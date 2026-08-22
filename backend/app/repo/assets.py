@@ -162,11 +162,29 @@ def add_asset_comment(
 ) -> str:
     cid = new_id()
     with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO asset_comment(id, project, path, author, text, parent_id, muted, is_private) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (cid, project, path, author, text, parent_id, 1 if muted else 0, 1 if is_private else 0),
-        )
+        # 답글이면 부모 존재·같은 스레드(project/path)를 잠금 안에서 확인(코덱스 P1) —
+        # 삭제와 경합하면 삭제된 부모를 가리키는 고아 답글이 만들어졌다(parent_id FK 없음).
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if parent_id:
+                parent = conn.execute(
+                    "SELECT project, path FROM asset_comment WHERE id=?", (parent_id,)
+                ).fetchone()
+                if (
+                    not parent
+                    or parent["project"] != project
+                    or parent["path"] != path
+                ):
+                    raise ValueError("답글 대상 코멘트가 없습니다")
+            conn.execute(
+                "INSERT INTO asset_comment(id, project, path, author, text, parent_id, muted, is_private) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (cid, project, path, author, text, parent_id, 1 if muted else 0, 1 if is_private else 0),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     return cid
 
 
@@ -399,18 +417,31 @@ def add_generation_comment(
 ) -> str:
     cid = new_id()
     with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO generation_comment(id, gen_id, author, text, parent_id, muted, is_private) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (cid, gen_id, author, text, parent_id, 1 if muted else 0, 1 if is_private else 0),
-        )
-        # 답글을 달면 그 부모 코멘트를 확인한 것으로 간주(작성자 본인 기준 seen 처리).
-        if parent_id:
+        # 답글이면 부모 존재·같은 스레드(gen_id)를 잠금 안에서 확인(코덱스 P1 — 고아 답글 방지).
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if parent_id:
+                parent = conn.execute(
+                    "SELECT gen_id FROM generation_comment WHERE id=?", (parent_id,)
+                ).fetchone()
+                if not parent or parent["gen_id"] != gen_id:
+                    raise ValueError("답글 대상 코멘트가 없습니다")
             conn.execute(
-                "INSERT OR IGNORE INTO generation_comment_seen(worker_id, comment_id) "
-                "VALUES(?, ?)",
-                (author, parent_id),
+                "INSERT INTO generation_comment(id, gen_id, author, text, parent_id, muted, is_private) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (cid, gen_id, author, text, parent_id, 1 if muted else 0, 1 if is_private else 0),
             )
+            # 답글을 달면 그 부모 코멘트를 확인한 것으로 간주(작성자 본인 기준 seen 처리).
+            if parent_id:
+                conn.execute(
+                    "INSERT OR IGNORE INTO generation_comment_seen(worker_id, comment_id) "
+                    "VALUES(?, ?)",
+                    (author, parent_id),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     return cid
 
 

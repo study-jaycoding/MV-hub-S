@@ -131,7 +131,9 @@ def set_generation_auto_tags_batch(items: list[tuple[str, list[str]]]) -> int:
                     f"AND name IN ({placeholders})",
                     (owner_uid, *batch),
                 ).fetchall():
-                    tag_cache[(owner_uid, row["name"])] = row["id"]
+                    # setdefault — NULL owner 는 UNIQUE 가 중복을 허용하므로 종전
+                    # fetchone(첫 행) 의미를 보존한다(코덱스 P2 — 마지막 행 덮어쓰기 금지).
+                    tag_cache.setdefault((owner_uid, row["name"]), row["id"])
         links: list[tuple[str, str]] = []
         for gen_id, names in final_by_id.items():
             if gen_id not in owners:

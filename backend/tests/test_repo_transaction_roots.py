@@ -367,6 +367,136 @@ def test_idempotent_placeholder_resume_truth_table(pooled_db, mutate, expected):
         ) is True
 
 
+def test_canvas_placeholder_resume_truth_table(pooled_db):
+    """R6 2-B 캔버스 진리표(코덱스 P1) — 특히 같은 이메일의 '일반 요청'(canvas_attempt_id
+    =NULL)이 타요청으로 정확히 집계돼야 한다(= 비교의 NULL 구멍 회귀)."""
+    gen_id = repo.create_local_generation({"model": "m", "prompt": "p"}, "me")
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE generation SET origin='local', status='pending', job_id=NULL WHERE id=?",
+            (gen_id,),
+        )
+        owner = conn.execute(
+            "SELECT creator_uid FROM generation WHERE id=?", (gen_id,)
+        ).fetchone()["creator_uid"]
+        conn.execute(
+            "INSERT INTO gen_request(id, account_email, gen_id, kind, status, canvas_attempt_id, payload) "
+            "VALUES('req-canvas','w@example.com',?,?,'preparing','attempt-1','{}')",
+            (gen_id, "create"),
+        )
+    link = {"attempt_id": "attempt-1", "generation_id": gen_id}
+    assert repo.canvas_placeholder_is_resumable(
+        "w@example.com", owner, link, "create"
+    ) is True  # 기본형
+
+    # ★같은 이메일의 일반 요청(NULL attempt) 이 존재 — 타요청이므로 재개 불가여야 한다
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO gen_request(id, account_email, gen_id, kind, status, canvas_attempt_id, payload) "
+            "VALUES('req-plain','w@example.com',?,?,'pending',NULL,'{}')",
+            (gen_id, "create"),
+        )
+    assert repo.canvas_placeholder_is_resumable(
+        "w@example.com", owner, link, "create"
+    ) is False
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM gen_request WHERE id='req-plain'")
+    # 다른 attempt 의 캔버스 요청도 타요청
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO gen_request(id, account_email, gen_id, kind, status, canvas_attempt_id, payload) "
+            "VALUES('req-other-attempt','w@example.com',?,?,'pending','attempt-2','{}')",
+            (gen_id, "create"),
+        )
+    assert repo.canvas_placeholder_is_resumable(
+        "w@example.com", owner, link, "create"
+    ) is False
+
+
+def test_reply_to_deleted_parent_is_rejected(pooled_db):
+    """코덱스 P1 — 부모 존재·같은 스레드 확인을 잠금 안에서: 삭제된(또는 다른 스레드의)
+    부모를 가리키는 고아 답글이 만들어지지 않는다(asset·generation 코멘트 공통)."""
+    cid = repo.add_asset_comment("proj", "a.png", "me", "부모")
+    repo.delete_asset_comment(cid, "me")
+    with pytest.raises(ValueError):
+        repo.add_asset_comment("proj", "a.png", "other", "고아 답글", parent_id=cid)
+    # 다른 스레드(경로)의 부모를 가리키는 답글도 거부
+    cid2 = repo.add_asset_comment("proj", "a.png", "me", "부모2")
+    with pytest.raises(ValueError):
+        repo.add_asset_comment("proj", "b.png", "other", "경로 불일치", parent_id=cid2)
+
+    gen_id = repo.create_local_generation({"model": "m", "prompt": "p"}, "me")
+    gcid = repo.add_generation_comment(gen_id, "me", "부모")
+    repo.delete_generation_comment(gcid, "me")
+    with pytest.raises(ValueError):
+        repo.add_generation_comment(gen_id, "other", "고아 답글", parent_id=gcid)
+    _assert_pool_connection_clean()
+    with db.get_connection() as conn:
+        orphans = conn.execute(
+            "SELECT COUNT(*) FROM asset_comment WHERE parent_id IS NOT NULL "
+            "AND parent_id NOT IN (SELECT id FROM asset_comment)"
+        ).fetchone()[0]
+    assert orphans == 0
+
+
+def test_restore_after_purge_returns_false_and_purge_after_restore_keeps_sidecar(pooled_db):
+    """코덱스 P1 — restore 는 휴지통 SELECT 전에 잠금: purge 가 먼저면 False(뒤늦은 부활
+    없음), restore 가 먼저면 살아난 본체 때문에 sidecar purge 가 정리를 건너뛴다."""
+    from app.repo import trash
+
+    gen_id = repo.create_local_generation({"model": "m", "prompt": "p"}, "me")
+    repo.set_status(gen_id, "failed")
+    assert trash.move_to_trash(gen_id)
+    assert trash.purge_trashed_item(gen_id) is True  # 휴지통에서 영구삭제
+    assert trash.restore_from_trash(gen_id) is False  # 뒤늦은 부활 없음
+    _assert_pool_connection_clean()
+
+    gen_id2 = repo.create_local_generation({"model": "m", "prompt": "p2"}, "me")
+    repo.set_status(gen_id2, "failed")
+    assert trash.move_to_trash(gen_id2)
+    assert trash.restore_from_trash(gen_id2) is True
+    from app.repo import manage as manage_repo
+
+    manage_repo.purge_generation_sidecar(gen_id2)  # 본체 생존 → 정리 건너뜀(재검증)
+    with db.get_connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM generation WHERE id=?", (gen_id2,)
+        ).fetchone()[0] == 1
+
+
+def test_reconcile_group_locked_skips_remaining_malformed_shapes(pooled_db):
+    """R6 2-H 잔여 skip 조건(코덱스 P2) — 중복<2·local≠1·synced 없음."""
+    from app.repo import generations as generations_repo
+
+    # 중복<2 (재검증에서 해소된 그룹)
+    only = _seed_dup("http://x/one.png", origin="local")
+    with db.get_connection() as conn:
+        assert generations_repo._reconcile_duplicate_group_locked(conn, "http://x/one.png") == 0
+    # local 2개(≠1)
+    _seed_dup("http://x/two-local.png", origin="local")
+    _seed_dup("http://x/two-local.png", origin="local")
+    _seed_dup("http://x/two-local.png", origin="synced", job_id="j")
+    with db.get_connection() as conn:
+        assert generations_repo._reconcile_duplicate_group_locked(conn, "http://x/two-local.png") == 0
+    # synced 없음
+    _seed_dup("http://x/no-sync.png", origin="local")
+    _seed_dup("http://x/no-sync.png", origin="local")
+    with db.get_connection() as conn:
+        assert generations_repo._reconcile_duplicate_group_locked(conn, "http://x/no-sync.png") == 0
+    assert only  # 사용 표시
+
+
+def test_ensure_admin_account_and_purge_are_pool_safe(pooled_db):
+    """코덱스 P2 — 풀 ON 사각 보강: ensure_admin_account·purge_generation_sidecar."""
+    from app.repo import manage as manage_repo
+
+    assert repo.ensure_admin_account("boot@example.com", "password123") is True
+    assert repo.ensure_admin_account("boot@example.com", "password123") is False  # 보존
+    _assert_pool_connection_clean()
+    manage_repo.purge_generation_sidecar("no-such-gen")
+    _assert_pool_connection_clean()
+
+
 def test_regenerate_resume_requires_derived_lineage(pooled_db):
     gen_id, owner = _seed_placeholder("w@example.com", "key-r", kind="regenerate")
     source_id = repo.create_local_generation({"model": "m", "prompt": "src"}, "me")
@@ -405,7 +535,13 @@ def test_new_indexes_exist_on_fresh_and_migrated_db(pooled_db):
         for name in expected:
             conn.execute(f"DROP INDEX {name}")  # 레거시 DB(인덱스 없던 시절) 재현
     assert not (expected & index_names())
-    db.init_db()  # 재부팅 마이그레이션 경로 — _migrate 가 재생성해야 한다
+    # ★_migrate 단독 실행으로 증명(코덱스 P2) — init_db 는 schema.sql 이 먼저 복원해
+    # 마이그레이션 경로를 독립 증명하지 못한다.
+    from app import db_migrations
+
+    with db.get_connection() as conn:
+        db_migrations._migrate_share_state_intent(conn)
+        db_migrations._migrate(conn)
     assert expected <= index_names()
     # 실측 근거 고정: creator_uid 해석이 SCAN 이 아니라 인덱스 탐색이어야 한다
     with db.get_connection() as conn:

@@ -368,6 +368,11 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
     """휴지통 항목을 메인 DB 에 그대로 재생성 + 휴지통에서 제거(원자). 없으면 False.
     account_uid 가 주어지면(AUTH on) 본인 것만 복구 — 남의 삭제물 복구·재노출 차단."""
     with _with_trash() as conn:
+        # ★잠금을 휴지통 SELECT '전'에 연다(코덱스 P1) — payload 를 읽은 뒤 purge 가
+        # 행을 지우면 restore 는 뒤늦게 본체를 복원하고 purge 는 sidecar 를 지워, 둘 다
+        # 성공하면서 metrics/task/export 가 유실됐다. IMMEDIATE 는 attach 된 휴지통 DB
+        # 까지 잠가 purge 의 행 삭제와 직렬화된다(먼저 지워졌으면 여기서 False).
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT payload, creator_uid FROM trash.trashed WHERE id=?", (gen_id,)
         ).fetchone()
@@ -376,6 +381,7 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
         # 일반 계정(account_uid 지정)은 '본인 것(옛 acct: 별칭 포함)'만. 소유자 NULL 인 레거시(단독 시절)
         # 항목은 일반 계정이 복구 못 하게 막는다 — admin 은 호출부에서 account_uid=None 으로 들어와 전부
         # 통과, 단독 모드(AUTH off)도 account_uid=None 이라 통과하므로 레거시가 잠기지 않는다.
+        # (PermissionError·이하 오류는 컨텍스트가 ROLLBACK 한다.)
         if account_uid is not None and row["creator_uid"] not in _account_alias_uids(
             conn, account_uid
         ):
@@ -383,7 +389,6 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
         p = json.loads(row["payload"])
         # payload 안 stale acct: 신원을 user_ 로 치환(재유입 차단) — admin·단독 복원 포함 항상.
         _rewrite_payload_identities(p, _acct_remap(conn))
-        conn.execute("BEGIN")
         _insert_row(conn, "generation", p["generation"])
         for a in p.get("assets", []):
             _insert_row(conn, "asset", a)

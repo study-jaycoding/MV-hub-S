@@ -301,6 +301,9 @@ def cache_projects(projects: list[dict[str, Any]]) -> None:
         return
     backfilled_ids: list[str] = []
     with get_connection() as conn:
+        # UPSERT·unknown SELECT·backfill UPDATE 를 한 트랜잭션으로(코덱스 P2) — 사이에
+        # 다른 쓰기가 끼면 backfilled_ids 가 실제 변경 행과 어긋났다. 종료는 컨텍스트 COMMIT.
+        conn.execute("BEGIN IMMEDIATE")
         conn.executemany(
             "INSERT INTO project(id, name, kind, created_by, archived, render_root_path, "
             "workspace_scope, workspace_id, workspace_name) "

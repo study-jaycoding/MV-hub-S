@@ -161,7 +161,12 @@ class FinalExportPolicyTests(unittest.TestCase):
         self.assertIsNotNone(result)
         lane_sql = "\n".join(statements)
         self.assertIn("AND gen_id IN", lane_sql)  # 수동 링크 레인 제한
-        self.assertIn("AND g.id IN", lane_sql)    # 폴더 레인 제한(R6 2-C 별칭 반영)
+        # 폴더·시퀀스 레인 '각각'에 제한이 있어야 한다(코덱스 P2 — 전체 trace 검사는
+        # 한 레인이 빠져도 통과할 수 있다). R6 2-C VALUES JOIN 문으로 특정해 단정.
+        folder_lane = [s for s in statements if "wanted(pid, fpath)" in s]
+        sequence_lane = [s for s in statements if "wanted(pid, seqname)" in s]
+        self.assertTrue(folder_lane and all("AND g.id IN" in s for s in folder_lane))
+        self.assertTrue(sequence_lane and all("AND g.id IN" in s for s in sequence_lane))
         # 전체 폴더 GROUP BY(프로젝트 전수)가 아니라 대상 폴더 제한 sync 만 돈다.
         group_by_stmts = [s for s in statements if "GROUP BY g.project_id, g.folder_path" in s]
         self.assertTrue(all("g.folder_path IN (" in s for s in group_by_stmts))

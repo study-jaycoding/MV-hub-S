@@ -784,8 +784,11 @@ def canvas_placeholder_is_resumable(
         "AND (? IS NULL OR g.creator_uid=?) "
         "AND g.origin='local' AND g.status='pending' "
         "AND (g.job_id IS NULL OR g.job_id='') "
+        # ★NULL-safe(IS ?) — 같은 이메일의 일반 요청(canvas_attempt_id=NULL)은 = 비교에서
+        # NULL 이 돼 '타요청'으로 안 잡혔다(코덱스 P1, 원 코드부터의 구멍 승계). IS 비교로
+        # NULL 행도 정확히 타요청으로 집계한다.
         "AND NOT EXISTS(SELECT 1 FROM gen_request o WHERE o.gen_id=r.gen_id "
-        "AND NOT (o.account_email=? AND o.canvas_attempt_id=?)) "
+        "AND NOT (o.account_email=? AND o.canvas_attempt_id IS ?)) "
     )
     params: list[Any] = [
         email, canvas_link["attempt_id"], canvas_link["generation_id"], kind,
