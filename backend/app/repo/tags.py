@@ -110,22 +110,37 @@ def set_generation_auto_tags_batch(items: list[tuple[str, list[str]]]) -> int:
             ).fetchall():
                 owners[row["id"]] = row["creator_uid"]
 
-        tag_cache: dict[tuple[Optional[str], str], Optional[str]] = {}
+        # (owner,name) 단건 SELECT 반복 → owner 별 chunked IN 배치(R6 2-I).
+        # owner_uid NULL 은 IS 비교 의미를 유지하려고 owner 단위로 나눠 조회한다.
+        # 없는 태그는 cache 미존재로 자연 제외(자동 태그 미생성 계약 그대로).
+        wanted: dict[Optional[str], set[str]] = {}
+        for gen_id, names in final_by_id.items():
+            if gen_id not in owners:
+                continue
+            owner_uid = owners[gen_id]
+            for name in {tag.strip() for tag in names if tag and tag.strip()}:
+                wanted.setdefault(owner_uid, set()).add(name)
+        tag_cache: dict[tuple[Optional[str], str], str] = {}
+        for owner_uid, names_set in wanted.items():
+            name_list = sorted(names_set)
+            for offset in range(0, len(name_list), 900):
+                batch = name_list[offset:offset + 900]
+                placeholders = ",".join("?" * len(batch))
+                for row in conn.execute(
+                    f"SELECT id, name FROM auto_tag WHERE owner_uid IS ? "
+                    f"AND name IN ({placeholders})",
+                    (owner_uid, *batch),
+                ).fetchall():
+                    tag_cache[(owner_uid, row["name"])] = row["id"]
         links: list[tuple[str, str]] = []
         for gen_id, names in final_by_id.items():
             if gen_id not in owners:
                 continue
             owner_uid = owners[gen_id]
             for name in {tag.strip() for tag in names if tag and tag.strip()}:
-                key = (owner_uid, name)
-                if key not in tag_cache:
-                    row = conn.execute(
-                        "SELECT id FROM auto_tag WHERE name=? AND owner_uid IS ?",
-                        (name, owner_uid),
-                    ).fetchone()
-                    tag_cache[key] = row["id"] if row else None
-                if tag_cache[key]:
-                    links.append((gen_id, tag_cache[key]))
+                tag_id = tag_cache.get((owner_uid, name))
+                if tag_id:
+                    links.append((gen_id, tag_id))
 
         conn.executemany(
             "DELETE FROM gen_auto_tag WHERE generation_id=?",
