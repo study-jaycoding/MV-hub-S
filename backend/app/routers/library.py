@@ -262,21 +262,28 @@ async def read_file_stamp(file: UploadFile = File(...)):
     열쇠로 기존 조회 API 가 카탈로그에서 가져오므로 여기서는 읽지 않는다.
     각인이 없으면 gen_id=None — '우리 프로그램을 거쳐 나간 파일이 아니다'라는 뜻이다.
     """
-    tmp = _new_temp_file(Path(file.filename or "").suffix)
-    try:
-        size = 0
-        with tmp.open("wb") as out:
-            while True:
-                chunk = await file.read(1 << 20)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > STAMP_MAX_BYTES:
-                    raise HTTPException(status_code=413, detail="파일이 너무 큽니다")
-                out.write(chunk)
-        stamp = file_stamp.read_stamp(tmp)
-    finally:
-        tmp.unlink(missing_ok=True)
+    # 복사·크기 검사·각인 읽기·임시파일 삭제를 하나의 동기 helper 가 소유하고 스레드에서
+    # 실행(R7 2-C) — 종전엔 최대 512MiB 재읽기(이미지 read_bytes)·최대 120초 ffmpeg
+    # subprocess 가 이벤트 루프 위에서 돌았다. 413·finally 삭제 계약 유지, 취소돼도
+    # to_thread 가 helper 완료까지 기다리므로 임시파일이 남지 않는다(non-abandon).
+    def _copy_and_read_stamp() -> dict:
+        tmp = _new_temp_file(Path(file.filename or "").suffix)
+        try:
+            size = 0
+            with tmp.open("wb") as out:
+                while True:
+                    chunk = file.file.read(1 << 20)  # 동기 SpooledTemporaryFile 읽기
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > STAMP_MAX_BYTES:
+                        raise HTTPException(status_code=413, detail="파일이 너무 큽니다")
+                    out.write(chunk)
+            return file_stamp.read_stamp(tmp)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    stamp = await asyncio.to_thread(_copy_and_read_stamp)
     return {
         "gen_id": file_stamp.gen_id_of(stamp),
         "job_id": stamp.get(file_stamp.KEY_JOB),

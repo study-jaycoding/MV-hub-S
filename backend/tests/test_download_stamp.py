@@ -150,12 +150,16 @@ class ReadStampRouteTests(unittest.IsolatedAsyncioTestCase):
 
 
 class _FakeUpload:
-    """UploadFile 흉내 — 라우터를 HTTP 없이 직접 부르기 위한 최소 구현."""
+    """UploadFile 흉내 — 라우터를 HTTP 없이 직접 부르기 위한 최소 구현.
+    R7 2-C 이후 라우터는 동기 helper 에서 .file(SpooledTemporaryFile 동등)을 읽는다."""
 
     def __init__(self, data: bytes, filename: str):
+        import io
+
         self._data = data
         self._pos = 0
         self.filename = filename
+        self.file = io.BytesIO(data)  # 동기 읽기 경로(UploadFile.file 동등)
 
     async def read(self, size: int = -1) -> bytes:
         chunk = self._data[self._pos :] if size < 0 else self._data[self._pos : self._pos + size]
