@@ -15,6 +15,8 @@ from ..services import media_cache
 
 
 MediaTarget = tuple[str, str, str, bool, str | None]
+MediaCacheUpdate = tuple[str, str, str, str | None, str | None]
+_DOWNLOAD_CONCURRENCY = 6
 
 
 async def cache_generation_media(generation: dict) -> dict[str, Any]:
@@ -54,7 +56,13 @@ async def cache_generation_media(generation: dict) -> dict[str, Any]:
         else current_path
         for _kind, _id, current_path, _is_image, source_url in targets
     ]
-    results = await asyncio.gather(*(media_cache.cache_url_result(url) for url in urls))
+    download_sem = asyncio.Semaphore(_DOWNLOAD_CONCURRENCY)
+
+    async def cache_one(url: str | None):
+        async with download_sem:
+            return await media_cache.cache_url_result(url)
+
+    results = await asyncio.gather(*(cache_one(url) for url in urls))
 
     cached = 0
     failed = 0
@@ -63,6 +71,7 @@ async def cache_generation_media(generation: dict) -> dict[str, Any]:
     bytes_cached = 0
     retryable = 0
     failure_codes: Counter[str] = Counter()
+    cache_updates: list[MediaCacheUpdate] = []
     for (kind, media_id, current_path, is_image, source_url), requested_url, result in zip(
         targets, urls, results
     ):
@@ -87,10 +96,16 @@ async def cache_generation_media(generation: dict) -> dict[str, Any]:
         if current_path != result.path:
             thumb_path = result.path if is_image else None
             preserved_source = source_url or (requested_url if requested_url.startswith(("http://", "https://")) else None)
-            if kind == "asset":
-                repo.update_asset_cache(media_id, result.path, thumb_path, preserved_source)
-            else:
-                repo.update_reference_cache(media_id, result.path, thumb_path, preserved_source)
+            cache_updates.append(
+                (kind, media_id, result.path, thumb_path, preserved_source)
+            )
+
+    # 네트워크 작업이 모두 끝난 뒤에만 쓰기 트랜잭션을 열고 성공 행만 한 번에 반영한다.
+    repo.apply_generation_media_cache_updates(
+        cache_updates,
+        asset_updater=repo.update_asset_cache,
+        reference_updater=repo.update_reference_cache,
+    )
 
     return {
         "cached": cached,

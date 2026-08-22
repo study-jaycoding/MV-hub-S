@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 import json
+import sqlite3
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Literal, Optional, Sequence
 
 from ..db import get_connection
 from ..generation_result import ACTIVE_STATUSES, stored_error
@@ -425,31 +427,97 @@ def set_job_id(gen_id: str, job_id: str) -> None:
         conn.execute("UPDATE generation SET job_id=? WHERE id=?", (job_id, gen_id))
 
 
+MediaCacheUpdate = tuple[
+    Literal["asset", "ref"], str, str, Optional[str], Optional[str]
+]
+MediaCacheUpdater = Callable[[str, str, Optional[str], Optional[str]], None]
+_media_cache_batch_conn: ContextVar[sqlite3.Connection | None] = ContextVar(
+    "media_cache_batch_conn", default=None
+)
+
+
+def _update_asset_cache(
+    conn: sqlite3.Connection,
+    asset_id: str, file_path: str, thumbnail_path: Optional[str], source_url: Optional[str]
+) -> None:
+    # thumbnail_path 는 새 값이 있을 때만 갱신(COALESCE) — 영상 캐시는 thumb=None 이라, 무조건
+    # 덮으면 CLI 정적 포스터(thumbnail_url)가 지워진다. 이미지는 local 경로(non-None)라 정상 갱신.
+    conn.execute(
+        "UPDATE asset SET file_path=?, thumbnail_path=COALESCE(?, thumbnail_path), "
+        "source_url=COALESCE(source_url, ?) WHERE id=?",
+        (file_path, thumbnail_path, source_url, asset_id),
+    )
+
+
 def update_asset_cache(
     asset_id: str, file_path: str, thumbnail_path: Optional[str], source_url: Optional[str]
 ) -> None:
     """asset 을 로컬 캐시 경로로 전환하고 원본 URL 을 source_url 에 보존."""
+    batch_conn = _media_cache_batch_conn.get()
+    if batch_conn is not None:
+        _update_asset_cache(batch_conn, asset_id, file_path, thumbnail_path, source_url)
+        return
     with get_connection() as conn:
-        # thumbnail_path 는 새 값이 있을 때만 갱신(COALESCE) — 영상 캐시는 thumb=None 이라, 무조건
-        # 덮으면 CLI 정적 포스터(thumbnail_url)가 지워진다. 이미지는 local 경로(non-None)라 정상 갱신.
-        conn.execute(
-            "UPDATE asset SET file_path=?, thumbnail_path=COALESCE(?, thumbnail_path), "
-            "source_url=COALESCE(source_url, ?) WHERE id=?",
-            (file_path, thumbnail_path, source_url, asset_id),
-        )
+        _update_asset_cache(conn, asset_id, file_path, thumbnail_path, source_url)
+
+
+def _update_reference_cache(
+    conn: sqlite3.Connection,
+    ref_id: str, file_path: str, thumbnail_path: Optional[str], source_url: Optional[str]
+) -> None:
+    # thumbnail_path 는 새 값이 있을 때만 갱신(COALESCE) — 영상 포스터 보존(update_asset_cache 와 동일).
+    conn.execute(
+        "UPDATE reference SET file_path=?, thumbnail_path=COALESCE(?, thumbnail_path), "
+        "source_url=COALESCE(source_url, ?) WHERE id=?",
+        (file_path, thumbnail_path, source_url, ref_id),
+    )
 
 
 def update_reference_cache(
     ref_id: str, file_path: str, thumbnail_path: Optional[str], source_url: Optional[str]
 ) -> None:
     """reference 를 로컬 캐시 경로로 전환하고 원본 URL 을 source_url 에 보존."""
+    batch_conn = _media_cache_batch_conn.get()
+    if batch_conn is not None:
+        _update_reference_cache(batch_conn, ref_id, file_path, thumbnail_path, source_url)
+        return
     with get_connection() as conn:
-        # thumbnail_path 는 새 값이 있을 때만 갱신(COALESCE) — 영상 포스터 보존(update_asset_cache 와 동일).
-        conn.execute(
-            "UPDATE reference SET file_path=?, thumbnail_path=COALESCE(?, thumbnail_path), "
-            "source_url=COALESCE(source_url, ?) WHERE id=?",
-            (file_path, thumbnail_path, source_url, ref_id),
-        )
+        _update_reference_cache(conn, ref_id, file_path, thumbnail_path, source_url)
+
+
+def apply_generation_media_cache_updates(
+    updates: Sequence[MediaCacheUpdate],
+    *,
+    asset_updater: Optional[MediaCacheUpdater] = None,
+    reference_updater: Optional[MediaCacheUpdater] = None,
+) -> None:
+    """성공한 미디어 경로 전부를 한 ``BEGIN IMMEDIATE`` 트랜잭션으로 반영한다.
+
+    ★transaction-root 전용(바깥 트랜잭션 안 호출 금지). 배치 문맥을 단건 공개 함수에
+    전달해 기존 호출 계약은 유지하면서도 행마다 ``get_connection`` 을 중첩하지 않는다.
+    """
+    if not updates:
+        return
+    apply_asset = asset_updater or update_asset_cache
+    apply_reference = reference_updater or update_reference_cache
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        token = _media_cache_batch_conn.set(conn)
+        try:
+            for kind, media_id, file_path, thumbnail_path, source_url in updates:
+                if kind == "asset":
+                    apply_asset(media_id, file_path, thumbnail_path, source_url)
+                elif kind == "ref":
+                    apply_reference(media_id, file_path, thumbnail_path, source_url)
+                else:
+                    raise ValueError(f"지원하지 않는 미디어 캐시 종류: {kind}")
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            _media_cache_batch_conn.reset(token)
 
 
 def all_generation_ids() -> list[str]:
