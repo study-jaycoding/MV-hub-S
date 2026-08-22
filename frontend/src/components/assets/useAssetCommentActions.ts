@@ -40,9 +40,15 @@ export function useAssetCommentActions({
       .catch(() => {});
   };
 
+  // 전송/수정/삭제 후 재조회. 호출 시점 파일(commentPath)을 고정해 두고, 응답이 왔을 때
+  // 열려 있는 파일이 그 사이 바뀌었으면 버린다 — 새 제목 아래 옛 파일 코멘트가 붙는 것 방지.
+  // (여기엔 WS 로 덮어써 주는 자가 회복 경로가 없어 한 번 어긋나면 그대로 남는다.)
   const refreshComments = () => {
-    if (!commentPath) return Promise.resolve();
-    return api.assetComments(project, commentPath).then(setComments);
+    const target = commentPath;
+    if (!target) return Promise.resolve();
+    return api.assetComments(project, target).then((c) => {
+      if (openPathRef.current === target) setComments(c);
+    });
   };
 
   const sendComment = (text: string, parentId: string | null | undefined, isPrivate: boolean) => {

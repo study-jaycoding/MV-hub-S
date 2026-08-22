@@ -38,7 +38,13 @@ export function GenCommentPanel({
   // 패널은 카드가 바뀌어도 remount 되지 않으므로(아래 ★ 주석) 이전 카드의 늦은 응답이 지금 카드
   // 코멘트를 덮어쓸 수 있다 → 마지막 요청만 화면에 반영한다. 전송/수정/삭제 후 refresh 도 같은 가드.
   const seqRef = useRef(0);
+  // 지금 화면에 떠 있는 카드. 전송/수정/삭제 응답이 늦게 도착한 뒤 시작되는 refresh 는
+  // 호출 시점(genId)을 그대로 들고 있으므로, 그 사이 카드가 바뀌었으면 아예 조회하지 않는다
+  // (조회했다면 seq 를 올려 새 카드 응답을 이기고 새 제목 아래 옛 코멘트를 붙인다).
+  const genIdRef = useRef(genId);
+  genIdRef.current = genId;
   const refresh = useCallback(() => {
+    if (genIdRef.current !== genId) return Promise.resolve();
     const my = ++seqRef.current;
     const cached = api.genCommentsCached(genId);
     if (cached) setComments(cached);

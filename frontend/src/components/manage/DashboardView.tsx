@@ -359,7 +359,9 @@ export function DashboardView({
         if (inScope()) setErr(summaryError || membersError || "");
       })
       .finally(() => {
-        setLoading(false);
+        // 대기 중인 재조회가 있으면 로딩을 넘겨주고 끄지 않는다 — 옛 요청이 스피너를 내리면
+        // 이어지는 재조회 한 왕복 동안 "프로젝트 없음" 빈 상태가 스쳐 보인다(로딩 소유권 이전).
+        if (!pendingReloadRef.current) setLoading(false);
         if (reloadPromiseRef.current === request) reloadPromiseRef.current = null;
         if (pendingReloadRef.current) {
           pendingReloadRef.current = false;
