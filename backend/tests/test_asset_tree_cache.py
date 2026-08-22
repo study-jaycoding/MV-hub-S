@@ -1,6 +1,7 @@
 """에셋 트리 캐시와 동시 요청 합치기 회귀 테스트."""
 
 import tempfile
+import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -62,6 +63,92 @@ class AssetTreeCacheTests(unittest.TestCase):
         self.assertEqual(first, cached)
         self.assertNotEqual(first, second)
 
+    def test_combined_invalidation_during_scan_does_not_restore_stale_cache(self):
+        scan_started = threading.Event()
+        release_stale_scan = threading.Event()
+        stale = [{"name": "stale"}]
+        current = [{"name": "current"}]
+        calls = 0
+
+        def controlled_scan(*_args):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                scan_started.set()
+                self.assertTrue(release_stale_scan.wait(timeout=1.0))
+                return stale
+            return current
+
+        with patch.object(
+            asset_tree,
+            "_scan_combined_internal_children",
+            side_effect=controlled_scan,
+        ):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                stale_read = pool.submit(
+                    asset_tree.read_combined_tree,
+                    self.assets_root,
+                    self.folders,
+                )
+                self.assertTrue(scan_started.wait(timeout=1.0))
+                asset_tree.invalidate_combined_tree(self.assets_root, self.folders)
+                release_stale_scan.set()
+                self.assertIs(stale_read.result(timeout=1.0), stale)
+
+            refreshed = asset_tree.read_combined_tree(self.assets_root, self.folders)
+            cached = asset_tree.read_combined_tree(self.assets_root, self.folders)
+
+        self.assertIs(refreshed, current)
+        self.assertIs(cached, current)
+        self.assertEqual(calls, 2)
+
+    def test_fresh_combined_read_scans_even_if_cache_appears_while_waiting(self):
+        key = asset_tree._combined_key(self.assets_root, self.folders)
+        scan_lock = asset_tree._tree_scan_lock(key)
+        with asset_tree._TREE_CACHE_LOCK:
+            before_epoch = asset_tree._TREE_INVALIDATION_EPOCHS.get(key, 0)
+        scan_lock.acquire()
+        try:
+            with patch.object(
+                asset_tree,
+                "_scan_combined_internal_children",
+                return_value=[{"name": "fresh"}],
+            ) as scan:
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(
+                        asset_tree.read_combined_tree,
+                        self.assets_root,
+                        self.folders,
+                        fresh=True,
+                    )
+                    deadline = time.monotonic() + 1.0
+                    epoch_advanced = False
+                    while True:
+                        with asset_tree._TREE_CACHE_LOCK:
+                            epoch = asset_tree._TREE_INVALIDATION_EPOCHS.get(key, 0)
+                        if epoch > before_epoch:
+                            epoch_advanced = True
+                            break
+                        if time.monotonic() >= deadline:
+                            break
+                        time.sleep(0.001)
+                    if epoch_advanced:
+                        with asset_tree._TREE_CACHE_LOCK:
+                            asset_tree._TREE_CACHE[key] = (
+                                time.monotonic(),
+                                [{"name": "appeared"}],
+                            )
+                    scan_lock.release()
+                    scan_lock = None
+                    result = future.result(timeout=1.0)
+
+            self.assertTrue(epoch_advanced)
+            self.assertEqual(result, [{"name": "fresh"}])
+            scan.assert_called_once()
+        finally:
+            if scan_lock is not None:
+                scan_lock.release()
+
     def test_project_tree_concurrent_reads_scan_once(self):
         expected = [{"name": "one.png", "type": "image", "path": "one.png"}]
 
@@ -81,6 +168,135 @@ class AssetTreeCacheTests(unittest.TestCase):
         self.assertEqual(scan.call_count, 1)
         self.assertTrue(all(read.children is expected for read in reads))
         self.assertEqual(sum(read.scanned for read in reads), 1)
+
+    def test_project_invalidation_during_scan_does_not_restore_stale_cache(self):
+        scan_started = threading.Event()
+        release_stale_scan = threading.Event()
+        stale = [{"name": "stale"}]
+        current = [{"name": "current"}]
+        calls = 0
+
+        def controlled_scan(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                scan_started.set()
+                self.assertTrue(release_stale_scan.wait(timeout=1.0))
+                return stale
+            return current
+
+        with patch.object(asset_tree, "build_tree", side_effect=controlled_scan):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                stale_read = pool.submit(
+                    asset_tree.read_project_tree,
+                    self.project_root,
+                )
+                self.assertTrue(scan_started.wait(timeout=1.0))
+                asset_tree.invalidate_project_tree(self.project_root)
+                release_stale_scan.set()
+                self.assertIs(stale_read.result(timeout=1.0).children, stale)
+
+            refreshed = asset_tree.read_project_tree(self.project_root)
+            cached = asset_tree.read_project_tree(self.project_root)
+
+        self.assertIs(refreshed.children, current)
+        self.assertTrue(refreshed.scanned)
+        self.assertIs(cached.children, current)
+        self.assertFalse(cached.scanned)
+        self.assertEqual(calls, 2)
+
+    def test_fresh_policy_scan_invalidates_inflight_other_policy(self):
+        hidden_started = threading.Event()
+        release_hidden = threading.Event()
+        hidden_calls = 0
+
+        def controlled_scan(*_args, hidden_names=None, **_kwargs):
+            nonlocal hidden_calls
+            if hidden_names:
+                hidden_calls += 1
+                if hidden_calls == 1:
+                    hidden_started.set()
+                    self.assertTrue(release_hidden.wait(timeout=1.0))
+                    return [{"name": "stale-hidden"}]
+                return [{"name": "current-hidden"}]
+            return [{"name": "fresh-visible"}]
+
+        with patch.object(asset_tree, "build_tree", side_effect=controlled_scan):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                stale_hidden = pool.submit(
+                    asset_tree.read_project_tree,
+                    self.project_root,
+                    hidden_names={"render"},
+                )
+                self.assertTrue(hidden_started.wait(timeout=1.0))
+                visible = asset_tree.read_project_tree(self.project_root, fresh=True)
+                release_hidden.set()
+                self.assertEqual(
+                    stale_hidden.result(timeout=1.0).children,
+                    [{"name": "stale-hidden"}],
+                )
+
+            refreshed_hidden = asset_tree.read_project_tree(
+                self.project_root,
+                hidden_names={"render"},
+            )
+
+        self.assertEqual(visible.children, [{"name": "fresh-visible"}])
+        self.assertEqual(refreshed_hidden.children, [{"name": "current-hidden"}])
+        self.assertEqual(hidden_calls, 2)
+
+    def test_fresh_project_read_scans_even_if_cache_appears_while_waiting(self):
+        key = asset_tree._project_key(self.project_root, None)
+        scan_lock = asset_tree._tree_scan_lock(key)
+        with asset_tree._TREE_CACHE_LOCK:
+            before_epoch = asset_tree._TREE_INVALIDATION_EPOCHS.get(
+                asset_tree._epoch_key(key),
+                0,
+            )
+        scan_lock.acquire()
+        try:
+            with patch.object(
+                asset_tree,
+                "build_tree",
+                return_value=[{"name": "fresh"}],
+            ) as scan:
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(
+                        asset_tree.read_project_tree,
+                        self.project_root,
+                        fresh=True,
+                    )
+                    deadline = time.monotonic() + 1.0
+                    epoch_advanced = False
+                    while True:
+                        with asset_tree._TREE_CACHE_LOCK:
+                            epoch = asset_tree._TREE_INVALIDATION_EPOCHS.get(
+                                asset_tree._epoch_key(key),
+                                0,
+                            )
+                        if epoch > before_epoch:
+                            epoch_advanced = True
+                            break
+                        if time.monotonic() >= deadline:
+                            break
+                        time.sleep(0.001)
+                    if epoch_advanced:
+                        with asset_tree._TREE_CACHE_LOCK:
+                            asset_tree._TREE_CACHE[key] = (
+                                time.monotonic(),
+                                [{"name": "appeared"}],
+                            )
+                    scan_lock.release()
+                    scan_lock = None
+                    result = future.result(timeout=1.0)
+
+            self.assertTrue(epoch_advanced)
+            self.assertEqual(result.children, [{"name": "fresh"}])
+            self.assertTrue(result.scanned)
+            scan.assert_called_once()
+        finally:
+            if scan_lock is not None:
+                scan_lock.release()
 
     def test_project_tree_keeps_display_policies_in_separate_caches(self):
         def scan_for_policy(*_args, hidden_names=None, **_kwargs):

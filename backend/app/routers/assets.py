@@ -104,12 +104,6 @@ def _sha256_file(path: Path) -> Optional[str]:
     return asset_io.sha256_file(path)
 
 
-def _find_same_media(
-    dest: Path, digest: str, media_type: str, size: Optional[int] = None
-) -> Optional[Path]:
-    return asset_io.find_same_media(dest, digest, media_type, size)
-
-
 # ── 업로드 스트리밍(청크) — 큰 파일을 통째로 메모리에 read 하지 않는다 ─────────────────
 _UPLOAD_MAX_FILES = asset_io.UPLOAD_MAX_FILES
 _UPLOAD_TOTAL_MAX_BYTES = upload_limits.ASSET_UPLOAD_TOTAL_MAX_BYTES
@@ -837,16 +831,22 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="빈 캡쳐")
     # 임포트와 동일 — 같은 내용(sha256)이 이미 captures 에 있으면 재사용(중복 방지). 크기 우선 비교로 가속.
     try:
-        existing = await asyncio.to_thread(_find_same_media, cap_dir, digest, "image", size)
-        if existing:
-            tmp.unlink(missing_ok=True)
-            return {"project": "captures", "path": existing.name, "name": existing.name, "type": "image", "reused": True}
         name = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"  # 충돌은 _commit 이 _2 로 회피
-        target = _commit_unique_tmp(tmp, cap_dir, name)
+        target, reused = await to_thread_non_abandon(
+            asset_io.find_or_commit_media,
+            tmp,
+            cap_dir,
+            name,
+            digest,
+            "image",
+            size,
+        )
     except BaseException:
         # 스트리밍이 끝난 뒤 중복 검사·최종 확정에서 실패해도 .part 파일을 남기지 않는다.
         tmp.unlink(missing_ok=True)
         raise
+    if reused:
+        return {"project": "captures", "path": target.name, "name": target.name, "type": "image", "reused": True}
     asset_tree.invalidate_project_tree(cap_dir)  # 새 캡쳐 즉시 반영 — 다음 트리 요청은 다시 훑는다
     asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
     return {"project": "captures", "path": target.name, "name": target.name, "type": "image"}
@@ -895,25 +895,31 @@ async def upload_reference_import(
             tmp.unlink(missing_ok=True)
             skipped.append(raw)
             continue
-        # 폴더 내 기존 파일 비교 — 크기 우선(다르면 해시 스킵) 후 sha256. 동기 IO 라 스레드로 오프로딩.
+        # 중복 재검색부터 최종 확정까지 같은 동기 임계구역에서 수행하고, 취소돼도 스레드를 버리지 않는다.
         try:
-            existing = await asyncio.to_thread(_find_same_media, dest, digest, mt, size)
-            if existing:
-                tmp.unlink(missing_ok=True)
+            target, reused = await to_thread_non_abandon(
+                asset_io.find_or_commit_media,
+                tmp,
+                dest,
+                raw,
+                digest,
+                mt,
+                size,
+            )
+            if reused:
                 rel = (
-                    existing.relative_to(project_dir).as_posix()
+                    target.relative_to(project_dir).as_posix()
                     if project_dir
-                    else existing.name
+                    else target.name
                 )
                 saved.append({
                     "project": out_project,
                     "path": rel,
-                    "name": existing.name,
+                    "name": target.name,
                     "type": mt,
                     "reused": True,
                 })
                 continue
-            target = _commit_unique_tmp(tmp, dest, raw)
         except BaseException:
             # 스트리밍 이후 예외도 정리해 실패한 드롭이 숨은 디스크 찌꺼기를 만들지 않게 한다.
             tmp.unlink(missing_ok=True)

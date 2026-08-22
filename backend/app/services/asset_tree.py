@@ -26,8 +26,10 @@ _TREE_TTL = max(
 )
 
 _CacheKey = tuple[str, str, tuple[str, ...]]
+_EpochKey = tuple[str, str, tuple[str, ...]]
 _TREE_CACHE: dict[_CacheKey, tuple[float, list[dict[str, Any]]]] = {}
 _TREE_SCAN_LOCKS: dict[_CacheKey, threading.Lock] = {}
+_TREE_INVALIDATION_EPOCHS: dict[_EpochKey, int] = {}
 _TREE_CACHE_LOCK = threading.Lock()
 
 
@@ -62,6 +64,16 @@ def _tree_scan_lock(key: _CacheKey) -> threading.Lock:
         return _TREE_SCAN_LOCKS.setdefault(key, threading.Lock())
 
 
+def _epoch_key(key: _CacheKey) -> _EpochKey:
+    # 표시 제외 정책이 달라도 같은 프로젝트 디스크를 읽으므로 무효화 세대를 공유한다.
+    return (key[0], key[1], ()) if key[0] == "project" else key
+
+
+def _scan_epoch(key: _CacheKey) -> int:
+    with _TREE_CACHE_LOCK:
+        return _TREE_INVALIDATION_EPOCHS.get(_epoch_key(key), 0)
+
+
 def _cached_tree(key: _CacheKey) -> list[dict[str, Any]] | None:
     with _TREE_CACHE_LOCK:
         cached = _TREE_CACHE.get(key)
@@ -72,15 +84,24 @@ def _cached_tree(key: _CacheKey) -> list[dict[str, Any]] | None:
     return None
 
 
-def _remember_tree(key: _CacheKey, children: list[dict[str, Any]]) -> None:
+def _remember_tree(
+    key: _CacheKey,
+    children: list[dict[str, Any]],
+    scan_epoch: int,
+) -> None:
     with _TREE_CACHE_LOCK:
-        _TREE_CACHE[key] = (time.monotonic(), children)
+        if _TREE_INVALIDATION_EPOCHS.get(_epoch_key(key), 0) == scan_epoch:
+            _TREE_CACHE[key] = (time.monotonic(), children)
 
 
 def invalidate_project_tree(directory: Path) -> None:
     """같은 디스크 폴더의 표시 정책별 캐시를 모두 비운다."""
     directory_key = str(directory)
     with _TREE_CACHE_LOCK:
+        epoch_key: _EpochKey = ("project", directory_key, ())
+        _TREE_INVALIDATION_EPOCHS[epoch_key] = (
+            _TREE_INVALIDATION_EPOCHS.get(epoch_key, 0) + 1
+        )
         stale = [
             key
             for key in _TREE_CACHE
@@ -93,6 +114,7 @@ def invalidate_project_tree(directory: Path) -> None:
 def invalidate_combined_tree(assets_root: Path, folders: Iterable[str]) -> None:
     key = _combined_key(assets_root, folders)
     with _TREE_CACHE_LOCK:
+        _TREE_INVALIDATION_EPOCHS[key] = _TREE_INVALIDATION_EPOCHS.get(key, 0) + 1
         _TREE_CACHE.pop(key, None)
 
 
@@ -199,16 +221,19 @@ def read_project_tree(
     if fresh:
         invalidate_project_tree(directory)
 
-    children = _cached_tree(key)
-    if children is not None:
-        return AssetTreeRead(children=children, scanned=False)
-
-    with _tree_scan_lock(key):
+    if not fresh:
         children = _cached_tree(key)
         if children is not None:
             return AssetTreeRead(children=children, scanned=False)
+
+    with _tree_scan_lock(key):
+        if not fresh:
+            children = _cached_tree(key)
+            if children is not None:
+                return AssetTreeRead(children=children, scanned=False)
+        scan_epoch = _scan_epoch(key)
         children = build_tree(directory, "", hidden_names=normalized_hidden)
-        _remember_tree(key, children)
+        _remember_tree(key, children, scan_epoch)
         return AssetTreeRead(children=children, scanned=True)
 
 
@@ -245,15 +270,19 @@ def read_combined_tree(
     if fresh:
         invalidate_combined_tree(assets_root, folder_tuple)
 
-    children = _cached_tree(key)
-    if children is not None:
-        return children
+    if not fresh:
+        children = _cached_tree(key)
+        if children is not None:
+            return children
 
     with _tree_scan_lock(key):
-        children = _cached_tree(key)
-        if children is None:
-            children = _scan_combined_internal_children(assets_root, folder_tuple)
-            _remember_tree(key, children)
+        if not fresh:
+            children = _cached_tree(key)
+            if children is not None:
+                return children
+        scan_epoch = _scan_epoch(key)
+        children = _scan_combined_internal_children(assets_root, folder_tuple)
+        _remember_tree(key, children, scan_epoch)
     return children
 
 

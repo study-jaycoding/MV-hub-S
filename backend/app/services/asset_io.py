@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Protocol
 
@@ -72,6 +74,36 @@ def find_same_media(
     except OSError:
         return None
     return None
+
+
+# 같은 내용의 동시 업로드는 기존 파일 재검색부터 새 파일 확정까지 직렬화한다.
+# refcount 는 잠금 대기자까지 포함하고 마지막 사용자가 키를 회수해 목적지 수만큼 누적되지 않는다.
+# ★단일 프로세스 범위다. 다중 프로세스의 동일 내용 중복 생성은 이 계약의 범위 밖이며,
+# 파일명 충돌 자체는 종전의 commit_unique_tmp hardlink/O_EXCL 규칙으로 계속 방어한다.
+_MEDIA_COMMIT_LOCKS: dict[
+    tuple[str, str, str, int],
+    tuple[threading.Lock, int],
+] = {}
+_MEDIA_COMMIT_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _media_commit_lock(key: tuple[str, str, str, int]):
+    with _MEDIA_COMMIT_LOCKS_GUARD:
+        entry = _MEDIA_COMMIT_LOCKS.get(key)
+        lock = entry[0] if entry else threading.Lock()
+        users = entry[1] if entry else 0
+        _MEDIA_COMMIT_LOCKS[key] = (lock, users + 1)
+    try:
+        with lock:
+            yield
+    finally:
+        with _MEDIA_COMMIT_LOCKS_GUARD:
+            current, users = _MEDIA_COMMIT_LOCKS[key]
+            if users <= 1:
+                _MEDIA_COMMIT_LOCKS.pop(key, None)
+            else:
+                _MEDIA_COMMIT_LOCKS[key] = (current, users - 1)
 
 
 async def stream_upload_tmp(
@@ -142,6 +174,38 @@ def commit_unique_tmp(tmp: Path, dest_dir: Path, raw_name: str) -> Path:
                         pass
                     raise
                 return target
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def find_or_commit_media(
+    tmp: Path,
+    dest: Path,
+    raw_name: str,
+    digest: str,
+    kind: str,
+    size: int,
+) -> tuple[Path, bool]:
+    """같은 미디어 재검색과 고유 이름 확정을 한 프로세스 안에서 원자화한다.
+
+    반환 bool 은 기존 파일 재사용 여부다. 해시·종류·크기 판정과 파일명 충돌 규칙은
+    각각 ``find_same_media``와 ``commit_unique_tmp``의 기존 계약을 그대로 사용한다.
+    """
+    try:
+        normalized_dest = dest.resolve()
+        key = (
+            os.path.normcase(str(normalized_dest)),
+            digest,
+            kind,
+            size,
+        )
+        with _media_commit_lock(key):
+            existing = find_same_media(normalized_dest, digest, kind, size)
+            if existing is not None:
+                tmp.unlink(missing_ok=True)
+                return existing, True
+            return commit_unique_tmp(tmp, normalized_dest, raw_name), False
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
