@@ -60,6 +60,13 @@ def _migrate_share_state_intent(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_ssi_due "
         "ON share_state_intent(status, next_retry_at)"
     )
+    # prepared 직후 claim_token 재조회가 전수 스캔이던 것(R6 1-L) — claim 중 행만
+    # 부분 인덱스. 열은 (claim_token, server_origin) — R5 2-A 의 최종 SELECT
+    # (claim_token+origin 조건)까지 커버한다(코덱스 확정).
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ssi_claim_token "
+        "ON share_state_intent(claim_token, server_origin) WHERE claim_token IS NOT NULL"
+    )
 
 
 def _backfill_workspace_registry(conn: sqlite3.Connection) -> None:
@@ -597,6 +604,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "ON scene_card_generation(owner_uid, canvas_attempt_id) "
             "WHERE canvas_attempt_id IS NOT NULL"
         )
+    # 캔버스 후보·claim 의 (owner_uid, generation_id, removed_at IS NULL) 소속 조회가
+    # owner 전체를 훑던 것(R6 1-K) — 활성 행만 부분 인덱스(removed_at 은 base 스키마 컬럼).
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scene_card_gen_owner_generation_active "
+        "ON scene_card_generation(owner_uid, generation_id) WHERE removed_at IS NULL"
+    )
 
     # ── v02 RBAC — 전역 4역할(복수 가능) + 프로젝트 3역할 (로드맵 PART 1) ──────
     # 레거시 C0~C5 는 제거됨. global_role(CSV, 복수) + project_role 만 사용.
@@ -617,6 +630,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_workspace_member_account "
         "ON workspace_member(account_email, is_available, workspace_id)"
+    )
+    # 표시이름 해석·멤버 조회의 account WHERE creator_uid IN (...) 이 SCAN 이던 것(R6 1-G).
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_account_creator_uid ON account(creator_uid)"
     )
     _backfill_workspace_registry(conn)
     _backfill_generation_workspace_names(conn)

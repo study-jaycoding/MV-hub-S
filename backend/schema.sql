@@ -206,6 +206,8 @@ CREATE TABLE IF NOT EXISTS account (
     approved_at   TEXT,
     password_changed_at TEXT                       -- 설정되면 그 이전 발급된 세션 토큰 무효(비번 변경/리셋 시 갱신)
 );
+-- 표시이름 해석·멤버 조회의 creator_uid IN (...) SCAN 방지(R6 1-G).
+CREATE INDEX IF NOT EXISTS idx_account_creator_uid ON account(creator_uid);
 
 -- 에이전트가 보고한 팀 워크스페이스 등록부. CLI에는 조직 전체 멤버 API가 없으므로 각 계정의
 -- workspace list 보고를 합쳐 MV-Hub가 확인한 접근 관계를 만든다. 생성물/프로젝트의 스냅샷 이름과
@@ -278,6 +280,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ssi_origin_anchor
     WHERE job_anchor IS NOT NULL AND server_generation_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_ssi_due
     ON share_state_intent(status, next_retry_at);
+-- prepared 직후 claim_token 재조회 전수 스캔 방지(R6 1-L) — claim 중 행만.
+CREATE INDEX IF NOT EXISTS idx_ssi_claim_token
+    ON share_state_intent(claim_token, server_origin) WHERE claim_token IS NOT NULL;
 
 -- 히스토리(parent_gen → child_gen). relation: 'derived'(재생성/가져오기) | 'reference'(@소스로 생성)
 -- ※ relation 컬럼·유니크 인덱스(idx_history_edge)는 _migrate 에서 생성한다(기존 DB ALTER 순서 때문).
@@ -538,6 +543,9 @@ CREATE TABLE IF NOT EXISTS scene_card_generation (
 -- 씬 열 때 그 씬 전체를 한 번에 읽는다(카드별 N번 조회 금지).
 CREATE INDEX IF NOT EXISTS idx_scene_card_gen_scene
     ON scene_card_generation(owner_uid, scene_id);
+-- 캔버스 후보·claim 의 생성물 소속 확인(활성 행만) — owner 전체 훑기 방지(R6 1-K).
+CREATE INDEX IF NOT EXISTS idx_scene_card_gen_owner_generation_active
+    ON scene_card_generation(owner_uid, generation_id) WHERE removed_at IS NULL;
 -- idx_scene_card_gen_attempt는 기존 DB에 canvas_attempt_id를 ALTER한 뒤 db_migrations에서 만든다.
 
 CREATE INDEX IF NOT EXISTS idx_generation_worker  ON generation(worker_id);
