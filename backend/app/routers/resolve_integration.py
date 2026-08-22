@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import urllib.parse
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -12,7 +11,11 @@ from pydantic import BaseModel, Field
 
 from . import _proxy
 from .. import repo
-from ..deps import account_scope_uid, require_view_generation
+from ..deps import (
+    account_scope_uid,
+    batch_view_member_projects,
+    can_view_generation_with_member_projects,
+)
 from ..services.resolve_status_runner import (
     resolve_connection_status_bounded,
     run_resolve_import_isolated,
@@ -112,23 +115,6 @@ async def post_resolve_python_install(request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-async def _generation_for_transfer(gen_id: str, request: Request) -> dict:
-    """로컬 생성물을 우선하고, 로컬에 없는 팀 공유물만 서버에서 조회한다."""
-    gen = repo.get_generation(gen_id, account_uid=account_scope_uid(request))
-    if gen:
-        require_view_generation(request, gen)
-        return gen
-    if _proxy.proxying():
-        encoded = urllib.parse.quote(gen_id, safe="")
-        # 공유 서버 조회는 동기 urllib 기반이므로 이벤트 루프 밖에서 실행한다.
-        remote = await asyncio.to_thread(
-            _proxy.proxy_json, "GET", f"/api/generations/{encoded}"
-        )
-        if isinstance(remote, dict):
-            return remote
-    raise HTTPException(status_code=404, detail=f"생성물을 찾을 수 없습니다: {gen_id}")
-
-
 @router.post("/transfers")
 async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
     """완료본을 로컬에 준비하고 현재 Resolve Media Pool로 가져온다."""
@@ -136,10 +122,49 @@ async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
     ids = list(dict.fromkeys(gen_id.strip() for gen_id in body.gen_ids if gen_id.strip()))
     if not ids:
         raise HTTPException(status_code=400, detail="전송할 생성물을 선택하세요")
-    # 순차 조회 — 서버에 대량 동시 요청을 만들지 않는다. 로컬 항목은 DB 단건 조회라 즉시 끝난다.
+    # 최대 500건 판정 배치화(R7 2-D) — 종전엔 ID 마다 로컬 단건 DB 조회(이벤트 루프 위)
+    # 와 원격 단건 GET 을 순차 반복했다. 로컬 1회+멤버십 1회+원격 batch 1회로 줄이고
+    # 입력 순서대로 재조립한다. ★로컬에 존재하지만 열람 불가(숨김)인 ID 는 원격 폴백
+    # 금지 — 단건 경로와 동일하게 404(존재 은닉). 진짜 부재만 원격 batch 로 간다.
+    def _local_lookup() -> tuple[dict, "object"]:
+        local = repo.get_generations_batch(ids, account_uid=account_scope_uid(request))
+        members = batch_view_member_projects(request, local.values())
+        return local, members
+
+    local_gens, member_projects = await asyncio.to_thread(_local_lookup)
+    missing = [gen_id for gen_id in ids if gen_id not in local_gens]
+    remote_cards: dict[str, dict] = {}
+    if missing and _proxy.proxying():
+        remote = await asyncio.to_thread(
+            _proxy.proxy_json,
+            "POST",
+            "/api/generations/batch",
+            body={"gen_ids": missing},
+        )
+        items = remote.get("items") if isinstance(remote, dict) else None
+        if isinstance(items, dict):
+            remote_cards = {
+                requested: card
+                for requested, card in items.items()
+                if isinstance(requested, str) and isinstance(card, dict)
+            }
     generations = []
-    for gen_id in ids:
-        generations.append(await _generation_for_transfer(gen_id, request))
+    for gen_id in ids:  # 입력 순서 재조립 — 첫 실패가 단건 경로와 같은 404 를 낸다
+        gen = local_gens.get(gen_id)
+        if gen:
+            if not can_view_generation_with_member_projects(
+                request, gen, member_projects
+            ):
+                raise HTTPException(status_code=404, detail="generation 없음")
+            generations.append(gen)
+            continue
+        card = remote_cards.get(gen_id)
+        if card is not None:
+            generations.append(card)
+            continue
+        raise HTTPException(
+            status_code=404, detail=f"생성물을 찾을 수 없습니다: {gen_id}"
+        )
     project_ids = {str(gen.get("project_id") or "") for gen in generations}
     if "" in project_ids:
         raise HTTPException(status_code=400, detail="프로젝트에 배정된 생성물만 전송할 수 있습니다")
@@ -184,7 +209,9 @@ async def retry_resolve_transfer(body: ResolveRetryIn, request: Request):
 async def pending_resolve_transfers(request: Request):
     """Resolve 내부 메뉴 스크립트가 가져올 준비 완료 전송 목록."""
     _require_local_resolve(request)
-    projects = repo.list_projects(include_archived=True).get("projects") or []
+    # 프로젝트 목록 조회도 스레드로(R7 2-D) — async 라우트 위 동기 DB 호출 제거.
+    projects_payload = await asyncio.to_thread(repo.list_projects, include_archived=True)
+    projects = projects_payload.get("projects") or []
     project_ids = [str(project.get("id") or "") for project in projects]
     manifests = await asyncio.to_thread(list_pending_manifests, project_ids)
     return {"items": manifests}
