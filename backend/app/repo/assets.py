@@ -218,30 +218,46 @@ def _comment_owner_locked(
 
 
 def edit_asset_comment(comment_id: str, worker_id: str, text: str) -> None:
+    """★transaction-root 전용(바깥 트랜잭션 안 호출 금지 — 중첩은 sqlite 오류로 fail-fast)."""
     with get_connection() as conn:
-        owner, locked = _comment_owner_locked(conn, comment_id, worker_id)
-        if owner is None:
-            raise ValueError("코멘트 없음")
-        if not owner:
-            raise PermissionError("내 코멘트만 수정할 수 있습니다")
-        if locked:
-            raise PermissionError("답글이 달려 수정할 수 없습니다")
-        conn.execute("UPDATE asset_comment SET text=? WHERE id=?", (text, comment_id))
+        # 검사~수정을 한 잠금 구간으로(R6 assets-1) — 사이에 타인 답글이 끼면 잠금 정책이 우회된다.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            owner, locked = _comment_owner_locked(conn, comment_id, worker_id)
+            if owner is None:
+                raise ValueError("코멘트 없음")
+            if not owner:
+                raise PermissionError("내 코멘트만 수정할 수 있습니다")
+            if locked:
+                raise PermissionError("답글이 달려 수정할 수 없습니다")
+            conn.execute("UPDATE asset_comment SET text=? WHERE id=?", (text, comment_id))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def delete_asset_comment(comment_id: str, worker_id: str) -> None:
+    """★transaction-root 전용(바깥 트랜잭션 안 호출 금지 — 중첩은 sqlite 오류로 fail-fast)."""
     with get_connection() as conn:
-        owner, locked = _comment_owner_locked(conn, comment_id, worker_id)
-        if owner is None:
-            return
-        if not owner:
-            raise PermissionError("내 코멘트만 삭제할 수 있습니다")
-        if locked:
-            raise PermissionError("답글이 달려 삭제할 수 없습니다")
-        # 내가 단 답글(자식)은 함께 삭제
-        conn.execute(
-            "DELETE FROM asset_comment WHERE id=? OR parent_id=?", (comment_id, comment_id)
-        )
+        conn.execute("BEGIN IMMEDIATE")  # 검사~삭제 경합 차단(R6 assets-1)
+        try:
+            owner, locked = _comment_owner_locked(conn, comment_id, worker_id)
+            if owner is None:
+                conn.execute("COMMIT")
+                return
+            if not owner:
+                raise PermissionError("내 코멘트만 삭제할 수 있습니다")
+            if locked:
+                raise PermissionError("답글이 달려 삭제할 수 없습니다")
+            # 내가 단 답글(자식)은 함께 삭제
+            conn.execute(
+                "DELETE FROM asset_comment WHERE id=? OR parent_id=?", (comment_id, comment_id)
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def mark_asset_comments_read(worker_id: str, project: str, path: str) -> None:
@@ -399,36 +415,51 @@ def add_generation_comment(
 
 
 def edit_generation_comment(comment_id: str, worker_id: str, text: str) -> None:
+    """★transaction-root 전용(바깥 트랜잭션 안 호출 금지 — 중첩은 sqlite 오류로 fail-fast)."""
     with get_connection() as conn:
-        owner, locked = _comment_owner_locked(
-            conn, comment_id, worker_id, "generation_comment"
-        )
-        if owner is None:
-            raise ValueError("코멘트 없음")
-        if not owner:
-            raise PermissionError("내 코멘트만 수정할 수 있습니다")
-        if locked:
-            raise PermissionError("답글이 달려 수정할 수 없습니다")
-        conn.execute(
-            "UPDATE generation_comment SET text=? WHERE id=?", (text, comment_id)
-        )
+        conn.execute("BEGIN IMMEDIATE")  # 검사~수정 경합 차단(R6 assets-1)
+        try:
+            owner, locked = _comment_owner_locked(
+                conn, comment_id, worker_id, "generation_comment"
+            )
+            if owner is None:
+                raise ValueError("코멘트 없음")
+            if not owner:
+                raise PermissionError("내 코멘트만 수정할 수 있습니다")
+            if locked:
+                raise PermissionError("답글이 달려 수정할 수 없습니다")
+            conn.execute(
+                "UPDATE generation_comment SET text=? WHERE id=?", (text, comment_id)
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def delete_generation_comment(comment_id: str, worker_id: str) -> None:
+    """★transaction-root 전용(바깥 트랜잭션 안 호출 금지 — 중첩은 sqlite 오류로 fail-fast)."""
     with get_connection() as conn:
-        owner, locked = _comment_owner_locked(
-            conn, comment_id, worker_id, "generation_comment"
-        )
-        if owner is None:
-            return
-        if not owner:
-            raise PermissionError("내 코멘트만 삭제할 수 있습니다")
-        if locked:
-            raise PermissionError("답글이 달려 삭제할 수 없습니다")
-        conn.execute(
-            "DELETE FROM generation_comment WHERE id=? OR parent_id=?",
-            (comment_id, comment_id),
-        )
+        conn.execute("BEGIN IMMEDIATE")  # 검사~삭제 경합 차단(R6 assets-1)
+        try:
+            owner, locked = _comment_owner_locked(
+                conn, comment_id, worker_id, "generation_comment"
+            )
+            if owner is None:
+                conn.execute("COMMIT")
+                return
+            if not owner:
+                raise PermissionError("내 코멘트만 삭제할 수 있습니다")
+            if locked:
+                raise PermissionError("답글이 달려 삭제할 수 없습니다")
+            conn.execute(
+                "DELETE FROM generation_comment WHERE id=? OR parent_id=?",
+                (comment_id, comment_id),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def mark_generation_comments_read(worker_id: str, gen_id: str) -> None:
@@ -568,22 +599,26 @@ def relink_asset_path(project: str, old_path: str, new_path: str, owner_uid: str
     """소스 파일을 새 경로에서 찾으면 asset_meta 의 path 를 갱신(자가 치유).
     새 경로 행이 이미 있으면(그 파일에 태그·컬러만 달아둔 경우 등) 그 행을 지우지 않고, 옛 행의
     소스·메타를 보완 병합(새 행에 없는 값만 옛 값으로)해 PK 충돌을 피하면서 소스를 보존한다.
-    UPDATE+DELETE 는 한 트랜잭션으로 묶어 중간 실패 시 양쪽이 어긋나지 않게 한다."""
+    UPDATE+DELETE 는 한 트랜잭션으로 묶어 중간 실패 시 양쪽이 어긋나지 않게 한다.
+    ★transaction-root 전용(바깥 트랜잭션 안 호출 금지 — 중첩은 sqlite 오류로 fail-fast)."""
     if old_path == new_path:
         return
     with get_connection() as conn:
+        # 두 SELECT 도 트랜잭션 안으로(R6 assets-2) — 읽기 뒤 다른 요청이 old/new 행을
+        # 바꾸면 낡은 판정으로 병합·삭제해 덮어쓰기·PK 경합이 났다.
+        conn.execute("BEGIN IMMEDIATE")
         old = conn.execute(
             "SELECT is_source, source_name, content_sha, tags, comment, color FROM asset_meta "
             "WHERE project=? AND path=? AND owner_uid=?",
             (project, old_path, owner_uid),
         ).fetchone()
         if not old:
+            conn.execute("COMMIT")
             return
         exists = conn.execute(
             "SELECT 1 FROM asset_meta WHERE project=? AND path=? AND owner_uid=?",
             (project, new_path, owner_uid),
         ).fetchone()
-        conn.execute("BEGIN")
         try:
             if exists:
                 # 새 경로 행 유지 + 옛 행의 소스는 덮어쓰고, 태그·코멘트·컬러는 새 행이 비어있을 때만 보완.

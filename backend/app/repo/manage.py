@@ -920,20 +920,19 @@ def record_completed(gen_id: str, job_id: Optional[str] = None) -> None:
     """완료/실패 시점: completed_at + elapsed_seconds(started_at 있을 때만, 초 단위)."""
     with get_connection() as conn:
         _ensure_schema(conn)
+        # elapsed 는 UPSERT 의 DO UPDATE 절에서 함께 계산(R6 manage-1) — 종전엔 같은 행을
+        # 직후 UPDATE 로 또 써 완료마다 쓰기·WAL 기록이 2회였다. started 없으면(신규 행·
+        # 동기화·과거분) elapsed 는 종전대로 NULL/기존값 유지.
         conn.execute(
             "INSERT INTO generation_metrics(gen_id, job_id, completed_at) "
             "VALUES(?,?, datetime('now')) "
             "ON CONFLICT(gen_id) DO UPDATE SET "
             "  job_id=COALESCE(excluded.job_id, generation_metrics.job_id), "
-            "  completed_at=excluded.completed_at",
+            "  completed_at=excluded.completed_at, "
+            "  elapsed_seconds=CASE WHEN generation_metrics.started_at IS NOT NULL "
+            "    THEN (julianday(excluded.completed_at) - julianday(generation_metrics.started_at)) * 86400.0 "
+            "    ELSE generation_metrics.elapsed_seconds END",
             (gen_id, job_id),
-        )
-        # elapsed = completed - started (초). started 없으면(동기화·과거분) NULL 유지.
-        conn.execute(
-            "UPDATE generation_metrics SET elapsed_seconds = "
-            "  (julianday(completed_at) - julianday(started_at)) * 86400.0 "
-            "WHERE gen_id=? AND started_at IS NOT NULL AND completed_at IS NOT NULL",
-            (gen_id,),
         )
 
 
@@ -1035,7 +1034,8 @@ def purge_generation_sidecar(gen_id: str) -> None:
     task_generation·final_export(모두 gen_id 키). 이 행들은 메인/휴지통 어디에도 대응 생성물이 없어
     LEFT JOIN 에서 영영 안 잡히며 무한 누적된다(영구삭제만 해당 — 휴지통 이동 땐 복원용으로 보존).
     ★telemetry_outbox 는 건드리지 않는다 — 삭제 tombstone 은 아직 서버에 push 안 됐을 수 있어
-    드레이너가 소유(purge 는 서버로의 '삭제 통보'를 취소하는 게 아니다)."""
+    드레이너가 소유(purge 는 서버로의 '삭제 통보'를 취소하는 게 아니다).
+    ★transaction-root 전용(바깥 트랜잭션 안 호출 금지 — 중첩은 sqlite 오류로 fail-fast)."""
     if not gen_id:
         return
     tables = ("generation_metrics", "task_generation", "final_export")
@@ -1051,10 +1051,21 @@ def purge_generation_sidecar(gen_id: str) -> None:
         }
         if not have:
             return
-        # 안전: 메인에 같은 id 의 살아있는 생성물이 남아있으면(크래시로 메인·휴지통 오버랩 등) 지우지 않는다
-        #  — 사이드카는 그 살아있는 생성물의 것일 수 있다. 정상 purge 는 이미 메인에서 사라진 뒤라 무해.
-        if conn.execute("SELECT 1 FROM generation WHERE id=? LIMIT 1", (gen_id,)).fetchone():
-            return
-        for t in tables:
-            if t in have:
-                conn.execute(f"DELETE FROM {t} WHERE gen_id=?", (gen_id,))
+        # 생존 재확인~삭제를 한 트랜잭션으로(R6 manage-2) — 확인 뒤 복원이 끼면 살아있는
+        # 생성물의 사이드카를 지우거나 일부 테이블만 지운 반쪽 상태가 남았다.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # 안전: 메인에 같은 id 의 살아있는 생성물이 남아있으면(복원·크래시 오버랩 등) 지우지
+            # 않는다 — 사이드카는 그 살아있는 생성물의 것일 수 있다.
+            if conn.execute(
+                "SELECT 1 FROM generation WHERE id=? LIMIT 1", (gen_id,)
+            ).fetchone():
+                conn.execute("COMMIT")
+                return
+            for t in tables:
+                if t in have:
+                    conn.execute(f"DELETE FROM {t} WHERE gen_id=?", (gen_id,))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise

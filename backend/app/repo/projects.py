@@ -324,28 +324,38 @@ def cache_projects(projects: list[dict[str, Any]]) -> None:
 
 
 def set_project_workspace(pid: str, workspace: Optional[dict[str, Any]]) -> bool:
-    """프로젝트의 워크스페이스 컨텍스트를 저장한다. 변경 정책은 라우터/유스케이스가 담당한다."""
+    """프로젝트의 워크스페이스 컨텍스트를 저장한다. 변경 정책은 라우터/유스케이스가 담당한다.
+    ★transaction-root 전용(바깥 트랜잭션 안 호출 금지 — 중첩은 sqlite 오류로 fail-fast)."""
     workspace_scope, workspace_id, workspace_name = workspace_columns(workspace)
     backfilled_ids: list[str] = []
     with get_connection() as conn:
-        cur = conn.execute(
-            "UPDATE project SET workspace_scope=?, workspace_id=?, workspace_name=? WHERE id=?",
-            (workspace_scope, workspace_id, workspace_name, pid),
-        )
-        if cur.rowcount and workspace_scope == "team" and workspace_id:
-            _add_workspace_members_to_project(conn, pid, workspace_id)
-            rows = conn.execute(
-                "SELECT id FROM generation WHERE project_id=? AND workspace_scope='unknown'",
-                (pid,),
-            ).fetchall()
-            if rows:
-                conn.execute(
-                    "UPDATE generation SET workspace_scope='team', workspace_id=?, workspace_name=? "
-                    "WHERE project_id=? AND workspace_scope='unknown'",
-                    (workspace_id, workspace_name, pid),
-                )
-                backfilled_ids = [row["id"] for row in rows]
-        updated = cur.rowcount > 0
+        # 프로젝트 갱신·멤버 편입·unknown backfill 을 all-or-nothing 으로(R6 1-J) —
+        # autocommit 다문장은 중간 실패 시 부분 상태가 노출됐다. telemetry 표시는 종전대로
+        # COMMIT 뒤(best-effort).
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                "UPDATE project SET workspace_scope=?, workspace_id=?, workspace_name=? WHERE id=?",
+                (workspace_scope, workspace_id, workspace_name, pid),
+            )
+            if cur.rowcount and workspace_scope == "team" and workspace_id:
+                _add_workspace_members_to_project(conn, pid, workspace_id)
+                rows = conn.execute(
+                    "SELECT id FROM generation WHERE project_id=? AND workspace_scope='unknown'",
+                    (pid,),
+                ).fetchall()
+                if rows:
+                    conn.execute(
+                        "UPDATE generation SET workspace_scope='team', workspace_id=?, workspace_name=? "
+                        "WHERE project_id=? AND workspace_scope='unknown'",
+                        (workspace_id, workspace_name, pid),
+                    )
+                    backfilled_ids = [row["id"] for row in rows]
+            updated = cur.rowcount > 0
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     if backfilled_ids:
         try:
             from .manage_telemetry import mark_telemetry_dirty
@@ -394,10 +404,20 @@ def local_unassigned_count() -> int:
 
 def reorder_projects(ordered_ids: list[str]) -> None:
     """관리자 탭에서 정한 프로젝트 표시 순서를 sort_order(0,1,2,…)로 저장.
-    목록에 없는(보관 등) 프로젝트는 건드리지 않는다(NULL 유지 → 뒤로 폴백)."""
+    목록에 없는(보관 등) 프로젝트는 건드리지 않는다(NULL 유지 → 뒤로 폴백).
+    ★transaction-root 전용(바깥 트랜잭션 안 호출 금지 — 중첩은 sqlite 오류로 fail-fast)."""
     with get_connection() as conn:
-        for i, pid in enumerate(ordered_ids):
-            conn.execute("UPDATE project SET sort_order = ? WHERE id = ?", (i, pid))
+        # 한 트랜잭션+executemany(R6 1-J) — 중간 실패 시 반쪽 순서가 남지 않는다.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.executemany(
+                "UPDATE project SET sort_order = ? WHERE id = ?",
+                list(enumerate(ordered_ids)),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def set_archived(pid: str, archived: bool) -> bool:
@@ -406,13 +426,39 @@ def set_archived(pid: str, archived: bool) -> bool:
 
 def delete_project(pid: str) -> bool:
     """프로젝트 삭제 — 귀속 결과물은 지우지 않고 미분류(NULL)로 되돌린다.
-    project_member 는 FK ON DELETE CASCADE 로 함께 정리."""
+    project_member 는 FK ON DELETE CASCADE 로 함께 정리.
+    ★transaction-root 전용(바깥 트랜잭션 안 호출 금지 — 중첩은 sqlite 오류로 fail-fast)."""
+    unassigned_ids: list[str] = []
     with get_connection() as conn:
-        conn.execute(
-            "UPDATE generation SET project_id = NULL WHERE project_id = ?", (pid,)
-        )
-        cur = conn.execute("DELETE FROM project WHERE id = ?", (pid,))
-        return cur.rowcount > 0
+        # 미분류 되돌림+삭제를 한 트랜잭션으로(R6 1-J) — 중간 실패 시 생성물만 미분류가
+        # 되고 프로젝트는 남는 반쪽 상태 방지. member cascade 는 DELETE 와 같은 트랜잭션.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            unassigned_ids = [
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM generation WHERE project_id = ?", (pid,)
+                ).fetchall()
+            ]
+            conn.execute(
+                "UPDATE generation SET project_id = NULL WHERE project_id = ?", (pid,)
+            )
+            cur = conn.execute("DELETE FROM project WHERE id = ?", (pid,))
+            deleted = cur.rowcount > 0
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    if unassigned_ids:
+        # 미분류로 되돌린 생성물을 telemetry dirty 로(코덱스 1-J 계약) — 안 하면 팀
+        # 집계에 옛 프로젝트 귀속이 남는다. COMMIT 뒤 best-effort(종전 backfill 과 동일).
+        try:
+            from .manage_telemetry import mark_telemetry_dirty
+
+            mark_telemetry_dirty(unassigned_ids)
+        except Exception:  # noqa: BLE001 — 텔레메트리 실패가 삭제를 막지 않는다
+            pass
+    return deleted
 
 
 def shared_generation_anchors(generation_ids: list[str]) -> list[str]:
