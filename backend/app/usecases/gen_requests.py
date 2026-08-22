@@ -327,94 +327,53 @@ def _expected_create_recipe(cmd: GenRequestCommand) -> dict:
     }
 
 
-async def _resolve_canvas_placeholder_collision(
+async def _resolve_placeholder_collision(
     cmd: GenRequestCommand,
     contract: dict,
 ) -> dict | None:
-    """동시 재시도가 placeholder를 먼저 만든/활성화한 경우를 권위 DB로 판정한다.
-
-    반환값이 generation이면 다른 요청이 이미 끝낸 것이고, None이면 현재 요청이 preparing
-    예약을 이어서 활성화해야 한다. 안전한 동일 요청이 아니면 409용 예외를 낸다.
-    """
+    """예약·placeholder를 한 transaction-root에서 completed/resumable/conflict로 판정한다."""
     link = cmd.canvas_link
-    if not link:
-        raise CanvasGenerationConflict("캔버스 생성 연결 정보가 없습니다")
-    fresh = await _sync_io(
-        repo.reserve_canvas_gen_request,
-        cmd.email,
-        cmd.creator_uid,
-        link["generation_id"],
-        cmd.kind,
-        link,
-        contract,
-    )
-    if not _reservation_matches(fresh, link, cmd.kind, contract):
-        raise CanvasGenerationConflict(
-            "같은 캔버스 생성 시도 ID가 다른 카드 또는 생성 명령에 이미 사용되었습니다"
-        )
-    if fresh.get("status") != "preparing":
-        generation = await _sync_io(repo.get_generation, link["generation_id"])
-        if generation:
-            return generation
-        raise CanvasGenerationConflict(
-            "기존 캔버스 생성 요청의 placeholder를 찾을 수 없습니다"
-        )
-    if not await _sync_io(
-        repo.canvas_placeholder_is_resumable,
-        cmd.email,
-        cmd.creator_uid,
-        link,
-        cmd.kind,
-        cmd.source_gen_id,
-    ):
-        raise CanvasGenerationConflict(
-            "같은 생성 ID가 다른 요청에 사용 중이라 안전하게 이어갈 수 없습니다"
-        )
-    return None
-
-
-async def _resolve_idempotent_placeholder_collision(
-    cmd: GenRequestCommand,
-    contract: dict,
-) -> dict | None:
-    """동시 일반 재시도가 같은 placeholder INSERT에서 충돌한 뒤 권위 행으로 수렴한다."""
-    if not cmd.idempotency_key:
+    if not link and not cmd.idempotency_key:
         raise GenerationIdempotencyConflict("일반 생성 요청 키가 없습니다")
-    fresh = await _sync_io(
-        repo.reserve_idempotent_gen_request,
+    decision = await _sync_io(
+        repo.classify_placeholder_collision,
         cmd.email,
         cmd.creator_uid,
         cmd.kind,
-        cmd.idempotency_key,
         contract,
+        cmd.source_gen_id,
+        idempotency_key=cmd.idempotency_key if not link else None,
+        canvas_link=link,
     )
-    if not _idempotency_reservation_matches(
-        fresh, cmd.kind, cmd.idempotency_key, contract
-    ):
-        raise GenerationIdempotencyConflict(
-            "같은 생성 요청 키가 다른 payload에 이미 사용되었습니다"
-        )
-    gen_id = fresh["gen_id"]
-    if fresh.get("status") != "preparing":
-        generation = await _sync_io(repo.get_generation, gen_id)
+    conflict_type = CanvasGenerationConflict if link else GenerationIdempotencyConflict
+    if decision["state"] == "completed":
+        generation = await _sync_io(repo.get_generation, decision["gen_id"])
         if generation:
             return generation
-        raise GenerationIdempotencyConflict(
-            "기존 생성 요청의 placeholder를 찾을 수 없습니다"
+        raise conflict_type(
+            "기존 캔버스 생성 요청의 placeholder를 찾을 수 없습니다"
+            if link
+            else "기존 생성 요청의 placeholder를 찾을 수 없습니다"
         )
-    if not await _sync_io(
-        repo.idempotent_placeholder_is_resumable,
-        cmd.email,
-        cmd.creator_uid,
-        cmd.idempotency_key,
-        gen_id,
-        cmd.kind,
-        cmd.source_gen_id,
-    ):
-        raise GenerationIdempotencyConflict(
-            "같은 생성 요청 키의 placeholder를 안전하게 이어갈 수 없습니다"
+    if decision["state"] == "resumable":
+        return None
+    if decision["reason"] == "contract_mismatch":
+        raise conflict_type(
+            "같은 캔버스 생성 시도 ID가 다른 카드 또는 생성 명령에 이미 사용되었습니다"
+            if link
+            else "같은 생성 요청 키가 다른 payload에 이미 사용되었습니다"
         )
-    return None
+    if decision["reason"] == "placeholder_missing":
+        raise conflict_type(
+            "기존 캔버스 생성 요청의 placeholder를 찾을 수 없습니다"
+            if link
+            else "기존 생성 요청의 placeholder를 찾을 수 없습니다"
+        )
+    raise conflict_type(
+        "같은 생성 ID가 다른 요청에 사용 중이라 안전하게 이어갈 수 없습니다"
+        if link
+        else "같은 생성 요청 키의 placeholder를 안전하게 이어갈 수 없습니다"
+    )
 
 
 @_account_scoped("email")
@@ -1357,34 +1316,12 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
     )
     try:
         if existing_placeholder:
-            if cmd.canvas_link:
-                resumable = await _sync_io(
-                    repo.canvas_placeholder_is_resumable,
-                    cmd.email,
-                    cmd.creator_uid,
-                    cmd.canvas_link,
-                    cmd.kind,
-                    cmd.source_gen_id,
-                )
-            else:
-                resumable = await _sync_io(
-                    repo.idempotent_placeholder_is_resumable,
-                    cmd.email,
-                    cmd.creator_uid,
-                    cmd.idempotency_key,
-                    gen_id,
-                    cmd.kind,
-                    cmd.source_gen_id,
-                )
-            if not resumable:
-                conflict_type = (
-                    CanvasGenerationConflict
-                    if cmd.canvas_link
-                    else GenerationIdempotencyConflict
-                )
-                raise conflict_type(
-                    "같은 생성 ID가 다른 요청에 사용 중이라 안전하게 이어갈 수 없습니다"
-                )
+            completed = await _resolve_placeholder_collision(
+                cmd,
+                canvas_contract if cmd.canvas_link else idempotency_contract,
+            )
+            if completed:
+                return completed
         elif cmd.kind == "create":
             create_kwargs = {"creator_uid": cmd.creator_uid}
             if cmd.workspace is not None:
@@ -1399,12 +1336,9 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
                 # 다른 동시 재시도가 같은 placeholder를 먼저 저장했는지 권위 DB로 재확인한다.
                 if not reservation:
                     raise
-                completed = (
-                    await _resolve_canvas_placeholder_collision(cmd, canvas_contract)
-                    if cmd.canvas_link
-                    else await _resolve_idempotent_placeholder_collision(
-                        cmd, idempotency_contract
-                    )
+                completed = await _resolve_placeholder_collision(
+                    cmd,
+                    canvas_contract if cmd.canvas_link else idempotency_contract,
                 )
                 if completed:
                     return completed
@@ -1422,12 +1356,9 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
             except sqlite3.IntegrityError:
                 if not reservation:
                     raise
-                completed = (
-                    await _resolve_canvas_placeholder_collision(cmd, canvas_contract)
-                    if cmd.canvas_link
-                    else await _resolve_idempotent_placeholder_collision(
-                        cmd, idempotency_contract
-                    )
+                completed = await _resolve_placeholder_collision(
+                    cmd,
+                    canvas_contract if cmd.canvas_link else idempotency_contract,
                 )
                 if completed:
                     return completed

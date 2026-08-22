@@ -585,7 +585,8 @@ def activate_idempotent_gen_request(
             raise
 
 
-def idempotent_placeholder_is_resumable(
+def _idempotent_placeholder_is_resumable(
+    conn: sqlite3.Connection,
     account_email: str,
     creator_uid: Optional[str],
     idempotency_key: str,
@@ -593,10 +594,6 @@ def idempotent_placeholder_is_resumable(
     kind: str,
     source_gen_id: Optional[str] = None,
 ) -> bool:
-    """같은 일반 요청 예약의 반쯤 만들어진 placeholder만 이어갈 수 있게 확인한다.
-    판정 조건 전체를 JOIN+NOT EXISTS 한 SELECT 로(R6 2-B) — 종전 3~4 SELECT 와 동일
-    진리표(코덱스 확정): 요청 preparing 정확 일치·creator(None 이면 생략)·origin=local·
-    pending·job_id 없음·타요청 없음(제외키=현재 요청 id)·regenerate 만 lineage."""
     sql = (
         "SELECT 1 FROM gen_request r JOIN generation g ON g.id = r.gen_id "
         "WHERE r.account_email=? AND r.idempotency_key=? AND r.gen_id=? AND r.kind=? "
@@ -616,8 +613,31 @@ def idempotent_placeholder_is_resumable(
             "AND h.child_gen_id=? AND h.relation='derived') "
         )
         params += [source_gen_id, gen_id]
+    return conn.execute(sql + "LIMIT 1", params).fetchone() is not None
+
+
+def idempotent_placeholder_is_resumable(
+    account_email: str,
+    creator_uid: Optional[str],
+    idempotency_key: str,
+    gen_id: str,
+    kind: str,
+    source_gen_id: Optional[str] = None,
+) -> bool:
+    """같은 일반 요청 예약의 반쯤 만들어진 placeholder만 이어갈 수 있게 확인한다.
+    판정 조건 전체를 JOIN+NOT EXISTS 한 SELECT 로(R6 2-B) — 종전 3~4 SELECT 와 동일
+    진리표(코덱스 확정): 요청 preparing 정확 일치·creator(None 이면 생략)·origin=local·
+    pending·job_id 없음·타요청 없음(제외키=현재 요청 id)·regenerate 만 lineage."""
     with get_connection() as conn:
-        return conn.execute(sql + "LIMIT 1", params).fetchone() is not None
+        return _idempotent_placeholder_is_resumable(
+            conn,
+            account_email,
+            creator_uid,
+            idempotency_key,
+            gen_id,
+            kind,
+            source_gen_id,
+        )
 
 
 def create_gen_request(
@@ -766,16 +786,14 @@ def activate_canvas_gen_request(
             raise
 
 
-def canvas_placeholder_is_resumable(
+def _canvas_placeholder_is_resumable(
+    conn: sqlite3.Connection,
     account_email: str,
     creator_uid: Optional[str],
     canvas_link: dict[str, str],
     kind: str,
     source_gen_id: Optional[str] = None,
 ) -> bool:
-    """예약과 같은 placeholder를 중단 지점부터 이어도 안전한지 확인한다.
-    판정 조건 전체를 한 SELECT 로(R6 2-B) — 일반형과 같은 진리표에 canvas_attempt_id
-    일치를 더하고, 타요청 제외키는 현행 그대로 (account_email, canvas_attempt_id) 쌍."""
     email = norm_email(account_email)
     sql = (
         "SELECT 1 FROM gen_request r JOIN generation g ON g.id = r.gen_id "
@@ -801,8 +819,144 @@ def canvas_placeholder_is_resumable(
             "AND h.child_gen_id=? AND h.relation='derived') "
         )
         params += [source_gen_id, canvas_link["generation_id"]]
+    return conn.execute(sql + "LIMIT 1", params).fetchone() is not None
+
+
+def canvas_placeholder_is_resumable(
+    account_email: str,
+    creator_uid: Optional[str],
+    canvas_link: dict[str, str],
+    kind: str,
+    source_gen_id: Optional[str] = None,
+) -> bool:
+    """예약과 같은 placeholder를 중단 지점부터 이어도 안전한지 확인한다.
+    판정 조건 전체를 한 SELECT 로(R6 2-B) — 일반형과 같은 진리표에 canvas_attempt_id
+    일치를 더하고, 타요청 제외키는 현행 그대로 (account_email, canvas_attempt_id) 쌍."""
     with get_connection() as conn:
-        return conn.execute(sql + "LIMIT 1", params).fetchone() is not None
+        return _canvas_placeholder_is_resumable(
+            conn,
+            account_email,
+            creator_uid,
+            canvas_link,
+            kind,
+            source_gen_id,
+        )
+
+
+def classify_placeholder_collision(
+    account_email: str,
+    creator_uid: Optional[str],
+    kind: str,
+    contract: dict[str, Any],
+    source_gen_id: Optional[str] = None,
+    *,
+    idempotency_key: Optional[str] = None,
+    canvas_link: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """동시 placeholder 충돌을 한 쓰기 잠금 안에서 최종 판정한다.
+
+    ``completed``는 동일 계약의 예약이 이미 활성화됐고 generation이 존재하는 경우,
+    ``resumable``은 예약이 preparing이며 기존 R6 placeholder 재개 진리표를 만족하는 경우다.
+    나머지는 모두 ``conflict``로 fail-closed 한다. BEGIN 뒤에만 예약과 placeholder를 읽어
+    활성화가 두 읽기 사이에 끼어드는 TOCTOU를 막는다.
+    """
+    if (idempotency_key is None) == (canvas_link is None):
+        raise ValueError("일반 idempotency key 또는 canvas link 중 하나만 필요합니다")
+
+    email = norm_email(account_email)
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if canvas_link is not None:
+                row = conn.execute(
+                    "SELECT id, creator_uid, gen_id, kind, payload, status, "
+                    "canvas_attempt_id attempt_id, canvas_scene_id scene_id, "
+                    "canvas_card_id card_id, idempotency_key FROM gen_request "
+                    "WHERE account_email=? AND canvas_attempt_id=? LIMIT 1",
+                    (email, canvas_link["attempt_id"]),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT id, creator_uid, gen_id, kind, payload, status, "
+                    "NULL attempt_id, NULL scene_id, NULL card_id, idempotency_key "
+                    "FROM gen_request WHERE account_email=? AND idempotency_key=? LIMIT 1",
+                    (email, idempotency_key),
+                ).fetchone()
+
+            reason = "reservation_missing"
+            state = "conflict"
+            gen_id = row["gen_id"] if row else None
+            matches = False
+            if row:
+                try:
+                    stored = json.loads(row["payload"] or "{}")
+                except (TypeError, ValueError):
+                    stored = {}
+                if canvas_link is not None:
+                    stored_contract = (
+                        stored.get("_canvas_contract") if isinstance(stored, dict) else False
+                    )
+                    matches = (
+                        row["gen_id"] == canvas_link["generation_id"]
+                        and row["kind"] == kind
+                        and row["scene_id"] == canvas_link["scene_id"]
+                        and row["card_id"] == canvas_link["card_id"]
+                        # RL-06 이전 예약은 계약 필드가 없으며 링크 4종 정확 일치로 재사용한다.
+                        and (stored_contract is None or stored_contract == contract)
+                    )
+                else:
+                    matches = (
+                        row["kind"] == kind
+                        and row["idempotency_key"] == idempotency_key
+                        and isinstance(stored, dict)
+                        and stored.get("_idempotency_contract") == contract
+                    )
+
+            if not row:
+                pass
+            elif not matches:
+                reason = "contract_mismatch"
+            elif row["status"] != "preparing":
+                generation_exists = conn.execute(
+                    "SELECT 1 FROM generation WHERE id=? LIMIT 1", (gen_id,)
+                ).fetchone()
+                if generation_exists:
+                    state = "completed"
+                    reason = ""
+                else:
+                    reason = "placeholder_missing"
+            else:
+                if canvas_link is not None:
+                    resumable = _canvas_placeholder_is_resumable(
+                        conn,
+                        email,
+                        creator_uid,
+                        canvas_link,
+                        kind,
+                        source_gen_id,
+                    )
+                else:
+                    resumable = _idempotent_placeholder_is_resumable(
+                        conn,
+                        email,
+                        creator_uid,
+                        idempotency_key,
+                        gen_id,
+                        kind,
+                        source_gen_id,
+                    )
+                if resumable:
+                    state = "resumable"
+                    reason = ""
+                else:
+                    reason = "placeholder_not_resumable"
+
+            conn.execute("COMMIT")
+            return {"state": state, "gen_id": gen_id, "reason": reason}
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
 
 
 def delete_canvas_gen_request_reservation(
