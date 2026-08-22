@@ -637,26 +637,44 @@ def list_generations(
         # 해석 쿼리를 다시 열 필요가 없다.
         srv_of = {g["id"]: g.get("job_id") or g["id"] for g in result if g.get("shared")}
         if srv_of:
-            try:
-                counts = _proxy.proxy_json(
-                    "POST", "/api/generations/comment-counts",
-                    body={"gen_ids": list(srv_of.values())},
-                    timeout=5,  # 비핵심 보강 — 서버가 느리거나 다운이면 목록을 60초씩 막지 말고 빨리 포기(로컬값 유지)
-                )
-                if isinstance(counts, dict):
-                    private_counts = repo.private_generation_comment_counts(
-                        list(srv_of), actor_id(request)
+            # 서버 코멘트 API 는 500개 상한 — 목록(최대 2,000)은 500씩 순차 chunk(R7 1-F).
+            # 종전엔 501건 이상이면 422 를 통째로 삼켜 모든 뱃지가 로컬값으로 남는 결정적
+            # 오표시였다. 실패 chunk 만 로컬값 유지(성공 chunk 는 반영)하고 로그를 남긴다.
+            server_ids = list(srv_of.values())
+            counts: dict = {}
+            for chunk_index, offset in enumerate(range(0, len(server_ids), 500)):
+                chunk = server_ids[offset:offset + 500]
+                try:
+                    part = _proxy.proxy_json(
+                        "POST", "/api/generations/comment-counts",
+                        body={"gen_ids": chunk},
+                        timeout=5,  # 비핵심 보강 — 서버가 느리면 목록을 오래 막지 않는다
                     )
-                    for g in result:
-                        sid = srv_of.get(g["id"])
-                        c = counts.get(sid) if sid else None
-                        if isinstance(c, dict):
-                            g["comment_count"] = int(c.get("comment_count") or 0) + private_counts.get(
-                                g["id"], 0
-                            )
-                            g["has_unread"] = c.get("has_unread", g.get("has_unread"))
-            except Exception:  # noqa: BLE001 — 보강 실패는 로컬 값 유지(치명적 아님)
-                pass
+                except Exception:  # noqa: BLE001 — 이 chunk 만 로컬 값 유지
+                    log.warning(
+                        "코멘트 보강 chunk 실패(무시): chunk=%d size=%d",
+                        chunk_index, len(chunk),
+                    )
+                    continue
+                if isinstance(part, dict):
+                    counts.update(part)
+                else:
+                    log.warning(
+                        "코멘트 보강 chunk 비정상 응답(무시): chunk=%d size=%d",
+                        chunk_index, len(chunk),
+                    )
+            if counts:
+                private_counts = repo.private_generation_comment_counts(
+                    list(srv_of), actor_id(request)  # 개인 비공개 수는 1회만 계산
+                )
+                for g in result:
+                    sid = srv_of.get(g["id"])
+                    c = counts.get(sid) if sid else None
+                    if isinstance(c, dict):
+                        g["comment_count"] = int(c.get("comment_count") or 0) + private_counts.get(
+                            g["id"], 0
+                        )
+                        g["has_unread"] = c.get("has_unread", g.get("has_unread"))
     # 내 라이브러리도 대표 썸네일이 원격 URL 이면 뒤에서 미리 캐시(팀 탭과 동일) — 첫 스크롤 지연 제거.
     # 이미 캐시된 건 즉시 통과(멱등)라 매 목록 요청 재호출이 싸다.
     own_urls = _remote_thumb_urls(result)

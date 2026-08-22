@@ -1085,16 +1085,33 @@ def seen_gen_comment(comment_id: str, request: Request):
 
 @router.post("/generations/{gen_id}/cache")
 async def cache_one(gen_id: str, request: Request):
-    gen, gen_id, _ = _resolve_local_or_reclaim(gen_id, request)  # 팀 탭 카드(서버 UUID)→로컬 행
-    if not gen:
-        raise HTTPException(status_code=404, detail="generation 없음")
-    require_view_generation(request, gen)  # 남의 비공개 프롬프트·params·에셋 URL 열람 차단(공유/본인만)
-    repo.request_media_preservation(gen_id, "manual", force=True)
-    res = await preserve_generation_now(gen_id)
-    if res is None:
-        res = {"status": (repo.get_media_preservation(gen_id) or {}).get("status", "running")}
-    res["generation"] = repo.get_generation(gen_id)
-    return res
+    # preflight(해석→권한→큐 등록)를 하나의 동기 helper 로 묶어 스레드에서(R7 1-H) —
+    # 로컬 miss 의 _resolve_local_or_reclaim 은 동기 proxy_get(최대 60초)이라 이벤트
+    # 루프를 통째로 막았다. 순서 고정: 권한 실패 시 큐 쓰기 0. 등록 뒤 취소는 durable
+    # queue 가 남는 것이 계약(보존 워커가 이어서 처리).
+    def _preflight() -> str:
+        gen, local_id, _ = _resolve_local_or_reclaim(gen_id, request)  # 팀 카드(서버 UUID)→로컬 행
+        if not gen:
+            raise HTTPException(status_code=404, detail="generation 없음")
+        require_view_generation(request, gen)  # 남의 비공개 프롬프트·params·에셋 URL 열람 차단
+        repo.request_media_preservation(local_id, "manual", force=True)
+        return local_id
+
+    resolved_id = await asyncio.to_thread(_preflight)
+    res = await preserve_generation_now(resolved_id)
+
+    def _assemble() -> dict:
+        out = res
+        if out is None:
+            out = {
+                "status": (repo.get_media_preservation(resolved_id) or {}).get(
+                    "status", "running"
+                )
+            }
+        out["generation"] = repo.get_generation(resolved_id)
+        return out
+
+    return await asyncio.to_thread(_assemble)
 
 
 @router.post("/cache-all")
