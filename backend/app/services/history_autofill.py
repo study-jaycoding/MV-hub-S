@@ -209,7 +209,9 @@ async def auto_start_history_import(
     email = norm_email(account_email)
     if not email:
         return False
-    account_scope = _capture_history_scope()
+    # 전환 락은 로그인 마이그레이션·DB 복원 동안 통째로 잡혀 있다 — 루프에서 기다리면
+    # 그동안 서버 전체(HTTP·WS)가 멈춘다. 대기는 워커 스레드에서.
+    account_scope = await asyncio.to_thread(_capture_history_scope)
     account_override = active_account.set_override(account_scope or "")
     try:
         local_key = _history_key()
@@ -231,7 +233,14 @@ async def auto_start_history_import(
         )
         if not claimed:
             return False
-        return _start_history_task(email, _history_account(email), automatic=True)
+        # 위에서 워커 스레드로 캡처한 키를 그대로 넘긴다 — 안 넘기면 _start_history_task 가
+        # 루프에서 같은 값을 다시 락 아래 캡처해, 방금 뺀 대기가 되살아난다.
+        return _start_history_task(
+            email,
+            _history_account(email),
+            automatic=True,
+            account_scope=account_scope,
+        )
     finally:
         active_account.reset_override(account_override)
 
@@ -240,7 +249,8 @@ async def startup_history_audit() -> bool:
     """로컬 허브 시작 때 최근 성공이 오래됐으면 한 번만 전체 이력을 확인한다."""
     if _history_auto_forbidden():
         return False
-    account_scope = _capture_history_scope()
+    # 부팅 audit 도 같은 이유로 루프에서 전환 락을 기다리지 않는다(위 auto_start 와 동일).
+    account_scope = await asyncio.to_thread(_capture_history_scope)
     account_override = active_account.set_override(account_scope or "")
     try:
         try:

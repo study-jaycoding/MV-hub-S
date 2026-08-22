@@ -159,7 +159,7 @@ def test_auto_start_claim_and_account_lookup_stay_on_captured_a(
         observed["claim_after"] = active_account.account_key()
         return claimed
 
-    def start_task(key, acc, *, automatic):
+    def start_task(key, acc, *, automatic, account_scope=None):
         observed.update(
             key=key,
             acc=dict(acc),
