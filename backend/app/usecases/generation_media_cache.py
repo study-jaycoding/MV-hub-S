@@ -17,6 +17,17 @@ from ..services import media_cache
 MediaTarget = tuple[str, str, str, bool, str | None]
 MediaCacheUpdate = tuple[str, str, str, str | None, str | None]
 _DOWNLOAD_CONCURRENCY = 6
+_DOWNLOAD_LIMITER_ATTR = "_mvhub_generation_media_download_limiter"
+
+
+def _download_limiter() -> asyncio.Semaphore:
+    """현재 event loop에서 모든 생성물 다운로드가 공유하는 상한을 반환한다."""
+    loop = asyncio.get_running_loop()
+    limiter = getattr(loop, _DOWNLOAD_LIMITER_ATTR, None)
+    if limiter is None:
+        limiter = asyncio.Semaphore(_DOWNLOAD_CONCURRENCY)
+        setattr(loop, _DOWNLOAD_LIMITER_ATTR, limiter)
+    return limiter
 
 
 async def cache_generation_media(generation: dict) -> dict[str, Any]:
@@ -56,13 +67,29 @@ async def cache_generation_media(generation: dict) -> dict[str, Any]:
         else current_path
         for _kind, _id, current_path, _is_image, source_url in targets
     ]
-    download_sem = asyncio.Semaphore(_DOWNLOAD_CONCURRENCY)
+    download_sem = _download_limiter()
 
     async def cache_one(url: str | None):
         async with download_sem:
             return await media_cache.cache_url_result(url)
 
-    results = await asyncio.gather(*(cache_one(url) for url in urls))
+    download_batch = asyncio.gather(
+        *(cache_one(url) for url in urls),
+        return_exceptions=True,
+    )
+    caller_cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            # 호출 task 취소가 gather와 형제 다운로드까지 취소하지 않게 한다.
+            results = await asyncio.shield(download_batch)
+            break
+        except asyncio.CancelledError as exc:
+            if caller_cancelled is None:
+                caller_cancelled = exc
+            # 반복 취소에도 파일 작업을 유기하지 않고 완료될 때까지 계속 회수한다.
+            if download_batch.done():
+                results = download_batch.result()
+                break
 
     cached = 0
     failed = 0
@@ -72,9 +99,14 @@ async def cache_generation_media(generation: dict) -> dict[str, Any]:
     retryable = 0
     failure_codes: Counter[str] = Counter()
     cache_updates: list[MediaCacheUpdate] = []
+    unexpected_error: BaseException | None = caller_cancelled
     for (kind, media_id, current_path, is_image, source_url), requested_url, result in zip(
         targets, urls, results
     ):
+        if isinstance(result, BaseException):
+            if unexpected_error is None:
+                unexpected_error = result
+            continue
         if result.status == "skipped":
             skipped += 1
             continue
@@ -106,6 +138,9 @@ async def cache_generation_media(generation: dict) -> dict[str, Any]:
         asset_updater=repo.update_asset_cache,
         reference_updater=repo.update_reference_cache,
     )
+
+    if unexpected_error is not None:
+        raise unexpected_error
 
     return {
         "cached": cached,
