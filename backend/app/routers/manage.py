@@ -1090,9 +1090,15 @@ def bulk_set_assignments(body: BulkAssignIn, request: Request):
     if not items:
         return {"ok": True, "count": 0}
     actor = actor_id(request)
-    # 방어적 상한 — 작업당 담당 20명.
+    # 작업당 담당 상한(20명)은 무음 절단([:20]) 대신 명시 거절(R7 1-C) — 뒤쪽 담당자가
+    # 조용히 유실된 채 {ok:true} 로 전체 성공처럼 보이던 것을 막는다(위 500 상한과 동일 정책).
     for it in items:
-        it["assignee_uids"] = [u for u in (it.get("assignee_uids") or [])][:20]
+        assignees = [u for u in (it.get("assignee_uids") or [])]
+        if len(assignees) > 20:
+            raise HTTPException(
+                status_code=400, detail="작업당 담당자는 최대 20명까지 지정할 수 있습니다"
+            )
+        it["assignee_uids"] = assignees
     # task→project도 한 번에 조회한다. 예전에는 저장만 배치고 여기서 작업 수만큼 DB를 다시 열었다.
     # 같은 task를 여러 줄로 보낸 기존 입력 순서 의미는 유지하므로 이 경로만 중복을 허용한다.
     task_ids = [it["task_id"] for it in items]

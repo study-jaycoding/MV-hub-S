@@ -35,7 +35,8 @@ from ..config import (
 )
 from ..deps import (
     account_actor_uid,
-    can_view_generation,
+    batch_view_member_projects,
+    can_view_generation_with_member_projects,
     require_agent_account,
     require_project_role,
 )
@@ -1193,12 +1194,21 @@ def save_to_library(req: SaveToLibraryReq, request: Request):
         params.setdefault("workflow_name", req.name)
     # 입력 계보(source_gen_id)는 열람 권한이 있는 것만 엣지로 남긴다 — 남의 비공개 생성물 id 를
     # 알고 넘겨 계보로 노출시키는 것을 막는다(엣지만 드롭, ref URL 자체는 그대로 보존).
+    # 레퍼런스마다 get_generation+멤버십 재조회(N+1)를 배치 1+1회로(R7 1-E) —
+    # 열람 불가·미존재=None 이라는 단건 의미는 그대로다.
+    source_ids = list(
+        dict.fromkeys(r.source_gen_id for r in (req.inputs or []) if r.source_gen_id)
+    )
+    source_gens = repo.get_generations_batch(source_ids) if source_ids else {}
+    member_projects = batch_view_member_projects(request, source_gens.values())
     ref_dicts: list[dict[str, Any]] = []
     for r in (req.inputs or []):
         sgid = r.source_gen_id
         if sgid:
-            g = repo.get_generation(sgid)
-            if not g or not can_view_generation(request, g):
+            g = source_gens.get(sgid)
+            if not g or not can_view_generation_with_member_projects(
+                request, g, member_projects
+            ):
                 sgid = None
         ref_dicts.append(
             {"file_path": r.url, "type": r.type, "source_gen_id": sgid,

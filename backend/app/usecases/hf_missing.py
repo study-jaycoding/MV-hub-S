@@ -33,7 +33,8 @@ async def trash_missing_generations(
     ``job_exists``가 ``None``을 반환하면 일시적인 확인 실패이므로 아무것도 변경하지
     않는다. 공유 서버 점검 실패도 로컬 처리 결과를 되돌리지 않는다.
     """
-    gens = repo.gens_with_job_id(account_uid=account_uid)
+    # 전체 행 스캔·SQLite busy 대기가 이벤트 루프를 막지 않게 스레드로(R7 1-I).
+    gens = await asyncio.to_thread(repo.gens_with_job_id, account_uid=account_uid)
     sem = asyncio.Semaphore(8)
 
     async def check(gen_id: str, job_id: str) -> tuple[str, bool | None]:

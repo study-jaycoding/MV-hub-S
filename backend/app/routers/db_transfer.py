@@ -421,8 +421,16 @@ def export_db(request: Request):
     if not path.is_file():
         raise HTTPException(status_code=404, detail="로컬 DB가 아직 없습니다")
     # sqlite backup API 로 임시파일에 일관 복사 — WAL 상태와 무관하게 완전한 스냅샷.
-    tmp = Path(tempfile.gettempdir()) / f"mvhub-export-{int(time.time())}.db"
-    db._copy_sqlite(path, tmp)
+    # ★OS 고유 임시파일(R7 1-B) — 종전 초 단위 이름은 같은 초의 동시 요청이 같은 파일을
+    # 복사·스트리밍·삭제해 한 응답의 정리가 다른 응답의 파일을 지울 수 있었다.
+    fd, tmp_name = tempfile.mkstemp(prefix="mvhub-export-", suffix=".db")
+    os.close(fd)  # Windows: 핸들을 닫아야 복사·교체 가능
+    tmp = Path(tmp_name)
+    try:
+        db._copy_sqlite(path, tmp)
+    except Exception:
+        tmp.unlink(missing_ok=True)  # FileResponse 전 실패도 정리
+        raise
     return FileResponse(
         tmp,
         filename="MV-hub-mydb.db",
