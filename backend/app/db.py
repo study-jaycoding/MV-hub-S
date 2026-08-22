@@ -333,7 +333,7 @@ def _get_connection_sqlite(db_path: Path | None = None) -> Iterator[sqlite3.Conn
         yield conn
         if conn.in_transaction:
             conn.execute("COMMIT;")
-    except Exception as exc:
+    except BaseException as exc:
         if isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower():
             try:
                 from .services.runtime_metrics import metrics

@@ -293,7 +293,11 @@ def elapsed_by_job_ids(job_ids: list[str]) -> dict[str, float]:
     if not ids:
         return {}
     try:
-        with get_connection() as conn:
+        conn = sqlite3.connect(
+            f"{MANAGE_DB_PATH.resolve().as_uri()}?mode=ro", uri=True
+        )
+        conn.row_factory = sqlite3.Row
+        try:
             ph = ",".join("?" * len(ids))
             rows = conn.execute(
                 f"SELECT job_id, MAX(elapsed_seconds) AS e FROM team_generation_fact "
@@ -301,6 +305,8 @@ def elapsed_by_job_ids(job_ids: list[str]) -> dict[str, float]:
                 f"GROUP BY job_id",
                 ids,
             ).fetchall()
+        finally:
+            conn.close()
         return {r["job_id"]: r["e"] for r in rows if r["e"] is not None}
     except sqlite3.DatabaseError:
         return {}
@@ -363,6 +369,7 @@ def team_overview(
         date_from, date_to, project_id, creator_uid, workspace_id, model
     )
     with get_connection() as conn:
+        conn.execute("BEGIN")  # 아래 모든 집계를 같은 WAL 읽기 스냅샷에 고정한다.
         totals = dict(conn.execute(
             f"SELECT COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits, "
             f"COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "

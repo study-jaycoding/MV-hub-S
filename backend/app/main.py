@@ -84,6 +84,7 @@ from .routers import (
 )
 from .services import auth as auth_svc
 from .services.agent_signals import agent_signals
+from .services.async_tools import to_thread_non_abandon
 from .services.backup import periodic_backup
 from .services.worker_backup import (
     periodic_worker_backup,
@@ -187,17 +188,9 @@ def _log_worker_backup_bootstrap_failure() -> None:
 
 async def _worker_backup_bootstrap() -> None:
     """기존 로컬 백업의 outbox 보강을 readiness 밖에서 수행하고 실제 스레드까지 추적한다."""
-    loop = asyncio.get_running_loop()
-    work = loop.run_in_executor(None, queue_latest_local_backup)
     try:
-        await asyncio.shield(work)
+        await to_thread_non_abandon(queue_latest_local_backup)
     except asyncio.CancelledError:
-        # run_in_executor 작업은 Task.cancel()만으로 멈추지 않는다. 종료 중에도 실제 복사·검증이
-        # 끝날 때까지 기다려 상태 DB를 periodic worker 정리와 겹치지 않게 한다.
-        try:
-            await asyncio.shield(work)
-        except Exception:  # noqa: BLE001 — 로컬 백업은 보존하고 실패만 운영 로그에 남긴다.
-            _log_worker_backup_bootstrap_failure()
         raise
     except Exception:  # noqa: BLE001 — 로컬 백업은 보존하고 다음 주기에서 다시 보강한다.
         _log_worker_backup_bootstrap_failure()

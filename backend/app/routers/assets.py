@@ -830,8 +830,10 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
         tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="빈 캡쳐")
     # 임포트와 동일 — 같은 내용(sha256)이 이미 captures 에 있으면 재사용(중복 방지). 크기 우선 비교로 가속.
+    commit_attempted = False
     try:
         name = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"  # 충돌은 _commit 이 _2 로 회피
+        commit_attempted = True  # 취소 재전파 전 실제 파일 확정 가능 — finally 무효화 기준
         target, reused = await to_thread_non_abandon(
             asset_io.find_or_commit_media,
             tmp,
@@ -845,10 +847,12 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
         # 스트리밍이 끝난 뒤 중복 검사·최종 확정에서 실패해도 .part 파일을 남기지 않는다.
         tmp.unlink(missing_ok=True)
         raise
+    finally:
+        if commit_attempted:
+            asset_tree.invalidate_project_tree(cap_dir)
+            asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
     if reused:
         return {"project": "captures", "path": target.name, "name": target.name, "type": "image", "reused": True}
-    asset_tree.invalidate_project_tree(cap_dir)  # 새 캡쳐 즉시 반영 — 다음 트리 요청은 다시 훑는다
-    asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
     return {"project": "captures", "path": target.name, "name": target.name, "type": "image"}
 
 
@@ -876,70 +880,73 @@ async def upload_reference_import(
     saved: list[dict[str, Any]] = []
     skipped: list[str] = []
     committed_new = False  # 새 파일을 하나라도 확정했으면 트리 캐시 무효화 대상
-    for up in files:
-        raw = os.path.basename((up.filename or "").replace("\\", "/"))
-        if not raw:
-            continue
-        mt = _media_type(raw)
-        if mt not in ("image", "video", "audio"):
-            skipped.append(raw)
-            continue
-        try:
-            tmp, size, digest = await _stream_upload_tmp(up, dest)  # 스트리밍 + sha 동시 계산
-        except _UploadTooLarge:
-            skipped.append(raw)
-            continue
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"저장 실패({raw}): {e}")
-        if size == 0:
-            tmp.unlink(missing_ok=True)
-            skipped.append(raw)
-            continue
-        # 중복 재검색부터 최종 확정까지 같은 동기 임계구역에서 수행하고, 취소돼도 스레드를 버리지 않는다.
-        try:
-            target, reused = await to_thread_non_abandon(
-                asset_io.find_or_commit_media,
-                tmp,
-                dest,
-                raw,
-                digest,
-                mt,
-                size,
-            )
-            if reused:
-                rel = (
-                    target.relative_to(project_dir).as_posix()
-                    if project_dir
-                    else target.name
-                )
-                saved.append({
-                    "project": out_project,
-                    "path": rel,
-                    "name": target.name,
-                    "type": mt,
-                    "reused": True,
-                })
+    commit_attempted = False
+    try:
+        for up in files:
+            raw = os.path.basename((up.filename or "").replace("\\", "/"))
+            if not raw:
                 continue
-        except BaseException:
-            # 스트리밍 이후 예외도 정리해 실패한 드롭이 숨은 디스크 찌꺼기를 만들지 않게 한다.
-            tmp.unlink(missing_ok=True)
-            raise
-        committed_new = True
-        rel = (
-            target.relative_to(project_dir).as_posix()
-            if project_dir
-            else target.name
-        )
-        saved.append({
-            "project": out_project,
-            "path": rel,
-            "name": target.name,
-            "type": mt,
-        })
-
-    if committed_new:
-        asset_tree.invalidate_project_tree(dest)  # 새 임포트 즉시 반영 — 다음 트리 요청은 다시 훑는다
-        asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
+            mt = _media_type(raw)
+            if mt not in ("image", "video", "audio"):
+                skipped.append(raw)
+                continue
+            try:
+                tmp, size, digest = await _stream_upload_tmp(up, dest)  # 스트리밍 + sha 동시 계산
+            except _UploadTooLarge:
+                skipped.append(raw)
+                continue
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(status_code=500, detail=f"저장 실패({raw}): {e}")
+            if size == 0:
+                tmp.unlink(missing_ok=True)
+                skipped.append(raw)
+                continue
+            # 중복 재검색부터 최종 확정까지 같은 동기 임계구역에서 수행하고, 취소돼도 스레드를 버리지 않는다.
+            try:
+                commit_attempted = True  # 취소 재전파 전 실제 파일 확정 가능 — finally 무효화 기준
+                target, reused = await to_thread_non_abandon(
+                    asset_io.find_or_commit_media,
+                    tmp,
+                    dest,
+                    raw,
+                    digest,
+                    mt,
+                    size,
+                )
+                if reused:
+                    rel = (
+                        target.relative_to(project_dir).as_posix()
+                        if project_dir
+                        else target.name
+                    )
+                    saved.append({
+                        "project": out_project,
+                        "path": rel,
+                        "name": target.name,
+                        "type": mt,
+                        "reused": True,
+                    })
+                    continue
+            except BaseException:
+                # 스트리밍 이후 예외도 정리해 실패한 드롭이 숨은 디스크 찌꺼기를 만들지 않게 한다.
+                tmp.unlink(missing_ok=True)
+                raise
+            committed_new = True
+            rel = (
+                target.relative_to(project_dir).as_posix()
+                if project_dir
+                else target.name
+            )
+            saved.append({
+                "project": out_project,
+                "path": rel,
+                "name": target.name,
+                "type": mt,
+            })
+    finally:
+        if committed_new or commit_attempted:
+            asset_tree.invalidate_project_tree(dest)
+            asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
     return {"saved": saved, "skipped": skipped}
 
 
