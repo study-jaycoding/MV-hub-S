@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from . import _proxy
-from .. import repo
+from .. import active_account, repo
 from ..config import (
     AUTH_ENABLED,
     BACKEND_DIR,
@@ -31,7 +31,12 @@ from ..config import (
     MANAGE_ENABLED,
 )
 from ..emailnorm import norm_email
-from ..deps import account_scope_uid, require_agent_account
+from ..deps import (
+    account_scope_uid,
+    current_account,
+    require_agent_account,
+    resolve_agent_account,
+)
 from ..models import AccountReportIn, AccountReportOut, IngestIn, IngestMcpIn, IngestOut
 from ..services import cli_bridge, history_autofill, syncer
 from ..services import auth as auth_service
@@ -416,6 +421,41 @@ def _history_route_key(acc: dict) -> str:
     return key
 
 
+def _capture_history_identity(session_acc: dict | None) -> tuple[str, dict, str]:
+    """계정 범위를 캡처하고 **그 범위 override 아래에서** 신원(acc)·작업 키(key)를 함께 만든다.
+
+    셋은 반드시 한 세트여야 한다. 캡처와 계산이 갈리면(예: acc 를 먼저 구하고 그다음 캡처)
+    그 사이의 A→B 전환이 'B DB 를 고정한 채 A 신원으로 도는' 작업을 만든다 —
+    acc 의 AUTH off 폴백(repo.get_my_uid)과 key 의 _history_key(account_key) 가 둘 다
+    호출 시점의 활성 계정을 읽기 때문이다. 요청 의존부(세션 계정)만 호출자가 미리 뽑아 넘긴다.
+
+    ★워커 스레드에서 호출한다 — 전환 락 대기와 동기 SQLite 가 들어 있어 이벤트 루프에서
+    돌리면 로그인 마이그레이션·DB 복원 동안 서버 전체가 멈춘다.
+    """
+    account_scope = history_autofill._capture_history_scope()
+    token = active_account.set_override(account_scope or "")
+    try:
+        acc = resolve_agent_account(session_acc)
+        return account_scope, acc, _history_route_key(acc)
+    finally:
+        active_account.reset_override(token)
+
+
+def _history_snapshot_in_scope(key: str, account_scope: str) -> dict[str, Any]:
+    """상태 조회(감사 테이블 읽기)도 키를 만든 그 계정 DB 에서 한다."""
+    token = active_account.set_override(account_scope or "")
+    try:
+        return history_autofill._history_snapshot(key)
+    finally:
+        active_account.reset_override(token)
+
+
+def _history_status_in_scope(session_acc: dict | None) -> dict[str, Any]:
+    """키 계산과 snapshot 조회를 한 override 아래에서 끝낸다(워커 스레드 전용)."""
+    account_scope, _acc, key = _capture_history_identity(session_acc)
+    return _history_snapshot_in_scope(key, account_scope)
+
+
 @router.post("/ingest/history/start")
 async def start_history_import(request: Request):
     """로컬 CLI 계정의 일반 생성 이력을 MCP cursor 끝까지 가져오는 한 번 클릭 작업."""
@@ -424,16 +464,17 @@ async def start_history_import(request: Request):
             status_code=409,
             detail="과거 전체 가져오기는 각 작업자 PC의 MV Hub에서 실행해야 합니다",
         )
-    acc = _agent_acc(request)
-    key = _history_route_key(acc)
-    # 전환 락 캡처·감사 조회는 워커 스레드에서. 이 락은 로그인(init_db 전체 마이그레이션)·
+    # 전환 락 캡처·신원·감사 조회는 워커 스레드에서. 이 락은 로그인(init_db 전체 마이그레이션)·
     # DB 복원 동안 통째로 잡혀 있어, 이벤트 루프에서 기다리면 그동안 서버 전체가 멈춘다.
     # ★라우트는 async 유지 — _start_history_task 가 asyncio.create_task 를 쓴다.
-    account_scope = await asyncio.to_thread(history_autofill._capture_history_scope)
+    session_acc = current_account(request)  # 요청 의존부만 루프에서(미들웨어가 채운 값, DB 미접근)
+    account_scope, acc, key = await asyncio.to_thread(
+        _capture_history_identity, session_acc
+    )
     history_autofill._start_history_task(
         key, dict(acc), automatic=False, account_scope=account_scope
     )
-    return await asyncio.to_thread(history_autofill._history_snapshot, key)
+    return await asyncio.to_thread(_history_snapshot_in_scope, key, account_scope)
 
 
 @router.get("/ingest/history/status")
@@ -444,11 +485,9 @@ async def history_import_status(request: Request):
             status_code=409,
             detail="과거 전체 가져오기는 각 작업자 PC의 MV Hub에서 실행해야 합니다",
         )
-    acc = _agent_acc(request)
     # 상태 폴링 한 번이 루프에서 동기 SQLite 를 돌리지 않게 워커 스레드로 뺀다.
-    return await asyncio.to_thread(
-        history_autofill._history_snapshot, _history_route_key(acc)
-    )
+    # 키 계산과 snapshot 이 다른 계정 DB 로 갈리지 않게 둘을 같은 override 안에서 처리한다.
+    return await asyncio.to_thread(_history_status_in_scope, current_account(request))
 
 
 @router.get("/credits")

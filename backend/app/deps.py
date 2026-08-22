@@ -46,9 +46,18 @@ def require_agent_account(request: Request) -> dict:
     안 채우므로 제공자(나) 신원 `{email:'local', creator_uid}` 으로 폴백해 로그인 없이도 내 에이전트가
     롱폴·생성요청·텔레메트리를 받게 한다. AUTH on 에선 401. (ingest._agent_acc·gen_requests._require_account·
     manage._push_acc 3중복을 단일화 — 신원 규칙이 분산되면 한 곳 누락이 권한 버그가 된다.)"""
-    acc = getattr(request.state, "account", None)
-    if acc:
-        return acc
+    return resolve_agent_account(getattr(request.state, "account", None))
+
+
+def resolve_agent_account(session_account: Optional[dict]) -> dict:
+    """require_agent_account 의 **DB 의존부**만 떼어낸 같은 규칙(단일 출처 유지).
+
+    세션 계정은 미들웨어가 이미 request 에 채워 둔 값이라 요청 문맥에서 꺼내면 되지만,
+    AUTH off 폴백의 repo.get_my_uid() 는 '지금 활성 계정 DB'를 읽는다. 계정 범위를 캡처한
+    override 아래에서 신원을 계산해야 하는 호출부(ingest 의 history 라우트)가 세션 계정만
+    미리 뽑아 오고 이 함수를 그 override 안에서 부른다."""
+    if session_account:
+        return session_account
     if not AUTH_ENABLED:
         from . import repo  # 지역 import(순환 회피)
 

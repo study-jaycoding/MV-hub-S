@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from functools import wraps
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
@@ -282,6 +283,43 @@ def _require_unpublish(request: Request, gen: dict[str, Any]) -> None:
     require_project_role(request, pid, rbac.SUPERVISOR)  # 슈퍼바이저 아니면 403
 
 
+@contextmanager
+def _pinned_account_scope():
+    """이 블록 전체를 '들어올 때의 계정 DB' 하나로 고정한다.
+
+    finalize·unpublish 는 로컬 읽기 → 원장 prepare → 프록시 토큰 → 서버 호출 → 로컬 미러 →
+    텔레메트리 → BackgroundTask 등록으로 이어지는 긴 흐름이고, repo·_proxy.token() 은 전부
+    **호출 시점의** 활성 계정 DB 를 읽는다. 서버 왕복을 기다리는 사이 다른 창에서 A→B 로
+    전환하면 'A 의 intent + B 의 토큰 + B 로 간 미러/텔레메트리' 같은 섞인 조합이 조용히 생긴다.
+    첫 DB 접근 전에 키를 한 번 캡처해 override 로 얹으면 응답까지 모든 단계가 같은 계정을 본다.
+
+    캡처 시점의 override 값은 account_key() 가 이미 돌려주던 값과 같아 동작은 그대로고
+    (AUTH on 서버는 항상 None → "" → 레거시 단일 DB) '중간 전환에 흔들리지 않음'만 더해진다.
+    ★finalize/unpublish 는 동기 def 라우트(threadpool)라 여기서 전환 락을 직접 기다려도
+    이벤트 루프를 막지 않는다 — async 라우트라면 _capture_account_scope 를 워커로 빼야 한다.
+    """
+    account_token = active_account.set_override(_capture_account_scope())
+    try:
+        yield
+    finally:
+        active_account.reset_override(account_token)
+
+
+def _account_scoped_route(fn):
+    """라우트 호출 전체를 _pinned_account_scope 로 감싼다(동기 라우트 전용).
+
+    functools.wraps 가 __wrapped__ 를 남기므로 FastAPI 의 시그니처 해석(inspect.signature)은
+    원래 파라미터를 그대로 보고, 코루틴이 아니므로 종전대로 threadpool 에서 실행된다.
+    """
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _pinned_account_scope():
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
 @router.post("/generations/{gen_id}/publish", response_model=GenerationOut)
 def publish(gen_id: str, body: PublishIn, request: Request):
     """generation 을 팀에 발행한다(명시적). 한 generation 은 0~1개의 share.
@@ -313,9 +351,13 @@ def publish(gen_id: str, body: PublishIn, request: Request):
 
 
 @router.post("/generations/{gen_id}/unpublish", response_model=GenerationOut)
+@_account_scoped_route
 def unpublish(gen_id: str, request: Request):
     """팀 공유 해제 — share 행을 제거한다(내가 공유한 것을 되돌림).
-    ⚠️ 최종(골드)인 항목은 공유 해제 불가 — '최종인데 공유 안 됨' 모순 차단(먼저 최종 해제)."""
+    ⚠️ 최종(골드)인 항목은 공유 해제 불가 — '최종인데 공유 안 됨' 모순 차단(먼저 최종 해제).
+    ★finalize 와 동일하게 첫 DB 접근부터 응답까지 한 계정 DB 로 고정한다(_pinned_account_scope):
+    서버 unpublish 왕복 중 계정이 바뀌면 A 원장에 prepare 해 놓고 B 토큰으로 호출하거나
+    B DB 에 미러/텔레메트리를 쓰게 된다."""
     requested_id = gen_id
     gen_id = repo.resolve_local_id(gen_id)  # 서버 핸들러가 job_id 로 와도 자기 행을 찾게(내작업탭→서버 방향)
     gen = repo.get_generation(gen_id)
@@ -401,7 +443,10 @@ def _finalizer_uid(request: Request) -> str | None:
 
 
 def _capture_account_scope() -> str:
-    """finalize 응답 직전의 계정 DB 키만 전환 락 아래 짧게 캡처한다(느린 보존은 락 밖)."""
+    """현재 계정 DB 키만 전환 락 아래 짧게 캡처한다(느린 보존·서버 왕복은 락 밖).
+
+    _pinned_account_scope 가 라우트 진입 시 한 번 부르고, 그 override 아래에서 다시 불리는
+    BackgroundTask 등록부(add_task 인자)는 같은 키를 그대로 돌려받는다."""
     with active_account.transition_lock:
         return active_account.account_key() or ""
 
@@ -427,11 +472,14 @@ async def _preserve_final_media(local_id: str, account_scope: str) -> None:
 
 
 @router.post("/generations/{gen_id}/finalize", response_model=GenerationOut)
+@_account_scoped_route
 def finalize(gen_id: str, request: Request, background: BackgroundTasks):
     """생성본을 최종(골드)으로 지정 — 그 프로젝트의 Supervisor 만(검수권). AUTH off 면 통과.
     최종은 곧 후보 확정이므로 공유(share)가 없으면 함께 발행한다(게이트 아님: 공유는 이미 자유).
     로컬 우선: 골드는 '공유된 항목의 서버 상태'다. 프록시 모드면 (필요시 번들 발행 후) 서버에
-    finalize 를 위임하고 — 역할 검증·골드 상태는 서버가 가진다 — 내 로컬 카드에도 골드를 미러한다."""
+    finalize 를 위임하고 — 역할 검증·골드 상태는 서버가 가진다 — 내 로컬 카드에도 골드를 미러한다.
+    ★첫 DB 접근(resolve_local_id)부터 응답까지 한 계정 DB 로 고정한다(_pinned_account_scope).
+    프록시 토큰·intent·미러·텔레메트리·BackgroundTask 인자가 전부 같은 계정을 보게 하기 위함."""
     requested_id = gen_id
     gen_id = repo.resolve_local_id(gen_id)  # 서버 핸들러가 job_id 로 와도 자기 행을 찾게(내작업탭→서버 방향)
     gen = repo.get_generation(gen_id)
@@ -539,8 +587,10 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
 
 
 @router.post("/generations/{gen_id}/unfinalize", response_model=GenerationOut)
+@_account_scoped_route
 def unfinalize(gen_id: str, request: Request):
-    """최종(골드) 해제 → 일반 공유 상태로 복귀(공유는 유지). Supervisor 만."""
+    """최종(골드) 해제 → 일반 공유 상태로 복귀(공유는 유지). Supervisor 만.
+    ★unpublish 와 같은 구조(원장 prepare → 서버 왕복 → 로컬 미러)라 같은 계정 고정을 쓴다."""
     requested_id = gen_id
     gen_id = repo.resolve_local_id(gen_id)  # 서버 핸들러가 job_id 로 와도 자기 행을 찾게(내작업탭→서버 방향)
     gen = repo.get_generation(gen_id)
