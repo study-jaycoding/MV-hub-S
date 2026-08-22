@@ -378,25 +378,29 @@ def _batch_task_gen_rows(
         pid = task_projects[tid]
         if fpath is not None and pid:
             fpath_to_tasks.setdefault((pid, fpath), []).append(tid)
+    # 실제 (project, key) 쌍만 VALUES JOIN(R6 2-C) — 종전 프로젝트 목록×경로 목록
+    # 직교곱은 존재하지 않는 조합까지 읽고 배치 수도 P배치×F배치로 불었다. 쌍당 bind 2개
+    # + gen 필터 bind 를 합쳐 SQLite 변수 상한(999) 아래로 chunk 를 재계산한다(코덱스).
+    gen_bind_count = len(gen_ids_sql or [])
+    pair_chunk = max(1, min(_SQLITE_PAIRED_IN_BATCH, (900 - gen_bind_count) // 2))
     if fpath_to_tasks:
-        projects = list(dict.fromkeys(pid for pid, _path in fpath_to_tasks))
-        fpaths = list(dict.fromkeys(path for _pid, path in fpath_to_tasks))
-        for project_batch in _batched(projects, _SQLITE_PAIRED_IN_BATCH):
-            for fpath_batch in _batched(fpaths, _SQLITE_PAIRED_IN_BATCH):
-                ph_p = ",".join("?" * len(project_batch))
-                ph_f = ",".join("?" * len(fpath_batch))
-                for r in conn.execute(
-                    f"SELECT id, project_id, folder_path, workspace_scope, workspace_id "
-                    f"FROM generation "
-                    f"WHERE project_id IN ({ph_p}) AND deleted_at IS NULL "
-                    f"AND folder_path IN ({ph_f})"
-                    + (f" AND id IN ({gen_ph})" if gen_ids_sql else ""),
-                    [*project_batch, *fpath_batch, *(gen_ids_sql or [])],
-                ):
-                    for tid in fpath_to_tasks.get((r["project_id"], r["folder_path"]), []):
-                        scope, workspace_id = task_scopes[tid]
-                        if _same_workspace(scope, workspace_id, r):
-                            membership[tid].add(r["id"])
+        for pair_batch in _batched(list(fpath_to_tasks), pair_chunk):
+            values_sql = ",".join("(?,?)" for _ in pair_batch)
+            pair_args = [value for pair in pair_batch for value in pair]
+            for r in conn.execute(
+                f"WITH wanted(pid, fpath) AS (VALUES {values_sql}) "
+                f"SELECT g.id AS id, g.project_id AS project_id, "
+                f"g.folder_path AS folder_path, g.workspace_scope AS workspace_scope, "
+                f"g.workspace_id AS workspace_id FROM generation g "
+                f"JOIN wanted w ON w.pid=g.project_id AND w.fpath=g.folder_path "
+                f"WHERE g.deleted_at IS NULL"
+                + (f" AND g.id IN ({gen_ph})" if gen_ids_sql else ""),
+                [*pair_args, *(gen_ids_sql or [])],
+            ):
+                for tid in fpath_to_tasks.get((r["project_id"], r["folder_path"]), []):
+                    scope, workspace_id = task_scopes[tid]
+                    if _same_workspace(scope, workspace_id, r):
+                        membership[tid].add(r["id"])
 
     # ③ 시퀀스 레인 — folder_path 없고 sequence 있는 작업. project_id+auto_tag.name 키로 매핑.
     seq_to_tasks: dict[tuple[str, str], list[str]] = {}
@@ -406,27 +410,26 @@ def _batch_task_gen_rows(
         if fpath is None and seq is not None and pid:
             seq_to_tasks.setdefault((pid, seq), []).append(tid)
     if seq_to_tasks:
-        projects = list(dict.fromkeys(pid for pid, _seq in seq_to_tasks))
-        seqs = list(dict.fromkeys(seq for _pid, seq in seq_to_tasks))
-        for project_batch in _batched(projects, _SQLITE_PAIRED_IN_BATCH):
-            for seq_batch in _batched(seqs, _SQLITE_PAIRED_IN_BATCH):
-                ph_p = ",".join("?" * len(project_batch))
-                ph_s = ",".join("?" * len(seq_batch))
-                for r in conn.execute(
-                    f"SELECT g.id AS id, g.project_id AS project_id, at.name AS seqname, "
-                    f"g.workspace_scope AS workspace_scope, g.workspace_id AS workspace_id "
-                    f"FROM generation g "
-                    f"JOIN gen_auto_tag gat ON gat.generation_id=g.id "
-                    f"JOIN auto_tag at ON at.id=gat.auto_tag_id "
-                    f"WHERE g.project_id IN ({ph_p}) AND g.deleted_at IS NULL "
-                    f"AND at.name IN ({ph_s})"
-                    + (f" AND g.id IN ({gen_ph})" if gen_ids_sql else ""),
-                    [*project_batch, *seq_batch, *(gen_ids_sql or [])],
-                ):
-                    for tid in seq_to_tasks.get((r["project_id"], r["seqname"]), []):
-                        scope, workspace_id = task_scopes[tid]
-                        if _same_workspace(scope, workspace_id, r):
-                            membership[tid].add(r["id"])
+        # 폴더 레인과 동일 — 실제 (project, sequence) 쌍만 VALUES JOIN(R6 2-C).
+        for pair_batch in _batched(list(seq_to_tasks), pair_chunk):
+            values_sql = ",".join("(?,?)" for _ in pair_batch)
+            pair_args = [value for pair in pair_batch for value in pair]
+            for r in conn.execute(
+                f"WITH wanted(pid, seqname) AS (VALUES {values_sql}) "
+                f"SELECT g.id AS id, g.project_id AS project_id, at.name AS seqname, "
+                f"g.workspace_scope AS workspace_scope, g.workspace_id AS workspace_id "
+                f"FROM generation g "
+                f"JOIN gen_auto_tag gat ON gat.generation_id=g.id "
+                f"JOIN auto_tag at ON at.id=gat.auto_tag_id "
+                f"JOIN wanted w ON w.pid=g.project_id AND w.seqname=at.name "
+                f"WHERE g.deleted_at IS NULL"
+                + (f" AND g.id IN ({gen_ph})" if gen_ids_sql else ""),
+                [*pair_args, *(gen_ids_sql or [])],
+            ):
+                for tid in seq_to_tasks.get((r["project_id"], r["seqname"]), []):
+                    scope, workspace_id = task_scopes[tid]
+                    if _same_workspace(scope, workspace_id, r):
+                        membership[tid].add(r["id"])
 
     # generation_ids 제한(완료본 단건 판정용) — 레인 산출 뒤 교집합이라 무제한 결과에서
     # 해당 id 만 남긴 것과 정확히 같다(레인·워크스페이스·정렬 규칙 무변).
