@@ -20,6 +20,7 @@ const CompareModal = lazy(() =>
 export function AppOverlays({
   account,
   adminOpen,
+  localHub,
   commentGenId,
   commentLabel,
   compareGens,
@@ -43,6 +44,7 @@ export function AppOverlays({
 }: {
   account?: Account | null;
   adminOpen: boolean;
+  localHub: boolean;
   commentGenId: string | null;
   commentLabel: string;
   compareGens: Generation[] | null;
@@ -96,7 +98,7 @@ export function AppOverlays({
       )}
       {adminOpen && (
         <Suspense fallback={null}>
-          <AdminWindow account={account} onClose={onAdminClose} />
+          <AdminWindow account={account} localHub={localHub} onClose={onAdminClose} />
         </Suspense>
       )}
       {compareGens && (

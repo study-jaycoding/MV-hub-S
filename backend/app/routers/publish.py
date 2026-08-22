@@ -267,6 +267,10 @@ def _normalize_shared_url(raw: str) -> str:
         raise HTTPException(
             status_code=400, detail="http(s)://호스트 형식의 주소가 필요합니다"
         )
+    try:
+        parts.port  # 형식·범위(1~65535) 불량이면 ValueError — 외부 요청 전 400(코덱스 P2)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="주소의 포트가 올바르지 않습니다") from exc
     if parts.username or parts.password or parts.query or parts.fragment:
         raise HTTPException(
             status_code=400, detail="주소에 계정 정보·쿼리를 포함할 수 없습니다"
@@ -743,7 +747,9 @@ def publish_to_shared(body: PublishToSharedIn, request: Request):
         # 권한 검사·항목별 repo.publish 순서·published 집계는 종전 그대로(중복 id 는
         # dedupe 로 1회만 집계 — 종전에도 두 번째는 shared=True 로 걸러졌다).
         unique_ids = list(dict.fromkeys(gid for gid in (body.gen_ids or []) if gid))
-        gens = repo.get_generations_batch(unique_ids)
+        gens: dict = {}
+        for offset in range(0, len(unique_ids), 500):  # SQL 변수 상한 보호(코덱스 P2)
+            gens.update(repo.get_generations_batch(unique_ids[offset:offset + 500]))
         for gid in unique_ids:
             gen = gens.get(gid)
             if not (gen and gen.get("status") == "done" and not gen.get("shared")):

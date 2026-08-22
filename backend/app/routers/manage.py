@@ -26,6 +26,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from . import _proxy
+from ..services.async_tools import to_thread_non_abandon
 from .. import rbac, repo
 from ..config import AUTH_ENABLED, MEDIA_DIR
 from ..deps import (
@@ -1342,7 +1343,7 @@ async def save_finals(project_id: str, request: Request):
 
 async def _save_finals_locked(project_id: str, request: Request, render: Path):
     if _proxy.proxying():
-        facts, server_outdated = await asyncio.to_thread(_save_finals_facts, project_id)
+        facts, server_outdated = await to_thread_non_abandon(_save_finals_facts, project_id)
         if server_outdated:
             raise HTTPException(
                 status_code=400,
@@ -1363,32 +1364,32 @@ async def _save_finals_locked(project_id: str, request: Request, render: Path):
                 if dest is None:
                     errors.append({"gen_id": gen_id, "reason": "경로 안전성 위반(트래버설)"})
                     continue
-                if await asyncio.to_thread(dest.exists):  # 멱등 — 이미 저장됨(NAS stat 오프로드)
-                    await asyncio.to_thread(
+                if await to_thread_non_abandon(dest.exists):  # 멱등 — 이미 저장됨(NAS stat 오프로드)
+                    await to_thread_non_abandon(
                         repo_manage.record_export, gen_id, str(dest), project_id
                     )
                     skipped += 1
                     continue
-                await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
+                await to_thread_non_abandon(dest.parent.mkdir, parents=True, exist_ok=True)
                 # NAS '같은 폴더'에 .part 로 받고 원자 교체 — 로컬 경로와 동일 규율.
                 tmp = dest.with_name(dest.name + f".{uuid.uuid4().hex}.part")
                 try:
-                    await asyncio.to_thread(
+                    await to_thread_non_abandon(
                         _proxy.stream_download,
                         f"/api/manage/save-finals/content/{gen_id}",
                         tmp,
                     )
-                    await asyncio.to_thread(
+                    await to_thread_non_abandon(
                         file_stamp.stamp_file, tmp, file_stamp.tags_for_generation(gen_id), dest.suffix
                     )
-                    await asyncio.to_thread(os.replace, tmp, dest)
+                    await to_thread_non_abandon(os.replace, tmp, dest)
                 except OSError:
                     try:
                         tmp.unlink(missing_ok=True)
                     except OSError:
                         pass
                     raise
-                await asyncio.to_thread(
+                await to_thread_non_abandon(
                     repo_manage.record_export, gen_id, str(dest), project_id
                 )
                 saved += 1
@@ -1398,7 +1399,7 @@ async def _save_finals_locked(project_id: str, request: Request, render: Path):
                 errors.append({"gen_id": gen_id, "reason": str(e)})
         return {"saved": saved, "skipped": skipped, "errors": errors}
 
-    finals = await asyncio.to_thread(final_export.finals_to_export, project_id)
+    finals = await to_thread_non_abandon(final_export.finals_to_export, project_id)
     saved, skipped = 0, 0
     errors: list[dict[str, str]] = []
     for f in finals:
@@ -1419,8 +1420,8 @@ async def _save_finals_locked(project_id: str, request: Request, render: Path):
                 errors.append({"gen_id": gen_id, "reason": "경로 안전성 위반(트래버설)"})
                 continue
             # 멱등: 목적지 파일이 이미 있으면 skip(사용자가 지웠으면 재복사 — 자기치유).
-            if await asyncio.to_thread(dest.exists):  # NAS stat 오프로드(R7 2-E)
-                await asyncio.to_thread(
+            if await to_thread_non_abandon(dest.exists):  # NAS stat 오프로드(R7 2-E)
+                await to_thread_non_abandon(
                     repo_manage.record_export, gen_id, str(dest), project_id
                 )
                 skipped += 1
@@ -1437,25 +1438,25 @@ async def _save_finals_locked(project_id: str, request: Request, render: Path):
             if not src.exists():
                 errors.append({"gen_id": gen_id, "reason": "로컬 원본 없음"})
                 continue
-            await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
+            await to_thread_non_abandon(dest.parent.mkdir, parents=True, exist_ok=True)
             # 원자적 저장(코덱스 #2) — 임시 .part 로 복사 후 교체. 복사 중 크래시/드라이브 끊김이
             # 나도 불완전 파일이 목적지에 남아 영구 skip 되는 일이 없다.
             # 임시명에 uuid — 동시 실행/재실행 시 같은 .part 를 두 요청이 다투지 않게.
             # 대용량·NAS 복사는 to_thread 로 오프로딩해 이벤트 루프(백엔드 응답성)를 막지 않는다.
             tmp = dest.with_name(dest.name + f".{uuid.uuid4().hex}.part")
             try:
-                await asyncio.to_thread(shutil.copy2, src, tmp)
-                await asyncio.to_thread(
+                await to_thread_non_abandon(shutil.copy2, src, tmp)
+                await to_thread_non_abandon(
                     file_stamp.stamp_file, tmp, file_stamp.tags_for_generation(gen_id), dest.suffix
                 )
-                await asyncio.to_thread(os.replace, tmp, dest)
+                await to_thread_non_abandon(os.replace, tmp, dest)
             except OSError:
                 try:
                     tmp.unlink(missing_ok=True)
                 except OSError:
                     pass
                 raise
-            await asyncio.to_thread(
+            await to_thread_non_abandon(
                 repo_manage.record_export, gen_id, str(dest), project_id
             )
             saved += 1

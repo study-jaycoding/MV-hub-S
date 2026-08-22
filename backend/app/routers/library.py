@@ -35,6 +35,7 @@ from ..deps import (
 from ..models import FacetsOut, GenerationOut
 from ..services import file_stamp, media_cache, thumbs
 from ..services.path_safety import safe_join
+from ..services.async_tools import to_thread_non_abandon
 from ..services.media_types import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
 
@@ -283,7 +284,7 @@ async def read_file_stamp(file: UploadFile = File(...)):
         finally:
             tmp.unlink(missing_ok=True)
 
-    stamp = await asyncio.to_thread(_copy_and_read_stamp)
+    stamp = await to_thread_non_abandon(_copy_and_read_stamp)  # 취소 시 UploadFile 을 스레드보다 먼저 닫지 않게
     return {
         "gen_id": file_stamp.gen_id_of(stamp),
         "job_id": stamp.get(file_stamp.KEY_JOB),

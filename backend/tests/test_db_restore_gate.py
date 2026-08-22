@@ -14,7 +14,10 @@ from app import db
 from app.routers import db_transfer
 
 
-class DbRestoreGateTests(unittest.TestCase):
+class _DbGateHarness(unittest.TestCase):
+    """공통 셋업·헬퍼만 담는 harness — 테스트 클래스가 이걸 상속해야
+    상속으로 기존 테스트가 중복 수집되지 않는다(코덱스 P2)."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -65,6 +68,8 @@ class DbRestoreGateTests(unittest.TestCase):
             conn.execute("INSERT INTO trashed VALUES('row', ?)", (marker,))
             conn.commit()
 
+
+class DbRestoreGateTests(_DbGateHarness):
     def test_maintenance_flush_closes_all_worker_pool_files(self):
         """유지보수 flush 뒤 DB와 sidecar의 rename/delete가 즉시 가능해야 한다."""
         ready = threading.Barrier(4)
@@ -218,7 +223,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class DbInstallSecurityInitTests(DbRestoreGateTests):
+class DbInstallSecurityInitTests(_DbGateHarness):
     """R7 0-B(코덱스 P1) — 교체 후 보안 초기화가 보상 롤백 경계 안에서 원자적으로."""
 
     def _seed_secrets(self, path: Path) -> None:
@@ -256,6 +261,32 @@ class DbInstallSecurityInitTests(DbRestoreGateTests):
                 "SELECT password_changed_at FROM account WHERE email='imported@example.com'"
             ).fetchone()[0]
             self.assertNotEqual(stamp, "2000-01-01T00:00:00Z")  # 전 계정 세션 회전
+
+    def test_auth_off_failure_restores_active_pointer(self):
+        """코덱스 P2 — AUTH off 에서 실패 시 active.json 이 원래 내용으로 복구된다."""
+        from app import active_account
+
+        pointer = self.root / "active.json"
+        pointer.write_text('{"active": "artist@example.com"}', encoding="utf-8")
+        self._set_marker(self.path, "old")
+        incoming = self.root / "incoming.db"
+        self._make_db(incoming, "new")
+        with (
+            mock.patch.object(db_transfer, "AUTH_ENABLED", False),
+            mock.patch.object(active_account, "_POINTER", pointer),
+            mock.patch.object(
+                db_transfer,
+                "_post_install_security_init",
+                side_effect=RuntimeError("보안 초기화 실패"),
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                db_transfer._install_db(incoming)
+        self.assertEqual(
+            pointer.read_text(encoding="utf-8"), '{"active": "artist@example.com"}'
+        )  # 포인터 원상(로그인 상태 보존)
+        with db.get_connection() as conn:
+            self.assertEqual(self._marker(conn), "old")
 
     def test_security_init_failure_rolls_back_files(self):
         self._set_marker(self.path, "old")

@@ -19,9 +19,13 @@ type AdminTab = "approve" | "roles" | "server";
 
 export function AdminWindow({
   account,
+  localHub,
   onClose,
 }: {
   account?: Account | null;
+  // ★로컬 허브 판별은 auth_enabled 기준(코덱스 P1) — account 존재 여부로 판별하면
+  // 로컬 허브도 팀 서버 로그인 뒤 account 가 생겨 공유 서버 탭·열쇠가 사라지는 회귀.
+  localHub: boolean;
   onClose: () => void;
 }) {
   const [members, setMembers] = useState<Member[]>([]);
@@ -41,10 +45,11 @@ export function AdminWindow({
   } | null>(null);
   const [urlDraft, setUrlDraft] = useState("");
   const [urlMsg, setUrlMsg] = useState("");
-  // 공유 서버(로그인 계정 존재=auth on)에서는 서버 연결 설정·elevation 이 '로컬 PC 전용'
-  // API(R7 0-A loopback 가드)라 LAN 접속 브라우저에선 403 이다 — 호출 자체를 생략하고
-  // 관련 UI(공유 서버 탭·열쇠)를 숨긴다. 로컬 허브(auth off, account 없음)만 기존 동작.
-  const localOnlyServerControls = !account;
+  // 공유 서버 본체(auth on)에서는 서버 연결 설정·elevation 이 '로컬 PC 전용' API
+  // (R7 0-A loopback 가드)라 LAN 접속 브라우저에선 403 — 호출을 생략하고 관련 UI
+  // (공유 서버 탭·열쇠)를 숨긴다. 로컬 허브(auth off — 팀 서버 로그인 여부 무관)는
+  // 기존 동작 그대로(코덱스 P1: account 기준 판별은 로컬 허브 회귀였다).
+  const localOnlyServerControls = localHub;
   const refreshShared = () => {
     if (!localOnlyServerControls) {
       setShared({ url: null, is_admin: false, elevated: false, elevated_as: null });

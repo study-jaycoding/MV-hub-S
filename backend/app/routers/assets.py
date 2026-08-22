@@ -47,6 +47,7 @@ from ..services.media_types import (
     VIDEO_EXTENSIONS,
     asset_content_type,
 )
+from ..services.async_tools import to_thread_non_abandon
 from ..services.request_guards import require_loopback_request
 from ..services import (
     asset_io,
@@ -767,6 +768,23 @@ async def upload_assets(
 
     saved: list[str] = []
     skipped: list[str] = []
+    try:
+        await _upload_files_loop(files, dest, proj_dir, saved, skipped)
+    finally:
+        # 취소로 루프가 중단돼도 이미 커밋된 파일이 트리에 반영되게(코덱스 P1) —
+        # 무효화는 멱등·저렴하고 watcher 이벤트와도 겹쳐 안전하다.
+        if saved:
+            asset_tree.invalidate_project_tree(proj_dir)
+    return {"saved": saved, "skipped": skipped}
+
+
+async def _upload_files_loop(
+    files: list[UploadFile],
+    dest: Path,
+    proj_dir: Path,
+    saved: list[str],
+    skipped: list[str],
+) -> None:
     for up in files:
         raw = os.path.basename((up.filename or "").replace("\\", "/"))
         if not raw:
@@ -786,13 +804,9 @@ async def upload_assets(
             skipped.append(raw)
             continue
         # 원자적 확정(hardlink/O_EXCL — 덮어쓰기·race 방지)도 스레드로(R7 2-G') —
-        # NAS 지연이 루프를 막지 않는다. to_thread 는 취소돼도 완료까지 대기(non-abandon).
-        target = await asyncio.to_thread(_commit_unique_tmp, tmp, dest, raw)
+        # non-abandon(코덱스 P1): 취소돼도 커밋 스레드 완료까지 대기.
+        target = await to_thread_non_abandon(_commit_unique_tmp, tmp, dest, raw)
         saved.append(target.relative_to(proj_dir).as_posix())
-
-    if saved:
-        asset_tree.invalidate_project_tree(proj_dir)  # 새 파일 반영 — 다음 트리 요청은 다시 훑는다
-    return {"saved": saved, "skipped": skipped}
 
 
 @router.post("/capture", dependencies=[Depends(_require_local_assets)])

@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from . import _proxy, _telemetry
+from ..services.async_tools import to_thread_non_abandon
 from .. import rbac, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..deps import (
@@ -1097,7 +1098,7 @@ async def cache_one(gen_id: str, request: Request):
         repo.request_media_preservation(local_id, "manual", force=True)
         return local_id
 
-    resolved_id = await asyncio.to_thread(_preflight)
+    resolved_id = await to_thread_non_abandon(_preflight)  # 취소 시 request 정리보다 스레드 완료 우선
     res = await preserve_generation_now(resolved_id)
 
     def _assemble() -> dict:
@@ -1111,7 +1112,7 @@ async def cache_one(gen_id: str, request: Request):
         out["generation"] = repo.get_generation(resolved_id)
         return out
 
-    return await asyncio.to_thread(_assemble)
+    return await to_thread_non_abandon(_assemble)
 
 
 @router.post("/cache-all")

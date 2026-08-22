@@ -132,6 +132,15 @@ async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
         return local, members
 
     local_gens, member_projects = await asyncio.to_thread(_local_lookup)
+    # 로컬 권한 판정을 원격 batch '전'에(코덱스 P2 — 오류 우선순위 동등성): 종전 단건
+    # 순차는 [열람불가 로컬, 원격 missing] 에서 즉시 404 였다 — 원격 장애(401/502)가
+    # 먼저 나지 않게 입력 순서로 로컬 실패를 먼저 확정한다.
+    for gen_id in ids:
+        gen = local_gens.get(gen_id)
+        if gen and not can_view_generation_with_member_projects(
+            request, gen, member_projects
+        ):
+            raise HTTPException(status_code=404, detail="generation 없음")
     missing = [gen_id for gen_id in ids if gen_id not in local_gens]
     remote_cards: dict[str, dict] = {}
     if missing and _proxy.proxying():
@@ -152,11 +161,7 @@ async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
     for gen_id in ids:  # 입력 순서 재조립 — 첫 실패가 단건 경로와 같은 404 를 낸다
         gen = local_gens.get(gen_id)
         if gen:
-            if not can_view_generation_with_member_projects(
-                request, gen, member_projects
-            ):
-                raise HTTPException(status_code=404, detail="generation 없음")
-            generations.append(gen)
+            generations.append(gen)  # 권한은 위에서 원격 호출 전에 이미 판정
             continue
         card = remote_cards.get(gen_id)
         if card is not None:

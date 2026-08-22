@@ -521,6 +521,12 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
     def test_slow_cost_estimate_does_not_delay_generation_response(self):
         link = self._link("slow")
 
+        # ★결정적 판정(플레이크 3회 관측 후 재작성): 벽시계(elapsed<0.10)는 전체 스위트
+        # 부하에서 요청 경로 자체가 밀려 오탐했다 — '견적이 끝나기 전에 제출 응답이
+        # 돌아왔다'를 이벤트로 직접 판정한다(계약 동일: 견적은 응답을 지연시키지 않는다).
+        release_estimate = asyncio.Event()
+        estimate_done = False
+
         async def scenario():
             command = GenRequestCommand(
                 kind="create",
@@ -531,14 +537,19 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
                 data={"prompt": "canvas", "model": "model", "params": {}},
                 canvas_link=link,
             )
-            started = time.perf_counter()
             result = await submit_gen_request(command)
-            elapsed = time.perf_counter() - started
-            await asyncio.sleep(0.24)
-            return result, elapsed
+            returned_before_estimate = not estimate_done  # 응답 시점에 견적 미완료
+            release_estimate.set()
+            for _ in range(100):  # 백그라운드 견적·기록 완료 대기(결정적 드레인)
+                if pm.call_count >= 2:
+                    break
+                await asyncio.sleep(0.01)
+            return result, returned_before_estimate
 
         async def slow_estimate(*_args, **_kwargs):
-            await asyncio.sleep(0.20)
+            nonlocal estimate_done
+            await release_estimate.wait()
+            estimate_done = True
             return {"credits": 5}
 
         with mock.patch("app.usecases.gen_requests.MANAGE_ENABLED", True), mock.patch(
@@ -552,10 +563,10 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
         ), mock.patch(
             "app.usecases.gen_requests.journal_generation_event"
         ):
-            result, elapsed = asyncio.run(scenario())
+            result, returned_before_estimate = asyncio.run(scenario())
 
         self.assertEqual(result["id"], link["generation_id"])
-        self.assertLess(elapsed, 0.10)
+        self.assertTrue(returned_before_estimate)  # 견적 완료 '전'에 응답 반환
         self.assertEqual(pm.call_count, 2)
         self.assertEqual(
             [call.kwargs["operation"] for call in pm.call_args_list],

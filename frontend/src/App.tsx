@@ -1688,6 +1688,7 @@ export default function App() {
       <AppOverlays
         account={account}
         adminOpen={adminOpen}
+        localHub={!authConfig?.auth_enabled}
         commentGenId={commentGenId}
         commentLabel={commentLabel}
         compareGens={compareGens}

@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -35,6 +36,7 @@ from ..deps import require_admin
 from ..repo import identity
 from ..services.db_scrub import SESSION_KEYS as _SESSION_KEYS
 from ..services.db_scrub import strip_transfer_secrets as _strip_session
+from ..services.async_tools import to_thread_non_abandon
 from ..services.request_guards import require_loopback_request
 from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db
 from ..services import upload_limits
@@ -191,23 +193,33 @@ def _install_db(
     서버의 새 세트 복원은 ``restore_trash_set=True``로 content·trash를 같은 유지보수 게이트에서
     바꾼다. 두 번째 파일 교체가 실패하면 첫 파일도 기존 자동 보관본으로 되돌린다.
     """
-    path = db.get_db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    trash_path = path.parent / "content_hub_trash.db"
-    staged = path.with_name(f".{path.name}.restore-{secrets.token_hex(8)}.tmp")
-    staged_trash = trash_path.with_name(
-        f".{trash_path.name}.restore-{secrets.token_hex(8)}.tmp"
-    )
     originals: list[tuple[Path, Path | None, bool]] = []
-    # active.json 원상 복구용 스냅샷(R7 0-B) — clear_active 이후 실패 시 파일 세트와 함께
-    # 포인터도 되돌린다(AUTH on 은 미사용이라 무관).
-    active_pointer_backup: bytes | None = None
-    if not AUTH_ENABLED:
-        with contextlib.suppress(OSError):
-            if active_account._POINTER.is_file():
-                active_pointer_backup = active_account._POINTER.read_bytes()
+    staged: Path | None = None
+    staged_trash: Path | None = None
     try:
         with db.maintenance_gate():
+            # ★대상 경로·포인터 스냅샷도 게이트 '안'에서 확정(R7 0-B, 코덱스 P1) —
+            # 게이트 전에 읽으면 계정 전환(set_active — 게이트 비참여)이 겹칠 때 설치
+            # 대상 path 와 이후 단계가 보는 활성 DB 가 달라질 수 있다.
+            path = db.get_db_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            trash_path = path.parent / "content_hub_trash.db"
+            staged = path.with_name(f".{path.name}.restore-{secrets.token_hex(8)}.tmp")
+            staged_trash = trash_path.with_name(
+                f".{trash_path.name}.restore-{secrets.token_hex(8)}.tmp"
+            )
+            # active.json 원상 복구용 스냅샷 — 읽기 실패는 '파일 없음'과 구분해 중단
+            # (원본 보호 원칙 — 복구 불능 상태로 교체를 진행하지 않는다).
+            active_pointer_backup: bytes | None = None
+            if not AUTH_ENABLED:
+                try:
+                    if active_account._POINTER.is_file():
+                        active_pointer_backup = active_account._POINTER.read_bytes()
+                except OSError as exc:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"활성 계정 포인터를 읽을 수 없어 가져오기를 중단했습니다: {exc}",
+                    ) from exc
             # 게이트가 새 요청을 막고 기존 컨텍스트가 모두 끝난 뒤라, 여기서만 전 스레드 풀을
             # 닫아도 진행 중 요청의 커넥션을 끊지 않는다. 이 뒤 게이트 해제 전에는 옛 파일을
             # 다시 여는 요청도 없다.
@@ -266,7 +278,7 @@ def _install_db(
                         trash_path.unlink(missing_ok=True)
                     else:
                         os.replace(staged_trash, trash_path)
-                db.init_db()
+                db.init_db(path)  # ★명시 경로(코덱스 P1) — 활성 DB 재해석 금지
                 # ★보안 초기화·활성 계정 해제도 이 보상 롤백 경계 안(R7 0-B, 코덱스 P1)
                 # — 하나라도 실패하면 성공 응답 없이 기존 파일 세트로 되돌린다.
                 _post_install_security_init(path)
@@ -299,6 +311,10 @@ def _install_db(
                             active_account._POINTER.unlink(missing_ok=True)
                         active_account._cache[0] = False  # 다음 조회가 파일에서 재로드
                 except Exception as rollback_error:  # noqa: BLE001
+                    logging.getLogger(__name__).error(
+                        "DB 가져오기 실패 후 자동 롤백도 실패 — 수동 복구 필요(백업 .bak 파일 확인)",
+                        exc_info=rollback_error,
+                    )
                     raise HTTPException(
                         status_code=500,
                         detail="복원 실패 뒤 기존 DB를 자동으로 되돌리지 못했습니다. 운영 로그를 확인하세요",
@@ -311,23 +327,26 @@ def _install_db(
             if restore_trash_set and trash_tmp is not None:
                 with contextlib.suppress(OSError):
                     trash_tmp.unlink(missing_ok=True)
+            # ★프로세스 캐시 초기화도 게이트 '안'(코덱스 P1) — 해제 후로 미루면 게이트를
+            # 기다리던 요청이 교체 전 신원·FTS 캐시를 보고 새 DB 와 어긋난다.
+            identity._MY_UID_CACHE[0] = None
+            from ..repo import generations as _gens
+
+            _gens._FTS_READY = None
+            _gens._FTS_READY_PATH = None
     except db.DatabaseMaintenanceTimeout as exc:
         raise HTTPException(
             status_code=503,
             detail="다른 DB 요청이 진행 중이라 복원을 잠시 뒤에 다시 시도하세요",
         ) from exc
     finally:
-        with contextlib.suppress(OSError):
-            staged.unlink(missing_ok=True)
-        with contextlib.suppress(OSError):
-            staged_trash.unlink(missing_ok=True)
-    identity._MY_UID_CACHE[0] = None
-    # FTS 존재 여부도 새 DB 기준으로 재확인(경로 동일이라 자동 재검출 안 됨 → 명시 리셋).
-    from ..repo import generations as _gens
-
-    _gens._FTS_READY = None
-    _gens._FTS_READY_PATH = None
-    # (보안 초기화·활성 계정 해제는 게이트 안 보상 롤백 경계에서 이미 완료 — R7 0-B)
+        if staged is not None:
+            with contextlib.suppress(OSError):
+                staged.unlink(missing_ok=True)
+        if staged_trash is not None:
+            with contextlib.suppress(OSError):
+                staged_trash.unlink(missing_ok=True)
+    # (보안 초기화·활성 계정 해제·캐시 초기화는 게이트 안에서 이미 완료 — R7 0-B)
     return {"ok": True, "relogin_required": True}
 
 
@@ -559,8 +578,9 @@ async def import_db(request: Request, file: UploadFile = File(...)):
                     max_bytes=upload_limits.DB_UPLOAD_FILE_MAX_BYTES,
                 )
             # 검증(integrity 스캔)도 스레드로(R7 2-B) — DB 크기에 비례하는 동기 작업이
-            # async 라우트의 이벤트 루프를 막았다. 예외 매핑은 아래 기존 그대로.
-            await asyncio.to_thread(validate_hub_db, tmp)
+            # async 라우트의 이벤트 루프를 막았다. non-abandon(코덱스 P1) — 취소 시
+            # finally 의 tmp 삭제가 검증 스레드보다 먼저 돌면 안 된다.
+            await to_thread_non_abandon(validate_hub_db, tmp)
         except HubDbValidationError as exc:
             _raise_validation_error(exc)
         except upload_limits.UploadLimitExceeded as exc:
@@ -581,8 +601,9 @@ async def import_db(request: Request, file: UploadFile = File(...)):
         # 검증 통과 → 현재 활성 DB 로 통째 교체 + 보안 리셋(import/복원 공용 헬퍼).
         # 교체 전체(백업 복사·WAL checkpoint·파일 교체·마이그레이션·drain 대기)를
         # 스레드로(R7 2-B) — 대형 DB 가져오기 중 다른 HTTP/WS 가 정지하지 않는다.
-        # to_thread 는 non-abandon: 취소돼도 스레드 완료까지 기다린 뒤 예외를 올린다.
-        return await asyncio.to_thread(_install_db, tmp)
+        # non-abandon(코덱스 P1): 취소돼도 설치 스레드 완료까지 기다린 뒤 취소를 올린다
+        # (finally 의 tmp 삭제가 설치 도중의 원본을 지우지 않게).
+        return await to_thread_non_abandon(_install_db, tmp)
     finally:
         try:
             tmp.unlink(missing_ok=True)
