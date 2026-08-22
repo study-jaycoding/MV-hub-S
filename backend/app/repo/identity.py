@@ -979,20 +979,30 @@ def list_members(viewer_uid: Optional[str] = None) -> list[dict[str, Any]]:
     provider = get_my_uid()
     my = viewer_uid if viewer_uid is not None else provider
     with get_connection() as conn:
-        counts = {
-            r["uid"]: r["cnt"]
-            for r in conn.execute(
-                "SELECT creator_uid uid, COUNT(*) cnt FROM generation "
-                "WHERE creator_uid IS NOT NULL GROUP BY creator_uid"
-            ).fetchall()
+        # generation 전수 집계는 1회만(R6 2-D) — 종전엔 계정 count 용과 외부 생성자
+        # 목록용으로 같은 GROUP BY 를 두 번 돌렸다. 집계는 현행대로 deleted_at 필터 없이.
+        agg_rows = conn.execute(
+            "SELECT g.creator_uid uid, COUNT(*) cnt, c.name name, c.global_role grole "
+            "FROM generation g LEFT JOIN creator c ON c.uid=g.creator_uid "
+            "WHERE g.creator_uid IS NOT NULL "
+            "GROUP BY g.creator_uid, c.name, c.global_role"
+        ).fetchall()
+        counts = {r["uid"]: r["cnt"] for r in agg_rows}
+        # 계정은 hidden 포함 1회 조회 — hidden UID 집합(외부 경로 제외용)과 ① 목록을
+        # 함께 파생. 같은 UID 복수 계정은 created_at 첫 계정이 이름·이메일 출처(현행).
+        account_rows = conn.execute(
+            "SELECT email, name, status, global_role, creator_uid, "
+            "COALESCE(hidden,0) AS hidden FROM account ORDER BY created_at"
+        ).fetchall()
+        hidden_uids = {
+            a["creator_uid"] for a in account_rows if a["hidden"] and a["creator_uid"]
         }
         members: list[dict[str, Any]] = []
         seen: set[str] = set()
         # ① 로그인 계정 = 멤버(권한·신원의 1차 출처). 숨긴 계정은 멤버·배정 후보에서 제외.
-        for a in conn.execute(
-            "SELECT email, name, status, global_role, creator_uid FROM account "
-            "WHERE COALESCE(hidden,0)=0 ORDER BY created_at"
-        ).fetchall():
+        for a in account_rows:
+            if a["hidden"]:
+                continue
             uid = a["creator_uid"]
             if not uid or uid in seen:
                 continue
@@ -1011,15 +1021,8 @@ def list_members(viewer_uid: Optional[str] = None) -> list[dict[str, Any]]:
         # ② 계정 없는 외부 생성자(가져온 번들 작성자 등)도 목록 유지. 단, '숨긴 계정'에 연결된 uid 는
         #    제외한다 — 생성물이 있는 계정은 ①에서 숨겨도 여기서 다시 들어와('숨기기'가 멤버·프로젝트
         #    후보에서 안 먹던 버그). 계정 없는 순수 외부 생성자(account 에 없음)는 그대로 유지된다.
-        for r in conn.execute(
-            "SELECT g.creator_uid uid, COUNT(*) cnt, c.name name, c.global_role grole "
-            "FROM generation g LEFT JOIN creator c ON c.uid=g.creator_uid "
-            "WHERE g.creator_uid IS NOT NULL "
-            "AND g.creator_uid NOT IN ("
-            "  SELECT creator_uid FROM account WHERE COALESCE(hidden,0)=1 AND creator_uid IS NOT NULL) "
-            "GROUP BY g.creator_uid, c.name, c.global_role"
-        ).fetchall():
-            if r["uid"] in seen:
+        for r in agg_rows:  # 위 집계 재사용(R6 2-D) — 두 번째 전수 GROUP BY 제거
+            if r["uid"] in seen or r["uid"] in hidden_uids:
                 continue
             seen.add(r["uid"])
             members.append(
