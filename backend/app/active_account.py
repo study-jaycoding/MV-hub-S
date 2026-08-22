@@ -33,6 +33,11 @@ _SAFE = re.compile(r"[^A-Za-z0-9_-]")
 # 빈 문자열("")은 '명시적 미로그인'(레거시 DB 강제)을 뜻한다.
 _override: ContextVar[Optional[str]] = ContextVar("active_key_override", default=None)
 
+# uid 는 계정 키와 '한 쌍'이다. 키만 오버라이드로 고정하고 uid 는 포인터를 직독하면, 키 캡처와
+# uid 읽기 사이에 낀 전환이 'DB=A · 소유 uid=B' 조용한 오귀속을 만든다(R13-IMPORT-1).
+# uid 자체가 None 일 수 있어 '설정 안 함'과 구분하려고 값을 1-튜플에 담는다.
+_uid_override: ContextVar[Optional[tuple]] = ContextVar("active_uid_override", default=None)
+
 # 단일 프로세스 내 포인터 캐시 — active.json 은 이 프로세스만 쓰므로 안전. [loaded, value]
 _cache: list = [False, None]
 
@@ -75,7 +80,13 @@ def account_key() -> Optional[str]:
 
 
 def active_uid() -> Optional[str]:
-    """활성 계정의 creator_uid(있으면) — 표시·이관 매칭용. 키가 아님."""
+    """활성 계정의 creator_uid(있으면) — 표시·이관 매칭용. 키가 아님.
+
+    계정 고정 구간(set_uid_override)에서는 그 구간에 들어올 때 키와 함께 캡처한 값을 쓴다 —
+    머신 포인터를 직독하면 구간 도중의 전환이 uid 만 다른 계정 것으로 바꿔 놓는다."""
+    ov = _uid_override.get()
+    if ov is not None:
+        return ov[0]
     p = _read_pointer()
     return (p or {}).get("uid") if p else None
 
@@ -128,3 +139,12 @@ def set_override(key: Optional[str]):
 
 def reset_override(token) -> None:
     _override.reset(token)
+
+
+def set_uid_override(uid: Optional[str]):
+    """활성 uid 오버라이드 — 계정 키 오버라이드와 같은 구간에서 짝으로 건다."""
+    return _uid_override.set((uid,))
+
+
+def reset_uid_override(token) -> None:
+    _uid_override.reset(token)

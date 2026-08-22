@@ -4,6 +4,15 @@ import { setAuthToken } from "./http";
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
 const RECONNECT_JITTER_RATIO = 0.2;
+// 유지보수 거부(1013)는 서버가 accept 한 뒤 바로 닫으므로 매번 onopen 이 뜬다 — '열렸다'는
+// 사실만으로 백오프를 되돌리면 유지보수 내내 1초 간격 재접속이 된다. 그래서 백오프 리셋은
+// '연결이 실제로 얼마간 유지된 뒤 끊겼을 때'로 제한한다. 기준 5초 = 거부(수 ms)와는 확실히
+// 구분되고, 앱 하트비트 주기(25초)보다는 짧아 짧게 쓰인 정상 연결도 종전처럼 즉시 복구한다.
+const STABLE_CONNECTION_MS = 5000;
+
+export function isStableConnection(connectedForMs: number | null): boolean {
+  return connectedForMs !== null && connectedForMs >= STABLE_CONNECTION_MS;
+}
 
 export function progressReconnectDelayMs(
   baseMs: number,
@@ -28,11 +37,12 @@ export function connectProgress(
   let backoff = RECONNECT_BASE_MS;
   let closed = false;
   let needsCatchUp = false;
+  let openedAt: number | null = null;
 
   const connect = () => {
     ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.onopen = () => {
-      backoff = RECONNECT_BASE_MS;
+      openedAt = Date.now();
       // 최초 연결은 App의 초기 reload와 겹치므로 보정 조회가 필요 없다. 실제로 한 번 연결된 뒤
       // 끊겼거나 최초 연결 시도부터 실패했다가 복구된 경우에만 그 사이 놓친 상태를 따라잡는다.
       if (needsCatchUp) onReconnect?.();
@@ -80,6 +90,11 @@ export function connectProgress(
         return;
       }
       needsCatchUp = true;
+      // 안정적으로 붙어 있다가 끊긴 연결만 백오프를 처음으로 되돌린다. accept 직후 닫히는
+      // 일시 거부(1013 유지보수)는 여기서 리셋되지 않아 재접속 간격이 정상적으로 늘어난다.
+      const connectedForMs = openedAt === null ? null : Date.now() - openedAt;
+      openedAt = null;
+      if (isStableConnection(connectedForMs)) backoff = RECONNECT_BASE_MS;
       const retryDelay = progressReconnectDelayMs(backoff);
       backoff = Math.min(backoff * 1.6, RECONNECT_MAX_MS);
       retry = setTimeout(connect, retryDelay);

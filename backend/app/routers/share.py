@@ -297,11 +297,17 @@ def _pinned_account_scope():
     (AUTH on 서버는 항상 None → "" → 레거시 단일 DB) '중간 전환에 흔들리지 않음'만 더해진다.
     ★finalize/unpublish 는 동기 def 라우트(threadpool)라 여기서 전환 락을 직접 기다려도
     이벤트 루프를 막지 않는다 — async 라우트라면 _capture_account_scope 를 워커로 빼야 한다.
+
+    ★계정 키와 uid 는 한 쌍으로 캡처해 둘 다 고정한다. 키만 고정하면 라우트 본문의
+    active_uid() 가 머신 포인터를 따로 읽어 'DB=A · 소유 uid=B' 오귀속이 남는다(R13-IMPORT-1).
     """
-    account_token = active_account.set_override(_capture_account_scope())
+    account_key, account_uid = _capture_account_pin()
+    account_token = active_account.set_override(account_key)
+    uid_token = active_account.set_uid_override(account_uid)
     try:
         yield
     finally:
+        active_account.reset_uid_override(uid_token)
         active_account.reset_override(account_token)
 
 
@@ -445,13 +451,21 @@ def _finalizer_uid(request: Request) -> str | None:
         return None
 
 
+def _capture_account_pin() -> tuple[str, str | None]:
+    """계정 DB 키와 그 계정의 uid 를 **같은 전환 락 구간**에서 한 쌍으로 캡처한다.
+
+    둘을 따로 읽으면 그 사이에 낀 전환이 'A DB 에 쓰면서 소유자는 B' 같은 조합을 조용히
+    만든다 — 락 안에서 함께 떠야 (A,A) 아니면 (B,B) 만 나온다(R13-IMPORT-1)."""
+    with active_account.transition_lock:
+        return active_account.account_key() or "", active_account.active_uid()
+
+
 def _capture_account_scope() -> str:
     """현재 계정 DB 키만 전환 락 아래 짧게 캡처한다(느린 보존·서버 왕복은 락 밖).
 
     _pinned_account_scope 가 라우트 진입 시 한 번 부르고, 그 override 아래에서 다시 불리는
     BackgroundTask 등록부(add_task 인자)는 같은 키를 그대로 돌려받는다."""
-    with active_account.transition_lock:
-        return active_account.account_key() or ""
+    return _capture_account_pin()[0]
 
 
 async def _preserve_final_media(local_id: str, account_scope: str) -> None:
@@ -766,9 +780,9 @@ def import_to_workspace(gen_id: str, body: ImportIn, request: Request):
     _materialize_remote_shared 로 서버를 왕복하고, 그 사이 다른 창에서 A→B 로 전환하면
     'A 에서 읽은 원본을 B DB 에 복제'하는 섞인 조합이 조용히 생긴다."""
     # 복제본은 가져온 계정 소유로 — house uid 로 떨어지면 내 작업에 안 잡힘(격리 일관성).
-    # ★소유 uid 는 캡처 직후·네트워크 전에 확정한다. active_uid() 는 override 를 보지 않고
-    # active.json 포인터를 직독하므로, 서버 왕복 뒤에 계산하면 DB 는 고정된 A 인데 소유 uid 만
-    # B 가 되는 오귀속이 생긴다(계정 고정을 붙였기 때문에 새로 열리는 구멍 — 순서가 처방의 일부).
+    # ★소유 uid 는 캡처 직후·네트워크 전에 확정한다. active_uid() 는 라우트 진입 때 계정 키와
+    # 한 쌍으로 캡처된 값을 돌려주므로(_pinned_account_scope) 서버 왕복 중 전환이 껴도 DB 와
+    # 소유 uid 가 갈리지 않는다 — 캡처보다 앞서 읽는 일이 없게 순서도 그대로 둔다.
     acc = current_account(request)
     creator_uid = acc.get("creator_uid") if acc else None
     if not creator_uid and _proxy.proxying():

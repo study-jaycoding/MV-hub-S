@@ -145,15 +145,37 @@ def make_token(email: str, ttl: int = _TOKEN_TTL, pwd_stamp: Optional[str] = Non
     return f"{payload}.{_sign(payload)}"
 
 
-def _decode_verified(token: Optional[str]) -> Optional[dict]:
-    """서명·만료 검증을 통과한 payload dict 반환, 아니면 None."""
+class _SecretUnavailable:
+    """'토큰이 무효'와 '지금은 검증할 수 없음'을 구분하는 표식(opt-in 반환값).
+
+    둘 다 "인증 안 됨"이지만 원인이 다르다 — 무효 토큰은 로그아웃(401/1008)이 맞고,
+    DB 파일 교체 중이라 서명 시크릿을 못 읽은 것은 일시 거부(503/1013)여야 한다. 검증한
+    바로 그 순간의 원인을 호출부가 그대로 받아야, 판정 시점에 유지보수 게이트를 다시
+    표본해 '그 사이 게이트가 내려가서 401 오판'하는 창이 사라진다(R13-AUTH-1).
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # 로그에서 None 과 헷갈리지 않게
+        return "<SECRET_UNAVAILABLE>"
+
+
+SECRET_UNAVAILABLE = _SecretUnavailable()
+
+
+def _decode_verified(token: Optional[str], unavailable=None):
+    """서명·만료 검증을 통과한 payload dict 반환, 아니면 None.
+
+    ★unavailable 을 준 호출부에만 '시크릿 사용 불가'를 그 표식으로 돌려준다. 기본값(None)은
+    종전과 완전히 같은 동작이라 기존 호출부·계약은 그대로다(무효와 합쳐 None).
+    """
     if not token or "." not in token:
-        return None
+        return None  # 형식오류 = 진짜 무효(시크릿과 무관) → 유지보수 중이어도 401 이 맞다
     payload_b64, sig = token.rsplit(".", 1)
     try:
         expected = _sign(payload_b64)
     except AuthSecretUnavailable:
-        return None  # 유지보수 중 = 검증 불가 → 미인증으로 닫는다(루프를 막고 기다리지 않는다)
+        return unavailable  # 유지보수 중 = 검증 불가(루프를 막고 기다리지 않는다)
     if not hmac.compare_digest(sig, expected):
         return None
     try:
@@ -165,13 +187,25 @@ def _decode_verified(token: Optional[str]) -> Optional[dict]:
     return data
 
 
-def verify_token(token: Optional[str]) -> Optional[str]:
-    """유효하면 email 반환, 아니면 None(서명 불일치·만료·형식오류)."""
-    data = _decode_verified(token)
-    return data.get("e") if data else None
+def verify_token(token: Optional[str], *, unavailable=None):
+    """유효하면 email 반환, 아니면 None(서명 불일치·만료·형식오류).
+
+    unavailable 을 주면 '시크릿 사용 불가(유지보수)'일 때만 None 대신 그 값을 돌려준다 —
+    원인 구분이 필요한 호출부(미들웨어·WS)만 쓰고, 정상 인증 경로에 드는 비용은 0 이다.
+    """
+    data = _decode_verified(token, unavailable)
+    if not isinstance(data, dict):
+        return data  # None(무효) 또는 호출부가 건넨 '검증 불가' 표식
+    return data.get("e")
 
 
-def token_password_stamp(token: Optional[str]) -> Optional[str]:
-    """토큰에 박힌 비번-스탬프(발급 시점의 password_changed_at). 구버전 토큰이면 None."""
-    data = _decode_verified(token)
-    return data.get("p") if data else None
+def token_password_stamp(token: Optional[str], *, unavailable=None):
+    """토큰에 박힌 비번-스탬프(발급 시점의 password_changed_at). 구버전 토큰이면 None.
+
+    ★이건 verify_token 과 별개의 두 번째 서명이다 — 그 사이에 교체가 시작되면 스탬프만
+    None 이 돼 '비번 바뀐 옛 토큰'으로 오인된다. unavailable 로 그 경우를 구분한다.
+    """
+    data = _decode_verified(token, unavailable)
+    if not isinstance(data, dict):
+        return data
+    return data.get("p")

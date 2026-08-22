@@ -678,10 +678,19 @@ async def auth_enforcement(request: Request, call_next):
     if not (path.startswith("/api/") or path.startswith("/media")):
         return await call_next(request)
     # 토큰(헤더 또는 쿠키)이 있으면 모드와 무관하게 계정을 실어둔다(/me·관리자 검증·표시에).
+    # ★'무효 토큰'과 '지금은 검증 불가(DB 교체로 서명 시크릿을 못 읽음)'는 결과가 같아도 원인이
+    # 다르다 — 전자만 로그아웃(401)이고 후자는 일시 거부(503)다. 검증한 그 순간의 원인을 표식으로
+    # 받아 두면 아래 판정에서 게이트를 다시 표본하지 않아도 된다(재표본은 그 사이 게이트가
+    # 내려가면 '유지보수였는데 401'로 오판했다 — R13-AUTH-1).
     token = session_token(request)
     email: str | None = None
+    secret_unavailable = False
     if token:
-        email = auth_svc.verify_token(token)
+        verdict = auth_svc.verify_token(token, unavailable=auth_svc.SECRET_UNAVAILABLE)
+        if verdict is auth_svc.SECRET_UNAVAILABLE:
+            secret_unavailable = True
+        else:
+            email = verdict
         if email:
             # SQLite busy_timeout 대기는 이벤트 루프가 아니라 워커 스레드에서 기다린다.
             # 계정 상태는 즉시 반영해야 하므로 여기서는 TTL 캐시를 두지 않는다.
@@ -690,8 +699,18 @@ async def auth_enforcement(request: Request, call_next):
                 # 비번 변경/리셋 후엔 그 이전 발급 토큰을 거부(탈취 대응). 스탬프 없는 계정
                 # (한 번도 안 바꿈)은 검사 생략 → 배포 시 기존 세션 일괄 로그아웃 방지.
                 pcat = acc.get("password_changed_at")
-                if not pcat or auth_svc.token_password_stamp(token) == pcat:
+                if not pcat:
                     request.state.account = acc
+                else:
+                    # 스탬프 조회는 두 번째 서명이라, 이 사이에 교체가 시작되면 스탬프만 None 이
+                    # 돼 '비번 바뀐 옛 토큰'으로 오인된다 — 여기서도 원인을 구분한다.
+                    stamp = auth_svc.token_password_stamp(
+                        token, unavailable=auth_svc.SECRET_UNAVAILABLE
+                    )
+                    if stamp is auth_svc.SECRET_UNAVAILABLE:
+                        secret_unavailable = True
+                    elif stamp == pcat:
+                        request.state.account = acc
     if not AUTH_ENABLED:
         return await call_next(request)
     # 보호: /api/*(로그인·가입·헬스 제외) + /media/*. 정적 SPA·/ws 는 여기서 제외.
@@ -701,14 +720,14 @@ async def auth_enforcement(request: Request, call_next):
     api_protected = path.startswith("/api/") and not api_public
     media_protected = path.startswith("/media")
     if (api_protected or media_protected) and request.state.account is None:
-        # ★유지보수(DB 파일 교체) 중이면 서명 시크릿을 못 읽어 verify_token 이 무조건 None 이다
+        # ★유지보수(DB 파일 교체) 중이면 서명 시크릿을 못 읽어 검증 자체가 불가능하다
         # (auth.get_secret 의 fail-closed). 교체가 성공하면 시크릿이 회전하므로 로그아웃이 맞지만,
         # 드레인 타임아웃 등으로 '중단·롤백'되면 옛 토큰은 그대로 유효한데 그 몇 초 사이 요청을
         # 친 브라우저만 401 을 받아 토큰을 지운다(팀 전원 오탐 로그아웃). 일시적 사용 불가는
         # 503 + Retry-After 로 알려 클라이언트가 세션을 지키고 재시도하게 한다(/api/ready 와 동일 계약).
-        # ★maintenance_active() 는 반드시 이 '실패 분기 안'에서만 부른다 — 정상 요청 핫패스에
-        # 락 획득을 추가하면 모든 요청이 유지보수 게이트 잠금을 한 번씩 더 만지게 된다.
-        if token and not email and maintenance_active():
+        # ★판정 근거는 '검증하던 그 순간'의 원인 하나뿐이다 — 여기서 게이트를 다시 표본하면
+        # 그 사이 게이트가 내려간 경우(롤백 직후)에 유효 토큰을 401 로 지웠다(R13-AUTH-1).
+        if secret_unavailable:
             return JSONResponse(
                 {"detail": "DB 유지보수 중입니다. 잠시 후 다시 시도하세요", "retry_after_seconds": 5},
                 status_code=503,
@@ -1060,15 +1079,30 @@ async def websocket_endpoint(ws: WebSocket):
         from .deps import SESSION_COOKIE, realtime_scope
 
         token = _websocket_session_token(ws, SESSION_COOKIE)
-        email = auth_svc.verify_token(token) if token else None
+        email: str | None = None
+        secret_unavailable = False
+        if token:
+            verdict = auth_svc.verify_token(token, unavailable=auth_svc.SECRET_UNAVAILABLE)
+            if verdict is auth_svc.SECRET_UNAVAILABLE:
+                secret_unavailable = True
+            else:
+                email = verdict
         acc = await asyncio.to_thread(repo.get_account, email) if email else None
         pcat = acc.get("password_changed_at") if acc else None
-        stale_password_token = bool(pcat and auth_svc.token_password_stamp(token) != pcat)
+        stale_password_token = False
+        if pcat:
+            stamp = auth_svc.token_password_stamp(
+                token, unavailable=auth_svc.SECRET_UNAVAILABLE
+            )
+            if stamp is auth_svc.SECRET_UNAVAILABLE:
+                secret_unavailable = True
+            stale_password_token = stamp != pcat
         if not acc or acc["status"] != "approved" or stale_password_token:
-            # HTTP 미들웨어와 같은 판정 — DB 교체 중이면 서명 검증이 통째로 닫혀 email 이 None 이
-            # 되고, 교체가 중단·롤백되면 멀쩡한 세션이 1008(=재로그인)로 끊긴다. 일시 거부는
+            # HTTP 미들웨어와 같은 판정 — DB 교체 중이면 서명 검증이 통째로 닫혀 인증이 실패하고,
+            # 교체가 중단·롤백되면 멀쩡한 세션이 1008(=재로그인)로 끊긴다. 일시 거부는
             # 1013 으로 보내 백오프 재연결에 맡긴다(1008 사유 토큰 계약은 그대로).
-            if token and not email and maintenance_active():
+            # 게이트를 다시 표본하지 않고, 검증하던 그 순간의 원인만 본다(R13-AUTH-1).
+            if secret_unavailable:
                 await _reject_websocket_policy(
                     ws,
                     reason=_WS_REASON_MAINTENANCE,
@@ -1114,16 +1148,21 @@ async def websocket_endpoint(ws: WebSocket):
             if AUTH_ENABLED and now - last_auth_check >= _WS_AUTH_RECHECK_SECONDS:
                 last_auth_check = now
                 acc2 = await asyncio.to_thread(repo.get_account, email) if email else None
-                pcat2 = acc2.get("password_changed_at") if acc2 else None
-                if (
-                    not acc2
-                    or acc2["status"] != "approved"
-                    or (pcat2 and auth_svc.token_password_stamp(token) != pcat2)
-                ):
+                if not acc2 or acc2["status"] != "approved":
                     # 주기 재검증 실패 = 진짜 인증 실패 — 최초 거부와 같은 사유를 붙여
                     # 프론트가 reason 없는 1008을 추측하지 않게 한다.
                     await ws.close(code=1008, reason=_WS_REASON_AUTH_REQUIRED)
                     return
+                pcat2 = acc2.get("password_changed_at")
+                if pcat2:
+                    stamp2 = auth_svc.token_password_stamp(
+                        token, unavailable=auth_svc.SECRET_UNAVAILABLE
+                    )
+                    # 유지보수 중이면 '판정 불가'지 인증 실패가 아니다 — 멀쩡한 소켓을 끊지 않고
+                    # 다음 주기에 다시 본다(교체가 끝나면 회전된 시크릿으로 정상 판정된다).
+                    if stamp2 is not auth_svc.SECRET_UNAVAILABLE and stamp2 != pcat2:
+                        await ws.close(code=1008, reason=_WS_REASON_AUTH_REQUIRED)
+                        return
     except WebSocketDisconnect:
         pass
     except Exception:

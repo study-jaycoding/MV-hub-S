@@ -8,7 +8,8 @@
 계약 3개를 고정한다.
   · 보호 API: 토큰이 있는데 검증 불가 + 유지보수 중 → 503 + Retry-After(세션 보존).
   · 평시 무효 토큰 → 종전 401 + X-MVHub-Auth-State: invalid(그대로).
-  · ★핫패스(정상 인증 요청)는 maintenance_active() 를 부르지 않는다 — 실패 분기 안에서만.
+  · ★핫패스(정상 인증 요청)는 maintenance_active() 를 부르지 않는다
+    (R13-AUTH-1 이후엔 인증 경로 전체가 게이트를 표본하지 않는다 — 원인은 검증 순간에 확정).
   · WS: 유지보수 중이면 1013(일시 거부, 백오프 재연결), 평시엔 1008 + 기존 사유 문자열.
 """
 
@@ -24,6 +25,11 @@ from app.services import auth as auth_svc
 
 
 _WS_REASON_AUTH_REQUIRED = "authentication required"  # 프론트가 파싱하는 계약 문자열
+
+# ★형식이 온전한(payload.signature) 토큰이어야 검증이 '서명' 단계까지 가서 시크릿 사용 불가를
+# 만난다. 점 없는 문자열은 시크릿과 무관한 형식오류 = 진짜 무효라 유지보수 중에도 401 이 맞다
+# (R13-AUTH-1 로 판정 근거가 '게이트 재표본'에서 '검증 순간의 원인'으로 바뀐 뒤의 계약).
+_UNVERIFIABLE_TOKEN = "payload.signature"
 
 
 @pytest.fixture
@@ -69,7 +75,7 @@ class _FakeWebSocket:
 def test_protected_api_during_maintenance_answers_503_with_retry_after(api_client):
     """게이트가 올라간 동안의 보호 API 요청은 세션을 지키는 503 이다."""
     client, main_module = api_client
-    client.cookies.set("ch_session", "token-that-cannot-be-verified-now")
+    client.cookies.set("ch_session", _UNVERIFIABLE_TOKEN)
 
     with db.maintenance_gate():
         response = client.get("/api/generations")
@@ -105,7 +111,10 @@ def test_no_token_during_maintenance_still_answers_401(api_client):
 
 
 def test_authenticated_hot_path_never_calls_maintenance_active(api_client, monkeypatch):
-    """★정상 요청 경로에는 게이트 확인(락 획득)이 추가되지 않는다 — 실패 분기 안에서만."""
+    """★정상 요청 경로에는 게이트 확인(락 획득)이 추가되지 않는다.
+
+    R13-AUTH-1 이후 인증 경로는 게이트를 아예 표본하지 않는다(원인은 검증 순간에 확정) —
+    핫패스에 락이 끼지 않는다는 이 계약은 그대로 유지되고 더 강해졌다."""
     client, main_module = api_client
     calls: list[int] = []
 
@@ -114,7 +123,9 @@ def test_authenticated_hot_path_never_calls_maintenance_active(api_client, monke
         return False
 
     monkeypatch.setattr(main_module, "maintenance_active", counting_maintenance_active)
-    monkeypatch.setattr(main_module.auth_svc, "verify_token", lambda token: "u@x.com")
+    monkeypatch.setattr(
+        main_module.auth_svc, "verify_token", lambda token, **_kw: "u@x.com"
+    )
     monkeypatch.setattr(
         main_module.repo,
         "get_account",
@@ -132,7 +143,7 @@ def test_authenticated_hot_path_never_calls_maintenance_active(api_client, monke
 def test_websocket_rejected_during_maintenance_uses_1013(api_client):
     """유지보수 중 WS 거부는 일시 거부(1013) — 프론트는 재로그인 대신 백오프 재연결."""
     _client, main_module = api_client
-    ws = _FakeWebSocket(token="token-that-cannot-be-verified-now")
+    ws = _FakeWebSocket(token=_UNVERIFIABLE_TOKEN)
 
     with db.maintenance_gate():
         asyncio.run(main_module.websocket_endpoint(ws))
