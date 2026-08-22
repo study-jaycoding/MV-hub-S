@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import time
 from typing import Optional
 
 from .. import repo
@@ -128,6 +129,7 @@ async def reconcile_stuck_synced() -> int:
     좁은 후보만 generate get 으로 검증해, '삭제됨(False)' 확정된 것만 휴지통으로 보낸다.
     확인불가(None)·존재(True)는 절대 안 건드린다 → 진짜 진행중 잡 오살 방지. 반환: 정리 건수.
     정상 시 후보 0건이라 CLI 호출도 0(사실상 무비용)."""
+    cutoff = time.time() - STUCK_SYNCED_AGE
     cands = await asyncio.to_thread(repo.list_stuck_synced_active, STUCK_SYNCED_AGE)
     if not cands:
         return 0
@@ -135,7 +137,12 @@ async def reconcile_stuck_synced() -> int:
     for gen_id, job_id in cands:
         exists = await cli_bridge.job_exists(job_id)
         if exists is False:  # 힉스필드에서 사라짐 확정 → 유령 카드 휴지통행(soft delete, 복구 가능)
-            if await asyncio.to_thread(repo.delete_generation, gen_id):
+            if await asyncio.to_thread(
+                repo.move_to_trash_if_stuck_synced,
+                gen_id,
+                job_id,
+                cutoff,
+            ):
                 trashed += 1
     return trashed
 

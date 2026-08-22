@@ -204,14 +204,42 @@ def move_to_trash_if_failed(gen_id: str, account_uid: Optional[str] = None) -> b
     )
 
 
+def move_to_trash_if_stuck_synced(
+    gen_id: str,
+    expected_job_id: str,
+    cutoff: float,
+) -> bool:
+    """유령 synced 카드 정리 전용 이동(SY-1).
+
+    원격 ``job_exists=False`` 확인 중 카드가 정상 상태로 수렴하거나 요청에 다시 연결될 수
+    있으므로, BEGIN IMMEDIATE 뒤 후보 선별 조건 전부를 같은 연결에서 다시 확인한다.
+    조건이 하나라도 달라졌으면 이동하지 않는다.
+    """
+    tomb: Optional[dict[str, Any]] = None
+    with _with_trash() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        gen = conn.execute(
+            "SELECT * FROM generation g WHERE g.id=? "
+            "AND g.origin='synced' AND g.status IN ('pending','running') "
+            "AND g.job_id=? AND g.deleted_at IS NULL "
+            "AND COALESCE(g.sort_ts, g.created_at) < ? "
+            "AND NOT EXISTS (SELECT 1 FROM gen_request r WHERE r.gen_id=g.id)",
+            (gen_id, expected_job_id, cutoff),
+        ).fetchone()
+        if not gen:
+            return False
+        tomb = _move_to_trash_on_conn(conn, gen_id, gen)
+        conn.execute("COMMIT")
+    _record_telemetry_tombstone(gen_id, tomb)
+    return True
+
+
 def _move_to_trash_guarded(
     gen_id: str,
     *,
     excluded_statuses: Optional[tuple[str, ...]],
     account_uid: Optional[str],
 ) -> bool:
-    from ..config import MANAGE_ENABLED
-
     tomb: Optional[dict[str, Any]] = None
     with _with_trash() as conn:
         # ★스냅샷(_gather)과 삭제를 같은 트랜잭션으로 — BEGIN 을 스냅샷 뒤에 열면
@@ -225,26 +253,43 @@ def _move_to_trash_guarded(
             return False
         if account_uid is not None and gen["creator_uid"] != account_uid:
             return False
-        payload = _gather(conn, gen_id, gen)
-        if MANAGE_ENABLED:  # 삭제 전 매니징 스냅샷 캡처(비용·프로젝트 등) — 자식 삭제 전이라야 조회 가능
-            tomb = _telemetry_snapshot(conn, gen_id, gen)
-        conn.execute(
-            "INSERT OR REPLACE INTO trash.trashed"
-            "(id, trashed_at, project_id, creator_uid, status, prompt, source_name, job_id, payload) "
-            "VALUES(?, datetime('now'), ?, ?, ?, ?, ?, ?, ?)",
-            (
-                gen_id,
-                gen["project_id"],
-                gen["creator_uid"],
-                gen["status"],
-                gen["prompt"],
-                gen["source_name"],
-                gen["job_id"],  # 동기화가 이 잡을 되살리지 않도록 거르는 키(삭제 표식)
-                json.dumps(payload, ensure_ascii=False),
-            ),
-        )
-        _delete_generation(conn, gen_id)  # 메인에서 본체+자식 제거
+        tomb = _move_to_trash_on_conn(conn, gen_id, gen)
         conn.execute("COMMIT")
+    _record_telemetry_tombstone(gen_id, tomb)
+    return True
+
+
+def _move_to_trash_on_conn(
+    conn: sqlite3.Connection,
+    gen_id: str,
+    gen: sqlite3.Row,
+) -> Optional[dict[str, Any]]:
+    """이미 열린 쓰기 트랜잭션에서 스냅샷·휴지통 INSERT·본체 삭제를 수행한다."""
+    from ..config import MANAGE_ENABLED
+
+    payload = _gather(conn, gen_id, gen)
+    tomb = _telemetry_snapshot(conn, gen_id, gen) if MANAGE_ENABLED else None
+    conn.execute(
+        "INSERT OR REPLACE INTO trash.trashed"
+        "(id, trashed_at, project_id, creator_uid, status, prompt, source_name, job_id, payload) "
+        "VALUES(?, datetime('now'), ?, ?, ?, ?, ?, ?, ?)",
+        (
+            gen_id,
+            gen["project_id"],
+            gen["creator_uid"],
+            gen["status"],
+            gen["prompt"],
+            gen["source_name"],
+            gen["job_id"],  # 동기화가 이 잡을 되살리지 않도록 거르는 키(삭제 표식)
+            json.dumps(payload, ensure_ascii=False),
+        ),
+    )
+    _delete_generation(conn, gen_id)  # 메인에서 본체+자식 제거
+    return tomb
+
+
+def _record_telemetry_tombstone(gen_id: str, tomb: Optional[dict[str, Any]]) -> None:
+    """성공한 휴지통 이동을 매니징 텔레메트리에 별도 커넥션으로 알린다."""
     # T5: 팀 매니징 텔레메트리에 삭제 tombstone 을 남긴다 — 서버 집계에서 이 생성물을 is_deleted 로
     # 넘겨(완료/공유 상태·건수가 어긋나지 않게). with 밖에서 별 커넥션으로, best-effort.
     if tomb is not None:
@@ -258,7 +303,6 @@ def _move_to_trash_guarded(
                 gen_id,
                 exc_info=True,
             )
-    return True
 
 
 def _telemetry_snapshot(conn, gen_id: str, gen) -> dict[str, Any]:

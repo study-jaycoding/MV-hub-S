@@ -125,6 +125,88 @@ def test_move_to_trash_if_failed_revalidates_inside_lock(pooled_db):
     assert [item["id"] for item in trash.list_trash()] == [failed_id]
 
 
+def _seed_stuck_synced(gen_id: str, job_id: str, sort_ts: float = 100.0) -> None:
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO generation("
+            "id, worker_id, prompt, model, status, created_at, sort_ts, job_id, origin"
+            ") VALUES(?, 'me', 'p', 'm', 'running', '1970-01-01 00:01:40', ?, ?, 'synced')",
+            (gen_id, sort_ts, job_id),
+        )
+
+
+@pytest.mark.parametrize(
+    "case, mutation",
+    [
+        ("status", "UPDATE generation SET status='done' WHERE id=?"),
+        ("job_id", "UPDATE generation SET job_id='job-new' WHERE id=?"),
+        ("origin", "UPDATE generation SET origin='local' WHERE id=?"),
+        ("time", "UPDATE generation SET sort_ts=300 WHERE id=?"),
+        ("deleted", "UPDATE generation SET deleted_at='2026-08-22' WHERE id=?"),
+    ],
+    ids=("status", "job_id", "origin", "time", "deleted"),
+)
+def test_move_to_trash_if_stuck_synced_rejects_changed_generation(
+    pooled_db,
+    case,
+    mutation,
+):
+    """SY-1 — 원격 확인 중 선별 조건이 달라진 카드는 쓰기락 안 재검증에서 보존한다."""
+    from app.repo import trash
+
+    gen_id = f"stuck-{case}"
+    job_id = f"job-{case}"
+    _seed_stuck_synced(gen_id, job_id)
+    with db.get_connection() as conn:
+        conn.execute(mutation, (gen_id,))
+
+    assert trash.move_to_trash_if_stuck_synced(gen_id, job_id, 200.0) is False
+    _assert_pool_connection_clean()
+    with db.get_connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM generation WHERE id=?", (gen_id,)
+        ).fetchone()[0] == 1
+
+
+def test_move_to_trash_if_stuck_synced_rejects_new_request(pooled_db):
+    """SY-1 — 원격 확인 중 gen_request가 연결되면 정상 로컬 요청일 수 있어 보존한다."""
+    from app.repo import trash
+
+    gen_id = "stuck-request"
+    job_id = "job-request"
+    _seed_stuck_synced(gen_id, job_id)
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO gen_request(id, account_email, gen_id, kind, status, payload) "
+            "VALUES('req-stuck', 'me@example.com', ?, 'create', 'pending', '{}')",
+            (gen_id,),
+        )
+
+    assert trash.move_to_trash_if_stuck_synced(gen_id, job_id, 200.0) is False
+    _assert_pool_connection_clean()
+    with db.get_connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM generation WHERE id=?", (gen_id,)
+        ).fetchone()[0] == 1
+
+
+def test_move_to_trash_if_stuck_synced_moves_only_unchanged_candidate(pooled_db):
+    """SY-1 — 전 조건이 유지된 경우에만 풀 ON 단일 transaction-root로 이동한다."""
+    from app.repo import trash
+
+    gen_id = "stuck-valid"
+    job_id = "job-valid"
+    _seed_stuck_synced(gen_id, job_id)
+
+    assert trash.move_to_trash_if_stuck_synced(gen_id, job_id, 200.0) is True
+    _assert_pool_connection_clean()
+    with db.get_connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM generation WHERE id=?", (gen_id,)
+        ).fetchone()[0] == 0
+    assert [item["id"] for item in trash.list_trash()] == [gen_id]
+
+
 def test_concurrent_first_registration_creates_exactly_one_admin(pooled_db):
     """R6 2-A(코덱스 필수) — 동시 최초 가입 2건에서 관리자(approved+admin)는 정확히
     1명. 같은 이메일 동시 가입은 IntegrityError 가 아니라 ValueError 로 정리된다."""
