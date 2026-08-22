@@ -1029,6 +1029,35 @@ def unlink_generation(task_id: str, gen_id: str) -> bool:
 
 
 # ── 영구 삭제 시 사이드카 고아 정리 ──────────────────────────────────────────
+def purge_generation_sidecar_in_connection(conn, gen_id: str) -> None:
+    """호출자가 연 트랜잭션에서 영구 삭제된 생성물의 사이드카를 정리한다.
+
+    스키마는 새로 만들지 않으며 이 함수는 BEGIN/COMMIT/ROLLBACK을 소유하지 않는다.
+    사이드카는 별도 manage DB가 아닌 현재 계정의 main 콘텐츠 DB에 있다.
+    """
+    if not gen_id:
+        return
+    tables = ("generation_metrics", "task_generation", "final_export")
+    # MANAGE off 계약: 이미 있는 테이블만 정리하고 _ensure_schema는 호출하지 않는다.
+    have = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM main.sqlite_master WHERE type='table' AND name IN "
+            "('generation_metrics','task_generation','final_export')"
+        )
+    }
+    if not have:
+        return
+    # 복원·크래시 오버랩 등으로 본체가 살아 있으면 그 본체의 사이드카일 수 있다.
+    if conn.execute(
+        "SELECT 1 FROM main.generation WHERE id=? LIMIT 1", (gen_id,)
+    ).fetchone():
+        return
+    for table in tables:
+        if table in have:
+            conn.execute(f"DELETE FROM main.{table} WHERE gen_id=?", (gen_id,))
+
+
 def purge_generation_sidecar(gen_id: str) -> None:
     """생성물이 '영구 삭제'(휴지통 purge)될 때 남는 사이드카 고아 행 정리 — generation_metrics·
     task_generation·final_export(모두 gen_id 키). 이 행들은 메인/휴지통 어디에도 대응 생성물이 없어
@@ -1038,33 +1067,12 @@ def purge_generation_sidecar(gen_id: str) -> None:
     ★transaction-root 전용(바깥 트랜잭션 안 호출 금지 — 중첩은 sqlite 오류로 fail-fast)."""
     if not gen_id:
         return
-    tables = ("generation_metrics", "task_generation", "final_export")
     with get_connection() as conn:
-        # MANAGE off 계약: 사이드카 스키마가 없으면 새로 만들지 않는다(_ensure_schema 호출 금지).
-        #  → 이미 있는 테이블만 정리. 과거 MANAGE on 때 쌓인 고아는 off 여도 청소 가능.
-        have = {
-            r[0]
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-                "('generation_metrics','task_generation','final_export')"
-            )
-        }
-        if not have:
-            return
         # 생존 재확인~삭제를 한 트랜잭션으로(R6 manage-2) — 확인 뒤 복원이 끼면 살아있는
         # 생성물의 사이드카를 지우거나 일부 테이블만 지운 반쪽 상태가 남았다.
         conn.execute("BEGIN IMMEDIATE")
         try:
-            # 안전: 메인에 같은 id 의 살아있는 생성물이 남아있으면(복원·크래시 오버랩 등) 지우지
-            # 않는다 — 사이드카는 그 살아있는 생성물의 것일 수 있다.
-            if conn.execute(
-                "SELECT 1 FROM generation WHERE id=? LIMIT 1", (gen_id,)
-            ).fetchone():
-                conn.execute("COMMIT")
-                return
-            for t in tables:
-                if t in have:
-                    conn.execute(f"DELETE FROM {t} WHERE gen_id=?", (gen_id,))
+            purge_generation_sidecar_in_connection(conn, gen_id)
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")

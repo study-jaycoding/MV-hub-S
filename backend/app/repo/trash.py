@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -608,6 +607,7 @@ def purge_trashed_item(gen_id: str, account_uid: Optional[str] = None) -> bool:
     """휴지통에서 영구 삭제(복원 불가). account_uid 가 있으면 본인 것만 — 남의 삭제물 영구삭제 방지.
     미디어 파일은 공유·내용주소라 건드리지 않음."""
     with _with_trash() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         if account_uid:
             aliases = _account_alias_uids(conn, account_uid)  # 옛 acct: 별칭 포함 — 전환 후에도 영구삭제 가능
             deleted = (
@@ -622,15 +622,11 @@ def purge_trashed_item(gen_id: str, account_uid: Optional[str] = None) -> bool:
             deleted = conn.execute(
                 "DELETE FROM trash.trashed WHERE id=?", (gen_id,)
             ).rowcount > 0
-    # 영구삭제 성공 시 manage 사이드카 고아(metrics·task_gen·final_export) 정리 — 별 DB, best-effort.
-    # telemetry_outbox tombstone 은 제외(미전송 삭제통보 보존 — 드레이너가 서버에 넘긴다).
-    if deleted:
-        try:
+        if deleted:
             from . import manage as _m
 
-            _m.purge_generation_sidecar(gen_id)
-        except Exception:  # noqa: BLE001 — 영구삭제 자체는 성공, 사이드카는 별 DB
-            logging.getLogger(__name__).warning(
-                "purge 사이드카 정리 실패(gen_id=%s)", gen_id, exc_info=True
-            )
+            # 세 사이드카는 main 콘텐츠 DB에 있으므로 휴지통 DELETE와 같은 transaction-root에서
+            # 정리한다. telemetry_outbox tombstone은 미전송 삭제 통보라 보존한다.
+            _m.purge_generation_sidecar_in_connection(conn, gen_id)
+        conn.execute("COMMIT")
     return deleted
