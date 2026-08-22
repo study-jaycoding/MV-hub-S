@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 from fastapi import HTTPException
 
-from .. import repo
+from .. import active_account, repo
 from ..config import AUTH_ENABLED, EXTERNAL_RECOVERY_ENABLED, LOCAL_AGENT_PAIR_SECRET, MANAGE_ENABLED
 from ..emailnorm import norm_email
 from . import cli_bridge, higgsfield_history
@@ -112,6 +112,12 @@ def _history_auto_forbidden() -> bool:
     return _history_server_forbidden() or not EXTERNAL_RECOVERY_ENABLED
 
 
+def _capture_history_scope() -> str:
+    """현재 계정 DB 키만 전환 락 아래 캡처한다. 느린 작업은 이 락 밖에서 돈다."""
+    with active_account.transition_lock:
+        return active_account.account_key() or ""
+
+
 def bind_history_loop(loop: asyncio.AbstractEventLoop) -> None:
     global _HISTORY_LOOP
     _HISTORY_LOOP = loop
@@ -149,6 +155,7 @@ def _start_history_task(key: str, acc: dict, *, automatic: bool) -> bool:
     # 실제 실행 잠금은 프로세스 전체에서 하나다.
     if any(task and not task.done() for task in _HISTORY_TASKS.values()):
         return False
+    captured_scope = _capture_history_scope()
     _HISTORY_STATES[key] = {
         **_history_idle(),
         "state": "running",
@@ -161,7 +168,8 @@ def _start_history_task(key: str, acc: dict, *, automatic: bool) -> bool:
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
     _HISTORY_TASKS[key] = asyncio.create_task(
-        _run_history_import(key, dict(acc)), name=f"history-import:{key}"
+        _run_history_import(key, dict(acc), account_scope=captured_scope),
+        name=f"history-import:{key}",
     )
     return True
 
@@ -178,54 +186,64 @@ async def auto_start_history_import(
     email = norm_email(account_email)
     if not email:
         return False
-    local_key = _history_key()
-    if local_key != "local" and norm_email(local_key) != email:
-        _logger.warning(
-            "history_auto_account_mismatch reason=%s requested=%s active=%s",
-            reason,
+    account_scope = _capture_history_scope()
+    account_override = active_account.set_override(account_scope or "")
+    try:
+        local_key = _history_key()
+        if local_key != "local" and norm_email(local_key) != email:
+            _logger.warning(
+                "history_auto_account_mismatch reason=%s requested=%s active=%s",
+                reason,
+                email,
+                local_key,
+            )
+            return False
+        if any(task and not task.done() for task in _HISTORY_TASKS.values()):
+            return False
+        claimed = await asyncio.to_thread(
+            repo.claim_history_auto_start,
             email,
-            local_key,
+            HISTORY_AUTO_COOLDOWN_SECONDS,
+            started_at=started_at,
         )
-        return False
-    if any(task and not task.done() for task in _HISTORY_TASKS.values()):
-        return False
-    claimed = await asyncio.to_thread(
-        repo.claim_history_auto_start,
-        email,
-        HISTORY_AUTO_COOLDOWN_SECONDS,
-        started_at=started_at,
-    )
-    if not claimed:
-        return False
-    return _start_history_task(email, _history_account(email), automatic=True)
+        if not claimed:
+            return False
+        return _start_history_task(email, _history_account(email), automatic=True)
+    finally:
+        active_account.reset_override(account_override)
 
 
 async def startup_history_audit() -> bool:
     """로컬 허브 시작 때 최근 성공이 오래됐으면 한 번만 전체 이력을 확인한다."""
     if _history_auto_forbidden():
         return False
+    account_scope = _capture_history_scope()
+    account_override = active_account.set_override(account_scope or "")
     try:
-        status = await cli_bridge.get_account_status(timeout=10.0)
-    except Exception as exc:  # noqa: BLE001 — 미로그인/CLI 불가는 다음 시작·gap 기회로 넘긴다.
-        _logger.warning("history_startup_audit_skipped error_type=%s", type(exc).__name__)
-        return False
-    email = norm_email((status or {}).get("email"))
-    if not (status or {}).get("connected") or not email:
-        _logger.warning("history_startup_audit_skipped reason=cli_not_logged_in")
-        return False
-    audit = await asyncio.to_thread(repo.get_history_import_audit, email)
-    unresolved_gap = bool(
-        audit.get("gap_detected_at") and not audit.get("gap_resolved_at")
-    )
-    if not unresolved_gap:
-        recent = await asyncio.to_thread(
-            repo.history_success_is_recent,
-            email,
-            HISTORY_AUTO_AUDIT_SECONDS,
-        )
-        if recent:
+        try:
+            status = await cli_bridge.get_account_status(timeout=10.0)
+        except Exception as exc:  # noqa: BLE001 — 미로그인/CLI 불가는 다음 시작·gap 기회로 넘긴다.
+            _logger.warning("history_startup_audit_skipped error_type=%s", type(exc).__name__)
             return False
-    return await auto_start_history_import(email, reason="startup")
+        email = norm_email((status or {}).get("email"))
+        if not (status or {}).get("connected") or not email:
+            _logger.warning("history_startup_audit_skipped reason=cli_not_logged_in")
+            return False
+        audit = await asyncio.to_thread(repo.get_history_import_audit, email)
+        unresolved_gap = bool(
+            audit.get("gap_detected_at") and not audit.get("gap_resolved_at")
+        )
+        if not unresolved_gap:
+            recent = await asyncio.to_thread(
+                repo.history_success_is_recent,
+                email,
+                HISTORY_AUTO_AUDIT_SECONDS,
+            )
+            if recent:
+                return False
+        return await auto_start_history_import(email, reason="startup")
+    finally:
+        active_account.reset_override(account_override)
 
 
 async def stop_history_imports() -> None:
@@ -237,8 +255,17 @@ async def stop_history_imports() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _run_history_import(key: str, acc: dict) -> None:
+async def _run_history_import(
+    key: str,
+    acc: dict,
+    *,
+    account_scope: str | None = None,
+) -> None:
     state = _HISTORY_STATES[key]
+    captured_scope = (
+        _capture_history_scope() if account_scope is None else account_scope
+    )
+    account_override = active_account.set_override(captured_scope or "")
     token = ""
     try:
         runner = _INGEST_RUNNER
@@ -312,3 +339,4 @@ async def _run_history_import(key: str, acc: dict) -> None:
     finally:
         token = ""  # 토큰을 전역 상태나 로그에 남기지 않는다.
         _HISTORY_TASKS.pop(key, None)
+        active_account.reset_override(account_override)
