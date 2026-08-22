@@ -12,7 +12,7 @@ import logging
 import os
 from typing import Any, Optional
 
-from .. import repo
+from .. import active_account, repo
 from ..usecases import generation_media_cache
 from .operational_logging import log_event
 
@@ -93,10 +93,7 @@ async def _process_claim(claim: dict[str, Any]) -> dict[str, Any]:
 
 async def preserve_generation_now(gen_id: str) -> Optional[dict[str, Any]]:
     """등록된 특정 작업을 즉시 한 번 처리한다. 이미 실행 중/완료면 None."""
-    claim = await asyncio.to_thread(repo.claim_media_preservation, gen_id)
-    if not claim:
-        return None
-    return await _process_claim_safely(claim)
+    return await _claim_and_process_non_abandon(gen_id)
 
 
 async def _process_claim_safely(claim: dict[str, Any]) -> dict[str, Any]:
@@ -118,6 +115,51 @@ async def _process_claim_safely(claim: dict[str, Any]) -> dict[str, Any]:
         )
         log_event(_log, "media_preservation_failed", level=logging.WARNING, exc_info=True)
         return {"status": "failed", "error_code": "internal_error"}
+
+
+def _capture_account_scope() -> str:
+    """claim 직전 계정을 캡처한다. 긴 보존 작업 동안 전환 lock은 보유하지 않는다."""
+    with active_account.transition_lock:
+        return active_account.account_key() or ""
+
+
+async def _claim_and_process(
+    gen_id: Optional[str], account_key: str
+) -> Optional[dict[str, Any]]:
+    """캡처한 계정 DB에서 claim부터 finish까지 처리한다."""
+    account_token = active_account.set_override(account_key)
+    try:
+        if gen_id is None:
+            claim = await asyncio.to_thread(repo.claim_media_preservation)
+        else:
+            claim = await asyncio.to_thread(repo.claim_media_preservation, gen_id)
+        if not claim:
+            return None
+        return await _process_claim_safely(claim)
+    finally:
+        active_account.reset_override(account_token)
+
+
+async def _claim_and_process_non_abandon(
+    gen_id: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """호출 task가 취소돼도 이미 시작한 claim~finish 단위는 끝낸 뒤 취소를 전파한다."""
+    account_key = _capture_account_scope()
+    worker = asyncio.create_task(_claim_and_process(gen_id, account_key))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # 첫 취소와 대기 중 반복 취소를 모두 흡수한다. 다운로드 task를 살려야 내부
+        # to_thread가 파일을 쓰는 동안 lock/상태 확정 흐름이 먼저 유기되지 않는다.
+        while not worker.done():
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.shield(worker)
+        if not worker.cancelled():
+            # 호출자 취소를 우선하되 내부 예외도 회수해 "Task exception was never retrieved"
+            # 경고를 남기지 않는다. claim 이후 예외는 _process_claim_safely가 finish한다.
+            with contextlib.suppress(Exception):
+                worker.result()
+        raise
 
 
 class PeriodicMediaPreservation:
@@ -145,10 +187,9 @@ class PeriodicMediaPreservation:
             try:
                 # 한 주기에 두 건만 처리해 저사양 서버의 네트워크·디스크 폭주를 막는다.
                 for _ in range(2):
-                    claim = await asyncio.to_thread(repo.claim_media_preservation)
-                    if not claim:
+                    result = await _claim_and_process_non_abandon()
+                    if result is None:
                         break
-                    await _process_claim_safely(claim)
                     processed += 1
                 if processed:
                     log_event(_log, "media_preservation_batch", processed=processed)
