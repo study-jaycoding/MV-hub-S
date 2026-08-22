@@ -142,7 +142,11 @@ async def _process_claim_safely(claim: dict[str, Any]) -> dict[str, Any]:
 
 
 def _capture_account_scope() -> str:
-    """claim 직전 계정을 캡처한다. 긴 보존 작업 동안 전환 lock은 보유하지 않는다."""
+    """claim 직전 계정을 캡처한다. 긴 보존 작업 동안 전환 lock은 보유하지 않는다.
+
+    ★호출은 반드시 워커 스레드에서(to_thread) — transition_lock 은 로그인 마이그레이션·DB
+    복원이 초 단위로 통째 쥐고 있어, 이벤트 루프에서 기다리면 서버 전체(HTTP·WS)가 멈춘다.
+    """
     with active_account.transition_lock:
         return active_account.account_key() or ""
 
@@ -168,7 +172,9 @@ async def _claim_and_process_non_abandon(
     gen_id: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """호출 task가 취소돼도 이미 시작한 claim~finish 단위는 끝낸 뒤 취소를 전파한다."""
-    account_key = _capture_account_scope()
+    # 캡처의 전환 락 획득은 워커 스레드에서(syncer.sync_now 와 같은 규율). 이 경로는 30초 주기
+    # 무조건 실행이라, 루프에서 락을 기다리면 복원·로그인 전환 때마다 서버가 통째로 정지한다.
+    account_key = await asyncio.to_thread(_capture_account_scope)
     worker = asyncio.create_task(_claim_and_process(gen_id, account_key))
     try:
         return await asyncio.shield(worker)

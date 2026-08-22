@@ -321,9 +321,12 @@ def _account_scoped_route(fn):
 
 
 @router.post("/generations/{gen_id}/publish", response_model=GenerationOut)
+@_account_scoped_route
 def publish(gen_id: str, body: PublishIn, request: Request):
     """generation 을 팀에 발행한다(명시적). 한 generation 은 0~1개의 share.
-    발행 = share-set 에 추가(서버 발행은 publish-to-shared 번들 경로가 담당)."""
+    발행 = share-set 에 추가(서버 발행은 publish-to-shared 번들 경로가 담당).
+    ★네트워크 왕복이 없는 로컬 전용 구간이지만, 읽기(get_generation)~쓰기(publish·보존요청·
+    텔레메트리)가 여러 DB 왕복으로 나뉘어 있어 같은 계정 DB 고정을 동일하게 적용한다."""
     if _proxy.proxying():
         # 프록시 모드의 서버 발행은 번들 write-ahead 경로만 허용한다. 이 로컬-only API를
         # 열어 두면 서버에는 없고 이 PC에만 shared인 상태가 생긴다.
@@ -756,8 +759,22 @@ def _materialize_remote_shared(gen_id: str, request: Request) -> tuple[dict[str,
 
 
 @router.post("/generations/{gen_id}/import", response_model=GenerationOut, status_code=201)
+@_account_scoped_route
 def import_to_workspace(gen_id: str, body: ImportIn, request: Request):
-    """공유 항목을 내 워크스페이스로 복제(프롬프트·레퍼런스 보존) + history."""
+    """공유 항목을 내 워크스페이스로 복제(프롬프트·레퍼런스 보존) + history.
+    ★finalize/unpublish 와 같은 계정 고정(_pinned_account_scope): 이 라우트는 중간에
+    _materialize_remote_shared 로 서버를 왕복하고, 그 사이 다른 창에서 A→B 로 전환하면
+    'A 에서 읽은 원본을 B DB 에 복제'하는 섞인 조합이 조용히 생긴다."""
+    # 복제본은 가져온 계정 소유로 — house uid 로 떨어지면 내 작업에 안 잡힘(격리 일관성).
+    # ★소유 uid 는 캡처 직후·네트워크 전에 확정한다. active_uid() 는 override 를 보지 않고
+    # active.json 포인터를 직독하므로, 서버 왕복 뒤에 계산하면 DB 는 고정된 A 인데 소유 uid 만
+    # B 가 되는 오귀속이 생긴다(계정 고정을 붙였기 때문에 새로 열리는 구멍 — 순서가 처방의 일부).
+    acc = current_account(request)
+    creator_uid = acc.get("creator_uid") if acc else None
+    if not creator_uid and _proxy.proxying():
+        from ..active_account import active_uid
+
+        creator_uid = active_uid()
     src = repo.get_generation(gen_id)
     if not src and _proxy.proxying():
         # 팀 탭은 서버 id(job_id)로 표시 → 내 로컬 항목이면 job_id 로 재해석해 찾는다.
@@ -775,13 +792,6 @@ def import_to_workspace(gen_id: str, body: ImportIn, request: Request):
     require_view_generation(request, src)  # ⑥: 볼 수 있는 것만 가져올 수 있다(멤버십 경계 일치)
     if not src["shared"]:
         raise HTTPException(status_code=409, detail="공유되지 않은 항목은 가져올 수 없음")
-    # 복제본은 가져온 계정 소유로 — house uid 로 떨어지면 내 작업에 안 잡힘(격리 일관성).
-    acc = current_account(request)
-    creator_uid = acc.get("creator_uid") if acc else None
-    if not creator_uid and _proxy.proxying():
-        from ..active_account import active_uid
-
-        creator_uid = active_uid()
     worker_id = body.worker_id or DEFAULT_WORKER_ID
     child_id = repo.import_generation(gen_id, worker_id, creator_uid=creator_uid)
     child = repo.get_generation(child_id)

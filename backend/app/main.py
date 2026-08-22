@@ -679,6 +679,7 @@ async def auth_enforcement(request: Request, call_next):
         return await call_next(request)
     # 토큰(헤더 또는 쿠키)이 있으면 모드와 무관하게 계정을 실어둔다(/me·관리자 검증·표시에).
     token = session_token(request)
+    email: str | None = None
     if token:
         email = auth_svc.verify_token(token)
         if email:
@@ -700,6 +701,19 @@ async def auth_enforcement(request: Request, call_next):
     api_protected = path.startswith("/api/") and not api_public
     media_protected = path.startswith("/media")
     if (api_protected or media_protected) and request.state.account is None:
+        # ★유지보수(DB 파일 교체) 중이면 서명 시크릿을 못 읽어 verify_token 이 무조건 None 이다
+        # (auth.get_secret 의 fail-closed). 교체가 성공하면 시크릿이 회전하므로 로그아웃이 맞지만,
+        # 드레인 타임아웃 등으로 '중단·롤백'되면 옛 토큰은 그대로 유효한데 그 몇 초 사이 요청을
+        # 친 브라우저만 401 을 받아 토큰을 지운다(팀 전원 오탐 로그아웃). 일시적 사용 불가는
+        # 503 + Retry-After 로 알려 클라이언트가 세션을 지키고 재시도하게 한다(/api/ready 와 동일 계약).
+        # ★maintenance_active() 는 반드시 이 '실패 분기 안'에서만 부른다 — 정상 요청 핫패스에
+        # 락 획득을 추가하면 모든 요청이 유지보수 게이트 잠금을 한 번씩 더 만지게 된다.
+        if token and not email and maintenance_active():
+            return JSONResponse(
+                {"detail": "DB 유지보수 중입니다. 잠시 후 다시 시도하세요", "retry_after_seconds": 5},
+                status_code=503,
+                headers={"Retry-After": "5"},
+            )
         return JSONResponse(
             {"detail": "로그인이 필요합니다"},
             status_code=401,
@@ -995,16 +1009,24 @@ _WS_AUTH_RECHECK_SECONDS = 45.0
 #                            HTTP 403 "AUTH off 모드는 로컬 전용"과 같은 정책 거부.
 _WS_REASON_AUTH_REQUIRED = "authentication required"
 _WS_REASON_AUTH_OFF_LOCAL_ONLY = "auth-off-local-only"
+# 일시 거부(1013 try-again-later) — 정책 거부가 아니므로 위 사유 토큰과 섞지 않는다.
+# 프론트는 1008 이 아닌 종료 코드를 전부 '일시 장애'로 보고 백오프 재연결한다(계약 변경 0).
+_WS_CODE_TRY_AGAIN_LATER = 1013
+_WS_REASON_MAINTENANCE = "maintenance"
 
 
-async def _reject_websocket_policy(ws: WebSocket, reason: str = _WS_REASON_AUTH_REQUIRED) -> None:
+async def _reject_websocket_policy(
+    ws: WebSocket, reason: str = _WS_REASON_AUTH_REQUIRED, code: int = 1008
+) -> None:
     """핸드셰이크를 완료한 뒤 1008로 닫아 브라우저의 무한 재접속을 막는다.
 
     accept 전에 close 하면 Uvicorn은 HTTP 403으로 거절하고 브라우저에는 1006만 보여준다.
     클라이언트는 1008만 영구 정책 거부로 구분하므로, 데이터는 보내지 않고 연결 직후 닫는다.
+    ★code 를 1013(try again later)으로 주면 '영구 거부'가 아닌 일시 거부다 — 유지보수 중
+    거부에만 쓰며, 프론트는 재로그인 대신 백오프 재연결을 한다.
     """
     await ws.accept()
-    await ws.close(code=1008, reason=reason)
+    await ws.close(code=code, reason=reason)
 
 
 def _log_browser_presence(event: str, counts: dict[str, int]) -> None:
@@ -1043,6 +1065,16 @@ async def websocket_endpoint(ws: WebSocket):
         pcat = acc.get("password_changed_at") if acc else None
         stale_password_token = bool(pcat and auth_svc.token_password_stamp(token) != pcat)
         if not acc or acc["status"] != "approved" or stale_password_token:
+            # HTTP 미들웨어와 같은 판정 — DB 교체 중이면 서명 검증이 통째로 닫혀 email 이 None 이
+            # 되고, 교체가 중단·롤백되면 멀쩡한 세션이 1008(=재로그인)로 끊긴다. 일시 거부는
+            # 1013 으로 보내 백오프 재연결에 맡긴다(1008 사유 토큰 계약은 그대로).
+            if token and not email and maintenance_active():
+                await _reject_websocket_policy(
+                    ws,
+                    reason=_WS_REASON_MAINTENANCE,
+                    code=_WS_CODE_TRY_AGAIN_LATER,
+                )
+                return
             await _reject_websocket_policy(ws)
             return
         # email 기반 스코프(progress·mutation 과 동일 규칙) — creator_uid NULL·리맵에도 안정.

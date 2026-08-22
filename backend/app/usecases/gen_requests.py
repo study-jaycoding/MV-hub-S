@@ -74,10 +74,14 @@ def _account_scoped(email_parameter: str, *, from_request_row: bool = False):
                 value = value.get("account_email") if isinstance(value, dict) else None
             elif not isinstance(value, str):
                 value = getattr(value, "email", None)
+            if value:
+                # 인자로 계정이 이미 정해진 호출은 공유 상태(active.json 포인터)를 전혀 읽지
+                # 않는다 — 락 안에서 읽던 것이 없으니 의미 변화 0이고, 로그인 마이그레이션·DB
+                # 복원이 transition_lock 을 초 단위로 쥐는 동안 usecase 호출이 통째로 대기하던
+                # 것만 사라진다. 락은 '포인터 폴백 캡처'일 때만 잡는다.
+                return str(value).strip()
             with active_account.transition_lock:
-                if not value:
-                    value = active_account.account_key() or ""
-                return str(value or "").strip()
+                return str(active_account.account_key() or "").strip()
 
         if inspect.iscoroutinefunction(action):
             @functools.wraps(action)
