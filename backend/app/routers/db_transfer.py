@@ -42,6 +42,7 @@ from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail,
 from ..services import upload_limits
 from ..services.backup import backup_now, list_backups_info
 from ..services.worker_backup import (
+    _verify_transfer_secrets_removed as _verify_secrets_removed,
     adopt_restored_backup,
     periodic_worker_backup,
     queue_backup_set,
@@ -575,7 +576,9 @@ async def import_db(request: Request, file: UploadFile = File(...)):
         try:
             await file.seek(0)
             with tmp.open("xb") as target:
-                await asyncio.to_thread(
+                # 복사도 non-abandon — 취소 시 스레드가 아직 tmp 핸들을 쥐고 있으면 finally 의
+                # unlink 가 실패해 최대 512MiB 임시파일이 %TEMP% 에 남는다.
+                await to_thread_non_abandon(
                     upload_limits.copy_stream_limited,
                     file.file,
                     target,
@@ -626,6 +629,9 @@ def _legacy_server_backup(source: Path) -> tuple[int, object]:
     try:
         shutil.copyfile(source, tmp)
         _strip_session(tmp)
+        # 정제 함수는 구형 DB 호환 때문에 SQLite 오류를 삼킨다 — 실제로 지워졌는지 확인하지 않으면
+        # 미정제 DB(세션 토큰·auth_secret)가 그대로 서버로 올라간다. 실패면 업로드 중단.
+        _verify_secrets_removed(tmp)
         validate_hub_db(tmp, require_integrity=True)
         return _multipart_upload(
             f"{_proxy.base_url()}/api/db-backup", _proxy.token(), tmp

@@ -23,6 +23,14 @@ def hub_db_validation_detail(exc: HubDbValidationError, *, downloaded: bool = Fa
     return "허브 DB 형식이 아닙니다(generation 테이블 없음)"
 
 
+def _read_only_uri(path: Path) -> str:
+    """검증 대상은 남이 올린 파일이다 — 절대 read-write 로 열지 않는다(hot journal 롤백·WAL
+    체크포인트가 원본을 바꾼다). 짝 -wal 이 없는 독립 파일이면 immutable 까지 붙인다: read-only
+    연결은 자기가 만든 -wal/-shm 을 닫을 때 지우지 못해 사이드카가 폴더에 쌓인다."""
+    immutable = not Path(str(path) + "-wal").exists()
+    return path.resolve().as_uri() + ("?mode=ro&immutable=1" if immutable else "?mode=ro")
+
+
 def validate_hub_db(path: Path, *, require_integrity: bool = False) -> None:
     """MV Hub SQLite DB 인지 확인한다. 라우터는 reason 을 사용자 문구로 바꾼다."""
     try:
@@ -33,7 +41,7 @@ def validate_hub_db(path: Path, *, require_integrity: bool = False) -> None:
         raise HubDbValidationError("unreadable") from exc
 
     try:
-        with closing(sqlite3.connect(str(path))) as conn:
+        with closing(sqlite3.connect(_read_only_uri(path), uri=True)) as conn:
             ok = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation'"
             ).fetchone()

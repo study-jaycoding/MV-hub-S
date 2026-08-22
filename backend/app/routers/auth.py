@@ -36,6 +36,10 @@ _COOKIE_MAX_AGE = 14 * 24 * 3600  # 토큰 TTL 과 동일(2주)
 _RL_WINDOW = 300.0  # 5분
 _RL_MAX = 8
 _rl_fails: dict[str, list[float]] = {}
+# 실패 기록 저장소 상한 — 매번 다른 이메일로 실패시키면 (IP|email) 키가 무한히 쌓인다(로그인은
+# 비인증 원격에서 부를 수 있다). 상한을 넘으면 만료된 키를 먼저 쓸고, 그래도 넘치면 가장 오래된
+# 키부터 버린다. 버려진 키는 창(_RL_WINDOW)을 새로 시작할 뿐, in-flight 예약·용량 규칙과는 무관.
+_RL_FAILS_MAX_KEYS = 4096
 # 검증 '진행 중' 예약 수 — 실패는 해시 검증이 끝나야 기록되므로, 예약 없이는 같은 키의 동시
 # 요청 수백 건이 전부 검사를 통과해 창(MAX)을 우회한다(적대 리뷰 P2). 검사+예약은 async 핸들러의
 # sync 구간에서 원자적(이벤트 루프가 끼어들 수 없음)이고, 완료 시 성공·실패·예외 모두 finally 로 푼다.
@@ -120,7 +124,16 @@ def _rl_release(key: str) -> None:
 
 
 def _rl_fail(key: str) -> None:
-    _rl_fails.setdefault(key, []).append(time.monotonic())
+    now = time.monotonic()
+    _rl_fails.setdefault(key, []).append(now)
+    if len(_rl_fails) > _RL_FAILS_MAX_KEYS:
+        cutoff = now - _RL_WINDOW
+        for stale_key, hits in list(_rl_fails.items()):
+            if not hits or hits[-1] < cutoff:
+                _rl_fails.pop(stale_key, None)
+        while len(_rl_fails) > _RL_FAILS_MAX_KEYS:
+            oldest = min(_rl_fails, key=lambda k: _rl_fails[k][-1])
+            _rl_fails.pop(oldest, None)
 
 
 def _rl_ok(key: str) -> None:

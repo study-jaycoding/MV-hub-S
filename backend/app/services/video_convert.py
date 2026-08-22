@@ -20,6 +20,9 @@ from pathlib import Path
 log = logging.getLogger("comfy.video")
 
 _DEFAULT_FPS = 16.0  # 원본 fps 를 못 읽을 때(깨진 0-fps 등) 강제할 안전 기본값
+# fps/tbr 은 비디오 스트림 줄에만 있다. 앵커 없이 전체 stderr 를 뒤지면 컨테이너 Metadata 의
+# 자유 텍스트(예: comment "captured at 60 fps")를 프레임레이트로 오인해 -r 을 잘못 강제한다.
+_VIDEO_STREAM_RE = re.compile(r"^\s*Stream #\d+[:.]\d+.*\bVideo:")
 
 
 class VideoConvertError(RuntimeError):
@@ -45,15 +48,17 @@ def _probe_fps(ff: str, src: Path) -> float | None:
     except (subprocess.SubprocessError, OSError):
         return None
     txt = (p.stderr or b"").decode("utf-8", "replace")
+    stream_lines = [ln for ln in txt.splitlines() if _VIDEO_STREAM_RE.search(ln)]
     for pat in (r"(\d+(?:\.\d+)?)\s*fps", r"(\d+(?:\.\d+)?)\s*tbr"):
-        m = re.search(pat, txt)
-        if m:
-            try:
-                f = float(m.group(1))
-            except ValueError:
-                continue
-            if 1.0 <= f <= 240.0:
-                return f
+        for line in stream_lines:
+            m = re.search(pat, line)
+            if m:
+                try:
+                    f = float(m.group(1))
+                except ValueError:
+                    continue
+                if 1.0 <= f <= 240.0:
+                    return f
     return None
 
 

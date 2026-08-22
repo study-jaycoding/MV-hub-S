@@ -24,6 +24,9 @@ _NOTIFY_EXCLUDE = (
     "/api/shared-server/",  # 로컬 로그인·주소·임시권한 설정이지 라이브러리 데이터 변경이 아님
     "/api/health",
     "/api/backup",
+    # 실제 백업 업로드 라우터 prefix. "/api/backup" 은 main 의 수동 백업 라우트만 가려서, 작업자
+    # 백업이 올라올 때마다 그 계정에 불필요한 synced(전체 reload) 알림이 나갔다.
+    "/api/db-backup",
     "/api/merge",
 )
 _NOTIFY_METHODS = ("POST", "PUT", "PATCH", "DELETE")

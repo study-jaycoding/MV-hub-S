@@ -22,15 +22,17 @@ def mcp_item_to_cli(item: dict[str, Any]) -> dict[str, Any]:
     MCP:  {id, status, model, params{prompt, medias|input_images}, results{rawUrl}, createdAt}
     CLI : {id, status, job_set_type, result_url, created_at, params}
     """
-    params = dict(item.get("params") or {})
+    # 원시 MCP/덤프 입력은 형식 보장이 없다 — dict 가 아니면 그 항목만 버린다(전체 500 방지).
+    raw_params = item.get("params")
+    params = dict(raw_params) if isinstance(raw_params, dict) else {}
 
     # 결과물 URL — results.rawUrl(객체) 또는 배열 첫 원소.
     results = item.get("results") or {}
     raw_url = None
     if isinstance(results, dict):
         raw_url = results.get("rawUrl") or results.get("url") or results.get("minUrl")
-    elif isinstance(results, list) and results:
-        r0 = results[0] or {}
+    elif isinstance(results, list) and results and isinstance(results[0], dict):
+        r0 = results[0]
         raw_url = r0.get("rawUrl") or r0.get("url")
 
     # 레퍼런스 — medias 가 있으면 그대로, 없고 input_images 만 있으면 medias 형태로 합성.

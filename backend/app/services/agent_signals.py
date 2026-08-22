@@ -138,7 +138,9 @@ class AgentSignals:
             ev.clear()
             with self._lock:
                 reasons = self._reasons.pop(email, None)
-            return ",".join(sorted(reasons)) if reasons else "event"
+            # 같은 계정 waiter 가 둘이면 사유는 먼저 깬 쪽이 가져간다. 남은 쪽에 "event" 같은
+            # 가짜 사유를 주면 에이전트가 할 일 없이 깨어나 그 사이클의 idle 폴백까지 건너뛴다.
+            return ",".join(sorted(reasons)) if reasons else None
         except asyncio.TimeoutError:
             return None
         finally:
