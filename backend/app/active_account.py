@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Optional
@@ -93,21 +94,31 @@ def account_dir(email: str) -> Path:
     return config.DATA_DIR / "db" / "acct" / _slug(email)
 
 
+# 계정 전환(포인터 쓰기)과 DB 복원(통째 교체)의 상호배제(R7 0-B, 코덱스 재확인 P1) —
+# 유지보수 게이트는 DB '연결'만 막고 set_active 는 참여하지 않아, 복원이 A 경로를 확정한
+# 사이 로그인 전환이 B 포인터를 쓰면 복원의 clear/롤백이 B 를 지우거나 A 스냅샷으로
+# 되덮을 수 있었다. 복원(_install_db)이 이 lock 을 게이트 밖에서 잡고, 전환·해제도 같은
+# lock 을 지나므로 두 흐름이 겹치지 않는다(RLock — 복원 내부의 clear_active 재진입 허용).
+transition_lock = threading.RLock()
+
+
 def set_active(email: str, uid: Optional[str] = None) -> None:
     """활성 계정 포인터 기록 — 로컬 프록시 로그인/전환 시 호출."""
-    payload = {"email": email, "uid": uid}
-    # 원자적 저장 — 반쯤 쓰이다 크래시하면 허브가 빈 계정 DB 를 읽는 사고를 막는다.
-    atomic_write_text(_POINTER, json.dumps(payload, ensure_ascii=False))
-    _cache[0], _cache[1] = True, payload
+    with transition_lock:
+        payload = {"email": email, "uid": uid}
+        # 원자적 저장 — 반쯤 쓰이다 크래시하면 허브가 빈 계정 DB 를 읽는 사고를 막는다.
+        atomic_write_text(_POINTER, json.dumps(payload, ensure_ascii=False))
+        _cache[0], _cache[1] = True, payload
 
 
 def clear_active() -> None:
     """로그아웃 — 포인터 제거(이후 get_db_path 는 레거시 단일 DB)."""
-    try:
-        _POINTER.unlink()
-    except OSError:
-        pass
-    _cache[0], _cache[1] = True, None
+    with transition_lock:
+        try:
+            _POINTER.unlink()
+        except OSError:
+            pass
+        _cache[0], _cache[1] = True, None
 
 
 def set_override(key: Optional[str]):

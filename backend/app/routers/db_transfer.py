@@ -172,14 +172,15 @@ def _post_install_security_init(path: Path) -> None:
 def _strict_clear_active() -> None:
     """활성 계정 포인터를 '확실히' 제거(R7 0-B) — 종전 clear_active 는 OSError 를 삼켜
     실패해도 성공 응답이 나갔다. 실패는 올려서 파일 보상 롤백이 돌게 한다."""
-    try:
-        active_account._POINTER.unlink(missing_ok=True)
-    except OSError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"가져오기 후 활성 계정 해제에 실패했습니다(교차 계정 보호를 위해 중단): {exc}",
-        ) from exc
-    active_account._cache[0], active_account._cache[1] = True, None
+    with active_account.transition_lock:  # RLock — _install_db 보유 중 재진입
+        try:
+            active_account._POINTER.unlink(missing_ok=True)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"가져오기 후 활성 계정 해제에 실패했습니다(교차 계정 보호를 위해 중단): {exc}",
+            ) from exc
+        active_account._cache[0], active_account._cache[1] = True, None
 
 
 def _install_db(
@@ -197,7 +198,10 @@ def _install_db(
     staged: Path | None = None
     staged_trash: Path | None = None
     try:
-        with db.maintenance_gate():
+        # ★계정 전환과의 상호배제(코덱스 재확인 P1) — 게이트는 DB 연결만 막으므로
+        # set_active 가 그 사이 끼면 경로·포인터 판정이 어긋난다. transition_lock 을
+        # 게이트보다 먼저 잡는다(전환은 게이트를 안 잡아 락 순서 역전 없음).
+        with active_account.transition_lock, db.maintenance_gate():
             # ★대상 경로·포인터 스냅샷도 게이트 '안'에서 확정(R7 0-B, 코덱스 P1) —
             # 게이트 전에 읽으면 계정 전환(set_active — 게이트 비참여)이 겹칠 때 설치
             # 대상 path 와 이후 단계가 보는 활성 DB 가 달라질 수 있다.

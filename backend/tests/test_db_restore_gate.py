@@ -288,6 +288,40 @@ class DbInstallSecurityInitTests(_DbGateHarness):
         with db.get_connection() as conn:
             self.assertEqual(self._marker(conn), "old")
 
+    def test_account_switch_waits_for_install_transition_lock(self):
+        """코덱스 재확인 P1 — 복원이 transition_lock 을 쥐는 동안 set_active 는 대기:
+        복원 중간에 끼어든 로그인 전환의 포인터를 clear/롤백이 지우는 순서가 불가능하다."""
+        from app import active_account
+
+        pointer = self.root / "active.json"
+        entered = threading.Event()
+        release = threading.Event()
+        switch_done = threading.Event()
+
+        def hold_lock():
+            with active_account.transition_lock:  # _install_db 와 같은 보유 방식
+                entered.set()
+                release.wait(2.0)
+
+        with mock.patch.object(active_account, "_POINTER", pointer):
+            holder = threading.Thread(target=hold_lock)
+            holder.start()
+            self.assertTrue(entered.wait(2.0))
+
+            def switch():
+                active_account.set_active("late@example.com")
+                switch_done.set()
+
+            switcher = threading.Thread(target=switch)
+            switcher.start()
+            self.assertFalse(switch_done.wait(0.15))  # 복원 보유 중엔 전환이 진행 못 함
+            release.set()
+            self.assertTrue(switch_done.wait(2.0))  # 해제 후에만 전환 완료
+            holder.join(timeout=2)
+            switcher.join(timeout=2)
+            self.assertTrue(pointer.is_file())
+            active_account.clear_active()
+
     def test_security_init_failure_rolls_back_files(self):
         self._set_marker(self.path, "old")
         incoming = self.root / "incoming.db"

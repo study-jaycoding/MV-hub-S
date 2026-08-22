@@ -17,7 +17,10 @@ async def to_thread_non_abandon(func, /, *args, **kwargs):
         return await asyncio.shield(worker)
     except asyncio.CancelledError:
         # 응답 task 취소는 보존하되, 스레드가 끝날 때까지 자원(임시파일·lock 구간)을
-        # 넘겨주지 않는다. 스레드의 예외는 취소 전파를 가리지 않게 삼킨다(취소가 우선).
-        with contextlib.suppress(Exception):
-            await worker
+        # 넘겨주지 않는다. ★대기 자체도 계속 shield(코덱스 재확인 P1) — 맨 await 로
+        # 기다리면 '반복 취소'가 worker 를 취소시켜 helper 가 스레드보다 먼저 반환했다.
+        # 스레드의 예외는 취소 전파를 가리지 않게 삼킨다(취소가 우선).
+        while not worker.done():
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.shield(worker)
         raise

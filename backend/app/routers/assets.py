@@ -768,12 +768,14 @@ async def upload_assets(
 
     saved: list[str] = []
     skipped: list[str] = []
+    commit_attempted = [False]
     try:
-        await _upload_files_loop(files, dest, proj_dir, saved, skipped)
+        await _upload_files_loop(files, dest, proj_dir, saved, skipped, commit_attempted)
     finally:
         # 취소로 루프가 중단돼도 이미 커밋된 파일이 트리에 반영되게(코덱스 P1) —
-        # 무효화는 멱등·저렴하고 watcher 이벤트와도 겹쳐 안전하다.
-        if saved:
+        # ★saved 가 아니라 '커밋 시도' 기준(재확인 P1): 커밋 스레드는 완주해 파일을
+        # 확정하지만 취소 전파로 saved.append 는 안 돌 수 있다. 무효화는 멱등·저렴.
+        if saved or commit_attempted[0]:
             asset_tree.invalidate_project_tree(proj_dir)
     return {"saved": saved, "skipped": skipped}
 
@@ -784,6 +786,7 @@ async def _upload_files_loop(
     proj_dir: Path,
     saved: list[str],
     skipped: list[str],
+    commit_attempted: list[bool],
 ) -> None:
     for up in files:
         raw = os.path.basename((up.filename or "").replace("\\", "/"))
@@ -805,6 +808,7 @@ async def _upload_files_loop(
             continue
         # 원자적 확정(hardlink/O_EXCL — 덮어쓰기·race 방지)도 스레드로(R7 2-G') —
         # non-abandon(코덱스 P1): 취소돼도 커밋 스레드 완료까지 대기.
+        commit_attempted[0] = True  # 취소돼도 finally 의 트리 무효화가 돌게 먼저 표시
         target = await to_thread_non_abandon(_commit_unique_tmp, tmp, dest, raw)
         saved.append(target.relative_to(proj_dir).as_posix())
 
