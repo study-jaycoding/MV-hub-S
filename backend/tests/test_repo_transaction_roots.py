@@ -179,6 +179,61 @@ def test_concurrent_first_registration_creates_exactly_one_admin(pooled_db):
     assert len(dup_errors) == 1 and isinstance(dup_errors[0], ValueError)
 
 
+def test_account_status_raw_and_registry_commit_atomically(pooled_db, monkeypatch):
+    """R6 2-E — 정상 보고(workspaces=list)는 raw JSON 과 registry 정규화가 전부 적용
+    또는 전부 롤백. 불완전 보고는 종전대로 raw-only 저장."""
+    from app.repo import identity
+
+    status = {
+        "credits": 10,
+        "workspaces": [
+            {"id": "ws-1", "name": "팀", "user_role": "member", "is_selected": True}
+        ],
+    }
+    # 후반(자동 편입) 실패 → raw 저장까지 함께 롤백돼야 한다(종전엔 raw 만 먼저 남았다)
+    import app.repo.project_membership as membership
+
+    def boom(conn, workspace_id, creator_uid):
+        raise RuntimeError("편입 실패")
+
+    monkeypatch.setattr(membership, "enroll_uid_into_workspace_projects", boom)
+    # creator_uid 가 있어야 enroll 경로에 진입한다
+    repo.register("worker@example.com", "password123")
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE account SET creator_uid='user_w1' WHERE email=?",
+            ("worker@example.com",),
+        )
+    with pytest.raises(RuntimeError):
+        identity.record_account_status("worker@example.com", status)
+    _assert_pool_connection_clean()
+    assert repo.get_setting("hf_status:worker@example.com") is None  # raw 도 롤백
+    with db.get_connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM workspace_member WHERE account_email=?",
+            ("worker@example.com",),
+        ).fetchone()[0] == 0
+
+    monkeypatch.setattr(
+        membership, "enroll_uid_into_workspace_projects", lambda *a, **k: 0
+    )
+    identity.record_account_status("worker@example.com", status)
+    assert repo.get_setting("hf_status:worker@example.com") is not None
+    with db.get_connection() as conn:
+        assert conn.execute(
+            "SELECT is_available FROM workspace_member WHERE account_email=?",
+            ("worker@example.com",),
+        ).fetchone()[0] == 1
+
+    # 불완전 보고(workspaces 없음) — raw-only 저장, 멤버십 불변(전부 unavailable 금지)
+    identity.record_account_status("worker@example.com", {"credits": 5})
+    with db.get_connection() as conn:
+        assert conn.execute(
+            "SELECT is_available FROM workspace_member WHERE account_email=?",
+            ("worker@example.com",),
+        ).fetchone()[0] == 1
+
+
 def test_new_indexes_exist_on_fresh_and_migrated_db(pooled_db):
     """1-G/1-K/1-L — 신규 DB(schema)와 기존 DB(_migrate 재실행) 양쪽에서 인덱스 보장."""
     expected = {

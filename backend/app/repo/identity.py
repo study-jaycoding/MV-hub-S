@@ -747,16 +747,26 @@ def record_account_status(email: str, status: dict[str, Any]) -> None:
     email = norm_email(email)
     if not email or not isinstance(status, dict):
         return
-    set_setting(f"hf_status:{email}", _json.dumps(status, ensure_ascii=False))
+    raw_payload = _json.dumps(status, ensure_ascii=False)
     workspaces = status.get("workspaces")
     if not isinstance(workspaces, list):
-        return  # 옛/불완전 보고가 기존 멤버십을 전부 unavailable로 만들지 않게 한다.
+        # 옛/불완전 보고 — raw 만 저장(기존 멤버십을 전부 unavailable로 만들지 않는다).
+        set_setting(f"hf_status:{email}", raw_payload)
+        return
     from .project_membership import enroll_uid_into_workspace_projects
 
     with get_connection() as conn:
         # autocommit 커넥션이라, 가용성 리셋~멤버 upsert~프로젝트 자동 편입을 한 트랜잭션으로 묶어
         # 중간 상태(전부 unavailable)가 다른 요청에 보이지 않게 한다(종료는 컨텍스트가 COMMIT/ROLLBACK).
+        # ★정상 보고(workspaces=list, 빈 list 포함)는 raw JSON 저장도 같은 트랜잭션 안(R6 2-E,
+        # 코덱스 계약) — 종전엔 raw 가 autocommit 으로 먼저 저장돼 후반 실패 시 두 표현이
+        # 어긋났다. set_setting() 호출 금지(내부 get_connection 중첩) — 같은 conn 직접 UPSERT.
         conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT INTO app_setting(key, value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (f"hf_status:{email}", raw_payload),
+        )
         account = conn.execute(
             "SELECT creator_uid FROM account WHERE email=?", (email,)
         ).fetchone()
