@@ -294,6 +294,41 @@ class DownloadViewStreamingTests(unittest.TestCase):
             worker.join(timeout=5)
             server.server_close()
 
+    def test_chunked_truncation_raises_comfy_error_and_preserves_destination(self):
+        """코덱스 재확인 잔여 — chunked 절단은 http.client.IncompleteRead 로 나타난다
+        (OSError 아님). ComfyError 로 변환돼야 호출부 오류 경로가 유지되고, dst 는 보존."""
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"  # chunked 는 1.1 필요
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                self.wfile.write(b"5\r\nabcde\r\n")  # 종료 청크(0) 없이 커넥션 종료
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.handle_request, daemon=True)
+        worker.start()
+        try:
+            with TemporaryDirectory() as d:
+                dst = Path(d) / "clip.mp4"
+                dst.write_bytes(b"previous-good")
+                with self.assertRaises(comfy_client.ComfyError):
+                    comfy_client.download_view(
+                        self._local_target(server.server_port),
+                        {"filename": "clip.mp4", "type": "output"},
+                        dst,
+                    )
+                self.assertEqual(dst.read_bytes(), b"previous-good")
+                self.assertEqual(list(dst.parent.glob("*.part")), [])
+        finally:
+            worker.join(timeout=5)
+            server.server_close()
+
     def test_failure_preserves_existing_destination_and_cleans_part(self):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):

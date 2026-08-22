@@ -6,6 +6,7 @@ urllib 로 이식한 것. 로컬/Cloud 를 target 기술자로 통일한다.
 주의: ComfyUI 는 보통 사설/로컬 IP(127.0.0.1:8188 등)라서 net_guard(사설망 차단)를
 일부러 통과하지 않는다 — 사용자가 설정에서 지정한 신뢰 호스트이기 때문.
 """
+import http.client
 import json
 import logging
 import mimetypes
@@ -573,7 +574,12 @@ def view_bytes(target: dict, params: dict) -> bytes:
     with _open_view_stream(target, params) as stream:
         try:
             return stream.read()
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            http.client.HTTPException,  # chunked 절단(IncompleteRead) 포함 — OSError 아님
+        ) as e:
             # helper 추출 전과 동일하게 읽기 오류도 ComfyError 로 변환(호출부 계약).
             raise ComfyError(f"출력물 다운로드 실패: {e}")
 
@@ -602,7 +608,12 @@ def download_view(target: dict, item: dict, dst: Path) -> None:
             expected = _content_length(stream)
             try:
                 shutil.copyfileobj(stream, out, length=1024 * 1024)
-            except (urllib.error.URLError, TimeoutError, OSError) as e:
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                OSError,
+                http.client.HTTPException,  # chunked 절단(IncompleteRead) 포함
+            ) as e:
                 raise ComfyError(f"출력물 다운로드 실패: {e}")
             copied = out.tell()
         if expected is not None and copied != expected:
