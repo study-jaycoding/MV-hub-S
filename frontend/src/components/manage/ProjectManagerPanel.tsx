@@ -1,7 +1,7 @@
 // 프로젝트 관리 패널 — 관리자 창의 '프로젝트' 탭을 이식한 오버레이. 프로젝트 생성/편집·렌더 폴더
 // 라벨링·멤버 프로젝트 역할 부여·보관/삭제·순서변경. 권한(create_project/grant_project_role)은
 // 백엔드가 강제하며 여기선 UI 노출만 게이팅한다. 대시보드 상단의 '+ 프로젝트'로 연다.
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { manageApi } from "../../lib/manageApi";
 import {
@@ -100,15 +100,25 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const loadProjects = () =>
-    api
+  // 보관/삭제/순서변경을 연타하면 먼저 보낸 목록 요청이 늦게 도착해 이미 반영된 최신 목록을
+  // 되돌린다 → 마지막 요청의 응답만 반영한다(중첩 요청도 같은 순번으로 판정).
+  const projectsReqRef = useRef(0);
+  const loadProjects = () => {
+    const my = ++projectsReqRef.current;
+    const isLatest = () => my === projectsReqRef.current;
+    return api
       .projects("team", true)
       .then((r) => {
+        if (!isLatest()) return;
         setProjects(r.projects);
-        api.allProjectMembers().then(setProjMembersMap).catch(() => {});
+        api
+          .allProjectMembers()
+          .then((m) => isLatest() && setProjMembersMap(m))
+          .catch(() => {});
         api
           .projectFolderLinks()
           .then((res) => {
+            if (!isLatest()) return;
             const next: Record<string, ProjectFolderEntry> = {};
             for (const [pid, link] of Object.entries(res.links || {})) {
               next[pid] = rememberProjectFolderLink(link);
@@ -129,7 +139,10 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
           })
           .catch(() => {});
       })
-      .catch(() => setProjects([]));
+      .catch(() => {
+        if (isLatest()) setProjects([]);
+      });
+  };
   useEffect(() => {
     api.members().then(setMembers).catch(() => {});
     api.workspaceOptions().then((r) => setWorkspaceOptions(r.workspaces || [])).catch(() => {});

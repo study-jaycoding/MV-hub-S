@@ -95,22 +95,33 @@ export function InfoPopup({
 
   // 크레딧 — 실제 사용값(generation_metrics.real_credits) 우선, 없으면 모델+옵션 견적(/api/cost) 폴백.
   // 소요시간(elapsed_seconds)도 metrics 에서 함께 받는다.
+  // 팝업은 카드가 바뀌어도 열린 채 대상만 갈아끼우므로, 이전 카드의 늦은 응답이 지금 카드
+  // 값으로 박힐 수 있다 → 마지막 대상의 응답만 반영한다(세 요청 모두 같은 순번 가드).
+  const infoSeqRef = useRef(0);
   useEffect(() => {
     if (target.kind !== "generation") return;
+    const my = ++infoSeqRef.current;
+    const isLatest = () => my === infoSeqRef.current;
     setCredits(null);
     setMetrics(null);
     setComfySub(null);
     const g = target.gen;
     if (g.model === "comfy") {
       // Comfy: 견적 API 는 단가가 없어 영영 안 끝난다 → 호출하지 않고 구독 정보를 조회한다.
-      api.comfySubscription().then(setComfySub).catch(() => setComfySub(null));
+      api
+        .comfySubscription()
+        .then((r) => isLatest() && setComfySub(r))
+        .catch(() => isLatest() && setComfySub(null));
     } else {
       api
         .estimateCost(g.model || "", (g.params || {}) as Record<string, unknown>, g.prompt)
-        .then((r) => setCredits(r.credits))
-        .catch(() => setCredits(null));
+        .then((r) => isLatest() && setCredits(r.credits))
+        .catch(() => isLatest() && setCredits(null));
     }
-    api.generationMetrics(g.id).then(setMetrics).catch(() => setMetrics(null));
+    api
+      .generationMetrics(g.id)
+      .then((m) => isLatest() && setMetrics(m))
+      .catch(() => isLatest() && setMetrics(null));
     setPreservation(g);
   }, [target]);
 

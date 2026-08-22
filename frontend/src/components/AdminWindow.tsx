@@ -188,11 +188,17 @@ export function AdminWindow({
   };
   useEscapeClose(onClose);
 
+  // 저장 중인 멤버 — 칩을 연타하면 낡은 value 로 만든 목록이 뒤에 도착해 먼저 준 역할을
+  // 지운다(PUT 이 전체 목록을 덮어쓰는 계약) → 응답이 올 때까지 그 멤버 칩을 잠근다.
+  const [roleBusyUid, setRoleBusyUid] = useState("");
   const changeMemberGlobalRoles = async (uid: string, roles: string[]) => {
+    setRoleBusyUid(uid);
     try {
       setMembers(await api.setMemberGlobalRoles(uid, roles));
     } catch (e) {
       alert("전역 역할 변경 실패: " + String(e));
+    } finally {
+      setRoleBusyUid("");
     }
   };
 
@@ -332,6 +338,7 @@ export function AdminWindow({
                   setMemberQuery={setMemberQuery}
                   shortUid={shortUid}
                   onChangeRoles={changeMemberGlobalRoles}
+                  busyUid={roleBusyUid}
                 />
               )}
             </>

@@ -14,9 +14,12 @@ export function memberRoleRank(roles: string[] | undefined): number {
 export function GlobalRolePicker({
   value,
   onChange,
+  disabled = false,
 }: {
   value: string[];
   onChange: (roles: string[]) => void;
+  // 저장 중 잠금 — 응답 전 다음 칩을 누르면 낡은 value 로 계산해 앞의 변경이 지워진다.
+  disabled?: boolean;
 }) {
   const has = (role: string) => value.includes(role);
   const toggle = (role: string) =>
@@ -29,6 +32,7 @@ export function GlobalRolePicker({
           type="button"
           className={"role-chip role-" + role + (has(role) ? " on" : "")}
           title={GLOBAL_ROLE_LABEL[role]}
+          disabled={disabled}
           onClick={() => toggle(role)}
         >
           {GLOBAL_ROLE_LABEL[role].split(" · ")[0]}

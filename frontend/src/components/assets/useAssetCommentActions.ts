@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { api } from "../../api";
 import { flashMsg } from "../../lib/flash";
@@ -18,12 +19,21 @@ export function useAssetCommentActions({
   setComments,
   reconcile,
 }: Params) {
+  // 마지막으로 연 파일 — 파일을 연달아 열면 이전 파일 응답이 늦게 도착해 새 제목 아래
+  // 남의 코멘트가 붙는다(연타 시 순서 역전). 목록을 비우고 최신 path 응답만 반영한다.
+  const openPathRef = useRef<string | null>(null);
   const openComments = (path: string) => {
     setCommentPath(path);
+    setComments([]);
+    openPathRef.current = path;
     api
       .assetComments(project, path)
-      .then(setComments)
-      .catch(() => setComments([]));
+      .then((c) => {
+        if (openPathRef.current === path) setComments(c);
+      })
+      .catch(() => {
+        if (openPathRef.current === path) setComments([]);
+      });
     api
       .markCommentsRead(project, path)
       .then(reconcile)

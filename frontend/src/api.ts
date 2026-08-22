@@ -725,11 +725,19 @@ export const api = {
     }),
   // 여러 카드의 코멘트 배지(수·미확인)만 배치로 가볍게 조회. 목록 전체 reload 없이 배지만
   // 주기 갱신할 때 쓴다(팀 코멘트 실시간 반영). 프록시 중이면 서버 스레드 기준으로 위임된다.
-  commentCounts: (genIds: string[]) =>
-    jsonFetch<Record<string, { comment_count: number; has_unread: boolean }>>(
-      `/api/generations/comment-counts`,
-      { method: "POST", body: jsonBody({ gen_ids: genIds }) },
-    ),
+  commentCounts: async (genIds: string[]) => {
+    // 서버 배치 상한(500)을 한 번이라도 넘기면 요청 전체가 422 로 거절돼 배지 폴이 영영 멈춘다
+    // (폴 쪽 catch 가 삼킴) → 상한 이하 조각으로 나눠 물어보고 응답을 다시 합친다.
+    const out: Record<string, { comment_count: number; has_unread: boolean }> = {};
+    for (const chunk of chunked(genIds)) {
+      const page = await jsonFetch<Record<string, { comment_count: number; has_unread: boolean }>>(
+        `/api/generations/comment-counts`,
+        { method: "POST", body: jsonBody({ gen_ids: chunk }) },
+      );
+      Object.assign(out, page);
+    }
+    return out;
+  },
 
   // 스포트라이트 @/# 피커: 소스를 이름(query) 또는 태그(tag)로 검색.
   // assetProject/assetDir 를 주면 에셋 파트 소스(그 폴더로 스코프)도 합류한다.

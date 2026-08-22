@@ -1,6 +1,6 @@
 // 생성본 코멘트 스레드 패널.
 // 저장/수정/삭제 API 는 생성본 전용으로 유지하고, 패널 UI 는 에셋 코멘트와 공통 컴포넌트를 사용한다.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { flashMsg } from "../lib/flash";
 import { makeStore } from "../lib/storage";
@@ -35,14 +35,20 @@ export function GenCommentPanel({
     true,
   );
 
+  // 패널은 카드가 바뀌어도 remount 되지 않으므로(아래 ★ 주석) 이전 카드의 늦은 응답이 지금 카드
+  // 코멘트를 덮어쓸 수 있다 → 마지막 요청만 화면에 반영한다. 전송/수정/삭제 후 refresh 도 같은 가드.
+  const seqRef = useRef(0);
   const refresh = useCallback(() => {
+    const my = ++seqRef.current;
     const cached = api.genCommentsCached(genId);
     if (cached) setComments(cached);
     return api
       .genComments(genId)
-      .then(setComments)
+      .then((c) => {
+        if (my === seqRef.current) setComments(c);
+      })
       .catch(() => {
-        if (!cached) setComments([]);
+        if (!cached && my === seqRef.current) setComments([]);
       });
   }, [genId]);
 
