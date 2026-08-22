@@ -371,7 +371,15 @@ export function DashboardView({
     reloadPromiseRef.current = request;
     return request;
   };
+  // 워크스페이스가 실제로 바뀔 때만 이전 공간 요약을 비운다 — 새 헤더 아래 이전 공간
+  // 프로젝트·수치가 남던 오표시 방지. 첫 마운트·주기 재조회는 유지해 깜빡이지 않게.
+  const summaryScopeRef = useRef(workspaceId);
   useEffect(() => {
+    if (summaryScopeRef.current !== workspaceId) {
+      summaryScopeRef.current = workspaceId;
+      setSummary(null);
+      setLoading(true);
+    }
     setSelectedPid(null);
     setSummaryPage(1);
     void reload();

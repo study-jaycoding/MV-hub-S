@@ -745,7 +745,11 @@ export function useSceneComfyExecution({
       );
       return;
     }
-    if (orchestratingRef.current) return;
+    if (orchestratingRef.current) {
+      // 다른 카드가 실행 중이면 클릭이 조용히 버려지던 문제 — 왜 안 되는지 알린다.
+      flashMsg("이 씬은 이미 생성 요청을 제출하고 있습니다.");
+      return;
+    }
     orchestratingRef.current = true;
     setComfyWaitingIds(new Set([generationId]));
     const sceneId = sceneIdRef.current;
@@ -790,7 +794,11 @@ export function useSceneComfyExecution({
   };
 
   const orchestrateRender = async (renderId: string) => {
-    if (orchestratingRef.current) return;
+    if (orchestratingRef.current) {
+      // 위와 동일 — 실행 중 뮤텍스에 막힌 Render 클릭을 무음으로 버리지 않는다.
+      flashMsg("이 씬은 이미 생성 요청을 제출하고 있습니다.");
+      return;
+    }
     orchestratingRef.current = true;
     const sceneId = sceneIdRef.current;
     try {

@@ -67,16 +67,27 @@ export function useAssetSelectionPersistence({
     });
   }, [files, setSelected]);
 
+  // 마퀴 드래그는 mousemove 마다 선택이 바뀌어 매번 동기 직렬화+localStorage 쓰기가 일어난다.
+  // 스크롤 위치 저장과 같은 150ms 지연으로 마지막 선택만 저장(pendingSaveRef = 언마운트 시 마무리).
+  const pendingSaveRef = useRef<(() => void) | null>(null);
   useEffect(() => {
-    try {
-      const items = [...selected]
-        .sort((a, b) => a - b)
-        .map((index) => files[index])
-        .filter((file) => file && (file.type === "image" || file.type === "video"))
-        .map((file) => ({ project, path: file.path, name: file.name, type: file.type }));
-      saveJSON(STORAGE_KEYS.assetsSelection, items);
-    } catch {
-      /* localStorage 불가 시 무시(드래그 페이로드 폴백) */
-    }
+    const save = () => {
+      pendingSaveRef.current = null;
+      try {
+        const items = [...selected]
+          .sort((a, b) => a - b)
+          .map((index) => files[index])
+          .filter((file) => file && (file.type === "image" || file.type === "video"))
+          .map((file) => ({ project, path: file.path, name: file.name, type: file.type }));
+        saveJSON(STORAGE_KEYS.assetsSelection, items);
+      } catch {
+        /* localStorage 불가 시 무시(드래그 페이로드 폴백) */
+      }
+    };
+    pendingSaveRef.current = save;
+    const timer = window.setTimeout(save, 150);
+    return () => window.clearTimeout(timer);
   }, [selected, files, project]);
+  // 언마운트로 타이머가 취소돼도 마지막 선택은 반드시 저장한다(다른 창의 드래그 페이로드 소스).
+  useEffect(() => () => pendingSaveRef.current?.(), []);
 }

@@ -3,9 +3,7 @@ import type { AssetMeta, AssetNode } from "../../types";
 import {
   assetBreadcrumb,
   collectAssetTags,
-  countAssetTypes,
   filterAssetFiles,
-  groupAssetsByDate,
   hasUnreadAssetMeta,
   isAssetSearchActive,
   type AssetSortDir,
@@ -53,7 +51,6 @@ export function useAssetViewData({
   });
 
   const hasAnyUnread = useMemo(() => hasUnreadAssetMeta(meta), [meta]);
-  const typeCounts = useMemo(() => countAssetTypes(tree), [tree]);
   const files = useMemo(
     () =>
       filterAssetFiles({
@@ -91,9 +88,8 @@ export function useAssetViewData({
       sortDir,
     ],
   );
-  const dateGroups = useMemo(() => groupAssetsByDate(files), [files]);
   const allTags = useMemo(() => collectAssetTags(meta), [meta]);
   const breadcrumb = assetBreadcrumb(dir);
 
-  return { allTags, breadcrumb, dateGroups, files, hasAnyUnread, searchActive, typeCounts };
+  return { allTags, breadcrumb, files, hasAnyUnread, searchActive };
 }

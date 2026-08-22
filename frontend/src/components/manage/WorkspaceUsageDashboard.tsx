@@ -445,13 +445,21 @@ export function WorkspaceUsageDashboard({
         // 구조 동일이면 이전 상태를 유지한다(실측 hotspot — 하위 렌더 40% 낭비 차단).
         setWorkspaces((prev) => reconcileArrayState(prev, items));
       })
-      .catch((reason) => active && setError(`사용량을 불러오지 못했습니다. ${String(reason)}`))
-      .finally(() => active && setLoading(false));
+      .catch((reason) => active && setError(`사용량을 불러오지 못했습니다. ${String(reason)}`));
+    // loading 은 overview 조회만 소유한다 — 가벼운 workspaces 응답이 먼저 와서 로딩을 끄면
+    // 아직 수치가 없는 빈 패널("팀 워크스페이스 없음")이 잠깐 떠 오안내가 된다.
     return () => { active = false; };
   }, [reloadSignal]);
 
+  // 워크스페이스가 실제로 바뀔 때만 이전 공간 수치를 비운다 — 헤더는 새 공간인데 표는
+  // 이전 공간이던 오표시 방지. 첫 마운트·30초 주기 재조회는 유지해 깜빡이지 않게.
+  const overviewScopeRef = useRef(workspaceId);
   useEffect(() => {
     let active = true;
+    if (overviewScopeRef.current !== workspaceId) {
+      overviewScopeRef.current = workspaceId;
+      setOverview(null);
+    }
     setLoading(true);
     setError("");
     manageApi.teamOverview({ workspaceId: workspaceId || undefined })
