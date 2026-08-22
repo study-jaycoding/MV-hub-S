@@ -399,15 +399,36 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
         # INSERT OR IGNORE 도 FK 위반은 못 무시해 복원 트랜잭션 전체가 롤백된다(복원 자체가 실패).
         # → 양 끝이 메인에 실재하는 엣지만 복원(나머지는 드롭하되 본체 복원은 진행). 상대를 나중에
         # 복원하면 그쪽 payload 에서 엣지가 재생성된다.
-        for l in p.get("history") or p.get("lineage") or []:
-            pid, cid = l.get("parent_gen_id"), l.get("child_gen_id")
-            if not pid or not cid:
-                continue
-            if (
-                conn.execute("SELECT 1 FROM generation WHERE id=?", (pid,)).fetchone()
-                and conn.execute("SELECT 1 FROM generation WHERE id=?", (cid,)).fetchone()
-            ):
-                _insert_row(conn, "history", l, or_ignore=True)
+        # endpoint 실재 확인은 엣지당 2 SELECT → 전체 endpoint chunked IN 1회(R6 2-J).
+        # generation 본체 삽입 뒤 같은 트랜잭션에서 조회(history 우선/lineage 폴백 유지).
+        edges = [
+            l
+            for l in (p.get("history") or p.get("lineage") or [])
+            if l.get("parent_gen_id") and l.get("child_gen_id")
+        ]
+        if edges:
+            endpoints = list(
+                dict.fromkeys(
+                    x
+                    for l in edges
+                    for x in (l["parent_gen_id"], l["child_gen_id"])
+                )
+            )
+            existing: set[str] = set()
+            for offset in range(0, len(endpoints), 900):
+                batch = endpoints[offset:offset + 900]
+                ph = ",".join("?" * len(batch))
+                existing.update(
+                    r["id"]
+                    for r in conn.execute(
+                        f"SELECT id FROM generation WHERE id IN ({ph})", batch
+                    ).fetchall()
+                )
+            for l in edges:
+                # 양 끝이 메인에 실재하는 엣지만(FK 보호 — 상대를 나중에 복원하면 그쪽
+                # payload 가 엣지를 재생성한다).
+                if l["parent_gen_id"] in existing and l["child_gen_id"] in existing:
+                    _insert_row(conn, "history", l, or_ignore=True)
         for c in p.get("comments", []):
             _insert_row(conn, "generation_comment", c, or_ignore=True)
         for rd in p.get("comment_reads", []):
