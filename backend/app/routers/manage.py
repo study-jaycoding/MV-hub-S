@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gzip
 import hashlib
 import json
@@ -1290,13 +1291,44 @@ def save_finals_status(project_id: str, request: Request):
     }
 
 
+# 프로젝트별 완료본 저장 직렬화(R7 2-E) — 같은 프로젝트 동시 요청이 둘 다 '목적지 없음'을
+# 보고 같은 원본을 중복 다운로드·복사한 뒤 둘 다 saved 로 보고하던 경합 제거(후발=skipped).
+# refcount 수거(R6 목적지 lock 동일): 대기 취소=refcount 만 감소, 보유 취소=release 후 감소,
+# 마지막 사용자가 레지스트리에서 제거. 레지스트리 갱신은 await 없는 동기 구간(단일 루프)만.
+# ★단일 프로세스·단일 이벤트 루프 계약 — 다중 워커/타 PC 의 NAS 경합까지는 못 막는다
+# (그건 종전처럼 고유 .part+원자 교체+멱등 skip 이 방어선).
+_SAVE_FINALS_LOCKS: dict[str, tuple[asyncio.Lock, int]] = {}
+
+
+@contextlib.asynccontextmanager
+async def _save_finals_lock(project_id: str):
+    entry = _SAVE_FINALS_LOCKS.get(project_id)
+    lock = entry[0] if entry else asyncio.Lock()
+    users = entry[1] if entry else 0
+    _SAVE_FINALS_LOCKS[project_id] = (lock, users + 1)
+    acquired = False
+    try:
+        await lock.acquire()
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            lock.release()
+        current, remaining = _SAVE_FINALS_LOCKS[project_id]
+        if remaining <= 1:
+            _SAVE_FINALS_LOCKS.pop(project_id, None)
+        else:
+            _SAVE_FINALS_LOCKS[project_id] = (current, remaining - 1)
+
+
 @router.post("/save-finals")
 async def save_finals(project_id: str, request: Request):
     """완료 작업의 최종본만 렌더 폴더 경로 구조 그대로 물리 저장(멱등).
     로컬 전용(_proxy 로컬 목록) — render_root 는 이 PC 의 디스크(Z:\\…).
     위임 모드: 대상은 서버 targets(판정 권위), 바이트는 content 스트림으로 받아 이 PC 가 저장."""
     _require_project_manage(request, project_id)
-    state = project_folders.render_root_state(project_id)
+    # 렌더 루트 판정(디스크·DB 접근)도 스레드로 — async 라우트 preflight 오프로드(R7 2-E).
+    state = await asyncio.to_thread(project_folders.render_root_state, project_id)
     if state.get("error"):
         raise HTTPException(status_code=400, detail=state["error"])
     render_path = state.get("render_path")
@@ -1304,8 +1336,13 @@ async def save_finals(project_id: str, request: Request):
         raise HTTPException(status_code=400, detail="렌더 폴더가 연결되지 않았습니다")
     render = Path(render_path)
 
+    async with _save_finals_lock(project_id):
+        return await _save_finals_locked(project_id, request, render)
+
+
+async def _save_finals_locked(project_id: str, request: Request, render: Path):
     if _proxy.proxying():
-        facts, server_outdated = _save_finals_facts(project_id)
+        facts, server_outdated = await asyncio.to_thread(_save_finals_facts, project_id)
         if server_outdated:
             raise HTTPException(
                 status_code=400,
@@ -1326,11 +1363,13 @@ async def save_finals(project_id: str, request: Request):
                 if dest is None:
                     errors.append({"gen_id": gen_id, "reason": "경로 안전성 위반(트래버설)"})
                     continue
-                if dest.exists():  # 멱등 — 이미 저장됨
-                    repo_manage.record_export(gen_id, str(dest), project_id)
+                if await asyncio.to_thread(dest.exists):  # 멱등 — 이미 저장됨(NAS stat 오프로드)
+                    await asyncio.to_thread(
+                        repo_manage.record_export, gen_id, str(dest), project_id
+                    )
                     skipped += 1
                     continue
-                dest.parent.mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
                 # NAS '같은 폴더'에 .part 로 받고 원자 교체 — 로컬 경로와 동일 규율.
                 tmp = dest.with_name(dest.name + f".{uuid.uuid4().hex}.part")
                 try:
@@ -1342,14 +1381,16 @@ async def save_finals(project_id: str, request: Request):
                     await asyncio.to_thread(
                         file_stamp.stamp_file, tmp, file_stamp.tags_for_generation(gen_id), dest.suffix
                     )
-                    os.replace(tmp, dest)
+                    await asyncio.to_thread(os.replace, tmp, dest)
                 except OSError:
                     try:
                         tmp.unlink(missing_ok=True)
                     except OSError:
                         pass
                     raise
-                repo_manage.record_export(gen_id, str(dest), project_id)
+                await asyncio.to_thread(
+                    repo_manage.record_export, gen_id, str(dest), project_id
+                )
                 saved += 1
             except HTTPException as e:  # stream_download 의 상태별 사유를 그대로 노출
                 errors.append({"gen_id": gen_id, "reason": str(e.detail)})
@@ -1357,7 +1398,7 @@ async def save_finals(project_id: str, request: Request):
                 errors.append({"gen_id": gen_id, "reason": str(e)})
         return {"saved": saved, "skipped": skipped, "errors": errors}
 
-    finals = final_export.finals_to_export(project_id)
+    finals = await asyncio.to_thread(final_export.finals_to_export, project_id)
     saved, skipped = 0, 0
     errors: list[dict[str, str]] = []
     for f in finals:
@@ -1378,8 +1419,10 @@ async def save_finals(project_id: str, request: Request):
                 errors.append({"gen_id": gen_id, "reason": "경로 안전성 위반(트래버설)"})
                 continue
             # 멱등: 목적지 파일이 이미 있으면 skip(사용자가 지웠으면 재복사 — 자기치유).
-            if dest.exists():
-                repo_manage.record_export(gen_id, str(dest), project_id)
+            if await asyncio.to_thread(dest.exists):  # NAS stat 오프로드(R7 2-E)
+                await asyncio.to_thread(
+                    repo_manage.record_export, gen_id, str(dest), project_id
+                )
                 skipped += 1
                 continue
             rel = await media_cache.cache_url(file_path)
@@ -1394,7 +1437,7 @@ async def save_finals(project_id: str, request: Request):
             if not src.exists():
                 errors.append({"gen_id": gen_id, "reason": "로컬 원본 없음"})
                 continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
             # 원자적 저장(코덱스 #2) — 임시 .part 로 복사 후 교체. 복사 중 크래시/드라이브 끊김이
             # 나도 불완전 파일이 목적지에 남아 영구 skip 되는 일이 없다.
             # 임시명에 uuid — 동시 실행/재실행 시 같은 .part 를 두 요청이 다투지 않게.
@@ -1405,14 +1448,16 @@ async def save_finals(project_id: str, request: Request):
                 await asyncio.to_thread(
                     file_stamp.stamp_file, tmp, file_stamp.tags_for_generation(gen_id), dest.suffix
                 )
-                os.replace(tmp, dest)
+                await asyncio.to_thread(os.replace, tmp, dest)
             except OSError:
                 try:
                     tmp.unlink(missing_ok=True)
                 except OSError:
                     pass
                 raise
-            repo_manage.record_export(gen_id, str(dest), project_id)
+            await asyncio.to_thread(
+                repo_manage.record_export, gen_id, str(dest), project_id
+            )
             saved += 1
         except Exception as e:  # noqa: BLE001 — 파일 1건 실패 격리(위 주석)
             errors.append({"gen_id": gen_id, "reason": str(e)})
