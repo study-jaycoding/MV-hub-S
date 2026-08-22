@@ -305,18 +305,23 @@ def shared_server_login(body: SharedLoginIn, request: Request):
     if status != 200 or not isinstance(resp, dict) or not resp.get("token"):
         raise HTTPException(status_code=400, detail=f"공유 서버 로그인 실패: {_flatten_detail(resp)}")
     acc = resp.get("account") or {}
-    # ★계정별 DB 로 전환 — 이후 set_setting 들이 이 계정 DB 에 기록된다(다른 계정과 격리).
-    _switch_account_db(body.email, acc.get("creator_uid"))
-    repo.set_setting(_K_URL, url)
-    repo.set_setting(_K_EMAIL, body.email)
-    repo.set_setting(_K_TOKEN, resp["token"])
-    repo.set_setting(_K_NAME, acc.get("name") or body.email)
-    repo.set_setting(_K_ROLES, json.dumps(acc.get("global_roles") or []))
-    _clear_elevation()  # 계정 전환 → 이전 사람의 임시 관리자 권한 해제(권한은 새로 로그인한 사람에게)
-    try:
-        repo.set_provider_name(acc.get("name") or body.email)
-    except Exception:  # noqa: BLE001
-        pass
+    # ★전환 '전체'(포인터→계정 DB 준비→세션 설정 저장)를 transition_lock 으로(코덱스
+    # 최종 P1) — 포인터 쓰기만 보호하면 그 직후 DB 복원이 끼어 계정 DB 준비와 설정
+    # 저장이 서로 다른 DB 로 갈렸다. lock 보유 중 열리는 커넥션은 컨텍스트 단위로 바로
+    # 닫혀 복원 게이트와 교착하지 않는다(복원은 이 lock 을 게이트보다 먼저 잡는다).
+    with active_account.transition_lock:
+        # 계정별 DB 로 전환 — 이후 set_setting 들이 이 계정 DB 에 기록된다(다른 계정과 격리).
+        _switch_account_db(body.email, acc.get("creator_uid"))
+        repo.set_setting(_K_URL, url)
+        repo.set_setting(_K_EMAIL, body.email)
+        repo.set_setting(_K_TOKEN, resp["token"])
+        repo.set_setting(_K_NAME, acc.get("name") or body.email)
+        repo.set_setting(_K_ROLES, json.dumps(acc.get("global_roles") or []))
+        _clear_elevation()  # 계정 전환 → 이전 사람의 임시 관리자 권한 해제(권한은 새로 로그인한 사람에게)
+        try:
+            repo.set_provider_name(acc.get("name") or body.email)
+        except Exception:  # noqa: BLE001
+            pass
     kick_share_state_reconciler()  # auth_required 원장을 새 토큰으로 즉시 재개
     return {"ok": True, "account": acc, **_shared_status()}
 
@@ -346,16 +351,17 @@ def shared_server_register(body: SharedRegisterIn, request: Request):
     acc = resp.get("account") or {}
     token = resp.get("token")
     if token:  # 첫 계정=admin 자동승인 → 바로 로그인 상태로 저장
-        _switch_account_db(body.email, acc.get("creator_uid"))  # 계정별 DB 로 전환
-        repo.set_setting(_K_URL, url)
-        repo.set_setting(_K_EMAIL, body.email)
-        repo.set_setting(_K_TOKEN, token)
-        repo.set_setting(_K_NAME, acc.get("name") or body.email)
-        repo.set_setting(_K_ROLES, json.dumps(acc.get("global_roles") or []))
-        try:
-            repo.set_provider_name(acc.get("name") or body.email)
-        except Exception:  # noqa: BLE001
-            pass
+        with active_account.transition_lock:  # 전환 전체 원자화(코덱스 최종 P1)
+            _switch_account_db(body.email, acc.get("creator_uid"))  # 계정별 DB 로 전환
+            repo.set_setting(_K_URL, url)
+            repo.set_setting(_K_EMAIL, body.email)
+            repo.set_setting(_K_TOKEN, token)
+            repo.set_setting(_K_NAME, acc.get("name") or body.email)
+            repo.set_setting(_K_ROLES, json.dumps(acc.get("global_roles") or []))
+            try:
+                repo.set_provider_name(acc.get("name") or body.email)
+            except Exception:  # noqa: BLE001
+                pass
         kick_share_state_reconciler()  # 첫 계정 자동 로그인도 대기 원장을 즉시 재개
     return {
         "ok": True,
@@ -370,26 +376,28 @@ def shared_server_register(body: SharedRegisterIn, request: Request):
 def shared_server_logout(request: Request):
     """로그아웃 — 토큰·신원·임시권한을 지운다. 서버 주소(_K_URL)는 유지(다음 로그인창이 그대로 쓰게)."""
     _require_local_shared_connection(request)
-    for k in (_K_TOKEN, _K_EMAIL, _K_NAME, _K_ROLES):
-        repo.set_setting(k, None)
-    _clear_elevation()  # 로그아웃 → 임시 관리자 권한도 해제
-    # ★활성 계정 포인터 해제 → 이후 읽기쓰기는 레거시 단일 DB(미로그인 상태). 다음 로그인이 다시 전환.
-    if not AUTH_ENABLED:
-        # 레거시 DB(리팩터 이전 단독 DB)에 옛 토큰이 남아 있으면 로그아웃 후에도 로그인된 것으로 보일 수
-        # 있다 → 레거시 토큰을 비운다. ★단, active 를 레거시로 전환(clear_active)한 '뒤'에 지우면 그 사이
-        # 창에서 다른 요청이 잔존 토큰으로 위임 모드를 오판한다 → 전환 '전에' 레거시 DB 를 직접 열어 비운다.
-        if db.DEFAULT_DB_PATH.exists():
-            try:
-                with db.get_connection(db_path=db.DEFAULT_DB_PATH) as conn:
-                    conn.execute(
-                        "INSERT INTO app_setting(key, value) VALUES(?, NULL) "
-                        "ON CONFLICT(key) DO UPDATE SET value=NULL",
-                        (_K_TOKEN,),
-                    )
-            except Exception:  # noqa: BLE001 — 레거시에 스키마/테이블 없으면 비울 토큰도 없음
-                pass
-        active_account.clear_active()
-        identity._MY_UID_CACHE[0] = None
+    # 설정 삭제~포인터 해제 전체를 transition_lock 으로(코덱스 최종 P1) — 복원과 교차 금지.
+    with active_account.transition_lock:
+        for k in (_K_TOKEN, _K_EMAIL, _K_NAME, _K_ROLES):
+            repo.set_setting(k, None)
+        _clear_elevation()  # 로그아웃 → 임시 관리자 권한도 해제
+        # ★활성 계정 포인터 해제 → 이후 읽기쓰기는 레거시 단일 DB(미로그인 상태). 다음 로그인이 다시 전환.
+        if not AUTH_ENABLED:
+            # 레거시 DB(리팩터 이전 단독 DB)에 옛 토큰이 남아 있으면 로그아웃 후에도 로그인된 것으로 보일 수
+            # 있다 → 레거시 토큰을 비운다. ★단, active 를 레거시로 전환(clear_active)한 '뒤'에 지우면 그 사이
+            # 창에서 다른 요청이 잔존 토큰으로 위임 모드를 오판한다 → 전환 '전에' 레거시 DB 를 직접 열어 비운다.
+            if db.DEFAULT_DB_PATH.exists():
+                try:
+                    with db.get_connection(db_path=db.DEFAULT_DB_PATH) as conn:
+                        conn.execute(
+                            "INSERT INTO app_setting(key, value) VALUES(?, NULL) "
+                            "ON CONFLICT(key) DO UPDATE SET value=NULL",
+                            (_K_TOKEN,),
+                        )
+                except Exception:  # noqa: BLE001 — 레거시에 스키마/테이블 없으면 비울 토큰도 없음
+                    pass
+            active_account.clear_active()  # RLock 재진입 — 같은 lock 보유 중
+            identity._MY_UID_CACHE[0] = None
     return {"ok": True, **_shared_status()}
 
 

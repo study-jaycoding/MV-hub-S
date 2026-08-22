@@ -322,6 +322,53 @@ class DbInstallSecurityInitTests(_DbGateHarness):
             self.assertTrue(pointer.is_file())
             active_account.clear_active()
 
+    def test_restore_cannot_interleave_with_login_switch(self):
+        """코덱스 최종 P1 — 로그인 전환 '전체'(포인터→DB 준비→설정 저장)가 진행 중이면
+        복원은 transition_lock 을 얻지 못한다(계정 DB 준비와 설정 저장이 다른 DB 로
+        갈리는 교차 차단)."""
+        from app import active_account
+        from app.routers import publish
+
+        pointer = self.root / "active.json"
+        in_switch = threading.Event()
+        release = threading.Event()
+
+        def slow_ensure(email, uid):
+            in_switch.set()  # set_active 완료 직후(종전 취약 창) — 여기서 복원이 끼면 안 된다
+            release.wait(2.0)
+
+        acquired: list[bool] = []
+        with (
+            mock.patch.object(active_account, "_POINTER", pointer),
+            mock.patch.object(publish, "AUTH_ENABLED", False),
+            mock.patch.object(publish.db, "ensure_account_db", side_effect=slow_ensure),
+            mock.patch.object(publish.agent_signals.agent_signals, "signal"),
+            mock.patch.object(publish, "_http_json", return_value=(200, {
+                "token": "t", "account": {"creator_uid": "user_x", "name": "n", "global_roles": []},
+            })),
+            mock.patch.object(publish, "kick_share_state_reconciler"),
+        ):
+            login = threading.Thread(
+                target=lambda: publish.shared_server_login(
+                    publish.SharedLoginIn(
+                        url="http://share.example.test", email="a@b.c", password="pw"
+                    ),
+                    mock.Mock(client=mock.Mock(host="127.0.0.1"), scope={"headers": []}),
+                )
+            )
+            login.start()
+            try:
+                self.assertTrue(in_switch.wait(2.0))
+                # 전환 진행 중(설정 저장 전) — 복원의 lock 획득이 막혀 있어야 한다
+                acquired.append(active_account.transition_lock.acquire(timeout=0.15))
+                if acquired[-1]:
+                    active_account.transition_lock.release()
+            finally:
+                release.set()
+                login.join(timeout=3)
+        self.assertEqual(acquired, [False])
+        active_account.clear_active()
+
     def test_security_init_failure_rolls_back_files(self):
         self._set_marker(self.path, "old")
         incoming = self.root / "incoming.db"
