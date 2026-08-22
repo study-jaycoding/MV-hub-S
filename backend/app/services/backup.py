@@ -466,7 +466,8 @@ class PeriodicBackup:
 
     async def _run(self) -> None:
         # NAS 파일 조회는 한 동기 helper로 묶어 poll당 to_thread 한 번만 사용한다.
-        src, backup_dir, _account_key = _capture_backup_scope()
+        scope = _capture_backup_scope()
+        src, backup_dir, _account_key = scope
         age, signature, backup_needed = await asyncio.to_thread(
             _read_poll_state,
             src,
@@ -474,9 +475,8 @@ class PeriodicBackup:
         )
         # 시작 백업: 최근 백업이 충분히 새것이면 생략(재기동 난립 방지).
         if age is None or age >= _STARTUP_SKIP_IF_YOUNGER:
-            await self._backup_once()
+            await self._backup_once(scope)
             # 성공·실패 뒤의 최신 백업 시각을 다시 읽어 기존 시작 시점 판단을 보존한다.
-            src, backup_dir, _account_key = _capture_backup_scope()
             age, signature, backup_needed = await asyncio.to_thread(
                 _read_poll_state,
                 src,
@@ -485,23 +485,31 @@ class PeriodicBackup:
         changed_at = time.monotonic() if backup_needed else None
         while True:
             await asyncio.sleep(min(60.0, BACKUP_POLL_INTERVAL))
-            src, backup_dir, _account_key = _capture_backup_scope()
-            age, current_signature, _backup_needed = await asyncio.to_thread(
+            current_scope = _capture_backup_scope()
+            src, backup_dir, _account_key = current_scope
+            age, current_signature, current_backup_needed = await asyncio.to_thread(
                 _read_poll_state,
                 src,
                 backup_dir,
             )
-            if current_signature != signature:
+            now = time.monotonic()
+            if current_scope != scope:
+                # 계정 전환 시 이전 계정의 dirty 시각을 버리고, 방금 읽은 새 계정 상태를
+                # 독립 기준선으로 삼는다. 새 계정이 실제 dirty면 debounce를 지금부터 센다.
+                scope = current_scope
                 signature = current_signature
-                changed_at = time.monotonic()
+                changed_at = now if current_backup_needed else None
+            elif current_signature != signature:
+                signature = current_signature
+                changed_at = now
             daily_due = age is None or age >= self._interval
             quiet_dirty_due = _change_backup_due(
                 changed_at,
                 age,
-                now=time.monotonic(),
+                now=now,
             )
             if daily_due or quiet_dirty_due:
-                succeeded = await self._backup_once()
+                succeeded = await self._backup_once(scope)
                 if succeeded:
                     # 백업 중 원본 DB를 쓰지 않으므로 방금 읽은 서명을 다음 비교 기준으로 재사용한다.
                     signature = current_signature
@@ -511,10 +519,16 @@ class PeriodicBackup:
                     # 무한히 유지할 이유도 없다. DB가 생기면 새 서명이 다시 변경을 알린다.
                     changed_at = None
 
-    async def _backup_once(self) -> bool:
+    async def _backup_once(
+        self,
+        scope: tuple[Path, Path, str] | None = None,
+    ) -> bool:
         """검증된 로컬 백업 경로가 생성된 경우에만 True를 반환한다."""
         try:
-            src, backup_dir, account_key = _capture_backup_scope()
+            # 스케줄러는 poll에서 캡처한 scope를 넘긴다. None은 직접 호출 호환 경로다.
+            src, backup_dir, account_key = (
+                _capture_backup_scope() if scope is None else scope
+            )
             account_token = active_account.set_override(account_key)
             try:
                 # 스레드가 백업 파일·콜백을 소유하는 동안 요청 취소가 와도 완료까지 기다린다.
