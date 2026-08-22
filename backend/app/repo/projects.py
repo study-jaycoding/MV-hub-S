@@ -495,6 +495,11 @@ def assign_to_project(
     if not generation_ids:
         return 0
     with get_connection() as conn:
+        # 검증(프로젝트 존재·워크스페이스 불일치)→UPDATE 를 한 쓰기락으로(R6 2-F) —
+        # 사이에 프로젝트 이동·삭제가 끼면 낡은 판정으로 귀속했다. BEGIN 은 프로젝트
+        # 조회 전에 연다(코덱스 계약). ★transaction-root 전용(중첩 호출 금지).
+        # 검증 실패(ValueError)·오류 시 컨텍스트가 ROLLBACK, 정상 종료 시 COMMIT 한다.
+        conn.execute("BEGIN IMMEDIATE")
         project = None
         if project_id is not None:
             project = conn.execute(
