@@ -744,17 +744,26 @@ async def upload_assets(
     """외부 파일을 현재 폴더(dir, 비면 프로젝트 루트)로 가져오기(드롭 업로드).
     파일명은 basename 만 사용(경로 traversal 차단), 미디어가 아닌 파일은 제외,
     이름 충돌은 _2, _3… 으로 회피(덮어쓰기 안 함)."""
-    proj_dir = _safe_project_dir(project, request)
-    if not proj_dir:
-        raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
-    # 합본(imp/cap)은 물리 폴더가 아니라 ASSETS_ROOT 뷰다. 루트(빈 dir)로 드롭하면 파일이 ASSETS_ROOT
-    #  최상위에 저장돼 합본 트리에 안 보이고 루트를 오염시킨다 → imports 폴더로 보낸다(외부 파일 버킷).
-    if project == _COMBINED_INTERNAL and not dir:
-        dir = _PROMPT_IMPORT_PROJECT
-    dest = _safe_project_resolve(project, proj_dir, dir) if dir else proj_dir
-    if not dest or not dest.is_dir():
-        raise HTTPException(status_code=400, detail="대상 폴더 없음")
-    _validate_upload_batch(files)
+    # SMB 경로 해석(_safe_project_dir — 죽은 NAS 는 최대 수십 초)·목적지 검사·배치 검증을
+    # 스레드로(R7 2-G') — async 라우트 위 동기 파일시스템 대기가 전체 요청을 세웠다.
+    def _resolve_destination() -> tuple[Path, Path]:
+        proj_dir_local = _safe_project_dir(project, request)
+        if not proj_dir_local:
+            raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
+        # 합본(imp/cap)은 물리 폴더가 아니라 ASSETS_ROOT 뷰다. 루트(빈 dir)로 드롭하면 파일이
+        # ASSETS_ROOT 최상위에 저장돼 합본 트리에 안 보이고 루트를 오염시킨다 → imports 폴더로.
+        nonlocal dir
+        if project == _COMBINED_INTERNAL and not dir:
+            dir = _PROMPT_IMPORT_PROJECT
+        dest_local = (
+            _safe_project_resolve(project, proj_dir_local, dir) if dir else proj_dir_local
+        )
+        if not dest_local or not dest_local.is_dir():
+            raise HTTPException(status_code=400, detail="대상 폴더 없음")
+        _validate_upload_batch(files)
+        return proj_dir_local, dest_local
+
+    proj_dir, dest = await asyncio.to_thread(_resolve_destination)
 
     saved: list[str] = []
     skipped: list[str] = []
@@ -776,7 +785,9 @@ async def upload_assets(
             tmp.unlink(missing_ok=True)
             skipped.append(raw)
             continue
-        target = _commit_unique_tmp(tmp, dest, raw)  # 원자적 확정(덮어쓰기·race 방지)
+        # 원자적 확정(hardlink/O_EXCL — 덮어쓰기·race 방지)도 스레드로(R7 2-G') —
+        # NAS 지연이 루프를 막지 않는다. to_thread 는 취소돼도 완료까지 대기(non-abandon).
+        target = await asyncio.to_thread(_commit_unique_tmp, tmp, dest, raw)
         saved.append(target.relative_to(proj_dir).as_posix())
 
     if saved:
