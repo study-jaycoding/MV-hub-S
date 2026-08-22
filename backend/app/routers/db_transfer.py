@@ -558,7 +558,9 @@ async def import_db(request: Request, file: UploadFile = File(...)):
                     target,
                     max_bytes=upload_limits.DB_UPLOAD_FILE_MAX_BYTES,
                 )
-            validate_hub_db(tmp)
+            # 검증(integrity 스캔)도 스레드로(R7 2-B) — DB 크기에 비례하는 동기 작업이
+            # async 라우트의 이벤트 루프를 막았다. 예외 매핑은 아래 기존 그대로.
+            await asyncio.to_thread(validate_hub_db, tmp)
         except HubDbValidationError as exc:
             _raise_validation_error(exc)
         except upload_limits.UploadLimitExceeded as exc:
@@ -577,7 +579,10 @@ async def import_db(request: Request, file: UploadFile = File(...)):
             ) from exc
 
         # 검증 통과 → 현재 활성 DB 로 통째 교체 + 보안 리셋(import/복원 공용 헬퍼).
-        return _install_db(tmp)
+        # 교체 전체(백업 복사·WAL checkpoint·파일 교체·마이그레이션·drain 대기)를
+        # 스레드로(R7 2-B) — 대형 DB 가져오기 중 다른 HTTP/WS 가 정지하지 않는다.
+        # to_thread 는 non-abandon: 취소돼도 스레드 완료까지 기다린 뒤 예외를 올린다.
+        return await asyncio.to_thread(_install_db, tmp)
     finally:
         try:
             tmp.unlink(missing_ok=True)
