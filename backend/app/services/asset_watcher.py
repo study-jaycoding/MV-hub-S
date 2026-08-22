@@ -41,6 +41,11 @@ _DEBOUNCE = 0.6  # 초 — 저장 중 쏟아지는 연속 이벤트를 한 번�
 # 네트워크 드라이브는 짧은 재인증·절전 해제에도 수 초간 is_dir=False가 될 수 있다.
 # 1→2→4→8초(상한)로 재확인하고 총 30초가 지나기 전에는 기존 핸들을 죽었다고 판정하지 않는다.
 _WATCH_HEALTH_INTERVAL = 1.0
+# 건강한(alive=True) 폴더의 identity stat 주기(R5 2-H) — 종전엔 매 사이클(1s) 전 감시
+# 폴더에 stat 을 날려 NAS 상시 트래픽이었다. emitter 생존 확인(저렴)은 1s 유지하고,
+# ★alive=False·recovery 중·root-lost·미등록 핸들은 즉시 stat(감지 지연=이벤트 영구
+# 누락 위험이라 완화 금지, 코덱스 계약).
+_HEALTHY_IDENTITY_INTERVAL = 5.0
 _MISSING_RETRY_INITIAL = 1.0
 _MISSING_RETRY_MAX = 8.0
 _MISSING_GRACE = 30.0
@@ -59,6 +64,7 @@ class _WatchState:
     generation: int
     identity: tuple[int, int] | None = None
     scheduling: bool = False
+    identity_checked_at: float = 0.0  # 마지막 identity stat 시각(monotonic, R5 2-H)
 
 
 @dataclass
@@ -465,6 +471,7 @@ class _Watcher:
             else:
                 state.handle = handle
                 state.identity = identity
+                state.identity_checked_at = time.monotonic()  # 방금 확인분(R5 2-H)
                 state.scheduling = False
         self._unschedule(observer, discard_handle)
 
@@ -519,7 +526,14 @@ class _Watcher:
                     return
                 now = time.monotonic()
                 candidates = [
-                    (dir_key, state.generation, state.handle, state.identity)
+                    (
+                        dir_key,
+                        state.generation,
+                        state.handle,
+                        state.identity,
+                        state.identity_checked_at,
+                        dir_key in self._recoveries,
+                    )
                     for dir_key, state in self._watches.items()
                     if dir_key in self._registrations_by_dir
                     and not state.scheduling
@@ -531,10 +545,30 @@ class _Watcher:
 
             # NAS의 is_dir가 느려도 이벤트/등록 락을 막지 않도록 파일시스템 확인은 락 밖에서 한다.
             emitter_map = _emitter_map(observer) if candidates else None
-            for dir_key, generation, handle, watched_identity in candidates:
-                current_identity = _directory_identity(dir_key)
-                available = current_identity is not None
+            for (
+                dir_key,
+                generation,
+                handle,
+                watched_identity,
+                identity_checked_at,
+                recovering,
+            ) in candidates:
                 alive = _watch_handle_alive(handle, emitter_map)
+                # ★alive=True 로 '확인된 건강'만 5s cadence 대상(R5 2-H, 코덱스 계약).
+                # alive=None(emitter 정보 없음)은 경로 확인이 유일한 신호라 매 사이클
+                # stat 하고, alive=False·recovery·핸들 없음은 즉시 확인해야 이벤트 영구
+                # 누락을 막는다.
+                identity_checked = (
+                    alive is not True
+                    or recovering
+                    or handle is None
+                    or now - identity_checked_at >= _HEALTHY_IDENTITY_INTERVAL
+                )
+                if identity_checked:
+                    current_identity = _directory_identity(dir_key)
+                else:
+                    current_identity = watched_identity  # 주기 밖 — 변화 없음으로 간주
+                available = current_identity is not None
                 old_handle = None
                 schedule_generation = None
                 with self._lock:
@@ -549,6 +583,8 @@ class _Watcher:
                         or state.scheduling
                     ):
                         continue
+                    if identity_checked:
+                        state.identity_checked_at = now  # 실제 stat 한 사이클만 갱신
                     recovery = self._recoveries.get(dir_key)
 
                     if not available:

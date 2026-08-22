@@ -218,6 +218,46 @@ class AssetWatcherTests(unittest.TestCase):
         self.assertIsNotNone(watcher._watches[key].handle)
         self.assertEqual(watcher._watches[key].identity, (1, 2))
 
+    def test_healthy_watch_skips_identity_stat_until_interval(self):
+        """R5 2-H — 건강(alive=True)한 감시는 5s cadence 밖에서 identity stat 을 생략,
+        주기 도래·alive=False 는 stat 한다(이상 신호 즉시 확인은 완화 금지 계약)."""
+        watcher = asset_watcher._Watcher()
+        watcher._observer = _FakeObserver()
+        watcher._registrations_by_dir["K"] = {
+            "r": asset_watcher._Registration("p", False)
+        }
+        handle = object()
+        state = asset_watcher._WatchState(handle, 1, identity=(1, 2))
+        watcher._watches["K"] = state
+        stats: list[str] = []
+
+        def counting_identity(key):
+            stats.append(key)
+            return (1, 2)
+
+        state.identity_checked_at = monotonic()  # 방금 확인됨
+        with patch.object(
+            asset_watcher, "_directory_identity", side_effect=counting_identity
+        ), patch.object(asset_watcher, "_watch_handle_alive", return_value=True):
+            watcher._health_check()
+        self.assertEqual(stats, [])  # 건강 + 주기 안 → stat 생략
+
+        state.identity_checked_at = monotonic() - 10.0  # 주기 경과
+        with patch.object(
+            asset_watcher, "_directory_identity", side_effect=counting_identity
+        ), patch.object(asset_watcher, "_watch_handle_alive", return_value=True):
+            watcher._health_check()
+        self.assertEqual(stats, ["K"])  # 주기 도래 → stat + checked_at 갱신
+        self.assertGreater(state.identity_checked_at, monotonic() - 5.0)
+
+        stats.clear()
+        state.identity_checked_at = monotonic()  # 주기 안이지만 이상 신호
+        with patch.object(
+            asset_watcher, "_directory_identity", side_effect=counting_identity
+        ), patch.object(asset_watcher, "_watch_handle_alive", return_value=False):
+            watcher._health_check()
+        self.assertEqual(stats, ["K"])  # alive=False → 즉시 stat(완화 금지)
+
     def test_nas_transient_missing_waits_for_grace_then_recovers(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
