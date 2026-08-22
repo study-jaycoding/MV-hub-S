@@ -161,7 +161,7 @@ class FinalExportPolicyTests(unittest.TestCase):
         self.assertIsNotNone(result)
         lane_sql = "\n".join(statements)
         self.assertIn("AND gen_id IN", lane_sql)  # 수동 링크 레인 제한
-        self.assertIn("AND id IN", lane_sql)      # 폴더 레인 제한
+        self.assertIn("AND g.id IN", lane_sql)    # 폴더 레인 제한(R6 2-C 별칭 반영)
         # 전체 폴더 GROUP BY(프로젝트 전수)가 아니라 대상 폴더 제한 sync 만 돈다.
         group_by_stmts = [s for s in statements if "GROUP BY g.project_id, g.folder_path" in s]
         self.assertTrue(all("g.folder_path IN (" in s for s in group_by_stmts))
