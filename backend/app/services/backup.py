@@ -501,23 +501,30 @@ class PeriodicBackup:
                 now=time.monotonic(),
             )
             if daily_due or quiet_dirty_due:
-                await self._backup_once()
-                # 백업 중 원본 DB를 쓰지 않으므로 방금 읽은 서명을 다음 비교 기준으로 재사용한다.
-                signature = current_signature
-                changed_at = None
+                succeeded = await self._backup_once()
+                if succeeded:
+                    # 백업 중 원본 DB를 쓰지 않으므로 방금 읽은 서명을 다음 비교 기준으로 재사용한다.
+                    signature = current_signature
+                    changed_at = None
+                elif not current_signature:
+                    # 초기화 전이거나 제거된 DB는 성공이 아니지만, 사라진 대상의 dirty를
+                    # 무한히 유지할 이유도 없다. DB가 생기면 새 서명이 다시 변경을 알린다.
+                    changed_at = None
 
-    async def _backup_once(self) -> None:
+    async def _backup_once(self) -> bool:
+        """검증된 로컬 백업 경로가 생성된 경우에만 True를 반환한다."""
         try:
             src, backup_dir, account_key = _capture_backup_scope()
             account_token = active_account.set_override(account_key)
             try:
                 # 스레드가 백업 파일·콜백을 소유하는 동안 요청 취소가 와도 완료까지 기다린다.
-                await to_thread_non_abandon(
+                path = await to_thread_non_abandon(
                     _run_backup_cycle,
                     src,
                     backup_dir,
                     self._completed_callback,
                 )
+                return path is not None
             finally:
                 active_account.reset_override(account_token)
         except asyncio.CancelledError:
@@ -525,6 +532,7 @@ class PeriodicBackup:
         except Exception as e:  # noqa: BLE001 — 워커가 죽지 않도록 격리
             log_event(_backup_log, "backup_failed", level=logging.ERROR, exc_info=True)
             print(f"[backup] 오류({type(e).__name__}) — MV_logs.bat에서 상세 확인")
+            return False
 
 
 periodic_backup = PeriodicBackup()
