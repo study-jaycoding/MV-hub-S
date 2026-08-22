@@ -593,39 +593,31 @@ def idempotent_placeholder_is_resumable(
     kind: str,
     source_gen_id: Optional[str] = None,
 ) -> bool:
-    """같은 일반 요청 예약의 반쯤 만들어진 placeholder만 이어갈 수 있게 확인한다."""
+    """같은 일반 요청 예약의 반쯤 만들어진 placeholder만 이어갈 수 있게 확인한다.
+    판정 조건 전체를 JOIN+NOT EXISTS 한 SELECT 로(R6 2-B) — 종전 3~4 SELECT 와 동일
+    진리표(코덱스 확정): 요청 preparing 정확 일치·creator(None 이면 생략)·origin=local·
+    pending·job_id 없음·타요청 없음(제외키=현재 요청 id)·regenerate 만 lineage."""
+    sql = (
+        "SELECT 1 FROM gen_request r JOIN generation g ON g.id = r.gen_id "
+        "WHERE r.account_email=? AND r.idempotency_key=? AND r.gen_id=? AND r.kind=? "
+        "AND r.status='preparing' "
+        "AND (? IS NULL OR g.creator_uid=?) "
+        "AND g.origin='local' AND g.status='pending' "
+        "AND (g.job_id IS NULL OR g.job_id='') "
+        "AND NOT EXISTS(SELECT 1 FROM gen_request o WHERE o.gen_id=r.gen_id AND o.id<>r.id) "
+    )
+    params: list[Any] = [
+        norm_email(account_email), idempotency_key, gen_id, kind,
+        creator_uid, creator_uid,
+    ]
+    if kind == "regenerate":
+        sql += (
+            "AND EXISTS(SELECT 1 FROM history h WHERE h.parent_gen_id=? "
+            "AND h.child_gen_id=? AND h.relation='derived') "
+        )
+        params += [source_gen_id, gen_id]
     with get_connection() as conn:
-        request = conn.execute(
-            "SELECT id FROM gen_request WHERE account_email=? AND idempotency_key=? "
-            "AND gen_id=? AND kind=? AND status='preparing' LIMIT 1",
-            (norm_email(account_email), idempotency_key, gen_id, kind),
-        ).fetchone()
-        generation = conn.execute(
-            "SELECT creator_uid, origin, status, job_id FROM generation WHERE id=?",
-            (gen_id,),
-        ).fetchone()
-        other_request = conn.execute(
-            "SELECT 1 FROM gen_request WHERE gen_id=? AND id<>? LIMIT 1",
-            (gen_id, request["id"] if request else ""),
-        ).fetchone()
-        if not (
-            request
-            and generation
-            and (creator_uid is None or generation["creator_uid"] == creator_uid)
-            and generation["origin"] == "local"
-            and generation["status"] == "pending"
-            and not generation["job_id"]
-            and not other_request
-        ):
-            return False
-        if kind != "regenerate":
-            return True
-        lineage = conn.execute(
-            "SELECT 1 FROM history WHERE parent_gen_id=? AND child_gen_id=? "
-            "AND relation='derived' LIMIT 1",
-            (source_gen_id, gen_id),
-        ).fetchone()
-        return bool(lineage)
+        return conn.execute(sql + "LIMIT 1", params).fetchone() is not None
 
 
 def create_gen_request(
@@ -781,41 +773,33 @@ def canvas_placeholder_is_resumable(
     kind: str,
     source_gen_id: Optional[str] = None,
 ) -> bool:
-    """예약과 같은 placeholder를 중단 지점부터 이어도 안전한지 확인한다."""
+    """예약과 같은 placeholder를 중단 지점부터 이어도 안전한지 확인한다.
+    판정 조건 전체를 한 SELECT 로(R6 2-B) — 일반형과 같은 진리표에 canvas_attempt_id
+    일치를 더하고, 타요청 제외키는 현행 그대로 (account_email, canvas_attempt_id) 쌍."""
     email = norm_email(account_email)
+    sql = (
+        "SELECT 1 FROM gen_request r JOIN generation g ON g.id = r.gen_id "
+        "WHERE r.account_email=? AND r.canvas_attempt_id=? AND r.gen_id=? AND r.kind=? "
+        "AND r.status='preparing' "
+        "AND (? IS NULL OR g.creator_uid=?) "
+        "AND g.origin='local' AND g.status='pending' "
+        "AND (g.job_id IS NULL OR g.job_id='') "
+        "AND NOT EXISTS(SELECT 1 FROM gen_request o WHERE o.gen_id=r.gen_id "
+        "AND NOT (o.account_email=? AND o.canvas_attempt_id=?)) "
+    )
+    params: list[Any] = [
+        email, canvas_link["attempt_id"], canvas_link["generation_id"], kind,
+        creator_uid, creator_uid,
+        email, canvas_link["attempt_id"],
+    ]
+    if kind == "regenerate":
+        sql += (
+            "AND EXISTS(SELECT 1 FROM history h WHERE h.parent_gen_id=? "
+            "AND h.child_gen_id=? AND h.relation='derived') "
+        )
+        params += [source_gen_id, canvas_link["generation_id"]]
     with get_connection() as conn:
-        request = conn.execute(
-            "SELECT id FROM gen_request WHERE account_email=? AND canvas_attempt_id=? "
-            "AND gen_id=? AND kind=? AND status='preparing' LIMIT 1",
-            (email, canvas_link["attempt_id"], canvas_link["generation_id"], kind),
-        ).fetchone()
-        generation = conn.execute(
-            "SELECT creator_uid, origin, status, job_id FROM generation WHERE id=?",
-            (canvas_link["generation_id"],),
-        ).fetchone()
-        other_request = conn.execute(
-            "SELECT 1 FROM gen_request WHERE gen_id=? AND NOT "
-            "(account_email=? AND canvas_attempt_id=?) LIMIT 1",
-            (canvas_link["generation_id"], email, canvas_link["attempt_id"]),
-        ).fetchone()
-        if not (
-            request
-            and generation
-            and (creator_uid is None or generation["creator_uid"] == creator_uid)
-            and generation["origin"] == "local"
-            and generation["status"] == "pending"
-            and not generation["job_id"]
-            and not other_request
-        ):
-            return False
-        if kind != "regenerate":
-            return True
-        lineage = conn.execute(
-            "SELECT 1 FROM history WHERE parent_gen_id=? AND child_gen_id=? "
-            "AND relation='derived' LIMIT 1",
-            (source_gen_id, canvas_link["generation_id"]),
-        ).fetchone()
-        return bool(lineage)
+        return conn.execute(sql + "LIMIT 1", params).fetchone() is not None
 
 
 def delete_canvas_gen_request_reservation(

@@ -293,6 +293,96 @@ def test_reconcile_duplicates_merges_only_well_formed_groups(pooled_db):
         assert alive(extra_local) is not None and alive(ext_synced) is not None  # 유실 방지
 
 
+def _seed_placeholder(email: str, key: str, kind: str = "create"):
+    """preparing 요청 + local pending placeholder 를 만든다(재개 가능 기본형)."""
+    gen_id = repo.create_local_generation({"model": "m", "prompt": "p"}, "me")
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE generation SET origin='local', status='pending', job_id=NULL WHERE id=?",
+            (gen_id,),
+        )
+        owner = conn.execute(
+            "SELECT creator_uid FROM generation WHERE id=?", (gen_id,)
+        ).fetchone()["creator_uid"]
+        conn.execute(
+            "INSERT INTO gen_request(id, account_email, gen_id, kind, status, idempotency_key, payload) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (f"req-{gen_id}", email, gen_id, kind, "preparing", key, "{}"),
+        )
+    return gen_id, owner
+
+
+@pytest.mark.parametrize(
+    "mutate, expected",
+    [
+        (None, True),  # 기본형 — 재개 가능
+        ("request_gone", False),
+        ("wrong_status_generation", False),
+        ("origin_synced", False),
+        ("job_id_set", False),
+        ("other_request", False),
+        ("creator_mismatch", False),
+    ],
+    ids=[
+        "base",
+        "no-preparing-request",
+        "generation-not-pending",
+        "origin-synced",
+        "job-anchored",
+        "other-request-exists",
+        "creator-mismatch",
+    ],
+)
+def test_idempotent_placeholder_resume_truth_table(pooled_db, mutate, expected):
+    """R6 2-B(코덱스 필수) — 3~4 SELECT→1 SELECT 통합 후에도 판정 진리표 동일."""
+    gen_id, owner = _seed_placeholder("w@example.com", "key-1")
+    creator = owner
+    with db.get_connection() as conn:
+        if mutate == "request_gone":
+            conn.execute("UPDATE gen_request SET status='pending' WHERE gen_id=?", (gen_id,))
+        elif mutate == "wrong_status_generation":
+            conn.execute("UPDATE generation SET status='running' WHERE id=?", (gen_id,))
+        elif mutate == "origin_synced":
+            conn.execute("UPDATE generation SET origin='synced' WHERE id=?", (gen_id,))
+        elif mutate == "job_id_set":
+            conn.execute("UPDATE generation SET job_id='job-x' WHERE id=?", (gen_id,))
+        elif mutate == "other_request":
+            conn.execute(
+                "INSERT INTO gen_request(id, account_email, gen_id, kind, status, payload) "
+                "VALUES('req-other','w@example.com',?,?,'pending','{}')",
+                (gen_id, "create"),
+            )
+        elif mutate == "creator_mismatch":
+            creator = "다른사람"
+    assert (
+        repo.idempotent_placeholder_is_resumable(
+            "w@example.com", creator, "key-1", gen_id, "create"
+        )
+        is expected
+    )
+    # creator=None 이면 소유자 검사 생략(계약) — creator 불일치 케이스만 True 로 뒤집힘
+    if mutate == "creator_mismatch":
+        assert repo.idempotent_placeholder_is_resumable(
+            "w@example.com", None, "key-1", gen_id, "create"
+        ) is True
+
+
+def test_regenerate_resume_requires_derived_lineage(pooled_db):
+    gen_id, owner = _seed_placeholder("w@example.com", "key-r", kind="regenerate")
+    source_id = repo.create_local_generation({"model": "m", "prompt": "src"}, "me")
+    assert repo.idempotent_placeholder_is_resumable(
+        "w@example.com", owner, "key-r", gen_id, "regenerate", source_id
+    ) is False  # lineage 없음
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO history(parent_gen_id, child_gen_id, relation) VALUES(?,?,'derived')",
+            (source_id, gen_id),
+        )
+    assert repo.idempotent_placeholder_is_resumable(
+        "w@example.com", owner, "key-r", gen_id, "regenerate", source_id
+    ) is True
+
+
 def test_new_indexes_exist_on_fresh_and_migrated_db(pooled_db):
     """1-G/1-K/1-L — 신규 DB(schema)와 기존 DB(_migrate 재실행) 양쪽에서 인덱스 보장."""
     expected = {
