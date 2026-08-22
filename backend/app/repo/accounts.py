@@ -69,24 +69,36 @@ def register(email: str, password: str, name: Optional[str] = None) -> dict[str,
         raise ValueError("올바른 이메일이 필요합니다")
     if not password or len(password) < 6:
         raise ValueError("비밀번호는 6자 이상이어야 합니다")
+    # 해시는 잠금 전 계산(느린 pbkdf2 를 쓰기락 밖으로 — 코덱스 계약).
+    password_hash = auth.hash_password(password)
     with get_connection() as conn:
-        if conn.execute("SELECT 1 FROM account WHERE email=?", (email,)).fetchone():
-            raise ValueError("이미 등록된 이메일입니다")
-        first = conn.execute("SELECT COUNT(*) c FROM account").fetchone()["c"] == 0
-        status = "approved" if first else "pending"  # 첫 계정 = 부트스트랩 관리자
-        # 첫 계정(소유자)은 admin + product_manager 둘 다 — 사람 관리와 프로젝트 생성·관리를
-        # 처음부터 할 수 있게(둘을 분리해 둔 탓에 admin 단독이면 프로젝트를 못 만드는 데드락 방지).
-        global_role = f"{rbac.ADMIN},{rbac.PRODUCT_MANAGER}" if first else rbac.MEMBER
-        # approved 면 approved_at 을 같은 INSERT 로 — 별도 UPDATE 2단계는 중간 크래시 시
-        # approved 인데 approved_at NULL 인 반쪽 상태를 남긴다(ensure_admin_account 와 패턴 통일).
-        approved_at = "datetime('now')" if first else "NULL"
-        conn.execute(
-            f"INSERT INTO account(email, name, password_hash, status, global_role, approved_at) "
-            f"VALUES(?,?,?,?,?,{approved_at})",
-            (email, (name or "").strip() or None, auth.hash_password(password), status, global_role),
-        )
-        account = _row(conn, email)
-    _link_accounts_to_creators()
+        # 존재·최초 count·INSERT 를 한 쓰기락으로(R6 2-A) — 종전엔 동시 최초 가입 둘 다
+        # count=0 을 보고 관리자 2명이 되거나, 같은 이메일 동시 가입이 ValueError 대신
+        # IntegrityError 로 새는 경합이 있었다. ★transaction-root 전용(중첩 호출 금지).
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if conn.execute("SELECT 1 FROM account WHERE email=?", (email,)).fetchone():
+                raise ValueError("이미 등록된 이메일입니다")
+            # first = 필터 없는 전체 count(hidden·pending·rejected 포함) — 코덱스 확정 규칙.
+            first = conn.execute("SELECT COUNT(*) c FROM account").fetchone()["c"] == 0
+            status = "approved" if first else "pending"  # 첫 계정 = 부트스트랩 관리자
+            # 첫 계정(소유자)은 admin + product_manager 둘 다 — 사람 관리와 프로젝트 생성·관리를
+            # 처음부터 할 수 있게(둘을 분리해 둔 탓에 admin 단독이면 프로젝트를 못 만드는 데드락 방지).
+            global_role = f"{rbac.ADMIN},{rbac.PRODUCT_MANAGER}" if first else rbac.MEMBER
+            # approved 면 approved_at 을 같은 INSERT 로 — 별도 UPDATE 2단계는 중간 크래시 시
+            # approved 인데 approved_at NULL 인 반쪽 상태를 남긴다(ensure_admin_account 와 패턴 통일).
+            approved_at = "datetime('now')" if first else "NULL"
+            conn.execute(
+                f"INSERT INTO account(email, name, password_hash, status, global_role, approved_at) "
+                f"VALUES(?,?,?,?,?,{approved_at})",
+                (email, (name or "").strip() or None, password_hash, status, global_role),
+            )
+            account = _row(conn, email)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    _link_accounts_to_creators()  # COMMIT 뒤 별도 단계(계약 유지)
     return get_account(email) or account
 
 
@@ -97,20 +109,30 @@ def ensure_admin_account(email: str, password: str) -> bool:
     email = norm_email(email)
     if not email or "@" not in email or not password or len(password) < 6:
         return False
+    password_hash = auth.hash_password(password)  # 느린 해시는 잠금 밖(R6 2-A)
     with get_connection() as conn:
-        if conn.execute("SELECT 1 FROM account WHERE email=?", (email,)).fetchone():
-            return False  # 이미 있음 — 보존
-        conn.execute(
-            "INSERT INTO account(email, name, password_hash, status, global_role, approved_at) "
-            "VALUES(?,?,?,?,?,datetime('now'))",
-            (
-                email,
-                "admin",
-                auth.hash_password(password),
-                "approved",
-                f"{rbac.ADMIN},{rbac.PRODUCT_MANAGER}",
-            ),
-        )
+        # 존재 확인~INSERT 직렬화(R6 2-A). ★count 규칙 미적용(코덱스) — bootstrap admin 은
+        # 기존 계정 수와 무관하게 없으면 approved 로 만든다. transaction-root 전용.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if conn.execute("SELECT 1 FROM account WHERE email=?", (email,)).fetchone():
+                conn.execute("COMMIT")
+                return False  # 이미 있음 — 보존
+            conn.execute(
+                "INSERT INTO account(email, name, password_hash, status, global_role, approved_at) "
+                "VALUES(?,?,?,?,?,datetime('now'))",
+                (
+                    email,
+                    "admin",
+                    password_hash,
+                    "approved",
+                    f"{rbac.ADMIN},{rbac.PRODUCT_MANAGER}",
+                ),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     _link_accounts_to_creators()
     return True
 

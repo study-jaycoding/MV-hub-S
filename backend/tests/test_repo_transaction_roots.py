@@ -125,6 +125,60 @@ def test_move_to_trash_if_failed_revalidates_inside_lock(pooled_db):
     assert [item["id"] for item in trash.list_trash()] == [failed_id]
 
 
+def test_concurrent_first_registration_creates_exactly_one_admin(pooled_db):
+    """R6 2-A(코덱스 필수) — 동시 최초 가입 2건에서 관리자(approved+admin)는 정확히
+    1명. 같은 이메일 동시 가입은 IntegrityError 가 아니라 ValueError 로 정리된다."""
+    import threading
+
+    results: list[dict] = []
+    errors: list[Exception] = []
+    barrier = threading.Barrier(2)
+
+    def run(email: str) -> None:
+        barrier.wait()
+        try:
+            results.append(repo.register(email, "password123"))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run, args=(f"user{index}@example.com",))
+        for index in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(results) == 2
+    admins = [r for r in results if r["status"] == "approved"]
+    assert len(admins) == 1  # 최초 관리자 정확히 1명(경합에서도)
+    assert "admin" in (admins[0].get("global_role") or "")
+    pendings = [r for r in results if r["status"] == "pending"]
+    assert len(pendings) == 1
+
+    # 같은 이메일 동시 가입 — 한쪽은 성공, 다른 쪽은 ValueError(IntegrityError 금지)
+    dup_errors: list[Exception] = []
+    dup_results: list[dict] = []
+    barrier2 = threading.Barrier(2)
+
+    def run_dup() -> None:
+        barrier2.wait()
+        try:
+            dup_results.append(repo.register("dup@example.com", "password123"))
+        except Exception as exc:  # noqa: BLE001
+            dup_errors.append(exc)
+
+    threads = [threading.Thread(target=run_dup) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(dup_results) == 1
+    assert len(dup_errors) == 1 and isinstance(dup_errors[0], ValueError)
+
+
 def test_new_indexes_exist_on_fresh_and_migrated_db(pooled_db):
     """1-G/1-K/1-L — 신규 DB(schema)와 기존 DB(_migrate 재실행) 양쪽에서 인덱스 보장."""
     expected = {
