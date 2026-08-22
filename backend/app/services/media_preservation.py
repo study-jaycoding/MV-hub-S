@@ -57,14 +57,38 @@ async def _process_claim(claim: dict[str, Any]) -> dict[str, Any]:
         )
         return {"status": "failed", "error_code": "missing_generation"}
 
-    result = await generation_media_cache.cache_generation_media(generation)
+    unexpected_error: Exception | None = None
+    try:
+        result = await generation_media_cache.cache_generation_media(generation)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        outcome = generation_media_cache._outcome_from_error(exc)
+        if outcome is None:
+            raise
+        result = outcome.result
+        unexpected_error = exc
+        log_event(
+            _log,
+            "media_preservation_partial_internal_error",
+            level=logging.WARNING,
+            exc_info=True,
+        )
+
     failed = int(result.get("failed") or 0)
     saved = int(result.get("cached") or 0) + int(result.get("already") or 0)
     error_code = _dominant_error(result)
     attempts = int(claim.get("attempts") or 1)
     retry_after: Optional[int] = None
 
-    if failed == 0:
+    if unexpected_error is not None:
+        error_code = "internal_error"
+        if attempts < _MAX_ATTEMPTS:
+            status = "partial"
+            retry_after = _RETRY_DELAYS[min(attempts - 1, len(_RETRY_DELAYS) - 1)]
+        else:
+            status = "partial" if saved else "failed"
+    elif failed == 0:
         status = "complete"
         error_code = None
     elif error_code == "capacity":

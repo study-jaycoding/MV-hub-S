@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
-from typing import Any
+from typing import Any, NamedTuple
 
 from .. import repo
 from ..services import media_cache
@@ -18,6 +18,12 @@ MediaTarget = tuple[str, str, str, bool, str | None]
 MediaCacheUpdate = tuple[str, str, str, str | None, str | None]
 _DOWNLOAD_CONCURRENCY = 6
 _DOWNLOAD_LIMITER_ATTR = "_mvhub_generation_media_download_limiter"
+_OUTCOME_ERROR_ATTR = "_mvhub_generation_media_cache_outcome"
+
+
+class _GenerationMediaCacheOutcome(NamedTuple):
+    result: dict[str, Any]
+    unexpected_error: BaseException | None
 
 
 def _download_limiter() -> asyncio.Semaphore:
@@ -30,8 +36,10 @@ def _download_limiter() -> asyncio.Semaphore:
     return limiter
 
 
-async def cache_generation_media(generation: dict) -> dict[str, Any]:
-    """한 생성물의 원격 asset/reference를 내려받고 성공한 경로만 DB에 반영한다."""
+async def _cache_generation_media_outcome(
+    generation: dict,
+) -> _GenerationMediaCacheOutcome:
+    """성공분을 반영하고 부분 결과와 재전파할 예외를 함께 반환한다."""
     targets: list[MediaTarget] = []  # (kind, id, current_path, is_image, source_url)
     for asset in generation.get("assets", []):
         targets.append(
@@ -55,10 +63,13 @@ async def cache_generation_media(generation: dict) -> dict[str, Any]:
         )
 
     if not targets:
-        return {
-            "cached": 0, "already": 0, "failed": 0, "skipped": 0,
-            "bytes_cached": 0, "failure_codes": {}, "retryable": 0,
-        }
+        return _GenerationMediaCacheOutcome(
+            {
+                "cached": 0, "already": 0, "failed": 0, "skipped": 0,
+                "bytes_cached": 0, "failure_codes": {}, "retryable": 0,
+            },
+            None,
+        )
 
     # 로컬 보존 경로가 DB에 있으나 파일만 유실됐으면 source_url로 자기치유한다.
     urls = [
@@ -104,6 +115,8 @@ async def cache_generation_media(generation: dict) -> dict[str, Any]:
         targets, urls, results
     ):
         if isinstance(result, BaseException):
+            failed += 1
+            failure_codes["internal_error"] += 1
             if unexpected_error is None:
                 unexpected_error = result
             continue
@@ -139,18 +152,43 @@ async def cache_generation_media(generation: dict) -> dict[str, Any]:
         reference_updater=repo.update_reference_cache,
     )
 
-    if unexpected_error is not None:
-        raise unexpected_error
+    return _GenerationMediaCacheOutcome(
+        {
+            "cached": cached,
+            "already": already,
+            "failed": failed,
+            "skipped": skipped,
+            "bytes_cached": bytes_cached,
+            "failure_codes": dict(failure_codes),
+            "retryable": retryable,
+        },
+        unexpected_error,
+    )
 
-    return {
-        "cached": cached,
-        "already": already,
-        "failed": failed,
-        "skipped": skipped,
-        "bytes_cached": bytes_cached,
-        "failure_codes": dict(failure_codes),
-        "retryable": retryable,
-    }
+
+def _outcome_from_error(
+    error: BaseException,
+) -> _GenerationMediaCacheOutcome | None:
+    """공개 함수가 재전파한 원예외에서 내부 부분 결과를 안전하게 꺼낸다."""
+    outcome = getattr(error, _OUTCOME_ERROR_ATTR, None)
+    if not isinstance(outcome, _GenerationMediaCacheOutcome):
+        return None
+    return outcome if outcome.unexpected_error is error else None
+
+
+async def cache_generation_media(generation: dict) -> dict[str, Any]:
+    """한 생성물의 원격 asset/reference를 내려받고 성공한 경로만 DB에 반영한다."""
+    outcome = await _cache_generation_media_outcome(generation)
+    if outcome.unexpected_error is not None:
+        # 보존 서비스는 원예외를 그대로 받으면서도 성공분을 정확히 정산할 수 있다.
+        # 예외를 감싸지 않아 직접 호출자의 타입·인스턴스·취소 계약을 바꾸지 않는다.
+        try:
+            setattr(outcome.unexpected_error, _OUTCOME_ERROR_ATTR, outcome)
+        except Exception:  # noqa: BLE001
+            # 사용자 정의 예외가 속성 추가를 막아도 원예외 재전파가 항상 우선이다.
+            pass
+        raise outcome.unexpected_error
+    return outcome.result
 
 
 async def cache_all_generation_media() -> dict[str, int]:
