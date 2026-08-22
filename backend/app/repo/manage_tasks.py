@@ -290,12 +290,14 @@ def _task_gen_rows(
         "  EXISTS(SELECT 1 FROM task_generation tg WHERE tg.task_id=? AND tg.gen_id=g.id) AS linked, "
         # 썸네일: poster(thumbnail_path) 우선. 비디오는 file_path(영상)를 이미지 썸네일로 못 써 깨지므로
         # poster 없으면 NULL(프론트가 <video> 로 첫 프레임 표시). 이미지는 file_path 그대로.
-        "  (SELECT COALESCE(a.thumbnail_path, CASE WHEN a.type='video' THEN NULL ELSE a.file_path END) "
-        "   FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS thumb, "
+        # 첫 asset 상관 서브쿼리 3회→rowid 픽커 1회+JOIN(R6 1-A) — 컬럼별 재탐색 제거.
+        "  COALESCE(fa.thumbnail_path, CASE WHEN fa.type='video' THEN NULL ELSE fa.file_path END) AS thumb, "
         # 비디오 컷은 poster 가 없어도 <video preload=metadata> 로 첫 프레임을 보여주게 원본·타입을 준다.
-        "  (SELECT a.type FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS media_type, "
-        "  (SELECT a.file_path FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS file_path "
+        "  fa.type AS media_type, "
+        "  fa.file_path AS file_path "
         "FROM generation g "
+        "LEFT JOIN asset fa ON fa.rowid = (SELECT a.rowid FROM asset a "
+        "  WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) "
         "WHERE g.deleted_at IS NULL AND ("
         "   g.id IN (SELECT gen_id FROM task_generation WHERE task_id=?) "
         "   OR (? IS NOT NULL AND g.project_id=? AND g.folder_path=?) "  # 폴더 레인
@@ -447,12 +449,15 @@ def _batch_task_gen_rows(
                 f"  g.workspace_scope AS workspace_scope, g.workspace_id AS workspace_id, "
                 f"  g.sort_ts AS sort_ts, "
                 f"  EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared, "
-                f"  (SELECT COALESCE(a.thumbnail_path, CASE WHEN a.type='video' THEN NULL ELSE a.file_path END) "
-                f"   FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS thumb, "
-                f"  (SELECT a.type FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS media_type, "
-                f"  (SELECT a.file_path FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS file_path "
+                # 첫 asset 상관 서브쿼리 3회→rowid 픽커 1회+JOIN(R6 1-A)
+                f"  COALESCE(fa.thumbnail_path, CASE WHEN fa.type='video' THEN NULL ELSE fa.file_path END) AS thumb, "
+                f"  fa.type AS media_type, "
+                f"  fa.file_path AS file_path "
+                f"FROM generation g "
+                f"LEFT JOIN asset fa ON fa.rowid = (SELECT a.rowid FROM asset a "
+                f"  WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) "
                 # ★deleted_at IS NULL — 원 함수는 이 필터를 전체 lane 바깥에 둬서 수동 링크 삭제물도 제외.
-                f"FROM generation g WHERE g.id IN ({ph_g}) AND g.deleted_at IS NULL",
+                f"WHERE g.id IN ({ph_g}) AND g.deleted_at IS NULL",
                 id_batch,
             ):
                 detail[g["id"]] = dict(g)

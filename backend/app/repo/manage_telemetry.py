@@ -54,8 +54,10 @@ def mark_telemetry_tombstone(gen_id: str, snapshot: dict[str, Any]) -> None:
         )
 
 
-def _ingested_local_ids(conn, job_ids: list[str], my_uid: Optional[str]) -> list[str]:
-    """외부 job id를 현재 살아 있는 로컬 generation id로 해석한다."""
+def _ingested_local_rows(
+    conn, job_ids: list[str], my_uid: Optional[str]
+) -> list[tuple[str, Optional[str]]]:
+    """외부 job id를 현재 살아 있는 로컬 (generation id, job_id)로 해석한다."""
     ids = [job_id for job_id in (job_ids or []) if job_id]
     if not ids:
         return []
@@ -66,9 +68,16 @@ def _ingested_local_ids(conn, job_ids: list[str], my_uid: Optional[str]) -> list
         where += " AND creator_uid = ?"
         args.append(my_uid)
     rows = conn.execute(
-        f"SELECT id FROM generation WHERE {where} AND deleted_at IS NULL", args
+        f"SELECT id, job_id FROM generation WHERE {where} AND deleted_at IS NULL", args
     ).fetchall()
-    return list(dict.fromkeys(str(row["id"]) for row in rows))
+    return [(str(row["id"]), row["job_id"]) for row in rows]
+
+
+def _ingested_local_ids(conn, job_ids: list[str], my_uid: Optional[str]) -> list[str]:
+    """외부 job id를 현재 살아 있는 로컬 generation id로 해석한다."""
+    return list(
+        dict.fromkeys(gid for gid, _job in _ingested_local_rows(conn, job_ids, my_uid))
+    )
 
 
 def track_ingested_in_connection(
@@ -83,8 +92,27 @@ def track_ingested_in_connection(
     만들고, 변경 없는 과거 행은 outbox 자체가 없을 때만 1회 넣는다. 이 함수는 스키마가 이미
     보장됐다는 전제로 동작해 호출자의 COMMIT/ROLLBACK 경계를 그대로 따른다.
     """
-    all_local_ids = _ingested_local_ids(conn, job_ids, my_uid)
-    changed_local_ids = set(_ingested_local_ids(conn, list(changed_job_ids), my_uid))
+    # generation 해석 1회로 전체·변경분을 함께 파생(R6 1-F) — 종전엔 같은 테이블을 두 번
+    # 탐색했다. 앵커 합집합으로 1회 조회한 뒤 종전과 동일한 (id 또는 job_id) 소속 판정으로
+    # 두 집합을 나눈다(changed 가 job_ids 의 부분집합이 아니어도 동등).
+    all_anchors = [anchor for anchor in (job_ids or []) if anchor]
+    changed_anchors = {anchor for anchor in (changed_job_ids or []) if anchor}
+    rows = _ingested_local_rows(
+        conn, list(dict.fromkeys([*all_anchors, *changed_anchors])), my_uid
+    )
+    all_anchor_set = set(all_anchors)
+    all_local_ids = list(
+        dict.fromkeys(
+            gid
+            for gid, job in rows
+            if gid in all_anchor_set or (job and job in all_anchor_set)
+        )
+    )
+    changed_local_ids = {
+        gid
+        for gid, job in rows
+        if gid in changed_anchors or (job and job in changed_anchors)
+    }
     dirty_count = 0
     backfilled_count = 0
     for gen_id in all_local_ids:

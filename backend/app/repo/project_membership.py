@@ -76,13 +76,19 @@ def enroll_uid_into_workspace_projects(
     roles_by_uid = _workspace_default_roles(conn, workspace_id, only_uid=creator_uid)
     if not roles_by_uid:
         return 0
-    total = 0
-    for row in conn.execute(
-        "SELECT id FROM project WHERE workspace_scope='team' AND workspace_id=? AND archived=0",
-        (workspace_id,),
-    ).fetchall():
-        total += _insert_members(conn, row["id"], roles_by_uid)
-    return total
+    role_csv = roles_by_uid[creator_uid]
+    # 활성 프로젝트 조회+프로젝트별 INSERT 반복(N+1)을 한 문장으로(R6 1-D). 수동 제외
+    # tombstone 우선(NOT EXISTS)·기존 멤버·역할 보존(DO NOTHING) 계약 그대로.
+    cur = conn.execute(
+        "INSERT INTO project_member(project_id, creator_uid, project_role) "
+        "SELECT p.id, ?, ? FROM project p "
+        "WHERE p.workspace_scope='team' AND p.workspace_id=? AND p.archived=0 "
+        "AND NOT EXISTS(SELECT 1 FROM project_member_removed r "
+        "  WHERE r.project_id=p.id AND r.creator_uid=?) "
+        "ON CONFLICT(project_id, creator_uid) DO NOTHING",
+        (creator_uid, role_csv, workspace_id, creator_uid),
+    )
+    return cur.rowcount
 
 
 def record_manual_removal(conn: sqlite3.Connection, pid: str, creator_uid: str) -> None:

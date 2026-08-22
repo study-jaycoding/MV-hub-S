@@ -103,32 +103,35 @@ def sync_scene_card_links(
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            for scene_id, card_id, generation_id in add:
+            # 항목별 execute 를 executemany 로(R6 1-E — 최대 2,000 호출→3). ★SQL 3종은
+            # 계약상 절대 합치지 않는다: add=IGNORE(백필은 tombstone 못 건드림) /
+            # explicit=해제 / removed=기록.
+            if add:
                 # 자동 백필 — 기존 행(특히 removed_at 표시)은 그대로 둔다. 낡은 로컬 목록이
                 # 다른 브라우저의 제거를 무르면 안 된다(합의 B / 적대 리뷰 P2).
-                conn.execute(
+                conn.executemany(
                     "INSERT OR IGNORE INTO scene_card_generation"
                     "(owner_uid, scene_id, card_id, generation_id) VALUES(?,?,?,?)",
-                    (owner_uid, scene_id, card_id, generation_id),
+                    [(owner_uid, s, c, g) for s, c, g in add],
                 )
-            for scene_id, card_id, generation_id in exp:
+            if exp:
                 # 사용자 의도(undo 부활 등) — 뺐다가 도로 넣는 정상 조작이므로 표시를 해제한다.
-                conn.execute(
+                conn.executemany(
                     "INSERT INTO scene_card_generation"
                     "(owner_uid, scene_id, card_id, generation_id) VALUES(?,?,?,?) "
                     "ON CONFLICT(owner_uid, scene_id, card_id, generation_id) "
                     "DO UPDATE SET removed_at=NULL",
-                    (owner_uid, scene_id, card_id, generation_id),
+                    [(owner_uid, s, c, g) for s, c, g in exp],
                 )
-            for scene_id, card_id, generation_id in rem:
+            if rem:
                 # 없던 행이어도 '뺐다'를 남긴다 — 다른 브라우저가 자기 로컬 목록으로 되살리는 걸 막는다.
-                conn.execute(
+                conn.executemany(
                     "INSERT INTO scene_card_generation"
                     "(owner_uid, scene_id, card_id, generation_id, removed_at) "
                     "VALUES(?,?,?,?,datetime('now')) "
                     "ON CONFLICT(owner_uid, scene_id, card_id, generation_id) "
                     "DO UPDATE SET removed_at=datetime('now')",
-                    (owner_uid, scene_id, card_id, generation_id),
+                    [(owner_uid, s, c, g) for s, c, g in rem],
                 )
             conn.execute("COMMIT")
         except Exception:
