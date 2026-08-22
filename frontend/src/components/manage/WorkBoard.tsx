@@ -48,6 +48,25 @@ export function taskWriteErrorMessage(action: string, error: unknown): string {
   return `${action} 실패: ${detail}`;
 }
 
+// 전체 선택/해제 — ids 마다 tasks 를 훑으면 O(n²)(수천 행에서 체감). id→작업을 한 번만 인덱싱한다.
+// 같은 id 가 여러 번 있으면 tasks.find 와 같게 '첫 항목'을 쓴다(읽기전용 판정이 뒤집히지 않게).
+export function applyTaskSelectAll(
+  selected: Set<string>,
+  ids: string[],
+  on: boolean,
+  tasks: Task[],
+  readOnly: boolean,
+): Set<string> {
+  const next = new Set(selected);
+  const taskById = new Map<string, Task>();
+  for (const item of tasks) if (!taskById.has(item.id)) taskById.set(item.id, item);
+  for (const id of ids) {
+    const task = taskById.get(id);
+    if (task && !taskIsReadOnly(task, readOnly)) on ? next.add(id) : next.delete(id);
+  }
+  return next;
+}
+
 export async function recoverTaskWriteFailure(
   action: string,
   error: unknown,
@@ -242,14 +261,7 @@ export function WorkBoard({
     });
   };
   const toggleSelectAll = (ids: string[], on: boolean) =>
-    setSelected((s) => {
-      const n = new Set(s);
-      ids.forEach((id) => {
-        const task = tasks.find((item) => item.id === id);
-        if (task && !taskIsReadOnly(task, showHistory)) on ? n.add(id) : n.delete(id);
-      });
-      return n;
-    });
+    setSelected((s) => applyTaskSelectAll(s, ids, on, tasks, showHistory));
   const clearSel = () => setSelected(new Set());
 
   // 필터·뷰 영속 — 창을 닫았다 와도 마지막 설정을 기억한다(localStorage).

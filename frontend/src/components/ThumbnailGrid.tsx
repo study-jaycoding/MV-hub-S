@@ -268,6 +268,18 @@ export function ThumbnailGrid(props: Props) {
     setFocusIdx((f) => (f >= generations.length ? -1 : f));
   }, [generations.length]);
 
+  // 필터/정렬이 바뀌면(resetKey) 목록이 통째로 달라진다 — 인덱스 기반 포커스와 스크롤 위치를 처음으로
+  //  되돌린다(옛 위치는 다른 항목을 가리킴). 첫 마운트는 건너뛴다(불필요한 스크롤 리셋 방지).
+  const resetKeyFirstRef = useRef(true);
+  useEffect(() => {
+    if (resetKeyFirstRef.current) {
+      resetKeyFirstRef.current = false;
+      return;
+    }
+    setFocusIdx(-1);
+    gridRef.current?.scrollTo({ top: 0 });
+  }, [props.resetKey]);
+
   // 최신 props 를 ref 로 — 드래그 콜백을 안정 참조로 유지(stale 방지).
   const opsRef = useRef({ generations, onSelectedChange, onPreview: props.onPreview });
   opsRef.current = { generations, onSelectedChange, onPreview: props.onPreview };

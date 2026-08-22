@@ -61,6 +61,39 @@ export function CalendarView({ tasks, thumb, disabled }: WorkViewProps) {
   );
 }
 
+// 생성자별 행 집계(순수) — 집계 키(creator_uid 우선)를 결과에 실어 준다. 표시 이름(name)은 서로 다른
+// 생성자끼리 같을 수 있어 React key 로 쓰면 두 사람의 행이 하나로 섞인다(집계 자체는 uid 로 갈라져 있음).
+export function creatorCalendarRows(
+  tasks: WorkViewProps["tasks"],
+  year: number,
+  month: number,
+): { key: string; name: string; byDay: Record<number, Cut[]>; total: number }[] {
+  const map = new Map<string, { name: string; cuts: Cut[]; seen: Set<string> }>();
+  for (const t of tasks) {
+    for (const c of t.cuts || []) {
+      const key = c.creator_uid || c.creator_name || "미상";
+      let e = map.get(key);
+      if (!e) {
+        e = { name: c.creator_name || "미상", cuts: [], seen: new Set() };
+        map.set(key, e);
+      }
+      if (!e.seen.has(c.id)) {
+        e.seen.add(c.id);
+        e.cuts.push(c);
+      }
+    }
+  }
+  return [...map.entries()].map(([key, e]) => {
+    const byDay: Record<number, Cut[]> = {};
+    for (const c of e.cuts) {
+      const d = parseYMD(c.created_at);
+      if (!d || d.y !== year || d.m !== month) continue;
+      (byDay[d.d] ||= []).push(c);
+    }
+    return { key, name: e.name, byDay, total: e.cuts.length };
+  });
+}
+
 // 생성자별 활동 그리드(기존 뷰) — 헤더는 위 래퍼가 그리고, 여기선 본문만.
 function CreatorCalendarBody({
   anchor,
@@ -81,32 +114,10 @@ function CreatorCalendarBody({
   const dow = (d: number) => new Date(anchor.y, anchor.m, d).getDay();
 
   // 모든 작업의 컷을 생성자별로 모은다(중복 컷 id 제거 — 여러 작업에 걸칠 수 있음).
-  const creators = useMemo(() => {
-    const map = new Map<string, { name: string; cuts: Cut[]; seen: Set<string> }>();
-    for (const t of tasks) {
-      for (const c of t.cuts || []) {
-        const key = c.creator_uid || c.creator_name || "미상";
-        let e = map.get(key);
-        if (!e) {
-          e = { name: c.creator_name || "미상", cuts: [], seen: new Set() };
-          map.set(key, e);
-        }
-        if (!e.seen.has(c.id)) {
-          e.seen.add(c.id);
-          e.cuts.push(c);
-        }
-      }
-    }
-    return [...map.values()].map((e) => {
-      const byDay: Record<number, Cut[]> = {};
-      for (const c of e.cuts) {
-        const d = parseYMD(c.created_at);
-        if (!d || d.y !== anchor.y || d.m !== anchor.m) continue;
-        (byDay[d.d] ||= []).push(c);
-      }
-      return { name: e.name, byDay, total: e.cuts.length };
-    });
-  }, [tasks, anchor.y, anchor.m]);
+  const creators = useMemo(
+    () => creatorCalendarRows(tasks, anchor.y, anchor.m),
+    [tasks, anchor.y, anchor.m],
+  );
 
   const trackWidth = daysInMonth * CELL;
 
@@ -134,7 +145,7 @@ function CreatorCalendarBody({
           </div>
 
           {creators.map((cr) => (
-            <div key={cr.name} className="work-cal-row">
+            <div key={cr.key} className="work-cal-row">
               <div className="work-cal-name" title={cr.name}>
                 <span className="work-cal-name-txt">👤 {cr.name}</span>
                 <span className="work-cal-name-count">{cr.total}</span>

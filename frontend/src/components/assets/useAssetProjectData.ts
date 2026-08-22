@@ -86,6 +86,10 @@ export function useAssetProjectData({
   };
   const projectRef = useRef(project); // 최신 선택 프로젝트 — 느린 응답이 돌아와도 딴 프로젝트를 덮지 않게
   projectRef.current = project;
+  // 지금 화면의 tree/meta 가 '어느 프로젝트' 것인지 — 미러 이펙트의 캐시 키. projectRef(=지금 렌더의
+  //  프로젝트)로 미러하면, A 를 그리는 중 선택이 B 로 바뀐 렌더에서 이펙트가 돌 때 A 트리가 B 키에 박힌다.
+  const treeProjectRef = useRef("");
+  const metaProjectRef = useRef("");
 
   const reloadProjects = useCallback((keepCurrent = false) => {
     api
@@ -107,10 +111,10 @@ export function useAssetProjectData({
   // 화면의 tree/meta 가 바뀔 때마다(reload·드롭임포트·메타편집 등 어떤 경로든) 현재 프로젝트 캐시에 미러링
   //  → 직접 setter 로 편집해도 캐시가 어긋나지 않는다(다른 폴더 갔다 와도 최신 반영).
   useEffect(() => {
-    if (projectRef.current) treeCacheRef.current[projectRef.current] = tree;
+    if (treeProjectRef.current) treeCacheRef.current[treeProjectRef.current] = tree;
   }, [tree]);
   useEffect(() => {
-    if (projectRef.current) metaCacheRef.current[projectRef.current] = meta;
+    if (metaProjectRef.current) metaCacheRef.current[metaProjectRef.current] = meta;
   }, [meta]);
 
   const reloadMeta = useCallback(async (targetProject = project) => {
@@ -119,6 +123,7 @@ export function useAssetProjectData({
     const cached = metaCacheRef.current[targetProject];
     // 캐시 즉시 표시는 '지금 보고 있는' 프로젝트일 때만 — 아니면 미러 이펙트가 현재 프로젝트 캐시를 오염시킨다.
     if (cached && projectRef.current === targetProject) {
+      metaProjectRef.current = targetProject; // 화면에 올리는 meta 의 소속을 함께 기록(미러 이펙트 짝)
       setMeta((prev) => reconcileRecordState(prev, cached));
     }
     try {
@@ -127,10 +132,12 @@ export function useAssetProjectData({
       persistCache(`${META_CACHE_KEY}.${targetProject}`, fresh); // 프로젝트별 키 — 창 닫아도 살아남게
       if (projectRef.current === targetProject) {
         // API가 매번 새 객체를 반환해도 내용이 같으면 526개 파일 화면을 다시 계산·렌더하지 않는다.
+        metaProjectRef.current = targetProject;
         setMeta((prev) => reconcileRecordState(prev, fresh));
       }
     } catch {
       if (!cached && projectRef.current === targetProject) {
+        metaProjectRef.current = targetProject;
         setMeta((prev) => reconcileRecordState(prev, {}));
       }
     }
@@ -145,6 +152,7 @@ export function useAssetProjectData({
     //  캐시를 다른 프로젝트 트리로 오염시킨다. (백그라운드 fetch 로 캐시 갱신은 아래에서 계속 수행)
     if (isCurrent()) {
       if (cached) {
+        treeProjectRef.current = targetProject; // 화면에 올리는 tree 의 소속을 함께 기록(미러 이펙트 짝)
         setTree((prev) => reconcileArrayState(prev, cached)); // 캐시 있으면 즉시 표시(로딩 화면 없음)
         onTreeLoaded?.(cached);
         setLoading(false);
@@ -159,6 +167,7 @@ export function useAssetProjectData({
       persistCache(`${TREE_CACHE_KEY}.${targetProject}`, nextTree.children); // 프로젝트별 키
       if (isCurrent()) {
         // 새 트리 객체라도 파일·버전·계층이 같으면 현재 화면 참조를 유지한다.
+        treeProjectRef.current = targetProject;
         setTree((prev) => reconcileArrayState(prev, nextTree.children));
         onTreeLoaded?.(nextTree.children);
         setError(null);

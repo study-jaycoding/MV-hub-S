@@ -64,6 +64,7 @@ import {
   type CanvasGenerationLink,
   type CanvasGenerationTarget,
 } from "./lib/canvasGenerationRecovery";
+import { downloadText } from "./lib/download";
 import { buildRecipeScene } from "./lib/recipeScene";
 import { useGenerationAutoRefresh } from "./lib/useGenerationAutoRefresh";
 import { useCommentBadgePoll } from "./lib/useCommentBadgePoll";
@@ -864,13 +865,13 @@ export default function App() {
   const handleSaveScene = (camera?: { z: number; x: number; y: number }) => {
     if (!activeScene) return;
     const text = exportSceneText(camera ? { ...activeScene, camera } : activeScene);
-    const blob = new Blob([text], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${(activeScene.name || "scene").replace(/[^\w가-힣 .-]/g, "_")}.mvscene.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    // 공용 헬퍼로 저장 — 앵커를 문서에 붙였다 떼고(브라우저에 따라 미부착 앵커의 click 은 무시됨),
+    // object URL 회수도 클릭 뒤로 미룬다(동기 revoke 는 저장 전에 URL 이 사라질 수 있음).
+    downloadText(
+      `${(activeScene.name || "scene").replace(/[^\w가-힣 .-]/g, "_")}.mvscene.json`,
+      text,
+      "application/json",
+    );
   };
   // 씬 불러오기 — 파일을 검증해 '새 탭'으로 연다(현재 캔버스 보존). 선택·프롬프트 바인딩은 초기화.
   const handleLoadSceneFile = async (file: File) => {

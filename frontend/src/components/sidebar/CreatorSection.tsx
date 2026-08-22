@@ -17,15 +17,19 @@ export function CreatorSection({
 }) {
   const tr = useT();
   const [creators, setCreators] = useState<Creator[]>([]);
-  const load = () =>
+  // 탭·프로젝트를 빠르게 바꾸면 이전 요청이 늦게 도착해 현재 목록을 덮는다 → 취소 가드로 버린다.
+  useEffect(() => {
+    let alive = true;
     api
       .creators(tab, projectId)
-      .then((items) =>
-        setCreators([...items].sort((a, b) => (a.is_mine === b.is_mine ? 0 : a.is_mine ? -1 : 1))),
-      )
+      .then((items) => {
+        if (alive)
+          setCreators([...items].sort((a, b) => (a.is_mine === b.is_mine ? 0 : a.is_mine ? -1 : 1)));
+      })
       .catch(() => {});
-  useEffect(() => {
-    load();
+    return () => {
+      alive = false;
+    };
   }, [tab, projectId]);
   if (!creators.length) return null;
   return (

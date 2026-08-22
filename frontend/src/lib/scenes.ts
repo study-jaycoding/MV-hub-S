@@ -280,11 +280,19 @@ export function createScene(projectId: string | null, name?: string): Scene {
   return scene;
 }
 
-export function updateScene(projectId: string | null, sceneId: string, patch: Partial<Scene>) {
-  saveScenes(
-    projectId,
-    listScenes(projectId).map((s) => (s.id === sceneId ? { ...s, ...patch } : s)),
-  );
+// 대상 씬을 갱신하고 '갱신된 목록'을 반환한다. 호출부가 결과를 다시 읽으려고 listScenes 를 부르면
+// 씬 편집 1회에 저장소 파싱이 3회로 늘어나므로(loadAll×2 + 재조회) 여기서 한 번만 읽고 넘겨준다.
+export function updateScene(
+  projectId: string | null,
+  sceneId: string,
+  patch: Partial<Scene>,
+): Scene[] {
+  const all = loadAll();
+  migrateLegacyBucket(all, projectId); // 옛 씬을 현재 계정으로 1회 이관(아래 saveAll 로 함께 확정)
+  const next = (all[keyOf(projectId)] || []).map((s) => (s.id === sceneId ? { ...s, ...patch } : s));
+  all[keyOf(projectId)] = next;
+  saveAll(all);
+  return next;
 }
 
 export function deleteScene(projectId: string | null, sceneId: string) {

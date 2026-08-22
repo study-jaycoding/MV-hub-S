@@ -1,7 +1,7 @@
 // 관리자 창 — 로드맵 §4-5. 좌측 상단 "Content Hub" 클릭으로 열림.
 // 멤버 전역 역할(복수) 관리 + 프로젝트 역할 관리. ⚠️ enforcement off 면 '식별·표시'까지만 —
 // 실제 접근 차단은 CONTENT_HUB_AUTH=1 일 때. 지금은 누구나 열 수 있다(2겹 차단은 나중).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { ApprovalTab, type AdminConfirmState } from "./admin/ApprovalTab";
 import { MemberRolesTab } from "./admin/MemberRolesTab";
@@ -152,8 +152,14 @@ export function AdminWindow({
     ]).finally(() => setLoading(false));
   }, []);
 
-  // '숨긴 계정 보기' 토글 시 목록 재조회.
+  // '숨긴 계정 보기' 토글 시 목록 재조회. 첫 실행은 건너뛴다 — 마운트 이펙트가 이미 같은 목록을
+  //  받고 있어, 안 건너뛰면 창을 열 때마다 /api/accounts 가 2번 나간다.
+  const showHiddenFirstRef = useRef(true);
   useEffect(() => {
+    if (showHiddenFirstRef.current) {
+      showHiddenFirstRef.current = false;
+      return;
+    }
     loadAccounts(showHidden);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showHidden]);

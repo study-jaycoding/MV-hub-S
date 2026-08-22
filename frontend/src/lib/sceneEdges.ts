@@ -148,11 +148,14 @@ export function resolvePortEdges(
 ): SceneEdge[] {
   const out: SceneEdge[] = [];
   const seenPair = new Set<string>();
+  // input 해석은 엣지마다 output 의 입력들을 찾는다 — 인덱스를 한 번만 만들어 전체 edges 재순회를 없앤다
+  // (인덱스는 원본 순서를 유지하므로 대표 소스 선정 결과도 그대로).
+  const incomingByTarget = buildIncomingEdgeIndex(edges);
   for (const e of edges) {
     const from = cardsById.get(e.from);
     let realFrom = e.from;
     if (from?.kind === "input") {
-      const r = resolveInputSourceId(e.from, cardsById, edges);
+      const r = resolveInputSourceIdIndexed(e.from, cardsById, edges, new Set(), incomingByTarget);
       if (!r) continue; // 못 푼 input 엣지는 수집에서 제외
       realFrom = r;
     }

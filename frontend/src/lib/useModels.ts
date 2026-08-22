@@ -234,6 +234,42 @@ export function costKey(
   return model + "|" + norm;
 }
 
+// ── 모델 파라미터·비용 캐시(모듈 스코프) ──────────────────────────────────
+// 훅 인스턴스(ref)에 두면 모델 모달을 닫았다 열 때마다(=리마운트) 같은 17~18건을 다시 받는다.
+// 모듈 스코프면 창이 살아 있는 동안 한 번만 받는다. ★계정 전환은 useHubAuth 가 location.reload()
+// 하므로(계정 email 변경·프록시 연결·범위 변경 모두) 이 캐시가 다른 계정으로 새지 않는다.
+const paramsCache = new Map<string, ModelParamsOut>(); // 완료된 결과 — 동기 적중(토글 딜레이 0)
+const paramsInflight = new Map<string, Promise<ModelParamsOut>>(); // 진행 중 요청 — 중복 요청 흡수
+const costCache = new Map<string, number>(); // cost(예상 크레딧) 결과 — 키=model+옵션값
+
+// 같은 모델 요청이 겹치면 하나로 합친다(모달과 프리페치가 동시에 부르는 경우).
+function loadModelParams(model: string): Promise<ModelParamsOut> {
+  const done = paramsCache.get(model);
+  if (done) return Promise.resolve(done);
+  const flying = paramsInflight.get(model);
+  if (flying) return flying;
+  const p = api
+    .modelParams(model)
+    .then((r) => {
+      paramsCache.set(model, r);
+      paramsInflight.delete(model);
+      return r;
+    })
+    .catch((e) => {
+      paramsInflight.delete(model); // 실패는 캐시하지 않는다 — 다음 시도에 재요청
+      throw e;
+    });
+  paramsInflight.set(model, p);
+  return p;
+}
+
+// 캐시 삽입 공통 관문 — 크기 상한(장기 세션 무한 누적 방지). 넘으면 통째 리셋(재조회 싼 캐시라 LRU 불필요).
+//  ★모든 삽입은 이 함수로 — 경로별로 직접 대입하면 상한이 절반만 작동한다(코덱스 리뷰).
+function putCost(key: string, credits: number): void {
+  if (costCache.size >= 500) costCache.clear();
+  costCache.set(key, credits);
+}
+
 export function useModels(onError: (msg: string) => void) {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [type, setType] = useState<"image" | "video">("image");
@@ -253,16 +289,7 @@ export function useModels(onError: (msg: string) => void) {
     model: string;
     opts: Record<string, string | number | boolean>;
   } | null>(null);
-  // 모델별 파라미터 캐시 — 이미지/비디오 토글 시 재요청(네트워크) 없이 즉시 전환.
-  const paramsCacheRef = useRef<Record<string, ModelParamsOut>>({});
-  // cost(예상 크레딧) 결과 캐시 — 키=model+옵션값. 같은 조합 재방문 시 CLI/디바운스 없이 즉시 표시.
-  const costCacheRef = useRef<Record<string, number>>({});
-  // 캐시 삽입 공통 관문 — 크기 상한(장기 세션 무한 누적 방지). 넘으면 통째 리셋(재조회 싼 캐시라 LRU 불필요).
-  //  ★모든 삽입은 이 함수로 — 경로별로 직접 대입하면 상한이 절반만 작동한다(코덱스 리뷰).
-  const putCost = (key: string, credits: number) => {
-    if (Object.keys(costCacheRef.current).length >= 500) costCacheRef.current = {};
-    costCacheRef.current[key] = credits;
-  };
+  // 모델별 파라미터·cost 캐시는 모듈 스코프(paramsCache/costCache) — 위 정의 참고.
   // 드롭다운 닫기 브리지 — open/setOpen 은 컴포넌트 UI 상태로 남으므로,
   // setOpt 가 옵션 선택 후 드롭다운을 닫도록 컴포넌트가 setOpen 을 여기 등록한다.
   const setOpenRef = useRef<((v: string | null) => void) | null>(null);
@@ -313,17 +340,15 @@ export function useModels(onError: (msg: string) => void) {
       setParamsLoading(false);
     };
     // 캐시 적중 → 네트워크 없이 즉시 적용(토글 딜레이 제거).
-    const cached = paramsCacheRef.current[model];
+    const cached = paramsCache.get(model);
     if (cached) {
       apply(cached);
       return;
     }
     setParamsLoading(true); // 네트워크 로드 시작 — 완료 전까지 옵션/스키마는 이전 모델 것(stale)
     let alive = true;
-    api
-      .modelParams(model)
+    loadModelParams(model)
       .then((r) => {
-        paramsCacheRef.current[model] = r;
         if (alive) apply(r);
       })
       .catch(() => {
@@ -351,7 +376,7 @@ export function useModels(onError: (msg: string) => void) {
         opts = c;
       }
       const key = costKey(m, opts);
-      if (costCacheRef.current[key] !== undefined) return;
+      if (costCache.has(key)) return;
       api
         .estimateCost(m, opts)
         .then((r) => {
@@ -360,15 +385,13 @@ export function useModels(onError: (msg: string) => void) {
         .catch(() => {});
     };
     for (const m of [...ALLOWED.image, ...ALLOWED.video]) {
-      const cached = paramsCacheRef.current[m];
+      const cached = paramsCache.get(m);
       if (cached) {
         warmCost(m, cached.params);
         continue;
       }
-      api
-        .modelParams(m)
+      loadModelParams(m)
         .then((r) => {
-          paramsCacheRef.current[m] = r;
           warmCost(m, r.params);
         })
         .catch(() => {});
@@ -388,7 +411,7 @@ export function useModels(onError: (msg: string) => void) {
       return;
     }
     const key = costKey(model, optionValues);
-    const hit = costCacheRef.current[key];
+    const hit = costCache.get(key);
     if (hit !== undefined) {
       // 캐시 적중(토글 왕복·이전 본 옵션 재선택) → 멈칫 없이 즉시 표시.
       setCost(hit);

@@ -182,8 +182,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   // 명시한 씬 patch + 목록 재읽기. 비동기 작업은 완료 시 활성 씬이 바뀔 수 있으므로 반드시 시작할 때
   // 캡처한 sceneId 로 이 관문을 호출한다. 삭제된 씬은 updateScene 이 재생성하지 않는다.
   const patchSceneById = useCallback((sceneId: string, patch: Partial<Scene>) => {
-    updateScene(null, sceneId, patch);
-    const latest = listScenes(null);
+    const latest = updateScene(null, sceneId, patch); // 저장된 목록을 그대로 받는다(재파싱 제거)
     setScenes((previous) =>
       mergePatchedSceneList(previous, latest, activeSceneIdRef.current, sceneId),
     );
