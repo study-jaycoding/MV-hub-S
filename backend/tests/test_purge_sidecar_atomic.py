@@ -1,4 +1,4 @@
-"""P2-1: 휴지통 purge와 main DB 사이드카의 단일 transaction-root 계약."""
+"""P1: 휴지통 purge 선커밋 뒤 main DB 사이드카를 별도 정리하는 계약."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def _sidecar_counts(gen_id: str = "g1") -> tuple[int, int, int]:
         )
 
 
-def test_sidecar_delete_failure_rolls_back_trash_and_all_sidecar(purge_db):
+def test_sidecar_delete_failure_keeps_trash_deleted_and_logs_warning(purge_db, caplog):
     _seed_trashed_generation_with_sidecar()
     with db.get_connection() as conn:
         # 마지막 DELETE에서 실패시켜 앞선 두 sidecar DELETE도 롤백됨을 검증한다.
@@ -74,21 +74,15 @@ def test_sidecar_delete_failure_rolls_back_trash_and_all_sidecar(purge_db):
             "BEGIN SELECT RAISE(FAIL, 'injected sidecar delete failure'); END"
         )
 
-    with pytest.raises(sqlite3.IntegrityError, match="injected sidecar delete failure"):
-        trash.purge_trashed_item("g1")
+    with caplog.at_level("WARNING", logger="mvhub.trash"):
+        assert trash.purge_trashed_item("g1") is True
 
-    assert _trash_count() == 1
-    assert _sidecar_counts() == (1, 1, 1)
-
-    # 휴지통 행이 보존됐으므로 실패 원인을 제거한 뒤 같은 purge를 재시도할 수 있다.
-    with db.get_connection() as conn:
-        conn.execute("DROP TRIGGER fail_final_export_delete")
-    assert trash.purge_trashed_item("g1") is True
     assert _trash_count() == 0
-    assert _sidecar_counts() == (0, 0, 0)
+    assert _sidecar_counts() == (1, 1, 1)
+    assert "purge_sidecar_cleanup_failed gen_id=g1" in caplog.text
 
 
-def test_purge_commits_trash_and_all_sidecar_together(purge_db):
+def test_purge_deletes_trash_then_all_sidecar(purge_db):
     _seed_trashed_generation_with_sidecar()
 
     assert trash.purge_trashed_item("g1") is True
@@ -119,4 +113,3 @@ def test_manage_off_purge_does_not_create_sidecar(purge_db, monkeypatch):
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
             "('generation_metrics','task_generation','final_export')"
         ).fetchall() == []
-

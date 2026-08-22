@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -34,6 +35,8 @@ from .manage_telemetry import (  # noqa: F401 — leaf 직접 의존 계약(test
     mark_telemetry_dirty,
     mark_telemetry_tombstone,
 )
+
+_log = logging.getLogger("mvhub.trash")
 
 # 휴지통은 별도 DB 파일(content_hub_trash.db)을 ATTACH 해서 `trash.trashed` 로 참조한다.
 _TRASHED_DDL = (
@@ -622,11 +625,16 @@ def purge_trashed_item(gen_id: str, account_uid: Optional[str] = None) -> bool:
             deleted = conn.execute(
                 "DELETE FROM trash.trashed WHERE id=?", (gen_id,)
             ).rowcount > 0
-        if deleted:
+        conn.execute("COMMIT")
+    if deleted:
+        # ATTACH 된 별도 WAL DB끼리는 전원 손실 원자성이 없으므로 휴지통 삭제를 먼저 단독
+        # 커밋한다. main 사이드카는 생존 재확인 가드가 있는 별도 transaction-root에서 정리한다.
+        try:
             from . import manage as _m
 
-            # 세 사이드카는 main 콘텐츠 DB에 있으므로 휴지통 DELETE와 같은 transaction-root에서
-            # 정리한다. telemetry_outbox tombstone은 미전송 삭제 통보라 보존한다.
-            _m.purge_generation_sidecar_in_connection(conn, gen_id)
-        conn.execute("COMMIT")
+            _m.purge_generation_sidecar(gen_id)
+        except Exception:
+            # 영구 삭제의 공개 반환값은 trash 행 삭제 기준이다. 정리 실패로 남은 고아는
+            # 데이터 유실보다 안전하므로 보존하되 운영자가 알 수 있게 경고한다.
+            _log.warning("purge_sidecar_cleanup_failed gen_id=%s", gen_id, exc_info=True)
     return deleted
