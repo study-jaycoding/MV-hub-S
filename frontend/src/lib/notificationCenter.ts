@@ -127,6 +127,9 @@ export function syncReleaseNotifications(
   return items.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
 }
 
+// 이사 알림 본문에 붙는 행동 안내 — 클릭이 곧 전환이므로 확인창 대신 여기서 미리 알린다.
+const RELOCATION_ACTION_HINT = "누르면 전환되고 다시 로그인합니다.";
+
 // 공유 서버가 새 주소로 이사했다는 시스템 알림. 백엔드가 릴리스 폴더의 공지를 읽어
 // 제안할 때만(그리고 새 주소가 실제로 응답할 때만) 만들어진다 — 닿지도 않는 주소로
 // 전환을 권하면 로그아웃만 되고 더 깊이 갇힌다.
@@ -145,10 +148,11 @@ export function serverRelocationNotification(
     version: String(info.revision),
     url,
     serverName,
-    // 평소 표기는 이름 — 이름이 없을 때만 주소를 드러낸다(주소는 확인 모달이 항상 보여준다).
+    // 평소 표기는 이름 — 이름이 없을 때만 주소를 드러낸다. 확인창이 없으므로(클릭=전환)
+    // 무슨 일이 일어나는지는 반드시 이 한 줄에 들어 있어야 한다.
     text: serverName
-      ? `'${serverName}' 서버가 새 위치로 이동했습니다`
-      : `공유 서버가 새 주소로 이사했습니다: ${url}`,
+      ? `'${serverName}' 서버가 새 위치로 이동했습니다. ${RELOCATION_ACTION_HINT}`
+      : `공유 서버가 새 주소로 이사했습니다: ${url}. ${RELOCATION_ACTION_HINT}`,
     created_at: info.announced_at || now,
     // ★'나중에'는 이 세션 동안만 기억한다(sessionStorage). 서버의 수락 표식은 실제로
     // 전환했을 때만 기록되므로, 미루면 다음 기동에서 다시 안읽음으로 뜬다.
@@ -180,6 +184,23 @@ export function markAllReleaseNotificationsRead(
   sessionStore?: NotificationStorage,
 ): ReleaseNotification[] {
   return items.map((item) => markReleaseNotificationRead(item, storage, sessionStore));
+}
+
+export type ReleaseNotificationAction = "relocate" | "confirm" | "none";
+
+// 시스템 알림을 눌렀을 때 무엇을 하나 — 확인창을 띄우는 조건을 한곳에 고정한다.
+//  · 이사: **확인창 없이 곧바로 전환**한다. 알림 본문이 이미 "누르면 전환되고 다시
+//    로그인합니다"라고 말하고 있고, 옛 주소로 남아 있으면 어차피 공유가 안 된다.
+//    (안전 검증은 백엔드가 한다 — 공지 재검증·신원 프로브·원자 전환.)
+//  · 업데이트: 앱을 재시작하고 몇 분이 걸리는 되돌릴 수 없는 작업이라 한 번 더 묻는다.
+//  · 이미 무언가 실행 중이면 아무것도 시작하지 않는다.
+export function releaseNotificationAction(
+  kind: ReleaseNotificationKind,
+  busy: boolean,
+): ReleaseNotificationAction {
+  if (busy) return "none";
+  if (kind === "relocation") return "relocate";
+  return kind === "available" ? "confirm" : "none";
 }
 
 export function filterNotificationItems<T extends { unread: boolean }>(

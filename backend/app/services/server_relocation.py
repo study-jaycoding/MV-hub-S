@@ -1,4 +1,4 @@
-"""공유 서버 '이사 공지'(server-location.json) 리더 — 주소 전환 공지(C안).
+"""공유 서버 '이사 공지'(server-location.json) 리더·발행기 — 주소 전환 공지(C안).
 
 관리자가 공유 서버를 새 주소(새 PC·새 IP)로 옮기면, 이미 로그인해 작업 중인 사람의 허브는
 다음 요청부터 옛 주소로 실패한다. 로그인 화면 탈출구(B안)는 '이미 갇힌 뒤'의 수동 복구라
@@ -18,15 +18,22 @@
 
 ``server_name`` 은 작업자 화면에 주소 대신 보일 이름이다(선택 — 비거나 없으면 주소로 폴백).
 
-★읽기는 반드시 '별도 프로세스 + 하드 타임아웃'으로 한다. 소스는 보통 NAS(SMB) 경로인데
-그 NAS 가 죽어 있으면 ``Path.open()``·``stat()`` 이 커널 I/O 에서 수십 초를 블로킹하고,
-파이썬 스레드는 그걸 중간에 끊을 수 없다. release_update 의 UNC 읽기에는 타임아웃이 없지만
-거기는 사용자가 버튼을 눌러 시작하는 1회 조회라 허용된다 — 이쪽은 기동 + 60초 주기로 도는
-백그라운드다. worker_backup 이 같은 이유로 NAS 전송을 자식 프로세스에 맡기는 것과 같은 판단.
+관리자는 이 파일을 손으로 쓰지 않아도 된다: 관리자 창의 '팀에 공지' 버튼이
+``publish_announcement`` 로 **지금 저장된 이름·주소를 revision+1 로 기록**한다(수동 작성은
+비상용으로 남는다 — docs/SERVER_RELOCATION.md).
 
-그래서 이 파일은 **자식 프로세스에서 스크립트로도 실행된다**(``python -I server_relocation.py
-<source>``). 모듈 최상단에는 상대 import 를 두지 않는다(스크립트 실행 시 패키지가 없어 실패).
-release_update 의존은 함수 안에서 지연 import 하고, 설정(repo) 접근은 아예 이 모듈 밖
+★읽기도 쓰기도 반드시 '별도 프로세스 + 하드 타임아웃'으로 한다. 소스는 보통 NAS(SMB) 경로인데
+그 NAS 가 죽어 있으면 ``Path.open()``·``stat()`` 이 커널 I/O 에서 수십 초를 블로킹하고,
+파이썬 스레드는 그걸 중간에 끊을 수 없다(스레드는 버려질 뿐 회수되지 않는다 — 발행은 버튼을
+누르는 요청 경로라 그 스레드가 요청 처리 풀을 갉아먹는다). release_update 의 UNC 읽기에는
+타임아웃이 없지만 거기는 사용자가 버튼을 눌러 시작하는 1회 조회라 허용된다 — 이쪽은 기동 +
+60초 주기로 도는 백그라운드다. worker_backup 이 같은 이유로 NAS 전송을 자식 프로세스에
+맡기는 것과 같은 판단.
+
+그래서 이 파일은 **자식 프로세스에서 스크립트로도 실행된다**(읽기 ``python -I
+server_relocation.py <source>``, 쓰기 ``... <source> --write <base64 본문>``). 모듈 최상단에는
+상대 import 를 두지 않는다(스크립트 실행 시 패키지가 없어 실패). release_update 의존과
+원자 쓰기(atomic_io) 는 함수 안에서 지연 import 하고, 설정(repo) 접근은 아예 이 모듈 밖
 (services/shared_connection)에 둔다.
 """
 
@@ -42,6 +49,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -53,6 +61,9 @@ MAX_BYTES = 64 * 1024
 SERVER_NAME_MAX = 64
 # 자식 프로세스 하드 타임아웃 — 죽은 NAS 를 만나도 이 시간 안에 반드시 회수된다.
 READ_TIMEOUT_SECONDS = 8.0
+# 발행(쓰기)도 같은 예산으로 격리한다. 쓰기가 읽기보다 오래 걸릴 이유는 없고, 예산을 늘리면
+# 죽은 NAS 를 만난 관리자가 그만큼 더 기다릴 뿐이다(실패 안내가 빠른 쪽이 낫다).
+WRITE_TIMEOUT_SECONDS = 8.0
 _HTTP_TIMEOUT_SECONDS = 6
 
 _log = logging.getLogger(__name__)
@@ -66,6 +77,23 @@ _refresh_lock = threading.Lock()
 
 class RelocationReadError(RuntimeError):
     """공지를 읽거나 해석할 수 없음. 공지가 아예 없는 것도 정상이므로 조용히 다룬다."""
+
+
+class AnnouncementMissing(RelocationReadError):
+    """공지 파일이 아직 없음 — '못 읽었다'와 구분해야 하는 유일한 실패다.
+
+    발행은 기존 번호에 +1 을 해야 하는데, 못 읽은 것을 '없음(0)'으로 착각하면 번호가
+    되감겨 팀 전체가 어느 공지가 최신인지 판단할 수 없는 상태가 된다(proposal 이 거부하는
+    바로 그 사고). 그래서 여기서만 구분한다.
+    """
+
+
+class RelocationWriteError(RuntimeError):
+    """공지를 발행할 수 없음 — 문구를 그대로 관리자에게 보여준다."""
+
+
+class RelocationPermissionError(RelocationWriteError):
+    """릴리스 폴더에 쓰기 권한이 없음(작업자 PC 등) — 권한의 본질은 NAS ACL 이다."""
 
 
 # ── 공지 파싱(신뢰 경계) ────────────────────────────────────────────────────
@@ -130,20 +158,60 @@ def read_source_bytes(source: str) -> bytes:
     try:
         with (Path(source) / LOCATION_FILE).open("rb") as handle:
             return handle.read(MAX_BYTES + 1)
+    except FileNotFoundError as exc:
+        # 공지를 아직 한 번도 안 낸 정상 상태 — 발행이 이 경우에만 revision 1 로 시작한다.
+        raise AnnouncementMissing("공지 파일이 아직 없습니다") from exc
     except OSError as exc:
         raise RelocationReadError(f"공지 파일을 읽을 수 없습니다: {exc}") from exc
 
 
-def read_announcement(
-    source: str, *, timeout: float = READ_TIMEOUT_SECONDS
-) -> Optional[dict[str, Any]]:
-    """공지를 격리된 자식 프로세스로 읽는다. 실패·타임아웃·형식 오류는 모두 None.
+def _atomic_write_text(path: Path, text: str) -> None:
+    """원자 쓰기는 services/atomic_io 한 곳만 쓴다(구현을 복사하지 않는다).
 
-    자식은 바이트를 base64 로 실어 보내기만 하고, 해석은 부모(parse_announcement)가 한다.
+    ★이 파일은 자식 프로세스에서 패키지 없이 스크립트로 실행되므로 그때는 상대 import 가
+    불가능하다 — 같은 폴더의 모듈을 경로로 직접 불러온다(atomic_io 는 표준 라이브러리만 쓴다).
+    """
+    try:
+        from .atomic_io import atomic_write_text
+    except ImportError:  # 자식 프로세스(패키지 없음)
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from atomic_io import atomic_write_text  # type: ignore[no-redef]
+
+    atomic_write_text(path, text)
+
+
+# 릴리스 소스가 HTTP 주소인 배포(웹 서버에 릴리스를 올려 두는 방식)에서는 발행할 수 없다.
+_HTTP_PUBLISH_REFUSAL = "HTTP 릴리스 소스에는 공지를 발행할 수 없습니다(폴더 경로만 가능합니다)"
+
+
+def write_source_text(source: str, text: str) -> None:
+    """공지 파일을 원자적으로 기록한다. **이 함수도 죽은 NAS 에서 오래 붙잡힐 수 있다.**"""
+    if source.lower().startswith(("http://", "https://")):
+        raise RelocationWriteError(_HTTP_PUBLISH_REFUSAL)
+    folder = Path(source)
+    if not folder.is_dir():
+        # atomic_write_text 는 없는 폴더를 만든다 — 오타 난 경로에 가짜 릴리스 폴더를
+        # 만들어 두면 아무도 못 읽는 공지가 조용히 생긴다. 먼저 존재를 확인한다.
+        raise RelocationWriteError(f"릴리스 폴더를 찾을 수 없습니다: {source}")
+    try:
+        _atomic_write_text(folder / LOCATION_FILE, text)
+    except PermissionError as exc:
+        raise RelocationPermissionError(
+            "릴리스 폴더에 쓰기 권한이 없습니다 — 관리자 PC 에서 실행하세요"
+        ) from exc
+    except OSError as exc:
+        raise RelocationWriteError(f"공지 파일을 쓸 수 없습니다: {exc}") from exc
+
+
+# ── 자식 프로세스 호출(읽기·쓰기 공통) ─────────────────────────────────────
+def _run_child(args: list[str], timeout: float) -> dict[str, Any]:
+    """이 파일을 자식 프로세스로 실행하고 마지막 JSON 한 줄을 돌려준다(실패는 빈 dict).
+
+    느린 원격 I/O 는 전부 자식 안에서만 일어난다 — 부모는 타임아웃으로 반드시 회수한다.
     """
     try:
         completed = subprocess.run(  # noqa: S603 — 이 파일 자신을 현재 Python 으로 실행
-            [sys.executable, "-I", str(Path(__file__).resolve()), source],
+            [sys.executable, "-I", str(Path(__file__).resolve()), *args],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -154,16 +222,27 @@ def read_announcement(
             check=False,
         )
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-        # 죽은 NAS 의 정상 결말이다 — 경고 없이 넘기고 직전 스냅샷을 그대로 쓴다.
-        _log.info("server_relocation_read_skipped: %s", exc)
-        return None
+        # 죽은 NAS 의 정상 결말이다 — 읽기는 직전 스냅샷을 그대로 쓰고, 발행은 실패 안내를 낸다.
+        _log.info("server_relocation_child_skipped: %s", exc)
+        return {}
 
     lines = [line for line in (completed.stdout or "").splitlines() if line.strip()]
     try:
         result = json.loads(lines[-1]) if lines else None
     except ValueError:
         result = None
-    if not isinstance(result, dict) or not result.get("ok"):
+    return result if isinstance(result, dict) else {}
+
+
+def read_announcement(
+    source: str, *, timeout: float = READ_TIMEOUT_SECONDS
+) -> Optional[dict[str, Any]]:
+    """공지를 격리된 자식 프로세스로 읽는다. 실패·타임아웃·형식 오류는 모두 None.
+
+    자식은 바이트를 base64 로 실어 보내기만 하고, 해석은 부모(parse_announcement)가 한다.
+    """
+    result = _run_child([source], timeout)
+    if not result.get("ok"):
         return None
     try:
         return parse_announcement(base64.b64decode(str(result.get("raw") or ""), validate=True))
@@ -224,6 +303,90 @@ def refresh(
         _refresh_lock.release()
 
 
+# ── 공지 발행(관리자 창 '팀에 공지') ────────────────────────────────────────
+def render_announcement(url: str, revision: int, name: str, announced_at: str) -> str:
+    """공지 파일 본문(JSON 텍스트). 쓰기 전에 **리더로 스스로 검증**한다.
+
+    깨진 공지를 팀 전체에 뿌리면 아무도 알림을 못 받는데 관리자는 성공했다고 믿는다 —
+    파싱을 통과하지 못하는 본문은 애초에 파일로 나가지 않는다.
+    """
+    text = json.dumps(
+        {
+            "shared_server_url": url,
+            "server_revision": int(revision),
+            "server_name": name,
+            "announced_at": announced_at,
+        },
+        ensure_ascii=False,
+        indent=2,
+    ) + "\n"
+    parse_announcement(text.encode("utf-8"))  # 자기 검증 — 어긋나면 RelocationReadError
+    return text
+
+
+def current_revision(source: str, *, timeout: float = READ_TIMEOUT_SECONDS) -> int:
+    """지금 릴리스 폴더에 놓인 공지의 revision(파일이 없으면 0). 못 읽으면 예외.
+
+    ★'없음'과 '못 읽음'을 반드시 구분한다 — 못 읽었는데 0 으로 진행하면 번호가 되감겨,
+    이미 옮긴 PC 와 아직 안 옮긴 PC 중 어느 쪽이 맞는지 판단할 근거가 사라진다.
+    """
+    result = _run_child([source], timeout)
+    if result.get("missing"):
+        return 0
+    if not result.get("ok"):
+        raise RelocationWriteError(
+            "기존 공지 파일을 확인하지 못했습니다: "
+            + str(result.get("error") or "릴리스 폴더에 연결할 수 없습니다(시간 초과)")
+        )
+    try:
+        return int(
+            parse_announcement(base64.b64decode(str(result.get("raw") or ""), validate=True))[
+                "revision"
+            ]
+        )
+    except (ValueError, RelocationReadError) as exc:
+        raise RelocationWriteError(
+            f"기존 {LOCATION_FILE} 을 해석할 수 없습니다({exc}). "
+            "그 파일을 고치거나 지운 뒤 다시 시도하세요"
+        ) from exc
+
+
+def publish_announcement(
+    source: str, *, url: str, name: str, timeout: float = WRITE_TIMEOUT_SECONDS
+) -> dict[str, Any]:
+    """지금 주소·이름을 revision+1 로 공지 파일에 기록한다(원자 쓰기). 실패는 예외.
+
+    읽기(번호 확인)와 쓰기가 각각 격리된 자식 프로세스다 — 죽은 NAS 를 만나도 각 단계가
+    제한 시간 안에 회수된다. 두 단계 사이의 경쟁(다른 관리자가 동시에 발행)은 막지 않는다:
+    관리자 둘이 같은 순간 다른 주소를 공지하는 것은 파일 잠금이 아니라 운영으로 막을 일이고,
+    그때도 리더는 '같은 번호·다른 주소'를 거부해 사고를 조용히 퍼뜨리지 않는다.
+    """
+    if source.lower().startswith(("http://", "https://")):
+        raise RelocationWriteError(_HTTP_PUBLISH_REFUSAL)  # 읽으러 가기 전에 끝낸다
+    revision = current_revision(source, timeout=timeout) + 1
+    announced_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    payload = render_announcement(url, revision, name, announced_at)
+    result = _run_child(
+        [source, "--write", base64.b64encode(payload.encode("utf-8")).decode("ascii")], timeout
+    )
+    if not result.get("ok"):
+        if result.get("denied"):
+            raise RelocationPermissionError(
+                str(result.get("error") or "릴리스 폴더에 쓰기 권한이 없습니다")
+            )
+        raise RelocationWriteError(
+            str(result.get("error") or "릴리스 폴더에 연결할 수 없습니다(시간 초과)")
+        )
+    announcement = {
+        "url": url,
+        "revision": revision,
+        "name": name,
+        "announced_at": announced_at,
+    }
+    remember(announcement)  # 방금 파일에 쓴 값이 곧 디스크의 진실이다 — 스냅샷도 맞춰 둔다
+    return announcement
+
+
 # ── 제안 판정(순수 함수) ────────────────────────────────────────────────────
 def proposal(
     current_url: str,
@@ -272,16 +435,52 @@ def proposal(
 
 
 # ── 자식 프로세스 진입점 ────────────────────────────────────────────────────
+def _emit(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+
 def _main(argv: list[str]) -> int:
-    if len(argv) != 1 or not argv[0].strip():
-        print(json.dumps({"ok": False, "error": "source required"}), flush=True)
+    """``<source>`` = 읽기, ``<source> --write <base64 본문>`` = 발행(원자 쓰기).
+
+    자식은 느린 I/O 만 담당한다 — 공지 해석·번호 계산은 전부 부모가 한다.
+    """
+    if not argv or not argv[0].strip():
+        _emit({"ok": False, "error": "source required"})
+        return 2
+    if len(argv) == 3 and argv[1] == "--write":
+        try:
+            write_source_text(argv[0], base64.b64decode(argv[2], validate=True).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            _emit({"ok": False, "error": f"본문을 해석할 수 없습니다: {exc}"[:300]})
+            return 1
+        except RelocationWriteError as exc:
+            # 권한 거부는 안내 문구가 달라야 한다(작업자 PC 에서 누른 경우) — 따로 표시한다.
+            _emit(
+                {
+                    "ok": False,
+                    "denied": isinstance(exc, RelocationPermissionError),
+                    "error": str(exc)[:300],
+                }
+            )
+            return 1
+        _emit({"ok": True})
+        return 0
+    if len(argv) != 1:
+        _emit({"ok": False, "error": "source required"})
         return 2
     try:
         raw = read_source_bytes(argv[0])
     except RelocationReadError as exc:
-        print(json.dumps({"ok": False, "error": str(exc)[:300]}, ensure_ascii=False), flush=True)
+        # 파일이 아직 없는 것은 '실패'가 아니라 '공지 전' 상태다 — 발행이 이 표식을 본다.
+        _emit(
+            {
+                "ok": False,
+                "missing": isinstance(exc, AnnouncementMissing),
+                "error": str(exc)[:300],
+            }
+        )
         return 1
-    print(json.dumps({"ok": True, "raw": base64.b64encode(raw).decode("ascii")}), flush=True)
+    _emit({"ok": True, "raw": base64.b64encode(raw).decode("ascii")})
     return 0
 
 

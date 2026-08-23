@@ -54,6 +54,17 @@ export const sharedApi = {
   // 이사 공지 조회 — 알림 센터가 주기적으로 확인한다(백그라운드 스냅샷 기반, 느린 I/O 없음).
   sharedServerRelocation: () =>
     jsonFetch<ServerRelocationInfo>("/api/shared-server/relocation"),
+  // 관리자 창 '팀에 공지' — 지금 저장된 이름·주소를 릴리스 폴더의 공지 파일로 발행한다.
+  // revision 은 백엔드가 기존 파일을 읽어 +1 한다(관리자가 번호를 기억하지 않아도 된다).
+  publishServerRelocation: () =>
+    jsonFetch<{
+      ok: boolean;
+      url: string;
+      revision: number;
+      server_name: string;
+      announced_at: string;
+      source: string;
+    }>("/api/shared-server/relocation/publish", { method: "POST", body: jsonBody({}) }),
   // 공지된 새 주소로 전환 — 백엔드가 공지 파일을 다시 읽어 재검증한 뒤에만 바꾼다.
   // 성공하면 이 PC 는 로그아웃 상태가 되므로 호출부는 곧바로 새로고침한다.
   sharedServerRelocate: (url: string, revision: number) =>

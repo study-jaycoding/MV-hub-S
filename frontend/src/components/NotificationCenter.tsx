@@ -12,6 +12,7 @@ import {
   markReleaseNotificationRead,
   notificationBadgeText,
   NOTIFICATION_CATEGORY_LABELS,
+  releaseNotificationAction,
   serverRelocationNotification,
   syncReleaseNotifications,
   unreadNotificationCount,
@@ -65,6 +66,11 @@ export function NotificationCenter({
   // 업데이트 실행 확인창(항목별)과 실행 진행 상태 — 패널을 닫아도 진행 문구는 유지된다.
   const [confirmUpdateId, setConfirmUpdateId] = useState<string | null>(null);
   const [updateRun, setUpdateRun] = useState<{ active: boolean; message: string } | null>(null);
+  // 이사 전환은 확인창 없이 곧바로 실행되므로, 진행·실패를 그 알림 자리에 붙여 보여준다
+  // (성공하면 화면이 통째로 새로고침되므로 남는 것은 실패 문구뿐이다).
+  const [relocateRun, setRelocateRun] = useState<
+    { id: string; busy: boolean; message: string } | null
+  >(null);
   const ref = useRef<HTMLDivElement>(null);
   const commentsSupportedRef = useRef(true);
   const commentsLoadSeqRef = useRef(0);
@@ -200,10 +206,13 @@ export function NotificationCenter({
   // 업데이트 알림 본문은 저장된 한국어 원문 대신 표시 시점 언어로 조립한다(버전은 치환).
   const releaseText = (item: ReleaseNotification) => {
     if (item.kind === "relocation") {
-      // 이름이 등록돼 있으면 이름만 — 새 주소는 확인 모달에서 반드시 보여준다.
+      // 이름이 등록돼 있으면 이름만 — 주소는 이름이 없을 때만 드러낸다. 확인창이 없으므로
+      // '누르면 무슨 일이 일어나는지'를 이 한 줄이 반드시 담는다.
       return item.serverName
-        ? t("'{name}' 서버가 새 위치로 이동했습니다").replace("{name}", item.serverName)
-        : t("공유 서버가 새 주소로 이사했습니다: {url}").replace("{url}", item.url || "");
+        ? t("'{name}' 서버가 새 위치로 이동했습니다. 누르면 전환되고 다시 로그인합니다.")
+            .replace("{name}", item.serverName)
+        : t("공유 서버가 새 주소로 이사했습니다: {url}. 누르면 전환되고 다시 로그인합니다.")
+            .replace("{url}", item.url || "");
     }
     return (item.kind === "available"
       ? t("새 버전 {v} 사용 가능")
@@ -244,24 +253,29 @@ export function NotificationCenter({
           : candidate,
       ),
     );
-    // "새 버전 사용 가능"·"서버 이사"는 그 자리에서 실행 여부를 묻는다(설정 이동 없이 즉시 실행).
-    if ((item.kind === "available" || item.kind === "relocation") && !updateRun?.active) {
-      setConfirmUpdateId((current) => (current === item.id ? null : item.id));
-    }
+    // 이사=클릭 즉시 전환(확인창 없음), 새 버전=그 자리에서 한 번 더 묻기. 판정은 한곳(lib).
+    const action = releaseNotificationAction(
+      item.kind,
+      !!updateRun?.active || !!relocateRun?.busy,
+    );
+    if (action === "relocate") void runRelocate(item);
+    else if (action === "confirm") setConfirmUpdateId((current) => (current === item.id ? null : item.id));
   };
 
   // 공유 서버 주소 전환 — 백엔드가 공지를 다시 읽어 재검증한 뒤 주소를 바꾸고 로그아웃시킨다.
   // 성공하면 새 주소 기준으로 다시 로그인해야 하므로 화면을 통째로 새로 연다.
+  // 실패하면(공지 변경·새 주소 무응답 등) 전환은 일어나지 않는다 — 사유를 그 알림 자리에
+  // 남겨, 옛 주소를 그대로 쓰고 있다는 사실이 드러나게 한다.
   const runRelocate = async (item: ReleaseNotification) => {
-    setConfirmUpdateId(null);
     if (!item.url) return;
-    setUpdateRun({ active: true, message: t("공유 서버 주소를 전환하는 중…") });
+    setRelocateRun({ id: item.id, busy: true, message: t("공유 서버 주소를 전환하는 중…") });
     try {
       await sharedApi.sharedServerRelocate(item.url, Number(item.version));
     } catch (relocateError) {
-      setUpdateRun({
-        active: false,
-        message: `${t("주소를 전환하지 못했습니다")}: ${String((relocateError as Error)?.message || relocateError)}`,
+      setRelocateRun({
+        id: item.id,
+        busy: false,
+        message: `${t("전환하지 못했습니다 — 옛 주소를 그대로 씁니다")}: ${String((relocateError as Error)?.message || relocateError)}`,
       });
       return;
     }
@@ -457,25 +471,24 @@ export function NotificationCenter({
                   {confirmUpdateId === item.id && (
                     <div className="notification-confirm" role="alertdialog" aria-label={t("알림 센터")}>
                       <span>
-                        {item.kind === "relocation"
-                          ? t("새 주소 {url} 로 전환하면 로그아웃되고 다시 로그인합니다. 전환할까요?")
-                              .replace("{url}", item.url || "")
-                          : t("{v}(으)로 업데이트하시겠습니까?").replace("{v}", `v${item.version}`)}
+                        {t("{v}(으)로 업데이트하시겠습니까?").replace("{v}", `v${item.version}`)}
                       </span>
                       <span className="notification-confirm-actions">
-                        <button
-                          type="button"
-                          className="yes"
-                          onClick={() =>
-                            void (item.kind === "relocation" ? runRelocate(item) : runUpdate(item))
-                          }
-                        >
-                          {item.kind === "relocation" ? t("예, 전환") : t("예, 업데이트")}
+                        <button type="button" className="yes" onClick={() => void runUpdate(item)}>
+                          {t("예, 업데이트")}
                         </button>
                         <button type="button" onClick={() => setConfirmUpdateId(null)}>
                           {t("나중에")}
                         </button>
                       </span>
+                    </div>
+                  )}
+                  {relocateRun?.id === item.id && (
+                    <div className="notification-confirm notification-inline-status" role="status">
+                      {relocateRun.busy && (
+                        <span className="notification-progress-spin" aria-hidden="true" />
+                      )}
+                      <span>{relocateRun.message}</span>
                     </div>
                   )}
                 </div>

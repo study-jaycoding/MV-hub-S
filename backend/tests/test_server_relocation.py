@@ -12,6 +12,7 @@
 6. 조회·전환 라우트는 loopback + Host 헤더 가드(B안과 같은 8개 라우트 규칙).
 7. 릴리스 설치본이 아니면 아무 동작도 하지 않는다(공지 파일을 읽으러 가지도 않는다).
 8. 공지 읽기는 별도 프로세스로 격리된다 — 죽은 NAS 가 허브를 붙잡지 못하게.
+9. 발행('팀에 공지') — 원자 쓰기·revision 자동 +1·못 읽으면 발행 거부·권한 실패 안내.
 """
 from __future__ import annotations
 
@@ -199,6 +200,98 @@ class IsolatedReadTests(unittest.TestCase):
         self.assertIsNone(
             server_relocation.read_announcement(str(self.source), timeout=0.001)
         )
+
+
+class AnnouncementPublishTests(unittest.TestCase):
+    """9. 발행 — 관리자가 파일을 손으로 쓰지 않게 하는 경로. 실제 자식 프로세스로 쓴다."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.source = Path(self.tmp.name)
+        self.file = self.source / server_relocation.LOCATION_FILE
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(lambda: server_relocation._snapshot.__setitem__(0, None))
+
+    def _publish(self, url="http://192.168.1.50:8010", name="MV 팀 서버", **kwargs):
+        return server_relocation.publish_announcement(
+            str(self.source), url=url, name=name, **kwargs
+        )
+
+    def test_first_publish_starts_at_revision_1_and_the_reader_accepts_it(self):
+        out = self._publish()
+        self.assertEqual(out["revision"], 1)
+        # 발행한 그대로를 리더(별도 프로세스)가 다시 읽어 통과해야 한다 — 깨진 공지를
+        # 팀에 뿌려 놓고 성공했다고 믿는 상태가 이 기능의 최악이다.
+        self.assertEqual(
+            server_relocation.read_announcement(str(self.source)),
+            {
+                "url": "http://192.168.1.50:8010",
+                "revision": 1,
+                "name": "MV 팀 서버",
+                "announced_at": out["announced_at"],
+            },
+        )
+        self.assertTrue(out["announced_at"])  # 발행 시각이 갱신된다
+
+    def test_revision_increases_from_the_file_that_is_already_there(self):
+        """번호는 사람 기억이 아니라 파일에서 계산한다(안 올린 재작성 = 리더가 거부하는 사고)."""
+        self.file.write_bytes(_location_bytes(revision=7))
+        self.assertEqual(self._publish()["revision"], 8)
+        self.assertEqual(self._publish()["revision"], 9)
+
+    def test_publish_writes_atomically_and_leaves_no_temp_file(self):
+        self._publish()
+        self.assertEqual([p.name for p in self.source.iterdir()], [server_relocation.LOCATION_FILE])
+
+    def test_unreadable_existing_file_refuses_to_publish(self):
+        """번호를 확인 못 했는데 1 로 덮어쓰면 이미 옮긴 PC 가 미아가 된다 — 차라리 멈춘다."""
+        self.file.write_bytes("손으로 고치다 깨뜨린 파일".encode("utf-8"))
+        with self.assertRaises(server_relocation.RelocationWriteError):
+            self._publish()
+        self.assertEqual(self.file.read_bytes(), "손으로 고치다 깨뜨린 파일".encode("utf-8"))  # 건드리지 않는다
+
+    def test_dead_source_gives_up_in_time_and_writes_nothing(self):
+        """죽은 NAS 대역 — 자식이 시간 안에 안 끝나면 회수하고 발행은 실패로 끝난다."""
+        self.file.write_bytes(_location_bytes(revision=3))
+        with self.assertRaises(server_relocation.RelocationWriteError):
+            self._publish(timeout=0.001)
+        self.assertEqual(server_relocation.parse_announcement(self.file.read_bytes())["revision"], 3)
+
+    def test_missing_folder_and_http_source_are_refused(self):
+        """오타 난 경로에 가짜 릴리스 폴더를 만들어 두면 아무도 못 읽는 공지가 생긴다."""
+        for source in (str(self.source / "nope"), "https://releases.example.com/mvhub"):
+            with self.assertRaises(server_relocation.RelocationWriteError):
+                server_relocation.publish_announcement(source, url="http://h:8010", name="")
+
+    def test_write_permission_failure_tells_the_admin_where_to_run_it(self):
+        """작업자 PC 는 릴리스 폴더에 읽기 권한만 있다(권한의 본질은 NAS ACL)."""
+        with mock.patch.object(
+            server_relocation, "_atomic_write_text", side_effect=PermissionError(13, "denied")
+        ):
+            with self.assertRaises(server_relocation.RelocationPermissionError) as caught:
+                server_relocation.write_source_text(str(self.source), "{}")
+        self.assertIn("관리자 PC", str(caught.exception))
+        # 자식이 올린 '권한 거부' 표식은 부모에서도 권한 예외로 남는다(안내 문구가 달라야 한다).
+        def denied_on_write(args, timeout):
+            if len(args) == 1:  # 번호 확인(읽기) — 아직 공지가 없는 폴더
+                return {"ok": False, "missing": True}
+            return {"ok": False, "denied": True, "error": "릴리스 폴더에 쓰기 권한이 없습니다"}
+
+        with mock.patch.object(server_relocation, "_run_child", side_effect=denied_on_write):
+            with self.assertRaises(server_relocation.RelocationPermissionError):
+                server_relocation.publish_announcement(
+                    str(self.source), url="http://h:8010", name=""
+                )
+
+    def test_published_announcement_becomes_the_local_snapshot(self):
+        out = self._publish()
+        self.assertEqual(server_relocation.snapshot(), out)
+
+    def test_rendering_refuses_a_body_the_reader_would_reject(self):
+        with self.assertRaises(server_relocation.RelocationReadError):
+            server_relocation.render_announcement("not-a-url", 1, "", "")
+        with self.assertRaises(server_relocation.RelocationReadError):
+            server_relocation.render_announcement("http://h:8010", 1, "줄\n바꿈", "")
 
 
 class InstallModeGateTests(unittest.TestCase):
@@ -454,6 +547,122 @@ class RelocationRouteTests(unittest.TestCase):
         self.assertEqual(shared_connection.relocation_seen(), {})
         # 되돌릴 수 없는 포인터 해제까지 가지 않았다.
         publish.active_account.clear_active.assert_not_called()
+
+
+class PublishRouteTests(unittest.TestCase):
+    """9. '팀에 공지' 라우트 — 지금 저장된 이름·주소를 그대로 릴리스 폴더에 남긴다."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.source = Path(self.tmp.name) / "releases"
+        self.source.mkdir()
+        self.old_db = os.environ.get("CONTENT_HUB_DB")
+        os.environ["CONTENT_HUB_DB"] = os.path.join(self.tmp.name, "content_hub.db")
+        db.flush_pool()
+        db.init_db()
+        repo.set_setting(publish._K_URL, "http://192.168.1.50:8010")
+        repo.set_setting(publish._K_SERVER_NAME, "MV 팀 서버")
+        repo.set_setting(publish._K_TOKEN, "secret-token")
+        repo.set_setting(publish._K_EMAIL, "artist@example.com")
+
+    def tearDown(self):
+        db.flush_pool()
+        if self.old_db is None:
+            os.environ.pop("CONTENT_HUB_DB", None)
+        else:
+            os.environ["CONTENT_HUB_DB"] = self.old_db
+        db.flush_pool()
+        server_relocation._snapshot[0] = None
+        self.tmp.cleanup()
+
+    def _publish(self, request: Request | None = None):
+        with mock.patch.object(
+            server_relocation, "announcement_source", return_value=str(self.source)
+        ):
+            return publish.publish_relocation_announcement(request or _request())
+
+    def test_remote_and_rebinding_requests_are_rejected(self):
+        for request in (_request(client_host="192.168.1.50"), _request(host_header="evil:8010")):
+            with self.assertRaises(HTTPException) as caught:
+                self._publish(request)
+            self.assertEqual(caught.exception.status_code, 403)
+
+    def test_publish_writes_the_saved_name_and_address(self):
+        out = self._publish()
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["url"], "http://192.168.1.50:8010")
+        self.assertEqual(out["server_name"], "MV 팀 서버")
+        self.assertEqual(out["revision"], 1)
+        self.assertEqual(out["source"], str(self.source))
+        written = server_relocation.parse_announcement(
+            (self.source / server_relocation.LOCATION_FILE).read_bytes()
+        )
+        self.assertEqual(written["url"], "http://192.168.1.50:8010")
+        self.assertEqual(written["name"], "MV 팀 서버")
+
+    def test_publish_bumps_the_revision_of_an_existing_announcement(self):
+        (self.source / server_relocation.LOCATION_FILE).write_bytes(_location_bytes(revision=4))
+        self.assertEqual(self._publish()["revision"], 5)
+
+    def test_the_published_file_never_contains_a_token_or_email(self):
+        self._publish()
+        raw = (self.source / server_relocation.LOCATION_FILE).read_text("utf-8")
+        self.assertNotIn("secret-token", raw)
+        self.assertNotIn("artist@example.com", raw)
+
+    def test_publisher_does_not_get_its_own_announcement_back(self):
+        """내가 낸 공지가 나에게 '옮기시겠습니까'로 돌아오면 안 된다."""
+        out = self._publish()
+        self.assertEqual(
+            shared_connection.relocation_seen(),
+            {"revision": out["revision"], "url": out["url"]},
+        )
+        self.assertIsNone(publish.shared_server_relocation(_request())["proposed_url"])
+        # 그래도 '더 높은 번호'의 새 공지는 여전히 제안된다(수락 표식이 귀를 막지 않는다).
+        server_relocation.remember(_announcement("http://10.0.0.9:8010", out["revision"] + 1))
+        with mock.patch.object(
+            publish,
+            "_probe_shared_health",
+            return_value=publish._probe_result(True, True, None, None),
+        ):
+            self.assertEqual(
+                publish.shared_server_relocation(_request())["proposed_url"],
+                "http://10.0.0.9:8010",
+            )
+
+    def test_non_release_install_refuses_without_touching_the_release_folder(self):
+        with (
+            mock.patch.object(server_relocation, "announcement_source", return_value=None),
+            mock.patch.object(server_relocation, "_run_child") as child,
+        ):
+            with self.assertRaises(HTTPException) as caught:
+                publish.publish_relocation_announcement(_request())
+        self.assertEqual(caught.exception.status_code, 400)
+        child.assert_not_called()
+
+    def test_permission_failure_is_reported_as_a_place_to_run_it(self):
+        with mock.patch.object(
+            server_relocation,
+            "publish_announcement",
+            side_effect=server_relocation.RelocationPermissionError(
+                "릴리스 폴더에 쓰기 권한이 없습니다 — 관리자 PC 에서 실행하세요"
+            ),
+        ):
+            with self.assertRaises(HTTPException) as caught:
+                self._publish()
+        self.assertEqual(caught.exception.status_code, 403)
+        self.assertIn("관리자 PC", caught.exception.detail)
+
+    def test_write_failure_is_reported_without_marking_it_accepted(self):
+        with mock.patch.object(
+            server_relocation,
+            "publish_announcement",
+            side_effect=server_relocation.RelocationWriteError("릴리스 폴더에 연결할 수 없습니다"),
+        ):
+            with self.assertRaises(HTTPException) as caught:
+                self._publish()
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertEqual(shared_connection.relocation_seen(), {})
 
 
 class ServerNameRegistrationTests(unittest.TestCase):

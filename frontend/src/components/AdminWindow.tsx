@@ -115,8 +115,34 @@ export function AdminWindow({
     loadAccounts();
   };
   const elevated = !!shared?.elevated;
+  // 팀에 공지 — 지금 '저장된' 이름·주소를 릴리스 폴더의 공지 파일로 내보낸다. 작업자 PC 는
+  // 1분 안에 알림을 받고, 알림을 누르면 그 주소로 전환된다. 팀 전체에 영향을 주는 행위라
+  // 확인 한 번을 거친다(입력창의 미저장 초안이 아니라 저장된 값이 나간다는 점도 여기서 알린다).
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [publishBusy, setPublishBusy] = useState(false);
+  const [publishMsg, setPublishMsg] = useState("");
+  const savedUrl = (shared?.url || "").trim();
+  const savedName = (shared?.server_name || "").trim();
+  const publishDirty = urlDraft.trim() !== savedUrl || nameDraft.trim() !== savedName;
+  const doPublish = async () => {
+    setPublishBusy(true);
+    setPublishMsg("");
+    try {
+      const r = await api.publishServerRelocation();
+      setPublishOpen(false);
+      setPublishMsg(
+        `팀에 공지했습니다 (${r.revision}번째). 작업자 PC 는 1분 안에 알림을 받습니다.`,
+      );
+    } catch (e) {
+      setPublishMsg("공지 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+      setPublishOpen(false);
+    } finally {
+      setPublishBusy(false);
+    }
+  };
   const saveUrl = async () => {
     setUrlMsg("");
+    setPublishMsg(""); // 주소가 바뀌었으면 직전 공지 결과 문구는 더 이상 지금 상태가 아니다
     try {
       const r = await api.setSharedServerUrl(urlDraft.trim(), nameDraft.trim());
       setShared((p) => ({
@@ -327,6 +353,7 @@ export function AdminWindow({
               )}
 
               {activeTab === "server" && (
+              <>
               <section className="admin-section">
                 <h4>공유 서버 이름·주소</h4>
                 <div className="admin-note-sub">
@@ -349,15 +376,68 @@ export function AdminWindow({
                   onChange={(e) => setUrlDraft(e.target.value)}
                   style={{ maxWidth: 420, marginTop: 8 }}
                 />
-                <div style={{ marginTop: 10 }}>
+                <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
                   <button className="settings-action" style={{ width: "auto" }} onClick={saveUrl}>
                     저장
+                  </button>
+                  <button
+                    className="settings-action"
+                    style={{ width: "auto" }}
+                    onClick={() => setPublishOpen(true)}
+                    disabled={publishBusy || !savedUrl}
+                    title="저장된 이름·주소를 팀 전체에 공지합니다"
+                  >
+                    {publishBusy ? "공지 중…" : "팀에 공지"}
                   </button>
                 </div>
                 {urlMsg && (
                   <p style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>{urlMsg}</p>
                 )}
+                {publishMsg && (
+                  <p style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>{publishMsg}</p>
+                )}
+                <div className="admin-note-sub" style={{ marginTop: 10 }}>
+                  ⓘ <b>팀에 공지</b>는 릴리스 폴더(작업자 설치 원본)에 이사 공지 파일을 남깁니다.
+                  작업 중인 사람에게 알림이 뜨고, 누르면 이 주소로 전환됩니다. 릴리스 폴더에
+                  쓰기 권한이 있는 관리자 PC 에서만 됩니다.
+                </div>
               </section>
+
+              {publishOpen && (
+                <div className="admin-confirm-backdrop" onMouseDown={() => setPublishOpen(false)}>
+                  <div className="admin-confirm" onMouseDown={(e) => e.stopPropagation()}>
+                    <p className="admin-confirm-q">
+                      팀 전체에 서버 전환 안내가 발송됩니다.
+                      <br />
+                      <span className="admin-note-sub">
+                        공지 내용: <b>{savedName || "(이름 없음)"}</b> · {savedUrl}
+                      </span>
+                      {publishDirty && (
+                        <>
+                          <br />
+                          <span className="admin-note-sub">
+                            ⚠ 입력창에 저장하지 않은 변경이 있습니다 — 공지는 <b>저장된 값</b>으로
+                            나갑니다.
+                          </span>
+                        </>
+                      )}
+                    </p>
+                    <div className="admin-confirm-actions">
+                      <button
+                        className="admin-confirm-yes"
+                        onClick={doPublish}
+                        disabled={publishBusy}
+                      >
+                        {publishBusy ? "공지 중…" : "공지 발송"}
+                      </button>
+                      <button className="admin-confirm-no" onClick={() => setPublishOpen(false)}>
+                        취소
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              </>
               )}
 
               {activeTab === "roles" && (

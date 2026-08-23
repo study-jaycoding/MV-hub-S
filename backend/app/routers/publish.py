@@ -378,7 +378,7 @@ def _require_local_shared_connection(request: Request) -> None:
     """공유 서버 '연결 설정'(상태·로그인·토큰·elevation·주소·probe)은 이 PC 브라우저 전용
     (R7 0-A, 코덱스 P1) — 원격 계정이 서버 공용 설정·토큰을 읽거나 바꾸는 간섭과
     login body.url SSRF 를 차단한다. 발행 '데이터' 경로(/share/publish-bundle·
-    /publish-to-shared)는 대상이 아니다. ★호환성: LAN 직결·역프록시에선 이 8개가 403.
+    /publish-to-shared)는 대상이 아니다. ★호환성: LAN 직결·역프록시에선 이 연결설정 라우트 전부(현재 11개)가 403.
     Host 헤더까지 loopback 이어야 통과한다(DNS 리바인딩으로 loopback 판정을 얻는 우회 차단)."""
     require_loopback_browser_request(
         request, "공유 서버 연결 설정은 해당 PC 브라우저에서만 사용할 수 있습니다"
@@ -740,6 +740,53 @@ def shared_server_relocation(request: Request):
 def _proposed_server_name(proposal: dict[str, Any]) -> str:
     """이사 뒤에 보여줄 서버 이름 — 공지의 이름이 우선, 없으면 지금 기억하는 이름."""
     return _normalize_server_name(proposal.get("name")) or _server_name()
+
+
+@router.post("/shared-server/relocation/publish")
+def publish_relocation_announcement(request: Request):
+    """지금 저장된 서버 이름·주소를 릴리스 폴더의 공지로 발행한다 — 관리자 창 '팀에 공지'.
+
+    관리자가 server-location.json 을 손으로 쓰지 않아도 되게 하는 버튼이다. revision 은
+    **기존 파일을 읽어 +1**(없으면 1) — 번호를 안 올린 재작성은 리더가 거부하는 사고이므로
+    사람의 기억에 맡기지 않는다. 읽기·쓰기 모두 자식 프로세스로 격리한다(죽은 NAS 대비).
+
+    ★권한의 본질은 릴리스 폴더 ACL 이다(작업자는 읽기 전용). 그래서 여기서 admin 역할을
+    다시 검사하지 않는다 — 쓰기 권한이 없는 PC 는 파일 시스템에서 막히고, 그때 안내 문구로
+    끝난다. 이 라우트도 다른 연결 설정과 같은 loopback+Host 가드 아래 있다.
+    """
+    _require_local_shared_connection(request)
+    url = _validated_effective_url()
+    name = _server_name()
+    source = server_relocation.announcement_source()
+    if not source:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "릴리스 설치본에서만 공지를 발행할 수 있습니다"
+                "(INSTALL_SOURCE.txt 가 가리키는 릴리스 폴더가 필요합니다)"
+            ),
+        )
+    try:
+        announced = server_relocation.publish_announcement(source, url=url, name=name)
+    except server_relocation.RelocationPermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (server_relocation.RelocationWriteError, server_relocation.RelocationReadError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # 내가 낸 공지가 나에게 다시 '옮기시겠습니까'로 돌아오지 않게 수락 표식을 갱신한다.
+    # (지금은 발행 주소 = 내 주소라 어차피 제안되지 않지만, 나중에 이 PC 가 다른 주소로
+    #  로그인하면 내가 쓴 번호를 나에게 제안하게 된다. 더 높은 번호는 그대로 제안된다.)
+    try:
+        _set_relocation_seen(announced["revision"], announced["url"])
+    except Exception:  # noqa: BLE001 — 표식 기록 실패가 '이미 성공한 발행'을 실패로 만들지 않게
+        logging.getLogger(__name__).error("발행한 공지의 수락 표식 기록 실패", exc_info=True)
+    return {
+        "ok": True,
+        "url": announced["url"],
+        "revision": announced["revision"],
+        "server_name": announced["name"],
+        "announced_at": announced["announced_at"],
+        "source": source,
+    }
 
 
 @router.post("/shared-server/relocate")

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   markAllReleaseNotificationsRead,
   markReleaseNotificationRead,
+  releaseNotificationAction,
   serverRelocationNotification,
   unreadNotificationCount,
 } from "../src/lib/notificationCenter";
@@ -48,16 +49,38 @@ describe("공유 서버 이사 알림", () => {
     const session = new MemoryStorage();
     const named = serverRelocationNotification(info(), session)!;
     expect(named.serverName).toBe("MV 팀 서버");
-    expect(named.text).toBe("'MV 팀 서버' 서버가 새 위치로 이동했습니다");
+    expect(named.text).toBe(
+      "'MV 팀 서버' 서버가 새 위치로 이동했습니다. 누르면 전환되고 다시 로그인합니다.",
+    );
     expect(named.text).not.toContain("192.168.1.50");
 
     for (const blank of [null, "", "   "]) {
       const plain = serverRelocationNotification(info({ server_name: blank }), session)!;
       expect(plain.serverName).toBe("");
-      expect(plain.text).toBe("공유 서버가 새 주소로 이사했습니다: http://192.168.1.50:8010");
+      expect(plain.text).toBe(
+        "공유 서버가 새 주소로 이사했습니다: http://192.168.1.50:8010. 누르면 전환되고 다시 로그인합니다.",
+      );
     }
-    // 이름이 있어도 전환 대상 주소는 항상 들고 다닌다(확인 모달이 보여준다).
+    // 이름이 있어도 전환 대상 주소는 항상 들고 다닌다(클릭 즉시 이 주소로 전환한다).
     expect(named.url).toBe("http://192.168.1.50:8010");
+  });
+
+  it("확인창이 없으므로 본문이 '누르면 전환된다'는 결과를 반드시 말한다", () => {
+    const session = new MemoryStorage();
+    for (const name of ["MV 팀 서버", ""]) {
+      const item = serverRelocationNotification(info({ server_name: name }), session)!;
+      expect(item.text).toContain("누르면 전환되고 다시 로그인합니다.");
+    }
+  });
+
+  it("이사 알림 클릭은 확인창 없이 곧바로 전환한다(업데이트만 한 번 더 묻는다)", () => {
+    expect(releaseNotificationAction("relocation", false)).toBe("relocate");
+    expect(releaseNotificationAction("available", false)).toBe("confirm");
+    expect(releaseNotificationAction("completed", false)).toBe("none");
+    // 이미 전환·업데이트가 돌고 있으면 같은 클릭이 두 번 실행되지 않는다.
+    for (const kind of ["relocation", "available", "completed"] as const) {
+      expect(releaseNotificationAction(kind, true)).toBe("none");
+    }
   });
 
   it("revision·주소가 알림 id 를 이룬다(새 공지는 새 알림)", () => {
