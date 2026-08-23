@@ -33,20 +33,92 @@ def _record_history(
 
 
 def _descendants(conn: sqlite3.Connection, root: str) -> set[str]:
-    """root 의 모든 자손 id(모든 relation, BFS). 순환 방어용."""
-    out: set[str] = set()
-    frontier = [root]
-    while frontier:
-        ph = ",".join("?" * len(frontier))
-        nxt = [
-            r["child_gen_id"]
-            for r in conn.execute(
-                f"SELECT child_gen_id FROM history WHERE parent_gen_id IN ({ph})", frontier
-            ).fetchall()
-        ]
-        frontier = [c for c in nxt if c not in out]
-        out.update(frontier)
-    return out
+    """root 의 모든 자손 id(모든 relation). 순환 검사·전이 축소용.
+
+    ``UNION``(not ``UNION ALL``)이 이미 본 id를 재귀 큐에 다시 넣지 않으므로 순환·자기참조도
+    종료한다. frontier 크기만큼 SQL 변수를 만들던 Python BFS와 달리 변수는 root 하나뿐이다.
+    """
+    return {
+        r["id"]
+        for r in conn.execute(
+            "WITH RECURSIVE descendants(id) AS ("
+            "  SELECT child_gen_id FROM history WHERE parent_gen_id=? "
+            "  UNION "
+            "  SELECT h.child_gen_id FROM history h "
+            "  JOIN descendants d ON h.parent_gen_id=d.id"
+            ") SELECT id FROM descendants",
+            (root,),
+        ).fetchall()
+    }
+
+
+def _limited_ids(rows: list[sqlite3.Row], limit: int) -> tuple[set[str], bool]:
+    """limit+1 행을 정확한 상한 집합과 실제 절단 여부로 바꾼다."""
+    if limit < 1:
+        raise ValueError("lineage limit은 1 이상이어야 합니다.")
+    return {r["id"] for r in rows[:limit]}, len(rows) > limit
+
+
+def _connected_lineage(
+    conn: sqlite3.Connection, gen_id: str, limit: int = 300
+) -> tuple[set[str], bool]:
+    """양방향 연결 컴포넌트를 ``(최대 limit개, 실제 절단 여부)``로 반환한다.
+
+    limit 계약: 양수이며 focus 자신도 1개로 센다. SQLite 재귀 CTE의 기본 FIFO 큐를 써서
+    graph hop이 가까운 노드를 먼저 고르고, 같은 hop 안의 선택 순서는 DB 탐색 순서다. 반환 API의
+    노드 순서는 이 탐색 순서가 아니라 기존처럼 ``sort_ts``가 결정한다.
+
+    CTE 행은 id 하나라 ``UNION`` 중복 제거가 순환·자기참조를 끝낸다. limit+1개만 읽어
+    상한을 넘기지 않으면서 실제로 생략된 노드가 있는지도 구분한다.
+    """
+    if limit < 1:
+        raise ValueError("lineage limit은 1 이상이어야 합니다.")
+    rows = conn.execute(
+        "WITH RECURSIVE connected(id) AS ("
+        "  VALUES(?) "
+        "  UNION "
+        "  SELECT h.child_gen_id FROM history h "
+        "  JOIN connected c ON h.parent_gen_id=c.id "
+        "  UNION "
+        "  SELECT h.parent_gen_id FROM history h "
+        "  JOIN connected c ON h.child_gen_id=c.id"
+        ") SELECT id FROM connected LIMIT ?",
+        (gen_id, limit + 1),
+    ).fetchall()
+    return _limited_ids(rows, limit)
+
+
+def _directed_lineage_window(
+    conn: sqlite3.Connection, gen_id: str, limit: int = 300
+) -> tuple[set[str], bool]:
+    """곁가지를 제외한 조상+자손 라인을 정확한 상한과 함께 반환한다.
+
+    기존 비소유 공유물 계약을 보존해 focus에서 가까운 조상을 먼저, 남은 자리에 가까운 자손을
+    넣는다. 각 CTE는 id만 ``UNION``하므로 손상 DB의 순환·자기참조에서도 종료한다.
+    """
+    if limit < 1:
+        raise ValueError("lineage limit은 1 이상이어야 합니다.")
+    rows = conn.execute(
+        "WITH RECURSIVE "
+        "ancestors(id) AS ("
+        "  VALUES(?) "
+        "  UNION "
+        "  SELECT h.parent_gen_id FROM history h "
+        "  JOIN ancestors a ON h.child_gen_id=a.id"
+        "), "
+        "descendants(id) AS ("
+        "  VALUES(?) "
+        "  UNION "
+        "  SELECT h.child_gen_id FROM history h "
+        "  JOIN descendants d ON h.parent_gen_id=d.id"
+        ") "
+        "SELECT id FROM ancestors "
+        "UNION ALL "
+        "SELECT id FROM descendants WHERE id NOT IN (SELECT id FROM ancestors) "
+        "LIMIT ?",
+        (gen_id, gen_id, limit + 1),
+    ).fetchall()
+    return _limited_ids(rows, limit)
 
 
 def _derived_depth_batch(
@@ -171,30 +243,6 @@ def _gen_row_visible(
 def _directed_lineage(conn: sqlite3.Connection, gen_id: str, limit: int = 300) -> set[str]:
     """gen_id 의 '연결된 라인' 노드집합 — 조상(부모 위로) + 자신 + 자손(자식 아래로).
     형제·곁가지(부모의 다른 자식, 자손의 다른 부모)는 제외 — 이 결과물로 이어지는 직계 라인만.
-    타 작업자가 공유물의 계보를 볼 때 쓴다(연결된 라인만 보이고 나머지는 안 보여도 됨)."""
-    out: set[str] = {gen_id}
-    # 위로(조상): child_gen_id 가 현재 집합인 부모들
-    frontier = [gen_id]
-    while frontier and len(out) < limit:
-        ph = ",".join("?" * len(frontier))
-        nxt = [
-            r["x"]
-            for r in conn.execute(
-                f"SELECT parent_gen_id x FROM history WHERE child_gen_id IN ({ph})", frontier
-            ).fetchall()
-        ]
-        frontier = [n for n in nxt if n not in out]
-        out.update(frontier)
-    # 아래로(자손): parent_gen_id 가 현재 집합인 자식들
-    frontier = [gen_id]
-    while frontier and len(out) < limit:
-        ph = ",".join("?" * len(frontier))
-        nxt = [
-            r["x"]
-            for r in conn.execute(
-                f"SELECT child_gen_id x FROM history WHERE parent_gen_id IN ({ph})", frontier
-            ).fetchall()
-        ]
-        frontier = [n for n in nxt if n not in out]
-        out.update(frontier)
-    return out
+    타 작업자가 공유물의 계보를 볼 때 쓴다(연결된 라인만 보이고 나머지는 안 보여도 됨).
+    limit은 focus를 포함한 양수 최대 개수이며, 조상 우선 계약은 ``_directed_lineage_window`` 참고."""
+    return _directed_lineage_window(conn, gen_id, limit)[0]

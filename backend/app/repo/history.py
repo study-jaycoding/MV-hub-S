@@ -13,8 +13,9 @@ from typing import Any, Optional
 from ..db import get_connection
 from .generation_rows import _fetch_gens  # 완전 직렬화 행 페치(단방향 import)
 from .lineage import (  # history 조회가 쓰는 lineage private helper (단방향: history → lineage)
+    _connected_lineage,
     _derived_depth_batch,
-    _directed_lineage,
+    _directed_lineage_window,
     _gen_row_visible,
 )
 
@@ -148,7 +149,9 @@ def get_history_graph(
     history 엣지를 양방향으로 따라 연결 컴포넌트를 모으고(약한형제는 제외 — 명시 엣지만),
     그 안의 모든 엣지(relation 포함)와 완전 직렬화된 generation 을 돌려준다.
     roots = 컴포넌트 안에서 들어오는 엣지가 없는 노드(원본). 없는 id 면 None.
-    limit: 안전 상한(폭주 방지) — BFS 가 이 수에 닿으면 멈춘다."""
+    limit 계약: focus를 포함한 양수 안전 상한. 반환 nodes는 반드시 최대 limit개다. 전체 컴포넌트는
+    가까운 graph hop 우선, 타인 공유물의 제한 라인은 기존 의미대로 가까운 조상 우선 후 가까운 자손
+    순으로 고른다. 같은 hop의 경계 선택은 DB 탐색 순서이며 최종 nodes 표시 순서는 기존 sort_ts 순이다."""
     with get_connection() as conn:
         if not conn.execute("SELECT 1 FROM generation WHERE id=?", (gen_id,)).fetchone():
             return None
@@ -160,25 +163,10 @@ def get_history_graph(
         focus_owned = bool(viewer_uid) and frow and frow["creator_uid"] == viewer_uid
         truncated = False
         if read_all or focus_owned:
-            # 연결 컴포넌트 BFS(부모·자식 양방향). 명시 history 엣지만(약한형제 제외).
-            node_ids: set[str] = {gen_id}
-            frontier = [gen_id]
-            while frontier and len(node_ids) < limit:
-                ph = ",".join("?" * len(frontier))
-                neigh = [
-                    r["x"]
-                    for r in conn.execute(
-                        f"SELECT child_gen_id x FROM history WHERE parent_gen_id IN ({ph}) "
-                        f"UNION SELECT parent_gen_id x FROM history WHERE child_gen_id IN ({ph})",
-                        [*frontier, *frontier],
-                    ).fetchall()
-                ]
-                frontier = [n for n in neigh if n not in node_ids]
-                node_ids.update(frontier)
-            truncated = bool(frontier)  # 확장할 이웃이 남았는데 limit 에서 멈췄다 → 일부 생략됨
+            # 명시 history 엣지만(약한형제 제외). CTE가 limit+1을 읽어 정확한 상한/절단을 판정한다.
+            node_ids, truncated = _connected_lineage(conn, gen_id, limit)
         else:
-            node_ids = _directed_lineage(conn, gen_id, limit)
-            truncated = len(node_ids) >= limit
+            node_ids, truncated = _directed_lineage_window(conn, gen_id, limit)
         ids = list(node_ids)
         iph = ",".join("?" * len(ids))
         # 절단 경계 가짜 루트 방지: '전체 history 기준 부모 엣지가 있는' 노드 집합. BFS 가 limit 에서
