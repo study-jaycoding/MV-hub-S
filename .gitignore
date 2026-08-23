@@ -49,3 +49,5 @@ release/publish_target.txt
 /.mvhub-runtime/
 # 백업 원격 복제 대상 경로(머신별 설정)
 tools/backup_replica_target.txt
+# 옵시디언 보관소 개인 설정(사람마다 다름 — 저장소에 올리지 않는다)
+/.obsidian/
