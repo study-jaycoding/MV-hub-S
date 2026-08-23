@@ -20,8 +20,16 @@ except ImportError:  # pragma: no cover - Resolve의 구형 Python 2 폴백
     from urllib2 import HTTPError, Request, URLError, urlopen
 
 
-PLUGIN_VERSION = "0.2.0"
+PLUGIN_VERSION = "0.3.0"
 WINDOW_ID = "com.millionvolt.mvhub.importer-result"
+# 허브 push 워커가 가져오기 전에 잡는 것과 **같은** 락 파일. 이 스크립트가 참여하지 않으면
+# 워커와 메뉴 실행이 동시에 같은 Resolve 프로젝트를 변형한다(v3 를 건너뛰는 것만으로는
+# 부족하다 — 남아 있는 v2 전송도 결국 같은 Media Pool 을 만진다).
+PROJECT_LOCK_RELATIVE = (".mvhub", "locks", "project-import.lock")
+BUSY_MESSAGE = (
+    "MV Hub 자동 가져오기가 지금 Resolve를 사용하고 있습니다. "
+    "끝난 뒤 다시 실행하세요."
+)
 # 허브에 "나는 v3 규약을 안다"고 알린다. 허브는 이 헤더가 없는 구버전 Importer 에는
 # v2 만 돌려준다. v3 전송은 claim 을 받은 소유자만 실행할 수 있다(claim API 는 다음 단계).
 CAPABILITIES_HEADER = "X-MVHub-Resolve-Capabilities"
@@ -41,6 +49,134 @@ _UNSAFE_FOLDER_CHARS = re.compile(r"[\\/\x00-\x1f]")
 
 class ImporterError(RuntimeError):
     pass
+
+
+# ── 허브와 공유하는 배타 락 (설계 명세 §2.1~2.2) ──────────────────────────────
+# app/services/resolve_lock.py 의 FileLock 과 같은 파일·같은 잠금 방식이다. Resolve 내장
+# 파이썬에서 돌아야 하므로 표준 라이브러리(ctypes/msvcrt, fcntl)만 쓴다.
+if os.name == "nt":
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    _LOCKFILE_FAIL_IMMEDIATELY = 0x00000001
+    _LOCKFILE_EXCLUSIVE_LOCK = 0x00000002
+
+    class _Overlapped(ctypes.Structure):
+        _fields_ = [
+            ("Internal", ctypes.c_void_p),
+            ("InternalHigh", ctypes.c_void_p),
+            ("Offset", wintypes.DWORD),
+            ("OffsetHigh", wintypes.DWORD),
+            ("hEvent", wintypes.HANDLE),
+        ]
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.LockFileEx.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(_Overlapped),
+    )
+    _kernel32.LockFileEx.restype = wintypes.BOOL
+    _kernel32.UnlockFileEx.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(_Overlapped),
+    )
+    _kernel32.UnlockFileEx.restype = wintypes.BOOL
+
+    def _lock_first_byte(handle):
+        overlapped = _Overlapped()
+        return bool(
+            _kernel32.LockFileEx(
+                msvcrt.get_osfhandle(handle.fileno()),
+                _LOCKFILE_EXCLUSIVE_LOCK | _LOCKFILE_FAIL_IMMEDIATELY,
+                0,
+                1,
+                0,
+                ctypes.byref(overlapped),
+            )
+        )
+
+    def _unlock_first_byte(handle):
+        overlapped = _Overlapped()
+        _kernel32.UnlockFileEx(
+            msvcrt.get_osfhandle(handle.fileno()), 0, 1, 0, ctypes.byref(overlapped)
+        )
+
+else:  # pragma: no cover - 운영 Resolve 연동은 Windows 전용
+    import fcntl
+
+    def _lock_first_byte(handle):
+        try:
+            fcntl.lockf(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB, 1, 0, os.SEEK_SET)
+        except (OSError, IOError):
+            return False
+        return True
+
+    def _unlock_first_byte(handle):
+        try:
+            fcntl.lockf(handle.fileno(), fcntl.LOCK_UN, 1, 0, os.SEEK_SET)
+        except (OSError, IOError):
+            pass
+
+
+class FileLock(object):
+    """안정된 lock 파일 첫 1바이트에 대한 배타 잠금. 파일은 만들기만 하고 지우지 않는다."""
+
+    def __init__(self, path):
+        self.path = str(path or "")
+        self._handle = None
+
+    def try_acquire(self):
+        if not self.path:
+            return False
+        directory = os.path.dirname(self.path)
+        if directory and not os.path.isdir(directory):
+            try:
+                os.makedirs(directory)
+            except OSError:
+                pass
+        try:
+            handle = open(self.path, "a+b")  # 절대 truncate 하지 않는다
+        except (OSError, IOError):
+            return False
+        try:
+            locked = _lock_first_byte(handle)
+        except Exception:
+            locked = False
+        if not locked:
+            try:
+                handle.close()
+            except Exception:
+                pass
+            return False
+        self._handle = handle
+        return True
+
+    def release(self):
+        handle, self._handle = self._handle, None
+        if handle is None:
+            return
+        try:
+            _unlock_first_byte(handle)
+        finally:
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+
+def _project_lock_path(manifest):
+    root = str(manifest.get("manifest_root") or "")
+    if not root:
+        return ""
+    return os.path.join(root, *PROJECT_LOCK_RELATIVE)
 
 
 def _resolve_context():
@@ -275,12 +411,106 @@ def _post_result(base, manifest, result):
     _http_json("POST", "/api/resolve/transfers/manual-result", payload, bases=(base,))
 
 
+def _import_manifest_items(media_pool, managed_root, manifest, ready):
+    """전송 하나를 현재 Media Pool 에 가져온다(호출자가 프로젝트 락을 보유한 상태)."""
+    result = {
+        "status": "failed",
+        "total": len(ready),
+        "imported": 0,
+        "skipped": 0,
+        "error_count": 0,
+        "error": None,
+    }
+    project_folder = _subfolder(
+        media_pool,
+        managed_root,
+        _folder_name(manifest.get("project_name"), "미분류 프로젝트"),
+    )
+    grouped = {}
+    for item in ready:
+        parts = tuple(_folder_parts(item.get("folder_path")))
+        grouped.setdefault(parts, []).append(item)
+
+    for parts in sorted(grouped, key=lambda value: tuple(_natural_key(p) for p in value)):
+        target = project_folder
+        for part in parts:
+            target = _subfolder(media_pool, target, part)
+        existing = _existing_paths(target)
+        missing = []
+        for item in grouped[parts]:
+            normalized = _normal_path(item.get("local_path"))
+            if normalized in existing:
+                result["skipped"] += 1
+            else:
+                missing.append(item)
+        if not missing:
+            continue
+        try:
+            if not media_pool.SetCurrentFolder(target):
+                raise ImporterError("대상 Media Pool 폴더를 선택할 수 없습니다")
+            imported = media_pool.ImportMedia(
+                [str(item["local_path"]) for item in missing]
+            )
+            refresh = getattr(media_pool, "RefreshFolders", None)
+            if callable(refresh):
+                refresh()
+            returned = set()
+            if isinstance(imported, (list, tuple)):
+                returned = {
+                    _normal_path(path)
+                    for path in (_clip_path(clip) for clip in imported)
+                    if path
+                }
+            current = _existing_paths(target) | returned
+            trust_return_count = (
+                isinstance(imported, (list, tuple))
+                and len(imported) == len(missing)
+                and not returned
+            )
+            for item in missing:
+                if _normal_path(item.get("local_path")) in current or trust_return_count:
+                    result["imported"] += 1
+                else:
+                    result["error_count"] += 1
+        except Exception as exc:
+            result["error_count"] += len(missing)
+            result["error"] = str(exc)
+
+    ok_count = result["imported"] + result["skipped"]
+    result["status"] = (
+        "complete"
+        if result["error_count"] == 0
+        else ("partial" if ok_count else "failed")
+    )
+    return result
+
+
 def import_pending(resolve_obj):
     response, hub_base = _http_json("GET", "/api/resolve/transfers/pending")
     manifests = response.get("items") or []
     if not manifests:
         return "가져올 준비 완료 원본이 없습니다. 먼저 MV Hub에서 다빈치 보내기를 누르세요."
 
+    # PC 공용 락 → 프로젝트 락 순서로 잡는다(허브 워커와 동일). PC 공용 락은 허브의 데이터
+    # 폴더 안이라 여기서 알 수 없어 경로를 물어본다. 구버전 허브(404)면 프로젝트 락만 쓴다.
+    machine_lock = FileLock(_machine_lock_path(hub_base))
+    if machine_lock.path and not machine_lock.try_acquire():
+        return BUSY_MESSAGE
+    try:
+        return _import_locked(resolve_obj, manifests, hub_base)
+    finally:
+        machine_lock.release()
+
+
+def _machine_lock_path(hub_base):
+    try:
+        locks, _base = _http_json("GET", "/api/resolve/locks", bases=(hub_base,))
+    except ImporterError:
+        return ""  # 구버전 허브 — 프로젝트 락만으로 진행한다(종전 동작보다 나쁘지 않다)
+    return str(locks.get("machine_lock_path") or "")
+
+
+def _import_locked(resolve_obj, manifests, hub_base):
     manager = resolve_obj.GetProjectManager()
     project = manager.GetCurrentProject() if manager else None
     if project is None:
@@ -316,84 +546,29 @@ def import_pending(resolve_obj):
                 )
             )
             continue
-        if managed_root is None:
-            managed_root = _subfolder(media_pool, root, "MV Hub")
-        result = {
-            "status": "failed",
-            "total": len(ready),
-            "imported": 0,
-            "skipped": 0,
-            "error_count": 0,
-            "error": None,
-        }
-        project_folder = _subfolder(
-            media_pool,
-            managed_root,
-            _folder_name(manifest.get("project_name"), "미분류 프로젝트"),
-        )
-        grouped = {}
-        for item in ready:
-            parts = tuple(_folder_parts(item.get("folder_path")))
-            grouped.setdefault(parts, []).append(item)
-
-        for parts in sorted(grouped, key=lambda value: tuple(_natural_key(p) for p in value)):
-            target = project_folder
-            for part in parts:
-                target = _subfolder(media_pool, target, part)
-            existing = _existing_paths(target)
-            missing = []
-            for item in grouped[parts]:
-                normalized = _normal_path(item.get("local_path"))
-                if normalized in existing:
-                    result["skipped"] += 1
-                else:
-                    missing.append(item)
-            if not missing:
-                continue
-            try:
-                if not media_pool.SetCurrentFolder(target):
-                    raise ImporterError("대상 Media Pool 폴더를 선택할 수 없습니다")
-                imported = media_pool.ImportMedia(
-                    [str(item["local_path"]) for item in missing]
+        # ★Resolve 를 만지기 전에 프로젝트 락을 잡는다. 이 전송이 v2 라도 허브 워커가
+        # 같은 Resolve 프로젝트를 동시에 변형할 수 있으므로 배타성은 락으로만 보장된다.
+        project_lock = FileLock(_project_lock_path(manifest))
+        if project_lock.path and not project_lock.try_acquire():
+            warnings.append(
+                "MV Hub 자동 가져오기가 사용 중이라 건너뛰었습니다: {0}".format(
+                    manifest.get("transfer_id") or "확인 불가"
                 )
-                refresh = getattr(media_pool, "RefreshFolders", None)
-                if callable(refresh):
-                    refresh()
-                returned = set()
-                if isinstance(imported, (list, tuple)):
-                    returned = {
-                        _normal_path(path)
-                        for path in (_clip_path(clip) for clip in imported)
-                        if path
-                    }
-                current = _existing_paths(target) | returned
-                trust_return_count = (
-                    isinstance(imported, (list, tuple))
-                    and len(imported) == len(missing)
-                    and not returned
-                )
-                for item in missing:
-                    if _normal_path(item.get("local_path")) in current or trust_return_count:
-                        result["imported"] += 1
-                    else:
-                        result["error_count"] += 1
-            except Exception as exc:
-                result["error_count"] += len(missing)
-                result["error"] = str(exc)
-
-        ok_count = result["imported"] + result["skipped"]
-        result["status"] = (
-            "complete"
-            if result["error_count"] == 0
-            else ("partial" if ok_count else "failed")
-        )
-        total_imported += result["imported"]
-        total_skipped += result["skipped"]
-        total_errors += result["error_count"]
+            )
+            continue
         try:
-            _post_result(hub_base, manifest, result)
-        except Exception as exc:
-            warnings.append("완료 기록 실패: {0}".format(exc))
+            if managed_root is None:
+                managed_root = _subfolder(media_pool, root, "MV Hub")
+            result = _import_manifest_items(media_pool, managed_root, manifest, ready)
+            total_imported += result["imported"]
+            total_skipped += result["skipped"]
+            total_errors += result["error_count"]
+            try:
+                _post_result(hub_base, manifest, result)
+            except Exception as exc:
+                warnings.append("완료 기록 실패: {0}".format(exc))
+        finally:
+            project_lock.release()
 
     if previous_folder is not None:
         try:

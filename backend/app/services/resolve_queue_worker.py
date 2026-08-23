@@ -66,14 +66,18 @@ _BLOCKING_CODES = frozenset(
         "module_unavailable",
         "spawn_failed",
         "locking_unsupported",
+        "journal_unavailable",
         "account_scope_changed",
         "destination_changed",
+        "server_changed",
     }
 )
 
 # 서버 위임 모드에서 로컬에 없는 생성물을 다시 찾는 훅. 계층 경계(services→routers 금지)
 # 때문에 라우터가 자기 모듈 로드 시 주입한다.
 _remote_lookup: Optional[Callable[[str], Optional[dict[str, Any]]]] = None
+# 지금 이 허브가 붙어 있는 공유 서버 origin 을 알려주는 훅(같은 이유로 라우터가 주입).
+_server_origin: Optional[Callable[[], str]] = None
 
 
 def set_remote_lookup(lookup: Optional[Callable[[str], Optional[dict[str, Any]]]]) -> None:
@@ -81,13 +85,37 @@ def set_remote_lookup(lookup: Optional[Callable[[str], Optional[dict[str, Any]]]
     _remote_lookup = lookup
 
 
+def set_server_origin(provider: Optional[Callable[[], str]]) -> None:
+    global _server_origin
+    _server_origin = provider
+
+
 def worker_enabled() -> bool:
+    """설정상 v3 자동 워커를 켤 조건인가(§D)."""
     override = os.environ.get("CONTENT_HUB_RESOLVE_QUEUE_WORKER", "").strip().lower()
     if override in {"0", "off", "false", "no"}:
         return False
     if override in {"1", "on", "true", "yes"}:
         return True
     return os.name == "nt" and install_mode() == "release"
+
+
+def worker_active() -> bool:
+    """실제로 드레인 task 가 살아 있는가.
+
+    ★API 는 이 값을 보고해야 한다. 설정 조건만 보면 잠금 self-test 실패로 워커가 아예
+    기동하지 못한 PC 에서도 UI 가 '자동 가져오기 켜짐'으로 보여 사용자가 영원히 기다린다.
+    """
+    return periodic_resolve_queue.running
+
+
+def worker_detail() -> str:
+    """워커가 꺼져 있는 이유(있으면). UI 가 사용자에게 그대로 보여 준다."""
+    if periodic_resolve_queue.running:
+        return ""
+    if not worker_enabled():
+        return "이 PC에서는 Resolve 자동 가져오기를 쓰지 않습니다"
+    return periodic_resolve_queue.last_error or "Resolve 가져오기 워커가 아직 시작되지 않았습니다"
 
 
 def _capture_account_scope() -> str:
@@ -146,6 +174,21 @@ def _source_payload_block(manifest: dict[str, Any]) -> Optional[dict[str, Any]]:
                 "code": "account_scope_changed",
                 "expected": expected_key,
                 "observed": current_key,
+                "last_checked_at": resolve_queue._utc_now(),
+            }
+    # 같은 계정이라도 붙어 있는 공유 서버가 바뀌면 접수 때와 다른 원본을 재조회하게 된다
+    # (로그인 화면의 '서버 주소 변경' 탈출구가 실제로 이 조합을 만든다).
+    expected_origin = str(scope.get("server_origin") or "")
+    if _server_origin is not None:
+        current_origin = ""
+        with contextlib.suppress(Exception):
+            current_origin = resolve_queue._origin_only(_server_origin() or "")
+        if current_origin != expected_origin:
+            return {
+                "code": "server_changed",
+                "expected": expected_origin,
+                "observed": current_origin,
+                "message": "접수할 때와 다른 공유 서버에 연결되어 있습니다",
                 "last_checked_at": resolve_queue._utc_now(),
             }
     contract = payload.get("destination_contract") or {}
@@ -222,7 +265,9 @@ async def _prepare_item(manifest: dict[str, Any], item: dict[str, Any]) -> None:
         return
 
     try:
-        status = await to_thread_non_abandon(resolve_transfer._copy_atomic, source, dest)
+        outcome = await to_thread_non_abandon(
+            resolve_transfer.copy_prepared, source, dest
+        )
     except ResolveTransferError as exc:
         # 메시지 파싱 없이 상태로 판정한다 — 목적지에 다른 파일이 있으면 충돌이다.
         _fail(
@@ -233,11 +278,15 @@ async def _prepare_item(manifest: dict[str, Any], item: dict[str, Any]) -> None:
         _fail("unexpected_error", str(exc))
         return
 
-    prepare["state"] = PREPARE_DOWNLOADED if status == "downloaded" else PREPARE_SKIPPED
+    prepare["state"] = (
+        PREPARE_DOWNLOADED if outcome.status == "downloaded" else PREPARE_SKIPPED
+    )
     prepare["error_code"] = None
     prepare["error"] = None
-    with contextlib.suppress(OSError):
-        prepare["size"] = dest.stat().st_size
+    # 해시는 복사 스트림에서 이미 계산됐다 — 여기서 파일을 다시 읽지 않는다(§3.2).
+    prepare["sha256"] = outcome.sha256
+    prepare["size"] = outcome.size
+    prepare["mtime_ns"] = outcome.mtime_ns
 
 
 async def prepare_transfer(manifest: dict[str, Any]) -> Optional[str]:
@@ -384,7 +433,44 @@ def _release_locks(locks: list[resolve_lock.FileLock]) -> None:
         lock.release()
 
 
-def _apply_import_result(manifest: dict[str, Any], result: dict[str, Any]) -> str:
+def _isolate_orphan_rebuild(manifest: dict[str, Any], staging: str) -> str:
+    """journal 이 가리키는 고아 임시 Bin 을 격리한다(§3.1). 자동 재실행 금지."""
+    manifest["recovery"] = {
+        "reason": "orphan_rebuild_bin",
+        "staging_bin": staging,
+        "verified_at": resolve_queue._utc_now(),
+    }
+    with contextlib.suppress(OSError):
+        resolve_queue.write_recovery_incident(
+            manifest,
+            {
+                "reason": "orphan_rebuild_bin",
+                "transfer_id": str(manifest.get("transfer_id") or ""),
+                "staging_bin": staging,
+            },
+        )
+    resolve_queue.set_state(
+        manifest,
+        resolve_queue.STATE_RECOVERY_REQUIRED,
+        error={
+            "code": "orphan_rebuild_bin",
+            "message": (
+                "Resolve Bin 재정렬이 끝나기 전에 중단됐습니다. "
+                f"임시 Bin {staging} 을(를) 확인한 뒤 복구 방법을 선택하세요"
+            ),
+        },
+        policy=DISPATCH_MANUAL_ONLY,
+        clear_claim=True,
+    )
+    return resolve_queue.STATE_RECOVERY_REQUIRED
+
+
+def _apply_import_result(
+    manifest: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    attempt: Optional[dict[str, Any]] = None,
+) -> str:
     """자식 결과를 항목·권위 상태에 반영한다. error_code 는 절대 버리지 않는다(§C)."""
     by_key = {}
     for entry in result.get("items") or []:
@@ -415,9 +501,37 @@ def _apply_import_result(manifest: dict[str, Any], result: dict[str, Any]) -> st
     code = str(result.get("error_code") or "")
     message = str(result.get("error") or "")
     if status == "complete":
+        # ★가져온 것만 보고 complete 로 확정하면, 준비 단계에서 떨어진 항목이 조용히
+        # 사라진다. 권위 상태는 실패로 두고(재시도 가능) v2 투영만 partial 로 적는다
+        # (명세 §1.3 "partial 은 권위 상태로 쓰지 않는다").
+        prepare_errors = resolve_queue.prepared_error_codes(manifest)
+        if prepare_errors:
+            manifest["completed_at"] = resolve_queue._utc_now()
+            projection = manifest.get("resolve_import")
+            if isinstance(projection, dict):
+                projection["status"] = "partial"
+            first_code, first_message = prepare_errors[0]
+            resolve_queue.set_state(
+                manifest,
+                STATE_FAILED,
+                error={
+                    "code": first_code,
+                    "message": (
+                        f"원본 {len(prepare_errors)}개를 준비하지 못해 일부만 가져왔습니다"
+                        + (f": {first_message}" if first_message else "")
+                    ),
+                },
+                clear_claim=True,
+            )
+            return STATE_FAILED
         manifest["completed_at"] = resolve_queue._utc_now()
         resolve_queue.set_state(manifest, STATE_COMPLETE, clear_claim=True)
         return STATE_COMPLETE
+    # 자식이 남긴 journal 이 rebuild 중간 phase 에 멈춰 있으면 임시 Bin 이 그대로다.
+    # 실패·중단 결과보다 이 격리가 우선한다(§3.1 — 자동 import 를 막아야 한다).
+    staging = resolve_queue.orphan_staging_bin(attempt)
+    if staging:
+        return _isolate_orphan_rebuild(manifest, staging)
     if status == "unavailable":
         if code in _BLOCKING_CODES:
             resolve_queue.set_state(
@@ -461,19 +575,26 @@ def _import_and_record(
     스레드 안에서 끝난다.
     """
     result = run_resolve_import_isolated(manifest)
-    attempt["result"] = {
+    # ★자식이 같은 파일에 phase·staging Bin·자기 PID 를 적어 뒀다. 부모의 옛 사본으로
+    # 통째로 덮어쓰면 고아 Bin 근거가 사라진다 — 디스크본을 다시 읽어 결과만 얹는다.
+    written = resolve_queue.read_attempt(manifest, str(attempt.get("attempt_id") or ""))
+    record = written if written is not None else attempt
+    record["result"] = {
         "status": str(result.get("status") or ""),
         "imported": int(result.get("imported") or 0),
         "skipped": int(result.get("skipped") or 0),
         "error_count": int(result.get("error_count") or 0),
     }
-    attempt["error_code"] = result.get("error_code")
-    attempt["error"] = result.get("error")
-    attempt["phase"] = "complete" if result.get("status") == "complete" else "failed"
+    record["error_code"] = result.get("error_code")
+    record["error"] = result.get("error")
+    # ★rebuild 중간 phase 는 덮지 않는다 — 자식이 그 지점에서 죽었다는 사실이 고아 임시
+    # Bin 을 격리할 유일한 근거다. 여기서 failed 로 지우면 복구기가 찾지 못한다.
+    if str(record.get("phase") or "") not in resolve_queue.REBUILD_PENDING_PHASES:
+        record["phase"] = "complete" if result.get("status") == "complete" else "failed"
     with contextlib.suppress(OSError):
-        resolve_queue.write_attempt(manifest, attempt)
+        resolve_queue.write_attempt(manifest, record)
     manifest["resolve_import"] = result
-    state = _apply_import_result(manifest, result)
+    state = _apply_import_result(manifest, result, attempt=record)
     resolve_queue.save_manifest(path, manifest)
     return state
 
@@ -490,6 +611,25 @@ async def import_transfer(manifest: dict[str, Any]) -> Optional[str]:
             return None
         if resolve_queue.dispatch_policy(current) != DISPATCH_AUTO:
             return None
+        # 준비한 파일이 그 사이에 바뀌지 않았는지 확인한다(§3.2). 복사 때 스트림에서
+        # 계산해 둔 sha256 이 권위이고, 크기·mtime 이 기록과 같으면 재해시는 생략한다.
+        if await to_thread_non_abandon(resolve_queue.verify_prepared_items, current):
+            prepared = int(current.get("downloaded") or 0) + int(current.get("skipped") or 0)
+            if not prepared:
+                def _integrity_failed() -> None:
+                    resolve_queue.set_state(
+                        current,
+                        STATE_FAILED,
+                        error={
+                            "code": resolve_queue.INTEGRITY_MISMATCH,
+                            "message": "준비한 원본이 달라져 가져오기를 중단했습니다",
+                        },
+                        clear_claim=True,
+                    )
+                    resolve_queue.save_manifest(path, current)
+
+                await to_thread_non_abandon(_integrity_failed)
+                return STATE_FAILED
         attempt_id = resolve_queue.new_attempt_id()
         claim = resolve_queue.build_claim(
             current, purpose="import", attempt_id=attempt_id
@@ -566,6 +706,12 @@ class ResolveQueueWorker:
     def __init__(self, interval: float = _INTERVAL_SECONDS) -> None:
         self._interval = interval
         self._task: Optional[asyncio.Task] = None
+        self.last_error: str = ""
+
+    @property
+    def running(self) -> bool:
+        """드레인 task 가 실제로 살아 있는가(API 가 보고하는 값의 근거)."""
+        return self._task is not None and not self._task.done()
 
     def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -574,6 +720,7 @@ class ResolveQueueWorker:
             return
         ok, detail = resolve_lock.self_test()
         if not ok:
+            self.last_error = detail or "이 PC에서는 파일 범위 잠금을 쓸 수 없습니다"
             log_event(
                 _log,
                 "resolve_queue_locking_unsupported",
@@ -581,6 +728,7 @@ class ResolveQueueWorker:
                 detail=detail,
             )
             return
+        self.last_error = ""
         self._task = asyncio.create_task(self._run(), name="resolve-queue")
 
     async def stop(self) -> None:
@@ -618,15 +766,40 @@ class ResolveQueueWorker:
         manifests = await to_thread_non_abandon(
             resolve_queue.scan_projects, project_ids, states=resolve_queue.ACTIVE_STATES
         )
+        # 부모(허브)가 죽어도 살아 있는 자식이 있는 프로젝트는 Resolve 를 만지지 않는다.
+        held = await to_thread_non_abandon(resolve_queue.import_held_roots, manifests)
+        if held:
+            log_event(
+                _log,
+                "resolve_queue_import_executor_alive",
+                level=logging.WARNING,
+                roots=len(held),
+            )
         done: list[str] = []
         for manifest in manifests:
             state = resolve_queue.queue_state(manifest)
+            manifest_root = str(manifest.get("manifest_root") or "")
+            ok, detail = await to_thread_non_abandon(
+                resolve_queue._root_locking_ok, Path(manifest_root)
+            )
+            if not ok:
+                # 이 루트에서는 이중 드레인을 막을 수단이 없다 — 건드리지 않는다(§2.2).
+                log_event(
+                    _log,
+                    "resolve_queue_root_locking_unsupported",
+                    level=logging.WARNING,
+                    detail=detail,
+                    manifest_root=manifest_root,
+                )
+                continue
             try:
                 if state == STATE_QUEUED:
                     result = await prepare_transfer(manifest)
-                elif state == STATE_READY and resolve_queue.dispatch_policy(
-                    manifest
-                ) == DISPATCH_AUTO:
+                elif (
+                    state == STATE_READY
+                    and resolve_queue.dispatch_policy(manifest) == DISPATCH_AUTO
+                    and resolve_queue.path_identity(manifest_root) not in held
+                ):
                     result = await import_transfer(manifest)
                 elif state == STATE_BLOCKED and _blocked_retry_due(manifest):
                     result = await to_thread_non_abandon(_resume_blocked, manifest)

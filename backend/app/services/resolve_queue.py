@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
 import stat
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -331,6 +333,18 @@ def recovery_path(manifest_root: Path, resolve_project_key: str) -> Path:
     return Path(manifest_root) / ".mvhub" / "recovery" / f"{safe_key}.json"
 
 
+def _root_locking_ok(manifest_root: Path) -> tuple[bool, str]:
+    """manifest 루트에서 byte-range 잠금이 되는가(§2.2 self-test).
+
+    POSIX 의 ``fcntl`` 잠금은 프로세스 단위라 같은 프로세스 두 핸들 검사가 원리적으로
+    실패한다. 운영(워커)은 Windows 전용이고 POSIX 에서는 드레인 자체가 돌지 않으므로,
+    검사를 강제하는 것은 Windows 뿐이다.
+    """
+    if os.name != "nt":
+        return True, ""
+    return resolve_lock.root_self_test(Path(manifest_root))
+
+
 def transfer_lock(manifest: dict[str, Any]) -> resolve_lock.FileLock:
     return resolve_lock.FileLock(
         resolve_lock.transfer_lock_path(
@@ -551,6 +565,14 @@ def accept_sync(
         raise ResolveTransferError("한 번에 하나의 프로젝트만 전송할 수 있습니다")
 
     source_root, manifest_root = resolve_transfer.resolve_transfer_roots(project_id)
+    # 실제 manifest 가 놓일 루트(대개 NAS)에서 잠금이 되는지 먼저 확인한다(§2.2).
+    # 로컬 CONTENT_HUB_DATA 만 검사하면 SMB 가 byte-range 잠금을 주지 않는 팀 공유
+    # 폴더에서도 접수가 통과해 이중 드레인 방어선이 없는 채로 큐가 쌓인다.
+    ok, detail = _root_locking_ok(manifest_root)
+    if not ok:
+        raise ResolveTransferError(
+            f"이 저장소에서는 Resolve 전송 대기열을 쓸 수 없습니다: {detail}"
+        )
     transfer_id = transfer_id or resolve_transfer._new_transfer_id()
     manifest = build_manifest(
         project_id,
@@ -562,6 +584,9 @@ def accept_sync(
         account_scope=account_scope or {},
     )
     ahead = len(_scan_dir(manifest_root, states=ACTIVE_STATES))
+    for older in known_manifest_roots(project_id):
+        if path_identity(older) != path_identity(manifest_root):
+            ahead += len(_scan_dir(older, states=ACTIVE_STATES))
     path = manifest_path_of(manifest)
     lock = resolve_lock.FileLock(
         resolve_lock.transfer_lock_path(manifest_root, transfer_id)
@@ -583,6 +608,8 @@ def accept_sync(
         save_manifest(path, manifest)
     finally:
         lock.release()
+    # Render 루트를 나중에 옮겨도 이 manifest 를 계속 찾을 수 있게 기억한다.
+    remember_manifest_root(project_id, manifest_root)
     return manifest, ahead
 
 
@@ -607,30 +634,74 @@ async def accept_transfer(
 
 
 # ── 스캔 ──────────────────────────────────────────────────────────────────────
+# 터미널(complete·cancelled) manifest 는 명세상 다시 전이하지 않으므로, 한 번 읽어 본
+# 파일은 stat 만으로 건너뛴다. ★터미널만 기억한다 — blocked·failed 처럼 되살아날 수 있는
+# 상태를 mtime 기반으로 기억하면 SMB 의 거친 타임스탬프에서 부활을 놓칠 수 있다.
+_TERMINAL_MEMO: dict[str, tuple[int, int]] = {}
+_TERMINAL_MEMO_GUARD = threading.Lock()
+_TERMINAL_MEMO_MAX = 4000
+
+
+def _memo_key(path: Path) -> str:
+    return os.path.normcase(str(path))
+
+
+def _memoized_terminal(path: Path, stat_result: os.stat_result) -> bool:
+    with _TERMINAL_MEMO_GUARD:
+        seen = _TERMINAL_MEMO.get(_memo_key(path))
+    return seen is not None and seen == (stat_result.st_mtime_ns, stat_result.st_size)
+
+
+def _memoize_terminal(path: Path, stat_result: os.stat_result) -> None:
+    with _TERMINAL_MEMO_GUARD:
+        if len(_TERMINAL_MEMO) >= _TERMINAL_MEMO_MAX:
+            _TERMINAL_MEMO.clear()
+        _TERMINAL_MEMO[_memo_key(path)] = (stat_result.st_mtime_ns, stat_result.st_size)
+
+
+def reset_scan_memo() -> None:
+    with _TERMINAL_MEMO_GUARD:
+        _TERMINAL_MEMO.clear()
+
+
 def _scan_dir(
     manifest_root: Path, *, states: Optional[Iterable[str]] = None
 ) -> list[dict[str, Any]]:
-    """한 프로젝트의 v3 manifest 를 읽는다. v2·손상 파일은 조용히 건너뛴다."""
+    """한 프로젝트의 v3 manifest 를 읽는다. v2·손상 파일은 조용히 건너뛴다.
+
+    ★상한은 '고른 항목'에만 건다. 이름순 앞 N개를 먼저 자르면 완료 manifest 가 N개
+    쌓인 순간 새 접수분이 영원히 발견되지 않는다(유실 0 위반). 대신 터미널 항목은
+    stat 만으로 싸게 걸러 NAS 왕복을 늘리지 않는다.
+    """
     wanted = frozenset(states) if states is not None else None
+    skip_terminal = wanted is not None and not (wanted & TERMINAL_STATES)
     directory = transfer_dir(manifest_root)
     try:
-        entries = sorted(
-            (path for path in directory.glob("*.json")),
-            key=lambda path: path.name,
-        )[:_SCAN_FILE_LIMIT]
+        entries = sorted(directory.glob("*.json"), key=lambda path: path.name)
     except OSError:
         return []
+    if wanted is None:
+        # 상태 필터가 없는 요약 조회는 전량 판독이 비싸므로 최신 것부터 상한만큼만 본다.
+        entries = entries[-_SCAN_FILE_LIMIT:]
     found: list[dict[str, Any]] = []
     for path in entries:
         try:
-            if not stat.S_ISREG(path.stat().st_mode):
+            stat_result = path.stat()
+            if not stat.S_ISREG(stat_result.st_mode):
+                continue
+            if skip_terminal and _memoized_terminal(path, stat_result):
                 continue
             manifest = read_manifest(path)
         except (OSError, ResolveQueueError):
             continue
-        if wanted is not None and queue_state(manifest) not in wanted:
+        state = queue_state(manifest)
+        if state in TERMINAL_STATES:
+            _memoize_terminal(path, stat_result)
+        if wanted is not None and state not in wanted:
             continue
         found.append(manifest)
+        if len(found) >= _SCAN_FILE_LIMIT:
+            break
     return found
 
 
@@ -641,19 +712,103 @@ def _project_roots(project_id: str) -> Optional[tuple[Path, Path]]:
         return None
 
 
+# ── manifest 루트 등록부 (§1.6 destination_changed) ───────────────────────────
+# 스캔 위치를 '현재 Render 연결값'으로만 재계산하면 Render 루트를 옮긴 순간 이전 루트의
+# manifest 가 통째로 고립된다(대기 중이던 전송이 조용히 사라지고 destination_changed
+# 전이도 일어나지 않는다). 접수 때 쓴 루트를 기억해 현재+기억된 루트를 모두 스캔한다.
+_ROOT_REGISTRY_FORMAT = "mvhub.resolve-manifest-roots"
+_ROOT_REGISTRY_MAX = 8
+_ROOT_REGISTRY_GUARD = threading.Lock()
+
+
+def root_registry_path() -> Path:
+    return resolve_lock._resolve_root() / "manifest-roots.json"
+
+
+def _read_root_registry() -> dict[str, Any]:
+    try:
+        data = json.loads(root_registry_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict) or data.get("format") != _ROOT_REGISTRY_FORMAT:
+        return {}
+    projects = data.get("projects")
+    return projects if isinstance(projects, dict) else {}
+
+
+def known_manifest_roots(project_id: str) -> list[Path]:
+    """이 프로젝트로 접수한 적이 있는 manifest 루트들(최근 순)."""
+    rows = _read_root_registry().get(str(project_id or ""))
+    if not isinstance(rows, list):
+        return []
+    return [Path(str(row)) for row in rows if isinstance(row, str) and row]
+
+
+def remember_manifest_root(project_id: str, manifest_root: Path) -> None:
+    """접수한 루트를 기억한다. 실패해도 접수 자체를 깨지 않는다(다음 접수가 다시 시도)."""
+    project_id = str(project_id or "")
+    if not project_id:
+        return
+    wanted = str(manifest_root)
+    with _ROOT_REGISTRY_GUARD:
+        projects = _read_root_registry()
+        rows = [
+            row
+            for row in (projects.get(project_id) or [])
+            if isinstance(row, str) and path_identity(row) != path_identity(wanted)
+        ]
+        projects[project_id] = [wanted, *rows][:_ROOT_REGISTRY_MAX]
+        with contextlib.suppress(OSError):
+            atomic_write_text(
+                root_registry_path(),
+                json.dumps(
+                    {
+                        "format": _ROOT_REGISTRY_FORMAT,
+                        "version": 1,
+                        "projects": projects,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+            )
+
+
+def project_scan_roots(project_id: str) -> list[Path]:
+    """현재 Render 연결이 가리키는 루트 + 접수 때 기억해 둔 루트(중복 제거)."""
+    roots: list[Path] = []
+    current = _project_roots(project_id)
+    if current is not None:
+        roots.append(current[1])
+    roots.extend(known_manifest_roots(project_id))
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = path_identity(root)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(root)
+    return unique
+
+
 def scan_projects(
     project_ids: list[str], *, states: Optional[Iterable[str]] = None
 ) -> list[dict[str, Any]]:
     """등록된 프로젝트들의 v3 큐를 FIFO(created_at, transfer_id) 로 모은다."""
     found: list[dict[str, Any]] = []
+    seen_transfers: set[tuple[str, str]] = set()
     for project_id in dict.fromkeys(pid for pid in project_ids if pid):
-        roots = _project_roots(project_id)
-        if roots is None:
-            continue
-        for manifest in _scan_dir(roots[1], states=states):
-            if str(manifest.get("project_id") or "") != project_id:
-                continue
-            found.append(manifest)
+        for root in project_scan_roots(project_id):
+            for manifest in _scan_dir(root, states=states):
+                if str(manifest.get("project_id") or "") != project_id:
+                    continue
+                key = (project_id, str(manifest.get("transfer_id") or ""))
+                if key in seen_transfers:
+                    continue
+                seen_transfers.add(key)
+                found.append(manifest)
     found.sort(
         key=lambda item: (
             str(item.get("created_at") or ""),
@@ -733,6 +888,10 @@ def new_attempt(
         "claim_epoch": claim.get("epoch") or 0,
         "executor": executor,
         "pid": os.getpid(),
+        # 자식이 시작하면 자기 PID·생성시각으로 덮어쓴다. 부모가 만든 이 초기 기록은
+        # 아직 실행자가 없다는 뜻이라 0 이어야 한다(생존 판정이 부모를 자식으로 오인 금지).
+        "executor_pid": 0,
+        "host_id": resolve_lock.host_id(),
         "process_started_at_filetime": resolve_lock.process_started_at_filetime(),
         "started_at": now,
         "updated_at": now,
@@ -750,6 +909,42 @@ def new_attempt(
         "error_code": None,
         "error": None,
     }
+
+
+def read_attempt(manifest: dict[str, Any], attempt_id: str) -> Optional[dict[str, Any]]:
+    """자식이 기록해 둔 attempt journal 한 건을 읽는다(없거나 손상이면 None)."""
+    if not attempt_id:
+        return None
+    try:
+        data = json.loads(attempt_path(manifest, attempt_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) and data.get("format") == ATTEMPT_FORMAT else None
+
+
+def executor_liveness(attempt: Optional[dict[str, Any]]) -> str:
+    """``none`` | ``alive`` | ``dead`` | ``unknown`` — journal 이 가리키는 자식의 생존(§2.7).
+
+    부모(허브)가 죽어도 Resolve 를 조작하던 자식은 살아 있을 수 있다. 그 상태에서 다른
+    실행자가 같은 프로젝트를 가져오면 Media Pool 이 동시에 변형된다. 부모 사망만으로
+    인계하지 않도록 자식 PID+생성시각까지 확인한다.
+    """
+    if not isinstance(attempt, dict):
+        return "none"
+    # ★``executor_pid`` 만 본다. ``pid`` 는 부모가 초기 기록을 남길 때 자기 PID 를 적는
+    # 필드라, 그걸 자식으로 오인하면 PID 재사용 시 멀쩡한 큐를 영원히 붙들 수 있다.
+    try:
+        pid = int(attempt.get("executor_pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    if pid <= 0 or pid == os.getpid():
+        return "none"
+    host = str(attempt.get("host_id") or "")
+    if host and host != resolve_lock.host_id():
+        return "unknown"  # 다른 PC 의 자식은 여기서 판정할 수 없다.
+    return resolve_lock.process_liveness(
+        pid, str(attempt.get("process_started_at_filetime") or "")
+    )
 
 
 def latest_attempt(manifest: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -785,6 +980,83 @@ def orphan_staging_bin(attempt: Optional[dict[str, Any]]) -> str:
     if str(attempt.get("phase") or "") in REBUILD_PENDING_PHASES:
         return name
     return ""
+
+
+# ── 준비 파일 무결성 (§3.2) ───────────────────────────────────────────────────
+INTEGRITY_MISMATCH = "integrity_mismatch"
+_HASH_CHUNK = 1024 * 1024
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        while chunk := handle.read(_HASH_CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_prepared_items(manifest: dict[str, Any]) -> int:
+    """import 직전 준비 파일이 기록과 같은지 확인한다. 반환=불일치로 떨어뜨린 항목 수.
+
+    복사 때 스트림에서 계산한 ``sha256`` 이 권위다. 매번 전량 재해시하면 대용량 전송에서
+    NAS 를 한 번 더 통째로 읽으므로, ``size``+``mtime_ns`` 가 기록과 같으면 그 파일은
+    복사 이후 바뀌지 않은 것으로 보고 재해시를 건너뛴다. 크기·시각이 다르면 그때만
+    전체 해시로 확정한다. 기록에 sha256 이 없는 옛 항목은 여기서 1회 해시해 채운다.
+    """
+    dropped = 0
+    for item in manifest.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        prepare = item.get("prepare") if isinstance(item.get("prepare"), dict) else None
+        if prepare is None or prepare.get("state") not in {
+            PREPARE_DOWNLOADED,
+            PREPARE_SKIPPED,
+        }:
+            continue
+        local = Path(str(item.get("local_path") or ""))
+        reason = None
+        try:
+            stat_result = local.stat()
+            if not stat.S_ISREG(stat_result.st_mode) or stat_result.st_size <= 0:
+                reason = "준비한 원본 파일이 없습니다"
+            elif prepare.get("size") is not None and int(prepare["size"]) != stat_result.st_size:
+                reason = "준비한 원본 파일의 크기가 달라졌습니다"
+            elif not prepare.get("sha256"):
+                prepare["sha256"] = file_sha256(local)
+                prepare["size"] = stat_result.st_size
+                prepare["mtime_ns"] = stat_result.st_mtime_ns
+            elif prepare.get("mtime_ns") != stat_result.st_mtime_ns:
+                if file_sha256(local) != str(prepare.get("sha256") or ""):
+                    reason = "준비한 원본 파일의 내용이 달라졌습니다"
+                else:
+                    prepare["mtime_ns"] = stat_result.st_mtime_ns
+        except OSError as exc:
+            reason = f"준비한 원본 파일을 확인할 수 없습니다: {exc}"
+        if reason:
+            prepare["state"] = PREPARE_ERROR
+            prepare["error_code"] = INTEGRITY_MISMATCH
+            prepare["error"] = reason
+            dropped += 1
+    if dropped:
+        refresh_projection(manifest)
+    return dropped
+
+
+def prepared_error_codes(manifest: dict[str, Any]) -> list[tuple[str, str]]:
+    """준비 단계에서 실패로 남은 항목의 (error_code, error) 목록."""
+    rows: list[tuple[str, str]] = []
+    for item in manifest.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        prepare = item.get("prepare") if isinstance(item.get("prepare"), dict) else {}
+        if prepare.get("state") == PREPARE_ERROR:
+            rows.append(
+                (
+                    str(prepare.get("error_code") or "unexpected_error"),
+                    str(prepare.get("error") or ""),
+                )
+            )
+    return rows
 
 
 def write_recovery_incident(manifest: dict[str, Any], payload: dict[str, Any]) -> Path:
@@ -826,6 +1098,12 @@ def _recover_one(manifest: dict[str, Any]) -> Optional[str]:
         state = queue_state(current)
         if state not in {STATE_QUEUED, STATE_PREPARING, STATE_READY, STATE_IMPORTING}:
             return None
+        attempt = latest_attempt(current) if state == STATE_IMPORTING else None
+        if executor_liveness(attempt) == "alive":
+            # ★부모(허브)가 죽어도 Resolve 를 조작하던 자식은 살아 있을 수 있다. OS 락은
+            # 부모와 함께 풀렸으므로 락만 보고 인계하면 같은 Media Pool 을 둘이 만진다.
+            # 상태를 건드리지 않고 이 프로젝트의 드레인을 보류한다(§2.7 자동 steal 금지).
+            return "import_executor_alive"
         if disposition == "unknown":
             # 소유자 사망을 확인할 수 없으면 자동 steal 금지 — 격리한다.
             set_state(
@@ -851,7 +1129,6 @@ def _recover_one(manifest: dict[str, Any]) -> Optional[str]:
             return STATE_READY
 
         # importing 중단분: 결과를 확정하지 못했으므로 자동 재실행하지 않는다.
-        attempt = latest_attempt(current)
         staging = orphan_staging_bin(attempt)
         if staging:
             current["recovery"] = {
@@ -901,6 +1178,21 @@ def _recover_one(manifest: dict[str, Any]) -> Optional[str]:
         return None
     finally:
         lock.release()
+
+
+def import_held_roots(manifests: Iterable[dict[str, Any]]) -> set[str]:
+    """살아 있는 자식(executor)이 붙들고 있는 프로젝트 루트 식별자.
+
+    그 프로젝트의 Resolve 가져오기는 이번 바퀴에 시작하지 않는다. 준비(파일 복사)는
+    Resolve 를 만지지 않으므로 계속 진행해도 안전하다.
+    """
+    held: set[str] = set()
+    for manifest in manifests:
+        if queue_state(manifest) != STATE_IMPORTING:
+            continue
+        if executor_liveness(latest_attempt(manifest)) == "alive":
+            held.add(path_identity(str(manifest.get("manifest_root") or "")))
+    return held
 
 
 def recover_boot(project_ids: list[str]) -> dict[str, int]:

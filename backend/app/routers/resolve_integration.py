@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import datetime, timezone
-from typing import Literal
+from typing import AsyncIterator, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -17,7 +18,7 @@ from ..deps import (
     can_view_generation_with_member_projects,
     current_account,
 )
-from ..services import resolve_queue, resolve_queue_worker
+from ..services import resolve_lock, resolve_queue, resolve_queue_worker
 from ..services.resolve_status_runner import (
     resolve_connection_status_bounded,
     run_resolve_import_isolated,
@@ -75,15 +76,52 @@ def _require_local_resolve(request: Request) -> None:
     )
 
 
-def _accept_account_scope(request: Request) -> dict:
-    """재시작 뒤에도 같은 계정으로만 재개하도록 접수 시점 계정을 고정한다(명세 §1.6)."""
+def _capture_account_pin() -> tuple[str, str | None]:
+    """계정 DB 키와 그 계정의 uid 를 **같은 전환 락 구간**에서 한 쌍으로 캡처한다.
+
+    둘을 따로 읽으면 그 사이에 낀 전환이 'A DB 를 읽으면서 소유자는 B' 조합을 만든다
+    (share.py 의 _capture_account_pin 과 같은 규율 — 그 모듈은 건드리지 않는다).
+    """
+    with active_account.transition_lock:
+        return active_account.account_key() or "", active_account.active_uid()
+
+
+@contextlib.asynccontextmanager
+async def _pinned_account_scope() -> AsyncIterator[str]:
+    """라우트 전체를 접수 시점 계정으로 고정한다(R11~13 패턴의 async 판).
+
+    접수는 로컬 배치 조회 → 멤버십 판정 → (위임이면) 원격 batch → manifest 기록으로
+    이어지고, 이 단계들은 전부 **호출 시점의** 활성 계정 DB 를 읽는다. 원격 왕복을
+    기다리는 사이 다른 창에서 A→B 로 전환하면 'A 로 판정하고 B 로 기록'이 조용히 생기고,
+    그 계정 scope 가 manifest 에 박혀 워커가 잘못된 계정으로 재개한다.
+
+    ★async 라우트라 전환 락은 워커 스레드에서 잡는다 — 이벤트 루프에서 기다리면
+    로그인 마이그레이션·DB 복원이 초 단위로 서버 전체를 세운다.
+    """
+    account_key, account_uid = await asyncio.to_thread(_capture_account_pin)
+    account_token = active_account.set_override(account_key)
+    uid_token = active_account.set_uid_override(account_uid)
+    try:
+        yield account_key
+    finally:
+        active_account.reset_uid_override(uid_token)
+        active_account.reset_override(account_token)
+
+
+def _accept_account_scope(request: Request, account_key: str) -> dict:
+    """재시작 뒤에도 같은 계정·같은 서버에서만 재개하도록 접수 시점을 고정한다(§1.6)."""
     account = current_account(request) or {}
     return resolve_queue.build_account_scope(
-        account_key=active_account.account_key() or "",
+        account_key=account_key,
         account_email=str(account.get("email") or active_account.active_email() or ""),
         creator_uid=str(account_scope_uid(request) or ""),
-        server_origin=_proxy.base_url() if _proxy.proxying() else "",
+        server_origin=_current_server_origin(),
     )
+
+
+def _current_server_origin() -> str:
+    """지금 붙어 있는 공유 서버 origin(위임 모드가 아니면 빈 문자열)."""
+    return _proxy.base_url() if _proxy.proxying() else ""
 
 
 def _remote_generation_lookup(gen_id: str) -> dict | None:
@@ -95,6 +133,7 @@ def _remote_generation_lookup(gen_id: str) -> dict | None:
 
 
 resolve_queue_worker.set_remote_lookup(_remote_generation_lookup)
+resolve_queue_worker.set_server_origin(_current_server_origin)
 
 
 @router.get("/script")
@@ -148,8 +187,17 @@ async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
     종전엔 이 요청 하나가 대용량 복사와 Resolve 조작까지 끝낼 때까지 붙잡혀 있었다.
     이제는 권한 판정 → 대상 Resolve 프로젝트 고정 → v3 manifest 원자 기록까지만 하고
     ``202 Accepted`` 로 즉시 돌려준다(명세 §1.7).
+
+    ★첫 DB 접근 전에 계정을 고정한다 — 판정과 기록이 다른 계정을 보면 안 된다.
     """
     _require_local_resolve(request)
+    async with _pinned_account_scope() as account_key:
+        return await _create_resolve_transfer_pinned(body, request, account_key)
+
+
+async def _create_resolve_transfer_pinned(
+    body: ResolveTransferIn, request: Request, account_key: str
+):
     ids = list(dict.fromkeys(gen_id.strip() for gen_id in body.gen_ids if gen_id.strip()))
     if not ids:
         raise HTTPException(status_code=400, detail="전송할 생성물을 선택하세요")
@@ -214,7 +262,7 @@ async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
                 "project_id": body.resolve_project_id.strip(),
                 "project_name": body.resolve_project_name.strip(),
             },
-            account_scope=_accept_account_scope(request),
+            account_scope=_accept_account_scope(request, account_key),
         )
     except ResolveTransferError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -232,7 +280,10 @@ async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
         "resolve_target": manifest.get("resolve_target") or {},
         "status": manifest.get("status"),
         "total": int(manifest.get("total") or 0),
-        "worker_enabled": resolve_queue_worker.worker_enabled(),
+        # 설정 조건이 아니라 '드레인 task 가 실제로 도는가'를 보고한다 — 잠금 self-test
+        # 실패로 워커가 기동조차 못 한 PC 에서 UI 가 켜짐으로 보이면 안 된다.
+        "worker_enabled": resolve_queue_worker.worker_active(),
+        "worker_detail": resolve_queue_worker.worker_detail(),
     }
 
 
@@ -266,7 +317,11 @@ async def get_resolve_queue(request: Request):
         str(project.get("id") or "") for project in (projects_payload.get("projects") or [])
     ]
     items = await asyncio.to_thread(resolve_queue.queue_snapshot, project_ids)
-    return {"items": items, "worker_enabled": resolve_queue_worker.worker_enabled()}
+    return {
+        "items": items,
+        "worker_enabled": resolve_queue_worker.worker_active(),
+        "worker_detail": resolve_queue_worker.worker_detail(),
+    }
 
 
 @router.get("/transfers/pending")
@@ -279,6 +334,21 @@ async def pending_resolve_transfers(request: Request):
     project_ids = [str(project.get("id") or "") for project in projects]
     manifests = await asyncio.to_thread(list_pending_manifests, project_ids)
     return {"items": manifests}
+
+
+@router.get("/locks")
+def get_resolve_lock_paths(request: Request):
+    """메뉴 Importer 가 push 워커와 **같은 락 파일**에 참여하도록 경로를 알려 준다.
+
+    프로젝트 락은 manifest_root 에서 유도할 수 있지만 PC 공용 락은 허브의 데이터 폴더
+    안이라 Resolve 안에서 알 수 없다. 이 경로 없이 프로젝트 락만 잡으면 '워커=프로젝트 B,
+    메뉴=프로젝트 A'가 같은 Resolve 를 동시에 변형한다.
+    """
+    _require_local_resolve(request)
+    return {
+        "machine_lock_path": str(resolve_lock.machine_lock_path()),
+        "project_lock_relative": ".mvhub/locks/project-import.lock",
+    }
 
 
 @router.post("/transfers/manual-result")

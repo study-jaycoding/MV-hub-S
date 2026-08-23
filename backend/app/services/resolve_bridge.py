@@ -49,6 +49,27 @@ _MEDIA_IMPORT_RETRY_DELAY_SECONDS = max(
 _UNSAFE_FOLDER_CHARS = re.compile(r"[\\/\x00-\x1f]")
 _NATURAL_NAME_CHUNKS = re.compile(r"(\d+)")
 
+# ── attempt journal 훅 (명세 §부속 A) ─────────────────────────────────────────
+# 이 모듈은 부모(허브)와 자식(resolve_import_worker) 양쪽에서 로드된다. 부모는 자식의
+# stdout JSON 만 기다리므로 중간 단계를 볼 수 없다 — 그래서 자식이 여기서 직접 phase 를
+# journal 에 원자 기록한다. 훅이 없으면(부모·in-process 실행) 아무 일도 하지 않는다.
+_journal_hook: Any = None
+
+
+def set_journal_hook(hook: Any) -> None:
+    global _journal_hook
+    _journal_hook = hook
+
+
+def _journal(phase: str, **fields: Any) -> None:
+    hook = _journal_hook
+    if hook is None:
+        return
+    try:
+        hook(phase, **fields)
+    except Exception:  # noqa: BLE001 - 기록 실패가 가져오기 자체를 깨지 않는다.
+        pass
+
 
 class ResolveBridgeError(RuntimeError):
     """Resolve 연결이나 Media Pool 조작을 완료할 수 없는 오류."""
@@ -767,7 +788,9 @@ def _reconcile_folder_tree_visible(
     move_clips = getattr(media_pool, "MoveClips", None)
     if not callable(move_clips):
         raise ResolveBridgeError("현재 Resolve가 클립을 보존한 Bin 재정렬을 지원하지 않습니다")
+    _journal("rebuild_backup_started", side_effects_started=True)
     backup_path = _export_rebuild_backup(manifest, project_manager, project)
+    _journal("rebuild_backup_complete", drp_path=backup_path)
     snapshots: dict[tuple[str, ...], tuple[list[Any], Counter[str]]] = {}
     for identity, desired_path in desired_nodes.items():
         if not identity or identity not in actual_nodes:
@@ -784,8 +807,12 @@ def _reconcile_folder_tree_visible(
         raise ResolveBridgeError(
             f"Resolve 정렬용 임시 Bin을 만들지 못했습니다. 백업: {backup_path}"
         )
+    # ★staging Bin 이름을 '만든 직후·클립을 옮기기 전에' 기록한다. 여기서 죽으면 고아 Bin 이
+    # 남는데, 이름이 journal 에 없으면 복구기가 무엇을 격리해야 할지 알 수 없다(§3.1).
+    _journal("rebuild_staging_created", staging_bin=staging_name, side_effects_started=True)
     staged_nodes: dict[tuple[str, ...], Any] = {(): staging}
     try:
+        _journal("rebuild_to_staging", staging_bin=staging_name)
         staged_nodes = _create_tree(media_pool, staging, set(snapshots))
         for path, (clips, _identities) in snapshots.items():
             if clips and not move_clips(clips, staged_nodes[path]):
@@ -794,6 +821,7 @@ def _reconcile_folder_tree_visible(
             if identity and (folder.GetClipList() or []):
                 raise ResolveBridgeError(f"기존 Bin에 클립이 남아 있습니다: {folder.GetName()}")
 
+        _journal("rebuild_to_final", staging_bin=staging_name)
         _delete_empty_children(media_pool, managed_root)
         final_nodes = _create_tree(media_pool, managed_root, desired_paths)
         for path, (_clips, expected) in snapshots.items():
@@ -804,10 +832,13 @@ def _reconcile_folder_tree_visible(
             if actual != expected:
                 raise ResolveBridgeError(f"정렬 후 클립 검증이 일치하지 않습니다: {'/'.join(path)}")
 
+        _journal("rebuild_verified", staging_bin=staging_name)
         _delete_empty_children(media_pool, staging)
         if not media_pool.DeleteFolders([staging]):
             raise ResolveBridgeError("Resolve 정렬용 임시 Bin을 정리하지 못했습니다")
         _refresh_folders(media_pool)
+        # 임시 Bin 이 사라졌으므로 고아 Bin 격리 대상이 아니다 — 이름을 지운다.
+        _journal("rebuild_staging_deleted", staging_bin="")
 
         _actual_nodes, final_children = _scan_actual_tree(managed_root)
         for parent_id, desired_rows in desired_children.items():
@@ -834,6 +865,9 @@ def _reconcile_folder_tree_visible(
                 _delete_empty_children(media_pool, staging)
                 if not media_pool.DeleteFolders([staging]):
                     recovery_errors.append("임시 Bin 정리 실패")
+                else:
+                    # 자동 복구가 임시 Bin 을 치웠다 — 고아 Bin 격리 대상에서 뺀다.
+                    _journal("rebuild_staging_deleted", staging_bin="")
             project_manager.SaveProject()
         except Exception as recovery_exc:  # noqa: BLE001 - 복구 결과를 원인과 함께 보고한다.
             recovery_errors.append(str(recovery_exc))
@@ -872,6 +906,15 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
             "현재 열려 있는 Resolve 프로젝트가 없습니다", code="no_project"
         )
     _assert_expected_project(manifest, project)
+    _current_id, _current_name = _project_identity(project)
+    _journal(
+        "project_verified",
+        resolve_project={
+            "expected_id": str((manifest.get("resolve_target") or {}).get("project_id") or ""),
+            "current_id": _current_id,
+            "current_name": _current_name,
+        },
+    )
     media_pool = project.GetMediaPool()
     root = media_pool.GetRootFolder() if media_pool else None
     if not media_pool or not root:
@@ -904,6 +947,9 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
     }
 
     try:
+        # 첫 AddSubFolder 보다 먼저 기록한다(§부속 A) — 여기서부터 Resolve 에 부수효과가
+        # 생길 수 있으므로, 이후 사망분은 자동 재실행이 아니라 복구 절차 대상이다.
+        _journal("mutation_started", side_effects_started=True)
         managed_root = _destination_folder(media_pool, root, [MEDIA_POOL_ROOT, project_label])
         source_items = [
             source_item
@@ -1018,14 +1064,30 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
                 item["error_code"] = getattr(exc, "code", None) or "unexpected_error"
                 result["error_count"] += 1
 
+        batch_index = 0
         for parts_key in sorted(import_batches, key=_folder_path_sort_key):
             entries = import_batches[parts_key]
             for start in range(0, len(entries), _MEDIA_IMPORT_BATCH_SIZE):
+                batch = entries[start : start + _MEDIA_IMPORT_BATCH_SIZE]
+                batch_index += 1
+                # 호출 직전 calling, 경로 검증 뒤 verified (§부속 A batch 규칙).
+                batch_journal = {
+                    "index": batch_index,
+                    "folder_path": "/".join(parts_key),
+                    "item_ids": [str(item.get("generation_id") or "") for item, _s, _n in batch],
+                    "state": "calling",
+                }
+                _journal(
+                    "import_batch_calling",
+                    last_batch=batch_journal,
+                    side_effects_started=True,
+                )
                 _import_media_batch(
-                    media_pool,
-                    prepared_targets[parts_key],
-                    entries[start : start + _MEDIA_IMPORT_BATCH_SIZE],
-                    result,
+                    media_pool, prepared_targets[parts_key], batch, result
+                )
+                _journal(
+                    "import_batch_verified",
+                    last_batch={**batch_journal, "state": "verified"},
                 )
 
         success_count = result["imported"] + result["skipped"]
@@ -1059,6 +1121,8 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
                 ordering_error_codes[0] if ordering_error_codes else "unexpected_error"
             )
 
+        if result["imported"] or reordered:
+            _journal("saving_project")
         if (result["imported"] or reordered) and not project_manager.SaveProject():
             result["status"] = "partial" if success_count else "failed"
             save_error = "Resolve 프로젝트 저장을 확인하지 못했습니다"
@@ -1102,6 +1166,7 @@ def import_manifest_to_current_project(
     """manifest 원본을 현재 Resolve 프로젝트에 폴더 구조대로 가져온다."""
     try:
         with _IMPORT_LOCK:
+            _journal("connecting")
             return _import_manifest_locked(manifest, resolve or _connect_resolve())
     except ResolveBridgeError as exc:
         # ★ 먼저 잡아 code 를 보존한다(명세 §C). 종전엔 아래 일반 catch 가 삼켜

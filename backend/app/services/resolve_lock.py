@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import errno
 import os
+import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -286,6 +287,11 @@ def project_lock_path(manifest_root: Path) -> Path:
     return path
 
 
+def locks_dir(manifest_root: Path) -> Path:
+    """manifest 루트 아래의 락 디렉터리(프로젝트 락·전송 락이 함께 있는 곳)."""
+    return project_lock_path(manifest_root).parent
+
+
 def transfer_lock_path(manifest_root: Path, transfer_id: str) -> Path:
     path = safe_join(
         Path(manifest_root),
@@ -351,3 +357,39 @@ def self_test(directory: Path | None = None) -> tuple[bool, str]:
         return False, "같은 파일을 두 번 잠글 수 있습니다(byte-range 잠금 미지원)"
     finally:
         first.release()
+
+
+# manifest 루트(대개 NAS/SMB)별 self-test 결과. 로컬 CONTENT_HUB_DATA 가 잠금을 지원해도
+# 실제 manifest 가 놓이는 공유 폴더는 지원하지 않을 수 있어, 그 루트에서 직접 검사한다.
+_ROOT_SELF_TEST: dict[str, tuple[bool, str]] = {}
+_ROOT_SELF_TEST_GUARD = threading.Lock()
+_ROOT_SELF_TEST_MAX = 256
+
+
+def root_self_test(manifest_root: Path) -> tuple[bool, str]:
+    """실제 manifest 루트에서 byte-range 잠금이 동작하는지 루트당 1회 검사한다(§2.2).
+
+    실패한 루트는 v3 접수·드레인을 거부해야 한다. best-effort 폴백은 두지 않는다 —
+    잠금이 없는 저장소에서 큐를 돌리면 이중 드레인을 막을 수단이 사라진다.
+    """
+    try:
+        target = locks_dir(Path(manifest_root))
+    except ResolveLockUnsupported as exc:
+        return False, str(exc)
+    key = os.path.normcase(os.path.abspath(str(target)))
+    with _ROOT_SELF_TEST_GUARD:
+        cached = _ROOT_SELF_TEST.get(key)
+    if cached is not None:
+        return cached
+    result = self_test(target)
+    with _ROOT_SELF_TEST_GUARD:
+        if len(_ROOT_SELF_TEST) >= _ROOT_SELF_TEST_MAX:
+            _ROOT_SELF_TEST.clear()
+        _ROOT_SELF_TEST[key] = result
+    return result
+
+
+def reset_root_self_test() -> None:
+    """검사 결과 기억을 비운다(저장소 교체·테스트용)."""
+    with _ROOT_SELF_TEST_GUARD:
+        _ROOT_SELF_TEST.clear()

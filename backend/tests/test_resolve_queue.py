@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -19,9 +20,11 @@ from unittest import mock
 
 from fastapi import Request
 
+from app import active_account
 from app.routers import resolve_integration
 from app.services import (
     resolve_bridge,
+    resolve_import_worker,
     resolve_lock,
     resolve_queue,
     resolve_queue_worker,
@@ -35,6 +38,17 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 def _local_request() -> Request:
     return Request({"type": "http", "client": ("127.0.0.1", 12345)})
+
+
+def _load_menu_importer(name: str):
+    """Resolve 메뉴 Importer 를 모듈로 불러온다(설치본과 같은 파일)."""
+    import importlib.util
+
+    script = BACKEND_DIR / "app" / "resources" / "resolve" / "MVHub_Importer.py"
+    spec = importlib.util.spec_from_file_location(name, script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class ResolveQueueTestBase(unittest.IsolatedAsyncioTestCase):
@@ -59,10 +73,15 @@ class ResolveQueueTestBase(unittest.IsolatedAsyncioTestCase):
         ]
         for patch in self._patches:
             patch.start()
+        # 프로세스 전역 기억(터미널 스캔 메모·루트 self-test)은 테스트마다 비운다.
+        resolve_queue.reset_scan_memo()
+        resolve_lock.reset_root_self_test()
 
     def tearDown(self):
         for patch in reversed(self._patches):
             patch.stop()
+        resolve_queue.reset_scan_memo()
+        resolve_lock.reset_root_self_test()
         self.tmp.cleanup()
 
     def _generation(self, index: int, folder: str = "ep001/c0010") -> dict:
@@ -448,7 +467,9 @@ class ErrorCodeContractTests(ResolveQueueTestBase):
         self.assertEqual(manifest["queue"]["dispatch_policy"], "manual_only")
 
 
-class WorkerDrainTests(ResolveQueueTestBase):
+class WorkerFixtureBase(ResolveQueueTestBase):
+    """워커 테스트 공용 픽스처 — 로컬 생성물 조회를 메모리 사전으로 대신한다."""
+
     def setUp(self):
         super().setUp()
         self.generations = {}
@@ -495,6 +516,8 @@ class WorkerDrainTests(ResolveQueueTestBase):
             transfer_id=transfer_id,
         )
 
+
+class WorkerDrainTests(WorkerFixtureBase):
     async def test_prepare_copies_sources_and_marks_ready(self):
         manifest, _ahead = self._accept_registered("drain-prepare", count=2)
         state = await resolve_queue_worker.prepare_transfer(manifest)
@@ -767,6 +790,650 @@ class WorkerGateTests(unittest.TestCase):
         with mock.patch.object(resolve_queue_worker, "worker_enabled", return_value=False):
             worker.start()
         self.assertIsNone(worker._task)
+
+
+class ScannerCoverageTests(ResolveQueueTestBase):
+    """P1-1 — 스캐너가 새 접수를 놓치지 않는다(유실 0)."""
+
+    def _finish(self, transfer_id: str) -> None:
+        manifest, _ahead = self._accept(transfer_id=transfer_id)
+        path = Path(manifest["manifest_path"])
+        resolve_queue.set_state(manifest, resolve_queue.STATE_COMPLETE)
+        resolve_queue.save_manifest(path, manifest)
+
+    def test_completed_backlog_never_hides_a_newly_accepted_transfer(self):
+        # 이름순으로 앞서는 완료본이 상한을 넘게 쌓여 있어도 새 접수는 발견돼야 한다.
+        for index in range(5):
+            self._finish(f"aaa-done-{index:02d}")
+        self._accept(transfer_id="zzz-new")
+
+        with mock.patch.object(resolve_queue, "_SCAN_FILE_LIMIT", 3):
+            active = resolve_queue.scan_projects(
+                ["p1"], states=resolve_queue.ACTIVE_STATES
+            )
+        self.assertEqual([item["transfer_id"] for item in active], ["zzz-new"])
+
+    def test_terminal_manifests_are_read_once_then_skipped_by_stat(self):
+        for index in range(3):
+            self._finish(f"aaa-done-{index:02d}")
+        self._accept(transfer_id="zzz-new")
+        resolve_queue.reset_scan_memo()  # 접수 중 ahead 스캔이 이미 기억한 것을 지운다
+        original = resolve_queue.read_manifest
+        with mock.patch.object(
+            resolve_queue, "read_manifest", wraps=original
+        ) as reader:
+            resolve_queue.scan_projects(["p1"], states=resolve_queue.ACTIVE_STATES)
+            first = reader.call_count
+            reader.reset_mock()
+            resolve_queue.scan_projects(["p1"], states=resolve_queue.ACTIVE_STATES)
+            second = reader.call_count
+        self.assertEqual(first, 4)  # 첫 바퀴는 전량 판독
+        self.assertEqual(second, 1)  # 완료본 3건은 stat 만으로 건너뛴다
+
+    def test_render_root_change_keeps_old_manifests_visible_and_blocks(self):
+        manifest, _ahead = self._accept(transfer_id="root-moved")
+        # ★@davinci 는 Render 의 '부모' 아래라, 같은 부모 안에서 이름만 바꾸면 manifest
+        # 루트가 그대로다. 프로젝트 폴더째 옮긴 상황이라야 고립이 재현된다.
+        moved = self.root / "MovedProject" / "Render"
+        moved.mkdir(parents=True)
+        with mock.patch.object(
+            resolve_transfer.project_folders,
+            "render_root_state",
+            return_value={"render_path": str(moved), "error": None},
+        ):
+            found = resolve_queue.scan_projects(["p1"])
+            blocked = resolve_queue_worker._source_payload_block(manifest)
+        # 옛 루트의 manifest 가 고립되지 않는다.
+        self.assertEqual([item["transfer_id"] for item in found], ["root-moved"])
+        # 그리고 destination_changed 전이가 실제로 일어날 수 있다.
+        self.assertEqual(blocked["code"], "destination_changed")
+
+    def test_manifest_root_registry_records_accept_root(self):
+        self._accept(transfer_id="root-remembered")
+        roots = [
+            resolve_queue.path_identity(root)
+            for root in resolve_queue.known_manifest_roots("p1")
+        ]
+        self.assertIn(resolve_queue.path_identity(self.manifest_root), roots)
+
+
+class MenuImporterLockTests(ResolveQueueTestBase):
+    """P1-2 — 메뉴 Importer 가 허브 워커와 같은 .lock 에 참여한다."""
+
+    def test_importer_lock_is_the_same_file_the_hub_worker_takes(self):
+        module = _load_menu_importer("mvhub_importer_lock_same_file")
+        lock_path = resolve_lock.project_lock_path(self.manifest_root)
+        self.assertEqual(
+            module._project_lock_path({"manifest_root": str(self.manifest_root)}),
+            str(lock_path),
+        )
+        holder = resolve_lock.FileLock(lock_path)
+        self.assertTrue(holder.try_acquire())
+        importer_lock = module.FileLock(str(lock_path))
+        try:
+            self.assertFalse(importer_lock.try_acquire())
+        finally:
+            holder.release()
+        self.assertTrue(importer_lock.try_acquire())
+        importer_lock.release()
+
+    def test_importer_stops_when_hub_worker_holds_the_machine_lock(self):
+        module = _load_menu_importer("mvhub_importer_lock_machine")
+        machine_lock_path = resolve_lock.machine_lock_path()
+
+        def _http(method, path, payload=None, bases=None):
+            if path == "/api/resolve/transfers/pending":
+                return {"items": [{"format": "mvhub.resolve-transfer"}]}, "http://hub"
+            if path == "/api/resolve/locks":
+                return {"machine_lock_path": str(machine_lock_path)}, "http://hub"
+            raise AssertionError(path)
+
+        holder = resolve_lock.FileLock(machine_lock_path)
+        self.assertTrue(holder.try_acquire())
+        resolve_obj = mock.MagicMock()
+        try:
+            with mock.patch.object(module, "_http_json", _http):
+                message = module.import_pending(resolve_obj)
+        finally:
+            holder.release()
+
+        self.assertEqual(message, module.BUSY_MESSAGE)
+        # Resolve 는 아예 건드리지 않는다.
+        resolve_obj.GetProjectManager.assert_not_called()
+
+    def test_importer_skips_a_project_the_worker_is_importing(self):
+        module = _load_menu_importer("mvhub_importer_lock_project")
+        media = self.render / "ready.mp4"
+        media.write_bytes(b"clip")
+        manifest = {
+            "format": "mvhub.resolve-transfer",
+            "transfer_id": "v2-busy",
+            "project_id": "p1",
+            "project_name": "테스트 프로젝트",
+            "manifest_root": str(self.manifest_root),
+            "items": [
+                {
+                    "status": "downloaded",
+                    "local_path": str(media),
+                    "folder_path": "ep001/c0010",
+                }
+            ],
+        }
+
+        def _http(method, path, payload=None, bases=None):
+            if path == "/api/resolve/transfers/pending":
+                return {"items": [manifest]}, "http://hub"
+            if path == "/api/resolve/locks":
+                return {"machine_lock_path": ""}, "http://hub"
+            raise AssertionError(path)
+
+        holder = resolve_lock.FileLock(
+            resolve_lock.project_lock_path(self.manifest_root)
+        )
+        self.assertTrue(holder.try_acquire())
+        resolve_obj = mock.MagicMock()
+        media_pool = (
+            resolve_obj.GetProjectManager.return_value.GetCurrentProject.return_value.GetMediaPool.return_value
+        )
+        media_pool.GetCurrentFolder.return_value = None
+        try:
+            with mock.patch.object(module, "_http_json", _http):
+                message = module.import_pending(resolve_obj)
+        finally:
+            holder.release()
+
+        self.assertIn("사용 중", message)
+        media_pool.AddSubFolder.assert_not_called()
+        media_pool.ImportMedia.assert_not_called()
+
+
+class RootLockingSelfTestTests(ResolveQueueTestBase):
+    """P1-2 — self-test 를 실제 manifest 루트(NAS)에서 한다."""
+
+    @unittest.skipUnless(sys.platform == "win32", "LockFileEx 자체 검사는 Windows 계약")
+    def test_self_test_runs_inside_the_manifest_root_not_local_data(self):
+        self._accept(transfer_id="selftest-root")
+        probe = self.manifest_root / ".mvhub" / "locks" / "locking-self-test.lock"
+        self.assertTrue(probe.is_file())
+
+    def test_accept_is_refused_when_the_manifest_root_cannot_lock(self):
+        with (
+            mock.patch.object(resolve_queue.os, "name", "nt"),
+            mock.patch.object(
+                resolve_lock, "root_self_test", return_value=(False, "SMB 잠금 없음")
+            ),
+        ):
+            with self.assertRaises(resolve_transfer.ResolveTransferError) as caught:
+                self._accept(transfer_id="selftest-refused")
+        self.assertIn("SMB 잠금 없음", str(caught.exception))
+
+    def test_worker_reports_the_real_task_state_not_the_setting(self):
+        worker = resolve_queue_worker.ResolveQueueWorker()
+        with (
+            mock.patch.dict(
+                resolve_queue_worker.os.environ,
+                {"CONTENT_HUB_RESOLVE_QUEUE_WORKER": "1"},
+                clear=False,
+            ),
+            mock.patch.object(
+                resolve_queue_worker, "periodic_resolve_queue", worker
+            ),
+            mock.patch.object(
+                resolve_lock, "self_test", return_value=(False, "잠금 미지원")
+            ),
+        ):
+            worker.start()
+            self.assertFalse(worker.running)
+            # 설정만 보면 켜짐이지만, 실제로는 워커가 없다.
+            self.assertTrue(resolve_queue_worker.worker_enabled())
+            self.assertFalse(resolve_queue_worker.worker_active())
+            self.assertIn("잠금 미지원", resolve_queue_worker.worker_detail())
+
+
+class ChildJournalTests(ResolveQueueTestBase):
+    """P1-3 — 자식이 journal 을 실제로 쓰고, 부모가 그걸 덮지 않는다."""
+
+    def _importing(self, transfer_id: str, attempt_id: str) -> dict:
+        manifest, _ahead = self._accept(transfer_id=transfer_id)
+        block = resolve_queue.queue_block(manifest)
+        block["last_attempt_id"] = attempt_id
+        block["claim"] = {"token": "tok", "epoch": 3, "owner": {}}
+        resolve_queue.set_state(manifest, resolve_queue.STATE_IMPORTING)
+        resolve_queue.save_manifest(Path(manifest["manifest_path"]), manifest)
+        return manifest
+
+    def test_child_journal_path_matches_the_queue_layer(self):
+        manifest = self._importing("journal-path", "attempt-path")
+        self.assertEqual(
+            resolve_import_worker.attempt_journal_path(manifest),
+            resolve_queue.attempt_path(manifest, "attempt-path"),
+        )
+        # v2(큐 밖) manifest 에는 journal 이 없다 — 기존 재시도 경로는 그대로 동작한다.
+        self.assertIsNone(
+            resolve_import_worker.attempt_journal_path(
+                {"manifest_root": str(self.manifest_root), "transfer_id": "v2"}
+            )
+        )
+
+    def test_child_records_own_pid_phase_and_terminal_result(self):
+        manifest = self._importing("journal-child", "attempt-child")
+
+        def _fake_import(payload):
+            resolve_bridge._journal("mutation_started", side_effects_started=True)
+            resolve_bridge._journal(
+                "rebuild_staging_created", staging_bin="__MVHUB_REBUILD_ab12cd34__"
+            )
+            return {
+                "status": "complete",
+                "error_code": None,
+                "error": None,
+                "imported": 1,
+                "skipped": 0,
+                "error_count": 0,
+                "items": [],
+            }
+
+        with mock.patch.object(
+            resolve_import_worker, "import_manifest_to_current_project", _fake_import
+        ):
+            result = resolve_import_worker.run(manifest)
+
+        self.assertEqual(result["status"], "complete")
+        record = resolve_queue.read_attempt(manifest, "attempt-child")
+        self.assertIsNotNone(record)
+        self.assertEqual(record["executor_pid"], resolve_import_worker.os.getpid())
+        self.assertEqual(record["pid"], resolve_import_worker.os.getpid())
+        self.assertTrue(record["process_started_at_filetime"] or sys.platform != "win32")
+        self.assertEqual(record["claim_token"], "tok")
+        self.assertEqual(record["staging_bin"], "__MVHUB_REBUILD_ab12cd34__")
+        self.assertTrue(record["side_effects_started"])
+        self.assertEqual(record["phase"], "complete")
+        self.assertEqual(record["result"]["status"], "complete")
+
+    def test_child_refuses_to_touch_resolve_when_journal_cannot_be_written(self):
+        manifest = self._importing("journal-broken", "attempt-broken")
+        called = []
+        with (
+            mock.patch.object(
+                resolve_import_worker,
+                "atomic_write_text",
+                side_effect=OSError("공유 폴더 오류"),
+            ),
+            mock.patch.object(
+                resolve_import_worker,
+                "import_manifest_to_current_project",
+                lambda payload: called.append(payload),
+            ),
+        ):
+            result = resolve_import_worker.run(manifest)
+
+        self.assertEqual(result["error_code"], "journal_unavailable")
+        self.assertEqual(called, [])
+        # 자동 재평가가 가능한 일시 조건이라 blocked 로 다뤄진다.
+        self.assertIn("journal_unavailable", resolve_queue_worker._BLOCKING_CODES)
+
+    def test_parent_merges_child_journal_and_isolates_orphan_staging(self):
+        manifest = self._importing("journal-merge", "attempt-merge")
+        path = Path(manifest["manifest_path"])
+        attempt = resolve_queue.new_attempt(
+            manifest,
+            attempt_id="attempt-merge",
+            claim={"token": "tok", "epoch": 3},
+            executor="push_worker",
+        )
+        resolve_queue.write_attempt(manifest, attempt)
+
+        def _child_dies(payload):
+            # 자식이 rebuild 도중 자기 phase 를 남기고 죽은 상황.
+            record = resolve_queue.read_attempt(payload, "attempt-merge")
+            record["phase"] = "rebuild_to_staging"
+            record["staging_bin"] = "__MVHUB_REBUILD_deadbeef__"
+            record["executor_pid"] = 4242
+            resolve_queue.write_attempt(payload, record)
+            return {
+                "status": "unavailable",
+                "error_code": "child_crashed",
+                "error": "자식이 죽었습니다",
+                "items": [],
+            }
+
+        with mock.patch.object(
+            resolve_queue_worker, "run_resolve_import_isolated", _child_dies
+        ):
+            state = resolve_queue_worker._import_and_record(path, manifest, attempt)
+
+        self.assertEqual(state, resolve_queue.STATE_RECOVERY_REQUIRED)
+        record = resolve_queue.read_attempt(manifest, "attempt-merge")
+        # 부모가 자기 사본으로 덮어썼다면 이 근거가 사라진다.
+        self.assertEqual(record["staging_bin"], "__MVHUB_REBUILD_deadbeef__")
+        self.assertEqual(record["phase"], "rebuild_to_staging")
+        self.assertEqual(record["executor_pid"], 4242)
+        saved = resolve_queue.read_manifest(path)
+        self.assertEqual(saved["queue"]["last_error"]["code"], "orphan_rebuild_bin")
+        self.assertEqual(saved["queue"]["dispatch_policy"], "manual_only")
+
+
+class ExecutorFencingTests(ResolveQueueTestBase):
+    """P1-3 — 부모가 죽어도 자식이 살아 있으면 인계하지 않는다."""
+
+    def _importing_with_live_child(self, transfer_id: str) -> dict:
+        manifest, _ahead = self._accept(transfer_id=transfer_id)
+        resolve_queue.set_state(manifest, resolve_queue.STATE_IMPORTING)
+        resolve_queue.save_manifest(Path(manifest["manifest_path"]), manifest)
+        attempt = resolve_queue.new_attempt(
+            manifest,
+            attempt_id="attempt-live",
+            claim={"token": "tok", "epoch": 1},
+            executor="push_worker",
+        )
+        attempt["executor_pid"] = 987654
+        attempt["pid"] = 987654
+        attempt["host_id"] = resolve_lock.host_id()
+        attempt["phase"] = "import_batch_calling"
+        attempt["side_effects_started"] = True
+        resolve_queue.write_attempt(manifest, attempt)
+        return manifest
+
+    def test_boot_recovery_leaves_importing_alone_while_the_child_lives(self):
+        self._importing_with_live_child("fence-alive")
+        with mock.patch.object(resolve_lock, "process_liveness", return_value="alive"):
+            counts = resolve_queue.recover_boot(["p1"])
+        self.assertEqual(counts.get("import_executor_alive"), 1)
+        current = resolve_queue.scan_projects(["p1"])[0]
+        self.assertEqual(
+            resolve_queue.queue_state(current), resolve_queue.STATE_IMPORTING
+        )
+
+    def test_parent_only_journal_is_never_mistaken_for_a_live_child(self):
+        # 자식이 시작하기도 전에 죽은 경우 journal 에는 부모 PID 만 있다. 그 PID 가
+        # 재사용돼 살아 있어도 '자식 생존'으로 읽으면 큐가 영원히 멈춘다.
+        manifest, _ahead = self._accept(transfer_id="fence-parent-only")
+        resolve_queue.set_state(manifest, resolve_queue.STATE_IMPORTING)
+        resolve_queue.save_manifest(Path(manifest["manifest_path"]), manifest)
+        attempt = resolve_queue.new_attempt(
+            manifest,
+            attempt_id="attempt-parent-only",
+            claim={"token": "tok", "epoch": 1},
+            executor="push_worker",
+        )
+        self.assertEqual(attempt["executor_pid"], 0)
+        resolve_queue.write_attempt(manifest, attempt)
+
+        with mock.patch.object(resolve_lock, "process_liveness", return_value="alive"):
+            self.assertEqual(resolve_queue.executor_liveness(attempt), "none")
+            resolve_queue.recover_boot(["p1"])
+        current = resolve_queue.scan_projects(["p1"])[0]
+        self.assertEqual(
+            resolve_queue.queue_state(current), resolve_queue.STATE_INTERRUPTED
+        )
+
+    def test_dead_child_is_isolated_as_interrupted(self):
+        self._importing_with_live_child("fence-dead")
+        with mock.patch.object(resolve_lock, "process_liveness", return_value="dead"):
+            resolve_queue.recover_boot(["p1"])
+        current = resolve_queue.scan_projects(["p1"])[0]
+        self.assertEqual(
+            resolve_queue.queue_state(current), resolve_queue.STATE_INTERRUPTED
+        )
+
+    async def test_drain_does_not_import_a_project_held_by_a_live_child(self):
+        held = self._importing_with_live_child("fence-drain-held")
+        ready, _ahead = self._accept(transfer_id="fence-drain-ready")
+        resolve_queue.set_state(ready, resolve_queue.STATE_READY)
+        resolve_queue.save_manifest(Path(ready["manifest_path"]), ready)
+
+        with (
+            mock.patch.object(
+                resolve_queue_worker, "_project_ids", return_value=["p1"]
+            ),
+            mock.patch.object(resolve_lock, "process_liveness", return_value="alive"),
+            mock.patch.object(
+                resolve_queue_worker, "run_resolve_import_isolated"
+            ) as importer,
+        ):
+            await resolve_queue_worker.ResolveQueueWorker().drain_once()
+
+        importer.assert_not_called()
+        self.assertEqual(
+            resolve_queue.queue_state(resolve_queue.read_manifest(Path(held["manifest_path"]))),
+            resolve_queue.STATE_IMPORTING,
+        )
+
+
+class AcceptAccountPinTests(ResolveQueueTestBase):
+    """P1-4 — 접수 라우트 전체가 같은 계정을 본다 + server_origin 검증."""
+
+    async def test_route_pins_the_account_before_the_first_db_access(self):
+        generations = [self._generation(1)]
+        seen: list[str | None] = []
+
+        def _batch(ids, account_uid=None):
+            # 첫 DB 접근 시점의 계정 — 고정이 없으면 머신 포인터를 그대로 읽는다.
+            seen.append(active_account.account_key())
+            return {"generation-01": generations[0]}
+
+        body = resolve_integration.ResolveTransferIn(
+            gen_ids=["generation-01"],
+            resolve_project_id="resolve-1",
+            resolve_project_name="EP01_EDIT",
+        )
+        with (
+            mock.patch.object(active_account.config, "AUTH_ENABLED", False),
+            mock.patch.object(
+                resolve_integration,
+                "_capture_account_pin",
+                return_value=("acct:pinned@example.com", "user-pinned"),
+            ),
+            mock.patch.object(
+                resolve_integration.repo, "get_generations_batch", side_effect=_batch
+            ),
+            mock.patch.object(
+                resolve_integration, "batch_view_member_projects", return_value=set()
+            ),
+            mock.patch.object(
+                resolve_integration,
+                "can_view_generation_with_member_projects",
+                return_value=True,
+            ),
+            mock.patch.object(
+                resolve_integration, "current_account", return_value={"email": "pinned@example.com"}
+            ),
+            mock.patch.object(
+                resolve_integration, "account_scope_uid", return_value="user-pinned"
+            ),
+            mock.patch.object(resolve_integration._proxy, "proxying", return_value=False),
+        ):
+            response = await resolve_integration.create_resolve_transfer(
+                body, _local_request()
+            )
+
+        self.assertEqual(seen, ["acct:pinned@example.com"])
+        manifest = resolve_queue.scan_projects(["p1"])[0]
+        scope = manifest["source_payload"]["account_scope"]
+        self.assertEqual(manifest["transfer_id"], response["transfer_id"])
+        self.assertEqual(scope["account_key"], "acct:pinned@example.com")
+        self.assertEqual(scope["creator_uid_at_accept"], "user-pinned")
+        # 오버라이드는 라우트가 끝나면 반드시 풀린다.
+        self.assertIsNone(active_account._override.get())
+
+    async def test_same_account_on_a_different_server_blocks_instead_of_running(self):
+        manifest, _ahead = resolve_queue.accept_sync(
+            "p1",
+            [self._generation(1)],
+            resolve_target={"project_id": "resolve-1", "project_name": "EP01_EDIT"},
+            account_scope=resolve_queue.build_account_scope(
+                account_key="acct:artist@example.com",
+                account_email="artist@example.com",
+                creator_uid="user_1",
+                server_origin="https://hub-a.example.com",
+            ),
+            transfer_id="server-moved",
+        )
+        with (
+            mock.patch.object(
+                resolve_queue_worker,
+                "_capture_account_scope",
+                return_value="acct:artist@example.com",
+            ),
+            mock.patch.object(
+                resolve_queue_worker, "_server_origin", lambda: "https://hub-b.example.com"
+            ),
+        ):
+            state = await resolve_queue_worker.prepare_transfer(manifest)
+
+        self.assertEqual(state, resolve_queue.STATE_BLOCKED)
+        current = resolve_queue.scan_projects(["p1"])[0]
+        self.assertEqual(current["queue"]["blocked"]["code"], "server_changed")
+        self.assertEqual(current["queue"]["resume_state"], resolve_queue.STATE_QUEUED)
+        self.assertIn("server_changed", resolve_queue_worker._BLOCKING_CODES)
+
+
+class PartialResultTests(WorkerFixtureBase):
+    """P1-5 — 준비 실패가 남았는데 complete 로 확정하지 않는다."""
+
+    async def test_partial_prepare_ends_as_failed_with_partial_projection(self):
+        manifest, _ahead = self._accept_registered("partial-prepare", count=2)
+        # 두 번째 원본만 사라진 상황(첫 번째는 정상 준비된다).
+        second = manifest["items"][1]["source_ref"]
+        self.generations.pop(second["local_generation_id"], None)
+        self.generations.pop(second["job_id"], None)
+
+        self.assertEqual(
+            await resolve_queue_worker.prepare_transfer(manifest),
+            resolve_queue.STATE_READY,
+        )
+        current = resolve_queue.scan_projects(["p1"])[0]
+
+        def _import_ok(payload):
+            return {
+                "status": "complete",
+                "error_code": None,
+                "error": None,
+                "imported": 1,
+                "skipped": 0,
+                "error_count": 0,
+                "items": [
+                    {
+                        "generation_id": payload["items"][0]["generation_id"],
+                        "local_path": payload["items"][0]["local_path"],
+                        "media_pool_path": "MV Hub/테스트 프로젝트/ep001/c0010",
+                        "status": "imported",
+                        "error": None,
+                        "error_code": None,
+                    }
+                ],
+            }
+
+        with mock.patch.object(
+            resolve_queue_worker, "run_resolve_import_isolated", _import_ok
+        ):
+            state = await resolve_queue_worker.import_transfer(current)
+
+        self.assertEqual(state, resolve_queue.STATE_FAILED)
+        saved = resolve_queue.scan_projects(["p1"])[0]
+        self.assertEqual(saved["queue"]["last_error"]["code"], "source_missing")
+        # 성공분은 imported 로 보존되고, v2 투영은 partial 이다(§1.3).
+        self.assertEqual(saved["items"][0]["import"]["state"], "imported")
+        self.assertEqual(saved["items"][1]["prepare"]["state"], "error")
+        self.assertEqual(saved["resolve_import"]["status"], "partial")
+        self.assertEqual(saved["status"], "partial")
+
+    async def test_all_prepared_and_imported_still_completes(self):
+        manifest, _ahead = self._accept_registered("partial-none", count=1)
+        await resolve_queue_worker.prepare_transfer(manifest)
+        current = resolve_queue.scan_projects(["p1"])[0]
+        with mock.patch.object(
+            resolve_queue_worker,
+            "run_resolve_import_isolated",
+            lambda payload: {
+                "status": "complete",
+                "error_code": None,
+                "error": None,
+                "imported": 1,
+                "skipped": 0,
+                "error_count": 0,
+                "items": [],
+            },
+        ):
+            state = await resolve_queue_worker.import_transfer(current)
+        self.assertEqual(state, resolve_queue.STATE_COMPLETE)
+
+
+class PreparedIntegrityTests(WorkerFixtureBase):
+    """P1-6 — 준비 파일 무결성(복사 중 해시 · 가져오기 직전 재검증)."""
+
+    async def _prepared(self, transfer_id: str) -> dict:
+        manifest, _ahead = self._accept_registered(transfer_id)
+        await resolve_queue_worker.prepare_transfer(manifest)
+        return resolve_queue.scan_projects(["p1"])[0]
+
+    async def test_prepare_records_sha256_without_reading_the_file_again(self):
+        with mock.patch.object(
+            resolve_queue, "file_sha256", side_effect=AssertionError("재해시 금지")
+        ):
+            current = await self._prepared("integrity-record")
+        prepare = current["items"][0]["prepare"]
+        local = Path(current["items"][0]["local_path"])
+        self.assertEqual(prepare["sha256"], resolve_queue.file_sha256(local))
+        self.assertEqual(prepare["size"], local.stat().st_size)
+        self.assertEqual(prepare["mtime_ns"], local.stat().st_mtime_ns)
+
+    async def test_unchanged_prepared_file_is_not_rehashed_before_import(self):
+        current = await self._prepared("integrity-fast")
+        with mock.patch.object(
+            resolve_queue, "file_sha256", side_effect=AssertionError("재해시 금지")
+        ):
+            self.assertEqual(resolve_queue.verify_prepared_items(current), 0)
+
+    async def test_replaced_prepared_file_is_caught_before_import(self):
+        current = await self._prepared("integrity-swap")
+        local = Path(current["items"][0]["local_path"])
+        original = local.read_bytes()
+        # 크기는 그대로, 내용만 바뀐 경우도 잡아야 한다(크기 비교만으로는 못 잡는다).
+        local.write_bytes(b"x" * len(original))
+        stat_result = local.stat()
+        os.utime(local, ns=(stat_result.st_atime_ns, stat_result.st_mtime_ns + 1000))
+
+        with mock.patch.object(
+            resolve_queue_worker, "run_resolve_import_isolated"
+        ) as importer:
+            state = await resolve_queue_worker.import_transfer(current)
+
+        importer.assert_not_called()
+        self.assertEqual(state, resolve_queue.STATE_FAILED)
+        saved = resolve_queue.scan_projects(["p1"])[0]
+        self.assertEqual(
+            saved["items"][0]["prepare"]["error_code"], resolve_queue.INTEGRITY_MISMATCH
+        )
+        self.assertEqual(
+            saved["queue"]["last_error"]["code"], resolve_queue.INTEGRITY_MISMATCH
+        )
+
+    async def test_deleted_prepared_file_is_caught_before_import(self):
+        current = await self._prepared("integrity-gone")
+        Path(current["items"][0]["local_path"]).unlink()
+        with mock.patch.object(
+            resolve_queue_worker, "run_resolve_import_isolated"
+        ) as importer:
+            state = await resolve_queue_worker.import_transfer(current)
+        importer.assert_not_called()
+        self.assertEqual(state, resolve_queue.STATE_FAILED)
+
+    async def test_legacy_prepared_item_without_hash_is_hashed_once(self):
+        current = await self._prepared("integrity-legacy")
+        prepare = current["items"][0]["prepare"]
+        prepare["sha256"] = None
+        prepare["mtime_ns"] = None
+        calls: list[Path] = []
+        original = resolve_queue.file_sha256
+        with mock.patch.object(
+            resolve_queue,
+            "file_sha256",
+            side_effect=lambda path: (calls.append(path), original(path))[1],
+        ):
+            self.assertEqual(resolve_queue.verify_prepared_items(current), 0)
+            self.assertEqual(resolve_queue.verify_prepared_items(current), 0)
+        self.assertEqual(len(calls), 1)  # 기록을 채운 뒤에는 다시 해시하지 않는다
 
 
 if __name__ == "__main__":

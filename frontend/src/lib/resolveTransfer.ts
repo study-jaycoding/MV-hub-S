@@ -49,7 +49,10 @@ export interface ResolveTransferAccepted {
   resolve_target: ResolveProjectTarget;
   status: string;
   total: number;
+  /** 설정 조건이 아니라 '드레인 워커가 실제로 도는가'. 잠금 self-test 실패면 false다. */
   worker_enabled: boolean;
+  /** worker_enabled 가 false 인 이유(사용자에게 그대로 보여 준다). */
+  worker_detail?: string;
 }
 
 export interface ResolveImportItem {
@@ -196,28 +199,34 @@ export function checkResolveSelection(selected: Generation[]): ResolveSelectionC
   };
 }
 
+/**
+ * ★"가져온 개수"만 말하면 준비 단계에서 떨어진 원본이 조용히 사라진다. 준비 실패와
+ * 가져오기 실패를 합쳐 항상 실패 건수를 함께 적어, 일부만 성공한 전송이 '완료'로
+ * 읽히지 않게 한다(백엔드도 같은 경우 queue.state 를 failed 로 확정한다).
+ */
 export function resolveTransferSummary(result: ResolveTransferResult): string {
-  const completed = result.downloaded + result.skipped;
-  if (result.error_count) {
-    const firstError = result.items.find((item) => item.status === "error")?.error;
+  const prepared = result.downloaded + result.skipped;
+  const prepareFailed = result.error_count;
+  const firstPrepareError = result.items.find((item) => item.status === "error")?.error;
+  const imported = result.resolve_import;
+  if (imported.status === "unavailable") {
     return [
-      `Resolve 전송 ${completed}개 완료 · ${result.error_count}개 실패`,
-      firstError ? `(${firstError})` : "",
+      `원본 ${prepared}개 준비 완료`,
+      prepareFailed ? `· 준비 실패 ${prepareFailed}개` : "",
+      `· ${imported.error || "Resolve 연결 실패"}`,
     ]
       .filter(Boolean)
       .join(" ");
   }
-  const imported = result.resolve_import;
-  if (imported.status === "unavailable") {
-    return `원본 ${completed}개 준비 완료 · ${imported.error || "Resolve 연결 실패"}`;
-  }
   const importedCount = imported.imported + imported.skipped;
-  if (imported.error_count || imported.status === "failed" || imported.error) {
-    const firstError = imported.items.find((item) => item.status === "error")?.error;
-    const reason = firstError || imported.error;
+  const failedTotal = prepareFailed + imported.error_count;
+  if (failedTotal || imported.status === "failed" || imported.error) {
+    const firstImportError = imported.items.find((item) => item.status === "error")?.error;
+    const reason = firstImportError || imported.error || firstPrepareError;
     return [
-      `Resolve 가져오기 ${importedCount}개 완료 · ${imported.error_count}개 실패`,
+      `Resolve 가져오기 ${importedCount}개 완료 · ${failedTotal}개 실패`,
       reason ? `(${reason})` : "",
+      prepareFailed ? `· 원본 준비 실패 ${prepareFailed}개 포함` : "",
     ]
       .filter(Boolean)
       .join(" ");
@@ -231,7 +240,8 @@ export function resolveTransferAcceptedSummary(
 ): string {
   const head = `Resolve 원본 ${accepted.total}개를 대기열에 접수했습니다`;
   if (!accepted.worker_enabled) {
-    return `${head} · 이 PC에서는 자동 가져오기가 꺼져 있습니다`;
+    // 워커가 왜 안 도는지(잠금 미지원 등)를 그대로 보여 준다 — 무한 대기 오해 방지.
+    return `${head} · ${accepted.worker_detail || "이 PC에서는 자동 가져오기가 꺼져 있습니다"}`;
   }
   return accepted.ahead
     ? `${head} · 앞 작업 ${accepted.ahead}건`
