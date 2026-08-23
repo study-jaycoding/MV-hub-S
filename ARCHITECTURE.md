@@ -1,5 +1,18 @@
+---
+aliases:
+  - MV-hub-S 구조 원칙
+  - 아키텍처 기준선
+tags:
+  - mvhub
+  - mvhub/구조
+  - 기준문서
+updated: 2026-08-24
+status: 현행 기준
+---
+
 # ARCHITECTURE.md — MV-hub-S 구조 원칙
 
+> [!NOTE]
 > 이 문서는 **유지보수성 개선의 기준선(baseline)** 이다.
 > 목적: "어디에 무슨 코드를 두는가"를 팀이 한 곳에서 합의한다.
 > 원칙: **큰 파일을 줄이는 게 목표가 아니라, 관심사(UI·상태·저장·실행·IO)를 섞지 않는 게 목표**다.
@@ -9,8 +22,8 @@
 
 리아키텍처 중 데이터 경계를 바꾸기 전에는 아래 두 기준 문서를 함께 확인한다.
 
-- `docs/DATA_OWNERSHIP.md` — 로컬 허브·공유 서버·파일·localStorage 중 어디가 최종 정답인가
-- `docs/신원과_모드_가이드.md` — email·creator_uid·worker_id·generation.id·job_id 사용 규칙
+- [docs/DATA_OWNERSHIP.md](docs/DATA_OWNERSHIP.md) — 로컬 허브·공유 서버·파일·localStorage 중 어디가 최종 정답인가
+- [docs/신원과_모드_가이드.md](docs/신원과_모드_가이드.md) — email·creator_uid·worker_id·generation.id·job_id 사용 규칙
 
 ---
 
@@ -37,19 +50,21 @@ shared     여러 feature 가 공유 — ui(공통 컴포넌트) / lib(순수 �
 - `domain(순수) → types` 만. domain 은 React·fetch·localStorage 를 import 하지 않는다.
 - **feature 끼리 직접 import 금지** (scene 이 manage 내부를 직접 가져다 쓰지 않는다). 공유가 필요하면 `shared` 로 올린다.
 
-> 지금 실제 폴더는 `components/{scene,assets,manage,spotlight,…}` + `lib/`(161개) 형태로,
-> 이미 feature 성격의 그룹이 잡혀 있다. 위 구조는 그걸 **명시적 규칙으로 굳히는 것**이지
-> 폴더를 대이사하자는 게 아니다. (대이사는 P 단계에서 필요할 때만, 조각으로.)
+> [!NOTE]
+> 지금 실제 폴더는 `components/`의 12개 그룹(`scene`·`assets`·`manage`·`spotlight`·`settings`…)
+> + `lib/`(173개 훅·유틸) 형태로, 이미 feature 성격의 그룹이 잡혀 있다. 위 구조는 그걸
+> **명시적 규칙으로 굳히는 것**이지 폴더를 대이사하자는 게 아니다. (대이사는 P 단계에서 필요할 때만, 조각으로.)
 
 ### 백엔드 (`backend/app`)
 
 ```
-routers     HTTP 만 — 요청/응답 변환, 인증 통과, usecase 호출
+routers     HTTP 만 — 요청/응답 변환, 인증 통과, usecase 호출          (25개)
   ▼
-usecases    업무 흐름 — 여러 repo·부수효과(WS·PM·agent signal)를 하나로 묶는다
+usecases    업무 흐름 — 여러 repo·부수효과(WS·PM·agent signal)를 하나로 묶는다   (4개)
   ▼
-repo        데이터 만 — SQL·트랜잭션 (facade __init__.py 유지, 내부만 분할)
-services    asset_tree·cli_bridge·media_cache·thumbs·syncer 등 도메인 IO (usecase 가 호출)
+repo        데이터 만 — SQL·트랜잭션 (facade __init__.py 유지, 내부만 분할)   (39개 모듈)
+services    asset_tree·cli_bridge·media_cache·thumbs·syncer·resolve_*·
+            server_relocation 등 도메인 IO (usecase 가 호출)              (63개)
 ```
 
 **의존 방향:** `routers → usecases → repo/services`.
@@ -58,8 +73,18 @@ services    asset_tree·cli_bridge·media_cache·thumbs·syncer 등 도메인 IO
 - `usecases` 는 FastAPI(Request/Response) 를 import 하지 않는다 — HTTP 는 router 의 몫.
 - `repo/__init__.py` 는 **facade** 다. 바깥은 `from app.repo import X` 만 쓰고, 내부 분할(`repo/generations.py` 등)은 이 파사드 뒤에 숨는다.
 
+> [!NOTE]
 > 현재는 일부 router 가 repo 를 직접 호출하며 업무 흐름까지 조립하는 곳이 있다.
 > usecases 계층은 그 조립부를 옮겨 담을 자리다. **한 번에 다 옮기지 않는다** — 손대는 라우터부터.
+
+외부 프로그램을 붙드는 서비스 묶음은 계약 문서가 따로 있다. 건드리기 전에 먼저 읽는다.
+
+| 묶음 | 하는 일 | 계약 문서 |
+|---|---|---|
+| `services/resolve_*` | DaVinci Resolve 전송 큐(접수·준비·반입·중단 복구) | [docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) |
+| `services/server_relocation.py` | 공유 서버 주소 이사 공지 발행·수신·전환 | [docs/SERVER_RELOCATION.md](docs/SERVER_RELOCATION.md) |
+| `services/telemetry_drain*` | 관리 텔레메트리 전송·재시도·마지막 성공 관측 | [docs/TELEMETRY_DRAIN_LIFECYCLE.md](docs/TELEMETRY_DRAIN_LIFECYCLE.md) |
+| `services/cli_bridge.py` | Higgsfield CLI 호출 경계(필드 매핑·pin) | [docs/HF_CLI_UPGRADE.md](docs/HF_CLI_UPGRADE.md) |
 
 ### 배포형 에이전트 (`agent_push.py`)
 
@@ -165,3 +190,40 @@ services    asset_tree·cli_bridge·media_cache·thumbs·syncer 등 도메인 IO
 
 각 P 단계는 **착수 전 무엇을 바꿀지 짧게 보고**, 조각별 커밋, 언제든 롤백 가능하게.
 SceneBoard 를 크게 건드리는 단계(P2~P4)는 **실측 라인을 흔들지 않도록 별도 워크트리/브랜치**에서 진행한다.
+
+> [!NOTE]
+> P0~P38 은 모두 반영됐다. 이후의 성능·안전 작업은 새 P 번호가 아니라 **최적화 라운드 장부**로
+> 이어졌다(§7). 구조를 바꾸는 일만 여기에 P 번호로 추가한다.
+
+---
+
+## 6. 동시성·상태 계약 (새 코드가 지켜야 할 하우스 규칙)
+
+최적화 라운드에서 **실제로 버그가 났던 자리**만 규칙으로 굳혔다. 이유까지 읽고 따른다.
+
+| 규칙 | 왜 이렇게 하나 | 어디에 있나 |
+|---|---|---|
+| 쓰기용 `to_thread` 는 `to_thread_non_abandon` 을 쓴다 | 서버가 종료되거나 요청이 취소돼도 쓰던 작업을 중간에 버리지 않는다. 그냥 `to_thread` 는 취소되면 결과를 버려서 반쯤 쓴 파일·DB 가 남는다 | `services/async_tools.py` |
+| 계정 키와 uid 는 **한 락 구간에서 함께** 캡처한다 | 계정 전환 도중에 키는 새 계정, uid 는 옛 계정으로 섞이면 남의 데이터에 쓴다 | `active_account.py:transition_lock`, `routers/*:_capture_account_pin` |
+| 동기 라우트는 계정 고정 데코레이터로 감싼다 | 라우트 본문 어디에서 계정을 다시 읽어도 같은 계정이 나와야 한다 | `routers/share.py:_account_scoped_route` |
+| 트랜잭션은 transaction-root 에서 `BEGIN IMMEDIATE`, **SELECT 보다 먼저** 연다 | 읽고 나서 잠그면 그 사이에 값이 바뀐다(TOCTOU). 안쪽에서 `get_connection` 을 또 여는 중첩도 금지 | `repo/*` |
+| 인증 시크릿 캐시 키에 `pool_epoch` 를 넣는다 | DB 를 복원·교체하면 옛 시크릿으로 통과하는 빈틈이 생긴다 | `db.py:pool_epoch()` |
+| 로컬 전용 라우트는 loopback + Host 헤더를 검사한다 | 외부 웹페이지가 브라우저를 통해 내 PC 의 API 를 두드리는 공격(DNS rebinding)을 막는다 | `services/request_guards.py` |
+| 프런트의 비동기 갱신은 seq 가드를 둔다 | 느린 응답이 뒤늦게 도착해 최신 화면을 덮어쓰면 안 된다 | `lib/useResolveTransferActions.ts` 등 |
+| 경과 시간 측정은 `performance.now()` | 벽시계는 시스템 시간 변경·NTP 보정에 흔들려서 음수 경과가 나온다 | 프런트 공통 |
+
+---
+
+## 7. 최적화 라운드 장부 (종료)
+
+성능·동시성 개선은 P 로드맵과 별도로 **라운드(R1~R14)** 로 돌렸고, 2026-08-24 **수렴 선언으로
+종료**했다. 각 라운드의 판정·근거는 `docs/OPT_PLAN*.md` 에 남아 있다.
+
+- 최종 장부: [docs/OPT_PLAN12_2026-08-23.md](docs/OPT_PLAN12_2026-08-23.md) — R13·R14 내역, 수렴 선언, 백로그 실측 판정
+- 회귀 기준선(2026-08-24): 백엔드 1,773 · 프런트 666 통과
+- 잔여 백로그 1건: 휴지통 교차-WAL 전원손실(구조 재설계급, 보류 확정)
+
+> [!CAUTION]
+> 장부에서 **종결·반대로 판정된 항목은 다시 제안하지 않는다.** 같은 후보를 매번 다시 파느라
+> 드는 비용이 개선 이득보다 크다는 게 라운드에서 반복 확인된 결론이다. 되살리려면 장부의
+> 판정 근거(실측 수치)를 먼저 반박해야 한다.
