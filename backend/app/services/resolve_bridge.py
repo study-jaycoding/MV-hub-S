@@ -622,6 +622,9 @@ def _import_media_batch(
     for item, _source, _normalized in remaining:
         item["status"] = "error"
         item["error"] = last_error or "Resolve가 원본 파일을 가져오지 못했습니다"
+        # ★코드 없이 문구만 남기면 상위가 오류 문자열을 파싱해 상태를 판단하게 된다
+        # (§C 금지). 재시도까지 하고도 Bin 에 나타나지 않은 항목은 이 코드로 확정한다.
+        item["error_code"] = "media_import_failed"
         result["error_count"] += 1
 
 

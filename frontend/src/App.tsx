@@ -1257,6 +1257,7 @@ export default function App() {
             resolveRetryProjectName={resolveTransfer.retryable?.target.project_name || ""}
             resolveTransferBusy={resolveTransfer.busy}
             resolveTransferPendingCount={resolveTransfer.pendingCount}
+            resolveQueue={resolveTransfer.queue}
           />
         ) : undefined
       ) : boardSelected.length > 0 ? (
@@ -1273,6 +1274,7 @@ export default function App() {
           resolveRetryProjectName={resolveTransfer.retryable?.target.project_name || ""}
           resolveTransferBusy={resolveTransfer.busy}
           resolveTransferPendingCount={resolveTransfer.pendingCount}
+          resolveQueue={resolveTransfer.queue}
         />
       ) : undefined
     ) : selected.size > 0 ? (
@@ -1288,6 +1290,7 @@ export default function App() {
         resolveRetryProjectName={resolveTransfer.retryable?.target.project_name || ""}
         resolveTransferBusy={resolveTransfer.busy}
         resolveTransferPendingCount={resolveTransfer.pendingCount}
+        resolveQueue={resolveTransfer.queue}
         onCompare={(items) => {
           if (items.length >= 2) setCompareGens(items);
         }}

@@ -68,6 +68,7 @@ STATES = frozenset(
 ACTIVE_STATES = frozenset(
     {STATE_QUEUED, STATE_PREPARING, STATE_READY, STATE_BLOCKED, STATE_IMPORTING}
 )
+# §1.3 "비종료 상태 → cancelled" — 되돌릴 수 없는 건 이 둘뿐이다.
 TERMINAL_STATES = frozenset({STATE_COMPLETE, STATE_CANCELLED})
 
 DISPATCH_AUTO = "auto"
@@ -97,7 +98,14 @@ REBUILD_PENDING_PHASES = frozenset(
     }
 )
 
+# 가져오기 항목이 '확정된' 상태들. 나머지는 재시도해도 안전한 누락분이다(§3.3·§3.4).
+IMPORT_SETTLED_STATES = frozenset({"imported", "skipped", "recovered_existing"})
+
 DEFAULT_LEASE_SECONDS = 120
+# import 가 이만큼을 넘기면 큐 스냅샷에 경고만 붙인다. 자동 kill 은 하지 않는다(§D).
+IMPORT_WARN_SECONDS = max(
+    60, int(os.environ.get("CONTENT_HUB_RESOLVE_IMPORT_WARN_SECONDS", "300"))
+)
 _SCAN_FILE_LIMIT = max(20, int(os.environ.get("CONTENT_HUB_RESOLVE_QUEUE_SCAN_LIMIT", "300")))
 # 이 허브 프로세스의 실행 식별자 — 재시작하면 바뀌므로 옛 claim 을 구분할 수 있다.
 HUB_INSTANCE_ID = uuid.uuid4().hex
@@ -163,16 +171,42 @@ def read_manifest(path: Path) -> dict[str, Any]:
     return data
 
 
+def _disk_revision(path: Path) -> Optional[int]:
+    """디스크에 있는 manifest 의 현재 revision(없거나 읽을 수 없으면 None)."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not is_v3(data):
+        return None
+    block = data.get("queue")
+    try:
+        return int((block or {}).get("revision") or 0)
+    except (TypeError, ValueError):
+        return None
+
+
 def save_manifest(path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     """revision 을 1 올리고 같은 디렉터리 temp→fsync→replace 로 원자 교체한다(§1.7).
 
     호출자는 해당 transfer 의 ``.lock`` 을 보유한 상태여야 한다.
+
+    ★교체 직전 파일의 revision 을 다시 읽어 이 사본이 근거한 값과 같은지 확인한다(CAS).
+    락을 제대로 잡았다면 절대 어긋나지 않지만, 어긋났다면 그건 '두 소유자가 같은
+    전송을 쓰고 있다'는 뜻이라 조용히 덮어쓰면 앞선 결과(가져오기 성공 기록 등)가
+    사라진다. 여기서 멈춰야 유실을 실패로 드러낼 수 있다.
     """
     block = queue_block(manifest)
     try:
-        block["revision"] = int(block.get("revision") or 0) + 1
+        base = int(block.get("revision") or 0)
     except (TypeError, ValueError):
-        block["revision"] = 1
+        base = 0
+    on_disk = _disk_revision(path)
+    if on_disk is not None and on_disk != base:
+        raise ResolveQueueError(
+            f"다른 작업자가 이 전송을 먼저 갱신했습니다(revision {on_disk} ≠ {base})"
+        )
+    block["revision"] = base + 1
     refresh_projection(manifest)
     atomic_write_text(
         Path(path),
@@ -212,6 +246,13 @@ def set_state(
         block["last_error"] = None
     if clear_claim:
         block["claim"] = None
+    if state in {STATE_FAILED, STATE_CANCELLED}:
+        # ★가져오기를 한 번도 못 하고 끝난 전송의 v2 투영이 "pending" 으로 남으면
+        # 기존 화면·요약이 '아직 가져오는 중'으로 읽는다. 권위 상태가 끝났으면 투영도
+        # 끝내 준다(실제 가져오기 결과가 있으면 그건 이미 pending 이 아니다).
+        projection = manifest.get("resolve_import")
+        if isinstance(projection, dict) and projection.get("status") == "pending":
+            projection["status"] = "failed"
     refresh_projection(manifest)
     return manifest
 
@@ -240,7 +281,11 @@ def refresh_projection(manifest: dict[str, Any]) -> None:
     manifest["error_count"] = errors
     state = queue_state(manifest)
     prepared = downloaded + skipped
-    if state in {STATE_QUEUED, STATE_PREPARING} or (not prepared and not errors):
+    if state == STATE_CANCELLED:
+        # 폐기된 전송은 v2 어휘에 'cancelled' 가 없다. 준비분이 있으면 partial, 아니면
+        # failed 로 적는다 — "pending" 으로 남으면 영원히 대기 중으로 읽힌다.
+        manifest["status"] = "partial" if prepared else "failed"
+    elif state in {STATE_QUEUED, STATE_PREPARING} or (not prepared and not errors):
         manifest["status"] = "pending"
     elif errors and prepared:
         manifest["status"] = "partial"
@@ -312,6 +357,129 @@ def claim_disposition(manifest: dict[str, Any]) -> str:
     if liveness == "dead":
         return "free"
     return "unknown" if expired else "alive"
+
+
+# ── 취소 요청 (§D) ────────────────────────────────────────────────────────────
+# 취소는 협력적이다. 아직 아무도 실행하지 않는 건(queued·ready·blocked…)은 API 가 그
+# 자리에서 락을 잡고 확정한다. 이미 워커가 락을 쥔 채 실행 중인 건(preparing·importing)
+# 은 API 가 manifest 를 쓸 수 없으므로 이 프로세스 안의 요청표에만 남기고, 실행 중인
+# 워커가 항목·단계 경계에서 이 표를 보고 스스로 멈춘 뒤 manifest 에 기록한다
+# (워커는 같은 허브 프로세스의 asyncio task 라 메모리를 공유한다).
+#
+# ★허브가 그 사이에 죽으면 요청은 사라진다. 그때는 부팅 복구가 preparing 을 queued 로
+# 되돌리므로 사용자가 큐에서 다시 취소하면 된다 — 취소가 '실행된 척' 남는 경우는 없다.
+_CANCEL_REQUESTS: dict[str, dict[str, Any]] = {}
+_CANCEL_GUARD = threading.Lock()
+
+
+def request_cancel(
+    transfer_id: str, *, force: bool = False, requested_by: str = ""
+) -> dict[str, Any]:
+    """취소 요청을 등록한다. 이미 있으면 force 만 승격한다(일반 취소 뒤 강제 중단)."""
+    key = str(transfer_id or "")
+    record = {
+        "requested_at": _utc_now(),
+        "requested_by": str(requested_by or ""),
+        "force": bool(force),
+    }
+    with _CANCEL_GUARD:
+        previous = _CANCEL_REQUESTS.get(key)
+        if previous is not None:
+            previous["force"] = bool(previous.get("force")) or bool(force)
+            return dict(previous)
+        _CANCEL_REQUESTS[key] = record
+    return dict(record)
+
+
+def cancel_requested(transfer_id: str) -> Optional[dict[str, Any]]:
+    with _CANCEL_GUARD:
+        record = _CANCEL_REQUESTS.get(str(transfer_id or ""))
+        return dict(record) if record else None
+
+
+def clear_cancel(transfer_id: str) -> None:
+    with _CANCEL_GUARD:
+        _CANCEL_REQUESTS.pop(str(transfer_id or ""), None)
+
+
+def reset_cancel_requests() -> None:
+    """프로세스 전역 요청표 비우기(테스트용)."""
+    with _CANCEL_GUARD:
+        _CANCEL_REQUESTS.clear()
+
+
+def record_cancel(manifest: dict[str, Any], request: dict[str, Any]) -> None:
+    """queue.cancel 에 요청을 남긴다 — 언제·누가·강제였는지가 복구 판단의 근거다."""
+    queue_block(manifest)["cancel"] = {
+        "requested_at": str(request.get("requested_at") or _utc_now()),
+        "requested_by": str(request.get("requested_by") or ""),
+        "force": bool(request.get("force")),
+    }
+
+
+# ── 진행 경고 (자동 kill 없음) ────────────────────────────────────────────────
+def import_warning(manifest: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """importing 이 오래 걸리면 경고만 만든다.
+
+    Resolve 가 모달 대화상자(저장 확인·미디어 재연결)를 띄우면 API 호출이 사용자가
+    누를 때까지 돌아오지 않는다. timeout 으로 끊는 것은 Media Pool 재정렬 도중을 끊는
+    일이라 금지다(§D). 대신 사용자에게 'Resolve 창을 보라'고 알린다.
+    """
+    if queue_state(manifest) != STATE_IMPORTING:
+        return None
+    started = _parse_utc(str(queue_block(manifest).get("state_changed_at") or ""))
+    if started is None:
+        return None
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    if elapsed < IMPORT_WARN_SECONDS:
+        return None
+    return {
+        "code": "import_slow",
+        "elapsed_seconds": int(elapsed),
+        "since": started.isoformat(timespec="seconds"),
+        "message": (
+            "Resolve 가져오기가 오래 걸리고 있습니다. Resolve 창에 확인을 기다리는 "
+            "대화상자가 떠 있는지 보세요"
+        ),
+    }
+
+
+# ── 누락분 계산 (§3.3) ────────────────────────────────────────────────────────
+def missing_item_ids(manifest: dict[str, Any]) -> list[str]:
+    """준비는 끝났는데 가져오기가 확정되지 않은 항목들.
+
+    같은 Bin·같은 정규화 경로는 브리지가 ``ImportMedia`` 전에 건너뛰므로(§3.4) 이
+    목록을 다시 실행해도 중복 클립이 생기지 않는다. 목록 생성만 자동이고, 실제 재실행은
+    사용자 확인 뒤에만 한다.
+    """
+    rows: list[str] = []
+    for item in manifest.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        prepare = item.get("prepare") if isinstance(item.get("prepare"), dict) else {}
+        if prepare.get("state") not in {PREPARE_DOWNLOADED, PREPARE_SKIPPED}:
+            continue
+        imported = item.get("import") if isinstance(item.get("import"), dict) else {}
+        if str(imported.get("state") or "") in IMPORT_SETTLED_STATES:
+            continue
+        rows.append(str(item.get("item_id") or ""))
+    return [row for row in rows if row]
+
+
+def build_recovery(
+    manifest: dict[str, Any], *, reason: str, attempt: Optional[dict[str, Any]] = None
+) -> dict[str, Any]:
+    """interrupted 로 격리할 때 붙이는 누락분 정보(§3.3). drp 백업 경로도 함께 남긴다."""
+    missing = missing_item_ids(manifest)
+    prepared = int(manifest.get("downloaded") or 0) + int(manifest.get("skipped") or 0)
+    return {
+        "reason": reason,
+        "existing_count": max(0, prepared - len(missing)),
+        "missing_count": len(missing),
+        "missing_item_ids": missing,
+        "drp_path": str((attempt or {}).get("drp_path") or ""),
+        "verified_at": _utc_now(),
+    }
 
 
 # ── 경로 ──────────────────────────────────────────────────────────────────────
@@ -548,6 +716,40 @@ def _origin_only(value: str) -> str:
     return f"{parts.scheme}://{host}"
 
 
+def idempotent_transfer_id(project_id: str, key: str) -> str:
+    """같은 접수 키에는 항상 같은 transfer_id — 재요청이 두 번째 전송을 만들지 않게.
+
+    ★202 를 보내기 직전에 허브가 죽거나 연결이 끊기면 클라이언트는 접수 성공을 알 수
+    없어 같은 요청을 다시 보낸다. 그때 새 ID 를 뽑으면 같은 원본을 두 번 복사·가져오는
+    중복 전송이 생긴다. 키가 있으면 ID 자체를 키에서 유도해, 두 번째 요청이 첫 번째
+    manifest 를 그대로 찾아 같은 접수증을 받게 한다.
+    """
+    digest = hashlib.sha256(
+        f"{project_id}\x00{key}".encode("utf-8", "replace")
+    ).hexdigest()
+    return f"idem-{digest[:24]}"
+
+
+def _ahead_count(manifest: dict[str, Any]) -> int:
+    """이 전송보다 FIFO 앞에 있는 '활성' 전송 수.
+
+    ★기록을 마친 **뒤에** 센다. 접수 전에 세면 동시에 들어온 두 요청이 서로를 못 봐
+    둘 다 같은 숫자를 보고한다. 그리고 프로젝트의 모든 manifest 루트(현재+기억된)를
+    보되 이 프로젝트 것만 센다 — 한 루트에 여러 프로젝트가 섞여 있을 수 있다.
+    """
+    if queue_state(manifest) not in ACTIVE_STATES:
+        return 0  # 이미 끝난 전송(같은 접수 키의 늦은 재요청)은 줄을 서지 않는다.
+    project_id = str(manifest.get("project_id") or "")
+    transfer_id = str(manifest.get("transfer_id") or "")
+    ahead = 0
+    for row in scan_projects([project_id], states=ACTIVE_STATES):
+        if str(row.get("transfer_id") or "") == transfer_id:
+            return ahead
+        ahead += 1
+    # 목록에서 자기 자신을 못 찾았다면(스캔 상한·경합) 앞을 셌다고 단정하지 않는다.
+    return 0
+
+
 def accept_sync(
     project_id: str,
     generations: list[dict[str, Any]],
@@ -555,8 +757,12 @@ def accept_sync(
     resolve_target: Optional[dict[str, str]] = None,
     account_scope: Optional[dict[str, Any]] = None,
     transfer_id: Optional[str] = None,
-) -> tuple[dict[str, Any], int]:
-    """접수 전용 — 파일 복사·Resolve 조작 없이 v3 manifest 만 원자 기록한다."""
+    idempotency_key: str = "",
+) -> tuple[dict[str, Any], int, bool]:
+    """접수 전용 — 파일 복사·Resolve 조작 없이 v3 manifest 만 원자 기록한다.
+
+    반환은 ``(manifest, 앞 대기 건수, 이미 접수돼 있던 요청인가)``.
+    """
     if not project_id:
         raise ResolveTransferError("프로젝트가 지정되지 않았습니다")
     if not generations:
@@ -573,7 +779,10 @@ def accept_sync(
         raise ResolveTransferError(
             f"이 저장소에서는 Resolve 전송 대기열을 쓸 수 없습니다: {detail}"
         )
-    transfer_id = transfer_id or resolve_transfer._new_transfer_id()
+    key = str(idempotency_key or "").strip()
+    transfer_id = transfer_id or (
+        idempotent_transfer_id(project_id, key) if key else resolve_transfer._new_transfer_id()
+    )
     manifest = build_manifest(
         project_id,
         generations,
@@ -583,10 +792,8 @@ def accept_sync(
         resolve_target=resolve_target,
         account_scope=account_scope or {},
     )
-    ahead = len(_scan_dir(manifest_root, states=ACTIVE_STATES))
-    for older in known_manifest_roots(project_id):
-        if path_identity(older) != path_identity(manifest_root):
-            ahead += len(_scan_dir(older, states=ACTIVE_STATES))
+    if key:
+        manifest["accept_key"] = key
     path = manifest_path_of(manifest)
     lock = resolve_lock.FileLock(
         resolve_lock.transfer_lock_path(manifest_root, transfer_id)
@@ -601,16 +808,22 @@ def accept_sync(
         ) from exc
     if not acquired:
         raise ResolveTransferError("같은 전송 ID가 이미 처리 중입니다")
+    duplicate = False
     try:
         if path.exists():
-            raise ResolveTransferError("같은 전송 ID의 기록이 이미 있습니다")
-        # 교체 성공 뒤에만 성공 응답을 만든다(§1.7 9단계).
-        save_manifest(path, manifest)
+            if not key:
+                raise ResolveTransferError("같은 전송 ID의 기록이 이미 있습니다")
+            # 같은 접수 키의 재요청 — 새로 만들지 않고 첫 접수분을 그대로 돌려준다.
+            manifest = read_manifest(path)
+            duplicate = True
+        else:
+            # 교체 성공 뒤에만 성공 응답을 만든다(§1.7 9단계).
+            save_manifest(path, manifest)
     finally:
         lock.release()
     # Render 루트를 나중에 옮겨도 이 manifest 를 계속 찾을 수 있게 기억한다.
     remember_manifest_root(project_id, manifest_root)
-    return manifest, ahead
+    return manifest, _ahead_count(manifest), duplicate
 
 
 async def accept_transfer(
@@ -620,7 +833,8 @@ async def accept_transfer(
     resolve_target: Optional[dict[str, str]] = None,
     account_scope: Optional[dict[str, Any]] = None,
     transfer_id: Optional[str] = None,
-) -> tuple[dict[str, Any], int]:
+    idempotency_key: str = "",
+) -> tuple[dict[str, Any], int, bool]:
     return await run_non_abandon(
         asyncio.to_thread(
             accept_sync,
@@ -629,6 +843,7 @@ async def accept_transfer(
             resolve_target=resolve_target,
             account_scope=account_scope,
             transfer_id=transfer_id,
+            idempotency_key=idempotency_key,
         )
     )
 
@@ -845,6 +1060,9 @@ def queue_snapshot(project_ids: list[str], *, limit: int = 50) -> list[dict[str,
                 "ahead": active_seen if state in ACTIVE_STATES else 0,
                 "blocked": block.get("blocked"),
                 "recovery": manifest.get("recovery"),
+                "cancel": block.get("cancel"),
+                # 오래 걸리는 가져오기 경고(자동 kill 없음) — UI 가 Resolve 창 확인을 안내한다.
+                "warning": import_warning(manifest),
                 "error_code": (last_error or {}).get("code"),
                 "error": (last_error or {}).get("message"),
             }
@@ -852,6 +1070,149 @@ def queue_snapshot(project_ids: list[str], *, limit: int = 50) -> list[dict[str,
         if state in ACTIVE_STATES:
             active_seen += 1
     return rows[: max(1, limit)]
+
+
+def find_manifest(project_ids: list[str], transfer_id: str) -> dict[str, Any]:
+    """transfer_id 로 v3 manifest 한 건을 찾는다(없으면 예외)."""
+    wanted = str(transfer_id or "")
+    for manifest in scan_projects(project_ids):
+        if str(manifest.get("transfer_id") or "") == wanted:
+            return manifest
+    raise ResolveQueueError("전송 기록을 찾을 수 없습니다")
+
+
+# ── 사용자 조작: 취소 · 수동 재시도 ───────────────────────────────────────────
+CANCEL_IMPORT_NEEDS_FORCE = (
+    "Resolve 가져오기가 진행 중입니다. 강제 중단을 선택하면 Resolve 조작을 즉시 끊고 "
+    "복구 확인이 필요한 상태로 둡니다"
+)
+
+
+def cancel_sync(
+    manifest: dict[str, Any], *, force: bool = False, requested_by: str = ""
+) -> dict[str, Any]:
+    """취소를 접수한다(§D — 일반 취소는 협력적, 강제 중단은 명시 확인일 때만).
+
+    반환 ``{"state", "applied", "cooperative", "force"}``. ``applied`` 가 False 면
+    지금 실행 중인 워커가 항목·단계 경계에서 멈춘 뒤 상태를 확정한다.
+    """
+    path = manifest_path_of(manifest)
+    transfer_id = str(manifest.get("transfer_id") or "")
+    state = queue_state(manifest)
+    if state in TERMINAL_STATES:
+        raise ResolveQueueError("이미 끝난 전송입니다")
+    if state == STATE_IMPORTING and not force:
+        raise ResolveQueueError(CANCEL_IMPORT_NEEDS_FORCE)
+    request = request_cancel(transfer_id, force=force, requested_by=requested_by)
+    lock = transfer_lock(manifest)
+    try:
+        acquired = lock.try_acquire()
+    except resolve_lock.ResolveLockUnsupported:
+        acquired = False
+    if not acquired:
+        # 지금 워커가 쥐고 있다 — manifest 는 그 워커만 쓸 수 있으므로 요청표에 맡긴다.
+        return {
+            "state": state,
+            "applied": False,
+            "cooperative": True,
+            "force": bool(force),
+        }
+    try:
+        current = read_manifest(path)
+        state = queue_state(current)
+        if state in TERMINAL_STATES:
+            clear_cancel(transfer_id)
+            return {
+                "state": state,
+                "applied": False,
+                "cooperative": False,
+                "force": bool(force),
+            }
+        record_cancel(current, request)
+        if state == STATE_IMPORTING:
+            # 락이 비었는데 importing = 소유자가 이미 죽었다. Media Pool 이 어디까지
+            # 바뀌었는지 알 수 없으므로 폐기가 아니라 복구 확인으로 보낸다(§D).
+            current["recovery"] = build_recovery(
+                current,
+                reason="force_cancelled_import",
+                attempt=latest_attempt(current),
+            )
+            set_state(
+                current,
+                STATE_RECOVERY_REQUIRED,
+                error={
+                    "code": "cancelled",
+                    "message": "가져오기를 강제로 중단했습니다. Resolve Bin 상태를 확인하세요",
+                },
+                policy=DISPATCH_MANUAL_ONLY,
+                clear_claim=True,
+            )
+            new_state = STATE_RECOVERY_REQUIRED
+        else:
+            set_state(
+                current,
+                STATE_CANCELLED,
+                error={"code": "cancelled", "message": "사용자가 전송을 폐기했습니다"},
+                clear_claim=True,
+            )
+            new_state = STATE_CANCELLED
+        save_manifest(path, current)
+    finally:
+        lock.release()
+    clear_cancel(transfer_id)
+    return {
+        "state": new_state,
+        "applied": True,
+        "cooperative": False,
+        "force": bool(force),
+    }
+
+
+def resume_sync(manifest: dict[str, Any]) -> dict[str, Any]:
+    """사용자 확인 뒤의 수동 재시도(§1.3 ``failed``/``interrupted``/``recovery_required``).
+
+    자동 재실행은 여전히 금지다 — 이 함수는 사용자가 버튼을 눌렀을 때만 불린다.
+    ``recovery_required`` 는 한 번에 되살리지 않는다. 사용자가 Resolve 에서 Bin·DRP 를
+    처리했다는 확인을 받아 ``interrupted`` 까지만 내리고, 누락분 재실행은 한 번 더
+    확인받는다(§3.5 버튼 흐름).
+    """
+    path = manifest_path_of(manifest)
+    lock = transfer_lock(manifest)
+    if not lock.try_acquire():
+        raise ResolveQueueError("지금 처리 중인 전송입니다. 잠시 뒤 다시 시도하세요")
+    try:
+        current = read_manifest(path)
+        state = queue_state(current)
+        prepared = int(current.get("downloaded") or 0) + int(current.get("skipped") or 0)
+        if state == STATE_RECOVERY_REQUIRED:
+            current["recovery"] = build_recovery(
+                current, reason="user_verified_bins", attempt=latest_attempt(current)
+            )
+            set_state(current, STATE_INTERRUPTED, policy=DISPATCH_MANUAL_ONLY)
+            target = STATE_INTERRUPTED
+        elif state == STATE_INTERRUPTED:
+            recovery = build_recovery(
+                current, reason="interrupted_import_missing_items", attempt=latest_attempt(current)
+            )
+            current["recovery"] = recovery
+            if not recovery["missing_count"]:
+                # 재검사 결과 누락 0개 — 그대로 확정한다(§3.3 4단계).
+                current["completed_at"] = _utc_now()
+                set_state(current, STATE_COMPLETE, clear_claim=True)
+                target = STATE_COMPLETE
+            else:
+                set_state(current, STATE_READY, policy=DISPATCH_AUTO, clear_claim=True)
+                target = STATE_READY
+        elif state in {STATE_FAILED, STATE_BLOCKED}:
+            target = STATE_READY if prepared else STATE_QUEUED
+            set_state(current, target, policy=DISPATCH_AUTO, clear_claim=True)
+            queue_block(current)["blocked_retry_count"] = 0
+        else:
+            raise ResolveQueueError("지금은 다시 시도할 수 없는 상태입니다")
+        save_manifest(path, current)
+    finally:
+        lock.release()
+    return {"state": target, "recovery": current.get("recovery")}
 
 
 # ── attempt journal (§부속 A) ─────────────────────────────────────────────────
@@ -1162,6 +1523,10 @@ def _recover_one(manifest: dict[str, Any]) -> Optional[str]:
             save_manifest(path, current)
             return STATE_RECOVERY_REQUIRED
 
+        # 누락 목록은 자동으로 만든다. 실제 재실행은 사용자 확인 전에는 하지 않는다(§3.3).
+        current["recovery"] = build_recovery(
+            current, reason="interrupted_import_missing_items", attempt=attempt
+        )
         set_state(
             current,
             STATE_INTERRUPTED,

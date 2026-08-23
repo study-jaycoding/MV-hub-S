@@ -862,3 +862,43 @@
 .sb-grade { display: inline-flex; gap: 4px; }
 .sb-grade button { min-width: 40px; padding: 6px 8px; font-weight: 800; }
 
+/* ── Resolve 전송 대기열 배지 + 목록 ── */
+/* 자동 재실행을 하지 않는 설계라 '확인이 필요한 건'을 사용자가 못 보면 큐가 멈춘 채로
+   남는다. 그래서 배지를 전송 버튼 옆에 두고, 손볼 게 있으면 경고색으로 띄운다. */
+.rq-wrap { position: relative; display: inline-flex; }
+.select-bar button.rq-alert {
+  border-color: rgba(251, 191, 36, 0.75); background: rgba(251, 191, 36, 0.16);
+}
+.rq-pop {
+  position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 70;
+  width: 420px; max-height: 52vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px; border-radius: 12px;
+  background: var(--panel, #16181d); border: 1px solid var(--border);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.rq-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 12px; font-weight: 700; color: var(--muted);
+}
+.select-bar .rq-pop button.rq-close { padding: 2px 8px; font-size: 12px; }
+.rq-worker { margin: 0; font-size: 11.5px; color: #fbbf24; }
+.rq-empty { margin: 0; font-size: 12px; color: var(--muted2); }
+.rq-row {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 10px; border-radius: 9px;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border);
+}
+.rq-row.rq-blocked, .rq-row.rq-interrupted { border-color: rgba(251, 191, 36, 0.55); }
+.rq-row.rq-recovery_required, .rq-row.rq-failed { border-color: rgba(244, 63, 94, 0.55); }
+.rq-row-head { display: flex; align-items: baseline; gap: 8px; }
+.rq-state { font-size: 12px; font-weight: 800; }
+.rq-name { font-size: 11.5px; color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.rq-detail { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
+.rq-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.select-bar .rq-actions button { padding: 4px 9px; font-size: 11.5px; }
+.select-bar .rq-actions button.rq-danger {
+  background: rgba(244, 63, 94, 0.2); border-color: rgba(244, 63, 94, 0.55);
+}
+.rq-warn { font-size: 11px; color: #ff9b9b; }
+

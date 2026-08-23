@@ -87,6 +87,8 @@ if os.name == "nt":  # pragma: no cover - 플랫폼 분기(운영 경로는 Wind
     _kernel32.GetProcessTimes.restype = wintypes.BOOL
     _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
     _kernel32.CloseHandle.restype = wintypes.BOOL
+    _kernel32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _kernel32.TerminateProcess.restype = wintypes.BOOL
 
     def _lock_first_byte(handle: IO[bytes]) -> None:
         overlapped = _Overlapped()
@@ -149,6 +151,26 @@ if os.name == "nt":  # pragma: no cover - 플랫폼 분기(운영 경로는 Wind
             return "unknown"
         return "alive" if int(recorded) == current else "dead"
 
+    def terminate_process(pid: int, started_at_filetime: str) -> bool:
+        """사용자의 '강제 중단' 확인이 있을 때만 부르는 프로세스 종료.
+
+        ★생성 시각까지 일치할 때만 끊는다. PID 만 보고 끊으면 재사용된 PID의 무고한
+        프로세스(다른 앱, Resolve 자신)를 죽일 수 있다. 자동 경로에서는 절대 부르지
+        않는다 — 명세 §D 의 ``TerminateProcess`` 금지는 자동 취소에 대한 규칙이다.
+        """
+        if pid <= 0 or pid == os.getpid():
+            return False
+        if process_liveness(pid, started_at_filetime) != "alive":
+            return False
+        PROCESS_TERMINATE = 0x0001
+        handle = _kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+        if not handle:
+            return False
+        try:
+            return bool(_kernel32.TerminateProcess(handle, 1))
+        finally:
+            _kernel32.CloseHandle(handle)
+
     def process_started_at_filetime(pid: int | None = None) -> str:
         """현재(또는 지정) 프로세스의 생성 시각 FILETIME 문자열."""
         target = os.getpid() if pid is None else pid
@@ -203,6 +225,20 @@ else:  # pragma: no cover - 개발용 POSIX 분기(운영 워커는 Windows 전�
             return "unknown"
         # POSIX 에는 값싼 생성시각 조회가 없어 PID 재사용을 구분할 수 없다.
         return "unknown"
+
+    def terminate_process(pid: int, started_at_filetime: str) -> bool:
+        """POSIX 개발 분기 — 생성 시각을 확인할 수 없어 이미 죽은 PID 만 걸러 낸다."""
+        import signal
+
+        if pid <= 0 or pid == os.getpid():
+            return False
+        if process_liveness(pid, started_at_filetime) == "dead":
+            return False
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return False
+        return True
 
     def process_started_at_filetime(pid: int | None = None) -> str:
         return ""
