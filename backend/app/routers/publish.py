@@ -86,8 +86,10 @@ from ..services.shared_connection import (  # noqa: E402
     URL_HISTORY_MAX as _URL_HISTORY_MAX,
     base_url as _effective_url,
     normalize_server_name as _normalize_server_name,
+    published_revision as _published_revision,
     relocation_seen as _relocation_seen,
     server_name as _server_name,
+    set_published_revision as _set_published_revision,
     set_relocation_seen as _set_relocation_seen,
 )
 
@@ -747,8 +749,10 @@ def publish_relocation_announcement(request: Request):
     """지금 저장된 서버 이름·주소를 릴리스 폴더의 공지로 발행한다 — 관리자 창 '팀에 공지'.
 
     관리자가 server-location.json 을 손으로 쓰지 않아도 되게 하는 버튼이다. revision 은
-    **기존 파일을 읽어 +1**(없으면 1) — 번호를 안 올린 재작성은 리더가 거부하는 사고이므로
-    사람의 기억에 맡기지 않는다. 읽기·쓰기 모두 자식 프로세스로 격리한다(죽은 NAS 대비).
+    **기존 파일과 이 PC 가 마지막으로 발행한 번호 중 큰 쪽 +1** — 번호를 안 올린 재작성은
+    리더가 거부하는 사고이고, 공지 파일을 지운 뒤의 '1 부터 다시'는 이미 옮긴 PC 들이
+    새 공지를 무시하게 만드는 사고다. 둘 다 사람의 기억에 맡기지 않는다.
+    읽기·쓰기 모두 자식 프로세스로 격리한다(죽은 NAS 대비).
 
     ★권한의 본질은 릴리스 폴더 ACL 이다(작업자는 읽기 전용). 그래서 여기서 admin 역할을
     다시 검사하지 않는다 — 쓰기 권한이 없는 PC 는 파일 시스템에서 막히고, 그때 안내 문구로
@@ -767,15 +771,19 @@ def publish_relocation_announcement(request: Request):
             ),
         )
     try:
-        announced = server_relocation.publish_announcement(source, url=url, name=name)
+        announced = server_relocation.publish_announcement(
+            source, url=url, name=name, last_published_revision=_published_revision()
+        )
     except server_relocation.RelocationPermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (server_relocation.RelocationWriteError, server_relocation.RelocationReadError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    # 내가 낸 공지가 나에게 다시 '옮기시겠습니까'로 돌아오지 않게 수락 표식을 갱신한다.
+    # 방금 쓴 번호를 로컬에 남긴다 — 누가 공지 파일을 지워도 다음 발행이 1 로 되감기지 않게.
+    # 그리고 내가 낸 공지가 나에게 다시 '옮기시겠습니까'로 돌아오지 않게 수락 표식도 갱신한다.
     # (지금은 발행 주소 = 내 주소라 어차피 제안되지 않지만, 나중에 이 PC 가 다른 주소로
     #  로그인하면 내가 쓴 번호를 나에게 제안하게 된다. 더 높은 번호는 그대로 제안된다.)
     try:
+        _set_published_revision(announced["revision"])
         _set_relocation_seen(announced["revision"], announced["url"])
     except Exception:  # noqa: BLE001 — 표식 기록 실패가 '이미 성공한 발행'을 실패로 만들지 않게
         logging.getLogger(__name__).error("발행한 공지의 수락 표식 기록 실패", exc_info=True)

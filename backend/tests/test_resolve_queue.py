@@ -7,6 +7,7 @@ Resolve 실기기가 필요한 부분은 자식 프로세스 결과를 모의한
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import subprocess
@@ -2091,6 +2092,453 @@ class KilledOwnerRecoveryTests(ResolveQueueTestBase):
         self.assertEqual(recovered["queue"]["dispatch_policy"], "manual_only")
         self.assertEqual(recovered["queue"]["last_error"]["code"], "child_crashed")
         self.assertIsNone(recovered["queue"]["claim"])
+
+
+class CancelPersistenceTests(WorkerFixtureBase):
+    """후속 백로그 2 — 취소 요청은 허브가 죽어도 살아남는다(manifest 옆 사이드카).
+
+    재현: 실행 중(preparing)인 건을 취소한 직후 허브가 죽는다. 예전에는 요청이 프로세스
+    메모리에만 있어 그대로 증발했고, 재기동한 워커는 아무 일도 없었던 듯 계속했다.
+    """
+
+    def _marker(self, manifest: dict) -> Path:
+        return resolve_queue.cancel_marker_path(
+            Path(manifest["manifest_root"]), manifest["transfer_id"]
+        )
+
+    def test_request_is_written_beside_the_manifest_not_into_the_queue(self):
+        manifest, _ahead = self._accept_registered("persist-write")
+        resolve_queue.request_cancel(
+            "persist-write", force=True, requested_by="user-1", manifest=manifest
+        )
+
+        marker = self._marker(manifest)
+        self.assertTrue(marker.is_file())
+        self.assertEqual(marker.suffix, resolve_queue.CANCEL_SUFFIX)
+        self.assertEqual(marker.parent, Path(manifest["manifest_path"]).parent)
+        # ★스캐너는 *.json 만 본다 — 사이드카가 전송 목록에 끼어들면 안 된다.
+        self.assertEqual(len(resolve_queue.scan_projects(["p1"])), 1)
+        # manifest 자체는 손대지 않는다(락은 실행 중인 워커가 쥐고 있을 수 있다).
+        self.assertEqual(
+            resolve_queue.queue_state(resolve_queue.scan_projects(["p1"])[0]),
+            resolve_queue.STATE_QUEUED,
+        )
+
+    def test_a_restarted_hub_inherits_the_pending_request(self):
+        manifest, _ahead = self._accept_registered("persist-inherit")
+        resolve_queue.request_cancel(
+            "persist-inherit", force=True, requested_by="user-1", manifest=manifest
+        )
+        resolve_queue.reset_cancel_requests()  # 허브 재시작 = 프로세스 메모리 소멸
+
+        self.assertIsNone(resolve_queue.cancel_requested("persist-inherit"))
+        inherited = resolve_queue.cancel_requested("persist-inherit", manifest)
+        self.assertIsNotNone(inherited)
+        self.assertTrue(inherited["force"])
+        self.assertEqual(inherited["requested_by"], "user-1")
+        # 한 번 승계하면 메모리 표에 올라온다(조회마다 NAS 를 읽지 않는다).
+        self.assertIsNotNone(resolve_queue.cancel_requested("persist-inherit"))
+
+    async def test_worker_after_restart_stops_before_copying_anything(self):
+        manifest, _ahead = self._accept_registered("persist-worker", count=2)
+        resolve_queue.request_cancel(
+            "persist-worker", requested_by="user-1", manifest=manifest
+        )
+        resolve_queue.reset_cancel_requests()
+
+        state = await resolve_queue_worker.prepare_transfer(manifest)
+
+        self.assertEqual(state, resolve_queue.STATE_CANCELLED)
+        current = resolve_queue.scan_projects(["p1"])[0]
+        self.assertEqual(current["queue"]["cancel"]["requested_by"], "user-1")
+        # 협력적 취소 시맨틱 그대로 — 복사를 시작조차 하지 않았다.
+        self.assertEqual(current["items"][0]["prepare"]["state"], "queued")
+        self.assertFalse(self._marker(manifest).exists())
+
+    def test_boot_recovery_adopts_a_request_left_by_a_dead_hub(self):
+        manifest, _ahead = self._accept_registered("persist-boot")
+        resolve_queue.set_state(manifest, resolve_queue.STATE_PREPARING)
+        resolve_queue.save_manifest(Path(manifest["manifest_path"]), manifest)
+        resolve_queue.request_cancel(
+            "persist-boot", requested_by="user-1", manifest=manifest
+        )
+        resolve_queue.reset_cancel_requests()
+
+        counts = resolve_queue.recover_boot(["p1"])
+
+        # 예전에는 queued 로 되돌려 놓고 사용자가 다시 취소해야 했다.
+        self.assertEqual(counts, {resolve_queue.STATE_CANCELLED: 1})
+        current = resolve_queue.scan_projects(["p1"])[0]
+        self.assertEqual(
+            resolve_queue.queue_state(current), resolve_queue.STATE_CANCELLED
+        )
+        self.assertEqual(current["queue"]["cancel"]["requested_by"], "user-1")
+        self.assertFalse(self._marker(manifest).exists())
+
+    def test_boot_recovery_of_an_interrupted_import_still_goes_to_recovery(self):
+        """importing 중단분은 폐기가 아니라 복구 확인이다(§D) — 요청 사실만 남긴다."""
+        manifest, _ahead = self._accept_registered("persist-boot-import")
+        resolve_queue.set_state(manifest, resolve_queue.STATE_IMPORTING)
+        resolve_queue.save_manifest(Path(manifest["manifest_path"]), manifest)
+        resolve_queue.request_cancel(
+            "persist-boot-import", force=True, requested_by="user-1", manifest=manifest
+        )
+        resolve_queue.reset_cancel_requests()
+
+        resolve_queue.recover_boot(["p1"])
+
+        current = resolve_queue.scan_projects(["p1"])[0]
+        self.assertEqual(
+            resolve_queue.queue_state(current), resolve_queue.STATE_INTERRUPTED
+        )
+        self.assertTrue(current["queue"]["cancel"]["force"])
+
+    def test_resume_withdraws_an_inherited_request(self):
+        manifest, _ahead = self._accept_registered("persist-resume")
+        resolve_queue.set_state(
+            manifest,
+            resolve_queue.STATE_FAILED,
+            error={"code": "unexpected_error", "message": "실패"},
+        )
+        resolve_queue.save_manifest(Path(manifest["manifest_path"]), manifest)
+        resolve_queue.request_cancel(
+            "persist-resume", requested_by="user-1", manifest=manifest
+        )
+        resolve_queue.reset_cancel_requests()
+
+        outcome = resolve_queue.resume_sync(resolve_queue.scan_projects(["p1"])[0])
+
+        self.assertEqual(outcome["state"], resolve_queue.STATE_QUEUED)
+        # '다시 시도' 는 앞선 취소의 철회다 — 남겨 두면 되살린 전송을 워커가 곧장 폐기한다.
+        self.assertFalse(self._marker(manifest).exists())
+        self.assertIsNone(resolve_queue.cancel_requested("persist-resume", manifest))
+
+    def test_confirmed_and_cooperative_requests_end_in_the_right_place(self):
+        confirmed, _ahead = self._accept_registered("persist-confirm")
+        self.assertTrue(resolve_queue.cancel_sync(confirmed, requested_by="u")["applied"])
+        self.assertFalse(self._marker(confirmed).exists())  # 확정했으면 요청은 소멸한다
+
+        running, _ahead = self._accept_registered("persist-cooperative")
+        lock = resolve_queue.transfer_lock(running)
+        self.assertTrue(lock.try_acquire())
+        try:
+            outcome = resolve_queue.cancel_sync(running, requested_by="u")
+        finally:
+            lock.release()
+        self.assertFalse(outcome["applied"])
+        self.assertTrue(outcome["cooperative"])
+        self.assertTrue(self._marker(running).is_file())  # 확정 전이면 살아 있어야 한다
+
+
+class TerminalCleanupTests(WorkerFixtureBase):
+    """후속 백로그 3 — 보존 기간이 지난 터미널 기록만 소량씩 지운다."""
+
+    def _terminal(
+        self,
+        transfer_id: str,
+        *,
+        state: str = resolve_queue.STATE_COMPLETE,
+        age_days: int = 40,
+    ) -> dict:
+        manifest, _ahead = self._accept_registered(transfer_id)
+        stamp = datetime.now(timezone.utc) - timedelta(days=age_days)
+        resolve_queue.set_state(manifest, state)
+        resolve_queue.queue_block(manifest)["state_changed_at"] = stamp.isoformat(
+            timespec="seconds"
+        )
+        path = Path(manifest["manifest_path"])
+        resolve_queue.save_manifest(path, manifest)
+        os.utime(path, (stamp.timestamp(), stamp.timestamp()))
+        resolve_queue.reset_scan_memo()
+        return resolve_queue.read_manifest(path)
+
+    def test_expired_record_is_removed_with_its_journal_lock_and_marker(self):
+        manifest = self._terminal("cleanup-old")
+        journal = resolve_queue.write_attempt(
+            manifest,
+            resolve_queue.new_attempt(
+                manifest,
+                attempt_id="attempt-old",
+                claim={"token": "t", "epoch": 1},
+                executor="push_worker",
+            ),
+        )
+        marker = self._cancel_marker(manifest)
+        lock_path = resolve_lock.transfer_lock_path(
+            Path(manifest["manifest_root"]), "cleanup-old"
+        )
+        self.assertTrue(journal.is_file())
+        self.assertTrue(marker.is_file())
+
+        self.assertEqual(resolve_queue.purge_expired_terminals(["p1"]), 1)
+
+        self.assertFalse(Path(manifest["manifest_path"]).exists())
+        self.assertFalse(journal.exists())
+        self.assertFalse(marker.exists())
+        self.assertFalse(lock_path.exists())
+        self.assertEqual(resolve_queue.scan_projects(["p1"]), [])
+
+    def _cancel_marker(self, manifest: dict) -> Path:
+        resolve_queue.request_cancel(
+            str(manifest["transfer_id"]), requested_by="u", manifest=manifest
+        )
+        resolve_queue.reset_cancel_requests()
+        return resolve_queue.cancel_marker_path(
+            Path(manifest["manifest_root"]), str(manifest["transfer_id"])
+        )
+
+    def test_recent_and_unfinished_records_are_never_touched(self):
+        self._terminal("cleanup-recent", age_days=1)
+        self._terminal("cleanup-failed", state=resolve_queue.STATE_FAILED, age_days=90)
+        self._accept_registered("cleanup-active")
+
+        self.assertEqual(resolve_queue.purge_expired_terminals(["p1"]), 0)
+        self.assertEqual(len(resolve_queue.scan_projects(["p1"])), 3)
+
+    def test_v2_manifests_are_never_read_or_deleted(self):
+        """★v2 는 구버전 메뉴 pull 경로 소유다 — 나이가 아무리 많아도 건드리지 않는다."""
+        manifest = self._terminal("cleanup-v2-neighbour")
+        legacy = (
+            resolve_queue.transfer_dir(Path(manifest["manifest_root"])) / "legacy-v2.json"
+        )
+        legacy.write_text(
+            json.dumps(
+                {
+                    "format": "mvhub.resolve-transfer",
+                    "version": 2,
+                    "transfer_id": "legacy-v2",
+                    "status": "complete",
+                }
+            ),
+            encoding="utf-8",
+        )
+        ancient = (datetime.now(timezone.utc) - timedelta(days=400)).timestamp()
+        os.utime(legacy, (ancient, ancient))
+
+        self.assertEqual(resolve_queue.purge_expired_terminals(["p1"]), 1)
+        self.assertTrue(legacy.is_file())
+
+    def test_cleanup_is_capped_per_round(self):
+        for index in range(3):
+            self._terminal(f"cleanup-batch-{index}")
+
+        self.assertEqual(resolve_queue.purge_expired_terminals(["p1"], limit=2), 2)
+        self.assertEqual(len(resolve_queue.scan_projects(["p1"])), 1)
+        self.assertEqual(resolve_queue.purge_expired_terminals(["p1"], limit=2), 1)
+        self.assertEqual(resolve_queue.scan_projects(["p1"]), [])
+
+    def test_retention_window_is_a_knob(self):
+        self._terminal("cleanup-knob", age_days=10)
+        self.assertEqual(resolve_queue.purge_expired_terminals(["p1"]), 0)  # 기본 30일
+        self.assertEqual(
+            resolve_queue.purge_expired_terminals(["p1"], retention_days=5), 1
+        )
+
+    def test_a_record_revived_after_the_scan_is_left_alone(self):
+        """스캔과 삭제 사이에 사용자가 되살렸다면 그건 더 이상 터미널이 아니다."""
+        manifest = self._terminal("cleanup-revived")
+        path = Path(manifest["manifest_path"])
+        stale = resolve_queue.read_manifest(path)
+        resolve_queue.set_state(stale, resolve_queue.STATE_QUEUED)
+        resolve_queue.save_manifest(path, stale)
+
+        self.assertFalse(
+            resolve_queue._purge_one(
+                manifest, cutoff=1.0, now=datetime.now(timezone.utc)
+            )
+        )
+        self.assertTrue(path.is_file())
+
+    async def test_drain_cleans_up_after_processing_the_queue(self):
+        self._terminal("cleanup-drain")
+        await resolve_queue_worker.ResolveQueueWorker().drain_once()
+        self.assertEqual(resolve_queue.scan_projects(["p1"]), [])
+
+
+class BinReconciliationTests(WorkerFixtureBase):
+    """후속 백로그 4 — 누락 판정을 manifest 가 아니라 실제 Media Pool 로 확인한다(§3.3)."""
+
+    async def _interrupted(self, transfer_id: str) -> dict:
+        """두 항목 다 '가져오기 결과 없음'인 채로 중단된 전송."""
+        manifest, _ahead = self._accept_registered(transfer_id, count=2)
+        await resolve_queue_worker.prepare_transfer(manifest)
+        current = resolve_queue.scan_projects(["p1"])[0]
+        resolve_queue.set_state(
+            current,
+            resolve_queue.STATE_INTERRUPTED,
+            policy=resolve_queue.DISPATCH_MANUAL_ONLY,
+        )
+        resolve_queue.save_manifest(Path(current["manifest_path"]), current)
+        return resolve_queue.scan_projects(["p1"])[0]
+
+    def _listing(self, manifest: dict, *indexes: int) -> dict:
+        key = resolve_bridge.bin_key(manifest["items"][0]["folder_path"])
+        return {
+            "status": "ok",
+            "error_code": None,
+            "project_name": "EP01_EDIT",
+            "bins": {key: [manifest["items"][index]["local_path"] for index in indexes]},
+            "error": None,
+        }
+
+    def _inspector(self, **kwargs):
+        return mock.patch.object(
+            resolve_status_runner, "run_resolve_bin_inspection_isolated", **kwargs
+        )
+
+    async def test_clips_already_in_the_bin_are_settled_not_recounted(self):
+        current = await self._interrupted("bins-partial")
+        with self._inspector(return_value=self._listing(current, 0)):
+            outcome = resolve_queue.resume_sync(current)
+
+        self.assertEqual(outcome["state"], resolve_queue.STATE_READY)
+        recovery = outcome["recovery"]
+        # manifest 만 봤으면 둘 다 누락이다 — 실사로 하나를 건져낸다.
+        self.assertEqual(recovery["missing_count"], 1)
+        self.assertEqual(recovery["missing_item_ids"], ["item-0002"])
+        self.assertEqual(recovery["existing_count"], 1)
+        self.assertEqual(
+            recovery["bin_check"], {"checked": True, "corrected": 1, "error_code": None}
+        )
+        saved = resolve_queue.scan_projects(["p1"])[0]
+        self.assertEqual(saved["items"][0]["import"]["state"], "recovered_existing")
+        self.assertEqual(saved["items"][1]["import"]["state"], "pending")
+
+    async def test_everything_present_confirms_complete_without_a_rerun(self):
+        current = await self._interrupted("bins-complete")
+        with self._inspector(return_value=self._listing(current, 0, 1)):
+            outcome = resolve_queue.resume_sync(current)
+
+        self.assertEqual(outcome["state"], resolve_queue.STATE_COMPLETE)
+        self.assertEqual(outcome["recovery"]["missing_count"], 0)
+        with mock.patch.object(
+            resolve_queue_worker, "run_resolve_import_isolated"
+        ) as importer:
+            await resolve_queue_worker.ResolveQueueWorker().drain_once()
+        importer.assert_not_called()
+
+    async def test_resolve_unavailable_falls_back_to_the_manifest(self):
+        current = await self._interrupted("bins-offline")
+        offline = {
+            "status": "unavailable",
+            "error_code": "not_running",
+            "bins": {},
+            "error": "Resolve 가 실행 중이 아닙니다",
+        }
+        with self._inspector(return_value=offline):
+            outcome = resolve_queue.resume_sync(current)
+
+        # 기능이 없던 때와 똑같은 결과여야 한다(동작 저하 없음).
+        self.assertEqual(outcome["state"], resolve_queue.STATE_READY)
+        self.assertEqual(outcome["recovery"]["missing_count"], 2)
+        self.assertEqual(
+            outcome["recovery"]["bin_check"],
+            {"checked": False, "corrected": 0, "error_code": "not_running"},
+        )
+
+    async def test_an_inspection_crash_never_blocks_the_retry(self):
+        current = await self._interrupted("bins-crash")
+        with self._inspector(side_effect=RuntimeError("자식이 죽었습니다")):
+            outcome = resolve_queue.resume_sync(current)
+
+        self.assertEqual(outcome["state"], resolve_queue.STATE_READY)
+        self.assertEqual(outcome["recovery"]["missing_count"], 2)
+        self.assertFalse(outcome["recovery"]["bin_check"]["checked"])
+
+    async def test_a_clip_in_another_bin_does_not_count_as_present(self):
+        current = await self._interrupted("bins-wrongbin")
+        listing = self._listing(current, 0, 1)
+        listing["bins"] = {"ep999/c9999": next(iter(listing["bins"].values()))}
+        with self._inspector(return_value=listing):
+            outcome = resolve_queue.resume_sync(current)
+
+        self.assertEqual(outcome["recovery"]["missing_count"], 2)
+        self.assertEqual(outcome["recovery"]["bin_check"]["corrected"], 0)
+
+    def test_bridge_reads_the_bin_without_creating_or_moving_anything(self):
+        manifest, _ahead = self._accept_registered("bins-bridge")
+        item = manifest["items"][0]
+        clip = mock.MagicMock()
+        clip.GetClipProperty.return_value = {"File Path": item["local_path"]}
+        leaf = self._folder("c0010", clips=[clip])
+        tree = self._folder(
+            "MV Hub",
+            children=[self._folder("테스트 프로젝트", children=[self._folder("ep001", children=[leaf])])],
+        )
+        root = self._folder("Master", children=[tree])
+        resolve_obj = mock.MagicMock()
+        project = resolve_obj.GetProjectManager.return_value.GetCurrentProject.return_value
+        project.GetUniqueId.return_value = "resolve-1"
+        project.GetName.return_value = "EP01_EDIT"
+        media_pool = project.GetMediaPool.return_value
+        media_pool.GetRootFolder.return_value = root
+
+        result = resolve_bridge.inspect_manifest_bins(manifest, resolve=resolve_obj)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(
+            result["bins"],
+            {resolve_bridge.bin_key("ep001/c0010"): [resolve_queue.path_identity(item["local_path"])]},
+        )
+        # ★읽기 전용 계약 — Bin 을 만들지도, 현재 폴더를 옮기지도 않는다.
+        media_pool.AddSubFolder.assert_not_called()
+        media_pool.SetCurrentFolder.assert_not_called()
+        media_pool.ImportMedia.assert_not_called()
+
+    def test_bridge_reports_a_project_mismatch_instead_of_guessing(self):
+        manifest, _ahead = self._accept_registered("bins-mismatch")
+        resolve_obj = mock.MagicMock()
+        project = resolve_obj.GetProjectManager.return_value.GetCurrentProject.return_value
+        project.GetUniqueId.return_value = "other-project"
+        project.GetName.return_value = "다른 프로젝트"
+
+        result = resolve_bridge.inspect_manifest_bins(manifest, resolve=resolve_obj)
+
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["error_code"], "project_changed")
+        self.assertEqual(result["bins"], {})
+
+    def test_bridge_returns_an_empty_listing_when_the_bin_does_not_exist(self):
+        manifest, _ahead = self._accept_registered("bins-absent")
+        root = self._folder("Master")
+        resolve_obj = mock.MagicMock()
+        project = resolve_obj.GetProjectManager.return_value.GetCurrentProject.return_value
+        project.GetUniqueId.return_value = "resolve-1"
+        project.GetName.return_value = "EP01_EDIT"
+        project.GetMediaPool.return_value.GetRootFolder.return_value = root
+
+        result = resolve_bridge.inspect_manifest_bins(manifest, resolve=resolve_obj)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["bins"], {})
+        self.assertEqual(resolve_queue.reconcile_imported_bins(manifest, {}), 0)
+
+    def _folder(self, name: str, *, clips=(), children=()) -> mock.MagicMock:
+        folder = mock.MagicMock()
+        folder.GetName.return_value = name
+        folder.GetClipList.return_value = list(clips)
+        folder.GetSubFolderList.return_value = list(children)
+        return folder
+
+    def test_child_process_dispatches_the_inspect_mode(self):
+        """자식 진입점 계약 — 봉투에 모드가 있으면 가져오기가 아니라 실사 조회다."""
+        payload = {
+            resolve_import_worker.MODE_KEY: resolve_import_worker.INSPECT_MODE,
+            "manifest": {"transfer_id": "t"},
+        }
+        with (
+            mock.patch.object(
+                resolve_import_worker,
+                "inspect_manifest_bins",
+                return_value={"status": "ok", "bins": {}},
+            ) as inspect,
+            mock.patch.object(resolve_import_worker, "run") as run,
+            mock.patch("sys.stdin", io.StringIO(json.dumps(payload))),
+            mock.patch("builtins.print"),
+        ):
+            resolve_import_worker.main()
+        inspect.assert_called_once_with({"transfer_id": "t"})
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

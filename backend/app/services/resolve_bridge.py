@@ -1177,3 +1177,88 @@ def import_manifest_to_current_project(
         return _unavailable_import(str(exc), exc.code)
     except Exception as exc:  # noqa: BLE001 - Resolve 외부 API 오류가 HTTP 500으로 번지지 않게 한다.
         return _unavailable_import(str(exc), "unexpected_error")
+
+
+# ── 대상 Bin 실사 조회 (명세 §3.3 1단계 — 읽기 전용) ──────────────────────────
+def bin_key(folder_path: str) -> str:
+    """Bin 대조용 정규 키. manifest 의 ``folder_path`` 와 실사 결과를 같은 규칙으로 맞춘다.
+
+    폴더 이름 정리(``_folder_name``)와 한글 정규화·대소문자(``_folder_identity``)까지
+    가져오기 경로와 똑같이 적용해야 '있는데 없다'로 읽지 않는다.
+    """
+    return "/".join(
+        _folder_identity(_folder_name(part, "미분류"))
+        for part in _folder_parts(str(folder_path or ""))
+    )
+
+
+def _unavailable_inspect(message: str, code: str) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "error_code": code,
+        "project_name": "",
+        "bins": {},
+        "error": message,
+    }
+
+
+def _inspect_bins_locked(manifest: dict[str, Any], resolve: Any) -> dict[str, Any]:
+    """이 manifest 가 노리는 Bin 들의 현재 클립 ``File Path`` 목록을 읽는다.
+
+    ★Media Pool 을 **바꾸지 않는다**. 없는 Bin 은 만들지 않고(``_folder_at_path``),
+    현재 폴더도 옮기지 않는다 — 이 경로는 '무엇이 실제로 들어갔는지' 확인만 한다.
+    """
+    project_manager = resolve.GetProjectManager()
+    project = project_manager.GetCurrentProject() if project_manager else None
+    if not project:
+        raise ResolveBridgeError(
+            "현재 열려 있는 Resolve 프로젝트가 없습니다", code="no_project"
+        )
+    _assert_expected_project(manifest, project)
+    media_pool = project.GetMediaPool()
+    root = media_pool.GetRootFolder() if media_pool else None
+    if not media_pool or not root:
+        raise ResolveBridgeError(
+            "현재 Resolve 프로젝트의 Media Pool을 열 수 없습니다", code="api_unavailable"
+        )
+    project_label = _folder_name(
+        str(manifest.get("project_name") or ""),
+        str(manifest.get("project_id") or "프로젝트"),
+    )
+    _refresh_folders(media_pool)
+    bins: dict[str, list[str]] = {}
+    managed_root = _folder_at_path(root, (MEDIA_POOL_ROOT, project_label))
+    result = {
+        "status": "ok",
+        "error_code": None,
+        "project_name": str(project.GetName() or ""),
+        "bins": bins,
+        "error": None,
+    }
+    if managed_root is None:
+        # 관리 Bin 자체가 없다 = 이 전송으로 들어간 클립도 없다(빈 목록이 곧 정답이다).
+        return result
+    for raw in {
+        str(item.get("folder_path") or "")
+        for item in manifest.get("items") or []
+        if isinstance(item, dict)
+    }:
+        parts = tuple(_folder_name(part, "미분류") for part in _folder_parts(raw))
+        folder = _folder_at_path(managed_root, parts) if parts else managed_root
+        if folder is None:
+            continue  # 아직 만들어지지 않은 Bin — 그 안의 항목은 전부 누락이다.
+        bins[bin_key(raw)] = sorted(_existing_paths(folder))
+    return result
+
+
+def inspect_manifest_bins(
+    manifest: dict[str, Any], *, resolve: Any | None = None
+) -> dict[str, Any]:
+    """대상 Bin 실사 조회. 실패는 예외 대신 ``status="unavailable"`` 로 돌려준다."""
+    try:
+        with _IMPORT_LOCK:
+            return _inspect_bins_locked(manifest, resolve or _connect_resolve())
+    except ResolveBridgeError as exc:
+        return _unavailable_inspect(str(exc), exc.code)
+    except Exception as exc:  # noqa: BLE001 - 조회 실패는 폴백 신호일 뿐 예외가 아니다.
+        return _unavailable_inspect(str(exc), "unexpected_error")

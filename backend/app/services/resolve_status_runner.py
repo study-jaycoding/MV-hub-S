@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .resolve_bridge import resolve_process_running
+from .resolve_import_worker import INSPECT_MODE, MODE_KEY
 from .resolve_import_worker import RESULT_PREFIX as IMPORT_RESULT_PREFIX
 from .resolve_probe import RESULT_PREFIX
 from .resolve_python_registry import parse_python_version, registry_python_installations
@@ -27,6 +28,10 @@ from .resolve_python_registry import parse_python_version, registry_python_insta
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 _STATUS_TIMEOUT_SECONDS = max(
     1.0, float(os.environ.get("CONTENT_HUB_RESOLVE_STATUS_TIMEOUT_SECONDS", "8"))
+)
+# 실사 조회(읽기 전용)의 제한 시간. 가져오기와 달리 제한을 두는 이유는 아래 함수 주석에.
+_INSPECT_TIMEOUT_SECONDS = max(
+    1.0, float(os.environ.get("CONTENT_HUB_RESOLVE_INSPECT_TIMEOUT_SECONDS", "30"))
 )
 # 폴백 인터프리터가 우리 코드(resolve_bridge)를 실행할 수 있는 최소 버전.
 # Resolve 메뉴 스크립트 하한(3.6)과는 다른 기준이다.
@@ -281,3 +286,78 @@ def run_resolve_import_isolated(manifest: dict[str, Any]) -> dict[str, Any]:
         # 자식 결과는 브리지가 항상 error_code 를 실어 보낸다. 여기서 키를 덧붙이지 않는다
         # (부모가 결과를 그대로 전달한다는 기존 계약 유지).
         return result
+
+
+def _inspect_unavailable(message: str, *, error_code: str) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "error_code": error_code,
+        "project_name": "",
+        "bins": {},
+        "error": message,
+    }
+
+
+def run_resolve_bin_inspection_isolated(manifest: dict[str, Any]) -> dict[str, Any]:
+    """대상 Bin 실사 조회를 호환 인터프리터의 자식 프로세스로 실행한다(읽기 전용).
+
+    ★가져오기와 달리 **시간 제한을 둔다.** 가져오기에 제한을 두지 않는 이유는 Media Pool
+    재정렬 도중을 끊으면 프로젝트가 중간 구조로 남기 때문인데, 이 경로는 클립 목록을 읽기만
+    해서 언제 끊겨도 남는 게 없다. 반대로 제한이 없으면 Resolve 모달 하나에 사용자의
+    '다시 시도' 버튼이 영영 돌아오지 않는다. 시간 초과·실패는 모두 ``unavailable`` 이고,
+    호출자는 기존 manifest 기반 판정으로 폴백한다(동작 저하 없음).
+    """
+    if resolve_process_running() is False:
+        # Resolve 가 꺼져 있으면 자식을 띄울 이유가 없다(상태 조회와 같은 빠른 길).
+        return _inspect_unavailable(
+            "DaVinci Resolve가 실행 중이지 않습니다", error_code="not_running"
+        )
+    # ★가져오기와 같은 잠금을 쓰되 **기다리는 시간에 상한**을 둔다. 가져오기는 제한이
+    # 없으므로 그냥 `with` 로 잡으면 다른 전송의 import 가 끝날 때까지 사용자의 '다시 시도'
+    # 요청이 무한정 붙잡힌다. 못 잡으면 폴백이다(정확도만 잃고 기능은 그대로 동작한다).
+    if not _IMPORT_LOCK.acquire(timeout=_INSPECT_TIMEOUT_SECONDS):
+        return _inspect_unavailable(
+            "다른 Resolve 작업이 진행 중이라 Bin 을 확인하지 못했습니다",
+            error_code="api_unavailable",
+        )
+    try:
+        try:
+            interpreter, _status, failure = _select_interpreter()
+        except subprocess.TimeoutExpired:
+            return _inspect_unavailable(_timeout_message(), error_code="api_unavailable")
+        if interpreter is None:
+            return _inspect_unavailable(
+                _no_interpreter_message(failure), error_code="python_incompatible"
+            )
+        try:
+            completed = _run_child(
+                interpreter,
+                "app.services.resolve_import_worker",
+                timeout=_INSPECT_TIMEOUT_SECONDS,
+                input_text=json.dumps(
+                    {MODE_KEY: INSPECT_MODE, "manifest": manifest}, ensure_ascii=True
+                ),
+            )
+        except subprocess.TimeoutExpired:
+            return _inspect_unavailable(
+                f"Resolve Bin 확인이 {_INSPECT_TIMEOUT_SECONDS:g}초 안에 끝나지 않았습니다",
+                error_code="api_unavailable",
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return _inspect_unavailable(
+                f"Resolve Bin 확인 프로세스를 실행할 수 없습니다: {exc}",
+                error_code="spawn_failed",
+            )
+        result = _parse_result(completed.stdout, IMPORT_RESULT_PREFIX)
+        if result is None:
+            detail = (
+                _tail_text(completed.stderr)
+                or f"Bin 확인 프로세스 종료 코드 {completed.returncode}"
+            )
+            return _inspect_unavailable(
+                f"Resolve Bin 확인 결과를 읽을 수 없습니다: {detail}",
+                error_code="invalid_child_result",
+            )
+        return result
+    finally:
+        _IMPORT_LOCK.release()

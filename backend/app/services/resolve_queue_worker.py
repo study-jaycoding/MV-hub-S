@@ -324,11 +324,11 @@ async def prepare_transfer(manifest: dict[str, Any]) -> Optional[str]:
         current = await to_thread_non_abandon(resolve_queue.read_manifest, path)
         if resolve_queue.queue_state(current) != STATE_QUEUED:
             return None
-        cancel = resolve_queue.cancel_requested(transfer_id)
+        cancel = resolve_queue.cancel_requested(transfer_id, current)
         if cancel is not None:
             # 락을 잡기 직전에 취소가 들어온 경우 — 복사를 시작조차 하지 않는다.
             state = await to_thread_non_abandon(_cancel_now, path, current, cancel)
-            resolve_queue.clear_cancel(transfer_id)
+            resolve_queue.clear_cancel(transfer_id, current)
             return state
         attempt_id = resolve_queue.new_attempt_id()
         claim = resolve_queue.build_claim(
@@ -373,17 +373,20 @@ async def prepare_transfer(manifest: dict[str, Any]) -> Optional[str]:
                 continue
             # ★취소는 '항목 사이'에서만 본다(§D 협력적 취소). 복사 한 건을 중간에서
             # 끊으면 .part 정리와 무결성 기록이 어긋난다 — 한 파일은 끝까지 간다.
+            # ★여기서는 사이드카를 읽지 않는다(manifest 를 넘기지 않는다): 항목마다 NAS 에
+            # 없는 파일을 열어 보면 100개짜리 전송이 왕복 100번을 더 한다. 앞선 프로세스의
+            # 요청은 이 단계 진입 때 이미 승계했고, 이 프로세스의 새 요청은 메모리에 있다.
             cancel = resolve_queue.cancel_requested(transfer_id)
             if cancel is not None:
                 state = await to_thread_non_abandon(_cancel_now, path, current, cancel)
-                resolve_queue.clear_cancel(transfer_id)
+                resolve_queue.clear_cancel(transfer_id, current)
                 return state
             await _prepare_item(current, item)
 
-        cancel = resolve_queue.cancel_requested(transfer_id)
+        cancel = resolve_queue.cancel_requested(transfer_id, current)
         if cancel is not None:
             state = await to_thread_non_abandon(_cancel_now, path, current, cancel)
-            resolve_queue.clear_cancel(transfer_id)
+            resolve_queue.clear_cancel(transfer_id, current)
             return state
 
         def _finish() -> str:
@@ -712,7 +715,7 @@ def _import_and_record(
         resolve_queue.write_attempt(manifest, record)
     manifest["resolve_import"] = result
     transfer_id = str(manifest.get("transfer_id") or "")
-    cancel = resolve_queue.cancel_requested(transfer_id)
+    cancel = resolve_queue.cancel_requested(transfer_id, manifest)
     if cancel is not None and cancel.get("force"):
         # 사용자가 자식을 끊었다 — 결과가 무엇이든 부수효과 범위를 확정할 수 없다.
         resolve_queue.record_cancel(manifest, cancel)
@@ -720,7 +723,7 @@ def _import_and_record(
     else:
         state = _apply_import_result(manifest, result, attempt=record)
     resolve_queue.save_manifest(path, manifest)
-    resolve_queue.clear_cancel(transfer_id)
+    resolve_queue.clear_cancel(transfer_id, manifest)
     return state
 
 
@@ -737,11 +740,11 @@ async def import_transfer(manifest: dict[str, Any]) -> Optional[str]:
             return None
         if resolve_queue.dispatch_policy(current) != DISPATCH_AUTO:
             return None
-        cancel = resolve_queue.cancel_requested(transfer_id)
+        cancel = resolve_queue.cancel_requested(transfer_id, current)
         if cancel is not None:
             # Resolve 를 아직 만지지 않은 경계 — 여기서 멈추면 부수효과가 없다.
             state = await to_thread_non_abandon(_cancel_now, path, current, cancel)
-            resolve_queue.clear_cancel(transfer_id)
+            resolve_queue.clear_cancel(transfer_id, current)
             return state
         # 준비한 파일이 그 사이에 바뀌지 않았는지 확인한다(§3.2). 복사 때 스트림에서
         # 계산해 둔 sha256 이 권위이고, 크기·mtime 이 기록과 같으면 재해시는 생략한다.
@@ -1072,7 +1075,31 @@ class ResolveQueueWorker:
                     detail=str(exc),
                 )
                 break
+
+        # ── 3) 완료분 정리: 보존 기간이 지난 터미널 기록만 소량씩 ────────────
+        # 활성 처리가 다 끝난 뒤에 한다 — 정리는 절대 큐 진행을 늦추면 안 된다.
+        await self._purge_expired(project_ids)
         return [state for state in outcomes if state]
+
+    async def _purge_expired(self, project_ids: list[str]) -> int:
+        """오래된 터미널 manifest 청소. 실패는 로그만 남기고 드레인을 계속한다."""
+        try:
+            removed = await to_thread_non_abandon(
+                resolve_queue.purge_expired_terminals, project_ids
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - 청소 실패가 큐 처리를 멈출 이유는 없다.
+            log_event(_log, "resolve_queue_cleanup_failed", level=logging.WARNING, exc_info=True)
+            return 0
+        if removed:
+            log_event(
+                _log,
+                "resolve_queue_cleanup",
+                removed=removed,
+                retention_days=resolve_queue.TERMINAL_RETENTION_DAYS,
+            )
+        return removed
 
 
 periodic_resolve_queue = ResolveQueueWorker()

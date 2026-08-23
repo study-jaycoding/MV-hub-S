@@ -30,6 +30,11 @@ URL_HISTORY_MAX = 5
 # 이 PC 가 이미 '수락'한 서버 이사 공지 — {"revision": N, "url": "..."} JSON.
 # 주소와 번호만 담는다(토큰·이메일 금지 — K_URL 과 같은 수준의 무해한 값).
 K_RELOCATION_SEEN = "shared_server_relocation_seen"
+# 이 PC 가 마지막으로 **발행한** 이사 공지 번호(정수 문자열).
+# ★공지 파일을 지우면 다음 발행이 1 부터 다시 시작해, 이미 더 높은 번호를 받아들인 PC 들이
+# 새 공지를 조용히 무시한다(리더가 '지난 번호'로 판정하기 때문). 발행할 때 파일의 번호와
+# 이 값 중 큰 쪽 +1 을 쓰면, 파일이 사라져도 번호가 되감기지 않는다.
+K_RELOCATION_PUBLISHED = "shared_server_relocation_published"
 # 공유 '서버'의 표시 이름(관리자가 주소와 함께 등록) — 작업자 화면엔 주소 대신 이 이름이 뜬다.
 # ★로그인한 '사람'의 표시 이름 키(shared_server_name, publish 소유)와 다른 키다. 그 키는
 # db_scrub.SESSION_KEYS 라 로그아웃·백업 정제에서 지워지는데, 서버 이름은 로그아웃한
@@ -96,3 +101,26 @@ def set_relocation_seen(revision: int, url: str) -> None:
     repo.set_setting(
         K_RELOCATION_SEEN, json.dumps({"revision": int(revision), "url": url}, ensure_ascii=False)
     )
+
+
+def published_revision() -> int:
+    """이 PC 가 마지막으로 발행한 공지 번호(없거나 깨졌으면 0 — '기억 없음').
+
+    0 은 '하한선 없음'이라 발행이 종전처럼 파일 번호만 보고 계산한다. 깨진 값을 0 으로
+    읽는 쪽이 안전하다 — 잘못된 하한으로 번호를 크게 건너뛰는 것보다 낫다.
+    """
+    raw = repo.get_setting(K_RELOCATION_PUBLISHED)
+    try:
+        value = int(str(raw or "").strip())
+    except (TypeError, ValueError):
+        return 0
+    return value if value > 0 else 0
+
+
+def set_published_revision(revision: int) -> None:
+    """방금 발행한 번호를 기억한다(발행 성공 뒤에만 호출한다).
+
+    발행 번호는 항상 '파일과 기억 중 큰 쪽 +1' 이라 이 값은 저절로 증가한다 —
+    되감기 방어를 여기서 또 하지 않는다.
+    """
+    repo.set_setting(K_RELOCATION_PUBLISHED, str(int(revision)))

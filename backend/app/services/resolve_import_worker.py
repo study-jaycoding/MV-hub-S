@@ -23,11 +23,18 @@ from typing import Any
 
 from . import resolve_lock
 from .atomic_io import atomic_write_text
-from .resolve_bridge import import_manifest_to_current_project, set_journal_hook
+from .resolve_bridge import (
+    import_manifest_to_current_project,
+    inspect_manifest_bins,
+    set_journal_hook,
+)
 
 
 RESULT_PREFIX = "MVHUB_RESOLVE_IMPORT="
 JOURNAL_UNAVAILABLE = "journal_unavailable"
+# 표준입력 봉투의 모드 키. manifest 에는 없는 이름이라 기존 '맨 manifest' 입력과 구분된다.
+MODE_KEY = "mvhub_mode"
+INSPECT_MODE = "inspect_bins"
 # ★resolve_queue.attempt_dir 과 같은 규칙이어야 한다. 여기서 resolve_queue 를 import 하면
 # repo(DB) 계층까지 자식 프로세스로 끌려오므로 경로 계산만 옮겨 두고, 두 계산이 같은 경로를
 # 내는지는 테스트가 지킨다(test_resolve_queue: 자식 journal 경로 계약).
@@ -165,10 +172,15 @@ def run(manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
-    manifest = json.load(sys.stdin)
-    # import_manifest_to_current_project 는 내부 예외를 unavailable 결과로 바꿔
-    # 항상 dict 를 돌려준다. 프로세스가 죽는 경우만 부모가 종료 코드로 감지한다.
-    result = run(manifest)
+    payload = json.load(sys.stdin)
+    if isinstance(payload, dict) and payload.get(MODE_KEY) == INSPECT_MODE:
+        # 실사 조회 모드 — Media Pool 을 읽기만 한다. attempt journal 을 남기지 않는 것이
+        # 계약이다: 이 경로에는 부수효과가 없으므로 기록할 '시도'가 없다.
+        result = inspect_manifest_bins(payload.get("manifest") or {})
+    else:
+        # import_manifest_to_current_project 는 내부 예외를 unavailable 결과로 바꿔
+        # 항상 dict 를 돌려준다. 프로세스가 죽는 경우만 부모가 종료 코드로 감지한다.
+        result = run(payload)
     print(RESULT_PREFIX + json.dumps(result, ensure_ascii=True), flush=True)
 
 

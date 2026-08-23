@@ -283,6 +283,37 @@ class AnnouncementPublishTests(unittest.TestCase):
                     str(self.source), url="http://h:8010", name=""
                 )
 
+    def test_deleted_file_keeps_counting_from_the_local_memory(self):
+        """공지 파일을 지워도 번호는 이어진다 — 1 로 되감기면 이미 옮긴 PC 가 무시한다."""
+        self.assertEqual(self._publish()["revision"], 1)
+        self.file.unlink()  # "공지 다 돌았으니 지운다"
+        # 로컬 기억이 없으면 종전대로 1 로 되감긴다(그게 이 백로그가 막으려는 사고다).
+        self.assertEqual(self._publish()["revision"], 1)
+        self.file.unlink()
+        self.assertEqual(self._publish(last_published_revision=1)["revision"], 2)
+        self.file.unlink()
+        self.assertEqual(self._publish(last_published_revision=2)["revision"], 3)
+
+    def test_the_floor_is_the_larger_of_the_file_and_the_memory(self):
+        """다른 관리자가 더 높은 번호를 냈으면 파일이 이긴다(로컬 기억이 번호를 낮추지 않는다)."""
+        self.file.write_bytes(_location_bytes(revision=7))
+        self.assertEqual(self._publish(last_published_revision=3)["revision"], 8)
+        self.file.write_bytes(_location_bytes(revision=2))
+        self.assertEqual(self._publish(last_published_revision=9)["revision"], 10)
+
+    def test_a_broken_memory_value_is_ignored_not_trusted(self):
+        for junk in (None, "", "네개", -5, True):
+            self.file.write_bytes(_location_bytes(revision=4))
+            self.assertEqual(self._publish(last_published_revision=junk)["revision"], 5)
+
+    def test_unreadable_file_still_refuses_even_with_a_local_memory(self):
+        """로컬 폴백은 '파일 부재'에만 적용된다 — 손상·무응답은 종전대로 발행 거부다."""
+        self.file.write_bytes("손으로 고치다 깨뜨린 파일".encode("utf-8"))
+        with self.assertRaises(server_relocation.RelocationWriteError):
+            self._publish(last_published_revision=9)
+        with self.assertRaises(server_relocation.RelocationWriteError):
+            self._publish(last_published_revision=9, timeout=0.001)
+
     def test_published_announcement_becomes_the_local_snapshot(self):
         out = self._publish()
         self.assertEqual(server_relocation.snapshot(), out)
@@ -663,6 +694,33 @@ class PublishRouteTests(unittest.TestCase):
                 self._publish()
         self.assertEqual(caught.exception.status_code, 400)
         self.assertEqual(shared_connection.relocation_seen(), {})
+        # 실패한 발행은 하한선도 올리지 않는다(다음 발행이 번호를 건너뛰면 안 된다).
+        self.assertEqual(shared_connection.published_revision(), 0)
+
+    def test_deleting_the_announcement_file_does_not_restart_numbering(self):
+        """재현 시나리오: 공지를 다 돌린 뒤 파일을 지우고 다음 이사 때 다시 [팀에 공지]."""
+        location = self.source / server_relocation.LOCATION_FILE
+        self.assertEqual(self._publish()["revision"], 1)
+        self.assertEqual(shared_connection.published_revision(), 1)
+
+        location.unlink()
+        self.assertEqual(self._publish()["revision"], 2)  # 1 이 아니다
+        self.assertEqual(shared_connection.published_revision(), 2)
+        self.assertEqual(
+            server_relocation.parse_announcement(location.read_bytes())["revision"], 2
+        )
+
+        # 파일을 또 지워도 계속 이어진다. rev 2 를 이미 수락한 PC 는 rev 3 을 받는다.
+        location.unlink()
+        self.assertEqual(self._publish()["revision"], 3)
+        self.assertEqual(
+            server_relocation.proposal(
+                "http://10.0.0.1:8010",
+                {"revision": 2, "url": "http://192.168.1.50:8010"},
+                server_relocation.snapshot(),
+            )["revision"],
+            3,
+        )
 
 
 class ServerNameRegistrationTests(unittest.TestCase):

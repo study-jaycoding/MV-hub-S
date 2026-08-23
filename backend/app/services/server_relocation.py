@@ -351,8 +351,24 @@ def current_revision(source: str, *, timeout: float = READ_TIMEOUT_SECONDS) -> i
         ) from exc
 
 
+def _positive_int(value: Any) -> int:
+    """1 이상의 정수만 통과시킨다(bool·None·문자열 쓰레기는 0 = '기억 없음')."""
+    if isinstance(value, bool):
+        return 0
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return number if number > 0 else 0
+
+
 def publish_announcement(
-    source: str, *, url: str, name: str, timeout: float = WRITE_TIMEOUT_SECONDS
+    source: str,
+    *,
+    url: str,
+    name: str,
+    last_published_revision: int = 0,
+    timeout: float = WRITE_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """지금 주소·이름을 revision+1 로 공지 파일에 기록한다(원자 쓰기). 실패는 예외.
 
@@ -360,10 +376,19 @@ def publish_announcement(
     제한 시간 안에 회수된다. 두 단계 사이의 경쟁(다른 관리자가 동시에 발행)은 막지 않는다:
     관리자 둘이 같은 순간 다른 주소를 공지하는 것은 파일 잠금이 아니라 운영으로 막을 일이고,
     그때도 리더는 '같은 번호·다른 주소'를 거부해 사고를 조용히 퍼뜨리지 않는다.
+
+    ★번호의 하한은 **파일과 ``last_published_revision`` 중 큰 쪽**이다. 누가 공지 파일을
+    지우면 파일만 보는 계산은 1 로 되감기고, 이미 더 높은 번호를 수락한 PC 들은 그 공지를
+    '지난 번호'로 보고 조용히 무시한다(아무도 못 옮기는데 관리자는 성공했다고 믿는다).
+    호출자가 로컬에 기억해 둔 마지막 발행 번호를 넘겨 주면 파일이 사라져도 이어서 센다.
+    기존 계약은 그대로다: 파일이 **있는데 못 읽으면**(무응답·손상) 여전히 발행을 거부한다 —
+    로컬 폴백은 '파일 부재'에만 적용된다(그 구분은 :func:`current_revision` 이 한다).
     """
     if source.lower().startswith(("http://", "https://")):
         raise RelocationWriteError(_HTTP_PUBLISH_REFUSAL)  # 읽으러 가기 전에 끝낸다
-    revision = current_revision(source, timeout=timeout) + 1
+    revision = (
+        max(current_revision(source, timeout=timeout), _positive_int(last_published_revision)) + 1
+    )
     announced_at = datetime.now().astimezone().isoformat(timespec="seconds")
     payload = render_announcement(url, revision, name, announced_at)
     result = _run_child(

@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import threading
 import time
@@ -414,20 +415,89 @@ def claim_disposition(manifest: dict[str, Any]) -> str:
 # ── 취소 요청 (§D) ────────────────────────────────────────────────────────────
 # 취소는 협력적이다. 아직 아무도 실행하지 않는 건(queued·ready·blocked…)은 API 가 그
 # 자리에서 락을 잡고 확정한다. 이미 워커가 락을 쥔 채 실행 중인 건(preparing·importing)
-# 은 API 가 manifest 를 쓸 수 없으므로 이 프로세스 안의 요청표에만 남기고, 실행 중인
-# 워커가 항목·단계 경계에서 이 표를 보고 스스로 멈춘 뒤 manifest 에 기록한다
-# (워커는 같은 허브 프로세스의 asyncio task 라 메모리를 공유한다).
+# 은 API 가 manifest 를 쓸 수 없으므로 요청표에만 남기고, 실행 중인 워커가 항목·단계
+# 경계에서 이 표를 보고 스스로 멈춘 뒤 manifest 에 기록한다(워커는 같은 허브 프로세스의
+# asyncio task 라 메모리를 공유한다).
 #
-# ★허브가 그 사이에 죽으면 요청은 사라진다. 그때는 부팅 복구가 preparing 을 queued 로
-# 되돌리므로 사용자가 큐에서 다시 취소하면 된다 — 취소가 '실행된 척' 남는 경우는 없다.
+# ★메모리 표만으로는 허브가 그 사이에 죽으면 요청이 사라진다. 그래서 같은 내용을
+# **manifest 옆 사이드카**(``<transfer_id>.cancel``)에도 남긴다 — manifest 가 아닌 별도
+# 파일이라 transfer 락을 쥔 워커와 부딪히지 않고(락 없이 쓸 수 있고), ``*.json`` 만 훑는
+# 스캐너의 큐 목록에도 끼어들지 않는다. 다음 프로세스(워커·부팅 복구)가 이 파일을 보고
+# 취소 의사를 승계한다. 취소 시맨틱 자체는 그대로다 — 협력적 취소는 여전히 실행자가
+# 경계에서 멈춰 확정하고, 강제 중단은 여전히 사용자의 2차 확인에서만 일어난다.
 _CANCEL_REQUESTS: dict[str, dict[str, Any]] = {}
 _CANCEL_GUARD = threading.Lock()
+CANCEL_SUFFIX = ".cancel"
+CANCEL_FORMAT = "mvhub.resolve-cancel"
+
+
+def cancel_marker_path(manifest_root: Path, transfer_id: str) -> Path:
+    """취소 요청 사이드카 경로 — manifest 와 같은 폴더의 ``<transfer_id>.cancel``."""
+    return resolve_transfer._manifest_path(Path(manifest_root), str(transfer_id)).with_suffix(
+        CANCEL_SUFFIX
+    )
+
+
+def _cancel_path_of(manifest: Optional[dict[str, Any]]) -> Optional[Path]:
+    """manifest 로부터 사이드카 경로(경로를 못 만들면 None — 메모리 표로만 동작)."""
+    if not isinstance(manifest, dict):
+        return None
+    root = str(manifest.get("manifest_root") or "")
+    transfer_id = str(manifest.get("transfer_id") or "")
+    if not root or not transfer_id:
+        return None
+    try:
+        return cancel_marker_path(Path(root), transfer_id)
+    except (ResolveTransferError, OSError):
+        return None
+
+
+def _write_cancel_marker(manifest: Optional[dict[str, Any]], record: dict[str, Any]) -> None:
+    """사이드카 기록은 best-effort 다 — 실패해도 이번 프로세스의 취소는 그대로 진행된다."""
+    path = _cancel_path_of(manifest)
+    if path is None:
+        return
+    with contextlib.suppress(OSError):
+        atomic_write_text(
+            path,
+            json.dumps(
+                {"format": CANCEL_FORMAT, "version": 1, **record},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+        )
+
+
+def _read_cancel_marker(manifest: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    path = _cancel_path_of(manifest)
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("format") != CANCEL_FORMAT:
+        return None
+    return {
+        "requested_at": str(data.get("requested_at") or ""),
+        "requested_by": str(data.get("requested_by") or ""),
+        "force": bool(data.get("force")),
+    }
 
 
 def request_cancel(
-    transfer_id: str, *, force: bool = False, requested_by: str = ""
+    transfer_id: str,
+    *,
+    force: bool = False,
+    requested_by: str = "",
+    manifest: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """취소 요청을 등록한다. 이미 있으면 force 만 승격한다(일반 취소 뒤 강제 중단)."""
+    """취소 요청을 등록한다. 이미 있으면 force 만 승격한다(일반 취소 뒤 강제 중단).
+
+    ``manifest`` 를 주면 같은 내용을 사이드카에도 남겨 허브가 죽어도 요청이 남는다.
+    """
     key = str(transfer_id or "")
     record = {
         "requested_at": _utc_now(),
@@ -438,20 +508,40 @@ def request_cancel(
         previous = _CANCEL_REQUESTS.get(key)
         if previous is not None:
             previous["force"] = bool(previous.get("force")) or bool(force)
-            return dict(previous)
-        _CANCEL_REQUESTS[key] = record
+            record = dict(previous)
+        else:
+            _CANCEL_REQUESTS[key] = record
+            record = dict(record)
+    _write_cancel_marker(manifest, record)
     return dict(record)
 
 
-def cancel_requested(transfer_id: str) -> Optional[dict[str, Any]]:
+def cancel_requested(
+    transfer_id: str, manifest: Optional[dict[str, Any]] = None
+) -> Optional[dict[str, Any]]:
+    """지금 살아 있는 취소 요청(없으면 None). 메모리 표가 비었으면 사이드카를 승계한다."""
+    key = str(transfer_id or "")
     with _CANCEL_GUARD:
-        record = _CANCEL_REQUESTS.get(str(transfer_id or ""))
-        return dict(record) if record else None
+        record = _CANCEL_REQUESTS.get(key)
+        if record:
+            return dict(record)
+    inherited = _read_cancel_marker(manifest)
+    if inherited is None:
+        return None
+    with _CANCEL_GUARD:
+        # 앞선 프로세스가 접수한 요청 — 이제 이 프로세스가 이어받는다(다음 조회는 메모리에서).
+        record = _CANCEL_REQUESTS.setdefault(key, inherited)
+        return dict(record)
 
 
-def clear_cancel(transfer_id: str) -> None:
+def clear_cancel(transfer_id: str, manifest: Optional[dict[str, Any]] = None) -> None:
+    """요청을 소멸시킨다 — 확정했거나(취소 완료), 사용자가 재시도로 철회했을 때만 부른다."""
     with _CANCEL_GUARD:
         _CANCEL_REQUESTS.pop(str(transfer_id or ""), None)
+    path = _cancel_path_of(manifest)
+    if path is not None:
+        with contextlib.suppress(OSError):
+            path.unlink()
 
 
 def reset_cancel_requests() -> None:
@@ -516,6 +606,69 @@ def missing_item_ids(manifest: dict[str, Any]) -> list[str]:
             continue
         rows.append(str(item.get("item_id") or ""))
     return [row for row in rows if row]
+
+
+def reconcile_imported_bins(manifest: dict[str, Any], bins: dict[str, Any]) -> int:
+    """실사 조회 결과로 '이미 Media Pool 에 있는' 항목을 확정한다. 반환=정정한 항목 수.
+
+    명세 §3.3 1~2단계 — 기대 목록(manifest 의 ``import.state``)이 아니라 **실재 목록**이
+    권위다. 실제로 Bin 에 들어간 클립은 ``recovered_existing`` 으로 확정해 누락에서 뺀다.
+    실사에서 안 보인 항목은 그대로 둔다(없다고 단정하지 않고 종전 판정을 유지한다).
+    """
+    if not isinstance(bins, dict) or not isinstance(manifest.get("items"), list):
+        return 0
+    lookup = {
+        str(key): {path_identity(row) for row in (value or []) if isinstance(row, str)}
+        for key, value in bins.items()
+    }
+    corrected = 0
+    for item in manifest.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        prepare = item.get("prepare") if isinstance(item.get("prepare"), dict) else {}
+        if prepare.get("state") not in {PREPARE_DOWNLOADED, PREPARE_SKIPPED}:
+            continue
+        imported = item.get("import") if isinstance(item.get("import"), dict) else None
+        if imported is None:
+            imported = item.setdefault("import", {})
+        if str(imported.get("state") or "") in IMPORT_SETTLED_STATES:
+            continue
+        key = resolve_bridge.bin_key(str(item.get("folder_path") or ""))
+        if path_identity(str(item.get("local_path") or "")) not in lookup.get(key, frozenset()):
+            continue
+        imported["state"] = "recovered_existing"
+        imported["error_code"] = None
+        corrected += 1
+    return corrected
+
+
+def verify_bins(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Resolve 에 직접 물어 실재 클립을 확인하고 manifest 를 정정한다(§3.3 1~2단계).
+
+    반환 ``{"checked", "corrected", "error_code"}``. Resolve 가 없거나 응답하지 않으면
+    ``checked=False`` 로 조용히 끝난다 — 그때는 호출자가 종전처럼 manifest 의
+    ``import.state`` 만 보고 누락을 센다(기능이 없던 때와 같은 동작).
+
+    ★import 는 여기서 하지 않는다(자식 프로세스 계층을 이 모듈의 import 그래프에 상시로
+    끌어들이지 않는다) — 사용자가 '다시 시도'를 눌렀을 때만 필요한 경로다.
+    """
+    from .resolve_status_runner import run_resolve_bin_inspection_isolated
+
+    try:
+        result = run_resolve_bin_inspection_isolated(manifest)
+    except Exception:  # noqa: BLE001 - 실사 실패가 재시도 자체를 막으면 안 된다.
+        return {"checked": False, "corrected": 0, "error_code": "unexpected_error"}
+    if not isinstance(result, dict) or str(result.get("status") or "") != "ok":
+        return {
+            "checked": False,
+            "corrected": 0,
+            "error_code": str((result or {}).get("error_code") or "api_unavailable"),
+        }
+    return {
+        "checked": True,
+        "corrected": reconcile_imported_bins(manifest, result.get("bins") or {}),
+        "error_code": None,
+    }
 
 
 def build_recovery(
@@ -1131,6 +1284,129 @@ def find_manifest(project_ids: list[str], transfer_id: str) -> dict[str, Any]:
     raise ResolveQueueError("전송 기록을 찾을 수 없습니다")
 
 
+# ── 완료분 정리 (보존 기간) ───────────────────────────────────────────────────
+# 스캔은 터미널 메모로 싸게 건너뛰지만 파일 자체는 영원히 남는다. 몇 달 뒤 NAS 의
+# ``.mvhub/transfers`` 에 수천 개가 쌓이면 디렉터리 나열만으로도 느려진다.
+# ★유실 방지가 정리보다 우선이다 — **터미널 상태 + 보존 기간 경과**만 지운다.
+# 활성·실패·중단 건은 어떤 경우에도 건드리지 않고, v2 manifest 는 read_manifest 가
+# 거부하므로 아예 열리지도 않는다(구버전 메뉴 pull 경로 소유 — 명세 §머리말).
+TERMINAL_RETENTION_DAYS = max(
+    1, int(os.environ.get("CONTENT_HUB_RESOLVE_QUEUE_RETENTION_DAYS", "30") or 30)
+)
+# 한 바퀴에 지우는 상한. 드레인은 사용자 작업과 같은 프로세스라 NAS 삭제로 오래 붙잡히면
+# 안 된다 — 조금씩 여러 바퀴에 걸쳐 치운다.
+CLEANUP_PER_ROUND = max(
+    1, int(os.environ.get("CONTENT_HUB_RESOLVE_QUEUE_CLEANUP_LIMIT", "20") or 20)
+)
+
+
+def _terminal_age_seconds(manifest: dict[str, Any], now: datetime) -> Optional[float]:
+    """터미널이 된 뒤 흐른 시간. 시각을 하나도 못 읽으면 None(그 파일은 지우지 않는다)."""
+    for value in (
+        queue_block(manifest).get("state_changed_at"),
+        manifest.get("completed_at"),
+        manifest.get("created_at"),
+    ):
+        parsed = _parse_utc(str(value or ""))
+        if parsed is not None:
+            return (now - parsed).total_seconds()
+    return None
+
+
+def _forget_terminal_memo(path: Path) -> None:
+    with _TERMINAL_MEMO_GUARD:
+        _TERMINAL_MEMO.pop(_memo_key(path), None)
+
+
+def _purge_one(manifest: dict[str, Any], *, cutoff: float, now: datetime) -> bool:
+    """한 건을 지운다(manifest·attempt journal·취소 사이드카·짝 .lock). 반환=지웠는가.
+
+    ★락을 잡고 **다시 읽어** 상태·나이를 확인한다. 스캔과 삭제 사이에 누가 되살렸다면
+    (수동 재시도 등) 그건 더 이상 터미널이 아니다. 락 파일은 마지막에, 락을 놓은 뒤에
+    지운다 — Windows 는 열려 있는 파일을 지울 수 없다.
+    """
+    path = manifest_path_of(manifest)
+    manifest_root = Path(str(manifest.get("manifest_root") or ""))
+    transfer_id = str(manifest.get("transfer_id") or "")
+    try:
+        lock = transfer_lock(manifest)
+    except resolve_lock.ResolveLockUnsupported:
+        return False
+    if not lock.try_acquire():
+        return False  # 누가 쥐고 있으면 이번 바퀴에는 건드리지 않는다.
+    try:
+        current = read_manifest(path)
+        if queue_state(current) not in TERMINAL_STATES:
+            return False
+        age = _terminal_age_seconds(current, now)
+        if age is None or age < cutoff:
+            return False
+        path.unlink()
+    except (ResolveQueueError, OSError):
+        return False
+    finally:
+        lock.release()
+    shutil.rmtree(attempt_dir(manifest_root, transfer_id), ignore_errors=True)
+    marker = _cancel_path_of(manifest)
+    if marker is not None:
+        with contextlib.suppress(OSError):
+            marker.unlink()
+    with contextlib.suppress(OSError, resolve_lock.ResolveLockUnsupported):
+        resolve_lock.transfer_lock_path(manifest_root, transfer_id).unlink()
+    _forget_terminal_memo(path)
+    return True
+
+
+def purge_expired_terminals(
+    project_ids: list[str],
+    *,
+    limit: int = CLEANUP_PER_ROUND,
+    retention_days: Optional[int] = None,
+) -> int:
+    """보존 기간이 지난 터미널 manifest 를 소량 지운다. 반환=지운 건수.
+
+    ★1차 필터는 파일 mtime 이다. 터미널 manifest 는 그 상태가 된 순간이 마지막 쓰기라
+    mtime 이 보존 기간 안이면 **열어 보지도 않는다** — 드레인마다 NAS 의 모든 기록을
+    읽어 들이면 정리가 큐 자체보다 비싸진다.
+    """
+    days = TERMINAL_RETENTION_DAYS if retention_days is None else max(1, int(retention_days))
+    cutoff = days * 86400.0
+    now = datetime.now(timezone.utc)
+    now_ts = now.timestamp()
+    removed = 0
+    ceiling = max(1, limit)
+    for project_id in dict.fromkeys(pid for pid in project_ids if pid):
+        for root in project_scan_roots(project_id):
+            try:
+                entries = sorted(transfer_dir(root).glob("*.json"), key=lambda path: path.name)
+            except OSError:
+                continue
+            for path in entries:
+                if removed >= ceiling:
+                    return removed
+                try:
+                    stat_result = path.stat()
+                    if not stat.S_ISREG(stat_result.st_mode):
+                        continue
+                    if now_ts - stat_result.st_mtime < cutoff:
+                        continue
+                    manifest = read_manifest(path)  # v2·손상 기록은 여기서 걸러진다
+                except (OSError, ResolveQueueError):
+                    continue
+                if str(manifest.get("project_id") or "") != project_id:
+                    continue
+                if queue_state(manifest) not in TERMINAL_STATES:
+                    continue
+                if path_identity(manifest_path_of(manifest)) != path_identity(path):
+                    continue  # 기록이 가리키는 경로와 실제 위치가 다르면 지우지 않는다
+                age = _terminal_age_seconds(manifest, now)
+                if age is None or age < cutoff:
+                    continue
+                if _purge_one(manifest, cutoff=cutoff, now=now):
+                    removed += 1
+    return removed
+
+
 # ── 사용자 조작: 취소 · 수동 재시도 ───────────────────────────────────────────
 CANCEL_IMPORT_NEEDS_FORCE = (
     "Resolve 가져오기가 진행 중입니다. 강제 중단을 선택하면 Resolve 조작을 즉시 끊고 "
@@ -1153,7 +1429,9 @@ def cancel_sync(
         raise ResolveQueueError("이미 끝난 전송입니다")
     if state == STATE_IMPORTING and not force:
         raise ResolveQueueError(CANCEL_IMPORT_NEEDS_FORCE)
-    request = request_cancel(transfer_id, force=force, requested_by=requested_by)
+    request = request_cancel(
+        transfer_id, force=force, requested_by=requested_by, manifest=manifest
+    )
     lock = transfer_lock(manifest)
     try:
         acquired = lock.try_acquire()
@@ -1171,7 +1449,7 @@ def cancel_sync(
         current = read_manifest(path)
         state = queue_state(current)
         if state in TERMINAL_STATES:
-            clear_cancel(transfer_id)
+            clear_cancel(transfer_id, current)
             return {
                 "state": state,
                 "applied": False,
@@ -1209,7 +1487,7 @@ def cancel_sync(
         save_manifest(path, current)
     finally:
         lock.release()
-    clear_cancel(transfer_id)
+    clear_cancel(transfer_id, current)
     return {
         "state": new_state,
         "applied": True,
@@ -1241,9 +1519,14 @@ def resume_sync(manifest: dict[str, Any]) -> dict[str, Any]:
             set_state(current, STATE_INTERRUPTED, policy=DISPATCH_MANUAL_ONLY)
             target = STATE_INTERRUPTED
         elif state == STATE_INTERRUPTED:
+            # ★명세 §3.3 1~2단계: 기대 목록(manifest)이 아니라 **실제 Media Pool** 을 본다.
+            # 이미 Bin 에 들어간 클립을 '누락'으로 세면 사용자가 같은 파일을 다시 가져오게
+            # 만든다(브리지가 건너뛰긴 하지만, 화면의 누락 개수 자체가 거짓이 된다).
+            bin_check = verify_bins(current)
             recovery = build_recovery(
                 current, reason="interrupted_import_missing_items", attempt=latest_attempt(current)
             )
+            recovery["bin_check"] = bin_check
             current["recovery"] = recovery
             if not recovery["missing_count"]:
                 # 재검사 결과 누락 0개 — 그대로 확정한다(§3.3 4단계).
@@ -1262,6 +1545,9 @@ def resume_sync(manifest: dict[str, Any]) -> dict[str, Any]:
         save_manifest(path, current)
     finally:
         lock.release()
+    # 사용자가 '다시 시도'를 눌렀다 = 앞선 취소 요청을 철회한 것이다. 승계된 사이드카를
+    # 남겨 두면 되살린 전송을 다음 워커가 곧바로 폐기해 버린다.
+    clear_cancel(str(current.get("transfer_id") or ""), current)
     return {"state": target, "recovery": current.get("recovery")}
 
 
@@ -1528,6 +1814,28 @@ def _recover_one(manifest: dict[str, Any]) -> Optional[str]:
             )
             save_manifest(path, current)
             return STATE_RECOVERY_REQUIRED
+
+        transfer_id = str(current.get("transfer_id") or "")
+        pending = cancel_requested(transfer_id, current)
+        if pending is not None and state in {STATE_QUEUED, STATE_PREPARING, STATE_READY}:
+            # ★앞선 프로세스가 접수해 놓고 죽은 취소 요청을 승계한다(사이드카). 아직 Resolve
+            # 를 만지지 않은 상태라 지금 확정해도 부수효과가 없다 — 워커가 항목 경계에서
+            # 멈춰 확정하는 것과 같은 결말이다(§D 협력적 취소).
+            record_cancel(current, pending)
+            set_state(
+                current,
+                STATE_CANCELLED,
+                error={"code": "cancelled", "message": "사용자가 전송을 폐기했습니다"},
+                clear_claim=True,
+            )
+            save_manifest(path, current)
+            clear_cancel(transfer_id, current)
+            return STATE_CANCELLED
+        if pending is not None:
+            # importing 중단분은 폐기가 아니라 복구 확인으로 간다(부수효과 범위 불명 — §D).
+            # 요청 사실만 남겨 사용자가 '왜 복구 확인인지'를 알 수 있게 한다. 사이드카는
+            # 그대로 두고, 사용자가 '다시 시도'를 누르면 그때 철회된다(resume_sync).
+            record_cancel(current, pending)
 
         if state in {STATE_QUEUED, STATE_PREPARING}:
             # 준비는 목적지 파일 내용 비교로 멱등하므로 안전하게 재큐잉한다.
