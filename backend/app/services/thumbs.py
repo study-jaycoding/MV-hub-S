@@ -16,7 +16,7 @@ import time
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from ..config import MEDIA_DIR
 from .media_types import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
@@ -364,12 +364,20 @@ def _media_target(rel_or_media_path: str) -> Optional[Path]:
 
 
 def prewarm_generation_thumbs(
-    widths: tuple[int, ...] = THUMB_WIDTHS, throttle: float = 0.0
+    widths: tuple[int, ...] = THUMB_WIDTHS,
+    throttle: float = 0.0,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> int:
     """모든 로컬 /media 이미지의 썸네일을 미리 생성(없는 것만). 시작 후 백그라운드 데몬에서 호출.
     → 첫 프로젝트 선택·스크롤에서도 생성 지연 없이 즉시 표시된다. 생성 개수를 반환.
     ★파일 하나당 두 버킷(256/512)을 '함께' 굽는다(인터리브) — 폭별로 전체를 두 번 돌면 용량 상한
-    eviction(생성시각 순 삭제)이 먼저 구운 폭 전체를 통째로 밀어내 한 버킷이 항상 콜드가 된다."""
+    eviction(생성시각 순 삭제)이 먼저 구운 폭 전체를 통째로 밀어내 한 버킷이 항상 콜드가 된다.
+
+    should_stop: 서버 종료 신호를 읽는 콜러블(없으면 종전대로 전량 스윕). 확인 지점은 **파일 단위**
+    — 굽는 중인 파일은 두 버킷을 마저 끝내고(반쪽 워밍 금지 = 위 인터리브 계약), 다음 파일 전에만
+    빠져나온다. 종료 시 남은 원본 파일 핸들·썸네일 쓰기가 lifespan 정리와 겹치던 것(원본 rename
+    WinError 32, 종료 뒤 JPG 기록)을 없앤다. 중단 시 evict 는 생략 — 종료 join 을 폴더 전체
+    스캔만큼 늘리지 않는다(상한 점검은 다음 부팅 프리워밍·일일 sweeper 의 force 스캔이 이어받는다)."""
     from ..db import get_connection
 
     with get_connection() as conn:
@@ -378,6 +386,8 @@ def prewarm_generation_thumbs(
         ).fetchall()
     made = 0
     for r in rows:
+        if should_stop is not None and should_stop():
+            return made
         target = _media_target(r["file_path"] or "")
         if not target:
             continue

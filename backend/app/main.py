@@ -126,6 +126,9 @@ _METRICS_LOG_INTERVAL = max(
     float(os.environ.get("CONTENT_HUB_METRICS_LOG_INTERVAL", "60")),
 )
 _operational_alerts = OperationalAlertTracker()
+# 썸네일 사전 생성 데몬 join 상한(초). 중단 확인이 파일 단위라 최악 대기는 '큰 이미지 1장 ×
+# 두 버킷(256/512)' — 느린 디스크의 대형 PNG 도 덮으면서 종료를 눈에 띄게 늘리지 않는 값.
+_THUMB_PREWARM_JOIN_TIMEOUT = 3.0
 
 
 def _remote_realtime_config() -> tuple[str, str] | None:
@@ -223,6 +226,11 @@ async def _application_lifespan(app: FastAPI):
     history_audit_task: asyncio.Task | None = None
     worker_backup_bootstrap_task: asyncio.Task | None = None
     runtime_loop: asyncio.AbstractEventLoop | None = None
+    # 썸네일 사전 생성 데몬 회수용(중단 이벤트 + 스레드 참조). 종료 시 이 스레드가 살아 있으면
+    # 원본 rename 이 WinError 32 로 깨지고 종료 뒤에도 JPG 가 기록됐다(실측).
+    thumb_prewarm_stop: "threading.Event | None" = None
+    thumb_prewarm_thread: "threading.Thread | None" = None
+    thumb_prewarm_started = False
     startup_complete = False
     periodic_sync_started = False
     backup_callback_configured = False
@@ -260,6 +268,23 @@ async def _application_lifespan(app: FastAPI):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+
+    def _stop_thumb_prewarm() -> None:
+        """썸네일 사전 생성 데몬 회수 — 중단 이벤트 + 제한 시간 join.
+
+        daemon=True 는 최후 안전망으로 유지하되(멈추지 않는 스레드가 프로세스 종료를 막지 않게),
+        정상 종료에서는 여기서 실제로 회수한다. 중단 확인은 파일 단위라 최악의 대기는
+        '큰 이미지 1장 × 두 버킷(256/512)'이다 — 3초면 느린 디스크의 대형 PNG 도 덮으면서
+        종료가 눈에 띄게 늘어나지 않는다. 초과하면 경고만 남기고 나머지 정리를 계속한다."""
+        thumb_prewarm_stop.set()
+        thumb_prewarm_thread.join(_THUMB_PREWARM_JOIN_TIMEOUT)
+        if thumb_prewarm_thread.is_alive():
+            log_event(
+                _runtime_log,
+                "thumb_prewarm_join_timeout",
+                level=logging.WARNING,
+                timeout_seconds=_THUMB_PREWARM_JOIN_TIMEOUT,
+            )
 
     # 시작: DB 스키마 적용(멱등) + 기본 작업자 + 미디어 디렉터리 + 잡 큐 워커
     init_db()
@@ -398,17 +423,26 @@ async def _application_lifespan(app: FastAPI):
 
     from .services import thumbs
 
+    # 종료 신호 — 스윕은 파일 단위로 이 이벤트를 보고 빠져나온다(_stop_thumb_prewarm 이 세운다).
+    thumb_prewarm_stop = threading.Event()
+
     def _prewarm() -> None:
         try:
             # 그리드가 쓰는 두 버킷(256/512)을 파일 단위로 함께 — 512 만 구우면 100% 배율(256 요청)에서 전부 미스.
-            n = thumbs.prewarm_generation_thumbs(throttle=0.005)
+            n = thumbs.prewarm_generation_thumbs(
+                throttle=0.005, should_stop=thumb_prewarm_stop.is_set
+            )
             if n:
                 print(f"[startup] 썸네일 {n}개 사전 생성 완료(백그라운드)")
         except Exception as e:  # noqa: BLE001
             print(f"[startup] 썸네일 사전 생성 건너뜀: {e}")
 
     try:
-        threading.Thread(target=_prewarm, daemon=True, name="thumb-prewarm").start()
+        thumb_prewarm_thread = threading.Thread(
+            target=_prewarm, daemon=True, name="thumb-prewarm"
+        )
+        thumb_prewarm_thread.start()
+        thumb_prewarm_started = True  # start 성공 뒤에만 회수 대상(미시작 스레드 join = RuntimeError)
         # 공유 서버 이사 공지는 기동 때 1회 확인해 둔다(이후 주기 갱신은 worker_backup 60초 루프가
         # 편승 — 워커 허브가 아닌 모드에는 그 루프가 없어 이 1회만 돈다). 릴리스 설치본이 아니면
         # refresh 가 즉시 None 으로 끝나고, 읽기 자체는 자식 프로세스+타임아웃으로 격리돼 있다.
@@ -498,6 +532,10 @@ async def _application_lifespan(app: FastAPI):
     finally:
         # 종료: 주기 백업 + 주기 동기화 + 어셋 감시 정리
         # 부분 부팅이면 성공 플래그가 있는 항목만, 정상 부팅이면 기존 cleanup 호출 순서를 그대로 따른다.
+        # 썸네일 사전 생성 데몬은 가장 먼저 회수한다 — 미디어 원본 핸들과 DB 커넥션을 쥔 채
+        # 남아 있으면 뒤따르는 정리·프로세스 종료와 겹쳐 원본 rename 이 깨진다(WinError 32).
+        if thumb_prewarm_started:
+            _attempt_sync_cleanup(_stop_thumb_prewarm)
         if runtime_report_task:
             await _attempt_async_cleanup(
                 lambda: _cancel_background_task(runtime_report_task)

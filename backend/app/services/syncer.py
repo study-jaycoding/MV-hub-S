@@ -25,6 +25,7 @@ from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, LOCAL_AGENT_PAIR_SECRET, M
 from ..generation_result import normalize_job_result
 from ..ws import manager
 from . import cli_bridge, history_autofill
+from .async_tools import to_thread_non_abandon
 from .operational_logging import log_event
 
 
@@ -65,7 +66,12 @@ async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
 
     DB 업서트는 ① 한 트랜잭션 배치(repo.apply_synced_jobs, fsync 1회) + ② to_thread 워커
     스레드에서 수행한다 — 이전엔 잡마다 커넥션·fsync 를 메인 이벤트 루프에서 돌려, 20초 주기마다
-    들어오는 HTTP 요청(관리자 창 등)을 그 사이 통째로 밀리게 했다(체감 딜레이의 정체)."""
+    들어오는 HTTP 요청(관리자 창 등)을 그 사이 통째로 밀리게 했다(체감 딜레이의 정체).
+
+    ★DB 를 '쓰는' to_thread 는 to_thread_non_abandon 으로 돈다 — 순정 to_thread 는 취소 즉시
+    반환하고 스레드는 계속 써서, PeriodicSync.stop() 이 끝난 뒤(실측 중앙값 0.069ms)에도 87~106ms
+    동안 DB 쓰기가 이어졌다(lifespan 의 DB 정리와 겹칠 수 있는 구간). 읽기 전용 to_thread 는
+    그대로 둔다(방치돼도 부수효과 없음). CLI 호출 횟수·캐시·리프레시 정책은 불변 — 종료 대기만 추가."""
     global _duplicate_reconcile_pending
 
     # ★계정 범위를 CLI 대기 '전에' 못 박는다 — 주기가 20초라 로그인/계정 전환과 겹치기 쉽고,
@@ -78,7 +84,7 @@ async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
     try:
         wid = worker_id or DEFAULT_WORKER_ID
         changed_job_ids: set[str] = set()
-        counts = await asyncio.to_thread(
+        counts = await to_thread_non_abandon(
             repo.apply_synced_jobs,
             jobs,
             wid,
@@ -109,7 +115,7 @@ async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
         # 그리드·카운트에 중복 노출). 중복 없으면 GROUP BY HAVING>1 이 빈 결과라 사실상 무비용.
         if counts.get("inserted") or _duplicate_reconcile_pending:
             try:
-                counts["reconciled"] = await asyncio.to_thread(repo.reconcile_duplicates)
+                counts["reconciled"] = await to_thread_non_abandon(repo.reconcile_duplicates)
             except Exception as exc:  # noqa: BLE001 — 동기화 결과는 보존하고 다음 주기에 다시 시도
                 _duplicate_reconcile_pending = True
                 # 예외 원문에는 DB 값이 섞일 수 있어 기록하지 않는다. 타입과 고정된 영향 요약만 남긴다.
@@ -129,7 +135,7 @@ async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
         if counts["gap_warning"]:
             email = await _house_account_email()
             if email:
-                await asyncio.to_thread(repo.mark_history_gap, email)
+                await to_thread_non_abandon(repo.mark_history_gap, email)
                 # 공유 팀 서버는 계정별 CLI 자격을 갖지 않으므로 기록·경보만 남긴다. 로컬 허브와
                 # test_dev pairing 모드만 history 자동 보충(서비스 계층)을 시작한다.
                 if not AUTH_ENABLED or LOCAL_AGENT_PAIR_SECRET:
@@ -168,7 +174,7 @@ async def reconcile_stuck_synced() -> int:
         exists = await cli_bridge.job_exists(job_id)
         if exists is False:  # 힉스필드에서 사라짐 확정 → 유령 카드 휴지통행(soft delete, 복구 가능)
             if house_uid is not None:
-                moved = await asyncio.to_thread(
+                moved = await to_thread_non_abandon(
                     repo.move_to_trash_if_stuck_synced,
                     gen_id,
                     job_id,
@@ -176,7 +182,7 @@ async def reconcile_stuck_synced() -> int:
                     house_uid,
                 )
             else:
-                moved = await asyncio.to_thread(
+                moved = await to_thread_non_abandon(
                     repo.move_to_trash_if_stuck_synced,
                     gen_id,
                     job_id,
@@ -220,7 +226,7 @@ async def reconcile_local_house() -> int:
         result = normalize_job_result(parsed)
         if result.status in ("pending", "running"):
             continue  # 아직 처리중 → 확인중 유지
-        applied = await asyncio.to_thread(
+        applied = await to_thread_non_abandon(
             repo.apply_reconcile,
             c["gen_id"],
             result.job_id,
@@ -253,6 +259,9 @@ class PeriodicSync:
             self._task = asyncio.create_task(self._run(), name="periodic-sync")
 
     async def stop(self) -> None:
+        """루프 취소 + 회수. 반환 시점에 이 루프의 DB 쓰기 스레드는 이미 끝나 있다 —
+        쓰기 to_thread 가 non-abandon 이라 취소가 스레드 완료 뒤에야 여기까지 올라온다.
+        (CLI 대기·읽기 구간에서 취소되면 종전처럼 즉시 반환 — 종료 지연 없음.)"""
         if self._task:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -269,7 +278,7 @@ class PeriodicSync:
                     # 네트워크 프록시를 거치지 않아 이벤트 루프 밖 워커에서 안전하게 처리할 수 있다.
                     from .telemetry_drain import drain_isolated_telemetry
 
-                    await asyncio.to_thread(drain_isolated_telemetry)
+                    await to_thread_non_abandon(drain_isolated_telemetry)
                 if c.get("gap_warning"):
                     print(
                         f"[periodic-sync] ⚠ 갭 경보: 신규 {c['inserted']}건 — "
