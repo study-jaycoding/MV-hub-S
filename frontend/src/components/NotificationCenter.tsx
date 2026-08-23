@@ -12,6 +12,7 @@ import {
   markReleaseNotificationRead,
   notificationBadgeText,
   NOTIFICATION_CATEGORY_LABELS,
+  serverRelocationNotification,
   syncReleaseNotifications,
   unreadNotificationCount,
   type NotificationCategory,
@@ -24,6 +25,7 @@ import {
   releaseUpdateMessage,
   startReleaseUpdate,
 } from "../lib/releaseUpdate";
+import { sharedApi } from "../lib/sharedApi";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
 import type { NotificationComment } from "../types";
@@ -103,12 +105,22 @@ export function NotificationCenter({
     }
   }, [commentUnreadCount, t]);
 
+  // 시스템(업데이트 + 공유 서버 이사) 소식을 함께 갱신한다. 두 조회는 서로 독립이라
+  // 한쪽이 실패해도 다른 쪽 알림은 살린다(업데이트 실패 시엔 직전 목록을 유지).
   const loadReleaseItems = useCallback(() => {
-    getReleaseUpdateStatus(true)
-      .then((status) => setReleaseItems(syncReleaseNotifications(status, window.localStorage)))
-      .catch(() => {
-        // 공유 서버 직결·개발 설치본처럼 로컬 업데이트 API를 쓸 수 없는 화면은 조용히 제외한다.
+    const updates = getReleaseUpdateStatus(true)
+      .then((status) => syncReleaseNotifications(status, window.localStorage))
+      .catch(() => null); // 공유 서버 직결·개발 설치본은 로컬 업데이트 API가 없다 — 조용히 제외
+    const relocation = sharedApi
+      .sharedServerRelocation()
+      .then((info) => serverRelocationNotification(info, window.sessionStorage))
+      .catch(() => null); // 구버전 백엔드·비 릴리스 설치본
+    void Promise.all([updates, relocation]).then(([items, moved]) => {
+      setReleaseItems((current) => {
+        const updateItems = items ?? current.filter((item) => item.kind !== "relocation");
+        return moved ? [moved, ...updateItems] : updateItems;
       });
+    });
   }, []);
 
   // 릴리스(시스템) 소식 + 경량 코멘트 배지(stats)는 닫혀 있어도 60초마다 확인한다.
@@ -186,11 +198,18 @@ export function NotificationCenter({
   };
 
   // 업데이트 알림 본문은 저장된 한국어 원문 대신 표시 시점 언어로 조립한다(버전은 치환).
-  const releaseText = (item: ReleaseNotification) =>
-    (item.kind === "available"
+  const releaseText = (item: ReleaseNotification) => {
+    if (item.kind === "relocation") {
+      // 이름이 등록돼 있으면 이름만 — 새 주소는 확인 모달에서 반드시 보여준다.
+      return item.serverName
+        ? t("'{name}' 서버가 새 위치로 이동했습니다").replace("{name}", item.serverName)
+        : t("공유 서버가 새 주소로 이사했습니다: {url}").replace("{url}", item.url || "");
+    }
+    return (item.kind === "available"
       ? t("새 버전 {v} 사용 가능")
       : t("{v}로 업데이트되었습니다")
     ).replace("{v}", `v${item.version}`);
+  };
 
   const openComment = (item: NotificationComment) => {
     const wasUnread = item.unread;
@@ -221,14 +240,32 @@ export function NotificationCenter({
     setReleaseItems((current) =>
       current.map((candidate) =>
         candidate.id === item.id
-          ? markReleaseNotificationRead(candidate, window.localStorage)
+          ? markReleaseNotificationRead(candidate, window.localStorage, window.sessionStorage)
           : candidate,
       ),
     );
-    // "새 버전 사용 가능"은 그 자리에서 업데이트 여부를 묻는다(설정 이동 없이 즉시 실행 흐름).
-    if (item.kind === "available" && !updateRun?.active) {
+    // "새 버전 사용 가능"·"서버 이사"는 그 자리에서 실행 여부를 묻는다(설정 이동 없이 즉시 실행).
+    if ((item.kind === "available" || item.kind === "relocation") && !updateRun?.active) {
       setConfirmUpdateId((current) => (current === item.id ? null : item.id));
     }
+  };
+
+  // 공유 서버 주소 전환 — 백엔드가 공지를 다시 읽어 재검증한 뒤 주소를 바꾸고 로그아웃시킨다.
+  // 성공하면 새 주소 기준으로 다시 로그인해야 하므로 화면을 통째로 새로 연다.
+  const runRelocate = async (item: ReleaseNotification) => {
+    setConfirmUpdateId(null);
+    if (!item.url) return;
+    setUpdateRun({ active: true, message: t("공유 서버 주소를 전환하는 중…") });
+    try {
+      await sharedApi.sharedServerRelocate(item.url, Number(item.version));
+    } catch (relocateError) {
+      setUpdateRun({
+        active: false,
+        message: `${t("주소를 전환하지 못했습니다")}: ${String((relocateError as Error)?.message || relocateError)}`,
+      });
+      return;
+    }
+    window.location.reload();
   };
 
   const runUpdate = async (item: ReleaseNotification) => {
@@ -283,7 +320,7 @@ export function NotificationCenter({
     setBusy(true);
     setError("");
     setReleaseItems((current) =>
-      markAllReleaseNotificationsRead(current, window.localStorage),
+      markAllReleaseNotificationsRead(current, window.localStorage, window.sessionStorage),
     );
     const hasUnreadCommentItems = unreadComments > 0 || comments.some((item) => item.unread);
     if (hasUnreadCommentItems) {
@@ -406,7 +443,9 @@ export function NotificationCenter({
                     className={"notification-item notification-update" + (item.unread ? " unread" : "")}
                     onClick={() => openRelease(item)}
                   >
-                    <span className="notification-thumb notification-update-icon" aria-hidden="true">↻</span>
+                    <span className="notification-thumb notification-update-icon" aria-hidden="true">
+                      {item.kind === "relocation" ? "⇄" : "↻"}
+                    </span>
                     <span className="notification-copy">
                       <span className="notification-text">{releaseText(item)}</span>
                       <span className="notification-meta">
@@ -417,10 +456,21 @@ export function NotificationCenter({
                   </button>
                   {confirmUpdateId === item.id && (
                     <div className="notification-confirm" role="alertdialog" aria-label={t("알림 센터")}>
-                      <span>{t("{v}(으)로 업데이트하시겠습니까?").replace("{v}", `v${item.version}`)}</span>
+                      <span>
+                        {item.kind === "relocation"
+                          ? t("새 주소 {url} 로 전환하면 로그아웃되고 다시 로그인합니다. 전환할까요?")
+                              .replace("{url}", item.url || "")
+                          : t("{v}(으)로 업데이트하시겠습니까?").replace("{v}", `v${item.version}`)}
+                      </span>
                       <span className="notification-confirm-actions">
-                        <button type="button" className="yes" onClick={() => void runUpdate(item)}>
-                          {t("예, 업데이트")}
+                        <button
+                          type="button"
+                          className="yes"
+                          onClick={() =>
+                            void (item.kind === "relocation" ? runRelocate(item) : runUpdate(item))
+                          }
+                        >
+                          {item.kind === "relocation" ? t("예, 전환") : t("예, 업데이트")}
                         </button>
                         <button type="button" onClick={() => setConfirmUpdateId(null)}>
                           {t("나중에")}

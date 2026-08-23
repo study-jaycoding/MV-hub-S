@@ -32,7 +32,7 @@ from typing import Any, Optional
 
 from .. import active_account, repo
 from ..config import BACKEND_DIR, DATA_DIR
-from . import shared_connection
+from . import server_relocation, shared_connection
 from .atomic_io import atomic_write_text
 from .db_scrub import SESSION_KEYS, strip_transfer_secrets
 from .operational_logging import log_event
@@ -1149,10 +1149,19 @@ class PeriodicWorkerBackupUpload:
         await asyncio.to_thread(cleanup_stale_state)
         await asyncio.sleep(3)
         while True:
+            # ★공유 서버 이사 공지 확인은 has_due_backup 뒤가 아니라 '주기 그 자체'에 편승한다 —
+            # 백업할 게 없는 유휴 PC 도 서버가 이사하면 알아야 하기 때문(run_now 는 due 가 없으면
+            # 바로 idle 로 끝난다). 읽기는 server_relocation 이 자식 프로세스+타임아웃으로 격리한다.
+            await self._tick_server_relocation()
             # due 판정은 run_now() 안(락 아래)에서 한 번만 — 종전엔 여기서 확인하고 run_now 가
             # 즉시 재확인해 상태 DB 조회(스키마 보장 포함)가 두 배로 돌았다(R4 A-2).
             await self.run_now()
             await asyncio.sleep(self._interval)
+
+    async def _tick_server_relocation(self) -> None:
+        """이사 공지 스냅샷 갱신 — 실패는 조용히 무시하고 백업 주기를 계속 돌린다."""
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(server_relocation.refresh)
 
     async def run_now(self) -> dict[str, Any]:
         async with self._run_lock:

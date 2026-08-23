@@ -1,9 +1,10 @@
 import type { ReleaseUpdateStatus } from "./releaseUpdate";
+import type { ServerRelocationInfo } from "./sharedApi";
 import { STORAGE_KEYS } from "./storageKeys";
 
 export type NotificationTab = "all" | "unread";
 export type NotificationCategory = "all" | "comment" | "update";
-export type ReleaseNotificationKind = "available" | "completed";
+export type ReleaseNotificationKind = "available" | "completed" | "relocation";
 
 // 카테고리 드롭다운 표기 — 코멘트(생성물 코멘트)와 시스템(업데이트 등 앱 소식)으로 나눈다.
 export const NOTIFICATION_CATEGORY_LABELS: Record<NotificationCategory, string> = {
@@ -22,10 +23,12 @@ export function filterNotificationsByCategory<T extends { source: "comment" | "u
 export interface ReleaseNotification {
   id: string;
   kind: ReleaseNotificationKind;
-  version: string;
+  version: string; // relocation 에서는 공지 revision(문자열)
   text: string;
   created_at: string;
   unread: boolean;
+  url?: string; // relocation 전용 — 옮겨 갈 새 공유 서버 주소
+  serverName?: string; // relocation 전용 — 그 서버의 표시 이름(없으면 주소로 폴백)
 }
 
 export interface NotificationStorage {
@@ -124,11 +127,45 @@ export function syncReleaseNotifications(
   return items.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
 }
 
+// 공유 서버가 새 주소로 이사했다는 시스템 알림. 백엔드가 릴리스 폴더의 공지를 읽어
+// 제안할 때만(그리고 새 주소가 실제로 응답할 때만) 만들어진다 — 닿지도 않는 주소로
+// 전환을 권하면 로그아웃만 되고 더 깊이 갇힌다.
+export function serverRelocationNotification(
+  info: ServerRelocationInfo | null | undefined,
+  sessionStore: NotificationStorage,
+  now = new Date().toISOString(),
+): ReleaseNotification | null {
+  const url = (info?.proposed_url || "").trim();
+  if (!info || !url || !info.reachable || info.revision <= 0) return null;
+  const serverName = (info.server_name || "").trim();
+  const id = `relocation:${info.revision}:${url}`;
+  return {
+    id,
+    kind: "relocation",
+    version: String(info.revision),
+    url,
+    serverName,
+    // 평소 표기는 이름 — 이름이 없을 때만 주소를 드러낸다(주소는 확인 모달이 항상 보여준다).
+    text: serverName
+      ? `'${serverName}' 서버가 새 위치로 이동했습니다`
+      : `공유 서버가 새 주소로 이사했습니다: ${url}`,
+    created_at: info.announced_at || now,
+    // ★'나중에'는 이 세션 동안만 기억한다(sessionStorage). 서버의 수락 표식은 실제로
+    // 전환했을 때만 기록되므로, 미루면 다음 기동에서 다시 안읽음으로 뜬다.
+    unread: safeGet(sessionStore, STORAGE_KEYS.notificationRelocationDismissed) !== id,
+  };
+}
+
 export function markReleaseNotificationRead(
   item: ReleaseNotification,
   storage: NotificationStorage,
+  sessionStore?: NotificationStorage,
 ): ReleaseNotification {
-  if (item.kind === "available") {
+  if (item.kind === "relocation") {
+    if (sessionStore) {
+      safeSet(sessionStore, STORAGE_KEYS.notificationRelocationDismissed, item.id);
+    }
+  } else if (item.kind === "available") {
     safeSet(storage, STORAGE_KEYS.notificationSeenAvailableVersion, item.version);
   } else {
     const completed = loadCompleted(storage);
@@ -140,8 +177,9 @@ export function markReleaseNotificationRead(
 export function markAllReleaseNotificationsRead(
   items: ReleaseNotification[],
   storage: NotificationStorage,
+  sessionStore?: NotificationStorage,
 ): ReleaseNotification[] {
-  return items.map((item) => markReleaseNotificationRead(item, storage));
+  return items.map((item) => markReleaseNotificationRead(item, storage, sessionStore));
 }
 
 export function filterNotificationItems<T extends { unread: boolean }>(

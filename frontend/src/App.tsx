@@ -1215,6 +1215,7 @@ export default function App() {
       return (
         <ServerLoginScreen
           url={sharedSrv.url}
+          serverName={sharedSrv.server_name}
           urlHistory={sharedSrv.url_history}
           onConnected={onProxyConnected}
         />

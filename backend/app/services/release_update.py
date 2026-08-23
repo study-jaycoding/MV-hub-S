@@ -231,7 +231,8 @@ def update_in_progress(root: Path = APP_ROOT) -> bool:
     )
 
 
-def _install_source(root: Path) -> str:
+def install_source(root: Path) -> str:
+    """신뢰된 릴리스 위치(INSTALL_SOURCE.txt) — 업데이트와 서버 이사 공지가 함께 쓴다."""
     try:
         source = (root / "INSTALL_SOURCE.txt").read_text("utf-8-sig").strip()
     except OSError as exc:
@@ -284,7 +285,7 @@ def _read_release_file(source: str, name: str, *, max_bytes: int) -> bytes:
 
 
 def fetch_latest(root: Path = APP_ROOT) -> dict[str, Any]:
-    source = _install_source(root)
+    source = install_source(root)
     try:
         latest = json.loads(_read_release_file(source, "latest.json", max_bytes=1024 * 1024).decode("utf-8-sig"))
     except (UnicodeDecodeError, ValueError, TypeError) as exc:

@@ -33,6 +33,14 @@ const EN: Record<string, string> = {
   "{v}(으)로 업데이트하시겠습니까?": "Update to {v} now?",
   "예, 업데이트": "Yes, update",
   "나중에": "Later",
+  // 공유 서버 이사 공지(주소 전환)
+  "공유 서버가 새 주소로 이사했습니다: {url}": "The shared server moved to {url}",
+  "'{name}' 서버가 새 위치로 이동했습니다": "'{name}' moved to a new location",
+  "새 주소 {url} 로 전환하면 로그아웃되고 다시 로그인합니다. 전환할까요?":
+    "Switching to {url} signs you out — you will log in again there. Switch now?",
+  "예, 전환": "Yes, switch",
+  "공유 서버 주소를 전환하는 중…": "Switching the shared server address…",
+  "주소를 전환하지 못했습니다": "Could not switch the address",
   "업데이트 실행기를 준비하는 중…": "Preparing the updater…",
   "업데이트를 시작하지 못했습니다": "Could not start the update",
   "업데이트 확인이 오래 걸립니다 — 설정의 업데이트 섹션에서 상태를 확인하세요.":

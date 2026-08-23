@@ -83,6 +83,7 @@ from .routers import (
     sync,
 )
 from .services import auth as auth_svc
+from .services import server_relocation
 from .services.agent_signals import agent_signals
 from .services.async_tools import to_thread_non_abandon
 from .services.backup import periodic_backup
@@ -408,6 +409,13 @@ async def _application_lifespan(app: FastAPI):
 
     try:
         threading.Thread(target=_prewarm, daemon=True, name="thumb-prewarm").start()
+        # 공유 서버 이사 공지는 기동 때 1회 확인해 둔다(이후 주기 갱신은 worker_backup 60초 루프가
+        # 편승 — 워커 허브가 아닌 모드에는 그 루프가 없어 이 1회만 돈다). 릴리스 설치본이 아니면
+        # refresh 가 즉시 None 으로 끝나고, 읽기 자체는 자식 프로세스+타임아웃으로 격리돼 있다.
+        # daemon 스레드라 죽은 NAS 를 만나도 종료를 붙잡지 않는다.
+        threading.Thread(
+            target=server_relocation.refresh, daemon=True, name="server-relocation-boot"
+        ).start()
         # 주기 동기화는 서버 직결 로컬 허브(AUTH off)에선 끈다 — 데이터는 서버가 정답이고 적재는
         # 에이전트(push)가 한다. 로컬에서 20초마다 CLI 동기화+broadcast 하면 라이브러리가 계속
         # 새로고침돼(로딩 깜빡임) 불필요. 서버(AUTH on)에서만 동작(거기도 CLI 없으면 무해 no-op).

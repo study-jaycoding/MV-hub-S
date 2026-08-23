@@ -28,7 +28,7 @@ from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ._telemetry import touch_generation_telemetry
 from ..deps import actor_id, require_edit_generation
 from ..repo import identity
-from ..services import agent_signals, net_guard
+from ..services import agent_signals, net_guard, server_relocation
 from ..services.request_guards import require_loopback_browser_request
 from ..services.event_journal import journal_audit_event
 from ..services.share_state_reconciler import kick_share_state_reconciler
@@ -78,11 +78,17 @@ def _switch_account_db(
 # 이메일/이름/역할 등 로그인 표시용 키만 이 라우터 소유로 남긴다.
 from ..services.shared_connection import (  # noqa: E402
     K_ELEV_TOKEN as _K_ELEV_TOKEN,
+    K_RELOCATION_SEEN as _K_RELOCATION_SEEN,
+    K_SERVER_NAME as _K_SERVER_NAME,
     K_TOKEN as _K_TOKEN,
     K_URL as _K_URL,
     K_URL_HISTORY as _K_URL_HISTORY,
     URL_HISTORY_MAX as _URL_HISTORY_MAX,
     base_url as _effective_url,
+    normalize_server_name as _normalize_server_name,
+    relocation_seen as _relocation_seen,
+    server_name as _server_name,
+    set_relocation_seen as _set_relocation_seen,
 )
 
 _K_EMAIL = "shared_server_email"
@@ -100,9 +106,12 @@ def _clear_elevation() -> None:
         repo.set_setting(k, None)
 
 
-def _url_history() -> list[str]:
-    """이 PC 가 예전에 쓰던 공유 서버 주소(최신순, 최대 _URL_HISTORY_MAX).
-    로그인 화면의 '최근 주소' 드롭다운 전용 — 주소 문자열만 들어 있다(토큰·이메일 없음)."""
+def _url_history_entries() -> list[dict[str, str]]:
+    """예전에 쓰던 공유 서버 주소 + 그때의 서버 이름(최신순, 최대 _URL_HISTORY_MAX).
+
+    저장 형식은 {"url","name"} 객체 배열이지만, **옛 형식(주소 문자열 배열)도 읽는다** —
+    이미 이력을 쌓아 둔 PC 가 업데이트만으로 후보를 잃으면 안 되기 때문(이름은 빈 값).
+    담기는 값은 주소와 이름뿐이다(토큰·이메일 금지)."""
     raw = repo.get_setting(_K_URL_HISTORY)
     try:
         values = json.loads(raw) if raw else []
@@ -110,23 +119,53 @@ def _url_history() -> list[str]:
         return []
     if not isinstance(values, list):
         return []
-    out: list[str] = []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
     for value in values:
-        if isinstance(value, str) and value.strip() and value not in out:
-            out.append(value)
+        if isinstance(value, str):
+            url, name = value, ""
+        elif isinstance(value, dict) and isinstance(value.get("url"), str):
+            url = value["url"]
+            name = value.get("name") if isinstance(value.get("name"), str) else ""
+        else:
+            continue
+        if not url.strip() or url in seen:
+            continue
+        seen.add(url)
+        out.append({"url": url, "name": name})
     return out[:_URL_HISTORY_MAX]
 
 
-def _push_url_history(previous: Optional[str], new_url: str) -> None:
-    """새 주소로 갈아타기 직전의 주소를 이력 맨 앞에 남긴다(중복 제거·상한 유지).
+def _url_history() -> list[str]:
+    """로그인 화면 '최근 주소' 드롭다운이 쓰는 주소 목록(응답 형식은 주소 문자열 그대로)."""
+    return [entry["url"] for entry in _url_history_entries()]
+
+
+def _push_url_history(previous: Optional[str], new_url: str, previous_name: str = "") -> None:
+    """새 주소로 갈아타기 직전의 주소(와 그때 이름)를 이력 맨 앞에 남긴다(중복 제거·상한 유지).
     되돌아갈 후보가 목적이므로 주소가 실제로 바뀔 때만 기록한다."""
     prev = (previous or "").strip().rstrip("/")
     if not prev or prev == new_url:
         return
-    history = [prev] + [u for u in _url_history() if u != prev]
+    entries = [{"url": prev, "name": previous_name}] + [
+        entry for entry in _url_history_entries() if entry["url"] != prev
+    ]
     repo.set_setting(
-        _K_URL_HISTORY, json.dumps(history[:_URL_HISTORY_MAX], ensure_ascii=False)
+        _K_URL_HISTORY, json.dumps(entries[:_URL_HISTORY_MAX], ensure_ascii=False)
     )
+
+
+def _server_name_for(url: str) -> str:
+    """그 주소에 딸린 서버 이름 — 지금 쓰는 주소면 현재 이름, 아니면 이력에서 되찾는다.
+
+    로그인 화면에서 옛 주소로 되돌아가는 작업자가 그 서버 이름을 그대로 다시 보게 한다.
+    찾지 못하면 빈 값 = 화면은 주소로 폴백한다(이름은 관리자가 다시 등록)."""
+    if (repo.get_setting(_K_URL) or "").strip().rstrip("/") == url:
+        return _server_name()
+    for entry in _url_history_entries():
+        if entry["url"] == url:
+            return _normalize_server_name(entry["name"])
+    return ""
 
 
 def _save_shared_session(
@@ -143,13 +182,17 @@ def _save_shared_session(
     필수 설정 중 하나라도 실패하면 예외를 그대로 전파해 활성 포인터 공개를 막는다.
     """
     name = account.get("name") or email
+    # 서버 표시 이름은 '그 주소에 딸린 값'이다 — 주소를 바꿔 로그인하면 그 주소의 이름으로
+    # 갈아끼운다(이력에도 없으면 비운다 → 화면은 주소로 폴백). ★_K_URL 을 덮기 '전에' 읽는다.
+    server_label = _server_name_for(url)
     # 주소 이력 — 갈아타기 '전' 주소를 남겨, 나중에 로그인 화면에서 되돌릴 수 있게 한다.
     # 필수 설정이 아니므로 실패해도 로그인을 막지 않는다(아래 필수 set_setting 들과 대조).
     try:
-        _push_url_history(repo.get_setting(_K_URL), url)
+        _push_url_history(repo.get_setting(_K_URL), url, _server_name())
     except Exception:  # noqa: BLE001 — 편의 기능 실패가 로그인 자체를 깨지 않게
         pass
     repo.set_setting(_K_URL, url)
+    repo.set_setting(_K_SERVER_NAME, server_label or None)
     repo.set_setting(_K_EMAIL, email)
     repo.set_setting(_K_TOKEN, token)
     repo.set_setting(_K_NAME, name)
@@ -306,6 +349,7 @@ class SharedLoginIn(BaseModel):
 
 class SetUrlIn(BaseModel):
     url: str
+    name: Optional[str] = None  # 서버 표시 이름(선택) — 비우면 이름 없이 주소만 쓴다
 
 
 def _shared_status() -> dict[str, Any]:
@@ -313,6 +357,9 @@ def _shared_status() -> dict[str, Any]:
     return {
         "configured": True,
         "url": _effective_url(),
+        # 관리자가 등록한 '서버' 표시 이름 — 작업자 화면은 주소 대신 이걸 보여준다(없으면 주소).
+        # 아래 "name" 은 로그인한 '사람' 이름이다(다른 값, 다른 키).
+        "server_name": _server_name(),
         # 로그인 화면의 '서버 주소 변경' 패널이 되돌릴 후보로 보여준다(주소만 — R7 0-A 로
         # 이 응답 자체가 loopback 전용이라 밖으로 나가지 않는다).
         "url_history": _url_history(),
@@ -465,32 +512,47 @@ def shared_server_register(body: SharedRegisterIn, request: Request):
     }
 
 
+_SESSION_KEYS = (_K_TOKEN, _K_EMAIL, _K_NAME, _K_ROLES)
+
+
+def _clear_session_settings() -> None:
+    """토큰·신원·임시 관리자 권한을 현재 DB scope 에서 지운다(포인터는 그대로).
+    호출자가 ``active_account.transition_lock`` 을 이미 잡고 있어야 한다."""
+    for k in _SESSION_KEYS:
+        repo.set_setting(k, None)
+    _clear_elevation()  # 로그아웃 → 임시 관리자 권한도 해제
+
+
+def _detach_active_account() -> None:
+    """활성 계정 포인터 해제 → 이후 읽기쓰기는 레거시 단일 DB(미로그인 상태).
+    되돌릴 수 없는 전환이므로 정리의 '마지막'에 온다. 호출자가 lock 을 잡고 있어야 한다."""
+    if AUTH_ENABLED:
+        return
+    # 레거시 DB(리팩터 이전 단독 DB)에 옛 토큰이 남아 있으면 로그아웃 후에도 로그인된 것으로 보일 수
+    # 있다 → 레거시 토큰을 비운다. ★단, active 를 레거시로 전환(clear_active)한 '뒤'에 지우면 그 사이
+    # 창에서 다른 요청이 잔존 토큰으로 위임 모드를 오판한다 → 전환 '전에' 레거시 DB 를 직접 열어 비운다.
+    if db.DEFAULT_DB_PATH.exists():
+        try:
+            with db.get_connection(db_path=db.DEFAULT_DB_PATH) as conn:
+                conn.execute(
+                    "INSERT INTO app_setting(key, value) VALUES(?, NULL) "
+                    "ON CONFLICT(key) DO UPDATE SET value=NULL",
+                    (_K_TOKEN,),
+                )
+        except Exception:  # noqa: BLE001 — 레거시에 스키마/테이블 없으면 비울 토큰도 없음
+            pass
+    active_account.clear_active()  # RLock 재진입 — 같은 lock 보유 중
+    identity._MY_UID_CACHE[0] = None
+
+
 @router.post("/shared-server/logout")
 def shared_server_logout(request: Request):
     """로그아웃 — 토큰·신원·임시권한을 지운다. 서버 주소(_K_URL)는 유지(다음 로그인창이 그대로 쓰게)."""
     _require_local_shared_connection(request)
     # 설정 삭제~포인터 해제 전체를 transition_lock 으로(코덱스 최종 P1) — 복원과 교차 금지.
     with active_account.transition_lock:
-        for k in (_K_TOKEN, _K_EMAIL, _K_NAME, _K_ROLES):
-            repo.set_setting(k, None)
-        _clear_elevation()  # 로그아웃 → 임시 관리자 권한도 해제
-        # ★활성 계정 포인터 해제 → 이후 읽기쓰기는 레거시 단일 DB(미로그인 상태). 다음 로그인이 다시 전환.
-        if not AUTH_ENABLED:
-            # 레거시 DB(리팩터 이전 단독 DB)에 옛 토큰이 남아 있으면 로그아웃 후에도 로그인된 것으로 보일 수
-            # 있다 → 레거시 토큰을 비운다. ★단, active 를 레거시로 전환(clear_active)한 '뒤'에 지우면 그 사이
-            # 창에서 다른 요청이 잔존 토큰으로 위임 모드를 오판한다 → 전환 '전에' 레거시 DB 를 직접 열어 비운다.
-            if db.DEFAULT_DB_PATH.exists():
-                try:
-                    with db.get_connection(db_path=db.DEFAULT_DB_PATH) as conn:
-                        conn.execute(
-                            "INSERT INTO app_setting(key, value) VALUES(?, NULL) "
-                            "ON CONFLICT(key) DO UPDATE SET value=NULL",
-                            (_K_TOKEN,),
-                        )
-                except Exception:  # noqa: BLE001 — 레거시에 스키마/테이블 없으면 비울 토큰도 없음
-                    pass
-            active_account.clear_active()  # RLock 재진입 — 같은 lock 보유 중
-            identity._MY_UID_CACHE[0] = None
+        _clear_session_settings()
+        _detach_active_account()
     return {"ok": True, **_shared_status()}
 
 
@@ -536,10 +598,15 @@ def shared_server_de_elevate(request: Request):
 
 @router.post("/shared-server/url")
 def set_shared_url(body: SetUrlIn, request: Request):
-    """공유 서버 주소 변경 — 관리자 창 '공유 서버' 탭(admin 전용 UI). 이 PC 로컬 허브 설정값."""
+    """공유 서버 주소·표시 이름 등록 — 관리자 창 '공유 서버' 탭. 이 PC 로컬 허브 설정값.
+
+    이름은 작업자 화면(로그인 화면·이사 알림)에 주소 대신 보여줄 값이다. 관리자만 등록하고
+    작업자는 읽기만 한다 — 이 라우트도 다른 연결 설정과 같은 loopback+Host 가드 아래 있다."""
     _require_local_shared_connection(request)
     url = _normalize_shared_url(body.url)
+    name = _normalize_server_name(body.name)
     repo.set_setting(_K_URL, url)
+    repo.set_setting(_K_SERVER_NAME, name or None)
     return _shared_status()
 
 
@@ -610,6 +677,155 @@ def probe_shared_server(body: ProbeUrlIn, request: Request):
     _require_local_shared_connection(request)
     url = _normalize_shared_url(body.url)
     return {"url": url, **_probe_shared_health(url)}
+
+
+# ── 서버 이사 공지(C안) — 관리자가 옮긴 새 주소를 작업 중인 사람에게 먼저 알린다 ──────
+# B안(로그인 화면 주소 변경)은 '이미 갇힌 뒤'의 수동 복구다. 여기서는 릴리스 폴더의
+# server-location.json 공지를 읽어, 로그인해 작업 중인 사람에게 알림 → 확인 → 전환까지
+# 연결한다. 판정·읽기는 services/server_relocation, 설정 키는 shared_connection 이 소유한다.
+_NO_RELOCATION = {
+    "current_url": "",
+    "proposed_url": None,
+    "revision": 0,
+    "server_name": None,
+    "announced_at": None,
+    "reachable": False,
+}
+
+
+class RelocateIn(BaseModel):
+    url: str
+    revision: int
+
+
+def _safe_normalized_url(url: str) -> Optional[str]:
+    """공지 파일에서 온 주소를 조회 경로에서 정규화한다(불량이면 None — 조회는 500 이 아니라
+    '제안 없음'으로 끝나야 한다). 전환 경로는 _normalize_shared_url 을 직접 써 400 을 낸다."""
+    try:
+        return _normalize_shared_url(url)
+    except HTTPException:
+        logging.getLogger(__name__).error(
+            "공지된 공유 서버 주소 형식이 올바르지 않습니다: %r", url
+        )
+        return None
+
+
+@router.get("/shared-server/relocation")
+def shared_server_relocation(request: Request):
+    """이사 공지 조회 — 옮겨 갈 새 주소가 있는지(알림 센터가 60초마다 확인).
+
+    공지 파일 자체는 백그라운드가 미리 읽어 둔 스냅샷에서 본다 — 죽은 NAS 가 이 요청을
+    붙잡으면 안 되기 때문이다. ``reachable`` 은 새 주소가 실제로 응답하는 **MV Hub 서버**
+    인지까지 확인한 결과다(B안 probe 재사용 — 무토큰·리다이렉트 금지·JSON·크기 상한).
+    """
+    _require_local_shared_connection(request)
+    current = _effective_url()
+    proposal = server_relocation.proposal(
+        current, _relocation_seen(), server_relocation.snapshot()
+    )
+    url = _safe_normalized_url(proposal["url"]) if proposal else None
+    if not proposal or not url:
+        return {**_NO_RELOCATION, "current_url": current}
+    return {
+        "current_url": current,
+        "proposed_url": url,
+        "revision": proposal["revision"],
+        # 같은 서버가 자리만 옮긴 것이므로, 공지에 이름이 없으면 지금 쓰는 이름을 그대로 쓴다.
+        "server_name": _proposed_server_name(proposal) or None,
+        "announced_at": proposal["announced_at"] or None,
+        "reachable": _probe_shared_health(url)["ok"],
+    }
+
+
+def _proposed_server_name(proposal: dict[str, Any]) -> str:
+    """이사 뒤에 보여줄 서버 이름 — 공지의 이름이 우선, 없으면 지금 기억하는 이름."""
+    return _normalize_server_name(proposal.get("name")) or _server_name()
+
+
+@router.post("/shared-server/relocate")
+def relocate_shared_server(body: RelocateIn, request: Request):
+    """공지된 새 주소로 전환 — 주소를 바꾸고 이 PC 의 로그인 세션을 정리한다(재로그인 필요).
+
+    ★브라우저가 보낸 url·revision 을 그대로 믿지 않는다. 공지 파일을 **다시 읽어** 같은
+    revision·같은 주소일 때만 진행한다(loopback 가드가 있어도, 프런트의 낡은 스냅샷이나
+    조작된 요청이 이 PC 의 서버 주소를 바꾸지 못하게). 여기서만 공지를 직접 읽으므로 자식
+    프로세스+타임아웃(server_relocation)으로 격리된 읽기를 그대로 쓴다.
+    """
+    _require_local_shared_connection(request)
+    url = _normalize_shared_url(body.url)
+    source = server_relocation.announcement_source()
+    announcement = server_relocation.read_announcement(source) if source else None
+    if not announcement:
+        raise HTTPException(
+            status_code=409, detail="이사 공지를 다시 읽지 못했습니다. 잠시 후 다시 시도하세요"
+        )
+    server_relocation.remember(announcement)  # 방금 읽은 최신 공지를 스냅샷에도 반영
+    proposal = server_relocation.proposal(_effective_url(), _relocation_seen(), announcement)
+    if not proposal or proposal["revision"] != body.revision or proposal["url"] != url:
+        raise HTTPException(
+            status_code=409, detail="이사 공지가 바뀌었습니다. 새로고침한 뒤 다시 확인하세요"
+        )
+    health = _probe_shared_health(url)
+    if not health["ok"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"새 주소에 연결할 수 없습니다: {health['reason'] or '확인 실패'}",
+        )
+    _apply_relocation(url, proposal["revision"], _proposed_server_name(proposal))
+    return {"ok": True, "url": url, "revision": proposal["revision"], **_shared_status()}
+
+
+# 실패 시 되돌릴 설정 — 주소·수락표식·이력 + 세션 키 전부.
+_RELOCATION_ROLLBACK_KEYS = (
+    _K_URL,
+    _K_SERVER_NAME,
+    _K_RELOCATION_SEEN,
+    _K_URL_HISTORY,
+    _K_ELEV_EMAIL,
+    _K_ELEV_NAME,
+    _K_ELEV_TOKEN,
+    *_SESSION_KEYS,
+)
+
+
+def _write_relocation(url: str, revision: int, name: str) -> None:
+    """새 주소·표시 이름·수락한 revision 을 현재 DB scope 에 기록(옛 주소는 이력으로)."""
+    try:
+        _push_url_history(repo.get_setting(_K_URL), url, _server_name())
+    except Exception:  # noqa: BLE001 — 되돌아갈 후보 목록 실패가 전환 자체를 막지 않게
+        pass
+    repo.set_setting(_K_URL, url)
+    repo.set_setting(_K_SERVER_NAME, name or None)
+    _set_relocation_seen(revision, url)
+
+
+def _apply_relocation(url: str, revision: int, name: str) -> None:
+    """주소 교체 + 세션 정리를 한 임계구역에서 처리한다.
+
+    순서가 계약이다. 되돌릴 수 있는 설정 쓰기를 먼저 끝내고, 되돌릴 수 없는 포인터 해제를
+    맨 뒤에 둔다 — 그래서 중간 실패는 '전환 전' 상태 그대로 복구된다.
+      1) 새 주소·이름·수락표식 기록  2) 토큰·신원 삭제  (여기까지 실패하면 전부 원상복구)
+      3) 활성 계정 포인터 해제  4) 로그아웃된 scope 에도 같은 값을 기록
+
+    ★4)가 없으면 안 된다: 포인터를 풀면 로그인 화면은 레거시 단일 DB 의 주소를 읽으므로,
+    계정 DB 에만 쓴 새 주소는 화면에 보이지 않고 같은 데드락이 재발한다.
+    """
+    with active_account.transition_lock:
+        before = {key: repo.get_setting(key) for key in _RELOCATION_ROLLBACK_KEYS}
+        try:
+            _write_relocation(url, revision, name)
+            _clear_session_settings()
+        except Exception as exc:  # noqa: BLE001 — 반쯤 바뀐 연결 정보를 남기지 않는다
+            for key, value in before.items():
+                try:
+                    repo.set_setting(key, value)
+                except Exception:  # noqa: BLE001 — 나머지 키 복구를 계속한다
+                    logging.getLogger(__name__).error("서버 이사 롤백 실패: %s", key)
+            raise HTTPException(
+                status_code=500, detail=f"주소 전환에 실패해 되돌렸습니다: {exc}"
+            ) from exc
+        _detach_active_account()
+        _write_relocation(url, revision, name)
 
 
 # ── 로컬 허브(발신 측) — 선택 발행 ──────────────────────────────────────────

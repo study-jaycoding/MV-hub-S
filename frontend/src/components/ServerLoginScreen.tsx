@@ -13,10 +13,13 @@ import { isUpstreamUnreachable } from "../lib/http";
 
 export function ServerLoginScreen({
   url,
+  serverName,
   urlHistory = [],
   onConnected,
 }: {
   url: string | null;
+  // 관리자가 등록한 서버 이름 — 평소엔 주소 대신 이 이름만 보인다(없으면 주소로 폴백).
+  serverName?: string | null;
   urlHistory?: string[];
   onConnected: () => void;
 }) {
@@ -33,6 +36,8 @@ export function ServerLoginScreen({
   const [probeResult, setProbeResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   const message = (err: unknown) => String(err).replace(/^Error:\s*\d+:\s*/, "");
+  // 평소 표기는 이름 우선 — 주소는 아래 '서버 주소 변경'(탈출구)에서만 그대로 보여준다.
+  const serverLabel = (serverName || "").trim() || url || "";
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -139,7 +144,7 @@ export function ServerLoginScreen({
           {isRegister
             ? "처음 가입하는 계정은 자동으로 관리자가 됩니다."
             : "공유 서버에서 admin 이 만든 내 팀 계정입니다."}
-          {url ? ` · 서버: ${url}` : ""}
+          {serverLabel ? ` · ${serverLabel}에 연결` : ""}
         </div>
 
         {notice && <div className="login-notice">{notice}</div>}

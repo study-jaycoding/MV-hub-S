@@ -39,11 +39,14 @@ export function AdminWindow({
   // 공유 서버 주소 관리(admin 전용) — 로컬 허브가 어느 서버로 발행·로그인하는지.
   const [shared, setShared] = useState<{
     url: string | null;
+    server_name: string;
     is_admin: boolean;
     elevated: boolean;
     elevated_as: string | null;
   } | null>(null);
   const [urlDraft, setUrlDraft] = useState("");
+  // 작업자 화면에 주소 대신 보일 서버 이름 — 주소와 한 번에 저장한다.
+  const [nameDraft, setNameDraft] = useState("");
   const [urlMsg, setUrlMsg] = useState("");
   // 공유 서버 본체(auth on)에서는 서버 연결 설정·elevation 이 '로컬 PC 전용' API
   // (R7 0-A loopback 가드)라 LAN 접속 브라우저에선 403 — 호출을 생략하고 관련 UI
@@ -52,16 +55,25 @@ export function AdminWindow({
   const localOnlyServerControls = localHub;
   const refreshShared = () => {
     if (!localOnlyServerControls) {
-      setShared({ url: null, is_admin: false, elevated: false, elevated_as: null });
+      setShared({ url: null, server_name: "", is_admin: false, elevated: false, elevated_as: null });
       return;
     }
     api
       .sharedServerStatus()
       .then((s) => {
-        setShared({ url: s.url, is_admin: s.is_admin, elevated: s.elevated, elevated_as: s.elevated_as });
+        setShared({
+          url: s.url,
+          server_name: s.server_name || "",
+          is_admin: s.is_admin,
+          elevated: s.elevated,
+          elevated_as: s.elevated_as,
+        });
         setUrlDraft(s.url || "");
+        setNameDraft(s.server_name || "");
       })
-      .catch(() => setShared({ url: null, is_admin: false, elevated: false, elevated_as: null }));
+      .catch(() =>
+        setShared({ url: null, server_name: "", is_admin: false, elevated: false, elevated_as: null }),
+      );
   };
   useEffect(() => {
     refreshShared();
@@ -106,13 +118,15 @@ export function AdminWindow({
   const saveUrl = async () => {
     setUrlMsg("");
     try {
-      const r = await api.setSharedServerUrl(urlDraft.trim());
+      const r = await api.setSharedServerUrl(urlDraft.trim(), nameDraft.trim());
       setShared((p) => ({
         url: r.url,
+        server_name: r.server_name || "",
         is_admin: p?.is_admin ?? false,
         elevated: p?.elevated ?? false,
         elevated_as: p?.elevated_as ?? null,
       }));
+      setNameDraft(r.server_name || "");
       setUrlMsg("저장됐습니다. 다음 로그인부터 이 주소를 씁니다.");
     } catch (e) {
       setUrlMsg("저장 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
@@ -314,17 +328,26 @@ export function AdminWindow({
 
               {activeTab === "server" && (
               <section className="admin-section">
-                <h4>공유 서버 주소</h4>
+                <h4>공유 서버 이름·주소</h4>
                 <div className="admin-note-sub">
-                  작업자가 로그인·발행할 공유 서버 주소입니다. 작업자 로그인창에는 안 보이고
-                  여기서만 바꿉니다(이 PC 로컬 허브 설정). 바꾸면 다음 로그인부터 적용됩니다.
+                  작업자가 로그인·발행할 공유 서버입니다. 작업자 화면에는 <b>이름만</b> 보이고
+                  주소는 여기서만 바꿉니다(이 PC 로컬 허브 설정). 바꾸면 다음 로그인부터
+                  적용됩니다. 이름을 비우면 주소가 그대로 보입니다.
                 </div>
+                <input
+                  className="settings-input"
+                  placeholder="서버 이름 (예: MV 팀 서버)"
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  maxLength={64}
+                  style={{ maxWidth: 420 }}
+                />
                 <input
                   className="settings-input"
                   placeholder="예: http://192.168.0.10:8010"
                   value={urlDraft}
                   onChange={(e) => setUrlDraft(e.target.value)}
-                  style={{ maxWidth: 420 }}
+                  style={{ maxWidth: 420, marginTop: 8 }}
                 />
                 <div style={{ marginTop: 10 }}>
                   <button className="settings-action" style={{ width: "auto" }} onClick={saveUrl}>

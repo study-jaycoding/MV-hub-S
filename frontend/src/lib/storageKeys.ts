@@ -24,6 +24,9 @@ export const STORAGE_KEYS = {
   notificationCurrentVersion: "ch.notifications.currentVersion",
   notificationCompletedUpdate: "ch.notifications.completedUpdate",
   notificationSeenAvailableVersion: "ch.notifications.seenAvailableVersion",
+  // 서버 이사 알림을 '나중에'로 닫은 표식 — ★sessionStorage 전용(localStorage 아님).
+  // 주소를 옮기지 않으면 앱이 서버에 닿지 못하므로 다음 기동엔 다시 눈에 띄어야 한다.
+  notificationRelocationDismissed: "ch.notifications.relocationDismissed",
   projectFolderExpanded: "ch.projects.folderExpanded",
   promptHistory: "ch.promptHistory",
   scenes: "ch.scenes", // Canvas 씬(빈 캔버스) — 카드·연결·카메라, 프로젝트별

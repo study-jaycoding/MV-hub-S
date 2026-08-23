@@ -1,11 +1,27 @@
 import { jsonBody, jsonFetch } from "./http";
 
+// 공유 서버 이사 공지(C안) — 관리자가 서버를 새 주소로 옮기면 릴리스 폴더의
+// server-location.json 공지를 백엔드가 읽어 이 형태로 알려준다.
+// reachable = 새 주소가 실제로 응답하는 MV Hub 서버인지까지 확인한 결과.
+// server_name = 이사 뒤 보여줄 서버 이름(공지의 이름 → 없으면 지금 쓰던 이름 → 없으면 null).
+export interface ServerRelocationInfo {
+  current_url: string;
+  proposed_url: string | null;
+  revision: number;
+  server_name: string | null;
+  announced_at: string | null;
+  reachable: boolean;
+}
+
 export const sharedApi = {
   // 선택 발행(로컬 허브 → 원격 공유 서버) — 로컬 우선 모델
   sharedServerStatus: () =>
     jsonFetch<{
       configured: boolean;
       url: string | null;
+      // 관리자가 등록한 '서버' 표시 이름(작업자 화면은 주소 대신 이걸 쓴다).
+      // 아래 name 은 로그인한 '사람' 이름 — 다른 값이다.
+      server_name: string;
       url_history: string[];
       email: string | null;
       name: string | null;
@@ -35,6 +51,16 @@ export const sharedApi = {
       server_version: string | null;
       reason: string | null;
     }>("/api/shared-server/probe", { method: "POST", body: jsonBody({ url }) }),
+  // 이사 공지 조회 — 알림 센터가 주기적으로 확인한다(백그라운드 스냅샷 기반, 느린 I/O 없음).
+  sharedServerRelocation: () =>
+    jsonFetch<ServerRelocationInfo>("/api/shared-server/relocation"),
+  // 공지된 새 주소로 전환 — 백엔드가 공지 파일을 다시 읽어 재검증한 뒤에만 바꾼다.
+  // 성공하면 이 PC 는 로그아웃 상태가 되므로 호출부는 곧바로 새로고침한다.
+  sharedServerRelocate: (url: string, revision: number) =>
+    jsonFetch<{ ok: boolean; url: string; revision: number; has_token: boolean }>(
+      "/api/shared-server/relocate",
+      { method: "POST", body: jsonBody({ url, revision }) },
+    ),
   sharedServerLogin: (url: string | null, email: string, password: string) =>
     jsonFetch<{ ok: boolean; account: import("../types").Account | null; has_token: boolean }>(
       "/api/shared-server/login",
@@ -61,11 +87,12 @@ export const sharedApi = {
       method: "POST",
       body: jsonBody({}),
     }),
-  setSharedServerUrl: (url: string) =>
-    jsonFetch<{ url: string | null; is_admin: boolean }>("/api/shared-server/url", {
-      method: "POST",
-      body: jsonBody({ url }),
-    }),
+  // 관리자 창 전용 — 주소와 표시 이름을 함께 등록한다(이름은 비워도 된다).
+  setSharedServerUrl: (url: string, name: string) =>
+    jsonFetch<{ url: string | null; server_name: string; is_admin: boolean }>(
+      "/api/shared-server/url",
+      { method: "POST", body: jsonBody({ url, name }) },
+    ),
   publishToShared: (genIds: string[]) =>
     jsonFetch<{
       ok: boolean;
