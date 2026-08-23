@@ -146,19 +146,28 @@ def test_batch_account_scope_is_pinned_without_holding_transition_lock(
     monkeypatch.setattr(active_account, "_cache", [False, None])
     active_account.set_active("a@example.com", "uid-a")
     monkeypatch.setattr(generation, "_my_uid", lambda _request: active_account.active_uid())
-    switched = threading.Event()
+    acquired: list[bool] = []
 
     def switch_account() -> None:
-        active_account.set_active("b@example.com", "uid-b")
-        switched.set()
+        # 판정은 벽시계('0.5초 안에 전환이 끝났나')가 아니라 락 보유 여부로 한다.
+        # 새 스레드에서 잡는다 — 배치 문맥은 이 테스트 스레드에서 열리므로 여기서
+        # acquire 하면 RLock 재진입으로 '보유 중'인데도 성공해 계약이 무력화된다.
+        got = active_account.transition_lock.acquire(timeout=0.5)
+        acquired.append(got)
+        if not got:
+            return
+        try:
+            active_account.set_active("b@example.com", "uid-b")  # RLock 재진입 OK
+        finally:
+            active_account.transition_lock.release()
 
     try:
         with generation._personal_meta_account_scope(object()) as my_uid:
             switcher = threading.Thread(target=switch_account)
             switcher.start()
-            assert switched.wait(0.5), "배치 처리 중 transition_lock을 보유했습니다"
-            switcher.join(timeout=1)
+            switcher.join(timeout=5)
             assert not switcher.is_alive()
+            assert acquired == [True], "배치 처리 중 transition_lock을 보유했습니다"
             assert my_uid == "uid-a"
             assert active_account.account_key() == "a@example.com"
         assert active_account.account_key() == "b@example.com"

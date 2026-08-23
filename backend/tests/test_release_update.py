@@ -497,8 +497,13 @@ def test_manual_updater_uses_local_app_data_when_temp_variables_are_empty(tmp_pa
     env["LOCALAPPDATA"] = str(local_app_data)
     env["MVHUB_NO_PAUSE"] = "1"
     env.pop("MVHUB_UPDATE_TARGET_DIR", None)
+    # ★런처는 전체 경로로 부른다. 이름만 주면 cmd 가 '현재 폴더'에서 찾아야 하는데,
+    # NoDefaultCurrentDirectoryInExePath=1 인 셸(보안 설정·일부 CI/도구 셸)에서는 그 탐색이
+    # 꺼져 있어 이 테스트만 "not recognized" 로 실패했다 — 검증 대상(TEMP 비었을 때의 임시
+    # 폴더 폴백)과 무관한 오탐이다. 실제 업데이트 경로도 %~dp0/전체 경로만 쓰므로(형제
+    # 테스트들과 동일) 전체 경로 호출이 운영 동작에 더 가깝다. cwd 는 그대로 둔다.
     completed = subprocess.run(
-        ["cmd.exe", "/d", "/c", "call", "update_release.bat"],
+        ["cmd.exe", "/d", "/c", "call", str(installed / "update_release.bat")],
         cwd=installed,
         env=env,
         capture_output=True,

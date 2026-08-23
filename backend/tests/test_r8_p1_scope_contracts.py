@@ -154,17 +154,26 @@ def _pending_account_reports(email: str) -> int:
 
 
 def _switch_pointer_without_waiting_for_network(email: str, uid: str) -> None:
-    switched = threading.Event()
+    """★판정은 '전환이 0.5초 안에 끝났는가'(벽시계 대리 측정 — 부하가 걸리면 간헐 오탐)가
+    아니라 '전환 락을 잡을 수 있는가'로 한다. 락은 새 스레드에서 잡는다 — RLock 이라
+    드레인을 돌리는 이 스레드에서 acquire 하면 보유 중에도 재진입 성공해 계약이 죽는다."""
+    acquired: list[bool] = []
 
     def switch() -> None:
-        active_account.set_active(email, uid)
-        switched.set()
+        got = active_account.transition_lock.acquire(timeout=0.5)
+        acquired.append(got)
+        if not got:
+            return
+        try:
+            active_account.set_active(email, uid)  # RLock 재진입 OK
+        finally:
+            active_account.transition_lock.release()
 
     worker = threading.Thread(target=switch)
     worker.start()
-    assert switched.wait(0.5), "네트워크 중 transition_lock을 보유했습니다"
-    worker.join(timeout=1)
+    worker.join(timeout=5)
     assert not worker.is_alive()
+    assert acquired == [True], "네트워크 중 transition_lock을 보유했습니다"
 
 
 def test_drain_once_keeps_account_key_and_uid_paired_across_switch(

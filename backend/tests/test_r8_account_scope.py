@@ -45,18 +45,29 @@ def _wait_thread_event(event: threading.Event, timeout: float = 2.0) -> None:
 
 
 def _switch_without_waiting_for_work(email: str, uid: str) -> None:
-    """느린 작업이 transition_lock을 쥐었다면 결정적으로 실패하되 테스트는 해제 가능하게 한다."""
-    switched = threading.Event()
+    """느린 작업이 transition_lock을 쥐었다면 결정적으로 실패하되 테스트는 해제 가능하게 한다.
+
+    ★판정은 '전환이 0.5초 안에 끝났는가'(벽시계 대리 측정 — 부하가 걸리면 스레드 기동·
+    포인터 파일 쓰기가 예산을 먹어 간헐 오탐)가 아니라 '전환 락을 잡을 수 있는가'로 한다.
+    락은 새 스레드에서 잡는다 — RLock 이라 잠재 보유자와 같은 스레드에서 acquire 하면
+    보유 중에도 재진입 성공해 계약이 무력화된다."""
+    acquired: list[bool] = []
 
     def switch() -> None:
-        active_account.set_active(email, uid)
-        switched.set()
+        got = active_account.transition_lock.acquire(timeout=0.5)
+        acquired.append(got)
+        if not got:
+            return
+        try:
+            active_account.set_active(email, uid)  # RLock 재진입 OK
+        finally:
+            active_account.transition_lock.release()
 
     thread = threading.Thread(target=switch)
     thread.start()
-    assert switched.wait(0.5), "느린 작업이 계정 전환 락을 보유했습니다"
-    thread.join(timeout=1)
+    thread.join(timeout=5)
     assert not thread.is_alive()
+    assert acquired == [True], "느린 작업이 계정 전환 락을 보유했습니다"
 
 
 def test_gen_submit_keeps_every_db_step_on_request_account_after_switch(

@@ -108,17 +108,26 @@ def test_history_import_switch_does_not_hold_lock_or_contaminate_b(
         task = autofill._HISTORY_TASKS[A_EMAIL]
         await second_page_waiting.wait()
 
-        switched = threading.Event()
+        acquired: list[bool] = []
 
         def switch_account() -> None:
-            active_account.set_active(B_EMAIL, B_UID)
-            switched.set()
+            # 판정은 벽시계('0.5초 안에 전환이 끝났나')가 아니라 락 보유 여부로 한다.
+            # 새 스레드에서 잡는다 — RLock 은 재진입이라 루프 스레드에서 acquire 하면
+            # 루프가 락을 쥔 채 await 하는 회귀를 잡지 못한다.
+            got = active_account.transition_lock.acquire(timeout=0.5)
+            acquired.append(got)
+            if not got:
+                return
+            try:
+                active_account.set_active(B_EMAIL, B_UID)  # RLock 재진입 OK
+            finally:
+                active_account.transition_lock.release()
 
         switcher = threading.Thread(target=switch_account)
         switcher.start()
-        assert switched.wait(0.5), "페이지 대기 중 transition_lock을 보유했습니다"
-        switcher.join(timeout=1)
+        switcher.join(timeout=5)
         assert not switcher.is_alive()
+        assert acquired == [True], "페이지 대기 중 transition_lock을 보유했습니다"
 
         release_second_page.set()
         await task

@@ -187,23 +187,26 @@ def test_account_switch_during_download_finishes_in_claimed_account(
             media_preservation.preserve_generation_now("account-scoped")
         )
         await asyncio.wait_for(download_started.wait(), timeout=1)
-        switched = threading.Event()
 
-        def switch_account() -> None:
-            active_account.set_active(B_EMAIL, "uid-b")
-            switched.set()
+        def switch_account() -> bool:
+            # 판정은 벽시계('0.5초 안에 전환이 끝났나')가 아니라 락 보유 여부로 한다.
+            # to_thread 워커에서 잡는다 — RLock 은 재진입이라 루프 스레드에서 acquire
+            # 하면 루프가 락을 쥔 채 await 하는 회귀를 잡지 못한다.
+            if not active_account.transition_lock.acquire(timeout=0.5):
+                return False
+            try:
+                active_account.set_active(B_EMAIL, "uid-b")  # RLock 재진입 OK
+                return True
+            finally:
+                active_account.transition_lock.release()
 
-        switcher = threading.Thread(target=switch_account)
-        switcher.start()
         try:
-            assert await asyncio.to_thread(switched.wait, 0.5), (
+            assert await asyncio.to_thread(switch_account), (
                 "다운로드 중 transition_lock을 보유했습니다"
             )
         finally:
             release_download.set()
         result = await task
-        switcher.join(timeout=1)
-        assert not switcher.is_alive()
         return result
 
     result = asyncio.run(scenario())
