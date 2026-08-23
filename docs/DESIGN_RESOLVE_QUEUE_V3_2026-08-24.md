@@ -139,6 +139,7 @@ v3에도 기존 브리지 재사용을 위해 다음 최상위 필드를 유지�
   "manifest_root": "D:\\Projects\\EP01\\@davinci",
   "manifest_path": "D:\\Projects\\EP01\\@davinci\\.mvhub\\transfers\\20260823T100000Z-a1b2c3d4.json",
   "created_at": "2026-08-23T10:00:00Z",
+  "created_at_ns": 1787654400123456700,
   "status": "pending",
   "total": 1,
   "downloaded": 0,
@@ -391,7 +392,13 @@ machine-import.lock
 
 ## 2.4 claim 순서
 
-1. FIFO 후보를 `created_at`, `transfer_id` 순으로 선택합니다.
+1. FIFO 후보를 `created_at_ns`, `transfer_id` 순으로 선택합니다.
+   - `created_at`(초 단위)만으로는 같은 초에 들어온 접수가 동률이 되고, 그때 `transfer_id`
+     문자열 정렬은 실제 접수 순서와 무관합니다(큐 순서·`ahead` 뒤바뀜). 그래서 접수 순서의
+     권위 키는 나노초 정수 `created_at_ns`이며, 같은 프로세스 안에서는 단조 증가를 강제합니다.
+   - 하위호환: `created_at_ns`가 없는 기존 v3 manifest는 초 단위 `created_at`을 나노초로
+     환산해 같은 축에서 비교하고, 그렇게 동률이 된 옛 기록끼리는 예전대로 `transfer_id`로 갈립니다.
+   - 한계: 서로 다른 프로세스(허브 재시작·다른 PC)의 접수는 벽시계 해상도까지만 구분됩니다.
 2. import 공용 락을 정해진 순서로 획득합니다.
 3. transfer lock 아래 manifest를 재읽습니다.
 4. 상태·revision·기존 claim을 다시 검사합니다.
@@ -457,11 +464,17 @@ claim 응답은 한 번에 manifest 하나만 반환합니다.
 PID만으로 사망을 판정하면 안 됩니다.
 
 - `host_id`가 현재 PC와 같을 때만 PID 검사를 수행합니다.
-- `OpenProcess`와 `GetProcessTimes`로 PID의 creation time을 읽습니다.
-- PID 존재 + creation time 일치: 원 소유자 생존
-- PID 존재 + creation time 불일치: PID 재사용, 원 소유자 사망
+- `OpenProcess`와 `GetProcessTimes`로 PID의 creation time과 **exit time**을 함께 읽습니다.
+- PID 존재 + exit time ≠ 0: 이미 종료(커널 객체만 남은 상태), 사망
+- PID 존재 + exit time = 0 + creation time 일치: 원 소유자 생존
+- PID 존재 + exit time = 0 + creation time 불일치: PID 재사용, 원 소유자 사망
 - PID 없음: 사망
 - 접근 거부·다른 host·조회 실패: `unknown`
+
+★exit time을 반드시 함께 봅니다. Windows는 프로세스가 끝나도 누군가 핸들을 쥐고 있으면
+커널 객체를 남겨 두고, 그동안 `OpenProcess`는 그 PID로 계속 성공하며 `GetProcessTimes`는
+creation time을 그대로 돌려줍니다. creation time만 비교하면 강제 종료된 허브를 `alive`로
+오판해 부팅 복구가 claim을 회수하지 못하고 `importing`이 고착됩니다.
 
 복구 규칙:
 

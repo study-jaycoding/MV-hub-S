@@ -1714,7 +1714,9 @@ class PrepareConcurrencyTests(WorkerFixtureBase):
         self.assertEqual(first, [resolve_queue.STATE_READY] * 3)
         self.assertEqual(
             [row["transfer_id"] for row in resolve_queue.scan_projects(["p1"])],
-            ["par-a", "par-b", "par-c"],
+            # FIFO = 접수 순서. 예전에는 같은 초 접수가 transfer_id 로 갈려 알파벳순
+            # (par-a, par-b, par-c)이 나왔는데, 그게 뒤바뀜 버그의 정체였다.
+            ["par-b", "par-a", "par-c"],
         )
 
 
@@ -1967,6 +1969,128 @@ class QueueRouteTests(WorkerFixtureBase):
             ),
             resolve_queue.STATE_READY,
         )
+
+
+class FifoOrderTests(ResolveQueueTestBase):
+    """접수 순서 = 큐 순서 (실환경 재현: 같은 초에 연속 3건 접수)."""
+
+    def test_same_second_accepts_keep_submission_order(self):
+        # 워커를 끈 채 빠르게 3회 접수하면 created_at(초 단위)이 같아진다. 예전에는 그때
+        # transfer_id 문자열로 갈려 큐 순서·ahead 가 실제 접수 순서와 뒤바뀌었다.
+        submitted = ["t-c-first", "t-a-second", "t-b-third"]
+        frozen = "2026-08-23T11:50:01+00:00"
+        aheads = []
+        with mock.patch.object(resolve_queue, "_utc_now", return_value=frozen):
+            for transfer_id in submitted:
+                _manifest, ahead = self._accept(transfer_id=transfer_id)
+                aheads.append(ahead)
+
+        rows = resolve_queue.queue_snapshot(["p1"])
+        self.assertEqual([row["created_at"] for row in rows], [frozen] * 3)
+        self.assertEqual([row["transfer_id"] for row in rows], submitted)
+        self.assertEqual([row["ahead"] for row in rows], [0, 1, 2])
+        # 접수 응답이 알려 주는 '앞 대기 건수'도 같은 키를 쓴다.
+        self.assertEqual(aheads, [0, 1, 2])
+
+    def test_created_ns_stays_monotonic_when_the_clock_does_not_move(self):
+        with mock.patch("time.time_ns", return_value=1_700_000_000_000_000_000):
+            values = [resolve_queue.next_created_ns() for _ in range(5)]
+        self.assertEqual(len(set(values)), 5)
+        self.assertEqual(values, sorted(values))
+
+    def _strip_ns(self, manifest: dict, created_at: str) -> None:
+        """새 필드가 없던 기존 v3 manifest 로 되돌린다(하위호환 검증용)."""
+        path = Path(manifest["manifest_path"])
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data.pop("created_at_ns", None)
+        data["created_at"] = created_at
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    def test_legacy_manifests_without_ns_keep_the_old_tie_break(self):
+        for transfer_id in ("legacy-b", "legacy-a"):
+            manifest, _ahead = self._accept(transfer_id=transfer_id)
+            self._strip_ns(manifest, "2026-08-23T11:50:01+00:00")
+
+        rows = resolve_queue.queue_snapshot(["p1"])
+        # 나노초 키가 없는 옛 기록끼리는 예전 규칙(created_at → transfer_id) 그대로다.
+        self.assertEqual([row["transfer_id"] for row in rows], ["legacy-a", "legacy-b"])
+
+    def test_new_manifest_queues_behind_an_older_legacy_manifest(self):
+        legacy, _ahead = self._accept(transfer_id="legacy-old")
+        self._strip_ns(legacy, "2020-01-01T00:00:00+00:00")
+        self._accept(transfer_id="fresh-new")
+
+        rows = resolve_queue.queue_snapshot(["p1"])
+        # 옛 기록의 초 단위 created_at 은 나노초로 환산돼 새 기록과 같은 축에서 비교된다.
+        self.assertEqual([row["transfer_id"] for row in rows], ["legacy-old", "fresh-new"])
+
+
+class KilledOwnerRecoveryTests(ResolveQueueTestBase):
+    """소유자 프로세스를 강제 종료했을 때의 생존 판정·부팅 복구.
+
+    실환경 재현: importing 도중 uvicorn PID 를 강제 종료하고 재기동. Windows 는 프로세스가
+    끝나도 누군가 핸들을 쥐고 있으면 커널 객체를 남기므로 ``OpenProcess`` 가 그 PID 로
+    계속 성공하고, 생성 시각도 그대로 남는다. 여기서는 ``subprocess.Popen`` 이 핸들을
+    쥔 채로 자식을 죽여 같은 조건을 만든다.
+    """
+
+    def _spawn_and_kill(self) -> tuple[int, str]:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # ★Popen 객체를 테스트가 끝날 때까지 살려 둬야 핸들이 열려 있고, 그래야 '종료했는데
+        # PID 로 열리는' 상황이 재현된다.
+        self._proc = proc
+        filetime = resolve_lock.process_started_at_filetime(proc.pid)
+        proc.kill()
+        proc.wait(timeout=30)
+        return proc.pid, filetime
+
+    def test_killed_process_is_dead_even_while_its_handle_stays_open(self):
+        pid, filetime = self._spawn_and_kill()
+        self.assertEqual(resolve_lock.process_liveness(pid, filetime), "dead")
+
+    def test_boot_recovery_takes_over_the_claim_of_a_killed_hub(self):
+        pid, filetime = self._spawn_and_kill()
+        manifest, _ahead = self._accept(transfer_id="boot-killed-hub")
+        path = Path(manifest["manifest_path"])
+        now = datetime.now(timezone.utc)
+        resolve_queue.queue_block(manifest)["claim"] = {
+            "token": "claim-killed-hub",
+            "epoch": 1,
+            "purpose": "import",
+            "owner": {
+                "kind": "push_worker",
+                "host_id": resolve_lock.host_id(),
+                # 재기동했으므로 hub_instance_id 는 지금 프로세스와 다르다.
+                "hub_instance_id": "previous-hub-instance",
+                "process_id": pid,
+                "process_started_at_filetime": filetime,
+                "process_nonce": "previous-nonce",
+                "executor_pid": 0,
+            },
+            "attempt_id": "attempt-killed-hub",
+            "acquired_at": now.isoformat(timespec="seconds"),
+            "heartbeat_at": now.isoformat(timespec="seconds"),
+            # lease 는 아직 살아 있다 — 만료를 기다려서가 아니라 '죽은 걸 확인해서' 회수해야 한다.
+            "lease_expires_at": (now + timedelta(hours=1)).isoformat(timespec="seconds"),
+        }
+        resolve_queue.set_state(manifest, resolve_queue.STATE_IMPORTING)
+        resolve_queue.save_manifest(path, manifest)
+
+        self.assertEqual(resolve_queue.claim_disposition(manifest), "free")
+
+        resolve_queue.recover_boot(["p1"])
+        recovered = resolve_queue.read_manifest(path)
+        # 30초 넘게 importing/auto 로 고착되던 자리 — interrupted + manual_only 로 확정된다.
+        self.assertEqual(
+            resolve_queue.queue_state(recovered), resolve_queue.STATE_INTERRUPTED
+        )
+        self.assertEqual(recovered["queue"]["dispatch_policy"], "manual_only")
+        self.assertEqual(recovered["queue"]["last_error"]["code"], "child_crashed")
+        self.assertIsNone(recovered["queue"]["claim"])
 
 
 if __name__ == "__main__":

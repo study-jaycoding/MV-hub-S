@@ -120,6 +120,13 @@ if os.name == "nt":  # pragma: no cover - 플랫폼 분기(운영 경로는 Wind
 
         PID 존재만으로 생존을 판정하지 않는다. 생성 시각(FILETIME)까지 같아야 원
         소유자이며, 다르면 PID 재사용이므로 원 소유자는 사망으로 본다.
+
+        ★생성 시각만으로도 부족하다. Windows 는 프로세스가 끝나도 누군가 핸들을 쥐고
+        있으면 커널 객체를 남겨 두고, 그동안 ``OpenProcess`` 는 그 PID 로 계속 성공한다.
+        그 상태의 ``GetProcessTimes`` 는 **생성 시각을 그대로** 돌려주므로 생성 시각만
+        비교하면 이미 죽은 프로세스를 ``alive`` 로 오판한다(→ 허브가 importing 중에
+        강제 종료되면 부팅 복구가 claim 을 회수하지 못하고 큐가 고착). 종료한 프로세스는
+        exit 시각이 0 이 아니므로 그것을 먼저 본다.
         """
         if pid <= 0:
             return "unknown"
@@ -144,8 +151,13 @@ if os.name == "nt":  # pragma: no cover - 플랫폼 분기(운영 경로는 Wind
             if not ok:
                 return "unknown"
             current = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+            exited = (exit_time.dwHighDateTime << 32) | exit_time.dwLowDateTime
         finally:
             _kernel32.CloseHandle(handle)
+        if exited:
+            # 이미 끝난 프로세스(커널 객체만 남은 상태). 생성 시각 일치 여부와 무관하게
+            # 사망이다 — PID 가 재사용됐다면 원 소유자는 더더욱 사망이다.
+            return "dead"
         recorded = str(started_at_filetime or "").strip()
         if not recorded.isdigit():
             return "unknown"

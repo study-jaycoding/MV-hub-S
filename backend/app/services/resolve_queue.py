@@ -21,6 +21,7 @@ import os
 import re
 import stat
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -131,6 +132,57 @@ def _parse_utc(value: str) -> Optional[datetime]:
 
 def new_attempt_id() -> str:
     return uuid.uuid4().hex
+
+
+# ── FIFO 접수 순서 키 ──────────────────────────────────────────────────────────
+# ``created_at`` 은 초 단위라 같은 초에 들어온 접수들이 동률이 되고, 그때 tie-break 로
+# 쓰던 ``transfer_id`` 문자열 정렬은 실제 접수 순서와 아무 상관이 없다. 그래서 빠르게
+# 연속 접수하면 큐 순서와 ``ahead`` 가 뒤바뀐다. v3 는 접수 순서의 권위 키로 나노초
+# 정수 ``created_at_ns`` 를 따로 기록한다.
+_CREATED_NS_GUARD = threading.Lock()
+_last_created_ns = 0
+
+
+def next_created_ns() -> int:
+    """접수 순서 키. 같은 프로세스 안에서는 반드시 증가한다.
+
+    Windows 벽시계는 해상도가 거칠어(≈15.6ms) 연속 접수가 같은 값을 받을 수 있으므로,
+    직전 값 이하가 나오면 +1 해서 단조성을 강제한다. 서로 다른 프로세스(허브 재시작·
+    다른 PC)에서 들어온 접수는 벽시계 해상도까지만 구분되며, 그래도 동률이면 예전처럼
+    ``transfer_id`` 로 결정론적으로 갈린다.
+    """
+    global _last_created_ns
+    with _CREATED_NS_GUARD:
+        value = time.time_ns()
+        if value <= _last_created_ns:
+            value = _last_created_ns + 1
+        _last_created_ns = value
+        return value
+
+
+def created_at_ns(manifest: dict[str, Any]) -> int:
+    """FIFO 정렬용 나노초 키.
+
+    ★하위호환: ``created_at_ns`` 가 없는 기존 v3 manifest 는 초 단위 ``created_at`` 을
+    환산해 쓴다. 그러면 옛 기록끼리는 같은 초에서 동률이 되어 예전 규칙(transfer_id)
+    으로 갈리고, 새 기록은 항상 자기 나노초로 갈린다.
+    """
+    raw = manifest.get("created_at_ns")
+    try:
+        value = int(raw) if not isinstance(raw, bool) else 0
+    except (TypeError, ValueError):
+        value = 0
+    if value > 0:
+        return value
+    parsed = _parse_utc(str(manifest.get("created_at") or ""))
+    if parsed is None:
+        return 0
+    return int(parsed.timestamp()) * 1_000_000_000 + parsed.microsecond * 1_000
+
+
+def fifo_key(manifest: dict[str, Any]) -> tuple[int, str]:
+    """접수 순서 정렬 키 — ``(created_at_ns, transfer_id)``."""
+    return (created_at_ns(manifest), str(manifest.get("transfer_id") or ""))
 
 
 # ── manifest 판독 ──────────────────────────────────────────────────────────────
@@ -639,6 +691,9 @@ def build_manifest(
         "folder_catalog_path": str(resolve_transfer._folder_catalog_path(manifest_root)),
         "folder_paths": [],
         "created_at": now,
+        # 접수 순서의 권위 키(v3 전용 필드). created_at 은 v2 투영과 표시용이라 초 단위를
+        # 유지하고, FIFO·ahead 판정은 이 나노초 값으로만 한다.
+        "created_at_ns": next_created_ns(),
         "completed_at": None,
         "status": "pending",
         "total": len(items),
@@ -1011,7 +1066,7 @@ def project_scan_roots(project_id: str) -> list[Path]:
 def scan_projects(
     project_ids: list[str], *, states: Optional[Iterable[str]] = None
 ) -> list[dict[str, Any]]:
-    """등록된 프로젝트들의 v3 큐를 FIFO(created_at, transfer_id) 로 모은다."""
+    """등록된 프로젝트들의 v3 큐를 FIFO(created_at_ns, transfer_id) 로 모은다."""
     found: list[dict[str, Any]] = []
     seen_transfers: set[tuple[str, str]] = set()
     for project_id in dict.fromkeys(pid for pid in project_ids if pid):
@@ -1024,12 +1079,7 @@ def scan_projects(
                     continue
                 seen_transfers.add(key)
                 found.append(manifest)
-    found.sort(
-        key=lambda item: (
-            str(item.get("created_at") or ""),
-            str(item.get("transfer_id") or ""),
-        )
-    )
+    found.sort(key=fifo_key)
     return found
 
 
