@@ -10,12 +10,14 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from . import _proxy
-from .. import repo
+from .. import active_account, repo
 from ..deps import (
     account_scope_uid,
     batch_view_member_projects,
     can_view_generation_with_member_projects,
+    current_account,
 )
+from ..services import resolve_queue, resolve_queue_worker
 from ..services.resolve_status_runner import (
     resolve_connection_status_bounded,
     run_resolve_import_isolated,
@@ -36,6 +38,8 @@ from ..services.resolve_transfer import (
     list_pending_manifests,
     load_manifest,
     save_manifest,
+    # v2 동기 준비 경로. 접수는 더 이상 직접 호출하지 않지만(전담 워커가 준비한다)
+    # "접수가 복사를 하지 않는다"를 확인하는 기존 계약 테스트가 이 이름을 참조한다.
     transfer_generations,
 )
 
@@ -69,6 +73,28 @@ def _require_local_resolve(request: Request) -> None:
     require_local_machine_request(
         request, "DaVinci Resolve 연동은 이 PC의 로컬 MV Hub에서만 사용할 수 있습니다"
     )
+
+
+def _accept_account_scope(request: Request) -> dict:
+    """재시작 뒤에도 같은 계정으로만 재개하도록 접수 시점 계정을 고정한다(명세 §1.6)."""
+    account = current_account(request) or {}
+    return resolve_queue.build_account_scope(
+        account_key=active_account.account_key() or "",
+        account_email=str(account.get("email") or active_account.active_email() or ""),
+        creator_uid=str(account_scope_uid(request) or ""),
+        server_origin=_proxy.base_url() if _proxy.proxying() else "",
+    )
+
+
+def _remote_generation_lookup(gen_id: str) -> dict | None:
+    """워커가 로컬에 없는 생성물을 다시 찾을 때 쓰는 위임 조회(계층 경계 주입)."""
+    if not gen_id or not _proxy.proxying():
+        return None
+    remote = _proxy.proxy_json("GET", f"/api/generations/{gen_id}")
+    return remote if isinstance(remote, dict) else None
+
+
+resolve_queue_worker.set_remote_lookup(_remote_generation_lookup)
 
 
 @router.get("/script")
@@ -115,9 +141,14 @@ async def post_resolve_python_install(request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/transfers")
+@router.post("/transfers", status_code=202)
 async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
-    """완료본을 로컬에 준비하고 현재 Resolve Media Pool로 가져온다."""
+    """전송을 큐에 접수만 한다(원본 복사·Resolve 가져오기는 전담 워커가 수행).
+
+    종전엔 이 요청 하나가 대용량 복사와 Resolve 조작까지 끝낼 때까지 붙잡혀 있었다.
+    이제는 권한 판정 → 대상 Resolve 프로젝트 고정 → v3 manifest 원자 기록까지만 하고
+    ``202 Accepted`` 로 즉시 돌려준다(명세 §1.7).
+    """
     _require_local_resolve(request)
     ids = list(dict.fromkeys(gen_id.strip() for gen_id in body.gen_ids if gen_id.strip()))
     if not ids:
@@ -176,38 +207,66 @@ async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
     if len(project_ids) != 1:
         raise HTTPException(status_code=400, detail="한 번에 하나의 프로젝트만 전송할 수 있습니다")
     try:
-        manifest = await transfer_generations(next(iter(project_ids)), generations)
-        if body.resolve_project_id or body.resolve_project_name:
-            manifest["resolve_target"] = {
+        manifest, ahead = await resolve_queue.accept_transfer(
+            next(iter(project_ids)),
+            generations,
+            resolve_target={
                 "project_id": body.resolve_project_id.strip(),
                 "project_name": body.resolve_project_name.strip(),
-            }
-            # Resolve 연결이 바로 끊겨도 재가져오기가 같은 프로젝트를 검증할 수 있게 먼저 기록한다.
-            await save_manifest(manifest)
-        # fusionscript 는 비호환 시 프로세스를 즉시 죽일 수 있어 백엔드 안에서 직접
-        # 부르지 않고, 호환 인터프리터를 고른 자식 프로세스로 실행한다.
-        manifest["resolve_import"] = await asyncio.to_thread(
-            run_resolve_import_isolated, manifest
+            },
+            account_scope=_accept_account_scope(request),
         )
-        await save_manifest(manifest)
-        return manifest
     except ResolveTransferError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    queue = resolve_queue.queue_block(manifest)
+    return {
+        "transfer_id": str(manifest.get("transfer_id") or ""),
+        "project_id": str(manifest.get("project_id") or ""),
+        "project_name": str(manifest.get("project_name") or ""),
+        "queued": True,
+        "ahead": ahead,
+        "queue": {
+            "state": queue.get("state"),
+            "dispatch_policy": queue.get("dispatch_policy"),
+        },
+        "resolve_target": manifest.get("resolve_target") or {},
+        "status": manifest.get("status"),
+        "total": int(manifest.get("total") or 0),
+        "worker_enabled": resolve_queue_worker.worker_enabled(),
+    }
 
 
 @router.post("/transfers/retry")
 async def retry_resolve_transfer(body: ResolveRetryIn, request: Request):
-    """이미 준비된 원본 manifest를 다시 읽어 Resolve 가져오기만 재실행한다."""
+    """이미 준비된 v2 원본 manifest를 다시 읽어 Resolve 가져오기만 재실행한다."""
     _require_local_resolve(request)
     try:
         manifest = await load_manifest(body.project_id.strip(), body.transfer_id.strip())
-        manifest["resolve_import"] = await asyncio.to_thread(
-            run_resolve_import_isolated, manifest
-        )
-        await save_manifest(manifest)
+
+        async def _import_and_save() -> dict:
+            # ★가져오기 실행과 결과 저장은 한 단위다. 둘 사이가 끊기면 Resolve 는 바뀌었는데
+            # manifest 에는 흔적이 남지 않아 다음 실행이 같은 작업을 또 한다.
+            result = await asyncio.to_thread(run_resolve_import_isolated, manifest)
+            manifest["resolve_import"] = result
+            await save_manifest(manifest)
+            return result
+
+        await resolve_queue.run_non_abandon(_import_and_save())
         return manifest
     except ResolveTransferError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/queue")
+async def get_resolve_queue(request: Request):
+    """v3 큐 목록 — 상태·앞 대기 건수(ahead)·마지막 오류 코드."""
+    _require_local_resolve(request)
+    projects_payload = await asyncio.to_thread(repo.list_projects, include_archived=True)
+    project_ids = [
+        str(project.get("id") or "") for project in (projects_payload.get("projects") or [])
+    ]
+    items = await asyncio.to_thread(resolve_queue.queue_snapshot, project_ids)
+    return {"items": items, "worker_enabled": resolve_queue_worker.worker_enabled()}
 
 
 @router.get("/transfers/pending")

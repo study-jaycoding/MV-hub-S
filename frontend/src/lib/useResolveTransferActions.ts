@@ -5,6 +5,7 @@ import {
   createResolveTransfer,
   getResolveConnectionStatus,
   retryResolveTransfer,
+  resolveTransferAcceptedSummary,
   resolveTransferSummary,
   type ResolveProjectTarget,
   type ResolveTransferResult,
@@ -66,14 +67,18 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
             ? `Resolve 원본 ${task.genIds.length}개 처리 중 · ${task.target.project_name}`
             : `준비된 원본 다시 가져오는 중 · ${task.target.project_name}`,
         );
-        const result = task.kind === "transfer"
-          ? await createResolveTransfer(task.genIds, task.target)
-          : await retryResolveTransfer(task.projectId, task.transferId);
+        if (task.kind === "transfer") {
+          // 접수만 하는 202 응답이다. 준비·가져오기 결과는 큐에서 확인한다.
+          const accepted = await createResolveTransfer(task.genIds, task.target);
+          flashRef.current(resolveTransferAcceptedSummary(accepted));
+          return;
+        }
+        const result = await retryResolveTransfer(task.projectId, task.transferId);
         flashRef.current(resolveTransferSummary(result));
         const nextRetryable = retryableFromResult(result);
         if (nextRetryable) {
           setRetryable(nextRetryable);
-        } else if (task.kind === "retry") {
+        } else {
           setRetryable((current) =>
             current?.transferId === task.transferId ? null : current,
           );

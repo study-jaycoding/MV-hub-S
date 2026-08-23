@@ -868,12 +868,16 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
     project_manager = resolve.GetProjectManager()
     project = project_manager.GetCurrentProject() if project_manager else None
     if not project:
-        raise ResolveBridgeError("현재 열려 있는 Resolve 프로젝트가 없습니다")
+        raise ResolveBridgeError(
+            "현재 열려 있는 Resolve 프로젝트가 없습니다", code="no_project"
+        )
     _assert_expected_project(manifest, project)
     media_pool = project.GetMediaPool()
     root = media_pool.GetRootFolder() if media_pool else None
     if not media_pool or not root:
-        raise ResolveBridgeError("현재 Resolve 프로젝트의 Media Pool을 열 수 없습니다")
+        raise ResolveBridgeError(
+            "현재 Resolve 프로젝트의 Media Pool을 열 수 없습니다", code="api_unavailable"
+        )
 
     previous_folder = media_pool.GetCurrentFolder()
     previous_folder_path = (
@@ -892,6 +896,9 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
         "skipped": 0,
         "error_count": 0,
         "error": None,
+        # 상태 판단은 문자열 메시지가 아니라 이 코드로만 한다(명세 §C).
+        "error_code": None,
+        "ordering_error_codes": [],
         "folder_order_backup": "",
         "items": [],
     }
@@ -922,6 +929,7 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
             )
 
         ordering_errors: list[str] = []
+        ordering_error_codes: list[str] = []
         reordered = False
         try:
             reordered, backup_path = _reconcile_folder_tree(
@@ -936,6 +944,7 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
             result["folder_order_backup"] = backup_path
         except Exception as exc:  # noqa: BLE001 - 가져오기는 유지하고 정렬 실패를 보고한다.
             ordering_errors.append(str(exc))
+            ordering_error_codes.append(getattr(exc, "code", None) or "unexpected_error")
 
         prepared_targets = {(): managed_root}
         folder_errors: dict[tuple[str, ...], str] = {}
@@ -959,6 +968,7 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
                 "media_pool_path": "",
                 "status": "pending",
                 "error": None,
+                "error_code": None,
             }
             result["items"].append(item)
             result["total"] += 1
@@ -1005,6 +1015,7 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
             except Exception as exc:  # noqa: BLE001 - 항목별 실패를 격리한다.
                 item["status"] = "error"
                 item["error"] = str(exc)
+                item["error_code"] = getattr(exc, "code", None) or "unexpected_error"
                 result["error_count"] += 1
 
         for parts_key in sorted(import_batches, key=_folder_path_sort_key):
@@ -1021,17 +1032,31 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
         if not result["total"]:
             result["status"] = "failed"
             result["error"] = "Resolve로 가져올 준비가 끝난 원본이 없습니다"
+            result["error_code"] = "source_missing"
         elif not result["error_count"]:
             result["status"] = "complete"
         elif success_count:
             result["status"] = "partial"
         else:
             result["status"] = "failed"
+        if result["error_count"] and not result["error_code"]:
+            result["error_code"] = next(
+                (
+                    str(item["error_code"])
+                    for item in result["items"]
+                    if item.get("error_code")
+                ),
+                "unexpected_error",
+            )
 
         if ordering_errors:
             result["status"] = "partial" if success_count else "failed"
             result["error"] = "Resolve 폴더 카탈로그 적용 실패: " + "; ".join(
                 ordering_errors
+            )
+            result["ordering_error_codes"] = ordering_error_codes
+            result["error_code"] = result["error_code"] or (
+                ordering_error_codes[0] if ordering_error_codes else "unexpected_error"
             )
 
         if (result["imported"] or reordered) and not project_manager.SaveProject():
@@ -1040,6 +1065,7 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
             result["error"] = (
                 f"{result['error']}; {save_error}" if result["error"] else save_error
             )
+            result["error_code"] = result["error_code"] or "api_unavailable"
     finally:
         if previous_folder:
             try:
@@ -1055,6 +1081,21 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
     return result
 
 
+def _unavailable_import(message: str, code: str) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "error_code": code,
+        "project_name": "",
+        "target_root": "",
+        "total": 0,
+        "imported": 0,
+        "skipped": 0,
+        "error_count": 0,
+        "error": message,
+        "items": [],
+    }
+
+
 def import_manifest_to_current_project(
     manifest: dict[str, Any], *, resolve: Any | None = None
 ) -> dict[str, Any]:
@@ -1062,15 +1103,9 @@ def import_manifest_to_current_project(
     try:
         with _IMPORT_LOCK:
             return _import_manifest_locked(manifest, resolve or _connect_resolve())
+    except ResolveBridgeError as exc:
+        # ★ 먼저 잡아 code 를 보존한다(명세 §C). 종전엔 아래 일반 catch 가 삼켜
+        # project_changed 같은 판정 근거가 API 까지 전달되지 않았다.
+        return _unavailable_import(str(exc), exc.code)
     except Exception as exc:  # noqa: BLE001 - Resolve 외부 API 오류가 HTTP 500으로 번지지 않게 한다.
-        return {
-            "status": "unavailable",
-            "project_name": "",
-            "target_root": "",
-            "total": 0,
-            "imported": 0,
-            "skipped": 0,
-            "error_count": 0,
-            "error": str(exc),
-            "items": [],
-        }
+        return _unavailable_import(str(exc), "unexpected_error")

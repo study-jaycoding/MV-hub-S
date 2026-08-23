@@ -35,6 +35,23 @@ export interface ResolveProjectTarget {
   project_name: string;
 }
 
+/**
+ * 전송 접수 응답(202). 원본 복사·Resolve 가져오기는 전담 워커가 큐에서 처리하므로
+ * 이 응답에는 아직 결과가 없다. 진행 상황은 큐 조회로 본다.
+ */
+export interface ResolveTransferAccepted {
+  transfer_id: string;
+  project_id: string;
+  project_name: string;
+  queued: boolean;
+  ahead: number;
+  queue: { state: string; dispatch_policy: string };
+  resolve_target: ResolveProjectTarget;
+  status: string;
+  total: number;
+  worker_enabled: boolean;
+}
+
 export interface ResolveImportItem {
   generation_id: string;
   local_path: string;
@@ -209,11 +226,23 @@ export function resolveTransferSummary(result: ResolveTransferResult): string {
   return `Resolve ${imported.imported}개 가져오기 완료${existing} · ${imported.target_root}`;
 }
 
+export function resolveTransferAcceptedSummary(
+  accepted: ResolveTransferAccepted,
+): string {
+  const head = `Resolve 원본 ${accepted.total}개를 대기열에 접수했습니다`;
+  if (!accepted.worker_enabled) {
+    return `${head} · 이 PC에서는 자동 가져오기가 꺼져 있습니다`;
+  }
+  return accepted.ahead
+    ? `${head} · 앞 작업 ${accepted.ahead}건`
+    : `${head} · 곧 원본을 준비합니다`;
+}
+
 export function createResolveTransfer(
   genIds: string[],
   target?: ResolveProjectTarget,
-): Promise<ResolveTransferResult> {
-  return jsonFetch<ResolveTransferResult>("/api/resolve/transfers", {
+): Promise<ResolveTransferAccepted> {
+  return jsonFetch<ResolveTransferAccepted>("/api/resolve/transfers", {
     method: "POST",
     body: jsonBody({
       gen_ids: genIds,

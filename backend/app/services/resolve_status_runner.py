@@ -221,9 +221,11 @@ def resolve_connection_status_bounded() -> dict[str, Any]:
     return _unavailable(_no_interpreter_message(failure), status="python_incompatible")
 
 
-def _import_unavailable(message: str) -> dict[str, Any]:
+def _import_unavailable(message: str, *, error_code: str) -> dict[str, Any]:
+    """부모 계층 실패도 error_code 를 반드시 싣는다(명세 §C 전달 경로)."""
     return {
         "status": "unavailable",
+        "error_code": error_code,
         "project_name": "",
         "target_root": "",
         "total": 0,
@@ -247,9 +249,11 @@ def run_resolve_import_isolated(manifest: dict[str, Any]) -> dict[str, Any]:
         try:
             interpreter, _status, failure = _select_interpreter()
         except subprocess.TimeoutExpired:
-            return _import_unavailable(_timeout_message())
+            return _import_unavailable(_timeout_message(), error_code="api_unavailable")
         if interpreter is None:
-            return _import_unavailable(_no_interpreter_message(failure))
+            return _import_unavailable(
+                _no_interpreter_message(failure), error_code="python_incompatible"
+            )
         try:
             completed = _run_child(
                 interpreter,
@@ -258,12 +262,22 @@ def run_resolve_import_isolated(manifest: dict[str, Any]) -> dict[str, Any]:
                 input_text=json.dumps(manifest, ensure_ascii=True),
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            return _import_unavailable(f"Resolve 가져오기 프로세스를 실행할 수 없습니다: {exc}")
+            return _import_unavailable(
+                f"Resolve 가져오기 프로세스를 실행할 수 없습니다: {exc}",
+                error_code="spawn_failed",
+            )
         result = _parse_result(completed.stdout, IMPORT_RESULT_PREFIX)
         if result is None:
             detail = (
                 _tail_text(completed.stderr)
                 or f"가져오기 프로세스 종료 코드 {completed.returncode}"
             )
-            return _import_unavailable(f"Resolve 가져오기 결과를 읽을 수 없습니다: {detail}")
+            # 자식이 결과 없이 죽었으면 부수효과 발생 여부를 알 수 없다 — 상위가
+            # 자동 재실행하지 않도록 child_crashed 로 구분한다.
+            return _import_unavailable(
+                f"Resolve 가져오기 결과를 읽을 수 없습니다: {detail}",
+                error_code="child_crashed" if completed.returncode else "invalid_child_result",
+            )
+        # 자식 결과는 브리지가 항상 error_code 를 실어 보낸다. 여기서 키를 덧붙이지 않는다
+        # (부모가 결과를 그대로 전달한다는 기존 계약 유지).
         return result

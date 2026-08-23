@@ -1,0 +1,936 @@
+"""Resolve 가져오기 큐 — manifest v3 코어.
+
+권위 설계: ``docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md``
+
+접수(POST /api/resolve/transfers)는 권한 판정·목적지 고정·v3 manifest 원자 기록까지만
+하고 즉시 반환한다. 실제 원본 복사(preparing)와 Resolve 가져오기(importing)는 전담
+워커(:mod:`resolve_queue_worker`)가 큐에서 꺼내 수행한다.
+
+v3 는 ``format: "mvhub.resolve-transfer.v3"`` 를 쓴다. 단순 ``version: 3`` 이면 format 만
+검사하는 구버전 스캐너가 v3 를 v2 로 오인해 claim 없이 강제 가져오기를 할 수 있다.
+기존 v2 manifest 는 이 모듈이 읽지도 고치지도 않는다 — 기존 메뉴 pull 경로 전용이다.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import os
+import re
+import stat
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Iterable, Optional
+
+from . import project_folders, resolve_bridge, resolve_lock, resolve_transfer
+from .atomic_io import atomic_write_text
+from .resolve_transfer import ResolveTransferError
+
+
+MANIFEST_FORMAT = "mvhub.resolve-transfer.v3"
+MANIFEST_VERSION = 3
+ATTEMPT_FORMAT = "mvhub.resolve-attempt"
+ATTEMPT_VERSION = 1
+SOURCE_PAYLOAD_SCHEMA = 1
+
+STATE_QUEUED = "queued"
+STATE_PREPARING = "preparing"
+STATE_READY = "ready"
+STATE_BLOCKED = "blocked"
+STATE_IMPORTING = "importing"
+STATE_COMPLETE = "complete"
+STATE_FAILED = "failed"
+STATE_INTERRUPTED = "interrupted"
+STATE_RECOVERY_REQUIRED = "recovery_required"
+STATE_CANCELLED = "cancelled"
+
+# 명세 §1.2 표의 상태 집합 그대로. (본문은 "9개"라고 적었지만 표에는 cancelled 를 포함해
+# 10개가 있고 전이표가 cancelled 를 요구하므로 표를 따른다.)
+STATES = frozenset(
+    {
+        STATE_QUEUED,
+        STATE_PREPARING,
+        STATE_READY,
+        STATE_BLOCKED,
+        STATE_IMPORTING,
+        STATE_COMPLETE,
+        STATE_FAILED,
+        STATE_INTERRUPTED,
+        STATE_RECOVERY_REQUIRED,
+        STATE_CANCELLED,
+    }
+)
+# 큐에 살아 있는(사용자에게 진행 중으로 보이는) 상태.
+ACTIVE_STATES = frozenset(
+    {STATE_QUEUED, STATE_PREPARING, STATE_READY, STATE_BLOCKED, STATE_IMPORTING}
+)
+TERMINAL_STATES = frozenset({STATE_COMPLETE, STATE_CANCELLED})
+
+DISPATCH_AUTO = "auto"
+DISPATCH_MANUAL_ONLY = "manual_only"
+
+# 준비 단계 항목 상태 → v2 투영(items[].status).
+PREPARE_QUEUED = "queued"
+PREPARE_DOWNLOADED = "downloaded"
+PREPARE_SKIPPED = "skipped"
+PREPARE_ERROR = "error"
+_PREPARE_TO_V2 = {
+    PREPARE_QUEUED: "pending",
+    PREPARE_DOWNLOADED: "downloaded",
+    PREPARE_SKIPPED: "skipped",
+    PREPARE_ERROR: "error",
+}
+
+# 고아 staging Bin 이름(명세 §3.1). 신규 staging 은 추적 가능한 이름을 쓴다.
+ORPHAN_BIN_RE = re.compile(r"^__MVHUB_REBUILD_[A-Za-z0-9_]+__$")
+# staging Bin 이 남아 있을 수 있는 중간 phase — 여기서 멈춘 attempt 는 recovery_required.
+REBUILD_PENDING_PHASES = frozenset(
+    {
+        "rebuild_staging_created",
+        "rebuild_to_staging",
+        "rebuild_to_final",
+        "rebuild_verified",
+    }
+)
+
+DEFAULT_LEASE_SECONDS = 120
+_SCAN_FILE_LIMIT = max(20, int(os.environ.get("CONTENT_HUB_RESOLVE_QUEUE_SCAN_LIMIT", "300")))
+# 이 허브 프로세스의 실행 식별자 — 재시작하면 바뀌므로 옛 claim 을 구분할 수 있다.
+HUB_INSTANCE_ID = uuid.uuid4().hex
+_PROCESS_NONCE = uuid.uuid4().hex
+
+
+class ResolveQueueError(RuntimeError):
+    """큐 접수·판독을 진행할 수 없는 오류."""
+
+
+# ── 시간·식별자 ────────────────────────────────────────────────────────────────
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _parse_utc(value: str) -> Optional[datetime]:
+    try:
+        parsed = datetime.fromisoformat(str(value or ""))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def new_attempt_id() -> str:
+    return uuid.uuid4().hex
+
+
+# ── manifest 판독 ──────────────────────────────────────────────────────────────
+def is_v3(manifest: Any) -> bool:
+    return isinstance(manifest, dict) and manifest.get("format") == MANIFEST_FORMAT
+
+
+def queue_block(manifest: dict[str, Any]) -> dict[str, Any]:
+    block = manifest.get("queue")
+    if not isinstance(block, dict):
+        block = {}
+        manifest["queue"] = block
+    return block
+
+
+def queue_state(manifest: dict[str, Any]) -> str:
+    return str(queue_block(manifest).get("state") or "")
+
+
+def dispatch_policy(manifest: dict[str, Any]) -> str:
+    return str(queue_block(manifest).get("dispatch_policy") or DISPATCH_AUTO)
+
+
+def manifest_path_of(manifest: dict[str, Any]) -> Path:
+    return Path(str(manifest.get("manifest_path") or ""))
+
+
+def read_manifest(path: Path) -> dict[str, Any]:
+    """v3 manifest 한 건을 읽는다. v2·손상 파일은 예외."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ResolveQueueError("전송 기록을 찾을 수 없습니다") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ResolveQueueError(f"전송 기록을 읽을 수 없습니다: {exc}") from exc
+    if not is_v3(data):
+        raise ResolveQueueError("MV Hub Resolve 큐(v3) 기록이 아닙니다")
+    return data
+
+
+def save_manifest(path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    """revision 을 1 올리고 같은 디렉터리 temp→fsync→replace 로 원자 교체한다(§1.7).
+
+    호출자는 해당 transfer 의 ``.lock`` 을 보유한 상태여야 한다.
+    """
+    block = queue_block(manifest)
+    try:
+        block["revision"] = int(block.get("revision") or 0) + 1
+    except (TypeError, ValueError):
+        block["revision"] = 1
+    refresh_projection(manifest)
+    atomic_write_text(
+        Path(path),
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
+    return manifest
+
+
+# ── 상태 전이 ─────────────────────────────────────────────────────────────────
+def set_state(
+    manifest: dict[str, Any],
+    state: str,
+    *,
+    error: Optional[dict[str, Any]] = None,
+    blocked: Optional[dict[str, Any]] = None,
+    resume_state: Optional[str] = None,
+    policy: Optional[str] = None,
+    clear_claim: bool = False,
+) -> dict[str, Any]:
+    """권위 상태(queue.state)를 바꾸고 v2 투영 필드까지 맞춘다."""
+    if state not in STATES:
+        raise ResolveQueueError(f"알 수 없는 큐 상태입니다: {state}")
+    block = queue_block(manifest)
+    block["state"] = state
+    block["state_changed_at"] = _utc_now()
+    if policy is not None:
+        block["dispatch_policy"] = policy
+    if state == STATE_BLOCKED:
+        block["blocked"] = blocked
+        block["resume_state"] = resume_state or STATE_QUEUED
+    else:
+        block["blocked"] = None
+        block["resume_state"] = resume_state
+    if error is not None:
+        block["last_error"] = error
+    elif state in {STATE_COMPLETE, STATE_READY, STATE_PREPARING}:
+        block["last_error"] = None
+    if clear_claim:
+        block["claim"] = None
+    refresh_projection(manifest)
+    return manifest
+
+
+def refresh_projection(manifest: dict[str, Any]) -> None:
+    """v2 호환 투영(§1.4) — 권위는 queue.state 이고 이건 기존 브리지용 표시값이다."""
+    items = manifest.get("items")
+    if not isinstance(items, list):
+        return
+    downloaded = skipped = errors = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        prepare = item.get("prepare") if isinstance(item.get("prepare"), dict) else {}
+        prepare_state = str(prepare.get("state") or PREPARE_QUEUED)
+        item["status"] = _PREPARE_TO_V2.get(prepare_state, "pending")
+        item["error"] = prepare.get("error")
+        if prepare_state == PREPARE_DOWNLOADED:
+            downloaded += 1
+        elif prepare_state == PREPARE_SKIPPED:
+            skipped += 1
+        elif prepare_state == PREPARE_ERROR:
+            errors += 1
+    manifest["downloaded"] = downloaded
+    manifest["skipped"] = skipped
+    manifest["error_count"] = errors
+    state = queue_state(manifest)
+    prepared = downloaded + skipped
+    if state in {STATE_QUEUED, STATE_PREPARING} or (not prepared and not errors):
+        manifest["status"] = "pending"
+    elif errors and prepared:
+        manifest["status"] = "partial"
+    elif errors:
+        manifest["status"] = "failed"
+    else:
+        manifest["status"] = "complete"
+
+
+# ── claim / lease ─────────────────────────────────────────────────────────────
+def build_claim(
+    manifest: dict[str, Any],
+    *,
+    purpose: str,
+    attempt_id: str,
+    kind: str = "push_worker",
+    lease_seconds: int = DEFAULT_LEASE_SECONDS,
+) -> dict[str, Any]:
+    """§2.3 claim 블록. epoch 는 transfer 별 단조 증가."""
+    block = queue_block(manifest)
+    previous = block.get("claim") if isinstance(block.get("claim"), dict) else {}
+    try:
+        epoch = int(previous.get("epoch") or 0) + 1
+    except (TypeError, ValueError):
+        epoch = 1
+    now = datetime.now(timezone.utc)
+    return {
+        "token": uuid.uuid4().hex + uuid.uuid4().hex[:8],
+        "epoch": epoch,
+        "purpose": purpose,
+        "owner": {
+            "kind": kind,
+            "host_id": resolve_lock.host_id(),
+            "hub_instance_id": HUB_INSTANCE_ID,
+            "process_id": os.getpid(),
+            "process_started_at_filetime": resolve_lock.process_started_at_filetime(),
+            "process_nonce": _PROCESS_NONCE,
+            "executor_pid": 0,
+        },
+        "attempt_id": attempt_id,
+        "acquired_at": now.isoformat(timespec="seconds"),
+        "heartbeat_at": now.isoformat(timespec="seconds"),
+        "lease_expires_at": (
+            now + timedelta(seconds=max(1, lease_seconds))
+        ).isoformat(timespec="seconds"),
+    }
+
+
+def claim_disposition(manifest: dict[str, Any]) -> str:
+    """``free`` | ``alive`` | ``unknown`` — 기존 claim 소유자의 생존 판정(§2.7)."""
+    block = queue_block(manifest)
+    claim = block.get("claim")
+    if not isinstance(claim, dict) or not claim.get("token"):
+        return "free"
+    owner = claim.get("owner") if isinstance(claim.get("owner"), dict) else {}
+    lease = _parse_utc(str(claim.get("lease_expires_at") or ""))
+    expired = lease is None or lease <= datetime.now(timezone.utc)
+    if str(owner.get("host_id") or "") != resolve_lock.host_id():
+        # 다른 PC 소유. lease 가 살아 있으면 건드리지 않고, 만료돼도 자동 steal 금지.
+        return "alive" if not expired else "unknown"
+    if str(owner.get("hub_instance_id") or "") == HUB_INSTANCE_ID:
+        return "alive"
+    liveness = resolve_lock.process_liveness(
+        int(owner.get("process_id") or 0),
+        str(owner.get("process_started_at_filetime") or ""),
+    )
+    if liveness == "alive":
+        return "alive"
+    if liveness == "dead":
+        return "free"
+    return "unknown" if expired else "alive"
+
+
+# ── 경로 ──────────────────────────────────────────────────────────────────────
+def path_identity(value: str | Path) -> str:
+    """UNC·대소문자 정규화된 경로 식별자. 브리지 dedupe 와 같은 규칙을 쓴다."""
+    return resolve_bridge._normal_path(str(value))
+
+
+def transfer_dir(manifest_root: Path) -> Path:
+    return Path(manifest_root) / ".mvhub" / "transfers"
+
+
+def attempt_dir(manifest_root: Path, transfer_id: str) -> Path:
+    return Path(manifest_root) / ".mvhub" / "attempts" / transfer_id
+
+
+def recovery_path(manifest_root: Path, resolve_project_key: str) -> Path:
+    safe_key = re.sub(r"[^A-Za-z0-9_.-]", "_", resolve_project_key or "unknown")[:80]
+    return Path(manifest_root) / ".mvhub" / "recovery" / f"{safe_key}.json"
+
+
+def transfer_lock(manifest: dict[str, Any]) -> resolve_lock.FileLock:
+    return resolve_lock.FileLock(
+        resolve_lock.transfer_lock_path(
+            Path(str(manifest.get("manifest_root") or "")),
+            str(manifest.get("transfer_id") or ""),
+        )
+    )
+
+
+# ── 접수 ──────────────────────────────────────────────────────────────────────
+def _asset_of(gen: dict[str, Any]) -> tuple[Optional[dict[str, Any]], int]:
+    assets = gen.get("assets") or []
+    for ordinal, asset in enumerate(assets):
+        if isinstance(asset, dict):
+            return asset, ordinal
+    return None, 0
+
+
+def _build_item(
+    index: int, gen: dict[str, Any], source_root: Path
+) -> tuple[dict[str, Any], Optional[Path]]:
+    gen_id = str(gen.get("id") or "")
+    job_id = str(gen.get("job_id") or "")
+    folder_path = str(gen.get("folder_path") or "")
+    asset, ordinal = _asset_of(gen)
+    media_type = str((asset or {}).get("type") or "")
+    # 파일명 확장자만 원격 URL 힌트에서 얻는다. URL·토큰 자체는 저장하지 않는다(§1.6).
+    source_hint = str((asset or {}).get("source_url") or (asset or {}).get("file_path") or "")
+    filename = (
+        resolve_transfer._transfer_filename(folder_path, gen_id, source_hint, media_type)
+        if gen_id and folder_path and asset
+        else ""
+    )
+    cached_ref = str((asset or {}).get("file_path") or "")
+    item: dict[str, Any] = {
+        "item_id": f"item-{index:04d}",
+        "generation_id": gen_id,
+        "folder_path": folder_path,
+        "filename": filename,
+        "media_type": media_type,
+        "local_path": "",
+        "status": "pending",
+        "error": None,
+        "source_ref": {
+            "requested_generation_id": gen_id,
+            "local_generation_id": gen_id,
+            "job_id": job_id,
+            "asset_id": str((asset or {}).get("id") or ""),
+            "asset_ordinal": ordinal,
+            "media_type": media_type,
+            "cached_media_ref": cached_ref if cached_ref.startswith("/media/") else None,
+        },
+        "destination": {"relative_folder": folder_path, "filename": filename},
+        "prepare": {
+            "state": PREPARE_QUEUED,
+            "size": None,
+            "sha256": None,
+            "error_code": None,
+            "error": None,
+        },
+        "import": {"state": "pending", "media_pool_path": "", "error_code": None},
+    }
+
+    reason = code = None
+    if gen.get("status") != "done":
+        reason, code = "완료된 생성물만 전송할 수 있습니다", "source_changed"
+    elif not gen_id:
+        reason, code = "생성물 ID가 없습니다", "source_missing"
+    elif not folder_path:
+        reason, code = "폴더 경로가 없습니다", "destination_changed"
+    elif asset is None:
+        reason, code = "원본 파일이 없습니다", "source_missing"
+    elif media_type not in {"video", "audio", "image"}:
+        reason = f"Resolve 전송을 지원하지 않는 형식입니다: {media_type or 'unknown'}"
+        code = "source_changed"
+    else:
+        dest = project_folders.safe_dest(source_root, folder_path, filename)
+        if dest is None:
+            reason, code = "경로 안전성 위반", "destination_changed"
+        else:
+            item["local_path"] = str(dest)
+            return item, dest
+    item["prepare"]["state"] = PREPARE_ERROR
+    item["prepare"]["error_code"] = code
+    item["prepare"]["error"] = reason
+    return item, None
+
+
+def build_manifest(
+    project_id: str,
+    generations: list[dict[str, Any]],
+    *,
+    source_root: Path,
+    manifest_root: Path,
+    transfer_id: str,
+    resolve_target: Optional[dict[str, str]],
+    account_scope: dict[str, Any],
+) -> dict[str, Any]:
+    path = resolve_transfer._manifest_path(manifest_root, transfer_id)
+    now = _utc_now()
+    items: list[dict[str, Any]] = []
+    preparable = 0
+    for index, gen in enumerate(generations, 1):
+        item, dest = _build_item(index, gen, source_root)
+        items.append(item)
+        if dest is not None:
+            preparable += 1
+    if not preparable:
+        first = next(
+            (item["prepare"]["error"] for item in items if item["prepare"].get("error")),
+            "전송할 수 있는 생성물이 없습니다",
+        )
+        raise ResolveTransferError(str(first))
+
+    manifest: dict[str, Any] = {
+        "format": MANIFEST_FORMAT,
+        "version": MANIFEST_VERSION,
+        "transfer_id": transfer_id,
+        "project_id": project_id,
+        "project_name": str(generations[0].get("project_name") or ""),
+        "source_root": str(source_root),
+        "manifest_root": str(manifest_root),
+        "manifest_path": str(path),
+        "folder_catalog_path": str(resolve_transfer._folder_catalog_path(manifest_root)),
+        "folder_paths": [],
+        "created_at": now,
+        "completed_at": None,
+        "status": "pending",
+        "total": len(items),
+        "downloaded": 0,
+        "skipped": 0,
+        "error_count": 0,
+        "resolve_target": {
+            "project_id": str((resolve_target or {}).get("project_id") or ""),
+            "project_name": str((resolve_target or {}).get("project_name") or ""),
+        },
+        "queue": {
+            "state": STATE_QUEUED,
+            "revision": 0,
+            "state_changed_at": now,
+            "dispatch_policy": DISPATCH_AUTO,
+            "resume_state": None,
+            "claim": None,
+            "blocked": None,
+            "last_error": None,
+            "last_attempt_id": None,
+            "cancel": {"requested_at": None, "requested_by": None, "force": False},
+        },
+        "source_payload": {
+            "schema": SOURCE_PAYLOAD_SCHEMA,
+            "account_scope": dict(account_scope),
+            "destination_contract": {
+                "root_kind": "project_render",
+                "project_id": project_id,
+                "accepted_root": str(source_root),
+                "root_identity": path_identity(source_root),
+                "path_policy": "safe_join_v1",
+                "filename_policy": "generation_sha256_v1",
+                "collision_policy": "content_equal_skip_else_fail",
+            },
+            "reconstruction": {
+                "generation_lookup_order": [
+                    "local_generation_id",
+                    "local_job_id",
+                    "scoped_remote_generation_id",
+                ],
+                "asset_policy": "primary_asset_v1",
+                "cdn_credentials": "never_persist",
+            },
+        },
+        "resolve_import": {"status": "pending"},
+        "items": items,
+    }
+    refresh_projection(manifest)
+    return manifest
+
+
+def build_account_scope(
+    *, account_key: str, account_email: str, creator_uid: str, server_origin: str
+) -> dict[str, Any]:
+    """§1.6 계정 재개 정보. 쿼리·fragment·userinfo 를 제거한 origin 만 남긴다."""
+    return {
+        "kind": "shared_account" if server_origin else "local_account",
+        "account_key": account_key or "",
+        "account_email": account_email or "",
+        "creator_uid_at_accept": creator_uid or "",
+        "server_origin": _origin_only(server_origin),
+    }
+
+
+def _origin_only(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(raw)
+    if not parts.scheme or not parts.netloc:
+        return ""
+    host = parts.netloc.rsplit("@", 1)[-1]  # userinfo 제거
+    return f"{parts.scheme}://{host}"
+
+
+def accept_sync(
+    project_id: str,
+    generations: list[dict[str, Any]],
+    *,
+    resolve_target: Optional[dict[str, str]] = None,
+    account_scope: Optional[dict[str, Any]] = None,
+    transfer_id: Optional[str] = None,
+) -> tuple[dict[str, Any], int]:
+    """접수 전용 — 파일 복사·Resolve 조작 없이 v3 manifest 만 원자 기록한다."""
+    if not project_id:
+        raise ResolveTransferError("프로젝트가 지정되지 않았습니다")
+    if not generations:
+        raise ResolveTransferError("전송할 생성물이 없습니다")
+    if any((gen.get("project_id") or "") != project_id for gen in generations):
+        raise ResolveTransferError("한 번에 하나의 프로젝트만 전송할 수 있습니다")
+
+    source_root, manifest_root = resolve_transfer.resolve_transfer_roots(project_id)
+    transfer_id = transfer_id or resolve_transfer._new_transfer_id()
+    manifest = build_manifest(
+        project_id,
+        generations,
+        source_root=source_root,
+        manifest_root=manifest_root,
+        transfer_id=transfer_id,
+        resolve_target=resolve_target,
+        account_scope=account_scope or {},
+    )
+    ahead = len(_scan_dir(manifest_root, states=ACTIVE_STATES))
+    path = manifest_path_of(manifest)
+    lock = resolve_lock.FileLock(
+        resolve_lock.transfer_lock_path(manifest_root, transfer_id)
+    )
+    try:
+        acquired = lock.try_acquire()
+    except resolve_lock.ResolveLockUnsupported as exc:
+        # 잠금을 신뢰할 수 없는 저장소면 큐를 안전하게 운영할 수 없다. best-effort 로
+        # 받아 두면 이중 드레인이 나므로 접수 자체를 거절하고 이유를 알린다.
+        raise ResolveTransferError(
+            f"이 저장소에서는 Resolve 전송 대기열을 쓸 수 없습니다: {exc}"
+        ) from exc
+    if not acquired:
+        raise ResolveTransferError("같은 전송 ID가 이미 처리 중입니다")
+    try:
+        if path.exists():
+            raise ResolveTransferError("같은 전송 ID의 기록이 이미 있습니다")
+        # 교체 성공 뒤에만 성공 응답을 만든다(§1.7 9단계).
+        save_manifest(path, manifest)
+    finally:
+        lock.release()
+    return manifest, ahead
+
+
+async def accept_transfer(
+    project_id: str,
+    generations: list[dict[str, Any]],
+    *,
+    resolve_target: Optional[dict[str, str]] = None,
+    account_scope: Optional[dict[str, Any]] = None,
+    transfer_id: Optional[str] = None,
+) -> tuple[dict[str, Any], int]:
+    return await run_non_abandon(
+        asyncio.to_thread(
+            accept_sync,
+            project_id,
+            generations,
+            resolve_target=resolve_target,
+            account_scope=account_scope,
+            transfer_id=transfer_id,
+        )
+    )
+
+
+# ── 스캔 ──────────────────────────────────────────────────────────────────────
+def _scan_dir(
+    manifest_root: Path, *, states: Optional[Iterable[str]] = None
+) -> list[dict[str, Any]]:
+    """한 프로젝트의 v3 manifest 를 읽는다. v2·손상 파일은 조용히 건너뛴다."""
+    wanted = frozenset(states) if states is not None else None
+    directory = transfer_dir(manifest_root)
+    try:
+        entries = sorted(
+            (path for path in directory.glob("*.json")),
+            key=lambda path: path.name,
+        )[:_SCAN_FILE_LIMIT]
+    except OSError:
+        return []
+    found: list[dict[str, Any]] = []
+    for path in entries:
+        try:
+            if not stat.S_ISREG(path.stat().st_mode):
+                continue
+            manifest = read_manifest(path)
+        except (OSError, ResolveQueueError):
+            continue
+        if wanted is not None and queue_state(manifest) not in wanted:
+            continue
+        found.append(manifest)
+    return found
+
+
+def _project_roots(project_id: str) -> Optional[tuple[Path, Path]]:
+    try:
+        return resolve_transfer.resolve_transfer_roots(project_id)
+    except (ResolveTransferError, OSError):
+        return None
+
+
+def scan_projects(
+    project_ids: list[str], *, states: Optional[Iterable[str]] = None
+) -> list[dict[str, Any]]:
+    """등록된 프로젝트들의 v3 큐를 FIFO(created_at, transfer_id) 로 모은다."""
+    found: list[dict[str, Any]] = []
+    for project_id in dict.fromkeys(pid for pid in project_ids if pid):
+        roots = _project_roots(project_id)
+        if roots is None:
+            continue
+        for manifest in _scan_dir(roots[1], states=states):
+            if str(manifest.get("project_id") or "") != project_id:
+                continue
+            found.append(manifest)
+    found.sort(
+        key=lambda item: (
+            str(item.get("created_at") or ""),
+            str(item.get("transfer_id") or ""),
+        )
+    )
+    return found
+
+
+def queue_snapshot(project_ids: list[str], *, limit: int = 50) -> list[dict[str, Any]]:
+    """GET /api/resolve/queue 응답용 요약. ahead 는 같은 FIFO 안의 앞선 활성 건수."""
+    manifests = scan_projects(project_ids)
+    active_seen = 0
+    rows: list[dict[str, Any]] = []
+    for manifest in manifests:
+        state = queue_state(manifest)
+        block = queue_block(manifest)
+        last_error = block.get("last_error") if isinstance(block.get("last_error"), dict) else None
+        rows.append(
+            {
+                "transfer_id": str(manifest.get("transfer_id") or ""),
+                "project_id": str(manifest.get("project_id") or ""),
+                "project_name": str(manifest.get("project_name") or ""),
+                "resolve_target": manifest.get("resolve_target") or {},
+                "state": state,
+                "dispatch_policy": dispatch_policy(manifest),
+                "created_at": str(manifest.get("created_at") or ""),
+                "state_changed_at": str(block.get("state_changed_at") or ""),
+                "revision": block.get("revision") or 0,
+                "total": int(manifest.get("total") or 0),
+                "downloaded": int(manifest.get("downloaded") or 0),
+                "skipped": int(manifest.get("skipped") or 0),
+                "error_count": int(manifest.get("error_count") or 0),
+                "ahead": active_seen if state in ACTIVE_STATES else 0,
+                "blocked": block.get("blocked"),
+                "recovery": manifest.get("recovery"),
+                "error_code": (last_error or {}).get("code"),
+                "error": (last_error or {}).get("message"),
+            }
+        )
+        if state in ACTIVE_STATES:
+            active_seen += 1
+    return rows[: max(1, limit)]
+
+
+# ── attempt journal (§부속 A) ─────────────────────────────────────────────────
+def attempt_path(manifest: dict[str, Any], attempt_id: str) -> Path:
+    return attempt_dir(
+        Path(str(manifest.get("manifest_root") or "")),
+        str(manifest.get("transfer_id") or ""),
+    ) / f"{attempt_id}.json"
+
+
+def write_attempt(
+    manifest: dict[str, Any],
+    attempt: dict[str, Any],
+) -> Path:
+    path = attempt_path(manifest, str(attempt.get("attempt_id") or ""))
+    attempt["updated_at"] = _utc_now()
+    atomic_write_text(
+        path, json.dumps(attempt, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    )
+    return path
+
+
+def new_attempt(
+    manifest: dict[str, Any], *, attempt_id: str, claim: dict[str, Any], executor: str
+) -> dict[str, Any]:
+    target = manifest.get("resolve_target") or {}
+    now = _utc_now()
+    return {
+        "format": ATTEMPT_FORMAT,
+        "version": ATTEMPT_VERSION,
+        "transfer_id": str(manifest.get("transfer_id") or ""),
+        "attempt_id": attempt_id,
+        "claim_token": str(claim.get("token") or ""),
+        "claim_epoch": claim.get("epoch") or 0,
+        "executor": executor,
+        "pid": os.getpid(),
+        "process_started_at_filetime": resolve_lock.process_started_at_filetime(),
+        "started_at": now,
+        "updated_at": now,
+        "phase": "child_started",
+        "side_effects_started": False,
+        "resolve_project": {
+            "expected_id": str(target.get("project_id") or ""),
+            "current_id": "",
+            "current_name": "",
+        },
+        "staging_bin": "",
+        "drp_path": "",
+        "last_batch": None,
+        "result": None,
+        "error_code": None,
+        "error": None,
+    }
+
+
+def latest_attempt(manifest: dict[str, Any]) -> Optional[dict[str, Any]]:
+    directory = attempt_dir(
+        Path(str(manifest.get("manifest_root") or "")),
+        str(manifest.get("transfer_id") or ""),
+    )
+    try:
+        paths = sorted(directory.glob("*.json"), key=lambda path: path.stat().st_mtime)
+    except OSError:
+        return None
+    for path in reversed(paths):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict) and data.get("format") == ATTEMPT_FORMAT:
+            return data
+    return None
+
+
+def is_orphan_rebuild_bin(name: str) -> bool:
+    return bool(ORPHAN_BIN_RE.fullmatch(str(name or "")))
+
+
+def orphan_staging_bin(attempt: Optional[dict[str, Any]]) -> str:
+    """중단된 attempt 가 남겼을 수 있는 staging Bin 이름(없으면 빈 문자열)."""
+    if not isinstance(attempt, dict):
+        return ""
+    name = str(attempt.get("staging_bin") or "")
+    if not name or not is_orphan_rebuild_bin(name):
+        return ""
+    if str(attempt.get("phase") or "") in REBUILD_PENDING_PHASES:
+        return name
+    return ""
+
+
+def write_recovery_incident(manifest: dict[str, Any], payload: dict[str, Any]) -> Path:
+    target = manifest.get("resolve_target") or {}
+    key = str(target.get("project_id") or target.get("project_name") or "unknown")
+    path = recovery_path(Path(str(manifest.get("manifest_root") or "")), key)
+    body = {
+        "format": "mvhub.resolve-recovery",
+        "version": 1,
+        "resolve_project_key": key,
+        "created_at": _utc_now(),
+        **payload,
+    }
+    atomic_write_text(
+        path, json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    )
+    return path
+
+
+# ── 부팅 복구 (§1.3 상태표 · §2.7) ────────────────────────────────────────────
+def _recover_one(manifest: dict[str, Any]) -> Optional[str]:
+    """한 건을 복구 상태로 전이한다. 반환값은 새 상태(변경 없으면 None)."""
+    state = queue_state(manifest)
+    if state not in {STATE_QUEUED, STATE_PREPARING, STATE_READY, STATE_IMPORTING}:
+        return None
+    disposition = claim_disposition(manifest)
+    if disposition == "alive":
+        return None  # 살아 있는 소유자의 작업은 건드리지 않는다.
+
+    path = manifest_path_of(manifest)
+    lock = transfer_lock(manifest)
+    try:
+        if not lock.try_acquire():
+            return None  # OS 락 보유자가 있으면 실행 중이다.
+    except resolve_lock.ResolveLockUnsupported:
+        return None
+    try:
+        current = read_manifest(path)
+        state = queue_state(current)
+        if state not in {STATE_QUEUED, STATE_PREPARING, STATE_READY, STATE_IMPORTING}:
+            return None
+        if disposition == "unknown":
+            # 소유자 사망을 확인할 수 없으면 자동 steal 금지 — 격리한다.
+            set_state(
+                current,
+                STATE_RECOVERY_REQUIRED,
+                error={
+                    "code": "claim_lost",
+                    "message": "이전 가져오기 프로세스가 끝났는지 확인할 수 없습니다",
+                },
+                policy=DISPATCH_MANUAL_ONLY,
+            )
+            save_manifest(path, current)
+            return STATE_RECOVERY_REQUIRED
+
+        if state in {STATE_QUEUED, STATE_PREPARING}:
+            # 준비는 목적지 파일 내용 비교로 멱등하므로 안전하게 재큐잉한다.
+            set_state(current, STATE_QUEUED, clear_claim=True)
+            save_manifest(path, current)
+            return STATE_QUEUED
+        if state == STATE_READY:
+            set_state(current, STATE_READY, clear_claim=True)
+            save_manifest(path, current)
+            return STATE_READY
+
+        # importing 중단분: 결과를 확정하지 못했으므로 자동 재실행하지 않는다.
+        attempt = latest_attempt(current)
+        staging = orphan_staging_bin(attempt)
+        if staging:
+            current["recovery"] = {
+                "reason": "orphan_rebuild_bin",
+                "staging_bin": staging,
+                "drp_path": str((attempt or {}).get("drp_path") or ""),
+                "verified_at": _utc_now(),
+            }
+            write_recovery_incident(
+                current,
+                {
+                    "reason": "orphan_rebuild_bin",
+                    "transfer_id": str(current.get("transfer_id") or ""),
+                    "staging_bin": staging,
+                    "drp_path": str((attempt or {}).get("drp_path") or ""),
+                },
+            )
+            set_state(
+                current,
+                STATE_RECOVERY_REQUIRED,
+                error={
+                    "code": "orphan_rebuild_bin",
+                    "message": (
+                        "Resolve Bin 재정렬이 끝나기 전에 중단된 흔적을 발견했습니다. "
+                        f"임시 Bin {staging} 을(를) 확인한 뒤 복구 방법을 선택하세요"
+                    ),
+                },
+                policy=DISPATCH_MANUAL_ONLY,
+                clear_claim=True,
+            )
+            save_manifest(path, current)
+            return STATE_RECOVERY_REQUIRED
+
+        set_state(
+            current,
+            STATE_INTERRUPTED,
+            error={
+                "code": "child_crashed",
+                "message": "가져오기 도중 결과를 확정하지 못했습니다",
+            },
+            policy=DISPATCH_MANUAL_ONLY,
+            clear_claim=True,
+        )
+        save_manifest(path, current)
+        return STATE_INTERRUPTED
+    except ResolveQueueError:
+        return None
+    finally:
+        lock.release()
+
+
+def recover_boot(project_ids: list[str]) -> dict[str, int]:
+    """부팅 시 1회 — 상태별 처리표(§1.3·§2.7)를 적용한다."""
+    counts: dict[str, int] = {}
+    for manifest in scan_projects(project_ids):
+        try:
+            state = _recover_one(manifest)
+        except OSError:
+            state = None
+        if state:
+            counts[state] = counts.get(state, 0) + 1
+    return counts
+
+
+# ── 취소되지 않는 실행 단위 ────────────────────────────────────────────────────
+async def run_non_abandon(coro):
+    """시작한 코루틴 단위를 끝까지 보장한다(취소는 끝난 뒤 전파).
+
+    '가져오기 실행 + manifest 저장'처럼 결과 기록까지가 한 단위인 구간에 쓴다.
+    단순 non-abandon to_thread 로는 실행만 살고 저장이 유기될 수 있다.
+    """
+    worker = asyncio.create_task(coro)
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        while not worker.done():
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.shield(worker)
+        if not worker.cancelled():
+            with contextlib.suppress(Exception):
+                worker.result()
+        raise

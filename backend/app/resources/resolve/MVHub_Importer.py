@@ -20,8 +20,14 @@ except ImportError:  # pragma: no cover - Resolve의 구형 Python 2 폴백
     from urllib2 import HTTPError, Request, URLError, urlopen
 
 
-PLUGIN_VERSION = "0.1.1"
+PLUGIN_VERSION = "0.2.0"
 WINDOW_ID = "com.millionvolt.mvhub.importer-result"
+# 허브에 "나는 v3 규약을 안다"고 알린다. 허브는 이 헤더가 없는 구버전 Importer 에는
+# v2 만 돌려준다. v3 전송은 claim 을 받은 소유자만 실행할 수 있다(claim API 는 다음 단계).
+CAPABILITIES_HEADER = "X-MVHub-Resolve-Capabilities"
+CAPABILITIES = "manifest-v3,claim-v1,journal-v1"
+# 이 스크립트가 claim 없이 처리해도 되는 형식(v2). v3 는 절대 건드리지 않는다.
+LEGACY_MANIFEST_FORMAT = "mvhub.resolve-transfer"
 HUB_URLS = tuple(
     value.strip().rstrip("/")
     for value in os.environ.get(
@@ -61,7 +67,7 @@ def _resolve_context():
 
 def _http_json(method, path, payload=None, bases=None):
     body = None
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", CAPABILITIES_HEADER: CAPABILITIES}
     if payload is not None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json; charset=utf-8"
@@ -226,6 +232,22 @@ def _existing_paths(folder):
     return result
 
 
+def _requires_claim(manifest):
+    """claim 규약이 필요한 v3 전송인가.
+
+    format 이 비었거나 v2 면 종전대로 처리한다. v3(또는 그 이상)는 허브의 push 워커가
+    .lock 으로 소유권을 잡고 실행하므로, 여기서 손대면 이중 드레인이 된다.
+    """
+    fmt = str(manifest.get("format") or "")
+    try:
+        version = int(manifest.get("version") or 0)
+    except (TypeError, ValueError):
+        version = 0
+    if fmt and fmt != LEGACY_MANIFEST_FORMAT:
+        return True
+    return version >= 3
+
+
 def _ready_items(manifest):
     result = []
     for item in manifest.get("items") or []:
@@ -275,6 +297,13 @@ def import_pending(resolve_obj):
     total_errors = 0
     warnings = []
     for manifest in reversed(manifests):
+        if _requires_claim(manifest):
+            warnings.append(
+                "MV Hub 자동 가져오기가 담당하는 전송은 건너뛰었습니다: {0}".format(
+                    manifest.get("transfer_id") or "확인 불가"
+                )
+            )
+            continue
         matches, mismatch = _matches_expected_project(manifest, project)
         if not matches:
             warnings.append("다른 프로젝트 전송은 보류했습니다: {0}".format(mismatch))
