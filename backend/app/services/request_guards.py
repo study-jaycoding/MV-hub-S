@@ -4,6 +4,7 @@ import ipaddress
 import os
 import socket
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 
@@ -37,6 +38,51 @@ def is_loopback_request(request: Request) -> bool:
 
 def require_loopback_request(request: Request, detail: str) -> None:
     if not is_loopback_request(request):
+        raise HTTPException(status_code=403, detail=detail)
+
+
+def request_host_header(request: Request) -> str:
+    """요청의 Host 헤더 원문(없으면 빈 문자열). scope 를 직접 읽어 client_host 와 같은 방식."""
+    for name, value in request.scope.get("headers") or ():
+        if name.lower() == b"host":
+            return value.decode("latin-1")
+    return ""
+
+
+def is_loopback_host_header(raw: str) -> bool:
+    """Host 헤더가 이 PC 자신을 가리키는 이름(localhost/127.0.0.1/[::1], 포트 무관)인가.
+
+    빈 값(=Host 헤더 없음)은 통과시킨다. HTTP/1.1 브라우저는 Host 를 반드시 붙이므로,
+    헤더가 없는 요청은 브라우저가 아니고 이 검사가 막으려는 공격 경로도 아니다.
+    """
+    host = raw.strip()
+    if not host:
+        return True
+    if "@" in host or "/" in host:
+        return False  # userinfo·경로 섞인 Host 는 파싱이 모호해진다 — 정상 Host 엔 없다
+    try:
+        parts = urlsplit(f"//{host}")
+        parts.port  # 포트 형식·범위 불량이면 ValueError
+        hostname = parts.hostname or ""
+    except ValueError:
+        return False
+    if not hostname:
+        return False
+    try:
+        return ipaddress.ip_address(_normalized_ip(hostname)).is_loopback
+    except ValueError:  # localhost 외의 도메인 이름 — 해석하지 않고 거부
+        return False
+
+
+def require_loopback_browser_request(request: Request, detail: str) -> None:
+    """loopback 접속 + Host 헤더도 loopback 이름 — DNS 리바인딩 방어.
+
+    ``require_loopback_request`` 만으로는 부족하다: 공격자 페이지의 도메인이 127.0.0.1 로
+    재해석(rebinding)되면 브라우저가 이 허브로 직접 접속하므로 클라이언트 IP 는 loopback 이
+    된다. 그때 Host 헤더에는 공격자 도메인이 남으므로, Host 까지 검사해야 그 우회를 막는다.
+    """
+    require_loopback_request(request, detail)
+    if not is_loopback_host_header(request_host_header(request)):
         raise HTTPException(status_code=403, detail=detail)
 
 

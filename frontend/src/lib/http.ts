@@ -74,6 +74,18 @@ export function isRouteMissing(error: unknown): boolean {
   );
 }
 
+/**
+ * 요청이 '상대 서버에 못 닿아서' 실패했나 — 자격증명·권한 문제와 구분한다.
+ *
+ * 로컬 허브는 공유 서버 연결 실패를 502로 올린다(_proxy.raw_request). 502/504거나
+ * 아예 HTTP 응답조차 못 받은 경우(fetch 자체 실패)는 주소가 틀렸을 수 있으므로,
+ * 로그인 화면이 '서버 주소 변경' 패널을 자동으로 펼치는 신호로 쓴다.
+ */
+export function isUpstreamUnreachable(error: unknown): boolean {
+  if (error instanceof HttpError) return error.status === 502 || error.status === 504;
+  return true;
+}
+
 export function shouldInvalidateAuth(res: Response, url: string): boolean {
   if (res.status !== 401 || url.includes("/api/auth/")) return false;
   // 새 서버·로컬 프록시는 요청별 401과 세션 만료를 구분한다. 헤더가 없는 구버전은 기존처럼

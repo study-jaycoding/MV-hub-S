@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import urllib.error
+import urllib.request
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -26,8 +28,8 @@ from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ._telemetry import touch_generation_telemetry
 from ..deps import actor_id, require_edit_generation
 from ..repo import identity
-from ..services import agent_signals
-from ..services.request_guards import require_loopback_request
+from ..services import agent_signals, net_guard
+from ..services.request_guards import require_loopback_browser_request
 from ..services.event_journal import journal_audit_event
 from ..services.share_state_reconciler import kick_share_state_reconciler
 
@@ -78,6 +80,8 @@ from ..services.shared_connection import (  # noqa: E402
     K_ELEV_TOKEN as _K_ELEV_TOKEN,
     K_TOKEN as _K_TOKEN,
     K_URL as _K_URL,
+    K_URL_HISTORY as _K_URL_HISTORY,
+    URL_HISTORY_MAX as _URL_HISTORY_MAX,
     base_url as _effective_url,
 )
 
@@ -96,6 +100,35 @@ def _clear_elevation() -> None:
         repo.set_setting(k, None)
 
 
+def _url_history() -> list[str]:
+    """이 PC 가 예전에 쓰던 공유 서버 주소(최신순, 최대 _URL_HISTORY_MAX).
+    로그인 화면의 '최근 주소' 드롭다운 전용 — 주소 문자열만 들어 있다(토큰·이메일 없음)."""
+    raw = repo.get_setting(_K_URL_HISTORY)
+    try:
+        values = json.loads(raw) if raw else []
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(values, list):
+        return []
+    out: list[str] = []
+    for value in values:
+        if isinstance(value, str) and value.strip() and value not in out:
+            out.append(value)
+    return out[:_URL_HISTORY_MAX]
+
+
+def _push_url_history(previous: Optional[str], new_url: str) -> None:
+    """새 주소로 갈아타기 직전의 주소를 이력 맨 앞에 남긴다(중복 제거·상한 유지).
+    되돌아갈 후보가 목적이므로 주소가 실제로 바뀔 때만 기록한다."""
+    prev = (previous or "").strip().rstrip("/")
+    if not prev or prev == new_url:
+        return
+    history = [prev] + [u for u in _url_history() if u != prev]
+    repo.set_setting(
+        _K_URL_HISTORY, json.dumps(history[:_URL_HISTORY_MAX], ensure_ascii=False)
+    )
+
+
 def _save_shared_session(
     *,
     url: str,
@@ -110,6 +143,12 @@ def _save_shared_session(
     필수 설정 중 하나라도 실패하면 예외를 그대로 전파해 활성 포인터 공개를 막는다.
     """
     name = account.get("name") or email
+    # 주소 이력 — 갈아타기 '전' 주소를 남겨, 나중에 로그인 화면에서 되돌릴 수 있게 한다.
+    # 필수 설정이 아니므로 실패해도 로그인을 막지 않는다(아래 필수 set_setting 들과 대조).
+    try:
+        _push_url_history(repo.get_setting(_K_URL), url)
+    except Exception:  # noqa: BLE001 — 편의 기능 실패가 로그인 자체를 깨지 않게
+        pass
     repo.set_setting(_K_URL, url)
     repo.set_setting(_K_EMAIL, email)
     repo.set_setting(_K_TOKEN, token)
@@ -274,6 +313,9 @@ def _shared_status() -> dict[str, Any]:
     return {
         "configured": True,
         "url": _effective_url(),
+        # 로그인 화면의 '서버 주소 변경' 패널이 되돌릴 후보로 보여준다(주소만 — R7 0-A 로
+        # 이 응답 자체가 loopback 전용이라 밖으로 나가지 않는다).
+        "url_history": _url_history(),
         "email": repo.get_setting(_K_EMAIL),
         "name": repo.get_setting(_K_NAME),
         "roles": _roles(),
@@ -286,11 +328,12 @@ def _shared_status() -> dict[str, Any]:
 
 
 def _require_local_shared_connection(request: Request) -> None:
-    """공유 서버 '연결 설정'(상태·로그인·토큰·elevation·주소)은 이 PC 브라우저 전용
+    """공유 서버 '연결 설정'(상태·로그인·토큰·elevation·주소·probe)은 이 PC 브라우저 전용
     (R7 0-A, 코덱스 P1) — 원격 계정이 서버 공용 설정·토큰을 읽거나 바꾸는 간섭과
     login body.url SSRF 를 차단한다. 발행 '데이터' 경로(/share/publish-bundle·
-    /publish-to-shared)는 대상이 아니다. ★호환성: LAN 직결·역프록시에선 이 7개가 403."""
-    require_loopback_request(
+    /publish-to-shared)는 대상이 아니다. ★호환성: LAN 직결·역프록시에선 이 8개가 403.
+    Host 헤더까지 loopback 이어야 통과한다(DNS 리바인딩으로 loopback 판정을 얻는 우회 차단)."""
+    require_loopback_browser_request(
         request, "공유 서버 연결 설정은 해당 PC 브라우저에서만 사용할 수 있습니다"
     )
 
@@ -368,6 +411,7 @@ def shared_server_login(body: SharedLoginIn, request: Request):
 
 
 class SharedRegisterIn(BaseModel):
+    url: Optional[str] = None  # 로그인과 동일한 draft — 비우면 기본/저장 주소 사용
     email: str
     password: str
     name: Optional[str] = None
@@ -377,9 +421,17 @@ class SharedRegisterIn(BaseModel):
 def shared_server_register(body: SharedRegisterIn, request: Request):
     """공유 서버에 새 팀 계정 가입 — 작업자가 로컬 허브 로그인창에서 직접. 서버 규칙: 첫 계정은
     자동 admin 승인(토큰 발급) → 즉시 사용, 그 외는 승인대기(pending) → 관리자 승인 후 로그인.
-    토큰이 오면(=첫 계정) 이 PC 로컬에 저장해 바로 로그인 상태가 된다."""
+    토큰이 오면(=첫 계정) 이 PC 로컬에 저장해 바로 로그인 상태가 된다.
+
+    주소는 로그인과 같은 draft 규칙이다 — body.url 을 정규화해 이번 요청에만 쓰고, 저장은
+    세션이 실제로 생길 때(_save_shared_session)만 일어난다. 서버가 이사한 뒤 합류하는 작업자도
+    로그인 화면에서 새 주소로 가입할 수 있어야 하기 때문이다(가입 실패·승인대기는 미저장)."""
     _require_local_shared_connection(request)
-    url = _validated_effective_url()
+    url = (
+        _normalize_shared_url(body.url)
+        if (body.url or "").strip()
+        else _validated_effective_url()
+    )
     status, resp = _http_json(
         "POST", f"{url}/api/auth/register",
         body={"email": body.email, "password": body.password, "name": body.name},
@@ -489,6 +541,75 @@ def set_shared_url(body: SetUrlIn, request: Request):
     url = _normalize_shared_url(body.url)
     repo.set_setting(_K_URL, url)
     return _shared_status()
+
+
+# 연결 테스트(probe) — 서버가 이사·IP 변경으로 주소가 틀리면 로그인이 실패하고 화면 전체가
+# 로그인창에 갇힌다(주소를 바꿀 관리자 UI 는 로그인해야 열린다) → UI 로 복구 불가. 그 탈출구의
+# 1단계로 '주소만' 확인한다. 절대 저장하지 않는다(저장은 로그인 성공 시 _save_shared_session).
+_PROBE_TIMEOUT_SECONDS = 5
+_PROBE_MAX_BYTES = 64 * 1024
+
+
+class ProbeUrlIn(BaseModel):
+    url: str
+
+
+def _probe_result(
+    ok: bool, reachable: bool, server_version: Optional[str], reason: Optional[str]
+) -> dict[str, Any]:
+    return {"ok": ok, "reachable": reachable, "server_version": server_version, "reason": reason}
+
+
+def _probe_shared_health(url: str) -> dict[str, Any]:
+    """{url}/api/health 를 **무토큰**으로 한 번 조회해 MV Hub 서버인지 판정한다.
+
+    임의의 주소를 받는 경로라 방어를 좁게 건다: 토큰 미첨부(오타·남의 주소로 세션이 새지
+    않음)·리다이렉트 금지(3xx 로 다른 곳에 재요청 금지)·JSON 전용·64KB 상한·5초 타임아웃
+    (거대 응답이나 응답하지 않는 호스트가 허브 스레드를 붙잡지 못하게).
+    반환: {ok, reachable, server_version, reason}.
+    """
+    req = urllib.request.Request(f"{url}/api/health", method="GET")
+    req.add_header("Accept", "application/json")
+    try:
+        # 리다이렉트 차단 opener 는 net_guard 단일 출처를 재사용한다. 단 여기서는
+        # assert_public_http_url 을 쓰지 않는다 — 팀 공유 서버는 사설 IP(LAN)가 정상이다.
+        with net_guard.guarded_opener().open(req, timeout=_PROBE_TIMEOUT_SECONDS) as resp:
+            status = resp.status
+            content_type = (resp.headers.get_content_type() or "").lower()
+            raw = resp.read(_PROBE_MAX_BYTES + 1)
+    except net_guard.BlockedURLError:
+        return _probe_result(False, True, None, "다른 주소로 리다이렉트됩니다(공유 서버 주소가 아닙니다)")
+    except urllib.error.HTTPError as exc:
+        return _probe_result(False, True, None, f"서버가 응답했지만 상태가 {exc.code} 입니다")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return _probe_result(False, False, None, f"연결할 수 없습니다({exc})")
+
+    if status != 200:
+        return _probe_result(False, True, None, f"서버가 응답했지만 상태가 {status} 입니다")
+    if len(raw) > _PROBE_MAX_BYTES:
+        return _probe_result(False, True, None, "응답이 너무 큽니다(공유 서버가 아닙니다)")
+    if not content_type.endswith("json"):
+        return _probe_result(
+            False, True, None, f"응답이 JSON 이 아닙니다({content_type or '형식 불명'})"
+        )
+    try:
+        payload = json.loads(raw.decode("utf-8", "replace") or "null")
+    except ValueError:
+        return _probe_result(False, True, None, "응답을 읽을 수 없습니다(JSON 형식 오류)")
+    if not isinstance(payload, dict) or "cli_version" not in payload:
+        return _probe_result(False, True, None, "MV Hub 공유 서버가 아닙니다(health 응답이 다릅니다)")
+    version = payload.get("cli_version")
+    return _probe_result(
+        True, True, version.strip() if isinstance(version, str) and version.strip() else None, None
+    )
+
+
+@router.post("/shared-server/probe")
+def probe_shared_server(body: ProbeUrlIn, request: Request):
+    """입력한 주소가 MV Hub 공유 서버인지 확인만 한다(저장 없음) — 로그인 화면 '연결 테스트'."""
+    _require_local_shared_connection(request)
+    url = _normalize_shared_url(body.url)
+    return {"url": url, **_probe_shared_health(url)}
 
 
 # ── 로컬 허브(발신 측) — 선택 발행 ──────────────────────────────────────────

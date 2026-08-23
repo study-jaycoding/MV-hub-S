@@ -6,6 +6,7 @@ export const sharedApi = {
     jsonFetch<{
       configured: boolean;
       url: string | null;
+      url_history: string[];
       email: string | null;
       name: string | null;
       roles: string[];
@@ -24,12 +25,27 @@ export const sharedApi = {
       method: "POST",
       body: jsonBody({}),
     }),
+  // 주소만 확인(저장 없음) — 로그인 화면 '연결 테스트'. 서버가 이사해 로그인 화면에
+  // 갇혔을 때 새 주소가 맞는지 로그인 전에 확인하는 탈출구.
+  sharedServerProbe: (url: string) =>
+    jsonFetch<{
+      url: string;
+      ok: boolean;
+      reachable: boolean;
+      server_version: string | null;
+      reason: string | null;
+    }>("/api/shared-server/probe", { method: "POST", body: jsonBody({ url }) }),
   sharedServerLogin: (url: string | null, email: string, password: string) =>
     jsonFetch<{ ok: boolean; account: import("../types").Account | null; has_token: boolean }>(
       "/api/shared-server/login",
       { method: "POST", body: jsonBody({ url, email, password }) },
     ),
-  sharedServerRegister: (email: string, password: string, name: string | null) =>
+  sharedServerRegister: (
+    url: string | null,
+    email: string,
+    password: string,
+    name: string | null,
+  ) =>
     jsonFetch<{
       ok: boolean;
       account: import("../types").Account | null;
@@ -38,7 +54,7 @@ export const sharedApi = {
       has_token: boolean;
     }>("/api/shared-server/register", {
       method: "POST",
-      body: jsonBody({ email, password, name }),
+      body: jsonBody({ url, email, password, name }),
     }),
   sharedServerLogout: () =>
     jsonFetch<{ ok: boolean; has_token: boolean }>("/api/shared-server/logout", {

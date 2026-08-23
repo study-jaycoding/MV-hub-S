@@ -503,6 +503,17 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 }
 .login-toggle:hover { color: var(--text); }
 .login-toggle:disabled { opacity: 0.6; cursor: default; }
+/* 서버 주소 변경(접이식) — 로그인 실패로 화면에 갇혔을 때의 탈출구 */
+.login-server {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; border-radius: 10px;
+  background: rgba(255,255,255,0.03); border: 1px solid var(--border);
+}
+.login-server select {
+  padding: 8px 10px; border-radius: 8px; font-size: 12.5px;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text);
+}
+.login-server .login-hint { margin-top: 0; word-break: break-all; }
 
 /* ── How it works (자리표시자) ── */
 .how-it-works { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px; }

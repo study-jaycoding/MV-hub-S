@@ -12,6 +12,8 @@ export interface SharedServerState {
   configured: boolean;
   has_token: boolean;
   url: string | null;
+  // 예전에 쓰던 공유 서버 주소(최신순) — 로그인 화면에서 주소를 되돌릴 때 쓴다.
+  url_history: string[];
   email: string | null;
   name: string | null;
   roles: string[];
@@ -32,7 +34,15 @@ export function isAuthResponseCurrent(
 }
 
 function fallbackSharedServer(): SharedServerState {
-  return { configured: false, has_token: false, url: null, email: null, name: null, roles: [] };
+  return {
+    configured: false,
+    has_token: false,
+    url: null,
+    url_history: [],
+    email: null,
+    name: null,
+    roles: [],
+  };
 }
 
 function sharedServerAccount(
@@ -69,6 +79,7 @@ export function useHubAuth() {
           configured: s.configured,
           has_token: s.has_token,
           url: s.url,
+          url_history: s.url_history || [],
           email: s.email,
           name: s.name,
           roles: s.roles || [],

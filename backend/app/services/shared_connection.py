@@ -22,6 +22,10 @@ from .. import repo
 
 # app_setting 키 — 로컬 허브가 기억하는 공유 서버 연결 정보(이 PC 로컬 DB 에만 저장).
 K_URL = "shared_server_url"
+# 최근에 쓴 공유 서버 주소 목록(JSON 배열, 최신순). 서버 이사·IP 변경으로 로그인 화면에
+# 갇혔을 때 되돌아갈 후보를 보여주는 '탈출구'용 — 주소만 담는다(토큰·이메일 금지).
+K_URL_HISTORY = "shared_server_url_history"
+URL_HISTORY_MAX = 5
 K_TOKEN = "shared_server_token"
 # 임시 관리자 권한 토큰(계정관리 호출에만) — 로그아웃·계정전환 시 해제.
 K_ELEV_TOKEN = "shared_server_elev_token"

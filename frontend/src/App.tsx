@@ -1212,7 +1212,13 @@ export default function App() {
   if (!authConfig?.auth_enabled) {
     if (sharedSrv === null) return null; // 연결 상태 로딩 중 — 깜빡임 방지
     if (!sharedSrv.has_token) {
-      return <ServerLoginScreen url={sharedSrv.url} onConnected={onProxyConnected} />;
+      return (
+        <ServerLoginScreen
+          url={sharedSrv.url}
+          urlHistory={sharedSrv.url_history}
+          onConnected={onProxyConnected}
+        />
+      );
     }
   }
 
