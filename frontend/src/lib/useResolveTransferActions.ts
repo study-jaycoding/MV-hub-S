@@ -236,11 +236,17 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
   const summary: ResolveQueueSummary = summarizeResolveQueue(rows);
   // 열어 둔 동안, 또는 진행 중인 전송이 남아 있는 동안만 5초 폴링.
   const shouldPoll = queueSupported && (queueOpen || summary.active > 0);
+  // blocked(project_changed 등) 재평가는 /status 호출이 트리거다 — /queue 폴링만으로는
+  // 올바른 프로젝트를 다시 열어도 워커 백오프(최대 15분)까지 '차단됨'으로 보인다(실기기 재현).
+  const hasBlocked = summary.blocked > 0;
   useEffect(() => {
     if (!shouldPoll) return undefined;
-    const timer = window.setInterval(() => void refreshQueue(), QUEUE_POLL_MS);
+    const timer = window.setInterval(() => {
+      if (hasBlocked) void getResolveConnectionStatus().catch(() => {});
+      void refreshQueue();
+    }, QUEUE_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [shouldPoll, refreshQueue]);
+  }, [shouldPoll, hasBlocked, refreshQueue]);
 
   const cancelQueued = useCallback(
     (row: ResolveQueueRow, force = false) => {
