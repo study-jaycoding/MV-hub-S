@@ -15,6 +15,24 @@ interface UseGenerationLibraryDataArgs {
   projectWorkspaceId?: string;
 }
 
+export const GENERATION_TAB_CACHE_FRESH_MS = 15_000;
+
+type GenerationTabCacheEntry = {
+  gens: Generation[];
+  hasMore: boolean;
+  sig: string;
+  loadedAt: number;
+};
+
+export function generationTabCacheIsFresh(
+  entry: GenerationTabCacheEntry | undefined,
+  sig: string,
+  now = Date.now(),
+  maxAge = GENERATION_TAB_CACHE_FRESH_MS,
+): boolean {
+  return !!entry && entry.sig === sig && now - entry.loadedAt >= 0 && now - entry.loadedAt < maxAge;
+}
+
 export function useGenerationLibraryData({
   authReady,
   filters,
@@ -50,7 +68,7 @@ export function useGenerationLibraryData({
   const lastLoadedTabRef = useRef<string | null>(null); // 현재 gens 가 어느 탭 데이터인지
   // 탭별 마지막 목록 캐시 — 탭을 오갈 때 이전에 보던 그 탭 화면을 '즉시' 띄우고(딜레이 제거),
   // 뒤에서 fetch 가 최신본으로 조용히 갱신한다. sig(쿼리 직렬화)가 다르면(필터 초기화 등) 캐시를 안 쓴다.
-  const tabCacheRef = useRef<Record<string, { gens: Generation[]; hasMore: boolean; sig: string }>>({});
+  const tabCacheRef = useRef<Record<string, GenerationTabCacheEntry>>({});
   // reload 코얼레싱 — 이미 실행 중이면 새 호출을 큐에 '병합'해 동시 네트워크를 1개로 줄인다.
   // reloadSeqRef 가 정합성(최신 결과만 반영)을 보장하므로, 여기선 중복 요청만 없앤다.
   const inflightRef = useRef<Promise<void> | null>(null);
@@ -141,7 +159,12 @@ export function useGenerationLibraryData({
         setHasMore(g.length >= GEN_PAGE);
         setLoadError(null);
         lastLoadedTabRef.current = tab;
-        tabCacheRef.current[tab] = { gens: g, hasMore: g.length >= GEN_PAGE, sig };
+        tabCacheRef.current[tab] = {
+          gens: g,
+          hasMore: g.length >= GEN_PAGE,
+          sig,
+          loadedAt: Date.now(),
+        };
         // 이 목록 요청을 시작하기 전에 성공한 내 변경 id들은 이제 화면 데이터에 포함됐다.
         finishSync(true);
       } catch (e) {
@@ -225,6 +248,23 @@ export function useGenerationLibraryData({
     [launch],
   );
 
+  // 탭 왕복용 stale-while-revalidate 게이트. 같은 필터의 목록을 방금 받았다면 캐시 화면을
+  // 그대로 쓰고, 팀 탭의 15초 안전망 폴링이 다음 최신화를 맡는다. 명시적 수정/재시도는 기존
+  // reload()를 호출하므로 절대 생략되지 않는다.
+  const reloadIfStale = useCallback(
+    (maxAge = GENERATION_TAB_CACHE_FRESH_MS): Promise<void> => {
+      if (!authReadyRef.current) return Promise.resolve();
+      const tab = filtersRef.current.tab;
+      if (tab === "compose") return reload();
+      const sig = JSON.stringify([!!filtersRef.current.deleted_only, genQueryRef.current]);
+      if (generationTabCacheIsFresh(tabCacheRef.current[tab], sig, Date.now(), maxAge)) {
+        return Promise.resolve();
+      }
+      return reload();
+    },
+    [reload],
+  );
+
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !authReadyRef.current) return;
     if (filtersRef.current.tab === "compose") return;
@@ -274,6 +314,7 @@ export function useGenerationLibraryData({
     projects,
     projectsLoadedRef,
     reload,
+    reloadIfStale,
     setFacets,
     setGens,
     stats,

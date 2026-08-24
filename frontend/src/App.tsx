@@ -261,6 +261,7 @@ export default function App() {
     projects,
     projectsLoadedRef,
     reload,
+    reloadIfStale,
     setFacets,
     setGens,
     stats,
@@ -442,8 +443,8 @@ export default function App() {
   // filters.tab 도 의존성에 포함 — compose 는 서버 쿼리상 'my' 로 합쳐져 serverFilterKey 가 같으므로,
   // 이게 없으면 compose→내작업 전환 때 즉시 reload 가 안 돌고 3초 폴링이 뒤늦게 채운다(전환 딜레이 원인).
   useEffect(() => {
-    reload();
-  }, [serverFilterKey, filters.tab, authReady, reload]);
+    void reloadIfStale();
+  }, [serverFilterKey, filters.tab, authReady, reloadIfStale]);
 
   // 프로젝트 미배정 = Supervisor 개념이 없음 → 본인 것이면 최종 가능(백엔드 require_edit 와 일치).
   const canFinalize = (g: Generation) => canFinalizeGeneration(g, finalizeProjects);
