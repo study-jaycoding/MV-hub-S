@@ -1,6 +1,6 @@
 """데이터 접근 계층 (Phase 2/3) — 패키지.
 
-repo.py 가 비대해져 모듈로 분해(CLAUDE.md 원칙 5). 외부에서 쓰는 `repo.X` API 는
+repo.py 가 비대해져 모듈로 분해(계층 규칙은 루트 ARCHITECTURE.md §1). 외부에서 쓰는 `repo.X` API 는
 이 __init__ 의 re-export 로 동일하게 유지된다. 순수 재조직 — 동작 변경 없음.
 """
 

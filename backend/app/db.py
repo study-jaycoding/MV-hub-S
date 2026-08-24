@@ -1,6 +1,6 @@
 """SQLite 연결·초기화 (Phase 1).
 
-설계 근거: DESIGN.md §1(로컬 우선) / §2(데이터 모델), CLAUDE.md 설계 원칙 1.
+설계 근거: docs/DATA_OWNERSHIP.md(로컬이 권위인 범위) · docs/DESIGN.md(초기 데이터 모델, 보존 문서).
 
 핵심:
 - WAL 저널 모드 — 읽기(UI 탐색)와 쓰기(생성 기록)가 서로를 막지 않게 한다.

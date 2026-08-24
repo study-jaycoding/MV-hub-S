@@ -1,6 +1,6 @@
 """Pydantic 모델 — API 요청/응답 스키마 (Phase 2).
 
-API 응답은 snake_case JSON (CLAUDE.md 컨벤션).
+API 응답은 snake_case JSON — 이 모듈의 응답 모델 필드명이 그 계약이다.
 DB row(sqlite3.Row) → 응답 모델 변환은 라우터의 직렬화 헬퍼에서 처리한다.
 """
 

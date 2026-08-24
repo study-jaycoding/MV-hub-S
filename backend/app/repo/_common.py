@@ -1,7 +1,8 @@
 """데이터 접근 계층 (Phase 2/3) — 공용 헬퍼·상수.
 
 라우터·잡 큐·동기화가 공유하는 SQLite 읽기/쓰기. 직렬화(Row → API dict)도 여기서.
-모든 ID 는 UUID 문자열(CLAUDE.md 컨벤션). 단, 동기화로 들어온 generation 은
+새로 만드는 ID 는 UUID 문자열(모든 테이블이 그런 것은 아니다 — account.email 은 이메일 PK,
+복합키도 있다). 단, 동기화로 들어온 generation 은
 higgsfield job id 를 그대로 PK 로 써서 재동기 시 멱등하게 한다.
 """
 

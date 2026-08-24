@@ -991,7 +991,8 @@ def import_generation(
 ) -> str:
     """공유 항목을 내 워크스페이스로 복제(프롬프트·레퍼런스 보존) + history 기록.
 
-    DESIGN.md §3-6/7, CLAUDE.md 원칙 3·4. 새 gen_id 반환.
+    제출 레시피·레퍼런스를 보존하고 history 엣지를 남긴다(schema.sql history, repo/lineage.py).
+    새 gen_id 반환.
     creator_uid: 로그인 계정 신원(있으면 그 계정 작업으로 귀속). 없으면 제공자 my_uid 폴백.
     """
     # 내 신원 해석은 트랜잭션 전에 — identity.get_my_uid()가 내부에서 커넥션을 열 수 있어

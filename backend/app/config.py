@@ -1,6 +1,6 @@
 """앱 설정·경로 (Phase 2).
 
-로컬 우선 원칙(CLAUDE.md §1): 모든 경로는 backend/ 기준 로컬 디렉터리.
+로컬 우선 원칙(docs/DATA_OWNERSHIP.md): 모든 경로는 backend/ 기준 로컬 디렉터리.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """라이브러리 조회 라우터 (Phase 2) — 로컬 탐색·필터.
 
-CLAUDE.md 원칙 1: 내 작업물 탐색은 네트워크를 절대 타지 않는다(전부 로컬 DB).
+개인 데이터는 로컬이 권위(docs/DATA_OWNERSHIP.md): 내 작업물 탐색은 로컬 DB 로만 답한다.
 """
 
 from __future__ import annotations
