@@ -517,17 +517,26 @@ def run_agent_bat(request: Request):
     server = str(request.base_url).rstrip("/")
     email = acc["email"]
     # CLI 버전 고정(pin): 서버 저장소 루트의 hf_cli_version.txt 를 읽어 그 버전으로 설치·교정한다.
-    # @latest 금지(힉스필드가 파괴적 변경을 자주 냄). 파일이 없으면 unpinned 폴백.
+    # @latest·버전 미지정 금지(힉스필드가 파괴적 변경을 자주 냄). ★pin 을 못 읽으면 폴백으로
+    # unpinned 설치를 만들지 않고 이 요청만 503 으로 막는다 — pin 누락은 정상 상태가 아니라
+    # 손상 신호이고, 여기서 만들어진 bat 이 작업자 PC 에 검증 안 된 CLI 를 깔기 때문이다.
     # 읽기 규칙은 read_first_line 단일 출처 — 종전 utf-8 직접 읽기는 BOM 이 버전 문자열에
     # 섞여 bat 의 npm install @higgsfield/cli@<BOM>x.y.z 를 깨뜨릴 수 있었다.
     from ..services.read_utf8_sig_first_line import read_first_line
 
+    _pin_detail = (
+        "서버의 hf_cli_version.txt 를 읽을 수 없어 안전을 위해 에이전트 설치 파일 생성을 "
+        "중단했습니다. 관리자에게 코드/릴리스 설치 상태 확인을 요청하세요."
+    )
     try:
         _pin = read_first_line(BACKEND_DIR.parent / "hf_cli_version.txt")
-    except Exception:  # noqa: BLE001
-        _pin = ""
-    if _pin:
-        cli_ensure = f"""echo [3/5] 힉스필드 CLI 확인(고정 {_pin})...
+    except (OSError, UnicodeError) as exc:
+        _logger.error("agent run-bat 생성 차단: hf_cli_version.txt 읽기 실패", exc_info=True)
+        raise HTTPException(status_code=503, detail=_pin_detail) from exc
+    if not _pin:
+        _logger.error("agent run-bat 생성 차단: hf_cli_version.txt 가 없거나 비어 있음")
+        raise HTTPException(status_code=503, detail=_pin_detail)
+    cli_ensure = f"""echo [3/5] 힉스필드 CLI 확인(고정 {_pin})...
 set "HF=higgsfield"
 where higgsfield >nul 2>nul || set "HF=hf"
 set "CURVER="
@@ -535,17 +544,6 @@ where %HF% >nul 2>nul && for /f "tokens=2" %%v in ('%HF% version 2^>nul') do if 
 if not "%CURVER%"=="{_pin}" (
   echo     힉스필드 CLI 고정 버전 {_pin} 설치/교정...
   call npm install -g @higgsfield/cli@{_pin} || (echo [오류] CLI 설치 실패 - 인터넷/npm 권한을 확인하세요. & pause & exit /b 1)
-  call :refreshpath
-  set "HF=higgsfield"
-)"""
-    else:
-        cli_ensure = """echo [3/5] 힉스필드 CLI 확인...
-set "HF=higgsfield"
-where higgsfield >nul 2>nul || set "HF=hf"
-where %HF% >nul 2>nul
-if errorlevel 1 (
-  echo     힉스필드 CLI 미설치 - npm 으로 설치...
-  call npm install -g @higgsfield/cli || (echo [오류] CLI 설치 실패 - 인터넷/npm 권한을 확인하세요. & pause & exit /b 1)
   call :refreshpath
   set "HF=higgsfield"
 )"""

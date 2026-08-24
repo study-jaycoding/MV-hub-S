@@ -110,6 +110,24 @@ try {
         finally { Pop-Location }
     }
 
+    # Pin check BEFORE any dependency work: an unpinned CLI install would leave the
+    # machine "installed" but on an untested CLI contract. A missing pin is a broken
+    # checkout, not a normal offline case (this installer already needs git/pip/npm).
+    $pinFile = Join-Path $repo "hf_cli_version.txt"
+    if (-not (Test-Path -LiteralPath $pinFile -PathType Leaf)) {
+        throw "hf_cli_version.txt is missing from the repository. Refusing an unpinned Higgsfield CLI install."
+    }
+    try {
+        $pin = [string](Get-Content -LiteralPath $pinFile -Encoding UTF8 -TotalCount 1)
+        $pin = $pin.Trim()
+    }
+    catch {
+        throw "Could not read hf_cli_version.txt: $($_.Exception.Message)"
+    }
+    if (-not $pin) {
+        throw "hf_cli_version.txt is empty. Refusing an unpinned Higgsfield CLI install."
+    }
+
     $pythonExe = $pythonCommand[0]
     $pythonArgs = @($pythonCommand | Select-Object -Skip 1)
     Invoke-Native "Install backend dependencies" $pythonExe @(
@@ -131,11 +149,7 @@ try {
     }
     finally { Pop-Location }
 
-    $pinFile = Join-Path $repo "hf_cli_version.txt"
-    $pin = if (Test-Path -LiteralPath $pinFile) {
-        (Get-Content -LiteralPath $pinFile -TotalCount 1).Trim()
-    } else { "" }
-    $cliPackage = if ($pin) { "@higgsfield/cli@$pin" } else { "@higgsfield/cli" }
+    $cliPackage = "@higgsfield/cli@$pin"
     Invoke-Native "Install Higgsfield CLI ($cliPackage)" "npm.cmd" @(
         "install", "-g", $cliPackage
     )

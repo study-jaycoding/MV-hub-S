@@ -15,7 +15,8 @@ import importlib.util
 import unittest
 from pathlib import Path
 
-TOOLS = Path(__file__).resolve().parents[2] / "tools"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TOOLS = REPO_ROOT / "tools"
 
 
 def _load(name: str):
@@ -90,6 +91,81 @@ class CheckUpdateGuidanceTests(unittest.TestCase):
 
     def test_no_stale_smoke_first_guidance(self):
         self.assertNotIn("통과하면 hf_cli_version.txt", self.source)
+
+
+class SetupCloneScriptPinTests(unittest.TestCase):
+    """초기설치 스크립트가 버전 없는 CLI 를 깔지 않는다."""
+
+    def setUp(self):
+        self.source = (REPO_ROOT / "setup_clone_git.ps1").read_text("utf-8")
+
+    def test_no_unpinned_cli_package(self):
+        self.assertNotIn('"@higgsfield/cli"', self.source)
+        self.assertIn('"@higgsfield/cli@$pin"', self.source)
+
+    def test_missing_or_empty_pin_throws(self):
+        self.assertIn("hf_cli_version.txt is missing", self.source)
+        self.assertIn("hf_cli_version.txt is empty", self.source)
+
+    def test_pin_check_runs_before_dependency_install(self):
+        pin_check = self.source.index("hf_cli_version.txt is missing")
+        backend_install = self.source.index("Install backend dependencies")
+        self.assertLess(
+            pin_check,
+            backend_install,
+            "pin 이 없으면 의존성 설치까지 다 하고 마지막에 실패하는 대신 먼저 멈춰야 한다",
+        )
+
+
+class RunAgentBatPinTests(unittest.TestCase):
+    """서버가 만들어 주는 에이전트 설치 bat 은 pin 없이는 만들어지지 않는다."""
+
+    def setUp(self):
+        import tempfile
+        from types import SimpleNamespace
+
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.root = Path(self.tmp.name)
+        self.backend_dir = self.root / "backend"
+        self.backend_dir.mkdir()
+        self.request = SimpleNamespace(base_url="http://127.0.0.1:8010/")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _call(self):
+        from unittest import mock
+
+        from app.routers import ingest
+
+        with mock.patch.object(ingest, "BACKEND_DIR", self.backend_dir), mock.patch.object(
+            ingest, "_agent_acc", return_value={"email": "worker@example.com"}
+        ):
+            return ingest.run_agent_bat(self.request)
+
+    def _write_pin(self, text: str) -> None:
+        (self.root / "hf_cli_version.txt").write_text(text, encoding="utf-8")
+
+    def test_missing_pin_returns_503(self):
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException) as ctx:
+            self._call()
+        self.assertEqual(ctx.exception.status_code, 503)
+
+    def test_empty_pin_returns_503(self):
+        from fastapi import HTTPException
+
+        self._write_pin("   \n")
+        with self.assertRaises(HTTPException) as ctx:
+            self._call()
+        self.assertEqual(ctx.exception.status_code, 503)
+
+    def test_pinned_bat_installs_the_exact_version(self):
+        self._write_pin("﻿1.1.23\n")  # BOM 도 허용
+        body = self._call().body.decode("utf-8", "replace")
+        self.assertIn("@higgsfield/cli@1.1.23", body)
+        self.assertNotIn("npm install -g @higgsfield/cli ||", body)
 
 
 if __name__ == "__main__":
