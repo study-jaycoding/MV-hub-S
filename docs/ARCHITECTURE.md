@@ -111,6 +111,7 @@ HTTP 요청
 | `comfy.py` | ComfyUI 연결·워크플로 파싱·제한된 입력 업로드·비동기 실행(`/run`+`/run_status`)·라이브러리 저장 |
 | `resolve_integration.py` | DaVinci Resolve 전송·스크립트 설치·수동 가져오기 결과 기록 |
 | `release_update.py` | 작업자 릴리스 자동 업데이트(status/start — 로컬 전용) |
+| `update_notices.py` | 공유 서버 업데이트 후보 등록·최근 5개·고정·공지·계정별 읽음 처리. 관리 쓰기는 서버 `Admin`만 허용 |
 | `scenes.py` | 씬 캔버스 DB 미러 백업(PUT/GET /scenes/backup) |
 | `db_backup.py` / `db_transfer.py` | 계정별 `content + trash` 백업 세트의 멱등 업로드·명시적 ACK·최신 세트 다운로드 / 로컬 DB 내보내기·스트리밍 가져오기·세트 복원(유지보수 게이트). 기존 단일 DB 경로는 혼합 버전 호환용으로 유지 |
 | 내부: `_proxy.py` / `_telemetry.py` / `_assets_access.py` | 데이터 소유권 프록시 위임 / 이벤트 루프 연결·단일 소유자·후속 요청을 조정하며 생성·계정 보고 채널을 독립 정산하는 drain / Assets 접근 가드 |
@@ -171,6 +172,7 @@ HTTP 요청
 | `manage_schema.py` / `manage_telemetry.py` | 관리 사이드카 스키마·outbox 팩트 전송 상태 |
 | `manage_transactions.py` / `manage_analytics.py` | 실제 크레딧 거래 매칭·읽기 전용 분석 집계 |
 | `manage_account_reports.py` | 계정 최신 상태·거래 보고의 영속 outbox, revision 정산·백오프·마지막 성공 상태 |
+| `release_update_notices.py` | 업데이트 공지 후보·고정 순위·공지 회차·계정별 읽음 상태의 원자 저장 |
 
 ### 4.5 서비스 (`backend/app/services/`) — 외부 연동·부수효과
 
@@ -374,6 +376,13 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
 - **코멘트 단위 seen 모델**(`generation_comment_seen`). 미확인=알림 규칙은 `_common` 의
   `ALERT_COMMENT_JOINS` + `ALERT_COMMENT_PREDICATE` 한 곳에서 정의 → 카드 뱃지·전역 통계·패널 NEW 세 경로가 항상 일치.
 - 알림 대상: ① 내가 만든 생성물에 달린 코멘트, 또는 ② 내 코멘트에 달린 답글만(내 글 제외).
+
+### 7.5 업데이트 공지
+
+- 로컬 `latest.json`의 검증된 메타데이터만 공유 서버에 등록하며 실제 배포 경로는 전달하지 않는다.
+- 공유 서버가 최근 5개 목록과 고정(최대 4개), 공지 회차, 계정별 읽음 상태의 권위 원장이다.
+- 재공지는 회차를 증가시켜 다시 미확인으로 만들고, 같은 버전의 자동 업데이트 알림은 서버 공지로
+  합쳐 중복을 막는다. 세부 계약은 [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md)를 따른다.
 
 ---
 
