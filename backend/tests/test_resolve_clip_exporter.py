@@ -61,14 +61,73 @@ class FakeMediaPool:
         return self.root
 
 
+class FakeFusionInput:
+    def __init__(self, input_id):
+        self.input_id = input_id
+        self.expression = ""
+
+    def GetAttrs(self):
+        return {"INPS_ID": self.input_id}
+
+    def SetExpression(self, expression):
+        self.expression = expression
+
+    def GetExpression(self):
+        return self.expression
+
+
+class FakeFusionTool:
+    def __init__(self, name):
+        self.name = name
+        self.values = {"Blend": 1.0}
+        self.inputs = (
+            {"StyledText": FakeFusionInput("StyledText")}
+            if name == "Text1"
+            else {}
+        )
+
+    def SetInput(self, name, value, _time):
+        self.values[name] = value
+
+    def GetInput(self, name, _time):
+        return self.values.get(name)
+
+    def GetInputList(self):
+        return self.inputs
+
+
+class FakeFusionComp:
+    def __init__(self):
+        self.tools = {
+            "Merge1": FakeFusionTool("Merge1"),
+            "Text1": FakeFusionTool("Text1"),
+        }
+
+    def FindTool(self, name):
+        return self.tools.get(name)
+
+
 class FakeTimelineItem:
-    def __init__(self, unique_id, name, start, end, media_item, enabled=True):
+    def __init__(
+        self,
+        unique_id,
+        name,
+        start,
+        end,
+        media_item,
+        enabled=True,
+        fail_fusion_import=False,
+    ):
         self.unique_id = unique_id
         self.name = name
         self.start = start
         self.end = end
         self.media_item = media_item
         self.enabled = enabled
+        self.fail_fusion_import = fail_fusion_import
+        self.fusion_names = []
+        self.fusion_comps = {}
+        self.imported_setting_text = ""
 
     def GetUniqueId(self):
         return self.unique_id
@@ -88,11 +147,42 @@ class FakeTimelineItem:
     def GetClipEnabled(self):
         return self.enabled
 
+    def GetFusionCompNameList(self):
+        return list(self.fusion_names)
+
+    def ImportFusionComp(self, path):
+        if self.fail_fusion_import:
+            return None
+        self.imported_setting_text = Path(path).read_text(encoding="utf-8")
+        name = f"Composition {len(self.fusion_names) + 1}"
+        self.fusion_names.append(name)
+        comp = FakeFusionComp()
+        self.fusion_comps[name] = comp
+        return comp
+
+    def RenameFusionCompByName(self, old_name, new_name):
+        if old_name not in self.fusion_names or new_name in self.fusion_names:
+            return False
+        self.fusion_names[self.fusion_names.index(old_name)] = new_name
+        self.fusion_comps[new_name] = self.fusion_comps.pop(old_name)
+        return True
+
+    def GetFusionCompByName(self, name):
+        return self.fusion_comps.get(name)
+
+    def DeleteFusionCompByName(self, name):
+        if name not in self.fusion_names:
+            return False
+        self.fusion_names.remove(name)
+        self.fusion_comps.pop(name, None)
+        return True
+
 
 class FakeTimeline:
-    def __init__(self, items, track_count=1):
+    def __init__(self, items, track_count=1, frame_rate="24"):
         self.items = list(items)
         self.track_count = track_count
+        self.frame_rate = frame_rate
 
     def GetName(self):
         return "편집본"
@@ -105,6 +195,13 @@ class FakeTimeline:
 
     def GetItemListInTrack(self, track_type, index):
         return self.items if track_type == "video" and index == 1 else []
+
+    def GetSetting(self, name=None):
+        settings = {
+            "timelineFrameRate": self.frame_rate,
+            "timelinePlaybackFrameRate": self.frame_rate,
+        }
+        return settings if name is None else settings.get(name)
 
 
 class FakeProject:
@@ -244,11 +341,13 @@ class ResolveClipExporterTests(unittest.TestCase):
                 [record], root, version="002", description="c", episode="001"
             )
 
-            self.assertEqual(Path(root), Path(temp) / "assets" / "reference")
+            self.assertEqual(Path(root), Path(temp) / "assets" / "CLIP")
             self.assertEqual(
                 jobs[0]["output_name"], "뻘뻘뻘_e001_c0010_c_v002"
             )
-            self.assertEqual(Path(jobs[0]["output_dir"]), Path(temp) / "assets" / "reference" / "e001")
+            self.assertEqual(
+                Path(jobs[0]["output_dir"]), Path(temp) / "assets" / "CLIP" / "e001"
+            )
 
     def test_creates_render_episode_sequence_folders_from_jobs(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -267,6 +366,14 @@ class ResolveClipExporterTests(unittest.TestCase):
             )
             self.assertTrue((render_root / "e001" / "c0010").is_dir())
             self.assertTrue((render_root / "e001" / "c0015").is_dir())
+
+    def test_clip_output_root_can_find_sibling_render_folder(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_root = Path(temp) / "assets" / "CLIP"
+
+            render_root = exporter.infer_render_root([], str(output_root))
+
+            self.assertEqual(Path(render_root), Path(temp) / "render")
 
     def test_project_folder_in_source_path_sets_name_and_10_ai_roots(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -295,11 +402,131 @@ class ResolveClipExporterTests(unittest.TestCase):
             jobs = exporter.build_render_jobs([record], output_root, episode="1")
 
             self.assertEqual(
-                Path(output_root), project_folder / "10_ai" / "assets" / "reference"
+                Path(output_root), project_folder / "10_ai" / "assets" / "CLIP"
             )
             self.assertEqual(Path(render_root), project_folder / "10_ai" / "render")
             self.assertEqual(jobs[0]["project"], "mudx")
             self.assertEqual(jobs[0]["output_name"], "mudx_e001_c0010_v001")
+
+    def test_ui_starts_with_empty_episode_and_clear_labels(self):
+        source = SCRIPT_PATH.read_text(encoding="utf-8")
+        episode_label = source.index('ui.Label({"Text": "에피소드"')
+        render_preset_label = source.index('ui.Label({"Text": "렌더 프리셋"')
+        field_row_start = source.rindex("ui.HGroup(", 0, episode_label)
+        field_row_end = source.rindex("ui.HGroup(", 0, render_preset_label)
+        field_row = source[field_row_start:field_row_end]
+
+        self.assertIn('"PlaceholderText": "에피소드 입력 (예: e001)"', source)
+        self.assertNotIn('"ID": "Episode",\n                                "Text":', source)
+        self.assertIn(
+            '"PlaceholderText": "선택 입력 (예: c-클린 버전, m-모자이크 버전)"',
+            source,
+        )
+        self.assertLess(
+            source.index('ui.Label({"Text": "설명"'),
+            source.index('ui.Label({"Text": "시퀀스 단위"'),
+        )
+        self.assertEqual(field_row.count("ui.HGroup("), 1)
+        self.assertLess(
+            field_row.index('"ID": "Episode"'), field_row.index('"ID": "Description"')
+        )
+        self.assertLess(
+            field_row.index('"ID": "Description"'), field_row.index('"ID": "SequenceStep"')
+        )
+        self.assertLess(field_row.index('"ID": "SequenceStep"'), field_row.index('"ID": "Version"'))
+        self.assertIn('"ID": "TimeCounter"', source)
+        self.assertIn('"Text": "타임카운터 적용"', source)
+        self.assertIn('"Checked": True', source)
+        self.assertIn('"Text": "렌더 폴더 생성"', source)
+        self.assertRegex(
+            source,
+            r'"ID": "CreateRenderFolders",[\s\S]*?"Enabled": False',
+        )
+        self.assertRegex(
+            source,
+            r'"ID": "RenderNow",[\s\S]*?"Enabled": False',
+        )
+        self.assertIn('window.On["Episode"].TextChanged = refresh', source)
+        self.assertIn('raise ExporterError("에피소드를 입력하세요 (예: e001)")', source)
+
+    def test_time_counter_is_applied_once_and_removed_without_touching_other_comps(self):
+        media = FakeMediaItem("m1", "원본", r"D:\Project\clip.mov")
+        item = FakeTimelineItem("t1", "클립", 0, 24, media)
+        item.fusion_names = ["사용자 효과"]
+        jobs = [
+            {"item": item, "frame_rate": 29.97, "frame_count": 300},
+            {"item": item, "frame_rate": 29.97, "frame_count": 300},
+        ]
+
+        first_count = exporter.apply_time_counter(jobs)
+        second_count = exporter.apply_time_counter(jobs)
+
+        self.assertEqual(first_count, 1)
+        self.assertEqual(second_count, 1)
+        self.assertEqual(
+            item.fusion_names,
+            ["사용자 효과", exporter.TIME_COUNTER_COMP_NAME],
+        )
+        self.assertIn('SourceOp = "Text1"', item.imported_setting_text)
+        self.assertIn("Value = 299", item.imported_setting_text)
+        self.assertIn("/ 29.97", item.imported_setting_text)
+        self.assertNotIn("Width = Input", item.imported_setting_text)
+        self.assertNotIn("Height = Input", item.imported_setting_text)
+
+        removed_count = exporter.remove_time_counter(jobs)
+
+        self.assertEqual(removed_count, 1)
+        self.assertEqual(
+            item.fusion_names,
+            ["사용자 효과", exporter.TIME_COUNTER_COMP_NAME],
+        )
+        comp = item.GetFusionCompByName(exporter.TIME_COUNTER_COMP_NAME)
+        self.assertEqual(comp.FindTool("Merge1").GetInput("Blend", 0), 0.0)
+
+        exporter.apply_time_counter(jobs)
+
+        self.assertEqual(comp.FindTool("Merge1").GetInput("Blend", 0), 1.0)
+        self.assertIn(
+            "/ 29.97",
+            comp.FindTool("Text1").inputs["StyledText"].GetExpression(),
+        )
+
+    def test_time_counter_apply_rolls_back_new_comps_when_a_later_clip_fails(self):
+        media = FakeMediaItem("m1", "원본", r"D:\Project\clip.mov")
+        first = FakeTimelineItem("t1", "첫번째", 0, 24, media)
+        second = FakeTimelineItem(
+            "t2", "두번째", 24, 48, media, fail_fusion_import=True
+        )
+
+        with self.assertRaisesRegex(exporter.ExporterError, "가져오지 못했습니다"):
+            exporter.apply_time_counter(
+                [
+                    {"item": first, "frame_rate": 24, "frame_count": 24},
+                    {"item": second, "frame_rate": 24, "frame_count": 24},
+                ]
+            )
+
+        self.assertEqual(first.fusion_names, [])
+        self.assertEqual(second.fusion_names, [])
+
+    def test_time_counter_setting_uses_fractional_fps_and_each_clip_length(self):
+        setting = exporter.build_time_counter_setting("23.976 DF", 1440)
+
+        self.assertIn("Value = 1439", setting)
+        self.assertIn("/ (23.976 * 60)", setting)
+        self.assertIn("/ 23.976", setting)
+        self.assertNotIn("__MVHUB_", setting)
+
+    def test_collect_records_carries_timeline_fps_and_clip_length(self):
+        media = FakeMediaItem("m1", "원본", r"D:\Project\clip.mov")
+        item = FakeTimelineItem("t1", "클립", 10, 310, media)
+        timeline = FakeTimeline([item], frame_rate="59.94")
+        project = FakeProject(timeline, media_tree(media, media))
+
+        rows = exporter.collect_timeline_clips(project, 1)
+
+        self.assertEqual(rows[0]["frame_rate"], 59.94)
+        self.assertEqual(rows[0]["frame_count"], 300)
 
     def test_empty_description_does_not_leave_an_extra_separator(self):
         record = {

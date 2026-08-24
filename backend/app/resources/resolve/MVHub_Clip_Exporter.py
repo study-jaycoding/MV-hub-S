@@ -15,13 +15,95 @@ import os
 import re
 import string
 import sys
+import tempfile
 import unicodedata
 
 
-PLUGIN_VERSION = "0.6.2"
+PLUGIN_VERSION = "0.7.2"
 CURRENT_SETTINGS_LABEL = "현재 Resolve 설정 유지"
 DEFAULT_TEMPLATE = "{project}_{episode}_{sequence}_{description}_v{version:03d}"
 WINDOW_ID = "com.millionvolt.mvhub.clip-exporter"
+TIME_COUNTER_COMP_NAME = "MVHub Time Counter"
+TIME_COUNTER_SETTING_TEMPLATE = r'''{
+	Tools = ordered() {
+		MediaOut1 = MediaOut {
+			CtrlWZoom = false,
+			Inputs = {
+				Index = Input { Value = "0", },
+				Input = Input {
+					SourceOp = "Merge1",
+					Source = "Output",
+				}
+			},
+			ViewInfo = OperatorInfo { Pos = { 605, 49.5 } },
+		},
+		Text1 = TextPlus {
+			Inputs = {
+				GlobalOut = Input { Value = __MVHUB_FRAME_END__, },
+				UseFrameFormatSettings = Input { Value = 1, },
+				["Gamut.SLogVersion"] = Input { Value = FuID { "SLog2" }, },
+				Wrap = Input { Value = 1, },
+				Center = Input { Value = { 0.0842941425256428, 0.074007478149039 }, },
+				LayoutRotation = Input { Value = 1, },
+				TransformRotation = Input { Value = 1, },
+				Green1 = Input { Value = 0.250980392156863, },
+				Blue1 = Input { Value = 0.262745098039216, },
+				Softness1 = Input { Value = 1, },
+				StyledText = Input { Expression = "Text(string.format(\"%02d:%02d\", math.floor((time - comp.RenderStart) / (__MVHUB_FRAME_RATE__ * 60)), math.floor((time - comp.RenderStart) / __MVHUB_FRAME_RATE__) % 60))", },
+				Font = Input { Value = "Open Sans", },
+				Style = Input { Value = "Bold", },
+				VerticalJustificationNew = Input { Value = 3, },
+				HorizontalJustificationNew = Input { Value = 3, }
+			},
+			ViewInfo = OperatorInfo { Pos = { 329.667, 112.197 } },
+		},
+		MediaIn1 = MediaIn {
+			ExtentSet = true,
+			Inputs = {
+				GlobalOut = Input { Value = __MVHUB_FRAME_END__, },
+				AudioTrack = Input { Value = FuID { "Timeline Audio" }, },
+				Layer = Input { Value = "0", },
+				ClipTimeEnd = Input { Value = __MVHUB_FRAME_END__, },
+				["Gamut.SLogVersion"] = Input { Value = FuID { "SLog2" }, },
+				DeepOutputMode = Input {
+					Value = 0,
+					Disabled = true,
+				},
+				LeftAudio = Input {
+					SourceOp = "Left",
+					Source = "Data",
+				},
+				RightAudio = Input {
+					SourceOp = "Right",
+					Source = "Data",
+				}
+			},
+			ViewInfo = OperatorInfo { Pos = { 168.333, 67.0758 } },
+			Version = 1
+		},
+		Left = AudioDisplay {
+			CtrlWZoom = false,
+		},
+		Right = AudioDisplay {
+			CtrlWZoom = false,
+		},
+		Merge1 = Merge {
+			Inputs = {
+				Background = Input {
+					SourceOp = "MediaIn1",
+					Source = "Output",
+				},
+				Foreground = Input {
+					SourceOp = "Text1",
+					Source = "Output",
+				},
+				PerformDepthMerge = Input { Value = 0, }
+			},
+			ViewInfo = OperatorInfo { Pos = { 322.667, 58.8788 } },
+		}
+	},
+	ActiveTool = "MediaOut1"
+}'''
 _INVALID_FILE_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _SPACES = re.compile(r"\s+")
 _WINDOWS_RESERVED = {
@@ -170,6 +252,81 @@ def normalize_episode(value):
     return "e{0:03d}".format(number)
 
 
+def _parse_frame_rate(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    match = re.search(r"\d+(?:\.\d+)?", str(value))
+    if not match:
+        return None
+    try:
+        frame_rate = float(match.group(0))
+    except ValueError:
+        return None
+    if frame_rate < 1 or frame_rate > 240:
+        return None
+    return frame_rate
+
+
+def timeline_frame_rate(project, timeline):
+    """현재 타임라인의 실제 FPS를 Resolve 설정에서 읽는다."""
+    setting_names = ("timelineFrameRate", "timelinePlaybackFrameRate")
+    for owner in (timeline, project):
+        get_setting = getattr(owner, "GetSetting", None)
+        if not callable(get_setting):
+            continue
+        for setting_name in setting_names:
+            try:
+                value = get_setting(setting_name)
+            except Exception:
+                value = None
+            frame_rate = _parse_frame_rate(value)
+            if frame_rate is not None:
+                return frame_rate
+        try:
+            settings = get_setting() or {}
+        except Exception:
+            settings = {}
+        if isinstance(settings, dict):
+            for setting_name in setting_names:
+                frame_rate = _parse_frame_rate(settings.get(setting_name))
+                if frame_rate is not None:
+                    return frame_rate
+    raise ExporterError("타임라인 프레임레이트를 확인할 수 없습니다")
+
+
+def build_time_counter_setting(frame_rate, frame_count):
+    """클립 FPS·길이에 맞춘 해상도 독립형 Fusion setting을 만든다."""
+    frame_rate = _parse_frame_rate(frame_rate)
+    if frame_rate is None:
+        raise ExporterError("타임카운터에 사용할 프레임레이트가 올바르지 않습니다")
+    try:
+        frame_count = int(frame_count)
+    except (TypeError, ValueError) as exc:
+        raise ExporterError("타임카운터에 사용할 클립 길이가 올바르지 않습니다") from exc
+    if frame_count < 1:
+        raise ExporterError("타임카운터에 사용할 클립 길이가 올바르지 않습니다")
+    frame_rate_text = _frame_rate_text(frame_rate)
+    return TIME_COUNTER_SETTING_TEMPLATE.replace(
+        "__MVHUB_FRAME_RATE__", frame_rate_text
+    ).replace("__MVHUB_FRAME_END__", str(frame_count - 1))
+
+
+def _frame_rate_text(frame_rate):
+    frame_rate = _parse_frame_rate(frame_rate)
+    if frame_rate is None:
+        raise ExporterError("타임카운터에 사용할 프레임레이트가 올바르지 않습니다")
+    return "{0:.6f}".format(frame_rate).rstrip("0").rstrip(".")
+
+
+def time_counter_expression(frame_rate):
+    frame_rate_text = _frame_rate_text(frame_rate)
+    return (
+        'Text(string.format("%02d:%02d", '
+        "math.floor((time - comp.RenderStart) / ({0} * 60)), "
+        "math.floor((time - comp.RenderStart) / {0}) % 60))"
+    ).format(frame_rate_text)
+
+
 def video_track_options(timeline):
     """현재 타임라인에 실제로 존재하는 비디오 트랙 목록을 만든다."""
     if timeline is None:
@@ -211,6 +368,7 @@ def collect_timeline_clips(project, track_index=1):
     path_by_id = media_pool_paths(media_pool)
     project_name = str(project.GetName() or "project")
     timeline_name = str(timeline.GetName() or "timeline")
+    frame_rate = timeline_frame_rate(project, timeline)
     rows = []
     for item in timeline.GetItemListInTrack("video", track_index) or []:
         enabled = _safe_call(item, "GetClipEnabled", True)
@@ -240,6 +398,8 @@ def collect_timeline_clips(project, track_index=1):
                 "start": start,
                 "end_exclusive": end_exclusive,
                 "mark_out": end_exclusive - 1,
+                "frame_count": end_exclusive - start,
+                "frame_rate": frame_rate,
                 "project": project_name,
                 "timeline": timeline_name,
                 "episode": episode,
@@ -319,10 +479,10 @@ def infer_project_root(records):
 
 
 def infer_output_root(records):
-    """프로젝트의 assets/reference 폴더를 출력 루트로 제안한다."""
+    """프로젝트의 assets/CLIP 폴더를 출력 루트로 제안한다."""
     project_root = infer_project_root(records)
     if project_root:
-        return os.path.join(project_root, "assets", "reference")
+        return os.path.join(project_root, "assets", "CLIP")
     return os.path.join(os.path.expanduser("~"), "Videos", "MV Hub Exports")
 
 
@@ -331,7 +491,7 @@ def infer_render_root(records, output_root=""):
     project_root = infer_project_root(records)
     if not project_root:
         current = os.path.abspath(os.path.expanduser(str(output_root or "").strip()))
-        if os.path.basename(current).casefold() == "reference":
+        if os.path.basename(current).casefold() == "clip":
             assets_dir = os.path.dirname(current)
             if os.path.basename(assets_dir).casefold() == "assets":
                 project_root = os.path.dirname(assets_dir)
@@ -427,6 +587,189 @@ def create_render_sequence_folders(jobs, render_root):
         os.makedirs(target, exist_ok=True)
         created.append(target)
     return created
+
+
+def _fusion_comp_names(item):
+    """Resolve 버전별 Fusion comp 이름 API 차이를 한 목록으로 맞춘다."""
+    for method_name in ("GetFusionCompNameList", "GetFusionCompNames"):
+        method = getattr(item, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            raw = method() or []
+        except Exception:
+            continue
+        if isinstance(raw, dict):
+            values = [value for value in raw.values() if isinstance(value, str)]
+            raw = values or [key for key in raw.keys() if isinstance(key, str)]
+        return [str(name) for name in raw if str(name or "").strip()]
+    return []
+
+
+def _unique_timeline_jobs(jobs):
+    """같은 TimelineItem을 가리키는 첫 작업만 반환한다."""
+    result = []
+    seen = set()
+    for job in jobs or []:
+        item = job.get("item")
+        if item is None:
+            continue
+        identity = _media_item_id(item) or "object:{0}".format(id(item))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(job)
+    return result
+
+
+def _unique_timeline_items(jobs):
+    return [job["item"] for job in _unique_timeline_jobs(jobs)]
+
+
+def _job_frame_count(job):
+    value = job.get("frame_count")
+    if value is not None:
+        return value
+    try:
+        return int(job["mark_out"]) - int(job["start"]) + 1
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ExporterError("타임카운터에 사용할 클립 길이를 확인할 수 없습니다") from exc
+
+
+def _delete_fusion_comp(item, comp_name):
+    delete = getattr(item, "DeleteFusionCompByName", None)
+    if not callable(delete) or not delete(comp_name):
+        raise ExporterError("타임카운터 Fusion 구성을 제거하지 못했습니다")
+
+
+def _fusion_input(tool, input_id):
+    get_inputs = getattr(tool, "GetInputList", None)
+    if not callable(get_inputs):
+        return None
+    for key, input_obj in (get_inputs() or {}).items():
+        try:
+            attrs = input_obj.GetAttrs() or {}
+        except Exception:
+            attrs = {}
+        if str(attrs.get("INPS_ID") or key) == input_id:
+            return input_obj
+    return None
+
+
+def _configure_time_counter_comp(item, enabled, frame_rate=None):
+    get_comp = getattr(item, "GetFusionCompByName", None)
+    if not callable(get_comp):
+        raise ExporterError("타임카운터 Fusion 구성을 확인할 수 없습니다")
+    comp = get_comp(TIME_COUNTER_COMP_NAME)
+    if not comp:
+        raise ExporterError("타임카운터 Fusion 구성을 확인할 수 없습니다")
+    merge = comp.FindTool("Merge1")
+    if not merge:
+        raise ExporterError("타임카운터의 Merge 노드를 찾을 수 없습니다")
+    merge.SetInput("Blend", 1.0 if enabled else 0.0, 0)
+    try:
+        blend = float(merge.GetInput("Blend", 0))
+    except (TypeError, ValueError) as exc:
+        raise ExporterError("타임카운터 적용 상태를 확인할 수 없습니다") from exc
+    expected = 1.0 if enabled else 0.0
+    if abs(blend - expected) > 0.001:
+        raise ExporterError("타임카운터 적용 상태를 변경하지 못했습니다")
+    if not enabled:
+        return
+
+    text_tool = comp.FindTool("Text1")
+    styled_text = _fusion_input(text_tool, "StyledText") if text_tool else None
+    set_expression = getattr(styled_text, "SetExpression", None)
+    get_expression = getattr(styled_text, "GetExpression", None)
+    if not callable(set_expression) or not callable(get_expression):
+        raise ExporterError("타임카운터 시간 계산식을 찾을 수 없습니다")
+    expression = time_counter_expression(frame_rate)
+    set_expression(expression)
+    if str(get_expression() or "") != expression:
+        raise ExporterError("타임라인 프레임레이트를 타임카운터에 적용하지 못했습니다")
+
+
+def apply_time_counter(jobs):
+    """각 대상 클립에 관리 대상 타임카운터 comp를 한 번만 적용한다."""
+    timeline_jobs = _unique_timeline_jobs(jobs)
+    if not timeline_jobs:
+        raise ExporterError("타임카운터를 적용할 타임라인 클립이 없습니다")
+
+    temporary_path = ""
+    applied = []
+    try:
+        handle, temporary_path = tempfile.mkstemp(
+            prefix="mvhub-time-counter-", suffix=".setting"
+        )
+        os.close(handle)
+        for job in timeline_jobs:
+            item = job["item"]
+            before = _fusion_comp_names(item)
+            if TIME_COUNTER_COMP_NAME in before:
+                _configure_time_counter_comp(item, True, job.get("frame_rate"))
+                continue
+            setting_text = build_time_counter_setting(
+                job.get("frame_rate"), _job_frame_count(job)
+            )
+            with open(temporary_path, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(setting_text)
+            importer = getattr(item, "ImportFusionComp", None)
+            if not callable(importer):
+                raise ExporterError(
+                    "현재 Resolve 버전에서 Fusion 구성 가져오기를 지원하지 않습니다"
+                )
+            imported = importer(temporary_path)
+            if not imported:
+                raise ExporterError("타임카운터 Fusion 구성을 가져오지 못했습니다")
+            after = _fusion_comp_names(item)
+            created_names = [name for name in after if name not in before]
+            if len(created_names) != 1:
+                raise ExporterError("가져온 타임카운터 Fusion 구성을 식별하지 못했습니다")
+            imported_name = created_names[0]
+            rename = getattr(item, "RenameFusionCompByName", None)
+            if not callable(rename) or not rename(imported_name, TIME_COUNTER_COMP_NAME):
+                try:
+                    _delete_fusion_comp(item, imported_name)
+                except Exception:
+                    pass
+                raise ExporterError("타임카운터 Fusion 구성 이름을 지정하지 못했습니다")
+            _configure_time_counter_comp(item, True, job.get("frame_rate"))
+            applied.append(item)
+        return len(timeline_jobs)
+    except Exception:
+        for item in reversed(applied):
+            try:
+                _delete_fusion_comp(item, TIME_COUNTER_COMP_NAME)
+            except Exception:
+                try:
+                    _configure_time_counter_comp(item, False)
+                except Exception:
+                    pass
+        raise
+    finally:
+        if temporary_path:
+            try:
+                os.remove(temporary_path)
+            except OSError:
+                pass
+
+
+def remove_time_counter(jobs):
+    """MV Hub 타임카운터만 비활성화하고 다른 Fusion 효과는 보존한다."""
+    disabled = 0
+    for item in _unique_timeline_items(jobs):
+        if TIME_COUNTER_COMP_NAME not in _fusion_comp_names(item):
+            continue
+        _configure_time_counter_comp(item, False)
+        disabled += 1
+    return disabled
+
+
+def set_time_counter_enabled(jobs, enabled):
+    """체크박스 상태와 타임라인의 관리 대상 Fusion comp 상태를 일치시킨다."""
+    if enabled:
+        return apply_time_counter(jobs)
+    return remove_time_counter(jobs)
 
 
 def _render_extension(project):
@@ -597,42 +940,26 @@ def show_exporter_window(resolve_obj, fusion_obj, bmd_obj):
                     ],
                 ),
                 ui.HGroup(
-                    {"Weight": 0},
+                    {"Weight": 0, "Spacing": 6},
                     [
                         ui.Label({"Text": "에피소드", "Weight": 0}),
                         ui.LineEdit(
                             {
                                 "ID": "Episode",
-                                "Text": "e001",
-                                "PlaceholderText": "e001",
-                                "Weight": 1,
+                                "PlaceholderText": "에피소드 입력 (예: e001)",
+                                "Weight": 2,
                             }
                         ),
-                    ],
-                ),
-                ui.HGroup(
-                    {"Weight": 0},
-                    [
-                        ui.Label({"Text": "시퀀스 단위", "Weight": 0}),
-                        ui.ComboBox({"ID": "SequenceStep", "Weight": 1}),
-                    ],
-                ),
-                ui.HGroup(
-                    {"Weight": 0},
-                    [
                         ui.Label({"Text": "설명", "Weight": 0}),
                         ui.LineEdit(
                             {
                                 "ID": "Description",
-                                "PlaceholderText": "선택 입력 (예: c)",
-                                "Weight": 1,
+                                "PlaceholderText": "선택 입력 (예: c-클린 버전, m-모자이크 버전)",
+                                "Weight": 3,
                             }
                         ),
-                    ],
-                ),
-                ui.HGroup(
-                    {"Weight": 0},
-                    [
+                        ui.Label({"Text": "시퀀스 단위", "Weight": 0}),
+                        ui.ComboBox({"ID": "SequenceStep", "Weight": 1}),
                         ui.Label({"Text": "버전", "Weight": 0}),
                         ui.LineEdit(
                             {
@@ -649,6 +976,14 @@ def show_exporter_window(resolve_obj, fusion_obj, bmd_obj):
                     [
                         ui.Label({"Text": "렌더 프리셋", "Weight": 0}),
                         ui.ComboBox({"ID": "Preset", "Weight": 1}),
+                        ui.CheckBox(
+                            {
+                                "ID": "TimeCounter",
+                                "Text": "타임카운터 적용",
+                                "Checked": True,
+                                "Weight": 0,
+                            }
+                        ),
                     ],
                 ),
                 ui.HGroup(
@@ -695,9 +1030,21 @@ def show_exporter_window(resolve_obj, fusion_obj, bmd_obj):
                 ui.HGroup(
                     {"Weight": 0},
                     [
-                        ui.Button({"ID": "CreateRenderFolders", "Text": "폴더 생성"}),
+                        ui.Button(
+                            {
+                                "ID": "CreateRenderFolders",
+                                "Text": "렌더 폴더 생성",
+                                "Enabled": False,
+                            }
+                        ),
                         ui.HGap(0, 1),
-                        ui.Button({"ID": "RenderNow", "Text": "Render All"}),
+                        ui.Button(
+                            {
+                                "ID": "RenderNow",
+                                "Text": "Render All",
+                                "Enabled": False,
+                            }
+                        ),
                         ui.Button({"ID": "Close", "Text": "닫기"}),
                     ],
                 ),
@@ -715,6 +1062,17 @@ def show_exporter_window(resolve_obj, fusion_obj, bmd_obj):
         items["Preset"].AddItem(str(preset))
     state = {"jobs": []}
 
+    def set_action_buttons_enabled(enabled):
+        enabled = bool(enabled)
+        items["CreateRenderFolders"].Enabled = enabled
+        items["RenderNow"].Enabled = enabled
+
+    def required_episode():
+        value = str(items["Episode"].Text or "").strip()
+        if not value:
+            raise ExporterError("에피소드를 입력하세요 (예: e001)")
+        return normalize_episode(value)
+
     def selected_track_index():
         selected = int(items["Track"].CurrentIndex or 0)
         if selected < 0 or selected >= len(track_options):
@@ -723,6 +1081,8 @@ def show_exporter_window(resolve_obj, fusion_obj, bmd_obj):
 
     def refresh(_event=None):
         try:
+            required_episode()
+            set_action_buttons_enabled(True)
             active_project = resolve_obj.GetProjectManager().GetCurrentProject()
             records = collect_timeline_clips(active_project, selected_track_index())
             if not str(items["OutputRoot"].Text or "").strip():
@@ -742,6 +1102,7 @@ def show_exporter_window(resolve_obj, fusion_obj, bmd_obj):
             )
             return active_project
         except Exception as exc:
+            set_action_buttons_enabled(False)
             state["jobs"] = []
             items["Preview"].PlainText = ""
             items["Status"].Text = "확인 필요: {0}".format(exc)
@@ -755,23 +1116,54 @@ def show_exporter_window(resolve_obj, fusion_obj, bmd_obj):
             refresh()
 
     def render_now(_event):
+        try:
+            required_episode()
+        except Exception as exc:
+            set_action_buttons_enabled(False)
+            items["Status"].Text = "확인 필요: {0}".format(exc)
+            return
         active_project = refresh()
         if active_project is None or not state["jobs"]:
             return
+        job_ids = []
         try:
             job_ids = enqueue_render_jobs(
                 active_project,
                 state["jobs"],
                 str(items["Preset"].CurrentText or CURRENT_SETTINGS_LABEL),
             )
+            try:
+                changed_count = set_time_counter_enabled(
+                    state["jobs"], bool(items["TimeCounter"].Checked)
+                )
+            except Exception:
+                for job_id in reversed(job_ids):
+                    try:
+                        active_project.DeleteRenderJob(job_id)
+                    except Exception:
+                        pass
+                raise
             start_render_jobs(active_project, job_ids)
-            items["Status"].Text = "렌더 시작: {0}개 클립을 순서대로 출력합니다".format(
-                len(job_ids)
+            counter_label = (
+                " · 타임카운터 적용 {0}개".format(changed_count)
+                if bool(items["TimeCounter"].Checked)
+                else " · 타임카운터 미적용"
+            )
+            items["Status"].Text = (
+                "렌더 시작: {0}개 클립을 순서대로 출력합니다{1}".format(
+                    len(job_ids), counter_label
+                )
             )
         except Exception as exc:
             items["Status"].Text = "렌더 시작 실패: {0}".format(exc)
 
     def create_render_folders(_event):
+        try:
+            required_episode()
+        except Exception as exc:
+            set_action_buttons_enabled(False)
+            items["Status"].Text = "확인 필요: {0}".format(exc)
+            return
         active_project = refresh()
         if active_project is None or not state["jobs"]:
             return
@@ -790,6 +1182,7 @@ def show_exporter_window(resolve_obj, fusion_obj, bmd_obj):
     window.On[WINDOW_ID].Close = close
     window.On["Close"].Clicked = close
     window.On["Browse"].Clicked = browse
+    window.On["Episode"].TextChanged = refresh
     window.On["Refresh"].Clicked = refresh
     window.On["CreateRenderFolders"].Clicked = create_render_folders
     window.On["RenderNow"].Clicked = render_now
