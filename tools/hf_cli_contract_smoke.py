@@ -59,6 +59,15 @@ def run_text(cli: str, *args: str) -> str:
         return ""
 
 
+def _reported_cli_version(version_text: str) -> str | None:
+    """`higgsfield version` 출력에서 실제 버전 토큰만 정확히 뽑는다."""
+    for line in version_text.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2 and parts[0].casefold() == "higgsfield":
+            return parts[1]
+    return None
+
+
 def _first(data):
     if isinstance(data, list):
         return data[0] if data else None
@@ -75,14 +84,21 @@ def main() -> int:
         print("[중단] higgsfield CLI 를 PATH 에서 못 찾음. 설치/PATH 확인 후 다시.")
         return 2
 
-    pin = PIN_FILE.read_text("utf-8").strip().splitlines()[0].strip() if PIN_FILE.exists() else ""
+    pin_text = PIN_FILE.read_text("utf-8-sig").strip() if PIN_FILE.exists() else ""
+    pin = pin_text.splitlines()[0].strip() if pin_text else ""
 
-    # 1) 버전 == pin
+    # 1) 설치본 버전 == pin. ★부분 문자열 비교 금지 — pin 1.1.2 가 설치본 1.1.23 을
+    #    통과시키면 안 된다(빈 pin 파일에서 splitlines()[0] 이 터지던 문제도 함께 해소).
     ver_txt = run_text(cli, "version")
-    if pin and pin in ver_txt:
+    actual_version = _reported_cli_version(ver_txt)
+    if pin and actual_version == pin:
         record(PASS, "version == pin", f"pin={pin}")
     else:
-        record(FAIL, "version == pin", f"pin={pin!r} but `version`={ver_txt.strip()[:60]!r}")
+        record(
+            FAIL,
+            "version == pin",
+            f"pin={pin!r} actual={actual_version!r} but `version`={ver_txt.strip()[:60]!r}",
+        )
 
     # 2) model list — 모델선택/거래태깅이 여기 필드에 의존
     ml, err = run_json(cli, "model", "list")
@@ -231,9 +247,12 @@ def main() -> int:
     if n_fail:
         print("→ FAIL 이 있다. CLI 계약이 깨졌다. cli_bridge/agent_push 의 해당 매핑을 고쳐라.")
     elif n_warn:
-        print("→ FAIL 없음. WARN 은 확인 권장(특히 seedance medias, 로그인/workspace 필요 항목).")
+        print(
+            "→ FAIL 없음. WARN 의 릴리스 차단 여부를 확인한 뒤(특히 seedance medias, "
+            "로그인/workspace 필요 항목) 현재 pin 변경을 커밋·릴리스하라."
+        )
     else:
-        print("→ 전부 통과. 이 CLI 버전으로 pin 범프해도 안전.")
+        print("→ 무료 계약 검증 전부 통과. 현재 pin 변경을 호환 코드와 함께 커밋·릴리스해도 된다.")
     return 1 if n_fail else 0
 
 

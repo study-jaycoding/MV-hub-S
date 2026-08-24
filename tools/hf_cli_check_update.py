@@ -89,9 +89,10 @@ def main() -> int:
 
     print("\n" + "=" * 60)
     print("다음 단계 (docs/HF_CLI_UPGRADE.md 절차):")
-    print(f"  1) npm install -g @higgsfield/cli@{latest}")
-    print("  2) python tools/hf_cli_contract_smoke.py   # 출력형식 변경까지 확정")
-    print(f"  3) 통과하면 hf_cli_version.txt 를 {latest} 로 올리고 커밋 → 릴리스")
+    print(f"  1) hf_cli_version.txt 를 {latest} 로 변경   # 아직 커밋·릴리스 금지")
+    print("  2) update_cli.bat                          # 바꾼 pin 의 정확한 버전을 설치")
+    print("  3) python tools/hf_cli_contract_smoke.py   # 출력형식 변경까지 확정")
+    print("  4) 통과하면 pin 변경과 호환 코드 수정분을 함께 커밋 → 릴리스")
     return 0
 
 
