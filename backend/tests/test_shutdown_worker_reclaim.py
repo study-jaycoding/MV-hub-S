@@ -149,6 +149,30 @@ class PrewarmStopCheckpointTests(unittest.TestCase):
             made = thumbs.prewarm_generation_thumbs(should_stop=should_stop)
         return made, processed, evict
 
+    def test_video_uses_poster_generator_instead_of_image_decoder(self):
+        rows = [{"file_path": "/media/aa/recent.mp4"}]
+        connection = SimpleNamespace(
+            execute=lambda _sql: SimpleNamespace(fetchall=lambda: rows)
+        )
+
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        with (
+            patch("app.db.get_connection", side_effect=fake_connection),
+            patch.object(thumbs, "_media_target", side_effect=Path),
+            patch.object(thumbs, "cache_path", side_effect=lambda t, w: Path(f"/missing/{t.name}.{w}")),
+            patch.object(thumbs, "ensure_thumb") as image_thumb,
+            patch.object(thumbs, "ensure_video_poster", return_value=Path("/thumb.jpg")) as video_poster,
+            patch.object(thumbs, "evict_thumb_cache"),
+        ):
+            made = thumbs.prewarm_generation_thumbs()
+
+        self.assertEqual(made, 2)
+        image_thumb.assert_not_called()
+        self.assertEqual(video_poster.call_count, 2)
+
     def test_stop_signal_skips_remaining_files_but_finishes_current_file(self):
         calls = {"n": 0}
 
