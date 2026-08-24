@@ -69,7 +69,7 @@ describe("미디어 썸네일 URL", () => {
     expect(mediaThumbUrl("/media/aa/sound.wav", null, "audio", 256)).toBeNull();
   });
 
-  it("포스터 없는 원격 영상은 대용량 전체 다운로드 대신 Range 폴백을 남긴다", () => {
+  it("원격 영상은 원본을 받지 않고 별도 포스터만 작은 썸네일 캐시로 쓴다", () => {
     expect(mediaThumbUrl("https://cdn.example/result.mp4", null, "video", 256)).toBeNull();
     expect(
       mediaThumbUrl(

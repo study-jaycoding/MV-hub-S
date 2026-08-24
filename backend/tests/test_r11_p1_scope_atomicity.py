@@ -35,6 +35,12 @@ A_UID = "r11p1-a-uid"
 B_UID = "r11p1-b-uid"
 
 
+@pytest.fixture(autouse=True)
+def _enable_legacy_preservation_contract(monkeypatch):
+    """이 파일은 명시적 opt-in 보존 기능의 계정 격리 계약을 검증한다."""
+    monkeypatch.setattr(share, "MEDIA_PRESERVATION_ENABLED", True)
+
+
 @pytest.fixture
 def two_accounts(tmp_path, monkeypatch):
     """실제 사용자 포인터·DB를 건드리지 않는 A/B 계정별 환경(HAF-1 fixture 형태)."""

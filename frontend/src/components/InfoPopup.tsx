@@ -87,8 +87,6 @@ export function InfoPopup({
   // Comfy 생성물은 Cloud 가 건별 크레딧을 API 로 안 준다(정액 구독제) → 견적 대신 구독 정보를 보여준다.
   const [comfySub, setComfySub] = useState<{ target: "cloud" | "local"; tier: string | null } | null>(null);
   const [recoveryBusy, setRecoveryBusy] = useState(false);
-  const [preservation, setPreservation] = useState<Generation | null>(null);
-  const [preservationBusy, setPreservationBusy] = useState(false);
   const modelName = useModelDisplayName();
   const drag = useRef<{ dx: number; dy: number } | null>(null);
 
@@ -123,7 +121,6 @@ export function InfoPopup({
       .generationMetrics(g.id)
       .then((m) => isLatest() && setMetrics(m))
       .catch(() => isLatest() && setMetrics(null));
-    setPreservation(g);
   }, [target]);
 
   const onDragStart = (e: React.PointerEvent) => {
@@ -149,7 +146,7 @@ export function InfoPopup({
   let sources: React.ReactNode = null;
 
   if (target.kind === "generation") {
-    const g = preservation || target.gen;
+    const g = target.gen;
     const asset = g.assets[0];
     isVideo = asset?.type === "video";
     // 영상: 실제 영상이 <video> src, thumbnail_path(CLI 정적 포스터)는 poster 로 분리(포스터를 src 로
@@ -192,43 +189,6 @@ export function InfoPopup({
                   : g.recovery_probe_status === "no_match"
                     ? "다시 실행"
                     : "미제출 확인 후 다시 실행"}
-              </button>
-            )}
-          </div>
-        )}
-        {g.media_preservation_status && g.media_preservation_status !== "none" && (
-          <div className={`info-preservation is-${g.media_preservation_status}`}>
-            <span className="info-preservation-label">원본 보존</span>
-            <span className="info-preservation-text">
-              {{
-                pending: "대기 중",
-                running: "보존 중",
-                complete: `완료 · ${g.media_preservation_cached || 0}개`,
-                partial: `일부 완료 · 실패 ${g.media_preservation_failed || 0}개`,
-                failed: "실패",
-                capacity: "저장공간 한도 도달",
-              }[g.media_preservation_status] || g.media_preservation_status}
-            </span>
-            {(["partial", "failed", "capacity"] as string[]).includes(
-              g.media_preservation_status,
-            ) && (
-              <button
-                type="button"
-                className="info-preservation-btn"
-                disabled={preservationBusy}
-                onClick={async () => {
-                  setPreservationBusy(true);
-                  try {
-                    const result = await api.preserveGeneration(g.id);
-                    setPreservation(result.generation);
-                  } catch (error) {
-                    alert(`원본 보존 재시도 실패: ${error}`);
-                  } finally {
-                    setPreservationBusy(false);
-                  }
-                }}
-              >
-                {preservationBusy ? "재시도 중…" : "원본 보존 재시도"}
               </button>
             )}
           </div>

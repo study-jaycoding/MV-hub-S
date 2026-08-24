@@ -13,10 +13,13 @@ from app.routers import library
 class MediaThumbSecurityTests(unittest.IsolatedAsyncioTestCase):
     async def test_remote_failures_end_locally_without_redirect(self):
         src = "https://evil.example/image.png"
-        with mock.patch.object(
-            library.media_cache,
-            "cache_thumb_source",
-            new=mock.AsyncMock(return_value=None),
+        with (
+            mock.patch.object(library._proxy, "is_shared_team_server", return_value=False),
+            mock.patch.object(
+                library.media_cache,
+                "cache_thumb_source",
+                new=mock.AsyncMock(return_value=None),
+            ),
         ):
             with self.assertRaises(HTTPException) as cache_error:
                 await library.media_thumb(src)
@@ -26,6 +29,7 @@ class MediaThumbSecurityTests(unittest.IsolatedAsyncioTestCase):
             target = Path(temp_dir) / "broken.png"
             target.write_bytes(b"not-an-image")
             with (
+                mock.patch.object(library._proxy, "is_shared_team_server", return_value=False),
                 mock.patch.object(
                     library.media_cache,
                     "cache_thumb_source",

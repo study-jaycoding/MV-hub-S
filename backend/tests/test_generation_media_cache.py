@@ -183,6 +183,7 @@ class GenerationMediaCacheTests(IsolatedAsyncioTestCase):
 
         with (
             patch.object(deps, "require_admin") as require_admin,
+            patch.object(generation, "MEDIA_PRESERVATION_ENABLED", True),
             patch.object(
                 repo, "request_media_preservation_for_all_done", return_value=2
             ) as batch,

@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager, contextmanager
 from typing import Any, Iterable, Iterator, Mapping, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-from ..config import DEFAULT_WORKER_ID
+from ..config import DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
 from ..db import get_connection
 from ._common import new_id
 
@@ -725,7 +725,7 @@ def apply_share_state_intent_local(
                     "UPDATE generation SET is_final=0, final_by=NULL, final_at=NULL WHERE id=?",
                     (target_id,),
                 )
-            if preservation_reason:
+            if preservation_reason and MEDIA_PRESERVATION_ENABLED:
                 # 공유/최종 표식과 보존 요청도 같은 트랜잭션에 둔다. 원장만 converged인데
                 # media_preservation 등록이 빠지는 부분 성공을 만들지 않는다.
                 conn.execute(

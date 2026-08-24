@@ -137,8 +137,9 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
 | `CONTENT_HUB_LOG_KEEP` | `5` | 회전 로그 보관 개수 |
 | `CONTENT_HUB_METRICS_LOG_INTERVAL` | `60` | CPU·메모리·요청 집계를 로그에 남기는 주기(초), 0=비활성 |
 | `CONTENT_HUB_SLOW_REQUEST_MS` | `1000` | 개별 느린 요청을 운영 로그에 기록하는 기준(ms) |
-| `CONTENT_HUB_PRESERVED_MEDIA_MAX_BYTES` | `53687091200`(50GiB) | 공유·최종 원본 영구 보존 총량. 기존 보존본은 자동 삭제하지 않음 |
-| `CONTENT_HUB_MEDIA_PRESERVATION_INTERVAL_SECONDS` | `30` | 원본 보존 워커 주기(초), 한 주기 최대 2건 |
+| `CONTENT_HUB_MEDIA_PRESERVATION` | `0`(off) | 기본 URL-only. 특수 설치에서만 1로 영구 보존 opt-in |
+| `CONTENT_HUB_PRESERVED_MEDIA_MAX_BYTES` | `53687091200`(50GiB) | opt-in 시 원본 영구 보존 총량 |
+| `CONTENT_HUB_MEDIA_PRESERVATION_INTERVAL_SECONDS` | `30` | opt-in 원본 보존 워커 주기(초), 한 주기 최대 2건 |
 | `CONTENT_HUB_MEDIA_PRESERVATION_STARTUP_DELAY_SECONDS` | `10` | 서버 시작 뒤 원본 보존 다운로드 시작 유예(초) |
 | `CONTENT_HUB_MEDIA_PRESERVATION_MAX_ATTEMPTS` | `5` | 자동 재시도 최대 횟수. 이후 정보창에서 수동 재시도 가능 |
 | `CONTENT_HUB_RESTART_LIMIT` | `5` | 빠른 서버 종료를 연속 허용하는 횟수 |
@@ -160,22 +161,20 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
     헤더를 못 붙이는 img 태그·WebSocket 용). 로그인 시 토큰+쿠키 동시 발급, 로그아웃 시 둘 다 폐기.
   - 정적 SPA(로그인 화면)와 로그인·가입·헬스 엔드포인트는 공개(그래야 로그인 화면이 뜬다).
 
-## 공유·최종 원본 보존
+## 미디어 URL-only 정책
 
-공유하거나 최종으로 지정한 완료 생성물은 원격 URL만 남기지 않고 서버·작업자 PC의 `media/`에
-자동 보존한다. 요청은 먼저 `media_preservation` DB 큐에 기록되므로 다운로드 중 프로세스가
-종료돼도 다음 시작에 이어진다. 업데이트 전부터 공유·최종이었던 기존 항목도 시작 시 자동 등록된다.
+Higgsfield 생성물은 DB에 원격 HTTPS URL을 보관한다. 공유·최종 선택은 서버와 작업자
+PC의 `media/`에 원본 영상을 자동 저장하지 않는다. 구버전이 보존한 항목도 DB에 남은
+`source_url`을 응답에서 우선하며, 이미 받은 파일은 안전을 위해 자동 삭제하지 않는다.
 
-- 워커는 기본 10초 뒤 시작해 30초마다 최대 2건만 처리한다.
-- 기본 총량은 50GiB다. 한도 초과 시 방금 받은 파일만 되돌리고 기존 보존본은 삭제하지 않는다.
-- 네트워크 일시 오류는 제한된 백오프로 재시도한다. `capacity`·`partial`·`failed`는 생성물
-  정보창의 **원본 보존 재시도**로 다시 처리할 수 있다.
-- 관리자 `POST /api/cache-all`은 즉시 전부 내려받지 않고 완료 생성물을 저속 큐에 등록한다.
-- 상태 DB와 운영 로그에는 URL·프롬프트·예외 원문을 넣지 않는다. 상태별 개수와 안전한 오류
-  코드만 남긴다.
+목록을 빠르게 보여주기 위한 썸네일은 각 작업자의 로컬 허브에서 만든다. 원격 이미지와
+영상 포스터를 목록 조회 직후 작은 JPEG로 미리 만들며, 썸네일과 썸네일 생성용 원본은
+작업자 PC의 용량 상한이 있는 LRU 캐시에만 둔다. 오래된 캐시는 자동 정리되고 비디오 원본
+자체는 사전 준비하지 않는다. 공유 서버는 원격 썸네일을 생성·저장하지 않는다.
 
-50GiB는 기본 안전값일 뿐 자동 용량 계획이 아니다. 운영 전 `media/`가 있는 실제 디스크 여유와
-백업 정책을 확인하고 필요할 때만 `CONTENT_HUB_PRESERVED_MEDIA_MAX_BYTES`를 조정한다.
+기존 영구 보존 코드는 특수 설치 호환성을 위해 남아 있지만 기본은 꺼져 있다.
+`CONTENT_HUB_MEDIA_PRESERVATION=1`을 명시한 설치에서만 시작 백필·주기 다운로드·수동
+`/api/cache-all`이 활성화된다. 일반 배포는 이 값을 설정하지 않는다.
 
 ## DB 자동 백업
 

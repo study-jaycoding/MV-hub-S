@@ -391,7 +391,9 @@ def prewarm_generation_thumbs(
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT file_path, MAX(rowid) AS latest_rowid FROM asset "
-            "WHERE file_path LIKE '/media/%' GROUP BY file_path ORDER BY latest_rowid DESC"
+            "WHERE file_path LIKE '/media/%' "
+            "AND (source_url IS NULL OR source_url NOT LIKE 'http%') "
+            "GROUP BY file_path ORDER BY latest_rowid DESC"
         ).fetchall()
     made = 0
     warmed_videos = 0

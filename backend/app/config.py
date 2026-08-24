@@ -84,6 +84,15 @@ EXTERNAL_RECOVERY_ENABLED = os.environ.get(
     "CONTENT_HUB_EXTERNAL_RECOVERY", "1"
 ).lower() in ("1", "true", "yes", "on")
 
+# ── 원본 미디어 저장 정책 ────────────────────────────────────────────────
+# MV Hub의 기본 계약은 Higgsfield HTTPS URL을 보관하고 원본 바이트는
+# 서버에 자동 저장하지 않는 것이다. 특수한 운영 이유로 영구 보존이 필요한
+# 설치본만 명시적으로 1을 설정한다. 기본값을 0으로 두어 공유·최종 선택이
+# 디스크 사용량 증가로 이어지지 않게 한다.
+MEDIA_PRESERVATION_ENABLED = os.environ.get(
+    "CONTENT_HUB_MEDIA_PRESERVATION", "0"
+).lower() in ("1", "true", "yes", "on")
+
 # 서버 바인딩 — 인증이 꺼진 개인/개발 모드는 기본적으로 로컬에만 묶는다. 공유 서버 스크립트는
 # CONTENT_HUB_AUTH=1 + CONTENT_HUB_HOST=0.0.0.0 을 명시하므로 LAN 공개 동작은 그대로 유지된다.
 HOST = os.environ.get(

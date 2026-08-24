@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 from . import _proxy
 from .. import active_account, db, repo
-from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
+from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
 from ._telemetry import touch_generation_telemetry
 from ..deps import actor_id, require_edit_generation
 from ..repo import identity
@@ -330,15 +330,14 @@ def receive_published_bundle(body: PublishBundleIn, request: Request):
                 "updated": int(counts.get("updated") or 0),
             },
         )
-    # 공유 서버도 받은 원본을 보존한다. 번들에는 원격 URL만 오므로 서버 측 byte-cache가
-    # 없으면 CDN 만료 뒤 팀 공유본 전체가 깨진다. ID/job_id 양쪽을 해석해 멱등 등록한다.
-    # 항목별 resolve+get(3N DB 진입)을 앞서 만든 anchors 의 배치 해석 1회로(R7 2-F) —
-    # 보존 큐 등록(쓰기)만 항목별 유지.
-    resolved_meta = repo.resolve_generation_meta_batch(anchors)
-    for anchor in anchors:
-        meta = resolved_meta.get(anchor)
-        if meta and meta.get("id"):
-            repo.request_media_preservation(meta["id"], "shared")
+    # 기본은 URL-only: 공유 서버에 미디어 바이트를 자동 저장하지 않는다.
+    # 영구 보존을 명시적으로 켠 특수 설치본에서만 영속 큐에 등록한다.
+    if MEDIA_PRESERVATION_ENABLED:
+        resolved_meta = repo.resolve_generation_meta_batch(anchors)
+        for anchor in anchors:
+            meta = resolved_meta.get(anchor)
+            if meta and meta.get("id"):
+                repo.request_media_preservation(meta["id"], "shared")
     return {"ok": True, **counts}
 
 

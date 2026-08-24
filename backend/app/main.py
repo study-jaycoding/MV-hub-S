@@ -45,6 +45,7 @@ from .config import (
     FRONTEND_DIST,
     MANAGE_ENABLED,
     MEDIA_DIR,
+    MEDIA_PRESERVATION_ENABLED,
     ensure_dirs,
 )
 from .db import init_db, maintenance_active
@@ -440,11 +441,14 @@ async def _application_lifespan(app: FastAPI):
             print(f"[startup] 썸네일 사전 생성 건너뜀: {e}")
 
     try:
-        thumb_prewarm_thread = threading.Thread(
-            target=_prewarm, daemon=True, name="thumb-prewarm"
-        )
-        thumb_prewarm_thread.start()
-        thumb_prewarm_started = True  # start 성공 뒤에만 회수 대상(미시작 스레드 join = RuntimeError)
+        # 공유 서버는 URL·DB만 보관하고 썸네일 파일을 만들지 않는다. 로컬 작업자 허브와
+        # 격리 test_dev만 썸네일을 사전 생성한다.
+        if not _proxy.is_shared_team_server():
+            thumb_prewarm_thread = threading.Thread(
+                target=_prewarm, daemon=True, name="thumb-prewarm"
+            )
+            thumb_prewarm_thread.start()
+            thumb_prewarm_started = True  # start 성공 뒤에만 회수 대상(미시작 스레드 join = RuntimeError)
         # 공유 서버 이사 공지는 기동 때 1회 확인해 둔다(이후 주기 갱신은 worker_backup 60초 루프가
         # 편승 — 워커 허브가 아닌 모드에는 그 루프가 없어 이 1회만 돈다). 릴리스 설치본이 아니면
         # refresh 가 즉시 None 으로 끝나고, 읽기 자체는 자식 프로세스+타임아웃으로 격리돼 있다.
@@ -471,8 +475,9 @@ async def _application_lifespan(app: FastAPI):
         periodic_backup_started = True
         periodic_sweeper.start()  # 묵은 임시파일(.part/.tmp/comfy 입력/%TEMP%) 청소 + 캐시 eviction
         periodic_sweeper_started = True
-        periodic_media_preservation.start()  # 공유·최종 원본 보존(영속 큐·재시작 복구·용량 상한)
-        media_preservation_started = True
+        if MEDIA_PRESERVATION_ENABLED:
+            periodic_media_preservation.start()  # 명시적 opt-in 설치만 영구 보존
+            media_preservation_started = True
         periodic_resolve_queue.start()  # Resolve 가져오기 큐(Windows+release 에서만 자동 시작)
         resolve_queue_started = True
         # 계층 경계(services→routers 금지) 때문에 reconciler 의 라우터 의존은 여기서 주입한다.

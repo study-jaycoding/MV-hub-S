@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 
 from . import _proxy
 from .. import active_account, rbac, repo
-from ..config import DEFAULT_WORKER_ID
+from ..config import DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
 from ._telemetry import touch_generation_telemetry
 from ..db import get_connection
 from ..deps import (
@@ -351,7 +351,8 @@ def publish(gen_id: str, body: PublishIn, request: Request):
     shared_by = actor_id(request)
     was_shared = bool(gen.get("shared"))
     repo.publish(gen_id, shared_by, body.visibility)
-    repo.request_media_preservation(gen_id, "shared")
+    if MEDIA_PRESERVATION_ENABLED:
+        repo.request_media_preservation(gen_id, "shared")
     _touch_telemetry(gen_id)
     out = repo.get_generation(gen_id)
     if out and not was_shared and out.get("shared"):
@@ -476,6 +477,8 @@ async def _preserve_final_media(local_id: str, account_scope: str) -> None:
     ★응답 이후(BackgroundTask)에 도는 코드다. ① 동기 DB 는 워커 스레드로 — 여기서 루프를 잡으면
     유지보수 게이트 대기가 서버 전체를 세운다. ② 계정 범위는 라우트에서 캡처한 키로 고정 — 응답
     뒤에 계정 전환이 끼면 B DB 를 읽어 gen 이 None 이 되고 골드 원본 보존이 조용히 유실됐다."""
+    if not MEDIA_PRESERVATION_ENABLED:
+        return
     account_token = active_account.set_override(account_scope or "")
     try:
         # 요청을 먼저 영속화하므로 프로세스가 여기서 중단돼도 다음 시작의 주기 워커가 이어간다.
@@ -565,9 +568,10 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
             )
             if mirrored and local_id:
                 _touch_telemetry(local_id)
-                background.add_task(
-                    _preserve_final_media, local_id, _capture_account_scope()
-                )
+                if MEDIA_PRESERVATION_ENABLED:
+                    background.add_task(
+                        _preserve_final_media, local_id, _capture_account_scope()
+                    )
                 return out
             return _mirror_pending_response(out)
     # 비프록시(서버 본체/단독 모드): 로컬에서 직접 처리.
@@ -598,8 +602,9 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
         fields=["is_final", "final_by", "final_at"],
         details={"is_final": True},
     )
-    # 최종본 원본 로컬 보존 — 응답 뒤에 도는 태스크라 지금의 계정 DB 키를 같이 넘긴다.
-    background.add_task(_preserve_final_media, gen_id, _capture_account_scope())
+    # 기본 URL-only 모드에서는 최종 선택이 원본 다운로드를 시작하지 않는다.
+    if MEDIA_PRESERVATION_ENABLED:
+        background.add_task(_preserve_final_media, gen_id, _capture_account_scope())
     return repo.get_generation(gen_id)
 
 

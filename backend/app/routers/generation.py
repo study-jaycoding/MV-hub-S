@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from . import _proxy, _telemetry
 from ..services.async_tools import to_thread_non_abandon
 from .. import rbac, repo
-from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
+from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
 from ..deps import (
     account_global_roles,
     account_scope_uid,
@@ -1182,6 +1182,11 @@ def seen_gen_comment(comment_id: str, request: Request):
 
 @router.post("/generations/{gen_id}/cache")
 async def cache_one(gen_id: str, request: Request):
+    if not MEDIA_PRESERVATION_ENABLED:
+        raise HTTPException(
+            status_code=409,
+            detail="HTTPS URL-only 모드에서는 원본을 서버에 저장하지 않습니다",
+        )
     # preflight(해석→권한→큐 등록)를 하나의 동기 helper 로 묶어 스레드에서(R7 1-H) —
     # 로컬 miss 의 _resolve_local_or_reclaim 은 동기 proxy_get(최대 60초)이라 이벤트
     # 루프를 통째로 막았다. 순서 고정: 권한 실패 시 큐 쓰기 0. 등록 뒤 취소는 durable
@@ -1217,6 +1222,11 @@ async def cache_all(request: Request):
     from ..deps import require_admin
 
     require_admin(request)  # 전 계정 미디어 일괄 캐시 — AUTH on 이면 admin 만(AUTH off 면 통과)
+    if not MEDIA_PRESERVATION_ENABLED:
+        raise HTTPException(
+            status_code=409,
+            detail="HTTPS URL-only 모드에서는 원본을 서버에 저장하지 않습니다",
+        )
     # 전체 DB 규모에 비례하는 항목별 직렬화·개별 커넥션(N+1)을 배치 한 번으로 바꾸고,
     # async 라우트의 이벤트 루프가 SQLite busy 대기(최대 5초)에 막히지 않게 스레드로 격리한다.
     queued = await asyncio.to_thread(repo.request_media_preservation_for_all_done)

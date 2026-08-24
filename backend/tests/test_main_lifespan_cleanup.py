@@ -41,6 +41,8 @@ def _patch_startup_dependencies(
     stack.enter_context(patch.object(main, "AUTH_ENABLED", auth_enabled))
     stack.enter_context(patch.object(main, "MANAGE_ENABLED", False))
     stack.enter_context(patch.object(main, "EXTERNAL_RECOVERY_ENABLED", False))
+    # 이 파일은 opt-in 보존 워커를 켠 설치의 시작/정리 순서 계약을 검증한다.
+    stack.enter_context(patch.object(main, "MEDIA_PRESERVATION_ENABLED", True))
     stack.enter_context(patch.object(main, "_METRICS_LOG_INTERVAL", 0))
     stack.enter_context(
         patch.object(
@@ -58,6 +60,7 @@ def _patch_startup_dependencies(
     stack.enter_context(patch("threading.Thread", return_value=MagicMock()))
     stack.enter_context(patch.object(main, "configure_share_state_router_deps"))
     stack.enter_context(patch.object(main._proxy, "is_worker_hub", return_value=False))
+    stack.enter_context(patch.object(main._proxy, "is_shared_team_server", return_value=False))
     stack.enter_context(
         patch.object(history_autofill, "startup_history_audit", AsyncMock(return_value=None))
     )

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -43,6 +43,76 @@ router = APIRouter(prefix="/api", tags=["library"])
 log = logging.getLogger("library")
 
 
+def _prefer_remote_source_urls(data):
+    """응답에서만 원본 HTTPS URL을 우선한다.
+
+    구버전이 자동 보존한 항목은 file_path가 `/media/...`로 바뀌어 있지만
+    source_url에 원래 원격 주소가 남아 있다. DB를 즉시 대량 변경하지 않고
+    API 응답만 URL-only 계약으로 복원해 다음 배포부터 서버 미디어 용량과
+    관계없이 표시한다. source_url이 없는 Comfy·업로드 로컬 파일은 그대로다.
+    """
+    rows = data if isinstance(data, list) else None
+    if rows is None:
+        return data
+    for generation in rows:
+        if not isinstance(generation, dict):
+            continue
+        for key in ("assets", "references"):
+            media_items = generation.get(key)
+            if not isinstance(media_items, list):
+                continue
+            for media in media_items:
+                if not isinstance(media, dict):
+                    continue
+                source_url = media.get("source_url")
+                if not isinstance(source_url, str) or not source_url.startswith(
+                    ("http://", "https://")
+                ):
+                    continue
+                old_path = media.get("file_path")
+                media["file_path"] = source_url
+                thumb = media.get("thumbnail_path")
+                if not isinstance(thumb, str) or thumb.startswith("/media/") or thumb == old_path:
+                    media["thumbnail_path"] = source_url if media.get("type") != "video" else None
+                media["cached"] = False
+    return data
+
+
+def _remote_thumb_urls(data) -> list[str]:
+    """카드 대표 썸네일로 쓰일 원격 URL을 순서대로 모은다.
+
+    작은 썸네일을 목록 응답 직후 미리 준비해 첫 스크롤 지연을 줄인다.
+    비디오 원본은 내려받지 않고, 별도 포스터 URL이 있을 때만 대상으로 삼는다.
+    """
+    if not isinstance(data, list):
+        return []
+    seen: dict[str, None] = {}
+    for generation in data:
+        if not isinstance(generation, dict):
+            continue
+        assets = generation.get("assets") or []
+        if not assets or not isinstance(assets[0], dict):
+            continue
+        asset = assets[0]
+        raw = asset.get("thumbnail_path") or (
+            asset.get("file_path") if asset.get("type") != "video" else None
+        )
+        if isinstance(raw, str) and raw.startswith(("http://", "https://")):
+            seen.setdefault(raw, None)
+    return list(seen.keys())
+
+
+def _schedule_remote_thumb_prewarm(background: BackgroundTasks, data) -> bool:
+    """작업자 로컬 허브에서만 원격 대표 썸네일 사전 준비를 예약한다."""
+    if _proxy.is_shared_team_server():
+        return False
+    urls = _remote_thumb_urls(data)
+    if not urls:
+        return False
+    background.add_task(thumbs.prewarm_remote_thumbs, urls)
+    return True
+
+
 def _overlay_personal_meta(data, request: Request):
     """팀 목록/단건(서버 데이터)에 내 로컬 개인메타를 덧입힌다(2단계).
 
@@ -53,12 +123,10 @@ def _overlay_personal_meta(data, request: Request):
     rows = data if isinstance(data, list) else None
     if rows is None:
         return data
+    _prefer_remote_source_urls(rows)
     if _proxy.proxying():
-        # 공유 서버가 보존한 원본은 서버 기준 `/media/...`다. 예전 CDN 썸네일은 만료될 수 있으므로
-        # 응답에서만 이미지 보존본을 대표 썸네일로 사용한다. 영상은 서버에 ffmpeg가 없는 설치도
-        # 있으므로 포스터를 비우고 브라우저가 보존 원본의 첫 프레임을 읽게 한다(Range 중계).
-        # 로컬 미들웨어가 파일 부재를 확인한 뒤 공유 서버로 인증 중계한다.
-        # 서버 DB는 바꾸지 않으며 개인 로컬 카드에는 적용하지 않는다.
+        # source_url이 없는 진짜 로컬 미디어(Comfy·수동 업로드)만 `/media`를 유지한다.
+        # 작업자 허브는 파일이 로컬에 없을 때 공유 서버로 인증 중계할 수 있다.
         for generation in rows:
             if not isinstance(generation, dict):
                 continue
@@ -182,29 +250,6 @@ def _team_local_filtered(request: Request, want_colors, want_tags, want_auto, li
         if cur_ts is None or cur_id is None:
             break
     return matches[:limit]
-
-
-def _remote_thumb_urls(data) -> list[str]:
-    """팀 목록 응답에서 카드 대표 썸네일로 쓰일 원격(http) URL 들을 모은다(순서보존·중복제거).
-
-    프론트(GenerationCard)와 동일 규칙: assets[0] 의 thumbnail_path, 이미지면 file_path 도.
-    비디오 file_path(.mp4)는 썸네일 대상이 아니므로 제외(원본 통째 다운로드 방지)."""
-    if not isinstance(data, list):
-        return []
-    seen: dict[str, None] = {}
-    for g in data:
-        if not isinstance(g, dict):
-            continue
-        assets = g.get("assets") or []
-        if not assets or not isinstance(assets[0], dict):
-            continue
-        a = assets[0]
-        raw = a.get("thumbnail_path") or (
-            a.get("file_path") if a.get("type") != "video" else None
-        )
-        if isinstance(raw, str) and raw.startswith(("http://", "https://")):
-            seen.setdefault(raw, None)
-    return list(seen.keys())
 
 
 STAMP_MAX_BYTES = 512 * 1024 * 1024  # 이보다 크면 각인 없이 그냥 흘려보낸다(디스크·시간 보호).
@@ -545,7 +590,16 @@ async def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)
     원격 다운로드·썸네일 생성 실패는 같은 오리진 오류로 끝내 외부 리다이렉트를 만들지 않는다."""
     is_remote = src.startswith(("http://", "https://"))
     if is_remote:
-        # 썸네일 생성만을 위한 원격 원본은 bounded 전용 캐시 — 영구 MEDIA_DIR에 무한 누적 금지.
+        if _proxy.is_shared_team_server():
+            # 공유 서버는 메타데이터와 URL만 보관한다. 직접 접속한 브라우저의 구 빌드가
+            # media-thumb를 호출해도 서버 디스크에는 원격 원본·썸네일을 만들지 않는다.
+            try:
+                assert_public_http_url(src)
+            except BlockedURLError as exc:
+                raise HTTPException(status_code=400, detail="허용되지 않는 원격 URL입니다") from exc
+            return RedirectResponse(src, status_code=307, headers={"Cache-Control": "no-store"})
+        # 썸네일 생성용 원본은 영구 보존 media와 분리된 bounded LRU 캐시에만 둔다.
+        # 비디오 원본은 호출부에서 제외하고 이미지·포스터만 이 경로로 들어온다.
         rel = await media_cache.cache_thumb_source(src)
         if not rel:
             raise HTTPException(status_code=502, detail="원격 미디어를 가져오지 못했습니다")
@@ -614,11 +668,9 @@ def list_generations(
             data = _team_local_filtered(request, colors, tags, auto_tags, limit, cursor_ts, cursor_id)
         else:
             data = _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
-        # 백그라운드 prewarm: 팀 항목 미디어는 원격 URL 이라 첫 표시 때 보는 PC 가 받아 리사이즈 → 느림.
-        # 목록을 받자마자 뒤에서 미리 캐시+썸네일링하면 실제 스크롤 시점엔 디스크 캐시 히트로 즉시 뜬다.
-        urls = _remote_thumb_urls(data)
-        if urls:
-            background.add_task(thumbs.prewarm_remote_thumbs, urls)
+        # 원격 이미지·영상 포스터는 목록을 받은 직후 작은 JPEG로 미리 준비한다.
+        # 실제 원본 영상은 대상에 넣지 않으며, 캐시는 상한을 넘으면 오래된 것부터 정리된다.
+        _schedule_remote_thumb_prewarm(background, data)
         return data
     # 로그인 계정이면 그 계정의 생성자 uid 로 '내 작업'을 한정(계정별 분리). 비로그인은 전체.
     account_uid = _account_uid(request)
@@ -657,6 +709,7 @@ def list_generations(
         cursor_ts=cursor_ts,
         cursor_id=cursor_id,
     )
+    _prefer_remote_source_urls(result)
     # 발행본(서버 공유) 카드의 코멘트 뱃지는 로컬 카운트가 아니라 '서버 스레드' 기준으로 보강한다
     # (팀원이 단 새 코멘트가 카드 C 뱃지에 바로 반영되도록). 공유 표식이 있는 카드만 1회 배치 조회.
     if _proxy.proxying():
@@ -706,11 +759,7 @@ def list_generations(
                             g["id"], 0
                         )
                         g["has_unread"] = c.get("has_unread", g.get("has_unread"))
-    # 내 라이브러리도 대표 썸네일이 원격 URL 이면 뒤에서 미리 캐시(팀 탭과 동일) — 첫 스크롤 지연 제거.
-    # 이미 캐시된 건 즉시 통과(멱등)라 매 목록 요청 재호출이 싸다.
-    own_urls = _remote_thumb_urls(result)
-    if own_urls:
-        background.add_task(thumbs.prewarm_remote_thumbs, own_urls)
+    _schedule_remote_thumb_prewarm(background, result)
     return result
 
 
@@ -786,6 +835,7 @@ def get_generation(gen_id: str, request: Request):
         raise HTTPException(status_code=404, detail="generation 없음")
     # 비공개는 본인만, 공유된 것만 남이 열람(원칙). 권한 없으면 404(존재 자체를 숨김).
     require_view_generation(request, gen)
+    _prefer_remote_source_urls([gen])
     return gen
 
 
@@ -848,6 +898,7 @@ def get_generations_batch(body: GenerationBatchIn, request: Request):
                         [str(parent) for parent in parents if parent] if isinstance(parents, list) else []
                     )
 
+    _prefer_remote_source_urls(list(visible_items.values()))
     return {
         "items": visible_items,
         "materials": visible_materials,

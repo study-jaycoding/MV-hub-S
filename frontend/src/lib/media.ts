@@ -116,7 +116,7 @@ export function thumbUrl(path: string | null | undefined, size = 256): string | 
 // display 전용 썸네일 URL — '볼 때'는 작은 캐시본으로 빠르고 안 깨지게. 저장값(원본)은 그대로 두고
 // 렌더 시점에만 프록시화한다(원칙: display=캐시썸네일 / 실제사용·다운로드=원본).
 //  · asset:proj|path 토큰 → 에셋 썸네일(백엔드 리사이즈, 영상은 첫 프레임 포스터)
-//  · /media·http(s) → media-thumb 프록시(리사이즈+디스크캐시+same-origin) — 원격 만료·교차출처 깨짐 방지
+//  · /media·http(s) → media-thumb 프록시(작은 JPEG 캐시) — 원본 영구 보존과는 별개
 //  · 이미 프록시(/api/…) URL 이면 그대로(중복 래핑·옛 저장값 호환), 오디오/빈값 → null
 export function displayThumb(pathOrToken: string | null | undefined, size = 256): string | null {
   if (!pathOrToken) return null;
@@ -136,7 +136,7 @@ export function displayThumb(pathOrToken: string | null | undefined, size = 256)
       /* 파싱 실패 시 아래 폴백 */
     }
   }
-  return thumbUrl(pathOrToken, size); // /media·http → 프록시, /api/assets/thumb → 버전표 재생성, /api/media-thumb 등은 raw 유지
+  return thumbUrl(pathOrToken, size); // /media·http → 썸네일 프록시, /api/assets/thumb → 버전표 재생성
 }
 
 // 레퍼런스(캔버스 카드·프롬프트 트레이·인라인 칩·토큰 알약) 썸네일 URL — 저장된 thumb(버전 고정 URL)

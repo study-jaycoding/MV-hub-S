@@ -250,6 +250,7 @@ def _patch_lifespan_with_real_threads(stack: ExitStack, tmp_path: Path) -> None:
     stack.enter_context(patch.object(server_relocation, "refresh", return_value=None))
     stack.enter_context(patch.object(main, "configure_share_state_router_deps"))
     stack.enter_context(patch.object(main._proxy, "is_worker_hub", return_value=False))
+    stack.enter_context(patch.object(main._proxy, "is_shared_team_server", return_value=False))
     stack.enter_context(
         patch.object(history_autofill, "startup_history_audit", AsyncMock(return_value=None))
     )
@@ -321,6 +322,23 @@ def test_lifespan_stops_and_joins_thumb_prewarm_thread(tmp_path):
         )
     finally:
         finished.wait(3.0)
+
+
+def test_shared_server_lifespan_does_not_start_thumb_prewarm(tmp_path):
+    async def scenario() -> None:
+        with ExitStack() as stack:
+            _patch_lifespan_with_real_threads(stack, tmp_path)
+            stack.enter_context(
+                patch.object(main._proxy, "is_shared_team_server", return_value=True)
+            )
+            prewarm = stack.enter_context(
+                patch.object(thumbs, "prewarm_generation_thumbs")
+            )
+            async with main._application_lifespan(main.app):
+                await asyncio.sleep(0)
+            prewarm.assert_not_called()
+
+    asyncio.run(scenario())
 
 
 def test_lifespan_survives_prewarm_that_ignores_stop_signal(tmp_path):

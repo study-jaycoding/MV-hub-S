@@ -380,15 +380,6 @@ export const api = {
       elapsed_seconds: number | null;
     }>(`/api/generations/${pathPart(id)}/metrics`),
 
-  preserveGeneration: (id: string) =>
-    jsonFetch<{ status: string; error_code?: string | null; generation: Generation }>(
-      `/api/generations/${pathPart(id)}/cache`,
-      { method: "POST", body: jsonBody({}) },
-    ).then((result) => ({
-      ...result,
-      generation: normalizeGenerationPromptCompatibility(result.generation),
-    })),
-
   // Comfy 실행 대상의 구독 정보(크레딧 표시용) — Cloud 는 건별 크레딧 API 미노출(정액 구독제)이라 등급만.
   comfySubscription: () =>
     jsonFetch<{ target: "cloud" | "local"; tier: string | null }>(`/api/comfy/subscription`),
