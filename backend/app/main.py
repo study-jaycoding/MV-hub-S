@@ -1205,6 +1205,18 @@ async def websocket_endpoint(ws: WebSocket):
                     # 프론트가 reason 없는 1008을 추측하지 않게 한다.
                     await ws.close(code=1008, reason=_WS_REASON_AUTH_REQUIRED)
                     return
+                # password_changed_at 이 없는 기존 계정도 토큰 만료·시크릿 회전을 다시 본다.
+                # 종전에는 비밀번호 스탬프가 있는 계정만 서명을 재검증해, 오래 열린 소켓이
+                # 만료 뒤에도 살아 있을 수 있었다.
+                verdict2 = auth_svc.verify_token(
+                    token, unavailable=auth_svc.SECRET_UNAVAILABLE
+                )
+                if verdict2 is auth_svc.SECRET_UNAVAILABLE:
+                    # DB 교체 중 판정 불가는 인증 실패가 아니다. 다음 주기에 다시 검사한다.
+                    continue
+                if verdict2 != email:
+                    await ws.close(code=1008, reason=_WS_REASON_AUTH_REQUIRED)
+                    return
                 pcat2 = acc2.get("password_changed_at")
                 if pcat2:
                     stamp2 = auth_svc.token_password_stamp(

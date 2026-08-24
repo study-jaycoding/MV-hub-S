@@ -152,3 +152,36 @@ def test_suspended_account_still_closes_during_the_grace_window(ws_auth):
     assert ws.closed == _AUTH_REQUIRED
     assert len(accounts) == 3  # 수락 + 유예 1주기 + 정지 확인
     assert stamps == [PCAT, _UNAVAILABLE], "정지 판정은 스탬프를 보기 전에 끝난다"
+
+
+def test_recheck_expires_token_for_legacy_account_without_password_stamp(ws_auth):
+    """password_changed_at=NULL 계정도 열린 소켓의 토큰 만료를 놓치지 않는다."""
+    verdict_calls = 0
+
+    def verify_token(_token, *, unavailable=None):
+        nonlocal verdict_calls
+        verdict_calls += 1
+        return EMAIL if verdict_calls == 1 else None
+
+    ws_auth.setattr(auth_svc, "verify_token", verify_token)
+    ws_auth.setattr(
+        main_module.repo,
+        "get_account",
+        lambda email: {
+            "email": email,
+            "status": "approved",
+            "password_changed_at": None,
+        },
+    )
+    ws_auth.setattr(
+        auth_svc,
+        "token_password_stamp",
+        lambda *_args, **_kwargs: pytest.fail("NULL 계정은 비밀번호 스탬프를 조회하지 않는다"),
+    )
+    ws = _ScriptedWebSocket("payload.signature", rounds=10)
+
+    asyncio.run(main_module.websocket_endpoint(ws))
+
+    assert ws.closed == _AUTH_REQUIRED
+    assert verdict_calls == 2  # 최초 수락 + 첫 주기 재검증
+    assert ws.rounds_left == 9

@@ -471,6 +471,72 @@ def test_periodic_startup_state_calls_run_off_event_loop(monkeypatch: pytest.Mon
     assert all(thread_id != loop_thread for _name, thread_id in calls)
 
 
+def test_periodic_startup_retries_after_transient_failure(monkeypatch: pytest.MonkeyPatch):
+    attempts = 0
+    cleaned = threading.Event()
+    monkeypatch.setattr(worker_backup, "_STARTUP_DELAY_SECONDS", 60)
+
+    def recover():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary database lock")
+
+    monkeypatch.setattr(worker_backup, "recover_in_progress", recover)
+    monkeypatch.setattr(worker_backup, "cleanup_stale_state", cleaned.set)
+
+    async def exercise():
+        worker = worker_backup.PeriodicWorkerBackupUpload()
+        worker._interval = 0.01
+        worker.start()
+        for _ in range(300):
+            if cleaned.is_set():
+                break
+            await asyncio.sleep(0.005)
+        assert worker._task is not None and not worker._task.done()
+        await worker.stop()
+
+    asyncio.run(exercise())
+
+    assert attempts == 2
+    assert cleaned.is_set()
+
+
+def test_periodic_loop_retries_after_unexpected_failure(monkeypatch: pytest.MonkeyPatch):
+    calls = 0
+    completed_retry = asyncio.Event()
+    monkeypatch.setattr(worker_backup, "_STARTUP_DELAY_SECONDS", 0)
+    monkeypatch.setattr(worker_backup, "recover_in_progress", lambda: 0)
+    monkeypatch.setattr(worker_backup, "cleanup_stale_state", lambda: {})
+
+    async def exercise():
+        nonlocal calls
+        worker = worker_backup.PeriodicWorkerBackupUpload()
+        worker._interval = 0.01
+
+        async def no_relocation():
+            return None
+
+        async def flaky_run():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("temporary worker failure")
+            completed_retry.set()
+            return {"state": "idle"}
+
+        worker._tick_server_relocation = no_relocation
+        worker.run_now = flaky_run
+        worker.start()
+        await asyncio.wait_for(completed_retry.wait(), timeout=2)
+        assert worker._task is not None and not worker._task.done()
+        await worker.stop()
+
+    asyncio.run(exercise())
+
+    assert calls >= 2
+
+
 def test_restart_cleanup_keeps_pending_set_and_removes_only_stale_staging(
     worker_store: Path,
 ):

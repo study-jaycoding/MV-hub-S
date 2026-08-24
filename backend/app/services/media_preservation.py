@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 from .. import active_account, repo
 from ..usecases import generation_media_cache
+from .async_tools import to_thread_non_abandon
 from .operational_logging import log_event
 
 
@@ -209,8 +210,23 @@ class PeriodicMediaPreservation:
             self._task = None
 
     async def _run(self) -> None:
-        await asyncio.to_thread(repo.recover_stale_media_preservations)
-        await asyncio.to_thread(repo.backfill_required_media_preservations)
+        # 시작 복구가 DB 교체·잠금 같은 일시 오류로 한 번 실패해도 워커를 영구 종료하지 않는다.
+        # 취소 중에도 스레드가 DB를 계속 만지는 고아 작업이 되지 않게 완료까지 기다린다.
+        while True:
+            try:
+                await to_thread_non_abandon(repo.recover_stale_media_preservations)
+                await to_thread_non_abandon(repo.backfill_required_media_preservations)
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log_event(
+                    _log,
+                    "media_preservation_startup_failed",
+                    level=logging.WARNING,
+                    exc_info=True,
+                )
+                await asyncio.sleep(self._interval)
         await asyncio.sleep(_STARTUP_DELAY_SECONDS)
         while True:
             processed = 0

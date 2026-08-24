@@ -33,6 +33,7 @@ from typing import Any, Optional
 from .. import active_account, repo
 from ..config import BACKEND_DIR, DATA_DIR
 from . import server_relocation, shared_connection
+from .async_tools import to_thread_non_abandon
 from .atomic_io import atomic_write_text
 from .db_scrub import SESSION_KEYS, strip_transfer_secrets
 from .operational_logging import log_event
@@ -64,6 +65,10 @@ UPLOAD_INTERVAL = max(
 UPLOAD_TIMEOUT = max(
     10.0,
     float(os.environ.get("CONTENT_HUB_WORKER_BACKUP_UPLOAD_TIMEOUT", "120")),
+)
+_STARTUP_DELAY_SECONDS = max(
+    0.0,
+    float(os.environ.get("CONTENT_HUB_WORKER_BACKUP_STARTUP_DELAY_SECONDS", "3")),
 )
 _MAX_PENDING_PER_ACCOUNT = max(
     1,
@@ -1141,21 +1146,45 @@ class PeriodicWorkerBackupUpload:
             self._task = None
         if self._process and self._process.returncode is None:
             await _terminate_process(self._process)
-            await asyncio.to_thread(recover_in_progress)
+            await to_thread_non_abandon(recover_in_progress)
         self._process = None
 
     async def _run(self) -> None:
-        await asyncio.to_thread(recover_in_progress)
-        await asyncio.to_thread(cleanup_stale_state)
-        await asyncio.sleep(3)
+        # DB 잠금·디스크 일시 오류 한 번으로 자동 백업이 다음 재시작까지 죽지 않게 한다.
         while True:
-            # ★공유 서버 이사 공지 확인은 has_due_backup 뒤가 아니라 '주기 그 자체'에 편승한다 —
-            # 백업할 게 없는 유휴 PC 도 서버가 이사하면 알아야 하기 때문(run_now 는 due 가 없으면
-            # 바로 idle 로 끝난다). 읽기는 server_relocation 이 자식 프로세스+타임아웃으로 격리한다.
-            await self._tick_server_relocation()
-            # due 판정은 run_now() 안(락 아래)에서 한 번만 — 종전엔 여기서 확인하고 run_now 가
-            # 즉시 재확인해 상태 DB 조회(스키마 보장 포함)가 두 배로 돌았다(R4 A-2).
-            await self.run_now()
+            try:
+                await to_thread_non_abandon(recover_in_progress)
+                await to_thread_non_abandon(cleanup_stale_state)
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log_event(
+                    _log,
+                    "worker_backup_startup_failed",
+                    level=logging.WARNING,
+                    exc_info=True,
+                )
+                await asyncio.sleep(self._interval)
+        await asyncio.sleep(_STARTUP_DELAY_SECONDS)
+        while True:
+            try:
+                # ★공유 서버 이사 공지 확인은 has_due_backup 뒤가 아니라 '주기 그 자체'에 편승한다 —
+                # 백업할 게 없는 유휴 PC 도 서버가 이사하면 알아야 하기 때문(run_now 는 due 가 없으면
+                # 바로 idle 로 끝난다). 읽기는 server_relocation 이 자식 프로세스+타임아웃으로 격리한다.
+                await self._tick_server_relocation()
+                # due 판정은 run_now() 안(락 아래)에서 한 번만 — 종전엔 여기서 확인하고 run_now 가
+                # 즉시 재확인해 상태 DB 조회(스키마 보장 포함)가 두 배로 돌았다(R4 A-2).
+                await self.run_now()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log_event(
+                    _log,
+                    "worker_backup_loop_failed",
+                    level=logging.WARNING,
+                    exc_info=True,
+                )
             await asyncio.sleep(self._interval)
 
     async def _tick_server_relocation(self) -> None:
@@ -1186,11 +1215,11 @@ class PeriodicWorkerBackupUpload:
                 )
             except asyncio.CancelledError:
                 await _terminate_process(process)
-                await asyncio.to_thread(recover_in_progress)
+                await to_thread_non_abandon(recover_in_progress)
                 raise
             except asyncio.TimeoutError:
                 await _terminate_process(process)
-                await asyncio.to_thread(recover_in_progress)
+                await to_thread_non_abandon(recover_in_progress)
                 return {"state": "failed", "error_code": "timeout"}
             finally:
                 if self._process is process:
@@ -1201,7 +1230,7 @@ class PeriodicWorkerBackupUpload:
             # recover_in_progress 가 두 번 실행됐다(R4 A-5).
             recovered = False
             if process.returncode != 0:
-                await asyncio.to_thread(recover_in_progress)
+                await to_thread_non_abandon(recover_in_progress)
                 recovered = True
             try:
                 # 운영 로깅 설정이 stdout 한 줄을 먼저 남기더라도 마지막 JSON 결과는 읽는다.
@@ -1213,14 +1242,14 @@ class PeriodicWorkerBackupUpload:
                 parsed = json.loads(output[-1]) if output else None
                 if not isinstance(parsed, dict) or "state" not in parsed:
                     if not recovered:
-                        await asyncio.to_thread(recover_in_progress)
+                        await to_thread_non_abandon(recover_in_progress)
                     return {"state": "failed", "error_code": "worker_failed"}
                 if process.returncode != 0 and parsed.get("state") != "failed":
                     return {"state": "failed", "error_code": "worker_failed"}
                 return parsed
             except (UnicodeDecodeError, ValueError):
                 if not recovered:
-                    await asyncio.to_thread(recover_in_progress)
+                    await to_thread_non_abandon(recover_in_progress)
                 return {"state": "failed", "error_code": "worker_failed"}
 
 

@@ -252,3 +252,71 @@ def test_periodic_startup_repo_calls_run_off_event_loop(monkeypatch):
 
     assert [name for name, _thread in calls] == ["recover", "backfill"]
     assert all(thread_id != loop_thread for _name, thread_id in calls)
+
+
+def test_periodic_startup_retries_after_transient_failure(monkeypatch):
+    attempts = 0
+    backfilled = threading.Event()
+    monkeypatch.setattr(media_preservation, "_STARTUP_DELAY_SECONDS", 60)
+
+    def recover():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary database lock")
+
+    monkeypatch.setattr(
+        media_preservation.repo, "recover_stale_media_preservations", recover
+    )
+    monkeypatch.setattr(
+        media_preservation.repo,
+        "backfill_required_media_preservations",
+        backfilled.set,
+    )
+
+    async def exercise():
+        worker = media_preservation.PeriodicMediaPreservation(interval=0.01)
+        worker.start()
+        for _ in range(300):
+            if backfilled.is_set():
+                break
+            await asyncio.sleep(0.005)
+        assert worker._task is not None and not worker._task.done()
+        await worker.stop()
+
+    asyncio.run(exercise())
+
+    assert attempts == 2
+    assert backfilled.is_set()
+
+
+def test_periodic_stop_waits_for_startup_recovery_thread(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr(media_preservation, "_STARTUP_DELAY_SECONDS", 60)
+
+    def blocking_recover():
+        entered.set()
+        assert release.wait(timeout=2)
+
+    monkeypatch.setattr(
+        media_preservation.repo,
+        "recover_stale_media_preservations",
+        blocking_recover,
+    )
+
+    async def exercise():
+        worker = media_preservation.PeriodicMediaPreservation(interval=0.01)
+        worker.start()
+        for _ in range(200):
+            if entered.is_set():
+                break
+            await asyncio.sleep(0.005)
+        assert entered.is_set()
+        stopping = asyncio.create_task(worker.stop())
+        await asyncio.sleep(0.02)
+        assert not stopping.done(), "복구 스레드가 끝나기 전에 stop이 반환하면 안 된다"
+        release.set()
+        await asyncio.wait_for(stopping, timeout=2)
+
+    asyncio.run(exercise())
