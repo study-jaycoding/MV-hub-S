@@ -22,6 +22,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 목적 | 기준 문서 |
 |---|---|
 | 지금 완료된 것과 다음 작업 | [CURRENT_STATUS.md](CURRENT_STATUS.md) |
+| 날짜별 상세 기록(회귀·실측·구현 근거) | [status/](status/) 노트 — 진입점은 [status/최근작업_2026-08-24.md](status/최근작업_2026-08-24.md) |
 | 프로그램 사용 | [사용설명서.md](사용설명서.md), [기능설명서.md](기능설명서.md) |
 | 현재 구조와 데이터 흐름 | [ARCHITECTURE.md](ARCHITECTURE.md), [AI_CONTEXT.md](AI_CONTEXT.md) |
 | 로컬·공유 서버 데이터 경계 | [DATA_OWNERSHIP.md](DATA_OWNERSHIP.md), [WORKSPACE_DATA_CONTRACT.md](WORKSPACE_DATA_CONTRACT.md) |
@@ -77,6 +78,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 |---|---|
 | **문서 색인·갱신 규칙** | `README`(이 문서) |
 | **현황·작업 기준** | `CURRENT_STATUS`, `RISK_REDUCTION_PLAN_2026-08-15` |
+| **날짜별 기록(`status/`)** | `status/최근작업_2026-08-24`, `status/RL_완료목록`, `status/검증기록`, `status/구현완료_RL-02_RL-23`, `status/사전배포검증_2026-08-19`, `status/안정화_2026-08-18` |
 | **현행 구조·계약** | `ARCHITECTURE`, `AI_CONTEXT`, `DATA_OWNERSHIP`, `WORKSPACE_DATA_CONTRACT`, `신원과_모드_가이드`, `AUTH_FAILURE_SEMANTICS`, `CANVAS_GENERATION_IDEMPOTENCY`, `CLI_ESTIMATE_LIFECYCLE`, `GENERATION_SUBMISSION_RECOVERY`, `TELEMETRY_DRAIN_LIFECYCLE`, `SHARE_STATE_COMPENSATION` |
 | **구현 전 확정 계약** | `WORKER_OFFDISK_BACKUP_CONTRACT` |
 | **운영·검증 절차** | `SERVER`, `SERVER_RECOVERY`, `TESTING`, `HF_CLI_UPGRADE` |
@@ -111,9 +113,11 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 
 1. 위험 상태가 바뀌었다면 `RISK_REDUCTION_PLAN_2026-08-15`의 Gate 0 표를 먼저 수정한다.
 2. `CURRENT_STATUS`의 완료 항목·다음 작업·실제 검증 숫자를 맞춘다.
-3. 구조나 상태 전이가 바뀐 경우에만 `ARCHITECTURE`와 해당 세부 계약을 수정한다.
-4. 과거 감사·계획·시험 기록의 본문은 당시 근거로 보존하고, 필요하면 상단 안내만 보강한다.
-5. 로컬 링크 검사와 `git diff --check`를 통과한 뒤 문서 변경을 별도 커밋한다.
+3. 날짜별 상세 기록(회귀 수치·실측 결과·구현 근거)은 `status/`에 **새 노트**로 넣고,
+   `CURRENT_STATUS`에는 한 줄 링크만 추가한다. 현황판이 다시 길어지지 않게 한다.
+4. 구조나 상태 전이가 바뀐 경우에만 `ARCHITECTURE`와 해당 세부 계약을 수정한다.
+5. 과거 감사·계획·시험 기록의 본문은 당시 근거로 보존하고, 필요하면 상단 안내만 보강한다.
+6. 로컬 링크 검사와 `git diff --check`를 통과한 뒤 문서 변경을 별도 커밋한다.
 
 ## 과거 초기 구현 기록 (Phase 1~5)
 
