@@ -58,6 +58,7 @@ import {
 } from "../lib/seedancePrompt";
 import { useAccountStatus } from "../lib/useAccountStatus";
 import { useCustomEvent } from "../lib/useCustomEvent";
+import { spotlightEnterAction } from "../lib/spotlightPromptKeyboard";
 import { useSpotlightAgentStatus } from "../lib/useSpotlightAgentStatus";
 import {
   useSpotlightMentionSources,
@@ -1112,18 +1113,22 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       }
     }
 
-    // Shift+Enter → 줄바꿈. 브라우저 기본은 <div> 블록을 넣기도 하는데, 그러면 serialize 가 \n 을 못 읽어
-    // 재사용에서 한 줄로 뭉개진다. execCommand insertLineBreak 로 <br> 를 확실히 넣어 \n 으로 읽히게 한다.
-    if (e.key === "Enter" && e.shiftKey && !composing && !mention) {
+    // 실수로 Enter만 눌러 유료 생성이 시작되지 않게 정확히 Alt+Enter만 생성한다.
+    // 그 외 Enter는 <br> 줄바꿈으로 고정해 serialize/reuse 에서 줄 구조도 보존한다.
+    const enterAction = !composing && !mention ? spotlightEnterAction(e) : null;
+    if (enterAction === "submit") {
+      e.preventDefault();
+      if (!busy) submit();
+      return;
+    }
+    if (enterAction === "consume") {
+      e.preventDefault();
+      return;
+    }
+    if (enterAction === "line_break") {
       e.preventDefault();
       document.execCommand("insertLineBreak");
       onEditorInput();
-      return;
-    }
-    // 평상시 Enter → 생성
-    if (e.key === "Enter" && !e.shiftKey && !composing && !mention) {
-      e.preventDefault();
-      if (!busy) submit();
     }
   };
 

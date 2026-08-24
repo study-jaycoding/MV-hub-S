@@ -46,7 +46,12 @@ export function SpotlightGenerateControls({
         </div>
       </div>
 
-      <button className="sl-gen" disabled={busy} onClick={onSubmit}>
+      <button
+        className="sl-gen"
+        title="생성 (Alt+Enter)"
+        disabled={busy}
+        onClick={onSubmit}
+      >
         {busy ? "생성 중…" : count > 1 ? `Generate ${count}` : "Generate"}{" "}
         <span className="sl-sparkle">✦</span>
         {costLoading ? (
