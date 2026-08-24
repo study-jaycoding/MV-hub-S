@@ -183,8 +183,25 @@ class AcceptContractTests(ResolveQueueTestBase):
         self.assertEqual(scope["server_origin"], "https://hub.example.com")
         self.assertEqual(scope["kind"], "shared_account")
 
-    async def test_route_returns_queued_receipt_and_never_imports(self):
+    async def test_route_prepares_and_imports_directly(self):
         generations = [self._generation(1)]
+        manifest = {
+            "transfer_id": "direct-1",
+            "project_id": "p1",
+            "project_name": "테스트 프로젝트",
+            "total": 1,
+            "downloaded": 1,
+            "skipped": 0,
+            "error_count": 0,
+            "items": [],
+        }
+        imported = {
+            "status": "complete",
+            "imported": 1,
+            "skipped": 0,
+            "error_count": 0,
+            "items": [],
+        }
         body = resolve_integration.ResolveTransferIn(
             gen_ids=["generation-01"],
             resolve_project_id="resolve-1",
@@ -215,22 +232,30 @@ class AcceptContractTests(ResolveQueueTestBase):
                 resolve_integration, "account_scope_uid", return_value=None
             ),
             mock.patch.object(resolve_integration._proxy, "proxying", return_value=False),
-            mock.patch.object(resolve_integration, "transfer_generations") as transfer,
             mock.patch.object(
-                resolve_integration, "run_resolve_import_isolated"
+                resolve_integration,
+                "transfer_generations",
+                new=mock.AsyncMock(return_value=manifest),
+            ) as transfer,
+            mock.patch.object(
+                resolve_integration,
+                "run_resolve_import_isolated",
+                return_value=imported,
             ) as importer,
+            mock.patch.object(
+                resolve_integration, "save_manifest", new=mock.AsyncMock()
+            ) as save,
         ):
             response = await resolve_integration.create_resolve_transfer(
                 body, _local_request()
             )
 
-        self.assertTrue(response["queued"])
-        self.assertEqual(response["ahead"], 0)
-        self.assertEqual(response["queue"]["state"], "queued")
-        self.assertEqual(response["total"], 1)
+        self.assertEqual(response["transfer_id"], "direct-1")
         self.assertEqual(response["resolve_target"]["project_name"], "EP01_EDIT")
-        transfer.assert_not_called()
-        importer.assert_not_called()
+        self.assertEqual(response["resolve_import"], imported)
+        transfer.assert_awaited_once_with("p1", generations)
+        importer.assert_called_once_with(manifest)
+        self.assertEqual(save.await_count, 2)
 
 
 class ManifestCoexistenceTests(ResolveQueueTestBase):
@@ -1213,6 +1238,16 @@ class AcceptAccountPinTests(ResolveQueueTestBase):
 
     async def test_route_pins_the_account_before_the_first_db_access(self):
         generations = [self._generation(1)]
+        manifest = {
+            "transfer_id": "direct-pinned",
+            "project_id": "p1",
+            "project_name": "테스트 프로젝트",
+            "total": 1,
+            "downloaded": 1,
+            "skipped": 0,
+            "error_count": 0,
+            "items": [],
+        }
         seen: list[str | None] = []
 
         def _batch(ids, account_uid=None):
@@ -1250,17 +1285,26 @@ class AcceptAccountPinTests(ResolveQueueTestBase):
                 resolve_integration, "account_scope_uid", return_value="user-pinned"
             ),
             mock.patch.object(resolve_integration._proxy, "proxying", return_value=False),
+            mock.patch.object(
+                resolve_integration,
+                "transfer_generations",
+                new=mock.AsyncMock(return_value=manifest),
+            ),
+            mock.patch.object(
+                resolve_integration,
+                "run_resolve_import_isolated",
+                return_value={"status": "complete"},
+            ),
+            mock.patch.object(
+                resolve_integration, "save_manifest", new=mock.AsyncMock()
+            ),
         ):
             response = await resolve_integration.create_resolve_transfer(
                 body, _local_request()
             )
 
         self.assertEqual(seen, ["acct:pinned@example.com"])
-        manifest = resolve_queue.scan_projects(["p1"])[0]
-        scope = manifest["source_payload"]["account_scope"]
         self.assertEqual(manifest["transfer_id"], response["transfer_id"])
-        self.assertEqual(scope["account_key"], "acct:pinned@example.com")
-        self.assertEqual(scope["creator_uid_at_accept"], "user-pinned")
         # 오버라이드는 라우트가 끝나면 반드시 풀린다.
         self.assertIsNone(active_account._override.get())
 

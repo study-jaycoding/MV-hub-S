@@ -96,7 +96,6 @@ from .services.worker_backup import (
 )
 from .services.temp_sweeper import periodic_sweeper
 from .services.media_preservation import periodic_media_preservation
-from .services.resolve_queue_worker import periodic_resolve_queue
 from .services.share_state_reconciler import (
     configure_share_state_router_deps,
     periodic_share_state_reconciler,
@@ -239,7 +238,6 @@ async def _application_lifespan(app: FastAPI):
     periodic_backup_started = False
     periodic_sweeper_started = False
     media_preservation_started = False
-    resolve_queue_started = False
     share_state_reconciler_started = False
     agent_loop_bound = False
     asset_watcher_started = False
@@ -478,8 +476,6 @@ async def _application_lifespan(app: FastAPI):
         if MEDIA_PRESERVATION_ENABLED:
             periodic_media_preservation.start()  # 명시적 opt-in 설치만 영구 보존
             media_preservation_started = True
-        periodic_resolve_queue.start()  # Resolve 가져오기 큐(Windows+release 에서만 자동 시작)
-        resolve_queue_started = True
         # 계층 경계(services→routers 금지) 때문에 reconciler 의 라우터 의존은 여기서 주입한다.
         from .routers import _proxy as _share_proxy
         from .routers._telemetry import touch_generation_telemetry
@@ -575,8 +571,6 @@ async def _application_lifespan(app: FastAPI):
             await _attempt_async_cleanup(periodic_share_state_reconciler.stop)
         if startup_complete or media_preservation_started:
             await _attempt_async_cleanup(periodic_media_preservation.stop)
-        if startup_complete or resolve_queue_started:
-            await _attempt_async_cleanup(periodic_resolve_queue.stop)
         if startup_complete or remote_realtime_started:
             await _attempt_async_cleanup(remote_realtime_bridge.stop)
         if telemetry_drain_scheduled or (

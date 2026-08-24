@@ -276,8 +276,6 @@ def _patch_lifespan_with_real_threads(stack: ExitStack, tmp_path: Path) -> None:
     stack.enter_context(
         patch.object(main.periodic_share_state_reconciler, "stop", AsyncMock())
     )
-    stack.enter_context(patch.object(main.periodic_resolve_queue, "start"))
-    stack.enter_context(patch.object(main.periodic_resolve_queue, "stop", AsyncMock()))
     stack.enter_context(patch.object(main.remote_realtime_bridge, "start"))
     stack.enter_context(patch.object(main.remote_realtime_bridge, "stop", AsyncMock()))
 

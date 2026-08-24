@@ -255,16 +255,13 @@ export function resolveTransferAcceptedSummary(
 export function createResolveTransfer(
   genIds: string[],
   target?: ResolveProjectTarget,
-  idempotencyKey?: string,
-): Promise<ResolveTransferAccepted> {
-  return jsonFetch<ResolveTransferAccepted>("/api/resolve/transfers", {
+): Promise<ResolveTransferResult> {
+  return jsonFetch<ResolveTransferResult>("/api/resolve/transfers", {
     method: "POST",
     body: jsonBody({
       gen_ids: genIds,
       resolve_project_id: target?.project_id || "",
       resolve_project_name: target?.project_name || "",
-      // 같은 클릭의 재요청이 두 번째 전송을 만들지 않게 하는 접수 키(있을 때만 보낸다).
-      ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
     }),
   });
 }

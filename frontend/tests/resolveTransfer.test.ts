@@ -180,20 +180,6 @@ describe("Resolve 전송 API와 결과 안내", () => {
     );
   });
 
-  it("같은 클릭의 재요청이 두 번째 전송을 만들지 않게 접수 키를 함께 보낸다", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue(result()),
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await createResolveTransfer(["g1"], undefined, "click-1");
-
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
-      idempotency_key: "click-1",
-    });
-  });
-
   it("연결 상태 확인과 준비된 원본 재가져오기는 전용 로컬 API를 사용한다", async () => {
     const status = {
       status: "ready",

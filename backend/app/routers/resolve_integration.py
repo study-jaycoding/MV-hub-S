@@ -39,8 +39,7 @@ from ..services.resolve_transfer import (
     list_pending_manifests,
     load_manifest,
     save_manifest,
-    # v2 동기 준비 경로. 접수는 더 이상 직접 호출하지 않지만(전담 워커가 준비한다)
-    # "접수가 복사를 하지 않는다"를 확인하는 기존 계약 테스트가 이 이름을 참조한다.
+    # Send to Resolve의 직접 준비 경로.
     transfer_generations,
 )
 
@@ -200,15 +199,12 @@ async def post_resolve_python_install(request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/transfers", status_code=202)
+@router.post("/transfers")
 async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
-    """전송을 큐에 접수만 한다(원본 복사·Resolve 가져오기는 전담 워커가 수행).
+    """완료본을 준비하고 현재 열린 Resolve로 직접 가져온 뒤 결과를 반환한다.
 
-    종전엔 이 요청 하나가 대용량 복사와 Resolve 조작까지 끝낼 때까지 붙잡혀 있었다.
-    이제는 권한 판정 → 대상 Resolve 프로젝트 고정 → v3 manifest 원자 기록까지만 하고
-    ``202 Accepted`` 로 즉시 돌려준다(명세 §1.7).
-
-    ★첫 DB 접근 전에 계정을 고정한다 — 판정과 기록이 다른 계정을 보면 안 된다.
+    서버 영구 큐는 사용하지 않는다. 브라우저의 짧은 직렬화만 남겨 Resolve API를
+    동시에 호출하지 않으며, 이 요청 한 건 안에서 준비·가져오기·결과 저장을 끝낸다.
     """
     _require_local_resolve(request)
     async with _pinned_account_scope() as account_key:
@@ -274,40 +270,24 @@ async def _create_resolve_transfer_pinned(
         raise HTTPException(status_code=400, detail="프로젝트에 배정된 생성물만 전송할 수 있습니다")
     if len(project_ids) != 1:
         raise HTTPException(status_code=400, detail="한 번에 하나의 프로젝트만 전송할 수 있습니다")
-    try:
-        manifest, ahead, duplicate = await resolve_queue.accept_transfer(
-            next(iter(project_ids)),
-            generations,
-            resolve_target={
+    async def _transfer_and_import() -> dict:
+        manifest = await transfer_generations(next(iter(project_ids)), generations)
+        if body.resolve_project_id or body.resolve_project_name:
+            manifest["resolve_target"] = {
                 "project_id": body.resolve_project_id.strip(),
                 "project_name": body.resolve_project_name.strip(),
-            },
-            account_scope=_accept_account_scope(request, account_key),
-            idempotency_key=body.idempotency_key.strip(),
+            }
+            await save_manifest(manifest)
+        manifest["resolve_import"] = await asyncio.to_thread(
+            run_resolve_import_isolated, manifest
         )
+        await save_manifest(manifest)
+        return manifest
+
+    try:
+        return await resolve_queue.run_non_abandon(_transfer_and_import())
     except ResolveTransferError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    queue = resolve_queue.queue_block(manifest)
-    return {
-        "transfer_id": str(manifest.get("transfer_id") or ""),
-        "project_id": str(manifest.get("project_id") or ""),
-        "project_name": str(manifest.get("project_name") or ""),
-        "queued": True,
-        # 같은 접수 키로 이미 받아 둔 요청 — 새 전송을 만들지 않고 그 접수증을 돌려줬다.
-        "duplicate": duplicate,
-        "ahead": ahead,
-        "queue": {
-            "state": queue.get("state"),
-            "dispatch_policy": queue.get("dispatch_policy"),
-        },
-        "resolve_target": manifest.get("resolve_target") or {},
-        "status": manifest.get("status"),
-        "total": int(manifest.get("total") or 0),
-        # 설정 조건이 아니라 '드레인 task 가 실제로 도는가'를 보고한다 — 잠금 self-test
-        # 실패로 워커가 기동조차 못 한 PC 에서 UI 가 켜짐으로 보이면 안 된다.
-        "worker_enabled": resolve_queue_worker.worker_active(),
-        "worker_detail": resolve_queue_worker.worker_detail(),
-    }
 
 
 @router.post("/transfers/retry")

@@ -1,8 +1,6 @@
 import { ProjectAssignMenu } from "../ProjectAssignMenu";
-import { ResolveQueueButton } from "./ResolveQueueButton";
 import { useT } from "../../lib/i18n";
 import type { GradeMode } from "../../lib/gradeStep";
-import type { ResolveQueueController } from "../../lib/useResolveTransferActions";
 import type { Generation, Project } from "../../types";
 
 type AssignHandlers = {
@@ -23,7 +21,6 @@ export function BoardSelectionActionBar({
   resolveRetryProjectName,
   resolveTransferBusy,
   resolveTransferPendingCount,
-  resolveQueue,
 }: {
   selected: Generation[];
   onShare: (selected: Generation[]) => void;
@@ -36,7 +33,6 @@ export function BoardSelectionActionBar({
   resolveRetryProjectName?: string;
   resolveTransferBusy?: boolean;
   resolveTransferPendingCount?: number;
-  resolveQueue?: ResolveQueueController;
 } & AssignHandlers) {
   const t = useT();
   if (!selected.length) return null;
@@ -79,7 +75,6 @@ export function BoardSelectionActionBar({
           ↻ 준비 원본 다시 가져오기
         </button>
       )}
-      {resolveQueue && <ResolveQueueButton queue={resolveQueue} />}
       {selected.length >= 2 && (
         <button
           onClick={() => onCompare(selected)}
@@ -108,7 +103,6 @@ export function LibrarySelectionActionBar({
   resolveRetryProjectName,
   resolveTransferBusy,
   resolveTransferPendingCount,
-  resolveQueue,
   onCompare,
   onAssign,
   onDelete,
@@ -126,7 +120,6 @@ export function LibrarySelectionActionBar({
   resolveRetryProjectName: string;
   resolveTransferBusy: boolean;
   resolveTransferPendingCount: number;
-  resolveQueue?: ResolveQueueController;
   onCompare: (selected: Generation[]) => void;
   onDelete: () => void;
   onRestore: () => void;
@@ -194,7 +187,6 @@ export function LibrarySelectionActionBar({
           ↻ 준비 원본 다시 가져오기
         </button>
       )}
-      {resolveQueue && <ResolveQueueButton queue={resolveQueue} />}
       {selectedCount >= 2 && (
         <button
           onClick={() => onCompare(selectedGenerations)}
