@@ -244,7 +244,7 @@ function GenerationCardImpl({
         thumb={thumb}
         isVideo={isVideo}
         src={asset?.file_path}
-        alt={gen.prompt}
+        alt=""
         videoRef={videoRef}
         onError={() => setBroken(true)}
         fallback={

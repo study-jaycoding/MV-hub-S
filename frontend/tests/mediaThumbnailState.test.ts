@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   INITIAL_MEDIA_THUMBNAIL_LOAD_STATE,
+  mediaThumbnailRenderMode,
   nextMediaThumbnailErrorState,
   nextVideoPosterErrorState,
 } from "../src/components/MediaThumbnail";
@@ -27,9 +28,20 @@ describe("MediaThumbnail failure state", () => {
   });
 
   it("영상 포스터 실패 상태는 원본 영상 첫 프레임 폴백을 사용할 수 있는 비종료 상태다", () => {
-    expect(nextVideoPosterErrorState(INITIAL_MEDIA_THUMBNAIL_LOAD_STATE)).toEqual({
+    const failedPoster = nextVideoPosterErrorState(INITIAL_MEDIA_THUMBNAIL_LOAD_STATE);
+
+    expect(failedPoster).toEqual({
       thumbBroken: true,
       mediaBroken: false,
     });
+    expect(mediaThumbnailRenderMode(failedPoster, true, true, true)).toBe("video");
+  });
+
+  it("실패한 영상 포스터를 일반 이미지로 다시 렌더링하지 않는다", () => {
+    const failedPoster = { thumbBroken: true, mediaBroken: false };
+
+    expect(mediaThumbnailRenderMode(failedPoster, true, true, true)).not.toBe("image");
+    expect(mediaThumbnailRenderMode(failedPoster, true, true, false)).toBe("fallback");
+    expect(mediaThumbnailRenderMode(failedPoster, true, false, true)).toBe("image");
   });
 });

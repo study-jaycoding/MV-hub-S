@@ -34,6 +34,24 @@ export function nextVideoPosterErrorState(
   return state.mediaBroken ? state : { thumbBroken: true, mediaBroken: false };
 }
 
+export type MediaThumbnailRenderMode = "fallback" | "video-poster" | "image" | "video";
+
+// 영상 포스터가 깨진 뒤에도 `thumb` 값 자체는 남아 있다. 단순히 `if (thumb)`로 분기하면
+// 실패한 포스터를 일반 이미지로 다시 그려 깨진 이미지 아이콘·alt 문구가 노출된다.
+// 미디어 종류와 실패 상태를 함께 보고 다음 표현을 고르는 순수 함수로 분기 계약을 고정한다.
+export function mediaThumbnailRenderMode(
+  state: MediaThumbnailLoadState,
+  hasThumb: boolean,
+  isVideo: boolean,
+  hasSrc: boolean,
+): MediaThumbnailRenderMode {
+  if (state.mediaBroken) return "fallback";
+  if (hasThumb && isVideo && !state.thumbBroken) return "video-poster";
+  if (hasThumb && !isVideo) return "image";
+  if (isVideo && hasSrc) return "video";
+  return "fallback";
+}
+
 interface Props {
   className?: string;
   thumb: string | null | undefined; // 썸네일(포스터) URL
@@ -68,16 +86,17 @@ export function MediaThumbnail({
     if (!loadState.mediaBroken) onError?.();
     setLoadState({ ...loadState, mediaBroken: true });
   };
-  if (loadState.mediaBroken) return <>{fallback}</>;
+  const renderMode = mediaThumbnailRenderMode(loadState, !!thumb, isVideo, !!src);
+  if (renderMode === "fallback") return <>{fallback}</>;
   // 영상 + 썸네일: 포스터로 깔고 호버 시 재생(preload 없음).
   // poster 자체의 HTTP 실패는 <video onError>로 일관되게 전달되지 않으므로 같은 URL의 숨은
   // 이미지 probe로 실패를 감지한다. 실패하면 아래의 preload=metadata 첫 프레임 폴백으로 한 번만
   // 전환한다. 정상 경로는 브라우저 캐시가 요청을 합쳐 원본 영상 바이트를 전혀 읽지 않는다.
-  if (thumb && isVideo && !loadState.thumbBroken)
+  if (renderMode === "video-poster")
     return (
       <>
         <img
-          src={thumb}
+          src={thumb ?? undefined}
           alt=""
           aria-hidden="true"
           style={{ display: "none" }}
@@ -87,7 +106,7 @@ export function MediaThumbnail({
           className={className}
           ref={videoRef ?? undefined}
           src={src ?? undefined}
-          poster={thumb}
+          poster={thumb ?? undefined}
           muted
           loop
           playsInline
@@ -98,7 +117,7 @@ export function MediaThumbnail({
       </>
     );
   // 이미지(또는 영상의 정지 썸네일).
-  if (thumb) {
+  if (renderMode === "image" && thumb) {
     // 재시도 옵션 + 썸네일이 깨졌고 원본 src 가 별도로 있으면 원본으로 교체(한 번만).
     const canRetry = retrySrcOnThumbError && !!src && src !== thumb;
     const imgSrc = canRetry && loadState.thumbBroken ? src : thumb;
@@ -119,7 +138,7 @@ export function MediaThumbnail({
     );
   }
   // 영상인데 썸네일 없음: 첫 프레임을 메타데이터로 띄워 'done' 대신 내용이 보이게.
-  if (isVideo && src)
+  if (renderMode === "video" && src)
     return (
       <video
         className={className}
