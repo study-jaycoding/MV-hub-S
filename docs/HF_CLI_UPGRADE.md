@@ -8,6 +8,10 @@
 그래서 CLI 버전은 **의도적으로 pin** 하고, **올릴 때마다 계약 스모크로 검증**한다. `@latest`
 자동설치는 쓰지 않는다(HF 가 breaking 을 자주 낸다).
 
+> ⚠️ **현재 예외(고칠 대상)**: pin 파일을 못 읽는 경우 버전을 지정하지 않고 설치하는 폴백이
+> `setup_clone_git.ps1`(초기설치)과 `backend/app/routers/ingest.py`(서버 생성 bat)에 남아 있다.
+> 원칙대로라면 폴백 설치가 아니라 **실패 종료**여야 한다.
+
 ## 버전 pin 단일 출처
 
 - `hf_cli_version.txt` (저장소 루트) — 한 줄, 현재 `1.1.23`.
@@ -34,20 +38,23 @@ python tools/hf_cli_check_update.py
 
 ## 버전 올리는 절차 (bump)
 
-1. 새 CLI 를 한 PC 에 설치: `npm install -g @higgsfield/cli@<새버전>`
-2. 로그인 + workspace 선택 상태에서 **계약 스모크** 실행:
+> **순서 주의**: 스모크의 첫 검사가 `version == pin` 이므로 **pin 을 먼저 바꾼 뒤** 설치·검증한다.
+> pin 을 그대로 두고 스모크를 돌리면 첫 항목이 항상 FAIL 이라 나머지 검증이 의미를 잃는다.
+
+1. `hf_cli_version.txt` 를 새 버전으로 바꾼다. **아직 커밋·릴리스하지 않는다.**
+2. 그 pin 대로 한 PC 에 설치: `update_cli.bat` (또는 `npm install -g @higgsfield/cli@<새버전>`)
+3. 로그인 + workspace 선택 상태에서 **계약 스모크** 실행:
    ```
    python tools/hf_cli_contract_smoke.py
    ```
-3. 결과 판정:
+4. 결과 판정:
    - **FAIL 이 있으면 → 절대 릴리스 금지.** 어느 계약이 깨졌는지 보고, 아래 "필드를 읽는 곳"의
      해당 매핑을 `x.get(a) or x.get(b)` 폴백 등으로 고친 뒤 스모크를 다시 통과시킨다.
-   - **WARN 은 확인 권장.** 특히 `--medias`(seedance) 관련 WARN 은 **seedance 영상을 운영에서
-     쓰면 릴리스 차단**으로 취급한다(agent_push 의 seedance 경로 재작성 + 유료 실측 필요).
-4. 스모크 통과 후 `hf_cli_version.txt` 를 새 버전으로 바꾼다.
+   - **WARN 은 확인 권장.** 특히 seedance 미디어 계약 WARN(모델 스키마에 `medias` 재등장)은
+     **seedance 영상을 운영에서 쓰면 릴리스 차단**으로 취급한다(agent_push 의 seedance 경로 재작성 + 유료 실측 필요).
 5. (선택) 소액 유료 생성 1건으로 `generate create ... --wait --json` 실제 결과를 확인한다 —
    이건 무료 스모크가 못 잡는다.
-6. 커밋(무엇이 바뀌어 무엇을 고쳤는지) 후 `release/make_release.bat` 로 릴리스 빌드.
+6. 스모크 통과 후 pin 변경과 호환 코드 수정을 **함께 커밋**하고 `release/make_release.bat` 로 릴리스 빌드.
    릴리스는 빌드 원본뿐 아니라 완성된 ZIP 안의 pin·npm package 버전까지 다시 비교한다.
    작업자는 이후 `update_release.bat`만 실행하면 코드와 해당 CLI가 함께 교체된다.
 
@@ -72,9 +79,10 @@ python tools/hf_cli_check_update.py
 version==pin, `model list`(job_type|job_set_type·display_name), `model get`(params[].name),
 `account status`(email·credits), `account transactions`(list|{items} + item 의 created_at/credits),
 `workspace list`(id·is_selected·credits·plan_type), `generate list`(bare list·result_url·created_at
-파싱·id/status/params·user_ 패턴), `generate cost`(credits), `generate create --help`(media flags·
---medias 소멸 경고), seedance `medias` param 소멸 경고, **boolean 직렬화 계약**(`--generate_audio True`
-거부·소문자 `true` 통과 = 우리의 소문자 직렬화가 필수임을 확인).
+파싱·id/status/params·user_ 패턴), `generate cost`(credits_exact|credits),
+`generate create --help`(**필수 media flag 존재** 확인 — `--medias` 자체를 검사하지는 않는다),
+seedance 모델 스키마(`image_references` 존재, `medias` 가 있으면 **재등장 WARN**),
+**boolean 직렬화 계약**(`--generate_audio True` 거부·소문자 `true` 통과 = 우리의 소문자 직렬화가 필수임을 확인).
 
 스모크는 **코드보다 관대하면 안 된다**(통과했는데 코드가 깨지는 오탐 방지). CLI 출력을 새로
 읽는 코드가 생기면 스모크에도 그 계약 검증을 추가한다.
