@@ -15,6 +15,7 @@ import {
   type ResolveProjectTarget,
   type ResolveQueueRow,
   type ResolveQueueSummary,
+  type ResolveTransferAccepted,
   type ResolveTransferResult,
 } from "./resolveTransfer";
 import { SerialTaskQueue, type SerialTaskQueueState } from "./serialTaskQueue";
@@ -69,6 +70,16 @@ function newIdempotencyKey(): string {
   return random || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
+/** 접수(202)는 완료 결과가 아니므로, 안내 직후 반드시 서버 큐를 다시 읽는다. */
+export async function announceAcceptedResolveTransfer(
+  accepted: ResolveTransferAccepted,
+  flash: (message: string) => void,
+  refresh: () => Promise<unknown> | undefined,
+): Promise<void> {
+  flash(resolveTransferAcceptedSummary(accepted));
+  await refresh();
+}
+
 export function useResolveTransferActions({ flash }: UseResolveTransferActionsArgs) {
   const [queueState, setQueueState] = useState<SerialTaskQueueState>({
     active: false,
@@ -90,6 +101,7 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
   flashRef.current = flash;
   const queueSeqRef = useRef(0);
   const queueEverOkRef = useRef(false);
+  const refreshQueueRef = useRef<(() => Promise<ResolveQueueRow[] | null>) | null>(null);
   const queueRef = useRef<SerialTaskQueue<ResolveQueueTask> | null>(null);
   if (!queueRef.current) {
     queueRef.current = new SerialTaskQueue(
@@ -106,7 +118,11 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
             task.target,
             task.acceptKey,
           );
-          flashRef.current(resolveTransferAcceptedSummary(accepted));
+          await announceAcceptedResolveTransfer(
+            accepted,
+            flashRef.current,
+            () => refreshQueueRef.current?.(),
+          );
           return;
         }
         const result = await retryResolveTransfer(task.projectId, task.transferId);
@@ -212,6 +228,7 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
       const snapshot = await getResolveQueue();
       if (seq !== queueSeqRef.current) return null;
       queueEverOkRef.current = true;
+      setQueueSupported(true);
       setRows(snapshot.items || []);
       setQueueWorker({
         enabled: !!snapshot.worker_enabled,
@@ -227,6 +244,7 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
       return null;
     }
   }, []);
+  refreshQueueRef.current = refreshQueue;
 
   // 첫 마운트에서 한 번만 확인한다. 이 PC의 허브가 아니면 여기서 끝난다.
   useEffect(() => {
