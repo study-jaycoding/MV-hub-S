@@ -1,10 +1,11 @@
 import type { ReleaseUpdateStatus } from "./releaseUpdate";
 import type { ServerRelocationInfo } from "./sharedApi";
+import type { UpdateNotice } from "./updateNotices";
 import { STORAGE_KEYS } from "./storageKeys";
 
 export type NotificationTab = "all" | "unread";
 export type NotificationCategory = "all" | "comment" | "update";
-export type ReleaseNotificationKind = "available" | "completed" | "relocation";
+export type ReleaseNotificationKind = "available" | "completed" | "relocation" | "announcement";
 
 // 카테고리 드롭다운 표기 — 코멘트(생성물 코멘트)와 시스템(업데이트 등 앱 소식)으로 나눈다.
 export const NOTIFICATION_CATEGORY_LABELS: Record<NotificationCategory, string> = {
@@ -29,6 +30,31 @@ export interface ReleaseNotification {
   unread: boolean;
   url?: string; // relocation 전용 — 옮겨 갈 새 공유 서버 주소
   serverName?: string; // relocation 전용 — 그 서버의 표시 이름(없으면 주소로 폴백)
+  noticeId?: string; // 서버 관리 업데이트 공지 전용
+  noticeRevision?: number;
+}
+
+export function mergeReleaseAnnouncementNotifications(
+  localItems: ReleaseNotification[],
+  notices: UpdateNotice[],
+): ReleaseNotification[] {
+  const announcedVersions = new Set(notices.map((item) => item.version.trim()).filter(Boolean));
+  const local = localItems.filter(
+    (item) => !(item.kind === "available" && announcedVersions.has(item.version.trim())),
+  );
+  const announced: ReleaseNotification[] = notices.map((item) => ({
+    id: `announcement:${item.id}:${item.announcement_revision}`,
+    kind: "announcement",
+    version: item.version,
+    text: `v${item.version} 업데이트가 등록되었습니다`,
+    created_at: item.announced_at || item.released_at,
+    unread: item.unread,
+    noticeId: item.id,
+    noticeRevision: item.announcement_revision,
+  }));
+  return [...announced, ...local].sort(
+    (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at),
+  );
 }
 
 export interface NotificationStorage {
@@ -165,7 +191,9 @@ export function markReleaseNotificationRead(
   storage: NotificationStorage,
   sessionStore?: NotificationStorage,
 ): ReleaseNotification {
-  if (item.kind === "relocation") {
+  if (item.kind === "announcement") {
+    // 서버 공지의 읽음은 API가 저장한다. 여기서는 낙관적 화면 갱신만 한다.
+  } else if (item.kind === "relocation") {
     if (sessionStore) {
       safeSet(sessionStore, STORAGE_KEYS.notificationRelocationDismissed, item.id);
     }

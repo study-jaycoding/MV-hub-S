@@ -10,6 +10,7 @@ import {
   markAllReleaseNotificationsRead,
   markNotificationListRead,
   markReleaseNotificationRead,
+  mergeReleaseAnnouncementNotifications,
   notificationBadgeText,
   NOTIFICATION_CATEGORY_LABELS,
   releaseNotificationAction,
@@ -27,6 +28,7 @@ import {
   startReleaseUpdate,
 } from "../lib/releaseUpdate";
 import { sharedApi } from "../lib/sharedApi";
+import { updateNoticeApi } from "../lib/updateNotices";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
 import type { NotificationComment } from "../types";
@@ -111,19 +113,40 @@ export function NotificationCenter({
     }
   }, [commentUnreadCount, t]);
 
-  // 시스템(업데이트 + 공유 서버 이사) 소식을 함께 갱신한다. 두 조회는 서로 독립이라
+  // 시스템(로컬 업데이트 상태 + 관리자 업데이트 공지 + 공유 서버 이사)을 함께 갱신한다.
   // 한쪽이 실패해도 다른 쪽 알림은 살린다(업데이트 실패 시엔 직전 목록을 유지).
   const loadReleaseItems = useCallback(() => {
     const updates = getReleaseUpdateStatus(true)
-      .then((status) => syncReleaseNotifications(status, window.localStorage))
-      .catch(() => null); // 공유 서버 직결·개발 설치본은 로컬 업데이트 API가 없다 — 조용히 제외
+      .then((status) => ({ ok: true as const, value: syncReleaseNotifications(status, window.localStorage) }))
+      .catch(() => ({ ok: false as const })); // 공유 서버 직결·개발 설치본은 로컬 업데이트 API가 없다 — 직전값 유지
     const relocation = sharedApi
       .sharedServerRelocation()
-      .then((info) => serverRelocationNotification(info, window.sessionStorage))
-      .catch(() => null); // 구버전 백엔드·비 릴리스 설치본
-    void Promise.all([updates, relocation]).then(([items, moved]) => {
+      .then((info) => ({ ok: true as const, value: serverRelocationNotification(info, window.sessionStorage) }))
+      .catch(() => ({ ok: false as const })); // 구버전 백엔드·비 릴리스 설치본 — 직전값 유지
+    const announcements = updateNoticeApi.list()
+      .then((items) => ({ ok: true as const, value: items }))
+      .catch(() => ({ ok: false as const })); // 구 공유 서버는 기능 미지원 — 직전값 유지
+    void Promise.all([updates, relocation, announcements]).then(([localResult, moveResult, noticeResult]) => {
       setReleaseItems((current) => {
-        const updateItems = items ?? current.filter((item) => item.kind !== "relocation");
+        const localItems = localResult.ok ? localResult.value : current.filter(
+          (item) => item.kind !== "relocation" && item.kind !== "announcement",
+        );
+        const serverNotices = noticeResult.ok ? noticeResult.value : current
+          .filter((item) => item.kind === "announcement")
+          .map((item) => ({
+            id: item.noticeId || "",
+            version: item.version,
+            file: "",
+            released_at: item.created_at,
+            pinned: false,
+            announcement_revision: item.noticeRevision || 0,
+            announced_at: item.created_at,
+            unread: item.unread,
+          }));
+        const updateItems = mergeReleaseAnnouncementNotifications(localItems, serverNotices);
+        const moved = moveResult.ok
+          ? moveResult.value
+          : current.find((item) => item.kind === "relocation") || null;
         return moved ? [moved, ...updateItems] : updateItems;
       });
     });
@@ -214,6 +237,9 @@ export function NotificationCenter({
         : t("공유 서버가 새 주소로 이사했습니다: {url}. 누르면 전환되고 다시 로그인합니다.")
             .replace("{url}", item.url || "");
     }
+    if (item.kind === "announcement") {
+      return t("{v} 업데이트가 등록되었습니다").replace("{v}", `v${item.version}`);
+    }
     return (item.kind === "available"
       ? t("새 버전 {v} 사용 가능")
       : t("{v}로 업데이트되었습니다")
@@ -253,6 +279,9 @@ export function NotificationCenter({
           : candidate,
       ),
     );
+    if (item.kind === "announcement" && item.noticeId && item.noticeRevision) {
+      void updateNoticeApi.seen(item.noticeId, item.noticeRevision).catch(() => loadReleaseItems());
+    }
     // 이사=클릭 즉시 전환(확인창 없음), 새 버전=그 자리에서 한 번 더 묻기. 판정은 한곳(lib).
     const action = releaseNotificationAction(
       item.kind,
@@ -333,6 +362,18 @@ export function NotificationCenter({
     if (!unreadTotal || busy) return;
     setBusy(true);
     setError("");
+    const hasUnreadUpdateNotices = releaseItems.some(
+      (item) => item.kind === "announcement" && item.unread,
+    );
+    if (hasUnreadUpdateNotices) {
+      try {
+        await updateNoticeApi.seenAll();
+      } catch {
+        setError(t("업데이트 알림을 모두 읽음 처리하지 못했습니다."));
+        setBusy(false);
+        return;
+      }
+    }
     setReleaseItems((current) =>
       markAllReleaseNotificationsRead(current, window.localStorage, window.sessionStorage),
     );

@@ -581,11 +581,15 @@ export const api = {
     generationIds: string[],
     operation: "assign" | "remove",
     workspace: { id: string; name: string },
+    team = false,
   ) => {
     if (generationIds.length > 500) {
       return Promise.reject(new Error("한 번에 최대 500개 생성물까지 변경할 수 있습니다"));
     }
-    return jsonFetch<GenerationWorkspaceBatchResponse>("/api/generations/workspace/batch", {
+    const path = team
+      ? "/api/generations/workspace/team-batch"
+      : "/api/generations/workspace/batch";
+    return jsonFetch<GenerationWorkspaceBatchResponse>(path, {
       method: "PUT",
       body: jsonBody({
         generation_ids: generationIds,

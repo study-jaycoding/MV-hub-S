@@ -4,6 +4,7 @@ import {
   filterNotificationsByCategory,
   markAllReleaseNotificationsRead,
   markNotificationListRead,
+  mergeReleaseAnnouncementNotifications,
   notificationBadgeText,
   syncReleaseNotifications,
   unreadNotificationCount,
@@ -31,6 +32,35 @@ const status = (overrides: Partial<ReleaseUpdateStatus> = {}): ReleaseUpdateStat
 });
 
 describe("알림 센터 파생 상태", () => {
+  it("관리자 공지가 같은 버전의 자동 available 알림을 대체하고 서버 읽음을 따른다", () => {
+    const local = [{
+      id: "update:available:1.2.0",
+      kind: "available" as const,
+      version: "1.2.0",
+      text: "새 버전",
+      created_at: "2026-08-24T00:00:00Z",
+      unread: true,
+    }];
+    const merged = mergeReleaseAnnouncementNotifications(local, [{
+      id: "release-abc",
+      version: "1.2.0",
+      file: "MVHub-1.2.0.zip",
+      released_at: "2026-08-24T00:00:00Z",
+      pinned: false,
+      announcement_revision: 1,
+      announced_at: "2026-08-24T01:00:00Z",
+      unread: false,
+    }]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toEqual(expect.objectContaining({
+      kind: "announcement",
+      version: "1.2.0",
+      unread: false,
+      noticeId: "release-abc",
+      noticeRevision: 1,
+    }));
+  });
+
   it("코멘트나 업데이트 미확인이 있을 때만 벨 수를 표시하고 9+로 제한한다", () => {
     const storage = new MemoryStorage();
     syncReleaseNotifications(status(), storage);

@@ -27,6 +27,7 @@ from ..deps import (
     account_scope_uid,
     actor_id,
     require_edit_generation,
+    require_super_admin_workspace,
     require_view_generation,
 )
 from ..models import (
@@ -42,6 +43,7 @@ from ..models import (
     TagsIn,
 )
 from ..services import cli_bridge, syncer
+from ..services.event_journal import journal_audit_event
 from ..services.media_preservation import preserve_generation_now
 from ..services.telemetry_drain import drain_isolated_telemetry
 from ..usecases import generation_personal_meta, hf_missing
@@ -509,6 +511,8 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
             status_code=409,
             detail="로그인 계정의 생성자 정보를 확인한 뒤 다시 시도하세요",
         )
+    super_claims: dict[str, Any] | None = None
+    mutation_owner_uid = owner_uid
     try:
         preview = repo.plan_generation_workspace_batch(
             body.generation_ids,
@@ -516,6 +520,22 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
             workspace,
             owner_uid=owner_uid,
         )
+    except repo.WorkspaceOwnershipError as exc:
+        # 공유 서버 본체에서 남의 카드가 섞였을 때만 10분 전용 권한을 요구한다. 로컬 허브의
+        # 일반(my) 경로는 권한을 넓히지 않고, 팀 탭 전용 라우트가 서버로 직접 전달한다.
+        if _proxy.proxying():
+            raise _workspace_assignment_error(exc)
+        super_claims = require_super_admin_workspace(request)
+        mutation_owner_uid = None
+        try:
+            preview = repo.plan_generation_workspace_batch(
+                body.generation_ids,
+                body.operation,
+                workspace,
+                owner_uid=None,
+            )
+        except repo.WorkspaceAssignmentError as retry_exc:
+            raise _workspace_assignment_error(retry_exc)
     except repo.WorkspaceAssignmentError as exc:
         raise _workspace_assignment_error(exc)
 
@@ -554,7 +574,7 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
             body.generation_ids,
             body.operation,
             workspace,
-            owner_uid=owner_uid,
+            owner_uid=mutation_owner_uid,
         )
     except repo.WorkspaceAssignmentError as exc:
         logger.error(
@@ -582,6 +602,33 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
             updates.append(
                 {"requested_id": str(row["requested_id"]), "generation": generation}
             )
+    if super_claims:
+        foreign_changed = [
+            str(row["requested_id"])
+            for row in result["changed"]
+            if row.get("creator_uid") != owner_uid
+        ]
+        for offset in range(0, len(foreign_changed), 50):
+            chunk = foreign_changed[offset : offset + 50]
+            if not chunk:
+                continue
+            journal_audit_event(
+                "generation.workspace_super_admin_changed",
+                actor_uid=actor_id(request),
+                target_type="generation_batch",
+                target_id=chunk[0] if len(foreign_changed) == 1 else None,
+                project_id=(result.get("assigned_project") or {}).get("id"),
+                fields=["workspace_id", "workspace_scope", "project_id"],
+                details={
+                    "generation_ids": chunk,
+                    "operation": body.operation,
+                    "workspace_id": workspace["id"],
+                    "super_session_id": str(super_claims["j"]),
+                    "item_count": len(foreign_changed),
+                    "chunk_index": offset // 50,
+                    "creator_unchanged": True,
+                },
+            )
     return {
         "workspace": workspace,
         "operation": body.operation,
@@ -591,6 +638,37 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
         "project": result.get("assigned_project"),
         "updates": updates,
     }
+
+
+@router.put("/generations/workspace/team-batch")
+def set_team_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Request):
+    """팀 탭 선택을 로컬 복사본이 아니라 공유 서버의 권위 행에 직접 적용한다."""
+    if not _proxy.proxying():
+        return set_generation_workspace_batch(body, request)
+    workspace = _resolve_workspace_target(
+        request,
+        workspace_id=body.workspace_id,
+        workspace_name=body.workspace_name,
+    )
+    result = _proxy.proxy_json(
+        "PUT",
+        "/api/generations/workspace/batch",
+        body={
+            "generation_ids": body.generation_ids,
+            "operation": body.operation,
+            "workspace_id": workspace["id"],
+            "workspace_name": workspace["name"],
+        },
+        timeout=30,
+        use_super_admin=True,
+    )
+    remote_workspace = result.get("workspace") if isinstance(result, dict) else None
+    if not isinstance(remote_workspace, dict) or remote_workspace.get("id") != workspace["id"]:
+        raise HTTPException(
+            status_code=409,
+            detail="선택한 워크스페이스와 서버의 변경 결과가 일치하지 않습니다",
+        )
+    return result
 
 
 def _batch_meta_callbacks(request: Request):

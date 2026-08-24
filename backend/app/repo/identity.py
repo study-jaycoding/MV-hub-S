@@ -480,6 +480,10 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     # 공유 원장의 예정 최종 지정자 — 대기 중 intent 를 3b 가 final_by 로 적용하므로
     # 전환 시 함께 정합해야 골드 지정자 신원이 안 끊긴다(키 아님 → plain).
     ("share_state_intent", "expected_final_by", "plain"),
+    # 업데이트 공지 작성자·읽음도 로그인 직후 acct: 신원으로 먼저 기록될 수 있다.
+    # 작성자는 감사 표시용 단일 값, 읽음은 복합 PK 상태이므로 각각 기존 전략을 재사용한다.
+    ("release_update_notice", "announced_by", "plain"),
+    ("release_update_notice_seen", "actor_uid", "ignore_del"),
 )
 
 # 신원-의심 컬럼 중 remap 대상이 '아닌' 것 — registry 테스트(test_identity_registry)가 PLAN∪EXEMPT 로
@@ -491,6 +495,10 @@ _REMAP_EXEMPT: dict[tuple[str, str], str] = {
     ("account", "creator_uid"): "remap authority/소스 — 이 값 기준으로 acct:<email>→user_ 매핑을 만든다",
     ("generation_event", "actor_uid"): "append-only 장애 이력 actor — 이메일 기반 임시 신원은 저장 전에 비가역 지문화",
     ("audit_event", "actor_uid"): "append-only 감사 actor — 당시 기록을 수정하지 않고 이메일 기반 신원은 비가역 지문화",
+    ("super_admin_session", "subject_uid"): (
+        "10분 권한 발급 당시의 서명 토큰 sub 스냅샷 — 신원 remap 시 토큰과 DB를 서로 다르게 "
+        "고치지 않고 즉시 fail-closed 무효화"
+    ),
 }
 
 

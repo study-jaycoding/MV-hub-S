@@ -209,6 +209,21 @@ CREATE TABLE IF NOT EXISTS account (
 -- 표시이름 해석·멤버 조회의 creator_uid IN (...) SCAN 방지(R6 1-G).
 CREATE INDEX IF NOT EXISTS idx_account_creator_uid ON account(creator_uid);
 
+-- 슈퍼 관리자 10분 세션. 일반 로그인 토큰과 분리된 workspace 변경 전용 권한이다.
+-- 원문 토큰은 저장하지 않고 SHA-256 지문만 남겨 DB 유출 시 재사용을 막는다.
+CREATE TABLE IF NOT EXISTS super_admin_session (
+    jti           TEXT PRIMARY KEY,
+    subject_email TEXT NOT NULL,
+    subject_uid   TEXT NOT NULL,
+    token_hash    TEXT NOT NULL,
+    scope         TEXT NOT NULL,
+    issued_at     INTEGER NOT NULL,
+    expires_at    INTEGER NOT NULL,
+    revoked_at    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_super_admin_session_subject
+    ON super_admin_session(subject_email, expires_at DESC);
+
 -- 에이전트가 보고한 팀 워크스페이스 등록부. CLI에는 조직 전체 멤버 API가 없으므로 각 계정의
 -- workspace list 보고를 합쳐 MV-Hub가 확인한 접근 관계를 만든다. 생성물/프로젝트의 스냅샷 이름과
 -- 달리 여기의 name/credits는 마지막 보고값이다.
@@ -371,6 +386,38 @@ CREATE INDEX IF NOT EXISTS idx_audit_event_created
     ON audit_event(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_event_project
     ON audit_event(project_id, created_at DESC, id DESC);
+
+-- 관리자가 공유하는 릴리스 업데이트 공지. 설치 포인터(latest.json)와 수명주기를 분리해
+-- 공지 고정/읽음 변경이 실제 설치 파일 선택을 바꾸지 않게 한다.
+CREATE TABLE IF NOT EXISTS release_update_notice (
+    id                    TEXT PRIMARY KEY,
+    version               TEXT NOT NULL,
+    file_name             TEXT NOT NULL,
+    sha256                TEXT NOT NULL UNIQUE,
+    size_bytes            INTEGER NOT NULL DEFAULT 0,
+    released_at           TEXT NOT NULL,
+    pinned                INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),
+    announcement_revision INTEGER NOT NULL DEFAULT 0,
+    announced_at          TEXT,
+    announced_by          TEXT,
+    created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_release_update_notice_rank
+    ON release_update_notice(pinned DESC, released_at DESC, created_at DESC);
+
+-- 공지는 재발행할 수 있다. revision까지 읽음 키에 넣어 같은 릴리스를 다시 공지하면
+-- 모든 사용자에게 새 알림으로 보이게 한다. PC가 바뀌어도 읽음은 공유 서버에 남는다.
+CREATE TABLE IF NOT EXISTS release_update_notice_seen (
+    notice_id TEXT NOT NULL,
+    revision  INTEGER NOT NULL,
+    actor_uid TEXT NOT NULL,
+    seen_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY(notice_id, revision, actor_uid),
+    FOREIGN KEY(notice_id) REFERENCES release_update_notice(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_release_update_notice_seen_actor
+    ON release_update_notice_seen(actor_uid, seen_at DESC);
 
 -- 모든 상태 변경을 같은 DB 트랜잭션에서 자동 포착한다. 애플리케이션의 의미 이벤트
 -- (요청됨/앵커확보/결과대기 등)와 함께 남아, 누락 없이 상태 전이를 재구성할 수 있다.

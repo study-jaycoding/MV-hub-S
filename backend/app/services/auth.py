@@ -16,13 +16,16 @@ import os
 import secrets
 import threading
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from .. import db
 from ..db import get_connection
 
 _PBKDF2_ITERS = 200_000
 _TOKEN_TTL = 14 * 24 * 3600  # 2주
+SUPER_ADMIN_TTL = 10 * 60
+SUPER_ADMIN_SCOPE = "superadmin_workspace"
+SUPER_ADMIN_HEADER = "X-MVHub-Super-Session"
 
 
 # ── 서버 시크릿(app_setting 'auth_secret') ───────────────────────────────────
@@ -138,7 +141,7 @@ def _sign(payload_b64: str) -> str:
 
 
 def make_token(email: str, ttl: int = _TOKEN_TTL, pwd_stamp: Optional[str] = None) -> str:
-    body = {"e": email, "x": int(time.time()) + ttl}
+    body = {"k": "session", "e": email, "x": int(time.time()) + ttl}
     if pwd_stamp:
         body["p"] = pwd_stamp  # 발급 시점의 account.password_changed_at — 비번 변경 후 옛 토큰 거부에 사용
     payload = _b64e(json.dumps(body).encode())
@@ -196,6 +199,10 @@ def verify_token(token: Optional[str], *, unavailable=None):
     data = _decode_verified(token, unavailable)
     if not isinstance(data, dict):
         return data  # None(무효) 또는 호출부가 건넨 '검증 불가' 표식
+    # 예전 일반 토큰(k 없음)은 계속 허용하되, 슈퍼 관리자 같은 다른 용도의 서명 토큰을
+    # Authorization에 넣어 일반 로그인으로 승격시키는 교차 사용은 거부한다.
+    if data.get("k") not in (None, "session"):
+        return None
     return data.get("e")
 
 
@@ -208,4 +215,42 @@ def token_password_stamp(token: Optional[str], *, unavailable=None):
     data = _decode_verified(token, unavailable)
     if not isinstance(data, dict):
         return data
+    if data.get("k") not in (None, "session"):
+        return None
     return data.get("p")
+
+
+def make_super_admin_token(
+    email: str,
+    subject_uid: str,
+    jti: str,
+    *,
+    ttl: int = SUPER_ADMIN_TTL,
+    now: Optional[int] = None,
+) -> tuple[str, int]:
+    """일반 로그인과 교차 사용할 수 없는 workspace 변경 전용 토큰을 만든다."""
+    issued_at = int(time.time()) if now is None else int(now)
+    expires_at = issued_at + max(1, min(int(ttl), SUPER_ADMIN_TTL))
+    body = {
+        "k": "super_admin",
+        "s": SUPER_ADMIN_SCOPE,
+        "e": email,
+        "sub": subject_uid,
+        "j": jti,
+        "i": issued_at,
+        "x": expires_at,
+    }
+    payload = _b64e(json.dumps(body).encode())
+    return f"{payload}.{_sign(payload)}", expires_at
+
+
+def verify_super_admin_token(token: Optional[str], *, unavailable=None) -> Optional[dict[str, Any]]:
+    """유효한 10분 workspace 전용 토큰의 claim을 반환한다."""
+    data = _decode_verified(token, unavailable)
+    if not isinstance(data, dict):
+        return data
+    if data.get("k") != "super_admin" or data.get("s") != SUPER_ADMIN_SCOPE:
+        return None
+    if not all(str(data.get(key) or "").strip() for key in ("e", "sub", "j")):
+        return None
+    return data

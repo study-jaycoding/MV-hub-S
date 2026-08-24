@@ -43,7 +43,6 @@ from ..mutation_notify import (
 # 연결 정보(키·기본 주소·조회)는 services/shared_connection 단일 출처 — 여기 별칭은
 # 기존 내부 사용명 유지용이고, base_url/token 은 테스트가 이 모듈 속성으로 패치한다.
 from ..services.shared_connection import (  # noqa: E402
-    K_ELEV_TOKEN as _K_ELEV_TOKEN,
     K_TOKEN as _K_TOKEN,
     base_url,
     elevation_token,
@@ -122,6 +121,7 @@ def raw_request(
     body: Optional[Any] = None,
     timeout: int = 60,
     mutation_origin: Optional[tuple[str, str]] = None,
+    super_token: Optional[str] = None,
 ) -> tuple[int, Any]:
     """공유 서버로 보내는 저수준 stdlib HTTP(새 의존성 0). `(status, parsed|text)` 반환.
     연결 실패만 502 로 올리고, 4xx/5xx 는 (code, 본문)으로 돌려준다(호출자가 해석).
@@ -131,6 +131,10 @@ def raw_request(
     req.add_header("Content-Type", "application/json")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
+    if super_token:
+        from ..services.auth import SUPER_ADMIN_HEADER
+
+        req.add_header(SUPER_ADMIN_HEADER, super_token)
     if mutation_origin:
         req.add_header(CLIENT_ID_HEADER, mutation_origin[0])
         req.add_header(MUTATION_ID_HEADER, mutation_origin[1])
@@ -245,6 +249,7 @@ def proxy_json(
     require_token: bool = True,
     timeout: int = 60,
     raw_query: Optional[str] = None,
+    use_super_admin: bool = False,
 ) -> Any:
     """공유 서버 {base}{path} 로 위임하고 성공 본문(parsed JSON)을 반환.
 
@@ -266,6 +271,7 @@ def proxy_json(
         body=body,
         timeout=timeout,
         mutation_origin=_REQUEST_MUTATION_ORIGIN.get(),
+        super_token=elevation_token() if use_super_admin else None,
     )
     if 200 <= status < 300:
         return parsed
@@ -440,9 +446,9 @@ async def _forward(request: Request) -> Response:
     raw = request.scope.get("raw_path")
     path = raw.decode("latin-1") if raw else request.url.path
     url = base_url() + path + (("?" + qs) if qs else "")
-    # 계정관리(/api/auth/accounts*)는 임시 관리자(elev) 토큰이 있으면 그걸로 — 본인이 admin 아니어도 승인 가능.
-    used_elev = request.url.path.startswith("/api/auth/accounts") and bool(elevation_token())
-    tok = elevation_token() if used_elev else token()
+    # 일반 API는 항상 현재 로그인 계정으로 수행한다. 슈퍼 관리자 토큰은 일반 로그인 토큰을
+    # 대체하지 않으며 workspace 전용 명시 경로에서만 별도 헤더로 전달한다.
+    tok = token()
     method = request.method
     ctype = request.headers.get("content-type")
     client_id = request.headers.get(CLIENT_ID_HEADER)
@@ -473,7 +479,7 @@ async def _forward(request: Request) -> Response:
     if status == 401:
         auth_state = await asyncio.to_thread(
             _handle_auth_failure,
-            _K_ELEV_TOKEN if used_elev else _K_TOKEN,
+            _K_TOKEN,
             tok,
             request.url.path,
         )

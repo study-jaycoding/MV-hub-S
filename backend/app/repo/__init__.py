@@ -33,6 +33,8 @@ from .facets import *  # noqa: F401,F403  (generations 에서 분리 — get_fac
 from .sources import *  # noqa: F401,F403  (generations 뒤 — search_sources 가 _attach_children import)
 from .gen_requests import *  # noqa: F401,F403  (generations 뒤 — placeholder gen 을 다룸)
 from .event_journal import *  # noqa: F401,F403  (장기 생성 이력·감사 기록 — leaf)
+from .super_admin_sessions import *  # noqa: F401,F403  (10분 workspace 전용 권한 — leaf)
+from .release_update_notices import *  # noqa: F401,F403  (관리자 릴리스 공지·읽음 — leaf)
 from .media_preservation import *  # noqa: F401,F403  (공유·최종 원본 보존 작업 상태 — leaf)
 from .share_state_intents import *  # noqa: F401,F403  (공유/골드 desired-state 원장 — leaf)
 from .trash import *  # noqa: F401,F403  (generations·tags 뒤 — trash 가 둘을 import)

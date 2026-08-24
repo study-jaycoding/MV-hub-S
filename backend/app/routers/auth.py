@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 import time
 from collections.abc import Callable
 from typing import Any, Optional, TypeVar
@@ -20,7 +21,15 @@ from pydantic import BaseModel
 from .. import repo
 from ..config import AUTH_ENABLED, MANAGE_ENABLED
 from ..emailnorm import norm_email
-from ..deps import SESSION_COOKIE, actor_id, require_admin, require_global_cap, session_token
+from ..deps import (
+    SESSION_COOKIE,
+    actor_id,
+    require_admin,
+    require_global_cap,
+    require_super_admin_workspace,
+    session_token,
+    super_admin_workspace_claims,
+)
 from ..services import auth
 from ..services import local_agent_pair
 from ..services.agent_signals import agent_signals
@@ -182,6 +191,10 @@ class HiddenIn(BaseModel):
     hidden: bool
 
 
+class SuperAdminIn(BaseModel):
+    password: str
+
+
 @router.get("/config")
 def auth_config():
     """프론트가 로그인 화면 표시 여부·부트스트랩 안내를 결정하는 데 쓴다."""
@@ -290,6 +303,86 @@ def logout(response: Response, request: Request):
         agent_signals.signal(previous, "pair-change")
     response.delete_cookie(SESSION_COOKIE, path="/")
     return {"ok": True}
+
+
+@router.post("/super-admin/elevate")
+async def elevate_super_admin(body: SuperAdminIn, request: Request):
+    """현재 로그인한 영구 admin이 자기 비밀번호로 10분 workspace 변경 권한을 받는다."""
+    account = getattr(request.state, "account", None)
+    if not account:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+    require_admin(request)
+    email = account["email"]
+    key = _rl_key(request, email)
+    _rl_reserve(key)
+    try:
+        verified = await _run_login_work(repo.authenticate, email, body.password)
+        if not verified:
+            _rl_fail(key)
+            raise HTTPException(status_code=401, detail="현재 비밀번호가 올바르지 않습니다")
+        if verified.get("status") != "approved" or "admin" not in (verified.get("global_roles") or []):
+            raise HTTPException(status_code=403, detail="영구 Admin 역할이 있는 계정만 사용할 수 있습니다")
+        _rl_ok(key)
+    finally:
+        _rl_release(key)
+
+    issued_at = int(time.time())
+    subject_uid = actor_id(request)
+    jti = secrets.token_hex(16)
+    token, expires_at = auth.make_super_admin_token(
+        email,
+        subject_uid,
+        jti,
+        now=issued_at,
+    )
+    repo.issue_super_admin_session(
+        jti=jti,
+        subject_email=email,
+        subject_uid=subject_uid,
+        token=token,
+        scope=auth.SUPER_ADMIN_SCOPE,
+        issued_at=issued_at,
+        expires_at=expires_at,
+    )
+    journal_audit_event(
+        "super_admin.issued",
+        actor_uid=subject_uid,
+        target_type="super_admin_session",
+        target_id=jti,
+        fields=["scope", "expires_at"],
+        details={"scope": auth.SUPER_ADMIN_SCOPE, "ttl_seconds": auth.SUPER_ADMIN_TTL},
+    )
+    return {
+        "ok": True,
+        "active": True,
+        "token": token,
+        "expires_at": expires_at,
+        "ttl_seconds": auth.SUPER_ADMIN_TTL,
+    }
+
+
+@router.get("/super-admin/status")
+def super_admin_status(request: Request):
+    claims = super_admin_workspace_claims(request)
+    return {
+        "active": bool(claims),
+        "expires_at": int(claims["expires_at"]) if claims else None,
+    }
+
+
+@router.post("/super-admin/revoke")
+def revoke_super_admin(request: Request):
+    claims = require_super_admin_workspace(request)
+    repo.revoke_super_admin_session(str(claims["j"]))
+    journal_audit_event(
+        "super_admin.revoked",
+        actor_uid=actor_id(request),
+        target_type="super_admin_session",
+        target_id=str(claims["j"]),
+        fields=["revoked_at"],
+        details={"manual": True},
+    )
+    return {"ok": True, "active": False, "expires_at": None}
 
 
 # ── 관리자: 계정 승인·등급 ───────────────────────────────────────────────────

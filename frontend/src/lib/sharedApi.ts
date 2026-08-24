@@ -30,14 +30,26 @@ export const sharedApi = {
       has_token: boolean;
       elevated: boolean;
       elevated_as: string | null;
+      super_admin_active: boolean;
+      super_admin_expires_at: number | null;
     }>("/api/shared-server/status"),
-  sharedServerElevate: (email: string, password: string) =>
-    jsonFetch<{ ok: boolean; elevated_as: string; elevated: boolean }>(
+  sharedServerElevate: (password: string) =>
+    jsonFetch<{
+      ok: boolean;
+      elevated: boolean;
+      super_admin_active: boolean;
+      super_admin_expires_at: number | null;
+    }>(
       "/api/shared-server/elevate",
-      { method: "POST", body: jsonBody({ email, password }) },
+      { method: "POST", body: jsonBody({ password }) },
     ),
   sharedServerDeElevate: () =>
-    jsonFetch<{ ok: boolean; elevated: boolean }>("/api/shared-server/de-elevate", {
+    jsonFetch<{
+      ok: boolean;
+      elevated: boolean;
+      super_admin_active: boolean;
+      super_admin_expires_at: number | null;
+    }>("/api/shared-server/de-elevate", {
       method: "POST",
       body: jsonBody({}),
     }),

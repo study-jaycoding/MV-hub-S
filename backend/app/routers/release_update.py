@@ -13,9 +13,12 @@ from ..config import PORT
 from ..services.operational_health import generation_queue_snapshot
 from ..services import resolve_queue
 from ..services.release_update import (
+    APP_ROOT,
     ReleaseUpdateBusyError,
     ReleaseUpdateError,
+    fetch_latest,
     get_status,
+    install_mode,
     start_update,
 )
 from ..services.request_guards import require_local_machine_request
@@ -66,6 +69,29 @@ async def release_update_status(request: Request, refresh: bool = False):
     # _with_activity 는 generation_queue_snapshot(SQLite 집계)을 부른다 — async 라우트
     # 위에서 직접 돌리면 이벤트 루프가 멈춘다(R5 ops-1) → 스레드로 내린다.
     return await asyncio.to_thread(_with_activity, status)
+
+
+@router.get("/latest-metadata")
+async def release_update_latest_metadata(request: Request):
+    """관리자 업데이트 등록용 최신 릴리스 메타데이터(로컬 설치 원본에서 읽음)."""
+    _require_local(request)
+    if install_mode(APP_ROOT) != "release":
+        raise HTTPException(
+            status_code=400,
+            detail="릴리스 설치본에서만 최신 업데이트 파일을 확인할 수 있습니다",
+        )
+    try:
+        latest = await asyncio.to_thread(fetch_latest, APP_ROOT)
+    except ReleaseUpdateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # INSTALL_SOURCE 같은 로컬 경로는 브라우저·공유 서버로 내보내지 않는다.
+    return {
+        "version": latest["version"],
+        "file": latest["file"],
+        "sha256": latest["sha256"],
+        "size": latest["size"],
+        "created_at": latest["created_at"],
+    }
 
 
 @router.post("/start", status_code=202)

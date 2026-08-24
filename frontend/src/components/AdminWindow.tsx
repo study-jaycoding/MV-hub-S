@@ -12,6 +12,8 @@ import {
   visibleAdminMembers,
 } from "../lib/accountIdentity";
 import { useEscapeClose } from "../lib/useEscapeClose";
+import { getLatestReleaseMetadata, type LatestReleaseMetadata } from "../lib/releaseUpdate";
+import { updateNoticeApi, type UpdateNotice } from "../lib/updateNotices";
 import { hasGlobalCap } from "../types";
 import type { Account, Member } from "../types";
 
@@ -43,6 +45,7 @@ export function AdminWindow({
     is_admin: boolean;
     elevated: boolean;
     elevated_as: string | null;
+    super_admin_expires_at: number | null;
   } | null>(null);
   const [urlDraft, setUrlDraft] = useState("");
   // 작업자 화면에 주소 대신 보일 서버 이름 — 주소와 한 번에 저장한다.
@@ -55,10 +58,17 @@ export function AdminWindow({
   const localOnlyServerControls = localHub;
   const refreshShared = () => {
     if (!localOnlyServerControls) {
-      setShared({ url: null, server_name: "", is_admin: false, elevated: false, elevated_as: null });
-      return;
+      setShared({
+        url: null,
+        server_name: "",
+        is_admin: false,
+        elevated: false,
+        elevated_as: null,
+        super_admin_expires_at: null,
+      });
+      return Promise.resolve();
     }
-    api
+    return api
       .sharedServerStatus()
       .then((s) => {
         setShared({
@@ -67,12 +77,20 @@ export function AdminWindow({
           is_admin: s.is_admin,
           elevated: s.elevated,
           elevated_as: s.elevated_as,
+          super_admin_expires_at: s.super_admin_expires_at,
         });
         setUrlDraft(s.url || "");
         setNameDraft(s.server_name || "");
       })
       .catch(() =>
-        setShared({ url: null, server_name: "", is_admin: false, elevated: false, elevated_as: null }),
+        setShared({
+          url: null,
+          server_name: "",
+          is_admin: false,
+          elevated: false,
+          elevated_as: null,
+          super_admin_expires_at: null,
+        }),
       );
   };
   useEffect(() => {
@@ -80,11 +98,8 @@ export function AdminWindow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 임시 관리자 권한(열쇠) — 본인 계정 유지한 채 admin 비번으로 '승인 절차' 권한만 일시 획득.
+  // 슈퍼 관리자(열쇠) — 현재 로그인한 영구 admin이 자기 비밀번호로 10분만 획득한다.
   const [elevOpen, setElevOpen] = useState(false);
-  // id 만 "admin" 으로 기본 채움(짧은 id 는 백엔드가 관리자 이메일로 매핑). 비밀번호는 보안상
-  // 미리 채우지 않는다 — 매번 직접 입력.
-  const [elevEmail, setElevEmail] = useState("admin");
   const [elevPw, setElevPw] = useState("");
   const [elevMsg, setElevMsg] = useState("");
   const [elevBusy, setElevBusy] = useState(false);
@@ -92,13 +107,10 @@ export function AdminWindow({
     setElevMsg("");
     setElevBusy(true);
     try {
-      await api.sharedServerElevate(elevEmail.trim(), elevPw);
+      await api.sharedServerElevate(elevPw);
       setElevOpen(false);
       setElevPw("");
       await refreshShared();
-      // 권한 획득 → 계정/멤버 목록 다시 조회(이제 서버가 admin 으로 응답).
-      loadAccounts();
-      api.members().then(setMembers).catch(() => {});
     } catch (e) {
       setElevMsg(String(e).replace(/^Error:\s*\d+:\s*/, ""));
     } finally {
@@ -112,15 +124,40 @@ export function AdminWindow({
       /* ignore */
     }
     await refreshShared();
-    loadAccounts();
   };
   const elevated = !!shared?.elevated;
+  const [elevRemaining, setElevRemaining] = useState(0);
+  useEffect(() => {
+    const update = () => {
+      const remaining = Math.max(
+        0,
+        Number(shared?.super_admin_expires_at || 0) - Math.floor(Date.now() / 1000),
+      );
+      setElevRemaining(remaining);
+      if (!remaining && shared?.elevated) {
+        setShared((current) =>
+          current
+            ? { ...current, elevated: false, elevated_as: null, super_admin_expires_at: null }
+            : current,
+        );
+      }
+    };
+    update();
+    if (!shared?.elevated) return;
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [shared?.elevated, shared?.super_admin_expires_at]);
+  const remainingLabel = `${Math.floor(elevRemaining / 60)}:${String(elevRemaining % 60).padStart(2, "0")}`;
   // 팀에 공지 — 지금 '저장된' 이름·주소를 릴리스 폴더의 공지 파일로 내보낸다. 작업자 PC 는
   // 1분 안에 알림을 받고, 알림을 누르면 그 주소로 전환된다. 팀 전체에 영향을 주는 행위라
   // 확인 한 번을 거친다(입력창의 미저장 초안이 아니라 저장된 값이 나간다는 점도 여기서 알린다).
   const [publishOpen, setPublishOpen] = useState(false);
   const [publishBusy, setPublishBusy] = useState(false);
   const [publishMsg, setPublishMsg] = useState("");
+  const [latestRelease, setLatestRelease] = useState<LatestReleaseMetadata | null>(null);
+  const [updateNotices, setUpdateNotices] = useState<UpdateNotice[]>([]);
+  const [updateNoticeBusy, setUpdateNoticeBusy] = useState("");
+  const [updateNoticeMsg, setUpdateNoticeMsg] = useState("");
   const savedUrl = (shared?.url || "").trim();
   const savedName = (shared?.server_name || "").trim();
   const publishDirty = urlDraft.trim() !== savedUrl || nameDraft.trim() !== savedName;
@@ -151,6 +188,7 @@ export function AdminWindow({
         is_admin: p?.is_admin ?? false,
         elevated: p?.elevated ?? false,
         elevated_as: p?.elevated_as ?? null,
+        super_admin_expires_at: p?.super_admin_expires_at ?? null,
       }));
       setNameDraft(r.server_name || "");
       setUrlMsg("저장됐습니다. 다음 로그인부터 이 주소를 씁니다.");
@@ -163,6 +201,7 @@ export function AdminWindow({
   // ⚠️ 서버 직결(프록시) 모드에선 멤버 목록의 is_mine 은 '서버 PC 신원'이라 내가 아니다 —
   //    그래서 로그인 계정(account)의 email/creator_uid 로 내 멤버 행을 직접 찾는다(없으면 is_mine 폴백).
   const viewerRoles = viewerGlobalRoles(account, members);
+  const isPermanentAdmin = hasGlobalCap(viewerRoles, "system");
 
   // 시스템 부트스트랩 계정(admin@millionvolt.com) — 관리 UI 어디에도 노출하지 않는다.
   // (열쇠 임시권한 로그인엔 여전히 admin 으로 인증 가능 — 목록에서만 가린다.)
@@ -172,7 +211,7 @@ export function AdminWindow({
   const visibleAccounts = visibleAdminAccounts(accounts);
   // 역량에 따라 보이는 탭이 다르다(로드맵 §1): 승인·전역역할=admin, 프로젝트=product_director.
   const tabDefs: { key: AdminTab; label: string; visible: boolean }[] = [
-    { key: "approve", label: "승인", visible: hasGlobalCap(viewerRoles, "approve_signup") || elevated },
+    { key: "approve", label: "승인", visible: hasGlobalCap(viewerRoles, "approve_signup") },
     { key: "roles", label: "멤버 · 전역 역할", visible: hasGlobalCap(viewerRoles, "grant_global") },
     // 공유 서버 주소 — 로그인한 공유 서버 계정이 admin 일 때만(로컬 허브 설정값).
     { key: "server", label: "공유 서버", visible: !!shared?.is_admin },
@@ -181,6 +220,63 @@ export function AdminWindow({
   const [tab, setTab] = useState<AdminTab>("approve");
   // 선택 탭이 권한 변화로 사라지면 첫 가용 탭으로 폴백(빈 화면 방지).
   const activeTab = visibleTabs.some((t) => t.key === tab) ? tab : visibleTabs[0]?.key;
+
+  const loadUpdateManagement = async () => {
+    const [items, latest] = await Promise.all([
+      updateNoticeApi.adminList().catch(() => [] as UpdateNotice[]),
+      getLatestReleaseMetadata().catch(() => null),
+    ]);
+    setUpdateNotices(items);
+    setLatestRelease(latest);
+  };
+  useEffect(() => {
+    if (activeTab === "server" && shared?.is_admin) void loadUpdateManagement();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, shared?.is_admin]);
+
+  const registerLatestRelease = async () => {
+    if (!latestRelease) return;
+    setUpdateNoticeBusy("register");
+    setUpdateNoticeMsg("");
+    try {
+      const result = await updateNoticeApi.register(latestRelease);
+      setUpdateNoticeMsg(result.created ? "최신 업데이트를 목록에 등록했습니다." : "이미 등록된 업데이트입니다.");
+      setUpdateNotices(await updateNoticeApi.adminList());
+    } catch (error) {
+      setUpdateNoticeMsg("등록 실패: " + String(error).replace(/^Error:\s*\d+:\s*/, ""));
+    } finally {
+      setUpdateNoticeBusy("");
+    }
+  };
+
+  const toggleUpdatePin = async (item: UpdateNotice) => {
+    setUpdateNoticeBusy(`pin:${item.id}`);
+    setUpdateNoticeMsg("");
+    try {
+      await updateNoticeApi.pin(item.id, !item.pinned);
+      setUpdateNotices(await updateNoticeApi.adminList());
+    } catch (error) {
+      setUpdateNoticeMsg("고정 변경 실패: " + String(error).replace(/^Error:\s*\d+:\s*/, ""));
+    } finally {
+      setUpdateNoticeBusy("");
+    }
+  };
+
+  const announceUpdate = async (item: UpdateNotice) => {
+    setUpdateNoticeBusy(`announce:${item.id}`);
+    setUpdateNoticeMsg("");
+    try {
+      const result = await updateNoticeApi.announce(item.id);
+      setUpdateNoticeMsg(
+        `v${item.version} 업데이트를 공지했습니다 (${result.item.announcement_revision}번째).`,
+      );
+      setUpdateNotices(await updateNoticeApi.adminList());
+    } catch (error) {
+      setUpdateNoticeMsg("공지 실패: " + String(error).replace(/^Error:\s*\d+:\s*/, ""));
+    } finally {
+      setUpdateNoticeBusy("");
+    }
+  };
 
   const loadAccounts = (hidden = showHidden) =>
     api.listAccounts(undefined, hidden).then(setAccounts).catch(() => setAccounts([]));
@@ -256,14 +352,14 @@ export function AdminWindow({
       <div className="admin-window" role="dialog" aria-label="관리자">
         <header className="admin-head">
           <span className="admin-title">⬡ 관리자</span>
-          {localOnlyServerControls && (
+          {localOnlyServerControls && isPermanentAdmin && (
           <button
             className={"admin-key" + (elevated ? " on" : "")}
             onClick={() => (elevated ? deElevate() : setElevOpen(true))}
             title={
               elevated
-                ? `임시 관리자 권한 ON (${shared?.elevated_as}) — 클릭해 해제`
-                : "임시 관리자 권한 — admin 비번으로 승인 권한 획득"
+                ? `슈퍼 관리자 ${remainingLabel} 남음 — 클릭해 해제`
+                : "슈퍼 관리자 — 내 비밀번호로 10분 권한 요청"
             }
           >
             🔑
@@ -281,21 +377,18 @@ export function AdminWindow({
               onMouseDown={(e) => e.stopPropagation()}
             >
               <p className="admin-confirm-q">
-                임시 관리자 권한 — 승인 절차를 조정하려면 admin 계정으로 인증하세요.
+                슈퍼 관리자 — 다른 사람의 생성물 워크스페이스를 옮기려면
                 <br />
-                <span className="admin-note-sub">로그아웃하거나 다른 사람이 로그인하면 해제됩니다.</span>
+                현재 로그인한 내 계정으로 다시 인증하세요.
+                <br />
+                <span className="admin-note-sub">
+                  권한은 서버 기준 10분 뒤 자동 만료되며 작성자 정보는 바뀌지 않습니다.
+                </span>
               </p>
               <input
                 className="settings-input"
-                type="email"
-                placeholder="admin 이메일"
-                value={elevEmail}
-                onChange={(e) => setElevEmail(e.target.value)}
-              />
-              <input
-                className="settings-input"
                 type="password"
-                placeholder="admin 비밀번호"
+                placeholder="현재 계정 비밀번호"
                 value={elevPw}
                 onChange={(e) => setElevPw(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && doElevate()}
@@ -401,6 +494,64 @@ export function AdminWindow({
                   작업 중인 사람에게 알림이 뜨고, 누르면 이 주소로 전환됩니다. 릴리스 폴더에
                   쓰기 권한이 있는 관리자 PC 에서만 됩니다.
                 </div>
+              </section>
+
+              <section className="admin-section">
+                <h4>업데이트 관리</h4>
+                <div className="admin-note-sub">
+                  최근 업데이트를 최대 5개 표시합니다. 고정한 항목은 새 업데이트가 생겨도 목록에
+                  남고(최대 4개), 공지를 누르면 팀원의 알림 센터에 표시됩니다.
+                </div>
+                {latestRelease && !updateNotices.some(
+                  (item) => item.sha256 && item.sha256 === latestRelease.sha256,
+                ) && (
+                  <button
+                    className="settings-action"
+                    style={{ width: "auto", marginBottom: 10 }}
+                    onClick={registerLatestRelease}
+                    disabled={!!updateNoticeBusy}
+                  >
+                    {updateNoticeBusy === "register"
+                      ? "등록 중…"
+                      : `최신 업데이트 v${latestRelease.version} 등록`}
+                  </button>
+                )}
+                <div className="admin-update-list">
+                  {updateNotices.length ? updateNotices.map((item) => (
+                    <div className="admin-update-row" key={item.id}>
+                      <label className="admin-update-pin" title="이 업데이트를 최근 5개 목록에 고정">
+                        <input
+                          type="checkbox"
+                          checked={item.pinned}
+                          disabled={!!updateNoticeBusy}
+                          onChange={() => void toggleUpdatePin(item)}
+                        />
+                        고정
+                      </label>
+                      <span className="admin-update-file" title={item.file}>
+                        <b>v{item.version}</b>
+                        <small>{item.file}</small>
+                      </span>
+                      <button
+                        className="settings-action"
+                        style={{ width: "auto" }}
+                        disabled={!!updateNoticeBusy}
+                        onClick={() => void announceUpdate(item)}
+                      >
+                        {updateNoticeBusy === `announce:${item.id}`
+                          ? "공지 중…"
+                          : item.announcement_revision > 0 ? "재공지" : "공지"}
+                      </button>
+                    </div>
+                  )) : (
+                    <div className="admin-note-sub">등록된 업데이트가 없습니다.</div>
+                  )}
+                </div>
+                {updateNoticeMsg && (
+                  <p style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>
+                    {updateNoticeMsg}
+                  </p>
+                )}
               </section>
 
               {publishOpen && (

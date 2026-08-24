@@ -28,6 +28,14 @@ export interface ReleaseUpdateStatus {
   percent?: number; // 업데이트 실행기(bat)가 기록하는 전체 진행률 0~100
 }
 
+export interface LatestReleaseMetadata {
+  version: string;
+  file: string;
+  sha256: string;
+  size: number;
+  created_at: string;
+}
+
 // 업데이트 실행기(update_release.bat)는 CP949 인코딩 함정 때문에 상태 message를
 // 영어(ASCII)로만 기록한다 — 한글이 bat 안에 있으면 표준 한국어 Windows 에서 추출이
 // 깨져 업데이트 자체가 죽는다(실측). 화면 한글은 여기서 state 코드로 매핑한다.
@@ -70,6 +78,10 @@ export function getReleaseUpdateStatus(refresh = false): Promise<ReleaseUpdateSt
   return jsonFetch<ReleaseUpdateStatus>(
     `/api/release-update/status${refresh ? "?refresh=true" : ""}`,
   );
+}
+
+export function getLatestReleaseMetadata(): Promise<LatestReleaseMetadata> {
+  return jsonFetch<LatestReleaseMetadata>("/api/release-update/latest-metadata");
 }
 
 export function startReleaseUpdate(): Promise<ReleaseUpdateStatus> {

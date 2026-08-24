@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any, Optional
 
 from .. import repo
@@ -42,8 +43,9 @@ K_RELOCATION_PUBLISHED = "shared_server_relocation_published"
 K_SERVER_NAME = "shared_server_display_name"
 SERVER_NAME_MAX = 64
 K_TOKEN = "shared_server_token"
-# 임시 관리자 권한 토큰(계정관리 호출에만) — 로그아웃·계정전환 시 해제.
+# 10분 슈퍼 관리자 workspace 전용 토큰 — 일반 로그인과 분리하며 로그아웃·계정전환 시 해제.
 K_ELEV_TOKEN = "shared_server_elev_token"
+K_ELEV_EXPIRES = "shared_server_elev_expires"
 
 # 팀이 한 번 정해 배포하는 기본 주소(env 로 덮어쓰기).
 DEFAULT_SHARED_URL = (
@@ -61,6 +63,19 @@ def token() -> Optional[str]:
 
 def elevation_token() -> Optional[str]:
     return repo.get_setting(K_ELEV_TOKEN)
+
+
+def elevation_expires_at() -> Optional[int]:
+    raw = repo.get_setting(K_ELEV_EXPIRES)
+    try:
+        value = int(str(raw or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value > int(time.time()) else None
+
+
+def elevation_active() -> bool:
+    return bool(elevation_token() and elevation_expires_at())
 
 
 def server_name() -> str:

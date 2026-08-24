@@ -81,6 +81,7 @@ from .routers import (
     scenes,
     share,
     sync,
+    update_notices,
 )
 from .services import auth as auth_svc
 from .services import server_relocation
@@ -417,7 +418,8 @@ async def _application_lifespan(app: FastAPI):
     linked = repo.link_accounts_to_creators()
     if linked:
         print(f"[startup] 계정 {linked}개를 생성자에 연결")
-    # 썸네일 사전 생성(백그라운드 데몬, 1회) — 첫 프로젝트 선택·스크롤에서도 생성 지연 없이 즉시 표시.
+    # 이미지 썸네일+최근 영상 포스터 사전 생성(백그라운드 데몬, 1회) — 첫 탭 진입·스크롤에서도
+    # 원본 영상 metadata를 다시 읽지 않고 정지 포스터 캐시가 즉시 표시된다.
     # 살짝 throttle 해 시작 직후 CPU 스파이크를 피한다(PIL 은 C 구간서 GIL 해제 → 응답성 유지).
     import threading
 
@@ -664,6 +666,7 @@ app.include_router(assets.router)
 app.include_router(projects.router)
 app.include_router(members.router)
 app.include_router(notifications.router)
+app.include_router(update_notices.router)
 app.include_router(ingest.router)
 app.include_router(gen_requests.router)
 app.include_router(publish.router)

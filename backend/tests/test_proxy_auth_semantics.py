@@ -103,6 +103,26 @@ def test_proxy_json_preserves_token_when_me_confirms_session():
     assert stored["shared_server_token"] == "token-a"
 
 
+def test_proxy_json_keeps_normal_identity_and_adds_scoped_super_token_separately():
+    raw = mock.Mock(return_value=(200, {"ok": True}))
+    with (
+        mock.patch.object(_proxy, "token", return_value="normal-token"),
+        mock.patch.object(_proxy, "elevation_token", return_value="scoped-token"),
+        mock.patch.object(_proxy, "base_url", return_value="http://server.test"),
+        mock.patch.object(_proxy, "raw_request", raw),
+    ):
+        _proxy.proxy_json(
+            "PUT",
+            "/api/generations/workspace/batch",
+            body={"generation_ids": ["g1"]},
+            use_super_admin=True,
+        )
+
+    call = raw.call_args
+    assert call.kwargs["token"] == "normal-token"
+    assert call.kwargs["super_token"] == "scoped-token"
+
+
 def test_proxy_json_clears_only_current_token_when_me_confirms_expiry():
     stored = {"shared_server_token": "token-a"}
     raw = mock.Mock(side_effect=[(401, {"detail": "denied"}), (401, {"detail": "login required"})])

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Optional
@@ -77,6 +78,7 @@ def _switch_account_db(
 # 연결 정보(URL·토큰 키·기본 주소·조회 규칙)는 services/shared_connection 단일 출처.
 # 이메일/이름/역할 등 로그인 표시용 키만 이 라우터 소유로 남긴다.
 from ..services.shared_connection import (  # noqa: E402
+    K_ELEV_EXPIRES as _K_ELEV_EXPIRES,
     K_ELEV_TOKEN as _K_ELEV_TOKEN,
     K_RELOCATION_SEEN as _K_RELOCATION_SEEN,
     K_SERVER_NAME as _K_SERVER_NAME,
@@ -97,14 +99,14 @@ _K_EMAIL = "shared_server_email"
 _K_NAME = "shared_server_name"      # 로그인한 계정 표시이름(상태 표시용)
 _K_ROLES = "shared_server_roles"    # 로그인한 계정 전역역할(JSON) — admin UI 게이트용
 
-# 임시 관리자 권한(elevation) — 본인 계정은 유지한 채 admin 비번을 입력해 '승인 절차' 권한만
-# 일시 획득. 이 토큰은 _proxy 가 계정관리(/api/auth/accounts*) 호출에만 쓴다. 로그아웃·계정전환 시 해제.
+# 10분 슈퍼 관리자 상태 표시용 신원. 실제 권한은 별도 scoped 토큰과 서버 세션이 강제하며,
+# 일반 계정관리에는 사용하지 않는다. 로그아웃·계정전환 시 함께 해제한다.
 _K_ELEV_EMAIL = "shared_server_elev_email"
 _K_ELEV_NAME = "shared_server_elev_name"
 
 
 def _clear_elevation() -> None:
-    for k in (_K_ELEV_TOKEN, _K_ELEV_EMAIL, _K_ELEV_NAME):
+    for k in (_K_ELEV_TOKEN, _K_ELEV_EXPIRES, _K_ELEV_EMAIL, _K_ELEV_NAME):
         repo.set_setting(k, None)
 
 
@@ -207,10 +209,6 @@ def _save_shared_session(
         pass
 
 
-# 임시 관리자 권한(elevation) 기본 관리자 계정 — 모달이 짧은 id "admin" 을 받으면 이 이메일로 매핑.
-_ADMIN_EMAIL = (os.environ.get("CONTENT_HUB_ADMIN_EMAIL") or "admin@millionvolt.com").strip()
-
-
 def _roles() -> list[str]:
     raw = repo.get_setting(_K_ROLES)
     try:
@@ -226,11 +224,13 @@ def _is_admin() -> bool:
 
 def _http_json(
     method: str, url: str, token: Optional[str] = None, body: Optional[dict] = None,
-    timeout: int = 60,
+    timeout: int = 60, super_token: Optional[str] = None,
 ) -> tuple[int, Any]:
     """공유 서버로 보내는 stdlib HTTP(새 의존성 0). (status, parsed|text) 반환.
     저수준 구현은 _proxy.raw_request 와 공유(중복 제거) — 로그인/가입/elevate 가 status 를 직접 본다."""
-    return _proxy.raw_request(method, url, token=token, body=body, timeout=timeout)
+    return _proxy.raw_request(
+        method, url, token=token, body=body, timeout=timeout, super_token=super_token
+    )
 
 
 def _flatten_detail(resp: Any) -> str:
@@ -356,6 +356,15 @@ class SetUrlIn(BaseModel):
 
 def _shared_status() -> dict[str, Any]:
     elev_email = repo.get_setting(_K_ELEV_EMAIL)
+    try:
+        elev_expires = int(repo.get_setting(_K_ELEV_EXPIRES) or 0)
+    except (TypeError, ValueError):
+        elev_expires = 0
+    elevated = bool(repo.get_setting(_K_ELEV_TOKEN)) and elev_expires > int(time.time())
+    if not elevated and (repo.get_setting(_K_ELEV_TOKEN) or elev_expires):
+        _clear_elevation()
+        elev_email = None
+        elev_expires = 0
     return {
         "configured": True,
         "url": _effective_url(),
@@ -370,9 +379,11 @@ def _shared_status() -> dict[str, Any]:
         "roles": _roles(),
         "is_admin": _is_admin(),
         "has_token": bool(repo.get_setting(_K_TOKEN)),
-        # 임시 관리자 권한 상태 — 본인이 admin 이 아니어도 승인 권한을 일시 보유 중인가.
-        "elevated": bool(repo.get_setting(_K_ELEV_TOKEN)),
+        # 10분 슈퍼 관리자 상태. elevated 필드는 구 화면 호환용 별칭이다.
+        "elevated": elevated,
         "elevated_as": elev_email,
+        "super_admin_active": elevated,
+        "super_admin_expires_at": elev_expires or None,
     }
 
 
@@ -559,41 +570,53 @@ def shared_server_logout(request: Request):
 
 
 class ElevateIn(BaseModel):
-    email: str
+    email: Optional[str] = None  # 구 화면 호환 입력 — 현재 로그인 계정만 재인증하므로 사용하지 않는다.
     password: str
 
 
 @router.post("/shared-server/elevate")
 def shared_server_elevate(body: ElevateIn, request: Request):
-    """임시 관리자 권한 — 본인 로그인은 유지한 채 admin 계정 비번을 검증해 '승인 절차' 권한만
-    일시 획득한다. 검증된 admin 토큰을 elev 슬롯에 저장하고, _proxy 가 계정관리(/api/auth/accounts*)
-    호출에만 그 토큰을 쓴다. 로그아웃·계정전환 시 해제(다른 사람이 로그인하면 권한도 넘어감)."""
-    # 짧은 관리자 id("admin")는 설정된 관리자 이메일로 매핑(기본 admin@millionvolt.com,
-    # env CONTENT_HUB_ADMIN_EMAIL 로 변경). 작업자가 매번 전체 이메일을 안 적어도 되게.
+    """현재 로그인한 영구 admin 본인이 재인증해 10분 workspace 전용 권한을 받는다."""
     _require_local_shared_connection(request)
-    email = (body.email or "").strip()
-    if "@" not in email:
-        email = _ADMIN_EMAIL
+    if not _is_admin():
+        raise HTTPException(status_code=403, detail="영구 Admin 역할이 있는 계정만 사용할 수 있습니다")
+    normal_token = repo.get_setting(_K_TOKEN)
+    if not normal_token:
+        raise HTTPException(status_code=401, detail="공유 서버 로그인이 필요합니다")
     url = _validated_effective_url()
     status, resp = _http_json(
-        "POST", f"{url}/api/auth/login", body={"email": email, "password": body.password}
+        "POST",
+        f"{url}/api/auth/super-admin/elevate",
+        token=normal_token,
+        body={"password": body.password},
     )
-    if status != 200 or not isinstance(resp, dict) or not resp.get("token"):
+    if status != 200 or not isinstance(resp, dict) or not resp.get("token") or not resp.get("expires_at"):
         raise HTTPException(status_code=400, detail=f"권한 부여 실패: {_flatten_detail(resp)}")
-    acc = resp.get("account") or {}
-    roles = acc.get("global_roles") or []
-    if "admin" not in roles:
-        raise HTTPException(status_code=403, detail="관리자(admin) 계정이 아닙니다")
     repo.set_setting(_K_ELEV_TOKEN, resp["token"])
-    repo.set_setting(_K_ELEV_EMAIL, email)
-    repo.set_setting(_K_ELEV_NAME, acc.get("name") or email)
-    return {"ok": True, "elevated_as": email, **_shared_status()}
+    repo.set_setting(_K_ELEV_EXPIRES, str(int(resp["expires_at"])))
+    repo.set_setting(_K_ELEV_EMAIL, repo.get_setting(_K_EMAIL))
+    repo.set_setting(_K_ELEV_NAME, repo.get_setting(_K_NAME))
+    return {"ok": True, **_shared_status()}
 
 
 @router.post("/shared-server/de-elevate")
 def shared_server_de_elevate(request: Request):
-    """임시 관리자 권한 해제(수동)."""
+    """슈퍼 관리자 권한 해제(수동). 서버 해제가 실패해도 로컬 토큰은 즉시 버린다."""
     _require_local_shared_connection(request)
+    normal_token = repo.get_setting(_K_TOKEN)
+    super_token = repo.get_setting(_K_ELEV_TOKEN)
+    if normal_token and super_token:
+        try:
+            _http_json(
+                "POST",
+                f"{_validated_effective_url()}/api/auth/super-admin/revoke",
+                token=normal_token,
+                body={},
+                timeout=10,
+                super_token=super_token,
+            )
+        except HTTPException:
+            pass
     _clear_elevation()
     return {"ok": True, **_shared_status()}
 
@@ -839,6 +862,7 @@ _RELOCATION_ROLLBACK_KEYS = (
     _K_ELEV_EMAIL,
     _K_ELEV_NAME,
     _K_ELEV_TOKEN,
+    _K_ELEV_EXPIRES,
     *_SESSION_KEYS,
 )
 

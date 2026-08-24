@@ -34,6 +34,10 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/auth/me/name",
         "/api/auth/me/password",
         "/api/auth/register",
+        # 일반 로그인과 분리된 10분 workspace 전용 권한 — 발급·상태·해제의 진실원천은 팀 서버.
+        "/api/auth/super-admin/elevate",
+        "/api/auth/super-admin/revoke",
+        "/api/auth/super-admin/status",
         "/api/credits",
         "/api/db-backup",
         "/api/db-backup/latest",
@@ -75,6 +79,14 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/provider",
         "/api/ready",
         "/api/share/publish-bundle",
+        # 업데이트 공지 목록·고정·읽음은 팀 공용 상태라 공유 서버 DB가 진실원천이다.
+        "/api/update-notices",
+        "/api/update-notices/admin/list",
+        "/api/update-notices/admin/register",
+        "/api/update-notices/admin/{notice_id}/announce",
+        "/api/update-notices/admin/{notice_id}/pin",
+        "/api/update-notices/seen-all",
+        "/api/update-notices/{notice_id}/seen",
     }
 )
 

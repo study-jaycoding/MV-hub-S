@@ -61,7 +61,7 @@ export function useGenerationWorkspaceActions({
 
     runningRef.current = true;
     try {
-      const result = await api.setGenerationWorkspace(ids, operation, workspace);
+      const result = await api.setGenerationWorkspace(ids, operation, workspace, !!teamTab);
       // 응답 매핑은 요청 앵커 기준 — 카드 객체의 id 는 절대 바꾸지 않고 워크스페이스 필드만
       // 패치한다(팀 카드 id 를 로컬 id 로 치환하면 선택·코멘트 패널·읽음 표시가 어긋난다).
       const byRequested = new Map(

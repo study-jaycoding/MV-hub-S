@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -62,6 +63,34 @@ def test_refresh_reports_available_and_same_version(tmp_path: Path):
     current = release_update.get_status(refresh=True, root=root)
     assert current["state"] == "up_to_date"
     assert current["can_update"] is False
+
+
+def test_latest_metadata_exposes_only_safe_release_fields(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(release_update_router, "_require_local", lambda _request: None)
+    monkeypatch.setattr(release_update_router, "install_mode", lambda _root: "release")
+    monkeypatch.setattr(
+        release_update_router,
+        "fetch_latest",
+        lambda _root: {
+            "version": "1.2.3",
+            "file": "MVHub-1.2.3.zip",
+            "sha256": "a" * 64,
+            "size": 1234,
+            "created_at": "2026-08-24T00:00:00+00:00",
+            "source": Path(r"Z:\private\release"),
+        },
+    )
+
+    result = asyncio.run(release_update_router.release_update_latest_metadata(object()))
+
+    assert result == {
+        "version": "1.2.3",
+        "file": "MVHub-1.2.3.zip",
+        "sha256": "a" * 64,
+        "size": 1234,
+        "created_at": "2026-08-24T00:00:00+00:00",
+    }
+    assert "source" not in result
 
 
 def test_refresh_rejects_unsafe_release_filename(tmp_path: Path):

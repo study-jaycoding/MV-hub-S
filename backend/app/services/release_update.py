@@ -297,10 +297,19 @@ def fetch_latest(root: Path = APP_ROOT) -> dict[str, Any]:
     digest = str(latest.get("sha256") or "").strip().lower()
     if not version or not _SHA256_RE.fullmatch(digest):
         raise ReleaseUpdateError("latest.json에 version, file, sha256이 필요합니다")
+    try:
+        size = int(latest.get("size") or 0)
+    except (TypeError, ValueError) as exc:
+        raise ReleaseUpdateError("latest.json의 size가 올바르지 않습니다") from exc
+    if size < 0:
+        raise ReleaseUpdateError("latest.json의 size가 올바르지 않습니다")
     return {
         "version": version,
         "file": filename,
         "sha256": digest,
+        "size": size,
+        # 옛 latest.json 호환: 생성 시각이 없으면 안정적인 과거값으로 두고 등록은 허용한다.
+        "created_at": str(latest.get("created_at") or "1970-01-01T00:00:00+00:00").strip(),
         "higgsfield_cli_version": str(latest.get("higgsfield_cli_version") or "").strip(),
         "source": source,
     }

@@ -194,6 +194,53 @@ def require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다")
 
 
+def super_admin_workspace_claims(request: Request) -> Optional[dict[str, Any]]:
+    """현재 요청의 10분 슈퍼 관리자 workspace 권한을 검증한다.
+
+    일반 로그인 계정과 별도 헤더 토큰의 계정·uid가 모두 같아야 하며, 발급 뒤 관리자 역할이
+    제거된 경우도 즉시 무효가 된다. 서명만 보지 않고 서버 세션 행의 만료·수동 해제도 확인한다.
+    """
+    account = current_account(request)
+    if not account or not rbac.has_any_global_role(account_global_roles(request), rbac.ADMIN):
+        return None
+    from . import repo  # 지역 import(순환 회피)
+    from .services import auth
+
+    token = (request.headers.get(auth.SUPER_ADMIN_HEADER) or "").strip()
+    claims = auth.verify_super_admin_token(token)
+    if not isinstance(claims, dict):
+        return None
+    email = norm_email(account.get("email"))
+    subject_uid = account_actor_uid(request)
+    if (
+        not email
+        or not subject_uid
+        or norm_email(claims.get("e")) != email
+        or str(claims.get("sub") or "") != subject_uid
+    ):
+        return None
+    active = repo.active_super_admin_session(
+        jti=str(claims["j"]),
+        subject_email=email,
+        subject_uid=subject_uid,
+        token=token,
+        scope=auth.SUPER_ADMIN_SCOPE,
+    )
+    if not active:
+        return None
+    return {**claims, "expires_at": int(active["expires_at"])}
+
+
+def require_super_admin_workspace(request: Request) -> dict[str, Any]:
+    claims = super_admin_workspace_claims(request)
+    if claims:
+        return claims
+    raise HTTPException(
+        status_code=403,
+        detail="슈퍼 관리자 권한이 없거나 만료되었습니다. 현재 비밀번호로 다시 인증하세요.",
+    )
+
+
 # ── 생성물 단위 가시성/편집 가드 (원칙: 내 정보 DB 는 나만, 내가 공유해야 남이 열람) ──────
 def can_view_generation(request: Request, gen: dict[str, Any]) -> bool:
     """열람 권한 — 비공개는 본인만, 전역 read_all(admin·PM·PD)은 전체, 공유물은 **list(team 탭)와

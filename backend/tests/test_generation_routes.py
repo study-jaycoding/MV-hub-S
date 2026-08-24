@@ -376,6 +376,113 @@ class GenerationReadRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         self.assertIsNone(repo.get_generation("loc1")["workspace_id"])
 
+    def test_super_admin_can_move_foreign_generation_without_changing_creator(self):
+        """팀 서버의 권한 라우트만 소유권 제한을 풀고 작성자는 그대로 보존한다."""
+        from app import db, repo
+        from app.routers import generation
+
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO generation"
+                "(id,job_id,worker_id,creator_uid,prompt,model,status,created_at,sort_ts) "
+                "VALUES('foreign1','foreign-job','me','other','p','m','done','2026-01-01',4)"
+            )
+            conn.execute(
+                "INSERT INTO share(id,generation_id,shared_by,visibility) "
+                "VALUES('share-foreign1','foreign1','me','team')"
+            )
+
+        with patch.object(generation, "_my_uid", return_value="admin-uid"):
+            denied = self.client.put(
+                "/api/generations/workspace/team-batch",
+                json={
+                    "generation_ids": ["foreign-job"],
+                    "operation": "assign",
+                    "workspace_name": "티타임",
+                },
+            )
+        self.assertEqual(denied.status_code, 403, denied.text)
+
+        with (
+            patch.object(generation, "_my_uid", return_value="admin-uid"),
+            patch.object(
+                generation,
+                "require_super_admin_workspace",
+                return_value={"j": "super-session-1"},
+            ),
+        ):
+            changed = self.client.put(
+                "/api/generations/workspace/team-batch",
+                json={
+                    "generation_ids": ["foreign-job"],
+                    "operation": "assign",
+                    "workspace_name": "티타임",
+                },
+            )
+
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertEqual(changed.json()["changed"], ["foreign-job"])
+        after = repo.get_generation("foreign1")
+        self.assertEqual(after["creator_uid"], "other")
+        self.assertEqual(after["workspace_id"], "ws-teatime")
+
+        # 슈퍼 관리자가 옮긴 뒤에도 원 작성자는 별도 권한 없이 자기 카드를 다시 옮길 수 있다.
+        with patch.object(generation, "_my_uid", return_value="other"):
+            owner_change = self.client.put(
+                "/api/generations/workspace/batch",
+                json={
+                    "generation_ids": ["foreign-job"],
+                    "operation": "remove",
+                    "workspace_name": "티타임",
+                },
+            )
+        self.assertEqual(owner_change.status_code, 200, owner_change.text)
+        self.assertEqual(repo.get_generation("foreign1")["creator_uid"], "other")
+        self.assertEqual(repo.get_generation("foreign1")["workspace_scope"], "personal")
+
+        audit = repo.list_audit_events(limit=1)[0]
+        self.assertEqual(audit["action"], "generation.workspace_super_admin_changed")
+        self.assertTrue(audit["details"]["creator_unchanged"])
+
+    def test_team_workspace_command_forwards_scoped_token_without_local_mutation(self):
+        from app.routers import generation
+
+        remote_result = {
+            "workspace": {"id": "ws-teatime", "name": "티타임"},
+            "operation": "assign",
+            "changed": ["foreign-job"],
+            "unchanged": [],
+            "project": None,
+            "updates": [],
+        }
+        with (
+            patch.object(generation._proxy, "proxying", return_value=True),
+            patch.object(
+                generation,
+                "_resolve_workspace_target",
+                return_value={"id": "ws-teatime", "name": "티타임"},
+            ),
+            patch.object(
+                generation._proxy,
+                "proxy_json",
+                return_value=remote_result,
+            ) as forwarded,
+        ):
+            response = self.client.put(
+                "/api/generations/workspace/team-batch",
+                json={
+                    "generation_ids": ["foreign-job"],
+                    "operation": "assign",
+                    "workspace_name": "티타임",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(forwarded.call_args.kwargs["use_super_admin"])
+        self.assertEqual(
+            forwarded.call_args.kwargs["body"]["generation_ids"], ["foreign-job"]
+        )
+
     # ── write 라우트(add/remove/derive)도 서버 job_id → 로컬 행 해석(ref.local_id) ──
     def test_add_history_via_server_job_id_targets_local_row(self):
         r = self.client.post(
