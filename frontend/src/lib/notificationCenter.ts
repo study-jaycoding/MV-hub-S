@@ -220,7 +220,8 @@ export type ReleaseNotificationAction = "relocate" | "confirm" | "none";
 //  · 이사: **확인창 없이 곧바로 전환**한다. 알림 본문이 이미 "누르면 전환되고 다시
 //    로그인합니다"라고 말하고 있고, 옛 주소로 남아 있으면 어차피 공유가 안 된다.
 //    (안전 검증은 백엔드가 한다 — 공지 재검증·신원 프로브·원자 전환.)
-//  · 업데이트: 앱을 재시작하고 몇 분이 걸리는 되돌릴 수 없는 작업이라 한 번 더 묻는다.
+//  · 업데이트: 로컬 자동 감지와 관리자 공지 모두 같은 확인창을 거쳐 즉시 실행한다.
+//    공지가 자동 감지 항목을 대체하더라도 업데이트 동작까지 함께 사라지면 안 된다.
 //  · 이미 무언가 실행 중이면 아무것도 시작하지 않는다.
 export function releaseNotificationAction(
   kind: ReleaseNotificationKind,
@@ -228,7 +229,7 @@ export function releaseNotificationAction(
 ): ReleaseNotificationAction {
   if (busy) return "none";
   if (kind === "relocation") return "relocate";
-  return kind === "available" ? "confirm" : "none";
+  return kind === "available" || kind === "announcement" ? "confirm" : "none";
 }
 
 export function filterNotificationItems<T extends { unread: boolean }>(
