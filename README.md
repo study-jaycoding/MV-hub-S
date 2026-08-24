@@ -6,7 +6,7 @@ tags:
   - mvhub
   - mvhub/진입점
 updated: 2026-08-24
-status: dev 기준선 안정 · main 병합 대기
+status: 코드 기준선 병합 완료 · 운영 배포 검증 대기
 ---
 
 # MV Hub
@@ -18,8 +18,10 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 > → [docs/README.md](docs/README.md)(전체 문서 색인).
 > 코드를 **어디에 둘지** 정할 때는 [ARCHITECTURE.md](ARCHITECTURE.md)가 기준이다.
 >
-> 기준선(2026-08-24): 자동 테스트 백엔드 1,773건 · 프런트 666건 통과. 최신 코드는 `dev`
-> 브랜치에 있고 `main` 병합 전이다. 잔여 항목의 단일 출처는 `docs/CURRENT_STATUS.md`다.
+> 기준선(2026-08-24): 자동 테스트 백엔드 1,773건 · 프런트 666건 통과. 코드 기준선
+> `0384f7b0`은 `main`과 `dev`에 병합됐으며, 새 릴리스 제작과 운영 배포 검증이 남아 있다.
+> 이후 문서 전용 정리는 실행 코드를 바꾸지 않는다. 잔여 항목의 단일 출처는
+> `docs/CURRENT_STATUS.md`다.
 
 ## 처음 받기 (작업자용 — 문서 제외하고 코드만)
 

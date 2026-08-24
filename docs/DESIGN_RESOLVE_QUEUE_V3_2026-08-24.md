@@ -14,7 +14,7 @@
 - 이중 드레인은 교체되지 않는 별도 `.lock` 파일의 Windows `LockFileEx`로 막습니다. manifest의 claim/PID/lease는 복구·fencing 용도입니다.
 - `importing` 중단 후 “자동 재큐잉”은 누락 목록까지만 자동 생성하고 `dispatch_policy: manual_only`로 둡니다. 실제 Resolve 재실행은 사용자 확인 전에는 하지 않습니다.
 
-현행 근거는 [resolve_transfer.py](</D:/ClaudeCode/MV-hub-S-dev/backend/app/services/resolve_transfer.py:29>), [MVHub_Importer.py](</D:/ClaudeCode/MV-hub-S-dev/backend/app/resources/resolve/MVHub_Importer.py:62>), [resolve_bridge.py](</D:/ClaudeCode/MV-hub-S-dev/backend/app/services/resolve_bridge.py:332>), [resolve_status_runner.py](</D:/ClaudeCode/MV-hub-S-dev/backend/app/services/resolve_status_runner.py:238>)입니다.
+현행 근거는 [resolve_transfer.py](../backend/app/services/resolve_transfer.py#L29), [MVHub_Importer.py](../backend/app/resources/resolve/MVHub_Importer.py#L62), [resolve_bridge.py](../backend/app/services/resolve_bridge.py#L332), [resolve_status_runner.py](../backend/app/services/resolve_status_runner.py#L238)입니다.
 
 # 1. manifest v3 상태·복구 명세
 
@@ -302,7 +302,7 @@ v3에도 기존 브리지 재사용을 위해 다음 최상위 필드를 유지�
 8. 같은 볼륨 안에서 `os.replace()`
 9. 교체 성공 뒤에만 메모리 상태·HTTP 응답 확정
 
-현행 `atomic_write_text`도 같은 디렉터리 temp→fsync→replace를 사용합니다([atomic_io.py](</D:/ClaudeCode/MV-hub-S-dev/backend/app/services/atomic_io.py:15>)).
+현행 `atomic_write_text`도 같은 디렉터리 temp→fsync→replace를 사용합니다([atomic_io.py](../backend/app/services/atomic_io.py#L15)).
 
 추가 요구:
 
@@ -314,7 +314,7 @@ v3에도 기존 브리지 재사용을 위해 다음 최상위 필드를 유지�
 
 ## 1.8 v2/구버전 안전성
 
-단순 `version: 3`은 금지합니다. 현행 스캐너는 version을 검사하지 않고 `format`, 최상위 `status`, `resolve_import.status`만 봅니다([resolve_transfer.py](</D:/ClaudeCode/MV-hub-S-dev/backend/app/services/resolve_transfer.py:211>)).
+단순 `version: 3`은 금지합니다. 현행 스캐너는 version을 검사하지 않고 `format`, 최상위 `status`, `resolve_import.status`만 봅니다([resolve_transfer.py](../backend/app/services/resolve_transfer.py#L211)).
 
 확정 정책:
 
@@ -330,7 +330,7 @@ v3에도 기존 브리지 재사용을 위해 다음 최상위 필드를 유지�
 
 # 2. push 워커 ↔ 수동 Importer 공통 claim/lease
 
-현행 메뉴 Importer는 이미 `127.0.0.1:8010/8012`로 Hub API를 호출할 수 있습니다([MVHub_Importer.py](</D:/ClaudeCode/MV-hub-S-dev/backend/app/resources/resolve/MVHub_Importer.py:25>)). 따라서 Importer가 SMB 파일을 직접 잠그지 않고, 로컬 Hub API가 락을 대신 보유하도록 합니다.
+현행 메뉴 Importer는 이미 `127.0.0.1:8010/8012`로 Hub API를 호출할 수 있습니다([MVHub_Importer.py](../backend/app/resources/resolve/MVHub_Importer.py#L25)). 따라서 Importer가 SMB 파일을 직접 잠그지 않고, 로컬 Hub API가 락을 대신 보유하도록 합니다.
 
 ## 2.1 락 파일
 
@@ -553,7 +553,7 @@ resolve_project_identity
 - Windows `normcase`
 - 매핑 드라이브를 UNC로 변환
 
-현행 브리지와 메뉴 Importer 모두 이 방식으로 기존 클립을 검사합니다([resolve_bridge.py](</D:/ClaudeCode/MV-hub-S-dev/backend/app/services/resolve_bridge.py:498>), [MVHub_Importer.py](</D:/ClaudeCode/MV-hub-S-dev/backend/app/resources/resolve/MVHub_Importer.py:195>)).
+현행 브리지와 메뉴 Importer 모두 이 방식으로 기존 클립을 검사합니다([resolve_bridge.py](../backend/app/services/resolve_bridge.py#L498), [MVHub_Importer.py](../backend/app/resources/resolve/MVHub_Importer.py#L195)).
 
 복구 알고리즘:
 
@@ -693,7 +693,7 @@ cancelled
 
 ## B. `project_changed=blocked` 재평가
 
-현재 `project_changed` 코드는 브리지에서 이미 생성됩니다([resolve_bridge.py](</D:/ClaudeCode/MV-hub-S-dev/backend/app/services/resolve_bridge.py:348>)).
+현재 `project_changed` 코드는 브리지에서 이미 생성됩니다([resolve_bridge.py](../backend/app/services/resolve_bridge.py#L348)).
 
 blocked 구조:
 
@@ -733,7 +733,7 @@ blocked 구조:
 
 ## C. `error_code` 보존
 
-현재 [resolve_bridge.py](</D:/ClaudeCode/MV-hub-S-dev/backend/app/services/resolve_bridge.py:1058>)의 최외곽 `except Exception`이 `ResolveBridgeError.code`를 버립니다. 다음 계약이 필요합니다.
+현재 [resolve_bridge.py](../backend/app/services/resolve_bridge.py#L1058)의 최외곽 `except Exception`이 `ResolveBridgeError.code`를 버립니다. 다음 계약이 필요합니다.
 
 모든 결과 계층에 필수:
 
