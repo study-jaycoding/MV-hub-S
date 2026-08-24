@@ -406,8 +406,8 @@ export function ProjectSection({
   }, [projects]);
 
   return (
-    <>
-      <section>
+    <div className="project-section">
+      <section className="project-shortcuts">
         <div className="proj-list">
           <button
             className={
@@ -468,9 +468,25 @@ export function ProjectSection({
         </div>
       </section>
 
-      <section>
+      <section className="project-tree-section">
         <h4 className="auto-tag-head">{tr("프로젝트")}</h4>
-        <div className="proj-list">
+        <div
+          className="proj-list project-tree-scroll"
+          onWheelCapture={(event) => {
+            // Windows/Chromium에서 버튼으로 만든 폴더 행 위의 기본 휠이 누락되는 경우가 있다.
+            // 스크롤바 자체는 브라우저 기본 동작을 쓰고, 자식 행 위의 휠만 목록으로 직접 전달한다.
+            if (
+              event.target === event.currentTarget ||
+              event.deltaY === 0 ||
+              event.currentTarget.scrollHeight <= event.currentTarget.clientHeight
+            ) {
+              return;
+            }
+            event.currentTarget.scrollTop += event.deltaY;
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
           {order.length === 0 && <span className="muted">{tr("없음")}</span>}
           {order.map((project, index) => {
             const projectActive = activeId === project.id && !deletedOnly;
@@ -626,6 +642,6 @@ export function ProjectSection({
           )}
         </div>
       </section>
-    </>
+    </div>
   );
 }

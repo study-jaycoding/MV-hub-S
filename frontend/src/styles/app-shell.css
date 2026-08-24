@@ -668,8 +668,28 @@
      사이드바는 읽는 곳이 아니라 조작하는 곳이라 글자 선택이 필요 없다. */
   user-select: none; -webkit-user-select: none;
 }
-/* 프로젝트/폴더 = 남는 높이를 전부 차지(폴더가 최대한 많이 보이게) */
-.sidebar-main { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+/* 프로젝트/폴더 = 남는 높이를 전부 차지한다. 실제 스크롤은 PROJECTS 아래 트리만 담당해
+   라이브러리·미분류·휴지통과 하단 필터는 움직이지 않는다. */
+.sidebar-main {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.project-section {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column;
+}
+.project-shortcuts { flex: none; }
+.project-tree-section {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column;
+}
+.project-tree-section > h4 { flex: none; }
+.project-tree-scroll {
+  flex: 1 1 auto; min-height: 0;
+  overflow-x: hidden; overflow-y: auto;
+  overscroll-behavior: contain;
+}
 /* 컬러·전역태그·생성자 = 항상 맨 아래. 길어지면 이 영역만 스크롤 */
 /* 하단 블록 접기 손잡이 — 접으면 프로젝트 폴더가 그만큼 넓어진다. 접힌 뒤에도 무엇이 숨었는지
    보이도록 이름을 그대로 남긴다. */

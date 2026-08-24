@@ -27,6 +27,22 @@
 .proj-row.sel-target { font-size: 14px; padding-top: 9px; padding-bottom: 9px; }
 /* 프로젝트 이름 행(뻘뻘뻘 등)은 기본을 한 단계 크게 — 폴더 트리의 묶음 제목 역할이라 도드라지게. */
 .proj-tree-wrap > .proj-row { font-size: 13px; }
+/* 프로젝트 폴더를 내리는 동안 현재 프로젝트 이름은 목록 맨 위에 남는다.
+   다음 프로젝트가 올라오면 자연스럽게 기존 헤더를 밀어내고 그 자리를 이어받는다. */
+.project-tree-scroll .proj-tree-wrap > .proj-row {
+  position: sticky; top: 0; z-index: 3;
+  background: var(--panel);
+  box-shadow: 0 1px 0 var(--border);
+}
+.project-tree-scroll .proj-tree-wrap > .proj-row:hover {
+  background: #181a1e;
+}
+.project-tree-scroll .proj-tree-wrap > .proj-row.sel-target {
+  background: rgba(255,79,138,0.2);
+}
+.project-tree-scroll .proj-tree-wrap > .proj-row.sel-target:hover {
+  background: rgba(255,79,138,0.28);
+}
 /* 프로젝트 접기 토글(▾/▸) — 폴더 캐럿과 같은 14px 열. 트리 없는 프로젝트는 ghost 로 자리만.
    ghost 는 span(inline)이라 width 가 무시되던 함정 → inline-flex 로 강제해 두 경우 폭이 같다. */
 .proj-fold {
