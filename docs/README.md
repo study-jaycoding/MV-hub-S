@@ -29,7 +29,9 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 신원·권한·실행 모드 | [신원과_모드_가이드.md](신원과_모드_가이드.md) |
 | 401 인증 실패·로그인 보존 계약 | [AUTH_FAILURE_SEMANTICS.md](AUTH_FAILURE_SEMANTICS.md) |
 | 생성·계정 보고 백그라운드 전송·재시도·마지막 성공 관측 계약 | [TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md) |
-| 공유·최종 상태 보상 계약 | [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md) |
+| 공유·최종 상태 계약 | [SHARE_STATE_RECONCILIATION_DESIGN.md](SHARE_STATE_RECONCILIATION_DESIGN.md)(상위·원장 수렴), [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md)(RL-11 보상) |
+| Resolve 전송 큐 계약 | [DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) |
+| 공유 서버 주소 이사 | [SERVER_RELOCATION.md](SERVER_RELOCATION.md) |
 | 작업자 PC 오프디스크 백업 설계·완료 조건 | [WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md) |
 | 현재 위험과 다음 작업 | [RISK_REDUCTION_PLAN_2026-08-15.md](RISK_REDUCTION_PLAN_2026-08-15.md) |
 | 캔버스 생성 재시도 계약 | [CANVAS_GENERATION_IDEMPOTENCY.md](CANVAS_GENERATION_IDEMPOTENCY.md) |
@@ -71,28 +73,33 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 
 ### 전체 문서 분류
 
-아래 표는 `docs`의 Markdown 문서를 빠짐없이 분류한다. PDF는 특정 시점에 만든 외부 배포용
-결과물이므로 현재 기술 판단의 기준으로 사용하지 않는다.
+아래 표는 현재 `docs` 아래 Markdown **59개**(`docs/*.md` 53 + `docs/status/*.md` 6)를 한 번씩
+분류한다. PDF는 특정 시점에 만든 외부 배포용 결과물이므로 현재 기술 판단의 기준으로 사용하지 않는다.
 
 | 상태 | 문서 |
 |---|---|
 | **문서 색인·갱신 규칙** | `README`(이 문서) |
 | **현황·작업 기준** | `CURRENT_STATUS`, `RISK_REDUCTION_PLAN_2026-08-15` |
 | **날짜별 기록(`status/`)** | `status/최근작업_2026-08-24`, `status/RL_완료목록`, `status/검증기록`, `status/구현완료_RL-02_RL-23`, `status/사전배포검증_2026-08-19`, `status/안정화_2026-08-18` |
-| **현행 구조·계약** | `ARCHITECTURE`, `AI_CONTEXT`, `DATA_OWNERSHIP`, `WORKSPACE_DATA_CONTRACT`, `신원과_모드_가이드`, `AUTH_FAILURE_SEMANTICS`, `CANVAS_GENERATION_IDEMPOTENCY`, `CLI_ESTIMATE_LIFECYCLE`, `GENERATION_SUBMISSION_RECOVERY`, `TELEMETRY_DRAIN_LIFECYCLE`, `SHARE_STATE_COMPENSATION` |
-| **구현 전 확정 계약** | `WORKER_OFFDISK_BACKUP_CONTRACT` |
-| **운영·검증 절차** | `SERVER`, `SERVER_RECOVERY`, `TESTING`, `HF_CLI_UPGRADE` |
+| **현행 구조·계약 — 공통** | `ARCHITECTURE`, `AI_CONTEXT`, `DATA_OWNERSHIP`, `WORKSPACE_DATA_CONTRACT`, `신원과_모드_가이드` |
+| **현행 구조·계약 — 기능별** | `AUTH_FAILURE_SEMANTICS`, `CANVAS_GENERATION_IDEMPOTENCY`, `CLI_ESTIMATE_LIFECYCLE`, `GENERATION_SUBMISSION_RECOVERY`, `TELEMETRY_DRAIN_LIFECYCLE`, `SHARE_STATE_RECONCILIATION_DESIGN`, `SHARE_STATE_COMPENSATION`, `WORKER_OFFDISK_BACKUP_CONTRACT`, `DESIGN_RESOLVE_QUEUE_V3_2026-08-24` |
+| **운영·검증 절차** | `SERVER`, `SERVER_RECOVERY`, `SERVER_RELOCATION`, `TESTING`, `HF_CLI_UPGRADE` |
 | **사용자 안내** | `사용설명서`, `기능설명서` |
-| **일부 구현·후속 설계** | `DESIGN_id_unification`, `PM_DASHBOARD_DESIGN`, `관리대시보드_통합계획`, `ROADMAP_SCALE` |
-| **완료 작업의 개발 이력** | `CANVAS_MERGE_OPTIMIZATION_PLAN` |
+| **일부 구현·후속 설계** | `DESIGN_id_unification`, `PM_DASHBOARD_DESIGN`, `관리대시보드_통합계획`, `ROADMAP_SCALE`, `COMFY_ENHANCE_PLAN_2026-08-21` |
+| **완료 작업의 개발 이력** | `CANVAS_MERGE_OPTIMIZATION_PLAN`, `BACKLOG_PLAN_2026-08-20`, `P2_CLOSEOUT_PLAN_2026-08-20`, `RL02_TASK_WORKSPACE_SNAPSHOT_PLAN` |
+| **완료 작업의 개발 이력 — OPT_PLAN 시리즈(12개)** | `OPT_PLAN_2026-08-21`, `OPT_PLAN2_2026-08-21`, `OPT_PLAN3_2026-08-22`, `OPT_PLAN4_2026-08-22`, `OPT_PLAN5_2026-08-22`, `OPT_PLAN6_2026-08-22`, `OPT_PLAN7_2026-08-22`, `OPT_PLAN8_2026-08-22`, `OPT_PLAN9_2026-08-22`, `OPT_PLAN10_2026-08-23`, `OPT_PLAN11_2026-08-23`, `OPT_PLAN12_2026-08-23` |
 | **시점 고정 검증 기록** | `LOAD_TEST_2026-08-14`, `PREDEPLOY_100_USERS` |
-| **과거 기준·감사 보존** | `AUDIT_2026-08-15`, `DESIGN`, `CLAUDE` |
+| **과거 기준·감사 보존** | `AUDIT_2026-08-15`, `DESIGN`, `CLAUDE`, `REVIEW_2026-08-17`, `P2_CLOSEOUT_REVIEW_2026-08-20` |
 | **외부 설명 자료** | `투자자_소개서` |
 
-`소개서.pdf`, `툴_소개서.pdf`도 외부 설명 자료 스냅샷으로 분류한다.
+- 공유 상태는 `SHARE_STATE_RECONCILIATION_DESIGN`(서버 권위 원장·수렴, 2026-08-20 구현)이 상위
+  계약이고, `SHARE_STATE_COMPENSATION`은 RL-11 시점의 즉시 보상 계약이다. 충돌하면 전자를 따른다.
+- `CLAUDE`(이 폴더의 것)는 옛 프로젝트 헌법이다. **현행 프로젝트 규칙은 저장소 루트
+  `CLAUDE.md`·`AGENTS.md`** 이며, 이 폴더의 문서는 그것을 대체하지 않는다.
+- `소개서.pdf`, `툴_소개서.pdf`도 외부 설명 자료 스냅샷으로 분류한다.
 
-이 분류가 바뀌면 문서를 이동하거나 삭제하는 대신 이 표와 해당 문서 상단의 상태 안내를 함께
-갱신한다.
+Markdown 을 추가·이름 변경·삭제하거나 위상이 바뀌면 **같은 커밋에서** 이 표와 해당 문서 상단의
+상태 안내를 함께 갱신한다. 문서를 이동하거나 삭제하는 것으로 갈음하지 않는다.
 
 ### 문서별 갱신 책임
 
@@ -156,7 +163,7 @@ cd frontend
 npm ci
 npm run dev                    # http://localhost:5173
 ```
-> 백엔드 포트를 바꿨다면 `BACKEND=http://127.0.0.1:<port> npm run dev` 로 프록시 재지정.
+> 백엔드 포트를 바꿨다면 `$env:BACKEND='http://127.0.0.1:<port>'; npm run dev` 로 프록시 재지정.
 
 ### 3) 사용
 1. 우측 상단 **↺ 동기화** — `higgsfield generate list` 의 실제 생성 이력을 로컬 DB 로 가져옵니다(멱등).
@@ -179,13 +186,13 @@ backend/
     db.py / db_migrations.py  # 커넥션 풀(스레드별)·유지보수 게이트 / 멱등 마이그레이션
     config.py / models.py     # 환경변수 설정 / Pydantic 요청·응답
     main.py                   # 앱 팩토리·미들웨어·lifespan·/ws
-    routers/   (22개)         # library·generation·gen_requests·ingest·share·publish·sync·
+    routers/   (23개)         # library·generation·gen_requests·ingest·share·publish·sync·
                               # projects·members·manage·assets(+metadata)·comfy·
                               # resolve_integration·release_update·scenes·auth·db_backup·
                               # db_transfer + 내부(_proxy·_telemetry·_assets_access)
     usecases/  (4개)          # gen_requests·generation_media_cache·generation_personal_meta·hf_missing
-    repo/      (30개 모듈)     # 데이터 접근 — generations·share·projects·identity·manage·trash 등
-    services/  (40개)          # cli_bridge·media_cache·syncer·thumbs·backup·comfy_*·resolve_*·
+    repo/      (37개 모듈)     # 데이터 접근 — generations·share·projects·identity·manage·trash 등
+    services/  (61개)          # cli_bridge·media_cache·syncer·thumbs·backup·comfy_*·resolve_*·
                               # telemetry_drain·operational_*·release_update·asset_* 등
 frontend/
   src/

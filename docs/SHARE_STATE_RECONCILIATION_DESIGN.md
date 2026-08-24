@@ -1,7 +1,9 @@
 # 공유/골드 상태 desired-state reconciliation 설계 v2 (배치 3)
 
 작성: 클로드 초안(2026-08-20) → 코덱스 xhigh 적대 리뷰(P0 6건·P1 3건) → v2 반영.
-기준 커밋 299eb853. 상태: **설계 확정, 구현 대기**(구현 시 이 문서가 계약).
+기준 커밋 299eb853. 상태: **구현 완료 — 이 문서가 현행 계약**
+(2026-08-20 `838bdae2` 원장 + `9034aaa3` reconciler, 코덱스 구현·클로드 검토 후 dev 병합.
+구현 위치 `backend/app/services/share_state_reconciler.py`, `backend/app/repo/share_state_intents.py`).
 리뷰 원문: 세션 scratchpad `batch3_review_codex_out.md`.
 
 ## 0. 목표와 원칙

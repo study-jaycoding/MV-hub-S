@@ -58,14 +58,16 @@ shared     여러 feature 가 공유 — ui(공통 컴포넌트) / lib(순수 �
 ### 백엔드 (`backend/app`)
 
 ```
-routers     HTTP 만 — 요청/응답 변환, 인증 통과, usecase 호출          (25개)
+routers     HTTP 만 — 요청/응답 변환, 인증 통과, usecase 호출          (23개)
   ▼
 usecases    업무 흐름 — 여러 repo·부수효과(WS·PM·agent signal)를 하나로 묶는다   (4개)
   ▼
-repo        데이터 만 — SQL·트랜잭션 (facade __init__.py 유지, 내부만 분할)   (39개 모듈)
+repo        데이터 만 — SQL·트랜잭션 (facade __init__.py 유지, 내부만 분할)   (37개 모듈)
 services    asset_tree·cli_bridge·media_cache·thumbs·syncer·resolve_*·
-            server_relocation 등 도메인 IO (usecase 가 호출)              (63개)
+            server_relocation 등 도메인 IO (usecase 가 호출)              (61개)
 ```
+
+> 모듈 수는 `__init__.py` 를 뺀 개수다.
 
 **의존 방향:** `routers → usecases → repo/services`.
 - `repo` 는 `routers` 를 import 하지 않는다(역방향 금지).
