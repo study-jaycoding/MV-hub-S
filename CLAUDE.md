@@ -17,7 +17,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 주요 문서 색인·문서 위상 | `docs/README.md` |
 | 위험 항목 상태의 단일 출처 | `docs/RISK_REDUCTION_PLAN_2026-08-15.md` `Gate 0` 표 |
 
-현행 프로젝트 규칙은 **이 파일**이다. `docs/CLAUDE.md` 는 별개 문서이며 위상은 `docs/README.md` 분류표를 따른다.
+현행 프로젝트 규칙은 **이 파일**이다. 옛 헌장은 `docs/PROJECT_CHARTER_LEGACY.md` 에 과거 기록으로 보존돼 있다(현행 아님 — 그 안의 `lineage` 테이블·"자동 동기화 금지"·"모든 ID UUID" 는 지금과 다르다).
 
 ## 실행
 
@@ -57,6 +57,14 @@ venv 위치는 클론마다 다르다(이 클론은 저장소 루트 `.venv`). �
 - 커밋은 **`dev` 에만**. 문서 변경과 코드 변경은 커밋을 분리한다.
 - `main` 병합은 **Jay가 "병합"이라고 말할 때만**, 그리고 `RISK_REDUCTION_PLAN` 의 `Gate 6-A`(전체 테스트·빌드·아키텍처 검사, 깨끗한 작업 트리, DB 하위 호환) 를 확인한 뒤 `git push origin HEAD:main`.
 - **여러 세션(클로드·코덱스)이 이 폴더에서 동시에 작업한다.** 수정 전 `git status --short` 를 확인하고, 다른 세션이 이미 고친 파일은 조율 없이 덮어쓰지 않는다.
+
+## 노트·문서 도구
+
+- 옵시디언 문법(위키링크·콜아웃·프로퍼티)은 `obsidian-markdown` 스킬을 따른다. 볼트 조작은
+  `obsidian-cli`, `.base` 는 `obsidian-bases`, `.canvas` 는 `json-canvas` 스킬.
+- URL 본문을 읽을 때는 WebFetch 대신 `defuddle` 스킬을 쓴다.
+- 저장소 md 의 링크는 **표준 상대경로**로 쓴다(옵시디언 그래프·GitHub 양쪽에서 동작).
+  콜아웃은 양쪽이 지원하는 5종(NOTE·TIP·IMPORTANT·WARNING·CAUTION)만, 커스텀 제목 없이.
 
 ## 함정
 

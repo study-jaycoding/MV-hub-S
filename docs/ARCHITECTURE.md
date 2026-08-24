@@ -3,7 +3,7 @@
 > 이 문서는 `content-hub-server` 의 **코드·시스템 구조**를 한눈에 보여주는 구조 레퍼런스다.
 > 기능 사용법은 [기능설명서.md](기능설명서.md), 서버 운영은 [SERVER.md](SERVER.md),
 > AI 에게 통째로 붙여넣는 자기완결 브리프는 [AI_CONTEXT.md](AI_CONTEXT.md) 를 본다.
-> (원본 [DESIGN.md](DESIGN.md)·[CLAUDE.md](CLAUDE.md) 는 개인용 `content-hub` 시절 명세라
+> (원본 [DESIGN.md](DESIGN.md)·[PROJECT_CHARTER_LEGACY.md](PROJECT_CHARTER_LEGACY.md) 는 개인용 `content-hub` 시절 명세라
 > 일부는 현재 push 모델 이전 내용이다 — 충돌 시 **이 문서와 AI_CONTEXT.md 가 최신**.)
 >
 > 최종 갱신: 2026-08-16

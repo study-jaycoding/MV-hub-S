@@ -96,7 +96,7 @@ git sparse-checkout set backend frontend tools
 | [docs/SERVER.md](docs/SERVER.md) · [docs/SERVER_RECOVERY.md](docs/SERVER_RECOVERY.md) | 서버 운영·자동복구 |
 | [docs/TESTING.md](docs/TESTING.md) · [docs/HF_CLI_UPGRADE.md](docs/HF_CLI_UPGRADE.md) | 테스트·검증 절차 · CLI 버전 올리는 절차 |
 | [docs/OPT_PLAN12_2026-08-23.md](docs/OPT_PLAN12_2026-08-23.md) | 최적화 라운드 최종 장부 — 수렴 선언·잔여 백로그 판정 |
-| [docs/DESIGN.md](docs/DESIGN.md) · [docs/CLAUDE.md](docs/CLAUDE.md) | 초기 설계 보존 기록 — 현행 구현 판단에 사용하지 않음 |
+| [docs/DESIGN.md](docs/DESIGN.md) · [docs/PROJECT_CHARTER_LEGACY.md](docs/PROJECT_CHARTER_LEGACY.md) | 초기 설계·헌장 보존 기록 — 현행 구현 판단에 사용하지 않음 |
 | docs/사용설명서.md · docs/기능설명서.md | 사용자·기능 설명 |
 
 > [!IMPORTANT]

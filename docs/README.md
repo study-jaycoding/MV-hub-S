@@ -89,13 +89,13 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | **완료 작업의 개발 이력** | `CANVAS_MERGE_OPTIMIZATION_PLAN`, `BACKLOG_PLAN_2026-08-20`, `P2_CLOSEOUT_PLAN_2026-08-20`, `RL02_TASK_WORKSPACE_SNAPSHOT_PLAN` |
 | **완료 작업의 개발 이력 — OPT_PLAN 시리즈(12개)** | `OPT_PLAN_2026-08-21`, `OPT_PLAN2_2026-08-21`, `OPT_PLAN3_2026-08-22`, `OPT_PLAN4_2026-08-22`, `OPT_PLAN5_2026-08-22`, `OPT_PLAN6_2026-08-22`, `OPT_PLAN7_2026-08-22`, `OPT_PLAN8_2026-08-22`, `OPT_PLAN9_2026-08-22`, `OPT_PLAN10_2026-08-23`, `OPT_PLAN11_2026-08-23`, `OPT_PLAN12_2026-08-23` |
 | **시점 고정 검증 기록** | `LOAD_TEST_2026-08-14`, `PREDEPLOY_100_USERS` |
-| **과거 기준·감사 보존** | `AUDIT_2026-08-15`, `DESIGN`, `CLAUDE`, `REVIEW_2026-08-17`, `P2_CLOSEOUT_REVIEW_2026-08-20` |
+| **과거 기준·감사 보존** | `AUDIT_2026-08-15`, `DESIGN`, `PROJECT_CHARTER_LEGACY`, `REVIEW_2026-08-17`, `P2_CLOSEOUT_REVIEW_2026-08-20` |
 | **외부 설명 자료** | `투자자_소개서` |
 
 - 공유 상태는 `SHARE_STATE_RECONCILIATION_DESIGN`(서버 권위 원장·수렴, 2026-08-20 구현)이 상위
   계약이고, `SHARE_STATE_COMPENSATION`은 RL-11 시점의 즉시 보상 계약이다. 충돌하면 전자를 따른다.
-- `CLAUDE`(이 폴더의 것)는 옛 프로젝트 헌법이다. **현행 프로젝트 규칙은 저장소 루트
-  `CLAUDE.md`·`AGENTS.md`** 이며, 이 폴더의 문서는 그것을 대체하지 않는다.
+- `PROJECT_CHARTER_LEGACY`(옛 `CLAUDE.md`, 2026-08-24 이름 변경)는 content-hub 시절 헌장이다.
+  **현행 프로젝트 규칙은 저장소 루트 `CLAUDE.md`·`AGENTS.md`** 이며, 그 문서는 과거 기록일 뿐이다.
 - `소개서.pdf`, `툴_소개서.pdf`도 외부 설명 자료 스냅샷으로 분류한다.
 
 Markdown 을 추가·이름 변경·삭제하거나 위상이 바뀌면 **같은 커밋에서** 이 표와 해당 문서 상단의

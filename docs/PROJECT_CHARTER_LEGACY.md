@@ -1,12 +1,29 @@
-# Content Hub — 프로젝트 헌법
+---
+aliases:
+  - Content Hub 초기 헌장
+tags:
+  - mvhub
+  - mvhub/보존
+status: 과거 기록 — 현행 구현·작업 지시로 사용 금지
+updated: 2026-08-24
+---
 
-> ⚠️ **구(舊) 명세 포함 주의**: 이 문서의 "디렉토리 구조(목표)"·"개발 순서" 등은 초기 설계
-> 기록이다. **현행 구조·모듈 지도는 [ARCHITECTURE.md](ARCHITECTURE.md)**, 문서 신선도는
-> [신원과_모드_가이드.md](신원과_모드_가이드.md)의 문서 위상 표가 정답이다.
-> 아래 "설계 원칙"과 "컨벤션"은 현행 유효.
+# Content Hub — 초기 프로젝트 헌장 (과거 기록)
 
-이 파일은 Claude Code가 세션 시작 시 자동으로 읽는 프로젝트 규칙이다.
-상세 설계는 @DESIGN.md 를 참조한다.
+> [!CAUTION]
+> **이 문서는 개인용 `content-hub` 시절의 초기 헌장이다. 현행 규칙이 아니다.**
+> 2026-08-24 에 `docs/CLAUDE.md` 에서 이 이름으로 옮겼다 — 파일명이 `CLAUDE.md` 이면
+> 자동으로 읽혀서 "현행 규칙이 둘"로 오인되기 때문이다.
+>
+> - 현행 프로젝트 규칙: 저장소 루트 [CLAUDE.md](../CLAUDE.md) · [AGENTS.md](../AGENTS.md)
+> - 현행 문서 위상: [docs/README.md](README.md)
+> - 현행 구조: 루트 [ARCHITECTURE.md](../ARCHITECTURE.md)(코드 배치) · [docs/ARCHITECTURE.md](ARCHITECTURE.md)(실행 구조)
+>
+> 아래 본문은 **당시의 판단 근거**로 보존한다. 지금과 다른 곳이 확인된 것만 적어 둔다:
+> `lineage` 테이블은 현재 `history` 로 바뀌었고, "자동 동기화 금지"는 팀 공개에만 해당하며
+> (에이전트는 로컬 이력을 주기적으로 적재한다), "모든 ID 는 UUID" 도 더는 사실이 아니다
+> (`account.email` 이 PK, 복합키 다수). `python -m app.db init` 은 실제 사용자 DB 를 열고
+> 마이그레이션하므로 **실행하지 말 것**.
 
 ## 한 줄 정의
 Higgsfield CLI로 이미지/영상을 생성하고, 생성에 쓰인 프롬프트·레퍼런스를 보존하며,
