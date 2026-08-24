@@ -21,13 +21,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import HTTPException, Request
 from fastapi.responses import Response
 
 from .. import repo
-from ..config import AUTH_ENABLED
+from ..config import AUTH_ENABLED, MEDIA_DIR
 from ..mutation_notify import (
     CLIENT_ID_HEADER,
     DOMAIN_ASSETS,
@@ -48,6 +49,7 @@ from ..services.shared_connection import (  # noqa: E402
     elevation_token,
     token,
 )
+from ..services.path_safety import safe_join
 
 # 401의 의미를 브라우저까지 보존한다. `invalid`만 실제 세션 만료이며 `preserved`는
 # 요청 자체가 거부됐을 뿐 저장된 로그인은 유지됐다는 뜻이다.
@@ -503,9 +505,40 @@ async def _forward(request: Request) -> Response:
 # GET 한 방에 수 GB), 이 접두사는 청크 스트리밍 중계로 우회한다(코덱스 P1).
 _STREAM_PREFIX = "/api/manage/save-finals/content/"
 
+# 공유 서버가 원본을 보존하면 generation의 file_path가 서버 기준 `/media/...`로 바뀐다.
+# 작업자 PC에도 같은 URL이 있지만 파일 자체는 없을 수 있으므로, 그때만 인증된 공유 서버로
+# 중계한다. 로컬 파일이 있으면 기존 로컬 우선 동작을 그대로 유지한다.
+_MEDIA_PREFIX = "/media/"
+
+
+def _local_media_target(path: str) -> Optional[Path]:
+    """안전한 `/media/...` 경로면 이 PC의 대상 경로, 아니면 None."""
+    if not isinstance(path, str) or not path.startswith(_MEDIA_PREFIX):
+        return None
+    rel = urllib.parse.unquote(path.removeprefix(_MEDIA_PREFIX))
+    return safe_join(MEDIA_DIR, rel)
+
+
+def _needs_shared_media_fallback(request: Request) -> bool:
+    """로컬에 없는 서버 보존 미디어/썸네일만 공유 서버 중계 대상으로 판정한다."""
+    if request.method not in ("GET", "HEAD"):
+        return False
+    path = request.url.path
+    media_path: Optional[str] = None
+    if path.startswith(_MEDIA_PREFIX):
+        media_path = path
+    elif path == "/api/media-thumb":
+        src = request.query_params.get("src")
+        if isinstance(src, str) and src.startswith(_MEDIA_PREFIX):
+            media_path = src
+    if not media_path:
+        return False
+    target = _local_media_target(media_path)
+    return target is not None and not target.is_file()
+
 
 async def _forward_stream(request: Request) -> Response:
-    """GET 전용 스트리밍 중계 — 서버 응답을 1MiB 청크로 그대로 흘려보낸다(허브 메모리 상주 없음).
+    """GET/HEAD 스트리밍 중계 — 서버 응답을 1MiB 청크로 그대로 흘려보낸다(허브 메모리 상주 없음).
     Starlette 가 동기 제너레이터를 threadpool 에서 돌리므로 blocking read 여도 이벤트 루프 안전."""
     from fastapi.responses import StreamingResponse
 
@@ -513,15 +546,45 @@ async def _forward_stream(request: Request) -> Response:
     path = raw.decode("latin-1") if raw else request.url.path
     qs = request.url.query
     url = base_url() + path + (("?" + qs) if qs else "")
-    req = urllib.request.Request(url)
+    req = urllib.request.Request(url, method=request.method)
     tok = token()
     if tok:
         req.add_header("Authorization", f"Bearer {tok}")
+    # 영상 탐색(seek)은 브라우저가 Range 요청으로 수행한다. 이 헤더를 버리면 매번 원본 전체를
+    # 처음부터 받아 재생이 끊기므로 조건부 캐시 헤더와 함께 서버까지 그대로 전달한다.
+    for name in ("Range", "If-Range", "If-None-Match", "If-Modified-Since"):
+        value = request.headers.get(name)
+        if value:
+            req.add_header(name, value)
+
+    def _response_headers(source) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if not source:
+            return headers
+        for name in (
+            "Content-Length",
+            "Content-Range",
+            "Accept-Ranges",
+            "Cache-Control",
+            "ETag",
+            "Last-Modified",
+            "Content-Disposition",
+        ):
+            value = source.get(name)
+            if value:
+                headers[name] = value
+        return headers
+
     try:
         upstream = await asyncio.to_thread(lambda: urllib.request.urlopen(req, timeout=300))
     except urllib.error.HTTPError as e:
         ct = e.headers.get_content_type() if e.headers else "application/json"
-        response = Response(content=e.read(), status_code=e.code, media_type=ct or "application/json")
+        response = Response(
+            content=e.read() if request.method != "HEAD" else b"",
+            status_code=e.code,
+            media_type=ct or "application/json",
+            headers=_response_headers(e.headers),
+        )
         if e.code == 401:
             response.headers[AUTH_STATE_HEADER] = await asyncio.to_thread(
                 _handle_auth_failure, _K_TOKEN, tok, request.url.path
@@ -544,11 +607,15 @@ async def _forward_stream(request: Request) -> Response:
         finally:
             upstream.close()
 
-    headers = {}
-    cl = upstream.headers.get("Content-Length")
-    if cl:
-        headers["Content-Length"] = cl  # 받는 쪽(브라우저·stream_download)이 크기 대조에 쓴다
+    headers = _response_headers(upstream.headers)
     media_type = upstream.headers.get_content_type() or "application/octet-stream"
+    if request.method == "HEAD":
+        upstream.close()
+        return Response(
+            status_code=upstream.status,
+            media_type=media_type,
+            headers=headers,
+        )
     return StreamingResponse(_iter(), status_code=upstream.status, media_type=media_type, headers=headers)
 
 
@@ -561,10 +628,15 @@ async def data_proxy_middleware(request: Request, call_next):
         )
     )
     try:
-        if proxying() and not is_local_path(request.url.path):
-            if request.method == "GET" and request.url.path.startswith(_STREAM_PREFIX):
+        if proxying():
+            # `/media`와 `/api/media-thumb`는 원래 로컬 경로다. 다만 서버 보존본만 있고 이 PC에는
+            # 없을 때는 인증 토큰을 숨긴 채 공유 서버에서 중계한다.
+            if _needs_shared_media_fallback(request):
                 return await _forward_stream(request)
-            return await _forward(request)
+            if not is_local_path(request.url.path):
+                if request.method in ("GET", "HEAD") and request.url.path.startswith(_STREAM_PREFIX):
+                    return await _forward_stream(request)
+                return await _forward(request)
         return await call_next(request)
     finally:
         _REQUEST_MUTATION_ORIGIN.reset(context_token)

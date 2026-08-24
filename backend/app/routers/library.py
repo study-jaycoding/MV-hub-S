@@ -53,6 +53,29 @@ def _overlay_personal_meta(data, request: Request):
     rows = data if isinstance(data, list) else None
     if rows is None:
         return data
+    if _proxy.proxying():
+        # 공유 서버가 보존한 원본은 서버 기준 `/media/...`다. 예전 CDN 썸네일은 만료될 수 있으므로
+        # 응답에서만 이미지 보존본을 대표 썸네일로 사용한다. 영상은 서버에 ffmpeg가 없는 설치도
+        # 있으므로 포스터를 비우고 브라우저가 보존 원본의 첫 프레임을 읽게 한다(Range 중계).
+        # 로컬 미들웨어가 파일 부재를 확인한 뒤 공유 서버로 인증 중계한다.
+        # 서버 DB는 바꾸지 않으며 개인 로컬 카드에는 적용하지 않는다.
+        for generation in rows:
+            if not isinstance(generation, dict):
+                continue
+            for key in ("assets", "references"):
+                media_items = generation.get(key)
+                if not isinstance(media_items, list):
+                    continue
+                for media in media_items:
+                    if not isinstance(media, dict):
+                        continue
+                    file_path = media.get("file_path")
+                    if isinstance(file_path, str) and file_path.startswith("/media/"):
+                        if media.get("type") == "video":
+                            media["thumbnail_path"] = None
+                        else:
+                            media["thumbnail_path"] = file_path
+                        media["cached"] = True
     my = account_scope_uid(request)
     if not my and _proxy.proxying():
         # AUTH off 프록시(에이전트, MV_agent)는 request.state.account 가 없어 account_scope_uid=None →
