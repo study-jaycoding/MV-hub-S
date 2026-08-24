@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app import active_account, config, db, manage_db, repo
+from app import active_account, config, db, deps, manage_db, repo
 from app.repo import manage as repo_manage
 from app.services import backup, telemetry_drain
 from app.usecases import gen_requests
@@ -129,6 +129,28 @@ def test_gen_submit_keeps_every_db_step_on_request_account_after_switch(
     assert result == {"id": "gen-a"}
     assert seen_scopes and set(seen_scopes) == {A_EMAIL}
     assert active_account.account_key() == B_EMAIL
+
+
+def test_auth_off_agent_identity_uses_active_account_email(account_scope, monkeypatch):
+    """로컬 허브 신원이 `local` 가상 DB가 아니라 현재 로그인 계정 DB를 가리킨다."""
+    monkeypatch.setattr(deps, "AUTH_ENABLED", False)
+    db.ensure_account_db(A_EMAIL, A_UID)
+    repo.set_setting("my_creator_uid", A_UID)
+
+    account = deps.resolve_agent_account(None)
+
+    assert account == {"email": A_EMAIL, "creator_uid": A_UID}
+    assert active_account.account_db_path(account["email"]).is_file()
+
+
+def test_gen_scope_recovers_legacy_local_sentinel(account_scope):
+    """구버전 큐에 남은 account_email=local도 현재 계정 DB 범위에서 처리한다."""
+
+    @gen_requests._account_scoped("email")
+    async def observed_scope(email: str) -> str | None:
+        return active_account.account_key()
+
+    assert asyncio.run(observed_scope("local")) == A_EMAIL
 
 
 def test_gen_estimate_records_on_original_account_after_switch(

@@ -43,8 +43,9 @@ def require_agent_account(request: Request) -> dict:
     """에이전트·텔레메트리·생성요청 공용 신원 폴백(단일 출처).
 
     인증 세션 계정이 있으면 그대로 사용. AUTH off '로컬 허브'(개인 PC)에선 미들웨어가 account 를
-    안 채우므로 제공자(나) 신원 `{email:'local', creator_uid}` 으로 폴백해 로그인 없이도 내 에이전트가
-    롱폴·생성요청·텔레메트리를 받게 한다. AUTH on 에선 401. (ingest._agent_acc·gen_requests._require_account·
+    안 채우므로 활성 계정 이메일과 제공자 uid로 폴백해 로그인 없이도 내 에이전트가
+    롱폴·생성요청·텔레메트리를 받게 한다. 활성 계정이 없는 레거시 단독 모드만 `local`을 쓴다.
+    AUTH on 에선 401. (ingest._agent_acc·gen_requests._require_account·
     manage._push_acc 3중복을 단일화 — 신원 규칙이 분산되면 한 곳 누락이 권한 버그가 된다.)"""
     return resolve_agent_account(getattr(request.state, "account", None))
 
@@ -59,9 +60,13 @@ def resolve_agent_account(session_account: Optional[dict]) -> dict:
     if session_account:
         return session_account
     if not AUTH_ENABLED:
-        from . import repo  # 지역 import(순환 회피)
+        from . import active_account, repo  # 지역 import(순환 회피)
 
-        return {"email": "local", "creator_uid": repo.get_my_uid()}
+        # 계정별 DB가 도입된 뒤에도 고정값 `local`을 반환하면 생성 usecase가
+        # data/db/acct/local-.../content_hub.db를 열어 즉시 500이 난다. 현재 override 또는
+        # active.json의 실제 이메일을 큐 신원으로 넘겨 DB 경로와 요청 소유 계정을 일치시킨다.
+        email = norm_email(active_account.active_email()) or "local"
+        return {"email": email, "creator_uid": repo.get_my_uid()}
     raise HTTPException(status_code=401, detail="로그인이 필요합니다")
 
 

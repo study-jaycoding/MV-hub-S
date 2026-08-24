@@ -74,14 +74,18 @@ def _account_scoped(email_parameter: str, *, from_request_row: bool = False):
                 value = value.get("account_email") if isinstance(value, dict) else None
             elif not isinstance(value, str):
                 value = getattr(value, "email", None)
-            if value:
+            normalized = str(value).strip() if value else ""
+            if normalized and normalized.lower() != "local":
                 # 인자로 계정이 이미 정해진 호출은 공유 상태(active.json 포인터)를 전혀 읽지
                 # 않는다 — 락 안에서 읽던 것이 없으니 의미 변화 0이고, 로그인 마이그레이션·DB
                 # 복원이 transition_lock 을 초 단위로 쥐는 동안 usecase 호출이 통째로 대기하던
                 # 것만 사라진다. 락은 '포인터 폴백 캡처'일 때만 잡는다.
-                return str(value).strip()
+                return normalized
             with active_account.transition_lock:
-                return str(active_account.account_key() or "").strip()
+                # 구버전이 저장한 `local` 요청은 실제 계정 폴더가 아니라 존재하지 않는
+                # acct/local-... DB를 가리킨다. 현재 활성 계정으로 복구하되, 계정 포인터가 없는
+                # 진짜 레거시 단독 모드에서는 기존 `local` 의미를 그대로 유지한다.
+                return str(active_account.account_key() or normalized).strip()
 
         if inspect.iscoroutinefunction(action):
             @functools.wraps(action)
