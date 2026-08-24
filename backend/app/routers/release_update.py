@@ -7,9 +7,11 @@ import asyncio
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
+from .. import repo
 from . import comfy
 from ..config import PORT
 from ..services.operational_health import generation_queue_snapshot
+from ..services import resolve_queue
 from ..services.release_update import (
     ReleaseUpdateBusyError,
     ReleaseUpdateError,
@@ -35,10 +37,16 @@ def _require_local(request: Request) -> None:
 def _activity() -> dict[str, int]:
     generation = int(generation_queue_snapshot().get("active_total") or 0)
     comfy_count = comfy.active_run_job_count()
+    projects = repo.list_projects(include_archived=True).get("projects") or []
+    project_ids = [str(project.get("id") or "") for project in projects]
+    resolve_count = len(
+        resolve_queue.scan_projects(project_ids, states=resolve_queue.ACTIVE_STATES)
+    )
     return {
         "generation_active": generation,
         "comfy_active": comfy_count,
-        "active_total": generation + comfy_count,
+        "resolve_active": resolve_count,
+        "active_total": generation + comfy_count + resolve_count,
     }
 
 

@@ -488,6 +488,32 @@ function Stop-MvHubProcesses {
     throw "Some MV Hub processes are still running: $Names. Close MV_agent windows and try again."
 }
 
+function Assert-NoActiveResolveImport {
+    param([string]$Root)
+
+    if (-not (Test-Path -LiteralPath $Root)) {
+        return
+    }
+    $ResolvedRoot = (Resolve-Path -LiteralPath $Root).Path.TrimEnd("\") + "\"
+    $Active = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $CommandLine = [string]$_.CommandLine
+        $ExecutablePath = [string]$_.ExecutablePath
+        $BelongsToRoot = $ExecutablePath -and $ExecutablePath.StartsWith(
+            $ResolvedRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+        $BelongsToRoot -and
+            $CommandLine.IndexOf(
+                "app.services.resolve_import_worker",
+                [StringComparison]::OrdinalIgnoreCase
+            ) -ge 0
+    })
+    if ($Active.Count) {
+        $Names = ($Active | ForEach-Object { "pid=$($_.ProcessId)" }) -join ", "
+        throw "DaVinci Resolve import is still running ($Names). Wait for it to finish, then update again."
+    }
+}
+
 function Install-Package {
     param(
         [object]$Latest,
@@ -522,6 +548,7 @@ function Install-Package {
     Write-Host "[update]  75%  Installing to $TargetDir..."
     Write-UpdateState -State "installing" -Message "Installing verified files..." -Latest ([string]$Latest.version) -Percent 75
     New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+    Assert-NoActiveResolveImport -Root $TargetDir
     Stop-MvHubProcesses -Root $TargetDir
 
     # Mutable backend data/media stays in place. Immutable application trees are not

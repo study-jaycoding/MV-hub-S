@@ -201,6 +201,38 @@ def test_shared_server_never_becomes_a_worker_release_updater(tmp_path: Path, mo
     assert status["can_update"] is False
 
 
+def test_update_activity_includes_resolve_queue(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        release_update_router,
+        "generation_queue_snapshot",
+        lambda: {"active_total": 0},
+    )
+    monkeypatch.setattr(release_update_router.comfy, "active_run_job_count", lambda: 0)
+    monkeypatch.setattr(
+        release_update_router.repo,
+        "list_projects",
+        lambda **_kwargs: {"projects": [{"id": "p1"}]},
+    )
+    monkeypatch.setattr(
+        release_update_router.resolve_queue,
+        "scan_projects",
+        lambda project_ids, *, states: [
+            {"project_id": project_ids[0], "state": "importing"}
+        ],
+    )
+
+    activity = release_update_router._activity()
+    guarded = release_update_router._with_activity({"can_update": True})
+
+    assert activity == {
+        "generation_active": 0,
+        "comfy_active": 0,
+        "resolve_active": 1,
+        "active_total": 1,
+    }
+    assert guarded["can_update"] is False
+
+
 def test_update_scripts_keep_normal_process_cleanup_and_allow_only_explicit_breakaway():
     project_root = Path(__file__).resolve().parents[2]
     update_launcher = (project_root / "update_release.bat").read_text(encoding="utf-8")
@@ -233,6 +265,8 @@ def test_update_scripts_keep_normal_process_cleanup_and_allow_only_explicit_brea
     assert "taskkill /T" not in updater
     assert "Get-MvHubProcessIds" in updater
     assert "Get-CimInstance Win32_Process" in updater
+    assert "Assert-NoActiveResolveImport -Root $TargetDir" in updater
+    assert "app.services.resolve_import_worker" in updater
     assert 'Join-Path $ResolvedRoot "MV_agent.bat"' in updater
     assert "CREATE_BREAKAWAY_FROM_JOB" in launcher
     assert "JOB_OBJECT_LIMIT_BREAKAWAY_OK" in launcher
