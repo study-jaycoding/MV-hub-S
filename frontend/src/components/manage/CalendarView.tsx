@@ -171,7 +171,7 @@ function CreatorCalendarBody({
                           title={`${cr.name} · ${anchor.m + 1}/${d} · ${cuts.length}개`}
                         >
                           <MediaThumbnail
-                            thumb={thumb(first.thumb)}
+                            thumb={thumb(first.thumb, first.file_path, first.media_type)}
                             isVideo={first.media_type === "video"}
                             src={first.media_type === "video" ? first.file_path ?? undefined : undefined}
                             fallback={<span className="work-cut-ph" />}

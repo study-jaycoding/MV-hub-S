@@ -15,8 +15,9 @@ import {
 } from "../../../lib/sceneEdges";
 import { gatherComfyMedia, hasTextConnection } from "../../../lib/sceneComfyInputs";
 import { isComfyRunning } from "../../../lib/sceneComfyRunningStore";
-import { hideBrokenImg, showLoadedImg } from "../../../lib/media";
+import { displayThumb, hideBrokenImg, showLoadedImg } from "../../../lib/media";
 import { HistoryBoardNode } from "../../history/HistoryBoardNode";
+import { MediaThumbnail } from "../../MediaThumbnail";
 import { TagEditor } from "../../TagEditor";
 import comfyLogo from "../../../assets/comfy-logo.svg";
 import type { HistPass } from "./GenerationCard";
@@ -326,7 +327,12 @@ export function ComfyCard({
                     mediaFallback.map((o, i) => (
                       <div key={"m" + i} className="scene-comfynode-preview">
                         {o.kind === "video" ? (
-                          <video src={o.url} muted loop playsInline preload="metadata" />
+                          <MediaThumbnail
+                            thumb={displayThumb(o.url, 512)}
+                            isVideo
+                            src={o.url}
+                            fallback={<span className="thumb-placeholder" />}
+                          />
                         ) : (
                           <img src={o.url} alt="" draggable={false} onError={hideBrokenImg} onLoad={showLoadedImg} />
                         )}

@@ -10,7 +10,7 @@ export interface TrayMentionItem {
   token: string; // @image1 / @video1 / @audio1
   type: string; // image | video | audio
   name: string; // 소스명(부가 표시)
-  media: string; // 썸네일 URL(이미지) 또는 비디오 파일 URL. 없으면 아이콘 폴백.
+  media: string; // 이미지/비디오 모두 표시용 정지 썸네일 URL. 없으면 아이콘 폴백.
 }
 
 interface Props {
@@ -101,21 +101,7 @@ export function SpotlightMentionPicker({
                   onSelectTrayRef(item.index);
                 }}
               >
-                {item.media && item.type === "video" ? (
-                  // React <video muted> DOM 프로퍼티 미반영 버그 → 명령형으로 무음 강제 후 재생.
-                  <video
-                    ref={(el) => {
-                      if (!el) return;
-                      el.muted = true;
-                      el.play().catch(() => {});
-                    }}
-                    src={item.media}
-                    muted
-                    loop
-                    playsInline
-                    preload="auto"
-                  />
-                ) : item.media ? (
+                {item.media ? (
                   <img src={displayThumb(item.media) || undefined} alt="" onError={hideBrokenImg} onLoad={showLoadedImg} />
                 ) : (
                   <span className="sl-mention-ph">{item.type === "audio" ? "🎵" : "🖼"}</span>

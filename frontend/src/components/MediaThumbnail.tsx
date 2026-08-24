@@ -28,7 +28,14 @@ export function nextMediaThumbnailErrorState(
   return { ...state, mediaBroken: true };
 }
 
+export function nextVideoPosterErrorState(
+  state: MediaThumbnailLoadState,
+): MediaThumbnailLoadState {
+  return state.mediaBroken ? state : { thumbBroken: true, mediaBroken: false };
+}
+
 interface Props {
+  className?: string;
   thumb: string | null | undefined; // 썸네일(포스터) URL
   isVideo: boolean; // 결과물이 영상인가
   src?: string | null; // 영상 파일 경로(영상일 때만 필요)
@@ -42,6 +49,7 @@ interface Props {
 }
 
 export function MediaThumbnail({
+  className,
   thumb,
   isVideo,
   src,
@@ -62,19 +70,32 @@ export function MediaThumbnail({
   };
   if (loadState.mediaBroken) return <>{fallback}</>;
   // 영상 + 썸네일: 포스터로 깔고 호버 시 재생(preload 없음).
-  if (thumb && isVideo)
+  // poster 자체의 HTTP 실패는 <video onError>로 일관되게 전달되지 않으므로 같은 URL의 숨은
+  // 이미지 probe로 실패를 감지한다. 실패하면 아래의 preload=metadata 첫 프레임 폴백으로 한 번만
+  // 전환한다. 정상 경로는 브라우저 캐시가 요청을 합쳐 원본 영상 바이트를 전혀 읽지 않는다.
+  if (thumb && isVideo && !loadState.thumbBroken)
     return (
-      <video
-        ref={videoRef ?? undefined}
-        src={src ?? undefined}
-        poster={thumb}
-        muted
-        loop
-        playsInline
-        preload="none"
-        draggable={false}
-        onError={terminalError}
-      />
+      <>
+        <img
+          src={thumb}
+          alt=""
+          aria-hidden="true"
+          style={{ display: "none" }}
+          onError={() => setLoadState(nextVideoPosterErrorState(loadState))}
+        />
+        <video
+          className={className}
+          ref={videoRef ?? undefined}
+          src={src ?? undefined}
+          poster={thumb}
+          muted
+          loop
+          playsInline
+          preload="none"
+          draggable={false}
+          onError={terminalError}
+        />
+      </>
     );
   // 이미지(또는 영상의 정지 썸네일).
   if (thumb) {
@@ -83,6 +104,7 @@ export function MediaThumbnail({
     const imgSrc = canRetry && loadState.thumbBroken ? src : thumb;
     return (
       <img
+        className={className}
         src={imgSrc}
         loading="lazy"
         decoding="async"
@@ -100,6 +122,7 @@ export function MediaThumbnail({
   if (isVideo && src)
     return (
       <video
+        className={className}
         ref={videoRef ?? undefined}
         src={src}
         muted

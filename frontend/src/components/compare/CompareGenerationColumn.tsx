@@ -7,11 +7,12 @@ import {
   refKey,
   tokenizePrompt,
 } from "../../lib/compareDiff";
-import { displayThumb, hideBrokenImg, showLoadedImg, thumbUrl } from "../../lib/media";
+import { displayThumb, hideBrokenImg, showLoadedImg, thumbOf, thumbUrl } from "../../lib/media";
 import { compareImageSource } from "../../lib/compareWindow";
 import { refSrc } from "../../lib/promptParts";
 import type { Generation, Reference } from "../../types";
 import type { CompareSourcePreview } from "./CompareSourceLightbox";
+import { MediaThumbnail } from "../MediaThumbnail";
 
 function renderPrompt(text: string, common: Set<string>, commonElems: Set<string>) {
   const parts = text.split(ELEMENT_SPLIT_RE);
@@ -77,8 +78,7 @@ export function CompareGenerationColumn({
 }) {
   const asset = generation.assets[0];
   const isVideo = asset?.type === "video";
-  const rawThumb = asset?.thumbnail_path || (asset?.type !== "video" ? asset?.file_path : null);
-  const thumb = mediaThumb(rawThumb, 512);
+  const thumb = thumbOf(generation, 512);
   const imageSrc = compareImageSource(asset?.file_path, thumb, useOriginalMedia);
 
   return (
@@ -97,7 +97,7 @@ export function CompareGenerationColumn({
                 controls
                 muted
                 playsInline
-                preload={useOriginalMedia ? "auto" : "metadata"}
+                preload={useOriginalMedia ? "auto" : thumb ? "none" : "metadata"}
               />
             ) : imageSrc ? (
               <img
@@ -154,12 +154,12 @@ export function CompareGenerationColumn({
                 }
               >
                 {reference.type === "video" ? (
-                  <video
+                  <MediaThumbnail
                     className="cmp-ref"
+                    thumb={poster}
+                    isVideo
                     src={refSrc(reference.file_path) || undefined}
-                    poster={poster || undefined}
-                    muted
-                    preload="metadata"
+                    fallback={<span className="cmp-ref cmp-ref-ph">🎞</span>}
                   />
                 ) : reference.type === "audio" ? (
                   <span className="cmp-ref cmp-ref-ph">🎵</span>

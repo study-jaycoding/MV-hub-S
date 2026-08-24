@@ -12,7 +12,7 @@ import {
 } from "../../lib/deactivated";
 import { manageApi } from "../../lib/manageApi";
 import { isHttpStatus, isRouteMissing } from "../../lib/http";
-import { thumbUrl } from "../../lib/media";
+import { mediaThumbUrl } from "../../lib/media";
 import { loadJSON, loadString, saveJSON, saveString } from "../../lib/storage";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
 import {
@@ -138,8 +138,12 @@ function loadFilters(): WorkFilters {
   };
 }
 
-function taskThumb(path?: string | null): string | undefined {
-  return thumbUrl(path, 256) ?? undefined;
+function taskThumb(
+  path?: string | null,
+  filePath?: string | null,
+  mediaType?: string | null,
+): string | undefined {
+  return mediaThumbUrl(filePath, path, mediaType, 256) ?? undefined;
 }
 
 // 서버가 변형 없이 저장만 하는 필드 — 이것만 담긴 PATCH 는 로컬 상태 갱신으로 끝내고 재호출 생략.

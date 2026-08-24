@@ -150,13 +150,36 @@ export function displayRefThumb(
   if (ref.type === "audio") return undefined;
   const fp = ref.file_path || "";
   const isAssetSrc = fp.startsWith("asset:") || fp.startsWith("/api/assets/file");
-  const raw = ref.type === "video" ? fp || ref.thumb : isAssetSrc ? fp : ref.thumb || fp;
+  // 원격 영상 원본만 있고 포스터가 없으면 media-thumb가 최대 128MB를 받으려 시도할 수 있다.
+  // 그 경우는 undefined로 두어 MediaThumbnail의 Range metadata 폴백을 사용한다. 보존된 /media와
+  // 에셋 영상은 서버가 로컬 파일에서 포스터를 싸게 만들 수 있으므로 원본 경로를 썸네일 입력으로 쓴다.
+  const videoFallback = fp.startsWith("/media/") || isAssetSrc ? fp : "";
+  const raw = ref.type === "video"
+    ? ref.thumb || videoFallback
+    : isAssetSrc
+      ? fp
+      : ref.thumb || fp;
   return displayThumb(raw, size) ?? undefined;
 }
 
 // 생성본의 대표 썸네일 URL(없으면 null). 로컬 /media·공유받은 원격 URL 모두 리사이즈 썸네일로 변환.
 export function thumbOf(g: Generation, size = 256): string | null {
   const a = g.assets[0];
-  const raw = a?.thumbnail_path || (a?.type !== "video" ? a?.file_path : null) || null;
-  return thumbUrl(raw, size);
+  // 영상도 포스터가 없으면 원본 경로를 media-thumb에 넘긴다. media-thumb는 첫 프레임을
+  // JPEG로 디스크 캐시하므로, 카드가 다시 마운트될 때마다 <video preload=metadata>가
+  // 원본 Range를 재요청·디코딩하는 비용을 피한다. Generation asset 타입은 이미지/영상만 온다.
+  return mediaThumbUrl(a?.file_path, a?.thumbnail_path, a?.type, size);
+}
+
+// DB/관리 API가 영상 포스터를 별도 필드에 저장하지 않은 경우에도 동일한 표시 규칙을 쓴다.
+// 생성 카드 외의 작업 보드·캘린더 등이 제각각 원본 영상을 직접 읽지 않게 하는 공용 관문.
+export function mediaThumbUrl(
+  filePath: string | null | undefined,
+  thumbnailPath: string | null | undefined,
+  type: string | null | undefined,
+  size = 256,
+): string | null {
+  if (type === "audio") return null;
+  if (type === "video" && !thumbnailPath && filePath?.startsWith("http")) return null;
+  return thumbUrl(thumbnailPath || filePath, size);
 }

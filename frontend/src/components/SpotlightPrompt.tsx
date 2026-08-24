@@ -26,7 +26,7 @@ import {
   runAssetVersionRefresh,
 } from "../lib/assetVersionRefresh";
 import { DRAG_TYPES } from "../lib/dragTypes";
-import { buildPromptParts, refSrc, refsToChips } from "../lib/promptParts";
+import { buildPromptParts, refsToChips } from "../lib/promptParts";
 import {
   unwrapTokenPill,
   countImageChips,
@@ -546,8 +546,9 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
         token: seedanceTrayToken(trayRefs, index),
         type: ref.type as string,
         name: ref.name,
-        // 비디오는 파일 URL(→<video>), 그 외는 버전 반영 썸네일. 오디오는 빈 값(아이콘 폴백).
-        media: ref.type === "video" ? refSrc(ref.file_path) || "" : displayRefThumb(ref) || "",
+        // 비디오도 원본 자동재생 대신 첫 프레임 캐시를 표시한다. 피커를 열 때 여러 원본 영상이
+        // 동시에 preload=auto 되는 비용을 막고, 실제 원본은 선택/미리보기 때만 읽는다.
+        media: displayRefThumb(ref, 128) || "",
       }))
       .filter((it) => !q || it.token.slice(1).toLowerCase().includes(q));
   }, [mention, model, trayRefs, assetVersionTick]);
@@ -690,8 +691,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     const item = trayRefs[index];
     const type = item?.type;
     const kind = type === "video" ? "video" : type === "audio" ? "audio" : "image";
-    // 비디오는 썸네일이 없어 파일 URL(→<video> 첫 프레임), 그 외는 썸네일 이미지.
-    const media = type === "video" ? refSrc(item?.file_path) : item?.thumb || undefined;
+    const media = type === "video" && item ? displayRefThumb(item, 128) : item?.thumb || undefined;
     insertRefToken(ed, seedanceTrayToken(trayRefs, index), kind, media);
     updatePlaceholder();
     setPromptTick((n) => n + 1);

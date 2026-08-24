@@ -13,6 +13,7 @@ import {
   usesSeedanceMediaRefs,
   type SeedanceTokenRoles,
 } from "../../lib/seedancePrompt";
+import { MediaThumbnail } from "../MediaThumbnail";
 
 // from_card: 이 참조가 씬의 연결된 레퍼런스 카드/리스트에서 온 것인지(SceneRef 와 왕복 시 보존해야
 //   disconnect 후에도 유령 참조로 남지 않는다). 일반 트레이 항목엔 없음.
@@ -158,20 +159,11 @@ export function SpotlightRefTray({
             >
               <span className="sl-reftray-num">{displayIndex}</span>
               {ref.type === "video" ? (
-                <video
-                  // React <video muted> 는 DOM 프로퍼티로 안 붙는 알려진 버그 → 소리가 새어나온다.
-                  // 재생 직전 명령형으로 muted 를 강제하고 play() 한다(autoPlay 속성 대신).
-                  ref={(el) => {
-                    if (!el) return;
-                    el.muted = true;
-                    el.play().catch(() => {});
-                  }}
+                <MediaThumbnail
+                  thumb={displayRefThumb(ref, 256)}
+                  isVideo
                   src={refSrc(ref.file_path)}
-                  muted
-                  loop
-                  preload="auto"
-                  playsInline
-                  draggable={false}
+                  fallback={<span className="sl-reftray-ph" />}
                 />
               ) : (ref.type as string) === "audio" ? (
                 <span className="sl-reftray-ph">A</span>

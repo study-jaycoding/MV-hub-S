@@ -28,6 +28,12 @@ THUMB_DIR = MEDIA_DIR / ".thumbs"  # 에셋 썸네일과 같은 디스크 캐시
 # ★프리워밍은 반드시 이 두 폭을 모두 구워야 한다 — 512 만 구우면 100% 배율 모니터(256 요청)에서
 #   전부 캐시 미스라 "미리 구웠는데 열 때마다 새로 굽는" 문제가 재현된다.
 THUMB_WIDTHS: tuple[int, ...] = (256, 512)
+# 시작 때 오래된 영상 수천 개를 전부 ffmpeg로 읽으면 캐시 워밍이 오히려 서버 CPU를 오래 점유한다.
+# 이미지는 종전대로 전량, 영상은 최신 N개만 백그라운드에서 포스터를 선생성한다. 나머지도
+# /api/media-thumb 첫 요청에서 같은 캐시 키로 생성되므로 기능 누락은 없다.
+GENERATION_VIDEO_PREWARM_LIMIT = max(
+    0, int(os.environ.get("CONTENT_HUB_VIDEO_THUMB_PREWARM_LIMIT", "400"))
+)
 
 # 썸네일 캐시(.thumbs) 총 용량 상한. 넘으면 오래된 것부터 삭제(LRU). 썸네일은 원본 URL 로 언제든 다시
 # 구울 수 있어 삭제해도 안전하다 — 이 상한은 .thumbs(재생성 가능 캐시)에만 적용하고 MEDIA_DIR 의
@@ -368,8 +374,10 @@ def prewarm_generation_thumbs(
     throttle: float = 0.0,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> int:
-    """모든 로컬 /media 이미지의 썸네일을 미리 생성(없는 것만). 시작 후 백그라운드 데몬에서 호출.
-    → 첫 프로젝트 선택·스크롤에서도 생성 지연 없이 즉시 표시된다. 생성 개수를 반환.
+    """로컬 /media 이미지와 최근 영상 포스터를 미리 생성(없는 것만).
+    시작 후 백그라운드 데몬에서 호출해 첫 탭 진입·스크롤의 생성 지연을 없앤다.
+    영상은 GENERATION_VIDEO_PREWARM_LIMIT로 제한하고, 나머지는 on-demand 캐시가 담당한다.
+    생성 개수를 반환.
     ★파일 하나당 두 버킷(256/512)을 '함께' 굽는다(인터리브) — 폭별로 전체를 두 번 돌면 용량 상한
     eviction(생성시각 순 삭제)이 먼저 구운 폭 전체를 통째로 밀어내 한 버킷이 항상 콜드가 된다.
 
@@ -382,18 +390,35 @@ def prewarm_generation_thumbs(
 
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT DISTINCT file_path FROM asset WHERE file_path LIKE '/media/%'"
+            "SELECT file_path, MAX(rowid) AS latest_rowid FROM asset "
+            "WHERE file_path LIKE '/media/%' GROUP BY file_path ORDER BY latest_rowid DESC"
         ).fetchall()
     made = 0
+    warmed_videos = 0
     for r in rows:
         if should_stop is not None and should_stop():
             return made
         target = _media_target(r["file_path"] or "")
         if not target:
             continue
+        suffix = target.suffix.lower()
+        if suffix in VIDEO_EXTENSIONS:
+            if warmed_videos >= GENERATION_VIDEO_PREWARM_LIMIT:
+                continue
+            warmed_videos += 1
+            ensure = ensure_video_poster
+        elif suffix in IMAGE_EXTENSIONS:
+            ensure = ensure_thumb
+        else:
+            continue
         for width in widths:
-            if not cache_path(target, width).exists():
-                if ensure_thumb(target, width):
+            try:
+                cached = _is_complete_file(cache_path(target, width))
+            except OSError:
+                # DB 행을 읽은 직후 정리/교체된 원본 하나가 전체 부팅 워밍을 중단하지 않게 한다.
+                break
+            if not cached:
+                if ensure(target, width):
                     made += 1
                 if throttle:
                     time.sleep(throttle)

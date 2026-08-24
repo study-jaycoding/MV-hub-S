@@ -10,7 +10,7 @@ import { DRAG_TYPES } from "../lib/dragTypes";
 import { APP_EVENTS, dispatchAppEvent } from "../lib/appEvents";
 import { ackTeamFresh } from "../lib/teamSeen";
 import type { GradeMode } from "../lib/gradeStep";
-import { thumbUrl } from "../lib/media";
+import { thumbOf, thumbUrl } from "../lib/media";
 import { useClickSeparation } from "../lib/useClickSeparation";
 import { MediaThumbnail } from "./MediaThumbnail";
 import comfyLogo from "../assets/comfy-logo.svg";
@@ -123,10 +123,10 @@ function GenerationCardImpl({
   const modelName = useModelDisplayName();
   const asset = gen.assets?.[0]; // 프록시·백필 스키마 어긋남 방어 — assets 부재 시 카드만 빈 썸네일
   const isVideo = asset?.type === "video";
-  const rawThumb = asset?.thumbnail_path || (!isVideo ? asset?.file_path : null);
   // 리사이즈 썸네일(작은 이미지 디코딩 → 그리드 즉시 표시). 로컬 /media·공유받은 원격 URL 모두 적용.
-  // 요청 폭은 그리드가 표시크기×DPR 로 준 값(작게 보이면 256 → 디코딩 메모리 1/4). 없으면 512.
-  const thumb = thumbUrl(rawThumb, thumbSize ?? 512);
+  // 영상도 poster가 없으면 media-thumb 첫 프레임 캐시를 사용한다. 요청 폭은 그리드가
+  // 표시크기×DPR 로 준 값(작게 보이면 256 → 디코딩 메모리 1/4). 없으면 512.
+  const thumb = thumbOf(gen, thumbSize ?? 512);
   const isList = layout === "list";
   const videoRef = useRef<HTMLVideoElement>(null);
   // T 버튼 → 적용된 태그 목록 팝업(보기/✕삭제). 태그 '입력'은 # 키(editingField) 로만 — 에셋과 동일.

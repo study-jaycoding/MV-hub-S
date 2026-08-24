@@ -11,6 +11,7 @@ import { useEscapeClose } from "../lib/useEscapeClose";
 import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
 import type { Generation, InfoTarget, PreviewTarget, Project, Reference } from "../types";
 import { InlinePromptRefs } from "./common/InlinePromptRefs";
+import { MediaThumbnail } from "./MediaThumbnail";
 
 interface Props {
   target: InfoTarget;
@@ -353,11 +354,11 @@ export function InfoPopup({
                 onClick={() => openSource(r)}
               >
                 {r.type === "video" ? (
-                  <video
+                  <MediaThumbnail
+                    thumb={displayThumb(r.thumbnail_path || r.file_path, 256)}
+                    isVideo
                     src={refSrc(r.file_path)}
-                    poster={displayThumb(r.thumbnail_path || r.file_path) || undefined}
-                    muted
-                    preload="metadata"
+                    fallback={<span className="info-source-ph">🎞</span>}
                   />
                 ) : r.type === "audio" ? (
                   <span className="info-source-ph">🎵</span>

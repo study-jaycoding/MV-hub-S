@@ -24,8 +24,8 @@ export function CutThumbs({
   return (
     <div className="work-cut-thumbs">
       {shown.map((c) => {
-        const th = thumb(c.thumb);
         const isVideo = c.media_type === "video";
+        const th = thumb(c.thumb, c.file_path, c.media_type);
         const off = disabled?.has(c.id);
         const cls =
           "work-cut" +

@@ -265,8 +265,8 @@ export function insertChip(editor: HTMLElement, ref: ChipRef) {
 export function buildRefTokenEl(token: string, kind: string, media?: string, missing = false): HTMLElement {
   const el = document.createElement("span");
   el.contentEditable = "false"; // 원자 카드 — 소스 칩(.inline-ref)과 동일. 클릭 시에만 편집 전환.
-  // 비디오는 썸네일(이미지)이 없어 파일 URL 이 오므로 <img> 로는 깨진다 → <video> 로 첫 프레임을 보여준다
-  // (트레이와 동일). 오디오는 썸네일이 없어 아이콘. 이미지/시작/끝은 <img>.
+  // 비디오도 media-thumb 첫 프레임 이미지를 넣는다. 에디터 안의 여러 알약이 원본 영상을
+  // autoplay/preload하면 입력할 때마다 네트워크·디코더가 늘어나므로 정지 썸네일만 표시한다.
   // missing = 트레이에 그 번호의 레퍼런스가 없음(@image3 인데 3번이 없음) → 경고 스타일로 시인성 있게.
   const hasMedia = !!media && kind !== "audio" && !missing;
   el.className = "sl-tok sl-tok-" + kind + (hasMedia ? " sl-tok-has-thumb" : "") + (missing ? " sl-tok-missing" : "");
@@ -274,22 +274,11 @@ export function buildRefTokenEl(token: string, kind: string, media?: string, mis
   if (missing) el.title = "이 번호의 레퍼런스가 트레이에 없습니다";
   if (hasMedia) {
     let m: HTMLElement;
-    if (kind === "video") {
-      const v = document.createElement("video");
-      v.src = media!;
-      v.muted = true; // 자동재생은 무음이어야 브라우저가 허용
-      v.autoplay = true; // 첫 프레임 정지 대신 움직이게(무음 루프)
-      v.loop = true;
-      v.preload = "auto";
-      v.setAttribute("playsinline", "");
-      m = v;
-    } else {
-      const img = document.createElement("img");
-      img.src = displayThumb(media!) || media!; // display=캐시 썸네일, 실패 시 원본
-      img.alt = "";
-      img.draggable = false;
-      m = img;
-    }
+    const img = document.createElement("img");
+    img.src = displayThumb(media!) || media!;
+    img.alt = "";
+    img.draggable = false;
+    m = img;
     m.className = "sl-tok-thumb";
     m.contentEditable = "false";
     el.appendChild(m);

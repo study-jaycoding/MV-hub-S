@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   INITIAL_MEDIA_THUMBNAIL_LOAD_STATE,
   nextMediaThumbnailErrorState,
+  nextVideoPosterErrorState,
 } from "../src/components/MediaThumbnail";
 
 describe("MediaThumbnail failure state", () => {
@@ -23,5 +24,12 @@ describe("MediaThumbnail failure state", () => {
   it("keeps terminal failure terminal", () => {
     const failed = { thumbBroken: true, mediaBroken: true };
     expect(nextMediaThumbnailErrorState(failed, true)).toEqual(failed);
+  });
+
+  it("영상 포스터 실패 상태는 원본 영상 첫 프레임 폴백을 사용할 수 있는 비종료 상태다", () => {
+    expect(nextVideoPosterErrorState(INITIAL_MEDIA_THUMBNAIL_LOAD_STATE)).toEqual({
+      thumbBroken: true,
+      mediaBroken: false,
+    });
   });
 });

@@ -205,7 +205,11 @@ export function emptyWorkFilters(): WorkFilters {
 export interface WorkViewProps {
   tasks: Task[];
   seqOptions: string[];
-  thumb: (path?: string | null) => string | undefined;
+  thumb: (
+    path?: string | null,
+    filePath?: string | null,
+    mediaType?: string | null,
+  ) => string | undefined;
   disabled: Set<string>; // d 로 비활성화(회색)된 생성물 id — 로컬(localStorage) 기준
   colorMap?: Record<string, string>; // 값 색 라벨 "field::value"->colorKey (프로젝트/시퀀스 등)
   myUid?: string | null; // 현재 로그인 uid — '내 작업' 필터·표시용
