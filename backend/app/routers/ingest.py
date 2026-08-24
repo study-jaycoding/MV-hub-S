@@ -703,12 +703,13 @@ def my_hf_status(request: Request):
 def known_jobs(request: Request):
     """이 계정(힉스필드 uid)으로 이미 서버에 있는 job_id 목록 — 에이전트가 새 것만 보내게.
     인증 필수. account.creator_uid 기준. (구버전 에이전트 호환용 — 신버전은 POST 차집합 사용.)"""
-    acc = getattr(request.state, "account", None)
-    if not acc:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+    # 브라우저 세션뿐 아니라 AUTH off 로컬 허브의 에이전트 신원도 허용한다.
+    # agent_push는 Bearer local로 이 로컬 전용 경로를 호출하므로 request.state.account가
+    # 비어 있다. 다른 ingest/agent 라우트와 같은 공용 폴백을 쓰지 않으면 매 사이클 401이 난다.
+    acc = _agent_acc(request)
     # account_scope_uid: creator_uid, 미링크면 acct:email 또는 '\x00'(불가능값) — None 으로 떨어져
     # 전역 검색(남의 job 존재 oracle)이 되지 않게 한다.
-    uid = account_scope_uid(request)
+    uid = account_scope_uid(request) or acc.get("creator_uid")
     return {"creator_uid": uid, "job_ids": repo.known_job_ids(uid) if uid else []}
 
 
@@ -722,10 +723,11 @@ def known_jobs_diff(body: KnownJobsIn, request: Request):
     GET(서버 보유 전량 응답)은 라이브러리가 커질수록 매 사이클 왕복이 무거워져 차집합으로 교체.
     ``refresh`` 는 서버 상태가 아직 대기/생성중인 항목뿐이라 완료 이력을 불필요하게 재전송하지 않는다.
     응답 payload 가 요청 크기로 유한해진다. 인증 필수."""
-    acc = getattr(request.state, "account", None)
-    if not acc:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+    # GET 호환 경로와 동일한 에이전트 신원 규칙. AUTH on 공유 서버에서는 여전히
+    # 검증된 세션 계정만 통과하고, AUTH off 로컬 허브만 활성 계정으로 폴백한다.
+    acc = _agent_acc(request)
     ids = [str(j) for j in (body.job_ids or []) if j][:1000]  # 방어적 상한
     # account_scope_uid 로 스코프 — 미링크 계정도 acct:email/'\x00' 이라 전역 검색(남의 job 존재
     # oracle)이 되지 않는다. GET 경로와 동일 기준.
-    return repo.job_id_sync_diff(ids, creator_uid=account_scope_uid(request))
+    uid = account_scope_uid(request) or acc.get("creator_uid")
+    return repo.job_id_sync_diff(ids, creator_uid=uid)

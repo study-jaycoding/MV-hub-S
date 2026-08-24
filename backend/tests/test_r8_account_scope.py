@@ -6,11 +6,13 @@ import asyncio
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app import active_account, config, db, deps, manage_db, repo
+from app.routers import ingest as ingest_router
 from app.repo import manage as repo_manage
 from app.services import backup, telemetry_drain
 from app.usecases import gen_requests
@@ -141,6 +143,26 @@ def test_auth_off_agent_identity_uses_active_account_email(account_scope, monkey
 
     assert account == {"email": A_EMAIL, "creator_uid": A_UID}
     assert active_account.account_db_path(account["email"]).is_file()
+
+
+def test_auth_off_known_jobs_accepts_local_agent_identity(account_scope, monkeypatch):
+    """로컬 에이전트의 known-jobs GET/POST가 브라우저 세션 없이도 401이 나지 않는다."""
+    monkeypatch.setattr(deps, "AUTH_ENABLED", False)
+    db.ensure_account_db(A_EMAIL, A_UID)
+    repo.set_setting("my_creator_uid", A_UID)
+    request = SimpleNamespace(state=SimpleNamespace(account=None))
+
+    known = MagicMock(return_value=["known-job"])
+    diff = MagicMock(return_value={"unknown": ["new-job"], "refresh": []})
+    monkeypatch.setattr(ingest_router.repo, "known_job_ids", known)
+    monkeypatch.setattr(ingest_router.repo, "job_id_sync_diff", diff)
+
+    assert ingest_router.known_jobs(request)["job_ids"] == ["known-job"]
+    assert ingest_router.known_jobs_diff(
+        ingest_router.KnownJobsIn(job_ids=["new-job"]), request
+    ) == {"unknown": ["new-job"], "refresh": []}
+    known.assert_called_once_with(A_UID)
+    diff.assert_called_once_with(["new-job"], creator_uid=A_UID)
 
 
 def test_gen_scope_recovers_legacy_local_sentinel(account_scope):
