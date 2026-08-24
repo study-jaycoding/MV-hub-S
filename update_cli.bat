@@ -3,71 +3,109 @@ chcp 65001 >nul
 REM ============================================================================
 REM  MV Hub - Higgsfield CLI updater (standalone)
 REM
-REM  Ensures the Higgsfield CLI matches the PINNED version in hf_cli_version.txt:
-REM  installs that exact version if missing or different, does nothing if already
-REM  matching. Never @latest - Higgsfield ships breaking changes; bump the pin file
-REM  to roll the whole team forward on a version we tested.
+REM  Ensures the effective Higgsfield CLI on PATH exactly matches the version in
+REM  hf_cli_version.txt. Never installs @latest - Higgsfield ships breaking
+REM  changes; bump the pin file to roll the whole team onto a tested version.
 REM
-REM  To BUMP the pinned CLI version safely, follow docs/HF_CLI_UPGRADE.md
-REM  (bump pin -> run tools/hf_cli_contract_smoke.py -> fix any FAIL -> release).
+REM  To bump the pin safely, follow docs\HF_CLI_UPGRADE.md:
+REM    change pin -> run this updater -> run contract smoke -> commit/release.
 REM
 REM  Usage:
-REM    update_cli.bat            run directly (pauses at the end)
-REM    update_cli.bat nopause    called by another script (no pause, best-effort)
+REM    update_cli.bat            interactive; pauses before returning
+REM    update_cli.bat nopause    no pause; returns the same verified exit code
 REM
-REM  update_git.bat calls this with "nopause" so the CLI logic lives in one place.
+REM  No script calls this file today (update_git, MV_agent and release paths all
+REM  handle the CLI themselves), so a non-zero exit cannot block app startup.
+REM  Exit 0 = the CLI actually executed and matched the pin.
+REM  Exit 1 = the pinned CLI could not be established.
 REM ============================================================================
 setlocal
 set "QUIET=0"
 if /i "%~1"=="nopause" set "QUIET=1"
 set "ROOT=%~dp0"
+set "RESULT=1"
 
-REM NOTE: MV_agent.bat now auto-checks the pinned CLI at startup and compares your code to the
-REM team server, so running this by hand is usually unnecessary. Kept as a manual/standalone updater
-REM (and still called by update_git.bat). Running it directly only pins the LOCAL CLI to hf_cli_version.txt.
-if "%QUIET%"=="0" echo     [note] MV_agent.bat now auto-checks CLI version at startup - running this by hand is optional.
-
-where npm >nul 2>nul
-if errorlevel 1 (
-  echo     npm not found - install Node.js from nodejs.org, then retry.
-  goto :end_skip
+if "%QUIET%"=="0" (
+  echo     [note] This checks the standalone/global CLI against hf_cli_version.txt.
 )
 
 REM Pinned version = single source of truth. Install EXACTLY this, never @latest.
 set "HF_CLI_VERSION="
 if exist "%ROOT%hf_cli_version.txt" set /p HF_CLI_VERSION=<"%ROOT%hf_cli_version.txt"
-REM trim stray leading/trailing spaces a re-saved pin file might add.
+REM Trim stray leading spaces a re-saved pin file might add.
 for /f "tokens=* delims= " %%x in ("%HF_CLI_VERSION%") do set "HF_CLI_VERSION=%%x"
 if not defined HF_CLI_VERSION (
-  echo     [warn] hf_cli_version.txt missing/empty - cannot pin; skipping.
-  goto :end_skip
+  echo     [error] hf_cli_version.txt is missing or empty; refusing an unpinned install.
+  goto :finish
 )
 
-where higgsfield >nul 2>nul
-if errorlevel 1 (
-  echo     Higgsfield CLI not installed - installing pinned @%HF_CLI_VERSION%...
-  call npm install -g @higgsfield/cli@%HF_CLI_VERSION% || echo     [warn] CLI install failed - continuing.
-  goto :end_ok
-)
-
-REM Local version compare (no network). Reinstall only when it differs from the pin.
-set "CUR="
-for /f "tokens=2" %%v in ('higgsfield version 2^>nul') do if not defined CUR set "CUR=%%v"
+REM Fast/offline-safe path: an already-correct CLI needs neither npm nor network.
+call :read_current_version
 if "%CUR%"=="%HF_CLI_VERSION%" (
   echo     Higgsfield CLI already at pinned %HF_CLI_VERSION% - skip.
-) else (
-  echo     Installed %CUR% differs from pin %HF_CLI_VERSION% - installing pinned...
-  call npm install -g @higgsfield/cli@%HF_CLI_VERSION% || echo     [warn] CLI update failed - continuing.
+  set "RESULT=0"
+  goto :finish
 )
 
-:end_ok
+if defined CUR (
+  echo     Installed %CUR% differs from pin %HF_CLI_VERSION% - installing pinned...
+) else (
+  echo     Higgsfield CLI is missing or unreadable - installing pinned @%HF_CLI_VERSION%...
+)
+
+where npm >nul 2>nul
+if errorlevel 1 (
+  echo     [error] npm not found; cannot install the pinned CLI.
+  goto :verify
+)
+
+REM npm's return code is diagnostic. The final decision is the effective CLI version.
+call npm install -g @higgsfield/cli@%HF_CLI_VERSION%
+if errorlevel 1 (
+  echo     [warn] npm reported an install failure; verifying the effective CLI anyway.
+)
+
+:verify
+call :read_current_version
+if "%CUR%"=="%HF_CLI_VERSION%" (
+  echo     [done] Verified Higgsfield CLI %HF_CLI_VERSION%.
+  set "RESULT=0"
+) else (
+  if defined CUR (
+    echo     [error] Effective Higgsfield CLI is %CUR%, expected %HF_CLI_VERSION%.
+  ) else (
+    echo     [error] Higgsfield CLI is still unavailable after the install attempt.
+  )
+  echo     [error] Do not use generation until the pinned version is available.
+  set "RESULT=1"
+)
+
+:finish
 if "%QUIET%"=="0" (
   echo.
-  echo [done] Higgsfield CLI check complete.
+  if "%RESULT%"=="0" (
+    echo [done] Higgsfield CLI check complete.
+  ) else (
+    echo [failed] Higgsfield CLI does not match the project pin.
+  )
   pause
 )
-exit /b 0
+exit /b %RESULT%
 
-:end_skip
-if "%QUIET%"=="0" pause
+REM ---------------------------------------------------------------------------
+REM Reads the version of the CLI that this shell will actually execute.
+REM CUR stays empty when the command is missing, fails, or has an unknown format.
+REM ---------------------------------------------------------------------------
+:read_current_version
+set "CUR="
+where higgsfield >nul 2>nul
+if errorlevel 1 exit /b 0
+
+set "VERSION_TMP=%TEMP%\mvhub-hf-version-%RANDOM%-%RANDOM%.tmp"
+call higgsfield version >"%VERSION_TMP%" 2>nul
+set "VERSION_RC=%ERRORLEVEL%"
+if "%VERSION_RC%"=="0" for /f "usebackq tokens=2" %%v in ("%VERSION_TMP%") do if not defined CUR set "CUR=%%v"
+del /q "%VERSION_TMP%" >nul 2>nul
+set "VERSION_TMP="
+set "VERSION_RC="
 exit /b 0
