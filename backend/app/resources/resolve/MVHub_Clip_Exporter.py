@@ -979,8 +979,8 @@ def show_exporter_window(resolve_obj, fusion_obj, bmd_obj):
                         ui.CheckBox(
                             {
                                 "ID": "TimeCounter",
-                                "Text": "타임카운터 적용",
-                                "Checked": True,
+                                "Text": "타임 카운터",
+                                "Checked": False,
                                 "Weight": 0,
                             }
                         ),

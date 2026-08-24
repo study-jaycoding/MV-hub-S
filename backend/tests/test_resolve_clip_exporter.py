@@ -435,8 +435,8 @@ class ResolveClipExporterTests(unittest.TestCase):
         )
         self.assertLess(field_row.index('"ID": "SequenceStep"'), field_row.index('"ID": "Version"'))
         self.assertIn('"ID": "TimeCounter"', source)
-        self.assertIn('"Text": "타임카운터 적용"', source)
-        self.assertIn('"Checked": True', source)
+        self.assertIn('"Text": "타임 카운터"', source)
+        self.assertIn('"Checked": False', source)
         self.assertIn('"Text": "렌더 폴더 생성"', source)
         self.assertRegex(
             source,
