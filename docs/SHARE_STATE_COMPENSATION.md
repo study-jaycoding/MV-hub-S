@@ -1,10 +1,22 @@
-# 공유·최종 상태 보상 계약 (RL-11)
+# 공유·최종 상태 보상 계약 (RL-11 — 대체됨)
 
 기준 구현: `18d63560`
 
-이 문서는 로컬 허브와 공유 서버 사이에서 `공유됨`과 `최종 선택` 상태가 다르게 남지 않게 하는
-현행 계약이다. 구현 위치는 `backend/app/routers/share.py`, 회귀 테스트는
-`backend/tests/test_share_state_consistency.py`다.
+> [!CAUTION]
+> **이 문서는 현행 계약이 아니다.** RL-11 당시의 *1회성 원격 보상* 규칙을 그대로 보존한 과거
+> 기록이다. 아래 4·5번과 실패 표의 "원격 작업을 되돌린다"는 지금 구현과 **반대**다.
+>
+> 현행 계약은 [SHARE_STATE_RECONCILIATION_DESIGN.md](SHARE_STATE_RECONCILIATION_DESIGN.md) 의
+> **converge-forward** 다 — 서버가 확정한 사용자 의도는 로컬 장애 때문에 되돌리지 않고,
+> 영속 원장에 기록한 뒤 reconciler 가 서버의 현재 권위 상태를 관측해 로컬 미러를 앞으로
+> 수렴시킨다(`backend/app/main.py` 의 `periodic_share_state_reconciler`,
+> `backend/app/services/share_state_reconciler.py`).
+>
+> 아래 본문은 **왜 그렇게 바뀌었는지** 판단하기 위한 근거로만 읽는다.
+
+로컬 허브와 공유 서버 사이에서 `공유됨`과 `최종 선택` 상태가 다르게 남지 않게 하려던 당시 계약이다.
+구현 위치는 `backend/app/routers/share.py`, 회귀 테스트는
+`backend/tests/test_share_state_consistency.py` 였다.
 
 ## 지켜야 하는 불변식
 

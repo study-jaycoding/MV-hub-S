@@ -6,7 +6,7 @@
 > (원본 [DESIGN.md](DESIGN.md)·[PROJECT_CHARTER_LEGACY.md](PROJECT_CHARTER_LEGACY.md) 는 개인용 `content-hub` 시절 명세라
 > 일부는 현재 push 모델 이전 내용이다 — 충돌 시 **이 문서와 AI_CONTEXT.md 가 최신**.)
 >
-> 최종 갱신: 2026-08-16
+> 최종 갱신: 2026-08-26
 
 ---
 
@@ -27,7 +27,10 @@ Higgsfield 로 만든 이미지·영상을 팀이 한곳에 모아 **탐색·태
 ```
 
 - **생성·재생성은 전원 각자 로컬 CLI**(자기 크레딧). 서버는 어떤 CLI 에도 의존하지 않는다 → 클라우드로 옮겨도 동작.
-- **서버로는 결과물 메타데이터만 push**. 미디어는 Higgsfield CloudFront **공개 URL** 을 그대로 참조(바이트 전송 불필요).
+- **서버로는 결과물 메타데이터만 push**. 미디어는 Higgsfield CloudFront **공개 URL** 을 그대로 참조한다
+  (기본 설정에서는 바이트 전송 불필요). 단 `CONTENT_HUB_MEDIA_PRESERVATION=1` 을 명시한 설치본만
+  예외로 원본을 자기 `MEDIA_DIR`(기본 `backend/data/media`, `CONTENT_HUB_DATA`·`CONTENT_HUB_MEDIA`
+  로 변경 가능) 로 내려받는다 — 플래그 기본값은 `0` 이다(§9 참조).
 - **Higgsfield 토큰은 각 PC 밖으로 안 나간다**(서버는 자격증명을 저장하지 않음 — 보안 요구).
 - 허브의 "생성/재생성" 버튼은 **서버에 요청만 남기고**(gen-request 큐), 그 사람 PC 의 에이전트가 가져가 로컬 CLI 로 실행한다(§7).
 
@@ -49,7 +52,10 @@ Higgsfield 로 만든 이미지·영상을 팀이 한곳에 모아 **탐색·태
 [팀원 각 PC] agent_push.py ──http(/api/ingest, /api/gen-requests)──▶ 같은 :8010
 ```
 
-- **DB**: `backend/data/db/content_hub.db` (SQLite WAL). 휴지통은 별도 DB `content_hub_trash.db`.
+- **DB**: SQLite WAL. 공유 서버·계정 없는 실행은 `backend/data/db/content_hub.db` 를 쓰고,
+  **로컬 허브에서 계정이 활성화되면 `backend/data/db/acct/<계정슬러그>/content_hub.db`** 로 계정별 분리된다
+  (`backend/app/db_paths.py`·`active_account.py`, `CONTENT_HUB_DB` 로 강제 지정 가능).
+  휴지통은 같은 폴더의 별도 DB `content_hub_trash.db`.
 - **미디어**: `backend/data/media/<sha[:2]>/<sha>.ext` (2단계 샤딩).
 - **포트·인증**: `MV_server.bat` 기본 **8010 + 로그인 ON**(`CONTENT_HUB_AUTH=1`). `serve.py` 가 IPv4/IPv6 듀얼스택.
 - ⚠️ **`--reload` 금지** — uvicorn 리로더가 SelectorEventLoop 을 강제해 CLI subprocess 가 깨진다. 백엔드 변경은 **서버 재시작**, 프론트 변경은 `npm run build` + 브라우저 **Ctrl+F5**(dist 즉시 서빙).
@@ -83,7 +89,7 @@ HTTP 요청
 | 파일 | 역할 |
 |---|---|
 | `main.py` | FastAPI 앱·미들웨어·lifespan(init_db·고아잡정리·중복병합·creator_uid 백필·계정↔creator 연결·신원캡처·썸네일 사전생성·주기 동기화/백업)·`/media`·SPA 마운트 |
-| `db.py` | 스키마 적용·마이그레이션·인덱스·FTS5. `python -m app.db init` 멱등 |
+| `db.py` | 스키마 적용·마이그레이션·인덱스·FTS5. 서버 기동 시 `init_db()` 로 자동 적용(멱등) — 손으로 `python -m app.db init` 을 돌리지 않는다 |
 | `models.py` | 요청/응답 Pydantic 모델 |
 | `config.py` | 경로·포트·`CONTENT_HUB_AUTH` 등 환경 설정 |
 | `deps.py` | 인증/RBAC FastAPI 의존성(`actor_id`·`require_global_cap`·`require_project_role`·`require_edit_generation`) |
@@ -97,10 +103,10 @@ HTTP 요청
 | 라우터 | 담당 |
 |---|---|
 | `library.py` | 목록·검색·통계·facets·휴지통·**미디어 썸네일**·`tab=my` 계정 스코프 |
-| `generation.py` | 태그/컬러/소스/코멘트·삭제·복원·Higgsfield 검증·리니지(옛 서버측 생성 경로 잔존·미사용) |
+| `generation.py` | 태그/컬러/소스/코멘트·삭제·복원·Higgsfield 검증·계보 조회 (옛 서버측 생성 라우트는 제거됨 — §4.5 `jobs.py` 행 참조) |
 | `gen_requests.py` | **로컬 실행 큐**: 생성요청·pending claim·fulfill·fail |
 | `ingest.py` | **push 적재**·known-jobs·`/credits`·`/ingest/account-report`. 생성 텔레메트리와 계정 상태·거래는 각각 영속 outbox에 기록하고 백그라운드 drain만 예약 |
-| `share.py` | 발행/가져오기/번들 export·import. 프록시 공유 해제·최종 해제는 로컬/서버 보상 계약 적용 |
+| `share.py` | 단건 발행/해제/최종/가져오기(번들 송수신은 `publish.py`, 직렬화는 `repo/share.py`). 프록시 공유·최종 상태는 write-ahead 원장 기록 후 서버를 권위로 삼아 converge-forward |
 | `projects.py` | 프로젝트 CRUD·멤버·배정·보관 |
 | `auth.py` | 로그인·가입·계정 승인 |
 | `members.py` | 등급(전역 역할) 관리 |
@@ -112,6 +118,7 @@ HTTP 요청
 | `resolve_integration.py` | DaVinci Resolve 전송·스크립트 설치·수동 가져오기 결과 기록 |
 | `release_update.py` | 작업자 릴리스 자동 업데이트(status/start — 로컬 전용) |
 | `update_notices.py` | 공유 서버 업데이트 후보 등록·최근 5개·고정·공지·계정별 읽음 처리. 관리 쓰기는 서버 `Admin`만 허용 |
+| `notifications.py` | 알림 센터의 **코멘트 알림** 조회 뷰 — 미확인 코멘트 목록·일괄 읽음(2개 API). 업데이트 공지는 `update_notices.py` 담당 |
 | `scenes.py` | 씬 캔버스 DB 미러 백업(PUT/GET /scenes/backup) |
 | `db_backup.py` / `db_transfer.py` | 계정별 `content + trash` 백업 세트의 멱등 업로드·명시적 ACK·최신 세트 다운로드 / 로컬 DB 내보내기·스트리밍 가져오기·세트 복원(유지보수 게이트). 기존 단일 DB 경로는 혼합 버전 호환용으로 유지 |
 | 내부: `_proxy.py` / `_telemetry.py` / `_assets_access.py` | 데이터 소유권 프록시 위임 / 이벤트 루프 연결·단일 소유자·후속 요청을 조정하며 생성·계정 보고 채널을 독립 정산하는 drain / Assets 접근 가드 |
@@ -230,7 +237,7 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 | `download.ts` | `download`·`downloadName`(파일 내려받기, 공용) |
 | `commentTree.ts` | `buildCommentTree<T>`(코멘트 부모-자식 트리 계산, 공용) |
 | `useClickSeparation.ts` | 단일/더블클릭 220ms 분리 훅 + 언마운트 타이머 정리(공용) |
-| `useSpotlightSubmit.ts` | Spotlight 입력 정규화·생성 요청·배치 제출 흐름. `App`은 ref의 `submit` 계약만 사용 |
+| `components/spotlight/useSpotlightSubmit.ts` | Spotlight 입력 정규화·생성 요청·배치 제출 흐름. `App`은 ref의 `submit` 계약만 사용 |
 | `useSceneHistory.ts` | 씬별 커밋 기준선·undo/redo·생성 결과 이력 보정. 화면 상태는 `SceneBoard`가 유지 |
 | `useSceneKeyboardShortcuts.ts` / `sceneKeyboard.ts` | 캔버스 단축키 리스너 생명주기 / 입력 대상·키 의도 순수 판정 |
 | `useSceneDragSession.ts` / `sceneDragSession.ts` | 전역 드래그 리스너·프레임 합치기 / React 비의존 드래그 세션 생명주기 |
@@ -249,9 +256,9 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 
 - **라이브러리**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·대기/생성 중 로고·상태 툴팁·썸네일)·`MediaThumbnail`·`FilterSidebar`·`LibraryToolbar`·`SearchBox`·`TopBar`.
 - **생성**: `SpotlightPrompt`(@/# 피커)·`FloatingPrompt`.
-- **캔버스 탭**(씬 캔버스 · 히스토리 보기): `SceneBoard`는 카드 상태·선택·노드별 포인터 판정·렌더 조립을 소유한다. 저장/undo, Comfy 실행, 단축키, 드래그 세션, 팬·줌은 전용 훅에 위임한다. 계보 뷰는 `HistoryBoard`·`HistoryPanel`·`HistoryMiniTree`·`CompareModal`이 담당한다.
+- **캔버스 탭**(씬 캔버스 · 히스토리 보기): `SceneBoard`는 카드 상태·선택·노드별 포인터 판정·렌더 조립을 소유한다. 저장/undo, Comfy 실행, 단축키, 드래그 세션, 팬·줌은 전용 훅에 위임한다. 계보 뷰는 `HistoryBoard`·`CompareModal`이 담당한다.
 - **코멘트**: `GenCommentPanel`(생성본 스레드·NEW 알림).
-- **계정/관리**: `LoginScreen`·`AccountMenu`(워크스페이스 전환·크레딧 게이지 — 분모는 프로젝트 예산 합)·`ManageAccount`·`AdminWindow`(승인·등급·프로젝트)·`SettingsPanel`(강조색·언어·모션·다운로드 위치·과거 가져오기·내 메타데이터·동기화 점검·DaVinci Resolve·프로그램 업데이트·생성물 재점검·단축키·ComfyUI 연결 — `settings/SettingsSections.tsx`).
+- **계정/관리**: `LoginScreen`·`AccountMenu`(워크스페이스 전환·크레딧 게이지 — 분모는 프로젝트 예산 합)·`ManageAccount`·`AdminWindow`(승인·전역 역할·공유 서버 — 프로젝트 CRUD 는 `manage/ProjectManagerPanel`)·`SettingsPanel`(강조색·언어·모션·다운로드 위치·과거 가져오기·내 메타데이터·동기화 점검·DaVinci Resolve·프로그램 업데이트·생성물 재점검·단축키·ComfyUI 연결 — `settings/SettingsSections.tsx`).
 - **Assets 분리창**: `AssetsWindow`·`AssetsView` + `assets/`(`AssetCell`·`FolderTree`·`MountManager`·`treeUtils`·`exportDrag`·`useAssetBroadcastSync`). 메인 창 없이도 WS를 직접 구독한다.
 - **PM 분리창**: `ManageWindow` + `manage/`(`DashboardView`·`WorkBoard`·`ExportView`). 전용 실시간 신호를 활성 탭의 한 번짜리 재조회로 합친다.
 - **보조**: `InfoPopup`·`MediaPreview`·`ProjectAssignMenu`·`ShortcutsWindow`.
@@ -260,7 +267,9 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 
 ## 6. 데이터 모델
 
-PK 는 전부 TEXT(uuid). 목록 정렬은 항상 `sort_ts DESC, id DESC`(키셋 페이지네이션).
+`generation.id` 등 주요 엔티티 식별자는 TEXT UUID 다. 다만 **모든 PK 가 UUID 는 아니다** —
+`account.email`·`app_setting.key` 처럼 자연키를 쓰거나 `(generation_id, tag_id)` 같은 복합키인
+테이블도 있다. 목록 정렬은 항상 `sort_ts DESC, id DESC`(키셋 페이지네이션).
 
 | 테이블 | 역할 | 핵심 컬럼 |
 |---|---|---|
@@ -269,7 +278,7 @@ PK 는 전부 TEXT(uuid). 목록 정렬은 항상 `sort_ts DESC, id DESC`(키셋
 | **`media_preservation`** | 공유·최종 원본 보존 영속 큐 | generation_id, reason(shared/final/manual/admin), status, attempts, cached/failed/skipped_count, bytes_cached, 안전한 error_code, next_retry_at |
 | `reference`+`gen_reference` | 생성에 쓴 레퍼런스(N:N) | role(@Image1/@Video/@start…), source, file_path, source_url |
 | `tag`+`gen_tag` / `auto_tag`+`gen_auto_tag` | 일반 태그 / 자동태그(별도 네임스페이스·owner 스코프·'무장' 시 새 생성 자동적용) | name |
-| **`lineage`** | 계보(타입드 엣지) | parent_gen_id → child_gen_id, **relation**: `derived`(재생성/가져오기, 강한 1부모) · `reference`(@소스 생성, 약한 다부모). UNIQUE(parent,child,relation) |
+| **`history`** | 계보(타입드 엣지, 모듈은 `repo/lineage.py`) | parent_gen_id → child_gen_id, **relation**: `derived`(재생성/가져오기, 강한 1부모) · `reference`(@소스 생성, 약한 다부모). UNIQUE(parent,child,relation) |
 | `share` | 팀 공유 발행 | generation_id, shared_by, visibility |
 | `generation_comment`(+`_read`,+`_seen`) | 공유 코멘트 스레드 + 읽음/확인 | gen_id, author, text, parent_id |
 | `project`+`project_member` | 작업 묶음(공유·이동 단위) | name, kind, archived / project_id, creator_uid, project_role |
@@ -282,8 +291,9 @@ PK 는 전부 TEXT(uuid). 목록 정렬은 항상 `sort_ts DESC, id DESC`(키셋
 | `asset_meta`+`asset_comment`(+`_read`) | Assets 분리창 파일별 메타/코멘트 | (project, path) 키, owner_uid 개인화 |
 | `trashed`(별도 DB) | 휴지통 | id, trashed_at, payload(본체+자식 전부) |
 
-> ⚠️ **마이그레이션 순서 함정**: `schema.sql` 의 executescript 가 `db.py _migrate` 의 ALTER 보다
-> **먼저** 실행된다 → 새로 ALTER 되는 컬럼(예 `lineage.relation`)에 거는 인덱스는 `_migrate` 에만 둔다.
+> ⚠️ **마이그레이션 순서 함정**: `schema.sql` 의 executescript 가 `_migrate` 의 ALTER 보다
+> **먼저** 실행된다 → 새로 ALTER 되는 컬럼(예 `history.relation`)에 거는 인덱스는 `_migrate`
+> (`backend/app/db_migrations.py`, `db.py` 가 호출)에만 둔다.
 > 새 테이블(IF NOT EXISTS)은 schema.sql 에 둬도 멱등이라 안전.
 
 ---
@@ -394,12 +404,15 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
   서버는 `X-MVHub-Auth-State`로 판정을 브라우저에 전달한다. 세부 계약은
   [AUTH_FAILURE_SEMANTICS.md](AUTH_FAILURE_SEMANTICS.md)를 따른다.
 - **멀티계정 신원**: `account`(로그인) 과 `creator`(작성자)는 별개 축, `account.creator_uid` 로 연결. 첫 가입자=부트스트랩 관리자, 이후 pending→승인.
-- **RBAC**: 전역 역할(admin/product_manager/product_director/production_director/member, CSV 복수) + 프로젝트 역할(project_manager/supervisor/editor). `CONTENT_HUB_AUTH=1` 일 때만 게이트.
+- **RBAC**: 전역 역할(admin/product_manager/production_director/member, CSV 복수) + 프로젝트 역할(project_manager/supervisor/creator). `CONTENT_HUB_AUTH=1` 일 때만 게이트.
 - **개인화 vs 공유**: 컬러·태그·소스명·파일메타는 계정별 개인 소유(owner_uid). 코멘트 스레드·공유여부·프롬프트·소스는 공유.
-- **공유·최종 상태 일관성**: `is_final`이면 반드시 공유 상태다. 프록시 변경은 원격 성공을 확인한
-  뒤 로컬에 반영하고, 로컬 반영 실패 시 재조회·원격 보상으로 이전의 일관된 상태를 복구한다.
+- **공유·최종 상태 일관성**: `is_final`이면 반드시 공유 상태다. 프록시 변경은 서버 호출 **전에**
+  영속 원장(write-ahead)에 기록하고, 서버 성공 뒤 로컬 반영에 실패하면 `mirror_pending` 으로
+  응답한 다음 reconciler 가 서버의 현재 권위 상태를 관측해 로컬 미러를 **앞으로 수렴**시킨다.
+  일반 로컬 미러 실패 때문에 원격 성공을 되돌리지 않는다(converge-forward).
   구버전 라우트 부재를 상태 부재로 추측하지 않는다. 자세한 규칙은
-  [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md)를 따른다.
+  [SHARE_STATE_RECONCILIATION_DESIGN.md](SHARE_STATE_RECONCILIATION_DESIGN.md)를 따른다
+  (옛 1회성 보상 계약은 [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md) 에 과거 기록으로 보존).
 - **표시이름 단일 해석**: `resolve_display_names`(creator.name → account.name → email) 읽기 시점에만.
 - **실시간**: 성공한 쓰기는 `library`→`synced`, `assets`→`assets_changed`, `manage`→`manage_changed`로 분리한다. 요청 id·영역 응답 헤더로 자기 알림 재조회를 생략하며 독립 Assets/PM 창은 자체 WS를 가진다.
 - **Assets 감시 수명주기**: 수동 마운트는 owner+프로젝트 이름, 자동 프로젝트는 project ID, 합본은
@@ -433,7 +446,7 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
    `source_url`이 있으면 응답에서 원격 URL을 우선한다. 특수 설치에서만
    `CONTENT_HUB_MEDIA_PRESERVATION=1`로 기존 영구 보존 워커를 opt-in 할 수 있다.
    기존에 받은 파일은 이 변경이 임의 삭제하지 않는다.
-5. **단일 오리진 / 키셋 / FTS5 / 휴지통 별도 DB(WAL) / 미디어 샤딩**. DB 는 SQLite 단일(§4.6).
+5. **단일 오리진 / 키셋 / FTS5 / 휴지통 별도 DB(WAL) / 미디어 샤딩**. DB 는 SQLite 단일(§6 데이터 모델).
 6. **마이그레이션 순서 함정**(§6) — 새 ALTER 컬럼 인덱스는 `_migrate` 에만.
 7. **출처 영속화**(provenance) — `source_url` 보존으로 재사용·변형 가능(최우선 가치).
 8. **자동 태그 격리** — 일반 태그와 완전 분리 네임스페이스.
@@ -456,10 +469,10 @@ MV-hub-S/
 │  ├─ schema.sql             DDL(SQLite)
 │  └─ app/
 │     ├─ main.py db.py db_migrations.py models.py config.py deps.py rbac.py ws.py manage_db.py
-│     ├─ routers/   §4.2 의 22개 + 내부(_proxy·_telemetry·_assets_access)
+│     ├─ routers/   24개(`__init__.py` 제외, 내부 _proxy·_telemetry·_assets_access 포함)
 │     ├─ usecases/  gen_requests generation_media_cache generation_personal_meta hf_missing
-│     ├─ repo/      §4.4 의 30개 모듈(파사드 __init__)
-│     ├─ services/  §4.5 의 40개
+│     ├─ repo/      39개 모듈(파사드 __init__ 별도)
+│     ├─ services/  61개
 │     └─ resources/resolve/  MVHub_Importer.py 등 Resolve 배포 스크립트
 └─ frontend/
    ├─ dist/                  빌드 산출물(백엔드가 서빙)

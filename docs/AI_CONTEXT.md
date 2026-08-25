@@ -6,11 +6,11 @@
 > (저장소 안에 더 상세한 `DESIGN.md`, `PROJECT_CHARTER_LEGACY.md`, `README.md`, `SERVER.md`, `사용설명서.md`, `deploy/` 가 있다.
 >  현행 작업 규칙은 저장소 루트 `CLAUDE.md`·`AGENTS.md` 다.)
 >
-> **구조 본문 기준: 2026-07-07** — 푸시 모델(각자 로컬 CLI 생성 + 서버는 공유 DB)·멀티계정 로그인·
+> **최종 갱신: 2026-08-26** · **구조 본문 기준: 2026-07-07** — 푸시 모델(각자 로컬 CLI 생성 + 서버는 공유 DB)·멀티계정 로그인·
 > 로컬 실행 큐(gen-request)·크레딧 집계 반영. 이전 "서버가 직접 생성" 모델에서 전환됨.
 > ★Higgsfield CLI 는 `hf_cli_version.txt` 로 **버전 pin**(0.2.x→1.x 파괴적 변경 대응). CLI 출력
 > 필드를 읽는 코드는 `x.get(new) or x.get(old)` 폴백을 쓴다 — 절차·계약은 `docs/HF_CLI_UPGRADE.md`.
-> UI 상단 탭은 **내 작업 / 팀 작업 / 캔버스**(옛 '팀 공유'→'팀 작업', 옛 '구성/계보 트리'→'캔버스').
+> UI 상단 탭은 **작업 공간 / 공유 & 리뷰 / 캔버스**(`frontend/src/components/TopBar.tsx`).
 > **현재 완료·잔여·검증 상태는 [CURRENT_STATUS.md](CURRENT_STATUS.md)를 먼저 확인한다.** 이 본문은
 > 구조를 설명하며 최신 작업 상태의 단일 출처가 아니다.
 
@@ -39,12 +39,15 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
 
 - **생성·재생성 = 전원 각자 로컬 CLI**(자기 크레딧). 서버는 어떤 CLI에도 의존하지 않음 → 클라우드로 옮겨도 동작.
 - **결과물은 push 로 서버에 적재**. 일반 미디어는 힉스필드 CloudFront **공개 URL**을 참조해
-  push 시 메타데이터만 전송한다. 공유·최종 완료본은 영속 큐로 자동 byte-cache하며, 업데이트 전
-  기존 공유·최종본도 시작 시 백필한다. 기본 50GiB 한도에서는 기존 보존본을 삭제하지 않고 새
-  다운로드만 거절한다. 상태와 수동 재시도는 생성물 정보창에 표시된다.
+  push 시 메타데이터만 전송한다. **기본값은 URL-only 로, 공유·최종을 선택해도 원본 바이트를
+  자동 저장하지 않는다**(`CONTENT_HUB_MEDIA_PRESERVATION` 기본 `0`). 이 플래그를 `1` 로 명시한
+  설치본만 영속 큐로 byte-cache 하고 기존 공유·최종본을 시작 시 백필한다. 그 경우 기본 50GiB
+  한도에서 기존 보존본을 삭제하지 않고 새 다운로드만 거절하며, 상태와 수동 재시도는 생성물
+  정보창에 표시된다.
 - **토큰은 로컬 보관**: 서버는 힉스필드 자격증명을 절대 저장하지 않는다(사용자 보안 요구).
 - **허브의 생성/재생성 버튼은 "서버에 요청만" 남긴다** → 그 사람 PC의 **에이전트**가 가져가 로컬 CLI로 실행 → 결과를 placeholder 카드에 채움(§5).
-- 과도기 편의: 서버가 jay PC에 떠 있어 jay 결과는 서버측 주기 동기화로도 들어올 수 있으나, 본질은 jay도 로컬→push. "하우스 계정/서버 생성" 개념은 폐기됨.
+- 과도기 편의: 서버측 주기 동기화는 `MV_server.bat` 에서 **기본 꺼짐**(`CONTENT_HUB_SERVER_SYNC=0`)이라
+  명시적으로 켜야만 동작한다. 본질은 전원이 로컬→push 다. "하우스 계정/서버 생성" 개념은 폐기됨.
 
 이 모델의 근거·검증은 메모리 `project_content_hub_push_model` 에 상세 기록.
 
@@ -57,7 +60,9 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
 - **단일 오리진**: 프론트는 상대경로(`/api`·`/ws`·`/media`)만 → 폴더째 올려도 무변경, CORS 불필요.
 - **실행**: `MV_server.bat`(기존 프론트 빌드 확인 → 백엔드 기동, dist가 없을 때만 `npm ci`+빌드). 기본 **포트 8010**, **로그인 강제 ON**(`CONTENT_HUB_AUTH=1`, bat 기본값). `serve.py` 가 IPv4 0.0.0.0 + IPv6 ::1 듀얼스택(Windows localhost IPv6 폴백 ~200ms 지연 제거).
 - ⚠️ **`--reload` 금지**: CLI subprocess 가 깨진다. 백엔드 변경은 **서버 재시작**으로 반영. 프론트 변경은 `npm run build` 후 브라우저 **Ctrl+F5**(dist 는 즉시 서빙되어 재시작 불필요).
-- 미디어: `backend/data/media/<sha[:2]>/<sha>.ext`(2단계 샤딩). DB: `backend/data/db/content_hub.db`. 휴지통: `content_hub_trash.db`(별도).
+- 미디어: `backend/data/media/<sha[:2]>/<sha>.ext`(2단계 샤딩). DB: 기본 `backend/data/db/content_hub.db`,
+  **로컬 허브에서 계정이 활성화되면 `backend/data/db/acct/<계정슬러그>/content_hub.db`**(계정별 분리).
+  휴지통: 같은 폴더의 `content_hub_trash.db`(별도).
 - 접속: 같은 PC `http://127.0.0.1:8010`(localhost보다 빠름), LAN 팀원 `http://<서버IP>:8010`.
 
 ---
@@ -83,9 +88,9 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
   - 시작·가입 시 `repo.link_accounts_to_creators()`: 소유자(provider_email)=힉스필드 `my_creator_uid`, 그 외=합성 `acct:<email>`.
   - push 첫 적재 때 `set_account_hf_creator` 가 합성 uid 를 **실제 힉스필드 uid**로 교체(그 계정의 자기 작업이 "내 작업"에 잡히게).
 - **가입 흐름**: 자동 등록(pending) → 관리자 승인(approved). **첫 계정 = 부트스트랩 관리자**(admin+product_manager, 즉시 approved).
-- **"내 작업" 분리**: `GET /api/generations?tab=my` 는 라우터가 `request.state.account.creator_uid` 를 주입 → 그 계정 생성물만. 비로그인(토큰 없음)이면 전체(단독/개발). `tab=team` 은 공유된 것.
-- **멤버 목록**: `list_members()` 는 **계정 우선**(생성물 0이어도 멤버·프로젝트 후보로 노출) + 계정 없는 외부 creator(가져온 작업 작성자)도 포함. → 관리자 창의 승인/등급/프로젝트 배정이 신규 계정을 바로 본다.
-- **RBAC**(`rbac.py`, `deps.py`): 전역 역할(admin/product_manager/product_director/production_director/member, CSV 복수) + 프로젝트 역할(project_manager/supervisor/editor). 게이트는 `CONTENT_HUB_AUTH=1` 일 때만 강제. `require_global_cap`/`require_project_role` 등.
+- **본인 작업 분리**(UI 탭 이름은 **작업 공간**): `GET /api/generations?tab=my` 는 라우터가 `request.state.account.creator_uid` 를 주입 → 그 계정 생성물만. 비로그인(토큰 없음)이면 전체(단독/개발). `tab=team` 은 공유된 것.
+- **멤버 목록**: `list_members()` 는 **계정 우선**(생성물 0이어도 멤버·프로젝트 후보로 노출) + 계정 없는 외부 creator(가져온 작업 작성자)도 포함. → 관리자 창의 승인·전역 역할 화면과 관리창 대시보드의 프로젝트 배정이 신규 계정을 바로 본다.
+- **RBAC**(`rbac.py`, `deps.py`): 전역 역할(admin/product_manager/production_director/member, CSV 복수) + 프로젝트 역할(project_manager/supervisor/creator). 게이트는 `CONTENT_HUB_AUTH=1` 일 때만 강제. `require_global_cap`/`require_project_role` 등.
 - 표시이름: 로그인 시 `account.name` 우선(전역 provider.name 아님) — [AccountMenu].
 
 ---
@@ -125,7 +130,9 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
   서버도 로그인 계정이 접근 가능한 등록부 ID인지 검증한 뒤 공식 이름으로 정규화한다. 시작 시에는
   등록부와 ID가 정확히 일치하는 이름 없는 과거 팀 생성물과 관리 팩트만 보강하고, 나머지는 추측하지 않는다.
 - 옛 서버측 직접 생성 경로(`POST /api/generations`, `/regenerate`, `services/jobs.py` 큐)는 **제거됨**(push 모델 전환 완료). 생성은 전원 로컬 CLI + `POST /api/gen-requests`.
-- ⚠️ 미완: `create` 의 **로컬파일/`asset:` 토큰 레퍼런스**는 타 PC 에이전트에서 resolve 불가(현재 URL·텍스트 레퍼런스만 OK).
+- `create` 의 **`asset:` 토큰 레퍼런스**는 에이전트가 허브 인증으로 `/api/assets/file` 에서 받아
+  임시파일로 CLI 에 넘긴다(구현됨 — `agent_push.py` `_resolve_ref`). ⚠️ 미완은 **베어 로컬 파일 경로**로,
+  이건 여전히 어느 에이전트에서도 resolve 하지 못한다(URL·`asset:`·`/상대경로`·텍스트만 OK).
 
 ---
 
@@ -159,7 +166,9 @@ python agent_push.py --server http://<서버IP>:8010 --email <내이메일>
 
 ## 8. 데이터 모델 (핵심)
 
-SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전부 TEXT(uuid). 정렬은 항상 `sort_ts DESC, id DESC`(키셋).
+SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). 주요 엔티티 식별자는 TEXT UUID 지만
+**모든 PK 가 UUID 는 아니다**(`account.email`·`app_setting.key` 자연키, 복합키 다수).
+정렬은 항상 `sort_ts DESC, id DESC`(키셋).
 
 | 테이블 | 역할 | 주요 컬럼 |
 |---|---|---|
@@ -168,7 +177,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 | `media_preservation` | 공유·최종 원본 보존 영속 큐 | generation_id, reason, status, attempts, cached/failed/skipped_count, bytes_cached, 안전한 error_code, next_retry_at |
 | `reference`+`gen_reference` | 생성에 쓴 레퍼런스(N:N) | role(@Image1/@Video/@start…), source, file_path, source_url |
 | `tag`+`gen_tag` / `auto_tag`+`gen_auto_tag` | 일반 태그 / 자동태그(별도 네임스페이스·사이드바 전용·'무장'시 새 생성 자동적용) | name |
-| **`lineage`** | 계보(타입드 엣지) | parent_gen_id → child_gen_id, **relation**('derived'=재생성/가져오기 강한 1부모, 'reference'=@소스 생성 약한 다부모), UNIQUE(parent,child,relation) |
+| **`history`** | 계보(타입드 엣지, 모듈은 `repo/lineage.py`) | parent_gen_id → child_gen_id, **relation**('derived'=재생성/가져오기 강한 1부모, 'reference'=@소스 생성 약한 다부모), UNIQUE(parent,child,relation) |
 | `share` | 팀 공유 발행 | generation_id, shared_by, visibility |
 | `generation_comment`+`_seen` | 공유 코멘트 스레드+코멘트 단위 확인 | gen_id, author, text, parent_id, muted |
 | `project`+`project_member` | 작업 묶음(공유·이동 단위) | name, kind, archived(콜드분리) / project_id, creator_uid, project_role |
@@ -179,7 +188,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 | `asset_meta`+`asset_comment(_read)` | Assets 분리창 파일별 메타/코멘트 | (project, path) 키 |
 | `trashed`(별도 DB) | 휴지통 | id, trashed_at, payload(JSON: 본체+자식 전부) |
 
-⚠️ **마이그레이션 함정**: schema.sql 의 executescript 가 `db.py _migrate` 의 ALTER 보다 **먼저** 실행됨 → 새로 ALTER 되는 컬럼(예: `lineage.relation`)에 거는 인덱스는 schema.sql 이 아니라 `_migrate` 에만 둔다(기존 DB ALTER 순서 보장). 단, **새 테이블**(IF NOT EXISTS)은 schema.sql 에 둬도 안전(기존 DB도 init_db 가 멱등 적용).
+⚠️ **마이그레이션 함정**: schema.sql 의 executescript 가 `_migrate`(`backend/app/db_migrations.py`, `db.py` 가 호출) 의 ALTER 보다 **먼저** 실행됨 → 새로 ALTER 되는 컬럼(예: `history.relation`)에 거는 인덱스는 schema.sql 이 아니라 `_migrate` 에만 둔다(기존 DB ALTER 순서 보장). 단, **새 테이블**(IF NOT EXISTS)은 schema.sql 에 둬도 안전(기존 DB도 init_db 가 멱등 적용).
 
 ---
 
@@ -190,14 +199,19 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 - ✅ **검색**: prompt+태그 부분일치. SQLite FTS5(trigram, 3자↑), 3자 미만 LIKE 폴백.
 - ✅ **벌크**: 마퀴 드래그·Shift/Ctrl·Ctrl+A·날짜그룹 선택 + 일괄 삭제/복원/영구삭제/공유/프로젝트 귀속.
 - ✅ **휴지통**: 삭제 즉시 별도 DB로 원자 이동(메인 항상 가벼움) → 검색·복원·영구삭제.
-- ✅ **팀 공유**: 발행/가져오기/번들 export·import(JSON)/공유 폴더. 멀티계정 신원·승인·등급.
-  공유 해제·최종 해제는 원격 확인 뒤 로컬 반영하며, 실패 시 재조회·보상한다. `is_final → shared`
-  불변식과 혼합 버전 `404` 판정은 [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md)를 따른다.
+- ✅ **팀 공유**: 발행/가져오기 + **공유 & 리뷰 탭**(공유 여부는 툴바 S 필터). 멀티계정 신원·승인·역할.
+  (JSON 번들 export·import 는 서버 모드에서 **제거**됐다 — 단일 DB 를 모두가 공유하므로 불필요.
+  사용자가 호출할 수 있는 번들 내보내기·가져오기 HTTP API 는 **없고**, 직렬화·병합은 공유 발행
+  흐름 내부(`POST /api/share/publish-bundle`)와 repo 계층에만 남아 있다.)
+  공유 해제·최종 해제는 서버 호출 전에 영속 원장을 기록하고, 로컬 반영에 실패하면 reconciler 가
+  서버의 현재 상태를 관측해 **앞으로 수렴**시킨다(원격 성공을 되돌리지 않는다). `is_final → shared`
+  불변식과 혼합 버전 `404` 판정은
+  [SHARE_STATE_RECONCILIATION_DESIGN.md](SHARE_STATE_RECONCILIATION_DESIGN.md)를 따른다.
 - ✅ **프로젝트**: 작업 묶음 + 보관(archived 콜드분리).
-- ✅ **계보(리니지)**: 재생성·@소스 참조 시 타입드 엣지 기록 + 가시화. **캔버스 탭 · 히스토리 보기** = 원본→파생 가로 트리(`HistoryBoard`): 마퀴 선택·비교·정보·다운로드·재생성·드래그 이동·무한 캔버스(휠 줌·미들클릭 팬)·d 비활성화·l 자동정렬·골드(최종) 강조. 같은 탭의 **씬 캔버스**(`SceneBoard`)는 자유 배치·연결·태그(localStorage).
+- ✅ **계보(리니지)**: 재생성·@소스 참조 시 타입드 엣지 기록 + 가시화. **캔버스 탭 · 히스토리 보기** = 원본→파생 가로 트리(`HistoryBoard`): 마퀴 선택·비교·정보·다운로드·재생성·드래그 이동·무한 캔버스(휠 줌·미들클릭 팬)·`d` 비활성화·`a` 자동정렬·골드(최종) 강조. 같은 탭의 **씬 캔버스**(`SceneBoard`)는 자유 배치·연결·태그(localStorage).
 - ✅ **소스 라이브러리**: is_source/source_name + @·# 프롬프트 피커로 재사용.
 - ✅ **Assets 분리창**: 임의 폴더 마운트·파일 브라우저·파일별 메타/코멘트(`/?embed=assets`). 원본 HTTP 응답은 지원 이미지·영상·오디오만 허용하며 고정 MIME·inline·nosniff·CSP sandbox·동일 출처 정책을 사용한다. HTML/SVG/스크립트와 이중 확장자는 415로 차단한다.
-- ✅ **크레딧 집계**(§7), **다국어**(ko/en, i18n 반응형), **테마**(강조색·모션 끄기), **관리자 창**(승인·등급·프로젝트).
+- ✅ **크레딧 집계**(§7), **다국어**(ko/en, i18n 반응형), **테마**(강조색·모션 끄기), **관리자 창**(승인·전역 역할·공유 서버) · **관리창 대시보드**(프로젝트 관리).
 - ✅ **씬 서버 백업**: 씬 원본은 localStorage, 계정별 로컬 SQLite 로 자동 미러(`/api/scenes/backup`).
 - ✅ **ComfyUI 연동**: 캔버스 comfy 카드 — 워크플로 파싱·파라미터 노출·미디어 자동주입·비동기 실행(`routers/comfy.py`).
 - ✅ **DaVinci Resolve 연동**: 렌더폴더 전송 + Media Pool 가져오기 + 수동 Importer(`routers/resolve_integration.py`).
@@ -210,13 +224,15 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 
 ## 10. 백엔드 모듈 지도 (`backend/app/`)
 
-> ⚠️ 아래는 핵심 요약이다. **전체 지도(라우터 22개·usecases 4개·repo 30모듈·services 40개)는
-> [ARCHITECTURE.md](ARCHITECTURE.md) §4** 가 정답 — 여기 없는 모듈(comfy·resolve·manage·
-> release_update·scenes·db_transfer 등)은 그쪽을 봐라.
+> ⚠️ 아래는 핵심 요약이다. `__init__.py` 를 뺀 실측 개수는
+> **라우터 24개·usecases 4개·repo 39모듈·services 61개**다.
+> 더 자세한 역할 지도는 [ARCHITECTURE.md](ARCHITECTURE.md) §4 를 본다 — 다만 §4 도 모든 파일을
+> 한 줄씩 나열하는 목록이 아니라 **주요 책임 경계를 설명하는 지도**이므로, 정확한 파일 목록이
+> 필요하면 저장소를 직접 본다.
 
 - `main.py` — 앱·**미들웨어(auth_enforcement: 토큰→request.state.account / mutation_notify: 쓰기 후 영역별 WS 알림)**·lifespan(init_db·고아잡 정리·중복병합·레거시 이전·creator_uid 백필·**계정↔creator 연결**·제공자 신원 캡처·썸네일 사전생성·동기화/백업). `/media`·SPA 마운트. `mutation_notify.py`는 본 서버·데이터 프록시가 공유하는 library/assets/manage 판정과 안전한 요청 출처·응답 영역 헤더 계약이다.
 - `db.py`(SQLite 스키마·마이그레이션·인덱스·FTS5), `models.py`(Pydantic), `config.py`(경로·포트·AUTH), `deps.py`(인증/RBAC 의존성), `ws.py`(진행률 broadcast), `rbac.py`(역할·역량).
-- **routers/**: `library.py`(목록·검색·통계·facets·휴지통·**미디어 썸네일**·**tab=my 계정 스코프**), `generation.py`(옛 서버측 생성·태그/컬러/소스/코멘트·삭제·복원·힉스필드검증·리니지), **`gen_requests.py`(로컬 실행 큐: 생성요청·pending·fulfill·fail)**, **`ingest.py`(push 적재·known-jobs·`/credits`)**, `share.py`, `projects.py`, `auth.py`(로그인·가입·계정승인), `members.py`(등급), `assets.py`(분리창), `sync.py`.
+- **routers/**: `library.py`(목록·검색·통계·facets·휴지통·**미디어 썸네일**·**tab=my 계정 스코프**), `generation.py`(태그·컬러·소스·코멘트·삭제·복원·Higgsfield 검증·계보 조회 — **옛 서버측 생성 라우트는 제거됨**), **`gen_requests.py`(로컬 실행 큐: 생성요청·pending·fulfill·fail)**, **`ingest.py`(push 적재·known-jobs·`/credits`)**, `share.py`, `projects.py`, `auth.py`(로그인·가입·계정승인), `members.py`(등급), `assets.py`(분리창), `sync.py`.
 - **repo/**: `generations.py`(중심: list_generations 키셋·검색·업서트·재생성·**account_uid 스코프**·리니지 그래프), **`gen_requests.py`(gen_recipe·claim·fulfill mark)**, `identity.py`(생성자·신원·**link_accounts_to_creators·set_account_hf_creator·credit_summary·list_members**), `tags.py`, `projects.py`, `share.py`, `accounts.py`(가입·인증·승인), `assets.py`, `trash.py`.
 - **services/**: `syncer.py`(주기 동기화), `cli_bridge.py`(Higgsfield CLI 래퍼: parse_job·generate list·account status·workspace·**셰임/Proactor 함정**), `media_cache.py`(원격→로컬·샤딩), `thumbs.py`(썸네일), `backup.py`(SQLite 온라인 백업), `worker_backup.py`(작업자 content+trash 세트·영속 outbox·공유 서버 ACK), `auth.py`(pbkdf2 해시·무상태 hmac 토큰). (옛 `jobs.py` 서버측 잡 큐·서버측 create_job 은 push 모델 전환으로 제거됨.)
 
@@ -226,7 +242,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 
 - `App.tsx` — 최상위 상태·reload/loadMore(무한 스크롤)·벌크·필터 합성(genQuery)·인증 부트스트랩·WS 진행률·캔버스 탭 보드 신호·onCreated 리니지 연결.
 - `api.ts`(타입세이프 클라이언트: `create`/`regenerate` 는 이제 **`/api/gen-requests`** 호출, `credits`, 인증 Bearer), `types.ts`(응답 타입), `lib/`(`http.ts`(401 세션 만료 의미 판정)·`librarySync.ts`(자기 변경 요청↔library/assets/manage 갱신 상관관계)·`useManageRealtime.ts`(독립 PM 창 직접 WS)·`assetBroadcast.ts`(Assets 창 전달)·`i18n.ts`·`theme.ts`(강조색·모션·언어)·`prompt.tsx`·`promptEditor.ts`·`useModels.ts`).
-- **components/**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·대기/생성 중 로고·상태 툴팁·썸네일·드래그 재사용), `FilterSidebar`·`LibraryToolbar`·`SearchBox`, `SpotlightPrompt`(생성 입력·@/# 피커), **`HistoryBoard`(캔버스 탭 계보 트리)·`HistoryPanel`(가계 패널)·`HistoryMiniTree`**, **`SceneBoard`/`SceneBar`(씬 캔버스)**·`FloatingPrompt`, `AssetsView/AssetsWindow`(분리창), `GenCommentPanel`, `AdminWindow`(승인·등급·프로젝트), `AccountMenu`(아바타·워크스페이스 전환·크레딧 게이지)·`ManageAccount`·**`SettingsPanel`(12개 섹션 — `settings/SettingsSections.tsx`: 강조색·언어·모션·다운로드 위치·과거 가져오기·내 메타데이터·동기화 점검·Resolve·프로그램 업데이트·재점검·단축키·ComfyUI)**, `LoginScreen`, `TopBar`(Assets·PM 보드 버튼 포함), `ManageWindow`+`manage/`(PM 분리창), `InfoPopup`·`MediaPreview`·`CompareModal`·`ShortcutsWindow`·`ProjectAssignMenu`.
+- **components/**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·대기/생성 중 로고·상태 툴팁·썸네일·드래그 재사용), `FilterSidebar`·`LibraryToolbar`·`SearchBox`, `SpotlightPrompt`(생성 입력·@/# 피커), **`HistoryBoard`(캔버스 탭 계보 트리)**, **`SceneBoard`/`SceneBar`(씬 캔버스)**·`FloatingPrompt`, `AssetsView/AssetsWindow`(분리창), `GenCommentPanel`, `AdminWindow`(승인·전역 역할·공유 서버 — 프로젝트 CRUD 는 `manage/ProjectManagerPanel`), `AccountMenu`(아바타·워크스페이스 전환·크레딧 게이지)·`ManageAccount`·**`SettingsPanel`(`settings/SettingsSections.tsx` + 자체 섹션 — 강조색·언어·모션·다운로드 위치·단축키·내 메타데이터(동기화 점검 포함)·ComfyUI·Resolve·생성물 재점검(과거 전체 가져오기 포함)·프로그램 업데이트)**, `LoginScreen`, `TopBar`(Assets·PM 보드 버튼 포함), `ManageWindow`+`manage/`(PM 분리창), `InfoPopup`·`MediaPreview`·`CompareModal`·`ShortcutsWindow`·`ProjectAssignMenu`.
 
 ---
 
@@ -390,7 +406,8 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 - **byte-cache 과거 구현(RL-22), 현행 기본 비활성**: 영구 보존 큐·백필·재시도 코드는 특수
   설치 호환용으로 남아 있지만 일반 배포에서는 실행하지 않는다. 빠른 목록용 작은 썸네일
   사전 준비는 작업자 PC의 별도 bounded LRU 캐시로만 유지한다.
-- **create 로컬파일/asset: 레퍼런스**: 타 PC 에이전트 resolve 불가(현재 URL·텍스트만). 바이트 업로드 경로 필요.
+- **create 베어 로컬파일 경로 레퍼런스**: 어느 에이전트에서도 resolve 불가(바이트 업로드 경로 필요).
+  `asset:` 토큰은 허브 인증 다운로드로 해결됐다.
 - (선택) 워크스페이스/크레딧 실시간성, 콘텐츠 게시 승인 게이트.
 - 완료된 큰 것들: 옛 서버측 생성 제거 / ComfyUI·Resolve 연동 / PM 대시보드 / 릴리스 자동
   업데이트 / DB 복원 유지보수 게이트 / 이벤트 루프 비블로킹화(§9 인벤토리 참조).

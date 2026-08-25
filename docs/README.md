@@ -6,7 +6,7 @@ tags:
   - mvhub
   - mvhub/문서
 status: 현행 기준 — 문서 색인
-updated: 2026-08-24
+updated: 2026-08-26
 ---
 
 # MV Hub 개발 문서 안내
@@ -40,7 +40,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 신원·권한·실행 모드 | [신원과_모드_가이드.md](신원과_모드_가이드.md) |
 | 401 인증 실패·로그인 보존 계약 | [AUTH_FAILURE_SEMANTICS.md](AUTH_FAILURE_SEMANTICS.md) |
 | 생성·계정 보고 백그라운드 전송·재시도·마지막 성공 관측 계약 | [TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md) |
-| 공유·최종 상태 계약 | [SHARE_STATE_RECONCILIATION_DESIGN.md](SHARE_STATE_RECONCILIATION_DESIGN.md)(상위·원장 수렴), [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md)(RL-11 보상) |
+| 공유·최종 상태 계약 | [SHARE_STATE_RECONCILIATION_DESIGN.md](SHARE_STATE_RECONCILIATION_DESIGN.md)(현행·원장 수렴). [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md) 는 RL-11 보상 계약으로 **대체됨** |
 | Resolve 전송 큐 계약 | [DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) |
 | 공유 서버 주소 이사 | [SERVER_RELOCATION.md](SERVER_RELOCATION.md) |
 | 업데이트 등록·고정·알림 공지 | [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md) |
@@ -74,7 +74,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | **현행 기준** | `ARCHITECTURE`, `AI_CONTEXT`, `DATA_OWNERSHIP`, `WORKSPACE_DATA_CONTRACT`, `신원과_모드_가이드` | 구현 전에 반드시 확인한다. |
 | **현재 현황 요약** | `CURRENT_STATUS` | 완료·잔여·검증 상태를 빠르게 확인한다. |
 | **현재 작업 목록** | `RISK_REDUCTION_PLAN_2026-08-15` | 위험 상태를 변경하는 단일 출처다. |
-| **현재 세부 계약** | `GENERATION_SUBMISSION_RECOVERY`, `CANVAS_GENERATION_IDEMPOTENCY`, `CLI_ESTIMATE_LIFECYCLE`, `AUTH_FAILURE_SEMANTICS`, `TELEMETRY_DRAIN_LIFECYCLE`, `SHARE_STATE_COMPENSATION`, `WORKER_OFFDISK_BACKUP_CONTRACT` | 기능별 상태 전이·복구·검증 기준이다. 완료 여부는 위험 계획의 Gate 0 표를 따른다. |
+| **현재 세부 계약** | `SHARE_STATE_RECONCILIATION_DESIGN`, `GENERATION_SUBMISSION_RECOVERY`, `CANVAS_GENERATION_IDEMPOTENCY`, `CLI_ESTIMATE_LIFECYCLE`, `AUTH_FAILURE_SEMANTICS`, `TELEMETRY_DRAIN_LIFECYCLE`, `WORKER_OFFDISK_BACKUP_CONTRACT` | 기능별 상태 전이·복구·검증 기준이다. 완료 여부는 위험 계획의 Gate 0 표를 따른다. |
 | **운영 기준** | `SERVER`, `SERVER_RECOVERY`, `TESTING`, `HF_CLI_UPGRADE` | 설치·업데이트·복구·검증 때 사용한다. |
 | **기능별 설계** | `PM_DASHBOARD_DESIGN`, `관리대시보드_통합계획`, `CANVAS_MERGE_OPTIMIZATION_PLAN`, `DESIGN_id_unification`, `ROADMAP_SCALE` | 일부 구현·일부 계획이 섞여 있으므로 현행 코드와 대조한다. |
 | **검증 기록** | `LOAD_TEST_2026-08-14`, `PREDEPLOY_100_USERS` | 해당 시점의 결과다. 새 배포를 자동 보증하지 않는다. |
@@ -94,18 +94,19 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | **현황·작업 기준** | [CURRENT_STATUS](CURRENT_STATUS.md), [RISK_REDUCTION_PLAN_2026-08-15](RISK_REDUCTION_PLAN_2026-08-15.md) |
 | **날짜별 기록(`status/`)** | [최근작업](status/최근작업_2026-08-24.md), [RL 완료목록](status/RL_완료목록.md), [검증기록](status/검증기록.md), [구현완료](status/구현완료_RL-02_RL-23.md), [사전배포검증](status/사전배포검증_2026-08-19.md), [안정화](status/안정화_2026-08-18.md) |
 | **현행 구조·계약 — 공통** | [ARCHITECTURE](ARCHITECTURE.md), [AI_CONTEXT](AI_CONTEXT.md), [DATA_OWNERSHIP](DATA_OWNERSHIP.md), [WORKSPACE_DATA_CONTRACT](WORKSPACE_DATA_CONTRACT.md), [신원과 모드 가이드](신원과_모드_가이드.md) |
-| **현행 구조·계약 — 기능별** | [AUTH_FAILURE_SEMANTICS](AUTH_FAILURE_SEMANTICS.md), [CANVAS_GENERATION_IDEMPOTENCY](CANVAS_GENERATION_IDEMPOTENCY.md), [CLI_ESTIMATE_LIFECYCLE](CLI_ESTIMATE_LIFECYCLE.md), [GENERATION_SUBMISSION_RECOVERY](GENERATION_SUBMISSION_RECOVERY.md), [TELEMETRY_DRAIN_LIFECYCLE](TELEMETRY_DRAIN_LIFECYCLE.md), [SHARE_STATE_RECONCILIATION_DESIGN](SHARE_STATE_RECONCILIATION_DESIGN.md), [SHARE_STATE_COMPENSATION](SHARE_STATE_COMPENSATION.md), [WORKER_OFFDISK_BACKUP_CONTRACT](WORKER_OFFDISK_BACKUP_CONTRACT.md), [DESIGN_RESOLVE_QUEUE_V3](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md), [UPDATE_ANNOUNCEMENTS](UPDATE_ANNOUNCEMENTS.md) |
+| **현행 구조·계약 — 기능별** | [AUTH_FAILURE_SEMANTICS](AUTH_FAILURE_SEMANTICS.md), [CANVAS_GENERATION_IDEMPOTENCY](CANVAS_GENERATION_IDEMPOTENCY.md), [CLI_ESTIMATE_LIFECYCLE](CLI_ESTIMATE_LIFECYCLE.md), [GENERATION_SUBMISSION_RECOVERY](GENERATION_SUBMISSION_RECOVERY.md), [TELEMETRY_DRAIN_LIFECYCLE](TELEMETRY_DRAIN_LIFECYCLE.md), [SHARE_STATE_RECONCILIATION_DESIGN](SHARE_STATE_RECONCILIATION_DESIGN.md), [WORKER_OFFDISK_BACKUP_CONTRACT](WORKER_OFFDISK_BACKUP_CONTRACT.md), [DESIGN_RESOLVE_QUEUE_V3](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md), [UPDATE_ANNOUNCEMENTS](UPDATE_ANNOUNCEMENTS.md) |
 | **운영·검증 절차** | [SERVER](SERVER.md), [SERVER_RECOVERY](SERVER_RECOVERY.md), [SERVER_RELOCATION](SERVER_RELOCATION.md), [TESTING](TESTING.md), [HF_CLI_UPGRADE](HF_CLI_UPGRADE.md) |
 | **사용자 안내** | [사용설명서](사용설명서.md), [기능설명서](기능설명서.md) |
 | **일부 구현·후속 설계** | [DESIGN_id_unification](DESIGN_id_unification.md), [PM_DASHBOARD_DESIGN](PM_DASHBOARD_DESIGN.md), [관리대시보드 통합계획](관리대시보드_통합계획.md), [ROADMAP_SCALE](ROADMAP_SCALE.md), [COMFY_ENHANCE_PLAN](COMFY_ENHANCE_PLAN_2026-08-21.md) |
 | **완료 작업의 개발 이력** | [CANVAS_MERGE_OPTIMIZATION_PLAN](CANVAS_MERGE_OPTIMIZATION_PLAN.md), [BACKLOG_PLAN](BACKLOG_PLAN_2026-08-20.md), [P2_CLOSEOUT_PLAN](P2_CLOSEOUT_PLAN_2026-08-20.md), [RL02_TASK_WORKSPACE_SNAPSHOT_PLAN](RL02_TASK_WORKSPACE_SNAPSHOT_PLAN.md) |
 | **완료 작업의 개발 이력 — OPT_PLAN 시리즈(12개)** | [1](OPT_PLAN_2026-08-21.md), [2](OPT_PLAN2_2026-08-21.md), [3](OPT_PLAN3_2026-08-22.md), [4](OPT_PLAN4_2026-08-22.md), [5](OPT_PLAN5_2026-08-22.md), [6](OPT_PLAN6_2026-08-22.md), [7](OPT_PLAN7_2026-08-22.md), [8](OPT_PLAN8_2026-08-22.md), [9](OPT_PLAN9_2026-08-22.md), [10](OPT_PLAN10_2026-08-23.md), [11](OPT_PLAN11_2026-08-23.md), [12](OPT_PLAN12_2026-08-23.md) |
 | **시점 고정 검증 기록** | [LOAD_TEST_2026-08-14](LOAD_TEST_2026-08-14.md), [PREDEPLOY_100_USERS](PREDEPLOY_100_USERS.md) |
-| **과거 기준·감사 보존** | [AUDIT_2026-08-15](AUDIT_2026-08-15.md), [DESIGN](DESIGN.md), [PROJECT_CHARTER_LEGACY](PROJECT_CHARTER_LEGACY.md), [REVIEW_2026-08-17](REVIEW_2026-08-17.md), [P2_CLOSEOUT_REVIEW](P2_CLOSEOUT_REVIEW_2026-08-20.md) |
+| **과거 기준·감사 보존** | [SHARE_STATE_COMPENSATION](SHARE_STATE_COMPENSATION.md)(RL-11 보상 — 대체됨), [AUDIT_2026-08-15](AUDIT_2026-08-15.md), [DESIGN](DESIGN.md), [PROJECT_CHARTER_LEGACY](PROJECT_CHARTER_LEGACY.md), [REVIEW_2026-08-17](REVIEW_2026-08-17.md), [P2_CLOSEOUT_REVIEW](P2_CLOSEOUT_REVIEW_2026-08-20.md) |
 | **외부 설명 자료** | [투자자 소개서](투자자_소개서.md) |
 
 - 공유 상태는 `SHARE_STATE_RECONCILIATION_DESIGN`(서버 권위 원장·수렴, 2026-08-20 구현)이 상위
-  계약이고, `SHARE_STATE_COMPENSATION`은 RL-11 시점의 즉시 보상 계약이다. 충돌하면 전자를 따른다.
+  **현행 계약**이고, `SHARE_STATE_COMPENSATION`은 RL-11 시점의 즉시 보상 계약으로 **대체됐다**
+  (로컬 실패 시 원격을 되돌리던 규칙 — 지금은 되돌리지 않는다). 과거 근거로만 읽는다.
 - `PROJECT_CHARTER_LEGACY`(옛 `CLAUDE.md`, 2026-08-24 이름 변경)는 content-hub 시절 헌장이다.
   **현행 프로젝트 규칙은 저장소 루트 `CLAUDE.md`·`AGENTS.md`** 이며, 그 문서는 과거 기록일 뿐이다.
 - `소개서.pdf`, `툴_소개서.pdf`도 외부 설명 자료 스냅샷으로 분류한다.
@@ -148,7 +149,7 @@ Markdown 을 추가·이름 변경·삭제하거나 위상이 바뀌면 **같은
 | 1 | `schema.sql` + `db.py` — SQLite WAL 초기화 | ✅ |
 | 2 | FastAPI 골격 + 라이브러리 조회 라우터(필터·검색·패싯) | ✅ |
 | 3 | `cli_bridge.py`(검증된 CLI 매핑) + 잡 큐 + WebSocket 진행률 | ✅ |
-| 4 | React UI — 썸네일 그리드(가상 스크롤)/필터/생성 모달/팀 작업 탭 | ✅ |
+| 4 | React UI — 썸네일 그리드(가상 스크롤)/필터/생성 모달/공유 & 리뷰 탭 | ✅ |
 | 5 | publish/import + lineage — **로컬 SQLite 구현** | ✅ (원격 서버 보류) |
 
 > **과거 Phase 5 스코프 컷**: 당시에는 원격 공유 서버를 보류하고 로컬 단일 DB만 구현했다.
@@ -161,9 +162,15 @@ Markdown 을 추가·이름 변경·삭제하거나 위상이 바뀌면 **같은
 ```powershell
 cd backend
 pip install -r requirements.txt
-python -m app.db init          # DB 초기화 (WAL) — 최초 1회, 멱등
 uvicorn app.main:app          # http://127.0.0.1:8000
 ```
+
+> [!CAUTION]
+> **`python -m app.db init` 을 손으로 실행하지 않는다.** DB 스키마·마이그레이션은 서버가 기동할 때
+> `init_db()` 로 자동 적용된다(`backend/app/main.py`). 이 명령을 직접 돌리면 **실제 사용자 DB** 에
+> 마이그레이션을 적용한다 — 대상은 `CONTENT_HUB_DB` → 활성 로컬 계정 DB → 기본 DB 순으로 정해진다
+> (`backend/app/db_paths.py`). 로그인이 켜진 공유 서버는 활성 계정을 쓰지 않고 기본 DB 를 연다. 스키마를 따로 시험해야 하면 임시 `CONTENT_HUB_DATA`/`CONTENT_HUB_DB`
+> 를 지정한 격리 환경에서만 한다.
 
 > ⚠️ **Windows 에서 `--reload` 를 붙이지 마세요.** uvicorn 리로더가 SelectorEventLoop 을
 > 강제해 `higgsfield` CLI 호출(asyncio subprocess)이 `NotImplementedError` 로 깨집니다.
@@ -178,10 +185,11 @@ npm run dev                    # http://localhost:5173
 > 백엔드 포트를 바꿨다면 `$env:BACKEND='http://127.0.0.1:<port>'; npm run dev` 로 프록시 재지정.
 
 ### 3) 사용
-1. 우측 상단 **↺ 동기화** — `higgsfield generate list` 의 실제 생성 이력을 로컬 DB 로 가져옵니다(멱등).
-2. 썸네일 그리드에서 탐색 · 좌측 사이드바로 컬러/태그/작업자/상태 필터.
-3. 카드 액션: ● 컬러 / # 태그 / ↻ 재생성 / ↗ 공유.
-4. **팀 작업** 탭 → ⬇ 가져오기 = 내 워크스페이스로 복제 + lineage 기록.
+1. 생성 이력은 **에이전트가 주기적으로 자동 적재**합니다. 수동으로 다시 당기려면
+   계정 메뉴의 **설정 → 전체 가져오기**를 씁니다(옛 상단바 ↺ 동기화 버튼은 제거됐습니다).
+2. 썸네일 그리드에서 탐색 · 좌측 사이드바로 프로젝트/컬러/전역 태그/생성자 필터(공유 여부는 툴바 S).
+3. 카드 좌상단 액션: **S** 공유·최종 / **T** 태그 / **C** 코멘트. 재생성은 카드 호버 오버레이의 **↻**, 컬러는 단축키 `r`·`g`·`b`.
+4. **공유 & 리뷰** 탭 → ⬇ 가져오기 = 내 워크스페이스로 복제 + lineage 기록.
 5. **+ 새 생성** — 프롬프트·모델·레퍼런스 입력 → `/api/gen-requests` 요청 등록 →
    내 PC 에이전트가 로컬 Higgsfield CLI로 제출·추적 → WebSocket으로 카드 갱신.
    팀 공간은 계정 보고에서 id와 이름이 모두 확인된 뒤 요청되어 생성정보에 워크스페이스명이 보존됩니다.
@@ -198,12 +206,13 @@ backend/
     db.py / db_migrations.py  # 커넥션 풀(스레드별)·유지보수 게이트 / 멱등 마이그레이션
     config.py / models.py     # 환경변수 설정 / Pydantic 요청·응답
     main.py                   # 앱 팩토리·미들웨어·lifespan·/ws
-    routers/   (23개)         # library·generation·gen_requests·ingest·share·publish·sync·
+    routers/   (24개)         # library·generation·gen_requests·ingest·share·publish·sync·
                               # projects·members·manage·assets(+metadata)·comfy·
                               # resolve_integration·release_update·scenes·auth·db_backup·
-                              # db_transfer + 내부(_proxy·_telemetry·_assets_access)
+                              # db_transfer·notifications·update_notices
+                              # + 내부(_proxy·_telemetry·_assets_access)
     usecases/  (4개)          # gen_requests·generation_media_cache·generation_personal_meta·hf_missing
-    repo/      (37개 모듈)     # 데이터 접근 — generations·share·projects·identity·manage·trash 등
+    repo/      (39개 모듈)     # 데이터 접근 — generations·share·projects·identity·manage·trash 등
     services/  (61개)          # cli_bridge·media_cache·syncer·thumbs·backup·comfy_*·resolve_*·
                               # telemetry_drain·operational_*·release_update·asset_* 등
 frontend/
@@ -225,8 +234,9 @@ frontend/
   는 SelectorEventLoop 을 강제해 여전히 깨진다**(`NotImplementedError`). 그래서 백엔드는
   `--reload` 없이 실행한다(실측 확인).
 - **출처 영속화(byte-cache)**: 소스·결과물이 Higgsfield 원격 URL(계정 귀속·만료 가능)에만
-  있으면 재사용이 깨진다. 공유·최종 완료본은 영속 큐로 자동 보존하고, 업데이트 전 기존 항목도
-  시작 시 백필한다. 개별 `⤓ 보관`(`/api/generations/{id}/cache`)은 즉시 재시도하고 관리자
+  있으면 재사용이 깨진다. **기본 설정에서는 자동 보존을 하지 않는다**
+  (`CONTENT_HUB_MEDIA_PRESERVATION` 기본 `0`). 이 플래그를 `1` 로 켠 설치본만 공유·최종 완료본을
+  영속 큐로 보존하고 기존 항목도 시작 시 백필한다. 개별 `⤓ 보관`(`/api/generations/{id}/cache`)은 즉시 재시도하고 관리자
   `/api/cache-all`은 완료본 전체를 저속 큐에 등록한다. 바이트는 `media/`로 내려받고 `file_path`를
   `/media/..`로 전환하며 원본 URL은 `source_url`에 보존한다. 기본 50GiB 한도에서는 기존 보존본을
   삭제하지 않고 새 초과 파일만 되돌린다(실측 확인).
