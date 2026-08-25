@@ -15,17 +15,26 @@
 ## 개발자 자동 테스트 기준선
 
 백엔드 테스트 의존성은 운영용 `requirements.txt`와 분리된 `requirements-dev.txt`로 설치한다.
-Windows PowerShell에서 `backend` 폴더를 기준으로 실행한다.
 이 파일에는 일반 테스트용 `pytest`뿐 아니라 100명 부하 시험의 자원 측정용 `psutil`도 포함된다.
 
+> [!NOTE]
+> **venv 위치는 클론마다 다르다.** 아래는 저장소 루트에 `.venv` 를 두는 형태(현재 개발 클론 기준)다.
+> 다른 위치를 쓰면 그 Python 실행 파일의 정확한 경로로 바꿔서 실행한다.
+
 ```powershell
-python -m venv .venv
-& '.\.venv\Scripts\python.exe' -m pip install -r requirements-dev.txt
+# 저장소 루트에서 최초 1회
+py -3 -m venv .venv
+& '.\.venv\Scripts\python.exe' -m pip install -r backend\requirements-dev.txt
+
+# 테스트는 backend 폴더 기준으로 실행한다
 $env:CONTENT_HUB_NO_PROXY = '1'
-& '.\.venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider
+Push-Location backend
+try { & '..\.venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider }
+finally { Pop-Location }
 ```
 
-`python`이 Microsoft Store 별칭으로 연결되면 설치된 Python 3.11+ 실행 파일로 첫 줄만 실행한다.
+`py` 런처가 없거나 `python` 이 Microsoft Store 별칭으로 연결되면, 설치된 Python 3.11+ 의
+정확한 실행 파일 경로로 첫 줄만 실행한다.
 
 프론트엔드는 `frontend` 폴더에서 실행한다.
 
@@ -97,6 +106,14 @@ python tools\verify_generation_submission_recovery.py
 ```
 
 출력의 `database`는 `temporary`, `paid_cli_called`는 `false`, 마지막 `ok`는 `true`여야 한다.
+
+> [!IMPORTANT]
+> **아래 각 항목에 적힌 모든 테스트 개수는 그 기능을 구현하던 시점의 기록이다.**
+> "합격 조건 N개" 뿐 아니라 "전체 회귀에서는 백엔드 N개" 같은 전체 수치도 마찬가지다.
+> 테스트는 계속 늘어나므로 지금 실행하면 대부분 그보다 많이 나온다(그 자체는 정상이다).
+> 이 숫자를 현재 합격 기준으로 재사용하지 말고, 병합 전에는 **전체 테스트를 다시 실행한
+> 결과**로 판단한다.
+> 마지막으로 기록된 전체 회귀는 [CURRENT_STATUS.md](CURRENT_STATUS.md) 를 본다.
 
 ## Git 업데이트 bootstrap 회귀(RL-25)
 
@@ -421,7 +438,7 @@ py -3 -m pytest `
   backend\tests\test_operational_logging_policy.py -q
 
 cd frontend
-npm test -- --run tests\progressSocket.test.ts
+npm.cmd test -- --run tests\progressSocket.test.ts
 ```
 
 `1f096796`의 집중 합격 기준은 백엔드 17개와 프론트 4개다.
@@ -703,10 +720,15 @@ live DB는 이 과정에서 수정되지 않는다. `test_dev_server.bat`은 Vit
 
 ## 머지 전 체크리스트
 
-1. 서버 테스트(AUTH=1) 통과 — 로그인·역할 권한 확인
-2. `cd frontend && npm run build` (타입체크) 통과
-3. 백엔드 `py_compile` / 서버 기동(smoke) 확인
-4. 정리 커밋까지 끝낸 뒤 main에 반영(squash 권장)
+1. `CONTENT_HUB_NO_PROXY=1` 격리 환경에서 **백엔드·프런트 전체 자동 테스트** 통과
+2. 프런트 production build(`npm.cmd run build`, 타입체크 포함)와 `npm.cmd run lint:architecture` 통과
+3. 서버 테스트(`CONTENT_HUB_AUTH=1`) — 로그인·역할 권한, 백엔드 컴파일과 격리 서버 기동 smoke 확인
+4. `dev` 작업 트리가 깨끗하고 병합 대상 커밋이 확정됐는지 확인
+5. DB 스키마가 기존 데이터와 하위 호환인지 확인(필요하면 마이그레이션·롤백 계획 기록)
+6. 기존 `main` 보다 생성·공유·업데이트 경로가 악화되지 않았는지 확인
+7. 위 1~6 은 `RISK_REDUCTION_PLAN_2026-08-15.md` 의 **`Gate 6-A` 필수 조건**에 대응한다.
+   게이트 원문을 다시 확인해 빠진 조건이 없는지 대조하고, 통과한 뒤에도
+   **Jay 가 명시적으로 "병합"이라고 지시한 경우에만** `git push origin HEAD:main` 으로 반영한다.
 
 ## 100명 격리 부하 테스트
 

@@ -81,20 +81,85 @@
 - 부팅 직후 npm/네트워크 문제로 시작에 실패하면 작업 스케줄러가 **5분 간격으로
   최대 10회 재시도**한다(일시적 장애는 스스로 회복).
 - 콘솔 로그(`logs\*_console.log`)는 **예약작업이 (재)시작될 때**(재부팅·실패
-  재시도) 50MB 를 넘으면 `.old` 로 밀어둔다. 재부팅 없이 수개월 연속 가동하면
-  그 사이엔 회전이 없으니, 로그가 크면 register 재실행(=재시작+회전)으로 정리.
-- 알려진 한계: "기존 서버 인계"는 포트를 점유한 serve.py 를 종료하는데, 같은
-  PC 에 **다른 저장소의 serve.py** 가 그 포트를 쓰고 있어도 구분하지 못한다.
-  서버 PC 에는 허브 저장소 하나만 두는 것을 전제로 한다.
+  재시도) **10 MiB** 를 넘으면 `.1` 로 밀고 `.3` 까지 **세 세대**를 보존한다
+  (`tools/rotate_text_log.py --max-bytes 10485760 --keep 3`). 단, 등록된 Python 경로를 못 읽는
+  손상 상태에서는 폴백으로 동작해 `.1` **한 세대만** 남긴다(`task_launch.bat`). 가동 중에는 로그 핸들이
+  열려 있어 회전하지 않으므로, 장기 연속 가동으로 로그가 크면 아래 안전 재시작으로 정리한다.
+- "기존 서버 인계"는 포트 소유 프로세스의 명령행에 **이 설치본의 `backend\serve.py`
+  절대경로가 독립된 인자로 정확히 일치할 때만** 그 PID 를 종료한다. 다른 저장소의
+  `serve.py` 나 무관한 프로그램이 그 포트를 쓰고 있으면 **종료하지 않고 실패**한다
+  (`restart_server_task.ps1` 의 명령행 대조·포트 소유 확인).
+- 다만 예약 작업 이름은 `MVHub Server`·`MVHub Watchdog`·`MVHub BackupCopy` 로 고정이고
+  등록 시 `/F` 로 교체되므로, **자동시작 등록은 PC 당 한 설치본에서만** 한다.
 
 ### 수동 중지 / 재시작
 
+> [!CAUTION]
+> `taskkill /IM python.exe /F` 는 **절대 쓰지 않는다.** 이 명령은 MV Hub 만이 아니라
+> 종료 권한이 있는 **이름이 `python.exe` 인 모든 프로세스**를 강제 종료한다. 다른 저장소의
+> 스크립트, 따로 띄워 둔 파이썬 작업, DaVinci Resolve·Houdini 가 **바깥으로 띄운 파이썬 자식
+> 프로세스**가 여기에 포함된다(애플리케이션 본체는 이름이 달라 종료되지 않는다). 그 작업과
+> 저장하지 않은 내용이 함께 날아간다.
+
+**안전한 전체 재시작**은 저장소 루트에서 이 파일을 실행한다(관리자 권한을 스스로 요청한다).
+
 ```
-schtasks /End /TN "MVHub Watchdog"     ← 워치독 먼저 중지(안 하면 되살림)
+restart_server_task.bat
+```
+
+이 스크립트는 포트를 쥔 프로세스 중 **이 설치본의 `backend\serve.py` 절대경로가 정확히 일치하는
+PID** 와, 명령행에 **이 저장소 경로와 `server_supervisor.py`·`server_watchdog.py` 가 함께 들어 있는
+프로세스**만 종료한다. 그 뒤 서버·워치독을 다시 시작하고 `/api/ready` 응답까지 확인한다.
+(뒤쪽 둘은 절대경로 완전 일치가 아니라 문자열 포함 조건이므로, 같은 저장소 경로와 그 스크립트
+이름을 명령행에 함께 가진 다른 프로세스가 있다면 함께 종료될 수 있다.)
+
+**완전 중지**(다시 켜지 않음) 전용 명령은 지금 코드에 없다. 아래를 **관리자 권한 창에서** 한다.
+
+> [!IMPORTANT]
+> `schtasks /End` 는 **지금 실행 중인 인스턴스만** 멈춘다. 작업 자체는 켜져 있어서
+> **재부팅하면 다시 시작되고**, 등록 설정에 실패 시 5분 재시도가 걸려 있어 곧바로 되살아날 수도
+> 있다. 그래서 **`/DISABLE` 을 먼저** 걸고 그다음 `/End` 로 현재 인스턴스를 끝낸다.
+
+먼저 세 작업을 모두 사용 안 함으로 바꾼다(백업 복제까지 멈출 때. 서버만 멈출 것이면
+`MVHub BackupCopy` 줄은 뺀다).
+
+```
+schtasks /Change /TN "MVHub Watchdog" /DISABLE
+schtasks /Change /TN "MVHub Server" /DISABLE
+schtasks /Change /TN "MVHub BackupCopy" /DISABLE
+```
+
+그다음 실행 중인 인스턴스를 끝낸다. **워치독을 먼저** 끝낸다 — 워치독 자체는 아무것도
+되살리지 못하지만(무응답 PID 종료만 한다), 서버가 사라지는 것을 장애로 보고 불필요하게
+개입·경보하는 것을 막기 위해서다. 실제로 서버를 다시 띄우는 것은 1겹 감독기
+(`tools/server_supervisor.py`)와 작업 스케줄러 재시도인데, 앞에서 `/DISABLE` 을 먼저 걸었으므로
+스케줄러 쪽은 막혀 있다. 다만 **예약 작업을 `/End` 해도 감독기·워치독 파이썬 프로세스가 분리된 채
+남을 수 있으므로**(`restart_server_task.ps1` 이 그 경우를 따로 정리한다), 아래 잔여 프로세스 확인을
+반드시 거친다.
+
+```
+schtasks /End /TN "MVHub Watchdog"
 schtasks /End /TN "MVHub Server"
-taskkill /IM python.exe /F              ← 또는 작업관리자에서 serve.py 프로세스 종료
+schtasks /End /TN "MVHub BackupCopy"
 ```
-다시 시작: `schtasks /Run /TN "MVHub Server"` → `schtasks /Run /TN "MVHub Watchdog"`
+
+그래도 남는 프로세스가 있으면 **작업 관리자에서 명령줄 열을 켜고**, 이 저장소 경로의
+`tools\server_watchdog.py`·`tools\server_supervisor.py`·`backend\serve.py` 를 가진
+PID 만 골라서 종료한다. 프런트 빌드 도중에 멈췄다면 같은 저장소 경로의 `npm`·`node` 가
+남아 있을 수 있으니 함께 확인한다.
+
+**다시 켤 때**는 `/DISABLE` 로 꺼둔 작업을 **하나도 빠뜨리지 말고** 되돌린다.
+`MVHub BackupCopy` 를 껐다면 그것까지 다시 켜야 일일 백업 복제가 재개된다.
+
+```
+schtasks /Change /TN "MVHub Server" /ENABLE
+schtasks /Change /TN "MVHub Watchdog" /ENABLE
+schtasks /Change /TN "MVHub BackupCopy" /ENABLE
+schtasks /Run /TN "MVHub Server"
+schtasks /Run /TN "MVHub Watchdog"
+```
+
+`MVHub BackupCopy` 는 매일 정해진 시각에 도는 작업이라 `/Run` 으로 즉시 실행할 필요는 없다.
 
 ## 예비 PC 복구 절차 (서버 PC 하드웨어 사망 시)
 
@@ -110,6 +175,8 @@ taskkill /IM python.exe /F              ← 또는 작업관리자에서 serve.p
    stamp의 `content_trash`·`manage_hub` 파일이 모두 있어야 한다.
 
    ```powershell
+   # 경로와 파일명은 예시다. 3번에서 클론한 실제 설치 경로와,
+   # 실제 최신 백업 세트의 대표 파일 경로로 바꿔서 실행한다.
    cd E:\MV-hub-S
    py -3 tools\verify_backup_restore.py --backup-set "E:\MVHub-backups\content_hub_20260731_120000.db"
    ```

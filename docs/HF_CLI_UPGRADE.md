@@ -8,9 +8,12 @@
 그래서 CLI 버전은 **의도적으로 pin** 하고, **올릴 때마다 계약 스모크로 검증**한다. `@latest`
 자동설치는 쓰지 않는다(HF 가 breaking 을 자주 낸다).
 
-> ⚠️ **현재 예외(고칠 대상)**: pin 파일을 못 읽는 경우 버전을 지정하지 않고 설치하는 폴백이
-> `setup_clone_git.ps1`(초기설치)과 `backend/app/routers/ingest.py`(서버 생성 bat)에 남아 있다.
-> 원칙대로라면 폴백 설치가 아니라 **실패 종료**여야 한다.
+> [!NOTE]
+> **이 예외는 `c233cdce` 에서 해소됐다.** pin 파일 누락·읽기 실패·빈 값은 손상 상태로 취급한다.
+> `setup_clone_git.ps1` 은 의존성 설치 **전에** 실패 종료하고,
+> `backend/app/routers/ingest.py` 는 에이전트 실행 bat 생성을 **503 으로 중단**한다.
+> `update_cli.bat` 은 `hf_cli_version.txt` 의 정확한 버전만 설치한 뒤 실제 버전을 다시 검증한다.
+> 버전 미지정·`@latest` 폴백은 어느 경로에도 없다.
 
 ## 버전 pin 단일 출처
 
@@ -38,8 +41,11 @@ python tools/hf_cli_check_update.py
 
 ## 버전 올리는 절차 (bump)
 
-> **순서 주의**: 스모크의 첫 검사가 `version == pin` 이므로 **pin 을 먼저 바꾼 뒤** 설치·검증한다.
-> pin 을 그대로 두고 스모크를 돌리면 첫 항목이 항상 FAIL 이라 나머지 검증이 의미를 잃는다.
+> [!IMPORTANT]
+> **순서 주의**: 스모크의 첫 검사가 `version == pin` 이므로 **pin 을 먼저 바꾸고
+> `update_cli.bat` 으로 그 버전을 설치한 뒤** 검증한다. 새 CLI 를 깔아두고 pin 을 그대로 두면
+> `version == pin` 이 FAIL 이라 릴리스 게이트를 통과할 수 없다. 다만 스모크는 그 뒤의 계약
+> 검사를 **끝까지 계속 실행**하므로, 필드·플래그가 무엇이 바뀌었는지 진단 자료로는 쓸 수 있다.
 
 1. `hf_cli_version.txt` 를 새 버전으로 바꾼다. **아직 커밋·릴리스하지 않는다.**
 2. 그 pin 대로 한 PC 에 설치: `update_cli.bat` (또는 `npm install -g @higgsfield/cli@<새버전>`)
@@ -52,11 +58,14 @@ python tools/hf_cli_check_update.py
      해당 매핑을 `x.get(a) or x.get(b)` 폴백 등으로 고친 뒤 스모크를 다시 통과시킨다.
    - **WARN 은 확인 권장.** 특히 seedance 미디어 계약 WARN(모델 스키마에 `medias` 재등장)은
      **seedance 영상을 운영에서 쓰면 릴리스 차단**으로 취급한다(agent_push 의 seedance 경로 재작성 + 유료 실측 필요).
-5. (선택) 소액 유료 생성 1건으로 `generate create ... --wait --json` 실제 결과를 확인한다 —
-   이건 무료 스모크가 못 잡는다.
-6. 스모크 통과 후 pin 변경과 호환 코드 수정을 **함께 커밋**하고 `release/make_release.bat` 로 릴리스 빌드.
-   릴리스는 빌드 원본뿐 아니라 완성된 ZIP 안의 pin·npm package 버전까지 다시 비교한다.
-   작업자는 이후 `update_release.bat`만 실행하면 코드와 해당 CLI가 함께 교체된다.
+5. **Jay 가 유료 실측을 명시적으로 승인한 경우에만** 소액 생성 1건으로
+   `generate create ... --wait --json` 실제 결과를 확인한다. 승인이 없으면 이 단계는 건너뛴다.
+   (무료 스모크는 실제 생성 응답과 과금 경계를 확인하지 못한다 — 한계로만 기록해 둔다.)
+6. 스모크 통과 후 pin 변경과 호환 코드 수정을 **함께 `dev` 에 커밋**한다.
+7. 릴리스는 여기서 바로 만들지 않는다. 프로젝트 절차(루트 `CLAUDE.md`·`AGENTS.md` 안전선)를 따른다 —
+   **`dev` 검증 → Jay 지시로 `main` 반영 → 릴리스 폴더를 `origin/main` 에 맞춘 뒤 거기서 제작**.
+   릴리스 스크립트는 빌드 원본뿐 아니라 완성된 ZIP 안의 pin·npm package 버전까지 다시 비교한다.
+   작업자는 이후 `update_release.bat` 만 실행하면 코드와 해당 CLI 가 함께 교체된다.
 
 ## CLI 출력/플래그를 읽는 곳 (계약이 깨지면 여기를 고친다)
 
