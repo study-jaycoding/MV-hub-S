@@ -5,7 +5,7 @@ aliases:
 tags:
   - mvhub
   - mvhub/진입점
-updated: 2026-08-26
+updated: 2026-08-27
 status: active
 ---
 
@@ -18,8 +18,8 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 > → [docs/README.md](docs/README.md)(전체 문서 색인).
 > 코드를 **어디에 둘지** 정할 때는 [ARCHITECTURE.md](ARCHITECTURE.md)가 기준이다.
 >
-> 기준선(2026-08-24): 자동 테스트 백엔드 1,773건 · 프런트 666건 통과. 코드 기준선
-> `0384f7b0`은 `main`과 `dev`에 병합됐으며, 새 릴리스 제작과 운영 배포 검증이 남아 있다.
+> 기준선(2026-08-27, `dev` `5f7a1853`): 자동 테스트 백엔드 1,854건(+29 subtests) · 프런트 98파일 679건 통과.
+> 팀 릴리스 `2026.08.25-0847`·`origin/main` 은 `aa0985b9` 이며 `dev` 는 코드 커밋 2개 앞서 있다(push 전). 새 릴리스 제작과 운영 배포 검증이 남아 있다.
 > 이후 문서 전용 정리는 실행 코드를 바꾸지 않는다. 잔여 항목의 단일 출처는
 > `docs/CURRENT_STATUS.md`다.
 
@@ -89,7 +89,7 @@ git sparse-checkout set backend frontend tools
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **구조 원칙** — 어디에 무슨 코드를 두는가(이 저장소의 규칙) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/AI_CONTEXT.md](docs/AI_CONTEXT.md) | 현행 구조 지도 · AI 에게 통째로 붙여넣는 자기완결 브리프 |
 | [docs/RISK_REDUCTION_PLAN_2026-08-15.md](docs/RISK_REDUCTION_PLAN_2026-08-15.md) | 위험 항목 상태를 바꾸는 단일 출처(Gate 0 표) |
-| [docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) | Resolve 전송 큐 v3 **설계 이력** — HEAD 구현은 큐 없이 직접 전송이다. 큐 재도입 작업 진행 중이므로 코드를 먼저 본다 |
+| [docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) | Resolve 전송 큐 v3 **설계 이력(superseded)** — 현행은 직접 전송([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §7.6). 큐 모듈은 워커 비활성 상태로 잔존하며 현재 확인된 재도입 계획은 없다 |
 | [docs/SERVER_RELOCATION.md](docs/SERVER_RELOCATION.md) | 공유 서버 주소 이사 — 공지 발행·원클릭 전환·수동 대안 |
 | [docs/TELEMETRY_DRAIN_LIFECYCLE.md](docs/TELEMETRY_DRAIN_LIFECYCLE.md) | 로컬 응답·관리 텔레메트리 전송·마지막 성공 관측 계약 |
 | [docs/SHARE_STATE_RECONCILIATION_DESIGN.md](docs/SHARE_STATE_RECONCILIATION_DESIGN.md) | 공유·최종 상태의 현행 계약 — 서버 권위 원장·converge-forward 수렴 (옛 즉시 보상 계약 `SHARE_STATE_COMPENSATION` 은 대체됨) |

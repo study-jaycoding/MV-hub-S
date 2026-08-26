@@ -6,7 +6,7 @@ tags:
   - mvhub
   - mvhub/문서
 status: active
-updated: 2026-08-26
+updated: 2026-08-27
 ---
 
 # MV Hub 개발 문서 안내
@@ -76,7 +76,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | **현재 작업 목록** | `RISK_REDUCTION_PLAN_2026-08-15` | 위험 상태를 변경하는 단일 출처다. |
 | **현재 세부 계약** | `SHARE_STATE_RECONCILIATION_DESIGN`, `GENERATION_SUBMISSION_RECOVERY`, `CANVAS_GENERATION_IDEMPOTENCY`, `CLI_ESTIMATE_LIFECYCLE`, `AUTH_FAILURE_SEMANTICS`, `TELEMETRY_DRAIN_LIFECYCLE`, `WORKER_OFFDISK_BACKUP_CONTRACT` | 기능별 상태 전이·복구·검증 기준이다. 완료 여부는 위험 계획의 Gate 0 표를 따른다. |
 | **운영 기준** | `SERVER`, `SERVER_RECOVERY`, `TESTING`, `HF_CLI_UPGRADE` | 설치·업데이트·복구·검증 때 사용한다. |
-| **기능별 설계** | `PM_DASHBOARD_DESIGN`, `관리대시보드_통합계획`, `DESIGN_id_unification`, `ROADMAP_SCALE` | 일부 구현·일부 계획이 섞여 있으므로 현행 코드와 대조한다. |
+| **기능별 설계** | `ROADMAP_SCALE`(active — 착수 조건 재측정), `관리대시보드_통합계획`(draft — 미구현 계획), `DESIGN_id_unification`(draft — Phase 0a·0b 구현 완료, Phase 1~3 백로그) | 2026-08-26 코드 대조로 위상을 확정했다. draft 의 미완료 항목을 현재 작업으로 간주하지 않는다. |
 | **검증 기록** | `LOAD_TEST_2026-08-14`, `PREDEPLOY_100_USERS` | 해당 시점의 결과다. 새 배포를 자동 보증하지 않는다. |
 | **과거 기록** | `AUDIT_2026-08-15`, `DESIGN` | 문제 발견 이력과 초기 설계 보존용이다. 현재 할 일 목록으로 사용하지 않는다. |
 
@@ -154,8 +154,8 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | **현행 구조·계약 — 기능별** | [AUTH_FAILURE_SEMANTICS](AUTH_FAILURE_SEMANTICS.md), [CANVAS_GENERATION_IDEMPOTENCY](CANVAS_GENERATION_IDEMPOTENCY.md), [CLI_ESTIMATE_LIFECYCLE](CLI_ESTIMATE_LIFECYCLE.md), [GENERATION_SUBMISSION_RECOVERY](GENERATION_SUBMISSION_RECOVERY.md), [TELEMETRY_DRAIN_LIFECYCLE](TELEMETRY_DRAIN_LIFECYCLE.md), [SHARE_STATE_RECONCILIATION_DESIGN](SHARE_STATE_RECONCILIATION_DESIGN.md), [WORKER_OFFDISK_BACKUP_CONTRACT](WORKER_OFFDISK_BACKUP_CONTRACT.md), [UPDATE_ANNOUNCEMENTS](UPDATE_ANNOUNCEMENTS.md) |
 | **운영·검증 절차** | [SERVER](SERVER.md), [SERVER_RECOVERY](SERVER_RECOVERY.md), [SERVER_RELOCATION](SERVER_RELOCATION.md), [TESTING](TESTING.md), [HF_CLI_UPGRADE](HF_CLI_UPGRADE.md) |
 | **사용자 안내** | [사용설명서](사용설명서.md), [기능설명서](기능설명서.md) |
-| **일부 구현·후속 설계** | [DESIGN_id_unification](DESIGN_id_unification.md), [PM_DASHBOARD_DESIGN](PM_DASHBOARD_DESIGN.md), [관리대시보드 통합계획](관리대시보드_통합계획.md), [ROADMAP_SCALE](ROADMAP_SCALE.md), [COMFY_ENHANCE_PLAN](COMFY_ENHANCE_PLAN_2026-08-21.md)(보류 — 구현 미착수) |
-| **완료 작업의 개발 이력** | [CANVAS_MERGE_OPTIMIZATION_PLAN](CANVAS_MERGE_OPTIMIZATION_PLAN.md), [BACKLOG_PLAN](BACKLOG_PLAN_2026-08-20.md), [P2_CLOSEOUT_PLAN](P2_CLOSEOUT_PLAN_2026-08-20.md), [RL02_TASK_WORKSPACE_SNAPSHOT_PLAN](RL02_TASK_WORKSPACE_SNAPSHOT_PLAN.md) |
+| **후속 설계(draft)·재측정(active)** | [DESIGN_id_unification](DESIGN_id_unification.md)(draft), [관리대시보드 통합계획](관리대시보드_통합계획.md)(draft), [ROADMAP_SCALE](ROADMAP_SCALE.md)(active), [COMFY_ENHANCE_PLAN](COMFY_ENHANCE_PLAN_2026-08-21.md)(보류 — 구현 미착수) |
+| **완료 작업의 개발 이력** | [PM_DASHBOARD_DESIGN](PM_DASHBOARD_DESIGN.md)(초기안 — §6 진행 순서 완료, 방식 변경분은 본문 NOTE), [CANVAS_MERGE_OPTIMIZATION_PLAN](CANVAS_MERGE_OPTIMIZATION_PLAN.md), [BACKLOG_PLAN](BACKLOG_PLAN_2026-08-20.md), [P2_CLOSEOUT_PLAN](P2_CLOSEOUT_PLAN_2026-08-20.md), [RL02_TASK_WORKSPACE_SNAPSHOT_PLAN](RL02_TASK_WORKSPACE_SNAPSHOT_PLAN.md) |
 | **완료 작업의 개발 이력 — OPT_PLAN 시리즈(12개)** | [1](OPT_PLAN_2026-08-21.md), [2](OPT_PLAN2_2026-08-21.md), [3](OPT_PLAN3_2026-08-22.md), [4](OPT_PLAN4_2026-08-22.md), [5](OPT_PLAN5_2026-08-22.md), [6](OPT_PLAN6_2026-08-22.md), [7](OPT_PLAN7_2026-08-22.md), [8](OPT_PLAN8_2026-08-22.md), [9](OPT_PLAN9_2026-08-22.md), [10](OPT_PLAN10_2026-08-23.md), [11](OPT_PLAN11_2026-08-23.md), [12](OPT_PLAN12_2026-08-23.md) |
 | **시점 고정 검증 기록** | [LOAD_TEST_2026-08-14](LOAD_TEST_2026-08-14.md), [PREDEPLOY_100_USERS](PREDEPLOY_100_USERS.md) |
 | **과거 기준·감사 보존** | [DESIGN_RESOLVE_QUEUE_V3](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md)(큐 v3 설계 이력 — `superseded`, 현행은 ARCHITECTURE §7.6), [SHARE_STATE_COMPENSATION](SHARE_STATE_COMPENSATION.md)(RL-11 보상 — 대체됨), [AUDIT_2026-08-15](AUDIT_2026-08-15.md), [DESIGN](DESIGN.md), [PROJECT_CHARTER_LEGACY](PROJECT_CHARTER_LEGACY.md), [REVIEW_2026-08-17](REVIEW_2026-08-17.md), [P2_CLOSEOUT_REVIEW](P2_CLOSEOUT_REVIEW_2026-08-20.md) |

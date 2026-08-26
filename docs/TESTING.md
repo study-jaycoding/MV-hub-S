@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-26
+updated: 2026-08-27
 status: active
 ---
 
@@ -53,7 +53,9 @@ npm.cmd run build
 `lint:architecture`는 P1 단계에서 경고 우선으로 운영한다. 종료 코드는 성공이어도
 표시된 경고는 현재 구조 부채이며, 새 경고를 만들지 않는 것을 원칙으로 한다.
 
-자동 테스트는 운영 DB가 아닌 `CONTENT_HUB_DB` 또는 `CONTENT_HUB_DATA` 임시 경로를 사용한다.
+자동 테스트는 운영 DB 를 쓰지 않는다. 공통 fixture 는 없고(`conftest.py` 는 `CONTENT_HUB_DB_POOL=0` 만 설정) 격리 방식은
+테스트마다 다르다 — 임시 경로의 `CONTENT_HUB_DB` 환경변수, `db.init_db(db_path)` 직접 호출, 함수 인자로 경로 전달,
+`config.DATA_DIR` monkeypatch·mock. `CONTENT_HUB_DATA` 환경변수로 격리하는 테스트는 없다.
 
 ### 사전 배포 통합 게이트
 

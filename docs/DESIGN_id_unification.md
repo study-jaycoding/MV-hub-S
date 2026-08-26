@@ -1,11 +1,12 @@
 ---
-updated: 2026-08-26
-status: review-required
+updated: 2026-08-27
+status: draft
 ---
 
 # 설계: id 이중성(uuid ↔ job_id) 통일
 
-> 적대적 리뷰 ① 후속. **Phase 0a·0b 구현 완료(아래 4장), Phase 1~3 미착수.**
+> 적대적 리뷰 ① 후속. **Phase 0a·0b 구현 완료(아래 4장), Phase 1~3 은 백로그(draft)** — 착수 트리거와 현황 재측정은
+> [ROADMAP_SCALE.md](ROADMAP_SCALE.md) B 항목이 단일 출처다(2026-08-26 대조: 트리거 미달).
 > 각 Phase 의 상태 표시를 따른다 — 이 문서 전체가 미구현 설계는 아니다.
 >
 > **대조할 코드**: `repo/generation_sync.py`(동기화 행 생성·멱등 매칭),
@@ -64,7 +65,7 @@ status: review-required
 
 > ⚠️ **정정(코드 재검토 후)**: 아래 Phase 0 은 당초 '저위험'으로 적었으나 실제론 그렇지 않다.
 > `id==job_id` 는 단순 코딩 관습이 아니라 **"동기화본 vs 로컬본" 판별자로 load-bearing** 하다:
-> - `reconcile_duplicates`(generations.py:829-830): `synced = job_id==id`, `local = job_id!=id`.
+> - `reconcile_duplicates`/`_reconcile_duplicate_group_locked`(`repo/generations.py`): 0a 이후 `origin` 마커로 판별한다(옛 `job_id==id` 판별은 폐기 — 줄 번호 대신 심볼로 찾는다).
 > - `set_job_id`/`apply_local_fulfillment` dup 탐지: `WHERE id=job_id`.
 > 따라서 동기화 행을 uuid 로 바꾸려면 이 판별을 **명시 마커(origin)** 로 교체하는 선행 단계가
 > 필요하고, 그건 중복방지(가시적·데이터 영향) 경로라 레이스 테스트가 필수다.
@@ -98,6 +99,6 @@ status: review-required
 
 - `backend/app/repo/generation_sync.py`: `upsert_synced_generation`(동기화 행 id 생성 — Phase 0b 로 UUID 발급 완료).
   `backend/app/repo/generations.py`: `set_job_id`(이미 BEGIN IMMEDIATE 적용됨).
-- `backend/schema.sql` / `db_migrations.py`: `job_id` 인덱스. **UNIQUE 는 보류됐고 현재는
-  비고유 인덱스만 있다**(`db_migrations.py` 의 job 인덱스 생성부).
+- `job_id` 인덱스는 `db_migrations.py` 에만 있고(비고유 `idx_generation_job`) `backend/schema.sql` 에는 없다 — 새 설치도
+  부팅 시 `_migrate` 에 의존한다. **UNIQUE 는 보류.**
 - 검증: 같은 job_id 두 번 동기화 → 한 행(uuid)으로 수렴, 로컬 생성+동기화 충돌 → 중복 없음.

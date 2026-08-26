@@ -1,12 +1,15 @@
 ---
-updated: 2026-08-26
-status: review-required
+updated: 2026-08-27
+status: archived
 ---
 
 # PM 대시보드 설계 (Project Management Dashboard)
 
-> ⚠️ **초기 설계 문서** — 착수 시점의 계획이며, 현재 구현과 다를 수 있다.
-> 실제 동작은 코드(backend/app/repo/manage.py, frontend/src/components/manage/)를 기준으로 판단할 것.
+> ⚠️ **초기 설계 문서(보존 이력)** — 2026-08-26 코드 대조 결과 §6 진행 순서는 **전부 구현됐고**, 방식이 달라진 곳
+> (create-first·claim→완료 elapsed·전량 매칭·`link_generations` id 전용·manage 로컬 예외·텔레메트리 채널)은 본문 NOTE 로
+> 표시했다. 현행 구조는 [관리대시보드_통합계획.md](관리대시보드_통합계획.md) §1 과 코드
+> (backend/app/repo/manage.py, frontend/src/components/manage/)를 기준으로 판단한다. §3 매칭 규칙·§6-1 위험·§6-3 포트 함정은
+> 유효한 운영 지식이다.
 
 > 작업자별·프로젝트별 **크레딧 사용량 / 제작시간 / 일정**을 한눈에 보는 관리 뷰.
 > 에셋 파트(Assets 분리창)와 동일한 **분리형 모듈** 패턴으로 만든다.
@@ -147,7 +150,8 @@ push_agent 가 허브 요청을 `generate create --wait` 로 직접 실행한다
 
 ## 6-1. 현재 프로세스 위험 검토 (확인 완료)
 **잡 원본 JSON 최상위 7키만**(created_at·display_name·id·job_set_type·params·result_url·status) —
-크레딧·시간 필드 없음 확인. `create --wait` 응답에도 크레딧 없음 → `account transactions` 필수.
+크레딧·시간 필드 없음 확인(2026-06 CLI 기준 시점 기록. CLI 1.x 는 `thumbnail_url`·`min_result_url`·`job_type` 등이 추가됐고,
+`workspace*` 는 CLI 출력에 없지만 파서가 방어적으로 수용한다 — 현행 파서는 `cli_bridge.parse_job`). `create --wait` 응답에도 크레딧 없음 → `account transactions` 필수.
 
 기존 흐름(① 생성 실행 claim→create --wait→fulfill ② 자동 push)에 대한 위험:
 - 🟢 **안전(격리)**: 사이드카 테이블(코어 무수정)·플래그 off 라우터·`FulfillIn` extra 허용(extra='forbid' 아님 → 신구 에이전트/서버 422 없음)·fulfill CAS 멱등(metrics는 applied=True일 때만 → 이중집계 없음).

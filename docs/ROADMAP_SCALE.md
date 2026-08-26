@@ -1,6 +1,6 @@
 ---
-updated: 2026-08-26
-status: review-required
+updated: 2026-08-27
+status: active
 ---
 
 # 규모 확장 로드맵 (Scale Roadmap)
@@ -8,6 +8,7 @@ status: review-required
 > 아키텍처 검토(2026-07-04, 클로드+코덱스)에서 "규모 커지면 할 것"으로 분류된 4항목의 실행 설계.
 > **지금 대공사할 항목이 아니다.** 각 항목의 (a)착수 트리거 (b)접근 (c)리스크·순서 (d)지금 저렴한 선행을 고정한다.
 > 소규모 내부도구 맥락 — 규모 신호가 오기 전에는 착수하지 않는다(과설계 경계).
+> 2026-08-26 코드 대조: 현황 수치·트리거·완료 항목이 코드와 일치해 **착수 조건 정기 재측정 문서(현행)** 로 둔다.
 >
 > **대조 기준**: 본문의 수치는 작성 시점 값이다. 항목별로 아래를 직접 보고 판단한다.
 >
@@ -15,7 +16,7 @@ status: review-required
 > |---|---|
 > | A. 대형 파일 분리 | 실제 파일 줄 수를 직접 센다(`repo/`·`routers/`·`services/`) |
 > | B. id≠job_id 통일 | `repo/id_resolve.py`·`generation_sync.py`·`share.py` — 아래 실측 명령 |
-> | C. durable outbox | `repo/manage_telemetry.py`·`services/telemetry_drain.py` |
+> | C. durable outbox | `agent_push.py`(앵커용 sqlite 상태 DB `anchor_outbox`·`tracked_job` 은 이미 있음 — job 원본 durable outbox 는 아님) · `routers/ingest.py` · `services/syncer.py`(100-window·`gap_warning`). 텔레메트리 outbox(`manage_telemetry`)는 다른 채널이라 대조 대상이 아니다 |
 > | D. 중앙 fact/index | `repo/manage_telemetry.py` 의 `build_telemetry_facts`, `manage_db.py` |
 
 ---
@@ -94,7 +95,7 @@ git grep -nE "\bOR\b[^;]{0,40}\bjob_id\b" -- backend/app/repo |
 
 ## C. durable outbox 동기화
 
-현황: `cli_bridge.list_jobs` size=100(CLI 상한, 페이지네이션 없음) → syncer가 매주기 최신 100 전량 재조회, 100-window 밖은 `gap_warning`만.
+현황: `cli_bridge.list_jobs` size=100(CLI 상한, 페이지네이션 없음) → syncer가 매주기 최신 100 전량 재조회, 100-window 밖은 `gap_warning`만. agent 쪽에는 앵커 보고용 sqlite 상태 DB(`anchor_outbox`·`tracked_job`)가 이미 있어 재시작 후 anchor 재전송은 되지만, job 원본 JSON 을 담는 durable outbox 는 아직 없다(2026-08-26 대조).
 
 **(a) 착수 트리거**: 운영에서 `gap_warning` 자주 뜸 / 생성량 많아 100 window 밖 밀림 / "생성했는데 허브에 안 보임" 보고 / agent 껐다 켠 사이 완료 누락 반복.
 

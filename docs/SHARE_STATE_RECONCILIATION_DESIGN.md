@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-26
+updated: 2026-08-27
 status: active
 ---
 
@@ -132,8 +132,8 @@ operation_kind='composite_finalize', base_shared/base_final 저장. 단계:
 ## 7. 외부 변경 재검사 (경계 명시)
 
 converged 이후 다른 세션의 서버 변경은 이 원장의 책임 밖(서버에 단조 revision 이 없음).
-원격 realtime reload 신호 수신 시 해당 생성물 재검사(있으면), 그 외는 다음 사용자 액션에서
-자연 수렴. 완전 보장은 서버 share_state_rev 도입이 필요 — P2 로 기록(배치 10 문서화 대상).
+원격 realtime reload 신호는 브라우저 재조회만 유발하고 원장을 재검사하지는 않는다(현재 미구현 — `remote_realtime.py`
+는 데이터 없는 reload 신호만 넘기고 reconciler 를 깨우지 않음). 다음 사용자 액션에서 자연 수렴. 완전 보장은 서버 share_state_rev 도입이 필요 — P2 로 기록(배치 10 문서화 대상).
 
 ## 8. 테스트 계약 (구현 전 고정 — 상태 전이표 포함)
 
