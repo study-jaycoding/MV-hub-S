@@ -41,7 +41,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 401 인증 실패·로그인 보존 계약 | [AUTH_FAILURE_SEMANTICS.md](AUTH_FAILURE_SEMANTICS.md) |
 | 생성·계정 보고 백그라운드 전송·재시도·마지막 성공 관측 계약 | [TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md) |
 | 공유·최종 상태 계약 | [SHARE_STATE_RECONCILIATION_DESIGN.md](SHARE_STATE_RECONCILIATION_DESIGN.md)(현행·원장 수렴). [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md) 는 RL-11 보상 계약으로 **대체됨** |
-| Resolve 전송 큐 계약 | [DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) |
+| Resolve 전송 (현행은 코드 기준) | `backend/app/routers/resolve_integration.py` · 설계 이력 [DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) |
 | 공유 서버 주소 이사 | [SERVER_RELOCATION.md](SERVER_RELOCATION.md) |
 | 업데이트 등록·고정·알림 공지 | [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md) |
 | 작업자 PC 오프디스크 백업 설계·완료 조건 | [WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md) |
@@ -123,6 +123,22 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
   추가한 경우.
 - 본문의 `작성일`·`기준일`·`시험일`은 다른 뜻이므로 `updated` 로 복사하지 않는다. 같은 뜻인
   `최종 갱신`·`최종 확인` 은 본문에 중복으로 두지 않는다.
+
+#### `status` 와 `updated` 를 읽는 법
+
+`status: active` 는 **그 분야의 기준 문서**라는 뜻이지 "본문이 오늘 코드와 같다"는 보증이 아니다.
+코드가 바뀌고 문서가 아직 안 따라온 구간이 반드시 생긴다.
+
+> [!IMPORTANT]
+> 문서를 **구현 판단의 근거로 쓰기 직전에**, 그 문서의 `updated` 이후 관련 코드가 바뀌었는지
+> 확인한다. 바뀌었으면 코드가 우선이고, 그 자리에서 문서를 함께 고친다.
+>
+> ```powershell
+> git log --oneline --since=<updated> -- backend/app/<관련경로>
+> ```
+
+동작을 바꾸는 코드 커밋은 그 동작을 서술한 문서를 **같은 커밋에서** 함께 고친다. 문서를 나중에
+고치기로 미루면 그 사이에 `active` 인데 내용이 반대인 문서가 생긴다.
 
 > [!NOTE]
 > 프로퍼티 적용 예외 1건: [DESIGN_RESOLVE_QUEUE_V3](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) 는

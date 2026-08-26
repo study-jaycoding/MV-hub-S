@@ -9,10 +9,12 @@ status: review-required
 
 ## 관리자 PC
 
-새 버전 zip 만들기:
+새 버전 zip 만들기. **릴리스는 고정 폴더 `D:\ClaudeCode\MV-hub-S-release` 에서만 만든다** —
+실행 전에 이 폴더의 `HEAD` 를 `origin/main` 에 맞추고 작업 트리가 깨끗한지 확인한다
+(조건과 금지 사항은 저장소 루트 `AGENTS.md` 의 안전 규칙을 따른다).
 
 ```powershell
-cd D:\ClaudeCode\MV-hub-S\release
+cd D:\ClaudeCode\MV-hub-S-release\release
 .\make_release.bat
 ```
 

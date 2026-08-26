@@ -76,7 +76,7 @@ git sparse-checkout set backend frontend tools
 
 | 기능 | 어떻게 동작하나 | 계약·절차 문서 |
 |---|---|---|
-| **Resolve로 보내기** | 고른 원본이 누를 때마다 **바로 접수**되고(앞 작업을 기다리지 않음), 전담 워커가 순서대로 DaVinci Resolve 미디어 풀에 넣는다. 앱을 껐다 켜도 큐가 남고, 중단된 반입은 사용자가 확인할 때까지 자동 재실행하지 않는다. | [docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) |
+| **Resolve로 보내기** | 고른 원본을 누르면 **그 요청 한 건 안에서 준비·반입·결과 저장까지 끝낸다**. 브라우저가 짧게 직렬화해 Resolve API 를 동시에 호출하지 않는다. 서버 영구 큐는 쓰지 않는다(2026-08-25 `aa0985b9` 로 복원). | 코드가 현행 기준 — `backend/app/routers/resolve_integration.py` |
 | **공유 서버 이사** | 서버 PC·IP가 바뀌면 관리자가 관리자 창에서 **[팀에 공지]** 를 누른다. 작업자에게 알림이 뜨고 **알림을 한 번 누르면 새 주소로 전환**된다(옛 토큰은 그때 지워진다). | [docs/SERVER_RELOCATION.md](docs/SERVER_RELOCATION.md) |
 | **프로그램 업데이트** | 설정 → 프로그램 업데이트. 진행 중 생성이 없을 때만 종료·교체·재시작한다. | [release/README.md](release/README.md) |
 
@@ -89,10 +89,10 @@ git sparse-checkout set backend frontend tools
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **구조 원칙** — 어디에 무슨 코드를 두는가(이 저장소의 규칙) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/AI_CONTEXT.md](docs/AI_CONTEXT.md) | 현행 구조 지도 · AI 에게 통째로 붙여넣는 자기완결 브리프 |
 | [docs/RISK_REDUCTION_PLAN_2026-08-15.md](docs/RISK_REDUCTION_PLAN_2026-08-15.md) | 위험 항목 상태를 바꾸는 단일 출처(Gate 0 표) |
-| [docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) | Resolve 전송 큐 v3 — 상태 전이·중단 복구·잠금 계약 |
+| [docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) | Resolve 전송 큐 v3 **설계 이력** — HEAD 구현은 큐 없이 직접 전송이다. 큐 재도입 작업 진행 중이므로 코드를 먼저 본다 |
 | [docs/SERVER_RELOCATION.md](docs/SERVER_RELOCATION.md) | 공유 서버 주소 이사 — 공지 발행·원클릭 전환·수동 대안 |
 | [docs/TELEMETRY_DRAIN_LIFECYCLE.md](docs/TELEMETRY_DRAIN_LIFECYCLE.md) | 로컬 응답·관리 텔레메트리 전송·마지막 성공 관측 계약 |
-| [docs/SHARE_STATE_COMPENSATION.md](docs/SHARE_STATE_COMPENSATION.md) | 공유 해제·최종 해제의 로컬/서버 일관성 계약 |
+| [docs/SHARE_STATE_RECONCILIATION_DESIGN.md](docs/SHARE_STATE_RECONCILIATION_DESIGN.md) | 공유·최종 상태의 현행 계약 — 서버 권위 원장·converge-forward 수렴 (옛 즉시 보상 계약 `SHARE_STATE_COMPENSATION` 은 대체됨) |
 | [docs/DATA_OWNERSHIP.md](docs/DATA_OWNERSHIP.md) · [docs/WORKSPACE_DATA_CONTRACT.md](docs/WORKSPACE_DATA_CONTRACT.md) | 데이터 소유권·워크스페이스 계약 |
 | [docs/신원과_모드_가이드.md](docs/신원과_모드_가이드.md) | 신원·실행 모드 기준 문서(문서 위상 표 포함) |
 | [docs/SERVER.md](docs/SERVER.md) · [docs/SERVER_RECOVERY.md](docs/SERVER_RECOVERY.md) | 서버 운영·자동복구 |

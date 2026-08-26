@@ -24,13 +24,15 @@ Higgsfield 로 만든 이미지·영상을 팀이 한곳에 모아 **탐색·태
 ## 2. ★가장 중요한 구조 원칙 — "서버는 생성하지 않는다"
 
 ```
-[jay PC]    자기 Higgsfield CLI ─┐
-[oz1 PC]    자기 Higgsfield CLI ─┤── push(메타데이터) ──▶ [서버 = 공유 DB] ──▶ 팀 전원이 브라우저로 공유
-[다른 팀원] 자기 Higgsfield CLI ─┘                          (생성 안 함 · 모아서 보여주기만)
+[jay PC]    자기 CLI ─▶ [내 로컬 DB] ─┐
+[oz1 PC]    자기 CLI ─▶ [내 로컬 DB] ─┼─ 팀에 발행한 것만 ─▶ [서버] ─▶ 팀 전원이 브라우저로 봄
+[다른 팀원] 자기 CLI ─▶ [내 로컬 DB] ─┘   (+크레딧·관리 집계)      (생성 안 함)
 ```
 
 - **생성·재생성은 전원 각자 로컬 CLI**(자기 크레딧). 서버는 어떤 CLI 에도 의존하지 않는다 → 클라우드로 옮겨도 동작.
-- **서버로는 결과물 메타데이터만 push**. 미디어는 Higgsfield CloudFront **공개 URL** 을 그대로 참조한다
+- **내 생성물의 정답은 내 로컬 DB** 다(`routers/_proxy.py` 의 로컬 우선 목록). 서버로 가는 것은
+  **팀에 발행한 것**과 크레딧·관리 집계뿐이다 — 소유권 경계는 [DATA_OWNERSHIP.md](DATA_OWNERSHIP.md).
+  미디어는 Higgsfield CloudFront **공개 URL** 을 그대로 참조한다
   (기본 설정에서는 바이트 전송 불필요). 단 `CONTENT_HUB_MEDIA_PRESERVATION=1` 을 명시한 설치본만
   예외로 원본을 자기 `MEDIA_DIR`(기본 `backend/data/media`, `CONTENT_HUB_DATA`·`CONTENT_HUB_MEDIA`
   로 변경 가능) 로 내려받는다 — 플래그 기본값은 `0` 이다(§9 참조).
@@ -281,7 +283,7 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 | **`media_preservation`** | 공유·최종 원본 보존 영속 큐 | generation_id, reason(shared/final/manual/admin), status, attempts, cached/failed/skipped_count, bytes_cached, 안전한 error_code, next_retry_at |
 | `reference`+`gen_reference` | 생성에 쓴 레퍼런스(N:N) | role(@Image1/@Video/@start…), source, file_path, source_url |
 | `tag`+`gen_tag` / `auto_tag`+`gen_auto_tag` | 일반 태그 / 자동태그(별도 네임스페이스·owner 스코프·'무장' 시 새 생성 자동적용) | name |
-| **`history`** | 계보(타입드 엣지, 모듈은 `repo/lineage.py`) | parent_gen_id → child_gen_id, **relation**: `derived`(재생성/가져오기, 강한 1부모) · `reference`(@소스 생성, 약한 다부모). UNIQUE(parent,child,relation) |
+| **`history`** | 계보(타입드 엣지 — 쓰기·계보 헬퍼는 `repo/lineage.py`, 조회·그래프는 `repo/history.py`) | parent_gen_id → child_gen_id, **relation**: `derived`(재생성/가져오기, 강한 1부모) · `reference`(@소스 생성, 약한 다부모). UNIQUE(parent,child,relation) |
 | `share` | 팀 공유 발행 | generation_id, shared_by, visibility |
 | `generation_comment`(+`_read`,+`_seen`) | 공유 코멘트 스레드 + 읽음/확인 | gen_id, author, text, parent_id |
 | `project`+`project_member` | 작업 묶음(공유·이동 단위) | name, kind, archived / project_id, creator_uid, project_role |

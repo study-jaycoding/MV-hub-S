@@ -52,17 +52,17 @@ shared     여러 feature 가 공유 — ui(공통 컴포넌트) / lib(순수 �
 
 > [!NOTE]
 > 지금 실제 폴더는 `components/`의 12개 그룹(`scene`·`assets`·`manage`·`spotlight`·`settings`…)
-> + `lib/`(173개 훅·유틸) 형태로, 이미 feature 성격의 그룹이 잡혀 있다. 위 구조는 그걸
+> + `lib/`(175개 훅·유틸) 형태로, 이미 feature 성격의 그룹이 잡혀 있다. 위 구조는 그걸
 > **명시적 규칙으로 굳히는 것**이지 폴더를 대이사하자는 게 아니다. (대이사는 P 단계에서 필요할 때만, 조각으로.)
 
 ### 백엔드 (`backend/app`)
 
 ```
-routers     HTTP 만 — 요청/응답 변환, 인증 통과, usecase 호출          (23개)
+routers     HTTP 만 — 요청/응답 변환, 인증 통과, usecase 호출          (24개)
   ▼
 usecases    업무 흐름 — 여러 repo·부수효과(WS·PM·agent signal)를 하나로 묶는다   (4개)
   ▼
-repo        데이터 만 — SQL·트랜잭션 (facade __init__.py 유지, 내부만 분할)   (37개 모듈)
+repo        데이터 만 — SQL·트랜잭션 (facade __init__.py 유지, 내부만 분할)   (39개 모듈)
 services    asset_tree·cli_bridge·media_cache·thumbs·syncer·resolve_*·
             server_relocation 등 도메인 IO (usecase 가 호출)              (61개)
 ```
@@ -83,7 +83,7 @@ services    asset_tree·cli_bridge·media_cache·thumbs·syncer·resolve_*·
 
 | 묶음 | 하는 일 | 계약 문서 |
 |---|---|---|
-| `services/resolve_*` | DaVinci Resolve 전송 큐(접수·준비·반입·중단 복구) | [docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) |
+| `services/resolve_*` | DaVinci Resolve 전송 | 코드가 현행 기준(설계 이력은 [docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md)) |
 | `services/server_relocation.py` | 공유 서버 주소 이사 공지 발행·수신·전환 | [docs/SERVER_RELOCATION.md](docs/SERVER_RELOCATION.md) |
 | `services/telemetry_drain*` | 관리 텔레메트리 전송·재시도·마지막 성공 관측 | [docs/TELEMETRY_DRAIN_LIFECYCLE.md](docs/TELEMETRY_DRAIN_LIFECYCLE.md) |
 | `services/cli_bridge.py` | Higgsfield CLI 호출 경계(필드 매핑·pin) | [docs/HF_CLI_UPGRADE.md](docs/HF_CLI_UPGRADE.md) |
@@ -211,7 +211,7 @@ SceneBoard 를 크게 건드리는 단계(P2~P4)는 **실측 라인을 흔들지
 | 트랜잭션은 transaction-root 에서 `BEGIN IMMEDIATE`, **SELECT 보다 먼저** 연다 | 읽고 나서 잠그면 그 사이에 값이 바뀐다(TOCTOU). 안쪽에서 `get_connection` 을 또 여는 중첩도 금지 | `repo/*` |
 | 인증 시크릿 캐시 키에 `pool_epoch` 를 넣는다 | DB 를 복원·교체하면 옛 시크릿으로 통과하는 빈틈이 생긴다 | `db.py:pool_epoch()` |
 | 로컬 전용 라우트는 loopback + Host 헤더를 검사한다 | 외부 웹페이지가 브라우저를 통해 내 PC 의 API 를 두드리는 공격(DNS rebinding)을 막는다 | `services/request_guards.py` |
-| 프런트의 비동기 갱신은 seq 가드를 둔다 | 느린 응답이 뒤늦게 도착해 최신 화면을 덮어쓰면 안 된다 | `lib/useResolveTransferActions.ts` 등 |
+| 프런트의 비동기 갱신은 seq 가드를 둔다 | 느린 응답이 뒤늦게 도착해 최신 화면을 덮어쓰면 안 된다 | `lib/useGenerationLibraryData.ts` · `components/GenCommentPanel.tsx` |
 | 경과 시간 측정은 `performance.now()` | 벽시계는 시스템 시간 변경·NTP 보정에 흔들려서 음수 경과가 나온다 | 프런트 공통 |
 
 ---

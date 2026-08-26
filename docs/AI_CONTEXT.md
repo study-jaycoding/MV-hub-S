@@ -29,8 +29,9 @@ status: active
 원본 개인용 `content-hub` 를 **서버화한 클론**(기능 상위집합)이다.
 
 **가장 중요한 운영 모델(§1)**: 서버는 **생성을 하지 않는다.** 팀원 각자가 **자기 PC·자기 힉스필드
-CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. 서버는 그것을 모은 **공유 DB**이며,
-허브는 그 DB를 보는 창구다. **힉스필드 토큰은 각자 PC 밖으로 나가지 않는다.**
+CLI**로 생성한다. 생성 결과는 **내 로컬 DB 가 정답**이고(`routers/_proxy.py` 의 로컬 우선 목록),
+서버로는 **팀에 발행한 것**과 크레딧·관리 집계만 간다. 허브는 로컬을 먼저 읽고 팀 항목만 서버에서
+가져온다. **힉스필드 토큰은 각자 PC 밖으로 나가지 않는다.**
 
 ---
 
@@ -182,7 +183,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). 주요 엔�
 | `media_preservation` | 공유·최종 원본 보존 영속 큐 | generation_id, reason, status, attempts, cached/failed/skipped_count, bytes_cached, 안전한 error_code, next_retry_at |
 | `reference`+`gen_reference` | 생성에 쓴 레퍼런스(N:N) | role(@Image1/@Video/@start…), source, file_path, source_url |
 | `tag`+`gen_tag` / `auto_tag`+`gen_auto_tag` | 일반 태그 / 자동태그(별도 네임스페이스·사이드바 전용·'무장'시 새 생성 자동적용) | name |
-| **`history`** | 계보(타입드 엣지, 모듈은 `repo/lineage.py`) | parent_gen_id → child_gen_id, **relation**('derived'=재생성/가져오기 강한 1부모, 'reference'=@소스 생성 약한 다부모), UNIQUE(parent,child,relation) |
+| **`history`** | 계보(타입드 엣지 — 쓰기·계보 헬퍼는 `repo/lineage.py`, 조회·그래프는 `repo/history.py`) | parent_gen_id → child_gen_id, **relation**('derived'=재생성/가져오기 강한 1부모, 'reference'=@소스 생성 약한 다부모), UNIQUE(parent,child,relation) |
 | `share` | 팀 공유 발행 | generation_id, shared_by, visibility |
 | `generation_comment`+`_seen` | 공유 코멘트 스레드+코멘트 단위 확인 | gen_id, author, text, parent_id, muted |
 | `project`+`project_member` | 작업 묶음(공유·이동 단위) | name, kind, archived(콜드분리) / project_id, creator_uid, project_role |

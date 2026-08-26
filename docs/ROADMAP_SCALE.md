@@ -28,7 +28,7 @@ status: review-required
 
 - `generations.py`의 조회·행 보강·facet·계보·ID 해석·CLI 동기화는 `generations_query`·`generation_rows`·`facets`·`history`·`lineage`·`id_resolve`·`generation_sync`로 분리된 상태다. 공용 레퍼런스 쓰기는 `generation_references`가 맡는다.
 - `manage.py`의 스키마·텔레메트리·거래 매칭·분석 조회·작업 CRUD를 각각 `manage_schema`·`manage_telemetry`·`manage_transactions`·`manage_analytics`·`manage_tasks`로 분리했다. 기존 `from app.repo import manage` 호출은 파사드로 유지한다.
-- `manage.py`는 약 1,600줄에서 515줄로 감소했다. `manage_tasks`는 컷 일괄 조회·관리 허브 소요시간 폴백·담당자 트랜잭션을 함께 소유하며, 기존 파사드 테스트와 브라우저 작업탭 스모크로 경계를 고정한다.
+- `manage.py`는 약 1,600줄에서 분할됐다(현재 `repo/manage.py` 1,079줄 — 2026-08-26 실측). `manage_tasks`는 컷 일괄 조회·관리 허브 소요시간 폴백·담당자 트랜잭션을 함께 소유하며, 기존 파사드 테스트와 브라우저 작업탭 스모크로 경계를 고정한다.
 - `routers/assets.py` 분리는 아직 보류다. 파일 시스템·watcher·업로드가 함께 있어 실제 Assets 스모크가 선행되어야 한다.
 
 **(a) 착수 트리거**: 같은 파일에서 작업 충돌 반복 / 신규 기능이 계속 이 파일에 붙어 리뷰 범위 비대 / 수정 시 테스트 영향 예측 곤란 / 신규 개발자 파악 지연.

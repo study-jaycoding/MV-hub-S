@@ -159,12 +159,12 @@ proxying() = AUTH off + shared_server_token 있음). 그래서 `/api/manage/*` �
 - `/api/auth/config` 는 **로컬 전용**(프록시 안 함) → manage_enabled(버튼 노출)는 **로컬 허브** 플래그 기준.
 - PM 데이터는 **팀 전체** 이므로 **공유 서버**에 있어야 한다.
 - ∴ 운영 적용 = **공유 서버**(manage 라우트·데이터·CONTENT_HUB_MANAGE=1) **+ 각 로컬 허브**(새 프론트 버튼·CONTENT_HUB_MANAGE=1, 버튼은 로컬 config 로 뜸) 둘 다 갱신.
-- **격리 테스트**: 테스트 DB 의 shared_server_token 을 지우면 프록시 꺼져 로컬에서 PM 직접 처리(run-test.bat 단독 검증). 검증 완료: summary·planning PUT/GET 왕복 정상.
+- **격리 테스트**: 테스트 DB 의 shared_server_token 을 지우면 프록시 꺼져 로컬에서 PM 직접 처리(`test_dev.bat` 단독 검증). 검증 완료: summary·planning PUT/GET 왕복 정상.
 
 ## 6-3. 운영 함정 — serve.py SO_REUSEADDR 포트 스태킹
 serve.py 가 SO_REUSEADDR 을 써서 **여러 서버가 같은 포트에 겹쳐 LISTEN** 가능 → 요청이
 옛/새 코드로 랜덤 분산(버튼 사라짐·간헐 404). MV_server.bat 은 시작 전 포트를 안 죽인다.
-run-test.bat 은 시작 전 포트 강제 종료 추가함(MV_agent.bat 과 동일). 운영도 재시작 시 옛 프로세스 종료 필요.
+`test_dev.bat` 은 시작 전 포트 강제 종료를 한다(`MV_agent.bat` 과 동일). 운영도 재시작 시 옛 프로세스 종료 필요.
 
 ## 7. 주의사항 (검증·코드에서 확인된 함정)
 - 매칭은 **윈도우 + 모델 일치 강제** (없으면 오귀속)

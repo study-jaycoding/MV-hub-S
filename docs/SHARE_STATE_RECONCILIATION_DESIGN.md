@@ -32,11 +32,11 @@ status: active
 
 | 경로 | 현재 | v2 |
 |---|---|---|
-| publish 번들 (publish.py:399-439, 벌크 포함) | 서버 성공 후 로컬 repo.publish, 실패 시 예외 | 서버 호출 전 대상 전부 원장 등록(한 트랜잭션), 응답 blocked_ids 만 CAS 취소 |
-| finalize (share.py:305-343) | 미러 실패 시 서버 back-out 1회성 | back-out 삭제, 원장 수렴. 동반 발행은 합성 의도(아래 §4) |
-| unfinalize (share.py:95-157) | 미러 실패 시 서버 재-finalize 1회성 | back-out 삭제, 원장 수렴 |
-| unpublish (share.py:218-233) | 보상 없음(예외 전파) | 원장 수렴 (신규 보호) |
-| 로컬 publish 라우트 (share.py:177) | 프록시 분기 없음 — 프록시 모드에서 로컬만 공유되는 API 구멍 | 프록시 모드면 400/의도 차단(UI 는 번들 경로 사용 — 외부 호출자 구멍 봉쇄) |
+| publish 번들 (`publish.py` 의 `publish_bundle_to_server`, 벌크 포함) | 서버 성공 후 로컬 repo.publish, 실패 시 예외 | 서버 호출 전 대상 전부 원장 등록(한 트랜잭션), 응답 blocked_ids 만 CAS 취소 |
+| finalize (`share.py` 의 `finalize`) | 미러 실패 시 서버 back-out 1회성 | back-out 삭제, 원장 수렴. 동반 발행은 합성 의도(아래 §4) |
+| unfinalize (`share.py` 의 `unfinalize`) | 미러 실패 시 서버 재-finalize 1회성 | back-out 삭제, 원장 수렴 |
+| unpublish (`share.py` 의 `unpublish`) | 보상 없음(예외 전파) | 원장 수렴 (신규 보호) |
+| 로컬 publish 라우트 (`share.py` 의 `publish`) | 프록시 분기 없음 — 프록시 모드에서 로컬만 공유되는 API 구멍 | 프록시 모드면 400/의도 차단(UI 는 번들 경로 사용 — 외부 호출자 구멍 봉쇄) |
 
 ## 2. 원장 스키마 (로컬 허브 content DB 전용, 서버·번들·텔레메트리 미포함)
 
@@ -124,7 +124,7 @@ operation_kind='composite_finalize', base_shared/base_final 저장. 단계:
 
 - 서버 성공 + 로컬 미러 대기: **200(서버 상태 본문) + 수렴 대기 표시**(응답 필드
   `mirror_pending: true`) — 503 을 주면 프론트가 실패로 표시해 사용자가 또 누른다
-  (useGenerationCardActions.ts:97). 프론트는 mirror_pending 이면 성공 토스트 + 카드 상태는
+  (`useGenerationCardActions.ts` 의 `onUnpublish`). 프론트는 mirror_pending 이면 성공 토스트 + 카드 상태는
   다음 수렴/재조회에 맡김.
 - 원장 선기록 실패(서버 미호출): 503 유지 — 진짜 실패.
 
