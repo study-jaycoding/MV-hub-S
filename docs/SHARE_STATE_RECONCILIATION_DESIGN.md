@@ -1,3 +1,8 @@
+---
+updated: 2026-08-24
+status: active
+---
+
 # 공유/골드 상태 desired-state reconciliation 설계 v2 (배치 3)
 
 작성: 클로드 초안(2026-08-20) → 코덱스 xhigh 적대 리뷰(P0 6건·P1 3건) → v2 반영.

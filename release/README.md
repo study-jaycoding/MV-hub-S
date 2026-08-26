@@ -1,3 +1,8 @@
+---
+updated: 2026-08-14
+status: review-required
+---
+
 # MV Hub Release
 
 작업자 PC에 Git/Python/Node.js/npm 없이 배포하기 위한 릴리즈 도구입니다.

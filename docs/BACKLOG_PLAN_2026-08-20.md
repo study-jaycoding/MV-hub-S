@@ -1,3 +1,8 @@
+---
+updated: 2026-08-20
+status: archived
+---
+
 # 백로그 정리 실행 계획 (2026-08-20, 클로드 초안 → 코덱스 xhigh 적대 검토 → 합의)
 
 기준 커밋 `0797f80b`. 잔여 상태의 단일 출처는 RISK_REDUCTION_PLAN Gate 0 표(유일 잔여 RL-23 🔶).

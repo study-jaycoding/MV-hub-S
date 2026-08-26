@@ -4,7 +4,10 @@ aliases:
 tags:
   - mvhub
   - mvhub/보존
-status: 과거 기록 — 현행 구현·작업 지시로 사용 금지
+status: superseded
+superseded_by:
+  - ../CLAUDE.md
+  - ../AGENTS.md
 updated: 2026-08-24
 ---
 

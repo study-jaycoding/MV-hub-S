@@ -1,3 +1,8 @@
+---
+updated: 2026-08-20
+status: snapshot
+---
+
 # P2 소진 계획 코덱스 적대 검토 원문 (2026-08-20, gpt-5.6-sol xhigh)
 
 > P2_CLOSEOUT_PLAN_2026-08-20.md v2 의 근거 문서. 검토 기준 커밋: dev 262c15bd,

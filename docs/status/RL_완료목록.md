@@ -4,7 +4,7 @@ aliases:
 tags:
   - mvhub
   - mvhub/현황
-status: 현황 참고 — 상태 변경의 단일 출처는 Gate 0 표
+status: snapshot
 updated: 2026-08-19
 ---
 

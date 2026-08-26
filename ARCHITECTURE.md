@@ -7,7 +7,7 @@ tags:
   - mvhub/구조
   - 기준문서
 updated: 2026-08-24
-status: 현행 기준
+status: active
 ---
 
 # ARCHITECTURE.md — MV-hub-S 구조 원칙

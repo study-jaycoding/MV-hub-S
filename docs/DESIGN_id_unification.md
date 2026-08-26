@@ -1,3 +1,8 @@
+---
+updated: 2026-06-25
+status: review-required
+---
+
 # 설계: id 이중성(uuid ↔ job_id) 통일
 
 > 적대적 리뷰 ① 후속. **설계 문서 — 아직 구현 전.** Phase 0 만 저위험·고가치라 먼저 착수 가능.

@@ -1,3 +1,8 @@
+---
+updated: 2026-07-02
+status: review-required
+---
+
 # PM 대시보드 설계 (Project Management Dashboard)
 
 > ⚠️ **초기 설계 문서** — 착수 시점의 계획이며, 현재 구현과 다를 수 있다.

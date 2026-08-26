@@ -1,9 +1,14 @@
+---
+updated: 2026-08-17
+status: active
+---
+
 # 데이터 소유권과 실행 모드 기준
 
 > 리아키텍처 중 데이터를 잘못된 저장소로 보내지 않기 위한 기준 문서다.
 > API·저장·동기화 코드를 바꾸기 전에 이 문서와 `신원과_모드_가이드.md`를 함께 확인한다.
 >
-> 최종 확인: 2026-08-05. 근거: `backend/app/routers/_proxy.py`, `backend/app/db.py`,
+> 근거: `backend/app/routers/_proxy.py`, `backend/app/db.py`,
 > `backend/app/active_account.py`, `backend/app/deps.py`, `backend/tests/test_proxy_ownership.py`.
 
 ---

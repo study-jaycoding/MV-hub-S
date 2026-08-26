@@ -1,3 +1,8 @@
+---
+updated: 2026-08-25
+status: active
+---
+
 # Content Hub — 서버 운영 가이드
 
 이 저장소(`MV-hub-S`)를 **서버 PC에 git 클론**해 공유 서버로 운영한다. 작업자 PC는

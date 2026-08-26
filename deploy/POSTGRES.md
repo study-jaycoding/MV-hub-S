@@ -1,3 +1,8 @@
+---
+updated: 2026-08-03
+status: active
+---
+
 # PostgreSQL 백엔드 (Phase 3) — 현재 전환 금지
 
 > **운영 상태(2026-07-31): PostgreSQL 런타임은 미완성이며 사용할 수 없습니다.**

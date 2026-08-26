@@ -4,7 +4,7 @@ aliases:
 tags:
   - mvhub
   - mvhub/현황
-status: 현행 기준 — 현황 요약
+status: active
 updated: 2026-08-24
 ---
 

@@ -6,7 +6,7 @@ tags:
   - mvhub
   - mvhub/진입점
 updated: 2026-08-24
-status: 코드 기준선 병합 완료 · 운영 배포 검증 대기
+status: active
 ---
 
 # MV Hub

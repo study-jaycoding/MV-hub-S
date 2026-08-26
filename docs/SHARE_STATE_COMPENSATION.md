@@ -1,3 +1,10 @@
+---
+updated: 2026-08-26
+status: superseded
+superseded_by:
+  - SHARE_STATE_RECONCILIATION_DESIGN.md
+---
+
 # 공유·최종 상태 보상 계약 (RL-11 — 대체됨)
 
 기준 구현: `18d63560`

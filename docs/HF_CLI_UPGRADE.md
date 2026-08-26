@@ -1,3 +1,8 @@
+---
+updated: 2026-08-26
+status: active
+---
+
 # Higgsfield CLI 업그레이드 절차
 
 우리 앱은 `@higgsfield/cli` 를 로컬에서 실행해 생성물을 만들고 수집한다. **CLI 는

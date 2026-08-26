@@ -1,3 +1,8 @@
+---
+updated: 2026-08-26
+status: active
+---
+
 # 테스트 실행 가이드
 
 테스트용 런처는 파일명 앞에 **`test_`**가 붙는다. 나머지 `MV_server.bat`·`MV_agent.bat` 등은 운영/실사용이다.

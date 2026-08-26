@@ -1,3 +1,12 @@
+---
+updated: 2026-08-03
+status: superseded
+superseded_by:
+  - ARCHITECTURE.md
+  - AI_CONTEXT.md
+  - 신원과_모드_가이드.md
+---
+
 # Content Hub — 설계 명세
 
 > ⚠️ **구(舊) 명세 주의**: 이 문서는 개인용 `content-hub` 시절(서버가 직접 생성) 명세다.
