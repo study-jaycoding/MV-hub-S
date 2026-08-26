@@ -14,8 +14,10 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import re
 from collections import Counter
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
@@ -509,6 +511,43 @@ def download_agent():
     )
 
 
+_BAT_PIN_RE = re.compile(r"^[0-9A-Za-z.+-]+$")
+_BAT_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$")
+_BAT_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+
+
+def _bat_safe_field(value: str, pattern: "re.Pattern[str]", label: str) -> str:
+    """run-bat 에 따옴표 없이 삽입되는 값 — allowlist 문자만 허용(공백·cmd 메타문자·비ASCII 거부)."""
+    text = str(value or "").strip()
+    if not text or pattern.fullmatch(text) is None:
+        raise ValueError(f"{label}: {text!r}")
+    return text
+
+
+def _bat_safe_server(value: str) -> str:
+    """요청 base_url 을 scheme://host[:port] 로 재구성 — 경로·쿼리·userinfo·이상 문자는 거부."""
+    parsed = urlsplit(str(value or "").strip())
+    try:
+        port = parsed.port
+    except ValueError:
+        port = -1
+    host = parsed.hostname or ""
+    ok = (
+        parsed.scheme in ("http", "https")
+        and bool(host)
+        and _BAT_HOST_RE.fullmatch(host) is not None
+        and port != -1
+        and not parsed.username
+        and not parsed.password
+        and parsed.path in ("", "/")
+        and not parsed.query
+        and not parsed.fragment
+    )
+    if not ok:
+        raise ValueError(f"server: {value!r}")
+    return f"{parsed.scheme}://{host}" + (f":{port}" if port else "")
+
+
 @router.get("/agent/run-bat")
 def run_agent_bat(request: Request):
     """원클릭 실행용 MV_agent.bat — 서버 주소·로그인 이메일을 채워 반환. 더블클릭하면
@@ -536,14 +575,25 @@ def run_agent_bat(request: Request):
     if not _pin:
         _logger.error("agent run-bat 생성 차단: hf_cli_version.txt 가 없거나 비어 있음")
         raise HTTPException(status_code=503, detail=_pin_detail)
-    cli_ensure = f"""echo [3/5] 힉스필드 CLI 확인(고정 {_pin})...
+    # 동적 값 3개는 따옴표 없이 bat 에 들어간다 — allowlist 밖(공백·따옴표·& | < > ^ %·비ASCII)이면
+    # 400. 생성되는 bat 전체가 ASCII 여야 하는 이유는 루트 .bat 과 같다(CP949 콘솔 함정,
+    # test_bat_launchers_are_ascii_only 참고). 한글 안내는 브라우저(허브 화면)가 맡는다.
+    try:
+        server = _bat_safe_server(server)
+        email = _bat_safe_field(email, _BAT_EMAIL_RE, "login email")
+        _pin = _bat_safe_field(_pin, _BAT_PIN_RE, "CLI version pin")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"에이전트 설치 파일에 넣을 수 없는 값입니다: {exc}"
+        ) from exc
+    cli_ensure = f"""echo [3/5] Checking Higgsfield CLI (pinned {_pin})...
 set "HF=higgsfield"
 where higgsfield >nul 2>nul || set "HF=hf"
 set "CURVER="
 where %HF% >nul 2>nul && for /f "tokens=2" %%v in ('%HF% version 2^>nul') do if not defined CURVER set "CURVER=%%v"
 if not "%CURVER%"=="{_pin}" (
-  echo     힉스필드 CLI 고정 버전 {_pin} 설치/교정...
-  call npm install -g @higgsfield/cli@{_pin} || (echo [오류] CLI 설치 실패 - 인터넷/npm 권한을 확인하세요. & pause & exit /b 1)
+  echo     Installing the pinned Higgsfield CLI {_pin}...
+  call npm install -g @higgsfield/cli@{_pin} || (echo [ERROR] CLI install failed - check internet access and npm permissions. & pause & exit /b 1)
   call :refreshpath
   set "HF=higgsfield"
 )"""
@@ -552,38 +602,40 @@ if not "%CURVER%"=="{_pin}" (
     #    재읽기(베스트에포트), 그래도 안 잡히면 '새 창에서 다시 실행' 안내로 수렴.
     #  · higgsfield 는 npm 셰임(.CMD)이라 배치에서 반드시 `call` 로 호출(안 하면 제어 안 돌아옴).
     #  · `higgsfield auth login` 은 대화형(계정 로그인)이라 자동화 불가 — 처음 1회 사람이 직접.
+    #  · 본문은 ASCII 전용(위 검증 + test_generated_bat_is_ascii_only). chcp 65001 은 에이전트
+    #    Python 출력(한글 로그)을 위해 유지한다.
     bat = rf"""@echo off
 chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 
 echo ============================================================
-echo  Content Hub 에이전트 - 자동 설치 + 실행
+echo  MV Hub agent - auto install + run
 echo ============================================================
 
-echo [0/5] agent_push.py 최신본 받는 중...
+echo [0/5] Downloading the latest agent_push.py...
 curl -fsSL -o "%~dp0agent_push.py.new" "{server}/api/agent/download" 2>nul || powershell -NoProfile -Command "Invoke-WebRequest -Uri '{server}/api/agent/download' -OutFile 'agent_push.py.new'" 2>nul
 if exist "%~dp0agent_push.py.new" move /y "%~dp0agent_push.py.new" "%~dp0agent_push.py" >nul
-if not exist "%~dp0agent_push.py" (echo [오류] agent_push.py 다운로드 실패 - 서버 주소를 확인하세요. & pause & exit /b 1)
+if not exist "%~dp0agent_push.py" (echo [ERROR] agent_push.py download failed - check the server address. & pause & exit /b 1)
 
 set "NEEDREOPEN=0"
 
-echo [1/5] Python 확인...
+echo [1/5] Checking Python...
 set "PY=python"
 where python >nul 2>nul || set "PY=py"
 where %PY% >nul 2>nul
 if errorlevel 1 (
-  echo     Python 미설치 - winget 으로 설치 시도...
-  where winget >nul 2>nul || (echo [오류] winget 이 없어 자동 설치 불가. https://www.python.org 에서 Python 설치 후 다시 실행하세요. & pause & exit /b 1)
+  echo     Python not found - trying a winget install...
+  where winget >nul 2>nul || (echo [ERROR] winget is missing, cannot auto-install. Install Python from https://www.python.org and run again. & pause & exit /b 1)
   winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements --silent
   set "NEEDREOPEN=1"
 )
 
-echo [2/5] Node.js(npm) 확인...
+echo [2/5] Checking Node.js (npm)...
 where npm >nul 2>nul
 if errorlevel 1 (
-  echo     Node.js 미설치 - winget 으로 설치 시도...
-  where winget >nul 2>nul || (echo [오류] winget 이 없어 자동 설치 불가. https://nodejs.org 에서 설치 후 다시 실행하세요. & pause & exit /b 1)
+  echo     Node.js not found - trying a winget install...
+  where winget >nul 2>nul || (echo [ERROR] winget is missing, cannot auto-install. Install Node.js from https://nodejs.org and run again. & pause & exit /b 1)
   winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements --silent
   set "NEEDREOPEN=1"
 )
@@ -592,41 +644,41 @@ if "%NEEDREOPEN%"=="1" call :refreshpath
 
 set "PY=python"
 where python >nul 2>nul || set "PY=py"
-where %PY% >nul 2>nul || (echo. & echo [안내] Python 설치는 완료됐지만 현재 창에 PATH 가 반영되지 않았습니다. & echo        이 창을 닫고 MV_agent.bat 을 다시 더블클릭하세요. & pause & exit /b 0)
-where npm >nul 2>nul || (echo. & echo [안내] Node.js 설치는 완료됐지만 현재 창에 PATH 가 반영되지 않았습니다. & echo        이 창을 닫고 MV_agent.bat 을 다시 더블클릭하세요. & pause & exit /b 0)
+where %PY% >nul 2>nul || (echo. & echo [INFO] Python was installed but PATH is not updated in this window yet. & echo        Close this window and double-click MV_agent.bat again. & pause & exit /b 0)
+where npm >nul 2>nul || (echo. & echo [INFO] Node.js was installed but PATH is not updated in this window yet. & echo        Close this window and double-click MV_agent.bat again. & pause & exit /b 0)
 
 {cli_ensure}
 
-echo [4/5] 힉스필드 로그인 + workspace 확인...
+echo [4/5] Checking Higgsfield login + workspace...
 call %HF% auth token >nul 2>nul
 if errorlevel 1 (
-  echo     로그인이 필요합니다 - 브라우저 안내에 따라 내 힉스필드 계정으로 로그인하세요.
+  echo     Login required - follow the browser prompt and sign in with your Higgsfield account.
   call %HF% auth login
 )
-rem CLI 1.x 는 workspace 미선택 시 generate 가 실패(rc!=0)한다. 선택 안 돼 있으면 팀 워크스페이스를
-rem 기본 선택(팀 도구). 이미 고른 게 있으면(개인 포함) 존중, 팀이 없으면 단일 워크스페이스로 폴백.
-rem 팀이 여러 개면 임의선택이 위험(엉뚱한 워크스페이스 청구)하므로 아래 안내만.
+rem CLI 1.x fails generate (rc!=0) when no workspace is selected. Pick the team workspace when
+rem nothing is selected (team tool); keep an existing choice; fall back to a single workspace.
+rem With several teams an automatic pick is risky (wrong billing), so only print the guidance below.
 %PY% -c "import subprocess,sys,json; hf=sys.argv[1]; r=subprocess.run([hf,'workspace','list','--json'],capture_output=True,text=True); ws=json.loads(r.stdout or '[]') if r.returncode==0 else []; ws=ws if isinstance(ws,list) else []; sel=any(w.get('is_selected') for w in ws); teams=[w for w in ws if w.get('plan_type')=='team']; pick=(teams[0] if len(teams)==1 else (ws[0] if len(ws)==1 else None)); (not sel and pick) and subprocess.run([hf,'workspace','set',pick['id']])" "%HF%" >nul 2>nul
 call %HF% account status >nul 2>nul
 if errorlevel 1 (
   echo.
-  echo  [조치 필요] 힉스필드 workspace 가 선택되지 않아 생성이 꺼집니다. 한 번만 설정하세요:
+  echo  [ACTION NEEDED] No Higgsfield workspace is selected, so generation is off. Set it once:
   call %HF% workspace list
-  echo     실행:  higgsfield workspace set [id]   그다음 이 창을 닫고 다시 실행하세요.
+  echo     Run:  higgsfield workspace set [id]   then close this window and run again.
   echo.
   pause
   exit /b 0
 )
 
-echo [5/5] 허브 열기 + 에이전트 실행 - 켜두면 작동, 창을 닫으면 멈춥니다.
-rem 기본 브라우저로 허브(우리 프로그램) 자동 열기. 그 뒤 에이전트는 이 창에서 상주.
+echo [5/5] Opening the hub + running the agent - keep this window open; closing it stops the agent.
+rem Open the hub (our app) in the default browser, then the agent stays in this window.
 start "" "{server}"
 %PY% agent_push.py --server {server} --email {email} --watch 30
 pause
 exit /b 0
 
 :refreshpath
-rem winget/npm 설치분 PATH 를 레지스트리(시스템+사용자)에서 다시 읽어 현재 세션에 반영(베스트에포트).
+rem Re-read PATH from the registry (system + user) so winget/npm installs are visible in this session (best effort).
 for /f "skip=2 tokens=2,*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v Path 2^>nul') do set "SysPath=%%b"
 for /f "skip=2 tokens=2,*" %%a in ('reg query "HKCU\Environment" /v Path 2^>nul') do set "UsrPath=%%b"
 set "PATH=%SysPath%;%UsrPath%"

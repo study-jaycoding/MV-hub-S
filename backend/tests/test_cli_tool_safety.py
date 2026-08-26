@@ -146,6 +146,69 @@ class RunAgentBatPinTests(unittest.TestCase):
     def _write_pin(self, text: str) -> None:
         (self.root / "hf_cli_version.txt").write_text(text, encoding="utf-8")
 
+    def _call_with(self, *, email="worker@example.com", base_url="http://127.0.0.1:8010/"):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from app.routers import ingest
+
+        with mock.patch.object(ingest, "BACKEND_DIR", self.backend_dir), mock.patch.object(
+            ingest, "_agent_acc", return_value={"email": email}
+        ):
+            return ingest.run_agent_bat(SimpleNamespace(base_url=base_url))
+
+    def test_generated_bat_is_ascii_only(self):
+        """CP949 콘솔 함정: 서버가 만들어 주는 bat 도 루트 .bat 처럼 ASCII 만 담는다."""
+        self._write_pin("1.1.23\n")
+        raw = self._call().body
+        self.assertTrue(raw.isascii(), "run-bat 본문에 비ASCII 문자가 있다")
+        body = raw.decode("ascii")
+        self.assertIn("MV Hub agent", body)
+        self.assertNotIn("Content Hub", body)
+        self.assertIn(
+            "agent_push.py --server http://127.0.0.1:8010 --email worker@example.com --watch 30",
+            body,
+        )
+        self.assertTrue(body.startswith("@echo off\r\nchcp 65001 >nul\r\n"))
+
+    def test_server_is_rebuilt_as_scheme_host_port(self):
+        self._write_pin("1.1.23\n")
+        body = self._call_with(base_url="http://MyHub.local:8010/").body.decode("ascii")
+        self.assertIn("--server http://myhub.local:8010 --email", body)
+        self.assertIn('"http://myhub.local:8010/api/agent/download"', body)
+
+    def test_unsafe_dynamic_values_are_rejected(self):
+        """server·email·pin 은 따옴표 없이 bat 에 들어간다 — allowlist 밖이면 400."""
+        from fastapi import HTTPException
+
+        self._write_pin("1.1.23\n")
+        for email in [
+            "worker@example.com & calc",
+            "\uc791\uc5c5\uc790@example.com",
+            "a b@example.com",
+            'w"x@example.com',
+            "worker@example.com|more",
+            "",
+        ]:
+            with self.subTest(email=email), self.assertRaises(HTTPException) as ctx:
+                self._call_with(email=email)
+            self.assertEqual(ctx.exception.status_code, 400)
+        for base_url in [
+            'http://127.0.0.1:8010/" & calc',
+            "http://127.0.0.1:8010/hub/",
+            "http://127.0.0.1:8010/?x=1",
+            "ftp://127.0.0.1:8010/",
+            "http://user:pw@127.0.0.1:8010/",
+            "http://127.0.0.1:abc/",
+        ]:
+            with self.subTest(base_url=base_url), self.assertRaises(HTTPException) as ctx:
+                self._call_with(base_url=base_url)
+            self.assertEqual(ctx.exception.status_code, 400)
+        self._write_pin("1.1.23 & calc\n")
+        with self.assertRaises(HTTPException) as ctx:
+            self._call()
+        self.assertEqual(ctx.exception.status_code, 400)
+
     def test_missing_pin_returns_503(self):
         from fastapi import HTTPException
 
