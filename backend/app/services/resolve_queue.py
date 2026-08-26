@@ -1281,7 +1281,7 @@ def queue_snapshot(
     limit: int = 50,
     owner_host_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """GET /api/resolve/queue 응답용 요약. ahead 는 같은 FIFO 안의 앞선 활성 건수."""
+    """큐 목록 요약(2026-08-27 라우트 제거 — 휴면). ahead 는 같은 FIFO 안의 앞선 활성 건수."""
     manifests = scan_projects(project_ids, owner_host_id=owner_host_id)
     active_seen = 0
     rows: list[dict[str, Any]] = []

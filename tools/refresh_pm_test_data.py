@@ -151,23 +151,26 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 
 
 def validate_snapshot_server_url(raw: str) -> str:
-    """test_pull-db 가 넘기는 스냅샷 서버 주소 — ``http(s)://host[:port]`` 만 허용한다.
+    """test_pull-db 가 넘기는 스냅샷 서버 주소 — ``http://host:port`` 만 허용한다.
 
-    bat 인자·환경변수로 들어오는 값이라 경로·쿼리·userinfo·따옴표·공백·cmd 메타문자는 전부
-    거부하고, 통과한 값은 scheme://host[:port] 로 재구성해 돌려준다(끝 슬래시 제거).
+    환경변수(MVHUB_SNAPSHOT_SERVER)로 들어오는 값이라 경로·쿼리·userinfo·따옴표·공백(앞뒤 포함)·
+    cmd 메타문자·https·포트 생략은 전부 거부하고, 통과한 값은 http://host:port 로 재구성해
+    돌려준다(끝 슬래시 제거). 스냅샷 서버(test_push-db)는 LAN 의 평문 http 고정 포트다.
     """
-    text = str(raw or "").strip()
+    text = str(raw or "")
+    if not text or text != text.strip():
+        raise ValueError(f"snapshot server must be http://host:port (got {text!r})")
     parsed = urllib.parse.urlsplit(text)
     try:
         port = parsed.port
     except ValueError:
-        port = -1
+        port = None
     host = parsed.hostname or ""
     ok = (
-        parsed.scheme in ("http", "https")
+        parsed.scheme == "http"
         and bool(host)
         and _HOST_RE.fullmatch(host) is not None
-        and port != -1
+        and port is not None
         and not parsed.username
         and not parsed.password
         and parsed.path in ("", "/")
@@ -176,7 +179,7 @@ def validate_snapshot_server_url(raw: str) -> str:
     )
     if not ok:
         raise ValueError(f"snapshot server must be http://host:port (got {text!r})")
-    return f"{parsed.scheme}://{host}" + (f":{port}" if port else "")
+    return f"http://{host}:{port}"
 
 
 def detail_text(payload: Any) -> str:
@@ -351,7 +354,9 @@ def main() -> int:
         try:
             raw_src = validate_snapshot_server_url(raw_src)
         except ValueError as exc:
-            fail(str(exc))
+            # 주소 형식 오류는 코드 2 — 복사·다운로드 실패(1)와 구분한다.
+            print(f"[ERROR] {exc}")
+            raise SystemExit(2) from exc
         src_label = raw_src
     else:
         src = Path(raw_src).resolve()

@@ -114,7 +114,7 @@ HTTP 요청
 |---|---|
 | `library.py` | 목록·검색·통계·facets·휴지통·**미디어 썸네일**·`tab=my` 계정 스코프 |
 | `generation.py` | 태그/컬러/소스/코멘트·삭제·복원·Higgsfield 검증·계보 조회 (옛 서버측 생성 라우트는 제거됨 — §4.5 `jobs.py` 행 참조) |
-| `gen_requests.py` | **로컬 실행 큐**: 생성요청·pending claim·fulfill·fail |
+| `gen_requests.py` | **로컬 실행 큐**: 생성요청·pending claim·anchor·reconcile·fail(`fulfill` 은 구버전 호환) |
 | `ingest.py` | **push 적재**·known-jobs·`/credits`·`/ingest/account-report`. 생성 텔레메트리와 계정 상태·거래는 각각 영속 outbox에 기록하고 백그라운드 drain만 예약 |
 | `share.py` | 단건 발행/해제/최종/가져오기(번들 송수신은 `publish.py`, 직렬화는 `repo/share.py`). 프록시 공유·최종 상태는 write-ahead 원장 기록 후 서버를 권위로 삼아 converge-forward |
 | `projects.py` | 프로젝트 CRUD·멤버·배정·보관 |
@@ -176,7 +176,7 @@ HTTP 요청
 | `generations_query.py` / `generation_rows.py` / `facets.py` | 목록·직렬화·조회 응답 보강·facet 집계 |
 | `id_resolve.py` | `generation.id`와 외부 `job_id`의 호환 해석 경계 |
 | `lineage.py` / `history.py` / `sources.py` | 계보 엣지·가계 조회·소스 검색 |
-| `gen_requests.py` | 생성 레시피·claim·fulfill mark |
+| `gen_requests.py` | 생성 레시피·claim·anchor·reconcile mark(`fulfill` 은 구버전 호환) |
 | `identity.py` | 생성자·신원 해석(`resolve_display_names`)·`link_accounts_to_creators`·`set_account_hf_creator`·`credit_summary`·`list_members` |
 | `tags.py` | 일반 태그 + 자동태그(별도 네임스페이스, owner 스코프) |
 | `assets.py` | 생성본 코멘트 스레드 + Assets 분리창 파일메타/코멘트 |

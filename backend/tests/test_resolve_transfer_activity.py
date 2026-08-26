@@ -124,3 +124,49 @@ def test_transfer_in_flight_blocks_the_update_activity_check(monkeypatch):
     assert activity["active_total"] == 1
     assert guarded["can_update"] is False
     assert release_update_router._activity()["resolve_active"] == 0
+
+
+def test_gate_reads_the_real_update_state_file(monkeypatch, tmp_path):
+    """업데이트가 checking 을 기록한 뒤 들어온 전송은 409, 기록이 비활성이면 게이트를 통과한다."""
+    import contextlib
+
+    from app.services import release_update as svc
+
+    class Passed(Exception):
+        pass
+
+    @contextlib.asynccontextmanager
+    async def _no_pin():
+        yield ""
+
+    async def _boom(body, request):
+        raise Passed()
+
+    monkeypatch.setattr(resolve_integration, "_require_local_resolve", lambda request: None)
+    monkeypatch.setattr(
+        resolve_integration, "update_in_progress", lambda: svc.update_in_progress(root=tmp_path)
+    )
+    monkeypatch.setattr(resolve_integration, "_pinned_account_scope", _no_pin)
+    monkeypatch.setattr(resolve_integration, "_create_resolve_transfer_pinned", _boom)
+    body = resolve_integration.ResolveTransferIn(gen_ids=["gen-1"])
+
+    async def run():
+        svc.write_state("checking", "확인 중", root=tmp_path, current_version="x")
+        with pytest.raises(HTTPException) as caught:
+            await resolve_integration.create_resolve_transfer(body, object())
+        assert caught.value.status_code == 409
+        assert resolve_transfer.active_transfer_count() == 0
+        svc.write_state("up_to_date", "최신", root=tmp_path, current_version="x")
+        with pytest.raises(Passed):
+            await resolve_integration.create_resolve_transfer(body, object())
+        assert resolve_transfer.active_transfer_count() == 0
+
+    asyncio.run(run())
+
+
+def test_queue_routes_are_gone_but_direct_transfer_routes_remain():
+    paths = {getattr(route, "path", "") for route in resolve_integration.router.routes}
+    assert not any(path.startswith("/api/resolve/queue") for path in paths), paths
+    for keep in ("/api/resolve/transfers", "/api/resolve/transfers/retry",
+                 "/api/resolve/transfers/pending", "/api/resolve/locks", "/api/resolve/status"):
+        assert keep in paths, keep

@@ -3,6 +3,7 @@ import {
   getReleaseUpdateStatus,
   isReleaseUpdateRunning,
   startReleaseUpdate,
+  updateBlockersText,
   type ReleaseUpdateStatus,
 } from "../src/lib/releaseUpdate";
 
@@ -63,5 +64,17 @@ describe("작업자 릴리스 업데이트 API", () => {
     expect(isReleaseUpdateRunning("restarting")).toBe(true);
     expect(isReleaseUpdateRunning("available")).toBe(false);
     expect(isReleaseUpdateRunning("failed")).toBe(false);
+  });
+});
+
+describe("업데이트 차단 사유 문구", () => {
+  it("유료 생성과 Resolve 전송을 나눠 말하고, 없으면 빈 문자열이다", () => {
+    expect(updateBlockersText({ active_total: 2, resolve_active: 0 })).toBe("생성 2건");
+    expect(updateBlockersText({ active_total: 1, resolve_active: 1 })).toBe("Resolve 전송 1건");
+    expect(updateBlockersText({ active_total: 3, resolve_active: 1 })).toBe(
+      "생성 2건 · Resolve 전송 1건",
+    );
+    expect(updateBlockersText({ active_total: 0, resolve_active: 0 })).toBe("");
+    expect(updateBlockersText(null)).toBe("");
   });
 });

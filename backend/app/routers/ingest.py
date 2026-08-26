@@ -511,8 +511,10 @@ def download_agent():
     )
 
 
-_BAT_PIN_RE = re.compile(r"^[0-9A-Za-z.+-]+$")
-_BAT_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$")
+# 선행 "-" 금지: 값이 따옴표 없이 `--server X --email Y` 로 들어가므로 argparse 옵션으로 오인될 수 있다.
+# "%" 금지: bat 실행 시 %NAME% 이 환경변수로 재확장된다.
+_BAT_PIN_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]*$")
+_BAT_EMAIL_RE = re.compile(r"^[A-Za-z0-9._+][A-Za-z0-9._+-]*@[A-Za-z0-9.-]+$")
 _BAT_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 
 

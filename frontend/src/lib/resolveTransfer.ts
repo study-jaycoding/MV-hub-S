@@ -182,7 +182,7 @@ export function checkResolveSelection(selected: Generation[]): ResolveSelectionC
 /**
  * ★"가져온 개수"만 말하면 준비 단계에서 떨어진 원본이 조용히 사라진다. 준비 실패와
  * 가져오기 실패를 합쳐 항상 실패 건수를 함께 적어, 일부만 성공한 전송이 '완료'로
- * 읽히지 않게 한다(백엔드도 같은 경우 queue.state 를 failed 로 확정한다).
+ * 읽히지 않게 한다(백엔드도 같은 경우 manifest status 를 failed 로 확정한다).
  */
 export function resolveTransferSummary(result: ResolveTransferResult): string {
   const prepared = result.downloaded + result.skipped;

@@ -7,6 +7,7 @@ import importlib.util
 import io
 import os
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -168,11 +169,14 @@ def test_refresh_tool_accepts_only_plain_snapshot_server_urls():
     tool = _load_refresh_tool()
     assert tool.validate_snapshot_server_url("http://192.168.1.199:8011") == "http://192.168.1.199:8011"
     assert tool.validate_snapshot_server_url("http://192.168.1.199:8011/") == "http://192.168.1.199:8011"
-    assert tool.validate_snapshot_server_url("https://mvhub-server:8011") == "https://mvhub-server:8011"
-    assert tool.validate_snapshot_server_url("http://mvhub-server") == "http://mvhub-server"
+    assert tool.validate_snapshot_server_url("http://mvhub-server:8011") == "http://mvhub-server:8011"
     unsafe = [
         'http://192.168.1.199:8011" & calc',
         "http://192.168.1.199:8011 --unsafe",
+        " http://192.168.1.199:8011",
+        "http://192.168.1.199:8011 ",
+        "https://192.168.1.199:8011",
+        "http://192.168.1.199",
         "ftp://192.168.1.199:8011",
         "http://192.168.1.199:8011/api",
         "http://192.168.1.199:8011?x=1",
@@ -186,6 +190,23 @@ def test_refresh_tool_accepts_only_plain_snapshot_server_urls():
         except ValueError:
             continue
         raise AssertionError(f"accepted unsafe snapshot server url: {bad!r}")
+
+
+def test_refresh_tool_cli_exits_2_on_bad_snapshot_url_without_touching_target(tmp_path):
+    """bat 이 넘긴 주소가 형식 밖이면 네트워크·복사 전에 코드 2 로 끝나고 대상 폴더는 그대로다."""
+    target = tmp_path / "data_test"
+    target.mkdir()
+    (target / "keep.txt").write_text("keep", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(REFRESH_TOOL_PATH), 'http://192.168.1.199:8011" & calc', str(target)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "snapshot server must be http://host:port" in result.stdout
+    assert (target / "keep.txt").read_text(encoding="utf-8") == "keep"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["data_test"]
 
 
 def test_test_dev_has_no_console_account_or_password_prompt():
@@ -272,15 +293,14 @@ def test_server_db_test_launchers_keep_live_and_local_data_isolated():
     assert 'set "DST=%ROOT%backend\\data_test"' in pull
     assert "PM_TEST_ADMIN_EMAIL" not in pull
     assert "192.168.1.199:8010" not in pull
-    # 서버 이사 뒤 덮어쓰기: 인자 > MVHUB_SNAPSHOT_SERVER > 기본값. 값은 파싱 후 확장(!SERVER!)으로만
-    # 쓰여 인자·env 안의 & " 가 명령으로 실행되지 않는다. 형식 검증은 refresh_pm_test_data.py 가 한다.
+    # 서버 이사 뒤 덮어쓰기: MVHUB_SNAPSHOT_SERVER > 기본값. 명령줄 인자(%~1)는 일부러 없다 —
+    # %~1 은 파싱 시점에 확장돼 delayed-expansion 보호를 받지 못한다. 값은 !SERVER! 로만 쓰고,
+    # 형식 검증(http://host:port)은 refresh_pm_test_data.py 가 한다.
     assert "setlocal EnableExtensions EnableDelayedExpansion" in pull
     assert 'if defined MVHUB_SNAPSHOT_SERVER set "SERVER=!MVHUB_SNAPSHOT_SERVER!"' in pull
-    assert 'if not "%~1"=="" set "SERVER=%~1"' in pull
-    assert (
-        pull.index('set "SERVER=http://192.168.1.199:8011"')
-        < pull.index('set "SERVER=!MVHUB_SNAPSHOT_SERVER!"')
-        < pull.index('set "SERVER=%~1"')
+    assert "%~1" not in pull
+    assert pull.index('set "SERVER=http://192.168.1.199:8011"') < pull.index(
+        'set "SERVER=!MVHUB_SNAPSHOT_SERVER!"'
     )
     assert "%SERVER%" not in pull
     assert 'refresh_pm_test_data.py" "!SERVER!" "%DST%"' in pull

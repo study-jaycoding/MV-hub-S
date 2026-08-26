@@ -188,6 +188,8 @@ class RunAgentBatPinTests(unittest.TestCase):
             "a b@example.com",
             'w"x@example.com',
             "worker@example.com|more",
+            "worker%PATH%@example.com",  # bat 실행 시 %PATH% 가 환경변수로 재확장된다
+            "-worker@example.com",  # `--email -worker@…` 는 argparse 옵션으로 읽힐 수 있다
             "",
         ]:
             with self.subTest(email=email), self.assertRaises(HTTPException) as ctx:
@@ -204,10 +206,11 @@ class RunAgentBatPinTests(unittest.TestCase):
             with self.subTest(base_url=base_url), self.assertRaises(HTTPException) as ctx:
                 self._call_with(base_url=base_url)
             self.assertEqual(ctx.exception.status_code, 400)
-        self._write_pin("1.1.23 & calc\n")
-        with self.assertRaises(HTTPException) as ctx:
-            self._call()
-        self.assertEqual(ctx.exception.status_code, 400)
+        for pin in ("1.1.23 & calc\n", "-1.1.23\n", "1.1.23%TEMP%\n"):
+            self._write_pin(pin)
+            with self.subTest(pin=pin), self.assertRaises(HTTPException) as ctx:
+                self._call()
+            self.assertEqual(ctx.exception.status_code, 400)
 
     def test_missing_pin_returns_503(self):
         from fastapi import HTTPException

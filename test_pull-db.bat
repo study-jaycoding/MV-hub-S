@@ -5,8 +5,10 @@ REM ============================================================================
 REM  Pull the SHARED SERVER db into this PC's TEST data   (run on YOUR OWN PC)
 REM
 REM    source (server) : test_push-db snapshot on http://192.168.1.199:8011
-REM    override        : first argument, or MVHUB_SNAPSHOT_SERVER (argument wins).
-REM                      Plain http://host:port only - refresh_pm_test_data.py rejects anything else.
+REM    override        : set MVHUB_SNAPSHOT_SERVER=http://host:port before running this file.
+REM                      (No command-line argument on purpose: batch arguments expand at
+REM                      parse time, before the delayed-expansion guard, and could inject commands.)
+REM                      refresh_pm_test_data.py rejects anything but http://host:port.
 REM    target (test)   : this PC's  backend\data_test  -> filled with that copy
 REM
 REM  After this, run test_dev_server.bat for the production-like final test.
@@ -19,7 +21,6 @@ REM ============================================================================
 set "ROOT=%~dp0"
 set "SERVER=http://192.168.1.199:8011"
 if defined MVHUB_SNAPSHOT_SERVER set "SERVER=!MVHUB_SNAPSHOT_SERVER!"
-if not "%~1"=="" set "SERVER=%~1"
 set "DST=%ROOT%backend\data_test"
 
 echo.

@@ -92,3 +92,18 @@ export function startReleaseUpdate(): Promise<ReleaseUpdateStatus> {
     body: jsonBody({ confirm: true }),
   });
 }
+
+/** 업데이트를 막는 진행 중 작업을 사람이 읽는 문구로 — 유료 생성·Comfy 와 Resolve 전송을 나눠 말한다. */
+export function updateBlockersText(
+  status: Pick<ReleaseUpdateStatus, "active_total" | "resolve_active"> | null | undefined,
+): string {
+  const active = status?.active_total || 0;
+  const resolveActive = status?.resolve_active || 0;
+  const generationActive = Math.max(0, active - resolveActive);
+  return [
+    generationActive > 0 ? `생성 ${generationActive}건` : "",
+    resolveActive > 0 ? `Resolve 전송 ${resolveActive}건` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
