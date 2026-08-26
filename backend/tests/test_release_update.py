@@ -230,25 +230,14 @@ def test_shared_server_never_becomes_a_worker_release_updater(tmp_path: Path, mo
     assert status["can_update"] is False
 
 
-def test_update_activity_includes_resolve_queue(monkeypatch: pytest.MonkeyPatch):
+def test_update_activity_counts_inflight_direct_resolve_transfers(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         release_update_router,
         "generation_queue_snapshot",
         lambda: {"active_total": 0},
     )
     monkeypatch.setattr(release_update_router.comfy, "active_run_job_count", lambda: 0)
-    monkeypatch.setattr(
-        release_update_router.repo,
-        "list_projects",
-        lambda **_kwargs: {"projects": [{"id": "p1"}]},
-    )
-    monkeypatch.setattr(
-        release_update_router.resolve_queue,
-        "scan_projects",
-        lambda project_ids, *, states, owner_host_id: [
-            {"project_id": project_ids[0], "state": "importing"}
-        ],
-    )
+    monkeypatch.setattr(release_update_router, "active_transfer_count", lambda: 1)
 
     activity = release_update_router._activity()
     guarded = release_update_router._with_activity({"can_update": True})

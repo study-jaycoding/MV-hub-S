@@ -26,6 +26,7 @@ const status = (overrides: Partial<ReleaseUpdateStatus> = {}): ReleaseUpdateStat
   can_update: false,
   generation_active: 0,
   comfy_active: 0,
+  resolve_active: 0,
   active_total: 0,
   updated_at: "2026-08-20T00:00:00Z",
   ...overrides,

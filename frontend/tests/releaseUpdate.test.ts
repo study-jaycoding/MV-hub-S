@@ -15,6 +15,7 @@ const status: ReleaseUpdateStatus = {
   can_update: true,
   generation_active: 0,
   comfy_active: 0,
+  resolve_active: 0,
   active_total: 0,
   updated_at: "2026-08-14T00:00:00Z",
 };

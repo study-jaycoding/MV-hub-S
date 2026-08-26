@@ -432,10 +432,13 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
   `require_local_machine_request`). **loopback 뿐 아니라 이 PC 의 네트워크 어댑터 주소도
   허용하며 Host 헤더는 검사하지 않는다** — 같은 PC 에서 온 요청인지만 본다.
 
-> [!WARNING]
-> **알려진 제약**: 업데이트 전 활성 작업 차단(`routers/release_update.py`)은 v3 큐만 스캔한다.
-> 현재 직접 전송은 `services/resolve_transfer.py` 의 v2 manifest 를 쓰므로 **전송 도중에
-> 업데이트를 눌러도 차단되지 않는다.** 해소는 `release_update.py` 의 스캔 대상을 v2 manifest 에 맞추는 별도 코드 결정이다.
+> [!NOTE]
+> **업데이트 차단과 전송의 순서 계약.** 업데이트 전 활성 작업 확인(`routers/release_update.py` 의
+> `_activity`)은 진행 중 직접 전송을 `services/resolve_transfer.active_transfer_count()` 로 센다 —
+> 핸들러 진입부터 종료까지이며, 요청이 취소돼도 `run_non_abandon` 작업이 끝날 때까지 세어진다.
+> 전송은 **카운터를 올린 뒤** `update_in_progress()` 게이트를 보고(409), 업데이트는 `checking` 을
+> 기록한 뒤 활동을 **재확인**하므로 어느 쪽이 먼저든 한쪽만 진행한다. 알려진 한계: Resolve 자식
+> 반입에 timeout 이 없어 자식이 멈추면 카운트가 유지돼 업데이트가 막힌다(`_IMPORT_LOCK` 과 같은 성질).
 
 > [!NOTE]
 > [DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) 는 영구 큐(08-23~24) 설계의

@@ -28,6 +28,7 @@ from ..services.resolve_python_installer import (
     ResolvePythonInstallError,
     start_python_installer,
 )
+from ..services.release_update import update_in_progress
 from ..services.request_guards import require_local_machine_request
 from ..services.resolve_script_installer import (
     ResolveScriptInstallError,
@@ -39,6 +40,7 @@ from ..services.resolve_transfer import (
     list_pending_manifests,
     load_manifest,
     save_manifest,
+    track_active,
     # Send to Resolve의 직접 준비 경로.
     transfer_generations,
 )
@@ -74,6 +76,15 @@ class ResolveManualResultIn(BaseModel):
     skipped: int = Field(ge=0, le=500)
     error_count: int = Field(ge=0, le=500)
     error: str | None = Field(default=None, max_length=1000)
+
+
+def _reject_if_update_in_progress() -> None:
+    """gen_requests·comfy 와 같은 게이트 — 업데이트(checking 이후)가 진행 중이면 새 전송을 받지 않는다."""
+    if update_in_progress():
+        raise HTTPException(
+            status_code=409,
+            detail="프로그램 업데이트가 진행 중이라 Resolve 전송을 시작할 수 없습니다",
+        )
 
 
 def _require_local_resolve(request: Request) -> None:
@@ -208,8 +219,13 @@ async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
     동시에 호출하지 않으며, 이 요청 한 건 안에서 준비·가져오기·결과 저장을 끝낸다.
     """
     _require_local_resolve(request)
-    async with _pinned_account_scope() as account_key:
-        return await _create_resolve_transfer_pinned(body, request, account_key)
+    # 순서가 계약이다: 카운터 증가 → 업데이트 게이트. release_update.start_update 는 checking 을
+    # 기록한 뒤 활동을 재확인하므로, 업데이트가 먼저 기록했으면 여기서 409, 이 요청이 먼저
+    # 올라갔으면 업데이트 쪽이 busy 로 거부된다 — 어느 순서든 한쪽만 진행한다.
+    async with track_active():
+        _reject_if_update_in_progress()
+        async with _pinned_account_scope() as account_key:
+            return await _create_resolve_transfer_pinned(body, request, account_key)
 
 
 async def _create_resolve_transfer_pinned(
@@ -296,21 +312,23 @@ async def _create_resolve_transfer_pinned(
 async def retry_resolve_transfer(body: ResolveRetryIn, request: Request):
     """이미 준비된 v2 원본 manifest를 다시 읽어 Resolve 가져오기만 재실행한다."""
     _require_local_resolve(request)
-    try:
-        manifest = await load_manifest(body.project_id.strip(), body.transfer_id.strip())
+    async with track_active():
+        _reject_if_update_in_progress()
+        try:
+            manifest = await load_manifest(body.project_id.strip(), body.transfer_id.strip())
 
-        async def _import_and_save() -> dict:
-            # ★가져오기 실행과 결과 저장은 한 단위다. 둘 사이가 끊기면 Resolve 는 바뀌었는데
-            # manifest 에는 흔적이 남지 않아 다음 실행이 같은 작업을 또 한다.
-            result = await asyncio.to_thread(run_resolve_import_isolated, manifest)
-            manifest["resolve_import"] = result
-            await save_manifest(manifest)
-            return result
+            async def _import_and_save() -> dict:
+                # ★가져오기 실행과 결과 저장은 한 단위다. 둘 사이가 끊기면 Resolve 는 바뀌었는데
+                # manifest 에는 흔적이 남지 않아 다음 실행이 같은 작업을 또 한다.
+                result = await asyncio.to_thread(run_resolve_import_isolated, manifest)
+                manifest["resolve_import"] = result
+                await save_manifest(manifest)
+                return result
 
-        await resolve_queue.run_non_abandon(_import_and_save())
-        return manifest
-    except ResolveTransferError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+            await resolve_queue.run_non_abandon(_import_and_save())
+            return manifest
+        except ResolveTransferError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 async def _queue_project_ids() -> list[str]:

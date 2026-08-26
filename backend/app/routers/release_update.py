@@ -7,11 +7,10 @@ import asyncio
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
-from .. import repo
 from . import comfy
 from ..config import PORT
 from ..services.operational_health import generation_queue_snapshot
-from ..services import resolve_lock, resolve_queue
+from ..services.resolve_transfer import active_transfer_count
 from ..services.release_update import (
     APP_ROOT,
     ReleaseUpdateBusyError,
@@ -40,15 +39,9 @@ def _require_local(request: Request) -> None:
 def _activity() -> dict[str, int]:
     generation = int(generation_queue_snapshot().get("active_total") or 0)
     comfy_count = comfy.active_run_job_count()
-    projects = repo.list_projects(include_archived=True).get("projects") or []
-    project_ids = [str(project.get("id") or "") for project in projects]
-    resolve_count = len(
-        resolve_queue.scan_projects(
-            project_ids,
-            states=resolve_queue.ACTIVE_STATES,
-            owner_host_id=resolve_lock.host_id(),
-        )
-    )
+    # 진행 중 직접 전송(요청 안에서 준비·반입·저장). 전송 쪽은 카운터를 올린 뒤 update_in_progress
+    # 게이트를 보고, 이쪽은 checking 기록 뒤 재확인한다(services/release_update.start_update).
+    resolve_count = active_transfer_count()
     return {
         "generation_active": generation,
         "comfy_active": comfy_count,

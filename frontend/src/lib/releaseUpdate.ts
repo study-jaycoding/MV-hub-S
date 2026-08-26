@@ -22,6 +22,7 @@ export interface ReleaseUpdateStatus {
   can_update: boolean;
   generation_active: number;
   comfy_active: number;
+  resolve_active: number; // 진행 중 Resolve 직접 전송(요청 안에서 준비·반입·저장)
   active_total: number;
   updated_at: string;
   accepted?: boolean;

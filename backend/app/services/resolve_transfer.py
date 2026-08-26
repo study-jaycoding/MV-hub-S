@@ -15,10 +15,10 @@ import shutil
 import stat
 import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, AsyncIterator, NamedTuple
 
 from ..config import MEDIA_DIR
 from . import media_cache, project_folders
@@ -28,6 +28,35 @@ from .path_safety import safe_join
 
 MANIFEST_FORMAT = "mvhub.resolve-transfer"
 MANIFEST_VERSION = 2
+
+# ── 진행 중 직접 전송 수 — 업데이트 차단(routers/release_update._activity) 이 읽는다 ─────────
+# 증감은 이벤트 루프에서, 읽기는 to_thread 워커 스레드에서 일어나므로 락으로 보호한다.
+_ACTIVE_LOCK = threading.Lock()
+_ACTIVE_TRANSFERS = 0
+
+
+@asynccontextmanager
+async def track_active() -> AsyncIterator[None]:
+    """핸들러 진입부터 종료까지 '진행 중 전송' 으로 센다.
+
+    취소·예외에서도 finally 로 내린다. 본문이 ``resolve_queue.run_non_abandon`` 을 쓰면 요청이
+    취소돼도 내부 작업이 끝난 뒤에야 빠져나오므로, 그동안은 계속 세어진다(업데이트가 반입 중인
+    프로세스를 교체하지 않게).
+    """
+    global _ACTIVE_TRANSFERS
+    with _ACTIVE_LOCK:
+        _ACTIVE_TRANSFERS += 1
+    try:
+        yield
+    finally:
+        with _ACTIVE_LOCK:
+            _ACTIVE_TRANSFERS -= 1
+
+
+def active_transfer_count() -> int:
+    """지금 진행 중인 직접 전송(준비·반입·저장) 수."""
+    with _ACTIVE_LOCK:
+        return _ACTIVE_TRANSFERS
 FOLDER_CATALOG_FORMAT = "mvhub.resolve-folder-catalog"
 FOLDER_CATALOG_VERSION = 1
 DAVINCI_DIR_NAME = "@davinci"

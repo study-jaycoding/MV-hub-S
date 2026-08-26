@@ -501,6 +501,15 @@ export function ReleaseUpdateSettingsSection({
   const running = busy || isReleaseUpdateRunning(status?.state);
   const releaseInstall = status?.install_mode === "release";
   const active = status?.active_total || 0;
+  const resolveActive = status?.resolve_active || 0;
+  const generationActive = Math.max(0, active - resolveActive);
+  // 유료 생성·Comfy 와 Resolve 전송을 나눠 말한다 — 둘 다 업데이트(프로세스 교체)를 막는다.
+  const busyText = [
+    generationActive > 0 ? `생성 ${generationActive}건` : "",
+    resolveActive > 0 ? `Resolve 전송 ${resolveActive}건` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
   // 실행기(bat)가 기록하는 전체 진행률 — 버튼·문구에 함께 보여 멈춘 건지 진행 중인지 구분되게.
   const pct = typeof status?.percent === "number" ? Math.min(100, status.percent) : null;
   const pctText = running && pct !== null ? ` ${pct}%` : "";
@@ -519,7 +528,7 @@ export function ReleaseUpdateSettingsSection({
     : !releaseInstall
       ? "업데이트"
       : active > 0
-      ? `생성 ${active}건 완료 후 업데이트`
+      ? `${busyText} 완료 후 업데이트`
       : status?.can_update
         ? "프로그램 업데이트"
         : "최신 버전";
