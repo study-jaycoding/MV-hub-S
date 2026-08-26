@@ -46,7 +46,7 @@ venv 위치는 클론마다 다르다(이 클론은 저장소 루트 `.venv`). �
 
 - **실사용 공유 서버 `192.168.1.199:8010` 에 테스트·쓰기 금지.** 내 PC의 8010은 로컬 허브이니 혼동하지 말 것.
 - **유료 호출 금지** — `higgsfield generate` 등 실제 크레딧 소모, Comfy Cloud 실제 실행. 계약 검증은 격리 HTTP 호환 서버로.
-- **`D:\ClaudeCode\MV-hub-S` 는 실사용 트리다. 건드리지 않는다.** 작업은 `MV-hub-S-dev`에서.
+- **실행 앱은 릴리스 설치본(이 PC: `C:\Users\FX-PC06\Desktop\MV-hub-S`)이다. 건드리지 않는다.** `D:\ClaudeCode\MV-hub-S` 는 2026-08-24 에 멈춘 옛 소스 트리라 근거로 쓰지 않고 건드리지도 않는다. 작업은 `MV-hub-S-dev`에서.
 - **`backend/data` 는 사용자 데이터다**(Git 제외). 직접 초기화·마이그레이션 금지. 수동 검증은 임시 `CONTENT_HUB_DATA`/`CONTENT_HUB_DB` 를 지정해서 한다.
 - **`register_autostart.bat` · `restart_server_task.bat` 는 검증용으로 실행 금지.** 시스템 자동시작 작업(MVHub Server/Watchdog/BackupCopy)을 교체하고 서버를 즉시 시작한다.
 - **`release/make_release*.ps1` · `update_release*.bat` 는 테스트 명령이 아니다.** `_staging` 재귀 삭제·프런트 재빌드·ZIP/`latest.json` 덮어쓰기, `release/publish_target.txt` 가 있으면 배포 폴더(NAS)에도 강제 복사한다. 명시적 배포 지시가 있을 때만.
