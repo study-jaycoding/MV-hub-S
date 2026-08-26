@@ -96,6 +96,8 @@ status: review-required
 
 ## 8. Phase 0 영향 파일(착수 시)
 
-- `backend/app/repo/generations.py`: `upsert_synced_generation`(동기화 행 id 생성), `set_job_id`(이미 BEGIN IMMEDIATE 적용됨).
-- `backend/schema.sql` / `db.py _migrate`: `job_id` UNIQUE 인덱스.
+- `backend/app/repo/generation_sync.py`: `upsert_synced_generation`(동기화 행 id 생성 — Phase 0b 로 UUID 발급 완료).
+  `backend/app/repo/generations.py`: `set_job_id`(이미 BEGIN IMMEDIATE 적용됨).
+- `backend/schema.sql` / `db_migrations.py`: `job_id` 인덱스. **UNIQUE 는 보류됐고 현재는
+  비고유 인덱스만 있다**(`db_migrations.py` 의 job 인덱스 생성부).
 - 검증: 같은 job_id 두 번 동기화 → 한 행(uuid)으로 수렴, 로컬 생성+동기화 충돌 → 중복 없음.

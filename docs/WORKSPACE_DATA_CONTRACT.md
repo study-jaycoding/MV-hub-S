@@ -100,8 +100,12 @@ CLI 1.1.23에는 조직 전체 멤버 조회 명령이 없다. 각 인증 계정
 | 정규화 단일 출처 | `backend/app/workspace_context.py` | 값 정규화·`unknown` 판정 |
 | 코어 DB | `backend/schema.sql` + `backend/app/db_migrations.py` | 컬럼 + 기존 DB 마이그레이션 |
 | 관리 DB | `backend/app/manage_db.py` | 관리 허브 쪽 스키마 |
-| 읽기·쓰기 | `backend/app/repo/generations.py` · `repo/generation_sync.py` | SELECT 목록·INSERT/UPDATE |
-| 프런트 타입 | `frontend/src/types.ts` · `lib/workspaceContext.ts` | 타입 + 컨텍스트 조립 |
+| 읽기·쓰기 | `backend/app/repo/generations.py` · `backend/app/repo/generation_sync.py` | SELECT 목록·INSERT/UPDATE |
+| 조회 응답 | `backend/app/repo/generation_rows.py` | 카드 행 조립 |
+| 프로젝트 | `backend/app/repo/projects.py` | 프로젝트 범위 질의 |
+| 공유·휴지통 | `backend/app/repo/share.py` · `backend/app/repo/trash.py` | 발행 번들·휴지통 복원 |
+| 생성 요청 | `backend/app/repo/gen_requests.py` | 요청 큐 payload |
+| 프런트 타입 | `frontend/src/types.ts` · `frontend/src/lib/workspaceContext.ts` | 타입 + 컨텍스트 조립 |
 | 팀 집계 | `backend/app/repo/manage_telemetry.py` | `build_telemetry_facts` 의 **명시적 SELECT 컬럼 목록** — 여기 안 넣으면 팀 집계에서만 값이 사라진다 |
 | 에이전트 | `agent_push.py` | 보고 payload |
 

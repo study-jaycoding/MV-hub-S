@@ -102,7 +102,7 @@ push_agent 가 허브 요청을 `generate create --wait` 로 직접 실행한다
 | 여는 법 | `?embed=assets` 팝업 | `?embed=manage` 팝업 |
 | 진입 버튼 | TopBar | TopBar에 "관리" 한 줄 |
 | 코드 청크 | lazy `AssetsWindow` | lazy `ManageWindow` |
-| 내용 | `AssetsView` | `ProjectDashboard` |
+| 내용 | `AssetsView` | `manage/DashboardView`(`ManageWindow.tsx` 에서 렌더) |
 | 스타일 | `.assets-window` | `.manage-window` (같은 styles.css·칩·라임 액센트) |
 
 참고 구현: `App.tsx` openAssetsWindow / `main.tsx` embed 분기 / `AssetsWindow.tsx`.
