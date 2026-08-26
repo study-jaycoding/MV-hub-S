@@ -63,12 +63,14 @@ status: review-required
 
 형태가 셋이라 한 줄 정규식으로 정확히 세지 못한다 — `id=? OR job_id=?` 비교,
 `id IN (...) OR job_id IN (...)` 목록, `g.id=x.y OR g.job_id=x.y` 컬럼 조인.
-아래로 후보를 좁힌 뒤 **눈으로 확인**한다(2026-08-26 기준 `repo/` 아래 9개 파일 —
-`id_resolve` · `share` · `projects` · `gen_requests` · `generations_query` ·
-`generation_sync` · `manage_telemetry` · `share_state_intents` · `workspace_assignments`).
+아래로 후보를 좁힌 뒤 **눈으로 확인**한다. 2026-08-26 기준 실제 이중 조회가 있는 곳은
+`repo/` 아래 **8개 파일** — `id_resolve`(4) · `share`(3) · `projects`(3) ·
+`generation_sync` · `generations_query` · `manage_telemetry` · `share_state_intents` ·
+`workspace_assignments`(각 1). `gen_requests` 는 `job_id` 비어있음 검사만 있어 해당하지 않는다.
 
 ```powershell
-git grep -nE "OR[^;]{0,30}job_id" -- backend/app
+git grep -nE "OR[^;]{0,40}job_id" -- backend/app/repo |
+  Select-String -NotMatch "IS NULL|job_id\s*=\s*''"
 ```
 
 > [!NOTE]

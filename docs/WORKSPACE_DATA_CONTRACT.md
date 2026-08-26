@@ -101,7 +101,8 @@ CLI 1.1.23에는 조직 전체 멤버 조회 명령이 없다. 각 인증 계정
 | 코어 DB | `backend/schema.sql` + `backend/app/db_migrations.py` | 컬럼 + 기존 DB 마이그레이션 |
 | 관리 DB | `backend/app/manage_db.py` | 관리 허브 쪽 스키마 |
 | 읽기·쓰기 | `backend/app/repo/generations.py` · `backend/app/repo/generation_sync.py` | SELECT 목록·INSERT/UPDATE |
-| 조회 응답 | `backend/app/repo/generation_rows.py` | 카드 행 조립 |
+| 조회 응답 | `backend/app/repo/generation_rows.py` · `backend/app/repo/generations_query.py` | 카드 행 조립 · 메인 목록 SELECT |
+| 소스 목록 | `backend/app/repo/sources.py` | 소스 패널 SELECT |
 | 프로젝트 | `backend/app/repo/projects.py` | 프로젝트 범위 질의 |
 | 공유·휴지통 | `backend/app/repo/share.py` · `backend/app/repo/trash.py` | 발행 번들·휴지통 복원 |
 | 생성 요청 | `backend/app/repo/gen_requests.py` | 요청 큐 payload |
