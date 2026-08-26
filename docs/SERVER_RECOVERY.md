@@ -209,11 +209,25 @@ schtasks /Run /TN "MVHub Watchdog"
 7. 검증: 팀원 1명에게 접속·로그인·팀 탭 확인 요청. 서버 PC 교체가 길어지면
    예비 PC에도 `register_autostart.bat` 를 등록한다.
 
+> [!CAUTION]
+> **복원 사본으로 서버를 띄울 때는 반드시 `CONTENT_HUB_EXTERNAL_RECOVERY=0` 을 준다.**
+> 이 스위치는 기본이 켜짐(`1`)이라, 백업 사본에 남아 있던 in-flight 마커·API 키로 부팅 시
+> **실제 Comfy Cloud 잡을 취소하거나 로컬 CLI 를 호출한다**. 파일은 격리해도 외부 서비스
+> 상태는 격리되지 않아, 드릴이 라이브 유료 작업을 죽일 수 있다.
+> (`backend/app/config.py` 의 `EXTERNAL_RECOVERY_ENABLED`, 사용처는 `backend/app/main.py`.)
+>
+> ```powershell
+> $env:CONTENT_HUB_EXTERNAL_RECOVERY = "0"
+> ```
+>
+> 임시 DB·복원 사본으로 띄우는 모든 검증 서버에 같이 적용한다.
+
 ### 월 1회 리허설 체크리스트
 
 - [ ] 복제 위치에 어제 날짜 백업이 있는가 (`logs\backup_replicate.log` 확인)
 - [ ] `backend\data\backup_replica_status.json`의 `state`가 `success`이고 마지막 성공 시각이
       예약 주기 안에 있는가
+- [ ] 드릴 서버를 `CONTENT_HUB_EXTERNAL_RECOVERY=0` 으로 띄웠는가 (외부 잡 취소 방지)
 - [ ] 같은 stamp의 content·trash·manage 세트에 `--backup-set` 드릴을 실행해 ready·로그인·핵심 수
       대조와 테스트 프로세스 회수가 모두 통과하는가
 - [ ] 실제 작업자 계정 세트 하나를 예비 PC에 복원해 개인 생성물과 휴지통 상태가 함께 보이는가

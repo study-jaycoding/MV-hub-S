@@ -7,6 +7,12 @@ status: review-required
 
 작업자 PC에 Git/Python/Node.js/npm 없이 배포하기 위한 릴리즈 도구입니다.
 
+> [!IMPORTANT]
+> 이 문서의 절차를 실행하기 전에 **저장소 루트 `AGENTS.md` 의 안전 규칙**을 먼저 읽는다.
+> 릴리스 스크립트는 `_staging` 재귀 삭제·프런트 재빌드·ZIP/`latest.json` 덮어쓰기를 하고,
+> `release/publish_target.txt` 가 있으면 배포 폴더(NAS)에도 강제 복사한다. 검증 목적으로
+> 실행하지 않는다.
+
 ## 관리자 PC
 
 새 버전 zip 만들기. **릴리스는 고정 폴더 `D:\ClaudeCode\MV-hub-S-release` 에서만 만든다** —

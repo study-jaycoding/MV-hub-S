@@ -9,6 +9,12 @@ status: review-required
 **미디어가 수만 건으로 늘고 동시 다운로드가 많아질 때**만 앞단에 nginx/Caddy 를 두어
 정적 파일(/media·번들)을 분리 서빙하면 uvicorn 이 정적 전송에 안 막힌다.
 
+> [!WARNING]
+> 아래 예시는 **인증이 꺼진 개인 설치**를 전제로 쓰였다. 팀 서버는 `MV_server.bat` 이
+> `CONTENT_HUB_AUTH=1` 로 켜서 띄우므로([docs/SERVER.md](../docs/SERVER.md)), 프록시가 `/media` 를
+> 직접 서빙하면 **인증을 우회**한다. 팀 서버에 적용하기 전에 `auth_request` 로 백엔드 세션
+> 검증을 붙이거나 `/media` 블록을 빼야 한다.
+
 ## 핵심 — 코드 무변경
 프론트는 이미 상대경로(`/api`·`/ws`·`/media`)라, 프록시가 같은 오리진을 유지하면
 **프론트엔드·백엔드 코드 변경이 전혀 없다.** 프록시는 `/media`·정적은 디스크에서

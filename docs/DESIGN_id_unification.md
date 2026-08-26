@@ -7,6 +7,10 @@ status: review-required
 
 > 적대적 리뷰 ① 후속. **Phase 0a·0b 구현 완료(아래 4장), Phase 1~3 미착수.**
 > 각 Phase 의 상태 표시를 따른다 — 이 문서 전체가 미구현 설계는 아니다.
+>
+> **대조할 코드**: `repo/generation_sync.py`(동기화 행 생성·멱등 매칭),
+> `repo/generations.py`(`set_job_id`·중복 정리), `db_migrations.py`(인덱스).
+> 본문의 "현재는 …" 서술은 Phase 0 이전 기준이므로 코드를 먼저 본다.
 
 ## 1. 문제
 

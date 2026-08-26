@@ -89,6 +89,25 @@ CLI 1.1.23에는 조직 전체 멤버 조회 명령이 없다. 각 인증 계정
 11. 공유된 내 카드는 서버 복사본을 먼저 갱신한다. 서버 변경이 실패하면 로컬 변경을 시작하지
     않으며, 변경된 로컬 생성물은 관리 텔레메트리 재전송 대상으로 표시한다.
 
+## 워크스페이스 필드를 하나 추가할 때 고칠 곳
+
+이 문서(계약)를 먼저 고치고, 소유권이 바뀌면 [DATA_OWNERSHIP.md](DATA_OWNERSHIP.md) 도 함께 고친다.
+그다음 코드는 아래 순서로 따라간다 — 하나라도 빠지면 값이 중간에서 조용히 사라진다.
+
+| 층 | 파일 | 무엇을 |
+|---|---|---|
+| API 모델 | `backend/app/models.py` | 요청·응답 필드 |
+| 정규화 단일 출처 | `backend/app/workspace_context.py` | 값 정규화·`unknown` 판정 |
+| 코어 DB | `backend/schema.sql` + `backend/app/db_migrations.py` | 컬럼 + 기존 DB 마이그레이션 |
+| 관리 DB | `backend/app/manage_db.py` | 관리 허브 쪽 스키마 |
+| 읽기·쓰기 | `backend/app/repo/generations.py` · `repo/generation_sync.py` | SELECT 목록·INSERT/UPDATE |
+| 프런트 타입 | `frontend/src/types.ts` · `lib/workspaceContext.ts` | 타입 + 컨텍스트 조립 |
+| 에이전트 | `agent_push.py` | 보고 payload |
+
+> [!WARNING]
+> 마이그레이션 없이 `schema.sql` 만 고치면 **새 설치에서만 동작하고 기존 사용자 DB 에서는 없는 컬럼**이
+> 된다. `backend/data` 는 사용자 데이터이므로 직접 초기화해서 해결하지 않는다.
+
 ## 격리 테스트 집계
 
 - `CONTENT_HUB_NO_PROXY=1`인 `test_dev`, `test_dev_server`는 운영 서버로 관리 통계를 보내지
