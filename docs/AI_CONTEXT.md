@@ -11,7 +11,7 @@ status: active
 > (저장소 안에 더 상세한 `DESIGN.md`, `PROJECT_CHARTER_LEGACY.md`, `README.md`, `SERVER.md`, `사용설명서.md`, `deploy/` 가 있다.
 >  현행 작업 규칙은 저장소 루트 `CLAUDE.md`·`AGENTS.md` 다.)
 >
-> **구조 본문 기준: 2026-07-07** — 푸시 모델(각자 로컬 CLI 생성 + 서버는 공유 DB)·멀티계정 로그인·
+> **구조 본문 기준: 2026-07-07** — 로컬 우선 모델(각자 로컬 CLI 생성 → 내 로컬 DB, 발행분만 서버)·멀티계정 로그인·
 > 로컬 실행 큐(gen-request)·크레딧 집계 반영. 이전 "서버가 직접 생성" 모델에서 전환됨.
 > ★Higgsfield CLI 는 `hf_cli_version.txt` 로 **버전 pin**(0.2.x→1.x 파괴적 변경 대응). CLI 출력
 > 필드를 읽는 코드는 `x.get(new) or x.get(old)` 폴백을 쓴다 — 절차·계약은 `docs/HF_CLI_UPGRADE.md`.
