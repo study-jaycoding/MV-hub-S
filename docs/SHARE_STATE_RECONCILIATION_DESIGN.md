@@ -92,7 +92,8 @@ prepared ──서버 성공──> pending(관측치 보강) ──로컬 적�
    └──> rejected            │ 401 ──> auth_required (로그인 복구 시 재개)
                             │ 새 seq 등장 ──> superseded (단, 관측 상태는 로컬 반영)
 서버 결과 불명(타임아웃) ──> prepared 유지(워커가 서버 관측 후 판정)
-로컬 행 소멸·데이터 모순 ──> blocked (sync-status 노출)
+로컬 행 소멸 ──> waiting_local (최대 5회) ──> rejected (last_error_code=local_target_lost|local_target_missing)
+(`blocked` 는 상태 집합에 예약만 돼 있고 현재 전이되지 않는다. sync-status 에 노출하지 않는다)
 ```
 
 - 종결(converged/superseded/rejected/blocked) 마킹·재시도 갱신 전부 `WHERE intent_seq=? AND
@@ -115,8 +116,8 @@ operation_kind='composite_finalize', base_shared/base_final 저장. 단계:
   `POST /api/generations/batch`(id OR job_id 해석 — job_id 단건 GET 404 함정 회피) 1회 조회,
   동기 SQLite·_proxy HTTP 는 to_thread.
 - claim: claim_token+lease_until 로 단일 워커 선점. claim 시점에 활성 account key 캡처,
-  작업 전체에 그 계정 컨텍스트 고정. server_origin ≠ 현재 설정이면 요청하지 않고
-  authority_changed(=blocked 계열)로 중단. 토큰은 원장에 저장하지 않음.
+  작업 전체에 그 계정 컨텍스트 고정. server_origin ≠ 현재 설정이면 요청하지 않고 claim 을
+  release 하며 `share_state_origin_mismatch` 로그만 남긴다(상태 변경 없음 — `authority_changed`/`blocked` 전이는 없다). 토큰은 원장에 저장하지 않음.
 - 적용 시 부수효과 멱등 재현: telemetry dirty(_touch_telemetry) + media_preservation 등록
   (shared/final 정책 동일).
 

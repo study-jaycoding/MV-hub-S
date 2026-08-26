@@ -78,7 +78,7 @@ python tools/hf_cli_check_update.py
   `list_models`, `get_model_params`, `estimate_cost`, 상태 정규화(`_STATUS_MAP`).
 - `agent_push.py` — 생성 실행 인자 조립(`_role_flag`·`--image`·seedance `--*-references`),
   `model list`/`model get` 캐시, `account transactions` 소비, `result_url` 의 `user_<id>` 추출.
-  boolean 파라미터는 `_param_flags`/`_param_args` 가 소문자 `true`/`false` 로 직렬화(1.x 엄격검증).
+  boolean 파라미터는 `_param_flags`(agent_push.py)·`_param_args`(cli_bridge.py) 가 소문자 `true`/`false` 로 직렬화(1.x 엄격검증).
 - 원칙: **raw CLI 출력 필드는 단일 키로 읽지 말고 `x.get(new) or x.get(old)` 폴백**으로 읽어
   개명에 견디게 한다. 내부 표준 필드명(model=job_set_type 등)은 유지한다.
 - `agent_push.py` 는 서버가 팀원에게 배포하는 **단독 스크립트**라 backend 를 import 하지 못한다 —

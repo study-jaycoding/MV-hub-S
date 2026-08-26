@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-20
+updated: 2026-08-26
 status: active
 ---
 
@@ -69,6 +69,9 @@ submitting
   없으면 요청은 `pending`으로 보존하고, 계정 사용자에게 에이전트 업데이트 안내를 보낸다.
 - 새 에이전트에는 `claimed`를 반환하고, `begin-submission`이 성공한 뒤에만 `submitting`으로 바꾼다.
 - `claimed` 만료는 `pending`으로 되돌린다.
+- 배포 정지 스위치(`generation_deployment_paused`, `GET/PUT /gen-requests/deployment-pause`)가 켜지면
+  `POST /gen-requests`·`pending-exists`·`pending` 은 **503 + Retry-After 60** 으로 claim 을 막는다.
+  이 창에서는 "`pending` → 다음 에이전트가 claim" 이 성립하지 않는다.
 - 유료 호출이 시작된 상태에서 `job_id`가 없으면 `recovery_required`로 격리한다.
 - 서버 시작 시 단순히 `job_id`가 없다는 이유로 살아 있는 큐 요청을 실패 처리하지 않는다.
 - 복구 전이는 생성 이벤트·운영 로그·상태 점검 수치에 남긴다.
@@ -81,6 +84,9 @@ submitting
 - 승인 응답이 없으면 CLI를 호출하지 않고 claim을 반환한다.
 - CLI를 호출한 뒤 `job_id`가 없으면 실패·재시도하지 않고 `recovery_required`를 보고한다.
 - 이미 제출된 작업은 로컬 outbox와 서버 anchor를 통해 같은 `job_id`로만 복구한다.
+- 멱등 보고 4곳(`begin-submission`·`recovery-required`·anchor·미부착 reconcile)은 순단 시 **최대 3회 호출, 실패 뒤 sleep 2회(0.5초·2ⁿ·jitter, 상한 2초 — sleep 합계 약 0.75~1.5초,
+  HTTP 요청 시간 별도)** 로 재시도하고 **4xx 는 즉시 중단**한다. anchor 의 200 `applied:false` 는 요청이 종결
+  상태면 outbox 에서 제거한다(`_retry_pause`).
 
 ## 4. 혼합 버전 업데이트 규칙
 
@@ -100,14 +106,21 @@ submitting
 
 `복구 확인 필요`가 표시되면 즉시 다시 생성하지 않는다.
 
-1. 해당 계정과 워크스페이스로 Higgsfield 생성 목록을 확인한다.
-2. 요청 시각, 모델, 프롬프트 식별 정보로 기존 외부 작업을 찾는다.
-3. 기존 `job_id`가 확인되면 새 생성 없이 그 작업을 anchor하고 추적한다.
-4. 외부 작업이 없다고 확인된 경우에만 `미제출 확인` 동작으로 요청을 `pending`에 되돌린다.
-5. 확인 근거와 수행자를 이벤트·감사 로그에 남긴다.
+1. **자동 조사**(에이전트, 매 tracking 사이클 — `agent_push.py` `recovery_probe_pass`): 제출 지문
+   (`submission_fingerprint` — 계정·모델·프롬프트·시각 창)으로 Higgsfield 최신 목록을 **읽기 전용**
+   (`generate list` 만 호출, `create` 금지)으로 대조한다.
+2. 후보가 **정확히 1개**면 사람 확인 없이 그 `job_id`로 자동 anchor 하고 추적한다(유료 호출 없음).
+3. 후보가 **여러 개**(`multiple`)면 영구 보류한다 — 자동으로 고르지 않는다.
+4. 후보가 **없음**이고 조사 창이 제출 구간을 덮었으면 `no_match` 확정. 이 결과가 **2분 이내**로 fresh 할 때만
+   `미제출 확인`(`confirm-not-submitted`)으로 요청을 `pending`에 되돌릴 수 있다. fresh 결과가 없으면
+   409 `probe_required`("자동 제출 조사를 요청했습니다"), 후보가 있으면 409 `candidate_found`.
+5. 조사 결과는 `gen_request` 의 ledger 컬럼(`backend/schema.sql`)에만 기록된다(이벤트·감사 로그 없음). anchor 와
+   재큐잉은 별도 이벤트를 남긴다. 조회 `GET /gen-requests/recovery-probes`; `POST /gen-requests/{rid}/recovery-probe` 는
+   **에이전트가 조사 결과를 기록하는 API** 이고, 재조사는 `confirm-not-submitted` 처리 중 `agent_signals` 의
+   `recovery-probe` 신호로 에이전트를 깨워 일어난다.
 
-현재 구현의 `confirm-not-submitted` API는 4번을 위한 명시적 안전장치다. 일반 자동 복구 루틴이
-이 API를 호출해서는 안 되며, 사용자 확인 없이 재큐잉하지 않는다.
+`confirm-not-submitted` API는 4번의 명시적 안전장치다. 자동 조사가 유일 후보를 찾으면 이 API 없이 anchor 되고,
+그 외에는 fresh `no_match` 없이는 재큐잉되지 않는다(2026-08-21 `a5fec866` 이후 규칙).
 
 ## 6. 코드 위치
 
@@ -116,7 +129,7 @@ submitting
 | claim·lease·격리·명시 재큐잉 | `backend/app/repo/gen_requests.py` |
 | 업무 흐름·이벤트·실시간 알림 | `backend/app/usecases/gen_requests.py` |
 | HTTP 계약 | `backend/app/routers/gen_requests.py`, `backend/app/models.py` |
-| 서버 시작 복구 | `backend/app/main.py`, `backend/app/repo/generations.py` |
+| 서버 시작 복구 | `backend/app/main.py` → `backend/app/repo/gen_requests.py`(`sweep_expired_generation_claims`), `backend/app/repo/generations.py`(고아 실패 처리) |
 | 에이전트 staged 제출·outbox | `agent_push.py` |
 | 상태 표시·명시 재실행 UI | `frontend/src/lib/generationDisplay.ts`, `frontend/src/lib/useGenerationCardActions.ts`, `frontend/src/components/InfoPopup.tsx` |
 | 상태엔진·권한·에이전트 계약 테스트 | `backend/tests/test_generation_state_engine.py`, `backend/tests/test_gen_request_usecase.py`, `backend/tests/test_identity_permissions.py`, `backend/tests/test_agent_contracts.py` |
@@ -164,7 +177,8 @@ submitting
 
 적대적 리뷰에서는 서버·프론트 양쪽의 일반 재생성 우회, claim 만료 자동 재큐잉, 서버 재시작 고아
 실패 처리, 구 에이전트의 알려진 모호한 실패 보고를 확인했다. `recovery_required`를 `pending`으로
-돌리는 경로는 같은 계정 사용자의 명시적 `confirm-not-submitted` 동작 하나만 남겼다.
+돌리는 경로는 같은 계정 사용자의 명시적 `confirm-not-submitted` 동작 하나만 남겼다(리뷰 시점. 이후 §5 의
+자동 조사·유일 후보 자동 anchor 가 추가됐다).
 
 ## 9. 완료 조건
 

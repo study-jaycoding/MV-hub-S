@@ -203,7 +203,8 @@ schtasks /Run /TN "MVHub Watchdog"
      `backend\data\db\acct\<계정슬러그>\content_hub.db` 로 복원(계정별 DB).
    - `db-backups\<계정슬러그>\` 는 팀원 로컬 허브가 올려둔 개인 DB 백업 —
      서버 복구에는 불필요하고, 팀원 PC 가 죽었을 때 그 계정으로 로그인한 작업자 설정의
-     `서버 DB 가져오기`로 최신 `content + trash` 세트를 복원하는 용도. 새 세트가 없는 구버전
+     설정 창의 서버 백업 목록에서 **백업 버전 선택 → [이 데이터 적용]** 으로 최신 `content + trash` 세트를
+     복원하는 용도(API `GET /api/db/server-backups` → `POST /api/db/server-restore/{backup_set_id}`). 새 세트가 없는 구버전
      저장소만 기존 단일 콘텐츠 DB 복원을 사용한다.
 6. `MV_server.bat` 실행(임시로는 수동 실행으로 충분).
 7. 검증: 팀원 1명에게 접속·로그인·팀 탭 확인 요청. 서버 PC 교체가 길어지면

@@ -3,9 +3,9 @@ updated: 2026-08-26
 status: active
 ---
 
-# Content Hub (server) — 설계 구조 설명서
+# MV Hub (MV-hub-S) — 설계 구조 설명서
 
-> 이 문서는 `content-hub-server` 의 **코드·시스템 구조**를 한눈에 보여주는 구조 레퍼런스다.
+> 이 문서는 MV Hub(코드명 `MV-hub-S`, 앱 제목 `Millionvolt Hub`; 옛 이름 `content-hub-server`)의 **코드·시스템 구조**를 한눈에 보여주는 구조 레퍼런스다.
 > 기능 사용법은 [기능설명서.md](기능설명서.md), 서버 운영은 [SERVER.md](SERVER.md),
 > AI 에게 통째로 붙여넣는 자기완결 브리프는 [AI_CONTEXT.md](AI_CONTEXT.md) 를 본다.
 > (원본 [DESIGN.md](DESIGN.md)·[PROJECT_CHARTER_LEGACY.md](PROJECT_CHARTER_LEGACY.md) 는 개인용 `content-hub` 시절 명세라
@@ -43,7 +43,7 @@ Higgsfield 로 만든 이미지·영상을 팀이 한곳에 모아 **탐색·태
 
 ## 3. 런타임 토폴로지 — 단일 오리진
 
-개발 모드에선 프론트(Vite 5173)·백엔드(FastAPI 8010)가 분리되지만, **서버 모드에선 백엔드가
+개발 모드에선 프론트(Vite 5173)·백엔드(FastAPI — 코드 기본 8000, `CONTENT_HUB_PORT` 로 재지정; Vite 프록시 대상은 `BACKEND` 환경변수; 운영 bat 은 8010)가 분리되지만, **서버 모드에선 백엔드가
 빌드된 프론트(`frontend/dist`)를 같은 오리진에서 직접 서빙**한다. 프론트는 모든 호출을
 상대경로로 하므로 폴더째 실서버에 올려도 코드 무변경, CORS 불필요.
 
@@ -54,7 +54,8 @@ Higgsfield 로 만든 이미지·영상을 팀이 한곳에 모아 **탐색·태
                                        ├─ /ws          → 진행률·동기화 push (WebSocket)
                                        └─ /media/*     → 로컬 미디어(샤딩 디렉터리)
 
-[팀원 각 PC] agent_push.py ──http(/api/ingest, /api/gen-requests)──▶ 같은 :8010
+[팀원 각 PC] agent_push.py ──http(/api/ingest, /api/gen-requests)──▶ 그 PC 의 로컬 허브 127.0.0.1:8010
+              (로컬 허브가 로컬 DB 에 적재·placeholder 생성. `_proxy._LOCAL_PREFIXES` 라 서버로 위임하지 않는다)
 ```
 
 - **DB**: SQLite WAL. 공유 서버·계정 없는 실행은 `backend/data/db/content_hub.db` 를 쓰고,
@@ -76,9 +77,13 @@ Higgsfield 로 만든 이미지·영상을 팀이 한곳에 모아 **탐색·태
 HTTP 요청
    │
    ▼  app/main.py 미들웨어
-   ├─ auth_enforcement : 토큰 → request.state.account  (CONTENT_HUB_AUTH=1 일 때 게이트)
-   ├─ upload_body_limit: 선별된 업로드의 원시 본문을 multipart 파싱 전에 제한
-   └─ mutation_notify  : 성공한 쓰기를 library/assets/manage로 분류해 WS 갱신 신호 전파
+   ├─ cors                 : 개발 모드 교차 오리진 허용
+   ├─ auth_enforcement     : 토큰 → request.state.account  (CONTENT_HUB_AUTH=1 일 때 게이트)
+   ├─ mutation_notify      : 성공한 쓰기를 library/assets/manage로 분류해 WS 갱신 신호 전파
+   ├─ data_proxy           : 프록시 모드에서 로컬 전용 경로 외 데이터 요청을 공유 서버로 위임
+   ├─ upload_body_limit    : 선별된 업로드의 원시 본문을 multipart 파싱 전에 제한
+   ├─ auth_off_remote_guard: AUTH off 서버에 원격 주소가 접근하면 차단(보안 경계)
+   └─ runtime_observation  : 요청 지표·운영 관측   (7개, `main.py` 등록 순)
    │
    ▼  routers/*.py   — HTTP 경계. 입력 검증(Pydantic) + deps(인증/RBAC) + actor_id 주입
    │
@@ -185,6 +190,18 @@ HTTP 요청
 | `manage_transactions.py` / `manage_analytics.py` | 실제 크레딧 거래 매칭·읽기 전용 분석 집계 |
 | `manage_account_reports.py` | 계정 최신 상태·거래 보고의 영속 outbox, revision 정산·백오프·마지막 성공 상태 |
 | `release_update_notices.py` | 업데이트 공지 후보·고정 순위·공지 회차·계정별 읽음 상태의 원자 저장 |
+| `_visibility.py` | 팀 생성물 가시성 SQL 조각(`team_generation_visibility_clause`) — 배치 멤버십 조회 `batch_view_member_projects` 는 `deps.py` |
+| `event_journal.py` | 생성 이벤트 저널(이메일형 uid 해시) |
+| `generation_delete.py` | 생성물 삭제 경로(`generation_write` 계열) |
+| `history_import_audit.py` | 이력 가져오기 감사 |
+| `media_preservation.py` | 원본 보존 큐 원장 |
+| `personal_meta_transactions.py` | 개인 메타 로컬+shadow 단일 트랜잭션 |
+| `project_membership.py` | 프로젝트 멤버십·자동 편입·제외 기록 |
+| `scene_cards.py` | 캔버스 카드 소속(backfill/explicit/removed) |
+| `scenes_backup.py` | 씬 백업 |
+| `share_state_intents.py` | 공유 상태 의도 원장(write-ahead, `intent_seq`) |
+| `super_admin_sessions.py` | 슈퍼 관리자 10분 세션 |
+| `workspace_assignments.py` | 워크스페이스 귀속 일괄 변경(`#+`/`#-`) |
 
 ### 4.5 서비스 (`backend/app/services/`) — 외부 연동·부수효과
 
@@ -310,7 +327,7 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 ```
 허브 "생성/재생성" 버튼
    │ POST /api/gen-requests (kind=create|regenerate)
-   ▼ 서버: placeholder 카드 즉시 생성(status=pending, 요청자 소유) + 큐잉
+   ▼ 로컬 허브(내 PC, 로컬 DB): placeholder 카드 즉시 생성(status=pending, 요청자 소유) + 큐잉
    │       (재생성은 placeholder + 'derived' 리니지까지)
    ▼ GET /api/gen-requests/pending  (새 에이전트: claim → claimed)
 요청자 PC 에이전트(agent_push.py --watch):
@@ -321,7 +338,7 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
    │   기한이 된 작업을 generate get <job_id> 로 직접 권위 확인
    │   성공 상태 + 결과 URL + 서버의 asset 저장 ACK가 모두 있어야 완료 확정
    ▼ POST /api/gen-requests/{id}/reconcile (완료 확정) | /fail (제출 실패)
-   ▼ 서버: placeholder 에 결과 채움 + WS broadcast → 카드 done/failed
+   ▼ 로컬 허브: placeholder 에 결과 채움 + WS broadcast → 카드 done/failed
 ```
 
 `generate list` 는 로컬 히스토리 적재(§7.2)에 사용한다. 생성 요청의 완료 판정에는 쓰지 않는다.
@@ -351,7 +368,8 @@ agent_push.py(각 PC) cycle = ① execute_pending(§7.1) + ② reconcile_pass(�
 push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
            → 서버가 unknown(신규)·refresh(재확인 필요) job_id 만 반환
            → POST /api/ingest {jobs, creator_uid, account_status}
-서버: 각 잡은 자기 고유 creator_uid 유지(uid 없을 때만 보강). account_status 를 app_setting 에 저장(크레딧).
+로컬 허브(`routers/ingest.py`, 로컬 DB): 각 잡은 자기 고유 creator_uid 유지(uid 없을 때만 보강).
+account_status 는 로컬 app_setting 에 저장하고, 팀 크레딧 집계용 계정 보고는 텔레메트리 outbox 로 서버에 전달([TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md)).
 ```
 
 구버전 서버가 POST 차집합 계약을 지원하지 않을 때만 `GET /api/ingest/known-jobs` 전량 응답으로
@@ -404,6 +422,9 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
 - **요청 한 건 안에서 준비·반입·결과 저장까지 끝낸다**(`routers/resolve_integration.py` 의
   `create_resolve_transfer`). 서버 영구 큐는 쓰지 않는다 — 2026-08-25 `aa0985b9` 로 큐를
   걷어내고 직접 전송으로 되돌렸다.
+- 큐 코드는 **잔존**한다: `services/resolve_queue.py`·`resolve_queue_worker.py`·`resolve_lock.py`·`resolve_import_worker.py`
+  와 라우트 `GET /api/resolve/queue`·`POST /queue/{id}/cancel`·`/resume`·`GET /transfers/pending`·`GET /locks`. 워커
+  (`periodic_resolve_queue`)는 기동되지 않으므로 `/resume` 은 상태만 바꾸고 처리하지 않는다. 제거·재도입은 별도 코드 결정이다.
 - 동시 호출 방지는 **두 곳**이다. 브라우저는 `lib/useResolveTransferActions.ts` 의
   `SerialTaskQueue` 로 짧게 직렬화하고(앱을 닫으면 사라지는 메모리 큐), 백엔드는
   `services/resolve_status_runner.py` 의 `_IMPORT_LOCK` 으로 Resolve 반입 자체를 직렬화한다.
@@ -414,11 +435,11 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
 > [!WARNING]
 > **알려진 제약**: 업데이트 전 활성 작업 차단(`routers/release_update.py`)은 v3 큐만 스캔한다.
 > 현재 직접 전송은 `services/resolve_transfer.py` 의 v2 manifest 를 쓰므로 **전송 도중에
-> 업데이트를 눌러도 차단되지 않는다.** 큐 재도입 작업에서 함께 맞춰야 한다.
+> 업데이트를 눌러도 차단되지 않는다.** 해소는 `release_update.py` 의 스캔 대상을 v2 manifest 에 맞추는 별도 코드 결정이다.
 
 > [!NOTE]
-> [DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) 는 영구 큐 설계의
-> 이력이며 HEAD 구현과 다르다. 큐 재도입 작업이 진행 중이므로 판단 전에 코드를 먼저 본다.
+> [DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) 는 영구 큐(08-23~24) 설계의
+> 이력이며 현행 구현과 다르다. 현재 확인된 재도입 계획은 없다(2026-08-26 — 릴리스·origin·설치본 모두 직접 전송).
 
 ---
 

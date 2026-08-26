@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-17
+updated: 2026-08-26
 status: active
 ---
 
@@ -38,6 +38,7 @@ MV Hub는 브라우저와 서버 하나로 끝나는 일반 웹앱이 아니다.
 | 로컬 프록시 | `CONTENT_HUB_AUTH=0`, 공유 토큰 있음 | 로컬 전용 경로는 현재 PC, 나머지는 공유 서버로 위임 |
 | 공유 서버 | `CONTENT_HUB_AUTH=1` | 다계정 SQLite와 RBAC를 서버가 직접 처리 |
 | 격리 테스트 | `CONTENT_HUB_NO_PROXY=1` | 저장된 공유 토큰이 있어도 외부 서버 위임 차단 |
+| 격리 개발(`test_dev.bat`) | `CONTENT_HUB_AUTH=1` + `CONTENT_HUB_NO_PROXY=1` | 다계정이지만 '공유 팀 서버'가 **아니다**(`is_shared_team_server()=False`, `routers/_proxy.py`) — 비공개 코멘트 저장 허용 |
 
 `_proxy.is_local_path()`는 로컬 프록시 모드에서만 의미가 있다. `_LOCAL_PREFIXES`와
 `_LOCAL_EXACT`에 없는 `/api/*` 요청은 기본적으로 공유 서버로 전달된다.
@@ -52,9 +53,15 @@ MV Hub는 브라우저와 서버 하나로 끝나는 일반 웹앱이 아니다.
 | 팀 프로젝트 정의·프로젝트 역할 | 공유 서버 DB | 프로젝트 이름·보관·멤버·역할은 팀 공통 |
 | 내 비공개 생성물·히스토리·개인 메타 | 계정별 로컬 SQLite | `data/db/acct/<계정>/content_hub.db` |
 | 팀에 발행된 생성물·공유 댓글 | 공유 서버 DB | 로컬 허브가 팀 항목을 조회·수정할 때 서버로 재분기 |
+| 비공개 코멘트(`is_private`) | 작성자 로컬 SQLite | 서버·번들로 나가지 않는다. 공유 팀 서버는 비공개 저장 요청을 거절(`routers/generation.py`·`assets_metadata.py`) |
+| 슈퍼 관리자 세션 · 10분 elev 토큰 | 서버 DB(`super_admin_session`) · 로컬 `app_setting`(`shared_server_elev_token`) | 토큰은 로그아웃·계정 전환 시 삭제 |
+| 업데이트 공지 후보·고정·읽음 | 공유 서버 DB(`release_update_notice*`) | 관리 쓰기는 서버 `Admin` 만 |
+| 서버 이사 공지 수락 · 서버 표시명 | 로컬 `app_setting` | `services/shared_connection.py` |
+| 감사 이벤트(`audit_event`) | 공유 서버 DB | 슈퍼 관리자 변경 등 |
 | 색·태그·자동 태그 | 계정별 로컬 SQLite | 내 카드 메타와 남의 팀 카드에 대한 개인 overlay 모두 로컬 |
 | 생성 요청·에이전트 상태·실행 큐 | 로컬 허브 DB/메모리 | 실제 Higgsfield CLI가 있는 PC에서만 처리 |
-| CLI 모델·비용·계정·워크스페이스 | 로컬 PC의 CLI | 공유 서버로 위임하지 않음 |
+| CLI 모델·비용·계정 상태·현재 워크스페이스 선택 | 로컬 PC의 CLI | `/api/models`·`/api/cost`·`/api/account`·`/api/workspaces` — 공유 서버로 위임하지 않음 |
+| 워크스페이스 등록부·멤버·해석·계정 보고 | 공유 서버 DB | `workspace_registry`·`workspace_member`(`repo/identity.py` `record_account_status`). `/api/workspaces/resolve`·`/api/account/hf` 는 프록시 모드에서 서버 위임 |
 | Comfy 설정·실행·결과 저장 | 로컬 PC | 이 PC의 Comfy/Cloud 연결과 디스크를 사용 |
 | 에셋 원본·마운트·트리·썸네일 | 로컬 파일 시스템 | 파일 I/O를 공유 서버에 위임하지 않음 |
 | 에셋 댓글 등 팀 메타 | 공유 서버 또는 로컬 | `assets` 라우터가 항목 성격에 따라 명시적으로 재분기 |

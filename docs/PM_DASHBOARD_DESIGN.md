@@ -57,7 +57,7 @@ CLI `generate list`가 **안 주는 것**:
 | 견적 | `generate cost` | 모델+옵션 기준 예상가(결정적·캐시됨). 잡과 1:1 확실 |
 | **실제** | `account transactions` | **실제 차감액**(음수·spend/refund/grant·시각). 단 **잡 id 없음** |
 
-### ★ 채우는 방식 — "생성 시점 기록"이 주력 (검토 확정)
+### ★ 채우는 방식 — "생성 시점 기록"이 주력 (초기안 — **미채택**. 현행은 아래 NOTE)
 push_agent 가 허브 요청을 `generate create --wait` 로 직접 실행한다(agent_push.py:441-524).
 완료까지 블록하므로 **그 순간 에이전트가 크레딧·시간을 다 쥔다** → fulfill 페이로드를
 `{job, credits, started_at, completed_at, elapsed}` 로 넓혀 서버가 행에 **즉시 박제**. 매칭 불필요.
@@ -65,11 +65,17 @@ push_agent 가 허브 요청을 `generate create --wait` 로 직접 실행한다
 | 생성 경로 | 견적 | 실제 크레딧 | 소요시간 |
 |---|---|---|---|
 | **허브 생성**(fulfill, 에이전트 실행) | ✅ 실행 전 cost | ✅ 직후 transactions | ✅ 스톱워치(489줄 전후 time) |
-| **힉스필드 직접**(generate list/ingest) | ✅ params 재계산 | ✅ (모델+시각) 매칭 | ❌ 복원 불가(스톱워치 밖) |
+| **힉스필드 직접**(generate list/ingest) | ❌ 견적 없음(`routers/ingest.py` 에 재계산 없음 — 매칭 실패 시 크레딧 0 집계) | ✅ (모델+시각) 매칭 | ❌ 복원 불가 |
 | **과거 이력** | 재계산 | 매칭 | ❌ |
 
 → **주력=생성 시점 기록**(허브 생성물, 모호 0). **보조=매칭 백필**(직접/과거분 크레딧만, §3 로직).
 소요시간은 허브 생성물 한정 — UI 에 커버리지 표기.
+
+> [!NOTE]
+> **현행(2026-08-26 코드 대조)**: 에이전트는 `create --wait` 가 아니라 **create-first**(제출 즉시 `job_id` anchor, 블록 없음)이고
+> fulfill/reconcile 입력은 `job` 하나다(`models.py` `FulfillIn`). 소요시간은 서버가 **claim→완료**(`started_at`=claim 시각, `completed_at`) 로
+> `generation_metrics` 에 기록하고(`repo/manage.py`; `requested_at` 은 기록만, elapsed 계산엔 미사용), 실제 크레딧은 **전부** `account transactions` 매칭(§3)으로 채운다.
+> 즉 위 표에서 "보조"라 한 방식이 현행 주력이다.
 
 ---
 
@@ -117,7 +123,8 @@ push_agent 가 허브 요청을 `generate create --wait` 로 직접 실행한다
 - `project_task` (+`task_generation`) — 작업 단위 + 생성물 연결
 - `project_planning` — 마감·예산·상태 (코어 `project` 안 건드림)
 
-> 생성물 연결은 `id` 와 `job_id` **둘 다 매칭**(기존 `assign_to_project` 규칙과 동일 — 팀 공유 탭 카드 id가 로컬 job_id라서).
+> 생성물 연결(`link_generations`)은 **`generation.id` 전용**이다(`repo/manage.py`, 없으면 오류). `assign_to_project` 는 여전히
+> id·job_id 이중 매칭이라 두 API 의 규칙이 다르다.
 
 ---
 
@@ -157,6 +164,11 @@ push_agent 가 허브 요청을 `generate create --wait` 로 직접 실행한다
 proxying() = AUTH off + shared_server_token 있음). 그래서 `/api/manage/*` 도 공유 서버로
 중계된다 → 공유 서버에 manage 코드/플래그가 없으면 404(테스트 중 이 404가 났음).
 - `/api/auth/config` 는 **로컬 전용**(프록시 안 함) → manage_enabled(버튼 노출)는 **로컬 허브** 플래그 기준.
+- 예외 2개는 **로컬에서 처리**한다: `/api/manage/project-folders`(폴더 트리)·`/api/manage/save-finals`(완료본 저장) —
+  `_proxy._LOCAL_PREFIXES`. "manage 전부 서버 중계"가 아니다.
+- 팀 집계 데이터는 서버 콘텐츠 DB 가 아니라 **텔레메트리 채널**로 온다: 작업자 로컬 outbox → `POST /api/manage/telemetry/push`
+  → 서버 `manage_hub.db`(`repo/manage_schema.py`, `services/telemetry_drain.py`). `/api/manage/summary` 는 콘텐츠 DB 집계
+  (프록시 모드에서는 서버 위임, `NO_PROXY` 면 로컬). 두 채널 구조는 [관리대시보드_통합계획.md](관리대시보드_통합계획.md) §1.
 - PM 데이터는 **팀 전체** 이므로 **공유 서버**에 있어야 한다.
 - ∴ 운영 적용 = **공유 서버**(manage 라우트·데이터·CONTENT_HUB_MANAGE=1) **+ 각 로컬 허브**(새 프론트 버튼·CONTENT_HUB_MANAGE=1, 버튼은 로컬 config 로 뜸) 둘 다 갱신.
 - **격리 테스트**: 테스트 DB 의 shared_server_token 을 지우면 프록시 꺼져 로컬에서 PM 직접 처리(`test_dev.bat` 단독 검증). 검증 완료: summary·planning PUT/GET 왕복 정상.

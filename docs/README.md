@@ -41,7 +41,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 401 인증 실패·로그인 보존 계약 | [AUTH_FAILURE_SEMANTICS.md](AUTH_FAILURE_SEMANTICS.md) |
 | 생성·계정 보고 백그라운드 전송·재시도·마지막 성공 관측 계약 | [TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md) |
 | 공유·최종 상태 계약 | [SHARE_STATE_RECONCILIATION_DESIGN.md](SHARE_STATE_RECONCILIATION_DESIGN.md)(현행·원장 수렴). [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md) 는 RL-11 보상 계약으로 **대체됨** |
-| Resolve 전송 (현행은 코드 기준) | `backend/app/routers/resolve_integration.py` · 설계 이력 [DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) |
+| Resolve 전송 (직접 전송 — 현행 흐름은 [ARCHITECTURE.md](ARCHITECTURE.md) §7.6) | `backend/app/routers/resolve_integration.py` · 큐 v3 설계 이력 [DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md)(현행 아님) |
 | 공유 서버 주소 이사 | [SERVER_RELOCATION.md](SERVER_RELOCATION.md) |
 | 업데이트 등록·고정·알림 공지 | [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md) |
 | 작업자 PC 오프디스크 백업 설계·완료 조건 | [WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md) |
@@ -146,14 +146,14 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 
 ### 전체 문서 분류
 
-아래 표는 현재 `docs` 아래 Markdown **60개**(`docs/*.md` 54 + `docs/status/*.md` 6)를 한 번씩
+아래 표는 현재 `docs` 아래 Markdown **61개**(`docs/*.md` 54 + `docs/status/*.md` 7)를 한 번씩
 분류한다. PDF는 특정 시점에 만든 외부 배포용 결과물이므로 현재 기술 판단의 기준으로 사용하지 않는다.
 
 | 상태 | 문서 |
 |---|---|
 | **문서 색인·갱신 규칙** | [README](README.md)(이 문서) |
 | **현황·작업 기준** | [CURRENT_STATUS](CURRENT_STATUS.md), [RISK_REDUCTION_PLAN_2026-08-15](RISK_REDUCTION_PLAN_2026-08-15.md) |
-| **날짜별 기록(`status/`)** | [최근작업](status/최근작업_2026-08-24.md), [RL 완료목록](status/RL_완료목록.md), [검증기록](status/검증기록.md), [구현완료](status/구현완료_RL-02_RL-23.md), [사전배포검증](status/사전배포검증_2026-08-19.md), [안정화](status/안정화_2026-08-18.md) |
+| **날짜별 기록(`status/`)** | [최근작업](status/최근작업_2026-08-24.md), [RL 완료목록](status/RL_완료목록.md), [검증기록](status/검증기록.md), [구현완료](status/구현완료_RL-02_RL-23.md), [사전배포검증](status/사전배포검증_2026-08-19.md), [안정화](status/안정화_2026-08-18.md), [코드대조](status/코드대조_2026-08-26.md) |
 | **현행 구조·계약 — 공통** | [ARCHITECTURE](ARCHITECTURE.md), [AI_CONTEXT](AI_CONTEXT.md), [DATA_OWNERSHIP](DATA_OWNERSHIP.md), [WORKSPACE_DATA_CONTRACT](WORKSPACE_DATA_CONTRACT.md), [신원과 모드 가이드](신원과_모드_가이드.md) |
 | **현행 구조·계약 — 기능별** | [AUTH_FAILURE_SEMANTICS](AUTH_FAILURE_SEMANTICS.md), [CANVAS_GENERATION_IDEMPOTENCY](CANVAS_GENERATION_IDEMPOTENCY.md), [CLI_ESTIMATE_LIFECYCLE](CLI_ESTIMATE_LIFECYCLE.md), [GENERATION_SUBMISSION_RECOVERY](GENERATION_SUBMISSION_RECOVERY.md), [TELEMETRY_DRAIN_LIFECYCLE](TELEMETRY_DRAIN_LIFECYCLE.md), [SHARE_STATE_RECONCILIATION_DESIGN](SHARE_STATE_RECONCILIATION_DESIGN.md), [WORKER_OFFDISK_BACKUP_CONTRACT](WORKER_OFFDISK_BACKUP_CONTRACT.md), [UPDATE_ANNOUNCEMENTS](UPDATE_ANNOUNCEMENTS.md) |
 | **운영·검증 절차** | [SERVER](SERVER.md), [SERVER_RECOVERY](SERVER_RECOVERY.md), [SERVER_RELOCATION](SERVER_RELOCATION.md), [TESTING](TESTING.md), [HF_CLI_UPGRADE](HF_CLI_UPGRADE.md) |
@@ -162,7 +162,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | **완료 작업의 개발 이력** | [CANVAS_MERGE_OPTIMIZATION_PLAN](CANVAS_MERGE_OPTIMIZATION_PLAN.md), [BACKLOG_PLAN](BACKLOG_PLAN_2026-08-20.md), [P2_CLOSEOUT_PLAN](P2_CLOSEOUT_PLAN_2026-08-20.md), [RL02_TASK_WORKSPACE_SNAPSHOT_PLAN](RL02_TASK_WORKSPACE_SNAPSHOT_PLAN.md) |
 | **완료 작업의 개발 이력 — OPT_PLAN 시리즈(12개)** | [1](OPT_PLAN_2026-08-21.md), [2](OPT_PLAN2_2026-08-21.md), [3](OPT_PLAN3_2026-08-22.md), [4](OPT_PLAN4_2026-08-22.md), [5](OPT_PLAN5_2026-08-22.md), [6](OPT_PLAN6_2026-08-22.md), [7](OPT_PLAN7_2026-08-22.md), [8](OPT_PLAN8_2026-08-22.md), [9](OPT_PLAN9_2026-08-22.md), [10](OPT_PLAN10_2026-08-23.md), [11](OPT_PLAN11_2026-08-23.md), [12](OPT_PLAN12_2026-08-23.md) |
 | **시점 고정 검증 기록** | [LOAD_TEST_2026-08-14](LOAD_TEST_2026-08-14.md), [PREDEPLOY_100_USERS](PREDEPLOY_100_USERS.md) |
-| **과거 기준·감사 보존** | [DESIGN_RESOLVE_QUEUE_V3](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md)(큐 v3 설계 — HEAD 는 직접 전송, 재도입 작업 중), [SHARE_STATE_COMPENSATION](SHARE_STATE_COMPENSATION.md)(RL-11 보상 — 대체됨), [AUDIT_2026-08-15](AUDIT_2026-08-15.md), [DESIGN](DESIGN.md), [PROJECT_CHARTER_LEGACY](PROJECT_CHARTER_LEGACY.md), [REVIEW_2026-08-17](REVIEW_2026-08-17.md), [P2_CLOSEOUT_REVIEW](P2_CLOSEOUT_REVIEW_2026-08-20.md) |
+| **과거 기준·감사 보존** | [DESIGN_RESOLVE_QUEUE_V3](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md)(큐 v3 설계 이력 — 릴리스·HEAD 모두 직접 전송, 현재 확인된 재도입 계획 없음. 상단 배너 "구현 완료 — 현행 계약" 은 낡았으며 다른 세션 수정분 정리 후 `superseded` 로 전환 예정), [SHARE_STATE_COMPENSATION](SHARE_STATE_COMPENSATION.md)(RL-11 보상 — 대체됨), [AUDIT_2026-08-15](AUDIT_2026-08-15.md), [DESIGN](DESIGN.md), [PROJECT_CHARTER_LEGACY](PROJECT_CHARTER_LEGACY.md), [REVIEW_2026-08-17](REVIEW_2026-08-17.md), [P2_CLOSEOUT_REVIEW](P2_CLOSEOUT_REVIEW_2026-08-20.md) |
 | **외부 설명 자료** | [투자자 소개서](투자자_소개서.md) |
 
 - 공유 상태는 `SHARE_STATE_RECONCILIATION_DESIGN`(서버 권위 원장·수렴, 2026-08-20 구현)이 상위

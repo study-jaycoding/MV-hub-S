@@ -3,7 +3,7 @@ updated: 2026-08-26
 status: active
 ---
 
-# Content Hub (server) — AI 컨텍스트 브리프
+# MV Hub (MV-hub-S) — AI 컨텍스트 브리프
 
 > **이 파일의 목적**: 코드에 직접 접근하지 못하는 AI(클로드 등)에게 이 프로그램 전체를
 > 한 파일로 이해시키기 위한 자기완결 문서. 새 대화에 이 내용을 통째로 붙여넣으면, AI 가
@@ -204,7 +204,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). 주요 엔�
 | `project`+`project_member` | 작업 묶음(공유·이동 단위) | name, kind, archived(콜드분리) / project_id, creator_uid, project_role |
 | `creator` | 생성자 uid→이름·전역역할 | uid, name, global_role(CSV) |
 | `account` | 로그인 계정 | email, password_hash(pbkdf2), status, global_role(CSV), **creator_uid**(생성자 연결), approved_at |
-| **`gen_request`** | 로컬 실행 생성요청 큐 | id, account_email, creator_uid, gen_id(placeholder), kind(create/regenerate), payload(JSON 레시피), status(pending/claimed/submitting/running/tracking/verifying/recovery_required/done/failed/canceled), lease_owner, lease_expires_at, error |
+| **`gen_request`** | 로컬 실행 생성요청 큐 | id, account_email, creator_uid, gen_id(placeholder), kind(create/regenerate), payload(JSON 레시피), status(preparing/pending/claimed/submitting/running/tracking/verifying/recovery_required/blocked/done/failed/canceled — `blocked` 는 자동 재큐잉 금지 활성 상태, 규칙은 [GENERATION_SUBMISSION_RECOVERY.md](GENERATION_SUBMISSION_RECOVERY.md)), lease_owner, lease_expires_at, error |
 | `app_setting` | key-value | provider_uid/name/email, my_creator_uid, auth_secret, **hf_status:<email>**(크레딧 보고) |
 | `asset_meta`+`asset_comment(_read)` | Assets 분리창 파일별 메타/코멘트 | (project, path) 키 |
 | `trashed`(별도 DB) | 휴지통 | id, trashed_at, payload(JSON: 본체+자식 전부) |

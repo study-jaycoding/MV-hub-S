@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-25
+updated: 2026-08-26
 status: active
 ---
 
@@ -101,8 +101,9 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
 - 같은 PC:        http://localhost:8010
 - 같은 네트워크:  http://<이 PC IP>:8010   (IP 는 `ipconfig` 로 확인)
 
-포트/바인딩 변경: `set PORT=9000 & MV_server.bat`, 또는 환경변수
-`CONTENT_HUB_PORT` / `CONTENT_HUB_HOST`.
+포트/바인딩 변경: `MV_server.bat` 은 `HOST`/`PORT` 환경변수만 본다
+(PowerShell: `$env:PORT = '9000'; .\MV_server.bat`). `CONTENT_HUB_HOST`/`CONTENT_HUB_PORT` 는
+bat 이 무조건 덮어쓰므로 **`python serve.py` 직접 실행 때만** 유효하다.
 
 ### Windows 자동시작과 업데이트
 
@@ -125,7 +126,7 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
 
 | 변수 | 기본값 | 용도 |
 |------|--------|------|
-| `CONTENT_HUB_HOST` | `0.0.0.0` | 바인딩 주소 |
+| `CONTENT_HUB_HOST` | `127.0.0.1`(AUTH off) · `0.0.0.0`(AUTH on 또는 MV_server.bat) | 바인딩 주소 |
 | `CONTENT_HUB_PORT` | `8000`(코드) · **MV_server.bat=8010** | 포트 |
 | `CONTENT_HUB_DATA` | `backend/data` | DB·미디어·공유 루트 |
 | `CONTENT_HUB_FRONTEND_DIST` | `frontend/dist` | 서빙할 빌드 산출물(없으면 API 전용) |

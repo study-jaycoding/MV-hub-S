@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-16
+updated: 2026-08-26
 status: active
 ---
 
@@ -52,6 +52,9 @@ preparing 예약 → placeholder 저장·검증 → pending 활성화 → 에이
 서버 재시작 복구도 같은 검사를 사용한다. 재생성은 원본→자식 계보가 실제로 존재해야 하며,
 import 직후 종료돼 덮어쓰지 못한 prompt·model·color·auto tag를 최초 명령 계약대로 다시 적용한 뒤
 `pending`으로 전환한다.
+예외: payload 의 `workspace.scope` 가 `team`·`personal` 이 아니면(미확정) `pending` 으로 되돌리지 않고 generation 을
+**`failed`** 로 종결한다(RL-04 fail-closed, `usecases/gen_requests.py` `repair_canvas_generation_links`). 재생성은
+사용자가 명시로 한다.
 
 ## 지켜야 하는 불변식
 

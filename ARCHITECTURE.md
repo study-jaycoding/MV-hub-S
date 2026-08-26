@@ -210,7 +210,7 @@ SceneBoard 를 크게 건드리는 단계(P2~P4)는 **실측 라인을 흔들지
 | 동기 라우트는 계정 고정 데코레이터로 감싼다 | 라우트 본문 어디에서 계정을 다시 읽어도 같은 계정이 나와야 한다 | `routers/share.py:_account_scoped_route` |
 | 트랜잭션은 transaction-root 에서 `BEGIN IMMEDIATE`, **SELECT 보다 먼저** 연다 | 읽고 나서 잠그면 그 사이에 값이 바뀐다(TOCTOU). 안쪽에서 `get_connection` 을 또 여는 중첩도 금지 | `repo/*` |
 | 인증 시크릿 캐시 키에 `pool_epoch` 를 넣는다 | DB 를 복원·교체하면 옛 시크릿으로 통과하는 빈틈이 생긴다 | `db.py:pool_epoch()` |
-| 로컬 전용 라우트는 loopback + Host 헤더를 검사한다 | 외부 웹페이지가 브라우저를 통해 내 PC 의 API 를 두드리는 공격(DNS rebinding)을 막는다 | `services/request_guards.py` |
+| 로컬 전용 라우트는 요청 출처를 검사한다 — **가드 3종의 범위가 다르다** | DNS rebinding(외부 웹페이지가 브라우저로 내 PC API 를 두드림)은 **Host 헤더까지 보는 `require_loopback_browser_request`** 만 막는다(적용: `routers/publish.py` 한 곳). `require_loopback_request` 는 loopback IP 만(assets·comfy·db_transfer), `require_local_machine_request` 는 이 PC 어댑터 IP 허용·Host 미검사(resolve·release_update) | `services/request_guards.py` |
 | 프런트의 비동기 갱신은 seq 가드를 둔다 | 느린 응답이 뒤늦게 도착해 최신 화면을 덮어쓰면 안 된다 | `lib/useGenerationLibraryData.ts` · `components/GenCommentPanel.tsx` |
 | 경과 시간 측정은 `performance.now()` | 벽시계는 시스템 시간 변경·NTP 보정에 흔들려서 음수 경과가 나온다 | 프런트 공통 |
 
