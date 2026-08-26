@@ -76,7 +76,7 @@ CREATE INDEX IF NOT EXISTS idx_media_preservation_due
 CREATE TABLE IF NOT EXISTS creator (
     uid  TEXT PRIMARY KEY,
     name TEXT,
-    global_role TEXT                           -- v02 전역 역할 CSV(복수 가능) admin/product_director/production_director/member
+    global_role TEXT                           -- v02 전역 역할 CSV(복수 가능) admin/product_manager(구 product_director)/production_director/member
 );
 
 -- 앱 설정(key-value). 제공자 신원(provider_uid/name/email) 등 단일값 보관.
@@ -319,7 +319,7 @@ CREATE TABLE IF NOT EXISTS gen_request (
     gen_id        TEXT NOT NULL,                  -- 즉시 만든 placeholder generation(여기 결과가 채워짐)
     kind          TEXT NOT NULL DEFAULT 'create', -- 'create' | 'regenerate'
     payload       TEXT,                           -- JSON: {model, prompt, params, references, source_gen_id}
-    status        TEXT NOT NULL DEFAULT 'pending',-- preparing | pending | claimed | submitting | tracking | verifying | blocked | recovery_required | done | failed | canceled
+    status        TEXT NOT NULL DEFAULT 'pending',-- preparing | pending | claimed | submitting | running | tracking | verifying | blocked | recovery_required | done | failed | canceled
     error         TEXT,
     provider_status TEXT,                         -- Higgsfield 원시 상태(알 수 없는 신규값도 그대로 보존)
     last_checked_at TEXT,                         -- generate get 마지막 확인 시각

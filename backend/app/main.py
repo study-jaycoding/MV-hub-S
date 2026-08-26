@@ -1,6 +1,6 @@
 """FastAPI 엔트리 (Phase 2/3).
 
-앱 팩토리: 시작 시 DB 초기화 + 기본 작업자 시드, 잡 큐 워커 기동,
+앱 팩토리: 시작 시 DB 초기화 + 기본 작업자 시드, 주기 작업(동기화·백업·스위퍼·미디어 보존·공유 상태 정합) 기동,
 라우터·정적 미디어·WebSocket 마운트.
 
 실행: uvicorn app.main:app  (backend/ 에서)
@@ -678,8 +678,8 @@ app.include_router(comfy.router)
 app.include_router(scenes.router)
 
 # ── PM 대시보드(분리형 사이드카) — 플래그 on 일 때만 등록 ────────────────────────
-# 기본 off: import 자체를 안 해 라우터·사이드카 테이블이 전혀 생기지 않는다(운영 무영향).
-# 켜면 /api/manage/* 활성. 설계: PM_DASHBOARD_DESIGN.md.
+# 기본 on(config.MANAGE_ENABLED). CONTENT_HUB_MANAGE=0 이면 import 자체를 안 해 라우터·사이드카 테이블이
+# 전혀 생기지 않는다. 켜져 있으면 /api/manage/* 활성. 설계: PM_DASHBOARD_DESIGN.md.
 if MANAGE_ENABLED:
     from .routers import manage
 

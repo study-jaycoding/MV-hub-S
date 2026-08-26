@@ -1,4 +1,7 @@
-"""Resolve 가져오기 큐 전담 워커 (manifest v3 명세 §2·§D).
+"""Resolve 가져오기 큐 전담 워커 (manifest v3 명세 §2·§D) — 휴면 모듈.
+
+호출자 없음: 2026-08-25 ``aa0985b9`` 로 직접 전송이 복원된 뒤 ``periodic_resolve_queue`` 는 어디서도
+start() 되지 않는다(설계 DESIGN_RESOLVE_QUEUE_V3 는 superseded). 삭제·재도입은 별도 결정이다.
 
 준비(원본 복사)는 최대 3개 동시, Resolve 가져오기는 명세대로 항상 1개다. 자식 프로세스
 대기에는 timeout 을 두지 않는다 — Media Pool 재정렬 도중을 끊으면 워커 안의 복구

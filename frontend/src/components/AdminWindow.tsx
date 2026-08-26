@@ -209,7 +209,7 @@ export function AdminWindow({
   const systemUids = systemMemberUids(members);
   const visibleMembers = visibleAdminMembers(members, systemUids);
   const visibleAccounts = visibleAdminAccounts(accounts);
-  // 역량에 따라 보이는 탭이 다르다(로드맵 §1): 승인·전역역할=admin, 프로젝트=product_director.
+  // 역량에 따라 보이는 탭이 다르다(로드맵 §1): 승인·전역역할=admin, 프로젝트=product_manager.
   const tabDefs: { key: AdminTab; label: string; visible: boolean }[] = [
     { key: "approve", label: "승인", visible: hasGlobalCap(viewerRoles, "approve_signup") },
     { key: "roles", label: "멤버 · 전역 역할", visible: hasGlobalCap(viewerRoles, "grant_global") },

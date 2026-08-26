@@ -1,7 +1,7 @@
 """RBAC 역할 모델 (v02 로드맵 PART 1) — 전역 4역할 + 프로젝트 3역할의 단일 진실 원천.
 
 설계 근거(RBAC_CMS_DAM_통합로드맵 §1):
-- **전역 역할**(사람 단위, account/creator.global_role): admin / product_director /
+- **전역 역할**(사람 단위, account/creator.global_role): admin / product_manager(구 product_director) /
   production_director / member. "시스템·가입·전역 인사·전 프로젝트 읽기·프로젝트 생성"을 가른다.
 - **프로젝트 역할**(project_member.project_role): project_manager / supervisor / creator.
   "그 프로젝트 안에서 멤버관리·작업·검수(=CMS 최종선택)"를 가른다.
@@ -74,7 +74,7 @@ def default_project_roles(global_value: RolesInput) -> list[str]:
     return [r for r in PROJECT_ROLES if r in acc]
 
 # ── 복수 전역 역할 — CSV 문자열 ↔ 리스트 ───────────────────────────────────
-# 사람의 전역 역할은 0개 이상. 저장은 "product_director,production_director" 같은 CSV.
+# 사람의 전역 역할은 0개 이상. 저장은 "product_manager,production_director" 같은 CSV.
 RolesInput = Union[str, Iterable[str], None]
 
 

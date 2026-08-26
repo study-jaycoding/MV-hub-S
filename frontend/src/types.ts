@@ -163,7 +163,7 @@ export interface ProjectFolderState extends ProjectFolderLink {
 export interface Member {
   uid: string;
   name: string | null;
-  global_roles: string[]; // v02 전역 역할(복수): admin/product_director/production_director/member
+  global_roles: string[]; // v02 전역 역할(복수): admin/product_manager/production_director/member
   is_mine: boolean;
   count: number; // 생성물 수
   email: string | null; // '나'(제공자)만

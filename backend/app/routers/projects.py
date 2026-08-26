@@ -281,7 +281,7 @@ def create_project(body: ProjectCreate, request: Request):
     # 프로젝트 정의는 팀 공유 → 서버에서 생성·관리(로컬 우선에서도 프로젝트는 서버 권위).
     if _proxy.proxying():
         return _proxy.proxy_json("POST", "/api/projects", body=body.model_dump())
-    # 프로젝트 생성 = 전역 create_project 역량(product_director). AUTH off 면 통과.
+    # 프로젝트 생성 = 전역 create_project 역량(product_manager). AUTH off 면 통과.
     require_global_cap(request, "create_project")
     try:
         created = repo.create_project(
@@ -372,7 +372,7 @@ def delete_project(pid: str, request: Request):
         result = _proxy.proxy_json("DELETE", f"/api/projects/{pid}")
         asset_watcher.unwatch(asset_watcher.auto_registration_id(pid))
         return result
-    require_global_cap(request, "create_project")  # 생성·삭제는 같은 역량(product_director)
+    require_global_cap(request, "create_project")  # 생성·삭제는 같은 역량(product_manager)
     removed = repo.delete_project(pid)
     if not removed:
         raise HTTPException(status_code=404, detail="없는 프로젝트")
@@ -461,7 +461,7 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
 
 # ── 프로젝트 멤버·역할 (v02 RBAC PART 1) ───────────────────────────────────
 def _can_manage_members(request: Request, pid: str) -> bool:
-    """멤버 역할 관리 권한 — 전역 grant_project_role(product_director) 또는
+    """멤버 역할 관리 권한 — 전역 grant_project_role(product_manager) 또는
     그 프로젝트의 manage_members(project_manager). AUTH off 면 항상 허용."""
     if not AUTH_ENABLED:
         return True

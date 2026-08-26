@@ -179,7 +179,7 @@ class StatusIn(BaseModel):
 
 
 class AccountGlobalRolesIn(BaseModel):
-    global_roles: list[str]  # admin/product_director/production_director/member (복수)
+    global_roles: list[str]  # admin/product_manager/production_director/member (복수)
 
 
 class PasswordChangeIn(BaseModel):

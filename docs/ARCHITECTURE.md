@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-26
+updated: 2026-08-27
 status: active
 ---
 
@@ -155,7 +155,7 @@ HTTP 요청
 
 | 모듈 | 담당 |
 |---|---|
-| `gen_requests.py` | 생성 요청 create/claim/fulfill/fail/reconcile의 업무 순서. 라우터는 인증·HTTP 변환만 담당 |
+| `gen_requests.py` | 생성 요청 create/claim/anchor/reconcile/fail 의 업무 순서(`fulfill` 은 구버전 에이전트 호환 경로). 라우터는 인증·HTTP 변환만 담당 |
 | `generation_media_cache.py` | 생성물 asset/reference 원격 URL을 로컬 보존 경로로 전환하고 상세 결과를 집계 |
 | `generation_personal_meta.py` | 팀 카드 개인 메타(색·태그 오버레이) 업무 흐름 |
 | `hf_missing.py` | Higgsfield 쪽에 없는 로컬 카드 점검·정리 |

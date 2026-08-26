@@ -277,7 +277,7 @@ def resolve_display_names(
 
 
 # ── 멤버 전역 역할(복수) — v02 RBAC PART 1 ───────────────────────────────
-# 전역 4역할 admin/product_director/production_director/member 를 CSV 로 복수 보유 가능.
+# 전역 4역할 admin/product_manager/production_director/member 를 CSV 로 복수 보유 가능.
 # ⚠️ enforcement off 면 '식별·표시'까지만 — 실제 차단은 CONTENT_HUB_AUTH=1 일 때.
 
 

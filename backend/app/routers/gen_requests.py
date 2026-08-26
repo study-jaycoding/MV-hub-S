@@ -3,9 +3,10 @@
 흐름(project_content_hub_push_model):
   버튼 → POST /gen-requests : placeholder 카드 즉시 생성 + 요청 큐잉(요청자 계정 소유)
   에이전트 → GET /gen-requests/pending : 자기 계정 대기 요청을 claim(claimed)
-            → begin-submission ACK → 로컬 CLI 로 실행 →
-            POST /gen-requests/{id}/fulfill : 결과를 placeholder 에 채움(done)
-            (실패 시 /fail)
+            → begin-submission ACK → 로컬 CLI 로 제출(create-first) →
+            POST /gen-requests/{id}/anchor : job_id 앵커(tracking/verifying) →
+            POST /gen-requests/{id}/reconcile : 최종 job 으로 권위 보정(done/failed 확정)
+            (실패 시 /fail). /fulfill 은 현행 에이전트가 쓰지 않는 구버전 호환 경로다.
 서버는 힉스필드 CLI 를 돌리지 않는다. 모든 엔드포인트는 허브 세션 인증 필수.
 """
 

@@ -1,10 +1,9 @@
-"""Resolve 가져오기 큐 — manifest v3 코어.
+"""Resolve manifest v3 코어 — 큐 설계의 잔존 모듈.
 
-권위 설계: ``docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md``
-
-접수(POST /api/resolve/transfers)는 권한 판정·목적지 고정·v3 manifest 원자 기록까지만
-하고 즉시 반환한다. 실제 원본 복사(preparing)와 Resolve 가져오기(importing)는 전담
-워커(:mod:`resolve_queue_worker`)가 큐에서 꺼내 수행한다.
+큐 설계 ``docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md`` 는 superseded 다. 2026-08-25 ``aa0985b9``
+로 직접 전송(요청 한 건 안에서 준비·반입·저장)이 복원됐고, 전담 워커(:mod:`resolve_queue_worker`)는
+어디서도 기동되지 않는다. 현행 코드가 이 모듈에서 쓰는 것은 취소되지 않는 실행 단위
+``run_non_abandon`` 뿐이며, 나머지(접수·상태 전이·스캔·복구)는 테스트로만 검증되는 휴면 코드다.
 
 v3 는 ``format: "mvhub.resolve-transfer.v3"`` 를 쓴다. 단순 ``version: 3`` 이면 format 만
 검사하는 구버전 스캐너가 v3 를 v2 로 오인해 claim 없이 강제 가져오기를 할 수 있다.

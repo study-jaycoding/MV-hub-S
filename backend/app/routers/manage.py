@@ -1,8 +1,8 @@
 """PM 대시보드(매니징먼트) 라우터 — 분리형 사이드카 모듈.
 
 설계: PM_DASHBOARD_DESIGN.md. 요청 모델도 여기 인라인으로 둔다(공용 models.py 무수정 → 격리).
-★main.py 는 CONTENT_HUB_MANAGE=1 일 때만 이 라우터를 등록한다 → 기본 off 면 엔드포인트
-자체가 없어 운영 동작에 영향 0(올려도 꺼진 채, 플래그만 켜면 활성).
+★main.py 는 CONTENT_HUB_MANAGE 가 켜져 있을 때만 이 라우터를 등록한다 — 기본 on(config.MANAGE_ENABLED,
+CONTENT_HUB_MANAGE=0 으로만 끔). off 면 엔드포인트·사이드카 테이블 자체가 없어 운영 동작에 영향 0.
 """
 
 from __future__ import annotations

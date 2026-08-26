@@ -413,7 +413,7 @@ class AssignProjectIn(BaseModel):
 class MemberOut(BaseModel):
     uid: str
     name: Optional[str] = None
-    # 전역 역할(복수 가능): admin/product_director/production_director/member
+    # 전역 역할(복수 가능): admin/product_manager/production_director/member
     global_roles: list[str] = Field(default_factory=lambda: ["member"])
     is_mine: bool = False
     count: int = 0  # 생성물 수
