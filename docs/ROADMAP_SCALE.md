@@ -9,8 +9,14 @@ status: review-required
 > **지금 대공사할 항목이 아니다.** 각 항목의 (a)착수 트리거 (b)접근 (c)리스크·순서 (d)지금 저렴한 선행을 고정한다.
 > 소규모 내부도구 맥락 — 규모 신호가 오기 전에는 착수하지 않는다(과설계 경계).
 >
-> **대조 기준**: 본문의 모듈 줄 수·분할 현황은 작성 시점 값이다. 현재 규모는 실제 파일로
-> 직접 세고, 본문은 착수 트리거 판단에만 쓴다.
+> **대조 기준**: 본문의 수치는 작성 시점 값이다. 항목별로 아래를 직접 보고 판단한다.
+>
+> | 항목 | 대조할 코드 |
+> |---|---|
+> | A. 대형 파일 분리 | 실제 파일 줄 수를 직접 센다(`repo/`·`routers/`·`services/`) |
+> | B. id≠job_id 통일 | `repo/id_resolve.py`·`generation_sync.py`·`share.py` — 아래 실측 명령 |
+> | C. durable outbox | `repo/manage_telemetry.py`·`services/telemetry_drain.py` |
+> | D. 중앙 fact/index | `repo/manage_telemetry.py` 의 `build_telemetry_facts`, `manage_db.py` |
 
 ---
 

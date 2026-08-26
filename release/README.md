@@ -12,6 +12,11 @@ status: review-required
 > 릴리스 스크립트는 `_staging` 재귀 삭제·프런트 재빌드·ZIP/`latest.json` 덮어쓰기를 하고,
 > `release/publish_target.txt` 가 있으면 배포 폴더(NAS)에도 강제 복사한다. 검증 목적으로
 > 실행하지 않는다.
+>
+> **대조할 스크립트**: 제작은 `release/make_release.ps1`(+`make_release.bat`), 배포본 선택은
+> `release/select_release.ps1`, 작업자 PC 업데이트는 루트 `update_release.bat` ·
+> `run_release_update.ps1` · `update_release_worker.bat`. 이 문서와 스크립트가 어긋나면
+> **스크립트가 현행**이다.
 
 ## 관리자 PC
 
