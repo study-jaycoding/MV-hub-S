@@ -50,6 +50,7 @@ venv 위치는 클론마다 다르다(이 클론은 저장소 루트 `.venv`). �
 - **`backend/data` 는 사용자 데이터다**(Git 제외). 직접 초기화·마이그레이션 금지. 수동 검증은 임시 `CONTENT_HUB_DATA`/`CONTENT_HUB_DB` 를 지정해서 한다.
 - **`register_autostart.bat` · `restart_server_task.bat` 는 검증용으로 실행 금지.** 시스템 자동시작 작업(MVHub Server/Watchdog/BackupCopy)을 교체하고 서버를 즉시 시작한다.
 - **`release/make_release*.ps1` · `update_release*.bat` 는 테스트 명령이 아니다.** `_staging` 재귀 삭제·프런트 재빌드·ZIP/`latest.json` 덮어쓰기, `release/publish_target.txt` 가 있으면 배포 폴더(NAS)에도 강제 복사한다. 명시적 배포 지시가 있을 때만.
+- **배포판은 반드시 고정 폴더 `D:\ClaudeCode\MV-hub-S-release`에서 만든다.** 배포 전에 원격을 갱신하고 이 폴더의 `HEAD`를 `origin/main`과 정확히 일치시킨 뒤, 작업 트리가 깨끗한지 확인하고 이 폴더 안의 릴리스 스크립트만 실행한다. `MV-hub-S-dev`나 임시 worktree에서 배포판을 만들지 않는다. 고정 폴더에 미커밋 변경이 있거나 안전하게 `origin/main`으로 맞출 수 없으면 배포를 중단하고 보고한다.
 - **DaVinci Resolve 를 임의로 끄지 않는다.** 열려 있는 사용자 프로젝트를 바꾸지 않는다.
 
 ## 브랜치·커밋
