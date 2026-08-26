@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -11,6 +12,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 GUARD = ROOT / "run_agent_session.py"
+_GUARD_SPEC = importlib.util.spec_from_file_location("run_agent_session", GUARD)
+assert _GUARD_SPEC is not None and _GUARD_SPEC.loader is not None
+session_guard = importlib.util.module_from_spec(_GUARD_SPEC)
+_GUARD_SPEC.loader.exec_module(session_guard)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -98,6 +103,47 @@ def test_guard_closes_foreground_child_when_guard_is_forced_closed(tmp_path):
             )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object breakaway test")
+def test_explicit_breakaway_child_survives_guard_cleanup(tmp_path):
+    fixture_dir = tmp_path / "browser breakaway"
+    fixture_dir.mkdir()
+    marker = fixture_dir / "child.pid"
+    child = fixture_dir / "child.py"
+    child.write_text(
+        "import os, pathlib, sys, time\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()), encoding='utf-8')\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    starter = fixture_dir / "starter.py"
+    starter.write_text(
+        "import subprocess, sys\n"
+        f"subprocess.Popen([sys.executable, {str(child)!r}, {str(marker)!r}], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+        "stderr=subprocess.DEVNULL, close_fds=True, "
+        "creationflags=0x01000000 | 0x08000000)\n",
+        encoding="utf-8",
+    )
+    batch = fixture_dir / "session.bat"
+    command = subprocess.list2cmdline([sys.executable, str(starter)])
+    batch.write_text(f"@echo off\n{command}\n", encoding="utf-8")
+
+    child_pid = 0
+    try:
+        result = subprocess.run([sys.executable, str(GUARD), str(batch)], timeout=15)
+        child_pid = _wait_for_pid(marker)
+
+        assert result.returncode == 0
+        assert _pid_alive(child_pid)
+    finally:
+        if child_pid and _pid_alive(child_pid):
+            subprocess.run(
+                ["taskkill", "/PID", str(child_pid), "/T", "/F"],
+                check=False,
+                capture_output=True,
+            )
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows stale-launcher cleanup test")
 def test_new_guard_closes_a_stale_pre_update_launcher_window(tmp_path):
     install_root = tmp_path / "old release folder"
@@ -143,10 +189,41 @@ def test_agent_launcher_enters_guard_before_starting_children():
     assert "run_agent_session.py" in script
     assert 'if "%MVHUB_SESSION_GUARDED%"=="1" goto :session_guarded' in script
     assert script.index("run_agent_session.py") < script.index("[1/5] Preparing frontend")
-    assert 'if not "%MVHUB_NO_BROWSER%"=="1" start' in script
+    assert 'run_agent_session.py" --open-url "%MVHUB_OPEN_URL%"' in script
 
 
 def test_release_contains_session_guard():
     script = (ROOT / "release" / "make_release.ps1").read_text(encoding="utf-8")
 
     assert script.count('"run_agent_session.py"') == 3
+
+
+def test_detached_browser_launcher_uses_breakaway_job_flag(monkeypatch):
+    calls: list[tuple[list[str], dict]] = []
+
+    class DummyProcess:
+        pass
+
+    def fake_popen(command, **kwargs):
+        calls.append((command, kwargs))
+        return DummyProcess()
+
+    monkeypatch.setattr(session_guard.subprocess, "Popen", fake_popen)
+
+    session_guard.open_browser_detached("http://127.0.0.1:5173/path?q=1")
+
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    assert command[1] == "url.dll,FileProtocolHandler"
+    assert command[2] == "http://127.0.0.1:5173/path?q=1"
+    assert kwargs["creationflags"] & session_guard.CREATE_BREAKAWAY_FROM_JOB
+    assert kwargs["creationflags"] & session_guard.CREATE_NO_WINDOW
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["", "relative/path", "file:///C:/secret.txt", "javascript:alert(1)"],
+)
+def test_detached_browser_launcher_rejects_non_http_urls(url):
+    with pytest.raises(ValueError):
+        session_guard.open_browser_detached(url)

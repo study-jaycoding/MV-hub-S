@@ -20,7 +20,7 @@ REM  Team shared-server address has a baked-in default (admins can change it in
 REM  the hub's admin window). To override here, uncomment and edit:
 REM  set "CONTENT_HUB_SHARED_URL=http://192.168.1.199:8010"
 REM
-REM  Stop: close this one window - both the hub and the agent stop.
+REM  Stop: close this one window - the hub and agent stop; the browser stays open.
 REM ============================================================================
 setlocal
 REM Force Python/pip to UTF-8 (avoid Korean Windows cp949 UnicodeDecodeError on pip install).
@@ -284,7 +284,12 @@ if exist "%TEMP%\mvhub_acct_status.tmp" del "%TEMP%\mvhub_acct_status.tmp" >nul 
 :agent_stage
 echo [5/5] Opening the app + keeping the generation agent running ^(closing this window stops it^)
 echo     Browser: %MVHUB_OPEN_URL%
-if not "%MVHUB_NO_BROWSER%"=="1" start "" "%MVHUB_OPEN_URL%"
+if not "%MVHUB_NO_BROWSER%"=="1" (
+  REM The browser is user UI, so launch it outside the kill-on-close Job Object.
+  REM Closing this CMD must stop local services without closing the browser itself.
+  "%PY_EXE%" %PY_ARGS% "%ROOT%run_agent_session.py" --open-url "%MVHUB_OPEN_URL%"
+  if errorlevel 1 echo [warn] Browser could not be opened automatically - use the URL above.
+)
 echo.
 if "%RUN_AGENT%"=="1" (
   if not "%CONTENT_HUB_LOCAL_AGENT_PAIR_SECRET%"=="" (
@@ -302,7 +307,7 @@ if "%RUN_AGENT%"=="1" (
   pause
 )
 echo.
-echo [stopped] agent stopped. Closing this window stops the hub too.
+echo [stopped] Agent and local services stopped. The browser remains open.
 pause
 call :stop_dev_frontend
 exit /b 0

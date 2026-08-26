@@ -185,7 +185,9 @@ def test_test_dev_starts_vite_only_after_backend_health_check():
         "if defined MVHUB_DEV_FRONTEND_DIR (", hub_ready
     )
     start_dev_call = agent_launcher.index("call :start_dev_frontend", start_dev_frontend)
-    browser_open = agent_launcher.index('start "" "%MVHUB_OPEN_URL%"', start_dev_frontend)
+    browser_open = agent_launcher.index(
+        'run_agent_session.py" --open-url "%MVHUB_OPEN_URL%"', start_dev_frontend
+    )
     vite_subroutine = agent_launcher.index("\n:start_dev_frontend")
     port_preflight = agent_launcher.index('set "_DEV_EXISTING_PID="', vite_subroutine)
     port_in_use_error = agent_launcher.index(
@@ -194,6 +196,16 @@ def test_test_dev_starts_vite_only_after_backend_health_check():
     vite_start = agent_launcher.index("npm.cmd run dev", vite_subroutine)
     assert health_check < hub_ready < start_dev_frontend < start_dev_call < browser_open
     assert vite_subroutine < port_preflight < port_in_use_error < vite_start
+
+
+def test_agent_opens_browser_outside_the_cleanup_job():
+    launcher = (ROOT_DIR / "MV_agent.bat").read_text(encoding="utf-8")
+    guard = (ROOT_DIR / "run_agent_session.py").read_text(encoding="utf-8")
+
+    assert 'run_agent_session.py" --open-url "%MVHUB_OPEN_URL%"' in launcher
+    assert 'start "" "%MVHUB_OPEN_URL%"' not in launcher
+    assert "CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW" in guard
+    assert "url.dll,FileProtocolHandler" in guard
 
 
 def test_test_dev_safely_replaces_only_its_own_previous_session():

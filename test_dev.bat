@@ -17,7 +17,7 @@ REM
 REM  Data is isolated in backend\data_test and never proxied to the team server.
 REM  WARNING: generation still creates REAL Higgsfield jobs and spends REAL credits.
 REM
-REM  Stop: close this window. A normal agent exit also stops the Vite child process.
+REM  Stop: close this window. Backend/Vite/agent stop; the browser stays open.
 REM ============================================================================
 set "ROOT=%~dp0"
 set "FRONTEND_PORT=5173"
@@ -103,7 +103,8 @@ echo   Log in only in the browser. The local agent follows that browser account 
 echo.
 
 REM MV_agent owns the complete lifecycle. In test mode it starts 8012, waits for
-REM /api/health, starts 5173, then opens the browser. Closing this window stops all.
+REM /api/health, starts 5173, then opens the browser. Closing this window stops
+REM the local services only; the browser remains open and shows they are offline.
 cd /d "%ROOT%" || (echo [ERROR] Project folder not found. & pause & exit /b 1)
 call "%ROOT%MV_agent.bat"
 exit /b %ERRORLEVEL%

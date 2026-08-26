@@ -17,6 +17,7 @@ import subprocess
 import sys
 from ctypes import wintypes
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 CREATE_SUSPENDED = 0x00000004
@@ -248,6 +249,31 @@ def _close_stale_launcher_shells(script: Path) -> None:
         pass
 
 
+def open_browser_detached(url: str) -> None:
+    """Open an HTTP(S) URL outside the agent cleanup Job Object.
+
+    The guarded launcher intentionally owns the local hub, Vite and generation
+    agent so closing its CMD window stops those services.  A browser is user UI,
+    not a local service: launching its protocol handler with BREAKAWAY keeps the
+    browser window/tab alive when that cleanup job closes.
+    """
+    parsed = urlsplit(str(url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("browser URL must be an absolute HTTP(S) URL")
+    if os.name != "nt":
+        raise OSError("detached browser launch is Windows-only")
+
+    rundll32 = str(Path(os.environ["SystemRoot"]) / "System32" / "rundll32.exe")
+    subprocess.Popen(  # noqa: S603 - fixed Windows protocol handler + validated URL
+        [rundll32, "url.dll,FileProtocolHandler", parsed.geturl()],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW,
+    )
+
+
 def run_guarded(script: Path) -> int:
     if os.name != "nt":
         raise OSError("MV Hub agent session guard is Windows-only")
@@ -310,9 +336,17 @@ def run_guarded(script: Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="MV Hub agent process-tree guard")
-    parser.add_argument("script", type=Path)
+    parser.add_argument("script", nargs="?", type=Path)
+    parser.add_argument("--open-url", default="")
     args = parser.parse_args(argv)
     try:
+        if args.open_url:
+            if args.script is not None:
+                parser.error("script and --open-url cannot be used together")
+            open_browser_detached(args.open_url)
+            return 0
+        if args.script is None:
+            parser.error("script is required unless --open-url is used")
         script = args.script.resolve()
         _close_stale_launcher_shells(script)
         return run_guarded(script)
