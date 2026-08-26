@@ -111,12 +111,14 @@ CLI 1.1.23에는 조직 전체 멤버 조회 명령이 없다. 각 인증 계정
 | 에이전트 | `agent_push.py` | 보고 payload |
 
 > [!IMPORTANT]
-> 이 표는 **자주 빠뜨리는 층**을 모은 것이지 전부가 아니다. 이 필드를 실제로 열거하는 곳은
-> 백엔드·프런트·에이전트에 걸쳐 30곳이 넘는다(테스트 제외). 작업 전에 전수로 확인한다.
+> 이 표는 **자주 빠뜨리는 층**을 모은 것이지 전부가 아니다. 이 필드를 실제로 다루는 파일은
+> 테스트를 빼고도 **33개**다(2026-08-26). 작업 전에 파일 목록으로 전수 확인한다.
 >
 > ```powershell
-> git grep -n "workspace_scope" -- backend frontend agent_push.py
+> git grep -l "workspace_scope" -- backend/app frontend/src agent_push.py
 > ```
+>
+> 줄 단위로 보면 350줄이 넘어 훑기 어렵다. 파일을 먼저 좁히고 그 안에서 확인한다.
 
 > [!WARNING]
 > 마이그레이션 없이 `schema.sql` 만 고치면 **새 설치에서만 동작하고 기존 사용자 DB 에서는 없는 컬럼**이
