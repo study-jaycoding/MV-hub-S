@@ -112,11 +112,14 @@ CLI 1.1.23에는 조직 전체 멤버 조회 명령이 없다. 각 인증 계정
 
 > [!IMPORTANT]
 > 이 표는 **자주 빠뜨리는 층**을 모은 것이지 전부가 아니다. 이 필드를 실제로 다루는 파일은
-> 테스트를 빼고도 **33개**다(2026-08-26). 작업 전에 파일 목록으로 전수 확인한다.
+> 테스트·문서를 빼고도 **37개**다(2026-08-26). 작업 전에 파일 목록으로 전수 확인한다.
 >
 > ```powershell
-> git grep -l "workspace_scope" -- backend/app frontend/src agent_push.py
+> git grep -l "workspace_scope" -- backend/app backend/schema.sql frontend/src tools agent_push.py
 > ```
+>
+> `backend/schema.sql` 과 `tools/` 를 범위에 넣어야 한다 — `backend/app` 만 지정하면
+> **스키마 파일을 놓쳐 컬럼 자체를 안 만들게 된다.**
 >
 > 줄 단위로 보면 350줄이 넘어 훑기 어렵다. 파일을 먼저 좁히고 그 안에서 확인한다.
 
