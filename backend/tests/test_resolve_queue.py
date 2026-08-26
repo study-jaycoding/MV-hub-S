@@ -148,6 +148,40 @@ class AcceptContractTests(ResolveQueueTestBase):
         self.assertEqual(saved["items"][0]["prepare"]["state"], "queued")
         self.assertEqual(saved["items"][0]["item_id"], "item-0001")
 
+    def test_runtime_queue_is_scoped_to_the_pc_that_accepted_it(self):
+        def accept_for_host(transfer_id: str, host_id: str):
+            return resolve_queue.accept_sync(
+                "p1",
+                [self._generation(1)],
+                resolve_target={"project_id": "resolve-1", "project_name": "EP01_EDIT"},
+                account_scope=resolve_queue.build_account_scope(
+                    account_key="acct:artist@example.com",
+                    account_email="artist@example.com",
+                    creator_uid="user-1",
+                    server_origin="https://hub.example.com",
+                    host_id=host_id,
+                ),
+                transfer_id=transfer_id,
+            )[0]
+
+        own = accept_for_host("owned-here", "host-a")
+        accept_for_host("owned-elsewhere", "host-b")
+        self._accept(transfer_id="legacy-without-host")
+
+        rows = resolve_queue.queue_snapshot(["p1"], owner_host_id="host-a")
+
+        self.assertEqual([row["transfer_id"] for row in rows], ["owned-here"])
+        self.assertEqual(
+            resolve_queue.find_manifest(
+                ["p1"], "owned-here", owner_host_id="host-a"
+            )["manifest_path"],
+            own["manifest_path"],
+        )
+        with self.assertRaises(resolve_queue.ResolveQueueError):
+            resolve_queue.find_manifest(
+                ["p1"], "owned-elsewhere", owner_host_id="host-a"
+            )
+
     def test_source_payload_keeps_restartable_keys_and_no_cdn_url(self):
         manifest, _ahead = self._accept(transfer_id="accept-payload")
         payload = manifest["source_payload"]
@@ -536,14 +570,20 @@ class WorkerFixtureBase(ResolveQueueTestBase):
             self.generations[gen["job_id"]] = gen
         return generations
 
-    def _accept_registered(self, transfer_id: str, count: int = 1):
+    def _accept_registered(
+        self, transfer_id: str, count: int = 1, *, host_id: str | None = None
+    ):
         generations = self._register(count)
         manifest, ahead, _duplicate = resolve_queue.accept_sync(
             "p1",
             generations,
             resolve_target={"project_id": "resolve-1", "project_name": "EP01_EDIT"},
             account_scope=resolve_queue.build_account_scope(
-                account_key="", account_email="", creator_uid="", server_origin=""
+                account_key="",
+                account_email="",
+                creator_uid="",
+                server_origin="",
+                host_id=host_id if host_id is not None else resolve_lock.host_id(),
             ),
             transfer_id=transfer_id,
         )
@@ -1516,6 +1556,26 @@ class AcceptIdempotencyTests(ResolveQueueTestBase):
         second, _b, duplicate = self._accept_with_key("click-2")
         self.assertNotEqual(first["transfer_id"], second["transfer_id"])
         self.assertFalse(duplicate)
+
+    def test_same_accept_key_cannot_reuse_another_pcs_transfer(self):
+        def accept(host_id: str):
+            return resolve_queue.accept_sync(
+                "p1",
+                [self._generation(1)],
+                resolve_target={"project_id": "resolve-1", "project_name": "EP01_EDIT"},
+                account_scope=resolve_queue.build_account_scope(
+                    account_key="acct:artist@example.com",
+                    account_email="artist@example.com",
+                    creator_uid="user-1",
+                    server_origin="https://hub.example.com",
+                    host_id=host_id,
+                ),
+                idempotency_key="same-click-key",
+            )
+
+        accept("host-a")
+        with self.assertRaises(resolve_transfer.ResolveTransferError):
+            accept("host-b")
 
     def test_ahead_ignores_other_projects_sharing_a_manifest_root(self):
         other = dict(self._generation(2), project_id="p2", project_name="다른 프로젝트")

@@ -460,6 +460,8 @@ export function resolveBlockedText(blocked: ResolveQueueBlocked | null): string 
       return "가져오기 기록을 남길 수 없습니다 → 공유 폴더 연결을 확인하세요";
     case "account_scope_changed":
       return "접수할 때와 다른 계정으로 로그인되어 있습니다 → 원래 계정으로 돌아오면 자동으로 이어집니다";
+    case "host_scope_changed":
+      return "다른 PC에서 접수한 작업입니다 → 접수한 PC에서만 이어갈 수 있습니다";
     case "server_changed":
       return "접수할 때와 다른 공유 서버에 연결되어 있습니다 → 원래 서버로 돌아오면 자동으로 이어집니다";
     case "destination_changed":

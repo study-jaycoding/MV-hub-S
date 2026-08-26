@@ -122,6 +122,7 @@ def _accept_account_scope(request: Request, account_key: str) -> dict:
         account_email=str(account.get("email") or active_account.active_email() or ""),
         creator_uid=str(account_scope_uid(request) or ""),
         server_origin=_current_server_origin(),
+        host_id=resolve_lock.host_id(),
     )
 
 
@@ -277,6 +278,7 @@ async def _create_resolve_transfer_pinned(
                 "project_id": body.resolve_project_id.strip(),
                 "project_name": body.resolve_project_name.strip(),
             }
+            # 가져오기 전에 대상 프로젝트를 먼저 기록해 연결이 끊겨도 재시도할 수 있게 한다.
             await save_manifest(manifest)
         manifest["resolve_import"] = await asyncio.to_thread(
             run_resolve_import_isolated, manifest
@@ -323,7 +325,11 @@ async def get_resolve_queue(request: Request):
     """v3 큐 목록 — 상태·앞 대기 건수(ahead)·경고·마지막 오류 코드."""
     _require_local_resolve(request)
     project_ids = await _queue_project_ids()
-    items = await asyncio.to_thread(resolve_queue.queue_snapshot, project_ids)
+    items = await asyncio.to_thread(
+        resolve_queue.queue_snapshot,
+        project_ids,
+        owner_host_id=resolve_lock.host_id(),
+    )
     return {
         "items": items,
         "worker_enabled": resolve_queue_worker.worker_active(),
@@ -335,7 +341,10 @@ async def _find_queued_transfer(transfer_id: str) -> dict:
     project_ids = await _queue_project_ids()
     try:
         return await asyncio.to_thread(
-            resolve_queue.find_manifest, project_ids, transfer_id
+            resolve_queue.find_manifest,
+            project_ids,
+            transfer_id,
+            owner_host_id=resolve_lock.host_id(),
         )
     except resolve_queue.ResolveQueueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

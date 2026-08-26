@@ -78,6 +78,7 @@ _BLOCKING_CODES = frozenset(
         "locking_unsupported",
         "journal_unavailable",
         "account_scope_changed",
+        "host_scope_changed",
         "destination_changed",
         "server_changed",
     }
@@ -176,6 +177,13 @@ def _source_payload_block(manifest: dict[str, Any]) -> Optional[dict[str, Any]]:
     """계정 scope·목적지 루트가 접수 때와 같은지 확인한다. 다르면 blocked 사유를 돌려준다."""
     payload = manifest.get("source_payload") or {}
     scope = payload.get("account_scope") or {}
+    expected_host_id = str(scope.get("host_id_at_accept") or "")
+    if expected_host_id and resolve_lock.host_id() != expected_host_id:
+        return {
+            "code": "host_scope_changed",
+            "message": "다른 PC에서 접수한 Resolve 전송입니다",
+            "last_checked_at": resolve_queue._utc_now(),
+        }
     expected_key = str(scope.get("account_key") or "")
     if expected_key:
         current_key = _capture_account_scope()
@@ -879,7 +887,9 @@ def note_resolve_project(status: dict[str, Any]) -> int:
         _last_seen_project = observed
     resumed = 0
     for manifest in resolve_queue.scan_projects(
-        _project_ids(), states={STATE_BLOCKED}
+        _project_ids(),
+        states={STATE_BLOCKED},
+        owner_host_id=resolve_lock.host_id(),
     ):
         block = resolve_queue.queue_block(manifest)
         blocked = block.get("blocked") if isinstance(block.get("blocked"), dict) else {}
@@ -947,7 +957,11 @@ class ResolveQueueWorker:
     async def _run(self) -> None:
         try:
             project_ids = await to_thread_non_abandon(_project_ids)
-            counts = await to_thread_non_abandon(resolve_queue.recover_boot, project_ids)
+            counts = await to_thread_non_abandon(
+                resolve_queue.recover_boot,
+                project_ids,
+                owner_host_id=resolve_lock.host_id(),
+            )
             if counts:
                 log_event(_log, "resolve_queue_boot_recovery", **counts)
         except asyncio.CancelledError:
@@ -974,7 +988,10 @@ class ResolveQueueWorker:
         """
         project_ids = await to_thread_non_abandon(_project_ids)
         manifests = await to_thread_non_abandon(
-            resolve_queue.scan_projects, project_ids, states=resolve_queue.ACTIVE_STATES
+            resolve_queue.scan_projects,
+            project_ids,
+            states=resolve_queue.ACTIVE_STATES,
+            owner_host_id=resolve_lock.host_id(),
         )
         # 부모(허브)가 죽어도 살아 있는 자식이 있는 프로젝트는 Resolve 를 만지지 않는다.
         held = await to_thread_non_abandon(resolve_queue.import_held_roots, manifests)
@@ -1085,7 +1102,9 @@ class ResolveQueueWorker:
         """오래된 터미널 manifest 청소. 실패는 로그만 남기고 드레인을 계속한다."""
         try:
             removed = await to_thread_non_abandon(
-                resolve_queue.purge_expired_terminals, project_ids
+                resolve_queue.purge_expired_terminals,
+                project_ids,
+                owner_host_id=resolve_lock.host_id(),
             )
         except asyncio.CancelledError:
             raise

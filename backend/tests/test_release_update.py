@@ -245,7 +245,7 @@ def test_update_activity_includes_resolve_queue(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(
         release_update_router.resolve_queue,
         "scan_projects",
-        lambda project_ids, *, states: [
+        lambda project_ids, *, states, owner_host_id: [
             {"project_id": project_ids[0], "state": "importing"}
         ],
     )

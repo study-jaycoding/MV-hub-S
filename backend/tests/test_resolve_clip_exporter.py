@@ -449,6 +449,14 @@ class ResolveClipExporterTests(unittest.TestCase):
         self.assertIn('window.On["Episode"].TextChanged = refresh', source)
         self.assertIn('raise ExporterError("에피소드를 입력하세요 (예: e001)")', source)
 
+        refresh_start = source.index("    def refresh(_event=None):")
+        refresh_end = source.index("    def browse(_event):", refresh_start)
+        refresh_source = source[refresh_start:refresh_end]
+        self.assertLess(
+            refresh_source.index('items["OutputRoot"].Text = infer_output_root(records)'),
+            refresh_source.index("required_episode()"),
+        )
+
     def test_time_counter_is_applied_once_and_removed_without_touching_other_comps(self):
         media = FakeMediaItem("m1", "원본", r"D:\Project\clip.mov")
         item = FakeTimelineItem("t1", "클립", 0, 24, media)

@@ -246,6 +246,7 @@ v3에도 기존 브리지 재사용을 위해 다음 최상위 필드를 유지�
   - `account_scope.account_key`
   - `account_scope.account_email`
   - `account_scope.creator_uid_at_accept`
+  - `account_scope.host_id_at_accept` — 접수한 로컬 PC의 안정 식별자
   - 쿼리·fragment·userinfo를 제거한 `server_origin`
 
 - 생성물 재조회:
@@ -271,13 +272,14 @@ v3에도 기존 브리지 재사용을 위해 다음 최상위 필드를 유지�
 
 재구성 순서:
 
-1. 현재 계정의 `account_key`와 `server_origin`이 접수 시 값과 같은지 확인합니다.
-2. 로컬 `generation.id`, 로컬 `job_id`, scoped 원격 generation 순으로 재조회합니다.
-3. `asset_id`가 있으면 정확히 일치하는 자산만 사용합니다. 없을 때만 `asset_ordinal`을 사용하며 타입까지 일치해야 합니다.
-4. 현재 자산의 `/media/...` 또는 현재 재조회 응답의 URL을 메모리에서만 사용합니다.
-5. 현재 Render root가 `root_identity`와 다르면 `blocked/destination_changed`입니다.
-6. `safe_join(root, relative_folder, filename)`으로 목적지를 다시 만듭니다.
-7. 기존 파일이 있으면 크기와 SHA-256/바이트 비교가 같을 때만 `skipped`; 다르면 `destination_conflict`입니다.
+1. 목록·워커·취소·재시도는 현재 `host_id`와 `host_id_at_accept`가 같은 기록만 대상으로 합니다. 이 필드가 없는 구버전 공유 기록은 자동 실행하지 않습니다.
+2. 현재 계정의 `account_key`와 `server_origin`이 접수 시 값과 같은지 확인합니다.
+3. 로컬 `generation.id`, 로컬 `job_id`, scoped 원격 generation 순으로 재조회합니다.
+4. `asset_id`가 있으면 정확히 일치하는 자산만 사용합니다. 없을 때만 `asset_ordinal`을 사용하며 타입까지 일치해야 합니다.
+5. 현재 자산의 `/media/...` 또는 현재 재조회 응답의 URL을 메모리에서만 사용합니다.
+6. 현재 Render root가 `root_identity`와 다르면 `blocked/destination_changed`입니다.
+7. `safe_join(root, relative_folder, filename)`으로 목적지를 다시 만듭니다.
+8. 기존 파일이 있으면 크기와 SHA-256/바이트 비교가 같을 때만 `skipped`; 다르면 `destination_conflict`입니다.
 
 저장 금지:
 

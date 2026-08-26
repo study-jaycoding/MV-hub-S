@@ -1081,12 +1081,12 @@ def show_exporter_window(resolve_obj, fusion_obj, bmd_obj):
 
     def refresh(_event=None):
         try:
-            required_episode()
-            set_action_buttons_enabled(True)
             active_project = resolve_obj.GetProjectManager().GetCurrentProject()
             records = collect_timeline_clips(active_project, selected_track_index())
             if not str(items["OutputRoot"].Text or "").strip():
                 items["OutputRoot"].Text = infer_output_root(records)
+            required_episode()
+            set_action_buttons_enabled(True)
             state["jobs"] = build_render_jobs(
                 records=records,
                 output_root=items["OutputRoot"].Text,

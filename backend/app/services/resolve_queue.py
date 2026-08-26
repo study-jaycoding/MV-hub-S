@@ -899,16 +899,35 @@ def build_manifest(
 
 
 def build_account_scope(
-    *, account_key: str, account_email: str, creator_uid: str, server_origin: str
+    *,
+    account_key: str,
+    account_email: str,
+    creator_uid: str,
+    server_origin: str,
+    host_id: str = "",
 ) -> dict[str, Any]:
-    """§1.6 계정 재개 정보. 쿼리·fragment·userinfo 를 제거한 origin 만 남긴다."""
+    """§1.6 재개 범위. 계정·공유 서버와 접수한 로컬 PC를 함께 고정한다."""
     return {
         "kind": "shared_account" if server_origin else "local_account",
         "account_key": account_key or "",
         "account_email": account_email or "",
         "creator_uid_at_accept": creator_uid or "",
         "server_origin": _origin_only(server_origin),
+        # 공유 프로젝트의 manifest 디렉터리는 여러 작업자 PC가 함께 본다. 이 값이 없으면
+        # 다른 사람의 큐가 목록·워커·취소 API에 섞이므로 신규 기록은 반드시 소유 PC를 남긴다.
+        "host_id_at_accept": host_id or "",
     }
+
+
+def manifest_host_id(manifest: dict[str, Any]) -> str:
+    """전송을 접수한 로컬 PC 식별자. 옛 기록은 빈 문자열이다."""
+    payload = manifest.get("source_payload")
+    if not isinstance(payload, dict):
+        return ""
+    scope = payload.get("account_scope")
+    if not isinstance(scope, dict):
+        return ""
+    return str(scope.get("host_id_at_accept") or "")
 
 
 def _origin_only(value: str) -> str:
@@ -950,7 +969,12 @@ def _ahead_count(manifest: dict[str, Any]) -> int:
     project_id = str(manifest.get("project_id") or "")
     transfer_id = str(manifest.get("transfer_id") or "")
     ahead = 0
-    for row in scan_projects([project_id], states=ACTIVE_STATES):
+    owner_host_id = manifest_host_id(manifest)
+    for row in scan_projects(
+        [project_id],
+        states=ACTIVE_STATES,
+        owner_host_id=(owner_host_id if owner_host_id else None),
+    ):
         if str(row.get("transfer_id") or "") == transfer_id:
             return ahead
         ahead += 1
@@ -1022,7 +1046,13 @@ def accept_sync(
             if not key:
                 raise ResolveTransferError("같은 전송 ID의 기록이 이미 있습니다")
             # 같은 접수 키의 재요청 — 새로 만들지 않고 첫 접수분을 그대로 돌려준다.
-            manifest = read_manifest(path)
+            existing = read_manifest(path)
+            requested_host_id = str((account_scope or {}).get("host_id_at_accept") or "")
+            if requested_host_id and manifest_host_id(existing) != requested_host_id:
+                raise ResolveTransferError(
+                    "같은 접수 키가 다른 PC의 Resolve 전송에서 이미 사용되었습니다"
+                )
+            manifest = existing
             duplicate = True
         else:
             # 교체 성공 뒤에만 성공 응답을 만든다(§1.7 9단계).
@@ -1217,15 +1247,25 @@ def project_scan_roots(project_id: str) -> list[Path]:
 
 
 def scan_projects(
-    project_ids: list[str], *, states: Optional[Iterable[str]] = None
+    project_ids: list[str],
+    *,
+    states: Optional[Iterable[str]] = None,
+    owner_host_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """등록된 프로젝트들의 v3 큐를 FIFO(created_at_ns, transfer_id) 로 모은다."""
+    """등록된 프로젝트들의 v3 큐를 FIFO로 모은다.
+
+    ``owner_host_id``를 지정한 런타임 경로는 그 PC가 접수한 기록만 반환한다. 소유 PC가
+    기록되지 않은 구버전 manifest는 안전하게 제외한다. 인자를 생략하는 경로는 유지보수·
+    마이그레이션용 전체 스캔이며 사용자 UI나 자동 워커에서 사용하면 안 된다.
+    """
     found: list[dict[str, Any]] = []
     seen_transfers: set[tuple[str, str]] = set()
     for project_id in dict.fromkeys(pid for pid in project_ids if pid):
         for root in project_scan_roots(project_id):
             for manifest in _scan_dir(root, states=states):
                 if str(manifest.get("project_id") or "") != project_id:
+                    continue
+                if owner_host_id is not None and manifest_host_id(manifest) != owner_host_id:
                     continue
                 key = (project_id, str(manifest.get("transfer_id") or ""))
                 if key in seen_transfers:
@@ -1236,9 +1276,14 @@ def scan_projects(
     return found
 
 
-def queue_snapshot(project_ids: list[str], *, limit: int = 50) -> list[dict[str, Any]]:
+def queue_snapshot(
+    project_ids: list[str],
+    *,
+    limit: int = 50,
+    owner_host_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
     """GET /api/resolve/queue 응답용 요약. ahead 는 같은 FIFO 안의 앞선 활성 건수."""
-    manifests = scan_projects(project_ids)
+    manifests = scan_projects(project_ids, owner_host_id=owner_host_id)
     active_seen = 0
     rows: list[dict[str, Any]] = []
     for manifest in manifests:
@@ -1275,10 +1320,15 @@ def queue_snapshot(project_ids: list[str], *, limit: int = 50) -> list[dict[str,
     return rows[: max(1, limit)]
 
 
-def find_manifest(project_ids: list[str], transfer_id: str) -> dict[str, Any]:
+def find_manifest(
+    project_ids: list[str],
+    transfer_id: str,
+    *,
+    owner_host_id: Optional[str] = None,
+) -> dict[str, Any]:
     """transfer_id 로 v3 manifest 한 건을 찾는다(없으면 예외)."""
     wanted = str(transfer_id or "")
-    for manifest in scan_projects(project_ids):
+    for manifest in scan_projects(project_ids, owner_host_id=owner_host_id):
         if str(manifest.get("transfer_id") or "") == wanted:
             return manifest
     raise ResolveQueueError("전송 기록을 찾을 수 없습니다")
@@ -1362,6 +1412,7 @@ def purge_expired_terminals(
     *,
     limit: int = CLEANUP_PER_ROUND,
     retention_days: Optional[int] = None,
+    owner_host_id: Optional[str] = None,
 ) -> int:
     """보존 기간이 지난 터미널 manifest 를 소량 지운다. 반환=지운 건수.
 
@@ -1394,6 +1445,8 @@ def purge_expired_terminals(
                 except (OSError, ResolveQueueError):
                     continue
                 if str(manifest.get("project_id") or "") != project_id:
+                    continue
+                if owner_host_id is not None and manifest_host_id(manifest) != owner_host_id:
                     continue
                 if queue_state(manifest) not in TERMINAL_STATES:
                     continue
@@ -1918,10 +1971,12 @@ def import_held_roots(manifests: Iterable[dict[str, Any]]) -> set[str]:
     return held
 
 
-def recover_boot(project_ids: list[str]) -> dict[str, int]:
+def recover_boot(
+    project_ids: list[str], *, owner_host_id: Optional[str] = None
+) -> dict[str, int]:
     """부팅 시 1회 — 상태별 처리표(§1.3·§2.7)를 적용한다."""
     counts: dict[str, int] = {}
-    for manifest in scan_projects(project_ids):
+    for manifest in scan_projects(project_ids, owner_host_id=owner_host_id):
         try:
             state = _recover_one(manifest)
         except OSError:

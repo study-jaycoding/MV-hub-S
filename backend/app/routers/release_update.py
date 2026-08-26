@@ -11,7 +11,7 @@ from .. import repo
 from . import comfy
 from ..config import PORT
 from ..services.operational_health import generation_queue_snapshot
-from ..services import resolve_queue
+from ..services import resolve_lock, resolve_queue
 from ..services.release_update import (
     APP_ROOT,
     ReleaseUpdateBusyError,
@@ -43,7 +43,11 @@ def _activity() -> dict[str, int]:
     projects = repo.list_projects(include_archived=True).get("projects") or []
     project_ids = [str(project.get("id") or "") for project in projects]
     resolve_count = len(
-        resolve_queue.scan_projects(project_ids, states=resolve_queue.ACTIVE_STATES)
+        resolve_queue.scan_projects(
+            project_ids,
+            states=resolve_queue.ACTIVE_STATES,
+            owner_host_id=resolve_lock.host_id(),
+        )
     )
     return {
         "generation_active": generation,
