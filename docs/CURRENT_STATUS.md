@@ -5,7 +5,7 @@ tags:
   - mvhub
   - mvhub/현황
 status: active
-updated: 2026-08-24
+updated: 2026-08-26
 ---
 
 # MV Hub 현재 작업 현황

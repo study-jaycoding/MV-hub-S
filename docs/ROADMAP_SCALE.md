@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-05
+updated: 2026-08-26
 status: review-required
 ---
 
@@ -49,7 +49,21 @@ status: review-required
 
 ## B. id ≠ job_id 통일
 
-현황: Phase 0(origin 컬럼) 완료. `id=? OR job_id=?` 변환 17곳. (근거: `docs/DESIGN_id_unification.md`)
+현황: Phase 0a·0b(origin 컬럼 + 신규 동기화 행 UUID) 완료. `id`/`job_id` 양쪽을 함께 조회하는
+지점은 **2026-08-26 실측 20곳 / 10개 파일** 이다 — `repo/` 아래 `id_resolve.py` 4,
+`generations_query.py` 3, `gen_requests.py` 3, `share.py` 3, `projects.py` 2,
+`generations.py`·`generation_rows.py`·`generation_sync.py`·`manage_telemetry.py`·`share_state_intents.py` 각 1.
+(설계 근거: `docs/DESIGN_id_unification.md`)
+
+숫자는 코드가 바뀌면 낡는다. 아래로 다시 센다.
+
+```powershell
+git grep -nE "OR\s+job_id|job_id\s*=\s*[^ ]+\s+OR" -- backend/app
+```
+
+> [!NOTE]
+> 2026-08-26 실측 20곳은 아래 착수 트리거의 **하한에 닿아 있다**. 그동안 본문이 17곳으로
+> 낡아 있어 이 사실이 드러나지 않았다. 다음에 변환 지점이 늘면 Phase 1 착수를 판단한다.
 
 **(a) 착수 트리거**: 변환 지점이 20~25곳 이상 증가 / 공유·복원·히스토리 id 매핑 버그 반복 / 외부 API·중앙 인덱스가 안정 앵커 요구.
 
@@ -60,7 +74,7 @@ status: review-required
 
 **(c) 리스크·순서**: 가장 위험 = 공유 번들·history edge·trash restore·server/local id 매핑. 진단·테스트 먼저, 데이터 마이그레이션 마지막. **구버전 번들 최소 1릴리스 호환**.
 
-**(d) 지금 선행**: 17곳 목록 문서화 + 신규 `id OR job_id` 추가 금지, 새 API는 `generation.id`만 받음, `job_id`는 "외부 HF 속성" 주석 통일.
+**(d) 지금 선행**: 위 실측 목록을 기준선으로 유지 + 신규 `id OR job_id` 추가 금지, 새 API는 `generation.id`만 받음, `job_id`는 "외부 HF 속성" 주석 통일.
 
 ---
 

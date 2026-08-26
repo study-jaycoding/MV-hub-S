@@ -461,9 +461,11 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
 11. **썸네일 캐시 무효화는 URL 의 `v`(파일 버전)로만 한다** — 함정.
     `v` 가 붙은 에셋 썸네일 URL 은 내용과 1:1 대응이라 `max-age=31536000, immutable` 로 응답하고,
     `v` 가 없으면 `no-cache` 로 매번 재검증한다(`routers/assets.py` 의 `cache_control` 분기).
-    생성본 썸네일은 30일(`routers/library.py`). **원본을 같은 경로에 덮어썼는데 `v` 가 그대로면
-    브라우저가 옛 썸네일로 굳는다** — 파일을 바꾸면 `lib/assetVersions.ts` 의 버전을 올려야 한다.
-    `v` 없는 URL 에 immutable 을 주는 변경은 잔상을 영구화하므로 금지.
+    생성본 썸네일은 30일(`routers/library.py`). 버전 값은 백엔드가 파일의
+    `mtime_ns-size` 로 **자동 파생**하고(`services/asset_tree.py`), `lib/assetVersions.ts` 는
+    `/api/assets/tree` 응답을 담아 두는 표일 뿐이다 — 손으로 올리는 상수가 아니다.
+    덮어썼는데 잔상이 남으면 트리 응답을 다시 받았는지부터 본다.
+    **`v` 없는 URL 에 immutable 을 주는 변경은 잔상을 영구화하므로 금지.**
 
 ---
 

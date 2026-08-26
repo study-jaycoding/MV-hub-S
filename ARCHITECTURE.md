@@ -6,7 +6,7 @@ tags:
   - mvhub
   - mvhub/구조
   - 기준문서
-updated: 2026-08-24
+updated: 2026-08-26
 status: active
 ---
 

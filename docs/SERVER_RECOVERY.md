@@ -214,7 +214,9 @@ schtasks /Run /TN "MVHub Watchdog"
 > 이 스위치는 기본이 켜짐(`1`)이라, 백업 사본에 남아 있던 in-flight 마커·API 키로 부팅 시
 > **실제 Comfy Cloud 잡을 취소하거나 로컬 CLI 를 호출한다**. 파일은 격리해도 외부 서비스
 > 상태는 격리되지 않아, 드릴이 라이브 유료 작업을 죽일 수 있다.
-> (`backend/app/config.py` 의 `EXTERNAL_RECOVERY_ENABLED`, 사용처는 `backend/app/main.py`.)
+> (`backend/app/config.py` 의 `EXTERNAL_RECOVERY_ENABLED`. 실제 차단 지점은
+> `routers/comfy.py`(Cloud 잡 취소 생략)·`services/history_autofill.py` 이고,
+> `main.py` 는 부팅 시 CLI 신원 캡처를 건너뛴다.)
 >
 > ```powershell
 > $env:CONTENT_HUB_EXTERNAL_RECOVERY = "0"

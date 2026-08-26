@@ -7,7 +7,7 @@ tags:
   - mvhub/운영
   - mvhub/업데이트
 status: active
-updated: 2026-08-24
+updated: 2026-08-26
 ---
 
 # 업데이트 공지 관리 계약

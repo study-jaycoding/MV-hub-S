@@ -102,6 +102,7 @@ CLI 1.1.23에는 조직 전체 멤버 조회 명령이 없다. 각 인증 계정
 | 관리 DB | `backend/app/manage_db.py` | 관리 허브 쪽 스키마 |
 | 읽기·쓰기 | `backend/app/repo/generations.py` · `repo/generation_sync.py` | SELECT 목록·INSERT/UPDATE |
 | 프런트 타입 | `frontend/src/types.ts` · `lib/workspaceContext.ts` | 타입 + 컨텍스트 조립 |
+| 팀 집계 | `backend/app/repo/manage_telemetry.py` | `build_telemetry_facts` 의 **명시적 SELECT 컬럼 목록** — 여기 안 넣으면 팀 집계에서만 값이 사라진다 |
 | 에이전트 | `agent_push.py` | 보고 payload |
 
 > [!WARNING]

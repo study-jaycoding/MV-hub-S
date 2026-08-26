@@ -5,7 +5,7 @@ aliases:
 tags:
   - mvhub
   - mvhub/진입점
-updated: 2026-08-24
+updated: 2026-08-26
 status: active
 ---
 
