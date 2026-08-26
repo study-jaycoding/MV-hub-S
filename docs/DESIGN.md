@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-03
+updated: 2026-08-24
 status: superseded
 superseded_by:
   - ARCHITECTURE.md

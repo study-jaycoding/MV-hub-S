@@ -76,7 +76,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | **현재 작업 목록** | `RISK_REDUCTION_PLAN_2026-08-15` | 위험 상태를 변경하는 단일 출처다. |
 | **현재 세부 계약** | `SHARE_STATE_RECONCILIATION_DESIGN`, `GENERATION_SUBMISSION_RECOVERY`, `CANVAS_GENERATION_IDEMPOTENCY`, `CLI_ESTIMATE_LIFECYCLE`, `AUTH_FAILURE_SEMANTICS`, `TELEMETRY_DRAIN_LIFECYCLE`, `WORKER_OFFDISK_BACKUP_CONTRACT` | 기능별 상태 전이·복구·검증 기준이다. 완료 여부는 위험 계획의 Gate 0 표를 따른다. |
 | **운영 기준** | `SERVER`, `SERVER_RECOVERY`, `TESTING`, `HF_CLI_UPGRADE` | 설치·업데이트·복구·검증 때 사용한다. |
-| **기능별 설계** | `PM_DASHBOARD_DESIGN`, `관리대시보드_통합계획`, `CANVAS_MERGE_OPTIMIZATION_PLAN`, `DESIGN_id_unification`, `ROADMAP_SCALE` | 일부 구현·일부 계획이 섞여 있으므로 현행 코드와 대조한다. |
+| **기능별 설계** | `PM_DASHBOARD_DESIGN`, `관리대시보드_통합계획`, `DESIGN_id_unification`, `ROADMAP_SCALE` | 일부 구현·일부 계획이 섞여 있으므로 현행 코드와 대조한다. |
 | **검증 기록** | `LOAD_TEST_2026-08-14`, `PREDEPLOY_100_USERS` | 해당 시점의 결과다. 새 배포를 자동 보증하지 않는다. |
 | **과거 기록** | `AUDIT_2026-08-15`, `DESIGN` | 문제 발견 이력과 초기 설계 보존용이다. 현재 할 일 목록으로 사용하지 않는다. |
 
@@ -86,7 +86,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 ### 문서 프로퍼티 규칙
 
 `AGENTS.md`·`CLAUDE.md`(매 세션 자동으로 읽히는 제어 문서) 두 개를 뺀 **모든 Markdown**은 맨 위에
-`updated`·`status` 두 줄을 둔다. 프로퍼티가 없으면 누락으로 본다.
+`updated`·`status` 두 프로퍼티를 둔다(`superseded` 는 `superseded_by` 도 함께). 프로퍼티가 없으면 누락으로 본다.
 
 **정본이 서로 다르다.** 같은 정보를 두 곳에서 관리하지 않는다.
 
@@ -105,10 +105,10 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 |---|---|
 | `active` | 그 문서가 다루는 범위에서 현행 기준 |
 | `draft` | 제안·미승인·보류. 현행 계약이 아니다 |
-| `review-required` | 현재 구현과 후속 계획이 섞여 있어 코드 대조가 필요하다 |
-| `snapshot` | 특정 날짜·커밋의 상태나 검증 기록. 현재를 자동 보증하지 않는다 |
+| `review-required` | 현행 구현·규칙과 어긋날 수 있어 대조가 필요하다(구현과 계획이 섞였거나 절차가 낡았을 때) |
+| `snapshot` | 특정 날짜·커밋의 상태·검증·감사·리뷰 기록. 현재를 자동 보증하지 않는다 |
 | `superseded` | 다른 문서로 대체됨. `superseded_by` 에 후속 문서 경로를 함께 적는다 |
-| `archived` | 완료 작업·감사·리뷰의 보존 이력. 현재 작업 지시가 아니다 |
+| `archived` | 완료 작업의 보존 이력. 현재 작업 지시가 아니다 |
 
 문서 상태와 구현 완료 상태를 섞지 않는다. 외부 실측이 남아 있어도 그 문서가 현행 계약이면
 `active` 다. 구현·검증 잔여는 본문이나 `RISK_REDUCTION_PLAN_2026-08-15` 에서 관리한다.
@@ -142,7 +142,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | **현행 구조·계약 — 기능별** | [AUTH_FAILURE_SEMANTICS](AUTH_FAILURE_SEMANTICS.md), [CANVAS_GENERATION_IDEMPOTENCY](CANVAS_GENERATION_IDEMPOTENCY.md), [CLI_ESTIMATE_LIFECYCLE](CLI_ESTIMATE_LIFECYCLE.md), [GENERATION_SUBMISSION_RECOVERY](GENERATION_SUBMISSION_RECOVERY.md), [TELEMETRY_DRAIN_LIFECYCLE](TELEMETRY_DRAIN_LIFECYCLE.md), [SHARE_STATE_RECONCILIATION_DESIGN](SHARE_STATE_RECONCILIATION_DESIGN.md), [WORKER_OFFDISK_BACKUP_CONTRACT](WORKER_OFFDISK_BACKUP_CONTRACT.md), [DESIGN_RESOLVE_QUEUE_V3](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md), [UPDATE_ANNOUNCEMENTS](UPDATE_ANNOUNCEMENTS.md) |
 | **운영·검증 절차** | [SERVER](SERVER.md), [SERVER_RECOVERY](SERVER_RECOVERY.md), [SERVER_RELOCATION](SERVER_RELOCATION.md), [TESTING](TESTING.md), [HF_CLI_UPGRADE](HF_CLI_UPGRADE.md) |
 | **사용자 안내** | [사용설명서](사용설명서.md), [기능설명서](기능설명서.md) |
-| **일부 구현·후속 설계** | [DESIGN_id_unification](DESIGN_id_unification.md), [PM_DASHBOARD_DESIGN](PM_DASHBOARD_DESIGN.md), [관리대시보드 통합계획](관리대시보드_통합계획.md), [ROADMAP_SCALE](ROADMAP_SCALE.md), [COMFY_ENHANCE_PLAN](COMFY_ENHANCE_PLAN_2026-08-21.md) |
+| **일부 구현·후속 설계** | [DESIGN_id_unification](DESIGN_id_unification.md), [PM_DASHBOARD_DESIGN](PM_DASHBOARD_DESIGN.md), [관리대시보드 통합계획](관리대시보드_통합계획.md), [ROADMAP_SCALE](ROADMAP_SCALE.md), [COMFY_ENHANCE_PLAN](COMFY_ENHANCE_PLAN_2026-08-21.md)(보류 — 구현 미착수) |
 | **완료 작업의 개발 이력** | [CANVAS_MERGE_OPTIMIZATION_PLAN](CANVAS_MERGE_OPTIMIZATION_PLAN.md), [BACKLOG_PLAN](BACKLOG_PLAN_2026-08-20.md), [P2_CLOSEOUT_PLAN](P2_CLOSEOUT_PLAN_2026-08-20.md), [RL02_TASK_WORKSPACE_SNAPSHOT_PLAN](RL02_TASK_WORKSPACE_SNAPSHOT_PLAN.md) |
 | **완료 작업의 개발 이력 — OPT_PLAN 시리즈(12개)** | [1](OPT_PLAN_2026-08-21.md), [2](OPT_PLAN2_2026-08-21.md), [3](OPT_PLAN3_2026-08-22.md), [4](OPT_PLAN4_2026-08-22.md), [5](OPT_PLAN5_2026-08-22.md), [6](OPT_PLAN6_2026-08-22.md), [7](OPT_PLAN7_2026-08-22.md), [8](OPT_PLAN8_2026-08-22.md), [9](OPT_PLAN9_2026-08-22.md), [10](OPT_PLAN10_2026-08-23.md), [11](OPT_PLAN11_2026-08-23.md), [12](OPT_PLAN12_2026-08-23.md) |
 | **시점 고정 검증 기록** | [LOAD_TEST_2026-08-14](LOAD_TEST_2026-08-14.md), [PREDEPLOY_100_USERS](PREDEPLOY_100_USERS.md) |

@@ -1,6 +1,6 @@
 ---
 updated: 2026-07-02
-status: active
+status: review-required
 ---
 
 # 배포 — 앞단 리버스 프록시(선택, Phase 2 미디어 분리 서빙)

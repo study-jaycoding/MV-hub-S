@@ -1,6 +1,6 @@
 ---
 updated: 2026-08-21
-status: review-required
+status: draft
 ---
 
 # Comfy 강화 계획 v2 (2026-08-21) — 클로드 초안 → 코덱스 방향검토 반영 합의안
