@@ -404,9 +404,12 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
 - **요청 한 건 안에서 준비·반입·결과 저장까지 끝낸다**(`routers/resolve_integration.py` 의
   `create_resolve_transfer`). 서버 영구 큐는 쓰지 않는다 — 2026-08-25 `aa0985b9` 로 큐를
   걷어내고 직접 전송으로 되돌렸다.
-- 동시 호출 방지는 브라우저에서만 한다. `lib/useResolveTransferActions.ts` 의 `SerialTaskQueue`
-  가 짧게 직렬화해 Resolve API 를 겹쳐 부르지 않게 한다(앱을 닫으면 사라지는 메모리 큐).
-- 로컬 전용 라우트라 loopback + Host 헤더를 검사한다(`_require_local_resolve`).
+- 동시 호출 방지는 **두 곳**이다. 브라우저는 `lib/useResolveTransferActions.ts` 의
+  `SerialTaskQueue` 로 짧게 직렬화하고(앱을 닫으면 사라지는 메모리 큐), 백엔드는
+  `services/resolve_status_runner.py` 의 `_IMPORT_LOCK` 으로 Resolve 반입 자체를 직렬화한다.
+- 로컬 전용 라우트다(`_require_local_resolve` → `services/request_guards.py` 의
+  `require_local_machine_request`). **loopback 뿐 아니라 이 PC 의 네트워크 어댑터 주소도
+  허용하며 Host 헤더는 검사하지 않는다** — 같은 PC 에서 온 요청인지만 본다.
 
 > [!WARNING]
 > **알려진 제약**: 업데이트 전 활성 작업 차단(`routers/release_update.py`)은 v3 큐만 스캔한다.

@@ -25,7 +25,7 @@ status: review-required
 | 항목 | 지금 저렴한 선행(해둘 것) | 규모 신호 전엔 손대지 말 것 |
 |---|---|---|
 | **A. 대형 파일 분리** | 새 코드의 미래 모듈 소속 섹션 정리, `from app import repo` facade 유지, 대형 파일에 새 기능 안 붙이기 | 대규모 파일 이동 전체 |
-| **B. id≠job_id 통일** | `id=? OR job_id=?` 17곳 목록화 + 신규 추가 금지, 새 API는 `generation.id`만 | 실제 id 마이그레이션 |
+| **B. id≠job_id 통일** | 변환 지점(아래 정의) 확인 + 신규 추가 금지, 새 API는 `generation.id`만 | 실제 id 마이그레이션 |
 | **C. durable outbox** | `/api/ingest` 멱등 테스트 강화, outbox 스키마 초안 문서화 | agent outbox 전면 전환 |
 | **D. 중앙 fact/index** | fact 필드 민감도 등급 주석, "검색/통계 캐시(권한 원본 아님)" 문서화 | 비공개 작업 중앙 검색 |
 
@@ -55,26 +55,31 @@ status: review-required
 
 ## B. id ≠ job_id 통일
 
-현황: Phase 0a·0b(origin 컬럼 + 신규 동기화 행 UUID) 완료. `id`/`job_id` 양쪽을 함께 조회하는
-지점은 **2026-08-26 실측 20곳 / 10개 파일** 이다 — `repo/` 아래 `id_resolve.py` 4,
-`generations_query.py` 3, `gen_requests.py` 3, `share.py` 3, `projects.py` 2,
-`generations.py`·`generation_rows.py`·`generation_sync.py`·`manage_telemetry.py`·`share_state_intents.py` 각 1.
+현황: Phase 0a·0b(origin 컬럼 + 신규 동기화 행 UUID) 완료.
 (설계 근거: `docs/DESIGN_id_unification.md`)
 
-숫자는 코드가 바뀌면 낡는다. 아래로 다시 센다.
+**변환 지점의 정의**: `id` 와 `job_id` **어느 쪽으로 와도 같은 행을 찾는** 조회다.
+`job_id IS NULL OR job_id=''` 같은 **상태 검사는 변환 지점이 아니다**.
+
+형태가 셋이라 한 줄 정규식으로 정확히 세지 못한다 — `id=? OR job_id=?` 비교,
+`id IN (...) OR job_id IN (...)` 목록, `g.id=x.y OR g.job_id=x.y` 컬럼 조인.
+아래로 후보를 좁힌 뒤 **눈으로 확인**한다(2026-08-26 기준 `repo/` 아래 9개 파일 —
+`id_resolve` · `share` · `projects` · `gen_requests` · `generations_query` ·
+`generation_sync` · `manage_telemetry` · `share_state_intents` · `workspace_assignments`).
 
 ```powershell
-git grep -nE "OR\s+job_id|job_id\s*=\s*[^ ]+\s+OR" -- backend/app
+git grep -nE "OR[^;]{0,30}job_id" -- backend/app
 ```
 
 > [!NOTE]
-> 2026-08-26 실측 20곳은 아래 착수 트리거의 **하한에 닿아 있다**. 그동안 본문이 17곳으로
-> 낡아 있어 이 사실이 드러나지 않았다. 다음에 변환 지점이 늘면 Phase 1 착수를 판단한다.
+> 2026-08-26 기준 변환 지점은 `repo/` 아래 9개 파일에 있고, 아래 착수 트리거의 범위에
+> **이미 들어와 있다**. 그동안 본문이 "17곳"으로 낡아 이 사실이 드러나지 않았다.
+> 다음에 변환 지점이 늘면 Phase 1 착수를 판단한다.
 
 **(a) 착수 트리거**: 변환 지점이 20~25곳 이상 증가 / 공유·복원·히스토리 id 매핑 버그 반복 / 외부 API·중앙 인덱스가 안정 앵커 요구.
 
 **(b) 접근**:
-- Phase 1(레거시 관측): `id<>job_id`·`id=job_id`·`job_id NULL` 분포를 진단 로그로 수집, 변환은 `resolve_generation_id`/`finalize_id_map` 사용처 17곳으로 고정, **신규 직접 SQL 금지**
+- Phase 1(레거시 관측): `id<>job_id`·`id=job_id`·`job_id NULL` 분포를 진단 로그로 수집, 변환은 `resolve_generation_id`/`finalize_id_map` 사용처로 고정, **신규 직접 SQL 금지**
 - Phase 2(uuid 앵커 전환): 외부 입출력은 항상 `generation.id`, `job_id`는 속성/검색키로만, 공유 번들에 `local_id`+`job_id`+`origin` 명시(구버전 호환)
 - Phase 3(변환기계 제거): UI/API의 job_id 직접 접근 제거, `id=? OR job_id=?` → `id=?`+명시 조회로 축소, 호환 윈도우 후 fallback 제거
 

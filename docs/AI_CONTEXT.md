@@ -152,7 +152,15 @@ CLI**로 생성한다. 생성 결과는 **내 로컬 DB 가 정답**이고(`rout
 ## 6. push 에이전트 (`agent_push.py`) + 적재(ingest)
 
 `agent_push.py` — **표준 라이브러리만**. 실운영 진입점은 **`MV_agent.bat` → `run_agent_session.py`**
-(Job Object 로 전체 트리 감시 — 창 닫으면 전부 종료). 개발에서 단독 실행:
+(Job Object 로 전체 트리 감시 — 창 닫으면 전부 종료).
+
+> [!IMPORTANT]
+> **정상 경로에서 에이전트가 붙는 곳은 내 로컬 허브(`127.0.0.1`)다.** `MV_agent.bat` 이
+> `CONTENT_HUB_HOST=127.0.0.1` 로 허브를 띄우고 에이전트를 거기에 연결하며,
+> `routers/ingest.py` 가 생성물을 **로컬 DB** 에 저장한다. 아래 `--server <서버IP>` 예시는
+> 개발용 단독 실행이고, 이후 설명의 "적재"도 로컬 허브 적재를 뜻한다.
+
+개발에서 단독 실행:
 ```
 python agent_push.py --server http://<서버IP>:8010 --email <내이메일>
 # --watch 의 숫자 값은 호환용(무시) — 롱폴 이벤트 상주 모드라 즉시 반응

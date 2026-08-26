@@ -109,6 +109,14 @@ CLI 1.1.23에는 조직 전체 멤버 조회 명령이 없다. 각 인증 계정
 | 팀 집계 | `backend/app/repo/manage_telemetry.py` | `build_telemetry_facts` 의 **명시적 SELECT 컬럼 목록** — 여기 안 넣으면 팀 집계에서만 값이 사라진다 |
 | 에이전트 | `agent_push.py` | 보고 payload |
 
+> [!IMPORTANT]
+> 이 표는 **자주 빠뜨리는 층**을 모은 것이지 전부가 아니다. 이 필드를 실제로 열거하는 곳은
+> 백엔드·프런트·에이전트에 걸쳐 30곳이 넘는다(테스트 제외). 작업 전에 전수로 확인한다.
+>
+> ```powershell
+> git grep -n "workspace_scope" -- backend frontend agent_push.py
+> ```
+
 > [!WARNING]
 > 마이그레이션 없이 `schema.sql` 만 고치면 **새 설치에서만 동작하고 기존 사용자 DB 에서는 없는 컬럼**이
 > 된다. `backend/data` 는 사용자 데이터이므로 직접 초기화해서 해결하지 않는다.
