@@ -140,10 +140,6 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 동작을 바꾸는 코드 커밋은 그 동작을 서술한 문서를 **같은 커밋에서** 함께 고친다. 문서를 나중에
 고치기로 미루면 그 사이에 `active` 인데 내용이 반대인 문서가 생긴다.
 
-> [!NOTE]
-> 프로퍼티 적용 예외 1건: [DESIGN_RESOLVE_QUEUE_V3](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) 는
-> 다른 세션이 수정 중이라 이번 적용에서 제외했다(64/65). 그 작업이 끝나면 붙이고 이 안내를 지운다.
-
 ### 전체 문서 분류
 
 아래 표는 현재 `docs` 아래 Markdown **61개**(`docs/*.md` 54 + `docs/status/*.md` 7)를 한 번씩
@@ -162,7 +158,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | **완료 작업의 개발 이력** | [CANVAS_MERGE_OPTIMIZATION_PLAN](CANVAS_MERGE_OPTIMIZATION_PLAN.md), [BACKLOG_PLAN](BACKLOG_PLAN_2026-08-20.md), [P2_CLOSEOUT_PLAN](P2_CLOSEOUT_PLAN_2026-08-20.md), [RL02_TASK_WORKSPACE_SNAPSHOT_PLAN](RL02_TASK_WORKSPACE_SNAPSHOT_PLAN.md) |
 | **완료 작업의 개발 이력 — OPT_PLAN 시리즈(12개)** | [1](OPT_PLAN_2026-08-21.md), [2](OPT_PLAN2_2026-08-21.md), [3](OPT_PLAN3_2026-08-22.md), [4](OPT_PLAN4_2026-08-22.md), [5](OPT_PLAN5_2026-08-22.md), [6](OPT_PLAN6_2026-08-22.md), [7](OPT_PLAN7_2026-08-22.md), [8](OPT_PLAN8_2026-08-22.md), [9](OPT_PLAN9_2026-08-22.md), [10](OPT_PLAN10_2026-08-23.md), [11](OPT_PLAN11_2026-08-23.md), [12](OPT_PLAN12_2026-08-23.md) |
 | **시점 고정 검증 기록** | [LOAD_TEST_2026-08-14](LOAD_TEST_2026-08-14.md), [PREDEPLOY_100_USERS](PREDEPLOY_100_USERS.md) |
-| **과거 기준·감사 보존** | [DESIGN_RESOLVE_QUEUE_V3](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md)(큐 v3 설계 이력 — 릴리스·HEAD 모두 직접 전송, 현재 확인된 재도입 계획 없음. 상단 배너 "구현 완료 — 현행 계약" 은 낡았으며 다른 세션 수정분 정리 후 `superseded` 로 전환 예정), [SHARE_STATE_COMPENSATION](SHARE_STATE_COMPENSATION.md)(RL-11 보상 — 대체됨), [AUDIT_2026-08-15](AUDIT_2026-08-15.md), [DESIGN](DESIGN.md), [PROJECT_CHARTER_LEGACY](PROJECT_CHARTER_LEGACY.md), [REVIEW_2026-08-17](REVIEW_2026-08-17.md), [P2_CLOSEOUT_REVIEW](P2_CLOSEOUT_REVIEW_2026-08-20.md) |
+| **과거 기준·감사 보존** | [DESIGN_RESOLVE_QUEUE_V3](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md)(큐 v3 설계 이력 — `superseded`, 현행은 ARCHITECTURE §7.6), [SHARE_STATE_COMPENSATION](SHARE_STATE_COMPENSATION.md)(RL-11 보상 — 대체됨), [AUDIT_2026-08-15](AUDIT_2026-08-15.md), [DESIGN](DESIGN.md), [PROJECT_CHARTER_LEGACY](PROJECT_CHARTER_LEGACY.md), [REVIEW_2026-08-17](REVIEW_2026-08-17.md), [P2_CLOSEOUT_REVIEW](P2_CLOSEOUT_REVIEW_2026-08-20.md) |
 | **외부 설명 자료** | [투자자 소개서](투자자_소개서.md) |
 
 - 공유 상태는 `SHARE_STATE_RECONCILIATION_DESIGN`(서버 권위 원장·수렴, 2026-08-20 구현)이 상위
