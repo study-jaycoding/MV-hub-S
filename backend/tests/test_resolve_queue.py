@@ -255,7 +255,6 @@ class AcceptContractTests(ResolveQueueTestBase):
                 "can_view_generation_with_member_projects",
                 return_value=True,
             ),
-            mock.patch.object(resolve_integration, "current_account", return_value={}),
             mock.patch.object(
                 resolve_integration.active_account, "account_key", return_value=""
             ),
@@ -1319,9 +1318,6 @@ class AcceptAccountPinTests(ResolveQueueTestBase):
                 return_value=True,
             ),
             mock.patch.object(
-                resolve_integration, "current_account", return_value={"email": "pinned@example.com"}
-            ),
-            mock.patch.object(
                 resolve_integration, "account_scope_uid", return_value="user-pinned"
             ),
             mock.patch.object(resolve_integration._proxy, "proxying", return_value=False),
@@ -1997,83 +1993,6 @@ class ImportItemErrorCodeTests(ResolveQueueTestBase):
         self.assertEqual(item["status"], "error")
         self.assertEqual(item["error_code"], "media_import_failed")
         self.assertEqual(result["error_count"], 1)
-
-
-class QueueRouteTests(WorkerFixtureBase):
-    """2단계 — 취소·재시도 로컬 API 계약."""
-
-    def _projects_patch(self):
-        return mock.patch.object(
-            resolve_integration.repo,
-            "list_projects",
-            return_value={"projects": [{"id": "p1"}]},
-        )
-
-    async def test_cancel_route_discards_a_queued_transfer(self):
-        self._accept_registered("route-cancel")
-        with self._projects_patch():
-            response = await resolve_integration.cancel_resolve_queue_transfer(
-                "route-cancel",
-                resolve_integration.ResolveQueueCancelIn(force=False),
-                _local_request(),
-            )
-        self.assertEqual(response["state"], resolve_queue.STATE_CANCELLED)
-        self.assertTrue(response["applied"])
-        self.assertFalse(response["child_stopped"])
-
-    async def test_cancel_route_refuses_import_without_force(self):
-        manifest, _ahead = self._accept_registered("route-import")
-        resolve_queue.set_state(manifest, resolve_queue.STATE_IMPORTING)
-        resolve_queue.save_manifest(Path(manifest["manifest_path"]), manifest)
-        with self._projects_patch():
-            with self.assertRaises(resolve_integration.HTTPException) as caught:
-                await resolve_integration.cancel_resolve_queue_transfer(
-                    "route-import",
-                    resolve_integration.ResolveQueueCancelIn(force=False),
-                    _local_request(),
-                )
-        self.assertEqual(caught.exception.status_code, 409)
-
-    async def test_unknown_transfer_is_404(self):
-        with self._projects_patch():
-            with self.assertRaises(resolve_integration.HTTPException) as caught:
-                await resolve_integration.resume_resolve_queue_transfer(
-                    "nope", _local_request()
-                )
-        self.assertEqual(caught.exception.status_code, 404)
-
-    async def test_status_route_reevaluates_blocked_transfers(self):
-        manifest, _ahead = self._accept_registered("route-status")
-        resolve_queue.set_state(
-            manifest,
-            resolve_queue.STATE_BLOCKED,
-            blocked={"code": "no_project"},
-            resume_state=resolve_queue.STATE_READY,
-        )
-        resolve_queue.save_manifest(Path(manifest["manifest_path"]), manifest)
-        ready = {
-            "status": "ready",
-            "project_id": "resolve-1",
-            "project_name": "EP01_EDIT",
-        }
-        with (
-            self._projects_patch(),
-            mock.patch.object(
-                resolve_integration,
-                "resolve_connection_status_bounded",
-                return_value=ready,
-            ),
-        ):
-            response = await resolve_integration.get_resolve_connection_status(
-                _local_request()
-            )
-        self.assertEqual(response, ready)
-        self.assertEqual(
-            resolve_queue.queue_state(
-                resolve_queue.read_manifest(Path(manifest["manifest_path"]))
-            ),
-            resolve_queue.STATE_READY,
-        )
 
 
 class FifoOrderTests(ResolveQueueTestBase):

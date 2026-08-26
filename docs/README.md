@@ -41,7 +41,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 401 인증 실패·로그인 보존 계약 | [AUTH_FAILURE_SEMANTICS.md](AUTH_FAILURE_SEMANTICS.md) |
 | 생성·계정 보고 백그라운드 전송·재시도·마지막 성공 관측 계약 | [TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md) |
 | 공유·최종 상태 계약 | [SHARE_STATE_RECONCILIATION_DESIGN.md](SHARE_STATE_RECONCILIATION_DESIGN.md)(현행·원장 수렴). [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md) 는 RL-11 보상 계약으로 **대체됨** |
-| Resolve 전송 (직접 전송 — 현행 흐름은 [ARCHITECTURE.md](ARCHITECTURE.md) §7.6) | `backend/app/routers/resolve_integration.py` · 큐 v3 설계 이력 [DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md)(현행 아님) |
+| Resolve 전송 (직접 전송 — 현행 흐름은 [ARCHITECTURE.md](ARCHITECTURE.md) §7.6) | `backend/app/routers/resolve_integration.py` · 큐 v3 설계 이력 [DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md)(현행 아님 — 큐 라우트·프론트 헬퍼는 2026-08-27 제거, 모듈은 잔존) |
 | 공유 서버 주소 이사 | [SERVER_RELOCATION.md](SERVER_RELOCATION.md) |
 | 업데이트 등록·고정·알림 공지 | [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md) |
 | 작업자 PC 오프디스크 백업 설계·완료 조건 | [WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md) |
