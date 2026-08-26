@@ -5,7 +5,9 @@ import sqlite3
 import sys
 import json
 import os
+import re
 import urllib.error
+import urllib.parse
 import urllib.request
 import getpass
 from contextlib import closing
@@ -143,6 +145,38 @@ def copy_snapshot(src: Path, dst: Path) -> None:
 def is_url(value: str) -> bool:
     low = value.strip().lower()
     return low.startswith("http://") or low.startswith("https://")
+
+
+_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+
+
+def validate_snapshot_server_url(raw: str) -> str:
+    """test_pull-db 가 넘기는 스냅샷 서버 주소 — ``http(s)://host[:port]`` 만 허용한다.
+
+    bat 인자·환경변수로 들어오는 값이라 경로·쿼리·userinfo·따옴표·공백·cmd 메타문자는 전부
+    거부하고, 통과한 값은 scheme://host[:port] 로 재구성해 돌려준다(끝 슬래시 제거).
+    """
+    text = str(raw or "").strip()
+    parsed = urllib.parse.urlsplit(text)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = -1
+    host = parsed.hostname or ""
+    ok = (
+        parsed.scheme in ("http", "https")
+        and bool(host)
+        and _HOST_RE.fullmatch(host) is not None
+        and port != -1
+        and not parsed.username
+        and not parsed.password
+        and parsed.path in ("", "/")
+        and not parsed.query
+        and not parsed.fragment
+    )
+    if not ok:
+        raise ValueError(f"snapshot server must be http://host:port (got {text!r})")
+    return f"{parsed.scheme}://{host}" + (f":{port}" if port else "")
 
 
 def detail_text(payload: Any) -> str:
@@ -314,7 +348,11 @@ def main() -> int:
     url_mode = is_url(raw_src)
 
     if url_mode:
-        src_label = raw_src.rstrip("/")
+        try:
+            raw_src = validate_snapshot_server_url(raw_src)
+        except ValueError as exc:
+            fail(str(exc))
+        src_label = raw_src
     else:
         src = Path(raw_src).resolve()
         if not src.exists():

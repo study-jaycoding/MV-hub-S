@@ -689,6 +689,10 @@ git checkout dev
 `*`만 표시하며 코드 원문을 저장하지 않는다. 코드는 다운로드 응답을 한 번 준비하면 즉시 폐기되며,
 임시 서버가 자동 재시작되어도 다시 사용할 수 없다.
 
+`test_pull-db.bat`의 서버 주소 기본값은 `http://192.168.1.199:8011`이다. 서버가 이사했으면 첫 인자
+(`test_pull-db.bat http://새주소:8011`)나 환경변수 `MVHUB_SNAPSHOT_SERVER`로 바꾼다(인자가 우선).
+`http://호스트:포트` 형식만 받으며 경로·따옴표·공백이 섞인 값은 `tools\refresh_pm_test_data.py`가 거부한다.
+
 최신 운영 DB 모양이 필요할 때는 서버에서 `test_push-db.bat`을 먼저 실행한 뒤, 내 PC에서
 `test_pull-db.bat`을 실행한다. 내려받은 DB와 이후 생성 결과는 `backend\data_test`에만 저장되며
 운영 DB에는 쓰지 않는다. 단, `test_dev.bat`에서 실행한 생성 요청은 실제 Higgsfield 작업이므로

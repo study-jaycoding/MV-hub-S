@@ -39,7 +39,8 @@ echo ============================================================
 echo  MV Hub - push test DB snapshot
 echo  live data ^(read-only^) : %SRC%
 echo  pushed test snapshot   : %DST%
-echo  pull source URL        : http://192.168.1.199:%PORT%
+echo  pull source URL        : http://[this server LAN IP]:%PORT%
+echo  dev PC override        : test_pull-db.bat [url]  or  set MVHUB_SNAPSHOT_SERVER
 echo ============================================================
 echo.
 

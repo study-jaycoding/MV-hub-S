@@ -163,6 +163,31 @@ def test_bat_launchers_are_ascii_only():
     )
 
 
+def test_refresh_tool_accepts_only_plain_snapshot_server_urls():
+    """bat 인자·env 로 들어온 스냅샷 서버 주소는 http(s)://host[:port] 만 통과한다."""
+    tool = _load_refresh_tool()
+    assert tool.validate_snapshot_server_url("http://192.168.1.199:8011") == "http://192.168.1.199:8011"
+    assert tool.validate_snapshot_server_url("http://192.168.1.199:8011/") == "http://192.168.1.199:8011"
+    assert tool.validate_snapshot_server_url("https://mvhub-server:8011") == "https://mvhub-server:8011"
+    assert tool.validate_snapshot_server_url("http://mvhub-server") == "http://mvhub-server"
+    unsafe = [
+        'http://192.168.1.199:8011" & calc',
+        "http://192.168.1.199:8011 --unsafe",
+        "ftp://192.168.1.199:8011",
+        "http://192.168.1.199:8011/api",
+        "http://192.168.1.199:8011?x=1",
+        "http://user:pw@192.168.1.199:8011",
+        "http://192.168.1.199:abc",
+        "",
+    ]
+    for bad in unsafe:
+        try:
+            tool.validate_snapshot_server_url(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted unsafe snapshot server url: {bad!r}")
+
+
 def test_test_dev_has_no_console_account_or_password_prompt():
     launcher = (ROOT_DIR / "test_dev.bat").read_text(encoding="utf-8")
     assert "set /p \"MVHUB_AGENT_EMAIL=" not in launcher
@@ -247,6 +272,18 @@ def test_server_db_test_launchers_keep_live_and_local_data_isolated():
     assert 'set "DST=%ROOT%backend\\data_test"' in pull
     assert "PM_TEST_ADMIN_EMAIL" not in pull
     assert "192.168.1.199:8010" not in pull
+    # 서버 이사 뒤 덮어쓰기: 인자 > MVHUB_SNAPSHOT_SERVER > 기본값. 값은 파싱 후 확장(!SERVER!)으로만
+    # 쓰여 인자·env 안의 & " 가 명령으로 실행되지 않는다. 형식 검증은 refresh_pm_test_data.py 가 한다.
+    assert "setlocal EnableExtensions EnableDelayedExpansion" in pull
+    assert 'if defined MVHUB_SNAPSHOT_SERVER set "SERVER=!MVHUB_SNAPSHOT_SERVER!"' in pull
+    assert 'if not "%~1"=="" set "SERVER=%~1"' in pull
+    assert (
+        pull.index('set "SERVER=http://192.168.1.199:8011"')
+        < pull.index('set "SERVER=!MVHUB_SNAPSHOT_SERVER!"')
+        < pull.index('set "SERVER=%~1"')
+    )
+    assert "%SERVER%" not in pull
+    assert 'refresh_pm_test_data.py" "!SERVER!" "%DST%"' in pull
     refresh_tool = REFRESH_TOOL_PATH.read_text(encoding="utf-8")
     assert "PM_TEST_SNAPSHOT_TOKEN" in refresh_tool
     assert "/api/auth/login" not in refresh_tool

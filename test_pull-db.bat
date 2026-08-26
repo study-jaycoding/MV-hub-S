@@ -1,10 +1,12 @@
 @echo off
 chcp 65001 >nul
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 REM ============================================================================
 REM  Pull the SHARED SERVER db into this PC's TEST data   (run on YOUR OWN PC)
 REM
 REM    source (server) : test_push-db snapshot on http://192.168.1.199:8011
+REM    override        : first argument, or MVHUB_SNAPSHOT_SERVER (argument wins).
+REM                      Plain http://host:port only - refresh_pm_test_data.py rejects anything else.
 REM    target (test)   : this PC's  backend\data_test  -> filled with that copy
 REM
 REM  After this, run test_dev_server.bat for the production-like final test.
@@ -16,11 +18,13 @@ REM  Enter the one-time code shown by test_push-db; the real admin password is n
 REM ============================================================================
 set "ROOT=%~dp0"
 set "SERVER=http://192.168.1.199:8011"
+if defined MVHUB_SNAPSHOT_SERVER set "SERVER=!MVHUB_SNAPSHOT_SERVER!"
+if not "%~1"=="" set "SERVER=%~1"
 set "DST=%ROOT%backend\data_test"
 
 echo.
 echo [PULL SERVER DB -^> TEST]
-echo   pushed snapshot   : %SERVER%
+echo   pushed snapshot   : !SERVER!
 echo   target (test data): %DST%
 echo.
 
@@ -39,7 +43,7 @@ if "%PYEXE%"=="" (
 echo [python] %PYEXE%
 
 REM Python reads the one-time code with echo disabled and prints only * characters.
-"%PYEXE%" "%ROOT%tools\refresh_pm_test_data.py" "%SERVER%" "%DST%"
+"%PYEXE%" "%ROOT%tools\refresh_pm_test_data.py" "!SERVER!" "%DST%"
 if errorlevel 1 (
   echo.
   echo [ERROR] pull failed. Check the server address, one-time code, and that
