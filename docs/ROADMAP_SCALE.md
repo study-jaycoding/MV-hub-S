@@ -69,7 +69,7 @@ status: review-required
 `workspace_assignments`(각 1). `gen_requests` 는 `job_id` 비어있음 검사만 있어 해당하지 않는다.
 
 ```powershell
-git grep -nE "OR[^;]{0,40}job_id" -- backend/app/repo |
+git grep -nE "\bOR\b[^;]{0,40}\bjob_id\b" -- backend/app/repo |
   Select-String -NotMatch "IS NULL|job_id\s*=\s*''"
 ```
 
