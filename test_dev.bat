@@ -6,7 +6,7 @@ REM  MV Hub - ONE-CLICK LOCAL DEV   run on YOUR OWN PC
 REM
 REM  One double-click starts all local development processes:
 REM    - isolated test backend + generation agent: 127.0.0.1:8012
-REM    - Vite live frontend:                       this PC:5173 (localhost + LAN IP)
+REM    - Vite live frontend:                       this PC:5173 (localhost + LAN IP; override: set FRONTEND_PORT=3173)
 REM    - browser:                                  Vite URL above
 REM    - login:                                    copied real account
 REM
@@ -20,7 +20,9 @@ REM
 REM  Stop: close this window. Backend/Vite/agent stop; the browser stays open.
 REM ============================================================================
 set "ROOT=%~dp0"
-set "FRONTEND_PORT=5173"
+REM Vite port. Set FRONTEND_PORT before running if 5173 is reserved on this PC
+REM (check: netsh interface ipv4 show excludedportrange protocol=tcp).
+if not defined FRONTEND_PORT set "FRONTEND_PORT=5173"
 set "BACKEND_PORT=8012"
 set "FRONTEND_URL=http://127.0.0.1:%FRONTEND_PORT%"
 set "BACKEND=http://127.0.0.1:8012"
