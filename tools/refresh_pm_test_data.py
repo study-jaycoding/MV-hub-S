@@ -346,13 +346,15 @@ def main() -> int:
     if len(sys.argv) != 3:
         fail("usage: refresh_pm_test_data.py <source-data-dir> <target-test-data-dir>")
 
-    raw_src = sys.argv[1].strip()
+    raw_arg = sys.argv[1]
+    raw_src = raw_arg.strip()
     dst = Path(sys.argv[2]).resolve()
     url_mode = is_url(raw_src)
 
     if url_mode:
         try:
-            raw_src = validate_snapshot_server_url(raw_src)
+            # 원문 그대로 검증한다 — 앞뒤 공백도 형식 오류다(bat env 값이 그대로 들어온다).
+            raw_src = validate_snapshot_server_url(raw_arg)
         except ValueError as exc:
             # 주소 형식 오류는 코드 2 — 복사·다운로드 실패(1)와 구분한다.
             print(f"[ERROR] {exc}")

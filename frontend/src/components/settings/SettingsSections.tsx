@@ -561,7 +561,7 @@ export function ReleaseUpdateSettingsSection({
               <>
                 <br />
                 <span style={{ color: "#f5a623" }}>
-                  유료 생성 또는 Comfy 작업이 끝나기 전에는 업데이트하지 않습니다.
+                  진행 중인 작업({busyText})이 끝나기 전에는 업데이트하지 않습니다.
                 </span>
               </>
             )}

@@ -165,7 +165,7 @@ def test_bat_launchers_are_ascii_only():
 
 
 def test_refresh_tool_accepts_only_plain_snapshot_server_urls():
-    """bat 인자·env 로 들어온 스냅샷 서버 주소는 http(s)://host[:port] 만 통과한다."""
+    """env 로 들어온 스냅샷 서버 주소는 http://host:port 만 통과한다(https·포트 생략·앞뒤 공백 거부)."""
     tool = _load_refresh_tool()
     assert tool.validate_snapshot_server_url("http://192.168.1.199:8011") == "http://192.168.1.199:8011"
     assert tool.validate_snapshot_server_url("http://192.168.1.199:8011/") == "http://192.168.1.199:8011"
@@ -197,14 +197,20 @@ def test_refresh_tool_cli_exits_2_on_bad_snapshot_url_without_touching_target(tm
     target = tmp_path / "data_test"
     target.mkdir()
     (target / "keep.txt").write_text("keep", encoding="utf-8")
-    result = subprocess.run(
-        [sys.executable, str(REFRESH_TOOL_PATH), 'http://192.168.1.199:8011" & calc', str(target)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert "snapshot server must be http://host:port" in result.stdout
+    for bad in (
+        'http://192.168.1.199:8011" & calc',
+        " http://192.168.1.199:8011",  # 앞 공백 — CLI 가 strip 으로 살려 주면 안 된다
+        "http://192.168.1.199:8011 ",
+        "https://192.168.1.199:8011",
+    ):
+        result = subprocess.run(
+            [sys.executable, str(REFRESH_TOOL_PATH), bad, str(target)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 2, (bad, result.stdout + result.stderr)
+        assert "snapshot server must be http://host:port" in result.stdout, bad
     assert (target / "keep.txt").read_text(encoding="utf-8") == "keep"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["data_test"]
 
