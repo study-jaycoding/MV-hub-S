@@ -36,7 +36,7 @@ status: active
 | 서버 정상 종료 | 등록된 모든 백그라운드 견적 task를 취소하고 gather 완료까지 대기 |
 | 정상 CLI 종료 | 기존 stdout·stderr·return code 계약 유지 |
 
-이 계약은 비용 견적뿐 아니라 `cli_bridge._run`과 `_run_capture`를 사용하는 CLI 호출의 타임아웃·취소에도
+이 계약은 비용 견적뿐 아니라 `cli_bridge._run`을 사용하는 CLI 호출의 타임아웃·취소에도
 적용된다. 실제 유료 생성은 작업자 에이전트의 별도 제출 계약을 따른다.
 
 ## 검증 기록

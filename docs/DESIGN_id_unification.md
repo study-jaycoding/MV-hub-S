@@ -10,7 +10,7 @@ status: draft
 > 각 Phase 의 상태 표시를 따른다 — 이 문서 전체가 미구현 설계는 아니다.
 >
 > **대조할 코드**: `repo/generation_sync.py`(동기화 행 생성·멱등 매칭),
-> `repo/generations.py`(`set_job_id`·중복 정리), `db_migrations.py`(인덱스).
+> `repo/generations.py`(`apply_local_fulfillment`·`apply_local_anchor`·중복 정리 — 옛 `set_job_id` 는 2026-08-27 삭제), `db_migrations.py`(인덱스).
 > 본문의 "현재는 …" 서술은 Phase 0 이전 기준이므로 코드를 먼저 본다.
 
 ## 1. 문제
@@ -18,7 +18,7 @@ status: draft
 - 로컬 DB: `generation.id` = uuid, `generation.job_id` = 힉스필드 잡 id.
 - 발행(`export_bundle`): 앵커를 `g.job_id or g.id` 로 정함 → 서버의 `generation.id` = job_id(있으면).
 - 가져오기(`import`): 수신측이 `id = job_id` 로 INSERT.
-- 동기화: 같은 잡을 동기화본으로 넣을 때 `id == job_id` 행을 만든다(`set_job_id`/`upsert_synced`).
+- 동기화: 같은 잡을 동기화본으로 넣을 때 `id == job_id` 행을 만든다(`upsert_synced`).
 
 → **한 DB 안에 "uuid인 id"와 "job_id인 id"가 공존.** 그래서:
 - `finalize_id_map` / `resolve_and_get` 의 `id=? OR job_id=?` 변환이 곳곳에 필요.
@@ -66,7 +66,7 @@ status: draft
 > ⚠️ **정정(코드 재검토 후)**: 아래 Phase 0 은 당초 '저위험'으로 적었으나 실제론 그렇지 않다.
 > `id==job_id` 는 단순 코딩 관습이 아니라 **"동기화본 vs 로컬본" 판별자로 load-bearing** 하다:
 > - `reconcile_duplicates`/`_reconcile_duplicate_group_locked`(`repo/generations.py`): 0a 이후 `origin` 마커로 판별한다(옛 `job_id==id` 판별은 폐기 — 줄 번호 대신 심볼로 찾는다).
-> - `set_job_id`/`apply_local_fulfillment` dup 탐지: `WHERE id=job_id`.
+> - `set_job_id`(2026-08-27 삭제)/`apply_local_fulfillment` dup 탐지: `WHERE id=job_id`.
 > 따라서 동기화 행을 uuid 로 바꾸려면 이 판별을 **명시 마커(origin)** 로 교체하는 선행 단계가
 > 필요하고, 그건 중복방지(가시적·데이터 영향) 경로라 레이스 테스트가 필수다.
 
