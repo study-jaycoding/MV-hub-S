@@ -5,8 +5,36 @@ import {
   seedanceAtTokenKind,
   seedanceCanonToken,
   seedanceTokenRoles,
+  seedanceHasTokenRoles,
+  normalizeSeedancePromptTokens,
   normalizeMediaRefTokensBasic,
 } from "../src/lib/seedancePrompt";
+
+describe("미디어 참조 토큰 경계 — 이메일·접미 글자 오인 방지 (SEEDANCE_TOKEN_SRC)", () => {
+  // 앞이 영문/숫자/밑줄이거나(foo@image1, 1@image1, _@image1, user@video2) 뒤에 영문/밑줄이 붙으면
+  // (@image1x, @image_1_, @audio1_ok) 토큰이 아니다(뒤의 숫자는 번호의 일부: @image12 = 12번). 앞 경계 클래스의
+  // 글자·숫자·밑줄 각각을 고정한다.
+  const notTokens = "foo@image1 1@image1 _@image1 @image1x @image_1_ user@video2 @audio1_ok";
+
+  it("정규화가 원문을 그대로 둔다(프롬프트를 바꾸지 않음) — 기본·seedance 제출 경로 모두", () => {
+    expect(normalizeMediaRefTokensBasic(notTokens)).toBe(notTokens);
+    expect(normalizeSeedancePromptTokens(notTokens)).toBe(notTokens);
+  });
+
+  it("역할 집계도 0개다(잘못된 참조 역할을 주지 않음)", () => {
+    expect(seedanceHasTokenRoles(seedanceTokenRoles(notTokens))).toBe(false);
+  });
+
+  it("공백·문장부호·괄호·줄 끝은 경계라서 그 옆의 토큰은 인식한다", () => {
+    expect(normalizeMediaRefTokensBasic("배경에 @image1, 끝")).toBe("배경에 <<<image1>>>, 끝");
+    expect(normalizeMediaRefTokensBasic("(@video2)")).toBe("(<<<video2>>>)");
+    expect(normalizeMediaRefTokensBasic("@image1")).toBe("<<<image1>>>");
+    // 한글은 경계 문자(영문·숫자·밑줄)가 아니라서 붙여 써도 토큰이다 — 한국어 프롬프트의 현행 동작 고정.
+    expect(normalizeMediaRefTokensBasic("배경은@image1로")).toBe("배경은<<<image1>>>로");
+    const roles = seedanceTokenRoles("@image1,@image2.");
+    expect([...roles.image.keys()].sort()).toEqual([1, 2]);
+  });
+});
 
 describe("usesMediaRefTokens", () => {
   it("비어있지 않은 모델이면 토큰 사용", () => {

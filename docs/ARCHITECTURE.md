@@ -425,14 +425,16 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
 - 큐 v3 코드의 잔존 범위(2026-08-27 정리 뒤): `services/resolve_queue.py` 는 현행이 쓰는 `run_non_abandon`(취소되지 않는
   실행 단위) 하나만 남긴 33줄 모듈이다 — 직접 전송 경로가 닿지 않는 접수·상태 전이·claim·취소·복구·스캔 코드와 휴면 워커
   `resolve_queue_worker.py` 는 호출자 없음을 확인하고 그 코드 없이는 못 도는 테스트와 함께 삭제했다(동작 코드는 옮기거나
-  바꾸지 않음). `resolve_lock.py`(`GET /locks` 와 Resolve 안 Importer 가 같은 락 파일을
-  공유)·`resolve_import_worker.py`(status runner 의 자식 프로세스)는 남는다. 라우트 `GET /api/resolve/queue`·`POST /queue/{id}/cancel`·
+  바꾸지 않음). `resolve_lock.py`(`GET /locks` 가 Resolve 안 Importer 들이 서로 공유할 락 파일 경로를 알려 줌 —
+  허브의 직접 반입은 이 파일 락에 **참여하지 않고** 프로세스 안 `_IMPORT_LOCK` 만 쓴다)·`resolve_import_worker.py`
+  (status runner 의 자식 프로세스)는 남는다. 라우트 `GET /api/resolve/queue`·`POST /queue/{id}/cancel`·
   `/resume` 과 워커 콜백 등록, `GET /status` 의 v3 blocked 재평가, 프론트 `lib/resolveTransfer.ts` 의 큐 헬퍼는 **제거**했다 —
   외부 클라이언트에는 404 이고, `/resume` 이 하던 v3 manifest 의 Bin 검증·완료 확정·복구 상태 전환(수동 복구 경로)도 함께
   사라졌다. 기존 v3 manifest 파일(`@davinci` 아래 `.mvhub`)은 그대로 남는다 — 현행 pending 스캐너는 읽은 뒤 format 으로 제외할 뿐, v3 전송으로 처리하거나 지우지 않는다. 재도입 계획은 없다.
-- 동시 호출 방지는 **두 곳**이다. 브라우저는 `lib/useResolveTransferActions.ts` 의
+- 동시 호출 방지는 **허브 직접 반입 경로 안의 두 곳**이다. 브라우저는 `lib/useResolveTransferActions.ts` 의
   `SerialTaskQueue` 로 짧게 직렬화하고(앱을 닫으면 사라지는 메모리 큐), 백엔드는
-  `services/resolve_status_runner.py` 의 `_IMPORT_LOCK` 으로 Resolve 반입 자체를 직렬화한다.
+  `services/resolve_status_runner.py` 의 `_IMPORT_LOCK` 으로 **허브 직접 반입 요청끼리** 직렬화한다.
+  Resolve 메뉴 Importer 는 이 두 직렬화에 참여하지 않는다(아래 NOTE 의 알려진 한계 ②).
 - 로컬 전용 라우트다(`_require_local_resolve` → `services/request_guards.py` 의
   `require_local_machine_request`). **loopback 뿐 아니라 이 PC 의 네트워크 어댑터 주소도
   허용하며 Host 헤더는 검사하지 않는다** — 같은 PC 에서 온 요청인지만 본다.
@@ -442,8 +444,12 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
 > `_activity`)은 진행 중 직접 전송을 `services/resolve_transfer.active_transfer_count()` 로 센다 —
 > 핸들러 진입부터 종료까지이며, 요청이 취소돼도 `run_non_abandon` 작업이 끝날 때까지 세어진다.
 > 전송은 **카운터를 올린 뒤** `update_in_progress()` 게이트를 보고(409), 업데이트는 `checking` 을
-> 기록한 뒤 활동을 **재확인**하므로 어느 쪽이 먼저든 한쪽만 진행한다. 알려진 한계: Resolve 자식
-> 반입에 timeout 이 없어 자식이 멈추면 카운트가 유지돼 업데이트가 막힌다(`_IMPORT_LOCK` 과 같은 성질).
+> 기록한 뒤 활동을 **재확인**하므로 어느 쪽이 먼저든 한쪽만 진행한다. 알려진 한계 두 가지(2026-08-27 Jay 결정으로
+> 현행 유지): ① Resolve 자식 반입에 timeout 이 없어 자식이 멈추면 카운트가 유지돼 업데이트가 막힌다(`_IMPORT_LOCK` 과
+> 같은 성질). ② 허브 직접 반입은 프로세스 안 `_IMPORT_LOCK` 만 쓰고 Resolve 메뉴 Importer 의 파일 락에는 참여하지
+> 않으므로, 웹 반입과 메뉴 Importer 를 **사람이 동시에** 실행하면 서로 직렬화되지 않는다(둘 다 수동 시작이라 확률은
+> 낮음. 사고가 관측되거나 자동 실행을 도입할 때, 허브 반입이 Importer 가 쓰는 `machine-import.lock` 의 같은
+> byte-range 락을 잡고 이미 잠겨 있으면 기존 결과 구조로 `error_code="resolve_busy"` 를 돌려주는 최소 처방을 검토).
 
 > [!NOTE]
 > [DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) 는 영구 큐(08-23~24) 설계의
