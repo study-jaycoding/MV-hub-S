@@ -36,6 +36,18 @@ updated: 2026-08-27
   같은 날 삭제. `resolve_lock.py`·`resolve_import_worker.py` 는 남는다(현행 사용: `/locks`·status runner 자식).
   `/resume` 이 하던 v3 manifest 수동 복구 경로는 사라졌다(파일은 보존). 반입 자식의 시간제한 없음은 **의도적 현행 유지**
   (실제 발생 0, ARCHITECTURE §7.6 알려진 한계) — 재설계 제안 없음.
+- **휴면 코드 정리(2026-08-27, Claude 스캐너 + Codex 독립 조사 교차).** 기준 = "현행 동작 경로가 닿지 않는 정의만, 동작
+  코드는 옮기거나 바꾸지 않음". 백엔드: 모듈 최상위 정의 2,600개 중 호출자 0 인 함수·상수 약 45개(mutation_notify 의
+  `should_notify_*` 3종 → `notification_domains` 로 통합됨, share_state 단건 lock·claim, backup·cli_bridge·comfy_client 의
+  구형 helper, Resolve Bin 실사 클러스터·큐 v3 복사·바이트락 `FileLock`/`process_liveness`/`terminate_process` 등)와 테스트만
+  쓰던 wrapper 12개를 제거. 살아있는 계약을 검사하던 테스트는 현행 API 로 바꿔 유지(`notification_domains`,
+  `update_project_identity`, `share_state_action_locks`, `job_id_sync_diff`, 메뉴 Importer 잠금은 Importer 자체 `FileLock`).
+  의도적 보존: `_REMAP_EXEMPT`(신원 스키마 감사 규칙)·`clear_task_read_cache`(테스트 격리 seam)·도구(`tools/*.py`)가 쓰는
+  복구 검증 함수들. 프런트: 다른 파일·테스트가 전혀 안 쓰는 export 10개(`ProjectPlanningDialog` 컴포넌트 포함)와 테스트만
+  쓰던 3개(`hasMediaRefTokens`·`applySceneGenerationResults`·`patchOwnedComfyRun`) 제거. "파일 안에서는 쓰지만 export 만
+  불필요한" 선언(약 190개)은 손대지 않음. 미참조 모듈·파일은 양쪽 모두 0. "하위 호환용" 이라 적혀 있던 `unknown_job_ids`·
+  `SCRIPT_RELATIVE_DIR` 은 저장소 안(도구·bat·프런트 포함) 호출자 0 을 확인하고 제거했다(저장소 밖 호출자는 없다고 봄 — 필요하면
+  한 줄 wrapper 로 복원). 메뉴 Importer 잠금 테스트는 허브 `FileLock` 대신 Importer 자체 `FileLock` 을 보유자로 써서 유지.
 - **공유 서버 이사 공지** 구현·실환경 검증 완료. 관리자 [팀에 공지] → 작업자 알림 → 한 번 눌러 전환.
 - **영상 포스터 오염 처방(2026-08-27).** 힉스필드 MCP `show_generations` 의 영상 `results.thumbnailUrl` 은 결과
   포스터가 아니라 **첫 입력 이미지**다(실측). 기동 시 이력 보충이 이를 저장해 7월 시댄스 영상 63건에 레퍼런스 시트가
@@ -68,8 +80,8 @@ updated: 2026-08-27
 
 | 검증 | 결과 |
 |---|---|
-| 백엔드 전체 테스트 | **1,797개 통과 + 46 subtests** (3분 9초, `resolve_queue.py` 기준선 정리 뒤 재실행 — 큐 v3 전용 테스트 −57, 살아있는 계약 재작성 +2) |
-| 프론트 전체 테스트 | **98개 파일·678개 통과**(`8f6f9cbb` 재실행 — 렌더 폴백 테스트 6개 추가) · `lint:architecture` 이상 없음 · `build` 성공 |
+| 백엔드 전체 테스트 | **1,787개 통과 + 46 subtests** (3분 16초, 휴면 코드 정리 뒤 재실행 — 죽은 wrapper 만 검사하던 테스트 제거, 살아있는 계약(placeholder 재개 진리표·cache-all 배치 결과·Comfy 계정별 중복 방지)은 현행 API 로 재작성; 그 전 `resolve_queue.py` 정리에서 −57/+2) |
+| 프론트 전체 테스트 | **98개 파일·673개 통과**(휴면 export 정리 뒤 재실행 — 죽은 함수 테스트 5개 제거) · `tsc --noEmit` 통과 · `lint:architecture` 이상 없음 · `build` 성공 |
 | Resolve 실기기 반입 | 통과 (2026-08-24, 큐 v3 기준 — 클립 3개, 중복 0, 원상 복원 확인) |
 | 업데이트 차단 게이트·카운터 실측 | 통과 (2026-08-27, `3fa4e862`, 격리 서버 8000·`data_test`) — `checking` 상태 파일 → `POST /api/resolve/transfers` **409**, 삭제 후 해제. 40건(1.1GB) 직접 전송 중 `resolve_active=1`·`can_update=false`(Claude 12샘플 중 8, Codex 19샘플 중 15), 종료 후 0. Resolve 대상 불일치로 가져오기 거부(클립 미삽입), 렌더 루트 원상복구 |
 | 런처 창 닫기 → 브라우저 유지 | 통과 (2026-08-27, `c243b211` 포함 dev, `test_dev` 포트 3173 사본) — 허브·Vite·에이전트 기동 후 콘솔 X 닫기: 11초 뒤 8012/3173 리스너 0·프로세스 트리 0, Chrome 프로세스 32→37→37 유지. 한계: Chrome 이 이미 켜진 상태(미실행 케이스는 OS 단위 테스트 `test_explicit_breakaway_child_survives_guard_cleanup` 만), 특정 탭은 미식별, 1회 실행. Codex 는 샌드박스 제약으로 단위 테스트(2 passed)·증거 감사만 |

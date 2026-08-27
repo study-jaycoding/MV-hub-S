@@ -89,13 +89,6 @@ def local_agent_pair_token(body: LocalAgentPairIn, request: Request):
     return {"email": email, "token": token}
 
 
-def _acc(request: Request) -> dict:
-    acc = getattr(request.state, "account", None)
-    if not acc:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다(적재는 인증 필수)")
-    return acc
-
-
 def _agent_acc(request: Request) -> dict:
     """에이전트·계정상태용 신원. 공용 require_agent_account 로 단일화(신원 규칙 분산 방지)."""
     return require_agent_account(request)

@@ -352,11 +352,6 @@ def job_id_sync_diff(
     }
 
 
-def unknown_job_ids(job_ids: list[str], creator_uid: Optional[str] = None) -> list[str]:
-    """하위 호환용: 받은 job_id 중 서버에 아직 없는 것만 반환한다."""
-    return job_id_sync_diff(job_ids, creator_uid)["unknown"]
-
-
 def upsert_synced_generation(
     parsed: dict[str, Any], worker_id: str, workspace: Optional[dict[str, Any]] = None
 ) -> str:

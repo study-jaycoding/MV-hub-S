@@ -100,20 +100,6 @@ def latest_backup_path() -> Optional[Path]:
     return backups[-1] if backups else None
 
 
-def _newest_age_seconds(backup_dir: Path | None = None) -> Optional[float]:
-    """가장 최근 백업의 나이(초). 백업이 없으면 None.
-
-    stat 는 NAS 순단·수동 정리와 경합할 수 있다 — 여기서 예외가 새면 주기 백업 루프
-    자체가 죽으므로(코덱스 리뷰), 읽기 실패한 파일은 건너뛴다."""
-    mtimes: list[float] = []
-    for p in _list_backups(backup_dir):
-        with contextlib.suppress(OSError):
-            mtimes.append(p.stat().st_mtime)
-    if not mtimes:
-        return None
-    return max(0.0, time.time() - max(mtimes))
-
-
 def _db_change_signature(src: Path | None = None) -> tuple[tuple[str, int, int], ...]:
     """개인 콘텐츠·휴지통의 파일/WAL 변화를 값싼 stat으로 감지한다."""
     content = src or get_db_path()
@@ -170,22 +156,6 @@ def _read_poll_state(
         else any(mtime_ns > newest_mtime_ns for _label, mtime_ns, _size in signature)
     )
     return backup_age, signature, backup_needed
-
-
-def _db_is_newer_than_backup() -> bool:
-    src, backup_dir, _account_key = _capture_backup_scope()
-    backups = _list_backups(backup_dir)
-    latest = backups[-1] if backups else None
-    if latest is None:
-        return bool(_db_change_signature(src))
-    try:
-        backup_mtime = latest.stat().st_mtime_ns
-    except OSError:
-        return True
-    return any(
-        mtime_ns > backup_mtime
-        for _label, mtime_ns, _size in _db_change_signature(src)
-    )
 
 
 def _change_backup_due(

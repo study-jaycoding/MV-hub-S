@@ -64,12 +64,12 @@ class ProjectNameIntegrityTests(unittest.TestCase):
         first = repo.create_project("Project A")
         second = repo.create_project("Project B")
         with self.assertRaises(repo.ProjectNameConflictError):
-            repo.rename_project(second["id"], "project a")
+            repo.update_project_identity(second["id"], name="project a")
 
-        repo.set_archived(first["id"], True)
-        repo.rename_project(second["id"], "Project A")
+        repo.update_project_identity(first["id"], archived=True)
+        repo.update_project_identity(second["id"], name="Project A")
         with self.assertRaises(repo.ProjectNameConflictError):
-            repo.set_archived(first["id"], False)
+            repo.update_project_identity(first["id"], archived=False)
 
     def test_combined_archive_and_duplicate_rename_uses_final_state(self):
         repo.create_project("Project A")

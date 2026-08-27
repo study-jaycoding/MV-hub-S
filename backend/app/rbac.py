@@ -7,7 +7,7 @@
   "그 프로젝트 안에서 멤버관리·작업·검수(=CMS 최종선택)"를 가른다.
 
 핵심 원칙(§1-6):
-- 권한 체크는 **서버에서**(deps.require_global/require_project_role). 버튼 숨김은 UX 보조일 뿐.
+- 권한 체크는 **서버에서**(deps.require_global_cap/require_project_role). 버튼 숨김은 UX 보조일 뿐.
 - 두 층 충돌(§5-3)은 **관대한 합집합**: 전역 또는 프로젝트 중 한쪽이 허용하면 통과.
   (예: 전역 read_all 보유자[admin·두 director]는 모든 프로젝트를 읽을 수 있다.)
 - **복수 전역 역할**: 한 사람이 여러 전역 역할을 동시에 보유할 수 있다(예: Product Director +
@@ -19,7 +19,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Optional, Union
+from typing import Iterable, Union
 
 # ── 전역 역할 (Global) ────────────────────────────────────────────────────
 ADMIN = "admin"
@@ -38,10 +38,9 @@ PROJECT_MANAGER = "project_manager"
 SUPERVISOR = "supervisor"
 CREATOR = "creator"  # (구 'editor' — 작업자)
 PROJECT_ROLES = (PROJECT_MANAGER, SUPERVISOR, CREATOR)
-DEFAULT_PROJECT_ROLE = CREATOR
 
 # ── 역량(capability) 매트릭스 ─────────────────────────────────────────────
-# 서버 enforcement 는 역할명(require_global/require_project_role)으로 하지만,
+# 서버 enforcement 는 역할명(require_global_cap/require_project_role)으로 하지만,
 # 프론트가 버튼을 회색처리할 때 이 표를 같은 진실로 참조한다(/api/auth/me 가 노출).
 GLOBAL_CAPS: dict[str, set[str]] = {
     ADMIN: {"system", "approve_signup", "grant_global", "read_all"},

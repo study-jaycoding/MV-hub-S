@@ -37,14 +37,6 @@ export const HISTORY_BOARD_LAYOUT: HistoryLayoutSizing = {
   pad: 28,
 };
 
-export const HISTORY_MINI_LAYOUT: HistoryLayoutSizing = {
-  nodeW: 84,
-  nodeH: 84,
-  gapX: 46,
-  gapY: 22,
-  pad: 20,
-};
-
 export const edgeKey = (parent: string, child: string) => parent + ">" + child;
 
 export function getHistoryCenter(

@@ -121,12 +121,6 @@ export interface StatusDef {
   color: string;
   group: string;
 }
-export const STATUS_GROUPS = ["할 일", "진행 중", "완료"] as const;
-const GROUP_EN: Record<string, string> = {
-  "할 일": "To-do",
-  "진행 중": "In progress",
-  "완료": "Done",
-};
 export const STATUSES: StatusDef[] = [
   { v: "not_started", ko: "시작 전", en: "Not started", color: "#9aa0a6", group: "할 일" },
   { v: "pending", ko: "대기", en: "Pending", color: "#c2557a", group: "진행 중" },
@@ -141,9 +135,6 @@ export function statusDef(v?: string | null): StatusDef | undefined {
 // 선택 언어 하나만 표시(병기 아님) — i18n 토글(한글/English)에 따름.
 export function statusText(s: StatusDef): string {
   return getLang() === "en" ? s.en : s.ko;
-}
-export function groupLabel(g: string): string {
-  return getLang() === "en" ? GROUP_EN[g] ?? g : g;
 }
 export function statusLabel(v?: string | null): string {
   const d = statusDef(v);

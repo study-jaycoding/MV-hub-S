@@ -2,7 +2,6 @@
 import { describe, it, expect } from "vitest";
 import {
   usesMediaRefTokens,
-  hasMediaRefTokens,
   seedanceAtTokenKind,
   seedanceCanonToken,
   seedanceTokenRoles,
@@ -16,20 +15,6 @@ describe("usesMediaRefTokens", () => {
   });
   it("빈 모델이면 false", () => {
     expect(usesMediaRefTokens("")).toBe(false);
-  });
-});
-
-describe("hasMediaRefTokens", () => {
-  it("<<<imageN>>> / @imageN 를 감지", () => {
-    expect(hasMediaRefTokens("배경에 <<<image1>>> 합성")).toBe(true);
-    expect(hasMediaRefTokens("@image2 스타일로")).toBe(true);
-  });
-  it("토큰 없으면 false", () => {
-    expect(hasMediaRefTokens("그냥 텍스트")).toBe(false);
-  });
-  it("경계: 앞에 영문/숫자가 붙은 @는 토큰 아님(이메일 등 오인 방지)", () => {
-    expect(hasMediaRefTokens("foo@image1")).toBe(false);
-    expect(hasMediaRefTokens("@image1x")).toBe(false); // 뒤에 문자 붙으면 거절
   });
 });
 

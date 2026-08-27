@@ -4,8 +4,12 @@ from app.mutation_notify import (
     DOMAIN_MANAGE,
     notification_domains,
     parse_mutation_origin,
-    should_notify_mutation,
 )
+
+
+def _notifies_library(method: str, path: str, status: int) -> bool:
+    """라이브러리 synced 방송 여부 — 현행 판정 함수 notification_domains 로 본다."""
+    return DOMAIN_LIBRARY in notification_domains(method, path, status)
 
 
 def test_polling_and_estimate_posts_do_not_broadcast_synced():
@@ -17,7 +21,7 @@ def test_polling_and_estimate_posts_do_not_broadcast_synced():
         "/api/projects/folder-counts/batch",
     )
     for path in paths:
-        assert not should_notify_mutation("POST", path, 200)
+        assert not _notifies_library("POST", path, 200)
 
 
 def test_non_library_side_effect_posts_do_not_force_library_reload():
@@ -31,14 +35,14 @@ def test_non_library_side_effect_posts_do_not_force_library_reload():
         "/api/manage/telemetry/push",
     )
     for path in paths:
-        assert not should_notify_mutation("POST", path, 200)
+        assert not _notifies_library("POST", path, 200)
 
 
 def test_scene_backup_asset_metadata_and_comfy_settings_use_their_own_refresh_channels():
-    assert not should_notify_mutation("PUT", "/api/scenes/backup", 200)
-    assert not should_notify_mutation("PUT", "/api/comfy/settings", 200)
-    assert not should_notify_mutation("PUT", "/api/assets/files/meta", 200)
-    assert not should_notify_mutation("POST", "/api/assets/upload", 200)
+    assert not _notifies_library("PUT", "/api/scenes/backup", 200)
+    assert not _notifies_library("PUT", "/api/comfy/settings", 200)
+    assert not _notifies_library("PUT", "/api/assets/files/meta", 200)
+    assert not _notifies_library("POST", "/api/assets/upload", 200)
 
 
 def test_shared_server_login_and_settings_do_not_reload_library():
@@ -65,17 +69,17 @@ def test_manage_writes_use_manage_channel_and_hf_cleanup_also_changes_library():
 
 
 def test_real_successful_mutation_still_broadcasts_synced():
-    assert should_notify_mutation("PUT", "/api/generations/g1/tags", 200)
-    assert should_notify_mutation("POST", "/api/gen-requests", 201)
-    assert should_notify_mutation("POST", "/api/comfy/save-to-library", 200)
-    assert should_notify_mutation("POST", "/api/projects/assign", 200)
+    assert _notifies_library("PUT", "/api/generations/g1/tags", 200)
+    assert _notifies_library("POST", "/api/gen-requests", 201)
+    assert _notifies_library("POST", "/api/comfy/save-to-library", 200)
+    assert _notifies_library("POST", "/api/projects/assign", 200)
     assert notification_domains("POST", "/api/projects/assign", 200) == (DOMAIN_LIBRARY,)
 
 
 def test_get_and_failed_mutation_do_not_broadcast_synced():
-    assert not should_notify_mutation("GET", "/api/generations", 200)
-    assert not should_notify_mutation("POST", "/api/gen-requests", 400)
-    assert not should_notify_mutation("POST", "/api/gen-requests", 307)
+    assert not _notifies_library("GET", "/api/generations", 200)
+    assert not _notifies_library("POST", "/api/gen-requests", 400)
+    assert not _notifies_library("POST", "/api/gen-requests", 307)
 
 
 def test_mutation_origin_accepts_only_bounded_safe_identifiers():

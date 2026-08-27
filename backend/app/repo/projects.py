@@ -227,10 +227,6 @@ def list_projects(
     return {"projects": projects, "unassigned": unassigned, "archived_count": archived_count}
 
 
-def rename_project(pid: str, name: str) -> bool:
-    return update_project_identity(pid, name=name)
-
-
 def update_project_identity(
     pid: str,
     *,
@@ -452,10 +448,6 @@ def reorder_projects(ordered_ids: list[str]) -> None:
         except Exception:
             conn.execute("ROLLBACK")
             raise
-
-
-def set_archived(pid: str, archived: bool) -> bool:
-    return update_project_identity(pid, archived=archived)
 
 
 def delete_project(pid: str) -> bool:

@@ -616,30 +616,6 @@ def _idempotent_placeholder_is_resumable(
     return conn.execute(sql + "LIMIT 1", params).fetchone() is not None
 
 
-def idempotent_placeholder_is_resumable(
-    account_email: str,
-    creator_uid: Optional[str],
-    idempotency_key: str,
-    gen_id: str,
-    kind: str,
-    source_gen_id: Optional[str] = None,
-) -> bool:
-    """같은 일반 요청 예약의 반쯤 만들어진 placeholder만 이어갈 수 있게 확인한다.
-    판정 조건 전체를 JOIN+NOT EXISTS 한 SELECT 로(R6 2-B) — 종전 3~4 SELECT 와 동일
-    진리표(코덱스 확정): 요청 preparing 정확 일치·creator(None 이면 생략)·origin=local·
-    pending·job_id 없음·타요청 없음(제외키=현재 요청 id)·regenerate 만 lineage."""
-    with get_connection() as conn:
-        return _idempotent_placeholder_is_resumable(
-            conn,
-            account_email,
-            creator_uid,
-            idempotency_key,
-            gen_id,
-            kind,
-            source_gen_id,
-        )
-
-
 def create_gen_request(
     account_email: str,
     creator_uid: Optional[str],
@@ -820,27 +796,6 @@ def _canvas_placeholder_is_resumable(
         )
         params += [source_gen_id, canvas_link["generation_id"]]
     return conn.execute(sql + "LIMIT 1", params).fetchone() is not None
-
-
-def canvas_placeholder_is_resumable(
-    account_email: str,
-    creator_uid: Optional[str],
-    canvas_link: dict[str, str],
-    kind: str,
-    source_gen_id: Optional[str] = None,
-) -> bool:
-    """예약과 같은 placeholder를 중단 지점부터 이어도 안전한지 확인한다.
-    판정 조건 전체를 한 SELECT 로(R6 2-B) — 일반형과 같은 진리표에 canvas_attempt_id
-    일치를 더하고, 타요청 제외키는 현행 그대로 (account_email, canvas_attempt_id) 쌍."""
-    with get_connection() as conn:
-        return _canvas_placeholder_is_resumable(
-            conn,
-            account_email,
-            creator_uid,
-            canvas_link,
-            kind,
-            source_gen_id,
-        )
 
 
 def classify_placeholder_collision(
@@ -1369,16 +1324,6 @@ def get_gen_request(rid: str) -> Optional[dict[str, Any]]:
     with get_connection() as conn:
         r = conn.execute("SELECT * FROM gen_request WHERE id=?", (rid,)).fetchone()
     return dict(r) if r else None
-
-
-def mark_request(rid: str, status: str, error: Optional[str] = None) -> None:
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE gen_request SET status=?, error=?, "
-            "terminal_at=CASE WHEN ? IN ('done','failed','canceled') THEN datetime('now') ELSE terminal_at END, "
-            "updated_at=datetime('now') WHERE id=?",
-            (status, error, status, rid),
-        )
 
 
 def record_request_check(

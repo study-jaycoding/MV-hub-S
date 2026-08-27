@@ -12,15 +12,8 @@ export function usesMediaRefTokens(model: string): boolean {
   return !!model;
 }
 
-// 이 텍스트가 레퍼런스 토큰(<<<imageN>>> · @imageN)을 담고 있나 — 재사용 시 '트레이-토큰 방식' 생성물을
-// 가려내는 데 쓴다(토큰이 있으면 레퍼런스를 트레이로, 없으면 인라인 소스칩으로 복원).
-export function hasMediaRefTokens(text: string): boolean {
-  return new RegExp(SEEDANCE_TOKEN_SRC, "i").test(text || "");
-}
-
 export type SeedanceRefType = ChipRef["type"] | "audio";
 export type SeedanceRefLike = { type: string };
-export type SeedanceTokenKind = "image" | "start" | "end" | "video" | "audio";
 export type SeedanceImageTokenKind = "image" | "start" | "end";
 export type SeedanceTrayRole = "omni" | "start" | "end" | "video" | "audio";
 

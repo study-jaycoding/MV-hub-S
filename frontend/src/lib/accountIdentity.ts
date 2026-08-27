@@ -73,11 +73,6 @@ export function visibleAdminAccounts(accounts: Account[]): Account[] {
   return accounts.filter((account) => !isSystemAccountEmail(account.email));
 }
 
-export function adminMemberDisplayName(members: Member[], uid: string): string {
-  const member = members.find((item) => item.uid === uid);
-  return member ? (member.is_mine ? "나" : member.name || "팀원") : "팀원";
-}
-
 export function projectRoleCounts(
   members: ProjectMember[],
   systemUids: Set<string>,

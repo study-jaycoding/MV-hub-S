@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   acquireSceneGeneration,
-  applySceneGenerationResults,
   executeSceneGenerationBatch,
 } from "../src/lib/sceneGenerationSubmission";
 import type { SceneCard } from "../src/lib/scenes";
@@ -120,27 +119,5 @@ describe("sceneGenerationSubmission", () => {
     expect(summary.successes).toHaveLength(2);
     expect(summary.submitFail).toBe(0);
     expect(summary.applyFail).toBe(1);
-  });
-
-  it("결과를 기존 변형 뒤에 결정적 순서로 붙이고 삭제된 카드는 되살리지 않는다", () => {
-    const original = [
-      card("A", { genId: "old", genIds: ["old", "g2"] }),
-      card("B"),
-    ];
-    const applied = applySceneGenerationResults(original, [
-      { cardId: "A", generationId: "g1" },
-      { cardId: "A", generationId: "g2" },
-      { cardId: "A", generationId: "g1" },
-      { cardId: "deleted", generationId: "ghost" },
-    ]);
-
-    expect(applied.attachedCardCount).toBe(1);
-    expect(applied.cards[0]).toMatchObject({
-      genId: "g1",
-      genIds: ["old", "g1", "g2"],
-      status: "pending",
-    });
-    expect(applied.cards[1]).toBe(original[1]);
-    expect(original[0].genIds).toEqual(["old", "g2"]); // 입력 불변
   });
 });

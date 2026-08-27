@@ -85,9 +85,3 @@ export function activeWorkspaceOf<T extends Workspace>(
   if (context.scope === "personal") return items.find((item) => !item.name);
   return items.find((item) => item.is_selected) || items.find((item) => !item.name);
 }
-
-export function workspaceLabel(context: WorkspaceContext): string {
-  if (context.scope === "team") return context.name || "팀 워크스페이스";
-  if (context.scope === "personal") return "개인 · 전체 보기";
-  return "워크스페이스 확인 중";
-}

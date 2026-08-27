@@ -10,10 +10,8 @@ Resolve 실기기가 필요한 부분은 자식 프로세스 결과를 모의한
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import subprocess
-import sys
 import tempfile
 import threading
 import unittest
@@ -73,13 +71,10 @@ class ResolveQueueTestBase(unittest.IsolatedAsyncioTestCase):
         ]
         for patch in self._patches:
             patch.start()
-        # 프로세스 전역 기억(루트 self-test)은 테스트마다 비운다.
-        resolve_lock.reset_root_self_test()
 
     def tearDown(self):
         for patch in reversed(self._patches):
             patch.stop()
-        resolve_lock.reset_root_self_test()
         self.tmp.cleanup()
 
     def _generation(self, index: int, folder: str = "ep001/c0010") -> dict:
@@ -225,22 +220,6 @@ class ManifestCoexistenceTests(ResolveQueueTestBase):
         self.assertFalse(module._requires_claim({}))
 
 
-class ClaimLockTests(ResolveQueueTestBase):
-
-    def test_lock_file_survives_acquire_release_cycles(self):
-        path = self.data / "locks" / "keepme.lock"
-        for _ in range(3):
-            lock = resolve_lock.FileLock(path)
-            self.assertTrue(lock.try_acquire())
-            lock.release()
-        self.assertTrue(path.is_file())
-
-    @unittest.skipUnless(sys.platform == "win32", "LockFileEx 자체 검사는 Windows 계약")
-    def test_self_test_detects_working_byte_range_locks(self):
-        ok, detail = resolve_lock.self_test(self.data / "locks")
-        self.assertTrue(ok, detail)
-
-
 class ErrorCodeContractTests(ResolveQueueTestBase):
     def test_bridge_outer_catch_preserves_bridge_error_code(self):
         def _boom(_manifest, _resolve):
@@ -368,22 +347,6 @@ class RetryRouteAtomicityTests(ResolveQueueTestBase):
 class MenuImporterLockTests(ResolveQueueTestBase):
     """메뉴 Importer 가 허브(`GET /locks`)와 같은 .lock 파일에 참여한다 — 다른 보유자가 잡고 있으면 멈추거나 건너뛴다."""
 
-    def test_importer_lock_is_the_shared_project_lock_file(self):
-        module = _load_menu_importer("mvhub_importer_lock_same_file")
-        lock_path = resolve_lock.project_lock_path(self.manifest_root)
-        self.assertEqual(
-            module._project_lock_path({"manifest_root": str(self.manifest_root)}),
-            str(lock_path),
-        )
-        holder = resolve_lock.FileLock(lock_path)
-        self.assertTrue(holder.try_acquire())
-        importer_lock = module.FileLock(str(lock_path))
-        try:
-            self.assertFalse(importer_lock.try_acquire())
-        finally:
-            holder.release()
-        self.assertTrue(importer_lock.try_acquire())
-        importer_lock.release()
 
     def test_importer_stops_when_another_holder_has_the_machine_lock(self):
         module = _load_menu_importer("mvhub_importer_lock_machine")
@@ -396,7 +359,7 @@ class MenuImporterLockTests(ResolveQueueTestBase):
                 return {"machine_lock_path": str(machine_lock_path)}, "http://hub"
             raise AssertionError(path)
 
-        holder = resolve_lock.FileLock(machine_lock_path)
+        holder = module.FileLock(str(machine_lock_path))
         self.assertTrue(holder.try_acquire())
         resolve_obj = mock.MagicMock()
         try:
@@ -435,8 +398,8 @@ class MenuImporterLockTests(ResolveQueueTestBase):
                 return {"machine_lock_path": ""}, "http://hub"
             raise AssertionError(path)
 
-        holder = resolve_lock.FileLock(
-            resolve_lock.project_lock_path(self.manifest_root)
+        holder = module.FileLock(
+            module._project_lock_path({"manifest_root": str(self.manifest_root)})
         )
         self.assertTrue(holder.try_acquire())
         resolve_obj = mock.MagicMock()
@@ -548,58 +511,6 @@ class ImportItemErrorCodeTests(ResolveQueueTestBase):
         self.assertEqual(item["status"], "error")
         self.assertEqual(item["error_code"], "media_import_failed")
         self.assertEqual(result["error_count"], 1)
-
-
-class KilledProcessLivenessTests(ResolveQueueTestBase):
-    """강제 종료된 프로세스의 생존 판정(`resolve_lock.process_liveness`) — 잠금 보유자 판정의 근거.
-
-    실환경 재현: 허브 PID 를 강제 종료한 뒤의 상태. Windows 는 프로세스가
-    끝나도 누군가 핸들을 쥐고 있으면 커널 객체를 남기므로 ``OpenProcess`` 가 그 PID 로
-    계속 성공하고, 생성 시각도 그대로 남는다. 여기서는 ``subprocess.Popen`` 이 핸들을
-    쥔 채로 자식을 죽여 같은 조건을 만든다.
-    """
-
-    def _spawn_and_kill(self) -> tuple[int, str]:
-        proc = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(120)"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        # ★Popen 객체를 테스트가 끝날 때까지 살려 둬야 핸들이 열려 있고, 그래야 '종료했는데
-        # PID 로 열리는' 상황이 재현된다.
-        self._proc = proc
-        filetime = resolve_lock.process_started_at_filetime(proc.pid)
-        proc.kill()
-        proc.wait(timeout=30)
-        return proc.pid, filetime
-
-    def test_killed_process_is_dead_even_while_its_handle_stays_open(self):
-        pid, filetime = self._spawn_and_kill()
-        self.assertEqual(resolve_lock.process_liveness(pid, filetime), "dead")
-
-
-class InspectModeDispatchTests(ResolveQueueTestBase):
-    """자식 워커 진입점 — 실사 조회(inspect) 봉투는 가져오기가 아니라 읽기 전용 조회로 분기한다."""
-
-    def test_child_process_dispatches_the_inspect_mode(self):
-        """자식 진입점 계약 — 봉투에 모드가 있으면 가져오기가 아니라 실사 조회다."""
-        payload = {
-            resolve_import_worker.MODE_KEY: resolve_import_worker.INSPECT_MODE,
-            "manifest": {"transfer_id": "t"},
-        }
-        with (
-            mock.patch.object(
-                resolve_import_worker,
-                "inspect_manifest_bins",
-                return_value={"status": "ok", "bins": {}},
-            ) as inspect,
-            mock.patch.object(resolve_import_worker, "run") as run,
-            mock.patch("sys.stdin", io.StringIO(json.dumps(payload))),
-            mock.patch("builtins.print"),
-        ):
-            resolve_import_worker.main()
-        inspect.assert_called_once_with({"transfer_id": "t"})
-        run.assert_not_called()
 
 
 if __name__ == "__main__":

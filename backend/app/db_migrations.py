@@ -825,10 +825,6 @@ def _migrate_rbac(conn: sqlite3.Connection, cr_cols: set) -> None:
     )
 
 
-# FTS5 사용 가능 여부(검색 경로 선택용). _migrate 가 1회 설정. None=아직 미확인.
-FTS_ENABLED: bool = False
-
-
 def _migrate_fts(conn: sqlite3.Connection) -> None:
     """검색 가속용 FTS5(trigram) 인덱스 — prompt LIKE '%...%' 전체 스캔 제거.
 
@@ -836,7 +832,6 @@ def _migrate_fts(conn: sqlite3.Connection) -> None:
     (3자 이상일 때. 3자 미만은 repo 가 LIKE 로 폴백). external content + 트리거로 generation 과
     자동 동기 — 어느 코드 경로로 INSERT/UPDATE/DELETE 하든 색인이 따라온다.
     FTS5 미탑재 빌드면 조용히 건너뛰고 검색은 LIKE 로 폴백(기능 동일, 속도만 차이)."""
-    global FTS_ENABLED
     try:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_fts'"
@@ -870,7 +865,5 @@ def _migrate_fts(conn: sqlite3.Connection) -> None:
             )
             # 기존 행 일괄 색인(외부 콘텐츠에서 재구성, 멱등).
             conn.execute("INSERT INTO generation_fts(generation_fts) VALUES('rebuild')")
-        FTS_ENABLED = True
     except sqlite3.OperationalError as e:
-        FTS_ENABLED = False
         print(f"[migrate] FTS5 사용 불가 — 검색은 LIKE 폴백: {e}")

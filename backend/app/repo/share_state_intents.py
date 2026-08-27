@@ -113,22 +113,6 @@ def share_state_action_locks(identity_keys: Iterable[str]) -> Iterator[None]:
                     _ACTION_LOCKS[key] = (lock, users - 1)
 
 
-@contextmanager
-def share_state_action_lock(
-    server_origin: str,
-    *,
-    server_generation_id: Optional[str] = None,
-    job_anchor: Optional[str] = None,
-) -> Iterator[None]:
-    key = share_state_identity_key(
-        server_origin,
-        server_generation_id=server_generation_id,
-        job_anchor=job_anchor,
-    )
-    with share_state_action_locks([key]):
-        yield
-
-
 @asynccontextmanager
 async def async_share_state_action_locks(identity_keys: Iterable[str]):
     """3b reconciler용 asyncio per-key lock + 동기 mutation 라우트 공통 게이트.
@@ -194,22 +178,6 @@ async def async_share_state_action_locks(identity_keys: Iterable[str]):
                     _ASYNC_ACTION_LOCKS[registry_key] = (lock, users - 1)
         if cleanup_error is not None:
             raise cleanup_error
-
-
-@asynccontextmanager
-async def async_share_state_action_lock(
-    server_origin: str,
-    *,
-    server_generation_id: Optional[str] = None,
-    job_anchor: Optional[str] = None,
-):
-    key = share_state_identity_key(
-        server_origin,
-        server_generation_id=server_generation_id,
-        job_anchor=job_anchor,
-    )
-    async with async_share_state_action_locks([key]):
-        yield
 
 
 _UPSERT_INTENT_SQL = """
@@ -472,74 +440,6 @@ def mark_share_state_intent_waiting_local(
         last_error_code=error_code,
         increment_fail_streak=True,
     )
-
-
-def list_due_share_state_intents(
-    *, limit: int = 10, now: Optional[str] = None
-) -> list[dict[str, Any]]:
-    """재시도 시각이 됐고 claim이 비었거나 만료된 비종결 행을 오래된 순으로 조회한다."""
-    with get_connection() as conn:
-        if now is None:
-            rows = conn.execute(
-                "SELECT * FROM share_state_intent WHERE status IN (?,?,?,?) "
-                "AND (next_retry_at IS NULL OR next_retry_at<=datetime('now')) "
-                "AND (claim_token IS NULL OR lease_until IS NULL OR lease_until<=datetime('now')) "
-                "ORDER BY COALESCE(next_retry_at, created_at), intent_seq LIMIT ?",
-                (*_CLAIMABLE_STATUSES, max(int(limit), 1)),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM share_state_intent WHERE status IN (?,?,?,?) "
-                "AND (next_retry_at IS NULL OR next_retry_at<=?) "
-                "AND (claim_token IS NULL OR lease_until IS NULL OR lease_until<=?) "
-                "ORDER BY COALESCE(next_retry_at, created_at), intent_seq LIMIT ?",
-                (*_CLAIMABLE_STATUSES, now, now, max(int(limit), 1)),
-            ).fetchall()
-    return [dict(row) for row in rows]
-
-
-def claim_share_state_intent(
-    intent_id: str,
-    intent_seq: int,
-    claim_token: str,
-    *,
-    lease_seconds: int = 120,
-    now: Optional[str] = None,
-) -> bool:
-    """비종결 현재 seq를 lease 만료 조건으로 선점한다."""
-    modifier = f"+{max(int(lease_seconds), 1)} seconds"
-    with get_connection() as conn:
-        if now is None:
-            cursor = conn.execute(
-                "UPDATE share_state_intent SET claim_token=?, "
-                "lease_until=datetime('now', ?), updated_at=datetime('now') "
-                "WHERE intent_id=? AND intent_seq=? AND status IN (?,?,?,?) "
-                "AND (claim_token IS NULL OR lease_until IS NULL OR lease_until<=datetime('now'))",
-                (
-                    claim_token,
-                    modifier,
-                    intent_id,
-                    int(intent_seq),
-                    *_CLAIMABLE_STATUSES,
-                ),
-            )
-        else:
-            cursor = conn.execute(
-                "UPDATE share_state_intent SET claim_token=?, "
-                "lease_until=datetime(?, ?), updated_at=datetime('now') "
-                "WHERE intent_id=? AND intent_seq=? AND status IN (?,?,?,?) "
-                "AND (claim_token IS NULL OR lease_until IS NULL OR lease_until<=?)",
-                (
-                    claim_token,
-                    now,
-                    modifier,
-                    intent_id,
-                    int(intent_seq),
-                    *_CLAIMABLE_STATUSES,
-                    now,
-                ),
-            )
-        return cursor.rowcount == 1
 
 
 def claim_due_share_state_intents(

@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from app import db, repo
+from app.repo import gen_requests as _gen_requests
 
 
 @pytest.fixture
@@ -394,107 +395,6 @@ def _seed_placeholder(email: str, key: str, kind: str = "create"):
     return gen_id, owner
 
 
-@pytest.mark.parametrize(
-    "mutate, expected",
-    [
-        (None, True),  # 기본형 — 재개 가능
-        ("request_gone", False),
-        ("wrong_status_generation", False),
-        ("origin_synced", False),
-        ("job_id_set", False),
-        ("other_request", False),
-        ("creator_mismatch", False),
-    ],
-    ids=[
-        "base",
-        "no-preparing-request",
-        "generation-not-pending",
-        "origin-synced",
-        "job-anchored",
-        "other-request-exists",
-        "creator-mismatch",
-    ],
-)
-def test_idempotent_placeholder_resume_truth_table(pooled_db, mutate, expected):
-    """R6 2-B(코덱스 필수) — 3~4 SELECT→1 SELECT 통합 후에도 판정 진리표 동일."""
-    gen_id, owner = _seed_placeholder("w@example.com", "key-1")
-    creator = owner
-    with db.get_connection() as conn:
-        if mutate == "request_gone":
-            conn.execute("UPDATE gen_request SET status='pending' WHERE gen_id=?", (gen_id,))
-        elif mutate == "wrong_status_generation":
-            conn.execute("UPDATE generation SET status='running' WHERE id=?", (gen_id,))
-        elif mutate == "origin_synced":
-            conn.execute("UPDATE generation SET origin='synced' WHERE id=?", (gen_id,))
-        elif mutate == "job_id_set":
-            conn.execute("UPDATE generation SET job_id='job-x' WHERE id=?", (gen_id,))
-        elif mutate == "other_request":
-            conn.execute(
-                "INSERT INTO gen_request(id, account_email, gen_id, kind, status, payload) "
-                "VALUES('req-other','w@example.com',?,?,'pending','{}')",
-                (gen_id, "create"),
-            )
-        elif mutate == "creator_mismatch":
-            creator = "다른사람"
-    assert (
-        repo.idempotent_placeholder_is_resumable(
-            "w@example.com", creator, "key-1", gen_id, "create"
-        )
-        is expected
-    )
-    # creator=None 이면 소유자 검사 생략(계약) — creator 불일치 케이스만 True 로 뒤집힘
-    if mutate == "creator_mismatch":
-        assert repo.idempotent_placeholder_is_resumable(
-            "w@example.com", None, "key-1", gen_id, "create"
-        ) is True
-
-
-def test_canvas_placeholder_resume_truth_table(pooled_db):
-    """R6 2-B 캔버스 진리표(코덱스 P1) — 특히 같은 이메일의 '일반 요청'(canvas_attempt_id
-    =NULL)이 타요청으로 정확히 집계돼야 한다(= 비교의 NULL 구멍 회귀)."""
-    gen_id = repo.create_local_generation({"model": "m", "prompt": "p"}, "me")
-    with db.get_connection() as conn:
-        conn.execute(
-            "UPDATE generation SET origin='local', status='pending', job_id=NULL WHERE id=?",
-            (gen_id,),
-        )
-        owner = conn.execute(
-            "SELECT creator_uid FROM generation WHERE id=?", (gen_id,)
-        ).fetchone()["creator_uid"]
-        conn.execute(
-            "INSERT INTO gen_request(id, account_email, gen_id, kind, status, canvas_attempt_id, payload) "
-            "VALUES('req-canvas','w@example.com',?,?,'preparing','attempt-1','{}')",
-            (gen_id, "create"),
-        )
-    link = {"attempt_id": "attempt-1", "generation_id": gen_id}
-    assert repo.canvas_placeholder_is_resumable(
-        "w@example.com", owner, link, "create"
-    ) is True  # 기본형
-
-    # ★같은 이메일의 일반 요청(NULL attempt) 이 존재 — 타요청이므로 재개 불가여야 한다
-    with db.get_connection() as conn:
-        conn.execute(
-            "INSERT INTO gen_request(id, account_email, gen_id, kind, status, canvas_attempt_id, payload) "
-            "VALUES('req-plain','w@example.com',?,?,'pending',NULL,'{}')",
-            (gen_id, "create"),
-        )
-    assert repo.canvas_placeholder_is_resumable(
-        "w@example.com", owner, link, "create"
-    ) is False
-    with db.get_connection() as conn:
-        conn.execute("DELETE FROM gen_request WHERE id='req-plain'")
-    # 다른 attempt 의 캔버스 요청도 타요청
-    with db.get_connection() as conn:
-        conn.execute(
-            "INSERT INTO gen_request(id, account_email, gen_id, kind, status, canvas_attempt_id, payload) "
-            "VALUES('req-other-attempt','w@example.com',?,?,'pending','attempt-2','{}')",
-            (gen_id, "create"),
-        )
-    assert repo.canvas_placeholder_is_resumable(
-        "w@example.com", owner, link, "create"
-    ) is False
-
-
 def test_reply_to_deleted_parent_is_rejected(pooled_db):
     """코덱스 P1 — 부모 존재·같은 스레드 확인을 잠금 안에서: 삭제된(또는 다른 스레드의)
     부모를 가리키는 고아 답글이 만들어지지 않는다(asset·generation 코멘트 공통)."""
@@ -605,10 +505,122 @@ def test_ensure_admin_account_and_purge_are_pool_safe(pooled_db):
     _assert_pool_connection_clean()
 
 
+def _idempotent_resumable(*args, **kwargs) -> bool:
+    """현행 판정 함수(`classify_placeholder_collision` 이 트랜잭션 안에서 부르는 private)를 연결 하나 열어 호출."""
+    with db.get_connection() as conn:
+        return _gen_requests._idempotent_placeholder_is_resumable(conn, *args, **kwargs)
+
+
+def _canvas_resumable(*args, **kwargs) -> bool:
+    with db.get_connection() as conn:
+        return _gen_requests._canvas_placeholder_is_resumable(conn, *args, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "mutate, expected",
+    [
+        (None, True),  # 기본형 — 재개 가능
+        ("request_gone", False),
+        ("wrong_status_generation", False),
+        ("origin_synced", False),
+        ("job_id_set", False),
+        ("other_request", False),
+        ("creator_mismatch", False),
+    ],
+    ids=[
+        "base",
+        "no-preparing-request",
+        "generation-not-pending",
+        "origin-synced",
+        "job-anchored",
+        "other-request-exists",
+        "creator-mismatch",
+    ],
+)
+def test_idempotent_placeholder_resume_truth_table(pooled_db, mutate, expected):
+    """R6 2-B(코덱스 필수) — 3~4 SELECT→1 SELECT 통합 후에도 판정 진리표 동일."""
+    gen_id, owner = _seed_placeholder("w@example.com", "key-1")
+    creator = owner
+    with db.get_connection() as conn:
+        if mutate == "request_gone":
+            conn.execute("UPDATE gen_request SET status='pending' WHERE gen_id=?", (gen_id,))
+        elif mutate == "wrong_status_generation":
+            conn.execute("UPDATE generation SET status='running' WHERE id=?", (gen_id,))
+        elif mutate == "origin_synced":
+            conn.execute("UPDATE generation SET origin='synced' WHERE id=?", (gen_id,))
+        elif mutate == "job_id_set":
+            conn.execute("UPDATE generation SET job_id='job-x' WHERE id=?", (gen_id,))
+        elif mutate == "other_request":
+            conn.execute(
+                "INSERT INTO gen_request(id, account_email, gen_id, kind, status, payload) "
+                "VALUES('req-other','w@example.com',?,?,'pending','{}')",
+                (gen_id, "create"),
+            )
+        elif mutate == "creator_mismatch":
+            creator = "다른사람"
+    assert (
+        _idempotent_resumable(
+            "w@example.com", creator, "key-1", gen_id, "create"
+        )
+        is expected
+    )
+    # creator=None 이면 소유자 검사 생략(계약) — creator 불일치 케이스만 True 로 뒤집힘
+    if mutate == "creator_mismatch":
+        assert _idempotent_resumable(
+            "w@example.com", None, "key-1", gen_id, "create"
+        ) is True
+
+
+def test_canvas_placeholder_resume_truth_table(pooled_db):
+    """R6 2-B 캔버스 진리표(코덱스 P1) — 특히 같은 이메일의 '일반 요청'(canvas_attempt_id
+    =NULL)이 타요청으로 정확히 집계돼야 한다(= 비교의 NULL 구멍 회귀)."""
+    gen_id = repo.create_local_generation({"model": "m", "prompt": "p"}, "me")
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE generation SET origin='local', status='pending', job_id=NULL WHERE id=?",
+            (gen_id,),
+        )
+        owner = conn.execute(
+            "SELECT creator_uid FROM generation WHERE id=?", (gen_id,)
+        ).fetchone()["creator_uid"]
+        conn.execute(
+            "INSERT INTO gen_request(id, account_email, gen_id, kind, status, canvas_attempt_id, payload) "
+            "VALUES('req-canvas','w@example.com',?,?,'preparing','attempt-1','{}')",
+            (gen_id, "create"),
+        )
+    link = {"attempt_id": "attempt-1", "generation_id": gen_id}
+    assert _canvas_resumable(
+        "w@example.com", owner, link, "create"
+    ) is True  # 기본형
+
+    # ★같은 이메일의 일반 요청(NULL attempt) 이 존재 — 타요청이므로 재개 불가여야 한다
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO gen_request(id, account_email, gen_id, kind, status, canvas_attempt_id, payload) "
+            "VALUES('req-plain','w@example.com',?,?,'pending',NULL,'{}')",
+            (gen_id, "create"),
+        )
+    assert _canvas_resumable(
+        "w@example.com", owner, link, "create"
+    ) is False
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM gen_request WHERE id='req-plain'")
+    # 다른 attempt 의 캔버스 요청도 타요청
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO gen_request(id, account_email, gen_id, kind, status, canvas_attempt_id, payload) "
+            "VALUES('req-other-attempt','w@example.com',?,?,'pending','attempt-2','{}')",
+            (gen_id, "create"),
+        )
+    assert _canvas_resumable(
+        "w@example.com", owner, link, "create"
+    ) is False
+
+
 def test_regenerate_resume_requires_derived_lineage(pooled_db):
     gen_id, owner = _seed_placeholder("w@example.com", "key-r", kind="regenerate")
     source_id = repo.create_local_generation({"model": "m", "prompt": "src"}, "me")
-    assert repo.idempotent_placeholder_is_resumable(
+    assert _idempotent_resumable(
         "w@example.com", owner, "key-r", gen_id, "regenerate", source_id
     ) is False  # lineage 없음
     with db.get_connection() as conn:
@@ -616,7 +628,7 @@ def test_regenerate_resume_requires_derived_lineage(pooled_db):
             "INSERT INTO history(parent_gen_id, child_gen_id, relation) VALUES(?,?,'derived')",
             (source_id, gen_id),
         )
-    assert repo.idempotent_placeholder_is_resumable(
+    assert _idempotent_resumable(
         "w@example.com", owner, "key-r", gen_id, "regenerate", source_id
     ) is True
 

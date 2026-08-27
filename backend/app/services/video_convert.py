@@ -62,34 +62,6 @@ def _probe_fps(ff: str, src: Path) -> float | None:
     return None
 
 
-def to_cloud_mp4(data: bytes, timeout: int = 180) -> bytes:
-    """영상 바이트를 H.264 MP4(yuv420p, faststart, 무음)로 재인코딩해 반환.
-
-    · ffmpeg 가 없으면 원본을 그대로 반환한다(변환 불가 — 호출부가 최선-노력으로 처리).
-    · 변환 실패(코덱/손상/타임아웃)면 VideoConvertError.
-    · ★오디오는 '무음 트랙'으로 교체한다 — Cloud 의 VHS LoadVideo 는 오디오를 추출하므로, 오디오가 없으면
-      'VHS failed to extract audio' 로 실패한다. 무음(anullsrc) 스테레오 트랙을 영상 길이에 맞춰(-shortest)
-      넣어 항상 추출 가능하게 한다(r2v 등 영상 입력엔 실제 오디오가 불필요).
-    · 프레임레이트는 강제하지 않는다 — 재인코딩만으로 유효한 fps 헤더가 새로 써져 0-fps 문제가 해소되고,
-      원본 프레임 타이밍(r2v 레퍼런스 길이)이 최대한 보존된다.
-    """
-    with tempfile.TemporaryDirectory(prefix="mvhub_vid_") as td:
-        src = Path(td) / "in"
-        src.write_bytes(data)
-        converted = to_cloud_mp4_path(src, timeout=timeout)
-        if converted == src:
-            return data
-        try:
-            result = converted.read_bytes()
-        finally:
-            try:
-                converted.unlink(missing_ok=True)
-            except OSError as exc:
-                # 변환 결과 읽기는 성공했으므로 임시파일 정리 실패로 성공을 뒤집지 않는다.
-                log.warning("cloud video legacy temp cleanup failed: %s", exc)
-        return result
-
-
 def to_cloud_mp4_path(source: Path, timeout: int = 180) -> Path:
     """파일 경로를 H.264 MP4로 변환하고 결과 경로를 반환한다.
 

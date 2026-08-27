@@ -60,8 +60,8 @@ class GenerationSyncTests(unittest.TestCase):
             repo.job_id_sync_diff(["job-1", "job-2"], "u_one"),
             {"unknown": ["job-2"], "refresh": ["job-1"]},
         )
-        self.assertEqual(repo.unknown_job_ids(["job-1", "job-2"], "u_one"), ["job-2"])
-        self.assertEqual(repo.unknown_job_ids(["job-1"], "u_other"), ["job-1"])
+        self.assertEqual(repo.job_id_sync_diff(["job-1", "job-2"], "u_one")["unknown"], ["job-2"])
+        self.assertEqual(repo.job_id_sync_diff(["job-1"], "u_other")["unknown"], ["job-1"])
 
         done = self.parsed("job-1")
         self.assertEqual(repo.upsert_synced_generation(done, "me"), "updated")

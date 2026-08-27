@@ -293,11 +293,12 @@ async def pending_resolve_transfers(request: Request):
 
 @router.get("/locks")
 def get_resolve_lock_paths(request: Request):
-    """메뉴 Importer 가 push 워커와 **같은 락 파일**에 참여하도록 경로를 알려 준다.
+    """메뉴 Importer 가 잡을 PC 공용 락 파일 경로를 알려 준다(허브 쪽 byte-range 락 구현은 2026-08-27 제거 —
+    허브의 직접 반입은 프로세스 안 `_IMPORT_LOCK` 만 쓰고, 이 파일 락은 Importer 끼리의 상호 배제용이다).
 
     프로젝트 락은 manifest_root 에서 유도할 수 있지만 PC 공용 락은 허브의 데이터 폴더
-    안이라 Resolve 안에서 알 수 없다. 이 경로 없이 프로젝트 락만 잡으면 '워커=프로젝트 B,
-    메뉴=프로젝트 A'가 같은 Resolve 를 동시에 변형한다.
+    안이라 Resolve 안에서 알 수 없다. 이 경로 없이 프로젝트 락만 잡으면 서로 다른 프로젝트를 든
+    Importer 두 개가 같은 Resolve 를 동시에 변형할 수 있다.
     """
     _require_local_resolve(request)
     return {

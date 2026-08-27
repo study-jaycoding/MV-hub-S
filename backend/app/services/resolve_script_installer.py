@@ -33,8 +33,6 @@ ALL_USERS_SCRIPT_RELATIVE_DIR = Path(
     "Utility",
     "MV Hub",
 )
-# 기존 테스트와 외부 코드 호환용 이름이다.
-SCRIPT_RELATIVE_DIR = USER_SCRIPT_RELATIVE_DIR
 _VERSION_PATTERN = re.compile(
     r'^PLUGIN_VERSION\s*=\s*["\']([^"\']+)["\']', re.MULTILINE
 )

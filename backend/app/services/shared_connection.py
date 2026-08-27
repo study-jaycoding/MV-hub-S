@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from typing import Any, Optional
 
 from .. import repo
@@ -63,19 +62,6 @@ def token() -> Optional[str]:
 
 def elevation_token() -> Optional[str]:
     return repo.get_setting(K_ELEV_TOKEN)
-
-
-def elevation_expires_at() -> Optional[int]:
-    raw = repo.get_setting(K_ELEV_EXPIRES)
-    try:
-        value = int(str(raw or "").strip())
-    except (TypeError, ValueError):
-        return None
-    return value if value > int(time.time()) else None
-
-
-def elevation_active() -> bool:
-    return bool(elevation_token() and elevation_expires_at())
 
 
 def server_name() -> str:

@@ -124,14 +124,6 @@ def _task_workspace(row) -> tuple[str, Optional[str], Optional[str]]:
     return "unknown", None, None
 
 
-def _project_workspace(conn, project_id: str) -> tuple[str, Optional[str], Optional[str]]:
-    row = conn.execute(
-        "SELECT workspace_scope, workspace_id, workspace_name FROM project WHERE id=?",
-        (project_id,),
-    ).fetchone()
-    return _task_workspace(row) if row else ("unknown", None, None)
-
-
 def _same_workspace(
     task_scope: str,
     task_workspace_id: Optional[str],

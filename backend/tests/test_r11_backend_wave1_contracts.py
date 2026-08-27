@@ -249,11 +249,11 @@ def test_wellformed_mcp_item_still_maps_normally() -> None:
 
 def test_worker_backup_upload_does_not_broadcast_synced() -> None:
     for path in ("/api/db-backup", "/api/db-backup/sets", "/api/db-backup/sets/abc/activate"):
-        assert not mutation_notify.should_notify_mutation("POST", path, 200)
+        assert mutation_notify.DOMAIN_LIBRARY not in mutation_notify.notification_domains("POST", path, 200)
         assert mutation_notify.notification_domains("POST", path, 200) == ()
     # 기존 제외 항목(main 의 수동 백업)과 정상 변경 경로는 그대로.
-    assert not mutation_notify.should_notify_mutation("POST", "/api/backup", 200)
-    assert mutation_notify.should_notify_mutation("POST", "/api/gen-requests", 201)
+    assert mutation_notify.DOMAIN_LIBRARY not in mutation_notify.notification_domains("POST", "/api/backup", 200)
+    assert mutation_notify.DOMAIN_LIBRARY in mutation_notify.notification_domains("POST", "/api/gen-requests", 201)
 
 
 # ── B5: fps 는 비디오 스트림 줄에서만 읽는다 ───────────────────────────────────

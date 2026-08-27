@@ -26,7 +26,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import shutil
 import subprocess
 import threading
@@ -216,30 +215,6 @@ async def get_job_raw(job_id: str, timeout: float = 30.0) -> Optional[dict[str, 
     except json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) and data.get("id") else None
-
-
-async def _run_capture(*args: str, timeout: float = 600.0) -> tuple[str, str, int]:
-    """create 전용 — stdout/stderr/returncode 를 모두 반환(예외 안 던짐, 타임아웃만 예외).
-    소프트 실패(rc=0 인데 status=failed) 시 stderr 에 담긴 사유를 살리기 위함."""
-    proc = await asyncio.create_subprocess_exec(
-        cli_path(),
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError as e:
-        await _terminate_cli_process(proc)
-        raise CLIError(f"CLI 타임아웃: higgsfield {' '.join(args)}") from e
-    except asyncio.CancelledError:
-        await _terminate_cli_process(proc)
-        raise
-    return (
-        (out or b"").decode("utf-8", "replace"),
-        (err or b"").decode("utf-8", "replace"),
-        proc.returncode if proc.returncode is not None else -1,
-    )
 
 
 async def _run_json(*args: str, timeout: float = 60.0) -> Any:

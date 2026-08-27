@@ -97,25 +97,6 @@ def create_local_generation(
             raise
 
 
-def find_comfy_generation_by_asset(
-    file_path: str, creator_uid: Optional[str] = None
-) -> Optional[str]:
-    """이미 저장된 Comfy 출력인지 asset.file_path 로 조회(중복 저장 방지). 있으면 gen_id.
-    creator_uid 지정 시 그 계정 저장본만(계정별 '내 작업' 분리). 휴지통 행은 제외."""
-    where = "a.file_path=? AND g.generator='comfy' AND g.deleted_at IS NULL"
-    args: list[Any] = [file_path]
-    if creator_uid:
-        where += " AND g.creator_uid=?"
-        args.append(creator_uid)
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT g.id FROM generation g JOIN asset a ON a.generation_id=g.id "
-            f"WHERE {where} LIMIT 1",
-            args,
-        ).fetchone()
-        return row["id"] if row else None
-
-
 def create_comfy_generation(
     *,
     worker_id: str,
@@ -414,29 +395,6 @@ def apply_reconcile(
     return True
 
 
-def set_job_id(gen_id: str, job_id: str) -> None:
-    """로컬 생성본에 실제 Higgsfield 잡 id 를 기록 — 이후 동기화가 이 행을
-    중복 생성 없이 갱신하도록(중복 방지의 핵심).
-
-    레이스 병합: 로컬 생성이 끝나기 전에 주기 동기화가 같은 잡을 먼저 동기화본
-    (id == job_id)으로 INSERT 했을 수 있다. 그 경우 사용자 메타(display_prompt·@소스명·
-    태그·컬러)가 없는 동기화본은 버리고 로컬을 남긴다(병합).
-
-    ★ SELECT dup → delete → UPDATE 를 BEGIN IMMEDIATE 로 직렬화한다 — autocommit 단발이면
-    그 사이 동기화가 같은 잡을 INSERT 해 중복 2행이 살아남던 레이스(apply_local_fulfillment 는
-    이미 IMMEDIATE 로 막은 것과 동일)를 set_job_id 경로에서도 닫는다."""
-    with get_connection() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        # 동기화 중복본(origin='synced' 이고 같은 job_id)을 찾는다 — id==job_id 좌표가 아닌 마커로(0a).
-        dup = conn.execute(
-            "SELECT id FROM generation WHERE job_id=? AND id<>? AND origin='synced'",
-            (job_id, gen_id),
-        ).fetchone()
-        if dup:
-            _delete_generation(conn, dup["id"])  # 레이스로 생긴 동기화 중복본 제거
-        conn.execute("UPDATE generation SET job_id=? WHERE id=?", (job_id, gen_id))
-
-
 MediaCacheUpdate = tuple[
     Literal["asset", "ref"], str, str, Optional[str], Optional[str]
 ]
@@ -528,16 +486,6 @@ def apply_generation_media_cache_updates(
             raise
         finally:
             _media_cache_batch_conn.reset(token)
-
-
-def all_generation_ids() -> list[str]:
-    with get_connection() as conn:
-        return [
-            r["id"]
-            for r in conn.execute(
-                "SELECT id FROM generation ORDER BY created_at DESC"
-            ).fetchall()
-        ]
 
 
 def apply_local_fulfillment(

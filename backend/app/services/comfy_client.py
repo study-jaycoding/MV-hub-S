@@ -315,24 +315,6 @@ def upload_file(target: dict, filename: str, path: Path, subfolder: str = "mvhub
     return f"{sub}/{name}" if sub else name
 
 
-def upload_bytes(target: dict, filename: str, data: bytes, subfolder: str = "mvhub") -> str:
-    """하위 호환 바이트 업로드. 운영 Comfy 실행은 ``upload_file``을 사용한다."""
-    import tempfile
-
-    handle = tempfile.NamedTemporaryFile(prefix="mvhub-comfy-input-", suffix=".part", delete=False)
-    path = Path(handle.name)
-    try:
-        with handle:
-            handle.write(data)
-        return upload_file(target, filename, path, subfolder)
-    finally:
-        try:
-            path.unlink(missing_ok=True)
-        except OSError as exc:
-            # 업로드 결과를 정리 실패로 뒤집지 않는다. 앱 접두 잔재는 temp_sweeper가 재회수한다.
-            log.warning("Comfy 바이트 업로드 임시파일 정리 실패: %s", exc)
-
-
 # Cloud 제출 검증오류에서 '미지원 노드'를 뽑는 패턴(예: unsupported node type 'SaveText|pysssss')
 _UNSUPPORTED_NODE_RE = re.compile(r"unsupported node type ['\"]([^'\"]+)['\"]", re.IGNORECASE)
 
@@ -626,16 +608,3 @@ def download_view(target: dict, item: dict, dst: Path) -> None:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
-
-
-def interrupt(target: dict) -> None:
-    """실행 중 작업 중단 — 로컬·Cloud 모두 '현재 실행 중 전체'가 대상.
-
-    취소 호출자는 실패를 사용자 실행 실패에 덧붙이지 않고 로그만 남긴다. 그 판단을 할 수
-    있도록 이 저수준 함수는 오류를 삼키지 않는다.
-    """
-    status, body = _request(
-        "POST", _url(target, "/interrupt"), headers=target["headers"], timeout=5,
-    )
-    if not 200 <= status < 300:
-        raise _classify(status, body.decode("utf-8", "replace"))

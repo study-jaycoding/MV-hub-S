@@ -137,13 +137,6 @@ def account_global_roles(request: Request) -> list[str]:
 # ── v02 RBAC 권한 게이트 (로드맵 §1-5/§1-6) ────────────────────────────────
 # 모든 게이트는 AUTH_ENABLED off 면 통과(차단 비활성, '식별 먼저 차단 나중'). 켜지면 서버가 강제.
 # 전역 역할은 복수 보유 가능 → 보유 역할들의 합집합으로 판정.
-def require_global(request: Request, *roles: str) -> None:
-    """전역 역할 게이트 — 보유 역할 중 roles 와 겹치면 통과. 예: require_global(request, rbac.ADMIN)."""
-    if not AUTH_ENABLED:
-        return
-    if not rbac.has_any_global_role(account_global_roles(request), *roles):
-        raise HTTPException(status_code=403, detail="권한이 없습니다")
-
 
 def require_global_cap(request: Request, cap: str) -> None:
     """전역 역량 게이트 — 보유 역할들의 역량 합집합 기준. 예: cap='approve_signup'."""

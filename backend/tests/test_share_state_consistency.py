@@ -287,17 +287,13 @@ def test_generation_action_lock_serializes_cross_mutations():
     second_entered = threading.Event()
 
     def first_action():
-        with repo.share_state_action_lock(
-            "http://share.example.test", job_anchor="server-1"
-        ):
+        with repo.share_state_action_locks([repo.share_state_identity_key("http://share.example.test", job_anchor="server-1")]):
             first_entered.set()
             assert allow_first_exit.wait(2)
 
     def second_action():
         assert first_entered.wait(2)
-        with repo.share_state_action_lock(
-            "HTTP://SHARE.EXAMPLE.TEST:80/", job_anchor="server-1"
-        ):
+        with repo.share_state_action_locks([repo.share_state_identity_key("HTTP://SHARE.EXAMPLE.TEST:80/", job_anchor="server-1")]):
             second_entered.set()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -315,15 +311,11 @@ def test_async_worker_lock_and_sync_route_lock_share_the_same_gate():
     sync_entered = threading.Event()
 
     def sync_action():
-        with repo.share_state_action_lock(
-            "http://share.example.test", job_anchor="server-async"
-        ):
+        with repo.share_state_action_locks([repo.share_state_identity_key("http://share.example.test", job_anchor="server-async")]):
             sync_entered.set()
 
     async def scenario():
-        async with repo.async_share_state_action_lock(
-            "http://share.example.test", job_anchor="server-async"
-        ):
+        async with repo.async_share_state_action_locks([repo.share_state_identity_key("http://share.example.test", job_anchor="server-async")]):
             pending = asyncio.create_task(asyncio.to_thread(sync_action))
             await asyncio.sleep(0.05)
             assert not sync_entered.is_set()

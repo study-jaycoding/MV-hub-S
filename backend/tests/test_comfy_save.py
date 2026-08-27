@@ -2,7 +2,6 @@
 
  · create_comfy_generation 이 generation(generator='comfy', origin='local', job_id NULL, status='done')
    + asset 을 한 트랜잭션으로 물질화하는지
- · find_comfy_generation_by_asset 멱등 조회(계정 스코프)
  · HF 삭제검증 대상(gens_with_job_id)에서 자동 제외(job_id 없음)
  · POST /api/comfy/save-to-library: 텍스트 출력 제외 + 재저장 멱등 + 응답 형태
 """
@@ -53,17 +52,21 @@ class ComfySaveRepoTests(unittest.TestCase):
         self.assertEqual(a["file_path"], "/media/comfy/abc123.png")
         self.assertEqual(a["thumbnail_path"], "/media/comfy/abc123.png")  # 없으면 file_path 폴백
 
+
     def test_dedup_by_asset_path_scoped_to_creator(self):
+        """같은 file_path 는 같은 계정 안에서만 재사용(existed=True)되고 다른 계정은 별도 저장본이다."""
         path = "/media/comfy/dup.png"
-        gid, _existed = self.repo.create_comfy_generation(
-            worker_id="me", creator_uid="me", prompt="p", display_prompt=None,
-            params={}, kind="image", file_path=path, thumbnail_path=None,
-        )
-        self.assertEqual(self.repo.find_comfy_generation_by_asset(path, "me"), gid)
+        common = dict(worker_id="me", prompt="p", display_prompt=None, params={}, kind="image",
+                      file_path=path, thumbnail_path=None)
+        gid, existed = self.repo.create_comfy_generation(creator_uid="me", **common)
+        self.assertFalse(existed)
+        again, existed_again = self.repo.create_comfy_generation(creator_uid="me", **common)
+        self.assertTrue(existed_again)
+        self.assertEqual(again, gid)
         # 다른 계정 스코프에서는 안 잡힘(계정별 '내 작업' 분리)
-        self.assertIsNone(self.repo.find_comfy_generation_by_asset(path, "someone_else"))
-        # 없는 경로
-        self.assertIsNone(self.repo.find_comfy_generation_by_asset("/media/comfy/none.png", "me"))
+        other, existed_other = self.repo.create_comfy_generation(creator_uid="someone_else", **common)
+        self.assertFalse(existed_other)
+        self.assertNotEqual(other, gid)
 
     def test_excluded_from_hf_deletion_candidates(self):
         self.repo.create_comfy_generation(

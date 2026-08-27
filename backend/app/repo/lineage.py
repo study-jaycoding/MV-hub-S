@@ -2,7 +2,7 @@
 
 generations.py 에서 분리(관심사 분리). 여기의 순수/mutation 헬퍼를 generations·history 가 import 해서 쓴다
 (단방향: generations → lineage, history → lineage). 공개 조회 함수 get_history/get_history_graph 는
-history.py 에 있고, 여기의 _derived_depth_batch/_directed_lineage/_gen_row_visible 를 가져다 쓴다.
+history.py 에 있고, 여기의 _derived_depth_batch/_gen_row_visible 를 가져다 쓴다.
 """
 from __future__ import annotations
 
@@ -238,11 +238,3 @@ def _gen_row_visible(
     if read_all or g.get("shared"):
         return True
     return bool(viewer_uid) and g.get("creator_uid") == viewer_uid
-
-
-def _directed_lineage(conn: sqlite3.Connection, gen_id: str, limit: int = 300) -> set[str]:
-    """gen_id 의 '연결된 라인' 노드집합 — 조상(부모 위로) + 자신 + 자손(자식 아래로).
-    형제·곁가지(부모의 다른 자식, 자손의 다른 부모)는 제외 — 이 결과물로 이어지는 직계 라인만.
-    타 작업자가 공유물의 계보를 볼 때 쓴다(연결된 라인만 보이고 나머지는 안 보여도 됨).
-    limit은 focus를 포함한 양수 최대 개수이며, 조상 우선 계약은 ``_directed_lineage_window`` 참고."""
-    return _directed_lineage_window(conn, gen_id, limit)[0]

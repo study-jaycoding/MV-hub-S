@@ -43,21 +43,6 @@ export function sameComfyParamValues(
   );
 }
 
-export function sameComfyMediaInputs(left: ComfyMediaInput[], right: ComfyMediaInput[]): boolean {
-  return (
-    left.length === right.length &&
-    left.every((item, index) => {
-      const other = right[index];
-      return (
-        item.type === other.type &&
-        item.url === other.url &&
-        item.name === other.name &&
-        (item.source_gen_id || null) === (other.source_gen_id || null)
-      );
-    })
-  );
-}
-
 export function samePreparedSceneComfyInputs(
   left: PreparedSceneComfyInputs,
   right: PreparedSceneComfyInputs,

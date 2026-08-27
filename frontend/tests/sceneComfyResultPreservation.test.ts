@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   doneOutputsPatch,
-  patchOwnedComfyRun,
   saveCompletedComfyResults,
   type SaveComfyOptions,
   type SaveComfyResult,
@@ -137,30 +136,7 @@ describe("Comfy 결과 보존 정산", () => {
     expect(seen).toEqual([first, second, third]);
     expect(result).toEqual({ saved: 2, failed: 1 });
   });
-
-  it("이전 runId는 새 실행의 running·failed·done 상태를 바꾸지 못한다", () => {
-    const cards = [
-      {
-        id: "comfy",
-        kind: "comfy",
-        x: 0,
-        y: 0,
-        comfyCfg: { runId: 2, status: "running", error: null },
-      },
-    ] as SceneCard[];
-
-    const staleIdle = patchOwnedComfyRun(cards, "comfy", 1, { status: "idle" });
-    const staleFailed = patchOwnedComfyRun(cards, "comfy", 1, { status: "failed", error: "old" });
-    const staleDone = patchOwnedComfyRun(cards, "comfy", 1, { status: "done" });
-    const currentDone = patchOwnedComfyRun(cards, "comfy", 2, { status: "done", error: null });
-
-    expect(staleIdle).toBe(cards);
-    expect(staleFailed).toBe(cards);
-    expect(staleDone).toBe(cards);
-    expect(currentDone[0].comfyCfg).toMatchObject({ runId: 2, status: "done", error: null });
-  });
 });
-
 
 describe("doneOutputsPatch — 저장 실패 시에도 결과가 카드에서 사라지지 않는다", () => {
   const media = [{ kind: "image" as const, url: "/run.png" }];

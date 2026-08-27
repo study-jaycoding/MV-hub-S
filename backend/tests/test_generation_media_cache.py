@@ -259,30 +259,21 @@ class CacheAllBatchEquivalenceTests(IsolatedAsyncioTestCase):
             ).fetchall()
         return [tuple(row) for row in stable], {r[0]: bool(r[1]) for r in stamps}
 
-    async def test_batch_matches_legacy_per_item_loop(self):
+    async def test_batch_registration_outcomes(self):
+        """현행 `request_media_preservation_for_all_done` 의 최종 상태 — running 은 보존, failed/complete 는 재장전,
+        done 아님은 제외, 휴지통 done 은 포함. (종전에는 항목별 루프와 등가 비교했으나 그 루프는 호출자가 없어 제거.)"""
         import os
         import tempfile
 
         from app import db, repo
 
         old_db = os.environ.get("CONTENT_HUB_DB")
-        results = {}
         try:
-            for mode in ("legacy", "batch"):
-                with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-                    self._seed(tmp)
-                    if mode == "legacy":
-                        queued = 0  # 종전 /cache-all 루프 그대로 재현(오라클)
-                        for gen_id in repo.all_generation_ids():
-                            generation = repo.get_generation(gen_id)
-                            if not generation or generation.get("status") != "done":
-                                continue
-                            if repo.request_media_preservation(gen_id, "admin", force=True):
-                                queued += 1
-                    else:
-                        queued = repo.request_media_preservation_for_all_done()
-                    results[mode] = (queued, *self._dump())
-                    db.flush_pool()
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+                self._seed(tmp)
+                queued = repo.request_media_preservation_for_all_done()
+                rows, stamps = self._dump()
+                db.flush_pool()
         finally:
             if old_db is None:
                 os.environ.pop("CONTENT_HUB_DB", None)
@@ -290,17 +281,20 @@ class CacheAllBatchEquivalenceTests(IsolatedAsyncioTestCase):
                 os.environ["CONTENT_HUB_DB"] = old_db
             db.flush_pool()
 
-        legacy_queued, legacy_rows, legacy_stamps = results["legacy"]
-        batch_queued, batch_rows, batch_stamps = results["batch"]
-        self.assertEqual(batch_queued, legacy_queued)
-        self.assertEqual(batch_rows, legacy_rows)
-        self.assertEqual(batch_stamps, legacy_stamps)
-        # 의미 검증: running 은 requested_at 유지, force 재장전 대상은 갱신됐다.
-        self.assertTrue(batch_stamps["g-running"])
-        self.assertFalse(batch_stamps["g-complete"])
-        self.assertFalse(batch_stamps["g-failed"])
-        # done 아님 행은 건드리지 않았다(기존 값 유지).
-        self.assertTrue(batch_stamps["g-notdone"])
+        by_id = {row[0]: row for row in rows}
+        self.assertGreaterEqual(queued, 1)
+        # 보존 행이 없던 done 행(휴지통 포함)은 새로 pending 등록된다.
+        self.assertEqual(by_id["g-new"][2], "pending")
+        self.assertEqual(by_id["g-trashed"][2], "pending")
+        # running 은 force 여도 건드리지 않는다(행·requested_at 그대로).
+        self.assertEqual(by_id["g-running"], ("g-running", "final", "running", "err", "2020-01-01 00:00:00"))
+        self.assertTrue(stamps["g-running"])
+        # failed/complete 는 재장전 대상 — requested_at 이 갱신된다.
+        self.assertFalse(stamps["g-complete"])
+        self.assertFalse(stamps["g-failed"])
+        # done 아님 행은 건드리지 않는다(기존 값 유지).
+        self.assertTrue(stamps["g-notdone"])
+        self.assertEqual(by_id["g-notdone"][2], "failed")
 
 
 if __name__ == "__main__":

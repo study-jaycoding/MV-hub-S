@@ -101,22 +101,6 @@ export function doneOutputsPatch(
   return attachApplied ? {} : { outputs: latestOutputs, output: null };
 }
 
-// 카드에 기록된 runId가 일치할 때만 상태를 바꾼다. 이전 실행의 finally/실패 응답이 새 실행을 덮지 못한다.
-export function patchOwnedComfyRun(
-  cards: SceneCard[],
-  cardId: string,
-  runId: number,
-  patch: Partial<SceneComfyCfg>,
-): SceneCard[] {
-  let changed = false;
-  const next = cards.map((card) => {
-    if (card.id !== cardId || card.kind !== "comfy" || card.comfyCfg?.runId !== runId) return card;
-    changed = true;
-    return { ...card, comfyCfg: { ...card.comfyCfg, ...patch } };
-  });
-  return changed ? next : cards;
-}
-
 interface UseSceneComfyExecutionOptions {
   sceneIdRef: MutableRefObject<string>;
   cardsRef: MutableRefObject<SceneCard[]>;

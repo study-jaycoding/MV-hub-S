@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 MediaType = Literal["image", "video"]
 # 레퍼런스(입력)는 오디오도 받는다 — 생성물 출력(AssetOut)은 image/video 유지, 레퍼런스만 확장.
 ReferenceMediaType = Literal["image", "video", "audio"]
-GenStatus = Literal["pending", "running", "done", "failed"]
 AccountType = Literal["personal", "team"]
 WorkspaceScope = Literal["team", "personal", "unknown"]
 

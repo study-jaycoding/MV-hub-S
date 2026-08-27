@@ -1,4 +1,3 @@
-import { dayInfoFromEpochSeconds } from "../../lib/dateGroups";
 import { assetFileUrl } from "../../lib/assetUrls";
 import type { AssetMeta, AssetNode, PreviewTarget } from "../../types";
 import { findFolder, flattenFiles } from "./treeUtils";
@@ -57,14 +56,6 @@ function compareAssetsBy(
 
 export function hasUnreadAssetMeta(meta: Record<string, AssetMeta>): boolean {
   return Object.values(meta).some((m) => m?.has_unread);
-}
-
-export function countAssetTypes(tree: AssetNode[]): { image: number; video: number; audio: number } {
-  const c = { image: 0, video: 0, audio: 0 };
-  for (const f of flattenFiles(tree)) {
-    if (f.type === "image" || f.type === "video" || f.type === "audio") c[f.type]++;
-  }
-  return c;
 }
 
 export function isAssetSearchActive({
@@ -177,20 +168,6 @@ export function filterAssetFiles({
     });
   }
   return result;
-}
-
-export function groupAssetsByDate(files: AssetNode[]): Map<string, { label: string; idxs: number[] }> {
-  const m = new Map<string, { label: string; idxs: number[] }>();
-  files.forEach((f, i) => {
-    const { key, label } = dayInfoFromEpochSeconds(f.mtime);
-    let e = m.get(key);
-    if (!e) {
-      e = { label, idxs: [] };
-      m.set(key, e);
-    }
-    e.idxs.push(i);
-  });
-  return m;
 }
 
 export function collectAssetTags(meta: Record<string, AssetMeta>): string[] {

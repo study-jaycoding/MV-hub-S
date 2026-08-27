@@ -18,7 +18,7 @@ import uuid
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, NamedTuple
+from typing import Any, AsyncIterator
 
 from ..config import MEDIA_DIR
 from . import media_cache, project_folders
@@ -433,32 +433,12 @@ def _dest_lock(dest: Path):
                 _DEST_LOCKS[key] = (current, users - 1)
 
 
-class CopyOutcome(NamedTuple):
-    """복사 결과와 그 자리에서 얻은 무결성 기록(추가 IO 없음)."""
-
-    status: str  # downloaded | skipped
-    sha256: str
-    size: int
-    mtime_ns: int
-
-
 def _copy_atomic(source: Path, dest: Path) -> str:
     """원본을 덮어쓰지 않고 원자적으로 복사한다. 반환값은 downloaded/skipped.
     같은 목적지 동시 요청은 _dest_lock 으로 직렬화 — 후발이 같은 원본이면 skipped,
     다른 원본이면 기존 오류 그대로."""
     with _dest_lock(dest):
         return _copy_atomic_locked(source, dest)
-
-
-def copy_prepared(source: Path, dest: Path) -> CopyOutcome:
-    """v3 큐 전용 복사 — 같은 규칙이되 복사 스트림에서 sha256 까지 얻는다(§3.2).
-
-    가져오기 직전 무결성 재검증에 쓸 해시를 '복사하면서' 만들기 때문에 원본을 다시
-    읽는 재해시가 없다. 목적지가 이미 있어 skipped 로 끝나는 경로도 어차피 두 파일을
-    전량 대조하므로 그 순회에서 해시를 같이 만든다.
-    """
-    with _dest_lock(dest):
-        return _copy_prepared_locked(source, dest)
 
 
 def _prepare_destination(source: Path, dest: Path) -> int:
@@ -496,39 +476,6 @@ def _copy_atomic_locked(source: Path, dest: Path) -> str:
         except OSError:
             pass
     return "downloaded"
-
-
-def _copy_prepared_locked(source: Path, dest: Path) -> CopyOutcome:
-    if dest.exists():
-        same, digest = _same_file_content(source, dest)
-        if dest.is_file() and same:
-            stat_result = dest.stat()
-            return CopyOutcome(
-                "skipped", digest, stat_result.st_size, stat_result.st_mtime_ns
-            )
-        raise ResolveTransferError("같은 이름의 다른 파일이 이미 있습니다")
-
-    source_size = _prepare_destination(source, dest)
-    tmp = dest.with_name(dest.name + f".{uuid.uuid4().hex}.part")
-    try:
-        digest = hashlib.sha256()
-        with source.open("rb") as reader, tmp.open("wb") as writer:
-            while chunk := reader.read(_COPY_CHUNK_BYTES):
-                digest.update(chunk)
-                writer.write(chunk)
-        shutil.copystat(source, tmp)  # copy2 와 같은 메타데이터 보존
-        if tmp.stat().st_size != source_size:
-            raise ResolveTransferError("원본 복사가 불완전합니다(크기 불일치)")
-        os.replace(tmp, dest)
-    finally:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-    stat_result = dest.stat()
-    return CopyOutcome(
-        "downloaded", digest.hexdigest(), stat_result.st_size, stat_result.st_mtime_ns
-    )
 
 
 def _same_file_content(left: Path, right: Path) -> tuple[bool, str]:

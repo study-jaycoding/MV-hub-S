@@ -189,27 +189,3 @@ async def cache_generation_media(generation: dict) -> dict[str, Any]:
             pass
         raise outcome.unexpected_error
     return outcome.result
-
-
-async def cache_all_generation_media() -> dict[str, int]:
-    """모든 생성물의 미보관 원격 미디어를 생성물 단위 최대 6개씩 병렬 보관한다."""
-    total = {"cached": 0, "failed": 0, "generations": 0}
-    sem = asyncio.Semaphore(6)
-
-    async def cache_one(gen_id: str) -> dict[str, Any] | None:
-        async with sem:
-            generation = repo.get_generation(gen_id)
-            if not generation:
-                return None
-            return await cache_generation_media(generation)
-
-    results = await asyncio.gather(*(cache_one(gen_id) for gen_id in repo.all_generation_ids()))
-    for result in results:
-        if not result:
-            continue
-        total["cached"] += result["cached"]
-        total["failed"] += result["failed"]
-        if result["cached"]:
-            total["generations"] += 1
-
-    return total
