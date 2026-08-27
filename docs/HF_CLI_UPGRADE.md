@@ -79,6 +79,10 @@ python tools/hf_cli_check_update.py
 - `agent_push.py` — 생성 실행 인자 조립(`_role_flag`·`--image`·seedance `--*-references`),
   `model list`/`model get` 캐시, `account transactions` 소비, `result_url` 의 `user_<id>` 추출.
   boolean 파라미터는 `_param_flags`(agent_push.py)·`_param_args`(cli_bridge.py) 가 소문자 `true`/`false` 로 직렬화(1.x 엄격검증).
+- `backend/app/services/mcp_ingest.py` — MCP `show_generations` 항목 → CLI list 형태. ★계약(2026-08-27 실측):
+  영상 항목의 `results.thumbnailUrl` 은 결과 포스터가 아니라 **첫 입력 이미지**(`params.medias[0].data.url`)다 →
+  영상은 버리고 이미지도 입력과 같은 `thumbnailUrl`/`minUrl` 은 버린다. `type`(image|video) 은 `result_media_type`
+  으로 `parse_job` 에 전달해 확장자 판정보다 우선한다. 진짜 영상 포스터(`…_thumbnail.webp`)는 CLI `generate get/list` 만 준다.
 - 원칙: **raw CLI 출력 필드는 단일 키로 읽지 말고 `x.get(new) or x.get(old)` 폴백**으로 읽어
   개명에 견디게 한다. 내부 표준 필드명(model=job_set_type 등)은 유지한다.
 - `agent_push.py` 는 서버가 팀원에게 배포하는 **단독 스크립트**라 backend 를 import 하지 못한다 —

@@ -142,14 +142,14 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 
 ### 전체 문서 분류
 
-아래 표는 현재 `docs` 아래 Markdown **61개**(`docs/*.md` 54 + `docs/status/*.md` 7)를 한 번씩
+아래 표는 현재 `docs` 아래 Markdown **62개**(`docs/*.md` 54 + `docs/status/*.md` 8)를 한 번씩
 분류한다. PDF는 특정 시점에 만든 외부 배포용 결과물이므로 현재 기술 판단의 기준으로 사용하지 않는다.
 
 | 상태 | 문서 |
 |---|---|
 | **문서 색인·갱신 규칙** | [README](README.md)(이 문서) |
 | **현황·작업 기준** | [CURRENT_STATUS](CURRENT_STATUS.md), [RISK_REDUCTION_PLAN_2026-08-15](RISK_REDUCTION_PLAN_2026-08-15.md) |
-| **날짜별 기록(`status/`)** | [최근작업](status/최근작업_2026-08-24.md), [RL 완료목록](status/RL_완료목록.md), [검증기록](status/검증기록.md), [구현완료](status/구현완료_RL-02_RL-23.md), [사전배포검증](status/사전배포검증_2026-08-19.md), [안정화](status/안정화_2026-08-18.md), [코드대조](status/코드대조_2026-08-26.md) |
+| **날짜별 기록(`status/`)** | [최근작업](status/최근작업_2026-08-24.md), [RL 완료목록](status/RL_완료목록.md), [검증기록](status/검증기록.md), [구현완료](status/구현완료_RL-02_RL-23.md), [사전배포검증](status/사전배포검증_2026-08-19.md), [안정화](status/안정화_2026-08-18.md), [코드대조](status/코드대조_2026-08-26.md), [영상 포스터 오염](status/영상_포스터_오염_2026-08-27.md) |
 | **현행 구조·계약 — 공통** | [ARCHITECTURE](ARCHITECTURE.md), [AI_CONTEXT](AI_CONTEXT.md), [DATA_OWNERSHIP](DATA_OWNERSHIP.md), [WORKSPACE_DATA_CONTRACT](WORKSPACE_DATA_CONTRACT.md), [신원과 모드 가이드](신원과_모드_가이드.md) |
 | **현행 구조·계약 — 기능별** | [AUTH_FAILURE_SEMANTICS](AUTH_FAILURE_SEMANTICS.md), [CANVAS_GENERATION_IDEMPOTENCY](CANVAS_GENERATION_IDEMPOTENCY.md), [CLI_ESTIMATE_LIFECYCLE](CLI_ESTIMATE_LIFECYCLE.md), [GENERATION_SUBMISSION_RECOVERY](GENERATION_SUBMISSION_RECOVERY.md), [TELEMETRY_DRAIN_LIFECYCLE](TELEMETRY_DRAIN_LIFECYCLE.md), [SHARE_STATE_RECONCILIATION_DESIGN](SHARE_STATE_RECONCILIATION_DESIGN.md), [WORKER_OFFDISK_BACKUP_CONTRACT](WORKER_OFFDISK_BACKUP_CONTRACT.md), [UPDATE_ANNOUNCEMENTS](UPDATE_ANNOUNCEMENTS.md) |
 | **운영·검증 절차** | [SERVER](SERVER.md), [SERVER_RECOVERY](SERVER_RECOVERY.md), [SERVER_RELOCATION](SERVER_RELOCATION.md), [TESTING](TESTING.md), [HF_CLI_UPGRADE](HF_CLI_UPGRADE.md) |
