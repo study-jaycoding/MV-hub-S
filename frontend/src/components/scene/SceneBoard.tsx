@@ -116,7 +116,7 @@ import { useSceneCardMove } from "../../lib/useSceneCardMove";
 import { useSceneGroupMove } from "../../lib/useSceneGroupMove";
 import { useSceneMarqueeSelection } from "../../lib/useSceneMarqueeSelection";
 import { markCardGenerationsRemoved } from "../../lib/sceneCardLinks";
-import type { SceneComfyCfg } from "../../lib/scenes";
+import type { SceneComfyCfg, SceneModelCfg } from "../../lib/scenes";
 import type { SceneGenerationAssignment } from "../../lib/sceneGenerationInputs";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
@@ -218,10 +218,19 @@ interface Props {
     sceneId: string,
     cardId: string,
   ) => Promise<void>;
-  // 렌더(배치) 노드 — 연결된 생성카드 id들을 넘기면 각 카드가 자기 모델·refs·텍스트로 한 번에 생성된다.
-  onRenderCards?: (cardIds: string[], batch?: number) => void | Promise<void>;
+  // 렌더(배치) 노드 — 연결된 생성카드 id들을 넘기면 각 카드가 연결 모델(없으면 fallbackModel)·refs·텍스트로 한 번에 생성된다.
+  onRenderCards?: (
+    cardIds: string[],
+    batch?: number,
+    fallbackModel?: SceneModelCfg | null,
+  ) => void | Promise<void>;
   // 배치 짝 생성 — 상류 comfy 를 배치수만큼 병렬 실행한 결과(runs)를 넘기면 각 run(짝)이 그 comfy 결과로 1장 생성.
-  onRenderCardRuns?: (runs: SceneGenerationRun[]) => void | Promise<void>;
+  onRenderCardRuns?: (
+    runs: SceneGenerationRun[],
+    fallbackModel?: SceneModelCfg | null,
+  ) => void | Promise<void>;
+  // 모델 노드 없는 생성카드의 폴백 모델(하단 프롬프트에 보이는 것). 실행 훅이 클릭 시점에 1회 읽는다.
+  getGenerationFallbackModel?: () => SceneModelCfg | null;
   // 현재 실행 중인 comfy 노드 목록 통지 — App 이 '내 작업'에 임시 생성중 카드(Comfy 로고)를 띄우는 데 쓴다.
   onComfyRunningChange?: (items: { id: string; name: string }[]) => void;
   grayOn?: boolean; // 상단 토글 — 켜면 비활성(회색) 카드를 캔버스에서 숨김
@@ -279,6 +288,7 @@ export function SceneBoard({
   onCanvasRecoveryClaim,
   onRenderCards,
   onRenderCardRuns,
+  getGenerationFallbackModel,
   onComfyRunningChange,
   grayOn,
   fill = true,
@@ -1589,6 +1599,7 @@ export function SceneBoard({
     onGenerateCard,
     onRenderCards,
     onRenderCardRuns,
+    getGenerationFallbackModel,
     onComfyRunningChange,
   });
   // render 노드: 특정 생성카드의 체크 토글(체크된 카드만 Render 대상). unchecked 목록에 넣고 뺀다.

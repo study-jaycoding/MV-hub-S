@@ -1,6 +1,7 @@
 // 캔버스 생성카드의 실제 Higgsfield 요청 재료와 실행 중 변경 감지용 지문.
 // Comfy 런타임 출력은 실행마다 달라지는 정상 값이므로 고정 오버레이로 치환하고,
 // 모델·파라미터·정적 텍스트·레퍼런스 및 동적 출력의 연결 순서만 비교한다.
+// 모델은 연결 모델 노드가 우선이고, 노드가 하나도 없으면 호출부가 넘긴 하단 프롬프트 모델(fallbackModel)을 쓴다.
 import type { ChipRef } from "./promptEditor";
 import {
   collectGenModel,
@@ -10,7 +11,7 @@ import {
   resolvePortEdges,
   type ComfyOutputsById,
 } from "./sceneEdges";
-import { variantIds, type SceneCard, type SceneEdge } from "./scenes";
+import { variantIds, type SceneCard, type SceneEdge, type SceneModelCfg } from "./scenes";
 import { parseSceneSetTags } from "./sceneSet";
 
 export interface SceneGenerationAssignment {
@@ -19,13 +20,32 @@ export interface SceneGenerationAssignment {
   tags: string[];
 }
 
+// 모델 출처 — node: 연결 모델 노드(정확히 1개) / fallback: 하단 프롬프트에 보이던 모델(모델 노드 없는 카드).
+export type SceneGenerationModelSource = "node" | "fallback";
+
 export interface SceneGenerationJobInput {
   cardId: string;
   model: string;
+  modelSource: SceneGenerationModelSource;
+  modelName?: string; // 표시용(알림). 없으면 model id 를 쓴다.
   params: Record<string, unknown>;
   refs: ChipRef[];
   text: string;
   assignment?: SceneGenerationAssignment;
+}
+
+// 생성카드 1개의 모델과 무관한 요청 재료(연결 텍스트·refs·Set 배정).
+export interface SceneGenerationCardInput {
+  refs: ChipRef[];
+  text: string;
+  assignment?: SceneGenerationAssignment;
+}
+
+export interface SceneGenerationModelChoice {
+  model: string;
+  modelName?: string;
+  params: Record<string, string | number | boolean>;
+  source: SceneGenerationModelSource;
 }
 
 export interface SceneGenerationInputSnapshot {
@@ -96,17 +116,17 @@ export function collectSceneGenerationAssignment(
   return { projectId, folderPath, tags };
 }
 
+// 생성카드 1개의 모델과 무관한 요청 재료 — 제출(buildSceneGenerationJobInput)과 실행 중 변경 감지 지문
+// (cardFingerprint)이 같은 함수를 써서 같은 입력을 본다.
 // 호출부가 한 번 resolve한 엣지를 여러 생성카드에 재사용할 수 있도록 이 함수는 resolvedEdges를 받는다.
-export function buildSceneGenerationJobInput(
+export function collectSceneGenerationCardInput(
   cardId: string,
   cardsById: Map<string, SceneCard>,
   resolvedEdges: SceneEdge[],
   overlay?: ComfyOutputsById,
-): SceneGenerationJobInput | null {
+): SceneGenerationCardInput | null {
   const card = cardsById.get(cardId);
   if (!card || card.kind !== "generation") return null;
-  const modelCfg = collectGenModel(cardId, cardsById, resolvedEdges);
-  if (!modelCfg?.model) return null;
 
   const gatheredText = collectGenText(cardId, cardsById, resolvedEdges, overlay);
   const text = gatheredText.count > 0 ? gatheredText.text : card.prompt || "";
@@ -146,12 +166,70 @@ export function buildSceneGenerationJobInput(
     source_gen_id: ref.source_gen_id ?? undefined,
   }));
   return {
-    cardId,
-    model: modelCfg.model,
-    params: { ...(modelCfg.params || {}) },
     refs,
     text,
     assignment: collectSceneGenerationAssignment(cardId, cardsById, resolvedEdges),
+  };
+}
+
+function modelNodeCount(
+  cardId: string,
+  cardsById: Map<string, SceneCard>,
+  resolvedEdges: SceneEdge[],
+): number {
+  return resolvedEdges.filter(
+    (edge) => edge.to === cardId && cardsById.get(edge.from)?.kind === "model",
+  ).length;
+}
+
+// 생성카드의 모델 결정 — 연결 모델 노드가 정확히 1개면 그 설정(노드 우선). 모델 노드가 하나도 없으면 하단
+// 프롬프트 모델(fallbackModel)로 대신한다(카드 Generate 바와 같은 규칙). 노드가 2개 이상(모호)이거나 1개인데
+// 모델을 고르지 않았으면(노드를 붙인 의도 존중) 폴백하지 않고 null → 호출부가 건너뛴다.
+export function resolveSceneGenerationModel(
+  cardId: string,
+  cardsById: Map<string, SceneCard>,
+  resolvedEdges: SceneEdge[],
+  fallbackModel?: SceneModelCfg | null,
+): SceneGenerationModelChoice | null {
+  const nodeCfg = collectGenModel(cardId, cardsById, resolvedEdges);
+  if (nodeCfg?.model) {
+    return {
+      model: nodeCfg.model,
+      modelName: nodeCfg.modelName,
+      params: { ...(nodeCfg.params || {}) },
+      source: "node",
+    };
+  }
+  if (fallbackModel?.model && modelNodeCount(cardId, cardsById, resolvedEdges) === 0) {
+    return {
+      model: fallbackModel.model,
+      modelName: fallbackModel.modelName,
+      params: { ...(fallbackModel.params || {}) },
+      source: "fallback",
+    };
+  }
+  return null;
+}
+
+// 생성 1건의 조립 재료(모델·파라미터·refs·텍스트·배정). 생성카드가 아니거나 모델을 정할 수 없으면 null.
+export function buildSceneGenerationJobInput(
+  cardId: string,
+  cardsById: Map<string, SceneCard>,
+  resolvedEdges: SceneEdge[],
+  overlay?: ComfyOutputsById,
+  fallbackModel?: SceneModelCfg | null,
+): SceneGenerationJobInput | null {
+  const chosen = resolveSceneGenerationModel(cardId, cardsById, resolvedEdges, fallbackModel);
+  if (!chosen) return null;
+  const input = collectSceneGenerationCardInput(cardId, cardsById, resolvedEdges, overlay);
+  if (!input) return null;
+  return {
+    cardId,
+    model: chosen.model,
+    modelSource: chosen.source,
+    modelName: chosen.modelName,
+    params: chosen.params,
+    ...input,
   };
 }
 
@@ -167,21 +245,32 @@ function canonicalValue(value: unknown): unknown {
   return value;
 }
 
-function jobFingerprint(job: SceneGenerationJobInput | null): string | null {
-  if (!job) return null;
+// 카드 1개의 실행 중 변경 감지 지문. 모델은 씬 안의 연결 상태만 본다 — 노드 설정(모델·params)과 노드 수
+// (0=하단 폴백 대상, 2+=모호). 하단 프롬프트 모델 자체는 씬 밖 상태라 지문에 넣지 않는다(호출부가 실행 시작
+// 시점 값을 고정해 제출까지 전달). 모델 노드가 없어도 텍스트·refs·Set 변경은 감지된다.
+function cardFingerprint(
+  cardId: string,
+  cardsById: Map<string, SceneCard>,
+  resolvedEdges: SceneEdge[],
+  overlay: ComfyOutputsById,
+): string | null {
+  const input = collectSceneGenerationCardInput(cardId, cardsById, resolvedEdges, overlay);
+  if (!input) return null;
+  const nodeCfg = collectGenModel(cardId, cardsById, resolvedEdges);
   // thumb는 표시용 캐시 URL이라 제외한다. URL 갱신만으로 유료 실행이 취소되면 안 된다.
   return JSON.stringify(
     canonicalValue({
-      model: job.model,
-      params: job.params,
-      text: job.text,
-      refs: job.refs.map((ref) => ({
+      model: nodeCfg?.model ?? null,
+      params: nodeCfg?.params ?? {},
+      modelNodes: modelNodeCount(cardId, cardsById, resolvedEdges),
+      text: input.text,
+      refs: input.refs.map((ref) => ({
         file_path: ref.file_path,
         type: ref.type,
         name: ref.name,
         source_gen_id: ref.source_gen_id ?? null,
       })),
-      assignment: job.assignment ?? null,
+      assignment: input.assignment ?? null,
     }),
   );
 }
@@ -274,12 +363,8 @@ export function captureSceneGenerationInputSnapshot(
   const fingerprints: Record<string, string | null> = {};
 
   for (const cardId of normalizedGenerationIds) {
-    const withoutRuntimeOutputs = jobFingerprint(
-      buildSceneGenerationJobInput(cardId, fingerprintCards, resolved, emptyOverlay),
-    );
-    const withDynamicMarkers = jobFingerprint(
-      buildSceneGenerationJobInput(cardId, fingerprintCards, resolved, dynamicOverlay),
-    );
+    const withoutRuntimeOutputs = cardFingerprint(cardId, fingerprintCards, resolved, emptyOverlay);
+    const withDynamicMarkers = cardFingerprint(cardId, fingerprintCards, resolved, dynamicOverlay);
     fingerprints[cardId] = JSON.stringify([withoutRuntimeOutputs, withDynamicMarkers]);
   }
   return {

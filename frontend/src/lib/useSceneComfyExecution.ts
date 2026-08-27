@@ -38,6 +38,7 @@ import {
   type SceneCard,
   type SceneComfyCfg,
   type SceneEdge,
+  type SceneModelCfg,
 } from "./scenes";
 
 export interface SaveComfyOptions {
@@ -135,8 +136,18 @@ interface UseSceneComfyExecutionOptions {
     batch?: number,
     assignment?: SceneGenerationAssignment | null,
   ) => void;
-  onRenderCards?: (cardIds: string[], batch?: number) => void | Promise<void>;
-  onRenderCardRuns?: (runs: SceneGenerationRun[]) => void | Promise<void>;
+  onRenderCards?: (
+    cardIds: string[],
+    batch?: number,
+    fallbackModel?: SceneModelCfg | null,
+  ) => void | Promise<void>;
+  onRenderCardRuns?: (
+    runs: SceneGenerationRun[],
+    fallbackModel?: SceneModelCfg | null,
+  ) => void | Promise<void>;
+  // 모델 노드 없는 생성카드가 쓸 하단 프롬프트 모델 — Render/Generate 클릭 시점에 1회 읽어 comfy 완료 뒤
+  // 제출까지 그대로 전달한다(실행 중 하단 모델을 바꿔도 유료 요청에 섞이지 않게).
+  getGenerationFallbackModel?: () => SceneModelCfg | null;
   onComfyRunningChange?: (items: { id: string; name: string }[]) => void;
 }
 
@@ -155,6 +166,7 @@ export function useSceneComfyExecution({
   onGenerateCard,
   onRenderCards,
   onRenderCardRuns,
+  getGenerationFallbackModel,
   onComfyRunningChange,
 }: UseSceneComfyExecutionOptions) {
   const orchestratingRef = useRef(false);
@@ -753,6 +765,7 @@ export function useSceneComfyExecution({
     orchestratingRef.current = true;
     setComfyWaitingIds(new Set([generationId]));
     const sceneId = sceneIdRef.current;
+    const fallbackModel = getGenerationFallbackModel?.() ?? null; // 클릭 시점 고정
     const generationInputSnapshot = captureSceneGenerationInputSnapshot(
       plan.generationIds,
       plan.comfyIds,
@@ -785,7 +798,7 @@ export function useSceneComfyExecution({
       );
       const matchingRuns = runs.filter((run) => run.cardId === generationId);
       if (!aborted && isPlanCurrent() && matchingRuns.length) {
-        await onRenderCardRuns?.(matchingRuns);
+        await onRenderCardRuns?.(matchingRuns, fallbackModel);
       }
     } finally {
       orchestratingRef.current = false;
@@ -801,6 +814,7 @@ export function useSceneComfyExecution({
     }
     orchestratingRef.current = true;
     const sceneId = sceneIdRef.current;
+    const fallbackModel = getGenerationFallbackModel?.() ?? null; // 클릭 시점 고정
     try {
       const cardsById = new Map(cardsRef.current.map((card) => [card.id, card] as const));
       const plan = buildRenderExecutionPlan(renderId, cardsById, edgesRef.current);
@@ -831,12 +845,12 @@ export function useSceneComfyExecution({
           isPlanCurrent,
         );
         if (!aborted && isPlanCurrent() && runs.length) {
-          await onRenderCardRuns?.(runs);
+          await onRenderCardRuns?.(runs, fallbackModel);
         }
       } else {
         const { runnableGenIds, aborted } = await runPlanComfy(plan, sceneId);
         if (!aborted && isPlanCurrent() && runnableGenIds.length) {
-          await onRenderCards?.(runnableGenIds, batch);
+          await onRenderCards?.(runnableGenIds, batch, fallbackModel);
         }
       }
     } finally {

@@ -146,6 +146,9 @@ export interface SpotlightPromptHandle {
     assignmentOverride?: SceneGenerationAssignment | null,
     canvasTargetOverride?: CanvasGenerationTarget | null,
   ) => void;
+  // 하단에 지금 보이는 모델·옵션 스냅샷 — 캔버스 렌더가 모델 노드 없는 생성카드에 쓰는 폴백.
+  // submit 과 같은 게이트(모델 없음·옵션 로딩 중·옵션이 아직 이전 모델 것)면 null.
+  currentModel: () => SceneModelCfg | null;
 }
 
 // 노출 모델 화이트리스트(ALLOWED)·숨김 파라미터(HIDDEN_PARAMS)·모델/파라미터/비용 로직은
@@ -970,8 +973,18 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       bumpPromptTick();
     },
   });
-  // App에는 Spotlight 내부 상태 대신 submit(batch) 한 가지 명령만 공개한다.
-  useImperativeHandle(ref, () => ({ submit }), [submit]);
+  // 캔버스 렌더 폴백용 — submit 이 body 를 만들 때 쓰는 것과 같은 model·optionValues 를 같은 게이트로 돌려준다.
+  const currentModel = useCallback((): SceneModelCfg | null => {
+    if (!model || paramsLoading || paramsModel !== model) return null;
+    return {
+      type,
+      model,
+      modelName: typeModels.find((m) => m.job_set_type === model)?.display_name,
+      params: { ...optionValues },
+    };
+  }, [type, model, paramsLoading, paramsModel, typeModels, optionValues]);
+  // App에는 Spotlight 내부 상태 대신 submit(batch)·currentModel() 두 명령만 공개한다.
+  useImperativeHandle(ref, () => ({ submit, currentModel }), [submit, currentModel]);
 
   // 드롭다운(model/ratio) Esc 닫기 — 도크 자체는 항상 떠 있음.
   useEffect(() => {

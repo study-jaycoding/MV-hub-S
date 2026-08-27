@@ -46,7 +46,7 @@ export function RenderCard({
   onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
   onResizeDown: (e: React.MouseEvent, cardId: string) => void;
 }) {
-  // 렌더(배치 생성) — 연결된 생성카드들을 모아 Render 버튼 한 번으로 각 카드를 자기 모델·refs·텍스트로 생성.
+  // 렌더(배치 생성) — 연결된 생성카드들을 모아 Render 버튼 한 번으로 각 카드를 연결 모델(없으면 하단 프롬프트 모델)·refs·텍스트로 생성.
   const gcids = collectRenderGenCardIds(card.id, cardsById, resolvedEdges);
   const unchecked = new Set(card.unchecked || []); // 체크 해제된(렌더 제외) 카드들
   const activeGcids = gcids.filter((cid) => !unchecked.has(cid)); // 실제 Render 대상(체크된 것만)
@@ -168,7 +168,7 @@ export function RenderCard({
           </button>
           <button
             className="scene-cardgen-go"
-            title="연결된 comfy 를 먼저 실행하고, 체크된 생성 카드를 각자 생성"
+            title="연결된 comfy 를 먼저 실행하고, 체크된 생성 카드를 각자 생성(모델 노드 없으면 하단 프롬프트 모델)"
             disabled={!renderCount}
             onClick={(e) => {
               e.stopPropagation();

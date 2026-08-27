@@ -4,6 +4,7 @@ import {
   collectSceneGenerationAssignment,
   captureSceneGenerationInputSnapshot,
   isSceneGenerationInputSnapshotCurrent,
+  resolveSceneGenerationModel,
 } from "../src/lib/sceneGenerationInputs";
 import { resolvePortEdges } from "../src/lib/sceneEdges";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
@@ -300,5 +301,157 @@ describe("sceneGenerationInputs", () => {
       },
     );
     expect(textOnlyJob?.refs.map((ref) => ref.file_path)).toEqual(["/unrelated-old.png"]);
+  });
+});
+
+describe("sceneGenerationInputs — 모델 노드 없는 카드의 하단 프롬프트 모델 폴백", () => {
+  const fallback = {
+    type: "image",
+    model: "spot-model",
+    modelName: "Spot",
+    params: { ratio: "16:9" },
+  };
+
+  it("모델 노드가 없으면 폴백 모델·옵션으로 job 을 만들고 텍스트·refs 는 카드 것을 쓴다", () => {
+    const cards = [
+      card("G", "generation", {
+        prompt: "draft",
+        refs: [{ file_path: "/r.png", type: "image", name: "r" }],
+      }),
+    ];
+    const resolved = resolvePortEdges(byId(cards), []);
+    const job = buildSceneGenerationJobInput("G", byId(cards), resolved, undefined, fallback);
+    expect(job).toMatchObject({
+      cardId: "G",
+      model: "spot-model",
+      modelName: "Spot",
+      modelSource: "fallback",
+      params: { ratio: "16:9" },
+      text: "draft",
+    });
+    expect(job?.refs.map((ref) => ref.file_path)).toEqual(["/r.png"]);
+    expect(job?.params).not.toBe(fallback.params); // 복사본 — 하단 옵션 객체를 건드리지 않는다
+    expect(resolveSceneGenerationModel("G", byId(cards), resolved, fallback)).toMatchObject({
+      model: "spot-model",
+      source: "fallback",
+    });
+  });
+
+  it("폴백이 없거나 비어 있으면 지금처럼 null(건너뜀)", () => {
+    const cards = [card("G", "generation", { prompt: "draft" })];
+    const resolved = resolvePortEdges(byId(cards), []);
+    expect(buildSceneGenerationJobInput("G", byId(cards), resolved)).toBeNull();
+    expect(buildSceneGenerationJobInput("G", byId(cards), resolved, undefined, null)).toBeNull();
+    expect(
+      buildSceneGenerationJobInput("G", byId(cards), resolved, undefined, { model: "" }),
+    ).toBeNull();
+  });
+
+  it("모델 노드가 1개면 폴백보다 노드 모델·파라미터가 우선", () => {
+    const cards = [
+      card("G", "generation", { prompt: "draft" }),
+      card("M", "model", {
+        modelCfg: { model: "nano", modelName: "Nano", params: { quality: "high" } },
+      }),
+    ];
+    const resolved = resolvePortEdges(byId(cards), [edge("e1", "M", "G")]);
+    expect(
+      buildSceneGenerationJobInput("G", byId(cards), resolved, undefined, fallback),
+    ).toMatchObject({
+      model: "nano",
+      modelName: "Nano",
+      modelSource: "node",
+      params: { quality: "high" },
+    });
+  });
+
+  it("모델 노드가 2개(모호)이거나 1개인데 모델 미설정이면 폴백하지 않고 null", () => {
+    const two = [
+      card("G", "generation", { prompt: "draft" }),
+      card("M1", "model", { modelCfg: { model: "nano" } }),
+      card("M2", "model", { modelCfg: { model: "flux" } }),
+    ];
+    const twoResolved = resolvePortEdges(byId(two), [
+      edge("e1", "M1", "G"),
+      edge("e2", "M2", "G"),
+    ]);
+    expect(
+      buildSceneGenerationJobInput("G", byId(two), twoResolved, undefined, fallback),
+    ).toBeNull();
+
+    const unset = [card("G", "generation", { prompt: "draft" }), card("M", "model")];
+    const unsetResolved = resolvePortEdges(byId(unset), [edge("e1", "M", "G")]);
+    expect(
+      buildSceneGenerationJobInput("G", byId(unset), unsetResolved, undefined, fallback),
+    ).toBeNull();
+    const emptyCfg = unset.map((item) => (item.id === "M" ? { ...item, modelCfg: {} } : item));
+    expect(
+      buildSceneGenerationJobInput("G", byId(emptyCfg), unsetResolved, undefined, fallback),
+    ).toBeNull();
+  });
+
+  it("지문: 모델 노드 없는 카드도 프롬프트·ref·Set·연결 텍스트 변경을 감지하고 위치 이동은 무시한다", () => {
+    const cards = [
+      card("G", "generation", {
+        prompt: "before",
+        refs: [{ file_path: "/ref.png", type: "image", name: "ref" }],
+      }),
+      card("S", "set", { setCfg: { tagsText: "before" } }),
+    ];
+    const edges = [edge("e1", "S", "G")];
+    const snapshot = captureSceneGenerationInputSnapshot(["G"], [], byId(cards), edges);
+    const promptChanged = cards.map((item) =>
+      item.id === "G" ? { ...item, prompt: "after" } : item,
+    );
+    const refChanged = cards.map((item) =>
+      item.id === "G" ? { ...item, refs: [{ ...item.refs![0], file_path: "/other.png" }] } : item,
+    );
+    const setChanged = cards.map((item) =>
+      item.id === "S" ? { ...item, setCfg: { tagsText: "after" } } : item,
+    );
+    const moved = cards.map((item) => ({ ...item, x: item.x + 100 }));
+    expect(isSceneGenerationInputSnapshotCurrent(snapshot, byId(cards), edges)).toBe(true);
+    expect(isSceneGenerationInputSnapshotCurrent(snapshot, byId(promptChanged), edges)).toBe(false);
+    expect(isSceneGenerationInputSnapshotCurrent(snapshot, byId(refChanged), edges)).toBe(false);
+    expect(isSceneGenerationInputSnapshotCurrent(snapshot, byId(setChanged), edges)).toBe(false);
+    expect(isSceneGenerationInputSnapshotCurrent(snapshot, byId(moved), edges)).toBe(true);
+
+    const withText = [card("G", "generation"), card("T", "text", { text: "before" })];
+    const textEdges = [edge("e1", "T", "G")];
+    const textSnapshot = captureSceneGenerationInputSnapshot(["G"], [], byId(withText), textEdges);
+    const textChanged = withText.map((item) =>
+      item.id === "T" ? { ...item, text: "after" } : item,
+    );
+    expect(isSceneGenerationInputSnapshotCurrent(textSnapshot, byId(textChanged), textEdges)).toBe(
+      false,
+    );
+  });
+
+  it("지문: 모델 노드 추가·제거·미설정·복수 전환을 감지한다", () => {
+    const alone = [card("G", "generation", { prompt: "p" })];
+    const aloneSnapshot = captureSceneGenerationInputSnapshot(["G"], [], byId(alone), []);
+    const added = [...alone, card("M", "model", { modelCfg: { model: "nano" } })];
+    expect(
+      isSceneGenerationInputSnapshotCurrent(aloneSnapshot, byId(added), [edge("e1", "M", "G")]),
+    ).toBe(false);
+
+    const linked = [
+      card("G", "generation", { prompt: "p" }),
+      card("M", "model", { modelCfg: { model: "nano" } }),
+    ];
+    const linkedEdges = [edge("e1", "M", "G")];
+    const linkedSnapshot = captureSceneGenerationInputSnapshot(["G"], [], byId(linked), linkedEdges);
+    expect(isSceneGenerationInputSnapshotCurrent(linkedSnapshot, byId(linked), [])).toBe(false);
+    const unset = linked.map((item) => (item.id === "M" ? { ...item, modelCfg: {} } : item));
+    expect(isSceneGenerationInputSnapshotCurrent(linkedSnapshot, byId(unset), linkedEdges)).toBe(
+      false,
+    );
+    const doubled = [...linked, card("M2", "model", { modelCfg: { model: "flux" } })];
+    expect(
+      isSceneGenerationInputSnapshotCurrent(linkedSnapshot, byId(doubled), [
+        ...linkedEdges,
+        edge("e2", "M2", "G"),
+      ]),
+    ).toBe(false);
   });
 });

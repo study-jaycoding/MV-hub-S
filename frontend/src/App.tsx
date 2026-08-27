@@ -37,6 +37,7 @@ import {
   SCENE_IMPORT_MAX_BYTES,
   variantIds,
   type Scene,
+  type SceneModelCfg,
   type SceneRef,
 } from "./lib/scenes";
 import {
@@ -911,7 +912,8 @@ export default function App() {
   };
   // ── 렌더(배치) 노드 ── 연결된 생성카드들을 각자 자기 모델·refs·텍스트로 한 번에 생성한다.
   //  · 각 카드의 연결 모델(collectGenModel)·연결 텍스트(collectGenText)·카드 refs 로 body 를 조립(하단 프롬프트 재사용).
-  //  · 모델이 안 붙은 카드는 건너뛴다(생성 불가). 잡은 전부 한 번에 제출하고 초과분은 서버 큐가 순서대로 처리.
+  //  · 모델 노드가 없는 카드는 Render 클릭 시점의 하단 프롬프트 모델로 생성(카드 Generate 바와 같은 규칙).
+  //    모델 노드가 2개 이상이거나 모델 미설정 노드면 건너뛴다. 잡은 전부 한 번에 제출하고 초과분은 서버 큐가 순서대로 처리.
   const genParamsCacheRef = useRef<Record<string, ModelParam[]>>({}); // 모델별 파라미터 스키마 캐시(auto 비율 해석용)
   // 씬별 렌더 진행 가드 — 같은 씬의 더블클릭만 막고, 느린 요청 중 다른 씬 작업은 허용한다.
   const renderingSceneIdsRef = useRef(new Set<string>());
@@ -920,7 +922,7 @@ export default function App() {
   //  ★배치 반복은 호출자가 jobs 를 늘려서(같은 카드 N개) 결정한다 — 여기선 job 1개=1장.
   const submitGenJobs = async (
     jobs: SceneGenerationJobInput[],
-    skipped: number,
+    skipped: number, // 모델을 정할 수 없어 건너뛴 생성카드 수(카드 단위)
     scene: Scene,
     projectId: string | undefined,
     folderPath: string | undefined,
@@ -930,7 +932,11 @@ export default function App() {
       return;
     }
     if (!jobs.length) {
-      flash(skipped ? "모델이 연결된 생성 카드가 없습니다." : "생성할 카드가 없습니다.");
+      flash(
+        skipped
+          ? "모델을 정할 수 없는 생성 카드뿐입니다. 모델 노드를 하나만 연결해 모델을 고르거나, 모델 노드를 모두 떼고 하단 프롬프트에서 모델을 고르세요."
+          : "생성할 카드가 없습니다.",
+      );
       return;
     }
     // 같은 모델 요청은 파라미터 조회 1회를 공유하되, 다른 모델 작업은 독립적으로 준비·제출한다.
@@ -1034,7 +1040,7 @@ export default function App() {
     );
     const { successes, buildFail, submitFail: createFail, applyFail } = summary;
     if (!successes.length && buildFail === jobs.length) {
-      flash(`생성 요청을 만들 수 없습니다(카드 ${buildFail}개 실패, 모델 없음 ${skipped}개).`);
+      flash(`생성 요청을 만들 수 없습니다(요청 ${buildFail}건 실패, 모델 미확정 카드 ${skipped}개).`);
       return;
     }
     // 연결은 요청 전에 입력 순서대로 저장됐다. 여기서는 성공 수와 표시 데이터만 정산한다.
@@ -1047,7 +1053,14 @@ export default function App() {
       byCard.set(success.cardId, arr);
     }
     const notes: string[] = [];
-    if (skipped) notes.push(`모델 없음 ${skipped}개`);
+    // 하단 프롬프트 모델로 나간 카드는 어떤 모델인지 드러낸다(숨은 '남은 모델' 방지).
+    const fallbackJobs = jobs.filter((job) => job.modelSource === "fallback");
+    if (fallbackJobs.length) {
+      const label = fallbackJobs[0].modelName || fallbackJobs[0].model;
+      const cardCount = new Set(fallbackJobs.map((job) => job.cardId)).size;
+      notes.push(`모델 노드 없음 → 하단 모델(${label}) ${cardCount}개`);
+    }
+    if (skipped) notes.push(`모델 미확정 ${skipped}개`);
     if (buildFail) notes.push(`요청 실패 ${buildFail}개`);
     if (createFail) notes.push(`제출 실패 ${createFail}장`);
     if (applyFail) notes.push("화면 반영 실패 — 재시작 시 자동 복구");
@@ -1058,9 +1071,14 @@ export default function App() {
     void reload();
     bumpBoard();
   };
-  // ── 렌더(배치) 노드 ── 연결된 생성카드들을 각자 자기 모델·refs·텍스트로 batch 장씩 한 번에 생성.
+  // ── 렌더(배치) 노드 ── 연결된 생성카드들을 각자 연결 모델(없으면 fallbackModel)·refs·텍스트로 batch 장씩 한 번에 생성.
   //  · comfy 없는(또는 comfy 결과를 짝으로 나누지 않는) 경로. 각 카드를 batch 수만큼 복제해 병렬 제출.
-  const generateCards = async (cardIds: string[], batchOverride?: number) => {
+  //  · fallbackModel 은 실행 훅이 Render 클릭 시점에 읽은 하단 프롬프트 모델 — 여기서 다시 읽지 않는다.
+  const generateCards = async (
+    cardIds: string[],
+    batchOverride?: number,
+    fallbackModel?: SceneModelCfg | null,
+  ) => {
     if (!activeScene || !cardIds.length) return;
     const sceneId = activeScene.id;
     const release = acquireSceneGeneration(renderingSceneIdsRef.current, sceneId);
@@ -1079,16 +1097,16 @@ export default function App() {
       const folderPath =
         armedFolder && armedFolder.projectId === projectId ? armedFolder.path : undefined;
       const jobs: SceneGenerationJobInput[] = [];
-      let skipped = 0;
+      const unresolved = new Set<string>(); // 모델을 정할 수 없는 생성카드(노드 2개 이상·미설정 노드·폴백 없음)
       for (const cid of cardIds) {
-        const job = buildSceneGenerationJobInput(cid, cardsById, resolved);
+        const job = buildSceneGenerationJobInput(cid, cardsById, resolved, undefined, fallbackModel);
         if (!job) {
-          if (cardsById.get(cid)?.kind === "generation") skipped++; // 생성카드인데 모델 없음
+          if (cardsById.get(cid)?.kind === "generation") unresolved.add(cid);
           continue;
         }
         for (let i = 0; i < batch; i++) jobs.push({ ...job }); // 각 잡 × 배치수
       }
-      await submitGenJobs(jobs, skipped, scene, projectId, folderPath);
+      await submitGenJobs(jobs, unresolved.size, scene, projectId, folderPath);
     } finally {
       release();
     }
@@ -1096,7 +1114,10 @@ export default function App() {
   // ── 배치 짝 생성 ── 상류 comfy 를 배치수만큼 병렬 실행한 결과(runs)를 받아, 각 run 을 그 comfy 결과(overlay)와
   //  짝지어 1장씩 병렬 생성한다. SceneBoard 오케스트레이터가 runs 를 만들어 이 함수를 1회 호출한다
   //  (씬별 실행 가드에 조용히 막히지 않도록 반드시 1회). run 마다 overlay 가 달라 서로 다른 comfy 결과로 생성.
-  const generateCardRuns = async (runs: SceneGenerationRun[]) => {
+  const generateCardRuns = async (
+    runs: SceneGenerationRun[],
+    fallbackModel?: SceneModelCfg | null,
+  ) => {
     if (!activeScene || !runs.length) return;
     const sceneId = activeScene.id;
     const release = acquireSceneGeneration(renderingSceneIdsRef.current, sceneId);
@@ -1113,21 +1134,22 @@ export default function App() {
       const folderPath =
         armedFolder && armedFolder.projectId === projectId ? armedFolder.path : undefined;
       const jobs: SceneGenerationJobInput[] = [];
-      let skipped = 0;
+      const unresolved = new Set<string>(); // 카드 단위 — run 수(배치)로 세면 알림이 부풀려진다
       for (const run of runs) {
         const job = buildSceneGenerationJobInput(
           run.cardId,
           cardsById,
           resolved,
           run.comfyOutputsById,
+          fallbackModel,
         );
         if (!job) {
-          if (cardsById.get(run.cardId)?.kind === "generation") skipped++;
+          if (cardsById.get(run.cardId)?.kind === "generation") unresolved.add(run.cardId);
           continue;
         }
         jobs.push(job); // run 하나당 1장(overlay 로 그 짝의 comfy 결과 주입)
       }
-      await submitGenJobs(jobs, skipped, scene, projectId, folderPath);
+      await submitGenJobs(jobs, unresolved.size, scene, projectId, folderPath);
     } finally {
       release();
     }
@@ -1460,6 +1482,7 @@ export default function App() {
                 }
                 onRenderCards={generateCards}
                 onRenderCardRuns={generateCardRuns}
+                getGenerationFallbackModel={() => spotlightPromptRef.current?.currentModel() ?? null}
                 onComfyRunningChange={setComfyRunning}
                 grayOn={grayOn}
                 fill={fill}
