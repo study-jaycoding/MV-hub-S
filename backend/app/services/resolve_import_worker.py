@@ -35,9 +35,9 @@ JOURNAL_UNAVAILABLE = "journal_unavailable"
 # 표준입력 봉투의 모드 키. manifest 에는 없는 이름이라 기존 '맨 manifest' 입력과 구분된다.
 MODE_KEY = "mvhub_mode"
 INSPECT_MODE = "inspect_bins"
-# ★resolve_queue.attempt_dir 과 같은 규칙이어야 한다. 여기서 resolve_queue 를 import 하면
-# repo(DB) 계층까지 자식 프로세스로 끌려오므로 경로 계산만 옮겨 두고, 두 계산이 같은 경로를
-# 내는지는 테스트가 지킨다(test_resolve_queue: 자식 journal 경로 계약).
+# journal 경로 규칙: <manifest_root>\.mvhub\attempts\<transfer_id>\<attempt_id>.json (옛 큐 v3 의 attempt_dir 과
+# 같은 형식). 자식 프로세스가 무거운 서비스 계층을 import 하지 않도록 경로 계산만 여기 둔다. 현행 v2 직접 전송
+# manifest 에는 attempt_id 가 없어 journal 을 만들지 않는다(아래 attempt_journal_path 가 None).
 _ATTEMPT_FORMAT = "mvhub.resolve-attempt"
 _ATTEMPT_VERSION = 1
 
