@@ -1,6 +1,7 @@
 """Resolve 가져오기 큐 v3 계약 검증.
 
-접수 즉시성·v2 공존·claim 잠금 상호 배제·부팅 복구 상태표·error_code 전달·워커 순차성.
+접수 즉시성·v2 공존·claim 잠금 상호 배제·부팅 복구 상태표·error_code 전달·취소 요청 영속·Bin 조회.
+(전담 워커 모듈과 워커 없이는 못 도는 테스트는 2026-08-27 삭제 — 직접 전송이 현행.)
 Resolve 실기기가 필요한 부분은 자식 프로세스 결과를 모의한다.
 """
 
@@ -29,7 +30,6 @@ from app.services import (
     resolve_import_worker,
     resolve_lock,
     resolve_queue,
-    resolve_queue_worker,
     resolve_status_runner,
     resolve_transfer,
 )
@@ -79,7 +79,6 @@ class ResolveQueueTestBase(unittest.IsolatedAsyncioTestCase):
         resolve_queue.reset_scan_memo()
         resolve_queue.reset_cancel_requests()
         resolve_lock.reset_root_self_test()
-        resolve_queue_worker.reset_resolve_project_memo()
 
     def tearDown(self):
         for patch in reversed(self._patches):
@@ -87,7 +86,6 @@ class ResolveQueueTestBase(unittest.IsolatedAsyncioTestCase):
         resolve_queue.reset_scan_memo()
         resolve_queue.reset_cancel_requests()
         resolve_lock.reset_root_self_test()
-        resolve_queue_worker.reset_resolve_project_memo()
         self.tmp.cleanup()
 
     def _generation(self, index: int, folder: str = "ep001/c0010") -> dict:
@@ -504,70 +502,12 @@ class ErrorCodeContractTests(ResolveQueueTestBase):
             missing = resolve_status_runner.run_resolve_import_isolated({"items": []})
         self.assertEqual(missing["error_code"], "python_incompatible")
 
-    def test_import_result_code_lands_in_manifest_and_queue_state(self):
-        manifest, _ahead = self._accept(transfer_id="code-path")
-        resolve_queue.set_state(manifest, resolve_queue.STATE_IMPORTING)
-        state = resolve_queue_worker._apply_import_result(
-            manifest,
-            {
-                "status": "unavailable",
-                "error_code": "project_changed",
-                "error": "다른 프로젝트가 열려 있습니다",
-                "items": [],
-            },
-        )
-        self.assertEqual(state, resolve_queue.STATE_BLOCKED)
-        self.assertEqual(manifest["queue"]["blocked"]["code"], "project_changed")
-        self.assertEqual(manifest["queue"]["last_error"]["code"], "project_changed")
-        self.assertEqual(manifest["queue"]["resume_state"], resolve_queue.STATE_READY)
-
-    def test_unclassified_import_failure_becomes_interrupted(self):
-        manifest, _ahead = self._accept(transfer_id="code-unknown")
-        resolve_queue.set_state(manifest, resolve_queue.STATE_IMPORTING)
-        state = resolve_queue_worker._apply_import_result(
-            manifest,
-            {"status": "unavailable", "error_code": "child_crashed", "error": "죽음"},
-        )
-        self.assertEqual(state, resolve_queue.STATE_INTERRUPTED)
-        self.assertEqual(manifest["queue"]["dispatch_policy"], "manual_only")
-
 
 class WorkerFixtureBase(ResolveQueueTestBase):
-    """워커 테스트 공용 픽스처 — 로컬 생성물 조회를 메모리 사전으로 대신한다."""
-
-    def setUp(self):
-        super().setUp()
-        self.generations = {}
-        self._worker_patches = [
-            mock.patch.object(
-                resolve_queue_worker,
-                "_project_ids",
-                return_value=["p1"],
-            ),
-            mock.patch.object(
-                resolve_queue_worker.repo,
-                "resolve_and_get",
-                side_effect=self._resolve_and_get,
-            ),
-        ]
-        for patch in self._worker_patches:
-            patch.start()
-
-    def tearDown(self):
-        for patch in reversed(self._worker_patches):
-            patch.stop()
-        super().tearDown()
-
-    def _resolve_and_get(self, any_id, account_uid=None):
-        gen = self.generations.get(any_id)
-        return (gen, any_id if gen else None, any_id)
+    """접수(accept_sync) 기반 테스트 공용 픽스처 — 생성물 N개를 만들어 접수까지 해 준다."""
 
     def _register(self, count: int) -> list[dict]:
-        generations = [self._generation(index) for index in range(1, count + 1)]
-        for gen in generations:
-            self.generations[gen["id"]] = gen
-            self.generations[gen["job_id"]] = gen
-        return generations
+        return [self._generation(index) for index in range(1, count + 1)]
 
     def _accept_registered(
         self, transfer_id: str, count: int = 1, *, host_id: str | None = None
@@ -589,195 +529,8 @@ class WorkerFixtureBase(ResolveQueueTestBase):
         return manifest, ahead
 
 
-class WorkerDrainTests(WorkerFixtureBase):
-    async def test_prepare_copies_sources_and_marks_ready(self):
-        manifest, _ahead = self._accept_registered("drain-prepare", count=2)
-        state = await resolve_queue_worker.prepare_transfer(manifest)
+class QueueSnapshotTests(WorkerFixtureBase):
 
-        self.assertEqual(state, resolve_queue.STATE_READY)
-        current = resolve_queue.scan_projects(["p1"])[0]
-        self.assertEqual(current["downloaded"], 2)
-        self.assertEqual(current["status"], "complete")
-        self.assertEqual(current["items"][0]["status"], "downloaded")
-        self.assertEqual(current["items"][0]["prepare"]["state"], "downloaded")
-        self.assertTrue(Path(current["items"][0]["local_path"]).is_file())
-        self.assertEqual(current["folder_paths"], ["ep001/c0010"])
-        self.assertIsNone(current["queue"]["claim"])
-
-    async def test_prepare_is_idempotent_after_requeue(self):
-        manifest, _ahead = self._accept_registered("drain-idempotent")
-        await resolve_queue_worker.prepare_transfer(manifest)
-        current = resolve_queue.scan_projects(["p1"])[0]
-        path = Path(current["manifest_path"])
-        resolve_queue.set_state(current, resolve_queue.STATE_QUEUED)
-        resolve_queue.save_manifest(path, current)
-
-        state = await resolve_queue_worker.prepare_transfer(current)
-        self.assertEqual(state, resolve_queue.STATE_READY)
-        again = resolve_queue.scan_projects(["p1"])[0]
-        # 이미 준비된 항목은 다시 복사하지 않는다(downloaded 유지, 오류 0).
-        self.assertEqual(again["error_count"], 0)
-        self.assertEqual(again["downloaded"], 1)
-
-    async def test_missing_source_marks_failed_with_code(self):
-        manifest, _ahead = self._accept_registered("drain-missing")
-        self.generations.clear()
-        state = await resolve_queue_worker.prepare_transfer(manifest)
-
-        self.assertEqual(state, resolve_queue.STATE_FAILED)
-        current = resolve_queue.scan_projects(["p1"])[0]
-        self.assertEqual(current["items"][0]["prepare"]["error_code"], "source_missing")
-        self.assertEqual(current["queue"]["last_error"]["code"], "source_missing")
-        self.assertEqual(current["status"], "failed")
-
-    async def test_account_scope_change_blocks_instead_of_failing(self):
-        generations = self._register(1)
-        manifest, _ahead, _duplicate = resolve_queue.accept_sync(
-            "p1",
-            generations,
-            resolve_target={"project_id": "resolve-1", "project_name": "EP01_EDIT"},
-            account_scope=resolve_queue.build_account_scope(
-                account_key="acct:someone@example.com",
-                account_email="someone@example.com",
-                creator_uid="user_1",
-                server_origin="",
-            ),
-            transfer_id="drain-scope",
-        )
-        with mock.patch.object(
-            resolve_queue_worker, "_capture_account_scope", return_value="acct:other@example.com"
-        ):
-            state = await resolve_queue_worker.prepare_transfer(manifest)
-
-        self.assertEqual(state, resolve_queue.STATE_BLOCKED)
-        current = resolve_queue.scan_projects(["p1"])[0]
-        self.assertEqual(current["queue"]["blocked"]["code"], "account_scope_changed")
-        self.assertEqual(current["queue"]["resume_state"], resolve_queue.STATE_QUEUED)
-
-    async def test_drain_runs_one_thread_at_a_time_in_fifo_order(self):
-        self._accept_registered("drain-aaa")
-        self._accept_registered("drain-bbb")
-
-        inflight = 0
-        peak = 0
-        order: list[str] = []
-        guard = threading.Lock()
-        original_copy = resolve_transfer._copy_atomic
-
-        def _tracked_copy(source, dest):
-            nonlocal inflight, peak
-            with guard:
-                inflight += 1
-                peak = max(peak, inflight)
-            try:
-                return original_copy(source, dest)
-            finally:
-                with guard:
-                    inflight -= 1
-
-        def _tracked_import(manifest):
-            nonlocal inflight, peak
-            with guard:
-                inflight += 1
-                peak = max(peak, inflight)
-                order.append(str(manifest.get("transfer_id") or ""))
-            try:
-                return {
-                    "status": "complete",
-                    "error_code": None,
-                    "error": None,
-                    "imported": len(manifest.get("items") or []),
-                    "skipped": 0,
-                    "error_count": 0,
-                    "items": [
-                        {
-                            "generation_id": item["generation_id"],
-                            "local_path": item["local_path"],
-                            "media_pool_path": "MV Hub/테스트 프로젝트/ep001/c0010",
-                            "status": "imported",
-                            "error": None,
-                            "error_code": None,
-                        }
-                        for item in manifest.get("items") or []
-                    ],
-                }
-            finally:
-                with guard:
-                    inflight -= 1
-
-        with (
-            mock.patch.object(resolve_transfer, "_copy_atomic", _tracked_copy),
-            mock.patch.object(
-                resolve_queue_worker, "run_resolve_import_isolated", _tracked_import
-            ),
-        ):
-            worker = resolve_queue_worker.ResolveQueueWorker()
-            first = await worker.drain_once()
-            second = await worker.drain_once()
-
-        self.assertEqual(peak, 1)
-        self.assertEqual(first, [resolve_queue.STATE_READY, resolve_queue.STATE_READY])
-        self.assertEqual(
-            second, [resolve_queue.STATE_COMPLETE, resolve_queue.STATE_COMPLETE]
-        )
-        self.assertEqual(order, ["drain-aaa", "drain-bbb"])
-        finished = resolve_queue.scan_projects(["p1"])
-        for manifest in finished:
-            self.assertEqual(
-                resolve_queue.queue_state(manifest), resolve_queue.STATE_COMPLETE
-            )
-            self.assertEqual(manifest["items"][0]["import"]["state"], "imported")
-            self.assertTrue(manifest["completed_at"])
-
-    async def test_import_records_result_even_if_caller_is_cancelled(self):
-        self._accept_registered("drain-cancel")
-        started = threading.Event()
-
-        def _slow_import(manifest):
-            started.set()
-            import time
-
-            time.sleep(0.3)
-            return {
-                "status": "complete",
-                "error_code": None,
-                "error": None,
-                "imported": 1,
-                "skipped": 0,
-                "error_count": 0,
-                "items": [],
-            }
-
-        with mock.patch.object(
-            resolve_queue_worker, "run_resolve_import_isolated", _slow_import
-        ):
-            worker = resolve_queue_worker.ResolveQueueWorker()
-            await worker.drain_once()  # queued → ready
-            task = asyncio.create_task(worker.drain_once())
-            await asyncio.to_thread(started.wait, 5)
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-
-        current = resolve_queue.scan_projects(["p1"])[0]
-        # 실행과 저장이 한 단위라 취소돼도 importing 으로 남지 않는다.
-        self.assertEqual(
-            resolve_queue.queue_state(current), resolve_queue.STATE_COMPLETE
-        )
-
-    async def test_unexpected_prepare_error_does_not_strand_preparing(self):
-        manifest, _ahead = self._accept_registered("prepare-boom")
-        with mock.patch.object(
-            resolve_queue_worker,
-            "_source_payload_block",
-            side_effect=RuntimeError("예상 밖"),
-        ):
-            state = await resolve_queue_worker.prepare_transfer(manifest)
-
-        self.assertEqual(state, resolve_queue.STATE_FAILED)
-        current = resolve_queue.scan_projects(["p1"])[0]
-        self.assertEqual(resolve_queue.queue_state(current), resolve_queue.STATE_FAILED)
-        self.assertEqual(current["queue"]["last_error"]["code"], "unexpected_error")
 
     async def test_queue_snapshot_reports_state_and_ahead(self):
         self._accept_registered("snap-aaa")
@@ -833,37 +586,6 @@ class RetryRouteAtomicityTests(ResolveQueueTestBase):
         self.assertEqual(manifest["resolve_import"]["status"], "complete")
 
 
-class WorkerGateTests(unittest.TestCase):
-    def test_worker_is_release_windows_only_unless_overridden(self):
-        with (
-            mock.patch.dict(
-                resolve_queue_worker.os.environ,
-                {"CONTENT_HUB_RESOLVE_QUEUE_WORKER": ""},
-                clear=False,
-            ),
-            mock.patch.object(resolve_queue_worker, "install_mode", return_value="development"),
-        ):
-            self.assertFalse(resolve_queue_worker.worker_enabled())
-        with mock.patch.dict(
-            resolve_queue_worker.os.environ,
-            {"CONTENT_HUB_RESOLVE_QUEUE_WORKER": "1"},
-            clear=False,
-        ):
-            self.assertTrue(resolve_queue_worker.worker_enabled())
-        with mock.patch.dict(
-            resolve_queue_worker.os.environ,
-            {"CONTENT_HUB_RESOLVE_QUEUE_WORKER": "0"},
-            clear=False,
-        ):
-            self.assertFalse(resolve_queue_worker.worker_enabled())
-
-    def test_disabled_worker_never_creates_a_task(self):
-        worker = resolve_queue_worker.ResolveQueueWorker()
-        with mock.patch.object(resolve_queue_worker, "worker_enabled", return_value=False):
-            worker.start()
-        self.assertIsNone(worker._task)
-
-
 class ScannerCoverageTests(ResolveQueueTestBase):
     """P1-1 — 스캐너가 새 접수를 놓치지 않는다(유실 0)."""
 
@@ -902,23 +624,6 @@ class ScannerCoverageTests(ResolveQueueTestBase):
         self.assertEqual(first, 4)  # 첫 바퀴는 전량 판독
         self.assertEqual(second, 1)  # 완료본 3건은 stat 만으로 건너뛴다
 
-    def test_render_root_change_keeps_old_manifests_visible_and_blocks(self):
-        manifest, _ahead = self._accept(transfer_id="root-moved")
-        # ★@davinci 는 Render 의 '부모' 아래라, 같은 부모 안에서 이름만 바꾸면 manifest
-        # 루트가 그대로다. 프로젝트 폴더째 옮긴 상황이라야 고립이 재현된다.
-        moved = self.root / "MovedProject" / "Render"
-        moved.mkdir(parents=True)
-        with mock.patch.object(
-            resolve_transfer.project_folders,
-            "render_root_state",
-            return_value={"render_path": str(moved), "error": None},
-        ):
-            found = resolve_queue.scan_projects(["p1"])
-            blocked = resolve_queue_worker._source_payload_block(manifest)
-        # 옛 루트의 manifest 가 고립되지 않는다.
-        self.assertEqual([item["transfer_id"] for item in found], ["root-moved"])
-        # 그리고 destination_changed 전이가 실제로 일어날 수 있다.
-        self.assertEqual(blocked["code"], "destination_changed")
 
     def test_manifest_root_registry_records_accept_root(self):
         self._accept(transfer_id="root-remembered")
@@ -1039,28 +744,6 @@ class RootLockingSelfTestTests(ResolveQueueTestBase):
                 self._accept(transfer_id="selftest-refused")
         self.assertIn("SMB 잠금 없음", str(caught.exception))
 
-    def test_worker_reports_the_real_task_state_not_the_setting(self):
-        worker = resolve_queue_worker.ResolveQueueWorker()
-        with (
-            mock.patch.dict(
-                resolve_queue_worker.os.environ,
-                {"CONTENT_HUB_RESOLVE_QUEUE_WORKER": "1"},
-                clear=False,
-            ),
-            mock.patch.object(
-                resolve_queue_worker, "periodic_resolve_queue", worker
-            ),
-            mock.patch.object(
-                resolve_lock, "self_test", return_value=(False, "잠금 미지원")
-            ),
-        ):
-            worker.start()
-            self.assertFalse(worker.running)
-            # 설정만 보면 켜짐이지만, 실제로는 워커가 없다.
-            self.assertTrue(resolve_queue_worker.worker_enabled())
-            self.assertFalse(resolve_queue_worker.worker_active())
-            self.assertIn("잠금 미지원", resolve_queue_worker.worker_detail())
-
 
 class ChildJournalTests(ResolveQueueTestBase):
     """P1-3 — 자식이 journal 을 실제로 쓰고, 부모가 그걸 덮지 않는다."""
@@ -1073,6 +756,26 @@ class ChildJournalTests(ResolveQueueTestBase):
         resolve_queue.set_state(manifest, resolve_queue.STATE_IMPORTING)
         resolve_queue.save_manifest(Path(manifest["manifest_path"]), manifest)
         return manifest
+
+    def test_child_refuses_to_touch_resolve_when_journal_cannot_be_written(self):
+        manifest = self._importing("journal-broken", "attempt-broken")
+        called = []
+        with (
+            mock.patch.object(
+                resolve_import_worker,
+                "atomic_write_text",
+                side_effect=OSError("공유 폴더 오류"),
+            ),
+            mock.patch.object(
+                resolve_import_worker,
+                "import_manifest_to_current_project",
+                lambda payload: called.append(payload),
+            ),
+        ):
+            result = resolve_import_worker.run(manifest)
+
+        self.assertEqual(result["error_code"], "journal_unavailable")
+        self.assertEqual(called, [])
 
     def test_child_journal_path_matches_the_queue_layer(self):
         manifest = self._importing("journal-path", "attempt-path")
@@ -1121,68 +824,6 @@ class ChildJournalTests(ResolveQueueTestBase):
         self.assertTrue(record["side_effects_started"])
         self.assertEqual(record["phase"], "complete")
         self.assertEqual(record["result"]["status"], "complete")
-
-    def test_child_refuses_to_touch_resolve_when_journal_cannot_be_written(self):
-        manifest = self._importing("journal-broken", "attempt-broken")
-        called = []
-        with (
-            mock.patch.object(
-                resolve_import_worker,
-                "atomic_write_text",
-                side_effect=OSError("공유 폴더 오류"),
-            ),
-            mock.patch.object(
-                resolve_import_worker,
-                "import_manifest_to_current_project",
-                lambda payload: called.append(payload),
-            ),
-        ):
-            result = resolve_import_worker.run(manifest)
-
-        self.assertEqual(result["error_code"], "journal_unavailable")
-        self.assertEqual(called, [])
-        # 자동 재평가가 가능한 일시 조건이라 blocked 로 다뤄진다.
-        self.assertIn("journal_unavailable", resolve_queue_worker._BLOCKING_CODES)
-
-    def test_parent_merges_child_journal_and_isolates_orphan_staging(self):
-        manifest = self._importing("journal-merge", "attempt-merge")
-        path = Path(manifest["manifest_path"])
-        attempt = resolve_queue.new_attempt(
-            manifest,
-            attempt_id="attempt-merge",
-            claim={"token": "tok", "epoch": 3},
-            executor="push_worker",
-        )
-        resolve_queue.write_attempt(manifest, attempt)
-
-        def _child_dies(payload):
-            # 자식이 rebuild 도중 자기 phase 를 남기고 죽은 상황.
-            record = resolve_queue.read_attempt(payload, "attempt-merge")
-            record["phase"] = "rebuild_to_staging"
-            record["staging_bin"] = "__MVHUB_REBUILD_deadbeef__"
-            record["executor_pid"] = 4242
-            resolve_queue.write_attempt(payload, record)
-            return {
-                "status": "unavailable",
-                "error_code": "child_crashed",
-                "error": "자식이 죽었습니다",
-                "items": [],
-            }
-
-        with mock.patch.object(
-            resolve_queue_worker, "run_resolve_import_isolated", _child_dies
-        ):
-            state = resolve_queue_worker._import_and_record(path, manifest, attempt)
-
-        self.assertEqual(state, resolve_queue.STATE_RECOVERY_REQUIRED)
-        record = resolve_queue.read_attempt(manifest, "attempt-merge")
-        # 부모가 자기 사본으로 덮어썼다면 이 근거가 사라진다.
-        self.assertEqual(record["staging_bin"], "__MVHUB_REBUILD_deadbeef__")
-        self.assertEqual(record["phase"], "rebuild_to_staging")
-        self.assertEqual(record["executor_pid"], 4242)
-        saved = resolve_queue.read_manifest(path)
-        self.assertEqual(saved["queue"]["last_error"]["code"], "orphan_rebuild_bin")
-        self.assertEqual(saved["queue"]["dispatch_policy"], "manual_only")
 
 
 class ExecutorFencingTests(ResolveQueueTestBase):
@@ -1246,29 +887,6 @@ class ExecutorFencingTests(ResolveQueueTestBase):
         current = resolve_queue.scan_projects(["p1"])[0]
         self.assertEqual(
             resolve_queue.queue_state(current), resolve_queue.STATE_INTERRUPTED
-        )
-
-    async def test_drain_does_not_import_a_project_held_by_a_live_child(self):
-        held = self._importing_with_live_child("fence-drain-held")
-        ready, _ahead = self._accept(transfer_id="fence-drain-ready")
-        resolve_queue.set_state(ready, resolve_queue.STATE_READY)
-        resolve_queue.save_manifest(Path(ready["manifest_path"]), ready)
-
-        with (
-            mock.patch.object(
-                resolve_queue_worker, "_project_ids", return_value=["p1"]
-            ),
-            mock.patch.object(resolve_lock, "process_liveness", return_value="alive"),
-            mock.patch.object(
-                resolve_queue_worker, "run_resolve_import_isolated"
-            ) as importer,
-        ):
-            await resolve_queue_worker.ResolveQueueWorker().drain_once()
-
-        importer.assert_not_called()
-        self.assertEqual(
-            resolve_queue.queue_state(resolve_queue.read_manifest(Path(held["manifest_path"]))),
-            resolve_queue.STATE_IMPORTING,
         )
 
 
@@ -1343,185 +961,6 @@ class AcceptAccountPinTests(ResolveQueueTestBase):
         self.assertEqual(manifest["transfer_id"], response["transfer_id"])
         # 오버라이드는 라우트가 끝나면 반드시 풀린다.
         self.assertIsNone(active_account._override.get())
-
-    async def test_same_account_on_a_different_server_blocks_instead_of_running(self):
-        manifest, _ahead, _duplicate = resolve_queue.accept_sync(
-            "p1",
-            [self._generation(1)],
-            resolve_target={"project_id": "resolve-1", "project_name": "EP01_EDIT"},
-            account_scope=resolve_queue.build_account_scope(
-                account_key="acct:artist@example.com",
-                account_email="artist@example.com",
-                creator_uid="user_1",
-                server_origin="https://hub-a.example.com",
-            ),
-            transfer_id="server-moved",
-        )
-        with (
-            mock.patch.object(
-                resolve_queue_worker,
-                "_capture_account_scope",
-                return_value="acct:artist@example.com",
-            ),
-            mock.patch.object(
-                resolve_queue_worker, "_server_origin", lambda: "https://hub-b.example.com"
-            ),
-        ):
-            state = await resolve_queue_worker.prepare_transfer(manifest)
-
-        self.assertEqual(state, resolve_queue.STATE_BLOCKED)
-        current = resolve_queue.scan_projects(["p1"])[0]
-        self.assertEqual(current["queue"]["blocked"]["code"], "server_changed")
-        self.assertEqual(current["queue"]["resume_state"], resolve_queue.STATE_QUEUED)
-        self.assertIn("server_changed", resolve_queue_worker._BLOCKING_CODES)
-
-
-class PartialResultTests(WorkerFixtureBase):
-    """P1-5 — 준비 실패가 남았는데 complete 로 확정하지 않는다."""
-
-    async def test_partial_prepare_ends_as_failed_with_partial_projection(self):
-        manifest, _ahead = self._accept_registered("partial-prepare", count=2)
-        # 두 번째 원본만 사라진 상황(첫 번째는 정상 준비된다).
-        second = manifest["items"][1]["source_ref"]
-        self.generations.pop(second["local_generation_id"], None)
-        self.generations.pop(second["job_id"], None)
-
-        self.assertEqual(
-            await resolve_queue_worker.prepare_transfer(manifest),
-            resolve_queue.STATE_READY,
-        )
-        current = resolve_queue.scan_projects(["p1"])[0]
-
-        def _import_ok(payload):
-            return {
-                "status": "complete",
-                "error_code": None,
-                "error": None,
-                "imported": 1,
-                "skipped": 0,
-                "error_count": 0,
-                "items": [
-                    {
-                        "generation_id": payload["items"][0]["generation_id"],
-                        "local_path": payload["items"][0]["local_path"],
-                        "media_pool_path": "MV Hub/테스트 프로젝트/ep001/c0010",
-                        "status": "imported",
-                        "error": None,
-                        "error_code": None,
-                    }
-                ],
-            }
-
-        with mock.patch.object(
-            resolve_queue_worker, "run_resolve_import_isolated", _import_ok
-        ):
-            state = await resolve_queue_worker.import_transfer(current)
-
-        self.assertEqual(state, resolve_queue.STATE_FAILED)
-        saved = resolve_queue.scan_projects(["p1"])[0]
-        self.assertEqual(saved["queue"]["last_error"]["code"], "source_missing")
-        # 성공분은 imported 로 보존되고, v2 투영은 partial 이다(§1.3).
-        self.assertEqual(saved["items"][0]["import"]["state"], "imported")
-        self.assertEqual(saved["items"][1]["prepare"]["state"], "error")
-        self.assertEqual(saved["resolve_import"]["status"], "partial")
-        self.assertEqual(saved["status"], "partial")
-
-    async def test_all_prepared_and_imported_still_completes(self):
-        manifest, _ahead = self._accept_registered("partial-none", count=1)
-        await resolve_queue_worker.prepare_transfer(manifest)
-        current = resolve_queue.scan_projects(["p1"])[0]
-        with mock.patch.object(
-            resolve_queue_worker,
-            "run_resolve_import_isolated",
-            lambda payload: {
-                "status": "complete",
-                "error_code": None,
-                "error": None,
-                "imported": 1,
-                "skipped": 0,
-                "error_count": 0,
-                "items": [],
-            },
-        ):
-            state = await resolve_queue_worker.import_transfer(current)
-        self.assertEqual(state, resolve_queue.STATE_COMPLETE)
-
-
-class PreparedIntegrityTests(WorkerFixtureBase):
-    """P1-6 — 준비 파일 무결성(복사 중 해시 · 가져오기 직전 재검증)."""
-
-    async def _prepared(self, transfer_id: str) -> dict:
-        manifest, _ahead = self._accept_registered(transfer_id)
-        await resolve_queue_worker.prepare_transfer(manifest)
-        return resolve_queue.scan_projects(["p1"])[0]
-
-    async def test_prepare_records_sha256_without_reading_the_file_again(self):
-        with mock.patch.object(
-            resolve_queue, "file_sha256", side_effect=AssertionError("재해시 금지")
-        ):
-            current = await self._prepared("integrity-record")
-        prepare = current["items"][0]["prepare"]
-        local = Path(current["items"][0]["local_path"])
-        self.assertEqual(prepare["sha256"], resolve_queue.file_sha256(local))
-        self.assertEqual(prepare["size"], local.stat().st_size)
-        self.assertEqual(prepare["mtime_ns"], local.stat().st_mtime_ns)
-
-    async def test_unchanged_prepared_file_is_not_rehashed_before_import(self):
-        current = await self._prepared("integrity-fast")
-        with mock.patch.object(
-            resolve_queue, "file_sha256", side_effect=AssertionError("재해시 금지")
-        ):
-            self.assertEqual(resolve_queue.verify_prepared_items(current), 0)
-
-    async def test_replaced_prepared_file_is_caught_before_import(self):
-        current = await self._prepared("integrity-swap")
-        local = Path(current["items"][0]["local_path"])
-        original = local.read_bytes()
-        # 크기는 그대로, 내용만 바뀐 경우도 잡아야 한다(크기 비교만으로는 못 잡는다).
-        local.write_bytes(b"x" * len(original))
-        stat_result = local.stat()
-        os.utime(local, ns=(stat_result.st_atime_ns, stat_result.st_mtime_ns + 1000))
-
-        with mock.patch.object(
-            resolve_queue_worker, "run_resolve_import_isolated"
-        ) as importer:
-            state = await resolve_queue_worker.import_transfer(current)
-
-        importer.assert_not_called()
-        self.assertEqual(state, resolve_queue.STATE_FAILED)
-        saved = resolve_queue.scan_projects(["p1"])[0]
-        self.assertEqual(
-            saved["items"][0]["prepare"]["error_code"], resolve_queue.INTEGRITY_MISMATCH
-        )
-        self.assertEqual(
-            saved["queue"]["last_error"]["code"], resolve_queue.INTEGRITY_MISMATCH
-        )
-
-    async def test_deleted_prepared_file_is_caught_before_import(self):
-        current = await self._prepared("integrity-gone")
-        Path(current["items"][0]["local_path"]).unlink()
-        with mock.patch.object(
-            resolve_queue_worker, "run_resolve_import_isolated"
-        ) as importer:
-            state = await resolve_queue_worker.import_transfer(current)
-        importer.assert_not_called()
-        self.assertEqual(state, resolve_queue.STATE_FAILED)
-
-    async def test_legacy_prepared_item_without_hash_is_hashed_once(self):
-        current = await self._prepared("integrity-legacy")
-        prepare = current["items"][0]["prepare"]
-        prepare["sha256"] = None
-        prepare["mtime_ns"] = None
-        calls: list[Path] = []
-        original = resolve_queue.file_sha256
-        with mock.patch.object(
-            resolve_queue,
-            "file_sha256",
-            side_effect=lambda path: (calls.append(path), original(path))[1],
-        ):
-            self.assertEqual(resolve_queue.verify_prepared_items(current), 0)
-            self.assertEqual(resolve_queue.verify_prepared_items(current), 0)
-        self.assertEqual(len(calls), 1)  # 기록을 채운 뒤에는 다시 해시하지 않는다
 
 
 class AcceptIdempotencyTests(ResolveQueueTestBase):
@@ -1652,23 +1091,6 @@ class CancelContractTests(WorkerFixtureBase):
             resolve_queue.STATE_QUEUED,
         )
 
-    async def test_prepare_stops_between_items_when_cancelled(self):
-        manifest, _ahead = self._accept_registered("cancel-between", count=2)
-        original = resolve_queue_worker._prepare_item
-
-        async def _one_then_cancel(current, item):
-            await original(current, item)
-            resolve_queue.request_cancel("cancel-between", requested_by="user-1")
-
-        with mock.patch.object(resolve_queue_worker, "_prepare_item", _one_then_cancel):
-            state = await resolve_queue_worker.prepare_transfer(manifest)
-
-        self.assertEqual(state, resolve_queue.STATE_CANCELLED)
-        current = resolve_queue.scan_projects(["p1"])[0]
-        # 시작한 파일 하나는 끝까지 복사하고, 다음 항목은 손대지 않는다.
-        self.assertEqual(current["items"][0]["prepare"]["state"], "downloaded")
-        self.assertEqual(current["items"][1]["prepare"]["state"], "queued")
-        self.assertIsNone(resolve_queue.cancel_requested("cancel-between"))
 
     def test_import_cannot_be_cancelled_without_explicit_force(self):
         manifest, _ahead = self._accept_registered("cancel-import")
@@ -1679,67 +1101,6 @@ class CancelContractTests(WorkerFixtureBase):
             resolve_queue.cancel_sync(manifest)
         # 거절된 요청은 표에도 남지 않는다(다음 취소가 조용히 강제되면 안 된다).
         self.assertIsNone(resolve_queue.cancel_requested("cancel-import"))
-
-    async def test_force_cancel_during_import_ends_in_recovery_required(self):
-        manifest, _ahead = self._accept_registered("cancel-force")
-        await resolve_queue_worker.prepare_transfer(manifest)
-        current = resolve_queue.scan_projects(["p1"])[0]
-
-        def _killed(_payload):
-            # 사용자가 자식을 끊어 결과 없이 죽은 상황.
-            resolve_queue.request_cancel("cancel-force", force=True, requested_by="user-1")
-            return {
-                "status": "unavailable",
-                "error_code": "child_crashed",
-                "error": "중단됨",
-                "items": [],
-            }
-
-        with mock.patch.object(
-            resolve_queue_worker, "run_resolve_import_isolated", _killed
-        ):
-            state = await resolve_queue_worker.import_transfer(current)
-
-        self.assertEqual(state, resolve_queue.STATE_RECOVERY_REQUIRED)
-        saved = resolve_queue.scan_projects(["p1"])[0]
-        self.assertEqual(saved["queue"]["last_error"]["code"], "cancelled")
-        self.assertTrue(saved["queue"]["cancel"]["force"])
-        self.assertEqual(saved["queue"]["dispatch_policy"], "manual_only")
-        self.assertIsNone(resolve_queue.cancel_requested("cancel-force"))
-
-    def test_force_stop_kills_only_the_child_the_journal_recorded(self):
-        manifest, _ahead = self._accept_registered("cancel-kill")
-        attempt = resolve_queue.new_attempt(
-            manifest,
-            attempt_id="attempt-kill",
-            claim={"token": "t", "epoch": 1},
-            executor="push_worker",
-        )
-        attempt["executor_pid"] = 4242
-        attempt["host_id"] = resolve_lock.host_id()
-        attempt["process_started_at_filetime"] = "123"
-        resolve_queue.write_attempt(manifest, attempt)
-
-        with mock.patch.object(
-            resolve_lock, "terminate_process", return_value=True
-        ) as killed:
-            self.assertTrue(resolve_queue_worker.force_stop_import(manifest))
-        killed.assert_called_once_with(4242, "123")
-
-    def test_force_stop_never_targets_a_parent_only_journal(self):
-        manifest, _ahead = self._accept_registered("cancel-kill-parent")
-        attempt = resolve_queue.new_attempt(
-            manifest,
-            attempt_id="attempt-parent",
-            claim={"token": "t", "epoch": 1},
-            executor="push_worker",
-        )
-        self.assertEqual(attempt["executor_pid"], 0)
-        resolve_queue.write_attempt(manifest, attempt)
-
-        with mock.patch.object(resolve_lock, "terminate_process") as killed:
-            self.assertFalse(resolve_queue_worker.force_stop_import(manifest))
-        killed.assert_not_called()
 
 
 class ImportWatchdogTests(ResolveQueueTestBase):
@@ -1777,118 +1138,9 @@ class ImportWatchdogTests(ResolveQueueTestBase):
         self.assertIsNone(resolve_queue.import_warning(manifest))
 
 
-class PrepareConcurrencyTests(WorkerFixtureBase):
-    """2단계 A′ — 준비만 동시 3개, Resolve 가져오기는 계속 1개."""
-
-    async def test_prepare_runs_up_to_three_at_once(self):
-        for index in range(4):
-            self._accept_registered(f"par-{index}")
-        inflight = 0
-        peak = 0
-        original = resolve_queue_worker._prepare_item
-
-        async def _tracked(manifest, item):
-            nonlocal inflight, peak
-            inflight += 1
-            peak = max(peak, inflight)
-            try:
-                await asyncio.sleep(0.05)
-                return await original(manifest, item)
-            finally:
-                inflight -= 1
-
-        with mock.patch.object(resolve_queue_worker, "_prepare_item", _tracked):
-            states = await resolve_queue_worker.ResolveQueueWorker().drain_once()
-
-        self.assertEqual(states, [resolve_queue.STATE_READY] * 4)
-        self.assertEqual(peak, resolve_queue_worker._PREPARE_SLOTS)
-        self.assertLessEqual(resolve_queue_worker._PREPARE_SLOTS, 3)
-
-    async def test_prepare_results_stay_in_fifo_order(self):
-        for name in ("par-b", "par-a", "par-c"):
-            self._accept_registered(name)
-        with mock.patch.object(
-            resolve_queue_worker, "run_resolve_import_isolated"
-        ) as importer:
-            first = await resolve_queue_worker.ResolveQueueWorker().drain_once()
-        importer.assert_not_called()
-        self.assertEqual(first, [resolve_queue.STATE_READY] * 3)
-        self.assertEqual(
-            [row["transfer_id"] for row in resolve_queue.scan_projects(["p1"])],
-            # FIFO = 접수 순서. 예전에는 같은 초 접수가 transfer_id 로 갈려 알파벳순
-            # (par-a, par-b, par-c)이 나왔는데, 그게 뒤바뀜 버그의 정체였다.
-            ["par-b", "par-a", "par-c"],
-        )
-
-
 class RecoveryFlowTests(WorkerFixtureBase):
     """2단계 — interrupted → 누락분만 다시 가져오기(자동 재실행 금지 유지)."""
 
-    async def _interrupted(self, transfer_id: str) -> dict:
-        manifest, _ahead = self._accept_registered(transfer_id, count=2)
-        await resolve_queue_worker.prepare_transfer(manifest)
-        current = resolve_queue.scan_projects(["p1"])[0]
-
-        def _half_done(payload):
-            first = payload["items"][0]
-            return {
-                "status": "unavailable",
-                "error_code": "child_crashed",
-                "error": "자식이 죽었습니다",
-                "items": [
-                    {
-                        "generation_id": first["generation_id"],
-                        "local_path": first["local_path"],
-                        "media_pool_path": "MV Hub/테스트 프로젝트/ep001/c0010",
-                        "status": "imported",
-                        "error": None,
-                        "error_code": None,
-                    }
-                ],
-            }
-
-        with mock.patch.object(
-            resolve_queue_worker, "run_resolve_import_isolated", _half_done
-        ):
-            state = await resolve_queue_worker.import_transfer(current)
-        self.assertEqual(state, resolve_queue.STATE_INTERRUPTED)
-        return resolve_queue.scan_projects(["p1"])[0]
-
-    async def test_interrupted_lists_missing_items_but_never_reruns_itself(self):
-        current = await self._interrupted("recover-missing")
-        recovery = current["recovery"]
-
-        self.assertEqual(recovery["reason"], "interrupted_import_missing_items")
-        self.assertEqual(recovery["missing_count"], 1)
-        self.assertEqual(recovery["existing_count"], 1)
-        self.assertEqual(recovery["missing_item_ids"], ["item-0002"])
-        # 목록만 자동이다 — 워커는 manual_only 라 집어가지 않는다.
-        self.assertEqual(current["queue"]["dispatch_policy"], "manual_only")
-        with mock.patch.object(
-            resolve_queue_worker, "run_resolve_import_isolated"
-        ) as importer:
-            await resolve_queue_worker.ResolveQueueWorker().drain_once()
-        importer.assert_not_called()
-
-    async def test_user_confirmation_requeues_only_the_missing_items(self):
-        current = await self._interrupted("recover-confirm")
-        outcome = resolve_queue.resume_sync(current)
-
-        self.assertEqual(outcome["state"], resolve_queue.STATE_READY)
-        saved = resolve_queue.scan_projects(["p1"])[0]
-        self.assertEqual(saved["queue"]["dispatch_policy"], "auto")
-        self.assertEqual(saved["recovery"]["missing_item_ids"], ["item-0002"])
-        # 이미 확정된 항목은 그대로 남는다.
-        self.assertEqual(saved["items"][0]["import"]["state"], "imported")
-
-    async def test_recheck_with_nothing_missing_confirms_complete(self):
-        current = await self._interrupted("recover-none")
-        for item in current["items"]:
-            item["import"]["state"] = "imported"
-        resolve_queue.save_manifest(Path(current["manifest_path"]), current)
-
-        outcome = resolve_queue.resume_sync(resolve_queue.scan_projects(["p1"])[0])
-        self.assertEqual(outcome["state"], resolve_queue.STATE_COMPLETE)
 
     def test_recovery_required_only_steps_down_to_interrupted(self):
         manifest, _ahead = self._accept_registered("recover-guarded")
@@ -1904,73 +1156,6 @@ class RecoveryFlowTests(WorkerFixtureBase):
         saved = resolve_queue.scan_projects(["p1"])[0]
         # 한 번에 되살리지 않는다 — 여전히 사용자가 한 번 더 확인해야 한다.
         self.assertEqual(saved["queue"]["dispatch_policy"], "manual_only")
-
-    def test_orphan_bin_recovery_keeps_the_backup_path_for_the_user(self):
-        manifest, _ahead = self._accept_registered("recover-orphan")
-        resolve_queue.set_state(manifest, resolve_queue.STATE_IMPORTING)
-        state = resolve_queue_worker._isolate_orphan_rebuild(
-            manifest,
-            "__MVHUB_REBUILD_ab12cd34__",
-            {"drp_path": r"D:\Projects\EP01\@davinci\.mvhub\resolve-backups\x.drp"},
-        )
-        self.assertEqual(state, resolve_queue.STATE_RECOVERY_REQUIRED)
-        self.assertEqual(manifest["recovery"]["staging_bin"], "__MVHUB_REBUILD_ab12cd34__")
-        self.assertIn("x.drp", manifest["recovery"]["drp_path"])
-
-
-class BlockedReevaluationTests(WorkerFixtureBase):
-    """2단계 — Resolve 상태 조회 성공을 §B 재평가 트리거로 쓴다."""
-
-    def _blocked_on_project(self, transfer_id: str) -> dict:
-        manifest, _ahead = self._accept_registered(transfer_id)
-        resolve_queue.set_state(
-            manifest,
-            resolve_queue.STATE_BLOCKED,
-            blocked={"code": "project_changed", "expected": "resolve-1", "observed": "other"},
-            resume_state=resolve_queue.STATE_READY,
-        )
-        resolve_queue.queue_block(manifest)["blocked_retry_count"] = 5
-        resolve_queue.save_manifest(Path(manifest["manifest_path"]), manifest)
-        return manifest
-
-    def test_opening_the_expected_project_resumes_without_waiting_for_backoff(self):
-        manifest = self._blocked_on_project("blocked-project")
-        resumed = resolve_queue_worker.note_resolve_project(
-            {"status": "ready", "project_id": "resolve-1", "project_name": "EP01_EDIT"}
-        )
-
-        self.assertEqual(resumed, 1)
-        current = resolve_queue.read_manifest(Path(manifest["manifest_path"]))
-        self.assertEqual(resolve_queue.queue_state(current), resolve_queue.STATE_READY)
-        # 사건 기반 재개라 백오프를 처음으로 되돌린다.
-        self.assertEqual(current["queue"]["blocked_retry_count"], 0)
-
-    def test_another_project_does_not_resume_the_transfer(self):
-        manifest = self._blocked_on_project("blocked-other")
-        resumed = resolve_queue_worker.note_resolve_project(
-            {"status": "ready", "project_id": "resolve-9", "project_name": "OTHER"}
-        )
-        self.assertEqual(resumed, 0)
-        self.assertEqual(
-            resolve_queue.queue_state(
-                resolve_queue.read_manifest(Path(manifest["manifest_path"]))
-            ),
-            resolve_queue.STATE_BLOCKED,
-        )
-
-    def test_the_same_project_is_only_scanned_once(self):
-        self._blocked_on_project("blocked-memo")
-        status = {"status": "ready", "project_id": "resolve-1", "project_name": "EP01_EDIT"}
-        self.assertEqual(resolve_queue_worker.note_resolve_project(status), 1)
-        with mock.patch.object(resolve_queue, "scan_projects") as scan:
-            self.assertEqual(resolve_queue_worker.note_resolve_project(status), 0)
-        scan.assert_not_called()
-
-    def test_unready_status_is_not_a_trigger(self):
-        self._blocked_on_project("blocked-notready")
-        self.assertEqual(
-            resolve_queue_worker.note_resolve_project({"status": "not_running"}), 0
-        )
 
 
 class ImportItemErrorCodeTests(ResolveQueueTestBase):
@@ -2162,21 +1347,6 @@ class CancelPersistenceTests(WorkerFixtureBase):
         # 한 번 승계하면 메모리 표에 올라온다(조회마다 NAS 를 읽지 않는다).
         self.assertIsNotNone(resolve_queue.cancel_requested("persist-inherit"))
 
-    async def test_worker_after_restart_stops_before_copying_anything(self):
-        manifest, _ahead = self._accept_registered("persist-worker", count=2)
-        resolve_queue.request_cancel(
-            "persist-worker", requested_by="user-1", manifest=manifest
-        )
-        resolve_queue.reset_cancel_requests()
-
-        state = await resolve_queue_worker.prepare_transfer(manifest)
-
-        self.assertEqual(state, resolve_queue.STATE_CANCELLED)
-        current = resolve_queue.scan_projects(["p1"])[0]
-        self.assertEqual(current["queue"]["cancel"]["requested_by"], "user-1")
-        # 협력적 취소 시맨틱 그대로 — 복사를 시작조차 하지 않았다.
-        self.assertEqual(current["items"][0]["prepare"]["state"], "queued")
-        self.assertFalse(self._marker(manifest).exists())
 
     def test_boot_recovery_adopts_a_request_left_by_a_dead_hub(self):
         manifest, _ahead = self._accept_registered("persist-boot")
@@ -2372,111 +1542,12 @@ class TerminalCleanupTests(WorkerFixtureBase):
         )
         self.assertTrue(path.is_file())
 
-    async def test_drain_cleans_up_after_processing_the_queue(self):
-        self._terminal("cleanup-drain")
-        await resolve_queue_worker.ResolveQueueWorker().drain_once()
-        self.assertEqual(resolve_queue.scan_projects(["p1"]), [])
-
 
 class BinReconciliationTests(WorkerFixtureBase):
     """후속 백로그 4 — 누락 판정을 manifest 가 아니라 실제 Media Pool 로 확인한다(§3.3)."""
 
-    async def _interrupted(self, transfer_id: str) -> dict:
-        """두 항목 다 '가져오기 결과 없음'인 채로 중단된 전송."""
-        manifest, _ahead = self._accept_registered(transfer_id, count=2)
-        await resolve_queue_worker.prepare_transfer(manifest)
-        current = resolve_queue.scan_projects(["p1"])[0]
-        resolve_queue.set_state(
-            current,
-            resolve_queue.STATE_INTERRUPTED,
-            policy=resolve_queue.DISPATCH_MANUAL_ONLY,
-        )
-        resolve_queue.save_manifest(Path(current["manifest_path"]), current)
-        return resolve_queue.scan_projects(["p1"])[0]
 
-    def _listing(self, manifest: dict, *indexes: int) -> dict:
-        key = resolve_bridge.bin_key(manifest["items"][0]["folder_path"])
-        return {
-            "status": "ok",
-            "error_code": None,
-            "project_name": "EP01_EDIT",
-            "bins": {key: [manifest["items"][index]["local_path"] for index in indexes]},
-            "error": None,
-        }
 
-    def _inspector(self, **kwargs):
-        return mock.patch.object(
-            resolve_status_runner, "run_resolve_bin_inspection_isolated", **kwargs
-        )
-
-    async def test_clips_already_in_the_bin_are_settled_not_recounted(self):
-        current = await self._interrupted("bins-partial")
-        with self._inspector(return_value=self._listing(current, 0)):
-            outcome = resolve_queue.resume_sync(current)
-
-        self.assertEqual(outcome["state"], resolve_queue.STATE_READY)
-        recovery = outcome["recovery"]
-        # manifest 만 봤으면 둘 다 누락이다 — 실사로 하나를 건져낸다.
-        self.assertEqual(recovery["missing_count"], 1)
-        self.assertEqual(recovery["missing_item_ids"], ["item-0002"])
-        self.assertEqual(recovery["existing_count"], 1)
-        self.assertEqual(
-            recovery["bin_check"], {"checked": True, "corrected": 1, "error_code": None}
-        )
-        saved = resolve_queue.scan_projects(["p1"])[0]
-        self.assertEqual(saved["items"][0]["import"]["state"], "recovered_existing")
-        self.assertEqual(saved["items"][1]["import"]["state"], "pending")
-
-    async def test_everything_present_confirms_complete_without_a_rerun(self):
-        current = await self._interrupted("bins-complete")
-        with self._inspector(return_value=self._listing(current, 0, 1)):
-            outcome = resolve_queue.resume_sync(current)
-
-        self.assertEqual(outcome["state"], resolve_queue.STATE_COMPLETE)
-        self.assertEqual(outcome["recovery"]["missing_count"], 0)
-        with mock.patch.object(
-            resolve_queue_worker, "run_resolve_import_isolated"
-        ) as importer:
-            await resolve_queue_worker.ResolveQueueWorker().drain_once()
-        importer.assert_not_called()
-
-    async def test_resolve_unavailable_falls_back_to_the_manifest(self):
-        current = await self._interrupted("bins-offline")
-        offline = {
-            "status": "unavailable",
-            "error_code": "not_running",
-            "bins": {},
-            "error": "Resolve 가 실행 중이 아닙니다",
-        }
-        with self._inspector(return_value=offline):
-            outcome = resolve_queue.resume_sync(current)
-
-        # 기능이 없던 때와 똑같은 결과여야 한다(동작 저하 없음).
-        self.assertEqual(outcome["state"], resolve_queue.STATE_READY)
-        self.assertEqual(outcome["recovery"]["missing_count"], 2)
-        self.assertEqual(
-            outcome["recovery"]["bin_check"],
-            {"checked": False, "corrected": 0, "error_code": "not_running"},
-        )
-
-    async def test_an_inspection_crash_never_blocks_the_retry(self):
-        current = await self._interrupted("bins-crash")
-        with self._inspector(side_effect=RuntimeError("자식이 죽었습니다")):
-            outcome = resolve_queue.resume_sync(current)
-
-        self.assertEqual(outcome["state"], resolve_queue.STATE_READY)
-        self.assertEqual(outcome["recovery"]["missing_count"], 2)
-        self.assertFalse(outcome["recovery"]["bin_check"]["checked"])
-
-    async def test_a_clip_in_another_bin_does_not_count_as_present(self):
-        current = await self._interrupted("bins-wrongbin")
-        listing = self._listing(current, 0, 1)
-        listing["bins"] = {"ep999/c9999": next(iter(listing["bins"].values()))}
-        with self._inspector(return_value=listing):
-            outcome = resolve_queue.resume_sync(current)
-
-        self.assertEqual(outcome["recovery"]["missing_count"], 2)
-        self.assertEqual(outcome["recovery"]["bin_check"]["corrected"], 0)
 
     def test_bridge_reads_the_bin_without_creating_or_moving_anything(self):
         manifest, _ahead = self._accept_registered("bins-bridge")

@@ -29,8 +29,9 @@ updated: 2026-08-27
   릴리스 `2026.08.25-0847`·`origin/dev`·`origin/main`·작업자 설치본이 모두 이 커밋이다(2026-08-26 실측).
   큐 v3(08-23~24)는 **이력**이며 현재 확인된 재도입 계획은 없다. 2026-08-27 에 큐 라우트 3개(`/api/resolve/queue*`)·
   워커 콜백·`/status` 의 v3 재평가·프론트 큐 헬퍼를 **제거**했고, 업데이트 차단은 v3 스캔 대신 진행 중 직접 전송 카운터를
-  본다(ARCHITECTURE §7.6). `services/resolve_queue*.py`·`resolve_lock.py`·`resolve_import_worker.py` 는 남는다(현행 사용:
-  `run_non_abandon`·`/locks`·status runner 자식; 워커는 휴면). `/resume` 이 하던 v3 manifest 수동 복구 경로는 사라졌다(파일은 보존).
+  본다(ARCHITECTURE §7.6). `services/resolve_queue.py`·`resolve_lock.py`·`resolve_import_worker.py` 는 남는다(현행 사용:
+  `run_non_abandon`·`/locks`·status runner 자식). 휴면 워커 `resolve_queue_worker.py`(1,127줄)와 워커 없이는 못 도는 테스트는
+  호출자 없음을 확인하고 2026-08-27 에 삭제했다. `/resume` 이 하던 v3 manifest 수동 복구 경로는 사라졌다(파일은 보존).
 - **공유 서버 이사 공지** 구현·실환경 검증 완료. 관리자 [팀에 공지] → 작업자 알림 → 한 번 눌러 전환.
 - **영상 포스터 오염 처방(2026-08-27).** 힉스필드 MCP `show_generations` 의 영상 `results.thumbnailUrl` 은 결과
   포스터가 아니라 **첫 입력 이미지**다(실측). 기동 시 이력 보충이 이를 저장해 7월 시댄스 영상 63건에 레퍼런스 시트가
@@ -61,7 +62,7 @@ updated: 2026-08-27
 
 | 검증 | 결과 |
 |---|---|
-| 백엔드 전체 테스트 | **1,896개 통과 + 46 subtests** (3분 28초, 영상 포스터 처방 커밋에서 재실행 — 신규 33) |
+| 백엔드 전체 테스트 | **1,852개 통과 + 46 subtests** (3분 20초, 휴면 워커 삭제 커밋에서 재실행 — 영상 포스터 처방 +33, 워커 의존 테스트 −44) |
 | 프론트 전체 테스트 | **98개 파일·678개 통과**(`8f6f9cbb` 재실행 — 렌더 폴백 테스트 6개 추가) · `lint:architecture` 이상 없음 · `build` 성공 |
 | Resolve 실기기 반입 | 통과 (2026-08-24, 큐 v3 기준 — 클립 3개, 중복 0, 원상 복원 확인) |
 | 업데이트 차단 게이트·카운터 실측 | 통과 (2026-08-27, `3fa4e862`, 격리 서버 8000·`data_test`) — `checking` 상태 파일 → `POST /api/resolve/transfers` **409**, 삭제 후 해제. 40건(1.1GB) 직접 전송 중 `resolve_active=1`·`can_update=false`(Claude 12샘플 중 8, Codex 19샘플 중 15), 종료 후 0. Resolve 대상 불일치로 가져오기 거부(클립 미삽입), 렌더 루트 원상복구 |

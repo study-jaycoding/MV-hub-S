@@ -422,12 +422,13 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
 - **요청 한 건 안에서 준비·반입·결과 저장까지 끝낸다**(`routers/resolve_integration.py` 의
   `create_resolve_transfer`). 서버 영구 큐는 쓰지 않는다 — 2026-08-25 `aa0985b9` 로 큐를
   걷어내고 직접 전송으로 되돌렸다.
-- 큐 v3 코드의 잔존 범위(2026-08-27 정리 뒤): `services/resolve_queue.py`(현행은 `run_non_abandon` 만 사용)·
-  `resolve_queue_worker.py`(휴면 — 호출자 없음)·`resolve_lock.py`(`GET /locks` 와 Resolve 안 Importer 가 같은 락 파일을
+- 큐 v3 코드의 잔존 범위(2026-08-27 정리 뒤): `services/resolve_queue.py`(현행은 `run_non_abandon` 만 사용; 휴면 워커
+  `resolve_queue_worker.py` 는 호출자 없음이 확인돼 워커 의존 테스트와 함께 삭제)·
+  `resolve_lock.py`(`GET /locks` 와 Resolve 안 Importer 가 같은 락 파일을
   공유)·`resolve_import_worker.py`(status runner 의 자식 프로세스). 라우트 `GET /api/resolve/queue`·`POST /queue/{id}/cancel`·
   `/resume` 과 워커 콜백 등록, `GET /status` 의 v3 blocked 재평가, 프론트 `lib/resolveTransfer.ts` 의 큐 헬퍼는 **제거**했다 —
   외부 클라이언트에는 404 이고, `/resume` 이 하던 v3 manifest 의 Bin 검증·완료 확정·복구 상태 전환(수동 복구 경로)도 함께
-  사라졌다. 기존 v3 manifest 파일(`@davinci`)은 그대로 남는다. 모듈 삭제·재도입은 별도 결정이다.
+  사라졌다. 기존 v3 manifest 파일(`@davinci`)은 그대로 남는다. 휴면 워커 모듈은 2026-08-27 삭제했고, `resolve_queue.py` 의 휴면 절반 정리·재도입은 별도 결정이다.
 - 동시 호출 방지는 **두 곳**이다. 브라우저는 `lib/useResolveTransferActions.ts` 의
   `SerialTaskQueue` 로 짧게 직렬화하고(앱을 닫으면 사라지는 메모리 큐), 백엔드는
   `services/resolve_status_runner.py` 의 `_IMPORT_LOCK` 으로 Resolve 반입 자체를 직렬화한다.

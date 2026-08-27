@@ -89,7 +89,7 @@ git sparse-checkout set backend frontend tools
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **구조 원칙** — 어디에 무슨 코드를 두는가(이 저장소의 규칙) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/AI_CONTEXT.md](docs/AI_CONTEXT.md) | 현행 구조 지도 · AI 에게 통째로 붙여넣는 자기완결 브리프 |
 | [docs/RISK_REDUCTION_PLAN_2026-08-15.md](docs/RISK_REDUCTION_PLAN_2026-08-15.md) | 위험 항목 상태를 바꾸는 단일 출처(Gate 0 표) |
-| [docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) | Resolve 전송 큐 v3 **설계 이력(superseded)** — 현행은 직접 전송([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §7.6). 큐 모듈은 워커 비활성 상태로 잔존하며 현재 확인된 재도입 계획은 없다 |
+| [docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) | Resolve 전송 큐 v3 **설계 이력(superseded)** — 현행은 직접 전송([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §7.6). 큐 모듈은 휴면 워커 모듈은 2026-08-27 삭제하며 현재 확인된 재도입 계획은 없다 |
 | [docs/SERVER_RELOCATION.md](docs/SERVER_RELOCATION.md) | 공유 서버 주소 이사 — 공지 발행·원클릭 전환·수동 대안 |
 | [docs/TELEMETRY_DRAIN_LIFECYCLE.md](docs/TELEMETRY_DRAIN_LIFECYCLE.md) | 로컬 응답·관리 텔레메트리 전송·마지막 성공 관측 계약 |
 | [docs/SHARE_STATE_RECONCILIATION_DESIGN.md](docs/SHARE_STATE_RECONCILIATION_DESIGN.md) | 공유·최종 상태의 현행 계약 — 서버 권위 원장·converge-forward 수렴 (옛 즉시 보상 계약 `SHARE_STATE_COMPENSATION` 은 대체됨) |
