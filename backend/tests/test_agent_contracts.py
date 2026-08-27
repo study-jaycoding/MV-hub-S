@@ -1959,3 +1959,32 @@ def test_recovery_probe_confirms_absence_when_full_window_covers_submission():
         "http://hub", "token-1", "request-1", "no_match", 0, None
     )
     anchor.assert_not_called()
+
+
+def test_test_dev_moves_off_windows_excluded_port_ranges():
+    # 5173 이 Windows 예약 범위(예: Hyper-V 5141-5240)에 들어가면 listen 이 EACCES 로 죽는다 —
+    # 런처는 포트를 확정하기 전에 pick_dev_port.ps1 로 빈 후보(3173, 3174, ...)로 옮겨야 한다.
+    launcher = (ROOT_DIR / "test_dev.bat").read_text(encoding="utf-8")
+    picker = ROOT_DIR / "tools" / "pick_dev_port.ps1"
+    assert picker.exists()
+    pick = launcher.index('tools\pick_dev_port.ps1" -Preferred %FRONTEND_PORT%')  # REM 설명이 아니라 실제 호출
+    assert launcher.index('if not defined FRONTEND_PORT set "FRONTEND_PORT=5173"') < pick
+    assert pick < launcher.index('set "FRONTEND_URL=http://127.0.0.1:%FRONTEND_PORT%"')
+    assert pick < launcher.index('set "MVHUB_DEV_FRONTEND_PORT=%FRONTEND_PORT%"')
+    if sys.platform != "win32":
+        return
+
+    def pick_port(ranges: str, preferred: int = 5173) -> str:
+        proc = subprocess.run(
+            [
+                "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-File", str(picker), "-Preferred", str(preferred), "-Ranges", ranges,
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout.strip()
+
+    assert pick_port("1-2") == "5173"  # 예약 안 됨 → 원하는 포트 그대로
+    assert pick_port("5141-5240") == "3173"  # 5173 예약 → 첫 후보
+    assert pick_port("5141-5240,3173-3174") == "3175"  # 후보도 예약 → 다음 후보

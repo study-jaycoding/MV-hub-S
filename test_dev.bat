@@ -6,7 +6,7 @@ REM  MV Hub - ONE-CLICK LOCAL DEV   run on YOUR OWN PC
 REM
 REM  One double-click starts all local development processes:
 REM    - isolated test backend + generation agent: 127.0.0.1:8012
-REM    - Vite live frontend:                       this PC:5173 (localhost + LAN IP; override: set FRONTEND_PORT=3173)
+REM    - Vite live frontend:                       this PC:5173 (localhost + LAN IP; auto-falls back to 3173.. if Windows reserves 5173)
 REM    - browser:                                  Vite URL above
 REM    - login:                                    copied real account
 REM
@@ -20,9 +20,14 @@ REM
 REM  Stop: close this window. Backend/Vite/agent stop; the browser stays open.
 REM ============================================================================
 set "ROOT=%~dp0"
-REM Vite port. Set FRONTEND_PORT before running if 5173 is reserved on this PC
-REM (check: netsh interface ipv4 show excludedportrange protocol=tcp).
+REM Vite port. Override with FRONTEND_PORT if you need a fixed value. Windows may reserve
+REM 5173 (excluded port range, e.g. Hyper-V: netsh interface ipv4 show excludedportrange
+REM protocol=tcp) and then listen() fails with EACCES - pick_dev_port.ps1 detects that and
+REM moves to the first free candidate (3173, 3174, ...).
 if not defined FRONTEND_PORT set "FRONTEND_PORT=5173"
+set "DEV_PORT_WANTED=%FRONTEND_PORT%"
+for /f "usebackq delims=" %%p in (`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%ROOT%tools\pick_dev_port.ps1" -Preferred %FRONTEND_PORT%`) do set "FRONTEND_PORT=%%p"
+if not "%FRONTEND_PORT%"=="%DEV_PORT_WANTED%" echo [dev] Port %DEV_PORT_WANTED% is reserved by Windows ^(excluded port range^). Using %FRONTEND_PORT% instead.
 set "BACKEND_PORT=8012"
 set "FRONTEND_URL=http://127.0.0.1:%FRONTEND_PORT%"
 set "BACKEND=http://127.0.0.1:8012"
