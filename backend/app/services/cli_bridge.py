@@ -346,7 +346,7 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
     반환 구조:
         {
           generation: {id, prompt, model, params(json), status, created_at, display_name},
-          asset: {type, file_path} | None,
+          asset: {type, file_path, thumbnail_url, min_result_url} | None,
           references: [{id, type, file_path, role}],
         }
     """
@@ -371,10 +371,11 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
 
     _m = _UID_RE.search(result_url or "")
     creator_uid = _m.group(1) if _m else None  # 결과 URL 경로의 생성자 식별자
-    for m in params.get("medias") or []:
-        data = (m or {}).get("data") or {}
-        url = data.get("url")
-        if not url:
+    medias = params.get("medias")
+    for m in medias if isinstance(medias, list) else []:  # MCP/덤프의 malformed medias(문자열 등)는 무시
+        data = m.get("data") if isinstance(m, dict) else None
+        url = data.get("url") if isinstance(data, dict) else None
+        if not isinstance(url, str) or not url:
             continue
         references.append(
             {
@@ -387,8 +388,13 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
 
     asset = None
     if result_url:
+        # MCP 이력 항목(mcp_item_to_cli)은 result_media_type 으로 타입을 명시한다 — 확장자 없는 영상 URL 이
+        # image 로 오분류돼 입력 축소본이 썸네일로 저장되지 않게 명시값(image|video)을 확장자 판정보다 우선.
+        explicit_type = job.get("result_media_type")
         asset = {
-            "type": media_type_from_url(result_url),
+            "type": explicit_type
+            if explicit_type in ("image", "video")
+            else media_type_from_url(result_url),
             "file_path": result_url,
             # CLI 1.x: 영상 잡은 thumbnail_url(정적 포스터 이미지)을 준다. 영상 asset 의 thumbnail_path
             # 로 써서 그리드/팝업에 가벼운 포스터를 붙인다(우리 썸네일러는 영상 미지원).

@@ -225,6 +225,7 @@ async def _application_lifespan(app: FastAPI):
     log_event(_runtime_log, "startup_begin", log_file=log_path.name)
     runtime_report_task: asyncio.Task | None = None
     history_audit_task: asyncio.Task | None = None
+    thumbnail_repair_task: asyncio.Task | None = None
     worker_backup_bootstrap_task: asyncio.Task | None = None
     runtime_loop: asyncio.AbstractEventLoop | None = None
     # 썸네일 사전 생성 데몬 회수용(중단 이벤트 + 스레드 참조). 종료 시 이 스레드가 살아 있으면
@@ -510,6 +511,13 @@ async def _application_lifespan(app: FastAPI):
         history_audit_task = asyncio.create_task(
             startup_history_audit(), name="history-startup-audit"
         )
+        # 영상 포스터 재조정(로컬 허브 전용, 같은 게이트) — 이력 보충이 저장한 '입력 이미지 포스터'를
+        # CLI 의 진짜 포스터로 고친다. 기동 뒤 잠시 기다렸다가 1회, 예산 안에서 순차.
+        from .services.thumbnail_repair import startup_thumbnail_repair
+
+        thumbnail_repair_task = asyncio.create_task(
+            startup_thumbnail_repair(), name="thumbnail-repair"
+        )
         # 위임 모드의 브라우저는 로컬 /ws만 본다. 프로세스당 원격 연결 하나가 다른 PC의 공유 서버
         # 변경 신호를 받아 로컬 소켓 전체에 중계한다(미로그인 상태면 task는 연결 없이 대기).
         if _proxy.is_worker_hub():
@@ -594,6 +602,10 @@ async def _application_lifespan(app: FastAPI):
         if history_audit_task and not history_audit_task.done():
             await _attempt_async_cleanup(
                 lambda: _cancel_background_task(history_audit_task)
+            )
+        if thumbnail_repair_task and not thumbnail_repair_task.done():
+            await _attempt_async_cleanup(
+                lambda: _cancel_background_task(thumbnail_repair_task)
             )
         if startup_complete or history_audit_task is not None:
 

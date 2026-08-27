@@ -210,9 +210,18 @@ def _upsert_synced(
             # 성능: 이미 같은 asset 1개가 있으면 재기록 생략(주기 동기화의 '변동 없음' 케이스에서
             # 매번 DELETE+INSERT 하던 쓰기를 제거 → WAL 쓰기·fsync 급감). 다르면(또는 0/복수면) 교체.
             cur_assets = conn.execute(
-                "SELECT type, file_path, thumbnail_path, source_url FROM asset WHERE generation_id=?",
+                "SELECT id, type, file_path, thumbnail_path, source_url FROM asset WHERE generation_id=?",
                 (target_id,),
             ).fetchall()
+            # 포스터 없이 들어온 재동기화(MCP 이력 보충 등)가 CLI 가 넣어둔 정적 포스터를 지우지 않게 —
+            # '같은 결과물'(타입 동일 + 원본 URL 동일; 원격→로컬 캐시 승격 포함)일 때만 기존 포스터를 승계한다.
+            # 결과 URL 이 다르면 옛 포스터를 새 결과에 붙이지 않고, 행이 0/복수면 승계하지 않는다.
+            # 들어온 thumb 가 있으면 그것이 우선(CLI 진짜 포스터가 오염값을 교체).
+            if not thumb and len(cur_assets) == 1 and cur_assets[0]["type"] == a["type"]:
+                old_key = cur_assets[0]["source_url"] or cur_assets[0]["file_path"]
+                new_key = src or fp
+                if old_key == new_key:
+                    thumb = cur_assets[0]["thumbnail_path"] or None
             same_asset = (
                 len(cur_assets) == 1
                 and cur_assets[0]["type"] == a["type"]
@@ -227,6 +236,8 @@ def _upsert_synced(
                     "VALUES(?,?,?,?,?,?)",
                     (new_id(), target_id, a["type"], fp, thumb, src),
                 )
+                if result == "unchanged":
+                    result = "updated"  # asset(포스터 포함)만 바뀌어도 변경 신호(WS·changed_job_ids)를 낸다
 
         # references — 이미 레퍼런스가 있으면 건드리지 않는다(중복 방지 + 로컬 명명 보존).
         #  · 로컬 생성본: display_prompt 와 @소스명이 달린 레퍼런스를 그대로 유지.

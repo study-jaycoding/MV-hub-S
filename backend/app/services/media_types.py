@@ -56,3 +56,25 @@ def media_type_from_url(url: Optional[str]) -> str:
         return "image"
     low = url.lower().split("?", 1)[0]
     return "video" if low.endswith(VIDEO_EXTENSIONS) else "image"
+
+
+def same_media_url(a: Optional[str], b: Optional[str]) -> bool:
+    """두 URL 이 같은 미디어 객체를 가리키는가 — 정확 일치, 또는 query/fragment 를 뺀 host+path 일치.
+
+    서명 query 만 다른 같은 CDN 객체는 같다고 본다. 파일명만 같은 다른 경로(image.png 류)는 다르다.
+    로컬 경로(/media/…)처럼 host 가 없으면 정확 일치만 인정한다. 빈 값·문자열 아님은 항상 False.
+    사용처: MCP 이력 항목의 썸네일이 입력 이미지인지(mcp_ingest), 저장된 포스터가 입력인지(thumbnail_repair)."""
+    if not isinstance(a, str) or not isinstance(b, str) or not a or not b:
+        return False
+    if a == b:
+        return True
+    from urllib.parse import urlsplit
+
+    def _key(url: str):
+        parts = urlsplit(url)
+        if not parts.netloc or not parts.path.strip("/"):
+            return None
+        return (parts.netloc.lower(), parts.path)
+
+    ka, kb = _key(a), _key(b)
+    return ka is not None and ka == kb

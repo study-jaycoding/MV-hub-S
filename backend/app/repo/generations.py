@@ -1068,5 +1068,78 @@ def import_generation(
 # 가계 조회(get_history/get_history_graph)는 history.py 로 분리.
 
 
+# ── 영상 포스터 재조정(services/thumbnail_repair) ─────────────────────────────
+def _input_urls_of(params_json: Optional[str]) -> list[str]:
+    """generation.params(JSON) 의 입력 미디어 URL — medias[*].data.url + input_images[*].url."""
+    try:
+        params = json.loads(params_json) if params_json else {}
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(params, dict):
+        return []
+    out: list[str] = []
+    medias = params.get("medias")
+    for media in medias if isinstance(medias, list) else []:
+        data = media.get("data") if isinstance(media, dict) else None
+        url = data.get("url") if isinstance(data, dict) else None
+        if isinstance(url, str) and url:
+            out.append(url)
+    images = params.get("input_images")
+    for img in images if isinstance(images, list) else []:
+        url = img.get("url") if isinstance(img, dict) else None
+        if isinstance(url, str) and url:
+            out.append(url)
+    return out
 
 
+def list_video_assets_with_input_thumbnail() -> list[dict[str, Any]]:
+    """포스터 재조정 후보 원자료 — 포스터가 있는 영상 asset(살아있는 생성물·job_id 보유)과 그 잡의 입력 URL
+    (generation.params 의 medias/input_images + 연결 레퍼런스의 file_path/source_url/share_url).
+    '포스터가 입력과 같은가' 판정은 서비스(thumbnail_repair.find_candidates)가 same_media_url 로 한다."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT a.id AS asset_id, a.generation_id, a.file_path, a.thumbnail_path, a.source_url, "
+            "g.job_id, g.params "
+            "FROM asset a JOIN generation g ON g.id=a.generation_id "
+            "WHERE a.type='video' AND g.deleted_at IS NULL "
+            "AND g.job_id IS NOT NULL AND g.job_id<>'' "
+            "AND a.thumbnail_path IS NOT NULL AND a.thumbnail_path<>'' "
+            "ORDER BY g.sort_ts DESC, a.rowid"
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            refs = conn.execute(
+                "SELECT r.file_path, r.source_url, r.share_url FROM gen_reference gr "
+                "JOIN reference r ON r.id=gr.reference_id WHERE gr.generation_id=?",
+                (r["generation_id"],),
+            ).fetchall()
+            input_urls = _input_urls_of(r["params"])
+            for ref in refs:
+                for value in (ref["file_path"], ref["source_url"], ref["share_url"]):
+                    if isinstance(value, str) and value:
+                        input_urls.append(value)
+            out.append(
+                {
+                    "asset_id": r["asset_id"],
+                    "job_id": r["job_id"],
+                    "file_path": r["file_path"],
+                    "thumbnail_path": r["thumbnail_path"],
+                    "source_url": r["source_url"],
+                    "input_urls": input_urls,
+                }
+            )
+        return out
+
+
+def set_asset_thumbnail_if_current(
+    asset_id: str, expected: str, new_thumbnail: Optional[str]
+) -> bool:
+    """CAS — 지금 값이 expected 일 때만 바꾼다(후보 조회 뒤 다른 경로가 정상 포스터를 써넣었으면 no-op).
+    삭제된 생성물의 asset 은 건드리지 않는다. 바뀐 행이 정확히 1이면 True."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE asset SET thumbnail_path=? WHERE id=? AND thumbnail_path=? "
+            "AND generation_id IN (SELECT id FROM generation WHERE deleted_at IS NULL)",
+            (new_thumbnail, asset_id, expected),
+        )
+        return cur.rowcount == 1
