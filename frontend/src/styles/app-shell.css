@@ -200,6 +200,8 @@
   overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
   color: var(--text); font-size: 12.5px; line-height: 1.38; overflow-wrap: anywhere;
 }
+/* 읽은 알림은 본문 글씨를 회색으로 낮춰 읽음/안읽음이 확실히 갈리게(Jay 요청) */
+.notification-item:not(.unread) .notification-text { color: var(--muted); }
 .notification-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10.5px; }
 .notification-unread-dot {
   width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--accent);
