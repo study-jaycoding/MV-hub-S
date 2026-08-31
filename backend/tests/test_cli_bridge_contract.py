@@ -234,6 +234,51 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
         cli_bridge._COST_CACHE.clear()
         cli_bridge._PARAM_NAMES_CACHE.pop("join-model", None)
 
+    async def test_estimate_cost_adds_dummy_reference_for_reference_required_modes(self):
+        """씨댄스 2.5 는 omni_reference/video_extension 의 '참조 ≥1' 규칙을 견적에도 적용해
+        참조 없는 cost 호출이 거부된다 — 견적 CLI 호출에만 껍데기 참조를 실어 통과시킨다
+        (가격은 모드·참조와 무관 실측). video_edit 는 입력 영상 길이가 가격을 정해 대상 아님."""
+        from app.services import cli_bridge
+
+        calls = []
+
+        async def capture_run_json(*args, **_kwargs):
+            calls.append(list(args))
+            return {"credits_exact": 26}
+
+        cli_bridge._COST_CACHE.clear()
+        cli_bridge._cost_loaded = True
+        cli_bridge._estimate_gates.clear()
+        cli_bridge._cost_write_locks.clear()
+        cli_bridge._PARAM_NAMES_CACHE["seedance_2_5"] = {"mode", "duration"}
+        try:
+            with patch.object(
+                cli_bridge, "_run_json", new=AsyncMock(side_effect=capture_run_json)
+            ), patch.object(cli_bridge, "_write_cost_cache", new=lambda payload: None):
+                for mode in ("omni_reference", "video_extension", "video_edit", "t2v"):
+                    await cli_bridge.estimate_cost(
+                        "seedance_2_5", {"mode": mode, "duration": 4}
+                    )
+                # 캐시 키는 더미 없이 param_args 기준 그대로 — 모드별 4키가 각각 저장된다.
+                self.assertEqual(len(cli_bridge._COST_CACHE), 4)
+                for cache_key in cli_bridge._COST_CACHE:
+                    self.assertNotIn(cli_bridge._COST_DUMMY_REF, cache_key)
+        finally:
+            cli_bridge._COST_CACHE.clear()
+            cli_bridge._PARAM_NAMES_CACHE.pop("seedance_2_5", None)
+
+        self.assertEqual(len(calls), 4)
+        omni, extension, edit, t2v = calls
+        self.assertIn("--image-references", omni)
+        self.assertIn(cli_bridge._COST_DUMMY_REF, omni)
+        self.assertIn("--video-references", extension)
+        self.assertIn(cli_bridge._COST_DUMMY_REF, extension)
+        self.assertNotIn("--image-references", extension)
+        for no_dummy in (edit, t2v):
+            self.assertNotIn("--image-references", no_dummy)
+            self.assertNotIn("--video-references", no_dummy)
+            self.assertNotIn(cli_bridge._COST_DUMMY_REF, no_dummy)
+
     async def test_cost_cache_write_failure_keeps_dirty_until_next_success(self):
         """R5 2-D — 쓰기 실패는 saved revision 을 올리지 않아 dirty 가 유지되고,
         다음 성공 저장(flush 포함)이 담아낸다."""

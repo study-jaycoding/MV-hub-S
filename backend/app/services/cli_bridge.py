@@ -775,6 +775,28 @@ async def estimate_cost(
     )
 
 
+# 참조 필수 모드의 견적용 더미 참조(2026-08-31 실측) — 씨댄스 2.5 는 mode 별 "참조 미디어 ≥1"
+# 규칙을 견적(generate cost)에도 적용해, 참조를 뺀 우리 견적 호출이 거부된다. cost 는 참조
+# '개수'만 검사하고 실체는 열어보지 않으며(가짜 UUID 통과), 가격도 모드·참조와 무관하다
+# (t2v=omni_reference=video_extension 동일). 껍데기 UUID 하나로 규칙만 통과시킨다.
+# video_edit 는 입력 영상의 실제 길이가 가격을 정해 더미 불가 — 견적 실패(=미표시)가 정직하다.
+_COST_DUMMY_REF = "00000000-0000-4000-8000-000000000000"
+_COST_REF_REQUIRED_MODES = {
+    "omni_reference": "--image-references",
+    "video_extension": "--video-references",
+}
+
+
+def _cost_dummy_ref_args(param_args: list[str]) -> list[str]:
+    """견적 인자의 --mode 가 참조 필수 모드면 그 모드가 요구하는 더미 참조 플래그를 돌려준다."""
+    try:
+        mode = param_args[param_args.index("--mode") + 1]
+    except (ValueError, IndexError):
+        return []
+    flag = _COST_REF_REQUIRED_MODES.get(mode)
+    return [flag, _COST_DUMMY_REF] if flag else []
+
+
 async def _estimate_cost_miss(
     key: str,
     model: str,
@@ -794,6 +816,8 @@ async def _estimate_cost_miss(
             _shield_json_prompt(prompt or "preview"),
         ]
         args += param_args
+        # 캐시 키(param_args 기준)는 더미와 무관하게 유지 — CLI 호출에만 끼운다.
+        args += _cost_dummy_ref_args(param_args)
         try:
             data = await _run_json(*args, timeout=timeout)
         except CLIError:
