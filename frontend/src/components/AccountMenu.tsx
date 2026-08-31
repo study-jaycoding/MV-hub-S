@@ -320,7 +320,7 @@ export function AccountMenu({
                   </span>
                   <span className="acct-item-meta">
                     {isPersonal ? t("개인 · ") : ""}
-                    {w.plan_type} · {Math.round(w.credits)} cr · {w.user_role}
+                    {w.plan_type} · {Math.round(w.credits).toLocaleString()} cr · {w.user_role}
                   </span>
                 </span>
               );
