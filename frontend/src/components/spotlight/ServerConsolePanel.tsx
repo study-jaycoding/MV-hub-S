@@ -110,11 +110,11 @@ export function ServerConsolePanel({ agentOn }: { agentOn: boolean | null }) {
       <button
         type="button"
         className="sl-status sl-console-toggle"
-        title="서버 콘솔 — cmd 창에 보이던 정보를 여기서 확인"
+        title="Host 콘솔 — cmd 창에 보이던 정보를 여기서 확인"
         onClick={() => setOpen((value) => !value)}
       >
         <span className={"sl-status-dot" + (agentOn ? " on" : "")} />
-        <span>서버</span>
+        <span>Host</span>
         <span aria-hidden="true">{open ? "▾" : "▴"}</span>
       </button>
     </div>
