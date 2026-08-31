@@ -27,6 +27,9 @@ router = APIRouter(prefix="/api/release-update", tags=["release-update"])
 
 class UpdateStartIn(BaseModel):
     confirm: bool
+    # 오류로 남은 카드가 '진행 중'으로 집계돼 업데이트가 막힐 때, 진행 중 작업 검사를
+    # 건너뛰고 시작한다 — 폴더에서 update_release.bat 을 직접 누르는 것과 동일한 우회.
+    force: bool = False
 
 
 def _require_local(request: Request) -> None:
@@ -108,7 +111,7 @@ async def release_update_start(
     try:
         result = await asyncio.to_thread(
             start_update,
-            activity_check=active_total,
+            activity_check=(lambda: 0) if body.force else active_total,
             ready_url=ready_url,
         )
     except ReleaseUpdateBusyError as exc:

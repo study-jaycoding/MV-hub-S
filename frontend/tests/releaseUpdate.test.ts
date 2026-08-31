@@ -53,7 +53,26 @@ describe("작업자 릴리스 업데이트 API", () => {
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({ "X-MVHub-Update": "1" }),
-        body: JSON.stringify({ confirm: true }),
+        body: JSON.stringify({ confirm: true, force: false }),
+      }),
+    );
+  });
+
+  it("강제 시작은 force=true 를 싣는다 — 진행 중 검사 건너뛰기(오류 잔여 카드 우회)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers(),
+      json: vi.fn().mockResolvedValue({ ...status, state: "starting", accepted: true }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await startReleaseUpdate(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/release-update/start",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-MVHub-Update": "1" }),
+        body: JSON.stringify({ confirm: true, force: true }),
       }),
     );
   });

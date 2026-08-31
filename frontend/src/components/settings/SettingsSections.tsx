@@ -492,12 +492,14 @@ export function ReleaseUpdateSettingsSection({
   msg,
   onRefresh,
   onUpdate,
+  onForceUpdate,
 }: {
   status: ReleaseUpdateStatus | null;
   busy: boolean;
   msg: string;
   onRefresh: () => void;
   onUpdate: () => void;
+  onForceUpdate: () => void; // 진행 중 검사 건너뛰기(더보기 안 — 오류 잔여 카드로 막힐 때)
 }) {
   const running = busy || isReleaseUpdateRunning(status?.state);
   const releaseInstall = status?.install_mode === "release";
@@ -573,6 +575,22 @@ export function ReleaseUpdateSettingsSection({
             ? "검증된 릴리스를 설치한 뒤 MV Hub를 자동으로 다시 시작합니다. 작업 파일과 로컬 DB는 유지됩니다."
             : "공유 서버 설치본은 update_git.bat으로 업데이트합니다."}
         </p>
+        {releaseInstall && (
+          <>
+            <p>
+              오류로 남은 생성 카드가 "진행 중"으로 잘못 집계돼 위 버튼이 계속 막힐 때는
+              아래 강제 업데이트를 쓰세요 — 폴더의 update_release.bat 을 직접 실행하는
+              것과 같습니다. 실제로 생성이 돌고 있다면 그 작업은 중단될 수 있습니다.
+            </p>
+            <button
+              className="settings-action ghost"
+              onClick={onForceUpdate}
+              disabled={running}
+            >
+              ⚠ 강제 업데이트 (진행 중 검사 건너뛰기)
+            </button>
+          </>
+        )}
       </SettingsDescription>
     </section>
   );

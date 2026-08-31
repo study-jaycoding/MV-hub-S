@@ -85,11 +85,13 @@ export function getLatestReleaseMetadata(): Promise<LatestReleaseMetadata> {
   return jsonFetch<LatestReleaseMetadata>("/api/release-update/latest-metadata");
 }
 
-export function startReleaseUpdate(): Promise<ReleaseUpdateStatus> {
+/** force=true — 오류 잔여 카드로 '진행 중' 집계가 안 빠질 때 검사를 건너뛰고 강제 시작
+ * (폴더의 update_release.bat 직접 실행과 동일). */
+export function startReleaseUpdate(force = false): Promise<ReleaseUpdateStatus> {
   return jsonFetch<ReleaseUpdateStatus>("/api/release-update/start", {
     method: "POST",
     headers: { "X-MVHub-Update": "1" },
-    body: jsonBody({ confirm: true }),
+    body: jsonBody({ confirm: true, force }),
   });
 }
 

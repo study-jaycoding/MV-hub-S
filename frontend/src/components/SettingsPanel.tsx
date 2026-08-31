@@ -254,21 +254,27 @@ export function SettingsPanel({
     }
   };
 
-  const runReleaseUpdate = async () => {
+  // force=true — 오류 잔여 카드가 '진행 중'으로 집계돼 일반 버튼이 막힐 때, 검사를 건너뛰고
+  // 강제 시작(폴더의 update_release.bat 직접 실행과 동일한 우회를 앱 안에서).
+  const runReleaseUpdate = async (force = false) => {
     const status = releaseUpdateStatus;
-    if (!status?.can_update || !status.latest_version) return;
-    if (!window.confirm(
-      `MV Hub를 ${status.latest_version} 버전으로 업데이트합니다.\n프로그램이 자동으로 다시 시작됩니다.\n계속할까요?`,
-    )) return;
+    if (!force && (!status?.can_update || !status.latest_version)) return;
+    const confirmText = force
+      ? "진행 중 작업 검사를 건너뛰고 강제로 업데이트합니다.\n실제로 생성·Resolve 전송이 돌고 있다면 그 작업은 중단될 수 있습니다.\n프로그램이 자동으로 다시 시작됩니다. 계속할까요?"
+      : `MV Hub를 ${status?.latest_version} 버전으로 업데이트합니다.\n프로그램이 자동으로 다시 시작됩니다.\n계속할까요?`;
+    if (!window.confirm(confirmText)) return;
     setReleaseUpdateBusy(true);
     setReleaseUpdateMsg("업데이트를 준비하는 중…");
     try {
-      window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, status.latest_version);
+      // 강제 경로는 버전 확인이 실패한 상태일 수도 있다 — 알 때만 대기 버전을 기록.
+      if (status?.latest_version) {
+        window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, status.latest_version);
+      }
     } catch {
       // 저장 불가 시에도 현재 설정 창에서 폴링한다.
     }
     try {
-      const started = await startReleaseUpdate();
+      const started = await startReleaseUpdate(force);
       setReleaseUpdateStatus(started);
       setReleaseUpdateMsg(started.message);
       setReleaseUpdatePolling(true);
@@ -624,7 +630,8 @@ export function SettingsPanel({
             busy={releaseUpdateBusy}
             msg={releaseUpdateMsg}
             onRefresh={refreshReleaseUpdate}
-            onUpdate={runReleaseUpdate}
+            onUpdate={() => void runReleaseUpdate()}
+            onForceUpdate={() => void runReleaseUpdate(true)}
           />
 
         </div>

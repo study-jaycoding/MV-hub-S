@@ -208,6 +208,47 @@ def test_start_update_blocks_active_generation(tmp_path: Path, monkeypatch: pyte
         release_update.start_update(activity_check=lambda: 1, root=root)
 
 
+def test_start_route_force_skips_activity_check(monkeypatch: pytest.MonkeyPatch):
+    """force=True 는 오류 잔여 카드 등으로 active 카운트가 남아 있어도 activity_check 를
+    0 으로 바꿔 시작한다(폴더의 update_release.bat 직접 실행과 동일한 우회).
+    기본(force 없음)은 여전히 실제 활동 카운트를 본다."""
+    monkeypatch.setattr(release_update_router, "_require_local", lambda _request: None)
+    monkeypatch.setattr(
+        release_update_router,
+        "_activity",
+        lambda: {"generation_active": 3, "comfy_active": 0, "resolve_active": 0, "active_total": 3},
+    )
+    captured: dict[str, object] = {}
+
+    def fake_start_update(*, activity_check, ready_url=None):
+        captured["blocked"] = activity_check() > 0
+        return {"state": "starting", "can_update": False}
+
+    monkeypatch.setattr(release_update_router, "start_update", fake_start_update)
+    request = Request(
+        {"type": "http", "method": "POST", "path": "/", "headers": [], "client": ("127.0.0.1", 5000)}
+    )
+
+    result = asyncio.run(
+        release_update_router.release_update_start(
+            release_update_router.UpdateStartIn(confirm=True, force=True),
+            request,
+            x_mvhub_update="1",
+        )
+    )
+    assert captured["blocked"] is False  # 강제 — active 3건이어도 게이트 통과
+    assert result["active_total"] == 3  # 응답에는 실제 카운트가 그대로 남는다
+
+    asyncio.run(
+        release_update_router.release_update_start(
+            release_update_router.UpdateStartIn(confirm=True),
+            request,
+            x_mvhub_update="1",
+        )
+    )
+    assert captured["blocked"] is True  # 일반 경로는 여전히 활동 카운트를 본다
+
+
 def test_update_route_is_limited_to_the_worker_machine(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(request_guards, "local_machine_hosts", lambda: frozenset({"127.0.0.1"}))
     local = Request({"type": "http", "method": "GET", "path": "/", "headers": [], "client": ("127.0.0.1", 5000)})
