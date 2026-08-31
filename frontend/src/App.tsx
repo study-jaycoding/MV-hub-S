@@ -1340,9 +1340,8 @@ export default function App() {
           flash(
             wsName ? (
               <>
-                <span className="toast-ws-label">워크스페이스</span>{" "}
-                <b className="toast-ws-name">{wsName}</b> 전환 — 이후 생성 크레딧은 이
-                공간에서 차감됩니다.
+                워크스페이스 <b className="toast-ws-name">{wsName}</b> — 이후 생성
+                크레딧은 이 공간에서 차감됩니다.
               </>
             ) : (
               "워크스페이스 전환 — 이후 생성 크레딧은 이 공간에서 차감됩니다."
