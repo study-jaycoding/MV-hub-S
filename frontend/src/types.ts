@@ -201,6 +201,21 @@ export interface CreditSummary {
   accounts: { email: string; name: string; credits: number | null; plan?: string | null }[];
 }
 
+// 서버 콘솔 패널 — cmd 창에 보이던 정보(/api/console/summary, 로컬 전용).
+export interface ConsoleLogTail {
+  exists: boolean;
+  updated_at: number | null; // epoch 초
+  lines: string[];
+}
+export interface ConsoleSummary {
+  app_version: string; // 릴리스 설치본만 값 있음
+  install_mode: "release" | "server" | "development";
+  port: number;
+  cli: { available: boolean; pinned: string; path: string };
+  agent_log: ConsoleLogTail;
+  hub_log: ConsoleLogTail;
+}
+
 // 로그인 계정 본인이 에이전트로 보고한 힉스필드 상태(비-하우스 계정 메뉴 — 읽기전용·마지막 동기화 기준).
 export interface ReportedHfStatus {
   reported: boolean; // 보고 이력 있음? (false=에이전트 미연결)

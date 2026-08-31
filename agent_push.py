@@ -2562,12 +2562,65 @@ def _initial_cycle(server: str, token: str, cli: str, size: int, no_push: bool) 
         push_once(server, token, cli, size)
 
 
+class _Tee:
+    """콘솔 출력을 파일에도 복사 — 앱의 '서버 콘솔' 패널이 그 파일을 읽는다.
+    파일 쓰기 실패는 무시한다(콘솔 동작은 절대 깨지지 않게)."""
+
+    def __init__(self, stream, fh):
+        self._stream = stream
+        self._fh = fh
+
+    def write(self, s):
+        n = self._stream.write(s)
+        try:
+            self._fh.write(s)
+            self._fh.flush()
+        except Exception:
+            pass
+        return n
+
+    def flush(self):
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+        try:
+            self._fh.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def _open_agent_log():
+    """backend/agent.log 열기(UTF-8 append). 1MB 를 넘으면 agent.log.1 로 교대해 무한 성장 방지.
+    실패하면 None — 콘솔 전용으로 그대로 동작한다."""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        base = os.path.join(here, "backend")
+        path = os.path.join(base if os.path.isdir(base) else here, "agent.log")
+        if os.path.exists(path) and os.path.getsize(path) > 1_000_000:
+            os.replace(path, path + ".1")
+        fh = open(path, "a", encoding="utf-8", errors="replace")
+        fh.write(f"\n===== 에이전트 시작 {datetime.now().isoformat(timespec='seconds')} =====\n")
+        fh.flush()
+        return fh
+    except Exception:
+        return None
+
+
 def main() -> None:
     # 로그를 콘솔에 즉시 찍어 '무엇을 했는지' 실시간으로 보이게(파이프/리다이렉트에서도).
     try:
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
+    # 콘솔에 찍는 모든 줄을 backend/agent.log 에도 남긴다 — 앱 상태줄의 '서버 콘솔' 패널용.
+    log_fh = _open_agent_log()
+    if log_fh is not None:
+        sys.stdout = _Tee(sys.stdout, log_fh)
+        sys.stderr = _Tee(sys.stderr, log_fh)
     ap = argparse.ArgumentParser(description="Content Hub 로컬 push 에이전트")
     ap.add_argument("--server", required=True, help="허브 서버 주소 (예: http://192.168.0.10:8010)")
     ap.add_argument("--email", help="내 허브 로그인 이메일(로그인 모드에서 필요)")

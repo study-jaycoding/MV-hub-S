@@ -77,6 +77,7 @@ import {
   type SpotlightAssetDragItem,
 } from "../lib/spotlightAssetRefs";
 import { SpotlightOptionsBar } from "./spotlight/SpotlightOptionsBar";
+import { ServerConsolePanel } from "./spotlight/ServerConsolePanel";
 import { SpotlightGenerateControls } from "./spotlight/SpotlightGenerateControls";
 import { SpotlightMentionPicker } from "./spotlight/SpotlightMentionPicker";
 import { SpotlightPromptRow } from "./spotlight/SpotlightPromptRow";
@@ -1268,6 +1269,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
 
         {error && <div className="sl-error">{error}</div>}
 
+        <div className="sl-status-row">
+        <ServerConsolePanel agentOn={agentOn} />
         <button
           type="button"
           className="sl-status"
@@ -1299,6 +1302,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             </>
           )}
         </button>
+        </div>
       </div>
     </div>
   );

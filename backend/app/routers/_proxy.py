@@ -385,6 +385,7 @@ _LOCAL_PREFIXES = (
     "/api/comfy",          # ComfyUI 연결·파싱·실행(이 PC 의 로컬/Cloud 자원 — 서버 위임 금지)
     "/api/resolve/",       # Render 원본·@davinci 기록 저장 및 Resolve 제어(이 PC 디스크/앱 대상)
     "/api/release-update/",  # 작업자 설치본·프로세스를 교체하는 이 PC 전용 업데이트
+    "/api/console/",       # 서버 콘솔 패널(버전·CLI 경로·에이전트/허브 로그) — 이 PC 정보라 서버 위임 금지
     "/api/workspaces",     # CLI 워크스페이스
     "/api/stamp/",         # 끌어다 놓은 로컬 파일의 각인 읽기 — 파일이 이 PC 에 있으므로 로컬 처리
     "/api/shared-server/", # 공유 서버 로그인/토큰/주소(이 허브의 로컬 설정)
