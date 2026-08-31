@@ -114,9 +114,7 @@ export function ServerConsolePanel({ agentOn }: { agentOn: boolean | null }) {
         onClick={() => setOpen((value) => !value)}
       >
         <span className={"sl-status-dot" + (agentOn ? " on" : "")} />
-        <span>
-          {agentOn == null ? "서버 확인 중…" : agentOn ? "서버 연결됨" : "서버 대기"}
-        </span>
+        <span>서버</span>
         <span aria-hidden="true">{open ? "▾" : "▴"}</span>
       </button>
     </div>

@@ -467,12 +467,12 @@
 .sl-status-credits { color: #ffce8f; font-weight: 700; }
 .sl-status-user { color: var(--muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 서버 콘솔 — 상태줄 왼쪽 토글 + cmd 창 정보를 담는 펼침 패널 */
-.sl-status-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; }
+/* 서버 콘솔 — '연결됨' 상태 바로 왼쪽의 [서버] 토글 + cmd 창 정보를 담는 펼침 패널 */
+.sl-status-row { display: flex; align-items: flex-end; justify-content: flex-end; gap: 10px; }
 .sl-console { position: relative; }
 .sl-console-toggle { align-self: auto; }
 .sl-console-panel {
-  position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 60;
+  position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 60;
   width: min(680px, 72vw);
   padding: 12px 14px; border-radius: 12px;
   border: 1px solid var(--border2); background: var(--panel, #16181a);
