@@ -77,7 +77,7 @@ const EN: Record<string, string> = {
   "⚙ 설정": "⚙ Settings",
   "⚙ Manage Account": "⚙ Manage Account",
   "워크스페이스": "Workspace",
-  "개인 · ": "Personal · ",
+  "개인": "Personal",
   "개": "", // 개수 단위 생략 ("13" instead of "13개")
   // 사이드바 필터 섹션
   "전역 태그": "Global tags",

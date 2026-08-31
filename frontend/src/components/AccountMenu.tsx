@@ -316,11 +316,15 @@ export function AccountMenu({
               const inner = (
                 <span className="acct-item-main">
                   <span className="acct-item-name">
-                    {isPersonal ? displayName : workspaceLabels.get(w.id) ?? w.name}
+                    <span className="acct-item-name-txt">
+                      {isPersonal ? displayName : workspaceLabels.get(w.id) ?? w.name}
+                    </span>
+                    <span className="acct-item-plan">
+                      {isPersonal ? `${t("개인")}·${w.plan_type}` : w.plan_type}
+                    </span>
                   </span>
                   <span className="acct-item-meta">
-                    {isPersonal ? t("개인 · ") : ""}
-                    {w.plan_type} · {Math.round(w.credits).toLocaleString()} cr · {w.user_role}
+                    {Math.round(w.credits).toLocaleString()} cr · {w.user_role}
                   </span>
                 </span>
               );
