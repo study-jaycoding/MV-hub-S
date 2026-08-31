@@ -754,7 +754,8 @@
   font-weight: 500;
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55), var(--glow);
 }
-/* 워크스페이스 전환 토스트 — 전환된 공간 이름을 굵고 조금 크게 */
+/* 워크스페이스 전환 토스트 — "워크스페이스"는 라임(악센트), 공간 이름은 굵고 조금 크게 */
+.toast-ws-label { color: var(--accent); }
 .toast-ws-name { font-weight: 700; font-size: 1.15em; }
 
 /* 스크롤바 */
