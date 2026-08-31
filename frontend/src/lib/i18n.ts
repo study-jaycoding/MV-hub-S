@@ -22,6 +22,8 @@ const EN: Record<string, string> = {
   "코멘트": "Comments",
   "시스템": "System",
   "안읽음": "Unread",
+  "읽음": "Read",
+  "읽은 알림이 없습니다.": "No read notifications.",
   "모두 읽음": "Mark all as read",
   "처리 중…": "Working…",
   "알림을 불러오는 중…": "Loading notifications…",

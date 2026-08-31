@@ -85,10 +85,11 @@ describe("알림 센터 파생 상태", () => {
     expect(filterNotificationsByCategory(items, "update")).toEqual([items[1]]);
   });
 
-  it("전체/안읽음 탭은 unread 플래그만으로 필터한다", () => {
+  it("전체/안읽음/읽음 탭은 unread 플래그만으로 필터한다", () => {
     const items = [{ id: "a", unread: true }, { id: "b", unread: false }];
     expect(filterNotificationItems(items, "all")).toEqual(items);
     expect(filterNotificationItems(items, "unread")).toEqual([items[0]]);
+    expect(filterNotificationItems(items, "read")).toEqual([items[1]]);
   });
 
   it("모두 읽음 뒤에는 전체 목록은 유지되고 안읽음 탭만 빈다", () => {

@@ -461,6 +461,9 @@ export function NotificationCenter({
             <button className={tab === "unread" ? "on" : ""} onClick={() => setTab("unread")}>
               {t("안읽음")} {unreadTotal}
             </button>
+            <button className={tab === "read" ? "on" : ""} onClick={() => setTab("read")}>
+              {t("읽음")}
+            </button>
           </div>
           <div className="notification-list">
             {loading && !allItems.length ? (
@@ -536,7 +539,11 @@ export function NotificationCenter({
               ))
             ) : (
               <div className="notification-empty">
-                {tab === "unread" ? t("새 알림이 없습니다.") : t("최근 알림이 없습니다.")}
+                {tab === "unread"
+                  ? t("새 알림이 없습니다.")
+                  : tab === "read"
+                    ? t("읽은 알림이 없습니다.")
+                    : t("최근 알림이 없습니다.")}
               </div>
             )}
           </div>

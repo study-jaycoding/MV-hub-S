@@ -3,7 +3,7 @@ import type { ServerRelocationInfo } from "./sharedApi";
 import type { UpdateNotice } from "./updateNotices";
 import { STORAGE_KEYS } from "./storageKeys";
 
-export type NotificationTab = "all" | "unread";
+export type NotificationTab = "all" | "unread" | "read";
 export type NotificationCategory = "all" | "comment" | "update";
 export type ReleaseNotificationKind = "available" | "completed" | "relocation" | "announcement";
 
@@ -236,7 +236,9 @@ export function filterNotificationItems<T extends { unread: boolean }>(
   items: T[],
   tab: NotificationTab,
 ): T[] {
-  return tab === "unread" ? items.filter((item) => item.unread) : items;
+  if (tab === "unread") return items.filter((item) => item.unread);
+  if (tab === "read") return items.filter((item) => !item.unread);
+  return items;
 }
 
 export function markNotificationListRead<T extends { unread: boolean }>(items: T[]): T[] {
