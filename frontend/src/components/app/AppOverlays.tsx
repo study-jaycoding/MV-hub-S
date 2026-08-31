@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+import type { ReactNode } from "react";
 import { GenCommentPanel } from "../GenCommentPanel";
 import { InfoPopup } from "../InfoPopup";
 import { MediaPreview } from "../MediaPreview";
@@ -53,7 +54,7 @@ export function AppOverlays({
   preview: PreviewTarget | null;
   projects: Project[];
   syncTick: number;
-  toast: string | null;
+  toast: ReactNode; // 문자열 또는 일부 강조된 JSX(useAppToast 참고)
   onAdminClose: () => void;
   onCloseOverlay: () => void;
   onCommentClose: () => void;

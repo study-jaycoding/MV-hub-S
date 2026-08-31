@@ -1333,9 +1333,20 @@ export default function App() {
           clearSelect();
         }}
         onSearch={(q) => patch({ search: q || undefined })}
-        onWorkspaceSwitched={async () => {
+        onWorkspaceSwitched={async (context) => {
           await reload();
-          flash("워크스페이스 전환 — 이후 생성 크레딧은 이 공간에서 차감됩니다.");
+          // 어느 공간으로 갔는지 이름을 굵게 강조 — 개인 공간은 이름이 없어 "개인"으로 표기.
+          const wsName = context.scope === "personal" ? "개인" : context.name;
+          flash(
+            wsName ? (
+              <>
+                <b className="toast-ws-name">{wsName}</b> 워크스페이스로 전환 — 이후 생성
+                크레딧은 이 공간에서 차감됩니다.
+              </>
+            ) : (
+              "워크스페이스 전환 — 이후 생성 크레딧은 이 공간에서 차감됩니다."
+            ),
+          );
         }}
         workspaceContext={workspaceContext}
         onWorkspaceContextChange={changeWorkspaceContext}

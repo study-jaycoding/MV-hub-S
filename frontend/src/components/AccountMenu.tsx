@@ -55,7 +55,7 @@ export function AccountMenu({
   account?: Account | null;
   onProviderUpdated: (p: ProviderIdentity) => void;
   onLogout?: () => void;
-  onWorkspaceSwitched: () => void;
+  onWorkspaceSwitched: (context: WorkspaceContext) => void; // 전환 완료 — 전환된 공간(토스트 표시용)
   workspaceContext: WorkspaceContext;
   onWorkspaceContextChange: (context: WorkspaceContext) => void;
   onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
@@ -233,7 +233,7 @@ export function AccountMenu({
     try {
       const r = id ? await api.selectWorkspace(id) : await api.unselectWorkspace();
       acceptLiveWorkspaces(r.workspaces);
-      onWorkspaceSwitched();
+      onWorkspaceSwitched(selectedWorkspaceContext(r.workspaces));
     } catch (e) {
       alert("워크스페이스 전환 실패: " + String(e));
     } finally {
@@ -345,7 +345,7 @@ export function AccountMenu({
                   className={"acct-item" + (selected ? " on" : "")}
                   onClick={() => {
                     onWorkspaceContextChange(itemContext);
-                    onWorkspaceSwitched();
+                    onWorkspaceSwitched(itemContext);
                   }}
                 >
                   {inner}

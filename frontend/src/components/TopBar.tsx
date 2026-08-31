@@ -15,7 +15,7 @@ interface Props {
   filters: Filters;
   onTab: (tab: "my" | "team" | "compose") => void;
   onSearch: (q?: string) => void;
-  onWorkspaceSwitched: () => void;
+  onWorkspaceSwitched: (context: WorkspaceContext) => void; // 전환 완료 — 전환된 공간(토스트 표시용)
   workspaceContext: WorkspaceContext;
   onWorkspaceContextChange: (context: WorkspaceContext) => void;
   onImported: (msg: string) => void; // (서버 모드 미사용 — App 호환)
