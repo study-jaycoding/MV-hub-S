@@ -319,13 +319,15 @@ export function AccountMenu({
                     <span className="acct-item-name-txt">
                       {isPersonal ? displayName : workspaceLabels.get(w.id) ?? w.name}
                     </span>
-                    <span className="acct-item-plan">
+                    {/* 선택 표시 = 배지 라임(✓ 대체). 크레딧은 오른쪽 끝(옛 ✓ 자리). */}
+                    <span className={"acct-item-plan" + (selected ? " on" : "")}>
                       {isPersonal ? `${t("개인")}·${w.plan_type}` : w.plan_type}
                     </span>
+                    <span className="acct-item-credits">
+                      {Math.round(w.credits).toLocaleString()} cr
+                    </span>
                   </span>
-                  <span className="acct-item-meta">
-                    {Math.round(w.credits).toLocaleString()} cr · {w.user_role}
-                  </span>
+                  <span className="acct-item-meta">{w.user_role}</span>
                 </span>
               );
               // 로컬 허브는 실제 CLI까지 전환한다. 공유 서버에서는 내 에이전트가 생성 직전에
@@ -340,7 +342,6 @@ export function AccountMenu({
                   disabled={busy}
                 >
                   {inner}
-                  {selected && <span className="acct-check">✓</span>}
                 </button>
               ) : (
                 <button
@@ -353,7 +354,6 @@ export function AccountMenu({
                   }}
                 >
                   {inner}
-                  {selected && <span className="acct-check">✓</span>}
                 </button>
               );
             })

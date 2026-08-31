@@ -287,8 +287,16 @@
   font-size: 9.5px; font-weight: 600; color: var(--muted);
   border: 1px solid var(--border2); background: rgba(255,255,255,0.04);
 }
+/* 선택된 워크스페이스 — ✓ 대신 배지를 라임으로(라임 배경 위 글씨는 검정 고정). */
+.acct-item-plan.on {
+  color: #111; background: var(--accent); border-color: var(--accent); font-weight: 700;
+}
+/* 크레딧 — 행 오른쪽 끝(옛 ✓ 자리) 정렬. */
+.acct-item-credits {
+  flex: none; margin-left: auto; font-size: 11px;
+  color: var(--muted); font-variant-numeric: tabular-nums;
+}
 .acct-item-meta { font-size: 10.5px; color: var(--muted); }
-.acct-check { color: var(--accent); font-weight: 700; flex: none; }
 .acct-sep { height: 1px; background: var(--border); margin: 7px 4px; }
 .acct-action {
   display: block; width: 100%; text-align: left; padding: 8px 9px; border-radius: 8px;
