@@ -552,6 +552,9 @@ export function PartialEditModal({
   };
 
   const [showOriginal, setShowOriginal] = useState(false); // 결과 화면에서 꾹 누르는 동안 원본
+  // 비교 A/B — 세로 분할선 와이프: 마우스 x 를 따라 왼쪽=원본(A), 오른쪽=결과(B).
+  const [abCompare, setAbCompare] = useState(false);
+  const [splitX, setSplitX] = useState(0.5); // 0..1, 무대 폭 기준
 
   // 키보드 — Esc 닫기(제출 요청 중·감시 중 금지: 제출 중 닫고 다시 열면 새 idempotency
   // key 로 유료 요청이 이중 생성, 코덱스 BLOCK) + 그리기 단축키(Ctrl+Z 실행취소,
@@ -670,32 +673,34 @@ export function PartialEditModal({
             </div>
             {stage === "draw" && (
               <>
-                {/* 도구별 옵션 — 펜/도형이면 색, 도형이면 종류까지(웹 편집기의 팝오버 열) */}
-                {tool !== "erase" && (
-                  <div className="partial-edit-subtools">
-                    {tool === "shape" && (
-                      <>
-                        {(
-                          [
-                            ["line", "─", "선"],
-                            ["arrow", "→", "화살표"],
-                            ["rect", "▢", "사각형"],
-                            ["ellipse", "◯", "원"],
-                          ] as [ShapeKind, string, string][]
-                        ).map(([kind, icon, label]) => (
-                          <button
-                            key={kind}
-                            className={shapeKind === kind ? "on" : ""}
-                            title={label}
-                            onClick={() => setShapeKind(kind)}
-                          >
-                            {icon}
-                          </button>
-                        ))}
-                        <span className="partial-edit-subdiv" />
-                      </>
-                    )}
-                    {COLORS.map((c) => (
+                {/* 옵션 열(도구 버튼들 바로 위, 우측 정렬) — [도형 종류] [컬러] [Size].
+                    지우개일 땐 색이 안 쓰이므로 Size 만 남는다. */}
+                <div className="partial-edit-subtools">
+                  <span className="partial-edit-toolspacer" />
+                  {tool === "shape" && (
+                    <>
+                      {(
+                        [
+                          ["line", "─", "선"],
+                          ["arrow", "→", "화살표"],
+                          ["rect", "▢", "사각형"],
+                          ["ellipse", "◯", "원"],
+                        ] as [ShapeKind, string, string][]
+                      ).map(([kind, icon, label]) => (
+                        <button
+                          key={kind}
+                          className={shapeKind === kind ? "on" : ""}
+                          title={label}
+                          onClick={() => setShapeKind(kind)}
+                        >
+                          {icon}
+                        </button>
+                      ))}
+                      <span className="partial-edit-subdiv" />
+                    </>
+                  )}
+                  {tool !== "erase" &&
+                    COLORS.map((c) => (
                       <button
                         key={c}
                         className={"partial-edit-swatch" + (color === c ? " sel" : "")}
@@ -704,13 +709,6 @@ export function PartialEditModal({
                         onClick={() => setColor(c)}
                       />
                     ))}
-                  </div>
-                )}
-                <div className="partial-edit-tools">
-                  <button disabled={!items.length} onClick={() => setItems([])}>
-                    전체 지우기
-                  </button>
-                  <span className="partial-edit-toolspacer" />
                   <label title="단축키 [ ] 로도 조절">
                     Size
                     <input
@@ -721,6 +719,12 @@ export function PartialEditModal({
                       onChange={(e) => setBrushSize(Number(e.target.value))}
                     />
                   </label>
+                </div>
+                <div className="partial-edit-tools">
+                  <button disabled={!items.length} onClick={() => setItems([])}>
+                    전체 지우기
+                  </button>
+                  <span className="partial-edit-toolspacer" />
                   <button
                     className={tool === "pen" ? "on" : ""}
                     title="Pen (D) · 크기 [ ] · 실행취소 Ctrl+Z"
@@ -788,7 +792,19 @@ export function PartialEditModal({
 
         {stage === "result" && src && resultUrl && (
           <>
-            <div className="partial-edit-stagebox" style={stageStyle}>
+            <div
+              className={"partial-edit-stagebox" + (abCompare ? " ab-active" : "")}
+              style={stageStyle}
+              onPointerMove={
+                abCompare
+                  ? (e) => {
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      if (!rect.width) return;
+                      setSplitX(Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)));
+                    }
+                  : undefined
+              }
+            >
               {/* contain — 결과 비율이 enum 스냅으로 원본과 미세하게 다르면 늘어나 보이는 대신
                   얇은 레터박스로 흡수(무대 배경은 이미 어두움, 코덱스 WARN) */}
               <img
@@ -797,6 +813,22 @@ export function PartialEditModal({
                 draggable={false}
                 style={{ objectFit: "contain" }}
               />
+              {abCompare && !showOriginal && (
+                <>
+                  {/* 원본을 위에 겹치고 분할선 오른쪽을 clip — 왼쪽=A(원본), 오른쪽=B(결과) */}
+                  <img
+                    src={srcUrlRef.current}
+                    alt=""
+                    draggable={false}
+                    style={{
+                      objectFit: "contain",
+                      clipPath: `inset(0 ${(100 - splitX * 100).toFixed(2)}% 0 0)`,
+                    }}
+                  />
+                  <div className="partial-edit-abline" style={{ left: `${(splitX * 100).toFixed(2)}%` }} />
+                  <div className="partial-edit-ablabel">A 원본 · 결과 B</div>
+                </>
+              )}
             </div>
             <div className="partial-edit-tools">
               <button
@@ -806,13 +838,24 @@ export function PartialEditModal({
                 onPointerLeave={() => setShowOriginal(false)}
                 title="누르고 있는 동안 원본 표시"
               >
-                원본 비교(꾹)
+                비교 push
+              </button>
+              <button
+                className={abCompare ? "on" : ""}
+                onClick={() => {
+                  setAbCompare((v) => !v);
+                  setSplitX(0.5);
+                }}
+                title="마우스를 좌우로 움직여 분할선 비교 — 왼쪽 원본 / 오른쪽 결과"
+              >
+                비교 A/B
               </button>
               <span className="partial-edit-toolspacer" />
               <button
                 className="settings-action ghost"
                 onClick={() => {
                   setResultUrl(null);
+                  setAbCompare(false);
                   setStage("draw");
                 }}
               >

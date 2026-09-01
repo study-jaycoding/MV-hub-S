@@ -92,6 +92,34 @@
 .partial-edit-stagebox canvas:not(.is-drawing) {
   pointer-events: none;
 }
+/* 비교 A/B — 마우스 x 를 따라오는 세로 분할선 와이프(왼쪽 원본 / 오른쪽 결과) */
+.partial-edit-stagebox.ab-active {
+  cursor: ew-resize;
+}
+.partial-edit-abline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-1px);
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  z-index: 2;
+}
+.partial-edit-ablabel {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 2px 10px;
+  border-radius: 999px;
+  pointer-events: none;
+  z-index: 2;
+}
 
 .partial-edit-waitveil {
   position: absolute;
@@ -138,7 +166,8 @@
   opacity: 0.45;
   cursor: default;
 }
-.partial-edit-tools label {
+.partial-edit-tools label,
+.partial-edit-subtools label {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -146,7 +175,8 @@
   color: var(--muted, #8b93a3);
 }
 /* 크기 슬라이더 — 얇은 트랙 + 라임 원형 썸(하단 독 슬라이더 감성) */
-.partial-edit-tools input[type="range"] {
+.partial-edit-tools input[type="range"],
+.partial-edit-subtools input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
   width: 150px;
@@ -156,7 +186,8 @@
   outline: none;
   cursor: pointer;
 }
-.partial-edit-tools input[type="range"]::-webkit-slider-thumb {
+.partial-edit-tools input[type="range"]::-webkit-slider-thumb,
+.partial-edit-subtools input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 13px;
   height: 13px;
