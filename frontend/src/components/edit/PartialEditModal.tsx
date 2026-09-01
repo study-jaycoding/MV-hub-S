@@ -466,12 +466,12 @@ export function PartialEditModal({
   // 업로드 후 생성이 최종 실패하면 캡처 파일 1개가 captures 에 남을 수 있다(잡 미연결) —
   // 롤백 없음은 수용(캡처는 Assets 에서 보이고 지울 수 있다, 코덱스 WARN 문서화).
   const buildReference = async (): Promise<{ file_path: string; thumbnail?: string }> => {
+    renderAll(items); // 잉크 검사·평면화 전에 최신 스트로크 보장(undo 직후 stale 캔버스 방지)
     if (!items.length || !annotHasInk()) {
       return { file_path: asset!.file_path, thumbnail: asset!.thumbnail_path || undefined };
     }
     const annot = annotRef.current;
     if (!annot || !src) throw new Error("주석 캔버스가 없습니다");
-    renderAll(items); // 최신 스트로크 보장
     const flat = document.createElement("canvas");
     flat.width = src.w;
     flat.height = src.h;
