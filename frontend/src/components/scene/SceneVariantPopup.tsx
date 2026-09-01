@@ -206,6 +206,25 @@ export function SceneVariantPopup({
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
       >
+        {/* 선택 액션바 — 패널 '위'에 표시(Jay). wrap 이 flex-column 이라 JSX 순서 = 화면 순서. */}
+        {selected.length > 0 && (
+          <div className="scene-varpop-actions">
+            <BoardSelectionActionBar
+              selected={selected}
+              projects={projects}
+              onShare={(s) => actions.onVariantShare?.(s)}
+              onDownload={(s) => actions.onVariantDownload?.(s)}
+              onCompare={(s) => actions.onVariantCompare?.(s)}
+              onAssign={(pid, folder) => actions.onVariantAssign?.(selected, pid, folder)}
+              onDelete={() => void closeAndTrash()}
+              onResolveTransfer={actions.variantResolve?.send}
+              onResolveRetry={actions.variantResolve?.retry ?? null}
+              resolveRetryProjectName={actions.variantResolve?.retryProjectName || ""}
+              resolveTransferBusy={actions.variantResolve?.busy}
+              resolveTransferPendingCount={actions.variantResolve?.pendingCount}
+            />
+          </div>
+        )}
         <div className="scene-varpop">
           <div className="scene-varpop-hd">
             <span>생성 결과 {ids.length}개</span>
@@ -477,24 +496,6 @@ export function SceneVariantPopup({
             )}
           </div>
         </div>
-        {selected.length > 0 && (
-          <div className="scene-varpop-actions">
-            <BoardSelectionActionBar
-              selected={selected}
-              projects={projects}
-              onShare={(s) => actions.onVariantShare?.(s)}
-              onDownload={(s) => actions.onVariantDownload?.(s)}
-              onCompare={(s) => actions.onVariantCompare?.(s)}
-              onAssign={(pid, folder) => actions.onVariantAssign?.(selected, pid, folder)}
-              onDelete={() => void closeAndTrash()}
-              onResolveTransfer={actions.variantResolve?.send}
-              onResolveRetry={actions.variantResolve?.retry ?? null}
-              resolveRetryProjectName={actions.variantResolve?.retryProjectName || ""}
-              resolveTransferBusy={actions.variantResolve?.busy}
-              resolveTransferPendingCount={actions.variantResolve?.pendingCount}
-            />
-          </div>
-        )}
         {/* 태그 편집 — 타일은 overflow:hidden 이라 잘리므로 팝업 레벨에 절대배치하되, 편집 중인
             타일 rect 를 측정해 그 '바로 아래'에 띄운다(카드 밑으로). */}
         {ui.tagEditGid &&
