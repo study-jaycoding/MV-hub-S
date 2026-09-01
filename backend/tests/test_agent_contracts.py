@@ -94,6 +94,146 @@ def test_agent_error_logs_hide_prompt_text_and_signed_url_queries():
     assert agent._safe_ref_label("/api/media/1.png") == "/api/media/1.png"
 
 
+def _make_sink(agent, tmp_path, threshold):
+    return agent._AgentLogSink(str(tmp_path / "agent.log"), threshold=threshold)
+
+
+def test_log_sink_rotates_midrun_at_line_boundary(tmp_path):
+    """실행 중 1MB(테스트: 소형 threshold) 초과 시 .1 교대 — 줄 끝 write 에서만."""
+    agent = _load_agent()
+    sink = _make_sink(agent, tmp_path, threshold=10)
+    sink.write("abcdefghijkl")  # 12B > 10B 지만 줄 미완 — 교대 금지
+    assert not (tmp_path / "agent.log.1").exists()
+    sink.write("end\n")  # 줄 완성 → 교대
+    sink.close()
+    archived = (tmp_path / "agent.log.1").read_text(encoding="utf-8")
+    assert archived == "abcdefghijklend\n"  # 줄이 반토막 나지 않고 통째로 보관
+    active = (tmp_path / "agent.log").read_text(encoding="utf-8")
+    assert "로그 교대" in active  # 새 파일은 교대 마커로 시작
+
+
+def test_log_sink_counts_utf8_bytes_not_chars(tmp_path):
+    """한글 3바이트 계상 — 문자 수가 아니라 UTF-8 바이트로 임계값을 판정한다."""
+    agent = _load_agent()
+    sink = _make_sink(agent, tmp_path, threshold=100)
+    line = "가" * 40 + "\n"  # 41자, 121바이트
+    sink.write(line)
+    sink.close()
+    archived = (tmp_path / "agent.log.1").read_bytes()
+    assert archived.decode("utf-8") == line  # strict 디코드 — UTF-8 절단 없음
+
+
+def test_log_sink_survives_rotation_failure_and_retries(tmp_path, monkeypatch):
+    """교대 실패(리더 점유 등) → 같은 파일에 계속 쓰고, 쿨다운 후 재시도에 성공."""
+    agent = _load_agent()
+    sink = _make_sink(agent, tmp_path, threshold=10)
+
+    def deny_replace(*_a, **_k):
+        raise PermissionError("file is busy")
+
+    monkeypatch.setattr(agent.os, "replace", deny_replace)
+    sink.write("0123456789ab\n")  # 교대 시도 → 실패 → 무예외
+    sink.write("more lines\n")  # 로깅은 계속된다
+    assert not (tmp_path / "agent.log.1").exists()
+    monkeypatch.undo()
+    sink._retry_at = 0.0  # 쿨다운 해제(테스트 가속)
+    sink.write("retry ok\n")  # 재시도 → 교대 성공
+    sink.close()
+    assert (tmp_path / "agent.log.1").exists()
+    archived = (tmp_path / "agent.log.1").read_text(encoding="utf-8")
+    assert "more lines" in archived and "retry ok" in archived
+
+
+def test_log_sink_recovers_when_new_active_open_fails_after_rename(tmp_path):
+    """rename 성공 + 새 active 열기 실패 → 후속 write 의 lazy reopen 으로 복구."""
+    agent = _load_agent()
+    sink = _make_sink(agent, tmp_path, threshold=10)
+    orig_open = sink._open_handle
+    state = {"fail_next": True}
+
+    def flaky_open():
+        if state["fail_next"]:
+            state["fail_next"] = False
+            sink._fh = None
+            sink._retry_at = agent.time.monotonic() + sink._RETRY_COOLDOWN
+            return False
+        return orig_open()
+
+    sink._open_handle = flaky_open
+    sink.write("0123456789ab\n")  # 교대: rename 성공, 새 파일 열기 실패
+    assert sink._fh is None
+    sink._retry_at = 0.0
+    sink.write("recovered\n")  # lazy reopen → 기록 재개
+    sink.close()
+    assert "recovered" in (tmp_path / "agent.log").read_text(encoding="utf-8")
+    assert (tmp_path / "agent.log.1").exists()
+
+
+def test_log_sink_concurrent_writers_lose_nothing_across_one_rotation(tmp_path):
+    """2스레드 동시 쓰기 — 총량을 threshold~2×threshold 로 묶어 교대 정확히 1회,
+    active+.1 전체에서 레코드 유실·절단이 없어야 한다."""
+    import threading
+
+    agent = _load_agent()
+    sink = _make_sink(agent, tmp_path, threshold=5_000)
+    per_thread = 300  # 15B × 600 = 9,000B (5,000 < 총량 < 10,000)
+
+    def writer(tid):
+        for i in range(per_thread):
+            sink.write(f"T{tid}-{i:06d}-xxxx\n")
+
+    threads = [threading.Thread(target=writer, args=(t,)) for t in (0, 1)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    sink.close()
+    combined = (tmp_path / "agent.log.1").read_text(encoding="utf-8") + (
+        tmp_path / "agent.log"
+    ).read_text(encoding="utf-8")
+    records = [ln for ln in combined.splitlines() if ln.startswith("T")]
+    assert len(records) == per_thread * 2
+    expected = {f"T{t}-{i:06d}-xxxx" for t in (0, 1) for i in range(per_thread)}
+    assert set(records) == expected  # 유실·중복·줄 절단 없음
+
+
+def test_log_sink_close_is_final_and_silent(tmp_path):
+    """close 후 write/flush 는 무예외 no-op — 재열기도 하지 않는다."""
+    agent = _load_agent()
+    sink = _make_sink(agent, tmp_path, threshold=10_000)
+    sink.write("before\n")
+    sink.close()
+    before = (tmp_path / "agent.log").read_bytes()
+    sink._retry_at = 0.0
+    sink.write("after close\n")
+    sink.flush()
+    sink.close()  # idempotent
+    assert (tmp_path / "agent.log").read_bytes() == before
+    assert sink._fh is None
+
+
+def test_log_sink_write_failure_drops_handle_then_lazy_reopens(tmp_path):
+    """쓰기 자체 실패 → 핸들 폐기·쿨다운, 이후 write 에서 자동 복구(카운터 재동기화)."""
+    agent = _load_agent()
+    sink = _make_sink(agent, tmp_path, threshold=10_000)
+
+    class Dead:
+        def write(self, _):
+            raise OSError("handle died")
+
+        def close(self):
+            pass
+
+    sink._fh = Dead()
+    sink.write("lost line\n")  # 실패 — 무예외, 핸들 폐기
+    assert sink._fh is None
+    sink._retry_at = 0.0
+    sink.write("revived\n")
+    sink.close()
+    text = (tmp_path / "agent.log").read_text(encoding="utf-8")
+    assert "revived" in text and "lost line" not in text
+
+
 def test_masked_password_input_never_writes_plaintext():
     agent = _load_agent()
     keys = iter(["s", "e", "c", "r", "e", "t", "\r"])

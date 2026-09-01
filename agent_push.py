@@ -40,7 +40,7 @@ import uuid
 from collections import Counter, OrderedDict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
 from datetime import datetime, timezone
-from threading import Event, Lock
+from threading import Event, Lock, RLock
 from urllib.parse import quote, urlencode, urlparse
 
 
@@ -2592,21 +2592,137 @@ def _initial_cycle(server: str, token: str, cli: str, size: int, no_push: bool) 
         push_once(server, token, cli, size)
 
 
-class _Tee:
-    """콘솔 출력을 파일에도 복사 — 앱의 '서버 콘솔' 패널이 그 파일을 읽는다.
-    파일 쓰기 실패는 무시한다(콘솔 동작은 절대 깨지지 않게)."""
+class _AgentLogSink:
+    """agent.log 공유 싱크 — stdout/stderr 두 _Tee 가 같은 인스턴스를 쓴다.
 
-    def __init__(self, stream, fh):
+    계약(코덱스 합의안, 묶음 B):
+    · 파일 오류는 어떤 경우에도 콘솔(생성 동작)로 전파되지 않는다.
+    · 실행 중에도 1MB 를 넘으면 .1 로 교대하되, 줄이 끝나는 write 에서만 교대한다.
+    · 교대·쓰기 실패는 일시 장애로 취급 — 5초 쿨다운 후 자동 복구를 계속 시도한다.
+    · 바이너리 append + 자체 UTF-8 인코딩: 바이트 카운팅 정확(한글 3바이트 포함),
+      텍스트 tell() 불요. 기존 CRLF 로그와 LF 가 섞여도 리더는 splitlines 라 무해.
+    · 다중 프로세스(같은 트리에서 에이전트 2개 수동 실행)는 지원하지 않는다 —
+      교대 중단 또는 .1 보관분 손실 가능(정상 런처는 단일 실행 mutex 로 1개).
+    · 이 클래스 내부에서 print() 금지 — _Tee 를 거쳐 자기 자신으로 재진입한다.
+    """
+
+    _RETRY_COOLDOWN = 5.0  # 초 — 교대/열기 실패 후 재시도 간격(리더의 파일 점유는 수 ms)
+
+    def __init__(self, path: str, threshold: int = 1_000_000):
+        self._path = path
+        self._threshold = threshold
+        self._lock = RLock()
+        self._fh = None
+        self._bytes = 0
+        self._closed = False
+        self._retry_at = 0.0  # time.monotonic() 기준 — 이 시각 전에는 열기/교대 재시도 안 함
+        try:
+            if os.path.exists(path) and os.path.getsize(path) > threshold:
+                os.replace(path, path + ".1")  # 시작 시 교대(종전 동작 유지)
+        except OSError:
+            pass  # 교대 실패 — 기존 파일에 이어 쓴다
+        self._open_handle()
+
+    def _open_handle(self) -> bool:
+        """append 핸들 열기 + 바이트 카운터를 실제 파일 크기로 재동기화. 실패 시 쿨다운."""
+        try:
+            self._fh = open(self._path, "ab")
+            try:
+                self._bytes = os.path.getsize(self._path)
+            except OSError:
+                self._bytes = 0
+            return True
+        except Exception:
+            self._fh = None
+            self._retry_at = time.monotonic() + self._RETRY_COOLDOWN
+            return False
+
+    def _drop_handle(self) -> None:
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
+
+    def _rotate(self) -> None:
+        """락 안에서만 호출. 자기 핸들을 닫아야 Windows 에서 rename 이 가능하다.
+        실패 시(리더가 그 순간 파일을 열어 둠 등) 같은 파일에 이어 쓰고 5초 뒤 재시도."""
+        self._drop_handle()
+        rotated = True
+        try:
+            os.replace(self._path, self._path + ".1")
+        except OSError:
+            rotated = False
+            self._retry_at = time.monotonic() + self._RETRY_COOLDOWN
+        if self._open_handle() and rotated:
+            # 마커는 교대 판정을 거치지 않는 원시 쓰기로 — self.write 를 쓰면 마커
+            # 자신이 다시 교대를 유발할 수 있다(재귀 교대, 소형 threshold 테스트로 실증)
+            self._write_raw(
+                f"----- 로그 교대 {datetime.now().isoformat(timespec='seconds')} -----\n"
+            )
+
+    def _write_raw(self, s: str) -> bool:
+        """락 안에서만 호출. 인코딩·기록·카운팅만 — 교대 판정 없음. 실패 시 핸들 폐기."""
+        try:
+            data = s.encode("utf-8", "replace")
+            self._fh.write(data)
+            self._fh.flush()
+            self._bytes += len(data)
+            return True
+        except Exception:
+            # 쓰기 실패 — 핸들이 죽었을 수 있으니 버리고 쿨다운 후 lazy reopen
+            self._drop_handle()
+            self._retry_at = time.monotonic() + self._RETRY_COOLDOWN
+            return False
+
+    def write(self, s: str) -> None:
+        try:
+            with self._lock:
+                if self._closed:
+                    return
+                if self._fh is None:
+                    if time.monotonic() < self._retry_at or not self._open_handle():
+                        return
+                if not self._write_raw(s):
+                    return
+                if (
+                    self._bytes > self._threshold
+                    and s.endswith("\n")  # 줄 중간 교대 금지
+                    and time.monotonic() >= self._retry_at
+                ):
+                    self._rotate()
+        except Exception:
+            pass  # 어떤 실패도 콘솔로 전파하지 않는다
+
+    def flush(self) -> None:
+        try:
+            with self._lock:
+                if self._fh is not None:
+                    self._fh.flush()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        try:
+            with self._lock:
+                self._closed = True
+                self._drop_handle()
+        except Exception:
+            pass
+
+
+class _Tee:
+    """콘솔 출력을 공유 싱크(agent.log)에도 복사 — 앱의 '서버 콘솔' 패널이 그 파일을 읽는다.
+    콘솔 write 를 먼저, 싱크는 그 다음 — 파일 쪽 실패가 콘솔 동작을 절대 깨지 않게."""
+
+    def __init__(self, stream, sink: _AgentLogSink):
         self._stream = stream
-        self._fh = fh
+        self._sink = sink
 
     def write(self, s):
         n = self._stream.write(s)
-        try:
-            self._fh.write(s)
-            self._fh.flush()
-        except Exception:
-            pass
+        self._sink.write(s)
         return n
 
     def flush(self):
@@ -2614,28 +2730,22 @@ class _Tee:
             self._stream.flush()
         except Exception:
             pass
-        try:
-            self._fh.flush()
-        except Exception:
-            pass
+        self._sink.flush()
 
     def __getattr__(self, name):
         return getattr(self._stream, name)
 
 
 def _open_agent_log():
-    """backend/agent.log 열기(UTF-8 append). 1MB 를 넘으면 agent.log.1 로 교대해 무한 성장 방지.
+    """backend/agent.log 공유 싱크 생성(UTF-8, 1MB 교대 — 실행 중에도).
     실패하면 None — 콘솔 전용으로 그대로 동작한다."""
     try:
         here = os.path.dirname(os.path.abspath(__file__))
         base = os.path.join(here, "backend")
         path = os.path.join(base if os.path.isdir(base) else here, "agent.log")
-        if os.path.exists(path) and os.path.getsize(path) > 1_000_000:
-            os.replace(path, path + ".1")
-        fh = open(path, "a", encoding="utf-8", errors="replace")
-        fh.write(f"\n===== 에이전트 시작 {datetime.now().isoformat(timespec='seconds')} =====\n")
-        fh.flush()
-        return fh
+        sink = _AgentLogSink(path)
+        sink.write(f"\n===== 에이전트 시작 {datetime.now().isoformat(timespec='seconds')} =====\n")
+        return sink
     except Exception:
         return None
 
@@ -2647,10 +2757,10 @@ def main() -> None:
     except Exception:
         pass
     # 콘솔에 찍는 모든 줄을 backend/agent.log 에도 남긴다 — 앱 상태줄의 '서버 콘솔' 패널용.
-    log_fh = _open_agent_log()
-    if log_fh is not None:
-        sys.stdout = _Tee(sys.stdout, log_fh)
-        sys.stderr = _Tee(sys.stderr, log_fh)
+    log_sink = _open_agent_log()
+    if log_sink is not None:
+        sys.stdout = _Tee(sys.stdout, log_sink)
+        sys.stderr = _Tee(sys.stderr, log_sink)
     ap = argparse.ArgumentParser(description="Content Hub 로컬 push 에이전트")
     ap.add_argument("--server", required=True, help="허브 서버 주소 (예: http://192.168.0.10:8010)")
     ap.add_argument("--email", help="내 허브 로그인 이메일(로그인 모드에서 필요)")
