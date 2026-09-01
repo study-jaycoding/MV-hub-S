@@ -582,7 +582,7 @@ def close_app_windows() -> int:
     # 돌려 백엔드가 409 → UI 의 "종료 중…" 고정을 막는다. (재열거 없이 HWND 만 확인 —
     # CIM 재조회는 최악 수십 초라 백엔드 45초 예산을 위협한다)
     deadline = time.time() + 8.0
-    remaining = list(sent)
+    remaining = list(hwnds)  # 전송 실패 창도 포함해 전체 소멸을 확인해야 성공이다
     while remaining and time.time() < deadline:
         time.sleep(0.4)
         remaining = [h for h in remaining if user32.IsWindow(h) and user32.IsWindowVisible(h)]

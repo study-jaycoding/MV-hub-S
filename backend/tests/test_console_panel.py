@@ -116,3 +116,6 @@ def test_tail_masks_bearer_tokens_and_signed_url_queries(
     assert "?Policy=***&Signature=***&Key-Pair-Id=*** ok" in lines[1]
     assert "?X-Amz-Security-Token=***&X-Amz-Signature=*** end" in lines[2]
     assert lines[3].endswith("?width=640")
+    # 쿼리 문맥(?&) 없이 등장하는 bare 형태도 마스킹된다
+    assert console._mask_secrets("retry with token=abc123 now") == "retry with token=*** now"
+    assert console._mask_secrets("token=abc123") == "token=***"

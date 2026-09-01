@@ -32,7 +32,8 @@ _MASK_QUERY_KEYS = (
 )
 _MASK_PATTERNS = [
     (re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]+"), r"\1 ***"),
-    (re.compile(rf"(?i)([?&](?:{_MASK_QUERY_KEYS})=)[^&\s\"']+"), r"\1***"),
+    # 줄 시작·공백 뒤의 bare `token=...` 형태도 잡는다(?& 만 요구하면 놓침)
+    (re.compile(rf"(?i)((?:^|[?&\s])(?:{_MASK_QUERY_KEYS})=)[^&\s\"']+"), r"\1***"),
 ]
 
 
