@@ -211,7 +211,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   }, [open]);
   // 계정·CLI 연결 상태(크레딧·이메일 부차 정보) — 데이터 도메인 훅으로 분리(IME·에디터 무관).
   const { account, checkAccount } = useAccountStatus(workspace);
-  const agentOn = useSpotlightAgentStatus(visible);
+  const { hubOk, agentOn } = useSpotlightAgentStatus(visible);
   // @/# 피커
   const [mention, setMention] = useState<SpotlightMention>(null);
   // 알약을 클릭해 텍스트로 풀어 이름 편집 중인 노드 — 그 안에서는 @가 멘션으로 재감지되지 않게 한다.
@@ -1270,38 +1270,12 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
         {error && <div className="sl-error">{error}</div>}
 
         <div className="sl-status-row">
-        <ServerConsolePanel agentOn={agentOn} />
-        <button
-          type="button"
-          className="sl-status"
-          title="생성·재생성은 내 PC의 에이전트가 켜져 있어야 실행됩니다(MV_agent.bat). 클릭=크레딧 확인"
-          onClick={checkAccount}
-        >
-          <span className={"sl-status-dot" + (agentOn ? " on" : "")} />
-          <span>
-            {agentOn == null
-              ? "에이전트 확인 중…"
-              : agentOn
-                ? "연결됨"
-                : "에이전트 꺼짐 — 생성하려면 실행"}
-          </span>
-          {account?.credits != null && (
-            <>
-              <span className="sl-status-sep">·</span>
-              <span className="sl-status-credits">
-                {account.credits.toLocaleString(undefined, { maximumFractionDigits: 2 })} credits
-              </span>
-            </>
-          )}
-          {account?.email && (
-            <>
-              <span className="sl-status-sep">·</span>
-              <span className="sl-status-user" title={account.email}>
-                {account.email}
-              </span>
-            </>
-          )}
-        </button>
+          <ServerConsolePanel
+            hubOk={hubOk}
+            agentOn={agentOn}
+            account={account}
+            onCheckAccount={checkAccount}
+          />
         </div>
       </div>
     </div>

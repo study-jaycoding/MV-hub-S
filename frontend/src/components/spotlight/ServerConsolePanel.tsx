@@ -41,7 +41,22 @@ function LogTail({ title, tail }: { title: string; tail: ConsoleSummary["agent_l
   );
 }
 
-export function ServerConsolePanel({ agentOn }: { agentOn: boolean | null }) {
+interface AccountInfo {
+  credits: number | null;
+  email: string;
+}
+
+export function ServerConsolePanel({
+  hubOk,
+  agentOn,
+  account,
+  onCheckAccount,
+}: {
+  hubOk: boolean | null; // 허브(로컬 서버) 응답 여부 — null=확인 전
+  agentOn: boolean | null; // 생성 에이전트 롱폴 연결 여부
+  account: AccountInfo | null;
+  onCheckAccount: () => void; // '연결됨' 클릭 = 크레딧 수동 확인(종전 동작)
+}) {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<ConsoleSummary | null>(null);
   const [error, setError] = useState("");
@@ -118,15 +133,65 @@ export function ServerConsolePanel({ agentOn }: { agentOn: boolean | null }) {
           </div>
         </>
       )}
-      <button
-        type="button"
-        className="sl-status sl-console-toggle"
-        title="Host 콘솔 — cmd 창에 보이던 정보를 여기서 확인"
-        onClick={() => setOpen((value) => !value)}
-      >
-        <span className={"sl-status-dot" + (agentOn ? " on" : "")} />
-        <span>Host</span>
-      </button>
+      {/* 통합 상태 컨트롤: ● Host/연결됨 · 크레딧 · 이메일
+          점 색 = 녹(둘 다 정상) / 노(허브만 정상, 에이전트 꺼짐) / 빨(허브 응답 없음) / 회(확인 전).
+          Host·연결됨은 각각 호버 시 하얗게, 클릭 시 각자의 동작(콘솔 열기 / 크레딧 확인). */}
+      <div className="sl-status sl-status-combo">
+        <span
+          className={
+            "sl-status-dot" +
+            (hubOk == null ? "" : !hubOk ? " bad" : agentOn ? " on" : " warn")
+          }
+          title={
+            hubOk == null
+              ? "상태 확인 중"
+              : !hubOk
+                ? "허브 응답 없음 — MV_agent.bat 실행 상태를 확인하세요"
+                : agentOn
+                  ? "허브·에이전트 정상"
+                  : "허브는 정상, 생성 에이전트 꺼짐 — 생성하려면 에이전트 실행"
+          }
+        />
+        <button
+          type="button"
+          className="sl-combo-part"
+          title="Host 콘솔 — cmd 창에 보이던 정보를 여기서 확인"
+          onClick={() => setOpen((value) => !value)}
+        >
+          Host
+        </button>
+        <span className="sl-combo-slash" aria-hidden="true">/</span>
+        <button
+          type="button"
+          className="sl-combo-part"
+          title="생성·재생성은 내 PC의 에이전트가 켜져 있어야 실행됩니다(MV_agent.bat). 클릭=크레딧 확인"
+          onClick={onCheckAccount}
+        >
+          {hubOk == null
+            ? "확인 중…"
+            : !hubOk
+              ? "연결 안 됨"
+              : agentOn
+                ? "연결됨"
+                : "에이전트 꺼짐"}
+        </button>
+        {account?.credits != null && (
+          <>
+            <span className="sl-status-sep">·</span>
+            <span className="sl-status-credits">
+              {account.credits.toLocaleString(undefined, { maximumFractionDigits: 2 })} credits
+            </span>
+          </>
+        )}
+        {account?.email && (
+          <>
+            <span className="sl-status-sep">·</span>
+            <span className="sl-status-user" title={account.email}>
+              {account.email}
+            </span>
+          </>
+        )}
+      </div>
     </>
   );
 }

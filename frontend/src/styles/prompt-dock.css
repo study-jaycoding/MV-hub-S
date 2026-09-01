@@ -463,13 +463,24 @@
 .sl-status:hover { border-color: var(--border2); color: var(--text); }
 .sl-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted2); }
 .sl-status-dot.on { background: #57d97e; box-shadow: 0 0 8px rgba(87, 217, 126, 0.6); }
+.sl-status-dot.warn { background: #f5c542; box-shadow: 0 0 8px rgba(245, 197, 66, 0.55); }
+.sl-status-dot.bad { background: #ff6b6b; box-shadow: 0 0 8px rgba(255, 107, 107, 0.55); }
+/* 통합 상태 컨트롤 — Host/연결됨 이 각자 호버(하얗게)·클릭(각자 동작). 컨테이너는 div.
+   전역 button 기본 padding 함정 회피를 위해 내부 버튼은 padding 0 명시. */
+.sl-status-combo { cursor: default; }
+.sl-combo-part {
+  background: none; border: 0; padding: 0; margin: 0;
+  font: inherit; color: var(--muted); cursor: pointer;
+  transition: color 0.12s;
+}
+.sl-combo-part:hover { color: #fff; }
+.sl-combo-slash { color: var(--muted2); margin: 0 -5px; }
 .sl-status-sep { color: var(--muted2); }
 .sl-status-credits { color: #ffce8f; font-weight: 700; }
 .sl-status-user { color: var(--muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Host 콘솔 — '연결됨' 상태 바로 왼쪽의 [Host] 토글. 정보는 앱 공통 플로팅 창(manage-float)으로. */
+/* Host 콘솔 — 통합 상태 컨트롤(● Host/연결됨) 안의 Host 클릭으로 연다. 정보는 중앙 플로팅 창. */
 .sl-status-row { display: flex; align-items: flex-end; justify-content: flex-end; gap: 10px; }
-.sl-console-toggle { align-self: auto; }
 /* 화면 중앙 고정 — manage-float 기본(우상단)을 덮는다. ✕ 로만 닫히는 무배경 플로팅. */
 .host-console-float {
   z-index: 330; width: min(680px, 92vw); font-size: 12px;
