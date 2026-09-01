@@ -86,17 +86,19 @@ def is_loopback_host_header(raw: str) -> bool:
     return bool(hostname) and _is_loopback_name(hostname)
 
 
-def _request_header(request: Request, name: str) -> str:
+def _request_header_values(request: Request, name: str) -> list[str]:
     target = name.lower().encode()
-    for key, value in request.scope.get("headers") or ():
-        if key.lower() == target:
-            return value.decode("latin-1")
-    return ""
+    return [
+        value.decode("latin-1")
+        for key, value in request.scope.get("headers") or ()
+        if key.lower() == target
+    ]
 
 
-def _origin_hostname(raw: str) -> str:
-    """Origin/Referer 값에서 hostname 만 — http(s) 가 아니거나 형식 불량이면 빈 문자열.
-    "null"(샌드박스 iframe·file://)은 scheme 파싱에서 걸려 거부된다."""
+def _http_url_hostname(raw: str, *, allow_path: bool) -> str:
+    """http(s) URL 값에서 hostname 만 — 형식 불량이면 빈 문자열.
+    Origin 은 경로가 없어야 하고(allow_path=False), Referer 는 경로를 가진다.
+    "null"(샌드박스 iframe)·file://·확장 스킴은 scheme 검사에서 거부된다."""
     value = raw.strip()
     if not value:
         return ""
@@ -107,7 +109,13 @@ def _origin_hostname(raw: str) -> str:
         return ""
     if parts.scheme not in ("http", "https") or parts.username is not None:
         return ""
+    if not allow_path and (parts.path or parts.query or parts.fragment):
+        return ""
     return parts.hostname or ""
+
+
+def _origin_hostname(raw: str) -> str:
+    return _http_url_hostname(raw, allow_path=False)
 
 
 def _require_same_machine_browser_context(
@@ -121,24 +129,35 @@ def _require_same_machine_browser_context(
     (완전 차단은 커스텀 헤더/CSRF 토큰이 필요해 비브라우저 호환과 양립 불가).
     DNS 리바인딩: 공격자 도메인이 로컬 IP 로 재해석되면 접속 IP 는 로컬이 되지만
     Host 헤더에 공격자 도메인이 남으므로 Host 검사가 막는다.
+    같은 헤더가 두 번 오는 모호한 요청은 정상 브라우저가 만들지 않으므로 거부한다.
     """
-    host_header = request_host_header(request)
-    if host_header.strip():
-        hostname = _authority_hostname(host_header)
-        if not hostname or not host_ok(hostname):
-            raise HTTPException(status_code=403, detail=detail)
-    if _request_header(request, "sec-fetch-site").strip().lower() == "cross-site":
+    def deny() -> None:
         raise HTTPException(status_code=403, detail=detail)
-    origin = _request_header(request, "origin").strip()
-    if origin:
-        hostname = _origin_hostname(origin)
+
+    host_values = [v for v in _request_header_values(request, "host") if v.strip()]
+    if len(host_values) > 1:
+        deny()
+    if host_values:
+        hostname = _authority_hostname(host_values[0])
         if not hostname or not host_ok(hostname):
-            raise HTTPException(status_code=403, detail=detail)
-    referer = _request_header(request, "referer").strip()
-    if referer:
-        hostname = _origin_hostname(referer)
+            deny()
+    for site in _request_header_values(request, "sec-fetch-site"):
+        if site.strip().lower() == "cross-site":
+            deny()
+    origin_values = [v for v in _request_header_values(request, "origin") if v.strip()]
+    if len(origin_values) > 1:
+        deny()
+    if origin_values:
+        hostname = _origin_hostname(origin_values[0])
         if not hostname or not host_ok(hostname):
-            raise HTTPException(status_code=403, detail=detail)
+            deny()
+    referer_values = [v for v in _request_header_values(request, "referer") if v.strip()]
+    if len(referer_values) > 1:
+        deny()
+    if referer_values:
+        hostname = _http_url_hostname(referer_values[0], allow_path=True)
+        if not hostname or not host_ok(hostname):
+            deny()
 
 
 def require_loopback_browser_request(request: Request, detail: str) -> None:

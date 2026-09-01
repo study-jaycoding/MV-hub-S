@@ -549,7 +549,7 @@ def _spawn_app_window(browser_exe: str, profile: Path, url: str) -> subprocess.P
     # appwin=1 — 프론트가 '앱 창'임을 알고 Host 콘솔에 '앱 종료' 버튼을 노출한다.
     # (X 닫기는 확인 없이 조용히 닫힘 — 일반 브라우저 탭·test_dev 에는 표식이 없다)
     url = url + ("&" if "?" in url else "?") + "appwin=1"
-    subprocess.Popen(
+    return subprocess.Popen(
         [
             browser_exe,
             f"--app={url}",
@@ -617,26 +617,29 @@ def _set_console_visible(visible: bool) -> None:
         _user32().ShowWindow(hwnd, SW_SHOW if visible else SW_HIDE)
 
 
-def _any_profile_app_hwnds() -> tuple[list[int], list[int]]:
-    """두 브라우저의 전용 프로필에서 (MV Hub 창, 그 외 프로필 창)을 모은다.
-    조회 실패한 브라우저는 건너뛴다 — 그쪽은 판단 불가이므로 오폭하지 않는다."""
+def _any_profile_app_hwnds() -> tuple[list[int], list[int], bool]:
+    """두 브라우저의 전용 프로필에서 (MV Hub 창, 그 외 프로필 창, 전체 조회 성공 여부).
+    조회 실패한 브라우저의 창은 판단 불가 — 호출측이 ok=False 로 알고 보수적으로 행동한다."""
     app: list[int] = []
     other: list[int] = []
+    all_ok = True
     for name, exe_basename in (("edge", "msedge.exe"), ("chrome", "chrome.exe")):
         got = _profile_pids(exe_basename, _app_profile_dir(name), verify_exe=False)
         if got is None:
+            all_ok = False
             continue
         _roots, all_pids = got
         found_app, found_other = _classify_app_hwnds(all_pids)
         app.extend(found_app)
         other.extend(found_other)
-    return app, other
+    return app, other, all_ok
 
 
 def _focus_app_window() -> bool:
-    """이미 떠 있는 MV Hub 앱 창을 앞으로 — 중복 실행 시 두 번째 런처가 호출."""
-    app, other = _any_profile_app_hwnds()
-    for hwnd in app + other:
+    """이미 떠 있는 MV Hub 승인 창을 앞으로 — 중복 실행 시 두 번째 런처가 호출.
+    비승인 창(DevTools 등)만 남은 정리 구간을 '실행 중'으로 오판하지 않게 승인 창만 본다."""
+    app, _other, _ok = _any_profile_app_hwnds()
+    for hwnd in app:
         _user32().SetForegroundWindow(hwnd)
         return True
     return False
@@ -645,28 +648,31 @@ def _focus_app_window() -> bool:
 def close_app_windows() -> int:
     """MV Hub 로 승인된 창 전부에 WM_CLOSE 전송 — 앱 안의 '종료' 확인 후 백엔드가 호출.
     창이 닫히면 감시자가 평소의 정상 종료 절차(Job 정리 → 허브·에이전트 정지)를 밟는다.
-    비승인 프로필 창(DevTools 등)은 건드리지 않고, 승인 창이 하나도 없으면 모호하므로
-    닫지 않고 실패를 반환한다(오폭 방지, 코덱스 합의)."""
+    비승인 프로필 창(DevTools 등)은 건드리지 않고, 승인 창이 하나도 없거나 일부 브라우저
+    조회가 실패해 전체를 못 봤으면 성공을 주장하지 않는다(오폭·오판 방지, 코덱스 합의)."""
     WM_CLOSE = 0x0010
     user32 = _user32()
-    app, other = _any_profile_app_hwnds()
+    app, other, all_ok = _any_profile_app_hwnds()
     if not app:
         print(f"[close-app] no approved MV Hub window ({len(other)} other profile window(s) untouched)")
         return 1
     sent = [hwnd for hwnd in app if user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)]
     print(f"[close-app] WM_CLOSE sent to {len(sent)}/{len(app)} window(s)")
     # PostMessageW 성공은 '큐에 넣음'일 뿐 닫힘 보장이 아니다(브라우저가 확인창 등으로
-    # 무시 가능) → 실제 소멸을 IsWindow 로 최대 8초 확인. 안 닫히면 실패(exit 1)로
-    # 돌려 백엔드가 409 → UI 의 "종료 중…" 고정을 막는다. (재열거 없이 HWND 만 확인 —
-    # CIM 재조회는 최악 수십 초라 백엔드 45초 예산을 위협한다)
+    # 무시 가능) → 실제 소멸을 최대 8초 확인(승인 property 까지 재확인해 HWND 재사용
+    # 오판 방지). 안 닫히면 실패(exit 1)로 돌려 백엔드가 409 → UI 고정을 막는다.
+    # (재열거 없이 HWND 만 확인 — CIM 재조회는 최악 수십 초라 백엔드 45초 예산을 위협)
     deadline = time.monotonic() + 8.0
     remaining = list(app)  # 전송 실패 창도 포함해 승인 창 전체의 소멸을 확인해야 성공이다
     while remaining and time.monotonic() < deadline:
         time.sleep(0.4)
-        remaining = [h for h in remaining if user32.IsWindow(h) and user32.IsWindowVisible(h)]
+        remaining = [h for h in remaining if _approved_alive(h)]
     if remaining:
         print(f"[close-app] {len(remaining)} window(s) did not close")
-    return 0 if sent and not remaining else 1
+    if not all_ok:
+        # 일부 브라우저 조회 실패 — 그쪽의 승인 창을 놓쳤을 수 있어 성공을 주장하지 않는다
+        print("[close-app] some browser queries failed - not claiming full success")
+    return 0 if sent and not remaining and all_ok else 1
 
 
 def acquire_launcher_mutex(port: str) -> bool:
@@ -716,22 +722,30 @@ class _WatchState:
             self.empty_scans = 0
             self.fail_since = None
             return "anchored"
-        if not self.approved_ever:
-            return "fallback" if now - self.start > _APP_FIRST_WINDOW_TIMEOUT else "waiting"
         if not query_ok:
+            # 조회 실패는 첫 승인 전이라도 모든 시한 판정을 유보한다 — spawn 직후
+            # CIM 이 죽었다고 fallback 하면 이미 띄운 앱 창이 고아가 된다(코덱스 BLOCK).
             if self.fail_since is None:
                 self.fail_since = now
             if now - self.fail_since > self.CIM_FAIL_SHOW_CONSOLE_AFTER:
                 return "hold_show_console"
             return "hold"
         self.fail_since = None
+        if not self.approved_ever:
+            return "fallback" if now - self.start > _APP_FIRST_WINDOW_TIMEOUT else "waiting"
         self.empty_scans += 1
         return "closed" if self.empty_scans >= _APP_CLOSE_DEBOUNCE_SCANS else "empty"
 
 
-def _hwnd_alive(hwnd: int) -> bool:
+def _approved_alive(hwnd: int) -> bool:
+    """승인 창 생존 판정 — 승인 property 까지 재확인해 HWND 재사용 오판을 막는다.
+    property 는 원래 창과 함께 소멸하고 재사용된 새 HWND 에 상속되지 않는다."""
     user32 = _user32()
-    return bool(user32.IsWindow(hwnd)) and bool(user32.IsWindowVisible(hwnd))
+    return (
+        bool(user32.IsWindow(hwnd))
+        and bool(user32.IsWindowVisible(hwnd))
+        and _is_marked_approved(hwnd)
+    )
 
 
 def watch_app_window(url: str) -> int:
@@ -765,19 +779,19 @@ def watch_app_window(url: str) -> int:
                 aux.add(spawn_proc.pid)
             app, _other = _classify_app_hwnds(aux)  # EnumWindows — 싼 경로(CIM 없음)
             query_ok = True
-            if not app and not any(_hwnd_alive(h) for h in state.approved):
+            if not app and not any(_approved_alive(h) for h in state.approved):
                 # 창이 안 보임 — pid 집합이 낡았을 수 있으니(창이 새 루트로 열림) CIM 재조회.
                 got = _profile_pids(exe, profile)
                 if got is None:
                     query_ok = False  # 조회 실패 ≠ 창 없음 — 종료 판정을 유보한다
                 else:
                     _roots, pids_now = got
-                    if pids_now:
-                        known_pids = set(pids_now)
+                    # 성공 결과는 빈 집합도 권위 있다 — PID 재사용 오분류 방지(코덱스 WARN)
+                    known_pids = set(pids_now)
                     app, _other = _classify_app_hwnds(set(pids_now) | (
                         {spawn_proc.pid} if spawn_proc is not None and spawn_proc.poll() is None else set()
                     ))
-            action = state.observe(set(app), query_ok, time.monotonic(), _hwnd_alive)
+            action = state.observe(set(app), query_ok, time.monotonic(), _approved_alive)
             if action == "anchored":
                 if not hid_console and _console_is_ours():
                     # 조회 회복 + 승인 창 존재가 함께 확인된 때만 (재)숨김

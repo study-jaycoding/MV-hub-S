@@ -103,6 +103,26 @@ def test_loopback_browser_guard_requires_loopback_origin_not_just_local():
         rg.require_loopback_browser_request(lan_origin, "no")
 
 
+def test_duplicate_security_headers_are_rejected_as_ambiguous():
+    """같은 헤더 2회는 정상 브라우저가 만들지 않는다 — 첫 값만 보고 통과시키지 않는다."""
+    scope_headers = [
+        (b"host", b"127.0.0.1:8010"),
+        (b"origin", b"http://127.0.0.1:8010"),
+        (b"origin", b"https://evil.example"),
+    ]
+    request = Request(
+        {"type": "http", "method": "POST", "path": "/", "headers": scope_headers, "client": ("127.0.0.1", 5000)}
+    )
+    with pytest.raises(HTTPException) as exc:
+        rg.require_local_machine_request(request, "no")
+    assert exc.value.status_code == 403
+
+
+def test_origin_with_path_is_rejected_but_referer_path_is_fine():
+    _local_403({"host": "127.0.0.1:8010", "origin": "http://127.0.0.1:8010/path"})
+    _local_ok({"host": "127.0.0.1:8010", "referer": "http://127.0.0.1:8010/deep/path?q=1"})
+
+
 def test_authority_and_origin_parsers_reject_ambiguous_forms():
     assert rg._authority_hostname("127.0.0.1:8010") == "127.0.0.1"
     assert rg._authority_hostname("[::1]:8010") == "::1"

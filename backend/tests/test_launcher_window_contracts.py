@@ -104,9 +104,46 @@ def test_close_app_refuses_when_no_approved_window(launcher, monkeypatch: pytest
     """승인 창 0 이면 비승인 프로필 창(DevTools 등)을 건드리지 않고 실패를 반환한다."""
     user32 = mock.MagicMock()
     monkeypatch.setattr(launcher, "_user32", lambda: user32)
-    monkeypatch.setattr(launcher, "_any_profile_app_hwnds", lambda: ([], [111, 222]))
+    monkeypatch.setattr(launcher, "_any_profile_app_hwnds", lambda: ([], [111, 222], True))
     assert launcher.close_app_windows() == 1
     user32.PostMessageW.assert_not_called()
+
+
+def test_close_app_does_not_claim_success_when_a_browser_query_failed(
+    launcher, monkeypatch: pytest.MonkeyPatch
+):
+    """한 브라우저 조회가 실패하면 그쪽 승인 창을 놓쳤을 수 있다 — 닫되 성공 주장은 안 함."""
+    user32 = mock.MagicMock()
+    user32.PostMessageW.return_value = 1
+    monkeypatch.setattr(launcher, "_user32", lambda: user32)
+    monkeypatch.setattr(launcher, "_any_profile_app_hwnds", lambda: ([100], [], False))
+    monkeypatch.setattr(launcher, "_approved_alive", lambda _h: False)  # 창은 닫혔다
+    assert launcher.close_app_windows() == 1  # all_ok=False → 성공 주장 금지
+    user32.PostMessageW.assert_called_once()  # 찾은 승인 창에는 닫기를 보냈다
+
+
+def test_focus_targets_only_approved_windows(launcher, monkeypatch: pytest.MonkeyPatch):
+    """정리 구간에 DevTools 만 남았으면 focus 실패 — '이미 실행 중' 오판 방지."""
+    user32 = mock.MagicMock()
+    monkeypatch.setattr(launcher, "_user32", lambda: user32)
+    monkeypatch.setattr(launcher, "_any_profile_app_hwnds", lambda: ([], [111], True))
+    assert launcher._focus_app_window() is False
+    user32.SetForegroundWindow.assert_not_called()
+
+
+def test_spawn_app_window_returns_the_process(launcher, monkeypatch: pytest.MonkeyPatch):
+    """spawn 은 Popen 을 반환해야 CIM 실패 시 보조 pid 탐색이 동작한다(코덱스 BLOCK)."""
+    sentinel = object()
+    captured: dict = {}
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        return sentinel
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
+    got = launcher._spawn_app_window("C:\\x\\chrome.exe", Path("C:/profile"), "http://127.0.0.1:8010")
+    assert got is sentinel
+    assert any(str(a).startswith("--app=") and "appwin=1" in str(a) for a in captured["args"])
 
 
 class TestWatchState:
@@ -120,6 +157,20 @@ class TestWatchState:
         assert st.observe(set(), True, 1.0, lambda h: True) == "waiting"
         late = launcher._APP_FIRST_WINDOW_TIMEOUT + 1.0
         assert st.observe(set(), True, late, lambda h: True) == "fallback"
+
+    def test_query_failure_before_first_approval_holds_instead_of_fallback(self, launcher):
+        """spawn 직후 CIM 이 죽으면 40초 시계로 fallback 하면 안 된다 — 고아 창 방지."""
+        st = self._state(launcher)
+        late = launcher._APP_FIRST_WINDOW_TIMEOUT + 5.0
+        assert st.observe(set(), False, late, lambda h: True) == "hold"
+        # 조회가 회복됐고 창이 나타났으면 시한이 지났어도 정상 앵커
+        assert st.observe({100}, True, late + 1.0, lambda h: True) == "anchored"
+
+    def test_query_recovery_without_window_still_falls_back(self, launcher):
+        st = self._state(launcher)
+        late = launcher._APP_FIRST_WINDOW_TIMEOUT + 5.0
+        st.observe(set(), False, late, lambda h: True)
+        assert st.observe(set(), True, late + 1.0, lambda h: True) == "fallback"
 
     def test_approval_is_sticky_across_title_changes(self, launcher):
         st = self._state(launcher)
