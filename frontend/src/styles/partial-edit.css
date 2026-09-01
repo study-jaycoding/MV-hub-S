@@ -74,6 +74,21 @@
   cursor: crosshair;
   touch-action: none;
 }
+/* 브러시 크기 미리보기 원 — 실제 칠해질 지름. 어두운 외곽선으로 밝은 배경에서도 보이게 */
+.partial-edit-cursor {
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  border: 1.5px solid var(--accent, #bef264);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+  z-index: 2;
+}
+.partial-edit-cursor.erase {
+  border-color: #fff;
+  border-style: dashed;
+}
 .partial-edit-stagebox canvas:not(.is-drawing) {
   pointer-events: none;
 }

@@ -196,6 +196,40 @@ export function PartialEditModal({
   }, [stage, strokes, src]);
 
   const activePointerRef = useRef<number | null>(null); // 멀티 포인터 혼선 방지 — 첫 포인터만
+  // 브러시 크기 커서 미리보기 — 실제 칠해질 지름의 원을 포인터에 따라 표시(상태 없이
+  // ref 직접 갱신: mousemove 마다 리렌더 없이).
+  const cursorRef = useRef<HTMLDivElement | null>(null);
+  const cursorPosRef = useRef<{ x: number; y: number } | null>(null); // 무대 상자 기준 px
+  const updateCursor = () => {
+    const el = cursorRef.current;
+    if (!el) return;
+    const overlay = overlayRef.current;
+    const pos = cursorPosRef.current;
+    if (!pos || !overlay || !src || stage !== "draw") {
+      el.style.display = "none";
+      return;
+    }
+    const rect = overlay.getBoundingClientRect();
+    if (!rect.width) return;
+    const d = brushSize * (rect.width / src.w); // 작업 px → 화면 px
+    el.style.display = "block";
+    el.style.left = `${pos.x}px`;
+    el.style.top = `${pos.y}px`;
+    el.style.width = `${d}px`;
+    el.style.height = `${d}px`;
+    el.classList.toggle("erase", tool === "erase");
+  };
+  const trackCursor = (e: React.PointerEvent) => {
+    const overlay = overlayRef.current;
+    if (!overlay) return;
+    const rect = overlay.getBoundingClientRect();
+    cursorPosRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    updateCursor();
+  };
+  useEffect(() => {
+    updateCursor(); // [ ] 로 크기를 바꾸거나 도구 전환 시 제자리에서 즉시 반영
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brushSize, tool, stage]);
   const toWork = (e: React.PointerEvent) => {
     const overlay = overlayRef.current;
     if (!overlay || !src) return null;
@@ -220,12 +254,17 @@ export function PartialEditModal({
     renderMask(strokes, liveStrokeRef.current);
   };
   const onPointerMove = (e: React.PointerEvent) => {
+    trackCursor(e); // 그리는 중이 아니어도 커서 원은 따라온다
     const live = liveStrokeRef.current;
     if (!live || e.pointerId !== activePointerRef.current) return;
     const p = toWork(e);
     if (!p) return;
     live.points.push(p);
     renderMask(strokes, live);
+  };
+  const onPointerLeave = () => {
+    cursorPosRef.current = null;
+    updateCursor();
   };
   const endStroke = (e: React.PointerEvent) => {
     if (e.pointerId !== activePointerRef.current) return;
@@ -596,10 +635,14 @@ export function PartialEditModal({
                 className={stage === "draw" ? "is-drawing" : ""}
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
+                onPointerEnter={trackCursor}
+                onPointerLeave={onPointerLeave}
                 onPointerUp={endStroke}
                 onPointerCancel={endStroke}
                 onLostPointerCapture={endStroke}
               />
+              {/* 브러시 크기 미리보기 원 — 지우개는 흰 점선 */}
+              <div ref={cursorRef} className="partial-edit-cursor" />
               {stage === "wait" && (
                 <div className="partial-edit-waitveil">
                   {waitStopped ? (
