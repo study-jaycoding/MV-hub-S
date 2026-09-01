@@ -18,9 +18,19 @@ import { saveToDownloadDir } from "../../lib/downloadDir";
 import { flashMsg } from "../../lib/flash";
 import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import { useModels } from "../../lib/useModels";
-import type { Generation, WorkspaceContext } from "../../types";
+import type { Generation, ModelInfo, WorkspaceContext } from "../../types";
 
 const MAX_WORK_PIXELS = 12_000_000; // 12MP — rawMask/feather/layer/final 4장 동시 보유 상한
+
+// 부분 수정 전용 모델 목록(하단 프롬프트의 ALLOWED 와 별개) — 편집 특화만.
+// GPT Image 2 는 장면을 크게 재해석하는 성향이라 마스크 경계가 어긋나기 쉽고 최고가(8.5cr)라
+// 제외(실측 검토). 첫 항목 = 기본 선택: 힉스필드 웹 편집기가 실제로 쓰는 Seedream.
+const EDIT_MODELS = [
+  "seedream_v5_pro",
+  "nano_banana_flash",
+  "nano_banana_2_lite",
+  "nano_banana_pro",
+];
 const POLL_MS = 2_000;
 const SLOW_AFTER_MS = 180_000; // 이후에도 계속 감시 — 실패 처리 아님(이중 과금 방지)
 
@@ -245,6 +255,23 @@ export function PartialEditModal({
     m.setType("image");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // 편집 전용 목록 — 카탈로그(전체 models)에서 EDIT_MODELS 순서대로 골라낸다.
+  const editModels = useMemo(
+    () =>
+      EDIT_MODELS.map((id) => m.models.find((x) => x.job_set_type === id)).filter(
+        (x): x is ModelInfo => !!x,
+      ),
+    [m.models],
+  );
+  // 기본 선택 = 목록 첫 항목(Seedream). 훅의 ALLOWED 기본선택(nano)이 같은 플러시에서
+  // 먼저 실행되고 이 effect 가 덮는다 — 카탈로그 로드 후 1회만.
+  const defaultApplied = useRef(false);
+  useEffect(() => {
+    if (defaultApplied.current || !editModels.length) return;
+    defaultApplied.current = true;
+    m.setModel(editModels[0].job_set_type);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editModels]);
   const aspect = useMemo(() => {
     if (!src || m.paramsModel !== m.model) return null;
     return nearestAspect(m.params.find((p) => p.name === "aspect_ratio")?.enum, src.w, src.h);
@@ -637,7 +664,7 @@ export function PartialEditModal({
                         <div className="sl-dropdown">
                           <div className="sl-dd-title">이미지 모델</div>
                           <div className="sl-dd-scroll">
-                            {m.typeModels.map((tm) => (
+                            {editModels.map((tm) => (
                               <button
                                 key={tm.job_set_type}
                                 className={"sl-dd-item" + (tm.job_set_type === m.model ? " sel" : "")}

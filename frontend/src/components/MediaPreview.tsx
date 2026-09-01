@@ -119,19 +119,6 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
             )}
           </span>
           <div className="preview-head-actions">
-            <button
-              className="lin-board-btn preview-dl-btn"
-              title="원본 다운로드"
-              onClick={() =>
-                downloadOne(
-                  cur.url,
-                  previewDownloadName(cur.url, cur.name, cur.type, cur.genId),
-                  cur.genId,
-                )
-              }
-            >
-              ⤓ 다운로드
-            </button>
             {cur.type === "image" && cur.genId && (
               <button
                 className="lin-board-btn preview-edit-btn"
@@ -157,6 +144,19 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
                 ⧉ 히스토리 보기
               </button>
             )}
+            <button
+              className="lin-board-btn preview-dl-btn"
+              title="원본 다운로드"
+              onClick={() =>
+                downloadOne(
+                  cur.url,
+                  previewDownloadName(cur.url, cur.name, cur.type, cur.genId),
+                  cur.genId,
+                )
+              }
+            >
+              ⤓ 다운로드
+            </button>
           </div>
           <button className="assets-x" onClick={onClose} title="닫기">
             ✕
