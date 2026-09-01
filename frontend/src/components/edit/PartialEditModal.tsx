@@ -136,15 +136,17 @@ export function PartialEditModal({
     return () => current?.bmp.close();
   }, [src]);
   const mountedRef = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // StrictMode 는 setup→cleanup→setup 으로 effect 를 재실행한다 — setup 에서 true 를
+    // 복원하지 않으면 개발 모드에서 mountedRef 가 영구 false 가 된다(코덱스 BLOCK).
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
       runTokenRef.current++; // unmount = 진행 중 폴링·지연 응답 전부 무효화
       if (srcUrlRef.current) URL.revokeObjectURL(srcUrlRef.current);
-    },
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
+  }, []);
 
   // ── 마스크(벡터 스트로크 → rawMask 캔버스) ──
   const [strokes, setStrokes] = useState<Stroke[]>([]);
@@ -221,18 +223,19 @@ export function PartialEditModal({
   };
   const hasBrush = strokes.some((s) => !s.erase);
   // 진짜 잉크가 남았는지 — 지우개로 전부 지운 마스크로 유료 생성을 막는다(코덱스 WARN).
-  // 12MP getImageData 는 비싸므로 64×64 미러로 검사한다.
+  // 축소 미러는 가는 선을 평균화로 놓친다(false negative) → 원본 해상도를 세로 조각
+  // 단위로 정확 검사, 첫 잉크에서 조기 종료. 제출 클릭 1회에만 실행되므로 비용 수용.
   const maskHasInk = (): boolean => {
     const raw = rawMaskRef.current;
     if (!raw) return false;
-    const probe = document.createElement("canvas");
-    probe.width = 64;
-    probe.height = 64;
-    const pctx = probe.getContext("2d", { willReadFrequently: true });
-    if (!pctx) return hasBrush; // 검사 불가 — 기록 기준으로 폴백
-    pctx.drawImage(raw, 0, 0, 64, 64);
-    const data = pctx.getImageData(0, 0, 64, 64).data;
-    for (let i = 3; i < data.length; i += 4) if (data[i] > 8) return true;
+    const ctx = raw.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return hasBrush; // 검사 불가 — 기록 기준으로 폴백
+    const stripe = 256;
+    for (let y = 0; y < raw.height; y += stripe) {
+      const rows = Math.min(stripe, raw.height - y);
+      const data = ctx.getImageData(0, y, raw.width, rows).data;
+      for (let i = 3; i < data.length; i += 4) if (data[i] > 0) return true;
+    }
     return false;
   };
 
@@ -264,6 +267,7 @@ export function PartialEditModal({
   const [prompt, setPrompt] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [waitStopped, setWaitStopped] = useState(false); // 완료됐지만 결과 로드 실패로 감시 종료
   const runTokenRef = useRef(0);
   const [result, setResult] = useState<{ bmp: ImageBitmap; w: number; h: number } | null>(null);
 
@@ -325,6 +329,7 @@ export function PartialEditModal({
           if (token !== runTokenRef.current) return;
           if (resultAttempts >= 5) {
             runTokenRef.current++; // 감시 종료 — 재다운로드 무한 루프 방지
+            setWaitStopped(true); // 감시 화면을 '완료·로드 실패 + 닫기'로 전환
             setError(
               "생성은 완료됐지만 결과를 불러오지 못했습니다 — 라이브러리 카드에서 직접 확인하세요.",
             );
@@ -387,6 +392,7 @@ export function PartialEditModal({
     if (!mountedRef.current) return;
     setSubmitting(false);
     setElapsed(0);
+    setWaitStopped(false);
     setStage("wait");
     startPolling(created.id);
   };
@@ -545,20 +551,32 @@ export function PartialEditModal({
                 onPointerMove={onPointerMove}
                 onPointerUp={endStroke}
                 onPointerCancel={endStroke}
+                onLostPointerCapture={endStroke}
               />
               {stage === "wait" && (
                 <div className="partial-edit-waitveil">
-                  <div>
-                    생성 중… {Math.round(elapsed / 1000)}초
-                    {slow && (
-                      <div className="partial-edit-slow">
-                        오래 걸리고 있습니다 — 라이브러리 카드로도 진행을 확인할 수 있습니다.
+                  {waitStopped ? (
+                    <>
+                      <div>생성은 완료 — 결과 이미지를 불러오지 못했습니다.</div>
+                      <button className="settings-action ghost" onClick={onClose}>
+                        닫기 (카드는 라이브러리에 있음)
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        생성 중… {Math.round(elapsed / 1000)}초
+                        {slow && (
+                          <div className="partial-edit-slow">
+                            오래 걸리고 있습니다 — 라이브러리 카드로도 진행을 확인할 수 있습니다.
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                  <button className="settings-action ghost" onClick={stopMonitoring}>
-                    감시 중단 (생성은 계속됨)
-                  </button>
+                      <button className="settings-action ghost" onClick={stopMonitoring}>
+                        감시 중단 (생성은 계속됨)
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
