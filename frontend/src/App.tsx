@@ -93,6 +93,8 @@ import { seedPending } from "./lib/sceneRecentDoneStore";
 import { useHistoryBoardState } from "./lib/useHistoryBoardState";
 import { usePromptDock } from "./lib/usePromptDock";
 import { usePromptCreatedActions } from "./lib/usePromptCreatedActions";
+import { postLibraryChanged } from "./lib/libraryBroadcast";
+import { PartialEditHost } from "./components/edit/PartialEditHost";
 import {
   canFinalizeGeneration,
   expandDisabledGenerationIds,
@@ -1769,6 +1771,17 @@ export default function App() {
           <VideoCompareModal videos={videoCompare} onClose={() => setVideoCompare(null)} />
         </Suspense>
       )}
+      {/* 부분 수정(브러시 인페인트) — InfoPopup 의 partialEdit 이벤트로 열림.
+          onQueued 는 좁은 목록 merge 만 — handlePromptCreated 를 재사용하면 구성 탭
+          선택 상태에 따라 무관한 부모가 derived 로 붙는다(코덱스 설계 검토 반영). */}
+      <PartialEditHost
+        workspace={workspaceContext}
+        onQueued={(g) => {
+          setGens((prev) => (prev.some((p) => p.id === g.id) ? prev : [g, ...prev]));
+          flash("부분 수정 생성을 시작했습니다.");
+          postLibraryChanged();
+        }}
+      />
     </div>
   );
 }

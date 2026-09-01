@@ -1,0 +1,171 @@
+/* 부분 수정(브러시 인페인트) 모달 — .partial-edit-* 네임스페이스 전용 */
+
+.partial-edit-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(0, 0, 0, 0.62);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.partial-edit-modal {
+  background: var(--panel, #16181d);
+  border: 1px solid var(--border, #2a2e37);
+  border-radius: 12px;
+  padding: 14px 16px 16px;
+  max-width: min(92vw, 1500px);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+}
+
+.partial-edit-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.partial-edit-title {
+  font-weight: 700;
+}
+.partial-edit-sub {
+  color: var(--muted, #8b93a3);
+  font-size: 12px;
+  flex: 1;
+}
+
+.partial-edit-error {
+  color: #ff8f8f;
+  font-size: 13px;
+}
+.partial-edit-note {
+  color: var(--muted, #8b93a3);
+  font-size: 12px;
+}
+.partial-edit-loading {
+  padding: 40px;
+  text-align: center;
+  color: var(--muted, #8b93a3);
+}
+
+/* 이미지 비율 그대로의 무대 — 오버레이 캔버스가 이미지와 1:1 로 겹친다(레터박스 없음).
+   크기는 인라인 스타일이 결정: width=min(86vw,1380px), max-width=calc(62vh × 비율) —
+   높이 상한을 폭 상한으로 파생시켜 어떤 클램프에서도 비율이 깨지지 않는다. */
+.partial-edit-stagebox {
+  position: relative;
+  align-self: center;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0b0d10;
+}
+.partial-edit-stagebox img,
+.partial-edit-stagebox canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  user-select: none;
+}
+.partial-edit-stagebox canvas.is-drawing {
+  cursor: crosshair;
+  touch-action: none;
+}
+.partial-edit-stagebox canvas:not(.is-drawing) {
+  pointer-events: none;
+}
+
+.partial-edit-waitveil {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 14px;
+  text-align: center;
+  pointer-events: auto;
+}
+.partial-edit-slow {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #ffd88a;
+}
+
+.partial-edit-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.partial-edit-tools button {
+  padding: 5px 10px;
+  border: 1px solid var(--border, #2a2e37);
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.partial-edit-tools button.on {
+  background: var(--accent, #bef264);
+  color: #111;
+  border-color: transparent;
+  font-weight: 600;
+}
+.partial-edit-tools button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.partial-edit-tools label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted, #8b93a3);
+}
+
+.partial-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.partial-edit-form textarea {
+  width: 100%;
+  min-height: 52px;
+  resize: vertical;
+  background: var(--panel-2, #101216);
+  border: 1px solid var(--border, #2a2e37);
+  border-radius: 8px;
+  color: inherit;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.partial-edit-formrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.partial-edit-formrow select {
+  background: var(--panel-2, #101216);
+  border: 1px solid var(--border, #2a2e37);
+  border-radius: 7px;
+  color: inherit;
+  padding: 6px 8px;
+  font-size: 12.5px;
+}
+.partial-edit-cost {
+  color: var(--muted, #8b93a3);
+  font-size: 12px;
+  flex: 1;
+}
+.partial-edit-hint {
+  color: var(--muted, #8b93a3);
+  font-size: 12px;
+}

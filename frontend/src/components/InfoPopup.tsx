@@ -3,6 +3,7 @@
 // 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { APP_EVENTS } from "../lib/appEvents";
 import { formatGenerationDateTime, generationListMeta } from "../lib/generationDisplay";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../lib/media";
@@ -392,8 +393,25 @@ export function InfoPopup({
           <span className="info-title" title={title}>
             {target.kind === "generation" ? "ℹ 생성 정보" : "ℹ 파일 정보"}
           </span>
-          {target.kind === "generation" && (onOpenInBoard || onOpenCanvas) && (
+          {target.kind === "generation" && (
             <div className="info-head-actions">
+              {target.gen.status === "done" && target.gen.assets?.[0]?.type === "image" && (
+                <button
+                  className="info-board-btn"
+                  title="칠한 부분만 다시 생성해 원본에 합성"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => {
+                    window.dispatchEvent(
+                      new CustomEvent(APP_EVENTS.partialEdit, {
+                        detail: { genId: target.gen.id },
+                      }),
+                    );
+                    onClose();
+                  }}
+                >
+                  🖌 부분 수정
+                </button>
+              )}
               {onOpenInBoard && (
                 <button
                   className="info-board-btn"
