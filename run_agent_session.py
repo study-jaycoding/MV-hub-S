@@ -264,7 +264,7 @@ APP_EXIT_NO_BROWSER = 3  # Edge/Chrome 없음 — bat 이 기존(콘솔 표시) 
 APP_EXIT_NO_WINDOW = 4  # 창이 제시간에 안 나타남/감시 실패 — 콘솔 복구 후 반환
 
 _APP_WINDOW_CLASS_PREFIX = "Chrome_WidgetWin"
-_APP_CLOSE_DEBOUNCE_SCANS = 5  # 연속 N 회(초) 창 0 이어야 '닫힘' 확정 — 순간 깜빡임 오인 방지
+_APP_CLOSE_DEBOUNCE_SCANS = 3  # 연속 N 회(초) 창 0 이어야 '닫힘' 확정 — 순간 깜빡임 오인 방지
 _APP_FIRST_WINDOW_TIMEOUT = 40.0
 
 ERROR_ALREADY_EXISTS = 183
@@ -545,9 +545,14 @@ def _focus_app_window() -> bool:
 
 def acquire_launcher_mutex(port: str) -> bool:
     """포트+설치별 단일 실행 mutex — 두 번째 실행이 허브 포트를 뺏는 사고 방지.
-    True=획득(계속 진행), False=이미 실행 중."""
+    True=획득(계속 진행), False=이미 실행 중.
+    ★use_last_error=True 필수 — ctypes.windll 은 GetLastError 를 보존하지 않아
+    ERROR_ALREADY_EXISTS 감지가 조용히 무력화된다(실측으로 잡은 버그)."""
     global _launcher_mutex_handle
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     name = f"Local\\MVHub_Launcher_{port}_{_install_id()}"
     handle = kernel32.CreateMutexW(None, True, name)
     if not handle:
@@ -721,9 +726,24 @@ def main(argv: list[str] | None = None) -> int:
         # 기존 앱 창만 앞으로 올린 뒤 조용히 끝낸다(코덱스 검토: split-ownership 방지).
         port = os.environ.get("CONTENT_HUB_PORT", "8010")
         if not acquire_launcher_mutex(port):
-            _focus_app_window()
-            print("[info] MV Hub is already running - switched to the existing window.")
-            return 0
+            if _focus_app_window():
+                # 창이 실제로 있음 = 진짜 중복 실행 — 그 창만 앞으로 올리고 끝.
+                print("[info] MV Hub is already running - switched to the existing window.")
+                return 0
+            # 창은 없는데 mutex 만 잡혀 있음 = 직전 세션이 종료 정리 중(창 닫힘 debounce +
+            # Job 정리, 수 초). 바로 에러 내지 말고 정리가 끝나길 기다렸다 이어서 실행한다.
+            print("[info] Waiting for the previous MV Hub session to finish closing...")
+            deadline = time.time() + 20.0
+            while time.time() < deadline:
+                time.sleep(1.0)
+                if acquire_launcher_mutex(port):
+                    break
+            else:
+                print(
+                    "[ERROR] Another MV Hub session is still running but no window was "
+                    "found. Close it (Task Manager: python/cmd under MV Hub) and retry."
+                )
+                return 1
         _close_stale_launcher_shells(script)
         return run_guarded(script)
     except (OSError, ValueError) as exc:
