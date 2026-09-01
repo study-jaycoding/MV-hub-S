@@ -126,9 +126,28 @@
 .partial-edit-tools label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 12px;
   color: var(--muted, #8b93a3);
+}
+/* 크기 슬라이더 — 얇은 트랙 + 라임 원형 썸(하단 독 슬라이더 감성) */
+.partial-edit-tools input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 150px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.14);
+  outline: none;
+  cursor: pointer;
+}
+.partial-edit-tools input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--accent, #bef264);
+  box-shadow: 0 0 6px rgba(196, 232, 74, 0.5);
 }
 
 /* 하단 프롬프트 독과 같은 모양의 입력 상자 — 칩(.sl-chip)·Generate(.sl-gen)·크레딧

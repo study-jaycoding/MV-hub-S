@@ -514,16 +514,31 @@ export function PartialEditModal({
     }, "image/png");
   };
 
-  // Esc 닫기 — 제출 요청 중·감시 중엔 금지: 제출 중 닫고 다시 열면 새 idempotency key 로
-  // 유료 요청이 이중 생성된다(코덱스 BLOCK). 감시 중 종료는 '감시 중단' 버튼으로만.
+  // 키보드 — Esc 닫기(제출 요청 중·감시 중 금지: 제출 중 닫고 다시 열면 새 idempotency
+  // key 로 유료 요청이 이중 생성, 코덱스 BLOCK) + 그리기 단축키(Ctrl+Z 실행취소, [ ] 크기).
+  // 입력창에 포커스가 있으면 그리기 단축키는 양보한다(텍스트 undo·괄호 입력 보존).
   const closable = stage !== "wait" && !submitting;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && closable) onClose();
+      if (e.key === "Escape") {
+        if (closable) onClose();
+        return;
+      }
+      const t = e.target instanceof Element ? e.target : null;
+      if (t?.closest("textarea, input, select, [contenteditable]")) return;
+      if (stage !== "draw") return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        setStrokes((p) => p.slice(0, -1));
+      } else if (e.key === "[") {
+        setBrushSize((s) => Math.max(10, s - 10));
+      } else if (e.key === "]") {
+        setBrushSize((s) => Math.min(200, s + 10));
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [closable, onClose]);
+  }, [closable, stage, onClose]);
 
   const slow = elapsed > SLOW_AFTER_MS;
   // 비율 보존 무대 크기 — 높이 상한(62vh)을 비율로 폭 상한에 옮겨, 어느 축이 클램프돼도
@@ -611,15 +626,12 @@ export function PartialEditModal({
             {stage === "draw" && (
               <>
                 <div className="partial-edit-tools">
-                  <button disabled={!strokes.length} onClick={() => setStrokes((p) => p.slice(0, -1))}>
-                    ↩ 실행취소
-                  </button>
                   <button disabled={!strokes.length} onClick={() => setStrokes([])}>
                     전체 지우기
                   </button>
                   <span className="partial-edit-toolspacer" />
-                  <label>
-                    Brush Size
+                  <label title="단축키 [ ] 로도 조절">
+                    Size
                     <input
                       type="range"
                       min={10}
@@ -630,15 +642,16 @@ export function PartialEditModal({
                   </label>
                   <button
                     className={tool === "brush" ? "on" : ""}
+                    title="크기 [ ] · 실행취소 Ctrl+Z"
                     onClick={() => setTool("brush")}
                   >
-                    🖌 브러시
+                    🖌 Brush
                   </button>
                   <button
                     className={tool === "erase" ? "on" : ""}
                     onClick={() => setTool("erase")}
                   >
-                    ⌫ 지우개
+                    ⌫ Eraser
                   </button>
                 </div>
                 {/* 하단 프롬프트 독과 같은 모양 — 한 상자에 입력창 + 알약 컨트롤 + 라임 Generate */}
@@ -696,7 +709,6 @@ export function PartialEditModal({
                       </span>
                     </button>
                   </div>
-                  {!hasBrush && <div className="partial-edit-hint">브러시로 수정할 부분을 칠하세요.</div>}
                   {!workspaceReady && (
                     <div className="partial-edit-hint">워크스페이스 확인 후 생성할 수 있습니다.</div>
                   )}
