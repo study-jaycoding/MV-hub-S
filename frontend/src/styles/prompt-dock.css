@@ -505,7 +505,9 @@
 }
 .host-exit-text { margin: 0; line-height: 1.55; }
 .host-exit-actions { display: flex; gap: 8px; margin-top: 12px; }
-.host-exit-actions > button { flex: 1; }  /* 종료·취소 같은 크기 */
+/* 종료·취소 같은 크기 — ghost 의 flex:0 0 auto(특이도 0,2,0)를 이기도록 특이도를 올린다 */
+.host-exit-actions > .settings-action,
+.host-exit-actions > .settings-action.ghost { flex: 1 1 0; width: auto; }
 
 .spotlight-spacer { flex: 1; }
 
