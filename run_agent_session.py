@@ -286,7 +286,7 @@ def _install_id() -> str:
 
 
 def _find_app_browser() -> tuple[str, str] | None:
-    """앱 모드 지원 브라우저 탐색 — (이름, exe 절대경로). 기본 Edge 우선, 다음 Chrome.
+    """앱 모드 지원 브라우저 탐색 — (이름, exe 절대경로). 기본 Chrome 우선, 다음 Edge(Jay 결정).
     env MVHUB_APP_BROWSER=chrome|edge 로 우선순위를 뒤집을 수 있다(선호 없으면 나머지로 폴백)."""
     if os.name != "nt":
         return None
@@ -340,7 +340,7 @@ def _find_app_browser() -> tuple[str, str] | None:
         return ("chrome", exe) if exe else None
 
     preferred = os.environ.get("MVHUB_APP_BROWSER", "").strip().lower()
-    order = (find_chrome, find_edge) if preferred == "chrome" else (find_edge, find_chrome)
+    order = (find_edge, find_chrome) if preferred == "edge" else (find_chrome, find_edge)
     for finder in order:
         found = finder()
         if found:
