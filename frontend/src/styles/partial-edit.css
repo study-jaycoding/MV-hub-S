@@ -92,6 +92,12 @@
 .partial-edit-stagebox canvas:not(.is-drawing) {
   pointer-events: none;
 }
+/* 와이프 위층(원본) — 불투명 배경 wrapper 를 clip: 레터박스로 아래층이 비치는 것 방지 */
+.partial-edit-wipetop {
+  position: absolute;
+  inset: 0;
+  background: #0b0d10;
+}
 /* 비교 A/B — 마우스 x 를 따라오는 세로 분할선 와이프(왼쪽 원본 / 오른쪽 결과) */
 .partial-edit-stagebox.ab-active {
   cursor: ew-resize;

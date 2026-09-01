@@ -77,6 +77,12 @@ export function VideoCompareModal({
       img.src = v.fallback;
     }
   };
+  // 누른 채 Alt+Tab 등으로 창 포커스를 잃으면 pointerup 이 안 와 push 가 고착된다(코덱스 WARN).
+  useEffect(() => {
+    const reset = () => setPushHeld(false);
+    window.addEventListener("blur", reset);
+    return () => window.removeEventListener("blur", reset);
+  }, []);
 
   return (
     <>
@@ -143,15 +149,21 @@ export function VideoCompareModal({
                   <div className="cmp-ablabel">B 2번</div>
                 </>
               ) : abOn ? (
+                // A(1번)는 불투명 배경 wrapper 로 겹치고 wrapper 를 clip — 비율이 달라 contain
+                // 레터박스가 생겨도 아래 B 가 A 쪽에 비치지 않는다(코덱스 WARN).
                 <>
                   <img src={videos[1].url} alt="" draggable={false} onError={wipeFallback(videos[1])} />
-                  <img
-                    src={videos[0].url}
-                    alt=""
-                    draggable={false}
-                    onError={wipeFallback(videos[0])}
+                  <div
+                    className="cmp-wipetop"
                     style={{ clipPath: `inset(0 ${(100 - splitX * 100).toFixed(2)}% 0 0)` }}
-                  />
+                  >
+                    <img
+                      src={videos[0].url}
+                      alt=""
+                      draggable={false}
+                      onError={wipeFallback(videos[0])}
+                    />
+                  </div>
                   <div className="cmp-abline" style={{ left: `${(splitX * 100).toFixed(2)}%` }} />
                   <div className="cmp-ablabel">A 1번 · 2번 B</div>
                 </>

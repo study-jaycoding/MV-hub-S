@@ -45,6 +45,21 @@ export function CompareModal({
     return a?.type === "image" ? compareImageSource(a.file_path, a.thumbnail_path, true) : null;
   });
   const canImageCompare = gens.length === 2 && wipeSrcs.every((s) => !!s);
+  // 와이프 이미지 원본 로드 실패 → 썸네일로 1회만 교체(컬럼 표시와 동일 규칙, 코덱스 WARN).
+  const wipeFallback = (g: Generation) => (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    const thumb = g.assets?.[0]?.thumbnail_path;
+    if (thumb && !img.dataset.fellback) {
+      img.dataset.fellback = "1";
+      img.src = thumb;
+    }
+  };
+  // 누른 채 Alt+Tab 등으로 창 포커스를 잃으면 pointerup 이 안 와 push 가 고착된다(코덱스 WARN).
+  useEffect(() => {
+    const reset = () => setPushHeld(false);
+    window.addEventListener("blur", reset);
+    return () => window.removeEventListener("blur", reset);
+  }, []);
   const [maximized, setMaximized] = useState(false);
   const [windowRect, setWindowRect] = useState<CompareWindowRect | null>(null);
   const modalRef = useRef<HTMLDivElement>(null);
@@ -292,25 +307,26 @@ export function CompareModal({
               {pushHeld ? (
                 // push 우선 — 꾹 누르는 동안 2번(B) 전체
                 <>
-                  <img src={wipeSrcs[1]!} alt="" draggable={false} />
+                  <img src={wipeSrcs[1]!} alt="" draggable={false} onError={wipeFallback(gens[1])} />
                   <div className="cmp-ablabel">B 2번</div>
                 </>
               ) : abOn ? (
-                // 바닥 = B(2번), 위에 A(1번)를 겹치고 분할선 오른쪽을 clip — 왼쪽 A / 오른쪽 B
+                // 바닥 = B(2번), 위에 A(1번)를 불투명 배경 wrapper 로 겹치고 wrapper 를 clip —
+                // 비율이 달라 contain 레터박스가 생겨도 아래 B 가 A 쪽에 비치지 않는다(코덱스 WARN).
                 <>
-                  <img src={wipeSrcs[1]!} alt="" draggable={false} />
-                  <img
-                    src={wipeSrcs[0]!}
-                    alt=""
-                    draggable={false}
+                  <img src={wipeSrcs[1]!} alt="" draggable={false} onError={wipeFallback(gens[1])} />
+                  <div
+                    className="cmp-wipetop"
                     style={{ clipPath: `inset(0 ${(100 - splitX * 100).toFixed(2)}% 0 0)` }}
-                  />
+                  >
+                    <img src={wipeSrcs[0]!} alt="" draggable={false} onError={wipeFallback(gens[0])} />
+                  </div>
                   <div className="cmp-abline" style={{ left: `${(splitX * 100).toFixed(2)}%` }} />
                   <div className="cmp-ablabel">A 1번 · 2번 B</div>
                 </>
               ) : (
                 <>
-                  <img src={wipeSrcs[0]!} alt="" draggable={false} />
+                  <img src={wipeSrcs[0]!} alt="" draggable={false} onError={wipeFallback(gens[0])} />
                   <div className="cmp-ablabel">A 1번</div>
                 </>
               )}

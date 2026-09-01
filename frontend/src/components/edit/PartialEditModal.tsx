@@ -555,6 +555,12 @@ export function PartialEditModal({
   // 비교 A/B — 세로 분할선 와이프: 마우스 x 를 따라 왼쪽=원본(A), 오른쪽=결과(B).
   const [abCompare, setAbCompare] = useState(false);
   const [splitX, setSplitX] = useState(0.5); // 0..1, 무대 폭 기준
+  // 누른 채 Alt+Tab 등으로 창 포커스를 잃으면 pointerup 이 안 와 push 가 고착된다(코덱스 WARN).
+  useEffect(() => {
+    const reset = () => setShowOriginal(false);
+    window.addEventListener("blur", reset);
+    return () => window.removeEventListener("blur", reset);
+  }, []);
 
   // 키보드 — Esc 닫기(제출 요청 중·감시 중 금지: 제출 중 닫고 다시 열면 새 idempotency
   // key 로 유료 요청이 이중 생성, 코덱스 BLOCK) + 그리기 단축키(Ctrl+Z 실행취소,
@@ -815,16 +821,19 @@ export function PartialEditModal({
               />
               {abCompare && !showOriginal && (
                 <>
-                  {/* 원본을 위에 겹치고 분할선 오른쪽을 clip — 왼쪽=A(원본), 오른쪽=B(결과) */}
-                  <img
-                    src={srcUrlRef.current}
-                    alt=""
-                    draggable={false}
-                    style={{
-                      objectFit: "contain",
-                      clipPath: `inset(0 ${(100 - splitX * 100).toFixed(2)}% 0 0)`,
-                    }}
-                  />
+                  {/* 원본을 불투명 배경 wrapper 로 겹치고 wrapper 를 clip — 왼쪽=A(원본),
+                      오른쪽=B(결과). 비율 차이로 레터박스가 생겨도 아래가 비치지 않는다. */}
+                  <div
+                    className="partial-edit-wipetop"
+                    style={{ clipPath: `inset(0 ${(100 - splitX * 100).toFixed(2)}% 0 0)` }}
+                  >
+                    <img
+                      src={srcUrlRef.current}
+                      alt=""
+                      draggable={false}
+                      style={{ objectFit: "contain" }}
+                    />
+                  </div>
                   <div className="partial-edit-abline" style={{ left: `${(splitX * 100).toFixed(2)}%` }} />
                 </>
               )}
@@ -862,6 +871,7 @@ export function PartialEditModal({
                 onClick={() => {
                   setResultUrl(null);
                   setAbCompare(false);
+                  setShowOriginal(false);
                   setStage("draw");
                 }}
               >
