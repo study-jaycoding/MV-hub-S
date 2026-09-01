@@ -210,6 +210,10 @@ export function PartialEditModal({
     if (stage !== "draw" || activePointerRef.current != null) return;
     const p = toWork(e);
     if (!p) return;
+    // 캔버스에 칠하기 시작 = 그리기 모드 복귀 — 프롬프트 포커스를 풀어 [ ]·Ctrl+Z 가
+    // 브러시 단축키로 돌아오게 한다(입력은 프롬프트를 다시 클릭해야 재개).
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.tagName === "TEXTAREA") active.blur();
     activePointerRef.current = e.pointerId;
     (e.target as Element).setPointerCapture(e.pointerId);
     liveStrokeRef.current = { erase: tool === "erase", size: brushSize, points: [p] };
@@ -656,9 +660,9 @@ export function PartialEditModal({
                 </div>
                 {/* 하단 프롬프트 독과 같은 모양 — 한 상자에 입력창 + 알약 컨트롤 + 라임 Generate */}
                 <div className="partial-edit-dock">
+                  {/* autoFocus 없음 — 기본은 그리기 모드([ ] 가 브러시 크기). 입력은 클릭해야 시작 */}
                   <textarea
-                    autoFocus
-                    placeholder="칠한 부분을 무엇으로 바꿀까요? (예: 보름달을 초승달로)"
+                    placeholder="칠한 부분을 무엇으로 바꿀까요? (예: 보름달을 초승달로) — 클릭해서 입력"
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
                   />
