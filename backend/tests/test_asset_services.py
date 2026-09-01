@@ -386,7 +386,9 @@ class AssetIoTests(unittest.TestCase):
             self.assertEqual((root / "captures" / result["path"]).read_bytes(), b"capture-image")
             self.assertEqual(list(root.rglob(".upload-*.part")), [])
             self.assertEqual(offload.await_count, 1)
-            self.assertEqual(offloaded, [asset_io.find_or_commit_media])
+            # 커밋+토큰 부기 원자화 래퍼가 스레드로 offload 된다(안에서 find_or_commit_media 호출)
+            self.assertEqual(offloaded, [assets._commit_capture_with_discard_token])
+            self.assertTrue(result["discard_token"])  # 신규 파일 — 정리 토큰 발급
 
     def test_reference_import_route_saves_media_and_cleans_temp_on_failure(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:

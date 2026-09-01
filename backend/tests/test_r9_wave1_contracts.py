@@ -71,7 +71,9 @@ def test_asset_commit_cancellation_still_invalidates_both_tree_caches(
     combined_invalidate = Mock()
 
     async def commit_then_cancel(func, /, *args, **kwargs):
-        target, reused = func(*args, **kwargs)
+        result = func(*args, **kwargs)
+        # capture 는 (target, reused, discard_token) 3-튜플(토큰 부기 원자화), 임포트는 2-튜플
+        target, reused = result[0], result[1]
         assert target.is_file()
         assert reused is False
         raise asyncio.CancelledError
