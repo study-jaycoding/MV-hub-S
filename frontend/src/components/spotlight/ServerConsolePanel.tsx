@@ -167,7 +167,13 @@ export function ServerConsolePanel({
           title="생성·재생성은 내 PC의 에이전트가 켜져 있어야 실행됩니다(MV_agent.bat). 클릭=크레딧 확인"
           onClick={onCheckAccount}
         >
-          CLI
+          {hubOk == null
+            ? "확인 중…"
+            : !hubOk
+              ? "연결 안 됨"
+              : agentOn
+                ? "연결됨"
+                : "에이전트 꺼짐"}
         </button>
         {account?.credits != null && (
           <>
