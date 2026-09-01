@@ -2699,7 +2699,12 @@ class _AgentLogSink:
         try:
             with self._lock:
                 if self._fh is not None:
-                    self._fh.flush()
+                    try:
+                        self._fh.flush()
+                    except Exception:
+                        # write 실패와 같은 계약 — 손상 가능 핸들 폐기 후 쿨다운 복구
+                        self._drop_handle()
+                        self._retry_at = time.monotonic() + self._RETRY_COOLDOWN
         except Exception:
             pass
 
