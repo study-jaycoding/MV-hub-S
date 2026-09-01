@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -53,8 +55,10 @@ def test_console_summary_clamps_tail_parameter(tmp_path, monkeypatch: pytest.Mon
     assert len(body["agent_log"]["lines"]) == 300  # 상한 300줄
 
 
-def test_close_app_is_local_only_and_spawns_window_closer(monkeypatch: pytest.MonkeyPatch):
-    """앱 종료: 원격 403, 로컬은 run_agent_session --close-app-window 를 백그라운드로 띄운다."""
+def test_close_app_is_local_only_and_waits_for_the_window_closer(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """앱 종료: 원격 403, 로컬은 run_agent_session --close-app-window 결과를 기다린다."""
     monkeypatch.setattr(
         request_guards, "local_machine_hosts", lambda: frozenset({"127.0.0.1"})
     )
@@ -62,12 +66,51 @@ def test_close_app_is_local_only_and_spawns_window_closer(monkeypatch: pytest.Mo
         console.console_close_app(_request("192.168.10.44"))
     assert exc.value.status_code == 403
 
-    spawned: dict[str, list[str]] = {}
+    ran: dict[str, list[str]] = {}
 
-    def fake_popen(args, **_kwargs):
-        spawned["args"] = [str(a) for a in args]
+    def fake_run(args, **_kwargs):
+        ran["args"] = [str(a) for a in args]
+        return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(console.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(console.subprocess, "run", fake_run)
     assert console.console_close_app(_request()) == {"ok": True}
-    assert spawned["args"][1].endswith("run_agent_session.py")
-    assert spawned["args"][2] == "--close-app-window"
+    assert ran["args"][1].endswith("run_agent_session.py")
+    assert ran["args"][2] == "--close-app-window"
+
+
+def test_close_app_surfaces_helper_failure_and_timeout(monkeypatch: pytest.MonkeyPatch):
+    """도우미 실패(창 못 찾음 exit 1)·무응답은 에러로 — 프론트 '종료 중…' 영구 고정 방지."""
+    monkeypatch.setattr(
+        request_guards, "local_machine_hosts", lambda: frozenset({"127.0.0.1"})
+    )
+    monkeypatch.setattr(
+        console.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1)
+    )
+    with pytest.raises(HTTPException) as exc:
+        console.console_close_app(_request())
+    assert exc.value.status_code == 409
+
+    def raise_timeout(*_a, **_k):
+        raise console.subprocess.TimeoutExpired(cmd="closer", timeout=45)
+
+    monkeypatch.setattr(console.subprocess, "run", raise_timeout)
+    with pytest.raises(HTTPException) as exc:
+        console.console_close_app(_request())
+    assert exc.value.status_code == 504
+
+
+def test_tail_masks_bearer_tokens_and_signed_url_queries(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """로그 꼬리의 비밀값 마스킹 — 과거 기록된 로그도 UI 로는 안 나간다."""
+    monkeypatch.setattr(console, "BACKEND_DIR", tmp_path)
+    (tmp_path / "agent.log").write_text(
+        "Authorization: Bearer abc.def-ghi_jkl\n"
+        "GET https://cdn.example.com/v.mp4?Policy=AAA&Signature=BBB&Key-Pair-Id=CCC ok\n"
+        "plain line stays untouched https://cdn.example.com/v.mp4?width=640\n",
+        encoding="utf-8",
+    )
+    lines = console.console_summary(_request(), tail=10)["agent_log"]["lines"]
+    assert lines[0] == "Authorization: Bearer ***"
+    assert "?Policy=***&Signature=***&Key-Pair-Id=*** ok" in lines[1]
+    assert lines[2].endswith("?width=640")

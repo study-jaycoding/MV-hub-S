@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,23 @@ from ..services.request_guards import require_local_machine_request
 router = APIRouter(prefix="/api/console", tags=["console"])
 
 _TAIL_MAX_BYTES = 64 * 1024  # 파일 끝 64KB 만 읽는다 — 큰 로그도 응답이 무겁지 않게
+
+# 로그 꼬리를 화면으로 내보내기 전 비밀값 마스킹 — 과거에 기록된 로그(구버전 포맷 포함)도
+# UI 노출은 막는다. Bearer 토큰과 서명 URL 쿼리 키(CloudFront Policy/Signature 등)가 대상.
+_MASK_QUERY_KEYS = (
+    "token|access_token|api_key|apikey|secret|password|signature"
+    "|x-amz-signature|key-pair-id|policy|expires"
+)
+_MASK_PATTERNS = [
+    (re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 ***"),
+    (re.compile(rf"(?i)([?&](?:{_MASK_QUERY_KEYS})=)[^&\s\"']+"), r"\1***"),
+]
+
+
+def _mask_secrets(line: str) -> str:
+    for pattern, repl in _MASK_PATTERNS:
+        line = pattern.sub(repl, line)
+    return line
 
 
 def _tail_lines(path: Path, limit: int) -> dict[str, Any]:
@@ -42,7 +60,7 @@ def _tail_lines(path: Path, limit: int) -> dict[str, Any]:
     return {
         "exists": True,
         "updated_at": stat.st_mtime,  # epoch 초 — 프론트가 "n초 전"으로 표기
-        "lines": lines[-limit:],
+        "lines": [_mask_secrets(line) for line in lines[-limit:]],
     }
 
 
@@ -88,12 +106,23 @@ def console_close_app(request: Request):
     script = APP_ROOT / "run_agent_session.py"
     if not script.is_file():
         raise HTTPException(status_code=400, detail="run_agent_session.py 를 찾을 수 없습니다")
-    subprocess.Popen(  # noqa: S603 — 설치 루트의 자체 스크립트 + 고정 인자
-        [sys.executable, str(script), "--close-app-window"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-        creationflags=_CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
+    # 도우미 결과를 기다렸다가 실패면 에러로 — fire-and-forget 이면 창이 그대로인데
+    # 프론트가 "종료 중…"에 영구 고정된다. sync 라우트라 threadpool 에서 돌아 이벤트
+    # 루프는 막지 않고, 도우미는 Edge·Chrome 프로세스 조회에 각 최대 ~15초 걸릴 수 있다.
+    try:
+        result = subprocess.run(  # noqa: S603 — 설치 루트의 자체 스크립트 + 고정 인자
+            [sys.executable, str(script), "--close-app-window"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=45,
+            creationflags=_CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(
+            status_code=504, detail="앱 창 닫기가 응답하지 않습니다 — 창을 직접 닫아도 동일하게 정리됩니다"
+        )
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=409, detail="닫을 MV Hub 앱 창을 찾지 못했습니다 — 창을 직접 닫아도 동일하게 정리됩니다"
+        )
     return {"ok": True}

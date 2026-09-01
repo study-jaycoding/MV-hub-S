@@ -490,9 +490,26 @@ def _console_window() -> int:
     return int(ctypes.windll.kernel32.GetConsoleWindow() or 0)
 
 
+def _launched_as_one_shot(cmdcmdline: str) -> bool:
+    """최초 cmd 의 기동 명령줄(MVHUB_CMDCMDLINE)에 /c 가 있으면 일회용 실행(더블클릭 등).
+    /c 없음 = 사용자가 띄워 둔 대화형 cmd(또는 /k) — 그 창을 숨기면 안 된다.
+    값이 없거나 파싱 실패면 False(안전하게 '숨기지 않음')."""
+    if not cmdcmdline:
+        return False
+    try:
+        argv = _parse_command_line(cmdcmdline)
+    except Exception:
+        return False
+    return any(arg.casefold() == "/c" for arg in argv)
+
+
 def _console_is_ours() -> bool:
     """이 콘솔에 사용자 셸(PowerShell 등)이 붙어 있으면 숨기지 않는다 —
-    더블클릭 실행(콘솔=우리 전용)일 때만 숨김(코덱스 검토 반영)."""
+    더블클릭 실행(콘솔=우리 전용)일 때만 숨김(코덱스 검토 반영).
+    cmd.exe 는 bat 해석기라 프로세스 목록만으로는 대화형/일회용을 못 가른다 →
+    bat 이 넘겨준 최초 기동 명령줄(MVHUB_CMDCMDLINE)의 /c 유무로 판별한다."""
+    if not _launched_as_one_shot(os.environ.get("MVHUB_CMDCMDLINE", "")):
+        return False
     kernel32 = ctypes.windll.kernel32
     count = 64
     pids = (wintypes.DWORD * count)()
@@ -558,10 +575,9 @@ def close_app_windows() -> int:
     WM_CLOSE = 0x0010
     user32 = _user32()
     hwnds = _any_profile_app_hwnds()
-    for hwnd in hwnds:
-        user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
-    print(f"[close-app] WM_CLOSE sent to {len(hwnds)} window(s)")
-    return 0 if hwnds else 1
+    sent = sum(1 for hwnd in hwnds if user32.PostMessageW(hwnd, WM_CLOSE, 0, 0))
+    print(f"[close-app] WM_CLOSE sent to {sent}/{len(hwnds)} window(s)")
+    return 0 if sent else 1  # 0건이면 실패(exit 1) — 백엔드가 에러로 돌려 UI 가 복구된다
 
 
 def acquire_launcher_mutex(port: str) -> bool:

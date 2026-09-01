@@ -1642,7 +1642,9 @@ def _download_ref(server: str, token: str, url: str, suffix: str, timeout: int =
                 shutil.copyfileobj(r, f)
             return tmp
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as e:
-        print(f"[경고] 레퍼런스 다운로드 실패({url}): {e}")
+        # 서명 쿼리(CloudFront Policy/Signature 등)가 agent.log 에 영속되지 않게 경로만 기록
+        safe_url = urlparse(url)._replace(query="", fragment="").geturl()
+        print(f"[경고] 레퍼런스 다운로드 실패({safe_url}): {e}")
         return None
 
 
@@ -1779,7 +1781,8 @@ def _submit_one(
     submission_fingerprint = _submission_fingerprint(
         model, prompt, params, allowed_params, refs
     )
-    print(f"  → {model}: {prompt[:40]}")
+    # 프롬프트 원문은 agent.log 에 영속하지 않는다(Host 콘솔 /summary 로도 노출되므로) — 길이만
+    print(f"  → {model}: 프롬프트 {len(prompt)}자")
     # 1) 비대기 제출 → job_id 즉시 확보(create 가 과금원). 응답 실측은 ["<uuid>"] 배열.
     # workspace 선택은 CLI 전역 상태다. 전환·검증부터 generate create 반환까지 한 요청만 진입시켜,
     # 다른 제출 스레드가 중간에 공간을 바꾸는 경합을 막는다. create 반환 뒤 원격 추적은 다시 병렬이다.

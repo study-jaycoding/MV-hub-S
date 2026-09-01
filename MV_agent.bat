@@ -35,6 +35,11 @@ REM below (app-window mode exclusion, login message) agree with the backend.
 if /i "%CONTENT_HUB_AUTH%"=="true" set "CONTENT_HUB_AUTH=1"
 if /i "%CONTENT_HUB_AUTH%"=="yes" set "CONTENT_HUB_AUTH=1"
 if /i "%CONTENT_HUB_AUTH%"=="on" set "CONTENT_HUB_AUTH=1"
+REM Console-ownership hint for app-window mode: capture how the OUTERMOST cmd was
+REM started. Double-click = one-shot "cmd /c" (safe to hide this console); a cmd the
+REM user keeps open has no /c and must never be hidden. Guard relaunches would see
+REM their own /c, so only the very first run captures the value (if not defined).
+if not defined MVHUB_CMDCMDLINE set "MVHUB_CMDCMDLINE=%CMDCMDLINE%"
 REM Show the manage (PM dashboard) button on the local hub too. Manage DATA is proxied
 REM to the shared server; access is still gated by each account's global role. Set 0 to hide.
 if "%CONTENT_HUB_MANAGE%"=="" set "CONTENT_HUB_MANAGE=1"
