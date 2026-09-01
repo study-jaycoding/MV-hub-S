@@ -21,3 +21,19 @@ export function isAppWindow(
     return false; // storage 차단 환경 — 확인창 없이 종전 동작
   }
 }
+
+// 앱 안의 '종료' 버튼으로 닫을 때는 브라우저 확인창(beforeunload)을 건너뛴다 —
+// 우리 디자인 확인창에서 이미 물었으므로 이중 확인 방지. 실패 시 재무장.
+let closeConfirmDisarmed = false;
+
+export function disarmCloseConfirm(): void {
+  closeConfirmDisarmed = true;
+}
+
+export function rearmCloseConfirm(): void {
+  closeConfirmDisarmed = false;
+}
+
+export function closeConfirmArmed(): boolean {
+  return !closeConfirmDisarmed;
+}

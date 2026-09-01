@@ -521,9 +521,9 @@ def _set_console_visible(visible: bool) -> None:
         _user32().ShowWindow(hwnd, SW_SHOW if visible else SW_HIDE)
 
 
-def _focus_app_window() -> bool:
-    """이미 떠 있는 MV Hub 앱 창을 앞으로 — 중복 실행 시 두 번째 런처가 호출.
-    어느 브라우저로 열렸는지 모르니 두 브라우저의 전용 프로필을 모두 확인한다."""
+def _any_profile_app_hwnds() -> list[int]:
+    """두 브라우저의 전용 프로필을 모두 확인해 보이는 MV Hub 앱 창 목록을 모은다."""
+    found: list[int] = []
     for name, exe_basename in (("edge", "msedge.exe"), ("chrome", "chrome.exe")):
         profile = _app_profile_dir(name)
         want_profile = str(profile).casefold().rstrip("\\/")
@@ -539,11 +539,29 @@ def _focus_app_window() -> bool:
                 if value and str(Path(value)).casefold().rstrip("\\/") == want_profile:
                     pids.add(row["pid"])
                     break
-        hwnds = _visible_app_hwnds(pids)
-        if hwnds:
-            _user32().SetForegroundWindow(hwnds[0])
-            return True
+        found.extend(_visible_app_hwnds(pids))
+    return found
+
+
+def _focus_app_window() -> bool:
+    """이미 떠 있는 MV Hub 앱 창을 앞으로 — 중복 실행 시 두 번째 런처가 호출."""
+    hwnds = _any_profile_app_hwnds()
+    if hwnds:
+        _user32().SetForegroundWindow(hwnds[0])
+        return True
     return False
+
+
+def close_app_windows() -> int:
+    """보이는 MV Hub 앱 창 전부에 WM_CLOSE 전송 — 앱 안의 '종료' 확인 후 백엔드가 호출.
+    창이 닫히면 감시자가 평소의 정상 종료 절차(Job 정리 → 허브·에이전트 정지)를 밟는다."""
+    WM_CLOSE = 0x0010
+    user32 = _user32()
+    hwnds = _any_profile_app_hwnds()
+    for hwnd in hwnds:
+        user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+    print(f"[close-app] WM_CLOSE sent to {len(hwnds)} window(s)")
+    return 0 if hwnds else 1
 
 
 def acquire_launcher_mutex(port: str) -> bool:
@@ -707,8 +725,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--open-url", default="")
     parser.add_argument("--app-probe", action="store_true")
     parser.add_argument("--app-window", default="")
+    parser.add_argument("--close-app-window", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.close_app_window:
+            return close_app_windows()
         if args.app_probe:
             # 앱 창 모드 가능? — Edge/Chrome 존재 판정만(빠름). 0=가능 / 3=불가.
             return 0 if _find_app_browser() else APP_EXIT_NO_BROWSER

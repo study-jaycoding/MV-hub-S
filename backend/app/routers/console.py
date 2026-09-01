@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from ..config import BACKEND_DIR, PORT
 from ..services import cli_bridge
@@ -69,3 +72,28 @@ def console_summary(request: Request, tail: int = 80):
         "agent_log": _tail_lines(BACKEND_DIR / "agent.log", tail),
         "hub_log": _tail_lines(BACKEND_DIR / "hub.log", tail),
     }
+
+
+_CREATE_NO_WINDOW = 0x08000000
+
+
+@router.post("/close-app")
+def console_close_app(request: Request):
+    """앱 내 '종료' 확인 후 호출 — MV Hub 앱 창에 OS 닫기(WM_CLOSE)를 보낸다.
+    창이 닫히면 런처 감시자가 평소의 정상 종료 절차(허브·에이전트 정지)를 밟는다.
+    프론트는 호출 전에 beforeunload 확인창을 무장 해제해 이중 확인이 없다."""
+    require_local_machine_request(
+        request, "앱 종료는 해당 작업자 PC에서만 실행할 수 있습니다"
+    )
+    script = APP_ROOT / "run_agent_session.py"
+    if not script.is_file():
+        raise HTTPException(status_code=400, detail="run_agent_session.py 를 찾을 수 없습니다")
+    subprocess.Popen(  # noqa: S603 — 설치 루트의 자체 스크립트 + 고정 인자
+        [sys.executable, str(script), "--close-app-window"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=_CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    return {"ok": True}

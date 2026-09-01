@@ -27,7 +27,7 @@ import {
   LibrarySelectionActionBar,
 } from "./components/app/SelectionActionBar";
 import { KEY_COLORS } from "./lib/appConstants";
-import { isAppWindow } from "./lib/appWindow";
+import { closeConfirmArmed, isAppWindow } from "./lib/appWindow";
 import { generationQueryKey } from "./lib/appGenerationQuery";
 import { generationsByIds, uniqueTagNames } from "./lib/generationTags";
 import { useAppNavigation } from "./lib/useAppNavigation";
@@ -185,6 +185,7 @@ export default function App() {
   useEffect(() => {
     if (!isAppWindow()) return;
     const confirmClose = (event: BeforeUnloadEvent) => {
+      if (!closeConfirmArmed()) return; // 앱 내 '종료' 확인을 이미 거침 — 이중 확인 방지
       event.preventDefault();
       event.returnValue = ""; // 크롬은 이 값이 있어야 확인창을 띄운다
     };

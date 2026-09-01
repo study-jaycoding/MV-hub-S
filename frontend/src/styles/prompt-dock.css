@@ -497,6 +497,14 @@
   font-family: Consolas, "Courier New", monospace; color: var(--text);
 }
 .sl-console-error { color: #ff6b6b; font-size: 12px; }
+/* 앱 종료 — Host 콘솔 하단 버튼 + 화면 중앙 확인창(우리 디자인) */
+.host-exit-row { margin-top: 12px; display: flex; justify-content: flex-end; }
+.host-exit-confirm {
+  z-index: 340; width: min(360px, 90vw);
+  top: 50%; left: 50%; right: auto; transform: translate(-50%, -50%);
+}
+.host-exit-text { margin: 0; line-height: 1.55; }
+.host-exit-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 
 .spotlight-spacer { flex: 1; }
 

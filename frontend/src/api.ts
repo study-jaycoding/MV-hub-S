@@ -449,6 +449,9 @@ export const api = {
   // 서버 콘솔 패널 — cmd 창에 보이던 정보(버전·CLI·에이전트/허브 로그 꼬리). 로컬 전용.
   consoleSummary: () =>
     jsonFetch<import("./types").ConsoleSummary>("/api/console/summary"),
+  // 앱 내 '종료' 확인 후 — 앱 창을 OS 측에서 닫아 정상 종료 절차로 이어지게 한다. 로컬 전용.
+  closeApp: () =>
+    jsonFetch<{ ok: boolean }>("/api/console/close-app", { method: "POST" }),
   // 로컬 텔레메트리(매니징) push 대기·실패 상태 — 조용히 묻히던 실패 가시화(read-only)
   syncStatus: () =>
     jsonFetch<{

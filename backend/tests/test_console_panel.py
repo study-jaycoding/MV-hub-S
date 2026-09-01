@@ -51,3 +51,23 @@ def test_console_summary_clamps_tail_parameter(tmp_path, monkeypatch: pytest.Mon
     )
     body = console.console_summary(_request(), tail=99999)
     assert len(body["agent_log"]["lines"]) == 300  # 상한 300줄
+
+
+def test_close_app_is_local_only_and_spawns_window_closer(monkeypatch: pytest.MonkeyPatch):
+    """앱 종료: 원격 403, 로컬은 run_agent_session --close-app-window 를 백그라운드로 띄운다."""
+    monkeypatch.setattr(
+        request_guards, "local_machine_hosts", lambda: frozenset({"127.0.0.1"})
+    )
+    with pytest.raises(HTTPException) as exc:
+        console.console_close_app(_request("192.168.10.44"))
+    assert exc.value.status_code == 403
+
+    spawned: dict[str, list[str]] = {}
+
+    def fake_popen(args, **_kwargs):
+        spawned["args"] = [str(a) for a in args]
+
+    monkeypatch.setattr(console.subprocess, "Popen", fake_popen)
+    assert console.console_close_app(_request()) == {"ok": True}
+    assert spawned["args"][1].endswith("run_agent_session.py")
+    assert spawned["args"][2] == "--close-app-window"
