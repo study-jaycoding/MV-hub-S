@@ -175,6 +175,8 @@ interface Props {
   onBindingChange?: (binding: { cardId: string; refs: SceneRef[] } | null) => void;
   // 마지막으로 본 화면(확대/이동)을 기억 — 팬/줌을 멈출 때 저장. 재렌더 없이 localStorage 에만 조용히.
   onCameraChange?: (camera: { z: number; x: number; y: number }) => void;
+  // 툴바 줌 클러스터([맞춤][−][%][+])의 % 표시 — 반올림 % 가 바뀔 때만 올라온다.
+  onZoomPct?: (pct: number) => void;
   // 생성 결과 카드 = 히스토리 카드(HistoryBoardNode). 히스토리와 동일한 액션을 그대로 위임.
   onPreview?: (t: PreviewTarget) => void;
   onInfo?: (t: InfoTarget) => void;
@@ -205,6 +207,8 @@ interface Props {
     deleteSelected: () => void;
     setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
     flushPending: () => void; // 밀린 입력 저장 확정 — App 이 씬 전환 직전 호출(옛 씬에 정확히 저장)
+    zoomFit: () => void; // 툴바 '맞춤' — f 키와 동일(선택 있으면 선택 중심, 없으면 전체)
+    zoomStep: (dir: 1 | -1) => void; // 툴바 −/+ — 화면 중앙 기준 한 단계 확대/축소
   } | null>;
   // 생성 카드 아래 'Generate' 툴바 — 즉시 생성(하단 프롬프트 submit 재사용). 배치수는 노드별(card.batchCount)로 관리.
   onGenerateCard?: (
@@ -265,6 +269,7 @@ export function SceneBoard({
   ioPanelHot,
   onBindingChange,
   onCameraChange,
+  onZoomPct,
   onPreview,
   onInfo,
   onRegenerate,
@@ -499,6 +504,7 @@ export function SceneBoard({
     toCanvas,
     navigateTo,
     frameRects,
+    stepZoom,
     beginPan,
   } = useSceneViewport({
     sceneId: scene.id,
@@ -506,6 +512,7 @@ export function SceneBoard({
     onCameraChange,
     cullingEnabled: CULL_ENABLED,
     gridSize: GRID,
+    onZoomPctChange: onZoomPct,
   });
   // 캔버스 위 마지막 마우스 좌표(클라이언트) — 선택 없이 n 눌렀을 때 이 위치에 카드 생성.
   const lastMouseRef = useRef<{ x: number; y: number; over: boolean }>({ x: 0, y: 0, over: false });
@@ -2062,7 +2069,14 @@ export function SceneBoard({
   // 명령형 핸들 바인딩은 렌더 중 write(비순수) 대신 커밋 후 useLayoutEffect 에서(refs 라 항상 최신).
   //  언마운트(탭 이탈·씬 언마운트) 시 핸들을 비워 옛 SceneBoard 클로저/refs 가 App 에 붙잡히지 않게 한다.
   useLayoutEffect(() => {
-    if (actionRef) actionRef.current = { deleteSelected: () => deleteCards(selResultCardIds()), setCardRefs, flushPending };
+    if (actionRef)
+      actionRef.current = {
+        deleteSelected: () => deleteCards(selResultCardIds()),
+        setCardRefs,
+        flushPending,
+        zoomFit: frameView,
+        zoomStep: stepZoom,
+      };
     return () => {
       if (actionRef) actionRef.current = null;
     };

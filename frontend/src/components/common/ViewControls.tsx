@@ -15,6 +15,8 @@ interface Props {
   onSelectLayout: (layout: LayoutMode) => void;
   onToggleGroupByDate: () => void;
   showLayout?: boolean;
+  // 씬 캔버스 줌 — 있으면 슬라이더 대신 [맞춤][−][%][+] 클러스터를 그린다.
+  zoomControl?: { pct: number; onFit: () => void; onStep: (dir: 1 | -1) => void };
   t?: (text: string) => string;
 }
 
@@ -31,6 +33,7 @@ export function ViewControls({
   onSelectLayout,
   onToggleGroupByDate,
   showLayout = true,
+  zoomControl,
   t = (text) => text,
 }: Props) {
   // 툴팁은 항상 뷰 이름(그리드/리스트)만 — 날짜 구분 상태와 무관(라이브러리·에셋 공통).
@@ -49,16 +52,37 @@ export function ViewControls({
       >
         {fitContain ? "▢" : "▣"}
       </button>
-      <div className="size-slider" title={sizeTitle}>
-        <input
-          type="range"
-          min={scaleMin}
-          max={scaleMax}
-          step={0.05}
-          value={scale}
-          onChange={(e) => onScale(Number(e.target.value))}
-        />
-      </div>
+      {zoomControl ? (
+        <div className="zoom-cluster">
+          <button
+            className="zc-fit"
+            onClick={zoomControl.onFit}
+            title={t("전체가 보이게 맞춤 — 선택이 있으면 선택 중심 (단축키 f)")}
+          >
+            {t("맞춤")}
+          </button>
+          <div className="zc-group">
+            <button onClick={() => zoomControl.onStep(-1)} title={t("축소")}>
+              −
+            </button>
+            <span className="zc-pct">{zoomControl.pct}%</span>
+            <button onClick={() => zoomControl.onStep(1)} title={t("확대")}>
+              +
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="size-slider" title={sizeTitle}>
+          <input
+            type="range"
+            min={scaleMin}
+            max={scaleMax}
+            step={0.05}
+            value={scale}
+            onChange={(e) => onScale(Number(e.target.value))}
+          />
+        </div>
+      )}
       {showLayout && (
         <div className="layout-toggle">
           <button

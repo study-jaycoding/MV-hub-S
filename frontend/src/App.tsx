@@ -176,6 +176,8 @@ export default function App() {
   const projectWorkspaceId =
     workspaceContext.scope === "team" ? workspaceContext.id || undefined : undefined;
   const [compareGens, setCompareGens] = useState<Generation[] | null>(null); // DAM 버전 비교
+  // 씬 캔버스 줌 %(툴바 [맞춤][−][%][+] 표시) — SceneBoard 가 반올림 % 바뀔 때만 올린다.
+  const [sceneZoomPct, setSceneZoomPct] = useState(100);
   // 단순 미디어 비교(레퍼런스 포함) — 열림 대상 + 씬 선택이 미디어비교 가능한지(상단 선택바가 비교버튼 표시).
   type CompareMedia = { url: string; name: string; type: "image" | "video"; fallback?: string; full?: string };
   const [videoCompare, setVideoCompare] = useState<CompareMedia[] | null>(null);
@@ -1433,6 +1435,16 @@ export default function App() {
               onToggleTagPanel={toggleTagPanel}
               zoomValue={boardStats.zoomPct / 100}
               onZoomValue={(v) => boardControl.current?.zoomTo(v)}
+              // 씬(캔버스) 활성 시 슬라이더(히스토리 보드 배선이라 무동작)를 [맞춤][−][%][+]로 교체
+              sceneZoom={
+                activeScene
+                  ? {
+                      pct: sceneZoomPct,
+                      onFit: () => sceneActionRef.current?.zoomFit(),
+                      onStep: (dir) => sceneActionRef.current?.zoomStep(dir),
+                    }
+                  : undefined
+              }
               boardMode
               showFilterToggle
             />
@@ -1483,6 +1495,7 @@ export default function App() {
                 onVariantDelete={deleteReturningIds}
                 onSelectionGens={setSceneSelGens}
                 actionRef={sceneActionRef}
+                onZoomPct={setSceneZoomPct}
                 onGenerateCard={(cardId, batch, assignment) =>
                   spotlightPromptRef.current?.submit(batch, assignment, {
                     sceneId: activeScene.id,

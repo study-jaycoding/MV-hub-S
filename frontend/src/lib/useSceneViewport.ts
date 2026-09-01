@@ -32,6 +32,8 @@ interface UseSceneViewportOptions {
   onCameraChange?: (camera: SceneCamera) => void;
   cullingEnabled: boolean;
   gridSize?: number;
+  // 툴바 % 표시용 — 반올림 % 가 실제로 바뀔 때만 호출(팬만 하면 안 부른다).
+  onZoomPctChange?: (pct: number) => void;
 }
 
 const normalizedCamera = (camera?: SceneCamera): SceneCamera => ({
@@ -47,6 +49,7 @@ export function useSceneViewport({
   onCameraChange,
   cullingEnabled,
   gridSize = 22,
+  onZoomPctChange,
 }: UseSceneViewportOptions) {
   const initialCamera = normalizedCamera(camera);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -63,6 +66,9 @@ export function useSceneViewport({
   incomingCameraRef.current = camera;
   const onCameraChangeRef = useRef(onCameraChange);
   onCameraChangeRef.current = onCameraChange;
+  const onZoomPctChangeRef = useRef(onZoomPctChange);
+  onZoomPctChangeRef.current = onZoomPctChange;
+  const lastZoomPctRef = useRef(-1);
 
   const getCamera = useCallback(
     (): SceneCamera => ({ z: zoomRef.current, x: panRef.current.x, y: panRef.current.y }),
@@ -80,6 +86,11 @@ export function useSceneViewport({
 
   const applyTransform = useCallback(() => {
     const current = getCamera();
+    const pct = Math.round(current.z * 100);
+    if (pct !== lastZoomPctRef.current) {
+      lastZoomPctRef.current = pct;
+      onZoomPctChangeRef.current?.(pct);
+    }
     const canvas = canvasRef.current;
     if (canvas) {
       canvas.style.transform = `translate(${current.x}px, ${current.y}px) scale(${current.z})`;
@@ -192,6 +203,25 @@ export function useSceneViewport({
     [applyTransform, persistCamera, replaceCamera],
   );
 
+  // 툴바 −/+ — 휠 줌과 같은 한 단계(×1.1) 규칙을 화면 중앙 기준으로 적용.
+  const stepZoom = useCallback(
+    (dir: 1 | -1) => {
+      const viewport = scrollRef.current?.getBoundingClientRect();
+      if (!viewport) return;
+      const next = zoomSceneCameraAt(
+        getCamera(),
+        viewport.width / 2,
+        viewport.height / 2,
+        dir > 0 ? -1 : 1, // deltaY<0 = 확대
+      );
+      if (next.z === zoomRef.current) return;
+      replaceCamera(next);
+      applyTransform();
+      persistCamera();
+    },
+    [applyTransform, getCamera, persistCamera, replaceCamera],
+  );
+
   const beginPan = useCallback(
     (event: ScenePanStartEvent, beginDrag: BeginSceneDrag) => {
       if (event.button !== 1) return false;
@@ -290,6 +320,7 @@ export function useSceneViewport({
     toCanvas,
     navigateTo,
     frameRects,
+    stepZoom,
     beginPan,
   };
 }
