@@ -265,6 +265,7 @@ export function PartialEditModal({
 
   // ── 제출 + 폴링 ──
   const [prompt, setPrompt] = useState("");
+  const [modelOpen, setModelOpen] = useState(false); // 모델 칩 팝오버(독과 동일 마크업)
   const [submitting, setSubmitting] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [waitStopped, setWaitStopped] = useState(false); // 완료됐지만 결과 로드 실패로 감시 종료
@@ -583,6 +584,23 @@ export function PartialEditModal({
             {stage === "draw" && (
               <>
                 <div className="partial-edit-tools">
+                  <button disabled={!strokes.length} onClick={() => setStrokes((p) => p.slice(0, -1))}>
+                    ↩ 실행취소
+                  </button>
+                  <button disabled={!strokes.length} onClick={() => setStrokes([])}>
+                    전체 지우기
+                  </button>
+                  <span className="partial-edit-toolspacer" />
+                  <label>
+                    Brush Size
+                    <input
+                      type="range"
+                      min={10}
+                      max={200}
+                      value={brushSize}
+                      onChange={(e) => setBrushSize(Number(e.target.value))}
+                    />
+                  </label>
                   <button
                     className={tool === "brush" ? "on" : ""}
                     onClick={() => setTool("brush")}
@@ -595,22 +613,6 @@ export function PartialEditModal({
                   >
                     ⌫ 지우개
                   </button>
-                  <label>
-                    크기
-                    <input
-                      type="range"
-                      min={10}
-                      max={200}
-                      value={brushSize}
-                      onChange={(e) => setBrushSize(Number(e.target.value))}
-                    />
-                  </label>
-                  <button disabled={!strokes.length} onClick={() => setStrokes((p) => p.slice(0, -1))}>
-                    ↩ 실행취소
-                  </button>
-                  <button disabled={!strokes.length} onClick={() => setStrokes([])}>
-                    전체 지우기
-                  </button>
                 </div>
                 {/* 하단 프롬프트 독과 같은 모양 — 한 상자에 입력창 + 알약 컨트롤 + 라임 Generate */}
                 <div className="partial-edit-dock">
@@ -621,18 +623,36 @@ export function PartialEditModal({
                     onChange={(e) => setPrompt(e.target.value)}
                   />
                   <div className="partial-edit-dockrow">
-                    <select
-                      className="partial-edit-modelselect"
-                      title="수정에 쓸 이미지 모델"
-                      value={m.model}
-                      onChange={(e) => m.setModel(e.target.value)}
-                    >
-                      {m.typeModels.map((tm) => (
-                        <option key={tm.job_set_type} value={tm.job_set_type}>
-                          {tm.display_name}
-                        </option>
-                      ))}
-                    </select>
+                    {/* 모델 칩 + 팝오버 — 하단 독의 마크업/클래스 그대로(sl-chip/sl-dropdown) */}
+                    <div className="sl-chip-wrap">
+                      <button
+                        className={"sl-chip" + (modelOpen ? " active" : "")}
+                        onClick={() => setModelOpen((v) => !v)}
+                      >
+                        <span className="sl-dot" />
+                        <span className="sl-chip-label">{m.modelName}</span>
+                        <span className="sl-caret">›</span>
+                      </button>
+                      {modelOpen && (
+                        <div className="sl-dropdown">
+                          <div className="sl-dd-title">이미지 모델</div>
+                          <div className="sl-dd-scroll">
+                            {m.typeModels.map((tm) => (
+                              <button
+                                key={tm.job_set_type}
+                                className={"sl-dd-item" + (tm.job_set_type === m.model ? " sel" : "")}
+                                onClick={() => {
+                                  m.setModel(tm.job_set_type);
+                                  setModelOpen(false);
+                                }}
+                              >
+                                {tm.display_name}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                     <span className="sl-chip" title="원본과 같은 비율로 생성됩니다">
                       □ {aspect ?? "—"}
                     </span>
@@ -643,7 +663,7 @@ export function PartialEditModal({
                       onClick={submit}
                       title={cost != null ? `예상 ${cost} 크레딧` : undefined}
                     >
-                      {submitting ? "요청 중…" : "생성 ✦"}
+                      {submitting ? "요청 중…" : "Generate ✦"}
                       <span className={"sl-cost" + (cost == null ? " loading" : "")}>
                         {cost != null ? cost : "…"}
                       </span>
