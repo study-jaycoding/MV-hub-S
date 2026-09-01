@@ -11,6 +11,7 @@ import {
 import { useModelDisplayName } from "../lib/modelCatalog";
 import { bindSynchronizedVideos } from "../lib/synchronizedVideos";
 import {
+  compareImageSource,
   fitCompareWindowToViewport,
   moveCompareWindow,
   resizeCompareWindow,
@@ -31,8 +32,17 @@ export function CompareModal({
   onClose: () => void;
 }) {
   const modelName = useModelDisplayName();
-  const [onlyDiff, setOnlyDiff] = useState(false); // 다른 값만 보기 토글
-  const [promptOnly, setPromptOnly] = useState(false); // 프롬프트만 보기(이미지·파라미터 숨김)
+  const [onlyDiff, setOnlyDiff] = useState(false); // 다른 값 비교 토글
+  const [promptOnly, setPromptOnly] = useState(false); // 프롬프트 비교(이미지·파라미터 숨김)
+  // 이미지 비교 — 부분 수정의 A/B 와 같은 세로 분할선 와이프(왼쪽 A=1번, 오른쪽 B=2번,
+  // 마우스 x 를 따라온다). 이미지 2개를 선택했을 때만 가능.
+  const [imageCompare, setImageCompare] = useState(false);
+  const [splitX, setSplitX] = useState(0.5); // 0..1, 와이프 상자 폭 기준
+  const wipeSrcs = gens.map((g) => {
+    const a = g.assets?.[0];
+    return a?.type === "image" ? compareImageSource(a.file_path, a.thumbnail_path, true) : null;
+  });
+  const canImageCompare = gens.length === 2 && wipeSrcs.every((s) => !!s);
   const [maximized, setMaximized] = useState(false);
   const [windowRect, setWindowRect] = useState<CompareWindowRect | null>(null);
   const modalRef = useRef<HTMLDivElement>(null);
@@ -142,9 +152,9 @@ export function CompareModal({
   // 영상 동기화 — 재생·정지·종료·수동 탐색을 두 비교 모달이 같은 공용 규칙으로 처리한다.
   useEffect(() => {
     const vids = videoRefs.current.filter((v): v is HTMLVideoElement => !!v);
-    if (promptOnly || vids.length === 0) return;
+    if (promptOnly || imageCompare || vids.length === 0) return;
     return bindSynchronizedVideos(vids);
-  }, [gens, maximized, promptOnly]);
+  }, [gens, maximized, promptOnly, imageCompare]);
 
   const prompts = gens.map((g) => g.display_prompt || g.prompt || "");
   const common = commonPromptTokens(prompts);
@@ -210,7 +220,7 @@ export function CompareModal({
           <div className="cmp-toggles">
             <button
               className={"fit-toggle" + (fitContain || maximized ? " on" : "")}
-              disabled={maximized}
+              disabled={maximized || imageCompare}
               onClick={() => setFitContain((v) => !v)}
               title={
                 maximized
@@ -226,46 +236,88 @@ export function CompareModal({
               <input
                 type="checkbox"
                 checked={onlyDiff}
-                disabled={promptOnly}
+                disabled={promptOnly || imageCompare}
                 onChange={(e) => setOnlyDiff(e.target.checked)}
               />
-              다른 값만 보기
+              다른 값 비교
+            </label>
+            <label
+              className="cmp-onlydiff"
+              title={
+                canImageCompare
+                  ? "이미지 2장을 세로 분할선으로 겹쳐 비교 — 마우스를 좌우로 움직이세요"
+                  : "이미지 생성본 2개를 선택했을 때만 쓸 수 있습니다"
+              }
+            >
+              <input
+                type="checkbox"
+                checked={imageCompare}
+                disabled={!canImageCompare}
+                onChange={(e) => {
+                  setImageCompare(e.target.checked);
+                  setSplitX(0.5);
+                }}
+              />
+              이미지 비교
             </label>
             <label className="cmp-onlydiff">
               <input
                 type="checkbox"
                 checked={promptOnly}
+                disabled={imageCompare}
                 onChange={(e) => setPromptOnly(e.target.checked)}
               />
-              프롬프트만 보기
+              프롬프트 비교
             </label>
           </div>
         </div>
         <div className="cmp-body">
-          <div
-            className={"cmp-cols" + (fitContain || maximized ? " fit-contain" : "")}
-            style={{ gridTemplateColumns: `repeat(${gens.length}, minmax(220px, 1fr))` }}
-          >
-            {gens.map((generation, idx) => (
-              <CompareGenerationColumn
-                key={generation.id}
-                common={common}
-                commonElems={commonElems}
-                commonRefs={commonRefs}
-                generation={generation}
-                generations={gens}
-                index={idx}
-                keys={keys}
-                modelName={modelName}
-                onlyDiff={onlyDiff}
-                onSourcePreview={setSrcPreview}
-                prompt={prompts[idx]}
-                promptOnly={promptOnly}
-                useOriginalMedia={maximized}
-                videoRefs={videoRefs}
+          {imageCompare && canImageCompare ? (
+            <div
+              className="cmp-imgwipe"
+              onPointerMove={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                if (!rect.width) return;
+                setSplitX(Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)));
+              }}
+            >
+              {/* 바닥 = B(2번), 위에 A(1번)를 겹치고 분할선 오른쪽을 clip — 왼쪽 A / 오른쪽 B */}
+              <img src={wipeSrcs[1]!} alt="" draggable={false} />
+              <img
+                src={wipeSrcs[0]!}
+                alt=""
+                draggable={false}
+                style={{ clipPath: `inset(0 ${(100 - splitX * 100).toFixed(2)}% 0 0)` }}
               />
-            ))}
-          </div>
+              <div className="cmp-abline" style={{ left: `${(splitX * 100).toFixed(2)}%` }} />
+              <div className="cmp-ablabel">A 1번 · 2번 B</div>
+            </div>
+          ) : (
+            <div
+              className={"cmp-cols" + (fitContain || maximized ? " fit-contain" : "")}
+              style={{ gridTemplateColumns: `repeat(${gens.length}, minmax(220px, 1fr))` }}
+            >
+              {gens.map((generation, idx) => (
+                <CompareGenerationColumn
+                  key={generation.id}
+                  common={common}
+                  commonElems={commonElems}
+                  commonRefs={commonRefs}
+                  generation={generation}
+                  generations={gens}
+                  index={idx}
+                  keys={keys}
+                  modelName={modelName}
+                  onlyDiff={onlyDiff}
+                  onSourcePreview={setSrcPreview}
+                  prompt={prompts[idx]}
+                  promptOnly={promptOnly}
+                  useOriginalMedia={maximized}
+                  videoRefs={videoRefs}
+                />
+              ))}
+            </div>
+          )}
         </div>
         {!maximized && (
           <div
