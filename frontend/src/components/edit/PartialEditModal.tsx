@@ -128,13 +128,22 @@ export function PartialEditModal({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // bitmap 은 src 교체·unmount 때 그 시점의 것만 닫는다. blob URL 은 unmount 에서만
+  // 정리 — [src] cleanup 에서 ref 를 revoke 하면 방금 만든 URL 을 즉시 폐기하는
+  // 수명 경합이 생긴다(코덱스 WARN).
+  useEffect(() => {
+    const current = src;
+    return () => current?.bmp.close();
+  }, [src]);
+  const mountedRef = useRef(true);
   useEffect(
     () => () => {
-      src?.bmp.close();
+      mountedRef.current = false;
+      runTokenRef.current++; // unmount = 진행 중 폴링·지연 응답 전부 무효화
       if (srcUrlRef.current) URL.revokeObjectURL(srcUrlRef.current);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [src],
+    [],
   );
 
   // ── 마스크(벡터 스트로크 → rawMask 캔버스) ──
@@ -174,6 +183,7 @@ export function PartialEditModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stage, strokes, src]);
 
+  const activePointerRef = useRef<number | null>(null); // 멀티 포인터 혼선 방지 — 첫 포인터만
   const toWork = (e: React.PointerEvent) => {
     const overlay = overlayRef.current;
     if (!overlay || !src) return null;
@@ -185,28 +195,46 @@ export function PartialEditModal({
     };
   };
   const onPointerDown = (e: React.PointerEvent) => {
-    if (stage !== "draw") return;
+    if (stage !== "draw" || activePointerRef.current != null) return;
     const p = toWork(e);
     if (!p) return;
+    activePointerRef.current = e.pointerId;
     (e.target as Element).setPointerCapture(e.pointerId);
     liveStrokeRef.current = { erase: tool === "erase", size: brushSize, points: [p] };
     renderMask(strokes, liveStrokeRef.current);
   };
   const onPointerMove = (e: React.PointerEvent) => {
     const live = liveStrokeRef.current;
-    if (!live) return;
+    if (!live || e.pointerId !== activePointerRef.current) return;
     const p = toWork(e);
     if (!p) return;
     live.points.push(p);
     renderMask(strokes, live);
   };
-  const endStroke = () => {
+  const endStroke = (e: React.PointerEvent) => {
+    if (e.pointerId !== activePointerRef.current) return;
+    activePointerRef.current = null;
     const live = liveStrokeRef.current;
     if (!live) return;
     liveStrokeRef.current = null;
     setStrokes((prev) => [...prev, live]);
   };
-  const hasMask = strokes.some((s) => !s.erase);
+  const hasBrush = strokes.some((s) => !s.erase);
+  // 진짜 잉크가 남았는지 — 지우개로 전부 지운 마스크로 유료 생성을 막는다(코덱스 WARN).
+  // 12MP getImageData 는 비싸므로 64×64 미러로 검사한다.
+  const maskHasInk = (): boolean => {
+    const raw = rawMaskRef.current;
+    if (!raw) return false;
+    const probe = document.createElement("canvas");
+    probe.width = 64;
+    probe.height = 64;
+    const pctx = probe.getContext("2d", { willReadFrequently: true });
+    if (!pctx) return hasBrush; // 검사 불가 — 기록 기준으로 폴백
+    pctx.drawImage(raw, 0, 0, 64, 64);
+    const data = pctx.getImageData(0, 0, 64, 64).data;
+    for (let i = 3; i < data.length; i += 4) if (data[i] > 8) return true;
+    return false;
+  };
 
   // ── 모델·비율·견적 (useModels 독립 인스턴스 — SceneModelModal 선례) ──
   const m = useModels(() => {});
@@ -240,20 +268,24 @@ export function PartialEditModal({
   const [result, setResult] = useState<{ bmp: ImageBitmap; w: number; h: number } | null>(null);
 
   const workspaceReady = isGenerationWorkspaceReady(workspace);
+  // aspect 필수 — 파라미터 로드 실패로 빈 스키마가 되면 기본 1:1 로 심하게 크롭된
+  // 유료 결과가 나온다(코덱스 WARN). 지원 이미지 모델은 전부 aspect enum 을 가진다.
   const canSubmit =
     stage === "draw" &&
     !submitting &&
     !!src &&
-    hasMask &&
+    hasBrush &&
     !!prompt.trim() &&
     !!m.model &&
     !m.paramsLoading &&
     m.paramsModel === m.model &&
+    !!aspect &&
     workspaceReady;
 
   const startPolling = (genId: string) => {
     const token = ++runTokenRef.current;
     const startedAt = Date.now();
+    let resultAttempts = 0; // 완료된 결과의 다운로드/디코드 실패 — 영구 재다운로드 방지 상한
     const tick = async () => {
       if (token !== runTokenRef.current) return;
       try {
@@ -270,21 +302,34 @@ export function PartialEditModal({
         }
         const done = g.status === "done" ? g.assets?.[0] : null;
         if (done?.file_path && done.type === "image") {
-          const blob = await fetchBlob(done.file_path, "partial-result.png", g.id);
+          // 완료됐는데 결과를 못 가져오는 건 '재생성할 일'이 아니다 — draw 로 돌리면
+          // 이미 완료된 잡을 중복 생성하게 유도한다(코덱스 WARN). 몇 번 재시도 후
+          // 감시 화면에 안내만 남긴다(카드는 라이브러리에 있다).
+          resultAttempts++;
+          try {
+            const blob = await fetchBlob(done.file_path, "partial-result.png", g.id);
+            if (token !== runTokenRef.current) return;
+            if (blob) {
+              const bmp = await createImageBitmap(blob);
+              if (token !== runTokenRef.current) {
+                bmp.close();
+                return;
+              }
+              setResult({ bmp, w: bmp.width, h: bmp.height });
+              setStage("compose");
+              return;
+            }
+          } catch {
+            /* 디코드 실패 — 아래 재시도/상한 처리 */
+          }
           if (token !== runTokenRef.current) return;
-          if (!blob) {
-            setStage("draw");
-            setError("결과 이미지를 불러오지 못했습니다 — 라이브러리 카드에서 직접 확인하세요.");
+          if (resultAttempts >= 5) {
+            runTokenRef.current++; // 감시 종료 — 재다운로드 무한 루프 방지
+            setError(
+              "생성은 완료됐지만 결과를 불러오지 못했습니다 — 라이브러리 카드에서 직접 확인하세요.",
+            );
             return;
           }
-          const bmp = await createImageBitmap(blob);
-          if (token !== runTokenRef.current) {
-            bmp.close();
-            return;
-          }
-          setResult({ bmp, w: bmp.width, h: bmp.height });
-          setStage("compose");
-          return;
         }
       } catch {
         /* 일시 조회 실패 — 다음 틱에 재시도 */
@@ -298,6 +343,10 @@ export function PartialEditModal({
 
   const submit = async () => {
     if (!canSubmit || !src) return;
+    if (!maskHasInk()) {
+      setError("마스크가 비어 있습니다 — 지운 곳 말고 남길 곳을 칠하세요.");
+      return;
+    }
     setError("");
     setSubmitting(true);
     const body: GenerationCreateBody = {
@@ -325,14 +374,18 @@ export function PartialEditModal({
       try {
         created = await run(); // 1회 재시도(같은 key)
       } catch (e) {
-        setSubmitting(false);
-        setError(`생성 요청 실패: ${String(e)}`);
+        if (mountedRef.current) {
+          setSubmitting(false);
+          setError(`생성 요청 실패: ${String(e)}`);
+        }
         return;
       }
     }
+    // 계보는 references 의 source_gen_id 가 이미 만든다(서버가 reference 엣지 기록,
+    // deriveFrom 은 전이 축소로 무효 — 코덱스 확인). 별도 호출 없음.
+    onQueued(created); // 카드가 생겼으면 unmount 여부와 무관하게 목록에 알린다
+    if (!mountedRef.current) return;
     setSubmitting(false);
-    onQueued(created);
-    api.deriveFrom(created.id, [gen.id]).catch(() => {}); // 원본→수정본 파생 계보(실패 무해)
     setElapsed(0);
     setStage("wait");
     startPolling(created.id);
@@ -348,6 +401,9 @@ export function PartialEditModal({
   const [feather, setFeather] = useState(8);
   const [showOriginal, setShowOriginal] = useState(false);
   const previewRef = useRef<HTMLCanvasElement | null>(null);
+  const scratchRef = useRef<{ feathered: HTMLCanvasElement; layer: HTMLCanvasElement } | null>(
+    null,
+  );
   useEffect(() => {
     if (stage !== "compose" || !src || !result) return;
     const canvas = previewRef.current;
@@ -359,24 +415,41 @@ export function PartialEditModal({
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(src.bmp, 0, 0, src.w, src.h);
     if (!showOriginal) {
+      // scratch 캔버스 2장은 재사용 — 페더 슬라이더 드래그마다 12MP 백킹 스토어를
+      // 새로 할당하면 메모리가 급증한다(코덱스 WARN).
+      if (!scratchRef.current) {
+        scratchRef.current = {
+          feathered: document.createElement("canvas"),
+          layer: document.createElement("canvas"),
+        };
+      }
+      const { feathered, layer } = scratchRef.current;
       // featherMask: rawMask 사본에만 blur — 원본·결과에는 filter 미적용
-      const feathered = document.createElement("canvas");
-      feathered.width = src.w;
-      feathered.height = src.h;
+      if (feathered.width !== src.w || feathered.height !== src.h) {
+        feathered.width = src.w;
+        feathered.height = src.h;
+      }
       const fctx = feathered.getContext("2d")!;
+      fctx.save();
+      fctx.clearRect(0, 0, src.w, src.h);
       if (feather > 0) fctx.filter = `blur(${feather}px)`;
       fctx.drawImage(raw, 0, 0);
+      fctx.restore();
       // resultLayer: 결과를 중앙 cover 로 그린 뒤 마스크로 잘라낸다(비균일 stretch 금지)
-      const layer = document.createElement("canvas");
-      layer.width = src.w;
-      layer.height = src.h;
+      if (layer.width !== src.w || layer.height !== src.h) {
+        layer.width = src.w;
+        layer.height = src.h;
+      }
       const lctx = layer.getContext("2d")!;
+      lctx.save();
+      lctx.clearRect(0, 0, src.w, src.h);
       const scale = Math.max(src.w / result.w, src.h / result.h);
       const dw = result.w * scale;
       const dh = result.h * scale;
       lctx.drawImage(result.bmp, (src.w - dw) / 2, (src.h - dh) / 2, dw, dh);
       lctx.globalCompositeOperation = "destination-in";
       lctx.drawImage(feathered, 0, 0);
+      lctx.restore();
       ctx.drawImage(layer, 0, 0);
     }
     ctx.restore();
@@ -407,14 +480,16 @@ export function PartialEditModal({
     }, "image/png");
   };
 
-  // Esc 닫기(감시 중 제외 — 감시 중단 버튼으로만)
+  // Esc 닫기 — 제출 요청 중·감시 중엔 금지: 제출 중 닫고 다시 열면 새 idempotency key 로
+  // 유료 요청이 이중 생성된다(코덱스 BLOCK). 감시 중 종료는 '감시 중단' 버튼으로만.
+  const closable = stage !== "wait" && !submitting;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && stage !== "wait") onClose();
+      if (e.key === "Escape" && closable) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [stage, onClose]);
+  }, [closable, onClose]);
 
   const slow = elapsed > SLOW_AFTER_MS;
   // 비율 보존 무대 크기 — 높이 상한(62vh)을 비율로 폭 상한에 옮겨, 어느 축이 클램프돼도
@@ -434,7 +509,7 @@ export function PartialEditModal({
           <span className="partial-edit-sub">
             칠한 부분만 다시 생성해 원본에 합성 — 나머지는 그대로
           </span>
-          {stage !== "wait" && (
+          {closable && (
             <button className="assets-x" onClick={onClose} title="닫기">
               ✕
             </button>
@@ -542,9 +617,14 @@ export function PartialEditModal({
                       {submitting ? "요청 중…" : "생성"}
                     </button>
                   </div>
-                  {!hasMask && <div className="partial-edit-hint">브러시로 수정할 부분을 칠하세요.</div>}
+                  {!hasBrush && <div className="partial-edit-hint">브러시로 수정할 부분을 칠하세요.</div>}
                   {!workspaceReady && (
                     <div className="partial-edit-hint">워크스페이스 확인 후 생성할 수 있습니다.</div>
+                  )}
+                  {m.paramsModel === m.model && !m.paramsLoading && !aspect && (
+                    <div className="partial-edit-hint">
+                      모델 파라미터를 불러오지 못해 생성할 수 없습니다 — 모델을 바꾸거나 다시 열어보세요.
+                    </div>
                   )}
                 </div>
               </>
