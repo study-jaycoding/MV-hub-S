@@ -87,8 +87,7 @@ export function ServerConsolePanel({ agentOn }: { agentOn: boolean | null }) {
     <>
       {open && (
         <>
-          {/* 앱 공통 플로팅 창 패턴(manage-float) — 바깥 클릭 또는 ✕ 로 닫기 */}
-          <div className="info-catcher host-console-catcher" onMouseDown={() => setOpen(false)} />
+          {/* 화면 중앙 플로팅 창 — ✕ 로만 닫힘(백드롭 없음: 뒤 화면 계속 조작 가능) */}
           <div className="manage-float host-console-float" role="dialog" aria-label="Host 콘솔">
             <header className="admin-head">
               <span className="admin-title">🖥 Host 콘솔</span>
@@ -127,7 +126,6 @@ export function ServerConsolePanel({ agentOn }: { agentOn: boolean | null }) {
       >
         <span className={"sl-status-dot" + (agentOn ? " on" : "")} />
         <span>Host</span>
-        <span aria-hidden="true">{open ? "▾" : "▴"}</span>
       </button>
     </>
   );

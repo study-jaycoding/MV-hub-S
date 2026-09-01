@@ -470,8 +470,11 @@
 /* Host 콘솔 — '연결됨' 상태 바로 왼쪽의 [Host] 토글. 정보는 앱 공통 플로팅 창(manage-float)으로. */
 .sl-status-row { display: flex; align-items: flex-end; justify-content: flex-end; gap: 10px; }
 .sl-console-toggle { align-self: auto; }
-.host-console-catcher { z-index: 320; }
-.host-console-float { z-index: 330; width: min(680px, 92vw); font-size: 12px; }
+/* 화면 중앙 고정 — manage-float 기본(우상단)을 덮는다. ✕ 로만 닫히는 무배경 플로팅. */
+.host-console-float {
+  z-index: 330; width: min(680px, 92vw); font-size: 12px;
+  top: 50%; left: 50%; right: auto; transform: translate(-50%, -50%);
+}
 .sl-console-grid { display: grid; grid-template-columns: 58px 1fr; gap: 4px 10px; }
 .sl-console-grid > span:nth-child(odd) { color: var(--muted); }
 .sl-console-grid > span:nth-child(even) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
