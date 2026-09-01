@@ -109,7 +109,7 @@
 }
 .partial-edit-ablabel {
   position: absolute;
-  bottom: 8px;
+  bottom: 44px;
   left: 50%;
   transform: translateX(-50%);
   font-size: 11px;
@@ -119,6 +119,32 @@
   border-radius: 999px;
   pointer-events: none;
   z-index: 2;
+}
+/* 하단 중앙 비교 버튼 — 버전 비교(.cmp-abbtns)와 동일 스타일 */
+.partial-edit-abbtns {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  z-index: 3;
+}
+.partial-edit-abbtns button {
+  padding: 4px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.partial-edit-abbtns button.on {
+  background: var(--accent, #bef264);
+  color: #111;
+  border-color: transparent;
+  font-weight: 600;
 }
 
 .partial-edit-waitveil {

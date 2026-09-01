@@ -826,30 +826,36 @@ export function PartialEditModal({
                     }}
                   />
                   <div className="partial-edit-abline" style={{ left: `${(splitX * 100).toFixed(2)}%` }} />
-                  <div className="partial-edit-ablabel">A 원본 · 결과 B</div>
                 </>
               )}
+              {/* 상태 뱃지 + 하단 중앙 비교 버튼(버전 비교와 동일 구성) */}
+              <div className="partial-edit-ablabel">
+                {showOriginal ? "원본" : abCompare ? "A 원본 · 결과 B" : "결과"}
+              </div>
+              <div className="partial-edit-abbtns">
+                <button
+                  className={showOriginal ? "on" : ""}
+                  title="누르고 있는 동안 원본 표시"
+                  onPointerDown={() => setShowOriginal(true)}
+                  onPointerUp={() => setShowOriginal(false)}
+                  onPointerLeave={() => setShowOriginal(false)}
+                  onPointerCancel={() => setShowOriginal(false)}
+                >
+                  비교 push
+                </button>
+                <button
+                  className={abCompare ? "on" : ""}
+                  title="마우스를 좌우로 움직여 분할선 비교 — 왼쪽 원본 / 오른쪽 결과"
+                  onClick={() => {
+                    setAbCompare((v) => !v);
+                    setSplitX(0.5);
+                  }}
+                >
+                  비교 A/B
+                </button>
+              </div>
             </div>
             <div className="partial-edit-tools">
-              <button
-                className={showOriginal ? "on" : ""}
-                onPointerDown={() => setShowOriginal(true)}
-                onPointerUp={() => setShowOriginal(false)}
-                onPointerLeave={() => setShowOriginal(false)}
-                title="누르고 있는 동안 원본 표시"
-              >
-                비교 push
-              </button>
-              <button
-                className={abCompare ? "on" : ""}
-                onClick={() => {
-                  setAbCompare((v) => !v);
-                  setSplitX(0.5);
-                }}
-                title="마우스를 좌우로 움직여 분할선 비교 — 왼쪽 원본 / 오른쪽 결과"
-              >
-                비교 A/B
-              </button>
               <span className="partial-edit-toolspacer" />
               <button
                 className="settings-action ghost"
