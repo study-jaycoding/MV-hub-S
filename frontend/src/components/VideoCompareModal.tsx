@@ -25,6 +25,12 @@ export function VideoCompareModal({
 }) {
   const videoRefs = useRef<(HTMLVideoElement | null)[]>([]);
   const [zoom, setZoom] = useState<CompareSourcePreview | null>(null); // 클릭해 크게 보기(라이트박스)
+  // 이미지 비교 — CompareModal 과 동일: A/B 와이프(토글) + push(꾹). 이미지 2개일 때만.
+  const [imageCompare, setImageCompare] = useState(false);
+  const [abOn, setAbOn] = useState(false); // 기본 꺼짐 — 아무것도 안 누른 상태로 시작
+  const [pushHeld, setPushHeld] = useState(false);
+  const [splitX, setSplitX] = useState(0.5);
+  const canImageCompare = videos.length === 2 && videos.every((v) => v.type === "image");
   // 이미지 표시 방식 — CompareModal 과 동일 키(cmpFit) 공유: 전체보기(contain, 블랙바) ↔ 꽉 채우기(cover, 크롭).
   const [fitContain, setFitContain] = useState<boolean>(() => {
     try {
@@ -59,9 +65,18 @@ export function VideoCompareModal({
   // 동기 재생·탐색 — CompareModal 과 같은 공용 바인더. 영상 요소만 대상.
   useEffect(() => {
     const vids = videoRefs.current.filter((v): v is HTMLVideoElement => !!v);
-    if (vids.length === 0) return;
+    if (imageCompare || vids.length === 0) return;
     return bindSynchronizedVideos(vids);
-  }, [videos]);
+  }, [videos, imageCompare]);
+
+  // 와이프용 이미지 로드 실패 → 검증된 대체(썸네일)로 1회만 교체(컬럼 표시와 동일 규칙).
+  const wipeFallback = (v: CompareVideo) => (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    if (v.fallback && !img.dataset.fellback) {
+      img.dataset.fellback = "1";
+      img.src = v.fallback;
+    }
+  };
 
   return (
     <>
@@ -70,8 +85,30 @@ export function VideoCompareModal({
         <header className="admin-head">
           <span className="admin-title">⊞ 미디어 비교 ({videos.length})</span>
           <div className="cmp-toggles">
+            <label
+              className="cmp-onlydiff"
+              title={
+                canImageCompare
+                  ? "이미지 2장을 겹쳐 비교 — push(꾹)·A/B 분할선"
+                  : "이미지 2개일 때만 쓸 수 있습니다"
+              }
+            >
+              <input
+                type="checkbox"
+                checked={imageCompare}
+                disabled={!canImageCompare}
+                onChange={(e) => {
+                  setImageCompare(e.target.checked);
+                  setAbOn(false);
+                  setSplitX(0.5);
+                  setPushHeld(false);
+                }}
+              />
+              이미지 비교
+            </label>
             <button
               className={"fit-toggle" + (fitContain ? " on" : "")}
+              disabled={imageCompare}
               onClick={() => setFitContain((v) => !v)}
               title={
                 fitContain
@@ -87,6 +124,67 @@ export function VideoCompareModal({
           </div>
         </header>
         <div className="cmp-body">
+          {imageCompare && canImageCompare ? (
+            <div
+              className={"cmp-imgwipe tall" + (abOn && !pushHeld ? " ab" : "")}
+              onPointerMove={
+                abOn && !pushHeld
+                  ? (e) => {
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      if (!rect.width) return;
+                      setSplitX(Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)));
+                    }
+                  : undefined
+              }
+            >
+              {pushHeld ? (
+                <>
+                  <img src={videos[1].url} alt="" draggable={false} onError={wipeFallback(videos[1])} />
+                  <div className="cmp-ablabel">B 2번</div>
+                </>
+              ) : abOn ? (
+                <>
+                  <img src={videos[1].url} alt="" draggable={false} onError={wipeFallback(videos[1])} />
+                  <img
+                    src={videos[0].url}
+                    alt=""
+                    draggable={false}
+                    onError={wipeFallback(videos[0])}
+                    style={{ clipPath: `inset(0 ${(100 - splitX * 100).toFixed(2)}% 0 0)` }}
+                  />
+                  <div className="cmp-abline" style={{ left: `${(splitX * 100).toFixed(2)}%` }} />
+                  <div className="cmp-ablabel">A 1번 · 2번 B</div>
+                </>
+              ) : (
+                <>
+                  <img src={videos[0].url} alt="" draggable={false} onError={wipeFallback(videos[0])} />
+                  <div className="cmp-ablabel">A 1번</div>
+                </>
+              )}
+              <div className="cmp-abbtns">
+                <button
+                  className={pushHeld ? "on" : ""}
+                  title="누르고 있는 동안 2번(B) 표시"
+                  onPointerDown={() => setPushHeld(true)}
+                  onPointerUp={() => setPushHeld(false)}
+                  onPointerLeave={() => setPushHeld(false)}
+                  onPointerCancel={() => setPushHeld(false)}
+                >
+                  비교 push
+                </button>
+                <button
+                  className={abOn ? "on" : ""}
+                  title="마우스를 좌우로 움직여 분할선 비교 — 왼쪽 1번 / 오른쪽 2번"
+                  onClick={() => {
+                    setAbOn((v) => !v);
+                    setSplitX(0.5);
+                  }}
+                >
+                  비교 A/B
+                </button>
+              </div>
+            </div>
+          ) : (
           <div
             className={"cmp-cols" + (fitContain ? " fit-contain" : "")}
             style={{ gridTemplateColumns: `repeat(${videos.length}, minmax(220px, 1fr))` }}
@@ -131,6 +229,7 @@ export function VideoCompareModal({
               </div>
             ))}
           </div>
+          )}
         </div>
       </div>
       <CompareSourceLightbox preview={zoom} onClose={() => setZoom(null)} />
