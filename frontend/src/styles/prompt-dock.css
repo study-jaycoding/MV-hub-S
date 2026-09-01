@@ -504,7 +504,8 @@
   top: 50%; left: 50%; right: auto; transform: translate(-50%, -50%);
 }
 .host-exit-text { margin: 0; line-height: 1.55; }
-.host-exit-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.host-exit-actions { display: flex; gap: 8px; margin-top: 12px; }
+.host-exit-actions > button { flex: 1; }  /* 종료·취소 같은 크기 */
 
 .spotlight-spacer { flex: 1; }
 
