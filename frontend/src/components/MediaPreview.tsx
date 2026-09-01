@@ -122,7 +122,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
             {cur.type === "image" && cur.genId && (
               <button
                 className="lin-board-btn preview-edit-btn"
-                title="칠한 부분만 다시 생성해 원본에 합성"
+                title="이미지 위에 펜·도형으로 표시해 수정 지시 (Seedream)"
                 onClick={() => {
                   window.dispatchEvent(
                     new CustomEvent(APP_EVENTS.partialEdit, {

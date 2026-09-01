@@ -398,7 +398,7 @@ export function InfoPopup({
               {target.gen.status === "done" && target.gen.assets?.[0]?.type === "image" && (
                 <button
                   className="info-board-btn"
-                  title="칠한 부분만 다시 생성해 원본에 합성"
+                  title="이미지 위에 펜·도형으로 표시해 수정 지시 (Seedream)"
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={() => {
                     window.dispatchEvent(

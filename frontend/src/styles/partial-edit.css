@@ -165,35 +165,95 @@
   box-shadow: 0 0 6px rgba(196, 232, 74, 0.5);
 }
 
-/* 하단 프롬프트 독과 같은 모양의 입력 상자 — 칩(.sl-chip)·Generate(.sl-gen)·크레딧
-   배지(.sl-cost)는 prompt-dock.css 의 실제 클래스를 그대로 재사용한다. */
-.partial-edit-dock {
+/* 알약형 프롬프트 바 — 웹 편집기의 'Describe how to edit image...' 한 줄 입력.
+   우측에 크레딧 표시 + 라임 원형 실행 버튼(✦). */
+.partial-edit-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   background: var(--panel-2, #101216);
   border: 1px solid var(--border, #2a2e37);
-  border-radius: 16px;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  border-radius: 999px;
+  padding: 7px 8px 7px 18px;
 }
-.partial-edit-dock textarea {
-  width: 100%;
-  min-height: 44px;
+.partial-edit-pill textarea {
+  flex: 1;
+  height: 22px;
+  line-height: 22px;
   resize: none;
+  overflow-y: auto;
   background: transparent;
   border: none;
   outline: none;
   color: inherit;
-  padding: 2px 2px 0;
+  padding: 0;
   font-size: 13.5px;
 }
-.partial-edit-dockrow {
+.partial-edit-cost {
+  color: var(--muted, #8b93a3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.partial-edit-gen {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: none;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent, #bef264);
+  color: #111;
+  font-size: 17px;
+  cursor: pointer;
+  padding: 0; /* 전역 button padding 함정 — 원형 유지 */
+}
+.partial-edit-gen:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* 도구별 옵션 열 — 펜/도형 색 스와치, 도형 종류(웹 편집기의 팝오버 열과 같은 구성) */
+.partial-edit-subtools {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
-.partial-edit-dockspacer {
-  flex: 1;
+.partial-edit-subtools button {
+  padding: 4px 9px;
+  border: 1px solid var(--border, #2a2e37);
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.partial-edit-subtools button.on {
+  background: var(--accent, #bef264);
+  color: #111;
+  border-color: transparent;
+  font-weight: 600;
+}
+.partial-edit-subdiv {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border, #2a2e37);
+  margin: 2px 2px;
+}
+/* .partial-edit-subtools button 보다 특이도를 높여(클래스 2개) padding/border 를 이긴다 */
+.partial-edit-subtools .partial-edit-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  padding: 0; /* 전역 button padding 함정 — 원형 유지 */
+  cursor: pointer;
+}
+.partial-edit-subtools .partial-edit-swatch.sel {
+  box-shadow:
+    0 0 0 2px var(--panel, #16181d),
+    0 0 0 4px var(--accent, #bef264);
 }
 .partial-edit-toolspacer {
   flex: 1;

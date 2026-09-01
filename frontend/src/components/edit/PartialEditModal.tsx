@@ -1,51 +1,58 @@
-// 부분 수정 모달 — 힉스필드 웹 편집기의 브러시 수정과 같은 원리(실측으로 확정):
-// 마스크는 서버로 가지 않는다. 원본을 참조로 넣어 전체를 재생성한 뒤, 브러시로 칠한
-// 영역만 브라우저에서 원본 위에 합성한다(경계 페더). 중간 생성물은 평소처럼 라이브러리
-// 카드로 남아 출처·프롬프트가 보존된다. 프로토타입 저장 = PNG 다운로드.
+// 부분 수정 모달 — 힉스필드 웹 편집기와 같은 원리(2026-09-01 실측으로 확정):
+// 펜·도형으로 그린 표시는 '이미지에 구워져' 모델에게 그대로 전송된다(웹 편집기의 실제 전송
+// 입력 이미지에 라임 동그라미가 박혀 있음을 확인). Seedream 이 낙서를 지시로 해석해 반영하고
+// 낙서 없는 전체 이미지를 돌려준다 — 마스크 파라미터도, 클라이언트 합성도 없다.
+// 결과가 원본에 충실한 건 Seedream 의 재현 성질 덕분(실측 ≈93% 픽셀 일치) → 모델 고정.
 //
-// 코덱스 설계 합의 반영:
-//  · 원본/결과 모두 fetchBlob→ImageBitmap (CDN 원본의 캔버스 오염 차단, /api/download 폴백)
-//  · 좌표계 = 이미지 비율 그대로의 wrapper(aspect-ratio) 위 오버레이 — 레터박스 어긋남 없음
-//  · 마스크는 벡터 스트로크 목록(undo=pop+재렌더), 작업 해상도 상한 12MP(메모리 폭주 방지)
-//  · 합성 순서: rawMask →(blur)→ featherMask → resultLayer(destination-in) → 원본 위 source-over
-//  · 결과는 원본 비율로 중앙 cover 합성(비균일 stretch 왜곡 방지)
-//  · 제출은 prepareCreate 클로저(재시도에도 idempotency key 유지), 빈 마스크/빈 프롬프트 가드
+// 구조:
+//  · 원본 fetchBlob→ImageBitmap (CDN 원본의 캔버스 오염 차단), 작업 해상도 상한 12MP
+//  · 주석은 벡터 아이템 목록(펜 스트로크/도형, undo=pop+재렌더) → annot 캔버스에 렌더
+//    (화면 표시 = 전송본과 동일한 WYSIWYG)
+//  · 제출: 주석 있으면 원본+주석 평면화 PNG 를 captures 업로드(asset: 토큰, sha256 재사용) →
+//    레퍼런스로 전송, 없으면 원본 URL 그대로. source_gen_id 로 계보 유지.
+//  · 제출은 prepareCreate 클로저(재시도에도 idempotency key 유지)
 //  · 폴링 2초 재귀 setTimeout + runToken, 180초 후에도 실패 처리하지 않고 '오래 걸림' 안내만
+//  · 결과 = 전체 이미지 표시(원본 비교 꾹) — 카드는 라이브러리에 그대로 남는다
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type GenerationCreateBody } from "../../api";
-import { fetchBlob, downloadName } from "../../lib/download";
-import { saveToDownloadDir } from "../../lib/downloadDir";
+import { fetchBlob } from "../../lib/download";
 import { flashMsg } from "../../lib/flash";
 import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import { useModels } from "../../lib/useModels";
-import type { Generation, ModelInfo, WorkspaceContext } from "../../types";
+import type { Generation, WorkspaceContext } from "../../types";
 
-const MAX_WORK_PIXELS = 12_000_000; // 12MP — rawMask/feather/layer/final 4장 동시 보유 상한
-
-// 부분 수정 전용 모델 목록(하단 프롬프트의 ALLOWED 와 별개) — 편집 특화만.
-// GPT Image 2 는 장면을 크게 재해석하는 성향이라 마스크 경계가 어긋나기 쉽고 최고가(8.5cr)라
-// 제외(실측 검토). 첫 항목 = 기본 선택: 힉스필드 웹 편집기가 실제로 쓰는 Seedream.
-const EDIT_MODELS = [
-  "seedream_v5_pro",
-  "nano_banana_flash",
-  "nano_banana_2_lite",
-  "nano_banana_pro",
-];
+const MAX_WORK_PIXELS = 12_000_000; // 12MP — 주석/평면화 캔버스 동시 보유 상한
+const EDIT_MODEL = "seedream_v5_pro"; // 편집 전용 고정 — 웹 편집기와 동일(원본 재현 충실, 실측)
 const POLL_MS = 2_000;
 const SLOW_AFTER_MS = 180_000; // 이후에도 계속 감시 — 실패 처리 아님(이중 과금 방지)
 
-interface Stroke {
+// 펜 컬러 스와치 — 웹 편집기의 구성(흰·라임·주황·빨강·민트·파랑·분홍·검정). 기본 = 라임.
+const COLORS = ["#ffffff", "#bef264", "#f59e0b", "#ef4444", "#2dd4bf", "#3b82f6", "#ec4899", "#111111"];
+
+interface PenStroke {
+  kind: "pen";
   erase: boolean;
+  color: string;
   size: number; // 작업 해상도 px
   points: { x: number; y: number }[];
 }
+type ShapeKind = "line" | "arrow" | "rect" | "ellipse";
+interface ShapeItem {
+  kind: "shape";
+  shape: ShapeKind;
+  color: string;
+  size: number;
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+}
+type DrawItem = PenStroke | ShapeItem;
 
-type Stage = "load" | "draw" | "wait" | "compose";
+type Stage = "load" | "draw" | "wait" | "result";
 
-function pathStroke(ctx: CanvasRenderingContext2D, stroke: Stroke) {
+function drawPen(ctx: CanvasRenderingContext2D, stroke: PenStroke) {
   ctx.globalCompositeOperation = stroke.erase ? "destination-out" : "source-over";
-  ctx.strokeStyle = "#ffffff";
-  ctx.fillStyle = "#ffffff";
+  ctx.strokeStyle = stroke.erase ? "#ffffff" : stroke.color;
+  ctx.fillStyle = ctx.strokeStyle;
   ctx.lineWidth = stroke.size;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -60,6 +67,45 @@ function pathStroke(ctx: CanvasRenderingContext2D, stroke: Stroke) {
   ctx.moveTo(pts[0].x, pts[0].y);
   for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
   ctx.stroke();
+}
+
+function drawShape(ctx: CanvasRenderingContext2D, s: ShapeItem) {
+  ctx.globalCompositeOperation = "source-over";
+  ctx.strokeStyle = s.color;
+  ctx.lineWidth = s.size;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  const { from, to } = s;
+  if (s.shape === "rect") {
+    ctx.strokeRect(Math.min(from.x, to.x), Math.min(from.y, to.y), Math.abs(to.x - from.x), Math.abs(to.y - from.y));
+    return;
+  }
+  if (s.shape === "ellipse") {
+    ctx.beginPath();
+    ctx.ellipse((from.x + to.x) / 2, (from.y + to.y) / 2, Math.abs(to.x - from.x) / 2, Math.abs(to.y - from.y) / 2, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    return;
+  }
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.lineTo(to.x, to.y);
+  ctx.stroke();
+  if (s.shape === "arrow") {
+    // 화살촉 — 선 끝(to)에서 150° 로 짧은 두 선. 굵기에 비례하되 최소 길이 보장.
+    const ang = Math.atan2(to.y - from.y, to.x - from.x);
+    const len = Math.max(s.size * 2.5, 14);
+    for (const off of [(Math.PI * 5) / 6, -(Math.PI * 5) / 6]) {
+      ctx.beginPath();
+      ctx.moveTo(to.x, to.y);
+      ctx.lineTo(to.x + Math.cos(ang + off) * len, to.y + Math.sin(ang + off) * len);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawItem(ctx: CanvasRenderingContext2D, it: DrawItem) {
+  if (it.kind === "pen") drawPen(ctx, it);
+  else drawShape(ctx, it);
 }
 
 // 모델 aspect_ratio enum 에서 원본 비율에 최근접한 값 — abs(log(r/target)) 가 가로·세로 대칭.
@@ -94,7 +140,7 @@ export function PartialEditModal({
   const asset = gen.assets?.[0];
   const [stage, setStage] = useState<Stage>("load");
   const [error, setError] = useState("");
-  const [note, setNote] = useState(""); // 축소 작업·크롭 예정 등 비차단 안내
+  const [note, setNote] = useState(""); // 축소 작업 등 비차단 안내
 
   // ── 원본 로드(작업 해상도 결정) ──
   const [src, setSrc] = useState<{ bmp: ImageBitmap; w: number; h: number } | null>(null);
@@ -158,58 +204,45 @@ export function PartialEditModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── 마스크(벡터 스트로크 → rawMask 캔버스) ──
-  const [strokes, setStrokes] = useState<Stroke[]>([]);
-  const [tool, setTool] = useState<"brush" | "erase">("brush");
-  const [brushSize, setBrushSize] = useState(60); // 작업 해상도 px
-  const rawMaskRef = useRef<HTMLCanvasElement | null>(null);
-  const overlayRef = useRef<HTMLCanvasElement | null>(null);
-  const liveStrokeRef = useRef<Stroke | null>(null);
+  // ── 주석(펜·도형 → annot 캔버스, 표시 = 전송본) ──
+  const [items, setItems] = useState<DrawItem[]>([]);
+  const [tool, setTool] = useState<"pen" | "erase" | "shape">("pen");
+  const [shapeKind, setShapeKind] = useState<ShapeKind>("rect");
+  const [color, setColor] = useState(COLORS[1]); // 라임
+  const [brushSize, setBrushSize] = useState(18); // 작업 해상도 px
+  const annotRef = useRef<HTMLCanvasElement | null>(null);
+  const liveRef = useRef<DrawItem | null>(null);
 
-  const renderMask = (list: Stroke[], live?: Stroke | null) => {
-    const raw = rawMaskRef.current;
-    if (!raw) return;
-    const ctx = raw.getContext("2d");
-    if (!ctx) return;
+  const renderAll = (list: DrawItem[], live?: DrawItem | null) => {
+    const cv = annotRef.current;
+    const ctx = cv?.getContext("2d");
+    if (!cv || !ctx) return;
     ctx.save();
-    ctx.clearRect(0, 0, raw.width, raw.height);
-    for (const s of list) pathStroke(ctx, s);
-    if (live) pathStroke(ctx, live);
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    for (const it of list) drawItem(ctx, it);
+    if (live) drawItem(ctx, live);
     ctx.restore();
-    // 화면 표시: rawMask 를 라임 반투명으로 틴트
-    const overlay = overlayRef.current;
-    const octx = overlay?.getContext("2d");
-    if (!overlay || !octx) return;
-    octx.save();
-    octx.clearRect(0, 0, overlay.width, overlay.height);
-    octx.globalAlpha = 0.45;
-    octx.drawImage(raw, 0, 0);
-    octx.globalCompositeOperation = "source-in";
-    octx.globalAlpha = 1;
-    octx.fillStyle = "#bef264";
-    octx.fillRect(0, 0, overlay.width, overlay.height);
-    octx.restore();
   };
   useEffect(() => {
-    if (stage === "draw") renderMask(strokes);
+    if (stage === "draw") renderAll(items);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stage, strokes, src]);
+  }, [stage, items, src]);
 
   const activePointerRef = useRef<number | null>(null); // 멀티 포인터 혼선 방지 — 첫 포인터만
   // 브러시 크기 커서 미리보기 — 실제 칠해질 지름의 원을 포인터에 따라 표시(상태 없이
-  // ref 직접 갱신: mousemove 마다 리렌더 없이).
+  // ref 직접 갱신: mousemove 마다 리렌더 없이). 도형 도구는 crosshair 만 쓰므로 숨긴다.
   const cursorRef = useRef<HTMLDivElement | null>(null);
   const cursorPosRef = useRef<{ x: number; y: number } | null>(null); // 무대 상자 기준 px
   const updateCursor = () => {
     const el = cursorRef.current;
     if (!el) return;
-    const overlay = overlayRef.current;
+    const annot = annotRef.current;
     const pos = cursorPosRef.current;
-    if (!pos || !overlay || !src || stage !== "draw") {
+    if (!pos || !annot || !src || stage !== "draw" || tool === "shape") {
       el.style.display = "none";
       return;
     }
-    const rect = overlay.getBoundingClientRect();
+    const rect = annot.getBoundingClientRect();
     if (!rect.width) return;
     const d = brushSize * (rect.width / src.w); // 작업 px → 화면 px
     el.style.display = "block";
@@ -218,22 +251,23 @@ export function PartialEditModal({
     el.style.width = `${d}px`;
     el.style.height = `${d}px`;
     el.classList.toggle("erase", tool === "erase");
+    el.style.borderColor = tool === "erase" ? "" : color; // erase 는 클래스(흰 점선)가 결정
   };
   const trackCursor = (e: React.PointerEvent) => {
-    const overlay = overlayRef.current;
-    if (!overlay) return;
-    const rect = overlay.getBoundingClientRect();
+    const annot = annotRef.current;
+    if (!annot) return;
+    const rect = annot.getBoundingClientRect();
     cursorPosRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     updateCursor();
   };
   useEffect(() => {
-    updateCursor(); // [ ] 로 크기를 바꾸거나 도구 전환 시 제자리에서 즉시 반영
+    updateCursor(); // [ ] 크기·도구·색 변경 시 제자리에서 즉시 반영
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [brushSize, tool, stage]);
+  }, [brushSize, tool, color, stage]);
   const toWork = (e: React.PointerEvent) => {
-    const overlay = overlayRef.current;
-    if (!overlay || !src) return null;
-    const rect = overlay.getBoundingClientRect();
+    const annot = annotRef.current;
+    if (!annot || !src) return null;
+    const rect = annot.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
     return {
       x: ((e.clientX - rect.left) / rect.width) * src.w,
@@ -244,23 +278,27 @@ export function PartialEditModal({
     if (stage !== "draw" || activePointerRef.current != null) return;
     const p = toWork(e);
     if (!p) return;
-    // 캔버스에 칠하기 시작 = 그리기 모드 복귀 — 프롬프트 포커스를 풀어 [ ]·Ctrl+Z 가
-    // 브러시 단축키로 돌아오게 한다(입력은 프롬프트를 다시 클릭해야 재개).
+    // 캔버스에 그리기 시작 = 그리기 모드 복귀 — 프롬프트 포커스를 풀어 단축키([ ]·D·E·R·
+    // Ctrl+Z)가 돌아오게 한다(입력은 프롬프트를 다시 클릭해야 재개).
     const active = document.activeElement;
     if (active instanceof HTMLElement && active.tagName === "TEXTAREA") active.blur();
     activePointerRef.current = e.pointerId;
     (e.target as Element).setPointerCapture(e.pointerId);
-    liveStrokeRef.current = { erase: tool === "erase", size: brushSize, points: [p] };
-    renderMask(strokes, liveStrokeRef.current);
+    liveRef.current =
+      tool === "shape"
+        ? { kind: "shape", shape: shapeKind, color, size: brushSize, from: p, to: p }
+        : { kind: "pen", erase: tool === "erase", color, size: brushSize, points: [p] };
+    renderAll(items, liveRef.current);
   };
   const onPointerMove = (e: React.PointerEvent) => {
     trackCursor(e); // 그리는 중이 아니어도 커서 원은 따라온다
-    const live = liveStrokeRef.current;
+    const live = liveRef.current;
     if (!live || e.pointerId !== activePointerRef.current) return;
     const p = toWork(e);
     if (!p) return;
-    live.points.push(p);
-    renderMask(strokes, live);
+    if (live.kind === "pen") live.points.push(p);
+    else live.to = p;
+    renderAll(items, live);
   };
   const onPointerLeave = () => {
     cursorPosRef.current = null;
@@ -269,52 +307,31 @@ export function PartialEditModal({
   const endStroke = (e: React.PointerEvent) => {
     if (e.pointerId !== activePointerRef.current) return;
     activePointerRef.current = null;
-    const live = liveStrokeRef.current;
+    const live = liveRef.current;
     if (!live) return;
-    liveStrokeRef.current = null;
-    setStrokes((prev) => [...prev, live]);
-  };
-  const hasBrush = strokes.some((s) => !s.erase);
-  // 진짜 잉크가 남았는지 — 지우개로 전부 지운 마스크로 유료 생성을 막는다(코덱스 WARN).
-  // 축소 미러는 가는 선을 평균화로 놓친다(false negative) → 원본 해상도를 세로 조각
-  // 단위로 정확 검사, 첫 잉크에서 조기 종료. 제출 클릭 1회에만 실행되므로 비용 수용.
-  const maskHasInk = (): boolean => {
-    const raw = rawMaskRef.current;
-    if (!raw) return false;
-    const ctx = raw.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return hasBrush; // 검사 불가 — 기록 기준으로 폴백
-    const stripe = 256;
-    for (let y = 0; y < raw.height; y += stripe) {
-      const rows = Math.min(stripe, raw.height - y);
-      const data = ctx.getImageData(0, y, raw.width, rows).data;
-      for (let i = 3; i < data.length; i += 4) if (data[i] > 0) return true;
+    liveRef.current = null;
+    // 도형은 드래그 없이 클릭만 한 것(크기 0)이면 버린다 — 보이지 않는 잉크 방지.
+    if (live.kind === "shape" && Math.hypot(live.to.x - live.from.x, live.to.y - live.from.y) < 3) {
+      renderAll(items);
+      return;
     }
-    return false;
+    setItems((prev) => [...prev, live]);
   };
 
-  // ── 모델·비율·견적 (useModels 독립 인스턴스 — SceneModelModal 선례) ──
+  // ── 모델(Seedream 고정)·비율·견적 ──
   const m = useModels(() => {});
   useEffect(() => {
     m.setType("image");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // 편집 전용 목록 — 카탈로그(전체 models)에서 EDIT_MODELS 순서대로 골라낸다.
-  const editModels = useMemo(
-    () =>
-      EDIT_MODELS.map((id) => m.models.find((x) => x.job_set_type === id)).filter(
-        (x): x is ModelInfo => !!x,
-      ),
-    [m.models],
-  );
-  // 기본 선택 = 목록 첫 항목(Seedream). 훅의 ALLOWED 기본선택(nano)이 같은 플러시에서
-  // 먼저 실행되고 이 effect 가 덮는다 — 카탈로그 로드 후 1회만.
+  // 훅의 ALLOWED 기본선택이 같은 플러시에서 먼저 실행되고 이 effect 가 덮는다 — 카탈로그 로드 후 1회만.
   const defaultApplied = useRef(false);
   useEffect(() => {
-    if (defaultApplied.current || !editModels.length) return;
+    if (defaultApplied.current || !m.models.length) return;
     defaultApplied.current = true;
-    m.setModel(editModels[0].job_set_type);
+    m.setModel(EDIT_MODEL);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editModels]);
+  }, [m.models]);
   const aspect = useMemo(() => {
     if (!src || m.paramsModel !== m.model) return null;
     return nearestAspect(m.params.find((p) => p.name === "aspect_ratio")?.enum, src.w, src.h);
@@ -335,21 +352,25 @@ export function PartialEditModal({
 
   // ── 제출 + 폴링 ──
   const [prompt, setPrompt] = useState("");
-  const [modelOpen, setModelOpen] = useState(false); // 모델 칩 팝오버(독과 동일 마크업)
   const [submitting, setSubmitting] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [waitStopped, setWaitStopped] = useState(false); // 완료됐지만 결과 로드 실패로 감시 종료
   const runTokenRef = useRef(0);
-  const [result, setResult] = useState<{ bmp: ImageBitmap; w: number; h: number } | null>(null);
+  const [resultUrl, setResultUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const current = resultUrl;
+    return () => {
+      if (current) URL.revokeObjectURL(current);
+    };
+  }, [resultUrl]);
 
   const workspaceReady = isGenerationWorkspaceReady(workspace);
   // aspect 필수 — 파라미터 로드 실패로 빈 스키마가 되면 기본 1:1 로 심하게 크롭된
-  // 유료 결과가 나온다(코덱스 WARN). 지원 이미지 모델은 전부 aspect enum 을 가진다.
+  // 유료 결과가 나온다(코덱스 WARN). 주석은 선택사항(프롬프트만으로도 편집 가능 — 웹과 동일).
   const canSubmit =
     stage === "draw" &&
     !submitting &&
     !!src &&
-    hasBrush &&
     !!prompt.trim() &&
     !!m.model &&
     !m.paramsLoading &&
@@ -385,13 +406,11 @@ export function PartialEditModal({
             const blob = await fetchBlob(done.file_path, "partial-result.png", g.id);
             if (token !== runTokenRef.current) return;
             if (blob) {
-              const bmp = await createImageBitmap(blob);
-              if (token !== runTokenRef.current) {
-                bmp.close();
-                return;
-              }
-              setResult({ bmp, w: bmp.width, h: bmp.height });
-              setStage("compose");
+              const bmp = await createImageBitmap(blob); // 디코드 검증 — 깨진 파일이면 throw
+              bmp.close();
+              if (token !== runTokenRef.current) return;
+              setResultUrl(URL.createObjectURL(blob));
+              setStage("result");
               return;
             }
           } catch {
@@ -417,25 +436,57 @@ export function PartialEditModal({
     void tick();
   };
 
+  // 주석이 있으면 원본+주석 평면화 PNG 를 captures 에 업로드해 asset: 토큰 참조로,
+  // 없으면 원본 URL 그대로. 업로드는 sha256 중복 재사용이라 재시도에도 파일이 늘지 않는다.
+  const buildReference = async (): Promise<{ file_path: string; thumbnail?: string }> => {
+    if (!items.length) {
+      return { file_path: asset!.file_path, thumbnail: asset!.thumbnail_path || undefined };
+    }
+    const annot = annotRef.current;
+    if (!annot || !src) throw new Error("주석 캔버스가 없습니다");
+    renderAll(items); // 최신 스트로크 보장
+    const flat = document.createElement("canvas");
+    flat.width = src.w;
+    flat.height = src.h;
+    const fctx = flat.getContext("2d");
+    if (!fctx) throw new Error("캔버스 생성 실패");
+    fctx.drawImage(src.bmp, 0, 0, src.w, src.h);
+    fctx.drawImage(annot, 0, 0);
+    const blob = await new Promise<Blob | null>((resolve) => flat.toBlob(resolve, "image/png"));
+    if (!blob) throw new Error("주석 이미지 인코딩 실패");
+    const up = await api.uploadCapture(blob);
+    return {
+      file_path: `asset:${up.project}|${up.path}`,
+      thumbnail: api.assetThumbUrl(up.project, up.path, 256),
+    };
+  };
+
   const submit = async () => {
     if (!canSubmit || !src) return;
-    if (!maskHasInk()) {
-      setError("마스크가 비어 있습니다 — 지운 곳 말고 남길 곳을 칠하세요.");
-      return;
-    }
     setError("");
     setSubmitting(true);
+    let refBits: { file_path: string; thumbnail?: string };
+    try {
+      refBits = await buildReference();
+    } catch (e) {
+      if (mountedRef.current) {
+        setSubmitting(false);
+        setError(`주석 이미지 업로드 실패: ${String(e)}`);
+      }
+      return;
+    }
+    if (!mountedRef.current) return;
     const body: GenerationCreateBody = {
       prompt: prompt.trim(),
       model: m.model,
       params: aspect ? { aspect_ratio: aspect } : {},
       references: [
         {
-          file_path: asset!.file_path,
+          file_path: refBits.file_path,
           type: "image",
           role: "@Image1",
           source_gen_id: gen.id,
-          thumbnail: asset!.thumbnail_path || undefined,
+          thumbnail: refBits.thumbnail,
           name: gen.source_name || undefined,
         },
       ],
@@ -457,8 +508,7 @@ export function PartialEditModal({
         return;
       }
     }
-    // 계보는 references 의 source_gen_id 가 이미 만든다(서버가 reference 엣지 기록,
-    // deriveFrom 은 전이 축소로 무효 — 코덱스 확인). 별도 호출 없음.
+    // 계보는 references 의 source_gen_id 가 이미 만든다(서버가 reference 엣지 기록). 별도 호출 없음.
     onQueued(created); // 카드가 생겼으면 unmount 여부와 무관하게 목록에 알린다
     if (!mountedRef.current) return;
     setSubmitting(false);
@@ -474,91 +524,11 @@ export function PartialEditModal({
     onClose();
   };
 
-  // ── 합성 ──
-  const [feather, setFeather] = useState(8);
-  const [showOriginal, setShowOriginal] = useState(false);
-  const previewRef = useRef<HTMLCanvasElement | null>(null);
-  const scratchRef = useRef<{ feathered: HTMLCanvasElement; layer: HTMLCanvasElement } | null>(
-    null,
-  );
-  useEffect(() => {
-    if (stage !== "compose" || !src || !result) return;
-    const canvas = previewRef.current;
-    const raw = rawMaskRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !raw || !ctx) return;
-    renderMask(strokes); // rawMask 를 최신 스트로크로 보장(스테이지 전환 직후 대비)
-    ctx.save();
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(src.bmp, 0, 0, src.w, src.h);
-    if (!showOriginal) {
-      // scratch 캔버스 2장은 재사용 — 페더 슬라이더 드래그마다 12MP 백킹 스토어를
-      // 새로 할당하면 메모리가 급증한다(코덱스 WARN).
-      if (!scratchRef.current) {
-        scratchRef.current = {
-          feathered: document.createElement("canvas"),
-          layer: document.createElement("canvas"),
-        };
-      }
-      const { feathered, layer } = scratchRef.current;
-      // featherMask: rawMask 사본에만 blur — 원본·결과에는 filter 미적용
-      if (feathered.width !== src.w || feathered.height !== src.h) {
-        feathered.width = src.w;
-        feathered.height = src.h;
-      }
-      const fctx = feathered.getContext("2d")!;
-      fctx.save();
-      fctx.clearRect(0, 0, src.w, src.h);
-      if (feather > 0) fctx.filter = `blur(${feather}px)`;
-      fctx.drawImage(raw, 0, 0);
-      fctx.restore();
-      // resultLayer: 결과를 중앙 cover 로 그린 뒤 마스크로 잘라낸다(비균일 stretch 금지)
-      if (layer.width !== src.w || layer.height !== src.h) {
-        layer.width = src.w;
-        layer.height = src.h;
-      }
-      const lctx = layer.getContext("2d")!;
-      lctx.save();
-      lctx.clearRect(0, 0, src.w, src.h);
-      const scale = Math.max(src.w / result.w, src.h / result.h);
-      const dw = result.w * scale;
-      const dh = result.h * scale;
-      lctx.drawImage(result.bmp, (src.w - dw) / 2, (src.h - dh) / 2, dw, dh);
-      lctx.globalCompositeOperation = "destination-in";
-      lctx.drawImage(feathered, 0, 0);
-      lctx.restore();
-      ctx.drawImage(layer, 0, 0);
-    }
-    ctx.restore();
-  }, [stage, src, result, feather, showOriginal]);
-  useEffect(() => () => result?.bmp.close(), [result]);
-
-  const savePng = () => {
-    const canvas = previewRef.current;
-    if (!canvas) return;
-    canvas.toBlob(async (blob) => {
-      if (!blob) {
-        flashMsg("PNG 인코딩에 실패했습니다.");
-        return;
-      }
-      const name = `${downloadName(gen, "image").replace(/\.png$/i, "")}_partial.png`;
-      if (await saveToDownloadDir(name, blob)) {
-        flashMsg(`저장됨: ${name}`);
-        return;
-      }
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }, "image/png");
-  };
+  const [showOriginal, setShowOriginal] = useState(false); // 결과 화면에서 꾹 누르는 동안 원본
 
   // 키보드 — Esc 닫기(제출 요청 중·감시 중 금지: 제출 중 닫고 다시 열면 새 idempotency
-  // key 로 유료 요청이 이중 생성, 코덱스 BLOCK) + 그리기 단축키(Ctrl+Z 실행취소, [ ] 크기).
+  // key 로 유료 요청이 이중 생성, 코덱스 BLOCK) + 그리기 단축키(Ctrl+Z 실행취소,
+  // [ ] 크기, D 펜 / E 지우개 / R 도형 — 웹 편집기와 동일 키).
   // 입력창에 포커스가 있으면 그리기 단축키는 양보한다(텍스트 undo·괄호 입력 보존).
   const closable = stage !== "wait" && !submitting;
   useEffect(() => {
@@ -570,13 +540,20 @@ export function PartialEditModal({
       const t = e.target instanceof Element ? e.target : null;
       if (t?.closest("textarea, input, select, [contenteditable]")) return;
       if (stage !== "draw") return;
+      const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
-        setStrokes((p) => p.slice(0, -1));
+        setItems((p) => p.slice(0, -1));
       } else if (e.key === "[") {
-        setBrushSize((s) => Math.max(10, s - 10));
+        setBrushSize((s) => Math.max(4, s - 8));
       } else if (e.key === "]") {
-        setBrushSize((s) => Math.min(200, s + 10));
+        setBrushSize((s) => Math.min(120, s + 8));
+      } else if (plain && e.key.toLowerCase() === "d") {
+        setTool("pen");
+      } else if (plain && e.key.toLowerCase() === "e") {
+        setTool("erase");
+      } else if (plain && e.key.toLowerCase() === "r") {
+        setTool("shape");
       }
     };
     window.addEventListener("keydown", onKey);
@@ -585,7 +562,7 @@ export function PartialEditModal({
 
   const slow = elapsed > SLOW_AFTER_MS;
   // 비율 보존 무대 크기 — 높이 상한(62vh)을 비율로 폭 상한에 옮겨, 어느 축이 클램프돼도
-  // 상자 비율 = 이미지 비율(오버레이 좌표 매핑의 전제)이 유지된다.
+  // 상자 비율 = 이미지 비율(주석 좌표 매핑의 전제)이 유지된다.
   const stageStyle = src
     ? {
         aspectRatio: `${src.w} / ${src.h}`,
@@ -599,7 +576,7 @@ export function PartialEditModal({
         <header className="partial-edit-head">
           <span className="partial-edit-title">🖌 부분 수정</span>
           <span className="partial-edit-sub">
-            칠한 부분만 다시 생성해 원본에 합성 — 나머지는 그대로
+            펜·도형으로 표시하고 지시 — 그린 표시는 모델에게 그대로 보입니다
           </span>
           {closable && (
             <button className="assets-x" onClick={onClose} title="닫기">
@@ -611,12 +588,6 @@ export function PartialEditModal({
         {error && <div className="partial-edit-error">{error}</div>}
         {note && <div className="partial-edit-note">{note}</div>}
 
-        {/* rawMask — 벡터 스트로크의 실체 캔버스(작업 해상도). 그리기·합성 양 단계가 쓰므로
-            스테이지 조건 밖에 상시 mount(그리기 블록 안에 두면 합성 단계에서 사라진다). */}
-        {src && (
-          <canvas ref={rawMaskRef} width={src.w} height={src.h} style={{ display: "none" }} />
-        )}
-
         {stage === "load" && <div className="partial-edit-loading">원본 불러오는 중…</div>}
 
         {(stage === "draw" || stage === "wait") && src && (
@@ -625,11 +596,11 @@ export function PartialEditModal({
               <img src={srcUrlRef.current} alt="" draggable={false} />
               <canvas
                 ref={(el) => {
-                  overlayRef.current = el;
+                  annotRef.current = el;
                   if (el && (el.width !== src.w || el.height !== src.h)) {
                     el.width = src.w;
                     el.height = src.h;
-                    renderMask(strokes);
+                    renderAll(items);
                   }
                 }}
                 className={stage === "draw" ? "is-drawing" : ""}
@@ -641,7 +612,7 @@ export function PartialEditModal({
                 onPointerCancel={endStroke}
                 onLostPointerCapture={endStroke}
               />
-              {/* 브러시 크기 미리보기 원 — 지우개는 흰 점선 */}
+              {/* 펜 크기 미리보기 원(선택 색) — 지우개는 흰 점선, 도형은 crosshair 만 */}
               <div ref={cursorRef} className="partial-edit-cursor" />
               {stage === "wait" && (
                 <div className="partial-edit-waitveil">
@@ -672,8 +643,44 @@ export function PartialEditModal({
             </div>
             {stage === "draw" && (
               <>
+                {/* 도구별 옵션 — 펜/도형이면 색, 도형이면 종류까지(웹 편집기의 팝오버 열) */}
+                {tool !== "erase" && (
+                  <div className="partial-edit-subtools">
+                    {tool === "shape" && (
+                      <>
+                        {(
+                          [
+                            ["line", "─", "선"],
+                            ["arrow", "→", "화살표"],
+                            ["rect", "▢", "사각형"],
+                            ["ellipse", "◯", "원"],
+                          ] as [ShapeKind, string, string][]
+                        ).map(([kind, icon, label]) => (
+                          <button
+                            key={kind}
+                            className={shapeKind === kind ? "on" : ""}
+                            title={label}
+                            onClick={() => setShapeKind(kind)}
+                          >
+                            {icon}
+                          </button>
+                        ))}
+                        <span className="partial-edit-subdiv" />
+                      </>
+                    )}
+                    {COLORS.map((c) => (
+                      <button
+                        key={c}
+                        className={"partial-edit-swatch" + (color === c ? " sel" : "")}
+                        style={{ background: c }}
+                        title={c}
+                        onClick={() => setColor(c)}
+                      />
+                    ))}
+                  </div>
+                )}
                 <div className="partial-edit-tools">
-                  <button disabled={!strokes.length} onClick={() => setStrokes([])}>
+                  <button disabled={!items.length} onClick={() => setItems([])}>
                     전체 지우기
                   </button>
                   <span className="partial-edit-toolspacer" />
@@ -681,103 +688,86 @@ export function PartialEditModal({
                     Size
                     <input
                       type="range"
-                      min={10}
-                      max={200}
+                      min={4}
+                      max={120}
                       value={brushSize}
                       onChange={(e) => setBrushSize(Number(e.target.value))}
                     />
                   </label>
                   <button
-                    className={tool === "brush" ? "on" : ""}
-                    title="크기 [ ] · 실행취소 Ctrl+Z"
-                    onClick={() => setTool("brush")}
+                    className={tool === "pen" ? "on" : ""}
+                    title="Pen (D) · 크기 [ ] · 실행취소 Ctrl+Z"
+                    onClick={() => setTool("pen")}
                   >
-                    🖌 Brush
+                    🖌 Pen
                   </button>
                   <button
                     className={tool === "erase" ? "on" : ""}
+                    title="Eraser (E)"
                     onClick={() => setTool("erase")}
                   >
                     ⌫ Eraser
                   </button>
+                  <button
+                    className={tool === "shape" ? "on" : ""}
+                    title="Shapes (R)"
+                    onClick={() => setTool("shape")}
+                  >
+                    ▱ Shapes
+                  </button>
                 </div>
-                {/* 하단 프롬프트 독과 같은 모양 — 한 상자에 입력창 + 알약 컨트롤 + 라임 Generate */}
-                <div className="partial-edit-dock">
-                  {/* autoFocus 없음 — 기본은 그리기 모드([ ] 가 브러시 크기). 입력은 클릭해야 시작 */}
+                {/* 알약형 프롬프트 바 — 웹 편집기와 같은 한 줄 입력 + 우측 크레딧·라임 실행 버튼.
+                    autoFocus 없음: 기본은 그리기 모드(단축키 유지), 입력은 클릭해야 시작 */}
+                <div className="partial-edit-pill">
                   <textarea
-                    placeholder="칠한 부분을 무엇으로 바꿀까요? (예: 보름달을 초승달로) — 클릭해서 입력"
+                    rows={1}
+                    placeholder="이미지를 어떻게 수정할까요? — 클릭해서 입력"
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        void submit();
+                      }
+                    }}
                   />
-                  <div className="partial-edit-dockrow">
-                    {/* 모델 칩 + 팝오버 — 하단 독의 마크업/클래스 그대로(sl-chip/sl-dropdown) */}
-                    <div className="sl-chip-wrap">
-                      <button
-                        className={"sl-chip" + (modelOpen ? " active" : "")}
-                        onClick={() => setModelOpen((v) => !v)}
-                      >
-                        <span className="sl-dot" />
-                        <span className="sl-chip-label">{m.modelName}</span>
-                        <span className="sl-caret">›</span>
-                      </button>
-                      {modelOpen && (
-                        <div className="sl-dropdown">
-                          <div className="sl-dd-title">이미지 모델</div>
-                          <div className="sl-dd-scroll">
-                            {editModels.map((tm) => (
-                              <button
-                                key={tm.job_set_type}
-                                className={"sl-dd-item" + (tm.job_set_type === m.model ? " sel" : "")}
-                                onClick={() => {
-                                  m.setModel(tm.job_set_type);
-                                  setModelOpen(false);
-                                }}
-                              >
-                                {tm.display_name}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    <span className="sl-chip" title="원본과 같은 비율로 생성됩니다">
-                      □ {aspect ?? "—"}
-                    </span>
-                    <span className="partial-edit-dockspacer" />
-                    <button
-                      className="sl-gen"
-                      disabled={!canSubmit}
-                      onClick={submit}
-                      title={cost != null ? `예상 ${cost} 크레딧` : undefined}
-                    >
-                      {submitting ? "요청 중…" : "Generate ✦"}
-                      <span className={"sl-cost" + (cost == null ? " loading" : "")}>
-                        {cost != null ? cost : "…"}
-                      </span>
-                    </button>
-                  </div>
-                  {!workspaceReady && (
-                    <div className="partial-edit-hint">워크스페이스 확인 후 생성할 수 있습니다.</div>
-                  )}
-                  {m.paramsModel === m.model && !m.paramsLoading && !aspect && (
-                    <div className="partial-edit-hint">
-                      모델 파라미터를 불러오지 못해 생성할 수 없습니다 — 모델을 바꾸거나 다시 열어보세요.
-                    </div>
-                  )}
+                  <span className="partial-edit-cost">
+                    {cost != null ? `${cost} cr` : "…"}
+                  </span>
+                  <button
+                    className="partial-edit-gen"
+                    disabled={!canSubmit}
+                    onClick={submit}
+                    title={cost != null ? `Seedream 으로 생성 — 예상 ${cost} 크레딧` : "Seedream 으로 생성"}
+                  >
+                    {submitting ? "…" : "✦"}
+                  </button>
                 </div>
+                {!workspaceReady && (
+                  <div className="partial-edit-hint">워크스페이스 확인 후 생성할 수 있습니다.</div>
+                )}
+                {m.paramsModel === m.model && !m.paramsLoading && !aspect && (
+                  <div className="partial-edit-hint">
+                    모델 파라미터를 불러오지 못해 생성할 수 없습니다 — 다시 열어보세요.
+                  </div>
+                )}
               </>
             )}
           </>
         )}
 
-        {stage === "compose" && src && (
+        {stage === "result" && src && resultUrl && (
           <>
             <div className="partial-edit-stagebox" style={stageStyle}>
-              <canvas ref={previewRef} width={src.w} height={src.h} />
+              <img
+                src={showOriginal ? srcUrlRef.current : resultUrl}
+                alt=""
+                draggable={false}
+              />
             </div>
             <div className="partial-edit-tools">
               <button
-                className={showOriginal ? "" : "on"}
+                className={showOriginal ? "on" : ""}
                 onPointerDown={() => setShowOriginal(true)}
                 onPointerUp={() => setShowOriginal(false)}
                 onPointerLeave={() => setShowOriginal(false)}
@@ -785,32 +775,19 @@ export function PartialEditModal({
               >
                 원본 비교(꾹)
               </button>
-              <label>
-                경계 부드럽게
-                <input
-                  type="range"
-                  min={0}
-                  max={30}
-                  value={feather}
-                  onChange={(e) => setFeather(Number(e.target.value))}
-                />
-              </label>
-              <button className="settings-action" onClick={savePng}>
-                PNG 저장
-              </button>
+              <span className="partial-edit-toolspacer" />
               <button
                 className="settings-action ghost"
                 onClick={() => {
-                  result?.bmp.close();
-                  setResult(null);
+                  setResultUrl(null);
                   setStage("draw");
                 }}
               >
-                같은 마스크로 다시 생성
+                같은 주석으로 다시 수정
               </button>
             </div>
             <div className="partial-edit-hint">
-              중간 생성물은 라이브러리 카드로 남습니다(출처·프롬프트 보존). 저장은 합성된 PNG 입니다.
+              결과는 라이브러리 카드로 저장되어 있습니다 — 다운로드·태그도 카드에서.
             </div>
           </>
         )}
