@@ -467,18 +467,11 @@
 .sl-status-credits { color: #ffce8f; font-weight: 700; }
 .sl-status-user { color: var(--muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 서버 콘솔 — '연결됨' 상태 바로 왼쪽의 [서버] 토글 + cmd 창 정보를 담는 펼침 패널 */
+/* Host 콘솔 — '연결됨' 상태 바로 왼쪽의 [Host] 토글. 정보는 앱 공통 플로팅 창(manage-float)으로. */
 .sl-status-row { display: flex; align-items: flex-end; justify-content: flex-end; gap: 10px; }
-.sl-console { position: relative; }
 .sl-console-toggle { align-self: auto; }
-.sl-console-panel {
-  position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 60;
-  width: min(680px, 72vw);
-  padding: 12px 14px; border-radius: 12px;
-  border: 1px solid var(--border2); background: var(--panel, #16181a);
-  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
-  font-size: 12px;
-}
+.host-console-catcher { z-index: 320; }
+.host-console-float { z-index: 330; width: min(680px, 92vw); font-size: 12px; }
 .sl-console-grid { display: grid; grid-template-columns: 58px 1fr; gap: 4px 10px; }
 .sl-console-grid > span:nth-child(odd) { color: var(--muted); }
 .sl-console-grid > span:nth-child(even) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

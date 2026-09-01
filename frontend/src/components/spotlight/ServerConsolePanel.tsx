@@ -84,28 +84,40 @@ export function ServerConsolePanel({ agentOn }: { agentOn: boolean | null }) {
     : "";
 
   return (
-    <div className="sl-console">
+    <>
       {open && (
-        <div className="sl-console-panel">
-          {error ? (
-            <div className="sl-console-error">{error}</div>
-          ) : (
-            <>
-              <div className="sl-console-grid">
-                <span>허브</span>
-                <span>{hubLabel}</span>
-                <span>CLI</span>
-                <span title={data?.cli.path || undefined}>{cliLabel}</span>
-                <span>에이전트</span>
-                <span>
-                  {agentOn == null ? "확인 중…" : agentOn ? "● 대기 중 (생성 가능)" : "꺼짐"}
-                </span>
-              </div>
-              {data && <LogTail title="에이전트 로그" tail={data.agent_log} />}
-              {data && <LogTail title="허브 로그" tail={data.hub_log} />}
-            </>
-          )}
-        </div>
+        <>
+          {/* 앱 공통 플로팅 창 패턴(manage-float) — 바깥 클릭 또는 ✕ 로 닫기 */}
+          <div className="info-catcher host-console-catcher" onMouseDown={() => setOpen(false)} />
+          <div className="manage-float host-console-float" role="dialog" aria-label="Host 콘솔">
+            <header className="admin-head">
+              <span className="admin-title">🖥 Host 콘솔</span>
+              <button className="assets-x" onClick={() => setOpen(false)} title="닫기">
+                ✕
+              </button>
+            </header>
+            <div className="admin-body">
+              {error ? (
+                <div className="sl-console-error">{error}</div>
+              ) : (
+                <>
+                  <div className="sl-console-grid">
+                    <span>허브</span>
+                    <span>{hubLabel}</span>
+                    <span>CLI</span>
+                    <span title={data?.cli.path || undefined}>{cliLabel}</span>
+                    <span>에이전트</span>
+                    <span>
+                      {agentOn == null ? "확인 중…" : agentOn ? "● 대기 중 (생성 가능)" : "꺼짐"}
+                    </span>
+                  </div>
+                  {data && <LogTail title="에이전트 로그" tail={data.agent_log} />}
+                  {data && <LogTail title="허브 로그" tail={data.hub_log} />}
+                </>
+              )}
+            </div>
+          </div>
+        </>
       )}
       <button
         type="button"
@@ -117,6 +129,6 @@ export function ServerConsolePanel({ agentOn }: { agentOn: boolean | null }) {
         <span>Host</span>
         <span aria-hidden="true">{open ? "▾" : "▴"}</span>
       </button>
-    </div>
+    </>
   );
 }
