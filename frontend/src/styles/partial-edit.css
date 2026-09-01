@@ -131,39 +131,49 @@
   color: var(--muted, #8b93a3);
 }
 
-.partial-edit-form {
+/* 하단 프롬프트 독과 같은 모양의 입력 상자 — 칩(.sl-chip)·Generate(.sl-gen)·크레딧
+   배지(.sl-cost)는 prompt-dock.css 의 실제 클래스를 그대로 재사용한다. */
+.partial-edit-dock {
+  background: var(--panel-2, #101216);
+  border: 1px solid var(--border, #2a2e37);
+  border-radius: 16px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.partial-edit-form textarea {
+.partial-edit-dock textarea {
   width: 100%;
-  min-height: 52px;
-  resize: vertical;
-  background: var(--panel-2, #101216);
-  border: 1px solid var(--border, #2a2e37);
-  border-radius: 8px;
+  min-height: 44px;
+  resize: none;
+  background: transparent;
+  border: none;
+  outline: none;
   color: inherit;
-  padding: 8px 10px;
-  font-size: 13px;
+  padding: 2px 2px 0;
+  font-size: 13.5px;
 }
-.partial-edit-formrow {
+.partial-edit-dockrow {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
-.partial-edit-formrow select {
-  background: var(--panel-2, #101216);
-  border: 1px solid var(--border, #2a2e37);
-  border-radius: 7px;
-  color: inherit;
-  padding: 6px 8px;
-  font-size: 12.5px;
-}
-.partial-edit-cost {
-  color: var(--muted, #8b93a3);
-  font-size: 12px;
+.partial-edit-dockspacer {
   flex: 1;
+}
+.partial-edit-modelselect {
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border, #2a2e37);
+  color: var(--text, #e6e9ef);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.partial-edit-modelselect:hover {
+  border-color: var(--border2, #3a3f4b);
 }
 .partial-edit-hint {
   color: var(--muted, #8b93a3);

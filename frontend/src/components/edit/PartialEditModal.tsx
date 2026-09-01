@@ -612,27 +612,41 @@ export function PartialEditModal({
                     전체 지우기
                   </button>
                 </div>
-                <div className="partial-edit-form">
+                {/* 하단 프롬프트 독과 같은 모양 — 한 상자에 입력창 + 알약 컨트롤 + 라임 Generate */}
+                <div className="partial-edit-dock">
                   <textarea
                     autoFocus
                     placeholder="칠한 부분을 무엇으로 바꿀까요? (예: 보름달을 초승달로)"
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
                   />
-                  <div className="partial-edit-formrow">
-                    <select value={m.model} onChange={(e) => m.setModel(e.target.value)}>
+                  <div className="partial-edit-dockrow">
+                    <select
+                      className="partial-edit-modelselect"
+                      title="수정에 쓸 이미지 모델"
+                      value={m.model}
+                      onChange={(e) => m.setModel(e.target.value)}
+                    >
                       {m.typeModels.map((tm) => (
                         <option key={tm.job_set_type} value={tm.job_set_type}>
                           {tm.display_name}
                         </option>
                       ))}
                     </select>
-                    <span className="partial-edit-cost">
-                      {cost != null ? `예상 ${cost} cr` : "견적 확인 중…"}
-                      {aspect ? ` · ${aspect}` : ""}
+                    <span className="sl-chip" title="원본과 같은 비율로 생성됩니다">
+                      □ {aspect ?? "—"}
                     </span>
-                    <button className="settings-action" disabled={!canSubmit} onClick={submit}>
-                      {submitting ? "요청 중…" : "생성"}
+                    <span className="partial-edit-dockspacer" />
+                    <button
+                      className="sl-gen"
+                      disabled={!canSubmit}
+                      onClick={submit}
+                      title={cost != null ? `예상 ${cost} 크레딧` : undefined}
+                    >
+                      {submitting ? "요청 중…" : "생성 ✦"}
+                      <span className={"sl-cost" + (cost == null ? " loading" : "")}>
+                        {cost != null ? cost : "…"}
+                      </span>
                     </button>
                   </div>
                   {!hasBrush && <div className="partial-edit-hint">브러시로 수정할 부분을 칠하세요.</div>}
