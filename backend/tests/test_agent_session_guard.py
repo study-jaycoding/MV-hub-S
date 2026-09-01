@@ -18,6 +18,15 @@ session_guard = importlib.util.module_from_spec(_GUARD_SPEC)
 _GUARD_SPEC.loader.exec_module(session_guard)
 
 
+def _guard_env() -> dict[str, str]:
+    """가드 실행용 env — 실사용 런처(포트 8010)와 단일 실행 mutex 를 공유하지 않게
+    테스트 전용 포트를 준다. MV Hub 앱을 켠 채로 스위트를 돌려도 '이미 실행 중'
+    경로로 빠지지 않는다(같은 dev 트리 = 같은 install_id 이므로 포트로만 분리 가능)."""
+    env = dict(os.environ)
+    env["CONTENT_HUB_PORT"] = str(56000 + os.getpid() % 4000)
+    return env
+
+
 def _pid_alive(pid: int) -> bool:
     process = subprocess.run(
         [
@@ -77,7 +86,7 @@ def _fixture(tmp_path: Path, *, background: bool) -> tuple[Path, Path]:
 def test_guard_closes_background_children_after_normal_batch_exit(tmp_path):
     batch, marker = _fixture(tmp_path, background=True)
 
-    result = subprocess.run([sys.executable, str(GUARD), str(batch)], timeout=15)
+    result = subprocess.run([sys.executable, str(GUARD), str(batch)], timeout=15, env=_guard_env())
     child_pid = _wait_for_pid(marker)
 
     assert result.returncode == 0
@@ -87,7 +96,7 @@ def test_guard_closes_background_children_after_normal_batch_exit(tmp_path):
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job Object test")
 def test_guard_closes_foreground_child_when_guard_is_forced_closed(tmp_path):
     batch, marker = _fixture(tmp_path, background=False)
-    guard = subprocess.Popen([sys.executable, str(GUARD), str(batch)])
+    guard = subprocess.Popen([sys.executable, str(GUARD), str(batch)], env=_guard_env())
     child_pid = _wait_for_pid(marker)
 
     try:
@@ -130,7 +139,9 @@ def test_explicit_breakaway_child_survives_guard_cleanup(tmp_path):
 
     child_pid = 0
     try:
-        result = subprocess.run([sys.executable, str(GUARD), str(batch)], timeout=15)
+        result = subprocess.run(
+            [sys.executable, str(GUARD), str(batch)], timeout=15, env=_guard_env()
+        )
         child_pid = _wait_for_pid(marker)
 
         assert result.returncode == 0

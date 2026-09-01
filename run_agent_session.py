@@ -370,13 +370,20 @@ def _parse_command_line(command_line: str) -> list[str]:
         ctypes.windll.kernel32.LocalFree(argv)
 
 
-def _browser_processes(exe_basename: str) -> list[dict]:
-    """해당 브라우저 프로세스의 {pid, exe, cmdline} 목록 — PowerShell CIM 1회 조회."""
+def _browser_processes(exe_basename: str) -> list[dict] | None:
+    """해당 브라우저 프로세스의 {pid, exe, cmdline} 목록 — PowerShell CIM 1회 조회.
+
+    반환 3상태(코덱스 합의): 목록=성공, []=성공했고 프로세스 없음, None=조회 실패.
+    실패를 '없음'으로 합치면 앱 창이 떠 있는데 감시가 종료로 오판한다. cmdlet 오류가
+    non-terminating 으로 exit 0 이 되지 않게 ErrorAction Stop 을 강제하고, 구조가
+    예상과 다르거나 CommandLine 을 못 읽는 행(권한·종료 중)이 있으면 '우리 프로필이
+    아님'을 증명할 수 없으므로 보수적으로 None."""
     powershell = str(
         Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
     )
     script = (
-        f"Get-CimInstance Win32_Process -Filter \"Name='{exe_basename}'\" | "
+        "$ErrorActionPreference='Stop'; "
+        f"Get-CimInstance Win32_Process -Filter \"Name='{exe_basename}'\" -ErrorAction Stop | "
         "Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
     )
     try:
@@ -387,34 +394,50 @@ def _browser_processes(exe_basename: str) -> list[dict]:
             timeout=15,
             creationflags=CREATE_NO_WINDOW,
         )
-        raw = (proc.stdout or "").strip()
-        if not raw:
-            return []
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        return []  # 조회 성공 + 해당 프로세스 없음
+    try:
         data = json.loads(raw)
-        rows = data if isinstance(data, list) else [data]
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return []
-    out = []
+    except ValueError:
+        return None
+    rows = data if isinstance(data, list) else [data]
+    out: list[dict] = []
     for row in rows:
-        if isinstance(row, dict) and row.get("ProcessId"):
-            out.append(
-                {
-                    "pid": int(row["ProcessId"]),
-                    "exe": str(row.get("ExecutablePath") or ""),
-                    "cmdline": str(row.get("CommandLine") or ""),
-                }
-            )
+        if not isinstance(row, dict) or not row.get("ProcessId") or not row.get("CommandLine"):
+            return None
+        try:
+            pid = int(row["ProcessId"])
+        except (TypeError, ValueError):
+            return None
+        out.append(
+            {
+                "pid": pid,
+                "exe": str(row.get("ExecutablePath") or ""),
+                "cmdline": str(row["CommandLine"]),
+            }
+        )
     return out
 
 
-def _profile_pids(browser_exe: str, profile: Path) -> tuple[set[int], set[int]]:
-    """전용 프로필을 물고 있는 (루트 pid 집합, 전체 pid 집합).
-    루트 = --type= 인자가 없는 브라우저 프로세스(렌더러/GPU/crashpad 제외)."""
+def _profile_pids(
+    browser_exe: str, profile: Path, *, verify_exe: bool = True
+) -> tuple[set[int], set[int]] | None:
+    """전용 프로필을 물고 있는 (루트 pid 집합, 전체 pid 집합) — 조회 실패면 None.
+    루트 = --type= 인자가 없는 브라우저 프로세스(렌더러/GPU/crashpad 제외).
+    verify_exe=False 면 실행파일 경로 대조 생략(basename 만 아는 호출측용)."""
+    rows = _browser_processes(Path(browser_exe).name)
+    if rows is None:
+        return None
     want_profile = str(profile).casefold().rstrip("\\/")
-    want_exe = str(Path(browser_exe)).casefold()
+    want_exe = str(Path(browser_exe)).casefold() if verify_exe else ""
     roots: set[int] = set()
     all_pids: set[int] = set()
-    for row in _browser_processes(Path(browser_exe).name):
+    for row in rows:
         argv = _parse_command_line(row["cmdline"])
         profile_arg = None
         has_type = False
@@ -430,7 +453,7 @@ def _profile_pids(browser_exe: str, profile: Path) -> tuple[set[int], set[int]]:
         if str(Path(profile_arg)).casefold().rstrip("\\/") != want_profile:
             continue
         exe = str(Path(row["exe"])).casefold() if row["exe"] else ""
-        if exe and exe != want_exe:
+        if want_exe and exe and exe != want_exe:
             continue
         all_pids.add(row["pid"])
         if not has_type:
@@ -463,9 +486,65 @@ def _visible_app_hwnds(pids: set[int]) -> list[int]:
     return [h for h in found if h]
 
 
-def _spawn_app_window(browser_exe: str, profile: Path, url: str) -> None:
+# 앱 창 판정: 제목이 이 접두로 시작하면 MV Hub 창(메인·Assets·Manage 모두 해당).
+# DevTools("DevTools - …")·오류 페이지·Ctrl+N 새 탭은 접두가 달라 제외된다.
+_APP_TITLE_PREFIX = "Millionvolt Hub"
+
+
+def _approved_prop_name() -> str:
+    """승인 표식 Window Property 이름 — 설치별로 달라 다른 설치의 창과 혼동 없음.
+    property 는 창과 함께 소멸하고 프로세스 경계 너머에서 읽히므로, watcher·close
+    helper·업데이트 후 새 watcher 가 같은 승인 정보를 공유한다(코덱스 합의)."""
+    return f"MVHubAppWindow_{_install_id()}"
+
+
+def _window_title(hwnd: int) -> str:
+    user32 = _user32()
+    buffer = ctypes.create_unicode_buffer(512)
+    user32.GetWindowTextW(hwnd, buffer, 512)
+    return buffer.value
+
+
+def _is_app_title(title: str) -> bool:
+    return title.startswith(_APP_TITLE_PREFIX)
+
+
+def _mark_approved(hwnd: int) -> None:
+    user32 = _user32()
+    user32.SetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.HANDLE]
+    user32.SetPropW(hwnd, _approved_prop_name(), wintypes.HANDLE(1))
+
+
+def _is_marked_approved(hwnd: int) -> bool:
+    user32 = _user32()
+    user32.GetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
+    user32.GetPropW.restype = wintypes.HANDLE
+    return bool(user32.GetPropW(hwnd, _approved_prop_name()))
+
+
+def _classify_app_hwnds(pids: set[int]) -> tuple[list[int], list[int]]:
+    """보이는 프로필 창을 (MV Hub 창, 그 외)로 분류.
+
+    MV Hub 창 = 승인 property 보유 또는 제목 접두 일치. 제목이 일치하는 창에는
+    property 를 심어 두므로, 이후 제목이 바뀌어도(업데이트 중 오류 페이지 등)
+    창이 사라질 때까지 MV Hub 창으로 인식된다(스티키 승인)."""
+    app: list[int] = []
+    other: list[int] = []
+    for hwnd in _visible_app_hwnds(pids):
+        if _is_marked_approved(hwnd):
+            app.append(hwnd)
+        elif _is_app_title(_window_title(hwnd)):
+            _mark_approved(hwnd)
+            app.append(hwnd)
+        else:
+            other.append(hwnd)
+    return app, other
+
+
+def _spawn_app_window(browser_exe: str, profile: Path, url: str) -> subprocess.Popen:
     """앱 창 실행 — Job 밖(BREAKAWAY)이라 업데이트 재시작 중에도 창이 살아남는다.
-    루트가 이미 있으면 이 호출은 기존 루트에 '창 하나 열어라' 명령만 전달하고 끝난다."""
+    루트가 이미 있으면 이 호출은 기존 루트에 '창 하나 열어라' 명령만 전달하고 끝난다.
+    반환 Popen 은 CIM 조회 실패 시 창 탐색의 보조 pid 로 쓴다(살아있을 때만 유효)."""
     profile.mkdir(parents=True, exist_ok=True)
     # appwin=1 — 프론트가 '앱 창'임을 알고 Host 콘솔에 '앱 종료' 버튼을 노출한다.
     # (X 닫기는 확인 없이 조용히 닫힘 — 일반 브라우저 탭·test_dev 에는 표식이 없다)
@@ -538,52 +617,51 @@ def _set_console_visible(visible: bool) -> None:
         _user32().ShowWindow(hwnd, SW_SHOW if visible else SW_HIDE)
 
 
-def _any_profile_app_hwnds() -> list[int]:
-    """두 브라우저의 전용 프로필을 모두 확인해 보이는 MV Hub 앱 창 목록을 모은다."""
-    found: list[int] = []
+def _any_profile_app_hwnds() -> tuple[list[int], list[int]]:
+    """두 브라우저의 전용 프로필에서 (MV Hub 창, 그 외 프로필 창)을 모은다.
+    조회 실패한 브라우저는 건너뛴다 — 그쪽은 판단 불가이므로 오폭하지 않는다."""
+    app: list[int] = []
+    other: list[int] = []
     for name, exe_basename in (("edge", "msedge.exe"), ("chrome", "chrome.exe")):
-        profile = _app_profile_dir(name)
-        want_profile = str(profile).casefold().rstrip("\\/")
-        pids: set[int] = set()
-        for row in _browser_processes(exe_basename):
-            argv = _parse_command_line(row["cmdline"])
-            for i, arg in enumerate(argv):
-                value = None
-                if arg.startswith("--user-data-dir="):
-                    value = arg.split("=", 1)[1]
-                elif arg == "--user-data-dir" and i + 1 < len(argv):
-                    value = argv[i + 1]
-                if value and str(Path(value)).casefold().rstrip("\\/") == want_profile:
-                    pids.add(row["pid"])
-                    break
-        found.extend(_visible_app_hwnds(pids))
-    return found
+        got = _profile_pids(exe_basename, _app_profile_dir(name), verify_exe=False)
+        if got is None:
+            continue
+        _roots, all_pids = got
+        found_app, found_other = _classify_app_hwnds(all_pids)
+        app.extend(found_app)
+        other.extend(found_other)
+    return app, other
 
 
 def _focus_app_window() -> bool:
     """이미 떠 있는 MV Hub 앱 창을 앞으로 — 중복 실행 시 두 번째 런처가 호출."""
-    hwnds = _any_profile_app_hwnds()
-    if hwnds:
-        _user32().SetForegroundWindow(hwnds[0])
+    app, other = _any_profile_app_hwnds()
+    for hwnd in app + other:
+        _user32().SetForegroundWindow(hwnd)
         return True
     return False
 
 
 def close_app_windows() -> int:
-    """보이는 MV Hub 앱 창 전부에 WM_CLOSE 전송 — 앱 안의 '종료' 확인 후 백엔드가 호출.
-    창이 닫히면 감시자가 평소의 정상 종료 절차(Job 정리 → 허브·에이전트 정지)를 밟는다."""
+    """MV Hub 로 승인된 창 전부에 WM_CLOSE 전송 — 앱 안의 '종료' 확인 후 백엔드가 호출.
+    창이 닫히면 감시자가 평소의 정상 종료 절차(Job 정리 → 허브·에이전트 정지)를 밟는다.
+    비승인 프로필 창(DevTools 등)은 건드리지 않고, 승인 창이 하나도 없으면 모호하므로
+    닫지 않고 실패를 반환한다(오폭 방지, 코덱스 합의)."""
     WM_CLOSE = 0x0010
     user32 = _user32()
-    hwnds = _any_profile_app_hwnds()
-    sent = [hwnd for hwnd in hwnds if user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)]
-    print(f"[close-app] WM_CLOSE sent to {len(sent)}/{len(hwnds)} window(s)")
+    app, other = _any_profile_app_hwnds()
+    if not app:
+        print(f"[close-app] no approved MV Hub window ({len(other)} other profile window(s) untouched)")
+        return 1
+    sent = [hwnd for hwnd in app if user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)]
+    print(f"[close-app] WM_CLOSE sent to {len(sent)}/{len(app)} window(s)")
     # PostMessageW 성공은 '큐에 넣음'일 뿐 닫힘 보장이 아니다(브라우저가 확인창 등으로
     # 무시 가능) → 실제 소멸을 IsWindow 로 최대 8초 확인. 안 닫히면 실패(exit 1)로
     # 돌려 백엔드가 409 → UI 의 "종료 중…" 고정을 막는다. (재열거 없이 HWND 만 확인 —
     # CIM 재조회는 최악 수십 초라 백엔드 45초 예산을 위협한다)
-    deadline = time.time() + 8.0
-    remaining = list(hwnds)  # 전송 실패 창도 포함해 전체 소멸을 확인해야 성공이다
-    while remaining and time.time() < deadline:
+    deadline = time.monotonic() + 8.0
+    remaining = list(app)  # 전송 실패 창도 포함해 승인 창 전체의 소멸을 확인해야 성공이다
+    while remaining and time.monotonic() < deadline:
         time.sleep(0.4)
         remaining = [h for h in remaining if user32.IsWindow(h) and user32.IsWindowVisible(h)]
     if remaining:
@@ -612,49 +690,108 @@ def acquire_launcher_mutex(port: str) -> bool:
     return True
 
 
+class _WatchState:
+    """앱 창 감시 상태 머신(순수 로직) — Win32 호출 없이 단위 테스트 가능하게 분리.
+
+    승인은 스티키: 한 번 MV Hub 로 승인된 HWND 는 제목이 바뀌어도(업데이트 중 오류
+    페이지 등) 창이 사라질 때까지 앵커다. 비승인(provisional) 창은 앵커도, 정상 종료
+    판정 대상도 아니다. CIM 조회 실패는 종료 카운터에 반영하지 않는다(코덱스 합의)."""
+
+    CIM_FAIL_SHOW_CONSOLE_AFTER = 30.0  # 초 — 이만큼 조회가 계속 실패하면 콘솔을 되살린다
+
+    def __init__(self, now: float):
+        self.approved: set[int] = set()
+        self.approved_ever = False
+        self.empty_scans = 0
+        self.fail_since: float | None = None
+        self.start = now
+
+    def observe(self, newly_app: set[int], query_ok: bool, now: float, is_alive) -> str:
+        """한 틱 관찰 → 행동: anchored(승인 창 존재) / waiting(첫 승인 대기) /
+        fallback(첫 창 시한 초과) / hold(조회 실패 — 판정 유보) / hold_show_console
+        (조회 장기 실패 — 사용자 제어권 회복) / empty(빈 스캔) / closed(종료 확정)."""
+        self.approved = {h for h in self.approved if is_alive(h)} | set(newly_app)
+        if self.approved:
+            self.approved_ever = True
+            self.empty_scans = 0
+            self.fail_since = None
+            return "anchored"
+        if not self.approved_ever:
+            return "fallback" if now - self.start > _APP_FIRST_WINDOW_TIMEOUT else "waiting"
+        if not query_ok:
+            if self.fail_since is None:
+                self.fail_since = now
+            if now - self.fail_since > self.CIM_FAIL_SHOW_CONSOLE_AFTER:
+                return "hold_show_console"
+            return "hold"
+        self.fail_since = None
+        self.empty_scans += 1
+        return "closed" if self.empty_scans >= _APP_CLOSE_DEBOUNCE_SCANS else "empty"
+
+
+def _hwnd_alive(hwnd: int) -> bool:
+    user32 = _user32()
+    return bool(user32.IsWindow(hwnd)) and bool(user32.IsWindowVisible(hwnd))
+
+
 def watch_app_window(url: str) -> int:
-    """앱 창을 띄우고(있으면 입양) 보이는 창이 전부 닫힐 때까지 대기.
-    첫 창 확인 후 (전용 콘솔일 때만) 콘솔을 숨기고, 비정상 종료 전엔 반드시 되살린다."""
+    """앱 창을 띄우고(있으면 입양) 승인된 MV Hub 창이 전부 닫힐 때까지 대기.
+    승인 창 확인 후 (전용 콘솔일 때만) 콘솔을 숨기고, 비정상 종료 전엔 반드시 되살린다."""
     browser = _find_app_browser()
     if not browser:
         return APP_EXIT_NO_BROWSER
     name, exe = browser
     profile = _app_profile_dir(name)
 
-    roots, all_pids = _profile_pids(exe, profile)
-    if not _visible_app_hwnds(all_pids):
-        # 창 없음 — 루트가 남아 있어도 --app 명령으로 새 창을 연다(입양+보강, 업데이트 직후 대응).
-        _spawn_app_window(exe, profile, url)
-
-    deadline = time.time() + _APP_FIRST_WINDOW_TIMEOUT
-    while time.time() < deadline:
-        roots, all_pids = _profile_pids(exe, profile)
-        if _visible_app_hwnds(all_pids):
-            break
-        time.sleep(0.7)
-    else:
+    got = _profile_pids(exe, profile)
+    if got is None:
+        # 조회 실패 — 창을 띄우기 '전'에 앱창 모드를 포기해야 고아 창이 안 생긴다.
         return APP_EXIT_NO_WINDOW
+    _roots, all_pids = got
+    known_pids: set[int] = set(all_pids)  # CIM 실패 시 보조 탐색용 '마지막으로 안 pid'
+    app, _other = _classify_app_hwnds(all_pids)
+    spawn_proc: subprocess.Popen | None = None
+    if not app:
+        # MV Hub 창 없음 — 루트·비승인 창(DevTools 등)이 남아 있어도 --app 으로 새 창을 연다.
+        spawn_proc = _spawn_app_window(exe, profile, url)
 
+    state = _WatchState(time.monotonic())
     hid_console = False
-    if _console_is_ours():
-        _set_console_visible(False)
-        hid_console = True
     try:
-        empty_scans = 0
         while True:
-            time.sleep(1.0)
-            hwnds = _visible_app_hwnds(all_pids)
-            if hwnds:
-                empty_scans = 0
-                continue
-            # 창이 안 보임 — pid 집합이 낡았을 수 있으니(창이 새 루트로 열림) 재조회 후 재확인.
-            roots, all_pids = _profile_pids(exe, profile)
-            if _visible_app_hwnds(all_pids):
-                empty_scans = 0
-                continue
-            empty_scans += 1
-            if empty_scans >= _APP_CLOSE_DEBOUNCE_SCANS:
-                return 0  # 모든 앱 창 닫힘 확정 → bat 종료 → Job 정리
+            time.sleep(0.7 if not state.approved_ever else 1.0)
+            aux = set(known_pids)
+            if spawn_proc is not None and spawn_proc.poll() is None:
+                aux.add(spawn_proc.pid)
+            app, _other = _classify_app_hwnds(aux)  # EnumWindows — 싼 경로(CIM 없음)
+            query_ok = True
+            if not app and not any(_hwnd_alive(h) for h in state.approved):
+                # 창이 안 보임 — pid 집합이 낡았을 수 있으니(창이 새 루트로 열림) CIM 재조회.
+                got = _profile_pids(exe, profile)
+                if got is None:
+                    query_ok = False  # 조회 실패 ≠ 창 없음 — 종료 판정을 유보한다
+                else:
+                    _roots, pids_now = got
+                    if pids_now:
+                        known_pids = set(pids_now)
+                    app, _other = _classify_app_hwnds(set(pids_now) | (
+                        {spawn_proc.pid} if spawn_proc is not None and spawn_proc.poll() is None else set()
+                    ))
+            action = state.observe(set(app), query_ok, time.monotonic(), _hwnd_alive)
+            if action == "anchored":
+                if not hid_console and _console_is_ours():
+                    # 조회 회복 + 승인 창 존재가 함께 확인된 때만 (재)숨김
+                    _set_console_visible(False)
+                    hid_console = True
+            elif action == "hold_show_console":
+                if hid_console:
+                    _set_console_visible(True)  # 장기 조회 실패 — 사용자 제어권 회복
+                    hid_console = False
+            elif action == "closed":
+                return 0  # 승인 창 전부 닫힘 확정 → bat 종료 → Job 정리
+            elif action == "fallback":
+                return APP_EXIT_NO_WINDOW
+            # waiting / hold / empty → 다음 틱
     except BaseException:
         if hid_console:
             _set_console_visible(True)
