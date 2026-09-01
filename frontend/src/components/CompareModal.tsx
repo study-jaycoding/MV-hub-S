@@ -37,8 +37,8 @@ export function CompareModal({
   // 이미지 비교 — 부분 수정의 A/B 와 같은 세로 분할선 와이프(왼쪽 A=1번, 오른쪽 B=2번,
   // 마우스 x 를 따라온다). 이미지 2개를 선택했을 때만 가능.
   const [imageCompare, setImageCompare] = useState(false);
-  const [abMode, setAbMode] = useState<"ab" | "push">("ab"); // 비교 방식 — A/B 와이프 vs push(꾹)
-  const [pushHeld, setPushHeld] = useState(false); // push 모드에서 꾹 누르는 동안 2번(B) 표시
+  const [abOn, setAbOn] = useState(true); // A/B 와이프 토글(기본 켬)
+  const [pushHeld, setPushHeld] = useState(false); // push 버튼을 꾹 누르는 동안 2번(B) 표시
   const [splitX, setSplitX] = useState(0.5); // 0..1, 와이프 상자 폭 기준
   const wipeSrcs = gens.map((g) => {
     const a = g.assets?.[0];
@@ -257,6 +257,7 @@ export function CompareModal({
                 disabled={!canImageCompare}
                 onChange={(e) => {
                   setImageCompare(e.target.checked);
+                  setAbOn(true);
                   setSplitX(0.5);
                   setPushHeld(false);
                 }}
@@ -276,43 +277,27 @@ export function CompareModal({
         </div>
         <div className="cmp-body">
           {imageCompare && canImageCompare ? (
-            <div className="cmp-abwrap">
-              {/* 비교 방식 선택 — 부분 수정과 동일 2종 */}
-              <div className="cmp-abmodes">
-                <button
-                  className={abMode === "push" ? "on" : ""}
-                  title="이미지를 꾹 누르는 동안 2번(B) 표시"
-                  onClick={() => {
-                    setAbMode("push");
-                    setPushHeld(false);
-                  }}
-                >
-                  비교 push
-                </button>
-                <button
-                  className={abMode === "ab" ? "on" : ""}
-                  title="마우스를 좌우로 움직여 분할선 비교 — 왼쪽 1번 / 오른쪽 2번"
-                  onClick={() => {
-                    setAbMode("ab");
-                    setSplitX(0.5);
-                  }}
-                >
-                  비교 A/B
-                </button>
-                {abMode === "push" && (
-                  <span className="cmp-abhint">이미지를 꾹 누르면 2번(B)이 보입니다</span>
-                )}
-              </div>
-              {abMode === "ab" ? (
-                <div
-                  className="cmp-imgwipe ab"
-                  onPointerMove={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    if (!rect.width) return;
-                    setSplitX(Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)));
-                  }}
-                >
-                  {/* 바닥 = B(2번), 위에 A(1번)를 겹치고 분할선 오른쪽을 clip — 왼쪽 A / 오른쪽 B */}
+            <div
+              className={"cmp-imgwipe" + (abOn && !pushHeld ? " ab" : "")}
+              onPointerMove={
+                abOn && !pushHeld
+                  ? (e) => {
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      if (!rect.width) return;
+                      setSplitX(Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)));
+                    }
+                  : undefined
+              }
+            >
+              {pushHeld ? (
+                // push 우선 — 꾹 누르는 동안 2번(B) 전체
+                <>
+                  <img src={wipeSrcs[1]!} alt="" draggable={false} />
+                  <div className="cmp-ablabel">B 2번</div>
+                </>
+              ) : abOn ? (
+                // 바닥 = B(2번), 위에 A(1번)를 겹치고 분할선 오른쪽을 clip — 왼쪽 A / 오른쪽 B
+                <>
                   <img src={wipeSrcs[1]!} alt="" draggable={false} />
                   <img
                     src={wipeSrcs[0]!}
@@ -322,19 +307,36 @@ export function CompareModal({
                   />
                   <div className="cmp-abline" style={{ left: `${(splitX * 100).toFixed(2)}%` }} />
                   <div className="cmp-ablabel">A 1번 · 2번 B</div>
-                </div>
+                </>
               ) : (
-                <div
-                  className="cmp-imgwipe push"
+                <>
+                  <img src={wipeSrcs[0]!} alt="" draggable={false} />
+                  <div className="cmp-ablabel">A 1번</div>
+                </>
+              )}
+              {/* 그림 하단 중앙 — 부분 수정과 동일 동작: push=꾹 누르는 동안만, A/B=토글 */}
+              <div className="cmp-abbtns">
+                <button
+                  className={pushHeld ? "on" : ""}
+                  title="누르고 있는 동안 2번(B) 표시"
                   onPointerDown={() => setPushHeld(true)}
                   onPointerUp={() => setPushHeld(false)}
                   onPointerLeave={() => setPushHeld(false)}
                   onPointerCancel={() => setPushHeld(false)}
                 >
-                  <img src={pushHeld ? wipeSrcs[1]! : wipeSrcs[0]!} alt="" draggable={false} />
-                  <div className="cmp-ablabel">{pushHeld ? "B 2번" : "A 1번"}</div>
-                </div>
-              )}
+                  비교 push
+                </button>
+                <button
+                  className={abOn ? "on" : ""}
+                  title="마우스를 좌우로 움직여 분할선 비교 — 왼쪽 1번 / 오른쪽 2번"
+                  onClick={() => {
+                    setAbOn((v) => !v);
+                    setSplitX(0.5);
+                  }}
+                >
+                  비교 A/B
+                </button>
+              </div>
             </div>
           ) : (
             <div

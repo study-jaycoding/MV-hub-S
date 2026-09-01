@@ -434,24 +434,25 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .cmp-srcbox-name { font-size: 12.5px; color: var(--muted2); }
 .cmp-empty { color: var(--muted); font-size: 13px; padding: 16px 2px; }
 .cmp-body { overflow: auto; padding: 14px 16px 18px; }
-/* 이미지 비교 — 방식 선택 줄 + 비교 상자. A/B=세로 분할선 와이프(마우스 x 추적),
-   push=이미지를 꾹 누르는 동안 2번(B) 표시 */
-.cmp-abwrap { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 320px; }
-.cmp-abmodes { display: flex; align-items: center; gap: 8px; flex: none; }
-.cmp-abmodes button {
-  padding: 4px 10px; border: 1px solid var(--border); border-radius: 7px;
-  background: transparent; color: inherit; cursor: pointer; font-size: 12px;
-}
-.cmp-abmodes button.on {
-  background: var(--accent); color: #111; border-color: transparent; font-weight: 600;
-}
-.cmp-abhint { font-size: 11.5px; color: var(--muted); }
+/* 이미지 비교 — A/B=세로 분할선 와이프(마우스 x 추적, 토글), push=버튼을 꾹 누르는
+   동안 2번(B) 표시. 버튼 2개는 그림 하단 중앙 오버레이(부분 수정과 동일 동작). */
 .cmp-imgwipe {
-  position: relative; flex: 1; min-height: 0;
+  position: relative; height: 100%; min-height: 320px;
   border-radius: 10px; overflow: hidden; background: #0e0f13;
 }
 .cmp-imgwipe.ab { cursor: ew-resize; }
-.cmp-imgwipe.push { cursor: pointer; }
+.cmp-abbtns {
+  position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 8px; z-index: 3;
+}
+.cmp-abbtns button {
+  padding: 4px 12px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55); color: #fff; cursor: pointer; font-size: 12px;
+  white-space: nowrap;
+}
+.cmp-abbtns button.on {
+  background: var(--accent); color: #111; border-color: transparent; font-weight: 600;
+}
 .cmp-imgwipe img {
   position: absolute; inset: 0; width: 100%; height: 100%;
   object-fit: contain; display: block; user-select: none;
@@ -461,7 +462,7 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
   background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5); pointer-events: none;
 }
 .cmp-ablabel {
-  position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+  position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%);
   font-size: 11px; color: #fff; background: rgba(0, 0, 0, 0.45);
   padding: 2px 10px; border-radius: 999px; pointer-events: none;
 }
