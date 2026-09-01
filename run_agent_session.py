@@ -467,6 +467,9 @@ def _spawn_app_window(browser_exe: str, profile: Path, url: str) -> None:
     """앱 창 실행 — Job 밖(BREAKAWAY)이라 업데이트 재시작 중에도 창이 살아남는다.
     루트가 이미 있으면 이 호출은 기존 루트에 '창 하나 열어라' 명령만 전달하고 끝난다."""
     profile.mkdir(parents=True, exist_ok=True)
+    # appwin=1 — 프론트가 '앱 창'임을 알고 닫기 전 확인(beforeunload)을 켠다.
+    # 일반 브라우저 탭·test_dev 에는 이 표식이 없어 묻지 않는다.
+    url = url + ("&" if "?" in url else "?") + "appwin=1"
     subprocess.Popen(
         [
             browser_exe,

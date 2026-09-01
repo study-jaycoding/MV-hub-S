@@ -27,6 +27,7 @@ import {
   LibrarySelectionActionBar,
 } from "./components/app/SelectionActionBar";
 import { KEY_COLORS } from "./lib/appConstants";
+import { isAppWindow } from "./lib/appWindow";
 import { generationQueryKey } from "./lib/appGenerationQuery";
 import { generationsByIds, uniqueTagNames } from "./lib/generationTags";
 import { useAppNavigation } from "./lib/useAppNavigation";
@@ -179,6 +180,17 @@ export default function App() {
   const [videoCompare, setVideoCompare] = useState<CompareMedia[] | null>(null);
   const [sceneCompareMedia, setSceneCompareMedia] = useState<CompareMedia[] | null>(null);
   const { flash, toast } = useAppToast();
+  // 앱 창 모드(런처 ?appwin=1): 이 창을 닫으면 허브·에이전트가 함께 종료되므로
+  // 닫기 전에 브라우저 확인창을 한 번 띄운다(문구는 브라우저 고정 — 커스텀 불가).
+  useEffect(() => {
+    if (!isAppWindow()) return;
+    const confirmClose = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = ""; // 크롬은 이 값이 있어야 확인창을 띄운다
+    };
+    window.addEventListener("beforeunload", confirmClose);
+    return () => window.removeEventListener("beforeunload", confirmClose);
+  }, []);
   // Canvas 씬(빈 캔버스) 상태·CRUD 는 useSceneCoordination 훅으로 추출. S1: 프로젝트 무관 전역(projectId=null).
   //  flash 전달 — 다른 탭이 이 씬을 바꾸면(멀티탭) 비파괴 알림용.
   const {
