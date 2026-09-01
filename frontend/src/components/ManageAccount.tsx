@@ -1,6 +1,6 @@
 // 내 계정 관리 — AccountMenu의 "Manage Account"로 열린다.
 // 계정 정보(이메일·등급·플랜·크레딧) 표시 + 표시이름 변경(여기서 직접 수정).
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import { APP_EVENTS, dispatchAppEvent } from "../lib/appEvents";
 import {
@@ -9,6 +9,7 @@ import {
   roleLabelList,
   type ProviderIdentity,
 } from "../lib/accountIdentity";
+import { getReleaseUpdateStatus } from "../lib/releaseUpdate";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import type { Account } from "../types";
 
@@ -40,6 +41,21 @@ export function ManageAccount({
   const [pw, setPw] = useState("");
   const [pwSaving, setPwSaving] = useState(false);
   const [pwMsg, setPwMsg] = useState("");
+  // 앱 버전 — 릴리스 설치본의 VERSION.txt(설치 성공 시에만 갱신되는 마커)가 단일 출처.
+  // release-update status 에 이미 실려 오므로 패널이 열릴 때 1회만 조회한다.
+  // 서버 원격 접속(403)·개발 실행(빈 값)은 보여줄 버전이 없어 행 자체를 숨긴다.
+  const [appVersion, setAppVersion] = useState("");
+  useEffect(() => {
+    let alive = true;
+    getReleaseUpdateStatus()
+      .then((s) => {
+        if (alive && s.current_version) setAppVersion(s.current_version);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEscapeClose(onClose);
 
@@ -185,6 +201,7 @@ export function ManageAccount({
             />
             <Row label="계정 식별자" value={accountUid(account, provider)} mono />
             <Row label="CLI 버전" value={cliVersion || "—"} mono />
+            {appVersion && <Row label="앱 버전" value={appVersion} mono />}
           </section>
         </div>
       </div>
