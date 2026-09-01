@@ -835,13 +835,12 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
     try:
         name = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"  # 충돌은 _commit 이 _2 로 회피
         commit_attempted = True  # 취소 재전파 전 실제 파일 확정 가능 — finally 무효화 기준
-        target, reused = await to_thread_non_abandon(
-            asset_io.find_or_commit_media,
+        target, reused, discard_token = await to_thread_non_abandon(
+            _commit_capture_with_discard_token,
             tmp,
             cap_dir,
             name,
             digest,
-            "image",
             size,
         )
     except BaseException:
@@ -853,7 +852,7 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
             asset_tree.invalidate_project_tree(cap_dir)
             asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
     if reused:
-        return _finalize_reused_capture(target)
+        return {"project": "captures", "path": target.name, "name": target.name, "type": "image", "reused": True}
     return {
         "project": "captures",
         "path": target.name,
@@ -861,7 +860,7 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
         "type": "image",
         # 신규 파일에만 1회용 정리 토큰 — 생성 요청이 확정 거절(4xx)로 끝난 고아만
         # 프론트가 이 토큰으로 지울 수 있다(아래 /capture-discard).
-        "discard_token": _issue_capture_discard_token(target.name),
+        "discard_token": discard_token,
     }
 
 
@@ -876,16 +875,25 @@ _capture_discard_tokens: dict[str, tuple[str, float]] = {}  # token -> (파일�
 _capture_discard_lock = threading.RLock()
 
 
-def _finalize_reused_capture(target: Path) -> dict[str, Any]:
-    """reused 업로드의 확정 — 락 안에서 옛 토큰 무효화 + 파일 실존 검증을 원자로.
-    삭제(discard)도 같은 락 안에서 pop→참조검사→unlink 를 다 하므로, 여기서 파일이
-    보이면 이후 discard 는 (토큰이 방금 무효화되어) 절대 못 지우고, 이미 지워졌으면
-    사라진 경로를 응답하는 대신 409 로 재시도를 유도한다."""
+def _commit_capture_with_discard_token(
+    tmp: Path, cap_dir: Path, name: str, digest: str, size: int
+) -> tuple[Path, bool, Optional[str]]:
+    """워커 스레드에서 실행 — 커밋/재사용 판정과 토큰 발급·무효화를 discard 와 같은 락
+    안에서 원자로 처리한다(코덱스 BLOCK 2차: 신규 커밋과 토큰 발급 사이에 reuse 가
+    끼어들면, reuse 확정 이후 발급된 토큰으로 참조 중인 파일이 삭제될 수 있었다).
+
+    · 신규 커밋 → 같은 락 안에서 토큰 발급 = 이후의 reuse 확정이 반드시 그 토큰을 본다.
+    · reuse → 옛 토큰 무효화 + 파일 실존 검증(discard 가 pop→검사→unlink 를 같은 락
+      안에서 다 하므로, 여기서 보인 파일은 이후 옛 토큰으로 절대 지워지지 않는다).
+      이미 지워졌으면 사라진 경로 응답 대신 409 로 재시도를 유도한다."""
     with _capture_discard_lock:
-        _invalidate_capture_discard_tokens(target.name)
-        if not target.exists():
-            raise HTTPException(status_code=409, detail="캡처가 방금 정리되었습니다 — 다시 시도하세요")
-    return {"project": "captures", "path": target.name, "name": target.name, "type": "image", "reused": True}
+        target, reused = asset_io.find_or_commit_media(tmp, cap_dir, name, digest, "image", size)
+        if reused:
+            _invalidate_capture_discard_tokens(target.name)
+            if not target.exists():
+                raise HTTPException(status_code=409, detail="캡처가 방금 정리되었습니다 — 다시 시도하세요")
+            return target, True, None
+        return target, False, _issue_capture_discard_token(target.name)
 
 
 def _issue_capture_discard_token(name: str) -> str:

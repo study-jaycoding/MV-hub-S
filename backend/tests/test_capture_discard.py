@@ -119,24 +119,36 @@ def test_reused_upload_invalidates_prior_tokens(local_only, captures_root, monke
     assert f.exists()
 
 
-def test_finalize_reused_capture_atomic_contract(local_only, captures_root, monkeypatch):
-    """reuse 확정과 discard 는 같은 락 경계 — 파일이 살아 있으면 옛 토큰을 무효화한 뒤
-    정상 응답(이후 discard 불가), 이미 정리된 뒤라면 사라진 경로 대신 409(코덱스 BLOCK 해소)."""
+def test_commit_capture_token_bookkeeping_is_atomic_with_discard(
+    local_only, captures_root, monkeypatch
+):
+    """커밋/재사용 판정 + 토큰 발급·무효화가 discard 와 같은 락 경계(코덱스 BLOCK 해소):
+    신규 커밋은 락 안에서 토큰까지 발급, reuse 는 옛 토큰 무효화 + 실존 검증(없으면 409)."""
     _fake_db(monkeypatch, [])
-    f = captures_root / "captures" / "capture-x.png"
+    cap_dir = captures_root / "captures"
+    f = cap_dir / "capture-x.png"
     f.write_bytes(b"png")
-    token = assets._issue_capture_discard_token("capture-x.png")
-    out = assets._finalize_reused_capture(f)
-    assert out["reused"] is True
-    # reuse 가 먼저 확정됐으면 옛 토큰으로는 못 지운다(무효화됨)
-    with pytest.raises(HTTPException) as exc:
+    # 신규 커밋 경로 — 토큰이 같은 임계구역에서 발급된다
+    monkeypatch.setattr(assets.asset_io, "find_or_commit_media", lambda *a, **k: (f, False))
+    target, reused, token = assets._commit_capture_with_discard_token(
+        f, cap_dir, "capture-x.png", "digest", 3
+    )
+    assert (target, reused) == (f, False) and token
+    # 이어서 reuse — 방금 발급된 신규 토큰을 무효화하고 실존을 검증한다
+    monkeypatch.setattr(assets.asset_io, "find_or_commit_media", lambda *a, **k: (f, True))
+    assert assets._commit_capture_with_discard_token(f, cap_dir, "capture-x.png", "digest", 3) == (
+        f,
+        True,
+        None,
+    )
+    with pytest.raises(HTTPException) as exc:  # 신규 시절 토큰은 이제 못 쓴다
         assets.discard_capture(assets.CaptureDiscardIn(token=token), _request())
     assert exc.value.status_code == 404
     assert f.exists()
-    # 반대 순서: 파일이 이미 정리된 뒤의 reuse 확정은 사라진 경로 응답 대신 409
+    # 파일이 이미 정리된 뒤의 reuse 는 사라진 경로 응답 대신 409(재시도 유도)
     f.unlink()
     with pytest.raises(HTTPException) as exc:
-        assets._finalize_reused_capture(f)
+        assets._commit_capture_with_discard_token(f, cap_dir, "capture-x.png", "digest", 3)
     assert exc.value.status_code == 409
 
 
