@@ -37,6 +37,8 @@ export function CompareModal({
   // 이미지 비교 — 부분 수정의 A/B 와 같은 세로 분할선 와이프(왼쪽 A=1번, 오른쪽 B=2번,
   // 마우스 x 를 따라온다). 이미지 2개를 선택했을 때만 가능.
   const [imageCompare, setImageCompare] = useState(false);
+  const [abMode, setAbMode] = useState<"ab" | "push">("ab"); // 비교 방식 — A/B 와이프 vs push(꾹)
+  const [pushHeld, setPushHeld] = useState(false); // push 모드에서 꾹 누르는 동안 2번(B) 표시
   const [splitX, setSplitX] = useState(0.5); // 0..1, 와이프 상자 폭 기준
   const wipeSrcs = gens.map((g) => {
     const a = g.assets?.[0];
@@ -256,6 +258,7 @@ export function CompareModal({
                 onChange={(e) => {
                   setImageCompare(e.target.checked);
                   setSplitX(0.5);
+                  setPushHeld(false);
                 }}
               />
               이미지 비교
@@ -273,24 +276,65 @@ export function CompareModal({
         </div>
         <div className="cmp-body">
           {imageCompare && canImageCompare ? (
-            <div
-              className="cmp-imgwipe"
-              onPointerMove={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                if (!rect.width) return;
-                setSplitX(Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)));
-              }}
-            >
-              {/* 바닥 = B(2번), 위에 A(1번)를 겹치고 분할선 오른쪽을 clip — 왼쪽 A / 오른쪽 B */}
-              <img src={wipeSrcs[1]!} alt="" draggable={false} />
-              <img
-                src={wipeSrcs[0]!}
-                alt=""
-                draggable={false}
-                style={{ clipPath: `inset(0 ${(100 - splitX * 100).toFixed(2)}% 0 0)` }}
-              />
-              <div className="cmp-abline" style={{ left: `${(splitX * 100).toFixed(2)}%` }} />
-              <div className="cmp-ablabel">A 1번 · 2번 B</div>
+            <div className="cmp-abwrap">
+              {/* 비교 방식 선택 — 부분 수정과 동일 2종 */}
+              <div className="cmp-abmodes">
+                <button
+                  className={abMode === "push" ? "on" : ""}
+                  title="이미지를 꾹 누르는 동안 2번(B) 표시"
+                  onClick={() => {
+                    setAbMode("push");
+                    setPushHeld(false);
+                  }}
+                >
+                  비교 push
+                </button>
+                <button
+                  className={abMode === "ab" ? "on" : ""}
+                  title="마우스를 좌우로 움직여 분할선 비교 — 왼쪽 1번 / 오른쪽 2번"
+                  onClick={() => {
+                    setAbMode("ab");
+                    setSplitX(0.5);
+                  }}
+                >
+                  비교 A/B
+                </button>
+                {abMode === "push" && (
+                  <span className="cmp-abhint">이미지를 꾹 누르면 2번(B)이 보입니다</span>
+                )}
+              </div>
+              {abMode === "ab" ? (
+                <div
+                  className="cmp-imgwipe ab"
+                  onPointerMove={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    if (!rect.width) return;
+                    setSplitX(Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)));
+                  }}
+                >
+                  {/* 바닥 = B(2번), 위에 A(1번)를 겹치고 분할선 오른쪽을 clip — 왼쪽 A / 오른쪽 B */}
+                  <img src={wipeSrcs[1]!} alt="" draggable={false} />
+                  <img
+                    src={wipeSrcs[0]!}
+                    alt=""
+                    draggable={false}
+                    style={{ clipPath: `inset(0 ${(100 - splitX * 100).toFixed(2)}% 0 0)` }}
+                  />
+                  <div className="cmp-abline" style={{ left: `${(splitX * 100).toFixed(2)}%` }} />
+                  <div className="cmp-ablabel">A 1번 · 2번 B</div>
+                </div>
+              ) : (
+                <div
+                  className="cmp-imgwipe push"
+                  onPointerDown={() => setPushHeld(true)}
+                  onPointerUp={() => setPushHeld(false)}
+                  onPointerLeave={() => setPushHeld(false)}
+                  onPointerCancel={() => setPushHeld(false)}
+                >
+                  <img src={pushHeld ? wipeSrcs[1]! : wipeSrcs[0]!} alt="" draggable={false} />
+                  <div className="cmp-ablabel">{pushHeld ? "B 2번" : "A 1번"}</div>
+                </div>
+              )}
             </div>
           ) : (
             <div

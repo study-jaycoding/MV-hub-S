@@ -434,11 +434,24 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .cmp-srcbox-name { font-size: 12.5px; color: var(--muted2); }
 .cmp-empty { color: var(--muted); font-size: 13px; padding: 16px 2px; }
 .cmp-body { overflow: auto; padding: 14px 16px 18px; }
-/* 이미지 비교 — 세로 분할선 와이프(왼쪽 A=1번, 오른쪽 B=2번), 마우스 x 를 따라온다 */
-.cmp-imgwipe {
-  position: relative; height: 100%; min-height: 320px;
-  border-radius: 10px; overflow: hidden; background: #0e0f13; cursor: ew-resize;
+/* 이미지 비교 — 방식 선택 줄 + 비교 상자. A/B=세로 분할선 와이프(마우스 x 추적),
+   push=이미지를 꾹 누르는 동안 2번(B) 표시 */
+.cmp-abwrap { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 320px; }
+.cmp-abmodes { display: flex; align-items: center; gap: 8px; flex: none; }
+.cmp-abmodes button {
+  padding: 4px 10px; border: 1px solid var(--border); border-radius: 7px;
+  background: transparent; color: inherit; cursor: pointer; font-size: 12px;
 }
+.cmp-abmodes button.on {
+  background: var(--accent); color: #111; border-color: transparent; font-weight: 600;
+}
+.cmp-abhint { font-size: 11.5px; color: var(--muted); }
+.cmp-imgwipe {
+  position: relative; flex: 1; min-height: 0;
+  border-radius: 10px; overflow: hidden; background: #0e0f13;
+}
+.cmp-imgwipe.ab { cursor: ew-resize; }
+.cmp-imgwipe.push { cursor: pointer; }
 .cmp-imgwipe img {
   position: absolute; inset: 0; width: 100%; height: 100%;
   object-fit: contain; display: block; user-select: none;
