@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
+import json
 import os
 import subprocess
 import sys
+import time
 from ctypes import wintypes
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -249,6 +252,362 @@ def _close_stale_launcher_shells(script: Path) -> None:
         pass
 
 
+# ── 앱 창 모드 ──────────────────────────────────────────────────────────────
+# 수명 앵커를 "콘솔 창"에서 "브라우저 앱 창(전용 프로필)"으로 바꾼다.
+#   · --app-probe  : 앱 창 모드 가능 여부(Edge/Chrome 존재)만 판정 — 성공 0 / 불가 3.
+#   · --app-window : 앱 창을 띄우거나(있으면 입양) 실제 '보이는 창(HWND)'을 감시.
+#                    창이 전부 닫히면 0 반환 → bat 종료 → Job 정리로 허브·에이전트 정지.
+# 창(HWND)이 앵커다 — 브라우저 루트 프로세스는 창이 다 닫혀도 남을 수 있어(백그라운드 모드)
+# PID 대기만으로는 종료를 놓친다(코덱스 검토 반영).
+
+APP_EXIT_NO_BROWSER = 3  # Edge/Chrome 없음 — bat 이 기존(콘솔 표시) 방식으로 폴백
+APP_EXIT_NO_WINDOW = 4  # 창이 제시간에 안 나타남/감시 실패 — 콘솔 복구 후 반환
+
+_APP_WINDOW_CLASS_PREFIX = "Chrome_WidgetWin"
+_APP_CLOSE_DEBOUNCE_SCANS = 5  # 연속 N 회(초) 창 0 이어야 '닫힘' 확정 — 순간 깜빡임 오인 방지
+_APP_FIRST_WINDOW_TIMEOUT = 40.0
+
+ERROR_ALREADY_EXISTS = 183
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+SW_HIDE = 0
+SW_SHOW = 5
+
+_launcher_mutex_handle = None  # 프로세스 수명 동안 유지 — GC 로 닫히면 mutex 가 풀린다
+
+
+def _user32():
+    return ctypes.WinDLL("user32", use_last_error=True)
+
+
+def _install_id() -> str:
+    """설치 루트별 고유 id — 여러 설치(릴리스/저장소)가 프로필·mutex 를 공유하지 않게."""
+    root = str(Path(__file__).resolve().parent).casefold()
+    return hashlib.sha1(root.encode("utf-8")).hexdigest()[:10]
+
+
+def _find_app_browser() -> tuple[str, str] | None:
+    """앱 모드 지원 브라우저 탐색 — (이름, exe 절대경로). 기본 Edge 우선, 다음 Chrome.
+    env MVHUB_APP_BROWSER=chrome|edge 로 우선순위를 뒤집을 수 있다(선호 없으면 나머지로 폴백)."""
+    if os.name != "nt":
+        return None
+    import winreg
+
+    def from_app_paths(exe: str) -> str | None:
+        for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+                try:
+                    with winreg.OpenKey(
+                        hive,
+                        rf"Software\Microsoft\Windows\CurrentVersion\App Paths\{exe}",
+                        0,
+                        winreg.KEY_READ | view,
+                    ) as key:
+                        value, _kind = winreg.QueryValueEx(key, None)
+                        if value and Path(value).is_file():
+                            return str(Path(value))
+                except OSError:
+                    continue
+        return None
+
+    def first_existing(paths: list[str]) -> str | None:
+        for p in paths:
+            if p and Path(p).is_file():
+                return str(Path(p))
+        return None
+
+    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+    pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    local = os.environ.get("LOCALAPPDATA", "")
+
+    def find_edge() -> tuple[str, str] | None:
+        exe = from_app_paths("msedge.exe") or first_existing(
+            [
+                str(Path(pf86) / "Microsoft" / "Edge" / "Application" / "msedge.exe"),
+                str(Path(pf) / "Microsoft" / "Edge" / "Application" / "msedge.exe"),
+                str(Path(local) / "Microsoft" / "Edge" / "Application" / "msedge.exe") if local else "",
+            ]
+        )
+        return ("edge", exe) if exe else None
+
+    def find_chrome() -> tuple[str, str] | None:
+        exe = from_app_paths("chrome.exe") or first_existing(
+            [
+                str(Path(pf) / "Google" / "Chrome" / "Application" / "chrome.exe"),
+                str(Path(pf86) / "Google" / "Chrome" / "Application" / "chrome.exe"),
+                str(Path(local) / "Google" / "Chrome" / "Application" / "chrome.exe") if local else "",
+            ]
+        )
+        return ("chrome", exe) if exe else None
+
+    preferred = os.environ.get("MVHUB_APP_BROWSER", "").strip().lower()
+    order = (find_chrome, find_edge) if preferred == "chrome" else (find_edge, find_chrome)
+    for finder in order:
+        found = finder()
+        if found:
+            return found
+    return None
+
+
+def _app_profile_dir(browser_name: str) -> Path:
+    base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    return base / "MVHub" / "app-window" / f"{browser_name}-{_install_id()}"
+
+
+def _parse_command_line(command_line: str) -> list[str]:
+    """Windows 규칙으로 커맨드라인 → 인자 리스트 (CommandLineToArgvW)."""
+    if not command_line:
+        return []
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    argc = ctypes.c_int(0)
+    argv = shell32.CommandLineToArgvW(command_line, ctypes.byref(argc))
+    if not argv:
+        return []
+    try:
+        return [argv[i] for i in range(argc.value)]
+    finally:
+        ctypes.windll.kernel32.LocalFree(argv)
+
+
+def _browser_processes(exe_basename: str) -> list[dict]:
+    """해당 브라우저 프로세스의 {pid, exe, cmdline} 목록 — PowerShell CIM 1회 조회."""
+    powershell = str(
+        Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    )
+    script = (
+        f"Get-CimInstance Win32_Process -Filter \"Name='{exe_basename}'\" | "
+        "Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
+    )
+    try:
+        proc = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        raw = (proc.stdout or "").strip()
+        if not raw:
+            return []
+        data = json.loads(raw)
+        rows = data if isinstance(data, list) else [data]
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+    out = []
+    for row in rows:
+        if isinstance(row, dict) and row.get("ProcessId"):
+            out.append(
+                {
+                    "pid": int(row["ProcessId"]),
+                    "exe": str(row.get("ExecutablePath") or ""),
+                    "cmdline": str(row.get("CommandLine") or ""),
+                }
+            )
+    return out
+
+
+def _profile_pids(browser_exe: str, profile: Path) -> tuple[set[int], set[int]]:
+    """전용 프로필을 물고 있는 (루트 pid 집합, 전체 pid 집합).
+    루트 = --type= 인자가 없는 브라우저 프로세스(렌더러/GPU/crashpad 제외)."""
+    want_profile = str(profile).casefold().rstrip("\\/")
+    want_exe = str(Path(browser_exe)).casefold()
+    roots: set[int] = set()
+    all_pids: set[int] = set()
+    for row in _browser_processes(Path(browser_exe).name):
+        argv = _parse_command_line(row["cmdline"])
+        profile_arg = None
+        has_type = False
+        for i, arg in enumerate(argv):
+            if arg.startswith("--user-data-dir="):
+                profile_arg = arg.split("=", 1)[1]
+            elif arg == "--user-data-dir" and i + 1 < len(argv):
+                profile_arg = argv[i + 1]
+            elif arg.startswith("--type="):
+                has_type = True
+        if not profile_arg:
+            continue
+        if str(Path(profile_arg)).casefold().rstrip("\\/") != want_profile:
+            continue
+        exe = str(Path(row["exe"])).casefold() if row["exe"] else ""
+        if exe and exe != want_exe:
+            continue
+        all_pids.add(row["pid"])
+        if not has_type:
+            roots.add(row["pid"])
+    return roots, all_pids
+
+
+def _visible_app_hwnds(pids: set[int]) -> list[int]:
+    """해당 프로세스들이 소유한 '보이는' 브라우저 최상위 창 목록."""
+    if not pids:
+        return []
+    user32 = _user32()
+    found: list[int] = []
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def callback(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        owner_pid = wintypes.DWORD(0)
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
+        if owner_pid.value not in pids:
+            return True
+        buffer = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, buffer, 64)
+        if buffer.value.startswith(_APP_WINDOW_CLASS_PREFIX):
+            found.append(int(hwnd) if hwnd else 0)
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(callback), 0)
+    return [h for h in found if h]
+
+
+def _spawn_app_window(browser_exe: str, profile: Path, url: str) -> None:
+    """앱 창 실행 — Job 밖(BREAKAWAY)이라 업데이트 재시작 중에도 창이 살아남는다.
+    루트가 이미 있으면 이 호출은 기존 루트에 '창 하나 열어라' 명령만 전달하고 끝난다."""
+    profile.mkdir(parents=True, exist_ok=True)
+    subprocess.Popen(
+        [
+            browser_exe,
+            f"--app={url}",
+            f"--user-data-dir={profile}",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW,
+    )
+
+
+def _console_window() -> int:
+    return int(ctypes.windll.kernel32.GetConsoleWindow() or 0)
+
+
+def _console_is_ours() -> bool:
+    """이 콘솔에 사용자 셸(PowerShell 등)이 붙어 있으면 숨기지 않는다 —
+    더블클릭 실행(콘솔=우리 전용)일 때만 숨김(코덱스 검토 반영)."""
+    kernel32 = ctypes.windll.kernel32
+    count = 64
+    pids = (wintypes.DWORD * count)()
+    got = kernel32.GetConsoleProcessList(pids, count)
+    if not got:
+        return False
+    foreign = {"powershell.exe", "pwsh.exe", "wt.exe", "windowsterminal.exe", "conemu64.exe"}
+    for i in range(min(int(got), count)):
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pids[i])
+        if not handle:
+            continue
+        try:
+            size = wintypes.DWORD(1024)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                if Path(buffer.value).name.casefold() in foreign:
+                    return False
+        finally:
+            kernel32.CloseHandle(handle)
+    return True
+
+
+def _set_console_visible(visible: bool) -> None:
+    hwnd = _console_window()
+    if hwnd:
+        _user32().ShowWindow(hwnd, SW_SHOW if visible else SW_HIDE)
+
+
+def _focus_app_window() -> bool:
+    """이미 떠 있는 MV Hub 앱 창을 앞으로 — 중복 실행 시 두 번째 런처가 호출.
+    어느 브라우저로 열렸는지 모르니 두 브라우저의 전용 프로필을 모두 확인한다."""
+    for name, exe_basename in (("edge", "msedge.exe"), ("chrome", "chrome.exe")):
+        profile = _app_profile_dir(name)
+        want_profile = str(profile).casefold().rstrip("\\/")
+        pids: set[int] = set()
+        for row in _browser_processes(exe_basename):
+            argv = _parse_command_line(row["cmdline"])
+            for i, arg in enumerate(argv):
+                value = None
+                if arg.startswith("--user-data-dir="):
+                    value = arg.split("=", 1)[1]
+                elif arg == "--user-data-dir" and i + 1 < len(argv):
+                    value = argv[i + 1]
+                if value and str(Path(value)).casefold().rstrip("\\/") == want_profile:
+                    pids.add(row["pid"])
+                    break
+        hwnds = _visible_app_hwnds(pids)
+        if hwnds:
+            _user32().SetForegroundWindow(hwnds[0])
+            return True
+    return False
+
+
+def acquire_launcher_mutex(port: str) -> bool:
+    """포트+설치별 단일 실행 mutex — 두 번째 실행이 허브 포트를 뺏는 사고 방지.
+    True=획득(계속 진행), False=이미 실행 중."""
+    global _launcher_mutex_handle
+    kernel32 = ctypes.windll.kernel32
+    name = f"Local\\MVHub_Launcher_{port}_{_install_id()}"
+    handle = kernel32.CreateMutexW(None, True, name)
+    if not handle:
+        return True  # mutex 를 못 만들 정도면 차단보다 진행이 낫다(종전 동작)
+    if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(handle)
+        return False
+    _launcher_mutex_handle = handle  # 프로세스 종료 시 자동 해제
+    return True
+
+
+def watch_app_window(url: str) -> int:
+    """앱 창을 띄우고(있으면 입양) 보이는 창이 전부 닫힐 때까지 대기.
+    첫 창 확인 후 (전용 콘솔일 때만) 콘솔을 숨기고, 비정상 종료 전엔 반드시 되살린다."""
+    browser = _find_app_browser()
+    if not browser:
+        return APP_EXIT_NO_BROWSER
+    name, exe = browser
+    profile = _app_profile_dir(name)
+
+    roots, all_pids = _profile_pids(exe, profile)
+    if not _visible_app_hwnds(all_pids):
+        # 창 없음 — 루트가 남아 있어도 --app 명령으로 새 창을 연다(입양+보강, 업데이트 직후 대응).
+        _spawn_app_window(exe, profile, url)
+
+    deadline = time.time() + _APP_FIRST_WINDOW_TIMEOUT
+    while time.time() < deadline:
+        roots, all_pids = _profile_pids(exe, profile)
+        if _visible_app_hwnds(all_pids):
+            break
+        time.sleep(0.7)
+    else:
+        return APP_EXIT_NO_WINDOW
+
+    hid_console = False
+    if _console_is_ours():
+        _set_console_visible(False)
+        hid_console = True
+    try:
+        empty_scans = 0
+        while True:
+            time.sleep(1.0)
+            hwnds = _visible_app_hwnds(all_pids)
+            if hwnds:
+                empty_scans = 0
+                continue
+            # 창이 안 보임 — pid 집합이 낡았을 수 있으니(창이 새 루트로 열림) 재조회 후 재확인.
+            roots, all_pids = _profile_pids(exe, profile)
+            if _visible_app_hwnds(all_pids):
+                empty_scans = 0
+                continue
+            empty_scans += 1
+            if empty_scans >= _APP_CLOSE_DEBOUNCE_SCANS:
+                return 0  # 모든 앱 창 닫힘 확정 → bat 종료 → Job 정리
+    except BaseException:
+        if hid_console:
+            _set_console_visible(True)
+        raise
+
+
 def open_browser_detached(url: str) -> None:
     """Open an HTTP(S) URL outside the agent cleanup Job Object.
 
@@ -338,8 +697,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="MV Hub agent process-tree guard")
     parser.add_argument("script", nargs="?", type=Path)
     parser.add_argument("--open-url", default="")
+    parser.add_argument("--app-probe", action="store_true")
+    parser.add_argument("--app-window", default="")
     args = parser.parse_args(argv)
     try:
+        if args.app_probe:
+            # 앱 창 모드 가능? — Edge/Chrome 존재 판정만(빠름). 0=가능 / 3=불가.
+            return 0 if _find_app_browser() else APP_EXIT_NO_BROWSER
+        if args.app_window:
+            parsed = urlsplit(args.app_window.strip())
+            if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+                raise ValueError("app window URL must be an absolute HTTP(S) URL")
+            return watch_app_window(parsed.geturl())
         if args.open_url:
             if args.script is not None:
                 parser.error("script and --open-url cannot be used together")
@@ -348,6 +717,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.script is None:
             parser.error("script is required unless --open-url is used")
         script = args.script.resolve()
+        # 단일 실행 — 같은 포트·설치의 런처가 이미 살아 있으면 허브 포트를 뺏지 않고
+        # 기존 앱 창만 앞으로 올린 뒤 조용히 끝낸다(코덱스 검토: split-ownership 방지).
+        port = os.environ.get("CONTENT_HUB_PORT", "8010")
+        if not acquire_launcher_mutex(port):
+            _focus_app_window()
+            print("[info] MV Hub is already running - switched to the existing window.")
+            return 0
         _close_stale_launcher_shells(script)
         return run_guarded(script)
     except (OSError, ValueError) as exc:

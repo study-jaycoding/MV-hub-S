@@ -282,6 +282,17 @@ if errorlevel 1 (
 if exist "%TEMP%\mvhub_acct_status.tmp" del "%TEMP%\mvhub_acct_status.tmp" >nul 2>nul
 
 :agent_stage
+REM --- App-window mode (preferred): the MV Hub window itself becomes the lifetime
+REM anchor. Closing that window stops the hub and agent; the console hides itself
+REM once the window is up (double-click launches only - a user shell stays visible).
+REM Requires Edge or Chrome, AUTH off, no dev frontend, no pair-secret. Anything
+REM else falls back to the classic console flow below (unchanged).
+set "MVHUB_APP_MODE="
+if not "%MVHUB_NO_BROWSER%"=="1" if not defined MVHUB_DEV_FRONTEND_DIR if not "%CONTENT_HUB_AUTH%"=="1" if "%CONTENT_HUB_LOCAL_AGENT_PAIR_SECRET%"=="" (
+  "%PY_EXE%" %PY_ARGS% "%ROOT%run_agent_session.py" --app-probe >nul 2>nul
+  if not errorlevel 1 set "MVHUB_APP_MODE=1"
+)
+if "%MVHUB_APP_MODE%"=="1" goto :app_window_stage
 echo [5/5] Opening the app + keeping the generation agent running ^(closing this window stops it^)
 echo     Browser: %MVHUB_OPEN_URL%
 if not "%MVHUB_NO_BROWSER%"=="1" (
@@ -310,6 +321,34 @@ echo.
 echo [stopped] Agent and local services stopped. The browser remains open.
 pause
 call :stop_dev_frontend
+exit /b 0
+
+REM ---------------------------------------------------------------------------
+REM App-window mode. The watcher opens (or adopts) the MV Hub app window with a
+REM dedicated browser profile, hides this console once the window is confirmed,
+REM and returns 0 when every app window is closed. NO pause on the normal path -
+REM returning here must end the guarded batch so the Job cleanup can stop the
+REM hub and agent. Abnormal returns re-show the console first (watcher side).
+REM ---------------------------------------------------------------------------
+:app_window_stage
+echo [5/5] Opening the MV Hub app window ^(close that window to stop everything^)
+if "%RUN_AGENT%"=="1" (
+  REM stdin=nul keeps the agent non-interactive in the hidden console - its
+  REM prompts are isatty-gated. Output still reaches backend\agent.log for the
+  REM in-app Host panel.
+  start "" /b cmd /c ""%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --server %HUB% --token local --watch 30 < nul"
+) else (
+  echo [info] Generation agent is OFF - see the reason above. Browsing still works.
+)
+"%PY_EXE%" %PY_ARGS% "%ROOT%run_agent_session.py" --app-window "%MVHUB_OPEN_URL%"
+if errorlevel 1 (
+  echo.
+  echo [warn] App window mode ended abnormally - see backend\hub.log and backend\agent.log.
+  echo        Opening a normal browser tab instead. Close THIS window to stop the hub.
+  "%PY_EXE%" %PY_ARGS% "%ROOT%run_agent_session.py" --open-url "%MVHUB_OPEN_URL%" >nul 2>nul
+  pause
+  exit /b 1
+)
 exit /b 0
 
 REM ---------------------------------------------------------------------------
