@@ -224,6 +224,7 @@ def test_cmds_all_one_shot_gate(launcher):
     assert f(['cmd /k "title x"']) is False  # 유지형 — 사용자가 띄워 둔 창
     assert f(["cmd /c ok.bat", None]) is False  # CommandLine 미독 PID — fail-open
     assert f(["cmd /c ok.bat", ""]) is False
+    assert f(['cmd /k b.bat /c']) is False  # /k 는 /c 가 함께 있어도 유지형(코덱스 WARN)
 
 
 def test_console_cmd_cmdlines_query_states(launcher, monkeypatch):

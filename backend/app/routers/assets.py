@@ -853,10 +853,7 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
             asset_tree.invalidate_project_tree(cap_dir)
             asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
     if reused:
-        # 같은 내용이 다시 올라와 재사용됨 — 이 파일을 가리키던 옛 정리 토큰은 무효화한다
-        # (다른 제출이 이 파일을 참조하기 시작했을 수 있어, 최초 업로더의 정리를 막는다).
-        _invalidate_capture_discard_tokens(target.name)
-        return {"project": "captures", "path": target.name, "name": target.name, "type": "image", "reused": True}
+        return _finalize_reused_capture(target)
     return {
         "project": "captures",
         "path": target.name,
@@ -874,7 +871,21 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
 # 인메모리 토큰(TTL 15분) — 앱 재시작이면 토큰 소멸 = 정리 포기(비파괴 방향).
 _CAPTURE_DISCARD_TTL = 15 * 60.0
 _capture_discard_tokens: dict[str, tuple[str, float]] = {}  # token -> (파일명, 만료 monotonic)
-_capture_discard_lock = threading.Lock()
+# RLock: reuse 확정(_finalize_reused_capture)과 삭제(discard)가 같은 락 경계를 공유해야
+# 'B 가 reused 로 고른 파일을 A 의 discard 가 그 사이 지우는' 경합이 닫힌다(코덱스 BLOCK).
+_capture_discard_lock = threading.RLock()
+
+
+def _finalize_reused_capture(target: Path) -> dict[str, Any]:
+    """reused 업로드의 확정 — 락 안에서 옛 토큰 무효화 + 파일 실존 검증을 원자로.
+    삭제(discard)도 같은 락 안에서 pop→참조검사→unlink 를 다 하므로, 여기서 파일이
+    보이면 이후 discard 는 (토큰이 방금 무효화되어) 절대 못 지우고, 이미 지워졌으면
+    사라진 경로를 응답하는 대신 409 로 재시도를 유도한다."""
+    with _capture_discard_lock:
+        _invalidate_capture_discard_tokens(target.name)
+        if not target.exists():
+            raise HTTPException(status_code=409, detail="캡처가 방금 정리되었습니다 — 다시 시도하세요")
+    return {"project": "captures", "path": target.name, "name": target.name, "type": "image", "reused": True}
 
 
 def _issue_capture_discard_token(name: str) -> str:
@@ -909,26 +920,29 @@ def discard_capture(body: CaptureDiscardIn, request: Request):
         request, "캡처 정리는 해당 작업자 PC에서만 실행할 수 있습니다"
     )
     now = time.monotonic()
+    # pop→참조검사→unlink 전체를 한 락 안에서 — reuse 확정(_finalize_reused_capture)과
+    # 원자화해 'reused 로 고른 직후 파일이 사라지는' 경합을 닫는다(코덱스 BLOCK).
+    # 락 안의 sqlite 1건 조회는 짧고(로컬 파일 DB) capture 업로드는 드물어 병목 아님.
     with _capture_discard_lock:
         entry = _capture_discard_tokens.pop(body.token, None)
-    if entry is None or entry[1] < now:
-        raise HTTPException(status_code=404, detail="정리 토큰이 없거나 만료되었습니다")
-    name = entry[0]
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM reference WHERE file_path = ? LIMIT 1",
-            (f"asset:captures|{name}",),
-        ).fetchone()
-    if row:
-        raise HTTPException(status_code=409, detail="생성물이 참조하는 파일이라 지우지 않습니다")
-    cap_dir = (ASSETS_ROOT / "captures").resolve()
-    target = (cap_dir / name).resolve()
-    if target.parent != cap_dir:  # 토큰은 서버 발급이라 정상경로지만 이중 방어
-        raise HTTPException(status_code=400, detail="잘못된 파일명")
-    try:
-        target.unlink(missing_ok=True)
-    except OSError:
-        raise HTTPException(status_code=409, detail="파일을 지우지 못했습니다")
+        if entry is None or entry[1] < now:
+            raise HTTPException(status_code=404, detail="정리 토큰이 없거나 만료되었습니다")
+        name = entry[0]
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM reference WHERE file_path = ? LIMIT 1",
+                (f"asset:captures|{name}",),
+            ).fetchone()
+        if row:
+            raise HTTPException(status_code=409, detail="생성물이 참조하는 파일이라 지우지 않습니다")
+        cap_dir = (ASSETS_ROOT / "captures").resolve()
+        target = (cap_dir / name).resolve()
+        if target.parent != cap_dir:  # 토큰은 서버 발급이라 정상경로지만 이중 방어
+            raise HTTPException(status_code=400, detail="잘못된 파일명")
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            raise HTTPException(status_code=409, detail="파일을 지우지 못했습니다")
     asset_tree.invalidate_project_tree(cap_dir)
     asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
     return {"ok": True}

@@ -571,15 +571,16 @@ def _console_window() -> int:
 
 def _launched_as_one_shot(cmdcmdline: str) -> bool:
     """최초 cmd 의 기동 명령줄(MVHUB_CMDCMDLINE)에 /c 가 있으면 일회용 실행(더블클릭 등).
-    /c 없음 = 사용자가 띄워 둔 대화형 cmd(또는 /k) — 그 창을 숨기면 안 된다.
-    값이 없거나 파싱 실패면 False(안전하게 '숨기지 않음')."""
+    /c 없음 = 사용자가 띄워 둔 대화형 cmd — 그 창을 숨기면 안 된다. /k 는 /c 와 함께
+    있어도 유지형이므로 거부(코덱스 WARN). 값이 없거나 파싱 실패면 False(숨기지 않음)."""
     if not cmdcmdline:
         return False
     try:
         argv = _parse_command_line(cmdcmdline)
     except Exception:
         return False
-    return any(arg.casefold() == "/c" for arg in argv)
+    flags = {arg.casefold() for arg in argv}
+    return "/c" in flags and "/k" not in flags
 
 
 def _cmds_all_one_shot(cmdlines: list) -> bool:
@@ -654,21 +655,24 @@ def _console_is_ours() -> bool:
     got = kernel32.GetConsoleProcessList(pids, count)
     if not got:
         return False
+    if int(got) > count:
+        return False  # 목록 절단 — 못 본 프로세스가 사용자 셸일 수 있다(fail-open)
     foreign = {"powershell.exe", "pwsh.exe", "wt.exe", "windowsterminal.exe", "conemu64.exe"}
     cmd_pids: list[int] = []
-    for i in range(min(int(got), count)):
+    for i in range(int(got)):
         handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pids[i])
         if not handle:
-            continue
+            return False  # 신원 미상 프로세스 = 사용자 셸일 수 있다 — 숨기지 않음(코덱스 WARN)
         try:
             size = wintypes.DWORD(1024)
             buffer = ctypes.create_unicode_buffer(size.value)
-            if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
-                name = Path(buffer.value).name.casefold()
-                if name in foreign:
-                    return False
-                if name == "cmd.exe":
-                    cmd_pids.append(int(pids[i]))
+            if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                return False  # 이름 미독도 동일 — fail-open
+            name = Path(buffer.value).name.casefold()
+            if name in foreign:
+                return False
+            if name == "cmd.exe":
+                cmd_pids.append(int(pids[i]))
         finally:
             kernel32.CloseHandle(handle)
     if cmd_pids:
