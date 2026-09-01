@@ -730,21 +730,21 @@ export function PartialEditModal({
                     title="Pen (D) · 크기 [ ] · 실행취소 Ctrl+Z"
                     onClick={() => setTool("pen")}
                   >
-                    🖌 Pen
+                    Pen
                   </button>
                   <button
                     className={tool === "erase" ? "on" : ""}
                     title="Eraser (E)"
                     onClick={() => setTool("erase")}
                   >
-                    ⌫ Eraser
+                    Eraser
                   </button>
                   <button
                     className={tool === "shape" ? "on" : ""}
                     title="Shapes (R)"
                     onClick={() => setTool("shape")}
                   >
-                    ▱ Shapes
+                    Shapes
                   </button>
                 </div>
                 {/* 알약형 프롬프트 바 — 웹 편집기와 같은 한 줄 입력 + 우측 크레딧·라임 실행 버튼.
