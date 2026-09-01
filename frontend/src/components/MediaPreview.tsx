@@ -2,6 +2,7 @@
 // 새 브라우저 탭을 열지 않고 이 창에서 보여주고, 영상은 재생한다.
 // 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
 import { useEffect, useRef, useState } from "react";
+import { APP_EVENTS } from "../lib/appEvents";
 import { downloadOne } from "../lib/download";
 import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
 import type { PreviewTarget } from "../types";
@@ -131,6 +132,22 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
             >
               ⤓ 다운로드
             </button>
+            {cur.type === "image" && cur.genId && (
+              <button
+                className="lin-board-btn preview-edit-btn"
+                title="칠한 부분만 다시 생성해 원본에 합성"
+                onClick={() => {
+                  window.dispatchEvent(
+                    new CustomEvent(APP_EVENTS.partialEdit, {
+                      detail: { genId: cur.genId },
+                    }),
+                  );
+                  onClose();
+                }}
+              >
+                🖌 부분 수정
+              </button>
+            )}
             {onOpenInBoard && cur.genId && (
               <button
                 className="lin-board-btn preview-board-btn"
