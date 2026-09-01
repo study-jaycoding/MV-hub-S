@@ -1,5 +1,6 @@
 // 앱 창(전용 브라우저 창) 감지 — 런처가 ?appwin=1 을 붙여 연다.
-// 이 창을 닫으면 허브·에이전트가 함께 종료되므로, 닫기 전에 브라우저 확인창을 한 번 띄운다.
+// Host 콘솔의 '앱 종료' 버튼(우리 디자인 확인창) 노출 여부를 이 표식으로 판정한다.
+// (X 닫기는 확인 없이 조용히 닫힌다 — 크롬 기본 확인창은 디자인 교체가 불가해 제거, Jay 결정)
 // SPA 내비게이션이 쿼리를 지워도 유지되게 sessionStorage 에 승격해 둔다(새로고침에도 유지).
 // 인자는 테스트 주입용 — 실사용은 무인자 호출로 브라우저 전역을 읽는다.
 
@@ -20,20 +21,4 @@ export function isAppWindow(
   } catch {
     return false; // storage 차단 환경 — 확인창 없이 종전 동작
   }
-}
-
-// 앱 안의 '종료' 버튼으로 닫을 때는 브라우저 확인창(beforeunload)을 건너뛴다 —
-// 우리 디자인 확인창에서 이미 물었으므로 이중 확인 방지. 실패 시 재무장.
-let closeConfirmDisarmed = false;
-
-export function disarmCloseConfirm(): void {
-  closeConfirmDisarmed = true;
-}
-
-export function rearmCloseConfirm(): void {
-  closeConfirmDisarmed = false;
-}
-
-export function closeConfirmArmed(): boolean {
-  return !closeConfirmDisarmed;
 }

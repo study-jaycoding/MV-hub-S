@@ -2,7 +2,7 @@
 // (앱 버전·CLI·에이전트/허브 로그 꼬리)를 패널로 펼치고, 다시 누르면 접는다.
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
-import { disarmCloseConfirm, isAppWindow, rearmCloseConfirm } from "../../lib/appWindow";
+import { isAppWindow } from "../../lib/appWindow";
 import type { ConsoleSummary } from "../../types";
 
 const MODE_LABEL: Record<string, string> = {
@@ -61,14 +61,12 @@ export function ServerConsolePanel({
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<ConsoleSummary | null>(null);
   const [error, setError] = useState("");
-  // 앱 종료 확인창(우리 디자인) — [종료] 시 브라우저 확인 무장해제 후 OS 측 창 닫기 요청.
+  // 앱 종료 확인창(우리 디자인) — [종료] 확인 시 OS 측 창 닫기 요청(감시자가 전체 정리).
   const [confirmExit, setConfirmExit] = useState(false);
   const [exiting, setExiting] = useState(false);
   const requestExit = () => {
     setExiting(true);
-    disarmCloseConfirm();
     api.closeApp().catch((e) => {
-      rearmCloseConfirm(); // 실패 — X 닫기 확인은 다시 켠다
       setExiting(false);
       setConfirmExit(false);
       setError(String(e));
