@@ -59,7 +59,7 @@ export function ViewControls({
             onClick={zoomControl.onFit}
             title={t("전체가 보이게 맞춤 — 선택이 있으면 선택 중심 (단축키 f)")}
           >
-            {t("맞춤")}
+            Fit
           </button>
           <div className="zc-group">
             <button onClick={() => zoomControl.onStep(-1)} title={t("축소")}>
