@@ -2,7 +2,7 @@
 // 재사용해, 그 노드에 쓸 모델/옵션을 고른다. useModels 를 이 모달 안에서 독립 인스턴스로 돌려
 // SpotlightPrompt 상태와 섞이지 않게 한다(코덱스 설계 A안). 저장하면 modelCfg 스냅샷을 콜백.
 import { useEffect, useState } from "react";
-import { useModels } from "../../lib/useModels";
+import { stripHiddenParams, useModels } from "../../lib/useModels";
 import { SpotlightOptionsBar } from "../spotlight/SpotlightOptionsBar";
 import type { SceneModelCfg } from "../../lib/scenes";
 
@@ -28,7 +28,8 @@ export function SceneModelModal({
   useEffect(() => {
     if (initial?.type === "image" || initial?.type === "video") m.setType(initial.type);
     if (initial?.model) {
-      m.pendingOptsRef.current = { model: initial.model, opts: initial.params ?? {} };
+      // 저장분에 숨김 파라미터(is_inpaint 등)가 있어도 body 로 되살아나지 않게 필터(코덱스)
+      m.pendingOptsRef.current = { model: initial.model, opts: stripHiddenParams(initial.params ?? {}) };
       m.setModel(initial.model);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

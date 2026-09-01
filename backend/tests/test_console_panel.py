@@ -119,3 +119,39 @@ def test_tail_masks_bearer_tokens_and_signed_url_queries(
     # 쿼리 문맥(?&) 없이 등장하는 bare 형태도 마스킹된다
     assert console._mask_secrets("retry with token=abc123 now") == "retry with token=*** now"
     assert console._mask_secrets("token=abc123") == "token=***"
+
+
+def test_close_app_single_flight_rejects_concurrent_requests(monkeypatch: pytest.MonkeyPatch):
+    """종료 연타 — 도우미가 도는 동안 두 번째 요청은 즉시 409, 끝나면 다시 가능."""
+    import threading
+
+    monkeypatch.setattr(
+        request_guards, "local_machine_hosts", lambda: frozenset({"127.0.0.1"})
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_run(*_a, **_k):
+        started.set()
+        assert release.wait(timeout=10)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(console.subprocess, "run", slow_run)
+    results: list = []
+    t = threading.Thread(target=lambda: results.append(console.console_close_app(_request())))
+    t.start()
+    try:
+        assert started.wait(timeout=10)  # 첫 요청이 도우미 실행에 진입
+        with pytest.raises(HTTPException) as exc:
+            console.console_close_app(_request())  # 진행 중 — 즉시 409
+        assert exc.value.status_code == 409
+        assert "진행 중" in exc.value.detail
+    finally:
+        release.set()
+        t.join(timeout=10)
+    assert results == [{"ok": True}]
+    # 락 해제 후에는 새 요청이 정상 진행된다
+    monkeypatch.setattr(
+        console.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0)
+    )
+    assert console.console_close_app(_request()) == {"ok": True}

@@ -28,7 +28,9 @@ export async function fetchBlob(
   url: string,
   name: string,
   genId?: string,
+  init?: { signal?: AbortSignal }, // 호출측 타임아웃/중단 — 모든 내부 fetch(폴백 포함)에 전달
 ): Promise<Blob | null> {
+  const signal = init?.signal;
   // genId 를 아는 다운로드는 허브를 거친다 — 허브가 파일에 '이 생성물이다'를 새겨서 준다(각인).
   // 브라우저가 CDN 에서 직접 받으면 각인할 기회가 없다. 허브가 실패하면 아래 직접 받기로 폴백해
   // 다운로드 자체는 막히지 않는다(각인은 있으면 좋은 것이지 필수 조건이 아니다).
@@ -36,7 +38,7 @@ export async function fetchBlob(
     try {
       const res = await fetch(
         withQuery("/api/download", { url, name, gen_id: genId }),
-        { credentials: "include" },
+        { credentials: "include", signal },
       );
       if (res.ok) return await res.blob();
     } catch {
@@ -44,7 +46,7 @@ export async function fetchBlob(
     }
   }
   try {
-    const res = await fetch(url, url.startsWith("/") ? { credentials: "include" } : {});
+    const res = await fetch(url, url.startsWith("/") ? { credentials: "include", signal } : { signal });
     if (res.ok) return await res.blob();
   } catch {
     /* 직접 실패 → 프록시 시도(로컬 제외) */
@@ -53,7 +55,7 @@ export async function fetchBlob(
   try {
     const res = await fetch(
       withQuery("/api/download", { url, name }),
-      { credentials: "include" },
+      { credentials: "include", signal },
     );
     if (res.ok) return await res.blob();
   } catch {

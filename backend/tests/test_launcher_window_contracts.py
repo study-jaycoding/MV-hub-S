@@ -212,3 +212,32 @@ class TestWatchState:
         st.observe(set(), True, 3.0, lambda h: False)
         assert st.observe({101}, True, 4.0, lambda h: True) == "anchored"
         assert st.empty_scans == 0
+
+
+def test_cmds_all_one_shot_gate(launcher):
+    """콘솔의 cmd.exe 전부가 /c(일회용)여야 ours — 대화형·/k·명령줄 미독은 숨기지 않는
+    방향(False). 대화형 cmd 에서 `cmd /c run.bat` 실행 시 사용자 콘솔 숨김 방지."""
+    f = launcher._cmds_all_one_shot
+    assert f([]) is True  # cmd 없음(파이썬만) — 호출측이 빈 목록이면 검사 자체를 스킵
+    assert f(['cmd /c ""C:\\x\\MV_agent.bat" "', 'cmd /c "python serve.py"']) is True
+    assert f(['"C:\\Windows\\system32\\cmd.exe"']) is False  # 대화형(바깥 사용자 셸)
+    assert f(['cmd /k "title x"']) is False  # 유지형 — 사용자가 띄워 둔 창
+    assert f(["cmd /c ok.bat", None]) is False  # CommandLine 미독 PID — fail-open
+    assert f(["cmd /c ok.bat", ""]) is False
+
+
+def test_console_cmd_cmdlines_query_states(launcher, monkeypatch):
+    """cmd 명령줄 CIM 조회 — 성공은 PID 순서 매핑(누락 PID=None 자리), 실패는 None."""
+    rows = [
+        {"ProcessId": 11, "CommandLine": "cmd /c a.bat"},
+        {"ProcessId": 22, "CommandLine": None},
+    ]
+    monkeypatch.setattr(
+        launcher.subprocess, "run", lambda *a, **k: _ps_result(0, json.dumps(rows))
+    )
+    assert launcher._console_cmd_cmdlines([11, 22, 33]) == ["cmd /c a.bat", None, None]
+
+    monkeypatch.setattr(launcher.subprocess, "run", lambda *a, **k: _ps_result(1, ""))
+    assert launcher._console_cmd_cmdlines([11]) is None  # cmdlet 실패 — 숨기지 않는 방향
+
+    assert launcher._console_cmd_cmdlines([]) == []  # cmd 없음 — 조회 없이 빈 목록

@@ -230,6 +230,21 @@ def _args_for_log(args) -> str:
     return " ".join(out)
 
 
+# CLI 가 echo 한 응답/오류 본문 속 프롬프트 필드 마스킹 — --prompt 인자는 _args_for_log 가
+# 가리지만, CLI 출력 원문을 담는 오류문구(타임아웃 partial·CLI 실패 msg·파싱실패 raw)엔
+# `"prompt": "..."` 원문이 실려 agent.log 에 영속됐다. 절단으로 닫는 따옴표가 잘린 JSON 도
+# 문자열 끝까지 마스킹한다(EOF-safe) — 반드시 [:600]/[:800] 절단보다 먼저 적용할 것.
+_PROMPT_ECHO_RE = re.compile(
+    r'("(?:negative_prompt|display_prompt|prompt)"\s*:\s*")((?:[^"\\]|\\.)*)("?)'
+)
+
+
+def _mask_prompt_echo(text: str) -> str:
+    return _PROMPT_ECHO_RE.sub(
+        lambda m: f"{m.group(1)}<프롬프트 {len(m.group(2))}자>{m.group(3)}", text
+    )
+
+
 def _run_cli_json(cli: str, *args: str, timeout: int = 120):
     """higgsfield CLI 를 --json 으로 실행하고 (파싱 결과, 오류문구) 반환."""
     try:
@@ -240,12 +255,12 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120):
     except subprocess.TimeoutExpired as e:
         # 타임아웃이어도 CLI 가 이미 찍은 부분 출력에 방금 만든 job id 가 있을 수 있다 → 버리지 않고
         # (순수 CLI 출력만) 담아, _extract_created_id 가 그 UUID 로 job_id 를 되찾게 한다(가짜 실패 방지).
-        partial = _as_text(e.stdout) or _as_text(e.stderr)
+        partial = _mask_prompt_echo(_as_text(e.stdout) or _as_text(e.stderr))
         partial = "".join(ch for ch in partial if ch == "\n" or ch >= " ").strip()[:800]
         print(f"[경고] CLI 타임아웃: {_args_for_log(args)[:160]}")
         return None, f"{_TIMEOUT_PREFIX}{partial}"
     if out.returncode != 0:
-        msg = (out.stderr or out.stdout or "").strip()
+        msg = _mask_prompt_echo((out.stderr or out.stdout or "").strip())
         # 진짜 CLI 에러를 앞에 둔다 — 뒤에서 잘려도 원인이 남게. 긴 명령어(JSON 프롬프트·ref UUID)는
         # 짧게 뒤에 붙인다(예전엔 명령어가 앞이라 하류 500자 컷에 실제 실패 사유가 통째로 잘렸다).
         return None, f"CLI 실패: {msg[:600]} — cmd: {_args_for_log(args)[:160]}"
@@ -254,7 +269,7 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120):
         return parsed, None
     # exit 0 인데 파싱 불가 — 실제 출력을 담아 원인 규명이 되게 한다(예전엔 args 만 찍어 원인을 잃었다).
     # 제어문자 제거·800자 제한.
-    raw = (out.stdout or "").strip() or (out.stderr or "").strip()
+    raw = _mask_prompt_echo((out.stdout or "").strip() or (out.stderr or "").strip())
     raw = "".join(ch for ch in raw if ch == "\n" or ch >= " ")[:800]
     return None, f"{_PARSE_FAIL_PREFIX}{raw or _args_for_log(args)}"
 
@@ -2616,12 +2631,20 @@ class _AgentLogSink:
         self._bytes = 0
         self._closed = False
         self._retry_at = 0.0  # time.monotonic() 기준 — 이 시각 전에는 열기/교대 재시도 안 함
+        # 교대 마커가 핸들 확보 실패로 못 쓰였으면 여기 보관 — 다음 핸들 확보 때 먼저 쓴다.
+        # (이중 장애: 교대는 됐는데 새 파일을 그 순간 못 열면 예전엔 마커가 영영 유실됐다)
+        self._pending_marker: str | None = None
+        self._rotate_fail_marked = False  # 교대 실패 마커는 연속 실패 첫 회만(스팸 방지)
         try:
             if os.path.exists(path) and os.path.getsize(path) > threshold:
                 os.replace(path, path + ".1")  # 시작 시 교대(종전 동작 유지)
+                self._pending_marker = (
+                    f"----- 로그 교대(시작) {datetime.now().isoformat(timespec='seconds')} -----\n"
+                )
         except OSError:
             pass  # 교대 실패 — 기존 파일에 이어 쓴다
-        self._open_handle()
+        if self._open_handle():
+            self._flush_pending_marker()
 
     def _open_handle(self) -> bool:
         """append 핸들 열기 + 바이트 카운터를 실제 파일 크기로 재동기화. 실패 시 쿨다운."""
@@ -2647,20 +2670,33 @@ class _AgentLogSink:
 
     def _rotate(self) -> None:
         """락 안에서만 호출. 자기 핸들을 닫아야 Windows 에서 rename 이 가능하다.
-        실패 시(리더가 그 순간 파일을 열어 둠 등) 같은 파일에 이어 쓰고 5초 뒤 재시도."""
+        실패 시(리더가 그 순간 파일을 열어 둠 등) 같은 파일에 이어 쓰고 5초 뒤 재시도.
+        마커는 pending 에 예약 — 이 자리에서 핸들을 못 열어도 다음 확보 때 쓰인다."""
         self._drop_handle()
-        rotated = True
+        ts = datetime.now().isoformat(timespec="seconds")
         try:
             os.replace(self._path, self._path + ".1")
+            self._pending_marker = f"----- 로그 교대 {ts} -----\n"
+            self._rotate_fail_marked = False
         except OSError:
-            rotated = False
             self._retry_at = time.monotonic() + self._RETRY_COOLDOWN
-        if self._open_handle() and rotated:
-            # 마커는 교대 판정을 거치지 않는 원시 쓰기로 — self.write 를 쓰면 마커
-            # 자신이 다시 교대를 유발할 수 있다(재귀 교대, 소형 threshold 테스트로 실증)
-            self._write_raw(
-                f"----- 로그 교대 {datetime.now().isoformat(timespec='seconds')} -----\n"
-            )
+            if not self._rotate_fail_marked:
+                # 연속 실패 첫 회만 흔적을 남긴다 — 5초 재시도마다 반복하면 마커가 스팸이 된다
+                self._rotate_fail_marked = True
+                self._pending_marker = f"----- 로그 교대 실패(파일 사용 중) — 같은 파일에 이어 씀 {ts} -----\n"
+        if self._open_handle():
+            self._flush_pending_marker()
+
+    def _flush_pending_marker(self) -> bool:
+        """락 안, 핸들 확보 직후 호출. 밀린 마커를 먼저 쓴다 — 성공해야 True.
+        마커는 교대 판정을 거치지 않는 원시 쓰기로(self.write 를 쓰면 마커 자신이
+        다시 교대를 유발할 수 있다 — 재귀 교대, 소형 threshold 테스트로 실증)."""
+        if self._pending_marker is None:
+            return True
+        if not self._write_raw(self._pending_marker):
+            return False
+        self._pending_marker = None
+        return True
 
     def _write_raw(self, s: str) -> bool:
         """락 안에서만 호출. 인코딩·기록·카운팅만 — 교대 판정 없음. 실패 시 핸들 폐기."""
@@ -2684,6 +2720,10 @@ class _AgentLogSink:
                 if self._fh is None:
                     if time.monotonic() < self._retry_at or not self._open_handle():
                         return
+                # 밀린 교대 마커를 본문보다 먼저 — 실패하면 이번 payload 는 버린다(순서 보존).
+                # payload 1건 유실은 기존 쓰기 실패 계약과 동일한 일시 장애로 수용(코덱스 합의).
+                if not self._flush_pending_marker():
+                    return
                 if not self._write_raw(s):
                     return
                 if (

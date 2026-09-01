@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -48,7 +49,7 @@ from ..services.media_types import (
     asset_content_type,
 )
 from ..services.async_tools import to_thread_non_abandon
-from ..services.request_guards import require_loopback_request
+from ..services.request_guards import require_local_machine_request, require_loopback_request
 from ..services import (
     asset_io,
     asset_mounts,
@@ -852,8 +853,85 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
             asset_tree.invalidate_project_tree(cap_dir)
             asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
     if reused:
+        # 같은 내용이 다시 올라와 재사용됨 — 이 파일을 가리키던 옛 정리 토큰은 무효화한다
+        # (다른 제출이 이 파일을 참조하기 시작했을 수 있어, 최초 업로더의 정리를 막는다).
+        _invalidate_capture_discard_tokens(target.name)
         return {"project": "captures", "path": target.name, "name": target.name, "type": "image", "reused": True}
-    return {"project": "captures", "path": target.name, "name": target.name, "type": "image"}
+    return {
+        "project": "captures",
+        "path": target.name,
+        "name": target.name,
+        "type": "image",
+        # 신규 파일에만 1회용 정리 토큰 — 생성 요청이 확정 거절(4xx)로 끝난 고아만
+        # 프론트가 이 토큰으로 지울 수 있다(아래 /capture-discard).
+        "discard_token": _issue_capture_discard_token(target.name),
+    }
+
+
+# ── 캡처 고아 정리 — 부분 수정이 올린 캡처가 생성 요청 확정 실패로 잡과 연결되지 못한
+# 경우의 1회용 삭제. 임의 경로 삭제를 막기 위해 서버가 신규 업로드에만 발급한 토큰으로만
+# 동작하고, reference 가 참조 중이면 지우지 않는다(코덱스 합의). 단일 프로세스 전제의
+# 인메모리 토큰(TTL 15분) — 앱 재시작이면 토큰 소멸 = 정리 포기(비파괴 방향).
+_CAPTURE_DISCARD_TTL = 15 * 60.0
+_capture_discard_tokens: dict[str, tuple[str, float]] = {}  # token -> (파일명, 만료 monotonic)
+_capture_discard_lock = threading.Lock()
+
+
+def _issue_capture_discard_token(name: str) -> str:
+    now = time.monotonic()
+    with _capture_discard_lock:
+        # 만료 청소 + 같은 파일명을 가리키는 옛 토큰 제거(새 업로드가 상태의 기준)
+        for t, (n, exp) in list(_capture_discard_tokens.items()):
+            if exp < now or n == name:
+                _capture_discard_tokens.pop(t, None)
+        token = secrets.token_urlsafe(16)
+        _capture_discard_tokens[token] = (name, now + _CAPTURE_DISCARD_TTL)
+    return token
+
+
+def _invalidate_capture_discard_tokens(name: str) -> None:
+    with _capture_discard_lock:
+        for t, (n, _exp) in list(_capture_discard_tokens.items()):
+            if n == name:
+                _capture_discard_tokens.pop(t, None)
+
+
+class CaptureDiscardIn(BaseModel):
+    token: str
+
+
+@router.post("/capture-discard", dependencies=[Depends(_require_local_assets)])
+def discard_capture(body: CaptureDiscardIn, request: Request):
+    """캡처 고아 정리 — 신규 업로드에 발급된 1회용 토큰으로만. 프론트는 생성 요청이
+    서버에 커밋되지 않았음이 확실한 실패(400/422)일 때만 부른다 — 네트워크 오류·5xx·
+    타임아웃은 커밋됐을 수 있어 부르지 않는다(그 잔존은 문서화된 수용 사항)."""
+    require_local_machine_request(
+        request, "캡처 정리는 해당 작업자 PC에서만 실행할 수 있습니다"
+    )
+    now = time.monotonic()
+    with _capture_discard_lock:
+        entry = _capture_discard_tokens.pop(body.token, None)
+    if entry is None or entry[1] < now:
+        raise HTTPException(status_code=404, detail="정리 토큰이 없거나 만료되었습니다")
+    name = entry[0]
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM reference WHERE file_path = ? LIMIT 1",
+            (f"asset:captures|{name}",),
+        ).fetchone()
+    if row:
+        raise HTTPException(status_code=409, detail="생성물이 참조하는 파일이라 지우지 않습니다")
+    cap_dir = (ASSETS_ROOT / "captures").resolve()
+    target = (cap_dir / name).resolve()
+    if target.parent != cap_dir:  # 토큰은 서버 발급이라 정상경로지만 이중 방어
+        raise HTTPException(status_code=400, detail="잘못된 파일명")
+    try:
+        target.unlink(missing_ok=True)
+    except OSError:
+        raise HTTPException(status_code=409, detail="파일을 지우지 못했습니다")
+    asset_tree.invalidate_project_tree(cap_dir)
+    asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
+    return {"ok": True}
 
 
 @router.post("/reference-import", dependencies=[Depends(_require_local_assets)])

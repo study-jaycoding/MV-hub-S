@@ -156,8 +156,23 @@ export const assetsApi = {
       headers: authFormHeaders(),
     });
     if (!res.ok) await throwHttpError(res, "/api/assets/capture", "캡쳐 업로드 실패");
-    return res.json() as Promise<{ project: string; path: string; name: string; type: string }>;
+    return res.json() as Promise<{
+      project: string;
+      path: string;
+      name: string;
+      type: string;
+      reused?: boolean;
+      discard_token?: string; // 신규 파일에만 — 생성 확정 실패(4xx) 시 고아 정리용 1회용 토큰
+    }>;
   },
+
+  // 캡처 고아 정리 — 부분 수정의 생성 요청이 서버에 커밋되지 않은 확정 실패(400/422)로
+  // 끝났을 때만 호출(신규 업로드 토큰 필수). 실패해도 조용히 무시된다(fire-and-forget).
+  discardCapture: (token: string) =>
+    jsonFetch<{ ok: boolean }>("/api/assets/capture-discard", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }),
 
   // 프롬프트/레퍼런스 트레이 외부 드롭 파일 → captures 처럼 항상 내장 imports 폴더에 저장.
   // (project/dir 은 하위호환으로 보내되 서버가 무시 — 예전엔 선택 폴더 안에 흩어졌다.)

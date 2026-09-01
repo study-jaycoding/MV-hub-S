@@ -66,7 +66,7 @@ import {
 } from "../lib/useSpotlightMentionSources";
 import { useSpotlightTray } from "../lib/useSpotlightTray";
 import { useSpotlightTokenWrap } from "../lib/useSpotlightTokenWrap";
-import { useModels, ALLOWED, HIDDEN_PARAMS } from "../lib/useModels";
+import { useModels, ALLOWED, HIDDEN_PARAMS, stripHiddenParams } from "../lib/useModels";
 import {
   notifySpotlightAssetsChanged,
   parseSpotlightAssetItems,
@@ -445,7 +445,10 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   const prevBindingKeyModelRef = useRef<string | null>(null);
   // 모델 적용 공통 — 목표 모델이 현재와 같으면 setModel 이 no-op(=params effect 안 돎)이라 옵션이 안 실린다.
   // 그 경우 옵션을 직접 반영하고, 다르면 pendingOpts 예약 후 type/model 전환(params 로드 시 옵션 덮음).
-  const applyModelCfg = (t: "image" | "video", m: string, opts: Record<string, string | number | boolean>) => {
+  const applyModelCfg = (t: "image" | "video", m: string, rawOpts: Record<string, string | number | boolean>) => {
+    // 씬 카드에 저장된 params 는 필터를 안 거쳤을 수 있다 — 숨김 파라미터(is_inpaint 등)가
+    // 이 경로로 body 에 되살아나지 않게 여기서 걸러낸다(코덱스 검토).
+    const opts = stripHiddenParams(rawOpts);
     if (m === model) {
       setOptionValues(opts);
     } else {

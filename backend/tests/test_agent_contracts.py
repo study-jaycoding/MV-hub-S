@@ -145,9 +145,11 @@ def test_log_sink_survives_rotation_failure_and_retries(tmp_path, monkeypatch):
 
 
 def test_log_sink_recovers_when_new_active_open_fails_after_rename(tmp_path):
-    """rename 성공 + 새 active 열기 실패 → 후속 write 의 lazy reopen 으로 복구."""
+    """rename 성공 + 새 active 열기 실패 → 후속 write 의 lazy reopen 으로 복구.
+    (threshold=100: 밀린 교대 마커 44B 가 복구 write 에서 재교대를 유발하지 않게 —
+    실제 1MB threshold 에선 마커 크기가 무시된다)"""
     agent = _load_agent()
-    sink = _make_sink(agent, tmp_path, threshold=10)
+    sink = _make_sink(agent, tmp_path, threshold=100)
     orig_open = sink._open_handle
     state = {"fail_next": True}
 
@@ -160,7 +162,7 @@ def test_log_sink_recovers_when_new_active_open_fails_after_rename(tmp_path):
         return orig_open()
 
     sink._open_handle = flaky_open
-    sink.write("0123456789ab\n")  # 교대: rename 성공, 새 파일 열기 실패
+    sink.write("x" * 100 + "\n")  # 교대: rename 성공, 새 파일 열기 실패
     assert sink._fh is None
     sink._retry_at = 0.0
     sink.write("recovered\n")  # lazy reopen → 기록 재개
@@ -195,6 +197,82 @@ def test_log_sink_concurrent_writers_lose_nothing_across_one_rotation(tmp_path):
     assert len(records) == per_thread * 2
     expected = {f"T{t}-{i:06d}-xxxx" for t in (0, 1) for i in range(per_thread)}
     assert set(records) == expected  # 유실·중복·줄 절단 없음
+
+
+def test_log_sink_pending_marker_survives_open_failure(tmp_path):
+    """이중 장애(rename 성공 + 새 파일 열기 실패) — 교대 마커가 유실되지 않고
+    lazy reopen 때 본문보다 먼저 쓰인다(pending 마커 계약)."""
+    agent = _load_agent()
+    sink = _make_sink(agent, tmp_path, threshold=100)
+    orig_open = sink._open_handle
+    state = {"fail_next": True}
+
+    def flaky_open():
+        if state["fail_next"]:
+            state["fail_next"] = False
+            sink._fh = None
+            sink._retry_at = agent.time.monotonic() + sink._RETRY_COOLDOWN
+            return False
+        return orig_open()
+
+    sink._open_handle = flaky_open
+    sink.write("x" * 100 + "\n")  # 교대: rename 성공, 새 파일 열기 실패 → 마커 pending
+    assert sink._pending_marker is not None
+    sink._retry_at = 0.0
+    sink.write("recovered\n")  # lazy reopen → 마커 먼저, 본문 다음
+    sink.close()
+    active = (tmp_path / "agent.log").read_text(encoding="utf-8")
+    assert "로그 교대" in active and "recovered" in active
+    assert active.index("로그 교대") < active.index("recovered")
+
+
+def test_log_sink_rotation_failure_marker_only_once_per_streak(tmp_path, monkeypatch):
+    """교대 실패 마커는 연속 실패의 첫 회만 — 5초 재시도마다 반복되면 스팸이 된다."""
+    agent = _load_agent()
+    sink = _make_sink(agent, tmp_path, threshold=10)
+
+    def deny_replace(*_a, **_k):
+        raise PermissionError("file is busy")
+
+    monkeypatch.setattr(agent.os, "replace", deny_replace)
+    sink.write("0123456789ab\n")  # 1차 실패 — 실패 마커 1회
+    sink._retry_at = 0.0
+    sink.write("0123456789cd\n")  # 2차 실패 — 마커 추가 금지
+    sink._retry_at = 0.0
+    sink.write("0123456789ef\n")  # 3차 실패
+    sink.close()
+    active = (tmp_path / "agent.log").read_text(encoding="utf-8")
+    assert active.count("교대 실패") == 1
+
+
+def test_log_sink_marks_startup_rotation(tmp_path):
+    """시작 시 교대(기존 파일 > threshold)도 새 파일에 마커를 남긴다."""
+    agent = _load_agent()
+    p = tmp_path / "agent.log"
+    p.write_text("x" * 20, encoding="utf-8")
+    sink = agent._AgentLogSink(str(p), threshold=10)
+    sink.close()
+    assert "로그 교대(시작)" in p.read_text(encoding="utf-8")
+    assert (tmp_path / "agent.log.1").exists()
+
+
+def test_mask_prompt_echo_covers_truncated_and_escaped_json():
+    """CLI echo 오류문구 속 prompt 계열 값 마스킹 — 이스케이프·다중 필드·절단(EOF-safe)."""
+    agent = _load_agent()
+    m = agent._mask_prompt_echo
+    out = m('{"job_type":"x","prompt":"secret words","negative_prompt":"bad stuff"}')
+    assert "secret words" not in out and "bad stuff" not in out
+    assert out.count("<프롬프트") == 2
+    # 이스케이프된 따옴표 포함 값 — 값 전체가 가려지고 구조는 유지
+    out2 = m('{"prompt": "a \\"b\\" c", "seed": 1}')
+    assert '"b"' not in out2 and '"seed": 1' in out2
+    # 절단으로 닫는 따옴표가 사라진 JSON — 문자열 끝까지 마스킹
+    out3 = m('{"prompt": "cut off in the midd')
+    assert "cut off" not in out3 and "<프롬프트" in out3
+    # display_prompt 도 같은 민감 필드
+    assert "shown" not in m('{"display_prompt":"shown"}')
+    # prompt 필드가 없으면 원문 그대로
+    assert m("plain error text") == "plain error text"
 
 
 def test_log_sink_close_is_final_and_silent(tmp_path):

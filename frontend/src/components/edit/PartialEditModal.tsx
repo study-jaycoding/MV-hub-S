@@ -17,6 +17,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type GenerationCreateBody } from "../../api";
 import { fetchBlob } from "../../lib/download";
 import { flashMsg } from "../../lib/flash";
+import { HttpError } from "../../lib/http";
 import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import { useModels } from "../../lib/useModels";
 import type { Generation, WorkspaceContext } from "../../types";
@@ -199,6 +200,7 @@ export function PartialEditModal({
     return () => {
       mountedRef.current = false;
       runTokenRef.current++; // unmount = 진행 중 폴링·지연 응답 전부 무효화
+      abortRef.current?.abort(); // 걸린 감시 요청도 끊는다(브라우저 pending 정리)
       if (srcUrlRef.current) URL.revokeObjectURL(srcUrlRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -387,14 +389,30 @@ export function PartialEditModal({
     !!aspect &&
     workspaceReady;
 
+  // 감시용 요청의 타임아웃 — 응답이 실패도 성공도 아닌 채 영영 pending 이면 다음 틱이
+  // 안 돈다(무응답 행). AbortController 로 요청 자체를 끊어 pending 누적도 막는다(코덱스).
+  const abortRef = useRef<AbortController | null>(null);
+  const timedFetch = async <T,>(ms: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    const timer = window.setTimeout(() => ctrl.abort(), ms);
+    try {
+      return await run(ctrl.signal);
+    } finally {
+      window.clearTimeout(timer);
+      if (abortRef.current === ctrl) abortRef.current = null; // 새 컨트롤러를 지우지 않게 가드
+    }
+  };
+
   const startPolling = (genId: string) => {
     const token = ++runTokenRef.current;
+    abortRef.current?.abort(); // 이전 감시의 걸린 요청 정리
     const startedAt = Date.now();
     let resultAttempts = 0; // 완료된 결과의 다운로드/디코드 실패 — 영구 재다운로드 방지 상한
     const tick = async () => {
       if (token !== runTokenRef.current) return;
       try {
-        const g = await api.getGeneration(genId);
+        const g = await timedFetch(15_000, (signal) => api.getGeneration(genId, { signal }));
         if (token !== runTokenRef.current) return;
         if (g.status === "failed" || g.status === "nsfw") {
           setStage("draw");
@@ -412,7 +430,9 @@ export function PartialEditModal({
           // 감시 화면에 안내만 남긴다(카드는 라이브러리에 있다).
           resultAttempts++;
           try {
-            const blob = await fetchBlob(done.file_path, "partial-result.png", g.id);
+            const blob = await timedFetch(60_000, (signal) =>
+              fetchBlob(done.file_path, "partial-result.png", g.id, { signal }),
+            );
             if (token !== runTokenRef.current) return;
             if (blob) {
               const bmp = await createImageBitmap(blob); // 디코드 검증 — 깨진 파일이면 throw
@@ -465,7 +485,11 @@ export function PartialEditModal({
   // 없으면 원본 URL 그대로. 업로드는 sha256 중복 재사용이라 재시도에도 파일이 늘지 않는다.
   // 업로드 후 생성이 최종 실패하면 캡처 파일 1개가 captures 에 남을 수 있다(잡 미연결) —
   // 롤백 없음은 수용(캡처는 Assets 에서 보이고 지울 수 있다, 코덱스 WARN 문서화).
-  const buildReference = async (): Promise<{ file_path: string; thumbnail?: string }> => {
+  const buildReference = async (): Promise<{
+    file_path: string;
+    thumbnail?: string;
+    discardToken?: string; // 신규 캡처에만 — 생성 요청 확정 거절(400/422) 시 고아 정리용
+  }> => {
     renderAll(items); // 잉크 검사·평면화 전에 최신 스트로크 보장(undo 직후 stale 캔버스 방지)
     if (!items.length || !annotHasInk()) {
       return { file_path: asset!.file_path, thumbnail: asset!.thumbnail_path || undefined };
@@ -485,6 +509,8 @@ export function PartialEditModal({
     return {
       file_path: `asset:${up.project}|${up.path}`,
       thumbnail: api.assetThumbUrl(up.project, up.path, 256),
+      // reused = 과거 잡이 같은 파일을 참조할 수 있음 → 정리 대상 아님(서버도 토큰 미발급)
+      discardToken: up.reused ? undefined : up.discard_token,
     };
   };
 
@@ -492,7 +518,7 @@ export function PartialEditModal({
     if (!canSubmit || !src) return;
     setError("");
     setSubmitting(true);
-    let refBits: { file_path: string; thumbnail?: string };
+    let refBits: { file_path: string; thumbnail?: string; discardToken?: string };
     try {
       refBits = await buildReference();
     } catch (e) {
@@ -528,6 +554,12 @@ export function PartialEditModal({
       try {
         created = await run(); // 1회 재시도(같은 key)
       } catch (e) {
+        // 확정 거절(400/422)만 방금 올린 신규 캡처를 정리한다 — 같은 idempotency key 의
+        // 재시도가 4xx 로 끝났다는 것은 서버에 커밋된 적이 없다는 뜻(커밋됐으면 dedup 성공).
+        // 네트워크 오류·5xx·타임아웃·408/409/429 는 커밋됐을 수 있어 절대 지우지 않는다(코덱스).
+        if (refBits.discardToken && e instanceof HttpError && (e.status === 400 || e.status === 422)) {
+          api.discardCapture(refBits.discardToken).catch(() => {});
+        }
         if (mountedRef.current) {
           setSubmitting(false);
           setError(`생성 요청 실패: ${String(e)}`);
@@ -547,6 +579,7 @@ export function PartialEditModal({
 
   const stopMonitoring = () => {
     runTokenRef.current++;
+    abortRef.current?.abort();
     flashMsg("감시를 중단했습니다 — 생성은 계속되며 완료되면 라이브러리 카드에 나타납니다.");
     onClose();
   };

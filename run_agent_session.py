@@ -582,11 +582,70 @@ def _launched_as_one_shot(cmdcmdline: str) -> bool:
     return any(arg.casefold() == "/c" for arg in argv)
 
 
+def _cmds_all_one_shot(cmdlines: list) -> bool:
+    """콘솔에 붙은 cmd.exe 전부가 일회용(/c)인지 — 하나라도 명령줄이 없거나 /c 미포함
+    (대화형·/k)·파싱 실패면 False(숨기지 않는 방향). 순수 함수 — 유닛 테스트 대상.
+    배경: 대화형 cmd 에서 `cmd /c run.bat` 로 실행하면 안쪽 cmd 의 CMDCMDLINE 엔 /c 가
+    있지만 콘솔엔 바깥 대화형 cmd 가 같이 붙어 있다 — 그 창을 숨기면 사용자 셸이 사라진다."""
+    return all(bool(line) and _launched_as_one_shot(line) for line in cmdlines)
+
+
+def _console_cmd_cmdlines(pids: list) -> list | None:
+    """주어진 PID 들(콘솔의 cmd.exe)의 CommandLine — PowerShell CIM 1회 조회.
+    반환: PID 순서의 리스트(미독 PID 는 None 자리) / 조회 실패는 None(숨기지 않는 방향).
+    콘솔 숨김 직전 1회만 불려 CIM 비용은 수용된다."""
+    if not pids:
+        return []
+    powershell = str(
+        Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    )
+    cond = " or ".join(f"ProcessId={int(p)}" for p in pids)
+    script = (
+        "$ErrorActionPreference='Stop'; "
+        f"Get-CimInstance Win32_Process -Filter \"{cond}\" -ErrorAction Stop | "
+        "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+    )
+    try:
+        proc = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        return [None for _ in pids]  # 조회는 성공했지만 행 없음 — 미독으로 취급(fail-open)
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    rows = data if isinstance(data, list) else [data]
+    by_pid: dict[int, str | None] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        try:
+            pid = int(row.get("ProcessId"))
+        except (TypeError, ValueError):
+            return None
+        line = row.get("CommandLine")
+        by_pid[pid] = line if isinstance(line, str) else None
+    return [by_pid.get(int(p)) for p in pids]
+
+
 def _console_is_ours() -> bool:
     """이 콘솔에 사용자 셸(PowerShell 등)이 붙어 있으면 숨기지 않는다 —
     더블클릭 실행(콘솔=우리 전용)일 때만 숨김(코덱스 검토 반영).
     cmd.exe 는 bat 해석기라 프로세스 목록만으로는 대화형/일회용을 못 가른다 →
-    bat 이 넘겨준 최초 기동 명령줄(MVHUB_CMDCMDLINE)의 /c 유무로 판별한다."""
+    ① bat 이 넘겨준 최초 기동 명령줄(MVHUB_CMDCMDLINE)의 /c 유무 +
+    ② 콘솔에 붙은 **모든** cmd.exe 의 실제 명령줄이 /c 인지(CIM)로 판별한다.
+    ②가 없으면 대화형 cmd 에서 `cmd /c run.bat` 실행 시 사용자 콘솔을 숨겼다.
+    (정상 기동의 hub/agent 자식 cmd 는 전부 `start /b cmd /c` 라 ② 를 통과한다)"""
     if not _launched_as_one_shot(os.environ.get("MVHUB_CMDCMDLINE", "")):
         return False
     kernel32 = ctypes.windll.kernel32
@@ -596,6 +655,7 @@ def _console_is_ours() -> bool:
     if not got:
         return False
     foreign = {"powershell.exe", "pwsh.exe", "wt.exe", "windowsterminal.exe", "conemu64.exe"}
+    cmd_pids: list[int] = []
     for i in range(min(int(got), count)):
         handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pids[i])
         if not handle:
@@ -604,10 +664,17 @@ def _console_is_ours() -> bool:
             size = wintypes.DWORD(1024)
             buffer = ctypes.create_unicode_buffer(size.value)
             if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
-                if Path(buffer.value).name.casefold() in foreign:
+                name = Path(buffer.value).name.casefold()
+                if name in foreign:
                     return False
+                if name == "cmd.exe":
+                    cmd_pids.append(int(pids[i]))
         finally:
             kernel32.CloseHandle(handle)
+    if cmd_pids:
+        lines = _console_cmd_cmdlines(cmd_pids)
+        if lines is None or not _cmds_all_one_shot(lines):
+            return False
     return True
 
 

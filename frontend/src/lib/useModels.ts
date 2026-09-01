@@ -41,10 +41,23 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
 // start/end_image)으로 쪼개 model 스키마에 노출한다. 이들은 '참조 픽커'가 담당하는 미디어라
 // 옵션(스칼라) UI 에 뜨면 안 된다 — 안 숨기면 정체불명 텍스트칸으로 렌더돼 오입력 함정이 된다.
 // (generate_audio 는 boolean 토글로 정상 노출 — 숨기지 않는다.)
+// is_inpaint/mask: 힉스필드 미문서·미사용 파라미터(2026-09-01 실측 — 웹 편집기도 안 쓴다).
+// 노출하면 효과 없는 옵션이 떠서 혼란만 준다.
 export const HIDDEN_PARAMS = new Set([
   "prompt", "medias", "input_images", "folder_id", "batch_size",
   "image_references", "video_references", "audio_references", "start_image", "end_image",
+  "is_inpaint", "mask",
 ]);
+
+// 외부에서 들어오는 옵션 덩어리(씬 카드 저장분·initial.params 등)에서 숨김 파라미터 제거 —
+// setOptionValues/pending 경로로 숨김 키가 되살아나 요청 body 에 실리는 것을 막는다(코덱스).
+export function stripHiddenParams<T>(opts: Record<string, T>): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const [k, v] of Object.entries(opts)) {
+    if (!HIDDEN_PARAMS.has(k)) out[k] = v;
+  }
+  return out;
+}
 
 // 기본값 오버라이드 — 모델 스키마 기본값 대신 우리가 쓸 기본값.
 //  · bitrate_mode: 힉스필드 네이티브 UI 와 동일하게 'high' 를 기본으로(검증결과 high 가 standard 와

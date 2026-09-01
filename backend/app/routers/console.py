@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,9 @@ def console_summary(request: Request, tail: int = 80):
 
 
 _CREATE_NO_WINDOW = 0x08000000
+# close-app single-flight — 종료 버튼 연타로 45초짜리 도우미 subprocess 가 동시에 여럿 돌지
+# 않게 한다. sync 라우트는 threadpool 스레드에서 돌므로 스레드 락이 유효(단일 uvicorn 프로세스).
+_close_app_lock = threading.Lock()
 
 
 @router.post("/close-app")
@@ -107,6 +111,15 @@ def console_close_app(request: Request):
     script = APP_ROOT / "run_agent_session.py"
     if not script.is_file():
         raise HTTPException(status_code=400, detail="run_agent_session.py 를 찾을 수 없습니다")
+    if not _close_app_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="이미 종료가 진행 중입니다")
+    try:
+        return _run_close_app_helper(script)
+    finally:
+        _close_app_lock.release()
+
+
+def _run_close_app_helper(script: Path):
     # 도우미 결과를 기다렸다가 실패면 에러로 — fire-and-forget 이면 창이 그대로인데
     # 프론트가 "종료 중…"에 영구 고정된다. sync 라우트라 threadpool 에서 돌아 이벤트
     # 루프는 막지 않고, 도우미는 Edge·Chrome 프로세스 조회에 각 최대 ~15초 걸릴 수 있다.

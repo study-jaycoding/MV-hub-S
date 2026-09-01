@@ -337,8 +337,8 @@ export const api = {
   purgeTrashed: (id: string) =>
     jsonFetch<{ purged: boolean }>(`/api/trash/${pathPart(id)}`, { method: "DELETE" }),
 
-  getGeneration: (id: string) =>
-    generationFetch(`/api/generations/${pathPart(id)}`),
+  getGeneration: (id: string, init?: RequestInit) =>
+    generationFetch(`/api/generations/${pathPart(id)}`, init),
 
   // 끌어다 놓은 파일의 각인 읽기 — 우리 프로그램을 거쳐 나간 파일이면 어느 생성물인지 알려준다.
   // 각인이 없으면 gen_id=null(외부에서 들어온 파일). 나머지 정보는 이 열쇠로 기존 조회 API 가 가져온다.
