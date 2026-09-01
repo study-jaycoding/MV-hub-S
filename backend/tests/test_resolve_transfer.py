@@ -317,7 +317,9 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
                     mock.patch.object(
                         request_guards,
                         "local_machine_hosts",
-                        return_value=frozenset({"127.0.0.1", "testclient"}),
+                        # testclient=접속 IP, testserver=TestClient 의 Host 헤더 —
+                        # 가드가 Host 까지 검사하므로(브라우저 문맥 검사) 둘 다 로컬로 등록
+                        return_value=frozenset({"127.0.0.1", "testclient", "testserver"}),
                     ),
                     mock.patch.object(
                         resolve_integration.repo,
