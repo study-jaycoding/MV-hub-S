@@ -81,7 +81,7 @@ _CREATE_NO_WINDOW = 0x08000000
 def console_close_app(request: Request):
     """앱 내 '종료' 확인 후 호출 — MV Hub 앱 창에 OS 닫기(WM_CLOSE)를 보낸다.
     창이 닫히면 런처 감시자가 평소의 정상 종료 절차(허브·에이전트 정지)를 밟는다.
-    프론트는 호출 전에 beforeunload 확인창을 무장 해제해 이중 확인이 없다."""
+    확인은 프론트의 우리 디자인 확인창 한 번뿐 — 브라우저 측 확인창은 없다."""
     require_local_machine_request(
         request, "앱 종료는 해당 작업자 PC에서만 실행할 수 있습니다"
     )

@@ -25,4 +25,19 @@ describe("isAppWindow", () => {
   it("storage 가 없으면(차단 환경) 조용히 false", () => {
     expect(isAppWindow("", null)).toBe(false);
   });
+
+  it("storage 접근이 예외를 던져도 죽지 않는다", () => {
+    const throwing = {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    };
+    // 표식 없는 화면: 읽기 실패 → 조용히 false
+    expect(isAppWindow("", throwing)).toBe(false);
+    // ?appwin=1 명시: 승격 저장이 실패해도 이번 화면은 앱 창
+    expect(isAppWindow("?appwin=1", throwing)).toBe(true);
+  });
 });

@@ -30,6 +30,11 @@ if "%PORT%"=="" set "PORT=8010"
 REM Normal local hubs use the team-server login gate and need no local login. Isolated
 REM test_dev may override this to 1 so a copied multi-user DB keeps account boundaries.
 if "%CONTENT_HUB_AUTH%"=="" set "CONTENT_HUB_AUTH=0"
+REM Backend accepts 1/true/yes/on as enabled - normalize here so the =="1" checks
+REM below (app-window mode exclusion, login message) agree with the backend.
+if /i "%CONTENT_HUB_AUTH%"=="true" set "CONTENT_HUB_AUTH=1"
+if /i "%CONTENT_HUB_AUTH%"=="yes" set "CONTENT_HUB_AUTH=1"
+if /i "%CONTENT_HUB_AUTH%"=="on" set "CONTENT_HUB_AUTH=1"
 REM Show the manage (PM dashboard) button on the local hub too. Manage DATA is proxied
 REM to the shared server; access is still gated by each account's global role. Set 0 to hide.
 if "%CONTENT_HUB_MANAGE%"=="" set "CONTENT_HUB_MANAGE=1"
