@@ -27,8 +27,12 @@ const EDIT_MODEL = "seedream_v5_pro"; // 편집 전용 고정 — 웹 편집기�
 const POLL_MS = 2_000;
 const SLOW_AFTER_MS = 180_000; // 이후에도 계속 감시 — 실패 처리 아님(이중 과금 방지)
 
-// 펜 컬러 스와치 — 웹 편집기의 구성(흰·라임·주황·빨강·민트·파랑·분홍·검정). 기본 = 라임.
+// 펜 컬러 스와치 — 웹 편집기의 구성(흰·라임·주황·빨강·민트·파랑·분홍·검정).
+// 시작 색 = 레드, 이후엔 마지막 사용한 색·도구를 기억한다(Jay).
 const COLORS = ["#ffffff", "#bef264", "#f59e0b", "#ef4444", "#2dd4bf", "#3b82f6", "#ec4899", "#111111"];
+const DEFAULT_COLOR = "#ef4444"; // 레드
+const LS_COLOR = "ch.partialEdit.color";
+const LS_TOOL = "ch.partialEdit.tool";
 
 interface PenStroke {
   kind: "pen";
@@ -208,9 +212,34 @@ export function PartialEditModal({
 
   // ── 주석(펜·도형 → annot 캔버스, 표시 = 전송본) ──
   const [items, setItems] = useState<DrawItem[]>([]);
-  const [tool, setTool] = useState<"pen" | "erase" | "shape">("pen");
+  // 도구·색은 마지막 사용값을 기억 — 프라이빗 모드 등 스토리지 차단 환경에서도 크래시 없이 기본값.
+  const [tool, setTool] = useState<"pen" | "erase" | "shape">(() => {
+    try {
+      const saved = localStorage.getItem(LS_TOOL);
+      if (saved === "pen" || saved === "erase" || saved === "shape") return saved;
+    } catch {
+      /* 스토리지 차단 — 기본값 사용 */
+    }
+    return "pen";
+  });
   const [shapeKind, setShapeKind] = useState<ShapeKind>("rect");
-  const [color, setColor] = useState(COLORS[1]); // 라임
+  const [color, setColor] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem(LS_COLOR);
+      if (saved && COLORS.includes(saved)) return saved;
+    } catch {
+      /* 스토리지 차단 — 기본값 사용 */
+    }
+    return DEFAULT_COLOR;
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_TOOL, tool);
+      localStorage.setItem(LS_COLOR, color);
+    } catch {
+      /* 유지 저장만 건너뛴다 */
+    }
+  }, [tool, color]);
   const [brushSize, setBrushSize] = useState(18); // 작업 해상도 px
   const annotRef = useRef<HTMLCanvasElement | null>(null);
   const liveRef = useRef<DrawItem | null>(null);
