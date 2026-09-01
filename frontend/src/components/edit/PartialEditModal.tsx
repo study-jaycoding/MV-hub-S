@@ -317,6 +317,15 @@ export function PartialEditModal({
     }
     setItems((prev) => [...prev, live]);
   };
+  // 취소 경로(pointercancel·capture 강탈)는 그리다 만 것을 커밋하지 않고 버린다 —
+  // 특히 중단된 도형이 엉뚱한 크기로 남는 것 방지(코덱스 WARN). 정상 pointerup 뒤에
+  // 오는 lostpointercapture 는 activePointerRef 가 이미 null 이라 no-op.
+  const cancelStroke = (e: React.PointerEvent) => {
+    if (e.pointerId !== activePointerRef.current) return;
+    activePointerRef.current = null;
+    liveRef.current = null;
+    renderAll(items);
+  };
 
   // ── 모델(Seedream 고정)·비율·견적 ──
   const m = useModels(() => {});
@@ -436,10 +445,28 @@ export function PartialEditModal({
     void tick();
   };
 
+  // 진짜 잉크가 남았는지 — 지우개로 전부 지운 주석으로 원본을 재인코딩·업로드하지
+  // 않기 위한 검사(코덱스 WARN: 12MP 초과 원본이 불필요하게 축소 레퍼런스로 바뀜).
+  // 세로 조각 단위 정확 검사, 첫 잉크에서 조기 종료. 제출 클릭 1회에만 실행.
+  const annotHasInk = (): boolean => {
+    const cv = annotRef.current;
+    const ctx = cv?.getContext("2d");
+    if (!cv || !ctx) return false;
+    const stripe = 256;
+    for (let y = 0; y < cv.height; y += stripe) {
+      const rows = Math.min(stripe, cv.height - y);
+      const data = ctx.getImageData(0, y, cv.width, rows).data;
+      for (let i = 3; i < data.length; i += 4) if (data[i] > 0) return true;
+    }
+    return false;
+  };
+
   // 주석이 있으면 원본+주석 평면화 PNG 를 captures 에 업로드해 asset: 토큰 참조로,
   // 없으면 원본 URL 그대로. 업로드는 sha256 중복 재사용이라 재시도에도 파일이 늘지 않는다.
+  // 업로드 후 생성이 최종 실패하면 캡처 파일 1개가 captures 에 남을 수 있다(잡 미연결) —
+  // 롤백 없음은 수용(캡처는 Assets 에서 보이고 지울 수 있다, 코덱스 WARN 문서화).
   const buildReference = async (): Promise<{ file_path: string; thumbnail?: string }> => {
-    if (!items.length) {
+    if (!items.length || !annotHasInk()) {
       return { file_path: asset!.file_path, thumbnail: asset!.thumbnail_path || undefined };
     }
     const annot = annotRef.current;
@@ -609,8 +636,8 @@ export function PartialEditModal({
                 onPointerEnter={trackCursor}
                 onPointerLeave={onPointerLeave}
                 onPointerUp={endStroke}
-                onPointerCancel={endStroke}
-                onLostPointerCapture={endStroke}
+                onPointerCancel={cancelStroke}
+                onLostPointerCapture={cancelStroke}
               />
               {/* 펜 크기 미리보기 원(선택 색) — 지우개는 흰 점선, 도형은 crosshair 만 */}
               <div ref={cursorRef} className="partial-edit-cursor" />
@@ -725,6 +752,9 @@ export function PartialEditModal({
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
                     onKeyDown={(e) => {
+                      // IME 조합 중 Enter(한글 마지막 글자 확정)는 제출이 아니다 — 미완성
+                      // 프롬프트로 유료 생성이 시작된다(코덱스 BLOCK). keyCode 229 = Chromium IME.
+                      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
                         void submit();
@@ -759,10 +789,13 @@ export function PartialEditModal({
         {stage === "result" && src && resultUrl && (
           <>
             <div className="partial-edit-stagebox" style={stageStyle}>
+              {/* contain — 결과 비율이 enum 스냅으로 원본과 미세하게 다르면 늘어나 보이는 대신
+                  얇은 레터박스로 흡수(무대 배경은 이미 어두움, 코덱스 WARN) */}
               <img
                 src={showOriginal ? srcUrlRef.current : resultUrl}
                 alt=""
                 draggable={false}
+                style={{ objectFit: "contain" }}
               />
             </div>
             <div className="partial-edit-tools">
