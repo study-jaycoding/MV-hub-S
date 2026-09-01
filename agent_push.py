@@ -215,6 +215,21 @@ def _as_text(v) -> str:
 _TIMEOUT_PREFIX = "CLI 타임아웃(부분출력): "
 
 
+def _args_for_log(args) -> str:
+    """오류 로그용 명령 인자 표기 — --prompt 원문은 agent.log 에 영속되지 않게 길이로 대체."""
+    out: list[str] = []
+    mask_next = False
+    for a in args:
+        if mask_next:
+            out.append(f"<프롬프트 {len(a)}자>")
+            mask_next = False
+            continue
+        out.append(a)
+        if a == "--prompt":
+            mask_next = True
+    return " ".join(out)
+
+
 def _run_cli_json(cli: str, *args: str, timeout: int = 120):
     """higgsfield CLI 를 --json 으로 실행하고 (파싱 결과, 오류문구) 반환."""
     try:
@@ -227,13 +242,13 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120):
         # (순수 CLI 출력만) 담아, _extract_created_id 가 그 UUID 로 job_id 를 되찾게 한다(가짜 실패 방지).
         partial = _as_text(e.stdout) or _as_text(e.stderr)
         partial = "".join(ch for ch in partial if ch == "\n" or ch >= " ").strip()[:800]
-        print(f"[경고] CLI 타임아웃: {' '.join(args)[:160]}")
+        print(f"[경고] CLI 타임아웃: {_args_for_log(args)[:160]}")
         return None, f"{_TIMEOUT_PREFIX}{partial}"
     if out.returncode != 0:
         msg = (out.stderr or out.stdout or "").strip()
         # 진짜 CLI 에러를 앞에 둔다 — 뒤에서 잘려도 원인이 남게. 긴 명령어(JSON 프롬프트·ref UUID)는
         # 짧게 뒤에 붙인다(예전엔 명령어가 앞이라 하류 500자 컷에 실제 실패 사유가 통째로 잘렸다).
-        return None, f"CLI 실패: {msg[:600]} — cmd: {' '.join(args)[:160]}"
+        return None, f"CLI 실패: {msg[:600]} — cmd: {_args_for_log(args)[:160]}"
     parsed = _parse_cli_json(out.stdout)
     if parsed is not None:
         return parsed, None
@@ -241,7 +256,7 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120):
     # 제어문자 제거·800자 제한.
     raw = (out.stdout or "").strip() or (out.stderr or "").strip()
     raw = "".join(ch for ch in raw if ch == "\n" or ch >= " ")[:800]
-    return None, f"{_PARSE_FAIL_PREFIX}{raw or ' '.join(args)}"
+    return None, f"{_PARSE_FAIL_PREFIX}{raw or _args_for_log(args)}"
 
 
 def _cli_json(cli: str, *args: str, timeout: int = 120):
@@ -1643,9 +1658,19 @@ def _download_ref(server: str, token: str, url: str, suffix: str, timeout: int =
             return tmp
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as e:
         # 서명 쿼리(CloudFront Policy/Signature 등)가 agent.log 에 영속되지 않게 경로만 기록
-        safe_url = urlparse(url)._replace(query="", fragment="").geturl()
-        print(f"[경고] 레퍼런스 다운로드 실패({safe_url}): {e}")
+        print(f"[경고] 레퍼런스 다운로드 실패({_safe_ref_label(url)}): {e}")
         return None
+
+
+def _safe_ref_label(val):
+    """실패 사유·로그용 레퍼런스 표기 — http(s) URL 은 서명 쿼리를 떼고 경로만 남긴다.
+    (asset:/상대경로 등 URL 아닌 값은 그대로 — 사유의 진단성을 잃지 않게)"""
+    if isinstance(val, str) and val.lower().startswith(("http://", "https://")):
+        try:
+            return urlparse(val)._replace(query="", fragment="").geturl()
+        except ValueError:
+            return val.split("?", 1)[0]
+    return val
 
 
 def _resolve_ref(server: str, token: str, val: str):
@@ -1769,12 +1794,14 @@ def _submit_one(
     if unresolved:
         # 레퍼런스를 못 가져오면 그대로 생성 시 입력 이미지 없이 엉뚱하게 나오고 크레딧만
         # 소모된다 → 실행하지 않고 명확한 사유로 실패시킨다.
-        _fail(server, token, rid, f"레퍼런스를 가져올 수 없습니다({len(unresolved)}개): {unresolved[0]}")
-        print(f"  ✗ 레퍼런스 해석 불가 — 실행 안 함: {unresolved[0]}")
+        bad_ref = _safe_ref_label(unresolved[0])
+        _fail(server, token, rid, f"레퍼런스를 가져올 수 없습니다({len(unresolved)}개): {bad_ref}")
+        print(f"  ✗ 레퍼런스 해석 불가 — 실행 안 함: {bad_ref}")
         return None
     if upload_failed:
-        _fail(server, token, rid, f"레퍼런스를 업로드할 수 없습니다({len(upload_failed)}개): {upload_failed[0]}")
-        print(f"  ✗ 레퍼런스 업로드 실패 — 실행 안 함: {upload_failed[0]}")
+        bad_ref = _safe_ref_label(upload_failed[0])
+        _fail(server, token, rid, f"레퍼런스를 업로드할 수 없습니다({len(upload_failed)}개): {bad_ref}")
+        print(f"  ✗ 레퍼런스 업로드 실패 — 실행 안 함: {bad_ref}")
         return None
     seedance_ref_args = _seedance_ref_args(seedance_media_ids)
     args += seedance_ref_args

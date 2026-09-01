@@ -575,9 +575,20 @@ def close_app_windows() -> int:
     WM_CLOSE = 0x0010
     user32 = _user32()
     hwnds = _any_profile_app_hwnds()
-    sent = sum(1 for hwnd in hwnds if user32.PostMessageW(hwnd, WM_CLOSE, 0, 0))
-    print(f"[close-app] WM_CLOSE sent to {sent}/{len(hwnds)} window(s)")
-    return 0 if sent else 1  # 0건이면 실패(exit 1) — 백엔드가 에러로 돌려 UI 가 복구된다
+    sent = [hwnd for hwnd in hwnds if user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)]
+    print(f"[close-app] WM_CLOSE sent to {len(sent)}/{len(hwnds)} window(s)")
+    # PostMessageW 성공은 '큐에 넣음'일 뿐 닫힘 보장이 아니다(브라우저가 확인창 등으로
+    # 무시 가능) → 실제 소멸을 IsWindow 로 최대 8초 확인. 안 닫히면 실패(exit 1)로
+    # 돌려 백엔드가 409 → UI 의 "종료 중…" 고정을 막는다. (재열거 없이 HWND 만 확인 —
+    # CIM 재조회는 최악 수십 초라 백엔드 45초 예산을 위협한다)
+    deadline = time.time() + 8.0
+    remaining = list(sent)
+    while remaining and time.time() < deadline:
+        time.sleep(0.4)
+        remaining = [h for h in remaining if user32.IsWindow(h) and user32.IsWindowVisible(h)]
+    if remaining:
+        print(f"[close-app] {len(remaining)} window(s) did not close")
+    return 0 if sent and not remaining else 1
 
 
 def acquire_launcher_mutex(port: str) -> bool:

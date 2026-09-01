@@ -107,10 +107,12 @@ def test_tail_masks_bearer_tokens_and_signed_url_queries(
     (tmp_path / "agent.log").write_text(
         "Authorization: Bearer abc.def-ghi_jkl\n"
         "GET https://cdn.example.com/v.mp4?Policy=AAA&Signature=BBB&Key-Pair-Id=CCC ok\n"
+        "S3 https://b.s3.aws.com/k?X-Amz-Security-Token=TTT&X-Amz-Signature=SSS end\n"
         "plain line stays untouched https://cdn.example.com/v.mp4?width=640\n",
         encoding="utf-8",
     )
     lines = console.console_summary(_request(), tail=10)["agent_log"]["lines"]
     assert lines[0] == "Authorization: Bearer ***"
     assert "?Policy=***&Signature=***&Key-Pair-Id=*** ok" in lines[1]
-    assert lines[2].endswith("?width=640")
+    assert "?X-Amz-Security-Token=***&X-Amz-Signature=*** end" in lines[2]
+    assert lines[3].endswith("?width=640")

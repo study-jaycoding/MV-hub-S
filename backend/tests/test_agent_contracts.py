@@ -77,6 +77,23 @@ def test_agent_and_server_share_provider_status_classification_contract():
     assert agent._ACTION_REQUIRED_RAW == cli_bridge._PROVIDER_ACTION_REQUIRED
 
 
+def test_agent_error_logs_hide_prompt_text_and_signed_url_queries():
+    """실패 로그·실패 사유의 비밀값 계약 — 프롬프트는 길이만, 서명 URL 은 경로만 남는다."""
+    agent = _load_agent()
+    shown = agent._args_for_log(
+        ["generate", "create", "seedance-2.5", "--prompt", "긴 프롬프트 원문", "--duration", "8"]
+    )
+    assert "긴 프롬프트 원문" not in shown
+    assert "<프롬프트 9자>" in shown
+    assert "--duration 8" in shown  # 다른 인자는 진단용으로 그대로
+
+    signed = "https://cdn.example.com/a.png?Policy=AAA&Signature=BBB&Key-Pair-Id=CCC"
+    assert agent._safe_ref_label(signed) == "https://cdn.example.com/a.png"
+    # URL 아닌 레퍼런스 값(asset:/상대경로)은 진단성을 위해 그대로
+    assert agent._safe_ref_label("asset:proj|cut01.png") == "asset:proj|cut01.png"
+    assert agent._safe_ref_label("/api/media/1.png") == "/api/media/1.png"
+
+
 def test_masked_password_input_never_writes_plaintext():
     agent = _load_agent()
     keys = iter(["s", "e", "c", "r", "e", "t", "\r"])

@@ -27,11 +27,11 @@ _TAIL_MAX_BYTES = 64 * 1024  # 파일 끝 64KB 만 읽는다 — 큰 로그도 �
 # 로그 꼬리를 화면으로 내보내기 전 비밀값 마스킹 — 과거에 기록된 로그(구버전 포맷 포함)도
 # UI 노출은 막는다. Bearer 토큰과 서명 URL 쿼리 키(CloudFront Policy/Signature 등)가 대상.
 _MASK_QUERY_KEYS = (
-    "token|access_token|api_key|apikey|secret|password|signature"
-    "|x-amz-signature|key-pair-id|policy|expires"
+    "token|access_token|api_key|apikey|secret|password|signature|sig|sas"
+    "|x-amz-signature|x-amz-security-token|x-goog-signature|key-pair-id|policy|expires"
 )
 _MASK_PATTERNS = [
-    (re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 ***"),
+    (re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]+"), r"\1 ***"),
     (re.compile(rf"(?i)([?&](?:{_MASK_QUERY_KEYS})=)[^&\s\"']+"), r"\1***"),
 ]
 
@@ -123,6 +123,6 @@ def console_close_app(request: Request):
         )
     if result.returncode != 0:
         raise HTTPException(
-            status_code=409, detail="닫을 MV Hub 앱 창을 찾지 못했습니다 — 창을 직접 닫아도 동일하게 정리됩니다"
+            status_code=409, detail="MV Hub 앱 창을 닫지 못했습니다 — 창을 직접 닫아도 동일하게 정리됩니다"
         )
     return {"ok": True}
