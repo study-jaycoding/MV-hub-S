@@ -5,6 +5,7 @@ import type React from "react";
 import type { SceneCard, SceneEdgeRole } from "../../../lib/scenes";
 import { cardBatch, variantIds } from "../../../lib/scenes";
 import type { Generation, InfoTarget, PreviewTarget } from "../../../types";
+import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../../lib/workspaceCommand";
 import { generationStatusLabelFor, generationStatusTitle } from "../../../lib/generationDisplay";
 import { HistoryBoardNode } from "../../history/HistoryBoardNode";
 import { TagEditor } from "../../TagEditor";
@@ -79,6 +80,11 @@ export function GenerationCard({
     autoTagOptions: string[];
     applyCardTags: (gen: Generation, next: string[]) => void;
     applyCardAutoTags: (gen: Generation, next: string[]) => void;
+    applyCardWorkspace?: (
+      gen: Generation,
+      operation: WorkspaceCommandOperation,
+      workspace: WorkspaceCommandTarget,
+    ) => Promise<boolean>; // ## 모드 #+/#- — 라이브러리 카드와 동일한 워크스페이스 변경
     close: () => void;
   };
 }) {
@@ -281,6 +287,13 @@ export function GenerationCard({
           <TagEditor
             tags={g.tags}
             onChange={(next) => tagEdit.applyCardTags(g, next)}
+            onWorkspaceCommand={
+              tagEdit.applyCardWorkspace
+                ? (operation, workspace) => tagEdit.applyCardWorkspace!(g, operation, workspace)
+                : undefined
+            }
+            currentWorkspaceId={g.workspace_id}
+            currentWorkspaceName={g.workspace_name}
             global={
               tagEdit.hasAutoTags
                 ? {

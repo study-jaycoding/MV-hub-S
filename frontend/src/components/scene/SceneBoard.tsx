@@ -14,6 +14,7 @@ import {
 } from "react";
 import type { CSSProperties, MutableRefObject, ReactNode } from "react";
 import { api } from "../../api";
+import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../lib/workspaceCommand";
 import {
   assetVersionsSnapshot,
   subscribeAssetVersions,
@@ -254,6 +255,12 @@ interface Props {
   onSetTags?: (g: Generation, tags: string[]) => void;
   onSetAutoTags?: (g: Generation, names: string[]) => void;
   autoTagOptions?: string[]; // 내 전역(auto) 태그 목록 — TagEditor 의 # 전역 picker
+  // 태그 편집기 ## 모드의 #+/#- 워크스페이스 변경 — App 핸들러(서버 저장+라이브러리 갱신)에 위임.
+  onWorkspaceCommand?: (
+    g: Generation,
+    operation: WorkspaceCommandOperation,
+    workspace: WorkspaceCommandTarget,
+  ) => Promise<boolean>;
   onOpenComments?: (g: Generation) => void; // C → 공유 코멘트 스레드 패널 열기(생성탭 카드와 동일)
   // Ctrl+K 로 프롬프트를 숨겼을 때 캔버스 상단 중앙(씬 패널·미니맵과 같은 줄)에 얹을 멀티선택 액션바.
   topCenterOverlay?: ReactNode;
@@ -308,6 +315,7 @@ export function SceneBoard({
   onSetTags,
   onSetAutoTags,
   autoTagOptions,
+  onWorkspaceCommand,
   onOpenComments,
 }: Props) {
   const t = useT(); // 언어(한/영) — View 노드 헤더 등 라벨 치환. 언어 변경 시 즉시 리렌더.
@@ -853,6 +861,30 @@ export function SceneBoard({
     setGenData((prev) => (prev[g.id] ? { ...prev, [g.id]: { ...prev[g.id], auto_tags: names } } : prev));
     onSetAutoTags?.(g, names);
   };
+  // #+/#- 워크스페이스 변경 — App 핸들러(서버 저장+라이브러리 갱신)에 위임하고, 성공 시 씬
+  // genData 사본도 낙관 패치해 다시 열었을 때 활성 칩(현재 귀속)이 맞게 보이게 한다.
+  const applyCardWorkspace = onWorkspaceCommand
+    ? async (
+        g: Generation,
+        operation: WorkspaceCommandOperation,
+        workspace: WorkspaceCommandTarget,
+      ): Promise<boolean> => {
+        const ok = await onWorkspaceCommand(g, operation, workspace);
+        if (ok) {
+          setGenData((prev) => {
+            const cur = prev[g.id];
+            if (!cur) return prev;
+            if (operation === "assign") {
+              return { ...prev, [g.id]: { ...cur, workspace_id: workspace.id, workspace_name: workspace.name } };
+            }
+            // remove 는 '그 공간 소속이었을 때만' 해제된다 — 다른 공간 소속이면 서버도 무변경
+            if (cur.workspace_id !== workspace.id) return prev;
+            return { ...prev, [g.id]: { ...cur, workspace_id: null, workspace_name: null } };
+          });
+        }
+        return ok;
+      }
+    : undefined;
 
   // ── 생성 결과 카드의 S(공유/최종) 확인 로직 — 히스토리 보드와 동일(단일클릭=공유, 더블=최종) ──
   const [sConfirm, setSConfirm] = useState<{ id: string; kind: "share" | "final" } | null>(null);
@@ -3387,6 +3419,7 @@ export function SceneBoard({
                     autoTagOptions: autoTagOptions ?? [],
                     applyCardTags,
                     applyCardAutoTags,
+                    applyCardWorkspace,
                     close: () => {
                       setTagEditCardId(null);
                       setTagEditNodeGenId(null);
@@ -3470,6 +3503,7 @@ export function SceneBoard({
                     autoTagOptions: autoTagOptions ?? [],
                     applyCardTags,
                     applyCardAutoTags,
+                    applyCardWorkspace,
                     close: () => {
                       setTagEditCardId(null);
                       setTagEditNodeGenId(null);
@@ -3880,6 +3914,7 @@ export function SceneBoard({
             hasAutoTags: !!onSetAutoTags,
             applyCardTags,
             applyCardAutoTags,
+            applyCardWorkspace,
           }}
           actions={{
             setCardMenu,

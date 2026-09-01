@@ -7,6 +7,7 @@ import type { MutableRefObject, RefObject } from "react";
 import type { SceneCard } from "../../lib/scenes";
 import { variantIds } from "../../lib/scenes";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
+import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../lib/workspaceCommand";
 import { generationStatusLabelFor } from "../../lib/generationDisplay";
 import { thumbOf } from "../../lib/media";
 import { APP_EVENTS, dispatchAppEvent } from "../../lib/appEvents";
@@ -76,6 +77,11 @@ export function SceneVariantPopup({
     hasAutoTags: boolean; // onSetAutoTags 존재
     applyCardTags: (g: Generation, next: string[]) => void;
     applyCardAutoTags: (g: Generation, next: string[]) => void;
+    applyCardWorkspace?: (
+      g: Generation,
+      operation: WorkspaceCommandOperation,
+      workspace: WorkspaceCommandTarget,
+    ) => Promise<boolean>; // ## 모드 #+/#- — 라이브러리 카드와 동일한 워크스페이스 변경
   };
   actions: {
     setCardMenu: (id: string | null) => void;
@@ -507,6 +513,13 @@ export function SceneVariantPopup({
                 <TagEditor
                   tags={g.tags}
                   onChange={(next) => gen.applyCardTags(g, next)}
+                  onWorkspaceCommand={
+                    gen.applyCardWorkspace
+                      ? (operation, workspace) => gen.applyCardWorkspace!(g, operation, workspace)
+                      : undefined
+                  }
+                  currentWorkspaceId={g.workspace_id}
+                  currentWorkspaceName={g.workspace_name}
                   global={
                     gen.hasAutoTags
                       ? {

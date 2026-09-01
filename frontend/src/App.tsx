@@ -524,6 +524,19 @@ export default function App() {
     setSelected,
     teamTab: filters.tab === "team",
   });
+  // 캔버스(구성탭) 태그 편집기의 #+/#- — 캔버스 선택과 라이브러리 선택은 다른 세계라
+  // 항상 '그 카드 단건'만 적용(빈 선택 ref). 캔버스 카드는 전부 로컬 카드라 teamTab 아님.
+  const canvasWsSelectionRef = useRef<Set<string>>(new Set());
+  const { onWorkspaceCommand: onCanvasWorkspaceCommand } = useGenerationWorkspaceActions({
+    activeWorkspaceId: filters.workspace_id,
+    flash,
+    gensRef,
+    reload,
+    selectedRef: canvasWsSelectionRef,
+    setGens,
+    setSelected,
+    teamTab: false,
+  });
   useGenerationKeyboardActions({ clearSelect, filtersRef, flash, gensRef, reload, selectedRef, setGens });
 
   // 정보(ⓘ) 버튼: 복수 선택 상태에서 선택된 카드의 정보를 누르면 비교창, 그 외엔 단일 정보창.
@@ -1527,6 +1540,7 @@ export default function App() {
                 onSetTags={onSetTags}
                 onSetAutoTags={onSetAutoTags}
                 autoTagOptions={facets.auto_tags}
+                onWorkspaceCommand={onCanvasWorkspaceCommand}
                 onOpenComments={(g) => openComment(g.id)}
               />
             ) : (

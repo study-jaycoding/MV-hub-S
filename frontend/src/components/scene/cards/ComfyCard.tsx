@@ -7,6 +7,7 @@ import type React from "react";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
 import { cardBatch, variantIds } from "../../../lib/scenes";
 import type { Generation, PreviewTarget } from "../../../types";
+import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../../lib/workspaceCommand";
 import {
   comfyDeclaredKinds,
   comfyOutputMedia,
@@ -61,6 +62,11 @@ export function ComfyCard({
     autoTagOptions: string[];
     applyCardTags: (gen: Generation, next: string[]) => void;
     applyCardAutoTags: (gen: Generation, next: string[]) => void;
+    applyCardWorkspace?: (
+      gen: Generation,
+      operation: WorkspaceCommandOperation,
+      workspace: WorkspaceCommandTarget,
+    ) => Promise<boolean>; // ## 모드 #+/#- — 라이브러리 카드와 동일한 워크스페이스 변경
     close: () => void;
   };
   actions: {
@@ -309,6 +315,14 @@ export function ComfyCard({
                           <TagEditor
                             tags={repGen.tags}
                             onChange={(next) => tagEdit.applyCardTags(repGen, next)}
+                            onWorkspaceCommand={
+                              tagEdit.applyCardWorkspace
+                                ? (operation, workspace) =>
+                                    tagEdit.applyCardWorkspace!(repGen, operation, workspace)
+                                : undefined
+                            }
+                            currentWorkspaceId={repGen.workspace_id}
+                            currentWorkspaceName={repGen.workspace_name}
                             global={
                               tagEdit.hasAutoTags
                                 ? {
