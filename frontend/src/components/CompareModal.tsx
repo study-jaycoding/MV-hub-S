@@ -37,7 +37,7 @@ export function CompareModal({
   // 이미지 비교 — 부분 수정의 A/B 와 같은 세로 분할선 와이프(왼쪽 A=1번, 오른쪽 B=2번,
   // 마우스 x 를 따라온다). 이미지 2개를 선택했을 때만 가능.
   const [imageCompare, setImageCompare] = useState(false);
-  const [abOn, setAbOn] = useState(true); // A/B 와이프 토글(기본 켬)
+  const [abOn, setAbOn] = useState(false); // A/B 와이프 토글(기본 꺼짐 — 아무것도 안 누른 상태로 시작)
   const [pushHeld, setPushHeld] = useState(false); // push 버튼을 꾹 누르는 동안 2번(B) 표시
   const [splitX, setSplitX] = useState(0.5); // 0..1, 와이프 상자 폭 기준
   const wipeSrcs = gens.map((g) => {
@@ -257,7 +257,7 @@ export function CompareModal({
                 disabled={!canImageCompare}
                 onChange={(e) => {
                   setImageCompare(e.target.checked);
-                  setAbOn(true);
+                  setAbOn(false);
                   setSplitX(0.5);
                   setPushHeld(false);
                 }}
