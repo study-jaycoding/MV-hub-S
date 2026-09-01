@@ -867,9 +867,7 @@ export function PartialEditModal({
               >
                 같은 주석으로 다시 수정
               </button>
-            </div>
-            <div className="partial-edit-hint">
-              결과는 라이브러리 카드로 저장되어 있습니다 — 다운로드·태그도 카드에서.
+              <span className="partial-edit-toolspacer" />
             </div>
           </>
         )}
