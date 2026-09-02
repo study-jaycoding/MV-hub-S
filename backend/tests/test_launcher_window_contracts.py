@@ -146,6 +146,86 @@ def test_spawn_app_window_returns_the_process(launcher, monkeypatch: pytest.Monk
     assert any(str(a).startswith("--app=") and "appwin=1" in str(a) for a in captured["args"])
 
 
+class TestPinnedBrowser:
+    """앱 창 브라우저 고정 — 프로필(=캔버스 localStorage)이 브라우저별로 갈리므로, 한 번 쓰기
+    시작한 브라우저를 계속 써야 한다. 나중에 Chrome 을 깔거나 지운 것만으로 프로필이 바뀌면
+    사용자에겐 작업물이 사라진 것으로 보인다(2026-09-02 현장 사례)."""
+
+    @pytest.fixture
+    def home(self, launcher, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.delenv("MVHUB_APP_BROWSER", raising=False)
+        return tmp_path
+
+    def _installed(self, launcher, monkeypatch: pytest.MonkeyPatch, want: str) -> bool:
+        monkeypatch.setenv("MVHUB_APP_BROWSER", want)
+        got = launcher._find_app_browser()
+        return bool(got and got[0] == want)
+
+    def test_roundtrip_and_junk_is_treated_as_unpinned(self, launcher, home):
+        assert launcher._read_pinned_browser() is None
+        launcher._pin_browser("edge")
+        assert launcher._read_pinned_browser() == "edge"
+        launcher._pin_browser("firefox")  # 우리가 쓰는 둘이 아니면 무시
+        assert launcher._read_pinned_browser() == "edge"
+        launcher._pinned_browser_path().write_text("  CHROME \n", encoding="utf-8")
+        assert launcher._read_pinned_browser() == "chrome"  # 공백·대소문자는 허용
+        launcher._pinned_browser_path().write_text("[깨짐]", encoding="utf-8")
+        assert launcher._read_pinned_browser() is None  # 이상한 값 = 고정 없음(기본 순서로)
+
+    def test_a_failed_write_keeps_the_old_pin_and_leaves_no_temp_file(
+        self, launcher, home, monkeypatch: pytest.MonkeyPatch
+    ):
+        launcher._pin_browser("chrome")
+
+        def boom(*_a, **_k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(launcher.os, "replace", boom)
+        launcher._pin_browser("edge")  # 실패해도 예외를 올리지 않는다(실행을 막으면 안 된다)
+        assert launcher._read_pinned_browser() == "chrome"
+        assert list(launcher._app_window_base().glob("*.tmp")) == []
+
+    def test_pin_wins_over_default_order_but_env_does_not_overwrite_it(
+        self, launcher, home, monkeypatch: pytest.MonkeyPatch
+    ):
+        if not (
+            self._installed(launcher, monkeypatch, "chrome")
+            and self._installed(launcher, monkeypatch, "edge")
+        ):
+            pytest.skip("Chrome·Edge 가 모두 설치된 PC 에서만 순서를 검증할 수 있다")
+        monkeypatch.delenv("MVHUB_APP_BROWSER", raising=False)
+        launcher._pin_browser("edge")
+        assert launcher._find_app_browser()[0] == "edge"  # 기본은 Chrome 우선인데 고정이 이긴다
+        monkeypatch.setenv("MVHUB_APP_BROWSER", "chrome")
+        assert launcher._find_app_browser()[0] == "chrome"  # env 는 이번 실행만 이긴다
+        assert launcher._read_pinned_browser() == "edge"  # ★임시 우회가 영구 전환이 되면 안 된다
+
+    def test_env_override_never_rewrites_the_pin(self, launcher, home, monkeypatch: pytest.MonkeyPatch):
+        """MVHUB_APP_BROWSER 는 이번 실행만 바꾼다 — 임시 우회가 영구 프로필 전환이 되면 안 된다."""
+        launcher._pin_browser("edge")
+        monkeypatch.setenv("MVHUB_APP_BROWSER", "chrome")
+        launcher._pin_browser("chrome")  # env 우회 중 승인 창을 봐도 고정은 그대로
+        assert launcher._read_pinned_browser() == "edge"
+        monkeypatch.delenv("MVHUB_APP_BROWSER")
+        launcher._pin_browser("chrome")  # 우회가 없으면 정상 갱신
+        assert launcher._read_pinned_browser() == "chrome"
+
+    def test_broken_bytes_do_not_crash_the_launcher(self, launcher, home):
+        """고정 파일이 깨진 바이트여도 앱 실행을 막지 않는다(고정 없음으로 취급)."""
+        path = launcher._pinned_browser_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xfe\x00chrome")
+        assert launcher._read_pinned_browser() is None
+
+    def test_profile_dir_is_per_browser_and_per_install(self, launcher, home):
+        chrome = launcher._app_profile_dir("chrome")
+        edge = launcher._app_profile_dir("edge")
+        assert chrome != edge  # 프로필은 브라우저별로 갈린다 — 그래서 고정이 필요하다
+        assert chrome.parent == launcher._app_window_base()
+        assert launcher._install_id() in chrome.name
+
+
 class TestWatchState:
     """감시 상태 머신 전이 — 코덱스가 요구한 회귀 지점들."""
 

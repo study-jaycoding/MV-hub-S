@@ -287,7 +287,11 @@ def _install_id() -> str:
 
 def _find_app_browser() -> tuple[str, str] | None:
     """앱 모드 지원 브라우저 탐색 — (이름, exe 절대경로). 기본 Chrome 우선, 다음 Edge(Jay 결정).
-    env MVHUB_APP_BROWSER=chrome|edge 로 우선순위를 뒤집을 수 있다(선호 없으면 나머지로 폴백)."""
+    env MVHUB_APP_BROWSER=chrome|edge 로 우선순위를 뒤집을 수 있다(선호 없으면 나머지로 폴백).
+
+    ★한 번 쓰기 시작한 브라우저는 계속 쓴다(_read_pinned_browser). 프로필이 브라우저별로 갈리는데
+     (_app_profile_dir), 캔버스 씬은 그 프로필의 localStorage 에 있다. 고정하지 않으면 나중에
+     Chrome 을 깔거나 지운 것만으로 프로필이 바뀌어 작업물이 사라진 것처럼 보인다."""
     if os.name != "nt":
         return None
     import winreg
@@ -339,7 +343,11 @@ def _find_app_browser() -> tuple[str, str] | None:
         )
         return ("chrome", exe) if exe else None
 
+    # 우선순위: env 지정 > 고정된 브라우저 > 기본(Chrome→Edge). env 는 이번 실행만 바꾸고
+    # 고정값은 건드리지 않는다 — 임시 우회가 영구 프로필 전환이 되면 안 된다.
     preferred = os.environ.get("MVHUB_APP_BROWSER", "").strip().lower()
+    if preferred not in ("chrome", "edge"):
+        preferred = _read_pinned_browser() or ""
     order = (find_edge, find_chrome) if preferred == "edge" else (find_chrome, find_edge)
     for finder in order:
         found = finder()
@@ -348,9 +356,49 @@ def _find_app_browser() -> tuple[str, str] | None:
     return None
 
 
-def _app_profile_dir(browser_name: str) -> Path:
+def _app_window_base() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-    return base / "MVHub" / "app-window" / f"{browser_name}-{_install_id()}"
+    return base / "MVHub" / "app-window"
+
+
+def _app_profile_dir(browser_name: str) -> Path:
+    return _app_window_base() / f"{browser_name}-{_install_id()}"
+
+
+def _pinned_browser_path() -> Path:
+    """이 설치가 쓰기로 한 브라우저 이름을 적어 두는 곳(설치별 — 프로필과 같은 축)."""
+    return _app_window_base() / f"preferred-{_install_id()}.txt"
+
+
+def _read_pinned_browser() -> str | None:
+    """고정된 브라우저 이름. 없거나 값이 이상하면 None(= 기본 우선순위로 탐색)."""
+    try:
+        # ValueError 는 UnicodeDecodeError 를 덮는다 — 깨진 바이트가 앱 실행을 막으면 안 된다.
+        name = _pinned_browser_path().read_text(encoding="utf-8").strip().lower()
+    except (OSError, ValueError):
+        return None
+    return name if name in ("chrome", "edge") else None
+
+
+def _pin_browser(browser_name: str) -> None:
+    """실제로 앱 창이 뜬 브라우저를 고정한다. 실패해도 실행을 막지 않는다(다음 기회에 다시 쓴다).
+    ★승인된 창을 확인한 뒤에만 부른다 — 탐색 성공이나 spawn 성공만으로 고정을 갈아치우면,
+     브라우저 업데이트로 exe 가 잠시 안 보이거나 창이 끝내 안 뜬 경우에도 프로필이 바뀐다."""
+    if os.environ.get("MVHUB_APP_BROWSER", "").strip().lower() in ("chrome", "edge"):
+        return  # env 로 이번 실행만 우회하는 중 — 임시 지정이 영구 선택을 바꾸면 안 된다
+    if browser_name not in ("chrome", "edge") or _read_pinned_browser() == browser_name:
+        return
+    path = _pinned_browser_path()
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(browser_name, encoding="utf-8")
+        os.replace(tmp, path)  # 원자 교체 — 동시 실행이 반쯤 쓴 파일을 읽지 않게
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _parse_command_line(command_line: str) -> list[str]:
@@ -839,6 +887,11 @@ def watch_app_window(url: str) -> int:
     if not app:
         # MV Hub 창 없음 — 루트·비승인 창(DevTools 등)이 남아 있어도 --app 으로 새 창을 연다.
         spawn_proc = _spawn_app_window(exe, profile, url)
+    pinned = False
+    if app:
+        # 이미 이 브라우저에 승인된 MV Hub 창이 있다 — 여기서 쓰고 있는 게 확실하므로 바로 고정.
+        _pin_browser(name)
+        pinned = True
 
     state = _WatchState(time.monotonic())
     hid_console = False
@@ -864,6 +917,12 @@ def watch_app_window(url: str) -> int:
                     ))
             action = state.observe(set(app), query_ok, time.monotonic(), _approved_alive)
             if action == "anchored":
+                if not pinned:
+                    # ★새로 띄운 창은 '실제로 승인된 창이 떴을 때' 고정한다 — spawn 성공만 보고
+                    #  고정하면 창이 끝내 안 떠 APP_EXIT_NO_WINDOW 로 물러날 때도 바뀐다(코덱스 P1).
+                    #  anchored 는 매 틱 오므로 한 번만 쓴다.
+                    _pin_browser(name)
+                    pinned = True
                 if not hid_console and _console_is_ours():
                     # 조회 회복 + 승인 창 존재가 함께 확인된 때만 (재)숨김
                     _set_console_visible(False)
