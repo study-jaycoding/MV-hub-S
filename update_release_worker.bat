@@ -44,6 +44,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UPDATE_PS1%" -TargetDir "%
 set "UPDATE_EXIT=%ERRORLEVEL%"
 del "%UPDATE_PS1%" >nul 2>nul
 
+if "%UPDATE_EXIT%"=="17" (
+  REM Another updater already holds the install lock. Its state file is live -
+  REM never overwrite it with a generic failure from this duplicate run.
+  echo.
+  echo [ERROR] Another MV Hub update is already running for this install.
+  if not "%MVHUB_NO_PAUSE%"=="1" pause
+  exit /b 17
+)
+
 if not "%UPDATE_EXIT%"=="0" (
   echo.
   echo [ERROR] MV Hub update failed.
@@ -80,13 +89,29 @@ if (-not $TargetDir) {
 $TargetDir = (Resolve-Path -LiteralPath $TargetDir).Path
 $CurrentVersion = ""
 $LatestVersion = ""
+$SwapToken = [Guid]::NewGuid().ToString("N").Substring(0, 8)
+$JournalPath = Join-Path $TargetDir "update-journal.json"
+# recovery describes what the install tree looks like when the updater fails:
+#   not_started       - nothing was stopped or replaced; the app kept running
+#   rolled_back       - processes were stopped but the old tree is intact/restored
+#   new_committed     - the new version committed (VERSION.txt) but restart failed
+#   recovery_required - rollback itself failed; backups and journal are preserved
+$script:RecoveryState = "not_started"
+$script:ProcessesStopped = $false
+$script:InstalledComponents = $null
+# True when this run found backups/journal from an earlier interrupted update.
+# Such a tree cannot be trusted (it may be half-swapped), so a full reinstall is
+# forced even on matching versions, and a failed reinstall must never be booted
+# or have its quarantined backups deleted.
+$script:HadRecoveryAssets = $false
 
 function Write-UpdateState {
     param(
         [string]$State,
         [string]$Message,
         [string]$Latest = $LatestVersion,
-        [int]$Percent = -1
+        [int]$Percent = -1,
+        [string]$Recovery = ""
     )
     if (-not $StateFile) {
         return
@@ -108,9 +133,125 @@ function Write-UpdateState {
     if ($Percent -ge 0) {
         $Payload["percent"] = [Math]::Min(100, $Percent)
     }
+    if ($Recovery) {
+        $Payload["recovery"] = $Recovery
+    }
     $TempState = "$StateFile.$PID.tmp"
     $Payload | ConvertTo-Json | Set-Content -LiteralPath $TempState -Encoding UTF8
     Move-Item -LiteralPath $TempState -Destination $StateFile -Force
+}
+
+# Windows error codes that mean "someone briefly holds a handle" - the only
+# failures worth retrying. Everything else (missing path, destination exists,
+# bad name, disk errors) fails immediately.
+$script:RetryableMoveCodes = @(5, 32, 33)  # ACCESS_DENIED, SHARING_VIOLATION, LOCK_VIOLATION
+
+function Get-TransientLockCode {
+    # Returns the FACILITY_WIN32 error code when the exception chain ends in an
+    # IO/access exception, or -1 for everything else (wrong type, no Win32 facility).
+    param([System.Exception]$Exception)
+    $Inner = $Exception
+    while ($null -ne $Inner.InnerException) { $Inner = $Inner.InnerException }
+    if (-not (($Inner -is [System.IO.IOException]) -or ($Inner -is [System.UnauthorizedAccessException]))) {
+        return -1
+    }
+    try {
+        $HResult = [int]$Inner.HResult
+        if ((($HResult -shr 16) -band 0xFFFF) -eq 0x8007) {
+            return $HResult -band 0xFFFF
+        }
+    }
+    catch {
+        return -1
+    }
+    return -1
+}
+
+function Move-PathWithRetry {
+    # Directory/file rename with a retry window for transient locks. Antivirus and
+    # the search indexer scan freshly copied trees and can hold handles for a few
+    # seconds; a single failed rename must not kill a whole update (seen live on
+    # 2026-09-02: frontend\dist swap died on one ACCESS_DENIED).
+    param(
+        [string]$Path,
+        [string]$Destination,
+        [string]$Label,
+        [int]$TimeoutSeconds = 15
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "Move failed for ${Label}: source is missing: $Path"
+    }
+    if (Test-Path -LiteralPath $Destination) {
+        throw "Move failed for ${Label}: destination already exists: $Destination"
+    }
+    $IsContainer = Test-Path -LiteralPath $Path -PathType Container
+    $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $DelayMs = 250
+    $Attempt = 0
+    while ($true) {
+        $Attempt++
+        try {
+            if ($IsContainer) {
+                [System.IO.Directory]::Move($Path, $Destination)
+            }
+            else {
+                [System.IO.File]::Move($Path, $Destination)
+            }
+            if ($Attempt -gt 1) {
+                Write-Host "[update] move recovered for $Label after $Attempt attempts"
+            }
+            return
+        }
+        catch {
+            $Win32Code = Get-TransientLockCode -Exception $_.Exception
+            $Retryable = $script:RetryableMoveCodes -contains $Win32Code
+            if (-not $Retryable -or (Get-Date) -ge $Deadline) {
+                throw
+            }
+            Write-Host "[update] move retry $Attempt for $Label (win32=$Win32Code): $Path"
+            # Clamp the sleep to the remaining window so total time honors the deadline.
+            $RemainingMs = [int][Math]::Max(0, ($Deadline - (Get-Date)).TotalMilliseconds)
+            Start-Sleep -Milliseconds ([Math]::Min($DelayMs, [Math]::Max(1, $RemainingMs)))
+            $DelayMs = [Math]::Min(2000, $DelayMs * 2)
+        }
+    }
+}
+
+function Invoke-CheckedProcess {
+    # Runs a validation executable with a hard timeout. A hung child must turn into
+    # a normal failure (so rollback and restart-on-failure still run) instead of
+    # freezing the whole updater forever.
+    param(
+        [string]$FilePath,
+        [string[]]$ArgumentList,
+        [string]$Label,
+        [int]$TimeoutSeconds = 60
+    )
+    $ProbeBase = Join-Path $env:TEMP ("mvhub-probe-" + [Guid]::NewGuid().ToString("N"))
+    $OutPath = $ProbeBase + ".out"
+    $ErrPath = $ProbeBase + ".err"
+    $Process = $null
+    try {
+        $Process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -NoNewWindow -PassThru `
+            -RedirectStandardOutput $OutPath -RedirectStandardError $ErrPath
+        # PS 5.1 trap: without touching .Handle first, ExitCode reads back $null
+        # after the process exits (the handle is never cached). Measured live.
+        [void]$Process.Handle
+        if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $Process.Kill() } catch {}
+            throw "Validation timed out after ${TimeoutSeconds}s (${Label}): $FilePath"
+        }
+        $Process.WaitForExit()  # flush: blocks until redirected streams are closed
+        $StdOut = ""
+        $StdErr = ""
+        if (Test-Path -LiteralPath $OutPath) { $StdOut = [System.IO.File]::ReadAllText($OutPath) }
+        if (Test-Path -LiteralPath $ErrPath) { $StdErr = [System.IO.File]::ReadAllText($ErrPath) }
+        return @{ ExitCode = $Process.ExitCode; StdOut = $StdOut; StdErr = $StdErr }
+    }
+    finally {
+        Remove-Item -LiteralPath $OutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $ErrPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Restart-MvHubAndWaitReady {
@@ -167,6 +308,67 @@ function Restart-MvHubAndWaitReady {
         Start-Sleep -Seconds 1
     }
     throw "MV Hub did not become ready within 3 minutes after update."
+}
+
+function Start-MvHubAfterFailure {
+    # Best-effort relaunch of the (restored) old version after a failed install, so
+    # users are never left with a dead backend and a frozen progress screen.
+    # Deliberately writes NO update state: the failed record must stay visible.
+    try {
+        $Launcher = Join-Path $TargetDir "MV_agent.bat"
+        if (-not (Test-Path -LiteralPath $Launcher -PathType Leaf)) {
+            Write-Host "[update] warn: MV_agent.bat is missing - cannot restart the app after failure."
+            return
+        }
+        if (-not $ReadyUrl) {
+            $ReadyUrl = "http://127.0.0.1:8010/api/ready"
+        }
+        # new_committed can reach here with the freshly launched hub already alive
+        # (readiness timed out, not the launch). Never stack a second launcher.
+        $ResolvedRoot = (Resolve-Path -LiteralPath $TargetDir).Path.TrimEnd("\") + "\"
+        $Existing = @(Get-MvHubProcessIds -ResolvedRoot $ResolvedRoot)
+        if ($Existing.Count) {
+            Write-Host "[update] MV Hub processes already running (pids: $($Existing -join ', ')) - not launching another."
+            return
+        }
+        Write-Host "[update] Restarting MV Hub after the failed update..."
+        $StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $StartInfo.FileName = $env:ComSpec
+        $StartInfo.Arguments = '/d /c call "' + $Launcher + '"'
+        $StartInfo.WorkingDirectory = $TargetDir
+        $StartInfo.UseShellExecute = $true
+        $StartInfo.CreateNoWindow = $false
+        $StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Normal
+        $PreviousNoBrowser = $env:MVHUB_NO_BROWSER
+        $PreviousNoPause = $env:MVHUB_NO_PAUSE
+        Remove-Item Env:MVHUB_NO_BROWSER -ErrorAction SilentlyContinue
+        Remove-Item Env:MVHUB_NO_PAUSE -ErrorAction SilentlyContinue
+        try {
+            [void][System.Diagnostics.Process]::Start($StartInfo)
+        }
+        finally {
+            if ($null -ne $PreviousNoBrowser) { $env:MVHUB_NO_BROWSER = $PreviousNoBrowser }
+            if ($null -ne $PreviousNoPause) { $env:MVHUB_NO_PAUSE = $PreviousNoPause }
+        }
+        $Deadline = (Get-Date).AddSeconds(90)
+        while ((Get-Date) -lt $Deadline) {
+            try {
+                $Ready = Invoke-RestMethod -Uri $ReadyUrl -TimeoutSec 2
+                if ($Ready.status -eq "ready") {
+                    Write-Host "[update] MV Hub is running again on the previous version."
+                    return
+                }
+            }
+            catch {
+                # Booting - keep waiting.
+            }
+            Start-Sleep -Seconds 1
+        }
+        Write-Host "[update] warn: MV Hub did not report ready within 90s after the failed update."
+    }
+    catch {
+        Write-Host "[update] warn: could not restart the app after failure: $($_.Exception.Message)"
+    }
 }
 
 $SourceFile = Join-Path $TargetDir "INSTALL_SOURCE.txt"
@@ -295,15 +497,15 @@ function Assert-BundledCli {
         throw "Bundled CLI validation failed ($Label): latest=$ExpectedVersion package=$Pin"
     }
 
-    $VersionOutput = @(& $NodeExe $CliEntry version 2>&1)
-    $VersionText = $VersionOutput -join "`n"
-    $VersionLine = $VersionText.Trim()
+    $Result = Invoke-CheckedProcess -FilePath $NodeExe -ArgumentList @(('"' + $CliEntry + '"'), "version") -Label $Label -TimeoutSeconds 60
+    $VersionLine = ([string]$Result.StdOut).Trim()
     $ExpectedPrefix = "higgsfield $Pin"
     if (
-        $LASTEXITCODE -ne 0 -or
+        $Result.ExitCode -ne 0 -or
         ($VersionLine -ne $ExpectedPrefix -and -not $VersionLine.StartsWith($ExpectedPrefix + " "))
     ) {
-        throw "Bundled CLI execution failed ($Label): expected=$Pin output=$VersionText"
+        $Detail = (($Result.StdOut + "`n" + $Result.StdErr)).Trim()
+        throw "Bundled CLI execution failed ($Label): expected=$Pin output=$Detail"
     }
     Write-Host "[$Label] Higgsfield CLI verified: $Pin"
     return $Pin
@@ -326,14 +528,16 @@ function Assert-PythonRuntime {
         "import anyio,idna,click,h11,httptools,dotenv,yaml,watchfiles,colorama,pip",
         "print('%d.%d.%d|%d' % (*sys.version_info[:3], struct.calcsize('P') * 8))"
     ) -join ";"
-    $Output = @(& $Exe -I -c $Probe 2>&1)
-    if ($LASTEXITCODE -ne 0 -or -not $Output) {
-        throw "Bundled Python validation failed ($Label): $($Output -join ' ')"
+    $Result = Invoke-CheckedProcess -FilePath $Exe -ArgumentList @("-I", "-c", ('"' + $Probe + '"')) -Label $Label -TimeoutSeconds 60
+    $OutputLines = @(([string]$Result.StdOut) -split "\r?\n" | Where-Object { $_.Trim() })
+    if ($Result.ExitCode -ne 0 -or -not $OutputLines.Count) {
+        $Detail = (($Result.StdOut + "`n" + $Result.StdErr)).Trim()
+        throw "Bundled Python validation failed ($Label): $Detail"
     }
 
-    $RuntimeIdentity = ([string]$Output[-1]).Trim().Split("|")
+    $RuntimeIdentity = ([string]$OutputLines[-1]).Trim().Split("|")
     if ($RuntimeIdentity.Count -ne 2 -or [int]$RuntimeIdentity[1] -ne 64) {
-        throw "Bundled Python validation failed ($Label): expected 64-bit runtime, got '$($Output[-1])'."
+        throw "Bundled Python validation failed ($Label): expected 64-bit runtime, got '$($OutputLines[-1])'."
     }
     $Parts = $RuntimeIdentity[0].Split(".")
     if ($Parts.Count -lt 2) {
@@ -377,38 +581,249 @@ function Assert-AppLayout {
     }
 }
 
-function Replace-ImmutableDirectory {
+function Get-UpdateComponents {
+    # Builds the full transactional replacement list, data-driven from the verified
+    # package. Every component (immutable directories AND root/backend metadata
+    # files) goes through the same stage -> swap -> rollback machinery, so a failed
+    # update can never leave a mixed old/new tree behind.
+    param([string]$ExtractDir)
+
+    $Components = New-Object System.Collections.ArrayList
+    foreach ($Required in @("backend\app", "frontend\dist", "runtime\node", "runtime\higgsfield", "runtime\python")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $ExtractDir $Required) -PathType Container)) {
+            throw "Update package is missing $Required."
+        }
+        [void]$Components.Add(@{ Relative = $Required; Kind = "dir" })
+    }
+    Get-ChildItem -LiteralPath $ExtractDir -Force | ForEach-Object {
+        if ($_.PSIsContainer) {
+            # backend/frontend/runtime are decomposed above; any other packaged
+            # top-level directory (e.g. tools) is replaced wholesale - merges leave
+            # files removed by newer releases behind.
+            if ($_.Name -ne "backend" -and $_.Name -ne "frontend" -and $_.Name -ne "runtime") {
+                [void]$Components.Add(@{ Relative = $_.Name; Kind = "dir" })
+            }
+        }
+        elseif ($_.Name -ne "VERSION.txt") {
+            [void]$Components.Add(@{ Relative = $_.Name; Kind = "file" })
+        }
+    }
+    Get-ChildItem -LiteralPath (Join-Path $ExtractDir "backend") -Force | ForEach-Object {
+        # backend\data owns user DBs, backup outbox, and replica status. Never touch
+        # it even if a malformed package unexpectedly contains data.
+        if ($_.PSIsContainer) {
+            if ($_.Name -ne "app" -and $_.Name -ne "data") {
+                [void]$Components.Add(@{ Relative = "backend\" + $_.Name; Kind = "dir" })
+            }
+        }
+        else {
+            [void]$Components.Add(@{ Relative = "backend\" + $_.Name; Kind = "file" })
+        }
+    }
+    return ,$Components
+}
+
+function Move-LeftoversToQuarantine {
+    # Leftovers from a previously failed or killed update are RECOVERY ASSETS.
+    # Deciding "which side is current" from file existence alone is provably
+    # unsafe for multi-component crashes (Codex review), so this makes NO guess
+    # and deletes NO backup: .previous/.rollback trees and the journal are moved
+    # aside into a quarantine folder, and the update then re-stages the fresh
+    # package in full - after which the tree is a complete new install no matter
+    # what shape the crash left behind. Disposable .next staging copies are the
+    # only thing deleted. Quarantine is removed only after this run confirms the
+    # new version; if this run fails too, the preserved backups are still on disk.
+    $ArtifactPattern = "^.+\.(?<kind>next|previous|rollback)\.[0-9a-f]{8}$"
+    $QuarantineRoot = Join-Path $TargetDir ("update-quarantine." + $SwapToken)
+    $Bases = @($TargetDir, (Join-Path $TargetDir "backend"), (Join-Path $TargetDir "frontend"), (Join-Path $TargetDir "runtime"))
+    # A quarantine folder from an even earlier interrupted run also proves the
+    # current tree cannot be trusted as-is.
+    if (@(Get-ChildItem -Path (Join-Path $TargetDir "update-quarantine.*") -Force -ErrorAction SilentlyContinue).Count) {
+        $script:HadRecoveryAssets = $true
+    }
+    foreach ($Base in $Bases) {
+        if (-not (Test-Path -LiteralPath $Base -PathType Container)) { continue }
+        foreach ($Leftover in @(Get-ChildItem -LiteralPath $Base -Force -ErrorAction SilentlyContinue)) {
+            if ($Leftover.Name -notmatch $ArtifactPattern) { continue }
+            if ($Matches["kind"] -eq "next") {
+                Write-Host ("[update] removing stale staging copy: " + $Leftover.FullName)
+                Remove-Item -LiteralPath $Leftover.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                continue
+            }
+            New-Item -ItemType Directory -Force -Path $QuarantineRoot | Out-Null
+            $Prefix = ""
+            if ($Base -ne $TargetDir) { $Prefix = (Split-Path -Leaf $Base) + "." }
+            Write-Host ("[update] preserving leftover backup in quarantine: " + $Leftover.FullName)
+            Move-PathWithRetry -Path $Leftover.FullName -Destination (Join-Path $QuarantineRoot ($Prefix + $Leftover.Name)) -Label ($Leftover.Name + " (quarantine)")
+            $script:HadRecoveryAssets = $true
+        }
+    }
+    if (Test-Path -LiteralPath $JournalPath) {
+        New-Item -ItemType Directory -Force -Path $QuarantineRoot | Out-Null
+        Move-PathWithRetry -Path $JournalPath -Destination (Join-Path $QuarantineRoot "update-journal.json") -Label "update journal (quarantine)"
+        $script:HadRecoveryAssets = $true
+    }
+}
+
+function New-StagedComponents {
+    # Stage every component next to its target (same volume, so the later swap is a
+    # pure rename) while the app is still RUNNING - any failure here is harmless,
+    # and the actual downtime window shrinks to renames plus verification.
     param(
-        [string]$SourceDir,
-        [string]$TargetDir,
-        [string]$Label
+        [string]$ExtractDir,
+        [object[]]$Components
     )
-    if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
-        throw "Update package is missing $Label."
+    foreach ($Component in $Components) {
+        $Source = Join-Path $ExtractDir $Component.Relative
+        $Component.Target = Join-Path $TargetDir $Component.Relative
+        $Component.Staged = Join-Path $TargetDir ($Component.Relative + ".next." + $SwapToken)
+        $Component.Previous = Join-Path $TargetDir ($Component.Relative + ".previous." + $SwapToken)
+        $StagedParent = Split-Path -Parent $Component.Staged
+        New-Item -ItemType Directory -Force -Path $StagedParent | Out-Null
+        try {
+            Copy-Item -LiteralPath $Source -Destination $Component.Staged -Recurse -Force
+        }
+        catch {
+            # The app is still running; one retry absorbs a transient scanner lock.
+            Start-Sleep -Milliseconds 750
+            Remove-Item -LiteralPath $Component.Staged -Recurse -Force -ErrorAction SilentlyContinue
+            Copy-Item -LiteralPath $Source -Destination $Component.Staged -Recurse -Force
+        }
     }
-    $Parent = Split-Path -Parent $TargetDir
-    $Leaf = Split-Path -Leaf $TargetDir
-    $Token = [Guid]::NewGuid().ToString("N").Substring(0, 8)
-    $NextDir = Join-Path $Parent "$Leaf.next.$Token"
-    $PrevDir = Join-Path $Parent "$Leaf.previous.$Token"
-    New-Item -ItemType Directory -Force -Path $Parent | Out-Null
-    Copy-Item -LiteralPath $SourceDir -Destination $NextDir -Recurse -Force
-    $HadPrevious = Test-Path -LiteralPath $TargetDir
-    if ($HadPrevious) {
-        Rename-Item -LiteralPath $TargetDir -NewName (Split-Path -Leaf $PrevDir)
-    }
+}
+
+function Write-UpdateJournal {
+    # Persist swap progress so a human (or a later run's recovery pass) can see
+    # exactly which components moved. Disk-state recovery does not depend on the
+    # journal (Restore-SwapArtifacts verifies the filesystem directly), so mid-swap
+    # writes are best-effort - but the INITIAL intent write is -Required: if the
+    # journal cannot even be created, abort before the first rename touches the tree.
+    param(
+        [object[]]$Components,
+        [switch]$Required
+    )
     try {
-        Rename-Item -LiteralPath $NextDir -NewName $Leaf
+        $Entries = @()
+        foreach ($Component in $Components) {
+            $Entries += @{
+                relative = $Component.Relative
+                kind = $Component.Kind
+                had_previous = [bool]$Component.HadPrevious
+                old_moved = [bool]$Component.OldMoved
+                swapped = [bool]$Component.Swapped
+            }
+        }
+        @{ token = $SwapToken; updated_at = [DateTime]::UtcNow.ToString("o"); components = $Entries } |
+            ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $JournalPath -Encoding UTF8
     }
     catch {
-        if ($HadPrevious -and (Test-Path -LiteralPath $PrevDir)) {
-            Rename-Item -LiteralPath $PrevDir -NewName $Leaf
+        if ($Required) {
+            throw "Could not write the update journal before swapping: $($_.Exception.Message)"
         }
-        Remove-Item -LiteralPath $NextDir -Recurse -Force -ErrorAction SilentlyContinue
-        throw "Atomic replacement failed for $Label; previous directory restored. $($_.Exception.Message)"
+        Write-Host "[update] warn: could not write update journal: $($_.Exception.Message)"
     }
-    if ($HadPrevious) {
-        Remove-Item -LiteralPath $PrevDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+function Invoke-ComponentSwap {
+    # Downtime section: replace every component by rename only (with lock retries).
+    param([object[]]$Components)
+    # Compute every HadPrevious up front so the intent journal below is accurate,
+    # then record it before the first rename - nothing has been touched yet, so a
+    # journal failure here aborts with the old tree fully intact.
+    foreach ($Component in $Components) {
+        $Component.HadPrevious = [bool](Test-Path -LiteralPath $Component.Target)
+    }
+    Write-UpdateJournal $Components -Required
+    foreach ($Component in $Components) {
+        if ($Component.HadPrevious) {
+            Move-PathWithRetry -Path $Component.Target -Destination $Component.Previous -Label ($Component.Relative + " (backup)")
+        }
+        $Component.OldMoved = $true
+        Write-UpdateJournal $Components
+        Move-PathWithRetry -Path $Component.Staged -Destination $Component.Target -Label $Component.Relative
+        $Component.Swapped = $true
+        Write-UpdateJournal $Components
+    }
+}
+
+function Undo-ComponentSwaps {
+    # Restore the old tree in reverse order. The new content is quarantined first so
+    # the restore rename can never collide. Returns the list of components that
+    # could not be restored (empty = full rollback).
+    param([object[]]$Components)
+    $Failures = New-Object System.Collections.ArrayList
+    for ($Index = $Components.Count - 1; $Index -ge 0; $Index--) {
+        $Component = $Components[$Index]
+        if (-not $Component.OldMoved) { continue }
+        try {
+            if ($Component.Swapped -and (Test-Path -LiteralPath $Component.Target)) {
+                Move-PathWithRetry -Path $Component.Target -Destination ($Component.Target + ".rollback." + $SwapToken) -Label ($Component.Relative + " (quarantine)")
+            }
+            if ($Component.HadPrevious) {
+                Move-PathWithRetry -Path $Component.Previous -Destination $Component.Target -Label ($Component.Relative + " (restore)")
+            }
+        }
+        catch {
+            [void]$Failures.Add($Component.Relative + ": " + $_.Exception.Message)
+        }
+    }
+    Write-UpdateJournal $Components
+    return ,@($Failures)
+}
+
+function Remove-SwapLeftovers {
+    # Cleanup of this run's swap artifacts. Cleanup trouble is logged, never
+    # escalated into a failure. Quarantined backups from earlier interrupted runs
+    # are deleted ONLY with -IncludeQuarantine (i.e. after this run confirmed a
+    # complete install) - a failed recovery reinstall must keep them on disk.
+    param(
+        [object[]]$Components,
+        [switch]$IncludeQuarantine
+    )
+    foreach ($Component in $Components) {
+        foreach ($Leftover in @($Component.Previous, $Component.Staged, ($Component.Target + ".rollback." + $SwapToken))) {
+            if ($Leftover -and (Test-Path -LiteralPath $Leftover)) {
+                Remove-Item -LiteralPath $Leftover -Recurse -Force -ErrorAction SilentlyContinue
+                if (Test-Path -LiteralPath $Leftover) {
+                    Write-Host "[update] warn: could not remove leftover $Leftover (will be cleaned on the next update)"
+                }
+            }
+        }
+    }
+    if ($IncludeQuarantine) {
+        Get-ChildItem -Path (Join-Path $TargetDir "update-quarantine.*") -Force -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $JournalPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Commit-VersionMarker {
+    # VERSION is the transaction commit marker. Never advertise the new version
+    # before every file and runtime validation has passed; a failed update must be
+    # retried instead of being mistaken for an up-to-date installation. Written via
+    # a same-volume temp file + atomic replace so it can never be half-written.
+    param([string]$Version)
+    $VersionPath = Join-Path $TargetDir "VERSION.txt"
+    $TempPath = Join-Path $TargetDir ("VERSION.txt.commit." + $SwapToken)
+    Set-Content -LiteralPath $TempPath -Value $Version -Encoding ASCII
+    if (Test-Path -LiteralPath $VersionPath) {
+        # Same transient-lock tolerance as the swaps: a scanner touching the old
+        # marker for a moment must not fail an otherwise fully verified install.
+        $ReplaceDeadline = (Get-Date).AddSeconds(5)
+        while ($true) {
+            try {
+                [System.IO.File]::Replace($TempPath, $VersionPath, $null)
+                break
+            }
+            catch {
+                $LockCode = Get-TransientLockCode -Exception $_.Exception
+                if (-not ($script:RetryableMoveCodes -contains $LockCode) -or (Get-Date) -ge $ReplaceDeadline) { throw }
+                Start-Sleep -Milliseconds 250
+            }
+        }
+    }
+    else {
+        Move-PathWithRetry -Path $TempPath -Destination $VersionPath -Label "VERSION.txt"
     }
 }
 
@@ -523,6 +938,7 @@ function Install-Package {
     $ZipPath = Join-Path $TempRoot $Latest.file
     $ExtractDir = Join-Path $TempRoot "extract"
 
+    # ----- Prepare phase: the running app is untouched until the Commit phase. -----
     Write-Host "[update]  10%  Downloading $($Latest.file)..."
     Write-UpdateState -State "downloading" -Message "Downloading update package..." -Latest ([string]$Latest.version) -Percent 10
     $ExpectedSize = 0
@@ -542,121 +958,113 @@ function Install-Package {
     $ExpectedCliVersion = [string]$Latest.higgsfield_cli_version
     Assert-AppLayout -Root $ExtractDir -Label "package"
     Assert-BundledCli -Root $ExtractDir -ExpectedVersion $ExpectedCliVersion -Label "package" | Out-Null
-    $NewPython = Join-Path $ExtractDir "runtime\python"
-    Assert-PythonRuntime -RuntimeDir $NewPython -Label "package"
+    Assert-PythonRuntime -RuntimeDir (Join-Path $ExtractDir "runtime\python") -Label "package"
 
-    Write-Host "[update]  75%  Installing to $TargetDir..."
-    Write-UpdateState -State "installing" -Message "Installing verified files..." -Latest ([string]$Latest.version) -Percent 75
-    New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+    $Components = Get-UpdateComponents -ExtractDir $ExtractDir
+
+    # Staging duplicates the package next to the install; require the headroom up
+    # front instead of dying halfway through a copy.
+    $PackageBytes = (Get-ChildItem -LiteralPath $ExtractDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
+    $TargetRoot = [System.IO.Path]::GetPathRoot($TargetDir)
+    $FreeBytes = (New-Object System.IO.DriveInfo($TargetRoot)).AvailableFreeSpace
+    if ($FreeBytes -lt ($PackageBytes + 200MB)) {
+        throw "Not enough free disk space on $TargetRoot to stage the update (need ~$([Math]::Ceiling($PackageBytes / 1MB)) MB free)."
+    }
+
+    Write-Host "[update]  70%  Staging new files next to the install..."
+    Write-UpdateState -State "installing" -Message "Staging verified files..." -Latest ([string]$Latest.version) -Percent 70
+    New-StagedComponents -ExtractDir $ExtractDir -Components $Components
+    Assert-PythonRuntime -RuntimeDir (Join-Path $TargetDir ("runtime\python.next." + $SwapToken)) -Label "staged"
+
+    # ----- Commit phase: stop the app, swap by rename only, verify, mark version. -----
     Assert-NoActiveResolveImport -Root $TargetDir
     Stop-MvHubProcesses -Root $TargetDir
+    $script:ProcessesStopped = $true
+    # From here until the version marker commits, the old tree is either untouched
+    # or restorable from .previous - so a failure below reports recovery=rolled_back
+    # unless the rollback itself breaks.
+    $script:RecoveryState = "rolled_back"
+    $script:InstalledComponents = $Components
 
-    # Mutable backend data/media stays in place. Immutable application trees are not
-    # merged: a merge leaves files removed by newer releases behind. Copy only stable
-    # root/backend metadata here, then replace app/dist/runtimes wholesale below.
-    Get-ChildItem -LiteralPath $ExtractDir -Force | ForEach-Object {
-        if ($_.Name -eq "backend") {
-            $BackendTarget = Join-Path $TargetDir "backend"
-            New-Item -ItemType Directory -Force -Path $BackendTarget | Out-Null
-            Get-ChildItem -LiteralPath $_.FullName -Force | ForEach-Object {
-                # backend\data owns user DBs, backup outbox, and replica status.
-                # Never overwrite it even if a malformed package unexpectedly contains data.
-                if ($_.Name -ne "app" -and $_.Name -ne "data") {
-                    Copy-Item -LiteralPath $_.FullName -Destination $BackendTarget -Recurse -Force
-                }
-            }
-        }
-        elseif ($_.Name -ne "runtime" -and $_.Name -ne "frontend" -and $_.Name -ne "VERSION.txt") {
-            Copy-Item -LiteralPath $_.FullName -Destination $TargetDir -Recurse -Force
-        }
+    try {
+        Write-Host "[update]  80%  Swapping staged files into place..."
+        Write-UpdateState -State "installing" -Message "Installing verified files..." -Latest ([string]$Latest.version) -Percent 80
+        Invoke-ComponentSwap -Components $Components
+
+        Write-Host "[update]  90%  Verifying installed files..."
+        Write-UpdateState -State "installing" -Message "Verifying installed files..." -Latest ([string]$Latest.version) -Percent 90
+        Assert-AppLayout -Root $TargetDir -Label "installed"
+        Assert-PythonRuntime -RuntimeDir (Join-Path $TargetDir "runtime\python") -Label "installed"
+        Assert-BundledCli -Root $TargetDir -ExpectedVersion $ExpectedCliVersion -Label "installed" | Out-Null
+        # INSTALL_SOURCE.txt is deliberately NOT rewritten here: its value is what
+        # this run was read from, and a non-atomic Set-Content outside the swap
+        # transaction could leave it half-written (Codex review). The first-time
+        # installer owns writing it.
+        Commit-VersionMarker -Version ([string]$Latest.version)
+        $script:RecoveryState = "new_committed"
     }
-
-    Replace-ImmutableDirectory `
-        -SourceDir (Join-Path $ExtractDir "backend\app") `
-        -TargetDir (Join-Path $TargetDir "backend\app") `
-        -Label "backend\app"
-    Replace-ImmutableDirectory `
-        -SourceDir (Join-Path $ExtractDir "frontend\dist") `
-        -TargetDir (Join-Path $TargetDir "frontend\dist") `
-        -Label "frontend\dist"
-    Replace-ImmutableDirectory `
-        -SourceDir (Join-Path $ExtractDir "runtime\node") `
-        -TargetDir (Join-Path $TargetDir "runtime\node") `
-        -Label "runtime\node"
-    Replace-ImmutableDirectory `
-        -SourceDir (Join-Path $ExtractDir "runtime\higgsfield") `
-        -TargetDir (Join-Path $TargetDir "runtime\higgsfield") `
-        -Label "runtime\higgsfield"
-
-    if (Test-Path -LiteralPath $NewPython) {
-        # Stage the new runtime fully in python.next.<token>, verify it runs, then swap
-        # with two renames. If the second rename fails, restore previous immediately -
-        # whatever point this dies at, a runnable runtime remains (atomic swap).
-        # The previous backup is deleted only after the swap verifies.
-        $Token = [Guid]::NewGuid().ToString("N").Substring(0, 8)
-        $PythonDir = Join-Path $TargetDir "runtime\python"
-        $NextDir = Join-Path $TargetDir "runtime\python.next.$Token"
-        $PrevDir = Join-Path $TargetDir "runtime\python.previous.$Token"
-
-        Write-Host "[update]  85%  Staging new Python runtime..."
-        Write-UpdateState -State "installing" -Message "Swapping Python runtime..." -Latest ([string]$Latest.version) -Percent 85
-        New-Item -ItemType Directory -Force -Path (Join-Path $TargetDir "runtime") | Out-Null
-        Copy-Item -LiteralPath $NewPython -Destination $NextDir -Recurse -Force
-        try {
-            Assert-PythonRuntime -RuntimeDir $NextDir -Label "staged"
+    catch {
+        $InstallError = $_.Exception.Message
+        Write-Host "[update] Install failed - rolling back to the previous version: $InstallError"
+        $Failures = @(Undo-ComponentSwaps -Components $Components)
+        if ($Failures.Count) {
+            # Rollback is incomplete: keep .previous backups and the journal for
+            # manual recovery, and never auto-restart a half-swapped tree.
+            $script:RecoveryState = "recovery_required"
+            throw "Install failed and rollback is incomplete [$($Failures -join '; ')]. Backups (*.previous.$SwapToken) and update-journal.json are preserved in $TargetDir. Original error: $InstallError"
         }
-        catch {
-            Remove-Item -LiteralPath $NextDir -Recurse -Force -ErrorAction SilentlyContinue
-            throw
+        if ($script:HadRecoveryAssets) {
+            # The tree we just rolled back TO was itself left by an interrupted
+            # earlier run - it may be half-swapped. Never boot it, and keep the
+            # quarantined backups on disk (Codex review).
+            $script:RecoveryState = "recovery_required"
+            throw "Recovery reinstall failed; the pre-existing tree is not trustworthy. Quarantined backups are preserved in $TargetDir\update-quarantine.*. Original error: $InstallError"
         }
-
-        Write-Host "[update] Swapping verified Python runtime..."
-        $HadPrevious = Test-Path -LiteralPath $PythonDir
-        if ($HadPrevious) {
-            Rename-Item -LiteralPath $PythonDir -NewName (Split-Path -Leaf $PrevDir)
-        }
-        try {
-            Rename-Item -LiteralPath $NextDir -NewName "python"
-        }
-        catch {
-            if ($HadPrevious) {
-                Rename-Item -LiteralPath $PrevDir -NewName "python"
-            }
-            Remove-Item -LiteralPath $NextDir -Recurse -Force -ErrorAction SilentlyContinue
-            throw "Python runtime swap failed; previous runtime restored. $($_.Exception.Message)"
-        }
-        try {
-            Assert-PythonRuntime -RuntimeDir $PythonDir -Label "installed"
-        }
-        catch {
-            Remove-Item -LiteralPath $PythonDir -Recurse -Force -ErrorAction SilentlyContinue
-            if ($HadPrevious -and (Test-Path -LiteralPath $PrevDir)) {
-                Rename-Item -LiteralPath $PrevDir -NewName "python"
-            }
-            throw "New Python runtime failed after swap; previous runtime restored. $($_.Exception.Message)"
-        }
-        if ($HadPrevious) {
-            Remove-Item -LiteralPath $PrevDir -Recurse -Force -ErrorAction SilentlyContinue
-        }
+        Remove-SwapLeftovers -Components $Components
+        throw
     }
-    else {
-        throw "Update package is missing runtime\python."
-    }
-
-    Write-Host "[update]  92%  Verifying installed files..."
-    Write-UpdateState -State "installing" -Message "Verifying installed files..." -Latest ([string]$Latest.version) -Percent 92
-    Assert-AppLayout -Root $TargetDir -Label "installed"
-    Assert-PythonRuntime -RuntimeDir (Join-Path $TargetDir "runtime\python") -Label "installed"
-    Assert-BundledCli -Root $TargetDir -ExpectedVersion $ExpectedCliVersion -Label "installed" | Out-Null
-    Set-Content -LiteralPath (Join-Path $TargetDir "INSTALL_SOURCE.txt") -Value $BaseUrl -Encoding UTF8
-    # VERSION is the transaction commit marker. Never advertise the new version
-    # before every file and runtime validation above has passed; a failed update
-    # must be retried instead of being mistaken for an up-to-date installation.
-    Set-Content -LiteralPath (Join-Path $TargetDir "VERSION.txt") -Value ([string]$Latest.version) -Encoding ASCII
 }
 
 $TempRoot = Join-Path $env:TEMP ("mvhub-update-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $TempRoot | Out-Null
+
+# One updater per install: the in-app path is already serialized by the backend,
+# but a manually launched update_release.bat can race it. Exit code 17 tells the
+# batch wrapper to leave the live updater's state file alone.
+$UpdateLockPath = Join-Path $TargetDir ".update.lock"
+$UpdateLockStream = $null
+try {
+    $UpdateLockStream = [System.IO.File]::Open(
+        $UpdateLockPath,
+        [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+    )
+}
+catch {
+    # Only a genuine sharing/lock violation means "another updater is running".
+    # ACL or disk errors must surface as a normal failure, not be mistaken for a
+    # duplicate run (Codex review).
+    $Inner = $_.Exception
+    while ($null -ne $Inner.InnerException) { $Inner = $Inner.InnerException }
+    $Win32Code = -1
+    try {
+        $HResult = [int]$Inner.HResult
+        if ((($HResult -shr 16) -band 0xFFFF) -eq 0x8007) {
+            $Win32Code = $HResult -band 0xFFFF
+        }
+    }
+    catch {
+        $Win32Code = -1
+    }
+    if ($Win32Code -eq 32 -or $Win32Code -eq 33) {
+        Write-Host "[ERROR] Another MV Hub update is already running for this install."
+        Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        [Environment]::Exit(17)
+    }
+    Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    throw
+}
 
 try {
     Write-Host "[1/3] Checking MV Hub release server..."
@@ -685,7 +1093,20 @@ try {
         $CurrentVersion = (Get-Content -LiteralPath $VersionPath -Raw).Trim()
     }
 
-    $NeedsInstall = $CurrentVersion -ne [string]$Latest.version
+    # Leftovers are handled BEFORE the same-version early return: a crashed
+    # transaction can leave a matching VERSION with backups still on disk, and
+    # recovery must not be skipped just because versions match (Codex review).
+    # Moving them aside never touches live targets, so this is safe while the
+    # app is still running; the layout checks below then judge the real tree.
+    New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+    Move-LeftoversToQuarantine
+
+    # Recovery assets prove the tree may be half-swapped: shallow layout checks
+    # cannot certify it, so a matching version never skips the full reinstall.
+    $NeedsInstall = ($CurrentVersion -ne [string]$Latest.version) -or $script:HadRecoveryAssets
+    if ($script:HadRecoveryAssets) {
+        Write-Host "[2/3] Previous update left recovery backups behind - forcing a full reinstall."
+    }
     if (-not $NeedsInstall) {
         try {
             Assert-AppLayout -Root $TargetDir -Label "installed"
@@ -713,14 +1134,42 @@ try {
         else {
             Write-UpdateState -State "complete" -Message "Update installed. Start MV Hub again." -Latest $LatestVersion -Percent 100
         }
+        # Backups are only deleted after the new version is confirmed (readiness for
+        # auto-restart, commit for manual runs). Cleanup trouble never fails the update.
+        if ($script:InstalledComponents) {
+            Remove-SwapLeftovers -Components $script:InstalledComponents -IncludeQuarantine
+        }
     }
 
     Write-Host "[3/3] Update complete."
 }
 catch {
-    Write-UpdateState -State "failed" -Message ("Update failed: " + $_.Exception.Message) -Latest $LatestVersion
-    throw
+    # Preserve the original install error first: recording state and relaunching
+    # the app are independent best-effort steps that must not mask it - and a
+    # state-file hiccup must not leave the app dead (Codex review).
+    $InstallFailure = $_
+    try {
+        Write-UpdateState -State "failed" -Message ("Update failed: " + $InstallFailure.Exception.Message) -Latest $LatestVersion -Recovery $script:RecoveryState
+    }
+    catch {
+        Write-Host "[update] warn: could not record the failed state: $($_.Exception.Message)"
+    }
+    # If we killed the app and the old tree is intact (or the new one committed),
+    # bring MV Hub back up so nobody is stranded on a dead backend with a frozen
+    # progress screen. A half-swapped tree (recovery_required) must NOT be booted.
+    if (
+        $script:ProcessesStopped -and
+        $RestartAfterInstall -eq "1" -and
+        ($script:RecoveryState -eq "rolled_back" -or $script:RecoveryState -eq "new_committed")
+    ) {
+        Start-MvHubAfterFailure
+    }
+    throw $InstallFailure
 }
 finally {
+    if ($UpdateLockStream) {
+        $UpdateLockStream.Dispose()
+        Remove-Item -LiteralPath $UpdateLockPath -Force -ErrorAction SilentlyContinue
+    }
     Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

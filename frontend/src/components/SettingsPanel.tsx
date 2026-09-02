@@ -48,6 +48,8 @@ import {
 import {
   getReleaseUpdateStatus,
   isReleaseUpdateRunning,
+  pollFailureMessage,
+  releaseUpdateMessage,
   startReleaseUpdate,
   UPDATE_WAIT_VERSION_KEY,
   type ReleaseUpdateStatus,
@@ -182,6 +184,7 @@ export function SettingsPanel({
     if (!releaseUpdatePolling) return;
     let cancelled = false;
     let timer = 0;
+    let firstFailedAt: number | null = null;
     const deadline = Date.now() + 5 * 60 * 1000;
 
     const poll = async () => {
@@ -194,10 +197,12 @@ export function SettingsPanel({
       try {
         const status = await getReleaseUpdateStatus(false);
         if (cancelled) return;
+        firstFailedAt = null;
         setReleaseUpdateStatus(status);
         const target = expected || status.latest_version;
         if (status.state === "failed") {
-          setReleaseUpdateMsg(status.message || "업데이트에 실패했습니다.");
+          // recovery_required 안내(로그 확인·관리자 문의)까지 포함되도록 공용 문구를 쓴다.
+          setReleaseUpdateMsg(releaseUpdateMessage(status) || "업데이트에 실패했습니다.");
           setReleaseUpdateBusy(false);
           setReleaseUpdatePolling(false);
           try {
@@ -223,14 +228,22 @@ export function SettingsPanel({
         }
       } catch {
         // 기존 허브가 종료되고 새 허브가 뜨는 동안 연결 실패는 정상이다.
-        if (!cancelled) setReleaseUpdateMsg("프로그램을 교체하고 다시 시작하는 중…");
+        // 다만 무응답이 90초를 넘으면 멈춘 문구 대신 정직한 대기 안내로 바꾼다(유령 진행률 방지).
+        if (!cancelled) {
+          if (firstFailedAt == null) firstFailedAt = Date.now();
+          setReleaseUpdateMsg(
+            pollFailureMessage(firstFailedAt, Date.now()) ?? "프로그램을 교체하고 다시 시작하는 중…",
+          );
+        }
       }
       if (!cancelled && Date.now() < deadline) {
         timer = window.setTimeout(poll, 1500);
       } else if (!cancelled) {
         setReleaseUpdateBusy(false);
         setReleaseUpdatePolling(false);
-        setReleaseUpdateMsg("자동 확인 시간이 초과됐습니다. 프로그램 창을 확인한 뒤 다시 열어주세요.");
+        setReleaseUpdateMsg(
+          "자동 확인 시간이 초과됐습니다. 프로그램 창과 업데이트 로그(%LOCALAPPDATA%\\MVHub\\updates\\update.log)를 확인해주세요.",
+        );
       }
     };
     void poll();

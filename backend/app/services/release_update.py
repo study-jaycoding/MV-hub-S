@@ -341,6 +341,17 @@ def _base_status(root: Path) -> dict[str, Any]:
     }
 
 
+def _stored_can_update(stored: dict[str, Any]) -> bool:
+    state = stored.get("state")
+    if state == "available":
+        return True
+    # 실패 기록도 재시도할 수 있어야 한다 — 단 반쯤 스왑된 트리(recovery_required)는
+    # 자동 재시도가 상태를 더 망가뜨릴 수 있어 수동 복구(update.log 확인)를 먼저 요구한다.
+    if state == "failed":
+        return stored.get("recovery") != "recovery_required"
+    return False
+
+
 def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any]:
     base = _base_status(root)
     if base["install_mode"] != "release":
@@ -358,6 +369,19 @@ def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any
             latest_version=str(stored.get("latest_version") or ""),
         )
 
+    if stored.get("state") == "failed" and stored.get("recovery") == "recovery_required":
+        # 반쯤 스왑된 트리 — 같은 버전 복구(current==latest)든 아니든 refresh 가 지우면
+        # 안 된다(코덱스 리뷰: 동버전 repair 실패가 up_to_date 로 둔갑하던 구멍).
+        # 해제 경로는 워커 재실행(시작 시 잔재 복원)·강제 업데이트뿐이며, 그때 start 가
+        # checking 을 새로 쓴다.
+        return {
+            **base,
+            **stored,
+            "install_mode": "release",
+            "current_version": _read_version(root),
+            "can_update": False,
+        }
+
     if not refresh and stored:
         if stored.get("state") == "up_to_date":
             healthy, reason = _installation_health(root)
@@ -374,12 +398,21 @@ def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any
             **stored,
             "install_mode": "release",
             "current_version": _read_version(root),
-            "can_update": stored.get("state") == "available",
+            "can_update": _stored_can_update(stored),
         }
 
     try:
         latest = fetch_latest(root)
     except ReleaseUpdateError as exc:
+        if stored.get("state") == "failed":
+            # 실패 기록 보존 — 릴리스 서버 확인이 안 된다고 실패 원인이 지워지면 안 된다.
+            return {
+                **base,
+                **stored,
+                "install_mode": "release",
+                "current_version": _read_version(root),
+                "can_update": _stored_can_update(stored),
+            }
         return {
             **base,
             "state": "check_failed",
@@ -387,6 +420,19 @@ def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any
             "updated_at": _utc_now(),
         }
     current = _read_version(root)
+    if stored.get("state") == "failed" and current != latest["version"]:
+        # 워커가 남긴 실패 기록은 배경 새로고침(알림센터 60초 주기 refresh=true)이 지우지
+        # 않는다 — 사용자가 실패 원인을 봐야 한다. 새 start_update 가 checking 을 쓰거나,
+        # 이후 설치가 성공해 current==latest 가 되면(아래 경로) 자연 해제된다.
+        # 상태 파일은 재기록하지 않아 워커가 남긴 recovery 필드가 그대로 보존된다.
+        return {
+            **base,
+            **stored,
+            "install_mode": "release",
+            "current_version": current,
+            "latest_version": latest["version"],
+            "can_update": _stored_can_update(stored),
+        }
     if current == latest["version"]:
         healthy, reason = _installation_health(root, latest["higgsfield_cli_version"])
         if not healthy:
@@ -457,12 +503,19 @@ def start_update(
             raise ReleaseUpdateBusyError("생성 작업이 진행 중입니다. 완료된 뒤 업데이트하세요")
 
         current = _read_version(root)
+        # 반쯤 스왑된 트리(recovery_required)는 버전이 같고 얕은 health 가 통과해도
+        # up_to_date 조기 반환으로 워커를 건너뛰면 복구 진입점이 사라진다(코덱스 리뷰).
+        # 이때는 무조건 워커를 실행한다 — 워커가 잔재를 격리 보존한 뒤 트리를 재검증하고
+        # 필요하면 전체 재설치한다.
+        needs_recovery = (
+            _read_state(root).get("recovery") == "recovery_required"
+        )
         write_state("checking", "최신 릴리스를 다시 확인하는 중…", root=root, current_version=current)
         latest_version = ""
         try:
             latest = fetch_latest(root)
             latest_version = latest["version"]
-            if current == latest["version"]:
+            if current == latest["version"] and not needs_recovery:
                 healthy, _reason = _installation_health(root, latest["higgsfield_cli_version"])
                 if healthy:
                     return write_state(

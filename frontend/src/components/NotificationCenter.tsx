@@ -24,6 +24,7 @@ import {
 import {
   getReleaseUpdateStatus,
   isReleaseUpdateRunning,
+  pollFailureMessage,
   releaseUpdateMessage,
   startReleaseUpdate,
 } from "../lib/releaseUpdate";
@@ -77,10 +78,13 @@ export function NotificationCenter({
   const commentsSupportedRef = useRef(true);
   const commentsLoadSeqRef = useRef(0);
   const updatePollRef = useRef<number | null>(null);
+  // 세대 토큰 — 진행 중이던 fetch가 stop 이후 돌아와 타이머를 부활시키는 것을 막는다.
+  const updatePollSeqRef = useRef(0);
 
   const stopUpdatePoll = useCallback(() => {
+    updatePollSeqRef.current += 1;
     if (updatePollRef.current !== null) {
-      window.clearInterval(updatePollRef.current);
+      window.clearTimeout(updatePollRef.current);
       updatePollRef.current = null;
     }
   }, []);
@@ -325,37 +329,55 @@ export function NotificationCenter({
     }
     const startedAt = Date.now();
     stopUpdatePoll();
-    updatePollRef.current = window.setInterval(() => {
+    const seq = updatePollSeqRef.current;
+    let firstFailedAt: number | null = null;
+    // 재귀 setTimeout — setInterval은 느린 fetch가 겹칠 수 있다(코덱스 검토).
+    const schedule = () => {
+      if (seq !== updatePollSeqRef.current) return;
+      updatePollRef.current = window.setTimeout(poll, 2000);
+    };
+    const poll = async () => {
+      updatePollRef.current = null;
+      if (seq !== updatePollSeqRef.current) return;
       if (Date.now() - startedAt > 15 * 60_000) {
-        stopUpdatePoll();
         setUpdateRun({
           active: false,
-          message: t("업데이트 확인이 오래 걸립니다 — 설정의 업데이트 섹션에서 상태를 확인하세요."),
+          message: t(
+            "업데이트 확인이 오래 걸립니다 — 설정의 업데이트 섹션과 업데이트 로그(%LOCALAPPDATA%\\MVHub\\updates\\update.log)를 확인하세요.",
+          ),
         });
         return;
       }
-      getReleaseUpdateStatus()
-        .then((status) => {
-          if (isReleaseUpdateRunning(status.state)) {
-            setUpdateRun({ active: true, message: releaseUpdateMessage(status) });
-            return;
-          }
-          stopUpdatePoll();
-          setUpdateRun({
-            active: false,
-            message:
-              status.state === "complete"
-                ? t("{v} 업데이트가 완료됐습니다. 새 버전으로 다시 시작됩니다.").replace(
-                    "{v}",
-                    `v${item.version}`,
-                  )
-                : releaseUpdateMessage(status) || t("업데이트 상태를 확인하세요."),
-          });
-        })
-        .catch(() => {
-          // 재시작 구간에는 서버가 잠시 응답하지 않는 게 정상 — 직전 문구를 유지하고 계속 확인한다.
+      try {
+        const status = await getReleaseUpdateStatus();
+        if (seq !== updatePollSeqRef.current) return;
+        firstFailedAt = null;
+        if (isReleaseUpdateRunning(status.state)) {
+          setUpdateRun({ active: true, message: releaseUpdateMessage(status) });
+          schedule();
+          return;
+        }
+        setUpdateRun({
+          active: false,
+          message:
+            status.state === "complete"
+              ? t("{v} 업데이트가 완료됐습니다. 새 버전으로 다시 시작됩니다.").replace(
+                  "{v}",
+                  `v${item.version}`,
+                )
+              : releaseUpdateMessage(status) || t("업데이트 상태를 확인하세요."),
         });
-    }, 2000);
+      } catch {
+        // 재시작 구간에는 서버가 잠시 응답하지 않는 게 정상 — 직전 문구를 유지하고 계속 확인한다.
+        // 다만 무응답이 90초를 넘으면 멈춘 진행률 대신 정직한 대기 안내로 바꾼다(유령 75% 방지).
+        if (seq !== updatePollSeqRef.current) return;
+        if (firstFailedAt == null) firstFailedAt = Date.now();
+        const warn = pollFailureMessage(firstFailedAt, Date.now());
+        if (warn) setUpdateRun({ active: true, message: t(warn) });
+        schedule();
+      }
+    };
+    schedule();
   };
 
   const markAllRead = async () => {

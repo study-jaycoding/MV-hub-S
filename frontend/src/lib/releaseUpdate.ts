@@ -27,6 +27,9 @@ export interface ReleaseUpdateStatus {
   updated_at: string;
   accepted?: boolean;
   percent?: number; // 업데이트 실행기(bat)가 기록하는 전체 진행률 0~100
+  // 실패 시 설치 트리 상태(워커가 기록): not_started(앱 무사)·rolled_back(구버전 복원)·
+  // new_committed(신버전 커밋됐지만 재시작 실패)·recovery_required(롤백 미완 — 수동 복구 필요)
+  recovery?: string;
 }
 
 export interface LatestReleaseMetadata {
@@ -60,9 +63,30 @@ export function releaseUpdateMessage(status: ReleaseUpdateStatus | null): string
   }
   if (status.state === "failed") {
     const raw = status.message || "";
-    return raw.startsWith("업데이트 실패") ? raw : `업데이트 실패: ${raw}`;
+    const text = raw.startsWith("업데이트 실패") ? raw : `업데이트 실패: ${raw}`;
+    if (status.recovery === "recovery_required") {
+      // 롤백이 끝까지 안 된 유일한 위험 상태 — 재시도보다 로그 확인이 먼저다.
+      // 복구 자체는 안전하다: 다음 실행이 백업을 격리 보존한 채 새로 설치한다.
+      return (
+        text
+        + " — 자동 복구가 완료되지 않았습니다. %LOCALAPPDATA%\\MVHub\\updates\\update.log 를 확인한 뒤, 설정의 '강제 업데이트'로 재시도하세요(백업은 보존됩니다)."
+      );
+    }
+    return text;
   }
   return status.message || "";
+}
+
+/** 업데이트 중 백엔드 무응답(연속)이 이 시간을 넘으면 멈춘 진행률 대신 정직한 안내로 바꾼다. */
+export const UPDATE_UNREACHABLE_WARN_MS = 90_000;
+
+/** 폴링 연속 실패 안내 — 교체·재시작 구간의 짧은 무응답은 null(직전 문구 유지).
+ * 업데이터가 아직 롤백·복사 중일 수 있으므로 "직접 실행하라"는 안내는 하지 않는다
+ * (사용자가 앱을 띄우면 런타임 파일을 다시 잠가 2차 실패를 만든다 — 코덱스 검토). */
+export function pollFailureMessage(firstFailedAt: number | null, now: number): string | null {
+  if (firstFailedAt == null) return null;
+  if (now - firstFailedAt < UPDATE_UNREACHABLE_WARN_MS) return null;
+  return "앱 응답이 90초 넘게 없습니다. 업데이트가 아직 실행 중일 수 있으니 프로그램을 직접 실행하지 말고 잠시 기다려주세요.";
 }
 
 export const UPDATE_WAIT_VERSION_KEY = "mvhub.release-update.wait-version";
