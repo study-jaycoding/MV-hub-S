@@ -406,6 +406,12 @@ def test_updater_never_passes_null_to_a_dotnet_string_argument():
     updater = (project_root / "update_release_worker.bat").read_text(encoding="utf-8")
 
     assert "[System.IO.File]::Replace($TempPath, $VersionPath, [NullString]::Value)" in updater
+
+    # 빌드가 버그 있는 워커를 아예 패키징하지 못하게 막는다 — 워커가 깨진 채 배포되면
+    # 그 릴리스를 받은 PC 는 스스로 업데이트할 능력을 잃고 수동 복구가 필요해진다.
+    builder = (project_root / "release" / "make_release.ps1").read_text(encoding="utf-8")
+    assert "Refusing to package" in builder
+    assert "[NullString]::Value" in builder
     offenders = re.findall(r"\[System\.[A-Za-z.]+\]::\w+\([^)]*,\s*\$null\s*\)", updater)
     assert offenders == [], offenders
 

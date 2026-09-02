@@ -587,6 +587,24 @@ else {
     Write-Host "[6/8] Skipping bundled Higgsfield CLI."
 }
 
+# The updater in the package is what future updates will run. If it ships broken,
+# every PC that installs this release loses the ability to update itself and needs
+# a manual repair - so refuse to package a known-bad worker (2026-09-02 incident).
+$StagedWorker = Join-Path $Stage "update_release_worker.bat"
+if (-not (Test-Path -LiteralPath $StagedWorker -PathType Leaf)) {
+    throw "update_release_worker.bat is missing from the staged package."
+}
+$WorkerText = Get-Content -LiteralPath $StagedWorker -Raw
+if ($WorkerText -match [regex]::Escape('$VersionPath, $null')) {
+    # Windows PowerShell turns $null into "" for .NET [string] parameters, so
+    # File.Replace(...,$null) dies with "The path is not of a legal form."
+    throw "Refusing to package: update_release_worker.bat still passes `$null to File.Replace (use [NullString]::Value)."
+}
+if ($WorkerText -notmatch [regex]::Escape('[NullString]::Value')) {
+    throw "Refusing to package: update_release_worker.bat is missing the [NullString]::Value fix."
+}
+Write-Host "      Updater verified: VERSION commit uses [NullString]::Value."
+
 Write-Host "[7/8] Creating zip..."
 $ZipPath = Join-Path $OutputDir "$PackageName.zip"
 Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue
