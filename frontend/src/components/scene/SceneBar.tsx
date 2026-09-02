@@ -11,9 +11,21 @@ interface Props {
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onHoverChange?: (hover: boolean) => void; // 씬 패널(저장/불러오기) 호버 표시용
+  backupOnly?: number; // DB 백업에만 있는 씬 수(0 이면 '가져오기'를 숨긴다)
+  onImportBackup?: () => void;
 }
 
-export function SceneBar({ scenes, activeId, onSelect, onAdd, onRename, onDelete, onHoverChange }: Props) {
+export function SceneBar({
+  scenes,
+  activeId,
+  onSelect,
+  onAdd,
+  onRename,
+  onDelete,
+  onHoverChange,
+  backupOnly = 0,
+  onImportBackup,
+}: Props) {
   return (
     <div
       className="scene-bar"
@@ -47,6 +59,16 @@ export function SceneBar({ scenes, activeId, onSelect, onAdd, onRename, onDelete
       <button className="scene-add" onClick={onAdd} title="씬 추가">
         +
       </button>
+      {backupOnly > 0 && onImportBackup ? (
+        // 다른 브라우저(앱 전용 프로필)에서 만든 씬이 이 PC 의 DB 백업에 남아 있을 때만 뜬다.
+        <button
+          className="scene-restore"
+          onClick={onImportBackup}
+          title={`이 브라우저에 없는 씬 ${backupOnly}개가 이 PC 의 백업에 있습니다. 눌러서 가져옵니다(현재 씬은 그대로 둡니다).`}
+        >
+          ⤓ 백업에서 씬 {backupOnly}개 가져오기
+        </button>
+      ) : null}
     </div>
   );
 }

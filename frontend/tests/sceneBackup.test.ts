@@ -180,15 +180,105 @@ describe("sceneBackup (DB 미러·복구)", () => {
     expect(chunks[1][0].id).toBe("b");
   });
 
-  it("삭제 미러 — 로컬에서 지운 씬은 서버 diff 로 삭제되고, 대량이면 분할된다", async () => {
-    const many = Array.from({ length: 501 }, (_, i) => ({ id: `d${i}`, data_hash: "h" }));
-    getMeta = () => Promise.resolve({ items: many });
+  it("삭제 미러 — 이 세션에서 본 씬을 지우면 서버에서도 지우고, 대량이면 분할된다", async () => {
+    const ids = Array.from({ length: 501 }, (_, i) => `d${i}`);
+    getMeta = () => Promise.resolve({ items: ids.map((id) => ({ id, data_hash: "h" })) });
+    getFull = () => Promise.resolve({ items: ids.map((id) => ({ id, data: sceneJson(id) })) });
     const { scenes, backup } = await boot();
-    scenes.saveScenes(null, []); // 버킷 존재(전부 삭제된 상태) → 서버 501건은 diff 삭제 대상
-    await backup.initSceneBackup();
+    await backup.initSceneBackup(); // 버킷 없음 → 복구 → 이 세션이 501건을 '본다'
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(0); // 복구 직후엔 올릴 것도 지울 것도 없다
+    scenes.saveScenes(null, []); // 사용자가 전부 지웠다
     await vi.advanceTimersByTimeAsync(2500);
     expect(puts().length).toBe(2); // 500 + 1 분할(서버 상한과 동일)
     expect(putBody(puts()[0]).deleted_ids.length).toBe(500);
     expect(putBody(puts()[1]).deleted_ids.length).toBe(1);
+  });
+
+  // ★회귀(2026-09-02): 앱 전용 브라우저 프로필 도입으로 한 PC 에 프로필이 여럿 생겼다. 종전 계약
+  //  ('서버에만 있는 id 는 전부 삭제')이면 프로필을 번갈아 열 때마다 서로의 백업을 지운다.
+  it("이 세션이 본 적 없는 서버 백업은 지우지 않는다 — 프로필이 갈려도 서로를 안 지운다", async () => {
+    getMeta = () => Promise.resolve({ items: [{ id: "other", data_hash: "h" }] }); // 다른 프로필이 올린 것
+    const { scenes, backup } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("mine"))]); // 이 프로필엔 내 씬만 있다(버킷 존재)
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(1);
+    expect(putBody(puts()[0]).deleted_ids).toEqual([]); // 'other' 는 건드리지 않는다
+    expect(putBody(puts()[0]).upserts.map((u: { id: string }) => u.id)).toEqual(["mine"]);
+  });
+
+  // 명시적 가져오기 — 자동 복구는 '버킷 키가 없을 때'만 돌아서, 이 브라우저에 씬이 하나라도
+  // 있으면 다른 프로필이 올려 둔 백업에 영영 닿지 못한다. 그 자리를 여는 사용자 조작.
+  it("가져오기 — 로컬을 덮지 않고 DB 에만 있는 씬만 더한다", async () => {
+    getMeta = () =>
+      Promise.resolve({ items: [{ id: "mine", data_hash: "h" }, { id: "other", data_hash: "h" }] });
+    getFull = () =>
+      Promise.resolve({
+        items: [
+          { id: "mine", data: sceneJson("mine", "서버가 아는 옛 이름") },
+          { id: "other", data: sceneJson("other") },
+        ],
+      });
+    const { scenes, backup } = await boot();
+    scenes.saveScenes(null, [{ ...JSON.parse(sceneJson("mine", "내가 지금 쓰는 이름")) }]);
+    expect(await backup.countBackupOnlyScenes()).toBe(1); // 'other' 하나만 가져올 게 있다
+    expect(await backup.importFromBackup()).toBe(1);
+    const got = scenes.listScenes(null);
+    expect(got.map((s) => s.id)).toEqual(["mine", "other"]);
+    expect(got[0].name).toBe("내가 지금 쓰는 이름"); // ★같은 id 는 로컬이 이긴다(덮어쓰기 금지)
+    expect(await backup.importFromBackup()).toBe(0); // 두 번 눌러도 중복되지 않는다
+  });
+
+  // ★회귀(코덱스 P1): 가져오는 동안 sync 가 돌면, sync 가 '가져오기 전' 로컬 목록으로 삭제를
+  //  계산해 방금 가져온 씬을 서버에서 지운다. 가져오기 중엔 sync 를 들이지 않아야 한다.
+  it("가져오는 중에는 sync 가 끼어들지 못하고, 끝난 뒤 한 번 돈다", async () => {
+    getMeta = () => Promise.resolve({ items: [{ id: "other", data_hash: "h" }] });
+    getFull = () => Promise.resolve({ items: [{ id: "other", data: sceneJson("other") }] });
+    let release: (() => void) | null = null;
+    getFull = () =>
+      new Promise((res) => {
+        release = () => res({ items: [{ id: "other", data: sceneJson("other") }] });
+      });
+    const { scenes, backup } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("mine"))]); // 버킷 있음 → 자동 복구는 'clean'
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500); // 'mine' 업로드 — 'other' 는 안 지운다(본 적 없음)
+    const before = calls.length;
+
+    const job = backup.importFromBackup(); // 응답을 붙잡아 둔다
+    scenes.saveScenes(null, [JSON.parse(sceneJson("mine", "가져오는 중 편집"))]); // 디바운스 예약
+    await vi.advanceTimersByTimeAsync(5000); // 그 타이머가 발화해도
+    expect(calls.length).toBe(before + 1); // ★가져오기 GET 하나뿐 — sync 는 한 번도 못 들어왔다
+
+    release!();
+    expect(await job).toBe(1);
+    expect(scenes.listScenes(null).map((s) => s.id)).toEqual(["mine", "other"]);
+    await vi.advanceTimersByTimeAsync(2500); // 가져오기가 이어준 schedule()
+    expect(puts().length).toBeGreaterThan(0);
+    for (const p of puts()) expect(putBody(p).deleted_ids).toEqual([]); // 가져온 씬을 되지우지 않는다
+  });
+
+  it("가져오기 — 백업이 손상됐으면 아무것도 적용하지 않는다", async () => {
+    getFull = () => Promise.resolve({ items: [{ id: "ok", data: sceneJson("ok") }, { id: "bad", data: "{{" }] });
+    const { scenes, backup } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("mine"))]);
+    await expect(backup.importFromBackup()).rejects.toThrow(/손상/);
+    expect(scenes.listScenes(null).map((s) => s.id)).toEqual(["mine"]); // 부분 적용 없음
+  });
+
+  // ★회귀: 조회 중 사용자가 씬을 만들면 종전엔 복구를 통째로 포기했다(빈 프로필에서 씬 하나만
+  //  만들어도 DB 백업을 영영 못 가져옴). 이제 합집합으로 가져오고 같은 id 는 로컬이 이긴다.
+  it("복구 조회 중 만든 씬이 있어도 DB 백업을 합쳐서 가져온다", async () => {
+    let created: (() => void) | null = null;
+    getFull = () =>
+      Promise.resolve({ items: [{ id: "fromdb", data: sceneJson("fromdb") }] }).then((r) => {
+        created?.(); // 응답 직전에 사용자가 새 씬을 만든 상황
+        return r;
+      });
+    const { scenes, backup } = await boot();
+    created = () => scenes.saveScenes(null, [JSON.parse(sceneJson("justmade"))]);
+    await backup.initSceneBackup();
+    expect(scenes.listScenes(null).map((s) => s.id)).toEqual(["justmade", "fromdb"]);
   });
 });

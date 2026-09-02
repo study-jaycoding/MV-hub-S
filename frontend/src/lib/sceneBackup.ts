@@ -1,11 +1,16 @@
 // 캔버스 씬 DB 백업 — localStorage(원본)의 단방향 미러(로컬→DB) + 캐시 소실 시 복구.
 //
 // 계약(코덱스 합의 설계 + P1 반영):
-//  · 로컬이 항상 정답. saveAll(쓰기 관문) 후 디바운스(2s) → 변경 씬만 벌크 PUT, DB 에만 남은
-//    씬은 delete 로 정합(삭제 미러). 실패는 30s 백오프·online 이벤트·다음 변경에서 재시도.
+//  · 로컬이 항상 정답. saveAll(쓰기 관문) 후 디바운스(2s) → 변경 씬만 벌크 PUT.
+//    실패는 30s 백오프·online 이벤트·다음 변경에서 재시도.
+//  · ★삭제 미러는 '이 세션에서 로컬에 있던 씬이 사라진 것'만 지운다(lastPushed 가 tombstone 역할).
+//    '서버에만 있는 id 전부'를 지우던 종전 계약은, 앱 전용 브라우저 프로필 도입(2026-09-01)으로
+//    한 PC 에 프로필이 여럿 생기자 프로필을 번갈아 열 때마다 서로의 백업을 지웠다.
 //  · 복구는 '로컬 버킷 키 자체가 없을 때'만(hasSceneBucket) — 빈 배열 버킷(마지막 씬 정상 삭제)은
 //    복구하지 않는다. 응답 전 행 검증(하나라도 손상 → 이번 복구 전체 포기 — 부분 복구가 남으면
-//    다음 진입의 재복구가 막힌다) + 적용 직전 재확인.
+//    다음 진입의 재복구가 막힌다) + 적용은 합집합(조회 중 생긴 씬 보존, 같은 id 는 로컬 우선).
+//  · 자동 복구가 닿지 못하는 자리(이 브라우저에 씬이 있는데 다른 프로필 백업이 DB 에 있음)는
+//    사용자가 여는 문(countBackupOnlyScenes/importFromBackup)으로만 연다 — 자동으로 합치지 않는다.
 //  · ★순서 불변식: 어떤 sync(특히 삭제 정합)도 그 계정 scope 의 복구 판정이 끝나기 전엔 돌지
 //    않는다(ensureInit await). 안 지키면 새 브라우저에서 로컬=[] 를 기준으로 서버 백업 전체를
 //    지우는 사고가 난다.
@@ -54,6 +59,12 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let syncing = false;
 let rerun = false; // 동기화 중 새 변경 — 끝나고 한 번 더
+// 진행 중인 sync 가 끝나는 시점 — 명시적 가져오기(importFromBackup)가 삭제 정합과 겹치지 않게 기다린다.
+let syncIdle: Promise<void> = Promise.resolve();
+let syncSettled: (() => void) | null = null;
+// 가져오기가 도는 동안엔 sync 를 아예 들이지 않는다. 겹치면 sync 가 '가져오기 전' 로컬 목록을 들고
+// 삭제를 계산해, 방금 가져온 씬을 서버에서 지운다(코덱스 P1). 가져오기가 끝나며 schedule() 로 이어준다.
+let importing = false;
 
 // 복구 알림 — 백그라운드(백오프 재시도) 복구도 현재 탭 UI(씬 목록)에 반영되게 구독을 받는다.
 //  같은 탭엔 storage 이벤트가 안 오므로 이 콜백이 유일한 통지 경로다(코덱스 P1).
@@ -134,10 +145,18 @@ function ensureInit(scope: string): Promise<InitResult> {
         return "blocked";
       }
     }
-    if (ns() !== scope || hasSceneBucket(null)) return "clean"; // 적용 직전 재확인(요청 중 로컬 변경 우선)
+    if (ns() !== scope) return "retry"; // 계정 전환 중 응답 — 폐기
     scenes.sort((a, b) => (a.created_at || 0) - (b.created_at || 0)); // 생성 순서대로 탭 복원
-    for (const s of scenes) lastPushed.set(s.id, JSON.stringify(s)); // 복구 에코 방지
-    saveScenes(null, scenes);
+    // 조회하는 사이에 사용자가 씬을 만들었으면 그것을 버릴 수 없다 → 합집합으로 적용하고 같은 id 는
+    // 로컬이 이긴다(로컬이 정답). ★종전엔 여기서 복구를 통째로 포기해, 빈 프로필에서 씬 하나만
+    //  만들어도 DB 백업을 영영 못 가져왔다(코덱스 P0). 위쪽 '버킷 키 없을 때만' 게이트는 그대로다 —
+    //  마지막 씬을 정상 삭제한 빈 배열 버킷은 여전히 복구 대상이 아니다.
+    const local = listScenes(null);
+    const localIds = new Set(local.map((s) => s.id));
+    const added = scenes.filter((s) => !localIds.has(s.id));
+    if (!added.length) return "clean"; // 가져올 게 없다
+    if (!saveScenes(null, local.concat(added))) return "retry"; // 저장 실패 — 복구했다고 보고하면 안 된다
+    for (const s of added) lastPushed.set(s.id, JSON.stringify(s)); // 복구 에코 방지(서버가 이미 아는 것만)
     restoreSubs.forEach((f) => f()); // 백그라운드 복구 포함 — 열린 캔버스가 즉시 목록을 다시 읽게
     return "restored";
   })();
@@ -163,11 +182,13 @@ async function ensureServerMeta(scope: string): Promise<Map<string, string> | nu
 }
 
 async function syncNow(): Promise<void> {
+  if (importing) return; // 가져오기가 끝나면 스스로 schedule() 한다 — 예약 타이머가 끼어들지 못하게
   if (syncing) {
     rerun = true;
     return;
   }
   syncing = true;
+  syncIdle = new Promise<void>((resolve) => (syncSettled = resolve)); // 명시적 가져오기가 기다릴 지점
   let failed = false;
   const scope = enterScope();
   try {
@@ -201,7 +222,15 @@ async function syncNow(): Promise<void> {
       upserts.push({ id: s.id, name: s.name, data });
     }
     const localIds = new Set(local.map((s) => s.id));
-    const allDeleted = [...meta.keys()].filter((id) => !localIds.has(id));
+    // ★삭제 미러는 '이 세션에서 로컬에 있던 씬이 사라진 것'만 지운다(코덱스 P0).
+    //  종전엔 '서버에만 있는 id' 를 전부 지웠다. 앱 전용 브라우저 프로필 도입(2026-09-01) 뒤로
+    //  한 PC 에 프로필이 여럿 생기면서, 프로필을 번갈아 열 때마다 서로의 백업을 지웠다.
+    //  · lastPushed = 이 세션에서 올렸거나 복구한 씬. 그게 지금 로컬에 없으면 사용자가 지운 것이다.
+    //  · 버킷 키 자체가 없으면(읽기 실패·캐시 소실) 로컬을 '정답'으로 믿을 수 없으므로 삭제하지 않는다.
+    const localTrusted = hasSceneBucket(null);
+    const allDeleted = localTrusted
+      ? [...meta.keys()].filter((id) => !localIds.has(id) && lastPushed.has(id))
+      : [];
     if (!upserts.length && !allDeleted.length) return;
     if (ns() !== scope) return; // 변경 적용(PUT) 직전 최종 확인
     // 청크 전송 — upsert 는 개수+UTF-8 바이트, delete 는 개수 기준(서버 상한과 동일).
@@ -237,6 +266,8 @@ async function syncNow(): Promise<void> {
     failed = true;
   } finally {
     syncing = false;
+    syncSettled?.();
+    syncSettled = null;
     if (ns() === scope && failed) {
       serverHash = null; // 실패 후엔 메타 재조회(부분 반영 가능성)
       if (!retryTimer) {
@@ -258,6 +289,73 @@ function schedule(): void {
     timer = null;
     void syncNow();
   }, DEBOUNCE_MS);
+}
+
+// ── 명시적 가져오기 — 자동 복구가 닿지 못하는 자리를 사람이 직접 여는 문 ──────────────
+// 자동 복구는 '로컬 버킷 키가 통째로 없을 때'만 돈다(로컬이 정답이라는 원칙). 그래서 이 브라우저에
+// 씬이 하나라도 있으면, 다른 브라우저 프로필이 올려 둔 DB 백업은 영영 안 보인다. 앱 전용 프로필
+// 도입(2026-09-01)으로 한 PC 에 프로필이 여럿 생기면서 이게 실제 문제가 됐다.
+// 계약: 로컬을 덮지 않는다 — 같은 id 는 로컬을 유지하고, DB 에만 있는 씬만 더한다.
+
+/** DB 백업에만 있고 이 브라우저엔 없는 씬 수. 0 이면 가져올 게 없다(UI 노출 판단용). */
+export async function countBackupOnlyScenes(): Promise<number> {
+  const scope = enterScope();
+  try {
+    const r = await jsonFetch<{ items: { id: string }[] }>(`${API}?project_id=`);
+    if (ns() !== scope) return 0;
+    const localIds = new Set(listScenes(null).map((s) => s.id));
+    return (r.items || []).filter((it) => !localIds.has(it.id)).length;
+  } catch {
+    return 0; // 오프라인·구백엔드 — 조용히 숨긴다(없는 기능처럼 보이는 게 낫다)
+  }
+}
+
+/** DB 백업에만 있는 씬을 이 브라우저로 가져온다. 반환 = 실제로 더한 개수. */
+export async function importFromBackup(): Promise<number> {
+  if (importing) return 0; // 연타 방지
+  importing = true;
+  try {
+    return await runImport();
+  } finally {
+    importing = false;
+    schedule(); // 가져온 결과를 서버와 다시 대조 + 그동안 밀린 변경을 이어서 올린다
+  }
+}
+
+async function runImport(): Promise<number> {
+  // 이미 시작된 sync 는 끝까지 기다린다. rerun 으로 곧바로 다음 sync 가 시작될 수 있어 반복 확인한다
+  // (syncIdle 은 sync 마다 새로 만들어진다). importing=true 라 새 sync 는 더 들어오지 않는다.
+  while (syncing) await syncIdle;
+  const scope = enterScope();
+  const r = await jsonFetch<{ items: { id: string; data: string }[] }>(
+    `${API}?project_id=&include_data=1`,
+  );
+  if (ns() !== scope) return 0;
+  // 자동 복구와 같은 전 행 검증 — 하나라도 손상이면 부분 적용 없이 전체 포기.
+  const scenes: Scene[] = [];
+  for (const it of r.items || []) {
+    let s: Scene;
+    try {
+      s = JSON.parse(it.data) as Scene;
+    } catch {
+      throw new Error("백업이 손상돼 가져오지 못했습니다");
+    }
+    if (!s || typeof s !== "object" || s.id !== it.id || !Array.isArray(s.cards)) {
+      throw new Error("백업이 손상돼 가져오지 못했습니다");
+    }
+    scenes.push(s);
+  }
+  const local = listScenes(null); // ★요청이 오가는 동안 생긴 씬까지 반영해 다시 읽는다
+  const localIds = new Set(local.map((s) => s.id));
+  const added = scenes
+    .filter((s) => !localIds.has(s.id))
+    .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+  if (!added.length) return 0;
+  if (!saveScenes(null, local.concat(added))) throw new Error("브라우저에 저장하지 못했습니다");
+  for (const s of added) lastPushed.set(s.id, JSON.stringify(s)); // 방금 가져온 것 = 서버에 이미 있음
+  serverHash = null; // 그사이 다른 프로필이 바꿨을 수 있다 — 메타를 새로 받아 대조
+  restoreSubs.forEach((f) => f());
+  return added.length;
 }
 
 // 부팅 배선 + 복구 — useSceneCoordination 이 마운트마다 호출(내부는 scope 당 1회).

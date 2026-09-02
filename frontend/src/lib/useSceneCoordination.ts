@@ -15,7 +15,12 @@ import {
   updateScene,
 } from "./scenes";
 import { clearSceneHistory } from "./sceneUndoStore";
-import { initSceneBackup, subscribeSceneRestore } from "./sceneBackup";
+import {
+  countBackupOnlyScenes,
+  importFromBackup,
+  initSceneBackup,
+  subscribeSceneRestore,
+} from "./sceneBackup";
 import {
   initSceneCardLinks,
   mergeCardLinksIntoScenes,
@@ -52,6 +57,8 @@ export function mergePatchedSceneList(
 export function useSceneCoordination(flash?: (msg: string) => void) {
   const [scenes, setScenes] = useState<Scene[]>(() => listScenes(null));
   const [activeSceneId, setActiveSceneId] = useState<string | null>(() => getActiveSceneId(null));
+  // DB 백업에만 있고 이 브라우저엔 없는 씬 수 — 0 이면 '가져오기'를 아예 노출하지 않는다.
+  const [backupOnly, setBackupOnly] = useState(0);
   const activeScene = scenes.find((s) => s.id === activeSceneId) || null;
   // 멀티탭 보호(C4) — 다른 탭이 씬을 저장하면(storage 이벤트) 마지막 저장이 조용히 덮어써서 이 탭이
   //  스테일해지는 걸 막는다. ★비파괴만: '내가 보고 있는 활성 씬'은 내 in-memory 를 유지(편집 보존)하고,
@@ -86,7 +93,9 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     });
     void initSceneBackup()
       .catch(() => false)
-      .then(() => initSceneCardLinks());
+      .then(() => initSceneCardLinks())
+      // 자동 복구가 닿지 못한 씬(다른 브라우저 프로필이 올려 둔 것)이 있으면 개수를 알아 둔다.
+      .then(() => countBackupOnlyScenes().then(setBackupOnly, () => setBackupOnly(0)));
     return () => {
       unsubscribe();
       unsubscribeLinks();
@@ -181,6 +190,26 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
       selectScene(next ? next.id : null);
     }
   };
+  // DB 백업에만 있는 씬을 이 브라우저로 가져온다(로컬은 덮지 않는다 — 같은 id 는 로컬 유지).
+  const importBackupScenes = async () => {
+    try {
+      const added = await importFromBackup();
+      // 가져온 씬에도 '카드에서 뺀 생성물' 표시를 입힌다 — 이미 로드된 소속 목록은 바뀌지 않아
+      // 구독 통지가 오지 않으므로, 여기서 한 번 직접 병합한다(코덱스 P2).
+      if (added) {
+        const merged = mergeCardLinksIntoScenes(listScenes(null), serverCardLinks());
+        if (merged) saveScenes(null, merged);
+      }
+      refreshScenes();
+      flashRef.current?.(
+        added ? `DB 백업에서 씬 ${added}개를 가져왔습니다.` : "가져올 씬이 없습니다.",
+      );
+    } catch (e) {
+      flashRef.current?.(e instanceof Error ? e.message : "씬을 가져오지 못했습니다.");
+    }
+    // 성공·실패와 무관하게 남은 개수를 다시 센다(부분 실패·다른 프로필의 새 백업 반영).
+    countBackupOnlyScenes().then(setBackupOnly, () => setBackupOnly(0));
+  };
   // 명시한 씬 patch + 목록 재읽기. 비동기 작업은 완료 시 활성 씬이 바뀔 수 있으므로 반드시 시작할 때
   // 캡처한 sceneId 로 이 관문을 호출한다. 삭제된 씬은 updateScene 이 재생성하지 않는다.
   const patchSceneById = useCallback((sceneId: string, patch: Partial<Scene>) => {
@@ -216,5 +245,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     removeSceneById,
     patchSceneById,
     patchActiveScene,
+    backupOnly,
+    importBackupScenes,
   };
 }

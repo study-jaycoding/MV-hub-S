@@ -29,6 +29,14 @@
   border: 1px dashed var(--border2); background: transparent; color: var(--accent); cursor: pointer;
 }
 .scene-add:hover { border-color: var(--accent); background: rgba(196, 232, 74, 0.10); }
+/* 백업에서 가져오기 — 가져올 씬이 있을 때만 나타난다. 평소엔 없는 버튼이라 눈에 띄어야 하지만
+   씬 탭보다 앞서 보이면 안 되므로 채도는 낮추고 테두리로만 구분한다. */
+.scene-restore {
+  margin-left: auto; font-size: 12px; font-weight: 700; padding: 4px 11px; border-radius: 8px;
+  border: 1px solid var(--accent); background: rgba(196, 232, 74, 0.10); color: var(--accent);
+  cursor: pointer; white-space: nowrap;
+}
+.scene-restore:hover { background: var(--accent); color: var(--accent-ink); }
 .scene-board {
   flex: 1; min-height: 0; position: relative; overflow: hidden; cursor: default; user-select: none; outline: none;
   background: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.11) 1px, transparent 0) 0 0 / 22px 22px;

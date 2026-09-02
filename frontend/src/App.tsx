@@ -191,7 +191,7 @@ export default function App() {
     scenes, activeSceneId, activeScene,
     sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
     flushScenePending, selectScene, addScene, importSceneSnapshot, renameScene, removeSceneById,
-    patchSceneById, patchActiveScene,
+    patchSceneById, patchActiveScene, backupOnly, importBackupScenes,
   } = useSceneCoordination(flash);
   // 씬 탭 바 호버 → SceneBoard 좌상단 씬 패널(저장/불러오기) 표시 트리거(평소 숨김).
   const [sceneBarHover, setSceneBarHover] = useState(false);
@@ -1470,6 +1470,8 @@ export default function App() {
               onRename={renameScene}
               onDelete={removeSceneById}
               onHoverChange={setSceneBarHover}
+              backupOnly={backupOnly}
+              onImportBackup={importBackupScenes}
             />
             {activeScene ? (
               <SceneBoard

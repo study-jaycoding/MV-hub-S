@@ -265,10 +265,12 @@ export function listScenes(projectId: string | null): Scene[] {
   return all[keyOf(projectId)] || [];
 }
 
-export function saveScenes(projectId: string | null, scenes: Scene[]) {
+// 반환 = 실제로 persist 됐는지. ★DB 미러(복구)는 이 값을 반드시 확인해야 한다 — 저장이 실패했는데
+//  '복구됨'으로 보고하면 다음 sync 가 빈 로컬을 기준으로 서버 백업을 지운다(코덱스 P0).
+export function saveScenes(projectId: string | null, scenes: Scene[]): boolean {
   const all = loadAll();
   all[keyOf(projectId)] = scenes;
-  saveAll(all);
+  return saveAll(all);
 }
 
 export function createScene(projectId: string | null, name?: string): Scene {
