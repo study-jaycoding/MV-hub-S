@@ -802,6 +802,9 @@ function Commit-VersionMarker {
     # before every file and runtime validation has passed; a failed update must be
     # retried instead of being mistaken for an up-to-date installation. Written via
     # a same-volume temp file + atomic replace so it can never be half-written.
+    # The backup argument must be [NullString]::Value, not $null: Windows PowerShell
+    # turns $null into an empty string for .NET [string] parameters, and File.Replace
+    # then fails with "The path is not of a legal form." (2026-09-02 field failure).
     param([string]$Version)
     $VersionPath = Join-Path $TargetDir "VERSION.txt"
     $TempPath = Join-Path $TargetDir ("VERSION.txt.commit." + $SwapToken)
@@ -812,7 +815,7 @@ function Commit-VersionMarker {
         $ReplaceDeadline = (Get-Date).AddSeconds(5)
         while ($true) {
             try {
-                [System.IO.File]::Replace($TempPath, $VersionPath, $null)
+                [System.IO.File]::Replace($TempPath, $VersionPath, [NullString]::Value)
                 break
             }
             catch {

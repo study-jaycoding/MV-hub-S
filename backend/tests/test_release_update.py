@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 
@@ -392,6 +393,21 @@ def test_release_update_contract_preserves_worker_backup_state_and_outbox():
     assert '-TargetDir (Join-Path $TargetDir "backend\\data")' not in updater
     assert "worker_backup_state.db" not in builder
     assert "worker-backup-outbox" not in builder
+
+
+def test_updater_never_passes_null_to_a_dotnet_string_argument():
+    """Windows PowerShell 은 .NET 의 [string] 매개변수에 $null 을 넘기면 빈 문자열로 바꾼다.
+
+    2026-09-02 실측 장애: `File.Replace($tmp, $ver, $null)` 의 세 번째 인자(백업 없음)가
+    ""가 되어 "The path is not of a legal form." 로 VERSION 커밋이 실패했고, 업데이트
+    전체가 롤백됐다. 진짜 null 은 [NullString]::Value 로만 전달된다.
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    updater = (project_root / "update_release_worker.bat").read_text(encoding="utf-8")
+
+    assert "[System.IO.File]::Replace($TempPath, $VersionPath, [NullString]::Value)" in updater
+    offenders = re.findall(r"\[System\.[A-Za-z.]+\]::\w+\([^)]*,\s*\$null\s*\)", updater)
+    assert offenders == [], offenders
 
 
 def test_release_builder_requires_verified_python_314_without_an_unproven_resolve_range():
