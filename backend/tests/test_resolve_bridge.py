@@ -109,7 +109,11 @@ class FakeMediaPool:
 
     def ImportMedia(self, paths):
         self.import_calls.append(list(paths))
-        clips = [FakeClip(path) for path in paths]
+        # 실제 API 처럼 경로 목록과 clipInfo dict 목록을 모두 받는다.
+        clips = [
+            FakeClip(path["FilePath"] if isinstance(path, dict) else path)
+            for path in paths
+        ]
         self.current.clips.extend(clips)
         return clips
 
@@ -266,6 +270,59 @@ class ResolveBridgeTests(unittest.TestCase):
         self.assertEqual(result["status"], "complete")
         self.assertEqual(len(self.pool.import_calls), 1)
         self.assertEqual(len(self.pool.import_calls[0]), 2)
+
+    def test_still_images_are_imported_one_path_per_call(self):
+        """스틸은 한 호출에 하나씩 — 번호만 다른 이미지를 함께 넣으면 Resolve 가
+        이미지 시퀀스로 합쳐 클립 하나([00-01])로 만든다.
+        (가짜 Resolve 엔 시퀀스 인식이 없으니 여기서 보는 건 호출 쪼개기뿐이다.)"""
+        manifest = self._manifest()
+        manifest["items"][1]["folder_path"] = "ep001/c0010"
+        for index, item in enumerate(manifest["items"], 1):
+            still = self.root / f"still-{index}.png"
+            still.write_bytes(f"png-{index}".encode())
+            item["local_path"] = str(still)
+
+        result = import_manifest_to_current_project(manifest, resolve=self.resolve)
+
+        self.assertEqual(result["imported"], 2)
+        self.assertEqual([len(call) for call in self.pool.import_calls], [1, 1])
+
+    def test_one_failing_still_does_not_block_the_rest(self):
+        """스틸 한 건이 예외를 내도 뒤 항목은 계속 넣는다 — 루프를 끊으면 호출조차
+        안 된 채 전부 실패로 집계된다(코덱스 리뷰)."""
+        manifest = self._manifest()
+        manifest["items"][1]["folder_path"] = "ep001/c0010"
+        stills = []
+        for index, item in enumerate(manifest["items"], 1):
+            still = self.root / f"still-{index}.png"
+            still.write_bytes(f"png-{index}".encode())
+            item["local_path"] = str(still)
+            stills.append(str(still))
+
+        original = self.pool.ImportMedia
+
+        def fail_first(paths):
+            if str(paths[0]) == stills[0]:
+                raise RuntimeError("Resolve 일시 오류")
+            return original(paths)
+
+        self.pool.ImportMedia = fail_first
+        result = import_manifest_to_current_project(manifest, resolve=self.resolve)
+
+        # 두 번째 스틸은 들어갔고, 첫 번째만 실패로 남는다(재시도 포함).
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["error_count"], 1)
+        self.assertEqual(result["status"], "partial")
+
+    def test_videos_are_still_imported_in_one_call(self):
+        """영상은 시퀀스로 합쳐질 일이 없어 종전대로 묶어 넣는다(대량 전송 성능)."""
+        manifest = self._manifest()  # 원본은 .mp4 다
+        manifest["items"][1]["folder_path"] = "ep001/c0010"
+
+        result = import_manifest_to_current_project(manifest, resolve=self.resolve)
+
+        self.assertEqual(result["imported"], 2)
+        self.assertEqual([len(call) for call in self.pool.import_calls], [2])
 
     def test_large_same_bin_import_is_chunked(self):
         manifest = self._manifest()

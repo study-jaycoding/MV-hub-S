@@ -54,6 +54,7 @@ class FakeMediaPool:
     def __init__(self):
         self.root = FakeFolder("Master")
         self.current = self.root
+        self.import_calls = []
 
     def GetRootFolder(self):
         return self.root
@@ -71,7 +72,12 @@ class FakeMediaPool:
         return True
 
     def ImportMedia(self, paths):
-        clips = [FakeClip(path) for path in paths]
+        self.import_calls.append(list(paths))
+        # 실제 API 처럼 경로 목록과 clipInfo dict 목록을 모두 받는다.
+        clips = [
+            FakeClip(path["FilePath"] if isinstance(path, dict) else path)
+            for path in paths
+        ]
         self.current.clips.extend(clips)
         return clips
 

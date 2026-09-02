@@ -559,6 +559,56 @@ def _existing_paths(folder: Any) -> set[str]:
     }
 
 
+# Resolve 가 이미지 시퀀스로 묶을 수 있는 스틸 확장자. 판정은 manifest 필드가 아니라
+# 확장자로 한다 — 반입 계층까지 내려오는 항목에는 media_type 이 없다.
+_STILL_IMAGE_SUFFIXES = {
+    ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".exr", ".dpx", ".tga", ".bmp", ".webp",
+}
+
+
+def _is_still_image(path: str) -> bool:
+    return Path(path).suffix.lower() in _STILL_IMAGE_SUFFIXES
+
+
+def _import_groups(sources: list[str]) -> list[list[str]]:
+    """스틸은 한 건씩, 잇달아 있는 영상·오디오는 한 묶음으로 나눈다(원래 순서 유지).
+
+    스틸을 한 호출에 같이 넣으면 Resolve 가 번호만 다른 이미지를 이미지 시퀀스로 합쳐
+    클립 하나(``[00-01]``)로 만든다. 영상·오디오는 그럴 일이 없어 묶어 넣는다(대량 전송 성능).
+    """
+    groups: list[list[str]] = []
+    for path in sources:
+        if not _is_still_image(path) and groups and not _is_still_image(groups[-1][0]):
+            groups[-1].append(path)
+        else:
+            groups.append([path])
+    return groups
+
+
+def _import_media_items(media_pool: Any, sources: list[str]) -> list[Any]:
+    """원본을 Media Pool 로 가져온다. 한 묶음이 실패해도 나머지는 계속 넣는다.
+
+    한 건의 예외로 루프를 끊으면 뒤 항목이 호출조차 안 된 채 전부 실패로 집계된다
+    (코덱스 리뷰). 전부 실패했을 때만 마지막 예외를 그대로 올려 원인을 남긴다.
+
+    ``ImportMedia([{"FilePath": …}])`` 는 문서상 항목당 클립 하나를 만들지만 실기에서는
+    아무것도 가져오지 못했다(2026-09-02 실측, `media_import_failed`). 그래서 경로 목록만 쓴다.
+    """
+    imported: list[Any] = []
+    last_error: BaseException | None = None
+    for group in _import_groups(sources):
+        try:
+            clips = media_pool.ImportMedia(list(group))
+        except Exception as exc:  # noqa: BLE001 - 묶음별 실패를 격리한다
+            last_error = exc
+            continue
+        if clips:
+            imported.extend(clips)
+    if not imported and last_error is not None:
+        raise last_error
+    return imported
+
+
 def _import_media_batch(
     media_pool: Any,
     target: Any,
@@ -576,7 +626,9 @@ def _import_media_batch(
         try:
             if not media_pool.SetCurrentFolder(target):
                 raise ResolveBridgeError("Resolve Media Pool 대상 폴더를 선택할 수 없습니다")
-            imported = media_pool.ImportMedia([str(source) for _item, source, _path in remaining])
+            imported = _import_media_items(
+                media_pool, [str(source) for _item, source, _path in remaining]
+            )
             if not imported:
                 last_error = "Resolve가 원본 파일을 가져오지 못했습니다"
             elif isinstance(imported, (list, tuple)):

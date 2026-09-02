@@ -68,19 +68,21 @@ def effective_root_path(pid: str) -> str:
 _EXT_BY_TYPE = {"video": ".mp4", "image": ".png", "audio": ".mp3", "3d": ".glb"}
 
 
+def export_ext(file_path: str, media_type: str | None) -> str:
+    """저장 확장자 — 원본 경로/URL 의 확장자 우선, 없으면 media_type 기본값."""
+    src = (file_path or "").split("?", 1)[0]
+    dot = src.rfind(".")
+    if dot != -1 and 1 <= len(src) - dot - 1 <= 5:
+        return src[dot:]
+    return _EXT_BY_TYPE.get((media_type or "").lower(), ".bin")
+
+
 def export_filename(folder_path: str, gen_id: str, file_path: str, media_type: str | None) -> str:
     """저장 파일명(결정적) — <시퀀스>_<gen 앞8자>.<확장자>. 재실행 시 같은 이름 → 멱등."""
     segs = [s for s in folder_path.replace("\\", "/").split("/") if s]
     seq = segs[-1] if segs else "cut"
-    src = (file_path or "").split("?", 1)[0]
-    ext = ""
-    dot = src.rfind(".")
-    if dot != -1 and 1 <= len(src) - dot - 1 <= 5:
-        ext = src[dot:]
-    if not ext:
-        ext = _EXT_BY_TYPE.get((media_type or "").lower(), ".bin")
     # gen_id 앞 12자 — 프로젝트 규모가 커져도 파일명 충돌(→ 멱등 오판) 여지 축소(코덱스 #5).
-    return f"{seq}_{gen_id[:12]}{ext}"
+    return f"{seq}_{gen_id[:12]}{export_ext(file_path, media_type)}"
 
 
 def safe_dest(render: Path, folder_path: str, filename: str) -> Path | None:

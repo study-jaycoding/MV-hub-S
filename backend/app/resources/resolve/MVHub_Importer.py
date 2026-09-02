@@ -411,6 +411,49 @@ def _post_result(base, manifest, result):
     _http_json("POST", "/api/resolve/transfers/manual-result", payload, bases=(base,))
 
 
+# Resolve 가 이미지 시퀀스로 묶을 수 있는 스틸 확장자.
+_STILL_IMAGE_SUFFIXES = (
+    ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".exr", ".dpx", ".tga", ".bmp", ".webp",
+)
+
+
+def _is_still_image(path):
+    return str(path).lower().endswith(_STILL_IMAGE_SUFFIXES)
+
+
+def _import_groups(sources):
+    """스틸은 한 건씩, 잇달아 있는 영상·오디오는 한 묶음으로 나눈다(원래 순서 유지)."""
+    groups = []
+    for path in sources:
+        if not _is_still_image(path) and groups and not _is_still_image(groups[-1][0]):
+            groups[-1].append(path)
+        else:
+            groups.append([path])
+    return groups
+
+
+def _import_media_items(media_pool, sources):
+    """원본을 Media Pool 로 가져온다. 한 묶음이 실패해도 나머지는 계속 넣는다.
+
+    스틸을 한 호출에 같이 넣으면 Resolve 가 번호만 다른 이미지를 이미지 시퀀스로
+    합쳐 클립 하나([00-01])로 만든다. clipInfo dict 형식은 실기에서 아무것도
+    가져오지 못해(2026-09-02 실측) 쓰지 않는다.
+    """
+    imported = []
+    last_error = None
+    for group in _import_groups(sources):
+        try:
+            clips = media_pool.ImportMedia(list(group))
+        except Exception as exc:
+            last_error = exc
+            continue
+        if clips:
+            imported.extend(clips)
+    if not imported and last_error is not None:
+        raise last_error
+    return imported
+
+
 def _import_manifest_items(media_pool, managed_root, manifest, ready):
     """전송 하나를 현재 Media Pool 에 가져온다(호출자가 프로젝트 락을 보유한 상태)."""
     result = {
@@ -448,8 +491,8 @@ def _import_manifest_items(media_pool, managed_root, manifest, ready):
         try:
             if not media_pool.SetCurrentFolder(target):
                 raise ImporterError("대상 Media Pool 폴더를 선택할 수 없습니다")
-            imported = media_pool.ImportMedia(
-                [str(item["local_path"]) for item in missing]
+            imported = _import_media_items(
+                media_pool, [str(item["local_path"]) for item in missing]
             )
             refresh = getattr(media_pool, "RefreshFolders", None)
             if callable(refresh):
