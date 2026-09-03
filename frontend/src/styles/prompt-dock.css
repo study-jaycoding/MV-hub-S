@@ -449,6 +449,16 @@
 .sl-sparkle { font-size: 12px; }
 
 .sl-error { color: #ff6b6b; font-size: 13px; padding: 0 6px; }
+/* Ctrl+K 로 프롬프트를 숨겼을 때 오류를 대신 띄우는 자리 — 화면 하단 중앙.
+   프롬프트 도크가 있던 위치라 눈이 가던 곳 그대로다. 클릭을 막지 않는다(캔버스 조작 방해 금지). */
+.sl-error-float {
+  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+  z-index: 60; pointer-events: none; max-width: min(680px, 92vw);
+  padding: 9px 16px; border-radius: 10px; text-align: center;
+  color: #ff6b6b; font-size: 13px; font-weight: 600; line-height: 1.4;
+  background: rgba(18, 8, 10, 0.92); border: 1px solid rgba(255, 107, 107, 0.55);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
 
 /* 상태바 — Generate 버튼 아래(우측)에 정렬 */
 .sl-status {

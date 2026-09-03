@@ -219,6 +219,8 @@ export default function App() {
   useSceneCompletionWatcher(glowCandidateIds, { coveredIds: sceneBoardCoveredIds });
   // 배치수(한 번에 N장)를 App 이 보유 — 하단 프롬프트와 '카드 아래 Generate 버튼'이 공유. submit 은 ref 로 노출.
   const [batchCount, setBatchCount] = useState(1);
+  // 프롬프트가 지금 보여주는 오류 — Ctrl+K 로 프롬프트를 숨겼을 때 하단 중앙에 대신 띄운다.
+  const [promptError, setPromptError] = useState<string | null>(null);
   const spotlightPromptRef = useRef<SpotlightPromptHandle>(null);
   // 구성탭 히스토리 보드(계보 트리) 상태는 useHistoryBoardState 훅으로 추출.
   const {
@@ -1750,9 +1752,17 @@ export default function App() {
           }
           workspace={workspaceContext}
           topSlot={promptVisible ? selectionBar : undefined}
+          onErrorChange={setPromptError}
           onCreated={onPromptCreated}
         />
       </div>
+      {/* Ctrl+K 로 프롬프트를 숨기면 그 안의 오류 문구도 같이 숨는다 — 왜 생성이 안 되는지 알 수 없게
+          되므로 화면 하단 중앙에 대신 띄운다(레퍼런스 번호 오류 등). 오류가 풀리면 저절로 사라진다. */}
+      {!promptVisible && promptError && (
+        <div className="sl-error-float" role="status">
+          {promptError}
+        </div>
+      )}
       {grade.pending && (
         <GradeStepModal
           pending={grade.pending}

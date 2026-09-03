@@ -102,6 +102,9 @@ interface Props {
   // 무장된 폴더 — 그 프로젝트로 생성 시 folder_path 로 자동 라벨링(전역변수식). 프로젝트 불일치면 미적용.
   armedFolder?: { projectId: string; path: string } | null;
   topSlot?: ReactNode; // 도크 상단(프롬프트 바로 위)에 끼우는 슬롯 — 멀티 선택 바
+  // 지금 표시 중인 오류를 밖으로 알린다. Ctrl+K 로 프롬프트를 숨기면 이 안의 .sl-error 가
+  // display:none 이 되어, 왜 생성이 안 되는지 알 길이 없어진다 — App 이 하단 중앙에 대신 띄운다.
+  onErrorChange?: (message: string | null) => void;
   activeProjectId?: string; // 현재 보고 있는 프로젝트 — 생성 시 자동 귀속(로드맵 §0-4)
   workspace: WorkspaceContext; // 계정 메뉴에서 선택한 생성/조회 대상
   expanded: boolean; // '+' 확장 — 레퍼런스 트레이(위)+프롬프트(아래) 2단. App 이 보유.
@@ -161,6 +164,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   armedAutoTags,
   armedFolder,
   topSlot,
+  onErrorChange,
   activeProjectId,
   workspace,
   expanded,
@@ -194,6 +198,13 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   const [open, setOpen] = useState<string | null>(null); // 열린 드롭다운 키(파라미터명 또는 'model')
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 오류를 밖(App)에도 알린다 — 프롬프트가 숨겨져 있으면 여기 .sl-error 는 안 보이기 때문이다.
+  //  콜백은 ref 로 잡아 두어 부모가 익명 함수를 넘겨도 매 렌더마다 다시 돌지 않게 한다.
+  const errorChangeRef = useRef(onErrorChange);
+  errorChangeRef.current = onErrorChange;
+  useEffect(() => {
+    errorChangeRef.current?.(error);
+  }, [error]);
   // setOpt 가 옵션 선택 후 드롭다운을 닫도록 훅에 setOpen 등록(open/setOpen 은 UI 상태로 컴포넌트에 잔류).
   setOpenRef.current = setOpen;
   // 옵션 팝오버(모델·비율·고급 등)가 열린 동안 바깥을 클릭하면 닫는다. 지금까진 값 선택/Escape 로만 닫혀
