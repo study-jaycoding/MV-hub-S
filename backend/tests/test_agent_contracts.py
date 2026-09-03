@@ -485,6 +485,24 @@ def test_test_dev_starts_vite_only_after_backend_health_check():
     assert vite_subroutine < port_preflight < port_in_use_error < vite_start
 
 
+def test_code_stale_notice_points_at_the_updater_this_install_has():
+    """릴리스 설치본에는 .git 도 update_git.bat 도 없다 — 그걸 실행하라고 안내하면 없는 파일로
+    보내는 셈이고, 실제로 한 작업자가 옛 CLI 핀에 그대로 묶여 있었다(2026-09-03 현장 보고).
+    git 클론(개발·서버)에는 git 경로를 그대로 안내한다."""
+    launcher = (ROOT_DIR / "MV_agent.bat").read_text(encoding="utf-8")
+
+    assert 'if exist "%ROOT%.git" set "MVHUB_UPDATE_HINT=update_git.bat"' in launcher
+    assert 'set "MVHUB_UPDATE_HINT=update_release.bat' in launcher
+    assert "Run:  %MVHUB_UPDATE_HINT%" in launcher
+    # 안내 문구가 다시 한 경로로 굳지 않게 — 분기 밖에서 update_git.bat 을 직접 지시하지 않는다.
+    assert "Run:  update_git.bat" not in launcher
+    # 이 값은 if(...) 블록 안에서 전개되므로 괄호가 들어가면 cmd 파싱이 깨진다.
+    hint = next(
+        line for line in launcher.splitlines() if line.startswith('set "MVHUB_UPDATE_HINT=update_release.bat')
+    )
+    assert "(" not in hint and ")" not in hint
+
+
 def test_agent_opens_browser_outside_the_cleanup_job():
     launcher = (ROOT_DIR / "MV_agent.bat").read_text(encoding="utf-8")
     guard = (ROOT_DIR / "run_agent_session.py").read_text(encoding="utf-8")

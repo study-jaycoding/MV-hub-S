@@ -242,10 +242,18 @@ REM / old hub without the endpoint -> empty output -> proceed (offline-safe).
 set "_CLICHK="
 if exist "%TEMP%\mvhub_clichk.txt" set /p _CLICHK=<"%TEMP%\mvhub_clichk.txt"
 del "%TEMP%\mvhub_clichk.txt" >nul 2>nul
+REM Point at the updater this install actually has. A release install (unzipped from the server)
+REM has no .git and does not ship update_git.bat - telling those users to run it sends them to a
+REM file that is not there, which is exactly how a worker stayed stuck on an old CLI pin
+REM (2026-09-03 field report). Git clones (dev/server) keep the git path.
+REM No parentheses in this value on purpose - it is expanded inside an if^(...^) block below.
+set "MVHUB_UPDATE_HINT=update_release.bat   - or in the app: Settings then Program update"
+if exist "%ROOT%.git" set "MVHUB_UPDATE_HINT=update_git.bat"
 if /i "%_CLICHK%"=="code_stale" (
   echo.
   echo  [action needed] Your code is behind the team server ^(it expects a different CLI version^).
-  echo  Generation is OFF until you update your code. Run:  update_git.bat   then re-run MV_agent.bat.
+  echo  Generation is OFF until you update your code. Run:  %MVHUB_UPDATE_HINT%
+  echo  Then re-run MV_agent.bat.
   echo  ^(Updating only the CLI is unsafe - old code can break on a newer CLI.^)
   echo.
   set "RUN_AGENT=0"
