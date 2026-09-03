@@ -20,10 +20,12 @@ interface UseSceneCardMoveOptions {
   edgesRef: MutableRefObject<SceneEdge[]>;
   groupsRef: MutableRefObject<SceneGroup[]>;
   selectedRef: MutableRefObject<Set<string>>;
+  selectedGroupIdsRef: MutableRefObject<Set<string>>;
   groupFramesRef: MutableRefObject<GroupFrame[]>;
   zoomRef: MutableRefObject<number>;
   scrollRef: MutableRefObject<HTMLDivElement | null>;
   setCards: Dispatch<SetStateAction<SceneCard[]>>;
+  setGroups: Dispatch<SetStateAction<SceneGroup[]>>;
   setSelected: Dispatch<SetStateAction<Set<string>>>;
   setDraggingIds: Dispatch<SetStateAction<readonly string[]>>;
   setEjectedIds: Dispatch<SetStateAction<Set<string>>>;
@@ -65,7 +67,26 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
     let moved = false;
 
     const selected = current.selectedRef.current;
-    const targetIds = selected.has(cardId) ? [...selected] : [cardId];
+    // 함께 끌 그룹 — 선택된 그룹 중 '수동 rect'를 가진 것만이다. 자동 그룹은 프레임을 멤버
+    // 카드에서 계산하므로 카드가 움직이면 알아서 따라온다(여기서 건드리면 이중으로 움직인다).
+    const movingRects = new Map<string, { x: number; y: number; w: number; h: number }>();
+    if (selected.has(cardId)) {
+      for (const group of current.groupsRef.current) {
+        if (group.rect && current.selectedGroupIdsRef.current.has(group.id)) {
+          movingRects.set(group.id, { ...group.rect });
+        }
+      }
+    }
+    // 함께 끌 그룹의 멤버는 선택 여부와 상관없이 같이 옮긴다. 프레임은 rect ∪ 멤버 카드라
+    // (sceneDerive.groupFrame) 멤버 하나만 제자리에 남아도 프레임이 그쪽으로 늘어난다.
+    const movingMemberIds = movingRects.size
+      ? current.groupsRef.current
+          .filter((group) => movingRects.has(group.id))
+          .flatMap((group) => group.cardIds)
+      : [];
+    const targetIds = selected.has(cardId)
+      ? [...new Set([...selected, ...movingMemberIds])]
+      : [cardId];
     const origins: Record<string, { x: number; y: number }> = {};
     for (const targetId of targetIds) {
       const card = cardsById.get(targetId);
@@ -86,7 +107,9 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
     const memberFrames = new Map<string, GroupFrame["frame"]>();
     for (const targetId of targetIds) {
       const group = groupByCard.get(targetId);
-      const frame = group ? frameByGroup.get(group.id) : undefined;
+      // 프레임이 카드와 같이 움직이는 그룹은 이탈 판정에서 뺀다 — 프레임을 벗어날 수가 없다.
+      if (!group || movingRects.has(group.id)) continue;
+      const frame = frameByGroup.get(group.id);
       if (frame) memberFrames.set(targetId, frame);
     }
 
@@ -138,6 +161,24 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
       relocated = true;
       latest.cardsRef.current = result.cards;
       latest.setCards(result.cards);
+
+      // 선택된 그룹의 rect 를 카드와 같은 만큼 옮긴다. 원본 dx/dy 가 아니라 '기준 카드가 실제로
+      // 간 거리'를 쓴다 — 격자 스냅이 걸리면 둘이 어긋나 프레임만 반 칸 밀린다.
+      if (movingRects.size) {
+        const movedAnchor = result.cards.find((card) => card.id === cardId);
+        if (movedAnchor) {
+          const appliedX = movedAnchor.x - anchor.x;
+          const appliedY = movedAnchor.y - anchor.y;
+          const nextGroups = latest.groupsRef.current.map((group) => {
+            const origin = movingRects.get(group.id);
+            return origin
+              ? { ...group, rect: { ...origin, x: origin.x + appliedX, y: origin.y + appliedY } }
+              : group;
+          });
+          latest.groupsRef.current = nextGroups;
+          latest.setGroups(nextGroups);
+        }
+      }
 
       if (memberFrames.size) {
         const movedById = new Map(result.cards.map((card) => [card.id, card] as const));

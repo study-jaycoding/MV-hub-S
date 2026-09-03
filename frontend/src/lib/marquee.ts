@@ -23,18 +23,26 @@ export function computeMarquee(
 
 // 마퀴 경계와 교차하는 셀들의 key 를 base 선택에 더해 반환. keyOf 가 셀 엘리먼트의 식별자를 뽑는다
 // (null/undefined 면 제외). 결과는 호출측이 setSelected/onSelectedChange 로 적용.
+/** 잡는 기준. intersect=살짝만 걸쳐도(카드), contain=완전히 감쌌을 때만(그룹처럼 큰 대상). */
+export type MarqueeHitMode = "intersect" | "contain";
+
 export function marqueeHits<K>(
   grid: HTMLElement,
   cellSelector: string,
   b: { x0: number; y0: number; x1: number; y1: number },
   base: Iterable<K>,
   keyOf: (el: HTMLElement) => K | null | undefined,
+  mode: MarqueeHitMode = "intersect",
 ): Set<K> {
   const hit = new Set<K>(base);
   grid.querySelectorAll(cellSelector).forEach((node) => {
     const el = node as HTMLElement;
     const r = el.getBoundingClientRect();
-    if (r.right >= b.x0 && r.left <= b.x1 && r.bottom >= b.y0 && r.top <= b.y1) {
+    const ok =
+      mode === "contain"
+        ? r.left >= b.x0 && r.right <= b.x1 && r.top >= b.y0 && r.bottom <= b.y1
+        : r.right >= b.x0 && r.left <= b.x1 && r.bottom >= b.y0 && r.top <= b.y1;
+    if (ok) {
       const k = keyOf(el);
       if (k != null) hit.add(k);
     }

@@ -2386,10 +2386,12 @@ export function SceneBoard({
     edgesRef,
     groupsRef,
     selectedRef,
+    selectedGroupIdsRef,
     groupFramesRef,
     zoomRef,
     scrollRef,
     setCards,
+    setGroups,
     setSelected,
     setDraggingIds,
     setEjectedIds,
@@ -2406,6 +2408,7 @@ export function SceneBoard({
     edgesRef,
     groupsRef,
     selectedGroupIdsRef,
+    selectedRef,
     zoomRef,
     scrollRef,
     setCards,
@@ -2417,7 +2420,7 @@ export function SceneBoard({
     reconcileGenerationRefs: withGenRefs,
     persist,
   });
-  const beginBoardMarquee = useSceneMarqueeSelection<string>({
+  const beginBoardMarquee = useSceneMarqueeSelection<string, string>({
     selected,
     surfaceRef: scrollRef,
     hitRootRef: canvasRef,
@@ -2426,6 +2429,13 @@ export function SceneBoard({
     beginDrag,
     cellSelector: ".scene-card",
     keyOf: (element) => element.dataset.id,
+    // 사각형이 그룹을 통째로 감싸면 그룹도 함께 잡는다 — 그래야 전체를 끌 때 프레임이 남지 않는다.
+    secondary: {
+      selected: selectedGroupIds,
+      setSelected: setSelectedGroupIds,
+      cellSelector: ".scene-group",
+      keyOf: (element) => element.dataset.groupId,
+    },
     preserveSelectionOnEmptyDrag: true,
     onPlainClick: () => {
       setSelected(new Set());
@@ -2491,7 +2501,11 @@ export function SceneBoard({
     }
     const cardEl = (e.target as HTMLElement).closest(".scene-card") as HTMLElement | null;
     if (cardEl?.dataset.id) {
-      setSelectedGroupIds(new Set());
+      // ★이미 선택돼 있는 카드를 잡는 건 '선택한 것 전체를 옮긴다'는 뜻이라 그룹 선택을 살려 둔다.
+      //  여기서 지우면 그룹 rect 가 같이 안 움직여, 카드만 빠져나가고 프레임이 늘어난다
+      //  (프레임 = rect ∪ 멤버 카드 — sceneDerive.groupFrame).
+      //  선택 밖 카드를 새로 누른 것이면 종전대로 그룹 선택을 해제한다.
+      if (!selectedRef.current.has(cardEl.dataset.id)) setSelectedGroupIds(new Set());
       beginCardMove(e, cardEl.dataset.id);
       return;
     }

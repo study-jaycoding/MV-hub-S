@@ -18,6 +18,7 @@ interface UseSceneGroupMoveOptions {
   edgesRef: MutableRefObject<SceneEdge[]>;
   groupsRef: MutableRefObject<SceneGroup[]>;
   selectedGroupIdsRef: MutableRefObject<Set<string>>;
+  selectedRef: MutableRefObject<Set<string>>;
   zoomRef: MutableRefObject<number>;
   scrollRef: MutableRefObject<HTMLDivElement | null>;
   setCards: Dispatch<SetStateAction<SceneCard[]>>;
@@ -52,12 +53,18 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
     const cardsById = new Map(
       current.cardsRef.current.map((card) => [card.id, card] as const),
     );
+    // 이미 선택돼 있던 그룹을 잡았다면 '선택한 것 전체를 옮긴다'는 뜻이다 — 그룹 멤버뿐 아니라
+    // 선택된 카드(그룹 밖 카드 포함)도 함께 옮기고, 카드 선택도 지우지 않는다.
+    // 선택 밖 그룹을 새로 잡은 것이면 종전대로 그 그룹만 옮기고 카드 선택은 해제한다.
+    const keepCardSelection = current.selectedGroupIdsRef.current.has(groupId);
     const memberIds = Array.from(
       new Set(
-        current.groupsRef.current
-          .filter((item) => targetGroupIdSet.has(item.id))
-          .flatMap((item) => item.cardIds)
-          .filter((cardId) => cardsById.has(cardId)),
+        [
+          ...current.groupsRef.current
+            .filter((item) => targetGroupIdSet.has(item.id))
+            .flatMap((item) => item.cardIds),
+          ...(keepCardSelection ? current.selectedRef.current : []),
+        ].filter((cardId) => cardsById.has(cardId)),
       ),
     );
     const origins: Record<string, { x: number; y: number }> = {};
@@ -178,8 +185,8 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
       );
     };
 
-    // 그룹 선택과 카드 선택은 별개다. 그룹을 잡는 순간 내부 카드 선택은 해제한다.
-    current.setSelected(new Set());
+    // 그룹 선택과 카드 선택은 별개다 — 선택 밖 그룹을 새로 잡을 때만 카드 선택을 해제한다.
+    if (!keepCardSelection) current.setSelected(new Set());
     current.beginDrag(move, up, () => {
       cleanupDrag();
       if (relocated) commitMovedGroup();

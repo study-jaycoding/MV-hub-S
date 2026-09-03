@@ -8,6 +8,7 @@ import {
   computeMarquee,
   marqueeHits,
   resolveMarqueeSelection,
+  type MarqueeHitMode,
   type MarqueeRect,
 } from "./marquee";
 import type { BeginSceneDrag } from "./useSceneDragSession";
@@ -16,7 +17,18 @@ interface ElementRef {
   readonly current: HTMLElement | null;
 }
 
-interface UseSceneMarqueeSelectionOptions<Key> {
+// 같은 사각형으로 함께 잡아야 하는 두 번째 대상(캔버스의 그룹) — 선택 상태가 카드와 따로
+// 관리되므로 채널을 하나 더 받는다. 없으면 종전과 똑같이 동작한다.
+interface MarqueeSecondary<Key> {
+  selected: ReadonlySet<Key>;
+  setSelected: Dispatch<SetStateAction<Set<Key>>>;
+  cellSelector: string;
+  keyOf: (element: HTMLElement) => Key | null | undefined;
+  /** 기본 contain — 그룹은 완전히 감쌌을 때만 잡는다(안쪽 카드 몇 개만 고를 때 딸려오면 곤란). */
+  hitMode?: MarqueeHitMode;
+}
+
+interface UseSceneMarqueeSelectionOptions<Key, Secondary = never> {
   selected: ReadonlySet<Key>;
   surfaceRef: ElementRef;
   hitRootRef?: ElementRef;
@@ -25,6 +37,7 @@ interface UseSceneMarqueeSelectionOptions<Key> {
   beginDrag: BeginSceneDrag;
   cellSelector: string;
   keyOf: (element: HTMLElement) => Key | null | undefined;
+  secondary?: MarqueeSecondary<Secondary>;
   preserveSelectionOnEmptyDrag?: boolean;
   preventDefault?: boolean;
   onPlainClick?: () => void;
@@ -34,8 +47,8 @@ const sameSet = <Key>(left: ReadonlySet<Key>, right: ReadonlySet<Key>) =>
   left.size === right.size && [...left].every((value) => right.has(value));
 
 /** 배경 드래그의 사각형 표시·교차 선택·클릭 해제 수명주기를 공통 관리한다. */
-export function useSceneMarqueeSelection<Key>(
-  options: UseSceneMarqueeSelectionOptions<Key>,
+export function useSceneMarqueeSelection<Key, Secondary = never>(
+  options: UseSceneMarqueeSelectionOptions<Key, Secondary>,
 ) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
@@ -50,6 +63,7 @@ export function useSceneMarqueeSelection<Key>(
 
     const additive = event.shiftKey || event.ctrlKey || event.metaKey;
     const previous = new Set(current.selected);
+    const previousSecondary = new Set(current.secondary?.selected ?? []);
     const start = { x: event.clientX, y: event.clientY };
     let moved = false;
 
@@ -78,6 +92,28 @@ export function useSceneMarqueeSelection<Key>(
         !!latest.preserveSelectionOnEmptyDrag,
       );
       latest.setSelected((selected) => (sameSet(selected, next) ? selected : next));
+      // 같은 사각형으로 그룹도 함께 잡는다 — 전체를 감싸 끌 때 카드만 움직이고 그룹은 남는
+      // 문제를 없앤다. 선택 합치기 규칙(추가선택·빈 드래그 보존)은 카드와 똑같이 적용한다.
+      const second = latest.secondary;
+      if (second) {
+        const boxedSecondary = marqueeHits<Secondary>(
+          hitRoot,
+          second.cellSelector,
+          b,
+          [],
+          second.keyOf,
+          second.hitMode ?? "contain",
+        );
+        const nextSecondary = resolveMarqueeSelection(
+          previousSecondary,
+          boxedSecondary,
+          additive,
+          !!latest.preserveSelectionOnEmptyDrag,
+        );
+        second.setSelected((selected) =>
+          sameSet(selected, nextSecondary) ? selected : nextSecondary,
+        );
+      }
     };
 
     const up = () => {
