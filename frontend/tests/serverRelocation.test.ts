@@ -75,11 +75,11 @@ describe("공유 서버 이사 알림", () => {
 
   it("이사 알림 클릭은 확인창 없이 곧바로 전환한다(업데이트만 한 번 더 묻는다)", () => {
     expect(releaseNotificationAction("relocation", false)).toBe("relocate");
-    expect(releaseNotificationAction("available", false)).toBe("confirm");
+    // 업데이트 알림은 관리자 공지(announcement)뿐이다 — 자동 감지는 알림을 만들지 않는다.
     expect(releaseNotificationAction("announcement", false)).toBe("confirm");
     expect(releaseNotificationAction("completed", false)).toBe("none");
     // 이미 전환·업데이트가 돌고 있으면 같은 클릭이 두 번 실행되지 않는다.
-    for (const kind of ["relocation", "available", "announcement", "completed"] as const) {
+    for (const kind of ["relocation", "announcement", "completed"] as const) {
       expect(releaseNotificationAction(kind, true)).toBe("none");
     }
   });

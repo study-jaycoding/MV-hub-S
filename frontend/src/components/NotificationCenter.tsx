@@ -244,10 +244,7 @@ export function NotificationCenter({
     if (item.kind === "announcement") {
       return t("{v} 업데이트가 등록되었습니다").replace("{v}", `v${item.version}`);
     }
-    return (item.kind === "available"
-      ? t("새 버전 {v} 사용 가능")
-      : t("{v}로 업데이트되었습니다")
-    ).replace("{v}", `v${item.version}`);
+    return t("{v}로 업데이트되었습니다").replace("{v}", `v${item.version}`);
   };
 
   const openComment = (item: NotificationComment) => {

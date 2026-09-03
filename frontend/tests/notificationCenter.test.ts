@@ -33,16 +33,21 @@ const status = (overrides: Partial<ReleaseUpdateStatus> = {}): ReleaseUpdateStat
 });
 
 describe("알림 센터 파생 상태", () => {
-  it("관리자 공지가 같은 버전의 자동 available 알림을 대체하고 서버 읽음을 따른다", () => {
-    const local = [{
-      id: "update:available:1.2.0",
-      kind: "available" as const,
-      version: "1.2.0",
-      text: "새 버전",
-      created_at: "2026-08-24T00:00:00Z",
-      unread: true,
-    }];
-    const merged = mergeReleaseAnnouncementNotifications(local, [{
+  // ★2026-09-03(Jay): 릴리스가 올라온 것만으로는 알림을 만들지 않는다. 릴리스마다 전원에게
+  //  알림이 가면 업데이트 시점을 일괄로 관리할 수 없다. 알림은 관리자가 공지한 것만.
+  it("새 버전이 있어도 관리자가 공지하기 전에는 알림을 만들지 않는다", () => {
+    const storage = new MemoryStorage();
+    syncReleaseNotifications(status(), storage); // 기준 버전 기록
+    const items = syncReleaseNotifications(
+      status({ state: "available", latest_version: "1.2.0", can_update: true }),
+      storage,
+    );
+    expect(items).toEqual([]); // 설정 화면엔 보이지만 알림은 안 뜬다
+    expect(unreadNotificationCount(0, items)).toBe(0); // 벨에도 안 잡힌다
+  });
+
+  it("관리자 공지는 알림이 되고 서버 읽음 상태를 따른다", () => {
+    const merged = mergeReleaseAnnouncementNotifications([], [{
       id: "release-abc",
       version: "1.2.0",
       file: "MVHub-1.2.0.zip",
@@ -65,8 +70,9 @@ describe("알림 센터 파생 상태", () => {
   it("코멘트나 업데이트 미확인이 있을 때만 벨 수를 표시하고 9+로 제한한다", () => {
     const storage = new MemoryStorage();
     syncReleaseNotifications(status(), storage);
+    // 업데이트 알림은 '내 업데이트가 끝났다'(completed)로 생긴다 — 새 릴리스 감지로는 안 생긴다.
     const updates = syncReleaseNotifications(
-      status({ state: "available", latest_version: "1.1.0", can_update: true }),
+      status({ current_version: "1.1.0", latest_version: "1.1.0" }),
       storage,
     );
     expect(unreadNotificationCount(0, [])).toBe(0);

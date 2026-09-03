@@ -5,7 +5,10 @@ import { STORAGE_KEYS } from "./storageKeys";
 
 export type NotificationTab = "all" | "unread" | "read";
 export type NotificationCategory = "all" | "comment" | "update";
-export type ReleaseNotificationKind = "available" | "completed" | "relocation" | "announcement";
+// ★새 릴리스가 올라온 것만으로는 알림을 만들지 않는다(2026-09-03, Jay). 릴리스를 만들 때마다
+//  전원에게 알림이 가면 업데이트 시점을 일괄로 관리할 수 없다. 알림은 관리자가 '공지'를 누른
+//  것만(announcement) — 자동 감지는 설정 화면의 업데이트 표시·버튼으로 그대로 남는다.
+export type ReleaseNotificationKind = "completed" | "relocation" | "announcement";
 
 // 카테고리 드롭다운 표기 — 코멘트(생성물 코멘트)와 시스템(업데이트 등 앱 소식)으로 나눈다.
 export const NOTIFICATION_CATEGORY_LABELS: Record<NotificationCategory, string> = {
@@ -38,10 +41,7 @@ export function mergeReleaseAnnouncementNotifications(
   localItems: ReleaseNotification[],
   notices: UpdateNotice[],
 ): ReleaseNotification[] {
-  const announcedVersions = new Set(notices.map((item) => item.version.trim()).filter(Boolean));
-  const local = localItems.filter(
-    (item) => !(item.kind === "available" && announcedVersions.has(item.version.trim())),
-  );
+  const local = localItems;
   const announced: ReleaseNotification[] = notices.map((item) => ({
     id: `announcement:${item.id}:${item.announcement_revision}`,
     kind: "announcement",
@@ -134,22 +134,8 @@ export function syncReleaseNotifications(
     });
   }
 
-  const latest = status.latest_version.trim();
-  if (status.state === "available" && latest) {
-    const seenVersion = safeGet(
-      storage,
-      STORAGE_KEYS.notificationSeenAvailableVersion,
-    ).trim();
-    items.push({
-      id: `update:available:${latest}`,
-      kind: "available",
-      version: latest,
-      text: `새 버전 v${latest} 사용 가능`,
-      created_at: status.updated_at || now,
-      unread: seenVersion !== latest,
-    });
-  }
-
+  // 새 버전이 올라와 있어도 여기서 알림을 만들지 않는다 — 관리자가 공지한 것만 알린다.
+  // (설정 화면은 status 를 직접 읽으므로 '업데이트 있음'과 업데이트 버튼은 그대로다.)
   return items.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
 }
 
@@ -197,8 +183,6 @@ export function markReleaseNotificationRead(
     if (sessionStore) {
       safeSet(sessionStore, STORAGE_KEYS.notificationRelocationDismissed, item.id);
     }
-  } else if (item.kind === "available") {
-    safeSet(storage, STORAGE_KEYS.notificationSeenAvailableVersion, item.version);
   } else {
     const completed = loadCompleted(storage);
     if (completed?.version === item.version) saveCompleted(storage, { ...completed, read: true });
@@ -220,8 +204,8 @@ export type ReleaseNotificationAction = "relocate" | "confirm" | "none";
 //  · 이사: **확인창 없이 곧바로 전환**한다. 알림 본문이 이미 "누르면 전환되고 다시
 //    로그인합니다"라고 말하고 있고, 옛 주소로 남아 있으면 어차피 공유가 안 된다.
 //    (안전 검증은 백엔드가 한다 — 공지 재검증·신원 프로브·원자 전환.)
-//  · 업데이트: 로컬 자동 감지와 관리자 공지 모두 같은 확인창을 거쳐 즉시 실행한다.
-//    공지가 자동 감지 항목을 대체하더라도 업데이트 동작까지 함께 사라지면 안 된다.
+//  · 업데이트: 관리자 공지를 누르면 확인창을 거쳐 즉시 실행한다(알림으로 오는 업데이트는
+//    공지뿐이다 — 자동 감지는 알림을 만들지 않고 설정 화면에만 남는다).
 //  · 이미 무언가 실행 중이면 아무것도 시작하지 않는다.
 export function releaseNotificationAction(
   kind: ReleaseNotificationKind,
@@ -229,7 +213,7 @@ export function releaseNotificationAction(
 ): ReleaseNotificationAction {
   if (busy) return "none";
   if (kind === "relocation") return "relocate";
-  return kind === "available" || kind === "announcement" ? "confirm" : "none";
+  return kind === "announcement" ? "confirm" : "none";
 }
 
 export function filterNotificationItems<T extends { unread: boolean }>(

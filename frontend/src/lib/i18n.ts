@@ -30,7 +30,6 @@ const EN: Record<string, string> = {
   "새 알림이 없습니다.": "No new notifications.",
   "최근 알림이 없습니다.": "No recent notifications.",
   "팀원": "Teammate",
-  "새 버전 {v} 사용 가능": "New version {v} available",
   "{v}로 업데이트되었습니다": "Updated to {v}",
   "{v}(으)로 업데이트하시겠습니까?": "Update to {v} now?",
   "예, 업데이트": "Yes, update",
