@@ -414,6 +414,26 @@ def test_install_refuses_a_split_layout(tmp_path, monkeypatch):
         sm.install_set(package, tmp_path / "data", 8010, _sha(sm, package))
 
 
+def test_recovering_from_the_servers_own_backups_folder_is_allowed(tmp_path, monkeypatch):
+    """<data>\\backups 는 <data> 안에 있다 — 그게 정상이고 복구의 표준 출처다.
+
+    데이터 폴더 전체를 겹침으로 보면 재해복구의 주 경로가 통째로 거부된다.
+    실제로 막혔던 회귀(2026-09-04). 막아야 하는 것은 db 폴더 안에 있는 경우뿐이다.
+    """
+    sm = _module()
+    data = tmp_path / "data"
+    _make_live_set(data / "db", tag="old")
+    package = _make_package(data / "backups_pkg")  # <data> 안이지만 db 밖
+    monkeypatch.setattr(sm, "ensure_server_stopped", lambda port: {})
+
+    db_dir = sm.role_live_paths(data)["content"].parent
+    assert sm._overlaps(package["content"].parent, data) is True  # 데이터 폴더와는 겹친다
+    assert sm._overlaps(package["content"].parent, db_dir) is False  # db 폴더와는 아니다
+
+    result = sm.install_set(package, data, 8010, _sha(sm, package))
+    assert Path(result["targets"]["content"]).is_file()
+
+
 def test_extras_are_actually_installed_not_just_carried(tmp_path):
     """export 가 담아 온 폴더를 설치하지 않으면 새 서버에서 비어 있다."""
     sm = _module()

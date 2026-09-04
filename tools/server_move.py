@@ -941,8 +941,19 @@ def cmd_import(args: argparse.Namespace) -> int:
         _say(f"  {role:<8}  : {package_files[role].name}")
     _say()
 
-    if _overlaps(package_dir, data_dir):
-        raise MoveError("패키지 폴더가 설치 대상 데이터 폴더와 겹칩니다")
+    # 겹침 검사는 '교체가 일어나는 db 폴더' 를 기준으로만 한다.
+    # 데이터 폴더 전체로 잡으면 안 된다 — 서버 자신의 백업은 <data>\backups 에 있고,
+    # 거기서 바로 복구하는 것이 SERVER_RECOVERY 의 표준 절차다. 그것까지 막으면
+    # 재해복구의 주 경로가 통째로 거부된다(2026-09-04 실서버에서 발견).
+    # 검증만 할 때는 아무것도 쓰지 않으므로 검사 자체가 필요 없다.
+    if args.install:
+        db_dir = role_live_paths(data_dir)["content"].parent
+        if _overlaps(package_dir, db_dir):
+            raise MoveError(
+                f"패키지가 교체 대상 폴더 안에 있습니다: {db_dir}\n"
+                "  설치 중 그 파일이 함께 옮겨져 세트가 깨질 수 있습니다.\n"
+                "  세트를 다른 폴더로 복사한 뒤 다시 실행하세요."
+            )
 
     if manifest_verified:
         _say("  [확인] manifest 의 크기·SHA-256 전량 일치")
