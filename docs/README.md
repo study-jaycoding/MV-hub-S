@@ -51,6 +51,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 생성 제출 중단·중복 과금 방지 | [GENERATION_SUBMISSION_RECOVERY.md](GENERATION_SUBMISSION_RECOVERY.md) |
 | 테스트와 배포 전 검증 | [TESTING.md](TESTING.md), [PREDEPLOY_100_USERS.md](PREDEPLOY_100_USERS.md) |
 | 서버 설치·운영·복구 | [SERVER.md](SERVER.md), [SERVER_RECOVERY.md](SERVER_RECOVERY.md) |
+| 공유 서버를 다른 PC 로 이전 | [SERVER_MIGRATION.md](SERVER_MIGRATION.md) |
 
 ## 문서 상태
 

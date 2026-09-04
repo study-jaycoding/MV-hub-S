@@ -170,6 +170,18 @@ schtasks /Run /TN "MVHub Watchdog"
 
 목표: 10분 내 복구. **순서가 중요하다 — 특히 1번.**
 
+> [!TIP]
+> 4·5번(검증과 DB 복원)은 아래 두 줄로 대신할 수 있다. 드릴·기존 DB 보존·실패 시 롤백까지
+> 묶여 있다. 계획된 서버 이전도 같은 도구를 쓴다 — [SERVER_MIGRATION.md](SERVER_MIGRATION.md).
+>
+> ```
+> server_move_import.bat --backup-set "<경로>\content_hub_<stamp>.db"
+> server_move_import.bat --backup-set "<경로>\content_hub_<stamp>.db" --install
+> ```
+>
+> **`--install` 이 없으면 검증만 하고 아무것도 바꾸지 않는다.** 첫 줄로 통과를 확인한 뒤
+> 둘째 줄을 실행한다. 1·2번(원 서버 전원 차단, 고정 IP)은 여전히 사람이 먼저 해야 한다.
+
 1. **원 서버 PC 전원을 끄거나 랜선을 뽑는다.** (살아있는 채로 예비 PC에 같은
    IP를 주면 IP 충돌로 둘 다 이상해진다.)
 2. 예비 PC에 서버 고정 IP를 수동 설정한다(제어판 → 네트워크 → IPv4 속성).
@@ -201,6 +213,9 @@ schtasks /Run /TN "MVHub Watchdog"
      `backend\data\db\manage_hub.db` 로 복원.
    - `backups\<계정슬러그>\content_hub_*.db` 가 있으면 →
      `backend\data\db\acct\<계정슬러그>\content_hub.db` 로 복원(계정별 DB).
+     단 **AUTH=1 공유 서버는 계정별 DB 를 만들지도 읽지도 않는다**(`account_key()` 가
+     `AUTH_ENABLED` 면 항상 `None`). 공유 서버 백업에 이 폴더가 있다면 그 데이터 폴더를
+     과거에 로컬 허브로 썼다는 뜻이므로, 개인 데이터로 보고 복원 대상에서 제외한다.
    - `db-backups\<계정슬러그>\` 는 팀원 로컬 허브가 올려둔 개인 DB 백업 —
      서버 복구에는 불필요하고, 팀원 PC 가 죽었을 때 그 계정으로 로그인한 작업자 설정의
      설정 창의 서버 백업 목록에서 **백업 버전 선택 → [이 데이터 적용]** 으로 최신 `content + trash` 세트를

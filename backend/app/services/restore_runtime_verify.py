@@ -11,6 +11,7 @@ import logging
 import os
 import secrets
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -24,6 +25,45 @@ from .backup_verify import (
     inspect_sqlite_database,
     read_table_counts,
 )
+
+
+# 격리 서버를 종료한 직후에만 나타나는 일시적 열기 실패. 실측된 것만 재시도 대상으로 둔다 —
+# 'no such table' 같은 진짜 결함까지 재시도로 흡수하면 드릴이 결함을 숨기게 된다.
+_TRANSIENT_OPEN_ERRORS = ("disk i/o error", "unable to open database file")
+
+
+def _read_counts_after_shutdown(
+    path: Path, tables: tuple[str, ...], *, attempts: int = 6
+) -> dict[str, int]:
+    """격리 서버를 종료한 '직후'의 첫 읽기를 짧게 재시도한다.
+
+    2026-09-04 실측: 종료 직후 첫 SELECT 가 sqlite3 'disk I/O error' 로 떨어지는데, 같은
+    파일을 몇 초 뒤 그대로 읽으면 정상이고 행 수도 맞다(재현율 100%). 파일 내용 문제가
+    아니라 방금 사라진 프로세스의 DB·-shm 을 여는 것이 잠시 막히는 현상으로 보인다
+    (핸들 해제 지연, stale -shm 복구, 파일 필터 중 무엇이 주된 원인인지는 확정하지 못했다).
+
+    그래서 '여는 단계의 일시적 실패'만 좁혀서 재시도하고, 그 밖의 OperationalError 는
+    즉시 올려 드릴을 실패시킨다. 재시도가 있었으면 로그에 남겨 조용히 넘어가지 않게 한다.
+    """
+    delay = 0.2
+    for attempt in range(attempts):
+        try:
+            counts = read_table_counts(path, tables)
+            if attempt:
+                logging.getLogger("mvhub.restore").warning(
+                    "격리 서버 종료 직후 %s 읽기가 %d회 재시도 끝에 성공했습니다",
+                    path.name,
+                    attempt,
+                )
+            return counts
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            transient = any(marker in message for marker in _TRANSIENT_OPEN_ERRORS)
+            if not transient or attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 1.5)
+    raise AssertionError("unreachable")
 
 
 def _free_loopback_port() -> int:
@@ -229,7 +269,7 @@ def verify_restored_set_runtime(
             process_stopped = process.poll() is not None
 
     after_counts = {
-        label: read_table_counts(
+        label: _read_counts_after_shutdown(
             path,
             tuple(BACKUP_SET_MEMBERS[label]["reconcile_tables"]),
         )
@@ -240,7 +280,7 @@ def verify_restored_set_runtime(
             "격리 서버 기동 전후 핵심 데이터 수가 다릅니다: "
             f"before={before_counts}, after={after_counts}"
         )
-    after_bootstrap = read_table_counts(paths["content"], ("account", "creator"))
+    after_bootstrap = _read_counts_after_shutdown(paths["content"], ("account", "creator"))
     bootstrap_deltas = {
         table: after_bootstrap[table] - before_bootstrap[table]
         for table in before_bootstrap
