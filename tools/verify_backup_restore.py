@@ -60,6 +60,7 @@ def main() -> int:
     if args.server_timeout <= 0:
         parser.error("--server-timeout은 0보다 커야 합니다")
 
+    leftover_server = False
     try:
         with tempfile.TemporaryDirectory(prefix="mvhub-restore-drill-") as tmp:
             temp_dir = Path(tmp)
@@ -93,6 +94,25 @@ def main() -> int:
                 report["created_snapshot"] = created_snapshot
                 report["restored_kept"] = bool(args.restored)
             print(json.dumps(report, ensure_ascii=False, indent=2))
+            # 격리 서버가 남으면 복원 DB를 계속 붙들고 있으므로 성공으로 보고하지 않는다.
+            # 그 밖의 검증 실패(ready 불일치·로그인 실패·행 수 변화)는 모두 예외를 던져 아래로 간다.
+            leftover_server = (
+                report.get("isolated_server", {}).get("process_stopped") is False
+            )
+        if leftover_server:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error_type": "IsolatedServerLeftRunning",
+                        "error": "격리 복원 서버가 종료되지 않았습니다. 남은 프로세스를 확인해 정리하세요.",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                file=sys.stderr,
+            )
+            return 1
         return 0
     except Exception as exc:  # noqa: BLE001 — 운영 도구는 traceback 대신 한 줄 구조화 오류
         print(
