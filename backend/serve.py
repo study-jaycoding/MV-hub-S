@@ -20,10 +20,40 @@ import argparse
 import os
 import signal
 import socket
+import sys
 
 import uvicorn
 
-from app.config import HOST, PORT
+
+def _make_stdio_crash_proof() -> None:
+    """콘솔 인코딩 때문에 print 한 줄이 서버를 죽이지 못하게 한다.
+
+    예약 작업은 stdout 을 logs\\server_console.log 로 돌린다. 그때 Python 은 콘솔이
+    아니라 로케일 인코딩(한국어 Windows = cp949)으로 인코딩하는데, cp949 에는
+    em dash(—)가 없다. 한글은 되지만 그 한 글자에서 UnicodeEncodeError 가 나고,
+    기동 중에 나면 uvicorn 이 'Application startup failed' 로 프로세스를 끝낸다.
+
+    2026-09-04 실서버에서 재현했다 — CONTENT_HUB_EXTERNAL_RECOVERY=0 으로 띄우자
+    app/main.py 의 기동 안내 print 하나 때문에 서버가 뜨지 못했다. 같은 문자가
+    serve.py(IPv6 바인딩 실패 안내)와 backup·syncer·thumbs·asset_watcher 등
+    16곳에 있어, 그 경로를 지나가는 순간 같은 일이 난다.
+
+    로그 문자를 곳곳에서 관리하는 대신 여기서 한 번 errors='replace' 로 바꾼다.
+    인코딩 자체는 바꾸지 않으므로 기존 로그 읽기(MV_logs.bat)는 그대로다.
+    PYTHONIOENCODING 을 준 호출자(복원 드릴)는 그 인코딩이 유지된다.
+
+    ★ app 을 import 하기 전에 불러야 한다 — import 시점의 print 도 보호 대상이다.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass  # 파이프·리다이렉트 형태에 따라 지원되지 않을 수 있다(그때는 원래대로).
+
+
+_make_stdio_crash_proof()
+
+from app.config import HOST, PORT  # noqa: E402 — stdio 보호를 app import 보다 먼저
 
 
 def _parse_args(argv: list[str] | None = None) -> None:
