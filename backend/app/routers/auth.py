@@ -335,23 +335,29 @@ async def elevate_super_admin(body: SuperAdminIn, request: Request):
         jti,
         now=issued_at,
     )
-    repo.issue_super_admin_session(
-        jti=jti,
-        subject_email=email,
-        subject_uid=subject_uid,
-        token=token,
-        scope=auth.SUPER_ADMIN_SCOPE,
-        issued_at=issued_at,
-        expires_at=expires_at,
-    )
-    journal_audit_event(
-        "super_admin.issued",
-        actor_uid=subject_uid,
-        target_type="super_admin_session",
-        target_id=jti,
-        fields=["scope", "expires_at"],
-        details={"scope": auth.SUPER_ADMIN_SCOPE, "ttl_seconds": auth.SUPER_ADMIN_TTL},
-    )
+    # 세션 저장·감사 기록은 DB 쓰기다 — 비동기 라우트에서 직접 부르면 락 대기(최대 busy_timeout 5초)
+    # 동안 이벤트 루프가 멈춰 다른 HTTP·WS 까지 같이 선다(코덱스 레인A P2-1). 순서는 그대로 두고
+    # 한 동기 함수로 묶어 non-abandon 스레드에서 실행한다(ARCHITECTURE §6: 쓰기는 to_thread_non_abandon).
+    def _persist_grant() -> None:
+        repo.issue_super_admin_session(
+            jti=jti,
+            subject_email=email,
+            subject_uid=subject_uid,
+            token=token,
+            scope=auth.SUPER_ADMIN_SCOPE,
+            issued_at=issued_at,
+            expires_at=expires_at,
+        )
+        journal_audit_event(
+            "super_admin.issued",
+            actor_uid=subject_uid,
+            target_type="super_admin_session",
+            target_id=jti,
+            fields=["scope", "expires_at"],
+            details={"scope": auth.SUPER_ADMIN_SCOPE, "ttl_seconds": auth.SUPER_ADMIN_TTL},
+        )
+
+    await to_thread_non_abandon(_persist_grant)
     return {
         "ok": True,
         "active": True,

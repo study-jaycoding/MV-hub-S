@@ -594,7 +594,9 @@ async def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)
             # 공유 서버는 메타데이터와 URL만 보관한다. 직접 접속한 브라우저의 구 빌드가
             # media-thumb를 호출해도 서버 디스크에는 원격 원본·썸네일을 만들지 않는다.
             try:
-                assert_public_http_url(src)
+                # getaddrinfo 는 동기 DNS 조회 — 비동기 라우트에서 직접 부르면 DNS 가 느릴 때
+                # 이벤트 루프가 서서 다른 요청·WS 까지 지연된다(코덱스 레인A P2-2). 검증만 스레드로.
+                await asyncio.to_thread(assert_public_http_url, src)
             except BlockedURLError as exc:
                 raise HTTPException(status_code=400, detail="허용되지 않는 원격 URL입니다") from exc
             return RedirectResponse(src, status_code=307, headers={"Cache-Control": "no-store"})

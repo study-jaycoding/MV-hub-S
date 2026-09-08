@@ -587,8 +587,11 @@ async def _forward_stream(request: Request) -> Response:
         upstream = await asyncio.to_thread(lambda: urllib.request.urlopen(req, timeout=300))
     except urllib.error.HTTPError as e:
         ct = e.headers.get_content_type() if e.headers else "application/json"
+        # 오류 본문 e.read() 는 소켓 동기 읽기(timeout 300초) — 헤더 뒤 본문이 늦게 오면 이 허브의
+        # 이벤트 루프가 서서 API·WS·롱폴이 함께 지연된다(코덱스 레인A P2-3). 읽기만 스레드로.
+        body = await asyncio.to_thread(e.read) if request.method != "HEAD" else b""
         response = Response(
-            content=e.read() if request.method != "HEAD" else b"",
+            content=body,
             status_code=e.code,
             media_type=ct or "application/json",
             headers=_response_headers(e.headers),
