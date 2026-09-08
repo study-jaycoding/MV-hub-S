@@ -5,6 +5,7 @@
 import { useMemo } from "react";
 import type React from "react";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
+import { LastViewedBadge } from "../LastViewedBadge";
 import { cardBatch, variantIds } from "../../../lib/scenes";
 import type { Generation, PreviewTarget } from "../../../types";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../../lib/workspaceCommand";
@@ -34,6 +35,7 @@ export function ComfyCard({
   runningLocal,
   laneDelta,
   getNodePreview,
+  lastViewed,
   graph,
   hist,
   tagEdit,
@@ -46,6 +48,7 @@ export function ComfyCard({
   runningLocal: boolean; // 부모 메모리 실행 집합(runningComfyIds)에 있는지
   laneDelta: (lane: "model" | "ref" | "text") => number;
   getNodePreview: (cardId: string) => (p: PreviewTarget) => void;
+  lastViewed?: boolean; // 이 씬에서 마지막으로 크게 열어본 카드인가(생성 카드와 같은 판정)
   graph: {
     cards: SceneCard[];
     cardsById: Map<string, SceneCard>;
@@ -541,6 +544,8 @@ export function ComfyCard({
         onMouseDown={(e) => actions.onResizeDown(e, card.id)}
         title="드래그해 크기 조절"
       />
+      {/* 마지막으로 크게 열어본 카드 — 저장은 getNodePreview 로 같이 되므로 표시도 같아야 한다 */}
+      {lastViewed && <LastViewedBadge />}
     </>
   );
 }

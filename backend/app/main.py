@@ -72,6 +72,7 @@ from .routers import (
     db_transfer,
     gen_requests,
     generation,
+    generation_views,
     ingest,
     library,
     members,
@@ -671,6 +672,7 @@ app.add_middleware(
 )
 
 app.include_router(library.router)
+app.include_router(generation_views.router)  # 개인 '마지막으로 본' 표시(고정 경로 — /generations/{id} 와 안 겹침)
 app.include_router(generation.router)
 app.include_router(share.router)
 app.include_router(sync.router)

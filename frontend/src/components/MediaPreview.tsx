@@ -2,6 +2,7 @@
 // 새 브라우저 탭을 열지 않고 이 창에서 보여주고, 영상은 재생한다.
 // 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
 import { useEffect, useRef, useState } from "react";
+import { recordGenerationView } from "../lib/generationViews";
 import { APP_EVENTS } from "../lib/appEvents";
 import { downloadOne } from "../lib/download";
 import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
@@ -38,6 +39,26 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
     setIdx(target.index ?? 0);
   }, [target]);
   const cur = items && items[idx] ? items[idx] : target;
+
+  // '마지막으로 본' 표시 기록 — 미리보기에 그 항목이 실제로 표시된 순간에만.
+  // ★target 이 막 바뀐 첫 패스에서는 위의 리셋 effect 가 아직 안 돌아 idx 가 옛 값이다.
+  //   그때 기록하면 새 목록 + 옛 인덱스 = 엉뚱한 항목이 찍히므로 target.index 를 쓴다.
+  const lastTargetRef = useRef<PreviewTarget | null>(null);
+  const lastRecordedRef = useRef("");
+  useEffect(() => {
+    const fresh = lastTargetRef.current !== target;
+    lastTargetRef.current = target;
+    const effIdx = fresh ? target.index ?? 0 : idx;
+    const item = items && items[effIdx] ? items[effIdx] : target;
+    if (!item.genId) return; // 에셋(파일) 미리보기 — 생성물이 아니라 기록 대상이 아니다
+    const sceneId = item.sceneId || target.sceneId || "";
+    const cardId = item.cardId || target.cardId || "";
+    const ctx = sceneId && cardId ? { sceneId, cardId } : null;
+    const key = [sceneId, cardId, item.genId].join("|");
+    if (lastRecordedRef.current === key) return; // 재렌더·프리페치로 다시 찍지 않는다
+    lastRecordedRef.current = key;
+    void recordGenerationView(item.genId, ctx);
+  }, [target, idx, items]);
 
   // 이웃(앞뒤) 이미지를 미리 브라우저 캐시에 받아둔다 → ←/→ 로 넘길 때 이미 받아둬서 즉시 표시(딜레이
   // 제거). 원본 화질 그대로 보여주되(다운로드는 필요할 때만), 디스크엔 안 쌓이고 브라우저 임시 캐시만 쓴다.

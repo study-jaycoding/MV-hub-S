@@ -8,6 +8,7 @@ import type { Generation, InfoTarget, PreviewTarget } from "../../../types";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../../lib/workspaceCommand";
 import { generationStatusLabelFor, generationStatusTitle } from "../../../lib/generationDisplay";
 import { HistoryBoardNode } from "../../history/HistoryBoardNode";
+import { LastViewedBadge } from "../LastViewedBadge";
 import { TagEditor } from "../../TagEditor";
 import higgsfieldLogo from "../../../assets/higgsfield-logo.svg";
 
@@ -48,6 +49,7 @@ export function GenerationCard({
   selectedOnly,
   laneDelta,
   getNodePreview,
+  lastViewed,
   hist,
   actions,
   tagEdit,
@@ -64,6 +66,7 @@ export function GenerationCard({
   selectedOnly: boolean; // 이 카드 '하나만' 선택됨 — Generate 툴바 노출 조건
   laneDelta: (lane: "model" | "ref" | "text") => number;
   getNodePreview: (cardId: string) => (p: PreviewTarget) => void;
+  lastViewed?: boolean; // 이 씬에서 마지막으로 크게 열어본 카드인가
   hist: HistPass;
   actions: {
     setCardMenu: (cardId: string | null) => void;
@@ -191,6 +194,9 @@ export function GenerationCard({
           )}
         </div>
       )}
+      {/* 마지막으로 크게 열어본 카드 하나. 도구 오버레이(.thumb-overlay)는 평소 숨어 있어
+          거기 넣으면 안 된다 — 이건 반대로 평소 보이고 호버 때 비켜준다. */}
+      {lastViewed && <LastViewedBadge />}
       {/* 다중 결과 배지 — 이 카드에서 만든 결과가 2개 이상이면. 클릭=팝업으로 모아보기 */}
       {variantIds(card).length > 1 && (
         <button

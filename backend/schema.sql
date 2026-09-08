@@ -595,6 +595,27 @@ CREATE INDEX IF NOT EXISTS idx_scene_card_gen_owner_generation_active
     ON scene_card_generation(owner_uid, generation_id) WHERE removed_at IS NULL;
 -- idx_scene_card_gen_attempt는 기존 DB에 canvas_attempt_id를 ALTER한 뒤 db_migrations에서 만든다.
 
+-- 마지막으로 크게 열어본 생성물(사용자별 개인 표시). 캔버스 카드 묶음마다 1행 + 캔버스 밖 열람 1행.
+--  · generation FK 를 걸지 않는다 — 휴지통은 메인 행을 실제로 지웠다가 복원 때 재삽입하므로
+--    (repo/trash.py) CASCADE 면 휴지통에 넣는 순간 표시가 죽고 복원해도 안 돌아온다.
+--    대신 읽을 때 generation 실재를 확인한다(scene_card_generation 의 LEFT JOIN 은 '없는 것도 남긴다'는
+--    다른 계약이라 그대로 쓰면 안 된다).
+--  · card_id 는 씬 간 유일하지 않다 — importScene 이 씬 id 만 새로 만들고 카드는 그대로 가져와,
+--    같은 씬을 두 번 들이면 다른 씬에 같은 card_id 가 생긴다. scene_id 와 짝이어야 유일하다.
+--  · owner_uid = deps.actor_id. 개인 편집물이라 팀 서버로 보내지 않는다(_proxy 로컬 처리).
+CREATE TABLE IF NOT EXISTS generation_view (
+    owner_uid     TEXT NOT NULL,
+    scene_id      TEXT NOT NULL,                          -- '' = 캔버스 밖(목록·히스토리)
+    card_id       TEXT NOT NULL,                          -- '' = 캔버스 밖
+    generation_id TEXT NOT NULL,
+    viewed_seq    INTEGER NOT NULL,                       -- 최신 판정 기준. 시각으로 정렬하지 않는다(시계 역행·동일 시각)
+    viewed_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (owner_uid, scene_id, card_id)
+);
+-- 씬을 열 때 그 씬의 마지막 카드 1개만 뽑는다.
+CREATE INDEX IF NOT EXISTS idx_generation_view_scene
+    ON generation_view(owner_uid, scene_id, viewed_seq DESC);
+
 CREATE INDEX IF NOT EXISTS idx_generation_worker  ON generation(worker_id);
 CREATE INDEX IF NOT EXISTS idx_generation_created ON generation(created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_share_gen   ON share(generation_id);  -- generation 당 공유 1개

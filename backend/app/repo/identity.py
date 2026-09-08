@@ -473,6 +473,8 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     ("task_assignment", "added_by", "plain"),  # 배정한 PM actor(routers add_assignment 가 actor_id 저장 → acct: 가능) — plain
     # 캔버스 씬 백업 owner(PK 선두) — 충돌(양 신원 행 공존) 시 user_ 행 유지·acct: 행 폐기(백업 미러라 손실 무해).
     ("scene_backup", "owner_uid", "ignore_del"),
+    # 마지막으로 본 생성물 표시(PK 에 owner_uid) — 캔버스 개인 상태라 scene_backup 과 같은 취급.
+    ("generation_view", "owner_uid", "ignore_del"),
     # 캔버스 카드 소속 owner(PK 선두) — 충돌 시 '제거 표시(removed_at)' 를 보존하며 병합.
     # ignore_del 로 acct: 행을 그냥 버리면 acct: 쪽에만 있던 tombstone 이 사라져, add-only 병합
     # 규칙상 지웠던 생성물이 카드에 되살아난다(적대 리뷰 P1 — 제거 의도가 항상 이긴다).

@@ -45,6 +45,9 @@ _NOTIFY_NO_LIBRARY_CHANGE_PATHS = frozenset(
         "/api/scenes/backup",
         "/api/comfy/parse",
         "/api/comfy/run",
+        # 내가 마지막으로 본 표시 — 생성물 자체는 안 바뀐다. 라이브러리 변경으로 치면
+        # 미리보기를 넘길 때마다 다른 창이 목록을 통째로 다시 읽는다.
+        "/api/generation-views",
     }
 )
 _NOTIFY_NO_LIBRARY_CHANGE_PREFIXES = (

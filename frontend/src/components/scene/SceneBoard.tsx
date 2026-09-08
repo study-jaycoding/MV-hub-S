@@ -134,6 +134,9 @@ import { SetCard } from "./cards/SetCard";
 import { ListCard } from "./cards/ListCard";
 import { RenderCard } from "./cards/RenderCard";
 import { GenerationCard } from "./cards/GenerationCard";
+import { refreshGenerationViews, useGenerationViews } from "../../lib/generationViews";
+import { onLibraryChanged } from "../../lib/libraryBroadcast";
+import { useCustomEvent } from "../../lib/useCustomEvent";
 import { ComfyCard } from "./cards/ComfyCard";
 import { ModelCard } from "./cards/ModelCard";
 import { InputCard } from "./cards/InputCard";
@@ -479,6 +482,23 @@ export function SceneBoard({
   // 씬 전환 = 선택 해제. 같은 씬이라도 외부(생성 결과 바인딩·프롬프트 순서변경)에서 cards/edges 가
   // 바뀌면 반영하되 선택은 유지 — 카드 드래그 중엔 persist 안 하므로 prop 이 안 바뀌어 방해받지 않는다.
   const sceneIdRef = useRef(scene.id);
+  // '마지막으로 본' 표시 — 모듈 store 라 구성 탭을 벗어나 언마운트돼도 값이 남는다.
+  const genViews = useGenerationViews(scene.id);
+  useEffect(() => {
+    void refreshGenerationViews(scene.id);
+  }, [scene.id]);
+  // 휴지통 이동·복원은 서버 조회에서 걸러진다 — 생성물 변경 신호가 오면 다시 읽어야 화면 배지도 따라간다.
+  // useSceneGenData 와 같은 300ms 트레일링 디바운스(배치 태깅 등 버스트를 1회로).
+  const viewsRefreshTimer = useRef<number | undefined>(undefined);
+  const bumpViewsRefresh = () => {
+    if (viewsRefreshTimer.current) clearTimeout(viewsRefreshTimer.current);
+    viewsRefreshTimer.current = window.setTimeout(() => {
+      void refreshGenerationViews(sceneIdRef.current);
+    }, 300);
+  };
+  useEffect(() => onLibraryChanged(bumpViewsRefresh), []); // 창 간
+  useCustomEvent(APP_EVENTS.libraryChanged, bumpViewsRefresh); // 같은 창
+  useEffect(() => () => { if (viewsRefreshTimer.current) clearTimeout(viewsRefreshTimer.current); }, []);
   useEffect(() => {
     // ★기존 저장분(레거시)에 박제된 status:"running" 치유 — 지금 실제로 실행 중(모듈 store)이 아니면
     //  done/idle 로 정규화해 '영원히 생성중' 표시를 없앤다(persist 쪽 settleComfyRunning 과 짝).
@@ -985,13 +1005,17 @@ export function SceneBoard({
                 type: av.type,
                 name: genDataRef.current[id]?.prompt?.slice(0, 50) || "결과",
                 genId: id,
+                // '마지막으로 본' 표시를 남길 묶음 — card_id 는 씬 간 유일하지 않아 씬과 짝으로 보낸다.
+                sceneId: sceneIdRef.current,
+                cardId,
               });
           }
         }
+        const ctx = { sceneId: sceneIdRef.current, cardId };
         if (items.length > 1) {
           const index = Math.max(0, items.findIndex((it) => it.genId === target.genId));
-          op({ ...target, items, index });
-        } else op(target);
+          op({ ...target, ...ctx, items, index });
+        } else op({ ...target, ...ctx });
       };
       cache.set(cardId, h);
     }
@@ -3405,6 +3429,7 @@ export function SceneBoard({
                   runningLocal={runningComfyIds.has(card.id)}
                   laneDelta={laneDelta}
                   getNodePreview={getNodePreview}
+                  lastViewed={genViews.lastCardId === card.id}
                   graph={{ cards, cardsById, edges, refParents, genData }}
                   hist={{
                     disabledIds,
@@ -3480,6 +3505,7 @@ export function SceneBoard({
                   selectedOnly={selected.size === 1}
                   laneDelta={laneDelta}
                   getNodePreview={getNodePreview}
+                  lastViewed={genViews.lastCardId === card.id}
                   hist={{
                     disabledIds,
                     typeFilter,
@@ -3893,6 +3919,8 @@ export function SceneBoard({
       {cardMenu && (
         <SceneVariantPopup
           cardId={cardMenu}
+          sceneId={scene.id}
+          viewedGenId={(cardMenu && genViews.card[cardMenu]) || null}
           cards={cards}
           genData={genData}
           disabledIds={disabledIds}

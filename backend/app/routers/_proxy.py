@@ -399,6 +399,7 @@ _LOCAL_PREFIXES = (
     "/api/auto-tags",      # 전역 태그(계정별 owner_uid, 로컬)
     "/api/trash",          # 내 휴지통(로컬)
     "/api/scenes",         # 캔버스 씬 DB 백업(개인 편집물 — 로컬 DB 미러. 서버 전송 금지)
+    "/api/generation-views",  # 내가 마지막으로 본 생성물(개인 표시 — 로컬 DB. 팀 항목은 기록 안 함)
     "/api/db/",            # 내 로컬 DB 내보내기/가져오기(교차 PC 연속성, 서버 무관)
     "/api/ingest",         # 에이전트→내 로컬 DB 동기화(generate list·mcp·known-jobs). 팀크레딧만 서버로 전달
     "/api/projects",       # 목록=하이브리드(서버 정의+로컬 카운트)·assign=로컬, 생성/역할 등 관리는 핸들러가 프록시

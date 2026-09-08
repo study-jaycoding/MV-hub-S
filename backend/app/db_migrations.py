@@ -598,6 +598,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "generation_id TEXT PRIMARY KEY REFERENCES generation(id) ON DELETE CASCADE, "
         "invalid_input_result INTEGER NOT NULL DEFAULT 0)"
     )
+    # 마지막으로 크게 열어본 생성물(개인 표시). 신규 DB 는 schema.sql 이 만들고, 기존 DB 는 여기서.
+    # FK 없음 — 휴지통이 메인 generation 행을 실제로 지웠다 복원 때 재삽입하므로 CASCADE 면 표시가 죽는다.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS generation_view ("
+        "owner_uid TEXT NOT NULL, scene_id TEXT NOT NULL, card_id TEXT NOT NULL, "
+        "generation_id TEXT NOT NULL, viewed_seq INTEGER NOT NULL, "
+        "viewed_at TEXT NOT NULL DEFAULT (datetime('now')), "
+        "PRIMARY KEY (owner_uid, scene_id, card_id))"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_generation_view_scene "
+        "ON generation_view(owner_uid, scene_id, viewed_seq DESC)"
+    )
     scene_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(scene_card_generation)")
     }

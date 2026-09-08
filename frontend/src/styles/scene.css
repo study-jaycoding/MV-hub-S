@@ -1272,3 +1272,43 @@
 .vtl-clip-n { position: absolute; left: 3px; top: 2px; font-size: 9px; font-weight: 800; background: rgba(0, 0, 0, 0.6); color: #fff; padding: 0 4px; border-radius: 3px; }
 .vtl-playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #ff3b3b; box-shadow: 0 0 6px rgba(255, 59, 59, 0.8); pointer-events: none; z-index: 3; }
 .vtl-playhead::before { content: ""; position: absolute; top: -1px; left: -4px; border: 5px solid transparent; border-top-color: #ff3b3b; }
+
+/* ── 마지막으로 확인한 결과 배지 ────────────────────────────────────────────
+   ★.thumb-overlay 안에 넣지 않는다 — 그 부모는 평소 숨어 있다가 호버·선택 때 나타나므로
+   요구(평소 보이고 호버 때 비켜줌)와 정반대다. 여기서 독립 요소로 띄운다.
+   ★크기를 명시한다 — 팝업이 .ov-icon 을 26px 로 덮으므로 물려받으면 안 된다.
+   재질은 도구 아이콘과 같은 유리 칩(rgba(12,13,16,.6) + blur)으로 맞춘다. */
+.last-viewed-badge {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  pointer-events: none; /* 카드 클릭·드래그를 가로채지 않는다 */
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: rgba(12, 13, 16, 0.6);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 1;
+  transition: opacity 0.14s ease;
+}
+.last-viewed-badge svg { display: block; flex: none; }
+/* 그림을 보려고 마우스를 올리면 비켜준다(사용자 확정 안). 카드/셀 어느 쪽에 붙어도 동작하게 둘 다. */
+.scene-card:hover .last-viewed-badge,
+.scene-varpop-item:hover .last-viewed-badge { opacity: 0; }
+/* 영상은 같은 자리에 ▶(.linb-vid / .scene-varpop-vid, z-index 2)가 있다 — 그 아래로 내려 둘 다 보이게. */
+.scene-card:has(.linb-vid) .last-viewed-badge { top: calc(50% + 30px); }
+.scene-varpop-item:has(.scene-varpop-vid) .last-viewed-badge { top: calc(50% + 28px); }
+@media (prefers-reduced-motion: reduce) {
+  .last-viewed-badge { transition: none; }
+}

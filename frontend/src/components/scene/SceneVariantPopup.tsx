@@ -10,6 +10,7 @@ import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../lib/workspaceCommand";
 import { generationStatusLabelFor } from "../../lib/generationDisplay";
 import { thumbOf } from "../../lib/media";
+import { LastViewedBadge } from "./LastViewedBadge";
 import { APP_EVENTS, dispatchAppEvent } from "../../lib/appEvents";
 import { downloadName, downloadOne } from "../../lib/download";
 import { DRAG_TYPES } from "../../lib/dragTypes";
@@ -29,6 +30,8 @@ export interface VariantResolveControls {
 
 export function SceneVariantPopup({
   cardId,
+  sceneId,
+  viewedGenId,
   cards,
   genData,
   disabledIds,
@@ -40,6 +43,8 @@ export function SceneVariantPopup({
   actions,
 }: {
   cardId: string; // cardMenu (열린 카드 id)
+  sceneId: string; // '마지막으로 본' 표시를 남길 씬 — card_id 는 씬 간 유일하지 않다
+  viewedGenId?: string | null; // 이 묶음에서 마지막으로 크게 열어본 결과
   cards: SceneCard[];
   genData: Record<string, Generation>;
   disabledIds: Set<string>;
@@ -125,6 +130,9 @@ export function SceneVariantPopup({
         type: a.type,
         name: genData[id]?.prompt?.slice(0, 50) || "결과",
         genId: id,
+        // 팝업은 자기 정렬(최신순)·방향키 목록을 지키므로 getNodePreview 를 안 쓴다 — 문맥만 직접 싣는다.
+        sceneId,
+        cardId: c.id,
       });
   }
   const openPreviewAt = (gid: string) => {
@@ -294,6 +302,7 @@ export function SceneVariantPopup({
                     onClick={(e) => selectPopup(gid, e)}
                     onDoubleClick={() => a && openPreviewAt(gid)}
                   >
+                    {viewedGenId === gid && <LastViewedBadge />}
                     {/* 영상도 확실히 보이게 — 썸네일 있으면 포스터, 없으면 첫 프레임(video). */}
                     <MediaThumbnail
                       thumb={gg ? thumbOf(gg) : null}
