@@ -77,6 +77,8 @@ export function NotificationCenter({
   const ref = useRef<HTMLDivElement>(null);
   const commentsSupportedRef = useRef(true);
   const commentsLoadSeqRef = useRef(0);
+  // 공지(시스템 알림) 조회 세대 — 읽음 처리가 세대를 올려 진행 중이던 조회 응답을 버린다(코덱스 레인B P2).
+  const releaseLoadSeqRef = useRef(0);
   const updatePollRef = useRef<number | null>(null);
   // 세대 토큰 — 진행 중이던 fetch가 stop 이후 돌아와 타이머를 부활시키는 것을 막는다.
   const updatePollSeqRef = useRef(0);
@@ -120,6 +122,7 @@ export function NotificationCenter({
   // 시스템(로컬 업데이트 상태 + 관리자 업데이트 공지 + 공유 서버 이사)을 함께 갱신한다.
   // 한쪽이 실패해도 다른 쪽 알림은 살린다(업데이트 실패 시엔 직전 목록을 유지).
   const loadReleaseItems = useCallback(() => {
+    const seq = ++releaseLoadSeqRef.current;
     const updates = getReleaseUpdateStatus(true)
       .then((status) => ({ ok: true as const, value: syncReleaseNotifications(status, window.localStorage) }))
       .catch(() => ({ ok: false as const })); // 공유 서버 직결·개발 설치본은 로컬 업데이트 API가 없다 — 직전값 유지
@@ -131,6 +134,7 @@ export function NotificationCenter({
       .then((items) => ({ ok: true as const, value: items }))
       .catch(() => ({ ok: false as const })); // 구 공유 서버는 기능 미지원 — 직전값 유지
     void Promise.all([updates, relocation, announcements]).then(([localResult, moveResult, noticeResult]) => {
+      if (seq !== releaseLoadSeqRef.current) return; // 그사이 읽음 처리·새 조회가 있었다 — 옛 응답
       setReleaseItems((current) => {
         const localItems = localResult.ok ? localResult.value : current.filter(
           (item) => item.kind !== "relocation" && item.kind !== "announcement",
@@ -281,7 +285,10 @@ export function NotificationCenter({
       ),
     );
     if (item.kind === "announcement" && item.noticeId && item.noticeRevision) {
-      void updateNoticeApi.seen(item.noticeId, item.noticeRevision).catch(() => loadReleaseItems());
+      releaseLoadSeqRef.current++; // 진행 중이던 조회가 방금의 읽음 표시를 되돌리지 않게
+      void updateNoticeApi
+        .seen(item.noticeId, item.noticeRevision)
+        .then(() => loadReleaseItems(), () => loadReleaseItems()); // 성공·실패 모두 서버 상태로 재조회
     }
     // 이사=클릭 즉시 전환(확인창 없음), 새 버전=그 자리에서 한 번 더 묻기. 판정은 한곳(lib).
     const action = releaseNotificationAction(
@@ -386,6 +393,7 @@ export function NotificationCenter({
     );
     if (hasUnreadUpdateNotices) {
       try {
+        releaseLoadSeqRef.current++; // 진행 중이던 조회가 '모두 읽음'을 되돌리지 않게
         await updateNoticeApi.seenAll();
       } catch {
         setError(t("업데이트 알림을 모두 읽음 처리하지 못했습니다."));

@@ -639,23 +639,33 @@ export function PartialEditModal({
       if (t?.closest("textarea, input, select, [contenteditable]")) return;
       if (stage !== "draw") return;
       const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
+      // 여기서 처리한 키는 뒤 캔버스(useSceneKeyboardShortcuts, window 버블)로 흘리지 않는다 —
+      // 주석 한 획을 지웠는데 캔버스의 직전 편집까지 같이 취소됐다(코덱스 레인B P1).
+      // capture 단계 리스너라 stopPropagation 이 같은 window 의 버블 리스너를 막는다.
+      // 입력창 포커스는 위에서 먼저 양보하므로 텍스트 undo·괄호 입력은 그대로다.
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
+        e.stopPropagation();
         setItems((p) => p.slice(0, -1));
       } else if (e.key === "[") {
+        e.stopPropagation();
         setBrushSize((s) => Math.max(4, s - 8));
       } else if (e.key === "]") {
+        e.stopPropagation();
         setBrushSize((s) => Math.min(120, s + 8));
       } else if (plain && e.key.toLowerCase() === "d") {
+        e.stopPropagation();
         setTool("pen");
       } else if (plain && e.key.toLowerCase() === "e") {
+        e.stopPropagation();
         setTool("erase");
       } else if (plain && e.key.toLowerCase() === "r") {
+        e.stopPropagation();
         setTool("shape");
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, [closable, stage, onClose]);
 
   const slow = elapsed > SLOW_AFTER_MS;

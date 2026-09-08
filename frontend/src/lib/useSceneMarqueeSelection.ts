@@ -104,11 +104,14 @@ export function useSceneMarqueeSelection<Key, Secondary = never>(
           second.keyOf,
           second.hitMode ?? "contain",
         );
+        // 그룹의 '빈 결과 보존'은 카드도 하나도 안 잡혔을 때만 — 카드 B 만 새로 감쌌는데 이전
+        // 그룹 A 가 되살아나 B 를 끌 때 A 까지 움직였다(코덱스 레인B P2). 추가선택(Shift/Ctrl)은
+        // resolveMarqueeSelection 이 먼저 합치므로 영향 없다.
         const nextSecondary = resolveMarqueeSelection(
           previousSecondary,
           boxedSecondary,
           additive,
-          !!latest.preserveSelectionOnEmptyDrag,
+          !!latest.preserveSelectionOnEmptyDrag && boxed.size === 0,
         );
         second.setSelected((selected) =>
           sameSet(selected, nextSecondary) ? selected : nextSecondary,

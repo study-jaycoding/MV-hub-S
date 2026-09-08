@@ -258,6 +258,10 @@ export function useGenerationLibraryData({
       if (tab === "compose") return reload();
       const sig = JSON.stringify([!!filtersRef.current.deleted_only, genQueryRef.current]);
       if (generationTabCacheIsFresh(tabCacheRef.current[tab], sig, Date.now(), maxAge)) {
+        // 캐시를 쓰더라도 진행 중이던 '이전 탭' 요청은 무효화해야 한다 — 안 그러면 그 늦은
+        // 응답이 seq 가드를 통과해 현재 탭 목록·추가 페이지·탭 캐시를 덮는다(Workspace 로
+        // 돌아왔는데 Share & Review 카드가 섞여 나타남 — 코덱스 레인B P1).
+        reloadSeqRef.current++;
         return Promise.resolve();
       }
       return reload();
