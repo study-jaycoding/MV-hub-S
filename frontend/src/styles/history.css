@@ -104,7 +104,7 @@
    호버하면 자동재생되므로 그때는 숨긴다. */
 .linb-vid {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2;
-  width: 20px; height: 20px; pointer-events: none;
+  width: 24px; height: 24px; pointer-events: none;
   opacity: 0.85;
   font-size: 0; line-height: 0;
   filter: drop-shadow(0 1px 2px rgba(0,0,0,0.65)) drop-shadow(0 0 6px rgba(0,0,0,0.35));
