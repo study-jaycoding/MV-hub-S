@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import _proxy
-from .. import rbac, repo
+from .. import deps, rbac, repo
 from ..config import AUTH_ENABLED, MEDIA_DIR
 from ..deps import (
     account_global_roles,
@@ -772,8 +772,10 @@ def generation_stats(request: Request):
     실패 수는 실패 정리 API와 동일한 계정 범위, 미확인 여부는 패널 seen 기록과 동일 신원을 쓴다.
     """
     uid = _account_uid(request)
+    # 미확인 수는 알림 센터와 같은 가시성(코덱스 코드 리뷰 P2) — deps.AUTH_ENABLED 를 속성으로 읽어 테스트 patch 가 먹게.
+    read_all = (not deps.AUTH_ENABLED) or rbac.has_global_cap(account_global_roles(request), "read_all")
     local = (
-        repo.generation_stats(viewer_id=uid, account_uid=uid)
+        repo.generation_stats(viewer_id=uid, account_uid=uid, read_all=read_all)
         if uid
         else repo.generation_stats()
     )

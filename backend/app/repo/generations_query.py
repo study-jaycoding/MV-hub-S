@@ -18,7 +18,7 @@ from .generation_rows import (  # 조회 응답 보강·행 페치 — 단방향
     _fetch_generation,
     _fetch_gens,
 )
-from ._visibility import team_generation_visibility_clause
+from ._visibility import alert_comment_visibility_clause, team_generation_visibility_clause
 
 # FTS5(generation_fts) 존재 여부 — 검색 경로 선택용. DB 경로별로 1회 확인 후 메모이즈.
 # ★경로로 키잉: 계정 전환·DB 이관으로 활성 DB 가 바뀌면 재확인한다(예전엔 전역 bool 로 1회만 확인해,
@@ -302,6 +302,8 @@ def generation_comment_counts(
 def generation_stats(
     viewer_id: str = DEFAULT_WORKER_ID,
     account_uid: Optional[str] = None,
+    *,
+    read_all: bool = True,
 ) -> dict[str, Any]:
     """무한 스크롤에서 전량 로드하지 않는 패널 파생값.
 
@@ -318,6 +320,9 @@ def generation_stats(
     if account_uid is not None:
         failed_where += " AND creator_uid=?"
         failed_args.append(account_uid)
+    # 미확인 수는 알림 센터(목록·모두 읽음)와 같은 가시성 — 아니면 권한을 잃은 답글이 '해소할 수 없는
+    # 벨 숫자'로 남는다(코덱스 코드 리뷰 P2). read_all(단독 모드·admin/PM/PD)은 제한 없음.
+    vis_sql, vis_params = alert_comment_visibility_clause(viewer_id, read_all)
     with get_connection() as conn:
         failed = conn.execute(
             f"SELECT COUNT(*) FROM generation WHERE {failed_where}",
@@ -326,8 +331,8 @@ def generation_stats(
         unread_count = conn.execute(
             f"SELECT COUNT(*) FROM generation_comment c "
             f"{ALERT_COMMENT_JOINS} "
-            f"WHERE {ALERT_COMMENT_PREDICATE}",
-            (viewer_id, viewer_id, viewer_id, viewer_id),
+            f"WHERE {ALERT_COMMENT_PREDICATE} {vis_sql}",
+            (viewer_id, viewer_id, viewer_id, viewer_id, *vis_params),
         ).fetchone()[0]
     return {
         "failed_count": int(failed),

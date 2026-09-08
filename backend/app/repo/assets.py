@@ -13,6 +13,7 @@ from ._common import (
     ALERT_COMMENT_TARGET_PREDICATE,
     new_id,
 )
+from ._visibility import alert_comment_visibility_clause as _alert_visibility_clause
 from .identity import resolve_display_names
 
 
@@ -314,30 +315,6 @@ def list_generation_comments(gen_id: str, viewer_uid: str = "") -> list[dict[str
             c["unread"] = bool(c.get("unread"))
             c["private"] = bool(c.get("private"))
         return out
-
-
-def _alert_visibility_clause(viewer_uid: str, read_all: bool) -> tuple[str, list[Any]]:
-    """알림 대상 생성물이 뷰어에게 '지금도 보이는지' — (SQL 조각, 바인딩). read_all 이면 빈 조각.
-
-    ALERT_COMMENT_TARGET_PREDICATE 의 '내 댓글에 달린 답글' 가지는 생성물 가시성을 보지 않아,
-    프로젝트를 나갔거나 공유가 해제된 뒤의 답글도 본문·썸네일과 함께 알림으로 왔다(코덱스 레인C C2).
-    그 상수는 카드 배지·통계·패널 4곳이 위치 바인딩으로 공유하므로 건드리지 않고, 내용이 노출되는
-    알림 센터 두 경로(목록·모두 읽음)에만 이 절을 AND 로 덧붙인다. 경계는 team 탭 목록과 같다:
-    내 생성물이거나, 공유돼 있고(share 행) 내가 멤버인 프로젝트(또는 내가 만든 공유물).
-    """
-    if read_all:
-        return "", []
-    from ._visibility import team_generation_visibility_clause
-    from .projects import my_member_projects  # 지역 import(순환 회피)
-
-    vis_sql, vis_params = team_generation_visibility_clause(my_member_projects(viewer_uid), viewer_uid)
-    if vis_sql is None:
-        return "", []
-    return (
-        "AND (g.creator_uid = ? OR (EXISTS (SELECT 1 FROM share sh WHERE sh.generation_id = g.id) "
-        "AND " + vis_sql + ")) ",
-        [viewer_uid, *vis_params],
-    )
 
 
 def list_comment_notifications(

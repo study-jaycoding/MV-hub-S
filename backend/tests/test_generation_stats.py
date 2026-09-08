@@ -103,6 +103,7 @@ class GenerationStatsTests(unittest.TestCase):
         stats.assert_called_once_with(
             viewer_id="user-me",
             account_uid="user-me",
+            read_all=True,  # AUTH off = 단독 모드. 미확인 집계 가시성(코덱스 코드 리뷰 P2)은 AUTH on 에서만 제한
         )
 
 
