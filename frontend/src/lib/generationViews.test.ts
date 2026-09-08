@@ -3,13 +3,13 @@
 //  · 늦게 도착한 조회(GET) 응답이 그사이 성공한 기록을 덮으면 안 된다.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-type Pending = { url: string; method: string; resolve: (v: unknown) => void };
+type Pending = { url: string; method: string; body?: BodyInit | null; resolve: (v: unknown) => void };
 const net = vi.hoisted(() => ({ calls: [] as Pending[] }));
 
 vi.mock("./http", () => ({
   jsonFetch: (url: string, init?: RequestInit) =>
     new Promise((resolve) => {
-      net.calls.push({ url, method: init?.method || "GET", resolve });
+      net.calls.push({ url, method: init?.method || "GET", body: init?.body, resolve });
     }),
   jsonBody: (v: unknown) => JSON.stringify(v),
 }));
@@ -19,6 +19,7 @@ import {
   getGenerationViews,
   recordGenerationView,
   refreshGenerationViews,
+  TEAM_SCOPE,
 } from "./generationViews";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -72,8 +73,25 @@ describe("generationViews", () => {
     expect(getGenerationViews("s")).toEqual({ card: {}, lastCardId: null });
   });
 
-  it("씬·카드 중 한쪽만 있으면 보내지 않는다", async () => {
-    await recordGenerationView("g", { sceneId: "s", cardId: "" });
+  it("Share & Review 는 @team 칸 — 카드 없이 보내고, Workspace 칸은 건드리지 않는다", async () => {
+    void recordGenerationView("server-uuid", { sceneId: TEAM_SCOPE, cardId: "" });
+    await flush();
+    expect(pending("PUT")).toHaveLength(1);
+    expect(JSON.parse(String(pending("PUT")[0].body))).toEqual({
+      generation_id: "server-uuid",
+      scene_id: "@team",
+      card_id: "",
+    });
+    pending("PUT")[0].resolve({ recorded: true });
+    await flush();
+    expect(getGenerationViews(TEAM_SCOPE)).toEqual({ card: { "": "server-uuid" }, lastCardId: null });
+    expect(getGenerationViews("")).toEqual({ card: {}, lastCardId: null });
+  });
+
+  it("규칙에 어긋난 조합은 보내지 않는다 — @team+카드 · 캔버스 씬+빈 카드 · 빈 씬+카드", async () => {
+    await recordGenerationView("g", { sceneId: TEAM_SCOPE, cardId: "c" });
+    await recordGenerationView("g", { sceneId: "scene-x", cardId: "" });
+    await recordGenerationView("g", { sceneId: "", cardId: "c" });
     expect(net.calls).toHaveLength(0);
   });
 

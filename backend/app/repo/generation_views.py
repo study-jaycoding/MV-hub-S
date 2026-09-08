@@ -33,7 +33,8 @@ __all__ = [
     "list_generation_views",
 ]
 
-# Share & Review 탭의 칸. 캔버스 씬 id 는 uuid 라 이 값과 겹칠 수 없다. 프론트(lib/generationViews.ts)와 같은 값.
+# Share & Review 탭의 칸. 캔버스 씬 id 는 시간+난수 base36(scenes.ts newId)이라 정상 경로에선 이 값이 나올 수 없다
+# (저장된 씬·백업 복원은 기존 id 를 검사 없이 보존하므로 손으로 고친 데이터까지 막지는 않는다). 프론트와 같은 값.
 TEAM_SCOPE = "@team"
 
 
@@ -44,10 +45,10 @@ def record_generation_view(
     scene_id: str = "",
     card_id: str = "",
 ) -> Optional[dict[str, Any]]:
-    """열람을 기록한다. 생성물이 이 DB 에 없으면 기록하지 않고 None 을 반환한다.
+    """열람을 기록한다. Workspace·캔버스 칸은 생성물이 이 DB 에 없으면 기록하지 않고 None 을 반환한다.
 
-    팀 탭에서 본 남의 생성물은 로컬에 행이 없다(사용자 확정: 팀 항목은 기록하지 않는다).
-    저장한 척하고 조회에서 조용히 버리면 화면과 DB 가 어긋나므로 여기서 분명히 거절한다.
+    팀 칸(TEAM_SCOPE)은 서버 항목이라 로컬 행이 없는 게 정상 — 실재 검사 없이 기록한다.
+    나머지 칸에서 저장한 척하고 조회에서 조용히 버리면 화면과 DB 가 어긋나므로 여기서 분명히 거절한다.
     """
     scene_id = scene_id or ""
     card_id = card_id or ""

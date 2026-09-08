@@ -182,6 +182,18 @@ def test_workspace_scope_still_requires_local_row(client):
     assert repo.record_generation_view(UID, "server-uuid-4") is None
 
 
+def test_api_team_scope_round_trip_and_bad_card(client):
+    """API 로 팀 칸 PUT→GET. Workspace 칸은 비어 있어야 하고, 팀 칸에 card_id 가 오면 400."""
+    body = {"generation_id": "server-uuid-9", "scene_id": repo.TEAM_SCOPE, "card_id": ""}
+    r = client.put("/api/generation-views", json=body)
+    assert r.status_code == 200 and r.json()["recorded"] is True
+    got = client.get("/api/generation-views", params={"scene_id": repo.TEAM_SCOPE}).json()
+    assert got["card"] == {"": "server-uuid-9"}
+    assert client.get("/api/generation-views").json()["card"] == {}
+    bad = client.put("/api/generation-views", json={**body, "card_id": "c"})
+    assert bad.status_code == 400
+
+
 # ── 라우팅·알림 ─────────────────────────────────────────────────────────────
 def test_get_route_is_not_swallowed_by_generation_detail(client):
     """/api/generations/{gen_id} 와 겹치지 않는 고정 경로여야 한다."""
