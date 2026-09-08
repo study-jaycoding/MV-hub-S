@@ -28,6 +28,7 @@ import { GenerationConfirmOverlay } from "./generation/GenerationConfirmOverlay"
 import { GenerationCardStatusBar } from "./generation/GenerationCardStatusBar";
 import { ClockIcon, FrameIcon, GemIcon, ModelIcon } from "./generation/GenerationCardIcons";
 import { GenerationThumbOverlay } from "./generation/GenerationThumbOverlay";
+import { LastViewedBadge } from "./scene/LastViewedBadge";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../lib/workspaceCommand";
 
 interface Props {
@@ -58,6 +59,7 @@ interface Props {
   onTags: (g: Generation) => void;
   onInfo: (t: InfoTarget) => void;
   onPreview: (t: PreviewTarget) => void;
+  lastViewed?: boolean; // 생성 탭에서 마지막으로 크게 열어본 결과인가('Last viewed' 배지)
   onShowHistory?: (g: Generation) => void; // 히스토리 뱃지 클릭 → 가계 패널
   autoTagOptions?: string[]; // 내 전역(auto) 태그 목록 — 태그 에디터에서 # 한 번 더로 카드에 부여/해제
   onSetAutoTags?: (g: Generation, names: string[]) => void;
@@ -119,6 +121,7 @@ function GenerationCardImpl({
   onInfo,
   onPreview,
   onShowHistory,
+  lastViewed,
 }: Props) {
   const modelName = useModelDisplayName();
   const asset = gen.assets?.[0]; // 프록시·백필 스키마 어긋남 방어 — assets 부재 시 카드만 빈 썸네일
@@ -391,6 +394,8 @@ function GenerationCardImpl({
       </span>
       {/* 가계(히스토리)는 좌상단 뱃지 대신 호버 오버레이의 '가계 보기' 버튼(공유 자리)으로 연다. */}
       {isVideo && <span className="play-badge">▶</span>}
+      {/* 마지막으로 크게 열어본 결과 — .card-thumb(position:relative) 기준 가운데. 오버레이 밖 독립 요소. */}
+      {lastViewed && <LastViewedBadge />}
       {/* 미디어가 있을 때만 하단 상태 라벨 — 미디어 없으면 placeholder가 이미 표시(중복 방지) */}
       {gen.status !== "done" && (!!thumb || (isVideo && !!asset)) && (
         <span

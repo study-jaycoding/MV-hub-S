@@ -23,6 +23,7 @@ import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import type { GradeMode } from "../lib/gradeStep";
 import { GenerationCard } from "./GenerationCard";
+import { useGenerationViewsSynced } from "../lib/useGenerationViewsSynced";
 import { getTeamSeenVersion, isFreshGen, subscribeTeamSeen } from "../lib/teamSeen";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../lib/workspaceCommand";
 
@@ -82,6 +83,8 @@ export function ThumbnailGrid(props: Props) {
   const t = useT();
   // 팀 탭 '새로 들어옴'(확인 전 글로우) — 카드 클릭으로 확인되면 스토어가 bump → 그 카드만 글로우 해제.
   const teamSeenVer = useSyncExternalStore(subscribeTeamSeen, getTeamSeenVersion);
+  // 생성 탭의 '마지막으로 본' 결과(캔버스 밖 행 ''). 팀 탭은 id 가 서버 UUID 라 절대 안 맞는다 — 의도(팀 항목 기록 안 함).
+  const genViews = useGenerationViewsSynced("");
   void teamSeenVer;
 
   // 날짜별 그룹은 rowModel.dateGroups 로 통합(별도 O(n) 스캔 제거) — 아래 rowModel 참고.
@@ -216,6 +219,7 @@ export function ThumbnailGrid(props: Props) {
   const renderGenerationCard = (generation: Generation, cardLayout: "grid" | "list") => (
     <GenerationCard
       gen={generation}
+      lastViewed={genViews.card[""] === generation.id}
       tab={props.tab}
       fresh={props.tab === "team" && isFreshGen(generation)}
       myCreatorUid={props.myCreatorUid}

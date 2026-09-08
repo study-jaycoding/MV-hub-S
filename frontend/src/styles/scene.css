@@ -1309,6 +1309,9 @@
 /* 영상은 같은 자리에 ▶(.linb-vid / .scene-varpop-vid, z-index 2)가 있다 — 그 아래로 내려 둘 다 보이게. */
 .scene-card:has(.linb-vid) .last-viewed-badge { top: calc(50% + 30px); }
 .scene-varpop-item:has(.scene-varpop-vid) .last-viewed-badge { top: calc(50% + 28px); }
+/* 생성 탭 카드(.card > .card-thumb) — 같은 배지, 같은 규칙. */
+.card:hover .last-viewed-badge { opacity: 0; }
+.card-thumb:has(.play-badge) .last-viewed-badge { top: calc(50% + 30px); }
 @media (prefers-reduced-motion: reduce) {
   .last-viewed-badge { transition: none; }
 }
