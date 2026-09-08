@@ -126,7 +126,10 @@ def test_read_all_role_sees_everything(seeded):
 def test_stats_unread_count_matches_notification_visibility_and_clears(seeded):
     """전역 통계(벨 숫자)도 알림 센터와 같은 경계 — 아니면 '모두 읽음' 뒤에도 숨긴 답글이 1 로 남는다."""
     with patch.object(deps, "AUTH_ENABLED", True):
-        stats = lambda ra: repo.generation_stats(viewer_id="user-me", account_uid="user-me", read_all=ra)["unread_count"]
+        stats = lambda ra: repo.generation_stats(
+            viewer_id="user-me", account_uid="user-me", read_all=ra,
+            member_projects=None if ra else repo.my_member_projects("user-me"),
+        )["unread_count"]
         assert stats(False) == 1  # mine-new 만
         assert stats(True) == 2  # read_all 은 숨김 없음
         notifications.seen_all_comment_notifications(_req())

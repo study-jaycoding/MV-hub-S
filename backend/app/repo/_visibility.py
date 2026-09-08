@@ -34,7 +34,9 @@ def team_generation_visibility_clause(
     return "1=0", []
 
 
-def alert_comment_visibility_clause(viewer_uid: str, read_all: bool) -> tuple[str, list[Any]]:
+def alert_comment_visibility_clause(
+    viewer_uid: str, read_all: bool, member_projects: Optional[Sequence[str]]
+) -> tuple[str, list[Any]]:
     """코멘트 알림 대상 생성물이 뷰어에게 '지금도 보이는지' — (AND 로 덧붙일 SQL 조각, 바인딩). read_all 이면 빈 조각.
 
     ALERT_COMMENT_TARGET_PREDICATE 의 '내 댓글에 달린 답글' 가지는 생성물 가시성을 보지 않아, 프로젝트를
@@ -42,13 +44,13 @@ def alert_comment_visibility_clause(viewer_uid: str, read_all: bool) -> tuple[st
     배지·패널이 위치 바인딩으로 공유하므로 건드리지 않고, 알림 센터(목록·모두 읽음)와 전역 통계의 미확인
     집계에 이 절을 덧붙인다 — 셋이 같은 경계여야 '모두 읽음' 뒤 벨 숫자가 남지 않는다(코덱스 코드 리뷰).
     경계는 team 탭 목록과 같다: 내 생성물이거나, 공유돼 있고(share 행) 내가 멤버인 프로젝트(또는 내가 만든 공유물).
-    별칭 전제: g=generation.
+    별칭 전제: g=generation. ``member_projects`` 는 호출한 라우터가 my_member_projects 로 읽어 넘긴다 —
+    이 모듈은 projects 가 import 하므로 여기서 projects 를 되불러오면 순환이 된다(경계 테스트가 지역
+    import 까지 간선으로 센다). read_all 이면 None 이어도 된다.
     """
     if read_all:
         return "", []
-    from .projects import my_member_projects  # 지역 import(순환 회피)
-
-    vis_sql, vis_params = team_generation_visibility_clause(my_member_projects(viewer_uid), viewer_uid)
+    vis_sql, vis_params = team_generation_visibility_clause(list(member_projects or []), viewer_uid)
     if vis_sql is None:
         return "", []
     return (

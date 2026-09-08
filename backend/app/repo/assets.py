@@ -318,7 +318,11 @@ def list_generation_comments(gen_id: str, viewer_uid: str = "") -> list[dict[str
 
 
 def list_comment_notifications(
-    viewer_uid: str, limit: int = 50, *, read_all: bool = True
+    viewer_uid: str,
+    limit: int = 50,
+    *,
+    read_all: bool = True,
+    member_projects: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """최근 30일 생성본 코멘트 알림(최신순).
 
@@ -326,7 +330,7 @@ def list_comment_notifications(
     ``ALERT_COMMENT_PREDICATE``로 판정한다. 따라서 카드 C 뱃지·전역 stats·스레드 NEW와
     알림 센터가 같은 단일 규칙을 사용한다.
     """
-    vis_sql, vis_params = _alert_visibility_clause(viewer_uid, read_all)
+    vis_sql, vis_params = _alert_visibility_clause(viewer_uid, read_all, member_projects)
     with get_connection() as conn:
         rows = conn.execute(
             f"SELECT c.id, c.author, w.name AS worker_name, c.text, c.created_at, "
@@ -359,13 +363,15 @@ def list_comment_notifications(
         return out
 
 
-def mark_all_comment_notifications_seen(worker_id: str, *, read_all: bool = True) -> int:
+def mark_all_comment_notifications_seen(
+    worker_id: str, *, read_all: bool = True, member_projects: Optional[list[str]] = None
+) -> int:
     """현재 뷰어의 알림 대상 코멘트만 모두 seen 처리한다.
 
     목록의 30일 표시 범위와 달리 전체 기간을 처리한다. 오래된 미확인 항목 때문에 전역 C 뱃지와
     벨이 남는 일을 막기 위한 의도적인 차이다.
     """
-    vis_sql, vis_params = _alert_visibility_clause(worker_id, read_all)
+    vis_sql, vis_params = _alert_visibility_clause(worker_id, read_all, member_projects)
     with get_connection() as conn:
         before = conn.total_changes
         conn.execute(

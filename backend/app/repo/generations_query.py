@@ -304,6 +304,7 @@ def generation_stats(
     account_uid: Optional[str] = None,
     *,
     read_all: bool = True,
+    member_projects: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """무한 스크롤에서 전량 로드하지 않는 패널 파생값.
 
@@ -322,7 +323,7 @@ def generation_stats(
         failed_args.append(account_uid)
     # 미확인 수는 알림 센터(목록·모두 읽음)와 같은 가시성 — 아니면 권한을 잃은 답글이 '해소할 수 없는
     # 벨 숫자'로 남는다(코덱스 코드 리뷰 P2). read_all(단독 모드·admin/PM/PD)은 제한 없음.
-    vis_sql, vis_params = alert_comment_visibility_clause(viewer_id, read_all)
+    vis_sql, vis_params = alert_comment_visibility_clause(viewer_id, read_all, member_projects)
     with get_connection() as conn:
         failed = conn.execute(
             f"SELECT COUNT(*) FROM generation WHERE {failed_where}",

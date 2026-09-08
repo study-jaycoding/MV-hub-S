@@ -774,8 +774,9 @@ def generation_stats(request: Request):
     uid = _account_uid(request)
     # 미확인 수는 알림 센터와 같은 가시성(코덱스 코드 리뷰 P2) — deps.AUTH_ENABLED 를 속성으로 읽어 테스트 patch 가 먹게.
     read_all = (not deps.AUTH_ENABLED) or rbac.has_global_cap(account_global_roles(request), "read_all")
+    member_projects = None if (read_all or not uid) else repo.my_member_projects(uid)
     local = (
-        repo.generation_stats(viewer_id=uid, account_uid=uid, read_all=read_all)
+        repo.generation_stats(viewer_id=uid, account_uid=uid, read_all=read_all, member_projects=member_projects)
         if uid
         else repo.generation_stats()
     )
