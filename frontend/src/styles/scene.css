@@ -1305,12 +1305,14 @@
 /* 그림을 보려고 마우스를 올리면 비켜준다(사용자 확정 안). 카드/셀 어느 쪽에 붙어도 동작하게 둘 다. */
 .scene-card:hover .last-viewed-badge,
 .scene-varpop-item:hover .last-viewed-badge { opacity: 0; }
-/* 영상은 같은 자리에 ▶(.linb-vid / .scene-varpop-vid, z-index 2)가 있다 — 그 아래로 내려 둘 다 보이게. */
-.scene-card:has(.linb-vid) .last-viewed-badge { top: calc(50% + 30px); }
-.scene-varpop-item:has(.scene-varpop-vid) .last-viewed-badge { top: calc(50% + 28px); }
 /* 생성 탭 카드(.card > .card-thumb) — 같은 배지, 같은 규칙. */
 .card:hover .last-viewed-badge { opacity: 0; }
-.card-thumb:has(.play-badge) .last-viewed-badge { top: calc(50% + 30px); }
+/* 영상 ▶ 표시(.play-badge / .linb-vid / .scene-varpop-vid)는 같은 한가운데다. 마지막 확인 카드에서는
+   ▶ 를 감추고 배지가 가운데를 차지한다 — 둘이 나란히 서면 지저분하다(사용자 확정). 영상인 건
+   호버 자동재생으로 드러나고, 배지는 그때 비켜준다. */
+.card-thumb:has(.last-viewed-badge) .play-badge,
+.scene-card:has(.last-viewed-badge) .linb-vid,
+.scene-varpop-item:has(.last-viewed-badge) .scene-varpop-vid { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .last-viewed-badge { transition: none; }
 }
