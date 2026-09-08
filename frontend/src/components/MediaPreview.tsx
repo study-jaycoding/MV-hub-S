@@ -53,7 +53,8 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
     if (!item.genId) return; // 에셋(파일) 미리보기 — 생성물이 아니라 기록 대상이 아니다
     const sceneId = item.sceneId || target.sceneId || "";
     const cardId = item.cardId || target.cardId || "";
-    const ctx = sceneId && cardId ? { sceneId, cardId } : null;
+    // 캔버스 씬은 카드까지, 캔버스 밖 칸(''·@team)은 씬 이름만 — 규칙 검증은 recordGenerationView 가 한다.
+    const ctx = sceneId ? { sceneId, cardId } : null;
     const key = [sceneId, cardId, item.genId].join("|");
     if (lastRecordedRef.current === key) return; // 재렌더·프리페치로 다시 찍지 않는다
     lastRecordedRef.current = key;

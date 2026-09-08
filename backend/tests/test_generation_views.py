@@ -155,6 +155,33 @@ def test_api_reports_not_recorded_for_unknown_generation(client):
     assert r.json()["recorded"] is False
 
 
+# ── Share & Review(팀) 칸 ───────────────────────────────────────────────────
+def test_team_scope_records_without_local_row(client):
+    """팀 탭 항목은 로컬에 행이 없는 게 정상 — 실재 검사 없이 기록되고 JOIN 없이 조회된다."""
+    assert repo.record_generation_view(UID, "server-uuid-1", scene_id=repo.TEAM_SCOPE) is not None
+    assert repo.list_generation_views(UID, scene_id=repo.TEAM_SCOPE)["card"] == {"": "server-uuid-1"}
+
+
+def test_team_and_workspace_scopes_are_independent(client):
+    """Workspace('') 와 Share & Review(@team) 는 각자 하나씩 기억한다 — 사용자 확정."""
+    mine = _new_gen()
+    repo.record_generation_view(UID, mine)
+    repo.record_generation_view(UID, "server-uuid-2", scene_id=repo.TEAM_SCOPE)
+    assert repo.list_generation_views(UID)["card"] == {"": mine}
+    assert repo.list_generation_views(UID, scene_id=repo.TEAM_SCOPE)["card"] == {"": "server-uuid-2"}
+
+
+def test_team_scope_rejects_card_id(client):
+    """팀 칸은 캔버스가 아니다 — card_id 가 오면 규칙 위반."""
+    with pytest.raises(ValueError):
+        repo.record_generation_view(UID, "server-uuid-3", scene_id=repo.TEAM_SCOPE, card_id="c")
+
+
+def test_workspace_scope_still_requires_local_row(client):
+    """팀 칸을 열었다고 Workspace 칸의 안전장치(로컬 실재)가 풀리면 안 된다."""
+    assert repo.record_generation_view(UID, "server-uuid-4") is None
+
+
 # ── 라우팅·알림 ─────────────────────────────────────────────────────────────
 def test_get_route_is_not_swallowed_by_generation_detail(client):
     """/api/generations/{gen_id} 와 겹치지 않는 고정 경로여야 한다."""

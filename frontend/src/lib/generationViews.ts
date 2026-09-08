@@ -9,7 +9,8 @@
 //    곧 사용자의 열람 순서다.
 //  · 조회(GET)는 시작 시점의 기록 버전을 적어 두고, 응답이 올 때까지 기록이 성공했으면 그 응답을
 //    버리고 한 번 더 읽는다. 안 그러면 옛 조회 응답이 새 기록을 덮어 배지가 뒤로 간다(코덱스 P1).
-//  · 캔버스 밖(목록·히스토리) 열람은 sceneId/cardId 없이 보내고, 캔버스 배지를 움직이지 않는다.
+//  · 캔버스 밖 열람은 탭마다 자기 칸 — Workspace 는 sceneId '', Share & Review 는 TEAM_SCOPE('@team').
+//    둘 다 cardId 없음. 캔버스 배지를 움직이지 않는다.
 //  · 서버가 owner 를 정한다 — 클라이언트는 owner 를 보내지 않는다.
 //  · 계정 전환·로그아웃은 페이지를 새로 고치므로(useHubAuth) 모듈 store 가 통째로 다시 만들어진다.
 //    별도 clear 는 두지 않는다.
@@ -18,6 +19,8 @@ import { jsonBody, jsonFetch } from "./http";
 import { withQuery } from "./url";
 
 const URL_BASE = "/api/generation-views";
+/** Share & Review 탭의 칸. 서버(repo/generation_views.py TEAM_SCOPE)와 같은 값. Workspace 는 ''. */
+export const TEAM_SCOPE = "@team";
 
 export interface SceneViews {
   /** 그 씬의 묶음(카드)별 마지막 생성물 — 결과 모아보기 팝업 배지 */
@@ -100,7 +103,9 @@ export function recordGenerationView(
 ): Promise<void> {
   const sceneId = scene?.sceneId || "";
   const cardId = scene?.cardId || "";
-  if (!generationId || Boolean(sceneId) !== Boolean(cardId)) return Promise.resolve();
+  const isCanvas = Boolean(sceneId) && sceneId !== TEAM_SCOPE;
+  // 캔버스 씬이면 cardId 가 있어야 하고, 캔버스 밖 칸(''·@team)이면 비어야 한다 — 서버와 같은 규칙.
+  if (!generationId || isCanvas !== Boolean(cardId)) return Promise.resolve();
   const run = async () => {
     try {
       const res = await jsonFetch<{ recorded: boolean }>(URL_BASE, {

@@ -29,6 +29,7 @@ import { GenerationCardStatusBar } from "./generation/GenerationCardStatusBar";
 import { ClockIcon, FrameIcon, GemIcon, ModelIcon } from "./generation/GenerationCardIcons";
 import { GenerationThumbOverlay } from "./generation/GenerationThumbOverlay";
 import { LastViewedBadge } from "./scene/LastViewedBadge";
+import { TEAM_SCOPE } from "../lib/generationViews";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../lib/workspaceCommand";
 
 interface Props {
@@ -198,7 +199,14 @@ function GenerationCardImpl({
   const previewName = gen.prompt.slice(0, 50) || "(제목 없음)";
   const openPreview = () => {
     if (asset)
-      onPreview({ url: asset.file_path, type: asset.type, name: previewName, genId: gen.id });
+      onPreview({
+        url: asset.file_path,
+        type: asset.type,
+        name: previewName,
+        genId: gen.id,
+        // Share & Review 는 자기 칸(@team)에 '마지막으로 본' 을 남긴다 — Workspace('')와 따로.
+        sceneId: tab === "team" ? TEAM_SCOPE : undefined,
+      });
   };
   // 카드를 프롬프트로 드래그 → 그 프롬프트+옵션 재사용(SpotlightPrompt 드롭). gen id 만 실음.
   const onCardDragStart = (e: React.DragEvent) => {

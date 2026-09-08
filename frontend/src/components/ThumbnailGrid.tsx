@@ -24,6 +24,7 @@ import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import type { GradeMode } from "../lib/gradeStep";
 import { GenerationCard } from "./GenerationCard";
 import { useGenerationViewsSynced } from "../lib/useGenerationViewsSynced";
+import { TEAM_SCOPE } from "../lib/generationViews";
 import { getTeamSeenVersion, isFreshGen, subscribeTeamSeen } from "../lib/teamSeen";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../lib/workspaceCommand";
 
@@ -83,8 +84,8 @@ export function ThumbnailGrid(props: Props) {
   const t = useT();
   // 팀 탭 '새로 들어옴'(확인 전 글로우) — 카드 클릭으로 확인되면 스토어가 bump → 그 카드만 글로우 해제.
   const teamSeenVer = useSyncExternalStore(subscribeTeamSeen, getTeamSeenVersion);
-  // 생성 탭의 '마지막으로 본' 결과(캔버스 밖 행 ''). 팀 탭은 id 가 서버 UUID 라 절대 안 맞는다 — 의도(팀 항목 기록 안 함).
-  const genViews = useGenerationViewsSynced("");
+  // '마지막으로 본' 결과 — Workspace 는 '' 칸, Share & Review 는 @team 칸(각자 하나씩, 사용자 확정).
+  const genViews = useGenerationViewsSynced(props.tab === "team" ? TEAM_SCOPE : "");
   void teamSeenVer;
 
   // 날짜별 그룹은 rowModel.dateGroups 로 통합(별도 O(n) 스캔 제거) — 아래 rowModel 참고.
@@ -432,7 +433,8 @@ export function ThumbnailGrid(props: Props) {
 
   const onPreviewCell = (g: Generation) => {
     const target = previewTargetFromGenerations(generations, g);
-    if (target) props.onPreview(target);
+    // Share & Review 는 자기 칸(@team) — items 는 MediaPreview 에서 target 의 sceneId 를 물려받는다.
+    if (target) props.onPreview(props.tab === "team" ? { ...target, sceneId: TEAM_SCOPE } : target);
   };
 
   // 드래그 시작(그리드 안·밖 공용). cellId 가 있으면 카드 위에서 시작한 것 = 마퀴 아님.

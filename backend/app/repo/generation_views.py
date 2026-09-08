@@ -7,8 +7,11 @@
   · 묶음 = 캔버스 카드 하나. 키는 (scene_id, card_id) 두 개가 **함께**여야 유일하다 —
     importScene 이 씬 id 만 새로 만들고 카드는 그대로 가져오므로 같은 씬을 두 번 들이면
     다른 씬에 같은 card_id 가 생긴다.
-  · 캔버스 밖(생성물 목록·히스토리) 열람은 scene_id=''·card_id='' 한 행에 모으고,
-    **캔버스 배지를 움직이지 않는다**(사용자 확정 — "캔버스는 캔버스대로").
+  · 캔버스 밖 열람은 탭마다 자기 칸에 모은다 — Workspace 는 scene_id='', Share & Review 는
+    scene_id=TEAM_SCOPE('@team'). 둘 다 card_id=''. **캔버스 배지를 움직이지 않는다**(사용자 확정).
+  · 팀 칸은 서버 항목이라 로컬 generation 행이 **없는 게 정상**이다 — 그 칸만 실재 검사와 JOIN 을
+    건너뛴다(로컬이 서버의 휴지통·발행 취소를 알 수 없으니 숨김도 없다. 카드가 목록에서 사라지면
+    배지도 그냥 안 보일 뿐이다). Workspace·캔버스의 안전장치는 그대로다.
   · 최신 판정은 viewed_seq 로 한다. viewed_at 으로 정렬하지 않는다 — 같은 초에 두 번 열거나
     시스템 시계가 뒤로 가면 순서가 모호해진다. viewed_at 은 사람이 읽는 용도.
   · generation FK 를 걸지 않는다. 휴지통은 메인 행을 실제로 지웠다가 복원 때 재삽입하므로
@@ -25,9 +28,13 @@ from typing import Any, Optional
 from ..db import get_connection
 
 __all__ = [
+    "TEAM_SCOPE",
     "record_generation_view",
     "list_generation_views",
 ]
+
+# Share & Review 탭의 칸. 캔버스 씬 id 는 uuid 라 이 값과 겹칠 수 없다. 프론트(lib/generationViews.ts)와 같은 값.
+TEAM_SCOPE = "@team"
 
 
 def record_generation_view(
@@ -44,17 +51,22 @@ def record_generation_view(
     """
     scene_id = scene_id or ""
     card_id = card_id or ""
-    # 캔버스 문맥은 둘 다 있거나 둘 다 없어야 한다 — 한쪽만 오면 다른 씬의 같은 카드와 섞인다.
-    if bool(scene_id) != bool(card_id):
-        raise ValueError("scene_id 와 card_id 는 함께 주거나 함께 비워야 합니다")
+    is_canvas = bool(scene_id) and scene_id != TEAM_SCOPE
+    # 캔버스 씬이면 card_id 가 있어야 하고(한쪽만 오면 다른 씬의 같은 카드와 섞인다),
+    # 캔버스 밖 칸(''·@team)이면 card_id 가 비어야 한다.
+    if is_canvas != bool(card_id):
+        raise ValueError("캔버스 씬이면 card_id 가 필요하고, 캔버스 밖 칸이면 card_id 를 비워야 합니다")
     with get_connection() as conn:
         # seq 채번과 UPSERT 를 한 트랜잭션에 묶는다 — 두 창이 동시에 열면 같은 seq 가 나온다.
         conn.execute("BEGIN IMMEDIATE")
-        exists = conn.execute(
-            "SELECT 1 FROM generation WHERE id=?", (generation_id,)
-        ).fetchone()
-        if not exists:
-            return None
+        # 팀 칸은 서버 항목이라 로컬 행이 없는 게 정상 — 실재 검사를 건너뛴다. 나머지 칸은 로컬에
+        # 없으면 기록하지 않는다(저장한 척하고 조회에서 버리면 화면과 DB 가 어긋난다).
+        if scene_id != TEAM_SCOPE:
+            exists = conn.execute(
+                "SELECT 1 FROM generation WHERE id=?", (generation_id,)
+            ).fetchone()
+            if not exists:
+                return None
         row = conn.execute(
             "SELECT IFNULL(MAX(viewed_seq), 0) AS seq FROM generation_view WHERE owner_uid=?",
             (owner_uid,),
@@ -88,11 +100,11 @@ def list_generation_views(owner_uid: str, *, scene_id: Optional[str] = None) -> 
     행은 남겨 두므로 복원하면 배지가 저절로 돌아온다.
     """
     key = scene_id or ""
+    # 팀 칸(@team)은 서버 항목이라 로컬 실재를 물을 수 없다 — JOIN 없이 그대로 돌려준다.
+    join = "" if key == TEAM_SCOPE else "JOIN generation g ON g.id = v.generation_id "
     sql = (
         "SELECT v.scene_id, v.card_id, v.generation_id, v.viewed_seq "
-        "FROM generation_view v "
-        "JOIN generation g ON g.id = v.generation_id "
-        "WHERE v.owner_uid=? AND v.scene_id=? "
+        "FROM generation_view v " + join + "WHERE v.owner_uid=? AND v.scene_id=? "
         "ORDER BY v.viewed_seq DESC"
     )
     with get_connection() as conn:
