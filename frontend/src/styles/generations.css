@@ -666,18 +666,19 @@
    모양·크기가 달라 ::before 도형(clip-path)으로 그린다. 그림자는 부모에 걸어 도형 실루엣을 따라 떨어지게.
    마지막 확인 카드에서는 숨기고 'Last viewed' 가 가운데를 차지한다(scene.css).
    캔버스(.linb-vid)·결과 모아보기(.scene-varpop-vid)도 같은 모양. */
+/* 둥근 모서리 흰 삼각형 — stroke-linejoin:round 로 꼭짓점을 둥글린 SVG. 세 곳(.play-badge/.linb-vid/.scene-varpop-vid)이 같이 쓴다. */
+:root { --play-tri: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M8 5.5 L18.5 12 L8 18.5 Z' fill='%23fff' stroke='%23fff' stroke-width='3' stroke-linejoin='round'/%3E%3C/svg%3E"); }
 .play-badge {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  width: 22px; height: 24px; pointer-events: none;
+  width: 16px; height: 16px; pointer-events: none;
   font-size: 0; line-height: 0; /* 글리프 숨김 — 아래 도형만 */
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.65)) drop-shadow(0 0 6px rgba(0, 0, 0, 0.35));
 }
 .play-badge::before {
   content: ""; display: block; width: 100%; height: 100%;
-  background: #fff;
-  clip-path: polygon(6% 0%, 100% 50%, 6% 100%);
+  background: var(--play-tri) center / contain no-repeat;
 }
-.card.list .play-badge { width: 28px; height: 30px; }
+.card.list .play-badge { width: 20px; height: 20px; }
 .play-badge { transition: opacity 0.15s; }
 .card-thumb:hover .play-badge { opacity: 0; } /* 호버 자동재생 중엔 숨김 */
 
