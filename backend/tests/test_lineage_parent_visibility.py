@@ -63,6 +63,7 @@ def seeded(monkeypatch):
                     )
 
                 gen("g_a", "user_a", "p_x", "mine")
+                gen("g_child", "user_a", "p_x")  # derive-from 의 자식
                 gen("g_b", "user_b", "p_x", "theirs")  # B 의 비공개 — A 가 보면 안 됨
                 gen("g_b_shared", "user_b", "p_member")
                 conn.execute(
@@ -101,6 +102,26 @@ def test_unknown_parent_is_left_to_repo(seeded):
 def test_auth_off_does_not_restrict_parents(seeded):
     with patch.object(deps, "AUTH_ENABLED", False):
         _require_parents_viewable(_request(USER_A), ["g_b"])
+
+
+def test_derive_from_checks_only_parents_that_survive_reduction(seeded):
+    """비공개 조상 P + 내가 볼 수 있는 공유 자손 Q 를 함께 넘기면 P 는 잉여로 빠지고 Q 만 연결된다.
+    (후보 전체를 먼저 검사하던 첫 수정은 여기서 404 를 내 Q 연결까지 실패시켰다 — 코덱스 코드 리뷰.)"""
+    from app.routers.generation import _parent_allowed
+    repo.add_history_edge("g_b", "g_b_shared", "derived")  # P(g_b) → Q(g_b_shared)
+    with patch.object(deps, "AUTH_ENABLED", True):
+        kept = repo.record_derived_parents("g_child", ["g_b", "g_b_shared"], allowed=_parent_allowed(_request(USER_A)))
+    assert kept == ["g_b_shared"]
+
+
+def test_derive_from_rejects_invisible_surviving_parent_and_writes_nothing(seeded):
+    from app.routers.generation import _parent_allowed
+    with patch.object(deps, "AUTH_ENABLED", True):
+        with pytest.raises(PermissionError):
+            repo.record_derived_parents("g_child", ["g_b"], allowed=_parent_allowed(_request(USER_A)))
+    with db.get_connection() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM history WHERE child_gen_id='g_child'").fetchone()[0]
+    assert n == 0
 
 
 # ── C3 ────────────────────────────────────────────────────────────────────────

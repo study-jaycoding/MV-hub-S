@@ -29,6 +29,8 @@ from ..deps import (
     require_edit_generation,
     require_super_admin_workspace,
     require_view_generation,
+    account_actor_uid,
+    can_view_generation_with_member_projects,
 )
 from ..models import (
     AutoTagsIn,
@@ -307,6 +309,19 @@ def _require_parents_viewable(request: Request, parent_ids: list[str]) -> None:
             require_view_generation(request, parent)
 
 
+def _parent_allowed(request: Request):
+    """계보 부모 열람 술어 — 저장소가 전이 축소 뒤 남은 부모에 적용한다.
+
+    상세 조회와 같은 판정(can_view_generation_with_member_projects). 멤버십은 여기서 한 번 읽어 닫아
+    넘긴다 — 저장소 트랜잭션 안에서 DB 를 다시 열지 않게(ARCHITECTURE §6 중첩 금지)."""
+    member_ids: set[str] | None = None
+    _viewer_uid, read_all = _viewer_scope(request)
+    actor = account_actor_uid(request)
+    if AUTH_ENABLED and actor and not read_all:
+        member_ids = set(repo.my_member_projects(actor))
+    return lambda gen: can_view_generation_with_member_projects(request, gen, member_ids)
+
+
 def _viewer_scope(request: Request) -> tuple[str | None, bool]:
     """(viewer_uid, read_all) — 계보 관련 노드 가시성 판정용.
     read_all = 단독 모드(AUTH off) 또는 전역 read_all(admin/PM/PD) 보유."""
@@ -413,8 +428,12 @@ def derive_from(body: DeriveFromIn, request: Request, ref: ResolvedGen = Depends
     if not ref.gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_edit_generation(request, ref.gen)  # 본인/admin 만 — 계보 기록도 수정 가드와 동일
-    _require_parents_viewable(request, body.parent_ids)  # 부모 열람 권한(코덱스 레인C C1)
-    repo.record_derived_parents(ref.local_id, body.parent_ids)
+    # 부모 열람 권한은 전이 축소 **뒤** 실제로 연결될 부모에만(코덱스 레인C C1 + 코드 리뷰 P2).
+    # 후보 전체에 걸면 비공개 조상 P + 공유 자손 Q 를 함께 선택한 정상 생성이 통째로 실패한다.
+    try:
+        repo.record_derived_parents(ref.local_id, body.parent_ids, allowed=_parent_allowed(request))
+    except PermissionError:
+        raise HTTPException(status_code=404, detail="generation 없음")  # 존재를 숨긴다(열람 가드 규약)
     viewer_uid, read_all = _viewer_scope(request)
     return repo.get_history(ref.local_id, viewer_uid=viewer_uid, read_all=read_all)
 

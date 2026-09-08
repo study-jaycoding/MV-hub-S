@@ -187,8 +187,19 @@ def add_history_edge(
             raise
 
 
-def record_derived_parents(child_id: str, parent_ids: list[str]) -> list[str]:
+def record_derived_parents(
+    child_id: str,
+    parent_ids: list[str],
+    *,
+    allowed=None,
+) -> list[str]:
     """파생 부모(들)를 'derived' 엣지로 기록하되 **전이 축소**한다.
+
+    ``allowed(gen_row) -> bool`` 이 주어지면 **축소 뒤 실제로 연결될 부모**에만 적용해, 하나라도
+    거부되면 아무것도 기록하지 않고 PermissionError 를 낸다. 축소 전 후보 전체에 걸면 비공개 조상 P 와
+    공유 자손 Q 를 함께 넘긴 정상 요청(P 는 잉여로 빠지고 Q 만 연결돼야 함)까지 실패한다(코덱스 리뷰).
+    gen_row 는 id·creator_uid·project_id·shared(0/1) 를 담는다. 멤버십 같은 부가 조회는 호출자가 미리
+    끝내고 술어에 닫아 넘긴다 — 이 트랜잭션 안에서 DB 를 다시 열지 않기 위해서다.
 
     후보 중 다른 후보(또는 child)의 **조상**인 것은 잉여(그 자손을 거쳐 이미 도달 가능) → 기록 안 함.
     가장 가까운 부모만 남겨 계보 그래프가 평탄해지지 않게 한다(원본→중간→자식 체인 보존).
@@ -213,6 +224,20 @@ def record_derived_parents(child_id: str, parent_ids: list[str]) -> list[str]:
             for p in cands
             if not (_descendants(conn, p) & (targets - {p}))
         ]
+        if allowed is not None and kept:
+            marks = ",".join("?" * len(kept))
+            rows = {
+                r["id"]: dict(r)
+                for r in conn.execute(
+                    "SELECT g.id, g.creator_uid, g.project_id, "
+                    "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
+                    f"FROM generation g WHERE g.id IN ({marks})",
+                    kept,
+                )
+            }
+            for p in kept:
+                if not allowed(rows[p]):
+                    raise PermissionError(f"부모 열람 권한 없음: {p}")
         for p in kept:
             _record_history(conn, p, child_id, "derived")
         return kept

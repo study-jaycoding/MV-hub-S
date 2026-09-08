@@ -393,8 +393,12 @@ export function NotificationCenter({
     );
     if (hasUnreadUpdateNotices) {
       try {
-        releaseLoadSeqRef.current++; // 진행 중이던 조회가 '모두 읽음'을 되돌리지 않게
+        releaseLoadSeqRef.current++; // 쓰기 시작 — 진행 중이던 조회 무효화
         await updateNoticeApi.seenAll();
+        // 쓰기 완료 — 그사이 60초 폴링이 시작한 조회(새 세대)가 쓰기 전 값을 들고 뒤늦게 도착해
+        // 읽음을 되돌릴 수 있다(코덱스 코드 리뷰 P2). 다시 무효화하고 서버 상태로 재조회.
+        releaseLoadSeqRef.current++;
+        loadReleaseItems();
       } catch {
         setError(t("업데이트 알림을 모두 읽음 처리하지 못했습니다."));
         setBusy(false);
