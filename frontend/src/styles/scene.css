@@ -978,6 +978,7 @@
   width: 24px; height: 24px; border-radius: 6px; padding-left: 2px; pointer-events: none;
   display: grid; place-items: center; font-size: 10px; color: #111;
   background: rgba(255, 255, 255, 0.92); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: opacity 0.15s;
 }
 .scene-varpop-item:hover .scene-varpop-vid { opacity: 0; }
 /* 셀 래퍼 — 대표 라벨/지정 버튼을 카드 '밖' 상단 스트립에 둔다(요청).
