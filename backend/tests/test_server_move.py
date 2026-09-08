@@ -450,6 +450,40 @@ def test_extras_are_actually_installed_not_just_carried(tmp_path):
     assert sm._install_extras(package, data, True) == []
 
 
+def test_extras_partial_copy_failure_leaves_nothing_and_rerun_completes(tmp_path, monkeypatch):
+    """복사 도중 실패하면 반쪽 폴더·임시 폴더가 남지 않고 예외가 올라간다. 재실행은 전체를 채운다.
+    (전엔 최종 이름에 바로 복사해 반쪽이 남고, 재실행이 '이미 있음'으로 건너뛰어 누락이 굳었다.)"""
+    sm = _module()
+    package = tmp_path / "pkg"
+    (package / "media").mkdir(parents=True)
+    for i in range(3):
+        (package / "media" / f"f{i}.bin").write_bytes(b"x" * 10)
+    data = tmp_path / "data"
+    data.mkdir()
+
+    real_copy2 = sm.shutil.copy2
+    calls = {"n": 0}
+
+    def flaky_copy2(src, dst, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("disk full")
+        return real_copy2(src, dst, *a, **k)
+
+    # copytree 의 copy_function 기본값은 정의 시점에 묶여 copy2 를 바꿔도 안 먹는다 — copytree 를 감싼다.
+    real_copytree = sm.shutil.copytree
+    monkeypatch.setattr(sm.shutil, "copytree", lambda s, d, **k: real_copytree(s, d, copy_function=flaky_copy2))
+    import pytest as _pytest
+    with _pytest.raises(OSError):
+        sm._install_extras(package, data, True)
+    assert not (data / "media").exists()
+    assert [p.name for p in data.iterdir()] == []  # .media.installing-* 잔재도 없어야 한다
+
+    monkeypatch.setattr(sm.shutil, "copytree", real_copytree)
+    assert sm._install_extras(package, data, True) == ["media"]
+    assert sorted(p.name for p in (data / "media").iterdir()) == ["f0.bin", "f1.bin", "f2.bin"]
+
+
 # ------------------------------------------------------------ 드릴 판정
 
 

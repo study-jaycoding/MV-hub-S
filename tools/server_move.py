@@ -27,6 +27,7 @@ import json
 import os
 import platform
 import shutil
+import uuid
 import sqlite3
 import subprocess
 import sys
@@ -1024,7 +1025,17 @@ def _install_extras(package_dir: Path, data_dir: Path, from_package: bool) -> li
             _say(f"  [건너뜀] {name} — 새 PC 에 이미 있습니다: {target}")
             _say(f"           패키지 쪽: {source}  (합칠지는 사람이 판단하세요)")
             continue
-        shutil.copytree(source, target)
+        # 최종 이름에 바로 복사하면 도중 실패 때 반쪽 폴더가 남고, 재실행은 '이미 있음'으로 건너뛰어
+        # 누락이 영영 채워지지 않는다(코덱스 레인C C4). 같은 데이터 폴더의 임시 이름에 완성한 뒤
+        # 이름만 바꾼다(같은 볼륨 → 원자적). 실패하면 임시 폴더를 지우고 예외를 그대로 올려
+        # 도구가 성공으로 끝나지 않게 한다.
+        staging = data_dir / f".{name}.installing-{uuid.uuid4().hex[:8]}"
+        try:
+            shutil.copytree(source, staging)
+            os.replace(staging, target)
+        except BaseException:
+            _remove_tree_with_retry(staging)
+            raise
         total = sum(p.stat().st_size for p in target.rglob("*") if p.is_file())
         _say(f"  {name} 설치 완료 ({_human(total)})")
         installed.append(name)
