@@ -99,15 +99,19 @@
 .linb-node.fit-contain { background: #050608; }
 .linb-node.fit-contain img,
 .linb-node.fit-contain video { object-fit: contain; }
-/* 영상 표시 뱃지 — 가운데 흰 둥근 사각, 검은 ▶(라이브러리 .play-badge 와 같은 모양, 힉스필드 방식).
+/* 영상 표시 뱃지 — 가운데 흰 삼각형만, 상자 없음(라이브러리 .play-badge 와 같은 모양, 힉스필드 방식).
    마지막 확인 카드에서는 숨기고 'Last viewed' 가 가운데를 차지한다(scene.css).
    호버하면 자동재생되므로 그때는 숨긴다. */
 .linb-vid {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2;
-  width: 34px; height: 34px; border-radius: 9px; padding-left: 3px; pointer-events: none;
-  display: grid; place-items: center; font-size: 13px; color: #111;
-  background: rgba(255,255,255,0.92); box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  width: 22px; height: 24px; pointer-events: none;
+  font-size: 0; line-height: 0;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.65)) drop-shadow(0 0 6px rgba(0,0,0,0.35));
   transition: opacity 0.15s;
+}
+.linb-vid::before {
+  content: ""; display: block; width: 100%; height: 100%;
+  background: #fff; clip-path: polygon(6% 0%, 100% 50%, 6% 100%);
 }
 .linb-node:hover .linb-vid { opacity: 0; }
 /* r/g/b 카드 컬러 마커 — 좌측 세로 바(그리드 list-color-bar 와 동일 개념). 색 지정한 노드만 표시. */
