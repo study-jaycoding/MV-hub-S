@@ -294,6 +294,19 @@ async def estimate_cost(body: CostIn):
         raise HTTPException(status_code=502, detail=str(e))
 
 
+def _require_parents_viewable(request: Request, parent_ids: list[str]) -> None:
+    """계보 부모로 지정된 생성물이 요청자에게 보이는 것인지 확인한다(로컬에 있는 것만).
+
+    로컬에 없는 id(프록시 팀 카드·아직 동기화 전)는 기존처럼 저장소가 판단하게 그대로 둔다 —
+    여기서는 '있는데 못 보는 것'만 막는다. 판정은 상세 조회와 같은 require_view_generation."""
+    for pid in parent_ids:
+        if not pid:
+            continue
+        parent, _local_id, _server_id = repo.resolve_and_get(pid)
+        if parent:
+            require_view_generation(request, parent)
+
+
 def _viewer_scope(request: Request) -> tuple[str | None, bool]:
     """(viewer_uid, read_all) — 계보 관련 노드 가시성 판정용.
     read_all = 단독 모드(AUTH off) 또는 전역 read_all(admin/PM/PD) 보유."""
@@ -368,6 +381,9 @@ def add_history(body: HistoryEdgeIn, request: Request, ref: ResolvedGen = Depend
     if not ref.gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_edit_generation(request, ref.gen)  # 히스토리 수정은 본인/admin 만
+    # 부모는 '열람 가능한 것'만 붙일 수 있다 — 자식 편집 권한만 보면 남의 비공개 생성물 id 를 부모로
+    # 걸어 계보 응답으로 그 프롬프트·파라미터·에셋 URL 을 읽어낼 수 있었다(코덱스 레인C C1).
+    _require_parents_viewable(request, [body.parent_gen_id])
     try:
         repo.add_history_edge(body.parent_gen_id, ref.local_id, body.relation)
     except ValueError as e:
@@ -397,6 +413,7 @@ def derive_from(body: DeriveFromIn, request: Request, ref: ResolvedGen = Depends
     if not ref.gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_edit_generation(request, ref.gen)  # 본인/admin 만 — 계보 기록도 수정 가드와 동일
+    _require_parents_viewable(request, body.parent_ids)  # 부모 열람 권한(코덱스 레인C C1)
     repo.record_derived_parents(ref.local_id, body.parent_ids)
     viewer_uid, read_all = _viewer_scope(request)
     return repo.get_history(ref.local_id, viewer_uid=viewer_uid, read_all=read_all)

@@ -191,6 +191,10 @@ def team_fresh(
 def project_folder_counts(pid: str, request: Request, tab: str = "my"):
     """프로젝트의 폴더별 생성물 개수 {counts: {folder_path: n}} — 사이드바 폴더 트리 뱃지·필터용.
     내 작업(my)은 내 생성물만, 팀(team)은 서버 위임(프록시)."""
+    # my/team 이외 값이면 아래 스코프 변수가 전부 None 으로 떨어져 필터 없는 집계가 나갔다
+    # (?tab=invalid 로 남의 비공개 폴더명·개수 조회 — 코덱스 레인C C3). 기본값 my 로 정규화.
+    if tab not in ("my", "team"):
+        tab = "my"
     if _proxy.proxying() and tab == "team":
         return _proxy.proxy_get(f"/api/projects/{pid}/folder-counts", request)
     account_uid = account_scope_uid(request) if tab == "my" else None
