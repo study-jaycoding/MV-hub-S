@@ -662,19 +662,19 @@
 .cd-date { margin-left: auto; font-size: 12.5px; color: var(--muted2); }
 
 /* 영상 재생 배지 (썸네일 중앙) */
-/* 영상 표시 ▶ — 왼쪽 아래 작은 흰 사각(힉스필드 방식, 사용자 확정). 가운데 원이던 것을 옮겼다:
-   그림을 안 가리고, 가운데의 'Last viewed' 배지와 자리 싸움을 안 한다. 왼쪽 위(S·C 배지, 드래그 손잡이)와
-   겹치지 않는 자리. 캔버스(.linb-vid)·결과 모아보기(.scene-varpop-vid)도 같은 모양. */
+/* 영상 표시 ▶ — 가운데 흰 둥근 사각, 검은 ▶(힉스필드 방식, 사용자 확정). 어두운 원이던 모양만 바꿨고
+   자리는 가운데 그대로. 마지막 확인 카드에서는 이걸 숨기고 'Last viewed' 가 가운데를 차지한다(scene.css).
+   캔버스(.linb-vid)·결과 모아보기(.scene-varpop-vid)도 같은 모양. */
 .play-badge {
-  position: absolute; left: 8px; bottom: 8px;
-  width: 26px; height: 26px; border-radius: 7px;
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 36px; height: 36px; border-radius: 9px;
   background: rgba(255, 255, 255, 0.92);
-  color: #111; font-size: 11px;
+  color: #111; font-size: 14px;
   display: flex; align-items: center; justify-content: center;
-  padding-left: 2px; pointer-events: none;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  padding-left: 3px; pointer-events: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
-.card.list .play-badge { width: 30px; height: 30px; font-size: 12px; }
+.card.list .play-badge { width: 42px; height: 42px; font-size: 16px; }
 .play-badge { transition: opacity 0.15s; }
 .card-thumb:hover .play-badge { opacity: 0; } /* 호버 자동재생 중엔 숨김 */
 

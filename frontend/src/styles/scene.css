@@ -973,11 +973,11 @@
 .scene-varpop-draglayer:active { cursor: grabbing; }
 /* 영상 표시 — 타일 중앙 ▶(라이브러리 play-badge 와 같은 개념). 호버 자동재생 중엔 숨김 */
 .scene-varpop-vid {
-  /* 왼쪽 아래 작은 흰 사각(생성 탭 .play-badge 와 같은 모양). 바닥 4px 색 띠(.scene-varpop-colorbar) 위로. */
-  position: absolute; left: 7px; bottom: 11px; z-index: 2;
-  width: 24px; height: 24px; border-radius: 6px; padding-left: 2px; pointer-events: none;
-  display: grid; place-items: center; font-size: 10px; color: #111;
-  background: rgba(255, 255, 255, 0.92); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  /* 가운데 흰 둥근 사각(생성 탭 .play-badge 와 같은 모양). 마지막 확인 셀에서는 숨긴다(아래). */
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2;
+  width: 30px; height: 30px; border-radius: 8px; padding-left: 3px; pointer-events: none;
+  display: grid; place-items: center; font-size: 12px; color: #111;
+  background: rgba(255, 255, 255, 0.92); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   transition: opacity 0.15s;
 }
 .scene-varpop-item:hover .scene-varpop-vid { opacity: 0; }
@@ -1308,7 +1308,12 @@
 .scene-varpop-item:hover .last-viewed-badge { opacity: 0; }
 /* 생성 탭 카드(.card > .card-thumb) — 같은 배지, 같은 규칙. */
 .card:hover .last-viewed-badge { opacity: 0; }
-/* 영상 ▶ 는 왼쪽 아래로 옮겨서(.play-badge 참고) 가운데 배지와 겹치지 않는다 — 둘 다 보인다. */
+/* 영상 ▶(.play-badge / .linb-vid / .scene-varpop-vid)는 가운데다. 마지막 확인 카드에서는 ▶ 를 감추고
+   'Last viewed' 가 가운데를 차지한다 — 둘이 나란히 서면 지저분하다(사용자 확정). 영상인 건 호버 자동재생으로
+   드러나고, 배지는 그때 비켜준다. */
+.card-thumb:has(.last-viewed-badge) .play-badge,
+.scene-card:has(.last-viewed-badge) .linb-vid,
+.scene-varpop-item:has(.last-viewed-badge) .scene-varpop-vid { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .last-viewed-badge { transition: none; }
 }
