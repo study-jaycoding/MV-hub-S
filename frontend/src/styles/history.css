@@ -99,15 +99,18 @@
 .linb-node.fit-contain { background: #050608; }
 .linb-node.fit-contain img,
 .linb-node.fit-contain video { object-fit: contain; }
-/* 영상 표시 뱃지 — 카드 중앙 ▶(라이브러리 play-badge 와 동일 개념)로 확실히 영상임을 표시.
+/* 영상 표시 뱃지 — 왼쪽 아래 작은 흰 사각(라이브러리 .play-badge 와 같은 모양, 힉스필드 방식).
+   가운데 원이던 것을 옮겼다: 그림을 안 가리고 가운데 'Last viewed' 배지와 겹치지 않는다.
+   캡션(.linb-cap, 약 18px) 위에 두고, 하단 컬러바(9px)가 있으면 그만큼 더 올린다.
    호버하면 자동재생되므로 그때는 숨긴다. */
 .linb-vid {
-  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2;
-  width: 34px; height: 34px; border-radius: 50%; padding-left: 2px; pointer-events: none;
-  display: grid; place-items: center; font-size: 13px; color: #fff;
-  background: rgba(15,16,20,0.5); border: 1px solid rgba(255,255,255,0.18);
-  backdrop-filter: blur(4px); transition: opacity 0.15s;
+  position: absolute; left: 8px; bottom: 22px; z-index: 5;
+  width: 26px; height: 26px; border-radius: 7px; padding-left: 2px; pointer-events: none;
+  display: grid; place-items: center; font-size: 11px; color: #111;
+  background: rgba(255,255,255,0.92); box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+  transition: opacity 0.15s;
 }
+.linb-node.has-cbar .linb-vid { bottom: 31px; }
 .linb-node:hover .linb-vid { opacity: 0; }
 /* r/g/b 카드 컬러 마커 — 좌측 세로 바(그리드 list-color-bar 와 동일 개념). 색 지정한 노드만 표시. */
 /* 노드 하단 컬러바 — 카드(.card-colorbar)와 동일. 색은 인라인, 최종이면 골드 + 빛 흐름. */
