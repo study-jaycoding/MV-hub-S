@@ -72,6 +72,10 @@ export interface ManageProject {
   folders?: ProjectFolderUsage[]; // 등록 폴더+실제 생성물을 합친 시퀀스별 집계
   metric_count: number;
   elapsed_total: number;
+  // 크레딧 커버리지(팩트 원천, 2026-09-09) — 실제/견적/미상 건수. 미상=크레딧을 모르는 생성물(0원 아님). 구서버는 없음.
+  credit_real_count?: number;
+  credit_est_count?: number;
+  credit_unknown_count?: number;
   planning?: Planning | null;
   types?: TypeCounts;
   video_seconds?: number;
@@ -100,11 +104,15 @@ export interface ManageTotals {
   net_credits?: number;
 }
 
+// 사용량 출처 — facts=텔레메트리 팩트(팀 기록 장부: 공유 무관·삭제분 포함). 구서버는 필드 없음(라이브러리 집계).
+export type UsageSource = "facts" | "content";
+
 export interface ManageSummary {
   projects: ManageProject[];
   workers: ManageWorker[];
   totals: ManageTotals;
   workspaces?: Workspace[];
+  usage_source?: UsageSource;
 }
 
 // 드래그 dataTransfer 키 — 생성물(컷)을 작업에 드롭 연결

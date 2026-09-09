@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
-from app import db, repo
+from app import db, manage_db, repo
 from app.repo import manage
 
 
@@ -15,9 +16,12 @@ class ManageWorkspaceScopeTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.old_db = os.environ.get("CONTENT_HUB_DB")
         os.environ["CONTENT_HUB_DB"] = os.path.join(self.tmp.name, "content_hub.db")
+        self.old_manage_path = manage_db.MANAGE_DB_PATH
+        manage_db.MANAGE_DB_PATH = Path(self.tmp.name) / "manage_hub.db"  # 사용자 DB 격리
         db.flush_pool()
         db.init_db()
         repo.ensure_default_worker()
+        manage_db.init_manage_db()
         with db.get_connection() as conn:
             manage._ensure_schema(conn)
             conn.execute("INSERT INTO creator(uid, name) VALUES('u-a', '제이')")
@@ -66,9 +70,38 @@ class ManageWorkspaceScopeTests(unittest.TestCase):
             "INSERT INTO generation_metrics(gen_id, real_credits, elapsed_seconds) VALUES(?,?,1)",
             (gid, credits),
         )
+        # 요약 사용량은 팩트(manage_hub)에서 센다 — 같은 생성물을 그 작성자 계정의 팩트로도 올린다.
+        row = conn.execute("SELECT created_at, sort_ts FROM generation WHERE id=?", (gid,)).fetchone()
+        n, skipped = manage_db.upsert_facts(
+            f"{creator_uid}@t",
+            creator_uid,
+            [
+                {
+                    "local_gen_id": gid,
+                    "job_id": f"job-{gid}",
+                    "workspace_scope": "team",
+                    "workspace_id": workspace_id,
+                    "workspace_name": workspace_id.upper(),
+                    "project_id": project_id,
+                    "project_name": "같은 프로젝트",
+                    "folder_path": folder_path,
+                    "model": model,
+                    "status": "done",
+                    "real_credits": credits,
+                    "elapsed_seconds": 1,
+                    "created_at": row["created_at"],
+                    "sort_ts": row["sort_ts"],
+                    "is_final": False,
+                    "is_shared": False,
+                    "is_deleted": False,
+                }
+            ],
+        )
+        assert (n, skipped) == (1, [])
 
     def tearDown(self) -> None:
         db.flush_pool()
+        manage_db.MANAGE_DB_PATH = self.old_manage_path
         if self.old_db is None:
             os.environ.pop("CONTENT_HUB_DB", None)
         else:

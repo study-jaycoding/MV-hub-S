@@ -582,6 +582,9 @@ async def summary(request: Request, workspace_id: Optional[str] = None):
         type_map = {}
     # async 라우트라 SQLite 집계를 이벤트 루프에서 직접 돌리면 busy 대기(최대 5초)가
     # 서버 전체 응답을 막는다 — 집계는 스레드로 격리한다.
+    # 사용량은 팩트(manage_hub) 원천 — 격리 test_dev 는 조회 직전 미전송 outbox 를 반영(team-overview 와
+    # 동일). 드레인은 락·DB 쓰기를 동반하므로 반드시 스레드에서(코덱스 P1 — 이벤트 루프 차단 금지).
+    await asyncio.to_thread(_refresh_isolated_telemetry)
     return await asyncio.to_thread(repo_manage.dashboard_summary, type_map, workspace_id)
 
 
@@ -609,6 +612,7 @@ def project_summary(request: Request, workspace_id: Optional[str] = None):
             repo.projects_where_role(member_uid, list(_PROJECT_READ_ROLES))
         )
         project_ids = [pid for pid in project_ids if pid in readable_ids]
+    _refresh_isolated_telemetry()  # 사용량은 팩트 원천 — 격리 test_dev 최신 반영(summary 와 동일, 동기 라우트)
     return repo_manage.project_dashboard_summary(project_ids, workspace_id)
 
 

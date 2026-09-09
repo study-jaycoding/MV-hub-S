@@ -21,6 +21,7 @@ import {
 } from "./projectUsageHierarchy";
 import { HoverMetric, WorkspaceUsageDashboard } from "./WorkspaceUsageDashboard";
 import type { ManageProject, ProjectFolderUsage } from "./types";
+import { creditCoverageText, usageSourceLabel } from "./usageSource";
 
 function fmtDur(sec: number): string {
   if (!sec || sec <= 0) return "—";
@@ -184,11 +185,13 @@ function ProjectDetail({
   pid,
   folders,
   projName,
+  usageSource,
 }: {
   summaryCard: ReactNode;
   pid: string | null;
   folders: ProjectFolderUsage[];
   projName: string;
+  usageSource?: string;
 }) {
   const [sequencePage, setSequencePage] = useState(1);
   const [sequencePageSize, setSequencePageSize] = useState<number>(USAGE_PAGE_SIZES[0]);
@@ -224,8 +227,8 @@ function ProjectDetail({
             <div className="dash-detail-title">
               <h2>에피소드 · 시퀀스</h2>
               <span className="dash-scope-chip">프로젝트 · {projName}</span>
-              {/* 프로젝트 요약과 같은 원천 — 폴더 파생 집계임을 명시(위 텔레메트리와 구분) */}
-              <span className="work-source-label">출처 · 라이브러리 생성물 집계</span>
+              {/* 프로젝트 요약과 같은 원천 — 팩트(팀 기록 장부)면 공유 안 한 컷도 포함됨을 명시. 구서버는 종전 문구. */}
+              <span className="work-source-label">{usageSourceLabel(usageSource)}</span>
             </div>
             <span className="meta">에피소드 {episodes.length}개 · 시퀀스 {sequenceCount}개</span>
           </div>
@@ -302,7 +305,7 @@ export function DashboardView({
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [selectedPid, setSelectedPid] = useState<string | null>(null); // 하단 상세 대상
-  const [summary, setSummary] = useState<{ projects: ManageProject[] } | null>(null);
+  const [summary, setSummary] = useState<{ projects: ManageProject[]; usage_source?: string } | null>(null);
   const [members, setMembers] = useState<Map<string, ProjectMember[]>>(new Map());
   const [showPanel, setShowPanel] = useState(false); // 프로젝트 관리 오버레이(＋프로젝트)
   const [summaryPage, setSummaryPage] = useState(1);
@@ -420,8 +423,8 @@ export function DashboardView({
       <div className="hd">
         <div className="dash-detail-title">
           <h2>프로젝트 요약</h2>
-          {/* 위 워크스페이스 사용 현황(텔레메트리)과 집계 원천이 달라 숫자가 어긋날 수 있다. */}
-          <span className="work-source-label">출처 · 라이브러리 생성물 집계</span>
+          {/* 2026-09-09부터 사용량은 위 워크스페이스 사용 현황과 같은 팩트(팀 기록 장부). 구서버면 종전 라이브러리 집계. */}
+          <span className="work-source-label">{usageSourceLabel(summary?.usage_source)}</span>
         </div>
         <span className="meta">전체 {rows.length}개</span>
       </div>
@@ -460,6 +463,8 @@ export function DashboardView({
                 p.planning?.note ? `메모 ${p.planning.note}` : null,
               ].filter(Boolean).join("\n") || "일정 정보 없음";
               const models = p.models || [];
+              const coverage = creditCoverageText(p); // 실제/견적/미상 — 구서버는 null
+              const unknownCount = p.credit_unknown_count || 0;
               const generated = p.gen_count || 0;
               const finals = p.final_count || 0;
               const yieldPercent = generated ? (finals / generated) * 100 : 0;
@@ -493,9 +498,14 @@ export function DashboardView({
                       value={used}
                       rows={models}
                       metric="credits"
-                      title="프로젝트 전체 모델별 크레딧 사용"
+                      title={coverage ? `프로젝트 전체 모델별 크레딧 사용 · ${coverage}` : "프로젝트 전체 모델별 크레딧 사용"}
                       suffix=" cr"
                     />
+                    {unknownCount > 0 && (
+                      <span className="dim" title="크레딧을 모르는 생성물 수 — 0원이 아니라 작업자 PC 의 거래 대조가 안 된 건">
+                        {" "}· 미상 {unknownCount}
+                      </span>
+                    )}
                   </td>
                   <td className="tnum">
                     <HoverMetric value={generated} rows={models} metric="count" title="모델별 생성" />
@@ -524,7 +534,7 @@ export function DashboardView({
         </table>
       </div>
       <div className="dash-legend">
-        <span className="dim">행 클릭=아래 상세 · 한도=설정 예산 · 사용=프로젝트 전체 누적 크레딧</span>
+        <span className="dim">행 클릭=아래 상세 · 한도=설정 예산 · 사용=프로젝트 전체 누적 크레딧 · 미상=크레딧을 모르는 건(0원 아님)</span>
       </div>
       <DashboardPagination
         label="프로젝트 요약"
@@ -560,6 +570,7 @@ export function DashboardView({
         pid={selectedPid}
         folders={selProj?.folders || []}
         projName={selName}
+        usageSource={summary?.usage_source}
       />
 
       {/* 프로젝트 관리 오버레이 — 생성·보관·삭제·멤버 역할 */}

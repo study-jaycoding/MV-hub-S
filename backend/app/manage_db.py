@@ -105,6 +105,9 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         "ON team_generation_fact(workspace_scope, workspace_id, project_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_tgf_workspace_model_created "
         "ON team_generation_fact(workspace_scope, workspace_id, model, created_at)",
+        # 관리 요약(프로젝트 대시보드) 폴더 집계 — project_id+folder_path GROUP BY(2026-09-09)
+        "CREATE INDEX IF NOT EXISTS idx_tgf_project_folder "
+        "ON team_generation_fact(project_id, folder_path)",
     ):
         conn.execute(statement)
 
@@ -525,3 +528,169 @@ def team_timeseries(
             f"GROUP BY bucket ORDER BY bucket ASC", args,
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── 관리 요약(프로젝트 대시보드) 팩트 집계 — 2026-09-09 ──────────────────────────────
+# '관리 요약' 카드·에피소드·시퀀스 표는 원래 content DB(generation = 공유 서버에선 발행분만)를
+# 집계했다. 공유 안 한 생성물의 크레딧·생성시간이 통째로 빠지고(뻘뻘뻘 e020: 16폴더 중 15폴더 0cr),
+# 생성시간은 아예 없었다(공유 번들에 metrics 미탑재). Jay 결정: "출근부 장부(팩트)로 봐야 한다".
+# 규칙은 team_overview 와 같다 — 크레딧=COALESCE(real, est, 0)·tombstone 포함(삭제돼도 비용은 발생)·
+# 워크스페이스 필터=team+id(없으면 전체). 프로젝트 레지스트리·planning·공유(발행) 수·빈 시퀀스·
+# 표시이름 폴백은 content 몫(repo/manage.py 가 조립).
+# 중복 정책(코덱스 P3 명시): 같은 계정+job_id 는 upsert 가 최신 local_gen_id 로 수렴시키지만, **계정이
+# 다르거나 job_id 가 없는 같은 잡은 두 번 센다** — team_overview 와 같은 한계(테스트로 고정).
+_DONE_STATUSES = ("done", "completed", "success")
+_PERIOD_MATCH = {  # 예산 주기 비교식 — content 경로에서 쓰던 식 그대로(전제: 서버 TZ=KST, SERVER.md)
+    "day": "date(created_at,'localtime') = date('now','localtime')",
+    "week": (
+        "date(created_at,'localtime','weekday 0','-6 days') = "
+        "date('now','localtime','weekday 0','-6 days')"
+    ),
+    "month": "strftime('%Y-%m', created_at,'localtime') = strftime('%Y-%m','now','localtime')",
+}
+
+
+def _usage_scope_where(
+    workspace_id: Optional[str], project_ids: Optional[list[str]] = None
+) -> tuple[str, list[Any]]:
+    """팩트 사용량 집계의 공통 WHERE — 워크스페이스(team+id, 없으면 전체)와 프로젝트 IN."""
+    where: list[str] = []
+    args: list[Any] = []
+    if workspace_id:
+        where.append("workspace_scope='team' AND workspace_id=?")
+        args.append(workspace_id)
+    if project_ids is not None:
+        if not project_ids:
+            return "WHERE 0", []
+        where.append(f"project_id IN ({','.join('?' for _ in project_ids)})")
+        args.extend(project_ids)
+    return (("WHERE " + " AND ".join(where)) if where else ""), args
+
+
+def fact_usage(
+    workspace_id: Optional[str],
+    project_ids: Optional[list[str]] = None,
+    budget_periods: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """관리 요약용 팩트 사용량을 **한 읽기 스냅샷**에서 전부 센다(코덱스 P2 — 조회 범위·스냅샷).
+
+    반환:
+      stats         {pid: gen_count·done_count·final_count·real_credits·credits·metric_count·
+                     credit_real_count·credit_est_count·credit_unknown_count·elapsed_total} — 미분류(None) 포함
+      models        {pid: [model·count·credits·final_count·elapsed_seconds]}
+      budget_models {pid: [model·count·credits·final_count]} — budget_periods={pid: day|week|month} 인 프로젝트만
+      folder_rows   [pid·folder_path·creator_uid·creator_name·model·count·final_count·credits·elapsed_seconds·
+                     created_start·created_end] — repo/manage.py 가 빈 시퀀스·표시이름과 합쳐 folders[] 로 조립
+      workers       [uid·name·gen_count·credits·elapsed_total]
+    project_ids=None 이면 워크스페이스 전체(대시보드 — 이동 프로젝트·totals 판정에 전체가 필요), 목록이면
+    그 프로젝트만(멤버용 project-summary — 허용된 것 밖은 SQL 에서부터 안 센다).
+    metric_count = 크레딧을 아는 행(실제 또는 견적). credit_unknown_count = 둘 다 없는 행 — 작업자 PC 의
+    거래 대조가 실패한 구멍(예: 리버 e003 148건)을 화면에서 0원과 구분하기 위한 값.
+    created_start/end 는 datetime(created_at,'localtime') 로 통일 — 팩트 created_at 은 'YYYY-MM-DD HH:MM:SS'
+    와 'YYYY-MM-DDTHH:MM:SSZ' 가 섞여 문자열 MIN/MAX 가 같은 날 안에서 뒤집힌다(코덱스 P2). 둘 다 UTC 전제,
+    표시는 팀 표준시(KST=서버 TZ) 날짜.
+    """
+    where, args = _usage_scope_where(workspace_id, project_ids)
+    periods = budget_periods or {}
+    done = ",".join("?" for _ in _DONE_STATUSES)
+    model_expr = "COALESCE(NULLIF(TRIM(model),''),'알 수 없음')"
+    period_cols = "".join(
+        f", SUM(CASE WHEN {cond} THEN 1 ELSE 0 END) AS {name}_count"
+        f", SUM(CASE WHEN {cond} THEN {_CREDIT} ELSE 0 END) AS {name}_credits"
+        f", SUM(CASE WHEN {cond} THEN is_final ELSE 0 END) AS {name}_final"
+        for name, cond in _PERIOD_MATCH.items()
+    )
+    empty: dict[str, Any] = {
+        "stats": {}, "models": {}, "budget_models": {}, "folder_rows": [], "workers": [],
+    }
+    with get_connection() as conn:
+        # 관리 DB 가 아직 초기화되지 않은 설치본(팩트 없음)에서 요약이 500 으로 죽지 않게 — 빈 사용량.
+        # (MANAGE on 이면 시작 시 init_manage_db 가 만들므로 운영에선 거의 안 걸린다.)
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='team_generation_fact'"
+        ).fetchone():
+            return empty
+        conn.execute("BEGIN")  # 아래 모든 집계를 같은 WAL 읽기 스냅샷에 고정
+        stat_rows = conn.execute(
+            f"SELECT project_id AS pid, COUNT(*) AS gen_count, "
+            f"SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ({done}) THEN 1 ELSE 0 END) AS done_count, "
+            f"COALESCE(SUM(is_final),0) AS final_count, "
+            f"COALESCE(SUM(real_credits),0) AS real_credits, "
+            f"COALESCE(SUM({_CREDIT}),0) AS credits, "
+            f"SUM(CASE WHEN real_credits IS NOT NULL THEN 1 ELSE 0 END) AS credit_real_count, "
+            f"SUM(CASE WHEN real_credits IS NULL AND est_credits IS NOT NULL THEN 1 ELSE 0 END) "
+            f"  AS credit_est_count, "
+            f"SUM(CASE WHEN real_credits IS NULL AND est_credits IS NULL THEN 1 ELSE 0 END) "
+            f"  AS credit_unknown_count, "
+            f"COALESCE(SUM(elapsed_seconds),0) AS elapsed_total "
+            f"FROM team_generation_fact {where} GROUP BY project_id",
+            [*_DONE_STATUSES, *args],
+        ).fetchall()
+        model_rows = conn.execute(
+            f"SELECT project_id AS pid, {model_expr} AS model, COUNT(*) AS count, "
+            f"COALESCE(SUM({_CREDIT}),0) AS credits, COALESCE(SUM(is_final),0) AS final_count, "
+            f"COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds{period_cols} "
+            f"FROM team_generation_fact {where} GROUP BY project_id, {model_expr} "
+            f"ORDER BY credits DESC, count DESC, model COLLATE NOCASE",
+            args,
+        ).fetchall()
+        folder_rows = conn.execute(
+            f"SELECT project_id AS pid, folder_path, creator_uid, MAX(creator_name) AS creator_name, "
+            f"{model_expr} AS model, COUNT(*) AS count, COALESCE(SUM(is_final),0) AS final_count, "
+            f"COALESCE(SUM({_CREDIT}),0) AS credits, "
+            f"COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "
+            f"MIN(datetime(created_at,'localtime')) AS created_start, "
+            f"MAX(datetime(created_at,'localtime')) AS created_end "
+            f"FROM team_generation_fact {where} "
+            f"GROUP BY project_id, folder_path, creator_uid, {model_expr} "
+            f"ORDER BY project_id, folder_path COLLATE NOCASE, credits DESC",
+            args,
+        ).fetchall()
+        worker_rows = conn.execute(
+            f"SELECT creator_uid AS uid, MAX(creator_name) AS name, COUNT(*) AS gen_count, "
+            f"COALESCE(SUM({_CREDIT}),0) AS credits, "
+            f"COALESCE(SUM(elapsed_seconds),0) AS elapsed_total "
+            f"FROM team_generation_fact {where} GROUP BY creator_uid ORDER BY gen_count DESC",
+            args,
+        ).fetchall()
+    stats: dict[Optional[str], dict[str, Any]] = {}
+    for r in stat_rows:
+        d = dict(r)
+        d["metric_count"] = int(d["credit_real_count"] or 0) + int(d["credit_est_count"] or 0)
+        stats[d["pid"]] = d
+    models: dict[str, list[dict[str, Any]]] = {}
+    budget: dict[str, list[dict[str, Any]]] = {}
+    for r in model_rows:
+        pid = r["pid"]
+        models.setdefault(pid, []).append(
+            {
+                "model": r["model"],
+                "count": r["count"] or 0,
+                "credits": r["credits"] or 0,
+                "final_count": r["final_count"] or 0,
+                "elapsed_seconds": r["elapsed_seconds"] or 0,
+            }
+        )
+        period = periods.get(pid)
+        if period not in _PERIOD_MATCH:
+            continue
+        count = r[f"{period}_count"] or 0
+        if not count:
+            continue
+        budget.setdefault(pid, []).append(
+            {
+                "model": r["model"],
+                "count": count,
+                "credits": r[f"{period}_credits"] or 0,
+                "final_count": r[f"{period}_final"] or 0,
+            }
+        )
+    for rows_ in budget.values():
+        rows_.sort(key=lambda it: (-it["credits"], -it["count"], it["model"].lower()))
+    return {
+        "stats": stats,
+        "models": models,
+        "budget_models": budget,
+        "folder_rows": [dict(r) for r in folder_rows],
+        "workers": [dict(r) for r in worker_rows],
+    }

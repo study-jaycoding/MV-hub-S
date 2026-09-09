@@ -3,11 +3,12 @@ import os
 import tempfile
 import unittest
 from contextlib import ExitStack
+from pathlib import Path
 from unittest import mock
 
 from fastapi import HTTPException
 
-from app import db, repo
+from app import db, manage_db, repo
 from app import deps as deps_mod
 from app.config import DEFAULT_WORKER_ID
 from app.repo import manage as repo_manage
@@ -43,9 +44,13 @@ class IdentityPermissionTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_db = os.environ.get("CONTENT_HUB_DB")
         os.environ["CONTENT_HUB_DB"] = os.path.join(self.tmp.name, "content_hub.db")
+        # 요약 사용량은 manage_hub 팩트 — 사용자 관리 DB 를 읽지 않게 임시 경로로 격리(코덱스 P2)
+        self.old_manage_path = manage_db.MANAGE_DB_PATH
+        manage_db.MANAGE_DB_PATH = Path(self.tmp.name) / "manage_hub.db"
         db.flush_pool()
         db.init_db()
         repo.ensure_default_worker()
+        manage_db.init_manage_db()
         with db.get_connection() as conn:
             conn.execute(
                 "INSERT INTO project(id, name, kind, archived) "
@@ -77,9 +82,25 @@ class IdentityPermissionTests(unittest.TestCase):
                 "INSERT INTO project_member(project_id, creator_uid, project_role) "
                 "VALUES('p_roleless','user_river','')"
             )
+        # 허용(p_river)·비허용(p_other) 프로젝트의 팩트 — 멤버 요약이 남의 프로젝트를 세지 않는지 검증용
+        for email, uid, pid, credits in (
+            ("river@example.com", "user_river", "p_river", 5),
+            ("other@example.com", "user_other", "p_other", 9),
+        ):
+            n, skipped = manage_db.upsert_facts(
+                email, uid,
+                [{
+                    "local_gen_id": f"g_{pid}", "job_id": f"job_{pid}", "workspace_scope": "personal",
+                    "project_id": pid, "folder_path": "ep001/c0010", "model": "nano", "status": "done",
+                    "real_credits": credits, "created_at": "2026-09-01T00:00:00Z",
+                    "is_final": False, "is_shared": False, "is_deleted": False,
+                }],
+            )
+            assert (n, skipped) == (1, [])
 
     def tearDown(self):
         db.flush_pool()
+        manage_db.MANAGE_DB_PATH = self.old_manage_path
         if self.old_db is None:
             os.environ.pop("CONTENT_HUB_DB", None)
         else:
@@ -166,6 +187,11 @@ class IdentityPermissionTests(unittest.TestCase):
         self.assertEqual([row["pid"] for row in result["projects"]], ["p_river"])
         self.assertNotIn("workers", result)
         self.assertNotIn("workspaces", result)
+        # 사용량은 팩트 원천 — 내 프로젝트 팩트(5cr)만, 남의 프로젝트(p_other 9cr)는 SQL 범위 밖.
+        self.assertEqual(result["usage_source"], "facts")
+        self.assertEqual(result["projects"][0]["gen_count"], 1)
+        self.assertEqual(result["projects"][0]["credits"], 5)
+        self.assertEqual([f["folder_path"] for f in result["projects"][0]["folders"]], ["ep001/c0010"])
 
     def test_ingest_requires_reported_cli_email_when_auth_is_on(self):
         acc = {"email": "river@example.com", "creator_uid": "user_river"}

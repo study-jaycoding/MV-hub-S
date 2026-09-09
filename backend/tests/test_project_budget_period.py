@@ -1,10 +1,15 @@
-"""프로젝트 예산 주기 저장과 현재 기간 사용량 집계."""
+"""프로젝트 예산 주기 저장과 현재 기간 사용량 집계.
+
+사용량 원천은 manage_hub 팩트(team_generation_fact, 2026-09-09 "출근부 장부") — content 생성물은
+레지스트리·빈 시퀀스·이름에만 쓰이므로 같은 생성물을 팩트로도 시드한다.
+"""
 
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
-from app import db, repo
+from app import db, manage_db, repo
 from app.repo import manage
 
 
@@ -13,9 +18,12 @@ class ProjectBudgetPeriodTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.old_db = os.environ.get("CONTENT_HUB_DB")
         os.environ["CONTENT_HUB_DB"] = os.path.join(self.tmp.name, "content_hub.db")
+        self.old_manage_path = manage_db.MANAGE_DB_PATH
+        manage_db.MANAGE_DB_PATH = Path(self.tmp.name) / "manage_hub.db"  # 사용자 DB 격리
         db.flush_pool()
         db.init_db()
         repo.ensure_default_worker()
+        manage_db.init_manage_db()
         with db.get_connection() as conn:
             conn.execute("INSERT INTO project(id, name, kind) VALUES('p1','Project','team')")
             manage._ensure_schema(conn)
@@ -38,9 +46,47 @@ class ProjectBudgetPeriodTests(unittest.TestCase):
                 "INSERT INTO project_task(id, project_id, name, folder_path) "
                 "VALUES('empty-folder', 'p1', 'Empty sequence', 'ep002/c0001')"
             )
+        # 같은 생성물을 팩트로 — 사용량은 여기서 센다.
+        self._upsert_fact("today")
+        self._upsert_fact("old")
+
+    _METRICS = {"today": (5, 30), "old": (11, 60)}  # gen_id -> (real_credits, elapsed)
+
+    def _upsert_fact(self, gen_id: str, *, is_deleted: bool = False) -> None:
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT creator_uid, model, is_final, folder_path, created_at FROM generation WHERE id=?",
+                (gen_id,),
+            ).fetchone()
+        credits, elapsed = self._METRICS[gen_id]
+        n, skipped = manage_db.upsert_facts(
+            f"{row['creator_uid']}@t",
+            row["creator_uid"],
+            [
+                {
+                    "local_gen_id": gen_id,
+                    "job_id": f"job-{gen_id}",
+                    "workspace_scope": "personal",
+                    "project_id": "p1",
+                    "project_name": "Project",
+                    "folder_path": row["folder_path"],
+                    "model": row["model"],
+                    "status": "done",
+                    "real_credits": credits,
+                    "elapsed_seconds": elapsed,
+                    "created_at": row["created_at"],
+                    "is_final": bool(row["is_final"]),
+                    "is_shared": False,
+                    "is_deleted": is_deleted,
+                    "deleted_at": row["created_at"] if is_deleted else None,
+                }
+            ],
+        )
+        assert (n, skipped) == (1, [])
 
     def tearDown(self):
         db.flush_pool()
+        manage_db.MANAGE_DB_PATH = self.old_manage_path
         if self.old_db is None:
             os.environ.pop("CONTENT_HUB_DB", None)
         else:
@@ -62,8 +108,8 @@ class ProjectBudgetPeriodTests(unittest.TestCase):
         self.assertEqual(
             project["models"],
             [
-                {"model": "seedance", "count": 1, "credits": 11, "final_count": 0},
-                {"model": "nano", "count": 1, "credits": 5, "final_count": 1},
+                {"model": "seedance", "count": 1, "credits": 11, "final_count": 0, "elapsed_seconds": 60},
+                {"model": "nano", "count": 1, "credits": 5, "final_count": 1, "elapsed_seconds": 30},
             ],
         )
         self.assertEqual(
@@ -99,20 +145,19 @@ class ProjectBudgetPeriodTests(unittest.TestCase):
         self.assertEqual(restricted_project["folders"], project["folders"])
 
     def test_deleted_generation_credits_still_count_toward_budget(self):
-        # 크레딧은 생성 시점에 이미 소진 — 카드를 지워도 예산 사용량에서 빠지면 안 된다
+        # 크레딧은 생성 시점에 이미 소진 — 카드를 지워도(팩트 tombstone) 예산 사용량에서 빠지면 안 된다
         # (쓰고 지우면 예산이 초기화되는 구멍 방지). 복원·반복 삭제에도 1회만 합산.
         manage.set_planning("p1", budget_credits=100, budget_period="day")
-        with db.get_connection() as conn:
-            conn.execute("UPDATE generation SET deleted_at=datetime('now') WHERE id='today'")
+        self._upsert_fact("today", is_deleted=True)  # 삭제 통보(tombstone)
         project = manage.dashboard_summary()["projects"][0]
         self.assertEqual(project["budget_used_credits"], 5)
         self.assertEqual(project["credits"], 16)
 
-        with db.get_connection() as conn:  # 복원 후 재삭제 — 이중 합산 없음
-            conn.execute("UPDATE generation SET deleted_at=NULL WHERE id='today'")
-            conn.execute("UPDATE generation SET deleted_at=datetime('now') WHERE id='today'")
+        self._upsert_fact("today")  # 복원
+        self._upsert_fact("today", is_deleted=True)  # 재삭제 — 이중 합산 없음
         project = manage.dashboard_summary()["projects"][0]
         self.assertEqual(project["budget_used_credits"], 5)
+        self.assertEqual(project["credits"], 16)
 
     def test_existing_planning_schema_migrates_to_month(self):
         with db.get_connection() as conn:

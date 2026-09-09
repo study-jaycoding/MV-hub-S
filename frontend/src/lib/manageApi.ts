@@ -27,7 +27,7 @@ export const manageApi = {
   summary: (workspaceId?: string) =>
     jsonFetch<ManageSummary>(withQuery("/api/manage/summary", { workspace_id: workspaceId })),
   projectSummary: (workspaceId?: string) =>
-    jsonFetch<Pick<ManageSummary, "projects">>(
+    jsonFetch<Pick<ManageSummary, "projects" | "usage_source">>(
       withQuery("/api/manage/project-summary", { workspace_id: workspaceId }),
     ),
   workspaces: () =>
