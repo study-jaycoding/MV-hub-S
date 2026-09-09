@@ -1,6 +1,9 @@
 // 앱 루트: 탭·필터 상태, 데이터 로딩, WebSocket 진행률, 액션 오케스트레이션.
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 // 코드 스플리팅 — 드물게 여는 구성보드는 지연 로드해 초기 번들에서 분리.
+// 씬 카드가 선택되지 않았을 때의 트레이 바인딩 refs — 렌더마다 같은 참조여야 한다(아래 trayBinding 주석).
+const EMPTY_SCENE_REFS: SceneRef[] = [];
+
 const HistoryBoard = lazy(() =>
   import("./components/HistoryBoard").then((m) => ({ default: m.HistoryBoard })),
 );
@@ -863,7 +866,9 @@ export default function App() {
         : {
             key: `${activeScene.id}:none`,
             promptKey: "none",
-            refs: [] as SceneRef[],
+            // ★고정 빈 배열 — 매 렌더 새 [] 를 주면 트레이 동기화(A)가 App 재렌더마다 다시 돌아, 카드 없이 '프롬프트
+            //  재사용'으로 넣은 레퍼런스를 빈 배열로 되돌린다(폴더 보기 창을 닫는 순간 알약이 ⚠ 로 — 2026-09-09).
+            refs: EMPTY_SCENE_REFS,
             prompt: "",
             model: null,
             modelKey: "none",
