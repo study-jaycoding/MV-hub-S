@@ -6,6 +6,7 @@
 import type { Generation, History, Reference } from "../types";
 import type { SceneCard, SceneEdge, SceneModelCfg, SceneRef, SceneSnapshot } from "./scenes";
 import { uid } from "./scenes";
+import { MODEL_DEFAULT_OVERRIDE } from "./useModels";
 
 const LEFT_X = 40; // 입력(레퍼런스·모델·텍스트) 열
 const RIGHT_X = 620; // 결과 카드 열
@@ -23,6 +24,18 @@ function normalizeParams(
     if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[k] = v;
   }
   return Object.keys(out).length ? out : undefined;
+}
+
+// 힉스필드 잡 기록(generate list)에는 mode 가 없고 동기화가 그 값으로 덮어써 옛 생성물 params 는 mode 가 빈다
+//  (2026-09-09). 우리 모델별 기본값(seedance_2_5: mode=omni_reference)만 채운다 — 스키마 없는 순수 함수라 실효
+//  기본값 전체는 못 채우고, 나머지는 모델 카드 편집창이 열 때 채운다. 저장값이 있으면 그것이 우선.
+function withModelDefaults(
+  model: string,
+  params: Record<string, string | number | boolean> | undefined,
+): Record<string, string | number | boolean> | undefined {
+  const ov = MODEL_DEFAULT_OVERRIDE[model];
+  if (!ov) return params;
+  return { ...ov, ...(params || {}) };
 }
 
 function refToSceneRef(r: Reference, sourceGenId?: string): SceneRef {
@@ -85,7 +98,7 @@ export function buildRecipeScene(gen: Generation, history?: History | null): Sce
     const modelCfg: SceneModelCfg = {
       model: gen.model,
       modelName: gen.model,
-      params: normalizeParams(gen.params),
+      params: withModelDefaults(gen.model, normalizeParams(gen.params)),
     };
     pushInput({ id: uid(), kind: "model", modelCfg }, "model");
   }

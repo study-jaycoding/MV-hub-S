@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -148,6 +149,35 @@ class GenerationSyncTests(unittest.TestCase):
         self.assertIsNotNone(other)
         self.assertNotEqual(other["id"], owner_id)
         self.assertEqual(other["creator_uid"], "u_other")
+
+    def test_sync_keeps_submit_only_params_like_mode(self) -> None:
+        """힉스필드 잡 기록(generate list)에는 mode 가 없다(2026-09-09 실측: Seedance 2.5 레퍼런스 10장 잡도 없음).
+        동기화가 params 를 통째로 덮어쓰면 재생성·레시피→씬이 mode 없는 params 를 복사해 CLI 기본 t2v 가
+        레퍼런스를 거부한다 → 힉스필드 값을 위에 얹되 힉스필드가 안 주는 키는 남긴다."""
+        local_id = repo.create_local_generation(
+            {
+                "prompt": "local prompt",
+                "model": "seedance_2_5",
+                "params": {"mode": "omni_reference", "duration": "12", "resolution": "720p"},
+            },
+            "me",
+            creator_uid="u_one",
+        )
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET job_id='job-mode' WHERE id=?", (local_id,))
+        parsed = self.parsed("job-mode")
+        parsed["generation"]["model"] = "seedance_2_5"
+        parsed["generation"]["params"] = {
+            "prompt": "prompt", "duration": 12, "resolution": "1080p", "medias": [],
+        }
+        self.assertEqual(repo.upsert_synced_generation(parsed, "me"), "updated")
+        with db.get_connection() as conn:
+            row = conn.execute("SELECT id, params FROM generation WHERE job_id='job-mode'").fetchone()
+        self.assertEqual(row["id"], local_id)
+        self.assertEqual(
+            json.loads(row["params"]),
+            {"mode": "omni_reference", "prompt": "prompt", "duration": 12, "resolution": "1080p", "medias": []},
+        )
 
     def test_url_adopt_still_recovers_same_creator_local_row(self) -> None:
         local_id = repo.create_local_generation(

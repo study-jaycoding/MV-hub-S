@@ -1032,6 +1032,24 @@ def _refs_for_cli(model: str, refs: list) -> tuple[list, str | None]:
     return [ref for ref in refs if isinstance(ref, dict)], None
 
 
+# Seedance 2.5 mode 보정(2026-09-09). 힉스필드 잡 기록(generate list)에는 mode 가 없고 동기화가 params 를 그 값으로
+# 덮어써, 재생성·레시피→씬·모델 카드가 복사한 params 는 mode 가 빈다. CLI 기본 t2v 는 레퍼런스를 거부한다
+# ("mode 't2v' does not accept reference media"). 레퍼런스가 실제로 붙는지 최종적으로 아는 곳이 여기뿐이라 제출 직전에
+# 맞춘다. video_edit·video_extension 은 사용자가 고른 것이니 두고, mode enum 에 omni_reference 가 있는 모델만 —
+# seedance_2_0 의 mode 는 다른 enum(fast 등)이라 건드리면 안 된다. 시작/끝 이미지(@start/@end)는 레퍼런스 미디어가 아니다.
+def _seedance_mode_for_refs(model: str, params: dict, refs: list, mode_enum: set) -> tuple[dict, str | None]:
+    """(보정된 params, 안내문|None). 바꿀 게 없으면 원본 그대로."""
+    if not _uses_single_start_image(model) or "omni_reference" not in mode_enum:
+        return params, None
+    has_media = any(isinstance(ref, dict) and _is_omni_media_ref(ref) for ref in refs)
+    mode = params.get("mode")
+    if has_media and mode in (None, "", "t2v"):
+        return {**params, "mode": "omni_reference"}, f"mode {mode or '없음'} → omni_reference(레퍼런스 있음)"
+    if not has_media and mode == "omni_reference":
+        return {**params, "mode": "t2v"}, "mode omni_reference → t2v(레퍼런스 없음)"
+    return params, None
+
+
 def _upload_cache_path() -> str:
     base = os.environ.get("LOCALAPPDATA")
     if base:
@@ -1293,19 +1311,67 @@ def _upload_for_media(
             my_ev.set()
 
 
+_MODEL_PARAMS_CACHE: dict = {}  # model → `model get` 의 params 목록(성공만 영구 캐시)
+_MODEL_PARAMS_FAIL_AT: dict = {}  # model → 마지막 조회 실패 시각(monotonic) — 짧게 기억해 재조회 폭주 방지
+_MODEL_PARAMS_FAIL_TTL = 60.0  # 초. 실패 뒤 이 동안은 재조회 없이 '스키마 없음'(필터·mode 보정 없음)으로 진행
+_MODEL_PARAMS_LOCKS: dict = {}  # model → Lock. 같은 모델 동시 조회는 하나로, 다른 모델끼리는 병렬(코덱스 2차: 전역 락이면
+#  A·B 가 각각 60초 타임아웃일 때 직렬로 기다린 끝에 A 의 실패 TTL 이 만료돼 재조회 — 최대 240초)
+_MODEL_PARAMS_LOCKS_GUARD = Lock()
 _PARAM_NAMES_CACHE: dict = {}  # model → 허용 param 이름 집합(빈 집합=스키마 못 받음 → 필터 안 함)
+
+
+def _model_params_lock(model: str) -> Lock:
+    with _MODEL_PARAMS_LOCKS_GUARD:
+        lock = _MODEL_PARAMS_LOCKS.get(model)
+        if lock is None:
+            lock = _MODEL_PARAMS_LOCKS[model] = Lock()
+        return lock
+
+
+def _model_params(cli: str, model: str) -> list:
+    """`model get <model> --json` 의 params 목록(dict 만). 성공은 영구 캐시. 실패는 빈 목록이되 영구 박제하지
+    않고(한 번 실패로 이 에이전트가 사는 동안 스키마 필터·mode 보정이 꺼지지 않게) _MODEL_PARAMS_FAIL_TTL 동안만
+    기억한다 — 계속 실패하는 동안 배치마다·워커마다 60초 타임아웃 조회를 반복해 제출·진행 조회가 늦어지는 것 방지
+    (코덱스 리뷰 P2). 조회는 모델별 락으로 묶어 같은 모델 동시 요청은 첫 조회 결과를 나눠 쓴다."""
+    cached = _MODEL_PARAMS_CACHE.get(model)
+    if cached is not None:
+        return cached
+    with _model_params_lock(model):
+        cached = _MODEL_PARAMS_CACHE.get(model)
+        if cached is not None:
+            return cached
+        failed_at = _MODEL_PARAMS_FAIL_AT.get(model)
+        if failed_at is not None and time.monotonic() - failed_at < _MODEL_PARAMS_FAIL_TTL:
+            return []
+        data = _cli_json(cli, "model", "get", model, timeout=60)
+        if not isinstance(data, dict):
+            _MODEL_PARAMS_FAIL_AT[model] = time.monotonic()
+            return []
+        items = [p for p in (data.get("params") or []) if isinstance(p, dict)]
+        _MODEL_PARAMS_CACHE[model] = items
+        _MODEL_PARAMS_FAIL_AT.pop(model, None)
+        return items
 
 
 def _allowed_params(cli: str, model: str) -> set:
     """모델이 받는 param 이름 집합 — `model get <model> --json` 의 params[].name.
     cli_bridge._allowed_param_names 와 동일 규칙(조회 실패 시 빈 집합 = 전부 통과, advisor)."""
     if model not in _PARAM_NAMES_CACHE:
-        data = _cli_json(cli, "model", "get", model, timeout=60)
-        names = set()
-        if isinstance(data, dict):
-            names = {p.get("name") for p in (data.get("params") or []) if isinstance(p, dict) and p.get("name")}
-        _PARAM_NAMES_CACHE[model] = names
+        items = _model_params(cli, model)
+        if not items:
+            return set()
+        _PARAM_NAMES_CACHE[model] = {p.get("name") for p in items if p.get("name")}
     return _PARAM_NAMES_CACHE[model]
+
+
+def _param_enum(model: str, name: str) -> set:
+    """모델 스키마(_allowed_params → _model_params 가 채운 캐시)에서 param 의 enum 값 집합(문자열).
+    캐시가 없거나(조회 실패) 그 param/enum 이 없으면 빈 집합 — 여기서 CLI 를 다시 부르지 않는다
+    (제출 경로의 CLI 호출 수 불변: generate create 전 CLI 호출은 model get 한 번뿐)."""
+    for p in _MODEL_PARAMS_CACHE.get(model) or []:
+        if p.get("name") == name:
+            return {str(v) for v in (p.get("enum") or []) if v is not None}
+    return set()
 
 
 def _param_flags(params: dict, allowed: set) -> list[str]:
@@ -1766,12 +1832,16 @@ def _submit_one(
         print(f"  ⚠ batch_size={params.get('batch_size')} → 1 강제(카드 1개=잡 1개 원칙)")
         params["batch_size"] = 1
     allowed_params = _allowed_params(cli, model)
-    args += _param_flags(params, allowed_params)
     refs, ref_error = _refs_for_cli(model, r.get("references") or [])
     if ref_error:
         _fail(server, token, rid, ref_error)
         print(f"  ✗ {model}: {ref_error}")
         return None
+    # ★mode 는 레퍼런스 유무에 맞춰 제출 직전에 보정(_seedance_mode_for_refs) — 플래그·제출 지문 모두 보정값 기준.
+    params, mode_note = _seedance_mode_for_refs(model, params, refs, _param_enum(model, "mode"))
+    if mode_note:
+        print(f"  ⚠ {model}: {mode_note}")
+    args += _param_flags(params, allowed_params)
     # 레퍼런스 — 다운로드 없이 배치 공유 캐시 조회만(해석값=공개 URL 또는 로컬 임시파일경로).
     unresolved: list = []
     upload_failed: list = []
@@ -2168,8 +2238,9 @@ def execute_pending(server: str, token: str, cli: str) -> int:
                     ref_cache, ref_temps = _resolve_refs_for(server, token, claimed, ref_cache)
                     ref_temps_all.extend(ref_temps)
                     batch_ref_cache = dict(ref_cache)
-                    for model in {r.get("model") for r in claimed if r.get("model")}:
-                        _allowed_params(cli, model)
+                    # 스키마(model get) 사전 조회는 하지 않는다 — 워커의 _allowed_params 가 모델별 단일 조회로 처리하고
+                    #  (같은 모델 워커는 첫 결과를 나눠 씀, 실패는 TTL 동안 기억) 조회 실패의 60초 타임아웃이 메인 루프의
+                    #  진행 조회를 막지 않게 한다(코덱스 리뷰 1·2차).
                     for request in claimed:
                         future = executor.submit(
                             _submit_one,

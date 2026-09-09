@@ -189,6 +189,18 @@ export function defaultOptions(
   return init;
 }
 
+// 저장된 옵션(모델 카드 등)을 하단 바에 적용할 때 — 통째로 바꿔치기하지 않고 실효 기본값 위에 얹는다.
+//  힉스필드 잡 기록엔 mode 가 없어 옛 생성물에서 복사한 설정은 mode 가 빈다(2026-09-09). 통째로 바꾸면 화면은
+//  기본값(omni_reference)이 켜진 것처럼 보이는데 실제 전송값은 비어 CLI 기본 t2v 로 제출되던 불일치를 막는다.
+//  모델 카드 편집창(pendingOpts → {...init, ...opts})과 같은 규칙.
+export function withEffectiveDefaults(
+  params: ModelParam[],
+  model: string,
+  saved: Record<string, string | number | boolean>,
+): Record<string, string | number | boolean> {
+  return { ...defaultOptions(params, model), ...saved };
+}
+
 // 옵션값에 모델 제약을 1회 적용해 보정된 새 객체를 반환(변경 없으면 입력 ref 그대로).
 //  ① enum 조합 제약 위반 → 허용값으로 스냅  ② 정수 범위 밖 → 클램프. 멱등.
 //  보정 effect 와 프리페치(정착 기본값 산출)가 동일 로직을 쓰도록 추출 — 키 불일치 방지.

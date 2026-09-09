@@ -146,4 +146,17 @@ describe("buildRecipeScene", () => {
     const s = buildRecipeScene(g, history);
     expect(s.cards.filter((c) => c.kind === "generation")).toHaveLength(1); // 결과만
   });
+
+  it("seedance_2_5 생성물의 모델 카드는 mode 기본값(omni_reference)을 채운다 — 힉스필드 잡 기록엔 mode 가 없다", () => {
+    // 저장값에 mode 가 없으면 채우고, 있으면 저장값 우선. 기본값 오버라이드가 없는 모델은 그대로.
+    const filled = buildRecipeScene(gen({ model: "seedance_2_5", params: { duration: 12 }, prompt: "p" }));
+    expect(filled.cards.find((c) => c.kind === "model")?.modelCfg?.params).toEqual({
+      mode: "omni_reference",
+      duration: 12,
+    });
+    const kept = buildRecipeScene(gen({ model: "seedance_2_5", params: { mode: "video_edit" }, prompt: "p" }));
+    expect(kept.cards.find((c) => c.kind === "model")?.modelCfg?.params).toEqual({ mode: "video_edit" });
+    const other = buildRecipeScene(gen({ model: "gpt_image_2", params: { quality: "high" }, prompt: "p" }));
+    expect(other.cards.find((c) => c.kind === "model")?.modelCfg?.params).toEqual({ quality: "high" });
+  });
 });

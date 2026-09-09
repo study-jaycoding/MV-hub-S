@@ -20,6 +20,21 @@ NO_REVIVE_ERROR = "레퍼런스가 적용되지 않았습니다(생성물에 입
 
 
 # ── 동기화 업서트 (CLI → 로컬) ───────────────────────────────────────────
+def _merged_params(stored_json, incoming):
+    """동기화 params 합치기 — 힉스필드 값을 위에 얹되, 힉스필드 잡 기록이 돌려주지 않는 키는 우리가 제출할 때
+    적은 값을 남긴다. 2026-09-09 실측: Seedance 2.5 잡 기록(generate list)엔 mode 가 없다(레퍼런스 10장 잡도).
+    통째로 덮어쓰면 재생성·레시피→씬이 mode 없는 params 를 복사하고 CLI 기본 t2v 가 레퍼런스를 거부한다."""
+    if not isinstance(incoming, dict):
+        return incoming
+    try:
+        stored = json.loads(stored_json) if stored_json else {}
+    except (TypeError, ValueError):
+        stored = {}
+    if not isinstance(stored, dict) or not stored:
+        return incoming
+    return {**stored, **incoming}
+
+
 def _upsert_synced(
     conn,
     parsed: dict[str, Any],
@@ -69,7 +84,7 @@ def _upsert_synced(
         # 이미 이 잡을 대표하는 행이 있는가? — 동기화본(id=job_id) 이거나
         # 로컬 생성본(job_id 컬럼=job_id). 있으면 그 행을 갱신해 중복 삽입을 막는다.
         existing = conn.execute(
-            "SELECT id, status, error, workspace_scope, creator_uid, model, origin "
+            "SELECT id, status, error, workspace_scope, creator_uid, model, origin, params "
             "FROM generation WHERE id = ? OR job_id = ? "
             "ORDER BY CASE WHEN origin='synced' THEN 0 ELSE 1 END LIMIT 1",
             (job_id, job_id),
@@ -84,7 +99,7 @@ def _upsert_synced(
             incoming_creator_uid = str(g.get("creator_uid") or "").strip() or None
             scoped_owner_uid = str(adopt_owner_uid or "").strip() or None
             existing = conn.execute(
-                "SELECT g.id, g.status, g.error, g.workspace_scope, g.creator_uid, g.model, g.origin "
+                "SELECT g.id, g.status, g.error, g.workspace_scope, g.creator_uid, g.model, g.origin, g.params "
                 "FROM generation g "
                 "JOIN asset a ON a.generation_id=g.id "
                 "WHERE (a.file_path=? OR a.source_url=?) "
@@ -136,7 +151,7 @@ def _upsert_synced(
                     g["status"],
                     stored_error(g["status"], existing["error"]),
                     g["model"],
-                    json.dumps(g["params"], ensure_ascii=False),
+                    json.dumps(_merged_params(existing["params"], g["params"]), ensure_ascii=False),
                     g.get("sort_ts"),
                     g.get("creator_uid"),
                     workspace_scope,

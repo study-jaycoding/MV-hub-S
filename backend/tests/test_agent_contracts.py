@@ -1324,11 +1324,13 @@ def test_execute_pending_claims_only_current_submit_worker_capacity():
         agent, "_load_upload_cache", return_value={}
     ), patch.object(agent, "_claim_pending", side_effect=claim_once), patch.object(
         agent, "_resolve_refs_for", side_effect=lambda _s, _t, _r, cache: (cache, [])
-    ), patch.object(agent, "_allowed_params", return_value=set()), patch.object(
+    ), patch.object(agent, "_allowed_params", return_value=set()) as schema, patch.object(
         agent, "_submit_one", return_value=tracked
     ), patch.object(agent, "_poll_active_jobs", side_effect=finish_active):
         assert agent.execute_pending("http://hub", "token-1", "higgsfield") == 1
 
+    # 스키마 조회는 워커(_submit_one) 안에서만 — 메인 루프가 60초 타임아웃 조회로 진행 조회를 막지 않는다(코덱스 1·2차).
+    schema.assert_not_called()
     assert claim_limits
     assert claim_limits[0] == agent._SUBMIT_WORKERS
     assert max(claim_limits) <= agent._SUBMIT_WORKERS
@@ -2241,3 +2243,197 @@ def test_test_dev_moves_off_windows_excluded_port_ranges():
     assert pick_port("1-2") == "5173"  # 예약 안 됨 → 원하는 포트 그대로
     assert pick_port("5141-5240") == "3173"  # 5173 예약 → 첫 후보
     assert pick_port("5141-5240,3173-3174") == "3175"  # 후보도 예약 → 다음 후보
+
+
+def test_seedance_mode_follows_references_before_submit():
+    """힉스필드 잡 기록(generate list)엔 mode 가 없어 재생성·레시피·모델 카드가 복사한 params 는 mode 가 빈다
+    (2026-09-09 실측). CLI 기본 t2v 는 레퍼런스를 거부하므로 제출 직전에 레퍼런스 유무로 맞춘다."""
+    agent = _load_agent()
+    enum = {"t2v", "omni_reference", "video_edit", "video_extension"}
+    ref = {"file_path": "https://cdn.example/a.png", "type": "image", "role": "@image1"}
+    # 비었거나 t2v + 레퍼런스 → omni_reference (원본 dict 는 건드리지 않는다)
+    src = {"duration": 12}
+    fixed, note = agent._seedance_mode_for_refs("seedance_2_5", src, [ref], enum)
+    assert fixed == {"duration": 12, "mode": "omni_reference"} and note
+    assert src == {"duration": 12}
+    fixed, _ = agent._seedance_mode_for_refs("seedance_2_5", {"mode": "t2v"}, [ref], enum)
+    assert fixed["mode"] == "omni_reference"
+    # 레퍼런스 없는 omni_reference → t2v
+    fixed, _ = agent._seedance_mode_for_refs("seedance_2_5", {"mode": "omni_reference"}, [], enum)
+    assert fixed["mode"] == "t2v"
+    # 사용자가 고른 video_edit/video_extension 은 그대로. 시작 이미지(@start)만 있으면 레퍼런스 미디어가 아니다.
+    same, note = agent._seedance_mode_for_refs("seedance_2_5", {"mode": "video_extension"}, [ref], enum)
+    assert same["mode"] == "video_extension" and note is None
+    start = {"file_path": "https://cdn.example/s.png", "type": "image", "role": "@start"}
+    same, _ = agent._seedance_mode_for_refs("seedance_2_5", {}, [start], enum)
+    assert "mode" not in same
+    # mode enum 에 omni_reference 가 없는 모델(seedance_2_0 fast 등)·비 seedance 는 손대지 않는다.
+    same, _ = agent._seedance_mode_for_refs("seedance_2_0", {"mode": "fast"}, [ref], {"fast", "standard"})
+    assert same == {"mode": "fast"}
+    same, _ = agent._seedance_mode_for_refs("gpt_image_2", {}, [ref], enum)
+    assert same == {}
+
+
+def test_param_enum_reads_model_get_cache_and_failure_is_not_frozen():
+    """mode 보정은 스키마 enum 을 본다 — `model get` 은 _allowed_params 가 부른 한 번을 재사용하고(제출 경로 CLI
+    호출 수 불변), 조회 실패는 캐시에 박제하지 않아 다음 제출에서 다시 조회된다(한 번 실패로 에이전트가 사는 동안
+    스키마 필터·mode 보정이 꺼지면 이 버그가 그대로 재현된다)."""
+    agent = _load_agent()
+    calls: list = []
+    schema = {"params": [{"name": "mode", "enum": ["t2v", "omni_reference"]}, {"name": "duration"}]}
+    answers = [None, schema]  # 첫 호출 실패(None) → 두 번째 성공
+
+    def fake_cli_json(cli, *args, timeout=120):
+        calls.append(args)
+        return answers.pop(0)
+
+    agent._MODEL_PARAMS_CACHE.clear()
+    agent._MODEL_PARAMS_FAIL_AT.clear()
+    agent._PARAM_NAMES_CACHE.clear()
+    with patch.object(agent, "_cli_json", fake_cli_json):
+        assert agent._allowed_params("hf", "seedance_2_5") == set()  # 실패 → 필터 없음
+        assert agent._param_enum("seedance_2_5", "mode") == set()  # 캐시 없음 → 보정 없음, CLI 재호출 없음
+        assert agent._allowed_params("hf", "seedance_2_5") == set()  # 실패 직후(TTL 안) → 재조회 없음
+        assert len(calls) == 1
+        agent._MODEL_PARAMS_FAIL_AT.clear()  # TTL 이 지난 뒤
+        assert agent._allowed_params("hf", "seedance_2_5") == {"mode", "duration"}  # 다음 제출: 재조회 성공
+        assert agent._param_enum("seedance_2_5", "mode") == {"t2v", "omni_reference"}
+        assert agent._param_enum("seedance_2_5", "duration") == set()
+        assert agent._allowed_params("hf", "seedance_2_5") == {"mode", "duration"}  # 캐시 재사용
+    assert len(calls) == 2 and all(a[:2] == ("model", "get") for a in calls)
+
+
+def test_seedance_submit_adds_omni_mode_when_references_attached():
+    """재현 버그(2026-09-09): 옛 생성물에서 복사한 params(mode 없음) + 레퍼런스 → 예전엔 --mode 없이 나가 CLI 기본 t2v 가
+    "mode 't2v' does not accept reference media" 로 거절. 이제 generate create 명령줄과 제출 지문 모두 omni_reference."""
+    agent = _load_agent()
+    job_id = "12345678-1234-1234-1234-123456789abc"
+    schema = {
+        "params": [
+            {"name": "mode", "enum": ["t2v", "omni_reference", "video_edit", "video_extension"], "default": "t2v"},
+            {"name": "duration"},
+            {"name": "resolution"},
+            {"name": "image_references"},
+        ]
+    }
+    request = _submission_request()
+    request["model"] = "seedance_2_5"
+    request["params"] = {"duration": 12, "resolution": "1080p"}
+    request["references"] = [{"file_path": "https://cdn.example/ref.png", "type": "image", "role": "@image1"}]
+    ref_cache = {"https://cdn.example/ref.png": "https://cdn.example/ref.png"}
+    agent._MODEL_PARAMS_CACHE.clear()
+    agent._PARAM_NAMES_CACHE.clear()
+    with patch.object(agent, "_cli_json", return_value=schema) as model_get, patch.object(
+        agent, "_upload_for_media", return_value=({"id": "11111111-1111-4111-8111-111111111111"}, False)
+    ), patch.object(agent, "_ensure_request_workspace", return_value=(True, None)), patch.object(
+        agent, "_begin_submission", return_value=True
+    ) as begin, patch.object(agent, "_run_cli_json", return_value=([job_id], None)) as create, patch.object(
+        agent, "_outbox_add"
+    ), patch.object(agent, "_anchor_with_retry", return_value=True):
+        result = agent._submit_one(
+            "http://hub", "token-1", "higgsfield", "user@example.com", request, ref_cache, {},
+            agent.Lock(), agent.Lock(), "agent-1",
+        )
+    assert result and result["job_id"] == job_id
+    model_get.assert_called_once()  # model get 한 번 — 보정이 CLI 호출을 더 만들지 않는다
+    args = create.call_args.args
+    assert args[1:4] == ("generate", "create", "seedance_2_5")
+    assert args[args.index("--mode") + 1] == "omni_reference"
+    assert args[args.index("--image-references") + 1] == "11111111-1111-4111-8111-111111111111"
+    assert begin.call_args.args[4]["params"]["mode"] == "omni_reference"  # 제출 지문도 보정값
+
+    # 반대: omni_reference 인데 레퍼런스가 없으면 t2v 로 내려 "requires reference media" 거절을 막는다.
+    request["params"] = {"mode": "omni_reference", "duration": 12}
+    request["references"] = []
+    with patch.object(agent, "_cli_json", return_value=schema), patch.object(
+        agent, "_ensure_request_workspace", return_value=(True, None)
+    ), patch.object(agent, "_begin_submission", return_value=True), patch.object(
+        agent, "_run_cli_json", return_value=([job_id], None)
+    ) as create, patch.object(agent, "_outbox_add"), patch.object(agent, "_anchor_with_retry", return_value=True):
+        assert agent._submit_one(
+            "http://hub", "token-1", "higgsfield", "user@example.com", request, {}, {},
+            agent.Lock(), agent.Lock(), "agent-1",
+        )
+    args = create.call_args.args
+    assert args[args.index("--mode") + 1] == "t2v"
+    assert "--image-references" not in args
+
+
+def test_model_get_failure_is_fetched_once_per_batch_and_retried_after_ttl():
+    """코덱스 P2: 스키마 조회가 계속 실패하면 사전 조회 1회 + 워커 N회로 `model get`(60초 타임아웃)이 배치마다 반복돼
+    제출·진행 조회가 늦어진다 → 실패는 TTL 동안 기억하고 같은 모델 동시 조회는 하나로 합친다."""
+    import threading
+
+    agent = _load_agent()
+    calls: list = []
+    gate = threading.Event()
+
+    def slow_failing_cli_json(cli, *args, timeout=120):
+        calls.append(args)
+        gate.wait(2)  # 첫 조회가 느린 동안 다른 워커가 몰려도 각자 조회하지 않는다
+        return None
+
+    agent._MODEL_PARAMS_CACHE.clear()
+    agent._MODEL_PARAMS_FAIL_AT.clear()
+    agent._PARAM_NAMES_CACHE.clear()
+    results: list = []
+    with patch.object(agent, "_cli_json", slow_failing_cli_json):
+        workers = [
+            threading.Thread(target=lambda: results.append(agent._allowed_params("hf", "seedance_2_5")))
+            for _ in range(8)
+        ]
+        for w in workers:
+            w.start()
+        gate.set()
+        for w in workers:
+            w.join(5)
+        assert results == [set()] * 8
+        assert len(calls) == 1  # 사전 조회 1회 + 워커 8회 → 1회
+        assert agent._param_enum("seedance_2_5", "mode") == set()  # 실패 중엔 보정 없음(CLI 호출도 없음)
+        assert len(calls) == 1
+
+    # TTL 이 지나면 다시 조회하고, 성공하면 영구 캐시.
+    schema = {"params": [{"name": "mode", "enum": ["t2v", "omni_reference"]}]}
+    agent._MODEL_PARAMS_FAIL_AT["seedance_2_5"] -= agent._MODEL_PARAMS_FAIL_TTL + 1
+    with patch.object(agent, "_cli_json", return_value=schema) as model_get:
+        assert agent._allowed_params("hf", "seedance_2_5") == {"mode"}
+        assert agent._param_enum("seedance_2_5", "mode") == {"t2v", "omni_reference"}
+        assert agent._allowed_params("hf", "seedance_2_5") == {"mode"}
+    model_get.assert_called_once()
+    assert "seedance_2_5" not in agent._MODEL_PARAMS_FAIL_AT
+
+
+def test_model_get_lookups_run_per_model_and_failures_are_reused_in_batch():
+    """코덱스 2차 P2: 전역 락이면 모델 A·B 가 각각 60초 타임아웃일 때 직렬로 기다린 끝에 A 의 실패 TTL 이 만료돼
+    재조회(최대 240초). 모델별 락 → A·B 조회가 동시에 진행되고, 각 모델의 실패는 자기 시각 기준 TTL 동안 재사용된다."""
+    import threading
+
+    agent = _load_agent()
+    barrier = threading.Barrier(2, timeout=3)
+    calls: list = []
+    concurrent: list = []
+
+    def failing_cli_json(cli, *args, timeout=120):
+        calls.append(args[2])
+        try:
+            barrier.wait()  # 두 모델의 조회가 동시에 여기 들어와야 통과(직렬화면 타임아웃)
+            concurrent.append(True)
+        except threading.BrokenBarrierError:
+            concurrent.append(False)
+        return None
+
+    agent._MODEL_PARAMS_CACHE.clear()
+    agent._MODEL_PARAMS_FAIL_AT.clear()
+    agent._PARAM_NAMES_CACHE.clear()
+    with patch.object(agent, "_cli_json", failing_cli_json):
+        workers = [threading.Thread(target=agent._allowed_params, args=("hf", m)) for m in ("model-a", "model-b")]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join(10)
+        assert sorted(calls) == ["model-a", "model-b"]
+        assert concurrent == [True, True]
+        # 같은 배치의 다른 워커: 실패를 재사용, 재조회 없음
+        assert agent._allowed_params("hf", "model-a") == set()
+        assert agent._allowed_params("hf", "model-b") == set()
+        assert sorted(calls) == ["model-a", "model-b"]

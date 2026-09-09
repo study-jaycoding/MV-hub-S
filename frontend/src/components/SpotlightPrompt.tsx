@@ -66,7 +66,7 @@ import {
 } from "../lib/useSpotlightMentionSources";
 import { useSpotlightTray } from "../lib/useSpotlightTray";
 import { useSpotlightTokenWrap } from "../lib/useSpotlightTokenWrap";
-import { useModels, ALLOWED, HIDDEN_PARAMS, stripHiddenParams } from "../lib/useModels";
+import { useModels, ALLOWED, HIDDEN_PARAMS, stripHiddenParams, withEffectiveDefaults } from "../lib/useModels";
 import {
   notifySpotlightAssetsChanged,
   parseSpotlightAssetItems,
@@ -186,7 +186,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   // 모델/파라미터/비용 로직은 useModels 훅으로 추출(동작 100% 보존). 로드 실패는 setError 로 보고.
   const { type, setType, model, setModel, tunable, constraints, typeModels, modelName,
           optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading,
-          pendingOptsRef, setOpenRef } =
+          pendingOptsRef, setOpenRef, params: schemaParams } =
     useModels((msg) => setError(msg));
   const [countState, setCountState] = useState(1); // 한 번에 N장 생성(배치) — 내부 폴백
   const count = countProp ?? countState; // App 이 배치수를 보유하면 컨트롤드(카드 툴바와 공유)
@@ -461,7 +461,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     // 이 경로로 body 에 되살아나지 않게 여기서 걸러낸다(코덱스 검토).
     const opts = stripHiddenParams(rawOpts);
     if (m === model) {
-      setOptionValues(opts);
+      // 같은 모델이면 params effect 가 안 돌아 기본값 병합이 없다 — 실효 기본값 위에 얹는다(mode 등 빈 키 방지).
+      setOptionValues(withEffectiveDefaults(schemaParams, m, opts));
     } else {
       pendingOptsRef.current = { model: m, opts };
       setType(t);
