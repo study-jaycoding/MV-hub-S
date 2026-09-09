@@ -47,6 +47,8 @@ export function planAutoConnections(
   const pairs: Array<[string, string]> = [];
   const seen = new Set<string>();
   // 순환 검사 — 기존 연결 + 지금까지의 계획으로 to 에서 from 에 닿으면 이 연결은 순환(실행 계획이 그 노드를 건너뛴다). 넣지 않는다.
+  //  무선(Input→Output) 경로도 실제 소스로 해석한 엣지(resolvePortEdges)로 따라간다 — comfy→Output ⇢ Input→텍스트 같은 고리(코덱스 5차).
+  let resolvedForCycle: SceneEdge[] | null = null;
   const reaches = (startId: string, goalId: string): boolean => {
     const next = new Map<string, string[]>();
     const link = (a: string, b: string) => {
@@ -54,7 +56,9 @@ export function planAutoConnections(
       if (arr) arr.push(b);
       else next.set(a, [b]);
     };
+    if (!resolvedForCycle) resolvedForCycle = resolvePortEdges(cardsById, edges);
     for (const e of edges) link(e.from, e.to);
+    for (const e of resolvedForCycle) link(e.from, e.to);
     for (const [f, t] of pairs) link(f, t);
     const visited = new Set<string>([startId]);
     const stack = [startId];

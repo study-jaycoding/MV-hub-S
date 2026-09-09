@@ -148,6 +148,16 @@ describe("planAutoConnections — 기존 규칙 유지", () => {
       "T>L",
     ]);
   });
+  it("무선 경로(comfy→Output ⇢ Input→텍스트)도 순환으로 본다 — comfy·텍스트·렌더를 잡으면 comfy→렌더만 (코덱스 5차)", () => {
+    const comfy = node("C", "comfy", { x: 0, comfyCfg: { status: "idle" } });
+    const out = node("OUT", "output", { text: "ch" });
+    const inp = node("IN", "input", { channel: "OUT" });
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "C", to: "OUT" },
+      { id: "e2", from: "IN", to: "T" },
+    ];
+    expect(plan([comfy, text("T", 200), node("RN", "render", { x: 400 })], [out, inp], edges)).toEqual(["C>RN"]);
+  });
   it("Set + 생성 → Set → 생성", () => {
     expect(plan([node("S", "set", { x: 300, setCfg: { tagsText: "" } }), gen("G", 0)])).toEqual(["S>G"]);
   });
