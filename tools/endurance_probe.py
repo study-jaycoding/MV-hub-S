@@ -551,8 +551,10 @@ def _run_isolated_server() -> int:
     original_backup_once = backup.periodic_backup._backup_once
     backup_cycle_path = Path(os.environ["CONTENT_HUB_ENDURANCE_BACKUP_FILE"])
 
-    async def measured_backup_once() -> None:
-        await original_backup_once()
+    async def measured_backup_once(*args: Any, **kwargs: Any) -> bool:
+        # 스케줄러는 poll 에서 캡처한 scope 를 인자로 넘기고(BK-1, 5b68cee7) 반환값(bool)으로 성공을 판단한다.
+        # 둘 다 그대로 통과시킨다 — 인자를 안 받던 옛 래퍼는 TypeError 로 백업이 한 번도 돌지 않았다(2026-09-09 실측).
+        succeeded = await original_backup_once(*args, **kwargs)
         newest = backup.latest_backup_path()
         payload = {
             "timestamp": time.time(),
@@ -560,6 +562,7 @@ def _run_isolated_server() -> int:
         }
         with backup_cycle_path.open("a", encoding="utf-8") as output:
             output.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        return succeeded
 
     backup.periodic_backup._backup_once = measured_backup_once
 
