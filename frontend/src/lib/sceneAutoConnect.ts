@@ -12,8 +12,10 @@
 import { canConnect, collectListInputs, resolvePortEdges, type ListInputs } from "./sceneEdges";
 import type { SceneCard, SceneEdge } from "./scenes";
 
-function layerOf(card: SceneCard): number {
-  return card.kind === "generation"
+// comfyAsGeneration: 렌더가 선택에 있으면 comfy 를 생성 카드와 같은 1층으로 — 렌더는 New·comfy 를 함께 모아 배치 실행하는
+//  수집기라 둘 다 렌더 입력으로 가야 한다(Jay 2026-09-09). 아니면 comfy 는 0층(가장 가까운 New 의 레퍼런스로, 예전 그대로).
+function layerOf(card: SceneCard, comfyAsGeneration = false): number {
+  return card.kind === "generation" || (card.kind === "comfy" && comfyAsGeneration)
     ? 1
     : card.kind === "list" || card.kind === "render"
       ? 2
@@ -74,14 +76,16 @@ export function planAutoConnections(
   const texts = selectedCards.filter((card) => card.kind === "text");
   const others = selectedCards.filter((card) => card.kind !== "text");
   const lists = others.filter((card) => card.kind === "list");
+  const hasRender = others.some((card) => card.kind === "render");
+  const layer = (card: SceneCard) => layerOf(card, hasRender);
 
   // ① 텍스트를 뺀 카드끼리 층 규칙.
   for (const source of others) {
-    const candidates = others.filter((target) => layerOf(target) > layerOf(source) && ok(source, target));
+    const candidates = others.filter((target) => layer(target) > layer(source) && ok(source, target));
     if (!candidates.length) continue;
-    const minimumLayer = Math.min(...candidates.map(layerOf));
+    const minimumLayer = Math.min(...candidates.map(layer));
     for (const target of candidates) {
-      if (layerOf(target) !== minimumLayer) continue;
+      if (layer(target) !== minimumLayer) continue;
       let from = source;
       let to = target;
       if (source.kind === "generation" && target.kind === "list" && currentKindOf(target) === "text") {
@@ -129,11 +133,11 @@ export function planAutoConnections(
       }
     }
     // 나머지(view·output 등)는 가장 가까운 층에만 — 생성이 있으면 생성까지(위에서 처리)라 더 잇지 않는다.
-    const candidates = others.filter((target) => layerOf(target) > 0 && ok(text, target));
+    const candidates = others.filter((target) => layer(target) > 0 && ok(text, target));
     if (!candidates.length) continue;
-    const minimumLayer = Math.min(...candidates.map(layerOf));
+    const minimumLayer = Math.min(...candidates.map(layer));
     for (const target of candidates)
-      if (layerOf(target) === minimumLayer && !handled.has(target.id)) add(text, target);
+      if (layer(target) === minimumLayer && !handled.has(target.id)) add(text, target);
   }
   return pairs;
 }

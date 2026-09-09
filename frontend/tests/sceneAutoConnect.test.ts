@@ -117,6 +117,14 @@ describe("planAutoConnections — 기존 규칙 유지", () => {
     expect(plan([list("L", 0), gen("G", 400)])).toEqual(["L>G"]);
     expect(plan([list("L", 600), gen("G", 400)])).toEqual(["G>L"]);
   });
+  it("New + comfy + 렌더 → 둘 다 렌더 입력으로(comfy → New 는 만들지 않는다, Jay 이미지 1)", () => {
+    const comfy = node("C", "comfy", { x: 0, y: 400, comfyCfg: { status: "idle" } });
+    expect(plan([gen("G", 0), comfy, node("RN", "render", { x: 400 })])).toEqual(["C>RN", "G>RN"]);
+  });
+  it("comfy + New(렌더 없음) → comfy → New (예전 그대로)", () => {
+    const comfy = node("C", "comfy", { x: 0, comfyCfg: { status: "idle" } });
+    expect(plan([comfy, gen("G", 300)])).toEqual(["C>G"]);
+  });
   it("Set + 생성 → Set → 생성", () => {
     expect(plan([node("S", "set", { x: 300, setCfg: { tagsText: "" } }), gen("G", 0)])).toEqual(["S>G"]);
   });
