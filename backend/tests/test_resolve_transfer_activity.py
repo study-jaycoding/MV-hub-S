@@ -132,6 +132,10 @@ def test_gate_reads_the_real_update_state_file(monkeypatch, tmp_path):
 
     from app.services import release_update as svc
 
+    # 상태 파일은 격리한다 — 안 하면 매 실행마다 실제 %LOCALAPPDATA%\MVHub\updates 에 update-*.json 이 남고
+    # (2026-09-09 확인: 60개), 쓰기가 막힌 샌드박스에서는 mkstemp 가 무한 재시도한다. test_release_update 와 같은 방식.
+    monkeypatch.setattr(svc, "UPDATE_STATE_BASE", tmp_path / "state")
+
     class Passed(Exception):
         pass
 
