@@ -1,16 +1,44 @@
 // 폴더 우클릭 메뉴 순수 규칙 — 탭별 동작·폴더 색조·확인 문구·화면 가장자리 보정.
 import { describe, it, expect } from "vitest";
 import {
+  ackAllLabel,
   clampMenuPosition,
   folderConfirmText,
+  folderMenuHeight,
   folderMenuKind,
   folderMenuLabel,
   folderTone,
+  FOLDER_MENU_BTN_H,
   FOLDER_MENU_H,
   FOLDER_MENU_W,
+  freshItemsInScope,
 } from "../src/lib/folderContextMenu";
 
 describe("folderContextMenu", () => {
+  it("'모두 확인' 범위 — path '' 는 프로젝트 전체(폴더 미지정 포함), 폴더는 그 폴더와 하위만, 확인분 제외", () => {
+    const at = "2026-09-10 01:00:00";
+    const items = [
+      { id: "a", project_id: "p", folder_path: "e020/c0010", shared_at: at, ack_key: "job-a" },
+      { id: "b", project_id: "p", folder_path: "e020/c0020", shared_at: at },
+      { id: "c", project_id: "p", folder_path: null, shared_at: at },
+      { id: "d", project_id: "q", folder_path: "e020/c0010", shared_at: at },
+      { id: "e", project_id: "p", folder_path: "e0200/c0010", shared_at: at }, // 접두 유사 폴더는 제외
+    ];
+    const none = () => false;
+    expect(freshItemsInScope(items, "p", "", none).map((it) => it.id)).toEqual(["a", "b", "c", "e"]);
+    expect(freshItemsInScope(items, "p", "e020", none).map((it) => it.id)).toEqual(["a", "b"]);
+    expect(freshItemsInScope(items, "p", "e020/", none).map((it) => it.id)).toEqual(["a", "b"]);
+    expect(freshItemsInScope(items, "p", "e020/c0010", none).map((it) => it.id)).toEqual(["a"]);
+    // 확인(ack)된 항목은 ack_key(없으면 id)로 제외
+    const acked = (key: string) => key === "job-a" || key === "c";
+    expect(freshItemsInScope(items, "p", "", acked).map((it) => it.id)).toEqual(["b", "e"]);
+  });
+  it("'모두 확인' 라벨과 메뉴 높이(단추 수만큼)", () => {
+    expect(ackAllLabel(406)).toBe("모두 확인 (+406)");
+    expect(folderMenuHeight(1)).toBe(FOLDER_MENU_H);
+    expect(folderMenuHeight(2)).toBe(FOLDER_MENU_H + FOLDER_MENU_BTN_H);
+    expect(folderMenuHeight(0)).toBe(FOLDER_MENU_H);
+  });
   it("내 작업 탭=팀에 공유 · 팀 탭=최종 경로로 저장", () => {
     expect(folderMenuLabel(folderMenuKind("my"))).toBe("팀에 공유");
     expect(folderMenuLabel(folderMenuKind("team"))).toBe("최종 경로로 저장");

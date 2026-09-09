@@ -11,11 +11,15 @@ import {
 import { createPortal } from "react-dom";
 import { api } from "../../api";
 import {
+  ackAllLabel,
   clampMenuPosition,
   folderConfirmText,
+  folderMenuHeight,
   folderMenuKind,
   folderMenuLabel,
   folderTone,
+  FOLDER_MENU_W,
+  freshItemsInScope,
   type FolderMenuKind,
 } from "../../lib/folderContextMenu";
 import { useEscapeClose } from "../../lib/useEscapeClose";
@@ -31,7 +35,13 @@ import { useCustomEvent } from "../../lib/useCustomEvent";
 import { useT } from "../../lib/i18n";
 import { loadJSON, saveJSON } from "../../lib/storage";
 import { reconcileArrayState, reconcileRecordState } from "../../lib/stateReconciliation";
-import { getTeamBase, getTeamSeenVersion, isAckedFor, subscribeTeamSeen } from "../../lib/teamSeen";
+import {
+  ackTeamFreshKeys,
+  getTeamBase,
+  getTeamSeenVersion,
+  isAckedFor,
+  subscribeTeamSeen,
+} from "../../lib/teamSeen";
 import {
   cachedProjectFolderEntries,
   initialProjectFolderExpansion,
@@ -395,6 +405,14 @@ export function ProjectSection({
     return { byProject, folderByProject, unassigned };
   }, [tab, teamFreshItems, teamSeenVer]);
 
+  // 우클릭 메뉴 '모두 확인' 대상 — 그 행 범위(프로젝트 행=전체, 폴더=하위 포함)의 미확인 신규 항목.
+  // teamSeenVer 의존 — 확인 직후 메뉴가 남아 있어도 개수가 즉시 맞는다.
+  const menuFresh = useMemo(() => {
+    if (!folderMenu || tab !== "team") return [];
+    void teamSeenVer;
+    return freshItemsInScope(teamFreshItems, folderMenu.projectId, folderMenu.path, isAckedFor);
+  }, [folderMenu, tab, teamFreshItems, teamSeenVer]);
+
   const selectFolder = async (pid: string, path: string) => {
     const cur = folders[pid];
     if (!cur?.root_path) return;
@@ -556,6 +574,25 @@ export function ProjectSection({
                     if (e.key === "Enter" || e.key === " ") onFilter(activeId === project.id ? undefined : project.id);
                   }}
                   title={project.name}
+                  onContextMenu={
+                    // 팀 탭에서 새로 들어온 항목(+N)이 있을 때만 '모두 확인' 메뉴(프로젝트 전체 범위 = path "").
+                    // 그 외엔 브라우저 기본 메뉴 그대로.
+                    onFolderAction && tab === "team" && (fresh?.byProject[project.id] || 0) > 0
+                      ? (e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          folderMenuAnchorRef.current = e.currentTarget as HTMLElement;
+                          setFolderMenu({
+                            projectId: project.id,
+                            path: "",
+                            name: project.name,
+                            depth: -1,
+                            x: e.clientX,
+                            y: e.clientY,
+                          });
+                        }
+                      : undefined
+                  }
                   draggable={dragArmed}
                   onDragStart={(e) => {
                     setDragIdx(index);
@@ -700,27 +737,54 @@ export function ProjectSection({
             ref={folderMenuRef}
             className="folder-ctx-menu"
             role="menu"
-            style={clampMenuPosition(folderMenu.x, folderMenu.y, window.innerWidth, window.innerHeight)}
+            style={clampMenuPosition(
+              folderMenu.x,
+              folderMenu.y,
+              window.innerWidth,
+              window.innerHeight,
+              FOLDER_MENU_W,
+              folderMenuHeight((folderMenu.depth >= 0 ? 1 : 0) + (menuFresh.length ? 1 : 0)),
+            )}
             onKeyDown={(e) => e.stopPropagation()}
             onContextMenu={(e) => e.preventDefault()}
           >
-            <div className="folder-ctx-name" title={folderMenu.path}>
+            <div className="folder-ctx-name" title={folderMenu.path || folderMenu.name}>
               {folderMenu.name}
             </div>
-            <button
-              type="button"
-              autoFocus
-              className={"folder-ctx-btn tone-" + folderTone(folderMenu.depth)}
-              onClick={() => {
-                const m = folderMenu;
-                const kind = folderMenuKind(tab);
-                closeFolderMenu(true);
-                if (!window.confirm(folderConfirmText(kind, m.name))) return;
-                void onFolderAction(kind, m.projectId, m.path, m.name);
-              }}
-            >
-              {folderMenuLabel(folderMenuKind(tab))}
-            </button>
+            {/* 폴더 행(depth>=0)만 탭별 동작 단추. 프로젝트 행(depth -1)은 '모두 확인'만. */}
+            {folderMenu.depth >= 0 && (
+              <button
+                type="button"
+                autoFocus
+                className={"folder-ctx-btn tone-" + folderTone(folderMenu.depth)}
+                onClick={() => {
+                  const m = folderMenu;
+                  const kind = folderMenuKind(tab);
+                  closeFolderMenu(true);
+                  if (!window.confirm(folderConfirmText(kind, m.name))) return;
+                  void onFolderAction(kind, m.projectId, m.path, m.name);
+                }}
+              >
+                {folderMenuLabel(folderMenuKind(tab))}
+              </button>
+            )}
+            {menuFresh.length > 0 && (
+              <button
+                type="button"
+                autoFocus={folderMenu.depth < 0}
+                className="folder-ctx-btn tone-ack"
+                title="이 범위에 새로 들어온 항목을 모두 확인한 것으로 표시합니다(카드 글로우·+N 배지 해제). 되돌릴 수 없지만 재공유되면 다시 새것이 됩니다."
+                onClick={() => {
+                  // 확인 기록은 로컬(계정별) — 서버 호출 없음. 한 번에 저장해 배지가 즉시 사라진다.
+                  ackTeamFreshKeys(
+                    menuFresh.map((it) => ({ ackKey: it.ack_key || it.id, sharedAt: it.shared_at })),
+                  );
+                  closeFolderMenu(true);
+                }}
+              >
+                {ackAllLabel(menuFresh.length)}
+              </button>
+            )}
           </div>,
           document.body,
         )}

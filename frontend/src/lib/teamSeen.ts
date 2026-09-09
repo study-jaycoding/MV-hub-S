@@ -140,3 +140,26 @@ export function isAckedFor(ackKey: string, sharedAt: string | null | undefined):
   if (!sharedAt) return true;
   return seen.at >= sharedAt;
 }
+
+// '모두 확인' — 사이드바 우클릭 메뉴에서 프로젝트/폴더 범위의 신규 항목을 한꺼번에 확인 처리(Jay 2026-09-10).
+// entries = 서버 team-fresh 항목의 (ack_key, shared_at). 이미 그 시점(또는 더 새 시점)을 확인한 항목은
+// 건너뛰고, 하나라도 바뀌면 **한 번만** 저장·bump 한다(항목마다 persist 하면 +N 수백 개에서 렌더 폭주).
+// shared_at 이 없는 구서버 항목은 지금 시각으로 기록 — isAckedFor 의 '키 확인만으로 인정' 규칙과 맞는다.
+// 반환 = 새로 확인 처리된 개수.
+export function ackTeamFreshKeys(
+  entries: { ackKey: string; sharedAt: string | null | undefined }[],
+): number {
+  const acc = load();
+  const seen = { ...acc.seen };
+  let changed = 0;
+  for (const entry of entries) {
+    if (!entry.ackKey) continue;
+    const at = entry.sharedAt || utcNowSql();
+    const current = seen[entry.ackKey];
+    if (current && current.at >= at) continue;
+    seen[entry.ackKey] = { at };
+    changed += 1;
+  }
+  if (changed) persist({ ...acc, seen });
+  return changed;
+}

@@ -2,8 +2,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ackTeamFresh,
+  ackTeamFreshKeys,
   ensureTeamBase,
   getTeamBase,
+  getTeamSeenVersion,
   isAckedFor,
   isFreshGen,
 } from "../src/lib/teamSeen";
@@ -39,6 +41,33 @@ describe("teamSeen (항목 단위 확인 모델)", () => {
   });
   afterEach(() => {
     delete (globalThis as { sessionStorage?: Storage }).sessionStorage;
+  });
+
+  it("'모두 확인'(ackTeamFreshKeys) — 여러 항목을 한 번에, 이미 확인된 것은 건너뛰고 저장·bump 는 한 번", () => {
+    ensureTeamBase();
+    const later = "2099-01-01 00:00:00"; // 기준선 이후
+    const v0 = getTeamSeenVersion();
+    expect(
+      ackTeamFreshKeys([
+        { ackKey: "job-1", sharedAt: later },
+        { ackKey: "job-2", sharedAt: later },
+        { ackKey: "", sharedAt: later }, // 빈 키는 무시
+      ]),
+    ).toBe(2);
+    expect(getTeamSeenVersion()).toBe(v0 + 1);
+    expect(isAckedFor("job-1", later)).toBe(true);
+    expect(isAckedFor("job-2", later)).toBe(true);
+    // 재확인은 no-op(저장·bump 없음)
+    expect(ackTeamFreshKeys([{ ackKey: "job-1", sharedAt: later }])).toBe(0);
+    expect(getTeamSeenVersion()).toBe(v0 + 1);
+    // 재공유(더 새 shared_at)면 다시 확인 대상
+    expect(isAckedFor("job-1", "2099-01-02 00:00:00")).toBe(false);
+    expect(ackTeamFreshKeys([{ ackKey: "job-1", sharedAt: "2099-01-02 00:00:00" }])).toBe(1);
+    expect(isAckedFor("job-1", "2099-01-02 00:00:00")).toBe(true);
+    // 시점 미상(구서버 응답)도 키 확인으로 인정
+    expect(isAckedFor("job-3", null)).toBe(false);
+    ackTeamFreshKeys([{ ackKey: "job-3", sharedAt: null }]);
+    expect(isAckedFor("job-3", null)).toBe(true);
   });
 
   it("기준선이 없으면 아무것도 새것이 아니다 (도입 첫날 전체 글로우 방지)", () => {
