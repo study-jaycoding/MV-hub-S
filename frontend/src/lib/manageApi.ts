@@ -298,6 +298,7 @@ export interface TeamOverview {
   project_models: TeamProjectModelRow[];
   folder_efficiency: FolderEfficiencyRow[];
   matrix: TeamMatrixCell[];
+  usage_scope?: "all" | "mine"; // 서버가 강제한 범위 — mine=일반 멤버(내 기록만). 구서버는 없음(read_all 전용).
 }
 
 export interface TeamBucket {

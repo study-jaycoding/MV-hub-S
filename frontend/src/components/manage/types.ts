@@ -106,8 +106,9 @@ export interface ManageTotals {
 
 // 사용량 출처 — facts=텔레메트리 팩트(팀 기록 장부: 삭제분 포함). 구서버는 필드 없음(라이브러리 집계).
 export type UsageSource = "facts" | "content";
-// 열람 범위 — all=매니저(팀원 미공유분 포함) · mine_plus_shared=일반 멤버(내 작업 전부 + 팀원 공유분).
-export type UsageScope = "all" | "mine_plus_shared";
+// 열람 범위 — all=매니저(팀 전체) · mine=일반 멤버(내 작업만, Jay 2026-09-10 두 번째 결정).
+// mine_plus_shared 는 같은 날 아침의 중간 규칙 — 구서버 호환 문구용으로만 남긴다.
+export type UsageScope = "all" | "mine" | "mine_plus_shared";
 
 export interface ManageSummary {
   projects: ManageProject[];

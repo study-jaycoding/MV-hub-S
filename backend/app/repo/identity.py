@@ -854,16 +854,28 @@ def list_workspace_registry(
     return [dict(row) for row in rows]
 
 
-def list_workspace_options() -> list[dict[str, Any]]:
-    """프로젝트/대시보드 선택용 팀 워크스페이스 목록(워크스페이스당 한 행)."""
+def list_workspace_options(member_email: Optional[str] = None) -> list[dict[str, Any]]:
+    """프로젝트/대시보드 선택용 팀 워크스페이스 목록(워크스페이스당 한 행).
+    member_email 을 주면 그 계정이 (에이전트 보고로) 현재 접근 가능한 워크스페이스만 — 일반 멤버의
+    '내 사용 현황' 드롭다운용. 이메일은 저장값과 같은 정규형(norm_email)으로 비교한다."""
+    member_filter = ""
+    params: list[Any] = []
+    if member_email is not None:
+        member_filter = (
+            " WHERE EXISTS (SELECT 1 FROM workspace_member me WHERE me.workspace_id=w.id "
+            "AND me.account_email=? AND me.is_available=1)"
+        )
+        params.append(norm_email(member_email))
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT w.id, w.name, w.plan_type, w.credits, w.last_seen_at, "
             "COUNT(DISTINCT CASE WHEN m.is_available=1 THEN m.account_email END) AS member_count "
             "FROM workspace_registry w "
-            "LEFT JOIN workspace_member m ON m.workspace_id=w.id "
+            "LEFT JOIN workspace_member m ON m.workspace_id=w.id"
+            f"{member_filter} "
             "GROUP BY w.id, w.name, w.plan_type, w.credits, w.last_seen_at "
-            "ORDER BY w.name COLLATE NOCASE"
+            "ORDER BY w.name COLLATE NOCASE",
+            params,
         ).fetchall()
     return [dict(row) for row in rows]
 

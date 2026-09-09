@@ -315,7 +315,11 @@ export function DashboardView({
   const [summaryPage, setSummaryPage] = useState(1);
   const [summaryPageSize, setSummaryPageSize] = useState<number>(USAGE_PAGE_SIZES[0]);
   const canManageProjects = caps.createProject || caps.grantRole;
-  const canViewWorkspaceUsage = caps.authOff || caps.readAll;
+  // 매니저(read_all·인증 off)=팀 전체, 일반 멤버=내 사용량만(서버가 (uid, email) 로 강제 — Jay 2026-09-10).
+  // 사용 현황 패널은 둘 다 보이고 범위·문구만 다르다. 전체 요약 API(summary) 는 매니저만.
+  const readAll = caps.authOff || caps.readAll;
+  const mine = !readAll;
+  const usedTitle = mine ? "내 모델별 크레딧 사용" : "프로젝트 전체 모델별 크레딧 사용";
 
   const reloadPromiseRef = useRef<Promise<void> | null>(null);
   const pendingReloadRef = useRef(false);
@@ -336,7 +340,7 @@ export function DashboardView({
     // 잘 보이던 대시보드를 "프로젝트 없음"으로 초기화하지 않게(null 덮어쓰기 금지).
     // read_all 판정이 서버와 어긋나도(스테일 캐시 등) 대시보드가 통째로 죽지 않게 —
     // 403 이면 일반 멤버용 API(자기 프로젝트만)로 폴백한다.
-    const summaryP = (canViewWorkspaceUsage
+    const summaryP = (readAll
       ? manageApi.summary(workspaceId).catch((e) =>
           isHttpStatus(e, 403) ? manageApi.projectSummary(workspaceId) : Promise.reject(e),
         )
@@ -347,7 +351,7 @@ export function DashboardView({
         return null as string | null;
       })
       .catch((e) => String(e?.message || e) || "요약 조회 실패");
-    const membersP = (canViewWorkspaceUsage
+    const membersP = (readAll
       ? projectApi.allProjectMembers().catch((e) =>
           isHttpStatus(e, 403) ? projectApi.visibleProjectMembers() : Promise.reject(e),
         )
@@ -492,7 +496,9 @@ export function DashboardView({
                   <td className="tnum">
                     <span
                       className={b != null ? "dash-hover-text" : "dim"}
-                      title={b != null ? `${budgetPeriodLabel(p.planning)} 예산 한도 · ${fmtBudgetCr(b)} cr` : "예산 미설정"}
+                      title={b != null
+                        ? `${budgetPeriodLabel(p.planning)} 예산 한도 · ${fmtBudgetCr(b)} cr${mine ? " · 팀 전체 한도 (내 사용과 기준이 다름)" : ""}`
+                        : "예산 미설정"}
                     >
                       {b != null ? `${fmtBudgetCr(b)} cr` : "—"}
                     </span>
@@ -502,7 +508,7 @@ export function DashboardView({
                       value={used}
                       rows={models}
                       metric="credits"
-                      title={coverage ? `프로젝트 전체 모델별 크레딧 사용 · ${coverage}` : "프로젝트 전체 모델별 크레딧 사용"}
+                      title={coverage ? `${usedTitle} · ${coverage}` : usedTitle}
                       suffix=" cr"
                     />
                     {unknownCount > 0 && (
@@ -528,7 +534,7 @@ export function DashboardView({
             {!rows.length && (
               <tr>
                 <td colSpan={8} className="dash-part-empty">
-                  {canViewWorkspaceUsage
+                  {readAll
                     ? `프로젝트가 없습니다. ${canManageProjects ? "＋ 프로젝트로 만드세요." : "관리자에게 생성을 요청하세요."}`
                     : "참여 중인 프로젝트가 없습니다."}
                 </td>
@@ -538,7 +544,11 @@ export function DashboardView({
         </table>
       </div>
       <div className="dash-legend">
-        <span className="dim">행 클릭=아래 상세 · 한도=설정 예산 · 사용=프로젝트 전체 누적 크레딧 · 미상=크레딧을 모르는 건(0원 아님)</span>
+        <span className="dim">
+          {mine
+            ? "행 클릭=아래 상세 · 한도=팀 전체 예산 · 사용=내 누적 크레딧 · 미상=크레딧을 모르는 건(0원 아님)"
+            : "행 클릭=아래 상세 · 한도=설정 예산 · 사용=프로젝트 전체 누적 크레딧 · 미상=크레딧을 모르는 건(0원 아님)"}
+        </span>
       </div>
       <DashboardPagination
         label="프로젝트 요약"
@@ -557,16 +567,15 @@ export function DashboardView({
   return (
     <div className="dash-view">
       {staleBanner}
-      {/* 워크스페이스 사용량을 가장 먼저 표시 — 선택 공간의 생성·크레딧·멤버·모델·폴더 효율. */}
-      {canViewWorkspaceUsage && (
-        <WorkspaceUsageDashboard
-          reloadSignal={reloadSignal}
-          canCreateProject={canManageProjects}
-          onCreateProject={() => setShowPanel(true)}
-          workspaceId={workspaceId}
-          onWorkspaceIdChange={onWorkspaceIdChange}
-        />
-      )}
+      {/* 사용량을 가장 먼저 표시 — 매니저는 워크스페이스 전체(생성·크레딧·멤버·모델·폴더 효율), 일반 멤버는 내 기록만. */}
+      <WorkspaceUsageDashboard
+        reloadSignal={reloadSignal}
+        canCreateProject={canManageProjects}
+        onCreateProject={() => setShowPanel(true)}
+        workspaceId={workspaceId}
+        onWorkspaceIdChange={onWorkspaceIdChange}
+        scope={mine ? "mine" : "all"}
+      />
 
       {/* 하나의 외곽 패널 안에서 프로젝트 요약과 선택 프로젝트 시퀀스를 확인한다. */}
       <ProjectDetail

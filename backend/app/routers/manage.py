@@ -29,6 +29,7 @@ from . import _proxy
 from ..services.async_tools import to_thread_non_abandon
 from .. import rbac, repo
 from ..config import AUTH_ENABLED, MEDIA_DIR
+from ..emailnorm import norm_email
 from ..deps import (
     account_actor_uid,
     account_global_roles,
@@ -216,6 +217,19 @@ def _task_json_response(
 def _require_manage_read(request: Request) -> None:
     """전사 PM 집계 열람. admin/PM/PD 같은 read_all 보유자만."""
     require_global_cap(request, "read_all")
+
+
+def _usage_viewer(request: Request) -> Optional[tuple[str, str]]:
+    """사용량(팩트) 열람 범위. None=전체(AUTH off 또는 read_all 매니저). 그 외 일반 멤버는 **(본인 uid,
+    본인 이메일) 쌍으로 강제**한다 — Jay 결정 2026-09-10: 멤버=내 사용량만(팀원 공유분도 제외), 매니저=팀 전체.
+    uid 는 account_scope_uid 규약(미링크=acct:이메일, 계정 없음=\\x00 — 어느 쪽도 팩트와 안 맞아 빈 결과),
+    이메일은 팩트 account_email 과 같은 정규형. 둘을 함께 대조하는 이유는 manage_db._viewer_clause 참조.
+    None 으로 폴백하면 전체가 열리므로 금지."""
+    if not AUTH_ENABLED or rbac.has_global_cap(account_global_roles(request), "read_all"):
+        return None
+    acc = current_account(request) or {}
+    email = norm_email(acc.get("email")) if acc.get("email") else ""
+    return (account_scope_uid(request) or "\x00", email or "\x00")
 
 
 def _refresh_isolated_telemetry() -> None:
@@ -440,24 +454,34 @@ def team_overview(
     model: Optional[str] = None,
 ):
     """팀 전체 집계(합계+작업자별+프로젝트별+매트릭스). 집계는 서버 manage_hub.db 에 있으므로
-    로컬 허브는 서버로 위임(프록시), 서버 본체는 로컬 manage_hub.db 를 읽는다. 권한=read_all(매니저)."""
+    로컬 허브는 서버로 위임(프록시), 서버 본체는 로컬 manage_hub.db 를 읽는다.
+    권한: read_all(매니저)=팀 전체, 일반 멤버=본인 기록만(creator_uid 를 본인으로 강제, 쿼리 인자 무시).
+    응답 usage_scope = all | mine 으로 화면이 문구·카드를 바꾼다."""
     if _proxy.proxying():
         return _proxy.proxy_get("/api/manage/team-overview", request)
-    _require_manage_read(request)
+    viewer = _usage_viewer(request)
+    if viewer is not None:
+        creator_uid = None  # 일반 멤버 — 쿼리 인자(작업자 드릴)는 버리고 본인 범위만
     _refresh_isolated_telemetry()
     from ..manage_db import team_overview as _ov
 
-    return _ov(date_from, date_to, project_id, creator_uid, workspace_id, model)
+    out = _ov(date_from, date_to, project_id, creator_uid, workspace_id, model, viewer=viewer)
+    out["usage_scope"] = "all" if viewer is None else "mine"
+    return out
 
 
 @router.get("/workspaces")
 def manage_workspaces(request: Request):
-    """관리 대시보드에서 선택할 검증된 팀 워크스페이스 목록."""
+    """관리 대시보드에서 선택할 검증된 팀 워크스페이스 목록. read_all 은 전체, 일반 멤버는 본인 계정이
+    (에이전트 보고로) 속한 워크스페이스만 — 남의 팀 이름·크레딧 풀은 안 보인다."""
     if _proxy.proxying():
         return _proxy.proxy_get("/api/manage/workspaces", request)
-    _require_manage_read(request)
+    viewer = _usage_viewer(request)
     _refresh_isolated_telemetry()
-    return {"workspaces": repo.list_workspace_options()}
+    if viewer is None:
+        return {"workspaces": repo.list_workspace_options()}
+    email = viewer[1]
+    return {"workspaces": repo.list_workspace_options(member_email=email) if email != "\x00" else []}
 
 
 @router.get("/team-timeseries")
@@ -473,17 +497,19 @@ def team_timeseries(
     time_from: Optional[str] = None,
     time_to: Optional[str] = None,
 ):
-    """팀 전체 기간별 추이(시간/일/주/월 버킷). 프록시/권한 규칙은 team-overview 와 동일."""
+    """팀 전체 기간별 추이(시간/일/주/월 버킷). 프록시/권한 규칙은 team-overview 와 동일(멤버=본인 강제)."""
     if _proxy.proxying():
         return _proxy.proxy_get("/api/manage/team-timeseries", request)
-    _require_manage_read(request)
+    viewer = _usage_viewer(request)
+    if viewer is not None:
+        creator_uid = None
     _refresh_isolated_telemetry()
     from ..manage_db import team_timeseries as _ts
 
     return {
         "buckets": _ts(
             date_from, date_to, project_id, creator_uid, workspace_id, model, bucket,
-            time_from, time_to,
+            time_from, time_to, viewer=viewer,
         )
     }
 
@@ -498,16 +524,18 @@ def usage_export(
     workspace_id: Optional[str] = None,
     model: Optional[str] = None,
 ):
-    """HF 보고서와 호환되는 날짜·사용자·모델 단위 사용량 행."""
+    """HF 보고서와 호환되는 날짜·사용자·모델 단위 사용량 행. 권한 규칙은 team-overview 와 동일(멤버=본인 강제)."""
     if _proxy.proxying():
         return _proxy.proxy_get("/api/manage/usage-export", request)
-    _require_manage_read(request)
+    viewer = _usage_viewer(request)
+    if viewer is not None:
+        creator_uid = None
     _refresh_isolated_telemetry()
     from ..manage_db import team_usage_export as _export
 
     return {
         "rows": _export(
-            date_from, date_to, project_id, creator_uid, workspace_id, model
+            date_from, date_to, project_id, creator_uid, workspace_id, model, viewer=viewer
         )
     }
 
@@ -613,8 +641,8 @@ def project_summary(request: Request, workspace_id: Optional[str] = None):
         )
         project_ids = [pid for pid in project_ids if pid in readable_ids]
     _refresh_isolated_telemetry()  # 사용량은 팩트 원천 — 격리 test_dev 최신 반영(summary 와 동일, 동기 라우트)
-    # 일반 멤버(member_uid 있음)는 내 작업 전부 + 팀원 공유분만 — 팀원 미공유분은 read_all 만(Jay 2026-09-10).
-    return repo_manage.project_dashboard_summary(project_ids, workspace_id, viewer_uid=member_uid)
+    # 일반 멤버(member_uid 있음)는 **내 작업만** — 팀원 것은 공유 여부와 무관하게 read_all 만(Jay 2026-09-10).
+    return repo_manage.project_dashboard_summary(project_ids, workspace_id, viewer=_usage_viewer(request))
 
 
 # ── 프로젝트 일정/예산 ────────────────────────────────────────────────────────

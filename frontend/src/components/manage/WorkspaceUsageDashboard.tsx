@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { isHttpStatus } from "../../lib/http";
 import {
   manageApi,
   type TeamModelRow,
@@ -40,6 +41,18 @@ type ModelTooltipRow = Pick<TeamModelRow, "model" | "count" | "credits"> & {
 
 function n(value: number): string {
   return Math.round(value || 0).toLocaleString();
+}
+
+// 일반 멤버 뷰의 '생성 시간 합' — 에피소드·시퀀스 표(DashboardView.fmtDur)와 같은 h/m/s 표기.
+function elapsedText(sec: number): string {
+  if (!sec || sec <= 0) return "—";
+  const wholeSeconds = Math.floor(sec);
+  const h = Math.floor(wholeSeconds / 3600);
+  const m = Math.floor((wholeSeconds % 3600) / 60);
+  const s = wholeSeconds % 60;
+  if (h) return `${h}h${m ? `${m}m` : ""}`;
+  if (m) return `${m}m${s ? `${s}s` : ""}`;
+  return `${s}s`;
 }
 
 function credits(value: number): string {
@@ -392,13 +405,22 @@ export function WorkspaceUsageDashboard({
   onCreateProject,
   workspaceId = "",
   onWorkspaceIdChange,
+  scope = "all",
 }: {
   reloadSignal?: number;
   canCreateProject?: boolean;
   onCreateProject?: () => void;
   workspaceId?: string;
   onWorkspaceIdChange?: (workspaceId?: string) => void;
+  /** all=매니저(팀 전체) · mine=일반 멤버 — 서버가 본인 기록으로 강제하므로 여기서는 문구·카드만 바꾼다. */
+  scope?: "all" | "mine";
 }) {
+  const mine = scope === "mine";
+  // 구서버(read_all 전용)에 새 프론트가 붙으면 멤버는 403 — 빈 결과와 구분해 안내만 한다(코덱스 P2).
+  const describeUsageError = (reason: unknown) =>
+    mine && isHttpStatus(reason, 403)
+      ? "이 서버 버전은 개인 사용량 조회를 지원하지 않습니다. 서버 업데이트 뒤 표시됩니다."
+      : `사용량을 불러오지 못했습니다. ${String(reason)}`;
   const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([]);
   const [chartPeriodUnit, setChartPeriodUnit] = useState<UsagePeriodUnit>("week");
   const [chartAnchorDate, setChartAnchorDate] = useState(() => new Date());
@@ -445,7 +467,7 @@ export function WorkspaceUsageDashboard({
         // 구조 동일이면 이전 상태를 유지한다(실측 hotspot — 하위 렌더 40% 낭비 차단).
         setWorkspaces((prev) => reconcileArrayState(prev, items));
       })
-      .catch((reason) => active && setError(`사용량을 불러오지 못했습니다. ${String(reason)}`));
+      .catch((reason) => active && setError(describeUsageError(reason)));
     // loading 은 overview 조회만 소유한다 — 가벼운 workspaces 응답이 먼저 와서 로딩을 끄면
     // 아직 수치가 없는 빈 패널("팀 워크스페이스 없음")이 잠깐 떠 오안내가 된다.
     return () => { active = false; };
@@ -467,7 +489,7 @@ export function WorkspaceUsageDashboard({
         if (!active) return;
         setOverview((prev) => reconcileValueState(prev, nextOverview));
       })
-      .catch((reason) => active && setError(`사용량을 불러오지 못했습니다. ${String(reason)}`))
+      .catch((reason) => active && setError(describeUsageError(reason)))
       .finally(() => active && setLoading(false));
     return () => { active = false; };
   }, [reloadSignal, workspaceId]);
@@ -613,14 +635,18 @@ export function WorkspaceUsageDashboard({
     return (
       <section className="usage-dashboard usage-empty">
         <header className="usage-head">
-          <h2>워크스페이스 사용 현황</h2>
+          <h2>{mine ? "내 사용 현황" : "워크스페이스 사용 현황"}</h2>
           <div className="usage-actions">{projectCreateButton}</div>
         </header>
         {error ? (
           // 조회 실패(권한·구버전 서버 404 등)를 "워크스페이스 없음"으로 위장하지 않는다.
           <p className="usage-error">{error}</p>
         ) : (
-          <p>아직 에이전트가 보고한 팀 워크스페이스가 없습니다. 멤버가 에이전트를 한 번 동기화하면 표시됩니다.</p>
+          <p>
+            {mine
+              ? "아직 보고된 내 기록이 없습니다. 에이전트가 연결·동기화되면 표시됩니다."
+              : "아직 에이전트가 보고한 팀 워크스페이스가 없습니다. 멤버가 에이전트를 한 번 동기화하면 표시됩니다."}
+          </p>
         )}
       </section>
     );
@@ -651,9 +677,9 @@ export function WorkspaceUsageDashboard({
                 </option>
               ))}
             </select>
-            <p>{selectedWorkspace?.member_count ?? totals?.workers ?? 0} members · 전체 기간</p>
+            <p>{mine ? "내 기록 · 전체 기간" : `${selectedWorkspace?.member_count ?? totals?.workers ?? 0} members · 전체 기간`}</p>
             <p className="work-source-label">
-              출처 · 에이전트 자동 보고(팀 텔레메트리 집계)
+              {mine ? "출처 · 에이전트 자동 보고(내 기록만 · 삭제분 포함)" : "출처 · 에이전트 자동 보고(팀 텔레메트리 집계)"}
               {totals?.estimated_count ? (
                 <span title="실제 차감액이 확인되지 않은 생성물 수 — 견적값이 있으면 그 값으로 합산됩니다">
                   {` · 실제 크레딧 미매칭 ${n(totals.estimated_count)}건`}
@@ -677,6 +703,9 @@ export function WorkspaceUsageDashboard({
 
       {error && <div className="usage-error">{error}</div>}
       {loading && !overview ? <div className="usage-loading">사용량 계산 중…</div> : null}
+      {mine && overview && totals && !totals.count ? (
+        <div className="usage-scope-note">아직 보고된 내 기록이 없습니다. 에이전트가 연결·동기화되면 표시됩니다.</div>
+      ) : null}
       {overview && totals ? (
         <>
           <div className="usage-overview">
@@ -688,15 +717,21 @@ export function WorkspaceUsageDashboard({
             />
             <div className="usage-stat-grid">
               <div><span>총 생성</span><strong>{n(totals.count)}</strong></div>
-              <div><span>멤버</span><strong>{n(totals.workers)}</strong></div>
+              {mine
+                ? <div><span>프로젝트</span><strong>{n(totals.projects)}</strong></div>
+                : <div><span>멤버</span><strong>{n(totals.workers)}</strong></div>}
               <div><span>사용 모델</span><strong>{n(totals.models)}</strong></div>
               <div><span>최종 선택</span><strong>{n(totals.final_count)}</strong></div>
-              <div><span>인원당 평균 생성</span><strong>{totals.workers ? n(totals.count / totals.workers) : "0"}</strong></div>
+              {mine
+                ? <div><span>생성 시간 합</span><strong>{elapsedText(totals.elapsed_seconds)}</strong></div>
+                : <div><span>인원당 평균 생성</span><strong>{totals.workers ? n(totals.count / totals.workers) : "0"}</strong></div>}
               <div><span>생성당 평균 크레딧</span><strong>{totals.count ? credits(totals.credits / totals.count) : "0"}</strong></div>
             </div>
           </div>
 
-          <div className="usage-two-columns">
+          <div className={`usage-two-columns${mine ? " single" : ""}`}>
+            {/* 일반 멤버는 본인 한 명뿐이라 멤버 카드를 빼고 모델 카드를 한 줄 전체로 */}
+            {!mine && (
             <div className="usage-card">
               <div className="usage-card-head"><h3>멤버 사용량</h3><span>{overview.by_worker.length}명</span></div>
               <div className="usage-table-scroll">
@@ -721,6 +756,7 @@ export function WorkspaceUsageDashboard({
                 onPageSizeChange={memberPage.setPageSize}
               />
             </div>
+            )}
             <div className="usage-card">
               <div className="usage-card-head">
                 <div><h3>모델 크레딧</h3><DrillLabel project={selectedProject} worker={selectedWorker} onClear={clearDrill} /></div>

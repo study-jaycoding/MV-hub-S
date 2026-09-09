@@ -302,7 +302,9 @@ def _budget_periods(planning: dict[str, dict[str, Any]], project_ids: list[str])
 
 
 def _shared_counts(conn, project_ids: Optional[list[str]], workspace_id: Optional[str]) -> dict[str, int]:
-    """프로젝트별 공유(발행) 수 — 발행 원장은 content share 표가 정확하다(팩트 is_shared 는 작성자 PC 보고값)."""
+    """프로젝트별 공유(발행) 수 — 발행 원장은 content share 표가 정확하다(팩트 is_shared 는 작성자 PC 보고값).
+    매니저(팀 전체) 전용 — 일반 멤버의 '내 공유 수'는 content 에 이메일이 없어 uid 위조를 못 막으므로(코덱스 P2)
+    project_dashboard_summary 가 팩트 is_shared(uid+이메일 절이 걸린 같은 WHERE)로 센다."""
     workspace_filter, params = _workspace_filter("g", workspace_id)
     project_filter = ""
     if project_ids is not None:
@@ -498,20 +500,20 @@ def dashboard_summary(
 def project_dashboard_summary(
     project_ids: list[str],
     workspace_id: Optional[str] = None,
-    viewer_uid: Optional[str] = None,
+    viewer: Optional[tuple[str, str]] = None,
 ) -> dict[str, Any]:
     """접근 가능한 프로젝트의 작업 현황에 필요한 최소 집계만 반환한다.
 
     사용량은 dashboard_summary 와 같은 팩트 원천(team_generation_fact)이다. ★노출 범위(Jay 결정 2026-09-10):
-    viewer_uid 가 있으면(일반 멤버) **내 작업 전부 + 팀원의 공유분**만 센다 — 팀원의 공유 안 한 작업은
-    매니저(read_all, viewer_uid=None)만 본다. 공유분 판정은 서버 share 표(발행 원장)의 job_id 로 한다.
-    종전 content 경로(발행분만)가 멤버에게 보이던 정보에 '내 미공유분'만 더한 셈이다. 전사 작업자·워크스페이스 통계는 의도적으로 읽지 않는다. 호출측이
-    멤버십으로 허용된 project_ids만 넘기며, 팩트 SQL 도 그 id·열람 범위로 한정해 일반 멤버 요청이 전사
-    데이터 집계 비용이나 노출 경로로 이어지지 않게 한다.
+    viewer=(creator_uid, account_email) 가 있으면(일반 멤버) **내 작업만** 센다 — 팀원 것은 공유 여부와
+    무관하게 매니저(read_all, viewer=None)만 본다. 공유 수 shared_count 도 본인 것만 — 멤버는 팩트 is_shared
+    (본인 PC 보고값, uid+이메일 절 안)로, 매니저는 content share 원장(팀 전체)으로.
+    전사 작업자·워크스페이스 통계는 의도적으로 읽지 않는다. 호출측이 멤버십으로 허용된 project_ids만 넘기며,
+    팩트 SQL 도 그 id·열람 범위로 한정해 일반 멤버 요청이 전사 데이터 집계 비용이나 노출 경로로 이어지지 않게 한다.
     """
     from .. import manage_db  # 지연 import — dashboard_summary 와 동일
 
-    usage_scope = "all" if viewer_uid is None else "mine_plus_shared"
+    usage_scope = "all" if viewer is None else "mine"
     ids = list(dict.fromkeys(pid for pid in project_ids if pid))
     if not ids:
         return {"projects": [], "usage_source": "facts", "usage_scope": usage_scope}
@@ -529,34 +531,20 @@ def project_dashboard_summary(
         if not scoped_ids:
             return {"projects": [], "usage_source": "facts", "usage_scope": usage_scope}
         marks = ",".join("?" for _ in scoped_ids)
-        shared_by_pid = _shared_counts(conn, scoped_ids, workspace_id)
+        # 매니저만 content 원장 — 멤버 공유 수는 아래에서 팩트 stats.shared_count 로(uid 위조 방어, 코덱스 P2).
+        shared_by_pid = _shared_counts(conn, scoped_ids, workspace_id) if viewer is None else {}
         planning = {
             row["project_id"]: dict(row)
             for row in conn.execute(
                 f"SELECT * FROM project_planning WHERE project_id IN ({marks})", scoped_ids
             ).fetchall()
         }
-        shared_job_ids: Optional[list[str]] = None
-        if viewer_uid is not None:
-            # 일반 멤버 범위의 '팀원 공유분' = 서버 공유 원장(share 표)에 있는 job_id — 작성자 PC 보고값(팩트
-            # is_shared)은 공유 해제·발행 직후에 다음 보고까지 어긋난다(코덱스 P1). job_id 없는 행은 대조 불가 → 숨김.
-            workspace_filter, workspace_params = _workspace_filter("g", workspace_id)
-            shared_job_ids = [
-                row["job_id"]
-                for row in conn.execute(
-                    f"SELECT DISTINCT g.job_id FROM generation g JOIN share s ON s.generation_id = g.id "
-                    f"WHERE g.project_id IN ({marks}) AND g.job_id IS NOT NULL "
-                    f"AND g.deleted_at IS NULL{workspace_filter}",
-                    scoped_ids + workspace_params,
-                ).fetchall()
-            ]
         # 허용된 프로젝트·열람 범위만 SQL 에서부터 센다(코덱스 P2) — 한 스냅샷.
         usage = manage_db.fact_usage(
             workspace_id,
             scoped_ids,
             _budget_periods(planning, scoped_ids),
-            viewer_uid=viewer_uid,
-            shared_job_ids=shared_job_ids,
+            viewer=viewer,
         )
         fact_stats = usage["stats"]
         project_models, budget_models = usage["models"], usage["budget_models"]
@@ -574,7 +562,11 @@ def project_dashboard_summary(
                 "pid": pid,
                 "name": project["name"] or pid,
                 **_usage_fields(fact_stats.get(pid)),
-                "shared_count": shared_by_pid.get(pid, 0),
+                "shared_count": (
+                    shared_by_pid.get(pid, 0)
+                    if viewer is None
+                    else int((fact_stats.get(pid) or {}).get("shared_count") or 0)
+                ),
                 "budget_used_credits": budget_usage.get(pid, 0),
                 "models": project_models.get(pid, []),
                 "budget_models": budget_models.get(pid, []),

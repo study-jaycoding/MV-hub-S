@@ -99,7 +99,7 @@ class IdentityPermissionTests(unittest.TestCase):
                 }],
             )
             assert (n, skipped) == (1, [])
-        # 팀원 공유분 판정은 서버 공유 원장(share 표) — g_mate_shared 의 발행본을 content 에 둔다.
+        # 팀원 공유분의 발행본이 서버 공유 원장(share 표)에 있어도 멤버에겐 안 보이는지 검증용.
         with db.get_connection() as conn:
             conn.execute(
                 "INSERT INTO generation(id, worker_id, creator_uid, prompt, status, model, folder_path, "
@@ -198,12 +198,12 @@ class IdentityPermissionTests(unittest.TestCase):
         self.assertEqual([row["pid"] for row in result["projects"]], ["p_river"])
         self.assertNotIn("workers", result)
         self.assertNotIn("workspaces", result)
-        # 사용량은 팩트 원천 — 일반 멤버는 내 것(5cr) + 팀원 공유분(2cr)만. 팀원 미공유(11cr)·남의
-        # 프로젝트(p_other 9cr)는 SQL 범위 밖(Jay 결정 2026-09-10).
+        # 사용량은 팩트 원천 — 일반 멤버는 내 것(5cr)만. 팀원 공유분(2cr)·미공유(11cr)·남의 프로젝트(p_other 9cr)는
+        # SQL 범위 밖(Jay 결정 2026-09-10: 멤버=내 사용량, 매니저=팀 전체).
         self.assertEqual(result["usage_source"], "facts")
-        self.assertEqual(result["usage_scope"], "mine_plus_shared")
-        self.assertEqual(result["projects"][0]["gen_count"], 2)
-        self.assertEqual(result["projects"][0]["credits"], 7)
+        self.assertEqual(result["usage_scope"], "mine")
+        self.assertEqual(result["projects"][0]["gen_count"], 1)
+        self.assertEqual(result["projects"][0]["credits"], 5)
         self.assertEqual([f["folder_path"] for f in result["projects"][0]["folders"]], ["ep001/c0010"])
         # 매니저(read_all)는 같은 프로젝트의 팀원 미공유분까지 본다(5 + 11 + 2).
         admin = DummyRequest(

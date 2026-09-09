@@ -7,7 +7,13 @@ describe("usageSourceLabel — 관리 요약 출처 라벨", () => {
     expect(usageSourceLabel("facts", "all")).toContain("공유 무관");
     expect(usageSourceLabel("facts")).toContain("공유 무관"); // scope 없음(구버전 응답)도 매니저 문구
   });
-  it("일반 멤버 범위면 '내 작업 전부 + 팀원 공유분'을 명시한다", () => {
+  it("일반 멤버 범위(mine)면 '내 작업만'을 명시한다", () => {
+    const label = usageSourceLabel("facts", "mine");
+    expect(label).toContain("내 작업만");
+    expect(label).not.toContain("팀원 공유분");
+    expect(label).not.toContain("공유 무관");
+  });
+  it("구서버의 중간 규칙(mine_plus_shared)은 그 문구를 유지한다", () => {
     const label = usageSourceLabel("facts", "mine_plus_shared");
     expect(label).toContain("내 작업 전부");
     expect(label).toContain("팀원 공유분");

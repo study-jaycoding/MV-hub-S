@@ -321,13 +321,30 @@ def elapsed_by_job_ids(job_ids: list[str]) -> dict[str, float]:
 _CREDIT = "COALESCE(real_credits, est_credits, 0)"
 
 
+Viewer = tuple[str, str]  # (creator_uid, account_email) — 일반 멤버의 '내 기록' 판정 쌍
+
+
+def _viewer_clause(viewer: Optional[Viewer], where: list[str], args: list[Any]) -> None:
+    """일반 멤버 범위 — 팩트의 creator_uid **와** account_email 이 세션 계정과 둘 다 맞는 행만.
+    (코덱스 P1) uid 하나만 보면 미링크 계정이 첫 ingest 때 남의 uid 로 연결하는 경로로 남의 기록을 볼 수
+    있다 — 팩트 account_email 은 push 때 세션 이메일로 강제되므로 둘을 함께 대조하면 막힌다.
+    권한용 값은 특수 필터('__none__' 등) 해석 없이 문자열 그대로 비교한다."""
+    if viewer is None:
+        return
+    uid, email = viewer
+    where.append("creator_uid=? AND account_email=?")
+    args.extend([uid, email])
+
+
 def _agg_where(
     date_from: Optional[str], date_to: Optional[str],
     project_id: Optional[str], creator_uid: Optional[str],
     workspace_id: Optional[str] = None, model: Optional[str] = None,
+    viewer: Optional[Viewer] = None,
 ) -> tuple[str, list[Any]]:
     where: list[str] = []
     args: list[Any] = []
+    _viewer_clause(viewer, where, args)
     # date() 로 감싸 날짜만 비교 — created_at 은 'YYYY-MM-DDTHH:MM:SSZ'(시각 포함)이라 문자열 비교하면
     # 종료일 당일이 통째로 빠진다('...T12:00Z' <= '2026-07-03' = false). date_from/to 는 YYYY-MM-DD.
     # 'localtime' 은 팀 표준시(KST) 통일 — 프론트가 보내는 날짜도 브라우저 로컬(KST) 기준이고,
@@ -362,14 +379,17 @@ def team_overview(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
     project_id: Optional[str] = None, creator_uid: Optional[str] = None,
     workspace_id: Optional[str] = None, model: Optional[str] = None,
+    viewer: Optional[Viewer] = None,
 ) -> dict[str, Any]:
     """워크스페이스 사용량 대시보드 한 방 집계.
 
     합계·작업자·프로젝트·모델·폴더 Yield를 같은 필터 스냅샷으로 계산해 화면 값이 서로 어긋나지
     않게 한다. 모델 상세 배열은 count/credits 값에 마우스를 올렸을 때 쓰인다.
+    viewer=(uid, email) 이면 일반 멤버의 '내 기록' 범위 — 모든 배열이 같은 WHERE 를 타므로
+    matrix·worker_models·폴더 행에도 남의 기록이 섞이지 않는다(`_viewer_clause`).
     """
     where, args = _agg_where(
-        date_from, date_to, project_id, creator_uid, workspace_id, model
+        date_from, date_to, project_id, creator_uid, workspace_id, model, viewer
     )
     with get_connection() as conn:
         conn.execute("BEGIN")  # 아래 모든 집계를 같은 WAL 읽기 스냅샷에 고정한다.
@@ -476,10 +496,11 @@ def team_usage_export(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
     project_id: Optional[str] = None, creator_uid: Optional[str] = None,
     workspace_id: Optional[str] = None, model: Optional[str] = None,
+    viewer: Optional[Viewer] = None,
 ) -> list[dict[str, Any]]:
-    """HF ``team-members-usage.csv``와 같은 날짜·멤버·모델 단위 사용량 행."""
+    """HF ``team-members-usage.csv``와 같은 날짜·멤버·모델 단위 사용량 행. viewer 는 team_overview 와 동일."""
     where, args = _agg_where(
-        date_from, date_to, project_id, creator_uid, workspace_id, model
+        date_from, date_to, project_id, creator_uid, workspace_id, model, viewer
     )
     created_clause = f"{'AND' if where else 'WHERE'} created_at IS NOT NULL"
     with get_connection() as conn:
@@ -500,8 +521,9 @@ def team_timeseries(
     project_id: Optional[str] = None, creator_uid: Optional[str] = None,
     workspace_id: Optional[str] = None, model: Optional[str] = None,
     bucket: str = "day", time_from: Optional[str] = None, time_to: Optional[str] = None,
+    viewer: Optional[Viewer] = None,
 ) -> list[dict[str, Any]]:
-    """기간별 추이 — 시간/일/주/월 버킷별 크레딧·건수. created_at(생성일) 기준."""
+    """기간별 추이 — 시간/일/주/월 버킷별 크레딧·건수. created_at(생성일) 기준. viewer 는 team_overview 와 동일."""
     fmt = {
         "minute": "%Y-%m-%dT%H:%M",
         "hour": "%Y-%m-%dT%H:00",
@@ -509,7 +531,7 @@ def team_timeseries(
         "month": "%Y-%m",
     }.get(bucket, "%Y-%m-%d")
     where, args = _agg_where(
-        date_from, date_to, project_id, creator_uid, workspace_id, model
+        date_from, date_to, project_id, creator_uid, workspace_id, model, viewer
     )
     # time_from/to 는 프론트가 보내는 브라우저 로컬(KST) 나이브 문자열 — created_at(UTC)을
     # localtime 으로 맞춰 비교해야 시간 차트가 9시간 밀리지 않는다.
@@ -553,16 +575,16 @@ _PERIOD_MATCH = {  # 예산 주기 비교식 — content 경로에서 쓰던 식
 def _usage_scope_where(
     workspace_id: Optional[str],
     project_ids: Optional[list[str]] = None,
-    viewer_uid: Optional[str] = None,
+    viewer: Optional[Viewer] = None,
 ) -> tuple[str, list[Any]]:
     """팩트 사용량 집계의 공통 WHERE — 워크스페이스(team+id, 없으면 전체)·프로젝트 IN·열람자 범위.
 
-    viewer_uid 가 있으면(일반 멤버) **내 작업 전부 + 팀원의 공유분**만 센다 — 팀원의 공유 안 한 작업은
-    매니저(read_all, viewer_uid=None)만 본다(Jay 결정 2026-09-10). '공유분' 판정은 팩트의 is_shared(작성자 PC
-    보고값 — 공유 해제·발행 직후엔 다음 보고까지 어긋난다, 코덱스 P1)가 아니라 **서버 공유 원장의 job_id**
-    (fact_usage 가 temp.shared_jobs 로 올린다)로 한다."""
+    viewer=(uid, email) 가 있으면(일반 멤버) **내 작업만** 센다 — 팀원 것은 공유 여부와 무관하게
+    매니저(read_all, viewer=None)만 본다(Jay 결정 2026-09-10, 같은 날 아침의 '내 것+팀원 공유분'을 대체).
+    본인 판정은 `_viewer_clause`(uid+email 동시 대조)."""
     where: list[str] = []
     args: list[Any] = []
+    _viewer_clause(viewer, where, args)
     if workspace_id:
         where.append("workspace_scope='team' AND workspace_id=?")
         args.append(workspace_id)
@@ -571,9 +593,6 @@ def _usage_scope_where(
             return "WHERE 0", []
         where.append(f"project_id IN ({','.join('?' for _ in project_ids)})")
         args.extend(project_ids)
-    if viewer_uid is not None:
-        where.append("(creator_uid=? OR job_id IN (SELECT job_id FROM temp.shared_jobs))")
-        args.append(viewer_uid)
     return (("WHERE " + " AND ".join(where)) if where else ""), args
 
 
@@ -581,30 +600,28 @@ def fact_usage(
     workspace_id: Optional[str],
     project_ids: Optional[list[str]] = None,
     budget_periods: Optional[dict[str, str]] = None,
-    viewer_uid: Optional[str] = None,
-    shared_job_ids: Optional[list[str]] = None,
+    viewer: Optional[Viewer] = None,
 ) -> dict[str, Any]:
     """관리 요약용 팩트 사용량을 **한 읽기 스냅샷**에서 전부 센다(코덱스 P2 — 조회 범위·스냅샷).
 
     반환:
-      stats         {pid: gen_count·done_count·final_count·real_credits·credits·metric_count·
-                     credit_real_count·credit_est_count·credit_unknown_count·elapsed_total} — 미분류(None) 포함
+      stats         {pid: gen_count·done_count·final_count·shared_count(PC 보고 is_shared 합)·real_credits·credits·
+                     metric_count·credit_real_count·credit_est_count·credit_unknown_count·elapsed_total} — 미분류(None) 포함
       models        {pid: [model·count·credits·final_count·elapsed_seconds]}
       budget_models {pid: [model·count·credits·final_count]} — budget_periods={pid: day|week|month} 인 프로젝트만
       folder_rows   [pid·folder_path·creator_uid·creator_name·model·count·final_count·credits·elapsed_seconds·
                      created_start·created_end] — repo/manage.py 가 빈 시퀀스·표시이름과 합쳐 folders[] 로 조립
       workers       [uid·name·gen_count·credits·elapsed_total]
     project_ids=None 이면 워크스페이스 전체(대시보드 — 이동 프로젝트·totals 판정에 전체가 필요), 목록이면
-    그 프로젝트만(멤버용 project-summary — 허용된 것 밖은 SQL 에서부터 안 센다). viewer_uid 는 일반 멤버의
-    열람 범위(내 것 전부 + 팀원 공유분), shared_job_ids 는 그때 호출측이 content share 표에서 뽑아 준
-    서버 공유 원장의 job_id 목록(임시 표로 올려 대조) — `_usage_scope_where` 참조.
+    그 프로젝트만(멤버용 project-summary — 허용된 것 밖은 SQL 에서부터 안 센다). viewer=(uid, email) 는
+    일반 멤버의 열람 범위(내 작업만) — `_usage_scope_where` 참조.
     metric_count = 크레딧을 아는 행(실제 또는 견적). credit_unknown_count = 둘 다 없는 행 — 작업자 PC 의
     거래 대조가 실패한 구멍(예: 리버 e003 148건)을 화면에서 0원과 구분하기 위한 값.
     created_start/end 는 datetime(created_at,'localtime') 로 통일 — 팩트 created_at 은 'YYYY-MM-DD HH:MM:SS'
     와 'YYYY-MM-DDTHH:MM:SSZ' 가 섞여 문자열 MIN/MAX 가 같은 날 안에서 뒤집힌다(코덱스 P2). 둘 다 UTC 전제,
     표시는 팀 표준시(KST=서버 TZ) 날짜.
     """
-    where, args = _usage_scope_where(workspace_id, project_ids, viewer_uid)
+    where, args = _usage_scope_where(workspace_id, project_ids, viewer)
     periods = budget_periods or {}
     done = ",".join("?" for _ in _DONE_STATUSES)
     model_expr = "COALESCE(NULLIF(TRIM(model),''),'알 수 없음')"
@@ -625,17 +642,11 @@ def fact_usage(
         ).fetchone():
             return empty
         conn.execute("BEGIN")  # 아래 모든 집계를 같은 WAL 읽기 스냅샷에 고정
-        if viewer_uid is not None:
-            # 일반 멤버 범위 — 서버 공유 원장의 job_id 를 연결 전용 임시 표로 올려 팩트와 대조한다(파일엔 안 쓴다).
-            conn.execute("CREATE TEMP TABLE shared_jobs(job_id TEXT PRIMARY KEY)")
-            conn.executemany(
-                "INSERT OR IGNORE INTO temp.shared_jobs(job_id) VALUES(?)",
-                [(job_id,) for job_id in (shared_job_ids or []) if job_id],
-            )
         stat_rows = conn.execute(
             f"SELECT project_id AS pid, COUNT(*) AS gen_count, "
             f"SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ({done}) THEN 1 ELSE 0 END) AS done_count, "
             f"COALESCE(SUM(is_final),0) AS final_count, "
+            f"COALESCE(SUM(is_shared),0) AS shared_count, "
             f"COALESCE(SUM(real_credits),0) AS real_credits, "
             f"COALESCE(SUM({_CREDIT}),0) AS credits, "
             f"SUM(CASE WHEN real_credits IS NOT NULL THEN 1 ELSE 0 END) AS credit_real_count, "

@@ -1215,6 +1215,8 @@ table.dash-tree td.l { text-align: left; }
 .usage-chart-col em { position: absolute; top: calc(100% + 6px); left: 50%; transform: translateX(-50%); color: var(--muted); font-size: 8px; font-style: normal; white-space: nowrap; }
 .usage-no-data { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
 .usage-two-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.usage-two-columns.single { grid-template-columns: 1fr; } /* 일반 멤버 뷰 — 멤버 카드 없이 한 칸 */
+.usage-scope-note { color: var(--muted); font-size: 12px; padding: 2px 0 6px; }
 .usage-table-scroll { flex: 1 1 auto; max-height: 350px; overflow: auto; }
 .usage-table { width: 100%; border-collapse: collapse; font-size: 11px; }
 .usage-table th { position: sticky; top: 0; z-index: 1; background: #17191b; color: var(--muted); font-weight: 500; text-align: right; }
