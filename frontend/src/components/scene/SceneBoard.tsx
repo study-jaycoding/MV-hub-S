@@ -37,6 +37,7 @@ import {
   type SceneCardKind,
   type SceneEdge,
   type SceneEdgeRole,
+  type ScenePortLane,
   type SceneGroup,
   type SceneRef,
   type SceneSetFolder,
@@ -57,9 +58,11 @@ import {
   comfyGenMeta,
   edgePathXY,
   fanOffset,
+  freezeLegacyCollectorOrder,
   refLaneOrderIndex,
   resolveEdgeRoles,
   resolvePortEdges,
+  withCollectorOrder,
 } from "../../lib/sceneEdges";
 import { arrangeNodes } from "../../lib/sceneLayout";
 import {
@@ -123,6 +126,7 @@ import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
 import { useClickSeparation } from "../../lib/useClickSeparation";
 import { settleCanvasGenerationAttempt } from "../../lib/canvasGenerationRecovery";
+import { planAutoConnections } from "../../lib/sceneAutoConnect";
 import { formatGenerationDateTime, generationListMeta } from "../../lib/generationDisplay";
 import { useModelDisplayName } from "../../lib/modelCatalog";
 import { InlinePromptRefs } from "../common/InlinePromptRefs";
@@ -322,7 +326,8 @@ export function SceneBoard({
   const t = useT(); // 언어(한/영) — View 노드 헤더 등 라벨 치환. 언어 변경 시 즉시 리렌더.
   // 최초 마운트에도 박제된 running 을 치유해 시작(effect 전 첫 페인트에 '생성중' 잔상 방지).
   const [cards, setCards] = useState<SceneCard[]>(() => settleComfyRunning(scene.cards, isComfyRunning));
-  const [edges, setEdges] = useState<SceneEdge[]>(scene.edges);
+  // 레거시 수집기 순서 고정(order 없는 list·render 연결에 옛 표시 순서를 박음 — 변경 없으면 같은 참조). 저장은 다음 변경 때.
+  const [edges, setEdges] = useState<SceneEdge[]>(() => freezeLegacyCollectorOrder(scene.cards, scene.edges));
   const [groups, setGroups] = useState<SceneGroup[]>(scene.groups || []);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null); // 이름 편집 중인 그룹
   const [colorPopId, setColorPopId] = useState<string | null>(null); // 색 팔레트 팝오버가 열린 그룹
@@ -487,6 +492,7 @@ export function SceneBoard({
     // ★기존 저장분(레거시)에 박제된 status:"running" 치유 — 지금 실제로 실행 중(모듈 store)이 아니면
     //  done/idle 로 정규화해 '영원히 생성중' 표시를 없앤다(persist 쪽 settleComfyRunning 과 짝).
     const inCards = settleComfyRunning(scene.cards, isComfyRunning);
+    const inEdges = freezeLegacyCollectorOrder(inCards, scene.edges); // 레거시 수집기 순서 고정(변경 없으면 같은 참조)
     if (sceneIdRef.current !== scene.id) {
       const prevId = sceneIdRef.current;
       persistSceneHistory(prevId); // 떠나는 씬의 undo 히스토리 보관(돌아오면 이어서)
@@ -495,14 +501,14 @@ export function SceneBoard({
       setSelectedGroupIds(new Set());
       setRowSel({ listId: "", cids: new Set() }); // 씬 전환 시 리스트/렌더 행 선택도 해제(stale 방지)
       // 들어온 씬의 히스토리를 store 에서 복원(없거나 stale 이면 리셋). 씬마다 자기 Ctrl+Z 를 유지.
-      restoreSceneHistory(scene.id, { cards: inCards, edges: scene.edges, groups: scene.groups || [] });
+      restoreSceneHistory(scene.id, { cards: inCards, edges: inEdges, groups: scene.groups || [] });
     }
     setCards(inCards);
-    setEdges(scene.edges);
+    setEdges(inEdges);
     setGroups(scene.groups || []);
     // 표시 중인 상태를 항상 '최근 커밋'으로 맞춘다 — 외부 갱신(생성 완료 등) 후 Ctrl+Z 가
     // 그 갱신까지 되돌리는(스테일 복원) 문제 방지. (내 persist 는 이미 같은 값이라 무해)
-    syncCommitBaseline({ cards: inCards, edges: scene.edges, groups: scene.groups || [] });
+    syncCommitBaseline({ cards: inCards, edges: inEdges, groups: scene.groups || [] });
   }, [scene.id, scene.cards, scene.edges, scene.groups]);
 
   const {
@@ -681,7 +687,7 @@ export function SceneBoard({
     sceneId: scene.id,
     initialSnapshot: {
       cards: settleComfyRunning(scene.cards, isComfyRunning),
-      edges: scene.edges,
+      edges,
       groups: scene.groups || [],
     },
     sceneIdRef,
@@ -1179,7 +1185,9 @@ export function SceneBoard({
       additions.push({ id: uid(), from, to });
     }
     if (!additions.length) return;
-    const ne = [...edgesRef.current, ...additions];
+    // list·render 로 가는 새 연결엔 연결 순서(order)를 지금 매긴다 — 리스트 항목 순서의 기준(카드 위치가 아니라).
+    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    const ne = [...edgesRef.current, ...withCollectorOrder(edgesRef.current, additions, byId)];
     const nc = withGenRefs(cardsRef.current, ne);
     setEdges(ne);
     setCards(nc);
@@ -1258,7 +1266,7 @@ export function SceneBoard({
       kind === "text"
         ? { ...base, kind: "text", text: "" }
         : kind === "set"
-          ? { ...base, kind: "set", w: 198, h: 110, setCfg: { tagsText: "" } }
+          ? { ...base, kind: "set", w: 160, h: 136, setCfg: { tagsText: "" } } // 폴더·태그 두 칸이 다 보이는 크기(Jay 2026-09-09)
         : kind === "model"
           ? { ...base, kind: "model" }
           : kind === "list"
@@ -1336,7 +1344,8 @@ export function SceneBoard({
       uid,
     );
     if (!newEdges.length) return;
-    const nextEdges = [...edgesRef.current, ...newEdges];
+    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    const nextEdges = [...edgesRef.current, ...withCollectorOrder(edgesRef.current, newEdges, byId)];
     const nextCards = withGenRefs(cardsRef.current, nextEdges); // 새 연결로 생성카드 refs 재계산
     setCards(nextCards);
     setEdges(nextEdges);
@@ -2164,57 +2173,14 @@ export function SceneBoard({
     return true;
   };
 
+  // 'c' 자동 연결 — 규칙은 lib/sceneAutoConnect(순수)에. 텍스트→생성·레퍼런스/리스트→텍스트는 위치와 무관하게 고정.
   const autoConnectSelection = (): boolean => {
     const selectedCards = [...selectedRef.current]
       .map((id) => cardsRef.current.find((card) => card.id === id))
       .filter((card): card is SceneCard => !!card);
     if (selectedCards.length < 2) return false;
-
-    const layerOf = (card: SceneCard) =>
-      card.kind === "generation"
-        ? 1
-        : card.kind === "list" || card.kind === "render"
-          ? 2
-          : card.kind === "view"
-            ? 3
-            : card.kind === "output"
-              ? 4
-              : 0;
     const cardsById = new Map(cardsRef.current.map((card) => [card.id, card] as const));
-
-    if (selectedCards.every((card) => card.kind === "generation")) {
-      const sorted = [...selectedCards].sort((left, right) => left.x - right.x);
-      const pairs: Array<[string, string]> = [];
-      for (let index = 0; index < sorted.length - 1; index++) {
-        pairs.push([sorted[index].id, sorted[index + 1].id]);
-      }
-      if (!pairs.length) return false;
-      addEdges(pairs);
-      return true;
-    }
-
-    const pairs: Array<[string, string]> = [];
-    for (const source of selectedCards) {
-      const candidates = selectedCards.filter(
-        (target) =>
-          layerOf(target) > layerOf(source) &&
-          canConnect(source, target, cardsById, edgesRef.current),
-      );
-      if (!candidates.length) continue;
-      const minimumLayer = Math.min(...candidates.map(layerOf));
-      for (const target of candidates) {
-        if (layerOf(target) !== minimumLayer) continue;
-        // 양방향이 가능한 모호한 쌍만 화면 위치로 방향을 정하고, 한 방향만 가능한 연결은 규칙을 유지한다.
-        if (
-          canConnect(target, source, cardsById, edgesRef.current) &&
-          target.x < source.x
-        ) {
-          pairs.push([target.id, source.id]);
-        } else {
-          pairs.push([source.id, target.id]);
-        }
-      }
-    }
+    const pairs = planAutoConnections(selectedCards, cardsById, edgesRef.current);
     if (!pairs.length) return false;
     addEdges(pairs);
     return true;
@@ -2798,23 +2764,42 @@ export function SceneBoard({
       else inn.set(e.to, [e]);
     }
     const yOf = (id: string) => cardsById.get(id)?.y ?? 0;
+    const resolvedFromById = new Map(resolvedEdges.map((e) => [e.id, e.from] as const)); // 무선 input → 실제 소스
     for (const [, list] of out) list.sort((p, q) => yOf(p.to) - yOf(q.to));
     for (const [toId, list] of inn) {
-      // 리스트 타깃은 항목 순서(edge.order, 없으면 y)로 fan-in 정렬 — 리스트 안에서 순서를 바꾸면
-      // 들어오는 연결선 순서도 그에 맞춰 바뀐다. 그 외 타깃은 소스 y 순.
-      if (cardsById.get(toId)?.kind === "list")
+      // 수집기(list·render) 타깃은 '카드가 보여주는 항목 순서'로 fan-in 정렬 — 썸네일 번호와 연결선 순서가
+      // 항상 일치한다(레퍼런스 리스트의 listOrder·edge.order·연결 순서를 collect* 가 이미 반영). 못 찾은 소스
+      // (무선 input 등)는 뒤로, 서로는 원래 순서 유지(안정 정렬). 그 외 타깃은 소스 y 순(교차 최소화).
+      const toKind = cardsById.get(toId)?.kind;
+      if (toKind === "list" || toKind === "render") {
+        // 각 연결을 '그 연결이 제공하는 첫 항목'의 순번으로 — 중첩 리스트는 자기 레퍼런스들 중 가장 앞 번호,
+        //  무선 input 은 해석된 실제 소스로 본다(코덱스 리뷰 ④). 못 찾으면 뒤(Infinity), 서로는 원래 순서 유지.
+        const firstIndexOf = new Map<string, number>();
+        if (toKind === "list") {
+          const li = collectListInputs(toId, cardsById, resolvedEdges);
+          if (li.kind === "reference") {
+            const refIdx = new Map(li.referenceCardIds.map((id, i) => [id, i] as const));
+            for (const srcId of li.sourceIds) {
+              let first = refIdx.get(srcId);
+              if (first == null && cardsById.get(srcId)?.kind === "list")
+                for (const rid of collectListInputs(srcId, cardsById, resolvedEdges).referenceCardIds) {
+                  const i = refIdx.get(rid);
+                  if (i != null && (first == null || i < first)) first = i;
+                }
+              firstIndexOf.set(srcId, first ?? Infinity);
+            }
+          } else li.sourceIds.forEach((id, i) => firstIndexOf.set(id, i));
+        } else collectRenderGenCardIds(toId, cardsById, resolvedEdges).forEach((id, i) => firstIndexOf.set(id, i));
+        const keyOf = (e: SceneEdge) => firstIndexOf.get(resolvedFromById.get(e.id) ?? e.from) ?? Infinity;
         list.sort((p, q) => {
-          const po = p.order;
-          const qo = q.order;
-          if (po != null && qo != null && po !== qo) return po - qo;
-          if (po != null && qo == null) return -1;
-          if (po == null && qo != null) return 1;
-          return yOf(p.from) - yOf(q.from);
+          const ip = keyOf(p);
+          const iq = keyOf(q);
+          return ip === iq ? 0 : ip - iq;
         });
-      else list.sort((p, q) => yOf(p.from) - yOf(q.from));
+      } else list.sort((p, q) => yOf(p.from) - yOf(q.from));
     }
     return { outEdges: out, inEdges: inn };
-  }, [visibleEdges, cardsById]);
+  }, [visibleEdges, cardsById, resolvedEdges]);
   const FAN = 13;
   const PORT_GAP = 24; // 연결 끝점(선 끝·점)을 카드 밖으로 이만큼 띄운다 — 끝점(바깥)과 클릭 포트(안쪽,≈12px) 간격을 카드↔포트 간격과 고르게.
   // 엣지 역할(model/ref/text/lineage/list) — 색·생성카드 입력 레인 결정. edge.role 우선, 없으면 추론.
@@ -2822,15 +2807,31 @@ export function SceneBoard({
     () => resolveEdgeRoles(edges, cardsById, refParents),
     [edges, cardsById, refParents],
   );
-  // 물리 레인 — model/text 는 각자, ref·lineage 는 같은 중앙 레인('ref')으로 묶는다(같은 y라 fan 을 합쳐야
-  // 겹치지 않는다). laneFrac 은 이 물리 레인 기준 y 비율(위=모델·중간=ref/계보·아래=텍스트).
-  const laneOf = (role: SceneEdgeRole): "model" | "ref" | "text" =>
-    role === "model" ? "model" : role === "text" ? "text" : "ref";
-  // 입력 포트 세로 위치 — 카드 '세로 중앙' 기준 고정 오프셋(카드가 커져도 간격 유지·항상 중앙 정렬). 모든 카드 공통.
-  //  ref=중앙(0), 모델=위, 텍스트=아래. gen·comfy 등 다입력 카드에 동일 적용.
+  // 물리 레인 — model/text/set 은 각자, ref·lineage 는 같은 중앙 레인('ref')으로 묶는다(같은 y라 fan 을 합쳐야
+  // 겹치지 않는다). 위=모델·중간=ref/계보·아래=텍스트·맨아래=세트(Set 노드 전용 입력, Jay 2026-09-09).
+  const laneOf = (role: SceneEdgeRole): ScenePortLane =>
+    role === "model" ? "model" : role === "text" ? "text" : role === "set" ? "set" : "ref";
+  // 입력 포트 세로 위치 — 카드별 '레인 목록'을 카드 세로 중앙에 대칭으로 놓는다(Jay 2026-09-09: 세트 레인이 들어오며
+  //  -26·0·+26·+52 로 아래로 치우쳤던 것을 생성 카드는 -39·-13·+13·+39 로). 생성 = model·ref·text·set 4레인,
+  //  comfy = ref(+텍스트 파라미터가 노출돼 있으면 text) 1~2레인. 카드가 짧으면 간격을 줄여 포트가 카드 안에 들어오게.
+  //  포트(카드 컴포넌트)와 선 끝점(edgeEnds)이 같은 함수·같은 카드를 써야 어긋나지 않는다.
   const PORT_V_GAP = 26;
-  const laneDelta = (lane: "model" | "ref" | "text") =>
-    lane === "model" ? -PORT_V_GAP : lane === "text" ? PORT_V_GAP : 0;
+  const laneSlots = (card: SceneCard): ScenePortLane[] =>
+    card.kind === "generation"
+      ? ["model", "ref", "text", "set"]
+      : card.kind === "comfy" &&
+          comfyTextDriveKeys(card.comfyCfg?.params, card.comfyCfg?.content).size > 0
+        ? ["ref", "text"]
+        : ["ref"];
+  const laneDelta = (lane: ScenePortLane, card: SceneCard) => {
+    const slots = laneSlots(card);
+    const n = slots.length;
+    if (n <= 1) return 0;
+    const gap = Math.min(PORT_V_GAP, Math.max(8, (heightOf(card) - 16) / (n - 1)));
+    const i = slots.indexOf(lane);
+    const idx = i < 0 ? (n - 1) / 2 : i; // 그 카드에 없는 레인은 중앙
+    return (idx - (n - 1) / 2) * gap;
+  };
   // 다입력 카드(생성·comfy)로 들어오는 연결의 fan-in 을 (타깃+물리레인) 단위로 — 같은 레인끼리만 세로로
   //  펼쳐 겹침 방지. comfy 도 ref(중앙)·text(아래) 레인 포트로 그려지므로 레인별 fan 이 포트와 맞아야 한다
   //  (안 그러면 전체 입력 기준 fan 이라 ref 선이 ref 포트에서 어긋남).
@@ -2884,7 +2885,7 @@ export function SceneBoard({
     // 다입력 카드(gen·comfy)는 세로중앙 + 레인 오프셋으로, 그 외는 중앙(0.5).
     const gen = b.kind === "generation";
     const laned = gen || b.kind === "comfy";
-    const y2base = b.y + heightOf(b) * 0.5 + (laned ? laneDelta(lane) : 0);
+    const y2base = b.y + heightOf(b) * 0.5 + (laned ? laneDelta(lane, b) : 0);
     // 레인 포트를 가진 카드(생성·comfy)는 레인별 fan 으로 그 레인 포트에 맞춘다. 그 외는 중앙 전체 fan.
     const fanList = laned ? inEdgesLaned.get(b.id + ":" + lane) : inEdges.get(b.id);
     return {
@@ -3161,6 +3162,8 @@ export function SceneBoard({
                     ? " model"
                     : role === "text"
                       ? " text"
+                      : role === "set"
+                        ? " set"
                       : refCardEdgeIds.has(e.id)
                         ? " ref"
                         : genRefEdgeIds.has(e.id)
@@ -3212,6 +3215,8 @@ export function SceneBoard({
                     ? " model"
                     : gb.role === "text"
                       ? " text"
+                      : gb.role === "set"
+                        ? " set"
                       : gb.ref
                         ? " ref"
                         : gb.refg
@@ -3558,6 +3563,8 @@ export function SceneBoard({
                   ? " model"
                   : dotRole === "text"
                     ? " text"
+                    : dotRole === "set"
+                      ? " set"
                     : refCardEdgeIds.has(e.id) || dotRole === "ref"
                       ? " ref"
                       : ""

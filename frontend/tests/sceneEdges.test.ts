@@ -115,12 +115,12 @@ describe("resolveEdgeRole", () => {
     const e: SceneEdge = { id: "e", from: "T", to: "G" };
     expect(resolveEdgeRole(e, byId(cards), {})).toBe("text");
   });
-  it("set 노드 소스 → 생성 카드의 text 레인", () => {
+  it("set 노드 소스 → 생성 카드의 set 전용 레인(텍스트 입력 아래)", () => {
     const cards = [node("S", "set"), node("G", "generation")];
     const e: SceneEdge = { id: "e", from: "S", to: "G" };
     expect(canConnect(cards[0], cards[1])).toBe(true);
     expect(canConnect(cards[0], node("L", "list"))).toBe(false);
-    expect(resolveEdgeRole(e, byId(cards), {})).toBe("text");
+    expect(resolveEdgeRole(e, byId(cards), {})).toBe("set");
   });
   it("reference 카드 소스 → 'ref'", () => {
     const cards = [node("R", "reference"), node("G", "generation")];
@@ -211,21 +211,55 @@ describe("collectListInputs", () => {
   it("입력 없으면 empty", () => {
     expect(collectListInputs("L", byId([node("L", "list")]), []).kind).toBe("empty");
   });
-  it("생성카드만 → generation, 순서=소스 y", () => {
+  it("생성카드만 → generation, 순서=연결한 순서(카드 위치와 무관)", () => {
     const cards = byId([
       node("L", "list"),
       node("G2", "generation", { y: 20 }),
       node("G1", "generation", { y: 5 }),
     ]);
     const edges: SceneEdge[] = [
-      { id: "e1", from: "G2", to: "L" },
+      { id: "e1", from: "G2", to: "L" }, // 먼저 연결
       { id: "e2", from: "G1", to: "L" },
     ];
     const r = collectListInputs("L", cards, edges);
     expect(r.kind).toBe("generation");
-    expect(r.generationCardIds).toEqual(["G1", "G2"]); // y 오름차순
+    expect(r.generationCardIds).toEqual(["G2", "G1"]); // 위에 있는 G1 이 먼저가 아니라, 먼저 연결한 G2 가 먼저
+    // 카드를 옮겨도(y 가 바뀌어도) 순서는 그대로 — 예전엔 y 로 정렬해 카드를 옮기면 리스트 순서가 뒤집혔다.
+    const moved = byId([node("L", "list"), node("G2", "generation", { y: 5 }), node("G1", "generation", { y: 20 })]);
+    expect(collectListInputs("L", moved, edges).generationCardIds).toEqual(["G2", "G1"]);
   });
-  it("edge.order 가 y 보다 우선", () => {
+  it("리스트 안에서 정한 순서(edge.order)가 이기고, 그 뒤 새로 연결한 항목은 뒤에 붙는다", () => {
+    const cards = byId([
+      node("L", "list"),
+      node("G1", "generation", { y: 5 }),
+      node("G2", "generation", { y: 20 }),
+      node("G3", "generation", { y: 0 }),
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "G1", to: "L", order: 1 },
+      { id: "e2", from: "G2", to: "L", order: 0 },
+      { id: "e3", from: "G3", to: "L" }, // 순서 정한 뒤 연결 — 맨 위(y=0)여도 뒤
+    ];
+    expect(collectListInputs("L", cards, edges).generationCardIds).toEqual(["G2", "G1", "G3"]);
+  });
+  it("레퍼런스 리스트 — listOrder 가 우선, 나머지는 연결한 순서", () => {
+    const refs = [{ file_path: "asset:p|a.png", type: "image" }];
+    const mk = (listOrder?: string[]) =>
+      byId([
+        node("L", "list", listOrder ? { listOrder } : {}),
+        node("R1", "reference", { y: 100, refs }),
+        node("R2", "reference", { y: 0, refs }),
+        node("R3", "reference", { y: 50, refs }),
+      ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "R1", to: "L" },
+      { id: "e2", from: "R2", to: "L" },
+      { id: "e3", from: "R3", to: "L" },
+    ];
+    expect(collectListInputs("L", mk(), edges).referenceCardIds).toEqual(["R1", "R2", "R3"]); // y 아님
+    expect(collectListInputs("L", mk(["R2"]), edges).referenceCardIds).toEqual(["R2", "R1", "R3"]);
+  });
+  it("edge.order 가 연결 순서보다 우선", () => {
     const cards = byId([
       node("L", "list"),
       node("G1", "generation", { y: 5 }),
@@ -398,7 +432,7 @@ describe("collectRenderGenCardIds", () => {
   });
   const byId = (cards: SceneCard[]) => new Map(cards.map((c) => [c.id, c] as const));
 
-  it("연결된 생성 카드만 y→x 순으로(생성 외 소스는 무시)", () => {
+  it("연결된 생성 카드만 연결한 순서로(생성 외 소스는 무시, 카드 위치 무관)", () => {
     const cards = byId([
       node("RN", "render"),
       node("G2", "generation", { y: 100 }),
@@ -407,12 +441,12 @@ describe("collectRenderGenCardIds", () => {
       node("L", "list", { y: 60 }),
     ]);
     const edges: SceneEdge[] = [
-      { id: "e1", from: "G2", to: "RN" },
+      { id: "e1", from: "G2", to: "RN" }, // 먼저 연결
       { id: "e2", from: "G1", to: "RN" },
       { id: "e3", from: "T", to: "RN" }, // 텍스트는 canConnect 에서 막히지만, 수집 함수도 생성만 남긴다
       { id: "e4", from: "L", to: "RN" },
     ];
-    expect(collectRenderGenCardIds("RN", cards, edges)).toEqual(["G1", "G2"]);
+    expect(collectRenderGenCardIds("RN", cards, edges)).toEqual(["G2", "G1"]);
   });
   it("연결 없으면 빈 배열", () => {
     expect(collectRenderGenCardIds("RN", byId([node("RN", "render")]), [])).toEqual([]);

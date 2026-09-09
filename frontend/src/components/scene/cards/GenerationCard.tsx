@@ -2,7 +2,7 @@
 //  HistoryBoardNode 는 memo 컴포넌트라 그 props 는 원래 값(안정 참조)을 hist 번들로 받아 '개별로' 풀어
 //  전달한다 — 번들 객체 자체는 매 렌더 새로 만들어져도 HBN 이 받는 각 prop 참조는 이전과 동일해 memo 유지.
 import type React from "react";
-import type { SceneCard, SceneEdgeRole } from "../../../lib/scenes";
+import type { SceneCard, SceneEdgeRole, ScenePortLane } from "../../../lib/scenes";
 import { cardBatch, variantIds } from "../../../lib/scenes";
 import type { Generation, InfoTarget, PreviewTarget } from "../../../types";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../../lib/workspaceCommand";
@@ -64,7 +64,7 @@ export function GenerationCard({
   height: number;
   fill: boolean;
   selectedOnly: boolean; // 이 카드 '하나만' 선택됨 — Generate 툴바 노출 조건
-  laneDelta: (lane: "model" | "ref" | "text") => number;
+  laneDelta: (lane: ScenePortLane, card: SceneCard) => number; // 카드별 레인 목록·높이로 대칭 배치(SceneBoard 소유)
   getNodePreview: (cardId: string) => (p: PreviewTarget) => void;
   lastViewed?: boolean; // 이 씬에서 마지막으로 크게 열어본 카드인가
   hist: HistPass;
@@ -211,20 +211,21 @@ export function GenerationCard({
           ▤ {variantIds(card).length}
         </button>
       )}
-      {/* 3 입력 단자 — 위=모델(주황)·중간=레퍼런스(파랑)·아래=텍스트(보라). 연결 역할은
-          소스 노드 종류로 자동 판정되어 해당 레인으로 라우팅된다. */}
+      {/* 4 입력 단자 — 위=모델(주황)·중간=레퍼런스(파랑)·아래=텍스트(보라)·맨아래=세트(금색, Set 노드만).
+          연결 역할은 소스 노드 종류로 자동 판정되어 해당 레인으로 라우팅된다. */}
       {(
         [
           ["model", "model", "모델 입력"],
           ["ref", "ref", "레퍼런스 입력"],
           ["text", "text", "텍스트 입력"],
-        ] as [SceneEdgeRole, "model" | "ref" | "text", string][]
+          ["set", "set", "세트 입력(폴더·태그) — Set 노드만"],
+        ] as [SceneEdgeRole, ScenePortLane, string][]
       ).map(([role, lane, tip]) => (
         <span
           key={role}
           className={"scene-port in lane-" + role}
           data-role={role}
-          style={{ top: `calc(50% + ${laneDelta(lane)}px)` }}
+          style={{ top: `calc(50% + ${laneDelta(lane, card)}px)` }}
           title={tip}
         />
       ))}

@@ -104,14 +104,16 @@ export interface SceneCard {
 }
 
 // 연결의 의미(입력 레인·색). 없으면 소스/타깃 kind 로 추론(resolveEdgeRole) — 기존 저장분 하위호환.
-export type SceneEdgeRole = "model" | "ref" | "text" | "lineage" | "list";
+export type SceneEdgeRole = "model" | "ref" | "text" | "set" | "lineage" | "list";
+// 다입력 카드(생성·comfy) 입력 포트의 물리 레인 — 위=모델, 중앙=레퍼런스(계보 포함), 아래=텍스트, 맨아래=세트(Set 노드 전용).
+export type ScenePortLane = "model" | "ref" | "text" | "set";
 
 export interface SceneEdge {
   id: string;
   from: string; // 출력 카드 id
   to: string; // 입력 카드 id
   role?: SceneEdgeRole; // 명시 역할(있으면 우선). 생성카드 입력 레인·색 결정에 사용.
-  order?: number; // list 노드 수집 순서(없으면 소스 y 로 폴백).
+  order?: number; // list·render 수집 순서(리스트 안에서 순서를 바꿀 때 기록). 없으면 '연결한 순서'(엣지 배열 순서).
 }
 
 // 카드 묶음(그룹).

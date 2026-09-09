@@ -86,9 +86,9 @@ export function SetCard({
         </label>
       </div>
       <span
-        className="scene-port out lane-text"
+        className="scene-port out lane-set"
         onMouseDown={(e) => onOutPortDown(e, card.id)}
-        title="드래그해 생성 카드 텍스트 입력에 연결"
+        title="드래그해 생성 카드 세트 입력(폴더·태그)에 연결"
       />
       <span
         className="scene-resize"

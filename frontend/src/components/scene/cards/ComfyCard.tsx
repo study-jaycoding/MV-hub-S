@@ -46,7 +46,7 @@ export function ComfyCard({
   fill: boolean;
   width: number; // widthOf(card)
   runningLocal: boolean; // 부모 메모리 실행 집합(runningComfyIds)에 있는지
-  laneDelta: (lane: "model" | "ref" | "text") => number;
+  laneDelta: (lane: "model" | "ref" | "text", card: SceneCard) => number; // 카드별 레인 목록·높이로 대칭 배치(SceneBoard 소유)
   getNodePreview: (cardId: string) => (p: PreviewTarget) => void;
   lastViewed?: boolean; // 이 씬에서 마지막으로 크게 열어본 카드인가(생성 카드와 같은 판정)
   graph: {
@@ -514,17 +514,17 @@ export function ComfyCard({
           </button>
         </div>
       )}
-      {/* 미디어 입력(레퍼런스/생성물 → LoadImage/LoadVideo)=ref 레인(중앙). 텍스트 파라미터가
-          노출돼 있으면 아래(text 레인)에 텍스트 입력 포트(보라)도 추가 — 다른 카드와 같은 고정 간격. */}
+      {/* 미디어 입력(레퍼런스/생성물 → LoadImage/LoadVideo)=ref 레인. 텍스트 파라미터가 노출돼 있으면
+          text 레인에 텍스트 입력 포트(보라)도 추가 — 둘이 카드 세로 중앙에 대칭(-13·+13)으로 놓인다(laneDelta). */}
       <span
         className={"scene-port in" + (hasTextParam ? " lane-ref" : "")}
-        style={hasTextParam ? { top: `calc(50% + ${laneDelta("ref")}px)` } : undefined}
+        style={hasTextParam ? { top: `calc(50% + ${laneDelta("ref", card)}px)` } : undefined}
         title="레퍼런스·생성물·리스트 연결 → 타입별로 LoadImage/LoadVideo 에 자동 주입"
       />
       {hasTextParam && (
         <span
           className="scene-port in lane-text"
-          style={{ top: `calc(50% + ${laneDelta("text")}px)` }}
+          style={{ top: `calc(50% + ${laneDelta("text", card)}px)` }}
           title="텍스트 연결 → 노출된 text 파라미터에 자동 입력(연결 중엔 입력칸 비활성)"
         />
       )}

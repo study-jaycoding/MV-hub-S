@@ -168,7 +168,7 @@ export function resolvePortEdges(
 }
 
 // list 노드로 들어온 입력을 수집·판정(순수). list 는 '동종 수집기' — 생성카드만 들어오면 generation,
-// text 만 들어오면 그 텍스트를 order/y 순으로 합친다. 섞이거나 model/ref 가 섞이면 사용 불가로 표시.
+// text 만 들어오면 그 텍스트를 order/연결 순으로 합친다. 섞이거나 model/ref 가 섞이면 사용 불가로 표시.
 export interface ListInputs {
   kind: "empty" | "generation" | "text" | "reference" | "mixed" | "invalid";
   sourceIds: string[]; // 정렬된 직접 입력 소스 카드 id(행 표시·순서 변경 기준)
@@ -189,6 +189,22 @@ function sortByOrder(items: { e: SceneEdge; c: SceneCard }[]): { e: SceneEdge; c
       if (oa == null && ob != null) return 1;
       if (a.c.y !== b.c.y) return a.c.y - b.c.y;
       if (a.c.x !== b.c.x) return a.c.x - b.c.x;
+      return a.i - b.i;
+    });
+}
+
+// 수집기(list·render) 전용 정렬: edge.order 우선 → 없으면 '연결한 순서'(엣지 배열 순서 = 연결 시각순).
+//  카드 위치(y·x)는 보지 않는다 — 카드를 옮겨도 리스트 순서가 바뀌지 않게(Jay 2026-09-09: 연결한 순서로 보이고,
+//  리스트 안에서 바꾼 순서는 그대로 유지). 수동 순서(edge.order)는 그대로 우선이고 그 뒤 새 연결은 뒤에 붙는다.
+function sortByConnectionOrder(items: { e: SceneEdge; c: SceneCard }[]): { e: SceneEdge; c: SceneCard }[] {
+  return items
+    .map((x, i) => ({ ...x, i }))
+    .sort((a, b) => {
+      const oa = a.e.order;
+      const ob = b.e.order;
+      if (oa != null && ob != null && oa !== ob) return oa - ob;
+      if (oa != null && ob == null) return -1;
+      if (oa == null && ob != null) return 1;
       return a.i - b.i;
     });
 }
@@ -561,7 +577,7 @@ function collectListInputsIndexed(
     .filter((x): x is { e: SceneEdge; c: SceneCard } => !!x.c);
   if (!sources.length)
     return { kind: "empty", sourceIds: [], generationCardIds: [], referenceCardIds: [], text: "" };
-  const sorted = sortByOrder(sources);
+  const sorted = sortByConnectionOrder(sources);
   const sourceIds = sorted.map((s) => s.c.id); // 직접 소스(행표시·reorder용) — 중첩이어도 그대로.
 
   // 중첩 수집 순환 차단 — 하위 list 로 내려갈 때 이 listId 를 경로에 넣는다(자기참조·A→B→A 방지).
@@ -689,6 +705,68 @@ function collectListInputsIndexed(
   };
 }
 
+// 새 연결에 '연결 순서' order 를 매긴다(list·render 타깃, 이미 있으면 그대로) — 저장 전에 매겨야 아래 레거시 이행(freeze)이
+//  새 연결까지 옛 y 순으로 되돌리지 않는다(코덱스 2차 리뷰 P1). 순번 = 그 타깃의 기존 최대 order + 1(없으면 기존 연결 개수),
+//  같은 묶음 안에서는 배열 순서대로 이어 매긴다. 연결을 만드는 모든 경로(addEdges·connectSelected)가 이걸 거친다.
+export function withCollectorOrder(
+  existing: SceneEdge[],
+  additions: SceneEdge[],
+  cardsById: Map<string, SceneCard>,
+): SceneEdge[] {
+  const next = new Map<string, number>();
+  const nextSeq = (toId: string): number => {
+    let seq = next.get(toId);
+    if (seq == null) {
+      let max = -1;
+      let count = 0;
+      for (const e of existing)
+        if (e.to === toId) {
+          count++;
+          if (e.order != null && e.order > max) max = e.order;
+        }
+      seq = Math.max(max + 1, count);
+    }
+    next.set(toId, seq + 1);
+    return seq;
+  };
+  return additions.map((e) => {
+    if (e.order != null) return e;
+    const kind = cardsById.get(e.to)?.kind;
+    if (kind !== "list" && kind !== "render") return e;
+    return { ...e, order: nextSeq(e.to) };
+  });
+}
+
+// ── 레거시 이행: 수집기 순서 고정 ──────────────────────────────────────────
+// 2026-09-09 부터 list·render 의 항목 순서가 '연결한 순서'(엣지 배열 순서)로 바뀌었다. 그 전 저장분은 edge.order 없이
+//  소스 카드 y→x 로 정렬해 보여 줬고, 생성 카드 refs(@image 번호)도 그 순서로 모였다. 그대로 두면 리스트 번호·텍스트의
+//  @image 썸네일은 연결 순서로 바뀌는데 실제 제출 refs 는 옛 순서라 어긋난다(코덱스 리뷰 P1). 그래서 씬을 열 때 한 번,
+//  order 가 하나라도 빠진 수집기의 들어오는 연결 전부에 '그때 보이던 순서'(order→y→x→배열)를 order 로 박아 고정한다.
+//  전부 order 가 있으면 원본 배열을 그대로 돌려준다(참조 동일 = 변경 없음). 무선 input 은 실제 소스의 y 로 본다.
+//  소스 카드가 사라진 연결은 뒤에 붙여 순번을 매긴다(다음 로드에 또 이행하지 않게).
+export function freezeLegacyCollectorOrder(cards: SceneCard[], edges: SceneEdge[]): SceneEdge[] {
+  const cardsById = new Map(cards.map((c) => [c.id, c] as const));
+  const resolvedFrom = new Map(resolvePortEdges(cardsById, edges).map((e) => [e.id, e.from] as const));
+  const orderById = new Map<string, number>();
+  for (const [toId, incoming] of buildIncomingEdgeIndex(edges)) {
+    const kind = cardsById.get(toId)?.kind;
+    if (kind !== "list" && kind !== "render") continue;
+    if (incoming.every((e) => e.order != null)) continue;
+    const withCard: { e: SceneEdge; c: SceneCard }[] = [];
+    const dangling: SceneEdge[] = [];
+    for (const e of incoming) {
+      const c = cardsById.get(resolvedFrom.get(e.id) ?? e.from);
+      if (c) withCard.push({ e, c });
+      else dangling.push(e);
+    }
+    let seq = 0;
+    for (const x of sortByOrder(withCard)) orderById.set(x.e.id, seq++);
+    for (const e of dangling) orderById.set(e.id, seq++);
+  }
+  if (!orderById.size) return edges;
+  return edges.map((e) => (orderById.has(e.id) ? { ...e, order: orderById.get(e.id) } : e));
+}
+
 export function collectListInputs(
   listId: string,
   cardsById: Map<string, SceneCard>,
@@ -730,7 +808,7 @@ export function collectViewGenCardIds(
   return out;
 }
 
-// 렌더(배치) 노드에 연결된 생성 카드 id들(edge.order→y→x 순, 중복 제거). 생성 카드만 — 리스트/텍스트 등은 무시.
+// 렌더(배치) 노드에 연결된 생성 카드 id들(edge.order→연결 순, 중복 제거). 생성 카드만 — 리스트/텍스트 등은 무시.
 // 소스가 input(무선)이면 호출부에서 resolvePortEdges 로 실제 소스로 해석된 엣지를 넘겨준다.
 // order 우선이라 렌더 노드 안에서 드래그로 순서 변경(reorderList)한 결과가 표시에 반영된다.
 export function collectRenderGenCardIds(
@@ -748,7 +826,7 @@ export function collectRenderGenCardIds(
         (x.c?.kind === "comfy" && !!(x.c.genIds?.length || x.c.genId)),
     );
   const out: string[] = [];
-  for (const s of sortByOrder(items)) if (!out.includes(s.c.id)) out.push(s.c.id);
+  for (const s of sortByConnectionOrder(items)) if (!out.includes(s.c.id)) out.push(s.c.id);
   return out;
 }
 
@@ -1126,8 +1204,10 @@ function resolveEdgeRoleWithContext(
   edges?: SceneEdge[],
   context?: EdgeRoleResolutionContext,
 ): SceneEdgeRole {
-  if (edge.role) return edge.role;
   const rawFrom = cardsById.get(edge.from);
+  // Set 노드는 명시 role 이 있어도(예전 저장분 "text") 세트 전용 레인으로 — 'Set 은 전용 포트로만'(2026-09-09).
+  if (rawFrom?.kind === "set") return "set";
+  if (edge.role) return edge.role;
   // 소스가 input(무선)이면 실제 소스 종류로 색을 맞춘다 — 못 풀면 그대로(중립 폴백).
   const fromId =
     rawFrom?.kind === "input" && edges
@@ -1151,7 +1231,7 @@ function resolveEdgeRoleWithContext(
         : "ref";
     return "ref"; // reference·generation → 레퍼런스(파랑)
   }
-  if (from?.kind === "set") return "text";
+  if (from?.kind === "set") return "set"; // Set 노드 전용 레인(생성 카드의 텍스트 입력 아래)
   if (from?.kind === "model") return "model";
   if (from?.kind === "text") return "text";
   if (from?.kind === "comfy") {
