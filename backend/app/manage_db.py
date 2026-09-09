@@ -551,9 +551,16 @@ _PERIOD_MATCH = {  # 예산 주기 비교식 — content 경로에서 쓰던 식
 
 
 def _usage_scope_where(
-    workspace_id: Optional[str], project_ids: Optional[list[str]] = None
+    workspace_id: Optional[str],
+    project_ids: Optional[list[str]] = None,
+    viewer_uid: Optional[str] = None,
 ) -> tuple[str, list[Any]]:
-    """팩트 사용량 집계의 공통 WHERE — 워크스페이스(team+id, 없으면 전체)와 프로젝트 IN."""
+    """팩트 사용량 집계의 공통 WHERE — 워크스페이스(team+id, 없으면 전체)·프로젝트 IN·열람자 범위.
+
+    viewer_uid 가 있으면(일반 멤버) **내 작업 전부 + 팀원의 공유분**만 센다 — 팀원의 공유 안 한 작업은
+    매니저(read_all, viewer_uid=None)만 본다(Jay 결정 2026-09-10). '공유분' 판정은 팩트의 is_shared(작성자 PC
+    보고값 — 공유 해제·발행 직후엔 다음 보고까지 어긋난다, 코덱스 P1)가 아니라 **서버 공유 원장의 job_id**
+    (fact_usage 가 temp.shared_jobs 로 올린다)로 한다."""
     where: list[str] = []
     args: list[Any] = []
     if workspace_id:
@@ -564,6 +571,9 @@ def _usage_scope_where(
             return "WHERE 0", []
         where.append(f"project_id IN ({','.join('?' for _ in project_ids)})")
         args.extend(project_ids)
+    if viewer_uid is not None:
+        where.append("(creator_uid=? OR job_id IN (SELECT job_id FROM temp.shared_jobs))")
+        args.append(viewer_uid)
     return (("WHERE " + " AND ".join(where)) if where else ""), args
 
 
@@ -571,6 +581,8 @@ def fact_usage(
     workspace_id: Optional[str],
     project_ids: Optional[list[str]] = None,
     budget_periods: Optional[dict[str, str]] = None,
+    viewer_uid: Optional[str] = None,
+    shared_job_ids: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """관리 요약용 팩트 사용량을 **한 읽기 스냅샷**에서 전부 센다(코덱스 P2 — 조회 범위·스냅샷).
 
@@ -583,14 +595,16 @@ def fact_usage(
                      created_start·created_end] — repo/manage.py 가 빈 시퀀스·표시이름과 합쳐 folders[] 로 조립
       workers       [uid·name·gen_count·credits·elapsed_total]
     project_ids=None 이면 워크스페이스 전체(대시보드 — 이동 프로젝트·totals 판정에 전체가 필요), 목록이면
-    그 프로젝트만(멤버용 project-summary — 허용된 것 밖은 SQL 에서부터 안 센다).
+    그 프로젝트만(멤버용 project-summary — 허용된 것 밖은 SQL 에서부터 안 센다). viewer_uid 는 일반 멤버의
+    열람 범위(내 것 전부 + 팀원 공유분), shared_job_ids 는 그때 호출측이 content share 표에서 뽑아 준
+    서버 공유 원장의 job_id 목록(임시 표로 올려 대조) — `_usage_scope_where` 참조.
     metric_count = 크레딧을 아는 행(실제 또는 견적). credit_unknown_count = 둘 다 없는 행 — 작업자 PC 의
     거래 대조가 실패한 구멍(예: 리버 e003 148건)을 화면에서 0원과 구분하기 위한 값.
     created_start/end 는 datetime(created_at,'localtime') 로 통일 — 팩트 created_at 은 'YYYY-MM-DD HH:MM:SS'
     와 'YYYY-MM-DDTHH:MM:SSZ' 가 섞여 문자열 MIN/MAX 가 같은 날 안에서 뒤집힌다(코덱스 P2). 둘 다 UTC 전제,
     표시는 팀 표준시(KST=서버 TZ) 날짜.
     """
-    where, args = _usage_scope_where(workspace_id, project_ids)
+    where, args = _usage_scope_where(workspace_id, project_ids, viewer_uid)
     periods = budget_periods or {}
     done = ",".join("?" for _ in _DONE_STATUSES)
     model_expr = "COALESCE(NULLIF(TRIM(model),''),'알 수 없음')"
@@ -611,6 +625,13 @@ def fact_usage(
         ).fetchone():
             return empty
         conn.execute("BEGIN")  # 아래 모든 집계를 같은 WAL 읽기 스냅샷에 고정
+        if viewer_uid is not None:
+            # 일반 멤버 범위 — 서버 공유 원장의 job_id 를 연결 전용 임시 표로 올려 팩트와 대조한다(파일엔 안 쓴다).
+            conn.execute("CREATE TEMP TABLE shared_jobs(job_id TEXT PRIMARY KEY)")
+            conn.executemany(
+                "INSERT OR IGNORE INTO temp.shared_jobs(job_id) VALUES(?)",
+                [(job_id,) for job_id in (shared_job_ids or []) if job_id],
+            )
         stat_rows = conn.execute(
             f"SELECT project_id AS pid, COUNT(*) AS gen_count, "
             f"SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ({done}) THEN 1 ELSE 0 END) AS done_count, "

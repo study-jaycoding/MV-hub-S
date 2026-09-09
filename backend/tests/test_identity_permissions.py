@@ -82,21 +82,32 @@ class IdentityPermissionTests(unittest.TestCase):
                 "INSERT INTO project_member(project_id, creator_uid, project_role) "
                 "VALUES('p_roleless','user_river','')"
             )
-        # 허용(p_river)·비허용(p_other) 프로젝트의 팩트 — 멤버 요약이 남의 프로젝트를 세지 않는지 검증용
-        for email, uid, pid, credits in (
-            ("river@example.com", "user_river", "p_river", 5),
-            ("other@example.com", "user_other", "p_other", 9),
+        # 팩트 — 멤버 요약이 남의 프로젝트(p_other)와 팀원의 미공유분을 세지 않는지 검증용
+        for gid, email, uid, pid, credits, shared in (
+            ("g_river", "river@example.com", "user_river", "p_river", 5, False),
+            ("g_other", "other@example.com", "user_other", "p_other", 9, False),
+            ("g_mate_private", "other@example.com", "user_other", "p_river", 11, False),
+            ("g_mate_shared", "other@example.com", "user_other", "p_river", 2, True),
         ):
             n, skipped = manage_db.upsert_facts(
                 email, uid,
                 [{
-                    "local_gen_id": f"g_{pid}", "job_id": f"job_{pid}", "workspace_scope": "personal",
+                    "local_gen_id": gid, "job_id": f"job_{gid}", "workspace_scope": "personal",
                     "project_id": pid, "folder_path": "ep001/c0010", "model": "nano", "status": "done",
                     "real_credits": credits, "created_at": "2026-09-01T00:00:00Z",
-                    "is_final": False, "is_shared": False, "is_deleted": False,
+                    "is_final": False, "is_shared": shared, "is_deleted": False,
                 }],
             )
             assert (n, skipped) == (1, [])
+        # 팀원 공유분 판정은 서버 공유 원장(share 표) — g_mate_shared 의 발행본을 content 에 둔다.
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, creator_uid, prompt, status, model, folder_path, "
+                "created_at, sort_ts, project_id, job_id) "
+                "VALUES('srv_mate_shared', 'me', 'user_other', 'p', 'done', 'nano', 'ep001/c0010', "
+                "datetime('now'), strftime('%s','now'), 'p_river', 'job_g_mate_shared')"
+            )
+            conn.execute("INSERT INTO share(generation_id, shared_by) VALUES('srv_mate_shared', 'me')")
 
     def tearDown(self):
         db.flush_pool()
@@ -187,11 +198,27 @@ class IdentityPermissionTests(unittest.TestCase):
         self.assertEqual([row["pid"] for row in result["projects"]], ["p_river"])
         self.assertNotIn("workers", result)
         self.assertNotIn("workspaces", result)
-        # 사용량은 팩트 원천 — 내 프로젝트 팩트(5cr)만, 남의 프로젝트(p_other 9cr)는 SQL 범위 밖.
+        # 사용량은 팩트 원천 — 일반 멤버는 내 것(5cr) + 팀원 공유분(2cr)만. 팀원 미공유(11cr)·남의
+        # 프로젝트(p_other 9cr)는 SQL 범위 밖(Jay 결정 2026-09-10).
         self.assertEqual(result["usage_source"], "facts")
-        self.assertEqual(result["projects"][0]["gen_count"], 1)
-        self.assertEqual(result["projects"][0]["credits"], 5)
+        self.assertEqual(result["usage_scope"], "mine_plus_shared")
+        self.assertEqual(result["projects"][0]["gen_count"], 2)
+        self.assertEqual(result["projects"][0]["credits"], 7)
         self.assertEqual([f["folder_path"] for f in result["projects"][0]["folders"]], ["ep001/c0010"])
+        # 매니저(read_all)는 같은 프로젝트의 팀원 미공유분까지 본다(5 + 11 + 2).
+        admin = DummyRequest(
+            {
+                "email": "admin@example.com",
+                "status": "approved",
+                "global_role": "admin",
+                "creator_uid": "user_admin",
+            }
+        )
+        with auth_on():
+            full = manage_router.project_summary(admin)
+        self.assertEqual(full["usage_scope"], "all")
+        river_row = next(row for row in full["projects"] if row["pid"] == "p_river")
+        self.assertEqual((river_row["gen_count"], river_row["credits"]), (3, 18))
 
     def test_ingest_requires_reported_cli_email_when_auth_is_on(self):
         acc = {"email": "river@example.com", "creator_uid": "user_river"}

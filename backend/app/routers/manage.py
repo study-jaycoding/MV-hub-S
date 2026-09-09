@@ -613,7 +613,8 @@ def project_summary(request: Request, workspace_id: Optional[str] = None):
         )
         project_ids = [pid for pid in project_ids if pid in readable_ids]
     _refresh_isolated_telemetry()  # 사용량은 팩트 원천 — 격리 test_dev 최신 반영(summary 와 동일, 동기 라우트)
-    return repo_manage.project_dashboard_summary(project_ids, workspace_id)
+    # 일반 멤버(member_uid 있음)는 내 작업 전부 + 팀원 공유분만 — 팀원 미공유분은 read_all 만(Jay 2026-09-10).
+    return repo_manage.project_dashboard_summary(project_ids, workspace_id, viewer_uid=member_uid)
 
 
 # ── 프로젝트 일정/예산 ────────────────────────────────────────────────────────

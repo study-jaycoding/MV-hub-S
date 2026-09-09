@@ -104,8 +104,10 @@ export interface ManageTotals {
   net_credits?: number;
 }
 
-// 사용량 출처 — facts=텔레메트리 팩트(팀 기록 장부: 공유 무관·삭제분 포함). 구서버는 필드 없음(라이브러리 집계).
+// 사용량 출처 — facts=텔레메트리 팩트(팀 기록 장부: 삭제분 포함). 구서버는 필드 없음(라이브러리 집계).
 export type UsageSource = "facts" | "content";
+// 열람 범위 — all=매니저(팀원 미공유분 포함) · mine_plus_shared=일반 멤버(내 작업 전부 + 팀원 공유분).
+export type UsageScope = "all" | "mine_plus_shared";
 
 export interface ManageSummary {
   projects: ManageProject[];
@@ -113,6 +115,7 @@ export interface ManageSummary {
   totals: ManageTotals;
   workspaces?: Workspace[];
   usage_source?: UsageSource;
+  usage_scope?: UsageScope;
 }
 
 // 드래그 dataTransfer 키 — 생성물(컷)을 작업에 드롭 연결

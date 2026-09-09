@@ -186,12 +186,14 @@ function ProjectDetail({
   folders,
   projName,
   usageSource,
+  usageScope,
 }: {
   summaryCard: ReactNode;
   pid: string | null;
   folders: ProjectFolderUsage[];
   projName: string;
   usageSource?: string;
+  usageScope?: string;
 }) {
   const [sequencePage, setSequencePage] = useState(1);
   const [sequencePageSize, setSequencePageSize] = useState<number>(USAGE_PAGE_SIZES[0]);
@@ -228,7 +230,7 @@ function ProjectDetail({
               <h2>에피소드 · 시퀀스</h2>
               <span className="dash-scope-chip">프로젝트 · {projName}</span>
               {/* 프로젝트 요약과 같은 원천 — 팩트(팀 기록 장부)면 공유 안 한 컷도 포함됨을 명시. 구서버는 종전 문구. */}
-              <span className="work-source-label">{usageSourceLabel(usageSource)}</span>
+              <span className="work-source-label">{usageSourceLabel(usageSource, usageScope)}</span>
             </div>
             <span className="meta">에피소드 {episodes.length}개 · 시퀀스 {sequenceCount}개</span>
           </div>
@@ -305,7 +307,9 @@ export function DashboardView({
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [selectedPid, setSelectedPid] = useState<string | null>(null); // 하단 상세 대상
-  const [summary, setSummary] = useState<{ projects: ManageProject[]; usage_source?: string } | null>(null);
+  const [summary, setSummary] = useState<
+    { projects: ManageProject[]; usage_source?: string; usage_scope?: string } | null
+  >(null);
   const [members, setMembers] = useState<Map<string, ProjectMember[]>>(new Map());
   const [showPanel, setShowPanel] = useState(false); // 프로젝트 관리 오버레이(＋프로젝트)
   const [summaryPage, setSummaryPage] = useState(1);
@@ -424,7 +428,7 @@ export function DashboardView({
         <div className="dash-detail-title">
           <h2>프로젝트 요약</h2>
           {/* 2026-09-09부터 사용량은 위 워크스페이스 사용 현황과 같은 팩트(팀 기록 장부). 구서버면 종전 라이브러리 집계. */}
-          <span className="work-source-label">{usageSourceLabel(summary?.usage_source)}</span>
+          <span className="work-source-label">{usageSourceLabel(summary?.usage_source, summary?.usage_scope)}</span>
         </div>
         <span className="meta">전체 {rows.length}개</span>
       </div>
@@ -571,6 +575,7 @@ export function DashboardView({
         folders={selProj?.folders || []}
         projName={selName}
         usageSource={summary?.usage_source}
+        usageScope={summary?.usage_scope}
       />
 
       {/* 프로젝트 관리 오버레이 — 생성·보관·삭제·멤버 역할 */}

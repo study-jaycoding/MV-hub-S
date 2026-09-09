@@ -227,6 +227,45 @@ class FactUsageSummaryTests(unittest.TestCase):
         manage_db.upsert_facts("a@x", "u_a", [_fact("f1", is_deleted=True, deleted_at=_iso(0))])
         self.assertEqual(credits(), 29)
 
+    # ── 일반 멤버 열람 범위 = 내 작업 전부 + 팀원 공유분 (Jay 결정 2026-09-10) ───────
+    def test_member_scope_hides_teammates_unshared_work(self) -> None:
+        # 팀원 u_b 의 팩트 둘을 추가 — 공유 판정은 PC 보고값(is_shared)이 아니라 서버 공유 원장(share 표):
+        #  f9  = PC 는 공유라고 보고했지만 서버 원장엔 없음(공유 해제 뒤 미보고) → 멤버에게 숨김
+        #  f10 = PC 보고는 미공유지만 서버에 발행돼 있음(발행 직후 미보고) → 멤버에게 보임(2cr)
+        manage_db.upsert_facts(
+            "b@x", "u_b",
+            [
+                _fact("f9", creator_uid="u_b", creator_name="리버", real_credits=3, is_shared=True),
+                _fact("f10", creator_uid="u_b", creator_name="리버", real_credits=2),
+            ],
+        )
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, creator_uid, prompt, status, model, folder_path, "
+                "created_at, sort_ts, project_id, workspace_scope, workspace_id, job_id) "
+                "VALUES('srv-f10', 'me', 'u_b', 'p', 'done', 'seedance', 'e001/c0010', "
+                "datetime('now'), strftime('%s','now'), 'p1', 'team', 'ws1', 'job-f10')"
+            )
+            conn.execute("INSERT INTO share(generation_id, shared_by) VALUES('srv-f10', 'me')")
+        # 매니저(viewer_uid=None): 전부 — 6 + f9 + f10 = 8건, 29 + 3 + 2 = 34cr
+        out = manage.project_dashboard_summary(["p1"], "ws1")
+        self.assertEqual(out["usage_scope"], "all")
+        self.assertEqual((out["projects"][0]["gen_count"], out["projects"][0]["credits"]), (8, 34))
+        # 일반 멤버 u_a: 내 것 전부(f1 f2 f3 f4 f5 = 5건·22cr) + 팀원 서버 공유분(f10 2cr). f8·f9 제외.
+        out = manage.project_dashboard_summary(["p1"], "ws1", viewer_uid="u_a")
+        self.assertEqual(out["usage_scope"], "mine_plus_shared")
+        (project,) = out["projects"]
+        self.assertEqual((project["gen_count"], project["credits"]), (6, 24))
+        c0010 = next(f for f in project["folders"] if f["folder_path"] == "e001/c0010")
+        self.assertEqual(
+            [(m["uid"], m["count"], m["credits"]) for m in c0010["members"]],
+            [("u_a", 3, 20), ("u_b", 1, 2)],
+        )
+        # 아무 작업도 없는 멤버(u_zero): 서버 공유 원장에 있는 팀원 작업만 — f10 하나
+        #  (f2 는 PC 가 공유라고 보고했을 뿐 서버 원장엔 없어 숨김).
+        out = manage.project_dashboard_summary(["p1"], "ws1", viewer_uid="u_zero")
+        self.assertEqual((out["projects"][0]["gen_count"], out["projects"][0]["credits"]), (1, 2))
+
     # ── 중복 정책(코덱스 P3 고정) ─────────────────────────────────────────────
     def test_duplicate_policy_same_account_job_converges_other_account_double_counts(self) -> None:
         def count() -> int:
