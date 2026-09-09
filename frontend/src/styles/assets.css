@@ -328,7 +328,7 @@
 
 /* 코멘트 창(공유 스레드 — 플로팅, 이동·크기조절) */
 .cmt-panel {
-  position: fixed; z-index: 82;
+  position: fixed; z-index: 165; /* 캔버스 '폴더 보기' 창(150/151) 위 — 창에서 C 로 연 코멘트가 가려지지 않게(코덱스 P2) */
   width: 320px; height: 380px;
   min-width: min(240px, calc(100vw - 16px));
   min-height: min(220px, calc(100vh - 16px));

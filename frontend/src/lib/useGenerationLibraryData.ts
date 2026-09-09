@@ -13,6 +13,9 @@ interface UseGenerationLibraryDataArgs {
   // 사이드바 프로젝트 목록 스코프 — 실제 선택된 워크스페이스(크레딧 컨텍스트)를 따른다.
   // 생성물 목록(genQuery.workspace_id = 옵트인 침 필터)과는 별개.
   projectWorkspaceId?: string;
+  // 캔버스 '폴더 보기' 창이 열려 있으면 compose 탭에서도 목록(그리드)을 조회·추가 로드한다(2026-09-09).
+  //  서버 목록 API 의 tab 은 my|team 만 받으므로 compose 는 my 로 보낸다(캔버스 격자 = 내 작업).
+  composeListEnabled?: boolean;
 }
 
 export const GENERATION_TAB_CACHE_FRESH_MS = 15_000;
@@ -39,6 +42,7 @@ export function useGenerationLibraryData({
   flash,
   genQuery,
   projectWorkspaceId,
+  composeListEnabled = false,
 }: UseGenerationLibraryDataArgs) {
   const [gens, setGens] = useState<Generation[]>([]);
   const [facets, setFacets] = useState<Facets>(EMPTY_FACETS);
@@ -59,6 +63,13 @@ export function useGenerationLibraryData({
   genQueryRef.current = genQuery;
   const projectWorkspaceIdRef = useRef(projectWorkspaceId);
   projectWorkspaceIdRef.current = projectWorkspaceId;
+  const composeListEnabledRef = useRef(composeListEnabled);
+  composeListEnabledRef.current = composeListEnabled;
+  // compose 탭의 목록 쿼리 — 서버 tab 은 my|team 뿐이라 my 로 정규화(폴더 보기 창).
+  const listQuery = () => {
+    const q = genQueryRef.current;
+    return q.tab === "compose" ? { ...q, tab: "my" as const } : q;
+  };
   const gensRef = useRef(gens);
   gensRef.current = gens;
   const loadingMoreRef = useRef(false);
@@ -117,7 +128,7 @@ export function useGenerationLibraryData({
     try {
       // 시작 시점의 탭/쿼리를 스냅샷 — await 뒤 ref가 다른 탭 값으로 바뀌어 있어도 안전.
       const tab = filtersRef.current.tab;
-      if (tab === "compose") {
+      if (tab === "compose" && !composeListEnabledRef.current) {
         setLoading(false);
         // 캔버스는 그리드를 안 그리지만 좌측 폴더(projects)와 등록 태그 패널(facets)을 직접 사용한다.
         // 둘 다 여기서 채워야 새로고침 직후에도 다른 탭 왕복 없이 폴더·태그가 바로 보인다.
@@ -144,7 +155,7 @@ export function useGenerationLibraryData({
         setLoadError(null); // 탭·필터가 바뀐 새 로드에 이전 화면의 실패가 잠깐 비치지 않게
       }
       const seq = ++reloadSeqRef.current;
-      const query = genQueryRef.current;
+      const query = listQuery();
       const trashMode = !!filtersRef.current.deleted_only;
       const scope = tab === "team" ? "team" : "my";
       const sig = JSON.stringify([trashMode, query]);
@@ -269,9 +280,18 @@ export function useGenerationLibraryData({
     [reload],
   );
 
+  // 캔버스 '폴더 보기' 창이 열릴 때 — 이전 탭(내 작업·팀) 카드가 남아 있으므로 비우되, 먼저 목록 소유 탭을 compose 로
+  //  넘긴다. 그냥 setGens([]) 하면 위 캐시 동기화 effect 가 이전 탭 캐시를 빈 목록으로 덮어, 창을 닫고 15초 안에
+  //  라이브러리로 돌아오면 '최신' 빈 캐시를 믿고 조회를 건너뛴다(코덱스 2차 P2).
+  const beginComposeList = useCallback(() => {
+    lastLoadedTabRef.current = "compose";
+    setGens([]);
+    setHasMore(false);
+  }, []);
+
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !authReadyRef.current) return;
-    if (filtersRef.current.tab === "compose") return;
+    if (filtersRef.current.tab === "compose" && !composeListEnabledRef.current) return;
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
@@ -285,7 +305,7 @@ export function useGenerationLibraryData({
       } else {
         const last = gensRef.current[gensRef.current.length - 1];
         const cursor = last ? { ts: last.sort_ts ?? 0, id: last.id } : null;
-        batch = await api.listGenerations(genQueryRef.current, cursor);
+        batch = await api.listGenerations(listQuery(), cursor);
       }
       if (seq !== reloadSeqRef.current) return; // 다른 탭/쿼리로 바뀐 뒤 도착한 이전 컨텍스트 페이지
       // ★gens 누적 캡(A5)은 넣지 않는다(코덱스 리뷰로 폐기): 앞부분 트림이 휴지통 offset 페이지네이션·
@@ -321,6 +341,7 @@ export function useGenerationLibraryData({
     reloadIfStale,
     setFacets,
     setGens,
+    beginComposeList,
     stats,
     unassignedCount,
   };

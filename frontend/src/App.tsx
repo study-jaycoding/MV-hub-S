@@ -78,6 +78,7 @@ import { useGenerationProgress } from "./lib/useGenerationProgress";
 import { useGenerationProjectActions } from "./lib/useGenerationProjectActions";
 import { useGenerationSelection } from "./lib/useGenerationSelection";
 import { useGenerationShareActions } from "./lib/useGenerationShareActions";
+import { useEscapeClose } from "./lib/useEscapeClose";
 import { manageApi } from "./lib/manageApi";
 import type { FolderMenuKind } from "./lib/folderContextMenu";
 import { useGenerationTagActions } from "./lib/useGenerationTagActions";
@@ -237,6 +238,8 @@ export default function App() {
   const [commentGenId, setCommentGenId] = useState<string | null>(null); // 공유 코멘트 스레드 패널 대상
   const [syncTick, setSyncTick] = useState(0); // WS 'synced' 수신 카운터 — 열린 코멘트 패널 실시간 갱신용
   const [preview, setPreview] = useState<PreviewTarget | null>(null); // 클릭 미리보기
+  const [folderPeek, setFolderPeek] = useState(false); // 캔버스 '폴더 보기' 창 — 규칙은 아래 folderSel 옆
+  const folderPeekRef = useRef<HTMLElement>(null);
   // 회색(비활성) — 카드별 비활성화 표시(d 키, gen id 기준 로컬). grayOn(useLibraryFilters)=ON 이면 목록에서 제외.
   const disabledGen = useDisabledGenerations();
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(그 폴더·하위 생성물 자동 회색)
@@ -275,9 +278,17 @@ export default function App() {
     reloadIfStale,
     setFacets,
     setGens,
+    beginComposeList,
     stats,
     unassignedCount,
-  } = useGenerationLibraryData({ authReady, filters, flash, genQuery, projectWorkspaceId });
+  } = useGenerationLibraryData({
+    authReady,
+    filters,
+    flash,
+    genQuery,
+    projectWorkspaceId,
+    composeListEnabled: folderPeek, // 창이 열려 있을 때만 compose 탭에서 목록 조회·추가 로드
+  });
   // 워크스페이스 전환(자동 동기화 포함) 시 사이드바 프로젝트 목록을 새 스코프로 재조회.
   // 첫 마운트는 초기 로드가 담당 — 목록이 한 번 로드된 뒤의 변경에만 반응한다.
   useEffect(() => {
@@ -1250,6 +1261,25 @@ export default function App() {
         : null,
     [filters.project_id, filters.folder_path],
   );
+  // 캔버스 폴더 보기(2026-09-09, Jay) — 활성 씬이 열려 있으면 계보 보드가 숨어 폴더 내용이 안 보인다. 사이드바에서
+  //  폴더를 고르면 가운데 플로팅 창에 라이브러리 격자(ThumbnailGrid, 같은 gridGens·툴바 필터·날짜 구분)를 그대로 띄워
+  //  워크스페이스로 가지 않고 그 폴더에 뭐가 있는지 바로 본다. 닫기: ✕·Esc·바깥 클릭·씬 전환·탭 이탈·프로젝트만 선택.
+  //  Esc 는 미리보기/정보 팝업이 위에 떠 있으면 그쪽이 먼저 닫히게 양보한다.
+  useEffect(() => {
+    if (filters.tab !== "compose" || !activeSceneId || !folderSel) setFolderPeek(false);
+  }, [filters.tab, activeSceneId, folderSel]);
+  // 열리거나(폴더 바뀜 포함) 열린 채 필터가 바뀌면 그 폴더 목록을 새로 받는다 — compose 는 평소 목록을 안 받아
+  //  이전 탭(팀·휴지통) 카드가 남아 있을 수 있으니 먼저 비운다(코덱스 P1). 열릴 때 창으로 초점 이동 — 안 하면
+  //  폴더 클릭 직후 Delete 가 뒤 캔버스 선택 노드를 지운다(코덱스 P2).
+  useEffect(() => {
+    if (!folderPeek) return;
+    beginComposeList(); // 소유 탭 전환 + 비우기(이전 탭 캐시 보존)
+    void reload();
+    folderPeekRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folderPeek, serverFilterKey]);
+  // Esc(창 밖에 초점이 있을 때) — 창 안 초점은 section onKeyDown 이 직접 처리(stopPropagation 이 window 훅을 막는다).
+  useEscapeClose(() => setFolderPeek(false), folderPeek && !preview && info === null);
   // 코멘트 패널 라벨 — 열렸을 때만, gens 가 바뀔 때만 계산(매 렌더 전량 find 방지).
   const commentLabel = useMemo(
     () =>
@@ -1360,6 +1390,62 @@ export default function App() {
       />
     ) : undefined;
 
+  // 라이브러리 격자 — 라이브러리 탭 본문과 캔버스 '폴더 보기' 창이 같은 요소를 쓴다(동시에 마운트되지 않음).
+  const thumbnailGrid = (
+    <ThumbnailGrid
+          generations={gridGens}
+          disabledIds={effectiveDisabled}
+          onBulkGradeStep={onBulkGradeStep}
+          tab={filters.tab === "team" ? "team" : "my"} // 캔버스 폴더 보기(compose)는 내 작업 격자
+          myCreatorUid={account?.creator_uid ?? null}
+          scale={scale}
+          fill={fill}
+          layout={layout}
+          groupByDate={groupByDate}
+          selectedIds={selected}
+          onSelectedChange={(next) => {
+            // comfy 임시 카드(가짜 id)는 선택에서 제외 — 전체선택/범위선택으로 삭제·배정 API 에 흘러가지 않게.
+            const clean = [...next].some((id) => id.startsWith("comfy-pending:"))
+              ? new Set([...next].filter((id) => !id.startsWith("comfy-pending:")))
+              : next;
+            setSelected(clean);
+            // 코멘트 패널이 열려 있으면 방금 클릭한(단일 선택) 카드로 따라가 그 카드 코멘트를 바로 보여준다.
+            if (commentGenId != null && clean.size === 1) setCommentGenId([...clean][0]);
+          }}
+          onToggleSelect={toggleSelect}
+          onSetSource={onSetSource}
+          onSetTags={onSetTags}
+          onBulkAddTags={onBulkAddTags}
+          onBulkRemoveTags={onBulkRemoveTags}
+          autoTagOptions={facets.auto_tags}
+          onSetAutoTags={onSetAutoTags}
+          onBulkAddAutoTags={onBulkAddAutoTags}
+          onBulkRemoveAutoTags={onBulkRemoveAutoTags}
+          onWorkspaceCommand={onWorkspaceCommand}
+          onOpenComments={(g) => openComment(g.id)}
+          onRegenerate={onRegenerate}
+          onPublish={onPublish}
+          onUnpublish={onUnpublish}
+          onFinalize={onFinalize}
+          onUnfinalize={onUnfinalize}
+          canFinalize={canFinalize}
+          onImport={onImport}
+          onRestore={onRestore}
+          dimDeleted={!filters.deleted_only}
+          onColor={onColor}
+          onTags={onTags}
+      onInfo={handleInfo}
+      onPreview={openPreview}
+      onShowHistory={onShowHistory}
+      hasMore={hasMore}
+      loadingMore={loadingMore}
+      onLoadMore={loadMore}
+      resetKey={serverFilterKey}
+      loadError={loadError}
+      onRetryLoad={() => void reload()}
+    />
+  );
+
   return (
     <div className="app">
       <TopBar
@@ -1416,9 +1502,10 @@ export default function App() {
                 archivedCount={archivedCount}
                 armedFolder={armedFolder}
                 onArmFolder={(projectId, path) => {
-                  // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 계보 보드 필터
+                  // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 계보 보드 필터 ③ 활성 씬이면 폴더 보기 창
                   setArmedFolder(path ? { projectId, path } : null);
                   patch({ project_id: projectId, folder_path: path || undefined });
+                  setFolderPeek(!!path && !!activeSceneId);
                 }}
                 onDropToFolder={(projectId, path, genId) => dropOnFolder(genId, projectId, path)}
                 onDropToUnassigned={(genId) => dropUnassign(genId)}
@@ -1593,6 +1680,52 @@ export default function App() {
             />
             </Suspense>
             )}
+            {folderPeek && activeScene && folderSel && (
+              <>
+                <div className="folder-peek-catcher" onMouseDown={() => setFolderPeek(false)} />
+                {/* 창 안 키 입력은 캔버스 전역 단축키(c·Delete·y…)로 새지 않게 여기서 멈춘다. Esc 는 위 훅. */}
+                <section
+                  ref={folderPeekRef}
+                  className="folder-peek"
+                  role="dialog"
+                  aria-label="폴더 보기"
+                  tabIndex={-1}
+                  onKeyDown={(e) => {
+                    // 미리보기/정보 팝업이 창 위에 떠 있으면 Esc·화살표는 그 팝업의 window 리스너까지 흘려보낸다
+                    //  (막으면 창 안 초점에서 팝업을 못 닫는다 — 코덱스 2차 P2). 그 외 키는 캔버스 전역 단축키로 안 샌다.
+                    const popupOpen = !!preview || info !== null;
+                    if (e.key === "Escape") {
+                      if (popupOpen) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setFolderPeek(false);
+                      return;
+                    }
+                    if (popupOpen && e.key.startsWith("Arrow")) return;
+                    e.stopPropagation();
+                  }}
+                >
+                  <header className="folder-peek-hd">
+                    <span className="folder-peek-title" title={folderSel.path}>
+                      {projects.find((p) => p.id === folderSel.projectId)?.name ?? ""} / {folderSel.path}
+                    </span>
+                    <span className="folder-peek-count">
+                      {gridGens.length}
+                      {hasMore ? "+" : ""}
+                    </span>
+                    <button
+                      type="button"
+                      className="folder-peek-x"
+                      onClick={() => setFolderPeek(false)}
+                      title="닫기 (Esc)"
+                    >
+                      ✕
+                    </button>
+                  </header>
+                  {thumbnailGrid}
+                </section>
+              </>
+            )}
           </main>
           </>
         ) : (
@@ -1672,58 +1805,7 @@ export default function App() {
                 tagPanelOpen={tagPanelOpen}
                 onToggleTagPanel={toggleTagPanel}
               />
-              <ThumbnailGrid
-                    generations={gridGens}
-                    disabledIds={effectiveDisabled}
-                    onBulkGradeStep={onBulkGradeStep}
-                    tab={filters.tab}
-                    myCreatorUid={account?.creator_uid ?? null}
-                    scale={scale}
-                    fill={fill}
-                    layout={layout}
-                    groupByDate={groupByDate}
-                    selectedIds={selected}
-                    onSelectedChange={(next) => {
-                      // comfy 임시 카드(가짜 id)는 선택에서 제외 — 전체선택/범위선택으로 삭제·배정 API 에 흘러가지 않게.
-                      const clean = [...next].some((id) => id.startsWith("comfy-pending:"))
-                        ? new Set([...next].filter((id) => !id.startsWith("comfy-pending:")))
-                        : next;
-                      setSelected(clean);
-                      // 코멘트 패널이 열려 있으면 방금 클릭한(단일 선택) 카드로 따라가 그 카드 코멘트를 바로 보여준다.
-                      if (commentGenId != null && clean.size === 1) setCommentGenId([...clean][0]);
-                    }}
-                    onToggleSelect={toggleSelect}
-                    onSetSource={onSetSource}
-                    onSetTags={onSetTags}
-                    onBulkAddTags={onBulkAddTags}
-                    onBulkRemoveTags={onBulkRemoveTags}
-                    autoTagOptions={facets.auto_tags}
-                    onSetAutoTags={onSetAutoTags}
-                    onBulkAddAutoTags={onBulkAddAutoTags}
-                    onBulkRemoveAutoTags={onBulkRemoveAutoTags}
-                    onWorkspaceCommand={onWorkspaceCommand}
-                    onOpenComments={(g) => openComment(g.id)}
-                    onRegenerate={onRegenerate}
-                    onPublish={onPublish}
-                    onUnpublish={onUnpublish}
-                    onFinalize={onFinalize}
-                    onUnfinalize={onUnfinalize}
-                    canFinalize={canFinalize}
-                    onImport={onImport}
-                    onRestore={onRestore}
-                    dimDeleted={!filters.deleted_only}
-                    onColor={onColor}
-                    onTags={onTags}
-                onInfo={handleInfo}
-                onPreview={openPreview}
-                onShowHistory={onShowHistory}
-                hasMore={hasMore}
-                loadingMore={loadingMore}
-                onLoadMore={loadMore}
-                resetKey={serverFilterKey}
-                loadError={loadError}
-                onRetryLoad={() => void reload()}
-              />
+              {thumbnailGrid}
             </main>
           </>
         )}

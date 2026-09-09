@@ -258,9 +258,10 @@
 .status-failed { color: #ff6b6b; }
 .status-nsfw { color: #ff6b6b; }
 /* 등급 S 다중선택 확인 모달 — 브라우저 confirm 대신 인앱 중앙 팝업 */
-.gradestep-catcher { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.45); }
+/* z 160/161 — 캔버스 '폴더 보기' 창(150/151) 안에서 S 등급 확인이 창 뒤에 숨지 않게(코덱스 P2). 프롬프트 독(60) 위. */
+.gradestep-catcher { position: fixed; inset: 0; z-index: 160; background: rgba(0, 0, 0, 0.45); }
 .gradestep-modal {
-  position: fixed; z-index: 61; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  position: fixed; z-index: 161; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: min(420px, calc(100vw - 32px));
   background: var(--panel, #16181d); border: 1px solid var(--border2);
   border-radius: 14px; padding: 18px 18px 14px;
