@@ -240,6 +240,8 @@ export default function App() {
   const [preview, setPreview] = useState<PreviewTarget | null>(null); // 클릭 미리보기
   const [folderPeek, setFolderPeek] = useState(false); // 캔버스 '폴더 보기' 창 — 규칙은 아래 folderSel 옆
   const folderPeekRef = useRef<HTMLElement>(null);
+  const folderPeekOpenRef = useRef(folderPeek);
+  folderPeekOpenRef.current = folderPeek;
   // 회색(비활성) — 카드별 비활성화 표시(d 키, gen id 기준 로컬). grayOn(useLibraryFilters)=ON 이면 목록에서 제외.
   const disabledGen = useDisabledGenerations();
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(그 폴더·하위 생성물 자동 회색)
@@ -552,7 +554,16 @@ export default function App() {
     setSelected,
     teamTab: false,
   });
-  useGenerationKeyboardActions({ clearSelect, filtersRef, flash, gensRef, reload, selectedRef, setGens });
+  useGenerationKeyboardActions({
+    clearSelect,
+    filtersRef,
+    flash,
+    gensRef,
+    reload,
+    selectedRef,
+    setGens,
+    composeGridActiveRef: folderPeekOpenRef, // 캔버스 '폴더 보기' 창이 떠 있으면 compose 에서도 r/g/b/d
+  });
 
   // 정보(ⓘ) 버튼: 복수 선택 상태에서 선택된 카드의 정보를 누르면 비교창, 그 외엔 단일 정보창.
   const handleInfo = (target: InfoTarget) => {
@@ -1279,7 +1290,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [folderPeek, serverFilterKey]);
   // Esc(창 밖에 초점이 있을 때) — 창 안 초점은 section onKeyDown 이 직접 처리(stopPropagation 이 window 훅을 막는다).
-  useEscapeClose(() => setFolderPeek(false), folderPeek && !preview && info === null);
+  useEscapeClose(
+    () => setFolderPeek(false),
+    folderPeek && !preview && info === null && selected.size === 0, // 선택이 있으면 Esc 는 선택 해제(라이브러리와 동일)
+  );
   // 코멘트 패널 라벨 — 열렸을 때만, gens 가 바뀔 때만 계산(매 렌더 전량 find 방지).
   const commentLabel = useMemo(
     () =>
@@ -1320,6 +1334,31 @@ export default function App() {
 
   // 멀티선택 액션바 — 프롬프트가 보이면 프롬프트 상단(topSlot)에, Ctrl+K 로 프롬프트를 숨기면 화면 상단
   // 중앙에 플로팅으로 유지한다(프롬프트와 함께 사라지지 않게). 아래에서 상태에 따라 한 곳에서만 마운트.
+  // 라이브러리 선택 액션바 — 라이브러리 탭 본문과 캔버스 '폴더 보기' 창이 같은 요소를 쓴다.
+  const librarySelectionBar =
+    selected.size > 0 ? (
+      <LibrarySelectionActionBar
+        selectedCount={selected.size}
+        selectedGenerations={selectedGenerations}
+        projects={projects}
+        onShare={boardShare}
+        onGradeStep={filters.tab === "team" ? onBulkGradeStep : undefined}
+        onDownload={bulkDownload}
+        onResolveTransfer={resolveTransfer.sendToResolve}
+        onResolveRetry={resolveTransfer.retryable ? resolveTransfer.retryPreparedTransfer : null}
+        resolveRetryProjectName={resolveTransfer.retryable?.target.project_name || ""}
+        resolveTransferBusy={resolveTransfer.busy}
+        resolveTransferPendingCount={resolveTransfer.pendingCount}
+        onCompare={(items) => {
+          if (items.length >= 2) setCompareGens(items);
+        }}
+        onAssign={assignSelectedToProject}
+        onDelete={bulkDelete}
+        onRestore={bulkRestore}
+        onPurge={bulkPurge}
+      />
+    ) : undefined;
+
   const selectionBar =
     filters.tab === "compose" ? (
       // 씬(캔버스)이 열려 있으면 씬 선택 결과카드 기준, 아니면 히스토리 보드 선택 노드 기준.
@@ -1367,28 +1406,49 @@ export default function App() {
           resolveTransferPendingCount={resolveTransfer.pendingCount}
         />
       ) : undefined
-    ) : selected.size > 0 ? (
-      <LibrarySelectionActionBar
-        selectedCount={selected.size}
-        selectedGenerations={selectedGenerations}
-        projects={projects}
-        onShare={boardShare}
-        onGradeStep={filters.tab === "team" ? onBulkGradeStep : undefined}
-        onDownload={bulkDownload}
-        onResolveTransfer={resolveTransfer.sendToResolve}
-        onResolveRetry={resolveTransfer.retryable ? resolveTransfer.retryPreparedTransfer : null}
-        resolveRetryProjectName={resolveTransfer.retryable?.target.project_name || ""}
-        resolveTransferBusy={resolveTransfer.busy}
-        resolveTransferPendingCount={resolveTransfer.pendingCount}
-        onCompare={(items) => {
-          if (items.length >= 2) setCompareGens(items);
-        }}
-        onAssign={assignSelectedToProject}
-        onDelete={bulkDelete}
-        onRestore={bulkRestore}
-        onPurge={bulkPurge}
-      />
-    ) : undefined;
+    ) : librarySelectionBar;
+
+  // 라이브러리 툴바 — 라이브러리 탭 본문과 캔버스 '폴더 보기' 창이 같은 요소를 쓴다(창에서도 워크스페이스처럼 조작).
+  const libraryToolbar = (
+    <LibraryToolbar
+      typeFilter={typeFilter}
+      onTypeFilter={setTypeFilter}
+      scale={scale}
+      onScale={setScale}
+      fill={fill}
+      onToggleFill={() => setFill((v) => !v)}
+      layout={layout}
+      onLayout={setLayout}
+      groupByDate={groupByDate}
+      onToggleGroupByDate={() => setGroupByDate((v) => !v)}
+      filtersOpen={showFilters}
+      onToggleFilters={() => setShowFilters((v) => !v)}
+      count={gridGens.length}
+      countMore={hasMore}
+      grayOn={grayOn}
+      onToggleGray={() => setGrayOn((v) => !v)}
+      loading={loading}
+      failedCount={failedCount}
+      onClearFailed={clearFailed}
+      colorDots={COLOR_DOTS}
+      colorFilter={colorFilter}
+      onToggleColor={toggleColorFilter}
+      sharedOnly={sharedOnly}
+      onToggleShared={() => setSharedOnly((v) => !v)}
+      commentOnly={commentOnly}
+      onToggleComment={() => setCommentOnly((v) => !v)}
+      finalOnly={finalOnly}
+      onToggleFinal={() => setFinalOnly((v) => !v)}
+      hasUnread={hasAnyUnread}
+      tags={facets.tags}
+      tagFilter={tagFilter}
+      onSelectTag={selectTagFilter}
+      onDeleteTag={deleteTagEverywhere}
+      onClearTags={clearTagFilter}
+      tagPanelOpen={tagPanelOpen}
+      onToggleTagPanel={toggleTagPanel}
+    />
+  );
 
   // 라이브러리 격자 — 라이브러리 탭 본문과 캔버스 '폴더 보기' 창이 같은 요소를 쓴다(동시에 마운트되지 않음).
   const thumbnailGrid = (
@@ -1551,7 +1611,7 @@ export default function App() {
               onSelectTag={selectTagFilter}
               onDeleteTag={deleteTagEverywhere}
               onClearTags={clearTagFilter}
-              tagPanelOpen={tagPanelOpen}
+              tagPanelOpen={tagPanelOpen && !folderPeek} // 창이 열려 있으면 창 툴바만 태그 패널을 띄운다(중복 방지)
               onToggleTagPanel={toggleTagPanel}
               zoomValue={boardStats.zoomPct / 100}
               onZoomValue={(v) => boardControl.current?.zoomTo(v)}
@@ -1691,18 +1751,24 @@ export default function App() {
                   aria-label="폴더 보기"
                   tabIndex={-1}
                   onKeyDown={(e) => {
-                    // 미리보기/정보 팝업이 창 위에 떠 있으면 Esc·화살표는 그 팝업의 window 리스너까지 흘려보낸다
-                    //  (막으면 창 안 초점에서 팝업을 못 닫는다 — 코덱스 2차 P2). 그 외 키는 캔버스 전역 단축키로 안 샌다.
-                    const popupOpen = !!preview || info !== null;
-                    if (e.key === "Escape") {
-                      if (popupOpen) return;
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setFolderPeek(false);
+                    // 창 안 키는 라이브러리 단축키(r/g/b/d·격자 키)가 받는다 — 씬 단축키·붙여넣기는 .folder-peek 안 키를
+                    //  무시하므로(sceneKeyboard) 막지 않는다. Esc 순서: 팝업(미리보기/정보) → 텍스트 입력(그 입력 몫) →
+                    //  선택 해제(슬라이더 같은 비텍스트 입력에 초점이 있어도 — 전역 훅은 INPUT 전부를 무시한다) → 창 닫기.
+                    if (e.key !== "Escape") return;
+                    if (preview || info !== null) return;
+                    const t = e.target as HTMLElement | null;
+                    const tag = t?.tagName?.toUpperCase();
+                    const typing =
+                      (tag === "INPUT" && !["range", "checkbox", "radio", "button"].includes((t as HTMLInputElement).type)) ||
+                      tag === "TEXTAREA" ||
+                      !!t?.isContentEditable;
+                    if (typing) return;
+                    e.preventDefault();
+                    if (selected.size > 0) {
+                      clearSelect();
                       return;
                     }
-                    if (popupOpen && e.key.startsWith("Arrow")) return;
-                    e.stopPropagation();
+                    setFolderPeek(false);
                   }}
                 >
                   <header className="folder-peek-hd">
@@ -1722,7 +1788,9 @@ export default function App() {
                       ✕
                     </button>
                   </header>
+                  {libraryToolbar}
                   {thumbnailGrid}
+                  {librarySelectionBar && <div className="folder-peek-selbar">{librarySelectionBar}</div>}
                 </section>
               </>
             )}
@@ -1767,44 +1835,7 @@ export default function App() {
               />
             )}
             <main className="main">
-              <LibraryToolbar
-                typeFilter={typeFilter}
-                onTypeFilter={setTypeFilter}
-                scale={scale}
-                onScale={setScale}
-                fill={fill}
-                onToggleFill={() => setFill((v) => !v)}
-                layout={layout}
-                onLayout={setLayout}
-                groupByDate={groupByDate}
-                onToggleGroupByDate={() => setGroupByDate((v) => !v)}
-                filtersOpen={showFilters}
-                onToggleFilters={() => setShowFilters((v) => !v)}
-                count={gridGens.length}
-                countMore={hasMore}
-                grayOn={grayOn}
-                onToggleGray={() => setGrayOn((v) => !v)}
-                loading={loading}
-                failedCount={failedCount}
-                onClearFailed={clearFailed}
-                colorDots={COLOR_DOTS}
-                colorFilter={colorFilter}
-                onToggleColor={toggleColorFilter}
-                sharedOnly={sharedOnly}
-                onToggleShared={() => setSharedOnly((v) => !v)}
-                commentOnly={commentOnly}
-                onToggleComment={() => setCommentOnly((v) => !v)}
-                finalOnly={finalOnly}
-                onToggleFinal={() => setFinalOnly((v) => !v)}
-                hasUnread={hasAnyUnread}
-                tags={facets.tags}
-                tagFilter={tagFilter}
-                onSelectTag={selectTagFilter}
-                onDeleteTag={deleteTagEverywhere}
-                onClearTags={clearTagFilter}
-                tagPanelOpen={tagPanelOpen}
-                onToggleTagPanel={toggleTagPanel}
-              />
+              {libraryToolbar}
               {thumbnailGrid}
             </main>
           </>

@@ -88,7 +88,9 @@ export function isSceneTextEntryTarget(target: SceneKeyboardTarget | null | unde
     tagName === "TEXTAREA" ||
     tagName === "SELECT" ||
     !!target.isContentEditable ||
-    !!target.closest?.(".sl-dockbar")
+    !!target.closest?.(".sl-dockbar") ||
+    // 캔버스 '폴더 보기' 창(라이브러리 격자) 안의 키는 라이브러리 단축키 몫 — 씬 단축키·붙여넣기가 받지 않는다(2026-09-09).
+    !!target.closest?.(".folder-peek")
   );
 }
 

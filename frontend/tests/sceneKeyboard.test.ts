@@ -27,6 +27,10 @@ describe("isSceneTextEntryTarget", () => {
     expect(
       isSceneTextEntryTarget({ tagName: "button", closest: (selector) => selector === ".sl-dockbar" }),
     ).toBe(true);
+    // 캔버스 '폴더 보기' 창(라이브러리 격자) 안의 키는 라이브러리 단축키 몫 — 씬 단축키·붙여넣기가 받지 않는다.
+    expect(
+      isSceneTextEntryTarget({ tagName: "div", closest: (selector) => selector === ".folder-peek" }),
+    ).toBe(true);
   });
 
   it("체크박스·버튼 같은 비텍스트 컨트롤에서는 캔버스 단축키를 허용한다", () => {

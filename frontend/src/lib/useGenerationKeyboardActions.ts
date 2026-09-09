@@ -16,6 +16,8 @@ interface UseGenerationKeyboardActionsArgs {
   reload: (silent?: boolean, light?: boolean) => void | Promise<void>;
   selectedRef: MutableRefObject<Set<string>>;
   setGens: Dispatch<SetStateAction<Generation[]>>;
+  // compose 탭에서도 라이브러리 격자가 떠 있는 동안(캔버스 '폴더 보기' 창)은 색·비활성 단축키를 살린다.
+  composeGridActiveRef?: MutableRefObject<boolean>;
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -43,6 +45,7 @@ export function useGenerationKeyboardActions({
   reload,
   selectedRef,
   setGens,
+  composeGridActiveRef,
 }: UseGenerationKeyboardActionsArgs) {
   const latestCallbacksRef = useRef({
     flash,
@@ -94,7 +97,12 @@ export function useGenerationKeyboardActions({
       }
       if (ids.length === 0) return;
       // 구성(compose=계보/씬)에선 색·비활성을 보드/씬이 자체 처리 — 라이브러리 선택 잔재로 이중 실행 방지.
-      if (filtersRef.current.tab === "compose") return;
+      //  단 '폴더 보기' 창이 떠 있고 키가 창 **안**에서 났으면 그 격자가 라이브러리라 살린다(씬 단축키는 창 안 키를
+      //  무시한다). 창 밖(Tab 으로 옮긴 초점 등)에서 난 키는 씬 몫 — 둘 다 받으면 씬 노드와 격자 선택이 함께 바뀐다.
+      if (filtersRef.current.tab === "compose") {
+        const inPeek = !!(e.target as HTMLElement | null)?.closest?.(".folder-peek");
+        if (!composeGridActiveRef?.current || !inPeek) return;
+      }
       if (matchShortcut(e, "colorRed")) {
         e.preventDefault();
         void colorSelected(ids, KEY_COLORS.r);
@@ -111,5 +119,5 @@ export function useGenerationKeyboardActions({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [clearSelect, colorSelected, filtersRef, selectedRef]);
+  }, [clearSelect, colorSelected, filtersRef, selectedRef, composeGridActiveRef]);
 }

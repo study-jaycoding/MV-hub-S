@@ -805,8 +805,10 @@
    씬 위(캔버스 상단 패널 z 20)·씬 모달(200)·플로팅 입력창(300) 아래. 격자는 .gen-grid 가 스스로 스크롤·추가 로드. */
 .folder-peek-catcher { position: fixed; inset: 0; z-index: 150; background: rgba(0,0,0,0.35); }
 .folder-peek {
-  position: fixed; z-index: 151; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  width: min(1500px, 88vw); height: min(860px, 78vh);
+  /* transform 없이 inset 으로 가운데 — transform 이 있으면 창 안 position:fixed 패널(태그 패널)이 창 기준으로 어긋나고
+     overflow 에 잘린다(코덱스 P2). */
+  position: fixed; z-index: 151; top: 11vh; bottom: 11vh; left: 6vw; right: 6vw;
+  max-width: 1500px; max-height: 860px; margin: auto;
   display: flex; flex-direction: column; min-height: 0;
   background: var(--panel, #14161c); border: 1px solid var(--border2); border-radius: 14px;
   box-shadow: 0 24px 70px rgba(0,0,0,0.65); overflow: hidden;
@@ -824,4 +826,8 @@
   font-size: 14px; padding: 4px 6px; border-radius: 6px;
 }
 .folder-peek-x:hover { color: var(--text); background: rgba(255,255,255,0.07); }
-.folder-peek .grid-wrap { flex: 1; min-height: 0; }
+.folder-peek > * { flex: none; }
+.folder-peek > .grid-wrap { flex: 1; min-height: 0; }
+.folder-peek > .lib-toolbar { border-bottom: 1px solid var(--border); }
+/* 창 안 선택 액션바 — 라이브러리와 같은 요소를 창 바닥에 */
+.folder-peek-selbar { border-top: 1px solid var(--border); padding: 6px 10px; display: flex; justify-content: center; }
