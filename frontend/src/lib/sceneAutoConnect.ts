@@ -46,9 +46,29 @@ export function planAutoConnections(
 
   const pairs: Array<[string, string]> = [];
   const seen = new Set<string>();
+  // 순환 검사 — 기존 연결 + 지금까지의 계획으로 to 에서 from 에 닿으면 이 연결은 순환(실행 계획이 그 노드를 건너뛴다). 넣지 않는다.
+  const reaches = (startId: string, goalId: string): boolean => {
+    const next = new Map<string, string[]>();
+    const link = (a: string, b: string) => {
+      const arr = next.get(a);
+      if (arr) arr.push(b);
+      else next.set(a, [b]);
+    };
+    for (const e of edges) link(e.from, e.to);
+    for (const [f, t] of pairs) link(f, t);
+    const visited = new Set<string>([startId]);
+    const stack = [startId];
+    while (stack.length) {
+      const id = stack.pop() as string;
+      if (id === goalId) return true;
+      for (const n of next.get(id) || []) if (!visited.has(n)) { visited.add(n); stack.push(n); }
+    }
+    return false;
+  };
   const add = (from: SceneCard, to: SceneCard) => {
     const key = from.id + ">" + to.id;
     if (seen.has(key)) return;
+    if (reaches(to.id, from.id)) return; // 순환 (코덱스 4차)
     seen.add(key);
     pairs.push([from.id, to.id]);
   };
@@ -120,8 +140,9 @@ export function planAutoConnections(
     }
     for (const other of others) {
       if (handled.has(other.id)) continue;
-      if (other.kind === "generation") {
-        // 텍스트 → 텍스트 리스트 → 생성 사슬이 있으면 직접 연결 생략(프롬프트 중복 방지).
+      if (other.kind === "generation" || (other.kind === "comfy" && layer(other) > 0)) {
+        // 텍스트 → 텍스트 리스트 → 생성/comfy 사슬이 있으면 직접 연결 생략(프롬프트 중복 방지, 코덱스 4차).
+        //  comfy 는 렌더가 있어 1층일 때만 텍스트가 직접 붙는다(렌더 없으면 예전처럼 안 붙는다).
         const viaTextList = lists.some((list) => has(text, list) && has(list, other));
         if (!viaTextList && ok(text, other)) add(text, other);
         handled.add(other.id);

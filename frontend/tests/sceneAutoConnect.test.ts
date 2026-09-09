@@ -125,6 +125,29 @@ describe("planAutoConnections — 기존 규칙 유지", () => {
     const comfy = node("C", "comfy", { x: 0, comfyCfg: { status: "idle" } });
     expect(plan([comfy, gen("G", 300)])).toEqual(["C>G"]);
   });
+  it("기존 comfy→텍스트→텍스트 리스트에서 comfy·리스트를 잡으면 아무것도 안 잇는다 — 폴백(리스트→comfy)이 순환이 된다 (코덱스 4차)", () => {
+    const comfy = node("C", "comfy", { x: 0, comfyCfg: { status: "idle", outputs: [{ kind: "image", url: "http://x/a.png" }] } });
+    const t = text("T", 200, "b");
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "C", to: "T" },
+      { id: "e2", from: "T", to: "L" },
+    ];
+    expect(plan([comfy, list("L", 400)], [t], edges)).toEqual([]);
+  });
+  it("기존 comfy→텍스트에서 comfy·텍스트·렌더를 잡으면 comfy→렌더만 — 텍스트→comfy 는 순환 (코덱스 4차)", () => {
+    const comfy = node("C", "comfy", { x: 0, comfyCfg: { status: "idle" } });
+    const edges: SceneEdge[] = [{ id: "e1", from: "C", to: "T" }];
+    expect(plan([comfy, text("T", 200), node("RN", "render", { x: 400 })], [], edges)).toEqual(["C>RN"]);
+  });
+  it("텍스트 리스트 + comfy + 텍스트 + 렌더: 텍스트 → 리스트 → comfy 사슬만(텍스트 → comfy 직접 연결은 프롬프트 중복) (코덱스 4차)", () => {
+    const { extra, edges } = textListEdges("L");
+    const comfy = node("C", "comfy", { x: 0, comfyCfg: { status: "idle", outputs: [{ kind: "image", url: "http://x/a.png" }] } });
+    expect(plan([comfy, list("L", 200), text("T", 400, "b"), node("RN", "render", { x: 600 })], extra, edges)).toEqual([
+      "C>RN",
+      "L>C",
+      "T>L",
+    ]);
+  });
   it("Set + 생성 → Set → 생성", () => {
     expect(plan([node("S", "set", { x: 300, setCfg: { tagsText: "" } }), gen("G", 0)])).toEqual(["S>G"]);
   });
