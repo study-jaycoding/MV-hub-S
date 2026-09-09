@@ -63,5 +63,27 @@ export function useGenerationShareActions({
     }
   };
 
-  return { boardShare, onPublish };
+  // 폴더 우클릭 '팀에 공유' — 후보 판정·분할 발행은 로컬 허브가 한다. 성공 수는 서버가 실제 수락한 수(accepted —
+  //  후보 수·attempted−blocked 가 아니다: 배치에서 제외된 후보까지 성공으로 세는 과대 표시 방지, 코덱스 코드 리뷰 P2).
+  const folderShare = async (projectId: string, folderPath: string, name: string) => {
+    try {
+      const r = await api.publishFolderToShared(projectId, folderPath);
+      const succeeded = r.accepted;
+      let message =
+        r.total === 0
+          ? `'${name}' 폴더에 공유할 항목이 없습니다(내 완료·미공유만).`
+          : `'${name}' 폴더 ${succeeded}개 팀에 공유.`;
+      if (r.message) message += ` ${r.message}`;
+      if (r.error)
+        message += ` 중단: ${r.error} (미처리 ${r.unprocessed}개 — 다시 실행하면 이어서 공유)`;
+      flash(withMirrorPendingNotice(message, r));
+      if (succeeded) postLibraryChanged();
+      await reload();
+      bumpBoard();
+    } catch (e) {
+      flash("공유 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+    }
+  };
+
+  return { boardShare, onPublish, folderShare };
 }

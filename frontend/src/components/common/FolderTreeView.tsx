@@ -1,5 +1,5 @@
 // 공통 폴더 트리 뷰 — 생성탭/어셋탭/관리자창이 같은 시각 언어를 공유한다.
-import { useRef, useState, type DragEvent, type KeyboardEvent } from "react";
+import { useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 
 export interface FolderTreeItem {
   name: string;
@@ -21,6 +21,7 @@ export function FolderTreeView({
   onDragFolder,
   isDisabled,
   onRowKeyDown,
+  onContextMenu,
   scroll = false,
   className = "",
 }: {
@@ -37,6 +38,8 @@ export function FolderTreeView({
   isDisabled?: (path: string) => boolean;
   // 폴더 행 포커스 상태에서 키 입력(예: d 로 비활성 토글).
   onRowKeyDown?: (path: string, e: KeyboardEvent) => void;
+  // 폴더 행 우클릭(브라우저 기본 메뉴 대신). 지정한 사용처(사이드바)만 — 선택(onSelect)은 부르지 않는다.
+  onContextMenu?: (path: string, name: string, depth: number, e: MouseEvent) => void;
   scroll?: boolean;
   className?: string;
 }) {
@@ -56,6 +59,7 @@ export function FolderTreeView({
           onDragFolder={onDragFolder}
           isDisabled={isDisabled}
           onRowKeyDown={onRowKeyDown}
+          onContextMenu={onContextMenu}
         />
       ))}
     </div>
@@ -73,6 +77,7 @@ function FolderTreeRow({
   onDragFolder,
   isDisabled,
   onRowKeyDown,
+  onContextMenu,
 }: {
   node: FolderTreeItem;
   depth: number;
@@ -84,6 +89,7 @@ function FolderTreeRow({
   onDragFolder?: (path: string, e: DragEvent) => void;
   isDisabled?: (path: string) => boolean;
   onRowKeyDown?: (path: string, e: KeyboardEvent) => void;
+  onContextMenu?: (path: string, name: string, depth: number, e: MouseEvent) => void;
 }) {
   const children = node.children || [];
   const hasChildren = children.length > 0;
@@ -174,6 +180,15 @@ function FolderTreeRow({
               }
             : undefined
         }
+        onContextMenu={
+          onContextMenu
+            ? (e) => {
+                e.preventDefault(); // 브라우저 기본 메뉴 대신 우리 메뉴 — 선택·드래그 상태는 건드리지 않는다
+                e.stopPropagation();
+                onContextMenu(node.path, node.name, depth, e);
+              }
+            : undefined
+        }
         {...dropProps}
       >
         <span
@@ -213,6 +228,7 @@ function FolderTreeRow({
             onDragFolder={onDragFolder}
             isDisabled={isDisabled}
             onRowKeyDown={onRowKeyDown}
+            onContextMenu={onContextMenu}
           />
         ))}
     </div>

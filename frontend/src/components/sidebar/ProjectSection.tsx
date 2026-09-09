@@ -6,8 +6,20 @@ import {
   useSyncExternalStore,
   type DragEvent,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../../api";
+import {
+  clampMenuPosition,
+  folderConfirmText,
+  folderMenuKind,
+  folderMenuLabel,
+  folderTone,
+  type FolderMenuKind,
+} from "../../lib/folderContextMenu";
+import { useEscapeClose } from "../../lib/useEscapeClose";
+import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { isFolderDisabled, toggleDisabledFolder } from "../../lib/deactivated";
 import { buildFolderCountTree, hasMoreThanFolderNodes } from "../../lib/folderTreeModel";
 import { useDisabledFolders } from "../../lib/useDisabledFolders";
@@ -46,6 +58,7 @@ function SidebarFolderTree({
   onDragFolder,
   isDisabled,
   onRowKeyDown,
+  onContextMenu,
 }: {
   state?: ProjectFolderEntry;
   loading?: boolean;
@@ -61,6 +74,7 @@ function SidebarFolderTree({
   onDragFolder?: (path: string, e: DragEvent) => void;
   isDisabled?: (path: string) => boolean;
   onRowKeyDown?: (path: string, e: KeyboardEvent) => void;
+  onContextMenu?: (path: string, name: string, depth: number, e: ReactMouseEvent) => void;
 }) {
   // 트리 파생(정규화→가상폴더 합성→카운트 누적)은 입력이 바뀔 때만 계산한다.
   // (훅 규칙상 아래 early return 들보다 먼저 호출)
@@ -87,6 +101,7 @@ function SidebarFolderTree({
         onDragFolder={onDragFolder}
         isDisabled={isDisabled}
         onRowKeyDown={onRowKeyDown}
+        onContextMenu={onContextMenu}
         scroll={scroll}
         className="sidebar-folder-tree"
       />
@@ -109,6 +124,7 @@ export function ProjectSection({
   onDropToFolder,
   onDropToUnassigned,
   enableFolderDrag = false,
+  onFolderAction,
 }: {
   projects: Project[];
   unassignedCount: number;
@@ -128,9 +144,35 @@ export function ProjectSection({
   onDropToUnassigned?: (genId: string) => void;
   // 캔버스에서만 폴더 → Set 드래그를 켠다. 일반 작업공간에서는 기존 클릭 UX 유지.
   enableFolderDrag?: boolean;
+  // 폴더 우클릭 메뉴의 실행 — 내 작업 탭 "팀에 공유"(share) / 팀 탭 "최종 경로로 저장"(save-finals). 없으면 메뉴 없음.
+  onFolderAction?: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
 }) {
   const tr = useT();
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(생략) — d 로 토글, 회색 표시
+  // 폴더 우클릭 메뉴 — body 포털·고정 위치(사이드바 overflow 에 잘리지 않게). 행 밖에 그려 드래그·클릭과 분리.
+  //  닫기: Esc(캡처·소비 — 폴더 행이 keydown 전파를 막아 기본 훅엔 안 닿는다), 바깥 mousedown, 드래그 시작, 탭 전환.
+  //  열리면 버튼에 초점 — 행에 초점이 남아 'd'(생략 토글)가 먹는 일 방지(코덱스 설계 검토 P2).
+  const [folderMenu, setFolderMenu] = useState<{
+    projectId: string;
+    path: string;
+    name: string;
+    depth: number;
+    x: number;
+    y: number;
+  } | null>(null);
+  const folderMenuRef = useRef<HTMLDivElement>(null);
+  // 메뉴를 연 폴더 행 — Esc·확인창 닫힘 뒤 초점을 그 행으로 되돌린다. 안 하면 초점이 body 로 빠져 'd' 가 전역
+  //  카드 단축키(선택 카드 비활성)로 새어 나간다(코덱스 코드 리뷰 P2). 바깥 클릭은 사용자가 고른 곳이 초점을 가지므로 복귀 안 함.
+  const folderMenuAnchorRef = useRef<HTMLElement | null>(null);
+  const closeFolderMenu = (restoreFocus: boolean) => {
+    setFolderMenu(null);
+    if (restoreFocus) folderMenuAnchorRef.current?.focus();
+  };
+  useEscapeClose(() => closeFolderMenu(true), !!folderMenu, true, true);
+  useOutsideMouseDown(folderMenuRef, () => closeFolderMenu(false), !!folderMenu);
+  useEffect(() => {
+    setFolderMenu(null);
+  }, [tab]);
   // 팀 탭 +N 배지 — 카드 클릭(확인)마다 스토어가 bump → 아래 fresh 재계산으로 배지가 하나씩 줄어든다.
   const teamSeenVer = useSyncExternalStore(subscribeTeamSeen, getTeamSeenVersion);
   const [order, setOrder] = useState<Project[]>(projects);
@@ -591,9 +633,18 @@ export function ProjectSection({
                           }
                         : undefined
                     }
+                    onContextMenu={
+                      onFolderAction
+                        ? (path, name, depth, e) => {
+                            folderMenuAnchorRef.current = e.currentTarget as HTMLElement;
+                            setFolderMenu({ projectId: project.id, path, name, depth, x: e.clientX, y: e.clientY });
+                          }
+                        : undefined
+                    }
                     onDragFolder={
                       enableFolderDrag
                         ? (path, e) => {
+                            setFolderMenu(null);
                             const payload = encodeSceneFolderDrag({
                               projectId: project.id,
                               projectName: project.name,
@@ -642,6 +693,37 @@ export function ProjectSection({
           )}
         </div>
       </section>
+      {folderMenu &&
+        onFolderAction &&
+        createPortal(
+          <div
+            ref={folderMenuRef}
+            className="folder-ctx-menu"
+            role="menu"
+            style={clampMenuPosition(folderMenu.x, folderMenu.y, window.innerWidth, window.innerHeight)}
+            onKeyDown={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <div className="folder-ctx-name" title={folderMenu.path}>
+              {folderMenu.name}
+            </div>
+            <button
+              type="button"
+              autoFocus
+              className={"folder-ctx-btn tone-" + folderTone(folderMenu.depth)}
+              onClick={() => {
+                const m = folderMenu;
+                const kind = folderMenuKind(tab);
+                closeFolderMenu(true);
+                if (!window.confirm(folderConfirmText(kind, m.name))) return;
+                void onFolderAction(kind, m.projectId, m.path, m.name);
+              }}
+            >
+              {folderMenuLabel(folderMenuKind(tab))}
+            </button>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

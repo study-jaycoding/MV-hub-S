@@ -12,9 +12,11 @@ broadcast → 그 서버를 띄운 팀원에게 실시간 반영. 미디어는 �
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -27,7 +29,7 @@ from . import _proxy
 from .. import active_account, db, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
 from ._telemetry import touch_generation_telemetry
-from ..deps import actor_id, require_edit_generation
+from ..deps import actor_id, current_account, require_edit_generation
 from ..repo import identity
 from ..services import agent_signals, net_guard, server_relocation
 from ..services.request_guards import require_loopback_browser_request
@@ -911,6 +913,11 @@ class PublishToSharedIn(BaseModel):
     gen_ids: list[str]
 
 
+class PublishFolderToSharedIn(BaseModel):
+    project_id: str
+    folder_path: str
+
+
 class PublishBundleResult(dict):
     """API 응답 dict와 라우트 내부 원장 참조를 함께 운반한다.
 
@@ -1228,3 +1235,104 @@ def publish_to_shared(body: PublishToSharedIn, request: Request):
         return {"ok": True, "published": published, "remote": {}}
     r = publish_bundle_to_server(body.gen_ids)
     return {"ok": True, **r}
+
+
+# 폴더 우클릭 '팀에 공유'(2026-09-09, 코덱스 설계 검토 반영) — 한 번에 200건씩 순차 발행. 번들 SQL 은 id 수의 2배
+# 매개변수를 쓰고 서버 HTTP 기본 제한이 60초라 수천 건을 한 번에 보내면 깨진다. 같은 폴더 동시 실행(더블클릭)은 409.
+_FOLDER_SHARE_CHUNK = 200
+_FOLDER_SHARE_INFLIGHT: set[str] = set()
+_FOLDER_SHARE_INFLIGHT_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _pinned_account_scope():
+    """폴더 공유 전체(후보 조회~마지막 배치)를 진입 시점 계정으로 고정 — share._pinned_account_scope 와 같은 규칙.
+    share 를 import 하면 share→publish(함수 안 import)와 순환이라(아키텍처 경계 테스트) 작은 헬퍼를 여기 따로 둔다.
+    DB 키와 uid 는 전환 락 안에서 한 쌍으로 캡처한다 — 따로 읽으면 'DB=A · 소유 uid=B' 오귀속(R13-IMPORT-1)."""
+    with active_account.transition_lock:
+        account_key, account_uid = active_account.account_key() or "", active_account.active_uid()
+    account_token = active_account.set_override(account_key)
+    uid_token = active_account.set_uid_override(account_uid)
+    try:
+        yield
+    finally:
+        active_account.reset_uid_override(uid_token)
+        active_account.reset_override(account_token)
+
+
+@router.post("/publish-to-shared/folder")
+def publish_folder_to_shared(body: PublishFolderToSharedIn, request: Request):
+    """그 프로젝트 폴더(하위 포함)의 내 완료·미공유 생성물을 발행한다.
+    후보는 로컬 허브 DB(repo.folder_share_candidates)에서 — 이 경로는 _proxy._LOCAL_EXACT 에 등록돼 서버로 넘어가지
+    않는다(서버엔 내 미공유물이 없다). 발행은 기존 publish_to_shared 와 같은 길(프록시=번들 전송, 비프록시=로컬 표식)을
+    200건씩 순차로 밟는다. 중간 배치가 실패하면 앞선 성공은 보존하고 error·unprocessed 로 알린다 — 결과가 불명한 배치를
+    자동 재전송하지 않는다(공유 원장 reconciler 몫).
+    ★후보 조회부터 마지막 배치까지 한 계정으로 고정(_pinned_account_scope) — 배치 사이에 다른 창에서 A→B 로 전환하면
+    후속 배치가 B 의 DB·토큰을 읽는다(코덱스 코드 리뷰 P1).
+    응답: total=후보 수(성공 수 아님) · attempted=처리 시도 · accepted=**서버가 실제 수락한 수**(프록시=배치별
+    remote_accepted 합산, 비프록시=로컬 표식 수) · published/blocked/mirror_pending/message/remote 합산. 화면의 성공 수는
+    accepted 를 쓴다(attempted−blocked 로 세면 배치에서 제외된 후보까지 성공으로 센다 — 코덱스 P2)."""
+    project_id = (body.project_id or "").strip()
+    folder_path = (body.folder_path or "").strip().strip("/")
+    if not project_id or not folder_path:
+        raise HTTPException(status_code=400, detail="project_id 와 folder_path 가 필요합니다")
+    key = f"{project_id}\n{folder_path}"
+    with _FOLDER_SHARE_INFLIGHT_LOCK:
+        if key in _FOLDER_SHARE_INFLIGHT:
+            raise HTTPException(status_code=409, detail="같은 폴더 공유가 아직 진행 중입니다")
+        _FOLDER_SHARE_INFLIGHT.add(key)
+    try:
+        with _pinned_account_scope():
+            return _publish_folder_pinned(project_id, folder_path, request)
+    finally:
+        with _FOLDER_SHARE_INFLIGHT_LOCK:
+            _FOLDER_SHARE_INFLIGHT.discard(key)
+
+
+def _publish_folder_pinned(project_id: str, folder_path: str, request: Request) -> dict[str, Any]:
+    acc = current_account(request)
+    viewer_uid = (acc or {}).get("creator_uid") or None
+    my_uid = viewer_uid or identity.get_my_uid()  # is_mine 과 같은 폴백(단독/AUTH off 는 제공자 신원)
+    ids = repo.folder_share_candidates(project_id, folder_path, my_uid)
+    out: dict[str, Any] = {
+        "ok": True,
+        "total": len(ids),
+        "attempted": 0,
+        "accepted": 0,
+        "published": 0,
+        "blocked": 0,
+        "unprocessed": 0,
+        "mirror_pending": False,
+        "message": None,
+        "error": None,
+        "remote": {"inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0},
+    }
+    for offset in range(0, len(ids), _FOLDER_SHARE_CHUNK):
+        chunk = ids[offset:offset + _FOLDER_SHARE_CHUNK]
+        try:
+            if _proxy.proxying():
+                r: Any = publish_bundle_to_server(chunk)
+                accepted = int(getattr(r, "remote_accepted", 0) or 0)
+            else:
+                r = publish_to_shared(PublishToSharedIn(gen_ids=chunk), request)
+                accepted = int(r.get("published") or 0)
+        except HTTPException as e:
+            out["error"] = str(e.detail)
+            out["unprocessed"] = len(ids) - offset
+            break
+        except Exception as e:  # noqa: BLE001 — 배치 1개 실패를 격리해 앞선 성공을 보존
+            out["error"] = str(e)
+            out["unprocessed"] = len(ids) - offset
+            break
+        out["attempted"] += len(chunk)
+        out["accepted"] += accepted
+        out["published"] += int(r.get("published") or 0)
+        out["blocked"] += int(r.get("blocked") or 0)
+        if r.get("mirror_pending"):
+            out["mirror_pending"] = True
+        if r.get("message") and not out["message"]:
+            out["message"] = r["message"]
+        remote = r.get("remote") or {}
+        for k in out["remote"]:
+            out["remote"][k] += int(remote.get(k) or 0)
+    return out

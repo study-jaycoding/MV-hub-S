@@ -273,3 +273,29 @@
 .pam-folders { padding: 2px 0 4px 8px; }
 .pam-folders .folder-tree { min-width: 0; }
 
+/* 폴더 우클릭 메뉴(팀에 공유 / 최종 경로로 저장) — body 포털·고정 위치. 버튼은 폴더 아이콘 색 그대로
+   (.folder-tree-row.root 하늘색 / 하위 라임). 라임·하늘색 위 글자는 검정 고정. */
+.folder-ctx-menu {
+  position: fixed; z-index: 1000; min-width: 200px; max-width: 280px;
+  display: flex; flex-direction: column; gap: 6px; padding: 6px;
+  background: var(--panel, #1c1c22); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+}
+.folder-ctx-name {
+  padding: 2px 4px; font-size: 12px; font-weight: 600; color: var(--text, #eee);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.folder-ctx-btn {
+  border: 0; border-radius: 8px; padding: 7px 10px; font-size: 12px; font-weight: 700;
+  color: #111; cursor: pointer; text-align: center;
+}
+.folder-ctx-btn.tone-root {
+  background: linear-gradient(#61eaff, #279fba);
+  box-shadow: 0 0 8px rgba(97,234,255,0.24);
+}
+.folder-ctx-btn.tone-child {
+  background: linear-gradient(#d8ff43, #8cca18);
+  box-shadow: 0 0 8px rgba(196,232,74,0.18);
+}
+.folder-ctx-btn:hover { filter: brightness(1.08); }
+.folder-ctx-btn:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }

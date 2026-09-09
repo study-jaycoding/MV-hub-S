@@ -174,10 +174,15 @@ export const manageApi = {
       }),
     ),
   // 완료본 렌더폴더 저장 — 완료 작업의 최종본만 물리 저장(멱등). saved/skipped/errors 반환.
-  saveFinals: (projectId: string) =>
-    jsonFetch<SaveFinalsResult>(withQuery("/api/manage/save-finals", { project_id: projectId }), {
-      method: "POST",
-    }),
+  //  folderPath 를 주면 그 폴더(하위 포함)의 저장 대상만(폴더 우클릭 '최종 경로로 저장'). 없으면 프로젝트 전체.
+  saveFinals: (projectId: string, folderPath?: string) =>
+    jsonFetch<SaveFinalsResult>(
+      withQuery("/api/manage/save-finals", {
+        project_id: projectId,
+        ...(folderPath ? { folder_path: folderPath } : {}),
+      }),
+      { method: "POST" },
+    ),
   // 저장 대상 미리보기 + 이력(읽기 전용, 다운로드 없음).
   saveFinalsStatus: (projectId: string) =>
     jsonFetch<SaveFinalsStatus>(withQuery("/api/manage/save-finals", { project_id: projectId })),

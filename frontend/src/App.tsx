@@ -78,6 +78,8 @@ import { useGenerationProgress } from "./lib/useGenerationProgress";
 import { useGenerationProjectActions } from "./lib/useGenerationProjectActions";
 import { useGenerationSelection } from "./lib/useGenerationSelection";
 import { useGenerationShareActions } from "./lib/useGenerationShareActions";
+import { manageApi } from "./lib/manageApi";
+import type { FolderMenuKind } from "./lib/folderContextMenu";
 import { useGenerationTagActions } from "./lib/useGenerationTagActions";
 import { useGenerationWorkspaceActions } from "./lib/useGenerationWorkspaceActions";
 import { useGenerationTrashActions } from "./lib/useGenerationTrashActions";
@@ -680,11 +682,26 @@ export default function App() {
     setTagPanelOpen,
   });
 
-  const { boardShare, onPublish } = useGenerationShareActions({
+  const { boardShare, onPublish, folderShare } = useGenerationShareActions({
     bumpBoard,
     flash,
     reload,
   });
+  // 폴더 우클릭 메뉴(라이브러리·캔버스 사이드바 공통) — 내 작업 탭 "팀에 공유" / 팀 탭 "최종 경로로 저장".
+  //  저장은 관리 권한(프로젝트 매니저)이 필요하다 — 없으면 서버의 403 사유를 그대로 보여준다.
+  const onFolderAction = async (kind: FolderMenuKind, projectId: string, path: string, name: string) => {
+    if (kind === "share") {
+      await folderShare(projectId, path, name);
+      return;
+    }
+    try {
+      const r = await manageApi.saveFinals(projectId, path);
+      const failed = r.errors.length ? ` · 실패 ${r.errors.length}(${r.errors[0].reason})` : "";
+      flash(`'${name}' 최종 경로 저장 — 저장 ${r.saved} · 건너뜀 ${r.skipped}${failed}`);
+    } catch (e) {
+      flash("최종 경로 저장 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+    }
+  };
   const {
     boardDelete,
     bulkDelete,
@@ -1405,6 +1422,7 @@ export default function App() {
                 }}
                 onDropToFolder={(projectId, path, genId) => dropOnFolder(genId, projectId, path)}
                 onDropToUnassigned={(genId) => dropUnassign(genId)}
+                onFolderAction={onFolderAction}
               />
             )}
           <main className="main">
@@ -1608,6 +1626,7 @@ export default function App() {
                   dropOnFolder(genId, projectId, path)
                 }
                 onDropToUnassigned={(genId) => dropUnassign(genId)}
+                onFolderAction={onFolderAction}
                 onCreatorChanged={reload}
                 projects={projects}
                 unassignedCount={unassignedCount}

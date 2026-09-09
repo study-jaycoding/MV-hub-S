@@ -3,6 +3,7 @@
 // (armedFolder 무장) ②계보 보드를 그 폴더로 필터, 그리고 카드를 폴더로 드래그해 담을 수 있게 한다.
 // onFilter/onViewDeleted 배선은 FilterSidebar 와 동일(폴더/프로젝트 선택 시 필터 반영).
 import type { Filters, Project } from "../../types";
+import type { FolderMenuKind } from "../../lib/folderContextMenu";
 import { ProjectSection } from "./ProjectSection";
 
 export function CanvasFolderSidebar({
@@ -15,6 +16,7 @@ export function CanvasFolderSidebar({
   onArmFolder,
   onDropToFolder,
   onDropToUnassigned,
+  onFolderAction,
 }: {
   filters: Filters;
   onChange: (patch: Partial<Filters>) => void;
@@ -25,6 +27,7 @@ export function CanvasFolderSidebar({
   onArmFolder?: (projectId: string, path: string) => void;
   onDropToFolder?: (projectId: string, path: string, genId: string) => void;
   onDropToUnassigned?: (genId: string) => void;
+  onFolderAction?: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
 }) {
   // 닫기는 라이브러리(내작업) 탭과 동일하게 툴바의 필터 토글(▢/▷)에 위임한다 — 사이드바 내부에 별도
   // ✕ 를 두지 않는다(두 탭 UX 일치).
@@ -53,6 +56,7 @@ export function CanvasFolderSidebar({
           onArmFolder={onArmFolder}
           onDropToFolder={onDropToFolder}
           onDropToUnassigned={onDropToUnassigned}
+          onFolderAction={onFolderAction}
           enableFolderDrag
         />
       </div>

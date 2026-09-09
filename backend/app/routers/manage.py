@@ -1322,8 +1322,23 @@ async def _save_finals_lock(project_id: str):
             _SAVE_FINALS_LOCKS[project_id] = (current, remaining - 1)
 
 
+def _in_folder(path: Optional[str], folder_path: str) -> bool:
+    """path 가 folder_path 자신이거나 그 아래인가(접두 규칙 — generations_query 의 폴더 필터와 동일 의미)."""
+    p = (path or "").strip().strip("/")
+    return p == folder_path or p.startswith(folder_path + "/")
+
+
+def _only_in_folder(items: list[dict], folder_path: Optional[str]) -> list[dict]:
+    """폴더 우클릭 '최종 경로로 저장'(2026-09-09) — 저장 대상(final_export 판정 그대로)을 그 폴더(하위 포함)로만 좁힌다.
+    folder_path 가 없으면 종전대로 프로젝트 전체. 대상 판정·경로·멱등·잠금은 바뀌지 않는다."""
+    fp = (folder_path or "").strip().strip("/")
+    if not fp:
+        return items
+    return [it for it in items if _in_folder(it.get("folder_path"), fp)]
+
+
 @router.post("/save-finals")
-async def save_finals(project_id: str, request: Request):
+async def save_finals(project_id: str, request: Request, folder_path: Optional[str] = None):
     """완료 작업의 최종본만 렌더 폴더 경로 구조 그대로 물리 저장(멱등).
     로컬 전용(_proxy 로컬 목록) — render_root 는 이 PC 의 디스크(Z:\\…).
     위임 모드: 대상은 서버 targets(판정 권위), 바이트는 content 스트림으로 받아 이 PC 가 저장."""
@@ -1338,12 +1353,15 @@ async def save_finals(project_id: str, request: Request):
     render = Path(render_path)
 
     async with _save_finals_lock(project_id):
-        return await _save_finals_locked(project_id, request, render)
+        return await _save_finals_locked(project_id, request, render, folder_path)
 
 
-async def _save_finals_locked(project_id: str, request: Request, render: Path):
+async def _save_finals_locked(
+    project_id: str, request: Request, render: Path, folder_path: Optional[str] = None
+):
     if _proxy.proxying():
         facts, server_outdated = await to_thread_non_abandon(_save_finals_facts, project_id)
+        facts = _only_in_folder(facts, folder_path)
         if server_outdated:
             raise HTTPException(
                 status_code=400,
@@ -1400,6 +1418,7 @@ async def _save_finals_locked(project_id: str, request: Request, render: Path):
         return {"saved": saved, "skipped": skipped, "errors": errors}
 
     finals = await to_thread_non_abandon(final_export.finals_to_export, project_id)
+    finals = _only_in_folder(finals, folder_path)
     saved, skipped = 0, 0
     errors: list[dict[str, str]] = []
     for f in finals:

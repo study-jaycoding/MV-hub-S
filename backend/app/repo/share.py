@@ -36,6 +36,38 @@ def publish(gen_id: str, shared_by: str, visibility: str = "team") -> str:
     return row["id"] if row else sid
 
 
+def folder_share_candidates(project_id: str, folder_path: str, my_uid: Optional[str]) -> list[str]:
+    """폴더 우클릭 '팀에 공유' 후보(2026-09-09) — 그 프로젝트의 folder_path(하위 포함) 안에서 완료(done)·휴지통 아님·
+    미공유·'내 것'. '내 것'은 조회 응답의 is_mine(generation_rows)과 같은 규칙: creator_uid 가 있으면 my_uid 와 일치,
+    없으면 my_uid 도 None 일 때만(단독 사용자·신원 확정 전). 계정 모드뿐 아니라 모든 모드에서 소유자를 거른다(코덱스 설계
+    검토 P1 — 항목별 권한 검사는 비프록시에서만 돌고 AUTH off 면 통과한다). 화면 필터(검색·페이지·숨김)와 무관하게 폴더
+    전체가 대상이고 0건은 정상. 접두 규칙은 generations_query 와 같다(ESCAPE)."""
+    project_id = (project_id or "").strip()
+    folder_path = (folder_path or "").strip().strip("/")
+    if not project_id or not folder_path:
+        return []
+    esc = folder_path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    where = [
+        "g.project_id = ?",
+        "(g.folder_path = ? OR g.folder_path LIKE ? ESCAPE '\\')",
+        "g.status = 'done'",
+        "g.deleted_at IS NULL",
+        "NOT EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)",
+    ]
+    args: list[Any] = [project_id, folder_path, esc + "/%"]
+    if my_uid is None:
+        where.append("(g.creator_uid IS NULL OR g.creator_uid = '')")
+    else:
+        where.append("g.creator_uid = ?")
+        args.append(my_uid)
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT g.id FROM generation g WHERE " + " AND ".join(where) + " ORDER BY g.sort_ts, g.rowid",
+            args,
+        ).fetchall()
+    return [r["id"] for r in rows]
+
+
 def unpublish(gen_id: str) -> int:
     """팀 공유 해제 — 해당 generation 의 share 행 제거. 제거된 행 수 반환."""
     with get_connection() as conn:
