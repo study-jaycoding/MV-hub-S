@@ -43,7 +43,7 @@ export function ProjectPlanningFields({
         })}
       />
       <label className="manage-field">
-        <span>과거 기록 전환</span>
+        <span>보관 기록 전환</span>
         <div className="manage-budget-limit">
           <input
             type="number"

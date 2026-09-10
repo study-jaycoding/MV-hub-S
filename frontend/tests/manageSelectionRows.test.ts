@@ -45,7 +45,7 @@ describe("applyTaskSelectAll", () => {
     expect(on).toEqual(applySelectAllNaive(new Set(), ids, true, tasks, false));
   });
 
-  it("해제는 선택에서 빼고, 과거 기록 화면(readOnly)에서는 아무것도 선택되지 않는다", () => {
+  it("해제는 선택에서 빼고, 보관 기록 화면(readOnly)에서는 아무것도 선택되지 않는다", () => {
     const base = new Set(["a", "d", "z"]);
     const off = applyTaskSelectAll(base, ["a"], false, tasks, false);
     expect([...off].sort()).toEqual(["d", "z"]); // 무관한 z 는 유지

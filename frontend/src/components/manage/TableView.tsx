@@ -244,7 +244,7 @@ export function TableView(props: WorkViewProps) {
                     </span>
                   )}
                   {!!t.archived && (
-                    <span className="work-readonly-badge work-archived-badge" title="보관 처리된 작업 — 과거 기록에서만 표시됩니다">
+                    <span className="work-readonly-badge work-archived-badge" title="보관 처리된 작업 — 보관 기록에서만 표시됩니다">
                       보관됨
                     </span>
                   )}

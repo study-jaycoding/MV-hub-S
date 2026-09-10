@@ -48,7 +48,7 @@ export function validateProjectPlanning(
 
   const archiveAfterDays = Number(form.archive_after_days ?? 30);
   if (!Number.isInteger(archiveAfterDays) || archiveAfterDays < 1 || archiveAfterDays > 3650) {
-    return { planning: null, error: "과거 기록 전환 기간은 1~3650일 사이의 정수로 입력하세요." };
+    return { planning: null, error: "보관 기록 전환 기간은 1~3650일 사이의 정수로 입력하세요." };
   }
 
   return {

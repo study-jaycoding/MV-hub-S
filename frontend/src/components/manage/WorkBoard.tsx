@@ -95,7 +95,7 @@ function isScopedMutationError(error: unknown): error is ScopedMutationError {
   );
 }
 
-// 화면을 닫거나 워크스페이스/과거 기록 범위를 바꾼 뒤 끝난 저장은 서버 결과만 유지한다.
+// 화면을 닫거나 워크스페이스/보관 기록 범위를 바꾼 뒤 끝난 저장은 서버 결과만 유지한다.
 // 이전 화면의 알림·재조회·낙관 상태가 현재 화면에 섞이지 않게 UI 후속 처리만 버린다.
 export function mutationErrorsForScope(errors: unknown[], activeScope: string): unknown[] {
   return errors.flatMap((error) => {
@@ -511,7 +511,7 @@ export function WorkBoard({
   useEffect(() => {
     if (seenHistoryRef.current === showHistory) return;
     seenHistoryRef.current = showHistory;
-    // 과거 기록은 보관된 작업뿐 아니라 보관된 프로젝트도 포함한다.
+    // 보관 기록은 보관된 작업뿐 아니라 보관된 프로젝트도 포함한다.
     // 새 범위 응답이 오기 전까지 이전 범위의 행을 과거/현재 데이터처럼 보여주지 않는다.
     projectsRef.current = [];
     setProjects([]);
@@ -793,9 +793,9 @@ export function WorkBoard({
           <button
             className={"work-history-toggle" + (showHistory ? " on" : "")}
             onClick={() => setShowHistory((value) => !value)}
-            title="오래된 자동 작업 기록 포함"
+            title="보관된 작업(오래 새 생성이 없는 폴더·보관 프로젝트)까지 포함"
           >
-            과거 기록
+            보관 기록
           </button>
           {/* 실제로 만든 생성물을 현재 작업자 기준으로 표시한다. */}
           {myUid ? (
