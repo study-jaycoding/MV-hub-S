@@ -298,7 +298,7 @@ export function CreditPlanFields({
           <div className="credit-topup-editor">
             <div className="credit-plan-table-head">
               <span>긴급 충전 {draft.topups.length ? `· ${draft.topups.length}건` : ""}</span>
-              <small>정기 충전 밖에 추가로 넣은 크레딧 — 언제·얼마</small>
+              <small>정기 충전 밖에 추가로 넣은 크레딧</small>
             </div>
             {draft.topups.map((topup) => (
               <div className="credit-topup-row" key={topup.id}>
