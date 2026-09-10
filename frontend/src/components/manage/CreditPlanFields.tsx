@@ -294,13 +294,7 @@ export function CreditPlanFields({
       {status === "error" ? <div className="login-error">크레딧 설정을 불러오지 못했습니다. {error}</div> : null}
       {loaded && draft ? (
         <>
-          <div className="manage-field credit-derived">
-            <span>월 충전</span>
-            <div className="credit-derived-value">
-              <strong>{draft.monthlyTopup == null ? "—" : `${formatThousands(String(draft.monthlyTopup))} 크레딧`}</strong>
-              <em>{draft.monthlyTopup == null ? "위 '예산 한도'를 매월로 적으면 여기에 따라옵니다" : "위 '예산 한도(매월)'와 같은 값 · 저장하면 반영"}</em>
-            </div>
-          </div>
+          {/* 월 충전은 위 '예산 한도(매월)'가 곧 그 값이라 여기선 다시 보여주지 않는다(Jay). 대시보드 풀 카드가 파생값을 보여 준다. */}
           <div className="credit-topup-editor">
             <div className="credit-plan-table-head">
               <span>긴급 충전 {draft.topups.length ? `· ${draft.topups.length}건` : ""}</span>
