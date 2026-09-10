@@ -82,7 +82,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\predeploy_gate.ps1 -Sk
 
 ## 롤백
 
-서버 코드 배포 전 기준은 Git 태그 `predeploy-baseline-defda2d`이다. 서버 장애 시 현재 DB와 로그를 먼저
+서버 코드 배포 전 기준은 Git 태그 `predeploy-baseline-9f727a12`(2026-09-10 배포 직전 main)이다. 그 이전 기준점은 `predeploy-baseline-defda2d`. 서버 장애 시 현재 DB와 로그를 먼저
 보존하고 이 태그 또는 직전 정상 릴리즈로 서버를 되돌린다. DB 스키마를 되돌려야 하는 경우에는 운영 DB를
 직접 덮어쓰지 말고, 검증된 백업을 새 파일로 복원한 뒤 점검 후 경로를 전환한다.
 
