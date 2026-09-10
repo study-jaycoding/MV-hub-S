@@ -85,23 +85,28 @@ describe("설정 초안 — 검사와 저장 본문", () => {
       { email: "a@x", name: "제이", workspace_role: "member", is_available: true, group_id: "g1" },
       { email: "c@x", name: "c", workspace_role: null, is_available: false, group_id: null },
     ],
+    topups: [{ id: "t1", day: "2026-09-03", credits: 3000, note: "긴급" }],
   };
-  it("서버 설정 → 초안 → 본문이 왕복한다(∞ 는 null, 보정은 비우면 없음)", () => {
+  it("서버 설정 → 초안 → 본문이 왕복한다(∞ 는 null, 보정은 비우면 없음, 월 충전은 표시만)", () => {
     const draft = draftFromSettings(settings);
     expect(draft.groups[1].unlimited).toBe(true);
+    expect(draft.monthlyTopup).toBe(20000);
     expect(validateDraft(draft)).toBeNull();
     const body = draftToBody(draft);
     expect(body.revision).toBe(3);
-    expect(body.monthly_topup).toBe(20000);
+    expect("monthly_topup" in body).toBe(false);
+    expect(body.topups).toEqual([{ id: "t1", day: "2026-09-03", credits: 3000, note: "긴급" }]);
     expect(body.groups).toEqual([
       { id: "g1", name: "Artist", monthly_limit: 1000, remaining_override: null },
       { id: "g2", name: "TD", monthly_limit: null, remaining_override: null },
     ]);
     expect(body.members).toEqual([{ email: "a@x", group_id: "g1" }, { email: "c@x", group_id: null }]);
   });
-  it("검사: 빈 이름·겹치는 이름·한도 없음·정수 아님을 잡는다", () => {
+  it("검사: 빈 이름·겹치는 이름·한도 없음·정수 아님·긴급 충전 오류를 잡는다", () => {
     const draft = draftFromSettings(settings);
-    expect(validateDraft({ ...draft, topupInput: "-1" })).toContain("월 충전");
+    expect(validateDraft({ ...draft, topups: [{ id: "t2", day: "", creditsInput: "100", note: "" }] })).toContain("날짜");
+    expect(validateDraft({ ...draft, topups: [{ id: "t2", day: "2026-09-10", creditsInput: "", note: "" }] })).toContain("크레딧");
+    expect(validateDraft({ ...draft, topups: [{ id: "t2", day: "2026-09-10", creditsInput: "0", note: "" }] })).toContain("크레딧");
     expect(validateDraft({ ...draft, groups: [{ ...draft.groups[0], name: " " }] })).toContain("그룹 이름");
     expect(validateDraft({ ...draft, groups: [draft.groups[0], { ...draft.groups[1], name: "Artist" }] })).toContain("겹칩니다");
     expect(validateDraft({ ...draft, groups: [{ ...draft.groups[0], limitInput: "" }] })).toContain("월 한도");

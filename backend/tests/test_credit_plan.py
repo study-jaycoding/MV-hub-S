@@ -17,6 +17,7 @@ from fastapi import HTTPException
 
 from app import db, manage_db, repo
 from app import deps as deps_mod
+from app.repo import manage
 from app.repo import manage_credit_plan as plan_repo
 from app.routers import manage as manage_router
 
@@ -90,6 +91,12 @@ class CreditPlanTests(unittest.TestCase):
                     ("ws2", "d@x", "u_d", "member", 1, 1),
                 ],
             )
+            conn.execute(
+                "INSERT INTO project(id, name, kind, workspace_scope, workspace_id, workspace_name) "
+                "VALUES('p1', 'P', 'team', 'team', 'ws1', 'WS1')"
+            )
+        # 월 충전액은 손 입력이 아니라 프로젝트 '예산 한도(매월)' 합에서 파생된다.
+        manage.set_planning("p1", budget_credits=20000, budget_period="month")
         # 이번 달: a = 100(실제) + 50(견적) + 미상 + 20(삭제분) = 170 · 미상 1, b = 30, c = 5. 지난달 b = 70.
         manage_db.upsert_facts("a@x", "u_a", [
             _fact("f1", real_credits=100), _fact("f2", est_credits=50), _fact("f3"),
@@ -113,9 +120,9 @@ class CreditPlanTests(unittest.TestCase):
         self.tmp.cleanup()
 
     # ── 도우미 ──
-    def _save(self, revision: int, groups: list[dict], members: list[dict], topup: int | None = 20000) -> dict:
+    def _save(self, revision: int, groups: list[dict], members: list[dict], topups: list[dict] | None = None) -> dict:
         return plan_repo.save_settings(
-            "ws1", revision=revision, monthly_topup=topup, note=None, groups=groups, members=members
+            "ws1", revision=revision, note=None, groups=groups, members=members, topups=topups
         )
 
     def _group(self, view: dict, name: str) -> dict:
@@ -160,7 +167,8 @@ class CreditPlanTests(unittest.TestCase):
         self.assertEqual(view["pool"]["used_month"], 205)  # 170 + 30 + 5 (c 는 접근 불가여도 돈은 나감)
         self.assertEqual(view["pool"]["unknown_month"], 1)
         self.assertEqual(view["pool"]["balance"], 7865)
-        self.assertIsNone(view["pool"]["monthly_topup"])
+        self.assertEqual(view["pool"]["monthly_topup"], 20000)  # 설정 전이어도 예산 한도(매월)에서 파생
+        self.assertEqual(view["pool"]["topups_month"], {"count": 0, "credits": 0})
         self.assertEqual(view["groups"], [])
         self.assertEqual(view["unassigned"]["member_count"], 2)  # available 만 인원으로
         self.assertEqual(view["unassigned"]["used_month"], 205)
@@ -318,8 +326,9 @@ class CreditPlanTests(unittest.TestCase):
             self.assertEqual(manage_router.credit_plan(member, workspace_id="ws1")["my_group"], None)
             saved = manage_router.put_credit_plan(
                 "ws1",
-                manage_router.CreditPlanIn(revision=0, monthly_topup=20000,
-                                           groups=[manage_router.CreditGroupIn(name="Artist", monthly_limit=1000)]),
+                manage_router.CreditPlanIn(revision=0,
+                                           groups=[manage_router.CreditGroupIn(name="Artist", monthly_limit=1000)],
+                                           topups=[manage_router.CreditTopupIn(day=f"{self.month}-02", credits=500)]),
                 pm,
             )
             self.assertEqual(saved["plan"]["revision"], 1)
@@ -329,6 +338,42 @@ class CreditPlanTests(unittest.TestCase):
             full = manage_router.credit_plan(pm, workspace_id="ws1")
             self.assertIn("pool", full)
             self.assertEqual(manage_router.credit_plan_settings("ws1", pm)["plan"]["revision"], 1)
+
+    # ── 월 충전(파생)·긴급 충전 ──
+    def test_monthly_topup_is_derived_from_monthly_budgets(self) -> None:
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO project(id, name, kind, workspace_scope, workspace_id, workspace_name) "
+                "VALUES('p2', 'P2', 'team', 'team', 'ws1', 'WS1')"
+            )
+        manage.set_planning("p2", budget_credits=5000, budget_period="month")
+        self.assertEqual(plan_repo.plan_view("ws1")["pool"]["monthly_topup"], 25000)  # 두 프로젝트 합
+        manage.set_planning("p2", budget_credits=5000, budget_period="week")  # 주 단위 예산은 안 센다
+        self.assertEqual(plan_repo.plan_view("ws1")["pool"]["monthly_topup"], 20000)
+        manage.set_planning("p1", budget_credits=None, budget_period="month")
+        self.assertIsNone(plan_repo.plan_view("ws1")["pool"]["monthly_topup"])
+        self.assertIsNone(plan_repo.get_settings("ws1")["plan"]["monthly_topup"])
+
+    def test_emergency_topups_are_recorded_and_summarized(self) -> None:
+        settings = self._save(0, [], [], topups=[
+            {"day": f"{self.month}-03", "credits": 3000, "note": " 긴급 "},
+            {"day": "2025-01-05", "credits": 1000},
+        ])
+        self.assertEqual([(t["day"], t["credits"], t["note"]) for t in settings["topups"]],
+                         [(f"{self.month}-03", 3000, "긴급"), ("2025-01-05", 1000, None)])  # 최근순
+        view = plan_repo.plan_view("ws1")
+        self.assertEqual(view["pool"]["topups_month"], {"count": 1, "credits": 3000})
+        self.assertEqual([t["credits"] for t in view["topups"]], [3000])  # 대시보드 목록은 최근 3개월만
+        keep = settings["topups"][0]["id"]
+        settings = self._save(1, [], [], topups=[{"id": keep, "day": f"{self.month}-03", "credits": 3500}])
+        self.assertEqual([(t["id"], t["credits"]) for t in settings["topups"]], [(keep, 3500)])  # 전체 교체
+        settings = self._save(2, [], [])  # topups 를 안 보내면 그대로
+        self.assertEqual(len(settings["topups"]), 1)
+        for bad in ({"day": "2026-9-3", "credits": 1}, {"day": f"{self.month}-03", "credits": 0},
+                    {"day": f"{self.month}-03", "credits": "x"}, {"id": "zz", "day": f"{self.month}-03", "credits": 1}):
+            with self.assertRaises(ValueError):
+                self._save(3, [], [], topups=[bad])
+        self.assertNotIn("topups", plan_repo.plan_view("ws1", viewer=("u_a", "a@x")))
 
     # ── 잔액 일별 관측 ──
     def test_balance_daily_snapshot_keeps_latest_of_day(self) -> None:

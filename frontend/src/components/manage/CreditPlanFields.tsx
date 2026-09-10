@@ -11,9 +11,11 @@ import {
   formatThousands,
   newGroupId,
   stripThousands,
+  todayLocal,
   type CreditPlanDraft,
   type CreditPlanMember,
   type DraftGroup,
+  type DraftTopup,
 } from "../../lib/creditPlan";
 
 function n(value: number | null): string {
@@ -272,6 +274,14 @@ export function CreditPlanFields({
     id: newGroupId(), isNew: true, name: "", limitInput: "", unlimited: false, overrideInput: "",
     remaining: null, usedMonth: 0, memberCount: 0,
   });
+  const updateTopup = (id: string, patch: Partial<DraftTopup>) => {
+    if (!draft) return;
+    update({ topups: draft.topups.map((topup) => (topup.id === id ? { ...topup, ...patch } : topup)) });
+  };
+  const addTopup = () => {
+    if (!draft) return;
+    update({ topups: [{ id: newGroupId(), day: todayLocal(), creditsInput: "", note: "" }, ...draft.topups] });
+  };
   const unassigned = draft ? draft.members.filter((member) => member.is_available && !member.group_id).length : 0;
 
   return (
@@ -284,20 +294,36 @@ export function CreditPlanFields({
       {status === "error" ? <div className="login-error">크레딧 설정을 불러오지 못했습니다. {error}</div> : null}
       {loaded && draft ? (
         <>
-          <label className="manage-field">
+          <div className="manage-field credit-derived">
             <span>월 충전</span>
-            <div className="manage-budget-limit">
-              <input
-                type="text"
-                inputMode="numeric"
-                value={formatThousands(draft.topupInput)}
-                placeholder="예: 20,000"
-                aria-label="워크스페이스 월 충전 크레딧"
-                onChange={(event) => update({ topupInput: stripThousands(event.target.value) })}
-              />
-              <em>크레딧 · 힉스필드에 매달 넣는 양(이월됨)</em>
+            <div className="credit-derived-value">
+              <strong>{draft.monthlyTopup == null ? "—" : `${formatThousands(String(draft.monthlyTopup))} 크레딧`}</strong>
+              <em>{draft.monthlyTopup == null ? "위 '예산 한도'를 매월로 적으면 여기에 따라옵니다" : "위 '예산 한도(매월)'와 같은 값 · 저장하면 반영"}</em>
             </div>
-          </label>
+          </div>
+          <div className="credit-topup-editor">
+            <div className="credit-plan-table-head">
+              <span>긴급 충전 {draft.topups.length ? `· ${draft.topups.length}건` : ""}</span>
+              <small>정기 충전 밖에 추가로 넣은 크레딧 — 언제·얼마</small>
+            </div>
+            {draft.topups.map((topup) => (
+              <div className="credit-topup-row" key={topup.id}>
+                <input type="date" value={topup.day} aria-label="충전 날짜" onChange={(event) => updateTopup(topup.id, { day: event.target.value })} />
+                <input
+                  className="settings-input"
+                  type="text"
+                  inputMode="numeric"
+                  value={formatThousands(topup.creditsInput)}
+                  placeholder="크레딧"
+                  aria-label="충전 크레딧"
+                  onChange={(event) => updateTopup(topup.id, { creditsInput: stripThousands(event.target.value) })}
+                />
+                <input className="settings-input" value={topup.note} placeholder="메모 (선택)" aria-label="메모" onChange={(event) => updateTopup(topup.id, { note: event.target.value })} />
+                <button type="button" className="credit-topup-remove" title="기록 삭제" onClick={() => update({ topups: draft.topups.filter((item) => item.id !== topup.id) })}>×</button>
+              </div>
+            ))}
+            <button type="button" className="credit-topup-add" onClick={addTopup}>+ 긴급 충전 기록</button>
+          </div>
           <div className="credit-plan-table-head">
             <span>그룹 {draft.groups.length}{unassigned ? ` · 미배정 ${unassigned}명` : ""}</span>
             <button type="button" className="credit-group-add" onClick={startNew}>+ 그룹 추가</button>

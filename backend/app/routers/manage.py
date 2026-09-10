@@ -659,12 +659,20 @@ class CreditMemberIn(BaseModel):
     group_id: Optional[str] = None  # None = 배정 해제
 
 
+class CreditTopupIn(BaseModel):
+    id: Optional[str] = None
+    day: str  # YYYY-MM-DD
+    credits: int = Field(gt=0)
+    note: Optional[str] = None
+
+
 class CreditPlanIn(BaseModel):
+    # 월 충전액은 안 받는다 — 프로젝트 '예산 한도(매월)' 합에서 파생(Jay: 같은 값이라 칸 하나만).
     revision: int = 0
-    monthly_topup: Optional[int] = Field(default=None, ge=0)
     note: Optional[str] = None
     groups: list[CreditGroupIn] = Field(default_factory=list)
     members: list[CreditMemberIn] = Field(default_factory=list)
+    topups: Optional[list[CreditTopupIn]] = None  # 긴급 충전 기록 전체 교체 · None=그대로
 
 
 def _require_known_workspace(workspace_id: str) -> None:
@@ -711,10 +719,10 @@ def put_credit_plan(workspace_id: str, body: CreditPlanIn, request: Request):
         return repo_credit.save_settings(
             workspace_id,
             revision=body.revision,
-            monthly_topup=body.monthly_topup,
             note=body.note,
             groups=[g.model_dump() for g in body.groups],
             members=[m.model_dump() for m in body.members],
+            topups=None if body.topups is None else [t.model_dump() for t in body.topups],
         )
     except repo_credit.CreditPlanConflict:
         raise HTTPException(status_code=409, detail="다른 곳에서 먼저 저장됐습니다. 설정을 다시 열어 주세요.")

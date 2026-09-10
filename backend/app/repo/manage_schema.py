@@ -148,11 +148,19 @@ _SCHEMA = (
     # ── 크레딧 풀·그룹 한도(워크스페이스 단위, 매니저 손 입력 — repo/manage_credit_plan.py) ──
     """CREATE TABLE IF NOT EXISTS workspace_credit_plan (
         workspace_id TEXT PRIMARY KEY,
-        monthly_topup INTEGER,
         note TEXT,
         revision INTEGER NOT NULL DEFAULT 1,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )""",
+    """CREATE TABLE IF NOT EXISTS workspace_credit_topup (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        day TEXT NOT NULL,
+        credits INTEGER NOT NULL,
+        note TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_wct_workspace ON workspace_credit_topup(workspace_id, day)",
     """CREATE TABLE IF NOT EXISTS workspace_credit_group (
         id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,

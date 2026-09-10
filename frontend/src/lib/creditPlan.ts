@@ -8,7 +8,7 @@ export interface BalancePoint {
 }
 
 export interface CreditPool {
-  monthly_topup: number | null; // 설정값(손 입력)
+  monthly_topup: number | null; // 파생값 — 이 워크스페이스 프로젝트들의 예산 한도(매월) 합
   note: string | null;
   used_month: number; // 팀 기록 장부(팩트) 이번 달 합
   unknown_month: number; // 크레딧을 모르는 건 수(0원 아님)
@@ -16,6 +16,14 @@ export interface CreditPool {
   balance_seen_at: string | null;
   month_start_balance: number | null; // 이번 달 첫 관측값(계산값 아님)
   month_start_day: string | null;
+  topups_month: { count: number; credits: number }; // 이번 달 긴급 충전 합·횟수
+}
+
+export interface CreditTopup {
+  id: string;
+  day: string; // YYYY-MM-DD
+  credits: number;
+  note: string | null;
 }
 
 export interface CreditGroupSummary {
@@ -46,6 +54,7 @@ export interface CreditPlanView {
   pool?: CreditPool; // 매니저만
   groups?: CreditGroupSummary[]; // 매니저만
   unassigned?: CreditUnassigned; // 매니저만
+  topups?: CreditTopup[]; // 매니저만 · 최근 3개월 긴급 충전(최근순)
   history?: BalancePoint[]; // 매니저만 · 최근 60일
   my_group?: CreditGroupSummary | null; // 멤버만(null=배정 전)
 }
@@ -64,14 +73,15 @@ export interface CreditPlanSettings {
   plan: { monthly_topup: number | null; note: string | null; revision: number; updated_at: string | null };
   groups: CreditGroupSummary[];
   members: CreditPlanMember[];
+  topups: CreditTopup[];
 }
 
 export interface CreditPlanSaveBody {
   revision: number;
-  monthly_topup: number | null;
   note: string | null;
   groups: { id?: string; name: string; monthly_limit: number | null; remaining_override?: number | null }[];
   members: { email: string; group_id: string | null }[];
+  topups: { id?: string; day: string; credits: number; note: string | null }[]; // 전체 교체
 }
 
 // ── 표시 판정 ──────────────────────────────────────────────────────────────
@@ -195,13 +205,21 @@ export interface DraftGroup {
   memberCount: number; // 서버 기준(표시용) — 초안의 실제 인원은 members 로 센다
 }
 
+export interface DraftTopup {
+  id: string; // 기존은 서버 id, 새 기록은 newGroupId()
+  day: string; // YYYY-MM-DD
+  creditsInput: string; // 숫자만
+  note: string;
+}
+
 export interface CreditPlanDraft {
   loadedFor: string; // workspaceId
   revision: number;
-  topupInput: string;
+  monthlyTopup: number | null; // 파생값(예산 한도 매월 합) — 표시만
   note: string;
   groups: DraftGroup[];
   members: CreditPlanMember[];
+  topups: DraftTopup[];
   dirty: boolean;
 }
 
@@ -209,8 +227,11 @@ export function draftFromSettings(settings: CreditPlanSettings): CreditPlanDraft
   return {
     loadedFor: settings.workspace_id,
     revision: settings.plan.revision,
-    topupInput: settings.plan.monthly_topup == null ? "" : String(settings.plan.monthly_topup),
+    monthlyTopup: settings.plan.monthly_topup,
     note: settings.plan.note || "",
+    topups: (settings.topups || []).map((topup) => ({
+      id: topup.id, day: topup.day, creditsInput: String(topup.credits), note: topup.note || "",
+    })),
     groups: settings.groups.map((group) => ({
       id: group.id,
       isNew: false,
@@ -237,7 +258,11 @@ function parseNonNegative(input: string): number | null | undefined {
 
 /** 초안 검사 — 오류 문구 또는 null. */
 export function validateDraft(draft: CreditPlanDraft): string | null {
-  if (parseNonNegative(draft.topupInput) === undefined) return "월 충전은 0 이상의 정수로 입력하세요.";
+  for (const topup of draft.topups) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(topup.day)) return "긴급 충전 날짜를 골라 주세요.";
+    const credits = parseNonNegative(topup.creditsInput);
+    if (!credits) return `긴급 충전(${topup.day}): 크레딧을 1 이상으로 입력하세요.`;
+  }
   const names = new Set<string>();
   for (const group of draft.groups) {
     const name = group.name.trim();
@@ -261,8 +286,13 @@ export function draftToBody(draft: CreditPlanDraft): CreditPlanSaveBody {
   const validIds = new Set(draft.groups.map((group) => group.id));
   return {
     revision: draft.revision,
-    monthly_topup: parseNonNegative(draft.topupInput) ?? null,
     note: draft.note.trim() || null,
+    topups: draft.topups.map((topup) => ({
+      id: topup.id,
+      day: topup.day,
+      credits: parseNonNegative(topup.creditsInput) ?? 0,
+      note: topup.note.trim() || null,
+    })),
     groups: draft.groups.map((group) => ({
       id: group.id,
       name: group.name.trim(),

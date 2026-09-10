@@ -15,6 +15,7 @@ import {
   type BalancePoint,
   type CreditGroupSummary,
   type CreditPlanView,
+  type CreditTopup,
 } from "../../lib/creditPlan";
 
 function n(value: number | null | undefined): string {
@@ -59,7 +60,7 @@ function GroupRemaining({ group }: { group: CreditGroupSummary }) {
   );
 }
 
-function BalanceChart({ history, month }: { history: BalancePoint[]; month: string }) {
+function BalanceChart({ history, month, topups }: { history: BalancePoint[]; month: string; topups: CreditTopup[] }) {
   if (history.length < 2) {
     return (
       <div className="credit-chart-empty">
@@ -102,6 +103,14 @@ function BalanceChart({ history, month }: { history: BalancePoint[]; month: stri
           <text x={x(step.day) + 6} y={y(history.find((point) => point.day === step.day)!.credits) - 6}>{`${dayLabel(step.day)} 충전 +${n(step.amount)}`}</text>
         </g>
       ))}
+      {topups
+        .filter((topup) => dayIndex(firstDay, topup.day) >= 0 && dayIndex(firstDay, topup.day) <= spanDays)
+        .map((topup) => (
+          <g key={`topup-${topup.id}`} className="topup-mark">
+            <line x1={x(topup.day)} x2={x(topup.day)} y1={pad.t} y2={height - pad.b} />
+            <text x={x(topup.day) + 4} y={pad.t + 12}>{`긴급 +${n(topup.credits)}`}</text>
+          </g>
+        ))}
       <circle cx={x(last.day)} cy={y(last.credits)} r={5} className="dot now" />
       <text x={Math.min(x(last.day) + 8, width - 130)} y={y(last.credits) - 8}>{`${dayLabel(last.day)} 잔액 ${n(last.credits)}`}</text>
       {projection ? (
@@ -198,20 +207,27 @@ export function CreditPoolSection({
   const groups = view.groups || [];
   const unassigned = view.unassigned;
   const total = limitTotal(groups);
-  const overTopup = pool?.monthly_topup != null && total > pool.monthly_topup;
+  const topups = view.topups || [];
+  const poolIn = pool ? (pool.monthly_topup ?? 0) + (pool.topups_month?.credits ?? 0) : 0;
+  const overTopup = pool?.monthly_topup != null && total > poolIn;
   return (
     <>
       <div className="usage-card credit-card">
         <div className="usage-card-head">
           <div><h3>크레딧 풀 · {monthLabel(view.month)}</h3></div>
-          <span>{view.configured ? "충전액은 설정값 · 잔액은 힉스필드 보고 · 사용은 팀 기록 장부" : "프로젝트 설정에서 월 충전과 그룹을 적으면 채워집니다"}</span>
+          <span>{view.configured ? "월 충전=예산 한도(매월) · 잔액은 힉스필드 보고 · 사용은 팀 기록 장부" : "프로젝트 설정에서 예산 한도(매월)와 그룹을 적으면 채워집니다"}</span>
         </div>
         {pool ? (
           <div className="credit-pool-grid">
             <div>
-              <span>월 충전 (설정값)</span>
+              <span>월 충전 (예산 한도 · 매월)</span>
               <strong>{pool.monthly_topup == null ? "—" : cr(pool.monthly_topup)}</strong>
-              <em>{pool.note || "힉스필드에 매달 넣는 양 · 이월됨"}</em>
+              <em>{pool.monthly_topup == null ? "매월 예산 한도 없음" : "프로젝트 예산 한도 합 · 이월됨"}</em>
+            </div>
+            <div className={pool.topups_month?.count ? "tone-warn" : ""}>
+              <span>긴급 충전 (이번 달)</span>
+              <strong>{pool.topups_month?.count ? `+${n(pool.topups_month.credits)} cr` : "없음"}</strong>
+              <em>{pool.topups_month?.count ? `${pool.topups_month.count}회 · 아래 기록` : "정기 충전 밖 추가 충전"}</em>
             </div>
             <div>
               <span>이번 달 사용 (팀 기록 장부)</span>
@@ -228,6 +244,16 @@ export function CreditPoolSection({
               <strong>{cr(pool.month_start_balance)}</strong>
               <em>{pool.month_start_day ? `${dayLabel(pool.month_start_day)} 첫 관측값 · 지난달에서 넘어온 몫` : "이번 달 관측 없음"}</em>
             </div>
+          </div>
+        ) : null}
+        {topups.length ? (
+          <div className="credit-topup-list">
+            <span className="credit-topup-list-head">긴급 충전 기록 · 최근 3개월</span>
+            {topups.map((topup) => (
+              <span className="credit-topup-item" key={topup.id}>
+                <b>{dayLabel(topup.day)}</b> +{n(topup.credits)} cr{topup.note ? <i> · {topup.note}</i> : null}
+              </span>
+            ))}
           </div>
         ) : null}
       </div>
@@ -280,7 +306,7 @@ export function CreditPoolSection({
           <div><h3>잔액 추이 · 최근 60일</h3></div>
           <span>{`관측 ${view.history?.length || 0}일 · 매달 1일 세로선 · 늘어난 곳=충전(관측) · 점선=최근 7일 속도 예상`}</span>
         </div>
-        <BalanceChart history={view.history || []} month={view.month} />
+        <BalanceChart history={view.history || []} month={view.month} topups={topups} />
       </div>
     </>
   );

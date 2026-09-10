@@ -1,19 +1,21 @@
-"""크레딧 풀 · 그룹 한도 — 워크스페이스 단위 설정과 대시보드 읽기 모델(Jay 결정 2026-09-10).
+"""크레딧 풀 · 그룹 한도 · 긴급 충전 — 워크스페이스 단위 설정과 대시보드 읽기 모델(Jay 결정 2026-09-10).
 
 힉스필드가 서브 워크스페이스에 매달 충전하고(enterprise 는 이월) 작업자는 User Group 의 월 한도 안에서 쓴다.
 **한도 강제는 힉스필드가 한다** — 여기서는 우리 대시보드가 그 구조를 알고 보여주기·경고만 한다.
 힉스필드는 충전·그룹·배정을 알려주지 않으므로(status 에 칸 없음, CLI 명령 없음) 매니저가 손으로 적는다.
 
 저장(모두 content DB 사이드카, `manage_schema._SCHEMA`):
-  workspace_credit_plan          워크스페이스당 1행 — monthly_topup(설정값)·note·revision(낙관적 잠금)
+  workspace_credit_plan          워크스페이스당 1행 — note·revision(낙관적 잠금). **월 충전액은 저장하지 않는다** —
+                                 이 워크스페이스 프로젝트들의 '예산 한도(매월)' 합에서 파생(Jay: 예산 한도와 같은 값이라 하나만).
   workspace_credit_group         그룹 — monthly_limit(NULL=∞)·base_month·base_balance(재기준점)
   workspace_credit_group_member  이메일 → 그룹(워크스페이스당 이메일 1개 = 힉스필드 Members 와 같은 키.
                                  팩트 account_email 과 직결되고 uid 위조와 무관)
+  workspace_credit_topup         긴급 충전 기록 — day·credits·note (매월 정기 충전 밖의 추가 충전, 손 입력)
   workspace_balance_daily(코어)   에이전트 status 보고 때 하루 한 행(잔액 관측) — 추이 그래프용
 
 이월 계산(그룹): remaining = base_balance + limit × (base_month~이번 달 개월 수) − base_month 이후 사용 합.
-**재기준화(코덱스 P2)**: 한도·배정이 바뀌면 과거가 소급되지 않게 저장 시점에 base_month=이번 달,
-base_balance 를 "저장 직전 남은 양이 그대로 이어지도록" 다시 잡는다(remaining_override 가 있으면 그 값으로).
+**재기준화(코덱스 P2)**: 한도·소속이 바뀌면 과거가 소급되지 않게 저장 시점에 base_month=이번 달,
+base_balance=이번 달로 넘어온 이월분(옛 소속·옛 한도로 지난달까지)으로 다시 잡는다(remaining_override 가 있으면 그 값).
 사용량은 팩트(`manage_db.workspace_email_usage`) — 삭제분(tombstone) 포함, 크레딧 = COALESCE(실제, 견적, 0),
 미상(둘 다 없음) 건수는 따로 세어 '추정' 표시 근거로 준다. 월 경계는 팩트 created_at 의 localtime(서버 KST).
 """
@@ -24,12 +26,13 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-_CLIENT_ID_RE = re.compile(r"[0-9a-f]{32}")  # 클라이언트가 새 그룹에 미리 붙이는 id(uuid hex) 형식
-
 from ..db import get_connection
 from ..emailnorm import norm_email
 from ._common import _email_localpart
 from .manage_schema import _ensure_schema
+
+_CLIENT_ID_RE = re.compile(r"[0-9a-f]{32}")  # 클라이언트가 새 그룹·충전 기록에 미리 붙이는 id(uuid hex) 형식
+_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 class CreditPlanConflict(Exception):
@@ -107,8 +110,8 @@ def _carry_in(group: dict[str, Any], emails: set[str], usage: dict, month: str) 
     return float(group["base_balance"] or 0) + float(limit) * months_before - used_before
 
 
-def _load(conn, workspace_id: str) -> tuple[Optional[dict], list[dict], dict[str, set[str]]]:
-    """(plan 행, 그룹 행 목록(정렬), {group_id: 이메일 집합})."""
+def _load(conn, workspace_id: str) -> tuple[Optional[dict], list[dict], dict[str, set[str]], list[dict]]:
+    """(plan 행, 그룹 행 목록(정렬), {group_id: 이메일 집합}, 긴급 충전 기록(최근순))."""
     plan_row = conn.execute(
         "SELECT * FROM workspace_credit_plan WHERE workspace_id=?", (workspace_id,)
     ).fetchone()
@@ -125,7 +128,29 @@ def _load(conn, workspace_id: str) -> tuple[Optional[dict], list[dict], dict[str
         (workspace_id,),
     ).fetchall():
         members.setdefault(r["group_id"], set()).add(r["account_email"])
-    return (dict(plan_row) if plan_row else None), groups, members
+    topups = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT id, day, credits, note, created_at FROM workspace_credit_topup WHERE workspace_id=? "
+            "ORDER BY day DESC, created_at DESC",
+            (workspace_id,),
+        ).fetchall()
+    ]
+    return (dict(plan_row) if plan_row else None), groups, members, topups
+
+
+def _monthly_budget(conn, workspace_id: str) -> Optional[int]:
+    """월 충전액 = 이 워크스페이스 프로젝트들의 '예산 한도(주기=매월)' 합. 매월 예산이 하나도 없으면 None.
+    (Jay: 예산 한도와 월 충전은 같은 값 — 칸 하나만 두고 파생한다. 하루·한 주 주기는 안 센다.)"""
+    row = conn.execute(
+        "SELECT SUM(pp.budget_credits) AS total, COUNT(pp.budget_credits) AS n FROM project_planning pp "
+        "JOIN project p ON p.id=pp.project_id "
+        "WHERE p.workspace_id=? AND p.archived=0 AND pp.budget_period='month' AND pp.budget_credits IS NOT NULL",
+        (workspace_id,),
+    ).fetchone()
+    if not row or not row["n"]:
+        return None
+    return int(row["total"] or 0)
 
 
 def _month_from_for(groups: list[dict], month: str) -> str:
@@ -139,13 +164,19 @@ def _workspace_row(conn, workspace_id: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def _topup_summary(topups: list[dict], month: str) -> dict[str, Any]:
+    mine = [t for t in topups if str(t["day"]).startswith(month)]
+    return {"count": len(mine), "credits": int(sum(int(t["credits"] or 0) for t in mine))}
+
+
 # ── 설정(매니저) ───────────────────────────────────────────────────────────────
 def get_settings(workspace_id: str) -> dict[str, Any]:
-    """프로젝트 설정 창용 — 플랜·그룹(현재 남은 양 포함)·멤버(이메일 기준, 접근 불가·과거 배정도 포함)."""
+    """프로젝트 설정 창용 — 플랜·그룹(현재 남은 양 포함)·멤버(이메일 기준, 접근 불가·과거 배정도 포함)·긴급 충전 기록."""
     month = current_month()
     with get_connection() as conn:
         _ensure_schema(conn)
-        plan, groups, members = _load(conn, workspace_id)
+        plan, groups, members, topups = _load(conn, workspace_id)
+        monthly_topup = _monthly_budget(conn, workspace_id)
         rows = conn.execute(
             "SELECT m.account_email AS email, m.is_available, m.user_role, "
             "COALESCE(NULLIF(c.name,''), NULLIF(a.name,'')) AS name "
@@ -184,13 +215,14 @@ def get_settings(workspace_id: str) -> dict[str, Any]:
         "workspace_id": workspace_id,
         "month": month,
         "plan": {
-            "monthly_topup": plan["monthly_topup"] if plan else None,
+            "monthly_topup": monthly_topup,  # 파생값(예산 한도 매월 합) — 설정 창은 읽기만
             "note": plan["note"] if plan else None,
             "revision": int(plan["revision"]) if plan else 0,
             "updated_at": plan["updated_at"] if plan else None,
         },
         "groups": [_group_summary(g, members.get(g["id"], set()), usage, month) for g in groups],
         "members": member_list,
+        "topups": [{"id": t["id"], "day": t["day"], "credits": int(t["credits"] or 0), "note": t["note"]} for t in topups],
     }
 
 
@@ -212,14 +244,41 @@ def _group_summary(group: dict, emails: set[str], usage: dict, month: str) -> di
     }
 
 
+def _prepare_topups(topups: list[dict[str, Any]], existing_ids: set[str]) -> list[tuple[str, str, int, Optional[str]]]:
+    """긴급 충전 입력 검증 → (id, day, credits, note). day 는 YYYY-MM-DD, credits 는 양의 정수."""
+    out: list[tuple[str, str, int, Optional[str]]] = []
+    seen: set[str] = set()
+    for t in topups:
+        day = str(t.get("day") or "").strip()
+        if not _DAY_RE.fullmatch(day):
+            raise ValueError("충전 날짜는 YYYY-MM-DD 로 적어 주세요")
+        try:
+            credits = int(t.get("credits"))
+        except (TypeError, ValueError):
+            raise ValueError("충전 크레딧은 정수로 적어 주세요") from None
+        if credits <= 0:
+            raise ValueError("충전 크레딧은 0 보다 커야 합니다")
+        tid = str(t.get("id") or "").strip()
+        if tid and tid not in existing_ids and not _CLIENT_ID_RE.fullmatch(tid):
+            raise ValueError("충전 기록 id 형식이 올바르지 않습니다")
+        if not tid:
+            tid = uuid.uuid4().hex
+        if tid in seen:
+            raise ValueError("충전 기록 id 가 겹칩니다")
+        seen.add(tid)
+        note = str(t.get("note") or "").strip() or None
+        out.append((tid, day, credits, note))
+    return out
+
+
 def save_settings(
     workspace_id: str,
     *,
     revision: int,
-    monthly_topup: Optional[int],
     note: Optional[str],
     groups: list[dict[str, Any]],
     members: list[dict[str, Any]],
+    topups: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """전체 저장(한 트랜잭션). revision 이 현재와 다르면 CreditPlanConflict(409).
 
@@ -227,6 +286,7 @@ def save_settings(
     id 가 없거나 모르는 uuid hex 면 새 그룹(클라이언트가 미리 붙인 id 로 같은 저장에 멤버 배정 가능).
     members: [{email, group_id|None}] — **적힌 이메일만** 바꾼다(None=배정 해제). 안 적힌 이메일은 그대로(코덱스 P2).
     group_id 는 이 워크스페이스 그룹이어야 한다(아니면 ValueError → 400).
+    topups: [{id?, day, credits, note?}] — 긴급 충전 기록 전체 교체(None 이면 그대로 둔다).
     재기준화(코덱스 P2 — 과거 소급 금지): 한도나 소속이 바뀐 그룹은 base_month=이번 달로 옮기고 base_balance 에
     "이번 달로 넘어온 이월분"(`_carry_in`, 옛 소속·옛 한도로 지난달까지 계산)을 넣는다. 그러면 지난달까지는 그대로,
     이번 달은 현재 소속·현재 한도로 다시 센다(예: 이번 달 한도 1000→2000 이면 남은 양 +1000, 이번 달에 들어온
@@ -236,7 +296,7 @@ def save_settings(
     with get_connection() as conn:
         _ensure_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
-        plan, old_groups, old_members = _load(conn, workspace_id)
+        plan, old_groups, old_members, old_topups = _load(conn, workspace_id)
         cur_rev = int(plan["revision"]) if plan else 0
         if int(revision or 0) != cur_rev:
             raise CreditPlanConflict(f"revision {revision} != {cur_rev}")
@@ -248,8 +308,6 @@ def save_settings(
         for gid, emails in old_members.items():
             for email in emails:
                 new_assign[email] = gid
-        incoming_ids = {str(g.get("id")) for g in groups if g.get("id")}
-        # 이 저장에서 새로 만드는 그룹은 id 를 미리 발급해 배정이 같이 들어올 수 있게 한다.
         prepared: list[dict[str, Any]] = []
         for order, g in enumerate(groups):
             name = str(g.get("name") or "").strip()
@@ -291,6 +349,9 @@ def save_settings(
         new_members: dict[str, set[str]] = {p["id"]: set() for p in prepared}
         for email, gid in new_assign.items():
             new_members[gid].add(email)
+        prepared_topups = (
+            None if topups is None else _prepare_topups(topups, {t["id"] for t in old_topups})
+        )
 
         # 2) 그룹 삭제를 먼저, 남는 그룹은 이름을 임시값으로 비워 UNIQUE(workspace_id, name) 충돌을 피한다 —
         #    삭제 뒤 같은 이름으로 다시 만들기·두 그룹 이름 맞바꾸기가 500 으로 죽지 않게(코덱스 P2).
@@ -342,26 +403,33 @@ def save_settings(
             "INSERT INTO workspace_credit_group_member(workspace_id, account_email, group_id) VALUES(?,?,?)",
             [(workspace_id, email, gid) for email, gid in sorted(new_assign.items())],
         )
-        # 5) 플랜 + revision
-        topup = None if monthly_topup is None else max(0, int(monthly_topup))
+        # 5) 긴급 충전 기록 전체 교체(요청에 있을 때만)
+        if prepared_topups is not None:
+            conn.execute("DELETE FROM workspace_credit_topup WHERE workspace_id=?", (workspace_id,))
+            conn.executemany(
+                "INSERT INTO workspace_credit_topup(id, workspace_id, day, credits, note) VALUES(?,?,?,?,?)",
+                [(tid, workspace_id, day, credits, note) for tid, day, credits, note in prepared_topups],
+            )
+        # 6) 플랜 + revision
         conn.execute(
-            "INSERT INTO workspace_credit_plan(workspace_id, monthly_topup, note, revision, updated_at) "
-            "VALUES(?,?,?,?,datetime('now')) "
-            "ON CONFLICT(workspace_id) DO UPDATE SET monthly_topup=excluded.monthly_topup, note=excluded.note, "
+            "INSERT INTO workspace_credit_plan(workspace_id, note, revision, updated_at) "
+            "VALUES(?,?,?,datetime('now')) "
+            "ON CONFLICT(workspace_id) DO UPDATE SET note=excluded.note, "
             "revision=workspace_credit_plan.revision+1, updated_at=excluded.updated_at",
-            (workspace_id, topup, (note or "").strip() or None, cur_rev + 1),
+            (workspace_id, (note or "").strip() or None, cur_rev + 1),
         )
     return get_settings(workspace_id)
 
 
 # ── 대시보드 읽기 ─────────────────────────────────────────────────────────────
 def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> dict[str, Any]:
-    """대시보드 카드. viewer=None(매니저): 풀·그룹 전체·미배정·잔액 이력. viewer=(uid, email)(일반 멤버):
-    자기 그룹 하나(합계·그중 내 사용)만 — 다른 그룹·이메일·풀 잔액·이력은 주지 않는다."""
+    """대시보드 카드. viewer=None(매니저): 풀·그룹 전체·미배정·긴급 충전·잔액 이력. viewer=(uid, email)(일반 멤버):
+    자기 그룹 하나(합계·그중 내 사용)만 — 다른 그룹·이메일·풀 잔액·충전·이력은 주지 않는다."""
     month = current_month()
     with get_connection() as conn:
         _ensure_schema(conn)
-        plan, groups, members = _load(conn, workspace_id)
+        plan, groups, members, topups = _load(conn, workspace_id)
+        monthly_topup = _monthly_budget(conn, workspace_id) if viewer is None else None
         ws = _workspace_row(conn, workspace_id)
         available = {
             r["account_email"]
@@ -401,11 +469,12 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
     un_used, un_unknown = _sum_usage(usage, unassigned_emails, month=month)
     used_month, unknown_month = _sum_usage(usage, all_emails | assigned_emails, month=month)
     month_start = next((h for h in history if h["day"] >= f"{month}-01"), None)
+    recent_topups = [t for t in topups if t["day"] >= _months_ago_day(month, 3)]
     return {
         "month": month,
         "configured": configured,
         "pool": {
-            "monthly_topup": plan["monthly_topup"] if plan else None,
+            "monthly_topup": monthly_topup,  # 예산 한도(매월) 합 — 손 입력 아님
             "note": plan["note"] if plan else None,
             "used_month": round(used_month),
             "unknown_month": unknown_month,
@@ -414,6 +483,7 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
             # 월초 잔액 = 이번 달 첫 관측일의 **첫** 관측값(같은 날 후속 보고로 안 바뀜 — 코덱스 P2). 관측이 없으면 None.
             "month_start_balance": month_start["first_credits"] if month_start else None,
             "month_start_day": month_start["day"] if month_start else None,
+            "topups_month": _topup_summary(topups, month),  # 이번 달 긴급 충전 합·횟수
         },
         "groups": [_group_summary(g, members.get(g["id"], set()), usage, month) for g in groups],
         "unassigned": {
@@ -421,5 +491,16 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
             "used_month": round(un_used),
             "unknown_month": un_unknown,
         },
+        "topups": [
+            {"id": t["id"], "day": t["day"], "credits": int(t["credits"] or 0), "note": t["note"]}
+            for t in recent_topups
+        ],
         "history": [{"day": h["day"], "credits": h["credits"]} for h in history],
     }
+
+
+def _months_ago_day(month: str, n: int) -> str:
+    """month('YYYY-MM') 에서 n 개월 전 달의 1일 — 대시보드 긴급 충전 목록 범위(최근 3개월)."""
+    y, m = (int(x) for x in month.split("-"))
+    total = y * 12 + (m - 1) - n
+    return f"{total // 12:04d}-{total % 12 + 1:02d}-01"
