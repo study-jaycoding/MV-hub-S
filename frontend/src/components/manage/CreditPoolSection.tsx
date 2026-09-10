@@ -178,10 +178,13 @@ export function CreditPoolSection({
   scope,
   workspaceId,
   reloadSignal = 0,
+  canAdjust = false,
 }: {
   scope: "all" | "mine";
   workspaceId?: string;
   reloadSignal?: number;
+  /** '추정' 맞추기 단추 — 저장(PUT credit-plan)은 전역 create_project 라 read_all 만 있는 열람자에겐 숨긴다(눌러도 403). */
+  canAdjust?: boolean;
 }) {
   const [view, setView] = useState<CreditPlanView | null>(null);
   const [error, setError] = useState("");
@@ -361,7 +364,7 @@ export function CreditPoolSection({
                     {n(group.used_period ?? group.used_month)}
                     <span className="credit-est"> {periodUsageLabel(group.limit_period)}{(group.unknown_period ?? group.unknown_month) ? ` · 미상 ${group.unknown_period ?? group.unknown_month}` : ""}</span>
                   </td>
-                  <GroupRemaining group={group} adjust={adjustFor(group.id)} />
+                  <GroupRemaining group={group} adjust={canAdjust ? adjustFor(group.id) : undefined} />
                 </tr>
               ))}
               {unassigned && (unassigned.member_count > 0 || unassigned.used_month > 0) ? (

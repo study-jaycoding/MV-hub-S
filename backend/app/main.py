@@ -303,7 +303,8 @@ async def _application_lifespan(app: FastAPI):
     # 이전 prompt_id 를 운영 로그에 남기고 Cloud 취소를 best-effort 로 시도한 뒤 흔적을 비운다.
     comfy.recover_interrupted_run_jobs()
     # 부트스트랩 관리자 — 서버(AUTH on)면 admin 계정을 자동 생성(없을 때만). '따로 안 만들어도
-    # 처음부터 admin 이 있게'. 기본 admin@millionvolt.com / admin1985, env 로 변경 가능.
+    # 처음부터 admin 이 있게'. 이메일은 CONTENT_HUB_ADMIN_EMAIL(기본 admin@millionvolt.com), 비밀번호는
+    # CONTENT_HUB_ADMIN_PASSWORD 가 없으면 1회용 값을 만들어 파일에만 남긴다 — 고정 기본 비밀번호는 없다(아래).
     if _should_bootstrap_admin():
         import secrets as _secrets
 

@@ -758,7 +758,7 @@ export function WorkspaceUsageDashboard({
           </div>
 
           {/* 크레딧 풀·그룹 한도·잔액 추이 — 고리·통계 격자 바로 아래(Jay 2026-09-10). 워크스페이스를 고른 때만. */}
-          <CreditPoolSection scope={scope} workspaceId={workspaceId || undefined} reloadSignal={reloadSignal} />
+          <CreditPoolSection scope={scope} workspaceId={workspaceId || undefined} reloadSignal={reloadSignal} canAdjust={canCreateProject} />
 
           <div className={`usage-two-columns${mine ? " single" : ""}`}>
             {/* 일반 멤버는 본인 한 명뿐이라 멤버 카드를 빼고 모델 카드를 한 줄 전체로 */}
