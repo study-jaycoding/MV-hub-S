@@ -382,9 +382,7 @@ export function CreditPlanFields({
                 ))}
               </tbody>
             </table>
-          ) : (
-            <div className="admin-empty">아직 그룹이 없습니다. "+ 그룹 추가"로 힉스필드 User Group 과 같은 이름을 만드세요.</div>
-          )}
+          ) : null}
           {editing ? (
             <GroupEditor
               draft={draft}
