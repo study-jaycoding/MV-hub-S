@@ -184,6 +184,18 @@ export const manageApi = {
         model: f.model,
       }),
     ),
+  // 프로젝트 상세 보고서 — 생성물 1건 = 1행(프로젝트·폴더·작성자·크레딧·소요시간). HF 호환 usageExport 와 별도.
+  usageDetailExport: (f: TeamFilters = {}) =>
+    jsonFetch<{ rows: TeamUsageDetailRow[] }>(
+      withQuery("/api/manage/usage-detail-export", {
+        date_from: f.dateFrom,
+        date_to: f.dateTo,
+        project_id: f.projectId,
+        creator_uid: f.creatorUid,
+        workspace_id: f.workspaceId,
+        model: f.model,
+      }),
+    ),
   // 완료본 렌더폴더 저장 — 완료 작업의 최종본만 물리 저장(멱등). saved/skipped/errors 반환.
   //  folderPath 를 주면 그 폴더(하위 포함)의 저장 대상만(폴더 우클릭 '최종 경로로 저장'). 없으면 프로젝트 전체.
   saveFinals: (projectId: string, folderPath?: string) =>
@@ -247,6 +259,30 @@ export interface TeamUsageExportRow {
   model: string;
   credits_used: number;
   jobs: number;
+}
+
+export interface TeamUsageDetailRow {
+  date: string | null; // 생성일 없는 행(날짜 없는 tombstone)도 실린다 — 합계 대조용
+  created_local: string | null;
+  user_email: string;
+  user_id: string | null;
+  user_name: string | null;
+  workspace_name: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  folder_path: string | null;
+  model: string;
+  output_type: string | null;
+  status: string | null;
+  credits: number;
+  credit_basis: "real" | "est" | "unknown";
+  elapsed_seconds: number | null;
+  started_local: string | null;
+  completed_local: string | null;
+  is_final: number;
+  is_shared: number;
+  is_deleted: number;
+  job_id: string | null;
 }
 
 export interface TeamWorkerModelRow extends TeamModelRow {

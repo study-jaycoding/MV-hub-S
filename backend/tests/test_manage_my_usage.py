@@ -160,6 +160,51 @@ class MyUsageScopeTests(unittest.TestCase):
         self.assertEqual({r["user_id"] for r in rows}, {"u_a"})
         self.assertEqual(sum(r["jobs"] for r in rows), 2)
 
+    def test_detail_export_is_per_generation_and_scoped(self) -> None:
+        # 상세 보고서: 생성물 1건 = 1행, 프로젝트·폴더·소요시간·크레딧 근거까지 실림. 멤버는 본인 행만.
+        with manage_db.get_connection() as conn:
+            conn.execute(
+                "UPDATE team_generation_fact SET elapsed_seconds=12.5, real_credits=NULL, est_credits=4 "
+                "WHERE local_gen_id='f2'"
+            )
+        with auth_on():
+            mine = manage_router.usage_detail_export(_account("a@x", "u_a"), creator_uid="u_b")["rows"]
+            everything = manage_router.usage_detail_export(_account("admin@x", "u_admin", "admin"))["rows"]
+        self.assertEqual([r["user_id"] for r in mine], ["u_a", "u_a"])
+        self.assertEqual(len(everything), 3)
+        by_gid = {r["job_id"]: r for r in everything}
+        f1, f2 = by_gid["job-f1"], by_gid["job-f2"]
+        self.assertEqual((f1["project_name"], f1["folder_path"], f1["model"]), ("Project", "e001/c0010", "seedance"))
+        self.assertEqual((f1["credits"], f1["credit_basis"]), (10, "real"))
+        self.assertEqual((f2["folder_path"], f2["credits"], f2["credit_basis"], f2["elapsed_seconds"]),
+                         ("e001/c0020", 4, "est", 12.5))
+        self.assertEqual(f1["date"], "2026-09-01")
+        self.assertTrue(f1["created_local"].startswith("2026-09-01"))
+        for key in ("user_email", "user_name", "workspace_name", "output_type", "status",
+                    "is_final", "is_shared", "is_deleted"):
+            self.assertIn(key, f1)
+
+    def test_detail_export_keeps_dateless_rows_and_orders_by_time(self) -> None:
+        # 코덱스 P2: 생성일 없는 tombstone 도 team_overview 합계엔 들어가므로 상세 보고서에서 빼지 않는다(빈 날짜, 맨 뒤).
+        # 코덱스 P3: 'YYYY-MM-DD HH:MM:SS' 와 'YYYY-MM-DDTHH:MM:SSZ' 가 섞여도 시간 순으로 정렬.
+        manage_db.upsert_facts(
+            "a@x", "u_a", [_fact("f4", created_at=None, is_deleted=True, real_credits=7)]
+        )
+        with manage_db.get_connection() as conn:
+            conn.execute("UPDATE team_generation_fact SET created_at='2026-09-02 08:00:00' WHERE local_gen_id='f2'")
+            conn.execute("UPDATE team_generation_fact SET created_at='2026-09-03T00:00:00Z' WHERE local_gen_id='f1'")
+        with auth_on():
+            rows = manage_router.usage_detail_export(_account("admin@x", "u_admin", "admin"))["rows"]
+            overview = manage_router.team_overview(_account("admin@x", "u_admin", "admin"))
+            ranged = manage_router.usage_detail_export(
+                _account("admin@x", "u_admin", "admin"), date_from="2026-09-01"
+            )["rows"]
+        self.assertEqual([r["job_id"] for r in rows], ["job-f3", "job-f2", "job-f1", "job-f4"])
+        self.assertIsNone(rows[-1]["date"])
+        self.assertEqual(sum(r["credits"] for r in rows), overview["totals"]["credits"])  # 합계 1:1
+        self.assertEqual(len(rows), overview["totals"]["count"])
+        self.assertNotIn("job-f4", [r["job_id"] for r in ranged])  # 기간 필터가 있으면 날짜 없는 행은 자연히 제외
+
     def test_workspaces_list_is_limited_to_my_memberships(self) -> None:
         with auth_on():
             mine = manage_router.manage_workspaces(_account("a@x", "u_a"))["workspaces"]

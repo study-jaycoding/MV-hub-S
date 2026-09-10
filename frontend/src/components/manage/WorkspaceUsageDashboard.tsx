@@ -11,10 +11,12 @@ import {
 import { modelDisplayName as modelLabel, useModelDisplayName } from "../../lib/modelCatalog";
 import {
   buildHfUsageCsv,
+  buildProjectDetailCsv,
   groupOutputCredits,
   groupOutputModels,
   HF_USAGE_REPORT_FILENAME,
   inferOutputModels,
+  PROJECT_DETAIL_REPORT_FILENAME,
   splitUsageFolderPath,
   type OutputCreditCategory,
   type OutputModelUsage,
@@ -434,7 +436,8 @@ export function WorkspaceUsageDashboard({
   const [selectedWorker, setSelectedWorker] = useState<TeamWorkerRow | null>(null);
   const [selectedProject, setSelectedProject] = useState<TeamProjectRow | null>(null);
   const [loading, setLoading] = useState(true);
-  const [exporting, setExporting] = useState(false);
+  // "" | "hf"(HF 호환 CSV) | "detail"(프로젝트 상세 보고서) — 한 번에 하나만 내려받는다.
+  const [exporting, setExporting] = useState<"" | "hf" | "detail">("");
   const [error, setError] = useState("");
   const modelDisplayName = useModelDisplayName();
 
@@ -595,31 +598,45 @@ export function WorkspaceUsageDashboard({
     setSelectedProject(null);
   };
 
-  const exportCsv = async () => {
+  const downloadCsv = (csv: string, filename: string) => {
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.style.display = "none";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const runExport = async (kind: "hf" | "detail") => {
     if (!overview || exporting) return;
-    setExporting(true);
+    setExporting(kind);
     setError("");
     try {
-      const response = await manageApi.usageExport({
-        workspaceId: workspaceId || undefined,
-      });
-      const csv = buildHfUsageCsv(response.rows || [], modelDisplayName);
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = HF_USAGE_REPORT_FILENAME;
-      anchor.style.display = "none";
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      const filters = { workspaceId: workspaceId || undefined };
+      if (kind === "hf") {
+        const response = await manageApi.usageExport(filters);
+        downloadCsv(buildHfUsageCsv(response.rows || [], modelDisplayName), HF_USAGE_REPORT_FILENAME);
+      } else {
+        const response = await manageApi.usageDetailExport(filters);
+        downloadCsv(
+          buildProjectDetailCsv(response.rows || [], modelDisplayName),
+          PROJECT_DETAIL_REPORT_FILENAME,
+        );
+      }
     } catch (reason) {
-      setError(`사용량 보고서를 만들지 못했습니다. ${String(reason)}`);
+      setError(
+        `${kind === "hf" ? "사용량 보고서" : "프로젝트 상세 보고서"}를 만들지 못했습니다. ${String(reason)}`,
+      );
     } finally {
-      setExporting(false);
+      setExporting("");
     }
   };
+  const exportCsv = () => runExport("hf");
+  const exportDetailCsv = () => runExport("detail");
 
   const projectCreateButton = canCreateProject && onCreateProject ? (
     <button
@@ -695,9 +712,19 @@ export function WorkspaceUsageDashboard({
             type="button"
             className="usage-export-button"
             onClick={exportCsv}
-            disabled={!overview || exporting}
+            disabled={!overview || Boolean(exporting)}
+            title="힉스필드 멤버 사용량 보고서와 같은 모양(날짜·멤버·모델 합계)"
           >
-            <DownloadIcon />{exporting ? "Exporting…" : "Export usage report"}
+            <DownloadIcon />{exporting === "hf" ? "Exporting…" : "Export usage report"}
+          </button>
+          <button
+            type="button"
+            className="usage-export-button"
+            onClick={exportDetailCsv}
+            disabled={!overview || Boolean(exporting)}
+            title="생성물 한 건이 한 줄 — 프로젝트·에피소드·컷·작성자·크레딧·생성 소요시간"
+          >
+            <DownloadIcon />{exporting === "detail" ? "내려받는 중…" : "프로젝트 상세 보고서"}
           </button>
         </div>
       </header>

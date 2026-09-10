@@ -543,6 +543,47 @@ def team_usage_export(
     return [dict(row) for row in rows]
 
 
+def team_usage_detail_export(
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    project_id: Optional[str] = None, creator_uid: Optional[str] = None,
+    workspace_id: Optional[str] = None, model: Optional[str] = None,
+    viewer: Optional[Viewer] = None,
+) -> list[dict[str, Any]]:
+    """'프로젝트 상세 보고서' — 생성물 1건 = 1행(묶지 않음). 프로젝트·폴더(에피소드/컷)·작성자·모델·
+    크레딧·생성 소요시간까지 팩트 열을 그대로 내보낸다(Jay 요청 2026-09-10, HF 호환 CSV 와 별도).
+    필터·열람 범위(viewer)는 team_usage_export 와 같다. tombstone(is_deleted) 도 비용 이력이라 포함하고
+    열로 표시만 한다. 시각은 팀 표준시(localtime)로 맞춘다 — created_at 이 UTC 라 그대로 내보내면 날짜가 밀린다.
+    credit_basis 는 합산에 실제로 쓰인 값의 출처(real → est → 없음)라 대시보드 합계와 1:1 로 맞는다.
+    생성일이 없는 행(날짜 없는 tombstone 등)도 team_overview 합계엔 들어가므로 **빼지 않고 빈 날짜로 맨 뒤에**
+    싣는다(코덱스 P2 — 기간 필터가 있으면 date() 비교에서 자연히 빠진다). 정렬은 원본 문자열이 아니라
+    julianday 로 — 'YYYY-MM-DD HH:MM:SS' 와 'YYYY-MM-DDTHH:MM:SSZ' 가 섞이면 문자열 순서가 시간 순서와 어긋난다."""
+    where, args = _agg_where(
+        date_from, date_to, project_id, creator_uid, workspace_id, model, viewer
+    )
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT date(created_at, 'localtime') AS date, "
+            f"datetime(created_at, 'localtime') AS created_local, "
+            f"account_email AS user_email, creator_uid AS user_id, creator_name AS user_name, "
+            f"workspace_name, project_id, project_name, folder_path, "
+            f"COALESCE(NULLIF(model,''),'알 수 없음') AS model, output_type, status, "
+            f"{_CREDIT} AS credits, "
+            f"CASE WHEN real_credits IS NOT NULL THEN 'real' "
+            f"WHEN est_credits IS NOT NULL THEN 'est' ELSE 'unknown' END AS credit_basis, "
+            f"elapsed_seconds, "
+            f"datetime(started_at, 'localtime') AS started_local, "
+            f"datetime(completed_at, 'localtime') AS completed_local, "
+            f"COALESCE(is_final,0) AS is_final, COALESCE(is_shared,0) AS is_shared, "
+            f"COALESCE(is_deleted,0) AS is_deleted, job_id "
+            f"FROM team_generation_fact {where} "
+            f"ORDER BY (created_at IS NULL) ASC, julianday(created_at) ASC, "
+            f"project_name COLLATE NOCASE ASC, folder_path COLLATE NOCASE ASC, "
+            f"account_email COLLATE NOCASE ASC, id ASC",
+            args,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def team_timeseries(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
     project_id: Optional[str] = None, creator_uid: Optional[str] = None,

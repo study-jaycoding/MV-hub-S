@@ -157,3 +157,90 @@ export function buildHfUsageCsv(
 }
 
 export const HF_USAGE_REPORT_FILENAME = "team-members-usage.csv";
+
+export interface UsageDetailRowLike {
+  date: string | null;
+  created_local: string | null;
+  user_email: string;
+  user_id: string | null;
+  user_name: string | null;
+  workspace_name: string | null;
+  project_name: string | null;
+  folder_path: string | null;
+  model: string;
+  output_type: string | null;
+  status: string | null;
+  credits: number;
+  credit_basis: "real" | "est" | "unknown";
+  elapsed_seconds: number | null;
+  started_local: string | null;
+  completed_local: string | null;
+  is_final: number;
+  is_shared: number;
+  is_deleted: number;
+  job_id: string | null;
+}
+
+const CREDIT_BASIS_LABEL: Record<UsageDetailRowLike["credit_basis"], string> = {
+  real: "실제 차감",
+  est: "견적",
+  unknown: "미확인",
+};
+
+function yesNo(value: number): string {
+  return value ? "예" : "";
+}
+
+// Excel·시트가 수식으로 해석하는 시작 글자(= + - @, 탭·CR)는 작은따옴표를 앞에 붙여 글자로 고정한다.
+// 프로젝트명·폴더명·작성자명은 멤버가 적은 값이라 CSV 주입 경로가 된다(코덱스 P2). 숫자 열엔 쓰지 않는다.
+function safeText(value: unknown): string {
+  const text = String(value ?? "");
+  return /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+}
+
+// 프로젝트 상세 보고서 — 생성물 1건 = 1행. 폴더 경로는 관리 요약과 같은 규칙으로 에피소드/씬·컷을 쪼갠다.
+// 한글 머리글이라 Excel 이 바로 읽도록 UTF-8 BOM 을 앞에 붙인다(HF 호환 CSV 는 BOM 없음 — 그쪽 규격 유지).
+// 크레딧은 행별로 반올림하지 않는다 — 합계 대조용이라 원본 정밀도를 지킨다(코덱스 P3). 소요시간만 0.1초로.
+export function buildProjectDetailCsv(
+  rows: UsageDetailRowLike[],
+  modelDisplayName: (model: string) => string,
+): string {
+  const table: unknown[][] = [
+    [
+      "날짜", "생성 시각", "워크스페이스", "프로젝트", "에피소드", "씬/컷", "폴더 경로",
+      "작성자", "이메일", "작성자 ID", "모델", "출력", "상태",
+      "크레딧", "크레딧 근거", "소요시간(초)", "시작", "완료",
+      "최종본", "공유", "삭제", "Job ID",
+    ],
+    ...(rows || []).map((row) => {
+      const levels = splitUsageFolderPath(row.folder_path || "");
+      return [
+        row.date || "",
+        row.created_local || "",
+        safeText(row.workspace_name),
+        safeText(row.project_name),
+        levels.episode === "—" ? "" : safeText(levels.episode),
+        levels.scene === "—" ? "" : safeText(levels.scene),
+        safeText(row.folder_path),
+        safeText(row.user_name),
+        safeText(row.user_email),
+        safeText(row.user_id),
+        safeText(modelDisplayName(row.model)),
+        safeText(row.output_type),
+        safeText(row.status),
+        Number(row.credits) || 0,
+        CREDIT_BASIS_LABEL[row.credit_basis] || safeText(row.credit_basis),
+        row.elapsed_seconds == null ? "" : Math.round(Number(row.elapsed_seconds) * 10) / 10,
+        row.started_local || "",
+        row.completed_local || "",
+        yesNo(row.is_final),
+        yesNo(row.is_shared),
+        yesNo(row.is_deleted),
+        safeText(row.job_id),
+      ];
+    }),
+  ];
+  return "\ufeff" + table.map((row) => row.map(csvCell).join(",")).join("\r\n");
+}
+
+export const PROJECT_DETAIL_REPORT_FILENAME = "project-detail-report.csv";

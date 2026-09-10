@@ -70,8 +70,13 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/manage/team-timeseries",
         "/api/manage/telemetry/push",
         "/api/manage/timeseries",
+        "/api/manage/usage-detail-export",
         "/api/manage/usage-export",
         "/api/manage/workspaces",
+        # 크레딧 풀·그룹 한도(2026-09-10) — 워크스페이스 단위 팀 설정이라 서버 manage DB 가 진실원천.
+        "/api/manage/credit-plan",
+        "/api/manage/credit-plan/{workspace_id}",
+        "/api/manage/credit-plan/{workspace_id}/settings",
         "/api/members",
         "/api/members/{uid}/global-roles",
         "/api/notifications/comments",

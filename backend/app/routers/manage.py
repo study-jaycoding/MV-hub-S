@@ -541,6 +541,33 @@ def usage_export(
     }
 
 
+@router.get("/usage-detail-export")
+def usage_detail_export(
+    request: Request,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    project_id: Optional[str] = None,
+    creator_uid: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    model: Optional[str] = None,
+):
+    """'프로젝트 상세 보고서' — 생성물 1건 = 1행(프로젝트·폴더·작성자·크레딧·소요시간). HF 호환 usage-export 와
+    별도 단추(Jay 결정 2026-09-10, 2안). 권한 규칙은 usage-export 와 동일(멤버=본인 강제)."""
+    if _proxy.proxying():
+        return _proxy.proxy_get("/api/manage/usage-detail-export", request)
+    viewer = _usage_viewer(request)
+    if viewer is not None:
+        creator_uid = None
+    _refresh_isolated_telemetry()
+    from ..manage_db import team_usage_detail_export as _export
+
+    return {
+        "rows": _export(
+            date_from, date_to, project_id, creator_uid, workspace_id, model, viewer=viewer
+        )
+    }
+
+
 # ── 서버 공유본 HF 삭제 검토(서버가 CLI 없이, 로컬이 검증 결과를 올린다) ──────────────
 class HfCheckResult(BaseModel):
     gen_id: str
