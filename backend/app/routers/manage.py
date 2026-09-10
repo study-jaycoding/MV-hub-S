@@ -651,6 +651,7 @@ class CreditGroupIn(BaseModel):
     id: Optional[str] = None
     name: str
     monthly_limit: Optional[int] = Field(default=None, ge=0)  # None = ∞
+    limit_period: Literal["day", "week", "month"] = "month"  # month 만 이월, day/week 는 그 기간 안에서만
     remaining_override: Optional[int] = None  # 지금 남은 양 보정(이월 포함) — 저장 시 재기준화
 
 

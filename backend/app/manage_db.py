@@ -518,6 +518,27 @@ def workspace_email_usage(workspace_id: str, month_from: Optional[str] = None) -
     return [dict(r) for r in rows]
 
 
+def workspace_email_period_usage(workspace_id: str, period: str) -> dict[str, dict[str, Any]]:
+    """워크스페이스의 **현재 주기**(day=오늘·week=이번 주·month=이번 달, localtime) 이메일별 크레딧 합·미상 수.
+    그룹 한도 주기가 매월이 아닐 때(이월 없음) 쓴다. 규칙은 예산 주기(_PERIOD_MATCH)와 같다."""
+    cond = _PERIOD_MATCH.get(period)
+    if not cond:
+        return {}
+    with get_connection() as conn:
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='team_generation_fact'"
+        ).fetchone():
+            return {}
+        rows = conn.execute(
+            f"SELECT account_email AS email, COALESCE(SUM({_CREDIT}),0) AS credits, "
+            f"SUM(CASE WHEN real_credits IS NULL AND est_credits IS NULL THEN 1 ELSE 0 END) AS unknown "
+            f"FROM team_generation_fact WHERE workspace_scope='team' AND workspace_id=? AND {cond} "
+            f"GROUP BY account_email",
+            (workspace_id,),
+        ).fetchall()
+    return {r["email"]: {"credits": r["credits"], "unknown": r["unknown"]} for r in rows}
+
+
 def team_usage_export(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
     project_id: Optional[str] = None, creator_uid: Optional[str] = None,

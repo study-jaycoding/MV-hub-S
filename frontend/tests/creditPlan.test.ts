@@ -9,6 +9,8 @@ import {
   mergeTopupsFromServer,
   newGroupId,
   niceCeil,
+  periodSuffix,
+  periodUsageLabel,
   projectDepletion,
   remainingTone,
   stripThousands,
@@ -36,6 +38,10 @@ describe("remainingTone — 남은 양 기준 경고색", () => {
     expect(usagePercent(300, null)).toBeNull();
     expect(usagePercent(300, 0)).toBeNull();
     expect(limitTotal([{ monthly_limit: 1000 }, { monthly_limit: null }, { monthly_limit: 500 }])).toBe(1500);
+    // 매일·매주 한도는 월 충전과 비교할 수 없어 합에서 뺀다
+    expect(limitTotal([{ monthly_limit: 1000, limit_period: "month" }, { monthly_limit: 300, limit_period: "day" }, { monthly_limit: 700, limit_period: "week" }])).toBe(1000);
+    expect([periodSuffix("day"), periodSuffix("week"), periodSuffix("month"), periodSuffix(undefined)]).toEqual(["/일", "/주", "/월", "/월"]);
+    expect([periodUsageLabel("day"), periodUsageLabel("week"), periodUsageLabel(undefined)]).toEqual(["오늘", "이번 주", "이번 달"]);
   });
 });
 
@@ -100,8 +106,8 @@ describe("설정 초안 — 검사와 저장 본문", () => {
     expect("monthly_topup" in body).toBe(false);
     expect(body.topups).toEqual([{ id: "t1", day: "2026-09-03", credits: 3000, note: "긴급" }]);
     expect(body.groups).toEqual([
-      { id: "g1", name: "Artist", monthly_limit: 1000, remaining_override: null },
-      { id: "g2", name: "TD", monthly_limit: null, remaining_override: null },
+      { id: "g1", name: "Artist", monthly_limit: 1000, limit_period: "month", remaining_override: null },
+      { id: "g2", name: "TD", monthly_limit: null, limit_period: "month", remaining_override: null },
     ]);
     expect(body.members).toEqual([{ email: "a@x", group_id: "g1" }, { email: "c@x", group_id: null }]);
   });
@@ -126,11 +132,11 @@ describe("설정 초안 — 검사와 저장 본문", () => {
     expect(id).toMatch(/^[0-9a-f]{32}$/);
     const withNew = {
       ...draft,
-      groups: [...draft.groups, { id, isNew: true, name: "New", limitInput: "300", unlimited: false, overrideInput: "", remaining: null, usedMonth: 0, memberCount: 0 }],
+      groups: [...draft.groups, { id, isNew: true, name: "New", limitInput: "300", limitPeriod: "week" as const, unlimited: false, overrideInput: "", remaining: null, usedMonth: 0, memberCount: 0 }],
       members: draft.members.map((member) => (member.email === "c@x" ? { ...member, group_id: id } : member)),
     };
     const body = draftToBody(withNew);
-    expect(body.groups[2]).toEqual({ id, name: "New", monthly_limit: 300, remaining_override: null });
+    expect(body.groups![2]).toEqual({ id, name: "New", monthly_limit: 300, limit_period: "week", remaining_override: null });
     expect(body.members).toContainEqual({ email: "c@x", group_id: id });
     expect(draftMemberCount(withNew, id)).toBe(1);
   });
@@ -142,7 +148,7 @@ describe("긴급 충전 줄 단위 저장", () => {
       workspace_id: "ws1", month: "2026-09", plan: { monthly_topup: 20000, note: null, revision: 3, updated_at: null },
       groups: [], members: [], topups: [{ id: "t1", day: "2026-09-03", credits: 3000, note: null }],
     });
-    const edited = { ...draft, groups: [{ id: "g9", isNew: true, name: "편집중", limitInput: "1", unlimited: false, overrideInput: "", remaining: null, usedMonth: 0, memberCount: 0 }], dirty: true };
+    const edited = { ...draft, groups: [{ id: "g9", isNew: true, name: "편집중", limitInput: "1", limitPeriod: "month" as const, unlimited: false, overrideInput: "", remaining: null, usedMonth: 0, memberCount: 0 }], dirty: true };
     const body = topupsOnlyBody(edited, [{ id: "t1", day: "2026-09-03", creditsInput: "3500", note: " 추가 " }]);
     expect(body).toEqual({ revision: 3, note: null, topups: [{ id: "t1", day: "2026-09-03", credits: 3500, note: "추가" }] });
     expect("groups" in body).toBe(false);

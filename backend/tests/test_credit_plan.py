@@ -339,6 +339,30 @@ class CreditPlanTests(unittest.TestCase):
             self.assertIn("pool", full)
             self.assertEqual(manage_router.credit_plan_settings("ws1", pm)["plan"]["revision"], 1)
 
+    def test_day_and_week_limits_count_only_current_period_without_carry(self) -> None:
+        # a 의 이번 달 170 은 전부 '지금' 만든 것 → 오늘·이번 주 사용도 170. b 는 이번 주 30(지난달 70 은 밖).
+        settings = self._save(0, [{"name": "Daily", "monthly_limit": 500, "limit_period": "day"},
+                                  {"name": "Weekly", "monthly_limit": 100, "limit_period": "week"}], [])
+        ids = {g["name"]: g["id"] for g in settings["groups"]}
+        settings = self._save(1, [{"id": ids["Daily"], "name": "Daily", "monthly_limit": 500, "limit_period": "day"},
+                                  {"id": ids["Weekly"], "name": "Weekly", "monthly_limit": 100, "limit_period": "week"}],
+                              [{"email": "a@x", "group_id": ids["Daily"]}, {"email": "b@x", "group_id": ids["Weekly"]}])
+        daily = self._group(settings, "Daily")
+        self.assertEqual((daily["limit_period"], daily["used_period"], daily["remaining"], daily["unknown_period"]), ("day", 170, 330, 1))
+        weekly = self._group(settings, "Weekly")
+        self.assertEqual((weekly["limit_period"], weekly["used_period"], weekly["remaining"]), ("week", 30, 70))
+        self.assertTrue(daily["estimated"])
+        # 매일 → 매월로 바꾸면 이월 0 에서 시작(base 는 이번 달)
+        settings = self._save(2, [{"id": ids["Daily"], "name": "Daily", "monthly_limit": 500, "limit_period": "month"},
+                                  {"id": ids["Weekly"], "name": "Weekly", "monthly_limit": 100, "limit_period": "week"}], [])
+        daily = self._group(settings, "Daily")
+        self.assertEqual((daily["limit_period"], daily["base_balance"], daily["remaining"]), ("month", 0, 330))
+        with self.assertRaises(ValueError):
+            self._save(3, [{"name": "X", "monthly_limit": 1, "limit_period": "year"}], [])
+        # 멤버 뷰도 기간 사용을 준다
+        mine = plan_repo.plan_view("ws1", viewer=("u_b", "b@x"))["my_group"]
+        self.assertEqual((mine["name"], mine["limit_period"], mine["my_used_period"]), ("Weekly", "week", 30))
+
     # ── 월 충전(파생)·긴급 충전 ──
     def test_monthly_topup_is_derived_from_monthly_budgets(self) -> None:
         with db.get_connection() as conn:

@@ -26,10 +26,25 @@ export interface CreditTopup {
   note: string | null;
 }
 
+export type LimitPeriod = "day" | "week" | "month"; // month 만 이월, day/week 는 그 기간 안에서만
+
+export function periodSuffix(period: LimitPeriod | undefined): string {
+  return period === "day" ? "/일" : period === "week" ? "/주" : "/월";
+}
+
+export function periodUsageLabel(period: LimitPeriod | undefined): string {
+  return period === "day" ? "오늘" : period === "week" ? "이번 주" : "이번 달";
+}
+
 export interface CreditGroupSummary {
   id: string;
   name: string;
   monthly_limit: number | null; // null = ∞
+  limit_period?: LimitPeriod; // 구서버는 없음(=month)
+  used_period?: number; // 한도 주기 안 사용(month 면 used_month 와 같음)
+  unknown_period?: number;
+  my_used_period?: number; // 멤버 뷰만
+  my_unknown_period?: number;
   base_month?: string;
   base_balance?: number;
   member_count: number;
@@ -79,7 +94,7 @@ export interface CreditPlanSettings {
 export interface CreditPlanSaveBody {
   revision: number;
   note: string | null;
-  groups?: { id?: string; name: string; monthly_limit: number | null; remaining_override?: number | null }[]; // 없으면 그룹·배정 그대로
+  groups?: { id?: string; name: string; monthly_limit: number | null; limit_period: LimitPeriod; remaining_override?: number | null }[]; // 없으면 그룹·배정 그대로
   members?: { email: string; group_id: string | null }[];
   topups?: { id?: string; day: string; credits: number; note: string | null }[]; // 전체 교체 · 없으면 그대로
 }
@@ -102,9 +117,12 @@ export function usagePercent(used: number, limit: number | null): number | null 
   return Math.round((used / limit) * 100);
 }
 
-/** 유한한 월 한도의 합(∞ 그룹 제외). 충전액과 비교해 "한도 합이 충전을 넘음" 경고에 쓴다. */
-export function limitTotal(groups: { monthly_limit: number | null }[]): number {
-  return groups.reduce((sum, group) => sum + (group.monthly_limit ?? 0), 0);
+/** 유한한 **매월** 한도의 합(∞·매일·매주 그룹 제외). 충전액(월)과 비교해 "한도 합이 충전을 넘음" 경고에 쓴다. */
+export function limitTotal(groups: { monthly_limit: number | null; limit_period?: LimitPeriod }[]): number {
+  return groups.reduce(
+    (sum, group) => sum + ((group.limit_period ?? "month") === "month" ? group.monthly_limit ?? 0 : 0),
+    0,
+  );
 }
 
 // ── 잔액 추이 ──────────────────────────────────────────────────────────────
@@ -198,6 +216,7 @@ export interface DraftGroup {
   isNew: boolean;
   name: string;
   limitInput: string; // 숫자만 · 빈 값 + unlimited=false 는 오류
+  limitPeriod: LimitPeriod;
   unlimited: boolean;
   overrideInput: string; // 지금 남은 양 보정(비우면 서버 계산 유지) · 숫자만(음수 허용 '-')
   remaining: number | null; // 서버가 준 현재 남은 양(표시용)
@@ -237,6 +256,7 @@ export function draftFromSettings(settings: CreditPlanSettings): CreditPlanDraft
       isNew: false,
       name: group.name,
       limitInput: group.monthly_limit == null ? "" : String(group.monthly_limit),
+      limitPeriod: group.limit_period ?? "month",
       unlimited: group.monthly_limit == null,
       overrideInput: "",
       remaining: group.remaining,
@@ -303,6 +323,7 @@ export function draftToBody(draft: CreditPlanDraft): CreditPlanSaveBody {
       id: group.id,
       name: group.name.trim(),
       monthly_limit: group.unlimited ? null : parseNonNegative(group.limitInput) ?? null,
+      limit_period: group.limitPeriod,
       remaining_override: group.overrideInput.trim() ? Number(group.overrideInput) : null,
     })),
     members: draft.members.map((member) => ({

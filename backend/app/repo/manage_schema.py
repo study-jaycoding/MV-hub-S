@@ -166,6 +166,7 @@ _SCHEMA = (
         workspace_id TEXT NOT NULL,
         name TEXT NOT NULL,
         monthly_limit INTEGER,
+        limit_period TEXT NOT NULL DEFAULT 'month',
         base_month TEXT NOT NULL,
         base_balance INTEGER NOT NULL DEFAULT 0,
         sort_order INTEGER NOT NULL DEFAULT 0,
@@ -597,6 +598,11 @@ def ensure_manage_schema(conn) -> None:
         return
     for statement in _SCHEMA:
         conn.execute(statement)
+
+    # 크레딧 그룹 한도 주기(day/week/month) — 먼저 만들어진 표에 열이 없으면 보강(기본 month)
+    group_columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_credit_group)")}
+    if group_columns and "limit_period" not in group_columns:
+        conn.execute("ALTER TABLE workspace_credit_group ADD COLUMN limit_period TEXT NOT NULL DEFAULT 'month'")
 
     task_columns = {row[1] for row in conn.execute("PRAGMA table_info(project_task)")}
     for column in ("sequence", "description", "folder_path", "source_last_seen_at"):

@@ -8,6 +8,8 @@ import { manageApi } from "../../lib/manageApi";
 import {
   limitTotal,
   niceCeil,
+  periodSuffix,
+  periodUsageLabel,
   projectDepletion,
   remainingTone,
   topupSteps,
@@ -43,10 +45,11 @@ function dayLabel(day: string): string {
 
 function GroupRemaining({ group }: { group: CreditGroupSummary }) {
   const tone = remainingTone(group.remaining, group.monthly_limit);
-  const percent = usagePercent(group.used_month, group.monthly_limit);
+  const percent = usagePercent(group.used_period ?? group.used_month, group.monthly_limit);
+  const carries = (group.limit_period ?? "month") === "month";
   return (
     <>
-      <td className="tnum">
+      <td className="tnum" title={carries ? "이월 포함" : "이 기간 안에서만(이월 없음)"}>
         {group.remaining == null ? "—" : n(group.remaining)}
         {group.estimated ? <span className="credit-est" title={`미상 ${group.unknown_since_base}건이 섞여 추정치`}> 추정</span> : null}
       </td>
@@ -190,8 +193,12 @@ export function CreditPoolSection({
         ) : (
           <div className="credit-pool-grid mine">
             <div><span>그룹</span><strong>{mine.name}</strong><em>{mine.member_count}명</em></div>
-            <div><span>월 한도</span><strong>{mine.monthly_limit == null ? "∞" : cr(mine.monthly_limit)}</strong></div>
-            <div><span>그룹 이번 달 사용</span><strong>{cr(mine.used_month)}</strong><em>그중 내 사용 {cr(mine.my_used_month)}{mine.my_unknown_month ? ` · 미상 ${mine.my_unknown_month}건` : ""}</em></div>
+            <div><span>한도 {periodSuffix(mine.limit_period)}</span><strong>{mine.monthly_limit == null ? "∞" : cr(mine.monthly_limit)}</strong></div>
+            <div>
+              <span>그룹 {periodUsageLabel(mine.limit_period)} 사용</span>
+              <strong>{cr(mine.used_period ?? mine.used_month)}</strong>
+              <em>그중 내 사용 {cr(mine.my_used_period ?? mine.my_used_month)}{(mine.my_unknown_period ?? mine.my_unknown_month) ? ` · 미상 ${mine.my_unknown_period ?? mine.my_unknown_month}건` : ""}</em>
+            </div>
             <div className={`left tone-${remainingTone(mine.remaining, mine.monthly_limit)}`}>
               <span>남은 양 (이월 포함)</span>
               <strong>{mine.remaining == null ? "∞" : cr(mine.remaining)}</strong>
@@ -270,15 +277,18 @@ export function CreditPoolSection({
         <div className="usage-table-scroll">
           <table className="usage-table credit-group-table">
             <thead>
-              <tr><th>그룹</th><th>인원</th><th>월 한도</th><th>이번 달 사용</th><th>남음 (이월 포함)</th><th>사용률</th></tr>
+              <tr><th>그룹</th><th>인원</th><th>한도</th><th>기간 사용</th><th>남음</th><th>사용률</th></tr>
             </thead>
             <tbody>
               {groups.map((group) => (
                 <tr key={group.id}>
                   <td><b>{group.name}</b></td>
                   <td className="tnum">{group.member_count}</td>
-                  <td className="tnum">{group.monthly_limit == null ? "∞" : n(group.monthly_limit)}</td>
-                  <td className="tnum">{n(group.used_month)}{group.unknown_month ? <span className="credit-est"> · 미상 {group.unknown_month}</span> : null}</td>
+                  <td className="tnum">{group.monthly_limit == null ? "∞" : `${n(group.monthly_limit)} ${periodSuffix(group.limit_period)}`}</td>
+                  <td className="tnum">
+                    {n(group.used_period ?? group.used_month)}
+                    <span className="credit-est"> {periodUsageLabel(group.limit_period)}{(group.unknown_period ?? group.unknown_month) ? ` · 미상 ${group.unknown_period ?? group.unknown_month}` : ""}</span>
+                  </td>
                   <GroupRemaining group={group} />
                 </tr>
               ))}

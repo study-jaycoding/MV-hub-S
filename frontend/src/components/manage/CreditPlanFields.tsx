@@ -5,12 +5,14 @@
 import { useEffect, useState } from "react";
 import { isHttpStatus, isRouteMissing } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
+import { BUDGET_PERIOD_OPTIONS } from "../../lib/projectPlanning";
 import {
   draftFromSettings,
   draftMemberCount,
   formatThousands,
   mergeTopupsFromServer,
   newGroupId,
+  periodSuffix,
   stripThousands,
   todayLocal,
   topupsOnlyBody,
@@ -19,6 +21,7 @@ import {
   type CreditPlanMember,
   type DraftGroup,
   type DraftTopup,
+  type LimitPeriod,
 } from "../../lib/creditPlan";
 
 function n(value: number | null): string {
@@ -46,6 +49,7 @@ function GroupEditor({
   const [name, setName] = useState(group.name);
   const [unlimited, setUnlimited] = useState(group.unlimited);
   const [limitInput, setLimitInput] = useState(group.limitInput);
+  const [limitPeriod, setLimitPeriod] = useState<LimitPeriod>(group.limitPeriod);
   const [overrideInput, setOverrideInput] = useState(group.overrideInput);
   const [emails, setEmails] = useState<string[]>(
     () => draft.members.filter((member) => member.group_id === group.id).map((member) => member.email),
@@ -73,7 +77,7 @@ function GroupEditor({
       return;
     }
     onApply(
-      { ...group, name: trimmed, unlimited, limitInput: stripThousands(limitInput), overrideInput: overrideInput.trim() },
+      { ...group, name: trimmed, unlimited, limitInput: stripThousands(limitInput), limitPeriod, overrideInput: overrideInput.trim() },
       emails,
     );
   };
@@ -100,7 +104,7 @@ function GroupEditor({
           </label>
           {!unlimited ? (
             <label className="credit-modal-field">
-              <span>월 한도</span>
+              <span>한도</span>
               <div className="manage-budget-limit">
                 <input
                   type="text"
@@ -109,7 +113,17 @@ function GroupEditor({
                   placeholder="예: 5,000"
                   onChange={(event) => { setLimitInput(stripThousands(event.target.value)); setError(""); }}
                 />
-                <em>크레딧 / 월</em>
+                <em>크레딧</em>
+                <select
+                  value={limitPeriod}
+                  aria-label="한도 주기"
+                  title="매월만 남은 양이 다음 달로 넘어갑니다(힉스필드 enterprise). 매일·매주는 그 기간 안에서만 셉니다."
+                  onChange={(event) => setLimitPeriod(event.target.value as LimitPeriod)}
+                >
+                  {BUDGET_PERIOD_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
               </div>
             </label>
           ) : null}
@@ -274,7 +288,7 @@ export function CreditPlanFields({
     setEditing(null);
   };
   const startNew = () => setEditing({
-    id: newGroupId(), isNew: true, name: "", limitInput: "", unlimited: false, overrideInput: "",
+    id: newGroupId(), isNew: true, name: "", limitInput: "", limitPeriod: "month", unlimited: false, overrideInput: "",
     remaining: null, usedMonth: 0, memberCount: 0,
   });
   const updateTopup = (id: string, patch: Partial<DraftTopup>) => {
@@ -368,12 +382,12 @@ export function CreditPlanFields({
           </div>
           {draft.groups.length ? (
             <table className="credit-plan-table">
-              <thead><tr><th>그룹</th><th>월 한도</th><th>인원</th><th>지금 남은 양</th></tr></thead>
+              <thead><tr><th>그룹</th><th>한도</th><th>인원</th><th>지금 남은 양</th></tr></thead>
               <tbody>
                 {draft.groups.map((group) => (
                   <tr key={group.id} onClick={() => setEditing(group)} title="클릭하면 그룹 창이 열립니다">
                     <td><b>{group.name}</b>{group.isNew ? <small> 저장 전</small> : null}</td>
-                    <td>{group.unlimited ? "∞" : `${formatThousands(group.limitInput)} /월`}</td>
+                    <td>{group.unlimited ? "∞" : `${formatThousands(group.limitInput)} ${periodSuffix(group.limitPeriod)}`}</td>
                     <td>{draftMemberCount(draft, group.id)}</td>
                     <td>{group.isNew ? "저장 후 계산" : n(group.remaining)}{group.overrideInput ? <small> 보정 예정</small> : null}</td>
                   </tr>
