@@ -145,19 +145,19 @@ class CreditPlanTests(unittest.TestCase):
             sql_month = conn.execute("SELECT strftime('%Y-%m','now','localtime')").fetchone()[0]
         self.assertEqual(self.month, sql_month)
 
-    def test_workspace_email_usage_counts_deleted_and_unknown_by_localtime_month(self) -> None:
-        rows = {(r["month"], r["email"]): r for r in manage_db.workspace_email_usage("ws1")}
-        a = rows[(self.month, "a@x")]
+    def test_workspace_email_usage_counts_deleted_and_unknown_by_localtime_day(self) -> None:
+        with manage_db.get_connection() as conn:
+            today = conn.execute("SELECT date('now','localtime')").fetchone()[0]
+        rows = {(r["day"], r["email"]): r for r in manage_db.workspace_email_usage("ws1")}
+        a = rows[(today, "a@x")]
         self.assertEqual((round(a["credits"]), a["count"], a["unknown"]), (170, 4, 1))
-        self.assertEqual(round(rows[(self.month, "b@x")]["credits"]), 30)
-        # UTC 8/31 20:00 은 KST 9/1 — 월 판정은 localtime. 기대값은 sqlite 자신에게 물어 시간대 무관하게 고정.
+        self.assertEqual(round(rows[(today, "b@x")]["credits"]), 30)
+        # UTC 8/31 20:00 은 KST 9/1 — 날짜 판정은 localtime. 기대값은 sqlite 자신에게 물어 시간대 무관하게 고정.
         manage_db.upsert_facts("a@x", "u_a", [_fact("edge", real_credits=1, created_at="2026-08-31T20:00:00Z")])
         with manage_db.get_connection() as conn:
-            expected = conn.execute(
-                "SELECT strftime('%Y-%m', '2026-08-31T20:00:00Z', 'localtime')"
-            ).fetchone()[0]
-        rows = manage_db.workspace_email_usage("ws1", "2026-08")
-        self.assertTrue(any(r["month"] == expected and r["email"] == "a@x" for r in rows))
+            expected = conn.execute("SELECT date('2026-08-31T20:00:00Z', 'localtime')").fetchone()[0]
+        rows = manage_db.workspace_email_usage("ws1", "2026-08-01")
+        self.assertTrue(any(r["day"] == expected and r["email"] == "a@x" for r in rows))
         self.assertEqual(manage_db.workspace_email_usage("ws-none"), [])
 
     # ── 설정 저장·재기준화 ──
@@ -206,7 +206,7 @@ class CreditPlanTests(unittest.TestCase):
         artist = self._group(settings, "Artist")
         # 이번 달 한도가 2000 이 됐으니 남은 양 = 이월 0 + 2000 − 이번 달 사용 200. 과거 달은 건드리지 않는다.
         self.assertEqual(artist["remaining"], 1800)
-        self.assertEqual((artist["base_month"], artist["base_balance"]), (self.month, 0))
+        self.assertEqual((artist["base_start"], artist["base_balance"]), (f"{self.month}-01", 0))
         self.assertEqual([g["name"] for g in settings["groups"]], ["Artist"])  # TD 는 목록에서 빠져 삭제
 
     def test_carry_over_across_months_is_not_rewritten_by_a_change(self) -> None:
@@ -218,13 +218,13 @@ class CreditPlanTests(unittest.TestCase):
         y, m = (int(x) for x in self.month.split("-"))
         last_month = f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
         with db.get_connection() as conn:  # 지난달부터 운영해 온 그룹으로 만든다(이월 검증용)
-            conn.execute("UPDATE workspace_credit_group SET base_month=? WHERE id=?", (last_month, artist_id))
+            conn.execute("UPDATE workspace_credit_group SET base_start=? WHERE id=?", (f"{last_month}-01", artist_id))
         artist = self._group(plan_repo.plan_view("ws1"), "Artist")
         self.assertEqual(artist["remaining"], 1900)  # 0 + 1000 × 2개월 − (지난달 70 + 이번 달 30)
         # 이번 달 한도를 2000 으로 — 지난달은 그대로(1000 − 70 = 930 이월), 이번 달만 새 한도.
         settings = self._save(2, [{"id": artist_id, "name": "Artist", "monthly_limit": 2000}], [])
         artist = self._group(settings, "Artist")
-        self.assertEqual((artist["base_month"], artist["base_balance"], artist["remaining"]), (self.month, 930, 2900))
+        self.assertEqual((artist["base_start"], artist["base_balance"], artist["remaining"]), (f"{self.month}-01", 930, 2900))
 
     def test_member_move_rebaselines_both_groups(self) -> None:
         settings = self._seed_artist_td()
@@ -275,8 +275,8 @@ class CreditPlanTests(unittest.TestCase):
         self.assertEqual((artist["id"], artist["member_count"], artist["remaining"]), (gid, 2, 800))
         # 다른 워크스페이스가 쓰는 id 는 거부 — 형식이 맞아도 소유 검증.
         with db.get_connection() as conn:
-            conn.execute("INSERT INTO workspace_credit_group(id, workspace_id, name, base_month) VALUES(?,?,?,?)",
-                         ("f" * 32, "ws2", "Other", self.month))
+            conn.execute("INSERT INTO workspace_credit_group(id, workspace_id, name, base_start) VALUES(?,?,?,?)",
+                         ("f" * 32, "ws2", "Other", f"{self.month}-01"))
         with self.assertRaises(ValueError):
             self._save(1, [{"id": gid, "name": "Artist", "monthly_limit": 1000}, {"id": "f" * 32, "name": "X", "monthly_limit": 1}], [])
 
@@ -339,8 +339,9 @@ class CreditPlanTests(unittest.TestCase):
             self.assertIn("pool", full)
             self.assertEqual(manage_router.credit_plan_settings("ws1", pm)["plan"]["revision"], 1)
 
-    def test_day_and_week_limits_count_only_current_period_without_carry(self) -> None:
+    def test_day_and_week_limits_carry_over_by_period(self) -> None:
         # a 의 이번 달 170 은 전부 '지금' 만든 것 → 오늘·이번 주 사용도 170. b 는 이번 주 30(지난달 70 은 밖).
+        # 일·주 한도도 enterprise 라 이월된다(Jay) — 기준일부터 지난 기간 수 × 한도가 쌓이고 사용만큼 빠진다.
         settings = self._save(0, [{"name": "Daily", "monthly_limit": 500, "limit_period": "day"},
                                   {"name": "Weekly", "monthly_limit": 100, "limit_period": "week"}], [])
         ids = {g["name"]: g["id"] for g in settings["groups"]}
@@ -352,11 +353,17 @@ class CreditPlanTests(unittest.TestCase):
         weekly = self._group(settings, "Weekly")
         self.assertEqual((weekly["limit_period"], weekly["used_period"], weekly["remaining"]), ("week", 30, 70))
         self.assertTrue(daily["estimated"])
-        # 매일 → 매월로 바꾸면 이월 0 에서 시작(base 는 이번 달)
+        # 어제부터 운영한 매일 그룹: 어제분 한도 500 이 이월 → 0 + 500×2 − 170 = 830
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        with db.get_connection() as conn:
+            conn.execute("UPDATE workspace_credit_group SET base_start=? WHERE id=?", (yesterday, ids["Daily"]))
+        self.assertEqual(self._group(plan_repo.plan_view("ws1"), "Daily")["remaining"], 830)
+        # 매일 → 매월로 바꾸면 옛 주기로 이월분(어제까지 500)을 넘기고 이번 달은 새 주기로: 500 + 500 − 170 = 830
         settings = self._save(2, [{"id": ids["Daily"], "name": "Daily", "monthly_limit": 500, "limit_period": "month"},
                                   {"id": ids["Weekly"], "name": "Weekly", "monthly_limit": 100, "limit_period": "week"}], [])
         daily = self._group(settings, "Daily")
-        self.assertEqual((daily["limit_period"], daily["base_balance"], daily["remaining"]), ("month", 0, 330))
+        self.assertEqual((daily["limit_period"], daily["base_start"], daily["base_balance"], daily["remaining"]),
+                         ("month", f"{self.month}-01", 500, 830))
         with self.assertRaises(ValueError):
             self._save(3, [{"name": "X", "monthly_limit": 1, "limit_period": "year"}], [])
         # 멤버 뷰도 기간 사용을 준다

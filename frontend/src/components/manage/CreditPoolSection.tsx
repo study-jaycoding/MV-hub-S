@@ -8,6 +8,7 @@ import { manageApi } from "../../lib/manageApi";
 import {
   limitTotal,
   niceCeil,
+  overrideBody,
   periodSuffix,
   periodUsageLabel,
   projectDepletion,
@@ -43,15 +44,51 @@ function dayLabel(day: string): string {
   return `${Number(m)}/${Number(d)}`;
 }
 
-function GroupRemaining({ group }: { group: CreditGroupSummary }) {
+interface AdjustState {
+  open: boolean;
+  value: string;
+  busy: boolean;
+  error: string;
+  onOpen: () => void;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+}
+
+function GroupRemaining({ group, adjust }: { group: CreditGroupSummary; adjust?: AdjustState }) {
   const tone = remainingTone(group.remaining, group.monthly_limit);
   const percent = usagePercent(group.used_period ?? group.used_month, group.monthly_limit);
-  const carries = (group.limit_period ?? "month") === "month";
   return (
     <>
-      <td className="tnum" title={carries ? "이월 포함" : "이 기간 안에서만(이월 없음)"}>
+      <td className="tnum" title="이월 포함">
         {group.remaining == null ? "—" : n(group.remaining)}
-        {group.estimated ? <span className="credit-est" title={`미상 ${group.unknown_since_base}건이 섞여 추정치`}> 추정</span> : null}
+        {group.estimated && adjust && !adjust.open ? (
+          <button
+            type="button"
+            className="credit-est-btn"
+            title={`미상 ${group.unknown_since_base}건이 섞여 추정치 — 누르면 힉스필드 관리 창의 남은 양으로 맞춥니다`}
+            onClick={adjust.onOpen}
+          >
+            추정
+          </button>
+        ) : group.estimated ? <span className="credit-est" title={`미상 ${group.unknown_since_base}건이 섞여 추정치`}> 추정</span> : null}
+        {adjust?.open ? (
+          <div className="credit-adjust" onClick={(event) => event.stopPropagation()}>
+            <input
+              type="text"
+              inputMode="numeric"
+              autoFocus
+              value={adjust.value}
+              placeholder="힉스필드 남은 양"
+              aria-label="힉스필드 남은 양"
+              onChange={(event) => adjust.onChange(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Enter") adjust.onSubmit(); if (event.key === "Escape") adjust.onCancel(); }}
+            />
+            <button type="button" disabled={adjust.busy} onClick={adjust.onSubmit}>{adjust.busy ? "저장 중…" : "맞추기"}</button>
+            <button type="button" className="ghost" disabled={adjust.busy} onClick={adjust.onCancel}>취소</button>
+            {adjust.error ? <span className="credit-est bad">{adjust.error}</span> : null}
+          </div>
+        ) : null}
       </td>
       <td>
         <span className={`credit-pct tone-${tone}`}>{percent == null ? "∞" : `${percent}%`}</span>
@@ -148,6 +185,8 @@ export function CreditPoolSection({
   const [view, setView] = useState<CreditPlanView | null>(null);
   const [error, setError] = useState("");
   const [hidden, setHidden] = useState(false);
+  const [tick, setTick] = useState(0); // '추정 맞추기' 저장 뒤 다시 읽기
+  const [adjust, setAdjust] = useState<{ id: string; value: string; busy: boolean; error: string } | null>(null);
 
   useEffect(() => {
     if (!workspaceId) {
@@ -172,7 +211,39 @@ export function CreditPoolSection({
         setError(`크레딧 풀을 불러오지 못했습니다. ${String(reason)}`);
       });
     return () => { active = false; };
-  }, [workspaceId, reloadSignal]);
+  }, [workspaceId, reloadSignal, tick]);
+
+  // '추정' → 힉스필드 관리 창의 남은 양을 적어 우리 계산을 그 값에 맞춘다(그룹 재기준화, 배정·다른 그룹은 그대로).
+  const submitAdjust = async () => {
+    if (!view || !adjust || !workspaceId || adjust.busy) return;
+    const digits = adjust.value.replace(/[^\d-]/g, "");
+    if (!digits || !Number.isInteger(Number(digits))) {
+      setAdjust({ ...adjust, error: "정수로 입력" });
+      return;
+    }
+    setAdjust({ ...adjust, busy: true, error: "" });
+    try {
+      await manageApi.saveCreditPlan(workspaceId, overrideBody(view, adjust.id, Number(digits)));
+      setAdjust(null);
+      setTick((value) => value + 1);
+    } catch (reason) {
+      setAdjust({
+        ...adjust,
+        busy: false,
+        error: isHttpStatus(reason, 409) ? "설정이 바뀜 — 새로고침 뒤 다시" : `실패: ${String(reason).replace(/^Error:\s*/, "")}`,
+      });
+    }
+  };
+  const adjustFor = (groupId: string): AdjustState => ({
+    open: adjust?.id === groupId,
+    value: adjust?.id === groupId ? adjust.value : "",
+    busy: adjust?.id === groupId ? adjust.busy : false,
+    error: adjust?.id === groupId ? adjust.error : "",
+    onOpen: () => setAdjust({ id: groupId, value: "", busy: false, error: "" }),
+    onChange: (value) => setAdjust((current) => (current && current.id === groupId ? { ...current, value: value.replace(/[^\d-]/g, "").replace(/\B(?=(\d{3})+(?!\d))/g, ","), error: "" } : current)),
+    onSubmit: () => { void submitAdjust(); },
+    onCancel: () => setAdjust(null),
+  });
 
   if (!workspaceId || hidden) return null;
   if (error) return <div className="usage-error">{error}</div>;
@@ -289,7 +360,7 @@ export function CreditPoolSection({
                     {n(group.used_period ?? group.used_month)}
                     <span className="credit-est"> {periodUsageLabel(group.limit_period)}{(group.unknown_period ?? group.unknown_month) ? ` · 미상 ${group.unknown_period ?? group.unknown_month}` : ""}</span>
                   </td>
-                  <GroupRemaining group={group} />
+                  <GroupRemaining group={group} adjust={adjustFor(group.id)} />
                 </tr>
               ))}
               {unassigned && (unassigned.member_count > 0 || unassigned.used_month > 0) ? (

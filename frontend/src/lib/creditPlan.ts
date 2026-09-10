@@ -45,7 +45,7 @@ export interface CreditGroupSummary {
   unknown_period?: number;
   my_used_period?: number; // 멤버 뷰만
   my_unknown_period?: number;
-  base_month?: string;
+  base_start?: string; // 재기준일(YYYY-MM-DD) — 매니저 설정 창만
   base_balance?: number;
   member_count: number;
   used_month: number;
@@ -65,7 +65,9 @@ export interface CreditUnassigned {
 
 export interface CreditPlanView {
   month: string;
+  today?: string;
   configured: boolean;
+  revision?: number; // 매니저만 — 대시보드에서 '추정 → 힉스필드 값 맞추기' 저장에 쓴다
   pool?: CreditPool; // 매니저만
   groups?: CreditGroupSummary[]; // 매니저만
   unassigned?: CreditUnassigned; // 매니저만
@@ -218,7 +220,6 @@ export interface DraftGroup {
   limitInput: string; // 숫자만 · 빈 값 + unlimited=false 는 오류
   limitPeriod: LimitPeriod;
   unlimited: boolean;
-  overrideInput: string; // 지금 남은 양 보정(비우면 서버 계산 유지) · 숫자만(음수 허용 '-')
   remaining: number | null; // 서버가 준 현재 남은 양(표시용)
   usedMonth: number;
   memberCount: number; // 서버 기준(표시용) — 초안의 실제 인원은 members 로 센다
@@ -258,7 +259,6 @@ export function draftFromSettings(settings: CreditPlanSettings): CreditPlanDraft
       limitInput: group.monthly_limit == null ? "" : String(group.monthly_limit),
       limitPeriod: group.limit_period ?? "month",
       unlimited: group.monthly_limit == null,
-      overrideInput: "",
       remaining: group.remaining,
       usedMonth: group.used_month,
       memberCount: group.member_count,
@@ -297,13 +297,26 @@ export function validateDraft(draft: CreditPlanDraft): string | null {
     names.add(name);
     if (!group.unlimited) {
       const limit = parseNonNegative(group.limitInput);
-      if (limit === undefined || limit === null) return `${name}: 월 한도를 0 이상의 정수로 입력하거나 ∞ 를 켜세요.`;
-    }
-    if (group.overrideInput.trim() && !Number.isInteger(Number(group.overrideInput))) {
-      return `${name}: 남은 양 보정은 정수로 입력하세요.`;
+      if (limit === undefined || limit === null) return `${name}: 한도를 0 이상의 정수로 입력하거나 '한도 없음'을 켜세요.`;
     }
   }
   return null;
+}
+
+/** 대시보드 '추정 → 힉스필드 값 맞추기' 저장 본문 — 그룹 목록은 그대로(배정은 안 보내 서버가 유지), 한 그룹만 남은 양을 R 로.
+ *  view 는 매니저 응답(revision·groups 포함)이어야 한다. */
+export function overrideBody(view: CreditPlanView, groupId: string, remaining: number): CreditPlanSaveBody {
+  return {
+    revision: view.revision ?? 0,
+    note: null,
+    groups: (view.groups || []).map((group) => ({
+      id: group.id,
+      name: group.name,
+      monthly_limit: group.monthly_limit,
+      limit_period: group.limit_period ?? "month",
+      remaining_override: group.id === groupId ? remaining : null,
+    })),
+  };
 }
 
 /** 초안 → 저장 본문. 새 그룹도 클라이언트 id 를 그대로 보내므로 멤버 배정을 같은 저장에 싣는다.
@@ -324,7 +337,6 @@ export function draftToBody(draft: CreditPlanDraft): CreditPlanSaveBody {
       name: group.name.trim(),
       monthly_limit: group.unlimited ? null : parseNonNegative(group.limitInput) ?? null,
       limit_period: group.limitPeriod,
-      remaining_override: group.overrideInput.trim() ? Number(group.overrideInput) : null,
     })),
     members: draft.members.map((member) => ({
       email: member.email,

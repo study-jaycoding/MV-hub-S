@@ -492,51 +492,31 @@ def team_overview(
     }
 
 
-def workspace_email_usage(workspace_id: str, month_from: Optional[str] = None) -> list[dict[str, Any]]:
-    """워크스페이스의 (월 'YYYY-MM' localtime, account_email) 별 크레딧 합·건수·미상 수 — 크레딧 풀·그룹 한도용.
+def workspace_email_usage(workspace_id: str, day_from: Optional[str] = None) -> list[dict[str, Any]]:
+    """워크스페이스의 (날짜 'YYYY-MM-DD' localtime, account_email) 별 크레딧 합·건수·미상 수 — 크레딧 풀·그룹 한도용.
     삭제분(tombstone) 포함(돈은 이미 나갔다), 크레딧 = COALESCE(실제, 견적, 0), 미상 = 둘 다 없음.
-    month_from 이 있으면 그 달 이후만(그룹 base_month 최소값). 워크스페이스 축(scope='team')이라 프로젝트
-    폴더 미배정(미분류) 생성물도 들어간다 — 힉스필드 풀에서 빠진 돈은 전부."""
+    day_from 이 있으면 그날 이후만(그룹 base_start 최소값). 워크스페이스 축(scope='team')이라 프로젝트
+    폴더 미배정(미분류) 생성물도 들어간다 — 힉스필드 풀에서 빠진 돈은 전부. 일·주·월 어느 주기든 호출측이
+    날짜로 묶는다(예산 주기 규칙과 같은 달력: 주=월요일 시작, 월=1일)."""
     where = "WHERE workspace_scope='team' AND workspace_id=?"
     args: list[Any] = [workspace_id]
-    if month_from:
-        where += " AND strftime('%Y-%m', created_at, 'localtime') >= ?"
-        args.append(month_from)
+    if day_from:
+        where += " AND date(created_at, 'localtime') >= ?"
+        args.append(day_from)
     with get_connection() as conn:
         if not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='team_generation_fact'"
         ).fetchone():
             return []
         rows = conn.execute(
-            f"SELECT strftime('%Y-%m', created_at, 'localtime') AS month, account_email AS email, "
+            f"SELECT date(created_at, 'localtime') AS day, account_email AS email, "
             f"COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits, "
             f"SUM(CASE WHEN real_credits IS NULL AND est_credits IS NULL THEN 1 ELSE 0 END) AS unknown "
             f"FROM team_generation_fact {where} AND created_at IS NOT NULL "
-            f"GROUP BY month, account_email",
+            f"GROUP BY day, account_email",
             args,
         ).fetchall()
     return [dict(r) for r in rows]
-
-
-def workspace_email_period_usage(workspace_id: str, period: str) -> dict[str, dict[str, Any]]:
-    """워크스페이스의 **현재 주기**(day=오늘·week=이번 주·month=이번 달, localtime) 이메일별 크레딧 합·미상 수.
-    그룹 한도 주기가 매월이 아닐 때(이월 없음) 쓴다. 규칙은 예산 주기(_PERIOD_MATCH)와 같다."""
-    cond = _PERIOD_MATCH.get(period)
-    if not cond:
-        return {}
-    with get_connection() as conn:
-        if not conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='team_generation_fact'"
-        ).fetchone():
-            return {}
-        rows = conn.execute(
-            f"SELECT account_email AS email, COALESCE(SUM({_CREDIT}),0) AS credits, "
-            f"SUM(CASE WHEN real_credits IS NULL AND est_credits IS NULL THEN 1 ELSE 0 END) AS unknown "
-            f"FROM team_generation_fact WHERE workspace_scope='team' AND workspace_id=? AND {cond} "
-            f"GROUP BY account_email",
-            (workspace_id,),
-        ).fetchall()
-    return {r["email"]: {"credits": r["credits"], "unknown": r["unknown"]} for r in rows}
 
 
 def team_usage_export(

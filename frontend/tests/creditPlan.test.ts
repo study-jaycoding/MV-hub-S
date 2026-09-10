@@ -9,6 +9,7 @@ import {
   mergeTopupsFromServer,
   newGroupId,
   niceCeil,
+  overrideBody,
   periodSuffix,
   periodUsageLabel,
   projectDepletion,
@@ -106,8 +107,8 @@ describe("설정 초안 — 검사와 저장 본문", () => {
     expect("monthly_topup" in body).toBe(false);
     expect(body.topups).toEqual([{ id: "t1", day: "2026-09-03", credits: 3000, note: "긴급" }]);
     expect(body.groups).toEqual([
-      { id: "g1", name: "Artist", monthly_limit: 1000, limit_period: "month", remaining_override: null },
-      { id: "g2", name: "TD", monthly_limit: null, limit_period: "month", remaining_override: null },
+      { id: "g1", name: "Artist", monthly_limit: 1000, limit_period: "month" },
+      { id: "g2", name: "TD", monthly_limit: null, limit_period: "month" },
     ]);
     expect(body.members).toEqual([{ email: "a@x", group_id: "g1" }, { email: "c@x", group_id: null }]);
   });
@@ -118,8 +119,7 @@ describe("설정 초안 — 검사와 저장 본문", () => {
     expect(validateDraft({ ...draft, topups: [{ id: "t2", day: "2026-09-10", creditsInput: "0", note: "" }] })).toContain("크레딧");
     expect(validateDraft({ ...draft, groups: [{ ...draft.groups[0], name: " " }] })).toContain("그룹 이름");
     expect(validateDraft({ ...draft, groups: [draft.groups[0], { ...draft.groups[1], name: "Artist" }] })).toContain("겹칩니다");
-    expect(validateDraft({ ...draft, groups: [{ ...draft.groups[0], limitInput: "" }] })).toContain("월 한도");
-    expect(validateDraft({ ...draft, groups: [{ ...draft.groups[0], overrideInput: "1.5" }] })).toContain("보정");
+    expect(validateDraft({ ...draft, groups: [{ ...draft.groups[0], limitInput: "" }] })).toContain("한도");
   });
   it("삭제된 그룹을 가리키는 배정은 해제(null)로 보낸다", () => {
     const draft = draftFromSettings(settings);
@@ -132,11 +132,11 @@ describe("설정 초안 — 검사와 저장 본문", () => {
     expect(id).toMatch(/^[0-9a-f]{32}$/);
     const withNew = {
       ...draft,
-      groups: [...draft.groups, { id, isNew: true, name: "New", limitInput: "300", limitPeriod: "week" as const, unlimited: false, overrideInput: "", remaining: null, usedMonth: 0, memberCount: 0 }],
+      groups: [...draft.groups, { id, isNew: true, name: "New", limitInput: "300", limitPeriod: "week" as const, unlimited: false, remaining: null, usedMonth: 0, memberCount: 0 }],
       members: draft.members.map((member) => (member.email === "c@x" ? { ...member, group_id: id } : member)),
     };
     const body = draftToBody(withNew);
-    expect(body.groups![2]).toEqual({ id, name: "New", monthly_limit: 300, limit_period: "week", remaining_override: null });
+    expect(body.groups![2]).toEqual({ id, name: "New", monthly_limit: 300, limit_period: "week" });
     expect(body.members).toContainEqual({ email: "c@x", group_id: id });
     expect(draftMemberCount(withNew, id)).toBe(1);
   });
@@ -148,7 +148,7 @@ describe("긴급 충전 줄 단위 저장", () => {
       workspace_id: "ws1", month: "2026-09", plan: { monthly_topup: 20000, note: null, revision: 3, updated_at: null },
       groups: [], members: [], topups: [{ id: "t1", day: "2026-09-03", credits: 3000, note: null }],
     });
-    const edited = { ...draft, groups: [{ id: "g9", isNew: true, name: "편집중", limitInput: "1", limitPeriod: "month" as const, unlimited: false, overrideInput: "", remaining: null, usedMonth: 0, memberCount: 0 }], dirty: true };
+    const edited = { ...draft, groups: [{ id: "g9", isNew: true, name: "편집중", limitInput: "1", limitPeriod: "month" as const, unlimited: false, remaining: null, usedMonth: 0, memberCount: 0 }], dirty: true };
     const body = topupsOnlyBody(edited, [{ id: "t1", day: "2026-09-03", creditsInput: "3500", note: " 추가 " }]);
     expect(body).toEqual({ revision: 3, note: null, topups: [{ id: "t1", day: "2026-09-03", credits: 3500, note: "추가" }] });
     expect("groups" in body).toBe(false);
@@ -161,6 +161,24 @@ describe("긴급 충전 줄 단위 저장", () => {
     expect(merged.topups[0].creditsInput).toBe("3500");
     expect(merged.groups[0].name).toBe("편집중"); // 편집 중인 그룹 초안은 그대로
     expect(validateTopup({ id: "x", day: "2026-09-10", creditsInput: "", note: "" })).toContain("크레딧");
+  });
+});
+
+describe("추정 → 힉스필드 값 맞추기 본문", () => {
+  it("그룹 목록은 그대로, 대상 그룹만 remaining_override, 배정은 안 보낸다", () => {
+    const body = overrideBody({
+      month: "2026-09", configured: true, revision: 7,
+      groups: [
+        { id: "g1", name: "Artist", monthly_limit: 1000, limit_period: "day", member_count: 1, used_month: 0, unknown_month: 0, remaining: 900, unknown_since_base: 2, estimated: true },
+        { id: "g2", name: "TD", monthly_limit: null, member_count: 0, used_month: 0, unknown_month: 0, remaining: null, unknown_since_base: 0, estimated: false },
+      ],
+    }, "g1", 3200);
+    expect(body.revision).toBe(7);
+    expect(body.groups).toEqual([
+      { id: "g1", name: "Artist", monthly_limit: 1000, limit_period: "day", remaining_override: 3200 },
+      { id: "g2", name: "TD", monthly_limit: null, limit_period: "month", remaining_override: null },
+    ]);
+    expect("members" in body).toBe(false);
   });
 });
 

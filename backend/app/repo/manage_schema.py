@@ -167,7 +167,8 @@ _SCHEMA = (
         name TEXT NOT NULL,
         monthly_limit INTEGER,
         limit_period TEXT NOT NULL DEFAULT 'month',
-        base_month TEXT NOT NULL,
+        base_start TEXT NOT NULL,
+        base_month TEXT,
         base_balance INTEGER NOT NULL DEFAULT 0,
         sort_order INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -603,6 +604,9 @@ def ensure_manage_schema(conn) -> None:
     group_columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_credit_group)")}
     if group_columns and "limit_period" not in group_columns:
         conn.execute("ALTER TABLE workspace_credit_group ADD COLUMN limit_period TEXT NOT NULL DEFAULT 'month'")
+    if group_columns and "base_start" not in group_columns:  # 재기준점을 달('YYYY-MM')에서 날짜로 — 일·주 주기 이월용
+        conn.execute("ALTER TABLE workspace_credit_group ADD COLUMN base_start TEXT")
+        conn.execute("UPDATE workspace_credit_group SET base_start = base_month || '-01' WHERE base_start IS NULL")
 
     task_columns = {row[1] for row in conn.execute("PRAGMA table_info(project_task)")}
     for column in ("sequence", "description", "folder_path", "source_last_seen_at"):

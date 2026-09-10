@@ -50,7 +50,6 @@ function GroupEditor({
   const [unlimited, setUnlimited] = useState(group.unlimited);
   const [limitInput, setLimitInput] = useState(group.limitInput);
   const [limitPeriod, setLimitPeriod] = useState<LimitPeriod>(group.limitPeriod);
-  const [overrideInput, setOverrideInput] = useState(group.overrideInput);
   const [emails, setEmails] = useState<string[]>(
     () => draft.members.filter((member) => member.group_id === group.id).map((member) => member.email),
   );
@@ -77,7 +76,7 @@ function GroupEditor({
       return;
     }
     onApply(
-      { ...group, name: trimmed, unlimited, limitInput: stripThousands(limitInput), limitPeriod, overrideInput: overrideInput.trim() },
+      { ...group, name: trimmed, unlimited, limitInput: stripThousands(limitInput), limitPeriod },
       emails,
     );
   };
@@ -131,28 +130,8 @@ function GroupEditor({
             <div className="credit-modal-remaining">
               <span>지금 남은 양</span>
               <strong>{n(group.remaining)}</strong>
-              <em>이번 달 사용 {Math.round(group.usedMonth).toLocaleString()} · 이월 포함 · 저장 후 다시 계산</em>
+              <em>이번 달 사용 {Math.round(group.usedMonth).toLocaleString()} · 이월 포함 · 힉스필드 값과 다르면 대시보드의 '추정'에서 맞춥니다</em>
             </div>
-          ) : null}
-          {!unlimited ? (
-            <label className="credit-modal-field">
-              <span>힉스필드 남은 양 (선택)</span>
-              <div className="manage-budget-limit">
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={overrideInput.startsWith("-") ? `-${formatThousands(overrideInput.slice(1))}` : formatThousands(overrideInput)}
-                  placeholder="비우면 우리 계산 그대로"
-                  title="힉스필드 관리 창에 보이는 이 그룹의 남은 크레딧을 적으면 우리 계산을 그 값에 맞춥니다(이월 포함)"
-                  onChange={(event) => {
-                    const raw = event.target.value;
-                    const negative = raw.trim().startsWith("-");
-                    setOverrideInput(`${negative ? "-" : ""}${stripThousands(raw)}`);
-                  }}
-                />
-                <em>크레딧</em>
-              </div>
-            </label>
           ) : null}
           {error ? <div className="login-error">{error}</div> : null}
           <div className="credit-modal-actions">
@@ -288,7 +267,7 @@ export function CreditPlanFields({
     setEditing(null);
   };
   const startNew = () => setEditing({
-    id: newGroupId(), isNew: true, name: "", limitInput: "", limitPeriod: "month", unlimited: false, overrideInput: "",
+    id: newGroupId(), isNew: true, name: "", limitInput: "", limitPeriod: "month", unlimited: false,
     remaining: null, usedMonth: 0, memberCount: 0,
   });
   const updateTopup = (id: string, patch: Partial<DraftTopup>) => {
@@ -389,7 +368,7 @@ export function CreditPlanFields({
                     <td><b>{group.name}</b>{group.isNew ? <small> 저장 전</small> : null}</td>
                     <td>{group.unlimited ? "∞" : `${formatThousands(group.limitInput)} ${periodSuffix(group.limitPeriod)}`}</td>
                     <td>{draftMemberCount(draft, group.id)}</td>
-                    <td>{group.isNew ? "저장 후 계산" : n(group.remaining)}{group.overrideInput ? <small> 보정 예정</small> : null}</td>
+                    <td>{group.isNew ? "저장 후 계산" : n(group.remaining)}</td>
                   </tr>
                 ))}
               </tbody>

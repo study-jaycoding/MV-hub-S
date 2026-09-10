@@ -1,29 +1,32 @@
 """크레딧 풀 · 그룹 한도 · 긴급 충전 — 워크스페이스 단위 설정과 대시보드 읽기 모델(Jay 결정 2026-09-10).
 
-힉스필드가 서브 워크스페이스에 매달 충전하고(enterprise 는 이월) 작업자는 User Group 의 월 한도 안에서 쓴다.
+힉스필드가 서브 워크스페이스에 매달 충전하고(enterprise 는 이월) 작업자는 User Group 의 한도 안에서 쓴다.
 **한도 강제는 힉스필드가 한다** — 여기서는 우리 대시보드가 그 구조를 알고 보여주기·경고만 한다.
 힉스필드는 충전·그룹·배정을 알려주지 않으므로(status 에 칸 없음, CLI 명령 없음) 매니저가 손으로 적는다.
 
 저장(모두 content DB 사이드카, `manage_schema._SCHEMA`):
   workspace_credit_plan          워크스페이스당 1행 — note·revision(낙관적 잠금). **월 충전액은 저장하지 않는다** —
                                  이 워크스페이스 프로젝트들의 '예산 한도(매월)' 합에서 파생(Jay: 예산 한도와 같은 값이라 하나만).
-  workspace_credit_group         그룹 — monthly_limit(NULL=∞)·base_month·base_balance(재기준점)
+  workspace_credit_group         그룹 — monthly_limit(NULL=∞)·limit_period(day/week/month)·base_start·base_balance(재기준점)
   workspace_credit_group_member  이메일 → 그룹(워크스페이스당 이메일 1개 = 힉스필드 Members 와 같은 키.
                                  팩트 account_email 과 직결되고 uid 위조와 무관)
   workspace_credit_topup         긴급 충전 기록 — day·credits·note (매월 정기 충전 밖의 추가 충전, 손 입력)
   workspace_balance_daily(코어)   에이전트 status 보고 때 하루 한 행(잔액 관측) — 추이 그래프용
 
-이월 계산(그룹): remaining = base_balance + limit × (base_month~이번 달 개월 수) − base_month 이후 사용 합.
-**재기준화(코덱스 P2)**: 한도·소속이 바뀌면 과거가 소급되지 않게 저장 시점에 base_month=이번 달,
-base_balance=이번 달로 넘어온 이월분(옛 소속·옛 한도로 지난달까지)으로 다시 잡는다(remaining_override 가 있으면 그 값).
-사용량은 팩트(`manage_db.workspace_email_usage`) — 삭제분(tombstone) 포함, 크레딧 = COALESCE(실제, 견적, 0),
-미상(둘 다 없음) 건수는 따로 세어 '추정' 표시 근거로 준다. 월 경계는 팩트 created_at 의 localtime(서버 KST).
+이월 계산(그룹, 세 주기 공통 — enterprise 는 일·주·월 어느 주기든 안 쓴 양이 넘어간다, Jay):
+  remaining = base_balance + limit × (base_start 가 속한 기간 ~ 이번 기간 개수) − base_start 이후 사용 합.
+  기간 시작 = day 그날 / week 그 주 월요일 / month 그 달 1일(예산 주기 `_PERIOD_MATCH` 와 같은 달력).
+**재기준화(코덱스 P2)**: 한도·주기·소속이 바뀌면 과거가 소급되지 않게 저장 시점에 base_start=이번 기간 시작,
+base_balance=이번 기간으로 넘어온 이월분(옛 소속·옛 한도로 지난 기간까지)으로 다시 잡는다(remaining_override 가
+있으면 지금 남은 양이 그 값이 되게). 사용량은 팩트(`manage_db.workspace_email_usage`, 날짜×이메일) — 삭제분(tombstone)
+포함, 크레딧 = COALESCE(실제, 견적, 0), 미상(둘 다 없음) 건수는 따로 세어 '추정' 표시 근거로 준다.
+날짜는 팩트 created_at 의 localtime(서버 KST).
 """
 from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 from ..db import get_connection
@@ -33,99 +36,120 @@ from .manage_schema import _ensure_schema
 
 _CLIENT_ID_RE = re.compile(r"[0-9a-f]{32}")  # 클라이언트가 새 그룹·충전 기록에 미리 붙이는 id(uuid hex) 형식
 _DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
-_PERIODS = ("day", "week", "month")  # 그룹 한도 주기 — month 만 이월(재기준화), day/week 는 그 기간 안에서만
+_PERIODS = ("day", "week", "month")
+
+Usage = dict[tuple[str, str], dict[str, Any]]  # {(day 'YYYY-MM-DD', email): {credits, count, unknown}}
 
 
 class CreditPlanConflict(Exception):
     """다른 곳에서 먼저 저장됨(revision 불일치) — 라우터가 409 로 바꾼다."""
 
 
+# ── 달력 ──────────────────────────────────────────────────────────────────────
+def today_local() -> str:
+    """'YYYY-MM-DD' — 서버 OS 시간대(팀 표준시 KST, SERVER.md). 팩트 날짜 집계의 localtime 과 같은 시계."""
+    return datetime.now().strftime("%Y-%m-%d")
+
+
 def current_month() -> str:
-    """'YYYY-MM' — 서버 OS 시간대(팀 표준시 KST, SERVER.md). 팩트 월 집계의 localtime 과 같은 시계."""
-    return datetime.now().strftime("%Y-%m")
+    return today_local()[:7]
+
+
+def _d(day: str) -> date:
+    return date.fromisoformat(day)
+
+
+def period_start(day: str, period: str) -> str:
+    """day 가 속한 기간의 시작일 — day 그날 / week 월요일 / month 1일."""
+    d = _d(day)
+    if period == "week":
+        return (d - timedelta(days=d.weekday())).isoformat()
+    if period == "month":
+        return d.replace(day=1).isoformat()
+    return d.isoformat()
+
+
+def periods_inclusive(base_start: str, day: str, period: str) -> int:
+    """base_start 가 속한 기간부터 day 가 속한 기간까지 포함 개수. base 가 미래면 0."""
+    try:
+        b = _d(period_start(base_start, period))
+        t = _d(period_start(day, period))
+    except ValueError:
+        return 0
+    if b > t:
+        return 0
+    if period == "day":
+        return (t - b).days + 1
+    if period == "week":
+        return (t - b).days // 7 + 1
+    return (t.year - b.year) * 12 + (t.month - b.month) + 1
 
 
 def months_inclusive(base_month: str, month: str) -> int:
-    """base_month 부터 month 까지 포함 개월 수. base 가 미래면 0."""
-    try:
-        by, bm = (int(x) for x in base_month.split("-")[:2])
-        y, m = (int(x) for x in month.split("-")[:2])
-    except (ValueError, AttributeError):
-        return 0
-    return max(0, (y - by) * 12 + (m - bm) + 1)
+    """(호환) 'YYYY-MM' 두 달 사이 포함 개월 수."""
+    return periods_inclusive(f"{base_month}-01", f"{month}-01", "month")
 
 
-def _usage_index(workspace_id: str, month_from: str) -> dict[tuple[str, str], dict[str, Any]]:
-    """{(month, email): {credits, count, unknown}} — 팩트 한 스냅샷(지연 import: manage_db 는 다른 DB)."""
+# ── 팩트 사용량 ───────────────────────────────────────────────────────────────
+def _usage_index(workspace_id: str, day_from: str) -> Usage:
+    """{(day, email): {credits, count, unknown}} — 팩트 한 스냅샷(지연 import: manage_db 는 다른 DB)."""
     from .. import manage_db
 
-    rows = manage_db.workspace_email_usage(workspace_id, month_from)
-    return {(r["month"], r["email"]): r for r in rows}
-
-
-def _period_usage(workspace_id: str, groups: list[dict]) -> dict[str, dict[str, dict[str, Any]]]:
-    """{period: {email: {credits, unknown}}} — 매월이 아닌 한도 주기(day/week)가 있는 그룹용 현재 주기 사용."""
-    from .. import manage_db
-
-    periods = {str(g.get("limit_period") or "month") for g in groups} - {"month"}
-    return {p: manage_db.workspace_email_period_usage(workspace_id, p) for p in periods}
-
-
-def _sum_period(period_usage: dict[str, dict[str, dict[str, Any]]], period: str, emails: set[str]) -> tuple[float, int]:
-    rows = period_usage.get(period, {})
-    credits = sum(float(rows[e]["credits"] or 0) for e in emails if e in rows)
-    unknown = sum(int(rows[e]["unknown"] or 0) for e in emails if e in rows)
-    return credits, unknown
+    rows = manage_db.workspace_email_usage(workspace_id, day_from)
+    return {(r["day"], r["email"]): r for r in rows}
 
 
 def _sum_usage(
-    usage: dict[tuple[str, str], dict[str, Any]],
+    usage: Usage,
     emails: set[str],
     *,
-    month: Optional[str] = None,
-    month_from: Optional[str] = None,
-    before_month: Optional[str] = None,
+    day_from: Optional[str] = None,
+    before_day: Optional[str] = None,
 ) -> tuple[float, int]:
-    """(크레딧 합, 미상 건수) — month 는 그 달만, month_from 은 그 달 이후, before_month 는 그 달 전까지."""
+    """(크레딧 합, 미상 건수) — day_from 이후(포함), before_day 전(미포함)."""
     credits = 0.0
     unknown = 0
-    for (mo, email), r in usage.items():
+    for (day, email), r in usage.items():
         if email not in emails:
             continue
-        if month is not None and mo != month:
+        if day_from is not None and day < day_from:
             continue
-        if month_from is not None and mo < month_from:
-            continue
-        if before_month is not None and mo >= before_month:
+        if before_day is not None and day >= before_day:
             continue
         credits += float(r["credits"] or 0)
         unknown += int(r["unknown"] or 0)
     return credits, unknown
 
 
-def _group_remaining(
-    group: dict[str, Any], emails: set[str], usage: dict, month: str
-) -> tuple[Optional[float], int]:
+def _group_period(group: dict[str, Any]) -> str:
+    period = str(group.get("limit_period") or "month")
+    return period if period in _PERIODS else "month"
+
+
+def _group_remaining(group: dict[str, Any], emails: set[str], usage: Usage, today: str) -> tuple[Optional[float], int]:
     """(남은 양(이월 포함) 또는 None(∞), base 이후 미상 수)."""
     limit = group.get("monthly_limit")
-    used_since, unknown_since = _sum_usage(usage, emails, month_from=group["base_month"])
+    base = group["base_start"]
+    used_since, unknown_since = _sum_usage(usage, emails, day_from=base)
     if limit is None:
         return None, unknown_since
-    months = months_inclusive(group["base_month"], month)
-    return float(group["base_balance"] or 0) + float(limit) * months - used_since, unknown_since
+    return float(group["base_balance"] or 0) + float(limit) * periods_inclusive(base, today, _group_period(group)) - used_since, unknown_since
 
 
-def _carry_in(group: dict[str, Any], emails: set[str], usage: dict, month: str) -> float:
-    """이번 달 시작 시점에 넘어온 양(이월분) — base_month 부터 지난달까지, **옛 소속·옛 한도**로. ∞ 는 0.
-    재기준화의 근거: 이번 달 사용은 항상 현재 소속·현재 한도로 다시 세고, 과거 달은 소급하지 않는다."""
+def _carry_in(group: dict[str, Any], emails: set[str], usage: Usage, today: str) -> float:
+    """이번 기간 시작 시점에 넘어온 양(이월분) — base 부터 지난 기간까지, **옛 소속·옛 한도·옛 주기**로. ∞ 는 0.
+    재기준화의 근거: 이번 기간 사용은 항상 현재 소속·현재 한도로 다시 세고, 과거 기간은 소급하지 않는다."""
     limit = group.get("monthly_limit")
     if limit is None:
         return 0.0
-    months_before = max(0, months_inclusive(group["base_month"], month) - 1)
-    used_before, _ = _sum_usage(usage, emails, month_from=group["base_month"], before_month=month)
-    return float(group["base_balance"] or 0) + float(limit) * months_before - used_before
+    period = _group_period(group)
+    cur_start = period_start(today, period)
+    periods_before = max(0, periods_inclusive(group["base_start"], today, period) - 1)
+    used_before, _ = _sum_usage(usage, emails, day_from=group["base_start"], before_day=cur_start)
+    return float(group["base_balance"] or 0) + float(limit) * periods_before - used_before
 
 
+# ── 저장소 읽기 ───────────────────────────────────────────────────────────────
 def _load(conn, workspace_id: str) -> tuple[Optional[dict], list[dict], dict[str, set[str]], list[dict]]:
     """(plan 행, 그룹 행 목록(정렬), {group_id: 이메일 집합}, 긴급 충전 기록(최근순))."""
     plan_row = conn.execute(
@@ -138,6 +162,9 @@ def _load(conn, workspace_id: str) -> tuple[Optional[dict], list[dict], dict[str
             (workspace_id,),
         ).fetchall()
     ]
+    for g in groups:  # 옛 행(달 단위 base_month 만 있음) 호환 — 그 달 1일을 기준일로
+        if not g.get("base_start"):
+            g["base_start"] = f"{g.get('base_month') or current_month()}-01"
     members: dict[str, set[str]] = {g["id"]: set() for g in groups}
     for r in conn.execute(
         "SELECT account_email, group_id FROM workspace_credit_group_member WHERE workspace_id=?",
@@ -169,8 +196,9 @@ def _monthly_budget(conn, workspace_id: str) -> Optional[int]:
     return int(row["total"] or 0)
 
 
-def _month_from_for(groups: list[dict], month: str) -> str:
-    return min([g["base_month"] for g in groups if g.get("base_month")] + [month])
+def _day_from_for(groups: list[dict], today: str) -> str:
+    """팩트를 읽을 시작일 — 그룹 base 중 가장 이른 날과 이번 달 1일 중 이른 것(미배정 '이번 달' 합에도 필요)."""
+    return min([g["base_start"] for g in groups if g.get("base_start")] + [period_start(today, "month")])
 
 
 def _workspace_row(conn, workspace_id: str) -> Optional[dict]:
@@ -185,10 +213,35 @@ def _topup_summary(topups: list[dict], month: str) -> dict[str, Any]:
     return {"count": len(mine), "credits": int(sum(int(t["credits"] or 0) for t in mine))}
 
 
+def _group_summary(group: dict, emails: set[str], usage: Usage, today: str) -> dict[str, Any]:
+    """그룹 한 줄 — 이번 기간 사용(used_period)·이번 달 사용(used_month)·남은 양(이월 포함)·미상."""
+    period = _group_period(group)
+    cur_start = period_start(today, period)
+    used_month, unknown_month = _sum_usage(usage, emails, day_from=period_start(today, "month"))
+    used_period, unknown_period = _sum_usage(usage, emails, day_from=cur_start)
+    remaining, unknown_since = _group_remaining(group, emails, usage, today)
+    return {
+        "id": group["id"],
+        "name": group["name"],
+        "monthly_limit": group.get("monthly_limit"),
+        "limit_period": period,
+        "base_start": group.get("base_start"),
+        "base_balance": group.get("base_balance"),
+        "member_count": len(emails),
+        "used_month": round(used_month),
+        "unknown_month": unknown_month,
+        "used_period": round(used_period),
+        "unknown_period": unknown_period,
+        "remaining": None if remaining is None else round(remaining),
+        "unknown_since_base": unknown_since,
+        "estimated": unknown_since > 0,
+    }
+
+
 # ── 설정(매니저) ───────────────────────────────────────────────────────────────
 def get_settings(workspace_id: str) -> dict[str, Any]:
     """프로젝트 설정 창용 — 플랜·그룹(현재 남은 양 포함)·멤버(이메일 기준, 접근 불가·과거 배정도 포함)·긴급 충전 기록."""
-    month = current_month()
+    today = today_local()
     with get_connection() as conn:
         _ensure_schema(conn)
         plan, groups, members, topups = _load(conn, workspace_id)
@@ -202,8 +255,7 @@ def get_settings(workspace_id: str) -> dict[str, Any]:
             "WHERE m.workspace_id=? ORDER BY m.is_available DESC, name COLLATE NOCASE, m.account_email",
             (workspace_id,),
         ).fetchall()
-    usage = _usage_index(workspace_id, _month_from_for(groups, month))
-    period_usage = _period_usage(workspace_id, groups)
+    usage = _usage_index(workspace_id, _day_from_for(groups, today))
     assigned: dict[str, str] = {}
     for gid, emails in members.items():
         for email in emails:
@@ -230,49 +282,17 @@ def get_settings(workspace_id: str) -> dict[str, Any]:
             )
     return {
         "workspace_id": workspace_id,
-        "month": month,
+        "month": today[:7],
+        "today": today,
         "plan": {
             "monthly_topup": monthly_topup,  # 파생값(예산 한도 매월 합) — 설정 창은 읽기만
             "note": plan["note"] if plan else None,
             "revision": int(plan["revision"]) if plan else 0,
             "updated_at": plan["updated_at"] if plan else None,
         },
-        "groups": [_group_summary(g, members.get(g["id"], set()), usage, month, period_usage) for g in groups],
+        "groups": [_group_summary(g, members.get(g["id"], set()), usage, today) for g in groups],
         "members": member_list,
         "topups": [{"id": t["id"], "day": t["day"], "credits": int(t["credits"] or 0), "note": t["note"]} for t in topups],
-    }
-
-
-def _group_summary(
-    group: dict, emails: set[str], usage: dict, month: str, period_usage: Optional[dict] = None
-) -> dict[str, Any]:
-    """그룹 한 줄. 매월 한도 = 이월 계산(base 기준). 매일·매주 한도 = 그 기간 사용만(이월 없음):
-    used_period/unknown_period 가 그 기간 값, remaining = 한도 − used_period."""
-    period = str(group.get("limit_period") or "month")
-    used_month, unknown_month = _sum_usage(usage, emails, month=month)
-    limit = group.get("monthly_limit")
-    if period == "month":
-        remaining, unknown_since = _group_remaining(group, emails, usage, month)
-        used_period, unknown_period = used_month, unknown_month
-    else:
-        used_period, unknown_period = _sum_period(period_usage or {}, period, emails)
-        remaining = None if limit is None else float(limit) - used_period
-        unknown_since = unknown_period
-    return {
-        "id": group["id"],
-        "name": group["name"],
-        "monthly_limit": limit,
-        "limit_period": period,
-        "base_month": group.get("base_month"),
-        "base_balance": group.get("base_balance"),
-        "member_count": len(emails),
-        "used_month": round(used_month),
-        "unknown_month": unknown_month,
-        "used_period": round(used_period),
-        "unknown_period": unknown_period,
-        "remaining": None if remaining is None else round(remaining),
-        "unknown_since_base": unknown_since,
-        "estimated": unknown_since > 0,
     }
 
 
@@ -316,17 +336,16 @@ def save_settings(
 
     groups=None 이면 그룹·배정은 **그대로 두고** 긴급 충전 기록(topups)·note 만 바꾼다(설정 창의 줄 단위 저장 —
     편집 중인 그룹 초안을 건드리지 않게). members 는 groups 와 함께일 때만 뜻이 있다.
-    groups: [{id?, name, monthly_limit|None, remaining_override?}] — 목록에 없는 기존 그룹은 삭제(배정도 삭제).
+    groups: [{id?, name, monthly_limit|None, limit_period?, remaining_override?}] — 목록에 없는 기존 그룹은 삭제(배정도 삭제).
     id 가 없거나 모르는 uuid hex 면 새 그룹(클라이언트가 미리 붙인 id 로 같은 저장에 멤버 배정 가능).
     members: [{email, group_id|None}] — **적힌 이메일만** 바꾼다(None=배정 해제). 안 적힌 이메일은 그대로(코덱스 P2).
     group_id 는 이 워크스페이스 그룹이어야 한다(아니면 ValueError → 400).
     topups: [{id?, day, credits, note?}] — 긴급 충전 기록 전체 교체(None 이면 그대로 둔다).
-    재기준화(코덱스 P2 — 과거 소급 금지): 한도나 소속이 바뀐 그룹은 base_month=이번 달로 옮기고 base_balance 에
-    "이번 달로 넘어온 이월분"(`_carry_in`, 옛 소속·옛 한도로 지난달까지 계산)을 넣는다. 그러면 지난달까지는 그대로,
-    이번 달은 현재 소속·현재 한도로 다시 센다(예: 이번 달 한도 1000→2000 이면 남은 양 +1000, 이번 달에 들어온
-    사람의 이번 달 사용은 새 그룹에 잡힘). remaining_override 가 있으면 지금 남은 양이 그 값이 되게 잡는다.
-    ∞→한도 전환·새 그룹은 이월분 0 에서 시작."""
-    month = current_month()
+    재기준화(코덱스 P2 — 과거 소급 금지): 한도·주기·소속이 바뀐 그룹은 base_start=이번 기간 시작으로 옮기고
+    base_balance 에 "이번 기간으로 넘어온 이월분"(`_carry_in`, 옛 규칙으로 지난 기간까지 계산)을 넣는다. 그러면
+    지난 기간까지는 그대로, 이번 기간은 현재 소속·한도로 다시 센다. remaining_override 가 있으면 지금 남은 양이
+    그 값이 되게 잡는다(대시보드 '추정' → 힉스필드 값 맞추기). ∞→한도 전환·새 그룹은 이월분 0 에서 시작."""
+    today = today_local()
     with get_connection() as conn:
         _ensure_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
@@ -342,7 +361,7 @@ def save_settings(
             _write_topups_and_plan(conn, workspace_id, prepared_topups, note, cur_rev)
             conn.execute("COMMIT")  # get_settings 는 새 커넥션으로 읽으므로 먼저 확정한다(컨텍스트 종료 commit 은 no-op)
             return get_settings(workspace_id)
-        usage = _usage_index(workspace_id, _month_from_for(old_groups, month))
+        usage = _usage_index(workspace_id, _day_from_for(old_groups, today))
 
         # 1) 새 소속표 = 기존 배정에 요청의 변경만 덮는다.
         new_assign: dict[str, str] = {}
@@ -405,13 +424,14 @@ def save_settings(
             gid = p["id"]
             emails_new = new_members[gid]
             limit = p["monthly_limit"]
-            used_month_new, _ = _sum_usage(usage, emails_new, month=month)
-            old = old_by_id.get(gid)
             period = p["limit_period"]
+            cur_start = period_start(today, period)
+            used_period_new, _ = _sum_usage(usage, emails_new, day_from=cur_start)
+            old = old_by_id.get(gid)
             changed = (
                 old is None
                 or old.get("monthly_limit") != limit
-                or str(old.get("limit_period") or "month") != period
+                or _group_period(old) != period
                 or old_members.get(gid, set()) != emails_new
             )
             override = p["remaining_override"]
@@ -421,27 +441,26 @@ def save_settings(
                     (p["name"], p["sort_order"], gid),
                 )
                 continue
-            base_month = month
-            if limit is None or period != "month":  # ∞ 또는 매일·매주 한도는 이월이 없어 base 를 안 쓴다
+            if limit is None:
                 base_balance = 0
             elif override is not None:
-                base_balance = round(float(override) - float(limit) + used_month_new)
-            elif old is not None and str(old.get("limit_period") or "month") == "month":
-                # 이월분만 넘기고 이번 달은 새 소속·새 한도로 다시 센다.
-                base_balance = round(_carry_in(old, old_members.get(gid, set()), usage, month))
-            else:  # 새 그룹·∞→한도·매일/매주→매월 전환은 이월 0 에서 시작
+                base_balance = round(float(override) - float(limit) + used_period_new)
+            elif old is not None and old.get("monthly_limit") is not None:
+                # 이월분만 넘기고 이번 기간은 새 소속·새 한도·새 주기로 다시 센다(옛 주기로 지난 기간까지 계산).
+                base_balance = round(_carry_in(old, old_members.get(gid, set()), usage, today))
+            else:  # 새 그룹·∞→한도 전환은 이월 0 에서 시작
                 base_balance = 0
             if old is None:
                 conn.execute(
                     "INSERT INTO workspace_credit_group(id, workspace_id, name, monthly_limit, limit_period, "
-                    "base_month, base_balance, sort_order) VALUES(?,?,?,?,?,?,?,?)",
-                    (gid, workspace_id, p["name"], limit, period, base_month, base_balance, p["sort_order"]),
+                    "base_start, base_month, base_balance, sort_order) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (gid, workspace_id, p["name"], limit, period, cur_start, cur_start[:7], base_balance, p["sort_order"]),
                 )
             else:
                 conn.execute(
-                    "UPDATE workspace_credit_group SET name=?, monthly_limit=?, limit_period=?, base_month=?, "
-                    "base_balance=?, sort_order=? WHERE id=?",
-                    (p["name"], limit, period, base_month, base_balance, p["sort_order"], gid),
+                    "UPDATE workspace_credit_group SET name=?, monthly_limit=?, limit_period=?, base_start=?, "
+                    "base_month=?, base_balance=?, sort_order=? WHERE id=?",
+                    (p["name"], limit, period, cur_start, cur_start[:7], base_balance, p["sort_order"], gid),
                 )
         # 4) 배정 전체 재기록(이 워크스페이스만)
         conn.execute("DELETE FROM workspace_credit_group_member WHERE workspace_id=?", (workspace_id,))
@@ -479,9 +498,10 @@ def _write_topups_and_plan(
 
 # ── 대시보드 읽기 ─────────────────────────────────────────────────────────────
 def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> dict[str, Any]:
-    """대시보드 카드. viewer=None(매니저): 풀·그룹 전체·미배정·긴급 충전·잔액 이력. viewer=(uid, email)(일반 멤버):
-    자기 그룹 하나(합계·그중 내 사용)만 — 다른 그룹·이메일·풀 잔액·충전·이력은 주지 않는다."""
-    month = current_month()
+    """대시보드 카드. viewer=None(매니저): 풀·그룹 전체·미배정·긴급 충전·잔액 이력·revision(추정 맞추기 저장용).
+    viewer=(uid, email)(일반 멤버): 자기 그룹 하나(합계·그중 내 사용)만 — 다른 그룹·이메일·풀 잔액·충전·이력은 주지 않는다."""
+    today = today_local()
+    month = today[:7]
     with get_connection() as conn:
         _ensure_schema(conn)
         plan, groups, members, topups = _load(conn, workspace_id)
@@ -503,40 +523,38 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
             ).fetchall()
         ] if viewer is None else []
     configured = plan is not None or bool(groups)
-    usage = _usage_index(workspace_id, _month_from_for(groups, month))
-    period_usage = _period_usage(workspace_id, groups)
+    usage = _usage_index(workspace_id, _day_from_for(groups, today))
+    month_start = period_start(today, "month")
 
     if viewer is not None:
         email = viewer[1]
         mine = next((g for g in groups if email in members.get(g["id"], set())), None)
         out: dict[str, Any] = {"month": month, "configured": configured, "my_group": None}
         if mine is not None:
-            summary = _group_summary(mine, members[mine["id"]], usage, month, period_usage)
-            my_used, my_unknown = _sum_usage(usage, {email}, month=month)
+            summary = _group_summary(mine, members[mine["id"]], usage, today)
             summary.pop("base_balance", None)
-            summary.pop("base_month", None)
+            summary.pop("base_start", None)
+            my_used, my_unknown = _sum_usage(usage, {email}, day_from=month_start)
+            my_p, my_p_unknown = _sum_usage(usage, {email}, day_from=period_start(today, summary["limit_period"]))
             summary["my_used_month"] = round(my_used)
             summary["my_unknown_month"] = my_unknown
-            if summary["limit_period"] != "month":  # 매일·매주 한도면 그 기간의 내 사용도
-                my_p, my_p_unknown = _sum_period(period_usage, summary["limit_period"], {email})
-                summary["my_used_period"] = round(my_p)
-                summary["my_unknown_period"] = my_p_unknown
-            else:
-                summary["my_used_period"] = round(my_used)
-                summary["my_unknown_period"] = my_unknown
+            summary["my_used_period"] = round(my_p)
+            summary["my_unknown_period"] = my_p_unknown
             out["my_group"] = summary
         return out
 
     assigned_emails = set().union(*members.values()) if members else set()
     all_emails = {email for (_, email) in usage.keys()} | available
     unassigned_emails = {e for e in all_emails if e not in assigned_emails}
-    un_used, un_unknown = _sum_usage(usage, unassigned_emails, month=month)
-    used_month, unknown_month = _sum_usage(usage, all_emails | assigned_emails, month=month)
-    month_start = next((h for h in history if h["day"] >= f"{month}-01"), None)
+    un_used, un_unknown = _sum_usage(usage, unassigned_emails, day_from=month_start)
+    used_month, unknown_month = _sum_usage(usage, all_emails | assigned_emails, day_from=month_start)
+    first_in_month = next((h for h in history if h["day"] >= month_start), None)
     recent_topups = [t for t in topups if t["day"] >= _months_ago_day(month, 3)]
     return {
         "month": month,
+        "today": today,
         "configured": configured,
+        "revision": int(plan["revision"]) if plan else 0,
         "pool": {
             "monthly_topup": monthly_topup,  # 예산 한도(매월) 합 — 손 입력 아님
             "note": plan["note"] if plan else None,
@@ -545,11 +563,11 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
             "balance": ws["credits"] if ws else None,
             "balance_seen_at": ws["last_seen_at"] if ws else None,
             # 월초 잔액 = 이번 달 첫 관측일의 **첫** 관측값(같은 날 후속 보고로 안 바뀜 — 코덱스 P2). 관측이 없으면 None.
-            "month_start_balance": month_start["first_credits"] if month_start else None,
-            "month_start_day": month_start["day"] if month_start else None,
+            "month_start_balance": first_in_month["first_credits"] if first_in_month else None,
+            "month_start_day": first_in_month["day"] if first_in_month else None,
             "topups_month": _topup_summary(topups, month),  # 이번 달 긴급 충전 합·횟수
         },
-        "groups": [_group_summary(g, members.get(g["id"], set()), usage, month, period_usage) for g in groups],
+        "groups": [_group_summary(g, members.get(g["id"], set()), usage, today) for g in groups],
         "unassigned": {
             "member_count": len([e for e in available if e not in assigned_emails]),
             "used_month": round(un_used),
