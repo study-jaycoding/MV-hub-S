@@ -326,7 +326,6 @@ export function CreditPlanFields({
                   <option key={day} value={day}>{day}일</option>
                 ))}
               </select>
-              <em>부터 다음 달 전날까지가 '이번 달'</em>
             </div>
           </label>
           <div className="credit-topup-editor">
