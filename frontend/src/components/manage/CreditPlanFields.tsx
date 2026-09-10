@@ -103,14 +103,13 @@ function GroupEditor({
               <span>월 한도</span>
               <div className="manage-budget-limit">
                 <input
-                  className="settings-input"
                   type="text"
                   inputMode="numeric"
                   value={formatThousands(limitInput)}
                   placeholder="예: 5,000"
                   onChange={(event) => { setLimitInput(stripThousands(event.target.value)); setError(""); }}
                 />
-                <em>크레딧 / 월 · 이월됨</em>
+                <em>크레딧 / 월</em>
               </div>
             </label>
           ) : null}
@@ -123,22 +122,21 @@ function GroupEditor({
           ) : null}
           {!unlimited ? (
             <label className="credit-modal-field">
-              <span>남은 양 보정</span>
+              <span>힉스필드 남은 양 (선택)</span>
               <div className="manage-budget-limit">
                 <input
-                  className="settings-input"
                   type="text"
                   inputMode="numeric"
                   value={overrideInput.startsWith("-") ? `-${formatThousands(overrideInput.slice(1))}` : formatThousands(overrideInput)}
-                  placeholder="비우면 유지"
-                  title="힉스필드 화면의 남은 양과 다르면 여기에 적어 맞춥니다(이월 포함)"
+                  placeholder="비우면 우리 계산 그대로"
+                  title="힉스필드 관리 창에 보이는 이 그룹의 남은 크레딧을 적으면 우리 계산을 그 값에 맞춥니다(이월 포함)"
                   onChange={(event) => {
                     const raw = event.target.value;
                     const negative = raw.trim().startsWith("-");
                     setOverrideInput(`${negative ? "-" : ""}${stripThousands(raw)}`);
                   }}
                 />
-                <em>크레딧 · 힉스필드 화면과 맞출 때만</em>
+                <em>크레딧</em>
               </div>
             </label>
           ) : null}
