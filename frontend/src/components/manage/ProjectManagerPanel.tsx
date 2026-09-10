@@ -26,6 +26,9 @@ import { workspaceCommandLabels } from "../../lib/workspaceCommand";
 import { ProjectRenderTree } from "../admin/ProjectRenderTree";
 import { ProjectMembersPanel } from "./ProjectMembersPanel";
 import { ProjectPlanningFields } from "./ProjectPlanningDialog";
+import { CreditPlanFields } from "./CreditPlanFields";
+import { draftToBody, validateDraft, type CreditPlanDraft } from "../../lib/creditPlan";
+import { isHttpStatus } from "../../lib/http";
 import type { Planning } from "./types";
 import { defaultProjectRoles } from "../../types";
 import type {
@@ -45,6 +48,7 @@ type ProjectDialogState =
       workspaceId: string;
       planning: Planning;
       budgetInput: string;
+      creditPlan?: CreditPlanDraft | null; // 워크스페이스 크레딧 풀·그룹 초안(설정 절이 불러와 채움)
       busy?: boolean;
       error?: string;
     }
@@ -56,6 +60,7 @@ type ProjectDialogState =
       workspaceId: string;
       planning: Planning;
       budgetInput: string;
+      creditPlan?: CreditPlanDraft | null;
       busy?: boolean;
       error?: string;
     };
@@ -284,6 +289,14 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
       setProjectDialog({ ...projectDialog, error: planningResult.error });
       return;
     }
+    const creditDraft = projectDialog.creditPlan;
+    if (creditDraft?.dirty) {
+      const creditError = validateDraft(creditDraft);
+      if (creditError) {
+        setProjectDialog({ ...projectDialog, error: creditError });
+        return;
+      }
+    }
     const workspace = workspaceOptions.find((item) => item.id === projectDialog.workspaceId);
     if (!workspace) {
       setProjectDialog({
@@ -316,8 +329,20 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
           ));
         }
       }
+      // 크레딧 풀·그룹(워크스페이스 단위)은 별도 저장 — 프로젝트 저장과 실패를 분리한다.
+      let creditSaveNote = "";
+      if (creditDraft?.dirty && creditDraft.loadedFor === workspace.id) {
+        try {
+          await manageApi.saveCreditPlan(workspace.id, draftToBody(creditDraft));
+        } catch (reason) {
+          creditSaveNote = isHttpStatus(reason, 409)
+            ? " 크레딧 풀·그룹은 다른 곳에서 먼저 저장돼 반영하지 못했습니다. 설정을 다시 열어 주세요."
+            : ` 크레딧 풀·그룹 저장 실패: ${String(reason).replace(/^Error:\s*/, "")}`;
+        }
+      }
       setProjectDialog(null);
-      if (!folderSaveFailed) setActMsg(`${name} 프로젝트 설정을 저장했습니다.`);
+      if (!folderSaveFailed) setActMsg(`${name} 프로젝트 설정을 저장했습니다.${creditSaveNote}`);
+      else if (creditSaveNote) setActMsg((cur) => `${cur}${creditSaveNote}`);
       loadProjects();
     } catch (e) {
       if (createdProjectId) {
@@ -674,6 +699,11 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
                   })}
                 />
               </section>
+              <CreditPlanFields
+                workspaceId={projectDialog.workspaceId}
+                draft={projectDialog.creditPlan ?? null}
+                onChange={(creditPlan) => setProjectDialog((cur) => (cur ? { ...cur, creditPlan, error: "" } : cur))}
+              />
               {projectDialog.error && <div className="login-error">{projectDialog.error}</div>}
               <div className="admin-confirm-actions">
                 <button className="admin-confirm-yes" onClick={saveProjectDialog} disabled={projectDialog.busy}>

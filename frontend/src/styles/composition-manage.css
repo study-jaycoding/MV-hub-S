@@ -1216,6 +1216,40 @@ table.dash-tree td.l { text-align: left; }
 .usage-no-data { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
 .usage-two-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .usage-two-columns.single { grid-template-columns: 1fr; } /* 일반 멤버 뷰 — 멤버 카드 없이 한 칸 */
+/* 크레딧 풀 · 그룹 한도 · 잔액 추이(CreditPoolSection) — 고리·통계 격자 아래 */
+.credit-card { --credit-warn: #f0c04a; --credit-bad: #f06a5a; }
+.credit-pool-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.credit-pool-grid > div { min-height: 86px; display: grid; align-content: center; gap: 5px; padding: 13px 15px; border-right: 1px solid var(--usage-line); }
+.credit-pool-grid > div:last-child { border-right: 0; }
+.credit-pool-grid span { color: var(--muted); font-size: 11px; }
+.credit-pool-grid strong { font-size: 19px; font-weight: 600; }
+.credit-pool-grid em { font-style: normal; color: var(--muted); font-size: 11px; }
+.credit-pool-grid .left strong { color: var(--accent); }
+.credit-pool-grid .tone-warn strong { color: var(--credit-warn); }
+.credit-pool-grid .tone-bad strong { color: var(--credit-bad); }
+.credit-pct { display: inline-block; min-width: 44px; text-align: center; border-radius: 999px; padding: 2px 8px; font-weight: 600; font-size: 11px; background: rgba(255,255,255,.08); }
+.credit-pct.tone-ok { background: rgba(196,232,74,.18); color: var(--accent); }
+.credit-pct.tone-warn { background: rgba(240,192,74,.18); color: var(--credit-warn); }
+.credit-pct.tone-bad { background: rgba(240,106,90,.2); color: var(--credit-bad); }
+.credit-mini { height: 5px; border-radius: 3px; background: rgba(255,255,255,.08); width: 90px; display: inline-block; vertical-align: middle; margin-left: 8px; overflow: hidden; }
+.credit-mini i { display: block; height: 100%; background: var(--accent); }
+.credit-mini i.tone-warn { background: var(--credit-warn); }
+.credit-mini i.tone-bad { background: var(--credit-bad); }
+.credit-est { color: var(--muted); font-size: 10px; }
+.credit-est.bad { color: var(--credit-bad); }
+.credit-group-table td b { font-weight: 600; }
+.credit-scope-note, .credit-chart-empty { padding: 8px 14px 10px; color: var(--muted); font-size: 11px; }
+.credit-chart { display: block; width: 100%; height: auto; padding: 8px 8px 4px; }
+.credit-chart text { font-size: 11px; fill: var(--muted); }
+.credit-chart text.warn { fill: var(--credit-warn); }
+.credit-chart .grid { stroke: var(--usage-line); stroke-width: 1; }
+.credit-chart .month-line { stroke: rgba(255,255,255,.22); stroke-width: 1; stroke-dasharray: 3 4; }
+.credit-chart .area { fill: rgba(196,232,74,.14); }
+.credit-chart .line { fill: none; stroke: var(--accent); stroke-width: 2.5; }
+.credit-chart .projection { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 5; opacity: .7; }
+.credit-chart .dot { fill: var(--accent); }
+.credit-chart .dot.now { stroke: #0e1011; stroke-width: 2; }
+@media (max-width: 960px) { .credit-pool-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .credit-pool-grid > div:nth-child(2n) { border-right: 0; } }
 .usage-scope-note { color: var(--muted); font-size: 12px; padding: 2px 0 6px; }
 .usage-table-scroll { flex: 1 1 auto; max-height: 350px; overflow: auto; }
 .usage-table { width: 100%; border-collapse: collapse; font-size: 11px; }

@@ -44,6 +44,7 @@ from ..deps import (
     require_project_role,
 )
 from ..repo import manage as repo_manage
+from ..repo import manage_credit_plan as repo_credit
 from ..repo import manage_tasks as repo_manage_tasks
 from ..services import cli_bridge, file_stamp, final_export, media_cache, project_folders
 from ..services.event_journal import journal_audit_event
@@ -643,6 +644,82 @@ def project_summary(request: Request, workspace_id: Optional[str] = None):
     _refresh_isolated_telemetry()  # 사용량은 팩트 원천 — 격리 test_dev 최신 반영(summary 와 동일, 동기 라우트)
     # 일반 멤버(member_uid 있음)는 **내 작업만** — 팀원 것은 공유 여부와 무관하게 read_all 만(Jay 2026-09-10).
     return repo_manage.project_dashboard_summary(project_ids, workspace_id, viewer=_usage_viewer(request))
+
+
+# ── 크레딧 풀 · 그룹 한도(워크스페이스 단위) ─────────────────────────────────
+class CreditGroupIn(BaseModel):
+    id: Optional[str] = None
+    name: str
+    monthly_limit: Optional[int] = Field(default=None, ge=0)  # None = ∞
+    remaining_override: Optional[int] = None  # 지금 남은 양 보정(이월 포함) — 저장 시 재기준화
+
+
+class CreditMemberIn(BaseModel):
+    email: str
+    group_id: Optional[str] = None  # None = 배정 해제
+
+
+class CreditPlanIn(BaseModel):
+    revision: int = 0
+    monthly_topup: Optional[int] = Field(default=None, ge=0)
+    note: Optional[str] = None
+    groups: list[CreditGroupIn] = Field(default_factory=list)
+    members: list[CreditMemberIn] = Field(default_factory=list)
+
+
+def _require_known_workspace(workspace_id: str) -> None:
+    if not workspace_id or not any(item["id"] == workspace_id for item in repo.list_workspace_options()):
+        raise HTTPException(status_code=404, detail="확인되지 않은 워크스페이스")
+
+
+@router.get("/credit-plan")
+def credit_plan(request: Request, workspace_id: str = ""):
+    """대시보드 크레딧 풀·그룹 카드. 매니저(read_all)=풀·그룹 전체·미배정·잔액 이력, 일반 멤버=자기 그룹 하나만
+    (소속 워크스페이스가 아니면 403). 힉스필드가 한도를 강제하므로 여기서는 보여주기·경고만."""
+    if _proxy.proxying():
+        return _proxy.proxy_get("/api/manage/credit-plan", request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id 가 필요합니다")
+    viewer = _usage_viewer(request)
+    if viewer is not None:
+        email = viewer[1]
+        mine = repo.list_workspace_options(member_email=email) if email != "\x00" else []
+        if not any(item["id"] == workspace_id for item in mine):
+            raise HTTPException(status_code=403, detail="이 워크스페이스의 멤버가 아닙니다")
+    _refresh_isolated_telemetry()
+    return repo_credit.plan_view(workspace_id, viewer)
+
+
+@router.get("/credit-plan/{workspace_id}/settings")
+def credit_plan_settings(workspace_id: str, request: Request):
+    """프로젝트 설정 창의 '크레딧 풀 · 그룹' 절 — 전역 PM 권한(create_project). 워크스페이스 단위 설정이라
+    프로젝트 PM 권한으로는 부족하다(코덱스 P1: 다른 프로젝트와 공유하는 풀을 바꾸거나 자신을 재배정할 수 있음)."""
+    if _proxy.proxying():
+        return _proxy.proxy_get(f"/api/manage/credit-plan/{workspace_id}/settings", request)
+    require_global_cap(request, "create_project")
+    _require_known_workspace(workspace_id)
+    _refresh_isolated_telemetry()
+    return repo_credit.get_settings(workspace_id)
+
+
+@router.put("/credit-plan/{workspace_id}")
+def put_credit_plan(workspace_id: str, body: CreditPlanIn, request: Request):
+    """전체 저장. revision(설정 조회 때 받은 값)이 현재와 다르면 409 — 다른 창·다른 프로젝트에서 먼저 저장된 것."""
+    require_global_cap(request, "create_project")
+    _require_known_workspace(workspace_id)
+    try:
+        return repo_credit.save_settings(
+            workspace_id,
+            revision=body.revision,
+            monthly_topup=body.monthly_topup,
+            note=body.note,
+            groups=[g.model_dump() for g in body.groups],
+            members=[m.model_dump() for m in body.members],
+        )
+    except repo_credit.CreditPlanConflict:
+        raise HTTPException(status_code=409, detail="다른 곳에서 먼저 저장됐습니다. 설정을 다시 열어 주세요.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ── 프로젝트 일정/예산 ────────────────────────────────────────────────────────

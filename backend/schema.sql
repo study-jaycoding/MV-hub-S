@@ -247,6 +247,17 @@ CREATE TABLE IF NOT EXISTS workspace_member (
     last_seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (workspace_id, account_email)
 );
+-- 워크스페이스 잔액 일별 관측 — 에이전트 status 보고 때 하루 한 행(같은 날은 최신 수신값으로 덮음).
+-- 대시보드 '잔액 추이' 그래프와 월초 잔액(관측값) 근거. day 는 서버 localtime(KST) 날짜.
+-- credits = 그날 마지막 값, first_credits = 그날 첫 값(월초 잔액은 이걸 쓴다 — 후속 보고로 안 바뀜).
+CREATE TABLE IF NOT EXISTS workspace_balance_daily (
+    workspace_id  TEXT NOT NULL REFERENCES workspace_registry(id) ON DELETE CASCADE,
+    day           TEXT NOT NULL,
+    credits       REAL NOT NULL,
+    first_credits REAL NOT NULL,
+    seen_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (workspace_id, day)
+);
 
 -- 발행 기록(누가, 언제, 공개 범위)
 CREATE TABLE IF NOT EXISTS share (

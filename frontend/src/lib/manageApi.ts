@@ -8,6 +8,7 @@ import type {
   Task,
 } from "../components/manage/types";
 import type { WorkspaceOption } from "../types";
+import type { CreditPlanSaveBody, CreditPlanSettings, CreditPlanView } from "./creditPlan";
 
 // 구서버(배치 라우트 없음) 판별 — 404/405 만 폴백 사유다. 400/401/403/5xx 를 폴백하면
 // 권한·서버 장애가 "구버전"으로 오인돼 조용히 다른 경로로 재시도된다(합의 설계).
@@ -43,6 +44,16 @@ export const manageApi = {
     jsonFetch<Planning>(`/api/manage/planning/${pathPart(pid)}`),
   setPlanning: (pid: string, body: Partial<Planning>) =>
     jsonFetch<Planning>(`/api/manage/planning/${pathPart(pid)}`, {
+      method: "PUT",
+      body: jsonBody(body),
+    }),
+  // 크레딧 풀·그룹 한도(워크스페이스 단위) — 대시보드 카드(권한별 범위는 서버가 정함)·설정 창(전역 PM)
+  creditPlan: (workspaceId: string) =>
+    jsonFetch<CreditPlanView>(withQuery("/api/manage/credit-plan", { workspace_id: workspaceId })),
+  creditPlanSettings: (workspaceId: string) =>
+    jsonFetch<CreditPlanSettings>(`/api/manage/credit-plan/${pathPart(workspaceId)}/settings`),
+  saveCreditPlan: (workspaceId: string, body: CreditPlanSaveBody) =>
+    jsonFetch<CreditPlanSettings>(`/api/manage/credit-plan/${pathPart(workspaceId)}`, {
       method: "PUT",
       body: jsonBody(body),
     }),

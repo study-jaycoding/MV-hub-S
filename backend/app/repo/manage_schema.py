@@ -145,6 +145,33 @@ _SCHEMA = (
     "CREATE INDEX IF NOT EXISTS idx_task_gen_gen ON task_generation(gen_id)",
     "CREATE INDEX IF NOT EXISTS idx_task_planned_uid ON task_planned_creator(creator_uid, task_id)",
     "CREATE INDEX IF NOT EXISTS idx_task_assignment_uid ON task_assignment(assignee_uid, task_id)",
+    # ── 크레딧 풀·그룹 한도(워크스페이스 단위, 매니저 손 입력 — repo/manage_credit_plan.py) ──
+    """CREATE TABLE IF NOT EXISTS workspace_credit_plan (
+        workspace_id TEXT PRIMARY KEY,
+        monthly_topup INTEGER,
+        note TEXT,
+        revision INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS workspace_credit_group (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        monthly_limit INTEGER,
+        base_month TEXT NOT NULL,
+        base_balance INTEGER NOT NULL DEFAULT 0,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(workspace_id, name)
+    )""",
+    """CREATE TABLE IF NOT EXISTS workspace_credit_group_member (
+        workspace_id TEXT NOT NULL,
+        account_email TEXT NOT NULL,
+        group_id TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, account_email)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_wcg_workspace ON workspace_credit_group(workspace_id, sort_order)",
+    "CREATE INDEX IF NOT EXISTS idx_wcgm_group ON workspace_credit_group_member(group_id)",
 )
 
 # 계정 DB 전환과 DB 파일 교체를 구분하도록 (경로, 풀 에폭)별로 보장 여부를 기억한다.

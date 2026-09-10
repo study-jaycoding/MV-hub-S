@@ -1,0 +1,111 @@
+import { describe, expect, it } from "vitest";
+import {
+  addDays,
+  draftFromSettings,
+  draftToBody,
+  limitTotal,
+  niceCeil,
+  projectDepletion,
+  remainingTone,
+  topupSteps,
+  usagePercent,
+  validateDraft,
+  type BalancePoint,
+  type CreditPlanSettings,
+} from "../src/lib/creditPlan";
+
+const day = (n: number) => addDays("2026-09-01", n);
+
+describe("remainingTone — 남은 양 기준 경고색", () => {
+  it("∞ 는 none, 0 이하는 bad, 한도의 20% 이하는 warn, 그 외 ok", () => {
+    expect(remainingTone(500, null)).toBe("none");
+    expect(remainingTone(0, 1000)).toBe("bad");
+    expect(remainingTone(-30, 1000)).toBe("bad");
+    expect(remainingTone(200, 1000)).toBe("warn");
+    expect(remainingTone(201, 1000)).toBe("ok");
+  });
+  it("이번 달 사용률은 한도 없으면 null", () => {
+    expect(usagePercent(300, 1000)).toBe(30);
+    expect(usagePercent(300, null)).toBeNull();
+    expect(usagePercent(300, 0)).toBeNull();
+    expect(limitTotal([{ monthly_limit: 1000 }, { monthly_limit: null }, { monthly_limit: 500 }])).toBe(1500);
+  });
+});
+
+describe("잔액 추이 — 충전 계단과 예상 소진", () => {
+  const falling: BalancePoint[] = [0, 1, 2, 3, 4, 5, 6].map((i) => ({ day: day(i), credits: 7000 - i * 500 }));
+  it("관측 사이의 증가만 충전으로 본다", () => {
+    const history = [...falling, { day: day(7), credits: 24000 }, { day: day(8), credits: 23000 }];
+    expect(topupSteps(history)).toEqual([{ day: day(7), amount: 20000 }]);
+    expect(topupSteps(falling)).toEqual([]);
+  });
+  it("최근 7일 소진 속도로 바닥나는 날을 예상하고, 충전은 소진에서 뺀다", () => {
+    const projection = projectDepletion(falling, 7, day(7));
+    expect(projection).not.toBeNull();
+    expect(projection!.perDay).toBe(500);
+    expect(projection!.daysLeft).toBe(8); // 4000 / 500
+    expect(projection!.depleteDay).toBe(day(14));
+    const withTopup = [...falling, { day: day(7), credits: 24000 }, { day: day(8), credits: 23500 }];
+    const after = projectDepletion(withTopup, 7, day(8))!;
+    // 창 = 마지막 날 기준 7일(day1~day8). 증가 20,000 은 빼고 감소만 합산(500×6) / 7일.
+    expect(after.perDay).toBeCloseTo(3000 / 7);
+  });
+  it("관측 3점 미만·소진 없음·1년 초과·끊긴 보고는 예상하지 않는다", () => {
+    const today = day(7);
+    expect(projectDepletion(falling.slice(0, 2), 7, today)).toBeNull();
+    expect(projectDepletion([0, 1, 2, 3].map((i) => ({ day: day(i), credits: 7000 })), 7, today)).toBeNull();
+    expect(projectDepletion([0, 1, 2, 3].map((i) => ({ day: day(i), credits: 100000 - i })), 7, today)).toBeNull();
+    // 관측 공백: 최근 7일 안에 점이 2개뿐이면 null
+    expect(projectDepletion([{ day: day(0), credits: 9000 }, { day: day(20), credits: 8000 }, { day: day(21), credits: 7000 }], 7, day(21))).toBeNull();
+    // 마지막 관측이 오늘보다 7일 넘게 오래됐으면(보고 끊김) 옛 속도로 예측하지 않는다(코덱스 P2)
+    expect(projectDepletion(falling, 7, day(40))).toBeNull();
+    expect(projectDepletion(falling, 7, day(13))).not.toBeNull();
+  });
+  it("세로축 최대값은 값보다 살짝 큰 깔끔한 수", () => {
+    expect(niceCeil(28058)).toBe(30000);
+    expect(niceCeil(7865)).toBe(8500);
+    expect(niceCeil(0)).toBe(1000);
+  });
+});
+
+describe("설정 초안 — 검사와 저장 본문", () => {
+  const settings: CreditPlanSettings = {
+    workspace_id: "ws1",
+    month: "2026-09",
+    plan: { monthly_topup: 20000, note: null, revision: 3, updated_at: null },
+    groups: [
+      { id: "g1", name: "Artist", monthly_limit: 1000, member_count: 2, used_month: 200, unknown_month: 1, remaining: 800, unknown_since_base: 1, estimated: true },
+      { id: "g2", name: "TD", monthly_limit: null, member_count: 0, used_month: 0, unknown_month: 0, remaining: null, unknown_since_base: 0, estimated: false },
+    ],
+    members: [
+      { email: "a@x", name: "제이", workspace_role: "member", is_available: true, group_id: "g1" },
+      { email: "c@x", name: "c", workspace_role: null, is_available: false, group_id: null },
+    ],
+  };
+  it("서버 설정 → 초안 → 본문이 왕복한다(∞ 는 null, 보정은 비우면 없음)", () => {
+    const draft = draftFromSettings(settings);
+    expect(draft.groups[1].unlimited).toBe(true);
+    expect(validateDraft(draft)).toBeNull();
+    const body = draftToBody(draft);
+    expect(body.revision).toBe(3);
+    expect(body.monthly_topup).toBe(20000);
+    expect(body.groups).toEqual([
+      { id: "g1", name: "Artist", monthly_limit: 1000, remaining_override: null },
+      { id: "g2", name: "TD", monthly_limit: null, remaining_override: null },
+    ]);
+    expect(body.members).toEqual([{ email: "a@x", group_id: "g1" }, { email: "c@x", group_id: null }]);
+  });
+  it("검사: 빈 이름·겹치는 이름·한도 없음·정수 아님을 잡는다", () => {
+    const draft = draftFromSettings(settings);
+    expect(validateDraft({ ...draft, topupInput: "-1" })).toContain("월 충전");
+    expect(validateDraft({ ...draft, groups: [{ ...draft.groups[0], name: " " }] })).toContain("그룹 이름");
+    expect(validateDraft({ ...draft, groups: [draft.groups[0], { ...draft.groups[1], name: "Artist" }] })).toContain("겹칩니다");
+    expect(validateDraft({ ...draft, groups: [{ ...draft.groups[0], limitInput: "" }] })).toContain("월 한도");
+    expect(validateDraft({ ...draft, groups: [{ ...draft.groups[0], overrideInput: "1.5" }] })).toContain("보정");
+  });
+  it("삭제된 그룹에 남은 배정은 본문에서 뺀다", () => {
+    const draft = draftFromSettings(settings);
+    const body = draftToBody({ ...draft, groups: [draft.groups[1]] });
+    expect(body.members).toEqual([{ email: "c@x", group_id: null }]);
+  });
+});

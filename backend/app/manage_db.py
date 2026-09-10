@@ -492,6 +492,32 @@ def team_overview(
     }
 
 
+def workspace_email_usage(workspace_id: str, month_from: Optional[str] = None) -> list[dict[str, Any]]:
+    """워크스페이스의 (월 'YYYY-MM' localtime, account_email) 별 크레딧 합·건수·미상 수 — 크레딧 풀·그룹 한도용.
+    삭제분(tombstone) 포함(돈은 이미 나갔다), 크레딧 = COALESCE(실제, 견적, 0), 미상 = 둘 다 없음.
+    month_from 이 있으면 그 달 이후만(그룹 base_month 최소값). 워크스페이스 축(scope='team')이라 프로젝트
+    폴더 미배정(미분류) 생성물도 들어간다 — 힉스필드 풀에서 빠진 돈은 전부."""
+    where = "WHERE workspace_scope='team' AND workspace_id=?"
+    args: list[Any] = [workspace_id]
+    if month_from:
+        where += " AND strftime('%Y-%m', created_at, 'localtime') >= ?"
+        args.append(month_from)
+    with get_connection() as conn:
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='team_generation_fact'"
+        ).fetchone():
+            return []
+        rows = conn.execute(
+            f"SELECT strftime('%Y-%m', created_at, 'localtime') AS month, account_email AS email, "
+            f"COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits, "
+            f"SUM(CASE WHEN real_credits IS NULL AND est_credits IS NULL THEN 1 ELSE 0 END) AS unknown "
+            f"FROM team_generation_fact {where} AND created_at IS NOT NULL "
+            f"GROUP BY month, account_email",
+            args,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def team_usage_export(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
     project_id: Optional[str] = None, creator_uid: Optional[str] = None,

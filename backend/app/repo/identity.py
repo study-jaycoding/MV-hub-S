@@ -809,6 +809,16 @@ def record_account_status(email: str, status: dict[str, Any]) -> None:
                     credits,
                 ),
             )
+            if credits is not None:
+                # 잔액 일별 관측(대시보드 추이) — 같은 트랜잭션·같은 커넥션. 보고엔 관측 시각이 없어
+                # 서버 수신 시각 기준으로 그날의 마지막 값을 남긴다(에이전트는 매 push 에 현재 상태를 보낸다).
+                conn.execute(
+                    "INSERT INTO workspace_balance_daily(workspace_id, day, credits, first_credits, seen_at) "
+                    "VALUES(?, date('now','localtime'), ?, ?, datetime('now')) "
+                    "ON CONFLICT(workspace_id, day) DO UPDATE SET "
+                    "credits=excluded.credits, seen_at=excluded.seen_at",  # first_credits 는 그날 첫 값 유지
+                    (workspace_id, credits, credits),
+                )
             conn.execute(
                 "INSERT INTO workspace_member"
                 "(workspace_id, account_email, creator_uid, user_role, is_selected, is_available) "
