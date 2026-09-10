@@ -296,7 +296,7 @@ class CreditPlanTests(unittest.TestCase):
                        for g in settings["groups"]],
                    self._assign(settings, {"a@x": "Artist", "b@x": "Artist"}))
         view = plan_repo.plan_view("ws1", viewer=("u_a", "a@x"))
-        self.assertEqual(set(view), {"month", "configured", "my_group"})
+        self.assertEqual(set(view), {"month", "cycle_start", "cycle_end", "configured", "my_group"})
         mine = view["my_group"]
         self.assertEqual((mine["name"], mine["used_month"], mine["my_used_month"], mine["remaining"]), ("Artist", 200, 170, 800))
         self.assertNotIn("base_balance", mine)
@@ -369,6 +369,52 @@ class CreditPlanTests(unittest.TestCase):
         # 멤버 뷰도 기간 사용을 준다
         mine = plan_repo.plan_view("ws1", viewer=("u_b", "b@x"))["my_group"]
         self.assertEqual((mine["name"], mine["limit_period"], mine["my_used_period"]), ("Weekly", "week", 30))
+
+    # ── 충전 기준일(달 경계) ──
+    def test_period_math_with_anchor_day(self) -> None:
+        ps = plan_repo.period_start
+        self.assertEqual(ps("2026-09-14", "month", 15), "2026-08-15")
+        self.assertEqual(ps("2026-09-15", "month", 15), "2026-09-15")
+        self.assertEqual(ps("2026-03-01", "month", 28), "2026-02-28")
+        self.assertEqual(plan_repo.period_end("2026-09-20", "month", 15), "2026-10-14")
+        self.assertEqual(plan_repo.period_end("2026-09-20", "month", 1), "2026-09-30")
+        self.assertEqual(ps("2026-09-10", "week"), "2026-09-07")  # 목요일 → 월요일
+        self.assertEqual(plan_repo.periods_inclusive("2026-08-15", "2026-10-14", "month", 15), 2)
+        self.assertEqual(plan_repo.periods_inclusive("2026-08-15", "2026-10-15", "month", 15), 3)
+        self.assertEqual(plan_repo.periods_inclusive("2026-09-01", "2026-09-30", "week"), 5)
+        with manage_db.get_connection() as conn:  # SQL 쪽 '매월' 판정도 같은 경계 — 15일 기준 9/14 는 8월 달
+            cond = manage_db._period_conditions(15)["month"].replace("created_at", "'2026-09-14T03:00:00Z'").replace(
+                "'now'", "'2026-09-20'")
+            self.assertEqual(conn.execute(f"SELECT {cond}").fetchone()[0], 0)
+            cond = manage_db._period_conditions(15)["month"].replace("created_at", "'2026-09-15T03:00:00Z'").replace(
+                "'now'", "'2026-09-20'")
+            self.assertEqual(conn.execute(f"SELECT {cond}").fetchone()[0], 1)
+
+    def test_topup_day_moves_the_month_boundary_everywhere(self) -> None:
+        today = datetime.now()
+        if today.day > 27:
+            self.skipTest("월말엔 '내일' 기준일을 만들 수 없다")
+        anchor = today.day + 1  # 이번 충전 달 = 지난달 (오늘+1)일 ~ 오늘 → 20일 전 기록이 들어온다
+        manage_db.upsert_facts("b@x", "u_b", [_fact("f-20", creator_uid="u_b", real_credits=40, created_at=_iso(-20))])
+        settings = plan_repo.save_settings("ws1", revision=0, note=None, groups=None, topup_day=anchor)
+        self.assertEqual(settings["plan"]["topup_day"], anchor)
+        view = plan_repo.plan_view("ws1")
+        self.assertEqual(view["pool"]["topup_day"], anchor)
+        self.assertLess(view["cycle_start"], (today - timedelta(days=20)).strftime("%Y-%m-%d"))
+        self.assertEqual(view["pool"]["used_month"], 205 + 40)  # 20일 전 40 이 '이번 달'에 들어옴
+        # 예산 '매월'(fact_usage) 도 같은 경계 — 기준일 1 이면 20일 전 기록은 달력 달에 따라 빠질 수 있으나 기준일 anchor 면 항상 포함
+        usage = manage_db.fact_usage("ws1", ["p1"], {"p1": "month"}, month_anchor_day=anchor)
+        self.assertEqual(round(sum(r["credits"] for r in usage["budget_models"]["p1"])), 245)
+        # 그룹(매월 한도)도 이번 충전 달 기준으로 센다
+        settings = plan_repo.save_settings("ws1", revision=1, note=None, groups=[{"name": "G", "monthly_limit": 1000}],
+                                           members=[{"email": "b@x", "group_id": None}])
+        gid = settings["groups"][0]["id"]
+        settings = plan_repo.save_settings("ws1", revision=2, note=None, groups=[{"id": gid, "name": "G", "monthly_limit": 1000}],
+                                           members=[{"email": "b@x", "group_id": gid}])
+        g = settings["groups"][0]
+        self.assertEqual((g["base_start"], g["used_month"], g["remaining"]), (view["cycle_start"], 70, 930))
+        with self.assertRaises(ValueError):
+            plan_repo.save_settings("ws1", revision=3, note=None, groups=None, topup_day=31)
 
     # ── 월 충전(파생)·긴급 충전 ──
     def test_monthly_topup_is_derived_from_monthly_budgets(self) -> None:

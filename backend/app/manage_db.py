@@ -599,6 +599,21 @@ _PERIOD_MATCH = {  # 예산 주기 비교식 — content 경로에서 쓰던 식
 }
 
 
+def _period_conditions(month_anchor_day: int = 1) -> dict[str, str]:
+    """예산 주기 비교식 — '매월'은 충전 기준일(1~28)로 달 경계를 옮긴다: 날짜를 (기준일−1)일 앞당기면
+    기준일~다음 달 전날이 달력상 한 달로 겹쳐 strftime('%Y-%m') 비교로 판정된다(예: 15일 기준 → 9/15~10/14).
+    기본 1일이면 종전 식 그대로."""
+    shift = max(0, min(int(month_anchor_day or 1), 28) - 1)
+    if not shift:
+        return dict(_PERIOD_MATCH)
+    out = dict(_PERIOD_MATCH)
+    out["month"] = (
+        f"strftime('%Y-%m', created_at,'localtime','-{shift} days') = "
+        f"strftime('%Y-%m','now','localtime','-{shift} days')"
+    )
+    return out
+
+
 def _usage_scope_where(
     workspace_id: Optional[str],
     project_ids: Optional[list[str]] = None,
@@ -628,8 +643,10 @@ def fact_usage(
     project_ids: Optional[list[str]] = None,
     budget_periods: Optional[dict[str, str]] = None,
     viewer: Optional[Viewer] = None,
+    month_anchor_day: int = 1,
 ) -> dict[str, Any]:
     """관리 요약용 팩트 사용량을 **한 읽기 스냅샷**에서 전부 센다(코덱스 P2 — 조회 범위·스냅샷).
+    month_anchor_day = 워크스페이스의 매월 충전 기준일(1~28) — 예산 '매월' 집계의 달 경계(`_period_conditions`).
 
     반환:
       stats         {pid: gen_count·done_count·final_count·shared_count(PC 보고 is_shared 합)·real_credits·credits·
@@ -656,7 +673,7 @@ def fact_usage(
         f", SUM(CASE WHEN {cond} THEN 1 ELSE 0 END) AS {name}_count"
         f", SUM(CASE WHEN {cond} THEN {_CREDIT} ELSE 0 END) AS {name}_credits"
         f", SUM(CASE WHEN {cond} THEN is_final ELSE 0 END) AS {name}_final"
-        for name, cond in _PERIOD_MATCH.items()
+        for name, cond in _period_conditions(month_anchor_day).items()
     )
     empty: dict[str, Any] = {
         "stats": {}, "models": {}, "budget_models": {}, "folder_rows": [], "workers": [],

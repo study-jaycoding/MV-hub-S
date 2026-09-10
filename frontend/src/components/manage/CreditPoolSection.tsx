@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { isHttpStatus, isRouteMissing } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
 import {
+  cycleLabel,
   limitTotal,
   niceCeil,
   overrideBody,
@@ -292,23 +293,23 @@ export function CreditPoolSection({
     <>
       <div className="usage-card credit-card">
         <div className="usage-card-head">
-          <div><h3>크레딧 풀 · {monthLabel(view.month)}</h3></div>
-          <span>{view.configured ? "월 충전=예산 한도(매월) · 잔액은 힉스필드 보고 · 사용은 팀 기록 장부" : "프로젝트 설정에서 예산 한도(매월)와 그룹을 적으면 채워집니다"}</span>
+          <div><h3>크레딧 풀 · {cycleLabel(view, pool?.topup_day)}</h3></div>
+          <span>{view.configured ? `월 충전=예산 한도(매월 ${pool?.topup_day ?? 1}일 기준) · 잔액은 힉스필드 보고 · 사용은 팀 기록 장부` : "프로젝트 설정에서 예산 한도(매월)와 그룹을 적으면 채워집니다"}</span>
         </div>
         {pool ? (
           <div className="credit-pool-grid">
             <div>
-              <span>월 충전 (예산 한도 · 매월)</span>
+              <span>월 충전 (예산 한도 · 매월 {pool.topup_day ?? 1}일)</span>
               <strong>{pool.monthly_topup == null ? "—" : cr(pool.monthly_topup)}</strong>
               <em>{pool.monthly_topup == null ? "매월 예산 한도 없음" : "프로젝트 예산 한도 합 · 이월됨"}</em>
             </div>
             <div className={pool.topups_month?.count ? "tone-warn" : ""}>
-              <span>긴급 충전 (이번 달)</span>
+              <span>긴급 충전 ({cycleLabel(view, pool.topup_day)})</span>
               <strong>{pool.topups_month?.count ? `+${n(pool.topups_month.credits)} cr` : "없음"}</strong>
               <em>{pool.topups_month?.count ? `${pool.topups_month.count}회 · 아래 기록` : "정기 충전 밖 추가 충전"}</em>
             </div>
             <div>
-              <span>이번 달 사용 (팀 기록 장부)</span>
+              <span>{cycleLabel(view, pool.topup_day)} 사용 (팀 기록 장부)</span>
               <strong>{cr(pool.used_month)}</strong>
               <em>{pool.unknown_month ? `미상 ${pool.unknown_month}건 제외 · 미분류 포함` : "미분류 포함"}</em>
             </div>
@@ -320,7 +321,7 @@ export function CreditPoolSection({
             <div>
               <span>월초 잔액 (관측)</span>
               <strong>{cr(pool.month_start_balance)}</strong>
-              <em>{pool.month_start_day ? `${dayLabel(pool.month_start_day)} 첫 관측값 · 지난달에서 넘어온 몫` : "이번 달 관측 없음"}</em>
+              <em>{pool.month_start_day ? `${dayLabel(pool.month_start_day)} 첫 관측값 · 지난달에서 넘어온 몫` : `${cycleLabel(view, pool.topup_day)} 관측 없음`}</em>
             </div>
           </div>
         ) : null}
@@ -338,7 +339,7 @@ export function CreditPoolSection({
 
       <div className="usage-card credit-card">
         <div className="usage-card-head">
-          <div><h3>그룹별 한도 · {monthLabel(view.month)}</h3></div>
+          <div><h3>그룹별 한도 · {cycleLabel(view, pool?.topup_day)}</h3></div>
           <span>
             {groups.length
               ? `${groups.length}그룹 · 한도 합 ${n(total)}${overTopup ? ` (충전 ${n(pool?.monthly_topup)} 초과 — 경고만)` : ""}`

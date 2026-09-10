@@ -671,6 +671,7 @@ class CreditPlanIn(BaseModel):
     # 월 충전액은 안 받는다 — 프로젝트 '예산 한도(매월)' 합에서 파생(Jay: 같은 값이라 칸 하나만).
     revision: int = 0
     note: Optional[str] = None
+    topup_day: Optional[int] = Field(default=None, ge=1, le=28)  # 매월 충전 기준일 · None=그대로
     groups: Optional[list[CreditGroupIn]] = None  # None=그룹·배정 그대로(충전 기록만 저장)
     members: Optional[list[CreditMemberIn]] = None
     topups: Optional[list[CreditTopupIn]] = None  # 긴급 충전 기록 전체 교체 · None=그대로
@@ -721,6 +722,7 @@ def put_credit_plan(workspace_id: str, body: CreditPlanIn, request: Request):
             workspace_id,
             revision=body.revision,
             note=body.note,
+            topup_day=body.topup_day,
             groups=None if body.groups is None else [g.model_dump() for g in body.groups],
             members=None if body.members is None else [m.model_dump() for m in body.members],
             topups=None if body.topups is None else [t.model_dump() for t in body.topups],

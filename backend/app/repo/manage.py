@@ -292,6 +292,20 @@ def _project_folder_breakdowns(
     return result
 
 
+def _credit_topup_day(conn, workspace_id: Optional[str]) -> int:
+    """워크스페이스의 매월 충전 기준일(1~28, 기본 1) — 예산 '매월' 계산의 달 경계. 워크스페이스 미지정이면 1일."""
+    if not workspace_id:
+        return 1
+    row = conn.execute(
+        "SELECT topup_day FROM workspace_credit_plan WHERE workspace_id=?", (workspace_id,)
+    ).fetchone()
+    try:
+        day = int(row["topup_day"]) if row and row["topup_day"] is not None else 1
+    except (TypeError, ValueError):
+        day = 1
+    return day if 1 <= day <= 28 else 1
+
+
 def _budget_periods(planning: dict[str, dict[str, Any]], project_ids: list[str]) -> dict[str, str]:
     """planning 이 있는 프로젝트의 예산 주기(없으면 month) — 팩트 예산 집계 입력."""
     return {
@@ -365,7 +379,8 @@ def dashboard_summary(
         registry_ids = [row["id"] for row in reg]
         # 팩트 사용량 — 워크스페이스 전체를 한 스냅샷으로(이동 프로젝트·totals 판정에 전체가 필요).
         usage = manage_db.fact_usage(
-            workspace_id, None, _budget_periods(planning, list(planning))
+            workspace_id, None, _budget_periods(planning, list(planning)),
+            month_anchor_day=_credit_topup_day(conn, workspace_id),
         )
         fact_stats = usage["stats"]
         fact_workers = usage["workers"]
@@ -545,6 +560,7 @@ def project_dashboard_summary(
             scoped_ids,
             _budget_periods(planning, scoped_ids),
             viewer=viewer,
+            month_anchor_day=_credit_topup_day(conn, workspace_id),
         )
         fact_stats = usage["stats"]
         project_models, budget_models = usage["models"], usage["budget_models"]

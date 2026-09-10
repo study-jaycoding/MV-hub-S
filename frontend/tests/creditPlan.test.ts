@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addDays,
+  cycleLabel,
   draftFromSettings,
   draftMemberCount,
   draftToBody,
@@ -105,6 +106,7 @@ describe("설정 초안 — 검사와 저장 본문", () => {
     const body = draftToBody(draft);
     expect(body.revision).toBe(3);
     expect("monthly_topup" in body).toBe(false);
+    expect(body.topup_day).toBe(1); // 서버가 안 주면 1일
     expect(body.topups).toEqual([{ id: "t1", day: "2026-09-03", credits: 3000, note: "긴급" }]);
     expect(body.groups).toEqual([
       { id: "g1", name: "Artist", monthly_limit: 1000, limit_period: "month" },
@@ -179,6 +181,14 @@ describe("추정 → 힉스필드 값 맞추기 본문", () => {
       { id: "g2", name: "TD", monthly_limit: null, limit_period: "month", remaining_override: null },
     ]);
     expect("members" in body).toBe(false);
+  });
+});
+
+describe("충전 달 범위 문구", () => {
+  it("기준일 1이면 '9월', 아니면 '9/15 ~ 10/14'", () => {
+    expect(cycleLabel({ month: "2026-09", cycle_start: "2026-09-01", cycle_end: "2026-09-30" }, 1)).toBe("9월");
+    expect(cycleLabel({ month: "2026-09", cycle_start: "2026-09-15", cycle_end: "2026-10-14" }, 15)).toBe("9/15 ~ 10/14");
+    expect(cycleLabel({ month: "2026-09" })).toBe("9월");
   });
 });
 

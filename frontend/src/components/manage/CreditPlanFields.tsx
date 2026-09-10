@@ -312,6 +312,23 @@ export function CreditPlanFields({
       {loaded && draft ? (
         <>
           {/* 월 충전은 위 '예산 한도(매월)'가 곧 그 값이라 여기선 다시 보여주지 않는다(Jay). 대시보드 풀 카드가 파생값을 보여 준다. */}
+          <label className="manage-field">
+            <span>충전 기준일</span>
+            <div className="manage-budget-limit credit-topup-day">
+              <em>매월</em>
+              <select
+                value={draft.topupDay}
+                aria-label="매월 충전 기준일"
+                title="힉스필드가 이 워크스페이스에 크레딧을 넣는 날 — 이날부터 다음 달 전날까지를 '이번 달'로 셉니다(예산 한도·그룹 이월·풀 카드 공통)"
+                onChange={(event) => update({ topupDay: Number(event.target.value) })}
+              >
+                {Array.from({ length: 28 }, (_, index) => index + 1).map((day) => (
+                  <option key={day} value={day}>{day}일</option>
+                ))}
+              </select>
+              <em>부터 다음 달 전날까지가 '이번 달'</em>
+            </div>
+          </label>
           <div className="credit-topup-editor">
             <div className="credit-plan-table-head">
               <span>긴급 충전 {draft.topups.length ? `· ${draft.topups.length}건` : ""}</span>

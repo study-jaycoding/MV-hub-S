@@ -149,6 +149,7 @@ _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS workspace_credit_plan (
         workspace_id TEXT PRIMARY KEY,
         note TEXT,
+        topup_day INTEGER NOT NULL DEFAULT 1,
         revision INTEGER NOT NULL DEFAULT 1,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )""",
@@ -607,6 +608,9 @@ def ensure_manage_schema(conn) -> None:
     if group_columns and "base_start" not in group_columns:  # 재기준점을 달('YYYY-MM')에서 날짜로 — 일·주 주기 이월용
         conn.execute("ALTER TABLE workspace_credit_group ADD COLUMN base_start TEXT")
         conn.execute("UPDATE workspace_credit_group SET base_start = base_month || '-01' WHERE base_start IS NULL")
+    plan_columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_credit_plan)")}
+    if plan_columns and "topup_day" not in plan_columns:  # 매월 충전 기준일(1~28) — 예산 '매월'·그룹 이월의 달 경계
+        conn.execute("ALTER TABLE workspace_credit_plan ADD COLUMN topup_day INTEGER NOT NULL DEFAULT 1")
 
     task_columns = {row[1] for row in conn.execute("PRAGMA table_info(project_task)")}
     for column in ("sequence", "description", "folder_path", "source_last_seen_at"):

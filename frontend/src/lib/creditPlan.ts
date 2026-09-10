@@ -9,6 +9,7 @@ export interface BalancePoint {
 
 export interface CreditPool {
   monthly_topup: number | null; // 파생값 — 이 워크스페이스 프로젝트들의 예산 한도(매월) 합
+  topup_day?: number; // 매월 충전 기준일(1~28) — 달 경계
   note: string | null;
   used_month: number; // 팀 기록 장부(팩트) 이번 달 합
   unknown_month: number; // 크레딧을 모르는 건 수(0원 아님)
@@ -34,6 +35,19 @@ export function periodSuffix(period: LimitPeriod | undefined): string {
 
 export function periodUsageLabel(period: LimitPeriod | undefined): string {
   return period === "day" ? "오늘" : period === "week" ? "이번 주" : "이번 달";
+}
+
+/** 'YYYY-MM-DD' → 'M/D'. 충전 달 범위 표시용. */
+export function shortDay(day: string | undefined): string {
+  if (!day) return "";
+  const [, m, d] = day.split("-");
+  return `${Number(m)}/${Number(d)}`;
+}
+
+/** 이번 충전 달 범위 문구 — 기준일 1이면 "9월", 아니면 "9/15 ~ 10/14". */
+export function cycleLabel(view: { month: string; cycle_start?: string; cycle_end?: string }, topupDay?: number): string {
+  if (!view.cycle_start || !view.cycle_end || (topupDay ?? 1) === 1) return `${Number(view.month.split("-")[1])}월`;
+  return `${shortDay(view.cycle_start)} ~ ${shortDay(view.cycle_end)}`;
 }
 
 export interface CreditGroupSummary {
@@ -66,6 +80,8 @@ export interface CreditUnassigned {
 export interface CreditPlanView {
   month: string;
   today?: string;
+  cycle_start?: string; // 이번 충전 달 범위(기준일 기준) — 예: 09-15 ~ 10-14
+  cycle_end?: string;
   configured: boolean;
   revision?: number; // 매니저만 — 대시보드에서 '추정 → 힉스필드 값 맞추기' 저장에 쓴다
   pool?: CreditPool; // 매니저만
@@ -87,7 +103,7 @@ export interface CreditPlanMember {
 export interface CreditPlanSettings {
   workspace_id: string;
   month: string;
-  plan: { monthly_topup: number | null; note: string | null; revision: number; updated_at: string | null };
+  plan: { monthly_topup: number | null; topup_day?: number; note: string | null; revision: number; updated_at: string | null };
   groups: CreditGroupSummary[];
   members: CreditPlanMember[];
   topups: CreditTopup[];
@@ -96,6 +112,7 @@ export interface CreditPlanSettings {
 export interface CreditPlanSaveBody {
   revision: number;
   note: string | null;
+  topup_day?: number; // 매월 충전 기준일 · 없으면 그대로
   groups?: { id?: string; name: string; monthly_limit: number | null; limit_period: LimitPeriod; remaining_override?: number | null }[]; // 없으면 그룹·배정 그대로
   members?: { email: string; group_id: string | null }[];
   topups?: { id?: string; day: string; credits: number; note: string | null }[]; // 전체 교체 · 없으면 그대로
@@ -236,6 +253,7 @@ export interface CreditPlanDraft {
   loadedFor: string; // workspaceId
   revision: number;
   monthlyTopup: number | null; // 파생값(예산 한도 매월 합) — 표시만
+  topupDay: number; // 매월 충전 기준일(1~28)
   note: string;
   groups: DraftGroup[];
   members: CreditPlanMember[];
@@ -248,6 +266,7 @@ export function draftFromSettings(settings: CreditPlanSettings): CreditPlanDraft
     loadedFor: settings.workspace_id,
     revision: settings.plan.revision,
     monthlyTopup: settings.plan.monthly_topup,
+    topupDay: settings.plan.topup_day ?? 1,
     note: settings.plan.note || "",
     topups: (settings.topups || []).map((topup) => ({
       id: topup.id, day: topup.day, creditsInput: String(topup.credits), note: topup.note || "",
@@ -326,6 +345,7 @@ export function draftToBody(draft: CreditPlanDraft): CreditPlanSaveBody {
   return {
     revision: draft.revision,
     note: draft.note.trim() || null,
+    topup_day: draft.topupDay,
     topups: draft.topups.map((topup) => ({
       id: topup.id,
       day: topup.day,
@@ -359,12 +379,13 @@ export function topupsOnlyBody(draft: CreditPlanDraft, topups: DraftTopup[]): Cr
   };
 }
 
-/** 줄 단위 저장 응답을 초안에 반영 — 그룹·배정 초안은 그대로, revision·충전 기록·월 충전만 서버값으로. */
+/** 줄 단위 저장 응답을 초안에 반영 — 그룹·배정 초안은 그대로, revision·충전 기록·월 충전·기준일만 서버값으로. */
 export function mergeTopupsFromServer(draft: CreditPlanDraft, settings: CreditPlanSettings): CreditPlanDraft {
   return {
     ...draft,
     revision: settings.plan.revision,
     monthlyTopup: settings.plan.monthly_topup,
+    topupDay: settings.plan.topup_day ?? draft.topupDay,
     topups: (settings.topups || []).map((topup) => ({
       id: topup.id, day: topup.day, creditsInput: String(topup.credits), note: topup.note || "",
     })),
