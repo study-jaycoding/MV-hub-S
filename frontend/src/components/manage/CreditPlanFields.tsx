@@ -324,7 +324,7 @@ export function CreditPlanFields({
           <div className="credit-topup-editor">
             <div className="credit-plan-table-head">
               <span>긴급 충전 {draft.topups.length ? `· ${draft.topups.length}건` : ""}</span>
-              <small>정기 충전 밖에 추가로 넣은 크레딧</small>
+              <button type="button" className="credit-group-add" onClick={addTopup}>+ 추가</button>
             </div>
             {draft.topups.map((topup) => (
               <div className="credit-topup-row" key={topup.id}>
@@ -363,7 +363,6 @@ export function CreditPlanFields({
               </div>
             ))}
             {topupError ? <div className="login-error">{topupError}</div> : null}
-            <button type="button" className="credit-topup-add" onClick={addTopup}>+ 긴급 충전 기록</button>
           </div>
           <div className="credit-plan-table-head">
             <span>그룹 {draft.groups.length}{unassigned ? ` · 미배정 ${unassigned}명` : ""}</span>
