@@ -9,9 +9,12 @@ import {
   draftFromSettings,
   draftMemberCount,
   formatThousands,
+  mergeTopupsFromServer,
   newGroupId,
   stripThousands,
   todayLocal,
+  topupsOnlyBody,
+  validateTopup,
   type CreditPlanDraft,
   type CreditPlanMember,
   type DraftGroup,
@@ -217,6 +220,8 @@ export function CreditPlanFields({
   const [status, setStatus] = useState<"idle" | "loading" | "unsupported" | "error">("idle");
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<DraftGroup | null>(null);
+  const [topupBusy, setTopupBusy] = useState("");
+  const [topupError, setTopupError] = useState("");
   const loaded = draft && draft.loadedFor === workspaceId;
 
   useEffect(() => {
@@ -282,6 +287,27 @@ export function CreditPlanFields({
     if (!draft) return;
     update({ topups: [{ id: newGroupId(), day: todayLocal(), creditsInput: "", note: "" }, ...draft.topups] });
   };
+  // 줄 단위 저장·삭제 — 이 줄이 반영된 충전 기록 전체를 바로 서버에 쓴다(그룹 초안은 안 보냄). 성공하면 revision·기록을 서버값으로.
+  const saveTopups = async (rowId: string, nextTopups: DraftTopup[]) => {
+    if (!draft || topupBusy) return;
+    const invalid = nextTopups.map(validateTopup).find(Boolean);
+    if (invalid) {
+      setTopupError(invalid);
+      return;
+    }
+    setTopupBusy(rowId);
+    setTopupError("");
+    try {
+      const saved = await manageApi.saveCreditPlan(workspaceId, topupsOnlyBody(draft, nextTopups));
+      onChange(mergeTopupsFromServer(draft, saved));
+    } catch (reason) {
+      setTopupError(isHttpStatus(reason, 409)
+        ? "다른 곳에서 먼저 저장됐습니다. 설정 창을 닫았다가 다시 열어 주세요."
+        : `저장하지 못했습니다. ${String(reason).replace(/^Error:\s*/, "")}`);
+    } finally {
+      setTopupBusy("");
+    }
+  };
   const unassigned = draft ? draft.members.filter((member) => member.is_available && !member.group_id).length : 0;
 
   return (
@@ -313,9 +339,30 @@ export function CreditPlanFields({
                   onChange={(event) => updateTopup(topup.id, { creditsInput: stripThousands(event.target.value) })}
                 />
                 <input className="settings-input" value={topup.note} placeholder="메모 (선택)" aria-label="메모" onChange={(event) => updateTopup(topup.id, { note: event.target.value })} />
-                <button type="button" className="credit-topup-remove" title="기록 삭제" onClick={() => update({ topups: draft.topups.filter((item) => item.id !== topup.id) })}>×</button>
+                <button
+                  type="button"
+                  className="credit-topup-save"
+                  disabled={topupBusy === topup.id}
+                  title="이 줄을 바로 저장"
+                  onClick={() => saveTopups(topup.id, draft.topups)}
+                >
+                  {topupBusy === topup.id ? "저장 중…" : "저장"}
+                </button>
+                <button
+                  type="button"
+                  className="credit-topup-remove"
+                  disabled={topupBusy === topup.id}
+                  title="이 기록을 바로 삭제"
+                  onClick={() => {
+                    if (!window.confirm(`${topup.day} 긴급 충전 기록을 삭제할까요?`)) return;
+                    void saveTopups(topup.id, draft.topups.filter((item) => item.id !== topup.id));
+                  }}
+                >
+                  삭제
+                </button>
               </div>
             ))}
+            {topupError ? <div className="login-error">{topupError}</div> : null}
             <button type="button" className="credit-topup-add" onClick={addTopup}>+ 긴급 충전 기록</button>
           </div>
           <div className="credit-plan-table-head">

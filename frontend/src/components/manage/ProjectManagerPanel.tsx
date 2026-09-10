@@ -591,7 +591,9 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
 
         {projectDialog && (
           <div className="admin-confirm-backdrop" onMouseDown={() => setProjectDialog(null)}>
-            <div className="admin-confirm admin-project-dialog" onMouseDown={(e) => e.stopPropagation()}>
+            {/* 카드 + 카드 밖 하단 중앙의 저장·닫기(Jay 2026-09-10) — 세로 묶음이라 카드가 길어도 단추는 항상 아래에 */}
+            <div className="project-dialog-stack" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="admin-confirm admin-project-dialog">
               <p className="admin-confirm-q">
                 {projectDialog.mode === "create" ? "새 프로젝트" : "프로젝트 설정"}
               </p>
@@ -705,14 +707,15 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
                 onChange={(creditPlan) => setProjectDialog((cur) => (cur ? { ...cur, creditPlan, error: "" } : cur))}
               />
               {projectDialog.error && <div className="login-error">{projectDialog.error}</div>}
-              <div className="admin-confirm-actions">
-                <button className="admin-confirm-yes" onClick={saveProjectDialog} disabled={projectDialog.busy}>
-                  {projectDialog.busy ? "저장 중…" : "확인"}
-                </button>
-                <button className="admin-confirm-no" onClick={() => setProjectDialog(null)}>
-                  취소
-                </button>
-              </div>
+            </div>
+            <div className="admin-confirm-actions project-dialog-actions">
+              <button className="admin-confirm-yes" onClick={saveProjectDialog} disabled={projectDialog.busy}>
+                {projectDialog.busy ? "저장 중…" : "저장"}
+              </button>
+              <button className="admin-confirm-no" onClick={() => setProjectDialog(null)}>
+                닫기
+              </button>
+            </div>
             </div>
           </div>
         )}

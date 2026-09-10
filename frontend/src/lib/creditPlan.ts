@@ -79,9 +79,9 @@ export interface CreditPlanSettings {
 export interface CreditPlanSaveBody {
   revision: number;
   note: string | null;
-  groups: { id?: string; name: string; monthly_limit: number | null; remaining_override?: number | null }[];
-  members: { email: string; group_id: string | null }[];
-  topups: { id?: string; day: string; credits: number; note: string | null }[]; // 전체 교체
+  groups?: { id?: string; name: string; monthly_limit: number | null; remaining_override?: number | null }[]; // 없으면 그룹·배정 그대로
+  members?: { email: string; group_id: string | null }[];
+  topups?: { id?: string; day: string; credits: number; note: string | null }[]; // 전체 교체 · 없으면 그대로
 }
 
 // ── 표시 판정 ──────────────────────────────────────────────────────────────
@@ -256,12 +256,18 @@ function parseNonNegative(input: string): number | null | undefined {
   return value;
 }
 
+/** 긴급 충전 한 줄 검사 — 오류 문구 또는 null. */
+export function validateTopup(topup: DraftTopup): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(topup.day)) return "긴급 충전 날짜를 골라 주세요.";
+  if (!parseNonNegative(topup.creditsInput)) return `긴급 충전(${topup.day}): 크레딧을 1 이상으로 입력하세요.`;
+  return null;
+}
+
 /** 초안 검사 — 오류 문구 또는 null. */
 export function validateDraft(draft: CreditPlanDraft): string | null {
   for (const topup of draft.topups) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(topup.day)) return "긴급 충전 날짜를 골라 주세요.";
-    const credits = parseNonNegative(topup.creditsInput);
-    if (!credits) return `긴급 충전(${topup.day}): 크레딧을 1 이상으로 입력하세요.`;
+    const error = validateTopup(topup);
+    if (error) return error;
   }
   const names = new Set<string>();
   for (const group of draft.groups) {
@@ -302,6 +308,32 @@ export function draftToBody(draft: CreditPlanDraft): CreditPlanSaveBody {
     members: draft.members.map((member) => ({
       email: member.email,
       group_id: member.group_id !== null && validIds.has(member.group_id) ? member.group_id : null,
+    })),
+  };
+}
+
+/** 긴급 충전 줄 단위 저장 본문 — 그룹·배정은 보내지 않아(서버가 그대로 둠) 편집 중인 그룹 초안을 건드리지 않는다. */
+export function topupsOnlyBody(draft: CreditPlanDraft, topups: DraftTopup[]): CreditPlanSaveBody {
+  return {
+    revision: draft.revision,
+    note: draft.note.trim() || null,
+    topups: topups.map((topup) => ({
+      id: topup.id,
+      day: topup.day,
+      credits: parseNonNegative(topup.creditsInput) ?? 0,
+      note: topup.note.trim() || null,
+    })),
+  };
+}
+
+/** 줄 단위 저장 응답을 초안에 반영 — 그룹·배정 초안은 그대로, revision·충전 기록·월 충전만 서버값으로. */
+export function mergeTopupsFromServer(draft: CreditPlanDraft, settings: CreditPlanSettings): CreditPlanDraft {
+  return {
+    ...draft,
+    revision: settings.plan.revision,
+    monthlyTopup: settings.plan.monthly_topup,
+    topups: (settings.topups || []).map((topup) => ({
+      id: topup.id, day: topup.day, creditsInput: String(topup.credits), note: topup.note || "",
     })),
   };
 }

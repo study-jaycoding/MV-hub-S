@@ -369,10 +369,21 @@ class CreditPlanTests(unittest.TestCase):
         self.assertEqual([(t["id"], t["credits"]) for t in settings["topups"]], [(keep, 3500)])  # 전체 교체
         settings = self._save(2, [], [])  # topups 를 안 보내면 그대로
         self.assertEqual(len(settings["topups"]), 1)
+        # 줄 단위 저장: groups=None 이면 그룹·배정은 손대지 않고 충전 기록만 바뀐다(revision 은 오른다).
+        settings = self._save(3, [{"name": "Artist", "monthly_limit": 1000}], [{"email": "a@x", "group_id": None}])
+        gid = settings["groups"][0]["id"]
+        settings = self._save(4, [{"id": gid, "name": "Artist", "monthly_limit": 1000}], [{"email": "a@x", "group_id": gid}])
+        settings = plan_repo.save_settings("ws1", revision=5, note=None, groups=None,
+                                           topups=[{"day": f"{self.month}-09", "credits": 700}])
+        self.assertEqual(settings["plan"]["revision"], 6)
+        self.assertEqual([t["credits"] for t in settings["topups"]], [700])
+        self.assertEqual((settings["groups"][0]["name"], settings["groups"][0]["member_count"]), ("Artist", 1))
+        with self.assertRaises(plan_repo.CreditPlanConflict):
+            plan_repo.save_settings("ws1", revision=5, note=None, groups=None, topups=[])
         for bad in ({"day": "2026-9-3", "credits": 1}, {"day": f"{self.month}-03", "credits": 0},
                     {"day": f"{self.month}-03", "credits": "x"}, {"id": "zz", "day": f"{self.month}-03", "credits": 1}):
             with self.assertRaises(ValueError):
-                self._save(3, [], [], topups=[bad])
+                self._save(6, [], [], topups=[bad])
         self.assertNotIn("topups", plan_repo.plan_view("ws1", viewer=("u_a", "a@x")))
 
     # ── 잔액 일별 관측 ──

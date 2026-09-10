@@ -276,12 +276,14 @@ def save_settings(
     *,
     revision: int,
     note: Optional[str],
-    groups: list[dict[str, Any]],
-    members: list[dict[str, Any]],
+    groups: Optional[list[dict[str, Any]]],
+    members: Optional[list[dict[str, Any]]] = None,
     topups: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """전체 저장(한 트랜잭션). revision 이 현재와 다르면 CreditPlanConflict(409).
 
+    groups=None 이면 그룹·배정은 **그대로 두고** 긴급 충전 기록(topups)·note 만 바꾼다(설정 창의 줄 단위 저장 —
+    편집 중인 그룹 초안을 건드리지 않게). members 는 groups 와 함께일 때만 뜻이 있다.
     groups: [{id?, name, monthly_limit|None, remaining_override?}] — 목록에 없는 기존 그룹은 삭제(배정도 삭제).
     id 가 없거나 모르는 uuid hex 면 새 그룹(클라이언트가 미리 붙인 id 로 같은 저장에 멤버 배정 가능).
     members: [{email, group_id|None}] — **적힌 이메일만** 바꾼다(None=배정 해제). 안 적힌 이메일은 그대로(코덱스 P2).
@@ -301,6 +303,13 @@ def save_settings(
         if int(revision or 0) != cur_rev:
             raise CreditPlanConflict(f"revision {revision} != {cur_rev}")
         old_by_id = {g["id"]: g for g in old_groups}
+        prepared_topups = (
+            None if topups is None else _prepare_topups(topups, {t["id"] for t in old_topups})
+        )
+        if groups is None:  # 충전 기록·note 만 — 그룹·배정은 손대지 않는다
+            _write_topups_and_plan(conn, workspace_id, prepared_topups, note, cur_rev)
+            conn.execute("COMMIT")  # get_settings 는 새 커넥션으로 읽으므로 먼저 확정한다(컨텍스트 종료 commit 은 no-op)
+            return get_settings(workspace_id)
         usage = _usage_index(workspace_id, _month_from_for(old_groups, month))
 
         # 1) 새 소속표 = 기존 배정에 요청의 변경만 덮는다.
@@ -332,7 +341,7 @@ def save_settings(
         valid_ids = {p["id"] for p in prepared}
         if len({p["name"] for p in prepared}) != len(prepared):
             raise ValueError("그룹 이름이 겹칩니다")
-        for m in members:
+        for m in members or []:
             email = norm_email(str(m.get("email") or ""))
             if not email:
                 continue
@@ -349,9 +358,6 @@ def save_settings(
         new_members: dict[str, set[str]] = {p["id"]: set() for p in prepared}
         for email, gid in new_assign.items():
             new_members[gid].add(email)
-        prepared_topups = (
-            None if topups is None else _prepare_topups(topups, {t["id"] for t in old_topups})
-        )
 
         # 2) 그룹 삭제를 먼저, 남는 그룹은 이름을 임시값으로 비워 UNIQUE(workspace_id, name) 충돌을 피한다 —
         #    삭제 뒤 같은 이름으로 다시 만들기·두 그룹 이름 맞바꾸기가 500 으로 죽지 않게(코덱스 P2).
@@ -403,22 +409,32 @@ def save_settings(
             "INSERT INTO workspace_credit_group_member(workspace_id, account_email, group_id) VALUES(?,?,?)",
             [(workspace_id, email, gid) for email, gid in sorted(new_assign.items())],
         )
-        # 5) 긴급 충전 기록 전체 교체(요청에 있을 때만)
-        if prepared_topups is not None:
-            conn.execute("DELETE FROM workspace_credit_topup WHERE workspace_id=?", (workspace_id,))
-            conn.executemany(
-                "INSERT INTO workspace_credit_topup(id, workspace_id, day, credits, note) VALUES(?,?,?,?,?)",
-                [(tid, workspace_id, day, credits, note) for tid, day, credits, note in prepared_topups],
-            )
-        # 6) 플랜 + revision
-        conn.execute(
-            "INSERT INTO workspace_credit_plan(workspace_id, note, revision, updated_at) "
-            "VALUES(?,?,?,datetime('now')) "
-            "ON CONFLICT(workspace_id) DO UPDATE SET note=excluded.note, "
-            "revision=workspace_credit_plan.revision+1, updated_at=excluded.updated_at",
-            (workspace_id, (note or "").strip() or None, cur_rev + 1),
-        )
+        # 5) 긴급 충전 기록 전체 교체(요청에 있을 때만) + 6) 플랜·revision
+        _write_topups_and_plan(conn, workspace_id, prepared_topups, note, cur_rev)
     return get_settings(workspace_id)
+
+
+def _write_topups_and_plan(
+    conn,
+    workspace_id: str,
+    prepared_topups: Optional[list[tuple[str, str, int, Optional[str]]]],
+    note: Optional[str],
+    cur_rev: int,
+) -> None:
+    """긴급 충전 기록 전체 교체(None 이면 그대로) + 플랜 note·revision+1. 호출측 트랜잭션 안에서."""
+    if prepared_topups is not None:
+        conn.execute("DELETE FROM workspace_credit_topup WHERE workspace_id=?", (workspace_id,))
+        conn.executemany(
+            "INSERT INTO workspace_credit_topup(id, workspace_id, day, credits, note) VALUES(?,?,?,?,?)",
+            [(tid, workspace_id, day, credits, memo) for tid, day, credits, memo in prepared_topups],
+        )
+    conn.execute(
+        "INSERT INTO workspace_credit_plan(workspace_id, note, revision, updated_at) "
+        "VALUES(?,?,?,datetime('now')) "
+        "ON CONFLICT(workspace_id) DO UPDATE SET note=excluded.note, "
+        "revision=workspace_credit_plan.revision+1, updated_at=excluded.updated_at",
+        (workspace_id, (note or "").strip() or None, cur_rev + 1),
+    )
 
 
 # ── 대시보드 읽기 ─────────────────────────────────────────────────────────────

@@ -6,14 +6,17 @@ import {
   draftToBody,
   formatThousands,
   limitTotal,
+  mergeTopupsFromServer,
   newGroupId,
   niceCeil,
   projectDepletion,
   remainingTone,
   stripThousands,
   topupSteps,
+  topupsOnlyBody,
   usagePercent,
   validateDraft,
+  validateTopup,
   type BalancePoint,
   type CreditPlanSettings,
 } from "../src/lib/creditPlan";
@@ -130,6 +133,28 @@ describe("설정 초안 — 검사와 저장 본문", () => {
     expect(body.groups[2]).toEqual({ id, name: "New", monthly_limit: 300, remaining_override: null });
     expect(body.members).toContainEqual({ email: "c@x", group_id: id });
     expect(draftMemberCount(withNew, id)).toBe(1);
+  });
+});
+
+describe("긴급 충전 줄 단위 저장", () => {
+  it("본문엔 그룹·배정이 없고(서버가 그대로 둠), 응답을 초안에 합치면 revision·기록만 바뀐다", () => {
+    const draft = draftFromSettings({
+      workspace_id: "ws1", month: "2026-09", plan: { monthly_topup: 20000, note: null, revision: 3, updated_at: null },
+      groups: [], members: [], topups: [{ id: "t1", day: "2026-09-03", credits: 3000, note: null }],
+    });
+    const edited = { ...draft, groups: [{ id: "g9", isNew: true, name: "편집중", limitInput: "1", unlimited: false, overrideInput: "", remaining: null, usedMonth: 0, memberCount: 0 }], dirty: true };
+    const body = topupsOnlyBody(edited, [{ id: "t1", day: "2026-09-03", creditsInput: "3500", note: " 추가 " }]);
+    expect(body).toEqual({ revision: 3, note: null, topups: [{ id: "t1", day: "2026-09-03", credits: 3500, note: "추가" }] });
+    expect("groups" in body).toBe(false);
+    const merged = mergeTopupsFromServer(edited, {
+      workspace_id: "ws1", month: "2026-09", plan: { monthly_topup: 25000, note: null, revision: 4, updated_at: null },
+      groups: [], members: [], topups: [{ id: "t1", day: "2026-09-03", credits: 3500, note: "추가" }],
+    });
+    expect(merged.revision).toBe(4);
+    expect(merged.monthlyTopup).toBe(25000);
+    expect(merged.topups[0].creditsInput).toBe("3500");
+    expect(merged.groups[0].name).toBe("편집중"); // 편집 중인 그룹 초안은 그대로
+    expect(validateTopup({ id: "x", day: "2026-09-10", creditsInput: "", note: "" })).toContain("크레딧");
   });
 });
 
