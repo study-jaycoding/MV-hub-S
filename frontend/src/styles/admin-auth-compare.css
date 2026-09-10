@@ -315,27 +315,59 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
   top: auto;
   bottom: calc(100% + 7px);
 }
-/* 크레딧 풀 · 그룹(CreditPlanFields) — 워크스페이스 단위 설정 절 */
+/* 크레딧 풀 · 그룹(CreditPlanFields) — 워크스페이스 단위 설정 절. 그룹 표 + 힉스필드식 그룹 창(모달) */
 .credit-plan-fields h5 small { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; font-weight: 400; }
-.credit-group-editor { margin: 10px 0 6px; display: grid; gap: 6px; }
-.credit-group-row { display: grid; grid-template-columns: 1.3fr 1fr 24px .9fr 1fr 26px; gap: 6px; align-items: center; }
-.credit-group-row.head span { color: var(--muted); font-size: 11px; font-weight: 700; }
-.credit-group-row .settings-input { width: 100%; min-width: 0; }
-.credit-group-row input[type="checkbox"] { justify-self: center; }
-.credit-group-remaining { font-size: 12px; text-align: right; color: var(--accent); }
-.credit-group-remove { width: 26px; height: 26px; padding: 0; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
-.credit-group-remove:hover { color: #f06a5a; border-color: #f06a5a; }
-.credit-group-add { margin-top: 2px; padding: 5px 10px; border-radius: 8px; border: 1px dashed var(--line); background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; justify-self: start; }
-.credit-group-add:hover { color: var(--text); border-color: var(--text); }
-.credit-member-editor { margin-top: 10px; display: grid; gap: 4px; }
-.credit-member-head { display: flex; justify-content: space-between; align-items: baseline; color: var(--muted); font-size: 11.5px; font-weight: 700; margin-bottom: 2px; }
-.credit-member-head small { font-weight: 400; }
-.credit-member-row { display: grid; grid-template-columns: 1fr 160px; gap: 8px; align-items: center; padding: 4px 6px; border-radius: 8px; }
-.credit-member-row:hover { background: rgba(255,255,255,.03); }
-.credit-member-row.off { opacity: .55; }
-.credit-member-row strong { display: block; font-size: 12.5px; }
-.credit-member-row small { color: var(--muted); font-size: 11px; }
-.credit-member-row select { font: inherit; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); }
+.credit-plan-table-head { display: flex; justify-content: space-between; align-items: center; margin: 10px 0 6px; color: var(--muted); font-size: 11.5px; font-weight: 700; }
+.credit-group-add { padding: 6px 12px; border-radius: 999px; border: 0; background: var(--accent); color: var(--accent-ink); cursor: pointer; font-size: 12px; font-weight: 700; }
+.credit-group-add:hover { filter: brightness(1.08); }
+.credit-plan-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.credit-plan-table th { text-align: left; color: var(--muted); font-size: 11px; font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.credit-plan-table td { padding: 8px; border-bottom: 1px solid rgba(255,255,255,.05); }
+.credit-plan-table tbody tr { cursor: pointer; }
+.credit-plan-table tbody tr:hover { background: rgba(255,255,255,.035); }
+.credit-plan-table td small { margin-left: 6px; color: var(--muted); font-size: 10.5px; }
+.credit-modal-backdrop { position: fixed; inset: 0; z-index: 320; background: rgba(0,0,0,.6); display: grid; place-items: center; padding: 16px; }
+.credit-modal { position: relative; width: min(760px, 94vw); max-height: 88vh; display: grid; grid-template-columns: 1fr 1fr; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; }
+.credit-modal-left { padding: 20px 20px 18px; border-right: 1px solid var(--line); display: grid; align-content: start; gap: 12px; }
+.credit-modal-left h4 { margin: 0 0 4px; font-size: 18px; }
+.credit-modal-field { display: grid; gap: 6px; }
+.credit-modal-field > span { color: var(--muted); font-size: 11.5px; font-weight: 700; }
+.credit-modal-field .settings-input { width: 100%; }
+.credit-modal-toggle { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.credit-switch { appearance: none; width: 36px; height: 20px; border-radius: 999px; background: #3a3d44; position: relative; cursor: pointer; transition: background .15s; margin: 0; }
+.credit-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+.credit-switch:checked { background: #22c55e; }
+.credit-switch:checked::after { left: 18px; }
+.credit-modal-remaining { display: grid; gap: 2px; padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,.04); }
+.credit-modal-remaining span { color: var(--muted); font-size: 11px; }
+.credit-modal-remaining strong { font-size: 18px; color: var(--accent); }
+.credit-modal-remaining em { font-style: normal; color: var(--muted); font-size: 10.5px; }
+.credit-modal-actions { display: flex; gap: 8px; margin-top: 6px; }
+.credit-modal-actions .admin-confirm-yes { flex: 1; }
+.credit-modal-delete { padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+.credit-modal-delete:hover { color: #f06a5a; border-color: #f06a5a; }
+.credit-modal-right { position: relative; padding: 20px; display: grid; align-content: start; gap: 10px; background: rgba(255,255,255,.02); min-height: 320px; }
+.credit-modal-close { position: absolute; top: 12px; right: 12px; width: 30px; height: 30px; padding: 0; border-radius: 50%; border: 1px solid var(--line); background: var(--panel2); color: var(--text); cursor: pointer; font-size: 16px; line-height: 1; }
+.credit-modal-members-head { display: flex; justify-content: space-between; align-items: center; margin-right: 40px; color: var(--muted); font-size: 11.5px; font-weight: 700; }
+.credit-modal-add { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; font-size: 12px; }
+.credit-modal-add.solid { background: #fff; color: #111; border-color: #fff; font-weight: 700; }
+.credit-modal-members, .credit-pick { display: grid; gap: 4px; overflow: auto; max-height: 56vh; }
+.credit-modal-member, .credit-pick-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; text-align: left; }
+.credit-pick-row { width: 100%; border: 1px solid transparent; background: transparent; color: var(--text); cursor: pointer; flex-direction: column; align-items: flex-start; gap: 1px; }
+.credit-pick-row:hover { background: rgba(255,255,255,.05); border-color: var(--line); }
+.credit-modal-member:hover { background: rgba(255,255,255,.03); }
+.credit-modal-member.off, .credit-pick-row.off { opacity: .55; }
+.credit-modal-member strong, .credit-pick-row strong { display: block; font-size: 12.5px; }
+.credit-modal-member small, .credit-pick-row small { color: var(--muted); font-size: 11px; }
+.credit-modal-member button { width: 24px; height: 24px; padding: 0; border-radius: 50%; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+.credit-modal-member button:hover { color: #f06a5a; border-color: #f06a5a; }
+.credit-pick-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+.credit-pick-head button { padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; font-size: 11.5px; }
+.credit-modal-empty { display: grid; justify-items: center; gap: 4px; padding: 48px 12px; text-align: center; }
+.credit-modal-empty-icon { font-size: 26px; opacity: .6; }
+.credit-modal-empty strong { font-size: 13px; }
+.credit-modal-empty small { color: var(--muted); font-size: 11.5px; margin-bottom: 8px; }
+@media (max-width: 720px) { .credit-modal { grid-template-columns: 1fr; } .credit-modal-left { border-right: 0; border-bottom: 1px solid var(--line); } }
 .project-member-picker {
   margin: 2px 0 12px;
   padding: 12px;

@@ -1,4 +1,5 @@
 import { BUDGET_PERIOD_OPTIONS, planningBudgetPeriod } from "../../lib/projectPlanning";
+import { formatThousands, stripThousands } from "../../lib/creditPlan";
 import type { Planning } from "./types";
 import { ProjectDateRangePicker } from "./ProjectDateRangePicker";
 
@@ -60,12 +61,12 @@ export function ProjectPlanningFields({
         <span>예산 한도</span>
         <div className="manage-budget-limit">
           <input
-            type="number"
-            min={0}
-            value={budgetInput}
+            type="text"
+            inputMode="numeric"
+            value={formatThousands(budgetInput)}
             placeholder="제한 없음"
             aria-label="예산 크레딧"
-            onChange={(event) => onBudgetInputChange(event.target.value)}
+            onChange={(event) => onBudgetInputChange(stripThousands(event.target.value))}
           />
           <em>크레딧</em>
           <select

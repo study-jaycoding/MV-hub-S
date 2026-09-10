@@ -259,13 +259,26 @@ class CreditPlanTests(unittest.TestCase):
                                   {"id": ids["Artist2"], "name": "Artist", "monthly_limit": None}], [])
         self.assertEqual({g["id"]: g["name"] for g in settings["groups"]}, {ids["Artist"]: "Artist2", ids["Artist2"]: "Artist"})
 
+    def test_client_supplied_group_id_allows_assignment_in_one_save(self) -> None:
+        gid = "0123456789abcdef0123456789abcdef"
+        settings = self._save(0, [{"id": gid, "name": "Artist", "monthly_limit": 1000}],
+                              [{"email": "a@x", "group_id": gid}, {"email": "b@x", "group_id": gid}])
+        artist = self._group(settings, "Artist")
+        self.assertEqual((artist["id"], artist["member_count"], artist["remaining"]), (gid, 2, 800))
+        # 다른 워크스페이스가 쓰는 id 는 거부 — 형식이 맞아도 소유 검증.
+        with db.get_connection() as conn:
+            conn.execute("INSERT INTO workspace_credit_group(id, workspace_id, name, base_month) VALUES(?,?,?,?)",
+                         ("f" * 32, "ws2", "Other", self.month))
+        with self.assertRaises(ValueError):
+            self._save(1, [{"id": gid, "name": "Artist", "monthly_limit": 1000}, {"id": "f" * 32, "name": "X", "monthly_limit": 1}], [])
+
     def test_revision_conflict_and_bad_group(self) -> None:
         self._seed_artist_td()
         with self.assertRaises(plan_repo.CreditPlanConflict):
             self._save(0, [], [])
         with self.assertRaises(ValueError):
             self._save(1, [{"name": "X", "monthly_limit": 1}], [{"email": "a@x", "group_id": "nope"}])
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError):  # uuid hex 형식이 아닌 id
             self._save(1, [{"id": "not-mine", "name": "X", "monthly_limit": 1}], [])
 
     # ── 멤버 뷰 ──

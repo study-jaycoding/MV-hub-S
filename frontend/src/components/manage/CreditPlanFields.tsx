@@ -1,15 +1,208 @@
 // 프로젝트 설정 창의 '크레딧 풀 · 그룹' 절 — 워크스페이스 단위 설정(월 충전·그룹 월 한도·멤버 배정).
-// 힉스필드 관리 창의 User Group 과 이름을 똑같이 적어 두는 대조표. 저장은 ProjectManagerPanel 이 별도 PUT 으로
-// (revision 낙관적 잠금 — 다른 창에서 먼저 저장했으면 409). 초안 상태는 부모(다이얼로그 state)가 들고 있다.
+// 힉스필드 관리 창(User Group)과 같은 흐름: 그룹 표 + "그룹 추가" → 그룹 창(이름·한도 없음 토글·월 한도·남은 양 보정 |
+// 멤버 목록·멤버 추가). 저장은 ProjectManagerPanel 이 프로젝트 저장 뒤 별도 PUT 으로(revision 낙관적 잠금 — 409).
+// 초안 상태는 부모(다이얼로그 state)가 들고, 여기서는 초안만 바꾼다. 숫자 칸은 천 단위 구분으로 보여 준다.
 import { useEffect, useState } from "react";
 import { isHttpStatus, isRouteMissing } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
-import { draftFromSettings, type CreditPlanDraft, type DraftGroup } from "../../lib/creditPlan";
+import {
+  draftFromSettings,
+  draftMemberCount,
+  formatThousands,
+  newGroupId,
+  stripThousands,
+  type CreditPlanDraft,
+  type CreditPlanMember,
+  type DraftGroup,
+} from "../../lib/creditPlan";
 
 function n(value: number | null): string {
   return value == null ? "∞" : Math.round(value).toLocaleString();
 }
 
+function memberLabel(member: CreditPlanMember): string {
+  return member.name || member.email.split("@")[0];
+}
+
+// ── 그룹 창(힉스필드 "Add new group" 과 같은 두 칸 구성) ──────────────────────
+function GroupEditor({
+  draft,
+  group,
+  onClose,
+  onApply,
+  onDelete,
+}: {
+  draft: CreditPlanDraft;
+  group: DraftGroup; // 새 그룹이면 isNew=true 로 미리 만든 것
+  onClose: () => void;
+  onApply: (next: DraftGroup, memberEmails: string[]) => void;
+  onDelete: (() => void) | null;
+}) {
+  const [name, setName] = useState(group.name);
+  const [unlimited, setUnlimited] = useState(group.unlimited);
+  const [limitInput, setLimitInput] = useState(group.limitInput);
+  const [overrideInput, setOverrideInput] = useState(group.overrideInput);
+  const [emails, setEmails] = useState<string[]>(
+    () => draft.members.filter((member) => member.group_id === group.id).map((member) => member.email),
+  );
+  const [picking, setPicking] = useState(false);
+  const [error, setError] = useState("");
+  const groupName = (id: string | null) => (id ? draft.groups.find((item) => item.id === id)?.name || "" : "");
+  const assigned = emails
+    .map((email) => draft.members.find((member) => member.email === email))
+    .filter((member): member is CreditPlanMember => Boolean(member));
+  const candidates = draft.members.filter((member) => !emails.includes(member.email));
+
+  const save = () => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setError("그룹 이름을 입력하세요.");
+      return;
+    }
+    if (draft.groups.some((item) => item.id !== group.id && item.name.trim() === trimmed)) {
+      setError("같은 이름의 그룹이 이미 있습니다.");
+      return;
+    }
+    if (!unlimited && !stripThousands(limitInput)) {
+      setError("월 한도를 입력하거나 '한도 없음'을 켜세요.");
+      return;
+    }
+    onApply(
+      { ...group, name: trimmed, unlimited, limitInput: stripThousands(limitInput), overrideInput: overrideInput.trim() },
+      emails,
+    );
+  };
+
+  return (
+    <div className="credit-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="credit-modal" role="dialog" aria-label={group.isNew ? "그룹 추가" : "그룹 편집"}>
+        <div className="credit-modal-left">
+          <h4>{group.isNew ? "그룹 추가" : "그룹 편집"}</h4>
+          <label className="credit-modal-field">
+            <span>그룹 이름</span>
+            <input
+              className="settings-input"
+              value={name}
+              placeholder="예: Producer"
+              autoFocus
+              onChange={(event) => { setName(event.target.value); setError(""); }}
+              onKeyDown={(event) => { if (event.key === "Enter") save(); }}
+            />
+          </label>
+          <label className="credit-modal-toggle">
+            <span>한도 없음</span>
+            <input type="checkbox" className="credit-switch" checked={unlimited} onChange={(event) => { setUnlimited(event.target.checked); setError(""); }} />
+          </label>
+          {!unlimited ? (
+            <label className="credit-modal-field">
+              <span>월 한도</span>
+              <div className="manage-budget-limit">
+                <input
+                  className="settings-input"
+                  type="text"
+                  inputMode="numeric"
+                  value={formatThousands(limitInput)}
+                  placeholder="예: 5,000"
+                  onChange={(event) => { setLimitInput(stripThousands(event.target.value)); setError(""); }}
+                />
+                <em>크레딧 / 월 · 이월됨</em>
+              </div>
+            </label>
+          ) : null}
+          {!group.isNew ? (
+            <div className="credit-modal-remaining">
+              <span>지금 남은 양</span>
+              <strong>{n(group.remaining)}</strong>
+              <em>이번 달 사용 {Math.round(group.usedMonth).toLocaleString()} · 이월 포함 · 저장 후 다시 계산</em>
+            </div>
+          ) : null}
+          {!unlimited ? (
+            <label className="credit-modal-field">
+              <span>남은 양 보정</span>
+              <div className="manage-budget-limit">
+                <input
+                  className="settings-input"
+                  type="text"
+                  inputMode="numeric"
+                  value={overrideInput.startsWith("-") ? `-${formatThousands(overrideInput.slice(1))}` : formatThousands(overrideInput)}
+                  placeholder="비우면 유지"
+                  title="힉스필드 화면의 남은 양과 다르면 여기에 적어 맞춥니다(이월 포함)"
+                  onChange={(event) => {
+                    const raw = event.target.value;
+                    const negative = raw.trim().startsWith("-");
+                    setOverrideInput(`${negative ? "-" : ""}${stripThousands(raw)}`);
+                  }}
+                />
+                <em>크레딧 · 힉스필드 화면과 맞출 때만</em>
+              </div>
+            </label>
+          ) : null}
+          {error ? <div className="login-error">{error}</div> : null}
+          <div className="credit-modal-actions">
+            <button type="button" className="admin-confirm-yes" onClick={save}>저장</button>
+            {onDelete ? (
+              <button type="button" className="credit-modal-delete" onClick={() => { if (window.confirm(`'${group.name}' 그룹을 삭제할까요? 배정도 풀립니다.`)) onDelete(); }}>삭제</button>
+            ) : null}
+          </div>
+        </div>
+        <div className="credit-modal-right">
+          <button type="button" className="credit-modal-close" aria-label="닫기" onClick={onClose}>×</button>
+          <div className="credit-modal-members-head">
+            <span>멤버 {assigned.length}</span>
+            {!picking && candidates.length ? (
+              <button type="button" className="credit-modal-add" onClick={() => setPicking(true)}>+ 멤버 추가</button>
+            ) : null}
+          </div>
+          {picking ? (
+            <div className="credit-pick">
+              <div className="credit-pick-head">
+                <span>추가할 멤버를 고르세요 — 다른 그룹에 있으면 옮겨집니다</span>
+                <button type="button" onClick={() => setPicking(false)}>완료</button>
+              </div>
+              {candidates.map((member) => (
+                <button
+                  type="button"
+                  key={member.email}
+                  className={`credit-pick-row${member.is_available ? "" : " off"}`}
+                  onClick={() => setEmails((current) => [...current, member.email])}
+                >
+                  <strong>{memberLabel(member)}</strong>
+                  <small>
+                    {member.email}
+                    {member.group_id && member.group_id !== group.id ? ` · 지금 ${groupName(member.group_id)}` : ""}
+                    {member.is_available ? "" : " · 접근 불가"}
+                  </small>
+                </button>
+              ))}
+              {!candidates.length ? <div className="admin-empty">추가할 멤버가 없습니다.</div> : null}
+            </div>
+          ) : assigned.length ? (
+            <div className="credit-modal-members">
+              {assigned.map((member) => (
+                <div className={`credit-modal-member${member.is_available ? "" : " off"}`} key={member.email}>
+                  <span>
+                    <strong>{memberLabel(member)}</strong>
+                    <small>{member.email}{member.is_available ? "" : " · 접근 불가"}</small>
+                  </span>
+                  <button type="button" aria-label="그룹에서 빼기" onClick={() => setEmails((current) => current.filter((email) => email !== member.email))}>×</button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="credit-modal-empty">
+              <div className="credit-modal-empty-icon" aria-hidden="true">👥</div>
+              <strong>아직 멤버가 없습니다</strong>
+              <small>멤버를 추가해 이 그룹에 배정하세요</small>
+              {candidates.length ? <button type="button" className="credit-modal-add solid" onClick={() => setPicking(true)}>멤버 추가</button> : null}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 절 본체 ───────────────────────────────────────────────────────────────
 export function CreditPlanFields({
   workspaceId,
   draft,
@@ -21,6 +214,7 @@ export function CreditPlanFields({
 }) {
   const [status, setStatus] = useState<"idle" | "loading" | "unsupported" | "error">("idle");
   const [error, setError] = useState("");
+  const [editing, setEditing] = useState<DraftGroup | null>(null);
   const loaded = draft && draft.loadedFor === workspaceId;
 
   useEffect(() => {
@@ -53,24 +247,32 @@ export function CreditPlanFields({
     if (!draft) return;
     onChange({ ...draft, ...patch, dirty: true });
   };
-  const updateGroup = (index: number, patch: Partial<DraftGroup>) => {
+  const applyGroup = (next: DraftGroup, memberEmails: string[]) => {
     if (!draft) return;
-    update({ groups: draft.groups.map((group, i) => (i === index ? { ...group, ...patch } : group)) });
-  };
-  const removeGroup = (index: number) => {
-    if (!draft) return;
-    const removed = draft.groups[index];
+    const exists = draft.groups.some((group) => group.id === next.id);
     update({
-      groups: draft.groups.filter((_, i) => i !== index),
-      members: draft.members.map((member) =>
-        removed.id && member.group_id === removed.id ? { ...member, group_id: null } : member),
+      groups: exists ? draft.groups.map((group) => (group.id === next.id ? next : group)) : [...draft.groups, next],
+      members: draft.members.map((member) => {
+        if (memberEmails.includes(member.email)) return { ...member, group_id: next.id };
+        if (member.group_id === next.id) return { ...member, group_id: null };
+        return member;
+      }),
     });
+    setEditing(null);
   };
-  const addGroup = () => {
+  const deleteGroup = (id: string) => {
     if (!draft) return;
-    update({ groups: [...draft.groups, { name: "", limitInput: "", unlimited: false, overrideInput: "", remaining: null, usedMonth: 0 }] });
+    update({
+      groups: draft.groups.filter((group) => group.id !== id),
+      members: draft.members.map((member) => (member.group_id === id ? { ...member, group_id: null } : member)),
+    });
+    setEditing(null);
   };
-  const hasNewGroups = Boolean(draft?.groups.some((group) => !group.id));
+  const startNew = () => setEditing({
+    id: newGroupId(), isNew: true, name: "", limitInput: "", unlimited: false, overrideInput: "",
+    remaining: null, usedMonth: 0, memberCount: 0,
+  });
+  const unassigned = draft ? draft.members.filter((member) => member.is_available && !member.group_id).length : 0;
 
   return (
     <section className="project-settings-section credit-plan-fields">
@@ -86,95 +288,46 @@ export function CreditPlanFields({
             <span>월 충전</span>
             <div className="manage-budget-limit">
               <input
-                type="number"
-                min={0}
-                step={100}
-                value={draft.topupInput}
-                placeholder="예: 20000"
+                type="text"
+                inputMode="numeric"
+                value={formatThousands(draft.topupInput)}
+                placeholder="예: 20,000"
                 aria-label="워크스페이스 월 충전 크레딧"
-                onChange={(event) => update({ topupInput: event.target.value })}
+                onChange={(event) => update({ topupInput: stripThousands(event.target.value) })}
               />
               <em>크레딧 · 힉스필드에 매달 넣는 양(이월됨)</em>
             </div>
           </label>
-          <div className="credit-group-editor">
-            <div className="credit-group-row head">
-              <span>그룹</span><span>월 한도</span><span>∞</span><span>지금 남은 양</span><span>보정</span><span />
-            </div>
-            {draft.groups.map((group, index) => (
-              <div className="credit-group-row" key={group.id || `new-${index}`}>
-                <input
-                  className="settings-input"
-                  value={group.name}
-                  placeholder="예: Artist"
-                  aria-label="그룹 이름"
-                  onChange={(event) => updateGroup(index, { name: event.target.value })}
-                />
-                <input
-                  className="settings-input"
-                  type="number"
-                  min={0}
-                  step={100}
-                  value={group.unlimited ? "" : group.limitInput}
-                  disabled={group.unlimited}
-                  placeholder={group.unlimited ? "∞" : "예: 5000"}
-                  aria-label="그룹 월 한도"
-                  onChange={(event) => updateGroup(index, { limitInput: event.target.value })}
-                />
-                <input
-                  type="checkbox"
-                  checked={group.unlimited}
-                  aria-label="한도 없음"
-                  title="한도 없음(∞)"
-                  onChange={(event) => updateGroup(index, { unlimited: event.target.checked })}
-                />
-                <span className="credit-group-remaining" title={`이번 달 사용 ${Math.round(group.usedMonth).toLocaleString()}`}>
-                  {group.id ? n(group.remaining) : "저장 후 계산"}
-                </span>
-                <input
-                  className="settings-input"
-                  type="number"
-                  value={group.overrideInput}
-                  placeholder="비우면 유지"
-                  title="힉스필드 화면의 남은 양과 다르면 여기에 적어 맞춥니다(이월 포함)"
-                  aria-label="남은 양 보정"
-                  onChange={(event) => updateGroup(index, { overrideInput: event.target.value })}
-                />
-                <button type="button" className="credit-group-remove" title="그룹 삭제(배정도 풀림)" onClick={() => removeGroup(index)}>×</button>
-              </div>
-            ))}
-            <button type="button" className="credit-group-add" onClick={addGroup}>+ 그룹</button>
+          <div className="credit-plan-table-head">
+            <span>그룹 {draft.groups.length}{unassigned ? ` · 미배정 ${unassigned}명` : ""}</span>
+            <button type="button" className="credit-group-add" onClick={startNew}>+ 그룹 추가</button>
           </div>
-          <div className="credit-member-editor">
-            <div className="credit-member-head">
-              <span>멤버 → 그룹</span>
-              <small>{hasNewGroups ? "새 그룹은 저장한 뒤에 배정할 수 있습니다." : "한 사람은 그룹 하나"}</small>
-            </div>
-            {draft.members.length === 0 ? (
-              <div className="admin-empty">이 워크스페이스에서 확인된 멤버가 없습니다.</div>
-            ) : null}
-            {draft.members.map((member) => (
-              <label className={`credit-member-row${member.is_available ? "" : " off"}`} key={member.email}>
-                <span>
-                  <strong>{member.name}</strong>
-                  <small>{member.email}{member.is_available ? "" : " · 접근 불가"}</small>
-                </span>
-                <select
-                  value={member.group_id || ""}
-                  aria-label={`${member.name} 그룹`}
-                  onChange={(event) => update({
-                    members: draft.members.map((item) =>
-                      item.email === member.email ? { ...item, group_id: event.target.value || null } : item),
-                  })}
-                >
-                  <option value="">그룹 없음</option>
-                  {draft.groups.filter((group) => group.id).map((group) => (
-                    <option key={group.id} value={group.id}>{group.name || "(이름 없음)"}</option>
-                  ))}
-                </select>
-              </label>
-            ))}
-          </div>
+          {draft.groups.length ? (
+            <table className="credit-plan-table">
+              <thead><tr><th>그룹</th><th>월 한도</th><th>인원</th><th>지금 남은 양</th></tr></thead>
+              <tbody>
+                {draft.groups.map((group) => (
+                  <tr key={group.id} onClick={() => setEditing(group)} title="클릭하면 그룹 창이 열립니다">
+                    <td><b>{group.name}</b>{group.isNew ? <small> 저장 전</small> : null}</td>
+                    <td>{group.unlimited ? "∞" : `${formatThousands(group.limitInput)} /월`}</td>
+                    <td>{draftMemberCount(draft, group.id)}</td>
+                    <td>{group.isNew ? "저장 후 계산" : n(group.remaining)}{group.overrideInput ? <small> 보정 예정</small> : null}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="admin-empty">아직 그룹이 없습니다. "+ 그룹 추가"로 힉스필드 User Group 과 같은 이름을 만드세요.</div>
+          )}
+          {editing ? (
+            <GroupEditor
+              draft={draft}
+              group={editing}
+              onClose={() => setEditing(null)}
+              onApply={applyGroup}
+              onDelete={editing.isNew ? null : () => deleteGroup(editing.id)}
+            />
+          ) : null}
         </>
       ) : null}
     </section>

@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   addDays,
   draftFromSettings,
+  draftMemberCount,
   draftToBody,
+  formatThousands,
   limitTotal,
+  newGroupId,
   niceCeil,
   projectDepletion,
   remainingTone,
+  stripThousands,
   topupSteps,
   usagePercent,
   validateDraft,
@@ -103,9 +107,33 @@ describe("설정 초안 — 검사와 저장 본문", () => {
     expect(validateDraft({ ...draft, groups: [{ ...draft.groups[0], limitInput: "" }] })).toContain("월 한도");
     expect(validateDraft({ ...draft, groups: [{ ...draft.groups[0], overrideInput: "1.5" }] })).toContain("보정");
   });
-  it("삭제된 그룹에 남은 배정은 본문에서 뺀다", () => {
+  it("삭제된 그룹을 가리키는 배정은 해제(null)로 보낸다", () => {
     const draft = draftFromSettings(settings);
     const body = draftToBody({ ...draft, groups: [draft.groups[1]] });
-    expect(body.members).toEqual([{ email: "c@x", group_id: null }]);
+    expect(body.members).toEqual([{ email: "a@x", group_id: null }, { email: "c@x", group_id: null }]);
+  });
+  it("새 그룹은 클라이언트 id 를 그대로 보내 같은 저장에 멤버 배정을 싣는다", () => {
+    const draft = draftFromSettings(settings);
+    const id = newGroupId();
+    expect(id).toMatch(/^[0-9a-f]{32}$/);
+    const withNew = {
+      ...draft,
+      groups: [...draft.groups, { id, isNew: true, name: "New", limitInput: "300", unlimited: false, overrideInput: "", remaining: null, usedMonth: 0, memberCount: 0 }],
+      members: draft.members.map((member) => (member.email === "c@x" ? { ...member, group_id: id } : member)),
+    };
+    const body = draftToBody(withNew);
+    expect(body.groups[2]).toEqual({ id, name: "New", monthly_limit: 300, remaining_override: null });
+    expect(body.members).toContainEqual({ email: "c@x", group_id: id });
+    expect(draftMemberCount(withNew, id)).toBe(1);
+  });
+});
+
+describe("숫자 입력 — 천 단위 구분", () => {
+  it("보이는 값은 20,000 · 저장값은 20000", () => {
+    expect(formatThousands("20000")).toBe("20,000");
+    expect(formatThousands("20,0a00")).toBe("20,000");
+    expect(formatThousands("")).toBe("");
+    expect(stripThousands("1,234,567")).toBe("1234567");
+    expect(stripThousands("abc")).toBe("");
   });
 });

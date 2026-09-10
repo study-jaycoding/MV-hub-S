@@ -161,15 +161,38 @@ export function niceCeil(value: number): number {
   return Math.ceil((value * 1.05) / unit) * unit;
 }
 
+// ── 숫자 입력(천 단위 구분) ────────────────────────────────────────────────
+/** 입력 문자열에서 숫자만 남긴다("20,000" → "20000"). 초안은 항상 이 형태로 들고 있다. */
+export function stripThousands(text: string): string {
+  return text.replace(/[^\d]/g, "");
+}
+
+/** 숫자 문자열을 천 단위 구분으로("20000" → "20,000"). 빈 값은 빈 문자열. */
+export function formatThousands(digits: string): string {
+  const clean = stripThousands(digits);
+  return clean ? Number(clean).toLocaleString("en-US") : "";
+}
+
+/** 새 그룹에 클라이언트가 미리 붙이는 id(uuid hex 32자) — 같은 저장에 멤버 배정을 실을 수 있게. 서버가 형식·소유를 검사한다. */
+export function newGroupId(): string {
+  const g = globalThis.crypto as Crypto | undefined;
+  if (g?.randomUUID) return g.randomUUID().replace(/-/g, "");
+  let out = "";
+  for (let i = 0; i < 32; i += 1) out += Math.floor(Math.random() * 16).toString(16);
+  return out;
+}
+
 // ── 설정 창 초안 ────────────────────────────────────────────────────────────
 export interface DraftGroup {
-  id?: string;
+  id: string; // 기존 그룹은 서버 id, 새 그룹은 newGroupId()
+  isNew: boolean;
   name: string;
-  limitInput: string; // 빈 값 + unlimited=false 는 오류
+  limitInput: string; // 숫자만 · 빈 값 + unlimited=false 는 오류
   unlimited: boolean;
-  overrideInput: string; // 지금 남은 양 보정(비우면 서버 계산 유지)
+  overrideInput: string; // 지금 남은 양 보정(비우면 서버 계산 유지) · 숫자만(음수 허용 '-')
   remaining: number | null; // 서버가 준 현재 남은 양(표시용)
   usedMonth: number;
+  memberCount: number; // 서버 기준(표시용) — 초안의 실제 인원은 members 로 센다
 }
 
 export interface CreditPlanDraft {
@@ -190,12 +213,14 @@ export function draftFromSettings(settings: CreditPlanSettings): CreditPlanDraft
     note: settings.plan.note || "",
     groups: settings.groups.map((group) => ({
       id: group.id,
+      isNew: false,
       name: group.name,
       limitInput: group.monthly_limit == null ? "" : String(group.monthly_limit),
       unlimited: group.monthly_limit == null,
       overrideInput: "",
       remaining: group.remaining,
       usedMonth: group.used_month,
+      memberCount: group.member_count,
     })),
     members: settings.members.map((member) => ({ ...member })),
     dirty: false,
@@ -230,10 +255,10 @@ export function validateDraft(draft: CreditPlanDraft): string | null {
   return null;
 }
 
-/** 초안 → 저장 본문. 그룹이 아직 id 가 없으면(새 그룹) 멤버 배정은 이름 기준 임시 키 `new:<index>` 로 보낸다 —
- *  서버가 같은 순서로 id 를 발급하지 않으므로 새 그룹 배정은 저장 뒤 한 번 더 저장해야 한다(설정 창이 안내). */
+/** 초안 → 저장 본문. 새 그룹도 클라이언트 id 를 그대로 보내므로 멤버 배정을 같은 저장에 싣는다.
+ *  초안에서 사라진 그룹을 가리키는 배정은 해제(null)로 보낸다. */
 export function draftToBody(draft: CreditPlanDraft): CreditPlanSaveBody {
-  const validIds = new Set(draft.groups.map((group) => group.id).filter((id): id is string => Boolean(id)));
+  const validIds = new Set(draft.groups.map((group) => group.id));
   return {
     revision: draft.revision,
     monthly_topup: parseNonNegative(draft.topupInput) ?? null,
@@ -244,8 +269,14 @@ export function draftToBody(draft: CreditPlanDraft): CreditPlanSaveBody {
       monthly_limit: group.unlimited ? null : parseNonNegative(group.limitInput) ?? null,
       remaining_override: group.overrideInput.trim() ? Number(group.overrideInput) : null,
     })),
-    members: draft.members
-      .filter((member) => member.group_id === null || validIds.has(member.group_id))
-      .map((member) => ({ email: member.email, group_id: member.group_id })),
+    members: draft.members.map((member) => ({
+      email: member.email,
+      group_id: member.group_id !== null && validIds.has(member.group_id) ? member.group_id : null,
+    })),
   };
+}
+
+/** 초안의 그룹별 실제 인원(초안 members 기준). */
+export function draftMemberCount(draft: CreditPlanDraft, groupId: string): number {
+  return draft.members.filter((member) => member.group_id === groupId).length;
 }

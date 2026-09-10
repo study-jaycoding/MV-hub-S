@@ -19,9 +19,12 @@ base_balance 를 "저장 직전 남은 양이 그대로 이어지도록" 다시 
 """
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Optional
+
+_CLIENT_ID_RE = re.compile(r"[0-9a-f]{32}")  # 클라이언트가 새 그룹에 미리 붙이는 id(uuid hex) 형식
 
 from ..db import get_connection
 from ..emailnorm import norm_email
@@ -221,6 +224,7 @@ def save_settings(
     """전체 저장(한 트랜잭션). revision 이 현재와 다르면 CreditPlanConflict(409).
 
     groups: [{id?, name, monthly_limit|None, remaining_override?}] — 목록에 없는 기존 그룹은 삭제(배정도 삭제).
+    id 가 없거나 모르는 uuid hex 면 새 그룹(클라이언트가 미리 붙인 id 로 같은 저장에 멤버 배정 가능).
     members: [{email, group_id|None}] — **적힌 이메일만** 바꾼다(None=배정 해제). 안 적힌 이메일은 그대로(코덱스 P2).
     group_id 는 이 워크스페이스 그룹이어야 한다(아니면 ValueError → 400).
     재기준화(코덱스 P2 — 과거 소급 금지): 한도나 소속이 바뀐 그룹은 base_month=이번 달로 옮기고 base_balance 에
@@ -253,7 +257,12 @@ def save_settings(
                 raise ValueError("그룹 이름이 비었습니다")
             gid = str(g.get("id") or "").strip()
             if gid and gid not in old_by_id:
-                raise ValueError("이 워크스페이스의 그룹이 아닙니다")
+                # 새 그룹에 클라이언트가 미리 붙인 id — 같은 저장에 멤버 배정을 싣기 위해(설정 창의 그룹 편집 모달).
+                # 형식이 uuid hex 가 아니거나 이미 다른 워크스페이스가 쓰는 id 면 거부(코덱스 P1 — 소유 검증).
+                if not _CLIENT_ID_RE.fullmatch(gid):
+                    raise ValueError("그룹 id 형식이 올바르지 않습니다")
+                if conn.execute("SELECT 1 FROM workspace_credit_group WHERE id=?", (gid,)).fetchone():
+                    raise ValueError("이 워크스페이스의 그룹이 아닙니다")
             if not gid:
                 gid = uuid.uuid4().hex
             limit = g.get("monthly_limit")
