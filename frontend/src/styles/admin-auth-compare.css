@@ -371,6 +371,16 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .credit-modal-field { display: grid; gap: 6px; }
 .credit-modal-field > span { color: var(--muted); font-size: 11.5px; font-weight: 700; }
 .credit-modal-field .settings-input { width: 100%; }
+/* 그룹 창의 월 한도·남은 양 칸 — .manage-field 밖이라 글자색·초점 테두리를 여기서 준다(글자 하얗게, 초점은 바깥 상자에) */
+.credit-modal-field .manage-budget-limit input {
+  color: var(--text); font: inherit; font-size: 13px; min-height: 34px; padding: 0 11px;
+  border: 0; outline: none; box-shadow: none; background: transparent;
+}
+.credit-modal-field .manage-budget-limit input::placeholder { color: var(--muted2); }
+.credit-modal-field .manage-budget-limit input:focus,
+.credit-modal-field .manage-budget-limit input:focus-visible { outline: none; box-shadow: none; }
+.credit-modal-field .manage-budget-limit:focus-within { border-color: var(--accent); }
+.credit-modal-field .manage-budget-limit em { padding: 0 11px 0 10px; } /* 글자와 보조 문구 사이 띄움 */
 .credit-modal-toggle { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 12.5px; font-weight: 600; cursor: pointer; }
 .credit-switch { appearance: none; width: 36px; height: 20px; border-radius: 999px; background: #3a3d44; position: relative; cursor: pointer; transition: background .15s; margin: 0; }
 .credit-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
