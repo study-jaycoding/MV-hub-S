@@ -485,10 +485,11 @@
 }
 .sl-combo-part:hover { color: #fff; }
 .sl-combo-slash { color: var(--muted2); margin: 0 -5px; }
-/* 지금 쓰는 워크스페이스 — 상태줄 가운데. Host·연결됨과 **같은 모양**이고 색만 라임(Jay 2026-09-11).
+/* 지금 쓰는 워크스페이스 — 상태줄 가운데. Host·연결됨과 같은 모양·같은 색이다(Jay 2026-09-11).
+   처음엔 라임으로 뒀는데 상태줄에서 혼자 튀어 눈길을 끌었다 — 여기 라임은 왼쪽 상태 점 하나면 된다.
    긴 이름은 말줄임. */
 .sl-combo-ws {
-  color: var(--accent);
+  color: var(--muted);
   max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .sl-combo-ws.unset { color: var(--muted2); font-style: italic; }
