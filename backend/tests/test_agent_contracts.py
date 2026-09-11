@@ -1349,11 +1349,12 @@ def test_agent_switches_and_verifies_team_workspace_before_submit():
     with patch.object(agent, "_run_cli_json", side_effect=[(before, None), (after, None)]), patch.object(
         agent, "_run_cli_command", return_value=None
     ) as command:
-        ok, error = agent._ensure_request_workspace(
+        resolved, error = agent._ensure_request_workspace(
             "higgsfield", {"scope": "team", "id": "team-1", "name": "MILLIONVOLT"}
         )
 
-    assert ok is True
+    # ★검증한 **실제 id** 를 돌려준다 — 호출부가 그 값을 생성 자식의 과금 공간으로 박는다.
+    assert resolved == "team-1"
     assert error is None
     command.assert_called_once_with("higgsfield", "workspace", "set", "team-1", timeout=60)
 
@@ -1371,11 +1372,13 @@ def test_agent_resolves_personal_workspace_without_storing_its_cli_id():
     with patch.object(agent, "_run_cli_json", side_effect=[(workspaces, None), (after, None)]), patch.object(
         agent, "_run_cli_command", return_value=None
     ) as command:
-        ok, error = agent._ensure_request_workspace(
+        resolved, error = agent._ensure_request_workspace(
             "higgsfield", {"scope": "personal", "id": None, "name": None}
         )
 
-    assert ok is True
+    # 개인 공간도 **실제 id** 를 돌려준다. 요청·DB 계약(personal / id:null)은 그대로 두고,
+    # CLI 호출에만 이 id 를 쓴다.
+    assert resolved == "personal-1"
     assert error is None
     command.assert_called_once_with("higgsfield", "workspace", "set", "personal-1", timeout=60)
 
@@ -1386,11 +1389,11 @@ def test_agent_refuses_missing_team_workspace_without_falling_back():
     with patch.object(agent, "_run_cli_json", return_value=(workspaces, None)), patch.object(
         agent, "_run_cli_command"
     ) as command:
-        ok, error = agent._ensure_request_workspace(
+        resolved, error = agent._ensure_request_workspace(
             "higgsfield", {"scope": "team", "id": "missing", "name": "OTHER"}
         )
 
-    assert ok is False
+    assert resolved is None
     assert "찾을 수 없습니다" in str(error)
     command.assert_not_called()
 
@@ -1400,9 +1403,9 @@ def test_agent_refuses_unknown_workspace_without_using_current_cli_selection():
     with patch.object(agent, "_run_cli_json") as read_workspaces, patch.object(
         agent, "_run_cli_command"
     ) as command:
-        ok, error = agent._ensure_request_workspace("higgsfield", None)
+        resolved, error = agent._ensure_request_workspace("higgsfield", None)
 
-    assert ok is False
+    assert resolved is None
     assert "워크스페이스 정보가 없습니다" in str(error)
     assert "다시 선택" in str(error)
     read_workspaces.assert_not_called()
@@ -1463,7 +1466,7 @@ def test_staged_agent_gets_server_ack_before_paid_cli_create():
     agent = _load_agent()
     job_id = "12345678-1234-1234-1234-123456789abc"
     with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
-        agent, "_ensure_request_workspace", return_value=(True, None)
+        agent, "_ensure_request_workspace", return_value=("ws-test", None)
     ), patch.object(agent, "_begin_submission", return_value=True) as begin, patch.object(
         agent, "_run_cli_json", return_value=([job_id], None)
     ) as create, patch.object(agent, "_outbox_add") as outbox, patch.object(
@@ -1501,7 +1504,7 @@ def test_staged_agent_gets_server_ack_before_paid_cli_create():
 def test_staged_agent_never_creates_when_begin_ack_is_missing():
     agent = _load_agent()
     with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
-        agent, "_ensure_request_workspace", return_value=(True, None)
+        agent, "_ensure_request_workspace", return_value=("ws-test", None)
     ), patch.object(agent, "_begin_submission", return_value=False), patch.object(
         agent, "_release_claim", return_value=True
     ) as release, patch.object(agent, "_run_cli_json") as create, patch.object(
@@ -1529,7 +1532,7 @@ def test_staged_agent_never_creates_when_begin_ack_is_missing():
 def test_missing_job_id_after_create_is_quarantined_not_failed_or_retried():
     agent = _load_agent()
     with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
-        agent, "_ensure_request_workspace", return_value=(True, None)
+        agent, "_ensure_request_workspace", return_value=("ws-test", None)
     ), patch.object(agent, "_begin_submission", return_value=True), patch.object(
         agent, "_run_cli_json", return_value=(None, "CLI 타임아웃")
     ) as create, patch.object(
@@ -1569,7 +1572,7 @@ def test_stale_reference_cache_is_cleared_without_automatic_create_retry():
         }
     )
     with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
-        agent, "_ensure_request_workspace", return_value=(True, None)
+        agent, "_ensure_request_workspace", return_value=("ws-test", None)
     ), patch.object(agent, "_upload_for_media", return_value=({"id": "stale-id"}, True)), patch.object(
         agent, "_begin_submission", return_value=True
     ), patch.object(
@@ -1603,7 +1606,7 @@ def test_old_server_response_without_claim_phase_keeps_legacy_submission_compati
     agent = _load_agent()
     job_id = "12345678-1234-1234-1234-123456789abc"
     with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
-        agent, "_ensure_request_workspace", return_value=(True, None)
+        agent, "_ensure_request_workspace", return_value=("ws-test", None)
     ), patch.object(agent, "_begin_submission") as begin, patch.object(
         agent, "_run_cli_json", return_value=([job_id], None)
     ), patch.object(agent, "_outbox_add"), patch.object(
@@ -2325,7 +2328,7 @@ def test_seedance_submit_adds_omni_mode_when_references_attached():
     agent._PARAM_NAMES_CACHE.clear()
     with patch.object(agent, "_cli_json", return_value=schema) as model_get, patch.object(
         agent, "_upload_for_media", return_value=({"id": "11111111-1111-4111-8111-111111111111"}, False)
-    ), patch.object(agent, "_ensure_request_workspace", return_value=(True, None)), patch.object(
+    ), patch.object(agent, "_ensure_request_workspace", return_value=("ws-test", None)), patch.object(
         agent, "_begin_submission", return_value=True
     ) as begin, patch.object(agent, "_run_cli_json", return_value=([job_id], None)) as create, patch.object(
         agent, "_outbox_add"
@@ -2346,7 +2349,7 @@ def test_seedance_submit_adds_omni_mode_when_references_attached():
     request["params"] = {"mode": "omni_reference", "duration": 12}
     request["references"] = []
     with patch.object(agent, "_cli_json", return_value=schema), patch.object(
-        agent, "_ensure_request_workspace", return_value=(True, None)
+        agent, "_ensure_request_workspace", return_value=("ws-test", None)
     ), patch.object(agent, "_begin_submission", return_value=True), patch.object(
         agent, "_run_cli_json", return_value=([job_id], None)
     ) as create, patch.object(agent, "_outbox_add"), patch.object(agent, "_anchor_with_retry", return_value=True):

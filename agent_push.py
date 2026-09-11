@@ -245,12 +245,15 @@ def _mask_prompt_echo(text: str) -> str:
     )
 
 
-def _run_cli_json(cli: str, *args: str, timeout: int = 120):
-    """higgsfield CLI 를 --json 으로 실행하고 (파싱 결과, 오류문구) 반환."""
+def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = None):
+    """higgsfield CLI 를 --json 으로 실행하고 (파싱 결과, 오류문구) 반환.
+
+    env 를 주면 **이 자식 프로세스에만** 적용한다(부모 os.environ 은 건드리지 않는다 — 동시에 도는
+    다른 요청의 환경을 오염시키면 그게 곧 엉뚱한 공간 과금이다). 안 주면 종전대로 부모 환경을 상속한다."""
     try:
         out = subprocess.run(
             [*_cli_argv(cli), *args, "--json"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, timeout=timeout, env=env,
         )
     except subprocess.TimeoutExpired as e:
         # 타임아웃이어도 CLI 가 이미 찍은 부분 출력에 방금 만든 job id 가 있을 수 있다 → 버리지 않고
@@ -329,21 +332,26 @@ def _workspace_context_from_list(workspaces) -> dict:
     return {"scope": "personal", "id": None, "name": name}
 
 
-def _ensure_request_workspace(cli: str, value) -> tuple[bool, str | None]:
+def _ensure_request_workspace(cli: str, value) -> tuple[str | None, str | None]:
     """요청 워크스페이스로 CLI를 전환하고 실제 선택 상태를 다시 확인한다.
 
     요청 공간이 unknown이면 현재 CLI 선택값을 추측해 사용하지 않는다. CLI의 마지막 선택 공간은
     다른 요청이나 사용자의 수동 전환이 남긴 전역 상태라, 그대로 생성하면 다른 팀에 과금될 수 있다.
+
+    반환: (검증한 실제 워크스페이스 id, 오류문구). 성공이면 id, 실패면 (None, 사유).
+    ★id 를 돌려주는 이유 — 호출부가 그 값을 **생성 자식의 HIGGSFIELD_WORKSPACE_ID 로 박는다**.
+     제출 직전에 `is_selected` 를 다시 읽어 정하면, 그 사이 허브가 전역을 바꾼 것을 그대로 따라가
+     막으려던 경합을 다시 들여오게 된다.
     """
     target = _request_workspace(value)
     if target["scope"] == "unknown":
-        return False, (
+        return None, (
             "요청의 워크스페이스 정보가 없습니다. 허브와 에이전트를 최신 버전으로 업데이트한 뒤 "
             "워크스페이스를 다시 선택하고 생성해 주세요"
         )
     workspaces, error = _run_cli_json(cli, "workspace", "list", timeout=60)
     if error or not isinstance(workspaces, list):
-        return False, error or "워크스페이스 목록을 확인할 수 없습니다"
+        return None, error or "워크스페이스 목록을 확인할 수 없습니다"
 
     if target["scope"] == "team":
         candidate = next(
@@ -367,22 +375,22 @@ def _ensure_request_workspace(cli: str, value) -> tuple[bool, str | None]:
         )
     if not candidate or not candidate.get("id"):
         label = target.get("name") or ("개인" if target["scope"] == "personal" else target["id"])
-        return False, f"이 계정에서 워크스페이스를 찾을 수 없습니다: {label}"
+        return None, f"이 계정에서 워크스페이스를 찾을 수 없습니다: {label}"
     if not candidate.get("is_selected"):
         error = _run_cli_command(cli, "workspace", "set", str(candidate["id"]), timeout=60)
         if error:
-            return False, f"워크스페이스 전환 실패: {error}"
+            return None, f"워크스페이스 전환 실패: {error}"
         _invalidate_account_cycle()  # 전환 성공 — 사이클 snapshot(크레딧·선택 공간) 폐기(3-A)
         workspaces, error = _run_cli_json(cli, "workspace", "list", timeout=60)
         if error or not isinstance(workspaces, list):
-            return False, error or "전환 결과를 확인할 수 없습니다"
+            return None, error or "전환 결과를 확인할 수 없습니다"
     selected = next(
         (w for w in workspaces if isinstance(w, dict) and w.get("is_selected")),
         None,
     )
     if not selected or str(selected.get("id") or "") != str(candidate["id"]):
-        return False, "워크스페이스 전환 검증에 실패했습니다"
-    return True, None
+        return None, "워크스페이스 전환 검증에 실패했습니다"
+    return str(candidate["id"]), None
 
 
 # 잡 id(UUID) 추출용 — generate create 가 --wait 조합에서 JSON 대신 평문(잡 id 또는 결과 URL)만
@@ -1899,8 +1907,8 @@ def _submit_one(
     # workspace 선택은 CLI 전역 상태다. 전환·검증부터 generate create 반환까지 한 요청만 진입시켜,
     # 다른 제출 스레드가 중간에 공간을 바꾸는 경합을 막는다. create 반환 뒤 원격 추적은 다시 병렬이다.
     with workspace_lock:
-        workspace_ok, workspace_error = _ensure_request_workspace(cli, r.get("workspace"))
-        if not workspace_ok:
+        workspace_id, workspace_error = _ensure_request_workspace(cli, r.get("workspace"))
+        if not workspace_id:
             reason = f"워크스페이스 확인 실패 — 생성하지 않음: {workspace_error}"
             _fail(server, token, rid, reason)
             print(f"  ✗ {reason}")
@@ -1913,7 +1921,12 @@ def _submit_one(
             _release_claim(server, token, rid, agent_id)
             print("  ✗ 서버 제출 허가를 확인하지 못해 생성하지 않았습니다")
             return None
-        created, cli_error = _run_cli_json(cli, *args, timeout=300)
+        # ★과금 공간을 **이 호출에** 박는다(전역 선택에 기대지 않는다). 위에서 검증한 그 id 를 그대로
+        #  쓴다 — 여기서 다시 조회하면 그 사이 허브가 바꾼 전역을 따라가 막으려던 경합이 되살아난다.
+        #  2026-09-11 실측: 전역=뻘뻘뻘 / env=R&D 로 생성했더니 **R&D 에서만** 1크레딧이 빠졌다.
+        #  실패해도 env 를 빼고 재시도하지 않는다 — create 는 이미 과금됐을 수 있다(중복 생성 금지).
+        create_env = {**os.environ, "HIGGSFIELD_WORKSPACE_ID": workspace_id}
+        created, cli_error = _run_cli_json(cli, *args, timeout=300, env=create_env)
     job_id = _extract_created_id(created, cli_error)
     if not job_id:
         # generate create를 호출한 뒤에는 exit code·타임아웃만으로 외부 미제출을 증명할 수 없다.
