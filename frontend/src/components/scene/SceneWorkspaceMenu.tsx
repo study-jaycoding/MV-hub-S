@@ -1,4 +1,6 @@
-// 씬 탭 우클릭 메뉴 — 이 캔버스의 워크스페이스 지정.
+// 씬 탭 우클릭 메뉴 — 이 캔버스의 **이름**과 **워크스페이스**를 여기서 바꾼다(Jay 2026-09-11).
+//  이름은 머리줄 입력칸에서 고친다(예전의 더블클릭 window.prompt 는 없앴다 — 브라우저 기본 창이라
+//  화면과 어울리지 않고, 탭을 끄는 동작과도 헷갈렸다).
 // 목록은 workspaceOptionsCache(stale-while-revalidate) — 팀 공간만 담긴다(개인 공간은 1차 제외).
 // 머리줄 오른쪽에 **지금 지정된 공간**을 라임 점과 함께 보여 주고(Jay 2026-09-11 A안), 목록은 이름만 담백하게.
 // 고른 항목은 라임 점 + 은은한 배경 — 글자는 그대로 읽히게 둔다(라임 배경 위 검은 글자는 목록엔 과하다).
@@ -19,15 +21,27 @@ const MENU_W = 230;
 export function SceneWorkspaceMenu({
   target,
   onAssign,
+  onRename,
   onClose,
 }: {
   target: SceneMenuTarget;
   onAssign: (sceneId: string, workspace: SceneWorkspace | null) => void;
+  onRename: (sceneId: string, name: string) => void;
   onClose: () => void;
 }) {
   const [options, setOptions] = useState(() => cachedWorkspaceOptions() ?? []);
   const [loading, setLoading] = useState(() => !cachedWorkspaceOptions());
   const ref = useRef<HTMLDivElement>(null);
+  // 씬 이름 — 입력칸에서 바로 고친다. 확정은 Enter·포커스 이탈, Esc 는 되돌리기(메뉴는 안 닫는다).
+  const [name, setName] = useState(target.sceneName);
+  const commitName = () => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setName(target.sceneName); // 빈 이름은 받지 않는다
+      return;
+    }
+    if (trimmed !== target.sceneName) onRename(target.sceneId, trimmed);
+  };
 
   useEffect(() => {
     let alive = true;
@@ -85,7 +99,28 @@ export function SceneWorkspaceMenu({
   return (
     <div className="scene-ws-menu" ref={ref} style={{ left, top, width: MENU_W }} role="menu">
       <div className="scene-ws-menu-head">
-        <span className="scene-ws-menu-scene">{target.sceneName}</span>
+        <input
+          className="scene-ws-menu-name"
+          value={name}
+          aria-label="씬 이름"
+          title="이름을 고치고 Enter"
+          onChange={(event) => setName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commitName();
+              onClose();
+              return;
+            }
+            if (event.key === "Escape") {
+              // 편집만 되돌리고 메뉴는 유지 — 메뉴의 Esc(닫기)까지 가지 않게 막는다.
+              event.preventDefault();
+              event.stopPropagation();
+              setName(target.sceneName);
+            }
+          }}
+          onBlur={commitName}
+        />
         {currentLabel ? (
           <span className="scene-ws-menu-now" title={`지금 지정: ${currentLabel}`}>
             <i aria-hidden="true" />

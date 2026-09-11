@@ -209,11 +209,6 @@ export function SceneBar({
                 if (takeSuppressedClick()) return;
                 onSelect(scene.id);
               }}
-              onDoubleClick={() => {
-                if (takeSuppressedClick()) return;
-                const name = window.prompt("씬 이름", scene.name);
-                if (name && name.trim()) onRename(scene.id, name.trim());
-              }}
               onContextMenu={(event) => {
                 event.preventDefault();
                 setMenu({
@@ -267,6 +262,7 @@ export function SceneBar({
         <SceneWorkspaceMenu
           target={menu}
           onAssign={onAssignWorkspace}
+          onRename={onRename}
           onClose={() => setMenu(null)}
         />
       ) : null}

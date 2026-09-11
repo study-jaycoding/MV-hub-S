@@ -1366,7 +1366,14 @@
   display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
   padding-bottom: 6px; border-bottom: 1px solid var(--line);
 }
-.scene-ws-menu-scene { font-weight: 700; font-size: 12.5px; color: var(--text); }
+/* 씬 이름 — 평소엔 글자처럼 보이고, 올리거나 손대면 입력칸이 드러난다. */
+.scene-ws-menu-name {
+  min-width: 0; flex: 1 1 auto; padding: 2px 6px; margin: -2px -6px;
+  border: 1px solid transparent; border-radius: 6px; background: transparent;
+  font: inherit; font-weight: 700; font-size: 12.5px; color: var(--text);
+}
+.scene-ws-menu-name:hover { border-color: var(--line); }
+.scene-ws-menu-name:focus { outline: none; border-color: var(--accent); background: rgba(255,255,255,.04); }
 .scene-ws-menu-now {
   display: inline-flex; align-items: center; gap: 5px; min-width: 0;
   color: var(--accent); font-size: 11.5px; font-weight: 700;

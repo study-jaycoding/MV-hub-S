@@ -68,7 +68,7 @@ describe("표시 이름 — 목록의 현재 이름이 우선", () => {
     expect(sceneWorkspaceMissing(scene("s2"), [{ id: "wsB" }])).toBe(false);
   });
   it("툴팁은 상태마다 다른 문장", () => {
-    expect(sceneTabTitle(scene("s2"), team("wsA"), null, false)).toContain("우클릭=워크스페이스");
+    expect(sceneTabTitle(scene("s2"), team("wsA"), null, false)).toContain("우클릭=이름·워크스페이스");
     expect(sceneTabTitle(assigned, team("wsB"), "산해학원", false)).toContain("'산해학원' 워크스페이스입니다");
     expect(sceneTabTitle(assigned, team("wsA"), "뻘뻘뻘", false)).toContain("워크스페이스: 뻘뻘뻘");
     expect(sceneTabTitle(assigned, team("wsA"), "뻘뻘뻘", true)).toContain("찾을 수 없습니다");
