@@ -590,6 +590,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "ON gen_request(account_email, idempotency_key) "
             "WHERE idempotency_key IS NOT NULL"
         )
+        # 붙이기 창의 '이 캔버스에서 떨어진 것' — 이 인덱스가 없으면 그 계정의 요청을 전부
+        # 훑는다. 부분 인덱스라 캔버스에서 안 만든 요청은 담지 않는다(실측: 이 범위 3ms).
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_genrequest_canvas_scene "
+            "ON gen_request(account_email, canvas_scene_id) "
+            "WHERE canvas_scene_id IS NOT NULL"
+        )
 
     # 검증 실패 결과 표식은 개인 로컬 메타라 generation 본체에 넣지 않는다. 그래야 선택 공유
     # 번들이 이 내부 표식을 팀 서버 데이터로 직렬화할 여지가 없다.

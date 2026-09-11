@@ -573,16 +573,36 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
             ],
         )
 
-        rows = repo.list_card_generation_history("artist@example.com", "u-artist")
-        seen = {(r["generation_id"], r["scene_id"], r["card_id"]) for r in rows}
-        self.assertIn((linked["generation_id"], "scene-a", "card-a"), seen)
-        self.assertIn((synced_id, "scene-b", "card-b"), seen)
-        self.assertIn((linked["generation_id"], "scene-c", "card-c"), seen)
+        def history(scene_id, scope="scene", email="artist@example.com", owner="u-artist"):
+            page = repo.list_card_generation_history(email, owner, scene_id, scope=scope)
+            return {
+                (r["generation_id"], r["scene_id"], r["card_id"]) for r in page["links"]
+            }
+
+        # ★기본(scope="scene")은 이 캔버스만 — 인덱스를 타는 범위라 창이 즉시 뜬다.
+        self.assertIn((linked["generation_id"], "scene-a", "card-a"), history("scene-a"))
+        self.assertIn((synced_id, "scene-b", "card-b"), history("scene-b"))
+        self.assertIn((linked["generation_id"], "scene-c", "card-c"), history("scene-c"))
+        # 자기 캔버스 범위엔 다른 캔버스 것이 안 섞인다
+        self.assertNotIn((synced_id, "scene-b", "card-b"), history("scene-a"))
+
+        # scope="other" 는 그 캔버스를 뺀 나머지 — 눌렀을 때만 읽는 범위다
+        other = history("scene-a", "other")
+        self.assertIn((synced_id, "scene-b", "card-b"), other)
+        self.assertIn((linked["generation_id"], "scene-c", "card-c"), other)
+        self.assertNotIn((linked["generation_id"], "scene-a", "card-a"), other)
+
+        # 씬을 안 주면 아무것도 돌려주지 않는다(라우터가 400 으로 막지만 여기서도 막는다)
+        self.assertEqual(
+            repo.list_card_generation_history("artist@example.com", "u-artist", ""),
+            {"links": [], "next": None},
+        )
 
         # 다른 계정·다른 소유자에게는 한 줄도 새지 않는다
-        self.assertEqual(
-            repo.list_card_generation_history("other@example.com", "u-other"), []
-        )
+        for scope in ("scene", "other"):
+            self.assertEqual(
+                history("scene-a", scope, "other@example.com", "u-other"), set()
+            )
 
         # 휴지통에 간 생성물은 화면에 보여줄 게 없으므로 빠진다
         with db.get_connection() as conn:
@@ -590,8 +610,100 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
                 "UPDATE generation SET deleted_at=datetime('now') WHERE id=?",
                 (synced_id,),
             )
-        after = repo.list_card_generation_history("artist@example.com", "u-artist")
-        self.assertNotIn(synced_id, {row["generation_id"] for row in after})
+        self.assertNotIn(
+            synced_id, {row[0] for row in history("scene-b")}
+        )
+
+    def test_card_history_pages_with_cursor_so_old_rows_stay_reachable(self):
+        """상한으로 끊지 않는다 — 최신 소속이 전부 붙어 있어도 오래된 것에 닿아야 한다.
+
+        서버는 '지금 붙어 있나'를 모르므로 거르기는 클라 몫이다. 그래서 한 쪽을 꽉 채우면
+        next 커서를 주고, 클라가 그걸로 이어 읽는다(코덱스 리뷰 P1).
+        """
+        made = []
+        for index in range(7):
+            gen_id = repo.create_local_generation(
+                {"prompt": f"p{index}", "model": "m", "params": {}},
+                "me",
+                creator_uid="u-artist",
+            )
+            with db.get_connection() as conn:
+                conn.execute(
+                    "UPDATE generation SET sort_ts=? WHERE id=?",
+                    (1_788_000_000.0 + index, gen_id),
+                )
+            made.append(gen_id)
+        repo.sync_scene_card_links(
+            "u-artist",
+            [
+                {"scene_id": "scene-p", "card_id": "card-p", "generation_id": gen_id}
+                for gen_id in made
+            ],
+            [],
+        )
+
+        seen = []
+        cursor = None
+        for _ in range(5):  # 쪽 크기 3 → 7건이면 3쪽이면 끝난다
+            page = repo.list_card_generation_history(
+                "artist@example.com", "u-artist", "scene-p", limit=3,
+                cursor_ts=(cursor or {}).get("ts"),
+                cursor_id=(cursor or {}).get("id", ""),
+                cursor_scene=(cursor or {}).get("scene", ""),
+                cursor_card=(cursor or {}).get("card", ""),
+            )
+            seen.extend(row["generation_id"] for row in page["links"])
+            cursor = page["next"]
+            if not cursor:
+                break
+
+        # 빠짐도 겹침도 없이 최신순 전부
+        self.assertEqual(seen, list(reversed(made)))
+        self.assertIsNone(cursor)
+
+    def test_card_history_paging_keeps_every_membership_of_one_generation(self):
+        """한 생성물이 여러 카드에 있으면 줄이 여럿이다 — 쪽 경계가 그중 하나를 삼키면 안 된다.
+
+        커서를 (sort_ts, 생성물 id) 로만 잡으면 같은 키를 가진 나머지 소속이 **영구 누락**된다.
+        하필 그 줄이 '이 카드에 있었음'이면 복구 목록에서 가장 중요한 항목이 사라진다
+        (코덱스 재리뷰 P1). 커서는 (sort_ts, id, scene, card) 네 개여야 한다.
+        """
+        gen_id = repo.create_local_generation(
+            {"prompt": "여러 카드", "model": "m", "params": {}},
+            "me",
+            creator_uid="u-artist",
+        )
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE generation SET sort_ts=? WHERE id=?", (1_788_000_500.0, gen_id)
+            )
+        cards = ["card-a", "card-b", "card-c", "card-d"]
+        repo.sync_scene_card_links(
+            "u-artist",
+            [
+                {"scene_id": "scene-m", "card_id": card, "generation_id": gen_id}
+                for card in cards
+            ],
+            [],
+        )
+
+        seen = []
+        cursor = None
+        for _ in range(6):  # 쪽 크기 2 → 4줄이면 2쪽 + 끝 확인
+            page = repo.list_card_generation_history(
+                "artist@example.com", "u-artist", "scene-m", limit=2,
+                cursor_ts=(cursor or {}).get("ts"),
+                cursor_id=(cursor or {}).get("id", ""),
+                cursor_scene=(cursor or {}).get("scene", ""),
+                cursor_card=(cursor or {}).get("card", ""),
+            )
+            seen.extend(row["card_id"] for row in page["links"])
+            cursor = page["next"]
+            if not cursor:
+                break
+
+        # 네 소속 전부 — 빠짐도 겹침도 없다
+        self.assertEqual(sorted(seen), cards)
 
     def test_slow_cost_estimate_does_not_delay_generation_response(self):
         link = self._link("slow")

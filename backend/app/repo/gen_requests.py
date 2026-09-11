@@ -1020,19 +1020,29 @@ def list_canvas_generation_candidates(
     return list(dict.fromkeys(str(row["gen_id"]) for row in rows if row["gen_id"]))
 
 
-MAX_CARD_HISTORY = 4000  # 한 번에 돌려줄 지난 소속 상한 — 클라가 로컬 캔버스와 대조할 재료
+# 한 번에 읽을 지난 소속 크기. 상한이 아니라 **한 쪽(page)** 이다 — 클라가 '지금 붙어 있나'를
+# 거른 뒤 모자라면 커서로 이어 읽는다. 상한으로 끊으면 최신 소속이 전부 붙어 있는 사람에게는
+# 오래된 복구 대상이 영영 안 보인다(코덱스 리뷰 P1).
+CARD_HISTORY_PAGE = 300
 
 
 def list_card_generation_history(
     account_email: str,
     owner_uid: str,
-    limit: int = MAX_CARD_HISTORY,
-) -> list[dict[str, Any]]:
-    """'이 생성물이 어느 카드에 있었나'의 원천 — 가벼운 (생성물, 씬, 카드) 메타데이터.
+    scene_id: str,
+    scope: str = "scene",
+    limit: int = 0,
+    cursor_ts: Optional[float] = None,
+    cursor_id: str = "",
+    cursor_scene: str = "",
+    cursor_card: str = "",
+) -> dict[str, Any]:
+    """'이 생성물이 어느 카드에 있었나'의 원천 — 가벼운 (생성물, 씬, 카드) 메타데이터 한 쪽.
 
     **서버는 '지금 붙어 있는지'를 모른다.** 카드 소속표는 더하기 전용이라 카드나 씬을 지워도
     행이 removed_at=NULL 로 남는다(sceneCardLinks 계약). 그래서 여기서 거르지 않고 지난 소속을
-    전부 돌려주고, '지금 어디에 붙어 있나'는 로컬 씬 목록을 가진 클라이언트가 판정한다.
+    돌려주고, '지금 어디에 붙어 있나'는 로컬 씬 목록을 가진 클라이언트가 판정한다.
+    거른 뒤 모자라면 `next` 커서로 다음 쪽을 청한다.
 
     두 줄기를 합친다 — 어느 한쪽만 보면 빠지는 자리가 있다.
       · 소속표: 수동으로 담은 synced 생성물은 요청행을 만들지 않아 여기에만 있다.
@@ -1040,31 +1050,73 @@ def list_card_generation_history(
         `kind` 로 좁히지 않는다 — 캔버스 재생성(kind='regenerate')도 카드에서 나온 것이다.
         placeholder 조차 없는 'preparing' 만 뺀다(확정 연결이 아니다 — resolve 질의와 같은 기준).
 
+    ★scope 로 범위를 가른다(성능 — 코덱스 배포 전 점검 P1).
+      · "scene"(기본): 이 캔버스만. 두 표 모두 (owner_uid, scene_id)·(account_email,
+        canvas_scene_id) 인덱스를 타 **생성물 5만 건에서 3ms**. 창을 열 때 이것만 읽는다.
+      · "other": 다른 캔버스. 인덱스가 없어 훑고 정렬해야 해 같은 규모에서 126ms 다. 그래서
+        사용자가 '다른 캔버스에서도 찾기'를 눌렀을 때만 읽는다.
+    범위를 안 가르고 한 번에 합치면 116ms — 창이 뜨는 데 그만큼 걸린다.
+
+    ★정렬·커서 키는 `(sort_ts, generation id, scene_id, card_id)` **네 개 전부** 다.
+    한 생성물이 여러 카드에 있었으면 같은 (sort_ts, id) 로 줄이 여럿 나오므로, 앞 둘만으로
+    자르면 쪽 경계에 걸친 나머지 소속이 **영구 누락**된다(코덱스 재리뷰 P1 — 그 줄이 바로
+    '이 카드에 있었음' 이었을 수 있다). sort_ts 는 NULL 이 없도록 보강되지만 COALESCE 로 한 번
+    더 막는다 — 커서 비교에서 NULL 이 나오면 그 줄이 조용히 사라진다.
+
     생성물 행이 이 DB 에 없는 소속은 뺀다(JOIN) — 화면에 보여줄 내용이 없다. 다른 설치본에만
     있는 것은 동기화된 뒤에 나온다. 휴지통에 간 것도 뺀다.
     한 생성물이 여러 카드에 있었으면 줄이 여러 개 나온다 — 가까운 것 고르기는 클라 몫이다.
     """
+    if not scene_id:
+        return {"links": [], "next": None}
+    other = scope == "other"
+    scene_where = "s.scene_id<>?" if other else "s.scene_id=?"
+    request_where = (
+        "r.canvas_scene_id IS NOT NULL AND r.canvas_scene_id<>?"
+        if other
+        else "r.canvas_scene_id=?"
+    )
+    page = max(1, min(int(limit or CARD_HISTORY_PAGE), CARD_HISTORY_PAGE))
+    cursor_sql = ""
+    cursor_args: list[Any] = []
+    if cursor_ts is not None:
+        ts = float(cursor_ts)
+        cursor_sql = (
+            " WHERE (sort_at < ?"
+            " OR (sort_at = ? AND sort_id < ?)"
+            " OR (sort_at = ? AND sort_id = ? AND scene_id < ?)"
+            " OR (sort_at = ? AND sort_id = ? AND scene_id = ? AND card_id < ?))"
+        )
+        cursor_args = [
+            ts,
+            ts, cursor_id,
+            ts, cursor_id, cursor_scene,
+            ts, cursor_id, cursor_scene, cursor_card,
+        ]
     sql = (
-        "SELECT generation_id, scene_id, card_id FROM ("
+        "SELECT generation_id, scene_id, card_id, sort_at, sort_id FROM ("
         "SELECT s.generation_id generation_id, s.scene_id scene_id, s.card_id card_id, "
-        "g.sort_ts sort_at, g.id sort_id "
+        "COALESCE(g.sort_ts, 0) sort_at, g.id sort_id "
         "FROM scene_card_generation s JOIN generation g ON g.id=s.generation_id "
-        "WHERE s.owner_uid=? AND g.deleted_at IS NULL "
+        f"WHERE s.owner_uid=? AND {scene_where} AND g.deleted_at IS NULL "
         "UNION "
-        "SELECT r.gen_id, r.canvas_scene_id, r.canvas_card_id, g.sort_ts, g.id "
+        "SELECT r.gen_id, r.canvas_scene_id, r.canvas_card_id, COALESCE(g.sort_ts, 0), g.id "
         "FROM gen_request r JOIN generation g ON g.id=r.gen_id "
-        "WHERE r.account_email=? AND r.canvas_scene_id IS NOT NULL "
+        f"WHERE r.account_email=? AND {request_where} "
         "AND r.canvas_card_id IS NOT NULL AND r.status<>'preparing' AND g.deleted_at IS NULL"
-        ") ORDER BY sort_at DESC, sort_id DESC LIMIT ?"
+        ")" + cursor_sql + " ORDER BY sort_at DESC, sort_id DESC, scene_id DESC, card_id DESC LIMIT ?"
     )
     args: list[Any] = [
         owner_uid,
+        scene_id,
         norm_email(account_email),
-        max(1, min(int(limit or MAX_CARD_HISTORY), MAX_CARD_HISTORY)),
+        scene_id,
+        *cursor_args,
+        page,
     ]
     with get_connection() as conn:
         rows = conn.execute(sql, args).fetchall()
-    return [
+    links = [
         {
             "generation_id": str(row["generation_id"]),
             "scene_id": str(row["scene_id"]),
@@ -1073,6 +1125,18 @@ def list_card_generation_history(
         for row in rows
         if row["generation_id"] and row["scene_id"] and row["card_id"]
     ]
+    # 한 쪽을 꽉 채웠으면 더 있을 수 있다. 마지막 줄이 다음 쪽의 기준이다.
+    nxt = (
+        {
+            "ts": float(rows[-1]["sort_at"]),
+            "id": str(rows[-1]["sort_id"]),
+            "scene": str(rows[-1]["scene_id"]),
+            "card": str(rows[-1]["card_id"]),
+        }
+        if len(rows) == page
+        else None
+    )
+    return {"links": links, "next": nxt}
 
 
 def claim_canvas_generation_candidate(

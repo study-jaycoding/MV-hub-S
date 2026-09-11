@@ -20,6 +20,16 @@ export interface CardHistoryLink {
   card_id: string;
 }
 
+/** 이어 읽기 기준 — 마지막으로 본 **줄** 전체의 키.
+ *  한 생성물이 여러 카드에 있었으면 (ts, id) 가 같은 줄이 여럿이라, 소속까지 넣어야
+ *  쪽 경계에 걸친 나머지 소속이 누락되지 않는다(코덱스 재리뷰 P1). */
+export interface CardHistoryCursor {
+  ts: number;
+  id: string;
+  scene: string;
+  card: string;
+}
+
 /** 로컬 캔버스 요약 — 판정에 필요한 것만 추린다. */
 export interface LocalCanvasState {
   readable: boolean; // 씬 목록을 실제로 읽었나(false 면 판정 금지)

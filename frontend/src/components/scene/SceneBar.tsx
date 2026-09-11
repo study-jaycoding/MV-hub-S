@@ -72,6 +72,10 @@ export function SceneBar({
   const suppressClickRef = useRef(false); // 드래그 직후의 합성 클릭 한 번을 삼킨다
   const dragRef = useRef<DragState | null>(null);
   dragRef.current = drag;
+  // 끄는 동안 탭 위치는 안 바뀐다(움직이는 건 삽입선뿐). 포인터가 움직일 때마다 모든 탭을
+  // 다시 재면 탭이 많을수록 레이아웃 계산이 쌓이므로, 드래그가 시작될 때 한 번만 재서 쓴다.
+  // 그 사이 씬 수가 달라지면(다른 창이 추가·삭제) 버리고 다시 잰다.
+  const dragRectsRef = useRef<DOMRect[] | null>(null);
   // 워크스페이스 이름은 캐시에서 현재 값을 쓴다(관리자가 이름을 바꿔도 맞게 보이도록).
   const [options, setOptions] = useState(() => cachedWorkspaceOptions());
   useEffect(() => {
@@ -82,6 +86,7 @@ export function SceneBar({
   const endDrag = (commit: boolean) => {
     const current = dragRef.current;
     setDrag(null);
+    dragRectsRef.current = null;
     if (!current?.active) return;
     // 드래그 뒤에 오는 합성 click 한 번을 삼킨다. 해제는 **포인터를 놓은 뒤**(releaseSuppression)에
     // 예약한다 — Esc 로 취소하고 버튼을 나중에 놓으면, 그 사이 타이머가 풀려 클릭이 통과해
@@ -111,10 +116,17 @@ export function SceneBar({
     const dx = event.clientX - current.startX;
     const dy = event.clientY - current.startY;
     if (!current.active && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
-    const rects = scenes
-      .map((scene) => tabRefs.current.get(scene.id)?.getBoundingClientRect())
-      .filter((rect): rect is DOMRect => !!rect);
-    if (rects.length !== scenes.length) return; // 목록이 바뀌는 중 — 이번 이동은 건너뛴다
+    let rects = dragRectsRef.current;
+    if (!rects || rects.length !== scenes.length) {
+      rects = scenes
+        .map((scene) => tabRefs.current.get(scene.id)?.getBoundingClientRect())
+        .filter((rect): rect is DOMRect => !!rect);
+      dragRectsRef.current = rects;
+    }
+    if (rects.length !== scenes.length) {
+      dragRectsRef.current = null; // 목록이 바뀌는 중 — 이번 이동은 건너뛰고 다음에 다시 잰다
+      return;
+    }
     const dropIndex = dropIndexAt(rects, event.clientX, event.clientY);
     setDrag({ ...current, active: true, dropBeforeId: scenes[dropIndex]?.id ?? null });
   };

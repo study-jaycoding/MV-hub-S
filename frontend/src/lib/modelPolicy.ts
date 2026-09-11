@@ -26,6 +26,11 @@ import {
 
 const REFRESH_MS = 10 * 60_000;
 const FOCUS_THROTTLE_MS = 30_000;
+// ★'확인 중'으로 제출을 막아 두는 최대 시간(코덱스 배포 전 점검 P2). 정책은 공유 서버까지 갔다
+//  오는데, 서버가 멎으면 프록시 소켓 시간제한(60초)까지 생성이 막힌다. 그때까지 기다리게 두지
+//  않고 '제한 없음'으로 열어 준다 — 조회 자체는 계속 살아 있어, 늦게라도 답이 오면 그때 반영한다.
+//  캐시가 있으면 애초에 stale 로 시작해 안 막히므로, 이 길은 프로필을 처음 쓰는 순간에만 쓰인다.
+const LOADING_BLOCK_MS = 8_000;
 
 let state: ModelPolicyState = NO_POLICY;
 let workspaceId = "";
@@ -48,6 +53,12 @@ async function fetchPolicy(): Promise<void> {
   if (!key) return;
   const mySeq = ++seq;
   lastFetchAt = Date.now();
+  // 오래 걸리면 기다리기를 멈추고 연다. 응답이 오면 아래 try 가 그대로 덮어쓴다.
+  const openUp = window.setTimeout(() => {
+    if (mySeq !== seq || key !== state.key || state.status !== "loading") return;
+    state = appliedFailure(state, key, "error");
+    emit();
+  }, LOADING_BLOCK_MS);
   try {
     const payload = await manageApi.creditPlanMyModels(workspaceId);
     if (mySeq !== seq || key !== state.key) return; // 늦은 응답(다른 키·더 새 요청이 있음)
@@ -60,6 +71,8 @@ async function fetchPolicy(): Promise<void> {
     const kind = isRouteMissing(error) ? "unsupported" : isHttpStatus(error, 401, 403) ? "auth" : "error";
     state = appliedFailure(state, key, kind);
     emit();
+  } finally {
+    window.clearTimeout(openUp);
   }
 }
 

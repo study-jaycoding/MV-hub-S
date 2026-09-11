@@ -443,20 +443,42 @@ def canvas_generation_candidates(request: Request, limit: int = 30):
 
 
 @router.get("/gen-requests/canvas-history")
-def canvas_generation_history(request: Request, limit: int = 0):
+def canvas_generation_history(
+    request: Request,
+    scene_id: str = "",
+    scope: str = "scene",
+    limit: int = 0,
+    cursor_ts: float | None = None,
+    cursor_id: str = "",
+    cursor_scene: str = "",
+    cursor_card: str = "",
+):
     """내 생성물이 '어느 카드에 있었나'의 지난 기록 — (생성물, 씬, 카드)만 가볍게.
 
     서버는 지금 붙어 있는지 모른다(카드 소속표는 카드 삭제를 모른다). 판정은 로컬 씬 목록을
     가진 클라이언트가 하고, 살아남은 것만 /api/generations/batch 로 본문을 받아간다.
+
+    scope="scene"(기본)은 이 캔버스만 — 인덱스를 타 창이 즉시 뜬다. "other"(다른 캔버스)는
+    훑어야 해서 사용자가 눌렀을 때만 읽는다.
     """
+    if scope not in ("scene", "other"):
+        raise HTTPException(status_code=400, detail="scope 는 scene 또는 other 입니다")
+    if not scene_id:
+        raise HTTPException(status_code=400, detail="scene_id 가 필요합니다")
     acc = _require_account(request)
-    return {
-        "links": repo.list_card_generation_history(
-            acc["email"],
-            actor_id(request),
-            limit=limit or repo.MAX_CARD_HISTORY,
-        )
-    }
+    # {"links": [...], "next": {ts, id} | None} — 클라가 '지금 붙어 있나'를 거른 뒤
+    # 모자라면 next 로 이어 읽는다(상한으로 끊으면 오래된 복구 대상이 영영 안 보인다).
+    return repo.list_card_generation_history(
+        acc["email"],
+        actor_id(request),
+        scene_id,
+        scope=scope,
+        limit=limit,
+        cursor_ts=cursor_ts,
+        cursor_id=cursor_id,
+        cursor_scene=cursor_scene,
+        cursor_card=cursor_card,
+    )
 
 
 @router.post("/gen-requests/canvas-candidates/claim")

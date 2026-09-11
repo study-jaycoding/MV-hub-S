@@ -26,7 +26,7 @@ import { pathPart } from "./lib/url";
 import { normalizeGenerationPromptCompatibility } from "./lib/generationPrompt";
 import { isGenerationWorkspaceReady } from "./lib/workspaceContext";
 import type { CanvasGenerationLink } from "./lib/canvasGenerationRecovery";
-import type { CardHistoryLink } from "./lib/canvasDetached";
+import type { CardHistoryCursor, CardHistoryLink } from "./lib/canvasDetached";
 import { getAccountNamespace } from "./lib/accountScope";
 
 export { getAuthToken, jsonFetch, setAuthToken };
@@ -550,10 +550,28 @@ export const api = {
 
   // 지난 카드 소속 — (생성물, 씬, 카드)만 가볍게. '지금 붙어 있나'는 서버가 모르므로
   // 로컬 씬 목록으로 거르고(canvasDetached), 살아남은 것만 getGenerationsBatch 로 본문을 받는다.
-  cardGenerationHistory: () =>
-    jsonFetch<{ links: CardHistoryLink[] }>("/api/gen-requests/canvas-history").then(
-      (result) => (Array.isArray(result.links) ? result.links : []),
-    ),
+  //  scope="scene" 은 이 캔버스만(인덱스를 타 즉시), "other" 는 다른 캔버스(훑어야 해서 요청 시만).
+  //  한 쪽씩 준다 — 거른 뒤 모자라면 next 커서로 이어 읽는다(상한으로 끊으면 오래된 복구
+  //  대상이 영영 안 보인다). 구서버는 next 가 없어 한 쪽에서 끝난다.
+  cardGenerationHistory: (
+    sceneId: string,
+    scope: "scene" | "other" = "scene",
+    cursor?: CardHistoryCursor | null,
+  ) => {
+    const params = new URLSearchParams({ scene_id: sceneId, scope });
+    if (cursor) {
+      params.set("cursor_ts", String(cursor.ts));
+      params.set("cursor_id", cursor.id);
+      params.set("cursor_scene", cursor.scene);
+      params.set("cursor_card", cursor.card);
+    }
+    return jsonFetch<{ links: CardHistoryLink[]; next?: CardHistoryCursor | null }>(
+      `/api/gen-requests/canvas-history?${params.toString()}`,
+    ).then((result) => ({
+      links: Array.isArray(result.links) ? result.links : [],
+      next: result.next ?? null,
+    }));
+  },
 
   claimCanvasGenerationCandidate: (generationId: string, sceneId: string, cardId: string) =>
     jsonFetch<{ ok: boolean }>("/api/gen-requests/canvas-candidates/claim", {
