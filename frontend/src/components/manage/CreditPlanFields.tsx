@@ -47,13 +47,11 @@ function GroupEditor({
   group,
   onClose,
   onApply,
-  onDelete,
 }: {
   draft: CreditPlanDraft;
   group: DraftGroup; // 새 그룹이면 isNew=true 로 미리 만든 것
   onClose: () => void;
   onApply: (next: DraftGroup, memberEmails: string[]) => void;
-  onDelete: (() => void) | null;
 }) {
   const [name, setName] = useState(group.name);
   const [unlimited, setUnlimited] = useState(group.unlimited);
@@ -144,7 +142,11 @@ function GroupEditor({
           <div className="credit-modal-field credit-allow">
             <div className="credit-allow-head">
               <span>사용 모델</span>
-              <button type="button" className="credit-modal-add" onClick={() => setPickingModels((current) => !current)}>
+              <button
+                type="button"
+                className={"credit-pill" + (pickingModels ? " solid" : "")}
+                onClick={() => setPickingModels((current) => !current)}
+              >
                 {pickingModels ? "완료" : "+ 고르기"}
               </button>
             </div>
@@ -187,26 +189,28 @@ function GroupEditor({
             </div>
           ) : null}
           {error ? <div className="login-error">{error}</div> : null}
+          {/* 삭제는 그룹 표의 휴지통에서 한다(Jay 2026-09-11) — 편집 창에서는 저장·닫기만. */}
           <div className="credit-modal-actions">
             <button type="button" className="admin-confirm-yes" onClick={save}>저장</button>
-            {onDelete ? (
-              <button type="button" className="credit-modal-delete" onClick={() => { if (window.confirm(`'${group.name}' 그룹을 삭제할까요? 배정도 풀립니다.`)) onDelete(); }}>삭제</button>
-            ) : null}
+            <button type="button" className="credit-modal-delete" onClick={onClose}>닫기</button>
           </div>
         </div>
         <div className="credit-modal-right">
-          <button type="button" className="credit-modal-close" aria-label="닫기" onClick={onClose}>×</button>
+          {/* 머리줄 = [멤버 N] … [+ 멤버 추가] [×] — 닫기 X 를 줄 안에 넣어 아래 멤버들의 × 와 세로로 맞춘다(Jay). */}
           <div className="credit-modal-members-head">
             <span>멤버 {assigned.length}</span>
-            {!picking && candidates.length ? (
-              <button type="button" className="credit-modal-add" onClick={() => setPicking(true)}>+ 멤버 추가</button>
-            ) : null}
+            <div className="credit-modal-head-right">
+              {!picking && candidates.length ? (
+                <button type="button" className="credit-pill" onClick={() => setPicking(true)}>+ 멤버 추가</button>
+              ) : null}
+              <button type="button" className="credit-modal-close" aria-label="닫기" onClick={onClose}>×</button>
+            </div>
           </div>
           {picking ? (
             <div className="credit-pick">
               <div className="credit-pick-head">
                 <span>추가할 멤버를 고르세요 — 다른 그룹에 있으면 옮겨집니다</span>
-                <button type="button" onClick={() => setPicking(false)}>완료</button>
+                <button type="button" className="credit-pill" onClick={() => setPicking(false)}>완료</button>
               </div>
               {candidates.map((member) => (
                 <button
@@ -242,7 +246,7 @@ function GroupEditor({
               <div className="credit-modal-empty-icon" aria-hidden="true">👥</div>
               <strong>아직 멤버가 없습니다</strong>
               <small>멤버를 추가해 이 그룹에 배정하세요</small>
-              {candidates.length ? <button type="button" className="credit-modal-add solid" onClick={() => setPicking(true)}>멤버 추가</button> : null}
+              {candidates.length ? <button type="button" className="credit-pill solid" onClick={() => setPicking(true)}>멤버 추가</button> : null}
             </div>
           )}
         </div>
@@ -264,6 +268,8 @@ export function CreditPlanFields({
   const [status, setStatus] = useState<"idle" | "loading" | "unsupported" | "error">("idle");
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<DraftGroup | null>(null);
+  // 그룹 삭제 확인 — 브라우저 기본 창 대신 우리 디자인 확인창(이름을 보여 주고 묻는다).
+  const [deleting, setDeleting] = useState<DraftGroup | null>(null);
   const [topupBusy, setTopupBusy] = useState("");
   const [topupError, setTopupError] = useState("");
   const loaded = draft && draft.loadedFor === workspaceId;
@@ -430,7 +436,7 @@ export function CreditPlanFields({
           </div>
           {draft.groups.length ? (
             <table className="credit-plan-table">
-              <thead><tr><th>그룹</th><th>한도</th><th>인원</th><th>지금 남은 양</th></tr></thead>
+              <thead><tr><th>그룹</th><th>한도</th><th>인원</th><th>지금 남은 양</th><th aria-label="삭제" /></tr></thead>
               <tbody>
                 {draft.groups.map((group) => (
                   <tr key={group.id} onClick={() => setEditing(group)} title="클릭하면 그룹 창이 열립니다">
@@ -443,6 +449,25 @@ export function CreditPlanFields({
                     <td>{group.unlimited ? "∞" : `${formatThousands(group.limitInput)} ${periodSuffix(group.limitPeriod)}`}</td>
                     <td>{draftMemberCount(draft, group.id)}</td>
                     <td>{group.isNew ? "저장 후 계산" : n(group.remaining)}</td>
+                    <td className="credit-plan-del-cell">
+                      <button
+                        type="button"
+                        className="credit-plan-del"
+                        aria-label={`${group.name} 그룹 삭제`}
+                        title="이 그룹 삭제"
+                        onClick={(event) => {
+                          event.stopPropagation(); // 줄 클릭(그룹 창 열기)과 겹치지 않게
+                          setDeleting(group);
+                        }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M3 6h18" />
+                          <path d="M8 6V4h8v2" />
+                          <path d="M19 6l-1 14H6L5 6" />
+                          <path d="M10 11v6M14 11v6" />
+                        </svg>
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -454,8 +479,33 @@ export function CreditPlanFields({
               group={editing}
               onClose={() => setEditing(null)}
               onApply={applyGroup}
-              onDelete={editing.isNew ? null : () => deleteGroup(editing.id)}
             />
+          ) : null}
+          {deleting ? (
+            <div className="admin-confirm-backdrop" onMouseDown={() => setDeleting(null)}>
+              <div className="admin-confirm" onMouseDown={(event) => event.stopPropagation()}>
+                <p className="admin-confirm-q">
+                  <b>{deleting.name}</b> 그룹을 삭제하시겠습니까?
+                  <br />
+                  <small>이 그룹에 배정된 멤버 {draftMemberCount(draft, deleting.id)}명의 배정도 함께 풀립니다.</small>
+                </p>
+                <div className="admin-confirm-actions">
+                  <button
+                    type="button"
+                    className="admin-confirm-yes"
+                    onClick={() => {
+                      deleteGroup(deleting.id);
+                      setDeleting(null);
+                    }}
+                  >
+                    삭제
+                  </button>
+                  <button type="button" className="admin-confirm-no" onClick={() => setDeleting(null)}>
+                    취소
+                  </button>
+                </div>
+              </div>
+            </div>
           ) : null}
         </>
       ) : null}
