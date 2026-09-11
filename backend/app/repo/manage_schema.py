@@ -172,6 +172,7 @@ _SCHEMA = (
         base_month TEXT,
         base_balance INTEGER NOT NULL DEFAULT 0,
         sort_order INTEGER NOT NULL DEFAULT 0,
+        restricted_models TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         UNIQUE(workspace_id, name)
     )""",
@@ -608,6 +609,8 @@ def ensure_manage_schema(conn) -> None:
     if group_columns and "base_start" not in group_columns:  # 재기준점을 달('YYYY-MM')에서 날짜로 — 일·주 주기 이월용
         conn.execute("ALTER TABLE workspace_credit_group ADD COLUMN base_start TEXT")
         conn.execute("UPDATE workspace_credit_group SET base_start = base_month || '-01' WHERE base_start IS NULL")
+    if group_columns and "restricted_models" not in group_columns:  # 그룹별 제한 모델(JSON 배열, 힉스필드 Restricted Models)
+        conn.execute("ALTER TABLE workspace_credit_group ADD COLUMN restricted_models TEXT NOT NULL DEFAULT '[]'")
     plan_columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_credit_plan)")}
     if plan_columns and "topup_day" not in plan_columns:  # 매월 충전 기준일(1~28) — 예산 '매월'·그룹 이월의 달 경계
         conn.execute("ALTER TABLE workspace_credit_plan ADD COLUMN topup_day INTEGER NOT NULL DEFAULT 1")

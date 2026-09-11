@@ -701,3 +701,18 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .how-desc { margin-top: 4px; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
 .how-note { margin-top: 16px; font-size: 12px; color: var(--muted2); }
 
+
+/* credit group dialog: restricted models (mirrors Higgsfield "Restricted Models") */
+.credit-restrict-head { display: flex; justify-content: space-between; align-items: center; }
+.credit-restrict-head > span { color: var(--muted); font-size: 11.5px; font-weight: 600; }
+.credit-restrict-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.credit-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: rgba(255,255,255,.04); font-size: 12px; }
+.credit-chip button { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; line-height: 1; }
+.credit-chip button:hover { color: #f06a5a; }
+.credit-restrict-empty { color: var(--muted); font-size: 11.5px; }
+.credit-restrict-pick { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.025); max-height: 220px; overflow: auto; }
+.credit-restrict-group { margin: 4px 0 2px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.credit-restrict-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 2px; font-size: 12.5px; cursor: pointer; }
+.credit-restrict-row:hover { background: rgba(255,255,255,.04); border-radius: 6px; }
+.credit-restrict-row input { margin: 0; }
+.credit-restrict-badge { color: #f06a5a; font-size: 11px; }

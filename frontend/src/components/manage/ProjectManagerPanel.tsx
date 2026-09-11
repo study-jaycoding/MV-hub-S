@@ -4,6 +4,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { manageApi } from "../../lib/manageApi";
+import { refreshModelPolicy } from "../../lib/modelRestrictions";
 import {
   projectRoleCounts,
   systemMemberUids,
@@ -334,6 +335,7 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
       if (creditDraft?.dirty && creditDraft.loadedFor === workspace.id) {
         try {
           await manageApi.saveCreditPlan(workspace.id, draftToBody(creditDraft));
+          refreshModelPolicy(); // 같은 앱에서 그룹(제한 모델)을 바꿨으면 내 정책도 바로 다시 읽는다
         } catch (reason) {
           creditSaveNote = isHttpStatus(reason, 409)
             ? " 크레딧 풀·그룹은 다른 곳에서 먼저 저장돼 반영하지 못했습니다. 설정을 다시 열어 주세요."

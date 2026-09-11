@@ -1,5 +1,6 @@
 // 모델 노드 카드 본문 — SceneBoard 렌더 분할(R2). 셸은 부모 소유, Fragment 만 반환(규칙은 OutputCard 참고).
 import type React from "react";
+import { useModelPolicy } from "../../../lib/modelRestrictions";
 import type { SceneCard } from "../../../lib/scenes";
 import { spotlightParamLabel, spotlightValueLabel } from "../../../lib/spotlightPromptConfig";
 
@@ -12,6 +13,9 @@ export function ModelCard({
   onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
   onResizeDown: (e: React.MouseEvent, cardId: string) => void;
 }) {
+  // 그룹별 제한 모델 — 저장된 모델이 제한이면 값은 그대로 두고 '제한됨'만 표시(Render 는 이 카드를 건너뛴다).
+  const policy = useModelPolicy();
+  const restricted = !!card.modelCfg?.model && policy.restricted.has(card.modelCfg.model);
   return (
     <>
       {/* 모델 노드 — 설정한 모델 정보 표시. (더블클릭 모델피커는 후속 단계) */}
@@ -26,6 +30,14 @@ export function ModelCard({
               </div>
               {card.modelCfg.type && (
                 <div className="scene-modelnode-type">{card.modelCfg.type}</div>
+              )}
+              {restricted && (
+                <div
+                  className="scene-modelnode-restricted"
+                  title={`${policy.groupName ? `'${policy.groupName}' 그룹` : "그룹"}에서 제한된 모델 — 더블클릭해 다른 모델을 고르세요`}
+                >
+                  제한됨
+                </div>
               )}
             </div>
             {card.modelCfg.params && Object.keys(card.modelCfg.params).length > 0 && (

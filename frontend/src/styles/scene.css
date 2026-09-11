@@ -1329,3 +1329,8 @@
 @media (prefers-reduced-motion: reduce) {
   .last-viewed-badge { transition: none; }
 }
+
+/* model node: saved model is restricted for this group (modelRestrictions) */
+.scene-modelnode-restricted { margin-top: 2px; font-size: 10px; font-weight: 700; color: #f06a5a; letter-spacing: 0.04em; }
+.scene-modelmodal-note { margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; background: rgba(240,106,90,.12); color: #f06a5a; font-size: 12px; line-height: 1.4; }
+.scene-modelmodal-note.muted { background: rgba(255,255,255,.05); color: var(--muted); }

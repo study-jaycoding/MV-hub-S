@@ -38,6 +38,8 @@ interface UseSpotlightSubmitOptions {
   historyRef: MutableRefObject<HistEntry[]>;
   inCompose: boolean;
   model: string;
+  // 그룹별 제한 모델 가드 문구(modelPolicyCore.submitBlockMessage) — 값이 있으면 pending 기록·업로드 전에 막는다.
+  modelBlockedMessage?: string | null;
   onCreated: (created?: Generation[], dragParentId?: string | null) => void;
   canvasTarget?: CanvasGenerationTarget | null;
   prepareCanvasGeneration?: (
@@ -72,6 +74,7 @@ export function useSpotlightSubmit({
   historyRef,
   inCompose,
   model,
+  modelBlockedMessage = null,
   onCreated,
   canvasTarget,
   prepareCanvasGeneration,
@@ -108,6 +111,12 @@ export function useSpotlightSubmit({
     if (!text && trayRefs.length + inlineRefs.length === 0) {
       setError("프롬프트를 입력하세요.");
       editor.focus();
+      return;
+    }
+    if (modelBlockedMessage) {
+      // 제한 모델·정책 첫 조회 중·이 타입이 통째로 제한 — 캔버스 pending 기록·업로드보다 먼저 거절해 유령 표식을
+      // 남기지 않는다. `!model` 검사보다 앞에 둬야 "모델을 선택하세요" 대신 진짜 이유가 나온다(코덱스 P2).
+      setError(modelBlockedMessage);
       return;
     }
     if (!model) {

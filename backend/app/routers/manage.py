@@ -680,6 +680,9 @@ class CreditGroupIn(BaseModel):
     monthly_limit: Optional[int] = Field(default=None, ge=0)  # None = ∞
     limit_period: Literal["day", "week", "month"] = "month"  # month 만 이월, day/week 는 그 기간 안에서만
     remaining_override: Optional[int] = None  # 지금 남은 양 보정(이월 포함) — 저장 시 재기준화
+    # 그룹별 제한 모델(job_type 목록, 힉스필드 Restricted Models 와 같은 차단 목록). None(키 없음)=기존값 유지 —
+    # 이 필드를 모르는 구버전 앱·'추정' 맞추기 저장이 제한을 지우지 않게. 명시 [] 만 해제.
+    restricted_models: Optional[list[str]] = None
 
 
 class CreditMemberIn(BaseModel):
@@ -725,6 +728,24 @@ def credit_plan(request: Request, workspace_id: str = ""):
             raise HTTPException(status_code=403, detail="이 워크스페이스의 멤버가 아닙니다")
     _refresh_isolated_telemetry()
     return repo_credit.plan_view(workspace_id, viewer)
+
+
+@router.get("/credit-plan/my-models")
+def credit_plan_my_models(request: Request, workspace_id: str = ""):
+    """본인 그룹의 제한 모델(생성 창·캔버스 모델 노드가 모델 목록을 거를 때). 매니저도 **본인 이메일**로 자기 그룹을
+    찾는다(_usage_viewer 의 read_all=전체 규칙과 다름). 워크스페이스 멤버가 아니면 403, 배정 없으면 빈 목록.
+    프록시 판정을 먼저 한다 — 로컬 허브의 AUTH off 를 '공유 서버 정책 없음'으로 오해하지 않게(코덱스)."""
+    if _proxy.proxying():
+        return _proxy.proxy_get("/api/manage/credit-plan/my-models", request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id 가 필요합니다")
+    if not AUTH_ENABLED:  # 서버 직결이 아닌 개발 로컬 — 정책 없음
+        return {"workspace_id": workspace_id, "group_id": None, "group_name": None, "restricted_models": [], "revision": 0}
+    acc = current_account(request) or {}
+    email = norm_email(acc.get("email")) if acc.get("email") else ""
+    if not email or not any(item["id"] == workspace_id for item in repo.list_workspace_options(member_email=email)):
+        raise HTTPException(status_code=403, detail="이 워크스페이스의 멤버가 아닙니다")
+    return repo_credit.my_models(workspace_id, email)
 
 
 @router.get("/credit-plan/{workspace_id}/settings")

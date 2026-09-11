@@ -25,6 +25,7 @@ base_balance=이번 기간으로 넘어온 이월분(옛 소속·옛 한도로 �
 """
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from datetime import date, datetime, timedelta
@@ -38,6 +39,47 @@ from .manage_schema import _ensure_schema
 _CLIENT_ID_RE = re.compile(r"[0-9a-f]{32}")  # 클라이언트가 새 그룹·충전 기록에 미리 붙이는 id(uuid hex) 형식
 _DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _PERIODS = ("day", "week", "month")
+# 그룹별 제한 모델(힉스필드 User Group → Restricted Models 와 같은 뜻, 차단 목록). 값은 CLI job_type 문자열.
+# 힉스필드 CLI·개발자 API 는 워크스페이스별 허용 모델을 돌려주지 않아(2026-09-11 실측) 매니저가 손으로 적는다.
+# 강제는 힉스필드가 하고 우리 앱은 모델 목록에서 숨기고 제출을 막는다(안내용). 모르는 id 도 저장한다(미래 모델·구버전 앱).
+_MODEL_ID_RE = re.compile(r"[a-z0-9_]{1,64}")
+_MAX_RESTRICTED_MODELS = 64
+
+
+def normalize_restricted_models(values: Any) -> list[str]:
+    """제한 모델 목록 정규화 — strip·소문자·빈 값 제거·중복 제거(첫 등장 순서) 뒤 형식·개수 검사. 위반은 ValueError(→400)."""
+    if values is None:
+        return []
+    if not isinstance(values, (list, tuple)):
+        raise ValueError("제한 모델 목록 형식이 올바르지 않습니다")
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        if not isinstance(raw, str):
+            raise ValueError("제한 모델 id 는 문자열이어야 합니다")
+        model = raw.strip().lower()
+        if not model or model in seen:
+            continue
+        if not _MODEL_ID_RE.fullmatch(model):
+            raise ValueError(f"제한 모델 id 형식이 올바르지 않습니다: {raw.strip()[:80]}")
+        seen.add(model)
+        out.append(model)
+    if len(out) > _MAX_RESTRICTED_MODELS:
+        raise ValueError(f"제한 모델은 {_MAX_RESTRICTED_MODELS}개까지입니다")
+    return out
+
+
+def _parse_restricted(raw: Any) -> list[str]:
+    """DB 의 JSON 문자열 → 목록. 깨진 값은 빈 목록(읽기는 관대하게, 쓰기는 normalize 로 엄격하게)."""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [m for m in data if isinstance(m, str) and m]
 
 Usage = dict[tuple[str, str], dict[str, Any]]  # {(day 'YYYY-MM-DD', email): {credits, count, unknown}}
 
@@ -193,6 +235,7 @@ def _load(conn, workspace_id: str) -> tuple[Optional[dict], list[dict], dict[str
     for g in groups:  # 옛 행(달 단위 base_month 만 있음) 호환 — 그 달 1일을 기준일로
         if not g.get("base_start"):
             g["base_start"] = f"{g.get('base_month') or current_month()}-01"
+        g["restricted_models"] = _parse_restricted(g.get("restricted_models"))
     members: dict[str, set[str]] = {g["id"]: set() for g in groups}
     for r in conn.execute(
         "SELECT account_email, group_id FROM workspace_credit_group_member WHERE workspace_id=?",
@@ -267,6 +310,7 @@ def _group_summary(group: dict, emails: set[str], usage: Usage, today: str, anch
         "remaining": None if remaining is None else round(remaining),
         "unknown_since_base": unknown_since,
         "estimated": unknown_since > 0,
+        "restricted_models": list(group.get("restricted_models") or []),
     }
 
 
@@ -375,7 +419,9 @@ def save_settings(
     topup_day: 매월 충전 기준일(1~28) · None 이면 그대로. 바뀌면 달 경계가 바뀌므로 매월 한도 그룹은 재기준화된다.
     groups=None 이면 그룹·배정은 **그대로 두고** 긴급 충전 기록(topups)·note·topup_day 만 바꾼다(설정 창의 줄 단위 저장 —
     편집 중인 그룹 초안을 건드리지 않게). members 는 groups 와 함께일 때만 뜻이 있다.
-    groups: [{id?, name, monthly_limit|None, limit_period?, remaining_override?}] — 목록에 없는 기존 그룹은 삭제(배정도 삭제).
+    groups: [{id?, name, monthly_limit|None, limit_period?, remaining_override?, restricted_models?}] — 목록에 없는 기존 그룹은 삭제(배정도 삭제).
+    restricted_models: 그룹별 제한 모델(job_type 목록). **키가 없으면(None) 기존 그룹은 기존값 유지·새 그룹은 []**, 명시 [] 는 해제 —
+    이 필드를 모르는 구버전 앱·대시보드 '추정' 맞추기(그룹 전체 재전송)가 제한을 지우지 않게(코덱스 P0).
     id 가 없거나 모르는 uuid hex 면 새 그룹(클라이언트가 미리 붙인 id 로 같은 저장에 멤버 배정 가능).
     members: [{email, group_id|None}] — **적힌 이메일만** 바꾼다(None=배정 해제). 안 적힌 이메일은 그대로(코덱스 P2).
     group_id 는 이 워크스페이스 그룹이어야 한다(아니면 ValueError → 400).
@@ -433,9 +479,15 @@ def save_settings(
             period = str(g.get("limit_period") or "month")
             if period not in _PERIODS:
                 raise ValueError("한도 주기는 day·week·month 중 하나여야 합니다")
+            old_row = old_by_id.get(gid)
+            if g.get("restricted_models") is None:  # 키 없음 = 기존값 유지(새 그룹은 빈 목록)
+                restricted = list(old_row.get("restricted_models") or []) if old_row else []
+            else:
+                restricted = normalize_restricted_models(g.get("restricted_models"))
             prepared.append(
                 {"id": gid, "name": name, "monthly_limit": limit, "limit_period": period, "sort_order": order,
-                 "remaining_override": g.get("remaining_override"), "is_new": gid not in old_by_id}
+                 "remaining_override": g.get("remaining_override"), "is_new": gid not in old_by_id,
+                 "restricted_json": json.dumps(restricted, ensure_ascii=False)}
             )
         valid_ids = {p["id"] for p in prepared}
         if len({p["name"] for p in prepared}) != len(prepared):
@@ -482,9 +534,10 @@ def save_settings(
             )
             override = p["remaining_override"]
             if old is not None and not changed and override is None:
+                # 한도·주기·소속이 그대로면 재기준화 없이 이름·순서·제한 모델만 갱신(제한은 base_* 와 무관 — 코덱스 P1).
                 conn.execute(
-                    "UPDATE workspace_credit_group SET name=?, sort_order=? WHERE id=?",
-                    (p["name"], p["sort_order"], gid),
+                    "UPDATE workspace_credit_group SET name=?, sort_order=?, restricted_models=? WHERE id=?",
+                    (p["name"], p["sort_order"], p["restricted_json"], gid),
                 )
                 continue
             if limit is None:
@@ -499,14 +552,16 @@ def save_settings(
             if old is None:
                 conn.execute(
                     "INSERT INTO workspace_credit_group(id, workspace_id, name, monthly_limit, limit_period, "
-                    "base_start, base_month, base_balance, sort_order) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (gid, workspace_id, p["name"], limit, period, cur_start, cur_start[:7], base_balance, p["sort_order"]),
+                    "base_start, base_month, base_balance, sort_order, restricted_models) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (gid, workspace_id, p["name"], limit, period, cur_start, cur_start[:7], base_balance, p["sort_order"],
+                     p["restricted_json"]),
                 )
             else:
                 conn.execute(
                     "UPDATE workspace_credit_group SET name=?, monthly_limit=?, limit_period=?, base_start=?, "
-                    "base_month=?, base_balance=?, sort_order=? WHERE id=?",
-                    (p["name"], limit, period, cur_start, cur_start[:7], base_balance, p["sort_order"], gid),
+                    "base_month=?, base_balance=?, sort_order=?, restricted_models=? WHERE id=?",
+                    (p["name"], limit, period, cur_start, cur_start[:7], base_balance, p["sort_order"],
+                     p["restricted_json"], gid),
                 )
         # 4) 배정 전체 재기록(이 워크스페이스만)
         conn.execute("DELETE FROM workspace_credit_group_member WHERE workspace_id=?", (workspace_id,))
@@ -649,6 +704,32 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
             for t in recent_topups
         ],
         "history": [{"day": h["day"], "credits": h["credits"]} for h in history],
+    }
+
+
+def my_models(workspace_id: str, email: str) -> dict[str, Any]:
+    """본인(이메일)의 그룹 제한 모델 — 생성 창·캔버스 모델 노드가 모델 목록을 거를 때 부른다(자주 호출).
+    plan_view 와 달리 사용량(팩트)을 계산하지 않고, 배정·그룹·revision 을 **한 SELECT** 로 읽는다 — 배정이 없어도
+    한 행이 나오게 LEFT JOIN 으로 묶어, 조회 사이에 저장이 끼어 '옛 배정 + 새 revision' 이 섞이지 않게 한다(코덱스 P2).
+    배정이 없으면 group_id=None·빈 목록."""
+    email = norm_email(email or "")
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        row = conn.execute(
+            "SELECT g.id AS group_id, g.name AS group_name, g.restricted_models AS restricted_models, "
+            "p.revision AS revision "
+            "FROM (SELECT ? AS ws, ? AS mail) q "
+            "LEFT JOIN workspace_credit_plan p ON p.workspace_id = q.ws "
+            "LEFT JOIN workspace_credit_group_member m ON m.workspace_id = q.ws AND m.account_email = q.mail "
+            "LEFT JOIN workspace_credit_group g ON g.id = m.group_id",
+            (workspace_id, email or "\x00"),
+        ).fetchone()
+    return {
+        "workspace_id": workspace_id,
+        "group_id": row["group_id"] if row else None,
+        "group_name": row["group_name"] if row else None,
+        "restricted_models": _parse_restricted(row["restricted_models"]) if row else [],
+        "revision": int(row["revision"]) if row and row["revision"] is not None else 0,
     }
 
 

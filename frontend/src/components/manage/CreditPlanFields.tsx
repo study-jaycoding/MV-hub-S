@@ -5,7 +5,9 @@
 import { useEffect, useState } from "react";
 import { isHttpStatus, isRouteMissing } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
+import { useModelDisplayName } from "../../lib/modelCatalog";
 import { BUDGET_PERIOD_OPTIONS } from "../../lib/projectPlanning";
+import { ALLOWED } from "../../lib/useModels";
 import {
   draftFromSettings,
   draftMemberCount,
@@ -32,6 +34,13 @@ function memberLabel(member: CreditPlanMember): string {
   return member.name || member.email.split("@")[0];
 }
 
+// 그룹 창의 '제한 모델' 후보 — 앱이 생성 창에 실제로 보여 주는 모델만(이미지·영상, Jay 2026-09-11: 부분 수정 모델은 제외).
+// 저장값은 job_type 문자열이라 여기 없는 옛·미래 id 도 알약으로는 보여 주고 그대로 보존한다.
+const RESTRICTABLE_MODEL_GROUPS: { title: string; ids: readonly string[] }[] = [
+  { title: "이미지", ids: ALLOWED.image },
+  { title: "영상", ids: ALLOWED.video },
+];
+
 // ── 그룹 창(힉스필드 "Add new group" 과 같은 두 칸 구성) ──────────────────────
 function GroupEditor({
   draft,
@@ -50,6 +59,12 @@ function GroupEditor({
   const [unlimited, setUnlimited] = useState(group.unlimited);
   const [limitInput, setLimitInput] = useState(group.limitInput);
   const [limitPeriod, setLimitPeriod] = useState<LimitPeriod>(group.limitPeriod);
+  // 제한 모델(차단 목록) — 힉스필드 User Group 의 Restricted Models 와 같은 뜻. 저장해야 서버에 간다.
+  const [restricted, setRestricted] = useState<string[]>(group.restrictedModels);
+  const [pickingModels, setPickingModels] = useState(false);
+  const modelLabel = useModelDisplayName();
+  const toggleRestricted = (id: string) =>
+    setRestricted((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   const [emails, setEmails] = useState<string[]>(
     () => draft.members.filter((member) => member.group_id === group.id).map((member) => member.email),
   );
@@ -76,7 +91,7 @@ function GroupEditor({
       return;
     }
     onApply(
-      { ...group, name: trimmed, unlimited, limitInput: stripThousands(limitInput), limitPeriod },
+      { ...group, name: trimmed, unlimited, limitInput: stripThousands(limitInput), limitPeriod, restrictedModels: restricted },
       emails,
     );
   };
@@ -126,6 +141,41 @@ function GroupEditor({
               </div>
             </label>
           ) : null}
+          <div className="credit-modal-field credit-restrict">
+            <div className="credit-restrict-head">
+              <span>제한 모델</span>
+              <button type="button" className="credit-modal-add" onClick={() => setPickingModels((current) => !current)}>
+                {pickingModels ? "완료" : "+ 추가"}
+              </button>
+            </div>
+            {restricted.length ? (
+              <div className="credit-restrict-chips">
+                {restricted.map((id) => (
+                  <span className="credit-chip" key={id} title={id}>
+                    {modelLabel(id)}
+                    <button type="button" aria-label={`${modelLabel(id)} 제한 풀기`} onClick={() => toggleRestricted(id)}>×</button>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <small className="credit-restrict-empty">제한 없음 — 이 그룹 멤버는 모든 모델을 씁니다. 고른 모델은 멤버의 생성 창·캔버스 모델 노드에서 사라집니다.</small>
+            )}
+            {pickingModels ? (
+              <div className="credit-restrict-pick" role="group" aria-label="제한할 모델 고르기">
+                {RESTRICTABLE_MODEL_GROUPS.map((section) => (
+                  <div key={section.title}>
+                    <div className="credit-restrict-group">{section.title}</div>
+                    {section.ids.map((id) => (
+                      <label className="credit-restrict-row" key={id}>
+                        <span>{modelLabel(id)}</span>
+                        <input type="checkbox" checked={restricted.includes(id)} onChange={() => toggleRestricted(id)} />
+                      </label>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
           {!group.isNew ? (
             <div className="credit-modal-remaining">
               <span>지금 남은 양</span>
@@ -268,7 +318,7 @@ export function CreditPlanFields({
   };
   const startNew = () => setEditing({
     id: newGroupId(), isNew: true, name: "", limitInput: "", limitPeriod: "month", unlimited: false,
-    remaining: null, usedMonth: 0, memberCount: 0,
+    remaining: null, usedMonth: 0, memberCount: 0, restrictedModels: [],
   });
   const updateTopup = (id: string, patch: Partial<DraftTopup>) => {
     if (!draft) return;
@@ -381,7 +431,12 @@ export function CreditPlanFields({
               <tbody>
                 {draft.groups.map((group) => (
                   <tr key={group.id} onClick={() => setEditing(group)} title="클릭하면 그룹 창이 열립니다">
-                    <td><b>{group.name}</b>{group.isNew ? <small> 저장 전</small> : null}</td>
+                    <td>
+                      <b>{group.name}</b>{group.isNew ? <small> 저장 전</small> : null}
+                      {group.restrictedModels.length ? (
+                        <small className="credit-restrict-badge" title={group.restrictedModels.join(", ")}> · 제한 {group.restrictedModels.length}</small>
+                      ) : null}
+                    </td>
                     <td>{group.unlimited ? "∞" : `${formatThousands(group.limitInput)} ${periodSuffix(group.limitPeriod)}`}</td>
                     <td>{draftMemberCount(draft, group.id)}</td>
                     <td>{group.isNew ? "저장 후 계산" : n(group.remaining)}</td>

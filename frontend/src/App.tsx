@@ -130,6 +130,7 @@ import {
   UNKNOWN_WORKSPACE,
   sameWorkspace,
 } from "./lib/workspaceContext";
+import { configureModelPolicy, currentModelPolicy, modelBlockMessage } from "./lib/modelRestrictions";
 import { STORAGE_KEYS } from "./lib/storageKeys";
 
 // 마지막으로 보던 라이브러리 상태 영속화(탭·서브탭·필터·크기·레이아웃 등)
@@ -262,6 +263,14 @@ export default function App() {
     setAccount,
     sharedSrv,
   } = useHubAuth();
+  // 그룹별 제한 모델 정책 — (공간, 로그인 이메일, 서버)가 바뀔 때만 다시 조회. 생성 창·캔버스 모델 노드·제출 가드가 함께 읽는다.
+  useEffect(() => {
+    configureModelPolicy({
+      context: workspaceContext,
+      email: hubAccount?.email ?? null,
+      serverKey: sharedSrv?.url ?? "",
+    });
+  }, [workspaceContext, hubAccount?.email, sharedSrv?.url]);
   // genQuery(서버 쿼리)·selectionResetKey 는 useLibraryFilters 훅에서 파생(위 destructure).
   const { clearSelect, selected, selectedRef, setSelected, toggleSelect } = useGenerationSelection({
     resetKey: selectionResetKey,
@@ -960,6 +969,11 @@ export default function App() {
   // 아니라 같은 카드에 누적). 배치 생성(onPromptCreated)과 동일한 append 규칙 — 새 것을 대표로.
   const onSceneRegenerate = async (g: Generation) => {
     if (!activeScene) return;
+    const blocked = modelBlockMessage(g.model); // 제한 모델은 pending 링크를 만들기 전에 거절
+    if (blocked) {
+      flash(blocked);
+      return;
+    }
     flushScenePending(activeScene.id);
     const latest = listScenes(null).find((scene) => scene.id === activeScene.id) || activeScene;
     const target = latest.cards.find((card) => variantIds(card).includes(g.id));
@@ -986,7 +1000,7 @@ export default function App() {
   // job 목록 제출(공통) — 모델 파라미터 선로드→body 조립→각 job 1회씩 병렬 create→카드에 결과 id 누적.
   //  ★배치 반복은 호출자가 jobs 를 늘려서(같은 카드 N개) 결정한다 — 여기선 job 1개=1장.
   const submitGenJobs = async (
-    jobs: SceneGenerationJobInput[],
+    requestedJobs: SceneGenerationJobInput[],
     skipped: number, // 모델을 정할 수 없어 건너뛴 생성카드 수(카드 단위)
     scene: Scene,
     projectId: string | undefined,
@@ -994,6 +1008,25 @@ export default function App() {
   ) => {
     if (!isGenerationWorkspaceReady(workspaceContext)) {
       flash("워크스페이스 정보를 확인하는 중입니다. 잠시 후 다시 실행하세요.");
+      return;
+    }
+    // 그룹별 제한 모델은 pending 기록·업로드보다 먼저 걸러낸다(로컬 거절이 유령 표식을 남기지 않게 — 코덱스 P1).
+    const policy = currentModelPolicy();
+    if (policy.status === "loading") {
+      flash("그룹 모델 정책을 확인하는 중입니다. 잠시 후 다시 실행하세요.");
+      return;
+    }
+    const restrictedCards = new Set(
+      requestedJobs.filter((job) => policy.restricted.has(job.model)).map((job) => job.cardId),
+    );
+    const jobs = restrictedCards.size
+      ? requestedJobs.filter((job) => !policy.restricted.has(job.model))
+      : requestedJobs;
+    if (!jobs.length && restrictedCards.size) {
+      flash(
+        `선택한 카드의 모델이 모두 ${policy.groupName ? `'${policy.groupName}' 그룹` : "그룹"}에서 제한되어 있습니다. ` +
+          "모델 노드에서 다른 모델을 고르세요.",
+      );
       return;
     }
     if (!jobs.length) {
@@ -1126,6 +1159,7 @@ export default function App() {
       notes.push(`모델 노드 없음 → 하단 모델(${label}) ${cardCount}개`);
     }
     if (skipped) notes.push(`모델 미확정 ${skipped}개`);
+    if (restrictedCards.size) notes.push(`제한 모델 제외 ${restrictedCards.size}개`);
     if (buildFail) notes.push(`요청 실패 ${buildFail}개`);
     if (createFail) notes.push(`제출 실패 ${createFail}장`);
     if (applyFail) notes.push("화면 반영 실패 — 재시작 시 자동 복구");

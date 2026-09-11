@@ -75,6 +75,8 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/manage/workspaces",
         # 크레딧 풀·그룹 한도(2026-09-10) — 워크스페이스 단위 팀 설정이라 서버 manage DB 가 진실원천.
         "/api/manage/credit-plan",
+        # 본인 그룹의 제한 모델 — 그룹·배정의 진실원천이 팀 서버이므로 로컬 허브는 위임한다.
+        "/api/manage/credit-plan/my-models",
         "/api/manage/credit-plan/{workspace_id}",
         "/api/manage/credit-plan/{workspace_id}/settings",
         "/api/members",

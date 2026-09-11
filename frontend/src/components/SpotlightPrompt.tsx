@@ -67,6 +67,8 @@ import {
 import { useSpotlightTray } from "../lib/useSpotlightTray";
 import { useSpotlightTokenWrap } from "../lib/useSpotlightTokenWrap";
 import { useModels, ALLOWED, HIDDEN_PARAMS, stripHiddenParams, withEffectiveDefaults } from "../lib/useModels";
+import { policyNote, submitBlockMessage } from "../lib/modelPolicyCore";
+import { useModelPolicy } from "../lib/modelRestrictions";
 import {
   notifySpotlightAssetsChanged,
   parseSpotlightAssetItems,
@@ -184,10 +186,17 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   onCanvasBatchCreated,
 }, ref) {
   // 모델/파라미터/비용 로직은 useModels 훅으로 추출(동작 100% 보존). 로드 실패는 setError 로 보고.
-  const { type, setType, model, setModel, tunable, constraints, typeModels, modelName,
+  // 그룹별 제한 모델 정책(앱 수준 모듈 저장소) — 목록에서 빼고, 이미 고른 모델이 제한이면 제출만 막는다.
+  const modelPolicy = useModelPolicy();
+  const { type, setType, model, setModel, markModelSelection, modelPickedByUser, firstAllowed,
+          currentModel: readSelectedModel, tunable, constraints, typeModels, modelName,
           optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading,
-          pendingOptsRef, setOpenRef, params: schemaParams } =
-    useModels((msg) => setError(msg));
+          pendingOptsRef, setOpenRef, params: schemaParams, selectedRestricted, typeFullyRestricted } =
+    useModels((msg) => setError(msg), { restricted: modelPolicy.restricted, ready: modelPolicy.status !== "loading" });
+  // 이 타입이 통째로 제한돼 고를 모델이 없으면 "모델을 선택하세요" 대신 이유를 말한다(코덱스 P2).
+  const modelBlockedMessage = typeFullyRestricted
+    ? `이 그룹에서 쓸 수 있는 ${type === "video" ? "영상" : "이미지"} 모델이 없습니다. 매니저에게 문의하세요.`
+    : submitBlockMessage(modelPolicy, model, modelName);
   const [countState, setCountState] = useState(1); // 한 번에 N장 생성(배치) — 내부 폴백
   const count = countProp ?? countState; // App 이 배치수를 보유하면 컨트롤드(카드 툴바와 공유)
   // SpotlightGenerateControls 는 Dispatch<SetStateAction<number>> 를 기대하므로 함수형 업데이트도 받는다.
@@ -452,21 +461,31 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     type: "image" | "video";
     model: string;
     opts: Record<string, string | number | boolean>;
+    explicit: boolean; // 라이브러리에서 그 모델을 사용자가 골랐는지(자동 선택이면 복원도 자동으로)
   } | null>(null);
   const prevBindingKeyModelRef = useRef<string | null>(null);
   // 모델 적용 공통 — 목표 모델이 현재와 같으면 setModel 이 no-op(=params effect 안 돎)이라 옵션이 안 실린다.
   // 그 경우 옵션을 직접 반영하고, 다르면 pendingOpts 예약 후 type/model 전환(params 로드 시 옵션 덮음).
-  const applyModelCfg = (t: "image" | "video", m: string, rawOpts: Record<string, string | number | boolean>) => {
+  //  explicit=false 로 부르면 '자동으로 고른 모델을 그대로 되돌린 것'이라 나중에 정책이 바뀌면 다시 고를 수 있다
+  //  (씬을 보기만 하고 돌아온 라이브러리 복원 — 코덱스 P2).
+  const applyModelCfg = (
+    t: "image" | "video",
+    m: string,
+    rawOpts: Record<string, string | number | boolean>,
+    explicit = true,
+  ) => {
     // 씬 카드에 저장된 params 는 필터를 안 거쳤을 수 있다 — 숨김 파라미터(is_inpaint 등)가
     // 이 경로로 body 에 되살아나지 않게 여기서 걸러낸다(코덱스 검토).
     const opts = stripHiddenParams(rawOpts);
     if (m === model) {
       // 같은 모델이면 params effect 가 안 돌아 기본값 병합이 없다 — 실효 기본값 위에 얹는다(mode 등 빈 키 방지).
+      // 값은 그대로여도 '이 모델을 쓰기로 한 출처'는 남겨야, 나중에 그 모델이 제한돼도 작업 중에 안 바뀐다.
+      markModelSelection(explicit);
       setOptionValues(withEffectiveDefaults(schemaParams, m, opts));
     } else {
       pendingOptsRef.current = { model: m, opts };
       setType(t);
-      setModel(m);
+      setModel(m, explicit);
     }
   };
   useEffect(() => {
@@ -474,11 +493,11 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     prevBindingKeyModelRef.current = bindingKey;
     // 라이브러리 → 씬 진입: 지금(씬 모델 적용 전=라이브러리) 모델 상태를 저장.
     if (prev === null && bindingKey !== null)
-      savedLibModelRef.current = { type, model, opts: optionValues };
+      savedLibModelRef.current = { type, model, opts: optionValues, explicit: modelPickedByUser() };
     if (bindingKey === null) {
-      // 씬 → 라이브러리 이탈: 저장한 라이브러리 모델 복원.
+      // 씬 → 라이브러리 이탈: 저장한 라이브러리 모델 복원(그때의 선택 출처까지 그대로 되돌린다).
       const s = savedLibModelRef.current;
-      if (prev !== null && s?.model) applyModelCfg(s.type, s.model, s.opts);
+      if (prev !== null && s?.model) applyModelCfg(s.type, s.model, s.opts, s.explicit);
       savedLibModelRef.current = null;
       return;
     }
@@ -756,8 +775,11 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             : ALLOWED.video.includes(g.model || "")
               ? "video"
               : "image";
-      // 원래 모델이 화이트리스트에 있으면 유지, 아니면 타입 기본(첫째)로 클램프
-      const useModel = ALLOWED[t].includes(g.model || "") ? (g.model as string) : ALLOWED[t][0];
+      // 원래 모델이 화이트리스트에 있으면 유지(명시 복원), 아니면 '지금 고를 수 있는' 첫 모델로 클램프(자동 대체).
+      // 폴백이 그룹 제한 모델을 집지 않게 firstAllowed 를 쓴다. 자동 대체는 explicit 로 굳히지 않아
+      // 나중에 정책이 바뀌면 다시 고를 수 있다(코덱스 P1).
+      const keepsOriginal = ALLOWED[t].includes(g.model || "");
+      const useModel = keepsOriginal ? (g.model as string) : firstAllowed(t) || ALLOWED[t][0];
       // 표시 옵션만 추려 임시 보관(프롬프트·미디어 등 내부 파라미터 제외).
       const opts: Record<string, string | number | boolean> = {};
       for (const [k, v] of Object.entries(g.params || {})) {
@@ -769,12 +791,15 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
         }
       }
       setType(t);
-      if (useModel === model) {
-        // 모델 동일 → [model] effect 안 돎. 옵션을 직접 병합.
+      // 비교는 **응답이 도착한 지금**의 모델로 한다 — 요청 중에 정책이 바뀌어 모델이 교체됐을 수 있다(코덱스 P1).
+      if (useModel === readSelectedModel()) {
+        // 모델 동일 → [model] effect 안 돎. 옵션을 직접 병합. 출처는 항상 다시 기록한다 — 폴백이 마침 지금 모델과
+        // 같을 때 이전의 '명시 선택'이 남아 자동 대체가 막히지 않게(코덱스 P2).
+        markModelSelection(keepsOriginal);
         setOptionValues((prev) => ({ ...prev, ...opts }));
       } else {
         pendingOptsRef.current = { model: useModel, opts }; // 그 모델 로드 때 기본값 위에 덮음(model 스탬프)
-        setModel(useModel);
+        setModel(useModel, keepsOriginal);
       }
       const ed = editorRef.current;
       // ★재사용은 '현재 접힘/펼침'이 아니라 '생성물이 토큰 방식인지'로 분기 → 접든 열든 같은 결과가 들어온다.
@@ -968,6 +993,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     historyRef,
     inCompose,
     model,
+    modelBlockedMessage,
     onCreated,
     canvasTarget,
     prepareCanvasGeneration,
@@ -1271,6 +1297,10 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
                 setModel={setModel}
                 modelName={modelName}
                 typeModels={typeModels}
+                modelRestricted={selectedRestricted}
+                restrictedNote={selectedRestricted ? modelBlockedMessage : null}
+                typeFullyRestricted={typeFullyRestricted}
+                policyNote={policyNote(modelPolicy)}
                 tunable={tunable}
                 constraints={constraints}
                 optionValues={optionValues}

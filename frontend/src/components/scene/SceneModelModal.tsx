@@ -2,6 +2,8 @@
 // 재사용해, 그 노드에 쓸 모델/옵션을 고른다. useModels 를 이 모달 안에서 독립 인스턴스로 돌려
 // SpotlightPrompt 상태와 섞이지 않게 한다(코덱스 설계 A안). 저장하면 modelCfg 스냅샷을 콜백.
 import { useEffect, useState } from "react";
+import { policyNote, submitBlockMessage } from "../../lib/modelPolicyCore";
+import { useModelPolicy } from "../../lib/modelRestrictions";
 import { stripHiddenParams, useModels } from "../../lib/useModels";
 import { SpotlightOptionsBar } from "../spotlight/SpotlightOptionsBar";
 import type { SceneModelCfg } from "../../lib/scenes";
@@ -15,7 +17,10 @@ export function SceneModelModal({
   onSave: (cfg: SceneModelCfg) => void;
   onClose: () => void;
 }) {
-  const m = useModels(() => {}); // 로드 실패는 조용히(모달이라 별도 토스트 불필요)
+  // 그룹별 제한 모델 — 목록에서 빼고, 저장돼 있던 모델이 제한이면 안내 뒤 새 모델을 고른 뒤에만 저장(자동 교체 금지).
+  const policy = useModelPolicy();
+  const m = useModels(() => {}, { restricted: policy.restricted, ready: policy.status !== "loading" }); // 로드 실패는 조용히(모달이라 별도 토스트 불필요)
+  const restrictedNote = m.selectedRestricted ? submitBlockMessage(policy, m.model, m.modelName) : null;
   const [open, setOpen] = useState<string | null>(null);
 
   // 드롭다운 닫기 브리지 — setOpt 선택 후 useModels 가 setOpen(null) 을 호출하게 등록.
@@ -50,6 +55,10 @@ export function SceneModelModal({
           </button>
         </div>
         <div className="scene-modelmodal-body">
+          {restrictedNote ? <div className="scene-modelmodal-note">{restrictedNote}</div> : null}
+          {!restrictedNote && policyNote(policy) ? (
+            <div className="scene-modelmodal-note muted">{policyNote(policy)}</div>
+          ) : null}
           {/* 하단 프롬프트와 동일 레이아웃(.sl-left flex/gap/wrap)으로 감싸 칩이 가로로 흐르게 한다. */}
           <div className="sl-left">
             <SpotlightOptionsBar
@@ -59,6 +68,10 @@ export function SceneModelModal({
               setModel={m.setModel}
               modelName={m.modelName}
               typeModels={m.typeModels}
+              modelRestricted={m.selectedRestricted}
+              restrictedNote={restrictedNote}
+              typeFullyRestricted={m.typeFullyRestricted}
+              policyNote={policyNote(policy)}
               tunable={m.tunable}
               constraints={m.constraints}
               optionValues={m.optionValues}
@@ -75,7 +88,7 @@ export function SceneModelModal({
           <button
             className="primary"
             onClick={save}
-            disabled={!m.model || m.paramsLoading || m.paramsModel !== m.model}
+            disabled={!m.model || m.selectedRestricted || m.paramsLoading || m.paramsModel !== m.model}
           >
             저장
           </button>
