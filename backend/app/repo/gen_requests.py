@@ -1015,6 +1015,61 @@ def list_canvas_generation_candidates(
     return list(dict.fromkeys(str(row["gen_id"]) for row in rows if row["gen_id"]))
 
 
+MAX_CARD_HISTORY = 4000  # 한 번에 돌려줄 지난 소속 상한 — 클라가 로컬 캔버스와 대조할 재료
+
+
+def list_card_generation_history(
+    account_email: str,
+    owner_uid: str,
+    limit: int = MAX_CARD_HISTORY,
+) -> list[dict[str, Any]]:
+    """'이 생성물이 어느 카드에 있었나'의 원천 — 가벼운 (생성물, 씬, 카드) 메타데이터.
+
+    **서버는 '지금 붙어 있는지'를 모른다.** 카드 소속표는 더하기 전용이라 카드나 씬을 지워도
+    행이 removed_at=NULL 로 남는다(sceneCardLinks 계약). 그래서 여기서 거르지 않고 지난 소속을
+    전부 돌려주고, '지금 어디에 붙어 있나'는 로컬 씬 목록을 가진 클라이언트가 판정한다.
+
+    두 줄기를 합친다 — 어느 한쪽만 보면 빠지는 자리가 있다.
+      · 소속표: 수동으로 담은 synced 생성물은 요청행을 만들지 않아 여기에만 있다.
+      · 요청표: 캔버스 생성 직후 백필(2초 디바운스) 전에 브라우저가 닫히면 소속표에 못 남는다.
+        `kind` 로 좁히지 않는다 — 캔버스 재생성(kind='regenerate')도 카드에서 나온 것이다.
+        placeholder 조차 없는 'preparing' 만 뺀다(확정 연결이 아니다 — resolve 질의와 같은 기준).
+
+    생성물 행이 이 DB 에 없는 소속은 뺀다(JOIN) — 화면에 보여줄 내용이 없다. 다른 설치본에만
+    있는 것은 동기화된 뒤에 나온다. 휴지통에 간 것도 뺀다.
+    한 생성물이 여러 카드에 있었으면 줄이 여러 개 나온다 — 가까운 것 고르기는 클라 몫이다.
+    """
+    sql = (
+        "SELECT generation_id, scene_id, card_id FROM ("
+        "SELECT s.generation_id generation_id, s.scene_id scene_id, s.card_id card_id, "
+        "g.created_at sort_at, g.id sort_id "
+        "FROM scene_card_generation s JOIN generation g ON g.id=s.generation_id "
+        "WHERE s.owner_uid=? AND g.deleted_at IS NULL "
+        "UNION "
+        "SELECT r.gen_id, r.canvas_scene_id, r.canvas_card_id, g.created_at, g.id "
+        "FROM gen_request r JOIN generation g ON g.id=r.gen_id "
+        "WHERE r.account_email=? AND r.canvas_scene_id IS NOT NULL "
+        "AND r.canvas_card_id IS NOT NULL AND r.status<>'preparing' AND g.deleted_at IS NULL"
+        ") ORDER BY sort_at DESC, sort_id DESC LIMIT ?"
+    )
+    args: list[Any] = [
+        owner_uid,
+        norm_email(account_email),
+        max(1, min(int(limit or MAX_CARD_HISTORY), MAX_CARD_HISTORY)),
+    ]
+    with get_connection() as conn:
+        rows = conn.execute(sql, args).fetchall()
+    return [
+        {
+            "generation_id": str(row["generation_id"]),
+            "scene_id": str(row["scene_id"]),
+            "card_id": str(row["card_id"]),
+        }
+        for row in rows
+        if row["generation_id"] and row["scene_id"] and row["card_id"]
+    ]
+
+
 def claim_canvas_generation_candidate(
     account_email: str,
     generation_id: str,

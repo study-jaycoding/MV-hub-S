@@ -1826,6 +1826,17 @@ export default function App() {
                 onCanvasRecoveryClaim={(generationId, sceneId, cardId) =>
                   api.claimCanvasGenerationCandidate(generationId, sceneId, cardId).then(() => undefined)
                 }
+                onCanvasCardHistory={() => api.cardGenerationHistory()}
+                // 지금 열려 있는 캔버스는 목록에 반드시 있다 — 없으면 로컬을 제대로 못 읽은 것이니
+                // 판정을 접는다(코덱스 P1: 읽기 실패를 '전부 떨어짐'으로 바꾸면 멀쩡한 생성물이
+                // 전부 미아로 보인다).
+                readLocalScenes={() => {
+                  const list = listScenes(null);
+                  return list.some((item) => item.id === activeScene.id) ? list : null;
+                }}
+                onLoadGenerations={(ids) =>
+                  api.getGenerationsBatch(ids).then((batch) => batch.items)
+                }
                 onRenderCards={generateCards}
                 onRenderCardRuns={generateCardRuns}
                 getGenerationFallbackModel={() => spotlightPromptRef.current?.currentModel() ?? null}

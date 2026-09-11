@@ -97,11 +97,29 @@ export function useSceneHistory({
     }
   };
 
+  // 전이 메타를 스택 엔트리에 싣는다. 메타가 없으면 원본 객체를 그대로 둔다 — 전체 지문 비교
+  // (sameSnap)가 현재 씬 props 와 일치해야 하므로 쓸데없이 새 객체를 만들지 않는다.
+  const carryTransition = (
+    base: SceneSnap,
+    meta?: { removedForward?: SceneCardRemoval[]; addedForward?: SceneCardRemoval[] },
+  ): SceneSnap =>
+    meta?.removedForward?.length || meta?.addedForward?.length
+      ? {
+          ...base,
+          ...(meta.removedForward?.length ? { removedForward: meta.removedForward } : {}),
+          ...(meta.addedForward?.length ? { addedForward: meta.addedForward } : {}),
+        }
+      : base;
+
   const persist = (
     nextCards: SceneCard[],
     nextEdges: SceneEdge[],
     nextGroups: SceneGroup[] = groupsRef.current,
-    opts?: { undo?: boolean; removedForward?: SceneCardRemoval[] },
+    opts?: {
+      undo?: boolean;
+      removedForward?: SceneCardRemoval[];
+      addedForward?: SceneCardRemoval[];
+    },
   ) => {
     // 실행 중 표시는 화면 전용이다. 저장·undo 스냅샷에는 완료/대기 상태만 남긴다.
     const next = {
@@ -110,13 +128,10 @@ export function useSceneHistory({
       groups: nextGroups,
     };
     if (opts?.undo !== false) {
-      // 이 커밋이 카드 소속을 명시적으로 제거했다면(comfy 워크플로 교체 등), 그 전이 정보를
-      // undo 엔트리에 싣는다 — undo 는 이걸 근거로만 부활시키고 redo 는 다시 제거한다(검증 P1).
-      undoStackRef.current.push(
-        opts?.removedForward?.length
-          ? { ...lastCommitRef.current, removedForward: opts.removedForward }
-          : lastCommitRef.current,
-      );
+      // 이 커밋이 카드 소속을 명시적으로 제거했다면(comfy 워크플로 교체 등) 또는 추가했다면
+      // (떨어진 생성물 붙이기), 그 전이 정보를 undo 엔트리에 싣는다 — undo/redo 는 이걸
+      // 근거로만 부활·제거한다("스냅샷에 있으니" 추론 금지, 검증 P1).
+      undoStackRef.current.push(carryTransition(lastCommitRef.current, opts));
       if (undoStackRef.current.length > 200) undoStackRef.current.shift();
       redoStackRef.current = [];
     }
@@ -158,8 +173,12 @@ export function useSceneHistory({
       [{ id: sceneIdNow, cards: restoredCards }],
       serverCardLinks(sceneIdNow),
     );
-    // removedForward 는 스택 엔트리 전용 전이 메타 — 복원 상태(lastCommit·저장분)에는 싣지 않는다.
-    const { removedForward: _transitionMeta, ...stateOnly } = snapshot;
+    // 전이 메타는 스택 엔트리 전용 — 복원 상태(lastCommit·저장분)에는 싣지 않는다.
+    const {
+      removedForward: _removedMeta,
+      addedForward: _addedMeta,
+      ...stateOnly
+    } = snapshot;
     const restored = {
       ...stateOnly,
       cards: merged ? (merged[0].cards as SceneCard[]) : restoredCards,
@@ -221,23 +240,20 @@ export function useSceneHistory({
     const previous = undoStackRef.current.pop();
     if (!previous) return;
     // 전이 메타는 그 전이의 양쪽 끝을 오갈 때 계속 쓰이므로 redo 엔트리에 그대로 옮겨 싣는다.
-    redoStackRef.current.push(
-      previous.removedForward?.length
-        ? { ...lastCommitRef.current, removedForward: previous.removedForward }
-        : lastCommitRef.current,
-    );
-    restoreState(previous, { revive: previous.removedForward });
+    redoStackRef.current.push(carryTransition(lastCommitRef.current, previous));
+    // 역방향 — 그 커밋이 뺀 것은 되살리고, 붙인 것은 뗀다.
+    restoreState(previous, {
+      revive: previous.removedForward,
+      remove: previous.addedForward,
+    });
   };
 
   const redo = () => {
     const next = redoStackRef.current.pop();
     if (!next) return;
-    undoStackRef.current.push(
-      next.removedForward?.length
-        ? { ...lastCommitRef.current, removedForward: next.removedForward }
-        : lastCommitRef.current,
-    );
-    restoreState(next, { remove: next.removedForward });
+    undoStackRef.current.push(carryTransition(lastCommitRef.current, next));
+    // 정방향 — 다시 빼고, 다시 붙인다.
+    restoreState(next, { remove: next.removedForward, revive: next.addedForward });
   };
 
   return {

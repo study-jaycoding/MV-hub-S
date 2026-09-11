@@ -26,6 +26,7 @@ import { pathPart } from "./lib/url";
 import { normalizeGenerationPromptCompatibility } from "./lib/generationPrompt";
 import { isGenerationWorkspaceReady } from "./lib/workspaceContext";
 import type { CanvasGenerationLink } from "./lib/canvasGenerationRecovery";
+import type { CardHistoryLink } from "./lib/canvasDetached";
 import { getAccountNamespace } from "./lib/accountScope";
 
 export { getAuthToken, jsonFetch, setAuthToken };
@@ -546,6 +547,13 @@ export const api = {
     jsonFetch<{ items: Generation[] }>(
       `/api/gen-requests/canvas-candidates?limit=${Math.max(1, Math.min(limit, 100))}`,
     ).then((result) => ({ ...result, items: normalizeGenerations(result.items) })),
+
+  // 지난 카드 소속 — (생성물, 씬, 카드)만 가볍게. '지금 붙어 있나'는 서버가 모르므로
+  // 로컬 씬 목록으로 거르고(canvasDetached), 살아남은 것만 getGenerationsBatch 로 본문을 받는다.
+  cardGenerationHistory: () =>
+    jsonFetch<{ links: CardHistoryLink[] }>("/api/gen-requests/canvas-history").then(
+      (result) => (Array.isArray(result.links) ? result.links : []),
+    ),
 
   claimCanvasGenerationCandidate: (generationId: string, sceneId: string, cardId: string) =>
     jsonFetch<{ ok: boolean }>("/api/gen-requests/canvas-candidates/claim", {

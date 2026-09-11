@@ -518,6 +518,81 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
             ),
         )
 
+    def test_card_history_merges_both_sources_and_keeps_removed_links(self):
+        """지난 카드 소속 = 요청표 ∪ 소속표. 뺀 표시도 남긴다(서버는 '지금 붙었나'를 모른다).
+
+        어느 한 줄기만 보면 빠지는 자리가 있다 — 수동으로 담은 synced 는 요청행이 없고,
+        백필 전에 브라우저가 닫힌 캔버스 생성은 소속표에 없다.
+        """
+        linked = self._link("history")
+        self._submit(linked)  # 요청표 줄기 — scene-a/card-a 가 요청에 박힌다
+
+        parsed = {
+            "generation": {
+                "id": "job-history-synced",
+                "prompt": "history only",
+                "model": "model",
+                "params": {"prompt": "history only"},
+                "status": "done",
+                "created_at": "2026-08-21T00:00:00Z",
+                "sort_ts": 1_755_734_400.0,
+                "creator_uid": "u-artist",
+            },
+            "asset": {
+                "type": "image",
+                "file_path": "https://cdn.example/job-history-synced.png",
+            },
+            "references": [],
+        }
+        self.assertEqual(repo.upsert_synced_generation(parsed, "me"), "inserted")
+        with db.get_connection() as conn:
+            synced_id = conn.execute(
+                "SELECT id FROM generation WHERE job_id='job-history-synced'"
+            ).fetchone()["id"]
+        # 소속표 줄기 — 요청행을 만들지 않는 경로다(claim 이 scene_card_generation 에만 쓴다)
+        self.assertTrue(
+            repo.claim_canvas_generation_candidate(
+                "artist@example.com",
+                synced_id,
+                "scene-b",
+                "card-b",
+                owner_uid="u-artist",
+                creator_uid="u-artist",
+            )
+        )
+        # comfy 교체로 뺀 소속 — removed_at 이 찍혀도 '있었다'는 사실은 남아야 한다
+        repo.sync_scene_card_links(
+            "u-artist",
+            [],
+            [
+                {
+                    "scene_id": "scene-c",
+                    "card_id": "card-c",
+                    "generation_id": linked["generation_id"],
+                }
+            ],
+        )
+
+        rows = repo.list_card_generation_history("artist@example.com", "u-artist")
+        seen = {(r["generation_id"], r["scene_id"], r["card_id"]) for r in rows}
+        self.assertIn((linked["generation_id"], "scene-a", "card-a"), seen)
+        self.assertIn((synced_id, "scene-b", "card-b"), seen)
+        self.assertIn((linked["generation_id"], "scene-c", "card-c"), seen)
+
+        # 다른 계정·다른 소유자에게는 한 줄도 새지 않는다
+        self.assertEqual(
+            repo.list_card_generation_history("other@example.com", "u-other"), []
+        )
+
+        # 휴지통에 간 생성물은 화면에 보여줄 게 없으므로 빠진다
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE generation SET deleted_at=datetime('now') WHERE id=?",
+                (synced_id,),
+            )
+        after = repo.list_card_generation_history("artist@example.com", "u-artist")
+        self.assertNotIn(synced_id, {row["generation_id"] for row in after})
+
     def test_slow_cost_estimate_does_not_delay_generation_response(self):
         link = self._link("slow")
 

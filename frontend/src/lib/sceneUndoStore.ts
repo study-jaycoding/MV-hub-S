@@ -18,6 +18,10 @@ export interface SceneSnap {
   // 스택 엔트리에만 실린다 — lastCommit·복원 결과는 항상 이 필드가 없는 순수 상태
   // (sameSnap 전체 지문 비교가 현재 씬 props 와 일치해야 하므로).
   removedForward?: SceneCardRemoval[];
+  // removedForward 의 거울짝 — 그 전이가 명시적으로 **추가한** 소속(떨어진 생성물 붙이기).
+  // undo(역방향)는 이걸 제거하고, redo(정방향)는 다시 부활시킨다. 이게 없으면 undo 가
+  // 과거 스냅샷을 되돌려도 ②서버 소속 병합이 방금 붙인 것을 도로 살려 되돌리기가 안 먹는다.
+  addedForward?: SceneCardRemoval[];
 }
 export interface SceneHistory {
   undo: SceneSnap[];

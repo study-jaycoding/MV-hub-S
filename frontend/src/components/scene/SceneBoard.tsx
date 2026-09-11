@@ -119,7 +119,13 @@ import { useSceneCardResize } from "../../lib/useSceneCardResize";
 import { useSceneCardMove } from "../../lib/useSceneCardMove";
 import { useSceneGroupMove } from "../../lib/useSceneGroupMove";
 import { useSceneMarqueeSelection } from "../../lib/useSceneMarqueeSelection";
-import { markCardGenerationsRemoved } from "../../lib/sceneCardLinks";
+import { markCardGenerationsRemoved, reviveCardGenerations } from "../../lib/sceneCardLinks";
+import {
+  detachedCandidates,
+  readLocalCanvasState,
+  type CardHistoryLink,
+  type DetachedCandidate,
+} from "../../lib/canvasDetached";
 import type { SceneComfyCfg, SceneModelCfg } from "../../lib/scenes";
 import type { SceneGenerationAssignment } from "../../lib/sceneGenerationInputs";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
@@ -228,6 +234,12 @@ interface Props {
     sceneId: string,
     cardId: string,
   ) => Promise<void>;
+  // 지난 카드 소속 — 서버의 (생성물, 씬, 카드) 기록. '지금 붙어 있나'는 이쪽이 로컬로 판정한다.
+  onCanvasCardHistory?: () => Promise<CardHistoryLink[]>;
+  // 판정에 쓸 로컬 씬 목록. null 이면 못 읽은 것(= 판정 금지, 안내만).
+  readLocalScenes?: () => Scene[] | null;
+  // 떨어진 생성물을 화면에 보여주려면 본문이 필요하다 — 살아남은 것만 일괄 조회.
+  onLoadGenerations?: (ids: string[]) => Promise<Record<string, Generation>>;
   // 렌더(배치) 노드 — 연결된 생성카드 id들을 넘기면 각 카드가 연결 모델(없으면 fallbackModel)·refs·텍스트로 한 번에 생성된다.
   onRenderCards?: (
     cardIds: string[],
@@ -303,6 +315,9 @@ export function SceneBoard({
   onGenerateCard,
   onCanvasRecoveryCandidates,
   onCanvasRecoveryClaim,
+  onCanvasCardHistory,
+  readLocalScenes,
+  onLoadGenerations,
   onRenderCards,
   onRenderCardRuns,
   getGenerationFallbackModel,
@@ -378,10 +393,15 @@ export function SceneBoard({
   const [tagEditNodeGenId, setTagEditNodeGenId] = useState<string | null>(null); // 카드 내부 HistoryBoardNode 의 태그 편집 대상 gen id
   const [canvasRecovery, setCanvasRecovery] = useState<{
     cardId: string;
-    items: Generation[];
+    items: Generation[]; // 아래 칸 — 아직 어디에도 안 담긴 것(카드 기록이 원래 없다)
+    detached: DetachedCandidate[]; // 위 칸 — 카드에 있었다가 떨어진 것(가까운 순)
+    detachedGens: Record<string, Generation>; // 위 칸 본문(일괄 조회 결과)
+    detachedStatus: "ok" | "unreadable"; // unreadable = 로컬 씬을 못 읽어 판정 불가
     loading: boolean;
     claimingId: string | null;
     error: string | null;
+    query: string; // 아래 칸 검색어
+    shown: number; // 아래 칸 표시 개수('더 보기'로 증가)
   } | null>(null);
   const recoveryModelName = useModelDisplayName(); // 복구 목록을 라이브러리 카드와 같은 표기로
   // Tab 노드 피커(Houdini식) — 커서 위치에 New/Model/List/Text 메뉴. sx/sy=보드기준 화면좌표(팝업 배치), cx/cy=새 노드 캔버스좌표.
@@ -731,7 +751,10 @@ export function SceneBoard({
   const applyCards = (
     nextCards: SceneCard[],
     mode: ApplyCardsMode,
-    persistOpts?: { removedForward?: { cardId: string; genIds: string[] }[] },
+    persistOpts?: {
+      removedForward?: { cardId: string; genIds: string[] }[];
+      addedForward?: { cardId: string; genIds: string[] }[];
+    },
   ) => {
     cardsRef.current = nextCards;
     setCards(nextCards);
@@ -758,14 +781,66 @@ export function SceneBoard({
     void markCardGenerationsRemoved(sceneId, cardId, genIds);
     return [{ cardId, genIds }];
   };
+  const RECOVERY_PAGE = 12; // 아래 칸 한 번에 보여줄 개수 — 나머지는 '더 보기'
+  const DETACHED_SHOWN = 30; // 위 칸에 본문까지 받아올 상한(가까운 순 앞쪽만)
+
+  // 위 칸(떨어진 것)을 만든다. 서버는 '있었던 자리'만 알고 '지금 붙었나'는 모르므로
+  // 로컬 씬 목록으로 거르고(canvasDetached), 살아남은 것만 본문을 일괄 조회한다.
+  const loadDetached = async (
+    cardId: string,
+  ): Promise<{
+    detached: DetachedCandidate[];
+    detachedGens: Record<string, Generation>;
+    detachedStatus: "ok" | "unreadable";
+  }> => {
+    const empty = { detached: [], detachedGens: {}, detachedStatus: "ok" as const };
+    if (!onCanvasCardHistory || !readLocalScenes || !onLoadGenerations) return empty;
+    const links = await onCanvasCardHistory();
+    // ★밀린 저장을 먼저 확정한다 — 방금 붙인 결과가 아직 메모리에만 있으면 '떨어진 것'으로 보인다.
+    flushPendingRef.current();
+    const scenes = readLocalScenes();
+    const local = readLocalCanvasState(scenes, scenes !== null);
+    const result = detachedCandidates(links, local, { sceneId: scene.id, cardId });
+    if (result.status !== "ok" || !result.items.length) {
+      return { ...empty, detachedStatus: result.status };
+    }
+    const head = result.items.slice(0, DETACHED_SHOWN);
+    const detachedGens = await onLoadGenerations(head.map((item) => item.generationId));
+    // 본문을 못 받은 것(다른 설치본에만 있는 생성물)은 보여줄 게 없으므로 뺀다.
+    return {
+      detached: head.filter((item) => detachedGens[item.generationId]),
+      detachedGens,
+      detachedStatus: "ok",
+    };
+  };
+
   const openCanvasRecovery = async (cardId: string) => {
     if (!onCanvasRecoveryCandidates) return;
-    setCanvasRecovery({ cardId, items: [], loading: true, claimingId: null, error: null });
+    setCanvasRecovery({
+      cardId,
+      items: [],
+      detached: [],
+      detachedGens: {},
+      detachedStatus: "ok",
+      loading: true,
+      claimingId: null,
+      error: null,
+      query: "",
+      shown: RECOVERY_PAGE,
+    });
     try {
-      const items = await onCanvasRecoveryCandidates();
+      // 두 칸은 서로 독립이라 같이 받는다. 위 칸이 실패해도 아래 칸은 살린다.
+      const [items, detachedPart] = await Promise.all([
+        onCanvasRecoveryCandidates(),
+        loadDetached(cardId).catch(() => ({
+          detached: [] as DetachedCandidate[],
+          detachedGens: {} as Record<string, Generation>,
+          detachedStatus: "ok" as const,
+        })),
+      ]);
       setCanvasRecovery((current) =>
         current?.cardId === cardId
-          ? { ...current, items, loading: false }
+          ? { ...current, items, ...detachedPart, loading: false }
           : current,
       );
     } catch (error) {
@@ -776,12 +851,30 @@ export function SceneBoard({
       );
     }
   };
-  const claimCanvasRecovery = async (generation: Generation) => {
+  // 고른 생성물을 이 카드에 붙인다. attach 가 서버 기록을 맡고(경로는 호출부가 정한다),
+  // 여기서는 카드 반영·정렬·undo 전이만 공통으로 처리한다.
+  const attachToCard = async (
+    generation: Generation,
+    attach: (target: { cardId: string }) => Promise<void>,
+  ) => {
     const target = canvasRecovery;
-    if (!target || !onCanvasRecoveryClaim) return;
+    if (!target) return;
     setCanvasRecovery({ ...target, claimingId: generation.id, error: null });
     try {
-      await onCanvasRecoveryClaim(generation.id, scene.id, target.cardId);
+      await attach({ cardId: target.cardId });
+      // ★반영 직전에 대상 카드를 다시 본다(코덱스 P1). 창을 연 사이 카드가 사라졌을 수도,
+      //  서버 소속 병합이 같은 생성물을 이미 넣었을 수도 있다. 전이 메타에는 **이번에 내가
+      //  실제로 더한 것**만 실어야 한다 — 아니면 undo 가 원래 있던 소속까지 '뺐음'으로 보낸다.
+      const beforeCard = cardsRef.current.find((card) => card.id === target.cardId);
+      if (!beforeCard) {
+        setCanvasRecovery((current) =>
+          current
+            ? { ...current, claimingId: null, error: "대상 카드가 사라졌습니다. 창을 닫고 다시 여세요." }
+            : current,
+        );
+        return;
+      }
+      const addedNow = !variantIds(beforeCard).includes(generation.id);
       const settled = settleCanvasGenerationAttempt(
         cardsRef.current,
         target.cardId,
@@ -799,10 +892,16 @@ export function SceneBoard({
         );
         return { ...card, genIds: sortedIds };
       });
-      applyCards(nextCards, "persistUser");
+      // ★undo 가 실제로 떼어지게 전이 메타를 싣는다. 없으면 되돌려도 ②서버 소속 병합이
+      //  방금 붙인 것을 도로 살려 Ctrl+Z 가 안 먹는다(코덱스 P1).
+      applyCards(nextCards, "persistUser", {
+        addedForward: addedNow
+          ? [{ cardId: target.cardId, genIds: [generation.id] }]
+          : undefined,
+      });
       setGenData((previous) => ({ ...previous, [generation.id]: generation }));
       setCanvasRecovery(null);
-      flashMsg("생성물을 이 카드에 복구했습니다.");
+      flashMsg("생성물을 이 카드에 붙였습니다.");
     } catch (error) {
       setCanvasRecovery((current) =>
         current
@@ -810,6 +909,102 @@ export function SceneBoard({
           : current,
       );
     }
+  };
+  // 아래 칸(어디에도 안 담긴 것) — 서버가 요청표·소속표에 이 카드를 처음으로 새겨 준다.
+  const claimCanvasRecovery = (generation: Generation) =>
+    attachToCard(generation, ({ cardId }) => {
+      if (!onCanvasRecoveryClaim) return Promise.resolve();
+      return onCanvasRecoveryClaim(generation.id, scene.id, cardId);
+    });
+  // 위 칸(떨어진 것) — 이미 지난 소속이 있으므로 '사용자 의도'로 되살린다.
+  //  ★요청표의 원래 씬·카드는 건드리지 않는다. 덮어쓰면 그 요청의 재시도가 다른 요청으로
+  //   판정되고, 클라의 pending attempt 검사도 어긋난다(코덱스 P1). 소속만 추가한다.
+  //  ★reviveCardGenerations 가 네트워크보다 먼저 의도를 영속시켜, 그 사이 도착한 병합이
+  //   방금 살린 것을 도로 지우지 않는다. undo 부활이 쓰는 바로 그 경로다.
+  const claimDetachedGeneration = (generation: Generation) =>
+    attachToCard(generation, ({ cardId }) => {
+      reviveCardGenerations(scene.id, cardId, [generation.id]);
+      return Promise.resolve();
+    });
+  // 아래 칸은 목록이 길다 — 검색으로 좁히고 '더 보기'로 늘린다(옛 30개 고정에는 찾을 길이 없었다).
+  const recoveryQuery = (canvasRecovery?.query || "").trim().toLowerCase();
+  const recoveryFiltered = !canvasRecovery
+    ? []
+    : recoveryQuery
+      ? canvasRecovery.items.filter((generation) =>
+          [generation.prompt, generation.display_prompt, recoveryModelName(generation.model), generation.model]
+            .some((text) => (text || "").toLowerCase().includes(recoveryQuery)),
+        )
+      : canvasRecovery.items;
+  const recoveryVisible = canvasRecovery
+    ? recoveryFiltered.slice(0, canvasRecovery.shown)
+    : [];
+  // 두 칸이 같은 모양으로 항목을 그린다 — 라이브러리 리스트 카드 축소판.
+  // 프롬프트 칩이 자체 <button> 이라 겹침(중첩 버튼)이 안 되게 항목은 div+role=button 이다.
+  const renderRecoveryItem = (
+    generation: Generation,
+    badge: ReactNode,
+    pick: (generation: Generation) => void,
+  ) => {
+    const meta = generationListMeta((generation.params || {}) as Record<string, unknown>);
+    const thumb = thumbOf(generation, 256);
+    const busy = !!canvasRecovery?.claimingId;
+    return (
+      <div
+        key={generation.id}
+        className={"scene-recovery-item" + (busy ? " busy" : "")}
+        role="button"
+        tabIndex={busy ? -1 : 0}
+        onClick={() => !busy && void pick(generation)}
+        onKeyDown={(event) => {
+          if (!busy && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault();
+            void pick(generation);
+          }
+        }}
+      >
+        {thumb ? (
+          <img className="scene-recovery-thumb" src={thumb} alt="" loading="lazy" />
+        ) : (
+          <span className="scene-recovery-thumb scene-recovery-thumb-empty" />
+        )}
+        <span className="scene-recovery-detail">
+          <span className="scene-recovery-model">
+            <ModelIcon /> {recoveryModelName(generation.model) || generation.model || "모델 미상"}
+          </span>
+          <InlinePromptRefs
+            displayPrompt={generation.display_prompt}
+            prompt={generation.prompt || "(프롬프트 없음)"}
+            references={generation.references}
+            onPreview={(target) => onPreview?.(target)}
+            className="scene-recovery-prompt"
+            stopPropagation
+          />
+          <span className="scene-recovery-sub">
+            {badge}
+            {meta.resolution && (
+              <span className="cd-chip">
+                <GemIcon /> {meta.resolution}
+              </span>
+            )}
+            {meta.duration && (
+              <span className="cd-chip">
+                <ClockIcon /> {meta.duration}
+              </span>
+            )}
+            {meta.aspect && (
+              <span className="cd-chip">
+                <FrameIcon /> {meta.aspect}
+              </span>
+            )}
+            <span className="scene-recovery-date">
+              {formatGenerationDateTime(generation.created_at)}
+            </span>
+            {canvasRecovery?.claimingId === generation.id && <i>붙이는 중…</i>}
+          </span>
+        </span>
+      </div>
+    );
   };
   // 언마운트(탭 이탈·씬 언마운트) 시 밀린 저장 확정 — 그때 onChange 는 아직 현재 씬을 가리킨다.
   //  + 새로고침/창닫기(pagehide) 에도 확정 — 디바운스 대기 중 편집 유실 방지.
@@ -3815,7 +4010,7 @@ export function SceneBoard({
         >
           <div className="scene-modelmodal scene-recoverymodal" onMouseDown={(event) => event.stopPropagation()}>
             <div className="scene-modelmodal-hd">
-              <b>빠진 생성물 복구</b>
+              <b>이 카드에 생성물 붙이기</b>
               <button
                 className="scene-modelmodal-x"
                 disabled={!!canvasRecovery.claimingId}
@@ -3826,74 +4021,116 @@ export function SceneBoard({
             </div>
             <div className="scene-comfymodal-body scene-recovery-list">
               {canvasRecovery.loading ? (
-                <div className="scene-recovery-empty">내 생성 요청을 확인하는 중입니다…</div>
+                <div className="scene-recovery-empty">내 생성 기록을 확인하는 중입니다…</div>
               ) : canvasRecovery.error ? (
                 <div className="scene-recovery-error">{canvasRecovery.error}</div>
-              ) : canvasRecovery.items.length ? (
-                // 라이브러리 리스트 카드와 같은 부품(썸네일·모델명·레퍼런스 칩 프롬프트·파라미터 칩)으로 표시.
-                // 프롬프트 칩이 자체 <button>이라 겹침(중첩 버튼)이 안 되게 항목은 div+role=button.
-                canvasRecovery.items.map((generation) => {
-                  const meta = generationListMeta((generation.params || {}) as Record<string, unknown>);
-                  const thumb = thumbOf(generation, 256);
-                  const busy = !!canvasRecovery.claimingId;
-                  return (
-                    <div
-                      key={generation.id}
-                      className={"scene-recovery-item" + (busy ? " busy" : "")}
-                      role="button"
-                      tabIndex={busy ? -1 : 0}
-                      onClick={() => !busy && void claimCanvasRecovery(generation)}
-                      onKeyDown={(event) => {
-                        if (!busy && (event.key === "Enter" || event.key === " ")) {
-                          event.preventDefault();
-                          void claimCanvasRecovery(generation);
-                        }
-                      }}
-                    >
-                      {thumb ? (
-                        <img className="scene-recovery-thumb" src={thumb} alt="" loading="lazy" />
-                      ) : (
-                        <span className="scene-recovery-thumb scene-recovery-thumb-empty" />
-                      )}
-                      <span className="scene-recovery-detail">
-                        <span className="scene-recovery-model">
-                          <ModelIcon /> {recoveryModelName(generation.model) || generation.model || "모델 미상"}
-                        </span>
-                        <InlinePromptRefs
-                          displayPrompt={generation.display_prompt}
-                          prompt={generation.prompt || "(프롬프트 없음)"}
-                          references={generation.references}
-                          onPreview={(target) => onPreview?.(target)}
-                          className="scene-recovery-prompt"
-                          stopPropagation
-                        />
-                        <span className="scene-recovery-sub">
-                          {meta.resolution && (
-                            <span className="cd-chip">
-                              <GemIcon /> {meta.resolution}
-                            </span>
-                          )}
-                          {meta.duration && (
-                            <span className="cd-chip">
-                              <ClockIcon /> {meta.duration}
-                            </span>
-                          )}
-                          {meta.aspect && (
-                            <span className="cd-chip">
-                              <FrameIcon /> {meta.aspect}
-                            </span>
-                          )}
-                          <span className="scene-recovery-date">
-                            {formatGenerationDateTime(generation.created_at)}
-                          </span>
-                          {canvasRecovery.claimingId === generation.id && <i>복구 중…</i>}
-                        </span>
-                      </span>
-                    </div>
-                  );
-                })
               ) : (
-                <div className="scene-recovery-empty">연결이 빠진 이전 생성 요청이 없습니다.</div>
+                <>
+                  {/* ── 위 칸: 되찾기 — 어느 카드에 있었는지 기록이 남아 있는 것 ── */}
+                  <div className="scene-recovery-sect">
+                    <div className="scene-recovery-sect-hd">
+                      <span className="scene-recovery-sect-title lime">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M3 12a9 9 0 1 0 3-6.7" />
+                          <path d="M3 4v5h5" />
+                        </svg>
+                        카드에서 나왔다가 떨어진 것
+                      </span>
+                      <span className="scene-recovery-count">{canvasRecovery.detached.length}</span>
+                    </div>
+                    <p className="scene-recovery-sect-sub">
+                      어느 카드에 있었는지가 기록에 남아 있습니다. 가까운 순 — 이 카드 → 이 캔버스 → 다른 캔버스.
+                    </p>
+                    {canvasRecovery.detachedStatus === "unreadable" ? (
+                      // ★로컬을 못 읽었으면 목록을 만들지 않는다 — 읽기 실패를 '전부 떨어짐'으로
+                      //  바꾸면 멀쩡한 생성물이 전부 미아로 보인다(코덱스 P1).
+                      <div className="scene-recovery-note">
+                        <b>지금은 판정할 수 없습니다.</b> 이 브라우저의 캔버스 목록을 읽지 못해,
+                        무엇이 떨어졌는지 가릴 수 없습니다. 창을 닫았다 다시 열어 보세요.
+                      </div>
+                    ) : canvasRecovery.detached.length ? (
+                      canvasRecovery.detached.map((candidate) => {
+                        const generation = canvasRecovery.detachedGens[candidate.generationId];
+                        if (!generation) return null;
+                        const tone =
+                          candidate.origin === "this-card"
+                            ? "this-card"
+                            : candidate.origin === "other-scene"
+                              ? "other-scene"
+                              : "this-scene";
+                        return renderRecoveryItem(
+                          generation,
+                          <span className={`scene-recovery-from ${tone}`}>
+                            {tone === "other-scene" && <i aria-hidden="true" />}
+                            {candidate.label}
+                          </span>,
+                          claimDetachedGeneration,
+                        );
+                      })
+                    ) : (
+                      <div className="scene-recovery-empty">
+                        이 브라우저의 캔버스에서 떨어진 생성물은 없습니다.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="scene-recovery-sep" />
+
+                  {/* ── 아래 칸: 담기 — 어느 카드에서 나왔는지 기록이 원래 없는 것 ── */}
+                  <div className="scene-recovery-sect">
+                    <div className="scene-recovery-sect-hd">
+                      <span className="scene-recovery-sect-title">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M12 5v14M5 12h14" />
+                        </svg>
+                        아직 어디에도 안 담긴 것
+                      </span>
+                      <span className="scene-recovery-count">{recoveryFiltered.length}</span>
+                      <input
+                        className="scene-recovery-search"
+                        value={canvasRecovery.query}
+                        placeholder="프롬프트·모델로 찾기"
+                        aria-label="안 담긴 생성물 검색"
+                        onChange={(event) =>
+                          setCanvasRecovery((current) =>
+                            current
+                              ? { ...current, query: event.target.value, shown: RECOVERY_PAGE }
+                              : current,
+                          )
+                        }
+                      />
+                    </div>
+                    <p className="scene-recovery-sect-sub">
+                      힉스필드 웹·다른 PC·카드 없이 만든 생성물입니다. 어느 카드에서 나왔는지는 기록이 없어 최신순입니다.
+                    </p>
+                    {recoveryVisible.length ? (
+                      <>
+                        {recoveryVisible.map((generation) =>
+                          renderRecoveryItem(generation, null, claimCanvasRecovery),
+                        )}
+                        {recoveryFiltered.length > recoveryVisible.length && (
+                          <button
+                            type="button"
+                            className="scene-recovery-more"
+                            onClick={() =>
+                              setCanvasRecovery((current) =>
+                                current
+                                  ? { ...current, shown: current.shown + RECOVERY_PAGE }
+                                  : current,
+                              )
+                            }
+                          >
+                            더 보기 ({recoveryFiltered.length - recoveryVisible.length})
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <div className="scene-recovery-empty">
+                        {recoveryQuery ? "찾는 말과 맞는 것이 없습니다." : "아직 어디에도 안 담긴 생성물이 없습니다."}
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
             </div>
             <div className="scene-modelmodal-ft">

@@ -439,6 +439,23 @@ def canvas_generation_candidates(request: Request, limit: int = 30):
     return {"items": [item for item in items if item]}
 
 
+@router.get("/gen-requests/canvas-history")
+def canvas_generation_history(request: Request, limit: int = 0):
+    """내 생성물이 '어느 카드에 있었나'의 지난 기록 — (생성물, 씬, 카드)만 가볍게.
+
+    서버는 지금 붙어 있는지 모른다(카드 소속표는 카드 삭제를 모른다). 판정은 로컬 씬 목록을
+    가진 클라이언트가 하고, 살아남은 것만 /api/generations/batch 로 본문을 받아간다.
+    """
+    acc = _require_account(request)
+    return {
+        "links": repo.list_card_generation_history(
+            acc["email"],
+            actor_id(request),
+            limit=limit or repo.MAX_CARD_HISTORY,
+        )
+    }
+
+
 @router.post("/gen-requests/canvas-candidates/claim")
 def claim_canvas_generation_candidate(body: CanvasManualClaimIn, request: Request):
     """선택한 구버전 생성물을 한 캔버스 카드에 1회 귀속한다."""

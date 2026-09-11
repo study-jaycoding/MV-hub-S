@@ -276,15 +276,22 @@ export function GenerationCard({
             Generate ✨
           </button>
           {actions.onRecover && (
+            // 글씨 대신 세로점 3개 — 창 안에서 '되찾기'와 '담기'가 갈려 한 낱말로 못 적는다(Jay).
+            // 글자 ⋮ 는 기준선 때문에 가운데가 틀어지므로 SVG 24격자 + grid center 로 그린다.
             <button
               className="scene-cardgen-recover"
-              title="이전에 연결이 빠진 내 생성물을 이 카드에 복구"
+              aria-label="이 카드에 생성물 붙이기"
+              title="이 카드에 생성물 붙이기 — 떨어진 내 생성물 되찾기"
               onClick={(e) => {
                 e.stopPropagation();
                 actions.onRecover?.(card.id);
               }}
             >
-              복구
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <circle cx="12" cy="5" r="1.9" />
+                <circle cx="12" cy="12" r="1.9" />
+                <circle cx="12" cy="19" r="1.9" />
+              </svg>
             </button>
           )}
         </div>
