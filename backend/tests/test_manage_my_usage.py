@@ -126,6 +126,55 @@ class MyUsageScopeTests(unittest.TestCase):
         self.assertEqual([r["creator_uid"] for r in filtered["by_worker"]], ["u_b"])
         self.assertEqual(full["totals"]["count"], 3)
 
+    # ── 거래 원장(사용·환불·순사용) ───────────────────────────────────────────
+    # ★팩트(생성물별)와 **다른 원천**이다. 환불은 생성물에 붙일 수 없어 여기서만 반영된다.
+    #  공유 서버는 AUTH on 이라 계정별 DB 로 갈리지 않고 하나의 content DB 를 쓴다
+    #  (active_account.account_key 가 AUTH 면 None) — 그래서 팀 전체 원장이 한곳에 모인다.
+    def _spend(self, email: str, uid: str, credits: float, action: str = "spend") -> None:
+        from app.repo.manage_transactions import record_transactions
+
+        record_transactions(uid, email, [{
+            "created_at": "2026-09-01T01:00:00Z", "credits": credits, "action": action,
+            "display_name": "M", "model": "seedance", "workspace_id": "ws1",
+        }])
+
+    def test_manager_sees_the_whole_team_ledger(self) -> None:
+        self._spend("a@x", "u_a", -10)
+        self._spend("b@x", "u_b", -7)
+        with auth_on():
+            out = manage_router.team_overview(_account("admin@x", "u_admin", role="admin"))
+        self.assertEqual(out["ledger"]["spend"], 17.0)
+
+    def test_a_member_only_sees_their_own_ledger(self) -> None:
+        """★원장에도 본인 범위를 서버가 강제한다 — 안 그러면 남의 지출이 보인다."""
+        self._spend("a@x", "u_a", -10)
+        self._spend("b@x", "u_b", -7)
+        with auth_on():
+            out = manage_router.team_overview(_account("a@x", "u_a"))
+        self.assertEqual(out["usage_scope"], "mine")
+        self.assertEqual(out["ledger"]["spend"], 10.0)
+
+    def test_a_refund_lowers_the_net_but_not_the_fact_totals(self) -> None:
+        """★환불은 원장에만 반영된다. 생성물 집계(totals)는 그대로 — 둘을 더하면 이중 집계다."""
+        self._spend("a@x", "u_a", -10)
+        self._spend("a@x", "u_a", 4, action="refund")
+        with auth_on():
+            out = manage_router.team_overview(_account("a@x", "u_a"))
+        self.assertEqual((out["ledger"]["spend"], out["ledger"]["refund"]), (10.0, 4.0))
+        self.assertEqual(out["ledger"]["net"], 6.0)
+        self.assertEqual(out["totals"]["credits"], 15)  # 팩트는 환불을 모른다(의도)
+
+    def test_a_drilldown_gets_no_ledger_because_the_ledger_has_no_such_axis(self) -> None:
+        """프로젝트·작업자·모델을 고르면 원장을 주지 않는다 — 공간 전체 합계를 그대로 내려보내면
+        화면에서 '이 프로젝트의 순사용' 으로 오독된다."""
+        self._spend("a@x", "u_a", -10)
+        admin = _account("admin@x", "u_admin", role="admin")
+        with auth_on():
+            self.assertIsNone(manage_router.team_overview(admin, project_id="p1")["ledger"])
+            self.assertIsNone(manage_router.team_overview(admin, creator_uid="u_a")["ledger"])
+            self.assertIsNone(manage_router.team_overview(admin, model="seedance")["ledger"])
+            self.assertIsNotNone(manage_router.team_overview(admin)["ledger"])
+
     def test_auth_off_is_unscoped(self) -> None:
         out = manage_router.team_overview(DummyRequest(None))
         self.assertEqual(out["usage_scope"], "all")

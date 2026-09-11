@@ -349,6 +349,23 @@ export interface TeamOverview {
   folder_efficiency: FolderEfficiencyRow[];
   matrix: TeamMatrixCell[];
   usage_scope?: "all" | "mine"; // 서버가 강제한 범위 — mine=일반 멤버(내 기록만). 구서버는 없음(read_all 전용).
+  // 거래 원장 — 실제로 오간 크레딧. ★생성물 집계(totals)와 **더하면 안 된다**(이중 집계):
+  // totals 는 생성물별 실제 또는 견적이고, 이쪽은 거래 기록이다. 환불은 여기서만 반영된다.
+  // null = 이 범위에서는 줄 수 없음(프로젝트·작업자·모델 드릴 — 원장은 그 축을 모른다).
+  // 없음(undefined) = 이 필드를 모르는 구서버.
+  ledger?: LedgerTotals | null;
+}
+
+export interface LedgerTotals {
+  spend: number;
+  refund: number;
+  net: number; // 사용 − 환불. 지출 없이 환불만 있는 달이 있어 **음수일 수 있다**.
+  spend_count: number;
+  refund_count: number;
+  other?: Record<string, number>; // spend/refund 밖의 action(예: grant). 실측 970건엔 0건이었다.
+  // 공간을 골랐을 때만. ★이 금액이 그 공간 것이라는 뜻이 아니라, **공간을 몰라 위 합계에
+  // 넣지 못한** 거래다(옛 에이전트가 올린 행).
+  unknown_workspace?: { spend: number; refund: number; count: number };
 }
 
 export interface TeamBucket {

@@ -1105,6 +1105,8 @@ table.dash-tree td.l { text-align: left; }
 .usage-card-head h3 { margin: 0; font-size: 13px; }
 .usage-card-head span,
 .usage-chart-scope { color: var(--muted); font-size: 10px; }
+/* 거래 원장 — 공간을 몰라 합계에 못 넣은 거래 안내. 그 공간 것이라는 뜻이 아니라는 걸 작게 알린다. */
+.usage-ledger-note { margin: 0; padding: 8px 14px 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .usage-card-head > div:first-child { display: flex; align-items: center; gap: 9px; }
 .usage-drill-chip { color: var(--accent); cursor: pointer; padding: 4px 8px; }
 .usage-drill-chip span { margin-left: 5px; color: inherit; }

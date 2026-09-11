@@ -99,16 +99,14 @@ class SyncStatusTests(unittest.TestCase):
     def test_account_report_queue_is_exposed_separately(self):
         from app.repo import manage
 
+        transactions = [{
+            "created_at": "2026-08-16T01:00:00Z",
+            "credits": -2, "action": "spend", "display_name": "Model A",
+        }]
+        manage.record_transactions("user_artist", "artist@example.com", transactions)
         manage.queue_account_reports(
             {"email": "artist@example.com", "credits": 10},
-            [
-                {
-                    "created_at": "2026-08-16T01:00:00Z",
-                    "credits": -2,
-                    "action": "spend",
-                    "display_name": "Model A",
-                }
-            ],
+            transactions, "artist@example.com",
         )
         rows = manage.list_due_account_reports()
         manage.mark_account_reports_failed(rows, "shared server offline")

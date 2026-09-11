@@ -309,8 +309,9 @@ def ingest(body: IngestIn, request: Request):
         try:
             from ..repo import manage as _m
 
-            _m.record_transactions(out.linked_uid, acc.get("email"), body.account_transactions or [])
-            transactions_stored = True
+            transactions = body.account_transactions or []
+            recorded = _m.record_transactions(out.linked_uid, acc.get("email"), transactions)
+            transactions_stored = recorded["stored"] + recorded["rejected"] == len(transactions)
         except Exception:  # noqa: BLE001 — 메트릭 수집 실패가 적재를 막지 않게
             pass
     report_queued = False
@@ -325,11 +326,11 @@ def ingest(body: IngestIn, request: Request):
                 from ..repo import manage as _m
 
                 queued = _m.queue_account_reports(
-                    body.account_status, body.account_transactions
+                    body.account_status, body.account_transactions, acc.get("email")
                 )
                 report_queued = bool(queued["status"] or queued["transactions"])
                 # 멱등 재보고는 삽입 0 이어도 성공이다 — 건수와 성공 여부를 섞지 않는다.
-                transactions_queued = True
+                transactions_queued = queued["transactions_queued"]
             except Exception as exc:  # noqa: BLE001 — 로컬 생성 적재는 보존하되 로그로 노출
                 log_event(
                     _logger,
@@ -368,8 +369,8 @@ def ingest(body: IngestIn, request: Request):
 def ingest_account_report(body: AccountReportIn, request: Request):
     """로컬 outbox 보고의 공유 서버 전용 수신점.
 
-    상태와 거래를 모두 DB에 반영한 뒤에만 ``accepted=true``를 반환한다. 중간 실패를 삼키지
-    않으므로 클라이언트는 응답이 없거나 비정상이면 같은 revision을 안전하게 재시도할 수 있다.
+    상태와 유효 거래를 모두 DB에 반영하고 무효 거래를 명시 반려한 뒤 ``accepted=true``를
+    반환한다. 누락·저장 실패는 성공으로 답하지 않아 같은 revision을 안전하게 재시도한다.
     """
     if not MANAGE_ENABLED:
         raise HTTPException(status_code=503, detail="관리 텔레메트리가 비활성입니다")
@@ -392,6 +393,8 @@ def ingest_account_report(body: AccountReportIn, request: Request):
         acc.get("email"),
         body.account_transactions,
     )
+    if result["stored"] + result["rejected"] != len(body.account_transactions):
+        raise HTTPException(status_code=503, detail="크레딧 거래 일부의 DB 저장을 확인하지 못했습니다")
     return AccountReportOut(
         accepted=True,
         transactions_inserted=int(result.get("inserted") or 0),

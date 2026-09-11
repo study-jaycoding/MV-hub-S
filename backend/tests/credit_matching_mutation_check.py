@@ -44,7 +44,7 @@ MUTATIONS = [
     ("empty_return", "transactions", "    inserted = 0\n",
      "    if not transactions:\n        return {'inserted': 0, 'matched': 0, 'matched_ids': []}\n    inserted = 0\n",
      SAFETY + "test_empty_cycle_matches_stored_transaction_after_generation_arrives",
-     "'matched': 0, 'matched_ids': []} != {'inserted': 0, 'matched': 1"),
+     "empty cycle must reevaluate stored transactions"),
     ("ingest_empty_gate", "ingest", "if MANAGE_ENABLED and out.linked_uid:",
      "if MANAGE_ENABLED and body.account_transactions:",
      INGEST + "test_empty_transactions_match_after_generation_ingest",

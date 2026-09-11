@@ -757,6 +757,37 @@ export function WorkspaceUsageDashboard({
             </div>
           </div>
 
+          {/* 거래 원장 — 실제로 오간 크레딧. ★위 고리·격자(생성물 집계)와 **더하면 안 된다**:
+              저쪽은 생성물별 실제 또는 견적이고 이쪽은 거래 기록이다. **환불은 여기서만 반영된다**
+              (어느 생성물의 환불인지 알 수 없어 개별 귀속은 포기했다 — 480크레딧 중 유일하게
+              후보가 하나뿐인 환불이 97크레딧어치였다 — 거래 후보 분석 기준). 프로젝트·작업자를 고르면 **선택 즉시** 숨긴다:
+              상단 카드는 드릴 응답이 아니라 기본 overview 를 읽어서, 서버가 주는 null 만으로는
+              안 사라진다(코덱스 리뷰). */}
+          {!drillTargetKey && overview.ledger ? (
+            <div className="usage-card">
+              <div className="usage-card-head">
+                <h3>{mine ? "내 거래" : "팀 거래"} 사용 현황</h3>
+                <span>수집된 거래 기준</span>
+              </div>
+              <div className="usage-stat-grid">
+                <div><span>사용</span><strong>{credits(overview.ledger.spend)}</strong></div>
+                <div>
+                  <span>환불</span>
+                  <strong>{overview.ledger.refund ? `−${credits(overview.ledger.refund)}` : "0"}</strong>
+                </div>
+                <div><span>순사용</span><strong>{credits(overview.ledger.net)}</strong></div>
+              </div>
+              {overview.ledger.unknown_workspace && overview.ledger.unknown_workspace.count > 0 ? (
+                <p className="usage-ledger-note">
+                  공간이 확인되지 않아 이 합계에 넣지 않은 거래{" "}
+                  {n(overview.ledger.unknown_workspace.count)}건 · 사용{" "}
+                  {credits(overview.ledger.unknown_workspace.spend)} · 환불{" "}
+                  {credits(overview.ledger.unknown_workspace.refund)}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
           {/* 크레딧 풀·그룹 한도·잔액 추이 — 고리·통계 격자 바로 아래(Jay 2026-09-10). 워크스페이스를 고른 때만. */}
           <CreditPoolSection scope={scope} workspaceId={workspaceId || undefined} reloadSignal={reloadSignal} canAdjust={canCreateProject} />
 

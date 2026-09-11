@@ -54,7 +54,7 @@ class ManageTransactionsTests(unittest.TestCase):
 
     def test_matching_records_real_credit_and_is_idempotent(self):
         first = manage.record_transactions("u_me", "me@example.com", [self._transaction()])
-        self.assertEqual(first, {"inserted": 1, "matched": 1, "matched_ids": ["g1"]})
+        self.assertEqual(first, {"inserted": 1, "matched": 1, "matched_ids": ["g1"], "stored": 1, "rejected": 0, "rejection_reasons": {}})
         with db.get_connection() as conn:
             metrics = conn.execute(
                 "SELECT real_credits, credit_source, matched "
@@ -71,7 +71,7 @@ class ManageTransactionsTests(unittest.TestCase):
         self.assertEqual(linked, "g1")
 
         second = manage.record_transactions("u_me", "me@example.com", [self._transaction()])
-        self.assertEqual(second, {"inserted": 0, "matched": 0, "matched_ids": []})
+        self.assertEqual(second, {"inserted": 0, "matched": 0, "matched_ids": [], "stored": 1, "rejected": 0, "rejection_reasons": {}})
 
     def test_known_model_mismatch_stays_unmatched(self):
         result = manage.record_transactions(

@@ -422,8 +422,17 @@ def dashboard_summary(
         ).fetchall()
         # 환불·지급 — credit_txn 의 action 별 합(절대값). spend 는 실매칭으로 이미 잡힘.
         # credit_txn에는 workspace 차원이 없다. 선택 범위에 전사 합계를 섞어 거짓 수치를 만들지 않는다.
-        io_rows = [] if workspace_id else conn.execute(
-            "SELECT action, COALESCE(SUM(ABS(credits)), 0) AS amt FROM credit_txn GROUP BY action"
+        # ★2026-09-12: credit_txn 에 workspace_id 가 생겨 공간을 골라도 셀 수 있다(종전엔 빈 배열).
+        #  숫자인 행만 센다 — 손상된 값이 ABS() 를 거쳐 0 으로 섞이면 '정확해 보이는 틀린 수'가 된다.
+        #  ⚠`/team-overview` 는 `manage_transactions.ledger_totals` 를 쓴다. 여기서 같은 함수를
+        #   부르지 않는 이유는 이 블록이 이미 커넥션 안이고 그 함수가 자기 커넥션·트랜잭션을 열기
+        #   때문이다(중첩). 통합은 별도 작업으로 남긴다.
+        io_rows = conn.execute(
+            "SELECT action, COALESCE(SUM(ABS(credits)), 0) AS amt FROM credit_txn "
+            "WHERE typeof(credits) IN ('integer','real')"
+            + (" AND workspace_id = ?" if workspace_id else "")
+            + " GROUP BY action",
+            [workspace_id] if workspace_id else [],
         ).fetchall()
         # 작업자 표시이름 — content creator 표(현재 이름) 우선, 없으면 팩트 스냅샷.
         uids = [w["uid"] for w in fact_workers if w["uid"]]
@@ -497,10 +506,11 @@ def dashboard_summary(
         "types": type_totals,
         "video_seconds": round(video_seconds_total, 1),
         # 실제 거래 기준 입출(절대값). net = 지출 - 환불.
-        "spend_credits": round(io.get("spend", 0)),
-        "refund_credits": round(io.get("refund", 0)),
-        "grant_credits": round(io.get("grant", 0)),
-        "net_credits": round(io.get("spend", 0) - io.get("refund", 0)),
+        # ★반올림하지 않는다(2026-09-12) — 크레딧은 소수다. 표시 자리수는 화면이 정한다.
+        "spend_credits": io.get("spend", 0),
+        "refund_credits": io.get("refund", 0),
+        "grant_credits": io.get("grant", 0),
+        "net_credits": io.get("spend", 0) - io.get("refund", 0),
     }
     return {
         "projects": projects,

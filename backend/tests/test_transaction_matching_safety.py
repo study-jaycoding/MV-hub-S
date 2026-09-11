@@ -106,10 +106,10 @@ class TransactionMatchingSafetyTests(unittest.TestCase):
         self.generation("g1")
         transaction = self.transaction(amount=32.5)
         result = self.record([transaction])
-        self.assertEqual(result, {"inserted": 1, "matched": 1, "matched_ids": ["g1"]})
+        self.assertEqual(result, {"inserted": 1, "matched": 1, "matched_ids": ["g1"], "stored": 1, "rejected": 0, "rejection_reasons": {}})
         self.assert_confirmed({"g1": 32.5})
         revision = self.revisions()
-        self.assertEqual(self.record([transaction]), {"inserted": 0, "matched": 0, "matched_ids": []})
+        self.assertEqual(self.record([transaction]), {"inserted": 0, "matched": 0, "matched_ids": [], "stored": 1, "rejected": 0, "rejection_reasons": {}})
         self.assertEqual(self.revisions(), revision)
 
     def test_crossed_times_across_projects_are_ambiguous(self):
@@ -195,14 +195,15 @@ class TransactionMatchingSafetyTests(unittest.TestCase):
         self.assertEqual(self.record([self.transaction()])["matched"], 0)
         self.generation("g1")
         result = self.record([])
-        self.assertEqual(result, {"inserted": 0, "matched": 1, "matched_ids": ["g1"]})
+        self.assertEqual(result["matched"], 1, "empty cycle must reevaluate stored transactions")
+        self.assertEqual(result, {"inserted": 0, "matched": 1, "matched_ids": ["g1"], "stored": 0, "rejected": 0, "rejection_reasons": {}})
         self.assert_confirmed({"g1": 32.5})
 
     def test_duplicate_only_cycle_also_reevaluates(self):
         transaction = self.transaction()
         self.record([transaction])
         self.generation("g1")
-        self.assertEqual(self.record([transaction]), {"inserted": 0, "matched": 1, "matched_ids": ["g1"]})
+        self.assertEqual(self.record([transaction]), {"inserted": 0, "matched": 1, "matched_ids": ["g1"], "stored": 1, "rejected": 0, "rejection_reasons": {}})
 
     def test_unknown_owner_empty_cycle_never_expands_to_other_users(self):
         self.record([self.transaction()])
@@ -359,7 +360,7 @@ class TransactionMatchingSafetyTests(unittest.TestCase):
                 self.assertEqual(result["matched"], 0)
                 self.assertEqual(result["matched_ids"], [])
                 self.assertIsNone(self.metrics()[gid]["real_credits"])
-        self.assertEqual(self.record([]), {"inserted": 0, "matched": 0, "matched_ids": []})
+        self.assertEqual(self.record([]), {"inserted": 0, "matched": 0, "matched_ids": [], "stored": 0, "rejected": 0, "rejection_reasons": {}})
         self.assertTrue(all(row["real_credits"] is None for row in self.metrics().values()))
         self.assertTrue(all(row["credit_source"] == "estimate" for row in self.metrics().values()))
         self.assertEqual(self.revisions(), {})

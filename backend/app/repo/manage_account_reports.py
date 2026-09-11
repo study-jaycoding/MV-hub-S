@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from ..db import get_connection
 from .manage_schema import _ensure_schema
+from .manage_transactions import _find_account_transaction, _transaction_rejection_reason
 
 _STATUS_KEY = "status"
 
@@ -65,14 +66,18 @@ def _transaction_key(transaction: dict[str, Any]) -> str:
 def queue_account_reports(
     account_status: Optional[dict[str, Any]],
     transactions: Optional[list[dict[str, Any]]],
-) -> dict[str, int]:
+    account_email: Optional[str],
+) -> dict[str, Any]:
     """최신 계정 상태와 고유 거래를 네트워크 호출 전에 내구성 큐에 기록한다.
 
     같은 상태·거래가 반복 보고되면 기존 성공/실패 상태를 건드리지 않는다. 특히 실패한 행의
     백오프가 에이전트 주기 보고마다 초기화되지 않게 하는 것이 중요하다.
+    transactions는 변경 건수다. ACK용 transactions_queued는 반려·멱등을 성공으로,
+    유효 거래의 장부 누락을 실패로 판정한다. 조회·저장 오류는 롤백 후 호출자에게 전달한다.
     """
     queued_status = 0
     queued_transactions = 0
+    missing_transactions = 0
     with get_connection() as conn:
         _ensure_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
@@ -82,10 +87,18 @@ def queue_account_reports(
                     conn, _STATUS_KEY, "status", account_status
                 )
             for transaction in transactions or []:
-                if not isinstance(transaction, dict) or not transaction:
+                if _transaction_rejection_reason(transaction):
                     continue
+                saved = _find_account_transaction(conn, account_email, transaction)
+                if saved is None:
+                    missing_transactions += 1
+                    continue
+                # NULL도 장부 보존값이다. 원본 폴백은 공간·모델 불일치를 되살린다.
+                payload = dict(transaction)
+                payload["workspace_id"] = saved["workspace_id"]
+                payload["model"] = saved["model"]
                 queued_transactions += _queue_row(
-                    conn, _transaction_key(transaction), "transaction", transaction
+                    conn, _transaction_key(transaction), "transaction", payload
                 )
             conn.execute("COMMIT")
         except Exception:
@@ -94,6 +107,8 @@ def queue_account_reports(
     return {
         "status": queued_status,
         "transactions": queued_transactions,
+        "transactions_queued": missing_transactions == 0,
+        "missing_transactions": missing_transactions,
     }
 
 

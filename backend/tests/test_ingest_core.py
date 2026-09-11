@@ -83,18 +83,18 @@ class IngestCoreTests(unittest.TestCase):
             mock.patch.object(ingest, "_ingest_core", return_value=expected),
             mock.patch.object(ingest._proxy, "proxying", return_value=True),
             mock.patch.object(ingest._proxy, "proxy_json") as proxy_json,
-            mock.patch.object(manage, "record_transactions"),
+            mock.patch.object(manage, "record_transactions", return_value={"stored": 1, "rejected": 0}),
             mock.patch.object(
                 manage,
                 "queue_account_reports",
-                return_value={"status": 1, "transactions": 1},
+                return_value={"status": 1, "transactions": 1, "transactions_queued": True},
             ) as queue,
             mock.patch.object(ingest, "schedule_telemetry_drain", return_value=True) as schedule,
         ):
             result = ingest.ingest(body, SimpleNamespace())
 
         self.assertIs(result, expected)
-        queue.assert_called_once_with(body.account_status, body.account_transactions)
+        queue.assert_called_once_with(body.account_status, body.account_transactions, "me@example.com")
         proxy_json.assert_not_called()
         schedule.assert_called_once_with()
 
@@ -120,7 +120,7 @@ class IngestCoreTests(unittest.TestCase):
             mock.patch.object(
                 manage,
                 "record_transactions",
-                return_value={"inserted": 1, "matched": 1},
+                return_value={"inserted": 1, "matched": 1, "stored": 1, "rejected": 0},
             ) as record,
         ):
             result = ingest.ingest_account_report(body, SimpleNamespace())

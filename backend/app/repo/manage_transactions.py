@@ -62,27 +62,60 @@ def _stable_transaction_id(
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
+def _transaction_rejection_reason(transaction: Any) -> Optional[str]:
+    """원문·개인정보 없이 적재와 큐가 동일한 무효 입력을 명시적으로 반려한다."""
+    if not isinstance(transaction, dict):
+        return "not_an_object"
+    # SQLite REAL affinity는 bool/숫자문자열도 숫자로 바꾼다. 타입을 잃기 전에 검사해야
+    # 잘못된 입력이 다음 빈 사이클에서 유효 금액으로 되살아나지 않는다.
+    # ★spend 뿐 아니라 **refund 도** 본다(2026-09-12) — 환불이 원장 합계에 직접 들어가게 되면서
+    #  `True` 가 1.0 으로, 무한대가 `real` 로 저장돼 집계에 섞인다(무한대는 JSON 직렬화까지 깨뜨린다).
+    if transaction.get("action") in ("spend", "refund") and _spend_amount(
+        transaction.get("credits")
+    ) is None:
+        return "invalid_amount"
+    return None
+
+
+def _find_account_transaction(conn, account_email: Optional[str], transaction: dict):
+    """보강값·소유자 remap과 무관한 장부 신원으로 조회한다. 호출자가 쓰기 잠금을 소유한다."""
+    account_key = str(account_email or "").strip().lower()
+    if not account_key:
+        return None
+    return conn.execute(
+        "SELECT id, workspace_id, model FROM credit_txn WHERE LOWER(TRIM(account_email))=? "
+        "AND created_at IS ? AND credits IS ? AND action IS ? "
+        "AND display_name IS ? LIMIT 1",
+        (account_key, transaction.get("created_at"), transaction.get("credits"),
+         transaction.get("action"), transaction.get("display_name")),
+    ).fetchone()
+
+
 def record_transactions(
     owner_uid: Optional[str],
     account_email: Optional[str],
     transactions: list[dict],
 ) -> dict[str, Any]:
-    """거래를 멱등 적재하고 소유자·모델·시각이 맞는 생성물에 실제값을 기록한다."""
+    """거래를 멱등 적재하고 소유자·모델·시각이 맞는 생성물에 실제값을 기록한다.
+
+    stored는 중복을 포함한 입력별 DB 존재 확인 건수, rejected는 명시적 반려 건수다.
+    둘의 합이 입력 수보다 작으면 설명되지 않은 누락이므로 ACK해서는 안 된다.
+    """
     inserted = 0
+    stored = 0
+    rejection_reasons: dict[str, int] = {}
     with get_connection() as conn:
         _ensure_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
         try:
             for transaction in transactions:
-                if not isinstance(transaction, dict):
+                reason = _transaction_rejection_reason(transaction)
+                if reason:
+                    rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
                     continue
                 created_at = transaction.get("created_at")
                 credits = transaction.get("credits")
                 action = transaction.get("action")
-                # SQLite REAL affinity는 bool/숫자문자열도 숫자로 바꾼다. 타입을 잃기 전에
-                # 검사해야 잘못된 입력이 다음 빈 사이클에서 유효 금액으로 되살아나지 않는다.
-                if action == "spend" and _spend_amount(credits) is None:
-                    continue
                 display_name = transaction.get("display_name")
                 model = transaction.get("model")
                 # 어느 공간에서 빠진 돈인지 — 거래 응답에는 없고 에이전트가 붙여 보낸다.
@@ -93,12 +126,7 @@ def record_transactions(
                 if account_key:
                     # 배포 전 owner 기반 ID 행도 안정 필드로 찾아 그 PK를 그대로 재사용한다.
                     # 따라서 remap 사이 재전송과 새 ID 산식 전환 모두 별도 행을 만들지 않는다.
-                    existing = conn.execute(
-                        "SELECT id FROM credit_txn WHERE LOWER(TRIM(account_email))=? "
-                        "AND created_at IS ? AND credits IS ? AND action IS ? "
-                        "AND display_name IS ? LIMIT 1",
-                        (account_key, created_at, credits, action, display_name),
-                    ).fetchone()
+                    existing = _find_account_transaction(conn, account_key, transaction)
                 if existing is not None:
                     transaction_id = existing["id"]
                 elif account_key:
@@ -142,6 +170,15 @@ def record_transactions(
                         "AND (workspace_id IS NULL OR TRIM(workspace_id)='')",
                         (workspace_id, transaction_id),
                     )
+                # INSERT OR IGNORE의 0건은 중복일 수도, 설명되지 않은 누락일 수도 있다.
+                # 실제 존재를 확인해 신규·중복 모두 입력 건별로 성공을 센다.
+                if account_key:
+                    saved = _find_account_transaction(conn, account_key, transaction)
+                else:
+                    saved = conn.execute(
+                        "SELECT id FROM credit_txn WHERE id=?", (transaction_id,)
+                    ).fetchone()
+                stored += int(saved is not None)
             matched_ids = _match_transactions(conn, owner_uid)
             conn.execute("COMMIT")
         except Exception:
@@ -151,6 +188,9 @@ def record_transactions(
         "inserted": inserted,
         "matched": len(matched_ids),
         "matched_ids": matched_ids,
+        "stored": stored,
+        "rejected": sum(rejection_reasons.values()),
+        "rejection_reasons": rejection_reasons,
     }
 
 
@@ -351,3 +391,89 @@ def _match_transactions(conn, owner_uid: Optional[str]) -> list[str]:
     # 오류를 삼키거나 COMMIT 뒤 별도 연결을 열면 장부와 전송 revision이 갈라진다.
     mark_telemetry_dirty_in_connection(conn, dirty_ids)
     return matched_ids
+
+
+def ledger_totals(
+    *,
+    workspace_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    account_email: Optional[str] = None,
+) -> dict[str, Any]:
+    """거래 원장 합계 — 사용 · 환불 · 순사용.
+
+    ★생성물 팩트와 **더하지 않는다**. 둘은 대상·시각·견적 포함 여부가 달라 합계가 같을 이유가
+     없다(팩트 = 생성물별 실제 또는 견적, 원장 = 실제로 오간 거래). 화면에서도 따로 보여 준다.
+
+    · **환불**: 2026-09-12 에 걷은 970건 중 28건(480크레딧)이 refund 였는데 어디에도 반영되지
+      않고 있었다. 환불을 개별 생성물에 잇는 것은 포기했다 — **거래 후보 분석**에서 같은
+      (공간·모델·금액) 지출이 창 안에 수십~수백 건이라, 후보가 하나뿐인 환불이 480 중 97(20%)
+      이었다(후보가 하나라고 진짜 짝이라는 뜻은 아니다). 총액에서만 빼는 것이 정직하다.
+    · **공간**: `workspace_id` 를 주면 그 공간 거래만 센다. 공간이 안 붙은 옛 행은 **섞지 않고**
+      `unknown_workspace` 로 따로 보고한다 — 그 돈이 선택한 공간 것이라는 근거가 없다.
+    · **기간**: 거래가 일어난 날 기준이고, 팩트와 같은 `date(created_at,'localtime')` 을 쓴다.
+      ⚠실서버 시간대가 UTC 라 이 경계는 KST 가 아니다(기존 보류 사항 — 팩트와 함께 옮겨야 한다).
+    · **권한**: `account_email` 을 주면 그 계정 거래만. 일반 멤버 범위는 서버가 강제한다.
+    · 금액은 **소수 그대로**. 지출 없이 환불만 있는 달이 실재하므로 **순사용이 음수일 수 있다**.
+    · `typeof` 로 숫자인 행만 센다 — 손상된 값이 `ABS()` 를 거쳐 0 으로 조용히 섞이지 않게.
+    """
+    # 조건과 인자를 **쌍으로** 들고 다닌다 — 문자열을 다시 걸러 인자를 맞추면 같은 조건이 둘일 때 깨진다.
+    base: list[tuple[str, list[Any]]] = [("typeof(credits) IN ('integer','real')", [])]
+    if date_from:
+        base.append(("date(created_at, 'localtime') >= ?", [date_from]))
+    if date_to:
+        base.append(("date(created_at, 'localtime') <= ?", [date_to]))
+    # ★`None` 만 전체다. 빈 문자열도 제한 조회로 본다 — `if account_email:` 이면 호출자가
+    #  빈 이메일을 넘겼을 때 조용히 전체가 열린다(권한이 뚫리는 자리).
+    if account_email is not None:
+        base.append(("LOWER(TRIM(account_email)) = ?", [str(account_email).strip().lower()]))
+
+    def _collect(conn, extra: Optional[tuple[str, list[Any]]]) -> dict[str, dict[str, float]]:
+        parts = base + ([extra] if extra else [])
+        rows = conn.execute(
+            "SELECT action, COALESCE(SUM(ABS(credits)), 0) AS amount, COUNT(*) AS n "
+            "FROM credit_txn WHERE " + " AND ".join(c for c, _ in parts) + " GROUP BY action",
+            [v for _, values in parts for v in values],
+        ).fetchall()
+        return {
+            r["action"]: {"amount": float(r["amount"] or 0), "count": int(r["n"] or 0)}
+            for r in rows
+        }
+
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        # ★두 집계를 **같은 스냅샷**에서 읽는다. 안 묶으면 그 사이에 다른 적재가 거래의 공간을
+        #  NULL→A 로 보강했을 때 'A 도 0, 미상도 0' 이 나온다 — 변경 전후 어느 시점도 아닌 값이다.
+        conn.execute("BEGIN")
+        try:
+            by_action = _collect(conn, ("workspace_id = ?", [workspace_id]) if workspace_id else None)
+            unknown = (
+                _collect(conn, ("(workspace_id IS NULL OR TRIM(workspace_id) = '')", []))
+                if workspace_id
+                else None
+            )
+        finally:
+            conn.execute("COMMIT")  # 읽기만 했다 — 쓰기 잠금을 잡지 않는다
+
+    spend = by_action.get("spend", {}).get("amount", 0.0)
+    refund = by_action.get("refund", {}).get("amount", 0.0)
+    out: dict[str, Any] = {
+        "spend": spend,
+        "refund": refund,
+        "net": spend - refund,
+        "spend_count": int(by_action.get("spend", {}).get("count", 0)),
+        "refund_count": int(by_action.get("refund", {}).get("count", 0)),
+        # grant 는 2026-09-12 실측 970건에 0건이었다. 관측되면 따로 분류한다 — 충전으로 추정하지 않는다.
+        "other": {k: v["amount"] for k, v in by_action.items() if k not in ("spend", "refund")},
+    }
+    if unknown is not None:
+        u_spend = unknown.get("spend", {}).get("amount", 0.0)
+        u_refund = unknown.get("refund", {}).get("amount", 0.0)
+        # ★이 금액이 선택한 공간 것이라는 뜻이 아니다 — '공간을 몰라 위 합계에 못 넣은 거래'다.
+        out["unknown_workspace"] = {
+            "spend": u_spend,
+            "refund": u_refund,
+            "count": int(unknown.get("spend", {}).get("count", 0))
+            + int(unknown.get("refund", {}).get("count", 0)),
+        }
+    return out

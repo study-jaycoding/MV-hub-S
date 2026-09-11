@@ -44,19 +44,24 @@ class AccountReportDeliveryTests(unittest.TestCase):
             "model": "model-a",
         }
 
+    def _queue(self, status, transactions):
+        email = self._status()["email"]
+        manage.record_transactions("user_artist", email, transactions)
+        return manage.queue_account_reports(status, transactions, email)
+
     def _allow_retry_now(self):
         with db.get_connection() as conn:
             conn.execute("UPDATE account_report_outbox SET next_retry_at=NULL")
 
     def test_queue_is_durable_and_identical_reports_do_not_reset_backoff(self):
-        first = manage.queue_account_reports(self._status(), [self._transaction()])
-        self.assertEqual(first, {"status": 1, "transactions": 1})
+        first = self._queue(self._status(), [self._transaction()])
+        self.assertEqual(first, {"status": 1, "transactions": 1, "transactions_queued": True, "missing_transactions": 0})
         rows = manage.list_due_account_reports()
         self.assertEqual(len(rows), 2)
 
         manage.mark_account_reports_failed(rows, "offline")
-        repeated = manage.queue_account_reports(self._status(), [self._transaction()])
-        self.assertEqual(repeated, {"status": 0, "transactions": 0})
+        repeated = self._queue(self._status(), [self._transaction()])
+        self.assertEqual(repeated, {"status": 0, "transactions": 0, "transactions_queued": True, "missing_transactions": 0})
         status = manage.account_report_outbox_status()
         self.assertEqual(status["account_report_pending"], 2)
         self.assertEqual(status["account_report_failed"], 2)
@@ -64,9 +69,9 @@ class AccountReportDeliveryTests(unittest.TestCase):
         self.assertEqual(manage.list_due_account_reports(), [])
 
     def test_stale_ack_does_not_clear_newer_status_or_record_success(self):
-        manage.queue_account_reports(self._status(credits=100), [])
+        self._queue(self._status(credits=100), [])
         stale = manage.list_due_account_reports()
-        manage.queue_account_reports(self._status(credits=90), [])
+        self._queue(self._status(credits=90), [])
 
         self.assertEqual(manage.mark_account_reports_pushed(stale), 0)
         status = manage.account_report_outbox_status()
@@ -76,7 +81,7 @@ class AccountReportDeliveryTests(unittest.TestCase):
     def test_transaction_model_enrichment_updates_one_queue_revision(self):
         transaction = self._transaction()
         transaction.pop("model")
-        manage.queue_account_reports(self._status(), [transaction])
+        self._queue(self._status(), [transaction])
         before = [
             row
             for row in manage.list_due_account_reports()
@@ -84,7 +89,7 @@ class AccountReportDeliveryTests(unittest.TestCase):
         ][0]
 
         enriched = {**transaction, "model": "model-a"}
-        queued = manage.queue_account_reports(self._status(), [enriched])
+        queued = self._queue(self._status(), [enriched])
         after = [
             row
             for row in manage.list_due_account_reports()
@@ -97,7 +102,7 @@ class AccountReportDeliveryTests(unittest.TestCase):
         self.assertEqual(after[0]["dirty_rev"], before["dirty_rev"] + 1)
 
     def test_network_failure_stays_queued_and_recovery_acknowledges_all(self):
-        manage.queue_account_reports(self._status(), [self._transaction()])
+        self._queue(self._status(), [self._transaction()])
 
         failed = drain_remote_account_reports(
             mock.Mock(side_effect=OSError("server offline")),
@@ -132,7 +137,7 @@ class AccountReportDeliveryTests(unittest.TestCase):
     def test_invalid_local_row_is_dead_lettered_while_valid_rows_continue(self):
         good = self._transaction()
         bad = {**self._transaction(), "created_at": "2026-08-16T02:00:00Z"}
-        manage.queue_account_reports(self._status(), [good, bad])
+        self._queue(self._status(), [good, bad])
         rows = manage.list_due_account_reports()
         bad_row = [row for row in rows if row["report_type"] == "transaction"][0]
         with db.get_connection() as conn:
@@ -173,7 +178,7 @@ class AccountReportDeliveryTests(unittest.TestCase):
             "created_at": "2026-08-16T02:00:00Z",
             "display_name": "Rejected Model",
         }
-        manage.queue_account_reports(self._status(), [good, bad])
+        self._queue(self._status(), [good, bad])
 
         def push(payload):
             transactions = payload["account_transactions"]
@@ -191,7 +196,7 @@ class AccountReportDeliveryTests(unittest.TestCase):
         self.assertEqual(status["account_report_dead"], 0)
 
     def test_http_409_remains_retryable_and_is_not_dead_lettered(self):
-        manage.queue_account_reports(self._status(), [])
+        self._queue(self._status(), [])
 
         result = drain_remote_account_reports(
             mock.Mock(
@@ -210,7 +215,7 @@ class AccountReportDeliveryTests(unittest.TestCase):
         self.assertEqual(status["account_report_dead"], 0)
 
     def test_repeated_http_409_dead_letters_only_that_row(self):
-        manage.queue_account_reports(self._status(), [self._transaction()])
+        self._queue(self._status(), [self._transaction()])
 
         def push(payload):
             if payload["account_transactions"]:
@@ -238,7 +243,7 @@ class AccountReportDeliveryTests(unittest.TestCase):
         self.assertIsNotNone(by_type["transaction"]["dead_lettered_at"])
 
     def test_missing_status_email_never_sends_transactions_under_guessed_identity(self):
-        manage.queue_account_reports(None, [self._transaction()])
+        self._queue(None, [self._transaction()])
         push = mock.Mock(return_value={"accepted": True})
 
         result = drain_remote_account_reports(push, creator_uid="user_artist")
@@ -251,7 +256,7 @@ class AccountReportDeliveryTests(unittest.TestCase):
         self.assertEqual(status["account_report_failed"], 1)
 
     def test_missing_explicit_ack_is_a_failure(self):
-        manage.queue_account_reports(self._status(), [])
+        self._queue(self._status(), [])
         result = drain_remote_account_reports(
             lambda _payload: {"transactions_inserted": 0},
             creator_uid="user_artist",

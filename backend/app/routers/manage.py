@@ -468,6 +468,24 @@ def team_overview(
 
     out = _ov(date_from, date_to, project_id, creator_uid, workspace_id, model, viewer=viewer)
     out["usage_scope"] = "all" if viewer is None else "mine"
+    # 거래 원장(사용·환불·순사용) — 팩트와 **별도 필드**로 붙인다. 둘을 더하면 이중 집계다
+    # (팩트=생성물별 실제 또는 견적, 원장=실제로 오간 거래). 환불은 여기서만 반영된다.
+    # 원장은 프로젝트·작업자·모델을 모르므로 그 드릴에서는 **주지 않는다** — 전체 합계를 그대로
+    # 내려보내면 화면에서 '이 프로젝트의 순사용'으로 오독된다.
+    from ..repo.manage_transactions import ledger_totals
+
+    out["ledger"] = (
+        None
+        if (project_id or creator_uid or model)
+        else ledger_totals(
+            workspace_id=workspace_id,
+            date_from=date_from,
+            date_to=date_to,
+            # 일반 멤버는 본인 계정 거래만. viewer 이메일은 서버가 정한 값이고, 계정이 없으면
+            # "\x00" 이라 아무것도 안 잡힌다(전체로 폴백하지 않는다).
+            account_email=viewer[1] if viewer else None,
+        )
+    )
     return out
 
 

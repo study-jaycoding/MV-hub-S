@@ -133,7 +133,7 @@ def _seed_account_scope(
     )
     if with_account_report:
         repo_manage.queue_account_reports(
-            {"email": email, "credits": 100, "plan": "team"}, []
+            {"email": email, "credits": 100, "plan": "team"}, [], email
         )
 
 
