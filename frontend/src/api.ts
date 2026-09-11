@@ -543,7 +543,7 @@ export const api = {
     return { links };
   },
 
-  canvasGenerationCandidates: (limit = 30) =>
+  canvasGenerationCandidates: (limit = 50) =>
     jsonFetch<{ items: Generation[] }>(
       `/api/gen-requests/canvas-candidates?limit=${Math.max(1, Math.min(limit, 100))}`,
     ).then((result) => ({ ...result, items: normalizeGenerations(result.items) })),

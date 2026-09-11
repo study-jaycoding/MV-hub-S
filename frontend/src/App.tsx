@@ -1821,7 +1821,7 @@ export default function App() {
                   })
                 }
                 onCanvasRecoveryCandidates={() =>
-                  api.canvasGenerationCandidates(30).then((result) => result.items)
+                  api.canvasGenerationCandidates(50).then((result) => result.items)
                 }
                 onCanvasRecoveryClaim={(generationId, sceneId, cardId) =>
                   api.claimCanvasGenerationCandidate(generationId, sceneId, cardId).then(() => undefined)
