@@ -6,6 +6,7 @@ import {
   activeWorkspaceOf,
   isGenerationWorkspaceReady,
   reconcileReportedWorkspaceContext,
+  scopedCredits,
   selectedWorkspaceContext,
   workspaceContextOf,
 } from "../src/lib/workspaceContext";
@@ -37,6 +38,40 @@ describe("workspace context", () => {
 
     expect(reconcileReportedWorkspaceContext(restored, reported)).toEqual({
       scope: "team", id: "ws-a", name: "MILLIONVOLT",
+    });
+  });
+
+  // ★코덱스 반례: 목록 항목의 이름이 비어 있으면 workspaceContextOf 가 개인 공간으로 분류한다.
+  //  확정된 팀 선택이 조용히 개인으로 넘어가면 사용자가 고른 적 없는 공간에서 생성하게 된다.
+  it("목록 항목의 이름이 비어 있어도 확정된 팀 선택을 개인으로 바꾸지 않는다", () => {
+    const chosen = { scope: "team" as const, id: "ws-a", name: "MILLIONVOLT" };
+    const reported = [
+      { id: "ws-a", name: "", plan_type: "team", credits: 10, is_selected: true, user_role: "member" },
+    ];
+
+    expect(reconcileReportedWorkspaceContext(chosen, reported)).toBe(chosen);
+  });
+
+  it("목록에 없어도 확정된 팀 선택을 유지한다 — 권한 상실인지 조회 실패인지 여기선 모른다", () => {
+    const chosen = { scope: "team" as const, id: "ws-gone", name: "사라진팀" };
+    expect(reconcileReportedWorkspaceContext(chosen, [])).toBe(chosen);
+  });
+
+  it("이름이 그대로면 같은 객체를 돌려준다 — 헛 렌더를 만들지 않는다", () => {
+    const chosen = { scope: "team" as const, id: "ws-a", name: "MILLIONVOLT" };
+    const reported = [
+      { id: "ws-a", name: "MILLIONVOLT", plan_type: "team", credits: 10, is_selected: true, user_role: "member" },
+    ];
+    expect(reconcileReportedWorkspaceContext(chosen, reported)).toBe(chosen);
+  });
+
+  it("관리자가 이름을 바꿨으면 새 이름으로 보완한다 — id 는 그대로", () => {
+    const chosen = { scope: "team" as const, id: "ws-a", name: "옛이름" };
+    const reported = [
+      { id: "ws-a", name: "새이름", plan_type: "team", credits: 10, is_selected: false, user_role: "member" },
+    ];
+    expect(reconcileReportedWorkspaceContext(chosen, reported)).toEqual({
+      scope: "team", id: "ws-a", name: "새이름",
     });
   });
 
@@ -140,5 +175,45 @@ describe("workspace context", () => {
     expect(activeWorkspaceOf(list, { scope: "personal", id: null, name: null })?.credits).toBe(8.5);
     // 아직 확정 전(unknown)일 때만 CLI 가 물고 있는 공간으로 폴백한다.
     expect(activeWorkspaceOf(list, { scope: "unknown", id: null, name: null })?.credits).toBe(90172);
+  });
+});
+
+describe("scopedCredits (고른 공간의 잔액 — 폴백 없음)", () => {
+  const items = [
+    { id: "personal", name: null, plan_type: "free", credits: 8.5, is_selected: true, user_role: "owner" },
+    { id: "ws-a", name: "MILLIONVOLT", plan_type: "team", credits: 200, is_selected: false, user_role: "member" },
+    { id: "ws-zero", name: "빈지갑", plan_type: "team", credits: 0, is_selected: false, user_role: "member" },
+  ];
+
+  it("고른 팀의 잔액을 준다 — CLI 가 물고 있는 공간이 아니라", () => {
+    expect(scopedCredits(items, { scope: "team", id: "ws-a", name: "MILLIONVOLT" })).toBe(200);
+  });
+
+  it("개인도 같은 규칙으로 목록에서 고른다", () => {
+    expect(scopedCredits(items, { scope: "personal", id: null, name: null })).toBe(8.5);
+  });
+
+  // ★0 은 정상 잔액이다. `?? 다른값` 으로 덮으면 빈 지갑이 남의 잔액으로 보인다.
+  it("잔액 0 을 미확인으로 바꾸지 않는다", () => {
+    expect(scopedCredits(items, { scope: "team", id: "ws-zero", name: "빈지갑" })).toBe(0);
+  });
+
+  // ★폴백 금지 — 다른 공간의 숫자를 보여 주느니 '미확인' 이 낫다.
+  it("목록에 없는 공간은 미확인(null) — 다른 공간 값으로 채우지 않는다", () => {
+    expect(scopedCredits(items, { scope: "team", id: "ws-gone", name: "사라진팀" })).toBeNull();
+  });
+
+  it("조회 실패(null·빈 목록)도 미확인", () => {
+    expect(scopedCredits(null, { scope: "team", id: "ws-a", name: "MILLIONVOLT" })).toBeNull();
+    expect(scopedCredits([], { scope: "team", id: "ws-a", name: "MILLIONVOLT" })).toBeNull();
+  });
+
+  it("숫자가 아닌 값·NaN 은 미확인", () => {
+    const broken = [{ id: "ws-a", name: "X", plan_type: "team", credits: NaN, is_selected: false, user_role: "m" }];
+    expect(scopedCredits(broken, { scope: "team", id: "ws-a", name: "X" })).toBeNull();
+  });
+
+  it("아직 공간을 모를 때(unknown)는 CLI 가 물고 있는 항목을 씨앗으로 쓴다", () => {
+    expect(scopedCredits(items, { scope: "unknown", id: null, name: null })).toBe(8.5);
   });
 });

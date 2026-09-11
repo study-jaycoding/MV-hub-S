@@ -132,13 +132,6 @@ import {
 } from "./lib/workspaceContext";
 import { configureModelPolicy, currentModelPolicy, modelBlockMessage } from "./lib/modelPolicy";
 import { normalizeSceneWorkspace, sceneMatchesWorkspace, type SceneMove, type SceneWorkspace } from "./lib/sceneWorkspace";
-import {
-  planSceneSwitch,
-  queuedIsFresh,
-  queuedStillApplies,
-  settleSwitch,
-} from "./lib/workspaceSwitchPlan";
-import { isHttpStatus } from "./lib/http";
 import { modelAllowed } from "./lib/modelPolicyCore";
 import { STORAGE_KEYS } from "./lib/storageKeys";
 
@@ -169,20 +162,13 @@ export default function App() {
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>(
     () => loadStoredWorkspaceContext() ?? UNKNOWN_WORKSPACE,
   );
-  // 워크스페이스 '변경 순번' — 누가 바꿨든(계정 메뉴·씬 탭·CLI 값 수렴) 오른다. 비동기 작업은
-  // 시작 시점 순번을 기억했다가, 도착했을 때 순번이 달라졌으면 **자기 결과를 버린다**.
-  // 그래야 늦게 온 옛 응답이 사용자의 새 선택을 덮지 않는다(코덱스 P2).
-  const workspaceEpochRef = useRef(0);
-  const [workspaceEpoch, setWorkspaceEpoch] = useState(0);
-  //  ★발급한 순번을 **돌려준다** — 계정 메뉴처럼 다른 컴포넌트는 prop 으로 받는 순번이 렌더 뒤에야
-  //   갱신돼, 호출 직후 읽으면 옛 값이다. 반환값을 들고 있다가 응답이 왔을 때 맞대 본다(코덱스 리뷰).
+  // 공간 변경은 **동기**다 — 네트워크를 타지 않으므로 늦게 온 응답이 선택을 덮을 일이 없다.
+  //  (예전엔 허브에 `workspace set` 을 보내느라 변경 순번으로 옛 응답을 걸러야 했다. 2026-09-11 에
+  //   허브가 CLI 전역을 안 건드리게 되면서 그 장치가 통째로 필요 없어졌다.)
   const changeWorkspaceContext = useCallback((next: WorkspaceContext) => {
-    workspaceEpochRef.current += 1;
-    setWorkspaceEpoch(workspaceEpochRef.current);
     setWorkspaceContext((previous) =>
       sameWorkspace(previous, next) && previous.name === next.name ? previous : next,
     );
-    return workspaceEpochRef.current;
   }, []);
   // 별도 키로 영속화 — 관리/에셋 창이 이 키(storage 이벤트)로 같은 범위를 따라간다.
   useEffect(() => {
@@ -225,24 +211,6 @@ export default function App() {
   //  이후 생성 요청에 그 공간이 실려 나가고, 에이전트가 제출 직전에 CLI 를 그 공간으로 맞춘다.
   //  ★이미 제출된 잡·대기 중인 잡은 영향 없다: 제출 시점에 힉스필드에서 확정되고, 대기 잡은
   //   요청에 박힌 공간으로 나간다(agent_push._ensure_request_workspace — 현재 CLI 값을 추측하지 않는다).
-  // 전환 중 표시 — 어느 요청인지는 위의 workspaceEpoch 로 가른다(연속 클릭·계정 메뉴 전환 모두 포함).
-  const [switching, setSwitching] = useState<{ epoch: number; sceneId: string } | null>(null);
-  // CLI 전환이 실패한 공간(403=권한 없음은 제외 — 그건 표시·집계만 바뀌면 되는 정상 모드).
-  // 실패가 남아 있는 동안에는 그 공간의 캔버스에서 생성을 막고, 같은 탭을 다시 누르면 재시도한다.
-  const [switchFailed, setSwitchFailed] = useState<{ workspaceId: string; detail: string } | null>(null);
-  // 전환 중에 다른 씬을 누르면 **그 클릭의 전환 의도를 버리지 않고** 여기 담아 뒀다가 이어서 처리한다.
-  //  예전엔 `if (switching) return` 으로 버렸다 — 씬은 C 것이 열렸는데 공간은 B 로 남아, 그 캔버스에서
-  //  생성이 막힌 채(sceneWorkspaceBlock) 스스로 풀리지 않는 어긋난 상태가 됐다(코덱스 반례).
-  //  마지막 의도만 남긴다 — 중간 것들은 사용자가 이미 지나쳤다.
-  const pendingSwitchRef = useRef<
-    { sceneId: string; target: SceneWorkspace; atEpoch: number } | null
-  >(null);
-  // 담아 둔 의도를 실행하기 직전에 '지금 열려 있는 씬' 을 다시 본다 — 씬 삭제·추가·가져오기는
-  // 씬 탭 클릭 관문을 거치지 않고 바로 옮기므로, 클로저에 갇힌 값으로는 판단할 수 없다.
-  const activeSceneIdRef = useRef(activeSceneId);
-  activeSceneIdRef.current = activeSceneId;
-  const activeSceneRef = useRef(activeScene);
-  activeSceneRef.current = activeScene;
   // 공간이 바뀐 것을 알리는 한 줄 — 씬 탭·계정 메뉴가 같은 문구를 쓴다. 이름을 굵게 강조하고,
   // 개인 공간은 이름이 없어 "개인"으로 표기한다.
   const flashWorkspaceSwitched = useCallback(
@@ -259,101 +227,29 @@ export default function App() {
       ),
     [flash],
   );
-  // 실제 전환 한 번. 끝나면 기다리던 의도가 있는지 보고 **이어서** 돈다.
-  const runWorkspaceSwitch = (target: SceneWorkspace, sceneId: string) => {
-    // 앱의 생성 대상 공간을 바꾼다(동기) — 이 뒤의 생성은 새 공간으로 나간다.
-    //  재시도여도 호출한다: 공간 값은 그대로지만 **변경 순번이 올라** 이번 요청이 앞선 요청과
-    //  구분된다(먼저 보낸 실패 응답이 나중 성공을 덮지 않게 — 코덱스 P2).
-    changeWorkspaceContext({ scope: "team", id: target.id, name: target.name });
-    const epoch = workspaceEpochRef.current;
-    setSwitching({ epoch, sceneId });
-    // CLI 전역 선택도 맞춘다 — 라이브(로컬 허브)에서 계정 메뉴 목록이 옛 값으로 되돌리지 않게.
-    // 공유 서버 본체에서는 하우스 계정이 아니면 403 이고, 그때는 앱 상태만으로 충분하다(조용히 무시).
-    void api
-      .selectWorkspace(target.id)
-      .then(
-        () => ({ ok: true as const }),
-        (error: unknown) =>
-          isHttpStatus(error, 403)
-            ? ({ ok: true as const }) // 하우스 계정 아님 — 표시·집계 대상만 바뀌면 된다
-            : ({ ok: false as const, detail: String(error).replace(/^Error:\s*/, "") }),
-      )
-      .then((result) => {
-        // '전환 중' 표시는 **자기 요청 것이면 언제나** 해제한다 — 결과를 버리더라도 남기면
-        // 이후 클릭이 영영 막힌다(코덱스 P2).
-        setSwitching((current) => (current?.epoch === epoch ? null : current));
-        const queued = pendingSwitchRef.current;
-        pendingSwitchRef.current = null;
-        const settled = settleSwitch({
-          // 담아 둔 뒤 공간이 또 바뀌었거나(순번), 그 씬을 떠났으면(삭제·자동 이동) 낡은 의도다.
-          //  둘 다 만족해야 이어간다 — 순번만으로는 씬 쪽 사정을 증명하지 못한다.
-          queuedFresh:
-            queuedIsFresh(queued, workspaceEpochRef.current) &&
-            queuedStillApplies(
-              queued,
-              activeSceneIdRef.current,
-              activeSceneRef.current
-                ? normalizeSceneWorkspace(activeSceneRef.current.workspace)
-                : undefined,
-            ),
-          ok: result.ok,
-          // 그 사이 사용자가 다른 공간을 골랐으면(씬 탭·계정 메뉴) 이 응답은 늦게 온 옛 것이다.
-          stale: epoch !== workspaceEpochRef.current,
-        });
-        if (settled.kind === "run-queued" && queued) {
-          runWorkspaceSwitch(queued.target, queued.sceneId);
-          return;
-        }
-        if (settled.kind === "drop") return;
-        if (settled.kind === "confirm") {
-          setSwitchFailed((current) => (current?.workspaceId === target.id ? null : current));
-          // 전환하는 동안 다른 경로가 앱 공간을 흔들었을 수 있어 한 번 더 확정한다(같은 값이면 무해).
-          changeWorkspaceContext({ scope: "team", id: target.id, name: target.name });
-          // ★알림은 **CLI 가 실제로 그 공간을 물었다고 확인된 뒤에만** 띄운다(Jay: "확실하게 변경되어서").
-          //  라이브러리 재조회는 공간 변경 effect 하나가 맡는다 — 여기서 또 부르면 두 번 돈다.
-          flashWorkspaceSwitched(target.name);
-          return;
-        }
-        const detail = result.ok ? "" : result.detail; // settled 로 좁혀진 뒤라 result 자체는 안 좁혀진다
-        setSwitchFailed({ workspaceId: target.id, detail });
-        flash(`워크스페이스를 '${target.name || target.id}'(으)로 바꾸지 못했습니다. ${detail}`);
-      });
-  };
   const selectSceneWithWorkspace = (id: string | null) => {
     selectScene(id); // 단일 관문(밀린 입력 flush 포함) — 씬은 언제나 먼저 연다
     if (!id) return;
     const scene = scenes.find((item) => item.id === id);
-    const plan = planSceneSwitch({
-      assigned: scene ? normalizeSceneWorkspace(scene.workspace) : undefined,
-      context: workspaceContext,
-      switching: !!switching,
-      failedWorkspaceId: switchFailed?.workspaceId ?? null,
-    });
-    if (plan.kind === "none") {
-      // '여기 그대로' — 기다리던 의도가 있으면 버린다. 안 버리면 B(전환 중)→C(대기)→B(재클릭)
-      // 에서 B 씬을 보고 있는데 끝난 뒤 C 로 넘어간다(코덱스 재현).
-      pendingSwitchRef.current = null;
-      return;
-    }
-    if (plan.kind === "queue") {
-      // 담은 시점의 순번을 함께 — 그 뒤 다른 경로가 공간을 바꾸면 이 의도는 낡은 것이 된다.
-      pendingSwitchRef.current = { sceneId: id, target: plan.target, atEpoch: workspaceEpochRef.current };
-      return;
-    }
-    runWorkspaceSwitch(plan.target, id);
+    const assigned = scene ? normalizeSceneWorkspace(scene.workspace) : undefined;
+    if (!assigned) return; // 지정 없는 씬은 어느 공간에서나 연다
+    if (workspaceContext.scope === "team" && (workspaceContext.id || "") === assigned.id) return;
+    // ★전환은 **동기**다 — 허브에 아무것도 안 보낸다. 앱이 고른 공간이 곧 생성 대상이고,
+    //  에이전트가 제출 직전에 요청에 박힌 그 공간으로 CLI 를 맞춘다(agent_push._ensure_request_workspace,
+    //  2026-09-11 부터는 생성 호출의 HIGGSFIELD_WORKSPACE_ID 로 못 박는다).
+    //  예전엔 여기서 허브에 `workspace set` 을 시켜 CLI 전역을 맞췄다 — 왕복 1.4초가 걸렸고,
+    //  그 전역을 에이전트와 나눠 쓰는 바람에 '확인 뒤 제출 전' 에 끼어드는 과금 경합이 있었다.
+    changeWorkspaceContext({ scope: "team", id: assigned.id, name: assigned.name });
+    flashWorkspaceSwitched(assigned.name);
   };
-  const switchingSceneId = switching?.epoch === workspaceEpoch ? switching.sceneId : null;
-  // 지금 보고 있는 캔버스에서 생성을 막아야 하는가 —
-  //  ① 앱 공간이 그 캔버스의 공간과 다르다(계정 메뉴로 딴 데 갔거나 지정 공간이 사라졌다)
-  //  ② 그 공간으로의 CLI 전환이 실패해 아직 안 맞는다
-  //  어긋난 채로 만들면 의도하지 않은 공간에서 크레딧이 빠진다.
+  // 지금 보고 있는 캔버스에서 생성을 막아야 하는가 — 앱 공간이 그 캔버스의 지정 공간과 다를 때다
+  //  (계정 메뉴로 딴 데 갔거나 지정 공간이 사라졌다). 어긋난 채로 만들면 의도하지 않은 공간에서
+  //  크레딧이 빠진다. ★'CLI 전환 실패' 분기는 없앴다 — 허브가 더는 CLI 를 바꾸지 않아 실패할 게 없다.
   const activeSceneWorkspace = activeScene ? normalizeSceneWorkspace(activeScene.workspace) : undefined;
   const sceneWorkspaceBlock =
     activeScene && !sceneMatchesWorkspace(activeScene, workspaceContext)
       ? `이 캔버스는 '${activeSceneWorkspace?.name || "다른"}' 워크스페이스입니다. 탭을 다시 눌러 그 공간으로 바꾼 뒤 생성하세요.`
-      : activeSceneWorkspace && switchFailed?.workspaceId === activeSceneWorkspace.id
-        ? `'${activeSceneWorkspace.name || activeSceneWorkspace.id}' 워크스페이스로 바꾸지 못했습니다(${switchFailed.detail}). 탭을 다시 눌러 재시도하세요.`
-        : null;
+      : null;
   // 씬 탭 바 호버 → SceneBoard 좌상단 씬 패널(저장/불러오기) 표시 트리거(평소 숨김).
   const [sceneBarHover, setSceneBarHover] = useState(false);
   // 공유&리뷰 '새로 들어옴' — 항목 단위 확인(ack) 모델. 여기선 기준선만 보장한다(최초 진입 시각).
@@ -1721,26 +1617,10 @@ export default function App() {
           clearSelect();
         }}
         onSearch={(q) => patch({ search: q || undefined })}
-        onWorkspaceSwitched={(context) => {
-          // 계정 메뉴로 전환에 성공했으면 그 공간의 '전환 실패' 기록을 지운다 — 안 그러면 그 공간의
-          // 캔버스가 계속 막힌다(코덱스 P2).
-          setSwitchFailed((current) =>
-            current && context.scope === "team" && current.workspaceId === (context.id || "")
-              ? null
-              : current,
-          );
-          // ★알림이 먼저다 — 예전엔 `await reload()` 뒤에 띄워, 전환이 끝난 뒤에도 라이브러리 재조회가
-          //  끝나야 알림이 보였다. 재조회는 공간 변경 effect 하나가 맡는다.
-          flashWorkspaceSwitched(context.scope === "personal" ? "개인" : context.name);
-        }}
-        onWorkspaceSwitchFailed={(context, detail) => {
-          setSwitchFailed({ workspaceId: context.id || "", detail });
-          // 메뉴는 이미 닫혔다 — 상태만 세우면 실패를 아무도 못 본다(코덱스 리뷰).
-          flash(`워크스페이스를 '${context.name || "개인"}'(으)로 바꾸지 못했습니다. ${detail}`);
-        }}
+        onWorkspaceSwitched={(context) =>
+          flashWorkspaceSwitched(context.scope === "personal" ? "개인" : context.name)
+        }
         workspaceContext={workspaceContext}
-        workspaceEpoch={workspaceEpoch}
-        workspaceSwitching={!!switching}
         onWorkspaceContextChange={changeWorkspaceContext}
         onImported={async (msg) => {
           await reload();
@@ -1847,7 +1727,6 @@ export default function App() {
               onAssignWorkspace={(sceneId: string, workspace: SceneWorkspace | null) =>
                 setSceneWorkspace(sceneId, workspace)
               }
-              switchingSceneId={switchingSceneId}
               onAdd={addScene}
               onRename={renameScene}
               onDelete={removeSceneById}

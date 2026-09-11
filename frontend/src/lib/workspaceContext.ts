@@ -55,7 +55,12 @@ export function reconcileReportedWorkspaceContext(
 ): WorkspaceContext {
   if (current.scope === "team" && current.id) {
     const matched = items.find((item) => item.id?.trim() === current.id);
-    return matched ? workspaceContextOf(matched) : current;
+    const name = matched?.name?.trim();
+    // ★확정된 팀 선택은 **그대로 둔다** — 목록에서 보완하는 것은 이름뿐이다.
+    //  예전엔 찾은 항목을 통째로 변환했는데, 그 항목의 이름이 비어 있으면 workspaceContextOf 가
+    //  개인 공간으로 분류해 **사용자가 고른 적 없는 공간**으로 넘어갔다. 목록에 없어도 유지한다
+    //  (권한을 잃었는지 목록 조회가 실패한 것인지 여기서는 구분할 수 없다).
+    return name && name !== current.name ? { ...current, name } : current;
   }
   return current.scope === "unknown" ? selectedWorkspaceContext(items) : current;
 }
@@ -77,6 +82,23 @@ export function sameWorkspace(a: WorkspaceContext, b: WorkspaceContext): boolean
  * 일 때만 CLI 가 선택 중인 항목으로 폴백한다. 계정 메뉴 게이지와 하단 상태줄이 같은 값을 쓰도록
  * 이 규칙을 한 곳에 둔다.
  */
+/**
+ * 지금 보고 있는 공간의 잔액. **폴백을 두지 않는다.**
+ *
+ * `account status` 는 CLI 전역 선택 기준인데, 허브는 이제 그 전역을 바꾸지 않는다(에이전트가 생성
+ * 직전에 요청의 공간으로 맞춘다) → 그 값은 앱 선택과 무관하다. 그래서 목록에서 고른 값만 쓴다.
+ * 찾지 못하면 **미확인(null)** 이다 — 다른 공간의 숫자를 보여 주면 크레딧을 잘못 읽는다.
+ * ★`0` 은 정상 잔액이므로 `??` 로 다른 값을 채워 넣으면 안 된다(그래서 여기서 한 번에 정한다).
+ */
+export function scopedCredits(
+  items: Workspace[] | null | undefined,
+  context: WorkspaceContext,
+): number | null {
+  if (!items) return null;
+  const credits = activeWorkspaceOf(items, context)?.credits;
+  return typeof credits === "number" && Number.isFinite(credits) ? credits : null;
+}
+
 export function activeWorkspaceOf<T extends Workspace>(
   items: T[],
   context: WorkspaceContext,

@@ -1388,7 +1388,6 @@
 .scene-tab-wrap.off-ws:hover { opacity: 0.72; }
 .scene-tab-wrap.on.off-ws { opacity: 0.68; }
 .scene-tab-wrap.dragging { opacity: 0.45; }
-.scene-tab-wrap.switching .scene-tab { font-style: italic; }
 /* 삽입선 — 탭 바깥의 형제 요소(탭 wrap 은 overflow:hidden 이라 안에 그리면 잘린다) */
 .scene-drop-line {
   width: 2px; align-self: stretch; margin: 2px -2px; background: var(--accent); border-radius: 2px;

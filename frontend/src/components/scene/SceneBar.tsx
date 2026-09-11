@@ -37,7 +37,6 @@ interface Props {
   onHoverChange?: (hover: boolean) => void; // 씬 패널(저장/불러오기) 호버 표시용
   backupOnly?: number; // DB 백업에만 있는 씬 수(0 이면 '가져오기'를 숨긴다)
   onImportBackup?: () => void;
-  switchingSceneId?: string | null; // 워크스페이스 전환 중인 씬(스피너 대신 표시만)
 }
 
 interface DragState {
@@ -64,7 +63,6 @@ export function SceneBar({
   onHoverChange,
   backupOnly = 0,
   onImportBackup,
-  switchingSceneId = null,
 }: Props) {
   const [drag, setDrag] = useState<DragState | null>(null);
   const [menu, setMenu] = useState<SceneMenuTarget | null>(null);
@@ -200,8 +198,7 @@ export function SceneBar({
               "scene-tab-wrap" +
               (activeId === scene.id ? " on" : "") +
               (dimmed ? " off-ws" : "") +
-              (dragging ? " dragging" : "") +
-              (switchingSceneId === scene.id ? " switching" : "")
+              (dragging ? " dragging" : "")
             }
           >
             <button

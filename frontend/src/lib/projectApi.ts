@@ -210,16 +210,9 @@ export const projectApi = {
     return jsonFetch<Creator[]>(`/api/creators?${p.toString()}`);
   },
 
-  // 워크스페이스(팀 공유 UUID 공간) — 목록·선택·해제
+  // 워크스페이스(팀 공유 UUID 공간) — **읽기만** 한다.
+  //  선택은 앱이 소유한다(로컬 저장 + 창 간 storage). 허브에 선택을 보내던 POST 두 개는
+  //  2026-09-11 에 폐기(410)했다 — 허브가 CLI 전역을 바꾸면 에이전트와 그 상태를 나눠 쓰게 돼
+  //  '확인 뒤 제출 전' 에 끼어드는 과금 경합이 생긴다. 래퍼도 같이 지운다(다시 쓰는 실수 방지).
   workspaces: () => jsonFetch<Workspace[]>("/api/workspaces"),
-  selectWorkspace: (workspace_id: string) =>
-    jsonFetch<{ workspaces: Workspace[] }>("/api/workspaces/select", {
-      method: "POST",
-      body: jsonBody({ workspace_id }),
-    }),
-  unselectWorkspace: () =>
-    jsonFetch<{ workspaces: Workspace[] }>("/api/workspaces/unselect", {
-      method: "POST",
-      body: jsonBody({}),
-    }),
 };

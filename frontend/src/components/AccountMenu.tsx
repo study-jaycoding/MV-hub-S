@@ -11,7 +11,6 @@ import { useT } from "../lib/i18n";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
 import { workspaceCommandLabels } from "../lib/workspaceCommand";
-import { canAdoptWorkspaceList } from "../lib/workspaceSwitchPlan";
 import {
   formatTelemetryLastSuccess,
   latestSyncSuccess,
@@ -23,7 +22,7 @@ import {
   activeWorkspaceOf,
   reconcileReportedWorkspaceContext,
   sameWorkspace,
-  selectedWorkspaceContext,
+  scopedCredits,
   workspaceContextOf,
 } from "../lib/workspaceContext";
 import { ManageAccount } from "./ManageAccount";
@@ -46,10 +45,7 @@ export function AccountMenu({
   onProviderUpdated,
   onLogout,
   onWorkspaceSwitched,
-  onWorkspaceSwitchFailed,
   workspaceContext,
-  workspaceEpoch,
-  workspaceSwitching,
   onWorkspaceContextChange,
   onImported,
   localHub,
@@ -60,11 +56,8 @@ export function AccountMenu({
   onProviderUpdated: (p: ProviderIdentity) => void;
   onLogout?: () => void;
   onWorkspaceSwitched: (context: WorkspaceContext) => void; // 전환 완료 — 전환된 공간(토스트 표시용)
-  onWorkspaceSwitchFailed: (context: WorkspaceContext, detail: string) => void; // CLI 전환 실패 — 그 공간 생성 차단
   workspaceContext: WorkspaceContext;
-  workspaceEpoch: number; // 공간 변경 순번(App 소유) — 조회를 시작한 뒤 바뀌었으면 그 응답은 버린다
-  workspaceSwitching?: boolean; // 씬 탭 전환이 진행 중 — 그동안의 조회 결과로 공간을 바꾸지 않는다
-  onWorkspaceContextChange: (context: WorkspaceContext) => number; // 발급된 변경 순번을 돌려준다
+  onWorkspaceContextChange: (context: WorkspaceContext) => void;
   onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
   localHub?: boolean; // 로컬 허브(MV_agent, AUTH off) = 내 CLI 가 이 PC 에 있음 → 워크스페이스 전환 가능
   manageEnabled?: boolean; // PM 관리 기능 on — 꺼진 서버엔 예산(planning) 조회를 아예 안 보낸다
@@ -72,7 +65,6 @@ export function AccountMenu({
   const [list, setList] = useState<Workspace[]>([]);
   const [reported, setReported] = useState<ReportedHfStatus | null>(null);
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [healthCliVersion, setHealthCliVersion] = useState<string | null>(null);
@@ -82,23 +74,9 @@ export function AccountMenu({
   // 비동기 콜백은 항상 가장 최신 컨텍스트를 읽는다.
   const workspaceContextRef = useRef(workspaceContext);
   workspaceContextRef.current = workspaceContext;
-  // 공간 변경 순번(App 소유) — 조회 응답이 도착했을 때 이 값이 그대로여야 반영한다.
-  const workspaceEpochRef = useRef(workspaceEpoch);
-  workspaceEpochRef.current = workspaceEpoch;
-  const switchingRef = useRef(workspaceSwitching);
-  switchingRef.current = workspaceSwitching;
-  // ★이 메뉴가 건 전환이 도는 동안 = CLI 는 아직 옛 공간이다. 메뉴를 다시 열면 목록을 재조회하는데,
-  //  그 응답으로 사용자의 방금 선택을 되돌리면 안 된다(코덱스 리뷰: 앱 A / CLI B 로 갈라지는 경로).
-  //  씬 전환용 switchingRef 는 이 경우를 못 덮는다 — 계정 메뉴 전환은 App 의 switching 을 안 세운다.
-  const selfSwitchingRef = useRef(false);
-  // 전환이 **시작·종료할 때마다** 오르는 순번. '응답 시점에 전환 중인가' 만 보면, 전환 도중 시작된
-  // 조회가 전환보다 **늦게** 도착했을 때 그대로 채택돼 선택이 되돌아간다(코덱스 재현).
-  // 조회는 시작 순번을 들고 있다가 도착했을 때 맞대 본다.
-  const switchGenRef = useRef(0);
-  // 씬 탭 전환의 시작·종료도 같은 이유로 순번을 올린다(그동안 CLI 는 옛 공간이다).
-  useEffect(() => {
-    switchGenRef.current += 1;
-  }, [workspaceSwitching]);
+  // 목록 조회 순번 — 겹친 조회(최초 로드 + 메뉴 열기)에서 **늦게 도착한 옛 응답**이 최신 잔액·이름을
+  // 덮지 않게 한다. 전환과는 무관한 보호다(전환은 이제 네트워크를 안 탄다).
+  const listSeqRef = useRef(0);
   const t = useT();
   const closeMenu = useCallback(() => setOpen(false), []);
   const closeMenuOnEscape = useCallback(() => {
@@ -124,34 +102,17 @@ export function AccountMenu({
   //  startedAt 을 주면 '조회를 시작할 때의 변경 순번' 과 비교해, 그 사이 공간이 바뀌었으면(씬 탭 클릭·
   //  메뉴 선택·전환 완료) 늦게 도착한 옛 CLI 값으로 되돌리지 않는다(코덱스 P2). 값 비교로는 부족하다 —
   //  같은 값으로 되돌아온 뒤 도착한 옛 응답을 못 거른다. 전환 직후 호출(switchTo)에는 주지 않는다.
-  const acceptLiveWorkspaces = useCallback(
-    (
-      items: Workspace[],
-      startedAt?: number,
-      startedSwitchGen?: number,
-      startedWhileSwitching = false,
-    ) => {
+  //  ★CLI 가 물고 있는 공간을 **앱 선택으로 채택하지 않는다**(2026-09-11). 허브는 더 이상 전역을 바꾸지
+  //   않고, 에이전트가 생성 직전에 요청의 공간으로 맞춘다 — 그래서 `is_selected` 는 '마지막으로 생성한
+  //   공간' 이지 '사용자가 고른 공간' 이 아니다. 그 값을 채택하면 방금 고른 공간이 되돌아간다.
+  //   reconcileReportedWorkspaceContext 규칙만 쓴다: 확정된 팀은 **이름만 보완**, 아직 모를 때(unknown)만 씨앗으로 채택.
+  const acceptLiveWorkspaces = useCallback((items: Workspace[], startedSeq?: number) => {
+    if (startedSeq !== undefined && startedSeq !== listSeqRef.current) return; // 늦게 온 옛 목록
     setList(items);
-    if (
-      !canAdoptWorkspaceList({
-        startedEpoch: startedAt,
-        currentEpoch: workspaceEpochRef.current,
-        startedSwitchGen: startedSwitchGen ?? switchGenRef.current,
-        currentSwitchGen: switchGenRef.current,
-        startedWhileSwitching,
-        switchingNow: !!switchingRef.current || selfSwitchingRef.current,
-      })
-    ) {
-      return;
-    }
     const currentContext = workspaceContextRef.current;
-    const next = selectedWorkspaceContext(items);
-    if (!sameWorkspace(currentContext, next) || currentContext.name !== next.name) {
-      onWorkspaceContextChange(next);
-    }
-  },
-    [onWorkspaceContextChange],
-  );
+    const next = reconcileReportedWorkspaceContext(currentContext, items);
+    if (next !== currentContext) onWorkspaceContextChange(next);
+  }, [onWorkspaceContextChange]);
   const acceptReportedStatus = useCallback((status: ReportedHfStatus) => {
     setReported(status);
     // 공유 서버에서는 메뉴 선택이 "조회/생성 대상"이다. 최초 진입 때만 에이전트가 보고한
@@ -165,15 +126,23 @@ export function AccountMenu({
   }, [onWorkspaceContextChange]);
   useEffect(() => {
     if (liveMode) {
-      const startedAt = workspaceEpochRef.current;
-      const startedGen = switchGenRef.current;
-      // 시작 시점에 전환이 돌고 있었는지도 함께 — 순번 effect 가 늦게 도는 틈을 안 믿는다.
-      const startedSwitching = !!switchingRef.current || selfSwitchingRef.current;
+      const startedSeq = ++listSeqRef.current;
       api
         .workspaces()
-        .then((items) => acceptLiveWorkspaces(items, startedAt, startedGen, startedSwitching))
+        .then((items) => acceptLiveWorkspaces(items, startedSeq))
         .catch(() => {});
-    } else api.accountHf().then(acceptReportedStatus).catch(() => setReported(null));
+    } else {
+      const startedSeq = ++listSeqRef.current;
+      api
+        .accountHf()
+        .then((status) => {
+          if (startedSeq === listSeqRef.current) acceptReportedStatus(status);
+        })
+        .catch(() => {
+          // ★실패도 순번을 본다 — 늦게 실패한 옛 조회가 그 사이 도착한 정상 결과를 지우면 안 된다.
+          if (startedSeq === listSeqRef.current) setReported(null);
+        });
+    }
   }, [acceptLiveWorkspaces, acceptReportedStatus, liveMode]);
   useEffect(() => {
     const controller = new AbortController();
@@ -199,15 +168,20 @@ export function AccountMenu({
   useEffect(() => {
     if (!open) return;
     if (liveMode) {
-      const startedAt = workspaceEpochRef.current;
-      const startedGen = switchGenRef.current;
-      // 시작 시점에 전환이 돌고 있었는지도 함께 — 순번 effect 가 늦게 도는 틈을 안 믿는다.
-      const startedSwitching = !!switchingRef.current || selfSwitchingRef.current;
+      const startedSeq = ++listSeqRef.current;
       api
         .workspaces()
-        .then((items) => acceptLiveWorkspaces(items, startedAt, startedGen, startedSwitching))
+        .then((items) => acceptLiveWorkspaces(items, startedSeq))
         .catch(() => {});
-    } else api.accountHf().then(acceptReportedStatus).catch(() => {});
+    } else {
+      const startedSeq = ++listSeqRef.current;
+      api
+        .accountHf()
+        .then((status) => {
+          if (startedSeq === listSeqRef.current) acceptReportedStatus(status);
+        })
+        .catch(() => {});
+    }
   }, [acceptLiveWorkspaces, acceptReportedStatus, open, liveMode]);
 
   // 표시할 워크스페이스 목록 — 하우스=라이브, 그 외=에이전트 보고값.
@@ -217,7 +191,8 @@ export function AccountMenu({
       ? [{ id: workspace.id, name: workspace.name }]
       : []),
   );
-  const current = wsList.find((w) => w.is_selected); // CLI 가 실제로 물고 있는 공간(플랜 라벨용)
+  // 플랜 라벨 기준 = **앱이 고른 공간**. 예전엔 CLI 가 물고 있는 공간(`is_selected`)을 썼는데,
+  // 허브는 이제 그 전역을 바꾸지 않아(에이전트가 제출 직전에 맞춘다) 앱 선택과 어긋난다.
   // 활성 워크스페이스 = 선택된 팀, 없으면 개인(name=null). 잔여 크레딧 표시용.
   // 하단 상태줄(useAccountStatus)도 같은 규칙을 쓴다 — 두 곳의 숫자가 어긋나지 않게.
   const activeWs = activeWorkspaceOf(wsList, workspaceContext);
@@ -261,11 +236,8 @@ export function AccountMenu({
 
   // 크레딧 — 하우스는 활성 워크스페이스 잔액, 비-하우스는 에이전트가 보고한 내 잔액.
   // 숫자로 정규화 — CLI 가 문자열/누락/이상값을 줘도 NaN·Infinity 로 링/aria/CSS 가 깨지지 않게 한다.
-  const rawCredits = activeWs?.credits ?? (liveMode ? null : reported?.credits);
-  const parsedCredits =
-    rawCredits == null ? null : typeof rawCredits === "number" ? rawCredits : Number(rawCredits);
-  const activeCredits =
-    parsedCredits != null && Number.isFinite(parsedCredits) ? parsedCredits : null;
+  // 잔액 = 고른 공간의 값만. 폴백 없음, 못 찾으면 미확인(null) — 규칙은 scopedCredits 한 곳에 있다.
+  const activeCredits = scopedCredits(wsList, workspaceContext);
   const gaugeCredits = activeCredits != null ? Math.max(0, activeCredits) : null; // 음수는 0으로(빈 게이지)
   // 게이지 채움 비율 = 남은 크레딧 / 예산 한도(0~100% 클램프 — 탑업으로 한도 초과해도 안 넘침).
   const creditPct =
@@ -291,46 +263,18 @@ export function AccountMenu({
   const roleText = accountRoleText(account);
   const initial = (displayName[0] || "?").toUpperCase();
 
-  // 전환은 낙관적으로 — 클릭하면 **바로** 메뉴를 닫고 앱 공간을 바꾼다. CLI 반영 확인(set+list
-  // 실측 ≈1.4초)은 뒤에서 하고, 확인된 뒤에 알림이 뜬다(Jay: "확실하게 변경되어서").
-  //  예전엔 확인이 끝날 때까지 목록 단추를 전부 잠그고, 거기서 또 라이브러리 재조회까지 기다린 뒤에야
-  //  알림이 떠서 4초 가까이 얼어 있었다. 확인이 끝나기 전에 메뉴를 다시 열면 단추는 여전히 잠겨
-  //  있으므로(busy), 겹친 전환 요청은 애초에 생기지 않는다.
+  // ★전환은 **동기**다 — 허브에 아무것도 안 보낸다. 앱이 고른 공간이 곧 생성 대상이고, 에이전트가
+  //  제출 직전에 요청에 박힌 그 공간으로 CLI 를 맞춘다. 예전엔 허브에 `workspace set` 을 시켜 CLI
+  //  전역을 맞췄다 — 왕복 1.4초가 걸렸고, 그 전역을 에이전트와 나눠 쓰는 바람에 '확인 뒤 제출 전' 에
+  //  끼어드는 과금 경합이 있었다(2026-09-11 에 생성 호출의 HIGGSFIELD_WORKSPACE_ID 로 못 박았다).
   const switchTo = (id: string | null) => {
     const target = id ? wsList.find((w) => w.id === id) : null;
     const context = id
       ? workspaceContextOf(target)
       : ({ scope: "personal", id: null, name: null } as WorkspaceContext);
     closeMenu();
-    // 발급된 순번을 받아 둔다 — prop 으로 오는 workspaceEpoch 는 렌더 뒤에야 갱신돼 지금 읽으면 옛 값이다.
-    const epoch = onWorkspaceContextChange(context); // 이 뒤의 생성은 새 공간으로 나간다
-    selfSwitchingRef.current = true;
-    switchGenRef.current += 1;
-    setBusy(true);
-    void (id ? api.selectWorkspace(id) : api.unselectWorkspace())
-      .then(
-        (r) => ({ ok: true as const, workspaces: r.workspaces }),
-        (error: unknown) => ({
-          ok: false as const,
-          detail: String(error).replace(/^Error:\s*/, ""),
-        }),
-      )
-      .then((result) => {
-        selfSwitchingRef.current = false;
-        switchGenRef.current += 1; // 전환이 끝났다 — 그 전에 시작된 조회는 모두 옛 값이다
-        setBusy(false);
-        // 그 사이 다른 경로가 공간을 바꿨으면(씬 탭·다른 창) 이 응답은 늦게 온 옛 것이다.
-        //  ★순번으로 가른다 — 값 비교로는 A→B→A 로 돌아온 뒤 도착한 옛 응답을 못 거른다.
-        //   그러면 성공한 전환에 실패 표시를 씌우거나, 그 반대가 된다(코덱스 리뷰).
-        if (epoch !== workspaceEpochRef.current) return;
-        if (result.ok) {
-          acceptLiveWorkspaces(result.workspaces);
-          onWorkspaceSwitched(selectedWorkspaceContext(result.workspaces));
-          return;
-        }
-        // 실패는 alert 로 흐름을 끊지 않는다 — 앱이 그 공간의 생성을 막고 토스트로 알린다.
-        onWorkspaceSwitchFailed(context, result.detail);
-      });
+    onWorkspaceContextChange(context);
+    onWorkspaceSwitched(context);
   };
 
   return (
@@ -368,8 +312,8 @@ export function AccountMenu({
               <div className="acct-sub">
                 {account
                   ? account.email
-                  : current
-                    ? `${current.plan_type} workspace`
+                  : activeWs
+                    ? `${activeWs.plan_type} workspace`
                     : provider?.email || "로컬 계정"}
               </div>
               {account && roleText && (
@@ -431,7 +375,6 @@ export function AccountMenu({
                   // 개인 워크스페이스도 실제 id 로 select 한다(CLI 1.x). 예전엔 개인=unselect 였는데,
                   // 1.x 는 unset 이면 account status 실패=생성 꺼짐 → 개인 id 로 set 해야 생성 유지.
                   onClick={() => switchTo(w.id)}
-                  disabled={busy}
                 >
                   {inner}
                 </button>
