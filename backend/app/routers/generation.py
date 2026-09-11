@@ -119,51 +119,6 @@ def list_creators(
     )
 
 
-def _require_house(request: Request) -> None:
-    """워크스페이스 전환은 서버 CLI(=하우스 계정) 전역 상태만 바꾼다 → 다른 사용자가 토글하면
-    하우스 컨텍스트가 바뀐다. 그래서 로그인 계정의 creator_uid 가 서버 힉스필드(my_creator_uid)와
-    같은 '하우스 계정'만 허용. AUTH off(account 없음)면 단독 모드라 통과."""
-    acc = getattr(request.state, "account", None)
-    if not acc:
-        return
-    if acc.get("creator_uid") and acc.get("creator_uid") == repo.get_my_uid():
-        return
-    raise HTTPException(
-        status_code=403,
-        detail="워크스페이스 전환은 서버에 연결된 힉스필드 계정(하우스)만 가능합니다.",
-    )
-
-
-def _schedule_switch_telemetry(counts: dict[str, int]) -> None:
-    """전환 뒤 배경 동기화가 끝나면 텔레메트리 드레인을 예약한다.
-
-    ★예약은 동기화 **뒤에** 걸어야 한다 — 드레인 디바운스가 0.05초라, 전환 응답 시점에 걸면
-     동기화가 outbox 를 표시하기 전에 비우고 끝나 그 분이 다음 기회까지 밀린다."""
-    if counts.get("telemetry_pending") or counts.get("telemetry_dirty"):
-        _telemetry.schedule_telemetry_drain()
-
-
-async def _verify_workspace(expect_id: str | None) -> list[dict[str, Any]]:
-    """set/unset 후 실제 컨텍스트가 의도대로 바뀌었는지 검증. expect_id=None=개인(아무것도 선택 안 됨).
-
-    ★strict 조회 — 평소의 list_workspaces 는 CLI 실패를 빈 목록으로 삼킨다. 그 빈 목록이 해제 검증에서는
-     '아무것도 선택 안 됨 = 성공' 으로 읽혀, 실제로는 옛 공간을 물고 있는데 해제됐다고 답하던 구멍이 있었다."""
-    try:
-        workspaces = await cli_bridge.list_workspaces(strict=True)
-    except cli_bridge.CLIError as exc:
-        raise HTTPException(
-            status_code=502, detail=f"워크스페이스 상태를 확인할 수 없습니다: {exc}"
-        )
-    if expect_id is None:
-        if any(w.get("is_selected") for w in workspaces):
-            raise HTTPException(status_code=502, detail="워크스페이스 해제가 반영되지 않았습니다(CLI 상태 불일치).")
-    else:
-        sel = next((w for w in workspaces if w.get("id") == expect_id), None)
-        if not sel or not sel.get("is_selected"):
-            raise HTTPException(status_code=502, detail="워크스페이스 전환이 반영되지 않았습니다(CLI 상태 불일치).")
-    return workspaces
-
-
 @router.get("/workspaces")
 async def list_workspaces():
     """워크스페이스 목록(개인/팀). is_selected 로 현재 컨텍스트 표시.
@@ -274,34 +229,32 @@ class WorkspaceSelectIn(BaseModel):
     workspace_id: str
 
 
+_WORKSPACE_SELECT_GONE = (
+    "워크스페이스 선택은 더 이상 서버가 CLI 를 바꾸는 방식이 아닙니다. "
+    "앱을 새로고침하면 선택이 앱 안에서 즉시 적용됩니다."
+)
+
+
 @router.post("/workspaces/select")
 async def select_workspace(body: WorkspaceSelectIn, request: Request):
-    """워크스페이스 선택(팀 공유 UUID 공간으로 전환) 후 검증·재동기화. 하우스 계정만."""
-    _require_house(request)
-    try:
-        await cli_bridge.set_workspace(body.workspace_id)
-    except cli_bridge.CLIError as e:
-        raise HTTPException(status_code=502, detail=f"워크스페이스 전환 실패: {e}")
-    workspaces = await _verify_workspace(body.workspace_id)  # 반영 확인(불일치면 502)
-    # 새 컨텍스트의 잡 끌어오기는 **응답 뒤로** — 실측 ≈1.9초라 전환 체감의 절반 이상이 이것이었다.
-    # 끝나면 syncer 가 'synced' 로 알려 화면이 스스로 다시 읽는다. 종료 중이면 예약을 안 받으므로
-    # 그 사실을 그대로 답한다(예약하지 않았는데 했다고 답하지 않는다).
-    scheduled = await syncer.switch_sync.schedule(_schedule_switch_telemetry)
-    return {"workspaces": workspaces, "sync": {"scheduled": 1 if scheduled else 0}}
+    """폐기(2026-09-11) — 허브는 더 이상 CLI 전역 워크스페이스를 바꾸지 않는다.
+
+    ★왜 200 으로 조용히 넘기지 않는가: 옛 프론트는 이 응답의 목록에서 `is_selected` 를 읽어
+     **앱 선택으로 채택**한다. CLI 전역은 이제 '마지막으로 생성한 공간' 이라 사용자가 방금 고른
+     공간이 되돌아가고, 그 뒤 생성 요청이 그 공간으로 작성된다 — 봉투 고정(HIGGSFIELD_WORKSPACE_ID)은
+     요청에 적힌 대로 정확히 과금하므로 이 오류를 막아 주지 못한다. 그래서 조용한 성공 대신 **410** 이다.
+     403 은 옛 씬 코드가 성공으로 취급하므로 폐기 응답으로 쓸 수 없다.
+
+    지금 선택은 앱이 소유한다(로컬 저장 + 창 간 storage 동기화). 목록은 `GET /api/workspaces`.
+    생성 시점의 CLI 공간은 에이전트가 요청에 박힌 값으로 맞춘다(agent_push._ensure_request_workspace).
+    """
+    raise HTTPException(status_code=410, detail=_WORKSPACE_SELECT_GONE)
 
 
 @router.post("/workspaces/unselect")
 async def unselect_workspace(request: Request):
-    """워크스페이스 해제 → 개인 계정 컨텍스트 복귀 후 검증·재동기화. 하우스 계정만."""
-    _require_house(request)
-    try:
-        await cli_bridge.unset_workspace()
-    except cli_bridge.CLIError as e:
-        raise HTTPException(status_code=502, detail=f"워크스페이스 해제 실패: {e}")
-    workspaces = await _verify_workspace(None)
-    # 위 select 와 같은 이유로 응답 뒤로.
-    scheduled = await syncer.switch_sync.schedule(_schedule_switch_telemetry)
-    return {"workspaces": workspaces, "sync": {"scheduled": 1 if scheduled else 0}}
+    """폐기(2026-09-11) — 위 select 와 같은 이유."""
+    raise HTTPException(status_code=410, detail=_WORKSPACE_SELECT_GONE)
 
 
 @router.post("/cost")

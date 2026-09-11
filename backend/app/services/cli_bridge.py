@@ -907,26 +907,18 @@ async def get_auth_token(timeout: float = 30.0) -> str:
 
 
 # ── 워크스페이스(팀 공유 UUID 공간) ───────────────────────────────────────
-async def list_workspaces(timeout: float = 30.0, *, strict: bool = False) -> list[dict[str, Any]]:
+async def list_workspaces(timeout: float = 30.0) -> list[dict[str, Any]]:
     """워크스페이스 목록 [{id, name, plan_type, credits, is_selected, user_role}].
     선택 안 됨(개인 컨텍스트)이면 모두 is_selected=false.
 
-    ★strict=True 는 CLI 실패를 빈 목록으로 삼키지 않고 그대로 올린다. '반영 확인'처럼 빈 목록이
-     **'아무것도 선택 안 됨 = 성공'으로 읽히는 자리**에서만 쓴다 — 조회 실패가 검증 통과가 되면
-     실제로는 옛 공간을 물고 있는데 해제됐다고 답하게 된다."""
+    ⚠️`is_selected` 는 **'마지막으로 생성한 공간'** 이지 '사용자가 고른 공간' 이 아니다(2026-09-11).
+     허브는 더 이상 CLI 전역을 바꾸지 않고, 에이전트가 제출 직전에 요청의 공간으로 맞춘다.
+     앱의 선택은 앱이 소유한다 — 이 값을 앱 선택으로 채택하면 방금 고른 공간이 되돌아간다."""
     try:
         data = await _run_json("workspace", "list", timeout=timeout)
     except CLIError:
-        if strict:
-            raise
         return []
-    if not isinstance(data, list):
-        # 형식이 틀린 응답도 strict 에서는 오류다 — 그냥 [] 로 바꾸면 '아무것도 선택 안 됨' 과
-        # 구분되지 않아 검증이 통과해 버린다(코덱스 리뷰).
-        if strict:
-            raise CLIError(f"workspace list 응답 형식이 목록이 아님: {type(data).__name__}")
-        return []
-    return data
+    return data if isinstance(data, list) else []
 
 
 async def set_workspace(workspace_id: str, timeout: float = 30.0) -> None:

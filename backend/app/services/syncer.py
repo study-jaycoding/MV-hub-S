@@ -18,7 +18,7 @@ import contextlib
 import logging
 import os
 import time
-from typing import Callable, Optional
+from typing import Optional
 
 from .. import active_account, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, LOCAL_AGENT_PAIR_SECRET, MANAGE_ENABLED
@@ -60,9 +60,7 @@ def _capture_account_scope() -> str:
         return active_account.account_key() or ""
 
 
-async def sync_now(
-    worker_id: Optional[str] = None, *, account_scope: Optional[str] = None
-) -> dict[str, int]:
+async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
     """CLI 에서 최근 생성 이력을 끌어와 업서트. 카운트 반환.
     신규가 워터마크 이상이면 gap_warning=1 을 함께 반환(누락 위험 알림).
 
@@ -80,10 +78,7 @@ async def sync_now(
     # 그러면 A 계정 CLI 로 받은 잡이 전환된 B 계정 DB 에 적재됐다. 캡처는 워커 스레드에서
     # (transition_lock 은 로그인 마이그레이션·DB 복원 동안 통째로 잡혀 있다).
     # override 는 DB 라우팅만 바꾼다 — CLI 호출 횟수·순서·캐시 정책은 그대로다.
-    # account_scope 를 받았으면 그 값을 쓴다 — 배경 실행(워크스페이스 전환 뒤)은 **예약한 쪽이**
-    # 요청 시점에 캡처해 넘긴다. 여기서 다시 캡처하면 그 사이 바뀐 계정으로 적재될 수 있다.
-    if account_scope is None:
-        account_scope = await asyncio.to_thread(_capture_account_scope)
+    account_scope = await asyncio.to_thread(_capture_account_scope)
     jobs = await cli_bridge.list_jobs()
     account_token = active_account.set_override(account_scope)
     try:
@@ -247,99 +242,6 @@ async def reconcile_local_house() -> int:
         if applied:
             applied_n += 1
     return applied_n
-
-
-class SwitchSync:
-    """워크스페이스 전환 뒤의 동기화를 요청 경로 밖에서 돌리는 단일 배경 작업.
-
-    전환 응답을 CLI 동기화(실측 `generate list --size 100` ≈1.9초)에 묶지 않는다. 전환은 바로
-    끝내고, 새 공간의 잡은 뒤에서 끌어와 끝나면 `synced` 로 알려 화면이 스스로 다시 읽게 한다.
-
-    ★계정 DB 키는 **예약하는 쪽이** 요청 시점에 캡처해 넘긴다 — 실행 시점엔 계정이 바뀌었을 수 있다.
-    ★진행 중이면 새 작업을 만들지 않고 '한 번 더' 표시만 남겨 합친다. 빠른 연속 전환이 CLI 조회와
-     DB 쓰기를 겹겹이 쌓지 않게 하고, 마지막 요청의 계정 범위로 한 번 더 돈다.
-    ★`synced` 알림은 '가장 최근 전환이냐'와 **무관하게** 보낸다. 이미 DB 에 들어간 변경은 그 뒤
-     어느 공간을 고르든 화면이 읽어야 한다 — 전환 순번으로 버리면 그 변경을 다시 읽을 계기가 없다.
-    """
-
-    _OnDone = Optional[Callable[[dict[str, int]], None]]
-
-    def __init__(self) -> None:
-        self._task: Optional[asyncio.Task] = None
-        self._again: Optional[tuple[str, "SwitchSync._OnDone"]] = None
-        self._closing = False
-
-    def arm(self) -> None:
-        """lifespan 시작 — 앞선 실행의 종료 표시를 푼다(한 프로세스에서 앱을 여러 번 띄우는 테스트)."""
-        self._closing = False
-
-    async def schedule(self, on_done: "SwitchSync._OnDone" = None) -> bool:
-        """전환 직후 동기화를 예약한다. 예약했으면 True, 종료 중이라 받지 않았으면 False.
-
-        on_done 은 동기화가 끝날 때마다 카운트와 함께 불린다(텔레메트리 드레인 예약처럼 라우터
-        계층이 붙이는 짧은 후속). 예외를 던지지 않아야 한다."""
-        if self._closing:
-            return False
-        scope = await asyncio.to_thread(_capture_account_scope)
-        # ★대기 뒤 다시 본다 — 캡처를 기다리는 동안 stop() 이 끝났을 수 있고, 그러면 회수된 뒤에
-        #  새 작업이 시작된다(코덱스 리뷰에서 메모리 재현으로 확인).
-        if self._closing:
-            return False
-        if self._task is not None and not self._task.done():
-            self._again = (scope, on_done)  # 진행 중 — 끝난 뒤 마지막 요청으로 한 번 더
-            return True
-        self._task = asyncio.create_task(self._run(scope, on_done), name="switch-sync")
-        return True
-
-    async def _run(self, scope: str, on_done: "SwitchSync._OnDone") -> None:
-        while True:
-            try:
-                counts = await sync_now(account_scope=scope)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — 배경 작업이 죽어도 다음 전환·주기가 재시도
-                log_event(
-                    _log,
-                    "switch_sync_failed",
-                    level=logging.WARNING,
-                    error_type=type(exc).__name__,
-                )
-            else:
-                if counts.get("inserted") or counts.get("updated"):
-                    await manager.broadcast_all({"type": "synced"})
-                if on_done is not None:
-                    # ★예약 당시의 계정 범위 안에서 부른다 — sync_now 는 반환 전에 override 를 풀기
-                    #  때문에, 그냥 부르면 그 사이 바뀐 계정의 outbox 를 보고 예약하게 된다.
-                    token = active_account.set_override(scope)
-                    try:
-                        on_done(counts)
-                    except Exception as exc:  # noqa: BLE001 — 후속 실패가 동기화를 되돌리지 않는다
-                        log_event(
-                            _log,
-                            "switch_sync_on_done_failed",
-                            level=logging.WARNING,
-                            error_type=type(exc).__name__,
-                        )
-                    finally:
-                        active_account.reset_override(token)
-            pending, self._again = self._again, None
-            if pending is None or self._closing:
-                return
-            scope, on_done = pending
-
-    async def stop(self) -> None:
-        """종료 회수 — 새 예약을 막고 진행 중 작업을 취소·대기한다. DB 쓰기는 sync_now 안에서
-        to_thread_non_abandon 이라, 여기서 돌아온 시점엔 그 스레드도 이미 끝나 있다."""
-        self._closing = True
-        self._again = None
-        task, self._task = self._task, None
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-
-
-switch_sync = SwitchSync()
 
 
 class PeriodicSync:

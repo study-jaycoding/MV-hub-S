@@ -118,7 +118,7 @@ from .services.upload_limits import UploadBodyLimitMiddleware
 from .services.runtime_metrics import metrics as runtime_metrics
 from .services.path_safety import safe_join
 from .services.remote_realtime import RemoteRealtimeBridge, relay_event
-from .services.syncer import periodic_sync, switch_sync
+from .services.syncer import periodic_sync
 from .usecases.gen_requests import shutdown_request_estimates
 from .ws import manager
 
@@ -464,9 +464,6 @@ async def _application_lifespan(app: FastAPI):
         if AUTH_ENABLED:
             periodic_sync.start()
             periodic_sync_started = True
-        # 워크스페이스 전환 뒤 동기화는 요청 밖에서 돈다(주기 동기화와 별개 — 로컬 허브는 주기가 없다).
-        # arm 은 앞선 실행의 종료 표시만 푼다 — 한 프로세스에서 앱을 여러 번 띄우는 테스트 대비.
-        switch_sync.arm()
         if _proxy.is_worker_hub():
             # 로컬 스냅샷 성공 뒤에만 전송 세트를 만들고, 네트워크 전송은 별도 자식 프로세스가
             # 영속 outbox에서 수행한다. 서버 본체·격리 테스트에는 이 부수효과를 붙이지 않는다.
@@ -591,8 +588,6 @@ async def _application_lifespan(app: FastAPI):
         # 이들이 끝나면 드레인을 다시 예약하고 루프 연결까지 되살리므로, 텔레메트리 회수 뒤에
         # 멈추면 방금 회수한 것이 되살아난다(코덱스 리뷰). 순서: 동기화 → 그 동기화가 시작시킨
         # 이력 보충 → 그다음이 텔레메트리 회수다.
-        #  · switch_sync 는 시작 조건이 없다(요청이 만든다) — 언제나 회수 대상.
-        await _attempt_async_cleanup(switch_sync.stop)
         if startup_complete or periodic_sync_started:
             await _attempt_async_cleanup(periodic_sync.stop)
         # 부팅 이력 감사도 **새 이력 보충 작업을 만드는 생산자**다. 아래 stop_history_imports 로 기존
