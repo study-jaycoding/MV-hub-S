@@ -185,8 +185,10 @@ def test_lifespan_injected_exception_still_runs_cleanup_in_original_order(tmp_pa
         "share-state",
         "media-preservation",
         "remote-realtime",
-        "telemetry-unbind",
+        # 텔레메트리를 예약할 수 있는 생산자(동기화·이력 보충)를 먼저 멈춘다 — 뒤에 멈추면 그들이
+        # 끝나면서 드레인을 다시 예약하고 루프 연결까지 되살린다(2026-09-11 코덱스 리뷰).
         "history",
+        "telemetry-unbind",
         "history-unbind",
         "asset",
     ]

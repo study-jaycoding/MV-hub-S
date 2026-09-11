@@ -118,7 +118,7 @@ from .services.upload_limits import UploadBodyLimitMiddleware
 from .services.runtime_metrics import metrics as runtime_metrics
 from .services.path_safety import safe_join
 from .services.remote_realtime import RemoteRealtimeBridge, relay_event
-from .services.syncer import periodic_sync
+from .services.syncer import periodic_sync, switch_sync
 from .usecases.gen_requests import shutdown_request_estimates
 from .ws import manager
 
@@ -464,6 +464,9 @@ async def _application_lifespan(app: FastAPI):
         if AUTH_ENABLED:
             periodic_sync.start()
             periodic_sync_started = True
+        # 워크스페이스 전환 뒤 동기화는 요청 밖에서 돈다(주기 동기화와 별개 — 로컬 허브는 주기가 없다).
+        # arm 은 앞선 실행의 종료 표시만 푼다 — 한 프로세스에서 앱을 여러 번 띄우는 테스트 대비.
+        switch_sync.arm()
         if _proxy.is_worker_hub():
             # 로컬 스냅샷 성공 뒤에만 전송 세트를 만들고, 네트워크 전송은 별도 자식 프로세스가
             # 영속 outbox에서 수행한다. 서버 본체·격리 테스트에는 이 부수효과를 붙이지 않는다.
@@ -584,6 +587,31 @@ async def _application_lifespan(app: FastAPI):
             await _attempt_async_cleanup(periodic_media_preservation.stop)
         if startup_complete or remote_realtime_started:
             await _attempt_async_cleanup(remote_realtime_bridge.stop)
+        # ── 텔레메트리를 예약할 수 있는 '생산자'를 먼저 전부 멈춘다 ──────────────────────
+        # 이들이 끝나면 드레인을 다시 예약하고 루프 연결까지 되살리므로, 텔레메트리 회수 뒤에
+        # 멈추면 방금 회수한 것이 되살아난다(코덱스 리뷰). 순서: 동기화 → 그 동기화가 시작시킨
+        # 이력 보충 → 그다음이 텔레메트리 회수다.
+        #  · switch_sync 는 시작 조건이 없다(요청이 만든다) — 언제나 회수 대상.
+        await _attempt_async_cleanup(switch_sync.stop)
+        if startup_complete or periodic_sync_started:
+            await _attempt_async_cleanup(periodic_sync.stop)
+        # 부팅 이력 감사도 **새 이력 보충 작업을 만드는 생산자**다. 아래 stop_history_imports 로 기존
+        # 작업을 다 회수해도, CLI 응답을 기다리다 재개한 감사가 새 작업을 하나 더 띄운다 — 그래서
+        # 회수보다 **먼저** 취소한다(코덱스 리뷰에서 메모리 재현: history_stopping 인데 살아 있는 import 1개).
+        if history_audit_task and not history_audit_task.done():
+            await _attempt_async_cleanup(
+                lambda: _cancel_background_task(history_audit_task)
+            )
+        # 동기화가 갭을 발견하면 이력 보충을 **분리된 작업으로** 띄운다 — 부모를 멈춰도 그건 계속
+        # 돌고, 끝나면서 텔레메트리를 다시 예약한다. 그래서 여기서 같이 멈춘다.
+        if startup_complete or history_audit_task is not None:
+
+            async def _stop_history_imports() -> None:
+                from .services.history_autofill import stop_history_imports
+
+                await stop_history_imports()
+
+            await _attempt_async_cleanup(_stop_history_imports)
         if telemetry_drain_scheduled or (
             startup_complete and (MANAGE_ENABLED or _proxy.is_worker_hub())
         ):
@@ -602,22 +630,10 @@ async def _application_lifespan(app: FastAPI):
                 unbind_telemetry_loop(runtime_loop)
 
             _attempt_sync_cleanup(_unbind_telemetry_loop)
-        if history_audit_task and not history_audit_task.done():
-            await _attempt_async_cleanup(
-                lambda: _cancel_background_task(history_audit_task)
-            )
         if thumbnail_repair_task and not thumbnail_repair_task.done():
             await _attempt_async_cleanup(
                 lambda: _cancel_background_task(thumbnail_repair_task)
             )
-        if startup_complete or history_audit_task is not None:
-
-            async def _stop_history_imports() -> None:
-                from .services.history_autofill import stop_history_imports
-
-                await stop_history_imports()
-
-            await _attempt_async_cleanup(_stop_history_imports)
         if (startup_complete or history_loop_bound) and runtime_loop is not None:
 
             def _unbind_history_loop() -> None:
@@ -628,8 +644,6 @@ async def _application_lifespan(app: FastAPI):
             _attempt_sync_cleanup(_unbind_history_loop)
         if (startup_complete or agent_loop_bound) and runtime_loop is not None:
             _attempt_sync_cleanup(lambda: agent_signals.unbind_loop(runtime_loop))
-        if startup_complete or periodic_sync_started:
-            await _attempt_async_cleanup(periodic_sync.stop)
         if (startup_complete or asset_watcher_started) and runtime_loop is not None:
             _attempt_sync_cleanup(asset_watcher.stop)
         if startup_complete and cleanup_error is None:

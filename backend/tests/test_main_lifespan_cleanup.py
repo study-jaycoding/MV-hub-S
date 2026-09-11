@@ -308,8 +308,10 @@ def test_shutdown_failure_attempts_remaining_cleanup_and_reraises_first_error(
         "share-state",
         "media",
         "remote-realtime",
-        "telemetry-unbind",
+        # 텔레메트리를 예약할 수 있는 생산자(동기화·이력 보충)를 먼저 멈춘다 — 뒤에 멈추면 그들이
+        # 끝나면서 드레인을 다시 예약하고 루프 연결까지 되살린다(2026-09-11 코덱스 리뷰).
         "history",
+        "telemetry-unbind",
         "history-unbind",
         "agent-unbind",
         "asset",
@@ -481,10 +483,11 @@ def test_normal_lifespan_keeps_existing_startup_and_shutdown_order(tmp_path):
         "stop:share-state",
         "stop:media",
         "stop:remote-realtime",
-        "unbind:telemetry",
+        # 생산자 먼저(동기화 → 그 동기화가 시작시킨 이력 보충) → 그다음 텔레메트리 회수.
+        "stop:sync",
         "stop:history",
+        "unbind:telemetry",
         "unbind:history",
         "unbind:agent",
-        "stop:sync",
         "stop:asset",
     ]

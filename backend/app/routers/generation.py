@@ -134,9 +134,26 @@ def _require_house(request: Request) -> None:
     )
 
 
+def _schedule_switch_telemetry(counts: dict[str, int]) -> None:
+    """전환 뒤 배경 동기화가 끝나면 텔레메트리 드레인을 예약한다.
+
+    ★예약은 동기화 **뒤에** 걸어야 한다 — 드레인 디바운스가 0.05초라, 전환 응답 시점에 걸면
+     동기화가 outbox 를 표시하기 전에 비우고 끝나 그 분이 다음 기회까지 밀린다."""
+    if counts.get("telemetry_pending") or counts.get("telemetry_dirty"):
+        _telemetry.schedule_telemetry_drain()
+
+
 async def _verify_workspace(expect_id: str | None) -> list[dict[str, Any]]:
-    """set/unset 후 실제 컨텍스트가 의도대로 바뀌었는지 검증. expect_id=None=개인(아무것도 선택 안 됨)."""
-    workspaces = await cli_bridge.list_workspaces()
+    """set/unset 후 실제 컨텍스트가 의도대로 바뀌었는지 검증. expect_id=None=개인(아무것도 선택 안 됨).
+
+    ★strict 조회 — 평소의 list_workspaces 는 CLI 실패를 빈 목록으로 삼킨다. 그 빈 목록이 해제 검증에서는
+     '아무것도 선택 안 됨 = 성공' 으로 읽혀, 실제로는 옛 공간을 물고 있는데 해제됐다고 답하던 구멍이 있었다."""
+    try:
+        workspaces = await cli_bridge.list_workspaces(strict=True)
+    except cli_bridge.CLIError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"워크스페이스 상태를 확인할 수 없습니다: {exc}"
+        )
     if expect_id is None:
         if any(w.get("is_selected") for w in workspaces):
             raise HTTPException(status_code=502, detail="워크스페이스 해제가 반영되지 않았습니다(CLI 상태 불일치).")
@@ -266,10 +283,11 @@ async def select_workspace(body: WorkspaceSelectIn, request: Request):
     except cli_bridge.CLIError as e:
         raise HTTPException(status_code=502, detail=f"워크스페이스 전환 실패: {e}")
     workspaces = await _verify_workspace(body.workspace_id)  # 반영 확인(불일치면 502)
-    counts = await syncer.sync_now()  # 새 컨텍스트의 잡을 즉시 반영
-    if counts.get("telemetry_pending") or counts.get("telemetry_dirty"):
-        _telemetry.schedule_telemetry_drain()
-    return {"workspaces": workspaces, "sync": counts}
+    # 새 컨텍스트의 잡 끌어오기는 **응답 뒤로** — 실측 ≈1.9초라 전환 체감의 절반 이상이 이것이었다.
+    # 끝나면 syncer 가 'synced' 로 알려 화면이 스스로 다시 읽는다. 종료 중이면 예약을 안 받으므로
+    # 그 사실을 그대로 답한다(예약하지 않았는데 했다고 답하지 않는다).
+    scheduled = await syncer.switch_sync.schedule(_schedule_switch_telemetry)
+    return {"workspaces": workspaces, "sync": {"scheduled": 1 if scheduled else 0}}
 
 
 @router.post("/workspaces/unselect")
@@ -281,10 +299,9 @@ async def unselect_workspace(request: Request):
     except cli_bridge.CLIError as e:
         raise HTTPException(status_code=502, detail=f"워크스페이스 해제 실패: {e}")
     workspaces = await _verify_workspace(None)
-    counts = await syncer.sync_now()
-    if counts.get("telemetry_pending") or counts.get("telemetry_dirty"):
-        _telemetry.schedule_telemetry_drain()
-    return {"workspaces": workspaces, "sync": counts}
+    # 위 select 와 같은 이유로 응답 뒤로.
+    scheduled = await syncer.switch_sync.schedule(_schedule_switch_telemetry)
+    return {"workspaces": workspaces, "sync": {"scheduled": 1 if scheduled else 0}}
 
 
 @router.post("/cost")
