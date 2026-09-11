@@ -181,13 +181,6 @@ function GroupEditor({
               </div>
             ) : null}
           </div>
-          {!group.isNew ? (
-            <div className="credit-modal-remaining">
-              <span>지금 남은 양</span>
-              <strong>{n(group.remaining)}</strong>
-              <em>이번 달 사용 {Math.round(group.usedMonth).toLocaleString()} · 이월 포함 · 힉스필드 값과 다르면 대시보드의 '추정'에서 맞춥니다</em>
-            </div>
-          ) : null}
           {error ? <div className="login-error">{error}</div> : null}
           {/* 삭제는 그룹 표의 휴지통에서 한다(Jay 2026-09-11) — 편집 창에서는 저장·닫기만. */}
           <div className="credit-modal-actions">
@@ -436,7 +429,7 @@ export function CreditPlanFields({
           </div>
           {draft.groups.length ? (
             <table className="credit-plan-table">
-              <thead><tr><th>그룹</th><th>한도</th><th>인원</th><th>지금 남은 양</th><th aria-label="삭제" /></tr></thead>
+              <thead><tr><th>그룹</th><th>한도</th><th>인원</th><th title="이월 포함 · 힉스필드 값과 다르면 대시보드 그룹 표의 '추정'에서 맞춥니다">지금 남은 양</th><th aria-label="삭제" /></tr></thead>
               <tbody>
                 {draft.groups.map((group) => (
                   <tr key={group.id} onClick={() => setEditing(group)} title="클릭하면 그룹 창이 열립니다">
