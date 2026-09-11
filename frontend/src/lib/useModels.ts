@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { autoRatioForCost } from "./aspectAuto";
-import { EMPTY_RESTRICTED } from "./modelPolicyCore";
+import { EMPTY_MODEL_SET } from "./modelPolicyCore";
 import type { ModelInfo, ModelParam, ModelParamsOut } from "../types";
 
 // 노출 모델 화이트리스트(타입별, 표시 순서대로).
@@ -298,16 +298,19 @@ function putCost(key: string, credits: number): void {
 
 export function useModels(
   onError: (msg: string) => void,
-  // 그룹별 제한 모델 정책(modelRestrictions). 없으면 제한 없음. ready=첫 조회가 끝남(워밍 프리페치를 그 뒤로 미룬다).
-  policy?: { restricted: ReadonlySet<string>; ready: boolean },
+  // 그룹별 사용 모델 정책(modelPolicy). allowed 가 **비어 있으면 제한 없음**(전부 사용). ready=첫 조회가 끝남
+  // (워밍 프리페치를 그 뒤로 미룬다).
+  policy?: { allowed: ReadonlySet<string>; ready: boolean },
 ) {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [type, setType] = useState<"image" | "video">("image");
   const [model, setModelState] = useState("");
-  const restricted = policy?.restricted ?? EMPTY_RESTRICTED;
+  const allowed = policy?.allowed ?? EMPTY_MODEL_SET;
   const policyReady = policy ? policy.ready : true;
+  // 이 모델이 지금 그룹에서 막혔는가 — 허용 목록이 비면 아무것도 막지 않는다.
+  const blocked = (jt: string) => allowed.size > 0 && !allowed.has(jt);
   // 지금 model 을 누가 골랐나 — true=사용자·복원(재사용·씬 바인딩·모델 노드)이 명시적으로, false=훅이 자동으로.
-  // 명시 선택은 나중에 제한돼도 바꾸지 않는다(selectedRestricted 로 알리고 제출만 막는다 — Jay D3). 자동 선택은 다시 고른다.
+  // 명시 선택은 나중에 못 쓰게 돼도 바꾸지 않는다(selectedBlocked 로 알리고 제출만 막는다 — Jay). 자동 선택은 다시 고른다.
   const explicitRef = useRef(false);
   // explicit=false 로 부르면 '자동 대체'(예: 지원 목록 밖 모델을 재사용할 때의 폴백)라 나중에 정책이 바뀌면 다시 고른다.
   const setModel = useCallback((m: string, explicit = true) => {
@@ -327,15 +330,16 @@ export function useModels(
   const modelPickedByUser = useCallback(() => explicitRef.current, []);
   // 비동기(`await`) 뒤에 읽어야 하는 값들 — 렌더 클로저를 잡으면 그 사이 바뀐 정책·모델을 놓친다(코덱스 P1).
   // 대입은 effect 에서 한다(렌더 본문 대입은 중단된 렌더의 값이 새어 나갈 수 있다).
-  const restrictedRef = useRef(restricted);
+  const allowedRef = useRef(allowed);
   const modelRef = useRef(model);
   useEffect(() => {
-    restrictedRef.current = restricted;
+    allowedRef.current = allowed;
     modelRef.current = model;
-  }, [restricted, model]);
-  /** 이 타입에서 지금 고를 수 있는 첫 모델(제한 제외) — 재사용·복원 폴백이 제한 모델을 집지 않게. */
+  }, [allowed, model]);
+  /** 이 타입에서 지금 고를 수 있는 첫 모델 — 재사용·복원 폴백이 못 쓰는 모델을 집지 않게. */
   const firstAllowed = useCallback(
-    (t: "image" | "video") => ALLOWED[t].find((jt) => !restrictedRef.current.has(jt)) ?? "",
+    (t: "image" | "video") =>
+      ALLOWED[t].find((jt) => allowedRef.current.size === 0 || allowedRef.current.has(jt)) ?? "",
     [],
   );
   /** 지금 고른 모델 — 비동기 작업이 끝난 뒤 '현재' 모델과 비교할 때 쓴다(시작 시점 값이 아니라). */
@@ -360,15 +364,15 @@ export function useModels(
   // setOpt 가 옵션 선택 후 드롭다운을 닫도록 컴포넌트가 setOpen 을 여기 등록한다.
   const setOpenRef = useRef<((v: string | null) => void) | null>(null);
 
-  // 화이트리스트 모델만 노출(타입별 다중, 화이트리스트 순서 유지) — 그룹에서 제한한 모델은 목록에서 뺀다.
+  // 화이트리스트 모델만 노출(타입별 다중, 화이트리스트 순서 유지) — 그룹이 쓸 수 없는 모델은 목록에서 뺀다.
   const typeModels = ALLOWED[type]
-    .filter((jt) => !restricted.has(jt))
+    .filter((jt) => !blocked(jt))
     .map((jt) => models.find((m) => m.job_set_type === jt))
     .filter((m): m is ModelInfo => !!m);
-  // 지금 고른 모델이 제한됐는가 — 목록에는 없지만 값은 남아 있는 상태(안내·제출 차단의 근거).
-  const selectedRestricted = !!model && restricted.has(model);
-  // 이 타입이 통째로 제한됐는가 — 카탈로그가 아직 안 와서 목록이 빈 것과 구별해야 안내 문구가 정직하다(코덱스).
-  const typeFullyRestricted = ALLOWED[type].every((jt) => restricted.has(jt));
+  // 지금 고른 모델이 막혔는가 — 목록에는 없지만 값은 남아 있는 상태(안내·제출 차단의 근거).
+  const selectedBlocked = !!model && blocked(model);
+  // 이 타입이 통째로 막혔는가 — 카탈로그가 아직 안 와서 목록이 빈 것과 구별해야 안내 문구가 정직하다(코덱스).
+  const typeFullyBlocked = ALLOWED[type].every((jt) => blocked(jt));
   const modelName =
     models.find((m) => m.job_set_type === model)?.display_name || "모델 선택";
   // 동적 옵션으로 보여줄 파라미터(프롬프트·미디어 제외)
@@ -381,12 +385,12 @@ export function useModels(
   useEffect(() => {
     // 명시적으로 고른 **지원 목록 밖** 모델은 특수 목적(부분 수정의 고정 모델 등)이라 건드리지 않는다.
     if (model && explicitRef.current && !ALLOWED.image.includes(model) && !ALLOWED.video.includes(model)) return;
-    // 유지: 이 타입의 모델이고 (제한이 아니거나 명시적으로 고른 것). 그 밖엔 첫 허용 모델로 자동 선택.
+    // 유지: 이 타입의 모델이고 (막히지 않았거나 명시적으로 고른 것). 그 밖엔 첫 사용 가능 모델로 자동 선택.
     const inType = ALLOWED[type].includes(model);
-    if (inType && (!restricted.has(model) || explicitRef.current)) return;
+    if (inType && (!blocked(model) || explicitRef.current)) return;
     const first = typeModels[0]?.job_set_type ?? "";
     if (!first) {
-      // 목록이 아직 없거나 이 타입이 전부 제한 — 다른 타입의 모델이 남아 있으면 비워 엉뚱한 타입으로 제출되지 않게 한다.
+      // 목록이 아직 없거나 이 타입을 전부 못 씀 — 다른 타입의 모델이 남아 있으면 비워 엉뚱한 타입으로 제출되지 않게 한다.
       if (!inType && model) {
         explicitRef.current = false;
         setModelState("");
@@ -397,9 +401,9 @@ export function useModels(
       explicitRef.current = false;
       setModelState(first);
     }
-    // model·selectionTick 도 본다 — 복원으로 '자동 선택된 제한 모델'이 되돌아왔을 때 지금 정책으로 다시 고르게(코덱스 P2).
+    // model·selectionTick 도 본다 — 복원으로 '자동 선택된, 지금은 못 쓰는 모델'이 되돌아왔을 때 다시 고르게(코덱스 P2).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [type, models, restricted, model, selectionTick]);
+  }, [type, models, allowed, model, selectionTick]);
 
   // 모델 바뀌면 CLI 파라미터 로드 + 기본값으로 옵션 초기화.
   useEffect(() => {
@@ -452,7 +456,7 @@ export function useModels(
 
   // 두 모델(이미지/비디오) 파라미터를 미리 받아 캐시 → 첫 토글부터 즉시 전환.
   // 추가로 각 모델 '정착 기본옵션'의 비용도 미리 추정해 cost 캐시에 넣어 둠(B) → 첫 토글의 비용 멈칫도 제거.
-  // 그룹 정책의 첫 조회가 끝난 뒤(ready) 허용 모델만 예열한다 — 제한 모델의 params·cost 조회를 헛되이 시작하지 않게.
+  // 그룹 정책의 첫 조회가 끝난 뒤(ready) 쓸 수 있는 모델만 예열한다 — 못 쓰는 모델의 params·cost 조회를 헛되이 시작하지 않게.
   useEffect(() => {
     if (!policyReady) return;
     // 기본옵션을 제약 보정까지 적용해 '정착' 상태로 만든 뒤 그 비용을 예열(모델 선택 시 cost effect 가 낼 키와 일치).
@@ -472,7 +476,7 @@ export function useModels(
         })
         .catch(() => {});
     };
-    for (const m of [...ALLOWED.image, ...ALLOWED.video].filter((jt) => !restricted.has(jt))) {
+    for (const m of [...ALLOWED.image, ...ALLOWED.video].filter((jt) => !blocked(jt))) {
       const cached = paramsCache.get(m);
       if (cached) {
         warmCost(m, cached.params);
@@ -485,13 +489,13 @@ export function useModels(
         .catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [policyReady, restricted]);
+  }, [policyReady, allowed]);
 
   // 모델/옵션 바뀌면 예상 크레딧 재추정. 같은 조합은 캐시 적중 → 즉시(디바운스·CLI 생략), 새 조합만 debounce 250ms + CLI.
   useEffect(() => {
     if (!model) {
       setCost(null);
-      setCostLoading(false); // 타입 전체가 제한돼 모델이 비는 경우에도 '계산 중…'이 남지 않게(코덱스 P2)
+      setCostLoading(false); // 이 타입을 전부 못 써서 모델이 비는 경우에도 '계산 중…'이 남지 않게(코덱스 P2)
       return;
     }
     // 모델 전환 직후 새 params 로드 전(stale)이면 이전 스키마로 견적하지 않는다 — 로드 완료 시 재실행된다.
@@ -548,5 +552,5 @@ export function useModels(
   return { models, type, setType, model, setModel, markModelSelection, modelPickedByUser, firstAllowed, currentModel,
            params, tunable, constraints,
            typeModels, modelName, optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading,
-           pendingOptsRef, setOpenRef, selectedRestricted, typeFullyRestricted };
+           pendingOptsRef, setOpenRef, selectedBlocked, typeFullyBlocked };
 }

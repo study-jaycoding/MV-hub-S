@@ -302,57 +302,57 @@ class CreditPlanTests(unittest.TestCase):
         self.assertNotIn("base_balance", mine)
         self.assertIsNone(plan_repo.plan_view("ws1", viewer=("u_c", "c@x"))["my_group"])
 
-    # ── 그룹별 제한 모델(Restricted Models) ──
-    def test_restricted_models_save_contract(self) -> None:
+    # ── 그룹이 쓸 수 있는 모델(허용 목록, 빈 목록=제한 없음) ──
+    def test_allowed_models_save_contract(self) -> None:
         # 정규화: 공백·대문자·중복·빈 값 정리, 첫 등장 순서 유지
         settings = self._save(
             0,
             [{"name": "Artist", "monthly_limit": 1000,
-              "restricted_models": [" Seedance_2_5 ", "seedance_2_5", "", "nano_banana_pro"]},
+              "allowed_models": [" Seedance_2_5 ", "seedance_2_5", "", "nano_banana_pro"]},
              {"name": "TD", "monthly_limit": None}],
             [],
         )
         artist = self._group(settings, "Artist")
-        self.assertEqual(artist["restricted_models"], ["seedance_2_5", "nano_banana_pro"])
-        self.assertEqual(self._group(settings, "TD")["restricted_models"], [])
+        self.assertEqual(artist["allowed_models"], ["seedance_2_5", "nano_banana_pro"])
+        self.assertEqual(self._group(settings, "TD")["allowed_models"], [])  # 빈 목록 = 제한 없음
         ids = {g["name"]: g["id"] for g in settings["groups"]}
         base = (artist["base_start"], artist["base_balance"])
 
-        # 키 없음(구버전 앱·'추정' 맞추기 재전송) = 기존값 유지 · 제한만 바꾸는 저장은 재기준화 없이 반영
+        # 키 없음(구버전 앱·'추정' 맞추기 재전송) = 기존값 유지 · 모델만 바꾸는 저장은 재기준화 없이 반영
         settings = self._save(1, [{"id": ids["Artist"], "name": "Artist", "monthly_limit": 1000},
                                   {"id": ids["TD"], "name": "TD", "monthly_limit": None}], [])
-        self.assertEqual(self._group(settings, "Artist")["restricted_models"], ["seedance_2_5", "nano_banana_pro"])
+        self.assertEqual(self._group(settings, "Artist")["allowed_models"], ["seedance_2_5", "nano_banana_pro"])
         settings = self._save(2, [{"id": ids["Artist"], "name": "Artist", "monthly_limit": 1000,
-                                   "restricted_models": ["gpt_image_2"]},
+                                   "allowed_models": ["gpt_image_2"]},
                                   {"id": ids["TD"], "name": "TD", "monthly_limit": None}], [])
         artist = self._group(settings, "Artist")
-        self.assertEqual(artist["restricted_models"], ["gpt_image_2"])
+        self.assertEqual(artist["allowed_models"], ["gpt_image_2"])
         self.assertEqual((artist["base_start"], artist["base_balance"]), base)
-        # 명시 [] = 해제
-        settings = self._save(3, [{"id": ids["Artist"], "name": "Artist", "monthly_limit": 1000, "restricted_models": []},
+        # 명시 [] = 제한 없음으로 되돌림
+        settings = self._save(3, [{"id": ids["Artist"], "name": "Artist", "monthly_limit": 1000, "allowed_models": []},
                                   {"id": ids["TD"], "name": "TD", "monthly_limit": None}], [])
-        self.assertEqual(self._group(settings, "Artist")["restricted_models"], [])
-        # 이름 맞바꾸기는 id 기준이라 제한이 따라간다 · 삭제 뒤 같은 이름의 새 그룹은 빈 목록
-        settings = self._save(4, [{"id": ids["Artist"], "name": "TD", "monthly_limit": 1000, "restricted_models": ["z_image"]},
+        self.assertEqual(self._group(settings, "Artist")["allowed_models"], [])
+        # 이름 맞바꾸기는 id 기준이라 설정이 따라간다 · 삭제 뒤 같은 이름의 새 그룹은 빈 목록
+        settings = self._save(4, [{"id": ids["Artist"], "name": "TD", "monthly_limit": 1000, "allowed_models": ["z_image"]},
                                   {"id": ids["TD"], "name": "Artist", "monthly_limit": None}], [])
-        self.assertEqual(next(g for g in settings["groups"] if g["id"] == ids["Artist"])["restricted_models"], ["z_image"])
+        self.assertEqual(next(g for g in settings["groups"] if g["id"] == ids["Artist"])["allowed_models"], ["z_image"])
         settings = self._save(5, [{"id": ids["TD"], "name": "Artist", "monthly_limit": None}], [])
         settings = self._save(6, [{"id": ids["TD"], "name": "Artist", "monthly_limit": None},
                                   {"name": "TD", "monthly_limit": 10}], [])
-        self.assertEqual(self._group(settings, "TD")["restricted_models"], [])
+        self.assertEqual(self._group(settings, "TD")["allowed_models"], [])
         # 형식·개수 위반은 ValueError(→400)
         for bad in (["bad-id!"], ["x" * 65], [f"m{i}" for i in range(65)], "seedance_2_5", [1]):
             with self.assertRaises(ValueError):
-                self._save(7, [{"id": ids["TD"], "name": "Artist", "monthly_limit": None, "restricted_models": bad}], [])
+                self._save(7, [{"id": ids["TD"], "name": "Artist", "monthly_limit": None, "allowed_models": bad}], [])
         # 그룹 이름 바꾸기 + 미상 id 보존(미래 모델·구버전 앱)
         settings = self._save(7, [{"id": ids["TD"], "name": "Artist", "monthly_limit": None,
-                                   "restricted_models": ["future_model_9"]}], [])
-        self.assertEqual(self._group(settings, "Artist")["restricted_models"], ["future_model_9"])
+                                   "allowed_models": ["future_model_9"]}], [])
+        self.assertEqual(self._group(settings, "Artist")["allowed_models"], ["future_model_9"])
 
     def test_my_models_and_router(self) -> None:
         settings = self._save(
             0,
-            [{"name": "Artist", "monthly_limit": 1000, "restricted_models": ["seedance_2_5"]},
+            [{"name": "Artist", "monthly_limit": 1000, "allowed_models": ["seedance_2_5"]},
              {"name": "TD", "monthly_limit": None}],
             [],
         )
@@ -360,25 +360,25 @@ class CreditPlanTests(unittest.TestCase):
                    self._assign(settings, {"a@x": "Artist", "b@x": "TD"}))
         artist_id = self._group(settings, "Artist")["id"]
         mine = plan_repo.my_models("ws1", "A@X")  # 이메일 정규형으로 대조
-        self.assertEqual((mine["group_id"], mine["group_name"], mine["restricted_models"], mine["revision"]),
+        self.assertEqual((mine["group_id"], mine["group_name"], mine["allowed_models"], mine["revision"]),
                          (artist_id, "Artist", ["seedance_2_5"], 2))
-        self.assertEqual(plan_repo.my_models("ws1", "b@x")["restricted_models"], [])
+        self.assertEqual(plan_repo.my_models("ws1", "b@x")["allowed_models"], [])  # 설정 없는 그룹 = 제한 없음
         unassigned = plan_repo.my_models("ws1", "c@x")
-        self.assertEqual((unassigned["group_id"], unassigned["restricted_models"], unassigned["revision"]), (None, [], 2))
+        self.assertEqual((unassigned["group_id"], unassigned["allowed_models"], unassigned["revision"]), (None, [], 2))
         # 멤버 뷰(my_group)와 매니저 뷰(groups)에도 실린다
-        self.assertEqual(plan_repo.plan_view("ws1", viewer=("u_a", "a@x"))["my_group"]["restricted_models"], ["seedance_2_5"])
-        self.assertEqual(self._group(plan_repo.plan_view("ws1"), "Artist")["restricted_models"], ["seedance_2_5"])
+        self.assertEqual(plan_repo.plan_view("ws1", viewer=("u_a", "a@x"))["my_group"]["allowed_models"], ["seedance_2_5"])
+        self.assertEqual(self._group(plan_repo.plan_view("ws1"), "Artist")["allowed_models"], ["seedance_2_5"])
         # 라우터: 멤버·매니저(본인 이메일)·비멤버 403·workspace_id 없음 400·AUTH off 는 빈 목록
         member = _acc("a@x", "u_a")
         pm = _acc("b@x", "u_b", "product_manager")
         with auth_on():
-            self.assertEqual(manage_router.credit_plan_my_models(member, workspace_id="ws1")["restricted_models"], ["seedance_2_5"])
+            self.assertEqual(manage_router.credit_plan_my_models(member, workspace_id="ws1")["allowed_models"], ["seedance_2_5"])
             self.assertEqual(manage_router.credit_plan_my_models(pm, workspace_id="ws1")["group_name"], "TD")
             for req, ws, code in ((member, "ws2", 403), (_acc("z@x", "u_z"), "ws1", 403), (member, "", 400)):
                 with self.assertRaises(HTTPException) as ctx:
                     manage_router.credit_plan_my_models(req, workspace_id=ws)
                 self.assertEqual(ctx.exception.status_code, code)
-        self.assertEqual(manage_router.credit_plan_my_models(member, workspace_id="ws1")["restricted_models"], [])
+        self.assertEqual(manage_router.credit_plan_my_models(member, workspace_id="ws1")["allowed_models"], [])
 
     # ── 라우터 게이트 ──
     def test_router_gates(self) -> None:

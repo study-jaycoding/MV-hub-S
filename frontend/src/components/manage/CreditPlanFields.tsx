@@ -34,9 +34,9 @@ function memberLabel(member: CreditPlanMember): string {
   return member.name || member.email.split("@")[0];
 }
 
-// 그룹 창의 '제한 모델' 후보 — 앱이 생성 창에 실제로 보여 주는 모델만(이미지·영상, Jay 2026-09-11: 부분 수정 모델은 제외).
+// 그룹 창의 '사용 모델' 후보 — 앱이 생성 창에 실제로 보여 주는 모델만(이미지·영상, Jay 2026-09-11: 부분 수정 모델은 제외).
 // 저장값은 job_type 문자열이라 여기 없는 옛·미래 id 도 알약으로는 보여 주고 그대로 보존한다.
-const RESTRICTABLE_MODEL_GROUPS: { title: string; ids: readonly string[] }[] = [
+const SELECTABLE_MODEL_GROUPS: { title: string; ids: readonly string[] }[] = [
   { title: "이미지", ids: ALLOWED.image },
   { title: "영상", ids: ALLOWED.video },
 ];
@@ -59,12 +59,12 @@ function GroupEditor({
   const [unlimited, setUnlimited] = useState(group.unlimited);
   const [limitInput, setLimitInput] = useState(group.limitInput);
   const [limitPeriod, setLimitPeriod] = useState<LimitPeriod>(group.limitPeriod);
-  // 제한 모델(차단 목록) — 힉스필드 User Group 의 Restricted Models 와 같은 뜻. 저장해야 서버에 간다.
-  const [restricted, setRestricted] = useState<string[]>(group.restrictedModels);
+  // 사용 모델(**허용 목록** — 체크한 것만 쓴다, 아무것도 없으면 제한 없음). 저장해야 서버에 간다.
+  const [allowed, setAllowed] = useState<string[]>(group.allowedModels);
   const [pickingModels, setPickingModels] = useState(false);
   const modelLabel = useModelDisplayName();
-  const toggleRestricted = (id: string) =>
-    setRestricted((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
+  const toggleAllowed = (id: string) =>
+    setAllowed((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   const [emails, setEmails] = useState<string[]>(
     () => draft.members.filter((member) => member.group_id === group.id).map((member) => member.email),
   );
@@ -91,7 +91,7 @@ function GroupEditor({
       return;
     }
     onApply(
-      { ...group, name: trimmed, unlimited, limitInput: stripThousands(limitInput), limitPeriod, restrictedModels: restricted },
+      { ...group, name: trimmed, unlimited, limitInput: stripThousands(limitInput), limitPeriod, allowedModels: allowed },
       emails,
     );
   };
@@ -141,34 +141,37 @@ function GroupEditor({
               </div>
             </label>
           ) : null}
-          <div className="credit-modal-field credit-restrict">
-            <div className="credit-restrict-head">
-              <span>제한 모델</span>
+          <div className="credit-modal-field credit-allow">
+            <div className="credit-allow-head">
+              <span>사용 모델</span>
               <button type="button" className="credit-modal-add" onClick={() => setPickingModels((current) => !current)}>
-                {pickingModels ? "완료" : "+ 추가"}
+                {pickingModels ? "완료" : "+ 고르기"}
               </button>
             </div>
-            {restricted.length ? (
-              <div className="credit-restrict-chips">
-                {restricted.map((id) => (
-                  <span className="credit-chip" key={id} title={id}>
-                    {modelLabel(id)}
-                    <button type="button" aria-label={`${modelLabel(id)} 제한 풀기`} onClick={() => toggleRestricted(id)}>×</button>
-                  </span>
-                ))}
-              </div>
+            {allowed.length ? (
+              <>
+                <div className="credit-allow-chips">
+                  {allowed.map((id) => (
+                    <span className="credit-chip" key={id} title={id}>
+                      {modelLabel(id)}
+                      <button type="button" aria-label={`${modelLabel(id)} 빼기`} onClick={() => toggleAllowed(id)}>×</button>
+                    </span>
+                  ))}
+                </div>
+                <small className="credit-allow-empty">이 {allowed.length}개만 쓸 수 있습니다 — 나머지는 멤버의 생성 창·캔버스 모델 선택 목록에서 빠집니다.</small>
+              </>
             ) : (
-              <small className="credit-restrict-empty">제한 없음 — 이 그룹 멤버는 모든 모델을 씁니다. 고른 모델은 멤버의 생성 창·캔버스 모델 노드에서 사라집니다.</small>
+              <small className="credit-allow-empty">제한 없음 — 이 그룹 멤버는 모든 모델을 씁니다. 특정 모델만 쓰게 하려면 아래에서 체크하세요.</small>
             )}
             {pickingModels ? (
-              <div className="credit-restrict-pick" role="group" aria-label="제한할 모델 고르기">
-                {RESTRICTABLE_MODEL_GROUPS.map((section) => (
+              <div className="credit-allow-pick" role="group" aria-label="쓸 수 있는 모델 고르기">
+                {SELECTABLE_MODEL_GROUPS.map((section) => (
                   <div key={section.title}>
-                    <div className="credit-restrict-group">{section.title}</div>
+                    <div className="credit-allow-group">{section.title}</div>
                     {section.ids.map((id) => (
-                      <label className="credit-restrict-row" key={id}>
+                      <label className="credit-allow-row" key={id}>
                         <span>{modelLabel(id)}</span>
-                        <input type="checkbox" checked={restricted.includes(id)} onChange={() => toggleRestricted(id)} />
+                        <input type="checkbox" checked={allowed.includes(id)} onChange={() => toggleAllowed(id)} />
                       </label>
                     ))}
                   </div>
@@ -318,7 +321,7 @@ export function CreditPlanFields({
   };
   const startNew = () => setEditing({
     id: newGroupId(), isNew: true, name: "", limitInput: "", limitPeriod: "month", unlimited: false,
-    remaining: null, usedMonth: 0, memberCount: 0, restrictedModels: [],
+    remaining: null, usedMonth: 0, memberCount: 0, allowedModels: [],
   });
   const updateTopup = (id: string, patch: Partial<DraftTopup>) => {
     if (!draft) return;
@@ -433,8 +436,8 @@ export function CreditPlanFields({
                   <tr key={group.id} onClick={() => setEditing(group)} title="클릭하면 그룹 창이 열립니다">
                     <td>
                       <b>{group.name}</b>{group.isNew ? <small> 저장 전</small> : null}
-                      {group.restrictedModels.length ? (
-                        <small className="credit-restrict-badge" title={group.restrictedModels.join(", ")}> · 제한 {group.restrictedModels.length}</small>
+                      {group.allowedModels.length ? (
+                        <small className="credit-allow-badge" title={group.allowedModels.join(", ")}> · 모델 {group.allowedModels.length}개만</small>
                       ) : null}
                     </td>
                     <td>{group.unlimited ? "∞" : `${formatThousands(group.limitInput)} ${periodSuffix(group.limitPeriod)}`}</td>

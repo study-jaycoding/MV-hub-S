@@ -1,6 +1,6 @@
 import { api } from "../api";
 import { postLibraryChanged } from "./libraryBroadcast";
-import { modelBlockMessage } from "./modelRestrictions";
+import { modelBlockMessage } from "./modelPolicy";
 import { isGenerationWorkspaceReady } from "./workspaceContext";
 import type { Filters, Generation, WorkspaceContext } from "../types";
 import type { CanvasGenerationLink } from "./canvasGenerationRecovery";
@@ -45,7 +45,7 @@ export function useGenerationCardActions({
       flash("워크스페이스 정보를 확인하는 중입니다. 잠시 후 다시 시도하세요.");
       return null;
     }
-    // 그룹별 제한 모델 — 재생성은 원본 모델(g.model)로 나가므로 제출 전에 막는다(서버 미전송, pending 없음).
+    // 그룹 사용 모델 — 재생성은 원본 모델(g.model)로 나가므로 제출 전에 막는다(서버 미전송, pending 없음).
     const blocked = modelBlockMessage(g.model);
     if (blocked) {
       flash(blocked);
@@ -82,8 +82,8 @@ export function useGenerationCardActions({
   const onRecoveryRequeue = async (g: Generation): Promise<boolean> => {
     if (g.execution_phase !== "recovery_required") return false;
     // 복구 재실행은 **원 생성물의 워크스페이스**로 다시 나간다(gen_requests 의 실행 레시피) — 지금 고른 공간의
-    // 제한을 씌우면 잘못 막는다. 같은 공간일 때만 검사한다(코덱스 P1).
-    //  · 개인 공간 생성물은 workspace_id 가 null 이지만 '모름'이 아니라 '팀이 아님'이다 — 그룹 제한은 팀 공간에만
+    // 설정을 씌우면 잘못 막는다. 같은 공간일 때만 검사한다(코덱스 P1).
+    //  · 개인 공간 생성물은 workspace_id 가 null 이지만 '모름'이 아니라 '팀이 아님'이다 — 그룹 설정은 팀 공간에만
     //    있으므로 빈 문자열로 넘겨 현재 팀 정책이 걸리지 않게 한다.
     const originWorkspace = g.workspace_scope === "personal" ? "" : g.workspace_id;
     const blocked = modelBlockMessage(g.model, { forWorkspaceId: originWorkspace });

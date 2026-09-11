@@ -68,7 +68,7 @@ import { useSpotlightTray } from "../lib/useSpotlightTray";
 import { useSpotlightTokenWrap } from "../lib/useSpotlightTokenWrap";
 import { useModels, ALLOWED, HIDDEN_PARAMS, stripHiddenParams, withEffectiveDefaults } from "../lib/useModels";
 import { policyNote, submitBlockMessage } from "../lib/modelPolicyCore";
-import { useModelPolicy } from "../lib/modelRestrictions";
+import { useModelPolicy } from "../lib/modelPolicy";
 import {
   notifySpotlightAssetsChanged,
   parseSpotlightAssetItems,
@@ -186,15 +186,15 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   onCanvasBatchCreated,
 }, ref) {
   // 모델/파라미터/비용 로직은 useModels 훅으로 추출(동작 100% 보존). 로드 실패는 setError 로 보고.
-  // 그룹별 제한 모델 정책(앱 수준 모듈 저장소) — 목록에서 빼고, 이미 고른 모델이 제한이면 제출만 막는다.
+  // 그룹 사용 모델 정책(앱 수준 모듈 저장소) — 못 쓰는 모델은 목록에서 빼고, 이미 고른 것이면 제출만 막는다.
   const modelPolicy = useModelPolicy();
   const { type, setType, model, setModel, markModelSelection, modelPickedByUser, firstAllowed,
           currentModel: readSelectedModel, tunable, constraints, typeModels, modelName,
           optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading,
-          pendingOptsRef, setOpenRef, params: schemaParams, selectedRestricted, typeFullyRestricted } =
-    useModels((msg) => setError(msg), { restricted: modelPolicy.restricted, ready: modelPolicy.status !== "loading" });
-  // 이 타입이 통째로 제한돼 고를 모델이 없으면 "모델을 선택하세요" 대신 이유를 말한다(코덱스 P2).
-  const modelBlockedMessage = typeFullyRestricted
+          pendingOptsRef, setOpenRef, params: schemaParams, selectedBlocked, typeFullyBlocked } =
+    useModels((msg) => setError(msg), { allowed: modelPolicy.allowed, ready: modelPolicy.status !== "loading" });
+  // 이 타입을 통째로 못 써서 고를 모델이 없으면 "모델을 선택하세요" 대신 이유를 말한다(코덱스 P2).
+  const modelBlockedMessage = typeFullyBlocked
     ? `이 그룹에서 쓸 수 있는 ${type === "video" ? "영상" : "이미지"} 모델이 없습니다. 매니저에게 문의하세요.`
     : submitBlockMessage(modelPolicy, model, modelName);
   const [countState, setCountState] = useState(1); // 한 번에 N장 생성(배치) — 내부 폴백
@@ -776,7 +776,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
               ? "video"
               : "image";
       // 원래 모델이 화이트리스트에 있으면 유지(명시 복원), 아니면 '지금 고를 수 있는' 첫 모델로 클램프(자동 대체).
-      // 폴백이 그룹 제한 모델을 집지 않게 firstAllowed 를 쓴다. 자동 대체는 explicit 로 굳히지 않아
+      // 폴백이 그룹에서 못 쓰는 모델을 집지 않게 firstAllowed 를 쓴다. 자동 대체는 explicit 로 굳히지 않아
       // 나중에 정책이 바뀌면 다시 고를 수 있다(코덱스 P1).
       const keepsOriginal = ALLOWED[t].includes(g.model || "");
       const useModel = keepsOriginal ? (g.model as string) : firstAllowed(t) || ALLOWED[t][0];
@@ -1297,9 +1297,9 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
                 setModel={setModel}
                 modelName={modelName}
                 typeModels={typeModels}
-                modelRestricted={selectedRestricted}
-                restrictedNote={selectedRestricted ? modelBlockedMessage : null}
-                typeFullyRestricted={typeFullyRestricted}
+                modelBlocked={selectedBlocked}
+                blockedNote={selectedBlocked ? modelBlockedMessage : null}
+                typeFullyBlocked={typeFullyBlocked}
                 policyNote={policyNote(modelPolicy)}
                 tunable={tunable}
                 constraints={constraints}

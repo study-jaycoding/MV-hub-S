@@ -21,11 +21,11 @@ interface Props {
   setModel: (value: string) => void;
   modelName: string;
   typeModels: ModelInfo[];
-  // 그룹별 제한 모델 — 지금 고른 모델이 제한됐으면 칩을 붉게, 드롭다운 머리에 안내를 띄운다.
-  modelRestricted?: boolean;
-  restrictedNote?: string | null;
-  // 이 타입의 모델이 전부 제한 — 카탈로그 미로딩으로 목록이 빈 것과 구별해 안내한다.
-  typeFullyRestricted?: boolean;
+  // 그룹 사용 모델 — 지금 고른 모델을 못 쓰면 칩을 붉게, 드롭다운 머리에 안내를 띄운다.
+  modelBlocked?: boolean;
+  blockedNote?: string | null;
+  // 이 타입의 모델을 전부 못 씀 — 카탈로그 미로딩으로 목록이 빈 것과 구별해 안내한다.
+  typeFullyBlocked?: boolean;
   // 정책을 지금 확신할 수 없을 때(캐시로 표시 중·조회 실패) 드롭다운에 드러낸다.
   policyNote?: string | null;
   tunable: ModelParam[];
@@ -62,9 +62,9 @@ export function SpotlightOptionsBar({
   setModel,
   modelName,
   typeModels,
-  modelRestricted = false,
-  restrictedNote = null,
-  typeFullyRestricted = false,
+  modelBlocked = false,
+  blockedNote = null,
+  typeFullyBlocked = false,
   policyNote = null,
   tunable,
   constraints,
@@ -105,8 +105,8 @@ export function SpotlightOptionsBar({
 
       <div className="sl-chip-wrap">
         <button
-          className={"sl-chip" + (open === "model" ? " active" : "") + (modelRestricted ? " restricted" : "")}
-          title={modelRestricted ? restrictedNote || "이 모델은 그룹에서 제한되어 있습니다" : undefined}
+          className={"sl-chip" + (open === "model" ? " active" : "") + (modelBlocked ? " blocked" : "")}
+          title={modelBlocked ? blockedNote || "이 모델은 이 그룹에서 쓸 수 없습니다" : undefined}
           onClick={() => setOpen(open === "model" ? null : "model")}
         >
           <span className="sl-dot" />
@@ -116,10 +116,10 @@ export function SpotlightOptionsBar({
         {open === "model" && (
           <div className="sl-dropdown">
             <div className="sl-dd-title">{type === "video" ? "영상" : "이미지"} 모델</div>
-            {modelRestricted ? (
-              <div className="sl-dd-note">{restrictedNote || "지금 고른 모델은 그룹에서 제한되어 있습니다. 다른 모델을 고르세요."}</div>
+            {modelBlocked ? (
+              <div className="sl-dd-note">{blockedNote || "지금 고른 모델은 이 그룹에서 쓸 수 없습니다. 다른 모델을 고르세요."}</div>
             ) : null}
-            {typeFullyRestricted ? (
+            {typeFullyBlocked ? (
               <div className="sl-dd-empty">이 그룹에서 쓸 수 있는 {type === "video" ? "영상" : "이미지"} 모델이 없습니다.</div>
             ) : null}
             {policyNote ? <div className="sl-dd-empty">{policyNote}</div> : null}

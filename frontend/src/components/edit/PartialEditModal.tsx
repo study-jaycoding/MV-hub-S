@@ -23,7 +23,9 @@ import { useModels } from "../../lib/useModels";
 import type { Generation, WorkspaceContext } from "../../types";
 
 const MAX_WORK_PIXELS = 12_000_000; // 12MP — 주석/평면화 캔버스 동시 보유 상한
-const EDIT_MODEL = "seedream_v5_pro"; // 편집 전용 고정 — 웹 편집기와 동일(원본 재현 충실, 실측)
+// 편집 전용 고정 모델 — 웹 편집기와 동일(원본 재현 충실, 실측). 그룹 사용 모델 정책의 면제 목록과 같은 값이어야
+// 부분 수정 결과물의 재생성·복구가 막히지 않는다(modelPolicyCore.POLICY_EXEMPT_MODELS).
+const EDIT_MODEL = "seedream_v5_pro";
 const POLL_MS = 2_000;
 const SLOW_AFTER_MS = 180_000; // 이후에도 계속 감시 — 실패 처리 아님(이중 과금 방지)
 

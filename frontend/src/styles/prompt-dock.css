@@ -531,8 +531,8 @@
 .error { color: #ff6b6b; font-size: 13px; }
 
 
-/* group-restricted model (modelRestrictions): selected model is blocked for this group */
-.sl-chip.restricted .sl-chip-label { color: #f06a5a; }
-.sl-chip.restricted .sl-dot { background: #f06a5a; }
+/* group model policy (modelPolicy): the selected model is not usable in this group */
+.sl-chip.blocked .sl-chip-label { color: #f06a5a; }
+.sl-chip.blocked .sl-dot { background: #f06a5a; }
 .sl-dd-note { padding: 6px 10px; font-size: 11px; line-height: 1.4; color: #f06a5a; }
 .sl-dd-empty { padding: 8px 10px 10px; font-size: 11.5px; color: var(--muted2); }

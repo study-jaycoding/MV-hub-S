@@ -57,7 +57,7 @@ export const manageApi = {
       method: "PUT",
       body: jsonBody(body),
     }),
-  // 본인 그룹의 제한 모델(생성 창·캔버스 모델 노드가 모델 목록을 거를 때) — 매니저도 본인 이메일 기준. 구서버는 404.
+  // 본인 그룹이 쓸 수 있는 모델(생성 창·캔버스 모델 노드가 모델 목록을 거를 때) — 매니저도 본인 이메일 기준. 구서버는 404.
   creditPlanMyModels: (workspaceId: string) =>
     jsonFetch<MyModelPolicy>(withQuery("/api/manage/credit-plan/my-models", { workspace_id: workspaceId })),
   listTasks: (projectId: string, workspaceId?: string, includeArchived = false) =>

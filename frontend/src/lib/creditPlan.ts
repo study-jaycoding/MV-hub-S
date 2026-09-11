@@ -69,15 +69,15 @@ export interface CreditGroupSummary {
   estimated: boolean; // 미상 건이 섞여 추정치
   my_used_month?: number; // 멤버 뷰만
   my_unknown_month?: number;
-  restricted_models?: string[]; // 그룹별 제한 모델(job_type, 차단 목록) — 구서버는 없음
+  allowed_models?: string[]; // 그룹이 쓸 수 있는 모델(job_type, **빈 목록=제한 없음**) — 구서버는 없음
 }
 
-/** GET /api/manage/credit-plan/my-models — 본인 그룹의 제한 모델(생성 창·캔버스 모델 노드가 거르는 근거). */
+/** GET /api/manage/credit-plan/my-models — 본인 그룹이 쓸 수 있는 모델(생성 창·캔버스 모델 노드가 거르는 근거). */
 export interface MyModelPolicy {
   workspace_id: string;
   group_id: string | null; // null = 배정 없음(제한 없음)
   group_name: string | null;
-  restricted_models: string[];
+  allowed_models: string[]; // 빈 목록 = 제한 없음(전부 사용)
   revision: number;
 }
 
@@ -123,8 +123,8 @@ export interface CreditPlanSaveBody {
   revision: number;
   note: string | null;
   topup_day?: number; // 매월 충전 기준일 · 없으면 그대로
-  // restricted_models: 키를 빼면 서버가 기존값을 유지하고, [] 를 보내야 해제된다(구버전 앱·'추정' 맞추기가 제한을 지우지 않게).
-  groups?: { id?: string; name: string; monthly_limit: number | null; limit_period: LimitPeriod; remaining_override?: number | null; restricted_models?: string[] }[]; // 없으면그룹·배정 그대로
+  // allowed_models: 키를 빼면 서버가 기존값을 유지하고, [] 를 보내야 제한이 풀린다(구버전 앱·'추정' 맞추기가 설정을 지우지 않게).
+  groups?: { id?: string; name: string; monthly_limit: number | null; limit_period: LimitPeriod; remaining_override?: number | null; allowed_models?: string[] }[]; // 없으면그룹·배정 그대로
   members?: { email: string; group_id: string | null }[];
   topups?: { id?: string; day: string; credits: number; note: string | null }[]; // 전체 교체 · 없으면 그대로
 }
@@ -251,7 +251,7 @@ export interface DraftGroup {
   remaining: number | null; // 서버가 준 현재 남은 양(표시용)
   usedMonth: number;
   memberCount: number; // 서버 기준(표시용) — 초안의 실제 인원은 members 로 센다
-  restrictedModels: string[]; // 그룹별 제한 모델(job_type). 앱이 모르는 id 도 그대로 보존한다(미래 모델·구버전 앱)
+  allowedModels: string[]; // 그룹이 쓸 수 있는 모델(job_type). 빈 배열=제한 없음. 앱이 모르는 id 도 그대로 보존한다
 }
 
 export interface DraftTopup {
@@ -293,7 +293,7 @@ export function draftFromSettings(settings: CreditPlanSettings): CreditPlanDraft
       remaining: group.remaining,
       usedMonth: group.used_month,
       memberCount: group.member_count,
-      restrictedModels: [...(group.restricted_models ?? [])],
+      allowedModels: [...(group.allowed_models ?? [])],
     })),
     members: settings.members.map((member) => ({ ...member })),
     dirty: false,
@@ -336,7 +336,7 @@ export function validateDraft(draft: CreditPlanDraft): string | null {
 }
 
 /** 대시보드 '추정 → 힉스필드 값 맞추기' 저장 본문 — 그룹 목록은 그대로(배정은 안 보내 서버가 유지), 한 그룹만 남은 양을
- *  제한 모델은 일부러 싣지 않는다 — 키가 없으면 서버가 기존값을 유지하므로, 오래된 대시보드 응답이 다른 매니저의 변경을 덮지 않는다.R 로.
+ *  사용 모델은 일부러 싣지 않는다 — 키가 없으면 서버가 기존값을 유지하므로, 오래된 대시보드 응답이 다른 매니저의 변경을 덮지 않는다.R 로.
  *  view 는 매니저 응답(revision·groups 포함)이어야 한다. */
 export function overrideBody(view: CreditPlanView, groupId: string, remaining: number): CreditPlanSaveBody {
   return {
@@ -371,9 +371,9 @@ export function draftToBody(draft: CreditPlanDraft): CreditPlanSaveBody {
       name: group.name.trim(),
       monthly_limit: group.unlimited ? null : parseNonNegative(group.limitInput) ?? null,
       limit_period: group.limitPeriod,
-      // 설정 창은 항상 명시한다(빈 배열 = 해제). 초안에 값이 없는 비정상 상태에서는 키를 빼
-      // 서버가 기존값을 유지하게 한다 — 크래시도, 조용한 제한 해제도 없게.
-      ...(Array.isArray(group.restrictedModels) ? { restricted_models: [...group.restrictedModels] } : {}),
+      // 설정 창은 항상 명시한다(빈 배열 = 제한 없음). 초안에 값이 없는 비정상 상태에서는 키를 빼
+      // 서버가 기존값을 유지하게 한다 — 크래시도, 조용한 설정 해제도 없게.
+      ...(Array.isArray(group.allowedModels) ? { allowed_models: [...group.allowedModels] } : {}),
     })),
     members: draft.members.map((member) => ({
       email: member.email,
