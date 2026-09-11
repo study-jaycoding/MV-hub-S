@@ -105,7 +105,7 @@ export function SceneWorkspaceMenu({
           }}
         >
           <span className="scene-ws-item-name">None</span>
-          <small>모두 보임</small>
+          <small>모든 공간에서 보임</small>
         </button>
         {loading && !options.length ? <div className="scene-ws-empty">불러오는 중…</div> : null}
         {!loading && !options.length ? (
