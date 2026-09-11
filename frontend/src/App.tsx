@@ -132,6 +132,12 @@ import {
 } from "./lib/workspaceContext";
 import { configureModelPolicy, currentModelPolicy, modelBlockMessage } from "./lib/modelPolicy";
 import { normalizeSceneWorkspace, sceneMatchesWorkspace, type SceneMove, type SceneWorkspace } from "./lib/sceneWorkspace";
+import {
+  planSceneSwitch,
+  queuedIsFresh,
+  queuedStillApplies,
+  settleSwitch,
+} from "./lib/workspaceSwitchPlan";
 import { isHttpStatus } from "./lib/http";
 import { modelAllowed } from "./lib/modelPolicyCore";
 import { STORAGE_KEYS } from "./lib/storageKeys";
@@ -168,12 +174,15 @@ export default function App() {
   // 그래야 늦게 온 옛 응답이 사용자의 새 선택을 덮지 않는다(코덱스 P2).
   const workspaceEpochRef = useRef(0);
   const [workspaceEpoch, setWorkspaceEpoch] = useState(0);
+  //  ★발급한 순번을 **돌려준다** — 계정 메뉴처럼 다른 컴포넌트는 prop 으로 받는 순번이 렌더 뒤에야
+  //   갱신돼, 호출 직후 읽으면 옛 값이다. 반환값을 들고 있다가 응답이 왔을 때 맞대 본다(코덱스 리뷰).
   const changeWorkspaceContext = useCallback((next: WorkspaceContext) => {
     workspaceEpochRef.current += 1;
     setWorkspaceEpoch(workspaceEpochRef.current);
     setWorkspaceContext((previous) =>
       sameWorkspace(previous, next) && previous.name === next.name ? previous : next,
     );
+    return workspaceEpochRef.current;
   }, []);
   // 별도 키로 영속화 — 관리/에셋 창이 이 키(storage 이벤트)로 같은 범위를 따라간다.
   useEffect(() => {
@@ -221,26 +230,47 @@ export default function App() {
   // CLI 전환이 실패한 공간(403=권한 없음은 제외 — 그건 표시·집계만 바뀌면 되는 정상 모드).
   // 실패가 남아 있는 동안에는 그 공간의 캔버스에서 생성을 막고, 같은 탭을 다시 누르면 재시도한다.
   const [switchFailed, setSwitchFailed] = useState<{ workspaceId: string; detail: string } | null>(null);
-  const selectSceneWithWorkspace = (id: string | null) => {
-    selectScene(id); // 단일 관문(밀린 입력 flush 포함) — 씬은 언제나 먼저 연다
-    if (!id) return;
-    const scene = scenes.find((item) => item.id === id);
-    const assigned = scene ? normalizeSceneWorkspace(scene.workspace) : undefined;
-    if (!assigned) return;
-    const already = workspaceContext.scope === "team" && (workspaceContext.id || "") === assigned.id;
-    // 이미 그 공간이어도 **직전 전환이 실패했으면** 다시 시도한다(같은 탭 재클릭 = 재시도).
-    if (already && switchFailed?.workspaceId !== assigned.id) return;
-    if (switching) return; // 이미 전환 중 — 연속 클릭으로 요청을 겹치지 않는다
+  // 전환 중에 다른 씬을 누르면 **그 클릭의 전환 의도를 버리지 않고** 여기 담아 뒀다가 이어서 처리한다.
+  //  예전엔 `if (switching) return` 으로 버렸다 — 씬은 C 것이 열렸는데 공간은 B 로 남아, 그 캔버스에서
+  //  생성이 막힌 채(sceneWorkspaceBlock) 스스로 풀리지 않는 어긋난 상태가 됐다(코덱스 반례).
+  //  마지막 의도만 남긴다 — 중간 것들은 사용자가 이미 지나쳤다.
+  const pendingSwitchRef = useRef<
+    { sceneId: string; target: SceneWorkspace; atEpoch: number } | null
+  >(null);
+  // 담아 둔 의도를 실행하기 직전에 '지금 열려 있는 씬' 을 다시 본다 — 씬 삭제·추가·가져오기는
+  // 씬 탭 클릭 관문을 거치지 않고 바로 옮기므로, 클로저에 갇힌 값으로는 판단할 수 없다.
+  const activeSceneIdRef = useRef(activeSceneId);
+  activeSceneIdRef.current = activeSceneId;
+  const activeSceneRef = useRef(activeScene);
+  activeSceneRef.current = activeScene;
+  // 공간이 바뀐 것을 알리는 한 줄 — 씬 탭·계정 메뉴가 같은 문구를 쓴다. 이름을 굵게 강조하고,
+  // 개인 공간은 이름이 없어 "개인"으로 표기한다.
+  const flashWorkspaceSwitched = useCallback(
+    (name: string | null) =>
+      flash(
+        name ? (
+          <>
+            워크스페이스 <b className="toast-ws-name">{name}</b> — 이후 생성 크레딧은 이 공간에서
+            차감됩니다.
+          </>
+        ) : (
+          "워크스페이스 전환 — 이후 생성 크레딧은 이 공간에서 차감됩니다."
+        ),
+      ),
+    [flash],
+  );
+  // 실제 전환 한 번. 끝나면 기다리던 의도가 있는지 보고 **이어서** 돈다.
+  const runWorkspaceSwitch = (target: SceneWorkspace, sceneId: string) => {
     // 앱의 생성 대상 공간을 바꾼다(동기) — 이 뒤의 생성은 새 공간으로 나간다.
-    //  재시도(already)여도 호출한다: 공간 값은 그대로지만 **변경 순번이 올라** 이번 요청이
-    //  앞선 요청과 구분된다(먼저 보낸 실패 응답이 나중 성공을 덮지 않게 — 코덱스 P2).
-    changeWorkspaceContext({ scope: "team", id: assigned.id, name: assigned.name });
+    //  재시도여도 호출한다: 공간 값은 그대로지만 **변경 순번이 올라** 이번 요청이 앞선 요청과
+    //  구분된다(먼저 보낸 실패 응답이 나중 성공을 덮지 않게 — 코덱스 P2).
+    changeWorkspaceContext({ scope: "team", id: target.id, name: target.name });
     const epoch = workspaceEpochRef.current;
-    setSwitching({ epoch, sceneId: id });
+    setSwitching({ epoch, sceneId });
     // CLI 전역 선택도 맞춘다 — 라이브(로컬 허브)에서 계정 메뉴 목록이 옛 값으로 되돌리지 않게.
     // 공유 서버 본체에서는 하우스 계정이 아니면 403 이고, 그때는 앱 상태만으로 충분하다(조용히 무시).
     void api
-      .selectWorkspace(assigned.id)
+      .selectWorkspace(target.id)
       .then(
         () => ({ ok: true as const }),
         (error: unknown) =>
@@ -250,20 +280,67 @@ export default function App() {
       )
       .then((result) => {
         // '전환 중' 표시는 **자기 요청 것이면 언제나** 해제한다 — 결과를 버리더라도 남기면
-        // 이후 클릭이 `if (switching) return` 에 영영 막힌다(코덱스 P2).
+        // 이후 클릭이 영영 막힌다(코덱스 P2).
         setSwitching((current) => (current?.epoch === epoch ? null : current));
-        // 그 사이 사용자가 다른 공간을 골랐으면(씬 탭·계정 메뉴) 이 응답은 버린다.
-        if (epoch !== workspaceEpochRef.current) return;
-        if (result.ok) {
-          setSwitchFailed((current) => (current?.workspaceId === assigned.id ? null : current));
-          // 전환하는 동안 다른 경로가 앱 공간을 흔들었을 수 있어 한 번 더 확정한다(같은 값이면 무해).
-          changeWorkspaceContext({ scope: "team", id: assigned.id, name: assigned.name });
-          void reload();
+        const queued = pendingSwitchRef.current;
+        pendingSwitchRef.current = null;
+        const settled = settleSwitch({
+          // 담아 둔 뒤 공간이 또 바뀌었거나(순번), 그 씬을 떠났으면(삭제·자동 이동) 낡은 의도다.
+          //  둘 다 만족해야 이어간다 — 순번만으로는 씬 쪽 사정을 증명하지 못한다.
+          queuedFresh:
+            queuedIsFresh(queued, workspaceEpochRef.current) &&
+            queuedStillApplies(
+              queued,
+              activeSceneIdRef.current,
+              activeSceneRef.current
+                ? normalizeSceneWorkspace(activeSceneRef.current.workspace)
+                : undefined,
+            ),
+          ok: result.ok,
+          // 그 사이 사용자가 다른 공간을 골랐으면(씬 탭·계정 메뉴) 이 응답은 늦게 온 옛 것이다.
+          stale: epoch !== workspaceEpochRef.current,
+        });
+        if (settled.kind === "run-queued" && queued) {
+          runWorkspaceSwitch(queued.target, queued.sceneId);
           return;
         }
-        setSwitchFailed({ workspaceId: assigned.id, detail: result.detail });
-        flash(`워크스페이스를 '${assigned.name || assigned.id}'(으)로 바꾸지 못했습니다. ${result.detail}`);
+        if (settled.kind === "drop") return;
+        if (settled.kind === "confirm") {
+          setSwitchFailed((current) => (current?.workspaceId === target.id ? null : current));
+          // 전환하는 동안 다른 경로가 앱 공간을 흔들었을 수 있어 한 번 더 확정한다(같은 값이면 무해).
+          changeWorkspaceContext({ scope: "team", id: target.id, name: target.name });
+          // ★알림은 **CLI 가 실제로 그 공간을 물었다고 확인된 뒤에만** 띄운다(Jay: "확실하게 변경되어서").
+          //  라이브러리 재조회는 공간 변경 effect 하나가 맡는다 — 여기서 또 부르면 두 번 돈다.
+          flashWorkspaceSwitched(target.name);
+          return;
+        }
+        const detail = result.ok ? "" : result.detail; // settled 로 좁혀진 뒤라 result 자체는 안 좁혀진다
+        setSwitchFailed({ workspaceId: target.id, detail });
+        flash(`워크스페이스를 '${target.name || target.id}'(으)로 바꾸지 못했습니다. ${detail}`);
       });
+  };
+  const selectSceneWithWorkspace = (id: string | null) => {
+    selectScene(id); // 단일 관문(밀린 입력 flush 포함) — 씬은 언제나 먼저 연다
+    if (!id) return;
+    const scene = scenes.find((item) => item.id === id);
+    const plan = planSceneSwitch({
+      assigned: scene ? normalizeSceneWorkspace(scene.workspace) : undefined,
+      context: workspaceContext,
+      switching: !!switching,
+      failedWorkspaceId: switchFailed?.workspaceId ?? null,
+    });
+    if (plan.kind === "none") {
+      // '여기 그대로' — 기다리던 의도가 있으면 버린다. 안 버리면 B(전환 중)→C(대기)→B(재클릭)
+      // 에서 B 씬을 보고 있는데 끝난 뒤 C 로 넘어간다(코덱스 재현).
+      pendingSwitchRef.current = null;
+      return;
+    }
+    if (plan.kind === "queue") {
+      // 담은 시점의 순번을 함께 — 그 뒤 다른 경로가 공간을 바꾸면 이 의도는 낡은 것이 된다.
+      pendingSwitchRef.current = { sceneId: id, target: plan.target, atEpoch: workspaceEpochRef.current };
+      return;
+    }
+    runWorkspaceSwitch(plan.target, id);
   };
   const switchingSceneId = switching?.epoch === workspaceEpoch ? switching.sceneId : null;
   // 지금 보고 있는 캔버스에서 생성을 막아야 하는가 —
@@ -381,9 +458,16 @@ export default function App() {
     composeListEnabled: folderPeek, // 창이 열려 있을 때만 compose 탭에서 목록 조회·추가 로드
   });
   // 워크스페이스 전환(자동 동기화 포함) 시 사이드바 프로젝트 목록을 새 스코프로 재조회.
-  // 첫 마운트는 초기 로드가 담당 — 목록이 한 번 로드된 뒤의 변경에만 반응한다.
+  //  ★공간 변경 재조회는 **여기 하나뿐**이다 — 씬 탭·계정 메뉴가 각자 또 부르면 진행 중 조회를
+  //   무효화하고 다시 도는 두 번 실행이 된다(첫 결과는 버려진다).
+  //  ★첫 렌더는 초기 로드가 담당하므로 건너뛰되, 판정은 '값이 실제로 바뀌었나'로 한다. 예전엔
+  //   `projectsLoadedRef` 로 걸러서, **초기 로드가 끝나기 전에 공간을 바꾸면** 이 재조회가 통째로
+  //   생략되고 옛 스코프 응답이 그대로 적용됐다(코덱스 반례).
+  const reloadedWorkspaceScopeRef = useRef(projectWorkspaceId);
   useEffect(() => {
-    if (projectsLoadedRef.current) void reload(true);
+    if (reloadedWorkspaceScopeRef.current === projectWorkspaceId) return;
+    reloadedWorkspaceScopeRef.current = projectWorkspaceId;
+    void reload(true); // silent — 라이브러리 가시성은 공간과 무관하니 스피너로 깜빡일 이유가 없다
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectWorkspaceId]);
   // 캔버스(compose 탭)에서 태그하면 scheduleTagReload 가 compose·light 라 facets 를 안 불러와
@@ -1637,7 +1721,7 @@ export default function App() {
           clearSelect();
         }}
         onSearch={(q) => patch({ search: q || undefined })}
-        onWorkspaceSwitched={async (context) => {
+        onWorkspaceSwitched={(context) => {
           // 계정 메뉴로 전환에 성공했으면 그 공간의 '전환 실패' 기록을 지운다 — 안 그러면 그 공간의
           // 캔버스가 계속 막힌다(코덱스 P2).
           setSwitchFailed((current) =>
@@ -1645,19 +1729,14 @@ export default function App() {
               ? null
               : current,
           );
-          await reload();
-          // 어느 공간으로 갔는지 이름을 굵게 강조 — 개인 공간은 이름이 없어 "개인"으로 표기.
-          const wsName = context.scope === "personal" ? "개인" : context.name;
-          flash(
-            wsName ? (
-              <>
-                워크스페이스 <b className="toast-ws-name">{wsName}</b> — 이후 생성
-                크레딧은 이 공간에서 차감됩니다.
-              </>
-            ) : (
-              "워크스페이스 전환 — 이후 생성 크레딧은 이 공간에서 차감됩니다."
-            ),
-          );
+          // ★알림이 먼저다 — 예전엔 `await reload()` 뒤에 띄워, 전환이 끝난 뒤에도 라이브러리 재조회가
+          //  끝나야 알림이 보였다. 재조회는 공간 변경 effect 하나가 맡는다.
+          flashWorkspaceSwitched(context.scope === "personal" ? "개인" : context.name);
+        }}
+        onWorkspaceSwitchFailed={(context, detail) => {
+          setSwitchFailed({ workspaceId: context.id || "", detail });
+          // 메뉴는 이미 닫혔다 — 상태만 세우면 실패를 아무도 못 본다(코덱스 리뷰).
+          flash(`워크스페이스를 '${context.name || "개인"}'(으)로 바꾸지 못했습니다. ${detail}`);
         }}
         workspaceContext={workspaceContext}
         workspaceEpoch={workspaceEpoch}

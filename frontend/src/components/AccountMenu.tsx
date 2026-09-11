@@ -11,6 +11,7 @@ import { useT } from "../lib/i18n";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
 import { workspaceCommandLabels } from "../lib/workspaceCommand";
+import { canAdoptWorkspaceList } from "../lib/workspaceSwitchPlan";
 import {
   formatTelemetryLastSuccess,
   latestSyncSuccess,
@@ -45,6 +46,7 @@ export function AccountMenu({
   onProviderUpdated,
   onLogout,
   onWorkspaceSwitched,
+  onWorkspaceSwitchFailed,
   workspaceContext,
   workspaceEpoch,
   workspaceSwitching,
@@ -58,10 +60,11 @@ export function AccountMenu({
   onProviderUpdated: (p: ProviderIdentity) => void;
   onLogout?: () => void;
   onWorkspaceSwitched: (context: WorkspaceContext) => void; // 전환 완료 — 전환된 공간(토스트 표시용)
+  onWorkspaceSwitchFailed: (context: WorkspaceContext, detail: string) => void; // CLI 전환 실패 — 그 공간 생성 차단
   workspaceContext: WorkspaceContext;
   workspaceEpoch: number; // 공간 변경 순번(App 소유) — 조회를 시작한 뒤 바뀌었으면 그 응답은 버린다
   workspaceSwitching?: boolean; // 씬 탭 전환이 진행 중 — 그동안의 조회 결과로 공간을 바꾸지 않는다
-  onWorkspaceContextChange: (context: WorkspaceContext) => void;
+  onWorkspaceContextChange: (context: WorkspaceContext) => number; // 발급된 변경 순번을 돌려준다
   onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
   localHub?: boolean; // 로컬 허브(MV_agent, AUTH off) = 내 CLI 가 이 PC 에 있음 → 워크스페이스 전환 가능
   manageEnabled?: boolean; // PM 관리 기능 on — 꺼진 서버엔 예산(planning) 조회를 아예 안 보낸다
@@ -84,6 +87,18 @@ export function AccountMenu({
   workspaceEpochRef.current = workspaceEpoch;
   const switchingRef = useRef(workspaceSwitching);
   switchingRef.current = workspaceSwitching;
+  // ★이 메뉴가 건 전환이 도는 동안 = CLI 는 아직 옛 공간이다. 메뉴를 다시 열면 목록을 재조회하는데,
+  //  그 응답으로 사용자의 방금 선택을 되돌리면 안 된다(코덱스 리뷰: 앱 A / CLI B 로 갈라지는 경로).
+  //  씬 전환용 switchingRef 는 이 경우를 못 덮는다 — 계정 메뉴 전환은 App 의 switching 을 안 세운다.
+  const selfSwitchingRef = useRef(false);
+  // 전환이 **시작·종료할 때마다** 오르는 순번. '응답 시점에 전환 중인가' 만 보면, 전환 도중 시작된
+  // 조회가 전환보다 **늦게** 도착했을 때 그대로 채택돼 선택이 되돌아간다(코덱스 재현).
+  // 조회는 시작 순번을 들고 있다가 도착했을 때 맞대 본다.
+  const switchGenRef = useRef(0);
+  // 씬 탭 전환의 시작·종료도 같은 이유로 순번을 올린다(그동안 CLI 는 옛 공간이다).
+  useEffect(() => {
+    switchGenRef.current += 1;
+  }, [workspaceSwitching]);
   const t = useT();
   const closeMenu = useCallback(() => setOpen(false), []);
   const closeMenuOnEscape = useCallback(() => {
@@ -109,17 +124,34 @@ export function AccountMenu({
   //  startedAt 을 주면 '조회를 시작할 때의 변경 순번' 과 비교해, 그 사이 공간이 바뀌었으면(씬 탭 클릭·
   //  메뉴 선택·전환 완료) 늦게 도착한 옛 CLI 값으로 되돌리지 않는다(코덱스 P2). 값 비교로는 부족하다 —
   //  같은 값으로 되돌아온 뒤 도착한 옛 응답을 못 거른다. 전환 직후 호출(switchTo)에는 주지 않는다.
-  const acceptLiveWorkspaces = useCallback((items: Workspace[], startedAt?: number) => {
+  const acceptLiveWorkspaces = useCallback(
+    (
+      items: Workspace[],
+      startedAt?: number,
+      startedSwitchGen?: number,
+      startedWhileSwitching = false,
+    ) => {
     setList(items);
-    // 씬 탭 전환이 진행 중이면 CLI 는 아직 옛 공간일 수 있다 — 그 값으로 사용자의 선택을 덮지 않는다.
-    if (startedAt !== undefined && switchingRef.current) return;
-    if (startedAt !== undefined && startedAt !== workspaceEpochRef.current) return;
+    if (
+      !canAdoptWorkspaceList({
+        startedEpoch: startedAt,
+        currentEpoch: workspaceEpochRef.current,
+        startedSwitchGen: startedSwitchGen ?? switchGenRef.current,
+        currentSwitchGen: switchGenRef.current,
+        startedWhileSwitching,
+        switchingNow: !!switchingRef.current || selfSwitchingRef.current,
+      })
+    ) {
+      return;
+    }
     const currentContext = workspaceContextRef.current;
     const next = selectedWorkspaceContext(items);
     if (!sameWorkspace(currentContext, next) || currentContext.name !== next.name) {
       onWorkspaceContextChange(next);
     }
-  }, [onWorkspaceContextChange]);
+  },
+    [onWorkspaceContextChange],
+  );
   const acceptReportedStatus = useCallback((status: ReportedHfStatus) => {
     setReported(status);
     // 공유 서버에서는 메뉴 선택이 "조회/생성 대상"이다. 최초 진입 때만 에이전트가 보고한
@@ -134,7 +166,13 @@ export function AccountMenu({
   useEffect(() => {
     if (liveMode) {
       const startedAt = workspaceEpochRef.current;
-      api.workspaces().then((items) => acceptLiveWorkspaces(items, startedAt)).catch(() => {});
+      const startedGen = switchGenRef.current;
+      // 시작 시점에 전환이 돌고 있었는지도 함께 — 순번 effect 가 늦게 도는 틈을 안 믿는다.
+      const startedSwitching = !!switchingRef.current || selfSwitchingRef.current;
+      api
+        .workspaces()
+        .then((items) => acceptLiveWorkspaces(items, startedAt, startedGen, startedSwitching))
+        .catch(() => {});
     } else api.accountHf().then(acceptReportedStatus).catch(() => setReported(null));
   }, [acceptLiveWorkspaces, acceptReportedStatus, liveMode]);
   useEffect(() => {
@@ -162,7 +200,13 @@ export function AccountMenu({
     if (!open) return;
     if (liveMode) {
       const startedAt = workspaceEpochRef.current;
-      api.workspaces().then((items) => acceptLiveWorkspaces(items, startedAt)).catch(() => {});
+      const startedGen = switchGenRef.current;
+      // 시작 시점에 전환이 돌고 있었는지도 함께 — 순번 effect 가 늦게 도는 틈을 안 믿는다.
+      const startedSwitching = !!switchingRef.current || selfSwitchingRef.current;
+      api
+        .workspaces()
+        .then((items) => acceptLiveWorkspaces(items, startedAt, startedGen, startedSwitching))
+        .catch(() => {});
     } else api.accountHf().then(acceptReportedStatus).catch(() => {});
   }, [acceptLiveWorkspaces, acceptReportedStatus, open, liveMode]);
 
@@ -247,17 +291,46 @@ export function AccountMenu({
   const roleText = accountRoleText(account);
   const initial = (displayName[0] || "?").toUpperCase();
 
-  const switchTo = async (id: string | null) => {
+  // 전환은 낙관적으로 — 클릭하면 **바로** 메뉴를 닫고 앱 공간을 바꾼다. CLI 반영 확인(set+list
+  // 실측 ≈1.4초)은 뒤에서 하고, 확인된 뒤에 알림이 뜬다(Jay: "확실하게 변경되어서").
+  //  예전엔 확인이 끝날 때까지 목록 단추를 전부 잠그고, 거기서 또 라이브러리 재조회까지 기다린 뒤에야
+  //  알림이 떠서 4초 가까이 얼어 있었다. 확인이 끝나기 전에 메뉴를 다시 열면 단추는 여전히 잠겨
+  //  있으므로(busy), 겹친 전환 요청은 애초에 생기지 않는다.
+  const switchTo = (id: string | null) => {
+    const target = id ? wsList.find((w) => w.id === id) : null;
+    const context = id
+      ? workspaceContextOf(target)
+      : ({ scope: "personal", id: null, name: null } as WorkspaceContext);
+    closeMenu();
+    // 발급된 순번을 받아 둔다 — prop 으로 오는 workspaceEpoch 는 렌더 뒤에야 갱신돼 지금 읽으면 옛 값이다.
+    const epoch = onWorkspaceContextChange(context); // 이 뒤의 생성은 새 공간으로 나간다
+    selfSwitchingRef.current = true;
+    switchGenRef.current += 1;
     setBusy(true);
-    try {
-      const r = id ? await api.selectWorkspace(id) : await api.unselectWorkspace();
-      acceptLiveWorkspaces(r.workspaces);
-      onWorkspaceSwitched(selectedWorkspaceContext(r.workspaces));
-    } catch (e) {
-      alert("워크스페이스 전환 실패: " + String(e));
-    } finally {
-      setBusy(false);
-    }
+    void (id ? api.selectWorkspace(id) : api.unselectWorkspace())
+      .then(
+        (r) => ({ ok: true as const, workspaces: r.workspaces }),
+        (error: unknown) => ({
+          ok: false as const,
+          detail: String(error).replace(/^Error:\s*/, ""),
+        }),
+      )
+      .then((result) => {
+        selfSwitchingRef.current = false;
+        switchGenRef.current += 1; // 전환이 끝났다 — 그 전에 시작된 조회는 모두 옛 값이다
+        setBusy(false);
+        // 그 사이 다른 경로가 공간을 바꿨으면(씬 탭·다른 창) 이 응답은 늦게 온 옛 것이다.
+        //  ★순번으로 가른다 — 값 비교로는 A→B→A 로 돌아온 뒤 도착한 옛 응답을 못 거른다.
+        //   그러면 성공한 전환에 실패 표시를 씌우거나, 그 반대가 된다(코덱스 리뷰).
+        if (epoch !== workspaceEpochRef.current) return;
+        if (result.ok) {
+          acceptLiveWorkspaces(result.workspaces);
+          onWorkspaceSwitched(selectedWorkspaceContext(result.workspaces));
+          return;
+        }
+        // 실패는 alert 로 흐름을 끊지 않는다 — 앱이 그 공간의 생성을 막고 토스트로 알린다.
+        onWorkspaceSwitchFailed(context, result.detail);
+      });
   };
 
   return (
