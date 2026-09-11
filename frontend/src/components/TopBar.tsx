@@ -17,6 +17,8 @@ interface Props {
   onSearch: (q?: string) => void;
   onWorkspaceSwitched: (context: WorkspaceContext) => void; // 전환 완료 — 전환된 공간(토스트 표시용)
   workspaceContext: WorkspaceContext;
+  workspaceEpoch: number; // 공간 변경 순번 — 늦은 목록 응답을 버리는 기준
+  workspaceSwitching: boolean; // 씬 탭 전환 진행 중 — 그동안 CLI 목록으로 공간을 덮지 않는다
   onWorkspaceContextChange: (context: WorkspaceContext) => void;
   onImported: (msg: string) => void; // (서버 모드 미사용 — App 호환)
   onOpenAssets: () => void;
@@ -38,6 +40,8 @@ export function TopBar({
   onSearch,
   onWorkspaceSwitched,
   workspaceContext,
+  workspaceEpoch,
+  workspaceSwitching,
   onWorkspaceContextChange,
   onImported,
   onOpenAssets,
@@ -140,6 +144,8 @@ export function TopBar({
         onLogout={onLogout}
         onWorkspaceSwitched={onWorkspaceSwitched}
         workspaceContext={workspaceContext}
+        workspaceEpoch={workspaceEpoch}
+        workspaceSwitching={workspaceSwitching}
         onWorkspaceContextChange={onWorkspaceContextChange}
         onImported={onImported}
         localHub={localHub}

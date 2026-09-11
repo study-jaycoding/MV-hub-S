@@ -1334,3 +1334,51 @@
 .scene-modelnode-blocked { margin-top: 2px; font-size: 10px; font-weight: 700; color: #f06a5a; letter-spacing: 0.04em; }
 .scene-modelmodal-note { margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; background: rgba(240,106,90,.12); color: #f06a5a; font-size: 12px; line-height: 1.4; }
 .scene-modelmodal-note.muted { background: rgba(255,255,255,.05); color: var(--muted); }
+
+/* scene tab: drag to reorder + per-canvas workspace (Jay 2026-09-11) */
+.scene-tab-wrap { position: relative; touch-action: none; }
+.scene-tab-wrap.off-ws { opacity: 0.42; }
+.scene-tab-wrap.off-ws:hover { opacity: 0.72; }
+.scene-tab-wrap.on.off-ws { opacity: 0.68; }
+.scene-tab-wrap.dragging { opacity: 0.45; }
+.scene-tab-wrap.switching .scene-tab { font-style: italic; }
+/* 삽입선 — 탭 바깥의 형제 요소(탭 wrap 은 overflow:hidden 이라 안에 그리면 잘린다) */
+.scene-drop-line {
+  width: 2px; align-self: stretch; margin: 2px -2px; background: var(--accent); border-radius: 2px;
+}
+.scene-tab-ws {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px;
+  background: var(--accent); vertical-align: middle;
+}
+.scene-tab-wrap.on .scene-tab-ws { background: var(--accent-ink); }
+.scene-tab-ws.missing { background: #f06a5a; }
+
+/* scene tab context menu — workspace assign + move */
+.scene-ws-menu {
+  position: fixed; z-index: 60; display: grid; gap: 6px; padding: 8px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel, #1a1a1a);
+  box-shadow: 0 10px 30px rgba(0,0,0,.45); font-size: 12px;
+  /* 메뉴 자체가 화면보다 높으면(작은 창) 잘리지 않게 — 위치 보정만으로는 부족하다(코덱스 P2) */
+  max-height: calc(100vh - 16px); overflow: auto;
+}
+.scene-ws-menu-head { font-weight: 700; font-size: 12.5px; color: var(--text); }
+.scene-ws-menu-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.scene-ws-menu-list { display: grid; gap: 2px; max-height: 240px; overflow: auto; }
+.scene-ws-item {
+  display: grid; text-align: left; padding: 5px 8px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text); cursor: pointer; font-size: 12.5px;
+}
+.scene-ws-item:hover { background: rgba(255,255,255,.06); }
+.scene-ws-item.on { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.scene-ws-item small { color: var(--muted); font-size: 11px; }
+.scene-ws-item.on small { color: var(--accent-ink); opacity: .8; }
+.scene-ws-empty { padding: 5px 8px; color: var(--muted); font-size: 11.5px; }
+.scene-ws-empty.warn { color: #f06a5a; }
+.scene-ws-menu-sep { height: 1px; background: var(--line); }
+.scene-ws-menu-move { display: flex; gap: 6px; }
+.scene-ws-menu-move button {
+  flex: 1; padding: 5px 6px; border: 1px solid var(--line); border-radius: 6px;
+  background: transparent; color: var(--text); cursor: pointer; font-size: 11.5px;
+}
+.scene-ws-menu-move button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.scene-ws-menu-move button:disabled { opacity: .4; cursor: default; }

@@ -136,6 +136,9 @@ export interface Scene {
   edges: SceneEdge[];
   groups?: SceneGroup[]; // 카드 그룹(선택 후 Ctrl+G) — 없으면 그룹 없음
   camera?: { z: number; x: number; y: number };
+  // 이 캔버스가 속한 팀 워크스페이스(탭 우클릭으로 지정, 없으면 '지정 없음' = 어디서나 정상 표시).
+  // 판정·표시 규칙은 sceneWorkspace.ts. 파일 export 에는 넣지 않는다(남의 공간 id 가 파일로 도는 걸 막는다).
+  workspace?: { id: string; name: string | null };
   created_at: number;
 }
 

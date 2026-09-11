@@ -14,6 +14,7 @@ import {
   saveScenes,
   updateScene,
 } from "./scenes";
+import { applySceneMove, type SceneMove, type SceneWorkspace } from "./sceneWorkspace";
 import { clearSceneHistory } from "./sceneUndoStore";
 import {
   countBackupOnlyScenes,
@@ -32,11 +33,13 @@ import type { Generation } from "../types";
 
 // 백그라운드 씬의 비동기 결과가 도착해도, 현재 씬의 아직 디바운스 저장 전인 입력은 React 메모리에서
 // 보존한다. target 씬만 최신 저장본으로 교체하고 나머지는 최신 목록을 사용한다.
+// patchedSceneId=null 은 '내용을 고친 씬이 없다'(순서만 바뀜) — 활성 씬을 **항상** 보호한다.
+// 재배열이 그 경우다: 활성 씬을 옮겼다고 해서 다른 창이 고친 내용으로 내 화면을 덮으면 안 된다(코덱스 P2).
 export function mergePatchedSceneList(
   previous: Scene[],
   latest: Scene[],
   activeSceneId: string | null,
-  patchedSceneId: string,
+  patchedSceneId: string | null,
 ): Scene[] {
   if (!activeSceneId || activeSceneId === patchedSceneId) return latest;
   const inMemoryActive = previous.find((scene) => scene.id === activeSceneId);
@@ -227,6 +230,41 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     patchSceneById(activeScene.id, patch);
   };
 
+  // 탭 순서 바꾸기 관문 — 드래그 결과를 **'이 씬을 저 씬 앞으로'라는 연산**으로 받는다.
+  //  ★목록 스냅샷을 받으면 안 된다: 끌고 있는 동안 다른 창·DB 백업 복구가 추가한 씬이 그 스냅샷에는
+  //   없어서, 그대로 저장하면 조용히 사라진다(코덱스 P0). 적용 직전에 최신 목록을 다시 읽고,
+  //   ID 집합·씬 내용은 그대로 둔 채 순서만 바꾼다. 대상이 사라졌으면 취소한다.
+  const reorderScenes = (move: SceneMove): boolean => {
+    sceneActionRef.current?.flushPending(); // 밀린 입력을 먼저 확정(저장본을 읽기 때문)
+    const next = applySceneMove(listScenes(null), move);
+    if (!next) {
+      // 대상·기준이 사라짐(다른 창에서 삭제) — 최신 목록을 반영하되 활성 씬 화면은 지킨다.
+      setScenes((previous) =>
+        mergePatchedSceneList(previous, listScenes(null), activeSceneIdRef.current, null),
+      );
+      return false;
+    }
+    if (!saveScenes(null, next)) {
+      // 저장 실패 — 화면을 저장본으로 되돌리되 활성 씬의 화면은 유지한다(기존 비파괴 정책).
+      setScenes((previous) =>
+        mergePatchedSceneList(previous, listScenes(null), activeSceneIdRef.current, null),
+      );
+      flashRef.current?.("탭 순서를 저장하지 못했습니다(저장 공간 부족).");
+      return false;
+    }
+    // 순서는 저장본(next)을 따르되, 활성 씬의 화면 내용은 내 메모리 것을 유지한다 —
+    // 다른 창이 활성 씬을 고치거나 지운 상태에서 재배열하면 그 변경이 내 캔버스를 덮어 버린다(코덱스 P2).
+    setScenes((previous) =>
+      mergePatchedSceneList(previous, next, activeSceneIdRef.current, null),
+    );
+    return true;
+  };
+
+  // 씬의 워크스페이스 지정/해제 — 최신 씬의 workspace 만 바꾼다(patchSceneById 가 저장 실패도 처리).
+  const setSceneWorkspace = (sceneId: string, workspace: SceneWorkspace | null) => {
+    patchSceneById(sceneId, { workspace: workspace ?? undefined });
+  };
+
   // setScenes/refreshScenes 는 내부 전용(반환 안 함) — 외부는 CRUD·두 patch 관문으로만 씬을 바꾼다.
   return {
     scenes,
@@ -245,6 +283,8 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     removeSceneById,
     patchSceneById,
     patchActiveScene,
+    reorderScenes,
+    setSceneWorkspace,
     backupOnly,
     importBackupScenes,
   };

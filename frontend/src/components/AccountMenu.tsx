@@ -46,6 +46,8 @@ export function AccountMenu({
   onLogout,
   onWorkspaceSwitched,
   workspaceContext,
+  workspaceEpoch,
+  workspaceSwitching,
   onWorkspaceContextChange,
   onImported,
   localHub,
@@ -57,6 +59,8 @@ export function AccountMenu({
   onLogout?: () => void;
   onWorkspaceSwitched: (context: WorkspaceContext) => void; // 전환 완료 — 전환된 공간(토스트 표시용)
   workspaceContext: WorkspaceContext;
+  workspaceEpoch: number; // 공간 변경 순번(App 소유) — 조회를 시작한 뒤 바뀌었으면 그 응답은 버린다
+  workspaceSwitching?: boolean; // 씬 탭 전환이 진행 중 — 그동안의 조회 결과로 공간을 바꾸지 않는다
   onWorkspaceContextChange: (context: WorkspaceContext) => void;
   onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
   localHub?: boolean; // 로컬 허브(MV_agent, AUTH off) = 내 CLI 가 이 PC 에 있음 → 워크스페이스 전환 가능
@@ -75,6 +79,11 @@ export function AccountMenu({
   // 비동기 콜백은 항상 가장 최신 컨텍스트를 읽는다.
   const workspaceContextRef = useRef(workspaceContext);
   workspaceContextRef.current = workspaceContext;
+  // 공간 변경 순번(App 소유) — 조회 응답이 도착했을 때 이 값이 그대로여야 반영한다.
+  const workspaceEpochRef = useRef(workspaceEpoch);
+  workspaceEpochRef.current = workspaceEpoch;
+  const switchingRef = useRef(workspaceSwitching);
+  switchingRef.current = workspaceSwitching;
   const t = useT();
   const closeMenu = useCallback(() => setOpen(false), []);
   const closeMenuOnEscape = useCallback(() => {
@@ -97,10 +106,16 @@ export function AccountMenu({
   //    라이브 — /api/workspaces(목록·select)가 로컬 CLI 를 직접 호출하므로 클릭 전환이 그대로 작동.
   //  · 공유 서버 본체(AUTH on): CLI 가 내 것이 아닐 수 있어 읽기전용(에이전트 보고값 표시).
   const liveMode = !account || !!localHub;
-  const acceptLiveWorkspaces = useCallback((items: Workspace[]) => {
+  //  startedAt 을 주면 '조회를 시작할 때의 변경 순번' 과 비교해, 그 사이 공간이 바뀌었으면(씬 탭 클릭·
+  //  메뉴 선택·전환 완료) 늦게 도착한 옛 CLI 값으로 되돌리지 않는다(코덱스 P2). 값 비교로는 부족하다 —
+  //  같은 값으로 되돌아온 뒤 도착한 옛 응답을 못 거른다. 전환 직후 호출(switchTo)에는 주지 않는다.
+  const acceptLiveWorkspaces = useCallback((items: Workspace[], startedAt?: number) => {
     setList(items);
-    const next = selectedWorkspaceContext(items);
+    // 씬 탭 전환이 진행 중이면 CLI 는 아직 옛 공간일 수 있다 — 그 값으로 사용자의 선택을 덮지 않는다.
+    if (startedAt !== undefined && switchingRef.current) return;
+    if (startedAt !== undefined && startedAt !== workspaceEpochRef.current) return;
     const currentContext = workspaceContextRef.current;
+    const next = selectedWorkspaceContext(items);
     if (!sameWorkspace(currentContext, next) || currentContext.name !== next.name) {
       onWorkspaceContextChange(next);
     }
@@ -117,8 +132,10 @@ export function AccountMenu({
     }
   }, [onWorkspaceContextChange]);
   useEffect(() => {
-    if (liveMode) api.workspaces().then(acceptLiveWorkspaces).catch(() => {});
-    else api.accountHf().then(acceptReportedStatus).catch(() => setReported(null));
+    if (liveMode) {
+      const startedAt = workspaceEpochRef.current;
+      api.workspaces().then((items) => acceptLiveWorkspaces(items, startedAt)).catch(() => {});
+    } else api.accountHf().then(acceptReportedStatus).catch(() => setReported(null));
   }, [acceptLiveWorkspaces, acceptReportedStatus, liveMode]);
   useEffect(() => {
     const controller = new AbortController();
@@ -143,8 +160,10 @@ export function AccountMenu({
   // 끝나도 즉시 반영된다(예전엔 마운트 때 한 번만 받아 '미연결'이 옛 상태로 박혀 있었다).
   useEffect(() => {
     if (!open) return;
-    if (liveMode) api.workspaces().then(acceptLiveWorkspaces).catch(() => {});
-    else api.accountHf().then(acceptReportedStatus).catch(() => {});
+    if (liveMode) {
+      const startedAt = workspaceEpochRef.current;
+      api.workspaces().then((items) => acceptLiveWorkspaces(items, startedAt)).catch(() => {});
+    } else api.accountHf().then(acceptReportedStatus).catch(() => {});
   }, [acceptLiveWorkspaces, acceptReportedStatus, open, liveMode]);
 
   // 표시할 워크스페이스 목록 — 하우스=라이브, 그 외=에이전트 보고값.
