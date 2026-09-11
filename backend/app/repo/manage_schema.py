@@ -31,7 +31,8 @@ _SCHEMA = (
         action         TEXT,
         created_at     TEXT,
         matched_gen_id TEXT,
-        model          TEXT
+        model          TEXT,
+        workspace_id   TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS project_planning (
         project_id     TEXT PRIMARY KEY,
@@ -644,6 +645,12 @@ def ensure_manage_schema(conn) -> None:
     transaction_columns = {row[1] for row in conn.execute("PRAGMA table_info(credit_txn)")}
     if "model" not in transaction_columns:
         conn.execute("ALTER TABLE credit_txn ADD COLUMN model TEXT")
+    if "workspace_id" not in transaction_columns:
+        # 어느 공간에서 빠진 돈인지 — 거래 응답에는 없어서 에이전트가 수집할 때 붙여 보낸다.
+        # ★거래 신원(UNIQUE 인덱스·ID 산식)에는 넣지 않는다. 시각이 마이크로초까지 있어
+        #  (이메일+시각+금액+action+표시명)이 사실상 고유하고, 신원을 바꾸면 배포 전 행과
+        #  배포 후 행이 갈려 같은 거래가 두 번 세어진다. 옛 행은 model 처럼 나중에 보강된다.
+        conn.execute("ALTER TABLE credit_txn ADD COLUMN workspace_id TEXT")
     _ensure_credit_transaction_identity(conn)
 
     planning_columns = {row[1] for row in conn.execute("PRAGMA table_info(project_planning)")}

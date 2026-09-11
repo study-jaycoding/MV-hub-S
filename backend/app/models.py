@@ -486,6 +486,10 @@ class IngestOut(BaseModel):
     skipped: int = 0  # 파싱 불가·중복 등 데이터 사유로 스테이징에서 걸러진 것
     errors: int = 0   # 업서트 중 예외로 반영 못 한 것(SAVEPOINT 롤백) — skipped 와 구분
     linked_uid: Optional[str] = None  # 이 계정에 연결된 힉스필드 생성자 uid
+    # 크레딧 거래가 실제로 장부에 들어갔나. 에이전트는 이 값이 True 일 때만 수집 기준을 옮긴다 —
+    # 200 만 보고 옮기면 서버가 삼킨 적재 실패 구간이 영영 다시 안 읽힌다(코덱스 P1).
+    # None = 이 필드를 모르는 옛 서버(에이전트가 종전대로 판단한다).
+    transactions_recorded: Optional[bool] = None
 
 
 # ── 프로젝트 역할(복수, v02 RBAC PART 1) ──────────────────────────────────

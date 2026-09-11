@@ -39,7 +39,7 @@ import webbrowser
 import uuid
 from collections import Counter, OrderedDict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Event, Lock, RLock
 from urllib.parse import quote, urlencode, urlparse
 
@@ -1499,9 +1499,240 @@ def _state_connect() -> sqlite3.Connection:
           updated_at REAL NOT NULL,
           PRIMARY KEY(server_key, account_email, job_id)
         );
+        CREATE TABLE IF NOT EXISTS txn_scan (
+          server_key TEXT NOT NULL,
+          account_email TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          newest_seen TEXT,
+          pending_cursor TEXT,
+          pending_newest TEXT,
+          updated_at REAL NOT NULL,
+          PRIMARY KEY(server_key, account_email, workspace_id)
+        );
         """
     )
+    scan_columns = {row[1] for row in conn.execute("PRAGMA table_info(txn_scan)")}
+    for column in ("pending_cursor", "pending_newest"):
+        if column not in scan_columns:
+            conn.execute(f"ALTER TABLE txn_scan ADD COLUMN {column} TEXT")
     return conn
+
+
+# ── 공간별 거래 수집 ──────────────────────────────────────────────────────
+# ★거래는 **공간별**이다(2026-09-11 실측, CLI 1.1.24). 전역 선택 공간 것만 읽으면 다른 공간의
+#  지출이 장부에 영영 안 들어온다 — 전역=뻘뻘뻘 조회에는 그날 R&D 에서 쓴 1크레딧이 보이지 않았다
+#  (뻘뻘뻘 최신 거래 09-05 vs R&D 최신 09-11). 2026-09-11 부터 허브는 CLI 전역을 안 바꾸므로,
+#  전역은 '에이전트가 마지막으로 제출한 요청의 공간'에 머문다 — 그 외 공간은 영구 사각지대였다.
+# 응답에는 어느 공간인지 표시가 **없다**(키는 action·created_at·credits·display_name 넷뿐) →
+#  호출할 때 우리가 붙인다. `HIGGSFIELD_WORKSPACE_ID` 는 자식 프로세스에만 준다(부모 오염 금지).
+# 목록은 이미 `account status` 사이클에서 받아 둔 것을 쓴다 — CLI 왕복이 늘지 않는다.
+_TXN_PAGE_SIZE = 100  # CLI 최대치
+# 공간당 페이지 상한. 실측상 한 사람의 100건이 7시간 치라, 5페이지면 하루를 넘게 본다.
+# 상한에 걸리면 남은 구간은 다음 사이클이 이어 본다(거래 적재는 멱등이라 겹쳐 읽어도 안전).
+_TXN_MAX_PAGES = 5
+# 기준 시각보다 이만큼 과거까지 겹쳐 읽는다 — 거래가 뒤늦게 나타나도 놓치지 않게.
+_TXN_OVERLAP_SECONDS = 6 * 3600
+
+
+def _txn_epoch(iso) -> float | None:
+    """거래 시각 → epoch. ★문자열 비교를 쓰면 안 된다 — `12:00:00.5Z` 가 `12:00:00Z` 보다
+    문자열로는 **작다**('.' < 'Z'). 오프셋이 섞이면 시간 단위로도 뒤집힌다(코덱스 P2)."""
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _shift_iso(iso, seconds: float) -> str | None:
+    """ISO 시각을 초 단위로 옮긴다(겹쳐 읽기 기준). 못 읽으면 None = 기준 없음."""
+    epoch = _txn_epoch(iso)
+    if epoch is None:
+        return None
+    moved = datetime.fromtimestamp(epoch + seconds, tz=timezone.utc)
+    return moved.isoformat().replace("+00:00", "Z")
+
+
+def _load_txn_marks(server: str, account_email: str | None) -> dict[str, dict]:
+    """(이 서버·이 계정) 공간별 수집 상태 → {ws_id: {newest, cursor, pending_newest}}.
+
+    `newest` 는 **끝까지 훑은** 스캔의 최신 시각이다. 상한에 걸려 중간에 끊긴 스캔은 newest 를
+    올리지 않고 `cursor`·`pending_newest` 에 이어 볼 위치를 남긴다 — 안 그러면 다음 사이클이
+    같은 앞부분만 되풀이하고 뒤쪽은 영영 안 읽힌다(코덱스 P1)."""
+    server_key, email = _state_scope(server, account_email)
+    try:
+        with _outbox_lock, _state_connect() as conn:
+            rows = conn.execute(
+                "SELECT workspace_id, newest_seen, pending_cursor, pending_newest FROM txn_scan "
+                "WHERE server_key=? AND account_email=?",
+                (server_key, email),
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    return {
+        r["workspace_id"]: {
+            "newest": r["newest_seen"],
+            "cursor": r["pending_cursor"],
+            "pending_newest": r["pending_newest"],
+        }
+        for r in rows
+    }
+
+
+def _save_txn_marks(server: str, account_email: str | None, marks: dict[str, dict]) -> None:
+    """★전송이 성공한 뒤에만 부른다 — 먼저 적으면 실패한 구간을 다시는 읽지 않는다."""
+    if not marks:
+        return
+    server_key, email = _state_scope(server, account_email)
+    now = time.time()
+    try:
+        with _outbox_lock, _state_connect() as conn:
+            conn.executemany(
+                "INSERT INTO txn_scan(server_key, account_email, workspace_id, newest_seen, "
+                "pending_cursor, pending_newest, updated_at) VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(server_key, account_email, workspace_id) DO UPDATE SET "
+                "newest_seen=excluded.newest_seen, pending_cursor=excluded.pending_cursor, "
+                "pending_newest=excluded.pending_newest, updated_at=excluded.updated_at",
+                [
+                    (server_key, email, ws, state.get("newest"),
+                     state.get("cursor"), state.get("pending_newest"), now)
+                    for ws, state in marks.items()
+                ],
+            )
+    except sqlite3.Error as e:
+        print(f"[경고] 거래 수집 기준 저장 실패(다음 사이클에 겹쳐 읽습니다): {e}")
+
+
+def _transaction_page(data) -> tuple[list, str | None, bool]:
+    """CLI 1.x 는 `{cursor, items}`, 0.x 는 bare list. (항목, 다음 cursor, 형식이 맞나).
+
+    형식이 어긋난 응답(오류 객체 등)을 '정상 빈 페이지'로 오인하면 스캔을 끝난 것으로 치고
+    기준을 옮겨 버린다 — 그 구간은 다시 안 읽힌다(코덱스 P2)."""
+    if isinstance(data, dict):
+        items = data.get("items")
+        if not isinstance(items, list):
+            return [], None, False
+        cursor = data.get("cursor")
+        return items, (str(cursor) if cursor else None), True
+    if isinstance(data, list):
+        return data, None, True
+    return [], None, False
+
+
+def _marks_to_persist(txn_ack, states: dict[str, dict]) -> dict[str, dict]:
+    """서버 응답을 보고 **어느 공간의 수집 상태를 저장할지** 고른다.
+
+    · True  — 거래가 장부(프록시면 전송 대기열까지)에 안착했다. 전부 저장한다.
+    · None  — 이 필드를 모르는 옛 서버. 저장 성공을 확인할 길이 없다. **끝까지 훑은 공간만**
+              저장하고 **미완결 cursor 는 버린다** — 저장 안 된 페이지를 넘어가면 그 구간을
+              아무도 다시 읽지 않는다. 완결분은 _TXN_OVERLAP_SECONDS 겹침이 받쳐 준다.
+    · False — 서버가 못 받았다. 아무것도 옮기지 않는다(다음 사이클에 그대로 다시 보낸다)."""
+    if txn_ack:
+        return states
+    if txn_ack is None:
+        return {ws: state for ws, state in states.items() if not state.get("cursor")}
+    return {}
+
+
+def _collect_workspace_transactions(
+    cli: str, workspaces, marks: dict[str, dict], *, reinspect: bool = False
+) -> tuple[list[dict], dict[str, dict]]:
+    """공간마다 거래를 걷어 `workspace_id` 를 붙인다 → (거래 목록, 공간별 새 수집 상태).
+
+    항목은 최신순으로 온다(실측). 이미 본 시각까지 내려가면 완결로 보고 기준을 옮기고,
+    페이지 상한에 걸리면 **미완결**로 두어 다음 사이클이 그 cursor 에서 이어 본다.
+    한 공간이 실패해도 다른 공간 수집을 막지 않는다 — 실패한 공간은 상태를 갱신하지 않아
+    다음 사이클에 그 구간을 다시 읽는다."""
+    collected: list[dict] = []
+    next_state: dict[str, dict] = {}
+    if not isinstance(workspaces, list):
+        return collected, next_state
+    for workspace in workspaces:
+        if not isinstance(workspace, dict):
+            continue
+        workspace_id = str(workspace.get("id") or "").strip()
+        if not workspace_id:
+            continue
+        label = workspace.get("name") or workspace_id
+        state = marks.get(workspace_id) or {}
+        settled = None if reinspect else state.get("newest")
+        stop_at = None if reinspect else _txn_epoch(_shift_iso(settled, -_TXN_OVERLAP_SECONDS))
+        # ★이어 볼 위치는 재점검에서도 물려받는다 — 재점검이 '처음부터'를 뜻한다고 cursor 를
+        #  버리면, 재점검을 반복할 때마다 앞부분만 되풀이하고 끝까지 못 간다(코덱스 P2).
+        #  재점검이 무시하는 것은 **기준 시각**(어디서 멈출까)이지 '어디까지 읽었나'가 아니다.
+        cursor = state.get("cursor")
+        started_with_cursor = bool(cursor)
+        # 이어 보는 중이면 지난 사이클에 본 최신값을 이어받는다(완결될 때 승격된다).
+        newest = (
+            (_txn_epoch(state.get("pending_newest")), state.get("pending_newest"))
+            if state.get("pending_newest")
+            else (None, None)
+        )
+        env = {**os.environ, "HIGGSFIELD_WORKSPACE_ID": workspace_id}
+        complete = False
+        failed = False
+        for _page in range(_TXN_MAX_PAGES):
+            args = ["account", "transactions", "--size", str(_TXN_PAGE_SIZE)]
+            if cursor:
+                args += ["--cursor", cursor]
+            data, err = _run_cli_json(cli, *args, timeout=60, env=env)
+            if err:
+                print(f"[경고] 거래 조회 실패({label}): {err[:120]}")
+                failed = True
+                break
+            items, next_cursor, well_formed = _transaction_page(data)
+            if not well_formed:
+                print(f"[경고] 거래 응답 형식이 낯섭니다({label}) — 이번 구간은 다음에 다시 읽습니다.")
+                failed = True
+                break
+            rows = [t for t in items if isinstance(t, dict)]
+            for row in rows:
+                row["workspace_id"] = workspace_id
+            collected += rows
+            stamps = [
+                (epoch, str(row.get("created_at")))
+                for row in rows
+                if (epoch := _txn_epoch(row.get("created_at"))) is not None
+            ]
+            if stamps:
+                page_newest = max(stamps)
+                if newest[0] is None or page_newest[0] > newest[0]:
+                    newest = page_newest
+                if stop_at is not None and min(stamps)[0] <= stop_at:
+                    complete = True  # 이미 본 구간까지 내려왔다
+                    break
+            if not next_cursor:
+                complete = True  # 더 볼 것이 없다 — 짧은 페이지여도 cursor 가 기준이다
+                break
+            cursor = next_cursor
+        if failed:
+            if started_with_cursor:
+                # 저장해 둔 cursor 로 시작했는데 실패했다 — 그 cursor 가 만료됐을 수 있다.
+                # 계속 같은 cursor 로 두드리면 그 공간은 영영 막힌다. 버리고 다음엔 처음부터
+                # 읽는다(겹쳐 읽기가 늘 뿐 누락은 없다 — 적재는 멱등이다).
+                next_state[workspace_id] = {
+                    "newest": settled, "cursor": None, "pending_newest": None,
+                }
+            continue  # 그 밖에는 상태를 그대로 둔다 — 못 읽은 구간을 다음에 다시 본다
+        if complete:
+            best = max(
+                [p for p in ((_txn_epoch(settled), settled), newest) if p[0] is not None],
+                default=(None, None),
+            )
+            next_state[workspace_id] = {
+                "newest": best[1], "cursor": None, "pending_newest": None,
+            }
+        else:
+            # 상한 도달 — 기준은 그대로 두고 이어 볼 위치만 남긴다.
+            print(
+                f"[안내] 거래가 많아 {label} 는 {_TXN_MAX_PAGES}쪽까지만 읽었습니다 "
+                "— 남은 구간은 다음 사이클에 이어 읽습니다."
+            )
+            next_state[workspace_id] = {
+                "newest": settled, "cursor": cursor, "pending_newest": newest[1],
+            }
+    return collected, next_state
 
 
 def _agent_instance_id() -> str:
@@ -2484,12 +2715,13 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
 
     # PM: 실제 차감액(account transactions) — 사이클당 1회만(잡마다 호출하지 않음). 서버가
     # (소유자+시각) 매칭으로 생성물 실제 크레딧을 채운다. best-effort(실패해도 push 진행).
-    txns = _cli_json(cli, "account", "transactions", "--size", "100")
-    # CLI 1.x 는 거래를 {cursor, items} 로 감싼다(0.x 는 bare list). items 를 꺼낸다.
-    if isinstance(txns, dict):
-        txns = txns.get("items") or []
-    if not isinstance(txns, list):
-        txns = []
+    # ★공간마다 걷는다(2026-09-11). 종전엔 CLI **전역 선택 공간** 하나만 읽어, 다른 공간의
+    #  지출이 장부에 들어오지 않았다. 목록은 위 account status 사이클이 이미 받아 둔 것이다.
+    txn_email = (acct or {}).get("email")
+    txn_marks = _load_txn_marks(server, txn_email)
+    txns, txn_newest = _collect_workspace_transactions(
+        cli, (acct or {}).get("workspaces"), txn_marks, reinspect=reinspect
+    )
     # 거래 표시명(display_name)을 모델 키(job_set_type)로 변환해 태깅 → 서버가 모델 가드로 정확 매칭.
     # best-effort: model list 실패/미태깅 거래는 서버가 시간+소유자 매칭으로 폴백(하위호환).
     # CLI 1.x model list 는 모델키를 job_set_type → job_type 로 개명. 둘 다 수용(구/신 호환).
@@ -2552,6 +2784,13 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
             return push_once(server, token, cli, size, _allow_relogin=False, reinspect=reinspect)
         print("       올바른 계정으로 허브에 로그인하면 자동으로 다시 시도합니다.")
         return
+    # 거래가 **장부에 실제로 들어간 뒤에야** 수집 기준을 옮긴다. 200 만 보고 옮기면 서버가
+    # 삼킨 적재 실패 구간이 영영 다시 안 읽힌다(코덱스 P1). 옛 서버는 이 필드를 안 주므로
+    # (None) 종전대로 200 을 성공으로 본다 — 그 경우 _TXN_OVERLAP_SECONDS 겹침이 안전망이다.
+    txn_ack = body.get("transactions_recorded")
+    _save_txn_marks(server, txn_email, _marks_to_persist(txn_ack, txn_newest))
+    if txn_ack is False:
+        print("[안내] 서버가 거래를 아직 장부에 넣지 못했습니다 — 다음 사이클에 다시 보냅니다.")
     print(
         f"[완료] 신규 {body.get('inserted')} · 갱신 {body.get('updated')} · "
         f"변동없음 {body.get('unchanged')} · 건너뜀 {body.get('skipped')} · "

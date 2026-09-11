@@ -304,16 +304,23 @@ def ingest(body: IngestIn, request: Request):
     # 거래는 out.linked_uid(이 계정의 힉스필드 uid) 소유로 적재하고, 같은 소유자 생성물과 시각 매칭.
     # 거래 차집합이 비어도, 방금 적재/보강된 생성물로 저장된 미매칭 거래를 다시 평가한다.
     # 신원을 못 정한 사이클은 전체 사용자 범위로 매칭하지 않는다.
+    transactions_stored = False
     if MANAGE_ENABLED and out.linked_uid:
         try:
             from ..repo import manage as _m
 
             _m.record_transactions(out.linked_uid, acc.get("email"), body.account_transactions or [])
+            transactions_stored = True
         except Exception:  # noqa: BLE001 — 메트릭 수집 실패가 적재를 막지 않게
             pass
     report_queued = False
+    # 프록시(로컬 허브)에서는 대기열에 들어가야 공유 서버까지 간다 — 로컬 저장만으로 성공이라고
+    # 답하면 에이전트가 기준을 옮겨 버리고, 전송기는 대기열만 읽으므로 그 구간을 아무도 다시
+    # 보내지 않는다(코덱스 P1).
+    transactions_queued = True
     if _proxy.proxying() and (body.account_status or body.account_transactions):
         if MANAGE_ENABLED:
+            transactions_queued = False
             try:
                 from ..repo import manage as _m
 
@@ -321,6 +328,8 @@ def ingest(body: IngestIn, request: Request):
                     body.account_status, body.account_transactions
                 )
                 report_queued = bool(queued["status"] or queued["transactions"])
+                # 멱등 재보고는 삽입 0 이어도 성공이다 — 건수와 성공 여부를 섞지 않는다.
+                transactions_queued = True
             except Exception as exc:  # noqa: BLE001 — 로컬 생성 적재는 보존하되 로그로 노출
                 log_event(
                     _logger,
@@ -345,6 +354,9 @@ def ingest(body: IngestIn, request: Request):
                 )
             except Exception:  # noqa: BLE001 - 기능 off의 레거시 호환 경로
                 pass
+    # ★거래가 **끝까지 안착했나**를 명시해 돌려준다 — 에이전트는 이 값이 참일 때만 수집 기준을
+    #  옮긴다. 프록시에서는 로컬 장부와 전송 대기열이 **둘 다** 성공해야 한다.
+    out.transactions_recorded = transactions_stored and transactions_queued
     # 팀 매니징: 응답을 네트워크에 묶지 않고 dirty 텔레메트리 전송을 예약한다. 동시 요청은
     # 단일 drain으로 합쳐지며 신규 적재분과 이전 실패분을 함께 재시도한다.
     if MANAGE_ENABLED or report_queued:

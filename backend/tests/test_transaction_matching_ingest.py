@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from app import active_account, db, repo
 from app.models import IngestIn
@@ -68,6 +69,40 @@ class TransactionMatchingIngestTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(row, "empty ingest must evaluate stored transactions")
         self.assertEqual(tuple(row), (32.5, "transaction", 1))
+
+    def test_the_response_says_whether_the_ledger_actually_took_the_transactions(self):
+        """★에이전트는 이 값이 True 일 때만 수집 기준을 옮긴다(코덱스 P1).
+
+        200 만 보고 옮기면, 서버가 삼킨 적재 실패 구간이 영영 다시 안 읽힌다 —
+        기준 시각은 앞서 있고 그 구간의 거래는 아무도 다시 보내지 않는다."""
+        result = ingest.ingest(self._body(account_transactions=[self.transaction]), self.request)
+        self.assertIs(result.transactions_recorded, True)
+
+    def test_a_proxy_that_cannot_queue_the_report_does_not_claim_success(self):
+        """★로컬 허브에서는 **대기열에 들어가야** 공유 서버까지 간다(코덱스 P1).
+
+        로컬 장부에 넣은 것만으로 성공이라 답하면 에이전트가 수집 기준을 옮기고,
+        전송기는 대기열만 읽으므로 그 구간을 아무도 다시 보내지 않는다."""
+        with patch.object(ingest._proxy, "proxying", return_value=True), patch.object(
+            manage, "queue_account_reports", side_effect=RuntimeError("queue down")
+        ):
+            result = ingest.ingest(
+                self._body(account_transactions=[self.transaction]), self.request
+            )
+        self.assertIs(result.transactions_recorded, False)
+
+    def test_a_proxy_that_queues_the_report_reports_success(self):
+        with patch.object(ingest._proxy, "proxying", return_value=True):
+            result = ingest.ingest(
+                self._body(account_transactions=[self.transaction]), self.request
+            )
+        self.assertIs(result.transactions_recorded, True)
+
+    def test_a_cycle_without_an_identified_owner_reports_no_ledger_write(self):
+        """소유자를 못 정하면 거래를 적재하지 않는다 — 성공으로 보고해서는 안 된다."""
+        anonymous = SimpleNamespace(state=SimpleNamespace(account={"email": "nobody@example.com"}))
+        result = ingest.ingest(self._body(account_status={"email": "nobody@example.com"}), anonymous)
+        self.assertIs(result.transactions_recorded, False)
 
     def test_empty_transactions_match_after_generation_ingest(self):
         self.assertEqual(manage.record_transactions(

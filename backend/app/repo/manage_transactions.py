@@ -85,6 +85,9 @@ def record_transactions(
                     continue
                 display_name = transaction.get("display_name")
                 model = transaction.get("model")
+                # 어느 공간에서 빠진 돈인지 — 거래 응답에는 없고 에이전트가 붙여 보낸다.
+                # 거래 신원에는 넣지 않는다(manage_schema 의 ALTER 주석 참조).
+                workspace_id = str(transaction.get("workspace_id") or "").strip() or None
                 account_key = str(account_email or "").strip().lower()
                 existing = None
                 if account_key:
@@ -108,8 +111,8 @@ def record_transactions(
                     transaction_id = hashlib.sha1(raw.encode("utf-8")).hexdigest()
                 cursor = conn.execute(
                     "INSERT OR IGNORE INTO credit_txn"
-                    "(id, owner_uid, account_email, display_name, credits, action, created_at, model) "
-                    "VALUES(?,?,?,?,?,?,?,?)",
+                    "(id, owner_uid, account_email, display_name, credits, action, created_at, "
+                    "model, workspace_id) VALUES(?,?,?,?,?,?,?,?,?)",
                     (
                         transaction_id,
                         owner_uid,
@@ -119,6 +122,7 @@ def record_transactions(
                         action,
                         created_at,
                         model,
+                        workspace_id,
                     ),
                 )
                 inserted += cursor.rowcount
@@ -129,6 +133,14 @@ def record_transactions(
                         "UPDATE credit_txn SET model=? WHERE id=? "
                         "AND (model IS NULL OR TRIM(model)='')",
                         (model, transaction_id),
+                    )
+                # 공간도 같은 규칙으로 보강한다 — 옛 에이전트가 올린 행(NULL)이 뒤늦게 채워지고,
+                # 이미 채워진 값은 덮지 않는다(다른 공간 값으로 조용히 바뀌면 진단이 어긋난다).
+                if workspace_id:
+                    conn.execute(
+                        "UPDATE credit_txn SET workspace_id=? WHERE id=? "
+                        "AND (workspace_id IS NULL OR TRIM(workspace_id)='')",
+                        (workspace_id, transaction_id),
                     )
             matched_ids = _match_transactions(conn, owner_uid)
             conn.execute("COMMIT")
