@@ -67,6 +67,13 @@ def _make_candidates(count: int) -> list[str]:
                 "UPDATE generation SET sort_ts=?, created_at='2026-09-01 10:00:01' WHERE id=?",
                 (1_788_000_001.0 + index * 0.001, gen_id),
             )
+            # ★요청 시각은 **거꾸로** 박는다(옛 정렬 키). 그래야 이 테스트가 결정적이다 —
+            #  요청 시각으로 정렬하면 결과가 정확히 뒤집히므로 옛 구현은 반드시 실패한다.
+            #  안 그러면 같은 초 + uuid 라 옛 구현도 우연히 통과할 수 있다(코덱스 리뷰).
+            conn.execute(
+                "UPDATE gen_request SET created_at=? WHERE gen_id=?",
+                (f"2026-09-01 10:{count - index:02d}:00", gen_id),
+            )
         made.append(gen_id)
     return made
 
@@ -90,3 +97,21 @@ def test_candidates_limit_cuts_from_the_newest_end(client):
 
     items = client.get("/api/gen-requests/canvas-candidates?limit=2").json()["items"]
     assert [item["id"] for item in items] == [made[4], made[3]]
+
+
+def test_retried_request_does_not_eat_a_limit_slot(client):
+    """한 생성물에 요청행이 여럿이어도 자리를 하나만 쓴다(UNION 이 접는다).
+
+    정렬 키를 생성물 기준으로 바꾸면서 재시도 요청들이 **같은 행**을 내게 됐다. UNION ALL 이면
+    중복이 LIMIT 자리를 먹어, 3자리를 달라고 해도 서로 다른 생성물은 2개만 돌아온다.
+    """
+    made = _make_candidates(3)
+    account = resolve_agent_account(None)
+    email = account["email"]
+    uid = account.get("creator_uid") or repo.get_my_uid()
+    # 가장 최신 생성물에 요청행을 둘 더 붙인다(제출 재시도로 생기는 모양)
+    for _ in range(2):
+        repo.create_gen_request(email, uid, made[2], "create", repo.gen_recipe(made[2]))
+
+    items = client.get("/api/gen-requests/canvas-candidates?limit=3").json()["items"]
+    assert [item["id"] for item in items] == list(reversed(made))
