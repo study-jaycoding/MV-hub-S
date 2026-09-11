@@ -42,8 +42,8 @@ def client(monkeypatch):
 def _make_candidates(count: int) -> list[str]:
     """카드에 안 담긴 '담기' 후보를 만든 순서대로 돌려준다(= 오래된 것부터).
 
-    후보 질의는 요청표의 created_at 으로 정렬한다. 한 초 안에 여러 건을 만들면 시각이 같아져
-    uuid 순으로 갈리므로, 시각을 1분씩 벌려 '최신순'이 뜻을 갖게 한다.
+    정렬키는 generation.sort_ts(정밀 epoch)다 — 라이브러리 목록과 같은 기준. 여기서는
+    같은 초에 만들어도 순서가 서는지 보려고 **1밀리초씩만** 벌린다.
     """
     account = resolve_agent_account(None)  # AUTH off 폴백 — 라우터가 쓰는 바로 그 신원
     email, uid = account["email"], account.get("creator_uid") or repo.get_my_uid()
@@ -61,9 +61,11 @@ def _make_candidates(count: int) -> list[str]:
         # 캔버스 연결이 없는 create 요청 = 어느 카드에도 안 담긴 후보
         repo.create_gen_request(email, uid, gen_id, "create", repo.gen_recipe(gen_id))
         with db.get_connection() as conn:
+            # 같은 초 안(1.000 → 1.004)이라도 최신순이 서야 한다 — 옛 코드는 이 경우
+            # 요청 uuid 로 갈려 배치 생성물의 순서가 매번 달라졌다.
             conn.execute(
-                "UPDATE gen_request SET created_at=? WHERE gen_id=?",
-                (f"2026-09-01 10:{index:02d}:00", gen_id),
+                "UPDATE generation SET sort_ts=?, created_at='2026-09-01 10:00:01' WHERE id=?",
+                (1_788_000_001.0 + index * 0.001, gen_id),
             )
         made.append(gen_id)
     return made

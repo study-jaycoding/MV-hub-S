@@ -982,7 +982,7 @@ def list_canvas_generation_candidates(
     카드에 잘 있는 생성물이 '빠진 것'처럼 보여 사용자가 중복으로 또 붙이게 된다.
     """
     request_sql = (
-        "SELECT r.gen_id, r.created_at sort_at, r.id sort_id "
+        "SELECT r.gen_id, g.sort_ts sort_at, g.id sort_id "
         "FROM gen_request r JOIN generation g ON g.id=r.gen_id "
         "WHERE r.account_email=? AND r.kind='create' AND r.canvas_attempt_id IS NULL "
         "AND g.deleted_at IS NULL"
@@ -1000,14 +1000,19 @@ def list_canvas_generation_candidates(
         # history/list에서 들어온 순수 synced 행은 요청표가 없다. creator_uid로 본인 소유를
         # 증명하고, 개인 카드 소속표에 아직 없는 행만 같은 수동 복구 목록에 합친다.
         parts.append(
-            "SELECT g.id gen_id, g.created_at sort_at, g.id sort_id FROM generation g "
+            "SELECT g.id gen_id, g.sort_ts sort_at, g.id sort_id FROM generation g "
             "WHERE g.origin='synced' AND g.creator_uid=? AND g.deleted_at IS NULL "
             "AND NOT EXISTS (SELECT 1 FROM gen_request r WHERE r.gen_id=g.id) "
             "AND NOT EXISTS (SELECT 1 FROM scene_card_generation s "
             "WHERE s.owner_uid=? AND s.generation_id=g.id AND s.removed_at IS NULL)"
         )
         args.extend((synced_owner, owner_uid))
-    sql = "SELECT gen_id FROM (" + " UNION ALL ".join(parts) + ") "
+    # ★정렬은 생성물의 sort_ts(정밀 epoch) — 라이브러리 목록과 같은 기준이다.
+    #  옛 코드는 요청표 created_at(초 단위) + 요청 id(uuid)로 정렬해, 같은 초에 만든 것들이
+    #  uuid 순으로 뒤섞였다(배치로 여러 장 뽑으면 매번 순서가 달랐다).
+    #  UNION(ALL 아님) — 같은 생성물이 두 줄기·재시도 요청으로 여러 번 나와도 한 줄로 접혀
+    #  LIMIT 자리를 먹지 않는다.
+    sql = "SELECT gen_id FROM (" + " UNION ".join(parts) + ") "
     sql += "ORDER BY sort_at DESC, sort_id DESC LIMIT ?"
     args.append(max(1, min(limit, 100)))
     with get_connection() as conn:
@@ -1042,11 +1047,11 @@ def list_card_generation_history(
     sql = (
         "SELECT generation_id, scene_id, card_id FROM ("
         "SELECT s.generation_id generation_id, s.scene_id scene_id, s.card_id card_id, "
-        "g.created_at sort_at, g.id sort_id "
+        "g.sort_ts sort_at, g.id sort_id "
         "FROM scene_card_generation s JOIN generation g ON g.id=s.generation_id "
         "WHERE s.owner_uid=? AND g.deleted_at IS NULL "
         "UNION "
-        "SELECT r.gen_id, r.canvas_scene_id, r.canvas_card_id, g.created_at, g.id "
+        "SELECT r.gen_id, r.canvas_scene_id, r.canvas_card_id, g.sort_ts, g.id "
         "FROM gen_request r JOIN generation g ON g.id=r.gen_id "
         "WHERE r.account_email=? AND r.canvas_scene_id IS NOT NULL "
         "AND r.canvas_card_id IS NOT NULL AND r.status<>'preparing' AND g.deleted_at IS NULL"
