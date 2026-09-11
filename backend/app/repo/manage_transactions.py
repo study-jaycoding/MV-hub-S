@@ -5,14 +5,22 @@ from __future__ import annotations
 import bisect
 import hashlib
 import math
+from collections import deque
 from datetime import datetime
 from typing import Any, Optional
 
 from ..db import get_connection
 from .manage_schema import _ensure_schema
-from .manage_telemetry import mark_telemetry_dirty
+from .manage_telemetry import mark_telemetry_dirty_in_connection
 
 _MATCH_WINDOW = 60.0
+_MAX_COMPONENT_VERTICES = 512
+_MAX_COMPONENT_EDGES = 65536
+_PENDING_SOURCES = (
+    "transaction_pending_ambiguous",
+    "transaction_pending_incomplete",
+    "transaction_pending_limit",
+)
 
 
 def _spend_amount(credits: Any) -> Optional[float]:
@@ -58,10 +66,8 @@ def record_transactions(
     owner_uid: Optional[str],
     account_email: Optional[str],
     transactions: list[dict],
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """거래를 멱등 적재하고 소유자·모델·시각이 맞는 생성물에 실제값을 기록한다."""
-    if not transactions:
-        return {"inserted": 0, "matched": 0}
     inserted = 0
     with get_connection() as conn:
         _ensure_schema(conn)
@@ -73,6 +79,10 @@ def record_transactions(
                 created_at = transaction.get("created_at")
                 credits = transaction.get("credits")
                 action = transaction.get("action")
+                # SQLite REAL affinity는 bool/숫자문자열도 숫자로 바꾼다. 타입을 잃기 전에
+                # 검사해야 잘못된 입력이 다음 빈 사이클에서 유효 금액으로 되살아나지 않는다.
+                if action == "spend" and _spend_amount(credits) is None:
+                    continue
                 display_name = transaction.get("display_name")
                 model = transaction.get("model")
                 account_key = str(account_email or "").strip().lower()
@@ -125,11 +135,6 @@ def record_transactions(
         except Exception:
             conn.execute("ROLLBACK")
             raise
-    if matched_ids:
-        try:
-            mark_telemetry_dirty(matched_ids)
-        except Exception:  # noqa: BLE001
-            pass
     return {
         "inserted": inserted,
         "matched": len(matched_ids),
@@ -137,51 +142,135 @@ def record_transactions(
     }
 
 
+def _augment(
+    start: int,
+    edges: dict[int, list[int]],
+    by_generation: dict[int, int],
+    by_transaction: dict[int, int],
+    spend_amounts: list[Optional[float]],
+    forbidden_amount: Optional[float] = None,
+) -> bool:
+    """반복형 BFS 증가경로. 성공한 경로만 배정을 옮긴다."""
+    queue = deque([start])
+    parents: dict[int, int] = {}  # 거래를 처음 방문한 생성물
+    while queue:
+        generation_index = queue.popleft()
+        for transaction_index in edges[generation_index]:
+            if transaction_index in parents:
+                continue
+            if (
+                generation_index == start
+                and forbidden_amount is not None
+                and spend_amounts[transaction_index] == forbidden_amount
+            ):
+                continue
+            parents[transaction_index] = generation_index
+            assigned = by_transaction.get(transaction_index)
+            if assigned is not None:
+                queue.append(assigned)
+                continue
+            # 빈 거래에서 시작점까지 거꾸로 이동하며 경로를 뒤집는다.
+            while True:
+                generation_index = parents[transaction_index]
+                previous = by_generation.get(generation_index)
+                by_generation[generation_index] = transaction_index
+                by_transaction[transaction_index] = generation_index
+                if previous is None:
+                    return True
+                transaction_index = previous
+    return False
+
+
+def _component_matching(
+    generation_indices: list[int],
+    transaction_indices: set[int],
+    edges: dict[int, list[int]],
+    spend_amounts: list[Optional[float]],
+) -> tuple[Optional[str], dict[int, int]]:
+    """모든 최대 매칭에서 생성물별 금액이 같을 때만 기준 매칭을 반환한다."""
+    if (
+        len(generation_indices) + len(transaction_indices) > _MAX_COMPONENT_VERTICES
+        or sum(len(edges[g]) for g in generation_indices) > _MAX_COMPONENT_EDGES
+    ):
+        return "limit", {}
+    by_generation: dict[int, int] = {}
+    by_transaction: dict[int, int] = {}
+    for generation_index in generation_indices:
+        _augment(generation_index, edges, by_generation, by_transaction, spend_amounts)
+    if len(by_generation) < len(generation_indices):
+        return "incomplete", {}
+    if len({spend_amounts[t] for t in transaction_indices}) == 1:
+        return None, by_generation
+    for generation_index in generation_indices:
+        # 각 검사는 같은 기준 매칭에서 독립적으로 수행한다.
+        alternate_generations = by_generation.copy()
+        alternate_transactions = by_transaction.copy()
+        transaction_index = alternate_generations.pop(generation_index)
+        del alternate_transactions[transaction_index]
+        if _augment(
+            generation_index, edges, alternate_generations, alternate_transactions,
+            spend_amounts, forbidden_amount=spend_amounts[transaction_index],
+        ):
+            return "ambiguous", {}
+    return None, by_generation
+
+
+def _set_credit_source(conn, generation, source: str) -> bool:
+    """보류/해제 상태가 실제 바뀔 때만 저장한다. 견적은 보존한다."""
+    if generation["credit_source"] == source and generation["matched"] == 0:
+        return False
+    cursor = conn.execute(
+        "INSERT INTO generation_metrics(gen_id, credit_source, matched) VALUES(?,?,0) "
+        "ON CONFLICT(gen_id) DO UPDATE SET credit_source=excluded.credit_source, matched=0 "
+        "WHERE generation_metrics.real_credits IS NULL",
+        (generation["id"], source),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError("Credit component state changed during matching")
+    return True
+
+
 def _match_transactions(conn, owner_uid: Optional[str]) -> list[str]:
-    """BEGIN IMMEDIATE 안에서 미매칭 거래와 생성물을 1:1로 확정한다."""
+    """BEGIN IMMEDIATE 안에서 요소 전체를 확정하거나 보류하고 dirty도 함께 저장한다."""
+    # 빈 계정 사이클이 전체 사용자 재평가로 확대되면 안 된다. 신원 없는 기존 호출도
+    # 거래 적재는 보존하되, 생성물 배정은 소유자를 확인한 호출에서만 수행한다.
+    if not owner_uid or not owner_uid.strip():
+        return []
     transactions = conn.execute(
         "SELECT id, credits, created_at, owner_uid, model FROM credit_txn "
-        "WHERE action='spend' AND matched_gen_id IS NULL "
-        "AND (owner_uid IS ? OR ? IS NULL)",
-        (owner_uid, owner_uid),
+        "WHERE action='spend' AND matched_gen_id IS NULL AND owner_uid=? ORDER BY id",
+        (owner_uid,),
     ).fetchall()
-    if not transactions:
-        return []
+    # 모델/시각/생성기 변경으로 후보가 사라진 생성물도 읽어 오래된 보류를 해제한다.
+    # 삭제된 생성물은 기존처럼 제외한다. 일반 dirty로 삭제 전송 표시를 덮으면 안 된다.
     generations = conn.execute(
-        "SELECT g.id AS id, g.sort_ts AS sort_ts, g.creator_uid AS creator_uid, "
-        "g.model AS model FROM generation g "
+        "SELECT g.id, g.sort_ts, g.creator_uid, g.model, g.generator, "
+        "m.est_credits, m.credit_source, m.matched FROM generation g "
         "LEFT JOIN generation_metrics m ON m.gen_id = g.id "
-        "WHERE g.sort_ts IS NOT NULL AND g.deleted_at IS NULL "
-        "AND (g.creator_uid = ? OR ? IS NULL) "
-        "AND m.real_credits IS NULL",
-        (owner_uid, owner_uid),
+        "WHERE g.creator_uid=? AND g.deleted_at IS NULL AND m.real_credits IS NULL ORDER BY g.id",
+        (owner_uid,),
     ).fetchall()
-    if not generations:
-        return []
-
-    order = sorted(range(len(generations)), key=lambda index: generations[index]["sort_ts"])
-    generation_timestamps = [generations[index]["sort_ts"] for index in order]
-    pairs: list[tuple[float, int, int]] = []
+    order = sorted(
+        (i for i, g in enumerate(generations)
+         if g["sort_ts"] is not None and g["generator"] != "comfy"),
+        key=lambda i: (generations[i]["sort_ts"], generations[i]["id"]),
+    )
+    generation_timestamps = [generations[i]["sort_ts"] for i in order]
+    edges: dict[int, list[int]] = {}
+    reverse_edges: dict[int, list[int]] = {}
     transaction_timestamps = [_epoch(row["created_at"]) for row in transactions]
-    # 금액을 못 읽는 거래는 후보에서 아예 뺀다 — 종전엔 NULL 인 채로 생성물에 붙어 그 거래를
-    # 소진하고 실제값은 비워 두었다(그 생성물은 다시 매칭되지도 않는다).
     spend_amounts = [_spend_amount(row["credits"]) for row in transactions]
     for transaction_index, transaction_epoch in enumerate(transaction_timestamps):
         if transaction_epoch is None or spend_amounts[transaction_index] is None:
             continue
         transaction = transactions[transaction_index]
-        lower = bisect.bisect_left(
-            generation_timestamps, transaction_epoch - _MATCH_WINDOW
-        )
-        upper = bisect.bisect_right(
-            generation_timestamps, transaction_epoch + _MATCH_WINDOW
-        )
+        lower = bisect.bisect_left(generation_timestamps, transaction_epoch - _MATCH_WINDOW)
+        upper = bisect.bisect_right(generation_timestamps, transaction_epoch + _MATCH_WINDOW)
         for ordered_index in range(lower, upper):
             generation_index = order[ordered_index]
             generation = generations[generation_index]
             if (
-                transaction["owner_uid"]
-                and generation["creator_uid"]
+                transaction["owner_uid"] and generation["creator_uid"]
                 and transaction["owner_uid"] != generation["creator_uid"]
             ):
                 continue
@@ -189,48 +278,64 @@ def _match_transactions(conn, owner_uid: Optional[str]) -> list[str]:
             generation_model = generation["model"]
             if transaction_model and generation_model and transaction_model != generation_model:
                 continue
-            pairs.append(
-                (
-                    abs(generation["sort_ts"] - transaction_epoch),
-                    transaction_index,
-                    generation_index,
-                )
-            )
-    pairs.sort()
+            edges.setdefault(generation_index, []).append(transaction_index)
+            reverse_edges.setdefault(transaction_index, []).append(generation_index)
 
-    used_transactions: set[int] = set()
-    used_generations: set[int] = set()
     matched_ids: list[str] = []
-    for _, transaction_index, generation_index in pairs:
-        if transaction_index in used_transactions or generation_index in used_generations:
+    dirty_ids: list[str] = []
+    visited: set[int] = set()
+    for start in sorted(edges):
+        if start in visited:
             continue
-        transaction = transactions[transaction_index]
-        generation = generations[generation_index]
-        real_credits = spend_amounts[transaction_index]  # 소수 보존 — 위 _spend_amount 참조
-        conn.execute("SAVEPOINT match_pair")
-        transaction_cursor = conn.execute(
-            "UPDATE credit_txn SET matched_gen_id=? "
-            "WHERE id=? AND matched_gen_id IS NULL",
-            (generation["id"], transaction["id"]),
+        visited.add(start)
+        queue = deque([start])
+        component_generations: list[int] = []
+        component_transactions: set[int] = set()
+        while queue:
+            generation_index = queue.popleft()
+            component_generations.append(generation_index)
+            for transaction_index in edges[generation_index]:
+                if transaction_index in component_transactions:
+                    continue
+                component_transactions.add(transaction_index)
+                for neighbor in reverse_edges[transaction_index]:
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+        reason, matching = _component_matching(
+            component_generations, component_transactions, edges, spend_amounts,
         )
-        if transaction_cursor.rowcount != 1:
-            conn.execute("ROLLBACK TO match_pair")
-            conn.execute("RELEASE match_pair")
+        if reason is not None:
+            for generation_index in component_generations:
+                generation = generations[generation_index]
+                if _set_credit_source(conn, generation, f"transaction_pending_{reason}"):
+                    dirty_ids.append(generation["id"])
             continue
-        metrics_cursor = conn.execute(
-            "INSERT INTO generation_metrics(gen_id, real_credits, credit_source, matched) "
-            "VALUES(?,?, 'transaction', 1) "
-            "ON CONFLICT(gen_id) DO UPDATE SET "
-            "real_credits=excluded.real_credits, credit_source='transaction', matched=1 "
-            "WHERE generation_metrics.real_credits IS NULL",
-            (generation["id"], real_credits),
-        )
-        if metrics_cursor.rowcount != 1:
-            conn.execute("ROLLBACK TO match_pair")
-            conn.execute("RELEASE match_pair")
-            continue
-        conn.execute("RELEASE match_pair")
-        used_transactions.add(transaction_index)
-        used_generations.add(generation_index)
-        matched_ids.append(generation["id"])
+        for generation_index, transaction_index in matching.items():
+            generation = generations[generation_index]
+            transaction_cursor = conn.execute(
+                "UPDATE credit_txn SET matched_gen_id=? WHERE id=? AND matched_gen_id IS NULL",
+                (generation["id"], transactions[transaction_index]["id"]),
+            )
+            if transaction_cursor.rowcount != 1:
+                raise RuntimeError("Credit component transaction changed during matching")
+            metrics_cursor = conn.execute(
+                "INSERT INTO generation_metrics(gen_id, real_credits, credit_source, matched) "
+                "VALUES(?,?, 'transaction', 1) "
+                "ON CONFLICT(gen_id) DO UPDATE SET "
+                "real_credits=excluded.real_credits, credit_source='transaction', matched=1 "
+                "WHERE generation_metrics.real_credits IS NULL",
+                (generation["id"], spend_amounts[transaction_index]),
+            )
+            if metrics_cursor.rowcount != 1:
+                raise RuntimeError("Credit component generation changed during matching")
+            matched_ids.append(generation["id"])
+            dirty_ids.append(generation["id"])
+    for generation_index, generation in enumerate(generations):
+        if generation_index not in edges and generation["credit_source"] in _PENDING_SOURCES:
+            source = "estimate" if generation["est_credits"] is not None else "unknown"
+            if _set_credit_source(conn, generation, source):
+                dirty_ids.append(generation["id"])
+    # 오류를 삼키거나 COMMIT 뒤 별도 연결을 열면 장부와 전송 revision이 갈라진다.
+    mark_telemetry_dirty_in_connection(conn, dirty_ids)
     return matched_ids

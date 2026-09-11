@@ -302,11 +302,13 @@ def ingest(body: IngestIn, request: Request):
             schedule_history_auto_start(gap_email)
     # PM: 실제 차감액 수집·매칭(분리형). 플래그 게이트 + best-effort — 실패해도 적재엔 무영향.
     # 거래는 out.linked_uid(이 계정의 힉스필드 uid) 소유로 적재하고, 같은 소유자 생성물과 시각 매칭.
-    if MANAGE_ENABLED and body.account_transactions:
+    # 거래 차집합이 비어도, 방금 적재/보강된 생성물로 저장된 미매칭 거래를 다시 평가한다.
+    # 신원을 못 정한 사이클은 전체 사용자 범위로 매칭하지 않는다.
+    if MANAGE_ENABLED and out.linked_uid:
         try:
             from ..repo import manage as _m
 
-            _m.record_transactions(out.linked_uid, acc.get("email"), body.account_transactions)
+            _m.record_transactions(out.linked_uid, acc.get("email"), body.account_transactions or [])
         except Exception:  # noqa: BLE001 — 메트릭 수집 실패가 적재를 막지 않게
             pass
     report_queued = False

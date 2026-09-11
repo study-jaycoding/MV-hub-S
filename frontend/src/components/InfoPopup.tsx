@@ -14,6 +14,7 @@ import type { Generation, InfoTarget, PreviewTarget, Project, Reference } from "
 import { InlinePromptRefs } from "./common/InlinePromptRefs";
 import { MediaThumbnail } from "./MediaThumbnail";
 
+import { formatCredits } from "../lib/formatCredits";
 interface Props {
   target: InfoTarget;
   onClose: () => void;
@@ -25,6 +26,11 @@ interface Props {
 }
 
 const POP_W = 380;
+const TRANSACTION_PENDING_REASONS: Record<string, string> = {
+  transaction_pending_ambiguous: "연결 가능한 거래에 서로 다른 금액이 있습니다.",
+  transaction_pending_incomplete: "모든 생성물에 연결할 거래가 아직 부족합니다.",
+  transaction_pending_limit: "연결 후보가 너무 많아 자동 확정을 보류했습니다.",
+};
 
 function clampStart(x: number, y: number) {
   const left = Math.min(Math.max(8, x + 8), window.innerWidth - POP_W - 8);
@@ -79,6 +85,7 @@ export function InfoPopup({
   };
   const [dim, setDim] = useState<string>("");
   const [credits, setCredits] = useState<number | null>(null); // 견적(폴백)
+  const [estimateStatus, setEstimateStatus] = useState<"loading" | "ready" | "error">("loading");
   const [metrics, setMetrics] = useState<{
     est_credits: number | null;
     real_credits: number | null;
@@ -103,6 +110,7 @@ export function InfoPopup({
     const my = ++infoSeqRef.current;
     const isLatest = () => my === infoSeqRef.current;
     setCredits(null);
+    setEstimateStatus("loading");
     setMetrics(null);
     setComfySub(null);
     const g = target.gen;
@@ -115,8 +123,16 @@ export function InfoPopup({
     } else {
       api
         .estimateCost(g.model || "", (g.params || {}) as Record<string, unknown>, g.prompt)
-        .then((r) => isLatest() && setCredits(r.credits))
-        .catch(() => isLatest() && setCredits(null));
+        .then((r) => {
+          if (!isLatest()) return;
+          setCredits(r.credits);
+          setEstimateStatus("ready");
+        })
+        .catch(() => {
+          if (!isLatest()) return;
+          setCredits(null);
+          setEstimateStatus("error");
+        });
     }
     api
       .generationMetrics(g.id)
@@ -161,6 +177,17 @@ export function InfoPopup({
     }
     title = g.prompt.slice(0, 60) || "(제목 없음)";
     const params = (g.params || {}) as Record<string, unknown>;
+    const estimate = metrics?.est_credits ?? credits;
+    const estimateText = estimate != null
+      ? `견적 ${formatCredits(estimate)} credits`
+      : estimateStatus === "loading"
+        ? "견적 조회 중…"
+        : estimateStatus === "error"
+          ? "견적 조회 실패"
+          : "견적 정보 없음";
+    const pendingReason = metrics?.real_credits != null
+      ? null
+      : TRANSACTION_PENDING_REASONS[metrics?.credit_source ?? ""];
     rows = (
       <>
         {g.execution_phase === "recovery_required" && (
@@ -238,16 +265,21 @@ export function InfoPopup({
             }
           />
         ) : (
-          <Row
-            label={metrics?.real_credits != null ? "크레딧(실제)" : "크레딧(견적)"}
-            value={
-              metrics?.real_credits != null
-                ? `${metrics.real_credits} credits`
-                : credits != null
-                  ? `${credits} credits`
-                  : "조회 중…"
-            }
-          />
+          <>
+            <Row
+              label={metrics?.real_credits != null ? "크레딧(실제)" : "크레딧(견적)"}
+              value={
+                metrics?.real_credits != null
+                  ? `${formatCredits(metrics.real_credits)} credits`
+                  : pendingReason
+                    ? `${estimateText} · 실제 사용량 확정 못 함`
+                    : estimate != null
+                      ? `${formatCredits(estimate)} credits`
+                      : estimateText
+              }
+            />
+            <Row label="확정 보류 사유" value={pendingReason} />
+          </>
         )}
         {metrics?.elapsed_seconds != null && (
           <Row label="생성 시간" value={formatElapsed(metrics.elapsed_seconds)} />
