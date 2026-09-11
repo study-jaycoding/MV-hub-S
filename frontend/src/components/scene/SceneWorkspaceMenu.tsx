@@ -98,7 +98,7 @@ export function SceneWorkspaceMenu({
       <div className="scene-ws-menu-list">
         <button
           type="button"
-          className={"scene-ws-item" + (target.current ? "" : " on")}
+          className={"scene-ws-item none" + (target.current ? "" : " on")}
           onClick={() => {
             onAssign(target.sceneId, null);
             onClose();

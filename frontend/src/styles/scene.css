@@ -1386,6 +1386,8 @@
   content: ""; position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
   width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
 }
+/* None 항목 — 이름도 설명과 같은 보조색(고르지 않은 동안). 고르면 아래 규칙이 라임으로 덮는다. */
+.scene-ws-item.none .scene-ws-item-name { color: var(--muted); }
 .scene-ws-item.on .scene-ws-item-name { color: var(--accent); font-weight: 700; }
 .scene-ws-item small { color: var(--muted); font-size: 11px; }
 .scene-ws-empty { padding: 5px 8px 5px 20px; color: var(--muted); font-size: 11.5px; }
