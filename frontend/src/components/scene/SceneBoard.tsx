@@ -393,7 +393,7 @@ export function SceneBoard({
   const [tagEditNodeGenId, setTagEditNodeGenId] = useState<string | null>(null); // 카드 내부 HistoryBoardNode 의 태그 편집 대상 gen id
   const [canvasRecovery, setCanvasRecovery] = useState<{
     cardId: string;
-    items: Generation[]; // 아래 칸 '생성물 카드에 담기' — 카드 기록이 원래 없는 것
+    items: Generation[]; // 아래 칸 '카드 생성물 담기' — 카드 기록이 원래 없는 것
     detached: DetachedCandidate[]; // 위 칸 '카드 생성물 복구' — 카드에 있었다가 떨어진 것(가까운 순)
     detachedGens: Record<string, Generation>; // 위 칸 본문(일괄 조회 결과)
     detachedStatus: "ok" | "unreadable"; // unreadable = 로컬 씬을 못 읽어 판정 불가
@@ -4076,14 +4076,14 @@ export function SceneBoard({
 
                   <div className="scene-recovery-sep" />
 
-                  {/* ── 아래 칸 '생성물 카드에 담기' — 어느 카드에서 나왔는지 기록이 원래 없는 것 ── */}
+                  {/* ── 아래 칸 '카드 생성물 담기' — 어느 카드에서 나왔는지 기록이 원래 없는 것 ── */}
                   <div className="scene-recovery-sect">
                     <div className="scene-recovery-sect-hd">
                       <span className="scene-recovery-sect-title">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M12 5v14M5 12h14" />
                         </svg>
-                        생성물 카드에 담기
+                        카드 생성물 담기
                       </span>
                       <span className="scene-recovery-count">{recoveryFiltered.length}</span>
                       <input
