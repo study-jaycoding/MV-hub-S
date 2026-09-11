@@ -1358,8 +1358,9 @@
   position: fixed; z-index: 60; display: grid; gap: 6px; padding: 8px;
   border: 1px solid var(--line); border-radius: 10px; background: var(--panel, #1a1a1a);
   box-shadow: 0 10px 30px rgba(0,0,0,.45); font-size: 12px;
-  /* 메뉴 자체가 화면보다 높으면(작은 창) 잘리지 않게 — 위치 보정만으로는 부족하다(코덱스 P2) */
-  max-height: calc(100vh - 16px); overflow: auto;
+  /* 메뉴 자체가 화면보다 높으면(작은 창) 잘리지 않게 — 위치 보정만으로는 부족하다(코덱스 P2).
+     가로는 절대 스크롤하지 않는다(폭 고정 + 긴 이름은 말줄임) — 밑에 가로 바가 생기면 지저분하다. */
+  max-height: calc(100vh - 16px); overflow-y: auto; overflow-x: hidden;
 }
 /* 머리줄 — 왼쪽 씬 이름, 오른쪽 '지금 지정된 공간'(라임 점 + 이름). 여기서 현재 상태를 바로 읽는다. */
 .scene-ws-menu-head {
@@ -1381,11 +1382,13 @@
 }
 .scene-ws-menu-now i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .scene-ws-menu-now.none { color: var(--muted2); font-weight: 400; font-style: italic; }
-.scene-ws-menu-list { display: grid; gap: 2px; max-height: 260px; overflow: auto; }
+.scene-ws-menu-list { display: grid; gap: 2px; max-height: 260px; overflow-y: auto; overflow-x: hidden; }
 .scene-ws-item {
-  position: relative; display: grid; text-align: left; padding: 6px 8px 6px 20px; border: 0; border-radius: 6px;
+  position: relative; display: grid; min-width: 0; text-align: left;
+  padding: 6px 8px 6px 20px; border: 0; border-radius: 6px;
   background: transparent; color: var(--text); cursor: pointer; font-size: 12.5px;
 }
+.scene-ws-item > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scene-ws-item:hover { background: rgba(255,255,255,.06); }
 /* 고른 항목 — 라임 점 + 은은한 배경. 글자는 그대로 읽히게(라임 배경 위 검은 글자는 목록엔 과하다). */
 .scene-ws-item.on { background: rgba(196,232,74,.12); }
