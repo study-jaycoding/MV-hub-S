@@ -107,7 +107,7 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
   align-items: center;
   gap: 9px;
   padding: 8px 9px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: color-mix(in srgb, var(--panel) 88%, transparent);
 }
@@ -326,7 +326,7 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .project-settings-section {
   margin: 14px 0 12px;
   padding-top: 13px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--border);
 }
 .project-settings-section h5 {
   margin: 0 0 11px;
@@ -352,7 +352,7 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .credit-topup-row > input, .credit-topup-row > button {
   box-sizing: border-box; height: 32px; margin: 0; font: inherit; font-size: 12.5px; line-height: 1;
 }
-.credit-topup-row input[type="date"] { padding: 0 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); color-scheme: dark; }
+.credit-topup-row input[type="date"] { padding: 0 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); color-scheme: dark; }
 .credit-topup-row .settings-input { width: 100%; min-width: 0; padding: 0 10px; border-radius: 8px; }
 .credit-topup-save { padding: 0; border-radius: 8px; border: 0; background: var(--accent); color: var(--accent-ink); cursor: pointer; font-weight: 700; }
 .credit-topup-save:disabled { opacity: .6; cursor: default; }
@@ -362,7 +362,7 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .credit-group-add { padding: 6px 12px; border-radius: 999px; border: 0; background: var(--accent); color: var(--accent-ink); cursor: pointer; font-size: 12px; font-weight: 700; }
 .credit-group-add:hover { filter: brightness(1.08); }
 .credit-plan-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.credit-plan-table th { text-align: left; color: var(--muted); font-size: 11px; font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.credit-plan-table th { text-align: left; color: var(--muted); font-size: 11px; font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--border); }
 .credit-plan-table td { padding: 8px; border-bottom: 1px solid rgba(255,255,255,.05); }
 .credit-plan-table tbody tr { cursor: pointer; }
 .credit-plan-table tbody tr:hover { background: rgba(255,255,255,.035); }
@@ -378,8 +378,8 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .credit-plan-del:hover { color: #f06a5a; border-color: #f06a5a; background: rgba(240,106,90,.10); }
 .admin-confirm-q small { display: block; margin-top: 8px; color: var(--muted); font-size: 12px; }
 .credit-modal-backdrop { position: fixed; inset: 0; z-index: 320; background: rgba(0,0,0,.6); display: grid; place-items: center; padding: 16px; }
-.credit-modal { position: relative; width: min(760px, 94vw); max-height: 88vh; display: grid; grid-template-columns: 1fr 1fr; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; }
-.credit-modal-left { padding: 20px 20px 18px; border-right: 1px solid var(--line); display: grid; align-content: start; gap: 12px; }
+.credit-modal { position: relative; width: min(760px, 94vw); max-height: 88vh; display: grid; grid-template-columns: 1fr 1fr; background: var(--panel); border: 1px solid var(--border); border-radius: 18px; overflow: hidden; }
+.credit-modal-left { padding: 20px 20px 18px; border-right: 1px solid var(--border); display: grid; align-content: start; gap: 12px; }
 .credit-modal-left h4 { margin: 0 0 4px; font-size: 18px; }
 .credit-modal-field { display: grid; gap: 6px; }
 .credit-modal-field > span { color: var(--muted); font-size: 11.5px; font-weight: 700; }
@@ -395,7 +395,7 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .credit-modal-field .manage-budget-limit:focus-within { border-color: var(--accent); }
 .credit-modal-field .manage-budget-limit em { padding: 0 11px 0 10px; } /* 글자와 보조 문구 사이 띄움 */
 .credit-modal-field .manage-budget-limit select { color: var(--text); background: transparent; }
-.credit-modal-toggle { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.credit-modal-toggle { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); font-size: 12.5px; font-weight: 600; cursor: pointer; }
 .credit-switch { appearance: none; width: 36px; height: 20px; border-radius: 999px; background: #3a3d44; position: relative; cursor: pointer; transition: background .15s; margin: 0; }
 .credit-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
 .credit-switch:checked { background: #22c55e; }
@@ -409,7 +409,7 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .credit-modal-right { position: relative; padding: 20px; display: grid; align-content: start; gap: 10px; background: rgba(255,255,255,.02); min-height: 320px; }
 .credit-modal-close {
   flex: none; width: 24px; height: 24px; padding: 0; border-radius: 50%;
-  border: 1px solid var(--line); background: transparent; color: var(--muted);
+  border: 1px solid var(--border); background: transparent; color: var(--muted);
   cursor: pointer; font-size: 14px; line-height: 1;
 }
 .credit-modal-close:hover { color: #f06a5a; border-color: #f06a5a; }
@@ -417,7 +417,7 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 /* 알약 단추 — '이건 누르는 것' 이 한눈에 보이게(Jay 2026-09-11). credit-modal-add 와 같은 모양이되
    테두리를 또렷하게 하고 호버 반응을 준다. solid = 켜진 상태(라임). */
 .credit-pill {
-  padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line);
+  padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border);
   background: rgba(255,255,255,.05); color: var(--text); cursor: pointer;
   font-size: 11.5px; font-weight: 700; line-height: 1.4;
 }
@@ -429,24 +429,24 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .credit-modal-members, .credit-pick { display: grid; gap: 4px; overflow: auto; max-height: 56vh; }
 .credit-modal-member, .credit-pick-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; text-align: left; }
 .credit-pick-row { width: 100%; border: 1px solid transparent; background: transparent; color: var(--text); cursor: pointer; flex-direction: column; align-items: flex-start; gap: 1px; }
-.credit-pick-row:hover { background: rgba(255,255,255,.05); border-color: var(--line); }
+.credit-pick-row:hover { background: rgba(255,255,255,.05); border-color: var(--border); }
 .credit-modal-member:hover { background: rgba(255,255,255,.03); }
 .credit-modal-member.off, .credit-pick-row.off { opacity: .55; }
 .credit-modal-member strong, .credit-pick-row strong { display: block; font-size: 12.5px; }
 .credit-modal-member small, .credit-pick-row small { color: var(--muted); font-size: 11px; }
-.credit-modal-member button { width: 24px; height: 24px; padding: 0; border-radius: 50%; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+.credit-modal-member button { width: 24px; height: 24px; padding: 0; border-radius: 50%; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; }
 .credit-modal-member button:hover { color: #f06a5a; border-color: #f06a5a; }
 .credit-pick-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; margin-bottom: 2px; }
-.credit-pick-head button { padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; font-size: 11.5px; }
+.credit-pick-head button { padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; font-size: 11.5px; }
 .credit-modal-empty { display: grid; justify-items: center; gap: 4px; padding: 48px 12px; text-align: center; }
 .credit-modal-empty-icon { font-size: 26px; opacity: .6; }
 .credit-modal-empty strong { font-size: 13px; }
 .credit-modal-empty small { color: var(--muted); font-size: 11.5px; margin-bottom: 8px; }
-@media (max-width: 720px) { .credit-modal { grid-template-columns: 1fr; } .credit-modal-left { border-right: 0; border-bottom: 1px solid var(--line); } }
+@media (max-width: 720px) { .credit-modal { grid-template-columns: 1fr; } .credit-modal-left { border-right: 0; border-bottom: 1px solid var(--border); } }
 .project-member-picker {
   margin: 2px 0 12px;
   padding: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 12px;
   background: rgba(255,255,255,.025);
 }
@@ -727,11 +727,11 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .credit-allow-head { display: flex; justify-content: space-between; align-items: center; }
 .credit-allow-head > span { color: var(--muted); font-size: 11.5px; font-weight: 600; }
 .credit-allow-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.credit-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: rgba(255,255,255,.04); font-size: 12px; }
+.credit-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px 3px 10px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,.04); font-size: 12px; }
 .credit-chip button { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; line-height: 1; }
 .credit-chip button:hover { color: #f06a5a; }
 .credit-allow-empty { color: var(--muted); font-size: 11.5px; }
-.credit-allow-pick { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.025); max-height: 220px; overflow: auto; }
+.credit-allow-pick { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: rgba(255,255,255,.025); max-height: 220px; overflow: auto; }
 .credit-allow-group { margin: 4px 0 2px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 .credit-allow-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 2px; font-size: 12.5px; cursor: pointer; }
 .credit-allow-row:hover { background: rgba(255,255,255,.04); border-radius: 6px; }
