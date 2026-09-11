@@ -485,6 +485,12 @@
 }
 .sl-combo-part:hover { color: #fff; }
 .sl-combo-slash { color: var(--muted2); margin: 0 -5px; }
+/* 지금 쓰는 워크스페이스 — 상태줄 가운데. 긴 이름은 말줄임(Jay 2026-09-11) */
+.sl-combo-ws {
+  color: var(--text); font-weight: 700;
+  max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sl-combo-ws.unset { color: var(--muted2); font-weight: 400; font-style: italic; }
 .sl-status-sep { color: var(--muted2); }
 .sl-status-credits { color: #ffce8f; font-weight: 700; }
 .sl-status-user { color: var(--muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

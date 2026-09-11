@@ -1319,6 +1319,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             hubOk={hubOk}
             agentOn={agentOn}
             account={account}
+            workspace={workspace}
             onCheckAccount={checkAccount}
             visible={visible}
           />

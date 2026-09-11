@@ -2,6 +2,7 @@
 // (앱 버전·CLI·에이전트/허브 로그 꼬리)를 패널로 펼치고, 다시 누르면 접는다.
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
+import type { WorkspaceContext } from "../../types";
 import { isAppWindow } from "../../lib/appWindow";
 import type { ConsoleSummary } from "../../types";
 
@@ -51,15 +52,20 @@ export function ServerConsolePanel({
   hubOk,
   agentOn,
   account,
+  workspace,
   onCheckAccount,
   visible = true,
 }: {
   hubOk: boolean | null; // 허브(로컬 서버) 응답 여부 — null=확인 전
   agentOn: boolean | null; // 생성 에이전트 롱폴 연결 여부
   account: AccountInfo | null;
+  workspace?: WorkspaceContext; // 지금 쓰는 워크스페이스 — 상태줄 가운데에 이름을 보여 준다(Jay)
   onCheckAccount: () => void; // '연결됨' 클릭 = 크레딧 수동 확인(종전 동작)
   visible?: boolean; // Ctrl+K 로 프롬프트가 숨겨진(display:none) 동안 로그 폴링을 멈춘다
 }) {
+  // 상태줄에 보여줄 워크스페이스 이름 — 개인 공간은 '개인', 아직 못 정했으면 빈 값.
+  const workspaceLabel =
+    workspace?.scope === "personal" ? "개인" : workspace?.scope === "team" ? workspace.name || "팀 공간" : "";
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<ConsoleSummary | null>(null);
   const [error, setError] = useState("");
@@ -223,6 +229,18 @@ export function ServerConsolePanel({
         >
           Host
         </button>
+        <span className="sl-combo-slash" aria-hidden="true">/</span>
+        {/* 지금 생성 크레딧이 빠지는 공간 — 어디서 만들고 있는지 상태줄에서 바로 보이게(Jay 2026-09-11). */}
+        <span
+          className={"sl-combo-ws" + (workspaceLabel ? "" : " unset")}
+          title={
+            workspaceLabel
+              ? "지금 이 워크스페이스로 생성합니다 — 크레딧도 여기서 빠집니다. 바꾸려면 오른쪽 위 계정 메뉴에서 고르세요."
+              : "워크스페이스가 아직 정해지지 않았습니다 — 오른쪽 위 계정 메뉴에서 고르세요."
+          }
+        >
+          {workspaceLabel || "공간 미정"}
+        </span>
         <span className="sl-combo-slash" aria-hidden="true">/</span>
         <button
           type="button"
