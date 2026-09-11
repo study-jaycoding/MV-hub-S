@@ -1361,24 +1361,33 @@
   /* 메뉴 자체가 화면보다 높으면(작은 창) 잘리지 않게 — 위치 보정만으로는 부족하다(코덱스 P2) */
   max-height: calc(100vh - 16px); overflow: auto;
 }
-.scene-ws-menu-head { font-weight: 700; font-size: 12.5px; color: var(--text); }
-.scene-ws-menu-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
-.scene-ws-menu-list { display: grid; gap: 2px; max-height: 240px; overflow: auto; }
+/* 머리줄 — 왼쪽 씬 이름, 오른쪽 '지금 지정된 공간'(라임 점 + 이름). 여기서 현재 상태를 바로 읽는다. */
+.scene-ws-menu-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  padding-bottom: 6px; border-bottom: 1px solid var(--line);
+}
+.scene-ws-menu-scene { font-weight: 700; font-size: 12.5px; color: var(--text); }
+.scene-ws-menu-now {
+  display: inline-flex; align-items: center; gap: 5px; min-width: 0;
+  color: var(--accent); font-size: 11.5px; font-weight: 700;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.scene-ws-menu-now i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.scene-ws-menu-now.none { color: var(--muted2); font-weight: 400; font-style: italic; }
+.scene-ws-menu-list { display: grid; gap: 2px; max-height: 260px; overflow: auto; }
 .scene-ws-item {
-  display: grid; text-align: left; padding: 5px 8px; border: 0; border-radius: 6px;
+  position: relative; display: grid; text-align: left; padding: 6px 8px 6px 20px; border: 0; border-radius: 6px;
   background: transparent; color: var(--text); cursor: pointer; font-size: 12.5px;
 }
 .scene-ws-item:hover { background: rgba(255,255,255,.06); }
-.scene-ws-item.on { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
-.scene-ws-item small { color: var(--muted); font-size: 11px; }
-.scene-ws-item.on small { color: var(--accent-ink); opacity: .8; }
-.scene-ws-empty { padding: 5px 8px; color: var(--muted); font-size: 11.5px; }
-.scene-ws-empty.warn { color: #f06a5a; }
-.scene-ws-menu-sep { height: 1px; background: var(--line); }
-.scene-ws-menu-move { display: flex; gap: 6px; }
-.scene-ws-menu-move button {
-  flex: 1; padding: 5px 6px; border: 1px solid var(--line); border-radius: 6px;
-  background: transparent; color: var(--text); cursor: pointer; font-size: 11.5px;
+/* 고른 항목 — 라임 점 + 은은한 배경. 글자는 그대로 읽히게(라임 배경 위 검은 글자는 목록엔 과하다). */
+.scene-ws-item.on { background: rgba(196,232,74,.12); }
+.scene-ws-item.on::before {
+  content: ""; position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
 }
-.scene-ws-menu-move button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-.scene-ws-menu-move button:disabled { opacity: .4; cursor: default; }
+.scene-ws-item.on .scene-ws-item-name { color: var(--accent); font-weight: 700; }
+.scene-ws-item small { color: var(--muted); font-size: 11px; }
+.scene-ws-empty { padding: 5px 8px 5px 20px; color: var(--muted); font-size: 11.5px; }
+.scene-ws-empty.warn { color: #f06a5a; }
+.scene-ws-menu-foot { color: var(--muted2); font-size: 11px; padding-top: 2px; border-top: 1px solid var(--line); }

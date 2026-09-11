@@ -1,5 +1,7 @@
-// 씬 탭 우클릭 메뉴 — 이 캔버스의 워크스페이스 지정 + 탭 순서 옮기기(드래그를 못 쓸 때의 대안).
+// 씬 탭 우클릭 메뉴 — 이 캔버스의 워크스페이스 지정.
 // 목록은 workspaceOptionsCache(stale-while-revalidate) — 팀 공간만 담긴다(개인 공간은 1차 제외).
+// 머리줄 오른쪽에 **지금 지정된 공간**을 라임 점과 함께 보여 주고(Jay 2026-09-11 A안), 목록은 이름만 담백하게.
+// 고른 항목은 라임 점 + 은은한 배경 — 글자는 그대로 읽히게 둔다(라임 배경 위 검은 글자는 목록엔 과하다).
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cachedWorkspaceOptions, fetchWorkspaceOptions } from "../../lib/workspaceOptionsCache";
 import type { SceneWorkspace } from "../../lib/sceneWorkspace";
@@ -10,8 +12,6 @@ export interface SceneMenuTarget {
   current: SceneWorkspace | undefined;
   x: number;
   y: number;
-  canMoveLeft: boolean;
-  canMoveRight: boolean;
 }
 
 const MENU_W = 230;
@@ -19,12 +19,10 @@ const MENU_W = 230;
 export function SceneWorkspaceMenu({
   target,
   onAssign,
-  onMove,
   onClose,
 }: {
   target: SceneMenuTarget;
   onAssign: (sceneId: string, workspace: SceneWorkspace | null) => void;
-  onMove: (sceneId: string, direction: -1 | 1) => void;
   onClose: () => void;
 }) {
   const [options, setOptions] = useState(() => cachedWorkspaceOptions() ?? []);
@@ -79,10 +77,24 @@ export function SceneWorkspaceMenu({
     setTop(Math.max(8, Math.min(target.y - height, room - height)));
   }, [target.x, target.y, options.length, loading]);
 
+  // 머리줄에 보여줄 '지금 지정' — 목록에 같은 id 가 있으면 현재 이름을 쓴다(이름이 바뀌어도 맞게).
+  const currentLabel = target.current
+    ? options.find((option) => option.id === target.current?.id)?.name || target.current.name || target.current.id
+    : null;
+
   return (
     <div className="scene-ws-menu" ref={ref} style={{ left, top, width: MENU_W }} role="menu">
-      <div className="scene-ws-menu-head">{target.sceneName}</div>
-      <div className="scene-ws-menu-label">워크스페이스</div>
+      <div className="scene-ws-menu-head">
+        <span className="scene-ws-menu-scene">{target.sceneName}</span>
+        {currentLabel ? (
+          <span className="scene-ws-menu-now" title={`지금 지정: ${currentLabel}`}>
+            <i aria-hidden="true" />
+            {currentLabel}
+          </span>
+        ) : (
+          <span className="scene-ws-menu-now none">지정 없음</span>
+        )}
+      </div>
       <div className="scene-ws-menu-list">
         <button
           type="button"
@@ -92,7 +104,7 @@ export function SceneWorkspaceMenu({
             onClose();
           }}
         >
-          지정 안 함
+          <span className="scene-ws-item-name">지정 안 함</span>
           <small>어느 공간에서나 보임</small>
         </button>
         {loading && !options.length ? <div className="scene-ws-empty">불러오는 중…</div> : null}
@@ -109,7 +121,7 @@ export function SceneWorkspaceMenu({
               onClose();
             }}
           >
-            {option.name}
+            <span className="scene-ws-item-name">{option.name}</span>
           </button>
         ))}
         {/* 목록에 없는데 지정돼 있으면(삭제·권한 상실) 그 사실을 보여 주고 값은 보존한다. */}
@@ -119,29 +131,7 @@ export function SceneWorkspaceMenu({
           </div>
         ) : null}
       </div>
-      <div className="scene-ws-menu-sep" />
-      <div className="scene-ws-menu-move">
-        <button
-          type="button"
-          disabled={!target.canMoveLeft}
-          onClick={() => {
-            onMove(target.sceneId, -1);
-            onClose();
-          }}
-        >
-          ← 왼쪽으로
-        </button>
-        <button
-          type="button"
-          disabled={!target.canMoveRight}
-          onClick={() => {
-            onMove(target.sceneId, 1);
-            onClose();
-          }}
-        >
-          오른쪽으로 →
-        </button>
-      </div>
+      <div className="scene-ws-menu-foot">탭을 끌어 순서를 바꿉니다</div>
     </div>
   );
 }

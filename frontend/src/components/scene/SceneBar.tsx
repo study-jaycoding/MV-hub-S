@@ -162,23 +162,13 @@ export function SceneBar({
     return true;
   };
 
-  const moveByStep = (sceneId: string, direction: -1 | 1) => {
-    const from = scenes.findIndex((scene) => scene.id === sceneId);
-    if (from < 0) return;
-    const target = from + direction;
-    if (target < 0 || target >= scenes.length) return;
-    // 왼쪽 = 앞 씬 앞으로, 오른쪽 = 뒤 씬의 다음 자리로.
-    const beforeId = direction < 0 ? scenes[target].id : (scenes[target + 1]?.id ?? null);
-    onReorder({ id: sceneId, beforeId });
-  };
-
   return (
     <div
       className="scene-bar"
       onMouseEnter={() => onHoverChange?.(true)}
       onMouseLeave={() => onHoverChange?.(false)}
     >
-      {scenes.map((scene, index) => {
+      {scenes.map((scene) => {
         const assigned = normalizeSceneWorkspace(scene.workspace);
         const label = sceneWorkspaceLabel(scene, options ?? []);
         const missing = sceneWorkspaceMissing(scene, options);
@@ -232,8 +222,6 @@ export function SceneBar({
                   current: assigned,
                   x: event.clientX,
                   y: event.clientY,
-                  canMoveLeft: index > 0,
-                  canMoveRight: index < scenes.length - 1,
                 });
               }}
               title={sceneTabTitle(scene, workspaceContext, label, missing)}
@@ -279,7 +267,6 @@ export function SceneBar({
         <SceneWorkspaceMenu
           target={menu}
           onAssign={onAssignWorkspace}
-          onMove={moveByStep}
           onClose={() => setMenu(null)}
         />
       ) : null}
