@@ -4,14 +4,33 @@ from __future__ import annotations
 
 import bisect
 import hashlib
+import math
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from ..db import get_connection
 from .manage_schema import _ensure_schema
 from .manage_telemetry import mark_telemetry_dirty
 
 _MATCH_WINDOW = 60.0
+
+
+def _spend_amount(credits: Any) -> Optional[float]:
+    """거래의 지출 금액 — **소수를 그대로 살린다**. 부호만 뗀다(spend 는 음수로 들어온다).
+
+    ★2026-09-11 실측: 힉스필드 거래 금액은 소수다. `Nano Banana 2` = −1.5, `Higgsfield Soul V2`
+     = −0.12, `Seedance 2.5` 기본 = −32.5. MILLION VOLT 최근 100건 중 **58건**이 소수였다.
+     종전 `round(abs(credits))` 는 −1.5 를 2 로 적어 **건당 33% 과대**, −0.12 는 0 으로 적어
+     **전액 소실**시켰다. `credit_txn.credits` 도 `team_generation_fact.real_credits` 도 이미
+     REAL 이라 스키마는 그대로 두고 코드만 고치면 된다.
+    금액을 읽을 수 없는 거래(bool·NaN·무한대·비수치)는 None 을 돌려 **매칭에서 제외**한다 —
+    0 으로 확정하면 유료 생성이 장부에 무료로 남는다."""
+    if isinstance(credits, bool) or not isinstance(credits, (int, float)):
+        return None
+    number = float(credits)
+    if not math.isfinite(number):
+        return None
+    return abs(number)
 
 
 def _epoch(iso: Optional[str]) -> Optional[float]:
@@ -144,8 +163,11 @@ def _match_transactions(conn, owner_uid: Optional[str]) -> list[str]:
     generation_timestamps = [generations[index]["sort_ts"] for index in order]
     pairs: list[tuple[float, int, int]] = []
     transaction_timestamps = [_epoch(row["created_at"]) for row in transactions]
+    # 금액을 못 읽는 거래는 후보에서 아예 뺀다 — 종전엔 NULL 인 채로 생성물에 붙어 그 거래를
+    # 소진하고 실제값은 비워 두었다(그 생성물은 다시 매칭되지도 않는다).
+    spend_amounts = [_spend_amount(row["credits"]) for row in transactions]
     for transaction_index, transaction_epoch in enumerate(transaction_timestamps):
-        if transaction_epoch is None:
+        if transaction_epoch is None or spend_amounts[transaction_index] is None:
             continue
         transaction = transactions[transaction_index]
         lower = bisect.bisect_left(
@@ -184,8 +206,7 @@ def _match_transactions(conn, owner_uid: Optional[str]) -> list[str]:
             continue
         transaction = transactions[transaction_index]
         generation = generations[generation_index]
-        credits = transaction["credits"]
-        real_credits = round(abs(credits)) if credits is not None else None
+        real_credits = spend_amounts[transaction_index]  # 소수 보존 — 위 _spend_amount 참조
         conn.execute("SAVEPOINT match_pair")
         transaction_cursor = conn.execute(
             "UPDATE credit_txn SET matched_gen_id=? "

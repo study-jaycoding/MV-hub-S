@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -552,14 +553,33 @@ async def _param_args(model: str, params: Optional[dict[str, Any]]) -> list[str]
 # 비용은 (모델 + 옵션)에 대해 결정적(프롬프트·계정 무관) → 한 번 받은 값은 캐시해 CLI 재호출을
 # 없앤다. 옵션 토글로 오갈 때, 정보팝업으로 같은 설정의 생성물을 볼 때 즉시 응답(딜레이 제거).
 # 설정 조합 수는 적어 사실상 무한 증가 없음(안전상 소프트 캡).
-# 비용 견적 영속 캐시 — 파일(DATA_DIR/cost_cache.json)에 (모델+옵션)→(크레딧, 저장시각)을 보관.
+# 비용 견적 영속 캐시 — 파일(DATA_DIR/cost_cache_v2.json)에 (모델+옵션)→(크레딧, 저장시각)을 보관.
 # 재시작·새 탭·재방문 시 CLI 재호출 없이 즉시. TTL 이 지난 항목은 다음 조회 때 CLI 로 재확인해
 # 힉스필드 가격 변동을 자동 반영한다(bat·수동 갱신 불필요).
-_COST_CACHE_FILE = DATA_DIR / "cost_cache.json"
-_COST_CACHE: dict[str, tuple[int, float]] = {}  # key → (credits, saved_epoch)
+# ★v2 로 파일을 갈아탄 이유(2026-09-11): v1 은 값을 **정수로 반올림해** 저장했다. 22.5 를 22 로,
+#  1.5 를 2 로 적어 둔 항목이 그대로 남아 있어, 소수를 살린 새 코드로 읽어도 복원되지 않는다
+#  (기본 TTL 7일이라 일주일 동안 옛 값이 이긴다). 새 이름으로 시작해 옛 파일은 건드리지 않는다.
+_COST_CACHE_FILE = DATA_DIR / "cost_cache_v2.json"
+_COST_CACHE: dict[str, tuple[float, float]] = {}  # key → (credits, saved_epoch)
 _COST_CACHE_MAX = 4096
 _COST_TTL = float(os.environ.get("CONTENT_HUB_COST_TTL", 7 * 86400))  # 기본 7일(가격 변동 자동 반영)
 _cost_loaded = False
+
+
+def _valid_cost(value: Any) -> Optional[float]:
+    """CLI 가 준 크레딧을 검증한다 — **소수를 그대로 살린다**.
+
+    ★2026-09-11 실측: 견적도 실제 청구도 소수다(`generate cost seedance_2_0` = 22.5,
+     거래 `Nano Banana 2` = −1.5, `Higgsfield Soul V2` = −0.12). 종전엔 여기서 정수로
+     반올림해 −1.5 를 2 로(33% 과대), −0.12 를 0 으로(전액 소실) 적었다.
+    bool 은 int 의 하위형이라 따로 막는다(True 가 1.0 으로 새면 가짜 가격이 된다).
+    NaN·무한대·음수는 가격이 아니다 — 견적은 0 이상이고, 거래의 부호는 호출부가 다룬다."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        return None
+    return number
 
 
 def _bounded_env_int(name: str, default: int, maximum: int) -> int:
@@ -633,8 +653,11 @@ def _load_cost_cache() -> None:
             return
         for k, v in raw.items():
             if isinstance(v, list) and len(v) == 2:
+                credits = _valid_cost(v[0])
+                if credits is None:
+                    continue  # 손상·옛 형식 항목은 버린다(다음 조회에서 CLI 로 다시 받는다)
                 try:
-                    _COST_CACHE[k] = (int(v[0]), float(v[1]))
+                    _COST_CACHE[k] = (credits, float(v[1]))
                 except (TypeError, ValueError):
                     pass
 
@@ -749,7 +772,7 @@ async def estimate_cost(
     params: Optional[dict[str, Any]] = None,
     prompt: str = "",
     timeout: float = 120.0,
-) -> dict[str, int]:
+) -> dict[str, float]:
     """잡 생성 없이 크레딧만 추정 — generate cost <model> [--param value] --json.
     레퍼런스(미디어)는 비용 추정에 불필요+업로드 비용 → 제외(PV 와 동일).
     동일 (모델·옵션) 결과는 캐시(CLI 재호출 없이 즉시) — 비용은 결정적이라 안전."""
@@ -803,7 +826,7 @@ async def _estimate_cost_miss(
     param_args: list[str],
     prompt: str,
     timeout: float,
-) -> dict[str, int]:
+) -> dict[str, float]:
     async with _estimate_gate():  # leader 만 세마포어 취득
         entry = _COST_CACHE.get(key)
         if entry is not None and (time.time() - entry[1]) < _COST_TTL:
@@ -828,23 +851,29 @@ async def _estimate_cost_miss(
             if entry is not None:
                 return {"credits": entry[0]}
             raise
+        # ★응답이 이상하면 **0 을 지어내지 않는다**(2026-09-11). 종전엔 캐시가 없을 때 0 을
+        #  돌려줘 화면·장부에 '무료'로 적혔다. 0 은 정상 가격이기도 해서 실패와 구분되지 않는다.
+        #  옛 값이 있으면 그걸 쓰고, 없으면 실패를 그대로 알린다(호출부가 '견적 없음'으로 표시).
         if not isinstance(data, dict):
-            return {"credits": entry[0]} if entry else {"credits": 0}  # 실패 시 옛 값 폴백
+            if entry is not None:
+                return {"credits": entry[0]}
+            raise CLIError(f"견적 응답이 JSON 객체가 아닙니다: {model}")
         credits = data.get("credits_exact")
         if credits is None:
-            credits = data.get("credits", 0)
-        try:
-            credits_int = int(round(float(credits)))
-        except (TypeError, ValueError):
-            return {"credits": entry[0]} if entry else {"credits": 0}
+            credits = data.get("credits")
+        credits_value = _valid_cost(credits)
+        if credits_value is None:
+            if entry is not None:
+                return {"credits": entry[0]}
+            raise CLIError(f"견적 금액을 읽을 수 없습니다: {model} ({credits!r})")
         if len(_COST_CACHE) >= _COST_CACHE_MAX:
             _COST_CACHE.clear()  # 소프트 캡(드묾)
-        _COST_CACHE[key] = (credits_int, time.time())  # TTL 만료분 재확인 시 최신값·시각으로 갱신
+        _COST_CACHE[key] = (credits_value, time.time())  # TTL 만료분 재확인 시 최신값·시각으로 갱신
         _mark_cost_cache_dirty()
         # 저장은 루프당 단일 writer 태스크가 백그라운드로(R5 2-D) — 응답·게이트를
         # debounce 만큼 잡지 않고, 태스크 누적·flush 역전도 없다(코덱스 P1 반영).
         _ensure_cost_writer()
-        return {"credits": credits_int}
+        return {"credits": credits_value}
 
 
 async def get_account_status(timeout: float = 30.0) -> dict[str, Any]:

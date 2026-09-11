@@ -1,5 +1,7 @@
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 
+import { formatCredits, roundCredits } from "../../lib/formatCredits";
+
 interface Props {
   children: ReactNode;
   count: number;
@@ -59,11 +61,13 @@ export function SpotlightGenerateControls({
         ) : (
           cost != null &&
           cost > 0 && (
+            // 크레딧은 소수다(Nano Banana 2 = 1.5, Soul V2 = 0.12). 곱한 뒤 둘째 자리에서
+            // 정리하지 않으면 `0.12 * 3` 이 0.36000000000000004 로 찍힌다.
             <span
               className="sl-cost"
-              title={`예상 크레딧 ${cost * count}${count > 1 ? ` (${count}장)` : ""} — 해상도·길이·모드에 따라 변동`}
+              title={`예상 크레딧 ${formatCredits(roundCredits(cost * count))}${count > 1 ? ` (${count}장)` : ""} — 해상도·길이·모드에 따라 변동`}
             >
-              {cost * count}
+              {formatCredits(roundCredits(cost * count))}
             </span>
           )
         )}

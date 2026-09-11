@@ -63,7 +63,11 @@ class ManageTransactionsTests(unittest.TestCase):
             linked = conn.execute(
                 "SELECT matched_gen_id FROM credit_txn"
             ).fetchone()["matched_gen_id"]
-        self.assertEqual(dict(metrics), {"real_credits": 7, "credit_source": "transaction", "matched": 1})
+        # ★7 이 아니라 7.2 다(2026-09-11) — 거래 금액의 소수를 버리지 않는다. 종전 round() 는
+        #  실측 −1.5 를 2 로(33% 과대), −0.12 를 0 으로(전액 소실) 적었다.
+        self.assertEqual(
+            dict(metrics), {"real_credits": 7.2, "credit_source": "transaction", "matched": 1}
+        )
         self.assertEqual(linked, "g1")
 
         second = manage.record_transactions("u_me", "me@example.com", [self._transaction()])

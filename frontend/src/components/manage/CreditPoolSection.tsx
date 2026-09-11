@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { isHttpStatus, isRouteMissing } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
+import { formatCredits } from "../../lib/formatCredits";
 import {
   cycleLabel,
   limitTotal,
@@ -23,7 +24,7 @@ import {
 } from "../../lib/creditPlan";
 
 function n(value: number | null | undefined): string {
-  return value == null ? "—" : Math.round(value).toLocaleString();
+  return formatCredits(value);
 }
 
 function cr(value: number | null | undefined): string {

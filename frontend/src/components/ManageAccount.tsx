@@ -13,6 +13,7 @@ import { getReleaseUpdateStatus } from "../lib/releaseUpdate";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import type { Account } from "../types";
 
+import { formatCredits } from "../lib/formatCredits";
 export function ManageAccount({
   provider,
   account,
@@ -195,7 +196,7 @@ export function ManageAccount({
               label="크레딧"
               value={
                 credits != null
-                  ? `${Math.round(credits).toLocaleString()} 남음`
+                  ? `${formatCredits(credits)} 남음`
                   : "조회 중…"
               }
             />

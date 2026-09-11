@@ -182,7 +182,14 @@ async def _record_request_estimate(
                     payload.get("model"), payload.get("params"), payload.get("prompt") or ""
                 )
                 value = (cc or {}).get("credits")
-                est = int(value) if value else None
+                # ★소수를 그대로 살린다(2026-09-11). 종전 `int(value) if value else None` 은 두 가지를
+                #  망가뜨렸다 — 22.5 를 22 로 깎았고, **정상 0(무료)** 까지 미상(None)으로 만들었다.
+                #  장부에서 0 과 '모름' 은 다른 뜻이다. 금액 유효성은 cli_bridge._valid_cost 가 본다.
+                est = (
+                    float(value)
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                    else None
+                )
         except Exception as exc:  # noqa: BLE001 — 부가 견적 실패는 생성에 영향 없음
             _log_pm_failure("estimate_cost", exc)
         await _sync_io(

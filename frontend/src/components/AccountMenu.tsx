@@ -28,6 +28,7 @@ import {
 import { ManageAccount } from "./ManageAccount";
 import { SettingsPanel } from "./SettingsPanel";
 import { manageApi } from "../lib/manageApi";
+import { formatCredits } from "../lib/formatCredits";
 import type { Account, ReportedHfStatus, Workspace, WorkspaceContext } from "../types";
 
 // 게이지 분모 규칙(Jay 지정): MILLIONVOLT(본사 공용 워크스페이스)는 고정 200,000.
@@ -290,7 +291,7 @@ export function AccountMenu({
         title={
           `${displayName}${account && roleText ? ` · ${roleText}` : ""}` +
           (activeCredits != null
-            ? `\nCredits ${Math.round(activeCredits).toLocaleString()} left`
+            ? `\nCredits ${formatCredits(activeCredits)} left`
             : "") +
           "\n워크스페이스·계정 관리"
         }
@@ -360,7 +361,7 @@ export function AccountMenu({
                       {isPersonal ? `${t("개인")}·${w.plan_type}` : w.plan_type}
                     </span>
                     <span className="acct-item-credits">
-                      {Math.round(w.credits).toLocaleString()} cr
+                      {formatCredits(w.credits)} cr
                     </span>
                   </span>
                   <span className="acct-item-meta">{w.user_role}</span>
@@ -401,7 +402,7 @@ export function AccountMenu({
               <div className="acct-credits-top">
                 <span className="acct-credits-label">Credits</span>
                 <span className="acct-credits-left">
-                  {Math.round(activeCredits).toLocaleString()} left
+                  {formatCredits(activeCredits)} left
                 </span>
               </div>
               <div

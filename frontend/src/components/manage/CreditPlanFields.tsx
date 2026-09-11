@@ -8,6 +8,7 @@ import { manageApi } from "../../lib/manageApi";
 import { useModelDisplayName } from "../../lib/modelCatalog";
 import { BUDGET_PERIOD_OPTIONS } from "../../lib/projectPlanning";
 import { ALLOWED } from "../../lib/useModels";
+import { formatCredits } from "../../lib/formatCredits";
 import {
   draftFromSettings,
   draftMemberCount,
@@ -27,7 +28,7 @@ import {
 } from "../../lib/creditPlan";
 
 function n(value: number | null): string {
-  return value == null ? "∞" : Math.round(value).toLocaleString();
+  return formatCredits(value, "∞");
 }
 
 function memberLabel(member: CreditPlanMember): string {

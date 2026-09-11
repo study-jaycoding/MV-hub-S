@@ -23,6 +23,7 @@ import { HoverMetric, WorkspaceUsageDashboard } from "./WorkspaceUsageDashboard"
 import type { ManageProject, ProjectFolderUsage } from "./types";
 import { creditCoverageText, usageSourceLabel } from "./usageSource";
 
+import { formatCredits } from "../../lib/formatCredits";
 function fmtDur(sec: number): string {
   if (!sec || sec <= 0) return "—";
   const wholeSeconds = Math.floor(sec);
@@ -34,7 +35,7 @@ function fmtDur(sec: number): string {
   return `${s}s`;
 }
 function fmtBudgetCr(n: number): string {
-  return Math.round(n || 0).toLocaleString();
+  return formatCredits(n || 0);
 }
 function statusLabel(s?: string | null): string {
   return PROJECT_STATUS_OPTIONS.find((option) => option.value === s)?.label ?? "—";
@@ -124,7 +125,7 @@ function CreatorCell({ row }: { row: ProjectFolderUsage }) {
   const names = [...new Set(members.map((member) => member.name || "팀원"))];
   const details = members
     .map((member) =>
-      `${member.name || "팀원"} · 생성 ${member.count} · 최종 ${member.final_count} · ${Math.round(member.credits).toLocaleString()} cr`,
+      `${member.name || "팀원"} · 생성 ${member.count} · 최종 ${member.final_count} · ${formatCredits(member.credits)} cr`,
     )
     .join("\n");
   return (

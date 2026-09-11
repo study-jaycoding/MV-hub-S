@@ -190,6 +190,16 @@ def _sum_usage(
     return credits, unknown
 
 
+def _shown(value: float) -> float:
+    """화면·API 로 나가는 크레딧 — 소수 **둘째 자리**까지 보여 준다.
+
+    ★정수 반올림을 쓰지 않는다(2026-09-11). 실측 최소 단위가 0.12 라 `round()` 로는
+     0.12 짜리 5건(0.6)이 1 로 부풀고 한 건은 0 으로 사라진다. 둘째 자리까지 남기면
+     정확하면서 부동소수 잡음(0.30000000000000004)도 화면에 안 나온다.
+    **저장값에는 쓰지 않는다** — DB 로 가는 base_balance·carry 는 원래 정밀도 그대로 둔다."""
+    return round(float(value), 2)
+
+
 def _group_period(group: dict[str, Any]) -> str:
     period = str(group.get("limit_period") or "month")
     return period if period in _PERIODS else "month"
@@ -305,11 +315,11 @@ def _group_summary(group: dict, emails: set[str], usage: Usage, today: str, anch
         "base_start": group.get("base_start"),
         "base_balance": group.get("base_balance"),
         "member_count": len(emails),
-        "used_month": round(used_month),
+        "used_month": _shown(used_month),
         "unknown_month": unknown_month,
-        "used_period": round(used_period),
+        "used_period": _shown(used_period),
         "unknown_period": unknown_period,
-        "remaining": None if remaining is None else round(remaining),
+        "remaining": None if remaining is None else _shown(remaining),
         "unknown_since_base": unknown_since,
         "estimated": unknown_since > 0,
         "allowed_models": list(group.get("allowed_models") or []),
@@ -546,10 +556,13 @@ def save_settings(
             if limit is None:
                 base_balance = 0
             elif override is not None:
-                base_balance = round(float(override) - float(limit) + used_period_new)
+                # ★반올림하지 않는다(2026-09-11) — 여기서 깎인 소수는 **DB 에 저장**돼 영구 손실이
+                #  된다(표시 문제가 아니다). 크레딧은 0.12 단위까지 실재한다(실측). INTEGER 컬럼
+                #  이어도 SQLite 는 소수를 그대로 보관한다(affinity 확인).
+                base_balance = float(override) - float(limit) + used_period_new
             elif old is not None and old.get("monthly_limit") is not None:
                 # 이월분만 넘기고 이번 기간은 새 소속·새 한도·새 주기로 다시 센다(옛 주기·옛 달 경계로 지난 기간까지 계산).
-                base_balance = round(_carry_in(old, old_members.get(gid, set()), usage, today, old_anchor))
+                base_balance = _carry_in(old, old_members.get(gid, set()), usage, today, old_anchor)
             else:  # 새 그룹·∞→한도 전환은 이월 0 에서 시작
                 base_balance = 0
             if old is None:
@@ -588,7 +601,7 @@ def _rebase_month_groups_for_anchor(
     usage = _usage_index(workspace_id, _day_from_for(month_groups, period_start(today, "month", min(old_anchor, new_anchor))))
     new_start = period_start(today, "month", new_anchor)
     for g in month_groups:
-        carry = round(_carry_in(g, members.get(g["id"], set()), usage, today, old_anchor))
+        carry = _carry_in(g, members.get(g["id"], set()), usage, today, old_anchor)  # 저장값 — 반올림 금지
         conn.execute(
             "UPDATE workspace_credit_group SET base_start=?, base_month=?, base_balance=? WHERE id=?",
             (new_start, new_start[:7], carry, g["id"]),
@@ -662,9 +675,9 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
             summary.pop("base_start", None)
             my_used, my_unknown = _sum_usage(usage, {email}, day_from=cycle_start)
             my_p, my_p_unknown = _sum_usage(usage, {email}, day_from=period_start(today, summary["limit_period"], anchor))
-            summary["my_used_month"] = round(my_used)
+            summary["my_used_month"] = _shown(my_used)
             summary["my_unknown_month"] = my_unknown
-            summary["my_used_period"] = round(my_p)
+            summary["my_used_period"] = _shown(my_p)
             summary["my_unknown_period"] = my_p_unknown
             out["my_group"] = summary
         return out
@@ -687,7 +700,7 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
             "monthly_topup": monthly_topup,  # 예산 한도(매월) 합 — 손 입력 아님
             "topup_day": anchor,
             "note": plan["note"] if plan else None,
-            "used_month": round(used_month),
+            "used_month": _shown(used_month),
             "unknown_month": unknown_month,
             "balance": ws["credits"] if ws else None,
             "balance_seen_at": ws["last_seen_at"] if ws else None,
@@ -699,7 +712,7 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
         "groups": [_group_summary(g, members.get(g["id"], set()), usage, today, anchor) for g in groups],
         "unassigned": {
             "member_count": len([e for e in available if e not in assigned_emails]),
-            "used_month": round(un_used),
+            "used_month": _shown(un_used),
             "unknown_month": un_unknown,
         },
         "topups": [
