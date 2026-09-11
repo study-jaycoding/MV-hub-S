@@ -92,7 +92,7 @@ export function SceneWorkspaceMenu({
             {currentLabel}
           </span>
         ) : (
-          <span className="scene-ws-menu-now none">지정 없음</span>
+          <span className="scene-ws-menu-now none">None</span>
         )}
       </div>
       <div className="scene-ws-menu-list">
@@ -104,8 +104,8 @@ export function SceneWorkspaceMenu({
             onClose();
           }}
         >
-          <span className="scene-ws-item-name">지정 안 함</span>
-          <small>어느 공간에서나 보임</small>
+          <span className="scene-ws-item-name">None</span>
+          <small>모두 보임</small>
         </button>
         {loading && !options.length ? <div className="scene-ws-empty">불러오는 중…</div> : null}
         {!loading && !options.length ? (
@@ -131,7 +131,6 @@ export function SceneWorkspaceMenu({
           </div>
         ) : null}
       </div>
-      <div className="scene-ws-menu-foot">탭을 끌어 순서를 바꿉니다</div>
     </div>
   );
 }
