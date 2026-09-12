@@ -19,6 +19,23 @@ export const ALLOWED: Record<"image" | "video", string[]> = {
   video: ["seedance_2_5", "seedance_2_0", "seedance_2_0_mini", "gemini_omni"],
 };
 
+/** 모델 키로 이미지/영상을 판정한다 — **한쪽 목록에만** 속할 때만 확정한다.
+ *
+ * ★왜(2026-09-13): 씬의 모델 노드를 열면 저장된 `type` 이 없거나 틀릴 수 있다. 그때 훅의
+ *  기본 타입(image)이 남으면, 아래 자동 선택이 "이 타입의 모델이 아니다" 라며 **영상 모델을
+ *  첫 이미지 모델로 갈아치운다**(코덱스가 실제 화면에서 재현: seedance_2_0_mini → Nano Banana 2).
+ *  모델 키가 곧 타입의 근거이므로, 저장값보다 **모델을 먼저** 믿는다.
+ * ★양쪽에 없거나(옛 키·개명) 양쪽에 다 있으면 **확정하지 않는다** — 억지로 image 로 떨어뜨리면
+ *  같은 사고가 난다. 호출측이 저장값·사용자 선택으로 메운다.
+ */
+export function inferModelType(model: string | null | undefined): "image" | "video" | undefined {
+  if (!model) return undefined;
+  const isImage = ALLOWED.image.includes(model);
+  const isVideo = ALLOWED.video.includes(model);
+  if (isImage === isVideo) return undefined; // 둘 다거나 둘 다 아니면 모른다
+  return isImage ? "image" : "video";
+}
+
 // 생성 카드 모델 라벨 — raw job_set_type 휴머나이즈가 CLI 카탈로그 표시명과 어긋나는 모델을
 // 카탈로그 이름으로 교정한다. 힉스필드는 nano_banana_flash 를 "Nano Banana 2", nano_banana_pro 를
 // "Nano Banana Pro" 로 부른다(혼동 주의) — 휴머나이즈하면 "Nano Banana Flash"/"Nano Banana Pro"로
@@ -352,6 +369,10 @@ export function useModels(
   // 현재 params/optionValues 가 '어느 모델' 것인지 + 로딩 중인지 — 모델 전환 직후 스키마가 바뀌기 전
   // stale 옵션으로 제출·견적하는 것을 막는다(제출은 paramsModel===model 일 때만).
   const [paramsModel, setParamsModel] = useState("");
+  // ★파라미터 조회가 **실패**했나 — 성공한 빈 스키마(`params: []`)와 구별해야 한다(코덱스).
+  //  종전에는 실패해도 `paramsModel=model` 로 두어 "정합" 으로 보였고, 그대로 저장하면
+  //  옵션이 `{}` 로 덮였다. 이제 실패면 정합을 깨고(저장 차단) 이 깃발로 안내한다.
+  const [paramsError, setParamsError] = useState(false);
   const [paramsLoading, setParamsLoading] = useState(false);
   // 카드 드롭 복원 시: 모델 변경 effect 가 기본값으로 옵션을 덮어쓰기 전, 복원할 옵션을 임시 보관.
   // 드롭/재사용이 '이 모델로 바꾼 뒤 이 옵션을 덮어라'를 예약. model 스탬프로 — 빠른 연속 재사용 시
@@ -413,6 +434,7 @@ export function useModels(
       setParams([]);
       setOptionValues({});
       setParamsModel("");
+      setParamsError(false);
       setParamsLoading(false);
       return;
     }
@@ -429,6 +451,7 @@ export function useModels(
         setOptionValues(init);
       }
       setParamsModel(model); // 이제 params/optionValues 가 이 model 것으로 정합
+      setParamsError(false);
       setParamsLoading(false);
     };
     // 캐시 적중 → 네트워크 없이 즉시 적용(토글 딜레이 제거).
@@ -447,8 +470,13 @@ export function useModels(
         if (alive) {
           setParams([]);
           setOptionValues({});
-          setParamsModel(model); // 실패해도 이 model 처리 종료로 표시(무한 로딩 방지)
+          // ★정합을 **깬다**(2026-09-13). 종전엔 `model` 을 넣어 성공과 구별되지 않았고,
+          //  `paramsModel === model` 을 저장 조건으로 쓰는 곳들(모델 노드 모달·부분 수정·
+          //  Spotlight 제출)이 **빈 옵션을 정상으로 보고 저장·제출**할 수 있었다.
+          setParamsModel("");
+          setParamsError(true);
           setParamsLoading(false);
+          // 복원 대기 옵션은 **소비하지 않는다** — 다시 조회에 성공하면 그때 덮는다.
         }
       });
     return () => {
@@ -502,6 +530,13 @@ export function useModels(
     }
     // 모델 전환 직후 새 params 로드 전(stale)이면 이전 스키마로 견적하지 않는다 — 로드 완료 시 재실행된다.
     // 그동안 이전 모델의 cost 가 남아 보이지 않게 '계산 중'으로 둔다(오해 방지).
+    // ★파라미터 조회가 실패했으면 견적을 시도하지 않고 '계산 중' 도 끝낸다(2026-09-13).
+    //  실패 시 `paramsModel` 이 비므로 아래 조건만으론 영영 '계산 중' 으로 남는다(코덱스 지적).
+    if (paramsError) {
+      setCost(null);
+      setCostLoading(false);
+      return;
+    }
     if (paramsModel !== model || paramsLoading) {
       setCostLoading(true);
       return;
@@ -532,7 +567,7 @@ export function useModels(
       alive = false;
       clearTimeout(t);
     };
-  }, [model, optionValues, paramsModel, paramsLoading]);
+  }, [model, optionValues, paramsModel, paramsLoading, paramsError]);
 
   // 현재 옵션에서 활성화된 조합 제약(예: fast → resolution 480p/720p 만).
   const constraints = activeConstraints(model, optionValues);
@@ -553,6 +588,6 @@ export function useModels(
 
   return { models, type, setType, model, setModel, markModelSelection, modelPickedByUser, firstAllowed, currentModel,
            params, tunable, constraints,
-           typeModels, modelName, optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading,
+           typeModels, modelName, optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading, paramsError,
            pendingOptsRef, setOpenRef, selectedBlocked, typeFullyBlocked };
 }
