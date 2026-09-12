@@ -12,7 +12,10 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
+import io
 import json
+import zlib
 import os
 import shutil
 import threading
@@ -113,6 +116,51 @@ def _qs(params: Optional[dict[str, Any]]) -> str:
     return ("?" + urllib.parse.urlencode(flat, doseq=True)) if flat else ""
 
 
+# ── 공유 서버 응답 압축 해제 (2026-09-12, C-14 2단계) ────────────────────────
+# ★왜: 로컬 허브 사용자의 가장 비싼 구간은 **허브 ↔ 공유 서버**(인터넷)다. 브라우저 구간은
+#  1단계(`app/list_gzip.py`)로 줄었지만 이 구간은 `urllib` 이 `Accept-Encoding: identity` 를
+#  보내 그대로였다. 실측 목록 1,664,434 B → gzip 85,501 B(5.1%).
+# ★목록은 **압축 바이트를 그대로 흘려보낼 수 없다** — 허브가 개인 색·태그를 덧씌우기 때문이다
+#  (`routers/library.py` 의 `_overlay_personal_meta`). 그래서 pass-through 가 아니라 허브가 푼다.
+# ★스트리밍·미디어 경로(`stream_download`·`_forward_stream`)는 **identity 를 유지**한다 —
+#  바이트·Range 계약을 건드리지 않는다.
+_PROXY_ACCEPT_ENCODING = "gzip"
+#: 받은 압축 본문의 상한. 목록 최대 2,000건이 압축 후 1MB 안쪽이라 넉넉히 잡는다.
+_MAX_COMPRESSED_BYTES = 32 * 1024 * 1024
+#: 푼 뒤의 상한 — 압축 폭탄 방어. 압축 전 크기로 재야 의미가 있다.
+_MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024
+
+
+def decode_proxy_body(raw: bytes, content_encoding: Optional[str]) -> bytes:
+    """응답 본문을 `Content-Encoding` 에 따라 푼다.
+
+    ★gzip 을 요청했어도 **무압축 응답이 정상**이다(구버전 공유 서버·압축 미적용 경로).
+     그래서 요청한 것이 아니라 **응답이 말하는 것**을 보고 판단한다.
+    ★해제 실패는 제어된 502 로 올린다 — 본문을 새로 노출하지 않는다.
+    """
+    name = (content_encoding or "").strip().lower()
+    if not name or name == "identity":
+        return raw
+    if name != "gzip":
+        raise HTTPException(
+            status_code=502,
+            detail=f"공유 서버가 다루지 못하는 인코딩으로 응답했습니다: {name}",
+        )
+    if len(raw) > _MAX_COMPRESSED_BYTES:
+        raise HTTPException(status_code=502, detail="공유 서버 응답이 너무 큽니다(압축분)")
+    try:
+        # ★한 번에 풀되 크기를 먼저 막는다. `decompress` 는 상한을 모르므로 스트림으로 읽는다.
+        stream = gzip.GzipFile(fileobj=io.BytesIO(raw))
+        out = stream.read(_MAX_DECOMPRESSED_BYTES + 1)
+    except (OSError, EOFError, zlib.error) as exc:
+        raise HTTPException(
+            status_code=502, detail="공유 서버 응답의 압축을 풀지 못했습니다"
+        ) from exc
+    if len(out) > _MAX_DECOMPRESSED_BYTES:
+        raise HTTPException(status_code=502, detail="공유 서버 응답이 너무 큽니다(해제 후)")
+    return out
+
+
 def raw_request(
     method: str,
     url: str,
@@ -129,6 +177,8 @@ def raw_request(
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method.upper())
     req.add_header("Content-Type", "application/json")
+    # 공유 서버가 압축을 주면 받는다 — 스트리밍·미디어 경로는 이 함수를 쓰지 않는다.
+    req.add_header("Accept-Encoding", _PROXY_ACCEPT_ENCODING)
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     if super_token:
@@ -140,7 +190,7 @@ def raw_request(
         req.add_header(MUTATION_ID_HEADER, mutation_origin[1])
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            raw = r.read()
+            raw = decode_proxy_body(r.read(), r.headers.get("Content-Encoding"))
             try:
                 return r.status, json.loads(raw.decode() or "null")
             except (ValueError, UnicodeDecodeError) as exc:
@@ -151,7 +201,10 @@ def raw_request(
                     detail=f"공유 서버 응답이 JSON 이 아닙니다(프록시/포털 간섭 의심): {raw[:120]!r}",
                 ) from exc
     except urllib.error.HTTPError as e:
-        detail: Any = e.read().decode("utf-8", "replace")
+        # ★오류 본문도 압축돼 올 수 있다 — 같은 해제를 거쳐야 401/403 진단이 깨지지 않는다.
+        detail: Any = decode_proxy_body(
+            e.read(), e.headers.get("Content-Encoding") if e.headers else None
+        ).decode("utf-8", "replace")
         try:
             detail = json.loads(detail)
         except (ValueError, TypeError):
@@ -309,8 +362,12 @@ def stream_download(
     tok = token()
     if not tok:
         raise HTTPException(status_code=401, detail="공유 서버 로그인이 필요합니다")
+    # ★`identity` 를 **명시**한다(2026-09-12, C-14). 이 경로는 바이트를 그대로 파일에 쓰므로
+    #  압축된 본문을 받으면 그대로 저장돼 파일이 깨진다. urllib 기본값도 identity 지만,
+    #  나중에 누가 기본값을 바꿔도 여기는 안 바뀌게 못 박는다.
     req = urllib.request.Request(
-        base_url() + path, headers={"Authorization": f"Bearer {tok}"}
+        base_url() + path,
+        headers={"Authorization": f"Bearer {tok}", "Accept-Encoding": "identity"},
     )
     dest = os.fspath(dest_tmp)
     total = 0
@@ -565,6 +622,9 @@ async def _forward_stream(request: Request) -> Response:
         value = request.headers.get(name)
         if value:
             req.add_header(name, value)
+    # ★브라우저의 `Accept-Encoding` 은 **복사하지 않는다**(2026-09-12, C-14). 이 경로는 응답
+    #  바이트를 그대로 되돌려주므로, 압축된 본문을 받으면 `Content-Range`·길이와 어긋난다.
+    req.add_header("Accept-Encoding", "identity")
 
     def _response_headers(source) -> dict[str, str]:
         headers: dict[str, str] = {}
