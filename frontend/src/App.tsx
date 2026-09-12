@@ -460,6 +460,14 @@ export default function App() {
         ),
       );
       if (!attempts.length) return;
+      // 숨은 창에선 서버를 찌르지 않는다(앱의 다른 폴러와 같은 규칙 — useSceneGenData·
+      // useSyncStatus 참고). ★탭이 아니라 '창이 보이는가'로만 쉰다: 이건 표시용 조회가 아니라
+      // 생성 시도 이어붙이기라 캔버스 탭 밖에서도 돌아야 한다.
+      // 체인이 끊기지 않게 다음 차례는 그대로 예약하고, 복귀 시엔 아래 리스너가 즉시 당겨온다.
+      if (document.visibilityState === "hidden") {
+        if (alive) timer = window.setTimeout(recover, 2500);
+        return;
+      }
       try {
         const [resolved, batch] = await Promise.all([
           api.resolveCanvasGenerationLinks(attempts.map(({ attempt }) => attempt.attemptId)),
@@ -507,9 +515,16 @@ export default function App() {
       if (alive) timer = window.setTimeout(recover, 2500);
     };
     void recover();
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (timer) clearTimeout(timer);
+      void recover(); // 복귀 즉시 1회 — 숨어 있는 동안 끝난 생성이 바로 카드에 붙는다
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       alive = false;
       if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [authReady, canvasAttemptSig, flushScenePending, patchSceneById, setGens]);
   const selectedGenerations = useMemo(() => generationsByIds(gens, selected), [gens, selected]);

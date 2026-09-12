@@ -351,7 +351,7 @@ export function ProjectSection({
     const since = tab === "team" ? getTeamBase() : null;
     if (since) {
       api
-        .teamFreshAll(since, isLatest)
+        .teamFreshAll(since)
         .then((items) => {
           if (isLatest()) {
             setTeamFreshItems((previous) => reconcileArrayState(previous, items));

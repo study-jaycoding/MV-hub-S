@@ -12,6 +12,7 @@ from typing import Any, NamedTuple
 
 from .. import repo
 from ..services import media_cache
+from ..services.async_tools import to_thread_non_abandon
 
 
 MediaTarget = tuple[str, str, str, bool, str | None]
@@ -146,11 +147,19 @@ async def _cache_generation_media_outcome(
             )
 
     # 네트워크 작업이 모두 끝난 뒤에만 쓰기 트랜잭션을 열고 성공 행만 한 번에 반영한다.
-    repo.apply_generation_media_cache_updates(
-        cache_updates,
-        asset_updater=repo.update_asset_cache,
-        reference_updater=repo.update_reference_cache,
-    )
+    # ★스레드에서 연다(2026-09-12). 이 안의 `BEGIN IMMEDIATE` 는 쓰기 잠금을 **동기로** 기다리고
+    #  (`db.py` 의 busy_timeout=5000) 이 함수는 `async def` 라, 경합이 나면 그 대기 동안
+    #  **서버 전체 이벤트 루프가 멈춘다** — 이 요청만이 아니라 모든 요청이 선다.
+    #  (코덱스 실측: 150ms 지연을 주입하니 10ms 뒤 실행 예정이던 heartbeat 가 150.58ms 에 실행)
+    #  취소돼도 반영을 마쳐야 하므로 non-abandon 변형을 쓴다 — 위 다운로드 회수와 같은 이유다.
+    #  계정 문맥은 ContextVar 라 to_thread 가 복사해 간다(직접 확인).
+    if cache_updates:
+        await to_thread_non_abandon(
+            repo.apply_generation_media_cache_updates,
+            cache_updates,
+            asset_updater=repo.update_asset_cache,
+            reference_updater=repo.update_reference_cache,
+        )
 
     return _GenerationMediaCacheOutcome(
         {

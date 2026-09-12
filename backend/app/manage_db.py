@@ -105,6 +105,12 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         "ON team_generation_fact(workspace_scope, workspace_id, project_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_tgf_workspace_model_created "
         "ON team_generation_fact(workspace_scope, workspace_id, model, created_at)",
+        # 전체 공간 모델 필터 — 기존 인덱스는 (workspace_scope, workspace_id, model, ...) 라
+        # 앞 두 조건이 없는 조회에는 맞지 않아 전량 SCAN 이었다(2026-09-12 EXPLAIN 확인).
+        # 코덱스 실측: 같은 집계가 1.879ms → 0.010ms. 쓰기 비용은 1,000건 upsert 에 +2.4~3.0ms,
+        # 인덱스 약 928KiB — 절대량이 작아 채택.
+        "CREATE INDEX IF NOT EXISTS idx_tgf_model_created "
+        "ON team_generation_fact(model, created_at)",
         # 관리 요약(프로젝트 대시보드) 폴더 집계 — project_id+folder_path GROUP BY(2026-09-09)
         "CREATE INDEX IF NOT EXISTS idx_tgf_project_folder "
         "ON team_generation_fact(project_id, folder_path)",
@@ -710,11 +716,19 @@ def fact_usage(
     periods = budget_periods or {}
     done = ",".join("?" for _ in _DONE_STATUSES)
     model_expr = "COALESCE(NULLIF(TRIM(model),''),'알 수 없음')"
+    # ★요청에 실제로 등장하는 주기만 집계한다(2026-09-12). 종전엔 day·week·month 를 모두
+    #  계산했는데, 소비부는 프로젝트마다 지정된 **한 주기**만 읽는다(아래 `periods.get(pid)`).
+    #  실측 계획 3개가 전부 `month` 였고, 코덱스 비교에서 반환값이 동일한 채 142.13 → 110.52ms.
+    #  `_period_conditions` 는 month_anchor_day 를 반영하므로 거기서 고른다(식을 새로 쓰지 않는다).
+    # 유효성 검사는 따로 두지 않는다 — 아래 루프가 `_period_conditions` 의 이름만 돌므로
+    # 잘못된 주기명(옛 데이터·손입력)은 애초에 일치하지 않는다(소비부도 같은 이유로 건너뛴다).
+    wanted = set(periods.values())
     period_cols = "".join(
         f", SUM(CASE WHEN {cond} THEN 1 ELSE 0 END) AS {name}_count"
         f", SUM(CASE WHEN {cond} THEN {_CREDIT} ELSE 0 END) AS {name}_credits"
         f", SUM(CASE WHEN {cond} THEN is_final ELSE 0 END) AS {name}_final"
         for name, cond in _period_conditions(month_anchor_day).items()
+        if name in wanted
     )
     empty: dict[str, Any] = {
         "stats": {}, "models": {}, "budget_models": {}, "folder_rows": [], "workers": [],

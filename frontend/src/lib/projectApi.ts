@@ -38,17 +38,13 @@ function teamFreshPage(since: string, cursor: TeamFreshCursor | null = null): Pr
   return jsonFetch<TeamFreshPage>(`/api/projects/team-fresh?${p.toString()}`);
 }
 
-export async function fetchAllTeamFresh(
-  since: string,
-  isActive: () => boolean = () => true,
-): Promise<TeamFreshItem[]> {
+async function readAllTeamFresh(since: string): Promise<TeamFreshItem[]> {
   const out: TeamFreshItem[] = [];
   const itemIds = new Set<string>();
   const cursors = new Set<string>();
   let cursor: TeamFreshCursor | null = null;
-  while (isActive()) {
+  for (;;) {
     const page = await teamFreshPage(since, cursor);
-    if (!isActive()) return [];
     for (const item of page.items || []) {
       if (!itemIds.has(item.id)) {
         itemIds.add(item.id);
@@ -63,6 +59,23 @@ export async function fetchAllTeamFresh(
     cursor = next;
   }
   return out;
+}
+
+// 같은 기준선으로 도는 조회가 이미 있으면 **합류**한다(단일비행).
+// ★왜(2026-09-12 실측): 이 목록은 기준선 이후 60일치 공유 **전체**이고 500건씩 **순차** 왕복이다
+//  (실측 413건 = 85.7KB 한 페이지). 호출부는 갱신마다 요청 번호를 올려 옛 실행을 무효로 만들었는데,
+//  팀 탭의 15초 폴이 그 갱신을 계속 일으킨다 — 전체 조회가 15초보다 길면 **매번 완독 전에 폐기**돼
+//  배지가 영영 갱신되지 않는다. 합류하면 왕복이 한 벌로 줄고 완독이 보장된다.
+//  늦은 결과를 화면에 반영할지 말지는 호출부의 판단으로 그대로 남긴다.
+let teamFreshInflight: { since: string; promise: Promise<TeamFreshItem[]> } | null = null;
+
+export function fetchAllTeamFresh(since: string): Promise<TeamFreshItem[]> {
+  if (teamFreshInflight && teamFreshInflight.since === since) return teamFreshInflight.promise;
+  const promise = readAllTeamFresh(since).finally(() => {
+    if (teamFreshInflight?.promise === promise) teamFreshInflight = null;
+  });
+  teamFreshInflight = { since, promise };
+  return promise;
 }
 
 export const projectApi = {

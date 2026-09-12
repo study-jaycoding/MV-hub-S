@@ -88,8 +88,21 @@ export function ServerConsolePanel({
   useEffect(() => {
     if (!open || !visible) return;
     let alive = true;
+    let inflight = false;
     let timer: number | undefined;
+    const schedule = () => {
+      if (alive) timer = window.setTimeout(load, 5000);
+    };
     const load = () => {
+      if (!alive || inflight) return;
+      // 숨은 탭에선 서버를 찌르지 않는다(앱의 다른 폴러와 같은 규칙 — useSyncStatus 참고).
+      // 5초는 이 앱에서 가장 짧은 주기라 방치하면 뒤에 두고도 분당 12회가 계속 나간다.
+      // 체인이 끊기지 않게 다음 차례는 그대로 예약하고, 복귀 시엔 아래 리스너가 즉시 당겨온다.
+      if (document.visibilityState === "hidden") {
+        schedule();
+        return;
+      }
+      inflight = true;
       api
         .consoleSummary()
         .then((summary) => {
@@ -99,13 +112,21 @@ export function ServerConsolePanel({
         })
         .catch((e) => alive && setError(String(e)))
         .finally(() => {
-          if (alive) timer = window.setTimeout(load, 5000);
+          inflight = false;
+          schedule();
         });
     };
     load();
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (timer !== undefined) window.clearTimeout(timer);
+      load(); // 복귀 즉시 1회 — 숨어 있는 동안 멈춰 있던 화면을 바로 되살린다
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       alive = false;
       if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [open, visible]);
 
