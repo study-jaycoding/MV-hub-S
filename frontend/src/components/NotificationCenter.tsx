@@ -191,13 +191,20 @@ export function NotificationCenter({
   // ②위의 탭 무관 경량 stats 60초 폴링이 함께 담당한다(최장 60초 지연은 허용 계약 —
   // 숨은 탭 복귀 시엔 다음 주기에 갱신). 열리는 순간의 최초 로드는 openPanel 의
   // loadComments(true)가 담당하고, 이 효과는 '열린 동안'의 60초 재갱신만 맡는다.
+  // ★타이머는 `open` 이 바뀔 때만 다시 만든다(2026-09-12, C-16). 종전에는 `loadComments` 도
+  //  의존성이라, 그 함수의 의존성인 **미읽음 수가 바뀔 때마다 60초 타이머가 처음부터 다시**
+  //  시작했다. 미읽음 수를 바꾸는 배지 폴은 10초 주기다(`useCommentBadgePoll` 기본값) —
+  //  수가 60초보다 자주 바뀌면 이 재갱신은 **한 번도 일어나지 않는다.**
+  //  최신 함수는 ref 로 집어 온다. (`t` 는 `useT()` 가 모듈 함수를 돌려주므로 안정적이다.)
+  const loadCommentsRef = useRef(loadComments);
+  loadCommentsRef.current = loadComments;
   useEffect(() => {
     if (!open) return;
     const timer = window.setInterval(() => {
-      if (document.visibilityState !== "hidden") void loadComments(false);
+      if (document.visibilityState !== "hidden") void loadCommentsRef.current(false);
     }, 60_000);
     return () => window.clearInterval(timer);
-  }, [open, loadComments]);
+  }, [open]);
 
   const close = useCallback(() => {
     setOpen(false);

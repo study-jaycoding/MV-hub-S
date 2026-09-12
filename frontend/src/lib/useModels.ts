@@ -6,6 +6,7 @@ import { api } from "../api";
 import { autoRatioForCost } from "./aspectAuto";
 import { EMPTY_MODEL_SET } from "./modelPolicyCore";
 import type { ModelInfo, ModelParam, ModelParamsOut } from "../types";
+import { fetchModelCatalog } from "./modelCatalogCache";
 
 // 노출 모델 화이트리스트(타입별, 표시 순서대로).
 //  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana 2 Lite(nano_banana_2_lite) · Nano Banana Pro(nano_banana_pro) · GPT Image 2(gpt_image_2)
@@ -379,7 +380,8 @@ export function useModels(
   const tunable = params.filter((p) => !HIDDEN_PARAMS.has(p.name));
 
   useEffect(() => {
-    api.models().then(setModels).catch((e) => onError(String(e)));
+    // 훅 인스턴스마다 같은 목록을 다시 받지 않는다 — 단일비행 + 짧은 TTL(`modelCatalogCache`).
+    fetchModelCatalog().then(setModels).catch((e) => onError(String(e)));
   }, []);
 
   useEffect(() => {

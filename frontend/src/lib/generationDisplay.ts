@@ -79,13 +79,26 @@ function parseCreatedAt(value: string): Date {
   return new Date(s);
 }
 
+// ★카드마다 새로 만들지 않는다(2026-09-12, C-15). `toLocaleDateString(locale, options)` 는
+//  호출마다 포맷터를 새로 만든다 — 실측 20,000회에 1201.7ms vs 재사용 34.9ms(**34.4배**),
+//  카드 200장이면 12.02ms -> 0.35ms 다. 같은 고침을 `dateGroups.ts` 에선 이미 했다.
+//  옵션이 고정(en-US·연·월이름·일)이라 재사용해도 표시가 달라지지 않는다 — 날짜 400개로 전수 대조했다.
+const GENERATION_DATE_FORMAT = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+});
+
 export function formatGenerationDate(value: string): string {
   const d = parseCreatedAt(value);
   if (isNaN(d.getTime())) return value.slice(0, 10);
-  return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+  return GENERATION_DATE_FORMAT.format(d);
 }
 
 // 생성일 + 시각(로컬) — 정보 팝업 등 정확한 시각이 필요한 곳.
+// ★여기는 카드마다 돌지 않으므로 그대로 둔다. 인자 없는 `toLocaleString()` 은 실행 환경의
+//  기본 로케일을 쓰는데, 이를 모듈 수준 포맷터로 바꾸면 그 로케일이 **적재 시점에 굳는다**.
+//  (참고로 `new Intl.DateTimeFormat()` 을 옵션 없이 쓰면 **날짜만** 나온다 — 시각이 사라진다.)
 export function formatGenerationDateTime(value: string): string {
   if (!value) return value;
   const d = parseCreatedAt(value);

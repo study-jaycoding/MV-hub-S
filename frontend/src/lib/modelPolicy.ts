@@ -4,7 +4,7 @@
 //  · 서버가 주는 것은 **허용 목록**이고 빈 목록은 제한 없음이다 — 판정은 modelPolicyCore 의 modelAllowed/blockedModels 로만.
 //  · 늦은 응답은 요청 순번 + 키 대조로 버린다(A→B→A 전환·포커스 재조회 역전 방지).
 //  · 마지막 서버 값은 localStorage 에 남겨 재시작·오프라인에도 같은 목록을 쓴다(status=stale 로 '미확인' 표시).
-//  · 갱신: 키 변경 · 창 포커스(30초 간격) · 10분 주기 · 같은 앱에서 매니저가 그룹을 저장한 직후(refreshModelPolicy).
+//  · 갱신: 키 변경 · 창 포커스(30초 간격) · 10분 주기(**보이는 창만**) · 같은 앱에서 매니저가 그룹을 저장한 직후(refreshModelPolicy).
 import { useSyncExternalStore } from "react";
 import { isHttpStatus, isRouteMissing } from "./http";
 import { manageApi } from "./manageApi";
@@ -83,6 +83,10 @@ function armTimer(): void {
   }
   if (!state.key || typeof window === "undefined") return;
   timer = window.setInterval(() => {
+    // ★숨은 탭에서는 조회하지 않는다(2026-09-12, C-19). 안 보이는 창의 정책은 쓸 데가 없고,
+    //  돌아오는 순간 아래 `onWindowFocus` 가 `visibilitychange` 로 받아 다시 조회한다
+    //  (30초 스로틀) — 그래서 건너뛰어도 복귀 시 낡은 채로 남지 않는다.
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
     void fetchPolicy();
   }, REFRESH_MS);
 }
