@@ -411,7 +411,7 @@ def ledger_totals(
       이었다(후보가 하나라고 진짜 짝이라는 뜻은 아니다). 총액에서만 빼는 것이 정직하다.
     · **공간**: `workspace_id` 를 주면 그 공간 거래만 센다. 공간이 안 붙은 옛 행은 **섞지 않고**
       `unknown_workspace` 로 따로 보고한다 — 그 돈이 선택한 공간 것이라는 근거가 없다.
-    · **기간**: 거래가 일어난 날 기준이고, 팩트와 같은 `date(created_at,'localtime')` 을 쓴다.
+    · **기간**: 거래가 일어난 날 기준이고, 팩트와 **같은 경계 규칙**을 쓴다(로컬 자정 이상 ~ 다음날 자정 미만).
       ⚠실서버 시간대가 UTC 라 이 경계는 KST 가 아니다(기존 보류 사항 — 팩트와 함께 옮겨야 한다).
     · **권한**: `account_email` 을 주면 그 계정 거래만. 일반 멤버 범위는 서버가 강제한다.
     · 금액은 **소수 그대로**. 지출 없이 환불만 있는 달이 실재하므로 **순사용이 음수일 수 있다**.
@@ -419,10 +419,14 @@ def ledger_totals(
     """
     # 조건과 인자를 **쌍으로** 들고 다닌다 — 문자열을 다시 걸러 인자를 맞추면 같은 조건이 둘일 때 깨진다.
     base: list[tuple[str, list[Any]]] = [("typeof(credits) IN ('integer','real')", [])]
+    # ★날짜 **범위**는 열을 함수로 감싸지 않는다(2026-09-12). `date(created_at,'localtime')` 은
+    #  인덱스를 무력화한다 — 팩트 쪽 실측으로 8.62ms(SCAN) vs 0.04ms(SEARCH), 244배였다.
+    #  ★이 패턴을 어제(커밋 35730165) 내가 여기에 새로 넣었다. 팩트와 **같은 경계 규칙**으로 고친다 —
+    #  둘이 갈리면 장부와 사용량의 '같은 날' 이 달라진다.
     if date_from:
-        base.append(("date(created_at, 'localtime') >= ?", [date_from]))
+        base.append(("julianday(created_at) >= julianday(?, 'utc')", [date_from]))
     if date_to:
-        base.append(("date(created_at, 'localtime') <= ?", [date_to]))
+        base.append(("julianday(created_at) < julianday(?, '+1 day', 'utc')", [date_to]))
     # ★`None` 만 전체다. 빈 문자열도 제한 조회로 본다 — `if account_email:` 이면 호출자가
     #  빈 이메일을 넘겼을 때 조용히 전체가 열린다(권한이 뚫리는 자리).
     if account_email is not None:

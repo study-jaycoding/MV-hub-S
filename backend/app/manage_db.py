@@ -111,6 +111,11 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         # 인덱스 약 928KiB — 절대량이 작아 채택.
         "CREATE INDEX IF NOT EXISTS idx_tgf_model_created "
         "ON team_generation_fact(model, created_at)",
+        # 날짜 범위 조회 — `date(created_at,'localtime')` 이 열을 감싸 인덱스를 못 쓰던 것을
+        # `julianday(created_at)` 표현식 인덱스로 바꿨다(2026-09-12). 실측 8.62 → 0.04ms.
+        # 쓰기 비용: 1,000건 upsert 에 +1.4~2.0ms, 인덱스 약 356KiB(코덱스 실측).
+        "CREATE INDEX IF NOT EXISTS idx_tgf_julian "
+        "ON team_generation_fact(julianday(created_at))",
         # 관리 요약(프로젝트 대시보드) 폴더 집계 — project_id+folder_path GROUP BY(2026-09-09)
         "CREATE INDEX IF NOT EXISTS idx_tgf_project_folder "
         "ON team_generation_fact(project_id, folder_path)",
@@ -356,11 +361,16 @@ def _agg_where(
     # 'localtime' 은 팀 표준시(KST) 통일 — 프론트가 보내는 날짜도 브라우저 로컬(KST) 기준이고,
     # 다른 집계(예: task 시수)와 예산 계산도 localtime 이라 여기만 UTC 면 일 경계가 9시간 어긋난다.
     # 전제: 서버 OS 시간대 = KST (SERVER.md 명시).
+    # ★날짜 **범위**는 열을 함수로 감싸지 않는다(2026-09-12). `date(created_at,'localtime')` 은
+    #  인덱스를 무력화해 전량 SCAN 이었다 — 실측 8.62ms(SCAN) vs 0.04ms(SEARCH), **244배**.
+    #  대신 **인자 쪽**을 변환해 `julianday(created_at)` 표현식 인덱스에 닿게 한다.
+    #  경계는 '시작일 로컬 자정 이상 · 종료일 다음날 로컬 자정 미만'. 시간대 의미는 그대로다
+    #  (177일 전량 + 무작위 범위 40건에서 기존 조건과 결과 완전 일치).
     if date_from:
-        where.append("date(created_at, 'localtime') >= ?")
+        where.append("julianday(created_at) >= julianday(?, 'utc')")
         args.append(date_from)
     if date_to:
-        where.append("date(created_at, 'localtime') <= ?")
+        where.append("julianday(created_at) < julianday(?, '+1 day', 'utc')")
         args.append(date_to)
     if project_id == "__none__":
         where.append("project_id IS NULL")
@@ -506,8 +516,8 @@ def workspace_email_usage(workspace_id: str, day_from: Optional[str] = None) -> 
     날짜로 묶는다(예산 주기 규칙과 같은 달력: 주=월요일 시작, 월=1일)."""
     where = "WHERE workspace_scope='team' AND workspace_id=?"
     args: list[Any] = [workspace_id]
-    if day_from:
-        where += " AND date(created_at, 'localtime') >= ?"
+    if day_from:  # 범위 필터는 인자 쪽을 변환한다(위 `_usage_scope_where` 주석 참조)
+        where += " AND julianday(created_at) >= julianday(?, 'utc')"
         args.append(day_from)
     with get_connection() as conn:
         if not conn.execute(
@@ -609,11 +619,20 @@ def team_timeseries(
     )
     # time_from/to 는 프론트가 보내는 브라우저 로컬(KST) 나이브 문자열 — created_at(UTC)을
     # localtime 으로 맞춰 비교해야 시간 차트가 9시간 밀리지 않는다.
+    # 범위 필터는 인자 쪽을 변환한다(위 `_agg_where` 주석 참조). 여기는 날짜가 아니라 시각이다.
+    # ★`datetime(?)` 으로 **초 단위로 정규화**하고 종료는 **다음 초 미만**으로 쓴다(2026-09-12).
+    #  종전 `datetime(created_at,'localtime') <= datetime(?)` 은 양쪽 다 소수 초를 **버리고**
+    #  비교했다. `julianday` 는 소수 초까지 비교하므로 그대로 `<=` 로 두면 `06:59:59.500Z` 같은
+    #  행이 빠진다(코덱스가 team_timeseries 로 재현). 프론트는 종료를 `HH:59:59` 로 보낸다.
     if time_from:
-        where += (" AND " if where else "WHERE ") + "datetime(created_at, 'localtime') >= datetime(?)"
+        where += (
+            " AND " if where else "WHERE "
+        ) + "julianday(created_at) >= julianday(datetime(?), 'utc')"
         args.append(time_from)
     if time_to:
-        where += (" AND " if where else "WHERE ") + "datetime(created_at, 'localtime') <= datetime(?)"
+        where += (
+            " AND " if where else "WHERE "
+        ) + "julianday(created_at) < julianday(datetime(?), '+1 second', 'utc')"
         args.append(time_to)
     with get_connection() as conn:
         rows = conn.execute(

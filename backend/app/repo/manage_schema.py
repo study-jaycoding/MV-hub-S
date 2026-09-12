@@ -140,6 +140,8 @@ _SCHEMA = (
     "CREATE INDEX IF NOT EXISTS idx_account_report_outbox_pushed "
     "ON account_report_outbox(pushed_at, next_retry_at, dirty_at)",
     "CREATE INDEX IF NOT EXISTS idx_credit_txn_owner ON credit_txn(owner_uid, created_at)",
+    # 장부 집계의 날짜 범위 — 팩트와 같은 이유로 표현식 인덱스를 쓴다(2026-09-12).
+    "CREATE INDEX IF NOT EXISTS idx_credit_txn_julian ON credit_txn(julianday(created_at))",
     "CREATE INDEX IF NOT EXISTS idx_credit_txn_unmatched ON credit_txn(owner_uid) "
     "WHERE action='spend' AND matched_gen_id IS NULL",
     "CREATE INDEX IF NOT EXISTS idx_project_task_proj ON project_task(project_id)",
