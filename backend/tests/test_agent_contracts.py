@@ -754,7 +754,12 @@ def test_agent_poll_uses_direct_get_as_authority():
         assert agent._poll_active_jobs("http://hub", "token-1", "higgsfield", active) == 1
 
     assert cli_json.call_args_list[0].args == ("higgsfield", "generate", "get", "job-running")
-    assert cli_json.call_args_list[0].kwargs == {"timeout": 120}
+    # timeout 에 **상한**이 걸린다(2026-09-12). 종전 120초는 실측 최대(522ms)의 230배라
+    # 순차 호출로 누적되면 한 패스가 끝없이 늘어졌다. 예산은 조회를 *시작할지*만 가르고,
+    # 시작한 조회는 이 상한을 온전히 받는다 — 숫자 자체가 아니라 그 계약을 본다.
+    timeout = cli_json.call_args_list[0].kwargs["timeout"]
+    assert 0 < timeout <= agent._DIRECT_CHECK_TIMEOUT_SECONDS
+    assert set(cli_json.call_args_list[0].kwargs) == {"timeout"}
     assert cli_json.call_count == 2
     reconcile.assert_any_call(
         "http://hub",
@@ -1209,7 +1214,12 @@ def test_agent_only_gets_terminal_job_detail_when_reference_validation_needs_it(
         "get",
         "job-done",
     )
-    assert cli_json.call_args_list[0].kwargs == {"timeout": 120}
+    # timeout 에 **상한**이 걸린다(2026-09-12). 종전 120초는 실측 최대(522ms)의 230배라
+    # 순차 호출로 누적되면 한 패스가 끝없이 늘어졌다. 예산은 조회를 *시작할지*만 가르고,
+    # 시작한 조회는 이 상한을 온전히 받는다 — 숫자 자체가 아니라 그 계약을 본다.
+    timeout = cli_json.call_args_list[0].kwargs["timeout"]
+    assert 0 < timeout <= agent._DIRECT_CHECK_TIMEOUT_SECONDS
+    assert set(cli_json.call_args_list[0].kwargs) == {"timeout"}
     reconcile.assert_called_once_with(
         "http://hub",
         "token-1",
@@ -1952,9 +1962,12 @@ def test_reconcile_pass_reads_candidates_and_reports_authoritative_job():
         )
 
     replay.assert_called_once_with("http://hub", "token-1", "user@example.com")
-    cli_json.assert_called_once_with(
-        "higgsfield", "generate", "get", "job-1", timeout=120
-    )
+    # 재조정 조회에도 같은 상한이 걸린다(2026-09-12). 후보는 최대 200건인데 종전엔
+    # 건당 120초라 순차 누적으로 한 패스가 끝없이 늘어질 수 있었다.
+    assert cli_json.call_count == 1
+    assert cli_json.call_args.args == ("higgsfield", "generate", "get", "job-1")
+    assert 0 < cli_json.call_args.kwargs["timeout"] <= agent._DIRECT_CHECK_TIMEOUT_SECONDS
+    assert set(cli_json.call_args.kwargs) == {"timeout"}
     assert http.call_args_list[0].args == (
         "GET",
         "http://hub/api/gen-requests/reconcile-candidates",

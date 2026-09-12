@@ -2210,7 +2210,98 @@ _MAX_IN_FLIGHT_JOBS = max(
 )
 _JOB_POLL_INTERVAL_SECONDS = 5.0
 _DIRECT_CHECK_INTERVAL_SECONDS = 30.0
-_DIRECT_CHECK_BATCH_SIZE = _env_int("MVHUB_CLI_TRACK_CHECKS", 8, 1, 32)
+# 한 추적 패스가 **새 확인을 시작**하는 데 쓰는 시간 상한(2026-09-12). 종전엔 고정 8건이라
+# 의도한 확인 간격(_DIRECT_CHECK_INTERVAL_SECONDS=30초)을 지킬 수 없었다 — 추적이
+# 롱폴 사이클당 1회(약 25초)만 돌아서, 64건이면 한 바퀴에 ceil(64/8)×25초 ≈ 200초가 걸렸다.
+# 실측(generate get): p50 452ms · p95 471ms · 최대 522ms(정상 네트워크, n=20).
+# ★"10초면 20건 넘게" 는 이 함수를 **단독으로** 부를 때다. `tracking_pass` 에서는 직접 확인이
+#  예산의 일부(_DIRECT_CHECK_BUDGET_SHARE)만 쓰므로 그보다 적다.
+# ★진행 중인 확인을 중간에 버리지는 않는다. 확정 보고를 끊으면 카드가 어중간한 상태로 남는다.
+#  그래서 한 패스는 이 값을 넘길 수 있다. **얼마나 넘는지 낙관하지 말 것**(코덱스 재현):
+#  직접 확인이 6초 쓰고 → 마지막 조회가 15초(누적 21초) → 재조정 강제 1건이 15초(누적 36초).
+#  ACK HTTP 기본 timeout 60초는 여기 더 붙는다. '조회 시작 예산' 계약의 값이다.
+# ★공짜가 아니다(코덱스 지적) — 이만큼 새 요청 처리·동기화·인증 확인이 뒤로 밀린다.
+# ★하한이 최소 슬라이스보다 충분히 커야 한다(코덱스 재현): 1초로 두면 시각을 읽는 순간
+#  남은 시간이 이미 1초 미만이라 **한 건도 조회하지 않고** 매 패스가 끝난다.
+_DIRECT_CHECK_BUDGET_SECONDS = float(_env_int("MVHUB_CLI_TRACK_BUDGET", 10, 3, 60))
+# 개별 조회 상한. ★남은 예산으로 **자르지 않는다** — 예산은 조회를 *시작할지*만 가르고,
+# 시작한 조회는 이 시간을 온전히 받는다. 남은 예산으로 자르면 끝낼 수 없는 시간만 주고 실패한다.
+# (종전 120초도 상한은 있었다. 문제는 그 값이 커서 순차 호출로 누적됐다는 것이다 — 실측 최대 522ms)
+_DIRECT_CHECK_TIMEOUT_SECONDS = 15.0
+# 이보다 적게 남았으면 새 조회를 시작하지 않는다 — 인위적인 timeout 을 만들지 않는다.
+_DIRECT_CHECK_MIN_SLICE_SECONDS = 1.0
+
+# 재조정(서버가 준 '확인중' 후보) 재시도 간격 — **프로세스 메모리**.
+# ★왜(2026-09-12): 서버는 매 사이클 같은 후보 목록을 준다. 조회가 실패하면 다음 사이클에 또
+#  같은 잡을 부르고, 실패가 이어지면 그대로 낭비가 쌓인다(후보는 최대 200건). 추적 폴링에는
+#  이미 check_failures 지수 백오프가 있는데 이 경로에만 없었다.
+# ★영속화하지 않는다: 에이전트를 다시 켜면 한 번씩 다시 보는 편이 맞고(그사이 서버 상태가
+#  바뀌었을 수 있다), 이걸 위해 스키마를 늘릴 이유가 없다.
+# ★범위를 (서버, 계정)으로 나눈다(코덱스 지적): job_id 단독 전역 키면 다른 계정의 후보를
+#  한 번 처리하는 것만으로 앞 계정의 백오프가 지워져 즉시 재조회한다.
+_RECONCILE_RETRY: dict[str, dict[str, tuple[float, int, float]]] = {}
+# scope → job_id → (다음 시도 시각, 연속 실패 수, 마지막으로 후보에서 본 시각)
+_RECONCILE_RETRY_BASE_SECONDS = 60.0
+_RECONCILE_RETRY_MAX_SECONDS = 900.0
+# ★'이번 목록에 없음' 으로 지우지 않는다: 서버 응답은 최대 200건이라 잘려 있을 수 있다.
+#  오래 안 보인 기록만 버리고, 그래도 안 줄면 개수 상한으로 자른다.
+_RECONCILE_RETRY_TTL_SECONDS = 3600.0
+_RECONCILE_RETRY_MAX_ENTRIES = 512
+
+# 지난 패스가 마지막으로 본 후보의 **요청 id(rid)** — 다음 패스는 그 다음 자리부터 본다.
+# ★job_id 로 기억하면 안 된다(코덱스 재현): 후보는 **요청 단위**라 같은 job_id 가 둘일 수 있고,
+#  회전이 첫 번째 위치만 찾아 두 요청 사이를 오가며 뒤쪽 후보를 영영 안 본다.
+# ★왜(코덱스 재현): 서버는 매번 같은 순서(오래된 순 200건)로 준다. 앞에서만 보면
+#  예산이 모자랄 때 뒤쪽 후보는 **영영 0회**다(후보 30건·4패스에서 뒤 10건이 0회였다).
+_RECONCILE_CURSOR: dict[str, str] = {}
+
+# 한 패스의 예산에서 직접 확인이 쓸 수 있는 최대 비율. 나머지는 재조정 몫으로 남긴다.
+# ★왜(코덱스 재현): 직접 확인을 먼저 돌리면 활성 잡이 많을 때 재조정이 **0회**가 된다
+#  (활성 64건이 계속 queued 인 10패스에서 직접 190회·재조정 0회).
+_DIRECT_CHECK_BUDGET_SHARE = 0.7
+
+
+def _reconcile_scope(server: str, account_email: str | None) -> str:
+    return f"{server}|{account_email or ''}"
+
+
+def _rotate_after(cands: list, cursor_rid: str | None) -> list:
+    """지난 패스가 멈춘 **다음 자리**부터 보도록 목록을 회전한다(없으면 그대로)."""
+    if not cursor_rid:
+        return cands
+    for index, candidate in enumerate(cands):
+        if isinstance(candidate, dict) and str(candidate.get("rid")) == cursor_rid:
+            return cands[index + 1 :] + cands[: index + 1]
+    return cands
+
+
+def _prune_reconcile_retries(scope: str, present_job_ids: set[str], now: float) -> dict:
+    """이번 목록에서 본 기록의 관측 시각을 갱신하고 오래된 것을 버린다.
+
+    ★'이번 목록에 없음' 으로 지우지 않는다 — 서버 응답은 최대 200건이라 잘려 있을 수 있다.
+    ★후보가 **비어 있어도** 만료 정리는 돈다. 안 그러면 후보가 없는 동안 기록이 영원히 남는다.
+    """
+    retries = _RECONCILE_RETRY.setdefault(scope, {})
+    for key in present_job_ids:
+        if key in retries:
+            retry_at, failures, _ = retries[key]
+            retries[key] = (retry_at, failures, now)
+    for stale in [k for k, v in retries.items() if now - v[2] > _RECONCILE_RETRY_TTL_SECONDS]:
+        retries.pop(stale, None)
+    return retries
+
+
+def _cap_reconcile_retries(retries: dict) -> None:
+    """상한을 넘으면 오래 안 본 것부터 버린다. ★**추가가 끝난 뒤에** 부른다 —
+    추가 전에만 자르면 실패가 쌓인 패스가 상한을 넘긴 채로 끝난다(코덱스 재현: 512 → 532)."""
+    excess = len(retries) - _RECONCILE_RETRY_MAX_ENTRIES
+    if excess > 0:
+        for stale in sorted(retries, key=lambda k: retries[k][2])[:excess]:
+            retries.pop(stale, None)
+
+# 추적 패스 한 번이 쓰는 시간 — 직접 확인과 재조정이 **같은 예산을 나눠 쓴다**.
+# 각자 예산을 새로 가지면 패스 전체는 제한되지 않는다(코덱스 지적).
+_TRACK_PASS_BUDGET_SECONDS = _DIRECT_CHECK_BUDGET_SECONDS
 _ACTIVE_TRACKING_TIMEOUT_SECONDS = 60 * 60
 _SUCCESS_RAW = {"completed", "succeeded", "success", "done"}
 _FAILURE_RAW = {
@@ -2356,6 +2447,7 @@ def _poll_active_jobs(
     cli: str,
     active: dict,
     account_email: str | None = None,
+    budget_end: float | None = None,
 ) -> int:
     """기한이 된 추적 작업을 generate get으로 직접 권위 확인한다.
 
@@ -2381,11 +2473,28 @@ def _poll_active_jobs(
         if now < tracked.get("next_direct_check", 0.0):
             continue
         due.append((job_id, tracked))
-        if len(due) >= _DIRECT_CHECK_BATCH_SIZE:
-            break
 
+    # 몇 건을 보느냐가 아니라 **얼마 동안 보느냐**로 자른다. 기한이 이른 순서는 그대로라
+    # 가장 오래 밀린 잡부터 확인하고, 못 본 잡은 다음 패스가 같은 순서로 이어서 본다.
+    if budget_end is None:
+        budget_end = time.monotonic() + _DIRECT_CHECK_BUDGET_SECONDS
     for job_id, tracked in due:
-        full, cli_error = _run_cli_json(cli, "generate", "get", job_id, timeout=120)
+        if budget_end - time.monotonic() < _DIRECT_CHECK_MIN_SLICE_SECONDS:
+            # ★남은 잡의 상태를 **건드리지 않는다.** check_failures 를 올리거나 next_direct_check 를
+            #  미루면 '확인을 못 한 것' 이 '확인했는데 실패한 것' 으로 둔갑해, 다음 패스가 같은 잡을
+            #  더 늦게 보게 된다(기아). 그대로 두면 다음 패스에서 여전히 맨 앞이다.
+            break
+        # ★시작을 허용했으면 **정상 timeout** 을 준다. 남은 예산으로 자르면 그 조회는
+        #  끝낼 수 없는 시간만 받고 실패하고, check_failures 만 쌓인다(코덱스 재현:
+        #  남은 1.0~1.2초 구간에서 1.2초짜리 응답이 매번 timeout). 예산은 **새 조회를
+        #  시작할지**만 가르고, 시작한 한 건은 예산을 넘길 수 있다.
+        full, cli_error = _run_cli_json(
+            cli,
+            "generate",
+            "get",
+            job_id,
+            timeout=_DIRECT_CHECK_TIMEOUT_SECONDS,
+        )
         if not (isinstance(full, dict) and full.get("id")):
             tracked["check_failures"] = int(tracked.get("check_failures", 0)) + 1
             delay = min(120.0, _DIRECT_CHECK_INTERVAL_SECONDS * (2 ** min(2, tracked["check_failures"] - 1)))
@@ -2816,6 +2925,7 @@ def reconcile_pass(
     cli: str,
     account_email: str | None = None,
     skip_job_ids: set[str] | None = None,
+    budget_end: float | None = None,
 ) -> None:
     """서버가 준 '확인중/유실된 running'(job_id 보유) 로컬 카드를, 내 CLI 계정으로 generate get 해
     실제 상태로 보정 push 한다 — 우리 앱은 '실패/생성중'인데 힉스필드엔 실제로 완료된 카드를 자동 교정.
@@ -2827,10 +2937,23 @@ def reconcile_pass(
     if st != 200 or not isinstance(data, dict):
         return
     cands = data.get("candidates")
-    if not isinstance(cands, list) or not cands:
+    if not isinstance(cands, list):
         return
+    scope = _reconcile_scope(server, account_email)
+    retries = _prune_reconcile_retries(
+        scope,
+        {str(c["job_id"]) for c in cands if isinstance(c, dict) and c.get("job_id")},
+        time.monotonic(),
+    )
+    if not cands:
+        return  # 정리는 위에서 이미 했다 — 후보가 잠깐 비어도 기록이 영원히 남지 않는다
     print(f"[재조정] 미확정 카드 {len(cands)}건 — 실제 상태 확인")
-    for c in cands:
+    if budget_end is None:
+        budget_end = time.monotonic() + _TRACK_PASS_BUDGET_SECONDS
+
+    checked = 0
+    last_rid: str | None = None
+    for c in _rotate_after(cands, _RECONCILE_CURSOR.get(scope)):
         if not isinstance(c, dict):
             continue
         rid, job_id = c.get("rid"), c.get("job_id")
@@ -2838,23 +2961,73 @@ def reconcile_pass(
             continue
         if skip_job_ids and job_id in skip_job_ids:
             continue
-        job = _cli_json(cli, "generate", "get", job_id, timeout=120)
-        # 조회 불가/내 계정 잡 아님(not found)·파싱실패 → 안 건드림(상태 유지, 다음 사이클 재시도).
-        if not (isinstance(job, dict) and job.get("id")):
+        now = time.monotonic()
+        # 앞서 실패한 후보는 백오프가 끝날 때까지 건너뛴다. 서버는 같은 목록을 계속 주므로
+        # 이게 없으면 안 되는 조회를 매 사이클 되풀이한다.
+        retry_at, failures, _ = retries.get(str(job_id), (0.0, 0, now))
+        if now < retry_at:
             continue
+        if budget_end - now < _DIRECT_CHECK_MIN_SLICE_SECONDS and checked:
+            # 예산이 다 됐다. 남은 후보의 백오프는 **건드리지 않는다** — 확인을 못 한 것이지
+            # 실패한 것이 아니다. 다음 패스는 아래 커서 덕분에 **여기 다음부터** 본다.
+            # ★`and checked`: 한 패스에 최소 한 건은 본다 — 직접 확인이 예산을 다 써도
+            #  재조정이 영영 0회가 되지 않게 하는 바닥이다.
+            break
+        checked += 1
+        last_rid = str(rid)
+        # ★시작을 허용했으면 **정상 timeout** 을 준다(위 직접 확인과 같은 계약).
+        job = _cli_json(
+            cli,
+            "generate",
+            "get",
+            job_id,
+            timeout=_DIRECT_CHECK_TIMEOUT_SECONDS,
+        )
+        # 조회 불가/내 계정 잡 아님(not found)·파싱실패 → 안 건드림(상태 유지, 백오프 뒤 재시도).
+        if not (isinstance(job, dict) and job.get("id")):
+            failures += 1
+            delay = min(
+                _RECONCILE_RETRY_MAX_SECONDS,
+                _RECONCILE_RETRY_BASE_SECONDS * (2 ** min(4, failures - 1)),
+            )
+            retries[str(job_id)] = (time.monotonic() + delay, failures, time.monotonic())
+            continue
+        retries.pop(str(job_id), None)  # 조회 성공 — 백오프 기록을 남기지 않는다
         st2, body = _report_reconcile(server, token, rid, job)
         if st2 == 200 and isinstance(body, dict) and body.get("applied"):
             print(f"  ✓ 보정: {job_id[:8]} → {body.get('status')}")
+    # ★조회 성공이 곧 '완료'는 아니다. 앞쪽 후보가 계속 queued 면 다음 패스도 앞에서
+    #  시작해 뒤쪽은 영영 안 본다 — 멈춘 자리를 기억해 다음 패스가 이어 본다.
+    if last_rid:
+        _RECONCILE_CURSOR[scope] = last_rid
+    _cap_reconcile_retries(retries)  # 이번 패스에서 늘어난 기록까지 포함해 자른다
 
 
 def tracking_pass(server: str, token: str, cli: str) -> int:
     """메모리/SQLite 추적 작업을 먼저 확인하고, 나머지 서버 복구 후보를 뒤이어 보정한다."""
     account_email = _cycle_account_email(cli)
     active = _runtime_active(server, account_email)
-    finished = _poll_active_jobs(server, token, cli, active, account_email) if active else 0
+    # ★한 패스가 쓰는 시간을 **여기서 한 번** 정해 직접 확인과 재조정이 나눠 쓰게 한다.
+    #  각자 예산을 새로 가지면 패스 전체는 제한되지 않는다(코덱스 지적).
+    #  `recovery_probe_pass` 는 예산으로 **자르지 않는다**(제출이 job_id 를 잃었을 때만 도는
+    #  드문 복구 경로다). 다만 **예산 계산에서 빠진 것은 아니다** — 그 사이에 끼어 있어
+    #  실행 시간만큼 아래 재조정의 남은 예산이 줄어든다. 같은 이유로 `replay_outbox` 와
+    #  후보 조회 HTTP 도 예산 밖이라, **패스 전체 응답 시간은 아직 제한되지 않는다**(남은 항목).
+    pass_start = time.monotonic()
+    budget_end = pass_start + _TRACK_PASS_BUDGET_SECONDS
+    # ★직접 확인에 예산의 일부만 준다. 전부 주면 활성 잡이 많을 때 재조정이 **0회**가 된다
+    #  (코덱스 재현: 활성 64건이 계속 queued 인 10패스에서 직접 190회·재조정 0회).
+    direct_end = pass_start + _TRACK_PASS_BUDGET_SECONDS * _DIRECT_CHECK_BUDGET_SHARE
+    finished = (
+        _poll_active_jobs(server, token, cli, active, account_email, budget_end=direct_end)
+        if active
+        else 0
+    )
     # job_id를 잃은 제출은 create를 다시 부르지 않고 최신 list 지문 대조만 수행한다.
     recovery_probe_pass(server, token, cli)
-    reconcile_pass(server, token, cli, account_email, skip_job_ids=set(active))
+    reconcile_pass(
+        server, token, cli, account_email, skip_job_ids=set(active), budget_end=budget_end
+    )
     return finished
 
 
