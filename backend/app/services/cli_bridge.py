@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import os
 import shutil
 import subprocess
@@ -182,23 +183,52 @@ async def _run(*args: str, timeout: float = 60.0) -> str:
     return (out or b"").decode("utf-8", "replace")
 
 
+# CLI 가 "그 잡은 없다"고 **말한** 형태만 삭제로 본다. 실측(CLI 1.1.24, 2026-09-12):
+# 없는 잡 → stdout 비어 있고 stderr `Error: Job not found`, 종료코드 3. 잘못된 id →
+# `Error: invalid id: ...`. 즉 정상 잡의 stdout(JSON)에는 이 형태가 나타나지 않는다.
+_JOB_NOT_FOUND_RE = re.compile(r"\berror:\s*job not found\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def _says_job_not_found(text: str) -> bool:
+    """CLI 의 not-found **통보**인가. 본문 아무 데나 있는 문자열로 판정하지 않는다.
+
+    ★2026-09-12 재현: 종전엔 응답 전문에서 "job not found" 를 찾아, 프롬프트에 그 문구가
+     들어간 **살아 있는 생성물**이 삭제로 판정됐다(status=completed·result_url 있음인데
+     False). 그 False 는 곧바로 휴지통 이동(usecases/hf_missing.py)으로 이어진다.
+
+    ★줄 끝에 고정한다(코덱스 리뷰): `Error: Job not found in cache; retry upstream` 같은
+     **다른 뜻의 메시지**가 부분일치로 통과하면 같은 오삭제가 난다.
+    """
+    return bool(_JOB_NOT_FOUND_RE.search(text or ""))
+
+
 async def job_exists(job_id: str, timeout: float = 30.0) -> Optional[bool]:
     """힉스필드에 이 잡이 아직 있나? generate get <id> 결과로 판정.
-    True=있음, False=삭제됨('Job not found'), None=확인불가(타임아웃/네트워크/모르는 출력 → 상태 변경 금지)."""
+    True=있음, False=삭제됨(CLI 가 not-found 라고 통보), None=확인불가(→ 상태 변경 금지)."""
     try:
         raw = (await _run("generate", "get", job_id, "--json", timeout=timeout)).strip()
     except CLIError as e:
-        # 삭제된 잡은 CLI 가 비정상종료 + stderr "Job not found" 로 알린다(rc≠0 → _run 이 CLIError).
-        # 그 에러 메시지에 not-found 신호가 있으면 삭제로 확정. 그 외(타임아웃·네트워크·PATH 등)는
-        # 확인불가(None) 로 두어 일시 오류로 멀쩡한 걸 지우지 않게 한다.
-        return False if "job not found" in str(e).lower() else None
-    if "job not found" in raw.lower():
-        return False
+        # 삭제된 잡은 CLI 가 비정상종료 + stderr not-found 로 알린다(rc≠0 → _run 이 CLIError).
+        # 그 외(타임아웃·네트워크·PATH 등)는 확인불가(None) 로 두어 일시 오류로 멀쩡한 걸
+        # 지우지 않게 한다. 이 경로의 인자는 `generate get <id> --json` 뿐이라 프롬프트가 섞이지 않는다.
+        return False if _says_job_not_found(str(e)) else None
+    # ★정상 잡 JSON 이 있으면 **그것이 답이다.** 문자열 검색을 먼저 하면 안 된다(위 주석).
+    # ★정상 종료(rc=0)의 stdout 은 **잡 JSON 이 아니면 확인불가**로 둔다(코덱스 리뷰).
+    #  실측상 not-found 는 stdout 으로 오지 않는다(stderr + rc=3). 그래서 여기서 문자열을
+    #  보는 것은 참을 만들지 못하고 거짓 양성만 만든다 — 잘린 JSON·프록시 오류 본문이
+    #  그 문구를 품으면 멀쩡한 생성물이 사라진다.
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
         return None
-    return True if isinstance(data, dict) and data.get("id") else None
+    if not isinstance(data, dict):
+        return None
+    # 물어본 잡을 돌려줬을 때만 '있다'로 확정한다. 다른 잡·id 없음은 이 잡의 생사를
+    # 말해 주지 않으므로 None(상태 변경 금지)이 정직하다.
+    returned = str(data.get("id") or "").strip()
+    if returned and returned.lower() == str(job_id).strip().lower():
+        return True
+    return None
 
 
 async def get_job_raw(job_id: str, timeout: float = 30.0) -> Optional[dict[str, Any]]:

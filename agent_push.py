@@ -2533,6 +2533,12 @@ _relogin_state = {"declined_email": None}
 _HF_SITE = "https://higgsfield.ai/"
 
 
+# ★이 응답을 사이클에 보관해 뒤의 `_cycle_collect_account_status` 가 재사용하고 싶어지지만,
+#  **하면 안 된다**(2026-09-12 시도했다 되돌림). push 직전의 `account status` 는 중복이 아니라
+#  **신원 재확인**이다 — 서버가 그 email 로 계정을 대조한다(routers/ingest.py 의 409).
+#  다른 터미널에서 CLI 계정을 A→B 로 바꾸면 `generate list` 는 B 의 잡을 주는데 보고 이메일만
+#  캐시된 A 로 남아, B 의 생성물이 A 에게 귀속되고 서버 검사도 통과한다(코덱스 재현).
+#  CLI 1회 약 470ms 는 그 안전장치의 값이다. 줄이려면 신원 확인을 대신할 수단이 먼저 필요하다.
 def _cli_account_email(cli: str) -> str | None:
     acct = _cli_json(cli, "account", "status")
     return acct.get("email") if isinstance(acct, dict) else None
@@ -2636,6 +2642,10 @@ def offer_cli_relogin(cli: str, detail: str) -> bool:
 def _signout_and_relogin(cli: str) -> str | None:
     """CLI + 브라우저(웹) 양쪽 로그아웃을 거친 뒤 다시 로그인 — '다른 계정'으로 전환 가능하게.
     반환: 재로그인 후의 CLI 계정 이메일(확인 실패면 None)."""
+    # ★무효화를 **시도 시작 시점**에 한다(2026-09-12). 종전엔 로그인까지 마친 뒤에야
+    #  무효화해서, `auth login` 실행이 예외로 끝나면(아래 return None) **로그아웃은 이미
+    #  된 상태인데** 이전 계정의 email snapshot 이 사이클에 그대로 남았다.
+    _invalidate_account_cycle()
     print("  현재 CLI 계정 로그아웃...")
     try:
         subprocess.run([*_cli_argv(cli), "auth", "logout"], timeout=60)
@@ -2658,7 +2668,7 @@ def _signout_and_relogin(cli: str) -> str | None:
     except Exception as e:  # noqa: BLE001
         print(f"  [오류] CLI 로그인 실행 실패: {e}")
         return None
-    _invalidate_account_cycle()  # 재로그인 — 이전 계정 snapshot 즉시 폐기(3-A)
+    _invalidate_account_cycle()  # 로그인 성공 뒤에도 한 번 더(로그인 중 채워졌을 값 폐기)
     return _cli_account_email(cli)
 
 

@@ -37,9 +37,39 @@ async def trash_missing_generations(
     gens = await asyncio.to_thread(repo.gens_with_job_id, account_uid=account_uid)
     sem = asyncio.Semaphore(8)
 
+    # 같은 요청 안에서 같은 잡을 두 번 묻지 않는다. 로컬 단계와 서버 단계의 후보가 겹치면
+    # 종전엔 `job_exists` 를 각각 불러 CLI 프로세스를 두 번 띄웠다(겹침 32개 → 호출 64회).
+    # CLI 1회 기동은 실측 약 470ms(2026-09-12) 라 겹침이 많을수록 그대로 지연이 된다.
+    # ★`job_id in seen` 으로 **조회 여부**를 본다. None(확인불가)도 '이미 물어봤다'이므로
+    #  `seen.get(job_id)` 의 falsy 검사로는 미조회와 구분되지 않는다.
+    # ★None 을 재사용하면 이번 요청의 서버 단계에서 다시 확인할 기회는 사라진다. 삭제 안전성은
+    #  그대로다(None 은 아무것도 바꾸지 않는다) — 재확인이 다음 요청으로 미뤄지는 정책이다.
+    seen: dict[str, bool | None] = {}
+    inflight: dict[str, asyncio.Task[bool | None]] = {}
+
+    async def _ask(job_id: str) -> bool | None:
+        try:
+            async with sem:
+                result = await cli_bridge.job_exists(job_id)
+        finally:
+            inflight.pop(job_id, None)
+        seen[job_id] = result
+        return result
+
+    async def existence(job_id: str) -> bool | None:
+        """이 요청에서 이미 확인한 잡이면 그 결과를 그대로 쓴다(CLI 재기동 없음)."""
+        key = str(job_id)
+        if key in seen:
+            return seen[key]
+        # 여기부터 create_task 까지 await 가 없어 같은 키의 동시 진입이 갈라지지 않는다.
+        task = inflight.get(key)
+        if task is None:
+            task = asyncio.create_task(_ask(key))
+            inflight[key] = task
+        return await task
+
     async def check(gen_id: str, job_id: str) -> tuple[str, bool | None]:
-        async with sem:
-            return gen_id, await cli_bridge.job_exists(job_id)
+        return gen_id, await existence(job_id)
 
     results = await asyncio.gather(*(check(gen_id, job_id) for gen_id, job_id in gens))
 
@@ -67,12 +97,14 @@ async def trash_missing_generations(
             server_checked = len(candidates)
 
             async def check_server(candidate: dict[str, Any]) -> dict[str, Any]:
-                async with sem:
-                    return {
-                        "gen_id": candidate["gen_id"],
-                        "job_id": candidate["job_id"],
-                        "exists": await cli_bridge.job_exists(candidate["job_id"]),
-                    }
+                return {
+                    "gen_id": candidate["gen_id"],
+                    "job_id": candidate["job_id"],
+                    # 로컬 단계가 이미 물어본 잡이면 그 결과를 쓴다(CLI 재기동 없음).
+                    # 서버가 준 gen_id·job_id 는 그대로 돌려보내 서버가 다시 검증한다 —
+                    # 확인 결과는 권한 증명이 아니다.
+                    "exists": await existence(candidate["job_id"]),
+                }
 
             server_results = await asyncio.gather(
                 *(check_server(candidate) for candidate in candidates if candidate.get("job_id"))
