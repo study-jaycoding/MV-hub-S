@@ -2809,6 +2809,35 @@ def _job_ids_to_sync(server: str, token: str, local_ids: list[str]) -> "set[str]
     return {job_id for job_id in local_ids if job_id not in known_ids}
 
 
+def _unique_model_by_display_name(models: list) -> dict[str, str]:
+    """표시명 → 모델 키. **그 이름이 가리키는 모델이 하나뿐일 때만** 넣는다.
+
+    ★왜(2026-09-12 실측): 거래에는 표시명만 있고 모델 키가 없다. 그런데 표시명은 **유일하지 않다** —
+     CLI 91종에서 `Nano Banana Pro` 하나가 `nano_banana_pro`·`_ai_stylist`·`_relight`·
+     `_skin_enhancer`·`_shots` **다섯**을 가리키고, `Topaz` 는 셋, `Genjutsu` 는 둘이다.
+     종전 dict 컴프리헨션은 **마지막 것이 조용히 이겨** 거의 모든 `Nano Banana Pro` 거래에
+     `nano_banana_2_shots` 를 붙였다. 서버 매칭은 모델을 **하드 필터**로 쓰므로
+     (`transaction_model != generation_model` 이면 간선을 버린다) 그 거래는 **매칭률 0%** 가 됐다.
+     로컬 6,266건 중 655건(10.5%)이 그랬다. **잘못 붙은 태그는 없는 것보다 나쁘다** —
+     미태깅은 시간+소유자 폴백을 타지만 오태깅은 정상 짝을 막는다.
+
+    ★판정은 '같은 이름의 **행 수**' 가 아니라 '서로 다른 **유효 키**의 수' 로 한다(코덱스 조건).
+     같은 이름·같은 키가 중복된 것은 모호하지 않다. 목록 순서가 뒤집혀도 결과는 같다.
+    ★키가 없는 항목이나 목록 조회 실패를 '유일함' 으로 보지 않는다 — 그런 이름은 아예 안 넣는다.
+    ★오늘 유일하다는 것이 **과거에도 유일했다는 증거는 아니다.** 이 표는 지금 태깅할 거래에만 쓴다.
+    """
+    keys_by_name: dict[str, set[str]] = {}
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        name = model.get("display_name")
+        key = model.get("job_set_type") or model.get("job_type")
+        if not name or not key:
+            continue
+        keys_by_name.setdefault(str(name), set()).add(str(key))
+    return {name: next(iter(keys)) for name, keys in keys_by_name.items() if len(keys) == 1}
+
+
 def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool = True, reinspect: bool = False) -> None:
     # 1) 로컬 생성물(내 CLI·내 계정) + 크레딧·워크스페이스 상태
     jobs = _cli_json(cli, "generate", "list", "--size", str(size)) or []
@@ -2846,11 +2875,7 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     # CLI 1.x model list 는 모델키를 job_set_type → job_type 로 개명. 둘 다 수용(구/신 호환).
     models = _cached_models(cli)
     if isinstance(models, list):
-        dn2key = {
-            m.get("display_name"): (m.get("job_set_type") or m.get("job_type"))
-            for m in models
-            if isinstance(m, dict) and m.get("display_name") and (m.get("job_set_type") or m.get("job_type"))
-        }
+        dn2key = _unique_model_by_display_name(models)
         for t in txns:
             if isinstance(t, dict) and t.get("display_name") in dn2key:
                 t["model"] = dn2key[t["display_name"]]
