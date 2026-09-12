@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import math
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -391,6 +392,111 @@ def _agg_where(
     return (("WHERE " + " AND ".join(where)) if where else ""), args
 
 
+def _max_name(current: Optional[str], value: Optional[str]) -> Optional[str]:
+    """SQL `MAX(name)` 과 같게 — NULL 은 빼고, 전부 NULL 이면 NULL 을 남긴다."""
+    if value is None:
+        return current
+    return value if current is None or value > current else current
+
+
+class _Bucket:
+    """접기용 누적기. 실수 합계는 **마지막에 `math.fsum` 으로 한 번** 더한다.
+
+    ★왜 한 번에 더하나(실측): SQLite 3.50.4 의 `SUM` 은 **보정합산**이라
+     `SUM(0.1,0.2,0.3)` 이 정확히 `0.6` 이다. 부분합을 **왼쪽부터 누적**하면
+     `0.6000000000000001` 이 되어 그 정밀도를 잃는다. `fsum` 은 정확히 반올림한다.
+     (참고: CPython 3.12+ 의 `sum()` 도 실수엔 보정합산을 쓴다 — 이 런타임은 3.14.3 이라
+      `sum` 으로도 같은 값이 나온다. `fsum` 은 그 보장을 런타임에 기대지 않으려는 것이다.)
+    ★한계: **부분합 안에서 이미 잃은 값은 복구하지 못한다**(코덱스 지적).
+     크기가 1e16 처럼 극단이면 접기와 직접 합이 갈린다(실측 차 0.4).
+     이 앱의 크레딧은 실측 범위가 0~330 이고, 실데이터 22,392행에서 잰 차이는 **0.0** 이다.
+    """
+
+    __slots__ = ("count", "_credits", "_elapsed", "final_count", "estimated_count",
+                 "creator_name", "project_name")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self._credits: list[float] = []
+        self._elapsed: list[float] = []
+        self.final_count = 0
+        self.estimated_count = 0
+        self.creator_name: Optional[str] = None
+        self.project_name: Optional[str] = None
+
+    def add(self, row: sqlite3.Row) -> None:
+        self.count += row["count"]
+        self._credits.append(row["credits"])
+        self._elapsed.append(row["elapsed_seconds"])
+        self.final_count += row["final_count"]
+        self.estimated_count += row["estimated_count"]
+        self.creator_name = _max_name(self.creator_name, row["creator_name"])
+        self.project_name = _max_name(self.project_name, row["project_name"])
+
+    @property
+    def credits(self) -> float:
+        return math.fsum(self._credits)
+
+    @property
+    def elapsed_seconds(self) -> float:
+        return math.fsum(self._elapsed)
+
+
+def _fold(groups: list[sqlite3.Row], key) -> dict[Any, _Bucket]:
+    out: dict[Any, _Bucket] = {}
+    for row in groups:
+        bucket_key = key(row)
+        bucket = out.get(bucket_key)
+        if bucket is None:
+            bucket = out[bucket_key] = _Bucket()
+        bucket.add(row)
+    return out
+
+
+def _nulls_first(value: Optional[str]) -> tuple[bool, str]:
+    """NULL 을 앞에 두는 비교 키 — 파이썬은 None 과 str 을 직접 비교하지 못한다."""
+    return (value is not None, value if value is not None else "")
+
+
+# ★합성 키 하나로 훑고 파이썬에서 접는다(2026-09-12, D-3).
+#  종전에는 같은 WHERE 로 **10번** 훑었다 — 실측 22,392행에서 중앙값 120.9ms.
+#  합성 키로 한 번 훑으면 37.4ms(3.2배·83.6ms 절감)이고, 이 데이터의 고유 조합은 418개(1.9%)다.
+#  걸러낸 부분집합을 임시표에 넣고 같은 10집계를 돌리는 안은 95.0ms(1.3배)라 기각했다.
+#
+#  ★원시 키로 묶고 **정규화 값은 SQL 식으로 함께 읽는다.** 파이썬에서 정규화하면 의미가 바뀐다:
+#   - `LOWER()` — SQLite 는 `Ae`(대문자 움라우트)와 소문자를 **다르게** 보는데 파이썬
+#     `.lower()` 는 같게 만든다(코덱스). 골든에서 실제로 별도 행으로 확인했다.
+#   - 모델 표시명은 유일하지 않다 — 원시값 NULL, 빈 문자열, 그리고 문자열 '알 수 없음' 이
+#     **같은 표시명**으로 나오는 서로 다른 세 그룹이다. 표시명을 접기 키로 쓰면 행이 사라진다.
+#   - 폴더 경로도 집계 **전에** 다듬으면 안 된다 — 역슬래시 경로와 슬래시 경로는 지금 별도 행이고,
+#     구분자·공백 정리는 집계 **뒤** 파생값(episode/scene)에만 적용된다.
+_FOLD_COLUMNS = (
+    "creator_uid, project_id, model, output_type, "
+    "MAX(creator_name) AS creator_name, MAX(project_name) AS project_name, "
+    "COALESCE(NULLIF(model,''),'알 수 없음') AS model_label, "
+    "COALESCE(NULLIF(LOWER(output_type),''),'other') AS output_label, "
+    "COUNT(*) AS count, COALESCE(SUM({credit}),0) AS credits, "
+    "COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "
+    "COALESCE(SUM(is_final),0) AS final_count, "
+    "COALESCE(SUM(CASE WHEN real_credits IS NULL THEN 1 ELSE 0 END),0) AS estimated_count"
+).format(credit=_CREDIT)
+_FOLD_GROUP_BY = "GROUP BY creator_uid, project_id, model, output_type"
+# ★폴더는 합성 키에 **넣지 않는다.** 폴더만 카디널리티가 열려 있어서(에피소드/씬이 아니라
+#  생성물마다 다른 경로가 들어오면) 합성 그룹이 행 수까지 불어난다. 실측: 폴더를 넣고 22,392행이
+#  전부 다른 폴더면 **247ms -> 421ms 로 오히려 느려졌다**(파이썬 객체·정렬 비용). 폴더를 빼면
+#  나머지 축(작업자·프로젝트·모델·출력)은 실데이터에서 418조합, 최악에도 그 곱으로 막힌다.
+#  폴더 집계는 **원래 SQL 그대로** 따로 한 번 더 훑는다 — 정렬·NULL·구분자 의미가 그대로 보존된다.
+_FOLDER_SQL = (
+    "SELECT project_id, MAX(project_name) AS project_name, "
+    "COALESCE(NULLIF(folder_path,''),'(폴더 미지정)') AS folder_path, "
+    "COUNT(*) AS count, COALESCE(SUM(is_final),0) AS final_count, "
+    "COALESCE(SUM({credit}),0) AS credits "
+    "FROM team_generation_fact {{where}} "
+    "GROUP BY project_id, COALESCE(NULLIF(folder_path,''),'(폴더 미지정)') "
+    "ORDER BY project_name, folder_path"
+).format(credit=_CREDIT)
+
+
 def team_overview(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
     project_id: Optional[str] = None, creator_uid: Optional[str] = None,
@@ -401,87 +507,106 @@ def team_overview(
 
     합계·작업자·프로젝트·모델·폴더 Yield를 같은 필터 스냅샷으로 계산해 화면 값이 서로 어긋나지
     않게 한다. 모델 상세 배열은 count/credits 값에 마우스를 올렸을 때 쓰인다.
-    viewer=(uid, email) 이면 일반 멤버의 '내 기록' 범위 — 모든 배열이 같은 WHERE 를 타므로
+    viewer=(uid, email) 이면 일반 멤버의 '내 기록' 범위 — **걸러내기를 접기 전에** 하므로
     matrix·worker_models·폴더 행에도 남의 기록이 섞이지 않는다(`_viewer_clause`).
+
+    ★정렬 계약(2026-09-12): 기존 우선순위 뒤에 **원시 식별자**를 붙여 결정적 순서를 만든다.
+     종전 SQLite 의 동점 순서는 보장된 적이 없다 — 이건 재현 계약이 아니라 **새 계약**이다.
+     보조 키는 크레딧이 **정확히 같을 때만** 작용하므로, 접기로 미세한 차이가 생기면 기존
+     동점이 깨질 수 있다. 그 변화도 허용한다.
     """
     where, args = _agg_where(
         date_from, date_to, project_id, creator_uid, workspace_id, model, viewer
     )
     with get_connection() as conn:
-        conn.execute("BEGIN")  # 아래 모든 집계를 같은 WAL 읽기 스냅샷에 고정한다.
-        totals = dict(conn.execute(
-            f"SELECT COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits, "
-            f"COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "
-            f"COALESCE(SUM(CASE WHEN real_credits IS NULL THEN 1 ELSE 0 END),0) AS estimated_count, "
-            f"COALESCE(SUM(is_final),0) AS final_count, "
-            f"COUNT(DISTINCT creator_uid) AS workers, COUNT(DISTINCT project_id) AS projects, "
-            f"COUNT(DISTINCT model) AS models, COUNT(DISTINCT output_type) AS features "
-            f"FROM team_generation_fact {where}", args,
-        ).fetchone())
-        by_worker = [dict(r) for r in conn.execute(
-            f"SELECT creator_uid, MAX(creator_name) AS creator_name, COUNT(*) AS count, "
-            f"COALESCE(SUM({_CREDIT}),0) AS credits, COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "
-            f"COALESCE(SUM(is_final),0) AS final_count "
-            f"FROM team_generation_fact {where} GROUP BY creator_uid ORDER BY credits DESC", args,
-        ).fetchall()]
-        by_project = [dict(r) for r in conn.execute(
-            f"SELECT project_id, MAX(project_name) AS project_name, COUNT(*) AS count, "
-            f"COALESCE(SUM({_CREDIT}),0) AS credits, COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "
-            f"COALESCE(SUM(is_final),0) AS final_count "
-            f"FROM team_generation_fact {where} GROUP BY project_id ORDER BY credits DESC", args,
-        ).fetchall()]
-        matrix = [dict(r) for r in conn.execute(
-            f"SELECT creator_uid, MAX(creator_name) AS creator_name, project_id, "
-            f"MAX(project_name) AS project_name, COUNT(*) AS count, "
-            f"COALESCE(SUM({_CREDIT}),0) AS credits "
-            f"FROM team_generation_fact {where} GROUP BY creator_uid, project_id", args,
-        ).fetchall()]
-        by_model = [dict(r) for r in conn.execute(
-            f"SELECT COALESCE(NULLIF(model,''),'알 수 없음') AS model, COUNT(*) AS count, "
-            f"COALESCE(SUM({_CREDIT}),0) AS credits, "
-            f"COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "
-            f"COALESCE(SUM(is_final),0) AS final_count "
-            f"FROM team_generation_fact {where} GROUP BY model ORDER BY credits DESC", args,
-        ).fetchall()]
-        by_output_type = [dict(r) for r in conn.execute(
-            f"SELECT COALESCE(NULLIF(LOWER(output_type),''),'other') AS output_type, "
-            f"COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits "
-            f"FROM team_generation_fact {where} "
-            f"GROUP BY COALESCE(NULLIF(LOWER(output_type),''),'other') ORDER BY credits DESC",
-            args,
-        ).fetchall()]
-        output_models = [dict(r) for r in conn.execute(
-            f"SELECT COALESCE(NULLIF(LOWER(output_type),''),'other') AS output_type, "
-            f"COALESCE(NULLIF(model,''),'알 수 없음') AS model, "
-            f"COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits "
-            f"FROM team_generation_fact {where} "
-            f"GROUP BY COALESCE(NULLIF(LOWER(output_type),''),'other'), model "
-            f"ORDER BY output_type, credits DESC",
-            args,
-        ).fetchall()]
-        worker_models = [dict(r) for r in conn.execute(
-            f"SELECT creator_uid, COALESCE(NULLIF(model,''),'알 수 없음') AS model, "
-            f"COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits, "
-            f"COALESCE(SUM(is_final),0) AS final_count "
-            f"FROM team_generation_fact {where} GROUP BY creator_uid, model "
-            f"ORDER BY creator_uid, credits DESC", args,
-        ).fetchall()]
-        project_models = [dict(r) for r in conn.execute(
-            f"SELECT project_id, COALESCE(NULLIF(model,''),'알 수 없음') AS model, "
-            f"COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits, "
-            f"COALESCE(SUM(is_final),0) AS final_count "
-            f"FROM team_generation_fact {where} GROUP BY project_id, model "
-            f"ORDER BY project_id, credits DESC", args,
-        ).fetchall()]
-        folders = [dict(r) for r in conn.execute(
-            f"SELECT project_id, MAX(project_name) AS project_name, "
-            f"COALESCE(NULLIF(folder_path,''),'(폴더 미지정)') AS folder_path, "
-            f"COUNT(*) AS count, COALESCE(SUM(is_final),0) AS final_count, "
-            f"COALESCE(SUM({_CREDIT}),0) AS credits "
-            f"FROM team_generation_fact {where} "
-            f"GROUP BY project_id, COALESCE(NULLIF(folder_path,''),'(폴더 미지정)') "
-            f"ORDER BY project_name, folder_path", args,
-        ).fetchall()]
+        conn.execute("BEGIN")  # 한 번만 훑지만 읽기 시점을 WAL 스냅샷에 고정한다.
+        groups = conn.execute(
+            f"SELECT {_FOLD_COLUMNS} FROM team_generation_fact {where} {_FOLD_GROUP_BY}", args,
+        ).fetchall()
+        folders = [dict(r) for r in conn.execute(_FOLDER_SQL.format(where=where), args).fetchall()]
+
+    by_worker_map = _fold(groups, lambda r: r["creator_uid"])
+    by_project_map = _fold(groups, lambda r: r["project_id"])
+    matrix_map = _fold(groups, lambda r: (r["creator_uid"], r["project_id"]))
+    by_model_map = _fold(groups, lambda r: r["model"])
+    by_output_map = _fold(groups, lambda r: r["output_label"])
+    output_model_map = _fold(groups, lambda r: (r["output_label"], r["model"]))
+    worker_model_map = _fold(groups, lambda r: (r["creator_uid"], r["model"]))
+    project_model_map = _fold(groups, lambda r: (r["project_id"], r["model"]))
+    # 원시값 -> 표시명. 표시명은 유일하지 않으므로 **원시값으로 접은 뒤** 라벨을 붙인다.
+    model_label = {r["model"]: r["model_label"] for r in groups}
+
+    total = _Bucket()
+    for row in groups:
+        total.add(row)
+    # `COUNT(DISTINCT x)` 는 NULL 을 세지 않는다. 빈 문자열은 센다.
+    totals = {
+        "count": total.count,
+        "credits": total.credits,
+        "elapsed_seconds": total.elapsed_seconds,
+        "estimated_count": total.estimated_count,
+        "final_count": total.final_count,
+        "workers": sum(1 for k in by_worker_map if k is not None),
+        "projects": sum(1 for k in by_project_map if k is not None),
+        "models": sum(1 for k in by_model_map if k is not None),
+        "features": len({r["output_type"] for r in groups if r["output_type"] is not None}),
+    }
+
+    by_worker = [
+        {"creator_uid": uid, "creator_name": b.creator_name, "count": b.count,
+         "credits": b.credits, "elapsed_seconds": b.elapsed_seconds, "final_count": b.final_count}
+        for uid, b in sorted(
+            by_worker_map.items(), key=lambda kv: (-kv[1].credits, _nulls_first(kv[0]))
+        )
+    ]
+    by_project = [
+        {"project_id": pid, "project_name": b.project_name, "count": b.count,
+         "credits": b.credits, "elapsed_seconds": b.elapsed_seconds, "final_count": b.final_count}
+        for pid, b in sorted(
+            by_project_map.items(), key=lambda kv: (-kv[1].credits, _nulls_first(kv[0]))
+        )
+    ]
+    matrix = [
+        {"creator_uid": uid, "creator_name": b.creator_name, "project_id": pid,
+         "project_name": b.project_name, "count": b.count, "credits": b.credits}
+        for (uid, pid), b in sorted(
+            matrix_map.items(), key=lambda kv: (_nulls_first(kv[0][0]), _nulls_first(kv[0][1]))
+        )
+    ]
+    by_model = [
+        {"model": model_label[key], "count": b.count, "credits": b.credits,
+         "elapsed_seconds": b.elapsed_seconds, "final_count": b.final_count}
+        for key, b in sorted(
+            by_model_map.items(), key=lambda kv: (-kv[1].credits, _nulls_first(kv[0]))
+        )
+    ]
+    by_output_type = [
+        {"output_type": label, "count": b.count, "credits": b.credits}
+        for label, b in sorted(by_output_map.items(), key=lambda kv: (-kv[1].credits, kv[0]))
+    ]
+    output_models = [
+        {"output_type": label, "model": model_label[key], "count": b.count, "credits": b.credits}
+        for (label, key), b in sorted(
+            output_model_map.items(),
+            key=lambda kv: (kv[0][0], -kv[1].credits, _nulls_first(kv[0][1])),
+        )
+    ]
+    worker_models = [
+        {"creator_uid": uid, "model": model_label[key], "count": b.count,
+         "credits": b.credits, "final_count": b.final_count}
+        for (uid, key), b in sorted(
+            worker_model_map.items(),
+            key=lambda kv: (_nulls_first(kv[0][0]), -kv[1].credits, _nulls_first(kv[0][1])),
+        )
+    ]
+    project_models = [
+        {"project_id": pid, "model": model_label[key], "count": b.count,
+         "credits": b.credits, "final_count": b.final_count}
+        for (pid, key), b in sorted(
+            project_model_map.items(),
+            key=lambda kv: (_nulls_first(kv[0][0]), -kv[1].credits, _nulls_first(kv[0][1])),
+        )
+    ]
     for row in folders:
         count = int(row.get("count") or 0)
         final_count = int(row.get("final_count") or 0)

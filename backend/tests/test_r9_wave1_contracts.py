@@ -198,7 +198,11 @@ def test_team_overview_uses_one_wal_snapshot_for_all_aggregates(
 
         def execute(self, sql: str, parameters=()):
             cursor = self._conn.execute(sql, parameters)
-            if not self.injected and "SELECT COUNT(*) AS count" in sql:
+            # ★첫 집계 **직후**에 남의 쓰기를 끼워 넣는다. 종전 앵커는 `"SELECT COUNT(*) AS count"`
+            #  라는 **한 집계의 SQL 문구**였다 — 2026-09-12 에 team_overview 를 한 번 훑기로 바꾸자
+            #  그 문구가 사라져 주입이 아예 일어나지 않았다(코덱스 지적). 이제 문구가 아니라
+            #  **팩트 표를 읽는 첫 SELECT** 를 앵커로 삼는다.
+            if not self.injected and "FROM team_generation_fact" in sql and sql.lstrip()[:6].upper() == "SELECT":
                 self.injected = True
                 with sqlite3.connect(path) as writer:
                     writer.execute(
@@ -228,8 +232,22 @@ def test_team_overview_uses_one_wal_snapshot_for_all_aggregates(
             yield InjectAfterFirstAggregate(conn)
 
     monkeypatch.setattr(manage_db, "get_connection", injecting_connection)
+    injector: list = []
+
+    @contextmanager
+    def capturing_connection():
+        with original_get_connection() as conn:
+            wrapper = InjectAfterFirstAggregate(conn)
+            injector.append(wrapper)
+            yield wrapper
+
+    monkeypatch.setattr(manage_db, "get_connection", capturing_connection)
     overview = manage_db.team_overview()
 
+    # ★주입이 실제로 일어났는지 **먼저** 본다. 안 일어나면 아래 단언은 전부 공짜로 통과한다.
+    assert injector and injector[0].injected, (
+        "동시 쓰기가 주입되지 않았다 — 앵커가 낡았다. team_overview 의 SQL 이 바뀌면 여기도 고쳐야 한다"
+    )
     assert overview["totals"]["count"] == 1
     for key in (
         "by_worker",

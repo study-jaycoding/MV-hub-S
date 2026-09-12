@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, GEN_PAGE } from "../api";
 import { EMPTY_FACETS } from "./appConstants";
 import { beginLibraryReload, finishLibraryReload } from "./librarySync";
+import { startLibraryRequests } from "./libraryRequestPlan";
 import { reconcileArrayState, reconcileValueState } from "./stateReconciliation";
 import type { Facets, Filters, GenQuery, GenStats, Generation, Project } from "../types";
 
@@ -160,11 +161,21 @@ export function useGenerationLibraryData({
       const scope = tab === "team" ? "team" : "my";
       const sig = JSON.stringify([trashMode, query]);
       // 탭 전환의 '즉시 표시'는 위 filters.tab effect가 담당 — 여기(비동기 실행 시점)는 최신본 fetch만.
-      // 1) 그리드 목록 먼저 — 도착 즉시 표시(느린 메타 호출에 그리드가 묶이지 않게).
+      // 1) 목록과 메타를 **함께 시작**한다(2026-09-12, C-6). 종전에는 목록을 다 받은 **뒤에야**
+      //    메타를 시작해, 왼쪽 폴더·태그·배지가 목록 왕복(로컬 47ms·3.38MB)만큼 늦게 왔다.
+      //    그리드 표시는 여전히 목록만 기다린다 — 아래에서 `list` 를 먼저 받아 그린다.
+      const now = Date.now();
+      const wantStats = !light || now - lastStatsAtRef.current > 10000; // stats는 비싸 10초 스로틀
+      // ★요청을 띄우는 시점의 값으로 고정한다 — seq·sig 와 같은 스냅샷 규칙.
+      const workspaceId = projectWorkspaceIdRef.current;
+      const { list, meta } = startLibraryRequests(
+        () => (trashMode ? api.listTrash(query.search, 0) : api.listGenerations(query, null)),
+        wantStats ? () => api.generationStats() : null,
+        light ? null : () => api.facets(scope),
+        light ? null : () => api.projects(scope, false, workspaceId),
+      );
       try {
-        const g = trashMode
-          ? await api.listTrash(query.search, 0)
-          : await api.listGenerations(query, null);
+        const g = await list;
         if (seq !== reloadSeqRef.current) return;
         setGens((prev) => reconcileArrayState(prev, g));
         setHasMore(g.length >= GEN_PAGE);
@@ -187,16 +198,9 @@ export function useGenerationLibraryData({
       } finally {
         if (!silent && seq === reloadSeqRef.current) setLoading(false);
       }
-      // 2) 메타(실패수·안읽음 배지·facets·projects)는 뒤따라 — 실패해도 그리드 표시엔 영향 없음.
-      const now = Date.now();
-      const wantStats = !light || now - lastStatsAtRef.current > 10000; // stats는 비싸 10초 스로틀
-      const [st, f, pr] = await Promise.all([
-        wantStats ? api.generationStats().catch(() => null) : Promise.resolve(null),
-        light ? Promise.resolve(null) : api.facets(scope).catch(() => null),
-        light
-          ? Promise.resolve(null)
-          : api.projects(scope, false, projectWorkspaceIdRef.current).catch(() => null),
-      ]);
+      // 2) 메타(실패수·안읽음 배지·facets·projects)는 위에서 이미 떠 있다 — 여기서 받기만 한다.
+      //    실패해도 그리드 표시엔 영향 없음(각 요청이 스스로 삼켜 null 로 온다).
+      const [st, f, pr] = await meta;
       if (seq !== reloadSeqRef.current) return;
       if (st) {
         setStats((prev) => reconcileValueState(prev, st));
