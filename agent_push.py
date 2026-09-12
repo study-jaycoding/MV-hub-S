@@ -2827,15 +2827,26 @@ def _unique_model_by_display_name(models: list) -> dict[str, str]:
     ★오늘 유일하다는 것이 **과거에도 유일했다는 증거는 아니다.** 이 표는 지금 태깅할 거래에만 쓴다.
     """
     keys_by_name: dict[str, set[str]] = {}
+    incomplete: set[str] = set()
     for model in models:
         if not isinstance(model, dict):
             continue
         name = model.get("display_name")
-        key = model.get("job_set_type") or model.get("job_type")
-        if not name or not key:
+        if not name:
             continue
-        keys_by_name.setdefault(str(name), set()).add(str(key))
-    return {name: next(iter(keys)) for name, keys in keys_by_name.items() if len(keys) == 1}
+        name = str(name)
+        key = model.get("job_set_type") or model.get("job_type")
+        if not key:
+            # ★키 없는 행을 그냥 건너뛰면 그 이름이 '유일' 해 보인다(코덱스 재현).
+            #  목록이 불완전하다는 증거이므로 그 이름은 통째로 뺀다.
+            incomplete.add(name)
+            continue
+        keys_by_name.setdefault(name, set()).add(str(key))
+    return {
+        name: next(iter(keys))
+        for name, keys in keys_by_name.items()
+        if len(keys) == 1 and name not in incomplete
+    }
 
 
 def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool = True, reinspect: bool = False) -> None:

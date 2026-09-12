@@ -79,6 +79,10 @@ class UniqueModelByDisplayNameTests(unittest.TestCase):
     def test_an_entry_without_a_key_never_makes_a_name_look_unique(self):
         """키가 빠진 항목을 '유일함' 의 근거로 쓰면 안 된다 — 그 이름은 아예 안 넣는다."""
         self.assertEqual(self.build([_model("Mystery")]), {})
+        # ★유효 키 1개 + 키 없는 행 1개 — 키 없는 행을 그냥 건너뛰면 '유일' 로 보인다(코덱스 재현).
+        #  목록이 불완전하다는 증거이므로 이 이름도 빼야 한다.
+        self.assertEqual(self.build([_model("Half"), _model("Half", "half_key")]), {})
+        self.assertEqual(self.build([_model("Half", "half_key"), _model("Half")]), {})  # 순서 무관
         # 키 없는 항목이 섞여도 진짜 키 둘이면 여전히 모호하다
         table = self.build([
             _model("Genjutsu"),
