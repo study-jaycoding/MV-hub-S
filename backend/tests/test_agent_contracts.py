@@ -1961,7 +1961,10 @@ def test_reconcile_pass_reads_candidates_and_reports_authoritative_job():
             "http://hub", "token-1", "higgsfield", account_email="user@example.com"
         )
 
-    replay.assert_called_once_with("http://hub", "token-1", "user@example.com")
+    # outbox 재전송도 패스 예산을 나눠 받는다(2026-09-12) — 인자 수가 아니라
+    # '올바른 서버·토큰·계정으로 한 번 부른다' 가 계약이다.
+    replay.assert_called_once()
+    assert replay.call_args.args[:3] == ("http://hub", "token-1", "user@example.com")
     # 재조정 조회에도 같은 상한이 걸린다(2026-09-12). 후보는 최대 200건인데 종전엔
     # 건당 120초라 순차 누적으로 한 패스가 끝없이 늘어질 수 있었다.
     assert cli_json.call_count == 1

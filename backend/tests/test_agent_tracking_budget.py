@@ -297,6 +297,230 @@ class TrackingPassBudgetTests(unittest.TestCase):
         self.assertEqual(len(set(self.reconcile_calls)), 30)
 
 
+class PassEntryWorkBudgetTests(unittest.TestCase):
+    """패스 **진입부 작업**도 같은 예산을 나눠 쓴다.
+
+    ★왜(코덱스 지적): `_poll_active_jobs` 만 막으면 패스 전체는 제한되지 않는다.
+     `replay_outbox`·`recovery_probe_pass`·후보 조회 HTTP 가 예산 밖이면
+     "패스가 제한된다" 는 말이 성립하지 않는다.
+
+    ★계약: 예산은 **새 호출을 시작할지**만 가른다. 시작한 호출은 정상 timeout 을 온전히 받는다.
+    ★예외 하나: 재조정의 **후보 조회와 첫 1건**은 예산이 없어도 한다 — 그게 없으면
+     '한 패스 최소 1건' 보장이 무력해져 재조정이 영영 0회가 된다.
+    """
+
+    def setUp(self):
+        self.agent = _load_agent()
+        self.clock = FakeClock()
+        self.anchored: list[str] = []
+
+    def _outbox(self, n):
+        return [{"rid": f"rid-{i:03d}", "job_id": f"job-{i:03d}"} for i in range(n)]
+
+    def _replay(self, items, *, budget_end, anchor_seconds=0.5, ok=True):
+        removed: list[str] = []
+
+        def fake_anchor(server, token, rid, job_id, verifying=False):
+            self.anchored.append(rid)
+            self.clock.advance(anchor_seconds)
+            return ok
+
+        with (
+            patch.object(self.agent.time, "monotonic", self.clock),
+            patch.object(self.agent, "_outbox_load", return_value=items),
+            patch.object(self.agent, "_anchor", side_effect=fake_anchor),
+            patch.object(self.agent, "_outbox_remove", side_effect=lambda s, a, rid: removed.append(rid)),
+        ):
+            self.agent.replay_outbox("http://server", "tok", "me@example.com", budget_end)
+        return removed
+
+    def test_outbox_replay_stops_on_the_budget_and_keeps_the_rest(self):
+        """★남은 것은 outbox 에 그대로 둔다 — 원래 '못 보낸 것을 보관해 다음에 재시도' 하는 구조다."""
+        removed = self._replay(self._outbox(40), budget_end=self.clock.now + 3.0)
+        self.assertGreater(len(self.anchored), 0)
+        self.assertLess(len(self.anchored), 40)          # 다 보내지 않았다
+        self.assertEqual(len(removed), len(self.anchored))  # 보낸 것만 지웠다
+
+    def test_outbox_replay_sends_everything_when_there_is_time(self):
+        removed = self._replay(self._outbox(5), budget_end=self.clock.now + 60.0)
+        self.assertEqual(len(self.anchored), 5)
+        self.assertEqual(len(removed), 5)
+
+    def test_an_unsent_anchor_is_not_removed_from_the_outbox(self):
+        """전송 실패는 보관한다(기존 계약) — 예산 때문에 안 보낸 것도 마찬가지다."""
+        removed = self._replay(self._outbox(3), budget_end=self.clock.now + 60.0, ok=False)
+        self.assertEqual(self.anchored, ["rid-000", "rid-001", "rid-002"])
+        self.assertEqual(removed, [])
+
+    def test_no_budget_replays_nothing(self):
+        removed = self._replay(self._outbox(10), budget_end=self.clock.now - 1.0)
+        self.assertEqual(self.anchored, [])
+        self.assertEqual(removed, [])
+
+    def test_recovery_probe_does_nothing_without_budget(self):
+        """드문 복구 경로다 — 예산이 없으면 시작하지 않고 뒤의 재조정에 시간을 남긴다."""
+        listed = {"n": 0}
+
+        def fake_list(server, token):
+            listed["n"] += 1
+            return 200, {"requests": [{"id": "r1"}]}
+
+        with (
+            patch.object(self.agent.time, "monotonic", self.clock),
+            patch.object(self.agent, "_list_recovery_probes", side_effect=fake_list),
+        ):
+            self.assertEqual(
+                self.agent.recovery_probe_pass("http://s", "tok", "hf", self.clock.now - 1.0), 0
+            )
+        self.assertEqual(listed["n"], 0)  # HTTP 조차 안 한다
+
+    def test_reconcile_still_fetches_candidates_without_budget(self):
+        """★진입부를 전부 막으면 '최소 1건' 보장이 무력해진다 — 후보 조회는 해야 한다."""
+        listed = {"n": 0}
+        looked = []
+
+        def fake_candidates(server, token):
+            listed["n"] += 1
+            return 200, {"candidates": [{"rid": "r1", "job_id": "job-1"}]}
+
+        def fake_cli(cli, *args, **kwargs):
+            looked.append(args[2])
+            return {"id": args[2], "status": "completed"}
+
+        with (
+            patch.object(self.agent.time, "monotonic", self.clock),
+            patch.object(self.agent, "_cycle_account_email", return_value="me@example.com"),
+            patch.object(self.agent, "replay_outbox", return_value=None),
+            patch.object(self.agent, "_list_reconcile_candidates", side_effect=fake_candidates),
+            patch.object(self.agent, "_cli_json", side_effect=fake_cli),
+            patch.object(self.agent, "_report_reconcile", return_value=(200, {"applied": True})),
+        ):
+            self.agent.reconcile_pass(
+                "http://s", "tok", "hf", "me@example.com", budget_end=self.clock.now - 1.0
+            )
+        self.assertEqual(listed["n"], 1)
+        self.assertEqual(looked, ["job-1"])  # 최소 1건 보장이 살아 있다
+
+
+class WholePassSharesOneBudgetTests(unittest.TestCase):
+    """★진입부 작업까지 **하나의 예산**을 나눠 쓴다 — 계약 ③ 의 마지막 조건.
+
+    위 `TrackingPassBudgetTests` 는 `replay_outbox`·`recovery_probe_pass` 를 **가짜로 두고**
+    직접 확인과 재조정만 쟀다. 그래서 "tracking_pass 가 진입부에도 예산을 넘기는가" 는 안 봤다.
+    여기서는 그 둘을 **실제로 돌려** 패스 전체 시간을 잰다.
+    """
+
+    def setUp(self):
+        self.agent = _load_agent()
+        self.clock = FakeClock()
+        self.anchored: list[str] = []
+        self.probed = 0
+        self.reconciled: list[str] = []
+
+    def _pass(self, *, outbox=100, anchor_seconds=0.4, probe_seconds=0.4, cands=30):
+        def fake_anchor(server, token, rid, job_id, verifying=False):
+            self.anchored.append(rid)
+            self.clock.advance(anchor_seconds)
+            return True
+
+        def fake_probe_list(server, token):
+            self.probed += 1
+            self.clock.advance(probe_seconds)  # 느린 HTTP 한 번
+            return 200, {"requests": []}
+
+        def fake_cli_json(cli, *args, **kwargs):
+            self.reconciled.append(args[2])
+            self.clock.advance(0.45)
+            return {"id": args[2], "status": "queued"}
+
+        items = [{"rid": f"o-{i:03d}", "job_id": f"job-{i:03d}"} for i in range(outbox)]
+        candidates = [{"rid": f"r-{i}", "job_id": f"cand-{i:03d}"} for i in range(cands)]
+
+        with (
+            patch.object(self.agent.time, "monotonic", self.clock),
+            patch.object(self.agent, "_cycle_account_email", return_value="me@example.com"),
+            patch.object(self.agent, "_runtime_active", return_value={}),
+            patch.object(self.agent, "_outbox_load", return_value=items),
+            patch.object(self.agent, "_anchor", side_effect=fake_anchor),
+            patch.object(self.agent, "_outbox_remove", return_value=None),
+            patch.object(self.agent, "_list_recovery_probes", side_effect=fake_probe_list),
+            patch.object(
+                self.agent,
+                "_list_reconcile_candidates",
+                return_value=(200, {"candidates": candidates}),
+            ),
+            patch.object(self.agent, "_cli_json", side_effect=fake_cli_json),
+            patch.object(self.agent, "_report_reconcile", return_value=(200, {"applied": True})),
+        ):
+            started = self.clock.now
+            self.agent.tracking_pass("http://server", "tok", "hf")
+            return self.clock.now - started
+
+    def test_slow_entry_work_does_not_stretch_the_pass(self):
+        """★이 시험이 이 클래스의 이유다 — outbox 100건 × 0.4초 = **40초**어치 일이 앞에 있다.
+
+        예산이 진입부까지 닿지 않으면 패스가 그 40초를 그대로 쓴다.
+        """
+        elapsed = self._pass()
+        self.assertLess(
+            elapsed,
+            self.agent._TRACK_PASS_BUDGET_SECONDS + 3.0,
+            f"패스가 {elapsed:.1f}초 — 진입부가 예산 밖이다",
+        )
+        self.assertGreater(len(self.anchored), 0)          # 일은 했다
+        self.assertLess(len(self.anchored), 100)           # 다 하지는 않았다
+
+    def test_entry_work_eating_the_budget_still_leaves_one_reconcile(self):
+        """★진입부가 예산을 다 써도 재조정 바닥(최소 1건)은 남아야 한다."""
+        self._pass()
+        self.assertGreaterEqual(len(self.reconciled), 1)
+
+    def test_a_quiet_entry_leaves_the_budget_to_the_rest(self):
+        """할 일이 없으면 진입부는 예산을 쓰지 않는다 — 재조정이 여러 건을 본다."""
+        self._pass(outbox=0, probe_seconds=0.05)
+        self.assertEqual(self.anchored, [])
+        self.assertGreater(len(self.reconciled), 5)
+
+    def test_the_three_paths_get_one_shared_deadline(self):
+        """전달 계약: 직접 확인은 **더 이른** 시한을, 복구와 재조정은 **같은** 시한을 받는다."""
+        seen: dict[str, float | None] = {}
+
+        def grab_poll(server, token, cli, active, email, budget_end=None):
+            seen["direct"] = budget_end
+            return 0
+
+        def grab_probe(server, token, cli, budget_end=None):
+            seen["recovery"] = budget_end
+            return 0
+
+        def grab_reconcile(server, token, cli, email=None, skip_job_ids=None, budget_end=None):
+            seen["reconcile"] = budget_end
+
+        with (
+            patch.object(self.agent.time, "monotonic", self.clock),
+            patch.object(self.agent, "_cycle_account_email", return_value="me@example.com"),
+            patch.object(self.agent, "_runtime_active", return_value={"job-1": {}}),
+            patch.object(self.agent, "_poll_active_jobs", side_effect=grab_poll),
+            patch.object(self.agent, "recovery_probe_pass", side_effect=grab_probe),
+            patch.object(self.agent, "reconcile_pass", side_effect=grab_reconcile),
+        ):
+            started = self.clock.now
+            self.agent.tracking_pass("http://server", "tok", "hf")
+
+        self.assertEqual(set(seen), {"direct", "recovery", "reconcile"})
+        for name, value in seen.items():
+            self.assertIsNotNone(value, f"{name} 가 예산을 못 받았다")
+        # 복구와 재조정은 같은 패스 시한을 본다
+        self.assertEqual(seen["recovery"], seen["reconcile"])
+        # 직접 확인은 그보다 이르다 — 나머지가 재조정 몫이다
+        self.assertLess(seen["direct"], seen["reconcile"])
+        budget = self.agent._TRACK_PASS_BUDGET_SECONDS
+        self.assertAlmostEqual(seen["reconcile"] - started, budget, places=6)
+        self.assertAlmostEqual(
+            seen["direct"] - started, budget * self.agent._DIRECT_CHECK_BUDGET_SHARE, places=6
+        )
+
+
 class ReconcileBackoffTests(unittest.TestCase):
     """서버가 준 '확인중' 후보를 백오프 없이 매 사이클 전량 재조회하던 것.
 

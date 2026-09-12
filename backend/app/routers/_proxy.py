@@ -640,7 +640,15 @@ async def data_proxy_middleware(request: Request, call_next):
         )
     )
     try:
-        if proxying():
+        # ★위임 여부 판정을 **스레드에서** 한다(2026-09-12). `proxying()` 은 설정을 DB 에서
+        #  읽는데, 그 경로가 유지보수 게이트(`db.py` 의 `_enter_connection_context`)에 닿는다.
+        #  거기 `_pool_condition.wait()` 는 **시한 없는 동기 대기**라, DB 복원·이관 중이면
+        #  이 요청만이 아니라 **이벤트 루프 위의 모든 요청이 선다**(코덱스 지적).
+        #  정상 조회는 실측 0.189ms 로 싸다 — 여기서 옮기는 것은 그 비용 때문이 아니라
+        #  **막히는 동안 서버가 응답을 이어 가게** 하기 위해서다.
+        #  ★서버 본체(AUTH on)는 `proxying()` 이 DB 를 보기 전에 짧게 끝난다 — 이 스레드 왕복은
+        #   사실상 로컬 허브에서만 일어난다.
+        if await asyncio.to_thread(proxying):
             # `/media`와 `/api/media-thumb`는 원래 로컬 경로다. 다만 서버 보존본만 있고 이 PC에는
             # 없을 때는 인증 토큰을 숨긴 채 공유 서버에서 중계한다.
             if _needs_shared_media_fallback(request):

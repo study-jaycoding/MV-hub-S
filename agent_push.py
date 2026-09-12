@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import hashlib
 import json
@@ -818,8 +819,16 @@ def _matches_submission_fingerprint(request: dict, job: dict) -> bool:
     return True
 
 
-def recovery_probe_pass(server: str, token: str, cli: str) -> int:
-    """모호한 제출을 최신 목록에서 읽기만 해 찾고, 유일 후보만 기존 placeholder에 앵커한다."""
+def recovery_probe_pass(
+    server: str, token: str, cli: str, budget_end: float | None = None
+) -> int:
+    """모호한 제출을 최신 목록에서 읽기만 해 찾고, 유일 후보만 기존 placeholder에 앵커한다.
+
+    ★예산이 없으면 **아무것도 시작하지 않고 돌아간다**(2026-09-12). 이 경로는 제출이 job_id 를
+     잃었을 때만 도는 드문 복구지만, 그 실행 시간만큼 뒤의 재조정 예산이 줄어든다.
+    """
+    if not _budget_allows(budget_end):
+        return 0
     status, data = _list_recovery_probes(server, token)
     requests = data.get("requests") if status == 200 and isinstance(data, dict) else None
     if not isinstance(requests, list) or not requests:
@@ -1534,6 +1543,25 @@ _TXN_MAX_PAGES = 5
 _TXN_OVERLAP_SECONDS = 6 * 3600
 
 
+
+@contextlib.contextmanager
+def _state_db():
+    """에이전트 상태 DB 를 열고 **반드시 닫는다**.
+
+    ★`with sqlite3.Connection` 은 트랜잭션만 끝내고 **연결은 닫지 않는다**(코덱스 지적).
+     이 함수는 한 사이클에 여러 번 불린다(유휴 2회 이상, 추적 8건이면 10회 이상 —
+     실측 `_state_connect` 1회 1.24ms) 이라 핸들이 계속 쌓인다.
+     커밋/롤백 계약은 그대로 둔다(안쪽 `with conn` 이 정상이면 커밋, 예외면 롤백).
+     ★연결 캐시·DDL 최적화는 하지 않는다 — 사이클당 12ms 는 작고, `synchronous=FULL`
+      내구성을 유지한 채로 재는 것이 먼저다(회의록 판정: 명시적 종료만).
+    """
+    conn = _state_connect()
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
 def _txn_epoch(iso) -> float | None:
     """거래 시각 → epoch. ★문자열 비교를 쓰면 안 된다 — `12:00:00.5Z` 가 `12:00:00Z` 보다
     문자열로는 **작다**('.' < 'Z'). 오프셋이 섞이면 시간 단위로도 뒤집힌다(코덱스 P2)."""
@@ -1562,7 +1590,7 @@ def _load_txn_marks(server: str, account_email: str | None) -> dict[str, dict]:
     같은 앞부분만 되풀이하고 뒤쪽은 영영 안 읽힌다(코덱스 P1)."""
     server_key, email = _state_scope(server, account_email)
     try:
-        with _outbox_lock, _state_connect() as conn:
+        with _outbox_lock, _state_db() as conn:
             rows = conn.execute(
                 "SELECT workspace_id, newest_seen, pending_cursor, pending_newest FROM txn_scan "
                 "WHERE server_key=? AND account_email=?",
@@ -1587,7 +1615,7 @@ def _save_txn_marks(server: str, account_email: str | None, marks: dict[str, dic
     server_key, email = _state_scope(server, account_email)
     now = time.time()
     try:
-        with _outbox_lock, _state_connect() as conn:
+        with _outbox_lock, _state_db() as conn:
             conn.executemany(
                 "INSERT INTO txn_scan(server_key, account_email, workspace_id, newest_seen, "
                 "pending_cursor, pending_newest, updated_at) VALUES(?,?,?,?,?,?,?) "
@@ -1736,7 +1764,7 @@ def _collect_workspace_transactions(
 
 
 def _agent_instance_id() -> str:
-    with _outbox_lock, _state_connect() as conn:
+    with _outbox_lock, _state_db() as conn:
         row = conn.execute("SELECT value FROM meta WHERE key='device_id'").fetchone()
         device_id = row["value"] if row else str(uuid.uuid4())
         if not row:
@@ -1771,7 +1799,7 @@ def _acquire_account_mutex(account_email: str) -> bool:
 
 def _outbox_load(server: str, account_email: str | None) -> list[dict]:
     server_key, account = _state_scope(server, account_email)
-    with _outbox_lock, _state_connect() as conn:
+    with _outbox_lock, _state_db() as conn:
         return [
             dict(row)
             for row in conn.execute(
@@ -1785,7 +1813,7 @@ def _outbox_load(server: str, account_email: str | None) -> list[dict]:
 def _outbox_add(server: str, account_email: str | None, rid: str, job_id: str) -> None:
     server_key, account = _state_scope(server, account_email)
     with _outbox_lock:
-        with _state_connect() as conn:
+        with _state_db() as conn:
             conn.execute(
                 "INSERT INTO anchor_outbox(server_key,account_email,rid,job_id,updated_at) "
                 "VALUES(?,?,?,?,?) ON CONFLICT(server_key,account_email,rid) DO UPDATE SET "
@@ -1797,7 +1825,7 @@ def _outbox_add(server: str, account_email: str | None, rid: str, job_id: str) -
 def _outbox_remove(server: str, account_email: str | None, rid: str) -> None:
     server_key, account = _state_scope(server, account_email)
     with _outbox_lock:
-        with _state_connect() as conn:
+        with _state_db() as conn:
             conn.execute(
                 "DELETE FROM anchor_outbox WHERE server_key=? AND account_email=? AND rid=?",
                 (server_key, account, rid),
@@ -1810,7 +1838,7 @@ def _tracked_save(server: str, account_email: str | None, tracked: dict) -> None
     mono = time.monotonic()
     next_wall = now_wall + max(0.0, tracked.get("next_direct_check", mono) - mono)
     deadline_wall = now_wall + max(1.0, tracked.get("deadline", mono + 3600) - mono)
-    with _outbox_lock, _state_connect() as conn:
+    with _outbox_lock, _state_db() as conn:
         conn.execute(
             "INSERT INTO tracked_job(server_key,account_email,rid,job_id,expected_image_inputs,"
             "provider_status,check_failures,next_check_at,deadline_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) "
@@ -1837,7 +1865,7 @@ def _tracked_load(server: str, account_email: str | None) -> dict[str, dict]:
     server_key, account = _state_scope(server, account_email)
     now_wall = time.time()
     mono = time.monotonic()
-    with _outbox_lock, _state_connect() as conn:
+    with _outbox_lock, _state_db() as conn:
         rows = conn.execute(
             "SELECT * FROM tracked_job WHERE server_key=? AND account_email=? ORDER BY next_check_at",
             (server_key, account),
@@ -1858,7 +1886,7 @@ def _tracked_load(server: str, account_email: str | None) -> dict[str, dict]:
 
 def _tracked_remove(server: str, account_email: str | None, job_id: str) -> None:
     server_key, account = _state_scope(server, account_email)
-    with _outbox_lock, _state_connect() as conn:
+    with _outbox_lock, _state_db() as conn:
         conn.execute(
             "DELETE FROM tracked_job WHERE server_key=? AND account_email=? AND job_id=?",
             (server_key, account, job_id),
@@ -1923,18 +1951,33 @@ def _anchor_with_retry(
     return False
 
 
-def replay_outbox(server: str, token: str, account_email: str | None) -> None:
+def replay_outbox(
+    server: str, token: str, account_email: str | None, budget_end: float | None = None
+) -> None:
     """지난번 크래시/순단으로 서버에 못 닿은 job_id 앵커를 재전송 — 재조정 패스 초에 매번 돈다(idle 포함).
-    재시작 복구이므로 '확인중'으로 앵커(verifying=True). 성공분은 outbox 에서 제거."""
+    재시작 복구이므로 '확인중'으로 앵커(verifying=True). 성공분은 outbox 에서 제거.
+
+    ★예산이 다 되면 **남은 것을 그대로 두고 멈춘다**(2026-09-12). outbox 는 원래 'ACK 못 받은 것을
+     보관해 다음에 재시도' 하는 구조라, 못 보낸 항목이 남는 것이 이 경로의 정상 계약이다.
+     서버도 job_id 를 잃은 요청을 자동 재큐잉하지 않고 `recovery_required` 로 격리한다 —
+     제한된 지연이 곧 재생성·중복 과금이 되지 않는다(코덱스 확인).
+    """
     items = _outbox_load(server, account_email)
     if not items:
         return
     print(f"[복구] 미전송 앵커 {len(items)}건 재전송")
+    sent = 0
     for it in items:
         if not isinstance(it, dict):
             continue
+        if not _budget_allows(budget_end):
+            print(f"  … 예산 소진 — {len(items) - sent}건은 outbox 에 남겨 다음 패스에서 재전송")
+            break
         rid, job_id = it.get("rid"), it.get("job_id")
-        if rid and job_id and _anchor(server, token, rid, job_id, verifying=True):
+        if not (rid and job_id):
+            continue
+        sent += 1
+        if _anchor(server, token, rid, job_id, verifying=True):
             _outbox_remove(server, account_email, rid)
 
 
@@ -2230,6 +2273,16 @@ _DIRECT_CHECK_BUDGET_SECONDS = float(_env_int("MVHUB_CLI_TRACK_BUDGET", 10, 3, 6
 _DIRECT_CHECK_TIMEOUT_SECONDS = 15.0
 # 이보다 적게 남았으면 새 조회를 시작하지 않는다 — 인위적인 timeout 을 만들지 않는다.
 _DIRECT_CHECK_MIN_SLICE_SECONDS = 1.0
+
+
+def _budget_allows(budget_end: float | None) -> bool:
+    """이 예산으로 **새 호출을 시작해도 되나.**
+
+    ★계약(이 파일 전체에 같게 적용): 예산은 **시작할지**만 가르고, 시작한 호출은 정상 timeout 을
+     온전히 받는다. 남은 예산으로 timeout 을 자르면 끝낼 수 없는 시간만 주고 실패한다.
+     그래서 한 패스는 예산 + **마지막으로 시작한 호출 1건**만큼 넘을 수 있다.
+    """
+    return budget_end is None or (budget_end - time.monotonic()) >= _DIRECT_CHECK_MIN_SLICE_SECONDS
 
 # 재조정(서버가 준 '확인중' 후보) 재시도 간격 — **프로세스 메모리**.
 # ★왜(2026-09-12): 서버는 매 사이클 같은 후보 목록을 준다. 조회가 실패하면 다음 사이클에 또
@@ -2968,7 +3021,11 @@ def reconcile_pass(
     조회(get)만 → 재생성·과금 없음. 실패는 조용히 넘겨 다음 사이클에 재시도(루프 유지)."""
     # 지난번 크래시/순단으로 서버에 못 닿은 job_id 앵커를 먼저 재전송 — 앵커돼야 아래 후보에 잡힌다.
     account_email = account_email or _cycle_account_email(cli)
-    replay_outbox(server, token, account_email)
+    replay_outbox(server, token, account_email, budget_end)
+    # ★후보 조회 HTTP 는 **예산이 없어도 한 번은 한다.** 이걸 막으면 아래 '한 패스 최소 1건'
+    #  보장이 무력해져 재조정이 영영 0회가 된다(직접 확인이 예산을 다 쓰는 상황이 바로 그 경우다).
+    #  대신 진입부에서 여러 번 도는 `replay_outbox` 는 위에서 예산으로 자른다 — 그쪽은
+    #  못 보낸 항목을 보관해 다음에 재시도하는 것이 원래 계약이라 잘라도 잃는 게 없다.
     st, data = _list_reconcile_candidates(server, token)
     if st != 200 or not isinstance(data, dict):
         return
@@ -3045,10 +3102,9 @@ def tracking_pass(server: str, token: str, cli: str) -> int:
     active = _runtime_active(server, account_email)
     # ★한 패스가 쓰는 시간을 **여기서 한 번** 정해 직접 확인과 재조정이 나눠 쓰게 한다.
     #  각자 예산을 새로 가지면 패스 전체는 제한되지 않는다(코덱스 지적).
-    #  `recovery_probe_pass` 는 예산으로 **자르지 않는다**(제출이 job_id 를 잃었을 때만 도는
-    #  드문 복구 경로다). 다만 **예산 계산에서 빠진 것은 아니다** — 그 사이에 끼어 있어
-    #  실행 시간만큼 아래 재조정의 남은 예산이 줄어든다. 같은 이유로 `replay_outbox` 와
-    #  후보 조회 HTTP 도 예산 밖이라, **패스 전체 응답 시간은 아직 제한되지 않는다**(남은 항목).
+    #  ★이제 `recovery_probe_pass`·`replay_outbox`·후보 조회 HTTP 도 **같은 예산을 나눠 쓴다**
+    #   (2026-09-12). 예산은 **새 호출을 시작할지**만 가르므로, 한 패스는 예산 +
+    #   마지막으로 시작한 호출 1건만큼 넘을 수 있다. ACK HTTP 기본 60초는 그 위에 붙는다.
     pass_start = time.monotonic()
     budget_end = pass_start + _TRACK_PASS_BUDGET_SECONDS
     # ★직접 확인에 예산의 일부만 준다. 전부 주면 활성 잡이 많을 때 재조정이 **0회**가 된다
@@ -3060,7 +3116,7 @@ def tracking_pass(server: str, token: str, cli: str) -> int:
         else 0
     )
     # job_id를 잃은 제출은 create를 다시 부르지 않고 최신 list 지문 대조만 수행한다.
-    recovery_probe_pass(server, token, cli)
+    recovery_probe_pass(server, token, cli, budget_end)
     reconcile_pass(
         server, token, cli, account_email, skip_job_ids=set(active), budget_end=budget_end
     )
