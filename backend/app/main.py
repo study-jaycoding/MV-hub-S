@@ -35,6 +35,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import active_account, repo
+from .list_gzip import ListGzipMiddleware
 from .config import (
     ALLOW_REMOTE_AUTH_OFF,
     AUTH_ENABLED,
@@ -872,6 +873,11 @@ async def mutation_notify(request: Request, call_next):
 @app.middleware("http")
 async def data_proxy(request: Request, call_next):
     return await _proxy.data_proxy_middleware(request, call_next)
+
+
+# 생성물 목록만 gzip — data_proxy **바깥**에 둬야 위임 모드(팀 목록)의 응답까지 압축된다.
+# 실측 1,664,434 B → 85,501 B(5.1%). 경로·메서드를 좁혀 미디어·스트리밍·Range 에는 닿지 않는다.
+app.add_middleware(ListGzipMiddleware)
 
 
 # multipart 파싱·로컬→공유서버 프록시가 본문을 읽기 전에 전체 바이트 상한을 강제한다.

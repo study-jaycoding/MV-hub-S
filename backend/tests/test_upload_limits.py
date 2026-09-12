@@ -252,15 +252,33 @@ def test_every_upload_route_has_a_positive_request_limit() -> None:
     assert all(value > 0 for value in upload_limits.UPLOAD_REQUEST_LIMITS.values())
 
 
-def test_main_middleware_limits_before_proxy_and_inside_observation() -> None:
+def _middleware_order() -> list[str]:
+    """바깥→안쪽 순서의 미들웨어 이름. 함수형(`@app.middleware`)과 클래스형을 함께 다룬다."""
     from app.main import app
 
-    classes = [item.cls for item in app.user_middleware]
-    limit_index = classes.index(upload_limits.UploadBodyLimitMiddleware)
-    assert limit_index == 2
-    assert app.user_middleware[0].kwargs["dispatch"].__name__ == "runtime_observation"
-    assert app.user_middleware[1].kwargs["dispatch"].__name__ == "auth_off_remote_guard"
-    assert app.user_middleware[limit_index + 1].kwargs["dispatch"].__name__ == "data_proxy"
+    names = []
+    for item in app.user_middleware:
+        dispatch = item.kwargs.get("dispatch")
+        names.append(dispatch.__name__ if dispatch is not None else item.cls.__name__)
+    return names
+
+
+def test_main_middleware_limits_before_proxy_and_inside_observation() -> None:
+    """계약은 **상대 순서**다 — 인접이 아니다(2026-09-12 에 목록 gzip 이 사이에 들어왔다).
+
+    · `runtime_observation` 이 가장 바깥 — 인증 거부·프록시 단락까지 센다.
+    · `auth_off_remote_guard` 가 그다음 — 프록시가 데이터를 서버로 단락시키기 **전에** 막는다.
+    · `UploadBodyLimit` 이 `data_proxy` **보다 바깥** — 프록시가 본문을 읽기 전에 상한을 건다.
+    · `ListGzipMiddleware` 도 `data_proxy` 보다 바깥 — 그래야 위임 모드(팀 목록) 응답도 압축된다.
+    """
+    order = _middleware_order()
+    assert order[0] == "runtime_observation"
+    assert order[1] == "auth_off_remote_guard"
+    for name in ("UploadBodyLimitMiddleware", "ListGzipMiddleware", "data_proxy"):
+        assert name in order, f"{name} 이 미들웨어 스택에 없다: {order}"
+    assert order.index("UploadBodyLimitMiddleware") < order.index("data_proxy")
+    assert order.index("ListGzipMiddleware") < order.index("data_proxy")
+    assert order.index("auth_off_remote_guard") < order.index("UploadBodyLimitMiddleware")
 
 
 def test_assets_total_limit_rejects_before_any_file_is_saved(monkeypatch) -> None:
