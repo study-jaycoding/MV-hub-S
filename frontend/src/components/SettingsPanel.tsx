@@ -3,7 +3,7 @@
 //  · 언어 한글/English (선택 영속 — 전체 번역은 단계 적용)
 //  · 단축키(변경은 별도 플로팅 창 ShortcutsWindow)
 //  · 생성물 점검(HF 최신분 동기화·삭제물 확인) + 100건 밖 과거 전체 MCP 백필
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   loadAccent,
   loadLang,
@@ -152,6 +152,14 @@ export function SettingsPanel({
     api.historyImportStatus().then(setHistoryImport).catch(() => {});
   }, []);
 
+  // ★폴 사슬은 `historyImport.state` 가 바뀔 때만 다시 만든다(2026-09-12, C-17).
+  //  종전에는 `onImported` 도 의존성이었는데 그건 `App.tsx:1644` 가 넘기는 **인라인 화살표**라
+  //  App 이 렌더될 때마다 식별자가 바뀐다. 그때마다 사슬이 끊기고 600ms 뒤부터 다시 시작하므로,
+  //  임포트 중 App 이 600ms 보다 자주 렌더되면 상태 조회가 **한 번도 못 나가** 진행률이 멈춘다.
+  //  (임포트는 생성물을 넣어 라이브러리 갱신을 일으키므로 그 렌더가 실제로 잦은 구간이다.)
+  //  같은 파일 아래의 릴리스 폴은 의존성이 불리언 하나뿐이라 이 문제가 없다 — 건드리지 않았다.
+  const onImportedRef = useRef(onImported);
+  onImportedRef.current = onImported;
   useEffect(() => {
     if (historyImport?.state !== "running") return;
     let cancelled = false;
@@ -162,7 +170,7 @@ export function SettingsPanel({
         if (cancelled) return;
         setHistoryImport(status);
         if (status.state === "complete") {
-          onImported?.(
+          onImportedRef.current?.(
             `과거 생성물 확인 완료 · 신규 ${status.inserted} · 갱신 ${status.updated} · 기존 ${status.unchanged}`,
           );
           return;
@@ -178,7 +186,7 @@ export function SettingsPanel({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [historyImport?.state, onImported]);
+  }, [historyImport?.state]);
 
   useEffect(() => {
     if (!releaseUpdatePolling) return;
