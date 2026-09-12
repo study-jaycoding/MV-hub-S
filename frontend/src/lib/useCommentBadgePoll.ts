@@ -2,6 +2,11 @@ import { useEffect, useRef } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { api } from "../api";
 import type { Generation } from "../types";
+import {
+  commentBadgeTargets,
+  decideCommentBadgeUpdate,
+  type PanelSeen,
+} from "./commentBadgeTargets";
 
 interface UseCommentBadgePollArgs {
   generations: Generation[];
@@ -9,6 +14,11 @@ interface UseCommentBadgePollArgs {
   // 새 미확인 코멘트가 감지되면 호출 — 열린 코멘트 패널을 즉시 갱신시키는 신호(syncTick bump).
   onNewUnread?: () => void;
   intervalMs?: number;
+  // 라이브러리 격자가 실제로 떠 있나. 캔버스에서 '폴더 보기' 를 닫아 두면 배지를 그릴 곳이 없다.
+  // ★탭으로 판단하면 안 된다 — 캔버스의 '폴더 보기' 도 같은 격자를 쓴다(코덱스 지적).
+  gridVisible?: boolean;
+  // 열린 코멘트 패널의 생성물. 목록에 없어도(알림에서 연 경우) 새 코멘트를 잡아야 한다.
+  openCommentGenId?: string | null;
 }
 
 // 팀 코멘트 실시간 반영: 화면에 떠 있는 '공유 카드'들의 코멘트 배지(수·미확인)만 짧은 주기로
@@ -19,47 +29,52 @@ export function useCommentBadgePoll({
   setGens,
   onNewUnread,
   intervalMs = 10000,
+  gridVisible = true,
+  openCommentGenId = null,
 }: UseCommentBadgePollArgs) {
   // 최신 값을 ref 로 참조해 인터벌을 매번 재설정하지 않는다.
   const gensRef = useRef(generations);
   gensRef.current = generations;
   const onNewUnreadRef = useRef(onNewUnread);
   onNewUnreadRef.current = onNewUnread;
+  const panelIdRef = useRef(openCommentGenId);
+  panelIdRef.current = openCommentGenId;
+  // 패널 대상의 직전 배지 값 — 목록에 없는 생성물의 변화를 이걸로 판정한다.
+  const panelSeenRef = useRef<PanelSeen | null>(null);
 
   useEffect(() => {
+    // 격자가 없으면 배지를 그릴 곳도 없다 — 물어볼 이유가 없다.
+    if (!gridVisible) return;
     let inflight = false;
     const tick = async () => {
       // 창이 안 보이면 쉰다(복귀 시 기존 visibilitychange reload 가 목록을 채운다).
       if (inflight || document.visibilityState === "hidden") return;
-      // 공유 카드(서버에 코멘트 스레드가 있는 카드)만 대상 — 로컬 전용 카드는 즉시 반영되므로 제외.
       // 스냅샷을 잡아 await 전후로 목록이 바뀌었는지 비교한다(아래 stale 방어).
       const snapshot = gensRef.current;
-      const shared = snapshot.filter((g) => g.shared);
-      if (shared.length === 0) return;
+      const panelId = panelIdRef.current;
+      const ids = commentBadgeTargets(snapshot, panelId);
+      if (ids.length === 0) return;
       inflight = true;
       try {
-        const counts = await api.commentCounts(shared.map((g) => g.id));
+        const counts = await api.commentCounts(ids);
+        const decision = decideCommentBadgeUpdate(
+          snapshot,
+          counts,
+          panelId,
+          panelSeenRef.current,
+        );
+        // 패널 판정은 목록과 무관하다 — 목록이 그사이 바뀌었어도 열린 패널은 갱신해야 한다.
+        if (panelId === panelIdRef.current) panelSeenRef.current = decision.nextPanelSeen;
+        if (decision.notifyPanel) onNewUnreadRef.current?.();
         // await 도중 목록이 갱신됐으면(15초 전체 리로드 등) 이 폴링 결과는 낡았을 수 있으니 버린다.
         // 최신 데이터를 stale 값으로 되돌리지 않도록 — 다음 주기에 다시 맞춘다.
-        if (gensRef.current !== snapshot) return;
-        // 변화 여부를 스냅샷 기준으로 먼저 판정(불필요한 리렌더·잘못된 side effect 방지).
-        let anyChange = false;
-        let notifyPanel = false;
-        for (const g of shared) {
-          const c = counts[g.id];
-          if (!c) continue;
-          if (c.has_unread !== g.has_unread || c.comment_count !== g.comment_count) anyChange = true;
-          // 새 코멘트가 온 카드(미확인 전환 또는 코멘트 수 증가) → 열린 패널을 새로고침.
-          if ((c.has_unread && !g.has_unread) || c.comment_count > g.comment_count) notifyPanel = true;
-        }
-        if (!anyChange) return;
+        if (gensRef.current !== snapshot || !decision.anyChange) return;
         setGens((prev) =>
           prev.map((g) => {
             const c = counts[g.id];
             return c ? { ...g, has_unread: c.has_unread, comment_count: c.comment_count } : g;
           }),
         );
-        if (notifyPanel) onNewUnreadRef.current?.();
       } catch {
         // 비핵심 보강 — 실패는 조용히 무시하고 다음 주기에 재시도.
       } finally {
@@ -68,5 +83,5 @@ export function useCommentBadgePoll({
     };
     const id = window.setInterval(tick, intervalMs);
     return () => window.clearInterval(id);
-  }, [intervalMs, setGens]);
+  }, [intervalMs, setGens, gridVisible]);
 }

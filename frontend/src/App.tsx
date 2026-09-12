@@ -583,11 +583,15 @@ export default function App() {
   // 진행중 잡·팀 탭 폴링 + 탭 재포커스 새로고침.
   useGenerationAutoRefresh({ generations: gens, tab: filters.tab, reload });
 
-  // 코멘트 배지 실시간 갱신: 공유 카드의 미확인 여부만 가볍게 주기 조회해 제자리 갱신(전 탭).
+  // 코멘트 배지 실시간 갱신: 공유 카드의 미확인 여부만 가볍게 주기 조회해 제자리 갱신.
   // 새 미확인이 잡히면 syncTick 을 올려 열린 코멘트 패널도 즉시 새로고침.
+  // ★격자가 실제로 떠 있을 때만 돈다 — 캔버스는 '폴더 보기' 를 열었을 때만 같은 격자를 쓴다.
+  //  탭으로 판단하면 그 폴더 보기가 빠진다(2026-09-12).
   useCommentBadgePoll({
     generations: gens,
     setGens,
+    gridVisible: filters.tab !== "compose" || folderPeek,
+    openCommentGenId: commentGenId,
     onNewUnread: () => {
       setSyncTick((t) => t + 1);
       void reload(true, true); // 공유 카드 폴링이 새 코멘트를 잡으면 전역 벨 stats도 같은 값으로 갱신
