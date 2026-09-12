@@ -629,11 +629,38 @@ async def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)
     )
 
 
+def _strip_list_prompt(rows):
+    """목록 응답에서만 `params.prompt` 를 뺀다(2026-09-12, C-1).
+
+    ★왜: 실측 `/api/generations?limit=200` 이 3.38MB 인데 그중 **26.3%·896KB** 가
+     `row.prompt` 와 같은 값의 중복이었다. 팀 탭은 이 목록을 **15초마다** 다시 받는다.
+     조건부 요청도 못 쓴다 — 이 엔드포인트에는 ETag 가 없다(관리 쪽 `manage.py` 에는 있다).
+
+    ★**여기서만** 뺀다. 상세·히스토리·재생성·번들·동기화는 그대로다.
+     레시피(씬 탭으로 '어떻게 만들었나' 열기)는 이미 받는 히스토리 응답의 온전한
+     `target.params` 를 쓰도록 프론트를 함께 고쳤다 — 추가 요청이 없다.
+
+    ★`params` 자체는 새 dict 로 바꿔 담는다 — 원본 dict 를 지우면 그것을 공유하는 다른
+     경로가 함께 상한다. `params: null` 과 `prompt` 가 없는 경우는 그대로 둔다.
+    """
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        params = row.get("params")
+        if isinstance(params, dict) and "prompt" in params:
+            row["params"] = {k: v for k, v in params.items() if k != "prompt"}
+    return rows
+
+
 @router.get("/generations", response_model=list[GenerationOut])
 def list_generations(
     request: Request,
     background: BackgroundTasks,
     tab: str = Query("my", pattern="^(my|team)$"),
+    # ★클라이언트가 **명시적으로 요청할 때만** `params.prompt` 를 뺀다(C-1).
+    #  옛 프론트는 이 인자를 안 보내고, 그 프론트는 아직 **목록 행**으로 레시피를 만든다 —
+    #  기본값으로 빼면 공존 기간에 옛 화면의 레시피가 프롬프트를 잃는다(코덱스 조건).
+    lean_params: int = Query(0, ge=0, le=1),
     worker_id: Optional[str] = None,
     color: Optional[str] = None,
     tag: Optional[str] = None,
@@ -673,7 +700,7 @@ def list_generations(
         # 원격 이미지·영상 포스터는 목록을 받은 직후 작은 JPEG로 미리 준비한다.
         # 실제 원본 영상은 대상에 넣지 않으며, 캐시는 상한을 넘으면 오래된 것부터 정리된다.
         _schedule_remote_thumb_prewarm(background, data)
-        return data
+        return _strip_list_prompt(data) if lean_params else data
     # 로그인 계정이면 그 계정의 생성자 uid 로 '내 작업'을 한정(계정별 분리). 비로그인은 전체.
     account_uid = _account_uid(request)
     # Team 탭: 내가 멤버인 프로젝트의 공유물만(read_all=admin/PM/PD 와 단독 모드는 전체).
@@ -762,7 +789,7 @@ def list_generations(
                         )
                         g["has_unread"] = c.get("has_unread", g.get("has_unread"))
     _schedule_remote_thumb_prewarm(background, result)
-    return result
+    return _strip_list_prompt(result) if lean_params else result
 
 
 @router.get("/generations-stats")

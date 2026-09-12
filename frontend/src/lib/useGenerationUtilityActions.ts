@@ -35,7 +35,12 @@ export function useGenerationUtilityActions({
   const onShowHistory = async (g: Generation) => {
     try {
       const history = await api.history(g.id);
-      openRecipe(g, history);
+      // ★레시피 옵션은 **히스토리 응답의 온전한 params** 로 만든다(2026-09-12, C-1).
+      //  목록 행의 `params` 는 프롬프트가 빠진 축약본일 수 있다 — 목록은 같은 값을 `prompt`
+      //  필드로 이미 싣고 있어 서버가 중복분을 뺀다(실측 목록의 26.3%·896KB).
+      //  히스토리는 이미 받고 있으므로 **추가 요청이 없다**. `?? g.params` 같은 대체는 넣지 않는다 —
+      //  `null` 도 유효한 원본 값이라 대체하면 없던 값을 만들어 낸다(코덱스 조건).
+      openRecipe({ ...g, params: history.target.params }, history);
     } catch (e) {
       flash("히스토리 조회 실패: " + String(e));
     }

@@ -307,10 +307,13 @@ function putGenComments(genId: string, comments: import("./types").GenComment[])
 export const api = {
   // 한 페이지(커서 뒤 limit개)만 받아온다. 무한 스크롤이 호출. cursor=null 이면 첫 페이지.
   // 서버가 모든 필터를 거르므로 반환된 페이지가 곧 화면에 그릴 정확한 결과.
+  // `lean_params=1` — 목록 응답에서 `params.prompt` 를 빼 달라는 **명시적 요청**(C-1).
+  //  같은 값이 `prompt` 필드로 이미 오고, 목록의 26.3%(실측 896KB)가 그 중복이었다.
+  //  ★옛 프론트는 이 인자를 안 보내므로 서버가 축약하지 않는다 — 공존 기간에 레시피가 상하지 않는다.
   listGenerations: (query: GenQuery, cursor: GenCursor | null = null, limit = GEN_PAGE) =>
-    jsonFetch<Generation[]>(`/api/generations?${buildQuery(query, cursor, limit)}`).then(
-      normalizeGenerations,
-    ),
+    jsonFetch<Generation[]>(
+      `/api/generations?${buildQuery(query, cursor, limit)}&lean_params=1`,
+    ).then(normalizeGenerations),
 
   // 패널 파생값(내 실패 수·미확인 코멘트) — 클라이언트 전량 집계 대체.
   generationStats: () => jsonFetch<GenStats>("/api/generations-stats"),
