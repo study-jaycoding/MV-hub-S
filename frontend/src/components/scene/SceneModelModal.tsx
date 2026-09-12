@@ -19,7 +19,18 @@ export function SceneModelModal({
 }) {
   // 그룹 사용 모델 — 목록에서 빼고, 저장돼 있던 모델을 못 쓰면 안내 뒤 새 모델을 고른 뒤에만 저장(자동 교체 금지).
   const policy = useModelPolicy();
-  const m = useModels(() => {}, { allowed: policy.allowed, ready: policy.status !== "loading" }); // 로드 실패는 조용히(모달이라 별도 토스트 불필요)
+  // ★복원값을 **초기 상태**로 넘긴다(2026-09-13). effect 로 나중에 넣으면 카탈로그 도착과 경쟁해
+  //  자동 선택이 복원한 모델을 덮었다(실측: 캐시 적중이면 3/3 재현, 캐시 만료면 3/3 정상).
+  // ★타입은 **모델 키를 먼저** 믿는다 — 저장된 `type` 이 없거나(레시피가 안 넣는다) 틀릴 수 있다.
+  const savedType =
+    initial?.type === "image" || initial?.type === "video" ? initial.type : undefined;
+  const m = useModels(() => {}, {
+    allowed: policy.allowed,
+    ready: policy.status !== "loading",
+    initialType: inferModelType(initial?.model) ?? savedType,
+    initialModel: initial?.model,
+    initialOpts: initial?.model ? stripHiddenParams(initial.params ?? {}) : undefined,
+  }); // 로드 실패는 조용히(모달이라 별도 토스트 불필요)
   const blockedNote = m.selectedBlocked ? submitBlockMessage(policy, m.model, m.modelName) : null;
   const [open, setOpen] = useState<string | null>(null);
 
@@ -29,27 +40,7 @@ export function SceneModelModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 저장된 설정 복원(mount 1회) — type/model 지정 + pendingOptsRef 로 params 로드 후 옵션 덮기.
-  // ★타입은 **모델 키를 먼저** 믿는다(2026-09-13). 저장된 `type` 이 없거나(레시피가 안 넣는다)
-  //  틀리면(`type:"image"` + 영상 모델) 훅의 기본 타입이 남고, 자동 선택이 그 모델을
-  //  **첫 이미지 모델로 갈아치운다** — 코덱스가 실제 화면에서 재현했다
-  //  (영상 레시피의 seedance_2_0_mini 가 Image/Nano Banana 2 로 열림).
-  // ★`setType` 과 `setModel` 은 **같은 동기 구간**에서 부른다. 타입만 먼저 바꾸고 모델을
-  //  다른 effect 로 미루면 그 사이에 자동 선택이 끼어든다.
-  // ★고치는 것은 **이 복원 지점뿐**이다. 공용 자동 선택 effect 를 건드리면 사용자가
-  //  탭을 눌러 타입을 바꾸는 것까지 되돌아간다(코덱스 반례).
-  useEffect(() => {
-    const savedType =
-      initial?.type === "image" || initial?.type === "video" ? initial.type : undefined;
-    const restoredType = inferModelType(initial?.model) ?? savedType;
-    if (restoredType) m.setType(restoredType);
-    if (initial?.model) {
-      // 저장분에 숨김 파라미터(is_inpaint 등)가 있어도 body 로 되살아나지 않게 필터(코덱스)
-      m.pendingOptsRef.current = { model: initial.model, opts: stripHiddenParams(initial.params ?? {}) };
-      m.setModel(initial.model);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // (복원은 위 `useModels` 초기값이 한다 — mount effect 로 넣던 것을 옮겼다.)
 
   // 저장해도 되는 상태인가 — 버튼의 `disabled` 와 `save()` **둘 다** 이걸 본다(코덱스 조건).
   //  종전엔 버튼에만 있어, 다른 경로로 눌리면 그대로 저장됐다.

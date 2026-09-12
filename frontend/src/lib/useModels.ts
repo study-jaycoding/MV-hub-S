@@ -318,21 +318,34 @@ export function useModels(
   onError: (msg: string) => void,
   // 그룹별 사용 모델 정책(modelPolicy). allowed 가 **비어 있으면 제한 없음**(전부 사용). ready=첫 조회가 끝남
   // (워밍 프리페치를 그 뒤로 미룬다).
-  policy?: { allowed: ReadonlySet<string>; ready: boolean },
+  policy?: {
+    allowed: ReadonlySet<string>;
+    ready: boolean;
+    // ★복원값은 **초기 상태**로 받는다(2026-09-13). effect 로 나중에 넣으면 카탈로그 도착과 경쟁한다 —
+    //  `setModel` 이 `explicitRef` 를 동기로 바꾸는 동안 `model` 상태는 아직 낡아 있어서,
+    //  그 틈에 도는 자동 선택이 낡은 값으로 판단해 **복원한 모델을 덮었다**(실측 로그로 확인).
+    //  마운트 때 이미 올바른 값이면 그 틈이 아예 없다. 안 넘기면 종전과 똑같다.
+    initialType?: "image" | "video";
+    initialModel?: string;
+    initialOpts?: Record<string, string | number | boolean>;
+  },
 ) {
   const [models, setModels] = useState<ModelInfo[]>([]);
-  const [type, setType] = useState<"image" | "video">("image");
-  const [model, setModelState] = useState("");
+  const [type, setType] = useState<"image" | "video">(policy?.initialType ?? "image");
+  const [model, setModelState] = useState(policy?.initialModel ?? "");
   const allowed = policy?.allowed ?? EMPTY_MODEL_SET;
   const policyReady = policy ? policy.ready : true;
   // 이 모델이 지금 그룹에서 막혔는가 — 허용 목록이 비면 아무것도 막지 않는다.
   const blocked = (jt: string) => allowed.size > 0 && !allowed.has(jt);
   // 지금 model 을 누가 골랐나 — true=사용자·복원(재사용·씬 바인딩·모델 노드)이 명시적으로, false=훅이 자동으로.
   // 명시 선택은 나중에 못 쓰게 돼도 바꾸지 않는다(selectedBlocked 로 알리고 제출만 막는다 — Jay). 자동 선택은 다시 고른다.
-  const explicitRef = useRef(false);
+  // 복원값을 받았으면 **처음부터 명시 선택**이다 — 자동 선택이 갈아치우지 못하게.
+  const explicitRef = useRef(!!policy?.initialModel);
   // explicit=false 로 부르면 '자동 대체'(예: 지원 목록 밖 모델을 재사용할 때의 폴백)라 나중에 정책이 바뀌면 다시 고른다.
   const setModel = useCallback((m: string, explicit = true) => {
     explicitRef.current = explicit;
+    // 다른 모델로 옮기면 복원 대기 옵션은 버린다 — 나중에 원래 모델로 돌아와도 되살아나지 않게.
+    if (pendingOptsRef.current && pendingOptsRef.current.model !== m) pendingOptsRef.current = null;
     setModelState(m);
   }, []);
   // 같은 모델로 복원하는 경로(setModel 이 no-op)도 선택 출처를 기록한다 — 명시 복원이면 true(제한돼도 안 바뀜),
@@ -380,7 +393,11 @@ export function useModels(
   const pendingOptsRef = useRef<{
     model: string;
     opts: Record<string, string | number | boolean>;
-  } | null>(null);
+  } | null>(
+    policy?.initialModel && policy?.initialOpts
+      ? { model: policy.initialModel, opts: policy.initialOpts }
+      : null,
+  );
   // 모델별 파라미터·cost 캐시는 모듈 스코프(paramsCache/costCache) — 위 정의 참고.
   // 드롭다운 닫기 브리지 — open/setOpen 은 컴포넌트 UI 상태로 남으므로,
   // setOpt 가 옵션 선택 후 드롭다운을 닫도록 컴포넌트가 setOpen 을 여기 등록한다.
@@ -446,7 +463,10 @@ export function useModels(
       const pend = pendingOptsRef.current;
       if (pend && pend.model === model) {
         setOptionValues({ ...init, ...pend.opts });
-        pendingOptsRef.current = null;
+        // ★여기서 **비우지 않는다**(코덱스 반례). StrictMode 는 effect 를 실행→정리→재실행하는데,
+        //  파라미터가 캐시 적중이면 두 번째 실행이 곧바로 다시 돈다. 그때 비어 있으면
+        //  **기본값만** 들어가 복원한 옵션이 사라진다. 같은 모델의 재적용은 결과가 같다(멱등).
+        //  비우는 것은 아래 `setModel` 이 **다른 모델로 옮길 때** 한다.
       } else {
         setOptionValues(init);
       }

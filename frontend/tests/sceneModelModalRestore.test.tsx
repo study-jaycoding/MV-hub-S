@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -38,8 +38,9 @@ vi.mock("../src/api", () => ({
     estimateCost: () => Promise.resolve({ credits: 1 }),
   },
 }));
+let allowedModels = new Set<string>();
 vi.mock("../src/lib/modelPolicy", () => ({
-  useModelPolicy: () => ({ status: "ready", ready: true, allowed: new Set<string>(), key: "k" }),
+  useModelPolicy: () => ({ status: "ready", ready: true, allowed: allowedModels, key: "k" }),
 }));
 
 let container: HTMLDivElement;
@@ -86,6 +87,18 @@ function button(label: string): HTMLButtonElement {
   return found as HTMLButtonElement;
 }
 
+/** 칩 버튼은 뒤에 `›` 가 붙는다 — 앞부분으로 찾는다. */
+function chip(label: string): HTMLButtonElement {
+  const found = [...container.querySelectorAll("button")].find((b) =>
+    (b.textContent || "").trim().startsWith(label),
+  );
+  if (!found) {
+    const all = [...container.querySelectorAll("button")].map((b) => (b.textContent || "").trim());
+    throw new Error(`'${label}' 칩을 못 찾았다: ${all.join(" | ")}`);
+  }
+  return found as HTMLButtonElement;
+}
+
 function click(el: Element) {
   act(() => {
     el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -94,6 +107,7 @@ function click(el: Element) {
 
 beforeEach(() => {
   saved = [];
+  allowedModels = new Set<string>(); // 빈 목록 = 제한 없음(그룹 정책 계약)
   modelParams.mockReset();
   modelParams.mockResolvedValue({ params: [], constraints: {} });
   container = document.createElement("div");
@@ -156,6 +170,109 @@ describe("씬 모델 노드 복원", () => {
     click(button("Image"));
     await settle();
     expect(shownModel()).toBe("Nano Banana 2"); // 사용자가 누른 탭이 이겼다
+  });
+});
+
+describe("★카탈로그 도착 타이밍과 StrictMode", () => {
+  // ★이 묶음이 실제 버그를 막는다. 실측 로그: `setModel` 은 `explicitRef` 를 **동기**로 바꾸고
+  //  `model` 상태는 나중에 반영된다 — 그 틈에 카탈로그가 도착하면 자동 선택이 **낡은 model** 로
+  //  판단해 복원한 모델을 덮었다(캐시 적중이면 3/3 재현). 이제 복원값은 **초기 상태**라 틈이 없다.
+
+  it("카탈로그가 이미 와 있어도(캐시 적중) 모델이 안 바뀐다", async () => {
+    // 한 번 띄워 모듈 캐시를 덥힌 뒤, 모듈을 **새로 들이지 않고** 다시 띄운다.
+    const { SceneModelModal } = await import("../src/components/scene/SceneModelModal");
+    const card = { type: "video", model: "seedance_2_0_mini", params: { resolution: "480p" } };
+    for (const pass of [1, 2]) {
+      act(() => {
+        root.render(
+          <SceneModelModal initial={card as never} onSave={() => {}} onClose={() => {}} />,
+        );
+      });
+      await settle();
+      expect(shownModel(), `${pass}번째 열기`).toBe("Seedance 2.0 Mini");
+      act(() => root.render(<div />)); // 취소
+      await settle();
+    }
+  });
+
+  it("★StrictMode + 파라미터 캐시 적중에서도 저장 옵션이 살아남는다", async () => {
+    // 코덱스 반례: 첫 적용에서 복원 옵션을 소비해 비우면, StrictMode 의 effect 재실행이
+    // **기본값만** 넣어 옵션이 사라진다. 모델·타입은 맞는데 옵션만 조용히 유실된다.
+    const { SceneModelModal } = await import("../src/components/scene/SceneModelModal");
+    modelParams.mockResolvedValue({
+      params: [{ name: "resolution", type: "enum", enum: ["480p", "720p"], default: "720p" }],
+      constraints: {},
+    });
+    const card = { type: "video", model: "seedance_2_0_mini", params: { resolution: "480p" } };
+    const render = () =>
+      act(() => {
+        root.render(
+          <StrictMode>
+            <SceneModelModal
+              initial={card as never}
+              onSave={(cfg) => saved.push(cfg as Record<string, unknown>)}
+              onClose={() => {}}
+            />
+          </StrictMode>,
+        );
+      });
+    render();
+    await settle();                 // 1회차 — 파라미터 캐시를 덥힌다
+    act(() => root.render(<div />));
+    await settle();
+    render();                        // 2회차 — 이번엔 캐시 적중 + StrictMode 재실행
+    await settle();
+
+    expect(shownModel()).toBe("Seedance 2.0 Mini");
+    click(button("저장"));
+    expect(saved).toHaveLength(1);
+    // ★기본값(720p)이 아니라 **저장돼 있던 480p** 가 나가야 한다
+    expect((saved[0] as { params: Record<string, unknown> }).params.resolution).toBe("480p");
+  });
+});
+
+describe("그룹 정책과 복원", () => {
+  it("★그룹에서 막힌 모델이어도 복원값은 유지하고 저장만 막는다", async () => {
+    // 기존 계약(`useModels.ts` 주석): "명시 선택은 나중에 못 쓰게 돼도 바꾸지 않는다 —
+    //  selectedBlocked 로 알리고 제출만 막는다". 복원도 명시 선택이다.
+    allowedModels = new Set(["seedance_2_5", "nano_banana_flash"]); // mini 가 빠졌다
+    await mount({ type: "video", model: "seedance_2_0_mini", params: {} });
+    expect(shownModel()).toBe("Seedance 2.0 Mini"); // 갈아치우지 않는다
+    expect(button("저장").disabled).toBe(true); // 제출만 막는다
+  });
+
+  it("제한이 없으면(빈 목록) 그대로 저장할 수 있다", async () => {
+    allowedModels = new Set<string>();
+    await mount({ type: "video", model: "seedance_2_0_mini", params: {} });
+    expect(button("저장").disabled).toBe(false);
+  });
+});
+
+describe("복원 옵션의 수명", () => {
+  it("★다른 모델로 갔다 돌아오면 복원 옵션이 되살아나지 않는다", async () => {
+    // 복원 옵션을 영원히 들고 있으면, 사용자가 모델을 바꿨다 돌아올 때 **옛 값이 부활**한다.
+    modelParams.mockResolvedValue({
+      params: [{ name: "resolution", type: "enum", enum: ["480p", "720p"], default: "720p" }],
+      constraints: {},
+    });
+    await mount({ type: "video", model: "seedance_2_0_mini", params: { resolution: "480p" } });
+    const { inferModelType } = await import("../src/lib/useModels");
+    expect(inferModelType("seedance_2_0_mini")).toBe("video"); // 전제 확인
+
+    // 모델 드롭다운을 열어 다른 영상 모델로 갔다가 되돌아온다
+    click(chip("Seedance 2.0 Mini"));   // 드롭다운 열기
+    await settle();
+    click(chip("Seedance 2.5"));         // 다른 모델로
+    await settle();
+    click(chip("Seedance 2.5"));         // 다시 열기
+    await settle();
+    click(chip("Seedance 2.0 Mini"));    // 원래 모델로 복귀
+    await settle();
+
+    click(button("저장"));
+    expect(saved).toHaveLength(1);
+    // 되돌아왔을 때는 **기본값(720p)** 이어야 한다 — 복원 옵션은 이미 버려졌다
+    expect((saved[0] as { params: Record<string, unknown> }).params.resolution).toBe("720p");
   });
 });
 
