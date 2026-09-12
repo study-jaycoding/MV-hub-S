@@ -342,12 +342,21 @@ export function useModels(
   // 복원값을 받았으면 **처음부터 명시 선택**이다 — 자동 선택이 갈아치우지 못하게.
   const explicitRef = useRef(!!policy?.initialModel);
   // explicit=false 로 부르면 '자동 대체'(예: 지원 목록 밖 모델을 재사용할 때의 폴백)라 나중에 정책이 바뀌면 다시 고른다.
+  // 다른 모델로 옮기면 복원 대기 옵션을 버린다 — 나중에 원래 모델로 돌아와도 되살아나지 않게.
+  // ★`setModel` 과 **자동 선택의 직접 호출** 둘 다에서 불러야 한다(2026-09-13, 코덱스 재현):
+  //  탭을 눌러(Image→Video) 자동 선택이 모델을 바꾸면 `setModel` 을 안 거치므로, 그 길로 나갔다
+  //  드롭다운으로 원래 모델을 다시 고르면 **옛 옵션이 부활**했다.
+  const dropStalePendingOpts = useCallback((next: string) => {
+    if (pendingOptsRef.current && pendingOptsRef.current.model !== next) {
+      pendingOptsRef.current = null;
+    }
+  }, []);
+
   const setModel = useCallback((m: string, explicit = true) => {
     explicitRef.current = explicit;
-    // 다른 모델로 옮기면 복원 대기 옵션은 버린다 — 나중에 원래 모델로 돌아와도 되살아나지 않게.
-    if (pendingOptsRef.current && pendingOptsRef.current.model !== m) pendingOptsRef.current = null;
+    dropStalePendingOpts(m);
     setModelState(m);
-  }, []);
+  }, [dropStalePendingOpts]);
   // 같은 모델로 복원하는 경로(setModel 이 no-op)도 선택 출처를 기록한다 — 명시 복원이면 true(제한돼도 안 바뀜),
   // 자동 대체면 false(정책이 바뀌면 다시 고름). 둘 다 기록해야 이전 값이 잘못 남지 않는다(코덱스 P2).
   // 자동 선택으로 되돌린 순간에는 지금 정책으로 다시 평가해야 한다(모델 값이 그대로여도) — 그 트리거.
@@ -433,12 +442,16 @@ export function useModels(
       // 목록이 아직 없거나 이 타입을 전부 못 씀 — 다른 타입의 모델이 남아 있으면 비워 엉뚱한 타입으로 제출되지 않게 한다.
       if (!inType && model) {
         explicitRef.current = false;
+        // ★이 줄은 **이중 방어**다 — 여기서 모델을 비운 뒤 다시 고르려면 반드시 아래 교체 분기를
+        //  거치고 거기서 이미 정리되므로, 되돌려 확인으로 관측되지 않는다(검출됐다고 적지 않는다).
+        dropStalePendingOpts("");
         setModelState("");
       }
       return;
     }
     if (first !== model) {
       explicitRef.current = false;
+      dropStalePendingOpts(first);
       setModelState(first);
     }
     // model·selectionTick 도 본다 — 복원으로 '자동 선택된, 지금은 못 쓰는 모델'이 되돌아왔을 때 다시 고르게(코덱스 P2).

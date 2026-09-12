@@ -276,6 +276,35 @@ describe("복원 옵션의 수명", () => {
   });
 });
 
+describe("복원 옵션의 수명 — 탭 경유", () => {
+  it("★탭을 거쳐 돌아와도 복원 옵션이 되살아나지 않는다", async () => {
+    // ★코덱스가 실제 화면에서 2/2 재현했다: 옵션 정리가 `setModel()` 에만 있었는데
+    //  **탭을 누르면 자동 선택이 `setModelState()` 를 직접** 부른다. 그 길로 나갔다가
+    //  드롭다운으로 원래 모델을 고르면 옛 옵션이 부활했다.
+    //  (드롭다운만 왕복하는 위 시험은 이 경로를 못 덮었다.)
+    modelParams.mockResolvedValue({
+      params: [{ name: "resolution", type: "enum", enum: ["480p", "720p"], default: "720p" }],
+      constraints: {},
+    });
+    await mount({ type: "video", model: "seedance_2_0_mini", params: { resolution: "480p" } });
+    expect(shownModel()).toBe("Seedance 2.0 Mini");
+
+    click(button("Image"));   // 탭으로 나간다 — 자동 선택이 모델을 바꾼다
+    await settle();
+    click(button("Video"));   // 탭으로 돌아온다
+    await settle();
+    click(chip("Seedance 2.5"));        // 드롭다운 열기
+    await settle();
+    click(chip("Seedance 2.0 Mini"));   // 원래 모델을 다시 고른다
+    await settle();
+
+    click(button("저장"));
+    expect(saved).toHaveLength(1);
+    // 사용자가 직접 다시 고른 것이므로 **기본값(720p)** 이어야 한다 — 옛 480p 가 아니라
+    expect((saved[0] as { params: Record<string, unknown> }).params.resolution).toBe("720p");
+  });
+});
+
 describe("파라미터 조회 실패", () => {
   it("★실패하면 저장을 막는다 — 빈 옵션이 기존 설정을 덮지 않게", async () => {
     modelParams.mockRejectedValue(new Error("502"));
