@@ -52,7 +52,21 @@ export function SceneModelModal({
     //  (React 가 `disabled` 를 fiber props 로 보므로 시험에서도 이 줄에 못 닿는다.)
     //  나중에 단축키·다른 버튼이 붙었을 때 빈 옵션이 덮이는 것을 막는다(코덱스 조건).
     if (!canSave) return;
-    onSave({ type: m.type, model: m.model, modelName: m.modelName, params: m.optionValues });
+    // ★`type` 은 화면 탭이 아니라 **모델의 실제 타입**을 저장한다(2026-09-13, 코덱스 재현).
+    //  카탈로그 밖 모델(부분 수정 전용 `seedream_v5_pro`)을 복원한 상태에서는 탭을 눌러도
+    //  모델이 **교체되지 않는데**(`useModels.ts:444` 가 보존한다) `m.type` 만 따라 움직여
+    //  `{type:"video", model:"seedream_v5_pro"}` 같은 어긋난 메타가 남았다.
+    // ★순서: CLI 카탈로그 → 모델 키 추론 → **생략**. `?? m.type` 으로 폴백하면 카탈로그가
+    //  아직 안 온 상태(빈 목록이어도 파라미터만 준비되면 저장된다)에서 같은 결함이 남는다.
+    //  `type` 은 선택 필드다(`scenes.ts:23`) — 모르면 안 적는 편이 틀리게 적는 것보다 낫다.
+    const resolvedType =
+      m.models.find((x) => x.job_set_type === m.model)?.type ?? inferModelType(m.model);
+    onSave({
+      ...(resolvedType ? { type: resolvedType } : {}),
+      model: m.model,
+      modelName: m.modelName,
+      params: m.optionValues,
+    });
     onClose();
   };
 

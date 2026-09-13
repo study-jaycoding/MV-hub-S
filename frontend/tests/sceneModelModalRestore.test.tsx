@@ -364,6 +364,39 @@ describe("그룹 정책 — 판정은 한 벌이어야 한다", () => {
   });
 });
 
+describe("저장하는 type 은 화면 탭이 아니라 **모델의 타입**이다", () => {
+  // ★왜(2026-09-13, 코덱스 3회차 실측): 카탈로그(`ALLOWED`) 밖 모델을 복원하면 탭을 눌러도
+  //  모델이 **교체되지 않는다**(`useModels.ts:444` 가 보존). 그런데 저장은 `m.type`(탭)을
+  //  그대로 썼다 → `{type:"video", model:"seedream_v5_pro"}` 같은 어긋난 메타가 남았다.
+  //  이 값은 카드 표시와 **모달 재열기 초기 타입**이 읽는다.
+
+  it("★탭을 Video 로 바꿔도 이미지 모델은 image 로 저장된다", async () => {
+    await mount({ model: "seedream_v5_pro", params: {} });
+    click(button("Video")); // 카탈로그 밖 모델이라 모델은 안 바뀐다
+    expect(shownModel()).toBe("Seedream V5 Pro"); // 보존 확인(전제)
+    click(button("저장"));
+    expect(saved).toHaveLength(1);
+    expect(saved[0].model).toBe("seedream_v5_pro");
+    expect(saved[0].type).toBe("image"); // 탭이 아니라 CLI 카탈로그의 타입
+  });
+
+  it("카탈로그에 없으면 모델 키로 추론한다", async () => {
+    // `gpt_image_2` 는 제품 `ALLOWED.image` 에 있지만 이 시험의 가짜 카탈로그엔 없다.
+    await mount({ model: "gpt_image_2", params: {} });
+    click(button("저장"));
+    expect(saved[0].type).toBe("image");
+  });
+
+  it("★둘 다 모르면 type 을 **적지 않는다** — 틀리게 적는 것보다 낫다", async () => {
+    // 카탈로그에도 없고 `ALLOWED` 양쪽에도 없는 옛 키.
+    await mount({ model: "legacy_unknown_model", params: {} });
+    click(button("저장"));
+    expect(saved).toHaveLength(1);
+    expect(saved[0].model).toBe("legacy_unknown_model");
+    expect("type" in saved[0]).toBe(false);
+  });
+});
+
 describe("파라미터 조회 실패", () => {
   it("★실패하면 저장을 막는다 — 빈 옵션이 기존 설정을 덮지 않게", async () => {
     modelParams.mockRejectedValue(new Error("502"));
