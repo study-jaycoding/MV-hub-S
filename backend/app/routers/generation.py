@@ -846,7 +846,14 @@ def _my_uid(request: Request) -> Optional[str]:
 
 @contextmanager
 def _personal_meta_account_scope(request: Request):
-    """배치 판정·저장을 같은 계정에 고정하되 전환 lock은 캡처 중에만 보유한다."""
+    """개인메타 판정·저장을 같은 계정에 고정하되 전환 lock은 캡처 중에만 보유한다.
+
+    ★배치뿐 아니라 **단건**도 쓴다(2026-09-13). 단건 경로 안에는 판정과 저장 사이에
+     `_proxy.proxy_get` 네트워크 왕복이 있어, 그 사이 다른 창에서 계정을 바꾸면 shadow 가
+     **새 계정 DB** 에 저장됐다(코덱스 재현: A 에 안 남고 B 에 색이 저장됨).
+    ★lock 은 캡처 동안만 잡는다 — `set_override` 는 컨텍스트 값만 바꾸므로 왕복이 안에
+     들어가도 보유 시간이 늘지 않는다(코덱스 확인: `active_account.py:135`).
+    """
     from .. import active_account
 
     with active_account.transition_lock:
@@ -865,23 +872,28 @@ def _set_personal_shadow(gen_id, request, *, local_apply, shadow_apply, result_k
     · 남의 팀 카드(프록시 + 타인 소유거나 로컬 행 없음)이면 내 로컬 shadow 에만(shadow_apply).
       공유 카드 자체는 안 바꾸므로 require_edit 불필요·서버 미러 없음.
     ★서버 단건 GET 은 프론트가 준 gen_id(팀 카드 서버 UUID)로 — server_id(=job_id)로는 서버가 404."""
-    gen, local_id, server_id = _resolve_local_or_reclaim(gen_id, request)
-    my = _my_uid(request)
-    is_other = (
-        bool(gen) and _proxy.proxying()
-        and bool(gen.get("creator_uid")) and gen.get("creator_uid") != my
-    )
-    if gen and not is_other:
-        require_edit_generation(request, gen)  # 본인/admin 만
-        local_apply(local_id)
-        return repo.get_generation(local_id)
-    if _proxy.proxying():
-        srv = _proxy.proxy_get(f"/api/generations/{gen_id}", request)
-        anchor = (srv.get("job_id") or srv.get("id") or gen_id) if isinstance(srv, dict) else gen_id
-        shadow_apply(anchor)
-        if isinstance(srv, dict):
-            srv[result_key] = result_value
-            return srv
+    # ★첫 DB 접근부터 저장까지 **한 계정에 고정**한다(2026-09-13). 아래 `_proxy.proxy_get` 을
+    #  기다리는 사이 다른 창에서 계정을 바꾸면 `shadow_apply` 가 새 계정 DB 에 썼다(코덱스 재현).
+    #  배치 경로는 이미 같은 스코프를 쓰고 있었다 — 단건만 빠져 있었다.
+    with _personal_meta_account_scope(request) as my:
+        gen, local_id, server_id = _resolve_local_or_reclaim(gen_id, request)
+        is_other = (
+            bool(gen) and _proxy.proxying()
+            and bool(gen.get("creator_uid")) and gen.get("creator_uid") != my
+        )
+        if gen and not is_other:
+            require_edit_generation(request, gen)  # 본인/admin 만
+            local_apply(local_id)
+            return repo.get_generation(local_id)
+        if _proxy.proxying():
+            srv = _proxy.proxy_get(f"/api/generations/{gen_id}", request)
+            anchor = (
+                (srv.get("job_id") or srv.get("id") or gen_id) if isinstance(srv, dict) else gen_id
+            )
+            shadow_apply(anchor)
+            if isinstance(srv, dict):
+                srv[result_key] = result_value
+                return srv
     raise HTTPException(status_code=404, detail="generation 없음")
 
 
