@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { autoRatioForCost } from "./aspectAuto";
-import { EMPTY_MODEL_SET } from "./modelPolicyCore";
+import { EMPTY_MODEL_SET, modelAllowed } from "./modelPolicyCore";
 import type { ModelInfo, ModelParam, ModelParamsOut } from "../types";
 import { fetchModelCatalog } from "./modelCatalogCache";
 
@@ -335,8 +335,14 @@ export function useModels(
   const [model, setModelState] = useState(policy?.initialModel ?? "");
   const allowed = policy?.allowed ?? EMPTY_MODEL_SET;
   const policyReady = policy ? policy.ready : true;
-  // 이 모델이 지금 그룹에서 막혔는가 — 허용 목록이 비면 아무것도 막지 않는다.
-  const blocked = (jt: string) => allowed.size > 0 && !allowed.has(jt);
+  // 이 모델이 지금 그룹에서 막혔는가 — 판정은 **공통 함수 하나**로만 한다.
+  // ★조건식을 여기 복제하면 안 된다(2026-09-13, 코덱스 실측): 종전엔
+  //  `allowed.size > 0 && !allowed.has(jt)` 를 따로 갖고 있어 **면제 모델**
+  //  (`POLICY_EXEMPT_MODELS` — 부분 수정 전용 고정 모델)에서 답이 갈렸다. 그 결과
+  //  모달의 저장 버튼은 `selectedBlocked` 로 **막히는데** 안내 문구는
+  //  `submitBlockMessage`(=`modelAllowed`) 로 계산돼 **null** 이라, 이유 없이 저장이
+  //  거부됐다(카드 표시는 `modelAllowed` 라 '안 막힘' 으로 보였다). 3/3 재현.
+  const blocked = (jt: string) => !modelAllowed({ allowed }, jt);
   // 지금 model 을 누가 골랐나 — true=사용자·복원(재사용·씬 바인딩·모델 노드)이 명시적으로, false=훅이 자동으로.
   // 명시 선택은 나중에 못 쓰게 돼도 바꾸지 않는다(selectedBlocked 로 알리고 제출만 막는다 — Jay). 자동 선택은 다시 고른다.
   // 복원값을 받았으면 **처음부터 명시 선택**이다 — 자동 선택이 갈아치우지 못하게.
@@ -376,10 +382,12 @@ export function useModels(
     allowedRef.current = allowed;
     modelRef.current = model;
   }, [allowed, model]);
-  /** 이 타입에서 지금 고를 수 있는 첫 모델 — 재사용·복원 폴백이 못 쓰는 모델을 집지 않게. */
+  /** 이 타입에서 지금 고를 수 있는 첫 모델 — 재사용·복원 폴백이 못 쓰는 모델을 집지 않게.
+   *  ★여기도 같은 공통 함수를 쓴다. 지금 카탈로그(`ALLOWED`)에는 면제 모델이 없어 결과는
+   *   같지만, 판정을 두 벌로 두면 다음 정책 변경 때 또 어긋난다(코덱스). */
   const firstAllowed = useCallback(
     (t: "image" | "video") =>
-      ALLOWED[t].find((jt) => allowedRef.current.size === 0 || allowedRef.current.has(jt)) ?? "",
+      ALLOWED[t].find((jt) => modelAllowed({ allowed: allowedRef.current }, jt)) ?? "",
     [],
   );
   /** 지금 고른 모델 — 비동기 작업이 끝난 뒤 '현재' 모델과 비교할 때 쓴다(시작 시점 값이 아니라). */

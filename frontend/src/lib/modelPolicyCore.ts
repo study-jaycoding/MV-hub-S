@@ -87,8 +87,17 @@ export function modelSet(
  *  허용 목록 방식에서는 '목록에 없음 = 못 씀'이라, 면제하지 않으면 부분 수정 결과물의 재생성·복구까지 막힌다(코덱스 P2). */
 export const POLICY_EXEMPT_MODELS: ReadonlySet<string> = new Set(["seedream_v5_pro"]);
 
-/** 이 모델을 쓸 수 있는가 — **허용 목록이 비어 있으면 전부 허용**. 면제 모델은 언제나 허용. */
-export function modelAllowed(state: ModelPolicyState, model: string | null | undefined): boolean {
+/** 이 모델을 쓸 수 있는가 — **허용 목록이 비어 있으면 전부 허용**. 면제 모델은 언제나 허용.
+ *
+ * ★인자를 `Pick<..., "allowed">` 로 좁힌 이유(2026-09-13): 이 판정이 필요한 곳 중에는 정책
+ *  **전체 상태를 들고 있지 않은** 훅(`useModels`)이 있다. 넓은 타입을 요구하면 그쪽이 조건식을
+ *  복제하게 되고, 실제로 그래서 면제 모델에서 판정이 엇갈렸다(모달이 말없이 저장을 거부).
+ *  기존 `ModelPolicyState` 호출부는 그대로 통과한다.
+ */
+export function modelAllowed(
+  state: Pick<ModelPolicyState, "allowed">,
+  model: string | null | undefined,
+): boolean {
   if (!model || POLICY_EXEMPT_MODELS.has(model)) return true;
   return state.allowed.size === 0 || state.allowed.has(model);
 }

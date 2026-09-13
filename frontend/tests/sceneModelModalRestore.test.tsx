@@ -33,6 +33,9 @@ vi.mock("../src/api", () => ({
         { display_name: "Nano Banana 2", job_set_type: "nano_banana_flash", type: "image" },
         { display_name: "Seedance 2.0 Mini", job_set_type: "seedance_2_0_mini", type: "video" },
         { display_name: "Seedance 2.5", job_set_type: "seedance_2_5", type: "video" },
+        // 부분 수정 전용 고정 모델 — **CLI 카탈로그에는 있고** 우리 드롭다운(`ALLOWED`)에는 없다.
+        // 실제 조건을 재현하려면 이 비대칭이 필요하다(코덱스): 제품 `ALLOWED` 에 넣으면 안 된다.
+        { display_name: "Seedream V5 Pro", job_set_type: "seedream_v5_pro", type: "image" },
       ]),
     modelParams: (...args: unknown[]) => modelParams(...args),
     estimateCost: () => Promise.resolve({ credits: 1 }),
@@ -302,6 +305,62 @@ describe("복원 옵션의 수명 — 탭 경유", () => {
     expect(saved).toHaveLength(1);
     // 사용자가 직접 다시 고른 것이므로 **기본값(720p)** 이어야 한다 — 옛 480p 가 아니라
     expect((saved[0] as { params: Record<string, unknown> }).params.resolution).toBe("720p");
+  });
+});
+
+describe("그룹 정책 — 판정은 한 벌이어야 한다", () => {
+  // ★왜(2026-09-13, 코덱스 2회차 실측에서 3/3 재현): `useModels` 가 그룹 판정 조건식을 **따로**
+  //  갖고 있어 면제 모델(`POLICY_EXEMPT_MODELS` = 부분 수정 전용 `seedream_v5_pro`)에서 답이
+  //  갈렸다. 저장 버튼은 `selectedBlocked`(옛 조건식)로 **막히는데**, 안내는
+  //  `submitBlockMessage`(=`modelAllowed`, 면제 존중)로 계산돼 **null** 이었다.
+  //  → 이유 없이 저장이 거부됐다. 카드 표시는 `modelAllowed` 라 '안 막힘' 으로 보여 더 헷갈렸다.
+  //  이 결함은 `origin/main` 에도 있었다(이번 48커밋의 회귀가 아니다).
+
+  it("★면제 모델은 그룹이 제한해도 저장할 수 있다", async () => {
+    allowedModels = new Set(["nano_banana_flash"]); // 면제 모델은 이 목록에 없다
+    await mount({ model: "seedream_v5_pro", params: { quality: "2k" } });
+    expect(shownModel()).toBe("Seedream V5 Pro"); // 갈아치우지 않는다
+    expect(button("저장").disabled).toBe(false);
+    click(button("저장"));
+    expect(saved).toHaveLength(1);
+    expect(saved[0].model).toBe("seedream_v5_pro");
+    expect(saved[0].params).toMatchObject({ quality: "2k" }); // 복원 옵션이 살아 있다
+  });
+
+  it("영상만 허용한 그룹에서도 면제 모델은 저장된다", async () => {
+    allowedModels = new Set(["seedance_2_5"]);
+    await mount({ model: "seedream_v5_pro", params: {} });
+    expect(button("저장").disabled).toBe(false);
+  });
+
+  it("★일반 제한 모델은 막히고 **이유가 함께 보인다**", async () => {
+    allowedModels = new Set(["nano_banana_flash"]); // 영상 Mini 는 못 쓴다
+    await mount({ model: "seedance_2_0_mini", params: { duration: 4 } });
+    expect(shownModel()).toBe("Seedance 2.0 Mini"); // 조용히 갈아치우지 않는다
+    expect(button("저장").disabled).toBe(true);
+    // 막았으면 **반드시** 이유가 있어야 한다 — 이게 없던 것이 이번 결함의 증상이었다
+    expect(container.textContent).toContain("쓸 수 없습니다");
+    click(button("저장"));
+    expect(saved).toHaveLength(0);
+  });
+
+  it("면제라고 드롭다운에 끼워 넣지는 않는다 — 노출 카탈로그와 정책은 별개다", async () => {
+    allowedModels = new Set(["nano_banana_flash"]);
+    await mount({ model: "seedream_v5_pro", params: {} });
+    click(chip("Seedream V5 Pro")); // 모델 칩을 열어 목록을 편다
+    const labels = [...container.querySelectorAll("button")].map((b) => (b.textContent || "").trim());
+    // 지금 고른 것을 보여 주는 칩 **하나뿐**이다 — 목록 항목으로 늘어나면 안 된다.
+    expect(labels.filter((t) => t.includes("Seedream"))).toHaveLength(1);
+    // 허용된 이미지 모델은 목록에 뜬다(목록 자체가 안 열린 것이 아님을 확인)
+    expect(labels.some((t) => t.includes("Nano Banana 2"))).toBe(true);
+  });
+
+  it("면제가 스키마 검증까지 우회하지는 않는다 — 조회 실패면 여전히 못 저장한다", async () => {
+    allowedModels = new Set(["nano_banana_flash"]);
+    modelParams.mockRejectedValue(new Error("502"));
+    await mount({ model: "seedream_v5_pro", params: { quality: "2k" } });
+    expect(button("저장").disabled).toBe(true);
+    expect(container.textContent).toContain("모델 설정을 불러오지 못했습니다");
   });
 });
 
