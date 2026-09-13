@@ -118,6 +118,17 @@ class StateDbLifetimeTests(unittest.TestCase):
                     pass  # pragma: no cover — 여기까지 못 온다
         self._assert_all_closed()
 
+    def test_an_interrupt_while_preparing_also_closes_the_connection(self):
+        """★`KeyboardInterrupt` 같은 **중단**에도 핸들을 놓는다 — 그래서 `BaseException` 이다.
+
+        (코덱스 리뷰가 짚은 시험 공백: 위 두 시험은 `Exception` 으로 좁혀도 통과한다.
+         자원 정리는 오류 삼킴이 아니므로 중단도 받아 닫고 그대로 다시 던져야 한다.)
+        """
+        with patch.object(self.agent, "_prepare_state_db", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
+                self.agent._state_connect()
+        self._assert_all_closed()
+
     # ── 내구성 계약 보존 ────────────────────────────────────────────────
     def test_the_durability_pragmas_are_still_applied(self):
         """`synchronous=FULL` 을 유지한 채로 고쳤다 — 성능을 위해 내구성을 낮추지 않았다."""

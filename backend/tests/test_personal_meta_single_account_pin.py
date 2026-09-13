@@ -132,6 +132,30 @@ def test_single_color_stays_on_the_captured_account(two_accounts) -> None:
     assert _for_account(B_EMAIL, _color_overlays) == {}, "남의 계정 DB 로 새면 안 된다"
 
 
+def test_an_exception_inside_the_scope_still_releases_the_override(two_accounts) -> None:
+    """★스코프 안에서 터져도 고정이 **풀린다** — 안 풀리면 뒤따르는 요청까지 옛 계정으로 본다.
+
+    (코덱스 리뷰가 짚은 시험 공백. `_personal_meta_account_scope` 의 `finally` 가 하는 일이다.)
+    """
+    def boom(_path, _request, **_kwargs):
+        active_account.set_active(B_EMAIL, B_UID)  # 다른 창에서 전환
+        db.flush_pool()
+        raise RuntimeError("shared server down")
+
+    with (
+        mock.patch.object(generation._proxy, "proxying", return_value=True),
+        mock.patch.object(generation._proxy, "proxy_get", side_effect=boom),
+    ):
+        with pytest.raises(RuntimeError):
+            generation.set_color("srv-uuid-1", generation.ColorIn(color="red"), _request())
+
+    # override 가 풀렸으니 머신 포인터(B)가 다시 보인다 — A 로 고정된 채 남으면 안 된다.
+    assert active_account.account_key() == B_EMAIL
+    # 실패했으므로 어느 쪽에도 저장되지 않는다.
+    assert _for_account(A_EMAIL, _color_overlays) == {}
+    assert _for_account(B_EMAIL, _color_overlays) == {}
+
+
 def test_single_tag_stays_on_the_captured_account(two_accounts) -> None:
     """★태그 단건도 같은 계약 — 색만 고치고 태그를 빠뜨리면 반쪽이다."""
     observed: dict = {}
