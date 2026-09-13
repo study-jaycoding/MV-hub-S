@@ -721,9 +721,17 @@
 /* 프로젝트 행에서 걷어낸 압정을 여기로 — 접힌 상태는 흐리게(고정핀 on/off 와 같은 표현). */
 .sidebar-foot-pin { font-size: 11px; filter: grayscale(1); opacity: 0.5; }
 .sidebar-foot-toggle.on .sidebar-foot-pin { filter: none; opacity: 1; }
-/* 생성자가 많아도 아래 영역이 폴더 자리를 뺏지 않도록 절반 이하로 묶는다 */
+/* 생성자가 많아도 아래 영역이 폴더 자리를 뺏지 않도록 절반 이하로 묶는다.
+   ★줄어들지는 않게 한다(flex-shrink: 0, 2026-09-13). 1 이었을 때는 폴더 트리와 **함께** 줄었는데,
+   flex 축소량은 기준 크기 비율로 나뉘므로 **폴더가 많을수록 이 블록이 더 깎였다** — 컬러 점과
+   전역 태그 + 단추가 잘려 조작이 안 됐다(Jay 보고).
+   실측(폴더 수 → 하단 높이, 필요 높이 176px): 5개 176 · 40개 **102** · 80개 **58** · 150개 **34**.
+   고친 뒤에는 전부 176px 로 필요한 만큼 잡는다. 넘치는 높이는 위 폴더 트리가 전부 흡수한다
+   (.project-tree-scroll 이 자체 스크롤을 갖는다).
+   상한 45% 와 내부 스크롤은 그대로 — 생성자가 많으면 여기서 묶이고 안에서 스크롤한다
+   (실측: 생성자 30명이면 필요 901px 이지만 353px 로 묶임). */
 .sidebar-foot {
-  flex: 0 1 auto; min-height: 0; max-height: 45%;
+  flex: 0 0 auto; min-height: 0; max-height: 45%;
   overflow-y: auto; padding-top: 2px;
 }
 .sidebar-foot section:first-child h4 { margin-top: 6px; }
