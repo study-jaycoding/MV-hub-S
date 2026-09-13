@@ -35,6 +35,15 @@ _ACTIVE_PHASES = (
     "blocked",
     "recovery_required",
 )
+# 업데이트가 프로세스를 끊으면 실제 제출·추적 중인 유료 작업을 잃을 수 있는 단계만 별도로 센다.
+# pending/claimed는 업데이트 게이트가 새 claim·begin-submission을 멈추고, blocked/recovery_required는
+# DB에 복구 상태가 남아 재시작 뒤 이어서 처리할 수 있으므로 일반 업데이트를 막지 않는다.
+_UPDATE_BLOCKING_PHASES = (
+    "submitting",
+    "running",
+    "tracking",
+    "verifying",
+)
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _REPLICA_STATUS_FILE = DATA_DIR / "backup_replica_status.json"
 
@@ -134,6 +143,7 @@ def generation_queue_snapshot() -> dict[str, Any]:
         return {
             "phase_counts": {},
             "active_total": 0,
+            "update_blocking_total": 0,
             "oldest_active_age_seconds": 0,
             "overdue_checks": 0,
             "check_failures_total": 0,
@@ -170,6 +180,11 @@ def generation_queue_snapshot() -> dict[str, Any]:
     return {
         "phase_counts": phase_counts,
         "active_total": sum(int(row["count"]) for row in active_rows),
+        "update_blocking_total": sum(
+            int(row["count"])
+            for row in rows
+            if row["status"] in _UPDATE_BLOCKING_PHASES
+        ),
         "oldest_active_age_seconds": oldest,
         "overdue_checks": sum(int(row["overdue_count"] or 0) for row in active_rows),
         "check_failures_total": sum(

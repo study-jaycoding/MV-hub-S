@@ -8,6 +8,9 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
+from fastapi import HTTPException
+
 from app import db, repo
 from app.models import CanvasManualClaimIn
 from app.routers import gen_requests as gen_requests_router
@@ -187,6 +190,81 @@ class TestGenRequestCapabilityGate:
         assert fields["submission_stage_declared"] is False
         assert fields["agent_id_present"] is False
         assert "email" not in fields
+
+    def test_update_checking_hides_pending_work_without_claiming_it(self):
+        rid, _ = self._request()
+        with patch.object(
+            gen_requests_router, "_require_account", return_value=self.account
+        ), patch.object(
+            gen_requests_router, "update_in_progress", return_value=True
+        ), patch.object(
+            gen_requests_router, "_require_generation_deployment_open", new_callable=AsyncMock
+        ) as deployment_gate:
+            exists = asyncio.run(
+                gen_requests_router.pending_gen_requests_exist(
+                    object(), capability="workspace,submission-stage", agent_id="agent-1"
+                )
+            )
+            claimed = asyncio.run(
+                gen_requests_router.pending_gen_requests(
+                    object(), capability="workspace,submission-stage", agent_id="agent-1"
+                )
+            )
+
+        assert exists == {"pending": False}
+        assert claimed == []
+        assert repo.get_gen_request(rid)["status"] == "pending"
+        deployment_gate.assert_not_awaited()
+
+    def test_begin_submission_records_phase_before_update_gate_then_releases_claim(self):
+        rid, gen_id = self._request()
+        claimed = repo.claim_pending_requests(
+            self.account["email"],
+            workspace_capable=True,
+            lease_owner="agent-1",
+            submission_stage_capable=True,
+        )
+        assert [item["id"] for item in claimed] == [rid]
+
+        def update_gate() -> bool:
+            assert repo.get_gen_request(rid)["status"] == "submitting"
+            assert repo.get_generation(gen_id)["status"] == "running"
+            return True
+
+        with patch.object(
+            gen_requests_router, "_require_account", return_value=self.account
+        ), patch.object(
+            gen_requests_router, "realtime_scope", return_value="acct:worker@example.com"
+        ), patch.object(
+            gen_requests_router, "update_in_progress", side_effect=update_gate
+        ), patch.object(
+            gen_requests_router.manager, "broadcast", new_callable=AsyncMock
+        ):
+            with pytest.raises(HTTPException) as exc:
+                asyncio.run(
+                    gen_requests_router.begin_gen_request_submission(
+                        rid, object(), agent_id="agent-1"
+                    )
+                )
+
+        assert exc.value.status_code == 409
+        assert "업데이트" in str(exc.value.detail)
+        assert repo.get_gen_request(rid)["status"] == "pending"
+        assert repo.get_generation(gen_id)["status"] == "pending"
+
+    def test_orphan_pending_request_is_never_claimed(self):
+        rid, gen_id = self._request()
+        with db.get_connection() as conn:
+            conn.execute("DELETE FROM generation WHERE id=?", (gen_id,))
+
+        assert repo.has_pending_requests(self.account["email"], workspace_capable=True) is False
+        assert repo.claim_pending_requests(
+            self.account["email"],
+            workspace_capable=True,
+            lease_owner="agent-1",
+            submission_stage_capable=True,
+        ) == []
+        assert repo.get_gen_request(rid)["status"] == "pending"
 
     def test_canvas_candidate_claim_only_links_existing_generation(self):
         body = CanvasManualClaimIn(

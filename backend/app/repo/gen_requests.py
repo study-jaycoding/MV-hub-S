@@ -1350,7 +1350,8 @@ def has_pending_requests(
     with get_connection() as conn:
         row = conn.execute(
             "SELECT 1 FROM gen_request "
-            f"WHERE account_email=? AND status='pending'{ws_gate} LIMIT 1",
+            f"WHERE account_email=? AND status='pending'{ws_gate} "
+            "AND EXISTS (SELECT 1 FROM generation g WHERE g.id=gen_request.gen_id) LIMIT 1",
             (norm_email(account_email),),
         ).fetchone()
     return row is not None
@@ -1399,7 +1400,8 @@ def claim_pending_requests(
         # 무해하다 — 새 요청을 못 본 경우에도 다음 폴에서 claim한다.
         has_pending = conn.execute(
             "SELECT 1 FROM gen_request "
-            f"WHERE account_email=? AND status='pending'{ws_gate} LIMIT 1",
+            f"WHERE account_email=? AND status='pending'{ws_gate} "
+            "AND EXISTS (SELECT 1 FROM generation g WHERE g.id=gen_request.gen_id) LIMIT 1",
             (email,),
         ).fetchone()
         if not has_pending:
@@ -1412,6 +1414,7 @@ def claim_pending_requests(
         rows = conn.execute(
             "SELECT id, gen_id, kind, payload FROM gen_request "
             f"WHERE account_email=? AND status='pending'{ws_gate} "
+            "AND EXISTS (SELECT 1 FROM generation g WHERE g.id=gen_request.gen_id) "
             "ORDER BY created_at, rowid LIMIT ?",
             (email, limit),
         ).fetchall()

@@ -276,7 +276,7 @@ def test_update_activity_counts_inflight_direct_resolve_transfers(monkeypatch: p
     monkeypatch.setattr(
         release_update_router,
         "generation_queue_snapshot",
-        lambda: {"active_total": 0},
+        lambda: {"active_total": 0, "update_blocking_total": 0},
     )
     monkeypatch.setattr(release_update_router.comfy, "active_run_job_count", lambda: 0)
     monkeypatch.setattr(release_update_router, "active_transfer_count", lambda: 1)
@@ -291,6 +291,27 @@ def test_update_activity_counts_inflight_direct_resolve_transfers(monkeypatch: p
         "active_total": 1,
     }
     assert guarded["can_update"] is False
+
+
+def test_update_activity_ignores_restart_safe_generation_queue_phases(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """pending/recovery 잔재는 운영 진단에는 남아도 일반 업데이트를 막지 않는다."""
+    monkeypatch.setattr(
+        release_update_router,
+        "generation_queue_snapshot",
+        lambda: {"active_total": 4, "update_blocking_total": 0},
+    )
+    monkeypatch.setattr(release_update_router.comfy, "active_run_job_count", lambda: 0)
+    monkeypatch.setattr(release_update_router, "active_transfer_count", lambda: 0)
+
+    assert release_update_router._activity() == {
+        "generation_active": 0,
+        "comfy_active": 0,
+        "resolve_active": 0,
+        "active_total": 0,
+    }
+    assert release_update_router._with_activity({"can_update": True})["can_update"] is True
 
 
 def test_update_scripts_keep_normal_process_cleanup_and_allow_only_explicit_breakaway():

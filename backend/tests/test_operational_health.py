@@ -60,6 +60,7 @@ def test_generation_queue_snapshot_merged_query_matches_per_status_semantics():
             empty = operational_health.generation_queue_snapshot()
             assert empty["phase_counts"] == {}
             assert empty["active_total"] == 0
+            assert empty["update_blocking_total"] == 0
             assert empty["overdue_checks"] == 0
             assert empty["check_failures_total"] == 0
             assert empty["oldest_active_age_seconds"] == 0
@@ -101,6 +102,7 @@ def test_generation_queue_snapshot_merged_query_matches_per_status_semantics():
             assert snapshot["check_failures_total"] == 2  # active 만
             assert snapshot["recovery_required_total"] == 1
             assert snapshot["active_total"] == 2  # running + recovery_required
+            assert snapshot["update_blocking_total"] == 1  # 실제 running만 재시작 위험
         finally:
             db.flush_pool()
             if old is None:
@@ -226,6 +228,7 @@ def test_shared_server_ignores_local_generation_queue(monkeypatch):
     assert operational_health.generation_queue_snapshot() == {
         "phase_counts": {},
         "active_total": 0,
+        "update_blocking_total": 0,
         "oldest_active_age_seconds": 0,
         "overdue_checks": 0,
         "check_failures_total": 0,

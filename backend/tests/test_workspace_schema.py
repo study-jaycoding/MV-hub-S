@@ -183,13 +183,24 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
         # 지정(team) 요청이 아무리 앞에 쌓여도(65개>구 스캔상한 64) 구 에이전트 claim 이
         # 뒤의 일반 요청을 집을 수 있어야 한다 — SQL 필터 기아 회귀.
         for i in range(65):
+            gen_id = repo.create_local_generation(
+                {"model": "m", "prompt": f"team-{i}"},
+                "me",
+                creator_uid="user-me",
+                workspace=self._team(),
+            )
             repo.create_gen_request(
-                "artist@example.com", "user-me", f"g{i}", "create",
+                "artist@example.com", "user-me", gen_id, "create",
                 {"model": "m", "workspace": self._team()},
             )
-        repo.create_gen_request("artist@example.com", "user-me", "g-general", "create", {"model": "m"})
+        general_id = repo.create_local_generation(
+            {"model": "m", "prompt": "general"}, "me", creator_uid="user-me"
+        )
+        repo.create_gen_request(
+            "artist@example.com", "user-me", general_id, "create", {"model": "m"}
+        )
         claimed = repo.claim_pending_requests("artist@example.com", 4)
-        self.assertEqual([c["gen_id"] for c in claimed], ["g-general"])
+        self.assertEqual([c["gen_id"] for c in claimed], [general_id])
         # capable 에이전트는 남은 지정 요청 전부 claim 가능.
         claimed_capable = repo.claim_pending_requests(
             "artist@example.com", 100, workspace_capable=True

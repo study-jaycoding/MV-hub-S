@@ -31,6 +31,89 @@ def _assert_pool_connection_clean() -> None:
         assert not conn.in_transaction
 
 
+def test_trash_cancels_unsubmitted_request_and_restore_does_not_requeue(pooled_db):
+    """삭제한 미제출 카드는 복원해도 유료 생성 대기열로 조용히 되살아나지 않는다."""
+    from app.repo import trash
+
+    gen_id = repo.create_local_generation({"model": "m", "prompt": "p"}, "me")
+    rid = repo.create_gen_request("me@example.com", None, gen_id, "create", {"model": "m"})
+
+    assert trash.move_to_trash(gen_id) is True
+    assert repo.get_gen_request(rid)["status"] == "canceled"
+    assert trash.restore_from_trash(gen_id) is True
+    assert repo.get_gen_request(rid)["status"] == "canceled"
+    assert repo.get_generation(gen_id)["status"] == "failed"
+    assert repo.has_pending_requests("me@example.com", workspace_capable=True) is False
+    _assert_pool_connection_clean()
+
+
+def test_trash_keeps_paid_tracking_request_blocking_until_purge(pooled_db):
+    """job_id가 생긴 진행 작업은 휴지통에 있어도 업데이트 보호, 영구삭제 뒤에는 종결한다."""
+    from app.repo import trash
+    from app.services.operational_health import generation_queue_snapshot
+
+    gen_id = repo.create_local_generation({"model": "m", "prompt": "p"}, "me")
+    rid = repo.create_gen_request("me@example.com", None, gen_id, "create", {"model": "m"})
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE generation SET status='running', job_id='job-paid' WHERE id=?",
+            (gen_id,),
+        )
+        conn.execute("UPDATE gen_request SET status='tracking' WHERE id=?", (rid,))
+
+    assert trash.move_to_trash(gen_id) is True
+    assert repo.get_gen_request(rid)["status"] == "tracking"
+    assert generation_queue_snapshot()["update_blocking_total"] == 1
+    assert trash.purge_trashed_item(gen_id) is True
+    assert repo.get_gen_request(rid)["status"] == "canceled"
+    assert generation_queue_snapshot()["update_blocking_total"] == 0
+    _assert_pool_connection_clean()
+
+
+def test_restore_does_not_fail_active_request_because_of_older_canceled_history(pooled_db):
+    """과거 canceled 이력은 현재 tracking 요청의 복원 상태를 덮어쓰지 않는다."""
+    from app.repo import trash
+
+    gen_id = repo.create_local_generation({"model": "m", "prompt": "p"}, "me")
+    old_rid = repo.create_gen_request(
+        "me@example.com", None, gen_id, "create", {"model": "m"}
+    )
+    active_rid = repo.create_gen_request(
+        "me@example.com", None, gen_id, "regenerate", {"model": "m"}
+    )
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE gen_request SET status='canceled', error=? WHERE id=?",
+            (trash._DELETED_REQUEST_NOTE, old_rid),
+        )
+        conn.execute("UPDATE gen_request SET status='tracking' WHERE id=?", (active_rid,))
+        conn.execute(
+            "UPDATE generation SET status='running', job_id='job-active' WHERE id=?",
+            (gen_id,),
+        )
+
+    assert trash.move_to_trash(gen_id) is True
+    assert trash.restore_from_trash(gen_id) is True
+    assert repo.get_generation(gen_id)["status"] == "running"
+    assert repo.get_gen_request(active_rid)["status"] == "tracking"
+    _assert_pool_connection_clean()
+
+
+def test_startup_reconcile_cancels_legacy_orphan_request(pooled_db):
+    """구버전 영구삭제가 남긴 보이지 않는 요청은 다음 부팅 정합에서 종결한다."""
+    from app.repo import trash
+
+    gen_id = repo.create_local_generation({"model": "m", "prompt": "p"}, "me")
+    rid = repo.create_gen_request("me@example.com", None, gen_id, "create", {"model": "m"})
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM generation WHERE id=?", (gen_id,))
+
+    assert repo.get_gen_request(rid)["status"] == "pending"
+    assert trash.reconcile_with_main() == 0
+    assert repo.get_gen_request(rid)["status"] == "canceled"
+    _assert_pool_connection_clean()
+
+
 def test_comment_lock_mutations_are_transaction_root_safe_with_pool(pooled_db):
     """assets-1 — 같은 풀 커넥션으로 연속 호출해도 중첩 오류·잔류 트랜잭션이 없다."""
     cid = repo.add_asset_comment("proj", "a.png", "me", "첫 코멘트")

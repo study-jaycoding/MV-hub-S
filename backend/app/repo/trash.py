@@ -37,6 +37,19 @@ from .manage_telemetry import (  # noqa: F401 — leaf 직접 의존 계약(test
 )
 
 _log = logging.getLogger("mvhub.trash")
+_DELETED_REQUEST_NOTE = "생성 전에 삭제되어 요청이 취소되었습니다"
+_NONTERMINAL_REQUEST_PHASES = (
+    "preparing",
+    "pending",
+    "claimed",
+    "submitting",
+    "running",
+    "tracking",
+    "verifying",
+    "blocked",
+    "recovery_required",
+)
+_PRESUBMIT_REQUEST_PHASES = ("preparing", "pending", "claimed")
 
 # 휴지통은 별도 DB 파일(content_hub_trash.db)을 ATTACH 해서 `trash.trashed` 로 참조한다.
 _TRASHED_DDL = (
@@ -307,6 +320,15 @@ def _move_to_trash_on_conn(
         ),
     )
     _delete_generation(conn, gen_id)  # 메인에서 본체+자식 제거
+    # 아직 유료 CLI 제출 전인 요청은 삭제 시점에 함께 종결한다. gen_request는 휴지통 payload에
+    # 포함되지 않으므로 여기서 취소하지 않으면 복원 뒤 pending/claimed가 되살아 자동 과금될 수 있다.
+    conn.execute(
+        "UPDATE gen_request SET status='canceled', error=?, lease_owner=NULL, "
+        "lease_expires_at=NULL, next_check_at=NULL, terminal_at=datetime('now'), "
+        "updated_at=datetime('now') WHERE gen_id=? "
+        f"AND status IN ({','.join('?' for _ in _PRESUBMIT_REQUEST_PHASES)})",
+        (_DELETED_REQUEST_NOTE, gen_id, *_PRESUBMIT_REQUEST_PHASES),
+    )
     _record_telemetry_tombstone(conn, gen_id, tomb)
 
 
@@ -450,6 +472,21 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
         # payload 안 stale acct: 신원을 user_ 로 치환(재유입 차단) — admin·단독 복원 포함 항상.
         _rewrite_payload_identities(p, _acct_remap(conn))
         _insert_row(conn, "generation", p["generation"])
+        # 삭제할 때 미제출 요청이 취소된 카드는 복원해도 대기열로 되살리지 않는다. 카드가
+        # 무한 pending처럼 보이지 않도록 실패 상태와 고정 안내를 함께 복원한다.
+        if conn.execute(
+            "SELECT 1 FROM gen_request r WHERE r.gen_id=? AND r.status='canceled' "
+            "AND r.error=? AND NOT EXISTS ("
+            "SELECT 1 FROM gen_request active WHERE active.gen_id=r.gen_id "
+            f"AND active.status IN ({','.join('?' for _ in _NONTERMINAL_REQUEST_PHASES)})) "
+            "LIMIT 1",
+            (gen_id, _DELETED_REQUEST_NOTE, *_NONTERMINAL_REQUEST_PHASES),
+        ).fetchone():
+            conn.execute(
+                "UPDATE generation SET status='failed', error=? WHERE id=? "
+                "AND status IN ('pending','running')",
+                (_DELETED_REQUEST_NOTE, gen_id),
+            )
         for a in p.get("assets", []):
             _insert_row(conn, "asset", a)
         for r in p.get("references", []):  # 공유 가능 → 이미 있으면 무시
@@ -591,6 +628,31 @@ def list_trash(
         return [_to_generation_out(json.loads(r["payload"])) for r in rows]
 
 
+def _cancel_orphan_requests(conn: sqlite3.Connection, gen_id: str | None = None) -> int:
+    """복구할 generation/휴지통 본체가 없는 요청과 휴지통의 미제출 요청을 종결한다."""
+    target = " AND gen_id=?" if gen_id is not None else ""
+    params: list[Any] = [
+        _DELETED_REQUEST_NOTE,
+        *_NONTERMINAL_REQUEST_PHASES,
+        *_PRESUBMIT_REQUEST_PHASES,
+    ]
+    if gen_id is not None:
+        params.append(gen_id)
+    cur = conn.execute(
+        "UPDATE gen_request SET status='canceled', error=?, lease_owner=NULL, "
+        "lease_expires_at=NULL, next_check_at=NULL, terminal_at=datetime('now'), "
+        "updated_at=datetime('now') WHERE "
+        f"status IN ({','.join('?' for _ in _NONTERMINAL_REQUEST_PHASES)}) "
+        "AND NOT EXISTS (SELECT 1 FROM generation g WHERE g.id=gen_request.gen_id) "
+        "AND ("
+        f"status IN ({','.join('?' for _ in _PRESUBMIT_REQUEST_PHASES)}) "
+        "OR NOT EXISTS (SELECT 1 FROM trash.trashed t WHERE t.id=gen_request.gen_id))"
+        f"{target}",
+        params,
+    )
+    return cur.rowcount
+
+
 def reconcile_with_main() -> int:
     """크래시(전원/OS 손실)로 휴지통 이동/복원이 한쪽 DB 에만 반영돼 같은 id 가 메인과 휴지통에 '둘 다'
     남은 경우를 정리한다. 정상 운영에선 둘은 상호배타(이동=메인삭제, 복원=휴지통삭제)라, 겹치면 중단된
@@ -598,12 +660,20 @@ def reconcile_with_main() -> int:
     전원 손실 + synchronous=NORMAL 의 드문 경우에 발생 가능).
 
     안전 규칙: 살아있는 메인 본을 정답으로 보고 휴지통 복사본만 제거한다 → 데이터 손실 없음(중단된
-    이동이면 삭제가 되돌려져 사용자가 재삭제, 중단된 복원이면 복원이 완결된다). 부팅 시 1회 호출."""
+    이동이면 삭제가 되돌려져 사용자가 재삭제, 중단된 복원이면 복원이 완결된다). 본체가 이미 영구
+    삭제된 옛 요청은 canceled로 종결하고, 휴지통 미제출 요청도 복원 시 자동 과금되지 않게 종결한다.
+    부팅 시 1회 호출."""
     with _with_trash() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
             "DELETE FROM trash.trashed WHERE id IN (SELECT id FROM generation)"
         )
-        return cur.rowcount
+        removed_duplicates = cur.rowcount
+        canceled_requests = _cancel_orphan_requests(conn)
+        conn.execute("COMMIT")
+        if canceled_requests:
+            _log.info("orphan_requests_canceled count=%d", canceled_requests)
+        return removed_duplicates
 
 
 def purge_trashed_item(gen_id: str, account_uid: Optional[str] = None) -> bool:
@@ -627,6 +697,15 @@ def purge_trashed_item(gen_id: str, account_uid: Optional[str] = None) -> bool:
             ).rowcount > 0
         conn.execute("COMMIT")
     if deleted:
+        try:
+            # 휴지통 행 삭제를 먼저 확정한 뒤, 복원으로 본체가 살아나지 않았음을 같은 쓰기락
+            # 안에서 재확인하고 요청을 종결한다. 중간 크래시는 다음 부팅 reconcile이 수습한다.
+            with _with_trash() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                _cancel_orphan_requests(conn, gen_id)
+                conn.execute("COMMIT")
+        except Exception:
+            _log.warning("purge_request_cleanup_failed gen_id=%s", gen_id, exc_info=True)
         # ATTACH 된 별도 WAL DB끼리는 전원 손실 원자성이 없으므로 휴지통 삭제를 먼저 단독
         # 커밋한다. main 사이드카는 생존 재확인 가드가 있는 별도 transaction-root에서 정리한다.
         try:

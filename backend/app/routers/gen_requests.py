@@ -511,8 +511,10 @@ async def pending_gen_requests_exist(
 ):
     """idle 에이전트가 큐를 선점하지 않고 값싼 읽기로 깨움 신호 유실을 복구한다."""
     acc = _require_account(request)
-    await _require_generation_deployment_open()
     agent_signals.touch(acc["email"])
+    if update_in_progress():
+        return {"pending": False}
+    await _require_generation_deployment_open()
     caps = {c.strip() for c in capability.split(",") if c.strip()}
     if await _paid_claim_blocked(
         acc,
@@ -546,6 +548,9 @@ async def pending_gen_requests(
     내리지 않는다. limit는 에이전트가 지금 제출할 수 있는 요청 수다.
     """
     acc = _require_account(request)
+    agent_signals.touch(acc["email"])
+    if update_in_progress():
+        return []
     await _require_generation_deployment_open()
     # capability: 에이전트가 지원 기능을 콤마 목록으로 밝힌다.
     # 'workspace' 가 없으면(구 에이전트) 워크스페이스 지정 요청은 내려주지 않는다 — 지정을
@@ -589,6 +594,20 @@ async def begin_gen_request_submission(
         raise HTTPException(
             status_code=409,
             detail="제출 권한이 만료됐거나 다른 에이전트가 인계했습니다 — 생성하지 않습니다",
+        )
+    # 순서가 핵심이다. 먼저 submitting을 DB에 기록해야 업데이트 시작 쪽의 2차 집계와
+    # 어느 쪽이 먼저 실행돼도 안전하다. checking이 먼저였다면 이 요청을 즉시 pending으로
+    # 되돌리고, submitting이 먼저였다면 업데이트 쪽이 활동 1건을 보고 중단한다.
+    if update_in_progress():
+        await release_claim(
+            acc["email"],
+            realtime_scope(acc),
+            rid,
+            agent_id,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="프로그램 업데이트가 진행 중이라 생성 제출을 시작하지 않습니다",
         )
     return {"ok": True, "applied": True}
 

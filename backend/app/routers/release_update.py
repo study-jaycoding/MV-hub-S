@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 from . import comfy
 from ..config import PORT
 from ..services.operational_health import generation_queue_snapshot
+from ..services.operational_logging import log_event
 from ..services.resolve_transfer import active_transfer_count
 from ..services.release_update import (
     APP_ROOT,
@@ -23,12 +25,12 @@ from ..services.release_update import (
 from ..services.request_guards import require_local_machine_request
 
 router = APIRouter(prefix="/api/release-update", tags=["release-update"])
+_log = logging.getLogger("mvhub.release_update")
 
 
 class UpdateStartIn(BaseModel):
     confirm: bool
-    # 오류로 남은 카드가 '진행 중'으로 집계돼 업데이트가 막힐 때, 진행 중 작업 검사를
-    # 건너뛰고 시작한다 — 폴더에서 update_release.bat 을 직접 누르는 것과 동일한 우회.
+    # 실제 진행 중 작업 검사를 건너뛰는 비상 우회. 정상 버튼의 오집계 해소 수단으로 쓰지 않는다.
     force: bool = False
 
 
@@ -40,7 +42,7 @@ def _require_local(request: Request) -> None:
 
 
 def _activity() -> dict[str, int]:
-    generation = int(generation_queue_snapshot().get("active_total") or 0)
+    generation = int(generation_queue_snapshot().get("update_blocking_total") or 0)
     comfy_count = comfy.active_run_job_count()
     # 진행 중 직접 전송(요청 안에서 준비·반입·저장). 전송 쪽은 카운터를 올린 뒤 update_in_progress
     # 게이트를 보고, 이쪽은 checking 기록 뒤 재확인한다(services/release_update.start_update).
@@ -108,6 +110,14 @@ async def release_update_start(
         return _activity()["active_total"]
 
     ready_url = f"http://127.0.0.1:{PORT}/api/ready"
+    if body.force:
+        forced_activity = await asyncio.to_thread(_activity)
+        log_event(
+            _log,
+            "release_update_force_requested",
+            level=logging.WARNING,
+            **forced_activity,
+        )
     try:
         result = await asyncio.to_thread(
             start_update,
