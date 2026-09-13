@@ -1543,9 +1543,27 @@ def _state_scope(server: str, account_email: str | None) -> tuple[str, str]:
 
 
 def _state_connect() -> sqlite3.Connection:
+    """상태 DB 연결을 열고 준비까지 끝내 돌려준다.
+
+    ★준비 도중 실패하면 **여기서 닫는다**(2026-09-13, 코덱스 재현). 호출자 `_state_db()` 는
+     `conn = _state_connect()` 를 try 밖에서 부르므로, `sqlite3.connect` 성공 뒤 PRAGMA·DDL 이
+     터지면(다른 프로세스가 `BEGIN EXCLUSIVE` 로 잠근 경우) 그쪽 `finally` 에 못 들어가
+     **연결이 안 닫힌다** — 실패 3회에 연결 3개가 남았다. 연결을 만든 쪽이 치운다.
+    ★`BaseException` 으로 받는다 — `KeyboardInterrupt` 같은 중단에도 핸들을 놓고 그대로 다시
+     던진다(자원 정리이지 오류 삼킴이 아니다).
+    """
     path = _agent_state_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)
+    try:
+        _prepare_state_db(conn)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+def _prepare_state_db(conn: sqlite3.Connection) -> None:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=FULL")

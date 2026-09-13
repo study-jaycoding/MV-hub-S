@@ -94,6 +94,30 @@ class StateDbLifetimeTests(unittest.TestCase):
         self.assertEqual(rows, ["kept"])
         self._assert_all_closed()
 
+    # ── 준비 단계 실패 ──────────────────────────────────────────────────
+    def test_a_failure_while_preparing_closes_the_connection(self):
+        """★`connect` 는 됐는데 **PRAGMA·DDL 에서** 터지면 그 연결도 닫아야 한다.
+
+        ★왜(2026-09-13, 코덱스 3회차 재현): `_state_db()` 는 `conn = _state_connect()` 를
+         **try 밖**에서 부른다. 그래서 준비 중 예외가 나면 그쪽 `finally` 에 못 들어가
+         **연결이 그대로 남는다** — 다른 프로세스가 `BEGIN EXCLUSIVE` 로 잠근 동안 3회
+         실패시켰더니 연결 3개가 미종료로 남았다. 연결을 만든 쪽이 치우게 고쳤다.
+        """
+        with patch.object(self.agent, "_prepare_state_db", side_effect=sqlite3.OperationalError("database is locked")):
+            for _ in range(3):
+                with self.assertRaises(sqlite3.OperationalError):
+                    self.agent._state_connect()
+        self.assertEqual(len(self.opened), 3, "3회 모두 connect 까지는 갔어야 한다")
+        self._assert_all_closed()
+
+    def test_a_failure_while_preparing_closes_it_through_the_context_manager_too(self):
+        """`_state_db()` 로 들어와도 같다 — 호출자가 달라도 핸들이 안 남는다."""
+        with patch.object(self.agent, "_prepare_state_db", side_effect=sqlite3.OperationalError("locked")):
+            with self.assertRaises(sqlite3.OperationalError):
+                with self.agent._state_db():
+                    pass  # pragma: no cover — 여기까지 못 온다
+        self._assert_all_closed()
+
     # ── 내구성 계약 보존 ────────────────────────────────────────────────
     def test_the_durability_pragmas_are_still_applied(self):
         """`synchronous=FULL` 을 유지한 채로 고쳤다 — 성능을 위해 내구성을 낮추지 않았다."""
