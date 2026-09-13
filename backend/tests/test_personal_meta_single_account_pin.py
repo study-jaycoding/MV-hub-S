@@ -132,6 +132,49 @@ def test_single_color_stays_on_the_captured_account(two_accounts) -> None:
     assert _for_account(B_EMAIL, _color_overlays) == {}, "남의 계정 DB 로 새면 안 된다"
 
 
+def _seed_local_card(uid: str) -> str:
+    """`job_id=ANCHOR` 로 되찾을 수 있는 로컬 행 하나 — `_set_meta` 는 로컬 행이 있어야 쓴다."""
+    gen_id = repo.create_local_generation(
+        {"model": "test-model", "prompt": "meta pin"}, "me", generation_id="local-1"
+    )
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET status='done', job_id=? WHERE id=?", (ANCHOR, gen_id))
+    repo.set_setting("my_creator_uid", uid)
+    return gen_id
+
+
+def _auto_tags_of(gen_id: str) -> list[str]:
+    gen = repo.get_generation(gen_id)
+    return list((gen or {}).get("auto_tags") or [])
+
+
+def test_single_auto_tag_stays_on_the_captured_account(two_accounts) -> None:
+    """★전역 태그 단건도 고정된다 — 색·태그와 **다른 헬퍼**(`_set_meta`)를 써서 빠져 있었다.
+
+    네트워크 왕복은 둘이 공유하는 `_resolve_local_or_reclaim` 안에 있으므로 창은 똑같다.
+    코덱스가 실제 HTTP 로 재현했다: A 로 보냈는데 3/3 회 **B 에만** 저장됐다.
+    고정이 없으면 전환 뒤 `resolve_and_get` 이 B DB 를 봐 로컬 행을 못 찾고 **404** 가 난다.
+    """
+    gen_id = _for_account(A_EMAIL, lambda: _seed_local_card(A_UID))
+    _for_account(A_EMAIL, lambda: repo.create_auto_tag("검수", A_UID))
+    observed: dict = {}
+
+    with (
+        mock.patch.object(generation._proxy, "proxying", return_value=True),
+        mock.patch.object(
+            generation._proxy, "proxy_get", side_effect=_switching_proxy(observed)
+        ),
+    ):
+        out = generation.set_gen_auto_tags(
+            "srv-uuid-1", generation.AutoTagsIn(auto_tags=["검수"]), _request()
+        )
+
+    assert out is not None
+    assert observed["scope_after_switch"] == A_EMAIL
+    assert _for_account(A_EMAIL, lambda: _auto_tags_of(gen_id)) == ["검수"]
+    assert _for_account(B_EMAIL, lambda: repo.get_generation(gen_id)) is None
+
+
 def test_an_exception_inside_the_scope_still_releases_the_override(two_accounts) -> None:
     """★스코프 안에서 터져도 고정이 **풀린다** — 안 풀리면 뒤따르는 요청까지 옛 계정으로 본다.
 

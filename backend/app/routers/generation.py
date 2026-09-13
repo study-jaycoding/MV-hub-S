@@ -414,7 +414,11 @@ def _resolve_local_or_reclaim(gen_id, request: Request):
     Phase 0b 이후 팀 탭 카드 id = 서버 UUID(≠ 로컬 id ≠ job_id)라 resolve_and_get 의 'id/job_id'
     로컬 매칭이 실패한다. 이때 프록시 모드면 서버 단건을 조회해 그 카드의 job_id 를 얻고, 그 job_id 로
     로컬 행을 되찾는다([share.py] _local_id_from_out 과 동형). color/tags 처럼 '로컬이 진실'인 개인메타를
-    팀 탭에서 편집할 때 404 를 없앤다. 내 로컬 행이 아니면(남의 카드) 그대로 (None, None, gen_id)."""
+    팀 탭에서 편집할 때 404 를 없앤다. 내 로컬 행이 아니면(남의 카드) 그대로 (None, None, gen_id).
+
+    ★여기 `proxy_get` 은 **네트워크 왕복**이다 — 이 함수를 부르는 쓰기 경로는 그 사이 계정이
+     바뀔 수 있으므로 **반드시 `_personal_meta_account_scope` 안에서** 불러야 한다
+     (`_set_personal_shadow`·`_set_meta` 둘 다 그렇게 한다)."""
     gen, local_id, server_id = repo.resolve_and_get(gen_id)
     if gen or not _proxy.proxying():
         return gen, local_id, server_id
@@ -438,22 +442,31 @@ def _set_meta(gen_id, request, apply, *, mirror_suffix: str | None = None, mirro
 
     ★ 미러는 '팀이 보는' 공유 필드(source/comment)만 한다. color/tags 는 작성자 전용(마스킹 대상)이라
     서버에 두지 않고 로컬 전용으로 두며, 팀 탭에는 허브가 오버레이(library._overlay_personal_meta)로
-    합친다 — 개인 메타를 공유 컬럼에 미러하던 dual-storage 불일치(미러 실패·낙관 레이스)를 원천 제거."""
-    gen, local_id, server_id = _resolve_local_or_reclaim(gen_id, request)
-    if not gen:
-        raise HTTPException(status_code=404, detail="generation 없음")
-    require_edit_generation(request, gen)  # 본인/admin 만 수정
-    # 공유 필드(source/comment)는 팀이 보는 값이라 서버가 진실 → 서버 먼저. 실패(권한 403·서버 502
-    # 등)면 로컬도 안 바꿔 "로컬만 바뀌고 팀엔 옛값"인 무음 불일치를 막는다(unpublish 와 동형).
-    # 404(서버에 아직 항목 없음)는 목표상 무해 → 삼키고 로컬 적용(로컬이 유일 보관처).
-    if mirror_suffix and _proxy.proxying() and gen.get("shared"):
-        try:
-            _proxy.proxy_json("PUT", f"/api/generations/{server_id}/{mirror_suffix}", body=mirror_body)
-        except HTTPException as e:
-            if e.status_code != 404:
-                raise
-    apply(local_id)
-    return repo.get_generation(local_id)
+    합친다 — 개인 메타를 공유 컬럼에 미러하던 dual-storage 불일치(미러 실패·낙관 레이스)를 원천 제거.
+
+    ★첫 DB 접근부터 저장까지 **한 계정에 고정**한다(2026-09-13). 이 경로에는 네트워크 왕복이
+     **둘** 있다 — `_resolve_local_or_reclaim` 안의 팀 카드 조회, 그리고 source/comment 의 미러.
+     그 사이 다른 창에서 계정을 바꾸면 `apply` 가 **새 계정 DB** 에 썼다(코덱스가 실제 HTTP 로
+     재현: 전역 태그가 3/3 회 B 에만 저장). 앞서 `_set_personal_shadow`(색·태그)만 고쳤는데
+     전역 태그·소스·코멘트는 이 헬퍼를 써서 범위 밖이었다."""
+    with _personal_meta_account_scope(request):
+        gen, local_id, server_id = _resolve_local_or_reclaim(gen_id, request)
+        if not gen:
+            raise HTTPException(status_code=404, detail="generation 없음")
+        require_edit_generation(request, gen)  # 본인/admin 만 수정
+        # 공유 필드(source/comment)는 팀이 보는 값이라 서버가 진실 → 서버 먼저. 실패(권한 403·서버 502
+        # 등)면 로컬도 안 바꿔 "로컬만 바뀌고 팀엔 옛값"인 무음 불일치를 막는다(unpublish 와 동형).
+        # 404(서버에 아직 항목 없음)는 목표상 무해 → 삼키고 로컬 적용(로컬이 유일 보관처).
+        if mirror_suffix and _proxy.proxying() and gen.get("shared"):
+            try:
+                _proxy.proxy_json(
+                    "PUT", f"/api/generations/{server_id}/{mirror_suffix}", body=mirror_body
+                )
+            except HTTPException as e:
+                if e.status_code != 404:
+                    raise
+        apply(local_id)
+        return repo.get_generation(local_id)
 
 
 @router.put("/generations/{gen_id}/tags", response_model=GenerationOut)
