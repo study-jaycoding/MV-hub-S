@@ -820,52 +820,102 @@ def _matches_submission_fingerprint(request: dict, job: dict) -> bool:
 
 
 def recovery_probe_pass(
-    server: str, token: str, cli: str, budget_end: float | None = None
+    server: str,
+    token: str,
+    cli: str,
+    budget_end: float | None = None,
+    account_email: str | None = None,
 ) -> int:
     """모호한 제출을 최신 목록에서 읽기만 해 찾고, 유일 후보만 기존 placeholder에 앵커한다.
 
-    ★예산이 없으면 **아무것도 시작하지 않고 돌아간다**(2026-09-12). 이 경로는 제출이 job_id 를
-     잃었을 때만 도는 드문 복구지만, 그 실행 시간만큼 뒤의 재조정 예산이 줄어든다.
+    ★예산이 없어도 **후보 조회와 첫 1건의 처리 시도**는 한다(2026-09-13). 종전엔 진입부에서
+     통째로 돌아갔는데 그것이 **회귀**였다 — `tracking_pass` 의 직접 확인은 조회 하나에 15초를
+     받으므로(`_DIRECT_CHECK_TIMEOUT_SECONDS`) 패스 예산 10초를 넘겨 돌아오는 일이 있고, 그러면
+     이 경로가 **매 패스 통째로 건너뛰어진다**. 코덱스 재현(활성 64건·조회 15초·4패스):
+     예산 도입 전 앵커 **1건** -> 도입 후 **0건**, 복구 요청이 그대로 남았다.
+     재조정(`reconcile_pass`)은 이미 같은 이유로 '후보 조회와 첫 1건' 예외를 갖고 있다.
+
+    ★'첫 1건' 은 성공이 아니라 **시도**다(코덱스). 성공만 세면 서버 장애 때 16건 전부를 강제
+     보고하게 된다 — 단순 합산으로 CLI 120초 + 보고 16x60초.
+
+    ★처리 순서는 **회전 순서 그대로**다. 종전처럼 저장된 unique 를 먼저 다 훑고 미조사를 뒤로
+     미루면 커서를 둬도 실행 순서가 종류별로 고정돼 뒤가 굶는다(코덱스 반례: 후보
+     [미조사 P, 저장된 U] 에서 U 가 예산을 다 쓰면 P 는 영영 조사되지 않는다).
+
+    ★종전과 달라지는 것(계약 변경으로 문서화한다 — 코덱스 확인):
+     · `budget_end=None`(무제한)이어도 **CLI 조회가 실패하면 그 패스를 끝낸다**. 종전에는
+       저장된 unique 를 먼저 다 앵커한 뒤 CLI 를 불렀으므로 같은 패스에서 앵커가 됐다.
+       지금은 회전 순서대로 처리하므로 뒤로 밀리고, **다음 패스에서 앵커된다**.
+     · 첫 보고 보장(보장 2)은 예산 없는 **저장된 unique 를 만나면 거기서 멈춘다**.
+
+    ★알려진 한계 — 이번 범위 밖이다.
+     · 공정성의 범위는 **서버가 준 창(최대 16건) 안**이다. 17번째 이후는 서버 LIMIT 때문에
+       조회에 아예 안 나온다(서버 질의를 바꿔야 하는 별건).
+     · 커서는 **프로세스 메모리**다 — 에이전트를 다시 켜면 앞에서 다시 본다(재조정과 같다).
+     · 진행 보장 + '시작한 호출은 정상 timeout' 계약 때문에 **롱폴 주기(약 25초)는 보장되지
+       않는다**. 최악은 CLI 120초 + 보고 60초가 그 위에 붙는다.
     """
-    if not _budget_allows(budget_end):
-        return 0
     status, data = _list_recovery_probes(server, token)
     requests = data.get("requests") if status == 200 and isinstance(data, dict) else None
     if not isinstance(requests, list) or not requests:
         return 0
+    scope = _reconcile_scope(server, account_email)  # (서버, 계정) — 재조정과 같은 범위 규칙
     anchored = 0
-    pending_requests: list[dict] = []
-    for request in requests:
+    attempted = 0  # 이번 패스에서 **처리 시도**한 요청 수. 0 이면 예산이 없어도 한 건은 한다.
+    reported = 0  # 이번 패스에서 **시작한** 보고 HTTP 수(실패도 센다 — 예외를 소비해야 폭주가 없다)
+    jobs: list | None = None  # CLI 목록 — 첫 미조사 요청에서 **패스당 한 번만** 늦게 부른다
+    list_saturated = False
+    oldest_listed: float | None = None
+    for request in _rotate_after(requests, _RECOVERY_CURSOR.get(scope), key="id"):
         if not isinstance(request, dict) or not request.get("id"):
-            continue
+            continue  # 훑기만 한 것은 시도로 세지 않는다
+        rid = str(request["id"])
+        # 저장된 unique = CLI 없이 앵커만 다시 보내는 경로. **어느 보장을 받는지가 달라** 먼저 가른다.
+        recorded_job_id = request.get("recovery_probe_job_id")
+        saved_unique = bool(
+            request.get("recovery_probe_status") == "unique" and recorded_job_id
+        )
+        # ★예산이 없어도 지나가는 **두 가지 보장**.
+        #  1. 첫 1건의 처리 시도 — 이게 없으면 앞 단계가 예산을 넘길 때 이 경로가 영영 0회다.
+        #  2. CLI 목록을 이미 샀으면 **첫 보고까지** 간다 — 그 비용(최대 120초)이 통째로
+        #     버려지지 않게. 목록을 산 직후의 요청이 '창 가득참' 으로 **보류**되면 시도는 1건이
+        #     되지만 보고는 0건이라, 보장 1 만으로는 그 패스가 결론을 하나도 못 남긴다.
+        #     ★저장된 unique 앵커는 보장 2에 **들지 않는다**(코덱스 재현): 보류 사이에 낀
+        #      앵커 15건이 전부 시작돼 한 패스가 912초가 됐다. 보장 2는 '첫 보고까지 가는 길'
+        #      이지 앵커 허가가 아니다.
+        reaching_first_report = jobs is not None and reported == 0 and not saved_unique
+        if attempted and not reaching_first_report and not _budget_allows(budget_end):
+            break
         # 유일 후보 기록 뒤 앵커 응답만 유실된 경우 최신 목록을 다시 추측하지 않고, ledger에
         # 저장한 같은 job_id만 재전송한다. create 계열 호출은 여전히 이 경로에 없다.
-        recorded_job_id = request.get("recovery_probe_job_id")
-        if request.get("recovery_probe_status") == "unique" and recorded_job_id:
-            if _anchor(
-                server, token, str(request["id"]), str(recorded_job_id), verifying=True
-            ):
+        if saved_unique:
+            attempted += 1
+            _RECOVERY_CURSOR[scope] = rid  # 시도 기준 — 실패해도 다음 패스는 그 다음부터
+            if _anchor(server, token, rid, str(recorded_job_id), verifying=True):
                 anchored += 1
                 print(f"  ✓ 모호한 제출 자동 복구 재시도: {str(recorded_job_id)[:8]}")
             continue
-        pending_requests.append(request)
-    if not pending_requests:
-        return anchored
-    jobs = _read_generate_json(cli, "list", "--size", "100", timeout=120)
-    if not isinstance(jobs, list):
-        return anchored
-    list_saturated = len(jobs) >= 100
-    # 창(최신 100건)의 가장 오래된 생성 시각 — 창이 제출 시점까지 거슬러 올라가면, 포화여도
-    # 제출 구간 전체를 본 것이라 '없음'을 확정할 수 있다.
-    listed_epochs = [
-        epoch
-        for job in jobs
-        if isinstance(job, dict)
-        for epoch in (_probe_epoch(job.get("created_at")),)
-        if epoch is not None
-    ]
-    oldest_listed = min(listed_epochs) if listed_epochs else None
-    for request in pending_requests:
+        if jobs is None:
+            # ★커서를 CLI 를 **부르기 전에** 옮긴다(코덱스 재현). `_run_cli_json` 은
+            #  `TimeoutExpired` 만 잡으므로 실행 파일이 없거나 권한이 없으면 예외가 그대로
+            #  올라간다 — 호출 뒤에 옮기면 그 요청이 **매 패스 앞을 막고** 뒤는 영영 못 본다.
+            _RECOVERY_CURSOR[scope] = rid
+            jobs = _read_generate_json(cli, "list", "--size", "100", timeout=120)
+            if not isinstance(jobs, list):
+                # 조회 실패 — 이 요청을 **시도한 것으로** 세고 끝낸다. 다음 패스가 이어받는다.
+                attempted += 1
+                break
+            list_saturated = len(jobs) >= 100
+            # 창(최신 100건)의 가장 오래된 생성 시각 — 창이 제출 시점까지 거슬러 올라가면, 포화여도
+            # 제출 구간 전체를 본 것이라 '없음'을 확정할 수 있다.
+            listed_epochs = [
+                epoch
+                for job in jobs
+                if isinstance(job, dict)
+                for epoch in (_probe_epoch(job.get("created_at")),)
+                if epoch is not None
+            ]
+            oldest_listed = min(listed_epochs) if listed_epochs else None
         matches_by_id = {
             str(job["id"]): job
             for job in jobs
@@ -890,22 +940,40 @@ def recovery_probe_pass(
             )
             if list_saturated and not window_covers_submission:
                 print("  ⚠ 모호한 제출 조사 보류 — 최신 100건 창이 가득 참")
+                # ★보류도 이 요청을 **검토한 결과**다(코덱스) — 보고 건수를 채우려고 없는
+                #  no_match 를 만들지 않는다. 커서는 옮겨 다음 패스가 뒤를 보게 한다.
+                attempted += 1
+                _RECOVERY_CURSOR[scope] = rid
                 continue
             outcome = "no_match"
+        # ★새 HTTP 를 시작하기 **직전에 다시 본다**(코덱스 재현). 루프 top 검사와 여기 사이에는
+        #  위의 지문 대조(최대 100건)가 있어 그동안에도 시간이 흐른다 — "루프 top 한 곳이면
+        #  충분하다" 는 내 판단이 틀렸다. 첫 보고는 위 보장 2가 통과시키므로 여기 안 걸린다.
+        if reported and not _budget_allows(budget_end):
+            break
+        attempted += 1
+        reported += 1  # ★HTTP **시작 전에** 올린다 — 실패해도 예외는 소비된다
+        _RECOVERY_CURSOR[scope] = rid
         job_id = str(matches[0]["id"]) if len(matches) == 1 else None
         recorded = _report_recovery_probe(
-            server, token, str(request["id"]), outcome, len(matches), job_id
+            server, token, rid, outcome, len(matches), job_id
         )
         if not recorded:
             continue
         effective_outcome = recorded.get("outcome", outcome)
         effective_job_id = recorded.get("job_id") if effective_outcome == "unique" else None
-        if effective_job_id and _anchor(
-            server, token, str(request["id"]), str(effective_job_id), verifying=True
-        ):
-            anchored += 1
-            print(f"  ✓ 모호한 제출 자동 복구: {str(effective_job_id)[:8]}")
-        elif effective_outcome in {"unique", "multiple"}:
+        anchor_done = False
+        if effective_job_id:
+            # ★앵커는 **따로** 예산을 본다 — 필수 보고 예외가 앵커까지 끌고 가면 한 패스가 60초를
+            #  더 쓴다. unique 는 서버에 이미 저장됐으니 다음 패스가 CLI 없이 그 id 로 앵커한다.
+            if not _budget_allows(budget_end):
+                print("  … 예산 소진 — 앵커는 다음 패스에서(서버에 job_id 저장됨)")
+                break
+            if _anchor(server, token, rid, str(effective_job_id), verifying=True):
+                anchored += 1
+                anchor_done = True
+                print(f"  ✓ 모호한 제출 자동 복구: {str(effective_job_id)[:8]}")
+        if not anchor_done and effective_outcome in {"unique", "multiple"}:
             print(
                 f"  ⚠ 모호한 제출 후보 {recorded.get('candidate_count', len(matches))}개 "
                 "— 자동 재실행 보류"
@@ -2308,6 +2376,15 @@ _RECONCILE_RETRY_MAX_ENTRIES = 512
 #  예산이 모자랄 때 뒤쪽 후보는 **영영 0회**다(후보 30건·4패스에서 뒤 10건이 0회였다).
 _RECONCILE_CURSOR: dict[str, str] = {}
 
+# 복구 조사(`recovery_probe_pass`)가 지난 패스에서 마지막으로 **시도한** 요청 id.
+# ★왜(2026-09-13, 코덱스 지적): 서버 조회는 `ORDER BY r.updated_at, r.id LIMIT 16` 인데
+#  조사 결과 기록(`record_recovery_probe_result`)은 `updated_at` 을 **안 바꾼다** -> 매 패스
+#  같은 앞부분이 온다. 예산 때문에 앞 몇 건만 처리하면 뒤쪽은 영영 조사되지 않는다.
+# ★성공이 아니라 **시도** 기준으로 옮긴다 — 실패한 요청이 앞을 계속 막으면 안 된다.
+# ★순서를 바꾸려고 서버의 `updated_at` 을 건드리면 안 된다: 그 값은 `recovery_required_at`
+#  으로 돌아가 지문 매칭의 **시간 범위 판단**에도 쓰인다(코덱스).
+_RECOVERY_CURSOR: dict[str, str] = {}
+
 # 한 패스의 예산에서 직접 확인이 쓸 수 있는 최대 비율. 나머지는 재조정 몫으로 남긴다.
 # ★왜(코덱스 재현): 직접 확인을 먼저 돌리면 활성 잡이 많을 때 재조정이 **0회**가 된다
 #  (활성 64건이 계속 queued 인 10패스에서 직접 190회·재조정 0회).
@@ -2318,12 +2395,16 @@ def _reconcile_scope(server: str, account_email: str | None) -> str:
     return f"{server}|{account_email or ''}"
 
 
-def _rotate_after(cands: list, cursor_rid: str | None) -> list:
-    """지난 패스가 멈춘 **다음 자리**부터 보도록 목록을 회전한다(없으면 그대로)."""
+def _rotate_after(cands: list, cursor_rid: str | None, key: str = "rid") -> list:
+    """지난 패스가 멈춘 **다음 자리**부터 보도록 목록을 회전한다(없으면 그대로).
+
+    ★`key` 는 목록마다 id 필드 이름이 달라서 받는다 — 재조정 후보는 `rid`, 복구 조사 요청은
+     `id` 다. 기본값을 `rid` 로 둬 기존 호출부는 바뀌지 않는다.
+    """
     if not cursor_rid:
         return cands
     for index, candidate in enumerate(cands):
-        if isinstance(candidate, dict) and str(candidate.get("rid")) == cursor_rid:
+        if isinstance(candidate, dict) and str(candidate.get(key)) == cursor_rid:
             return cands[index + 1 :] + cands[: index + 1]
     return cands
 
@@ -3116,7 +3197,7 @@ def tracking_pass(server: str, token: str, cli: str) -> int:
         else 0
     )
     # job_id를 잃은 제출은 create를 다시 부르지 않고 최신 list 지문 대조만 수행한다.
-    recovery_probe_pass(server, token, cli, budget_end)
+    recovery_probe_pass(server, token, cli, budget_end, account_email)
     reconcile_pass(
         server, token, cli, account_email, skip_job_ids=set(active), budget_end=budget_end
     )

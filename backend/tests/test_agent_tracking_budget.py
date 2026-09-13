@@ -305,8 +305,10 @@ class PassEntryWorkBudgetTests(unittest.TestCase):
      "패스가 제한된다" 는 말이 성립하지 않는다.
 
     ★계약: 예산은 **새 호출을 시작할지**만 가른다. 시작한 호출은 정상 timeout 을 온전히 받는다.
-    ★예외 하나: 재조정의 **후보 조회와 첫 1건**은 예산이 없어도 한다 — 그게 없으면
-     '한 패스 최소 1건' 보장이 무력해져 재조정이 영영 0회가 된다.
+    ★예외: 재조정과 **복구 조사** 모두 '후보 조회와 첫 1건' 은 예산이 없어도 한다 — 그게
+     없으면 '한 패스 최소 1건' 보장이 무력해져 그 경로가 영영 0회가 된다.
+     복구 조사는 2026-09-13 에 이 예외를 받았다(그전엔 진입부에서 통째로 돌아갔고, 그것이
+     앞 단계가 예산을 넘길 때 복구를 영구히 굶기는 회귀였다 — 코덱스 재현).
     """
 
     def setUp(self):
@@ -357,22 +359,42 @@ class PassEntryWorkBudgetTests(unittest.TestCase):
         self.assertEqual(self.anchored, [])
         self.assertEqual(removed, [])
 
-    def test_recovery_probe_does_nothing_without_budget(self):
-        """드문 복구 경로다 — 예산이 없으면 시작하지 않고 뒤의 재조정에 시간을 남긴다."""
+    def test_recovery_probe_still_tries_one_without_budget(self):
+        """★예산이 없어도 **후보 조회와 첫 1건의 시도**는 한다.
+
+        종전엔 진입부에서 통째로 돌아갔고(`return 0`), 그게 **회귀**였다 — 직접 확인의 조회
+        하나가 15초를 받으므로(`_DIRECT_CHECK_TIMEOUT_SECONDS` > 패스 예산 10초) 복구 차례엔
+        예산이 이미 끝나 있는 일이 있고, 그러면 이 경로가 **매 패스 통째로** 건너뛰어진다.
+        코덱스 재현(활성 64건·조회 15초·4패스): 예산 도입 전 앵커 1건 → 도입 후 **0건**.
+        재조정도 같은 이유로 '후보 조회와 첫 1건' 예외를 이미 갖고 있다.
+        """
         listed = {"n": 0}
+        anchored: list[str] = []
 
         def fake_list(server, token):
             listed["n"] += 1
-            return 200, {"requests": [{"id": "r1"}]}
+            return 200, {
+                "requests": [
+                    {"id": "r1", "recovery_probe_status": "unique", "recovery_probe_job_id": "job-1"},
+                    {"id": "r2", "recovery_probe_status": "unique", "recovery_probe_job_id": "job-2"},
+                ]
+            }
 
+        def fake_anchor(server, token, rid, job_id, verifying=False):
+            anchored.append(rid)
+            return True
+
+        self.agent._RECOVERY_CURSOR.clear()
         with (
             patch.object(self.agent.time, "monotonic", self.clock),
             patch.object(self.agent, "_list_recovery_probes", side_effect=fake_list),
+            patch.object(self.agent, "_anchor", side_effect=fake_anchor),
         ):
             self.assertEqual(
-                self.agent.recovery_probe_pass("http://s", "tok", "hf", self.clock.now - 1.0), 0
+                self.agent.recovery_probe_pass("http://s", "tok", "hf", self.clock.now - 1.0), 1
             )
-        self.assertEqual(listed["n"], 0)  # HTTP 조차 안 한다
+        self.assertEqual(listed["n"], 1)  # 후보 조회는 한다
+        self.assertEqual(anchored, ["r1"])  # 딱 **한 건만** — 둘째는 예산에서 막힌다
 
     def test_reconcile_still_fetches_candidates_without_budget(self):
         """★진입부를 전부 막으면 '최소 1건' 보장이 무력해진다 — 후보 조회는 해야 한다."""
@@ -489,8 +511,9 @@ class WholePassSharesOneBudgetTests(unittest.TestCase):
             seen["direct"] = budget_end
             return 0
 
-        def grab_probe(server, token, cli, budget_end=None):
+        def grab_probe(server, token, cli, budget_end=None, account_email=None):
             seen["recovery"] = budget_end
+            seen["recovery_email"] = account_email
             return 0
 
         def grab_reconcile(server, token, cli, email=None, skip_job_ids=None, budget_end=None):
@@ -507,9 +530,14 @@ class WholePassSharesOneBudgetTests(unittest.TestCase):
             started = self.clock.now
             self.agent.tracking_pass("http://server", "tok", "hf")
 
-        self.assertEqual(set(seen), {"direct", "recovery", "reconcile"})
-        for name, value in seen.items():
-            self.assertIsNotNone(value, f"{name} 가 예산을 못 받았다")
+        # ★복구 조사도 **이미 얻은 계정**을 받는다 — 커서를 (서버, 계정)으로 나누려고 거기서
+        #  다시 `_cycle_account_email` 을 부르면 패스마다 CLI 호출이 하나 늘어난다.
+        self.assertEqual(seen["recovery_email"], "me@example.com")
+        self.assertEqual(
+            set(seen), {"direct", "recovery", "recovery_email", "reconcile"}
+        )
+        for name in ("direct", "recovery", "reconcile"):
+            self.assertIsNotNone(seen[name], f"{name} 가 예산을 못 받았다")
         # 복구와 재조정은 같은 패스 시한을 본다
         self.assertEqual(seen["recovery"], seen["reconcile"])
         # 직접 확인은 그보다 이르다 — 나머지가 재조정 몫이다
