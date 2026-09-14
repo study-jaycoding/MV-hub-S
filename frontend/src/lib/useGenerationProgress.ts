@@ -153,7 +153,9 @@ export function useGenerationProgress({
         setGens((prev) =>
           prev.map((g) => (g.id === m.generation_id ? applyProgressToGen(g, m) : g)),
         );
-        if (["done", "failed", "nsfw"].includes(m.status) && m.generation_id) {
+        // 실패·NSFW 는 상세 재조회를 걸지 않는다. 사유는 위에서 WS 가 이미 실어 왔고, 재조회를
+        // 걸면 그 답이 늦게 도착해 그사이 완료된 카드를 옛 실패로 되돌릴 수 있다(코덱스 리뷰).
+        if (m.status === "done" && m.generation_id) {
           const generationId = m.generation_id;
           api
             .getGeneration(generationId)
@@ -165,8 +167,7 @@ export function useGenerationProgress({
               }
             })
             .catch(() => void reload(true, true));
-          // 실패는 확정 사유를 재조회하고, 완료에 따른 보드 갱신은 done에서만 유지한다.
-          if (m.status === "done") bumpBoard();
+          bumpBoard();
         }
       },
       () => void reload(true),

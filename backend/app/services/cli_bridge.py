@@ -189,6 +189,27 @@ async def _run(*args: str, timeout: float = 60.0) -> str:
 _JOB_NOT_FOUND_RE = re.compile(r"\berror:\s*job not found\s*$", re.IGNORECASE | re.MULTILINE)
 
 
+def _error_text(job: dict[str, Any]) -> Optional[str]:
+    """공급자 응답에서 실패 사유를 **문자열로** 꺼낸다.
+
+    값이 dict/list 면 그대로 흘려보내지 않는다 — SQLite 바인딩에서 터지면 그 잡 한 건이
+    SAVEPOINT 로 롤백되고(적재 누락), 단건 경로는 예외가 호출자까지 올라간다."""
+    for key in ("error", "error_message", "failure_reason", "fail_reason",
+                "reason", "detail", "message"):
+        value = job.get(key)
+        if isinstance(value, str):
+            if value.strip():
+                return value
+            continue
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        try:
+            return json.dumps(value, ensure_ascii=False)[:600]
+        except (TypeError, ValueError):
+            return str(value)[:600]
+    return None
+
+
 def _says_job_not_found(text: str) -> bool:
     """CLI 의 not-found **통보**인가. 본문 아무 데나 있는 문자열로 판정하지 않는다.
 
@@ -434,16 +455,11 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
                 else {}
             ),
             # 실패 사유(rc=0 인데 잡 자체가 실패한 경우 — NSFW 거부 등). 키는 방어적으로 탐색.
-            # 힉스필드 실패 잡 JSON 은 보통 사유 필드를 안 주지만(검증됨), 줄 때를 대비해 폭넓게 탐색.
-            "error": (
-                job.get("error")
-                or job.get("error_message")
-                or job.get("failure_reason")
-                or job.get("fail_reason")
-                or job.get("reason")
-                or job.get("detail")
-                or job.get("message")
-            ),
+            # ★2026-09-14 실측(CLI 1.1.24, 목록 100건 중 실패 4건): 응답 최상위 키는 created_at·
+            #  display_name·id·job_type·min_result_url·params·result_url·status 뿐이고 오류 키가
+            #  **하나도 없다**(generate get 단건도 같음). 지금 여기서 건지는 것은 없고, 사유는 우리가
+            #  만든다(CLI 실패 문구·복구 경로). 필드가 생길 때를 대비해 탐색은 남긴다.
+            "error": _error_text(job),
         },
         "asset": asset,
         "references": references,

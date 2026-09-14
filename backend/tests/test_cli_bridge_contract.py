@@ -17,6 +17,33 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
 
         self.assertEqual(cli_bridge.normalize_status("waiting"), "pending")
 
+    async def test_error_text_normalizes_non_string_values(self):
+        """★사유 값이 문자열이 아니면 문자열로 바꾼다.
+
+        dict/list 를 그대로 흘려보내면 SQLite 바인딩에서 터져 그 잡 한 건이 SAVEPOINT 로
+        롤백된다(적재 누락). 단건 경로는 예외가 호출자까지 올라간다.
+        """
+        from app.services import cli_bridge
+
+        self.assertEqual(cli_bridge._error_text({"error": "NSFW 차단"}), "NSFW 차단")
+        self.assertEqual(cli_bridge._error_text({"error": {"code": 42}}), '{"code": 42}')
+        self.assertEqual(cli_bridge._error_text({"reason": ["a", "b"]}), '["a", "b"]')
+        self.assertEqual(cli_bridge._error_text({"detail": 7}), "7")
+        # 빈 값은 건너뛰고 다음 키를 본다
+        self.assertEqual(cli_bridge._error_text({"error": "   ", "detail": "진짜 사유"}), "진짜 사유")
+        self.assertIsNone(cli_bridge._error_text({"error": {}, "reason": [], "detail": None}))
+        self.assertIsNone(cli_bridge._error_text({"id": "x", "status": "failed"}))
+
+    async def test_parse_job_keeps_error_a_string(self):
+        """parse_job 을 통과한 사유는 항상 문자열이거나 None 이다(저장 경로 계약)."""
+        from app.services import cli_bridge
+
+        parsed = cli_bridge.parse_job(
+            {"id": "j1", "status": "failed", "created_at": 1780000000,
+             "params": {"prompt": "p"}, "error": {"message": "bad"}}
+        )
+        self.assertIsInstance(parsed["generation"]["error"], str)
+
     async def test_model_get_accepts_cli_1_1_20_job_type(self):
         from app.services import cli_bridge
 

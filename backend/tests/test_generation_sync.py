@@ -159,6 +159,28 @@ class GenerationSyncTests(unittest.TestCase):
                     row["error"], "힉스필드 사유" if status in ("failed", "nsfw") else None,
                 )
 
+    def test_sync_reports_updated_when_only_the_error_changed(self) -> None:
+        """★사유만 바뀌어도 '변경' 으로 세야 한다.
+
+        unchanged 로 세면 syncer 가 synced 알림을 건너뛴다(inserted·updated 일 때만 broadcast)
+        → DB 는 새 사유로 갱신됐는데 화면은 옛 사유를 그대로 들고 있는다.
+        """
+        job_id = "job-error-only-change"
+        parsed = self.parsed(job_id, status="failed")
+        parsed["generation"]["error"] = "첫 사유"
+        self.assertEqual(repo.upsert_synced_generation(parsed, "me"), "inserted")
+
+        parsed["generation"]["error"] = "새 사유"
+        self.assertEqual(repo.upsert_synced_generation(parsed, "me"), "updated")
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT error FROM generation WHERE job_id=?", (job_id,)
+            ).fetchone()
+        self.assertEqual(row["error"], "새 사유")
+
+        # 사유까지 같으면 변경이 아니다 — 매 동기화마다 알림이 나가면 안 된다.
+        self.assertEqual(repo.upsert_synced_generation(parsed, "me"), "unchanged")
+
     def test_legacy_waiting_synced_job_is_selected_for_repair(self) -> None:
         waiting = self.parsed("job-waiting", status="waiting")
         self.assertEqual(repo.upsert_synced_generation(waiting, "me"), "inserted")

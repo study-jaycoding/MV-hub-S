@@ -124,6 +124,9 @@ def _upsert_synced(
             )
             creator_filled = not existing["creator_uid"] and bool(g.get("creator_uid"))
             model_filled = not existing["model"] and bool(g.get("model"))
+            # 아래 UPDATE 와 같은 값을 쓴다 — 사유가 바뀌었는지 판정에도 써야 하기 때문이다.
+            # (규칙 설명은 UPDATE 바로 위 주석에 있다)
+            next_error = stored_error(g["status"], g.get("error") or existing["error"])
             result = (
                 "updated"
                 if (
@@ -132,6 +135,9 @@ def _upsert_synced(
                     or creator_filled
                     or model_filled
                     or adopt
+                    # ★사유만 바뀌어도 '변경' 이다. unchanged 로 세면 syncer 가 synced 알림을 건너뛰어
+                    #  (inserted·updated 일 때만 broadcast) DB 는 갱신됐는데 화면은 옛 사유를 그대로 둔다.
+                    or next_error != existing["error"]
                 )
                 else "unchanged"
             )
@@ -150,7 +156,7 @@ def _upsert_synced(
                 f"{job_id_set} WHERE id=?",
                 (
                     g["status"],
-                    stored_error(g["status"], g.get("error") or existing["error"]),
+                    next_error,
                     g["model"],
                     json.dumps(_merged_params(existing["params"], g["params"]), ensure_ascii=False),
                     g.get("sort_ts"),
