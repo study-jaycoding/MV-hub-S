@@ -275,6 +275,164 @@ def test_mask_prompt_echo_covers_truncated_and_escaped_json():
     assert m("plain error text") == "plain error text"
 
 
+def test_sanitize_diagnostic_hides_credentials_but_keeps_context():
+    agent = _load_agent()
+    for raw, secret, marker in (
+        ("Bearer FAKE_REVIEW_TOKEN", "FAKE_REVIEW_TOKEN", "<자격값 숨김>"),
+        ("basic FAKE_BASIC_VALUE==", "FAKE_BASIC_VALUE", "<자격값 숨김>"),
+        ("Authorization: Bearer FAKE_AUTH_VALUE", "FAKE_AUTH_VALUE", "<인증정보 숨김>"),
+        ("authorization=Basic FAKE_AUTH_VALUE", "FAKE_AUTH_VALUE", "<인증정보 숨김>"),
+        ('{"Authorization": "Custom FAKE_AUTH_VALUE", "status": 401}', "FAKE_AUTH_VALUE", "<인증정보 숨김>"),
+        ("api_key=FAKE_API_VALUE", "FAKE_API_VALUE", "<API 키 숨김>"),
+        ("X-API-Key: FAKE_API_VALUE", "FAKE_API_VALUE", "<API 키 숨김>"),
+        ("HIGGSFIELD_API_KEY=FAKE_API_VALUE", "FAKE_API_VALUE", "<API 키 숨김>"),
+        ("accessToken='FAKE_TOKEN_VALUE with spaces'", "FAKE_TOKEN_VALUE", "<토큰 숨김>"),
+        ('{"refresh_token":"FAKE_TOKEN_VALUE","status":401}', "FAKE_TOKEN_VALUE", "<토큰 숨김>"),
+        ('password="FAKE_PASSWORD_VALUE with spaces"', "FAKE_PASSWORD_VALUE", "<비밀번호 숨김>"),
+        ("client_secret=FAKE_SECRET_VALUE", "FAKE_SECRET_VALUE", "<비밀값 숨김>"),
+        ("cookie=FAKE_COOKIE_VALUE", "FAKE_COOKIE_VALUE", "<쿠키 숨김>"),
+        ("Cookie: sid=FAKE_COOKIE_VALUE; other=FAKE_COOKIE_VALUE", "FAKE_COOKIE_VALUE", "<쿠키 숨김>"),
+        ("Set-Cookie: sid=FAKE_COOKIE_VALUE; HttpOnly", "FAKE_COOKIE_VALUE", "<쿠키 숨김>"),
+        ('Cookie: sid="FAKE_COOKIE_VALUE"; other=FAKE_COOKIE_VALUE', "FAKE_COOKIE_VALUE", "<쿠키 숨김>"),
+        ('Authorization: Digest username="FAKE_AUTH_VALUE", nonce="FAKE_AUTH_VALUE"', "FAKE_AUTH_VALUE", "<인증정보 숨김>"),
+        ("api key=FAKE_API_VALUE", "FAKE_API_VALUE", "<API 키 숨김>"),
+        ('token="FAKE_TOKEN_VALUE without closing quote', "FAKE_TOKEN_VALUE", "<토큰 숨김>"),
+    ):
+        shown = agent._sanitize_diagnostic("request failed\n" + raw + "\nstatus 401")
+        assert secret not in shown
+        assert marker in shown
+        assert shown.startswith("request failed\n")
+        if "without closing" not in raw:
+            assert shown.endswith("\nstatus 401")
+    # 길이/모양만으로 가리지 않는다. 정상 진단, 숫자, 식별자와 CLI 안내는 유지한다.
+    for raw in (
+        "Error: higgsfield: request failed (no response received) | Hint: Run: hf auth login",
+        "Error: No workspace selected. | Hint: Run: hf workspace set <workspace_id>",
+        "request_id=" + "a" * 64 + " status=429 token_count=100",
+    ):
+        assert agent._sanitize_diagnostic(raw) == raw
+
+
+def test_sanitize_diagnostic_url_keeps_endpoint_and_masks_every_query_key():
+    agent = _load_agent()
+    url = "https://cdn.example.com:8443/jobs/asset.png"
+    signed = url + "?Policy=FAKE_POLICY&Signature=FAKE_SIGNATURE&new_key=FAKE_NEW_VALUE"
+    assert agent._sanitize_diagnostic("failed (" + signed + ").") == (
+        "failed (" + url + "?<URL 쿼리 숨김>)."
+    )
+    assert agent._sanitize_diagnostic(url + "?page=2") == url + "?<URL 쿼리 숨김>"
+    assert agent._sanitize_diagnostic('{"url":"' + signed + '","status":403}') == (
+        '{"url":"' + url + '?<URL 쿼리 숨김>","status":403}'
+    )
+    assert agent._sanitize_diagnostic(url) == url
+    assert agent._sanitize_diagnostic(
+        "https://FAKE_USER:FAKE_PASSWORD@cdn.example.com/a?x=FAKE_QUERY#FAKE_FRAGMENT"
+    ) == (
+        "https://<URL 자격정보 숨김>@cdn.example.com/a?<URL 쿼리 숨김>#<URL fragment 숨김>"
+    )
+    assert agent._sanitize_diagnostic("http://[::1]:8012/jobs?x=FAKE_QUERY") == (
+        "http://[::1]:8012/jobs?<URL 쿼리 숨김>"
+    )
+
+
+def test_sanitize_diagnostic_preserves_prompt_masking_contract():
+    agent = _load_agent()
+    for raw in (
+        '{"prompt":"secret words","negative_prompt":"bad stuff","display_prompt":"shown"}',
+        '{"prompt": "a \\"b\\" c", "seed": 1}',
+        '{"prompt": "cut off in the midd',
+        '{"prompt": "trailing backslash' + "\\",
+        "plain error text",
+    ):
+        assert agent._sanitize_diagnostic(raw) == agent._mask_prompt_echo(raw)
+
+
+def test_sanitize_diagnostic_removes_ansi_and_controls_before_matching_secrets():
+    agent = _load_agent()
+    raw = (
+        "\x1b[31mError\x1b[0m\r\n"
+        "Bear\x00er\tFAKE\x1b[32m_TOKEN\x1b[0m\n"
+        "api_\x7fkey=FAKE_API\x1b[0m\n"
+        "\x1b]8;;https://example.com/?token=FAKE_LINK\x1b\\endpoint\x1b]8;;\x07"
+        "\x9b31m\x01\x85"
+    )
+    shown = agent._sanitize_diagnostic(raw)
+    assert shown == "Error\nBearer <자격값 숨김>\napi_key=<API 키 숨김>\nendpoint"
+    assert not any(ord(ch) < 32 and ch != "\n" or 127 <= ord(ch) <= 159 for ch in shown)
+
+
+def test_sanitize_diagnostic_keeps_uuid_for_created_job_recovery():
+    agent = _load_agent()
+    job_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    for raw in (
+        f"Created job: {job_id}\nBearer FAKE_REVIEW_TOKEN",
+        f"download https://cdn.example.com/jobs/{job_id}/output?Signature=FAKE_SIGNATURE",
+        '{"job_id":"' + job_id + '","token":"FAKE_REVIEW_TOKEN","prompt":"private"}',
+    ):
+        shown = agent._sanitize_diagnostic(raw)
+        assert job_id in shown
+        for prefix in (agent._TIMEOUT_PREFIX, agent._PARSE_FAIL_PREFIX):
+            assert agent._extract_created_id(None, prefix + shown) == job_id
+        assert agent._extract_created_id(None, "CLI 실패: " + shown) is None
+
+
+def test_run_cli_sanitizes_existing_error_paths_before_truncation():
+    agent = _load_agent()
+    job_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    private = "PRIVATE_PROMPT " * 100 + "END"
+    raw = (
+        'diagnostic {"prompt":"' + private + '","job_id":"' + job_id + '"}\n'
+        "Authorization: Bearer FAKE_AUTH\n"
+        "api_key=FAKE_API\n"
+        "https://cdn.example.com/jobs?Signature=FAKE_SIGNATURE\n"
+        '{"display_prompt":"' + private
+    )
+    # stdout 우선/비어 있을 때 stderr: 기존 세 호출부의 실제 분기를 전부 고정한다.
+    for mode, use_stderr in (
+        ("timeout", False), ("timeout", True), ("parse", False), ("parse", True), ("failure", False),
+    ):
+        stdout, stderr = ("", raw) if use_stderr else (raw, "")
+        if mode == "timeout":
+            options = {"side_effect": subprocess.TimeoutExpired(
+                "hf", 120, output=stdout.encode(), stderr=stderr.encode(),
+            )}
+            prefix = agent._TIMEOUT_PREFIX
+        else:
+            options = {"return_value": subprocess.CompletedProcess(
+                [], int(mode == "failure"), stdout=stdout, stderr=stderr,
+            )}
+            prefix = agent._PARSE_FAIL_PREFIX if mode == "parse" else "CLI 실패: "
+        with patch.object(agent.subprocess, "run", **options):
+            data, error = agent._run_cli_json("hf", "generate", "create")
+        assert data is None and error.startswith(prefix)
+        assert "PRIVATE" not in error and "FAKE" not in error
+        assert error.count(f"<프롬프트 {len(private)}자>") == 2
+        assert "https://cdn.example.com/jobs?<URL 쿼리 숨김>" in error
+        assert job_id in error
+        if mode != "failure":
+            assert agent._extract_created_id(data, error) == job_id
+
+
+def test_sanitize_diagnostic_accepts_unexpected_inputs_without_raising():
+    agent = _load_agent()
+
+    class Unprintable:
+        def __str__(self):
+            raise ValueError("must not stringify unexpected input")
+
+    for raw in (
+        None, b"\xffBearer FAKE_BYTES", 123, {}, [], Unprintable(), "",
+        "".join(chr(i) for i in range(256)), "\ud800\udfff",
+        "https://[broken?signature=FAKE_QUERY", "\x1b]unfinished ANSI",
+        'token="' + "\\" * 1001, "x" * 10000,
+    ):
+        shown = agent._sanitize_diagnostic(raw)
+        assert isinstance(shown, str)
+        assert "FAKE" not in shown
+    assert agent._sanitize_diagnostic(None) == ""
+    assert agent._sanitize_diagnostic(b"Bearer FAKE_BYTES") == "Bearer <자격값 숨김>"
+
+
 def test_run_cli_failure_keeps_both_streams_without_duplicates_or_blank_lines():
     agent = _load_agent()
     for stderr, stdout, expected in (

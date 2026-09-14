@@ -246,6 +246,83 @@ def _mask_prompt_echo(text: str) -> str:
     )
 
 
+# CLI 1.1.24 실측 오류는 민감값을 포함하지 않았다. 원문 전달 확대 전의 방어선이며,
+# 임의의 긴 문자열/UUID는 가리지 않는다. 반드시 정제한 뒤 호출부에서 길이를 제한한다.
+_DIAGNOSTIC_ANSI_RE = re.compile(
+    r"(?:\x1b\]|\x9d)[\s\S]*?(?:\x07|\x1b\\|\x9c|$)"
+    r"|(?:\x1b[PX^_]|\x90|\x98|\x9e|\x9f)[\s\S]*?(?:\x1b\\|\x9c|$)"
+    r"|(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]|\x1b[ -/]*[@-Z\\-_]"
+)
+_DIAGNOSTIC_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+_DIAGNOSTIC_URL_RE = re.compile(r"""(?i)\b[a-z][a-z0-9+.-]*://[^\s<>"']+""")
+_DIAGNOSTIC_QUOTED_VALUE = r""""(?:[^"\\]|\\[\s\S])*(?:"|\\?$)|'(?:[^'\\]|\\[\s\S])*(?:'|\\?$)"""
+_DIAGNOSTIC_HEADER_RE = re.compile(
+    r"""(?P<prefix>(?<![\w-])["']?(?P<key>(?:proxy-)?authorization|(?:set-)?cookie)["']?[ \t]*:[ \t]*)"""
+    r"(?:" + _DIAGNOSTIC_QUOTED_VALUE + r"""|[^\n}]+)""", re.IGNORECASE,
+)
+_DIAGNOSTIC_KEY_RE = re.compile(
+    r"""(?P<prefix>(?<![\w-])["']?(?P<key>authorization|[a-z0-9_-]*(?:api[ _-]?key|token|password|secret|cookie))["']?[ \t]*[=:][ \t]*)"""
+    r"(?:" + _DIAGNOSTIC_QUOTED_VALUE
+    + r"""|(?:Bearer|Basic)[ \t]+[^\s,;'"<>{}\[\]&]+|[^\s,;'"<>{}\[\]&]+)""",
+    re.IGNORECASE,
+)
+_DIAGNOSTIC_AUTH_RE = re.compile(
+    r"""(?i)\b(Bearer|Basic)[ \t]+[^\s,;'"<>{}\[\]&]+"""
+)
+
+
+def _sanitize_diagnostic(text: str | bytes | None) -> str:
+    """오류 진단용 가림막. URL은 호스트/경로 보존, 쿼리 전체·fragment·userinfo는 가림.
+
+    문자열/bytes/None을 수용하고 다른 타입은 내용을 펼치지 않는다. UUID는 민감 필드
+    밖에서는 보존한다(타임아웃/파싱 실패의 잡 복구). 길이 제한은 여기서 하지 않는다.
+    """
+    if text is None:
+        return ""
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "replace")
+    elif not isinstance(text, str):
+        return "<진단 입력 형식 숨김>"
+    text = _DIAGNOSTIC_ANSI_RE.sub("", text)
+    text = _DIAGNOSTIC_CONTROL_RE.sub("", text.replace("\r\n", "\n").replace("\r", "\n").replace("\t", " "))
+    text = _mask_prompt_echo(text)
+
+    def mask_url(match):
+        # 파싱 불가 URL도 정제할 수 있게 URL 유효성 검사 없이 구분자만 나눈다.
+        url = match.group(0).rstrip(".,;)}")
+        punctuation = match.group(0)[len(url):]
+        base, fragment_sep, _ = url.partition("#")
+        base, query_sep, _ = base.partition("?")
+        scheme, _, rest = base.partition("://")
+        authority, slash, path = rest.partition("/")
+        if "@" in authority:
+            authority = "<URL 자격정보 숨김>@" + authority.rsplit("@", 1)[1]
+        return (scheme + "://" + authority + slash + path
+                + ("?<URL 쿼리 숨김>" if query_sep else "")
+                + ("#<URL fragment 숨김>" if fragment_sep else "") + punctuation)
+
+    def mask_credential(match):
+        key = match.group("key").lower().replace("-", "").replace("_", "").replace(" ", "")
+        if key.endswith("cookie"):
+            label = "쿠키"
+        elif key.endswith("apikey"):
+            label = "API 키"
+        elif key.endswith("token"):
+            label = "토큰"
+        elif key.endswith("password"):
+            label = "비밀번호"
+        elif key.endswith("secret"):
+            label = "비밀값"
+        else:
+            label = "인증정보"
+        return match.group("prefix") + f"<{label} 숨김>"
+
+    text = _DIAGNOSTIC_URL_RE.sub(mask_url, text)
+    text = _DIAGNOSTIC_HEADER_RE.sub(mask_credential, text)
+    text = _DIAGNOSTIC_KEY_RE.sub(mask_credential, text)
+    return _DIAGNOSTIC_AUTH_RE.sub(lambda m: f"{m.group(1)} <자격값 숨김>", text)
+
+
 def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = None):
     """higgsfield CLI 를 --json 으로 실행하고 (파싱 결과, 오류문구) 반환.
 
@@ -259,8 +336,8 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = N
     except subprocess.TimeoutExpired as e:
         # 타임아웃이어도 CLI 가 이미 찍은 부분 출력에 방금 만든 job id 가 있을 수 있다 → 버리지 않고
         # (순수 CLI 출력만) 담아, _extract_created_id 가 그 UUID 로 job_id 를 되찾게 한다(가짜 실패 방지).
-        partial = _mask_prompt_echo(_as_text(e.stdout) or _as_text(e.stderr))
-        partial = "".join(ch for ch in partial if ch == "\n" or ch >= " ").strip()[:800]
+        partial = _sanitize_diagnostic(_as_text(e.stdout) or _as_text(e.stderr))
+        partial = partial.strip()[:800]
         print(f"[경고] CLI 타임아웃: {_args_for_log(args)[:160]}")
         return None, f"{_TIMEOUT_PREFIX}{partial}"
     if out.returncode != 0:
@@ -272,7 +349,7 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = N
         #  싣게 바뀌면 그때 자동으로 건진다.
         stderr = (out.stderr or "").strip()
         stdout = (out.stdout or "").strip()
-        msg = _mask_prompt_echo("\n".join(dict.fromkeys(part for part in (stderr, stdout) if part)))
+        msg = _sanitize_diagnostic("\n".join(dict.fromkeys(part for part in (stderr, stdout) if part)))
         # 진짜 CLI 에러를 앞에 둔다 — 뒤에서 잘려도 원인이 남게. 긴 명령어(JSON 프롬프트·ref UUID)는
         # 짧게 뒤에 붙인다(예전엔 명령어가 앞이라 하류 500자 컷에 실제 실패 사유가 통째로 잘렸다).
         return None, f"CLI 실패: {msg[:600]} — cmd: {_args_for_log(args)[:160]}"
@@ -281,8 +358,8 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = N
         return parsed, None
     # exit 0 인데 파싱 불가 — 실제 출력을 담아 원인 규명이 되게 한다(예전엔 args 만 찍어 원인을 잃었다).
     # 제어문자 제거·800자 제한.
-    raw = _mask_prompt_echo((out.stdout or "").strip() or (out.stderr or "").strip())
-    raw = "".join(ch for ch in raw if ch == "\n" or ch >= " ")[:800]
+    raw = _sanitize_diagnostic((out.stdout or "").strip() or (out.stderr or "").strip())
+    raw = raw[:800]
     return None, f"{_PARSE_FAIL_PREFIX}{raw or _args_for_log(args)}"
 
 
