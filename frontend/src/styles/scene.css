@@ -34,8 +34,9 @@
 .scene-tab-wrap:not(.on) .scene-del { font-size: 12.5px; padding: 3px 7px 3px 2px; color: var(--muted2); }
 /* 공간 표식도 같이 줄인다 — 탭만 작아지면 표식이 상대적으로 커 보인다. */
 .scene-tab-wrap:not(.on) .ws-mark-box { width: 13px; height: 13px; border-radius: 4px; font-size: 8px; }
-/* 얹으면 다시 또렷해진다 — 누를 수 있다는 신호는 남긴다. ×는 자기 hover 규칙(빨강)을 유지. */
-.scene-tab-wrap:not(.on):hover .scene-tab { color: var(--text); }
+/* 얹으면 한 단계만 밝아진다 — --text 까지 올리면 비활성 탭이 활성 탭보다 튄다(Jay 지적).
+   ×는 자기 hover 규칙(빨강)을 유지. */
+.scene-tab-wrap:not(.on):hover .scene-tab { color: var(--muted); }
 .scene-tab-wrap:not(.on) .scene-del:hover { color: var(--danger, #f2777c); }
 .scene-add {
   font-size: 12px; font-weight: 700; padding: 4px 11px; border-radius: 8px;
