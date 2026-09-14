@@ -117,7 +117,11 @@
   position: relative; /* 순서변경 흰 선(absolute)의 기준 */
   display: flex; align-items: stretch; gap: 8px; flex-wrap: nowrap;
   overflow-x: auto; overflow-y: hidden;
-  padding: 10px 10px 8px; margin-bottom: 2px;
+  /* 위아래 여백은 눈에 보이는 선을 기준으로 맞춘다 — 위는 패널 테두리(패널 padding 6px 이
+     더 붙는다), 아래는 이 트레이의 border-bottom. 위 8 + 아래 14 로 그 6px 을 상쇄해 둘 다
+     15px 이 된다. 위를 6 까지 줄이면 항목 번호 배지(top:-5px)가 패널 테두리에 1px 까지
+     붙으므로 8 이 하한이다. */
+  padding: 8px 10px 14px; margin-bottom: 2px;
   border-bottom: 1px solid var(--border);
   min-height: 86px; outline: none;
 }
@@ -274,7 +278,9 @@
 /* 컨트롤 행 */
 .sl-controls {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 4px 10px 8px; border-top: 1px solid var(--border);
+  /* 아래는 패널 padding 6px 이 더 붙으므로 위 11 · 아래 5 로 상쇄한다 — 구분선↔토글 15px,
+     Generate 위아래 12px 로 같아진다. 트레이와 같은 15px 이 되게 맞췄다. */
+  padding: 11px 10px 5px; border-top: 1px solid var(--border);
 }
 .sl-left { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 
