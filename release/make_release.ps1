@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = (Get-Date -Format "yyyy.MM.dd-HHmm"),
     [string]$OutputDir = (Join-Path $PSScriptRoot "packages"),
     [string]$PublishDir = "",
@@ -140,6 +140,7 @@ function Assert-ReleaseArchive {
             "agent_push.py",
             "run_agent_session.py",
             "hf_cli_version.txt",
+            "mvhub.ico",
             "backend/serve.py",
             "backend/app/main.py",
             "backend/app/routers/release_update.py",
@@ -195,7 +196,8 @@ function Assert-ReleaseArchive {
             "update_release_worker.bat",
             "agent_push.py",
             "run_agent_session.py",
-            "hf_cli_version.txt"
+            "hf_cli_version.txt",
+            "mvhub.ico"
         )
         $UnexpectedTopLevel = @($Names | Where-Object {
             $TopLevel = ($_ -split "/", 2)[0]
@@ -461,7 +463,10 @@ $RootFiles = @(
     "update_release_worker.bat",
     "agent_push.py",
     "run_agent_session.py",
-    "hf_cli_version.txt"
+    "hf_cli_version.txt",
+    # 바탕화면 바로가기 아이콘. 런처가 %LOCALAPPDATA%\MVHub 로 복사해 그 사본을 가리킨다
+    # - 설치 폴더 원본을 가리키면 탐색기가 쥔 핸들 때문에 업데이트 rename 이 막힐 수 있다.
+    "mvhub.ico"
 )
 foreach ($Name in $RootFiles) {
     $Src = Join-Path $ProjectRoot $Name

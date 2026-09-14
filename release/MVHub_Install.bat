@@ -52,7 +52,8 @@ if not "%INSTALL_EXIT%"=="0" (
 
 echo.
 echo [done] MV Hub is installed.
-echo        Run: "%TARGET_DIR%\MV_agent.bat"
+echo        Run: the "MV Hub" icon on your Desktop
+echo             (or "%TARGET_DIR%\MV_agent.bat")
 echo        Update later: "%TARGET_DIR%\update_release.bat"
 if not "%MVHUB_NO_PAUSE%"=="1" pause
 exit /b 0
@@ -264,6 +265,56 @@ function Install-Package {
     }
 }
 
+function New-DesktopShortcut {
+    # Create the Desktop icon after a successful install. The rule lives in ONE place
+    # (run_agent_session.py --ensure-shortcut). Re-implementing it here would drift from the
+    # install-id rule the app uses, and split the "already made it" marker in two.
+    # This must NEVER turn a finished install into a reported failure: the app is already in
+    # place by now, and $ErrorActionPreference is Stop for everything above.
+    param([string]$Root)
+
+    try {
+        $Python = Join-Path $Root "runtime\python\python.exe"
+        $Guard = Join-Path $Root "run_agent_session.py"
+        if (-not (Test-Path -LiteralPath $Python -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $Guard -PathType Leaf)) {
+            Write-Host "[install] Desktop shortcut skipped (bundled Python not found)."
+            return
+        }
+        $OutFile = Join-Path $env:TEMP ("mvhub-shortcut-" + [Guid]::NewGuid().ToString("N") + ".txt")
+        # Quote the script path. -ArgumentList joins array elements with spaces and does NOT
+        # quote them, so "C:\Users\Jane Doe\Desktop\..." would reach Python as two arguments
+        # and the shortcut would silently never be created on such a PC.
+        $Process = Start-Process -FilePath $Python -ArgumentList @("`"$Guard`"", "--ensure-shortcut") `
+            -NoNewWindow -PassThru -RedirectStandardOutput $OutFile
+        # PS 5.1: without touching .Handle first, ExitCode comes back null.
+        [void]$Process.Handle
+        if (-not $Process.WaitForExit(60000)) {
+            try { $Process.Kill() } catch { }
+            Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+            Write-Host "[install] warn: desktop shortcut timed out - the app creates it on first run."
+            return
+        }
+        $Outcome = ""
+        if (Test-Path -LiteralPath $OutFile) {
+            $Outcome = (Get-Content -LiteralPath $OutFile -Raw).Trim()
+            Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+        }
+        if ($Process.ExitCode -eq 0) {
+            Write-Host "[install] Desktop shortcut is ready."
+        }
+        else {
+            # Never claim an icon is ready when it is not, or when it belongs to ANOTHER
+            # install ("foreign") - clicking that one opens a different hub and DB.
+            Write-Host "[install] note: no Desktop shortcut for this install ($Outcome)."
+            Write-Host "[install]       Start MV Hub from: $Root\MV_agent.bat"
+        }
+    }
+    catch {
+        Write-Host "[install] warn: desktop shortcut could not be created: $($_.Exception.Message)"
+    }
+}
+
 $TempRoot = Join-Path $env:TEMP ("mvhub-install-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $TempRoot | Out-Null
 
@@ -294,6 +345,8 @@ try {
 
     Write-Host "[2/3] Installing/updating: '$CurrentVersion' -> '$($Latest.version)'"
     Install-Package -Latest $Latest -TempRoot $TempRoot
+
+    New-DesktopShortcut -Root $TargetDir
 
     Write-Host "[3/3] Install/update complete."
 }

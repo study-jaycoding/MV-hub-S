@@ -279,9 +279,14 @@ def _user32():
     return ctypes.WinDLL("user32", use_last_error=True)
 
 
+def _install_root() -> Path:
+    """이 설치의 루트 — 이 파일이 놓인 폴더."""
+    return Path(__file__).resolve().parent
+
+
 def _install_id() -> str:
     """설치 루트별 고유 id — 여러 설치(릴리스/저장소)가 프로필·mutex 를 공유하지 않게."""
-    root = str(Path(__file__).resolve().parent).casefold()
+    root = str(_install_root()).casefold()
     return hashlib.sha1(root.encode("utf-8")).hexdigest()[:10]
 
 
@@ -356,9 +361,14 @@ def _find_app_browser() -> tuple[str, str] | None:
     return None
 
 
-def _app_window_base() -> Path:
+def _mvhub_local_dir() -> Path:
+    """이 PC 의 사용자별 MV Hub 보관함 — 앱 창 프로필·바로가기 표식·아이콘 사본이 여기 모인다."""
     base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-    return base / "MVHub" / "app-window"
+    return base / "MVHub"
+
+
+def _app_window_base() -> Path:
+    return _mvhub_local_dir() / "app-window"
 
 
 def _app_profile_dir(browser_name: str) -> Path:
@@ -1027,6 +1037,190 @@ def run_guarded(script: Path) -> int:
             kernel32.CloseHandle(info.hProcess)
 
 
+# ── 바탕화면 바로가기 ────────────────────────────────────────────────────────
+# 설치 폴더를 열지 않고 아이콘 하나로 앱을 켠다(Jay 2026-09-14). 만드는 곳은 **여기 한 곳**이다
+# — 설치기도 같은 함수를 부른다(--ensure-shortcut). 설치기가 PowerShell 로 같은 일을 따로
+# 구현하면 _install_id() 의 casefold/resolve 규칙이 미묘하게 어긋나 표식이 갈린다(코덱스 P2).
+#
+# ★아이콘(.ico)은 설치 폴더가 아니라 %LOCALAPPDATA%\MVHub 의 **사본**을 가리킨다.
+#  업데이트는 설치 폴더의 파일을 rename 으로 통째 교체하는데, 그 rename 이 잠금(win32 5/32/33)에
+#  막히면 15초 재시도 뒤 **업데이트 전체가 롤백**된다(update_release_worker.bat 의
+#  Move-PathWithRetry → Invoke-ComponentSwap → Undo-ComponentSwaps). 2026-09-02 에 백신이 방금
+#  복사된 파일을 잠가 실제로 일어난 일이다. 아이콘은 셸이 아무 때나 읽는 파일이므로 교체 대상에서
+#  빼 둔다 — 교체할 파일을 늘리지 않는 것 자체가 이득이다.
+#  ※탐색기 자신은 표시 중에도 .ico 핸들을 붙잡지 않는다(2026-09-14 실측: 폴더를 열어 아이콘을
+#   그리는 중에도 rename 3회 모두 성공). 위험 주체는 탐색기가 아니라 백신·인덱서다.
+#
+# ★이미 있는 바로가기가 **다른 설치**를 가리키면 손대지 않는다. 이름이 "MV Hub" 하나뿐이라
+#  한 PC 에 설치 폴더가 둘이면 서로 덮어쓰는데, 그러면 같은 아이콘을 눌렀는데 다른 DB·다른
+#  브라우저 프로필이 열린다 — "작업물이 사라졌다" 신고가 되는 바로 그 상황이다(_install_id 축).
+#
+# ★창 모드는 최소화가 아니라 **보통**이다. 최소화하면 기동 중 오류([ERROR] + pause)가 화면에
+#  안 보여 "눌렀는데 아무 일도 없다"가 된다. 성공하면 어차피 앱 창이 뜬 뒤 콘솔이 스스로 숨는다.
+
+SHORTCUT_NAME = "MV Hub"
+ICON_FILE = "mvhub.ico"
+
+_SHORTCUT_PS = r"""
+$ErrorActionPreference = "Stop"
+# 바탕화면은 Known Folder 로 찾는다 - OneDrive 등으로 옮겨져 있어도 실제 위치가 나온다.
+# ($env:USERPROFILE\Desktop 을 짐작하면 리디렉션된 PC 에서 엉뚱한 곳에 만든다)
+$desktop = $env:MVHUB_SC_DESKTOP
+if (-not $desktop) { $desktop = [Environment]::GetFolderPath("DesktopDirectory") }
+if (-not $desktop -or -not (Test-Path -LiteralPath $desktop -PathType Container)) {
+    Write-Output "no-desktop"
+    exit 0
+}
+$link = Join-Path $desktop ($env:MVHUB_SC_NAME + ".lnk")
+$shell = New-Object -ComObject WScript.Shell
+if (Test-Path -LiteralPath $link) {
+    $existing = $shell.CreateShortcut($link)
+    if ([string]::Equals([string]$existing.TargetPath, $env:MVHUB_SC_TARGET,
+                         [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Output "already-ours"
+    } else {
+        Write-Output "foreign"
+    }
+    exit 0
+}
+# 최종 이름으로 바로 저장하지 않는다. 저장이 실제로 됐는지 확인한 뒤 **덮어쓰지 않는 이동**으로
+# 확정해야, 같은 순간에 다른 설치가 만든 바로가기를 지우지 않는다(File.Move 는 대상이 있으면 예외).
+# 임시 이름은 **설치마다 고정**이다. 무작위로 하면 Save 와 Move 사이에서 강제 종료됐을 때
+# 바탕화면에 잔재가 영영 쌓인다. 고정이면 다음 실행이 자기 것만 골라 치울 수 있다.
+$temp = Join-Path $desktop $env:MVHUB_SC_TMPNAME
+Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+try {
+    $sc = $shell.CreateShortcut($temp)
+    $sc.TargetPath = $env:MVHUB_SC_TARGET
+    $sc.WorkingDirectory = $env:MVHUB_SC_ROOT
+    $sc.IconLocation = $env:MVHUB_SC_ICON + ",0"
+    $sc.WindowStyle = 1
+    $sc.Description = $env:MVHUB_SC_NAME
+    $sc.Save()
+    if (-not (Test-Path -LiteralPath $temp)) {
+        Write-Output "failed"
+        exit 0
+    }
+    [System.IO.File]::Move($temp, $link)
+    Write-Output "created"
+}
+catch {
+    Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    Write-Output "failed"
+}
+"""
+
+_SHORTCUT_DONE = ("created", "already-ours")
+
+
+def _shortcut_mark_path() -> Path:
+    """이 설치가 바로가기를 이미 만들었다는 표식 — 사용자가 지운 것을 매번 되살리지 않는다."""
+    return _mvhub_local_dir() / f"shortcut-{_install_id()}.txt"
+
+
+def _sync_shortcut_icon(root: Path) -> Path | None:
+    """설치 폴더의 아이콘을 LOCALAPPDATA 로 복사하고 **사본 경로**를 돌려준다(없으면 None)."""
+    source = root / ICON_FILE
+    if not source.is_file():
+        return None  # 아이콘을 안 담은 옛 패키지
+    # 설치마다 따로 둔다. 한 파일을 공유하면 B 를 한 번 켜는 것만으로 **A 바로가기의 그림**이
+    # B 것으로 바뀐다(소유권 판정은 실행 대상만 보므로 그때도 A 를 그대로 둔다).
+    target = _mvhub_local_dir() / f"icon-{_install_id()}.ico"
+    try:
+        data = source.read_bytes()
+        if not target.is_file() or target.read_bytes() != data:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # 곧바로 덮어쓰면 write_bytes 가 먼저 파일을 비우므로, 쓰다 실패하면 **빈 사본**이
+            # 남는다. 그러면 아래 폴백이 그 깨진 것을 '쓸 만한 옛 사본'으로 돌려준다.
+            staging = target.parent / (target.name + ".next")
+            try:
+                staging.write_bytes(data)
+                os.replace(staging, target)
+            finally:
+                staging.unlink(missing_ok=True)
+    except OSError:
+        # 복사에 실패해도 쓸 만한 옛 사본이 있으면 그것으로 간다.
+        return target if target.is_file() else None
+    return target
+
+
+def ensure_desktop_shortcut(desktop: Path | None = None) -> str:
+    """바탕화면에 'MV Hub' 바로가기를 한 번 만든다. 무슨 일이 있었는지 사유를 돌려준다.
+
+    desktop 은 **시험에서만** 넘긴다(실사용은 None → Known Folder). 환경변수가 아니라
+    인자인 이유: 바깥 환경에 같은 이름이 떠 있다고 바로가기 자리가 바뀌면 안 된다.
+
+    사유: created / already-ours / already-marked / foreign / dev-tree / no-icon /
+    no-launcher / no-desktop / not-windows / failed.
+
+    ★실패는 전부 삼킨다. 바로가기는 편의 기능이라 이것 때문에 앱이 안 뜨면 안 된다.
+     PowerShell 호출에 시한(20초)을 거는 것도 같은 이유다 — 예외는 잡아도 '멈춰 있는'
+     COM 호출은 못 잡는데, 그러면 앱 기동이 같이 멈춘다(코덱스 P1)."""
+    if os.name != "nt":
+        return "not-windows"
+    mark: Path | None = None
+    try:
+        root = _install_root()
+        if (root / ".git").exists():
+            # 개발 저장소·워크트리 — 여기서 만들면 개발본이 대표 아이콘을 차지한다.
+            # (.git 은 워크트리에서 파일, 클론에서 폴더라 exists 로 본다)
+            return "dev-tree"
+        mark = _shortcut_mark_path()
+        # 아이콘 사본은 **표식과 상관없이 매번** 맞춘다. 나중 릴리스가 아이콘을 바꾸면
+        # 기존 사용자의 바로가기도 따라가야 하는데, 그 바로가기가 가리키는 것은 사본이다.
+        icon = _sync_shortcut_icon(root)
+        if mark.exists():
+            return "already-marked"
+        launcher = root / "MV_agent.bat"
+        if not launcher.is_file():
+            return "no-launcher"
+        if icon is None:
+            return "no-icon"
+        env = os.environ.copy()
+        # 경로는 PowerShell 코드에 끼워 넣지 않고 **환경변수로** 넘긴다. 파일명에는 따옴표·$·
+        # 백틱·괄호가 들어갈 수 있어 문자열로 조립하면 파싱이 깨지거나 주입이 된다(코덱스 P1).
+        env.update(
+            {
+                "MVHUB_SC_NAME": SHORTCUT_NAME,
+                "MVHUB_SC_TARGET": str(launcher),
+                "MVHUB_SC_ROOT": str(root),
+                "MVHUB_SC_ICON": str(icon),
+                "MVHUB_SC_DESKTOP": str(desktop) if desktop else "",
+                "MVHUB_SC_TMPNAME": f"MVHub-{_install_id()}.tmp.lnk",
+            }
+        )
+        powershell = str(
+            Path(os.environ["SystemRoot"])
+            / "System32"
+            / "WindowsPowerShell"
+            / "v1.0"
+            / "powershell.exe"
+        )
+        proc = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", _SHORTCUT_PS],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=CREATE_NO_WINDOW,
+            timeout=20,
+            check=False,
+        )
+        lines = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+        outcome = lines[-1] if lines else "failed"
+    except (OSError, subprocess.SubprocessError, KeyError, ValueError):
+        return "failed"
+    if outcome in _SHORTCUT_DONE and mark is not None:
+        try:
+            mark.parent.mkdir(parents=True, exist_ok=True)
+            mark.write_text(outcome, encoding="utf-8")
+        except OSError:
+            pass  # 표식을 못 남겨도 바로가기는 이미 있다 — 다음 실행이 다시 확인할 뿐이다
+    return outcome
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="MV Hub agent process-tree guard")
     parser.add_argument("script", nargs="?", type=Path)
@@ -1034,10 +1228,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--app-probe", action="store_true")
     parser.add_argument("--app-window", default="")
     parser.add_argument("--close-app-window", action="store_true")
+    parser.add_argument("--ensure-shortcut", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.close_app_window:
             return close_app_windows()
+        if args.ensure_shortcut:
+            # 설치기가 설치를 끝낸 뒤 부르는 단독 모드 — 앱은 띄우지 않는다.
+            outcome = ensure_desktop_shortcut()
+            print(outcome)
+            # 0 = **이 설치를** 여는 바로가기가 실제로 있다. 그 밖은 2 — 설치기가
+            # 'MV_agent.bat 으로 시작하라'고 정직하게 안내해야 한다. 특히 foreign 은
+            # 아이콘이 있긴 하지만 그것을 누르면 **다른 설치**가 열린다.
+            return 0 if outcome in _SHORTCUT_DONE else 2
         if args.app_probe:
             # 앱 창 모드 가능? — Edge/Chrome 존재 판정만(빠름). 0=가능 / 3=불가.
             return 0 if _find_app_browser() else APP_EXIT_NO_BROWSER
@@ -1077,6 +1280,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
         _close_stale_launcher_shells(script)
+        ensure_desktop_shortcut()
         return run_guarded(script)
     except (OSError, ValueError) as exc:
         print(f"[ERROR] Agent session guard failed: {exc}", file=sys.stderr)
