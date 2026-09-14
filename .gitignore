@@ -51,3 +51,6 @@ release/publish_target.txt
 tools/backup_replica_target.txt
 # 옵시디언 보관소 개인 설정(사람마다 다름 — 저장소에 올리지 않는다)
 /.obsidian/
+
+# 대화용 화면 그림(모의 렌더·비교 이미지) — 저장소에 남기지 않는다.
+_shots/
