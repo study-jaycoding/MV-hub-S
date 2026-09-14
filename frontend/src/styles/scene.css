@@ -6,6 +6,9 @@
 .scene-tab {
   font-size: 12px; font-weight: 700; padding: 4px 11px; border-radius: 8px;
   border: 1px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer;
+  /* 긴 이름이 탭을 통째로 늘려 다른 탭과 + 단추를 다음 줄로 밀어내던 것을 막는다(Jay 2026-09-14).
+     넘치는 이름은 … 로 줄이고, 전체 이름은 SceneBar 가 title 첫 줄에 넣어 준다. */
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .scene-tab:hover { color: var(--text); border-color: var(--accent); }
 .scene-tab.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
@@ -1392,36 +1395,58 @@
 .scene-drop-line {
   width: 2px; align-self: stretch; margin: 2px -2px; background: var(--accent); border-radius: 2px;
 }
-.scene-tab-ws {
-  display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px;
-  background: var(--accent); vertical-align: middle;
-}
-.scene-tab-wrap.on .scene-tab-ws { background: var(--accent-ink); }
-.scene-tab-ws.missing { background: #f06a5a; }
+/* 탭 = [표식][이름] — 표식은 안 줄고 이름만 … 로 줄어든다. */
+.scene-tab { display: inline-flex; align-items: center; gap: 6px; }
+.scene-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* scene tab context menu — workspace assign + move */
 .scene-ws-menu {
   position: fixed; z-index: 60; display: grid; gap: 6px; padding: 8px;
   border: 1px solid var(--border2); border-radius: 10px; background: var(--panel, #1a1a1a);
   box-shadow: 0 10px 30px rgba(0,0,0,.45); font-size: 12px;
+  /* 폭은 내용에 맞춘다(Jay 2026-09-14). 예전엔 230px 고정이라 이름이 짧아도 가로로 길었고,
+     머리줄의 '지금 지정된 공간'은 남는 폭이 없어 잘렸다. 최대 250px 는 아래 SceneWorkspaceMenu
+     의 MENU_MAX_W 와 같은 값 — 화면 밖으로 나가지 않게 여는 위치를 그 폭으로 잡는다. */
+  width: max-content; min-width: 168px; max-width: 250px;
+  /* max-width 로 폭을 자를 때 격자 칸은 다시 계산되지 않는다(크롬) — minmax(0,1fr) 로 칸이
+     잘린 폭을 따르게 해야 머리줄이 메뉴 밖으로 넘치지 않는다. */
+  grid-template-columns: minmax(0, 1fr);
   /* 메뉴 자체가 화면보다 높으면(작은 창) 잘리지 않게 — 위치 보정만으로는 부족하다(코덱스 P2).
-     가로는 절대 스크롤하지 않는다(폭 고정 + 긴 이름은 말줄임) — 밑에 가로 바가 생기면 지저분하다. */
+     가로는 절대 스크롤하지 않는다(긴 이름은 말줄임) — 밑에 가로 바가 생기면 지저분하다. */
   max-height: calc(100vh - 16px); overflow-y: auto; overflow-x: hidden;
 }
 /* 머리줄 — 왼쪽 씬 이름, 오른쪽 '지금 지정된 공간'(라임 점 + 이름). 여기서 현재 상태를 바로 읽는다. */
 .scene-ws-menu-head {
   display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
   padding-bottom: 6px; border-bottom: 1px solid var(--border2);
+  /* ★메뉴 폭은 **목록**이 정한다 — 씬 이름은 폭 계산에 끼지 않는다(Jay 2026-09-14).
+     안 그러면 이름이 길수록 메뉴가 통째로 넓어져, 같은 메뉴가 씬마다 다른 크기로 뜬다.
+     `width:0 + min-width:100%` 는 '내용만큼 넓히기'에서 빠지면서 줄은 꽉 채우는 상투 수법이다. */
+  width: 0; min-width: 100%;
 }
 /* 씬 이름 — 평소엔 글자처럼 보이고, 올리거나 손대면 입력칸이 드러난다. */
 .scene-ws-menu-name {
-  min-width: 0; flex: 1 1 auto; padding: 2px 6px; margin: -2px -6px;
+  /* 글자 길이만큼만 차지한다 — 예전엔 flex:1 1 auto 로 남는 폭을 다 먹어(글자 "base01" 40px 에
+     입력칸 175px), 오른쪽 '지금 지정된 공간'에 45px 밖에 안 남아 이름이 잘렸다. */
+  /* 왼쪽 음수 여백은 **글자를 머리줄 끝에 맞추려는 것**이다(평소엔 글자처럼 보여야 한다).
+     오른쪽까지 음수로 두면 머리줄이 메뉴 안쪽 폭을 6px 넘겨, 오른쪽 공간 이름이 테두리에
+     붙고 말줄임도 안 나온다(2026-09-14 실측). 오른쪽은 0 으로 둔다. */
+  min-width: 4em; flex: 0 1 auto; field-sizing: content; padding: 2px 6px;
+  margin: -2px 0 -2px -6px;
+  text-overflow: ellipsis; /* 이름이 길면 … (편집 중에는 크롬이 입력 내용을 따라 스크롤한다) */
   border: 1px solid transparent; border-radius: 6px; background: transparent;
   font: inherit; font-weight: 700; font-size: 12.5px; color: var(--text);
+}
+/* field-sizing 은 크롬 123+ 전용이다. 없는 브라우저에서는 예전처럼 남는 폭을 채우게 둔다. */
+@supports not (field-sizing: content) {
+  .scene-ws-menu-name { flex: 1 1 auto; }
 }
 .scene-ws-menu-name:hover { border-color: var(--border2); }
 .scene-ws-menu-name:focus { outline: none; border-color: var(--accent); background: rgba(255,255,255,.04); }
 .scene-ws-menu-now {
+  /* 씬 이름이 길어도 이 칸은 줄어들지 않는다 — 줄어드는 쪽은 항상 이름칸이다(Jay 2026-09-14).
+     공간 이름까지 길면 60% 에서 멈추고 그때는 이쪽도 … 로 줄인다. */
+  flex: 0 0 auto; max-width: 60%;
   display: inline-flex; align-items: center; gap: 5px; min-width: 0;
   color: var(--accent); font-size: 11.5px; font-weight: 700;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1429,22 +1454,18 @@
 .scene-ws-menu-now i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .scene-ws-menu-now.none { color: var(--muted2); font-weight: 400; font-style: italic; }
 .scene-ws-menu-list { display: grid; gap: 2px; max-height: 260px; overflow-y: auto; overflow-x: hidden; }
+/* 툴바의 워크스페이스 필터 메뉴(.lib-ws-item)와 **같은 모양**으로 맞춘다(Jay 2026-09-14).
+   같은 목록을 두 곳에서 보여 주므로 생김새가 다르면 같은 공간인지 알아보기 어렵다.
+   예전의 왼쪽 라임 점(::before)은 없앴다 — 그 자리를 표식(첫 글자 사각형)이 쓴다. */
 .scene-ws-item {
-  position: relative; display: grid; min-width: 0; text-align: left;
-  padding: 6px 8px 6px 20px; border: 0; border-radius: 6px;
+  display: flex; align-items: center; gap: 8px; min-width: 0; text-align: left;
+  padding: 6px 9px; border: 0; border-radius: 7px;
   background: transparent; color: var(--text); cursor: pointer; font-size: 12.5px;
 }
 .scene-ws-item > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scene-ws-item:hover { background: rgba(255,255,255,.06); }
-/* 고른 항목 — 라임 점 + 은은한 배경. 글자는 그대로 읽히게(라임 배경 위 검은 글자는 목록엔 과하다). */
+/* 고른 항목 — 은은한 배경 + 라임 글자(라임 배경 위 검은 글자는 목록엔 과하다). */
 .scene-ws-item.on { background: rgba(196,232,74,.12); }
-.scene-ws-item.on::before {
-  content: ""; position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
-  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
-}
-/* None 항목 — 이름도 설명과 같은 보조색(고르지 않은 동안). 고르면 아래 규칙이 라임으로 덮는다. */
-.scene-ws-item.none .scene-ws-item-name { color: var(--muted); }
 .scene-ws-item.on .scene-ws-item-name { color: var(--accent); font-weight: 700; }
-.scene-ws-item small { color: var(--muted); font-size: 11px; }
-.scene-ws-empty { padding: 5px 8px 5px 20px; color: var(--muted); font-size: 11.5px; }
+.scene-ws-empty { padding: 6px 9px; color: var(--muted); font-size: 11.5px; }
 .scene-ws-empty.warn { color: #f06a5a; }

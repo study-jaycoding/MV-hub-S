@@ -3,9 +3,12 @@
 //  화면과 어울리지 않고, 탭을 끄는 동작과도 헷갈렸다).
 // 목록은 workspaceOptionsCache(stale-while-revalidate) — 팀 공간만 담긴다(개인 공간은 1차 제외).
 // 머리줄 오른쪽에 **지금 지정된 공간**을 라임 점과 함께 보여 주고(Jay 2026-09-11 A안), 목록은 이름만 담백하게.
-// 고른 항목은 라임 점 + 은은한 배경 — 글자는 그대로 읽히게 둔다(라임 배경 위 검은 글자는 목록엔 과하다).
+// 생김새는 툴바의 워크스페이스 필터 메뉴와 같게 맞췄다(표식 + 은은한 배경 + 라임 글자,
+// Jay 2026-09-14). **글자는 `None` 그대로다** — 여기는 필터가 아니라 '이 캔버스를 어느
+// 공간에 둘지' 를 고르는 자리라 `All`(전부에 속함)로 읽히면 뜻이 어긋난다(Jay 결정).
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cachedWorkspaceOptions, fetchWorkspaceOptions } from "../../lib/workspaceOptionsCache";
+import { WorkspaceMark } from "../common/WorkspaceMark";
 import type { SceneWorkspace } from "../../lib/sceneWorkspace";
 
 export interface SceneMenuTarget {
@@ -16,7 +19,10 @@ export interface SceneMenuTarget {
   y: number;
 }
 
-const MENU_W = 230;
+// 폭은 CSS 가 내용에 맞춰 정한다(scene.css 의 .scene-ws-menu). 여기 값은 '최대 이 폭까지
+// 넓어질 수 있다'는 뜻으로, 화면 밖으로 나가지 않게 여는 위치를 잡는 데만 쓴다 — 저 max-width
+// 와 같은 값을 유지한다.
+const MENU_MAX_W = 250;
 
 export function SceneWorkspaceMenu({
   target,
@@ -78,7 +84,7 @@ export function SceneWorkspaceMenu({
 
   // 화면 밖으로 나가지 않게 위치 보정 — 가로는 바로, 세로는 **실제 높이를 잰 뒤** 넘치면 위로 연다
   // (여러 줄 탭·작은 창에서 아래쪽을 우클릭하면 목록과 이동 단추에 손이 닿지 않는다 — 코덱스 P2).
-  const left = Math.max(8, Math.min(target.x, window.innerWidth - MENU_W - 8));
+  const left = Math.max(8, Math.min(target.x, window.innerWidth - MENU_MAX_W - 8));
   const [top, setTop] = useState(() => Math.max(8, target.y));
   useLayoutEffect(() => {
     const height = ref.current?.offsetHeight ?? 0;
@@ -97,7 +103,7 @@ export function SceneWorkspaceMenu({
     : null;
 
   return (
-    <div className="scene-ws-menu" ref={ref} style={{ left, top, width: MENU_W }} role="menu">
+    <div className="scene-ws-menu" ref={ref} style={{ left, top }} role="menu">
       <div className="scene-ws-menu-head">
         <input
           className="scene-ws-menu-name"
@@ -140,7 +146,6 @@ export function SceneWorkspaceMenu({
           }}
         >
           <span className="scene-ws-item-name">None</span>
-          <small>모든 공간에서 보임</small>
         </button>
         {loading && !options.length ? <div className="scene-ws-empty">불러오는 중…</div> : null}
         {!loading && !options.length ? (
@@ -156,6 +161,7 @@ export function SceneWorkspaceMenu({
               onClose();
             }}
           >
+            <WorkspaceMark label={option.name} id={option.id} />
             <span className="scene-ws-item-name">{option.name}</span>
           </button>
         ))}

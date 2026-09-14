@@ -13,12 +13,14 @@ import {
   normalizeSceneWorkspace,
   sceneDimmed,
   sceneTabTitle,
+  shortSceneName,
   sceneWorkspaceLabel,
   sceneWorkspaceMissing,
   type SceneMove,
   type SceneWorkspace,
 } from "../../lib/sceneWorkspace";
 import { cachedWorkspaceOptions } from "../../lib/workspaceOptionsCache";
+import { WorkspaceMark } from "../common/WorkspaceMark";
 import { SceneWorkspaceMenu, type SceneMenuTarget } from "./SceneWorkspaceMenu";
 import type { WorkspaceContext } from "../../types";
 
@@ -228,16 +230,20 @@ export function SceneBar({
                   y: event.clientY,
                 });
               }}
-              title={sceneTabTitle(scene, workspaceContext, label, missing)}
+              // 탭은 190px 에서 이름을 … 로 줄인다(scene.css) — 전체 이름은 여기 첫 줄로 본다.
+              title={`${scene.name}
+${sceneTabTitle(scene, workspaceContext, label, missing)}`}
             >
+              {/* 어느 공간인지 **점이 아니라 표식으로** 보여 준다(Jay 2026-09-14) — 라임 점은
+                  '지정됨' 만 말할 뿐 어느 공간인지는 못 알려 줬다. 메뉴·툴바와 같은 표식이다. */}
               {assigned ? (
-                <span
-                  className={"scene-tab-ws" + (missing ? " missing" : "")}
-                  aria-hidden="true"
-                  title={label || undefined}
+                <WorkspaceMark
+                  label={label || assigned.name || assigned.id}
+                  id={assigned.id}
+                  className={"sm" + (missing ? " missing" : "")}
                 />
               ) : null}
-              {scene.name}
+              <span className="scene-tab-name">{shortSceneName(scene.name)}</span>
             </button>
             <button
               className="scene-del"

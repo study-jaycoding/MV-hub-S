@@ -75,6 +75,7 @@ import {
 import { gatherComfyMedia, hasTextConnection } from "../../lib/sceneComfyInputs";
 import { isSceneComfyConfigCurrent } from "../../lib/sceneComfyExecutor";
 import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
+import { shortSceneName } from "../../lib/sceneWorkspace";
 import {
   buildSelectedConnections,
   SCENE_GRID as GRID,
@@ -3958,7 +3959,7 @@ export function SceneBoard({
           onMouseEnter={() => setIoPanelHover(true)}
           onMouseLeave={() => setIoPanelHover(false)}
         >
-          <div className="scene-io-name" title={scene.name}>{scene.name}</div>
+          <div className="scene-io-name" title={scene.name}>{shortSceneName(scene.name)}</div>
           <div className="scene-io-btns">
             {onSaveScene && (
               <button

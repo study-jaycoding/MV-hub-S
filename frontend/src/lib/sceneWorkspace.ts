@@ -62,6 +62,18 @@ export function sceneWorkspaceMissing(
   return !options.some((item) => item.id === assigned.id);
 }
 
+/** 탭·보드 머리줄에 보여줄 짧은 이름 — 12자를 넘으면 자르고 … 를 붙인다(Jay 2026-09-14).
+ *  폭(px)으로 자르지 않는 이유: 같은 190px 에 한글은 13자, 숫자는 22자가 들어가 글자 종류마다
+ *  들쭉날쭉했다. 전체 이름은 두 곳 모두 title 로 본다.
+ *  이름을 고치는 곳(우클릭 메뉴의 입력칸)에는 쓰지 않는다 — 값을 자르면 편집이 망가진다. */
+export const SCENE_NAME_MAX_CHARS = 12;
+export function shortSceneName(name: string): string {
+  // 이모지가 반쪽으로 쪼개지지 않게 코드포인트 단위로 센다(slice 는 UTF-16 단위라 안 된다).
+  const chars = Array.from(name);
+  if (chars.length <= SCENE_NAME_MAX_CHARS) return name;
+  return chars.slice(0, SCENE_NAME_MAX_CHARS).join("") + "…";
+}
+
 /** 탭 title(마우스를 올렸을 때). 상태별로 다른 문장을 준다. */
 export function sceneTabTitle(
   scene: Pick<Scene, "workspace">,

@@ -9,6 +9,7 @@ import {
   sceneTabTitle,
   sceneWorkspaceLabel,
   sceneWorkspaceMissing,
+  shortSceneName,
 } from "../src/lib/sceneWorkspace";
 import type { Scene } from "../src/lib/scenes";
 
@@ -72,6 +73,30 @@ describe("표시 이름 — 목록의 현재 이름이 우선", () => {
     expect(sceneTabTitle(assigned, team("wsB"), "산해학원", false)).toContain("'산해학원' 워크스페이스입니다");
     expect(sceneTabTitle(assigned, team("wsA"), "뻘뻘뻘", false)).toContain("워크스페이스: 뻘뻘뻘");
     expect(sceneTabTitle(assigned, team("wsA"), "뻘뻘뻘", true)).toContain("찾을 수 없습니다");
+  });
+});
+
+describe("짧은 이름 — 폭이 아니라 글자 수로 자른다", () => {
+  it("12자까지는 그대로 둔다", () => {
+    expect(shortSceneName("base01")).toBe("base01");
+    expect(shortSceneName("가나다라마바사아자차카타")).toBe("가나다라마바사아자차카타");
+  });
+
+  it("13자부터 12자로 자르고 … 를 붙인다", () => {
+    expect(shortSceneName("가나다라마바사아자차카타파")).toBe("가나다라마바사아자차카타…");
+    expect(shortSceneName("test111111111111111111dfdf")).toBe("test11111111…");
+  });
+
+  it("글자 종류가 섞여도 자르는 기준은 글자 수다", () => {
+    // 한글은 숫자의 두 배 폭이라 px 로 자르면 여기서 갈렸다 — 둘 다 12자여야 한다.
+    expect(Array.from(shortSceneName("산해학원 프로젝트 캔버스 2026"))).toHaveLength(13);
+    expect(Array.from(shortSceneName("abcdefghijklmnop"))).toHaveLength(13);
+  });
+
+  it("이모지를 반쪽으로 쪼개지 않는다", () => {
+    // slice(0,12) 였다면 13번째 글자인 이모지의 앞 절반이 남아 깨진 글자가 보인다.
+    expect(shortSceneName("가나다라마바사아자차카타🎬")).toBe("가나다라마바사아자차카타…");
+    expect(shortSceneName("🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬")).toBe("🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬…");
   });
 });
 

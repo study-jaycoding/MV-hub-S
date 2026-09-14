@@ -83,3 +83,18 @@ select optgroup {
 .app { height: 100%; display: flex; flex-direction: column; }
 .muted { color: var(--muted); font-size: 12px; }
 
+/* 워크스페이스 표식 — 이름 첫 글자를 담은 작은 색 사각형(components/common/WorkspaceMark).
+   툴바 필터·씬 탭 메뉴·씬 탭이 같은 목록을 다른 곳에서 보여 주므로 생김새를 한곳에서 정한다.
+   색은 컴포넌트가 넘기는 `--ws-h`(id 해시 색상환 각도)에서 뽑는다. */
+.ws-mark-box {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 5px; font-size: 10px; font-weight: 800;
+  background: hsl(var(--ws-h) 60% 50% / 0.18); color: hsl(var(--ws-h) 70% 68%);
+}
+/* 씬 탭에 들어가는 작은 것 — 탭이 두꺼워지지 않게 한 치수 줄인다. */
+.ws-mark-box.sm { width: 15px; height: 15px; border-radius: 4px; font-size: 9px; }
+/* 지금 계정에서 못 찾는 공간(삭제·권한 상실) — 색상환 대신 경고색. */
+.ws-mark-box.missing { background: rgba(240, 106, 90, 0.22); color: #f06a5a; }
+/* 라임 탭 위에서는 옅은 배경이 안 보인다 — 어두운 바탕에 공간 색 글자로 뒤집는다. */
+.scene-tab-wrap.on .ws-mark-box { background: rgba(0, 0, 0, 0.74); color: hsl(var(--ws-h) 75% 64%); }
+.scene-tab-wrap.on .ws-mark-box.missing { background: rgba(0, 0, 0, 0.74); color: #ff8f80; }
