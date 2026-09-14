@@ -91,9 +91,9 @@ describe("workspace context", () => {
     expect(isGenerationWorkspaceReady({ scope: "unknown", id: null, name: null })).toBe(false);
   });
 
-  it("워크스페이스 필터를 서버 생성물 쿼리에 보존한다", () => {
-    const query = buildGenerationQuery({
-      filters: { tab: "my", workspace_id: "ws-a" },
+  const queryFor = (workspaceIds?: string[]) =>
+    buildGenerationQuery({
+      filters: { tab: "my", ...(workspaceIds ? { workspace_ids: workspaceIds } : {}) },
       typeFilter: "all",
       colorFilter: new Set(),
       tagFilter: new Set(),
@@ -102,7 +102,22 @@ describe("workspace context", () => {
       commentOnly: false,
       finalOnly: false,
     });
-    expect(query.workspace_id).toBe("ws-a");
+
+  it("워크스페이스 필터를 서버 생성물 쿼리에 보존한다", () => {
+    expect(queryFor(["ws-a"]).workspace_ids).toEqual(["ws-a"]);
+  });
+
+  it("중복 선택은 정렬·중복제거해서 보낸다 — 고른 순서로 같은 조회가 갈라지면 안 된다", () => {
+    // 쿼리 키가 JSON 문자열이라(appGenerationQuery) [A,B] 와 [B,A] 가 다른 조회로 잡힌다.
+    expect(queryFor(["ws-b", "ws-a", "ws-b"]).workspace_ids).toEqual(["ws-a", "ws-b"]);
+    expect(JSON.stringify(queryFor(["ws-b", "ws-a"]))).toBe(
+      JSON.stringify(queryFor(["ws-a", "ws-b"])),
+    );
+  });
+
+  it("안 골랐으면 파라미터 자체를 안 보낸다 (빈 배열도 아님)", () => {
+    expect(queryFor().workspace_ids).toBeUndefined();
+    expect(queryFor([]).workspace_ids).toBeUndefined();
   });
 
   it("신규 생성 요청에 현재 워크스페이스를 포함한다", async () => {

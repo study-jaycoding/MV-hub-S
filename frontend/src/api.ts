@@ -70,7 +70,12 @@ function buildQuery(q: GenQuery, cursor: GenCursor | null = null, limit = GEN_PA
   if (q.share_dir) p.set("share_dir", q.share_dir);
   if (q.local_only) p.set("local_only", "true");
   if (q.creator_uid) p.set("creator_uid", q.creator_uid);
-  if (q.workspace_id) p.set("workspace_id", q.workspace_id);
+  // 여러 개 = 반복 파라미터(colors·tags 와 같은 전례).
+  // ★한 개일 때는 옛 단수 파라미터도 같이 보낸다 — 팀 탭은 이 쿼리스트링이 공유 서버로
+  //  그대로 넘어가는데(_proxy.proxy_get), 서버가 옛 버전이면 workspace_ids 를 모른다.
+  //  한 개 선택은 그래도 걸리게 한다. 두 개 이상은 허브가 직접 거른다(library.py).
+  for (const w of q.workspace_ids || []) p.append("workspace_ids", w);
+  if (q.workspace_ids?.length === 1) p.set("workspace_id", q.workspace_ids[0]);
   if (q.project_id) p.set("project_id", q.project_id); // 서버사이드 — 누락 없이 정확
   if (q.folder_path) p.set("folder_path", q.folder_path); // 폴더 접두사 필터
   if (q.search) p.set("search", q.search);

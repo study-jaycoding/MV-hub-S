@@ -8,11 +8,55 @@ import type { Store } from "./storage";
 import type { Filters, GenQuery } from "../types";
 import type { MediaFilter } from "./mediaTypes";
 import { buildGenerationQuery } from "./appGenerationQuery";
-import { useLibraryPersistence } from "./useLibraryPersistence";
+import {
+  FILTERS_FORMAT_KEY,
+  FILTERS_KEY,
+  LEGACY_FILTERS_KEY,
+  useLibraryPersistence,
+} from "./useLibraryPersistence";
 
 export interface WorkspaceChip {
   id: string;
   name: string;
+}
+
+type StoredFilters = Filters & { [FILTERS_FORMAT_KEY]?: string };
+
+/** 저장값의 워크스페이스 선택을 **깨끗한 배열 하나**로 모은다.
+ *  옛 단수(`workspace_id`)와 새 배열이 섞여 있어도 합치고, 빈 문자열·중복은 버린다
+ *  (`loadJSON` 은 JSON 파싱만 하고 모양은 확인하지 않는다 — 손상값이 그대로 들어온다). */
+function collectWorkspaceIds(stored: StoredFilters): string[] {
+  const ids = new Set<string>();
+  const raw = Array.isArray(stored.workspace_ids) ? stored.workspace_ids : [];
+  for (const id of [...raw, stored.workspace_id]) {
+    if (typeof id === "string" && id.trim()) ids.add(id);
+  }
+  return [...ids];
+}
+
+/** 저장된 filters 를 읽어 되살린다 — 형식별 일회성 이사를 포함한다.
+ *
+ *  형식 0(표식 없음): 가시성 분리(2026-08-21) 잔재 청소. 예전엔 워크스페이스 전환이
+ *    `workspace_id` 필터를 자동 주입했다. 등록 침에 없는 값은 그 잔재이므로 버린다.
+ *  형식 1: 단일 선택 시절. 청소 없이 배열로 옮긴다.
+ *  형식 2: 지금 형식(배열).
+ *
+ *  ★새 키(FILTERS_KEY)가 있으면 옛 키는 아예 안 본다. 옛 릴리스는 옛 키만 쓰므로 두 버전이
+ *   서로의 저장값을 망가뜨리지 않는다 — 대신 **두 버전의 선택이 실시간으로 같아지지는 않는다**.
+ */
+export function restoreFilters(LS: Store): Filters {
+  const fresh = LS.loadJSON<StoredFilters>(FILTERS_KEY);
+  const raw: StoredFilters = fresh ?? LS.loadJSON<StoredFilters>(LEGACY_FILTERS_KEY) ?? { tab: "my" };
+  const { [FILTERS_FORMAT_KEY]: format, ...stored } = raw;
+  if (!fresh && !format && stored.workspace_id) {
+    const chips = LS.loadJSON<WorkspaceChip[]>("workspaceChips") ?? [];
+    if (!chips.some((chip) => chip && chip.id === stored.workspace_id)) {
+      delete stored.workspace_id;
+    }
+  }
+  const workspaceIds = collectWorkspaceIds(stored as StoredFilters);
+  delete stored.workspace_id;
+  return { ...stored, ...(workspaceIds.length ? { workspace_ids: workspaceIds } : { workspace_ids: undefined }) };
 }
 
 export function useLibraryFilters(LS: Store) {
@@ -20,18 +64,7 @@ export function useLibraryFilters(LS: Store) {
   const [workspaceChips, setWorkspaceChips] = useState<WorkspaceChip[]>(
     () => LS.loadJSON<WorkspaceChip[]>("workspaceChips") ?? [],
   );
-  const [filters, setFilters] = useState<Filters>(() => {
-    const stored = LS.loadJSON<Filters>("filters") ?? { tab: "my" };
-    // 가시성 분리 마이그레이션: 예전엔 워크스페이스 전환이 workspace_id 필터를 자동 주입했다.
-    // 등록된 침이 없는 workspace_id 는 그 잔재이므로 버린다(기본 = 전부 보기).
-    if (stored.workspace_id) {
-      const chips = LS.loadJSON<WorkspaceChip[]>("workspaceChips") ?? [];
-      if (!chips.some((chip) => chip && chip.id === stored.workspace_id)) {
-        delete stored.workspace_id;
-      }
-    }
-    return stored;
-  });
+  const [filters, setFilters] = useState<Filters>(() => restoreFilters(LS));
   const [typeFilter, setTypeFilter] = useState<MediaFilter>(
     () => (LS.get("typeFilter", "all") as MediaFilter) || "all",
   ); // 전체/이미지/영상/음성
@@ -80,7 +113,7 @@ export function useLibraryFilters(LS: Store) {
         finalOnly,
         legacyColor: filters.color,
         search: filters.search,
-        workspaceId: filters.workspace_id,
+        workspaceIds: [...(filters.workspace_ids ?? [])].sort(),
         shareDir: filters.share_dir,
         sharedOnly,
         tag: filters.tag,
@@ -93,7 +126,7 @@ export function useLibraryFilters(LS: Store) {
       finalOnly,
       filters.color,
       filters.search,
-      filters.workspace_id,
+      filters.workspace_ids,
       filters.share_dir,
       filters.tag,
       sharedOnly,

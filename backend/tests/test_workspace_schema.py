@@ -257,10 +257,28 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
             "me", creator_uid="user-me", workspace=team_b,
         )
 
-        generations = repo.list_generations(workspace_id="ws-millionvolt")
-        # workspace_id(옵트인 침 필터)는 생성물 목록을 그 공간 도장으로 좁힌다(미분류 포함).
+        generations = repo.list_generations(workspace_ids=["ws-millionvolt"])
+        # workspace_ids(옵트인 필터)는 생성물 목록을 그 공간 도장으로 좁힌다(미분류 포함).
         self.assertEqual({item["prompt"] for item in generations}, {"a", "a unassigned"})
         self.assertIn(gen_a, {item["id"] for item in generations})
+
+        # 중복 선택(Jay 2026-09-14) — 고른 공간끼리는 OR 다.
+        both = repo.list_generations(workspace_ids=["ws-millionvolt", "ws-other"])
+        self.assertEqual(
+            {item["prompt"] for item in both},
+            {"a", "a unassigned", "b", "b unassigned"},
+        )
+        # ★빈 목록은 '아무것도 안 보임'이 아니라 **전체**다. scope='team' 만 남기면 개인·미상
+        #  소속이 전체 보기에서 통째로 사라진다.
+        self.assertEqual(
+            {item["prompt"] for item in repo.list_generations(workspace_ids=[])},
+            {"a", "a unassigned", "b", "b unassigned"},
+        )
+        # 빈 문자열·공백만 있는 값은 선택으로 치지 않는다(빈 목록과 같게 전체).
+        self.assertEqual(
+            len(repo.list_generations(workspace_ids=["", "  "])),
+            len(repo.list_generations()),
+        )
         projects = repo.list_projects(workspace_id="ws-millionvolt")
         # 프로젝트 '행'만 워크스페이스로 선별한다. 카운트(프로젝트·미분류)는 워크스페이스 무관 —
         # 그리드 가시성이 워크스페이스와 분리(전부 보임)라 숫자도 전체 기준이어야 화면과 맞는다.

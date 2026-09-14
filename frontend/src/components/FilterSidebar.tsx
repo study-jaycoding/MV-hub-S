@@ -152,14 +152,14 @@ export function FilterSidebar({
             {workspaceChips.map((c) => (
               <span
                 key={"ws:" + c.id}
-                className={"auto-tag-chip ws" + (filters.workspace_id === c.id ? " on" : "")}
+                className={"auto-tag-chip ws" + (filters.workspace_ids?.includes(c.id) ? " on" : "")}
               >
                 <button
                   className="auto-tag-name"
                   title={
-                    filters.workspace_id === c.id
-                      ? "해제 — 전체 보기로 복귀"
-                      : `"${c.name}" 워크스페이스에서 생성한 것만 보기`
+                    filters.workspace_ids?.includes(c.id)
+                      ? "이 워크스페이스만 빼기"
+                      : `"${c.name}" 워크스페이스에 속한 것도 함께 보기`
                   }
                   onClick={() => onToggleWorkspaceChip(c.id)}
                 >

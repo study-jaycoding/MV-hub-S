@@ -198,7 +198,9 @@ def _overlay_personal_meta(data, request: Request):
     return data
 
 
-def _team_local_filtered(request: Request, want_colors, want_tags, want_auto, limit: int, cursor_ts, cursor_id):
+def _team_local_filtered(
+    request: Request, want_colors, want_tags, want_auto, want_ws, limit: int, cursor_ts, cursor_id
+):
     """팀 탭 개인메타 필터(색/태그/전역태그) — 이들은 로컬 전용(서버 미러 안 함)이라 서버가 못 거른다.
     허브가 해당 필터를 뺀 요청으로 서버 목록을 받아 overlay(내 색·태그+shadow) 후 로컬에서 거른다.
     필터 그룹끼리는 AND, 그룹 안에서는 OR(서버 SQL 과 동일 의미). 무한스크롤(GEN_PAGE)이 조기 종료되지
@@ -206,7 +208,10 @@ def _team_local_filtered(request: Request, want_colors, want_tags, want_auto, li
     cset = {c for c in (want_colors or []) if c}
     tset = {t for t in (want_tags or []) if t}
     aset = {a for a in (want_auto or []) if a}
-    if not (cset or tset or aset):
+    # 워크스페이스 **중복 선택**은 서버가 옛 버전이면 못 거른다(새 파라미터를 모른다). 그래서
+    # 허브가 한 번 더 거른다 — 서버가 이미 걸렀으면 이 검사는 전부 통과라 손해가 없다.
+    wset = {w for w in (want_ws or []) if w}
+    if not (cset or tset or aset or wset):
         return _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
 
     def _match(g: dict) -> bool:
@@ -215,6 +220,8 @@ def _team_local_filtered(request: Request, want_colors, want_tags, want_auto, li
         if tset and not (tset & set(g.get("tags") or [])):
             return False
         if aset and not (aset & set(g.get("auto_tags") or [])):
+            return False
+        if wset and not (g.get("workspace_scope") == "team" and g.get("workspace_id") in wset):
             return False
         return True
 
@@ -667,7 +674,9 @@ def list_generations(
     share_dir: Optional[str] = Query(None, pattern="^(mine|received)$"),
     local_only: bool = False,
     creator_uid: Optional[str] = None,
+    # 단수는 옛 프론트·옛 공유 서버 호환용. 새 프론트는 한 개를 고를 때 둘 다 보낸다.
     workspace_id: Optional[str] = None,
+    workspace_ids: list[str] = Query(default=[]),
     project_id: Optional[str] = None,
     folder_path: Optional[str] = None,
     search: Optional[str] = None,
@@ -688,13 +697,25 @@ def list_generations(
 ):
     # 로컬 우선: 내 작업(tab=my)은 이 허브 로컬 DB가 정답 → 즉시·서버무관. 팀 공유(tab=team)만
     # 서버 DB로 위임(모두의 발행물이 거기 있음).
+    # 복수 우선(합집합이 아니다). 새 프론트의 '전체' 는 둘 다 안 보낸다.
+    # ★이 함수는 시험에서 **직접** 호출되기도 한다 — 그때 기본값은 Query 객체 그대로라
+    #  바로 순회하면 TypeError 다. 목록일 때만 쓴다.
+    raw_ws = workspace_ids if isinstance(workspace_ids, (list, tuple)) else []
+    picked_ws = [w for w in raw_ws if isinstance(w, str) and w.strip()]
+    if not picked_ws and workspace_id:
+        picked_ws = [workspace_id]
     if tab == "team" and _proxy.proxying():
         # color/tags 는 작성자 전용이라 서버에 미러하지 않는다(개인 메타). 팀 목록은 서버 데이터라
         # '내 카드'의 개인 색·태그가 빠져 있으므로, 허브가 자기 로컬 DB에서 가져와 덧입힌다(A1 오버레이).
         # 색·태그·전역태그는 개인메타(로컬 전용)라 서버가 못 거른다 → 허브가 그 필터 뺀 요청으로 받아
         # overlay(내 색·태그+shadow) 후 로컬 필터. 나머지(media_type·folder 등)는 서버가 그대로 거름.
-        if colors or tags or auto_tags:
-            data = _team_local_filtered(request, colors, tags, auto_tags, limit, cursor_ts, cursor_id)
+        # 한 개 선택은 단수 파라미터가 같이 나가 **서버가 거른다**(옛 서버에서도 동작, 상한 없음).
+        # 두 개 이상만 허브가 거른다 — 그 경로의 기존 한계(상위 약 12,000행)가 같이 적용된다.
+        local_ws = picked_ws if len(picked_ws) > 1 else []
+        if colors or tags or auto_tags or local_ws:
+            data = _team_local_filtered(
+                request, colors, tags, auto_tags, local_ws, limit, cursor_ts, cursor_id
+            )
         else:
             data = _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
         # 원격 이미지·영상 포스터는 목록을 받은 직후 작은 JPEG로 미리 준비한다.
@@ -720,7 +741,7 @@ def list_generations(
         share_dir=share_dir,
         local_only=local_only,
         creator_uid=creator_uid,
-        workspace_id=workspace_id,
+        workspace_ids=picked_ws,
         account_uid=account_uid,
         project_id=project_id,
         folder_path=folder_path,

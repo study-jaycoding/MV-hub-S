@@ -8,7 +8,7 @@ list_generations·get_generation·통계·코멘트수. 쓰기(생성·상태·�
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, Optional
+from typing import Sequence, Any, Optional
 
 from ..config import DEFAULT_WORKER_ID
 from ..db import get_connection
@@ -53,7 +53,10 @@ def list_generations(
     share_dir: Optional[str] = None,  # None | 'mine'(내가 공유) | 'received'(타 작업자 공유본)
     local_only: bool = False,  # 힉스필드에 없고 로컬에만 있는 것(job_id 없음 or hf_missing)
     creator_uid: Optional[str] = None,  # 특정 생성자(팀원)만
-    workspace_id: Optional[str] = None,  # 선택한 팀 워크스페이스. 개인 선택은 None=전체
+    # 선택한 팀 워크스페이스들(중복 선택, 서로 OR). 빈 목록·None = 전체 보기.
+    # 개인·미상 소속은 이 필터로 고를 수 없다 — workspace_id 를 못 가진다
+    # (docs/WORKSPACE_DATA_CONTRACT.md 정합성 규칙 2).
+    workspace_ids: Optional[Sequence[str]] = None,
     account_uid: Optional[str] = None,  # 로그인 계정의 생성자 uid — tab='my' 를 이 계정 것만으로 한정
     team_member_projects: Optional[list[str]] = None,  # tab='team' 일 때 내가 멤버인 프로젝트의 공유물만(None=전체)
     project_id: Optional[str] = None,  # 프로젝트 귀속 필터. 'none'=미분류(NULL), 그 외=해당 프로젝트
@@ -143,9 +146,15 @@ def list_generations(
     if creator_uid:
         where.append("g.creator_uid = ?")
         args.append(creator_uid)
-    if workspace_id:
-        where.append("g.workspace_scope = 'team' AND g.workspace_id = ?")
-        args.append(workspace_id)
+    # 여러 개면 OR 로 묶고, 다른 조건과는 AND 로 걸린다(아래에서 where 를 AND 로 잇는다).
+    # ★빈 목록이면 조건을 아예 안 건다 = 전체. `scope='team'` 만 남기면 개인·미상 소속이
+    #  전체 보기에서 통째로 사라진다. 그 scope 조건은 같은 id 가 남아 있는 비정상 행을
+    #  걸러내므로 계속 필요하다(이 필터 자체는 권한 검사가 아니다).
+    picked = [w for w in (workspace_ids or []) if isinstance(w, str) and w.strip()]
+    if picked:
+        marks = ",".join("?" for _ in picked)
+        where.append(f"(g.workspace_scope = 'team' AND g.workspace_id IN ({marks}))")
+        args.extend(picked)
     if project_id == "none":
         where.append("g.project_id IS NULL")
     elif project_id:

@@ -4,7 +4,7 @@ import type { Generation } from "../types";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "./workspaceCommand";
 
 interface UseGenerationWorkspaceActionsArgs {
-  activeWorkspaceId?: string;
+  activeWorkspaceIds?: string[];
   flash: (message: string) => void;
   gensRef: MutableRefObject<Generation[]>;
   reload: (silent?: boolean, light?: boolean) => void | Promise<void>;
@@ -26,7 +26,7 @@ function readableError(error: unknown): string {
 }
 
 export function useGenerationWorkspaceActions({
-  activeWorkspaceId,
+  activeWorkspaceIds,
   flash,
   gensRef,
   reload,
@@ -68,10 +68,14 @@ export function useGenerationWorkspaceActions({
         result.updates.map((update) => [update.requested_id, update.generation]),
       );
       const changedAnchors = new Set(result.changed);
+      // 지금 보고 있는 공간 **집합**에서 빠지는 카드만 목록에서 뺀다(중복 선택, 2026-09-14).
+      //  A·B 를 같이 보는 중에 A 카드를 **B 로** 옮기면 계속 보여야 한다 — 단수 비교였다면
+      //  '다른 공간으로 갔다'며 사라졌다.
+      const armed = activeWorkspaceIds ?? [];
+      const stillVisible = armed.includes(result.workspace.id);
       const dropChanged = Boolean(
-        activeWorkspaceId &&
-          ((operation === "remove" && activeWorkspaceId === result.workspace.id) ||
-            (operation === "assign" && activeWorkspaceId !== result.workspace.id)),
+        armed.length &&
+          ((operation === "remove" && stillVisible) || (operation === "assign" && !stillVisible)),
       );
       const apply = (generations: Generation[]) =>
         generations.flatMap((generation) => {

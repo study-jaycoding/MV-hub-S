@@ -6,6 +6,7 @@ import { MEDIA_FILTER_OPTIONS } from "../lib/mediaTypes";
 import { makeStore } from "../lib/storage";
 import { useFloatingPanel } from "../lib/useFloatingPanel";
 import { ColorFilterDots } from "./common/ColorFilterDots";
+import { LibraryWorkspaceFilter, type WorkspaceFilterProps } from "./common/LibraryWorkspaceFilter";
 import { TagFilterPanel } from "./common/TagFilterPanel";
 import { ViewControls } from "./common/ViewControls";
 
@@ -29,6 +30,9 @@ interface Props {
   loading: boolean;
   failedCount: number; // 실패 항목 수(>0 이면 '실패 정리' 노출)
   onClearFailed: () => void;
+  // 워크스페이스로 걸러 보기 — 회색 dot 왼쪽에 [칩][버튼]. **주지 않으면 안 그린다**:
+  //  구성 보드 툴바는 워크스페이스 조건이 배선돼 있지 않아(App.tsx 의 보드 배선) 눌러도 무동작이다.
+  workspaceFilter?: WorkspaceFilterProps;
   // 에셋 파트와 동일한 인스턴트 필터(컬러 dot · S · T)
   colorDots: { k: string; hex: string }[];
   colorFilter: Set<string>;
@@ -80,6 +84,7 @@ export function LibraryToolbar({
   loading,
   failedCount,
   onClearFailed,
+  workspaceFilter,
   colorDots,
   colorFilter,
   onToggleColor,
@@ -171,6 +176,7 @@ export function LibraryToolbar({
       <div className="lib-tools">
         {/* 인스턴트 필터: 골드(최종만) · 컬러 dot · S(팀 공유만) · T(태그) · C(코멘트) */}
         <div className="assets-filters">
+          {workspaceFilter && <LibraryWorkspaceFilter {...workspaceFilter} />}
           <ColorFilterDots
             colorDots={colorDots}
             activeColors={colorFilter}

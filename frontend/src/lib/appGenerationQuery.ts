@@ -28,7 +28,11 @@ export function buildGenerationQuery({
     share_dir: filters.share_dir,
     local_only: filters.local_only,
     creator_uid: filters.creator_uid,
-    workspace_id: filters.workspace_id,
+    // 정렬한 사본을 보낸다 — 고른 순서가 달라도 같은 조회여야 한다(쿼리 키가 JSON 문자열이라
+    // [A,B] 와 [B,A] 가 다른 조회로 잡히면 같은 결과를 두 번 받는다).
+    workspace_ids: filters.workspace_ids?.length
+      ? [...new Set(filters.workspace_ids)].sort()
+      : undefined,
     project_id: filters.project_id,
     folder_path: filters.folder_path,
     search: filters.search,

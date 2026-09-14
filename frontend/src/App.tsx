@@ -93,6 +93,7 @@ import { useHubAuth } from "./lib/useHubAuth";
 import { useAppToast } from "./lib/useAppToast";
 import { useDisabledGenerations } from "./lib/useDisabledGenerations";
 import { useLibraryFilters } from "./lib/useLibraryFilters";
+import { useWorkspaceFilterOptions } from "./lib/useWorkspaceFilterOptions";
 import { useSceneCoordination } from "./lib/useSceneCoordination";
 import { useSceneCompletionWatcher } from "./lib/useSceneCompletionWatcher";
 import { seedPending } from "./lib/sceneRecentDoneStore";
@@ -620,7 +621,7 @@ export default function App() {
     setGens,
   });
   const { onWorkspaceCommand } = useGenerationWorkspaceActions({
-    activeWorkspaceId: filters.workspace_id,
+    activeWorkspaceIds: filters.workspace_ids,
     flash,
     gensRef,
     reload,
@@ -633,7 +634,7 @@ export default function App() {
   // 항상 '그 카드 단건'만 적용(빈 선택 ref). 캔버스 카드는 전부 로컬 카드라 teamTab 아님.
   const canvasWsSelectionRef = useRef<Set<string>>(new Set());
   const { onWorkspaceCommand: onCanvasWorkspaceCommand } = useGenerationWorkspaceActions({
-    activeWorkspaceId: filters.workspace_id,
+    activeWorkspaceIds: filters.workspace_ids,
     flash,
     gensRef,
     reload,
@@ -684,12 +685,36 @@ export default function App() {
     workspaceContext,
     setWorkspaceChips,
   });
-  // 워크스페이스 침(옵트인 필터) — 단일 선택 토글. 등록 해제 시 무장 중이면 필터도 푼다.
+  // 워크스페이스 침(옵트인 필터) — 툴바 필터와 **같은 선택**을 넣고 뺀다(중복 선택).
+  //  최신 state 기준으로 뒤집는다(연속 클릭이 서로를 덮지 않게).
   const toggleWorkspaceChip = (id: string) =>
-    patch({ workspace_id: filters.workspace_id === id ? undefined : id });
+    setFilters((previous) => {
+      const current = previous.workspace_ids ?? [];
+      const next = current.includes(id)
+        ? current.filter((item) => item !== id)
+        : [...current, id];
+      return { ...previous, workspace_ids: next.length ? next : undefined };
+    });
+  // 등록 해제는 **보기 필터를 건드리지 않는다**(2026-09-14). 지금은 툴바에 해제용 칩이 늘 있어
+  // 거기서 풀면 된다 — 등록을 지웠다고 보던 화면이 말없이 전체로 되돌아가면 안 된다.
   const removeWorkspaceChip = (id: string) => {
     setWorkspaceChips((prev) => prev.filter((chip) => chip.id !== id));
-    if (filters.workspace_id === id) patch({ workspace_id: undefined });
+  };
+
+  // 툴바 워크스페이스 필터 — 목록은 `#+` 피커·씬 메뉴와 같은 모듈 캐시를 쓴다.
+  //  걸려 있을 때만 미리 받아 온다(칩에 이름을 보여줘야 하므로).
+  // ★`!![]` 는 true 다 — 길이로 판단해야 안 걸렸을 때 헛 조회를 안 한다.
+  const workspaceFilterOptions = useWorkspaceFilterOptions(
+    (filters.workspace_ids?.length ?? 0) > 0,
+  );
+  const workspaceFilter = {
+    value: filters.workspace_ids ?? [],
+    options: workspaceFilterOptions.options,
+    loading: workspaceFilterOptions.loading,
+    failed: workspaceFilterOptions.failed,
+    onOpen: workspaceFilterOptions.reload,
+    onToggle: toggleWorkspaceChip,
+    onClear: () => patch({ workspace_ids: undefined }),
   };
 
   // comfy 노드 실행 중 목록(SceneBoard 통지) — '내 작업'에 임시 생성중 카드(Comfy 로고)를 프론트 전용으로 띄운다.
@@ -1530,6 +1555,7 @@ export default function App() {
   // 라이브러리 툴바 — 라이브러리 탭 본문과 캔버스 '폴더 보기' 창이 같은 요소를 쓴다(창에서도 워크스페이스처럼 조작).
   const libraryToolbar = (
     <LibraryToolbar
+      workspaceFilter={workspaceFilter}
       typeFilter={typeFilter}
       onTypeFilter={setTypeFilter}
       scale={scale}
@@ -1632,7 +1658,7 @@ export default function App() {
         onTab={(tab) => {
           navTab(tab); // 브라우저 히스토리 엔트리 추가(뒤로/앞으로 연동)
           // 직접 탭 클릭은 다른 필터를 초기화하되 무장된 워크스페이스 침 필터는 유지
-          setFilters((previous) => ({ tab, workspace_id: previous.workspace_id }));
+          setFilters((previous) => ({ tab, workspace_ids: previous.workspace_ids }));
           clearSelect();
         }}
         onSearch={(q) => patch({ search: q || undefined })}

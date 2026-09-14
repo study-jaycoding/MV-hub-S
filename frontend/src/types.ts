@@ -352,7 +352,12 @@ export interface Filters {
   share_dir?: "mine" | "received"; // 공유한 것 / 공유 받은 것(타 작업자 생성)
   local_only?: boolean; // 로컬 보기 — 힉스필드에 없고 로컬에만 있는 것
   creator_uid?: string; // 특정 생성자(팀원)만 보기
-  workspace_id?: string; // 선택한 팀 워크스페이스. 개인 선택은 생략=전체 보기
+  // 선택한 팀 워크스페이스들(중복 선택, OR). 빈 배열·없음 = 전체 보기.
+  // 개인·미상 소속은 이 필터로 고를 수 없다 — workspace_id 를 못 가지기 때문이다
+  // (docs/WORKSPACE_DATA_CONTRACT.md 정합성 규칙 2).
+  workspace_ids?: string[];
+  /** @deprecated 단일 선택 시절 저장값. 읽어서 workspace_ids 로 옮기는 데만 쓴다. */
+  workspace_id?: string;
   project_id?: string; // 프로젝트 필터. 특정 id 또는 'none'(미분류)
   folder_path?: string; // 폴더 필터(접두사) — 그 폴더 + 하위 전부. 프로젝트 선택 시 해제
   search?: string;

@@ -10,7 +10,7 @@ import unittest
 
 
 class TeamLocalFilterTests(unittest.TestCase):
-    def _run(self, pages, *, colors=None, tags=None, auto=None, limit=200,
+    def _run(self, pages, *, colors=None, tags=None, auto=None, ws=None, limit=200,
              overlay_shadow=None, overlay_tags=None,
              query="tab=team&colors=%23ff0000&limit=200"):
         """pages: 서버가 커서별로 돌려줄 목록들. overlay_shadow/{id:color}·overlay_tags/{id:[tag]} 주입."""
@@ -41,14 +41,42 @@ class TeamLocalFilterTests(unittest.TestCase):
         library._proxy.proxy_json = fake_proxy_json
         library._overlay_personal_meta = fake_overlay
         try:
-            out = library._team_local_filtered(Req(), colors, tags, auto, limit, None, None)
+            out = library._team_local_filtered(
+                Req(), colors, tags, auto, ws, limit, None, None
+            )
         finally:
             library._proxy.proxy_json = orig_pj
             library._overlay_personal_meta = orig_ov
         return out, calls
 
-    def _card(self, cid, color=None, tags=None, auto=None, ts=1.0):
-        return {"id": cid, "job_id": cid, "color": color, "tags": tags or [], "auto_tags": auto or [], "sort_ts": ts}
+    def _card(self, cid, color=None, tags=None, auto=None, ts=1.0, ws=None):
+        card = {"id": cid, "job_id": cid, "color": color, "tags": tags or [],
+                "auto_tags": auto or [], "sort_ts": ts}
+        if ws:
+            card.update(workspace_scope="team", workspace_id=ws)
+        return card
+
+    # ── 워크스페이스 중복 선택(Jay 2026-09-14) ──
+    # 팀 탭은 쿼리스트링이 공유 서버로 그대로 넘어간다. **옛 서버는 workspace_ids 를 모른다** —
+    # 그러면 필터가 조용히 안 걸린 전체가 온다. 그래서 허브가 한 번 더 거른다.
+    def test_filters_by_multiple_workspaces_local(self):
+        page = [self._card("a", ws="ws-1"), self._card("b", ws="ws-2"),
+                self._card("c", ws="ws-3"), self._card("d")]
+        out, _ = self._run([page], ws=["ws-1", "ws-3"])
+        self.assertEqual([g["id"] for g in out], ["a", "c"])
+
+    def test_personal_and_unknown_rows_never_match_a_workspace_pick(self):
+        # 개인·미상 소속은 workspace_id 를 못 가진다(WORKSPACE_DATA_CONTRACT 규칙 2).
+        # 같은 id 가 남아 있는 비정상 행도 scope 가 team 이 아니면 안 걸려야 한다.
+        rows = [self._card("a", ws="ws-1"), self._card("b")]
+        rows[1].update(workspace_scope="personal", workspace_id="ws-1")
+        out, _ = self._run([rows], ws=["ws-1"])
+        self.assertEqual([g["id"] for g in out], ["a"])
+
+    def test_no_workspace_pick_means_everything(self):
+        page = [self._card("a", ws="ws-1"), self._card("b")]
+        out, _ = self._run([page], ws=[])
+        self.assertEqual([g["id"] for g in out], ["a", "b"])
 
     # ── 색 ──
     def test_filters_by_color_local(self):
@@ -120,3 +148,55 @@ class TeamLocalFilterTests(unittest.TestCase):
         for gone in ("color=", "colors=", "tag=", "tags=", "cursor_ts=", "cursor_id="):
             self.assertNotIn(gone, q)
         self.assertIn("tab=team", q)
+
+
+class TeamTabDispatchTests(unittest.TestCase):
+    """팀 탭에서 **언제** 허브가 직접 거르는가 — 이 판단이 없으면 위 필터는 불려지지도 않는다.
+
+    팀 탭 요청은 쿼리스트링이 공유 서버로 그대로 넘어간다(_proxy.proxy_get). 그래서
+     · 한 개 선택 → 단수 `workspace_id` 가 같이 나가 **서버가** 거른다(옛 서버에서도 동작).
+     · 두 개 이상 → 옛 서버는 `workspace_ids` 를 모른다 → **허브가** 거른다.
+    """
+
+    def _call(self, ws_ids):
+        from unittest import mock
+
+        from fastapi import BackgroundTasks
+
+        from app.routers import library
+
+        class _Request:
+            class url:
+                query = "tab=team"
+
+            headers: dict = {}
+            cookies: dict = {}
+
+        with (
+            mock.patch.object(library._proxy, "proxying", return_value=True),
+            mock.patch.object(library, "_team_local_filtered", return_value=[]) as local,
+            mock.patch.object(library._proxy, "proxy_get", return_value=[]) as passthrough,
+            mock.patch.object(library, "_overlay_personal_meta", side_effect=lambda d, r: d),
+            mock.patch.object(library, "_schedule_remote_thumb_prewarm", return_value=False),
+        ):
+            library.list_generations(
+                _Request(), BackgroundTasks(), tab="team",
+                colors=[], tags=[], auto_tags=[], workspace_ids=ws_ids, limit=500,
+            )
+        return local, passthrough
+
+    def test_two_or_more_picks_are_filtered_by_the_hub(self):
+        local, passthrough = self._call(["ws-1", "ws-2"])
+        self.assertEqual(local.call_args.args[4], ["ws-1", "ws-2"])
+        passthrough.assert_not_called()
+
+    def test_a_single_pick_is_left_to_the_server(self):
+        # 서버가 거르면 상한(약 12,000행) 없이 정확하다 — 굳이 허브가 다시 걸 필요가 없다.
+        local, passthrough = self._call(["ws-1"])
+        local.assert_not_called()
+        passthrough.assert_called_once()
+
+    def test_no_pick_is_left_to_the_server(self):
+        local, passthrough = self._call([])
+        local.assert_not_called()
+        passthrough.assert_called_once()
