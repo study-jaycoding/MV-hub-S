@@ -1400,11 +1400,12 @@
 
 /* scene tab: drag to reorder + per-canvas workspace (Jay 2026-09-11) */
 .scene-tab-wrap { position: relative; touch-action: none; }
-/* 탭 밝기는 세 단계다 — 활성(1.0) > 같은 공간 비활성(0.62) > 다른 공간(0.3).
-   비활성을 흐리게 만든 뒤(2026-09-15) 0.42 로 두면 가운데 단계와 붙어 구분이 사라진다.
-   이 두 줄은 위 :not(.on) 규칙보다 뒤에 있어야 이긴다(같은 우선순위 — 순서로 갈린다). */
-.scene-tab-wrap.off-ws { opacity: 0.3; }
-.scene-tab-wrap.off-ws:hover { opacity: 0.62; }
+/* 선택 안 한 탭은 **전부 같은 밝기**다(Jay 2026-09-15). 예전엔 다른 워크스페이스 소속만 0.42 로
+   더 흐렸는데, 탭마다 밝기가 달라 보이는 게 산만하다. 어느 공간 소속인지는 탭 앞의 색 배지
+   (.ws-mark-box)가 이미 알려주므로 밝기로 또 구분하지 않는다.
+   활성인데 다른 공간인 경우(.on.off-ws)는 아래 규칙이 그대로 맡는다. */
+.scene-tab-wrap.off-ws { opacity: 0.62; }
+.scene-tab-wrap.off-ws:hover { opacity: 0.88; }
 .scene-tab-wrap.on.off-ws { opacity: 0.68; }
 .scene-tab-wrap.dragging { opacity: 0.45; }
 /* 삽입선 — 탭 바깥의 형제 요소(탭 wrap 은 overflow:hidden 이라 안에 그리면 잘린다) */
