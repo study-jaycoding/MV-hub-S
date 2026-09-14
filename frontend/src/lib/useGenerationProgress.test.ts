@@ -3,7 +3,7 @@
 //  · 2026-09-14 회귀: running 이라고 error 를 지우자 '확인 중' 배지가 '생성중' 으로 되돌아갔다.
 import { describe, expect, it } from "vitest";
 
-import { isVerifying } from "./generationDisplay";
+import { generationStatusTitle, isVerifying } from "./generationDisplay";
 import { applyProgressToGen } from "./useGenerationProgress";
 import type { Generation, ProgressMessage } from "../types";
 
@@ -20,6 +20,23 @@ describe("applyProgressToGen", () => {
   it("서버가 빈 사유를 명시하면 지운다", () => {
     const next = applyProgressToGen(card({ error: "옛 사유" }), { type: "progress", status: "done", error: null } as unknown as ProgressMessage);
     expect(next.error).toBeNull();
+  });
+
+  it("★실패가 확정되면 툴팁에 옛 단계·다음 확인 시각이 남지 않는다", () => {
+    const before = card({ status: "running", execution_phase: "tracking" });
+    const next = applyProgressToGen(before, {
+      type: "progress",
+      status: "failed",
+      error: "CLI 실패: NSFW",
+    } as ProgressMessage);
+    expect(next.execution_phase).toBe("failed");
+
+    const tip = generationStatusTitle(
+      next.status, next.error, next.execution_phase, null, null, "2026-09-14T10:00:00Z",
+    );
+    expect(tip).toContain("실패");
+    expect(tip).not.toContain("생성 중");
+    expect(tip).not.toContain("다음 확인");   // 종료 단계에는 다음 확인 예정이 없다
   });
 
   it("★서버가 사유를 안 담은 메시지는 기존 사유를 건드리지 않는다", () => {

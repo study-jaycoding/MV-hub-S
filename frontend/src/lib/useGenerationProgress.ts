@@ -21,6 +21,10 @@ import type { Generation, ProgressMessage } from "../types";
 export function applyProgressToGen(g: Generation, m: ProgressMessage): Generation {
   const next: Generation = { ...g, status: m.status! };
   if ("error" in m) next.error = m.error ?? null;
+  // 실패가 확정되면 실행 단계도 함께 맞춘다. WS 는 단계를 싣지 않고, 실패한 카드는 폴링 대상에서
+  // 빠진다(useGenerationAutoRefresh 는 활성 잡이 있을 때만 돈다) — 그냥 두면 툴팁에 '단계: 생성 중',
+  // '다음 확인: ...' 같은 옛 정보가 남는다. 서버도 이때 요청을 failed 로 둔다(코덱스 리뷰).
+  if (m.status === "failed" || m.status === "nsfw") next.execution_phase = "failed";
   return next;
 }
 
