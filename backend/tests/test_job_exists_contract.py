@@ -167,5 +167,38 @@ class JobExistsTests(unittest.TestCase):
                     self.assertIsNone(self._call())
 
 
+class GetJobRawTests(unittest.TestCase):
+    def _call(self):
+        return asyncio.run(cli_bridge.get_job_raw(JOB))
+
+    def test_live_job_with_not_found_in_prompt_is_preserved(self):
+        for prompt in (
+            "a lost dog poster reading: job not found",
+            "Error: Job not found",
+            "first line\nError: Job not found\nlast line",
+            "Error: Job not found in cache; retry upstream",
+        ):
+            for indent in (None, 2):
+                with self.subTest(prompt=prompt, indent=indent):
+                    expected = json.loads(_job(params={"prompt": prompt}))
+                    raw = json.dumps(expected, indent=indent)
+                    with patch.object(cli_bridge, "_run", new=_run_returns(raw)):
+                        self.assertEqual(self._call(), expected)
+
+    def test_not_found_and_invalid_output_remain_unknown(self):
+        for raw in (
+            "Error: Job not found", "", "   ", "<html>502 Bad Gateway</html>",
+            '{"id": "%s", "params": {"prompt": "Error: Job not found' % JOB,
+            "[]", "null", '"Error: Job not found"', '{"status":"completed"}',
+        ):
+            with self.subTest(raw=raw):
+                with patch.object(cli_bridge, "_run", new=_run_returns(raw)):
+                    self.assertIsNone(self._call())
+        for message in ("Error: Job not found", "CLI timeout"):
+            with self.subTest(message=message):
+                with patch.object(cli_bridge, "_run", new=_run_raises(message)):
+                    self.assertIsNone(self._call())
+
+
 if __name__ == "__main__":
     unittest.main()

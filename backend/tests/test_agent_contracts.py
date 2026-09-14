@@ -275,6 +275,78 @@ def test_mask_prompt_echo_covers_truncated_and_escaped_json():
     assert m("plain error text") == "plain error text"
 
 
+def test_run_cli_failure_keeps_both_streams_without_duplicates_or_blank_lines():
+    agent = _load_agent()
+    for stderr, stdout, expected in (
+        ("warning on stderr", "actual failure on stdout", "warning on stderr\nactual failure on stdout"),
+        ("  same failure\n", "same failure", "same failure"),
+        (" \n", "stdout failure", "stdout failure"),
+        ("stderr failure", " \n", "stderr failure"),
+        (None, "stdout failure", "stdout failure"),
+        ("stderr failure", None, "stderr failure"),
+        (None, None, ""),
+    ):
+        result = subprocess.CompletedProcess([], 1, stdout=stdout, stderr=stderr)
+        with patch.object(agent.subprocess, "run", return_value=result):
+            data, error = agent._run_cli_json("hf", "generate", "get", "job-1")
+        assert data is None
+        assert error == f"CLI 실패: {expected} — cmd: generate get job-1"
+
+
+def test_run_cli_failure_masks_combined_output_before_the_600_character_cut():
+    agent = _load_agent()
+    stdout = '{"prompt":"' + "private prompt " * 100 + '","error":"quota exceeded"}'
+    stderr = '{"negative_prompt":"private negative","display_prompt":"private display"}'
+    result = subprocess.CompletedProcess([], 1, stdout=stdout, stderr=stderr)
+    with patch.object(agent.subprocess, "run", return_value=result):
+        data, error = agent._run_cli_json("hf", "generate", "create", "--prompt", "private argument")
+    assert data is None
+    assert "private" not in error
+    assert "quota exceeded" in error  # 먼저 절단하면 긴 prompt 뒤의 실제 사유를 잃는다.
+    assert error.index('"negative_prompt"') < error.index('"prompt"')
+    assert error.index("quota exceeded") < error.index(" — cmd:")
+
+    # 긴 출력도 기존 본문 600자 상한과 오류 우선·명령 후순위를 유지한다.
+    result = subprocess.CompletedProcess([], 1, stdout="x" * 900, stderr="root cause")
+    with patch.object(agent.subprocess, "run", return_value=result):
+        _, error = agent._run_cli_json("hf", "generate", "get", "job-1")
+    assert error == "CLI 실패: root cause\n" + "x" * 589 + " — cmd: generate get job-1"
+
+
+def test_run_cli_failure_output_uuid_is_not_recovered_as_a_created_job():
+    agent = _load_agent()
+    reference_id = "11111111-2222-4333-8444-555555555555"
+    result = subprocess.CompletedProcess([], 1, stdout=f"reference: {reference_id}", stderr="warning")
+    with patch.object(agent.subprocess, "run", return_value=result):
+        data, error = agent._run_cli_json("hf", "generate", "create")
+    assert reference_id in error
+    assert agent._extract_created_id(data, error) is None
+
+
+def test_timeout_and_parse_failure_keep_stdout_job_recovery_priority():
+    """④의 병합을 복구 경로에 확대하면 stderr의 마지막 참조 UUID를 잡으로 잘못 고른다."""
+    agent = _load_agent()
+    job_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    reference_id = "11111111-2222-4333-8444-555555555555"
+    stdout = f"Created job: {job_id}"
+    stderr = f"reference: {reference_id}"
+    with patch.object(
+        agent.subprocess, "run",
+        side_effect=subprocess.TimeoutExpired("hf", 120, output=stdout.encode(), stderr=stderr.encode()),
+    ):
+        data, error = agent._run_cli_json("hf", "generate", "create")
+    assert error.startswith(agent._TIMEOUT_PREFIX)
+    assert reference_id not in error
+    assert agent._extract_created_id(data, error) == job_id
+
+    result = subprocess.CompletedProcess([], 0, stdout=stdout, stderr=stderr)
+    with patch.object(agent.subprocess, "run", return_value=result):
+        data, error = agent._run_cli_json("hf", "generate", "create")
+    assert error.startswith(agent._PARSE_FAIL_PREFIX)
+    assert reference_id not in error
+    assert agent._extract_created_id(data, error) == job_id
+
+
 def test_log_sink_close_is_final_and_silent(tmp_path):
     """close 후 write/flush 는 무예외 no-op — 재열기도 하지 않는다."""
     agent = _load_agent()
@@ -2095,6 +2167,40 @@ def test_unknown_provider_status_and_network_failure_are_non_terminal():
         assert agent._poll_active_jobs("http://hub", "token", "higgsfield", active) == 0
     fail.assert_not_called()
     assert list(active) == ["job-1"]
+
+
+def test_poll_cli_failure_logs_a_bounded_detail_without_reporting_or_finishing(capsys):
+    agent = _load_agent()
+    active = {
+        "job-1": {
+            "rid": "request-1", "job_id": "job-1", "deadline": float("inf"),
+            "next_direct_check": 0.0,
+        },
+    }
+    result = subprocess.CompletedProcess(
+        [], 1,
+        stdout='{"prompt":"private prompt","error":"quota exceeded"}\n' + "x" * 600,
+        stderr="warning\n",
+    )
+    with patch.object(agent.subprocess, "run", return_value=result), patch.object(
+        agent, "_http"
+    ) as http, patch.object(agent, "_fail") as fail, patch.object(
+        agent.time, "monotonic", return_value=100.0
+    ):
+        assert agent._poll_active_jobs("http://hub", "token", "hf", active) == 0
+    lines = capsys.readouterr().out.splitlines()
+    delay = int(agent._DIRECT_CHECK_INTERVAL_SECONDS)
+    assert lines[0] == f"  ⚠ 상태 조회 실패(job-1) — {delay}초 뒤 재시도"
+    assert len(lines) == 2
+    assert lines[1].startswith("    CLI 실패: warning ")
+    assert len(lines[1]) == 304  # 들여쓰기 4칸 + 상세 300자
+    assert "quota exceeded" in lines[1]
+    assert "private prompt" not in lines[1]
+    http.assert_not_called()
+    fail.assert_not_called()
+    assert list(active) == ["job-1"]
+    assert active["job-1"]["check_failures"] == 1
+    assert active["job-1"]["next_direct_check"] == 100.0 + delay
 
 
 def test_sixty_four_jobs_are_direct_checked_in_fair_bounded_batches():

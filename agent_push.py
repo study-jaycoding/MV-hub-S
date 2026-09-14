@@ -264,7 +264,15 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = N
         print(f"[경고] CLI 타임아웃: {_args_for_log(args)[:160]}")
         return None, f"{_TIMEOUT_PREFIX}{partial}"
     if out.returncode != 0:
-        msg = _mask_prompt_echo((out.stderr or out.stdout or "").strip())
+        # stderr·stdout 을 **둘 다** 담는다(같으면 한 번, 빈 쪽은 건너뜀). 종전엔 `stderr or stdout`
+        # 이라 stderr 에 경고 한 줄만 있어도 stdout 을 통째로 버렸다.
+        # ★2026-09-14 실측(CLI 1.1.24): 이 CLI 는 rc≠0 일 때 오류를 **stderr 에만** 쓰고 stdout 은
+        #  비운다(없는 잡·잘못된 id·없는 플래그 3종 확인). 그래서 지금은 병합으로 늘어나는 내용이
+        #  없고, 하류(_fail → 화면)로 더 나가는 원문도 없다. CLI 가 --json 오류 본문을 stdout 에
+        #  싣게 바뀌면 그때 자동으로 건진다.
+        stderr = (out.stderr or "").strip()
+        stdout = (out.stdout or "").strip()
+        msg = _mask_prompt_echo("\n".join(dict.fromkeys(part for part in (stderr, stdout) if part)))
         # 진짜 CLI 에러를 앞에 둔다 — 뒤에서 잘려도 원인이 남게. 긴 명령어(JSON 프롬프트·ref UUID)는
         # 짧게 뒤에 붙인다(예전엔 명령어가 앞이라 하류 500자 컷에 실제 실패 사유가 통째로 잘렸다).
         return None, f"CLI 실패: {msg[:600]} — cmd: {_args_for_log(args)[:160]}"
@@ -2655,6 +2663,8 @@ def _poll_active_jobs(
                 _tracked_save(server, account_email, tracked)
             if cli_error:
                 print(f"  ⚠ 상태 조회 실패({job_id[:8]}) — {int(delay)}초 뒤 재시도")
+                detail = " ".join(cli_error.split())[:300]
+                print(f"    {detail}")
             continue
         if str(full.get("id")) != job_id:
             tracked["next_direct_check"] = time.monotonic() + 60.0

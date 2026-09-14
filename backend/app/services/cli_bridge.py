@@ -239,7 +239,7 @@ async def get_job_raw(job_id: str, timeout: float = 30.0) -> Optional[dict[str, 
         raw = (await _run("generate", "get", job_id, "--json", timeout=timeout)).strip()
     except CLIError:
         return None
-    if not raw or "job not found" in raw.lower():
+    if not raw or _says_job_not_found(raw):
         return None
     try:
         data = json.loads(raw)
