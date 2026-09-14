@@ -4,7 +4,12 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { APP_EVENTS } from "../lib/appEvents";
-import { formatGenerationDateTime, generationErrorFallback, generationListMeta } from "../lib/generationDisplay";
+import {
+  formatGenerationDateTime,
+  generationErrorFallback,
+  generationListMeta,
+  submitDiagnostic,
+} from "../lib/generationDisplay";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../lib/media";
 import { refSrc } from "../lib/promptParts";
@@ -198,6 +203,11 @@ export function InfoPopup({
                 ? "자동 조사 결과 이 제출로 만들어진 외부 작업이 발견되지 않았습니다. 아래 버튼으로 다시 실행하면 됩니다."
                 : "외부 작업이 이미 만들어졌을 수 있어 자동 재생성을 멈췄습니다. 먼저 같은 계정의 Higgsfield 생성 목록에서 해당 작업이 없는지 확인하세요."}
             </span>
+            {submitDiagnostic(g.error) && (
+              <span className="info-error-text info-recovery-text">
+                {submitDiagnostic(g.error)}
+              </span>
+            )}
             {onRecoveryRequeue && (
               <button
                 type="button"

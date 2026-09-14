@@ -13,6 +13,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
+
 from app.models import PendingRequestOut
 from app.services import cli_bridge
 from app.services.test_snapshot import (
@@ -1775,14 +1777,19 @@ def test_staged_agent_never_creates_when_begin_ack_is_missing():
     release.assert_called_once_with("http://hub", "token-1", "request-1", "agent-1")
 
 
-def test_missing_job_id_after_create_is_quarantined_not_failed_or_retried():
+@pytest.mark.parametrize("reported", [True, False])
+@pytest.mark.parametrize("cli_error", [
+    None, "CLI 타임아웃",
+    "CLI 실패: Invalid media UUID — cmd: --input https://cdn.example.com/a?token=FAKE_QUERY",
+])
+def test_missing_job_id_after_create_is_quarantined_not_failed_or_retried(reported, cli_error):
     agent = _load_agent()
     with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
         agent, "_ensure_request_workspace", return_value=("ws-test", None)
     ), patch.object(agent, "_begin_submission", return_value=True), patch.object(
-        agent, "_run_cli_json", return_value=(None, "CLI 타임아웃")
+        agent, "_run_cli_json", return_value=(None, cli_error)
     ) as create, patch.object(
-        agent, "_require_submission_recovery", return_value=True
+        agent, "_require_submission_recovery", return_value=reported
     ) as recovery, patch.object(agent, "_fail") as fail, patch.object(
         agent, "_outbox_add"
     ) as outbox:
@@ -1801,7 +1808,10 @@ def test_missing_job_id_after_create_is_quarantined_not_failed_or_retried():
 
     assert result is None
     create.assert_called_once()
-    recovery.assert_called_once_with("http://hub", "token-1", "request-1")
+    recovery.assert_called_once_with(
+        "http://hub", "token-1", "request-1",
+        agent._sanitize_diagnostic(cli_error or "잡 id를 확인하지 못했습니다").strip()[:700],
+    )
     fail.assert_not_called()
     outbox.assert_not_called()
 
@@ -1845,7 +1855,7 @@ def test_stale_reference_cache_is_cleared_without_automatic_create_retry():
     create.assert_called_once()
     invalidate.assert_called_once()
     assert invalidate.call_args.args[1] == r"C:\refs\input.png"
-    recovery.assert_called_once_with("http://hub", "token-1", "request-1")
+    recovery.assert_called_once_with("http://hub", "token-1", "request-1", create.return_value[1])
 
 
 def test_old_server_response_without_claim_phase_keeps_legacy_submission_compatible():
@@ -2726,3 +2736,35 @@ def test_model_get_lookups_run_per_model_and_failures_are_reused_in_batch():
         assert agent._allowed_params("hf", "model-a") == set()
         assert agent._allowed_params("hf", "model-b") == set()
         assert sorted(calls) == ["model-a", "model-b"]
+
+
+@pytest.mark.parametrize("response_body", [b'{"ok": true, "applied": true}', b'{"ok": true}', b'{}'])
+def test_recovery_reason_is_sanitized_in_actual_http_body_and_old_server_can_ignore_it(response_body):
+    agent = _load_agent()
+    raw_reason = (
+        'Invalid media UUID https://cdn.example.com/a?Signature=FAKE_SIGNATURE '
+        'token=FAKE_TOKEN ' + '진단' * 500
+    )
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.status = 200
+    response.read.return_value = response_body
+    with patch.object(agent.urllib.request, "urlopen", return_value=response) as urlopen:
+        assert agent._require_submission_recovery("http://hub", "token-1", "request-1", raw_reason)
+    request = urlopen.call_args.args[0]
+    body = agent.json.loads(request.data)
+    assert body == {"reason": agent._sanitize_diagnostic(raw_reason).strip()[:700]}
+    assert len(body["reason"]) == 700
+    assert "Invalid media UUID" in body["reason"]
+    assert "FAKE_SIGNATURE" not in body["reason"]
+    assert "FAKE_TOKEN" not in body["reason"]
+    assert request.get_header("Authorization") == "Bearer token-1"
+    assert request.get_header("Content-type") == "application/json"
+
+
+@pytest.mark.parametrize("reason", [None, "", "  "])
+def test_recovery_empty_reason_keeps_bodyless_agent_contract(reason):
+    agent = _load_agent()
+    with patch.object(agent, "_http", return_value=(200, {"ok": True})) as http:
+        assert agent._require_submission_recovery("http://hub", "t", "r1", reason)
+    assert http.call_args.kwargs == {"token": "t", "timeout": 15}

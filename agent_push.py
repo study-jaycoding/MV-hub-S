@@ -766,11 +766,18 @@ def _release_claim(
     return status == 200
 
 
-def _require_submission_recovery(server: str, token: str, rid: str) -> bool:
+def _require_submission_recovery(
+    server: str, token: str, rid: str, reason: str | None = None,
+) -> bool:
     """CLI 호출 뒤 job_id가 없는 모호한 결말을 자동 재생성 금지 상태로 보고한다."""
     url = _gen_request_url(server, rid, "recovery-required")
+    kwargs = {"token": token, "timeout": 15}
+    # CLI 오류 뒤에 붙은 명령 인자까지 전송 직전에 정제하고, 그 뒤 길이를 제한한다.
+    diagnostic = _sanitize_diagnostic(reason).strip()[:700]
+    if diagnostic:
+        kwargs["body"] = {"reason": diagnostic}
     for attempt in range(3):
-        status, body = _http("POST", url, token=token, timeout=15)
+        status, body = _http("POST", url, **kwargs)
         if status == 200:
             return not isinstance(body, dict) or body.get("applied", True) is not False
         if 400 <= status < 500:
@@ -2376,7 +2383,7 @@ def _submit_one(
     if not job_id:
         # generate create를 호출한 뒤에는 exit code·타임아웃만으로 외부 미제출을 증명할 수 없다.
         # 자동 fail/재시도하면 이미 결제된 작업을 한 번 더 만들 수 있으므로 수동 복구 상태로 격리한다.
-        reason = "잡 id를 확인하지 못했습니다" if not cli_error else cli_error[:700]
+        reason = _sanitize_diagnostic(cli_error or "잡 id를 확인하지 못했습니다").strip()[:700]
         if cli_error:
             print(f"[경고] {cli_error}")
         if seedance_cached_paths and cli_error and any(
@@ -2386,7 +2393,7 @@ def _submit_one(
             for cached_path in seedance_cached_paths:
                 _invalidate_upload_cache(upload_cache, cached_path, upload_lock)
             print("  ↻ 다음 명시적 재실행을 위해 실패한 레퍼런스 업로드 캐시를 비웠습니다")
-        reported = _require_submission_recovery(server, token, rid)
+        reported = _require_submission_recovery(server, token, rid, reason)
         suffix = "" if reported else " (서버 보고 실패 — lease 만료 시 자동 격리)"
         print(f"  ⚠ 제출 결과 확인 필요: {reason}{suffix}")
         return None

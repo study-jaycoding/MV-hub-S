@@ -596,9 +596,10 @@ async def require_submission_recovery(
     email: str,
     account_uid: str | None,
     request_id: str,
+    reason: str | None = None,
 ) -> bool:
     """CLI 호출 결말이 불명확한 요청을 새 과금이 일어나지 않는 보류 상태로 격리한다."""
-    result = await _sync_io(repo.mark_request_recovery_required, request_id, email)
+    result = await _sync_io(repo.mark_request_recovery_required, request_id, email, reason)
     if not result:
         return False
     if not result["transitioned"]:

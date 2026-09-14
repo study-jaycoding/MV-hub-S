@@ -283,6 +283,12 @@ class TestGenerationStateEngine:
         assert request["lease_owner"] is None
         assert generation["status"] == "running"
         assert "자동 재생성을 차단" in generation["error"]
+        assert repo.mark_request_recovery_required(rid, "worker@example.com", "late detail") == {
+            "gen_id": gen_id, "transitioned": False,
+        }
+        assert repo.get_gen_request(rid)["updated_at"] == request["updated_at"]
+        assert repo.get_gen_request(rid)["error"] == generation["error"]
+        assert repo.get_generation(gen_id)["error"] == generation["error"]
         assert repo.claim_pending_requests("worker@example.com", limit=16) == []
 
     def test_unknown_cli_outcome_can_anchor_existing_job_or_explicitly_requeue(self):
@@ -494,3 +500,52 @@ class TestGenerationStateEngine:
         assert any("SELECT 1 FROM gen_request" in statement for statement in statements)
         assert not any("BEGIN IMMEDIATE" in statement for statement in statements)
         assert not any(statement.lstrip().upper().startswith("UPDATE") for statement in statements)
+
+
+    def test_recovery_reason_is_display_only_bounded_and_written_once_to_both_rows(self):
+        for reason, detail in (
+            (None, ""), ("", ""), ("  ", ""), (False, ""), ({"unexpected": True}, ""),
+            ("Invalid media UUID", "Invalid media UUID"),
+            ("  진단\x00\t\r\n\x7f\x85\u202e\ud800 내용  ", "진단 내용"),
+            ("가" * 701, "가" * 700),
+        ):
+            rid, gen_id = self._request()
+            repo.claim_pending_requests(
+                "worker@example.com", limit=1, lease_owner="agent-1", submission_stage_capable=True,
+            )
+            repo.begin_request_submission(rid, "worker@example.com", "agent-1")
+            result = repo.mark_request_recovery_required(rid, "worker@example.com", reason)
+            assert result == {"gen_id": gen_id, "transitioned": True}
+            expected = gen_requests_repo.RECOVERY_REQUIRED_NOTE
+            if detail:
+                expected += f"\n제출 진단: {detail}"
+            assert repo.get_gen_request(rid)["error"] == expected
+            assert repo.get_generation(gen_id)["error"] == expected
+            assert repo.get_generation(gen_id)["status"] == "running"
+            with db.get_connection() as conn:
+                conn.execute("UPDATE gen_request SET updated_at='2001-01-01 00:00:00' WHERE id=?", (rid,))
+            assert repo.mark_request_recovery_required(rid, "worker@example.com", "late detail") == {
+                "gen_id": gen_id, "transitioned": False,
+            }
+            request = repo.get_gen_request(rid)
+            assert request["updated_at"] == "2001-01-01 00:00:00"
+            assert request["error"] == repo.get_generation(gen_id)["error"] == expected
+
+    def test_recovery_reason_cannot_bypass_state_account_or_job_guards(self):
+        for state, email, job_id in (
+            ("pending", "worker@example.com", None),
+            ("claimed", "worker@example.com", None),
+            ("done", "worker@example.com", None),
+            ("canceled", "worker@example.com", None),
+            ("submitting", "other@example.com", None),
+            ("running", "worker@example.com", "already-anchored"),
+        ):
+            rid, gen_id = self._request()
+            with db.get_connection() as conn:
+                conn.execute("UPDATE gen_request SET status=? WHERE id=?", (state, rid))
+                conn.execute("UPDATE generation SET job_id=? WHERE id=?", (job_id, gen_id))
+            before = repo.get_gen_request(rid)
+            generation_before = repo.get_generation(gen_id)
+            assert repo.mark_request_recovery_required(rid, email, "late detail") is None
+            assert repo.get_gen_request(rid) == before
+            assert repo.get_generation(gen_id) == generation_before

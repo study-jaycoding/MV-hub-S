@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import unicodedata
 import uuid
 from typing import Any, Optional
 
@@ -18,6 +19,10 @@ from ..emailnorm import norm_email
 from ..workspace_context import normalize_workspace_context
 from . import tags
 from .generations import RECOVERY_REQUIRED_NOTE
+
+# 복구 안내 뒤에 붙는 상세 진단의 머리말. 프론트 generationDisplay.SUBMIT_DIAGNOSTIC_MARK 와 짝 —
+# 팝업이 이 표식으로 상세만 잘라 쓴다(안내 문구는 팝업이 이미 따로 보여주므로 그대로 두면 겹친다).
+SUBMIT_DIAGNOSTIC_PREFIX = "제출 진단: "
 
 
 _AMBIGUOUS_ACTIVE_PHASES = (
@@ -216,6 +221,7 @@ def release_claimed_request(
 def mark_request_recovery_required(
     rid: str,
     account_email: str,
+    reason: str | None = None,
 ) -> Optional[dict[str, Any]]:
     """CLI 호출 뒤 job_id를 확보하지 못한 요청을 즉시 수동 복구 상태로 격리한다."""
     email = norm_email(account_email)
@@ -232,19 +238,29 @@ def mark_request_recovery_required(
             conn.execute("ROLLBACK")
             return None
         transitioned = row["status"] != "recovery_required"
+        # lease 만료 등이 먼저 격리했다면 뒤늦은 상세는 버린다. 복구 조사 기준인
+        # updated_at도 사유 보강 때문에 갱신하지 않는다.
         if transitioned:
+            # 표시용 문구일 뿐 실패 판정·재생성 허가에는 쓰지 않는다.
+            # 민감정보 정제는 배포 에이전트가 담당하고 서버는 최소 위생만 적용한다.
+            detail = "" if not isinstance(reason, str) else "".join(
+                ch for ch in reason if unicodedata.category(ch) not in ("Cc", "Cf", "Cs")
+            ).strip()[:700]
+            display_error = RECOVERY_REQUIRED_NOTE
+            if detail:
+                display_error += f"\n{SUBMIT_DIAGNOSTIC_PREFIX}{detail}"
             conn.execute(
                 "UPDATE gen_request SET status='recovery_required', error=?, lease_owner=NULL, "
                 "lease_expires_at=NULL, next_check_at=NULL, recovery_probe_status=NULL, "
                 "recovery_probe_at=NULL, recovery_probe_matches=0, recovery_probe_job_id=NULL, "
                 "updated_at=datetime('now') "
                 "WHERE id=?",
-                (RECOVERY_REQUIRED_NOTE, rid),
+                (display_error, rid),
             )
             conn.execute(
                 "UPDATE generation SET status='running', error=? "
                 "WHERE id=? AND status IN ('pending','running')",
-                (RECOVERY_REQUIRED_NOTE, row["gen_id"]),
+                (display_error, row["gen_id"]),
             )
         return {"gen_id": str(row["gen_id"]), "transitioned": transitioned}
 

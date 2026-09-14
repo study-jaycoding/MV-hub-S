@@ -298,3 +298,34 @@ class TestGenRequestCapabilityGate:
         )
         # 이 API는 완료된 생성물의 카드 소속만 기록하며 외부 생성 claim 경로가 아니다.
         paid_gate.assert_not_awaited()
+
+
+@pytest.mark.parametrize("raw_body, reason", [
+    (b'', None), (b'null', None), (b'{}', None), (b'""', None),
+    (b'{"reason": ""}', ""), (b'{"reason": null}', None),
+    (b'{"reason":', None), (b'\xff', None), (b'[]', None),
+    (b'{"reason": "Invalid media UUID"}', "Invalid media UUID"),
+])
+@pytest.mark.parametrize("applied", [True, False])
+def test_recovery_route_optional_body_preserves_response_and_conflict(raw_body, reason, applied):
+    from starlette.requests import Request
+
+    async def receive():
+        return {"type": "http.request", "body": raw_body, "more_body": False}
+
+    request = Request({"type": "http", "method": "POST", "path": "/"}, receive)
+    with patch.object(gen_requests_router, "_require_account", return_value={"email": "worker@example.com"}), patch.object(
+        gen_requests_router, "realtime_scope", return_value="acct:worker@example.com"
+    ), patch.object(gen_requests_router.agent_signals, "touch"), patch.object(
+        gen_requests_router, "require_submission_recovery", new_callable=AsyncMock, return_value=applied
+    ) as recover:
+        if applied:
+            assert asyncio.run(gen_requests_router.mark_gen_request_recovery_required("r1", request)) == {
+                "ok": True, "applied": True,
+            }
+        else:
+            with pytest.raises(HTTPException) as exc:
+                asyncio.run(gen_requests_router.mark_gen_request_recovery_required("r1", request))
+            assert exc.value.status_code == 409
+            assert exc.value.detail == "복구 보류로 전환할 수 없는 요청 상태입니다"
+    recover.assert_awaited_once_with("worker@example.com", "acct:worker@example.com", "r1", reason=reason)

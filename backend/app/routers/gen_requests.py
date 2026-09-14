@@ -657,8 +657,14 @@ async def mark_gen_request_recovery_required(rid: str, request: Request):
     """CLI 호출은 시작했지만 job_id를 얻지 못한 모호한 결말을 자동 재생성 금지로 격리한다."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
+    try:
+        body = await request.json()
+    except Exception:
+        # 본문 없는 구 에이전트와 손상된 JSON도 기존 격리 동작을 유지한다.
+        body = None
+    reason = body.get("reason") if isinstance(body, dict) else None
     applied = await require_submission_recovery(
-        acc["email"], realtime_scope(acc), rid
+        acc["email"], realtime_scope(acc), rid, reason=reason
     )
     if not applied:
         raise HTTPException(status_code=409, detail="복구 보류로 전환할 수 없는 요청 상태입니다")

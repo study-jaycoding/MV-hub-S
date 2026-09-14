@@ -305,8 +305,9 @@ def test_recovery_report_is_idempotent_and_generation_requeue_resolves_owned_req
             {"gen_id": "g1", "transitioned": False},
         ]
         assert asyncio.run(
-            require_submission_recovery("a@b.com", "acct:a", "r1")
+            require_submission_recovery("a@b.com", "acct:a", "r1", reason="Invalid media UUID")
         ) is True
+        repo.mark_request_recovery_required.assert_called_once_with("r1", "a@b.com", "Invalid media UUID")
         assert asyncio.run(
             require_submission_recovery("a@b.com", "acct:a", "r1")
         ) is True
