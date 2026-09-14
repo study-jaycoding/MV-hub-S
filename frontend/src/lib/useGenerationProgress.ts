@@ -10,7 +10,19 @@ import {
   type LibraryMutationOrigin,
 } from "./librarySync";
 import { isKnownGen, observeStatus } from "./sceneRecentDoneStore";
-import type { Generation } from "../types";
+import type { Generation, ProgressMessage } from "../types";
+
+/** progress 한 건을 카드에 반영한다. **서버가 말한 것만** 바꾸고, error 를 담지 않은
+ *  메시지(단순 running 통지)는 기존 사유를 그대로 둔다.
+ *
+ *  ★running 이라고 error 를 지우면 안 된다 — generations.py 가 '확인중 — 실제 상태 재확인
+ *  대기' 를 running 상태로 DB 에 직접 써 두고, 카드는 그 문구로 '확인 중' 배지를 띄운다
+ *  (isVerifying). 지우면 배지가 '생성중' 으로 되돌아간다. */
+export function applyProgressToGen(g: Generation, m: ProgressMessage): Generation {
+  const next: Generation = { ...g, status: m.status! };
+  if ("error" in m) next.error = m.error ?? null;
+  return next;
+}
 
 interface UseGenerationProgressArgs {
   enabled: boolean;
@@ -139,14 +151,12 @@ export function useGenerationProgress({
           observeStatus(m.generation_id, m.status);
         }
         setGens((prev) =>
-          prev.map((g) =>
-            g.id === m.generation_id ? { ...g, status: m.status! } : g,
-          ),
+          prev.map((g) => (g.id === m.generation_id ? applyProgressToGen(g, m) : g)),
         );
-        if (m.status === "done" && m.generation_id) {
-          const doneId = m.generation_id;
+        if (["done", "failed", "nsfw"].includes(m.status) && m.generation_id) {
+          const generationId = m.generation_id;
           api
-            .getGeneration(doneId)
+            .getGeneration(generationId)
             .then((fresh) => {
               if (gensRef.current.some((g) => g.id === fresh.id)) {
                 setGens((prev) => prev.map((g) => (g.id === fresh.id ? fresh : g)));
@@ -155,7 +165,8 @@ export function useGenerationProgress({
               }
             })
             .catch(() => void reload(true, true));
-          bumpBoard();
+          // 실패는 확정 사유를 재조회하고, 완료에 따른 보드 갱신은 done에서만 유지한다.
+          if (m.status === "done") bumpBoard();
         }
       },
       () => void reload(true),

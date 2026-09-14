@@ -9,6 +9,15 @@ export const GENERATION_STATUS_LABEL: Record<string, string> = {
   nsfw: "NSFW 차단",
 };
 
+// 사유가 비었을 때 보여줄 문구. failed 는 팝업 라벨('⚠ 실패 사유')과 말이 겹쳐 상태를 되풀이하지 않는다.
+// nsfw 처럼 뜻이 분명한 상태만 라벨로 설명하고, 모르는 상태의 원인은 지어내지 않는다.
+export function generationErrorFallback(status: string): string {
+  if (status === "failed") return "상세 사유를 받지 못했습니다.";
+  return Object.prototype.hasOwnProperty.call(GENERATION_STATUS_LABEL, status)
+    ? `${GENERATION_STATUS_LABEL[status]} 상태입니다. 상세 사유 정보가 없습니다.`
+    : "실패 사유 정보가 없습니다.";
+}
+
 // pending/running 카드는 '내 PC 에이전트가 실행'하는 로컬 생성 — 에이전트가 떠 있어야 완료된다.
 export const LOCAL_EXEC_HINT =
   "내 PC의 에이전트가 로컬 CLI로 생성 중입니다. 에이전트(push_agent --watch)가 떠 있어야 완료됩니다.";

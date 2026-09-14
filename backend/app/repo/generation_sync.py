@@ -138,8 +138,9 @@ def _upsert_synced(
             # adopt(URL 매칭)면 job_id 를 권위값으로 덮어씀, 아니면 기존 보존(COALESCE).
             # sort_ts 는 힉스필드 정밀 epoch 으로 갱신 → 로컬 생성본도 힉스필드 순서에 정렬(있을 때만).
             job_id_set = "job_id=?" if adopt else "job_id=COALESCE(job_id, ?)"
-            # ★error 정합: failed→done 되살림 시 옛 실패 사유를 비운다(stored_error 가 done/pending/running 이면
-            #  None). 여전히 실패(failed/nsfw)면 기존 사유를 그대로 보존(existing["error"]) → 사유 유실 방지.
+            # ★error 정합: failed→done 되살림 시 옛 실패 사유는 stored_error 가 비운다(done/pending/running → None).
+            # 실패 사유는 COALESCE처럼 새 값 우선, None/빈 문자열이면 기존 보존 — 통째 교체하면
+            # 힉스필드가 사유를 생략할 때 에이전트·복구 경로가 기록한 기존 사유가 유실된다.
             conn.execute(
                 f"UPDATE generation SET status=?, error=?, model=COALESCE(model,?), params=?, "
                 f"sort_ts=COALESCE(?, sort_ts), creator_uid=COALESCE(?, creator_uid), "
@@ -149,7 +150,7 @@ def _upsert_synced(
                 f"{job_id_set} WHERE id=?",
                 (
                     g["status"],
-                    stored_error(g["status"], existing["error"]),
+                    stored_error(g["status"], g.get("error") or existing["error"]),
                     g["model"],
                     json.dumps(_merged_params(existing["params"], g["params"]), ensure_ascii=False),
                     g.get("sort_ts"),
@@ -175,11 +176,11 @@ def _upsert_synced(
             target_id = new_id()
             conn.execute(
                 "INSERT INTO generation"
-                "(id, worker_id, prompt, model, params, color, status, created_at, sort_ts, "
+                "(id, worker_id, prompt, model, params, color, status, error, created_at, sort_ts, "
                 # sort_ts 누락 시 created_at 에서 파생 — 키셋 페이지네이션이 이 행을 놓치지 않게(NULL 금지).
                 # origin='synced' — 순수 동기화본(판별을 id==job_id 좌표가 아닌 명시 마커로).
                 "creator_uid, job_id, origin, workspace_scope, workspace_id, workspace_name) "
-                "VALUES(?,?,?,?,?,?,?,?,COALESCE(?, strftime('%s', ?)),?,?, 'synced',?,?,?)",
+                "VALUES(?,?,?,?,?,?,?,?,?,COALESCE(?, strftime('%s', ?)),?,?, 'synced',?,?,?)",
                 (
                     target_id,
                     worker_id,
@@ -188,6 +189,7 @@ def _upsert_synced(
                     json.dumps(g["params"], ensure_ascii=False),
                     None,
                     g["status"],
+                    stored_error(g["status"], g.get("error")),
                     g["created_at"],
                     g.get("sort_ts"),
                     g["created_at"],

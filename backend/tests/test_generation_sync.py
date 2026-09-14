@@ -83,6 +83,82 @@ class GenerationSyncTests(unittest.TestCase):
                 1,
             )
 
+    def test_sync_update_prefers_new_error(self) -> None:
+        for status in ("failed", "nsfw"):
+            with self.subTest(status=status):
+                job_id = f"job-new-error-{status}"
+                parsed = self.parsed(job_id, status=status)
+                self.assertEqual(repo.upsert_synced_generation(parsed, "me"), "inserted")
+                with db.get_connection() as conn:
+                    conn.execute(
+                        "UPDATE generation SET error=? WHERE job_id=?",
+                        ("기존 실패 사유", job_id),
+                    )
+                parsed["generation"]["error"] = "새 실패 사유"
+                repo.upsert_synced_generation(parsed, "me")
+                with db.get_connection() as conn:
+                    row = conn.execute(
+                        "SELECT error FROM generation WHERE job_id=?", (job_id,)
+                    ).fetchone()
+                self.assertEqual(row["error"], "새 실패 사유")
+
+    def test_sync_update_preserves_existing_error_when_new_error_is_empty(self) -> None:
+        for status in ("failed", "nsfw"):
+            for incoming_error in (None, ""):
+                with self.subTest(status=status, incoming_error=incoming_error):
+                    job_id = f"job-empty-error-{status}-{incoming_error!r}"
+                    parsed = self.parsed(job_id, status=status)
+                    self.assertEqual(repo.upsert_synced_generation(parsed, "me"), "inserted")
+                    with db.get_connection() as conn:
+                        conn.execute(
+                            "UPDATE generation SET error=? WHERE job_id=?",
+                            ("복구 경로가 기록한 실패 사유", job_id),
+                        )
+                    parsed["generation"]["error"] = incoming_error
+                    repo.upsert_synced_generation(parsed, "me")
+                    with db.get_connection() as conn:
+                        row = conn.execute(
+                            "SELECT error FROM generation WHERE job_id=?", (job_id,)
+                        ).fetchone()
+                    self.assertEqual(row["error"], "복구 경로가 기록한 실패 사유")
+
+    def test_sync_update_clears_error_when_failed_job_revives(self) -> None:
+        for status in ("done", "pending", "running"):
+            with self.subTest(status=status):
+                job_id = f"job-revive-error-{status}"
+                parsed = self.parsed(job_id, status="failed")
+                self.assertEqual(repo.upsert_synced_generation(parsed, "me"), "inserted")
+                with db.get_connection() as conn:
+                    conn.execute(
+                        "UPDATE generation SET error=? WHERE job_id=?",
+                        ("기존 실패 사유", job_id),
+                    )
+                parsed = self.parsed(job_id, status=status)
+                parsed["generation"]["error"] = "뒤늦게 도착한 실패 사유"
+                self.assertEqual(repo.upsert_synced_generation(parsed, "me"), "updated")
+                with db.get_connection() as conn:
+                    row = conn.execute(
+                        "SELECT status, error FROM generation WHERE job_id=?", (job_id,)
+                    ).fetchone()
+                self.assertEqual(row["status"], status)
+                self.assertIsNone(row["error"])
+
+    def test_sync_insert_stores_error_only_for_failure(self) -> None:
+        for status in ("failed", "nsfw", "done", "pending", "running"):
+            with self.subTest(status=status):
+                job_id = f"job-insert-error-{status}"
+                parsed = self.parsed(job_id, status=status)
+                parsed["generation"]["error"] = "힉스필드 사유"
+                self.assertEqual(repo.upsert_synced_generation(parsed, "me"), "inserted")
+                with db.get_connection() as conn:
+                    row = conn.execute(
+                        "SELECT status, error FROM generation WHERE job_id=?", (job_id,)
+                    ).fetchone()
+                self.assertEqual(row["status"], status)
+                self.assertEqual(
+                    row["error"], "힉스필드 사유" if status in ("failed", "nsfw") else None,
+                )
+
     def test_legacy_waiting_synced_job_is_selected_for_repair(self) -> None:
         waiting = self.parsed("job-waiting", status="waiting")
         self.assertEqual(repo.upsert_synced_generation(waiting, "me"), "inserted")

@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { APP_EVENTS } from "../lib/appEvents";
-import { formatGenerationDateTime, generationListMeta } from "../lib/generationDisplay";
+import { formatGenerationDateTime, generationErrorFallback, generationListMeta } from "../lib/generationDisplay";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../lib/media";
 import { refSrc } from "../lib/promptParts";
@@ -234,7 +234,7 @@ export function InfoPopup({
         {(g.status === "failed" || g.status === "nsfw") && (
           <div className="info-error">
             <span className="info-error-label">⚠ 실패 사유</span>
-            <span className="info-error-text">{g.error || "사유 정보 없음 (옛 생성)"}</span>
+            <span className="info-error-text">{g.error || generationErrorFallback(g.status)}</span>
           </div>
         )}
         <Row label="비율" value={params.aspect_ratio as string} />
