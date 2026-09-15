@@ -149,13 +149,21 @@
    --g-base 는 그룹 색(없으면 강조색), --g-lit 는 흰색을 섞어 밝힌 선택용 색. */
 .scene-group.selected {
   --g-base: var(--gc, var(--accent));
-  --g-lit: color-mix(in srgb, var(--g-base) 62%, #fff);
+  /* 폴백 — 상대색을 못 쓰는 환경에서만 쓰인다(흰색을 섞어 밝히는 방식) */
+  --g-lit: color-mix(in srgb, var(--g-base) 70%, #fff);
   border-style: solid; border-color: var(--g-lit);
   /* 면도 같이 살짝 밝아져야 '켜졌다'는 느낌이 난다(안 고름 13% → 고름 20%) */
   background: color-mix(in srgb, var(--g-base) 20%, transparent);
   box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--g-lit) 42%, transparent),
-    0 0 18px color-mix(in srgb, var(--g-base) 34%, transparent);
+    0 0 0 2px color-mix(in srgb, var(--g-lit) 58%, transparent),
+    0 0 22px color-mix(in srgb, var(--g-lit) 48%, transparent);
+}
+/* 형광 — 흰색을 섞으면 파스텔로 바래서 '켜진' 느낌이 안 난다.
+   색상(h)은 그대로 두고 밝기(l)를 조금, 채도(c)를 크게 올려 네온처럼 만든다. */
+@supports (color: oklch(from red calc(l + 0.1) calc(c * 1.7) h)) {
+  .scene-group.selected {
+    --g-lit: oklch(from var(--g-base) calc(l + 0.10) calc(c * 1.7) h);
+  }
 }
 .scene-group.selected .scene-group-hd {
   border-bottom-color: var(--g-lit);
