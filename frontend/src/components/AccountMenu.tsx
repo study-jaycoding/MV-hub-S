@@ -474,7 +474,9 @@ export function AccountMenu({
         document.body,
       )}
 
-      {manageOpen && (
+      {/* 설정·계정 관리도 상단바 밖(body)에서 그린다 — 안에 두면 생성 결과 창의 어두운 막에
+          똑같이 덮인다(2026-09-15 Jay). 두 패널 모두 position:fixed 라 자리는 그대로다. */}
+      {manageOpen && createPortal(
         <ManageAccount
           provider={provider}
           account={account}
@@ -483,14 +485,16 @@ export function AccountMenu({
           plan={activeWs?.plan_type ?? null}
           credits={activeCredits}
           cliVersion={reported?.cli_version ?? healthCliVersion}
-        />
+        />,
+        document.body,
       )}
 
-      {settingsOpen && (
+      {settingsOpen && createPortal(
         <SettingsPanel
           onClose={() => setSettingsOpen(false)}
           onImported={onImported}
-        />
+        />,
+        document.body,
       )}
     </div>
   );

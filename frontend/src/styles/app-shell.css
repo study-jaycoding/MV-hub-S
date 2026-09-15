@@ -356,9 +356,13 @@
 .acct-dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.14); flex: none; }
 .acct-dot.on { background: var(--accent); }
 
-/* 내 계정 관리 — 플로팅 패널(우측 상단, 모달 아님). 불투명 배경으로 시인성 확보 */
+/* 내 계정 관리 — 플로팅 패널(우측 상단, 모달 아님). 불투명 배경으로 시인성 확보.
+   ★z-index 는 자기 바깥클릭 막(.info-catcher, 230)보다 위여야 한다 — 아래면 패널 안을
+   눌러도 막이 먼저 받아 그대로 닫힌다. 예전엔 상단바 안에 묻혀 안 드러났을 뿐이다
+   (2026-09-15, 패널을 body 로 옮기며 실측으로 드러남).
+   235 = 막(230)·비교 모달(231) 위, 비교 라이트박스(.cmp-srcbox 240) 아래. */
 .manage-float {
-  position: fixed; z-index: 85; top: 56px; right: 14px;
+  position: fixed; z-index: 235; top: 56px; right: 14px;
   width: min(380px, 92vw); max-height: 82vh; overflow-y: auto;
   display: flex; flex-direction: column;
   background: var(--panel, #1b1b22); backdrop-filter: blur(12px);
