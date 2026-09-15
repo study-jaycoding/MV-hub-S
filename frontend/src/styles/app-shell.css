@@ -231,8 +231,11 @@
   background: var(--grad); display: inline-flex; align-items: center; justify-content: center;
 }
 .acct-avatar:hover { filter: brightness(1.12); }
+/* body 로 옮겨 그린다(AccountMenu 가 createPortal) — 상단바(z-index 21) 안에 두면
+   생성 결과 창의 어두운 막(.scene-varpop-backdrop, 30)에 아래쪽이 덮여 흐려졌다.
+   위치는 아바타 버튼 rect 로 인라인 지정한다. 400 = 앱의 모든 막(최대 360)보다 위. */
 .acct-pop {
-  position: absolute; top: calc(100% + 8px); right: 0; z-index: 70;
+  position: fixed; z-index: 400;
   width: 264px; padding: 8px; border-radius: 12px;
   background: var(--panel, #1c1c22); border: 1px solid var(--border);
   box-shadow: 0 16px 44px rgba(0,0,0,0.55);
@@ -544,6 +547,8 @@
 .settings-action.is-busy { opacity: 0.6; cursor: default; pointer-events: none; }
 /* 서버 백업/가져오기 — 두 버튼 나란히. 파일 방식은 <details> 로 접어 보조 노출. */
 .settings-row { display: flex; gap: 8px; }
+.settings-resolve-follow { display: flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer; }
+.settings-resolve-follow input { accent-color: var(--accent); margin: 0; }
 .settings-row .settings-action { margin-top: 8px; }
 /* 보조(해제 등) 버튼 — 가로폭 자동·차분한 톤 */
 .settings-action.ghost {

@@ -1,6 +1,7 @@
 // 계정·워크스페이스 통합 메뉴 — 힉스필드 사이트의 계정 드롭다운처럼.
 // 워크스페이스 전환 + 표시이름 변경 + 로그인 정보/로그아웃을 한 곳에서 관리. Assets 버튼 옆.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../api";
 import {
   accountDisplayName,
@@ -79,6 +80,8 @@ export function AccountMenu({
   // 덮지 않게 한다. 전환과는 무관한 보호다(전환은 이제 네트워크를 안 탄다).
   const listSeqRef = useRef(0);
   const t = useT();
+  const popRef = useRef<HTMLDivElement>(null);
+  const [popPos, setPopPos] = useState<{ top: number; right: number } | null>(null);
   const closeMenu = useCallback(() => setOpen(false), []);
   const closeMenuOnEscape = useCallback(() => {
     setOpen(false);
@@ -161,9 +164,22 @@ export function AccountMenu({
       });
     return () => controller.abort();
   }, []);
-  useOutsideMouseDown(ref, closeMenu, open);
+  // 팝업은 body 로 옮겨 그린다(아래 createPortal) — 상단바 안에 있으면 모달 막에 덮인다.
+  //  그래서 바깥클릭 판정에 팝업 자신도 함께 넘긴다. 안 그러면 메뉴 안을 눌러도 닫힌다.
+  useOutsideMouseDown(ref, closeMenu, open, popRef);
   // 캡처 단계에서 Esc 를 소비해 뒤의 라이브러리 전역 Esc(선택 해제)까지 전달되지 않게 한다.
   useEscapeClose(closeMenuOnEscape, open, true, true);
+  // 아바타 버튼 기준 위치. 상단바가 sticky 라 스크롤로는 안 움직이고, 창 크기만 따라간다.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const r = avatarRef.current?.getBoundingClientRect();
+      if (r) setPopPos({ top: Math.round(r.bottom + 8), right: Math.round(window.innerWidth - r.right) });
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open]);
   // 메뉴를 열 때마다 워크스페이스/보고값을 새로고침 — 에이전트 동기화·계정상태 보고가 나중에
   // 끝나도 즉시 반영된다(예전엔 마운트 때 한 번만 받아 '미연결'이 옛 상태로 박혀 있었다).
   useEffect(() => {
@@ -301,8 +317,8 @@ export function AccountMenu({
         </span>
       </button>
 
-      {open && (
-        <div className="acct-pop">
+      {open && popPos && createPortal(
+        <div className="acct-pop" ref={popRef} style={{ top: popPos.top, right: popPos.right }}>
           <div className="acct-head">
             <span className={"acct-ring acct-ring-lg" + ringOn} style={ringStyle}>
               <span className="acct-av-lg">{initial}</span>
@@ -454,7 +470,8 @@ export function AccountMenu({
               ⏏ Sign Out
             </button>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
 
       {manageOpen && (
