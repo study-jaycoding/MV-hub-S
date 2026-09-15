@@ -2,8 +2,8 @@ import { isFolderDisabled, type DisabledFolders } from "./deactivated";
 import type { Generation } from "../types";
 
 export const GENERATION_STATUS_LABEL: Record<string, string> = {
-  pending: "생성중",
-  running: "생성중",
+  pending: "생성 중",
+  running: "생성 중",
   done: "완료",
   failed: "실패",
   nsfw: "NSFW 차단",

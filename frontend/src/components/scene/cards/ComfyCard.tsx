@@ -433,7 +433,7 @@ export function ComfyCard({
                     <span className="gen-wave-bar" />
                     <span className="gen-wave-bar" />
                   </span>
-                  <span className="gen-generating-label">생성중</span>
+                  <span className="gen-generating-label">생성 중</span>
                 </span>
               </div>
             ) : (
