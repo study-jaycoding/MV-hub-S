@@ -273,10 +273,13 @@ function GenerationCardImpl({
             }
           >
             {gen.status === "running" || gen.status === "pending" ? (
-              // 카드 안에는 상태 글씨를 겹쳐 표시하지 않고 로고만 보여준다.
-              // 세부 단계(대기/제출/생성/확인/조치)는 위 title 툴팁과 정보창에서 확인한다.
+              // 로고 아래에 캔버스 카드와 같은 단계 문구를 함께 보여준다(2026-09-15 Jay).
+              // 더 자세한 것(힉스필드 상태·마지막/다음 확인·오류)은 위 title 툴팁과 정보창에 있다.
               <span className="gen-generating gen-comfy-pending">
                 <img src={higgsfieldLogo} alt="Higgsfield" className="gen-comfy-logo" />
+                <span className="gen-generating-label">
+                  {generationStatusLabelFor(gen.status, gen.error, gen.execution_phase)}
+                </span>
               </span>
             ) : (
               generationStatusLabel(gen.status)
@@ -582,6 +585,7 @@ function GenerationCardImpl({
           <div className="thumb-placeholder status-running">
             <span className="gen-generating gen-comfy-pending">
               <img src={comfyLogo} alt="Comfy" className="gen-comfy-logo" />
+              <span className="gen-generating-label">생성 중</span>
             </span>
           </div>
         </div>
