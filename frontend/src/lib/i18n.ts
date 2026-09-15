@@ -105,6 +105,21 @@ const EN: Record<string, string> = {
   "날짜 구분 끄기 (한 번 더)": "Ungroup (click again)",
   "리스트": "List",
   "그리드": "Grid",
+  // 워크스페이스 필터(라이브러리 툴바) — 공간 이름은 사용자 자료라 번역하지 않는다.
+  "워크스페이스로 걸러 보기": "Filter by workspace",
+  "이 워크스페이스만 빼기": "Remove this workspace",
+  "나머지는 버튼을 눌러 목록에서 뺄 수 있습니다": "Open the menu to remove the rest",
+  '지금 "{name}" 워크스페이스에 속한 것만 보는 중 (만든 곳이 아니라 현재 소속)':
+    'Showing only items now in "{name}" (current workspace, not where it was made)',
+  "불러오는 중…": "Loading…",
+  "목록을 못 받았습니다 — 다시 시도": "Could not load the list — retry",
+  "속한 팀 워크스페이스가 없습니다.": "You are not in any team workspace.",
+  // 레퍼런스 역할 메뉴(프롬프트 트레이 우클릭)
+  "레퍼런스 역할": "Reference role",
+  "첫 프레임": "First frame",
+  "끝 프레임": "Last frame",
+  "옴니 레퍼런스": "Omni reference",
+  "레퍼런스 모드에서만 지정할 수 있습니다.": "Available only in reference mode.",
   // 캔버스 노드
   "미리보기": "View", // View 노드 헤더(한글 UI=미리보기, 영문 UI=View)
   // 미디어 타입

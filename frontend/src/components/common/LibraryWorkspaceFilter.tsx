@@ -15,6 +15,7 @@
 // 목록·로딩·실패는 컨테이너 훅(useWorkspaceFilterOptions)이 들고 있고 이 컴포넌트는 그리기만 한다.
 import { useCallback, useRef, useState } from "react";
 
+import { useT } from "../../lib/i18n";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { workspaceCommandLabels } from "../../lib/workspaceCommand";
@@ -55,6 +56,7 @@ export function LibraryWorkspaceFilter({
   // 메뉴만 닫고 카드 선택은 유지 — 라이브러리 전역 Esc 보다 캡처 단계에서 먼저 처리한다.
   useEscapeClose(closeMenuOnEscape, open, true, true);
 
+  const t = useT();
   const labels = workspaceCommandLabels(options);
   // 이름은 목록에서 찾되, **칩은 선택에서 만든다** — 목록 조회가 실패했거나 탈퇴한 공간이어도
   // 칩과 ✕ 는 남아야 한다. 여기서 선택을 자동으로 지우면 보던 화면이 말없이 전체로 되돌아간다.
@@ -70,13 +72,15 @@ export function LibraryWorkspaceFilter({
         <span
           key={id}
           className="lib-ws-chip"
-          title={`지금 "${labelOf(id)}" 워크스페이스에 속한 것만 보는 중 (만든 곳이 아니라 현재 소속)`}
+          // 공간 이름은 사용자 자료라 번역하지 않고 자리표시자로 끼워 넣는다.
+          title={t('지금 "{name}" 워크스페이스에 속한 것만 보는 중 (만든 곳이 아니라 현재 소속)')
+            .replace("{name}", labelOf(id))}
         >
           <WorkspaceMark label={labelOf(id)} id={id} />
           <span className="lib-ws-chip-name">{labelOf(id)}</span>
           <button
             className="lib-ws-chip-x"
-            title="이 워크스페이스만 빼기"
+            title={t("이 워크스페이스만 빼기")}
             onClick={() => onToggle(id)}
           >
             ×
@@ -84,7 +88,7 @@ export function LibraryWorkspaceFilter({
         </span>
       ))}
       {hidden > 0 && (
-        <span className="lib-ws-more" title="나머지는 버튼을 눌러 목록에서 뺄 수 있습니다">
+        <span className="lib-ws-more" title={t("나머지는 버튼을 눌러 목록에서 뺄 수 있습니다")}>
           +{hidden}
         </span>
       )}
@@ -92,7 +96,7 @@ export function LibraryWorkspaceFilter({
         <button
           ref={buttonRef}
           className={"af-btn lib-ws-btn" + (value.length ? " on" : "")}
-          title="워크스페이스로 걸러 보기"
+          title={t("워크스페이스로 걸러 보기")}
           aria-haspopup="menu"
           aria-expanded={open}
           onClick={() => {
@@ -150,14 +154,14 @@ export function LibraryWorkspaceFilter({
                 </button>
               );
             })}
-            {loading && !options.length && <div className="lib-ws-note">불러오는 중…</div>}
+            {loading && !options.length && <div className="lib-ws-note">{t("불러오는 중…")}</div>}
             {failed && (
               <button type="button" className="lib-ws-note warn" onClick={onOpen}>
-                목록을 못 받았습니다 — 다시 시도
+                {t("목록을 못 받았습니다 — 다시 시도")}
               </button>
             )}
             {!loading && !failed && !options.length && !orphans.length && (
-              <div className="lib-ws-note">속한 팀 워크스페이스가 없습니다.</div>
+              <div className="lib-ws-note">{t("속한 팀 워크스페이스가 없습니다.")}</div>
             )}
           </div>
         )}
