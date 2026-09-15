@@ -1997,8 +1997,10 @@ export default function App() {
       {!promptVisible && selectionBar && !(filters.tab === "compose" && !!activeScene) && (
         <div className="selbar-top-float">{selectionBar}</div>
       )}
-      {/* 프롬프트 입력바 — 구성탭에서도 표시. Ctrl/⌘+K 로 표시/숨김 토글(display 토글로 입력 상태 보존) */}
-      <div style={promptVisible ? undefined : { display: "none" }}>
+      {/* 프롬프트 입력바 — 구성탭에서도 표시. Ctrl/⌘+K 로 표시/숨김 토글(display 토글로 입력 상태 보존).
+          숨김은 SpotlightPrompt 안에서 처리한다 — 여기서 도크를 통째로 감추면 상태줄(● Host/연결됨)까지
+          같이 사라진다. 상태줄은 숨겨도 화면 우측 하단에 남아 있어야 한다(Jay 2026-09-15). */}
+      <div>
         <SpotlightPrompt
           ref={spotlightPromptRef}
           visible={promptVisible}

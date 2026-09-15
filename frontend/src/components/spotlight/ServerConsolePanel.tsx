@@ -54,14 +54,12 @@ export function ServerConsolePanel({
   account,
   workspace,
   onCheckAccount,
-  visible = true,
 }: {
   hubOk: boolean | null; // 허브(로컬 서버) 응답 여부 — null=확인 전
   agentOn: boolean | null; // 생성 에이전트 롱폴 연결 여부
   account: AccountInfo | null;
   workspace?: WorkspaceContext; // 지금 쓰는 워크스페이스 — 상태줄 가운데에 이름을 보여 준다(Jay)
   onCheckAccount: () => void; // '연결됨' 클릭 = 크레딧 수동 확인(종전 동작)
-  visible?: boolean; // Ctrl+K 로 프롬프트가 숨겨진(display:none) 동안 로그 폴링을 멈춘다
 }) {
   // 상태줄에 보여줄 워크스페이스 이름 — 개인 공간은 '개인', 아직 못 정했으면 빈 값.
   const workspaceLabel =
@@ -82,11 +80,11 @@ export function ServerConsolePanel({
     });
   };
 
-  // 열려 있고 프롬프트가 보이는 동안만 갱신 — 닫거나 Ctrl+K 로 숨기면 폴링 없음.
+  // 콘솔이 열려 있는 동안만 갱신 — 닫으면 폴링 없음.
   // setInterval 대신 '응답 완료 후 5초 뒤 다음 요청' 예약: 요청이 겹치지 않고,
   // 느린 옛 응답이 새 응답 뒤에 도착해 화면을 되덮는 순서 역전도 없다(alive 게이트).
   useEffect(() => {
-    if (!open || !visible) return;
+    if (!open) return;
     let alive = true;
     let inflight = false;
     let timer: number | undefined;
@@ -128,7 +126,7 @@ export function ServerConsolePanel({
       if (timer !== undefined) window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [open, visible]);
+  }, [open]);
 
   const hubLabel = data
     ? [

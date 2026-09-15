@@ -11,6 +11,15 @@
   display: flex; flex-direction: column; gap: 8px;
   pointer-events: auto;
 }
+/* Ctrl+K 로 프롬프트를 숨긴 상태 — 도크 안쪽(패널·오류·선택바)만 감추고 상태줄(● Host/연결됨)은
+   화면 우측 하단에 남긴다. 어느 공간으로 생성되는지·에이전트가 켜져 있는지는 프롬프트를 접고
+   캔버스를 볼 때도 계속 보여야 한다(Jay 2026-09-15).
+   가로 폭을 내용만큼으로 줄이고 상태줄에만 pointer-events 를 켜 캔버스 클릭을 막지 않는다. */
+.sl-dockbar.sl-hidden { justify-content: flex-end; }
+.sl-dockbar.sl-hidden .sl-dock { width: auto; max-width: none; pointer-events: none; }
+.sl-dockbar.sl-hidden .sl-dock > *:not(.sl-status-row) { display: none; }
+.sl-dockbar.sl-hidden .sl-status-row { pointer-events: auto; }
+
 @keyframes sl-rise {
   from { opacity: 0; transform: translateY(24px) scale(0.98); }
   to   { opacity: 1; transform: translateY(0) scale(1); }

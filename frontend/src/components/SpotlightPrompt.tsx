@@ -131,7 +131,7 @@ interface Props {
   // 단축키가 글자로 새지 않게). 프롬프트는 직접 클릭해야 타이핑. sceneMode(카드 바인딩)보다 넓게 —
   // 카드를 아직 안 골랐어도 캔버스에선 자동 포커스 금지.
   inCompose?: boolean;
-  // Ctrl+K 로 숨겨진(display:none) 동안 에이전트 상태 폴링을 멈추기 위한 표시 여부.
+  // Ctrl+K 표시 여부. false 면 도크 안쪽(패널·오류)만 감추고 상태줄은 우측 하단에 남긴다.
   visible?: boolean;
   // ── 캔버스 카드 아래 Generate 버튼 연동 ── 배치수를 App 이 보유(카드 툴바와 공유).
   count?: number; // 배치 장수(컨트롤드). 없으면 내부 상태 사용.
@@ -231,7 +231,9 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   }, [open]);
   // 계정·CLI 연결 상태(크레딧·이메일 부차 정보) — 데이터 도메인 훅으로 분리(IME·에디터 무관).
   const { account, checkAccount } = useAccountStatus(workspace);
-  const { hubOk, agentOn } = useSpotlightAgentStatus(visible);
+  // 프롬프트를 숨겨도 상태줄은 화면 우측 하단에 남으므로 폴링은 계속한다 — 멈추면 점 색이
+  // 숨긴 순간에 얼어붙어 '연결됨'인데 실제로는 끊긴 상태를 보여 준다. (숨은 탭 쉼은 훅 안에 있다.)
+  const { hubOk, agentOn } = useSpotlightAgentStatus();
   // @/# 피커
   const [mention, setMention] = useState<SpotlightMention>(null);
   // 알약을 클릭해 텍스트로 풀어 이름 편집 중인 노드 — 그 안에서는 @가 멘션으로 재감지되지 않게 한다.
@@ -1218,7 +1220,13 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   };
 
   return (
-    <div className={"sl-dockbar" + (agentOn === false ? " sl-offline" : "")}>
+    <div
+      className={
+        "sl-dockbar" +
+        (agentOn === false ? " sl-offline" : "") +
+        (visible ? "" : " sl-hidden")
+      }
+    >
       <div className="sl-dock">
         {topSlot}
         <div
@@ -1321,7 +1329,6 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             account={account}
             workspace={workspace}
             onCheckAccount={checkAccount}
-            visible={visible}
           />
         </div>
       </div>
