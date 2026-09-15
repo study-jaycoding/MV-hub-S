@@ -16,6 +16,21 @@ const SEEDANCE_2_5_PARAMS: ModelParam[] = [
 ];
 
 describe("PARAM_GATES (seedance_2_5.extension_mode)", () => {
+  it("무시되는 길이·비율은 표시 게이트에서 계속 허용하고 선택값도 유지한다", () => {
+    for (const mode of ["video_edit", "video_extension"]) {
+      const valid: Record<string, string | number | boolean> = { mode, duration: 12, aspect_ratio: "auto" };
+      if (mode === "video_extension") valid.extension_mode = "forward";
+      expect(paramGateAllows("seedance_2_5", "duration", valid)).toBe(true);
+      expect(paramGateAllows("seedance_2_5", "aspect_ratio", valid)).toBe(true);
+      expect(correctedOptions("seedance_2_5", SEEDANCE_2_5_PARAMS, valid)).toBe(valid);
+    }
+  });
+
+  it("방향 옵션은 extension에서만 표시한다", () => {
+    for (const mode of ["t2v", "omni_reference", "video_edit", "video_extension"]) {
+      expect(paramGateAllows("seedance_2_5", "extension_mode", { mode })).toBe(mode === "video_extension");
+    }
+  });
   it("Seedance 2.5 기본 mode는 omni_reference이고 extension_mode는 싣지 않는다", () => {
     const init = defaultOptions(SEEDANCE_2_5_PARAMS, "seedance_2_5");
     expect(init.mode).toBe("omni_reference");

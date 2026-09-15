@@ -3,6 +3,7 @@ import {
   SEEDANCE_TOKEN_SRC,
   seedanceAtTokenKind,
   emptySeedanceTokenRoles,
+  effectiveSeedanceMode,
   normalizeMediaRefTokensBasic,
   normalizeSeedancePromptTokens,
   seedanceAudioIndexMap,
@@ -14,6 +15,7 @@ import {
   usesMediaRefTokens,
   usesSeedanceMediaRefs,
   validateSeedanceTokenRoles,
+  validateSeedanceMode,
   type SeedanceRefType,
 } from "./seedancePrompt";
 
@@ -88,6 +90,7 @@ function validateMediaRefTokenPresence(text: string, refs: { type: string }[]): 
   return null;
 }
 
+// 라이브러리 직접 재생성(useGenerationCardActions.prepareRegenerate)은 이 빌더를 거치지 않으며 이번 검증 범위 밖이다.
 export function buildSpotlightCreateBody({
   text,
   inlineRefs,
@@ -103,10 +106,6 @@ export function buildSpotlightCreateBody({
 }: Params): { body: SpotlightCreateBody | null; error: string | null } {
   const seedanceMode = usesSeedanceMediaRefs(model);
   const tokenRoles = seedanceMode ? seedanceTokenRoles(text) : emptySeedanceTokenRoles();
-  if (seedanceMode) {
-    const tokenError = validateSeedanceTokenRoles(trayRefs, tokenRoles);
-    if (tokenError) return { body: null, error: tokenError };
-  }
 
   let imgN = 0;
   let videoN = 0;
@@ -127,6 +126,18 @@ export function buildSpotlightCreateBody({
     return { ...ref, role: `@Image${++imgN}` };
   });
   const refs = [...trayWithRoles, ...inlineWithRoles];
+  const params = { ...optionValues };
+  const effectiveMode = effectiveSeedanceMode(model, params.mode, refs.length);
+  if (effectiveMode !== params.mode) params.mode = effectiveMode;
+
+  if (seedanceMode) {
+    // 기존 토큰 번호의 기준은 트레이다. 인라인은 모드 판정·영상 개수에만 합산한다.
+    const tokenError = validateSeedanceTokenRoles(trayRefs, tokenRoles);
+    if (tokenError) return { body: null, error: tokenError };
+  }
+  const modeError = validateSeedanceMode(model, effectiveMode, refs, tokenRoles, params.extension_mode);
+  if (modeError) return { body: null, error: modeError };
+  if (model === "seedance_2_5" && effectiveMode !== "video_extension") delete params.extension_mode;
 
   // 없는 번호의 레퍼런스 토큰(빨강 알약)이 섞인 채 제출되면 CLI 가 크레딧만 쓰고 실패한다 → 차단.
   if (!seedanceMode && usesMediaRefTokens(model)) {
@@ -158,7 +169,7 @@ export function buildSpotlightCreateBody({
       prompt: cliPrompt || "(no text)",
       display_prompt: displayPrompt || undefined,
       model,
-      params: optionValues,
+      params,
       tags: tags?.length ? tags : undefined,
       auto_tags: armedAutoTags,
       references: refs.map((ref) => ({

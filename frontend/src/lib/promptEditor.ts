@@ -122,7 +122,10 @@ export function buildChipEl(ref: ChipRef): HTMLElement {
   rm.addEventListener("mousedown", (e) => {
     e.preventDefault();
     e.stopPropagation();
+    const editor = chip.closest<HTMLElement>('[contenteditable="true"]');
     chip.remove();
+    // DOM 직접 삭제는 브라우저가 input을 발생시키지 않는다. 기존 입력 경로로 모드·초안·placeholder를 갱신한다.
+    editor?.dispatchEvent(new Event("input", { bubbles: true }));
   });
   // 칩 재배치 드래그 — 커스텀 타입(x-ch-chip)으로 격리해 카드/에셋 드롭 핸들러와 안 섞이게.
   chip.addEventListener("dragstart", (e) => {

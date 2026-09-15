@@ -10,7 +10,31 @@ import {
   isVariantParam,
   modelRows,
   modelVariantSuffix,
+  spotlightIgnoredOptions,
 } from "./spotlightPromptConfig";
+
+describe("spotlightIgnoredOptions — 유효하지만 무시되는 값", () => {
+  it("edit는 길이·비율과 원본 길이 기준 요금 안내", () => {
+    expect(spotlightIgnoredOptions("seedance_2_5", "video_edit")).toEqual({
+      params: ["duration", "aspect_ratio"],
+      note: "길이·비율은 넣은 영상을 따릅니다.",
+      billingNote: "요금도 그 영상 길이로 매겨집니다.",
+    });
+  });
+  it("extension은 비율만 무시", () => {
+    expect(spotlightIgnoredOptions("seedance_2_5", "video_extension")).toEqual({
+      params: ["aspect_ratio"], note: "비율은 넣은 영상을 따릅니다.",
+    });
+  });
+  it.each(["t2v", "omni_reference", undefined, "unknown"])("%s로 돌아오면 흐림과 안내 해제", (mode) => {
+    expect(spotlightIgnoredOptions("seedance_2_5", mode)).toEqual({ params: [], note: null });
+  });
+  it.each(["seedance_2_0", "seedance_2_0_mini", "another_model"])("%s는 영향 없음", (model) => {
+    for (const mode of ["video_edit", "video_extension", "std", "fast"]) {
+      expect(spotlightIgnoredOptions(model, mode)).toEqual({ params: [], note: null });
+    }
+  });
+});
 
 const VIDEO = [
   { job_set_type: "seedance_2_5", display_name: "Seedance 2.5" },

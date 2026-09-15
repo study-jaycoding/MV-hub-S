@@ -132,11 +132,6 @@ export function useSpotlightSubmit({
     const displayPrompt = partsDisplay(parts);
     setBusy(true);
     try {
-      const resolvedOptions = await resolveAutoAspectRatio(
-        optionValues,
-        tunable,
-        [...trayRefs, ...inlineRefs],
-      );
       const effectiveAssignment =
         generationAssignmentOverride !== undefined
           ? generationAssignmentOverride || undefined
@@ -152,7 +147,7 @@ export function useSpotlightSubmit({
         parts,
         displayPrompt,
         model,
-        optionValues: resolvedOptions,
+        optionValues,
         tags: targetTags,
         armedAutoTags,
         activeProjectId: targetProjectId,
@@ -163,6 +158,8 @@ export function useSpotlightSubmit({
         setBusy(false);
         return;
       }
+      // 검증을 통과한 요청만 이미지 비율을 비동기로 잰다. 무시되는 옵션도 기존 auto 변환은 유지한다.
+      body.params = await resolveAutoAspectRatio(body.params || {}, tunable, [...trayRefs, ...inlineRefs]);
 
       const batch = normalizeSpotlightBatch(
         batchOverride,

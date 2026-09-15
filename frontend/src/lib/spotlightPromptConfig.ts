@@ -15,6 +15,26 @@ export function durationRange(model: string, fallback: number): { min: number; m
 // 자주 바꾸는 핵심 파라미터만 인라인 칩으로 두고, 나머지는 고급 팝오버로 모은다.
 export const SPOTLIGHT_PRIMARY_PARAMS = new Set(["aspect_ratio", "resolution", "duration"]);
 
+// 허용값 제한/표시 게이트와 별개: 유효하지만 CLI가 무시하는 값. 선택과 전송은 유지한다.
+export function spotlightIgnoredOptions(model: string, mode: unknown): {
+  params: readonly string[];
+  note: string | null;
+  billingNote?: string;
+} {
+  if (model === "seedance_2_5") {
+    if (mode === "video_edit") return {
+      params: ["duration", "aspect_ratio"],
+      note: "길이·비율은 넣은 영상을 따릅니다.",
+      billingNote: "요금도 그 영상 길이로 매겨집니다.",
+    };
+    if (mode === "video_extension") return {
+      params: ["aspect_ratio"],
+      note: "비율은 넣은 영상을 따릅니다.",
+    };
+  }
+  return { params: [], note: null };
+}
+
 // ── 모델 드롭다운 '변형' ────────────────────────────────────────────────────
 // CLI 모델 하나를 옵션 고정값으로 갈라 **드롭다운에서만** 별도 항목처럼 보여준다. 힉스필드 웹이
 // Seedance 2.0 / 2.0 Fast 를 따로 내놓는 것과 같은 표시다.

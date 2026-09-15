@@ -52,6 +52,7 @@ import { flashMsg } from "../lib/flash";
 import { dataTransferHasFiles, displayRefThumb, filesFromDataTransfer } from "../lib/media";
 import {
   emptySeedanceTokenRoles,
+  effectiveSeedanceMode,
   seedanceTokenRoles,
   seedanceTrayToken,
   usesMediaRefTokens,
@@ -155,6 +156,8 @@ export interface SpotlightPromptHandle {
   // 하단에 지금 보이는 모델·옵션 스냅샷 — 캔버스 렌더가 모델 노드 없는 생성카드에 쓰는 폴백.
   // submit 과 같은 게이트(모델 없음·옵션 로딩 중·옵션이 아직 이전 모델 것)면 null.
   currentModel: () => SceneModelCfg | null;
+  // 씬 일괄 생성 오류도 내부 setError → onErrorChange 통로로 표시한다.
+  reportError: (message: string | null) => void;
 }
 
 // 노출 모델 화이트리스트(ALLOWED)·숨김 파라미터(HIDDEN_PARAMS)·모델/파라미터/비용 로직은
@@ -511,6 +514,17 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bindingKey, bindingModelKey]);
+  // 씬/라이브러리 옵션 복원 effect 뒤에 둔다. 함수형 갱신으로 방금 복원된 edit/extension을 보존한다.
+  useEffect(() => {
+    if (model !== "seedance_2_5" || paramsLoading || paramsModel !== model || readSelectedModel() !== model) return;
+    const inlineCount = editorRef.current ? serialize(editorRef.current).refs.length : 0;
+    const referenceCount = trayRefs.length + inlineCount;
+    setOptionValues((prev) => {
+      const mode = effectiveSeedanceMode(model, prev.mode, referenceCount);
+      return mode === prev.mode ? prev : { ...prev, mode };
+    });
+    // mode도 감시해 첨부가 그대로인 상태에서 t2v/omni를 수동 선택해도 다시 맞춘다.
+  }, [model, paramsLoading, paramsModel, readSelectedModel, trayRefs, promptTick, optionValues.mode, setOptionValues]);
   useEffect(() => {
     if (!bindingKey) return;
     const ed = editorRef.current;
@@ -1027,8 +1041,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       params: { ...optionValues },
     };
   }, [type, model, paramsLoading, paramsModel, typeModels, optionValues]);
-  // App에는 Spotlight 내부 상태 대신 submit(batch)·currentModel() 두 명령만 공개한다.
-  useImperativeHandle(ref, () => ({ submit, currentModel }), [submit, currentModel]);
+  useImperativeHandle(ref, () => ({ submit, currentModel, reportError: setError }), [submit, currentModel]);
 
   // 드롭다운(model/ratio) Esc 닫기 — 도크 자체는 항상 떠 있음.
   useEffect(() => {

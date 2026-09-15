@@ -9,6 +9,7 @@ import {
   modelRows,
   modelVariantSuffix,
   spotlightAdvancedParamRank,
+  spotlightIgnoredOptions,
   spotlightParamLabel,
   spotlightValueLabel,
 } from "../../lib/spotlightPromptConfig";
@@ -84,6 +85,7 @@ export function SpotlightOptionsBar({
   // 조건부 게이트 — 현재 옵션 조합에서 허용 안 되는 파라미터는 표시하지 않는다
   // (예: extension_mode 는 mode=video_extension 일 때만 — 다른 모드에 실으면 CLI 거부).
   const visibleTunable = tunable.filter((p) => paramGateAllows(model, p.name, optionValues));
+  const ignored = spotlightIgnoredOptions(model, optionValues.mode);
   const audioParam = visibleTunable.find((p) => p.name === "generate_audio");
   const advancedParams = visibleTunable
     .filter(
@@ -166,13 +168,14 @@ export function SpotlightOptionsBar({
       </div>
 
       {visibleTunable.filter((p) => SPOTLIGHT_PRIMARY_PARAMS.has(p.name)).map((p) => {
+        const ignoredClass = ignored.params.includes(p.name) ? " sl-opt-ignored" : "";
         if (/duration|length/i.test(p.name)) {
           if (p.enum?.length) {
             const vals = p.enum;
             const cur = String(optionValues[p.name] ?? p.default ?? vals[0]);
             const idx = Math.max(0, vals.indexOf(cur));
             return (
-              <div className="sl-chip sl-opt-slider" key={p.name} title={p.name}>
+              <div className={"sl-chip sl-opt-slider" + ignoredClass} key={p.name} title={p.name}>
                 <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
                 <input
                   type="range"
@@ -191,7 +194,7 @@ export function SpotlightOptionsBar({
           const raw = Number(optionValues[p.name] ?? def) || def;
           const cur = Math.min(dmax, Math.max(dmin, raw));
           return (
-            <div className="sl-chip sl-opt-slider" key={p.name} title={`${p.name} (${dmin}~${dmax}s)`}>
+            <div className={"sl-chip sl-opt-slider" + ignoredClass} key={p.name} title={`${p.name} (${dmin}~${dmax}s)`}>
               <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
               <input
                 type="range"
@@ -210,7 +213,7 @@ export function SpotlightOptionsBar({
         return p.enum?.length ? (
           <div className="sl-chip-wrap" key={p.name}>
             <button
-              className={"sl-chip sl-opt-chip" + (open === p.name ? " active" : "")}
+              className={"sl-chip sl-opt-chip" + ignoredClass + (open === p.name ? " active" : "")}
               onClick={() => setOpen(open === p.name ? null : p.name)}
               title={p.name}
             >
@@ -254,7 +257,7 @@ export function SpotlightOptionsBar({
             )}
           </div>
         ) : p.type === "integer" ? (
-          <label className="sl-chip sl-opt-num" key={p.name} title={p.name}>
+          <label className={"sl-chip sl-opt-num" + ignoredClass} key={p.name} title={p.name}>
             <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
             <input
               type="number"
@@ -423,6 +426,11 @@ export function SpotlightOptionsBar({
               })}
             </div>
           )}
+        </div>
+      )}
+      {ignored.note && (
+        <div className="sl-ignored-note">
+          {ignored.note}{ignored.billingNote && <> <strong>{ignored.billingNote}</strong></>}
         </div>
       )}
     </>

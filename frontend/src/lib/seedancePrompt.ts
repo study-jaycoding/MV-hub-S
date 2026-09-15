@@ -4,6 +4,12 @@ export function usesSeedanceMediaRefs(model: string): boolean {
   return model.startsWith("seedance");
 }
 
+// 2.0/mini의 std·fast는 생성 방식이 아니므로 그대로 둔다. 화면과 제출의 공통 판정.
+export function effectiveSeedanceMode<T>(model: string, mode: T, referenceCount: number): T | "t2v" | "omni_reference" {
+  if (model !== "seedance_2_5" || (mode !== "t2v" && mode !== "omni_reference")) return mode;
+  return referenceCount > 0 ? "omni_reference" : "t2v";
+}
+
 // 레퍼런스 토큰(<<<imageN>>> · @imageN)을 쓰는 모델인가 — 현재 이미지·영상 모델 전부 레퍼런스를 쓴다.
 // 이 게이트는 '알약 시각화·@피커·클릭편집·자동 알약화·기본 정규화'를 켠다(이미지 모델도 포함).
 // seedance 전용 로직(시작/끝 프레임·검증·역할 배지·번호 remapping)은 usesSeedanceMediaRefs 로 별도 게이트.
@@ -121,6 +127,7 @@ export function seedanceTrayRole(
   index: number,
   roles: SeedanceTokenRoles,
 ): SeedanceTrayRole {
+  // 첫/끝 역할은 타입 그룹 내 위치를 따른다. 후속 우클릭 지정도 재정렬 시 토큰 번호를 재매핑하지 않는다.
   const type = seedanceRefType(trayRefs[index]);
   if (type === "video") return "video";
   if (type === "audio") return "audio";
@@ -150,6 +157,36 @@ export function seedanceTrayBadgeTitle(role: SeedanceTrayRole): string {
 
 function countRefsByType(trayRefs: SeedanceRefLike[], type: SeedanceRefType): number {
   return trayRefs.filter((ref) => seedanceRefType(ref) === type).length;
+}
+
+// 토큰 정합 검사와 별개인 Seedance 2.5 모드 계약. refs는 전송할 트레이+인라인 전체다.
+export function validateSeedanceMode(
+  model: string,
+  mode: unknown,
+  refs: SeedanceRefLike[],
+  roles: SeedanceTokenRoles,
+  extensionMode: unknown,
+): string | null {
+  if (model !== "seedance_2_5") return null;
+  if (mode === "video_edit" || mode === "video_extension") {
+    const hasFrame = [...roles.image.values()].some((kinds) => kinds.has("start") || kinds.has("end"));
+    if (hasFrame) {
+      const label = mode === "video_edit" ? "영상 고치기" : "영상 이어붙이기";
+      return `첫/끝 프레임은 레퍼런스 모드에서만 쓸 수 있습니다 — 지금 모드는 ${label}입니다.`;
+    }
+  }
+  const videoCount = countRefsByType(refs, "video");
+  if (mode === "video_edit") {
+    if (videoCount === 0) return "고칠 영상을 1개 넣어 주세요 — 영상 고치기 모드는 영상 레퍼런스가 정확히 1개 필요합니다.";
+    if (videoCount > 1) return `영상은 1개만 넣을 수 있습니다 — 지금 ${videoCount}개입니다.`;
+  }
+  if (mode === "video_extension") {
+    if (videoCount === 0) return "이어붙일 영상을 넣어 주세요.";
+    if (extensionMode == null || String(extensionMode).trim() === "") {
+      return "이어붙일 방향(extension_mode)을 선택해 주세요.";
+    }
+  }
+  return null;
 }
 
 export function validateSeedanceTokenRoles(

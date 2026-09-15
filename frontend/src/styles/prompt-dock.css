@@ -321,6 +321,9 @@
 .sl-opt-ic { display: inline-flex; align-items: center; color: var(--muted); }
 /* 듀레이션 슬라이더 칩 — 아이콘 + 레인지 + 값(s) */
 .sl-opt-slider { gap: 8px; }
+/* CLI가 무시하는 값도 조작 가능하다. 안내는 별도 요소라 흐려지지 않는다. */
+.sl-opt-ignored { opacity: 0.45; }
+.sl-ignored-note { flex-basis: 100%; order: 1; color: var(--text); font-size: 12px; }
 .sl-opt-slider input[type="range"] {
   width: 70px; height: 4px; margin: 0; padding: 0;
   accent-color: var(--accent); background: transparent; cursor: pointer;
@@ -464,6 +467,7 @@
 .sl-sparkle { font-size: 12px; }
 
 .sl-error { color: #ff6b6b; font-size: 13px; padding: 0 6px; }
+.sl-error, .sl-error-float { white-space: pre-line; }
 /* Ctrl+K 로 프롬프트를 숨겼을 때 오류를 대신 띄우는 자리 — 화면 하단 중앙.
    프롬프트 도크가 있던 위치라 눈이 가던 곳 그대로다. 클릭을 막지 않는다(캔버스 조작 방해 금지). */
 .sl-error-float {

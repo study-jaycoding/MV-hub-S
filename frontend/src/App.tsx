@@ -1188,33 +1188,40 @@ export default function App() {
       canvasLink: canvasLinks[index],
     }));
 
+    spotlightPromptRef.current?.reportError(null);
+    const invalidCards = new Map<string, string>();
+    const generationCards = scene.cards.filter((card) => card.kind === "generation");
     const summary = await executeSceneGenerationBatch(
       linkedJobs.map((job) => ({ cardId: job.cardId, input: job })),
       async (j) => {
         try {
           await ensureModelParams(j.model);
           const tunable = genParamsCacheRef.current[j.model] || [];
-          const optionValues = await resolveAutoAspectRatio(j.params, tunable, j.refs);
           const assignmentProjectId = j.assignment?.projectId ?? projectId;
           const assignmentFolderPath = j.assignment?.folderPath ?? folderPath;
           const assignmentTags = j.assignment?.tags || [];
-          const { body } = buildSpotlightCreateBody({
+          const { body, error } = buildSpotlightCreateBody({
             text: j.text,
             inlineRefs: [],
             trayRefs: j.refs,
             parts: [],
             displayPrompt: j.text,
             model: j.model,
-            optionValues,
+            optionValues: j.params,
             tags: assignmentTags,
             armedAutoTags: [...armedAutoTags],
             activeProjectId: assignmentProjectId,
             folderPath: assignmentFolderPath,
           });
-          if (!body) {
+          if (error || !body) {
             if (j.canvasLink) discardCanvasGeneration(j.canvasLink);
+            // 같은 카드의 배치 반복은 한 번만 알리고, 유효한 다른 카드는 계속 제출한다.
+            const cardNumber = generationCards.findIndex((card) => card.id === j.cardId) + 1;
+            invalidCards.set(j.cardId, `생성 카드 ${cardNumber}: ${error || "생성 요청을 만들 수 없습니다."}`);
+            spotlightPromptRef.current?.reportError([...invalidCards.values()].join("\n"));
             return null;
           }
+          body.params = await resolveAutoAspectRatio(body.params || {}, tunable, j.refs);
           return { body, canvasLink: j.canvasLink };
         } catch (error) {
           if (j.canvasLink) discardCanvasGeneration(j.canvasLink);
