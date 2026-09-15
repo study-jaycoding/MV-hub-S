@@ -126,6 +126,42 @@ const EN: Record<string, string> = {
   "폴더 등록": "Folders",
   "파일 날짜별로 구분": "Group by date",
   "이 폴더에 미디어가 없습니다.": "No media in this folder.",
+  // 생성 진행 상태 — 작업 공간 격자·캔버스 카드·생성 정보가 함께 쓴다.
+  //  짧게: 타일이 작아지면 한 줄에 들어가야 한다(가장 긴 것 기준으로 재 봤다).
+  "요청 준비 중": "Preparing",
+  "대기": "Queued",
+  "준비 중": "Starting",
+  "제출 중": "Submitting",
+  "생성 중": "Generating",
+  "확인 중": "Checking",
+  "조치 필요": "Action needed",
+  "HF 확인 필요": "Check HF",
+  "완료": "Done",
+  "실패": "Failed",
+  "NSFW 차단": "NSFW blocked",
+  "삭제됨": "Deleted",
+  "원본 없음": "File missing",
+  // 카드 툴팁 — 우리가 붙이는 앞말만. 오류 본문은 서버가 만든 글이라 한국어 그대로 나온다.
+  "단계": "Phase",
+  "Higgsfield 상태": "Higgsfield status",
+  "마지막 확인": "Last checked",
+  "다음 확인": "Next check",
+  "내 PC의 에이전트가 로컬 CLI로 생성 중입니다. 에이전트(push_agent --watch)가 떠 있어야 완료됩니다.":
+    "Your PC's agent is generating through the local CLI. It has to stay running to finish.",
+  "상세 사유를 받지 못했습니다.": "No details were provided.",
+  "{s} 상태입니다. 상세 사유 정보가 없습니다.": "Status: {s}. No details available.",
+  "실패 사유 정보가 없습니다.": "No failure details available.",
+  // 생성 정보 — HF 확인 안내
+  "자동 조사 결과 이 제출로 만들어진 외부 작업이 발견되지 않았습니다. 아래 버튼으로 다시 실행하면 됩니다.":
+    "Our automatic probe found no external job from this submission. Use the button below to run it again.",
+  "외부 작업이 이미 만들어졌을 수 있어 자동 재생성을 멈췄습니다. 먼저 같은 계정의 Higgsfield 생성 목록에서 해당 작업이 없는지 확인하세요.":
+    "An external job may already exist, so auto-retry was stopped. First check the Higgsfield job list on the same account.",
+  "다시 실행": "Run again",
+  "미제출 확인 후 다시 실행": "Confirm not submitted, then run again",
+  "실패 사유": "Failure reason",
+  // HF 확인 안내(생성 정보 · 재생성 차단 알림)
+  "외부 제출 여부를 먼저 확인해야 합니다. 생성 정보에서 HF 확인을 진행하세요.":
+    "Check whether it was already submitted. Open the generation info and run the HF check.",
 };
 
 let _lang: Lang = loadLang();

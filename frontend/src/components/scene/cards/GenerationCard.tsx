@@ -7,6 +7,7 @@ import { cardBatch, variantIds } from "../../../lib/scenes";
 import type { Generation, InfoTarget, PreviewTarget } from "../../../types";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../../lib/workspaceCommand";
 import { generationStatusLabelFor, generationStatusTitle } from "../../../lib/generationDisplay";
+import { useT } from "../../../lib/i18n";
 import { HistoryBoardNode } from "../../history/HistoryBoardNode";
 import { LastViewedBadge } from "../LastViewedBadge";
 import { TagEditor } from "../../TagEditor";
@@ -91,6 +92,8 @@ export function GenerationCard({
     close: () => void;
   };
 }) {
+  // 언어를 바꾼 즉시 상태 문구가 다시 그려지도록 구독한다(번역 자체는 generationDisplay).
+  const t = useT();
   return (
     <>
       {waiting ? (
@@ -140,7 +143,7 @@ export function GenerationCard({
           {card.genId ? (
             genMissing ? (
               // 외부에서 삭제(휴지통)된 생성물 — 무한 'Generating' 대신 명시.
-              <div className="scene-card-genbody">삭제됨</div>
+              <div className="scene-card-genbody">{t("삭제됨")}</div>
             ) : String(g?.status) === "failed" || String(g?.status) === "nsfw" || String(g?.status) === "error" ? (
               // 실패·NSFW 차단 — 라이브러리(My Work) 그리드와 동일한 경고 비주얼(빨강+⚠+라벨).
               //  생성 정보는 done 카드와 동일하게 '미들클릭'으로 연다(별도 ⓘ 배지 없음).

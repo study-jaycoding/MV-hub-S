@@ -1,5 +1,10 @@
 import { isFolderDisabled, type DisabledFolders } from "./deactivated";
+import { t } from "./i18n";
 import type { Generation } from "../types";
+
+// ★문구는 여기서 t() 로 번역해 내보낸다 — 부르는 화면마다 감싸면 한 곳만 빠뜨려도
+//  언어를 바꿨을 때 카드 하나만 한국어로 남는다. 대신 이 문구를 그리는 컴포넌트는
+//  useT() 로 구독해야 언어를 바꾼 즉시 다시 그려진다(구독이 없으면 옛 글자가 남는다).
 
 export const GENERATION_STATUS_LABEL: Record<string, string> = {
   pending: "생성 중",
@@ -12,10 +17,13 @@ export const GENERATION_STATUS_LABEL: Record<string, string> = {
 // 사유가 비었을 때 보여줄 문구. failed 는 팝업 라벨('⚠ 실패 사유')과 말이 겹쳐 상태를 되풀이하지 않는다.
 // nsfw 처럼 뜻이 분명한 상태만 라벨로 설명하고, 모르는 상태의 원인은 지어내지 않는다.
 export function generationErrorFallback(status: string): string {
-  if (status === "failed") return "상세 사유를 받지 못했습니다.";
+  if (status === "failed") return t("상세 사유를 받지 못했습니다.");
   return Object.prototype.hasOwnProperty.call(GENERATION_STATUS_LABEL, status)
-    ? `${GENERATION_STATUS_LABEL[status]} 상태입니다. 상세 사유 정보가 없습니다.`
-    : "실패 사유 정보가 없습니다.";
+    ? t("{s} 상태입니다. 상세 사유 정보가 없습니다.").replace(
+        "{s}",
+        t(GENERATION_STATUS_LABEL[status]),
+      )
+    : t("실패 사유 정보가 없습니다.");
 }
 
 // 복구 보류 카드의 error 는 "안내 문구 + 줄바꿈 + 제출 진단: <상세>" 형태다(서버
@@ -35,7 +43,8 @@ export const LOCAL_EXEC_HINT =
   "내 PC의 에이전트가 로컬 CLI로 생성 중입니다. 에이전트(push_agent --watch)가 떠 있어야 완료됩니다.";
 
 export function generationStatusLabel(status: string): string {
-  return GENERATION_STATUS_LABEL[status] || status;
+  // 모르는 상태값은 받은 그대로 — 사전에 없으면 t() 가 원문을 돌려준다.
+  return t(GENERATION_STATUS_LABEL[status] || status);
 }
 
 // '확인중' 마커 — 서버 repo.VERIFYING_NOTE 와 짝. 모호한 결말(타임아웃/파싱실패)에서 job_id 만 확보한
@@ -64,8 +73,8 @@ export function generationStatusLabelFor(
   error?: string | null,
   executionPhase?: string | null,
 ): string {
-  if (executionPhase && EXECUTION_PHASE_LABEL[executionPhase]) return EXECUTION_PHASE_LABEL[executionPhase];
-  return isVerifying(status, error) ? "확인 중" : generationStatusLabel(status);
+  if (executionPhase && EXECUTION_PHASE_LABEL[executionPhase]) return t(EXECUTION_PHASE_LABEL[executionPhase]);
+  return isVerifying(status, error) ? t("확인 중") : generationStatusLabel(status);
 }
 
 export function generationStatusTitle(
@@ -77,17 +86,20 @@ export function generationStatusTitle(
   nextCheckAt?: string | null,
 ): string | undefined {
   const details: string[] = [];
-  if (executionPhase) details.push(`단계: ${EXECUTION_PHASE_LABEL[executionPhase] || executionPhase}`);
-  if (providerStatus) details.push(`Higgsfield 상태: ${providerStatus}`);
-  if (lastCheckedAt) details.push(`마지막 확인: ${formatGenerationDateTime(lastCheckedAt)}`);
+  // 오류 본문(error)은 서버가 만든 글이라 번역하지 않는다 — 여기서는 우리가 붙이는 앞말만 바꾼다.
+  if (executionPhase) {
+    details.push(`${t("단계")}: ${t(EXECUTION_PHASE_LABEL[executionPhase] || executionPhase)}`);
+  }
+  if (providerStatus) details.push(`${t("Higgsfield 상태")}: ${providerStatus}`);
+  if (lastCheckedAt) details.push(`${t("마지막 확인")}: ${formatGenerationDateTime(lastCheckedAt)}`);
   if (nextCheckAt && !["done", "failed"].includes(executionPhase || "")) {
-    details.push(`다음 확인: ${formatGenerationDateTime(nextCheckAt)}`);
+    details.push(`${t("다음 확인")}: ${formatGenerationDateTime(nextCheckAt)}`);
   }
   if (error) details.push(error);
   if (details.length) return details.join("\n");
   if (isVerifying(status, error)) return error || undefined; // "확인중 — 실제 상태 재확인 대기"
   if (status === "failed" && error) return error;
-  if (status === "pending" || status === "running") return LOCAL_EXEC_HINT;
+  if (status === "pending" || status === "running") return t(LOCAL_EXEC_HINT);
   return undefined;
 }
 

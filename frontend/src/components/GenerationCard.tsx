@@ -15,6 +15,7 @@ import { useClickSeparation } from "../lib/useClickSeparation";
 import { MediaThumbnail } from "./MediaThumbnail";
 import comfyLogo from "../assets/comfy-logo.svg";
 import higgsfieldLogo from "../assets/higgsfield-logo.svg";
+import { useT } from "../lib/i18n";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import {
   formatGenerationDate,
@@ -124,6 +125,8 @@ function GenerationCardImpl({
   onShowHistory,
   lastViewed,
 }: Props) {
+  // 언어를 바꾼 즉시 상태 문구가 다시 그려지도록 구독한다(문구 번역은 generationDisplay 가 한다).
+  const t = useT();
   const modelName = useModelDisplayName();
   const asset = gen.assets?.[0]; // 프록시·백필 스키마 어긋남 방어 — assets 부재 시 카드만 빈 썸네일
   const isVideo = asset?.type === "video";
@@ -293,7 +296,7 @@ function GenerationCardImpl({
           title="원본 미디어를 불러올 수 없습니다 — 힉스필드에서 삭제됐을 수 있어요. 설정의 'HF 삭제물 체크'로 정리하세요."
         >
           <span className="thumb-broken-ic">⚠</span>
-          <span className="thumb-broken-label">원본 없음</span>
+          <span className="thumb-broken-label">{t("원본 없음")}</span>
         </div>
       )}
 

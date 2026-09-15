@@ -9,6 +9,7 @@ import { variantIds } from "../../lib/scenes";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../lib/workspaceCommand";
 import { generationStatusLabelFor } from "../../lib/generationDisplay";
+import { useT } from "../../lib/i18n";
 import { thumbOf } from "../../lib/media";
 import { LastViewedBadge } from "./LastViewedBadge";
 import { APP_EVENTS, dispatchAppEvent } from "../../lib/appEvents";
@@ -106,6 +107,8 @@ export function SceneVariantPopup({
     variantResolve?: VariantResolveControls;
   };
 }) {
+  // 언어를 바꾼 즉시 상태 문구가 다시 그려지도록 구독한다(번역 자체는 generationDisplay).
+  useT();
   // 배경 클릭 닫기는 '배경에서 누르기 시작한' 경우만. 팝업 안에서 시작한 드래그(마퀴·타일 끌기)가
   // 박스 밖에서 끝나면 브라우저가 공통 조상(배경)에 click 을 합성해 팝업이 닫히던 버그 방지.
   const backdropDownRef = useRef(false);

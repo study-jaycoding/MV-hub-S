@@ -1,6 +1,7 @@
 // 정보 팝업 — 이미지/동영상 휠(중간)클릭 시 뜨는 플로팅 글래스 창.
 // (예전 Assets 플로팅 패널의 '구성'을 이 정보 팝업에 재사용)
 // 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
+import { useT } from "../lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { APP_EVENTS } from "../lib/appEvents";
@@ -70,6 +71,8 @@ export function InfoPopup({
   onOpenCanvas,
   onRecoveryRequeue,
 }: Props) {
+  // 언어를 바꾼 즉시 상태 문구가 다시 그려지도록 구독한다(번역 자체는 generationDisplay).
+  const t = useT();
   // 레퍼런스(소스) → 크게 보기. 원본(asset 토큰/URL/로컬) 우선, 없으면 썸네일.
   const openSource = (r: Reference) => {
     const url = refSrc(r.file_path) || refSrc(r.thumbnail_path) || refSrc(r.source_url);
@@ -197,11 +200,11 @@ export function InfoPopup({
       <>
         {g.execution_phase === "recovery_required" && (
           <div className="info-recovery">
-            <span className="info-recovery-label">⚠ HF 확인 필요</span>
+            <span className="info-recovery-label">⚠ {t("HF 확인 필요")}</span>
             <span className="info-recovery-text">
               {g.recovery_probe_status === "no_match"
-                ? "자동 조사 결과 이 제출로 만들어진 외부 작업이 발견되지 않았습니다. 아래 버튼으로 다시 실행하면 됩니다."
-                : "외부 작업이 이미 만들어졌을 수 있어 자동 재생성을 멈췄습니다. 먼저 같은 계정의 Higgsfield 생성 목록에서 해당 작업이 없는지 확인하세요."}
+                ? t("자동 조사 결과 이 제출로 만들어진 외부 작업이 발견되지 않았습니다. 아래 버튼으로 다시 실행하면 됩니다.")
+                : t("외부 작업이 이미 만들어졌을 수 있어 자동 재생성을 멈췄습니다. 먼저 같은 계정의 Higgsfield 생성 목록에서 해당 작업이 없는지 확인하세요.")}
             </span>
             {submitDiagnostic(g.error) && (
               <span className="info-error-text info-recovery-text">
@@ -223,10 +226,10 @@ export function InfoPopup({
                 }}
               >
                 {recoveryBusy
-                  ? "처리 중…"
+                  ? t("처리 중…")
                   : g.recovery_probe_status === "no_match"
-                    ? "다시 실행"
-                    : "미제출 확인 후 다시 실행"}
+                    ? t("다시 실행")
+                    : t("미제출 확인 후 다시 실행")}
               </button>
             )}
           </div>
@@ -243,7 +246,7 @@ export function InfoPopup({
         />
         {(g.status === "failed" || g.status === "nsfw") && (
           <div className="info-error">
-            <span className="info-error-label">⚠ 실패 사유</span>
+            <span className="info-error-label">⚠ {t("실패 사유")}</span>
             <span className="info-error-text">{g.error || generationErrorFallback(g.status)}</span>
           </div>
         )}

@@ -2,6 +2,7 @@
 //  ★파라미터 입력 포커스 주의: 모듈 최상단 선언(타입 안정) — 타이핑 중 리렌더에도 input 이 리마운트
 //   되지 않아 포커스 유지. 저장은 setComfyParam(defer)→blur 시 flushPending 확정(기존 동작 그대로).
 //  HistoryBoardNode(memo)는 GenerationCard 와 동일하게 hist 번들의 안정 참조를 개별로 풀어 전달.
+import { useT } from "../../../lib/i18n";
 import { useMemo } from "react";
 import type React from "react";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
@@ -86,6 +87,8 @@ export function ComfyCard({
     onResizeDown: (e: React.MouseEvent, cardId: string) => void;
   };
 }) {
+  // 언어를 바꾼 즉시 상태 문구가 다시 그려지도록 구독한다(번역 자체는 generationDisplay).
+  const t = useT();
   const { cards, cardsById, edges, refParents, genData } = graph;
   // Comfy 노드 — ComfyUI 워크플로우를 얹어 단독 실행. 더블클릭=API 로드·파라미터 노출 모달.
   const cfg = card.comfyCfg;
@@ -433,12 +436,12 @@ export function ComfyCard({
                     <span className="gen-wave-bar" />
                     <span className="gen-wave-bar" />
                   </span>
-                  <span className="gen-generating-label">생성 중</span>
+                  <span className="gen-generating-label">{t("생성 중")}</span>
                 </span>
               </div>
             ) : (
               <div className={"scene-comfynode-status s-" + (st || "idle")}>
-                ● {st === "done" ? "완료" : st === "failed" ? "실패" : "대기"}
+                ● {st === "done" ? t("완료") : st === "failed" ? t("실패") : t("대기")}
               </div>
             )}
             {st === "failed" && cfg.error && (

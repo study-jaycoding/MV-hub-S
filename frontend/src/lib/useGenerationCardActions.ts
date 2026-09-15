@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { api } from "../api";
 import { postLibraryChanged } from "./libraryBroadcast";
 import { modelBlockMessage } from "./modelPolicy";
@@ -38,7 +39,7 @@ export function useGenerationCardActions({
     onDefinitiveReject?: () => void,
   ): Promise<Generation | null> => {
     if (g.execution_phase === "recovery_required") {
-      flash("외부 제출 여부를 먼저 확인해야 합니다. 생성 정보에서 HF 확인을 진행하세요.");
+      flash(t("외부 제출 여부를 먼저 확인해야 합니다. 생성 정보에서 HF 확인을 진행하세요."));
       return null;
     }
     if (!isGenerationWorkspaceReady(workspace)) {
