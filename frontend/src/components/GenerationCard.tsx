@@ -588,7 +588,7 @@ function GenerationCardImpl({
           <div className="thumb-placeholder status-running">
             <span className="gen-generating gen-comfy-pending">
               <img src={comfyLogo} alt="Comfy" className="gen-comfy-logo" />
-              <span className="gen-generating-label">생성 중</span>
+              <span className="gen-generating-label">{t("생성 중")}</span>
             </span>
           </div>
         </div>

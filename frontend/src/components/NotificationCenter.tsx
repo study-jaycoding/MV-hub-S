@@ -219,7 +219,8 @@ export function NotificationCenter({
   useOutsideMouseDown(ref, close, open, panelRef);
   useEscapeClose(close, open, true, true);
   // 벨 자리 기준 위치(옛 CSS 의 top: calc(100% + 9px) / right: 0 과 같은 자리).
-  //  상단바가 sticky 라 스크롤로는 안 움직이고, 창 크기만 따라간다.
+  //  상단바는 앱 바깥 틀(.app)의 flex 칸이라 본문만 스크롤되고 제자리에 남는다
+  //  (창 자체는 스크롤되지 않는다 — 실측). 그래서 창 크기만 따라가면 된다.
   useLayoutEffect(() => {
     if (!open) return;
     const place = () => {

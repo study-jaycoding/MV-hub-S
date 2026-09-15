@@ -6,6 +6,37 @@ import {
 } from "../src/lib/generationDisplay";
 import { setLang } from "../src/lib/i18n";
 
+describe("실행 단계 계약 — 백엔드 어휘를 빠짐없이 사람 말로 보여준다", () => {
+  // 백엔드가 gen_request.status 에 넣거나 살아 있는 단계로 취급하는 값 전부.
+  //  출처: backend/app/repo/gen_requests.py(_AMBIGUOUS_ACTIVE_PHASES),
+  //       backend/app/repo/trash.py(_NONTERMINAL_REQUEST_PHASES, 'canceled'),
+  //       backend/app/repo/generations.py('done'/'failed').
+  //  백엔드에 단계가 늘면 이 목록도 늘리고 라벨을 채워야 한다 — 안 그러면 툴팁에 영문이 샌다.
+  const BACKEND_PHASES = [
+    "preparing", "pending", "claimed", "submitting", "running", "tracking",
+    "verifying", "blocked", "recovery_required", "done", "failed", "canceled",
+  ];
+
+  it("모든 단계가 내부 값 그대로 노출되지 않는다", () => {
+    for (const phase of BACKEND_PHASES) {
+      const label = generationStatusLabelFor("running", null, phase);
+      expect(label, phase + " 라벨 없음").not.toBe(phase);
+      const title = generationStatusTitle("running", null, phase);
+      expect(title, phase + " 툴팁에 영문 생값").not.toContain("단계: " + phase);
+    }
+  });
+
+  it("삭제로 취소된 뒤 복원한 카드는 '취소됨' 으로 보인다", () => {
+    // trash.restore_from_trash 는 generation.status 를 failed 로 두고
+    //  gen_request.status 는 canceled 로 남긴다 — 실제 종료 사유는 취소다.
+    expect(generationStatusLabelFor("failed", null, "canceled")).toBe("취소됨");
+    expect(generationStatusTitle("failed", null, "canceled")).toContain("단계: 취소됨");
+    setLang("en");
+    expect(generationStatusLabelFor("failed", null, "canceled")).toBe("Canceled");
+    setLang("ko");
+  });
+});
+
 describe("generation execution phase display", () => {
   it("generation status보다 상세 실행 단계를 우선 표시한다", () => {
     expect(generationStatusLabelFor("pending", null, "preparing")).toBe("요청 준비 중");

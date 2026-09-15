@@ -169,7 +169,8 @@ export function AccountMenu({
   useOutsideMouseDown(ref, closeMenu, open, popRef);
   // 캡처 단계에서 Esc 를 소비해 뒤의 라이브러리 전역 Esc(선택 해제)까지 전달되지 않게 한다.
   useEscapeClose(closeMenuOnEscape, open, true, true);
-  // 아바타 버튼 기준 위치. 상단바가 sticky 라 스크롤로는 안 움직이고, 창 크기만 따라간다.
+  // 아바타 버튼 기준 위치. 상단바는 앱 바깥 틀(.app)의 flex 칸이라 본문만 스크롤되고 제자리에
+  //  남는다(창 자체는 스크롤되지 않는다 — 실측). 그래서 창 크기만 따라가면 된다.
   useLayoutEffect(() => {
     if (!open) return;
     const place = () => {

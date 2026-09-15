@@ -140,6 +140,7 @@ const EN: Record<string, string> = {
   "실패": "Failed",
   "NSFW 차단": "NSFW blocked",
   "삭제됨": "Deleted",
+  "취소됨": "Canceled",
   "원본 없음": "File missing",
   // 카드 툴팁 — 우리가 붙이는 앞말만. 오류 본문은 서버가 만든 글이라 한국어 그대로 나온다.
   "단계": "Phase",

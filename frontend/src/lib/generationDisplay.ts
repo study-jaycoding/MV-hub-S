@@ -62,6 +62,13 @@ const EXECUTION_PHASE_LABEL: Record<string, string> = {
   recovery_required: "HF 확인 필요",
   done: "완료",
   failed: "실패",
+  // 삭제로 미제출 요청이 취소된 카드 — 복원해도 대기열로 안 돌아간다(trash.restore_from_trash).
+  //  generation.status 는 failed 로 남지만 실제 종료 사유는 취소이므로 그대로 보여준다.
+  canceled: "취소됨",
+  // 백엔드가 살아 있는 단계로 인정하는 값(_NONTERMINAL_REQUEST_PHASES). 다만 이 값을
+  //  gen_request 에 기록하는 경로는 전수 검색에서 찾지 못했다(미확인). 남아 있을 경우
+  //  툴팁에 영문 생값이 새므로 짝만 맞춰 둔다.
+  running: "생성 중",
 };
 
 export function isVerifying(status: string, error: string | null | undefined): boolean {
