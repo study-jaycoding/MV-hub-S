@@ -399,6 +399,9 @@
   border: 1.5px solid var(--muted); transition: border-color 0.12s, background 0.12s;
 }
 .sl-dd-item:hover { background: rgba(255, 255, 255, 0.06); }
+.sl-ref-role-menu { position: fixed; bottom: auto; z-index: 300; width: 210px; display: flex; flex-direction: column; }
+.sl-ref-role-menu .sl-dd-item:disabled { opacity: 0.45; cursor: default; }
+.sl-ref-role-menu .sl-dd-item:disabled:hover { background: transparent; }
 .sl-dd-item.sel {
   color: #fff; font-weight: 600;
   background: rgba(var(--accent-rgb), 0.12); box-shadow: inset 0 0 0 1px var(--accent);

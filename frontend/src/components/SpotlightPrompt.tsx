@@ -67,6 +67,7 @@ import {
 } from "../lib/useSpotlightMentionSources";
 import { useSpotlightTray } from "../lib/useSpotlightTray";
 import { useSpotlightTokenWrap } from "../lib/useSpotlightTokenWrap";
+import { useSeedanceRoleMenu } from "../lib/useSeedanceRoleMenu";
 import { useModels, ALLOWED, HIDDEN_PARAMS, stripHiddenParams, withEffectiveDefaults } from "../lib/useModels";
 import { policyNote, submitBlockMessage } from "../lib/modelPolicyCore";
 import { useModelPolicy } from "../lib/modelPolicy";
@@ -85,6 +86,7 @@ import { SpotlightGenerateControls } from "./spotlight/SpotlightGenerateControls
 import { SpotlightMentionPicker } from "./spotlight/SpotlightMentionPicker";
 import { SpotlightPromptRow } from "./spotlight/SpotlightPromptRow";
 import { SpotlightRefTray } from "./spotlight/SpotlightRefTray";
+import { SpotlightRefRoleMenu } from "./spotlight/SpotlightRefRoleMenu";
 import {
   SPOTLIGHT_MAX_COUNT,
   useSpotlightSubmit,
@@ -404,6 +406,20 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   const bindingKey = trayBinding?.key ?? null;
   const bindingPrompt = trayBinding?.prompt ?? ""; // JSON(PromptPart[]) 또는 "" (없음)
   const bindingPromptKey = trayBinding?.promptKey ?? null; // 연결 텍스트 변경 감지(같은 카드에서 파생 반영)
+  const roleMenu = useSeedanceRoleMenu({
+    scope: JSON.stringify([bindingKey, bindingPromptKey, model]),
+    model, mode: optionValues.mode,
+    ready: !paramsLoading && paramsModel === model && readSelectedModel() === model,
+    active: expanded && visible,
+    trayRefs, editorRef, allowFocusRef, resolveMedia: resolveTokenMedia,
+    onEdited: () => {
+      editingTokenNodeRef.current = null;
+      histIdxRef.current = -1;
+      setMention(null);
+      updatePlaceholder();
+      bumpPromptTick();
+    },
+  });
   const lastPromptFpRef = useRef<string>("");
   const prevBindingKeyRef = useRef<string | null>(null);
   const libraryDraftRef = useRef<string>(""); // 비-씬(라이브러리) 프롬프트 임시 보관
@@ -1279,7 +1295,12 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
               onRemove={removeTrayRef}
               onClearAll={() => setTrayRefs([])}
               onPreview={onPreview}
+              onRoleContextMenu={roleMenu.openMenu}
             />
+          )}
+          {expanded && visible && roleMenu.menu && (
+            <SpotlightRefRoleMenu {...roleMenu.menu} enabled={roleMenu.enabled}
+              onChoose={roleMenu.choose} onClose={roleMenu.close} />
           )}
 
           {/* 프롬프트 행 */}

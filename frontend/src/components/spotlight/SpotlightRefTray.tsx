@@ -30,6 +30,7 @@ interface Props {
   onRemove: (index: number) => void;
   onClearAll: () => void;
   onPreview?: (target: PreviewTarget) => void; // 항목 더블클릭 → 원본 크게 보기
+  onRoleContextMenu?: (event: MouseEvent, uid: string) => void;
 }
 
 export function SpotlightRefTray({
@@ -43,6 +44,7 @@ export function SpotlightRefTray({
   onRemove,
   onClearAll,
   onPreview,
+  onRoleContextMenu,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   // 순서변경 드래그 — 삽입 위치 세로 흰 선(화면좌표·fixed) + 잡고 있는 항목(흐리게)
@@ -124,6 +126,7 @@ export function SpotlightRefTray({
       onDrop={onDrop}
       onKeyDown={onKeyDown}
       onMouseDown={(e: MouseEvent<HTMLDivElement>) => {
+        if (e.button !== 0) { e.preventDefault(); return; }
         if (!(e.target as HTMLElement).closest("button")) e.currentTarget.focus();
       }}
     >
@@ -147,6 +150,7 @@ export function SpotlightRefTray({
               key={ref.uid}
               className={"sl-reftray-item" + (fromIdx === index ? " reordering" : "")}
               data-tidx={index}
+              onContextMenu={(e) => { if (ref.type === "image") onRoleContextMenu?.(e, ref.uid); }}
               onMouseDown={(e) => startReorder(e, index)}
               onDoubleClick={() =>
                 onPreview?.({
