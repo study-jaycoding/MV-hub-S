@@ -123,6 +123,7 @@ interface Props {
     refs: SceneRef[];
     prompt?: string;
     promptKey?: string;
+    promptDerived?: boolean; // 연결 Text 노드에서 온 입력은 생성 후에도 유지한다.
     model?: SceneModelCfg | null;
     modelKey?: string;
     assignment?: SceneGenerationAssignment;
@@ -1024,6 +1025,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     editorRef,
     historyRef,
     inCompose,
+    preservePromptAfterSubmit: !!trayBinding?.promptDerived,
+    promptContextKey: JSON.stringify([bindingKey, bindingPromptKey]),
     model,
     modelBlockedMessage,
     onCreated,
@@ -1042,6 +1045,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     setError,
     clearMention: () => setMention(null),
     updatePlaceholder,
+    onHistorySaved: () => { histIdxRef.current = -1; },
     notifyPromptChanged: () => {
       histIdxRef.current = -1;
       bumpPromptTick();

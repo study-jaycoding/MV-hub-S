@@ -1079,6 +1079,7 @@ export default function App() {
             key: `${activeScene.id}:${sceneBinding.cardId}`,
             // promptKey: 같은 카드에서 연결 텍스트가 바뀌면 에디터를 다시 채우도록(파생 반영). 파생 아니면 고정.
             promptKey: textDerived ? `txt:${boundGenText.text}` : "card",
+            promptDerived: textDerived,
             refs: sceneBinding.refs,
             prompt: derivedPrompt,
             model: boundModel,

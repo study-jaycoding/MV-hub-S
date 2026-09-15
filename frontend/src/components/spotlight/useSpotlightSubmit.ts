@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import type { RefObject, MutableRefObject } from "react";
 import { api } from "../../api";
 import { resolveAutoAspectRatio } from "../../lib/aspectAuto";
@@ -37,6 +37,8 @@ interface UseSpotlightSubmitOptions {
   editorRef: RefObject<HTMLDivElement>;
   historyRef: MutableRefObject<HistEntry[]>;
   inCompose: boolean;
+  preservePromptAfterSubmit?: boolean;
+  promptContextKey?: string | null;
   model: string;
   // 그룹 사용 모델 가드 문구(modelPolicyCore.submitBlockMessage) — 값이 있으면 pending 기록·업로드 전에 막는다.
   modelBlockedMessage?: string | null;
@@ -60,6 +62,7 @@ interface UseSpotlightSubmitOptions {
   clearMention: () => void;
   updatePlaceholder: () => void;
   notifyPromptChanged: () => void;
+  onHistorySaved?: () => void;
 }
 
 export function useSpotlightSubmit({
@@ -73,6 +76,8 @@ export function useSpotlightSubmit({
   editorRef,
   historyRef,
   inCompose,
+  preservePromptAfterSubmit = false,
+  promptContextKey = null,
   model,
   modelBlockedMessage = null,
   onCreated,
@@ -92,7 +97,17 @@ export function useSpotlightSubmit({
   clearMention,
   updatePlaceholder,
   notifyPromptChanged,
+  onHistorySaved,
 }: UseSpotlightSubmitOptions) {
+  const contextKey = JSON.stringify([
+    inCompose, canvasTarget?.sceneId, canvasTarget?.cardId,
+    promptContextKey, workspace.scope, workspace.id,
+  ]);
+  const promptContextRef = useRef({ key: contextKey });
+  // 객체 교체로 A→B→A 전환도 구별한다. 늦은 성공 응답이 돌아온 카드의 초안을 지우면 안 된다.
+  if (promptContextRef.current.key !== contextKey) {
+    promptContextRef.current = { key: contextKey };
+  }
   return useCallback(async (
     batchOverride?: number,
     generationAssignmentOverride?: SceneGenerationAssignment | null,
@@ -129,6 +144,8 @@ export function useSpotlightSubmit({
     }
 
     const parts = serializeParts(editor);
+    const submittedParts = JSON.stringify(parts);
+    const submittedContext = promptContextRef.current;
     const displayPrompt = partsDisplay(parts);
     setBusy(true);
     try {
@@ -219,14 +236,24 @@ export function useSpotlightSubmit({
         });
         historyRef.current = filtered.slice(-HIST_MAX);
         saveHistory(historyRef.current);
+        onHistorySaved?.();
       }
-      editor.innerHTML = "";
-      updatePlaceholder();
-      notifyPromptChanged();
-      clearMention();
+      // 파생 Text는 같은 카드/원문이면 복원 effect가 다시 돌지 않으므로 비우지 않는다.
+      // 일반 입력도 요청 대기 중 다른 카드로 이동하거나 새로 편집했으면 그대로 보존한다.
+      if (!preservePromptAfterSubmit && editorRef.current === editor &&
+          promptContextRef.current === submittedContext &&
+          JSON.stringify(serializeParts(editor)) === submittedParts) {
+        editor.innerHTML = "";
+        updatePlaceholder();
+        notifyPromptChanged();
+        clearMention();
+        if (!inCompose) requestAnimationFrame(() => {
+          if (editorRef.current === editor && promptContextRef.current === submittedContext &&
+              serializeParts(editor).length === 0) editor.focus();
+        });
+      }
       setBusy(false);
       if (failed) setError(`${batch}장 중 ${failed}장 제출 실패 — 성공한 요청은 계속 진행됩니다.`);
-      if (!inCompose) requestAnimationFrame(() => editor.focus());
     } catch (error) {
       setError(String(error));
       setBusy(false);
@@ -245,9 +272,11 @@ export function useSpotlightSubmit({
     editorRef,
     historyRef,
     inCompose,
+    preservePromptAfterSubmit,
     model,
     notifyPromptChanged,
     onCreated,
+    onHistorySaved,
     onCanvasBatchCreated,
     prepareCanvasGeneration,
     settleCanvasGeneration,
