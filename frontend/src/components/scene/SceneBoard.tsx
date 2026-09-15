@@ -153,6 +153,12 @@ import { InputCard } from "./cards/InputCard";
 import { HeadCard } from "./cards/HeadCard";
 import { ViewCard } from "./cards/ViewCard";
 import { CARD_H, CARD_W, GROUP_COLORS } from "./sceneColors";
+import {
+  resolveCardForGeneration,
+  resolveSelectionGenerationIds,
+  type ResolveOpenPopup,
+  type ResolveSceneSelectionTarget,
+} from "../../lib/resolveSelection";
 // ── 뷰포트 컬링(가상화) 플래그 — 화면 밖 카드를 렌더에서 빼 메모리·DOM 절감. 단계 롤아웃용. ──
 // CULL_ENABLED=false 면 완전 무동작(rAF·setState·ResizeObserver 없음, renderCards===visibleCards).
 // Phase 1: 켜되 마진 넉넉(먼 카드만 언마운트) — 문제 시 이 값만 false 로 되돌리면 즉시 원복.
@@ -189,6 +195,10 @@ interface Props {
   onBindingChange?: (binding: { cardId: string; refs: SceneRef[] } | null) => void;
   // 마지막으로 본 화면(확대/이동)을 기억 — 팬/줌을 멈출 때 저장. 재렌더 없이 localStorage 에만 조용히.
   onCameraChange?: (camera: { z: number; x: number; y: number }) => void;
+  // Resolve Media Pool에서 고른 생성물 — 기존 변형 팝업만 열고 대표/Last viewed는 바꾸지 않는다.
+  resolveSelection?: ResolveSceneSelectionTarget | null;
+  onResolveSelectionConsumed?: (nonce: number) => void;
+  onResolvePopupChange?: (popup: ResolveOpenPopup | null) => void;
   // 툴바 줌 클러스터([맞춤][−][%][+])의 % 표시 — 반올림 % 가 바뀔 때만 올라온다.
   onZoomPct?: (pct: number) => void;
   // 생성 결과 카드 = 히스토리 카드(HistoryBoardNode). 히스토리와 동일한 액션을 그대로 위임.
@@ -301,6 +311,9 @@ export function SceneBoard({
   ioPanelHot,
   onBindingChange,
   onCameraChange,
+  resolveSelection,
+  onResolveSelectionConsumed,
+  onResolvePopupChange,
   onZoomPct,
   onPreview,
   onInfo,
@@ -349,6 +362,8 @@ export function SceneBoard({
   const t = useT(); // 언어(한/영) — View 노드 헤더 등 라벨 치환. 언어 변경 시 즉시 리렌더.
   // 최초 마운트에도 박제된 running 을 치유해 시작(effect 전 첫 페인트에 '생성중' 잔상 방지).
   const [cards, setCards] = useState<SceneCard[]>(() => settleComfyRunning(scene.cards, isComfyRunning));
+  const sceneIdRef = useRef(scene.id);
+  const cardsSceneId = sceneIdRef.current; // 이 렌더에서 cards가 속한 씬(동기화 effect 전의 값)
   // 레거시 수집기 순서 고정(order 없는 list·render 연결에 옛 표시 순서를 박음 — 변경 없으면 같은 참조). 저장은 다음 변경 때.
   const [edges, setEdges] = useState<SceneEdge[]>(() => freezeLegacyCollectorOrder(scene.cards, scene.edges));
   const [groups, setGroups] = useState<SceneGroup[]>(scene.groups || []);
@@ -440,6 +455,12 @@ export function SceneBoard({
   const caretPosRef = useRef<Map<string, number>>(new Map()); // 텍스트 노드별 마지막 캐럿 위치 — 재편집 시 그곳으로 복원
   const [tagEditGid, setTagEditGid] = useState<string | null>(null); // 변형 팝업 타일별 태그 편집 대상 gen id
   const [popupSel, setPopupSel] = useState<Set<string>>(new Set()); // 팝업 내 다중선택(gid)
+  const [resolveHighlightedIds, setResolveHighlightedIds] = useState<Set<string>>(new Set());
+  // 직접 선택(클릭·범위·마퀴)은 기존 라임 표시로 돌아간다. Resolve 신호만 별도 강조한다.
+  const setUserPopupSel = useCallback((next: React.SetStateAction<Set<string>>) => {
+    setResolveHighlightedIds(new Set());
+    setPopupSel(next);
+  }, []);
   const [gripDragging, setGripDragging] = useState(false); // 팝업 재사용 그립 드래그 중 — 백드롭 클릭통과(프롬프트로 드롭)
   const [popupMarq, setPopupMarq] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
   const varGridRef = useRef<HTMLDivElement>(null);
@@ -484,18 +505,86 @@ export function SceneBoard({
       window.removeEventListener("resize", measure);
     };
   }, [tagEditGid]);
-  useEffect(() => {
-    // 팝업 열림/카드 전환/닫기 시 선택·태그편집 대상 초기화 — 이전 카드의 태그 에디터가 다른 카드
-    // 팝업 위에 stale 위치로 남지 않게.
-    setPopupSel(new Set());
-    setTagEditGid(null);
-  }, [cardMenu]);
   // 팝업이 '모달 레이어'인지·그 선택을 전역 keydown 에서 읽기 위한 ref(빈-deps 핸들러용).
   const cardMenuRef = useRef(cardMenu);
   cardMenuRef.current = cardMenu;
   const popupSelRef = useRef(popupSel);
   popupSelRef.current = popupSel;
   const popupAnchorRef = useRef<string | null>(null); // 팝업 Shift 범위선택 기준점(마지막 단일/토글 클릭)
+  const handledResolveSelectionRef = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    onResolvePopupChange?.(cardsSceneId === scene.id && cards.some((card) => card.id === cardMenu)
+      ? { sceneId: scene.id, cardId: cardMenu! } : null);
+    return () => onResolvePopupChange?.(null);
+  }, [cardMenu, cardsSceneId, scene.id, cards, onResolvePopupChange]);
+  const scrollResolveSelectionIntoView = useCallback((generationId: string) => {
+    const tile = Array.from(
+      varGridRef.current?.querySelectorAll<HTMLElement>("[data-gid]") || [],
+    ).find((item) => item.dataset.gid === generationId);
+    tile?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, []);
+  useEffect(() => {
+    // 창이 바뀌면 먼저 초기화한다. Resolve 신호는 아래에서 열린 창을 확인한 뒤 적용·소비한다.
+    setPopupSel(new Set());
+    setResolveHighlightedIds(new Set());
+    setTagEditGid(null);
+  }, [cardMenu, scene.id]);
+  // 반드시 초기화 effect 뒤에서 실행: 팝업이 열린 커밋에서 초기화 → 선택 순서를 보장한다.
+  useEffect(() => {
+    if (!resolveSelection || resolveSelection.sceneId !== scene.id) return;
+    if (cardsSceneId !== scene.id) return;
+    if (handledResolveSelectionRef.current === resolveSelection.nonce) return;
+    if (Date.now() - resolveSelection.at > 30_000) {
+      handledResolveSelectionRef.current = resolveSelection.nonce;
+      onResolveSelectionConsumed?.(resolveSelection.nonce);
+      return;
+    }
+    const consume = () => {
+      handledResolveSelectionRef.current = resolveSelection.nonce;
+      onResolveSelectionConsumed?.(resolveSelection.nonce);
+    };
+    const clearResolveSelection = () => {
+      // Resolve가 만든 선택만 지운다. 이후 직접 클릭으로 고른 라임 선택은 별도 상태다.
+      if (!resolveHighlightedIds.size) return;
+      setPopupSel((current) => new Set([...current].filter((id) => !resolveHighlightedIds.has(id))));
+      setResolveHighlightedIds(new Set());
+      if (popupAnchorRef.current && resolveHighlightedIds.has(popupAnchorRef.current)) popupAnchorRef.current = null;
+    };
+    const generationIds = resolveSelectionGenerationIds(resolveSelection.generationIds, resolveSelection.generationId);
+    if (!generationIds.length) {
+      clearResolveSelection();
+      consume();
+      return;
+    }
+    const multiple = Math.max(generationIds.length, resolveSelection.selectedCount ?? 0) > 1;
+    const openCard = cards.find((card) => card.id === cardMenu);
+    const stayInOpenPopup = !resolveSelection.openPopup || resolveSelection.truncated || (multiple && !!openCard);
+    const targetCard = stayInOpenPopup ? openCard : resolveCardForGeneration(cards, cardMenu, generationIds);
+    // 씬 전환 첫 렌더에는 내부 cards가 직전 씬 값일 수 있다. cards가 새 씬으로 동기화되면
+    // 이 effect가 다시 돌아오고, 실제 목표를 찾은 시점에만 nonce를 소비한다.
+    if (!targetCard) {
+      if (stayInOpenPopup) consume();
+      return;
+    }
+    const targetIds = new Set(generationIds);
+    const matchedIds = variantIds(targetCard).filter((id) => targetIds.has(id));
+    if (!matchedIds.length) {
+      clearResolveSelection();
+      consume();
+      return;
+    }
+    if (targetCard.id !== cardMenu) {
+      setCardMenu(targetCard.id);
+      return;
+    }
+    setPopupSel(new Set(matchedIds));
+    setResolveHighlightedIds(new Set(matchedIds));
+    popupAnchorRef.current = matchedIds[0];
+    setTagEditGid(null);
+    consume();
+    // 카드가 열린 커밋의 타일은 이미 DOM에 있다. 전달·스크롤 모두 타이머 없이 처리한다.
+    scrollResolveSelectionIntoView(matchedIds[0]);
+  }, [resolveSelection, scene.id, cardsSceneId, cards, cardMenu, resolveHighlightedIds, onResolveSelectionConsumed, scrollResolveSelectionIntoView]);
   // 가위(연결 자르기) — 후디니식: Y 를 누르고 있는 동안만 활성. 좌드래그로 궤적을 그리고 지나간
   // 연결선을 빨갛게 표시(예고)했다가, 마우스를 떼면 그 선들을 실제로 끊는다.
   const [cutHeld, setCutHeld] = useState(false); // Y 키를 누르고 있는 중
@@ -521,7 +610,6 @@ export function SceneBoard({
   };
   // 씬 전환 = 선택 해제. 같은 씬이라도 외부(생성 결과 바인딩·프롬프트 순서변경)에서 cards/edges 가
   // 바뀌면 반영하되 선택은 유지 — 카드 드래그 중엔 persist 안 하므로 prop 이 안 바뀌어 방해받지 않는다.
-  const sceneIdRef = useRef(scene.id);
   // '마지막으로 본' 표시 — 모듈 store 라 구성 탭을 벗어나 언마운트돼도 값이 남는다.
   // 생성물 변경(휴지통 이동·복원 등) 때 다시 읽는 것까지 훅이 맡는다 — 생성 탭과 같은 훅.
   const genViews = useGenerationViewsSynced(scene.id);
@@ -2262,7 +2350,7 @@ export function SceneBoard({
   const beginVariantMarquee = useSceneMarqueeSelection<string>({
     selected: popupSel,
     surfaceRef: varGridRef,
-    setSelected: setPopupSel,
+    setSelected: setUserPopupSel,
     setMarquee: setPopupMarq,
     beginDrag,
     cellSelector: ".scene-varpop-item",
@@ -4311,7 +4399,8 @@ export function SceneBoard({
           autoTagOptions={autoTagOptions ?? []}
           ui={{
             popupSel,
-            setPopupSel,
+            setPopupSel: setUserPopupSel,
+            resolveHighlightedIds,
             popupAnchorRef,
             popupMarq,
             gripDragging,

@@ -27,6 +27,14 @@ def enabled() -> bool:
     return bool(LOCAL_AGENT_PAIR_SECRET)
 
 
+def active_email() -> Optional[str]:
+    """test_dev에서 마지막으로 확인된 로컬 브라우저 계정(내부 서비스용)."""
+    if not enabled():
+        return None
+    with _lock:
+        return _active_email
+
+
 def activate(request: Request, email: str) -> Optional[str]:
     """로컬 브라우저가 인증한 계정을 활성화하고 이전 계정을 반환한다."""
     if not enabled() or not is_loopback_request(request):

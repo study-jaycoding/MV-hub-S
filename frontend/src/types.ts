@@ -480,8 +480,19 @@ export interface PreviewTarget {
 
 // WebSocket 진행률 메시지
 export interface ProgressMessage {
-  type: "queued" | "progress" | "synced" | "assets_changed" | "manage_changed" | "flash";
+  type:
+    | "queued"
+    | "progress"
+    | "synced"
+    | "assets_changed"
+    | "manage_changed"
+    | "flash"
+    | "resolve_selection";
   generation_id?: string;
+  generation_ids?: string[];
+  selected_count?: number;
+  truncated?: boolean;
+  selection_id?: string;
   status?: GenStatus;
   result_url?: string | null;
   error?: string;

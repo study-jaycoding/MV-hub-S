@@ -310,6 +310,8 @@ export function MetadataContinuitySection({
 }
 
 export function ResolveScriptSettingsSection({
+  selectionFollow,
+  onSelectionFollowChange,
   status,
   connection,
   diagnostics,
@@ -319,6 +321,8 @@ export function ResolveScriptSettingsSection({
   onInstall,
   onRefreshConnection,
 }: {
+  selectionFollow: boolean;
+  onSelectionFollowChange: (enabled: boolean) => void;
   status: ResolveScriptStatus | null;
   connection: ResolveConnectionStatus | null;
   diagnostics: ResolveEnvironmentDiagnostics | null;
@@ -378,6 +382,16 @@ export function ResolveScriptSettingsSection({
   return (
     <section className="settings-section">
       <h4>DaVinci Resolve</h4>
+      <label className="settings-resolve-follow">
+        <input type="checkbox" checked={selectionFollow}
+          onChange={(event) => onSelectionFollowChange(event.target.checked)}
+          aria-describedby="resolve-follow-help" />
+        실시간 체크
+      </label>
+      <p className="settings-hint" id="resolve-follow-help">
+        체크하면 Resolve에서 선택한 생성물의 캔버스와 결과 창을 자동으로 엽니다.
+        해제하면 이미 열린 생성 결과 창 안에서만 선택을 표시합니다.
+      </p>
       <div className="settings-row">
         <button className="settings-action" onClick={onRefreshConnection} disabled={connectionBusy}>
           ◆ {connectionBusy ? "진단 중…" : "Resolve 진단"}

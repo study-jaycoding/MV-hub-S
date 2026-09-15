@@ -11,6 +11,8 @@ export const APP_EVENTS = {
   // 부분 수정(브러시 인페인트) 모달 열기 — InfoPopup → App 의 PartialEditHost. detail={genId}
   partialEdit: "ch:partial-edit",
   reusePrompt: "ch:reuse-prompt",
+  resolveSelection: "ch:resolve-selection",
+  resolveSelectionSettingsChanged: "ch:resolve-selection-settings-changed",
   shortcutsChanged: "ch:shortcuts-changed",
 } as const;
 

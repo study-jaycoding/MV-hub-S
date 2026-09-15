@@ -120,6 +120,7 @@ from .services.upload_limits import UploadBodyLimitMiddleware
 from .services.runtime_metrics import metrics as runtime_metrics
 from .services.path_safety import safe_join
 from .services.remote_realtime import RemoteRealtimeBridge, relay_event
+from .services.resolve_selection_monitor import selection_monitor as resolve_selection_monitor
 from .services.syncer import periodic_sync
 from .usecases.gen_requests import shutdown_request_estimates
 from .ws import manager
@@ -249,6 +250,7 @@ async def _application_lifespan(app: FastAPI):
     telemetry_loop_bound = False
     history_loop_bound = False
     remote_realtime_started = False
+    resolve_selection_started = False
     telemetry_drain_scheduled = False
     primary_error: BaseException | None = None
     cleanup_error: BaseException | None = None
@@ -527,6 +529,13 @@ async def _application_lifespan(app: FastAPI):
         if _proxy.is_worker_hub():
             remote_realtime_bridge.start()
             remote_realtime_started = True
+        # 운영 작업자 허브뿐 아니라 격리 test_dev도 Resolve 실측 대상이다. 공유 팀 서버 본체만
+        # 제외하고, 보이는 보조 창 없이 Media Pool 단일 선택을 로컬 브라우저로 전달한다.
+        if not _proxy.is_shared_team_server():
+            # 실제 poller 자식은 브라우저 WebSocket 연결이 있을 때만 뜬다.
+            resolve_selection_monitor.start()
+            resolve_selection_started = True
+        if _proxy.is_worker_hub():
             # 업데이트/재시작 전에 남은 생성정보 전송 대기열도 자동으로 한 번 정리한다.
             # 로그인 토큰이 없는 PC에서는 drain_telemetry가 조용히 건너뛴다.
             from .routers._telemetry import schedule_telemetry_drain
@@ -558,6 +567,8 @@ async def _application_lifespan(app: FastAPI):
             await _attempt_async_cleanup(
                 lambda: _cancel_background_task(runtime_report_task)
             )
+        if resolve_selection_started:
+            await _attempt_async_cleanup(resolve_selection_monitor.stop)
         if startup_complete:
             await _attempt_async_cleanup(shutdown_request_estimates)
         # debounce 로 미뤄진 비용 캐시 스냅샷을 상한 시간 안에 저장(R5 2-D).

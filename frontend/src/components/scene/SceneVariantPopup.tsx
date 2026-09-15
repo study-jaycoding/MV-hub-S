@@ -56,6 +56,7 @@ export function SceneVariantPopup({
   ui: {
     popupSel: Set<string>;
     setPopupSel: React.Dispatch<React.SetStateAction<Set<string>>>;
+    resolveHighlightedIds?: Set<string>;
     popupAnchorRef: MutableRefObject<string | null>;
     popupMarq: { l: number; t: number; w: number; h: number } | null;
     gripDragging: boolean;
@@ -288,6 +289,7 @@ export function SceneVariantPopup({
                       "scene-varpop-item" +
                       (rep ? " rep" : "") +
                       (on ? " on" : "") +
+                      (on && ui.resolveHighlightedIds?.has(gid) ? " resolve-selected" : "") +
                       (off ? " off" : "") +
                       (folderDim ? " foldim" : "")
                     }

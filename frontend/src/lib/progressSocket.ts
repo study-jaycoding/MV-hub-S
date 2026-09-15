@@ -60,6 +60,16 @@ export function connectProgress(
         ) {
           dispatchAppEvent(APP_EVENTS.flash, message.message);
         }
+        if (message.type === "resolve_selection" &&
+          (Array.isArray(message.generation_ids) || message.generation_id)) {
+          dispatchAppEvent(APP_EVENTS.resolveSelection, {
+            generationId: message.generation_id,
+            generationIds: message.generation_ids,
+            selectedCount: message.selected_count,
+            truncated: message.truncated,
+            selectionId: message.selection_id,
+          });
+        }
         onMessage(message);
       } catch {
         /* ignore */

@@ -100,6 +100,15 @@ import { seedPending } from "./lib/sceneRecentDoneStore";
 import { useHistoryBoardState } from "./lib/useHistoryBoardState";
 import { usePromptDock } from "./lib/usePromptDock";
 import { usePromptCreatedActions } from "./lib/usePromptCreatedActions";
+import { APP_EVENTS } from "./lib/appEvents";
+import { useCustomEvent } from "./lib/useCustomEvent";
+import {
+  resolveSceneForGeneration,
+  resolveSelectionGenerationIds,
+  type ResolveOpenPopup,
+  type ResolveSceneSelectionTarget,
+} from "./lib/resolveSelection";
+import { useResolveSelectionFollow } from "./lib/resolveSelectionSettings";
 import { postLibraryChanged } from "./lib/libraryBroadcast";
 import { PartialEditHost } from "./components/edit/PartialEditHost";
 import {
@@ -206,6 +215,56 @@ export default function App() {
     flushScenePending, selectScene, addScene, importSceneSnapshot, renameScene, removeSceneById,
     patchSceneById, patchActiveScene, reorderScenes, setSceneWorkspace, backupOnly, importBackupScenes,
   } = useSceneCoordination(flash);
+  const [resolveSceneSelection, setResolveSceneSelection] =
+    useState<ResolveSceneSelectionTarget | null>(null);
+  const resolveSelectionNonceRef = useRef(0);
+  const resolveSelectionFollow = useResolveSelectionFollow();
+  useEffect(() => setResolveSceneSelection(null), [resolveSelectionFollow]);
+  const resolveSelectionEventRef = useRef("");
+  const resolveOpenPopupRef = useRef<ResolveOpenPopup | null>(null);
+  const onResolvePopupChange = useCallback((popup: ResolveOpenPopup | null) => {
+    resolveOpenPopupRef.current = popup;
+  }, []);
+  const resolveFollowerTabIdRef = useRef(
+    `mvhub-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  useEffect(() => {
+    // Resolve를 클릭하는 순간 브라우저는 OS 포커스를 잃는다. 그래서 "지금 포커스인가"가 아니라
+    // 마지막으로 사용한 MV Hub 탭을 기억해 두고, 그 탭만 선택 이벤트를 따라가게 한다.
+    const claim = () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        if (
+          localStorage.getItem("ch.resolve-follower-tab") !== resolveFollowerTabIdRef.current
+        )
+          localStorage.setItem("ch.resolve-follower-tab", resolveFollowerTabIdRef.current);
+      } catch {
+        // 저장소를 막은 브라우저는 보이는 탭 기준으로 동작한다.
+      }
+    };
+    const claimIfActive = () => {
+      if (document.hasFocus()) claim();
+    };
+    const release = () => {
+      try {
+        if (localStorage.getItem("ch.resolve-follower-tab") === resolveFollowerTabIdRef.current)
+          localStorage.removeItem("ch.resolve-follower-tab");
+      } catch {
+        // 저장소를 막은 브라우저는 해제할 값도 없다.
+      }
+    };
+    claimIfActive();
+    window.addEventListener("focus", claim);
+    window.addEventListener("pointerdown", claim, true);
+    document.addEventListener("visibilitychange", claimIfActive);
+    window.addEventListener("pagehide", release);
+    return () => {
+      window.removeEventListener("focus", claim);
+      window.removeEventListener("pointerdown", claim, true);
+      document.removeEventListener("visibilitychange", claimIfActive);
+      window.removeEventListener("pagehide", release);
+    };
+  }, []);
   // ── 캔버스별 워크스페이스(Jay 2026-09-11) ──────────────────────────────────
   //  씬 탭을 우클릭해 팀 워크스페이스를 지정하면, 다른 공간을 보고 있을 때 그 탭은 회색이고
   //  누르면 **그 공간으로 바꾸면서** 씬을 연다. 전환은 계정 메뉴와 같은 뜻이다 —
@@ -872,6 +931,62 @@ export default function App() {
     setBoardFocusId,
     setBoardArrange,
     setFilters,
+  });
+  useCustomEvent(APP_EVENTS.resolveSelection, (event) => {
+    // 같은 계정의 여러 탭이 /ws를 받아도 마지막으로 사용한 MV Hub 탭 하나만 화면을 움직인다.
+    if (document.visibilityState !== "visible") return;
+    try {
+      if (localStorage.getItem("ch.resolve-follower-tab") !== resolveFollowerTabIdRef.current)
+        return;
+    } catch {
+      // 저장소를 막은 브라우저에서는 visibility만으로 최선의 탭을 고른다.
+    }
+    const detail = (
+      event as CustomEvent<{
+        generationId?: string; generationIds?: string[]; selectedCount?: number;
+        truncated?: boolean; selectionId?: string;
+      }>
+    ).detail;
+    const generationIds = resolveSelectionGenerationIds(detail?.generationIds, detail?.generationId);
+    if (!generationIds.length && !Array.isArray(detail?.generationIds)) return;
+    const selectedCount = Math.max(generationIds.length,
+      Number.isInteger(detail?.selectedCount) ? detail!.selectedCount! : 0);
+    const truncated = detail?.truncated === true;
+    const selectionId = String(detail?.selectionId || "");
+    if (selectionId && resolveSelectionEventRef.current === selectionId) return;
+    if (selectionId) resolveSelectionEventRef.current = selectionId;
+    // 선택 해제·상한 초과·체크 OFF는 현재 창에만 전달한다. 복수 선택도 열린 창을 우선한다.
+    const openPopup = resolveSelectionFollow && !truncated && generationIds.length > 0;
+    if (!openPopup && filters.tab !== "compose") {
+      setResolveSceneSelection(null);
+      return;
+    }
+    const keepOpenPopup = selectedCount > 1 && filters.tab === "compose" &&
+      resolveOpenPopupRef.current?.sceneId === activeSceneId;
+    const targetScene = openPopup && !keepOpenPopup
+      ? resolveSceneForGeneration(scenes, activeSceneId, generationIds)
+      : activeScene;
+    if (!targetScene) {
+      setResolveSceneSelection(null);
+      if (openPopup) flash("Resolve에서 선택한 생성물이 저장된 캔버스에 없습니다.");
+      return;
+    }
+    resolveSelectionNonceRef.current += 1;
+    setResolveSceneSelection({
+      sceneId: targetScene.id,
+      generationId: generationIds[0] ?? "",
+      generationIds,
+      selectedCount,
+      truncated,
+      nonce: resolveSelectionNonceRef.current,
+      at: Date.now(),
+      openPopup,
+      followEnabled: resolveSelectionFollow,
+    });
+    if (openPopup) {
+      if (filters.tab !== "compose") navTab("compose");
+      if (activeSceneId !== targetScene.id) selectSceneWithWorkspace(targetScene.id);
+    }
   });
   // 히스토리 버튼 → 그 생성물 recipe(어떻게 만들었나)를 새 씬 탭으로 연다(편집·재생성 가능). 팀 결과물도 동일.
   // history 없이도 연다 — 파일 드롭 복원처럼 계보 조회가 실패해도 레시피 본체(레퍼런스·모델·
@@ -1799,6 +1914,18 @@ export default function App() {
                 onBindingChange={setSceneBinding}
                 // 세션 중 씬 전환했다 돌아와도 복원되게 카메라도 저장.
                 onCameraChange={(camera) => patchActiveScene({ camera })}
+                resolveSelection={
+                  resolveSceneSelection?.sceneId === activeScene.id &&
+                  resolveSceneSelection.followEnabled === resolveSelectionFollow
+                    ? resolveSceneSelection
+                    : null
+                }
+                onResolvePopupChange={onResolvePopupChange}
+                onResolveSelectionConsumed={(nonce) =>
+                  setResolveSceneSelection((current) =>
+                    current?.nonce === nonce ? null : current,
+                  )
+                }
                 onPreview={openPreview}
                 onInfo={setInfo}
                 onRegenerate={onSceneRegenerate}

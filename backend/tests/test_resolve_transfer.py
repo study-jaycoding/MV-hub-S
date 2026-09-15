@@ -144,6 +144,47 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loaded["transfer_id"], result["transfer_id"])
         self.assertEqual(loaded["items"][0]["status"], "downloaded")
 
+    async def test_selection_index_keeps_completed_manifest_paths(self):
+        result = await self._transfer(
+            [self._generation(1, "ep001/c0010")], "selection-history"
+        )
+        result["resolve_import"] = {"status": "complete", "imported": 1}
+        await resolve_transfer.save_manifest(result)
+
+        with mock.patch.object(
+            resolve_transfer.project_folders,
+            "render_root_state",
+            return_value={"render_path": str(self.render), "error": None},
+        ):
+            entries = resolve_transfer.manifest_generation_entries(["p1"])
+
+        self.assertIn(
+            {
+                "project_id": "p1",
+                "generation_id": "generation-01",
+                "local_path": str(Path(result["items"][0]["local_path"]).resolve()),
+            },
+            entries,
+        )
+
+    async def test_selection_index_rejects_manifest_item_outside_render_root(self):
+        result = await self._transfer(
+            [self._generation(1, "ep001/c0010")], "selection-unsafe"
+        )
+        manifest_path = Path(result["manifest_path"])
+        saved = json.loads(manifest_path.read_text("utf-8"))
+        saved["items"][0]["local_path"] = str(self.root / "outside.mp4")
+        manifest_path.write_text(json.dumps(saved), encoding="utf-8")
+
+        with mock.patch.object(
+            resolve_transfer.project_folders,
+            "render_root_state",
+            return_value={"render_path": str(self.render), "error": None},
+        ):
+            entries = resolve_transfer.manifest_generation_entries(["p1"])
+
+        self.assertEqual(entries, [])
+
     async def test_manual_importer_lists_only_safe_pending_manifests(self):
         pending = await self._transfer(
             [self._generation(1, "ep001/c0010")], "manual-pending"

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import re
 import stat as stat_module
@@ -23,6 +24,8 @@ from typing import Any
 
 
 MEDIA_POOL_ROOT = "MV Hub"
+MVHUB_METADATA_KEY = "MV Hub"
+MVHUB_METADATA_VERSION = 1
 _SCRIPTING_RELATIVE_DIR = Path(
     "Blackmagic Design",
     "DaVinci Resolve",
@@ -551,12 +554,64 @@ def _clip_file_path(clip: Any) -> str:
         return ""
 
 
+def _clips_by_path(folder: Any) -> dict[str, Any]:
+    """Bin 클립을 정규 원본 경로로 찾는다. 같은 원본의 중복 클립은 첫 항목을 쓴다."""
+    result: dict[str, Any] = {}
+    for clip in folder.GetClipList() or []:
+        normalized = _normal_path(_clip_file_path(clip))
+        if not normalized:
+            continue
+        result.setdefault(normalized, clip)
+    return result
+
+
 def _existing_paths(folder: Any) -> set[str]:
-    return {
-        normalized
-        for clip in (folder.GetClipList() or [])
-        if (normalized := _normal_path(_clip_file_path(clip)))
-    }
+    return set(_clips_by_path(folder))
+
+
+def mvhub_clip_metadata(generation_id: str, project_id: str) -> str:
+    """Resolve의 숨은 third-party metadata에 넣는 작은 MV Hub 식별자."""
+    return json.dumps(
+        {
+            "version": MVHUB_METADATA_VERSION,
+            "generation_id": generation_id,
+            "project_id": project_id,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+
+
+def parse_mvhub_clip_metadata(value: Any) -> dict[str, str] | None:
+    """버전 1 메타데이터만 엄격히 읽는다. 손상·타 앱 값은 선택 연결에 쓰지 않는다."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != MVHUB_METADATA_VERSION:
+        return None
+    generation_id = str(payload.get("generation_id") or "").strip()
+    project_id = str(payload.get("project_id") or "").strip()
+    if not generation_id or not project_id:
+        return None
+    return {"generation_id": generation_id, "project_id": project_id}
+
+
+def _stamp_mvhub_metadata(clip: Any, generation_id: str, project_id: str) -> bool:
+    """가져오기 성공과 독립된 best-effort 메타데이터 기록."""
+    setter = getattr(clip, "SetThirdPartyMetadata", None)
+    if not callable(setter) or not generation_id or not project_id:
+        return False
+    value = mvhub_clip_metadata(generation_id, project_id)
+    getter = getattr(clip, "GetThirdPartyMetadata", None)
+    try:
+        if callable(getter) and getter(MVHUB_METADATA_KEY) == value:
+            return False
+        return bool(setter(MVHUB_METADATA_KEY, value))
+    except Exception:  # noqa: BLE001 - 메타데이터 미지원이 원본 가져오기를 실패시키면 안 된다.
+        return False
 
 
 # Resolve 가 이미지 시퀀스로 묶을 수 있는 스틸 확장자. 판정은 manifest 필드가 아니라
@@ -614,14 +669,17 @@ def _import_media_batch(
     target: Any,
     entries: list[tuple[dict[str, Any], Path, str]],
     result: dict[str, Any],
-) -> None:
+    project_id: str = "",
+) -> bool:
     """한 Bin의 원본을 묶어 가져오고, 빠진 항목만 한 번 더 시도한다."""
     remaining = list(entries)
     last_error = ""
+    metadata_changed = False
     for attempt in range(_MEDIA_IMPORT_ATTEMPTS):
         if not remaining:
             break
         returned_paths: set[str] = set()
+        returned_by_path: dict[str, Any] = {}
         returned_all = False
         try:
             if not media_pool.SetCurrentFolder(target):
@@ -637,6 +695,11 @@ def _import_media_batch(
                     for clip in imported
                     if (normalized := _normal_path(_clip_file_path(clip)))
                 }
+                returned_by_path = {
+                    normalized: clip
+                    for clip in imported
+                    if (normalized := _normal_path(_clip_file_path(clip)))
+                }
                 # 일부 Resolve 버전/파일 형식은 반환 객체의 File Path 속성이 즉시 비어
                 # 있어도 요청 수와 같은 객체를 돌려준다. 이 경우 기존 API 성공 계약을 믿는다.
                 returned_all = len(imported) == len(remaining) and not returned_paths
@@ -649,10 +712,14 @@ def _import_media_batch(
                 # 전량 반환 성공 계약을 믿는 경우 Bin 전체 재스캔 결과는 판정에 안 쓰인다
                 # (R5 bridge-1) — 기존 클립 C개의 GetClipProperty 왕복을 생략한다.
                 # RefreshFolders(화면 갱신)는 유지. 부분·불명확 반환은 종전대로 재스캔.
+                current_by_path = returned_by_path
                 current_paths = returned_paths
             else:
-                current_paths = _existing_paths(target) | returned_paths
+                current_by_path = _clips_by_path(target)
+                current_by_path.update(returned_by_path)
+                current_paths = set(current_by_path)
         except Exception as exc:  # noqa: BLE001 - 확인 불가 항목은 재시도 후 개별 실패로 남긴다.
+            current_by_path = {}
             current_paths = set()
             last_error = str(exc)
 
@@ -661,6 +728,13 @@ def _import_media_batch(
             if returned_all or normalized in current_paths:
                 item["status"] = "imported"
                 result["imported"] += 1
+                clip = current_by_path.get(normalized)
+                if clip is not None:
+                    metadata_changed = _stamp_mvhub_metadata(
+                        clip,
+                        str(item.get("generation_id") or ""),
+                        project_id,
+                    ) or metadata_changed
             else:
                 next_remaining.append((item, source, normalized))
         remaining = next_remaining
@@ -678,6 +752,7 @@ def _import_media_batch(
         # (§C 금지). 재시도까지 하고도 Bin 에 나타나지 않은 항목은 이 코드로 확정한다.
         item["error_code"] = "media_import_failed"
         result["error_count"] += 1
+    return metadata_changed
 
 
 def _path_identity(parts: tuple[str, ...]) -> tuple[str, ...]:
@@ -1057,10 +1132,11 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
             except Exception as exc:  # noqa: BLE001 - 해당 경로 항목만 실패 처리한다.
                 folder_errors[parts_key] = str(exc)
 
+        metadata_changed = False
         import_batches: dict[
             tuple[str, ...], list[tuple[dict[str, Any], Path, str]]
         ] = {}
-        existing_paths_by_folder: dict[tuple[str, ...], set[str]] = {}
+        existing_clips_by_folder: dict[tuple[str, ...], dict[str, Any]] = {}
         queued_paths_by_folder: dict[tuple[str, ...], set[str]] = {}
         for source_item in source_items:
             item = {
@@ -1100,11 +1176,17 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
                     [MEDIA_POOL_ROOT, project_label, *parts]
                 )
                 normalized = _normal_path(str(source))
-                if parts_key not in existing_paths_by_folder:
-                    existing_paths_by_folder[parts_key] = _existing_paths(target)
-                if normalized in existing_paths_by_folder[parts_key]:
+                if parts_key not in existing_clips_by_folder:
+                    existing_clips_by_folder[parts_key] = _clips_by_path(target)
+                existing_clip = existing_clips_by_folder[parts_key].get(normalized)
+                if existing_clip is not None:
                     item["status"] = "skipped"
                     result["skipped"] += 1
+                    metadata_changed = _stamp_mvhub_metadata(
+                        existing_clip,
+                        item["generation_id"],
+                        str(manifest.get("project_id") or ""),
+                    ) or metadata_changed
                     continue
                 queued = queued_paths_by_folder.setdefault(parts_key, set())
                 if normalized in queued:
@@ -1137,9 +1219,13 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
                     last_batch=batch_journal,
                     side_effects_started=True,
                 )
-                _import_media_batch(
-                    media_pool, prepared_targets[parts_key], batch, result
-                )
+                metadata_changed = _import_media_batch(
+                    media_pool,
+                    prepared_targets[parts_key],
+                    batch,
+                    result,
+                    str(manifest.get("project_id") or ""),
+                ) or metadata_changed
                 _journal(
                     "import_batch_verified",
                     last_batch={**batch_journal, "state": "verified"},
@@ -1176,15 +1262,23 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
                 ordering_error_codes[0] if ordering_error_codes else "unexpected_error"
             )
 
-        if result["imported"] or reordered:
+        actual_project_change = bool(result["imported"] or reordered)
+        if actual_project_change or metadata_changed:
             _journal("saving_project")
-        if (result["imported"] or reordered) and not project_manager.SaveProject():
-            result["status"] = "partial" if success_count else "failed"
-            save_error = "Resolve 프로젝트 저장을 확인하지 못했습니다"
-            result["error"] = (
-                f"{result['error']}; {save_error}" if result["error"] else save_error
-            )
-            result["error_code"] = result["error_code"] or "api_unavailable"
+        if actual_project_change or metadata_changed:
+            save_ok = project_manager.SaveProject()
+            if not save_ok and actual_project_change:
+                result["status"] = "partial" if success_count else "failed"
+                save_error = "Resolve 프로젝트 저장을 확인하지 못했습니다"
+                result["error"] = (
+                    f"{result['error']}; {save_error}" if result["error"] else save_error
+                )
+                result["error_code"] = result["error_code"] or "api_unavailable"
+            elif not save_ok:
+                # 과거 클립의 보조 ID 백필 실패가 원본 반입 성공을 실패로 바꾸면 안 된다.
+                result.setdefault("warnings", []).append(
+                    "Resolve 프로젝트 저장 확인 실패(선택 연결 메타데이터)"
+                )
     finally:
         if previous_folder:
             try:

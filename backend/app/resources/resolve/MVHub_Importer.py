@@ -20,8 +20,9 @@ except ImportError:  # pragma: no cover - Resolve의 구형 Python 2 폴백
     from urllib2 import HTTPError, Request, URLError, urlopen
 
 
-PLUGIN_VERSION = "0.3.0"
+PLUGIN_VERSION = "0.3.1"
 WINDOW_ID = "com.millionvolt.mvhub.importer-result"
+MVHUB_METADATA_KEY = "MV Hub"
 # 허브 push 워커가 가져오기 전에 잡는 것과 **같은** 락 파일. 이 스크립트가 참여하지 않으면
 # 워커와 메뉴 실행이 동시에 같은 Resolve 프로젝트를 변형한다(v3 를 건너뛰는 것만으로는
 # 부족하다 — 남아 있는 v2 전송도 결국 같은 Media Pool 을 만진다).
@@ -359,13 +360,42 @@ def _clip_path(clip):
         return ""
 
 
-def _existing_paths(folder):
-    result = set()
+def _clips_by_path(folder):
+    result = {}
     for clip in folder.GetClipList() or []:
         path = _clip_path(clip)
-        if path:
-            result.add(_normal_path(path))
+        if not path:
+            continue
+        normalized = _normal_path(path)
+        if normalized not in result:
+            result[normalized] = clip
     return result
+
+
+def _existing_paths(folder):
+    return set(_clips_by_path(folder))
+
+
+def _stamp_mvhub_metadata(clip, item, project_id):
+    setter = getattr(clip, "SetThirdPartyMetadata", None)
+    generation_id = str(item.get("generation_id") or "")
+    if not callable(setter) or not generation_id or not project_id:
+        return False
+    value = json.dumps(
+        {
+            "version": 1,
+            "generation_id": generation_id,
+            "project_id": str(project_id),
+        },
+        separators=(",", ":"),
+    )
+    getter = getattr(clip, "GetThirdPartyMetadata", None)
+    try:
+        if callable(getter) and getter(MVHUB_METADATA_KEY) == value:
+            return False
+        return bool(setter(MVHUB_METADATA_KEY, value))
+    except Exception:
+        return False
 
 
 def _requires_claim(manifest):
@@ -463,6 +493,7 @@ def _import_manifest_items(media_pool, managed_root, manifest, ready):
         "skipped": 0,
         "error_count": 0,
         "error": None,
+        "metadata_updated": 0,
     }
     project_folder = _subfolder(
         media_pool,
@@ -478,12 +509,14 @@ def _import_manifest_items(media_pool, managed_root, manifest, ready):
         target = project_folder
         for part in parts:
             target = _subfolder(media_pool, target, part)
-        existing = _existing_paths(target)
+        existing = _clips_by_path(target)
         missing = []
         for item in grouped[parts]:
             normalized = _normal_path(item.get("local_path"))
             if normalized in existing:
                 result["skipped"] += 1
+                if _stamp_mvhub_metadata(existing[normalized], item, manifest.get("project_id")):
+                    result["metadata_updated"] += 1
             else:
                 missing.append(item)
         if not missing:
@@ -497,22 +530,27 @@ def _import_manifest_items(media_pool, managed_root, manifest, ready):
             refresh = getattr(media_pool, "RefreshFolders", None)
             if callable(refresh):
                 refresh()
-            returned = set()
+            returned = {}
             if isinstance(imported, (list, tuple)):
-                returned = {
-                    _normal_path(path)
-                    for path in (_clip_path(clip) for clip in imported)
-                    if path
-                }
-            current = _existing_paths(target) | returned
+                for clip in imported:
+                    path = _clip_path(clip)
+                    if path:
+                        returned[_normal_path(path)] = clip
+            current = _clips_by_path(target)
+            current.update(returned)
             trust_return_count = (
                 isinstance(imported, (list, tuple))
                 and len(imported) == len(missing)
                 and not returned
             )
             for item in missing:
-                if _normal_path(item.get("local_path")) in current or trust_return_count:
+                normalized = _normal_path(item.get("local_path"))
+                if normalized in current or trust_return_count:
                     result["imported"] += 1
+                    clip = current.get(normalized)
+                    if clip is not None:
+                        if _stamp_mvhub_metadata(clip, item, manifest.get("project_id")):
+                            result["metadata_updated"] += 1
                 else:
                     result["error_count"] += 1
         except Exception as exc:
@@ -568,6 +606,7 @@ def _import_locked(resolve_obj, manifests, hub_base):
     total_imported = 0
     total_skipped = 0
     total_errors = 0
+    total_metadata_updated = 0
     warnings = []
     for manifest in reversed(manifests):
         if _requires_claim(manifest):
@@ -606,6 +645,7 @@ def _import_locked(resolve_obj, manifests, hub_base):
             total_imported += result["imported"]
             total_skipped += result["skipped"]
             total_errors += result["error_count"]
+            total_metadata_updated += result["metadata_updated"]
             try:
                 _post_result(hub_base, manifest, result)
             except Exception as exc:
@@ -618,7 +658,7 @@ def _import_locked(resolve_obj, manifests, hub_base):
             media_pool.SetCurrentFolder(previous_folder)
         except Exception:
             pass
-    if total_imported and not manager.SaveProject():
+    if (total_imported or total_metadata_updated) and not manager.SaveProject():
         warnings.append("Resolve 프로젝트 저장 확인 실패")
     message = "가져오기 완료: 새 원본 {0}개, 기존 {1}개".format(
         total_imported, total_skipped

@@ -22,6 +22,7 @@ from ..services.resolve_status_runner import (
     resolve_connection_status_bounded,
     run_resolve_import_isolated,
 )
+from ..services.resolve_selection_monitor import selection_monitor as resolve_selection_monitor
 from ..services.resolve_diagnostics import resolve_environment_diagnostics
 from ..services.resolve_python_installer import (
     ResolvePythonInstallError,
@@ -244,9 +245,10 @@ async def _create_resolve_transfer_pinned(body: ResolveTransferIn, request: Requ
             }
             # 가져오기 전에 대상 프로젝트를 먼저 기록해 연결이 끊겨도 재시도할 수 있게 한다.
             await save_manifest(manifest)
-        manifest["resolve_import"] = await asyncio.to_thread(
-            run_resolve_import_isolated, manifest
-        )
+        async with resolve_selection_monitor.suspended():
+            manifest["resolve_import"] = await asyncio.to_thread(
+                run_resolve_import_isolated, manifest
+            )
         await save_manifest(manifest)
         return manifest
 
@@ -268,7 +270,8 @@ async def retry_resolve_transfer(body: ResolveRetryIn, request: Request):
             async def _import_and_save() -> dict:
                 # ★가져오기 실행과 결과 저장은 한 단위다. 둘 사이가 끊기면 Resolve 는 바뀌었는데
                 # manifest 에는 흔적이 남지 않아 다음 실행이 같은 작업을 또 한다.
-                result = await asyncio.to_thread(run_resolve_import_isolated, manifest)
+                async with resolve_selection_monitor.suspended():
+                    result = await asyncio.to_thread(run_resolve_import_isolated, manifest)
                 manifest["resolve_import"] = result
                 await save_manifest(manifest)
                 return result

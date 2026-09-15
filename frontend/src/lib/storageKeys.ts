@@ -29,6 +29,7 @@ export const STORAGE_KEYS = {
   notificationRelocationDismissed: "ch.notifications.relocationDismissed",
   projectFolderExpanded: "ch.projects.folderExpanded",
   promptHistory: "ch.promptHistory",
+  resolveSelectionFollow: "ch.resolveSelectionFollow",
   scenes: "ch.scenes", // Canvas 씬(빈 캔버스) — 카드·연결·카메라, 프로젝트별
   scenesActive: "ch.scenes.active", // 프로젝트별 마지막으로 연 씬 id
   shortcuts: "ch.shortcuts",

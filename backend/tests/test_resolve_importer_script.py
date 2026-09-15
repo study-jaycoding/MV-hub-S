@@ -29,9 +29,17 @@ def _load_importer():
 class FakeClip:
     def __init__(self, path: str):
         self.path = path
+        self.third_party_metadata = {}
 
     def GetClipProperty(self, name=None):
         return self.path if name == "File Path" else {"File Path": self.path}
+
+    def GetThirdPartyMetadata(self, key=None):
+        return self.third_party_metadata.get(key, "") if key else self.third_party_metadata
+
+    def SetThirdPartyMetadata(self, key, value):
+        self.third_party_metadata[key] = value
+        return True
 
 
 class FakeFolder:
@@ -146,6 +154,7 @@ class ResolveImporterScriptTests(unittest.TestCase):
             },
             "items": [
                 {
+                    "generation_id": "generation-1",
                     "status": "downloaded",
                     "folder_path": "e001/c0010",
                     "local_path": str(self.source),
@@ -174,6 +183,7 @@ class ResolveImporterScriptTests(unittest.TestCase):
             ["MV Hub", "MV 프로젝트", "e001", "c0010"],
         )
         self.assertEqual(sequence.clips[0].path, str(self.source))
+        self.assertIn("generation-1", sequence.clips[0].third_party_metadata["MV Hub"])
         self.assertIn("새 원본 1개", message)
         self.assertEqual(calls[-1][2]["status"], "complete")
         self.assertEqual(self.manager.saved, 1)

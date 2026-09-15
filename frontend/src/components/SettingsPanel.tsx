@@ -36,6 +36,7 @@ import {
 import { ComfyConnectionSection } from "./settings/ComfyConnectionSection";
 import { SettingsDescription } from "./settings/SettingsDescription";
 import { SettingsGroup } from "./settings/SettingsGroup";
+import { saveResolveSelectionFollow, useResolveSelectionFollow } from "../lib/resolveSelectionSettings";
 import {
   getResolveConnectionStatus,
   getResolveEnvironmentDiagnostics,
@@ -66,6 +67,7 @@ export function SettingsPanel({
   const [accent, setAccent] = useState(loadAccent());
   const [lang, setLangState] = useState<Lang>(loadLang());
   const [reduceMotion, setReduceMotion] = useState(loadReduceMotion());
+  const resolveSelectionFollow = useResolveSelectionFollow();
   const [historyImport, setHistoryImport] = useState<HistoryImportStatus | null>(null);
   const [scOpen, setScOpen] = useState(false);
   const [dbBusy, setDbBusy] = useState(false);
@@ -593,6 +595,8 @@ export function SettingsPanel({
             <ComfyConnectionSection />
 
             <ResolveScriptSettingsSection
+              selectionFollow={resolveSelectionFollow}
+              onSelectionFollowChange={saveResolveSelectionFollow}
               status={resolveScriptStatus}
               connection={resolveConnection}
               diagnostics={resolveDiagnostics}

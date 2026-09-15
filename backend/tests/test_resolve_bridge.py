@@ -14,10 +14,18 @@ from app.services.resolve_bridge import import_manifest_to_current_project
 class FakeClip:
     def __init__(self, path: str):
         self.path = path
+        self.third_party_metadata = {}
 
     def GetClipProperty(self, key=None):
         props = {"File Path": self.path, "Clip Name": Path(self.path).name}
         return props.get(key, "") if key else props
+
+    def GetThirdPartyMetadata(self, key=None):
+        return self.third_party_metadata.get(key, "") if key else self.third_party_metadata
+
+    def SetThirdPartyMetadata(self, key, value):
+        self.third_party_metadata[key] = value
+        return True
 
 
 class FakeFolder:
@@ -137,13 +145,14 @@ class FakeProjectManager:
     def __init__(self, project):
         self.project = project
         self.saved = 0
+        self.save_result = True
 
     def GetCurrentProject(self):
         return self.project
 
     def SaveProject(self):
         self.saved += 1
-        return True
+        return self.save_result
 
     def ExportProject(self, _project_name, path, _with_stills):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -249,6 +258,13 @@ class ResolveBridgeTests(unittest.TestCase):
         episode = self._child(project, "ep001")
         self.assertEqual(len(self._child(episode, "c0010").clips), 1)
         self.assertEqual(len(self._child(episode, "c0020").clips), 1)
+        first_clip = self._child(episode, "c0010").clips[0]
+        self.assertEqual(
+            resolve_bridge.parse_mvhub_clip_metadata(
+                first_clip.GetThirdPartyMetadata(resolve_bridge.MVHUB_METADATA_KEY)
+            ),
+            {"generation_id": "g1", "project_id": "p1"},
+        )
         self.assertIs(self.pool.current, self.original_folder)
         self.assertEqual(self.manager.saved, 1)
 
@@ -260,6 +276,34 @@ class ResolveBridgeTests(unittest.TestCase):
         self.assertEqual(first["imported"], 2)
         self.assertEqual((second["imported"], second["skipped"]), (0, 2))
         self.assertEqual(self.manager.saved, 1)
+
+    def test_repeated_import_backfills_missing_metadata_and_saves_once(self):
+        manifest = self._manifest()
+        import_manifest_to_current_project(manifest, resolve=self.resolve)
+        managed = self._child(self.pool.root, "MV Hub")
+        project = self._child(managed, "프로젝트_테스트")
+        episode = self._child(project, "ep001")
+        self._child(episode, "c0010").clips[0].third_party_metadata.clear()
+
+        result = import_manifest_to_current_project(manifest, resolve=self.resolve)
+
+        self.assertEqual((result["imported"], result["skipped"]), (0, 2))
+        self.assertEqual(self.manager.saved, 2)
+
+    def test_metadata_only_save_failure_does_not_fail_import(self):
+        manifest = self._manifest()
+        import_manifest_to_current_project(manifest, resolve=self.resolve)
+        managed = self._child(self.pool.root, "MV Hub")
+        project = self._child(managed, "프로젝트_테스트")
+        episode = self._child(project, "ep001")
+        self._child(episode, "c0010").clips[0].third_party_metadata.clear()
+        self.manager.save_result = False
+
+        result = import_manifest_to_current_project(manifest, resolve=self.resolve)
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["error_count"], 0)
+        self.assertTrue(result.get("warnings"))
 
     def test_same_bin_files_are_imported_in_one_batch(self):
         manifest = self._manifest()

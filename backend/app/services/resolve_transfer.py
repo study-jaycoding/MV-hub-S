@@ -27,6 +27,7 @@ from .path_safety import safe_join
 
 MANIFEST_FORMAT = "mvhub.resolve-transfer"
 MANIFEST_VERSION = 2
+_SELECTION_INDEX_MANIFEST_LIMIT = 5000
 
 # ── 진행 중 직접 전송 수 — 업데이트 차단(routers/release_update._activity) 이 읽는다 ─────────
 # 증감은 이벤트 루프에서, 읽기는 to_thread 워커 스레드에서 일어나므로 락으로 보호한다.
@@ -341,6 +342,94 @@ def list_pending_manifests(
                     break
     pending.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
     return pending[: max(1, limit)]
+
+
+def manifest_source_roots(project_ids: list[str]) -> dict[str, Path]:
+    """현재 계정 프로젝트에서 검증된 Render 루트만 한 번씩 계산한다."""
+    result: dict[str, Path] = {}
+    for project_id in dict.fromkeys(pid for pid in project_ids if pid):
+        state = project_folders.render_root_state(project_id)
+        render_raw = str(state.get("render_path") or "").strip()
+        if not render_raw or state.get("error"):
+            continue
+        try:
+            result[project_id] = Path(render_raw).resolve()
+        except OSError:
+            continue
+    return result
+
+
+def manifest_generation_entries(
+    project_ids: list[str], *, source_roots: dict[str, Path] | None = None
+) -> list[dict[str, str]]:
+    """현재 계정이 아는 프로젝트의 완료/과거 manifest에서 안전한 경로-ID 쌍을 읽는다.
+
+    Resolve 선택 감시는 예전 클립에 third-party metadata가 없을 때만 이 작은 JSON 기록을
+    폴백으로 쓴다. 파일명은 보지 않고 manifest의 절대 경로 완전 일치만 허용한다.
+    스캔은 프로젝트별 최신 5천 전송으로 제한한다. 그보다 오래된 클립은 새 메타데이터가
+    각인된 경우에만 자동 연결하고, 무제한 NAS 순회로 앱을 멈추게 하지 않는다.
+    """
+    result: list[dict[str, str]] = []
+    roots = source_roots if source_roots is not None else manifest_source_roots(project_ids)
+    for project_id, source_root in roots.items():
+        try:
+            project_root = source_root.parent
+            manifest_root = safe_join(project_root, DAVINCI_DIR_NAME)
+            transfer_dir = (
+                safe_join(manifest_root, Path(".mvhub") / "transfers")
+                if manifest_root is not None
+                else None
+            )
+            if transfer_dir is None or not transfer_dir.is_dir():
+                continue
+            manifest_root_resolved = manifest_root.resolve()
+            stats = [(path, path.stat()) for path in transfer_dir.glob("*.json")]
+            paths = [
+                path
+                for path, stat_result in sorted(
+                    stats, key=lambda entry: entry[1].st_mtime, reverse=True
+                )
+                if stat.S_ISREG(stat_result.st_mode)
+            ][:_SELECTION_INDEX_MANIFEST_LIMIT]
+        except OSError:
+            continue
+        for path in paths:
+            try:
+                manifest = _read_manifest(path)
+                recorded_path = Path(str(manifest.get("manifest_path") or "")).resolve()
+                recorded_root = Path(str(manifest.get("manifest_root") or "")).resolve()
+                recorded_source = Path(str(manifest.get("source_root") or "")).resolve()
+            except (ResolveTransferError, OSError):
+                continue
+            if (
+                manifest.get("format") != MANIFEST_FORMAT
+                or str(manifest.get("project_id") or "") != project_id
+                or recorded_path != path.resolve()
+                or recorded_root != manifest_root_resolved
+                or recorded_source != source_root
+            ):
+                continue
+            for item in manifest.get("items") or []:
+                if not isinstance(item, dict) or item.get("status") not in {
+                    "downloaded",
+                    "skipped",
+                }:
+                    continue
+                generation_id = str(item.get("generation_id") or "").strip()
+                try:
+                    local_path = Path(str(item.get("local_path") or "")).resolve()
+                    local_path.relative_to(source_root)
+                except (OSError, ValueError):
+                    continue
+                if generation_id:
+                    result.append(
+                        {
+                            "project_id": project_id,
+                            "generation_id": generation_id,
+                            "local_path": str(local_path),
+                        }
+                    )
+    return result
 
 
 def _transfer_name_base(folder_path: str) -> str:

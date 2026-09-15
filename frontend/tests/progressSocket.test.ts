@@ -208,4 +208,39 @@ describe("connectProgress", () => {
     expect(Math.max(...delays)).toBe(1200);
     expect(new Set(delays).size).toBeGreaterThan(90);
   });
+
+  it.each([
+    { generation_id: "legacy" },
+    { generation_id: "first", generation_ids: ["first", "second"], selected_count: 2 },
+    { generation_id: "", generation_ids: [], selected_count: 0 },
+    { generation_id: "first", generation_ids: ["first"], selected_count: 201, truncated: true },
+  ])("Resolve 선택 배열·해제·원본 개수와 구형 ID를 이벤트로 전달한다: %j", (selection) => {
+    vi.stubGlobal("location", { protocol: "http:", host: "127.0.0.1:5173" });
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    class TestCustomEvent<T> extends Event {
+      detail: T | undefined;
+      constructor(type: string, init?: { detail?: T }) {
+        super(type);
+        this.detail = init?.detail;
+      }
+    }
+    vi.stubGlobal("window", new EventTarget());
+    vi.stubGlobal("CustomEvent", TestCustomEvent);
+    const selected = vi.fn();
+    const onMessage = vi.fn();
+    window.addEventListener(APP_EVENTS.resolveSelection, selected);
+    const off = connectProgress(onMessage);
+    const message = { type: "resolve_selection", selection_id: "selection", ...selection };
+    FakeWebSocket.instances[0].onmessage?.({ data: JSON.stringify(message) });
+    expect(selected).toHaveBeenCalledTimes(1);
+    expect((selected.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      generationId: selection.generation_id,
+      generationIds: "generation_ids" in selection ? selection.generation_ids : undefined,
+      selectedCount: "selected_count" in selection ? selection.selected_count : undefined,
+      truncated: "truncated" in selection ? selection.truncated : undefined,
+      selectionId: "selection",
+    });
+    expect(onMessage).toHaveBeenCalledWith(message);
+    off();
+  });
 });

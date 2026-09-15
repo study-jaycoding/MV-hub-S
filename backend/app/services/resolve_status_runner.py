@@ -221,6 +221,21 @@ def resolve_connection_status_bounded() -> dict[str, Any]:
     return _unavailable(_no_interpreter_message(failure), status="python_incompatible")
 
 
+def resolve_compatible_interpreter() -> tuple[str | None, str]:
+    """장기 실행 Resolve 자식이 쓸 호환 Python과 실패 설명을 반환한다.
+
+    선택 감시도 import와 같은 ABI 경계를 지켜야 하므로 자체적으로 fusionscript를
+    불러오지 않고, 이미 검증된 인터프리터 선택 관문만 재사용한다.
+    """
+    if resolve_process_running() is False:
+        return None, "DaVinci Resolve가 실행 중이지 않습니다"
+    try:
+        interpreter, _result, failure = _select_interpreter()
+    except subprocess.TimeoutExpired:
+        return None, _timeout_message()
+    return interpreter, failure
+
+
 def _import_unavailable(message: str, *, error_code: str) -> dict[str, Any]:
     """부모 계층 실패도 error_code 를 반드시 싣는다(명세 §C 전달 경로)."""
     return {
