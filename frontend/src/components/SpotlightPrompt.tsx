@@ -1303,6 +1303,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
                 setType={setType}
                 model={model}
                 setModel={setModel}
+                onPickModel={(picked, opts) => applyModelCfg(type, picked, opts)}
                 modelName={modelName}
                 typeModels={typeModels}
                 modelBlocked={selectedBlocked}

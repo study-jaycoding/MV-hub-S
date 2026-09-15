@@ -9,14 +9,16 @@ import type { ModelInfo, ModelParam, ModelParamsOut } from "../types";
 import { fetchModelCatalog } from "./modelCatalogCache";
 
 // 노출 모델 화이트리스트(타입별, 표시 순서대로).
-//  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana 2 Lite(nano_banana_2_lite) · Nano Banana Pro(nano_banana_pro) · GPT Image 2(gpt_image_2)
-//  비디오: Seedance 2.5(seedance_2_5, duration 4~30s·오디오 생성 지원·480p/720p/1080p) · Seedance 2.0(seedance_2_0) · Seedance 2.0 Mini(seedance_2_0_mini, 저가·빠름·최대 720p) · Gemini Omni Flash(gemini_omni, duration 4~10s)
+//  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana 2 Lite(nano_banana_2_lite) · Nano Banana Pro(nano_banana_pro) · GPT Image 2.5(gpt_image_2_5) · GPT Image 2(gpt_image_2)
+//  비디오: Seedance 2.5(seedance_2_5, duration 4~30s·오디오 생성 지원·480p/720p/1080p) · Seedance 2.0(seedance_2_0) · Seedance 2.0 Mini(seedance_2_0_mini, 저가·빠름·최대 720p)
+//   ※ Gemini Omni Flash(gemini_omni)는 2026-09-15 노출 제외(Jay 요청). CLI 카탈로그엔 남아 있고 이 목록에서만 뺐다 —
+//     이 모델로 만든 생성물은 0건이라 기존 카드 표시엔 영향 없다(DB 대조 확인).
 // 각 모델의 옵션은 CLI 스키마(get_model_params)로 동적 렌더 — 모델마다 다른 파라미터 자동 반영.
 // ※ CLI 업데이트로 Nano Banana Pro 코드가 nano_banana_2 → nano_banana_pro 로 개명됨(옛 코드는 CLI 목록에서 사라져 매칭 실패→드롭다운 누락이었음).
 //   ai_stylist/skin_enhancer/shots 변형도 표시명은 "Nano Banana Pro"지만 프리셋 전용(프롬프트 없음)이라 일반 드롭다운엔 제외.
 export const ALLOWED: Record<"image" | "video", string[]> = {
-  image: ["nano_banana_flash", "nano_banana_2_lite", "nano_banana_pro", "gpt_image_2"],
-  video: ["seedance_2_5", "seedance_2_0", "seedance_2_0_mini", "gemini_omni"],
+  image: ["nano_banana_flash", "nano_banana_2_lite", "nano_banana_pro", "gpt_image_2_5", "gpt_image_2"],
+  video: ["seedance_2_5", "seedance_2_0", "seedance_2_0_mini"],
 };
 
 /** 모델 키로 이미지/영상을 판정한다 — **한쪽 목록에만** 속할 때만 확정한다.
@@ -47,6 +49,7 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
   nano_banana_pro: "Nano Banana Pro",
   nano_banana_2: "Nano Banana Pro", // 레거시(개명 전 코드)로 만든 과거 카드 표시용 — CLI 목록엔 더 없음
   nano_banana: "Nano Banana",
+  gpt_image_2_5: "GPT Image 2.5", // 휴머나이즈는 "Gpt Image 2 5"(소문자 pt·마침표 소실)라 표기 교정
   gpt_image_2: "GPT Image 2", // 휴머나이즈는 "Gpt Image 2"(소문자 pt)라 표기 교정
   seedance_2_5: "Seedance 2.5",
   seedance_2_0: "Seedance 2.0",
@@ -79,10 +82,15 @@ export function stripHiddenParams<T>(opts: Record<string, T>): Record<string, T>
 }
 
 // 기본값 오버라이드 — 모델 스키마 기본값 대신 우리가 쓸 기본값.
-//  · bitrate_mode: 힉스필드 네이티브 UI 와 동일하게 'high' 를 기본으로(검증결과 high 가 standard 와
-//    크레딧 동일 → 화질만 올라가는 '공짜' 개선). 해당 enum 에 그 값이 있을 때만 적용(타 모델 안전).
+//  · bitrate_mode: 힉스필드 네이티브 UI 와 동일하게 'high' 를 기본으로(high 가 standard 와 크레딧
+//    동일 → 화질만 올라가는 '공짜' 개선). 해당 enum 에 그 값이 있을 때만 적용(타 모델 안전).
+//    2026-09-15 재실측(generate cost): seedance_2_5 32.5=32.5 · seedance_2_0 22.5=22.5 ·
+//    seedance_2_0_mini 12.5=12.5 · ad_multiplier 32.5=32.5 — 넷 다 여전히 동일.
+//    ★위 MODEL_CONSTRAINTS 의 '가격이 같다고 숨기지 말라' 와 혼동 금지(2026-09-15 Jay 결정):
+//      값이 같다고 **선택지를 뺏는 것**은 금지. 값이 같을 때 **유리한 쪽을 기본으로 골라주는 것**은 유지 —
+//      사용자가 언제든 바꿀 수 있으므로 선택을 뺏지 않는다. 가격이 갈리면 이 기본값을 다시 판단할 것.
 //  · duration: 비디오 기본 길이를 4s 로(스키마/CLI 기본 5s 대신 — 최소·최저 크레딧). duration 파라미터를
-//    가진 비디오 모델(seedance_2_0·seedance_2_0_mini·gemini_omni, 모두 min 4s)에 적용된다. enum 없는 수치.
+//    가진 비디오 모델(seedance_2_0·seedance_2_0_mini, 모두 min 4s)에 적용된다. enum 없는 수치.
 export const DEFAULT_OVERRIDE: Record<string, string> = { bitrate_mode: "high", duration: "4" };
 export const MODEL_DEFAULT_OVERRIDE: Record<string, Record<string, string>> = {
   seedance_2_5: { mode: "omni_reference" },
@@ -102,9 +110,13 @@ export function effectiveDefault(p: {
 }
 
 // ── 모델별 파라미터 조합 제약 ──────────────────────────────────────────────
-// CLI 스키마(model get)·비용(generate cost)이 *막지 않는* 비즈니스 규칙. 힉스필드 네이티브 UI 기준.
-//  예) seedance_2_0 Fast 모드는 1080p 미지원 — cost 는 에러 없이 720p 가격(17)으로 조용히
-//      다운그레이드되므로(=1080p 무효), 우리가 UI 에서 막아야 사용자가 헛 선택을 안 한다.
+// 힉스필드가 **명시적으로 거부**하는 조합만 UI 에서 막는다. 막지 않으면 사용자가 제출에서 실패한다.
+//  예) seedance_2_0 mode=fast + 1080p → CLI 가 거부(2026-09-15 실측):
+//      "mode 'fast' supports only 480p/720p; use mode 'std' for 1080p/4k"
+// ★금지(2026-09-15 Jay 결정): **견적 크레딧이 같다**는 이유로 옵션을 숨기지 않는다.
+//   값이 같아도 실제 결과물은 다를 수 있고, 같은지 확인하려면 실제 생성=과금이 필요하다.
+//   그 근거로 gpt_image_2 의 quality=low → resolution 1k 제한을 제거했다(low 는 1k·2k 가 0.5 로
+//   같지만 4k 는 0.75 로 다르다 — 값이 같다는 것만으로 무효라고 단정할 수 없다).
 //  규칙: whenParam==whenEquals 이면 param 의 허용값을 allow 로 제한. 동일 param 다중 규칙은 교집합.
 export type ParamConstraint = {
   whenParam: string;
@@ -121,16 +133,6 @@ export const MODEL_CONSTRAINTS: Record<string, ParamConstraint[]> = {
       param: "resolution",
       allow: ["480p", "720p"],
       note: "Fast 모드는 720p 초과 해상도(1080p·4k)를 지원하지 않습니다 (최대 720p).",
-    },
-  ],
-  gpt_image_2: [
-    {
-      // CLI 검증: quality=low 면 1k/2k/4k 비용이 전부 1로 동일 → 해상도가 적용되지 않음(1k로 처리).
-      whenParam: "quality",
-      whenEquals: "low",
-      param: "resolution",
-      allow: ["1k"],
-      note: "Low 품질에서는 해상도가 적용되지 않습니다 (1k로 처리).",
     },
   ],
 };

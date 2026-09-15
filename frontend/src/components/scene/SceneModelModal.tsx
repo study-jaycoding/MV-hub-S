@@ -97,6 +97,12 @@ export function SceneModelModal({
               setType={m.setType}
               model={m.model}
               setModel={m.setModel}
+              onPickModel={(picked, opts) => {
+                // 변형 선택으로 다른 모델로 옮길 때 — 옵션을 예약해 두면 params 로드 뒤 기본값 위에 덮인다.
+                // (바는 모델이 실제로 바뀔 때만 이걸 부른다. 같은 모델의 변형 전환은 setOpt 로 처리된다.)
+                m.pendingOptsRef.current = { model: picked, opts };
+                m.setModel(picked);
+              }}
               modelName={m.modelName}
               typeModels={m.typeModels}
               modelBlocked={m.selectedBlocked}

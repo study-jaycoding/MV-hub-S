@@ -3,7 +3,11 @@ import type { MediaType, ModelInfo, ModelParam } from "../../types";
 import { effectiveDefault, numericRange, paramGateAllows } from "../../lib/useModels";
 import {
   SPOTLIGHT_PRIMARY_PARAMS,
+  currentVariantValue,
   durationRange,
+  isVariantParam,
+  modelRows,
+  modelVariantSuffix,
   spotlightAdvancedParamRank,
   spotlightParamLabel,
   spotlightValueLabel,
@@ -19,6 +23,8 @@ interface Props {
   setType: (value: MediaType) => void;
   model: string;
   setModel: (value: string) => void;
+  /** 다른 모델로 옮기면서 옵션도 함께 지정한다(변형 선택). 같은 모델이면 setOpt 로 값만 바꾼다. */
+  onPickModel: (model: string, opts: Record<string, string | number | boolean>) => void;
   modelName: string;
   typeModels: ModelInfo[];
   // 그룹 사용 모델 — 지금 고른 모델을 못 쓰면 칩을 붉게, 드롭다운 머리에 안내를 띄운다.
@@ -60,6 +66,7 @@ export function SpotlightOptionsBar({
   setType,
   model,
   setModel,
+  onPickModel,
   modelName,
   typeModels,
   modelBlocked = false,
@@ -79,7 +86,12 @@ export function SpotlightOptionsBar({
   const visibleTunable = tunable.filter((p) => paramGateAllows(model, p.name, optionValues));
   const audioParam = visibleTunable.find((p) => p.name === "generate_audio");
   const advancedParams = visibleTunable
-    .filter((p) => !SPOTLIGHT_PRIMARY_PARAMS.has(p.name) && p.name !== "generate_audio")
+    .filter(
+      (p) =>
+        !SPOTLIGHT_PRIMARY_PARAMS.has(p.name) &&
+        p.name !== "generate_audio" &&
+        !isVariantParam(model, p.name), // 모델 드롭다운이 맡은 값(seedance_2_0.mode)은 여기 중복 표시하지 않는다
+    )
     .sort((a, b) => spotlightAdvancedParamRank(a.name) - spotlightAdvancedParamRank(b.name));
   const advancedDirty = advancedParams.some((p) => {
     const cur = optionValues[p.name];
@@ -110,7 +122,7 @@ export function SpotlightOptionsBar({
           onClick={() => setOpen(open === "model" ? null : "model")}
         >
           <span className="sl-dot" />
-          <span className="sl-chip-label">{modelName}</span>
+          <span className="sl-chip-label">{modelName + modelVariantSuffix(model, optionValues)}</span>
           <span className="sl-caret">›</span>
         </button>
         {open === "model" && (
@@ -124,16 +136,28 @@ export function SpotlightOptionsBar({
             ) : null}
             {policyNote ? <div className="sl-dd-empty">{policyNote}</div> : null}
             <div className="sl-dd-scroll">
-              {typeModels.map((m) => (
+              {modelRows(typeModels).map((row) => (
                 <button
-                  key={m.job_set_type}
-                  className={"sl-dd-item" + (m.job_set_type === model ? " sel" : "")}
+                  key={row.key}
+                  className={
+                    "sl-dd-item" +
+                    (row.model === model &&
+                    (row.value === undefined || currentVariantValue(model, optionValues) === row.value)
+                      ? " sel"
+                      : "")
+                  }
                   onClick={() => {
-                    setModel(m.job_set_type);
+                    // 다른 모델 → 옵션까지 예약해 함께 전환(params 로드 뒤 기본값 위에 덮인다).
+                    // 같은 모델의 변형 전환 → 그 값만 바꾼다(해상도·길이 등 나머지 선택을 보존).
+                    if (row.model !== model) onPickModel(row.model, row.value ? { [row.param!]: row.value } : {});
+                    else {
+                      setModel(row.model); // 같은 모델 재선택 — '사용자가 골랐다' 는 출처를 남긴다(종전 동작)
+                      if (row.value) setOpt(row.param!, row.value);
+                    }
                     setOpen(null);
                   }}
                 >
-                  {m.display_name}
+                  {row.display_name}
                 </button>
               ))}
             </div>
