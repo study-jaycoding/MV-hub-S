@@ -354,7 +354,12 @@ def test_watchdog_process_treats_foreign_busy_as_hijacked_without_intervention(t
             ],
             capture_output=True,
             text=True,
-            timeout=10,
+            # 503 탐침마다 포트 주인을 PowerShell 로 묻는다(Get-NetTCPConnection 4회 +
+            #  CIM 4회). TCP 조회만 이 PC 에서 1회 1,777ms 라 4회에 약 7.1초이고, CIM 과
+            #  나머지 실행 시간이 더 붙는다. 이 시험 단독 3회 실측은 12.78~12.99초였다.
+            #  10초는 기계 속도에 따라 넘기던 값이라 3배 여유로 올린다 — 진짜로 멈추면
+            #  여전히 여기서 잡힌다.
+            timeout=40,
         )
     finally:
         server.shutdown()
