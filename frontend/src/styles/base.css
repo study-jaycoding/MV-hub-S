@@ -20,6 +20,10 @@
   --grad: linear-gradient(120deg, #d2ef5e 0%, #c4e84a 50%, #aedb33 100%);
   --grad-soft: linear-gradient(120deg, rgba(196, 232, 74, 0.15), rgba(174, 219, 51, 0.15));
   --accent: #c4e84a;
+  /* 강조색의 R,G,B 3원색 — 반투명 채움(rgba(var(--accent-rgb), α))이 강조색을 따라오게 하는 열쇠.
+     theme.ts 의 applyAccent() 가 런타임에 덮어쓰지만, JS 가 돌기 전(또는 실패했을 때)에도
+     rgba() 가 유효하려면 여기 기본값이 반드시 있어야 한다. 없으면 선언 전체가 무효가 된다. */
+  --accent-rgb: 196, 232, 74;
   --accent-ink: #131806; /* 라임 위에 얹는 어두운 텍스트(버튼 라벨 등) */
   --pink: #c4e84a; /* 레거시 변수명 — 라임으로 통일(핑크 강조 제거) */
   --glow: 0 0 0 1px rgba(196, 232, 74, 0.5), 0 8px 30px rgba(196, 232, 74, 0.22);

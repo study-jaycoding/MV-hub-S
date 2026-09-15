@@ -19,9 +19,19 @@ export const ACCENT_PRESETS: AccentPreset[] = [
 const ACCENT_KEY = "ch_accent";
 export const DEFAULT_ACCENT = ACCENT_PRESETS[0].hex;
 
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
-  const h = hex.replace("#", "");
+/** 저장소·입력에서 온 값을 `#` + 6자리 소문자 hex 로 정규화. 형식이 아니면 기본 강조색.
+ *  localStorage 는 손댈 수 있는 곳이라(확장·콘솔·옛 버전) 망가진 값이 들어올 수 있다.
+ *  그대로 두면 parseInt 가 NaN 을 내고 `--accent-rgb: NaN, NaN, NaN` 이 되어
+ *  이 변수를 쓰는 CSS 선언이 전부 무효가 된다(채움이 사라짐). 한 곳에서 막는다. */
+function normalizeHex(hex: string): string {
+  const h = String(hex ?? "").trim().replace(/^#/, "");
+  if (!/^([0-9a-f]{3}|[0-9a-f]{6})$/i.test(h)) return DEFAULT_ACCENT;
   const v = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  return `#${v.toLowerCase()}`;
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const v = normalizeHex(hex).slice(1);
   return {
     r: parseInt(v.slice(0, 2), 16),
     g: parseInt(v.slice(2, 4), 16),
@@ -38,10 +48,14 @@ function inkFor(hex: string): string {
 }
 
 /** CSS 변수를 강조색 hex 기준으로 일괄 갱신. */
-export function applyAccent(hex: string): void {
+export function applyAccent(rawHex: string): void {
+  const hex = normalizeHex(rawHex);
   const { r, g, b } = hexToRgb(hex);
   const s = document.documentElement.style;
   s.setProperty("--accent", hex);
+  // 반투명 채움용 3원색 — CSS 는 rgba(var(--accent-rgb), 0.12) 꼴로 쓴다.
+  // hex 한 개로 테두리(--accent)와 채움이 함께 움직이게 하는 지점.
+  s.setProperty("--accent-rgb", `${r}, ${g}, ${b}`);
   s.setProperty("--accent-ink", inkFor(hex));
   // grad: 거의 단색의 미세 그라데이션(라임 기본과 동일한 느낌)
   s.setProperty("--grad", `linear-gradient(120deg, ${hex}, ${hex})`);
@@ -57,13 +71,15 @@ export function applyAccent(hex: string): void {
 
 export function loadAccent(): string {
   try {
-    return localStorage.getItem(ACCENT_KEY) || DEFAULT_ACCENT;
+    return normalizeHex(localStorage.getItem(ACCENT_KEY) || DEFAULT_ACCENT);
   } catch {
     return DEFAULT_ACCENT;
   }
 }
 
-export function saveAccent(hex: string): void {
+export function saveAccent(rawHex: string): void {
+  // 저장·적용·설정 표시가 같은 값을 보도록 들어오는 길목에서 한 번만 정규화한다.
+  const hex = normalizeHex(rawHex);
   try {
     localStorage.setItem(ACCENT_KEY, hex);
   } catch {
