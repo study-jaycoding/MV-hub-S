@@ -15,7 +15,9 @@ export function durationRange(model: string, fallback: number): { min: number; m
 // 자주 바꾸는 핵심 파라미터만 인라인 칩으로 두고, 나머지는 고급 팝오버로 모은다.
 export const SPOTLIGHT_PRIMARY_PARAMS = new Set(["aspect_ratio", "resolution", "duration"]);
 
-// 허용값 제한/표시 게이트와 별개: 유효하지만 CLI가 무시하는 값. 선택과 전송은 유지한다.
+// 허용값 제한/표시 게이트와 별개: 유효하지만 CLI가 이 모드에서 무시하는 값.
+// 화면에서는 흐리게 + 조작 불가로 두고(2026-09-15 Jay), 값과 전송은 그대로 유지한다
+// — 모드를 되돌리면 고르던 값이 살아 있어야 하고, CLI 는 어차피 이 값을 버린다.
 export function spotlightIgnoredOptions(model: string, mode: unknown): {
   params: readonly string[];
   note: string | null;

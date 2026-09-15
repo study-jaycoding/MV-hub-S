@@ -165,50 +165,62 @@ describe("씬/카드 복원과 모델 스키마 응답 순서", () => {
   });
 });
 
-describe("무시되는 옵션도 실제 입력과 선택값을 보존", () => {
-  it("edit의 길이/비율은 흐려도 조작 가능하고, 안내는 흐리지 않다", async () => {
+describe("무시되는 옵션은 조작할 수 없고, 고른 값은 보존된다", () => {
+  it("edit의 길이·비율은 만질 수 없고, 되돌리면 고르던 값이 살아 있다", async () => {
     view = await mountPrompt({ trayBinding: binding("video_edit") });
     const slider = required<HTMLInputElement>(view.container, '.sl-opt-slider input[type="range"]');
     const sliderChip = required(view.container, ".sl-opt-slider");
     const ratio = required<HTMLButtonElement>(view.container, 'button[title="aspect_ratio"]');
     expect(sliderChip.classList.contains("sl-opt-ignored")).toBe(true);
     expect(ratio.classList.contains("sl-opt-ignored")).toBe(true);
-    expect(slider.disabled).toBe(false);
-    expect(ratio.disabled).toBe(false);
+    // ★2026-09-15 Jay: 흐리게만 두면 "만질 수 있으니 효과가 있나 보다" 로 헷갈린다 — 아예 잠근다.
+    expect(slider.disabled).toBe(true);
+    expect(ratio.disabled).toBe(true);
     expect(getComputedStyle(sliderChip).opacity).toBe("0.45");
-    expect(getComputedStyle(ratio).pointerEvents).not.toBe("none");
+    click(ratio);
+    await settle();
+    expect(view.container.querySelector(".sl-dropdown")).toBeNull();
+
+    // 안내 문구는 잠근 이유를 알려주는 자리라 흐리지 않는다.
     const note = required(view.container, ".sl-ignored-note");
     expect(note.closest(".sl-opt-ignored")).toBeNull();
     expect(getComputedStyle(note).opacity).not.toBe("0.45");
     expect(note.textContent).toContain("길이·비율은 넣은 영상을 따릅니다.");
     expect(required(note, "strong").textContent).toBe("요금도 그 영상 길이로 매겨집니다.");
 
+    // 효과가 있는 모드에서는 종전대로 조작된다.
+    expectShownMode(view.container, "video_edit");
+    click(button(required(view.container, ".sl-adv-pop"), "t2v"));
+    await settle();
+    expect(view.container.querySelector(".sl-opt-ignored")).toBeNull();
+    expect(view.container.querySelector(".sl-ignored-note")).toBeNull();
+    const freeSlider = required<HTMLInputElement>(view.container, '.sl-opt-slider input[type="range"]');
+    expect(freeSlider.disabled).toBe(false);
     act(() => {
       // React의 value tracker를 갱신하지 않고 브라우저 입력처럼 실제 DOM 값을 바꾼다.
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, "12");
-      slider.dispatchEvent(new Event("input", { bubbles: true }));
-      slider.dispatchEvent(new Event("change", { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(freeSlider, "12");
+      freeSlider.dispatchEvent(new Event("input", { bubbles: true }));
+      freeSlider.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await settle();
     expect(view.ref.current?.currentModel()?.params?.duration).toBe(12);
     expect(required(view.container, ".sl-opt-val").textContent).toBe("12s");
-    click(ratio);
+    click(required<HTMLButtonElement>(view.container, 'button[title="aspect_ratio"]'));
     click(button(required(view.container, ".sl-dropdown"), "9:16"));
     await settle();
     expect(view.ref.current?.currentModel()?.params?.aspect_ratio).toBe("9:16");
 
-    expectShownMode(view.container, "video_edit");
+    // 무시되는 모드로 돌아가면 다시 잠기고, 고르던 값은 그대로 남아 제출에도 실린다.
+    expectShownMode(view.container, "t2v");
     click(button(required(view.container, ".sl-adv-pop"), "video_extension"));
     await settle();
-    expect(required(view.container, ".sl-opt-slider").classList.contains("sl-opt-ignored")).toBe(false);
-    expect(required(view.container, 'button[title="aspect_ratio"]').classList.contains("sl-opt-ignored")).toBe(true);
+    expect(required<HTMLInputElement>(view.container, '.sl-opt-slider input[type="range"]').disabled).toBe(false);
+    expect(required<HTMLButtonElement>(view.container, 'button[title="aspect_ratio"]').disabled).toBe(true);
     expect(required(view.container, ".sl-ignored-note").textContent).toBe("비율은 넣은 영상을 따릅니다.");
     expectShownMode(view.container, "video_extension");
-    click(button(required(view.container, ".sl-adv-pop"), "t2v"));
+    click(button(required(view.container, ".sl-adv-pop"), "video_edit"));
     await settle();
-    expectShownMode(view.container, "t2v");
-    expect(view.container.querySelector(".sl-opt-ignored")).toBeNull();
-    expect(view.container.querySelector(".sl-ignored-note")).toBeNull();
+    expect(required<HTMLInputElement>(view.container, '.sl-opt-slider input[type="range"]').disabled).toBe(true);
     expect(view.ref.current?.currentModel()?.params).toMatchObject({ duration: 12, aspect_ratio: "9:16" });
   });
 });

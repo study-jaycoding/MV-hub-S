@@ -168,7 +168,11 @@ export function SpotlightOptionsBar({
       </div>
 
       {visibleTunable.filter((p) => SPOTLIGHT_PRIMARY_PARAMS.has(p.name)).map((p) => {
-        const ignoredClass = ignored.params.includes(p.name) ? " sl-opt-ignored" : "";
+        // 이 모드에서 CLI 가 무시하는 값 — 흐리게 두는 데서 그치지 않고 **조작도 막는다**
+        // (2026-09-15 Jay: 만질 수 있으면 효과가 있는 줄 알게 되어 헷갈린다).
+        // 값 자체와 전송은 종전대로 — 모드를 되돌리면 고르던 값이 그대로 살아 있다.
+        const isIgnored = ignored.params.includes(p.name);
+        const ignoredClass = isIgnored ? " sl-opt-ignored" : "";
         if (/duration|length/i.test(p.name)) {
           if (p.enum?.length) {
             const vals = p.enum;
@@ -183,6 +187,7 @@ export function SpotlightOptionsBar({
                   max={vals.length - 1}
                   step={1}
                   value={idx}
+                  disabled={isIgnored}
                   onChange={(e) => setOpt(p.name, vals[Number(e.target.value)])}
                 />
                 <span className="sl-opt-val">{cur}s</span>
@@ -202,6 +207,7 @@ export function SpotlightOptionsBar({
                 max={dmax}
                 step={1}
                 value={cur}
+                disabled={isIgnored}
                 onChange={(e) =>
                   setOptionValues((prev) => ({ ...prev, [p.name]: Number(e.target.value) }))
                 }
@@ -214,6 +220,7 @@ export function SpotlightOptionsBar({
           <div className="sl-chip-wrap" key={p.name}>
             <button
               className={"sl-chip sl-opt-chip" + ignoredClass + (open === p.name ? " active" : "")}
+              disabled={isIgnored}
               onClick={() => setOpen(open === p.name ? null : p.name)}
               title={p.name}
             >
@@ -221,7 +228,9 @@ export function SpotlightOptionsBar({
               <span>{String(optionValues[p.name] ?? p.default ?? "")}</span>
               <span className="sl-caret">›</span>
             </button>
-            {open === p.name && (
+            {/* 잠긴 값은 목록이 이미 열려 있어도 닫는다 — 비동기 복원(프롬프트 재사용)이 메뉴가 열린
+                채로 모드를 바꿔 넣을 수 있고, 그때 열린 목록으로 고르면 잠금이 뚫린다. */}
+            {open === p.name && !isIgnored && (
               <div className="sl-dropdown">
                 <div className="sl-dd-scroll">
                   {/* aspect_ratio 는 CLI 에 auto 가 없어도 맨 앞에 'auto' 를 합성한다(제출 시 레퍼런스 비율로 치환).
