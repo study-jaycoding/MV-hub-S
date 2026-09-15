@@ -1,4 +1,4 @@
-/* ── 스포트라이트 (project-viewer 형태 — 하단 도킹 바) ── */
+﻿/* ── 스포트라이트 (project-viewer 형태 — 하단 도킹 바) ── */
 /* 항상 떠 있는 하단 도크 — 화면을 가리지 않게 pointer-events 는 도크에만. */
 .sl-dockbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;

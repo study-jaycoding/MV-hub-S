@@ -1,4 +1,4 @@
-/* ── 구성/합성 보드 ── */
+﻿/* ── 구성/합성 보드 ── */
 .compose { flex: 1; display: flex; min-height: 0; }
 .compose-tray {
   width: 176px; flex: 0 0 176px;
