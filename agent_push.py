@@ -242,7 +242,8 @@ _PROMPT_ECHO_RE = re.compile(
 
 def _mask_prompt_echo(text: str) -> str:
     return _PROMPT_ECHO_RE.sub(
-        lambda m: f"{m.group(1)}<프롬프트 {len(m.group(2))}자>{m.group(3)}", text
+        lambda m: m.group(0) if re.fullmatch(r"<프롬프트 [0-9]+자>", m.group(2))
+        else f"{m.group(1)}<프롬프트 {len(m.group(2))}자>{m.group(3)}", text
     )
 
 
@@ -254,7 +255,10 @@ _DIAGNOSTIC_ANSI_RE = re.compile(
     r"|(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]|\x1b[ -/]*[@-Z\\-_]"
 )
 _DIAGNOSTIC_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
-_DIAGNOSTIC_URL_RE = re.compile(r"""(?i)\b[a-z][a-z0-9+.-]*://[^\s<>"']+""")
+# 재정제 시에도 기존 가림 표식을 URL의 일부로 읽어 쿼리/fragment 표식이 쌓이지 않게 한다.
+_DIAGNOSTIC_URL_RE = re.compile(
+    r"""(?i)\b[a-z][a-z0-9+.-]*://(?:<URL (?:자격정보|쿼리|fragment) 숨김>|[^\s<>"'])+"""
+)
 _DIAGNOSTIC_QUOTED_VALUE = r""""(?:[^"\\]|\\[\s\S])*(?:"|\\?$)|'(?:[^'\\]|\\[\s\S])*(?:'|\\?$)"""
 _DIAGNOSTIC_HEADER_RE = re.compile(
     r"""(?P<prefix>(?<![\w-])["']?(?P<key>(?:proxy-)?authorization|(?:set-)?cookie)["']?[ \t]*:[ \t]*)"""

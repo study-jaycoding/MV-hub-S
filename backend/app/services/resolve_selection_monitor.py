@@ -22,6 +22,7 @@ from ..ws import manager
 from .resolve_bridge import _normal_path
 from . import local_agent_pair
 from .async_tools import to_thread_non_abandon
+from .resolve_queue import run_non_abandon
 from .resolve_selection_worker import MAX_SELECTIONS, RESULT_PREFIX
 from .resolve_status_runner import resolve_compatible_interpreter
 from .resolve_transfer import manifest_generation_entries, manifest_source_roots
@@ -39,6 +40,7 @@ class ResolveSelectionMonitor:
         self._task: asyncio.Task[None] | None = None
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
+        self._process_lock = asyncio.Lock()
         self._selection_ready = asyncio.Event()
         self._selection_revision = 0
         self._process_epoch = 0
@@ -68,20 +70,27 @@ class ResolveSelectionMonitor:
 
     async def stop(self) -> None:
         self._stopping = True
-        task, self._task = self._task, None
+        task = self._task
         if task:
             task.cancel()
-        await self._stop_process()
-        if task:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+
+        async def finish() -> None:
+            await self._stop_process()
+            if task:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            if self._task is task:
+                self._task = None
+
+        # 종료 요청 자체가 취소돼도 자식과 감시 태스크의 회수를 마친다.
+        await run_non_abandon(finish())
 
     @asynccontextmanager
     async def suspended(self) -> AsyncIterator[None]:
         """Resolve를 변경하는 동안 읽기 poller도 같은 앱에 동시 호출하지 않게 멈춘다."""
         self._pause_count += 1
-        await self._stop_process()
         try:
+            await self._stop_process()
             yield
         finally:
             self._pause_count = max(0, self._pause_count - 1)
@@ -90,6 +99,14 @@ class ResolveSelectionMonitor:
             self._roots_cache = None
 
     async def _stop_process(self) -> None:
+        await run_non_abandon(self._stop_process_locked())
+
+    async def _stop_process_locked(self) -> None:
+        async with self._process_lock:
+            await self._close_process()
+
+    async def _close_process(self) -> None:
+        # 호출자는 시작·참조 등록과 같은 잠금을 종료 완료까지 보유한다.
         process, self._process = self._process, None
         self._selection_revision += 1
         self._process_epoch += 1
@@ -101,7 +118,12 @@ class ResolveSelectionMonitor:
             reader.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await reader
-        if process is None or process.returncode is not None:
+        if process is not None:
+            await self._terminate_process(process)
+
+    @staticmethod
+    async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+        if process.returncode is not None:
             return
         with contextlib.suppress(ProcessLookupError):
             process.terminate()
@@ -110,6 +132,20 @@ class ResolveSelectionMonitor:
         except asyncio.TimeoutError:
             process.kill()
             await process.wait()
+
+    async def _start_process(self) -> None:
+        async with self._process_lock:
+            if self._pause_count or self._stopping:
+                return
+            # _run의 판정 뒤 suspend가 들어와도 생성·참조 등록·reader 시작을
+            # 한 단위로 마친다. 호출자는 이 단위가 끝난 뒤에 취소를 전파한다.
+            self._process = await self._launch_process()
+            if self._process is not None:
+                self._reader_closed = False
+                self._selection_ready.clear()
+                self._reader_task = asyncio.create_task(
+                    self._read_selections(self._process), name="resolve-selection-reader"
+                )
 
     async def _launch_process(self) -> asyncio.subprocess.Process | None:
         interpreter, _failure = await asyncio.to_thread(resolve_compatible_interpreter)
@@ -132,8 +168,7 @@ class ResolveSelectionMonitor:
         # 인터프리터 probe 중 suspend/stop이 들어온 경쟁 구간을 닫는다. 대입 전이라
         # _stop_process가 볼 수 없었던 자식은 여기서 직접 회수한다.
         if self._pause_count or self._stopping:
-            process.terminate()
-            await process.wait()
+            await self._terminate_process(process)
             return None
         self._priming = True
         self._worker_had_snapshot = False
@@ -455,7 +490,7 @@ class ResolveSelectionMonitor:
             if self._process is None or self._process.returncode is not None:
                 await self._stop_process()
                 try:
-                    self._process = await self._launch_process()
+                    await run_non_abandon(self._start_process())
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001 - 보조 감시 실패가 서버 수명을 끝내면 안 된다.
@@ -466,12 +501,9 @@ class ResolveSelectionMonitor:
                     restart_index += 1
                     await asyncio.sleep(delay)
                     continue
-                self._reader_closed = False
-                self._selection_ready.clear()
-                self._reader_task = asyncio.create_task(
-                    self._read_selections(self._process), name="resolve-selection-reader"
-                )
             process = self._process
+            if process is None:
+                continue  # 시작 완료 직후 suspend가 회수한 경우
             if process.stdout is None:
                 await self._stop_process()
                 continue

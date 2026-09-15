@@ -337,6 +337,26 @@ def test_sanitize_diagnostic_url_keeps_endpoint_and_masks_every_query_key():
     )
 
 
+@pytest.mark.parametrize("raw, expected", [
+    ("https://cdn.example/a?Signature=FAKE_SIGNATURE", "https://cdn.example/a?<URL 쿼리 숨김>"),
+    ("https://cdn.example/a#FAKE_FRAGMENT", "https://cdn.example/a#<URL fragment 숨김>"),
+    ("https://FAKE_USER:FAKE_PASSWORD@cdn.example/a", "https://<URL 자격정보 숨김>@cdn.example/a"),
+    (
+        'failed (https://FAKE_USER:FAKE_PASSWORD@cdn.example/a?x=FAKE_QUERY#FAKE_FRAGMENT). '
+        '{"prompt":"private words","token":"FAKE_TOKEN"}',
+        'failed (https://<URL 자격정보 숨김>@cdn.example/a?<URL 쿼리 숨김>#<URL fragment 숨김>). '
+        '{"prompt":"<프롬프트 13자>","token":<토큰 숨김>}',
+    ),
+])
+def test_k2_sanitize_diagnostic_is_idempotent(raw, expected):
+    agent = _load_agent()
+    shown = agent._sanitize_diagnostic(raw)
+    assert shown == expected
+    for _ in range(3):
+        shown = agent._sanitize_diagnostic(shown)
+        assert shown == expected
+
+
 def test_sanitize_diagnostic_preserves_prompt_masking_contract():
     agent = _load_agent()
     for raw in (
@@ -2768,3 +2788,51 @@ def test_recovery_empty_reason_keeps_bodyless_agent_contract(reason):
     with patch.object(agent, "_http", return_value=(200, {"ok": True})) as http:
         assert agent._require_submission_recovery("http://hub", "t", "r1", reason)
     assert http.call_args.kwargs == {"token": "t", "timeout": 15}
+
+
+def test_k2_submit_recovery_http_body_masks_url_once_through_real_product_path():
+    agent = _load_agent()
+    raw_error = (
+        'Invalid media https://FAKE_USER:FAKE_PASSWORD@cdn.example/a?Signature=FAKE_SIGNATURE#FAKE_FRAGMENT '
+        'https://cdn.example/b?Signature=FAKE_SECOND '
+        '{"prompt":"private words","token":"FAKE_TOKEN"}'
+    )
+
+    def run_cli(argv, **kwargs):
+        if argv[1:3] == ["model", "get"]:
+            return subprocess.CompletedProcess(argv, 0, '{"params":[]}', "")
+        if argv[1:3] == ["workspace", "list"]:
+            return subprocess.CompletedProcess(argv, 0, '[{"id":"ws-test","name":"","is_selected":true}]', "")
+        assert argv[1:3] == ["generate", "create"]
+        assert kwargs["env"]["HIGGSFIELD_WORKSPACE_ID"] == "ws-test"
+        return subprocess.CompletedProcess(argv, 1, "", raw_error)
+
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.status = 200
+    response.read.return_value = b'{"ok":true,"applied":true}'
+    # Only external process/HTTP IO is replaced: submission, CLI parsing, recovery and
+    # HTTP request serialization all run their real implementations.
+    with patch.object(agent.subprocess, "run", side_effect=run_cli) as run, patch.object(
+        agent.urllib.request, "urlopen", return_value=response
+    ) as urlopen:
+        result = agent._submit_one(
+            "http://hub", "token-1", "higgsfield", "user@example.com",
+            _submission_request(), {}, {}, agent.Lock(), agent.Lock(), "agent-1",
+        )
+
+    assert result is None
+    assert [call.args[0][1:3] for call in run.call_args_list] == [
+        ["model", "get"], ["workspace", "list"], ["generate", "create"],
+    ]
+    assert [urlsplit(call.args[0].full_url).path for call in urlopen.call_args_list] == [
+        "/api/gen-requests/request-1/begin-submission",
+        "/api/gen-requests/request-1/recovery-required",
+    ]
+    body = agent.json.loads(urlopen.call_args.args[0].data)
+    assert body == {"reason": (
+        'CLI 실패: Invalid media https://<URL 자격정보 숨김>@cdn.example/a?<URL 쿼리 숨김>#<URL fragment 숨김> '
+        'https://cdn.example/b?<URL 쿼리 숨김> '
+        '{"prompt":"<프롬프트 13자>","token":<토큰 숨김>}'
+        ' — cmd: generate create nano-banana --prompt <프롬프트 11자>'
+    )}

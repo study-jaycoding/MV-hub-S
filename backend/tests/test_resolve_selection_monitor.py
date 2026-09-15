@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
 import unittest
@@ -520,6 +521,203 @@ class ResolveSelectionMonitorTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.wait_for(self.monitor._run(), 2)
                 self.assertEqual(waits, expected)
                 self.assertIsNone(self.monitor._reader_task)
+
+
+class ControlledReader(asyncio.StreamReader):
+    """외부 파이프의 읽기/취소 완료 시점만 조절한다. 감시 reader는 제품 코드다."""
+
+    def __init__(self):
+        super().__init__()
+        self.reading = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.release_cancel = asyncio.Event()
+        self.release_cancel.set()
+
+    async def readline(self):
+        self.reading.set()
+        try:
+            return await super().readline()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            await self.release_cancel.wait()
+            raise
+
+
+class ControlledProcess(FakeProcess):
+    def __init__(self):
+        super().__init__()
+        self.stdout = ControlledReader()
+        self.terminated = asyncio.Event()
+        self.exited = asyncio.Event()
+        self.exit_on_terminate = True
+
+    def terminate(self):
+        self.terminated.set()
+        if self.exit_on_terminate:
+            self.finish()
+
+    def finish(self):
+        if self.returncode is None:
+            self.returncode = 0
+            self.stdout.feed_eof()
+            self.exited.set()
+
+    kill = finish
+
+    async def wait(self):
+        await self.exited.wait()
+        return self.returncode
+
+
+class ResolveSelectionLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    """start→실제 감시 루프/reader→suspended/stop 경로, 외부 프로세스만 대역."""
+
+    @contextlib.asynccontextmanager
+    async def running_monitor(self, process, spawn=None):
+        monitor = ResolveSelectionMonitor()
+        with (
+            mock.patch.object(resolve_selection_monitor, "resolve_compatible_interpreter", return_value=("fake-python", None)),
+            mock.patch.object(resolve_selection_monitor.asyncio, "create_subprocess_exec", new=mock.AsyncMock(side_effect=spawn, return_value=process)),
+            mock.patch.object(resolve_selection_monitor.manager, "stats", new=mock.AsyncMock(return_value={"connections": 1})),
+        ):
+            monitor.start()
+            try:
+                yield monitor
+            finally:
+                process.stdout.release_cancel.set()
+                process.finish()
+                await asyncio.wait_for(monitor.stop(), 2)
+
+    async def test_concurrent_suspend_waits_for_reader_cancellation(self):
+        process = ControlledProcess()
+        process.stdout.release_cancel.clear()
+        async with self.running_monitor(process) as monitor:
+            await asyncio.wait_for(process.stdout.reading.wait(), 1)
+            entered = []
+
+            async def transfer():
+                async with monitor.suspended():
+                    entered.append(process.returncode)
+
+            first = asyncio.create_task(transfer())
+            await asyncio.wait_for(process.stdout.cancelled.wait(), 1)
+            second = asyncio.create_task(transfer())
+            try:
+                await asyncio.sleep(.02)
+                self.assertEqual(entered, [], "두 번째 가져오기도 reader 회수를 기다려야 한다")
+            finally:
+                process.stdout.release_cancel.set()
+                await asyncio.wait_for(asyncio.gather(first, second), 1)
+            self.assertEqual(entered, [0, 0])
+            self.assertEqual(monitor._pause_count, 0)
+
+    async def test_concurrent_suspend_waits_for_process_exit(self):
+        process = ControlledProcess()
+        process.exit_on_terminate = False
+        async with self.running_monitor(process) as monitor:
+            await asyncio.wait_for(process.stdout.reading.wait(), 1)
+            entered = []
+
+            async def transfer():
+                async with monitor.suspended():
+                    entered.append(process.returncode)
+
+            first = asyncio.create_task(transfer())
+            await asyncio.wait_for(process.terminated.wait(), 1)
+            second = asyncio.create_task(transfer())
+            try:
+                await asyncio.sleep(.02)
+                self.assertEqual(entered, [], "terminate 호출만으로 가져오기를 허용하면 안 된다")
+            finally:
+                process.finish()
+                await asyncio.wait_for(asyncio.gather(first, second), 1)
+            self.assertEqual(entered, [0, 0])
+
+    async def test_suspend_waits_for_inflight_spawn_and_reaps_child(self):
+        process = ControlledProcess()
+        spawning, release_spawn = asyncio.Event(), asyncio.Event()
+
+        async def spawn(*_args, **_kwargs):
+            spawning.set()
+            await release_spawn.wait()
+            return process
+
+        async with self.running_monitor(process, spawn) as monitor:
+            await asyncio.wait_for(spawning.wait(), 1)
+            entered = []
+
+            async def transfer():
+                async with monitor.suspended():
+                    entered.append(process.returncode)
+
+            transfer_task = asyncio.create_task(transfer())
+            try:
+                await asyncio.sleep(.02)
+                self.assertEqual(entered, [], "아직 생성 중인 자식도 회수한 뒤 가져와야 한다")
+            finally:
+                release_spawn.set()
+                await asyncio.wait_for(transfer_task, 1)
+            self.assertEqual(entered, [0])
+            self.assertIsNone(monitor._process)
+            self.assertIsNone(monitor._reader_task)
+
+    async def test_cancelled_suspend_drains_child_and_releases_pause(self):
+        process = ControlledProcess()
+        process.exit_on_terminate = False
+        async with self.running_monitor(process) as monitor:
+            await asyncio.wait_for(process.stdout.reading.wait(), 1)
+            entered = []
+
+            async def transfer():
+                async with monitor.suspended():
+                    entered.append(True)
+
+            transfer_task = asyncio.create_task(transfer())
+            await asyncio.wait_for(process.terminated.wait(), 1)
+            try:
+                for _ in range(2):
+                    transfer_task.cancel()
+                    await asyncio.sleep(.01)
+                self.assertFalse(transfer_task.done(), "취소돼도 자식 회수보다 먼저 반환하지 않는다")
+            finally:
+                process.finish()
+                outcomes = await asyncio.wait_for(asyncio.gather(transfer_task, return_exceptions=True), 1)
+            self.assertIsInstance(outcomes[0], asyncio.CancelledError)
+            self.assertEqual(entered, [])
+            self.assertEqual(monitor._pause_count, 0)
+            self.assertIsNone(monitor._process)
+            self.assertIsNone(monitor._reader_task)
+
+    async def test_cancelled_stop_drains_inflight_spawn_and_monitor(self):
+        process = ControlledProcess()
+        spawning, release_spawn = asyncio.Event(), asyncio.Event()
+
+        async def spawn(*_args, **_kwargs):
+            spawning.set()
+            await release_spawn.wait()
+            return process
+
+        async with self.running_monitor(process, spawn) as monitor:
+            await asyncio.wait_for(spawning.wait(), 1)
+            monitor_task = monitor._task
+            stop_task = asyncio.create_task(monitor.stop())
+            try:
+                for _ in range(2):
+                    await asyncio.sleep(.01)
+                    stop_task.cancel()
+                await asyncio.sleep(.01)
+                self.assertFalse(stop_task.done(), "종료 요청 취소가 생성 중인 자식을 버리면 안 된다")
+            finally:
+                release_spawn.set()
+                outcomes = await asyncio.wait_for(asyncio.gather(stop_task, return_exceptions=True), 1)
+            self.assertIsInstance(outcomes[0], asyncio.CancelledError)
+            self.assertEqual(process.returncode, 0)
+            self.assertTrue(monitor_task.done())
+            self.assertIsNone(monitor._task)
+            self.assertIsNone(monitor._process)
+            self.assertIsNone(monitor._reader_task)
+            pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task() and not task.done()]
+            self.assertEqual(pending, [])
 
 
 if __name__ == "__main__":
