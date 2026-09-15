@@ -88,6 +88,7 @@ from .routers import (
     update_notices,
 )
 from .services import auth as auth_svc
+from .services import cli_bridge
 from .services import server_relocation
 from .services.agent_signals import agent_signals
 from .services.async_tools import to_thread_non_abandon
@@ -408,8 +409,6 @@ async def _application_lifespan(app: FastAPI):
     # 사용자가 바꾼 이름은 절대 안 덮어씀. CLI 오프라인이면 조용히 건너뜀(다음 기회).
     if EXTERNAL_RECOVERY_ENABLED:
         try:
-            from .services import cli_bridge
-
             # 부팅이 외부 CLI 응답에 오래 묶이지 않게 짧은 타임아웃 — 실패 시 다음 기회에 캡처(무해).
             status = await cli_bridge.get_account_status(timeout=8.0)
             repo.capture_provider_identity(status.get("email") or None)
@@ -444,6 +443,7 @@ async def _application_lifespan(app: FastAPI):
             print(f"[startup] 썸네일 사전 생성 건너뜀: {e}")
 
     try:
+        cli_bridge.start_model_refreshes()
         # 공유 서버는 URL·DB만 보관하고 썸네일 파일을 만들지 않는다. 로컬 작업자 허브와
         # 격리 test_dev만 썸네일을 사전 생성한다.
         if not _proxy.is_shared_team_server():
@@ -545,6 +545,9 @@ async def _application_lifespan(app: FastAPI):
         primary_error = exc
         raise
     finally:
+        # 모델 목록은 shield 안의 실제 CLI leader를 회수한다. 부분 부팅도 정리한다.
+        # 다른 종료 작업이 await하는 동안에도 새 모델 갱신이 예약되지 않게 먼저 닫는다.
+        await _attempt_async_cleanup(cli_bridge.shutdown_model_refreshes)
         # 종료: 주기 백업 + 주기 동기화 + 어셋 감시 정리
         # 부분 부팅이면 성공 플래그가 있는 항목만, 정상 부팅이면 기존 cleanup 호출 순서를 그대로 따른다.
         # 썸네일 사전 생성 데몬은 가장 먼저 회수한다 — 미디어 원본 핸들과 DB 커넥션을 쥔 채

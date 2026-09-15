@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import re
 import os
@@ -33,6 +34,7 @@ import subprocess
 import threading
 import time
 import weakref
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -40,6 +42,7 @@ from ..config import DATA_DIR
 from ..workspace_context import normalize_workspace_context  # leaf 모듈(순환 없음 확인)
 from .atomic_io import atomic_write_text
 from .media_types import media_type_from_url
+from .operational_logging import log_event
 
 # ── CLI 경로 해석 (셰임 함정 회피) ────────────────────────────────────────
 _CLI_PATH: Optional[str] = None
@@ -74,7 +77,8 @@ _inflight_calls: weakref.WeakKeyDictionary[
 ] = weakref.WeakKeyDictionary()
 
 
-async def _single_flight(key: str, factory) -> Any:
+def _single_flight_task(key: str, factory) -> asyncio.Task[Any]:
+    """공유 leader 자체를 반환한다. 종료 소유자는 shield 바깥이 아닌 이것을 취소한다."""
     loop = asyncio.get_running_loop()
     with _inflight_guard:
         calls = _inflight_calls.get(loop)
@@ -92,6 +96,11 @@ async def _single_flight(key: str, factory) -> Any:
 
             task.add_done_callback(_cleanup)
             calls[key] = task
+    return task
+
+
+async def _single_flight(key: str, factory) -> Any:
+    task = _single_flight_task(key, factory)
     # shield: waiter 개별 취소가 공유 leader·다른 waiter 까지 취소시키지 않게 격리
     # (코덱스 P2). 전원 취소돼도 task 는 완주해 결과를 캐시한다(성공 조건 시).
     return await asyncio.shield(task)
@@ -475,34 +484,144 @@ async def list_jobs(timeout: float = 60.0, size: int = 100) -> list[dict[str, An
     return [parse_job(j) for j in data if isinstance(j, dict)]
 
 
+_MODEL_FRESH_TTL = 300.0
+# params 캐시와 같은 1시간은 운영 절충치이며 검증된 안전값은 아니다.
+_MODEL_MAX_AGE = 3600.0
+_MODEL_RETRY_DELAY = 60.0
+_model_log = logging.getLogger(__name__ + ".models")
+
+
+@dataclass
+class _ModelRefreshState:
+    task: asyncio.Task[Any] | None = None
+    retry_at: float = 0.0
+    stopping: bool = False
+
+
+_model_refresh_states: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, _ModelRefreshState
+] = weakref.WeakKeyDictionary()
+
+
+def _model_refresh_state() -> _ModelRefreshState:
+    # 호출과 태스크 예약은 해당 이벤트 루프 스레드에서만 수행한다.
+    loop = asyncio.get_running_loop()
+    state = _model_refresh_states.get(loop)
+    if state is None:
+        state = _ModelRefreshState()
+        _model_refresh_states[loop] = state
+    return state
+
+
+def start_model_refreshes() -> None:
+    """새 lifespan에서만 다시 예약을 허용한다. 목록 prewarm은 하지 않는다."""
+    state = _model_refresh_state()
+    if state.task is not None and not state.task.done():
+        raise RuntimeError("Model catalog refresh is still running")
+    state.stopping = False
+
+
+async def shutdown_model_refreshes() -> None:
+    """새 예약을 먼저 막고 실제 leader 취소 후 _run의 자식 회수를 기다린다."""
+    state = _model_refresh_state()
+    already_stopping = state.stopping
+    state.stopping = True
+    task = state.task
+    if task is not None:
+        if not already_stopping and not task.done():
+            task.cancel()
+        # shutdown 자체의 취소도 CLI 회수를 중간에 다시 취소하지 않도록 한다.
+        drain = asyncio.gather(task, return_exceptions=True)
+        try:
+            await asyncio.shield(drain)
+        except asyncio.CancelledError:
+            await drain
+            raise
+
+
 async def list_models(timeout: float = 60.0) -> list[dict[str, Any]]:
-    """생성 모달용 모델 목록 [{display_name, job_set_type, type}]. 5분 TTL 캐시(거의 불변).
-    동시 miss 는 single-flight 로 CLI 1회에 합류(R5 2-C1)."""
-    cached = _cache_get("models", 300.0)
-    if cached is not None:
-        return cached
-    return await _single_flight("models", lambda: _list_models_uncached(timeout))
+    """5분 신선도, 마지막 성공부터 1시간까지 stale 즉답 + 공유 CLI 갱신."""
+    state = _model_refresh_state()
+    if state.stopping:
+        raise CLIError("Model catalog is shutting down")
+    hit = _CALL_CACHE.get("models")
+    now = time.monotonic()
+    age = now - hit[0] if hit is not None else None
+    if hit is not None and age < _MODEL_FRESH_TTL:
+        return hit[1]
+    stale_allowed = hit is not None and age < _MODEL_MAX_AGE
+    task = state.task
+    if task is None or task.done():
+        # 캐시 없는 조회는 종전처럼 실패 후에도 다시 시도한다.
+        if hit is not None and now < state.retry_at:
+            if stale_allowed:
+                return hit[1]
+            raise CLIError("Model catalog expired; refresh retry is delayed")
+        task = _single_flight_task("models", lambda: _refresh_models(state, timeout))
+        state.task = task  # 강한 참조. 요청별 바깥 태스크를 만들지 않는다.
+
+        def _clear_model_task(done: asyncio.Task[Any]) -> None:
+            if state.task is done:
+                state.task = None
+
+        task.add_done_callback(_clear_model_task)
+    if stale_allowed:
+        return hit[1]
+    # cold / 상한 초과 / stale 갱신은 모두 위의 models leader에 합류한다.
+    return await asyncio.shield(task)
+
+
+async def _refresh_models(state: _ModelRefreshState, timeout: float) -> list[dict[str, Any]]:
+    try:
+        result = await _list_models_uncached(timeout)
+    except Exception as exc:
+        now = time.monotonic()
+        hit = _CALL_CACHE.get("models")
+        state.retry_at = now + _MODEL_RETRY_DELAY
+        # 예외 본문, stderr, traceback에는 토큰/경로가 섞일 수 있다. 종류만 기록한다.
+        error_kind = (
+            "JSONDecodeError" if isinstance(exc.__cause__, json.JSONDecodeError)
+            else type(exc).__name__
+        )
+        log_event(
+            _model_log, "model_catalog_refresh_failed", level=logging.WARNING,
+            error_kind=error_kind,
+            cache_age_seconds=round(now - hit[0], 3) if hit is not None else None,
+            next_retry_at_utc=datetime.fromtimestamp(
+                time.time() + _MODEL_RETRY_DELAY, timezone.utc
+            ).isoformat(),
+        )
+        raise CLIError("Model catalog refresh failed") from None
+    state.retry_at = 0.0
+    return result
 
 
 async def _list_models_uncached(timeout: float) -> list[dict[str, Any]]:
     data = await _run_json("model", "list", timeout=timeout)
     if not isinstance(data, list):
-        return []
+        raise ValueError("Invalid model catalog response")
     out = []
     for m in data:
         if not isinstance(m, dict):
             continue
         # CLI 1.x model list 는 job_set_type → job_type 로 개명. 둘 다 수용(빈 모델키 방지 = 모델선택 깨짐 방지).
         jst = m.get("job_set_type") or m.get("job_type")
+        if not isinstance(jst, str) or not jst.strip():
+            continue
+        # 키가 유효해도 표시 필드가 객체/숫자면 ModelOut 응답 검증이 실패한다.
+        # 선택 키는 보존하고 부가 필드는 기존 기본값으로 정규화한다.
+        display_name = m.get("display_name")
+        model_type = m.get("type")
         out.append(
             {
-                "display_name": m.get("display_name") or jst or "?",
-                "job_set_type": jst or "",
-                "type": m.get("type") or "image",
+                "display_name": display_name if isinstance(display_name, str) and display_name else jst,
+                "job_set_type": jst,
+                "type": model_type if isinstance(model_type, str) and model_type else "image",
             }
         )
-    if out:  # 성공(비어있지 않음)만 캐시 — 일시 실패([])를 5분 고정하지 않게
-        _cache_put("models", out)
+    if not out:
+        raise ValueError("Model catalog has no valid model keys")
+    _cache_put("models", out)
     return out
 
 

@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-02
+updated: 2026-09-15
 status: active
 ---
 
@@ -227,6 +227,26 @@ HTTP 요청
 | `video_convert.py` / `media_types.py` / `path_safety.py` / `atomic_io.py` / `net_guard.py` | ffmpeg 변환 / 미디어 판별·Assets 브라우저 응답 고정 MIME / 경로 안전 / 원자 쓰기 / SSRF 가드 |
 | `remote_realtime.py` / `local_agent_pair.py` / `request_guards.py` / `event_journal.py` / `sqlite_db.py` | 서버 WS 중계 / 에이전트 페어링 / 로컬 요청 가드 / 생성 이벤트 저널 / SQLite 검증 |
 | ~~`jobs.py`~~ | 옛 서버측 잡 큐 — **제거됨**(push 모델 전환. POST /api/generations·/regenerate 라우트도 삭제) |
+
+#### 모델 목록 캐시 (2026-09-15)
+
+`cli_bridge.list_models`만 서버 SWR(낡은 목록 즉시 응답 후 백그라운드 갱신)을 사용한다.
+나이는 마지막 성공부터 `time.monotonic()`으로 잰다. 300초 미만은 즉답, 300초 이상
+3600초 미만은 기존 목록을 즉답하고 CLI 갱신을 한 번 예약한다. 3600초 이상 또는
+캐시 없음은 같은 `models` single-flight 실행을 기다린다. 1시간 상한은 params 캐시와
+맞춘 운영 절충치이며 검증된 안전값은 아니다.
+
+- 유효한 모델 키가 있는 행이 하나 이상일 때만 목록과 성공 시각을 교체한다.
+  실패·빈 목록·깨진 JSON·빈 키뿐인 응답은 기존 스냅샷을 유지한다.
+- 기존 스냅샷의 갱신 실패 후 60초 동안 추가 CLI를 예약하지 않는다. 상한 전에는
+  stale 응답, 상한부터는 명시적 오류다. 캐시 없는 조회의 실패 후 재시도는 기존 동작을 유지한다.
+- 오류 로그에는 종류·캐시 나이·다음 재시도 UTC 시각만 기록하며 CLI 원문은 기록하지 않는다.
+- 이벤트 루프별 실제 CLI 태스크를 강한 참조로 보관한다. 개별 요청 취소는 `shield`로
+  격리하고, lifespan 종료는 새 예약을 막은 뒤 실제 태스크를 취소해 자식 프로세스 회수까지 기다린다.
+- 프런트 `modelCatalogCache.ts`의 60초 TTL과 `get_model_params`는 그대로다.
+  이미 열린 화면을 자동으로 갱신하지 않으며 서버 재시작 직후의 첫 조회 대기도 남는다.
+
+계약 시험: `backend/tests/test_model_catalog_swr.py`, `backend/tests/test_cli_bridge_contract.py`.
 
 ### 4.6 보조 스크립트 (`backend/`)
 
