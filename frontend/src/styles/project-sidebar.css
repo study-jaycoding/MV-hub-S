@@ -237,9 +237,13 @@
 
 /* ── 프로젝트 귀속 메뉴 — 선택바 드롭다운 ── */
 .proj-assign { position: relative; }
+/* 위치·높이·폭은 ProjectAssignMenu 가 잘림 경계를 재서 인라인으로 정한다(useMenuPlacement).
+   여기서는 기본 선호 방향과 상한만 말한다 — 폴더 보기 창처럼 overflow:hidden 안에서는
+   계산이 이 값을 줄인다. min-width 는 그 축소를 막지 않게 max-width 와 함께 쓴다. */
 .proj-assign-menu {
+  --menu-prefer: up; --menu-gap: 6px; --menu-max-height: 320px;
   position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 50;
-  min-width: 180px; max-height: 320px; overflow-y: auto;
+  min-width: min(180px, 100%); max-height: 320px; overflow-y: auto;
   display: flex; flex-direction: column; gap: 1px; padding: 5px;
   background: var(--panel, #1c1c22); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 8px 28px rgba(0,0,0,0.5);
@@ -248,9 +252,11 @@
    · 프롬프트 숨김(Ctrl+K): 라이브러리=selbar-top-float, 캔버스=scene-topbar-overlay
    · 변형 팝업('생성 결과 N개'): 액션바가 패널 '위' 절대배치라 화면 꼭대기에 붙는다
      → 위로 열면 프로젝트 목록이 화면 밖으로 잘려 '미분류로 빼기'만 보였다(2026-09-15 Jay). */
+/* 이 세 자리는 액션바가 화면 위쪽에 있어 아래로 여는 것이 자연스럽다 — 방향 '선호'만 바꾸고
+   실제 위치는 계산에 맡긴다(옛날처럼 top 을 직접 지정하면 인라인 계산과 싸운다). */
 .selbar-top-float .proj-assign-menu,
 .scene-topbar-overlay .proj-assign-menu,
-.scene-varpop-actions .proj-assign-menu { bottom: auto; top: calc(100% + 6px); }
+.scene-varpop-actions .proj-assign-menu { --menu-prefer: down; bottom: auto; top: calc(100% + 6px); }
 .proj-assign-menu button {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   width: 100%; text-align: left; padding: 7px 10px; border-radius: 7px;

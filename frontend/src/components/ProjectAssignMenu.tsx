@@ -10,6 +10,7 @@ import { buildFolderCountTree, type FolderCountTreeNode } from "../lib/folderTre
 import { visibleProjectFolderRoots } from "../lib/projectFolderTree";
 import { loadJSON, saveJSON } from "../lib/storage";
 import { useEscapeClose } from "../lib/useEscapeClose";
+import { useMenuPlacement } from "../lib/useMenuPlacement";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
 import type { Project, ProjectFolderState } from "../types";
 import { FolderTreeView } from "./common/FolderTreeView";
@@ -36,6 +37,7 @@ export function ProjectAssignMenu({
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const closeMenu = useCallback(() => setOpen(false), []);
   const closeMenuOnEscape = useCallback(() => {
     setOpen(false);
@@ -52,6 +54,13 @@ export function ProjectAssignMenu({
     () => loadJSON<Record<string, string[]>>(LS_EXP) || {},
   );
 
+  // 잘림 경계(폴더 보기 창 등) 안에 들어가게 방향·높이·좌우를 잡는다. 목록·펼침이 바뀌면 다시 잰다.
+  const placement = useMenuPlacement(open, ref, buttonRef, menuRef, "up", [
+    projects.length,
+    expandedPid,
+    folderState,
+    folderExpanded,
+  ]);
   useOutsideMouseDown(ref, closeMenu, open);
   // 메뉴만 닫고 현재 카드 선택은 유지 — 전역 라이브러리 Esc 보다 캡처 단계에서 먼저 처리한다.
   useEscapeClose(closeMenuOnEscape, open, true, true);
@@ -140,7 +149,22 @@ export function ProjectAssignMenu({
         📁 프로젝트에 담기 ▾
       </button>
       {open && (
-        <div className="proj-assign-menu">
+        <div
+          className="proj-assign-menu"
+          ref={menuRef}
+          // 계산이 정한 쪽만 쓰고 반대쪽은 auto — CSS 의 위치 선언과 경쟁하지 않게 한다.
+          style={
+            placement
+              ? {
+                  top: placement.top === null ? "auto" : placement.top,
+                  bottom: placement.bottom === null ? "auto" : placement.bottom,
+                  left: placement.left,
+                  maxHeight: placement.maxHeight,
+                  maxWidth: placement.maxWidth,
+                }
+              : undefined
+          }
+        >
           {projects.map((p) => {
             const linked = linkedIds.has(p.id);
             const isOpen = expandedPid === p.id;
