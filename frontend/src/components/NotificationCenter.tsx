@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../api";
 import { fmtWhen, timestampMs } from "../lib/format";
 import { getLang, useT } from "../lib/i18n";
@@ -75,6 +76,8 @@ export function NotificationCenter({
     { id: string; busy: boolean; message: string } | null
   >(null);
   const ref = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const [panelPos, setPanelPos] = useState<{ top: number; right: number } | null>(null);
   const commentsSupportedRef = useRef(true);
   const commentsLoadSeqRef = useRef(0);
   // 공지(시스템 알림) 조회 세대 — 읽음 처리가 세대를 올려 진행 중이던 조회 응답을 버린다(코덱스 레인B P2).
@@ -211,8 +214,22 @@ export function NotificationCenter({
     setCategoryOpen(false);
     setConfirmUpdateId(null);
   }, []);
-  useOutsideMouseDown(ref, close, open);
+  // 패널은 body 로 옮겨 그린다(아래 createPortal) — 상단바 안에 있으면 모달 막에 덮인다.
+  //  그래서 바깥클릭 판정에 패널 자신도 함께 넘긴다. 안 그러면 패널 안을 눌러도 닫힌다.
+  useOutsideMouseDown(ref, close, open, panelRef);
   useEscapeClose(close, open, true, true);
+  // 벨 자리 기준 위치(옛 CSS 의 top: calc(100% + 9px) / right: 0 과 같은 자리).
+  //  상단바가 sticky 라 스크롤로는 안 움직이고, 창 크기만 따라간다.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const r = ref.current?.getBoundingClientRect();
+      if (r) setPanelPos({ top: Math.round(r.bottom + 9), right: Math.round(window.innerWidth - r.right) });
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open]);
 
   const allItems = useMemo<CenterItem[]>(() => {
     const mixed: CenterItem[] = [
@@ -450,8 +467,13 @@ export function NotificationCenter({
         )}
       </button>
 
-      {open && (
-        <section className="notification-panel" aria-label={t("알림 센터")}>
+      {open && panelPos && createPortal(
+        <section
+          className="notification-panel"
+          ref={panelRef}
+          style={{ top: panelPos.top, right: panelPos.right }}
+          aria-label={t("알림 센터")}
+        >
           <header className="notification-head">
             {/* 카테고리 드롭다운 — 전체 알림 / 코멘트 / 시스템(업데이트) */}
             <div className="notification-cat">
@@ -600,7 +622,8 @@ export function NotificationCenter({
             </div>
           )}
           {error && <div className="notification-error" role="status">{error}</div>}
-        </section>
+        </section>,
+        document.body,
       )}
     </div>
   );

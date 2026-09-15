@@ -106,8 +106,12 @@
   background: var(--accent); color: var(--accent-ink); font-size: 9px; font-weight: 900;
   line-height: 1; font-variant-numeric: tabular-nums;
 }
+/* body 로 옮겨 그린다(NotificationCenter 가 createPortal) — 상단바(z-index 21) 안에 두면
+   생성 결과 창의 어두운 막(.scene-varpop-backdrop, 30)에 통째로 덮여, 흐려지는 것은 물론
+   패널을 눌러도 막이 클릭을 먹어 닫혔다. 위치는 벨 rect 로 인라인 지정한다.
+   400 = 계정 팝업(.acct-pop)과 같은 층, 앱의 모든 막(최대 360)보다 위. */
 .notification-panel {
-  position: absolute; top: calc(100% + 9px); right: 0; z-index: 75;
+  position: fixed; z-index: 400;
   width: min(380px, calc(100vw - 24px)); overflow: hidden;
   background: var(--panel, #1c1c22); border: 1px solid var(--border2); border-radius: 13px;
   box-shadow: 0 18px 50px rgba(0,0,0,0.62);
