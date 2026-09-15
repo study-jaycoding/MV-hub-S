@@ -279,7 +279,7 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 | `download.ts` | `download`·`downloadName`(파일 내려받기, 공용) |
 | `commentTree.ts` | `buildCommentTree<T>`(코멘트 부모-자식 트리 계산, 공용) |
 | `useClickSeparation.ts` | 단일/더블클릭 220ms 분리 훅 + 언마운트 타이머 정리(공용) |
-| `components/spotlight/useSpotlightSubmit.ts` | Spotlight 입력 정규화·생성 요청·배치 제출 흐름. `App`은 ref의 `submit` 계약만 사용 |
+| `components/spotlight/useSpotlightSubmit.ts` | Spotlight 입력 정규화·생성 요청·배치 제출 흐름. `App`은 ref의 `submit` 계약만 사용. 연결 Text의 `promptDerived`는 성공 후 입력을 유지한다. 일반 입력도 제출 시점과 컨텍스트·직렬화 파트가 같을 때만 비운다. 요청 대기 중 다른 카드/공간으로 갔다 돌아오면 같은 내용이어도 보존한다. 히스토리 저장 후에는 DOM 유지 여부와 무관하게 탐색 위치만 초기화한다 |
 | `useSceneHistory.ts` | 씬별 커밋 기준선·undo/redo·생성 결과 이력 보정. 화면 상태는 `SceneBoard`가 유지 |
 | `useSceneKeyboardShortcuts.ts` / `sceneKeyboard.ts` | 캔버스 단축키 리스너 생명주기 / 입력 대상·키 의도 순수 판정 |
 | `useSceneDragSession.ts` / `sceneDragSession.ts` | 전역 드래그 리스너·프레임 합치기 / React 비의존 드래그 세션 생명주기 |
