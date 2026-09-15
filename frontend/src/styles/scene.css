@@ -160,9 +160,9 @@
 }
 /* 형광 — 흰색을 섞으면 파스텔로 바래서 '켜진' 느낌이 안 난다.
    색상(h)은 그대로 두고 밝기(l)를 조금, 채도(c)를 크게 올려 네온처럼 만든다. */
-@supports (color: oklch(from red calc(l + 0.1) calc(c * 1.7) h)) {
+@supports (color: oklch(from red calc(l + 0.1) calc(c * 2.2) h)) {
   .scene-group.selected {
-    --g-lit: oklch(from var(--g-base) calc(l + 0.10) calc(c * 1.7) h);
+    --g-lit: oklch(from var(--g-base) calc(l + 0.10) calc(c * 2.2) h);
   }
 }
 .scene-group.selected .scene-group-hd {
