@@ -245,7 +245,7 @@
 }
 .lib-ws-btn:hover { color: var(--text); }
 /* 켜짐은 옅은 라임 — 무엇이 걸렸는지는 왼쪽 칩이 말하므로 버튼까지 꽉 채우면 과하다. */
-.lib-ws-btn.on { color: var(--accent); background: rgba(196,232,74,0.14); border-color: var(--accent); }
+.lib-ws-btn.on { color: var(--accent); background: rgba(var(--accent-rgb),0.14); border-color: var(--accent); }
 .lib-ws-menu {
   position: absolute; top: 30px; right: 0; z-index: 60;
   display: grid; gap: 2px; padding: 6px;
@@ -260,7 +260,7 @@
   background: transparent; color: var(--text); cursor: pointer;
 }
 .lib-ws-item:hover { background: rgba(255,255,255,0.06); }
-.lib-ws-item.on { background: rgba(196,232,74,0.12); }
+.lib-ws-item.on { background: rgba(var(--accent-rgb),0.12); }
 .lib-ws-item.on .lib-ws-item-name, .lib-ws-item.on .lib-ws-all { color: var(--accent); font-weight: 700; }
 .lib-ws-item-name, .lib-ws-all { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lib-ws-note {
@@ -529,7 +529,7 @@
 /* 드래그 마퀴(선택 사각형) */
 .assets-marquee {
   position: absolute; z-index: 5; pointer-events: none;
-  background: rgba(196, 232, 74, 0.16);
+  background: rgba(var(--accent-rgb), 0.16);
   border: 1px solid var(--accent);
   border-radius: 2px;
 }
@@ -665,7 +665,7 @@
 .info-head-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
 .info-board-btn {
   font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 8px;
-  border: 1px solid var(--accent); background: var(--grad-soft, rgba(196,232,74,0.12));
+  border: 1px solid var(--accent); background: var(--grad-soft, rgba(var(--accent-rgb),0.12));
   color: var(--accent); cursor: pointer; white-space: nowrap;
 }
 .info-board-btn:hover { background: var(--grad); color: var(--accent-ink); }

@@ -225,7 +225,7 @@
   height: 13px;
   border-radius: 50%;
   background: var(--accent, #bef264);
-  box-shadow: 0 0 6px rgba(196, 232, 74, 0.5);
+  box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.5);
 }
 
 /* 알약형 프롬프트 바 — 웹 편집기의 'Describe how to edit image...' 한 줄 입력.

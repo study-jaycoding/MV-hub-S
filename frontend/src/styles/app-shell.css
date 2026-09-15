@@ -59,7 +59,7 @@
   border-radius: 999px;
   color: var(--text);
 }
-.search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(196,232,74,0.18); }
+.search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),0.18); }
 .topbar input { user-select: text; -webkit-user-select: text; }
 .topbar .sync { margin-left: auto; background: rgba(255,255,255,0.05); }
 
@@ -639,7 +639,7 @@
   border-radius: 999px;
   color: var(--muted);
 }
-.spotlight-trigger:hover { border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 3px rgba(196,232,74,0.14); }
+.spotlight-trigger:hover { border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),0.14); }
 .spotlight-trigger .st-icon {
   background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
   font-size: 15px;
@@ -662,7 +662,7 @@
   color: var(--text);
 }
 .assets-btn:hover { border-color: var(--border2); }
-.assets-btn.on { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(196, 232, 74, 0.16); }
+.assets-btn.on { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16); }
 /* Assets 폴더 아이콘은 FolderIcon 컴포넌트(SVG) — 버튼 안에서 세로 중앙 정렬만 담당. */
 .assets-btn svg { display: block; flex-shrink: 0; }
 .assets-label { font-size: 13px; font-weight: 500; }

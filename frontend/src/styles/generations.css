@@ -81,7 +81,7 @@
 .card:hover {
   transform: translateY(-3px);
   border-color: var(--border2);
-  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(196,232,74,0.25);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(var(--accent-rgb),0.25);
 }
 .card-thumb {
   position: relative;

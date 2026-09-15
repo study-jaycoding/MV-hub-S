@@ -1,11 +1,11 @@
-﻿/* ── 히스토리(가계) ── */
+/* ── 히스토리(가계) ── */
 /* 카드 ⑂ 버튼의 파생·사용 수 뱃지(GenerationThumbOverlay) */
 .lineage-count { font-size: 11px; font-weight: 800; }
 
 /* 미리보기 헤더의 '구성에서 보기'·다운로드 버튼(MediaPreview 공용) */
 .lin-board-btn {
   margin-left: auto; font-size: 12px; font-weight: 700; padding: 5px 11px; border-radius: 9px;
-  border: 1px solid var(--accent); background: var(--grad-soft, rgba(196,232,74,0.12)); color: var(--accent); cursor: pointer;
+  border: 1px solid var(--accent); background: var(--grad-soft, rgba(var(--accent-rgb),0.12)); color: var(--accent); cursor: pointer;
 }
 .lin-board-btn:hover { background: var(--grad); color: var(--accent-ink); }
 
@@ -30,7 +30,7 @@
 .linb-zoombtn:hover { color: var(--text); border-color: var(--accent); }
 .linb-marquee {
   position: absolute; z-index: 5; pointer-events: none;
-  background: rgba(196, 232, 74, 0.16);
+  background: rgba(var(--accent-rgb), 0.16);
   border: 1px solid var(--accent);
   border-radius: 2px;
 }
@@ -40,7 +40,7 @@
 .linb-edge.ref { stroke: #8ea0ff; opacity: 0.7; stroke-dasharray: 5 4; }
 .linb-edge.dim { opacity: 0.12; }
 /* 메인 라인(원본→최신 파생): 굵은 강조선 — 선택과 무관하게 항상 표시(생성 순서 한눈에) */
-.linb-edge.main { stroke: var(--accent); stroke-width: 3.6; opacity: 1; stroke-linecap: round; filter: drop-shadow(0 0 4px rgba(196,232,74,0.5)); }
+.linb-edge.main { stroke: var(--accent); stroke-width: 3.6; opacity: 1; stroke-linecap: round; filter: drop-shadow(0 0 4px rgba(var(--accent-rgb),0.5)); }
 /* 선택 → 원본 경로: 두꺼운 흰 선(메인 라인보다 위에 그려져 선택이 가장 잘 보임) */
 .linb-edge.hl { stroke: #fff; stroke-width: 5; opacity: 1; stroke-linecap: round; filter: drop-shadow(0 0 3px rgba(255,255,255,0.6)); }
 /* 비활성(회색) — 노드/엣지 모두. hl(흰선)보다 우선해야 하므로 !important */
@@ -56,7 +56,7 @@
 .linb-refnode:hover { border-color: #8ea0ff; }
 .linb-refnode-hd {
   flex: none; font-size: 10px; font-weight: 800; letter-spacing: 0.03em; color: var(--accent);
-  padding: 3px 7px; background: rgba(196, 232, 74, 0.10); border-bottom: 1px solid var(--border2);
+  padding: 3px 7px; background: rgba(var(--accent-rgb), 0.10); border-bottom: 1px solid var(--border2);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .linb-refnode-body {
@@ -142,7 +142,7 @@
   background: rgba(8,9,12,0.92); backdrop-filter: blur(2px);
 }
 .linb-node.root { border-color: #ffd24a; }
-.linb-node.focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(196,232,74,0.3), 0 3px 14px rgba(0,0,0,0.5); }
+.linb-node.focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),0.3), 0 3px 14px rgba(0,0,0,0.5); }
 /* 선택 카드 — 라임 테두리 + 살짝 확대(시인성). 위로 떠오르게 z-index. */
 .linb-node.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent); transform: scale(1.14); z-index: 7; }
 /* 선택 경로 위의 노드(조상) — 흰 테두리로 강조, 나머지는 흐리게 */
@@ -233,7 +233,7 @@
 }
 .linb-node:hover .linb-sf { opacity: 0; }
 /* 메인 라인 위의 노드 — 절제된 accent 글로우(생성 순서 강조). 선택/포커스(더 강한 강조)는 그대로 우선. */
-.linb-node.mainline { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(196,232,74,0.5), 0 3px 12px rgba(0,0,0,0.45); }
+.linb-node.mainline { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb),0.5), 0 3px 12px rgba(0,0,0,0.45); }
 /* 생성 순번 뱃지 — 좌상단 원형(원본 태그와 안 겹치게 살짝 아래). 라임 배경엔 검은 글씨(--accent-ink). */
 .linb-seq {
   position: absolute; top: 5px; left: 5px; z-index: 2;

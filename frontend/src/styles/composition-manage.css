@@ -1,4 +1,4 @@
-﻿/* ── 구성/합성 보드 ── */
+/* ── 구성/합성 보드 ── */
 .compose { flex: 1; display: flex; min-height: 0; }
 .compose-tray {
   width: 176px; flex: 0 0 176px;
@@ -18,7 +18,7 @@
   border-radius: 9px; overflow: hidden; background: #050608;
   border: 1px solid var(--border);
 }
-.tray-item:hover { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(196,232,74,0.25); }
+.tray-item:hover { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb),0.25); }
 .tray-item img, .tray-item video { width: 100%; height: 100%; object-fit: cover; display: block; }
 .tray-add {
   position: absolute; right: 4px; bottom: 4px;
@@ -57,7 +57,7 @@
   background: #050608;
   touch-action: none;
 }
-.board-item:hover { box-shadow: 0 12px 36px rgba(0,0,0,0.6), 0 0 0 1px rgba(196,232,74,0.4); }
+.board-item:hover { box-shadow: 0 12px 36px rgba(0,0,0,0.6), 0 0 0 1px rgba(var(--accent-rgb),0.4); }
 .board-item:active { cursor: grabbing; }
 .board-item img, .board-item video {
   width: 100%; height: 100%; object-fit: cover; display: block;
@@ -1237,7 +1237,7 @@ table.dash-tree td.l { text-align: left; }
 .credit-pool-grid .tone-warn strong { color: var(--credit-warn); }
 .credit-pool-grid .tone-bad strong { color: var(--credit-bad); }
 .credit-pct { display: inline-block; min-width: 44px; text-align: center; border-radius: 999px; padding: 2px 8px; font-weight: 600; font-size: 11px; background: rgba(255,255,255,.08); }
-.credit-pct.tone-ok { background: rgba(196,232,74,.18); color: var(--accent); }
+.credit-pct.tone-ok { background: rgba(var(--accent-rgb),.18); color: var(--accent); }
 .credit-pct.tone-warn { background: rgba(240,192,74,.18); color: var(--credit-warn); }
 .credit-pct.tone-bad { background: rgba(240,106,90,.2); color: var(--credit-bad); }
 .credit-mini { height: 5px; border-radius: 3px; background: rgba(255,255,255,.08); width: 90px; display: inline-block; vertical-align: middle; margin-left: 8px; overflow: hidden; }
@@ -1262,7 +1262,7 @@ table.dash-tree td.l { text-align: left; }
 .credit-chart text.warn { fill: var(--credit-warn); }
 .credit-chart .grid { stroke: var(--usage-line); stroke-width: 1; }
 .credit-chart .month-line { stroke: rgba(255,255,255,.22); stroke-width: 1; stroke-dasharray: 3 4; }
-.credit-chart .area { fill: rgba(196,232,74,.14); }
+.credit-chart .area { fill: rgba(var(--accent-rgb),.14); }
 .credit-chart .line { fill: none; stroke: var(--accent); stroke-width: 2.5; }
 .credit-chart .projection { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 5; opacity: .7; }
 .credit-chart .dot { fill: var(--accent); }

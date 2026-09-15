@@ -1,4 +1,4 @@
-﻿/* ── 스포트라이트 (project-viewer 형태 — 하단 도킹 바) ── */
+/* ── 스포트라이트 (project-viewer 형태 — 하단 도킹 바) ── */
 /* 항상 떠 있는 하단 도크 — 화면을 가리지 않게 pointer-events 는 도크에만. */
 .sl-dockbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
@@ -207,7 +207,7 @@
   vertical-align: middle; margin: 0 2px;
   padding: 2px 6px 2px 3px; border-radius: 9px;
   /* 소스 칩 — 프롬프트 텍스트와 확실히 구분되게 accent 톤 알약(시인성). */
-  background: rgba(196, 232, 74, 0.13); border: 1px solid rgba(196, 232, 74, 0.45);
+  background: rgba(var(--accent-rgb), 0.13); border: 1px solid rgba(var(--accent-rgb), 0.45);
   user-select: none; cursor: grab;
 }
 
@@ -225,10 +225,10 @@
 /* 썸네일 있으면 이모지 아이콘 숨김(img 로 대체). 아래 타입별 ::before 보다 우선순위를 높여야
    순서와 무관하게 확실히 숨겨진다(2-클래스 스코프). */
 .sl-tok.sl-tok-has-thumb::before { content: none; }
-.sl-tok-image { background: rgba(196, 232, 74, 0.16); border-color: rgba(196, 232, 74, 0.5); color: var(--accent); }
+.sl-tok-image { background: rgba(var(--accent-rgb), 0.16); border-color: rgba(var(--accent-rgb), 0.5); color: var(--accent); }
 .sl-tok-image::before { content: "🖼"; }
 .sl-tok-start,
-.sl-tok-end { background: rgba(196, 232, 74, 0.16); border-color: rgba(196, 232, 74, 0.5); color: var(--accent); }
+.sl-tok-end { background: rgba(var(--accent-rgb), 0.16); border-color: rgba(var(--accent-rgb), 0.5); color: var(--accent); }
 .sl-tok-start::before { content: "⏮"; }
 .sl-tok-end::before { content: "⏭"; }
 .sl-tok-video { background: rgba(96, 165, 250, 0.16); border-color: rgba(96, 165, 250, 0.55); color: #9ec5ff; }
@@ -244,7 +244,7 @@
 .ch-chip-dropbar {
   position: fixed; width: 2px; background: var(--accent); border-radius: 1px;
   z-index: 200; pointer-events: none; display: none;
-  box-shadow: 0 0 6px rgba(196, 232, 74, 0.7);
+  box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.7);
 }
 .inline-ref img {
   width: 20px; height: 20px; border-radius: 5px; object-fit: cover; display: block;
@@ -294,7 +294,7 @@
   background: transparent; color: var(--muted); font-size: 12px; font-weight: 600;
 }
 .sl-type-btn:hover { color: var(--text); }
-.sl-type-btn.active { background: var(--grad); color: var(--accent-ink); font-weight: 700; box-shadow: 0 3px 12px rgba(196, 232, 74, 0.35); }
+.sl-type-btn.active { background: var(--grad); color: var(--accent-ink); font-weight: 700; box-shadow: 0 3px 12px rgba(var(--accent-rgb), 0.35); }
 
 /* 칩 (모델/비율) */
 .sl-chip-wrap { position: relative; }
@@ -305,7 +305,7 @@
   color: var(--text); font-size: 12.5px; font-weight: 500;
 }
 .sl-chip:hover { border-color: var(--border2); }
-.sl-chip.active { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(196, 232, 74, 0.16); }
+.sl-chip.active { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16); }
 .sl-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
 .sl-caret { color: var(--muted); font-size: 16px; }
 /* 옵션 칩 라벨을 아이콘으로 — 텍스트 라벨 길이로 줄바꿈되던 것 해소(한 줄 유지) */
@@ -353,7 +353,7 @@
   cursor: pointer; font: inherit; color: inherit;
   transition: border-color 0.12s, background 0.12s;
 }
-.inline-ref-btn:hover { border-color: var(--accent); background: rgba(196, 232, 74, 0.18); }
+.inline-ref-btn:hover { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.18); }
 /* Generate 버튼 예상 크레딧 배지 */
 .sl-cost {
   display: inline-flex; align-items: center; min-width: 18px; height: 18px;
@@ -389,7 +389,7 @@
 .sl-dd-item:hover { background: rgba(255, 255, 255, 0.06); }
 .sl-dd-item.sel {
   color: #fff; font-weight: 600;
-  background: rgba(196, 232, 74, 0.12); box-shadow: inset 0 0 0 1px var(--accent);
+  background: rgba(var(--accent-rgb), 0.12); box-shadow: inset 0 0 0 1px var(--accent);
 }
 .sl-dd-item.sel::before { border-color: var(--accent); background: var(--accent); }
 .sl-dd-item.sel::after {
@@ -401,7 +401,7 @@
 .sl-chip.dirty { border-color: var(--accent); color: #fff; }
 .sl-adv-dot {
   width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
-  box-shadow: 0 0 6px rgba(196, 232, 74, 0.8); margin-left: 2px;
+  box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.8); margin-left: 2px;
 }
 /* 고급 팝오버 — 파라미터별 풀 라벨 + 값 버튼(값만으론 의미 모호한 것 해소) */
 .sl-adv-pop { min-width: 260px; max-width: 340px; }
@@ -447,9 +447,9 @@
   height: 40px; padding: 0 22px; border: none; border-radius: 22px;
   background: var(--grad); color: var(--accent-ink); font-size: 14px; font-weight: 800;
   display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0;
-  box-shadow: 0 6px 22px rgba(196, 232, 74, 0.35);
+  box-shadow: 0 6px 22px rgba(var(--accent-rgb), 0.35);
 }
-.sl-gen:hover:not(:disabled) { box-shadow: 0 8px 28px rgba(196, 232, 74, 0.45); }
+.sl-gen:hover:not(:disabled) { box-shadow: 0 8px 28px rgba(var(--accent-rgb), 0.45); }
 .sl-gen:active { transform: scale(0.97); }
 .sl-gen:disabled { opacity: 0.55; }
 .sl-sparkle { font-size: 12px; }

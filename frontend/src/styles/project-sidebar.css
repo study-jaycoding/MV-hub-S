@@ -163,7 +163,7 @@
 }
 .folder-tree-row:not(.root) .folder-tree-icon {
   background: linear-gradient(#d8ff43, #8cca18);
-  box-shadow: 0 0 8px rgba(196,232,74,0.18);
+  box-shadow: 0 0 8px rgba(var(--accent-rgb),0.18);
 }
 .folder-tree-row.selected .folder-tree-icon {
   background: linear-gradient(#ff8bbc, #f34c91);
@@ -295,12 +295,12 @@
 }
 .folder-ctx-btn.tone-child {
   background: linear-gradient(#d8ff43, #8cca18);
-  box-shadow: 0 0 8px rgba(196,232,74,0.18);
+  box-shadow: 0 0 8px rgba(var(--accent-rgb),0.18);
 }
 /* '모두 확인' — +N 배지(라임)와 같은 색. 프로젝트 행·폴더 행 공통 */
 .folder-ctx-btn.tone-ack {
   background: linear-gradient(#d8ff43, #8cca18);
-  box-shadow: 0 0 8px rgba(196,232,74,0.18);
+  box-shadow: 0 0 8px rgba(var(--accent-rgb),0.18);
 }
 .folder-ctx-btn:hover { filter: brightness(1.08); }
 .folder-ctx-btn:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
