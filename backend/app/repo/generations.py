@@ -552,7 +552,7 @@ def apply_local_fulfillment(
 #  문구로 '확인중' 라벨을 띄우고, 재조정이 done/failed 로 확정하면 error 를 지우거나 실제 사유로 덮는다.
 VERIFYING_NOTE = "확인중 — 실제 상태 재확인 대기"
 RECOVERY_REQUIRED_NOTE = (
-    "복구 확인 필요 — 외부 제출 여부가 불명확하여 자동 재생성을 차단했습니다"
+    "HF 확인 필요 — 외부 제출 여부가 불명확하여 자동 재생성을 차단했습니다"
 )
 
 

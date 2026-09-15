@@ -11,7 +11,7 @@ import {
 } from "./generationDisplay";
 
 describe("submitDiagnostic", () => {
-  const NOTE = "복구 확인 필요 — 외부 제출 여부가 불명확하여 자동 재생성을 차단했습니다";
+  const NOTE = "HF 확인 필요 — 외부 제출 여부가 불명확하여 자동 재생성을 차단했습니다";
 
   it("상세만 꺼낸다 — 안내 문구는 팝업이 따로 보여주므로 겹치면 안 된다", () => {
     const detail = "CLI 실패: connect ETIMEDOUT";

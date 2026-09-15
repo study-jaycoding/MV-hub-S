@@ -197,7 +197,7 @@ export function InfoPopup({
       <>
         {g.execution_phase === "recovery_required" && (
           <div className="info-recovery">
-            <span className="info-recovery-label">⚠ 복구 확인 필요</span>
+            <span className="info-recovery-label">⚠ HF 확인 필요</span>
             <span className="info-recovery-text">
               {g.recovery_probe_status === "no_match"
                 ? "자동 조사 결과 이 제출로 만들어진 외부 작업이 발견되지 않았습니다. 아래 버튼으로 다시 실행하면 됩니다."
