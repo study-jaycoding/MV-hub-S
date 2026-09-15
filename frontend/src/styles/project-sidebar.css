@@ -244,10 +244,13 @@
   background: var(--panel, #1c1c22); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 8px 28px rgba(0,0,0,0.5);
 }
-/* 프롬프트 숨김(Ctrl+K)으로 선택바가 화면/캔버스 상단에 뜰 때 — 위로 열면 화면 밖으로 잘리므로
-   아래로. (라이브러리=selbar-top-float, 캔버스=scene-topbar-overlay 두 래퍼 모두) */
+/* 선택바가 화면 위쪽에 뜰 때 — 위로 열면 화면 밖으로 잘리므로 아래로 연다.
+   · 프롬프트 숨김(Ctrl+K): 라이브러리=selbar-top-float, 캔버스=scene-topbar-overlay
+   · 변형 팝업('생성 결과 N개'): 액션바가 패널 '위' 절대배치라 화면 꼭대기에 붙는다
+     → 위로 열면 프로젝트 목록이 화면 밖으로 잘려 '미분류로 빼기'만 보였다(2026-09-15 Jay). */
 .selbar-top-float .proj-assign-menu,
-.scene-topbar-overlay .proj-assign-menu { bottom: auto; top: calc(100% + 6px); }
+.scene-topbar-overlay .proj-assign-menu,
+.scene-varpop-actions .proj-assign-menu { bottom: auto; top: calc(100% + 6px); }
 .proj-assign-menu button {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   width: 100%; text-align: left; padding: 7px 10px; border-radius: 7px;

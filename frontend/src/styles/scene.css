@@ -806,21 +806,34 @@
 }
 /* 선택 카드 — 라임 강조 */
 .scene-card.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent); z-index: 5; }
-/* 방금 생성됨 — 라임 glow(맥동)로 '방금 만들어졌다'를 직관 표시. 카드 클릭 시 JS 가 해제. */
+/* 방금 생성됨 — 라임 glow(맥동)로 '방금 만들어졌다'를 직관 표시. 카드 클릭 시 JS 가 해제.
+   ★맥동은 카드의 box-shadow 가 아니라 덧댄 층의 opacity 로 낸다. box-shadow 는 합성만으로
+   끝나지 않아 매 프레임 카드를 다시 그리고, 캔버스가 소수 배율일 때 그 안 글자가 프레임마다
+   다르게 래스터되어 '글씨가 떨린다'. 2026-09-15 실측(Jay 신고): DPR 1.5 에서 글자 채널 차이
+   98/255(눈에 보이는 크기), 이 애니메이션만 끄면 모든 배율에서 0. opacity 는 합성으로 끝난다. */
 .scene-card.glow {
   z-index: 4;
-  box-shadow: 0 0 0 2px var(--accent), 0 0 20px 5px rgba(210, 255, 60, 0.55);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+/* 결과 노드가 든 카드는 아래 has-node 규칙이 box-shadow 를 지운다. 종전에는 애니메이션 선언이
+   일반 선언을 이겨 링이 남았으므로, 링을 더 높은 선택자로 되살려 보이는 모습을 맞춘다. */
+.scene-card.has-node.glow { box-shadow: 0 0 0 2px var(--accent); }
+/* z-index:-1 — 카드 내용과 포트(연결 원) 위로 덮이지 않게, 종전 box-shadow 와 같은 순서로 그린다. */
+.scene-card.glow::after {
+  content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 26px 7px rgba(210, 255, 60, 0.78);
   animation: scene-card-glow 1.4s ease-in-out infinite;
 }
 @keyframes scene-card-glow {
-  0%, 100% { box-shadow: 0 0 0 2px var(--accent), 0 0 14px 3px rgba(210, 255, 60, 0.45); }
-  50% { box-shadow: 0 0 0 2px var(--accent), 0 0 26px 7px rgba(210, 255, 60, 0.78); }
+  0%, 100% { opacity: 0.4; }  /* 종전 맥동의 가장 어두운 지점과 밝기를 맞춘다 */
+  50% { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .scene-card.glow { animation: none; }
+  .scene-card.glow::after { animation: none; opacity: 0.8; }
 }
 /* 앱 설정 '모션 끄기'도 존중(OS 설정과 별개 축) — 누락 보완 */
-.reduce-motion .scene-card.glow { animation: none; }
+.reduce-motion .scene-card.glow::after { animation: none; opacity: 0.8; }
 /* 생성중(결과 없는) 생성 카드는 완성 카드처럼 자체 테두리(파랑) 유지 + 라임 '링'만 — 통짜 라임 방지 */
 .scene-card-gen.sel:not(.has-node) { border-color: #2b3a55; }
 /* 결과가 든 생성 카드 = 히스토리 노드(.linb-node)가 뼈대를 대체 → 카드 자체 테두리/배경 제거.
