@@ -1,0 +1,22 @@
+/* Resolve 확인 표시 전용. 직접 선택(.selected)·일괄 작업 상태는 변경하지 않는다. */
+.gen-cell:has(> .card.resolve-highlighted) { content-visibility: visible; }
+.gen-cell .card.resolve-highlighted,
+.gen-cell .card.resolve-highlighted:hover {
+  border-color: #ff304f;
+  box-shadow: 0 0 0 2px #ff304f, 0 0 18px 5px rgba(255, 48, 79, 0.72);
+  animation: none;
+  transform: none;
+  filter: none; /* 비활성 상태는 보존하되 확인 중인 빨간 강조까지 회색으로 바꾸지 않는다. */
+}
+.gen-cell .card.resolve-highlighted::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  pointer-events: none; z-index: 7;
+  box-shadow: inset 0 0 0 2px #ff304f;
+}
+/* 조회 위치는 생성 목적지의 기존 selected/sel-target 스타일과 별개로 표시한다. */
+.project-tree-scroll .viewed-resolve,
+.project-tree-scroll .resolve-viewed-path {
+  box-shadow: inset 0 0 0 1px #ff304f;
+  background: rgba(255, 48, 79, 0.14);
+}
+.resolve-viewed-path { overflow-wrap: anywhere; border-radius: 6px; padding: 6px 8px; }

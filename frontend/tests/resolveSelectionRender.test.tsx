@@ -1,10 +1,14 @@
 // @vitest-environment jsdom
-import { act, StrictMode, useRef, useState } from "react";
+import { act, forwardRef, StrictMode, useCallback, useRef, useState, type ComponentProps } from "react";
 import { readFileSync } from "node:fs";
 import { URL as NodeURL } from "node:url";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Scene } from "../src/lib/scenes";
 import type { ResolveSceneSelectionTarget } from "../src/lib/resolveSelection";
+import type { Filters, Generation, GenQuery, Project } from "../src/types";
+import { isLocatedQuery, type GenerationLocation, type GenerationLocationRequest } from "../src/lib/resolveLibraryLocation";
+import type { SpotlightPromptHandle } from "../src/components/SpotlightPrompt";
+import type { PromptProps } from "./seedanceRenderHarness";
 import { createRenderRoot, installPromptBoundaryMocks, settle } from "./seedanceRenderHarness";
 
 const fixture: Scene = {
@@ -18,6 +22,20 @@ const otherScene: Scene = {
 let view: ReturnType<typeof createRenderRoot>;
 let boundary: ReturnType<typeof installPromptBoundaryMocks>;
 let style: HTMLStyleElement;
+let locateGenerations: ReturnType<typeof vi.fn<(request: GenerationLocationRequest) => Promise<GenerationLocation>>>;
+let gridSnapshot: ComponentProps<typeof import("../src/components/ThumbnailGrid").ThumbnailGrid> | null;
+let promptSnapshot: PromptProps | null;
+let librarySnapshot: { filters: Filters; genQuery: GenQuery; projectWorkspaceId?: string } | null;
+let sidebarSnapshot: ComponentProps<typeof import("../src/components/FilterSidebar").FilterSidebar> | null;
+let refreshProjects: () => void;
+const libraryHighlightedIds = () => [...(gridSnapshot?.resolveHighlightedIds || [])];
+const libraryGeneration = (id: string): Generation => ({
+  id, status: "done", prompt: id, assets: [], tags: [], auto_tags: [], references: [],
+  shared: true, deleted: false, is_mine: true, workspace_scope: "team", workspace_id: "view-workspace",
+  project_id: id.startsWith("other") ? "other-project" : "resolve-project",
+  project_name: id.startsWith("other") ? "Other project" : "Resolve project",
+  folder_path: "episode/shot", created_at: "2026-09-16T00:00:00Z",
+} as Generation);
 const request = (generation: string | string[] = "target", openPopup = true, nonce = 1, sceneId = fixture.id,
   extra: Partial<ResolveSceneSelectionTarget> = {}): ResolveSceneSelectionTarget =>
   ({ sceneId, generationId: Array.isArray(generation) ? generation[0] ?? "" : generation,
@@ -55,6 +73,14 @@ beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
   boundary = installPromptBoundaryMocks();
+  gridSnapshot = null; promptSnapshot = null; librarySnapshot = null; sidebarSnapshot = null;
+  refreshProjects = () => {};
+  locateGenerations = vi.fn().mockImplementation(async ({ gen_ids }: GenerationLocationRequest) => {
+    const first = gen_ids[0] ? libraryGeneration(gen_ids[0]) : null;
+    const items = first ? gen_ids.map(libraryGeneration).filter((item) => item.project_id === first.project_id) : [];
+    return { items, focus_ids: items.map((item) => item.id), project_id: first?.project_id || null, folder_path: first?.folder_path || null };
+  });
+  Object.assign(boundary.api, { locateGenerations });
   boundary.api.getGenerationsBatch.mockResolvedValue({ materials: {}, missing: [], items: Object.fromEntries(
     ["representative", "target", "other", "other-target"].map((id) => [id, { id, status: "done", prompt: id, assets: [], tags: [] }]),
   ) } as never);
@@ -329,13 +355,11 @@ it("복수 선택으로 새 씬을 열고 단일 선택으로 바뀌면 마지�
 });
 
 // App의 실제 라우팅·이벤트 수신과 SceneBoard를 함께 시험한다. IO와 주변 화면만 대체한다.
-function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id) {
+function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id, initialProjects: Project[] = []) {
   const noop = () => {};
   for (const [path, names] of [
-    ["../src/components/FilterSidebar", ["FilterSidebar"]],
     ["../src/components/sidebar/CanvasFolderSidebar", ["CanvasFolderSidebar"]],
     ["../src/components/LibraryToolbar", ["LibraryToolbar"]],
-    ["../src/components/ThumbnailGrid", ["ThumbnailGrid"]],
     ["../src/components/scene/SceneBar", ["SceneBar"]],
     ["../src/components/app/AppOverlays", ["AppOverlays"]],
     ["../src/components/app/SelectionActionBar", ["BoardSelectionActionBar", "LibrarySelectionActionBar"]],
@@ -343,6 +367,21 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
   ] as const) {
     vi.doMock(path, () => Object.fromEntries(names.map((name) => [name, () => null])));
   }
+  vi.doMock("../src/components/FilterSidebar", () => ({ FilterSidebar: (props: NonNullable<typeof sidebarSnapshot>) => {
+    sidebarSnapshot = props;
+    return <output data-testid="viewed-folder">{JSON.stringify(props.viewedFolder)}</output>;
+  } }));
+  vi.doMock("../src/components/ThumbnailGrid", () => ({ ThumbnailGrid: (props: NonNullable<typeof gridSnapshot>) => {
+    gridSnapshot = props;
+    return <output data-testid="library-highlight">{JSON.stringify([...props.resolveHighlightedIds || []])}</output>;
+  } }));
+  vi.doMock("../src/components/SpotlightPrompt", async () => {
+    const actual = await vi.importActual<typeof import("../src/components/SpotlightPrompt")>("../src/components/SpotlightPrompt");
+    return { ...actual, SpotlightPrompt: forwardRef<SpotlightPromptHandle, PromptProps>((props, ref) => {
+      promptSnapshot = props;
+      return <actual.SpotlightPrompt {...props} ref={ref} />;
+    }) };
+  });
   vi.doMock("../src/components/TopBar", () => ({
     TopBar: ({ filters }: { filters: { tab: string } }) => <output data-testid="tab">{filters.tab}</output>,
   }));
@@ -367,18 +406,32 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
     },
   }));
   vi.doMock("../src/lib/useGenerationLibraryData", () => ({
-    useGenerationLibraryData: () => ({
-      gens: [], setGens: noop, gensRef: useRef([]), facets: { tags: [], auto_tags: [], models: [] }, setFacets: noop,
-      filtersRef: useRef({ tab: "my" }), projectsLoadedRef: useRef(true), projects: [],
+    useGenerationLibraryData: (args: NonNullable<typeof librarySnapshot>) => {
+      librarySnapshot = args;
+      const [gens, setGens] = useState<Generation[]>([]);
+      const [location, setLocation] = useState<{ tab: "my" | "team"; value: GenerationLocation } | null>(null);
+      const [projects, setProjects] = useState(initialProjects);
+      refreshProjects = () => setProjects((previous) => [...previous]);
+      const revealLocated = useCallback((tab: "my" | "team", value: GenerationLocation) => {
+        setLocation({ tab, value }); setGens(value.items);
+      }, []);
+      const filtersRef = useRef(args.filters); filtersRef.current = args.filters;
+      const gensRef = useRef(gens); gensRef.current = gens;
+      return {
+      gens, setGens, gensRef, facets: { tags: [], auto_tags: [], models: [] }, setFacets: noop,
+      filtersRef, projectsLoadedRef: useRef(true), projects,
+      revealLocated, locatedVisibleIds: new Set(gens.map((item) => item.id)),
+      isLocatedView: !!location && isLocatedQuery(args.genQuery, location.tab, location.value),
       stats: { has_unread: false, failed_count: 0, unread_count: 0 }, loading: false, loadingMore: false,
       hasMore: false, loadError: null, archivedCount: 0, unassignedCount: 0, loadMore: noop, beginComposeList: noop,
       reload: noop, reloadIfStale: noop,
-    }),
+    };
+    },
   }));
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
 }
 
-it.each(["my", "team"])("%s 탭: 해제 시 유지하고 체크 시 첫 Resolve 신호로 캔버스와 선택을 함께 표시한다", async (tab) => {
+it.each(["my", "team"])("%s 탭: 체크 시 캔버스 대신 현재 탭의 대상 폴더와 카드를 표시한다", async (tab) => {
   installAppBoundaries();
   localStorage.setItem("ch.lib.filtersV2", JSON.stringify({ tab, __v: "2" }));
   const settings = await import("../src/lib/resolveSelectionSettings");
@@ -394,8 +447,60 @@ it.each(["my", "team"])("%s 탭: 해제 시 유지하고 체크 시 첫 Resolve 
   act(() => settings.saveResolveSelectionFollow(true));
   act(() => send("on"));
   await settle();
-  expect(view.container.querySelector('[data-testid="tab"]')?.textContent).toBe("compose");
-  expect(selectedIds()).toEqual(["target"]);
+  expect(view.container.querySelector('[data-testid="tab"]')?.textContent).toBe(tab);
+  expect(view.container.querySelector(".scene-varpop-item")).toBeNull();
+  expect(libraryHighlightedIds()).toEqual(["target"]);
+  expect(librarySnapshot?.filters).toEqual({ tab, project_id: "resolve-project", folder_path: "episode/shot" });
+  expect(gridSnapshot?.resolveScrollRequest?.generationId).toBe("target");
+  expect(gridSnapshot?.selectedIds.size).toBe(0);
+  expect(locateGenerations).toHaveBeenLastCalledWith(expect.objectContaining({ tab, gen_ids: ["target"] }));
+});
+
+it("App: 자동 조회는 모든 보기 필터만 해제하며 없는 프로젝트의 위치와 기존 생성 설정을 유지한다", async () => {
+  installAppBoundaries([fixture], fixture.id, [{ id: "generation-project", name: "생성 프로젝트", count: 0 } as Project]);
+  const generationScope = { project_id: "generation-project", folder_path: "next/clip" };
+  const armedFolder = { projectId: "generation-project", path: "next/clip" };
+  const workspace = { scope: "team", id: "generation-workspace", name: "생성 팀" };
+  localStorage.setItem("ch.workspaceContext", JSON.stringify(workspace));
+  localStorage.setItem("ch.lib.filtersV2", JSON.stringify({
+    tab: "my", ...generationScope, q: "hidden", model: "hidden-model", creator_uid: "hidden-creator",
+    workspace_ids: ["hidden-workspace"], deleted_only: true, include_deleted: true, __v: "2",
+  }));
+  localStorage.setItem("ch.lib.armedFolder", JSON.stringify(armedFolder));
+  localStorage.setItem("ch.lib.armedAutoTags", JSON.stringify(["다음 생성 태그"]));
+  localStorage.setItem("ch.lib.colorFilter", JSON.stringify(["red"]));
+  localStorage.setItem("ch.lib.tagFilter", JSON.stringify(["hidden-tag"]));
+  localStorage.setItem("ch.lib.typeFilter", "video");
+  for (const key of ["sharedOnly", "commentOnly", "finalOnly", "grayOn"]) localStorage.setItem(`ch.lib.${key}`, "1");
+  const { default: App } = await import("../src/App");
+  act(() => view.root.render(<StrictMode><App /></StrictMode>));
+  await settle();
+  expect(promptSnapshot?.activeProjectId).toBe("generation-project");
+  act(() => window.dispatchEvent(new CustomEvent("ch:resolve-selection", { detail: { generationId: "target", selectionId: "scope-follow" } })));
+  await settle();
+  const locatedFilters = { tab: "my", project_id: "resolve-project", folder_path: "episode/shot" };
+  expect(librarySnapshot?.filters).toEqual(locatedFilters);
+  expect(librarySnapshot?.genQuery).toMatchObject({ ...locatedFilters, colors: [], tags: [], auto_tags: [] });
+  const { tab: _tab, project_id: _project, folder_path: _folder, ...queryFilters } = librarySnapshot!.genQuery;
+  expect(Object.values(queryFilters).every((value) => Array.isArray(value) ? value.length === 0 : !value)).toBe(true);
+  expect(libraryHighlightedIds()).toEqual(["target"]);
+  expect(sidebarSnapshot?.viewedFolder).toMatchObject({ projectId: "resolve-project", projectName: "Resolve project", path: "episode/shot" });
+  // 현재 생성 워크스페이스의 프로젝트 목록에는 조회 프로젝트가 없다. 재조회가 도착해도 지우지 않는다.
+  expect(sidebarSnapshot?.projects.some((project) => project.id === "resolve-project")).toBe(false);
+  act(() => refreshProjects());
+  await settle();
+  expect(librarySnapshot?.filters).toEqual(locatedFilters);
+  expect(libraryHighlightedIds()).toEqual(["target"]);
+  expect(librarySnapshot?.projectWorkspaceId).toBe("generation-workspace");
+  expect(promptSnapshot?.activeProjectId).toBe("generation-project");
+  expect(promptSnapshot?.armedFolder).toEqual(armedFolder);
+  expect(promptSnapshot?.armedAutoTags).toEqual(["다음 생성 태그"]);
+  expect(promptSnapshot?.workspace).toEqual(workspace);
+  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual(generationScope);
+  expect(JSON.parse(localStorage.getItem("ch.lib.filterAutoTagsV1")!)).toEqual([]);
+  expect(JSON.parse(localStorage.getItem("ch.lib.armedAutoTags")!)).toEqual(["다음 생성 태그"]);
+  for (const key of ["sharedOnly", "commentOnly", "finalOnly", "grayOn"]) expect(localStorage.getItem(`ch.lib.${key}`)).toBe("0");
+  expect(boundary.api.prepareCreate).not.toHaveBeenCalled();
 });
 
 async function mountApp(tab = "compose") {
@@ -441,13 +546,54 @@ it("App: 열린 창이 없으면 복수 선택의 현재 씬 일치를 첫 ID보
   expect(view.container.querySelectorAll(".scene-varpop")).toHaveLength(1);
 });
 
-it("App: 현재 씬 일치와 열린 창이 없으면 복수 선택의 다른 씬 한 묶음만 연다", async () => {
+it("App 작업 공간: 복수 선택도 캔버스를 열지 않고 해당 폴더에서 모두 강조한다", async () => {
   const send = await mountApp("my");
   act(() => send(["other", "other-target"]));
   await settle();
-  expect(view.container.querySelector('[data-testid="tab"]')?.textContent).toBe("compose");
-  expect(resolveHighlightedIds()).toEqual(["other", "other-target"]);
-  expect(view.container.querySelectorAll(".scene-varpop")).toHaveLength(1);
+  expect(view.container.querySelector('[data-testid="tab"]')?.textContent).toBe("my");
+  expect(libraryHighlightedIds()).toEqual(["other", "other-target"]);
+  expect(librarySnapshot?.filters).toEqual({ tab: "my", project_id: "other-project", folder_path: "episode/shot" });
+  expect(view.container.querySelectorAll(".scene-varpop")).toHaveLength(0);
+});
+
+it("App 공유·리뷰: 미공유 응답은 이전 빨강만 지우고 탭·폴더·직접 선택을 그대로 둔다", async () => {
+  const send = await mountApp("team");
+  act(() => send(["target"]));
+  await settle();
+  act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
+  const filters = librarySnapshot!.filters;
+  locateGenerations.mockResolvedValueOnce({
+    items: [{ ...libraryGeneration("other"), shared: false }], focus_ids: ["other"],
+    project_id: "other-project", folder_path: "episode/shot",
+  });
+  act(() => send(["other"]));
+  await settle();
+  expect(librarySnapshot?.filters).toEqual(filters);
+  expect(libraryHighlightedIds()).toEqual([]);
+  expect(gridSnapshot?.selectedIds).toEqual(new Set(["target"]));
+  expect(gridSnapshot?.resolveScrollRequest).toBeNull();
+  expect(view.container.querySelector('[data-testid="tab"]')?.textContent).toBe("team");
+  expect(view.container.querySelector(".scene-varpop")).toBeNull();
+});
+
+it("App 작업 공간 체크 OFF: 지금 보이는 카드만 강조하고 다른 위치는 열지 않는다", async () => {
+  const send = await mountApp("my");
+  act(() => send(["target"]));
+  await settle();
+  const settings = await import("../src/lib/resolveSelectionSettings");
+  act(() => settings.saveResolveSelectionFollow(false));
+  await settle();
+  const filters = librarySnapshot!.filters;
+  act(() => send(["target"]));
+  await settle();
+  expect(libraryHighlightedIds()).toEqual(["target"]);
+  expect(gridSnapshot?.resolveScrollRequest).toBeNull();
+  act(() => send(["other"]));
+  await settle();
+  expect(libraryHighlightedIds()).toEqual([]);
+  expect(librarySnapshot?.filters).toEqual(filters);
+  expect(gridSnapshot?.generations.map((item) => item.id)).toEqual(["target"]);
+  expect(view.container.querySelector(".scene-varpop")).toBeNull();
 });
 
 it.each(["my", "team"])("App %s: 빈 배열과 상한 초과 신호는 자동 탭·씬 이동이나 창 열기가 없다", async (tab) => {
@@ -461,7 +607,7 @@ it.each(["my", "team"])("App %s: 빈 배열과 상한 초과 신호는 자동 �
   expect(view.container.querySelector(".scene-varpop")).toBeNull();
   act(() => send(["target"]));
   await settle();
-  expect(resolveHighlightedIds()).toEqual(["target"]);
+  expect(libraryHighlightedIds()).toEqual(["target"]);
 });
 
 it("App: 상한 초과 신호도 열린 창에서는 교집합을 표시하고 빈 배열은 라임 선택을 보존한다", async () => {
@@ -503,9 +649,9 @@ it.each([{}, { generationIds: ["target"], truncated: true, selectedCount: 201 }]
     });
     await settle();
     expect(view.container.querySelector(".scene-varpop")).toBeNull();
-    openResults();
-    await settle();
-    expect(selectedIds()).toEqual([]);
+    expect(view.container.querySelector('[data-testid="tab"]')?.textContent).toBe("my");
+    expect(libraryHighlightedIds()).toEqual([]);
+    expect(librarySnapshot?.filters.project_id).toBeUndefined();
   },
 );
 

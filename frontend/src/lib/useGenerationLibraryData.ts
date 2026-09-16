@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { api, GEN_PAGE } from "../api";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { api, GEN_PAGE, type GenCursor } from "../api";
+import { isLocatedQuery, locatedItems, mergeLocatedGenerations, type GenerationLocation } from "./resolveLibraryLocation";
 import { EMPTY_FACETS } from "./appConstants";
 import { beginLibraryReload, finishLibraryReload } from "./librarySync";
 import { startLibraryRequests } from "./libraryRequestPlan";
@@ -8,6 +9,7 @@ import type { Facets, Filters, GenQuery, GenStats, Generation, Project } from ".
 
 interface UseGenerationLibraryDataArgs {
   authReady: boolean;
+  authKey?: string;
   filters: Filters;
   flash: (message: string) => void;
   genQuery: GenQuery;
@@ -26,6 +28,7 @@ type GenerationTabCacheEntry = {
   hasMore: boolean;
   sig: string;
   loadedAt: number;
+  cursor?: GenCursor | null;
 };
 
 export function generationTabCacheIsFresh(
@@ -39,6 +42,7 @@ export function generationTabCacheIsFresh(
 
 export function useGenerationLibraryData({
   authReady,
+  authKey = "",
   filters,
   flash,
   genQuery,
@@ -46,6 +50,11 @@ export function useGenerationLibraryData({
   composeListEnabled = false,
 }: UseGenerationLibraryDataArgs) {
   const [gens, setGens] = useState<Generation[]>([]);
+  const [locatedReload, setLocatedReload] = useState(0);
+  const [locatedVisibleIds, setLocatedVisibleIds] = useState<ReadonlySet<string> | null>(null);
+  // Resolve의 오래된 대상은 페이지 밖에서도 보이지만, 다음 페이지 커서는 그 대상을 따라가지 않는다.
+  const pageCursorRef = useRef<GenCursor | null>(null);
+  const locatedRef = useRef<{ tab: "my" | "team"; location: GenerationLocation } | null>(null);
   const [facets, setFacets] = useState<Facets>(EMPTY_FACETS);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -87,13 +96,38 @@ export function useGenerationLibraryData({
   const pendingArgsRef = useRef<{ silent: boolean; light: boolean } | null>(null);
   const pendingResolversRef = useRef<Array<() => void>>([]);
 
+  const authScope = JSON.stringify([authKey, authReady]);
+  const authScopeRef = useRef(authScope);
+  const resetAuthRef = useRef(false);
+  if (authScopeRef.current !== authScope) {
+    authScopeRef.current = authScope;
+    resetAuthRef.current = true;
+    reloadSeqRef.current++;
+    locatedRef.current = null;
+    tabCacheRef.current = {};
+    pageCursorRef.current = null;
+    lastLoadedTabRef.current = null;
+    projectsLoadedRef.current = false;
+  }
+  useLayoutEffect(() => {
+    if (!resetAuthRef.current) return;
+    resetAuthRef.current = false;
+    gensRef.current = [];
+    setGens([]);
+    setProjects([]);
+    setFacets(EMPTY_FACETS);
+    setHasMore(false);
+    setLoadError(null);
+    setLocatedVisibleIds(null);
+  }, [authScope]);
+
   // 목록이 바뀌면(삭제·태그·컬러·추가 로드 등) 현재 탭 캐시도 동기화 —
   // 탭을 오갔다 돌아와도 방금 편집한 결과가 캐시 화면에 그대로 보이게.
   useEffect(() => {
     const t = lastLoadedTabRef.current;
     if (!t) return;
     const c = tabCacheRef.current[t];
-    if (c) tabCacheRef.current[t] = { ...c, gens, hasMore };
+    if (c) tabCacheRef.current[t] = { ...c, gens, hasMore, cursor: pageCursorRef.current };
   }, [gens, hasMore]);
 
   // ★탭이 바뀌면 '그 자리에서' 화면 컨텍스트를 전환 — 진행 중 reload(코얼레싱 큐)가 끝나길 기다리면
@@ -108,14 +142,44 @@ export function useGenerationLibraryData({
     const cached = tabCacheRef.current[tab];
     if (cached && cached.sig === sig) {
       setGens(cached.gens);
+      pageCursorRef.current = cached.cursor ?? null;
       setHasMore(cached.hasMore);
       setLoading(false);
     } else {
       setGens([]);
+      pageCursorRef.current = null;
       setHasMore(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters.tab]);
+
+  const queryKey = JSON.stringify(genQuery);
+  useEffect(() => {
+    const located = locatedRef.current;
+    if (located && !isLocatedQuery(genQueryRef.current, located.tab, located.location)) {
+      delete tabCacheRef.current[located.tab];
+      locatedRef.current = null;
+      setLocatedVisibleIds(null);
+    }
+  }, [queryKey]);
+
+  const revealLocated = useCallback((tab: "my" | "team", location: GenerationLocation) => {
+    const sameView = isLocatedQuery(genQueryRef.current, tab, location);
+    const items = locatedItems(location, tab);
+    locatedRef.current = { tab, location: { ...location, items } };
+    setLocatedVisibleIds(new Set(items.map((item) => item.id)));
+    reloadSeqRef.current++;
+    lastLoadedTabRef.current = tab; // 왕복 중 탭 전환도 기존 즉시 전환 가드를 유지한다.
+    // 같은 위치여도 캐시 때문에 권한 재검증을 건너뛰지 않는다.
+    delete tabCacheRef.current[tab];
+    if (!sameView) {
+      pageCursorRef.current = null;
+      setHasMore(false);
+    }
+    setGens((previous) => mergeLocatedGenerations(sameView ? previous : [], items));
+    setLoadError(null);
+    if (sameView) setLocatedReload((value) => value + 1);
+  }, []);
 
   const runReload = useCallback(async (silent: boolean, light: boolean) => {
     if (!authReadyRef.current) return;
@@ -174,16 +238,37 @@ export function useGenerationLibraryData({
         light ? null : () => api.facets(scope),
         light ? null : () => api.projects(scope, false, workspaceId),
       );
+      const located = locatedRef.current;
+      // 共有解除・削除・移動は毎回の通常更新と一緒に再確認。古い注入カードを復活させない。
+      const locationCheck = located && isLocatedQuery(query, located.tab, located.location)
+        ? api.locateGenerations({
+            tab: located.tab, gen_ids: located.location.focus_ids,
+            project_id: located.location.project_id || "none",
+            folder_path: located.location.folder_path,
+          }).catch(() => null)
+        : Promise.resolve(null);
       try {
-        const g = await list;
+        const [page, checked] = await Promise.all([list, locationCheck]);
         if (seq !== reloadSeqRef.current) return;
+        const last = page[page.length - 1];
+        pageCursorRef.current = last ? { ts: last.sort_ts ?? 0, id: last.id } : null;
+        let g = page;
+        if (located && located === locatedRef.current && isLocatedQuery(query, located.tab, located.location)) {
+          const valid = checked && isLocatedQuery(query, located.tab, checked)
+            ? locatedItems(checked, located.tab) : [];
+          const oldIds = new Set(located.location.focus_ids);
+          // locate만 일시 실패해도 정상 목록에서 확인된 행은 보존하되 Resolve 강조는 해제한다.
+          g = checked ? mergeLocatedGenerations(page.filter((item) => !oldIds.has(item.id)), valid) : page;
+          setLocatedVisibleIds(new Set(valid.map((item) => item.id)));
+        }
         setGens((prev) => reconcileArrayState(prev, g));
-        setHasMore(g.length >= GEN_PAGE);
+        setHasMore(page.length >= GEN_PAGE);
         setLoadError(null);
         lastLoadedTabRef.current = tab;
         tabCacheRef.current[tab] = {
           gens: g,
-          hasMore: g.length >= GEN_PAGE,
+          hasMore: page.length >= GEN_PAGE,
+          cursor: pageCursorRef.current,
           sig,
           loadedAt: Date.now(),
         };
@@ -284,10 +369,16 @@ export function useGenerationLibraryData({
     [reload],
   );
 
+  useEffect(() => {
+    if (locatedReload) void reload(true, true);
+  }, [locatedReload, reload]);
+
   // 캔버스 '폴더 보기' 창이 열릴 때 — 이전 탭(내 작업·팀) 카드가 남아 있으므로 비우되, 먼저 목록 소유 탭을 compose 로
   //  넘긴다. 그냥 setGens([]) 하면 위 캐시 동기화 effect 가 이전 탭 캐시를 빈 목록으로 덮어, 창을 닫고 15초 안에
   //  라이브러리로 돌아오면 '최신' 빈 캐시를 믿고 조회를 건너뛴다(코덱스 2차 P2).
   const beginComposeList = useCallback(() => {
+    locatedRef.current = null;
+    pageCursorRef.current = null;
     lastLoadedTabRef.current = "compose";
     setGens([]);
     setHasMore(false);
@@ -307,15 +398,16 @@ export function useGenerationLibraryData({
       if (trashMode) {
         batch = await api.listTrash(genQueryRef.current.search, gensRef.current.length);
       } else {
-        const last = gensRef.current[gensRef.current.length - 1];
-        const cursor = last ? { ts: last.sort_ts ?? 0, id: last.id } : null;
-        batch = await api.listGenerations(listQuery(), cursor);
+        batch = await api.listGenerations(listQuery(), pageCursorRef.current);
       }
       if (seq !== reloadSeqRef.current) return; // 다른 탭/쿼리로 바뀐 뒤 도착한 이전 컨텍스트 페이지
+      const last = batch[batch.length - 1];
+      if (last) pageCursorRef.current = { ts: last.sort_ts ?? 0, id: last.id };
       // ★gens 누적 캡(A5)은 넣지 않는다(코덱스 리뷰로 폐기): 앞부분 트림이 휴지통 offset 페이지네이션·
       //  virtua 스크롤 앵커·focusIdx(인덱스 기반)·선택 Set 을 동시에 깨뜨린다. 항목당 메타 수 KB 뿐이고
       //  진짜 메모리(썸네일 비트맵·DOM)는 가상 스크롤이 이미 상한 — 실이득 대비 회귀 위험이 커서 제외.
       setGens((prev) => {
+        if (locatedRef.current && !trashMode) return mergeLocatedGenerations(prev, batch);
         const seen = new Set(prev.map((x) => x.id));
         return [...prev, ...batch.filter((x) => !seen.has(x.id))];
       });
@@ -343,6 +435,9 @@ export function useGenerationLibraryData({
     projectsLoadedRef,
     reload,
     reloadIfStale,
+    revealLocated,
+    locatedVisibleIds,
+    isLocatedView: !!locatedRef.current && isLocatedQuery(genQuery, locatedRef.current.tab, locatedRef.current.location),
     setFacets,
     setGens,
     beginComposeList,

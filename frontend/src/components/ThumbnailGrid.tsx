@@ -38,6 +38,9 @@ interface Props {
   layout: "grid" | "list";
   groupByDate: boolean; // 그리드에서 힉스필드 날짜별 섹션 구분
   selectedIds: Set<string>;
+  resolveHighlightedIds?: ReadonlySet<string>; // 확인 표시 전용 — 일괄 작업 선택/Last viewed와 분리
+  resolveScrollRequest?: { generationId: string; nonce: number } | null;
+  onClearResolveHighlight?: () => void;
   onSelectedChange: (next: Set<string>) => void; // 마퀴/클릭 선택 결과(전체 치환)
   onToggleSelect: (id: string) => void; // 리스트 모드 체크박스
   onSetSource: (g: Generation, name: string | null, isSource: boolean) => void;
@@ -79,7 +82,30 @@ interface Props {
 }
 
 export function ThumbnailGrid(props: Props) {
-  const { generations, scale, layout, groupByDate, selectedIds, onSelectedChange } = props;
+  const { generations, scale, layout, groupByDate, selectedIds } = props;
+  const resolveScrollGuardRef = useRef(false);
+  const handledResolveScrollRef = useRef<string | null>(null);
+  const [resolveScrollRelease, setResolveScrollRelease] = useState(0);
+  const releaseResolveScrollGuard = () => {
+    if (!resolveScrollGuardRef.current) return;
+    resolveScrollGuardRef.current = false;
+    // 목록이 짧으면 wheel을 해도 scroll 이벤트가 없다. underfill 검사도 다시 깨운다.
+    setResolveScrollRelease((version) => version + 1);
+  };
+  const onSelectedChange = (next: Set<string>) => {
+    releaseResolveScrollGuard();
+    props.onClearResolveHighlight?.();
+    props.onSelectedChange(next);
+  };
+  const resolveScrollKey = props.resolveScrollRequest
+    ? JSON.stringify([props.resolveScrollRequest.generationId, props.resolveScrollRequest.nonce])
+    : null;
+  // 자동 이동 뒤 바닥/underfill 이벤트로 모든 과거 페이지가 줄줄이 로드되지 않게 한다.
+  // 다음 사용자 스크롤 의도 또는 필터 변경 시 즉시 일반 무한 스크롤로 돌아간다.
+  useLayoutEffect(() => {
+    resolveScrollGuardRef.current = resolveScrollKey !== null &&
+      resolveScrollKey !== handledResolveScrollRef.current;
+  }, [resolveScrollKey, props.resetKey]);
   const isList = layout === "list";
   const t = useT();
   // 팀 탭 '새로 들어옴'(확인 전 글로우) — 카드 클릭으로 확인되면 스토어가 bump → 그 카드만 글로우 해제.
@@ -136,13 +162,15 @@ export function ThumbnailGrid(props: Props) {
     const el = gridRef.current;
     if (!el) return;
     const id = requestAnimationFrame(() => {
-      if (el.scrollHeight <= el.clientHeight + 40) props.onLoadMore?.();
+      if (!resolveScrollGuardRef.current && el.scrollHeight <= el.clientHeight + 40) props.onLoadMore?.();
     });
     return () => cancelAnimationFrame(id);
-  }, [rowModel, props.hasMore, props.loadingMore, props.onLoadMore]);
+  }, [rowModel, props.hasMore, props.loadingMore, props.onLoadMore, resolveScrollRelease]);
 
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
-  const [focusIdx, setFocusIdx] = useState(-1); // 방향키 네비 앵커(그리드 포커스 시)
+  const [focusedGenerationId, setFocusedGenerationId] = useState<string | null>(null);
+  // Resolve 대상 주입·다음 페이지 정렬로 순서가 바뀌어도 방향키/Shift 앵커는 같은 카드를 유지한다.
+  const focusIdx = useMemo(() => generations.findIndex((g) => g.id === focusedGenerationId), [generations, focusedGenerationId]);
   // 카드 인라인 편집(S 이름·# 태그) — 버튼/단축키 공통 진실원. 한 번에 한 카드.
   // (C 코멘트는 인라인이 아니라 공유 스레드 패널 → onOpenComments)
   const [editTarget, setEditTarget] = useState<{ id: string; field: "source" | "tag" } | null>(null);
@@ -168,7 +196,12 @@ export function ThumbnailGrid(props: Props) {
   propsRef.current = props;
   const cb = useMemo(
     () => ({
-      onToggleSelect: (id: string) => propsRef.current.onToggleSelect(id),
+      onToggleSelect: (id: string) => {
+        if (resolveScrollGuardRef.current) setResolveScrollRelease((version) => version + 1);
+        resolveScrollGuardRef.current = false;
+        propsRef.current.onClearResolveHighlight?.();
+        propsRef.current.onToggleSelect(id);
+      },
       onSetSource: (g: Generation, n: string | null, s: boolean) =>
         propsRef.current.onSetSource(g, n, s),
       onSetTags: (g: Generation, tg: string[]) => propsRef.current.onSetTags(g, tg),
@@ -229,6 +262,7 @@ export function ThumbnailGrid(props: Props) {
       fill={props.fill}
       dimDeleted={props.dimDeleted}
       selected={selectedIds.has(generation.id)}
+      resolveHighlighted={props.resolveHighlightedIds?.has(generation.id)}
       editingField={editTarget?.id === generation.id ? editTarget.field : null}
       onRequestEdit={requestEdit}
       onEditDone={editDone}
@@ -265,13 +299,13 @@ export function ThumbnailGrid(props: Props) {
   );
   const dragRef = useRef<{
     x: number; y: number; base: Set<string>; additive: boolean; range: boolean;
-    anchor: number; moved: boolean; cellId: string | null;
+    anchor: string | null; moved: boolean; cellId: string | null;
   } | null>(null);
 
-  // 목록 길이가 줄면 포커스 인덱스를 범위 내로 클램프(매 렌더 리셋 방지 — 길이 변할 때만).
+  // 대상이 실제로 목록에서 빠진 경우만 포커스를 해제한다.
   useEffect(() => {
-    setFocusIdx((f) => (f >= generations.length ? -1 : f));
-  }, [generations.length]);
+    if (focusIdx < 0) setFocusedGenerationId(null);
+  }, [focusIdx]);
 
   // 필터/정렬이 바뀌면(resetKey) 목록이 통째로 달라진다 — 인덱스 기반 포커스와 스크롤 위치를 처음으로
   //  되돌린다(옛 위치는 다른 항목을 가리킴). 첫 마운트는 건너뛴다(불필요한 스크롤 리셋 방지).
@@ -281,16 +315,34 @@ export function ThumbnailGrid(props: Props) {
       resetKeyFirstRef.current = false;
       return;
     }
-    setFocusIdx(-1);
+    setFocusedGenerationId(null);
     gridRef.current?.scrollTo({ top: 0 });
   }, [props.resetKey]);
+
+  // resetKey의 맨 위 이동·열 수 측정 다음 프레임에 대상 행으로 한 번만 이동한다.
+  // 아직 대상이 없으면 행 모델 갱신을 기다린다(과거 페이지를 전부 읽지 않는다).
+  useEffect(() => {
+    const target = props.resolveScrollRequest;
+    if (!target || resolveScrollKey === handledResolveScrollRef.current) return;
+    const generationIndex = generations.findIndex((g) => g.id === target.generationId);
+    const navRow = generationIndex < 0 ? undefined : rowModel.posByGen[generationIndex]?.navRow;
+    if (navRow === undefined) return;
+    const rowIndex = rowModel.rowIndexOfNavRow[navRow];
+    const frame = requestAnimationFrame(() => {
+      if (!vRef.current) return;
+      resolveScrollGuardRef.current = true;
+      vRef.current.scrollToIndex(rowIndex, { align: "nearest" });
+      handledResolveScrollRef.current = resolveScrollKey;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [generations, rowModel, resolveScrollKey, props.resolveScrollRequest]);
 
   // 최신 props 를 ref 로 — 드래그 콜백을 안정 참조로 유지(stale 방지).
   const opsRef = useRef({ generations, onSelectedChange, onPreview: props.onPreview });
   opsRef.current = { generations, onSelectedChange, onPreview: props.onPreview };
   // 드래그 시작 시점의 선택·앵커도 ref 로 — 창 전역 리스너에서 낡은 값을 잡지 않게.
-  const startRef = useRef({ selectedIds, focusIdx });
-  startRef.current = { selectedIds, focusIdx };
+  const startRef = useRef({ selectedIds, focusedGenerationId });
+  startRef.current = { selectedIds, focusedGenerationId };
 
   // 마퀴 히트 계산을 프레임당 1회로 코얼레스(러버밴드 드래그의 mousemove 폭주 → 셀 전체
   // querySelectorAll+getBoundingClientRect 반복을 프레임당 한 번으로).
@@ -338,22 +390,23 @@ export function ThumbnailGrid(props: Props) {
     if (d.cellId) {
       const gens = opsRef.current.generations;
       const clickedIdx = gens.findIndex((g) => g.id === d.cellId);
-      if (d.range && d.anchor >= 0 && clickedIdx >= 0) {
+      const anchorIdx = gens.findIndex((g) => g.id === d.anchor);
+      if (d.range && anchorIdx >= 0 && clickedIdx >= 0) {
         // Shift-클릭 = 앵커~클릭 사이 전부 선택(앵커는 유지 → 연속 Shift-클릭으로 범위 조정).
-        const lo = Math.min(d.anchor, clickedIdx), hi = Math.max(d.anchor, clickedIdx);
+        const lo = Math.min(anchorIdx, clickedIdx), hi = Math.max(anchorIdx, clickedIdx);
         opsRef.current.onSelectedChange(new Set(gens.slice(lo, hi + 1).map((g) => g.id)));
       } else if (d.additive) {
-        setFocusIdx(clickedIdx);
+        setFocusedGenerationId(d.cellId);
         const n = new Set(d.base);
         if (n.has(d.cellId)) n.delete(d.cellId);
         else n.add(d.cellId);
         opsRef.current.onSelectedChange(n);
       } else {
-        setFocusIdx(clickedIdx);
+        setFocusedGenerationId(d.cellId);
         opsRef.current.onSelectedChange(new Set([d.cellId]));
       }
     } else if (!d.additive && !d.range) {
-      setFocusIdx(-1);
+      setFocusedGenerationId(null);
       opsRef.current.onSelectedChange(new Set());
     }
   }, [onDragMove]);
@@ -362,6 +415,7 @@ export function ThumbnailGrid(props: Props) {
   const onGridKeyDown = (e: React.KeyboardEvent) => {
     // 카드 인라인 입력 중엔 무시(타이핑이 그리드 네비/단축키로 새지 않게).
     if ((e.target as HTMLElement).tagName === "INPUT") return;
+    if (/^(Arrow|Page|Home|End| )/.test(e.key)) releaseResolveScrollGuard();
     if (!generations.length) return;
     // 태그(#)·코멘트(c) — 포커스 카드에서 인라인 편집·코멘트(에셋 파트와 동일). 단축키 레지스트리로
     // 매칭(사용자 변경 가능). s 는 생성탭에선 비활성(공유는 카드 S 클릭/오버레이/선택바로만).
@@ -392,8 +446,8 @@ export function ThumbnailGrid(props: Props) {
       // 가상화: DOM 기하 대신 행렬 모델로 이웃 계산(오프스크린 셀도 정확).
       const nxt = focusIdx < 0 ? 0 : navigateGrid(rowModel, cur, e.key);
       if (nxt == null) return;
-      setFocusIdx(nxt);
       const nxtId = generations[nxt]?.id;
+      setFocusedGenerationId(nxtId || null);
       if (e.shiftKey) {
         const n = new Set(selectedIds);
         const curId = generations[cur]?.id;
@@ -426,7 +480,7 @@ export function ThumbnailGrid(props: Props) {
       e.preventDefault();
       onSelectedChange(new Set(generations.map((g) => g.id)));
     } else if (e.key === "Escape") {
-      setFocusIdx(-1);
+      setFocusedGenerationId(null);
       onSelectedChange(new Set());
     }
   };
@@ -441,14 +495,14 @@ export function ThumbnailGrid(props: Props) {
   const beginDrag = useCallback(
     (e: { clientX: number; clientY: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean },
      cellId: string | null) => {
-      const { selectedIds: base, focusIdx: anchorIdx } = startRef.current;
+      const { selectedIds: base, focusedGenerationId: anchorId } = startRef.current;
       dragRef.current = {
         x: e.clientX,
         y: e.clientY,
         base: new Set(base),
         additive: e.ctrlKey || e.metaKey, // Ctrl/Cmd = 개별 토글
         range: e.shiftKey, // Shift = 앵커~클릭 범위 선택
-        anchor: anchorIdx, // mousedown 시점 앵커 캡처(stale 클로저 회피)
+        anchor: anchorId, // mousedown 이후 목록 순서가 바뀌어도 같은 카드로 범위를 잡는다.
         moved: false,
         cellId,
       };
@@ -563,7 +617,7 @@ export function ThumbnailGrid(props: Props) {
   // 바닥 근처면 서버 다음 페이지 요청 — 가상화 후 sentinel 대신 스크롤 메트릭 기반.
   const onGridScroll = () => {
     const el = gridRef.current;
-    if (!el || !props.hasMore || props.loadingMore) return;
+    if (!el || resolveScrollGuardRef.current || !props.hasMore || props.loadingMore) return;
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 800) props.onLoadMore?.();
   };
 
@@ -582,6 +636,9 @@ export function ThumbnailGrid(props: Props) {
         onDragStart={onGridDragStart}
         onKeyDown={onGridKeyDown}
         onScroll={onGridScroll}
+        onWheelCapture={releaseResolveScrollGuard}
+        onTouchStartCapture={releaseResolveScrollGuard}
+        onPointerDownCapture={releaseResolveScrollGuard}
       >
         <div className="gen-grid-head" />
         <Virtualizer

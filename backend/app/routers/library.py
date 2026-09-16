@@ -14,15 +14,15 @@ import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 from starlette.background import BackgroundTask
 
 from . import _proxy
-from .. import deps, rbac, repo
+from .. import active_account, deps, rbac, repo
 from ..config import AUTH_ENABLED, MEDIA_DIR
 from ..deps import (
     account_global_roles,
@@ -33,6 +33,7 @@ from ..deps import (
     require_view_generation,
 )
 from ..models import FacetsOut, GenerationOut
+from ..usecases.generation_locate import locate_generations
 from ..services import file_stamp, media_cache, thumbs
 from ..services.path_safety import safe_join
 from ..services.async_tools import to_thread_non_abandon
@@ -890,6 +891,70 @@ def get_generation(gen_id: str, request: Request):
     require_view_generation(request, gen)
     _prefer_remote_source_urls([gen])
     return gen
+
+
+class GenerationLocateIn(BaseModel):
+    tab: Literal["my", "team"]
+    gen_ids: list[Annotated[str, Field(max_length=200)]] = Field(max_length=200)
+    project_id: Optional[str] = Field(default=None, max_length=200)
+    folder_path: Optional[str] = Field(default=None, max_length=4096)
+
+
+class GenerationLocateOut(BaseModel):
+    items: list[GenerationOut] = Field(max_length=200)
+    focus_ids: list[str] = Field(max_length=200)
+    project_id: Optional[str]
+    folder_path: Optional[str]
+
+
+@router.post("/generations/locate", response_model=GenerationLocateOut)
+def locate_generation_targets(body: GenerationLocateIn, request: Request):
+    """탭을 유지한 Resolve 따라보기용 대상 조회. 폴더 저장·목록 변경·미디어 보존은 하지 않는다."""
+    # sync 라우트는 워커 스레드에서 실행된다. 짧은 전환 락으로 DB 키/uid를 함께 고정하고,
+    # 원격 왕복 중에는 락을 잡지 않는다(계정 전환이 끼어도 새 계정 DB/토큰을 섞지 않음).
+    with active_account.transition_lock:
+        account_key = active_account.account_key() or ""
+        account_uid = active_account.active_uid()
+    account_token = active_account.set_override(account_key)
+    uid_token = active_account.set_uid_override(account_uid)
+    try:
+        team_proxy = body.tab == "team" and _proxy.proxying()
+        viewer_uid = _account_uid(request)
+        member_projects = None
+        if body.tab == "team" and not team_proxy:
+            read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
+                account_global_roles(request), "read_all"
+            )
+            if not read_all:
+                member_projects = repo.my_member_projects(viewer_uid or "\x00")
+
+        def fetch_team(payload):
+            remote = _proxy.proxy_json("POST", "/api/generations/locate", body=payload, timeout=10)
+            # 구서버 미지원/원격 장애는 원래 오류로 종료한다. 로컬 성공 응답으로 대체하지 않는다.
+            try:
+                parsed = GenerationLocateOut.model_validate(remote)
+            except ValidationError:
+                raise HTTPException(502, "공유 서버의 생성물 위치 응답을 확인할 수 없습니다") from None
+            if (
+                parsed.focus_ids != [item.id for item in parsed.items]
+                or any(not item.shared or item.deleted for item in parsed.items)
+            ):
+                raise HTTPException(502, "공유 서버의 생성물 위치 응답을 확인할 수 없습니다")
+            return parsed.model_dump()
+
+        result = locate_generations(
+            tab=body.tab, gen_ids=body.gen_ids, account_uid=viewer_uid,
+            team_member_projects=member_projects,
+            project_id=body.project_id, folder_path=body.folder_path,
+            fetch_team=fetch_team if team_proxy else None,
+        )
+        if team_proxy:
+            _overlay_personal_meta(result["items"], request)
+        _prefer_remote_source_urls(result["items"])
+        return result
+    finally:
+        active_account.reset_uid_override(uid_token)
+        active_account.reset_override(account_token)
 
 
 class GenerationBatchIn(BaseModel):

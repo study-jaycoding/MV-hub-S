@@ -31,6 +31,7 @@ import {
 } from "./components/app/SelectionActionBar";
 import { KEY_COLORS } from "./lib/appConstants";
 import { generationQueryKey } from "./lib/appGenerationQuery";
+import { useResolveLibraryFollow } from "./lib/useResolveLibraryFollow";
 import { generationsByIds, uniqueTagNames } from "./lib/generationTags";
 import { useAppNavigation } from "./lib/useAppNavigation";
 import {
@@ -164,6 +165,7 @@ export default function App() {
     sharedOnly, setSharedOnly, tagFilter, setTagFilter, tagPanelOpen, setTagPanelOpen,
     commentOnly, setCommentOnly, finalOnly, setFinalOnly, grayOn, setGrayOn,
     armedAutoTags, setArmedAutoTags, armedFolder, setArmedFolder,
+    generationScope, filterAutoTags, followLocation, toggleAutoTag, manualRevision,
     workspaceChips, setWorkspaceChips,
     genQuery, selectionResetKey,
   } = useLibraryFilters(LS);
@@ -385,6 +387,7 @@ export default function App() {
   const { clearSelect, selected, selectedRef, setSelected, toggleSelect } = useGenerationSelection({
     resetKey: selectionResetKey,
   });
+  const libraryAuthKey = JSON.stringify([hubAccount?.email, account?.email, account?.creator_uid, sharedSrv?.url]);
   const {
     archivedCount,
     facets,
@@ -400,6 +403,9 @@ export default function App() {
     projectsLoadedRef,
     reload,
     reloadIfStale,
+    revealLocated,
+    locatedVisibleIds,
+    isLocatedView,
     setFacets,
     setGens,
     beginComposeList,
@@ -407,6 +413,7 @@ export default function App() {
     unassignedCount,
   } = useGenerationLibraryData({
     authReady,
+    authKey: libraryAuthKey,
     filters,
     flash,
     genQuery,
@@ -612,7 +619,7 @@ export default function App() {
   // 이게 없으면 compose→내작업 전환 때 즉시 reload 가 안 돌고 3초 폴링이 뒤늦게 채운다(전환 딜레이 원인).
   useEffect(() => {
     void reloadIfStale();
-  }, [serverFilterKey, filters.tab, authReady, reloadIfStale]);
+  }, [serverFilterKey, filters.tab, authReady, libraryAuthKey, reloadIfStale]);
 
   // 프로젝트 미배정 = Supervisor 개념이 없음 → 본인 것이면 최종 가능(백엔드 require_edit 와 일치).
   const canFinalize = (g: Generation) => canFinalizeGeneration(g, finalizeProjects);
@@ -729,6 +736,8 @@ export default function App() {
   // localStorage 에 id 가 남아 재방문 시 빈 화면이 되는 것 방지. 'none'(미분류)은 항상 유효.
   useEffect(() => {
     if (!projectsLoadedRef.current) return; // 첫 로드 전엔 판단 보류
+    // 자동 조회 위치는 재시작 후에도 생성 목적지와 다를 수 있다. 공간 제한 목록만으로 지우지 않는다.
+    if (isLocatedView || filters.project_id !== generationScope.project_id) return;
     const pid = filters.project_id;
     if (pid && pid !== "none" && !projects.some((p) => p.id === pid)) {
       patch({ project_id: undefined });
@@ -736,7 +745,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects]);
 
-  const { addAutoTag, removeAutoTag, toggleArmedAutoTag } = useGenerationAutoTagActions({
+  const { addAutoTag, removeAutoTag } = useGenerationAutoTagActions({
     askPrompt,
     flash,
     reload,
@@ -932,6 +941,17 @@ export default function App() {
     setBoardArrange,
     setFilters,
   });
+  const canFollowResolve = useCallback(() => {
+    if (document.visibilityState !== "visible") return false;
+    try {
+      return localStorage.getItem("ch.resolve-follower-tab") === resolveFollowerTabIdRef.current;
+    } catch { return true; }
+  }, []);
+  const resolveLibrary = useResolveLibraryFollow({
+    filters, enabled: resolveSelectionFollow, authReady,
+    authKey: libraryAuthKey,
+    manualRevision, gens: gridGens, locatedVisibleIds, followLocation, revealLocated, canFollow: canFollowResolve,
+  });
   useCustomEvent(APP_EVENTS.resolveSelection, (event) => {
     // 같은 계정의 여러 탭이 /ws를 받아도 마지막으로 사용한 MV Hub 탭 하나만 화면을 움직인다.
     if (document.visibilityState !== "visible") return;
@@ -955,6 +975,11 @@ export default function App() {
     const selectionId = String(detail?.selectionId || "");
     if (selectionId && resolveSelectionEventRef.current === selectionId) return;
     if (selectionId) resolveSelectionEventRef.current = selectionId;
+    if (filters.tab !== "compose") {
+      setResolveSceneSelection(null);
+      resolveLibrary.receive(generationIds, truncated);
+      return;
+    }
     // 선택 해제·상한 초과·체크 OFF는 현재 창에만 전달한다. 복수 선택도 열린 창을 우선한다.
     const openPopup = resolveSelectionFollow && !truncated && generationIds.length > 0;
     if (!openPopup && filters.tab !== "compose") {
@@ -1420,7 +1445,7 @@ export default function App() {
       // 렌더 노드의 배치수(노드별)로 각 잡을 복제. 없으면 하단 스포트라이트 배치.
       const batch = Math.max(1, batchOverride ?? batchCount);
       const projectId =
-        filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
+        generationScope.project_id && generationScope.project_id !== "none" ? generationScope.project_id : undefined;
       const folderPath =
         armedFolder && armedFolder.projectId === projectId ? armedFolder.path : undefined;
       const jobs: SceneGenerationJobInput[] = [];
@@ -1457,7 +1482,7 @@ export default function App() {
       const cardsById = new Map(scene.cards.map((c) => [c.id, c] as const));
       const resolved = resolvePortEdges(cardsById, scene.edges);
       const projectId =
-        filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
+        generationScope.project_id && generationScope.project_id !== "none" ? generationScope.project_id : undefined;
       const folderPath =
         armedFolder && armedFolder.projectId === projectId ? armedFolder.path : undefined;
       const jobs: SceneGenerationJobInput[] = [];
@@ -1486,11 +1511,11 @@ export default function App() {
   useEffect(() => {
     if (
       armedFolder &&
-      (filters.folder_path !== armedFolder.path || filters.project_id !== armedFolder.projectId)
+      (generationScope.folder_path !== armedFolder.path || generationScope.project_id !== armedFolder.projectId)
     ) {
       setArmedFolder(null);
     }
-  }, [filters.folder_path, filters.project_id, armedFolder, setArmedFolder]);
+  }, [generationScope.folder_path, generationScope.project_id, armedFolder, setArmedFolder]);
   const {
     onColor,
     onFinalize,
@@ -1721,6 +1746,9 @@ export default function App() {
   // 라이브러리 격자 — 라이브러리 탭 본문과 캔버스 '폴더 보기' 창이 같은 요소를 쓴다(동시에 마운트되지 않음).
   const thumbnailGrid = (
     <ThumbnailGrid
+          resolveHighlightedIds={resolveLibrary.highlightedIds}
+          resolveScrollRequest={resolveLibrary.scrollRequest}
+          onClearResolveHighlight={resolveLibrary.clear}
           generations={gridGens}
           disabledIds={effectiveDisabled}
           onBulkGradeStep={onBulkGradeStep}
@@ -2095,8 +2123,9 @@ export default function App() {
                 onToggleFinal={() => setFinalOnly((v) => !v)}
                 grayOn={grayOn}
                 onToggleGray={() => setGrayOn((v) => !v)}
-                armedAutoTags={armedAutoTags}
-                onToggleAutoTag={toggleArmedAutoTag}
+                armedAutoTags={filterAutoTags}
+                onToggleAutoTag={toggleAutoTag}
+                viewedFolder={resolveLibrary.viewedFolder}
                 onAddAutoTag={addAutoTag}
                 onDeleteAutoTag={removeAutoTag}
                 workspaceChips={workspaceChips}
@@ -2165,8 +2194,8 @@ export default function App() {
           armedAutoTags={[...armedAutoTags]}
           armedFolder={armedFolder}
           activeProjectId={
-            filters.project_id && filters.project_id !== "none"
-              ? filters.project_id
+            generationScope.project_id && generationScope.project_id !== "none"
+              ? generationScope.project_id
               : undefined
           }
           workspace={workspaceContext}

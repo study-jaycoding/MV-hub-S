@@ -40,6 +40,7 @@ interface Props {
   layout?: "grid" | "list";
   fill?: boolean;
   selected?: boolean;
+  resolveHighlighted?: boolean;
   onToggleSelect?: (id: string) => void;
   onSetSource: (g: Generation, name: string | null, isSource: boolean) => void; // 인라인 소스 등록
   onSetTags: (g: Generation, tags: string[]) => void; // 인라인 태그 저장
@@ -92,6 +93,7 @@ function GenerationCardImpl({
   fresh = false,
   fill = true,
   selected = false,
+  resolveHighlighted = false,
   onToggleSelect,
   onSetSource, // (생성탭 S는 공유로 전환 — 소스 편집 경로는 사용 안 함, 에디터 호환용으로만 유지)
   onSetTags,
@@ -501,6 +503,7 @@ function GenerationCardImpl({
           "card list" +
           (fill ? "" : " contain") +
           (selected ? " selected" : "") +
+          (resolveHighlighted ? " resolve-highlighted" : "") +
           (gen.is_final ? " final" : "") +
           (fresh ? " fresh" : "") +
           (gen.deleted && dimDeleted ? " deleted" : "")
@@ -601,6 +604,7 @@ function GenerationCardImpl({
         "card card-grid" +
         (fill ? "" : " contain") +
         (selected ? " selected" : "") +
+        (resolveHighlighted ? " resolve-highlighted" : "") +
         (gen.is_final ? " final" : "") +
         (fresh ? " fresh" : "") +
         (gen.deleted && dimDeleted ? " deleted" : "")

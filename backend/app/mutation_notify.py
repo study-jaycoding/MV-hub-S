@@ -39,6 +39,7 @@ _NOTIFY_NO_LIBRARY_CHANGE_PATHS = frozenset(
         "/api/cost",
         "/api/comfy/settings",
         "/api/generations/batch",
+        "/api/generations/locate",
         "/api/generations/comment-counts",
         "/api/ingest/known-jobs",
         "/api/projects/folder-counts/batch",

@@ -72,6 +72,7 @@ def list_generations(
     shared_only: bool = False,  # 팀 공유된 것만(내 작업 탭 내 토글)
     comment_only: bool = False,  # 코멘트가 하나라도 있는 것만
     final_only: bool = False,  # 최종(골드)으로 지정된 것만
+    generation_ids: Optional[Sequence[str]] = None,  # 내부 locate용 PK 제한(None=전체, []=없음)
     limit: int = 500,
     # 키셋(seek) 페이지네이션 커서 — 직전 페이지 마지막 행의 (sort_ts, id). 둘 다 주면 그 뒤부터.
     # OFFSET 을 대체(건너뛴 N행 스캔 제거) → 수만 번째 페이지도 일정 속도.
@@ -85,6 +86,13 @@ def list_generations(
     where: list[str] = []
     args: list[Any] = []
     actor_uid = account_uid if account_uid and account_uid != "\x00" else None
+
+    if generation_ids is not None:
+        ids = list(dict.fromkeys(generation_ids))
+        if not ids:
+            return []
+        where.append(f"g.id IN ({','.join('?' for _ in ids)})")
+        args += ids
 
     if deleted_only:
         where.append("g.deleted_at IS NOT NULL")  # 휴지통 전용 뷰 — 지운 것만

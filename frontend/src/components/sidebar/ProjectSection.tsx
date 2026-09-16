@@ -25,7 +25,7 @@ import {
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { isFolderDisabled, toggleDisabledFolder } from "../../lib/deactivated";
-import { buildFolderCountTree, hasMoreThanFolderNodes } from "../../lib/folderTreeModel";
+import { buildFolderCountTree, hasMoreThanFolderNodes, normalizeFolderPath } from "../../lib/folderTreeModel";
 import { useDisabledFolders } from "../../lib/useDisabledFolders";
 import { APP_EVENTS } from "../../lib/appEvents";
 import { DRAG_TYPES } from "../../lib/dragTypes";
@@ -61,6 +61,7 @@ function SidebarFolderTree({
   counts,
   newCounts,
   selectedPath,
+  viewedPath,
   expanded,
   onToggle,
   onSelect,
@@ -77,6 +78,7 @@ function SidebarFolderTree({
   // 빨간 하이라이트 = 실제 생성 목적지(armedFolder). 서버 저장 selected_path 가 아니라 이걸 쓴다
   // — 무장이 풀리면(기본 라이브러리로 감) 하이라이트도 사라져 '어디로 생성되는지'와 정확히 일치.
   selectedPath?: string;
+  viewedPath?: string;
   expanded: Set<string>;
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
@@ -92,11 +94,27 @@ function SidebarFolderTree({
     if (!state?.tree) return [] as FolderTreeItem[];
     return buildFolderCountTree(visibleProjectFolderRoots(state.tree), counts, newCounts);
   }, [state?.tree, counts, newCounts]);
-  if (!state?.root_path) return null;
-  if (loading && !state.tree) return <div className="side-folder-note">폴더 로딩...</div>;
-  if (state.error) return <div className="side-folder-note error">{state.error}</div>;
-  if (!state.tree) return null;
-  if (!roots.length) return null; // 합성 후에도 비면(디스크·데이터 모두 없음) 트리 숨김
+  const viewedInTree = useMemo(() => {
+    if (!viewedPath) return false;
+    const pending = [...roots];
+    while (pending.length) {
+      const node = pending.pop()!;
+      if (node.path === viewedPath) return true;
+      if (node.children) pending.push(...node.children);
+    }
+    return false;
+  }, [roots, viewedPath]);
+  // 다른 PC의 폴더/아직 안 온 트리 때문에 확인 결과까지 숨기지 않는다.
+  const viewedFallback = viewedPath && (!viewedInTree || !!state?.error || !state?.root_path) ? (
+    <div className="side-folder-note resolve-viewed-path" data-resolve-viewed="true"
+      title="다빈치 확인 위치 — 생성 목적지는 변경하지 않습니다">
+      📁 {viewedPath}
+    </div>
+  ) : null;
+  if (!state?.root_path) return viewedFallback;
+  if (loading && !state.tree) return <>{viewedFallback}<div className="side-folder-note">폴더 로딩...</div></>;
+  if (state.error) return <>{viewedFallback}<div className="side-folder-note error">{state.error}</div></>;
+  if (!state.tree || !roots.length) return viewedFallback;
   // 폴더가 15개를 넘을 때만 스크롤(max-height) 적용 — 적을 땐 스크롤바가 깜빡이지 않게.
   const scroll = hasMoreThanFolderNodes(roots, 15);
   return (
@@ -104,6 +122,7 @@ function SidebarFolderTree({
       <FolderTreeView
         nodes={roots}
         selectedPath={selectedPath || ""}
+        viewedPath={viewedPath}
         expanded={expanded}
         onToggle={onToggle}
         onSelect={onSelect}
@@ -115,6 +134,7 @@ function SidebarFolderTree({
         scroll={scroll}
         className="sidebar-folder-tree"
       />
+      {viewedFallback}
       {state.truncated && <div className="side-folder-note">일부만 표시</div>}
     </div>
   );
@@ -128,6 +148,7 @@ export function ProjectSection({
   tab = "my",
   deletedOnly,
   armedFolder,
+  viewedFolder,
   onFilter,
   onViewDeleted,
   onArmFolder,
@@ -144,6 +165,7 @@ export function ProjectSection({
   deletedOnly: boolean;
   // 실제 생성 목적지(무장 폴더). 폴더 트리의 빨간 하이라이트를 이것에 연동 — 서버 selected_path 아님.
   armedFolder?: { projectId: string; path: string } | null;
+  viewedFolder?: { projectId: string; projectName?: string; path: string; nonce: number } | null;
   onFilter: (projectId?: string) => void;
   onViewDeleted: () => void;
   // 폴더 선택 시 무장(전역변수) — 그 프로젝트로 생성 시 folder_path 로 자동 라벨링
@@ -239,6 +261,51 @@ export function ProjectSection({
   >([]);
   const [expandedFolders, setExpandedFolders] =
     useState<Record<string, Set<string>>>(loadProjectFolderExpansion);
+  const projectTreeRef = useRef<HTMLDivElement>(null);
+  const viewedScrollRef = useRef<{ key: string; kind: "row" | "fallback" | "project" } | null>(null);
+  const viewedProjectId = viewedFolder?.projectId;
+  const viewedPath = viewedFolder ? normalizeFolderPath(viewedFolder.path) : undefined;
+  useEffect(() => {
+    if (!viewedProjectId) return;
+    // 확인 위치를 열어도 다음 생성 폴더와 서버 selected_path는 절대 변경하지 않는다.
+    setCollapsed((previous) => {
+      if (!previous.has(viewedProjectId)) return previous;
+      const next = new Set(previous);
+      next.delete(viewedProjectId);
+      return next;
+    });
+    setExpandedFolders((previous) => {
+      const expanded = new Set(previous[viewedProjectId] || []);
+      const segments = (viewedPath || "").split("/").filter(Boolean);
+      // 숨겨지지 않는 루트 노드(path="")도 조상일 수 있다.
+      expanded.add("");
+      for (let depth = 1; depth < segments.length; depth += 1) expanded.add(segments.slice(0, depth).join("/"));
+      return { ...previous, [viewedProjectId]: expanded };
+    });
+  }, [viewedProjectId, viewedPath, viewedFolder?.nonce]);
+  useEffect(() => {
+    if (!viewedProjectId) return;
+    const frame = requestAnimationFrame(() => {
+      const container = projectTreeRef.current;
+      const project = [...(container?.querySelectorAll<HTMLElement>("[data-project-id]") || [])]
+        .find((element) => element.dataset.projectId === viewedProjectId);
+      const matched = project?.querySelector<HTMLElement>('[data-resolve-viewed="true"]');
+      const target = matched || project?.querySelector<HTMLElement>(".proj-row");
+      if (!target || !container) return;
+      const key = JSON.stringify([viewedProjectId, viewedPath, viewedFolder?.nonce]);
+      const kind = matched?.classList.contains("resolve-viewed-path") ? "fallback"
+        : matched || !viewedPath ? "row" : "project";
+      const previous = viewedScrollRef.current;
+      // 최초 표시 또는 늦게 도착한 실제 폴더 행에만 이동한다. 배지 갱신이 사용자의 스크롤을 뺏지 않는다.
+      if (previous?.key === key && (previous.kind === "row" || previous.kind === kind)) return;
+      viewedScrollRef.current = { key, kind };
+      const bounds = container.getBoundingClientRect();
+      const row = target.getBoundingClientRect();
+      if (row.top < bounds.top) container.scrollTop += row.top - bounds.top;
+      else if (row.bottom > bounds.bottom) container.scrollTop += row.bottom - bounds.bottom;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [viewedProjectId, viewedPath, viewedFolder?.nonce, folders, collapsed, expandedFolders, folderCounts]);
   const projectKey = projects.map((project) => project.id).join("|");
 
   const seedProjectExpansion = (pid: string, state: ProjectFolderState) => {
@@ -532,6 +599,7 @@ export function ProjectSection({
         <h4 className="auto-tag-head">{tr("프로젝트")}</h4>
         <div
           className="proj-list project-tree-scroll"
+          ref={projectTreeRef}
           onWheelCapture={(event) => {
             // Windows/Chromium에서 버튼으로 만든 폴더 행 위의 기본 휠이 누락되는 경우가 있다.
             // 스크롤바 자체는 브라우저 기본 동작을 쓰고, 자식 행 위의 휠만 목록으로 직접 전달한다.
@@ -547,7 +615,7 @@ export function ProjectSection({
             event.stopPropagation();
           }}
         >
-          {order.length === 0 && <span className="muted">{tr("없음")}</span>}
+          {order.length === 0 && !viewedFolder && <span className="muted">{tr("없음")}</span>}
           {order.map((project, index) => {
             const projectActive = activeId === project.id && !deletedOnly;
             // 트리는 캐시로 즉시 그려지는데 링크 목록은 비동기라, 링크 기준으로만 판정하면
@@ -556,13 +624,14 @@ export function ProjectSection({
               !!folders[project.id]?.tree || linkedFolderIds.includes(project.id);
             const isCollapsed = collapsed.has(project.id);
             return (
-              <div key={project.id} className={"proj-tree-wrap" + (projectActive ? " on" : "")}>
+              <div key={project.id} data-project-id={project.id} className={"proj-tree-wrap" + (projectActive ? " on" : "")}>
                 <div
                   role="button"
                   tabIndex={0}
                   className={
                     "proj-row" +
                     (projectActive ? " on" : "") +
+                    (viewedProjectId === project.id && !viewedPath ? " viewed-resolve" : "") +
                     // 이 프로젝트가 활성이면서 그 안의 폴더를 무장하지 않았을 때만 프로젝트 행이 빨강
                     // (=프로젝트 루트가 목적지). 폴더 무장 중이면 빨강은 그 폴더에만.
                     (projectActive && armedFolder?.projectId !== project.id ? " sel-target" : "") +
@@ -656,6 +725,7 @@ export function ProjectSection({
                     selectedPath={
                       armedFolder?.projectId === project.id ? armedFolder.path : ""
                     }
+                    viewedPath={viewedProjectId === project.id ? viewedPath : undefined}
                     expanded={expandedFolders[project.id] || new Set()}
                     onToggle={(path) => toggleProjectFolderNode(project.id, path)}
                     onSelect={(path) => selectFolder(project.id, path)}
@@ -705,6 +775,15 @@ export function ProjectSection({
               </div>
             );
           })}
+          {viewedFolder && !order.some((project) => project.id === viewedFolder.projectId) && (
+            <div className="proj-tree-wrap" data-project-id={viewedFolder.projectId}
+              title="다빈치 확인 위치 — 생성 워크스페이스와 목적지는 변경하지 않습니다">
+              <div className="proj-row viewed-resolve">
+                <span className="proj-name">{viewedFolder.projectName || "다빈치 확인 프로젝트"}</span>
+              </div>
+              {viewedPath && <div className="side-folder-note resolve-viewed-path" data-resolve-viewed="true">📁 {viewedPath}</div>}
+            </div>
+          )}
           {archivedCount > 0 && (
             <div className="proj-archived">
               <button

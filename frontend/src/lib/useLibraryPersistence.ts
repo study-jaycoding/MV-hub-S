@@ -15,6 +15,15 @@ export const LEGACY_FILTERS_KEY = "filters";
  *  따로 두면 한쪽만 저장에 성공했을 때(Store 는 예외를 삼킨다) 둘이 어긋난다:
  *  청소된 filters 저장 실패 + 표식 저장 성공 → 다음 로드에서 옛 잔재가 되살아난다(코덱스 P2). */
 export const FILTERS_FORMAT_KEY = "__v";
+/** 현재 화면 위치와 분리한 다음 생성 목적지. 빈 객체도 유효한 "목적지 없음" 값이다. */
+export const GENERATION_SCOPE_KEY = "generationScopeV1";
+/** 생성물 목록에만 적용하는 전역 태그 필터. 빈 배열도 유효한 저장값이다. */
+export const FILTER_AUTO_TAGS_KEY = "filterAutoTagsV1";
+
+export interface GenerationScope {
+  project_id?: string;
+  folder_path?: string;
+}
 
 interface UseLibraryPersistenceArgs {
   armedAutoTags: Set<string>;
@@ -23,8 +32,10 @@ interface UseLibraryPersistenceArgs {
   workspaceChips: { id: string; name: string }[];
   commentOnly: boolean;
   fill: boolean;
+  filterAutoTags?: Set<string>;
   filters: Filters;
   finalOnly: boolean;
+  generationScope?: GenerationScope;
   grayOn: boolean;
   groupByDate: boolean;
   layout: "grid" | "list";
@@ -43,8 +54,10 @@ export function useLibraryPersistence({
   workspaceChips,
   commentOnly,
   fill,
+  filterAutoTags = new Set<string>(),
   filters,
   finalOnly,
+  generationScope = {},
   grayOn,
   groupByDate,
   layout,
@@ -72,6 +85,14 @@ export function useLibraryPersistence({
   useEffect(() => store.set("grayOn", grayOn ? "1" : "0"), [grayOn, store]);
   useEffect(() => store.setSet("tagFilter", tagFilter), [store, tagFilter]);
   useEffect(() => store.setSet("armedAutoTags", armedAutoTags), [armedAutoTags, store]);
+  useEffect(
+    () => store.setJSON(FILTER_AUTO_TAGS_KEY, [...filterAutoTags]),
+    [filterAutoTags, store],
+  );
+  useEffect(
+    () => store.setJSON(GENERATION_SCOPE_KEY, generationScope),
+    [generationScope, store],
+  );
   // null 도 저장 → loadJSON 이 그대로 null 로 복원(해제 상태 영속).
   useEffect(() => store.setJSON("armedFolder", armedFolder), [armedFolder, store]);
   useEffect(() => store.setJSON("workspaceChips", workspaceChips), [store, workspaceChips]);

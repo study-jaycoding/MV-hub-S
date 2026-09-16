@@ -28,6 +28,7 @@ import { isGenerationWorkspaceReady } from "./lib/workspaceContext";
 import type { CanvasGenerationLink } from "./lib/canvasGenerationRecovery";
 import type { CardHistoryCursor, CardHistoryLink } from "./lib/canvasDetached";
 import { getAccountNamespace } from "./lib/accountScope";
+import type { GenerationLocation, GenerationLocationRequest } from "./lib/resolveLibraryLocation";
 
 export { getAuthToken, jsonFetch, setAuthToken };
 export { connectProgress } from "./lib/progressSocket";
@@ -310,6 +311,10 @@ function putGenComments(genId: string, comments: import("./types").GenComment[])
 }
 
 export const api = {
+  locateGenerations: (request: GenerationLocationRequest) =>
+    jsonFetch<GenerationLocation>("/api/generations/locate", {
+      method: "POST", body: jsonBody(request),
+    }).then((location) => ({ ...location, items: normalizeGenerations(location.items) })),
   // 한 페이지(커서 뒤 limit개)만 받아온다. 무한 스크롤이 호출. cursor=null 이면 첫 페이지.
   // 서버가 모든 필터를 거르므로 반환된 페이지가 곧 화면에 그릴 정확한 결과.
   // `lean_params=1` — 목록 응답에서 `params.prompt` 를 빼 달라는 **명시적 요청**(C-1).

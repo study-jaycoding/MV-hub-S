@@ -14,6 +14,7 @@ export interface FolderTreeItem {
 export function FolderTreeView({
   nodes,
   selectedPath = "",
+  viewedPath,
   expanded,
   onToggle,
   onSelect,
@@ -27,6 +28,7 @@ export function FolderTreeView({
 }: {
   nodes: FolderTreeItem[];
   selectedPath?: string;
+  viewedPath?: string; // 외부 확인 위치 — 생성 목적지(selectedPath)와 독립
   expanded?: Set<string>;
   onToggle?: (path: string) => void;
   onSelect: (path: string) => void;
@@ -52,6 +54,7 @@ export function FolderTreeView({
           node={node}
           depth={0}
           selectedPath={selectedPath}
+          viewedPath={viewedPath}
           expanded={expanded}
           onToggle={onToggle}
           onSelect={onSelect}
@@ -70,6 +73,7 @@ function FolderTreeRow({
   node,
   depth,
   selectedPath,
+  viewedPath,
   expanded,
   onToggle,
   onSelect,
@@ -82,6 +86,7 @@ function FolderTreeRow({
   node: FolderTreeItem;
   depth: number;
   selectedPath: string;
+  viewedPath?: string;
   expanded?: Set<string>;
   onToggle?: (path: string) => void;
   onSelect: (path: string) => void;
@@ -133,11 +138,13 @@ function FolderTreeRow({
           "folder-tree-row" +
           (depth === 0 ? " root" : "") +
           (selected ? " selected" : "") +
+          (viewedPath === node.path ? " viewed-resolve" : "") +
           (disabled ? " disabled" : "") +
           (node.virtual ? " virtual" : "") +
           (dropOver ? " drop-over" : "")
         }
         style={{ paddingLeft: 6 + depth * 14 }}
+        data-resolve-viewed={viewedPath === node.path || undefined}
         title={
           (node.virtual
             ? `${node.path} (팀 데이터 폴더 — 내 디스크엔 없음)`
@@ -221,6 +228,7 @@ function FolderTreeRow({
             node={child}
             depth={depth + 1}
             selectedPath={selectedPath}
+            viewedPath={viewedPath}
             expanded={expanded}
             onToggle={onToggle}
             onSelect={onSelect}
