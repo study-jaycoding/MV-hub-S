@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import time
 from collections import deque
@@ -44,7 +45,7 @@ _LABELS = {
     "generation_journal_write_failed": "생성 이력 저장 실패",
     "audit_journal_write_failed": "감사 기록 저장 실패",
     "audit_change": "중요 설정 변경",
-    "http_request": "HTTP 이상",
+    "http_request": "HTTP 요청 확인 필요",
     "runtime_snapshot_failed": "상태 집계 실패",
 }
 
@@ -52,6 +53,39 @@ _LABELS = {
 def _short_time(value: object) -> str:
     text = str(value or "")
     return text[0:19].replace("T", " ") if text else "-"
+
+
+def _http_request_label(payload: dict[str, Any]) -> str:
+    # 성공 응답도 지연 기준을 넘으면 WARNING이다. 상태 코드로 실패와 구분하되
+    # 로그 등급/임계값은 바꾸지 않는다. 202 등의 정상 응답이 작업 완료를 뜻하지는 않는다.
+    status = payload.get("status")
+    if isinstance(status, str) and status.isascii() and status.isdigit():
+        status = int(status) if len(status) == 3 else None
+    if type(status) is not int:
+        return _LABELS["http_request"]
+    subject = "HTTP"
+    # 요청 원문/쿼리를 출력하지 않고 확인된 작업명만 사용한다.
+    if payload.get("method") == "POST" and payload.get("path") == "/api/db-backup/sets":
+        subject = "DB 백업 업로드"
+    if 200 <= status < 300:
+        return f"{subject} 응답 지연 (정상 응답)"
+    if 300 <= status < 400:
+        return f"{subject} 응답 지연 (3xx 응답)"
+    if 400 <= status < 500:
+        return f"{subject} 요청 오류"
+    if 500 <= status < 600:
+        return f"{subject} 서버 오류"
+    return _LABELS["http_request"]
+
+
+def _http_elapsed(value: Any) -> str:
+    try:
+        elapsed_ms = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return "소요=확인 불가"
+    if isinstance(value, bool) or not math.isfinite(elapsed_ms) or elapsed_ms < 0:
+        return "소요=확인 불가"
+    return f"소요={elapsed_ms / 1000:.2f}초"
 
 
 def format_event(payload: dict[str, Any]) -> str | None:
@@ -97,6 +131,8 @@ def format_event(payload: dict[str, Any]) -> str | None:
     if label is None and level not in {"WARNING", "ERROR", "CRITICAL"}:
         return None
     label = label or event or "운영 이벤트"
+    if event == "http_request":
+        label = _http_request_label(payload)
     details = []
     for key, title in (
         ("generation_id", "생성"),
@@ -130,7 +166,10 @@ def format_event(payload: dict[str, Any]) -> str | None:
     ):
         value = payload.get(key)
         if value not in (None, "", []):
-            details.append(f"{title}={value}")
+            if event == "http_request" and key == "elapsed_ms":
+                details.append(_http_elapsed(value))
+            else:
+                details.append(f"{title}={value}")
     suffix = " | " + " · ".join(details) if details else ""
     return f"[{stamp}] {level:<7} {label}{suffix}"
 

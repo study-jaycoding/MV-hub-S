@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 def _module():
     path = Path(__file__).resolve().parents[2] / "tools" / "log_viewer.py"
@@ -147,6 +149,102 @@ def test_backup_completion_is_visible_with_set_summary():
     assert "백업 완료" in line
     assert "백업파일수=3" in line
     assert "백업크기byte=2048" in line
+
+
+def test_slow_backup_upload_is_successful_response_not_http_error():
+    viewer = _module()
+    payload = {
+        "ts": "2026-09-16T05:02:02+00:00",
+        "level": "WARNING",
+        "event": "http_request",
+        "method": "POST",
+        "path": "/api/db-backup/sets",
+        "status": 200,
+        "elapsed_ms": 1490.71,
+    }
+    original = dict(payload)
+    assert viewer.format_event(payload) == (
+        "[2026-09-16 05:02:02] WARNING DB 백업 업로드 응답 지연 (정상 응답)"
+        " | 상태=200 · 소요=1.49초"
+    )
+    assert payload == original
+
+
+@pytest.mark.parametrize(
+    ("status", "label"),
+    [
+        (200, "HTTP 응답 지연 (정상 응답)"),
+        (202, "HTTP 응답 지연 (정상 응답)"),
+        (204, "HTTP 응답 지연 (정상 응답)"),
+        (302, "HTTP 응답 지연 (3xx 응답)"),
+        (304, "HTTP 응답 지연 (3xx 응답)"),
+        (401, "HTTP 요청 오류"),
+        (403, "HTTP 요청 오류"),
+        (404, "HTTP 요청 오류"),
+        (413, "HTTP 요청 오류"),
+        (429, "HTTP 요청 오류"),
+        (500, "HTTP 서버 오류"),
+        (502, "HTTP 서버 오류"),
+        (503, "HTTP 서버 오류"),
+        ("200", "HTTP 응답 지연 (정상 응답)"),
+    ],
+)
+def test_http_status_is_classified_without_changing_severity(status, label):
+    viewer = _module()
+    level = "ERROR" if str(status).startswith("5") else "WARNING"
+    line = viewer.format_event(
+        {"event": "http_request", "status": status, "level": level, "elapsed_ms": 12}
+    )
+    assert label in line and level in line
+    assert "완료" not in line  # 정상 HTTP 응답은 비동기 작업 완료 보장이 아니다.
+    assert "소요=0.01초" in line
+
+
+@pytest.mark.parametrize("status", [None, "done", {}, [], True, 200.5, "200.0", 0, 600])
+def test_legacy_or_malformed_http_status_is_not_reported_as_success(status):
+    line = _module().format_event(
+        {"event": "http_request", "status": status, "level": "WARNING"}
+    )
+    assert "HTTP 요청 확인 필요" in line
+    assert "정상 응답" not in line
+
+
+@pytest.mark.parametrize("elapsed", ["unknown", {}, True, -1, float("inf"), float("nan")])
+def test_malformed_http_duration_does_not_break_log_viewer(elapsed):
+    line = _module().format_event(
+        {"event": "http_request", "status": 200, "elapsed_ms": elapsed}
+    )
+    assert "소요=확인 불가" in line
+
+
+@pytest.mark.parametrize("method", [None, "GET"])
+def test_backup_path_without_upload_method_is_not_mislabeled(method):
+    line = _module().format_event(
+        {"event": "http_request", "status": 200, "method": method, "path": "/api/db-backup/sets"}
+    )
+    assert "HTTP 응답 지연" in line
+    assert "DB 백업 업로드" not in line
+
+
+def test_http_details_do_not_expose_raw_request_or_exception():
+    line = _module().format_event(
+        {
+            "event": "http_request", "status": 503, "level": "ERROR",
+            "method": "POST", "path": "/api/db-backup/sets?token=private-value",
+            "url": "https://example.test?token=private-value",
+            "exception": "private-exception", "email": "private@example.test",
+        }
+    )
+    assert "HTTP 서버 오류" in line
+    assert "private" not in line
+    assert "DB 백업 업로드" not in line
+
+
+def test_non_http_elapsed_field_keeps_original_format():
+    line = _module().format_event(
+        {"event": "backup_completed", "elapsed_ms": 1490.71}
+    )
+    assert "지연ms=1490.71" in line
 
 
 def test_recent_update_history_is_trimmed_and_bounded(tmp_path):
