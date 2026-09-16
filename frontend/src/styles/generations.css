@@ -879,10 +879,22 @@
 }
 /* Ctrl+K 로 프롬프트를 숨겼을 때 — 멀티선택 액션바를 화면 상단 중앙에 띄운다(상단바 아래). */
 .selbar-top-float {
-  position: fixed; top: 64px; left: 50%; transform: translateX(-50%);
+  /* 가운데부터 자동 폭을 재면 화면의 절반으로 줄어든다. 캔버스처럼 좌우 가용 폭을 쓴다. */
+  position: fixed; top: 64px; left: 0; right: 0; padding: 0 12px;
   z-index: 60; display: flex; justify-content: center;
+  pointer-events: none;
 }
-.selbar-top-float .select-bar { align-self: center; }
+.selbar-top-float .select-bar {
+  align-self: center; flex-wrap: wrap; justify-content: center; max-width: 100%; min-width: 0;
+  pointer-events: auto;
+}
+/* 좁은 창에서는 글자가 아니라 버튼 단위로 접는다. 담기 메뉴 내부의 배치는 건드리지 않는다. */
+.selbar-top-float .select-bar > * { flex-shrink: 0; }
+.selbar-top-float .sb-count,
+.selbar-top-float .select-bar > button,
+.selbar-top-float .proj-assign > button {
+  white-space: nowrap;
+}
 
 .sb-count { font-weight: 700; font-size: 13px; }
 .select-bar button {
