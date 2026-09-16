@@ -1,5 +1,6 @@
 import { isFolderDisabled, type DisabledFolders } from "./deactivated";
 import { t } from "./i18n";
+import { classifyGenerationError, type GenerationIssueCode } from "./generationIssue";
 import type { Generation } from "../types";
 
 // ★문구는 여기서 t() 로 번역해 내보낸다 — 부르는 화면마다 감싸면 한 곳만 빠뜨려도
@@ -59,7 +60,7 @@ const EXECUTION_PHASE_LABEL: Record<string, string> = {
   tracking: "생성 중",
   verifying: "확인 중",
   blocked: "조치 필요",
-  recovery_required: "HF 확인 필요",
+  recovery_required: "제출 확인 필요",
   done: "완료",
   failed: "실패",
   // 삭제로 미제출 요청이 취소된 카드 — 복원해도 대기열로 안 돌아간다(trash.restore_from_trash).
@@ -75,11 +76,91 @@ export function isVerifying(status: string, error: string | null | undefined): b
   return (status === "running" || status === "pending") && !!error && error.includes(VERIFYING_MARK);
 }
 
+const GENERATION_ISSUE_TEXT: Record<GenerationIssueCode, { title: string; detail: string; action: string }> = {
+  group_credit_limit: {
+    title: "크레딧 한도 초과",
+    detail: "워크스페이스 그룹의 월간 크레딧 사용 한도에 도달했습니다.",
+    action: "워크스페이스 관리자에게 그룹 한도 조정을 요청하거나 한도가 초기화될 때까지 기다리세요.",
+  },
+  insufficient_credits: {
+    title: "크레딧 부족",
+    detail: "생성에 필요한 크레딧이 부족하다는 응답을 받았습니다.",
+    action: "Higgsfield에서 이 요청의 계정과 워크스페이스 크레딧 잔액을 확인하세요.",
+  },
+  credit_issue: {
+    title: "크레딧 제한 확인",
+    detail: "크레딧 잔액 또는 사용 한도 관련 오류가 보고되었습니다.",
+    action: "Higgsfield의 크레딧 잔액과 워크스페이스 그룹 한도를 함께 확인하세요.",
+  },
+  auth: {
+    title: "로그인 필요",
+    detail: "Higgsfield 인증을 확인하지 못했습니다.",
+    action: "이 PC의 Higgsfield CLI 로그인 상태를 확인하고 필요한 경우 다시 로그인하세요.",
+  },
+  forbidden: {
+    title: "접근 권한 확인",
+    detail: "요청한 작업에 대한 접근이 거부되었습니다.",
+    action: "선택한 Higgsfield 계정의 워크스페이스 접근 권한과 역할을 관리자에게 확인하세요.",
+  },
+  invalid_input: {
+    title: "입력값 확인",
+    detail: "입력값 또는 레퍼런스를 처리하지 못했습니다.",
+    action: "오류 원문을 참고해 생성 설정과 레퍼런스 파일을 확인하세요.",
+  },
+  rate_limit: {
+    title: "요청 한도 초과",
+    detail: "짧은 시간에 보낸 요청이 서비스 허용량을 초과했습니다.",
+    action: "잠시 기다린 뒤 요청 상태를 확인하세요. 제출 확인이 필요한 요청은 먼저 외부 작업을 확인하세요.",
+  },
+  provider_error: {
+    title: "서비스 오류",
+    detail: "외부 생성 서비스에서 오류 응답을 받았습니다.",
+    action: "서비스 상태와 오류 원문을 확인하세요. 제출 여부가 불명확하면 먼저 외부 작업을 확인하세요.",
+  },
+  network_timeout: {
+    title: "통신 확인 필요",
+    detail: "연결이 끊겼거나 응답을 제때 받지 못했습니다.",
+    action: "네트워크 연결을 확인하세요. 응답이 없어도 작업이 생성됐을 수 있으므로 제출 상태를 먼저 확인하세요.",
+  },
+};
+
+const ACTIVE_EXECUTION_PHASES = new Set([
+  "preparing", "pending", "claimed", "submitting", "tracking", "verifying", "running",
+]);
+
+export interface GenerationIssue {
+  code: GenerationIssueCode;
+  title: string;
+  detail: string;
+  action: string;
+}
+
+// 진단은 표시 전용이다. 재실행 가능 여부는 기존 실행 단계/복구 계약만 판단한다.
+// 성공·취소·차단 및 실제 진행 중인 카드에 오래된 오류가 남아 있어도 실패로 덮지 않는다.
+export function generationIssueFor(
+  status: string,
+  error?: string | null,
+  executionPhase?: string | null,
+): GenerationIssue | null {
+  if (["done", "canceled", "nsfw"].includes(status)) return null;
+  if (executionPhase === "done" || executionPhase === "canceled") return null;
+  if (executionPhase && ACTIVE_EXECUTION_PHASES.has(executionPhase)) return null;
+  if (status !== "failed" && !["failed", "blocked", "recovery_required"].includes(executionPhase || "")) return null;
+  const code = classifyGenerationError(error);
+  if (!code) return null;
+  const text = GENERATION_ISSUE_TEXT[code];
+  return { code, title: t(text.title), detail: t(text.detail), action: t(text.action) };
+}
+
 export function generationStatusLabelFor(
   status: string,
   error?: string | null,
   executionPhase?: string | null,
 ): string {
+  if (status === "done" || status === "nsfw") return generationStatusLabel(status);
+  if (status === "canceled" || executionPhase === "canceled") return t(EXECUTION_PHASE_LABEL.canceled);
+  const issue = generationIssueFor(status, error, executionPhase);
+  if (issue) return issue.title;
   if (executionPhase && EXECUTION_PHASE_LABEL[executionPhase]) return t(EXECUTION_PHASE_LABEL[executionPhase]);
   return isVerifying(status, error) ? t("확인 중") : generationStatusLabel(status);
 }
@@ -93,6 +174,14 @@ export function generationStatusTitle(
   nextCheckAt?: string | null,
 ): string | undefined {
   const details: string[] = [];
+  const issue = generationIssueFor(status, error, executionPhase);
+  if (issue) {
+    details.push(`${issue.title}: ${issue.detail}`);
+    details.push(`${t("해결 방법")}: ${issue.action}`);
+  }
+  if (executionPhase === "recovery_required" && !["done", "canceled", "nsfw"].includes(status)) {
+    details.push(t("자동 재실행 안 함 · 제출 확인 필요"));
+  }
   // 오류 본문(error)은 서버가 만든 글이라 번역하지 않는다 — 여기서는 우리가 붙이는 앞말만 바꾼다.
   if (executionPhase) {
     details.push(`${t("단계")}: ${t(EXECUTION_PHASE_LABEL[executionPhase] || executionPhase)}`);

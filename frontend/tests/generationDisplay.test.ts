@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  generationIssueFor,
   generationStatusLabelFor,
   generationStatusTitle,
 } from "../src/lib/generationDisplay";
@@ -45,7 +46,7 @@ describe("generation execution phase display", () => {
     expect(generationStatusLabelFor("running", null, "verifying")).toBe("확인 중");
     expect(generationStatusLabelFor("running", null, "blocked")).toBe("조치 필요");
     expect(generationStatusLabelFor("running", null, "recovery_required")).toBe(
-      "HF 확인 필요",
+      "제출 확인 필요",
     );
   });
 
@@ -78,7 +79,7 @@ describe("영어로 바꾸면 상태 문구도 영어로 나온다", () => {
     expect(generationStatusLabelFor("running", null, "tracking")).toBe("Generating");
     expect(generationStatusLabelFor("running", null, "verifying")).toBe("Checking");
     expect(generationStatusLabelFor("running", null, "blocked")).toBe("Action needed");
-    expect(generationStatusLabelFor("running", null, "recovery_required")).toBe("Check HF");
+    expect(generationStatusLabelFor("running", null, "recovery_required")).toBe("Submission check needed");
     expect(generationStatusLabelFor("done", null, "done")).toBe("Done");
     expect(generationStatusLabelFor("failed", null, "failed")).toBe("Failed");
   });
@@ -97,5 +98,87 @@ describe("영어로 바꾸면 상태 문구도 영어로 나온다", () => {
     expect(generationStatusLabelFor("running", null, "submitting")).toBe("Submitting");
     setLang("ko");
     expect(generationStatusLabelFor("running", null, "submitting")).toBe("제출 중");
+  });
+});
+
+describe("오류 원인 안내는 상태를 바꾸지 않고 필요한 카드에만 표시한다", () => {
+  const creditError = "CLI 실패: Error: You've reached your monthly workspace group credit limit. Ask your workspace admin to increase the group limit or wait until it resets. — cmd: generate create seedance_2_5 --mode omni_reference";
+  afterEach(() => setLang("ko"));
+
+  it("그룹 사용 한도를 잔액 부족과 구분하고 관리자 조치를 안내한다", () => {
+    const issue = generationIssueFor("running", creditError, "recovery_required");
+    expect(issue?.code).toBe("group_credit_limit");
+    expect(issue?.title).toBe("크레딧 한도 초과");
+    expect(issue?.detail).toContain("월간");
+    expect(issue?.action).toContain("관리자");
+    expect(issue?.action).not.toContain("충전");
+    expect(generationStatusLabelFor("running", creditError, "recovery_required")).toBe("크레딧 한도 초과");
+  });
+
+  it("실패·차단·제출확인에서만 원인을 표시한다", () => {
+    expect(generationIssueFor("failed", creditError)?.code).toBe("group_credit_limit");
+    expect(generationIssueFor("running", creditError, "blocked")?.code).toBe("group_credit_limit");
+    expect(generationIssueFor("running", creditError, "failed")?.code).toBe("group_credit_limit");
+    expect(generationIssueFor("running", creditError)).toBeNull();
+    expect(generationIssueFor("pending", creditError)).toBeNull();
+    expect(generationIssueFor("unknown", creditError)).toBeNull();
+  });
+
+  it("성공·취소·NSFW 상태와 실제 진행 단계는 오래된 오류로 덮지 않는다", () => {
+    for (const status of ["done", "canceled", "nsfw"]) {
+      expect(generationIssueFor(status, creditError, "recovery_required")).toBeNull();
+    }
+    expect(generationStatusLabelFor("done", creditError, "recovery_required")).toBe("완료");
+    expect(generationStatusLabelFor("nsfw", creditError, "recovery_required")).toBe("NSFW 차단");
+    expect(generationStatusLabelFor("failed", creditError, "canceled")).toBe("취소됨");
+    for (const phase of ["preparing", "pending", "claimed", "submitting", "tracking", "verifying", "running", "done", "canceled"]) {
+      expect(generationIssueFor("failed", creditError, phase), phase).toBeNull();
+      expect(generationStatusLabelFor("failed", creditError, phase), phase).not.toBe("크레딧 한도 초과");
+    }
+  });
+
+  it("원인 안내가 있어도 자동 재실행 중단과 원문을 툴팁에 보존한다", () => {
+    const title = generationStatusTitle("running", creditError, "recovery_required", "unknown");
+    expect(title).toContain("크레딧 한도 초과:");
+    expect(title).toContain("해결 방법:");
+    expect(title).toContain("자동 재실행 안 함 · 제출 확인 필요");
+    expect(title).toContain("단계: 제출 확인 필요");
+    expect(title).toContain("Higgsfield 상태: unknown");
+    expect(title).toContain(creditError);
+  });
+
+  it("원인을 모르면 기존 실패 표시와 중립적인 제출확인 안내를 유지한다", () => {
+    const unknownError = "Unrecognized external error";
+    expect(generationIssueFor("failed", unknownError)).toBeNull();
+    expect(generationStatusLabelFor("failed", unknownError)).toBe("실패");
+    expect(generationStatusLabelFor("running", unknownError, "recovery_required")).toBe("제출 확인 필요");
+    expect(generationStatusTitle("running", unknownError, "recovery_required")).toContain("자동 재실행 안 함");
+    expect(generationStatusTitle("failed", unknownError)).toBe(unknownError);
+  });
+
+  it("각 오류의 안내와 조치가 영어로 바뀌고 한국어로 즉시 돌아온다", () => {
+    const cases = [
+      [creditError, "Credit limit reached"],
+      ["CLI 실패: Error: Insufficient credits", "Insufficient credits"],
+      [creditError.replace(" — cmd:", " Insufficient credits. — cmd:"), "Check credit limits"],
+      ["CLI 실패: Error: Not authenticated", "Sign-in needed"],
+      ["CLI 실패: Error: Forbidden", "Check permissions"],
+      ["CLI 실패: Error: Invalid media UUID", "Check inputs"],
+      ["CLI 실패: Error: Too many requests", "Rate limit reached"],
+      ["CLI 실패: Error: Internal server error", "Service error"],
+      ["CLI 실패: Error: connect ETIMEDOUT", "Check connection"],
+    ];
+    setLang("en");
+    for (const [error, expectedTitle] of cases) {
+      const issue = generationIssueFor("failed", error);
+      expect(issue?.title, error).toBe(expectedTitle);
+      expect(issue?.detail, error).not.toMatch(/[가-힣]/);
+      expect(issue?.action, error).not.toMatch(/[가-힣]/);
+    }
+    const title = generationStatusTitle("running", creditError, "recovery_required");
+    expect(title).toContain("Suggested action:");
+    expect(title).toContain("Auto-retry paused · submission check needed");
+    setLang("ko");
+    expect(generationIssueFor("failed", creditError)?.title).toBe("크레딧 한도 초과");
   });
 });

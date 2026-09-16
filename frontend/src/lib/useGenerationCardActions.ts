@@ -6,6 +6,7 @@ import { isGenerationWorkspaceReady } from "./workspaceContext";
 import type { Filters, Generation, WorkspaceContext } from "../types";
 import type { CanvasGenerationLink } from "./canvasGenerationRecovery";
 import { withMirrorPendingNotice } from "./shareMirrorPending";
+import { generationIssueFor } from "./generationDisplay";
 
 type AskPrompt = (
   title: string,
@@ -39,7 +40,9 @@ export function useGenerationCardActions({
     onDefinitiveReject?: () => void,
   ): Promise<Generation | null> => {
     if (g.execution_phase === "recovery_required") {
-      flash(t("외부 제출 여부를 먼저 확인해야 합니다. 생성 정보에서 HF 확인을 진행하세요."));
+      const issue = generationIssueFor(g.status, g.error, g.execution_phase);
+      const recoveryHint = t("외부 제출 여부를 먼저 확인해야 합니다. 생성 정보에서 제출 확인을 진행하세요.");
+      flash(issue ? `${issue.title} — ${issue.action}\n${recoveryHint}` : recoveryHint);
       return null;
     }
     if (!isGenerationWorkspaceReady(workspace)) {
@@ -92,10 +95,12 @@ export function useGenerationCardActions({
       flash(blocked);
       return false;
     }
+    const issue = generationIssueFor(g.status, g.error, g.execution_phase);
     if (
       !window.confirm(
-        "Higgsfield에서 이 요청의 작업이 생성되지 않은 것을 직접 확인했습니까?\n\n" +
-          "확인을 누르면 기존 요청을 다시 실행하며 크레딧이 사용될 수 있습니다.",
+        (issue ? `${issue.title} — ${issue.action}\n\n` : "") +
+          t("Higgsfield에서 이 요청의 작업이 생성되지 않은 것을 직접 확인했습니까?") + "\n\n" +
+          t("확인을 누르면 기존 요청을 다시 실행하며 크레딧이 사용될 수 있습니다."),
       )
     ) {
       return false;

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import io
+import json
 import os
 import sqlite3
 import subprocess
@@ -1836,7 +1837,15 @@ def test_missing_job_id_after_create_is_quarantined_not_failed_or_retried(report
     outbox.assert_not_called()
 
 
-def test_stale_reference_cache_is_cleared_without_automatic_create_retry():
+@pytest.mark.parametrize("cli_error,invalidate_expected", [
+    ("Invalid media UUID", True),
+    ("CLI 실패: Error: You've reached your monthly workspace group credit limit. Ask your workspace admin to increase the group limit or wait until it resets. — cmd: generate create --mode omni_reference --input ref", False),
+    ("CLI 실패: Insufficient credits — cmd: --mode omni_reference", False),
+    ("CLI 실패: Not authenticated — cmd: --input ref", False),
+    ("Permission denied for media upload", False),
+    ("CLI 실패: Unknown error — cmd: --mode omni_reference", False),
+])
+def test_reference_cache_only_cleared_for_reference_errors_without_create_retry(cli_error, invalidate_expected):
     agent = _load_agent()
     request = _submission_request()
     request.update(
@@ -1852,7 +1861,7 @@ def test_stale_reference_cache_is_cleared_without_automatic_create_retry():
     ), patch.object(agent, "_upload_for_media", return_value=({"id": "stale-id"}, True)), patch.object(
         agent, "_begin_submission", return_value=True
     ), patch.object(
-        agent, "_run_cli_json", return_value=(None, "Invalid media UUID")
+        agent, "_run_cli_json", return_value=(None, cli_error)
     ) as create, patch.object(
         agent, "_invalidate_upload_cache"
     ) as invalidate, patch.object(
@@ -1873,9 +1882,30 @@ def test_stale_reference_cache_is_cleared_without_automatic_create_retry():
 
     assert result is None
     create.assert_called_once()
-    invalidate.assert_called_once()
-    assert invalidate.call_args.args[1] == r"C:\refs\input.png"
+    if invalidate_expected:
+        invalidate.assert_called_once()
+        assert invalidate.call_args.args[1] == r"C:\refs\input.png"
+    else:
+        invalidate.assert_not_called()
     recovery.assert_called_once_with("http://hub", "token-1", "request-1", create.return_value[1])
+
+
+@pytest.mark.parametrize("case", json.loads(
+    (ROOT_DIR / "frontend/tests/fixtures/generationErrorCases.json").read_text(encoding="utf-8")
+), ids=lambda case: case["name"])
+def test_cli_error_guidance_matches_frontend_contract(case):
+    agent = _load_agent()
+    assert agent._classify_cli_error(case["error"]) == case["code"]
+    assert agent._should_invalidate_reference_cache(case["error"]) == case["invalidate"]
+
+
+def test_cli_guidance_is_bilingual_without_copying_raw_error(capsys):
+    agent = _load_agent()
+    agent._print_cli_issue("Insufficient credits — cmd: --prompt PRIVATE_PROMPT")
+    shown = capsys.readouterr().out
+    assert "크레딧 부족 / Insufficient credits" in shown
+    assert "PRIVATE_PROMPT" not in shown
+    assert "미제출" not in shown
 
 
 def test_old_server_response_without_claim_phase_keeps_legacy_submission_compatible():

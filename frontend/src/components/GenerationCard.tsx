@@ -20,7 +20,6 @@ import { useModelDisplayName } from "../lib/modelCatalog";
 import {
   formatGenerationDate,
   generationListMeta,
-  generationStatusLabel,
   generationStatusLabelFor,
   generationStatusTitle,
 } from "../lib/generationDisplay";
@@ -287,7 +286,7 @@ function GenerationCardImpl({
                 </span>
               </span>
             ) : (
-              generationStatusLabel(gen.status)
+              generationStatusLabelFor(gen.status, gen.error, gen.execution_phase)
             )}
           </div>
         }

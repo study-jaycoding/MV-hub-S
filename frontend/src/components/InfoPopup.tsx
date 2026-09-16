@@ -8,8 +8,9 @@ import { APP_EVENTS } from "../lib/appEvents";
 import {
   formatGenerationDateTime,
   generationErrorFallback,
+  generationIssueFor,
   generationListMeta,
-  submitDiagnostic,
+  generationStatusLabelFor,
 } from "../lib/generationDisplay";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../lib/media";
@@ -196,21 +197,33 @@ export function InfoPopup({
     const pendingReason = metrics?.real_credits != null
       ? null
       : TRANSACTION_PENDING_REASONS[metrics?.credit_source ?? ""];
+    const issue = generationIssueFor(g.status, g.error, g.execution_phase);
+    const recoveryRequired = g.execution_phase === "recovery_required" && !["done", "nsfw", "canceled"].includes(g.status);
+    const originalError = g.error ? (
+      <details className="info-error-details">
+        <summary>{t("오류 원문")}</summary>
+        <div className="info-error-text">{g.error}</div>
+      </details>
+    ) : null;
+    const issueGuidance = issue ? (
+      <>
+        <span className="info-error-text">{issue.detail}</span>
+        <span className="info-error-text"><strong>{t("해결 방법")}: </strong>{issue.action}</span>
+      </>
+    ) : null;
     rows = (
       <>
-        {g.execution_phase === "recovery_required" && (
+        {recoveryRequired && (
           <div className="info-recovery">
-            <span className="info-recovery-label">⚠ {t("HF 확인 필요")}</span>
+            <span className="info-recovery-label">⚠ {issue?.title || generationStatusLabelFor(g.status, g.error, g.execution_phase)}</span>
+            {issueGuidance}
+            <span className="info-recovery-text">{t("자동 재실행 안 함 · 제출 확인 필요")}</span>
             <span className="info-recovery-text">
               {g.recovery_probe_status === "no_match"
-                ? t("자동 조사 결과 이 제출로 만들어진 외부 작업이 발견되지 않았습니다. 아래 버튼으로 다시 실행하면 됩니다.")
+                ? t("자동 조사에서 외부 작업을 찾지 못했습니다. 원인을 해결한 뒤 작업이 없는지 직접 확인하고 다시 실행하세요.")
                 : t("외부 작업이 이미 만들어졌을 수 있어 자동 재생성을 멈췄습니다. 먼저 같은 계정의 Higgsfield 생성 목록에서 해당 작업이 없는지 확인하세요.")}
             </span>
-            {submitDiagnostic(g.error) && (
-              <span className="info-error-text info-recovery-text">
-                {submitDiagnostic(g.error)}
-              </span>
-            )}
+            {originalError}
             {onRecoveryRequeue && (
               <button
                 type="button"
@@ -244,10 +257,18 @@ export function InfoPopup({
               : modelName(g.model)
           }
         />
-        {(g.status === "failed" || g.status === "nsfw") && (
+        {!recoveryRequired && g.execution_phase !== "canceled" &&
+          (issue || g.status === "failed" || g.status === "nsfw") && (
           <div className="info-error">
-            <span className="info-error-label">⚠ {t("실패 사유")}</span>
-            <span className="info-error-text">{g.error || generationErrorFallback(g.status)}</span>
+            <span className="info-error-label">⚠ {issue?.title || t("실패 사유")}</span>
+            {issue ? <>{issueGuidance}{originalError}</> : g.status === "failed" && g.error ? (
+              <>
+                <span className="info-error-text">{t("오류 원문에서 상세 내용을 확인하세요.")}</span>
+                {originalError}
+              </>
+            ) : (
+              <span className="info-error-text">{g.error || generationErrorFallback(g.status)}</span>
+            )}
           </div>
         )}
         <Row label="비율" value={params.aspect_ratio as string} />

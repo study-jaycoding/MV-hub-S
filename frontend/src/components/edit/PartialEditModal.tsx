@@ -18,6 +18,7 @@ import { api, type GenerationCreateBody } from "../../api";
 import { fetchBlob } from "../../lib/download";
 import { flashMsg } from "../../lib/flash";
 import { HttpError } from "../../lib/http";
+import { generationIssueFor } from "../../lib/generationDisplay";
 import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import { useModels } from "../../lib/useModels";
 import type { Generation, WorkspaceContext } from "../../types";
@@ -447,8 +448,11 @@ export function PartialEditModal({
         if (token !== runTokenRef.current) return;
         if (g.status === "failed" || g.status === "nsfw") {
           setStage("draw");
+          const issue = generationIssueFor(g.status, g.error, g.execution_phase);
           setError(
-            g.status === "nsfw"
+            issue
+              ? `${issue.title} — ${issue.detail}\n${issue.action}`
+              : g.status === "nsfw"
               ? "생성이 NSFW 로 차단되었습니다."
               : `생성 실패: ${g.error || "원인 미상 — 라이브러리 카드를 확인하세요"}`,
           );

@@ -216,6 +216,101 @@ def _as_text(v) -> str:
 _TIMEOUT_PREFIX = "CLI 타임아웃(부분출력): "
 
 
+def _cli_diagnostic_body(error: str | None) -> str:
+    """표시/캐시 판단 전용. 반환 오류 원문과 job_id 복구 계약은 변경하지 않는다."""
+    body = (error or "")[:8192].split("제출 진단: ", 1)[-1]
+    return re.split(r"\s*[—–]\s*cmd:", body, maxsplit=1)[0].strip()
+
+
+def _cli_strip_error_prefix(value: str) -> str:
+    return re.sub(r"^(?:(?:\[경고\]|CLI 실패:|Error:|오류:)\s*)+", "", value, flags=re.I).strip()
+
+
+def _cli_error_message(error: str | None, *, for_cache: bool = False) -> str:
+    body = _cli_diagnostic_body(error)
+    if body.startswith(("CLI 타임아웃", "CLI JSON 파싱 실패")):
+        return ""  # partial 출력의 사용자 데이터는 원인/캐시 근거로 쓰지 않는다.
+    value = _cli_strip_error_prefix(body)
+    if value.startswith(("{", "[")):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return ""
+        if not isinstance(parsed, dict):
+            return ""
+        detail = parsed.get("error")
+        record = detail if isinstance(detail, dict) else parsed
+        message = detail if isinstance(detail, str) else record.get("message")
+        if message is None:
+            message = record.get("detail")
+        value = message if isinstance(message, str) else ""
+    lines = []
+    for line in re.split(r"\r\n|[\n\r\u2028\u2029]", value):
+        clean = _cli_strip_error_prefix(line.strip())
+        if re.match(r"^(?:prompt|negative_prompt|display_prompt|request|body|args|command)\s*[:=]", clean, re.I):
+            break
+        if re.match(r"^(?:Traceback\b|at\s|File\s[\"'])", clean, re.I):
+            if for_cache:
+                continue  # 스택 경로는 제외하되 마지막 실제 오류의 기존 캐시 복구는 유지.
+            break
+        if clean.startswith(("{", "[")):
+            continue
+        lines.append(re.sub(r"https?://\S+", "", clean, flags=re.I))
+    return "\n".join(lines)
+
+
+# 단일 파일 배포를 유지한다. TS 쪽과 동일 JSON fixture를 양쪽 테스트에서 읽어 검증한다.
+# 명시적 오류 구문만 허용하며 이 분류로 제출 여부/과금/재시도를 결정하지 않는다.
+_CLI_ISSUE_PATTERNS = [
+    ("group_credit_limit", r"^(?:you(?:['’]ve| have) reached your monthly workspace group credit limit\b|monthly workspace group credit limit (?:reached|exceeded)\b)"),
+    ("insufficient_credits", r"^(?:insufficient credits\b|not enough credits\b|you (?:do not|don't) have enough credits\b|(?:your )?credit balance (?:is )?(?:insufficient|too low|exhausted)\b)"),
+    ("auth", r"^(?:not authenticated\b|authentication (?:required|failed)\b|(?:your )?(?:session|access token|authentication token) (?:has )?expired\b|invalid (?:access|authentication|auth) token\b|HTTP (?:status(?: code)?\s*:?[ \t]*)?401\b)"),
+    ("forbidden", r"^(?:permission denied\b|access denied\b|forbidden\b|you (?:do not|don't) have (?:access|permission)\b|HTTP (?:status(?: code)?\s*:?[ \t]*)?403\b)"),
+    ("invalid_input", r"^(?:invalid (?:media UUID|input|parameter|argument|reference|image|video|audio)\b|validation (?:error|failed)\b|unsupported (?:image|video|audio|file|format)\b|missing required (?:input|parameter|argument)\b|HTTP (?:status(?: code)?\s*:?[ \t]*)?(?:400|422)\b)"),
+    ("rate_limit", r"^(?:rate limit (?:exceeded|reached)\b|too many requests\b|HTTP (?:status(?: code)?\s*:?[ \t]*)?429\b)"),
+    ("provider_error", r"^(?:internal server error\b|service unavailable\b|bad gateway\b|gateway timeout\b|HTTP (?:status(?: code)?\s*:?[ \t]*)?5\d\d\b)"),
+    ("network_timeout", r"^(?:(?:connection|request|connect|read) (?:has )?timed out\b|connect ETIMEDOUT\b|network (?:error|unreachable)\b|connection (?:refused|reset|closed)\b|fetch failed\b)"),
+]
+
+
+def _classify_cli_error(error: str | None) -> str | None:
+    if _cli_diagnostic_body(error).startswith("CLI 타임아웃"):
+        return "network_timeout"
+    messages = [_cli_strip_error_prefix(s) for s in re.split(r"\n|[.!?]\s+", _cli_error_message(error))]
+    found = [code for code, pattern in _CLI_ISSUE_PATTERNS if any(re.search(pattern, s, re.I) for s in messages)]
+    if "group_credit_limit" in found and "insufficient_credits" in found:
+        return "credit_issue"
+    return found[0] if found else None
+
+
+_CLI_ISSUE_GUIDANCE = {
+    "group_credit_limit": ("크레딧 한도 초과 / Credit limit reached", "워크스페이스 그룹의 월간 한도에 도달했습니다. 관리자에게 한도 조정을 요청하거나 초기화를 기다리세요."),
+    "insufficient_credits": ("크레딧 부족 / Insufficient credits", "Higgsfield에서 선택한 워크스페이스의 잔액과 필요한 크레딧을 확인하세요."),
+    "credit_issue": ("크레딧 제한 확인 / Check credit limits", "크레딧 잔액과 워크스페이스 그룹 한도를 함께 확인하세요."),
+    "auth": ("로그인 필요 / Sign-in required", "내 PC의 Higgsfield CLI 로그인 상태와 사용 계정을 확인하세요."),
+    "forbidden": ("접근 권한 확인 / Check permissions", "계정의 워크스페이스·모델·파일 접근 권한을 관리자에게 확인하세요."),
+    "invalid_input": ("입력값 확인 / Check inputs", "모델 설정과 레퍼런스 파일의 형식·개수·유효성을 확인하세요."),
+    "rate_limit": ("요청 한도 초과 / Too many requests", "잠시 기다린 뒤 제출 상태를 확인하세요."),
+    "provider_error": ("서비스 오류 / Service error", "서비스 응답에 문제가 있습니다. 잠시 후 제출 상태를 확인하세요."),
+    "network_timeout": ("통신 확인 필요 / Check connection", "네트워크와 서비스 연결을 확인하세요. 응답이 없어도 제출됐을 수 있습니다."),
+}
+
+
+def _print_cli_issue(error: str | None) -> None:
+    guidance = _CLI_ISSUE_GUIDANCE.get(_classify_cli_error(error))
+    if guidance:
+        title, action = guidance
+        print(f"  ⚠ {title} — {action}")
+
+
+def _should_invalidate_reference_cache(error: str | None) -> bool:
+    message = _cli_error_message(error, for_cache=True)
+    if _classify_cli_error(message) in {"group_credit_limit", "insufficient_credits", "credit_issue", "auth", "forbidden"}:
+        return False
+    # 이전 media/reference/upload/uuid/input 오류 복구는 유지하되 cmd의 omni_reference는 제외.
+    return any(marker in message.lower() for marker in ("media", "reference", "upload", "uuid", "input"))
+
+
 def _args_for_log(args) -> str:
     """오류 로그용 명령 인자 표기 — --prompt 원문은 agent.log 에 영속되지 않게 길이로 대체."""
     out: list[str] = []
@@ -1614,6 +1709,7 @@ def _fail(server: str, token: str, rid: str, reason: str) -> None:
     """요청 실패 보고. reason 에 한글/공백/괄호가 들어가므로 반드시 URL 인코딩한다
     (urllib 은 비-ASCII URL 을 그대로 못 보냄 — 'ascii codec' 오류로 보고 자체가 실패해
     요청이 running 에 영영 멈추는 버그를 막는다)."""
+    _print_cli_issue(reason)
     _http(
         "POST",
         _gen_request_url(server, rid, "fail", {"reason": reason}),
@@ -2390,16 +2486,14 @@ def _submit_one(
         reason = _sanitize_diagnostic(cli_error or "잡 id를 확인하지 못했습니다").strip()[:700]
         if cli_error:
             print(f"[경고] {cli_error}")
-        if seedance_cached_paths and cli_error and any(
-            marker in cli_error.lower()
-            for marker in ("media", "reference", "upload", "uuid", "input")
-        ):
+            _print_cli_issue(cli_error)
+        if seedance_cached_paths and _should_invalidate_reference_cache(cli_error):
             for cached_path in seedance_cached_paths:
                 _invalidate_upload_cache(upload_cache, cached_path, upload_lock)
             print("  ↻ 다음 명시적 재실행을 위해 실패한 레퍼런스 업로드 캐시를 비웠습니다")
         reported = _require_submission_recovery(server, token, rid, reason)
         suffix = "" if reported else " (서버 보고 실패 — lease 만료 시 자동 격리)"
-        print(f"  ⚠ 제출 결과 확인 필요: {reason}{suffix}")
+        print(f"  ⚠ 제출 확인 필요 / Submission check needed — 자동 재실행하지 않습니다: {reason}{suffix}")
         return None
     # 2) 즉시 앵커(크래시 세이프) — outbox 에 먼저 남기고 서버 ACK 재시도. ACK 실패해도 outbox 가
     #    재조정 패스/재시작 때 재전송하므로 계속 진행한다(잡은 이미 힉스필드에 떠 있음).

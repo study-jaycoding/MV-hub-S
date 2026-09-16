@@ -3,6 +3,8 @@ import { APP_EVENTS, dispatchAppEvent } from "../../lib/appEvents";
 import { DRAG_TYPES } from "../../lib/dragTypes";
 import { downloadName, downloadOne } from "../../lib/download";
 import { thumbOf } from "../../lib/media";
+import { generationStatusLabelFor, generationStatusTitle } from "../../lib/generationDisplay";
+import { useT } from "../../lib/i18n";
 import type { Generation, InfoTarget, PreviewTarget } from "../../types";
 import { MediaThumbnail } from "../MediaThumbnail";
 
@@ -71,6 +73,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
   onTag,
   onOpenComments,
 }: Props) {
+  useT();
   const asset = generation.assets[0];
   const thumb = thumbOf(generation);
   const dimmed =
@@ -141,7 +144,14 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
         thumb={thumb}
         isVideo={asset?.type === "video"}
         src={asset?.file_path}
-        fallback={<span className={"linb-ph status-" + generation.status}>{generation.status}</span>}
+        fallback={
+          <span className={"linb-ph status-" + generation.status} title={generationStatusTitle(
+            generation.status, generation.error, generation.execution_phase, generation.provider_status,
+            generation.last_checked_at, generation.next_check_at,
+          )}>
+            {generationStatusLabelFor(generation.status, generation.error, generation.execution_phase)}
+          </span>
+        }
       />
       {asset?.type === "video" && <span className="linb-vid">▶</span>}
       {isRoot && <span className="linb-tag root-tag">원본</span>}

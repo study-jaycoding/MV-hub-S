@@ -151,6 +151,52 @@ const EN: Record<string, string> = {
   "확인 중": "Checking",
   "조치 필요": "Action needed",
   "HF 확인 필요": "Check HF",
+  "제출 확인 필요": "Submission check needed",
+  // 오류 원인 안내 — 원문은 보존하고 화면에 붙이는 안내만 번역한다.
+  "크레딧 한도 초과": "Credit limit reached",
+  "워크스페이스 그룹의 월간 크레딧 사용 한도에 도달했습니다.":
+    "The workspace group's monthly credit limit has been reached.",
+  "워크스페이스 관리자에게 그룹 한도 조정을 요청하거나 한도가 초기화될 때까지 기다리세요.":
+    "Ask your workspace admin to adjust the group limit, or wait until it resets.",
+  "크레딧 부족": "Insufficient credits",
+  "생성에 필요한 크레딧이 부족하다는 응답을 받았습니다.":
+    "The service reported insufficient credits for this generation.",
+  "Higgsfield에서 이 요청의 계정과 워크스페이스 크레딧 잔액을 확인하세요.":
+    "Check the credit balance of this request's account and workspace in Higgsfield.",
+  "크레딧 제한 확인": "Check credit limits",
+  "크레딧 잔액 또는 사용 한도 관련 오류가 보고되었습니다.":
+    "A credit balance or usage limit error was reported.",
+  "Higgsfield의 크레딧 잔액과 워크스페이스 그룹 한도를 함께 확인하세요.":
+    "Check both the Higgsfield credit balance and workspace group limit.",
+  "로그인 필요": "Sign-in needed",
+  "Higgsfield 인증을 확인하지 못했습니다.": "Higgsfield authentication could not be verified.",
+  "이 PC의 Higgsfield CLI 로그인 상태를 확인하고 필요한 경우 다시 로그인하세요.":
+    "Check the Higgsfield CLI sign-in on this PC and sign in again if needed.",
+  "접근 권한 확인": "Check permissions",
+  "요청한 작업에 대한 접근이 거부되었습니다.": "Access to the requested operation was denied.",
+  "선택한 Higgsfield 계정의 워크스페이스 접근 권한과 역할을 관리자에게 확인하세요.":
+    "Ask your admin to check the selected Higgsfield account's workspace access and role.",
+  "입력값 확인": "Check inputs",
+  "입력값 또는 레퍼런스를 처리하지 못했습니다.": "An input or reference could not be processed.",
+  "오류 원문을 참고해 생성 설정과 레퍼런스 파일을 확인하세요.":
+    "Use the original error to check generation settings and reference files.",
+  "요청 한도 초과": "Rate limit reached",
+  "짧은 시간에 보낸 요청이 서비스 허용량을 초과했습니다.":
+    "Too many requests were sent within the service's time limit.",
+  "잠시 기다린 뒤 요청 상태를 확인하세요. 제출 확인이 필요한 요청은 먼저 외부 작업을 확인하세요.":
+    "Wait briefly, then check the request status. If submission needs checking, check the external job first.",
+  "서비스 오류": "Service error",
+  "외부 생성 서비스에서 오류 응답을 받았습니다.": "The external generation service returned an error.",
+  "서비스 상태와 오류 원문을 확인하세요. 제출 여부가 불명확하면 먼저 외부 작업을 확인하세요.":
+    "Check the service status and original error. If submission is uncertain, check the external job first.",
+  "통신 확인 필요": "Check connection",
+  "연결이 끊겼거나 응답을 제때 받지 못했습니다.": "The connection failed or a response did not arrive in time.",
+  "네트워크 연결을 확인하세요. 응답이 없어도 작업이 생성됐을 수 있으므로 제출 상태를 먼저 확인하세요.":
+    "Check your network connection. A job may exist even without a response, so check submission status first.",
+  "해결 방법": "Suggested action",
+  "오류 원문": "Original error",
+  "오류 원문에서 상세 내용을 확인하세요.": "See the original error for details.",
+  "자동 재실행 안 함 · 제출 확인 필요": "Auto-retry paused · submission check needed",
   "완료": "Done",
   "실패": "Failed",
   "NSFW 차단": "NSFW blocked",
@@ -168,8 +214,8 @@ const EN: Record<string, string> = {
   "{s} 상태입니다. 상세 사유 정보가 없습니다.": "Status: {s}. No details available.",
   "실패 사유 정보가 없습니다.": "No failure details available.",
   // 생성 정보 — HF 확인 안내
-  "자동 조사 결과 이 제출로 만들어진 외부 작업이 발견되지 않았습니다. 아래 버튼으로 다시 실행하면 됩니다.":
-    "Our automatic probe found no external job from this submission. Use the button below to run it again.",
+  "자동 조사에서 외부 작업을 찾지 못했습니다. 원인을 해결한 뒤 작업이 없는지 직접 확인하고 다시 실행하세요.":
+    "The automatic check found no external job. Resolve the cause, personally confirm that no job exists, then run again.",
   "외부 작업이 이미 만들어졌을 수 있어 자동 재생성을 멈췄습니다. 먼저 같은 계정의 Higgsfield 생성 목록에서 해당 작업이 없는지 확인하세요.":
     "An external job may already exist, so auto-retry was stopped. First check the Higgsfield job list on the same account.",
   "다시 실행": "Run again",
@@ -178,6 +224,12 @@ const EN: Record<string, string> = {
   // HF 확인 안내(생성 정보 · 재생성 차단 알림)
   "외부 제출 여부를 먼저 확인해야 합니다. 생성 정보에서 HF 확인을 진행하세요.":
     "Check whether it was already submitted. Open the generation info and run the HF check.",
+  "외부 제출 여부를 먼저 확인해야 합니다. 생성 정보에서 제출 확인을 진행하세요.":
+    "Check whether it was already submitted. Open the generation info to verify the submission.",
+  "Higgsfield에서 이 요청의 작업이 생성되지 않은 것을 직접 확인했습니까?":
+    "Have you personally confirmed that no job was created for this request in Higgsfield?",
+  "확인을 누르면 기존 요청을 다시 실행하며 크레딧이 사용될 수 있습니다.":
+    "Confirming will run the existing request again and may use credits.",
 };
 
 let _lang: Lang = loadLang();

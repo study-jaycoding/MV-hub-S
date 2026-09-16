@@ -152,7 +152,9 @@ export function GenerationCard({
                 return (
                   <div
                     className={"scene-card-genbody scene-genfail status-" + st}
-                    title={g?.error || undefined}
+                    title={g ? generationStatusTitle(
+                      st, g.error, g.execution_phase, g.provider_status, g.last_checked_at, g.next_check_at,
+                    ) : undefined}
                     onMouseDown={(e) => e.button === 1 && e.preventDefault()} // 휠클릭 자동스크롤 방지
                     onAuxClick={(e) => {
                       if (e.button === 1 && g && hist.onInfo) {

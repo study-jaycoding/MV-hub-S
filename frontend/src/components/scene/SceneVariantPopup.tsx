@@ -8,7 +8,7 @@ import type { SceneCard } from "../../lib/scenes";
 import { variantIds } from "../../lib/scenes";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../lib/workspaceCommand";
-import { generationStatusLabelFor } from "../../lib/generationDisplay";
+import { generationStatusLabelFor, generationStatusTitle } from "../../lib/generationDisplay";
 import { useT } from "../../lib/i18n";
 import { thumbOf } from "../../lib/media";
 import { LastViewedBadge } from "./LastViewedBadge";
@@ -318,12 +318,18 @@ export function SceneVariantPopup({
                           // 실패·NSFW = 메인 카드와 동일한 경고 비주얼(어두운 빨강 + ⚠ + '실패').
                           <div
                             className={`thumb-placeholder status-${gg.status}`}
-                            title={gg.error || undefined}
+                            title={generationStatusTitle(
+                              gg.status, gg.error, gg.execution_phase, gg.provider_status, gg.last_checked_at, gg.next_check_at,
+                            )}
                           >
                             {generationStatusLabelFor(gg.status, gg.error, gg.execution_phase)}
                           </div>
                         ) : (
-                          <span className="scene-varpop-ph">{String(gg?.status || "…")}</span>
+                          <span className="scene-varpop-ph" title={gg ? generationStatusTitle(
+                            gg.status, gg.error, gg.execution_phase, gg.provider_status, gg.last_checked_at, gg.next_check_at,
+                          ) : undefined}>
+                            {gg ? generationStatusLabelFor(gg.status, gg.error, gg.execution_phase) : "…"}
+                          </span>
                         )
                       }
                     />
