@@ -19,8 +19,6 @@ import {
   planningBudgetInput,
   validateProjectPlanning,
 } from "../../lib/projectPlanning";
-import { loadJSON, saveJSON } from "../../lib/storage";
-import { STORAGE_KEYS } from "../../lib/storageKeys";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useManageCaps } from "../../lib/useManageCaps";
 import { workspaceCommandLabels } from "../../lib/workspaceCommand";
@@ -76,10 +74,10 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
   const [workspaceMembers, setWorkspaceMembers] = useState<Record<string, WorkspaceMemberCandidate[]>>({});
   const [projectDialog, setProjectDialog] = useState<ProjectDialogState | null>(null);
   const [projFolders, setProjFolders] = useState<Record<string, ProjectFolderEntry>>({});
-  // 렌더폴더 트리를 펼친 프로젝트 — 이전에 펼쳐둔 상태를 기억(매번 전체 펼침 금지).
-  const [openFolderTrees, setOpenFolderTrees] = useState<Set<string>>(
-    () => new Set(loadJSON<string[]>(STORAGE_KEYS.manageFolderTrees) || []),
-  );
+  // 렌더폴더 트리를 펼친 프로젝트 — 열 때마다 접힌 상태로 시작한다(Jay 요청 2026-09-16).
+  // 이전에는 펼침 목록을 localStorage 에 기억해 복원했는데, 패널을 열면 트리가 저절로
+  // 펼쳐지고 그 프로젝트들의 폴더 조회까지 같이 나갔다.
+  const [openFolderTrees, setOpenFolderTrees] = useState<Set<string>>(() => new Set());
   const [folderLoading, setFolderLoading] = useState<Record<string, boolean>>({});
   const [activeMembersProjectId, setActiveMembersProjectId] = useState("");
   const [projMembersMap, setProjMembersMap] = useState<Record<string, ProjectMember[]>>({});
@@ -130,18 +128,6 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
               next[pid] = rememberProjectFolderLink(link);
             }
             setProjFolders(next);
-            const linkedIds = Object.keys(res.links || {}).filter(
-              (pid) => !!res.links[pid]?.root_path,
-            );
-            // 이전에 펼쳐둔 프로젝트만 복원(linked 인 것만 유효). 폴더 없는 건 자동 제외.
-            const linkedSet = new Set(linkedIds);
-            const saved = (loadJSON<string[]>(STORAGE_KEYS.manageFolderTrees) || []).filter(
-              (pid) => linkedSet.has(pid),
-            );
-            setOpenFolderTrees(new Set(saved));
-            saved.forEach((pid) => {
-              if (!next[pid]?.tree) loadProjectFolderTree(pid);
-            });
           })
           .catch(() => {});
       })
@@ -358,11 +344,6 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
       setProjectDialog({ ...projectDialog, busy: false, error: String(e).replace(/^Error:\s*/, "") });
     }
   };
-  // 펼침 상태를 기억 — 다음에 열 때 그대로 복원.
-  useEffect(() => {
-    saveJSON(STORAGE_KEYS.manageFolderTrees, [...openFolderTrees]);
-  }, [openFolderTrees]);
-
   const toggleFolderTree = (pid: string) => {
     if (openFolderTrees.has(pid)) {
       setOpenFolderTrees((prev) => {

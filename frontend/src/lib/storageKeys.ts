@@ -18,7 +18,6 @@ export const STORAGE_KEYS = {
   workspaceContext: "ch.workspaceContext", // 선택 워크스페이스(크레딧 컨텍스트) — 관리/에셋 창 범위와 동기
   modelPolicy: "ch.modelPolicy", // 그룹 사용 모델 정책의 마지막 서버 값 — `:<서버|이메일|워크스페이스>` 접미
   manageColorTags: "ch.manage.colorTags",
-  manageFolderTrees: "ch.manage.folderTrees", // 프로젝트관리에서 렌더폴더 트리를 펼친 프로젝트 id 목록
   manageTab: "ch.manage.tab",
   manageWorkFilters: "ch.manage.workFilters",
   manageWorkView: "ch.manage.workView",
