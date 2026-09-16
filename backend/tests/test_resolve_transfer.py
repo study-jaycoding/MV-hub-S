@@ -578,6 +578,18 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(dest.read_bytes(), b"payload-bytes")
             self.assertEqual(resolve_transfer._DEST_LOCKS, {})  # 레지스트리 회수 계약
 
+    @unittest.skipUnless(os.name == "nt", "Windows extended 경로 잠금 키 검사")
+    def test_dest_lock_uses_same_key_for_extended_and_normal_windows_path(self):
+        normal = self.render / "out" / "final_00.mp4"
+        extended = Path("\\\\?\\" + str(normal).upper())
+        keys = []
+        for path in (normal, extended):
+            with resolve_transfer._dest_lock(path):
+                self.assertEqual(len(resolve_transfer._DEST_LOCKS), 1)
+                keys.append(next(iter(resolve_transfer._DEST_LOCKS)))
+            self.assertEqual(resolve_transfer._DEST_LOCKS, {})
+        self.assertEqual(keys[0], keys[1])
+
     async def test_concurrent_different_source_same_name_takes_next_number(self):
         """같은 번호를 노린 다른 원본 동시 요청 — 둘 다 저장되고 뒤엣것이 다음 번호로 간다."""
         import threading as threading_module
@@ -615,9 +627,9 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(errors, [])
             self.assertEqual(sorted(results), ["final_00.mp4", "final_01.mp4"])
             # 먼저 잡은 쪽이 _00, 나중 쪽이 _01 — 어느 쪽도 덮이지 않는다.
-            written = {
-                path.read_bytes() for path in dest.parent.iterdir() if path.is_file()
-            }
+            written_paths = [path for path in dest.parent.iterdir() if path.is_file()]
+            self.assertEqual(len(written_paths), 2)
+            written = {path.read_bytes() for path in written_paths}
             self.assertEqual(written, {b"content-a", b"content-b"})
             self.assertEqual(resolve_transfer._DEST_LOCKS, {})
 

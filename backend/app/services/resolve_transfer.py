@@ -22,7 +22,7 @@ from typing import Any, AsyncIterator
 from ..config import MEDIA_DIR
 from . import media_cache, project_folders
 from .atomic_io import atomic_write_text
-from .path_safety import safe_join
+from .path_safety import safe_join, path_comparison_key
 
 
 MANIFEST_FORMAT = "mvhub.resolve-transfer"
@@ -543,7 +543,7 @@ _DEST_LOCKS_GUARD = threading.Lock()
 
 @contextmanager
 def _dest_lock(dest: Path):
-    key = os.path.normcase(str(dest))
+    key = os.path.normcase(str(path_comparison_key(dest)))
     with _DEST_LOCKS_GUARD:
         entry = _DEST_LOCKS.get(key)
         lock = entry[0] if entry else threading.Lock()
