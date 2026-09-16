@@ -166,20 +166,28 @@ export function useGenerationLibraryData({
   const revealLocated = useCallback((tab: "my" | "team", location: GenerationLocation) => {
     const sameView = isLocatedQuery(genQueryRef.current, tab, location);
     const items = locatedItems(location, tab);
+    const visibleIds = new Set(gensRef.current.map((item) => item.id));
+    const sig = JSON.stringify([!!filtersRef.current.deleted_only, genQueryRef.current]);
+    // 선택 대상은 직전 locate에서 서버 확인했다. 필터 해제/폴더 이동이 필요 없고
+    // 정상 페이지가 신선할 때만 추가 전체 재조회를 생략한다(캐시 수명은 연장하지 않는다).
+    const reusePage = sameView && !filtersRef.current.deleted_only &&
+      lastLoadedTabRef.current === tab && !loadError &&
+      !inflightRef.current && !pendingArgsRef.current && !loadingMoreRef.current &&
+      generationTabCacheIsFresh(tabCacheRef.current[tab], sig) &&
+      items.length > 0 && items.every((item) => visibleIds.has(item.id));
     locatedRef.current = { tab, location: { ...location, items } };
     setLocatedVisibleIds(new Set(items.map((item) => item.id)));
     reloadSeqRef.current++;
     lastLoadedTabRef.current = tab; // 왕복 중 탭 전환도 기존 즉시 전환 가드를 유지한다.
-    // 같은 위치여도 캐시 때문에 권한 재검증을 건너뛰지 않는다.
-    delete tabCacheRef.current[tab];
+    if (!reusePage) delete tabCacheRef.current[tab];
     if (!sameView) {
       pageCursorRef.current = null;
       setHasMore(false);
     }
     setGens((previous) => mergeLocatedGenerations(sameView ? previous : [], items));
     setLoadError(null);
-    if (sameView) setLocatedReload((value) => value + 1);
-  }, []);
+    if (sameView && !reusePage) setLocatedReload((value) => value + 1);
+  }, [loadError]);
 
   const runReload = useCallback(async (silent: boolean, light: boolean) => {
     if (!authReadyRef.current) return;

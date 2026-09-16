@@ -110,9 +110,19 @@ it.each(["grid", "list"] as const)("%s: Resolve 강조는 직접 선택·Last vi
   const style = document.createElement("style");
   style.textContent = readFileSync(new NodeURL("../src/styles/resolve-library.css", import.meta.url), "utf8");
   document.head.appendChild(style);
-  expect(getComputedStyle(follow).borderColor).toBe("rgb(255, 48, 79)");
+  // 링은 전환이 있는 카드가 아니라 셀의 독립 레이어에 그린다. 제거 시에도 red 잔상이 없다.
+  const rules = [...style.sheet!.cssRules] as CSSStyleRule[];
+  const ring = rules.find((rule) => rule.selectorText === '.gen-cell:has(> .card.resolve-highlighted)::after');
+  expect(ring?.style.getPropertyValue("box-shadow")).toContain("#ff304f");
+  expect(ring?.style.getPropertyValue("transition")).toBe("none");
+  expect(ring?.style.getPropertyValue("pointer-events")).toBe("none");
+  expect(host.querySelector('.gen-cell:has(> .card.resolve-highlighted)')).toBe(follow.parentElement);
+  expect(getComputedStyle(follow).borderColor).not.toBe("rgb(255, 48, 79)");
   expect(getComputedStyle(follow).animation).toBe("none");
   expect(getComputedStyle(follow).filter).toBe("none");
+  renderGrid({ ...props, resolveHighlightedIds: new Set() });
+  expect(host.querySelector('.gen-cell:has(> .card.resolve-highlighted)')).toBeNull();
+  expect(direct.classList.contains("selected")).toBe(true);
   style.remove();
 });
 

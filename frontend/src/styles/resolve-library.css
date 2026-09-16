@@ -2,16 +2,16 @@
 .gen-cell:has(> .card.resolve-highlighted) { content-visibility: visible; }
 .gen-cell .card.resolve-highlighted,
 .gen-cell .card.resolve-highlighted:hover {
-  border-color: #ff304f;
-  box-shadow: 0 0 0 2px #ff304f, 0 0 18px 5px rgba(255, 48, 79, 0.72);
   animation: none;
   transform: none;
   filter: none; /* 비활성 상태는 보존하되 확인 중인 빨간 강조까지 회색으로 바꾸지 않는다. */
 }
-.gen-cell .card.resolve-highlighted::after {
-  content: ""; position: absolute; inset: 0; border-radius: inherit;
+/* 카드의 일반 라임/hover 전환과 분리한다. 레이어 생성·제거 모두 즉시여서 해제 잔상도 없다. */
+.gen-cell:has(> .card.resolve-highlighted)::after {
+  content: ""; position: absolute; inset: 0; border-radius: 14px;
   pointer-events: none; z-index: 7;
-  box-shadow: inset 0 0 0 2px #ff304f;
+  transition: none;
+  box-shadow: inset 0 0 0 2px #ff304f, 0 0 0 2px #ff304f, 0 0 18px 5px rgba(255, 48, 79, 0.72);
 }
 /* 조회 위치는 생성 목적지의 기존 selected/sel-target 스타일과 별개로 표시한다. */
 .project-tree-scroll .viewed-resolve,

@@ -179,6 +179,156 @@ it.each(["unshare", "moved", "failure"])("기존 주입 대상 %s는 재조회 �
   expect(state.filters.filters.folder_path).toBe("e001/c0010");
 });
 
+it.each(["my", "team"])("%s: 같은 폴더의 이미 표시된 대상은 권한 조회 1회만 하고 정상 페이지를 재사용", async (tab) => {
+  const next = gen("next-target", 2);
+  vi.mocked(api.listGenerations).mockResolvedValue([next, target]);
+  await mount(tab);
+  act(() => state.follow.receive([target.id], false)); await settle();
+  vi.mocked(api.locateGenerations).mockClear().mockResolvedValue(location([next]));
+  vi.mocked(api.listGenerations).mockClear();
+  act(() => state.follow.receive([next.id], false)); await settle();
+  expect(api.locateGenerations).toHaveBeenCalledTimes(1);
+  expect(api.listGenerations).not.toHaveBeenCalled();
+  expect([...state.follow.highlightedIds]).toEqual([next.id]);
+  expect(state.data.gens.map((item) => item.id)).toEqual([next.id, target.id]);
+  // 일반 갱신은 생략하지 않으며, 공유 취소는 다음 조회에서 강조와 주입을 제거한다.
+  vi.mocked(api.locateGenerations).mockResolvedValue(location([]));
+  await act(async () => { await state.data.reload(true, true); });
+  expect(api.locateGenerations).toHaveBeenCalledTimes(2);
+  expect(api.listGenerations).toHaveBeenCalledTimes(1);
+  expect(state.follow.highlightedIds.size).toBe(0);
+  expect(state.data.gens.map((item) => item.id)).toEqual([target.id]);
+});
+
+it("같은 폴더라도 목록 밖 대상은 정상 페이지와 권한을 다시 확인한다", async () => {
+  vi.mocked(api.listGenerations).mockResolvedValue([target]);
+  await mount();
+  act(() => state.follow.receive([target.id], false)); await settle();
+  const outside = gen("outside-page", 0);
+  vi.mocked(api.locateGenerations).mockClear().mockResolvedValue(location([outside]));
+  vi.mocked(api.listGenerations).mockClear();
+  act(() => state.follow.receive([outside.id], false)); await settle();
+  expect(api.locateGenerations).toHaveBeenCalledTimes(2);
+  expect(api.listGenerations).toHaveBeenCalledTimes(1);
+  expect([...state.follow.highlightedIds]).toEqual([outside.id]);
+});
+
+it("같은 위치의 연속 선택은 정상 페이지 캐시 수명을 연장하지 않는다", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(100_000);
+  const next = gen("next-target", 2);
+  vi.mocked(api.listGenerations).mockResolvedValue([next, target]);
+  await mount();
+  act(() => state.follow.receive([target.id], false)); await settle();
+  vi.mocked(api.listGenerations).mockClear();
+  for (const now of [105_000, 110_000]) {
+    clock.mockReturnValue(now);
+    vi.mocked(api.locateGenerations).mockResolvedValue(location([next]));
+    act(() => state.follow.receive([next.id], false)); await settle();
+    expect(api.listGenerations).not.toHaveBeenCalled();
+  }
+  clock.mockReturnValue(116_000);
+  act(() => state.follow.receive([next.id], false)); await settle();
+  expect(api.listGenerations).toHaveBeenCalledTimes(1);
+});
+
+it("정상 페이지 오류 뒤에는 남은 캐시가 신선해도 다시 조회한다", async () => {
+  const next = gen("next-target", 2);
+  vi.mocked(api.listGenerations).mockResolvedValue([next, target]);
+  await mount();
+  act(() => state.follow.receive([target.id], false)); await settle();
+  vi.mocked(api.listGenerations).mockRejectedValueOnce(new Error("offline"));
+  await act(async () => { await state.data.reload(true, true); });
+  expect(state.data.loadError).toBe("offline");
+  vi.mocked(api.listGenerations).mockClear();
+  vi.mocked(api.locateGenerations).mockResolvedValue(location([next]));
+  act(() => state.follow.receive([next.id], false)); await settle();
+  expect(api.listGenerations).toHaveBeenCalledTimes(1);
+  expect(state.data.loadError).toBeNull();
+});
+
+it.each(["search", "trash"])("%s 필터를 해제할 때는 필터 적용 전 캐시를 재사용하지 않는다", async (kind) => {
+  vi.mocked(api.listGenerations).mockResolvedValue([target]);
+  vi.mocked(api.listTrash).mockResolvedValue([target]);
+  await mount();
+  act(() => state.follow.receive([target.id], false)); await settle();
+  act(() => state.filters.patch(kind === "search" ? { search: "filter" } : { deleted_only: true }));
+  await settle();
+  vi.mocked(api.listGenerations).mockClear();
+  act(() => state.follow.receive([target.id], false)); await settle();
+  expect(api.listGenerations).toHaveBeenCalled();
+  expect(state.filters.filters.search).toBeUndefined();
+  expect(state.filters.filters.deleted_only).toBeUndefined();
+  expect([...state.follow.highlightedIds]).toEqual([target.id]);
+});
+
+it("탭 이탈·복귀 뒤 도착한 예전 locate는 동일 탭이라도 적용하지 않는다", async () => {
+  vi.mocked(api.listGenerations).mockResolvedValue([target]);
+  await mount();
+  act(() => state.follow.receive([target.id], false)); await settle();
+  const response = deferred<GenerationLocation>();
+  vi.mocked(api.locateGenerations).mockReturnValueOnce(response.promise);
+  act(() => state.follow.receive([target.id], false));
+  act(() => state.filters.patch({ tab: "team" })); await settle();
+  act(() => state.filters.patch({ tab: "my" })); await settle();
+  const rows = state.data.gens;
+  response.resolve(location([{ ...target, project_name: "stale" }])); await settle();
+  expect(state.data.gens).toBe(rows);
+  expect(state.follow.highlightedIds.size).toBe(0);
+});
+
+it("재사용은 추가 페이지의 복수 대상·다음 커서·hasMore를 보존한다", async () => {
+  await mount();
+  const page = Array.from({ length: GEN_PAGE }, (_, i) => gen(`page-${i}`, 1000 - i));
+  const nextPage = Array.from({ length: GEN_PAGE }, (_, i) => gen(`next-${i}`, 800 - i));
+  vi.mocked(api.listGenerations).mockResolvedValue(page);
+  act(() => state.follow.receive([target.id], false)); await settle();
+  vi.mocked(api.listGenerations).mockResolvedValue(nextPage);
+  await act(async () => { await state.data.loadMore(); });
+  vi.mocked(api.listGenerations).mockClear();
+  vi.mocked(api.locateGenerations).mockClear().mockResolvedValue(location([page[0], nextPage[0]]));
+  act(() => state.follow.receive([page[0].id, nextPage[0].id], false)); await settle();
+  expect(api.listGenerations).not.toHaveBeenCalled();
+  expect(api.locateGenerations).toHaveBeenCalledTimes(1);
+  expect(state.data.gens).toHaveLength(GEN_PAGE * 2 + 1);
+  expect(state.data.hasMore).toBe(true);
+  expect([...state.follow.highlightedIds]).toEqual([page[0].id, nextPage[0].id]);
+  vi.mocked(api.listGenerations).mockResolvedValue([]);
+  await act(async () => { await state.data.loadMore(); });
+  expect(vi.mocked(api.listGenerations).mock.calls[0][1]).toEqual({ ts: 601, id: "next-199" });
+});
+
+it("추가 페이지 로드 도중 선택하면 재사용하지 않고 낡은 추가 페이지를 버린다", async () => {
+  vi.mocked(api.listGenerations).mockResolvedValue([target]);
+  await mount();
+  act(() => state.follow.receive([target.id], false)); await settle();
+  const response = deferred<Generation[]>();
+  vi.mocked(api.listGenerations).mockReturnValueOnce(response.promise);
+  let more!: Promise<void>;
+  act(() => { more = state.data.loadMore(); });
+  vi.mocked(api.listGenerations).mockClear();
+  act(() => state.follow.receive([target.id], false)); await settle();
+  expect(api.listGenerations).toHaveBeenCalledTimes(1);
+  await act(async () => { response.resolve([gen("stale-page")]); await more; });
+  expect(state.data.gens.map((item) => item.id)).toEqual([target.id]);
+  expect(state.data.loadingMore).toBe(false);
+});
+
+it("일반 재조회 도중 선택 변경은 낡은 응답을 버리고 최신 선택으로 다시 검증한다", async () => {
+  const next = gen("next-target", 2);
+  vi.mocked(api.listGenerations).mockResolvedValue([next, target]);
+  await mount("team");
+  act(() => state.follow.receive([target.id], false)); await settle();
+  const pending = deferred<Generation[]>();
+  vi.mocked(api.listGenerations).mockReturnValueOnce(pending.promise);
+  act(() => { void state.data.reload(true, true); });
+  vi.mocked(api.locateGenerations).mockResolvedValue(location([next]));
+  act(() => state.follow.receive([next.id], false)); await settle();
+  pending.resolve([gen("stale")]); await settle();
+  expect(state.data.gens.map((item) => item.id)).toEqual([next.id, target.id]);
+  expect([...state.follow.highlightedIds]).toEqual([next.id]);
+  expect(state.data.loading).toBe(false);
+});
+
 it("프로젝트 루트·상위 폴더에서 복수 대상은 하위 폴더를 포함", () => {
   const items = [target, gen("sibling", 2, "e001/c0020"), gen("other", 3, "e002/c0010")];
   expect(locatedItems(location(items, null), "team")).toHaveLength(3);

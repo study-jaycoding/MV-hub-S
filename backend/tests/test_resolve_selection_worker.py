@@ -275,7 +275,7 @@ class ResolveSelectionWorkerTests(unittest.TestCase):
             mock.patch.object(
                 resolve_selection_worker, "_connect_resolve", return_value=resolve
             ),
-            mock.patch.object(resolve_selection_worker, "POLL_SECONDS", 0.1),
+            mock.patch.object(resolve_selection_worker, "POLL_SECONDS", 0.05),
             mock.patch.object(
                 resolve_selection_worker.time,
                 "sleep",
@@ -293,7 +293,7 @@ class ResolveSelectionWorkerTests(unittest.TestCase):
         self.assertTrue(
             output.call_args.args[0].startswith(resolve_selection_worker.RESULT_PREFIX)
         )
-        self.assertEqual(sleep.call_args_list, [mock.call(0.1)] * 3)
+        self.assertEqual(sleep.call_args_list, [mock.call(0.05)] * 3)
 
     def test_missing_manager_keeps_twenty_attempts_and_half_second_waits(self):
         with (
@@ -302,7 +302,7 @@ class ResolveSelectionWorkerTests(unittest.TestCase):
                 "_connect_resolve",
                 return_value=DisconnectedResolve(),
             ),
-            mock.patch.object(resolve_selection_worker, "POLL_SECONDS", 0.1),
+            mock.patch.object(resolve_selection_worker, "POLL_SECONDS", 0.05),
             mock.patch.object(
                 resolve_selection_worker.time,
                 "sleep",
@@ -319,7 +319,7 @@ class ResolveSelectionWorkerTests(unittest.TestCase):
     def test_missing_project_waits_at_least_half_a_second(self):
         resolve = FakeResolve([])
         resolve.manager.project = None
-        for poll_seconds, expected_wait in ((0.1, 0.5), (0.8, 0.8)):
+        for poll_seconds, expected_wait in ((0.05, 0.5), (0.8, 0.8)):
             with self.subTest(poll_seconds=poll_seconds):
                 with (
                     mock.patch.object(
@@ -338,10 +338,10 @@ class ResolveSelectionWorkerTests(unittest.TestCase):
 
                 sleep.assert_called_once_with(expected_wait)
 
-    def test_poll_interval_defaults_to_tenth_second_with_same_lower_bound(self):
+    def test_poll_interval_defaults_to_fifty_ms_with_same_lower_bound(self):
         variable = "CONTENT_HUB_RESOLVE_SELECTION_POLL_SECONDS"
         try:
-            for configured, expected in ((None, 0.1), ("0.01", 0.1), ("0.8", 0.8)):
+            for configured, expected in ((None, 0.05), ("0.01", 0.05), ("0.1", 0.1), ("0.8", 0.8)):
                 with self.subTest(configured=configured), mock.patch.dict(os.environ):
                     if configured is None:
                         os.environ.pop(variable, None)
