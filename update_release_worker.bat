@@ -53,6 +53,15 @@ if "%UPDATE_EXIT%"=="17" (
   exit /b 17
 )
 
+if "%UPDATE_EXIT%"=="18" (
+  REM The payload recorded a retryable Resolve-transfer refusal. Do not turn it
+  REM into a generic failure (or overwrite any preserved recovery warning).
+  echo.
+  echo [INFO] DaVinci Resolve transfer is active. Wait for it to finish, then update again.
+  if not "%MVHUB_NO_PAUSE%"=="1" pause
+  exit /b 18
+)
+
 if not "%UPDATE_EXIT%"=="0" (
   echo.
   echo [ERROR] MV Hub update failed.
@@ -165,6 +174,25 @@ function Get-TransientLockCode {
         return -1
     }
     return -1
+}
+
+function Write-ResolveTransferBusyState {
+    # No installation work has started. Retain the last offered version and any
+    # earlier recovery warning while allowing an ordinary busy refusal to retry.
+    $Previous = $null
+    if ($StateFile -and (Test-Path -LiteralPath $StateFile)) {
+        try { $Previous = Get-Content -LiteralPath $StateFile -Raw -Encoding UTF8 | ConvertFrom-Json }
+        catch { $Previous = $null }
+    }
+    $BusyLatest = $LatestVersion
+    $BusyRecovery = "not_started"
+    if ($Previous) {
+        if ($Previous.latest_version) { $BusyLatest = [string]$Previous.latest_version }
+        if ($Previous.recovery) { $BusyRecovery = [string]$Previous.recovery }
+    }
+    $BusyState = "available"
+    if ($BusyRecovery -eq "recovery_required") { $BusyState = "failed" }
+    Write-UpdateState -State $BusyState -Message "DaVinci Resolve transfer is active. Wait for it to finish, then update again." -Latest $BusyLatest -Recovery $BusyRecovery
 }
 
 function Move-PathWithRetry {
@@ -595,7 +623,11 @@ function Get-UpdateComponents {
         }
         [void]$Components.Add(@{ Relative = $Required; Kind = "dir" })
     }
-    Get-ChildItem -LiteralPath $ExtractDir -Force | ForEach-Object {
+    # Runtime locks identify the installation, not the package. Never replace
+    # them, even if an incorrectly assembled package happens to include them.
+    Get-ChildItem -LiteralPath $ExtractDir -Force | Where-Object {
+        $_.Name -notin @(".update.lock", ".resolve-transfer.lock")
+    } | ForEach-Object {
         if ($_.PSIsContainer) {
             # backend/frontend/runtime are decomposed above; any other packaged
             # top-level directory (e.g. tools) is replaced wholesale - merges leave
@@ -1036,6 +1068,10 @@ New-Item -ItemType Directory -Force -Path $TempRoot | Out-Null
 # batch wrapper to leave the live updater's state file alone.
 $UpdateLockPath = Join-Path $TargetDir ".update.lock"
 $UpdateLockStream = $null
+$ResolveTransferLockPath = Join-Path $TargetDir ".resolve-transfer.lock"
+$ResolveTransferLockStream = $null
+$ResolveTransferBusy = $false
+$UpdateExitCode = 0
 try {
     $UpdateLockStream = [System.IO.File]::Open(
         $UpdateLockPath,
@@ -1070,6 +1106,23 @@ catch {
 }
 
 try {
+    # Transfers share this independent handle for their entire copy/import/save
+    # lifetime, including an external Python import child. Acquire exclusively
+    # before preparing an update, and keep it until cleanup/restart completes.
+    # A leftover empty file is harmless; only a live handle can block this open.
+    try {
+        $ResolveTransferLockStream = [System.IO.File]::Open(
+            $ResolveTransferLockPath,
+            [System.IO.FileMode]::OpenOrCreate,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+    }
+    catch {
+        $Win32Code = Get-TransientLockCode -Exception $_.Exception
+        if ($Win32Code -eq 32 -or $Win32Code -eq 33) { $ResolveTransferBusy = $true }
+        throw
+    }
     Write-Host "[1/3] Checking MV Hub release server..."
     Write-Host "      Source: $BaseUrl"
     Write-UpdateState -State "checking" -Message "Checking the release server..." -Percent 5
@@ -1147,32 +1200,48 @@ try {
     Write-Host "[3/3] Update complete."
 }
 catch {
-    # Preserve the original install error first: recording state and relaunching
-    # the app are independent best-effort steps that must not mask it - and a
-    # state-file hiccup must not leave the app dead (Codex review).
-    $InstallFailure = $_
-    try {
-        Write-UpdateState -State "failed" -Message ("Update failed: " + $InstallFailure.Exception.Message) -Latest $LatestVersion -Recovery $script:RecoveryState
+    if ($ResolveTransferBusy) {
+        Write-ResolveTransferBusyState
+        Write-Host "[INFO] DaVinci Resolve transfer is active; update was not started."
+        $UpdateExitCode = 18
     }
-    catch {
-        Write-Host "[update] warn: could not record the failed state: $($_.Exception.Message)"
+    else {
+        # Preserve the original install error first: recording state and relaunching
+        # the app are independent best-effort steps that must not mask it - and a
+        # state-file hiccup must not leave the app dead (Codex review).
+        $InstallFailure = $_
+        try {
+            Write-UpdateState -State "failed" -Message ("Update failed: " + $InstallFailure.Exception.Message) -Latest $LatestVersion -Recovery $script:RecoveryState
+        }
+        catch {
+            Write-Host "[update] warn: could not record the failed state: $($_.Exception.Message)"
+        }
+        # If we killed the app and the old tree is intact (or the new one committed),
+        # bring MV Hub back up so nobody is stranded on a dead backend with a frozen
+        # progress screen. A half-swapped tree (recovery_required) must NOT be booted.
+        if (
+            $script:ProcessesStopped -and
+            $RestartAfterInstall -eq "1" -and
+            ($script:RecoveryState -eq "rolled_back" -or $script:RecoveryState -eq "new_committed")
+        ) {
+            Start-MvHubAfterFailure
+        }
+        throw $InstallFailure
     }
-    # If we killed the app and the old tree is intact (or the new one committed),
-    # bring MV Hub back up so nobody is stranded on a dead backend with a frozen
-    # progress screen. A half-swapped tree (recovery_required) must NOT be booted.
-    if (
-        $script:ProcessesStopped -and
-        $RestartAfterInstall -eq "1" -and
-        ($script:RecoveryState -eq "rolled_back" -or $script:RecoveryState -eq "new_committed")
-    ) {
-        Start-MvHubAfterFailure
-    }
-    throw $InstallFailure
 }
 finally {
+    if ($ResolveTransferLockStream) {
+        $ResolveTransferLockStream.Dispose()
+        # Keep this file: deleting after close could race another transfer's open.
+    }
     if ($UpdateLockStream) {
         $UpdateLockStream.Dispose()
         Remove-Item -LiteralPath $UpdateLockPath -Force -ErrorAction SilentlyContinue
     }
     Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+if ($UpdateExitCode -ne 0) {
+    # Environment.Exit bypasses finally; use it only after every handle/temp has
+    # been cleaned, while retaining the exact code through PowerShell launchers.
+    [Environment]::Exit($UpdateExitCode)
 }

@@ -29,6 +29,7 @@ from ..services.resolve_python_installer import (
     start_python_installer,
 )
 from ..services.release_update import update_in_progress
+from ..services.resolve_transfer_gate import ResolveTransferGateBusy, ResolveTransferGateError
 from ..services.request_guards import require_local_machine_request
 from ..services.resolve_script_installer import (
     ResolveScriptInstallError,
@@ -84,6 +85,18 @@ def _require_local_resolve(request: Request) -> None:
     require_local_machine_request(
         request, "DaVinci Resolve 연동은 이 PC의 로컬 MV Hub에서만 사용할 수 있습니다"
     )
+
+
+@contextlib.asynccontextmanager
+async def _tracked_resolve_transfer() -> AsyncIterator[None]:
+    """전송 전체의 보호 핸들 오류를 HTTP 응답으로 바꾼다."""
+    try:
+        async with track_active():
+            yield
+    except ResolveTransferGateBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ResolveTransferGateError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _capture_account_pin() -> tuple[str, str | None]:
@@ -173,7 +186,7 @@ async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
     # 순서가 계약이다: 카운터 증가 → 업데이트 게이트. release_update.start_update 는 checking 을
     # 기록한 뒤 활동을 재확인하므로, 업데이트가 먼저 기록했으면 여기서 409, 이 요청이 먼저
     # 올라갔으면 업데이트 쪽이 busy 로 거부된다 — 어느 순서든 한쪽만 진행한다.
-    async with track_active():
+    async with _tracked_resolve_transfer():
         _reject_if_update_in_progress()
         async with _pinned_account_scope():
             return await _create_resolve_transfer_pinned(body, request)
@@ -262,7 +275,7 @@ async def _create_resolve_transfer_pinned(body: ResolveTransferIn, request: Requ
 async def retry_resolve_transfer(body: ResolveRetryIn, request: Request):
     """이미 준비된 v2 원본 manifest를 다시 읽어 Resolve 가져오기만 재실행한다."""
     _require_local_resolve(request)
-    async with track_active():
+    async with _tracked_resolve_transfer():
         _reject_if_update_in_progress()
         try:
             manifest = await load_manifest(body.project_id.strip(), body.transfer_id.strip())

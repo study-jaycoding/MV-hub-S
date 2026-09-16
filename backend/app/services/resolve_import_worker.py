@@ -23,6 +23,11 @@ from typing import Any
 
 from . import resolve_lock
 from .atomic_io import atomic_write_text
+from .resolve_transfer_gate import (
+    ResolveTransferGateBusy,
+    ResolveTransferGateError,
+    transfer_lease,
+)
 from .resolve_bridge import (
     import_manifest_to_current_project,
     set_journal_hook,
@@ -147,6 +152,22 @@ def _journal_unavailable(message: str) -> dict[str, Any]:
 
 
 def run(manifest: dict[str, Any]) -> dict[str, Any]:
+    # 부모가 죽어도 실제 가져오기/완료 기록이 끝날 때까지 자식이 별도 핸들을 유지한다.
+    # 모듈 파일의 설치 루트로 판정하므로 외부 호환 Python도 동일한 잠금을 사용한다.
+    try:
+        with transfer_lease():
+            return _run_import(manifest)
+    except ResolveTransferGateError as exc:
+        return {
+            **_journal_unavailable(str(exc)),
+            "error_code": (
+                "update_in_progress" if isinstance(exc, ResolveTransferGateBusy)
+                else "transfer_guard_failed"
+            ),
+        }
+
+
+def _run_import(manifest: dict[str, Any]) -> dict[str, Any]:
     path = attempt_journal_path(manifest)
     journal = None
     if path is not None:

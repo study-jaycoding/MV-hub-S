@@ -23,6 +23,7 @@ from ..config import MEDIA_DIR
 from . import media_cache, project_folders
 from .atomic_io import atomic_write_text
 from .path_safety import safe_join, path_comparison_key
+from .resolve_transfer_gate import transfer_lease
 
 
 MANIFEST_FORMAT = "mvhub.resolve-transfer"
@@ -47,7 +48,8 @@ async def track_active() -> AsyncIterator[None]:
     with _ACTIVE_LOCK:
         _ACTIVE_TRANSFERS += 1
     try:
-        yield
+        with transfer_lease():
+            yield
     finally:
         with _ACTIVE_LOCK:
             _ACTIVE_TRANSFERS -= 1
