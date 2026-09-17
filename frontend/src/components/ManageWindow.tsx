@@ -37,7 +37,7 @@ export function ManageWindow() {
   const reloadSignal = useManageRealtime(enabled === true);
   // 대시보드 탭은 모두에게 연다. read_all 보유자는 워크스페이스 전체 통계까지,
   // 일반 멤버는 자신이 참여한 프로젝트 작업 현황만 본다.
-  const caps = useManageCaps();
+  const caps = useManageCaps(reloadSignal);
   useEffect(() => saveString(STORAGE_KEYS.manageTab, tab), [tab]);
 
   useEffect(() => {
@@ -132,6 +132,8 @@ export function ManageWindow() {
       )}
       {tab === "tasks" && caps.loaded && (
         <WorkBoard
+          key={caps.contextKey}
+          contextKey={caps.contextKey}
           reloadSignal={reloadSignal}
           viewerUid={caps.viewerUid}
           personalByDefault={!caps.readAll}

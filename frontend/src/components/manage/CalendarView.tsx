@@ -7,6 +7,7 @@ import { useT } from "../../lib/i18n";
 import { MediaThumbnail } from "../MediaThumbnail";
 import { MonthlyTaskCalendar } from "./MonthlyTaskCalendar";
 import type { Cut, WorkViewProps } from "./types";
+import { cutHasPreview, cutLocalId, privateCutLabel } from "./taskPreviews";
 
 const CELL = 40; // 하루 칸 너비(px)
 type CalMode = "creator" | "month";
@@ -17,7 +18,7 @@ function parseYMD(s?: string | null): { y: number; m: number; d: number } | null
   return m ? { y: +m[1], m: +m[2] - 1, d: +m[3] } : null;
 }
 
-export function CalendarView({ tasks, thumb, disabled }: WorkViewProps) {
+export function CalendarView({ tasks, thumb, disabled, myUid }: WorkViewProps) {
   useT();
   const today = new Date();
   const [anchor, setAnchor] = useState({ y: today.getFullYear(), m: today.getMonth() });
@@ -55,7 +56,7 @@ export function CalendarView({ tasks, thumb, disabled }: WorkViewProps) {
       {mode === "month" ? (
         <MonthlyTaskCalendar anchor={anchor} tasks={tasks} />
       ) : (
-        <CreatorCalendarBody anchor={anchor} tasks={tasks} thumb={thumb} disabled={disabled} />
+        <CreatorCalendarBody anchor={anchor} tasks={tasks} thumb={thumb} disabled={disabled} myUid={myUid} />
       )}
     </div>
   );
@@ -100,12 +101,15 @@ function CreatorCalendarBody({
   tasks,
   thumb,
   disabled,
+  myUid,
 }: {
   anchor: { y: number; m: number };
   tasks: WorkViewProps["tasks"];
   thumb: WorkViewProps["thumb"];
   disabled: WorkViewProps["disabled"];
+  myUid?: string | null;
 }) {
+  const t = useT();
   const today = new Date();
   const daysInMonth = new Date(anchor.y, anchor.m + 1, 0).getDate();
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
@@ -153,8 +157,9 @@ function CreatorCalendarBody({
               <div className="work-cal-track" style={{ width: trackWidth }}>
                 {days.map((d) => {
                   const cuts = cr.byDay[d] || [];
-                  const first = cuts[0];
-                  const off = first ? disabled.has(first.id) : false;
+                  const first = cuts.find(cutHasPreview) || cuts[0];
+                  const localId = first ? cutLocalId(first) : undefined;
+                  const off = !!localId && disabled.has(localId);
                   const cls =
                     "work-cal-gencell" +
                     (isToday(d) ? " today" : "") +
@@ -170,12 +175,14 @@ function CreatorCalendarBody({
                           }
                           title={`${cr.name} · ${anchor.m + 1}/${d} · ${cuts.length}개`}
                         >
-                          <MediaThumbnail
+                          {cutHasPreview(first) ? <MediaThumbnail
                             thumb={thumb(first.thumb, first.file_path, first.media_type)}
                             isVideo={first.media_type === "video"}
                             src={first.media_type === "video" ? first.file_path ?? undefined : undefined}
                             fallback={<span className="work-cut-ph" />}
-                          />
+                          /> : <span className="work-cut-private-calendar" title={t(privateCutLabel(first, myUid))}>
+                            {t(first.creator_uid === myUid ? "미리보기 없음" : "미공유")}
+                          </span>}
                           {cuts.length > 1 && (
                             <span className="work-cal-gen-more">+{cuts.length - 1}</span>
                           )}

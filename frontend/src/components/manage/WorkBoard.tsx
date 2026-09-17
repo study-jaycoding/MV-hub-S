@@ -25,6 +25,7 @@ import { CalendarView } from "./CalendarView";
 import { BoardView } from "./KanbanBoard";
 import { type ColorMap, loadColorMap, saveColorMap } from "./manageColors";
 import { scopeTasksToCreator } from "./personalWork";
+import { applyTaskPreviews, cutLocalId, prepareTaskPreviews, taskPreviewCandidates } from "./taskPreviews";
 import { TableView } from "./TableView";
 import { WorkFilterBar } from "./WorkFilterBar";
 import { useT } from "../../lib/i18n";
@@ -209,16 +210,24 @@ export function WorkBoard({
   personalByDefault = false,
   workspaceId,
   workspaceName,
+  contextKey = "",
 }: {
   reloadSignal?: number;
   viewerUid?: string | null;
   personalByDefault?: boolean;
   workspaceId?: string;
   workspaceName?: string;
+  contextKey?: string;
 }) {
-  useT(); // 언어 토글 시 라벨 리렌더
+  const t = useT();
+  const [showHistory, setShowHistory] = useState(false);
+  const scopeKey = JSON.stringify([contextKey, viewerUid, personalByDefault,
+    workspaceId || "personal", showHistory]);
   const [projects, setProjects] = useState<{ pid: string; name: string }[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]); // 전체 프로젝트 병합(project_name 부착)
+  const [storedTasks, setTasks] = useState<Task[]>([]); // 전체 프로젝트 병합(project_name 부착)
+  const [taskScope, setTaskScope] = useState(scopeKey);
+  // effect가 정리되기 전 렌더에서도 이전 계정·공간의 미디어를 노출하지 않는다.
+  const tasks = taskScope === scopeKey ? storedTasks : [];
   const [seqOptions, setSeqOptions] = useState<string[]>([]);
   const myUid = viewerUid;
   // 일반 작업자는 본인이 만든 생성물 기준 개인 작업표가 기본이다. read_all 관리자는 전체가 기본.
@@ -228,7 +237,6 @@ export function WorkBoard({
   );
   const [filters, setFilters] = useState<WorkFilters>(loadFilters);
   const [err, setErr] = useState<string | null>(null);
-  const [showHistory, setShowHistory] = useState(false);
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -254,7 +262,7 @@ export function WorkBoard({
   // 테이블 행 다중선택(하단 선택바에서 일괄 삭제). 뷰 전환 시 초기화.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   useEffect(() => setSelected(new Set()), [view]);
-  useEffect(() => setSelected(new Set()), [showHistory, workspaceId]);
+  useEffect(() => setSelected(new Set()), [scopeKey]);
   const toggleSelect = (id: string) => {
     const task = tasks.find((item) => item.id === id);
     if (!task || taskIsReadOnly(task, showHistory)) return;
@@ -302,7 +310,6 @@ export function WorkBoard({
   const loadingRef = useRef(false);
   const loadPromiseRef = useRef<Promise<void> | null>(null);
   const pendingLoadRef = useRef(false);
-  const scopeKey = `${workspaceId || "personal"}:${showHistory ? "history" : "active"}`;
   const scopeKeyRef = useRef(scopeKey);
   scopeKeyRef.current = scopeKey;
   // ★스코프(워크스페이스×이력)별 저장 큐 — 하나의 latest 큐를 공유하면 A 스코프의 대기 중
@@ -360,9 +367,21 @@ export function WorkBoard({
           if (scopeKeyRef.current === requestScope) pendingLoadRef.current = true;
           return;
         }
-        const ordered = tasks.sort(bySort);
+        const ordered = prepareTaskPreviews(tasks, viewerUid).sort(bySort);
         // 30초 안전망·실시간 신호가 같은 JSON을 돌려줘도 작업표 전체를 다시 그리지 않는다.
         setTasks((previous) => reconcileArrayState(previous, ordered));
+        setTaskScope(requestScope);
+        const candidates = taskPreviewCandidates(ordered, viewerUid);
+        if (!viewerUid || !candidates.length) return;
+        // 일반 생성물 batch는 서버로 폴백하므로 사용하지 않는다. 본인 로컬 전용 조회만 허용.
+        // 미리보기 지연이 새 작업 목록/공간 조회를 막지 않도록 별도로 보강한다.
+        void manageApi.localTaskPreviews(viewerUid, candidates).catch(() => null).then((previews) => {
+          if (!mountedRef.current || reqRef.current !== my || !taskLoadResultIsCurrent(
+            requestScope, scopeKeyRef.current, requestDataRevision, taskDataRevisionRef.current,
+          )) return;
+          const enriched = applyTaskPreviews(ordered, viewerUid, candidates, previews);
+          setTasks((previous) => reconcileArrayState(previous, enriched));
+        });
       }
     };
     // 프로젝트별 fan-out은 순차 배포 중 구서버에 배치 라우트가 없을 때만 사용한다.
@@ -379,7 +398,7 @@ export function WorkBoard({
     const request = manageApi
       .listTasksBatch(ps.map((p) => p.pid), workspaceId, showHistory)
       .then((byPid) => {
-        finish(ps.flatMap((p) => (byPid[p.pid] || []).map((t) => ({ ...t, project_name: p.name }))));
+        return finish(ps.flatMap((p) => (byPid[p.pid] || []).map((t) => ({ ...t, project_name: p.name }))));
       })
       .catch((error) => {
         if (!isRouteMissing(error)) throw error;
@@ -496,7 +515,7 @@ export function WorkBoard({
     setProjects([]);
     setTasks([]);
     void loadProjectsRef.current();
-  }, [workspaceId]);
+  }, [workspaceId, contextKey, viewerUid, personalByDefault]);
 
   useEffect(() => {
     api.facets().then((f) => setSeqOptions(f.auto_tags || [])).catch(() => {});
@@ -577,7 +596,7 @@ export function WorkBoard({
       // 상태 이동과 컷 활성화 동기화(대칭): 생략→컷 비활성화, 생략에서 빼면→컷 재활성화.
       if (patch.status) {
         const t = tasks.find((x) => x.id === tid);
-        const ids = (t?.cuts || []).map((c) => c.id);
+        const ids = (t?.cuts || []).map(cutLocalId).filter((id): id is string => !!id);
         if (patch.status === "omit") {
           // 폴더 단위로 이미 생략된 작업이면 id store 를 건드리지 않는다 — 폴더를 다시 켤 때
           // 컷 비활성이 잔류해 계속 생략으로 남는 오염 방지(폴더 store 가 단일 소스).
@@ -613,6 +632,7 @@ export function WorkBoard({
     })();
   };
   const onLinkGen = (tid: string, genId: string) => {
+    if (genId.startsWith("fact:")) return;
     if (writeBlocked(tid)) return;
     const requestScope = scopeKey;
     void (async () => {
@@ -626,6 +646,7 @@ export function WorkBoard({
     })();
   };
   const onUnlinkGen = (tid: string, genId: string) => {
+    if (genId.startsWith("fact:")) return;
     if (writeBlocked(tid)) return;
     const requestScope = scopeKey;
     void (async () => {
@@ -648,7 +669,10 @@ export function WorkBoard({
           return { ...t, status: "omit" };
         if (!disabled.size) return t;
         const cuts = t.cuts || [];
-        const allOff = cuts.length > 0 && cuts.every((c) => disabled.has(c.id));
+        const allOff = cuts.length > 0 && cuts.every((c) => {
+          const id = cutLocalId(c);
+          return !!id && disabled.has(id);
+        });
         return allOff ? { ...t, status: "omit" } : t;
       }),
     [tasks, disabled, disabledFolders],
@@ -660,7 +684,7 @@ export function WorkBoard({
     const s = new Set(disabled);
     for (const t of tasks) {
       if (isFolderDisabled(disabledFolders, t.project_id, t.folder_path))
-        (t.cuts || []).forEach((c) => s.add(c.id));
+        (t.cuts || []).forEach((c) => { const id = cutLocalId(c); if (id) s.add(id); });
     }
     return s;
   }, [tasks, disabled, disabledFolders]);
@@ -786,7 +810,7 @@ export function WorkBoard({
         <div>
           <h1>작업</h1>
           <p className="work-source-label">
-            공유 서버 작업 기록 · {workspaceName || (workspaceId ? "선택 워크스페이스" : "개인 · 전체 워크스페이스")}
+            {t("서버 작업 기록 · 로컬 미리보기")} · {workspaceName || (workspaceId ? "선택 워크스페이스" : "개인 · 전체 워크스페이스")}
           </p>
         </div>
         <div className="work-head-ctl">

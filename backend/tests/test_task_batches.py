@@ -27,6 +27,13 @@ class TaskBatchTests(unittest.TestCase):
         db.flush_pool()
         db.init_db()
         repo.ensure_default_worker()
+        # 이 파일은 배치 계약을 검사한다. 실행 모드/실제 브라우저 경계는 별도 HTTP 회귀에서 검증.
+        access = patch.object(manage_router, "_task_activity_access", return_value={
+            "include_activity": True, "activity_viewer": None,
+            "activity_read_all": False, "preview_owner": None,
+        })
+        access.start()
+        self.addCleanup(access.stop)
         # 배치 쓰기 계약은 귀속이 확정된 현재 작업을 대상으로 한다. 기본 시드 프로젝트의
         # 레거시 unknown 값을 그대로 쓰면 운영 라우터에서도 수정 불가이므로 정상 개인 범위로 맞춘다.
         with db.get_connection() as conn:
@@ -85,7 +92,8 @@ class TaskBatchTests(unittest.TestCase):
         self.assertEqual(json.loads(result.body), expected)
         self.assertEqual(require_read.call_count, 2)
         batch.assert_called_once_with(
-            ["p1", "p2"], include_archived=False, workspace_id=None
+            ["p1", "p2"], include_archived=False, workspace_id=None,
+            include_activity=True, activity_viewer=ANY, activity_read_all=ANY, preview_owner=ANY,
         )
         single.assert_not_called()
 

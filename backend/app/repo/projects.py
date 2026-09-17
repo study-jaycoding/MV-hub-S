@@ -13,6 +13,7 @@ import sqlite3
 from typing import Any, Optional
 
 from ..db import get_connection
+from ..task_activity import task_activity_now, task_location_key
 from ..workspace_context import workspace_columns
 from ._common import clean_folder_path as _clean_folder_path, new_id
 from ._visibility import team_generation_visibility_clause
@@ -455,7 +456,11 @@ def delete_project(pid: str) -> bool:
     project_member 는 FK ON DELETE CASCADE 로 함께 정리.
     ★transaction-root 전용(바깥 트랜잭션 안 호출 금지 — 중첩은 sqlite 오류로 fail-fast)."""
     unassigned_ids: list[str] = []
+    from .manage_schema import ensure_manage_schema
+    from .manage_telemetry import mark_telemetry_dirty_in_connection
+
     with get_connection() as conn:
+        ensure_manage_schema(conn)
         # 미분류 되돌림+삭제를 한 트랜잭션으로(R6 1-J) — 중간 실패 시 생성물만 미분류가
         # 되고 프로젝트는 남는 반쪽 상태 방지. member cascade 는 DELETE 와 같은 트랜잭션.
         conn.execute("BEGIN IMMEDIATE")
@@ -467,23 +472,16 @@ def delete_project(pid: str) -> bool:
                 ).fetchall()
             ]
             conn.execute(
-                "UPDATE generation SET project_id = NULL WHERE project_id = ?", (pid,)
+                "UPDATE generation SET project_id=NULL, task_activity_at=? WHERE project_id=?",
+                (task_activity_now(), pid),
             )
             cur = conn.execute("DELETE FROM project WHERE id = ?", (pid,))
             deleted = cur.rowcount > 0
+            mark_telemetry_dirty_in_connection(conn, unassigned_ids)
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
             raise
-    if unassigned_ids:
-        # 미분류로 되돌린 생성물을 telemetry dirty 로(코덱스 1-J 계약) — 안 하면 팀
-        # 집계에 옛 프로젝트 귀속이 남는다. COMMIT 뒤 best-effort(종전 backfill 과 동일).
-        try:
-            from .manage_telemetry import mark_telemetry_dirty
-
-            mark_telemetry_dirty(unassigned_ids)
-        except Exception:  # noqa: BLE001 — 텔레메트리 실패가 삭제를 막지 않는다
-            pass
     return deleted
 
 
@@ -511,6 +509,7 @@ def assign_to_project(
     *,
     shared_only: bool = False,
     folder_path: Optional[str] = None,
+    resume_work: bool = False,
 ) -> int:
     """결과물들을 프로젝트에 귀속(또는 project_id=None 으로 미분류 해제). 변경 행수 반환.
     project_id 가 실재하는지 검증(없으면 ValueError).
@@ -520,7 +519,13 @@ def assign_to_project(
     스코프 없이 남의 공유물을 프로젝트로 묶더라도, 공유 안 된 남의 사적 작업물은 절대 못 건드리게."""
     if not generation_ids:
         return 0
+    from ..config import MANAGE_ENABLED
+    from .manage_schema import ensure_manage_schema
+    from .manage_telemetry import mark_telemetry_dirty_in_connection
+
     with get_connection() as conn:
+        if MANAGE_ENABLED:
+            ensure_manage_schema(conn)
         # 검증(프로젝트 존재·워크스페이스 불일치)→UPDATE 를 한 쓰기락으로(R6 2-F) —
         # 사이에 프로젝트 이동·삭제가 끼면 낡은 판정으로 귀속했다. BEGIN 은 프로젝트
         # 조회 전에 연다(코덱스 계약). ★transaction-root 전용(중첩 호출 금지).
@@ -559,29 +564,47 @@ def assign_to_project(
         #  · 폴더를 명시 선택(folder_path 있음) → 그 폴더로 갱신.
         #  · 프로젝트명만 담기(folder_path 없음) → 기존 폴더 보존(건드리지 않음).
         fpath = _clean_folder_path(folder_path)
-        set_cols = ["project_id = ?"]
-        set_args: list[Any] = [project_id]
-        if project and project["workspace_scope"] == "team" and project["workspace_id"]:
-            set_cols += [
-                "workspace_scope = CASE WHEN workspace_scope='unknown' THEN 'team' ELSE workspace_scope END",
-                "workspace_id = CASE WHEN workspace_scope='unknown' THEN ? ELSE workspace_id END",
-                "workspace_name = CASE WHEN workspace_scope='unknown' THEN ? ELSE workspace_name END",
-            ]
-            set_args += [project["workspace_id"], project["workspace_name"]]
-        if project_id is None:
-            set_cols.append("folder_path = NULL")
-        elif fpath is not None:
-            set_cols.append("folder_path = ?")
-            set_args.append(fpath)
-        params: list[Any] = [*set_args, *generation_ids, *generation_ids]
+        params: list[Any] = [*generation_ids, *generation_ids]
         if account_uid is not None:
             params.append(account_uid)
-        cur = conn.execute(
-            f"UPDATE generation SET {', '.join(set_cols)} "
+        rows = conn.execute(
+            "SELECT id, project_id, folder_path, workspace_scope, workspace_id, workspace_name, "
+            "task_activity_at FROM generation "
             f"WHERE (id IN ({placeholders}) OR job_id IN ({placeholders})){scope}",
             params,
-        )
-        return cur.rowcount
+        ).fetchall()
+        dirty_ids: list[str] = []
+        stamp = task_activity_now()
+        fields = ("project_id", "folder_path", "workspace_scope", "workspace_id", "workspace_name")
+        for row in rows:
+            previous = dict(row)
+            updated = {**previous, "project_id": project_id}
+            if project_id is None:
+                updated["folder_path"] = None
+            elif fpath is not None:
+                updated["folder_path"] = fpath
+            if project and project["workspace_scope"] == "team" and project["workspace_id"]:
+                if previous["workspace_scope"] == "unknown":
+                    updated.update(
+                        workspace_scope="team", workspace_id=project["workspace_id"],
+                        workspace_name=project["workspace_name"],
+                    )
+            # 이 함수의 unknown→team은 프로젝트에서 빠진 정보를 보강하는 부수 작업이다.
+            # 같은 프로젝트/폴더의 단순 보강은 활동이 아니며 명시 resume만 예외다.
+            changed_location = task_location_key(previous)[2:] != task_location_key(updated)[2:]
+            if not resume_work and all(previous[key] == updated[key] for key in fields):
+                continue
+            activity = stamp if changed_location or resume_work else previous["task_activity_at"]
+            conn.execute(
+                "UPDATE generation SET project_id=?, folder_path=?, workspace_scope=?, "
+                "workspace_id=?, workspace_name=?, task_activity_at=? WHERE id=?",
+                (*[updated[key] for key in fields], activity, row["id"]),
+            )
+            dirty_ids.append(row["id"])
+        if MANAGE_ENABLED:
+            # 요청이 job_id 앵커여도 outbox에는 반드시 정식 로컬 id를 넣는다.
+            mark_telemetry_dirty_in_connection(conn, dirty_ids)
+        return len(rows)
 
 
 def folder_counts(

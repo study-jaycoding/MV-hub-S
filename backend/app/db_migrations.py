@@ -297,6 +297,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # NULL = 미지정. 무장 폴더(armedFolder)로 생성 시 라벨링.
     if "folder_path" not in gen_cols:
         conn.execute("ALTER TABLE generation ADD COLUMN folder_path TEXT")
+    # 실제 폴더 배치/명시 재개만 기록한다. 구기록을 now로 채우면 과거 작업 전체가 재활성된다.
+    if "task_activity_at" not in gen_cols:
+        conn.execute("ALTER TABLE generation ADD COLUMN task_activity_at TEXT")
     # 휴지통(soft delete) — 우리 카탈로그에서만 숨김. NULL=정상, 시각=지운 때.
     # 힉스필드 원본엔 영향 없음(우리 DB 기록만). '지운 생성물 보기' 토글로 흐리게 재표시.
     if "deleted_at" not in gen_cols:

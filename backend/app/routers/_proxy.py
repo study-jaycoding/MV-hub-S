@@ -464,6 +464,7 @@ _LOCAL_PREFIXES = (
 )
 _LOCAL_EXACT = frozenset(
     {
+        "/api/manage/local-task-previews",  # 본인 미공유 컷 — 원격 폴백 금지
         "/api/health",
         "/api/cli-check",     # 코드핀 vs 서버 버전 게이트 — 로컬 허브가 서버를 대신 조회해 대조(프록시 금지)
         "/api/cost",          # CLI 비용 추정

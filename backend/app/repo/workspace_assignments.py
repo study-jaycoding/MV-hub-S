@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from ..db import get_connection
 from ..emailnorm import norm_email
+from ..task_activity import task_activity_now, task_location_key
 
 
 class WorkspaceAssignmentError(ValueError):
@@ -139,7 +140,7 @@ def _build_plan(
     rows = conn.execute(
         f"WITH requested(requested_id) AS (VALUES {values}) "
         "SELECT requested.requested_id, g.id, g.job_id, g.creator_uid, g.deleted_at, "
-        "g.workspace_scope, g.workspace_id, g.workspace_name, g.project_id, "
+        "g.workspace_scope, g.workspace_id, g.workspace_name, g.project_id, g.folder_path, "
         "p.workspace_scope AS project_workspace_scope, p.workspace_id AS project_workspace_id, "
         "p.workspace_name AS project_workspace_name, "
         "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
@@ -253,10 +254,15 @@ def set_generation_workspace_batch(
     owner_uid: Optional[str] = None,
 ) -> dict[str, Any]:
     """전체 검증과 귀속 변경을 한 쓰기 트랜잭션으로 수행한다."""
+    from .manage_schema import ensure_manage_schema
+    from .manage_telemetry import mark_telemetry_dirty_in_connection
+
     with get_connection() as conn:
+        ensure_manage_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
         plan = _build_plan(conn, generation_ids, operation, workspace, owner_uid)
         assigned_project = plan.get("assigned_project")
+        stamp = task_activity_now()
         for row in plan["changed"]:
             action = row.get("project_action", "keep")
             if operation == "assign":
@@ -295,11 +301,12 @@ def set_generation_workspace_batch(
                         "workspace_name=NULL WHERE id=?",
                         (row["id"],),
                     )
-
-    changed_local_ids = [str(row["id"]) for row in plan["changed"]]
-    if changed_local_ids:
-        # 관리 대시보드는 별도 팩트 DB를 읽으므로 다음 에이전트 push에서 즉시 재집계되게 한다.
-        from .manage_telemetry import mark_telemetry_dirty
-
-        mark_telemetry_dirty(changed_local_ids)
+            updated = dict(conn.execute(
+                "SELECT workspace_scope, workspace_id, project_id, folder_path FROM generation WHERE id=?",
+                (row["id"],),
+            ).fetchone())
+            if task_location_key(row) != task_location_key(updated):
+                conn.execute("UPDATE generation SET task_activity_at=? WHERE id=?", (stamp, row["id"]))
+        # 변경과 큐 기록을 함께 커밋한다. 이름만 변경된 경우에도 메타는 전송하되 활동은 보존한다.
+        mark_telemetry_dirty_in_connection(conn, [str(row["id"]) for row in plan["changed"]])
     return plan

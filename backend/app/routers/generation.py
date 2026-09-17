@@ -98,15 +98,18 @@ def list_creators(
     project_id: str | None = None,
     workspace_ids: list[str] = Query(default=[]),
     workspace_scope: Optional[Literal["personal"]] = None,
+    folder_path: str | None = None,
+    facet_scope: Optional[Literal["library"]] = None,
 ):
-    """생성자 목록 — project_id 가 오면 그 프로젝트 참여 인원(멤버), 아니면 My=본인/Team=공유물 작성자."""
+    """생성자 집계. My의 facet_scope=library는 실제 본인 라이브러리 범위이며 구 응답은 보존한다."""
     raw_ws = workspace_ids if isinstance(workspace_ids, (list, tuple)) else []
     if len(raw_ws) > 200 or any(
         not isinstance(w, str) or not w.strip() or len(w.strip()) > 200 for w in raw_ws
     ):
         raise HTTPException(422, "워크스페이스 ID는 비어 있지 않은 200자 이하 문자열이어야 합니다")
-    picked_ws = list(dict.fromkeys(w.strip() for w in raw_ws)) if tab == "team" else []
-    scope = workspace_scope if tab == "team" else None
+    library_facet = tab == "my" and facet_scope == "library"
+    picked_ws = list(dict.fromkeys(w.strip() for w in raw_ws)) if tab == "team" or library_facet else []
+    scope = workspace_scope if tab == "team" or library_facet else None
     scoped = bool(picked_ws or scope)
     # 같은 임계구역에서 캡처한 key/uid를 원격 왕복 끝까지 유지한다.
     # 기존 개인메타 helper 자체의 동작은 바꾸지 않고 이 조회에서만 uid도 고정한다.
@@ -132,6 +135,10 @@ def list_creators(
                 return {"items": data["items"], "workspace_filter_applied": True}
             # 미링크 AUTH-on 계정은 기존 impossible UID로 제한한다. None으로 완화하지 않는다.
             account_uid = account_scope_uid(request)
+            if library_facet and not account_uid and (AUTH_ENABLED or _proxy.proxying()):
+                # AUTH off 로컬 허브는 request 계정 대신 위에서 키와 함께 캡처한 UID를 쓴다.
+                # AUTH on 미확정 로그인은 활성 PC 계정이나 제공자 UID로 완화하지 않는다.
+                account_uid = (pinned_uid if not AUTH_ENABLED else None) or "\x00"
             team_member_projects = None
             if tab == "team":
                 read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
@@ -143,7 +150,11 @@ def list_creators(
                 account_uid=account_uid, tab=tab, project_id=project_id,
                 team_member_projects=team_member_projects,
                 workspace_ids=picked_ws, workspace_scope=scope,
+                folder_path=folder_path if library_facet else None,
+                facet_scope="library" if library_facet else None,
             )
+            if library_facet:
+                return {"items": items, "creator_scope_applied": True}
             return {"items": items, "workspace_filter_applied": True} if scoped else items
         finally:
             active_account.reset_uid_override(uid_token)

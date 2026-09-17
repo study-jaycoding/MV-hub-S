@@ -176,13 +176,40 @@ it("선택한 생성자는 집계 조건을 줄이지 않고 클릭 선택·해�
   expect(api.creators).toHaveBeenLastCalledWith("team", "project", { workspace_ids: ["a"] });
 });
 
-it("프로젝트 전환은 재조회하고 내 작업은 공간 조건과 자동 필터해제를 적용하지 않음", async () => {
+it("프로젝트 전환은 재조회하고 내 작업도 공간 조건과 사라진 선택 해제를 적용", async () => {
   render(); await settle();
   render({ projectId: "project-new" }); await settle();
   expect(api.creators).toHaveBeenLastCalledWith("team", "project-new", { workspace_ids: ["a"] });
   render({ tab: "my", activeUid: "missing" }); await settle();
-  expect(api.creators).toHaveBeenLastCalledWith("my", "project-new", {});
-  expect(onFilter).not.toHaveBeenCalled();
+  expect(api.creators).toHaveBeenLastCalledWith("my", "project-new", { workspace_ids: ["a"] }, undefined);
+  expect(onFilter).toHaveBeenCalledWith(undefined);
+});
+
+it("내 작업은 폴더·미분류 변경을 조회 키에 포함하고 늦은 이전 폴더 집계를 버린다", async () => {
+  const old = deferred<Creator[]>();
+  vi.mocked(api.creators).mockImplementation(async (_tab, _project, _scope, folder) =>
+    folder === "ep/old" ? old.promise : b);
+  render({ tab: "my", folderPath: "ep/old" }); await settle();
+  render({ projectId: "none", folderPath: "ep/new" }); await settle();
+  expect(api.creators).toHaveBeenLastCalledWith("my", "none", { workspace_ids: ["a"] }, "ep/new");
+  expect(rows()).toEqual(["B creator9"]);
+  old.resolve(a); await settle(); expect(rows()).toEqual(["B creator9"]);
+});
+
+it("내 작업 휴지통에서도 일반 생성자 숫자를 조회하지 않으며 선택을 유지", async () => {
+  render({ tab: "my", deletedOnly: true, activeUid: "old-creator" }); await settle();
+  event(); broadcast(); await settle();
+  expect(api.creators).not.toHaveBeenCalled(); expect(onFilter).not.toHaveBeenCalled();
+  expect(rows()).toEqual([]); expect(host.textContent).toContain("생성자 필터 해제");
+  render({ deletedOnly: false }); await settle(); expect(api.creators).toHaveBeenCalledOnce();
+});
+
+it("내 작업의 범위 미지원 응답은 기존 숫자 대신 로컬 업데이트 안내를 보여준다", async () => {
+  render({ tab: "my" }); await settle(); expect(rows()).toHaveLength(2);
+  vi.mocked(api.creators).mockRejectedValueOnce(new HttpError(409, "scope unavailable"));
+  render({ folderPath: "other" }); await settle();
+  expect(rows()).toEqual([]);
+  expect(host.textContent).toContain("로컬 앱 업데이트");
 });
 
 it("언마운트 뒤에는 변경 알림 구독을 제거", async () => {

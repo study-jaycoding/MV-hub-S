@@ -104,8 +104,13 @@ def list_creators(
     team_member_projects: Optional[list[str]] = None,
     workspace_ids: Optional[list[str]] = None,
     workspace_scope: Optional[str] = None,
+    folder_path: Optional[str] = None,
+    facet_scope: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """생성자 목록 [{uid, name, count, is_mine}] — 사이드바 필터 + 이름붙이기.
+
+    facet_scope='library' + tab='my'는 본인/공간/프로젝트/폴더의 실제 콘텐츠만 집계한다.
+    아래 멤버 합집합 설명은 opt-in 없는 구 클라이언트의 호환 동작이다.
 
     그리드 목록과 같은 범위를 세도록 탭·계정으로 한정한다(예전엔 전체를 세서 '내 작업' 탭에도
     남의 카운트가 떴다):
@@ -115,6 +120,44 @@ def list_creators(
       · tab='team' → 현재 사용자가 볼 수 있는 공유 결과물의 작성자들.
       · account_uid 없음(비로그인/단독) → 전체(기존 동작 유지)."""
     my = account_uid or get_my_uid()
+    if tab == "my" and facet_scope == "library":
+        # 새 사이드바는 멤버 명단이 아닌 실제 내 라이브러리의 기본 범위를 집계한다.
+        # 구 클라이언트의 프로젝트 멤버/배열 계약은 아래 기존 분기로 유지한다.
+        if not my or my == "\x00":
+            return []
+        where = ["g.creator_uid = ?", "g.deleted_at IS NULL"]
+        args: list[Any] = [my]
+        if project_id == "none":
+            where.append("g.project_id IS NULL")
+        elif project_id:
+            where.append("g.project_id = ?")
+            args.append(project_id)
+        else:
+            where.append(
+                "(g.project_id IS NULL OR g.project_id NOT IN "
+                "(SELECT id FROM project WHERE archived = 1))"
+            )
+        picked = list(dict.fromkeys(
+            w.strip() for w in (workspace_ids or []) if isinstance(w, str) and w.strip()
+        ))
+        if picked:
+            where.append(f"(g.workspace_scope = 'team' AND g.workspace_id IN ({','.join('?' for _ in picked)}))")
+            args.extend(picked)
+        if workspace_scope is not None:
+            where.append("g.workspace_scope = ?")
+            args.append(workspace_scope)
+        if folder_path:
+            # 카드 목록과 동일: 자신+하위 폴더만, LIKE 메타문자는 폴더 이름으로 취급한다.
+            escaped = folder_path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where.append("(g.folder_path = ? OR g.folder_path LIKE ? ESCAPE '\\')")
+            args += [folder_path, escaped + "/%"]
+        with get_connection() as conn:
+            count = conn.execute(
+                f"SELECT COUNT(*) FROM generation g WHERE {' AND '.join(where)}", args
+            ).fetchone()[0]
+            name = resolve_display_names(conn, [my]).get(my)
+            # 확인된 본인은 0건이어도 유지한다. 타인/배정 멤버를 합치지 않는다.
+            return [{"uid": my, "name": name, "count": count, "is_mine": True}]
     if tab == "team":
         # 카드 목록과 같은 공유/권한/워크스페이스/프로젝트 범위로 서버에서 전체를 센다.
         # 목록 페이지를 수집하지 않으므로 카드 로드 수나 프록시 스캔 상한에 좌우되지 않는다.

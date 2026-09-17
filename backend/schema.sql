@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS generation (
     color      TEXT,                                 -- 컬러 마커 (hex/name)
     status     TEXT NOT NULL DEFAULT 'pending',      -- pending|running|done|failed
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    task_activity_at TEXT,                            -- 실제 배치 변경/명시 재개 시각. 기존 데이터는 NULL 유지
     sort_ts    REAL,                                 -- 정렬용 정밀 epoch(힉스필드 created_at sub-second). 표시는 created_at, 정렬은 이것
     job_id     TEXT,                                 -- Higgsfield 잡 id. 로컬 생성본↔동기화본 연결(중복 방지)
     is_source  INTEGER NOT NULL DEFAULT 0,           -- 소스 라이브러리 등록 여부(@ 로 프롬프트에서 참조)

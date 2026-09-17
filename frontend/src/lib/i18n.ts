@@ -7,6 +7,13 @@ import { type Lang, loadLang, saveLang } from "./theme";
 
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
+  "서버 작업 기록 · 로컬 미리보기": "Server activity · Local previews",
+  "미공유": "Unshared",
+  "로컬 확인 중": "Checking locally",
+  "이 PC에 원본 없음": "Not on this PC",
+  "로컬 미리보기 없음": "Local preview unavailable",
+  "미리보기 없음": "No preview",
+  "{label} {count}개": "{label}: {count}",
   "더 보기": "Load more",
   "뒤쪽 페이지에 조건에 맞는 항목이 있을 수 있습니다.": "Matching items may be on a later page.",
   "휴지통 추가 조회에 실패했습니다. 새로고침 후 다시 시도하세요.": "Could not load more trash items. Refresh to try again.",
@@ -93,6 +100,7 @@ const EN: Record<string, string> = {
   "생성자": "Creator",
   "생성자 필터 해제": "Clear creator filter",
   "워크스페이스별 생성자 표시에는 공유 서버 업데이트가 필요합니다.": "Update the shared server to show creators for this workspace.",
+  "작업 공간 생성자 표시에는 로컬 앱 업데이트가 필요합니다.": "Update the local app for workspace creator counts.",
   "컬러": "Color",
   "프로젝트": "Projects",
   "공유": "Shared",

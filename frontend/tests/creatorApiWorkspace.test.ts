@@ -57,22 +57,51 @@ it.each([undefined, {}, { workspace_ids: [] }])("전체 보기는 기존 배열 
   expect(query().get("workspace_scope")).toBeNull();
 });
 
-it("내 작업 호출은 추가 공간 인자를 적용하지 않고 기존 배열을 유지", async () => {
-  jsonFetch.mockResolvedValue(items);
-  expect(await projectApi.creators("my", "project-one", { workspace_ids: ["a"], workspace_scope: "personal" }))
+it("내 작업은 본인 라이브러리 범위를 요청하고 공간·폴더를 함께 보낸다", async () => {
+  jsonFetch.mockResolvedValue({ items, creator_scope_applied: true });
+  expect(await projectApi.creators("my", "project-one", { workspace_ids: ["a"], workspace_scope: "personal" }, "ep/seq"))
     .toEqual(items);
   expect(query().get("tab")).toBe("my");
   expect(query().get("project_id")).toBe("project-one");
-  expect(query().getAll("workspace_ids")).toEqual([]);
-  expect(query().get("workspace_scope")).toBeNull();
+  expect(query().getAll("workspace_ids")).toEqual(["a"]);
+  expect(query().get("workspace_scope")).toBe("personal");
+  expect(query().get("folder_path")).toBe("ep/seq");
+  expect(query().get("facet_scope")).toBe("library");
 });
 
 it("인자 없는 기존 호출과 서버 오류는 그대로 유지", async () => {
-  jsonFetch.mockResolvedValueOnce(items);
+  jsonFetch.mockResolvedValueOnce({ items, creator_scope_applied: true });
   expect(await projectApi.creators()).toEqual(items);
   expect(query().get("tab")).toBe("my");
   const error = new HttpError(403, "denied");
   jsonFetch.mockRejectedValueOnce(error);
   await expect(projectApi.creators("team", undefined, { workspace_ids: ["a"] })).rejects.toBe(error);
   expect(jsonFetch).toHaveBeenCalledTimes(2);
+});
+
+it.each([items, { items }, { items, creator_scope_applied: false },
+  { items, creator_scope_applied: "true" }, { items: {}, creator_scope_applied: true }, null])(
+  "내 작업은 구서버 또는 범위 확인 없는 응답을 숫자로 표시하지 않는다", async (result) => {
+    jsonFetch.mockResolvedValue(result);
+    await expect(projectApi.creators("my", "none", {}, "e001")).rejects.toMatchObject({ status: 409 });
+  },
+);
+
+it("미분류·루트와 공유 탭의 기존 범위를 구분한다", async () => {
+  jsonFetch.mockResolvedValueOnce({ items: [], creator_scope_applied: true });
+  await projectApi.creators("my", "none", {}, "");
+  expect(query().get("project_id")).toBe("none");
+  expect(query().get("folder_path")).toBeNull();
+  jsonFetch.mockResolvedValueOnce(items);
+  await projectApi.creators("team", "p", {}, "ignored-folder");
+  expect(query().get("facet_scope")).toBeNull();
+  expect(query().get("folder_path")).toBeNull();
+});
+
+it("프로젝트 귀속은 명시적 재개 요청에서만 resume_work를 보낸다", async () => {
+  jsonFetch.mockResolvedValue({ ok: true, updated: 1 });
+  await projectApi.assignProject(["g"], "p", "my", "ep/seq");
+  expect(JSON.parse(jsonFetch.mock.calls.at(-1)![1].body)).not.toHaveProperty("resume_work");
+  await projectApi.assignProject(["g"], "p", "my", "ep/seq", true);
+  expect(JSON.parse(jsonFetch.mock.calls.at(-1)![1].body).resume_work).toBe(true);
 });

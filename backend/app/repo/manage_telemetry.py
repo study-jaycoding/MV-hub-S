@@ -302,7 +302,7 @@ def build_telemetry_facts(
         "g.workspace_scope, g.workspace_id, g.workspace_name, "
         "g.project_id, p.name AS project_name, g.folder_path, g.model, "
         "(SELECT a.type FROM asset a WHERE a.generation_id=g.id LIMIT 1) AS output_type, "
-        "g.status, g.created_at, g.sort_ts, g.is_final, "
+        "g.status, g.created_at, g.task_activity_at, g.sort_ts, g.is_final, "
         "(CASE WHEN EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) "
         "THEN 1 ELSE 0 END) AS is_shared, "
         "m.real_credits, m.est_credits, m.credit_source, m.elapsed_seconds, "

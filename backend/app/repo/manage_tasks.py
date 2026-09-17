@@ -14,9 +14,18 @@ from typing import Any, Optional
 
 from ..db import get_connection, pool_epoch
 from ..db_paths import get_db_path
+from ..task_activity import latest_task_activity_at
 from ._common import new_id
 from .identity import resolve_display_names
 from .manage_schema import _ensure_schema, unresolved_workspace_sql
+from .manage_task_activity import (
+    folder_sources,
+    load_activity_snapshot,
+    normalize_viewer,
+    project_cuts,
+    task_activity_cache_key,
+    visible_activity_projects,
+)
 
 
 # ── 작업(Task) ────────────────────────────────────────────────────────────────
@@ -494,18 +503,19 @@ def sync_folder_tasks(conn, project_id: str) -> None:
     프로젝트의 distinct folder_path 마다 project_task 1개를 보장 — name=1단계(예 ep001),
     sequence=2단계(예 c0010), folder_path=전체 경로. INSERT OR IGNORE + (project_id, folder_path)
     유니크 인덱스로 이미 있으면 건너뜀 → PM 이 편집한 status/일정/설명을 절대 덮어쓰지 않는다.
-    폴더/생성물이 사라져도 자동 작업을 삭제하지 않는다(편집 정보 유실 방지). 마지막 생성이
+    폴더/생성물이 사라져도 자동 작업을 삭제하지 않는다(편집 정보 유실 방지). 마지막 생성/배치 활동이
     프로젝트 설정 기간보다 오래됐고 계획 마감일도 지났을 때만 archived=1로 전환한다."""
     sync_folder_tasks_batch(conn, [project_id])
 
 
 def sync_folder_tasks_batch(
-    conn, project_ids: list[str], folder_paths: Optional[list[str]] = None
+    conn, project_ids: list[str], folder_paths: Optional[list[str]] = None,
+    *, activity_sources: Optional[list[dict[str, Any]]] = None,
 ) -> None:
     """여러 프로젝트의 폴더 작업을 한 조회로 동기화하고 수명주기를 갱신한다.
 
     팀 프로젝트는 프로젝트와 같은 workspace의 생성물만 작업으로 인정한다. 기존 행은 삭제하지
-    않고 마지막 관측 시각을 갱신하며, 새 생성물이 다시 보이면 과거 기록에서 자동 복원한다.
+    않고 생성/명시적 배치 활동 시각을 반영한다. 단순 재조회·동기화는 활동으로 세지 않는다.
 
     folder_paths 를 주면 그 폴더의 자동 작업 보장만 수행한다(완료본 단건 판정용 —
     프로젝트 전체 GROUP BY 를 피한다). 이때 백필·보관 수명주기 갱신은 건너뛴다:
@@ -522,7 +532,7 @@ def sync_folder_tasks_batch(
     # 변수 상한보다 큰 IN 절을 만들지 않도록 같은 연결 안에서 안전한 크기로 나눈다.
     if len(project_ids) > _SQLITE_IN_BATCH:
         for batch in _batched(project_ids):
-            sync_folder_tasks_batch(conn, batch, folder_paths)
+            sync_folder_tasks_batch(conn, batch, folder_paths, activity_sources=activity_sources)
         return
     placeholders = ",".join("?" * len(project_ids))
     folder_filter = ""
@@ -532,29 +542,37 @@ def sync_folder_tasks_batch(
         folder_args = folder_paths
     source_rows = conn.execute(
         "SELECT g.project_id, g.folder_path, g.workspace_scope, g.workspace_id, "
-        "MAX(g.workspace_name) AS workspace_name, "
-        "MAX(COALESCE(NULLIF(g.created_at, ''), datetime(g.sort_ts, 'unixepoch'))) "
-        "AS source_last_seen_at FROM generation g "
+        "g.workspace_name, g.created_at, g.sort_ts, g.task_activity_at "
+        "FROM generation g "
         "WHERE g.project_id IN (" + placeholders + ") "
         "  AND g.folder_path IS NOT NULL AND g.folder_path<>'' "
-        "  AND g.deleted_at IS NULL" + folder_filter + " "
-        "GROUP BY g.project_id, g.folder_path, g.workspace_scope, g.workspace_id",
+        "  AND g.deleted_at IS NULL" + folder_filter,
         [*project_ids, *folder_args],
-    ).fetchall()
+    ).fetchall() if activity_sources is None else [
+        row for row in activity_sources
+        if row.get("project_id") in project_ids
+        and (folder_paths is None or row.get("folder_path") in folder_paths)
+    ]
     fps: dict[tuple[str, str, str, Optional[str]], dict[str, Any]] = {}
     for raw in source_rows:
         scope, workspace_id, workspace_name = _task_workspace(raw)
         key = (raw["project_id"], raw["folder_path"], scope, workspace_id)
         row = dict(raw)
+        if activity_sources is None:
+            row["source_last_seen_at"] = latest_task_activity_at(
+                row.get("created_at"), row.get("task_activity_at"), row.get("sort_ts")
+            )
         row.update(
             workspace_scope=scope,
             workspace_id=workspace_id,
             workspace_name=workspace_name,
         )
         previous = fps.get(key)
-        if previous is None or str(row["source_last_seen_at"] or "") > str(
-            previous["source_last_seen_at"] or ""
-        ):
+        # SQLite 날짜와 ISO 날짜를 문자열로 비교하지 않는다. 원래 생성일은 보존하고
+        # 명시적인 배치 활동만 보관 판정에 더한다.
+        if previous is None or latest_task_activity_at(
+            previous["source_last_seen_at"], row["source_last_seen_at"]
+        ) != previous["source_last_seen_at"]:
             fps[key] = row
     # ★읽기(list_tasks*)마다 호출된다 — 변화가 없는 정상 상태에선 write 0회를 보장해야
     # 여러 클라이언트가 30초 폴링하는 공유 서버에서 GET 이 SQLite 쓰기락을 다투지 않는다.
@@ -572,6 +590,29 @@ def sync_folder_tasks_batch(
         # 불완전한 구행도 source 쪽과 같은 정규화 키로 찾는다. 그렇지 않으면 같은 폴더의
         # unknown 작업을 하나 더 만들어 중복 카드가 생긴다.
         existing[(r["project_id"], r["folder_path"], scope, workspace_id)] = r
+    # 보관/재활성의 조건을 하나만 사용한다. source가 같아도 PM 마감·보관 기간 변경으로
+    # 활성화될 수 있으므로 시각 동일 여부만 보고 archived 행을 건너뛰면 안 된다.
+    archive_where = (
+        "project_id IN (" + placeholders + ") "
+        "AND source_kind='generation' "
+        "AND source_last_seen_at IS NOT NULL "
+        "AND datetime(source_last_seen_at, printf('+%d days', "
+        "  MAX(1, MIN(COALESCE((SELECT pp.archive_after_days FROM project_planning pp "
+        "                           WHERE pp.project_id=project_task.project_id), 30), 3650))"
+        ")) < datetime('now') "
+        "AND (due_date IS NULL OR TRIM(due_date)='' OR date(due_date)<date('now')) "
+        "AND NOT EXISTS (SELECT 1 FROM project_planning pp "
+        "                WHERE pp.project_id=project_task.project_id "
+        "                  AND pp.due_date IS NOT NULL AND TRIM(pp.due_date)<>'' "
+        "                  AND date(pp.due_date)>=date('now'))"
+    )
+    still_archived: set[str] = set()
+    if folder_paths is None:
+        still_archived = {
+            row["id"] for row in conn.execute(
+                "SELECT id FROM project_task WHERE " + archive_where + " AND archived=1", project_ids
+            )
+        }
     for row in fps.values():
         fp = row["folder_path"]
         parts = [seg for seg in fp.replace("\\", "/").split("/") if seg]
@@ -596,15 +637,20 @@ def sync_folder_tasks_batch(
             )
             continue
         # PM이 편집한 이름·상태·일정은 보존하고 자동 수명주기 필드만, 달라졌을 때만 갱신한다.
+        observed_at = row["source_last_seen_at"] or cur["source_last_seen_at"]
+        retain_archived = (
+            folder_paths is not None
+            or (cur["id"] in still_archived and cur["source_last_seen_at"] == observed_at)
+        )
         if (
             cur["source_kind"] != "generation"
-            or cur["source_last_seen_at"] != row["source_last_seen_at"]
-            or cur["archived"]
+            or cur["source_last_seen_at"] != observed_at
+            or (cur["archived"] and not retain_archived)
         ):
             conn.execute(
-                "UPDATE project_task SET source_kind='generation', source_last_seen_at=?, archived=0 "
+                "UPDATE project_task SET source_kind='generation', source_last_seen_at=?, archived=? "
                 "WHERE id=?",
-                (row["source_last_seen_at"], cur["id"]),
+                (observed_at, cur["archived"] if folder_paths is not None else 0, cur["id"]),
             )
 
     if folder_paths is not None:
@@ -629,20 +675,7 @@ def sync_folder_tasks_batch(
     # 보관 조건 = 마지막 관측+N일이 지났고, 작업/프로젝트 계획 마감일도 모두 지남.
     # 삭제가 아니라 archived 플래그만 바꾸므로 PM 메모·배정·수동 링크는 보존된다.
     # (동일 조건 SELECT 로 대상 유무를 먼저 확인 — 정상 상태 GET 은 쓰기 트랜잭션이 되지 않는다)
-    archive_where = (
-        "project_id IN (" + placeholders + ") "
-        "AND source_kind='generation' AND archived=0 "
-        "AND source_last_seen_at IS NOT NULL "
-        "AND datetime(source_last_seen_at, printf('+%d days', "
-        "  MAX(1, MIN(COALESCE((SELECT pp.archive_after_days FROM project_planning pp "
-        "                           WHERE pp.project_id=project_task.project_id), 30), 3650))"
-        ")) < datetime('now') "
-        "AND (due_date IS NULL OR TRIM(due_date)='' OR date(due_date)<date('now')) "
-        "AND NOT EXISTS (SELECT 1 FROM project_planning pp "
-        "                WHERE pp.project_id=project_task.project_id "
-        "                  AND pp.due_date IS NOT NULL AND TRIM(pp.due_date)<>'' "
-        "                  AND date(pp.due_date)>=date('now'))"
-    )
+    archive_where += " AND archived=0"
     if conn.execute(
         "SELECT 1 FROM project_task WHERE " + archive_where + " LIMIT 1", project_ids
     ).fetchone():
@@ -652,7 +685,9 @@ def sync_folder_tasks_batch(
 
 
 def _list_tasks_batch_uncached(
-    project_ids: list[str], *, include_archived: bool = False, workspace_id: Optional[str] = None
+    project_ids: list[str], *, include_archived: bool = False, workspace_id: Optional[str] = None,
+    include_activity: bool = False, activity_viewer: Optional[tuple[str, str]] = None,
+    activity_read_all: bool = False, preview_owner: Optional[tuple[str, str]] = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """여러 프로젝트의 작업과 파생값을 한 DB 조회 묶음으로 반환한다.
 
@@ -665,7 +700,11 @@ def _list_tasks_batch_uncached(
         return {}
     with get_connection() as conn:
         _ensure_schema(conn)
-        sync_folder_tasks_batch(conn, project_ids)
+        activity = load_activity_snapshot(conn, project_ids) if include_activity else None
+        sync_folder_tasks_batch(
+            conn, project_ids,
+            **({"activity_sources": folder_sources(activity)} if activity is not None else {}),
+        )
         placeholders = ",".join("?" * len(project_ids))
         archived_filter = "" if include_archived else " AND t.archived=0"
         workspace_filter = ""
@@ -709,6 +748,11 @@ def _list_tasks_batch_uncached(
         all_gen_ids: set[str] = set()
         # 1차: 작업별 컷을 '한 번에' 확보(작업당 1쿼리 N+1 → 레인별 배치) + 전체 gen_id 수집.
         per_task_cuts: dict[str, list[dict[str, Any]]] = _batch_task_gen_rows(conn, None, rows)
+        if activity is not None:
+            per_task_cuts = project_cuts(
+                rows, per_task_cuts, activity, activity_viewer=activity_viewer,
+                activity_read_all=activity_read_all, preview_owner=preview_owner,
+            )
         for r in rows:
             for g in per_task_cuts.get(r["id"], []):
                 if g["creator_uid"]:
@@ -759,10 +803,23 @@ def _list_tasks_batch_uncached(
             for g in gens
             if g.get("job_id") and metrics_by_gen.get(g["id"], (0, None))[1] is None
         ]
-        if need_job_ids:
+        if need_job_ids and not include_activity:
             from .. import manage_db
             for job_batch in _batched(list(dict.fromkeys(need_job_ids))):
                 elapsed_by_job.update(manage_db.elapsed_by_job_ids(job_batch))
+        # 목록 보강은 생성자/계정까지 대조한 fact만 사용한다. job ID 단독 시간 폴백으로
+        # 다른 계정의 소요시간이 섞이지 않게 기존 내부 경로와 구분한다.
+        if include_activity:
+            for gens in per_task_cuts.values():
+                for cut in gens:
+                    fallback = cut.pop("_activity_metrics", None)
+                    if fallback is None:
+                        continue
+                    previous = metrics_by_gen.get(cut["id"])
+                    metrics_by_gen[cut["id"]] = (
+                        previous[0] if previous is not None else (fallback[0] or 0),
+                        previous[1] if previous is not None and previous[1] is not None else fallback[1],
+                    )
         # 개인 작업표가 작업 전체 합계가 아니라 '내가 만든 컷'만 다시 합산할 수 있도록
         # 컷별 소요시간도 응답에 싣는다. 콘텐츠 DB 값이 없으면 위 텔레메트리 폴백을 그대로 쓴다.
         elapsed_by_gen: dict[str, float] = {}
@@ -829,7 +886,9 @@ def _list_tasks_batch_uncached(
             )
             # 과거 기록 화면에서는 실제로 보관 처리된 자동 작업을 보여줘야 한다. 단순히 생성물이
             # 사라진 활성 유령 행은 include_archived=True여도 계속 숨긴다.
-            show_archived_history = include_archived and bool(r["archived"])
+            show_archived_history = include_archived and bool(r["archived"]) and (
+                not include_activity or bool(normalize_viewer(activity_viewer) and activity_read_all)
+            )
             if (
                 r["folder_path"]
                 and d["gen_count"] == 0
@@ -855,7 +914,8 @@ def _list_tasks_batch_uncached(
                 c["credits"] = metrics_by_gen.get(c["id"], (0, None))[0]
                 c["elapsed"] = elapsed_by_gen.get(c["id"], 0)
                 c["comment_count"] = comments_by_gen.get(c["id"], 0)
-                c.pop("job_id", None)  # 폴백 계산용 내부값 — 응답(컷)엔 노출 안 함(코덱스)
+                if not c.pop("_has_preview_hint", False):
+                    c.pop("job_id", None)  # 본인 미리보기 상관키 외에는 응답에 노출하지 않는다.
             d["cuts"] = per_task_cuts[d["id"]]
             d["creators"] = seen  # 실제 생성자(연결 컷 파생) — 기존 필터·캘린더 호환 유지
             # 담당(배정, 복수) — {uid, name}. 대시보드에서 지정, 작업탭 '내 배분' 필터·표시에 사용.
@@ -869,7 +929,9 @@ def _list_tasks_batch_uncached(
 
 
 def list_tasks_batch(
-    project_ids: list[str], *, include_archived: bool = False, workspace_id: Optional[str] = None
+    project_ids: list[str], *, include_archived: bool = False, workspace_id: Optional[str] = None,
+    include_activity: bool = False, activity_viewer: Optional[tuple[str, str]] = None,
+    activity_read_all: bool = False, preview_owner: Optional[tuple[str, str]] = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """동일한 동시 작업 조회는 한 번만 계산하고 DB 변경 시 즉시 다시 계산한다.
 
@@ -878,20 +940,29 @@ def list_tasks_batch(
     공유한다. 계산 중 쓰기가 끼면 캐시하지 않으므로 변경 전후가 섞인 결과도 재사용하지 않는다.
     """
     project_ids = list(dict.fromkeys(pid for pid in project_ids if pid))
+    activity_args = ({
+        "include_activity": True, "activity_viewer": activity_viewer,
+        "activity_read_all": activity_read_all, "preview_owner": preview_owner,
+    } if include_activity else {})
     if not project_ids or _TASK_READ_CACHE_TTL <= 0:
         return _list_tasks_batch_uncached(
-            project_ids, include_archived=include_archived, workspace_id=workspace_id
+            project_ids, include_archived=include_archived, workspace_id=workspace_id, **activity_args,
         )
     key = (
         str(get_db_path()),
         tuple(project_ids),
         bool(include_archived),
         str(workspace_id or ""),
+        bool(include_activity),
+        task_activity_cache_key(
+            activity_viewer=activity_viewer, activity_read_all=activity_read_all,
+            preview_owner=preview_owner,
+        ) if include_activity else None,
     )
     stamp = _task_cache_stamp()
     if stamp is None:
         return _list_tasks_batch_uncached(
-            project_ids, include_archived=include_archived, workspace_id=workspace_id
+            project_ids, include_archived=include_archived, workspace_id=workspace_id, **activity_args,
         )
     cached = _task_cache_hit(key, stamp, time.monotonic())
     if cached is not None:
@@ -901,13 +972,13 @@ def list_tasks_batch(
         stamp = _task_cache_stamp()
         if stamp is None:
             return _list_tasks_batch_uncached(
-                project_ids, include_archived=include_archived, workspace_id=workspace_id
+                project_ids, include_archived=include_archived, workspace_id=workspace_id, **activity_args,
             )
         cached = _task_cache_hit(key, stamp, time.monotonic())
         if cached is not None:
             return cached
         result = _list_tasks_batch_uncached(
-            project_ids, include_archived=include_archived, workspace_id=workspace_id
+            project_ids, include_archived=include_archived, workspace_id=workspace_id, **activity_args,
         )
         if _task_cache_stamp() == stamp:
             with _TASK_READ_CACHE_GUARD:
@@ -924,11 +995,16 @@ def list_tasks_batch(
 
 
 def list_tasks(
-    project_id: str, *, include_archived: bool = False, workspace_id: Optional[str] = None
+    project_id: str, *, include_archived: bool = False, workspace_id: Optional[str] = None,
+    include_activity: bool = False, activity_viewer: Optional[tuple[str, str]] = None,
+    activity_read_all: bool = False, preview_owner: Optional[tuple[str, str]] = None,
 ) -> list[dict[str, Any]]:
     """단일 프로젝트 호환 API. 실제 조회는 다중 프로젝트 배치 경로를 공유한다."""
     return list_tasks_batch(
-        [project_id], include_archived=include_archived, workspace_id=workspace_id
+        [project_id], include_archived=include_archived, workspace_id=workspace_id,
+        **({"include_activity": True, "activity_viewer": activity_viewer,
+            "activity_read_all": activity_read_all, "preview_owner": preview_owner}
+           if include_activity else {}),
     ).get(project_id, [])
 
 
@@ -1083,7 +1159,9 @@ def task_projects(task_ids: list[str]) -> dict[str, str]:
 
 
 def task_projects_for_workspace(
-    workspace_id: str, *, include_historical: bool = False
+    workspace_id: str, *, include_historical: bool = False,
+    include_activity: bool = False, activity_viewer: Optional[tuple[str, str]] = None,
+    activity_read_all: bool = False, preview_owner: Optional[tuple[str, str]] = None,
 ) -> list[dict[str, Any]]:
     """작업 화면 전용 프로젝트 목록. 과거 모드에서는 이동한 프로젝트도 포함한다."""
     workspace_id = str(workspace_id or "").strip()
@@ -1112,6 +1190,35 @@ def task_projects_for_workspace(
             + " ORDER BY p.name COLLATE NOCASE, p.id",
             args,
         ).fetchall()
+        if include_activity and include_historical:
+            # 과거 facts만 남은 프로젝트도 찾되 프로젝트 목록 GET에서 작업 행을 만들지 않는다.
+            all_projects = conn.execute(
+                "SELECT id,name,workspace_scope,workspace_id,archived FROM project"
+            ).fetchall()
+            facts = load_activity_snapshot(conn, [row["id"] for row in all_projects])
+            viewer = normalize_viewer(activity_viewer)
+            visible_ids = visible_activity_projects(facts, workspace_id, viewer, activity_read_all)
+            # 다른 조회자가 facts로 자동 행을 만든 뒤에도 그 존재가 일반 멤버에게 새지 않게
+            # 재투영한다. 실제 PM 수동 작업/편집 정보는 별도 팀 메타이므로 기존대로 보존한다.
+            if not (viewer and activity_read_all):
+                pm_ids = {
+                    row["project_id"] for row in conn.execute(
+                        "SELECT DISTINCT t.project_id FROM project_task t "
+                        "WHERE LOWER(TRIM(t.workspace_scope))='team' AND TRIM(t.workspace_id)=? "
+                        "AND (t.folder_path IS NULL OR t.folder_path='' OR t.start_date IS NOT NULL "
+                        "OR t.due_date IS NOT NULL OR COALESCE(t.note,'')<>'' "
+                        "OR COALESCE(t.description,'')<>'' OR t.status='omit' "
+                        "OR EXISTS(SELECT 1 FROM task_assignment a WHERE a.task_id=t.id))",
+                        (workspace_id,),
+                    )
+                }
+                rows = [row for row in rows if (
+                    (row["workspace_scope"] == "team" and row["workspace_id"] == workspace_id)
+                    or row["id"] in visible_ids or row["id"] in pm_ids
+                )]
+            known = {row["id"] for row in rows}
+            rows = [*rows, *(row for row in all_projects if row["id"] in visible_ids - known)]
+            rows.sort(key=lambda row: (str(row["name"]).casefold(), row["id"]))
         return [
             {
                 "id": row["id"],

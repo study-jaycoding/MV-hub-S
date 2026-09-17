@@ -145,6 +145,7 @@ export function BoardView(props: WorkViewProps) {
                 >
                   <CutThumbs
                     task={t}
+                    myUid={props.myUid}
                     thumb={thumb}
                     disabled={disabled}
                     readOnly={locked}

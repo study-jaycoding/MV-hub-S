@@ -173,6 +173,7 @@ export const projectApi = {
     projectId: string | null,
     tab: "my" | "team" = "my",
     folderPath?: string | null, // 담을 때 함께 지정하는 폴더(렌더 루트 상대 경로)
+    resumeWork = false, // 사용자 명시적 작업 재개에서만 opt-in
   ) =>
     jsonFetch<{ ok: boolean; updated: number; team_synced?: boolean | null }>(`/api/projects/assign?tab=${tab}`, {
       method: "POST",
@@ -180,6 +181,7 @@ export const projectApi = {
         generation_ids: generationIds,
         project_id: projectId,
         folder_path: folderPath ?? null,
+        ...(resumeWork ? { resume_work: true } : {}),
       }),
     }),
 
@@ -218,15 +220,25 @@ export const projectApi = {
     ),
 
   // 생성자(팀 워크스페이스 작성자) — 목록
-  creators: async (tab: "my" | "team" = "my", projectId?: string, workspaceFilter?: LibraryWorkspaceFilter) => {
+  creators: async (tab: "my" | "team" = "my", projectId?: string, workspaceFilter?: LibraryWorkspaceFilter, folderPath?: string) => {
     const p = new URLSearchParams({ tab });
     if (projectId) p.set("project_id", projectId);
-    const scope = workspaceFilterOf(tab === "team" ? workspaceFilter ?? {} : {});
+    const scope = workspaceFilterOf(workspaceFilter ?? {});
+    if (tab === "my") {
+      p.set("facet_scope", "library");
+      if (folderPath) p.set("folder_path", folderPath);
+    }
     for (const id of scope.workspace_ids ?? []) p.append("workspace_ids", id);
     if (scope.workspace_scope) p.set("workspace_scope", scope.workspace_scope);
-    const result = await jsonFetch<Creator[] | { items: Creator[]; workspace_filter_applied: boolean }>(
+    const result = await jsonFetch<Creator[] | { items: Creator[]; workspace_filter_applied?: boolean; creator_scope_applied?: boolean }>(
       `/api/creators?${p.toString()}`,
     );
+    if (tab === "my") {
+      if (!result || Array.isArray(result) || result.creator_scope_applied !== true || !Array.isArray(result.items)) {
+        throw new HttpError(409, "작업 공간 생성자 표시에는 로컬 앱 업데이트가 필요합니다.");
+      }
+      return result.items;
+    }
     if (!hasWorkspaceFilter(scope)) return result as Creator[];
     // 구서버가 모르는 조건을 무시하고 전체 건수를 보내도 현재 공간의 집계로 표시하지 않는다.
     if (!result || Array.isArray(result) || result.workspace_filter_applied !== true || !Array.isArray(result.items)) {

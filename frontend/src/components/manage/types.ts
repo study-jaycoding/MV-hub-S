@@ -231,6 +231,10 @@ export interface WorkViewProps {
 export interface Cut {
   id: string;
   status: string;
+  metadata_only?: boolean; // 비공유 작업 기록. 서버 응답에는 미디어 주소가 없다.
+  local_gen_id?: string | null; // 본인에게만 제공되는 로컬 미리보기 조회 힌트
+  job_id?: string | null;
+  preview_state?: "pending" | "ready" | "missing" | "unavailable";
   creator_uid?: string | null;
   creator_name?: string | null;
   model?: string | null; // 모델별 크레딧 호버 집계용
@@ -244,6 +248,25 @@ export interface Cut {
   credits?: number; // 이 컷의 크레딧(참여자별 집계용)
   elapsed?: number; // 이 컷의 생성 소요시간(초) — 개인 작업표 재집계용
   comment_count?: number; // 이 컷의 코멘트 수 — 개인 작업표 재집계용
+}
+
+export interface TaskPreviewCandidate {
+  id: string;
+  local_gen_id?: string;
+  job_id?: string;
+  project_id: string;
+  folder_path: string;
+  workspace_id: string;
+}
+
+export interface TaskPreviewResponse {
+  viewer_uid: string | null;
+  items: Record<string, {
+    local_gen_id: string;
+    thumb: string | null;
+    file_path: string | null;
+    media_type: string | null;
+  }>;
 }
 // 카드 썸네일 노출 한도 — 최종→공유→일반 순(백엔드 정렬)에서 앞 3장.
 export const CUT_THUMB_MAX = 3;

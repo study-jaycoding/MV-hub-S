@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 
 from . import _proxy
 from ..services.async_tools import to_thread_non_abandon
-from .. import rbac, repo
+from .. import active_account, rbac, repo
 from ..config import AUTH_ENABLED, MEDIA_DIR
 from ..emailnorm import norm_email
 from ..deps import (
@@ -51,6 +51,7 @@ from ..services.event_journal import journal_audit_event
 from ..services.telemetry_drain import drain_isolated_telemetry
 from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
 from ..services.path_safety import safe_join
+from ..services.request_guards import require_loopback_browser_request
 from ..services.operational_logging import log_event
 
 router = APIRouter(prefix="/api/manage", tags=["manage"])
@@ -233,6 +234,30 @@ def _usage_viewer(request: Request) -> Optional[tuple[str, str]]:
     return (account_scope_uid(request) or "\x00", email or "\x00")
 
 
+def _task_activity_access(request: Request) -> dict:
+    """팀 서버만 활동을 투영한다. 로컬·격리 dev의 기존 개인 미디어는 보존한다."""
+    if not _proxy.is_shared_team_server():
+        require_loopback_browser_request(request, "로컬 작업 기록은 본인 PC에서만 조회할 수 있습니다")
+        return {"include_activity": False, "activity_viewer": None,
+                "activity_read_all": False, "preview_owner": None}
+    # 팀 서버에서는 None이 항상 deny. 관리자도 확인된 조회자 쌍이 필요하다.
+    acc = current_account(request) or {}
+    if not isinstance(acc, dict):
+        acc = {}
+    with active_account.transition_lock:
+        uid = account_scope_uid(request) if AUTH_ENABLED else active_account.active_uid() or repo.get_my_uid()
+        email = norm_email(acc.get("email")) if acc.get("email") else ""
+        if not AUTH_ENABLED:
+            email = norm_email(active_account.account_key() or "local")
+    viewer = (uid, email) if uid and uid != "\x00" and email else None
+    return {
+        "include_activity": True,
+        "activity_viewer": viewer,
+        "activity_read_all": bool(not AUTH_ENABLED or rbac.has_global_cap(account_global_roles(request), "read_all")),
+        "preview_owner": viewer,
+    }
+
+
 def _refresh_isolated_telemetry() -> None:
     """격리 스냅샷의 과거 미전송 outbox를 대시보드 조회 직전에 복구한다."""
     try:
@@ -385,6 +410,7 @@ class TelemetryFactIn(BaseModel):
     credit_source: Optional[str] = None
     elapsed_seconds: Optional[float] = None
     created_at: Optional[str] = None
+    task_activity_at: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     sort_ts: Optional[float] = None
@@ -1006,8 +1032,9 @@ def list_task_projects(
 ):
     """작업 화면용 프로젝트 목록. 과거 모드에서는 다른 공간으로 이동한 프로젝트도 반환한다."""
     _require_workspace_read(request, workspace_id)
+    _refresh_isolated_telemetry()
     projects = repo_manage.task_projects_for_workspace(
-        workspace_id, include_historical=include_historical
+        workspace_id, include_historical=include_historical, **_task_activity_access(request)
     )
     allowed: list[dict] = []
     for project in projects:
@@ -1040,10 +1067,12 @@ def list_tasks(
     _require_project_read(
         request, project_id, workspace_id, allow_historical=include_archived
     )
+    _refresh_isolated_telemetry()
     return _visible_tasks(
         request,
         repo_manage.list_tasks(
-            project_id, include_archived=include_archived, workspace_id=workspace_id
+            project_id, include_archived=include_archived, workspace_id=workspace_id,
+            **_task_activity_access(request),
         ),
     )
 
@@ -1083,6 +1112,8 @@ def list_tasks_batch(
         allowed.append(pid)
     if not allowed:
         return {}
+    _refresh_isolated_telemetry()
+    activity_access = _task_activity_access(request)
     # 이 표식을 결과 조립보다 먼저 잡아야 이전 결과를 쓰기 완료 뒤의 새 표식으로 캐시하지 않는다.
     response_stamp = repo_manage_tasks._task_cache_stamp()
     can_read_unresolved = not AUTH_ENABLED or rbac.has_global_cap(
@@ -1096,6 +1127,12 @@ def list_tasks_batch(
         str(workspace_id or ""),
         can_read_unresolved,
         gzip_encoded,
+        bool(activity_access["include_activity"]),
+        repo_manage_tasks.task_activity_cache_key(
+            activity_viewer=activity_access["activity_viewer"],
+            activity_read_all=activity_access["activity_read_all"],
+            preview_owner=activity_access["preview_owner"],
+        ),
     )
     response_etag = _task_response_etag(response_key, response_stamp)
     if _etag_matches(request.headers.get("if-none-match"), response_etag):
@@ -1107,7 +1144,7 @@ def list_tasks_batch(
             ),
         )
     result = repo_manage.list_tasks_batch(
-        allowed, include_archived=include_archived, workspace_id=workspace_id
+        allowed, include_archived=include_archived, workspace_id=workspace_id, **activity_access
     )
     visible = {
         project_id: _visible_tasks(request, tasks) for project_id, tasks in result.items()
@@ -1119,6 +1156,46 @@ def list_tasks_batch(
         gzip_encoded=gzip_encoded,
         etag=response_etag,
     )
+
+
+class LocalTaskPreviewItem(BaseModel):
+    id: str = Field(min_length=1, max_length=250)
+    local_gen_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    job_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
+    folder_path: str = Field(min_length=1, max_length=2048)
+    workspace_id: str = Field(min_length=1, max_length=200)
+
+
+class LocalTaskPreviewsIn(BaseModel):
+    viewer_uid: str = Field(min_length=1, max_length=200)
+    items: list[LocalTaskPreviewItem] = Field(default_factory=list, max_length=500)
+
+
+@router.post("/local-task-previews")
+def local_task_previews(body: LocalTaskPreviewsIn, request: Request):
+    require_loopback_browser_request(request, "본인 PC에서만 작업 미리보기를 조회할 수 있습니다")
+    if _proxy.is_shared_team_server():
+        raise HTTPException(403, "공유 서버에서는 로컬 작업 미리보기를 제공하지 않습니다")
+    if len({item.id for item in body.items}) != len(body.items) or any(
+        not item.local_gen_id and not item.job_id for item in body.items
+    ):
+        raise HTTPException(422, "중복 없는 작업 ID와 로컬 생성물 식별자가 필요합니다")
+    with active_account.transition_lock:
+        key = active_account.account_key() or ""
+        uid = account_scope_uid(request) if AUTH_ENABLED else active_account.active_uid() or repo.get_my_uid()
+    if not uid or uid == "\x00" or uid != body.viewer_uid:
+        raise HTTPException(409, "로그인 계정이 변경되었습니다. 작업 목록을 다시 확인해 주세요")
+    key_token = active_account.set_override(key)
+    uid_token = active_account.set_uid_override(uid)
+    try:
+        return {
+            "viewer_uid": uid,
+            "items": repo.local_task_previews([item.model_dump() for item in body.items], uid),
+        }
+    finally:
+        active_account.reset_uid_override(uid_token)
+        active_account.reset_override(key_token)
 
 
 @router.post("/tasks", status_code=201)

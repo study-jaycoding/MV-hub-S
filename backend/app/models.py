@@ -406,6 +406,7 @@ class AssignProjectIn(BaseModel):
     generation_ids: list[str] = Field(default_factory=list)
     project_id: Optional[str] = None
     folder_path: Optional[str] = None
+    resume_work: bool = False  # 명시 복원일 때만 동일 위치의 보관 작업도 재개
 
 
 # ── 멤버 전역 역할(복수) — v02 RBAC PART 1 ────────────────────────────────

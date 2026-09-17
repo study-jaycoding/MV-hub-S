@@ -9,6 +9,29 @@ function okResponse(result: unknown): Pick<Response, "ok" | "json"> {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("PM task batch API", () => {
+  it("로컬 미리보기는 500개씩 나누고 기대 계정을 모든 요청에 고정한다", async () => {
+    const items = Array.from({ length: 501 }, (_, i) => ({ id: `fact:${i}`, local_gen_id: `local-${i}`,
+      project_id: "p", folder_path: "ep/seq", workspace_id: "w" }));
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({ viewer_uid: "me", items: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+    await manageApi.localTaskPreviews("me", items);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [url, init] of fetchMock.mock.calls) {
+      expect(url).toBe("/api/manage/local-task-previews");
+      expect(JSON.parse(init.body).viewer_uid).toBe("me");
+    }
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).items).toHaveLength(500);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).items).toHaveLength(1);
+  });
+
+  it("로컬 미리보기의 계정 불일치는 서버 재조회 없이 실패한다", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({ viewer_uid: "other", items: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(manageApi.localTaskPreviews("me", [{ id: "fact:1", project_id: "p",
+      folder_path: "ep/seq", workspace_id: "w", local_gen_id: "g" }])).rejects.toThrow("계정");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("과거 작업용 프로젝트 목록을 선택 워크스페이스 ID로 요청한다", async () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse({ projects: [] }));
     vi.stubGlobal("fetch", fetchMock);

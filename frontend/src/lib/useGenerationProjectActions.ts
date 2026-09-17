@@ -31,6 +31,8 @@ export function useGenerationProjectActions({
         projectId,
         filtersRef.current.tab === "team" ? "team" : "my",
         folderPath,
+        // 자동 동기화가 아닌 사용자의 명시적 폴더 담기: 같은 폴더라도 보관 작업을 재개한다.
+        !!projectId && !!folderPath?.trim(),
       );
       await reload();
       if (refreshBoard) bumpBoard();

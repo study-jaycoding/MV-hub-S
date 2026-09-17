@@ -2134,7 +2134,7 @@ export default function App() {
                 facets={facets}
                 filters={filters}
                 onChange={patch}
-                creatorWorkspaceFilter={filters.tab === "team" ? genQuery : undefined}
+                creatorWorkspaceFilter={genQuery}
                 creatorQueryReady={authReady && workspaceQueryReady}
                 creatorContextKey={libraryAuthKey}
                 colorDots={COLOR_DOTS}

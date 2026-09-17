@@ -6,6 +6,8 @@ import type {
   ManageSummary,
   Planning,
   Task,
+  TaskPreviewCandidate,
+  TaskPreviewResponse,
 } from "../components/manage/types";
 import type { WorkspaceOption } from "../types";
 import type { CreditPlanSaveBody, CreditPlanSettings, CreditPlanView, MyModelPolicy } from "./creditPlan";
@@ -25,6 +27,17 @@ function warnLegacyBatchOnce(): void {
 }
 
 export const manageApi = {
+  localTaskPreviews: async (viewerUid: string, items: TaskPreviewCandidate[]) => {
+    const result: TaskPreviewResponse = { viewer_uid: viewerUid, items: {} };
+    for (const page of chunked(items)) {
+      const response = await jsonFetch<TaskPreviewResponse>("/api/manage/local-task-previews", {
+        method: "POST", body: jsonBody({ viewer_uid: viewerUid, items: page }),
+      });
+      if (response.viewer_uid !== viewerUid) throw new Error("로컬 미리보기 계정이 변경되었습니다.");
+      Object.assign(result.items, response.items);
+    }
+    return result;
+  },
   summary: (workspaceId?: string) =>
     jsonFetch<ManageSummary>(withQuery("/api/manage/summary", { workspace_id: workspaceId })),
   projectSummary: (workspaceId?: string) =>

@@ -423,21 +423,21 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
                 body.generation_ids, body.project_id,
                 account_uid=account_uid, shared_only=True,
                 folder_path=body.folder_path,
+                resume_work=body.resume_work,
             )
         else:
             # 내 작업: AUTH on 이면 내 생성물만 귀속(남의 작업물 이동 차단). 단독/AUTH off 는 None → 제약 없음.
             n = repo.assign_to_project(
                 body.generation_ids, body.project_id,
                 account_uid=account_scope_uid(request), folder_path=body.folder_path,
+                resume_work=body.resume_work,
             )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     # 팀 매니징: 귀속(프로젝트·폴더)이 바뀐 내 생성물을 텔레메트리 dirty 표시 → 다음 drain 에 반영.
     if MANAGE_ENABLED and tab != "team":
         try:
-            from ..repo import manage as _m
-
-            _m.mark_telemetry_dirty(body.generation_ids)
+            # 이동과 outbox 기록은 repo의 같은 트랜잭션에서 완료했다.
             drain_isolated_telemetry()
         except Exception:  # noqa: BLE001
             pass
@@ -454,6 +454,7 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
                         "generation_ids": anchors,  # 서버 앵커(job_id) — 로컬 uuid 아님
                         "project_id": body.project_id,
                         "folder_path": body.folder_path,
+                        "resume_work": body.resume_work,
                     },
                 )
                 # 서버가 실제로 매칭·반영했는지(updated>0)까지 확인해야 진짜 동기 성공.

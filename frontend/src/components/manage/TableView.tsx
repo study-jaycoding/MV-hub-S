@@ -207,6 +207,7 @@ export function TableView(props: WorkViewProps) {
                 >
                   <CutThumbs
                     task={t}
+                    myUid={props.myUid}
                     thumb={thumb}
                     disabled={disabled}
                     readOnly={locked}

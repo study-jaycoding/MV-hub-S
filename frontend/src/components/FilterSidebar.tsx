@@ -211,11 +211,8 @@ export function FilterSidebar({
           onFilter={(uid) => onChange({ creator_uid: uid })}
           onChanged={onCreatorChanged}
           tab={filters.tab === "team" ? "team" : "my"}
-          projectId={
-            filters.tab === "team"
-              ? filters.project_id
-              : filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined
-          }
+          projectId={filters.project_id}
+          folderPath={filters.tab === "team" ? undefined : filters.folder_path}
           workspaceFilter={creatorWorkspaceFilter}
           ready={creatorQueryReady}
           contextKey={creatorContextKey}

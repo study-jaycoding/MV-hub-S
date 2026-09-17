@@ -8,6 +8,7 @@ from typing import Any, Iterable, Optional
 
 from ..config import DEFAULT_WORKER_ID
 from ..db import get_connection
+from ..task_activity import merge_task_activity_location
 from . import generation_sync, identity, tags
 from ._common import (
     BUNDLE_FORMAT,
@@ -222,7 +223,7 @@ def export_bundle(
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         grows = conn.execute(
             "SELECT g.id, g.job_id, g.prompt, g.display_prompt, g.model, g.params, "
-            "g.status, g.created_at, g.sort_ts, g.creator_uid, "
+            "g.status, g.created_at, g.task_activity_at, g.sort_ts, g.creator_uid, "
             "g.workspace_scope, g.workspace_id, g.workspace_name, g.project_id, g.folder_path "
             f"FROM generation g{clause} ORDER BY g.sort_ts DESC, g.created_at DESC",
             args,
@@ -390,6 +391,7 @@ def export_bundle(
                     "params": json.loads(g["params"]) if g["params"] else {},
                     "status": g["status"],
                     "created_at": g["created_at"],
+                    "task_activity_at": g["task_activity_at"],
                     "sort_ts": g["sort_ts"],
                     "creator_uid": g["creator_uid"],
                     "workspace_scope": g["workspace_scope"],
@@ -501,7 +503,8 @@ def import_bundle_item(
             # 아래 위치(project/folder) 병합의 is_owner 규칙을 fact 층까지 확장한 것.
             # shared_by 미상(레거시 로컬 흐름)은 기존 동작 보존.
             existing = conn.execute(
-                "SELECT id, creator_uid FROM generation WHERE id=? OR job_id=? LIMIT 1",
+                "SELECT id, creator_uid, project_id, folder_path, workspace_scope, workspace_id, "
+                "workspace_name, task_activity_at FROM generation WHERE id=? OR job_id=? LIMIT 1",
                 (job_id, job_id),
             ).fetchone()
             fact_blocked = bool(
@@ -536,23 +539,29 @@ def import_bundle_item(
                 # 남의 것을 재공유(creator≠shared_by)면 기존 서버값 보존(COALESCE, 침범 금지).
                 creator = g.get("creator_uid")
                 is_owner = (not creator) or (creator == shared_by)
+                current = dict(conn.execute(
+                    "SELECT project_id, folder_path, workspace_scope, workspace_id, workspace_name, "
+                    "task_activity_at FROM generation WHERE id=?", (gid,),
+                ).fetchone())
+                incoming = dict(current)
                 if is_owner:
-                    conn.execute(
-                        "UPDATE generation SET project_id=?, folder_path=? WHERE id=?",
-                        (g.get("project_id"), folder_path, gid),
-                    )
+                    incoming.update(project_id=g.get("project_id"), folder_path=folder_path,
+                                    task_activity_at=g.get("task_activity_at"))
                 else:
-                    pid = g.get("project_id")
-                    if pid:
-                        conn.execute(
-                            "UPDATE generation SET project_id=COALESCE(project_id, ?) WHERE id=?",
-                            (pid, gid),
-                        )
-                    if folder_path:
-                        conn.execute(
-                            "UPDATE generation SET folder_path=COALESCE(folder_path, ?) WHERE id=?",
-                            (folder_path, gid),
-                        )
+                    # 비소유 발행은 기존 빈 위치 보강만 허용하고 활동 시각을 주장하지 못한다.
+                    incoming.update(
+                        project_id=current["project_id"] or g.get("project_id"),
+                        folder_path=current["folder_path"] or folder_path,
+                        task_activity_at=None,
+                    )
+                merged = merge_task_activity_location(dict(existing) if existing else None, incoming)
+                fields = ("project_id", "folder_path", "workspace_scope", "workspace_id",
+                          "workspace_name", "task_activity_at")
+                conn.execute(
+                    "UPDATE generation SET project_id=?, folder_path=?, workspace_scope=?, "
+                    "workspace_id=?, workspace_name=?, task_activity_at=? WHERE id=?",
+                    (*[merged.get(field) for field in fields], gid),
+                )
                 tags._add_tags(conn, gid, item.get("tags") or [])
                 tags._set_auto_tags(conn, gid, item.get("auto_tags") or [])
                 _merge_comments(conn, gid, item.get("comments") or [])

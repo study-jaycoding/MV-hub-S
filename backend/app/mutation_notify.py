@@ -94,7 +94,7 @@ def notification_domains(method: str, path: str, status_code: int) -> tuple[str,
         domains.append(DOMAIN_LIBRARY)
     if path.startswith("/api/assets/") and path not in _ASSET_NO_CHANGE_PATHS:
         domains.append(DOMAIN_ASSETS)
-    if path.startswith("/api/manage/"):
+    if path.startswith("/api/manage/") and path != "/api/manage/local-task-previews":
         domains.append(DOMAIN_MANAGE)
     return tuple(domains)
 

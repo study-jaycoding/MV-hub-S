@@ -39,15 +39,15 @@ def catalog(tmp_path, monkeypatch):
             [("viewer",), ("zero",)],
         )
 
-    def add(gen_id, *, owner="a", scope="team", workspace="ws-a", project="p", shared=True, deleted=False):
+    def add(gen_id, *, owner="a", scope="team", workspace="ws-a", project="p", shared=True, deleted=False, folder=None):
         with db.get_connection() as conn:
             conn.execute(
                 "INSERT INTO generation(id,worker_id,prompt,status,created_at,sort_ts,creator_uid,"
-                "project_id,workspace_scope,workspace_id,deleted_at) "
-                "VALUES(:id,'me',:id,'done','2026-09-17',1,:owner,:project,:scope,:workspace,:deleted)",
+                "project_id,workspace_scope,workspace_id,deleted_at,folder_path) "
+                "VALUES(:id,'me',:id,'done','2026-09-17',1,:owner,:project,:scope,:workspace,:deleted,:folder)",
                 {"id": gen_id, "owner": owner, "project": project, "scope": scope,
                  "workspace": workspace if scope == "team" else None,
-                 "deleted": "2026-09-17" if deleted else None},
+                 "deleted": "2026-09-17" if deleted else None, "folder": folder},
             )
             if shared:
                 conn.execute(
@@ -123,12 +123,114 @@ def test_team_project_none_and_archived_rules(catalog):
 
 
 def test_my_project_union_and_zero_members_ignore_workspace_filters(catalog):
+    # opt-in 없는 구 클라이언트의 배열/멤버 계약은 보존한다.
     catalog("a", shared=False, workspace="ws-b")
     result = repo.list_creators(
         tab="my", account_uid="viewer", project_id="p", workspace_ids=["ws-a"], workspace_scope="personal",
     )
     assert counts(result) == {"a": 1, "viewer": 0, "zero": 0}
     assert counts(repo.list_creators(tab="my", account_uid="viewer", workspace_ids=["ws-a"])) == {"viewer": 0}
+
+
+@pytest.mark.parametrize("scope", [
+    {}, {"workspace_ids": ["ws-a"]}, {"workspace_ids": ["ws-b", "ws-a"]},
+    {"workspace_scope": "personal"}, {"workspace_ids": ["ws-a"], "workspace_scope": "personal"},
+])
+@pytest.mark.parametrize("project_id", [None, "p", "q", "cold", "none"])
+@pytest.mark.parametrize("folder", [None, "", "ep", "ep/seq"])
+def test_my_facet_matches_own_library_scope(catalog, scope, project_id, folder):
+    catalog("mine", owner="viewer", folder="ep/seq", shared=False)
+    catalog("nested", owner="viewer", folder="ep/seq/sub", workspace="ws-b")
+    catalog("root", owner="viewer")
+    catalog("other-folder", owner="viewer", folder="ep2/seq")
+    catalog("other-project", owner="viewer", project="q", folder="ep/seq")
+    catalog("personal", owner="viewer", scope="personal", folder="ep/seq")
+    catalog("unknown", owner="viewer", scope="unknown", folder="ep/seq")
+    catalog("unassigned", owner="viewer", project=None)
+    catalog("archived", owner="viewer", project="cold", folder="ep/seq")
+    catalog("deleted", owner="viewer", folder="ep/seq", deleted=True)
+    catalog("other-creator", folder="ep/seq")
+    expected = repo.list_generations(tab="my", account_uid="viewer", project_id=project_id,
+                                     folder_path=folder, **scope)
+    actual = repo.list_creators(tab="my", facet_scope="library", account_uid="viewer",
+                               project_id=project_id, folder_path=folder, **scope)
+    assert counts(actual) == {"viewer": len(expected)}
+    assert actual[0]["is_mine"] is True
+
+
+@pytest.mark.parametrize("folder", ["e_01", "e%01", "e\\01"])
+def test_my_facet_treats_like_symbols_as_folder_names(catalog, folder):
+    catalog("exact", owner="viewer", folder=folder)
+    catalog("child", owner="viewer", folder=folder + "/seq")
+    catalog("not-child", owner="viewer", folder=folder + "0/seq")
+    catalog("wildcard", owner="viewer", folder="eX01/seq")
+    assert counts(repo.list_creators(tab="my", facet_scope="library", account_uid="viewer",
+                                    project_id="p", folder_path=folder)) == {"viewer": 2}
+
+
+def test_my_facet_denies_unknown_login_and_has_no_page_limit(catalog, monkeypatch):
+    catalog("mine", owner="viewer", folder="ep")
+    with db.get_connection() as conn:
+        conn.executemany(
+            "INSERT INTO generation(id,worker_id,prompt,status,created_at,creator_uid,project_id,folder_path) "
+            "VALUES(?,'me','','done','2026-09-17','viewer','p','ep')",
+            [(f"many-{i}",) for i in range(501)],
+        )
+    assert repo.list_creators(tab="my", facet_scope="library", account_uid="\x00", project_id="p") == []
+    monkeypatch.setattr(repo, "list_generations", Mock(side_effect=AssertionError("aggregate query only")))
+    assert counts(repo.list_creators(tab="my", facet_scope="library", account_uid="viewer",
+                                    project_id="p", folder_path="ep")) == {"viewer": 502}
+
+
+def test_my_library_scope_opt_in_returns_confirmed_envelope_without_proxy(catalog, monkeypatch):
+    catalog("mine", owner="viewer", folder="ep/seq", shared=False)
+    catalog("other", folder="ep/seq")
+    monkeypatch.setattr(_proxy, "proxying", lambda: True)
+    result = generation.list_creators(request(role="admin", query="tab=my"), tab="my",
+                                     facet_scope="library", project_id="p", folder_path="ep/seq",
+                                     workspace_ids=["ws-a"])
+    assert result["creator_scope_applied"] is True
+    assert counts(result["items"]) == {"viewer": 1}
+
+
+def test_my_library_scope_unidentified_login_does_not_fall_back_to_provider(catalog):
+    catalog("other")
+    req = request()
+    req.state.account = None
+    result = generation.list_creators(req, tab="my", facet_scope="library", project_id="p")
+    assert result == {"creator_scope_applied": True, "items": []}
+
+
+@pytest.mark.parametrize("pinned_uid,expected", [("viewer", {"viewer": 1}), (None, {})])
+def test_my_library_scope_auth_off_proxy_uses_only_pinned_local_viewer(catalog, monkeypatch, pinned_uid, expected):
+    catalog("mine", owner="viewer", folder="ep/seq", shared=False)
+    catalog("other", owner="a", folder="ep/seq")
+    monkeypatch.setattr(generation, "AUTH_ENABLED", False)
+    monkeypatch.setattr(deps, "AUTH_ENABLED", False)
+    monkeypatch.setattr(config, "AUTH_ENABLED", False)
+    monkeypatch.setattr(_proxy, "proxying", lambda: True)
+    active_account._cache[:] = [True, {"uid": pinned_uid}]
+    req = request(query="tab=my")
+    req.state.account = None  # 실제 로컬 허브는 AUTH off라 요청 계정이 채워지지 않는다.
+    result = generation.list_creators(req, tab="my", facet_scope="library", project_id="p",
+                                     folder_path="ep/seq", workspace_ids=["ws-a"])
+    assert result["creator_scope_applied"] is True
+    assert counts(result["items"]) == expected
+    _proxy.proxy_json.assert_not_called()
+
+
+@pytest.mark.parametrize("account", [None, {"creator_uid": None},
+                                      {"creator_uid": None, "email": "unlinked@example.test"}])
+def test_my_library_scope_auth_on_missing_identity_never_uses_active_proxy_viewer(catalog, monkeypatch, account):
+    catalog("mine", owner="viewer", folder="ep/seq", shared=False)
+    monkeypatch.setattr(_proxy, "proxying", lambda: True)
+    active_account._cache[:] = [True, {"uid": "viewer"}]
+    req = request(query="tab=my")
+    req.state.account = account
+    result = generation.list_creators(req, tab="my", facet_scope="library", project_id="p")
+    assert result["creator_scope_applied"] is True
+    assert "viewer" not in counts(result["items"])
+    assert all(row["count"] == 0 for row in result["items"])
 
 
 def test_counts_are_not_limited_to_a_card_page(catalog, monkeypatch):
@@ -243,3 +345,8 @@ def test_http_contract_validation_permissions_and_unscoped_compatibility(catalog
         personal = client.get("/api/creators?tab=team&workspace_scope=personal").json()
         assert counts(personal["items"]) == {"b": 1}
         assert isinstance(client.get("/api/creators?tab=my&workspace_scope=personal").json(), list)
+        own = client.get("/api/creators", params={"tab": "my", "facet_scope": "library",
+                          "project_id": "none", "folder_path": "e001", "workspace_ids": "ws-a"}).json()
+        assert own["creator_scope_applied"] is True
+        assert counts(own["items"]) == {"viewer": 0}
+        assert client.get("/api/creators?tab=my&facet_scope=unknown").status_code == 422

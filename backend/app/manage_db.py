@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from .config import DATA_DIR
+from .task_activity import merge_task_activity_location, normalize_task_activity_at
 
 # 콘텐츠 DB(content_hub.db) 와 같은 폴더에 두되 파일만 분리 — 백업은 폴더 통째로 한 번에 된다.
 MANAGE_DB_PATH = (DATA_DIR / "db" / "manage_hub.db").resolve()
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS team_generation_fact (
     credit_source   TEXT,
     elapsed_seconds REAL,
     created_at      TEXT,                    -- 생성일
+    task_activity_at TEXT,                   -- 작성자/명시 배치 활동. 수신 시각과 분리
     started_at      TEXT,
     completed_at    TEXT,
     sort_ts         REAL,                    -- 정렬용 에포크(숫자) — TEXT 면 affinity 로 문자화되어 정렬 깨짐
@@ -84,6 +86,8 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE team_generation_fact ADD COLUMN workspace_id TEXT")
     if "workspace_name" not in columns:
         conn.execute("ALTER TABLE team_generation_fact ADD COLUMN workspace_name TEXT")
+    if "task_activity_at" not in columns:
+        conn.execute("ALTER TABLE team_generation_fact ADD COLUMN task_activity_at TEXT")
     conn.execute(
         "UPDATE team_generation_fact "
         "SET workspace_scope='unknown', workspace_id=NULL, workspace_name=NULL "
@@ -201,6 +205,7 @@ _UPSERT_SET = (
     "est_credits=COALESCE(excluded.est_credits, team_generation_fact.est_credits), "
     "credit_source=COALESCE(excluded.credit_source, team_generation_fact.credit_source), "
     "elapsed_seconds=excluded.elapsed_seconds, created_at=excluded.created_at, "
+    "task_activity_at=excluded.task_activity_at, "
     "started_at=excluded.started_at, completed_at=excluded.completed_at, sort_ts=excluded.sort_ts, "
     "is_final=excluded.is_final, is_shared=excluded.is_shared, is_deleted=excluded.is_deleted, "
     "deleted_at=excluded.deleted_at, last_seen_at=excluded.last_seen_at, updated_at=excluded.updated_at"
@@ -211,7 +216,7 @@ _FACT_COLS = (
     "workspace_scope", "workspace_id", "workspace_name",
     "project_id", "project_name", "folder_path", "model", "output_type", "status",
     "real_credits", "est_credits", "credit_source", "elapsed_seconds",
-    "created_at", "started_at", "completed_at", "sort_ts",
+    "created_at", "task_activity_at", "started_at", "completed_at", "sort_ts",
     "is_final", "is_shared", "is_deleted", "deleted_at", "last_seen_at", "updated_at",
 )
 
@@ -227,6 +232,7 @@ def _fact_values(account_email: str, cu: Optional[str], gid: str, it: dict, now:
         it.get("project_id"), it.get("project_name"), it.get("folder_path"), it.get("model"),
         it.get("output_type"), it.get("status"), it.get("real_credits"), it.get("est_credits"),
         it.get("credit_source"), it.get("elapsed_seconds"), it.get("created_at"),
+        normalize_task_activity_at(it.get("task_activity_at")),
         it.get("started_at"), it.get("completed_at"), it.get("sort_ts"),
         1 if it.get("is_final") else 0, 1 if it.get("is_shared") else 0,
         1 if it.get("is_deleted") else 0, it.get("deleted_at"), now, now,
@@ -261,6 +267,8 @@ def upsert_facts(
         f"ON CONFLICT(account_email, local_gen_id) DO UPDATE SET {_UPSERT_SET}"
     )
     with get_connection() as conn:
+        # 위치/활동 비교와 upsert를 직렬화해 지연 push가 최신 배치를 되돌리지 않게 한다.
+        conn.execute("BEGIN IMMEDIATE")
         for it in items:
             gid = (it.get("local_gen_id") or "").strip()
             if not gid:
@@ -272,6 +280,28 @@ def upsert_facts(
             # job_id 중복 정리(코덱스): 같은 잡이 다른 local_gen_id 로 재적재(계정 DB 이관·재생성)되면
             # 이중 집계된다. 같은 계정+job_id 의 다른 행을 지워 최신 local_gen_id 로 수렴시킨다. tombstone 도 동일.
             jid = it.get("job_id")
+            existing_rows = conn.execute(
+                "SELECT * FROM team_generation_fact WHERE account_email=? AND local_gen_id=? "
+                "UNION ALL SELECT * FROM team_generation_fact WHERE job_id=? AND account_email=? "
+                "AND local_gen_id<>?",
+                (account_email, gid, jid, account_email, gid),
+            ).fetchall()
+            # 계정 DB 이관으로 로컬 id만 바뀌어도 기존 job의 정확한 활동 근거를 유지한다.
+            existing = max(
+                (dict(row) for row in existing_rows),
+                key=lambda row: (normalize_task_activity_at(row.get("task_activity_at")) or "",
+                                 row.get("local_gen_id") == gid),
+                default=None,
+            )
+            from .workspace_context import workspace_columns
+
+            scope, wid, name = workspace_columns(it)
+            if scope == "unknown" and existing:
+                scope, wid, name = (existing["workspace_scope"], existing["workspace_id"],
+                                    existing["workspace_name"])
+            prepared = merge_task_activity_location(existing, {
+                **it, "workspace_scope": scope, "workspace_id": wid, "workspace_name": name,
+            })
             if jid:
                 conn.execute(
                     "DELETE FROM team_generation_fact WHERE account_email=? AND job_id=? "
@@ -287,10 +317,10 @@ def upsert_facts(
                     (now, now, now, account_email, gid),
                 )
                 if cur.rowcount == 0:  # 팩트 없음 → 스냅샷으로 전체행 삽입(is_deleted=1 포함)
-                    conn.execute(sql, _fact_values(account_email, cu, gid, it, now))
+                    conn.execute(sql, _fact_values(account_email, cu, gid, prepared, now))
                 n += 1
                 continue
-            conn.execute(sql, _fact_values(account_email, cu, gid, it, now))
+            conn.execute(sql, _fact_values(account_email, cu, gid, prepared, now))
             n += 1
     return n, skipped
 
@@ -325,6 +355,69 @@ def elapsed_by_job_ids(job_ids: list[str]) -> dict[str, float]:
         return {r["job_id"]: r["e"] for r in rows if r["e"] is not None}
     except sqlite3.DatabaseError:
         return {}
+
+
+def task_activity_facts(
+    project_ids: list[str], *, content_refs: Optional[list[dict[str, Any]]] = None
+) -> list[dict[str, Any]]:
+    """작업 보강용 메타 스냅샷. 파일 생성·마이그레이션·콘텐츠 DB 조인은 하지 않는다.
+
+    이동/삭제된 원본도 과거 콘텐츠와 대조해야 하므로 refs 조회에는 프로젝트·공간·삭제
+    필터를 적용하지 않는다. 권한 투영은 작업 저장소가 별도로 수행하며 이메일은 내부용이다.
+    같은 앵커의 타 계정 보고까지 읽어 모호한 연결을 개인 미리보기 근거로 쓰지 않는다.
+    """
+    projects = sorted({str(pid) for pid in project_ids if pid})
+    if not projects:
+        return []
+    try:
+        conn = sqlite3.connect(f"{MANAGE_DB_PATH.resolve().as_uri()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            found: dict[str, dict[str, Any]] = {}
+            for start in range(0, len(projects), 800):
+                batch = projects[start:start + 800]
+                for row in conn.execute(
+                    "SELECT * FROM team_generation_fact WHERE project_id IN ("
+                    + ",".join("?" * len(batch)) + ")", batch,
+                ):
+                    found[row["id"]] = dict(row)
+
+            refs = [*(content_refs or []), *found.values()]
+            for field, source_field in (("job_id", "job_id"), ("local_gen_id", "id")):
+                pairs = sorted({
+                    (str(row.get("creator_uid") or "").strip(), str(
+                        row.get(field) if field == "job_id" else
+                        row.get("local_gen_id") or row.get(source_field) or ""
+                    ).strip())
+                    for row in refs
+                    if row.get("creator_uid") and (
+                        row.get(field) or (field == "local_gen_id" and row.get(source_field))
+                    )
+                })
+                for start in range(0, len(pairs), 400):
+                    batch = pairs[start:start + 400]
+                    values = ",".join("(?,?)" for _ in batch)
+                    for row in conn.execute(
+                        f"WITH wanted(uid, anchor) AS (VALUES {values}) "
+                        f"SELECT f.* FROM team_generation_fact f JOIN wanted w "
+                        f"ON f.creator_uid=w.uid AND f.{field}=w.anchor",
+                        [value for pair in batch for value in pair],
+                    ):
+                        found[row["id"]] = dict(row)
+            return list(found.values())
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        # 구버전/기능 off의 파일·테이블 부재만 호환한다. 잠금/손상 등을 성공인 빈 기록으로
+        # 오인해 작업이 사라지지 않도록 실제 DB 장애는 호출자에게 전달한다.
+        if "no such table" in str(exc):
+            return []
+        if "unable to open database" in str(exc):
+            try:
+                MANAGE_DB_PATH.stat()
+            except FileNotFoundError:
+                return []
+        raise
 
 
 # ── 팀 집계 조회(manage-T4) — manage_hub.db 를 읽어 매니저 대시보드에 낸다 ──────────
