@@ -335,6 +335,7 @@ class InflightRunPersistenceTests(unittest.TestCase):
 
         with mock.patch.object(comfy.repo, "get_setting", get_setting), \
              mock.patch.object(comfy.repo, "set_setting", set_setting), \
+             mock.patch.object(comfy, "EXTERNAL_RECOVERY_ENABLED", True), \
              mock.patch.object(comfy, "_raw_settings", return_value={"comfy_api_key": "key"}), \
              mock.patch.object(comfy.comfy_client, "cloud_cancel_pending") as cancel:
             comfy.recover_interrupted_run_jobs()
