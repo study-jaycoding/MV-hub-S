@@ -6,7 +6,7 @@ tags:
   - mvhub
   - mvhub/문서
 status: active
-updated: 2026-08-27
+updated: 2026-09-17
 ---
 
 # MV Hub 개발 문서 안내
@@ -15,6 +15,9 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 현재 작업 상태는 [CURRENT_STATUS.md](CURRENT_STATUS.md)에서 먼저 확인한다.
 현행 설계는 [ARCHITECTURE.md](ARCHITECTURE.md)와 [AI_CONTEXT.md](AI_CONTEXT.md)를 참조한다.
 [DESIGN.md](DESIGN.md)는 서버가 직접 생성하던 초기 설계의 보존 문서다.
+
+작업 탭의 미공유 생성 기록 연결은 [TASK_ACTIVITY_FACTS.md](TASK_ACTIVITY_FACTS.md)에서
+설계·권한 경계·검증 상태를 관리한다.
 
 ## 1분 안에 현재 상황 파악하기
 
