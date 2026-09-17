@@ -4,7 +4,7 @@
 // 방향은 "이번 모드에서 실제로 한 칸 움직일 수 있는(권한 통과) 카드" 기준으로 정한다.
 import type { Generation } from "../types";
 
-export type GradeAction = "publish" | "unpublish" | "finalize" | "unfinalize";
+export type GradeAction = "publish" | "unpublish" | "finalize" | "unfinalize" | "unhold";
 // single/double = 카드 S 버튼(방향은 선택 상태에서 추론), up/down = 공유&리뷰 탭 ↑/↓ 버튼(방향 명시).
 export type GradeMode = "single" | "double" | "up" | "down";
 
@@ -43,7 +43,7 @@ export function computeGradeStep(
       const lv = level(g);
       if (mode === "up") {
         if (lv === 0 && g.is_mine && g.status === "done") ops.push({ gen: g, action: "publish" });
-        else if (lv === 1 && canFinalize(g)) ops.push({ gen: g, action: "finalize" });
+        else if (lv === 1 && canFinalize(g)) ops.push({ gen: g, action: g.is_held ? "unhold" : "finalize" });
       } else {
         if (lv === 2 && canFinalize(g)) ops.push({ gen: g, action: "unfinalize" });
         else if (lv === 1 && (g.is_mine || canFinalize(g))) ops.push({ gen: g, action: "unpublish" });
@@ -98,32 +98,38 @@ export function computeGradeStep(
 }
 
 // 확인 모달 문구 — 상황별로 무엇이 일어나는지 사람이 읽게.
-export function describeGradeStep(r: GradeStepResult): { title: string; body: string } {
-  const keptNote = r.kept > 0 ? ` (${r.kept}개는 유지·권한없음)` : "";
+export function describeGradeStep(
+  r: GradeStepResult,
+  translate: (text: string) => string = (text) => text,
+): { title: string; body: string } {
+  const keptNote = r.kept > 0
+    ? translate(" ({kept}개는 유지·권한없음)").replace("{kept}", String(r.kept))
+    : "";
+  const body = (template: string) => translate(template).replace("{count}", String(r.applied)) + keptNote;
   if (r.applied === 0) {
-    return { title: "적용할 항목 없음", body: "선택한 카드에 지금 바꿀 수 있는 항목이 없습니다." };
+    return { title: translate("적용할 항목 없음"), body: translate("선택한 카드에 지금 바꿀 수 있는 항목이 없습니다.") };
   }
   if (r.mode === "up") {
     return {
-      title: "한 단계 올리기",
-      body: `선택한 ${r.applied}개를 한 단계 올릴까요? (일반→공유, 공유→최종)${keptNote}`,
+      title: translate("단계 올리기"),
+      body: body("선택한 {count}개를 한 단계 올릴까요? (일반·보류→공유, 공유→최종)"),
     };
   }
   if (r.mode === "down") {
     return {
-      title: "한 단계 내리기",
-      body: `선택한 ${r.applied}개를 한 단계 내릴까요? (최종→공유, 공유→일반)${keptNote}`,
+      title: translate("단계 내리기"),
+      body: body("선택한 {count}개를 한 단계 내릴까요? (최종→공유, 공유·보류→일반)"),
     };
   }
   if (r.mode === "single") {
     return r.direction === "up"
-      ? { title: "팀에 공유", body: `선택한 ${r.applied}개를 팀에 공유할까요?${keptNote}` }
-      : { title: "공유 해제", body: `선택한 ${r.applied}개의 공유를 해제할까요? (→일반)${keptNote}` };
+      ? { title: translate("팀에 공유"), body: body("선택한 {count}개를 팀에 공유할까요?") }
+      : { title: translate("공유 해제"), body: body("선택한 {count}개의 공유를 해제할까요? (→일반)") };
   }
   return r.direction === "up"
     ? {
-        title: "한 단계 올리기",
-        body: `선택한 ${r.applied}개를 한 단계 올릴까요? (일반→공유, 공유→최종) — 일반은 공유까지만 올라갑니다.${keptNote}`,
+        title: translate("단계 올리기"),
+        body: body("선택한 {count}개를 한 단계 올릴까요? (일반→공유, 공유→최종) — 일반은 공유까지만 올라갑니다."),
       }
-    : { title: "최종 해제", body: `선택한 ${r.applied}개의 최종을 해제할까요? (→공유)${keptNote}` };
+    : { title: translate("최종 해제"), body: body("선택한 {count}개의 최종을 해제할까요? (→공유)") };
 }

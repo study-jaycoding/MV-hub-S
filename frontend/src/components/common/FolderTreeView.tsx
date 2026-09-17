@@ -1,5 +1,7 @@
 // 공통 폴더 트리 뷰 — 생성탭/어셋탭/관리자창이 같은 시각 언어를 공유한다.
 import { useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
+import type { FolderReviewCounts } from "../../types";
+import { FolderReviewCount } from "./FolderReviewCount";
 
 export interface FolderTreeItem {
   name: string;
@@ -7,6 +9,7 @@ export interface FolderTreeItem {
   count?: number | null; // 이 폴더(하위 포함)의 카탈로그 생성물 수. null = 아직 조회 전
   fileCount?: number | null; // 폴더 안 실제 파일 수(디스크). count 와 다를 때만 흐리게 덧붙는다
   newCount?: number | null; // 마지막 방문 이후 새로 공유된 개수(팀 탭) — 라임 배지
+  reviewCounts?: FolderReviewCounts | null;
   children?: FolderTreeItem[];
   virtual?: boolean; // 디스크에 없는 논리 폴더(팀 데이터의 folder_path로 합성) — 표식만 다르게
 }
@@ -214,11 +217,12 @@ function FolderTreeRow({
             +{node.newCount}
           </span>
         )}
-        {node.count !== null && (
+        {node.count !== null && (node.reviewCounts !== undefined ?
+          <FolderReviewCount counts={node.reviewCounts} total={count} /> : (
           <span className={"folder-tree-count" + (count > 0 ? "" : " zero")}>
             {count > 0 ? count : "-"}
           </span>
-        )}
+        ))}
       </button>
       {hasChildren &&
         open &&

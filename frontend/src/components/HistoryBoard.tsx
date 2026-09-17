@@ -67,6 +67,7 @@ export function HistoryBoard({
   colorFilter,
   tagFilter,
   sharedOnly = false,
+  reviewFilter = "shared",
   commentOnly = false,
   finalOnly = false,
 }: {
@@ -94,6 +95,7 @@ export function HistoryBoard({
   colorFilter?: Set<string>; // 매칭 안 되는 노드는 흐리게(dim) — 그래프 구조는 유지
   tagFilter?: Set<string>;
   sharedOnly?: boolean;
+  reviewFilter?: "shared" | "held";
   commentOnly?: boolean;
   finalOnly?: boolean;
 }) {
@@ -624,6 +626,7 @@ export function HistoryBoard({
                   colorFilter={colorFilter}
                   tagFilter={tagFilter}
                   sharedOnly={sharedOnly}
+                  reviewFilter={reviewFilter}
                   commentOnly={commentOnly}
                   finalOnly={finalOnly}
                   sConfirm={sConfirm?.id === g.id ? sConfirm : null}
@@ -663,4 +666,3 @@ export function HistoryBoard({
     </div>
   );
 }
-

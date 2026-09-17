@@ -8,6 +8,7 @@ export interface GenerationQueryInput {
   tagFilter: Set<string>;
   armedAutoTags: Set<string>;
   sharedOnly: boolean;
+  reviewFilter?: GenQuery["review_filter"];
   commentOnly: boolean;
   finalOnly: boolean;
 }
@@ -19,6 +20,7 @@ export function buildGenerationQuery({
   tagFilter,
   armedAutoTags,
   sharedOnly,
+  reviewFilter = "shared",
   commentOnly,
   finalOnly,
 }: GenerationQueryInput): GenQuery {
@@ -42,7 +44,7 @@ export function buildGenerationQuery({
     colors: [...colorFilter].sort(),
     tags: [...tagFilter].sort(),
     auto_tags: [...armedAutoTags].sort(),
-    shared_only: sharedOnly || undefined,
+    review_filter: sharedOnly ? reviewFilter : undefined,
     comment_only: commentOnly || undefined,
     final_only: finalOnly || undefined,
   };

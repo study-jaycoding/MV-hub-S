@@ -150,6 +150,70 @@ class TaskActivityFactsTests(unittest.TestCase):
             conn.execute("UPDATE generation SET is_final=0")
         self.assertEqual(self.read()[0]["status"], "publish")
 
+    def test_hold_priority_and_pm_fields_are_preserved_in_both_read_paths(self):
+        self.fact()
+        self.content(shared=True)
+        task = self.read()[0]
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET is_held=1 WHERE id='server-1'")
+            conn.execute(
+                "UPDATE project_task SET status='pending',note='PM note',description='PM description',"
+                "start_date='2026-01-01',due_date='2099-01-01',sort_order=7 WHERE id=?", (task["id"],),
+            )
+            original = dict(conn.execute("SELECT * FROM project_task WHERE id=?", (task["id"],)).fetchone())
+        for activity in (False, True):
+            with self.subTest(activity=activity):
+                held = self.read()[0] if activity else manage.list_tasks("p1", workspace_id="ws-a")[0]
+                self.assertEqual(held["status"], "hold")
+                self.assertTrue(held["cuts"][0]["is_held"])
+                for field in ("id", "created_at", "archived", "note", "description", "start_date", "due_date", "sort_order"):
+                    self.assertEqual(held[field], original[field])
+        # 다른 최종 컷이 있으면 기존의 any-final 완료 판정이 보류보다 우선한다.
+        self.content("server-2", uid="u2", job="job-2", shared=True, final=True)
+        self.assertEqual(self.read()[0]["status"], "done")
+        with db.get_connection() as conn:
+            stored = dict(conn.execute("SELECT * FROM project_task WHERE id=?", (task["id"],)).fetchone())
+        self.assertEqual(stored["status"], "pending")
+        self.assertEqual(stored["created_at"], original["created_at"])
+
+    def test_unshared_and_final_content_do_not_expose_held_state(self):
+        self.fact(is_shared=True, is_final=True)
+        self.content(shared=True)
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET is_held=1,is_final=1 WHERE id='server-1'")
+        self.assertFalse(self.read()[0]["cuts"][0]["is_held"])
+        with db.get_connection() as conn:
+            conn.execute("DELETE FROM share")
+        own = self.read()[0]
+        self.assertEqual(own["status"], "in_progress")
+        self.assertFalse(own["cuts"][0]["is_held"])
+        self.assertEqual(self.read("u2"), [])
+        self.fact("fact-only")
+        self.assertTrue(all(not cut["is_held"] for cut in self.read()[0]["cuts"]))
+
+    def test_dragged_hold_status_does_not_mutate_cuts_or_override_automatic_status(self):
+        self.content(shared=True)
+        task = self.read()[0]
+        manage.update_task(task["id"], {"status": "hold"})
+        self.assertEqual(self.read()[0]["status"], "publish")
+        with db.get_connection() as conn:
+            self.assertEqual(conn.execute("SELECT is_held FROM generation WHERE id='server-1'").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT status FROM project_task WHERE id=?", (task["id"],)).fetchone()[0], "hold")
+
+    def test_review_hold_does_not_reactivate_archived_work_or_change_original_dates(self):
+        self.content(shared=True)
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET created_at='2025-01-01T00:00:00Z' WHERE id='server-1'")
+        archived = self.read(archived=True)[0]
+        self.assertTrue(archived["archived"])
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET is_held=1 WHERE id='server-1'")
+        self.assertEqual(self.read(), [])
+        held = self.read(archived=True)[0]
+        self.assertEqual((held["id"], held["status"], held["archived"]), (archived["id"], "hold", 1))
+        self.assertEqual(held["created_at"], archived["created_at"])
+        self.assertEqual(held["cuts"][0]["created_at"], "2025-01-01T00:00:00Z")
+
     def test_server_deleted_content_does_not_delete_private_fact(self):
         self.fact(is_shared=True, is_final=True)
         self.content(shared=True, final=True)

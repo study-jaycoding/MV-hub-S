@@ -3,6 +3,7 @@ import { postLibraryChanged } from "./libraryBroadcast";
 import type { Generation } from "../types";
 import { shareableGenerations } from "./generationDisplay";
 import { withMirrorPendingNotice } from "./shareMirrorPending";
+import { t } from "./i18n";
 
 interface UseGenerationShareActionsArgs {
   bumpBoard: () => void;
@@ -26,14 +27,13 @@ export function useGenerationShareActions({
         : r.published;
       // 서버가 반영하지 않은(blocked) 항목은 조용히 넘기지 않고 사유를 보여준다 —
       // 무음 유실이면 사용자는 "공유됨"으로 믿는다.
-      const message = r.message
-        ? `${succeeded}개 팀에 공유. ${r.message}`
-        : `${succeeded}개 팀에 공유.`;
-      flash(withMirrorPendingNotice(message, r));
+      const summary = t("{count}개 팀에 공유.").replace("{count}", String(succeeded));
+      const message = r.message ? `${summary} ${r.message}` : summary;
+      flash(withMirrorPendingNotice(message, r, t));
       if (succeeded) postLibraryChanged(); // 관리탭 즉시 재조회(공유→게시 상태 반영)
       return succeeded;
     } catch (e) {
-      flash("공유 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+      flash(t("공유 실패:") + " " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
       return 0;
     }
   };
@@ -44,14 +44,14 @@ export function useGenerationShareActions({
       await reload();
       bumpBoard();
     } catch (e) {
-      flash("공유 실패: " + String(e));
+      flash(t("공유 실패:") + " " + String(e));
     }
   };
 
   const boardShare = async (sel: Generation[]) => {
     const targets = shareableGenerations(sel);
     if (!targets.length) {
-      flash("공유할 항목이 없습니다(내 완료·미공유만).");
+      flash(t("공유할 항목이 없습니다(내 완료·미공유만)."));
       return;
     }
     try {
@@ -59,7 +59,7 @@ export function useGenerationShareActions({
       await reload();
       bumpBoard();
     } catch (e) {
-      flash("공유 실패: " + String(e));
+      flash(t("공유 실패:") + " " + String(e));
     }
   };
 
@@ -71,17 +71,18 @@ export function useGenerationShareActions({
       const succeeded = r.accepted;
       let message =
         r.total === 0
-          ? `'${name}' 폴더에 공유할 항목이 없습니다(내 완료·미공유만).`
-          : `'${name}' 폴더 ${succeeded}개 팀에 공유.`;
+          ? t("'{name}' 폴더에 공유할 항목이 없습니다(내 완료·미공유만).").replace("{name}", () => name)
+          : t("'{name}' 폴더 {count}개 팀에 공유.").replace("{count}", String(succeeded)).replace("{name}", () => name);
       if (r.message) message += ` ${r.message}`;
       if (r.error)
-        message += ` 중단: ${r.error} (미처리 ${r.unprocessed}개 — 다시 실행하면 이어서 공유)`;
-      flash(withMirrorPendingNotice(message, r));
+        message += " " + t("중단: {error} (미처리 {count}개 — 다시 실행하면 이어서 공유)")
+          .replace("{count}", String(r.unprocessed)).replace("{error}", () => r.error!);
+      flash(withMirrorPendingNotice(message, r, t));
       if (succeeded) postLibraryChanged();
       await reload();
       bumpBoard();
     } catch (e) {
-      flash("공유 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+      flash(t("공유 실패:") + " " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
     }
   };
 

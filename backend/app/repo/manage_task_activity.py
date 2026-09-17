@@ -57,7 +57,7 @@ def _fact_is_task_source(fact) -> bool:
 
 _CONTENT_SELECT = (
     "SELECT g.id,g.project_id,g.folder_path,g.workspace_scope,g.workspace_id,g.workspace_name,"
-    "g.creator_uid,g.job_id,g.status,g.model,g.is_final,g.created_at,g.sort_ts,g.deleted_at,g.task_activity_at,"
+    "g.creator_uid,g.job_id,g.status,g.model,g.is_final,g.is_held,g.created_at,g.sort_ts,g.deleted_at,g.task_activity_at,"
     "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared FROM generation g "
 )
 
@@ -137,6 +137,7 @@ def load_activity_snapshot(conn, project_ids: list[str]) -> dict[str, Any]:
             ambiguous_facts.add(fact["id"])
             fact = None
         record = dict(row)
+        record["is_held"] = bool(row.get("shared") and not row.get("is_final") and row.get("is_held"))
         record["_fact"] = fact
         if row.get("shared"):
             if fact:
@@ -167,7 +168,7 @@ def load_activity_snapshot(conn, project_ids: list[str]) -> dict[str, Any]:
             "project_id", "folder_path", "workspace_scope", "workspace_id", "workspace_name",
             "creator_uid", "job_id", "status", "model", "created_at", "sort_ts", "task_activity_at",
         )}
-        record.update(id="fact:" + fact["id"], shared=False, is_final=False, _fact=fact)
+        record.update(id="fact:" + fact["id"], shared=False, is_final=False, is_held=False, _fact=fact)
         sources[record["id"]] = record
     return {"sources": list(sources.values()), "by_content": by_content}
 
@@ -240,6 +241,7 @@ def project_cuts(
             )}
             cut["linked"] = original.get("linked", 0)
             shared = bool(record.get("shared"))
+            cut["is_held"] = bool(shared and not cut["is_final"] and record.get("is_held"))
             cut["metadata_only"] = not shared
             for field in ("thumb", "file_path", "media_type"):
                 cut[field] = original.get(field) if shared else None

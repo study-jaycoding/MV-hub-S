@@ -1,6 +1,8 @@
 // 라이브러리 툴바 (힉스필드식): History(미디어 타입 필터) + 필터 토글 +
 // 썸네일 크기 조절 슬라이더 + List/Grid 레이아웃 토글.
+import { useEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
+import type { ReviewFilter } from "../lib/generationReview";
 import type { MediaFilter } from "../lib/mediaTypes";
 import { MEDIA_FILTER_OPTIONS } from "../lib/mediaTypes";
 import { makeStore } from "../lib/storage";
@@ -39,6 +41,8 @@ interface Props {
   onToggleColor: (hex: string) => void;
   sharedOnly: boolean;
   onToggleShared: () => void;
+  reviewFilter?: ReviewFilter;
+  onReviewFilter?: (filter: ReviewFilter) => void;
   commentOnly: boolean; // C 필터: 미확인 코멘트만 보기
   onToggleComment: () => void;
   finalOnly?: boolean; // 골드 필터: 최종(골드)만 보기
@@ -90,6 +94,8 @@ export function LibraryToolbar({
   onToggleColor,
   sharedOnly,
   onToggleShared,
+  reviewFilter = "shared",
+  onReviewFilter,
   commentOnly,
   onToggleComment,
   finalOnly = false,
@@ -111,6 +117,26 @@ export function LibraryToolbar({
   showFilterToggle,
 }: Props) {
   const t = useT();
+  const [reviewMenuOpen, setReviewMenuOpen] = useState(false);
+  const reviewMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!reviewMenuOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!reviewMenuRef.current?.contains(event.target as Node)) setReviewMenuOpen(false);
+    };
+    const closeEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setReviewMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeEscape);
+    };
+  }, [reviewMenuOpen]);
+  const reviewLabel = reviewFilter === "held" ? t("보류만 보기") : t("공유만 보기");
+  const oppositeFilter = reviewFilter === "held" ? "shared" : "held";
+  const oppositeLabel = oppositeFilter === "held" ? t("보류만 보기") : t("공유만 보기");
   const typeLabel = MEDIA_FILTER_OPTIONS.find((o) => o.v === typeFilter)?.label ?? "전체";
   const typeIndex = Math.max(0, MEDIA_FILTER_OPTIONS.findIndex((o) => o.v === typeFilter));
 
@@ -186,13 +212,29 @@ export function LibraryToolbar({
             finalOnly={finalOnly}
             onToggleFinal={onToggleFinal}
           />
-          <button
-            className={"af-btn" + (sharedOnly ? " on" : "")}
-            title="팀에 공유된 것만 보기"
-            onClick={onToggleShared}
-          >
-            S
-          </button>
+          <div className="lib-review-filter" ref={reviewMenuRef}>
+            <button
+              className={"af-btn" + (sharedOnly ? " on" : "") + (reviewFilter === "held" ? " held" : "")}
+              title={reviewLabel}
+              aria-label={reviewLabel}
+              aria-pressed={sharedOnly}
+              aria-expanded={reviewMenuOpen}
+              onClick={() => { setReviewMenuOpen(false); onToggleShared(); }}
+              onContextMenu={(event) => {
+                if (!onReviewFilter) return;
+                event.preventDefault();
+                setReviewMenuOpen((open) => !open);
+              }}
+            >S</button>
+            {reviewMenuOpen && onReviewFilter && (
+              <button
+                className={"af-btn on lib-review-alternative" + (oppositeFilter === "held" ? " held" : "")}
+                title={oppositeLabel}
+                aria-label={oppositeLabel}
+                onClick={() => { onReviewFilter(oppositeFilter); setReviewMenuOpen(false); }}
+              >S</button>
+            )}
+          </div>
           <button
             className={"af-btn" + (tagPanelOpen || tagFilter.size ? " on" : "")}
             title="태그로 필터 (다시 누르면 닫힘 + 해제)"

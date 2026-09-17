@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { t } from "./i18n";
 import { api } from "../api";
 import { postLibraryChanged } from "./libraryBroadcast";
@@ -7,6 +8,7 @@ import type { Filters, Generation, WorkspaceContext } from "../types";
 import type { CanvasGenerationLink } from "./canvasGenerationRecovery";
 import { withMirrorPendingNotice } from "./shareMirrorPending";
 import { generationIssueFor } from "./generationDisplay";
+import { reviewTargets, type ReviewAction } from "./generationReview";
 
 type AskPrompt = (
   title: string,
@@ -18,6 +20,7 @@ interface UseGenerationCardActionsArgs {
   armedAutoTags: Set<string>;
   askPrompt: AskPrompt;
   bumpBoard: () => void;
+  canFinalize: (generation: Generation) => boolean;
   flash: (message: string) => void;
   navTab: (tab: Filters["tab"]) => void;
   reload: () => Promise<void>;
@@ -28,11 +31,13 @@ export function useGenerationCardActions({
   armedAutoTags,
   askPrompt,
   bumpBoard,
+  canFinalize,
   flash,
   navTab,
   reload,
   workspace,
 }: UseGenerationCardActionsArgs) {
+  const reviewInFlightRef = useRef(new Set<string>());
   // 새로 만든 재생성 placeholder 를 반환한다(캔버스에서 그 카드에 변형으로 append 하려고). 실패 시 null.
   const onRegenerate = async (
     g: Generation,
@@ -121,34 +126,67 @@ export function useGenerationCardActions({
   const onUnpublish = async (g: Generation) => {
     try {
       const result = await api.unpublish(g.id);
-      flash(withMirrorPendingNotice("팀 공유를 해제했습니다.", result));
+      flash(withMirrorPendingNotice(t("팀 공유를 해제했습니다."), result, t));
       await reload();
       bumpBoard();
       postLibraryChanged();
     } catch (e) {
-      flash("공유 해제 실패: " + String(e));
+      flash(t("공유 해제 실패:") + " " + String(e));
     }
   };
+
+  const onReviewSelection = async (
+    generations: Generation[],
+    action: ReviewAction,
+    canFinalize: (generation: Generation) => boolean,
+  ) => {
+    const targets = reviewTargets(generations, action, canFinalize)
+      .filter((generation) => !reviewInFlightRef.current.has(generation.id));
+    if (!targets.length) { flash(t("바꿀 수 있는 항목이 없습니다.")); return; }
+    for (const generation of targets) reviewInFlightRef.current.add(generation.id);
+    try {
+      // 기존 다중 등급 처리와 같은 부분 성공 방식. 요청 헤더는 이 호출 문맥에서 함께 고정한다.
+      const results = await Promise.allSettled(targets.map((generation) => api.setReviewState(generation, action)));
+      const succeeded = results.filter((result) => result.status === "fulfilled").length;
+      const mirrorPending = results.some((result) => result.status === "fulfilled" && result.value.mirror_pending);
+      const firstError = results.find((result) => result.status === "rejected")?.reason;
+      const failed = targets.length - succeeded;
+      const kept = generations.length - targets.length;
+      const summary = t("{success}개 적용 · {failed}개 실패 · {kept}개 유지")
+        .replace("{success}", String(succeeded)).replace("{failed}", String(failed)).replace("{kept}", String(kept));
+      flash(withMirrorPendingNotice(summary, { mirror_pending: mirrorPending }, t) +
+        (firstError ? `\n${String(firstError)}` : ""));
+      if (succeeded) {
+        postLibraryChanged();
+        bumpBoard();
+      }
+      await reload();
+    } finally {
+      for (const generation of targets) reviewInFlightRef.current.delete(generation.id);
+    }
+  };
+
+  const onReview = (generation: Generation, action: ReviewAction) => onReviewSelection([generation], action, canFinalize);
 
   const onFinalize = async (g: Generation) => {
     try {
       const result = await api.finalize(g.id);
-      flash(withMirrorPendingNotice("최종(골드)으로 지정했습니다.", result));
+      flash(withMirrorPendingNotice(t("최종(골드)으로 지정했습니다."), result, t));
       await reload();
       postLibraryChanged();
     } catch (e) {
-      flash("최종 지정 실패: " + String(e));
+      flash(t("최종 지정 실패:") + " " + String(e));
     }
   };
 
   const onUnfinalize = async (g: Generation) => {
     try {
       const result = await api.unfinalize(g.id);
-      flash(withMirrorPendingNotice("최종 지정을 해제했습니다.", result));
+      flash(withMirrorPendingNotice(t("최종 지정을 해제했습니다."), result, t));
       await reload();
       postLibraryChanged();
     } catch (e) {
-      flash("최종 해제 실패: " + String(e));
+      flash(t("최종 해제 실패:") + " " + String(e));
     }
   };
 
@@ -196,6 +234,8 @@ export function useGenerationCardActions({
   return {
     onColor,
     onFinalize,
+    onReviewSelection,
+    onReview,
     onImport,
     onRecoveryRequeue,
     onRegenerate,

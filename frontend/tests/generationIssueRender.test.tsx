@@ -276,6 +276,7 @@ it("원인을 표시해도 recovery_required 재생성은 차단하고 추가 �
   function Host() {
     actions = useGenerationCardActions({
       armedAutoTags: new Set(), askPrompt: async () => null, bumpBoard: noop, flash,
+      canFinalize: () => true,
       navTab: noop, reload: async () => {}, workspace: { scope: "personal", id: null, name: null },
     });
     return null;
@@ -294,6 +295,7 @@ it.each(["ko", "en"] as const)("%s 재실행 동의에는 원인과 과금 주�
   function Host() {
     actions = useGenerationCardActions({
       armedAutoTags: new Set(), askPrompt: async () => null, bumpBoard: noop, flash: noop,
+      canFinalize: () => true,
       navTab: noop, reload: async () => {}, workspace: { scope: "personal", id: null, name: null },
     });
     return null;
@@ -339,6 +341,16 @@ it("완료 응답에 옛 복구 단계가 남아도 재실행 확인 패널을 �
   await render(<InfoPopup target={{ kind: "generation", gen: g, x: 0, y: 0 }} onClose={noop} onPreview={noop} />);
   expect(container.querySelector(".info-error")).toBeNull();
   expect(container.querySelector(".info-recovery")).toBeNull();
+});
+
+it("보류 배지는 히스토리·캔버스·변형 팝업에서 빨강 S로 표시한다", async () => {
+  const g = generation({ shared: true, is_held: true, status: "done", execution_phase: "done", error: null });
+  await render(<HistoryBoardNode {...historyProps(g)} />);
+  expect(required(".linb-sf.held").textContent).toBe("S");
+  await render(<CanvasGenerationCard {...canvasProps(g)} showNode />);
+  expect(required(".linb-sf.held").textContent).toBe("S");
+  await render(<SceneVariantPopup {...variantProps(g)} />);
+  expect(required(".card-sf.held").textContent).toBe("S");
 });
 
 it.each(["nsfw", "failed"] as const)("%s 종료의 phase가 done이어도 원래 사유를 숨기지 않는다", async (status) => {

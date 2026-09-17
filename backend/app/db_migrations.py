@@ -24,8 +24,10 @@ def _migrate_share_state_intent(conn: sqlite3.Connection) -> None:
         "operation_kind TEXT NOT NULL,"
         "desired_shared INTEGER NOT NULL CHECK(desired_shared IN (0,1)),"
         "desired_final INTEGER NOT NULL CHECK(desired_final IN (0,1)),"
+        "desired_held INTEGER CHECK(desired_held IN (0,1)),"
         "base_shared INTEGER NOT NULL CHECK(base_shared IN (0,1)),"
         "base_final INTEGER NOT NULL CHECK(base_final IN (0,1)),"
+        "base_held INTEGER CHECK(base_held IN (0,1)),"
         "expected_final_by TEXT,"
         "intent_seq INTEGER NOT NULL,"
         "status TEXT NOT NULL CHECK(status IN ("
@@ -46,6 +48,14 @@ def _migrate_share_state_intent(conn: sqlite3.Connection) -> None:
         "CHECK (server_generation_id IS NOT NULL OR job_anchor IS NOT NULL)"
         ")"
     )
+    intent_cols = {row[1] for row in conn.execute("PRAGMA table_info(share_state_intent)")}
+    for column in ("desired_held", "base_held"):
+        if column not in intent_cols:
+            # NULL은 보류축을 주장하지 않은 과거 의도다. False로 채우지 않는다.
+            conn.execute(
+                f"ALTER TABLE share_state_intent ADD COLUMN {column} INTEGER "
+                f"CHECK({column} IN (0,1))"
+            )
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_ssi_origin_uuid "
         "ON share_state_intent(server_origin, server_generation_id) "
@@ -307,6 +317,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # v02 CMS — Supervisor 최종(골드) 마킹. is_final + 누가/언제.
     if "is_final" not in gen_cols:
         conn.execute("ALTER TABLE generation ADD COLUMN is_final INTEGER NOT NULL DEFAULT 0")
+    if "is_held" not in gen_cols:
+        conn.execute("ALTER TABLE generation ADD COLUMN is_held INTEGER NOT NULL DEFAULT 0")
     if "final_by" not in gen_cols:
         conn.execute("ALTER TABLE generation ADD COLUMN final_by TEXT")
     if "final_at" not in gen_cols:

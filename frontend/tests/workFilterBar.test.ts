@@ -53,4 +53,14 @@ describe("workFilterOptions", () => {
       "Seedance 2.0",
     ]);
   });
+
+  it("보류 작업이 있으면 기존 상태 사이에 보류 필터를 추가한다", () => {
+    const rows = [...tasks, { ...tasks[0], id: "held-task", status: "hold" }];
+    expect(workFilterOptions("status", rows).map(({ value, label }) => ({ value, label }))).toEqual([
+      { value: "in_progress", label: "생성" },
+      { value: "hold", label: "보류" },
+      { value: "publish", label: "공유" },
+      { value: "done", label: "완료" },
+    ]);
+  });
 });

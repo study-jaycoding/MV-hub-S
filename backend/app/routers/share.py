@@ -27,7 +27,7 @@ from ..deps import (
     require_project_role,
     require_view_generation,
 )
-from ..models import GenerationOut, ImportIn, PublishIn
+from ..models import FinalReviewIn, GenerationOut, ImportIn, PublishIn
 from ..services.async_tools import to_thread_non_abandon
 from ..services.event_journal import journal_audit_event
 from ..services.media_preservation import preserve_generation_now
@@ -126,9 +126,13 @@ def _prepare_proxy_intent(
     base_shared: bool,
     base_final: bool,
     expected_final_by: str | None = None,
+    desired_held: bool | None = None,
+    base_held: bool | None = None,
 ) -> dict[str, Any]:
     """프록시 mutation의 서버 호출 전 prepared 기록. 실패하면 503으로 서버 호출을 막는다."""
     try:
+        if desired_held is None and operation_kind in {"finalize", "unfinalize", "unpublish"}:
+            desired_held = False
         return repo.prepare_share_state_intent(
             _proxy.base_url(),
             server_generation_id=(None if local_id else server_id),
@@ -140,6 +144,8 @@ def _prepare_proxy_intent(
             base_shared=base_shared,
             base_final=base_final,
             expected_final_by=expected_final_by,
+            desired_held=desired_held,
+            base_held=base_held,
         )
     except Exception as exc:
         raise HTTPException(
@@ -217,10 +223,22 @@ def _mirror_proxy_success(
 ) -> bool:
     """서버 성공 관측을 pending으로 보강한 뒤 로컬 적용+converged CAS를 원자로 수행한다."""
     observed = {"shared": shared, "is_final": is_final}
+    held = out.get("is_held") if isinstance(out, dict) else None
+    if not shared or is_final:
+        held = False
+    if isinstance(held, bool):
+        observed["is_held"] = held
+    else:
+        held = None  # 구서버 누락을 False로 만들지 않는다.
     if isinstance(out, dict) and out.get("final_by") is not None:
         observed["final_by"] = out.get("final_by")
     server_generation_id = out.get("id") if isinstance(out, dict) else None
     job_anchor = out.get("job_id") if isinstance(out, dict) else None
+    matches = (
+        shared == bool(ref.get("desired_shared")) and is_final == bool(ref.get("desired_final"))
+        and (ref.get("desired_held") is None or held == bool(ref["desired_held"]))
+    )
+    terminal_status = "converged" if matches else "superseded"
     try:
         transitioned = _transition_proxy_intent(
             ref,
@@ -239,10 +257,12 @@ def _mirror_proxy_success(
                 local_id=local_id,
                 shared=shared,
                 is_final=is_final,
+                is_held=held,
                 final_by=final_by,
                 shared_by=shared_by,
                 preservation_reason=preservation_reason,
                 observed_state=observed,
+                status=terminal_status,
             )
             == repo.SHARE_STATE_APPLY_APPLIED
         )
@@ -256,6 +276,10 @@ def _mirror_proxy_success(
         except Exception:  # noqa: BLE001 — prepared/pending 잔존 자체가 재시작 안전망
             pass
         kick_share_state_reconciler()
+    elif terminal_status == "superseded" and ref.get("operation_kind") in {"hold", "unhold", "final_review", "unfinalize"}:
+        if local_id:
+            _touch_telemetry(local_id)
+        raise HTTPException(409, "검토 상태가 다른 작업으로 변경되었습니다. 새로고침 후 다시 확인해 주세요")
     return applied
 
 
@@ -264,6 +288,16 @@ def _mirror_pending_response(out: dict[str, Any] | None) -> JSONResponse:
     payload = dict(out or {})
     payload["mirror_pending"] = True
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+def _require_review_response(ref: dict[str, Any], out: Any) -> None:
+    if not isinstance(out, dict) or any(
+        not isinstance(out.get(field), bool) for field in ("shared", "is_final", "is_held")
+    ):
+        # 서버가 적용했을 수도 있으므로 rejected로 닫거나 반대로 되돌리지 않는다.
+        error = HTTPException(503, "검토 상태를 확인하지 못했습니다. 공유 서버 업데이트를 확인해 주세요")
+        _record_proxy_failure(ref, error)
+        raise error
 
 
 def _require_unpublish(request: Request, gen: dict[str, Any]) -> None:
@@ -405,7 +439,7 @@ def unpublish(gen_id: str, request: Request):
                 _transition_proxy_intent(
                     ref,
                     "converged",
-                    observed_state={"shared": False, "is_final": False},
+                    observed_state={"shared": False, "is_final": False, "is_held": False},
                 )
                 raise HTTPException(status_code=404, detail="generation 없음")
             mirrored = _mirror_proxy_success(
@@ -422,7 +456,7 @@ def unpublish(gen_id: str, request: Request):
                 return _mirror_pending_response(out)
             if local_id:
                 server_state = dict(current or {})
-                server_state.update({"shared": False, "is_final": False})
+                server_state.update({"shared": False, "is_final": False, "is_held": False})
                 return _mirror_pending_response(server_state)
             raise HTTPException(status_code=404, detail="generation 없음")
     # 비프록시(서버 본체/단독 모드): 로컬에서 직접 처리.
@@ -635,6 +669,7 @@ def unfinalize(gen_id: str, request: Request):
             except HTTPException as exc:
                 _record_proxy_failure(ref, exc)
                 raise
+            _require_review_response(ref, out)
             if local_id is None:
                 local_id = _local_id_from_out(out)
                 current = repo.get_generation(local_id) if local_id else current
@@ -642,8 +677,9 @@ def unfinalize(gen_id: str, request: Request):
                 ref,
                 out,
                 local_id=local_id,
-                shared=True,
-                is_final=False,
+                shared=out["shared"],
+                is_final=out["is_final"],
+                final_by=out.get("final_by"),
                 shared_by=(current.get("worker_id") if current else DEFAULT_WORKER_ID),
             )
             if mirrored and local_id:
@@ -671,6 +707,167 @@ def unfinalize(gen_id: str, request: Request):
         details={"is_final": False},
     )
     return repo.get_generation(gen_id)
+
+
+@router.post("/generations/{gen_id}/final-review", response_model=GenerationOut)
+@_account_scoped_route
+def final_review(gen_id: str, body: FinalReviewIn, request: Request):
+    """최종을 명시적으로 일반/공유/보류로 전환한다. 중간 상태는 노출하지 않는다."""
+    target = body.state
+    if _proxy.proxying():
+        with _stable_proxy_identity_lock(gen_id) as (local_id, server_id):
+            current = repo.get_generation(local_id) if local_id else None
+            ref = _prepare_proxy_intent(
+                local_id=local_id, server_id=server_id, operation_kind="final_review",
+                desired_shared=target != "unshared", desired_final=False, desired_held=target == "held",
+                base_shared=bool(current.get("shared")) if current else True,
+                base_final=bool(current.get("is_final")) if current else True,
+                base_held=current.get("is_held") if current else None,
+            )
+            try:
+                out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/final-review", body={"state": target})
+            except HTTPException as exc:
+                if exc.status_code == 404 and _is_remote_generation_missing(exc) and target == "unshared":
+                    if local_id is None:
+                        _transition_proxy_intent(ref, "converged", observed_state={
+                            "shared": False, "is_final": False, "is_held": False,
+                        })
+                        raise
+                    out = {**(current or {}), "shared": False, "is_final": False, "is_held": False,
+                           "final_by": None, "final_at": None}
+                else:
+                    _record_proxy_failure(ref, exc)
+                    if exc.status_code == 404 and not _is_remote_generation_missing(exc):
+                        raise HTTPException(409, "최종 상태 변경을 사용하려면 공유 서버를 업데이트해 주세요") from exc
+                    raise
+            _require_review_response(ref, out)
+            if local_id is None:
+                local_id = _local_id_from_out(out)
+                current = repo.get_generation(local_id) if local_id else current
+            mirrored = _mirror_proxy_success(
+                ref, out, local_id=local_id, shared=out["shared"], is_final=out["is_final"],
+                final_by=out.get("final_by"),
+                shared_by=current.get("worker_id") if current else DEFAULT_WORKER_ID,
+            )
+            if mirrored and local_id:
+                _touch_telemetry(local_id)
+                return out
+            return _mirror_pending_response(out)
+
+    gen_id = repo.resolve_local_id(gen_id)
+    gen = repo.get_generation(gen_id)
+    if not gen:
+        raise HTTPException(404, "generation 없음")
+    if gen.get("project_id"):
+        if not rbac.has_any_global_role(account_global_roles(request), rbac.ADMIN):
+            require_project_role(request, gen["project_id"], rbac.SUPERVISOR)
+    else:
+        require_edit_generation(request, gen)
+    try:
+        previous = repo.transition_final_review(gen_id, target, gen.get("worker_id") or DEFAULT_WORKER_ID)
+    except repo.GenerationHoldStateError as exc:
+        messages = {
+            "not_found": "generation 없음", "not_done": "완료된 생성물만 상태를 변경할 수 있습니다",
+            "deleted": "휴지통의 생성물은 상태를 변경할 수 없습니다",
+            "not_final": "최종 상태가 변경되었습니다. 새로고침 후 다시 확인해 주세요",
+        }
+        raise HTTPException(404 if exc.reason == "not_found" else 409, messages[exc.reason]) from exc
+    _touch_telemetry(gen_id)
+    journal_audit_event(
+        "generation.unfinalized", actor_uid=actor_id(request), target_type="generation", target_id=gen_id,
+        project_id=gen.get("project_id"), fields=["is_final", "final_by", "final_at"], details={"is_final": False},
+    )
+    if previous["shared"] != (target != "unshared"):
+        _journal_share_change(request, gen, shared=target != "unshared")
+    if bool(previous["is_held"]) != (target == "held"):
+        journal_audit_event(
+            "generation.held" if target == "held" else "generation.unheld",
+            actor_uid=actor_id(request), target_type="generation", target_id=gen_id,
+            project_id=gen.get("project_id"), fields=["is_held"], details={"is_held": target == "held"},
+        )
+    return repo.get_generation(gen_id)
+
+
+def _change_generation_hold(gen_id: str, request: Request, *, held: bool):
+    """검토 보류/복귀. 서버 판정만 미러하며 원본 다운로드는 시작하지 않는다."""
+    if _proxy.proxying():
+        with _stable_proxy_identity_lock(gen_id) as (local_id, server_id):
+            current = repo.get_generation(local_id) if local_id else None
+            ref = _prepare_proxy_intent(
+                local_id=local_id,
+                server_id=server_id,
+                operation_kind="hold" if held else "unhold",
+                desired_shared=True,
+                desired_final=False,
+                desired_held=held,
+                base_shared=bool(current.get("shared")) if current else True,
+                base_final=bool(current.get("is_final")) if current else False,
+                base_held=current.get("is_held") if current else None,
+            )
+            try:
+                action = "hold" if held else "unhold"
+                out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/{action}")
+            except HTTPException as exc:
+                _record_proxy_failure(ref, exc)
+                if exc.status_code == 404 and not _is_remote_generation_missing(exc):
+                    raise HTTPException(409, "보류 기능을 사용하려면 공유 서버를 업데이트해 주세요") from exc
+                raise
+            _require_review_response(ref, out)
+            if local_id is None:
+                local_id = _local_id_from_out(out)
+                current = repo.get_generation(local_id) if local_id else current
+            mirrored = _mirror_proxy_success(
+                ref, out, local_id=local_id,
+                shared=bool(out.get("shared")), is_final=bool(out.get("is_final")),
+                final_by=out.get("final_by"),
+                shared_by=current.get("worker_id") if current else DEFAULT_WORKER_ID,
+            )
+            if mirrored and local_id:
+                _touch_telemetry(local_id)
+                return out
+            return _mirror_pending_response(out)
+
+    gen_id = repo.resolve_local_id(gen_id)
+    gen = repo.get_generation(gen_id)
+    if not gen:
+        raise HTTPException(404, "generation 없음")
+    # 검토 결정권은 최종 지정과 동일하다. PM이나 일반 생성자의 프로젝트 권한을 넓히지 않는다.
+    if gen.get("project_id"):
+        if not rbac.has_any_global_role(account_global_roles(request), rbac.ADMIN):
+            require_project_role(request, gen["project_id"], rbac.SUPERVISOR)
+    else:
+        require_edit_generation(request, gen)
+    try:
+        repo.set_generation_hold(gen_id, held)
+    except repo.GenerationHoldStateError as exc:
+        messages = {
+            "not_found": "generation 없음",
+            "not_shared": "공유된 생성물만 보류 상태를 변경할 수 있습니다",
+            "not_done": "완료된 생성물만 보류 상태를 변경할 수 있습니다",
+            "deleted": "휴지통의 생성물은 보류 상태를 변경할 수 없습니다",
+            "final": "최종 지정을 먼저 해제한 후 보류할 수 있습니다",
+        }
+        raise HTTPException(404 if exc.reason == "not_found" else 409, messages[exc.reason]) from exc
+    _touch_telemetry(gen_id)
+    if bool(gen.get("is_held")) != held:
+        journal_audit_event(
+            "generation.held" if held else "generation.unheld",
+            actor_uid=actor_id(request), target_type="generation", target_id=gen_id,
+            project_id=gen.get("project_id"), fields=["is_held"], details={"is_held": held},
+        )
+    return repo.get_generation(gen_id)
+
+
+@router.post("/generations/{gen_id}/hold", response_model=GenerationOut)
+@_account_scoped_route
+def hold_generation(gen_id: str, request: Request):
+    return _change_generation_hold(gen_id, request, held=True)
+
+
+@router.post("/generations/{gen_id}/unhold", response_model=GenerationOut)
+@_account_scoped_route
+def unhold_generation(gen_id: str, request: Request):
+    return _change_generation_hold(gen_id, request, held=False)
 
 
 # ── 제공자 신원 ───────────────────────────────────────────────────────────

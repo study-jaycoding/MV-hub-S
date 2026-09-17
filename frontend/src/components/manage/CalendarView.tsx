@@ -183,6 +183,9 @@ function CreatorCalendarBody({
                           /> : <span className="work-cut-private-calendar" title={t(privateCutLabel(first, myUid))}>
                             {t(first.creator_uid === myUid ? "미리보기 없음" : "미공유")}
                           </span>}
+                          {!!first.shared && !first.is_final && !!first.is_held && (
+                            <span className="work-cut-badge held" title={t("보류")}>S</span>
+                          )}
                           {cuts.length > 1 && (
                             <span className="work-cal-gen-more">+{cuts.length - 1}</span>
                           )}

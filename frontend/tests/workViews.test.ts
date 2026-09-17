@@ -27,8 +27,8 @@ function task(patch: Partial<Task> = {}): Task {
 }
 
 describe("work board flow", () => {
-  it("shows only generation, sharing, and completion columns", () => {
-    expect(BOARD_STATUS_VALUES).toEqual(["in_progress", "publish", "done"]);
+  it("shows generation, hold, sharing, and completion columns in order", () => {
+    expect(BOARD_STATUS_VALUES).toEqual(["in_progress", "hold", "publish", "done"]);
     expect(BOARD_STATUS_VALUES).not.toContain("not_started");
     expect(BOARD_STATUS_VALUES).not.toContain("omit");
   });

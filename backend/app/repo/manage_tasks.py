@@ -287,6 +287,8 @@ def _task_gen_rows(
     return conn.execute(
         "SELECT g.id AS id, g.status AS status, g.creator_uid AS creator_uid, g.model AS model, "
         "  g.is_final AS is_final, g.created_at AS created_at, g.job_id AS job_id, "
+        "  CASE WHEN g.is_held=1 AND g.is_final=0 AND EXISTS(SELECT 1 FROM share s "
+        "    WHERE s.generation_id=g.id) THEN 1 ELSE 0 END AS is_held, "
         "  EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared, "
         "  EXISTS(SELECT 1 FROM task_generation tg WHERE tg.task_id=? AND tg.gen_id=g.id) AS linked, "
         # 썸네일: poster(thumbnail_path) 우선. 비디오는 file_path(영상)를 이미지 썸네일로 못 써 깨지므로
@@ -450,6 +452,8 @@ def _batch_task_gen_rows(
             for g in conn.execute(
                 f"SELECT g.id AS id, g.status AS status, g.creator_uid AS creator_uid, g.model AS model, "
                 f"  g.is_final AS is_final, g.created_at AS created_at, g.job_id AS job_id, "
+                f"  CASE WHEN g.is_held=1 AND g.is_final=0 AND EXISTS(SELECT 1 FROM share s "
+                f"    WHERE s.generation_id=g.id) THEN 1 ELSE 0 END AS is_held, "
                 f"  g.workspace_scope AS workspace_scope, g.workspace_id AS workspace_id, "
                 f"  g.sort_ts AS sort_ts, "
                 f"  EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared, "
@@ -865,11 +869,13 @@ def _list_tasks_batch_uncached(
             d["derived_start"] = days[0] if days else None
             d["derived_due"] = days[-1] if days else None
             d["derived_date"] = days[0] if days else None  # 기존 캘린더 폴백 호환
-            # 폴더 자동 작업은 컷 상태로 열(상태)을 자동 배치: 최종→완료, 공유→게시, 생성물→진행.
+            # 폴더 자동 작업은 컷 상태로 자동 배치: 최종→완료, 공유 보류→보류, 공유→게시, 생성물→진행.
             # 단 사용자가 '생략'으로 옮긴 건 수동 종결이라 그대로 둔다(그때 컷 비활성화는 프론트 처리).
             if r["folder_path"] and r["status"] != "omit":
                 if any(g["is_final"] for g in gens):
                     d["status"] = "done"
+                elif any(g["shared"] and g.get("is_held") for g in gens):
+                    d["status"] = "hold"
                 elif any(g["shared"] for g in gens):
                     d["status"] = "publish"
                 elif gens:

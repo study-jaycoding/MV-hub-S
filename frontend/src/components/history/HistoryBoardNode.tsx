@@ -5,8 +5,10 @@ import { downloadName, downloadOne } from "../../lib/download";
 import { thumbOf } from "../../lib/media";
 import { generationStatusLabelFor, generationStatusTitle } from "../../lib/generationDisplay";
 import { useT } from "../../lib/i18n";
+import { matchesReviewFilter, type ReviewFilter } from "../../lib/generationReview";
 import type { Generation, InfoTarget, PreviewTarget } from "../../types";
 import { MediaThumbnail } from "../MediaThumbnail";
+import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
 
 type SConfirm = { id: string; kind: "share" | "final" } | null;
 
@@ -26,6 +28,7 @@ interface Props {
   colorFilter?: Set<string>;
   tagFilter?: Set<string>;
   sharedOnly: boolean;
+  reviewFilter?: ReviewFilter;
   commentOnly: boolean;
   finalOnly: boolean;
   // 캔버스에서 폴더를 선택했을 때, 그 폴더(하위 포함) 밖 카드를 흐리게(딤) — 어떤 게 들어갔는지
@@ -59,6 +62,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
   colorFilter,
   tagFilter,
   sharedOnly,
+  reviewFilter = "shared",
   commentOnly,
   finalOnly,
   folderSel,
@@ -73,14 +77,14 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
   onTag,
   onOpenComments,
 }: Props) {
-  useT();
+  const t = useT();
   const asset = generation.assets[0];
   const thumb = thumbOf(generation);
   const dimmed =
     (typeFilter !== "all" && asset?.type !== typeFilter) ||
     (!!colorFilter && colorFilter.size > 0 && !(generation.color && colorFilter.has(generation.color))) ||
     (!!tagFilter && tagFilter.size > 0 && !generation.tags.some((tag) => tagFilter.has(tag))) ||
-    (sharedOnly && !generation.shared) ||
+    (sharedOnly && !matchesReviewFilter(generation, reviewFilter)) ||
     (commentOnly && generation.comment_count === 0) ||
     (finalOnly && !generation.is_final) ||
     (!!folderSel &&
@@ -157,8 +161,8 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
       {isRoot && <span className="linb-tag root-tag">원본</span>}
       {(generation.shared || generation.is_final) && (
         <span
-          className={"linb-sf" + (generation.is_final ? " final" : " shared")}
-          title={generation.is_final ? "최종(골드)" : "팀 공유됨"}
+          className={"linb-sf" + (generation.is_final ? " final" : generation.is_held ? " shared held" : " shared")}
+          title={t(generation.is_final ? "최종(골드)" : generation.is_held ? "보류" : "팀 공유됨")}
         >
           {generation.is_final ? "★" : "S"}
         </span>
@@ -177,15 +181,15 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
               className={
                 "linb-ov-btn" +
                 (generation.shared ? " on" : "") +
-                (generation.is_final ? " final" : "")
+                (generation.is_final ? " final" : generation.is_held ? " held" : "")
               }
-              title={
+              title={t(
                 generation.is_final
                   ? "최종(골드) · 더블클릭=최종 해제"
                   : generation.shared
                     ? "팀 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정"
                     : "팀에 공유 (클릭) · 공유 후 더블클릭=최종 지정"
-              }
+              )}
               onClick={(e) => {
                 e.stopPropagation();
                 onSClick(generation);
@@ -289,30 +293,8 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
         </div>
       </div>
       {sConfirm?.id === generation.id && (
-        <div
-          className="sconfirm"
-          onClick={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-          onDoubleClick={(e) => e.stopPropagation()}
-        >
-          <span className="cs-final-q">
-            {sConfirm.kind === "final"
-              ? generation.is_final
-                ? "최종 지정을 해제할까요?"
-                : "최종(골드)으로 지정할까요?"
-              : generation.shared
-                ? "공유 해제 할까요?"
-                : "공유 하시겠습니까?"}
-          </span>
-          <div className="cs-final-actions">
-            <button className="cs-final-yes" onClick={() => onSConfirmYes(generation)}>
-              Yes
-            </button>
-            <button className="cs-final-no" onClick={onSConfirmNo}>
-              No
-            </button>
-          </div>
-        </div>
+        <GenerationConfirmOverlay mode={sConfirm.kind} shared={generation.shared} isFinal={!!generation.is_final}
+          onYes={() => onSConfirmYes(generation)} onNo={onSConfirmNo} />
       )}
     </div>
   );

@@ -359,8 +359,8 @@
 .manage-toggles button.on { opacity: 1; background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
 .manage-tog-sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
 
-/* 칸반 — 실제 생성 흐름(생성·공유·완료) 3열 */
-.kanban { display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 12px; align-items: start; }
+/* 칸반 — 실제 생성 흐름(생성·보류·공유·완료) 4열 */
+.kanban { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 12px; align-items: start; }
 .kanban-col { border: 1px solid var(--border); border-radius: 12px; padding: 10px; min-height: 120px; }
 .kanban-flow { overflow-x: auto; padding-bottom: 8px; }
 .kanban-flow .kanban-col { min-width: 0; border-top: 2px solid var(--status-color, var(--border)); }
@@ -609,6 +609,7 @@ tr.work-row-archived td { opacity: .62; }
 }
 .work-cut-badge.final { color: #ffd84d; }
 .work-cut-badge.shared { color: var(--accent); }
+.work-cut-badge.held { background: #c9384a; color: #fff; }
 /* d 로 비활성화된 컷 — 회색 처리(생성탭과 동일한 로컬 비활성화 상태 반영) */
 .work-cut.deactivated { opacity: .4; filter: grayscale(1); }
 /* 4장 이상일 때 +N 칩 */

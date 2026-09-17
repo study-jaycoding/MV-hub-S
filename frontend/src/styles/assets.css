@@ -237,6 +237,11 @@
 .af-btn:hover { color: var(--text); }
 /* 눌림(활성) — 또렷한 색 변화(솔리드 accent) */
 .af-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.lib-review-filter { position: relative; display: inline-flex; flex: none; }
+.lib-review-filter > .af-btn { width: 26px; min-width: 26px; padding: 0; }
+.lib-review-filter .af-btn.held.on { background: #c9384a; border-color: #c9384a; color: #fff; }
+.lib-review-filter .af-btn.held:not(.on) { color: #c9384a; border-color: #c9384a; }
+.lib-review-filter .lib-review-alternative { position: absolute; z-index: 80; top: calc(100% + 6px); left: 50%; transform: translateX(-50%); }
 /* ── 워크스페이스로 걸러 보기 — 회색 dot 왼쪽에 [칩][버튼] (Jay 2026-09-14) ── */
 .lib-ws-wrap { position: relative; display: inline-flex; }
 .lib-ws-btn {

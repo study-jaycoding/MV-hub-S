@@ -1,5 +1,6 @@
 import type {
   Creator,
+  FolderReviewCounts,
   Member,
   Project,
   ProjectsResponse,
@@ -18,6 +19,27 @@ export interface TeamFreshItem {
   folder_path: string | null;
   shared_at: string | null;
   ack_key?: string | null;
+  creator_uid?: string | null; // 미지원(필드 부재)과 작성자 미상(null)을 구분한다.
+}
+
+interface FolderCountsResponse {
+  counts: Record<string, number>;
+  review_counts?: Record<string, FolderReviewCounts>;
+  creator_filter_uid?: string;
+}
+
+interface FolderCountsBatchResponse {
+  counts: Record<string, Record<string, number>>;
+  review_counts?: Record<string, Record<string, FolderReviewCounts>>;
+  creator_filter_uid?: string;
+  project_counts?: Record<string, number>;
+  unassigned_count?: number;
+}
+
+function requireCreatorCountScope(result: { creator_filter_uid?: string }, creatorUid?: string) {
+  if (creatorUid && result?.creator_filter_uid !== creatorUid) {
+    throw new HttpError(409, "생성자별 개수 표시에는 앱과 공유 서버 업데이트가 필요합니다.");
+  }
 }
 
 interface TeamFreshCursor {
@@ -62,20 +84,21 @@ async function readAllTeamFresh(since: string): Promise<TeamFreshItem[]> {
   return out;
 }
 
-// 같은 기준선으로 도는 조회가 이미 있으면 **합류**한다(단일비행).
+// 같은 기준선·계정/서버/공간 문맥으로 도는 조회가 이미 있으면 **합류**한다(단일비행).
 // ★왜(2026-09-12 실측): 이 목록은 기준선 이후 60일치 공유 **전체**이고 500건씩 **순차** 왕복이다
 //  (실측 413건 = 85.7KB 한 페이지). 호출부는 갱신마다 요청 번호를 올려 옛 실행을 무효로 만들었는데,
 //  팀 탭의 15초 폴이 그 갱신을 계속 일으킨다 — 전체 조회가 15초보다 길면 **매번 완독 전에 폐기**돼
 //  배지가 영영 갱신되지 않는다. 합류하면 왕복이 한 벌로 줄고 완독이 보장된다.
 //  늦은 결과를 화면에 반영할지 말지는 호출부의 판단으로 그대로 남긴다.
-let teamFreshInflight: { since: string; promise: Promise<TeamFreshItem[]> } | null = null;
+let teamFreshInflight: { key: string; promise: Promise<TeamFreshItem[]> } | null = null;
 
-export function fetchAllTeamFresh(since: string): Promise<TeamFreshItem[]> {
-  if (teamFreshInflight && teamFreshInflight.since === since) return teamFreshInflight.promise;
+export function fetchAllTeamFresh(since: string, contextKey = ""): Promise<TeamFreshItem[]> {
+  const key = JSON.stringify([since, contextKey]);
+  if (teamFreshInflight && teamFreshInflight.key === key) return teamFreshInflight.promise;
   const promise = readAllTeamFresh(since).finally(() => {
     if (teamFreshInflight?.promise === promise) teamFreshInflight = null;
   });
-  teamFreshInflight = { since, promise };
+  teamFreshInflight = { key, promise };
   return promise;
 }
 
@@ -132,19 +155,41 @@ export const projectApi = {
     jsonFetch<import("../types").ProjectFolderState>(
       `/api/manage/project-folders/${pathPart(id)}`,
     ),
+  openProjectFolder: (projectId: string, folderPath: string) =>
+    jsonFetch<{ ok: boolean }>("/api/manage/project-folders/reveal", {
+      method: "POST",
+      body: jsonBody({ project_id: projectId, folder_path: folderPath }),
+    }),
   // 프로젝트의 폴더별 생성물 개수 {folder_path: n} — 사이드바 트리 뱃지·필터 표시용.
-  projectFolderCounts: (id: string, tab: "my" | "team" = "my") =>
-    jsonFetch<{ counts: Record<string, number> }>(
-      `/api/projects/${pathPart(id)}/folder-counts?tab=${tab}`,
-    ),
-  projectFolderCountsBatch: (ids: string[], tab: "my" | "team" = "my") =>
-    jsonFetch<{ counts: Record<string, Record<string, number>> }>(
+  projectFolderCounts: async (id: string, tab: "my" | "team" = "my", creatorUid?: string) => {
+    const params = new URLSearchParams({ tab });
+    if (creatorUid) params.set("creator_uid", creatorUid);
+    const result = await jsonFetch<FolderCountsResponse>(
+      `/api/projects/${pathPart(id)}/folder-counts?${params.toString()}`,
+    );
+    requireCreatorCountScope(result, creatorUid);
+    return result;
+  },
+  projectFolderCountsBatch: async (ids: string[], tab: "my" | "team" = "my", creatorUid?: string) => {
+    const result = await jsonFetch<FolderCountsBatchResponse>(
       "/api/projects/folder-counts/batch",
       {
         method: "POST",
-        body: jsonBody({ project_ids: ids, tab }),
+        body: jsonBody({ project_ids: ids, tab, ...(creatorUid ? { creator_uid: creatorUid } : {}) }),
       },
-    ),
+    );
+    requireCreatorCountScope(result, creatorUid);
+    if (creatorUid && (!Number.isSafeInteger(result.unassigned_count) || result.unassigned_count! < 0
+      || ids.some(id => !Object.prototype.hasOwnProperty.call(result.project_counts ?? {}, id)
+        || !Number.isSafeInteger(result.project_counts![id]) || result.project_counts![id] < 0
+        || !Object.prototype.hasOwnProperty.call(result.counts ?? {}, id)
+        || !result.counts[id] || typeof result.counts[id] !== "object" || Array.isArray(result.counts[id])
+        || Object.values(result.counts[id]).some(n => !Number.isSafeInteger(n) || n < 0)
+        || Object.values(result.counts[id]).reduce((sum, n) => sum + n, 0) > result.project_counts![id]))) {
+      throw new HttpError(502, "생성자별 개수 응답이 올바르지 않습니다.");
+    }
+    return result;
+  },
   // 기준선 이후 공유된 항목 목록 — 사이드바 +N(신규 라임 배지). 클라가 확인(클릭)분을 제외하고 센다.
   // 구버전 서버는 이 라우트가 없어 404 → 호출부가 빈 목록 폴백(배지만 숨김).
   teamFresh: teamFreshPage,

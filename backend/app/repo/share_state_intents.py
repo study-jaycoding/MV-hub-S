@@ -20,7 +20,7 @@ from ._common import new_id
 
 
 SHARE_STATE_OPERATION_KINDS = frozenset(
-    {"publish", "unpublish", "finalize", "unfinalize", "composite_finalize"}
+    {"publish", "unpublish", "finalize", "unfinalize", "composite_finalize", "hold", "unhold", "final_review"}
 )
 SHARE_STATE_STATUSES = frozenset(
     {
@@ -183,7 +183,7 @@ async def async_share_state_action_locks(identity_keys: Iterable[str]):
 _UPSERT_INTENT_SQL = """
 INSERT INTO share_state_intent(
     intent_id, server_origin, server_generation_id, job_anchor, local_id,
-    operation_kind, desired_shared, desired_final, base_shared, base_final,
+    operation_kind, desired_shared, desired_final, base_shared, base_final, desired_held, base_held,
     expected_final_by, intent_seq, status, claim_token, lease_until,
     fail_streak, next_retry_at, last_error_code, observed_state_json, observed_at,
     created_at, updated_at, last_attempt_at
@@ -198,7 +198,7 @@ VALUES(
         ORDER BY (server_generation_id IS NOT NULL) DESC, intent_seq DESC
         LIMIT 1
     ), ?),
-    ?,?,?,?,?,?,?,?,?,?,?, 'prepared', ?, datetime('now', ?),
+    ?,?,?,?,?,?,?,?,?,?,?,?,?, 'prepared', ?, datetime('now', ?),
     0, NULL, NULL, NULL, NULL, datetime('now'), datetime('now'), NULL
 )
 ON CONFLICT DO UPDATE SET
@@ -210,6 +210,8 @@ ON CONFLICT DO UPDATE SET
     desired_final=excluded.desired_final,
     base_shared=excluded.base_shared,
     base_final=excluded.base_final,
+    desired_held=excluded.desired_held,
+    base_held=excluded.base_held,
     expected_final_by=excluded.expected_final_by,
     intent_seq=share_state_intent.intent_seq+1,
     status='prepared',
@@ -247,6 +249,12 @@ def _intent_params(
     desired_final = bool(item.get("desired_final"))
     if desired_final and not desired_shared:
         raise ValueError("최종 상태는 공유 상태여야 합니다")
+    desired_held = item.get("desired_held")
+    base_held = item.get("base_held")
+    if desired_held not in (None, False, True) or base_held not in (None, False, True):
+        raise ValueError("보류 상태는 boolean 또는 미지정이어야 합니다")
+    if desired_held and (not desired_shared or desired_final):
+        raise ValueError("보류는 최종이 아닌 공유 상태여야 합니다")
     claim_token = new_id()
     candidate_id = new_id()
     modifier = f"+{max(int(lease_seconds), 1)} seconds"
@@ -266,6 +274,8 @@ def _intent_params(
         int(desired_final),
         int(bool(item.get("base_shared"))),
         int(bool(item.get("base_final"))),
+        None if desired_held is None else int(desired_held),
+        None if base_held is None else int(base_held),
         _clean_optional(item.get("expected_final_by")),
         1,
         claim_token,
@@ -341,6 +351,8 @@ def prepare_share_state_intent(
     base_shared: bool,
     base_final: bool,
     expected_final_by: Optional[str] = None,
+    desired_held: Optional[bool] = None,
+    base_held: Optional[bool] = None,
     lease_seconds: int = 120,
 ) -> dict[str, Any]:
     return prepare_share_state_intents(
@@ -355,6 +367,8 @@ def prepare_share_state_intent(
                 "desired_final": desired_final,
                 "base_shared": base_shared,
                 "base_final": base_final,
+                "desired_held": desired_held,
+                "base_held": base_held,
                 "expected_final_by": expected_final_by,
             }
         ],
@@ -550,13 +564,14 @@ def apply_share_state_intent_local(
     local_id: Optional[str] = None,
     shared: bool,
     is_final: bool,
+    is_held: Optional[bool] = None,
     final_by: Optional[str] = None,
     shared_by: Optional[str] = None,
     preservation_reason: Optional[str] = None,
     status: str = "converged",
     observed_state: Optional[Mapping[str, Any]] = None,
 ) -> str:
-    """로컬 ``{shared, final}`` 적용과 원장 상태 전이를 한 트랜잭션 CAS로 수행한다.
+    """로컬 ``{shared, final, held}`` 적용과 원장 상태 전이를 한 트랜잭션 CAS로 수행한다.
 
     CAS가 먼저 확인된 뒤 BEGIN IMMEDIATE가 끝날 때까지 새 seq UPSERT가 들어올 수 없다. 따라서
     옛 워커는 로컬을 한 줄도 바꾸지 못하고, 적용 중 예외가 나면 원장 전이까지 함께 롤백된다.
@@ -564,6 +579,9 @@ def apply_share_state_intent_local(
     """
     if is_final and not shared:
         raise ValueError("최종 상태는 공유 상태여야 합니다")
+    # 구서버가 필드를 생략하면 보류를 추측하지 않는다. 최종/미공유는 세 축 불변식으로 해제한다.
+    if not shared or is_final:
+        is_held = False
     if preservation_reason not in {None, "shared", "final"}:
         raise ValueError("지원하지 않는 미디어 보존 사유입니다")
     if status not in SHARE_STATE_STATUSES:
@@ -625,6 +643,8 @@ def apply_share_state_intent_local(
                     "UPDATE generation SET is_final=0, final_by=NULL, final_at=NULL WHERE id=?",
                     (target_id,),
                 )
+            if is_held is not None:
+                conn.execute("UPDATE generation SET is_held=? WHERE id=?", (int(is_held), target_id))
             if preservation_reason and MEDIA_PRESERVATION_ENABLED:
                 # 공유/최종 표식과 보존 요청도 같은 트랜잭션에 둔다. 원장만 converged인데
                 # media_preservation 등록이 빠지는 부분 성공을 만들지 않는다.

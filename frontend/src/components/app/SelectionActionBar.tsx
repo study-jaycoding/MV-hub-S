@@ -143,13 +143,13 @@ export function LibrarySelectionActionBar({
         (onGradeStep ? (
           <span className="sb-grade">
             <button
-              title="한 단계 내리기 (최종→공유, 공유→일반)"
+              title={t("단계 내리기 (최종→공유, 공유·보류→일반)")}
               onClick={() => onGradeStep("down")}
             >
               ↓
             </button>
             <button
-              title="한 단계 올리기 (일반→공유, 공유→최종)"
+              title={t("단계 올리기 (일반·보류→공유, 공유→최종)")}
               onClick={() => onGradeStep("up")}
             >
               ↑

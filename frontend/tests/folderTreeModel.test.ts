@@ -139,4 +139,41 @@ describe("프로젝트 폴더 카운트 트리", () => {
     expect(hasMoreThanFolderNodes([node], 15)).toBe(true);
     expect(hasMoreThanFolderNodes([node], 1_500)).toBe(false);
   });
+
+  it("상태별 개수도 경로 정규화 후 부모에 한 번씩 합산한다", () => {
+    const tree = buildFolderCountTree([], { "ep/shot1": 4, "ep\\shot1\\deep": 2, "ep/shot10": 2 }, undefined, {
+      "ep/shot1": { final: 1, held: 1, shared: 2 },
+      "ep\\shot1\\deep": { final: 0, held: 1, shared: 1 },
+      "ep/shot10": { final: 0, held: 0, shared: 2 },
+    });
+    expect(find(tree, "ep")?.reviewCounts).toEqual({ final: 1, held: 2, shared: 5 });
+    expect(find(tree, "ep/shot1")?.reviewCounts).toEqual({ final: 1, held: 2, shared: 3 });
+    expect(find(tree, "ep/shot10")?.reviewCounts).toEqual({ final: 0, held: 0, shared: 2 });
+    expect(find(tree, "ep")?.count).toBe(8);
+  });
+
+  it("상태 맵도 prototype 폴더명과 같은 경로의 별칭을 안전하게 누적한다", () => {
+    const counts = Object.fromEntries([["__proto__/x", 2], ["/__proto__/x/", 3], ["constructor", 1]]);
+    const review = Object.fromEntries([["__proto__/x", { final: 1, held: 1, shared: 0 }],
+      ["/__proto__/x/", { final: 0, held: 0, shared: 3 }], ["constructor", { final: 0, held: 0, shared: 1 }]]);
+    const tree = buildFolderCountTree([], counts, undefined, review);
+    expect(find(tree, "__proto__")?.reviewCounts).toEqual({ final: 1, held: 1, shared: 3 });
+    expect(find(tree, "constructor")?.reviewCounts).toEqual({ final: 0, held: 0, shared: 1 });
+  });
+
+  it.each([null, {}, { shot: { final: 0, held: 1, shared: 1 } },
+    { shot: { final: -1, held: 1, shared: 3 } }, { shot: { final: 0, held: 1.5, shared: 1.5 } }])(
+    "누락·불일치 상태 정보를 공유 건수로 추정하지 않는다 (%j)", (review) => {
+      const node = buildFolderCountTree([], { shot: 3 }, undefined, review)[0];
+      expect(node.count).toBe(3); expect(node.reviewCounts).toBeNull();
+    },
+  );
+
+  it("기존 표시와 상세 지원 빈 결과를 구분하고 총계에 없는 상세 경로는 무시한다", () => {
+    const roots = [{ path: "empty", name: "empty", count: 42 }];
+    expect(buildFolderCountTree(roots, {})[0].reviewCounts).toBeUndefined();
+    expect(buildFolderCountTree(roots, {}, undefined, { phantom: { final: 2, held: 0, shared: 0 } }))
+      .toEqual([expect.objectContaining({ path: "empty", count: 0, reviewCounts: { final: 0, held: 0, shared: 0 } })]);
+    expect(buildFolderCountTree(roots, undefined, undefined, null)[0].count).toBeNull();
+  });
 });

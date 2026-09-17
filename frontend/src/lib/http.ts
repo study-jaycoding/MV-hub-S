@@ -102,7 +102,11 @@ export async function throwHttpError(res: Response, url: string, fallback?: stri
   throw new HttpError(res.status, `${res.status}: ${detail}`, detail);
 }
 
-export async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
+export async function jsonFetch<T>(
+  url: string,
+  init?: RequestInit,
+  validateResponse?: (response: Response) => void,
+): Promise<T> {
   const mutationOrigin = createLibraryMutationOrigin(init?.method);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -115,6 +119,7 @@ export async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> 
   }
   const res = await fetch(url, { ...init, headers });
   if (!res.ok) await throwHttpError(res, url);
+  validateResponse?.(res);
   if (mutationOrigin) {
     const domainHeader = res.headers?.get(MUTATION_DOMAINS_HEADER) ?? null;
     // P36 서버는 변경 id만 되돌려주므로 도메인 헤더가 없으면 library로 간주해 롤링 업데이트를

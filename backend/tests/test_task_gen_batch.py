@@ -147,6 +147,25 @@ class TaskGenBatchParityTests(unittest.TestCase):
         # 시퀀스 작업: g3 만
         self.assertEqual({g["id"] for g in batch["t_seq"]}, {"g3"})
 
+    def test_held_cut_parity_normalizes_unshared_and_final_flags(self):
+        with db.get_connection() as conn:
+            # 레거시/비정상 상태에서도 보류는 공유이고 최종이 아닌 컷에만 유효하다.
+            conn.execute("UPDATE generation SET is_held=1 WHERE id IN ('g1','g2','g6')")
+            conn.execute(
+                "INSERT INTO share(id,generation_id,shared_by) VALUES('s2','g2','u_me')"
+            )
+            rows = conn.execute("SELECT * FROM project_task WHERE project_id='p1'").fetchall()
+            batch = _m._batch_task_gen_rows(conn, "p1", rows)
+            for row in rows:
+                oracle = [dict(cut) for cut in _m._task_gen_rows(
+                    conn, row["id"], "p1", row["sequence"], row["folder_path"],
+                )]
+                self.assertEqual(batch[row["id"]], oracle)
+        cuts = {cut["id"]: cut for cut in batch["t_folder"]}
+        self.assertEqual(cuts["g6"]["is_held"], 1)
+        self.assertEqual(cuts["g1"]["is_held"], 0)
+        self.assertEqual(cuts["g2"]["is_held"], 0)
+
     def test_multi_project_batch_keeps_folder_and_sequence_membership_scoped(self):
         """같은 폴더·시퀀스 이름을 쓰는 다른 프로젝트의 컷이 섞이면 안 된다."""
         with db.get_connection() as conn:

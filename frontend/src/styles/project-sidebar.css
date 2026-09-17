@@ -176,6 +176,11 @@
   min-width: 24px; text-align: right; color: var(--muted); font-size: 11px; flex: none;
 }
 .folder-tree-count.zero { color: var(--muted2); }
+.folder-review-count { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.folder-review-final, .folder-review-held { font-size: 0.9em; font-weight: 400; }
+.folder-review-final { color: #e8b62c; }
+.folder-review-held { color: #ef7d8c; }
+.folder-review-total { font-weight: 700; }
 /* 확인 전 신규 공유 개수(팀 탭) — 총 개수 왼쪽에 라임으로 '+N' (폴더 행/프로젝트·미분류 행 공용) */
 .folder-tree-newcount {
   flex: none; color: var(--accent); font-size: 11px; font-weight: 800; margin-right: 2px;
@@ -282,7 +287,7 @@
 .pam-folders { padding: 2px 0 4px 8px; }
 .pam-folders .folder-tree { min-width: 0; }
 
-/* 폴더 우클릭 메뉴(팀에 공유 / 최종 경로로 저장) — body 포털·고정 위치. 버튼은 폴더 아이콘 색 그대로
+/* 폴더 우클릭 메뉴(팀에 공유 / 골드만 저장 · 상단 원본 열기) — body 포털·고정 위치. 버튼은 폴더 아이콘 색 그대로
    (.folder-tree-row.root 하늘색 / 하위 라임). 라임·하늘색 위 글자는 검정 고정. */
 .folder-ctx-menu {
   position: fixed; z-index: 1000; min-width: 200px; max-width: 280px;
@@ -290,10 +295,19 @@
   background: var(--panel, #1c1c22); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 8px 28px rgba(0,0,0,0.5);
 }
+.folder-ctx-head { display: flex; align-items: center; gap: 6px; min-height: 24px; }
 .folder-ctx-name {
+  flex: 1; min-width: 0;
   padding: 2px 4px; font-size: 12px; font-weight: 600; color: var(--text, #eee);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.folder-ctx-open {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 24px;
+  width: 24px; height: 24px; padding: 0; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel, #1c1c22); color: var(--text, #eee); cursor: pointer; font-size: 14px;
+}
+.folder-ctx-open:hover { background: var(--hover, #303037); }
+.folder-ctx-open:focus-visible { outline: 2px solid var(--accent, #c8ee3d); outline-offset: 1px; }
 .folder-ctx-btn {
   border: 0; border-radius: 8px; padding: 7px 10px; font-size: 12px; font-weight: 700;
   color: #111; cursor: pointer; text-align: center;

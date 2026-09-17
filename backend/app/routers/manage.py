@@ -845,6 +845,37 @@ class ProjectFolderSelectionIn(BaseModel):
     selected_path: str = ""
 
 
+class ProjectFolderRevealIn(BaseModel):
+    project_id: str = Field(min_length=1, max_length=200)
+    folder_path: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/project-folders/reveal")
+def reveal_project_folder(body: ProjectFolderRevealIn, request: Request):
+    require_loopback_browser_request(request, "원본 위치는 본인 PC의 로컬 앱에서만 열 수 있습니다")
+    if _proxy.is_shared_team_server():
+        raise HTTPException(403, "공유 서버에서는 폴더를 열 수 없습니다. 본인 PC의 로컬 앱을 사용해 주세요")
+    with active_account.transition_lock:
+        key = active_account.account_key() or ""
+        uid = active_account.active_uid()
+    key_token = active_account.set_override(key)
+    uid_token = active_account.set_uid_override(uid)
+    try:
+        _require_project_read(request, body.project_id)
+        try:
+            project_folders.open_project_folder(body.project_id, body.folder_path)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(500, "폴더를 열지 못했습니다. 드라이브 연결과 탐색기 실행 권한을 확인해 주세요") from exc
+        return {"ok": True}
+    finally:
+        active_account.reset_uid_override(uid_token)
+        active_account.reset_override(key_token)
+
+
 @router.get("/project-folders")
 def project_folder_links(request: Request):
     links = repo_manage.list_project_folders()  # 로컬 링크(selected_path·레거시 root)

@@ -25,6 +25,8 @@ import {
 } from "../lib/generationDisplay";
 import { InlinePromptRefs, hasInlinePromptRefs } from "./common/InlinePromptRefs";
 import { GenerationConfirmOverlay } from "./generation/GenerationConfirmOverlay";
+import { GenerationReviewOverlay } from "./generation/GenerationReviewOverlay";
+import { reviewTargets, reviewState, type ReviewAction } from "../lib/generationReview";
 import { GenerationCardStatusBar } from "./generation/GenerationCardStatusBar";
 import { ClockIcon, FrameIcon, GemIcon, ModelIcon } from "./generation/GenerationCardIcons";
 import { GenerationThumbOverlay } from "./generation/GenerationThumbOverlay";
@@ -53,6 +55,9 @@ interface Props {
   onUnpublish: (g: Generation) => void;
   onFinalize: (g: Generation) => void; // v02 CMS: Supervisor 최종(골드) 지정
   onUnfinalize: (g: Generation) => void; // 최종 해제
+  onReview?: (g: Generation, action: ReviewAction) => void;
+  onBulkReview?: (action: ReviewAction) => void;
+  bulkReviewAllowed?: Record<ReviewAction, boolean>;
   canFinalize?: (g: Generation) => boolean; // 그 프로젝트 supervisor/PM 일 때만 최종 가능(없으면 허용)
   onImport: (g: Generation) => void;
   onRestore: (g: Generation) => void; // 휴지통 복구
@@ -117,6 +122,9 @@ function GenerationCardImpl({
   onUnpublish,
   onFinalize,
   onUnfinalize,
+  onReview,
+  onBulkReview,
+  bulkReviewAllowed,
   canFinalize,
   onImport,
   onRestore,
@@ -141,6 +149,8 @@ function GenerationCardImpl({
   // v02 CMS — S 더블클릭 → 최종(골드) 확인 플로팅. 단일클릭(공유 토글)과 충돌 방지용 타이머.
   const [confirmFinal, setConfirmFinal] = useState(false);
   const [confirmShare, setConfirmShare] = useState(false); // S 단일클릭 → 공유/해제 확인(최종과 동일 UX)
+  const [confirmReview, setConfirmReview] = useState(false);
+  useEffect(() => setConfirmReview(false), [gen.id, gen.shared, gen.is_held, gen.is_final, selectedCount, tab]);
   // 미디어 로드 실패(원본 URL 죽음 = 힉스필드에서 삭제 등) → '원본 없음' 흐림 표시(즉시 감지 신호).
   // 소스가 바뀌면(리로드로 캐시 URL 전환 등) 초기화해 다시 시도.
   const [broken, setBroken] = useState(false);
@@ -149,6 +159,10 @@ function GenerationCardImpl({
   // 다중선택 중(이 카드도 포함)이면 S 는 선택 전체에 등급 규칙으로 적용(개별 확인 UI 대신 인앱 모달).
   const isMultiGrade = selected && (selectedCount ?? 1) > 1 && !!onBulkGradeStep;
   const onSClick = () => {
+    if (tab === "team" && (gen.shared || isMultiGrade)) {
+      setConfirmReview(true);
+      return; // 공유·보류·최종 모두 메뉴 → 명시적 Yes 확인 뒤에만 변경.
+    }
     if (isMultiGrade) {
       sClick.onClick(() => onBulkGradeStep!("single"));
       return;
@@ -166,6 +180,7 @@ function GenerationCardImpl({
     gen.shared ? onUnpublish(gen) : onPublish(gen);
   };
   const onSDouble = () => {
+    if (tab === "team" && gen.shared) return;
     if (isMultiGrade) {
       sClick.onDouble(() => onBulkGradeStep!("double"));
       return;
@@ -196,7 +211,19 @@ function GenerationCardImpl({
   //  · 최종 권한자(그 프로젝트 supervisor/global admin)는 '공유된' 남의 카드에도 S 가 보여 최종 지정 가능
   //  · 최종(골드) 카드는 누구에게나 ★ 가 보인다(권한 없으면 읽기전용 표식 — 더블클릭은 무반응)
   const mayFinalize = canFinalize ? canFinalize(gen) : true;
-  const showSF = gen.is_mine || gen.is_final || (gen.shared && mayFinalize);
+  const showSF = gen.is_mine || gen.is_final || gen.is_held || (gen.shared && mayFinalize);
+  const reviewAllowed = isMultiGrade ? bulkReviewAllowed ?? { unshared: false, shared: false, held: false, final: false } : {
+    unshared: !!onReview && reviewTargets([gen], "unshared", () => mayFinalize).length > 0,
+    shared: !!onReview && reviewTargets([gen], "shared", () => mayFinalize).length > 0,
+    held: !!onReview && reviewTargets([gen], "held", () => mayFinalize).length > 0,
+    final: !!onReview && reviewTargets([gen], "final", () => mayFinalize).length > 0,
+  };
+  const onReviewAction = (action: ReviewAction) => {
+    setConfirmReview(false);
+    if (!reviewAllowed[action]) return;
+    if (isMultiGrade) onBulkReview?.(action);
+    else onReview?.(gen, action);
+  };
 
   const params = (gen.params || {}) as Record<string, unknown>;
 
@@ -329,9 +356,9 @@ function GenerationCardImpl({
       <div className="card-tl">
         {showSF && (
           <button
-            className={"card-sf" + (gen.shared ? " on" : "") + (gen.is_final ? " final" : "")}
-            title={
-              gen.is_final
+            className={"card-sf" + (gen.shared ? " on" : "") + (gen.is_final ? " final" : gen.is_held ? " held" : "")}
+            title={t(
+              tab === "team" && gen.shared ? "클릭하여 공유 상태 변경" : gen.is_final
                 ? mayFinalize
                   ? "최종(골드) — 더블클릭=최종 해제 (공유 잠금)"
                   : "최종(골드)"
@@ -342,7 +369,7 @@ function GenerationCardImpl({
                   : gen.shared && mayFinalize
                     ? "클릭=공유 해제 · 더블클릭=최종 지정 (Supervisor)"
                     : "더블클릭=최종 지정(Supervisor)"
-            }
+            )}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
@@ -353,7 +380,12 @@ function GenerationCardImpl({
               onSDouble();
             }}
           >
-            {gen.is_final ? "★" : "S"}
+            {gen.is_final ? (
+              // 글꼴의 ★는 기준선 여백 때문에 아래로 치우친다. 도형 경계를 viewBox에 맞춰 중앙에 둔다.
+              <svg className="card-final-star" viewBox="2 0 96 91" aria-hidden="true" focusable="false">
+                <polygon points="50,0 61,35 98,35 68,57 79,91 50,70 21,91 32,57 2,35 39,35" />
+              </svg>
+            ) : "S"}
           </button>
         )}
         <button
@@ -474,7 +506,10 @@ function GenerationCardImpl({
   );
 
   // 공유/최종 확인 — 카드 '전체'를 덮는 오버레이(보드 노드와 동일한 .sconfirm 모양으로 통일).
-  const cardConfirm = (confirmShare || confirmFinal) && (
+  const cardConfirm = confirmReview ? (
+    <GenerationReviewOverlay state={reviewState(gen)} count={isMultiGrade ? selectedCount : 1}
+      allowed={reviewAllowed} onAction={onReviewAction} onCancel={() => setConfirmReview(false)} />
+  ) : (confirmShare || confirmFinal) && (
     <GenerationConfirmOverlay
       mode={confirmFinal ? "final" : "share"}
       shared={gen.shared}
@@ -514,6 +549,7 @@ function GenerationCardImpl({
         //   팀 탭 배지와 어긋나지 않는다. 새것이 아니면 ackTeamFresh 가 no-op(기록 안 쌓임).
         onMouseDownCapture={() => ackTeamFresh(gen)}
       >
+        <div className="card-clip">
         {cardConfirm}
         {thumbBox}
         {gen.color && <div className="list-color-bar" style={{ background: gen.color }} />}
@@ -576,6 +612,7 @@ function GenerationCardImpl({
           </div>
           {statusBar}
         </div>
+        </div>
       </div>
     );
   }
@@ -586,6 +623,7 @@ function GenerationCardImpl({
   if (gen._comfyPending) {
     return (
       <div className={"card card-grid" + (fill ? "" : " contain")}>
+        <div className="card-clip">
         <div className="card-thumb">
           <div className="thumb-placeholder status-running">
             <span className="gen-generating gen-comfy-pending">
@@ -593,6 +631,7 @@ function GenerationCardImpl({
               <span className="gen-generating-label">{t("생성 중")}</span>
             </span>
           </div>
+        </div>
         </div>
       </div>
     );
@@ -615,9 +654,11 @@ function GenerationCardImpl({
       //   팀 탭 배지와 어긋나지 않는다. 새것이 아니면 ackTeamFresh 가 no-op(기록 안 쌓임).
       onMouseDownCapture={() => ackTeamFresh(gen)}
     >
+      <div className="card-clip">
       {cardConfirm}
       {thumbBox}
       {statusBar}
+      </div>
     </div>
   );
 }

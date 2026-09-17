@@ -44,6 +44,7 @@ _PROJECT_READ_ROLES = (rbac.PROJECT_MANAGER, rbac.SUPERVISOR, rbac.CREATOR)
 class FolderCountsBatchIn(BaseModel):
     project_ids: list[str] = Field(default_factory=list)
     tab: str = "my"
+    creator_uid: str | None = None
 
 
 def _has_read_all(request: Request) -> bool:
@@ -188,7 +189,9 @@ def team_fresh(
 
 
 @router.get("/{pid}/folder-counts")
-def project_folder_counts(pid: str, request: Request, tab: str = "my"):
+def project_folder_counts(
+    pid: str, request: Request, tab: str = "my", creator_uid: str | None = None,
+):
     """프로젝트의 폴더별 생성물 개수 {counts: {folder_path: n}} — 사이드바 폴더 트리 뱃지·필터용.
     내 작업(my)은 내 생성물만, 팀(team)은 서버 위임(프록시)."""
     # my/team 이외 값이면 아래 스코프 변수가 전부 None 으로 떨어져 필터 없는 집계가 나갔다
@@ -209,6 +212,27 @@ def project_folder_counts(pid: str, request: Request, tab: str = "my"):
         if not read_all:
             actor_uid = account_scope_uid(request)
             team_member_projects = repo.my_member_projects(actor_uid or "\x00")
+    if creator_uid:
+        selected = repo.creator_folder_counts_batch(
+            [pid], creator_uid=creator_uid, account_uid=account_uid,
+            shared_only=(tab == "team"), team_member_projects=team_member_projects,
+            actor_uid=actor_uid, include_unassigned=False,
+        )
+        result = {"counts": selected["counts"][pid], "creator_filter_uid": creator_uid}
+        if tab == "team":
+            result["review_counts"] = selected["review_counts"][pid]
+        return result
+    if tab == "team":
+        folders = repo.folder_review_counts_batch(
+            [pid], team_member_projects=team_member_projects, actor_uid=actor_uid
+        )[pid]
+        return {
+            "counts": {path: counts["total"] for path, counts in folders.items()},
+            "review_counts": {
+                path: {key: counts[key] for key in ("final", "held", "shared")}
+                for path, counts in folders.items()
+            },
+        }
     return {
         "counts": repo.folder_counts(
             pid,
@@ -228,10 +252,13 @@ def project_folder_counts_batch(body: FolderCountsBatchIn, request: Request):
         raise HTTPException(status_code=413, detail="프로젝트는 최대 100개까지 조회할 수 있습니다")
     tab = "team" if body.tab == "team" else "my"
     if _proxy.proxying() and tab == "team":
+        proxy_body = {"project_ids": project_ids, "tab": "team"}
+        if body.creator_uid:
+            proxy_body["creator_uid"] = body.creator_uid
         return _proxy.proxy_json(
             "POST",
             "/api/projects/folder-counts/batch",
-            body={"project_ids": project_ids, "tab": "team"},
+            body=proxy_body,
         )
     account_uid = account_scope_uid(request) if tab == "my" else None
     team_member_projects = None
@@ -243,6 +270,32 @@ def project_folder_counts_batch(body: FolderCountsBatchIn, request: Request):
         if not read_all:
             actor_uid = account_scope_uid(request)
             team_member_projects = repo.my_member_projects(actor_uid or "\x00")
+    if body.creator_uid:
+        return {
+            **repo.creator_folder_counts_batch(
+                project_ids, creator_uid=body.creator_uid, account_uid=account_uid,
+                shared_only=(tab == "team"), team_member_projects=team_member_projects,
+                actor_uid=actor_uid,
+            ),
+            "creator_filter_uid": body.creator_uid,
+        }
+    if tab == "team":
+        projects = repo.folder_review_counts_batch(
+            project_ids, team_member_projects=team_member_projects, actor_uid=actor_uid
+        )
+        return {
+            "counts": {
+                pid: {path: counts["total"] for path, counts in folders.items()}
+                for pid, folders in projects.items()
+            },
+            "review_counts": {
+                pid: {
+                    path: {key: counts[key] for key in ("final", "held", "shared")}
+                    for path, counts in folders.items()
+                }
+                for pid, folders in projects.items()
+            },
+        }
     return {
         "counts": repo.folder_counts_batch(
             project_ids,

@@ -139,7 +139,7 @@ _ROUTE_CASES: dict[str, dict] = {
     },
     "unfinalize": {
         "seed": {"shared": True, "final": True},
-        "payload": {"id": "server-1", "job_id": "server-1", "shared": True, "is_final": False},
+        "payload": {"id": "server-1", "job_id": "server-1", "shared": True, "is_final": False, "is_held": False},
     },
 }
 

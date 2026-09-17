@@ -63,25 +63,34 @@
 .gen-cell:has(> .card.selected) { content-visibility: visible; }
 /* 그리드 모드 카드 = 정사각 썸네일 + 하단 컬러/S·T·C 바(에셋 그리드처럼) */
 .gen-grid .card.card-grid { height: auto; }
-.gen-grid .card.card-grid > .card-thumb { flex: 0 0 auto; aspect-ratio: 1; }
+.gen-grid .card.card-grid > .card-clip > .card-thumb { flex: 0 0 auto; aspect-ratio: 1; }
 
 /* ── 카드 (미디어 풀블리드) ── */
 .grid-cell { padding: 9px; }
 .card {
   position: relative; /* 전체 카드 확인 오버레이(.sconfirm) 기준 */
   height: 100%;
-  background: var(--panel);
-  border: 1px solid var(--border);
+  background: var(--border);
+  border: 0;
+  padding: 1px;
   border-radius: 14px;
-  overflow: hidden;
+  overflow: visible;
   display: flex;
   flex-direction: column;
-  transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s;
+  transition: transform 0.14s ease, box-shadow 0.14s ease, background-color 0.14s;
 }
 .card:hover {
   transform: translateY(-3px);
-  border-color: var(--border2);
+  background: var(--border2);
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(var(--accent-rgb),0.25);
+}
+/* 바깥 색 면이 프레임, 안쪽은 clip-path 한 곳만 둥글게 자른다.
+   동일한 radius/overflow 클립을 겹치지 않아 모서리 안티앨리어싱이 중복되지 않는다.
+   선택 여부와 무관하게 1px 여백과 자식 배치는 고정이다. */
+.card-clip {
+  position: relative; display: flex; flex-direction: inherit; flex: 1 1 auto;
+  min-width: 0; min-height: 0; overflow: hidden; background: var(--panel);
+  clip-path: inset(0 round 13px);
 }
 .card-thumb {
   position: relative;
@@ -92,7 +101,7 @@
 }
 /* 그리드 카드만 컨테이너로 — 카드 폭에 따라 오버레이 버튼 간격/크기를 줄이는 @container 기준
    (리스트 모드는 폭이 auto 라 컨테이너로 만들지 않는다) */
-.card.card-grid > .card-thumb { container-type: inline-size; }
+.card.card-grid > .card-clip > .card-thumb { container-type: inline-size; }
 .card-thumb img, .card-thumb video {
   width: 100%; height: 100%; object-fit: cover; display: block;
   transition: transform 0.3s ease;
@@ -202,11 +211,14 @@
 .card-sf:hover, .card-cm:hover { color: #fff; border-color: var(--border2); transform: scale(1.08); }
 /* S 공유(라임)/최종(골드) — 항상 표시 */
 .card-sf.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); opacity: 1; pointer-events: auto; font-size: 13px; }
+.card-sf.held { background: #c9384a; color: #fff; border-color: #c9384a; }
 .card-sf.final {
+  position: relative; /* 광택 레이어도 이 버튼 안에서만 중앙 아이콘 위로 흐른다. */
   background: linear-gradient(135deg, #f5c542, #e0a316);
   color: #2a1d00; border-color: #ffd966; font-size: 16px; opacity: 1; pointer-events: auto;
   box-shadow: 0 0 0 1px #ffd966, 0 0 10px rgba(245,197,66,0.55);
 }
+.card-final-star { display: block; width: 1em; height: 1em; flex: none; fill: currentColor; }
 /* C 미확인 코멘트(호박색) — 확인 전까지 항상 표시. 읽으면 has_unread=false 라 다시 호버 전용. */
 .card-cm.alert {
   background: #f5a623; color: #2a1500; border-color: #ffc04d; opacity: 1; pointer-events: auto;
@@ -361,7 +373,8 @@
   display: flex; flex-direction: column; gap: 9px;
 }
 .cs-final-q { font-size: 12px; font-weight: 700; color: var(--text); text-align: center; }
-.cs-final-actions { display: flex; gap: 7px; }
+.confirm-panel { display: flex; flex-direction: column; gap: 9px; width: 100%; min-width: 0; }
+.cs-final-actions { display: flex; gap: 7px; width: 100%; }
 .cs-final-actions button {
   flex: 1; height: 28px; border-radius: 7px; font-size: 12px; font-weight: 700; cursor: pointer;
   white-space: nowrap; padding: 0 6px; line-height: 1;
@@ -369,6 +382,38 @@
 .cs-final-yes { background: #e8b62c; color: #2a1d00; border: 1px solid #ffd966; }
 .cs-final-no { background: transparent; color: var(--muted); border: 1px solid var(--border2); }
 .cs-final-no:hover { color: var(--text); }
+.sconfirm.review-confirm { align-items: center; padding: 6px; container-type: size; }
+.review-confirm .cs-final-q { max-width: 100%; }
+.review-selection-count { font-size: 11px; color: var(--muted); }
+.review-panel { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; min-width: 0;
+  max-height: 100%; overflow-y: auto; }
+.review-panel.review-menu { height: 100%; }
+/* 메뉴만 남은 높이를 3등분한다. 확인 단계는 질문과 가로 1:1 버튼을 카드 중앙에 유지한다. */
+.review-options { display: grid; grid-template-rows: repeat(3, minmax(30px, 1fr)); flex: 1 0 auto; gap: 4px; width: 100%; }
+.review-option { display: flex; align-items: center; justify-content: flex-start; min-width: 0;
+  box-sizing: border-box; min-height: 30px; padding: 3px 8px; border: 1px solid var(--border2); border-radius: 8px; }
+.review-option-name { display: inline-flex; align-items: center; gap: 7px; min-width: 0; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.review-option-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review-option-icon { display: inline-flex; align-items: center; justify-content: center; width: 21px; height: 21px;
+  flex-shrink: 0; border-radius: 5px; background: currentColor; font-size: 12px; }
+/* 고정 상한 없이 카드 안쪽을 채운다. 짧은 변 기준으로 글자/아이콘을 확대하므로
+   가로로 긴 리스트에서도 세 행이 높이를 넘지 않는다. 위 고정값은 container 단위 폴백이다. */
+@supports (width: 1cqmin) {
+  .review-options { gap: max(4px, 1.5cqmin); }
+  .review-option { padding: max(3px, 1cqmin) max(8px, 3cqmin); border-radius: max(8px, 2.5cqmin); }
+  .review-option-name { font-size: max(12px, 6cqmin); gap: max(7px, 2cqmin); }
+  .review-option-icon { width: max(21px, 10cqmin); height: max(21px, 10cqmin);
+    font-size: max(12px, 6cqmin); }
+}
+.review-unshared { background: rgba(150,155,165,0.10); border-color: #686c75; color: #c3c6cc; }
+.review-unshared .review-option-icon { background: #686c75; color: #fff; }
+.review-shared { background: rgba(var(--accent-rgb),0.10); border-color: var(--accent); color: var(--accent); }
+.review-shared .review-option-icon { background: var(--accent); color: var(--accent-ink); }
+.review-held { background: rgba(201,56,74,0.12); border-color: #c9384a; color: #ef7d8c; }
+.review-held .review-option-icon { background: #c9384a; color: #fff; }
+.review-final { background: rgba(232,182,44,0.10); border-color: #e8b62c; color: #e8b62c; }
+.review-final .review-option-icon { background: #e8b62c; color: #2a1d00; }
+.review-panel button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* 인라인 태그 입력 */
 .cs-tag-input {
@@ -759,23 +804,19 @@
 
 /* 선택 — 또렷한 라임 링(시인성↑) + 들림 제거(위로 안 움직여 윗부분 안 가려짐) */
 .card.selected {
-  /* 라임 선택 표시는 카드 '안쪽' 오버레이 링(::after)으로 — 바깥 box-shadow 는 옆 카드와 겹쳐 보임. */
-  border-color: var(--accent);
+  background: var(--accent);
   box-shadow: none;
   transform: none !important;
 }
 .card.selected:hover { box-shadow: none; }
-/* 안쪽 라임 링(썸네일 위에 그려야 보이므로 오버레이 + inset box-shadow). */
-.card.selected::after {
-  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 7;
-  box-shadow: inset 0 0 0 2px var(--accent);
-}
+/* 1px 여백 + 2px 클립으로 3px 프레임을 드러낸다. 1 + 2 + 11 = 바깥 반경 14px. */
+.card.selected > .card-clip { clip-path: inset(2px round 11px); }
 
 /* 팀 탭 '새로 들어옴' — 라임 링 맥동(캔버스 방금생성 glow 와 같은 시각 언어).
    기준선 = 공유&리뷰 탭 마지막 방문 시각. 탭을 떠나면 '봤음' 처리되어 다음 방문부턴 안 빛난다.
    선택(.selected) 시엔 선택 링이 우선 — 글로우는 비선택 카드에만. */
 .card.fresh:not(.selected) {
-  border-color: var(--accent);
+  background: var(--accent);
   box-shadow: 0 0 0 1px var(--accent), 0 0 12px 2px rgba(210, 255, 60, 0.35);
   animation: card-fresh-glow 1.4s ease-in-out infinite;
 }

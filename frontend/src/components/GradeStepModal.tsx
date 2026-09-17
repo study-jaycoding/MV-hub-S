@@ -1,6 +1,7 @@
 // 등급 S 다중선택 확인 — 브라우저 confirm 대신 인앱 중앙 모달.
 import { describeGradeStep, type GradeStepResult } from "../lib/gradeStep";
 import { useEscapeClose } from "../lib/useEscapeClose";
+import { useT } from "../lib/i18n";
 
 export function GradeStepModal({
   pending,
@@ -13,8 +14,9 @@ export function GradeStepModal({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const t = useT();
   useEscapeClose(busy ? () => {} : onCancel); // 적용 중엔 ESC/바깥클릭으로 못 닫음(작업 도는데 모달만 닫힘 방지)
-  const { title, body } = describeGradeStep(pending);
+  const { title, body } = describeGradeStep(pending, t);
   return (
     <>
       <div className="gradestep-catcher" onMouseDown={busy ? undefined : onCancel} />
@@ -23,10 +25,10 @@ export function GradeStepModal({
         <div className="gradestep-body">{body}</div>
         <div className="gradestep-actions">
           <button className="gradestep-btn cancel" onClick={onCancel} disabled={busy}>
-            취소
+            {t("취소")}
           </button>
           <button className="gradestep-btn confirm" onClick={onConfirm} disabled={busy}>
-            {busy ? "적용 중…" : "확인"}
+            {busy ? t("적용 중…") : t("확인")}
           </button>
         </div>
       </div>

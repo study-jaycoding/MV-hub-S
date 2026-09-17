@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, StrictBool, ValidationError, model_serializer
 from starlette.background import BackgroundTask
 
@@ -202,6 +202,7 @@ def _overlay_personal_meta(data, request: Request):
 def _team_local_filtered(
     request: Request, want_colors, want_tags, want_auto, want_ws, limit: int, cursor_ts, cursor_id,
     *, workspace_scope: Optional[str] = None,
+    review_filter: Optional[str] = None,
 ):
     # 여러 페이지를 조회하는 사이 계정이 바뀌어도 원격 토큰과 개인메타 DB를 섞지 않는다.
     # 네트워크 왕복 동안 전환 락을 잡지 않고, 같은 임계구역에서 캡처한 key/uid만 고정한다.
@@ -214,6 +215,7 @@ def _team_local_filtered(
         return _team_local_filtered_for_account(
             request, want_colors, want_tags, want_auto, want_ws, limit, cursor_ts, cursor_id,
             workspace_scope=workspace_scope,
+            review_filter=review_filter,
         )
     finally:
         active_account.reset_uid_override(uid_token)
@@ -223,6 +225,7 @@ def _team_local_filtered(
 def _team_local_filtered_for_account(
     request: Request, want_colors, want_tags, want_auto, want_ws, limit: int, cursor_ts, cursor_id,
     *, workspace_scope: Optional[str] = None,
+    review_filter: Optional[str] = None,
 ):
     """팀 탭 개인메타 필터(색/태그/전역태그) — 이들은 로컬 전용(서버 미러 안 함)이라 서버가 못 거른다.
     허브가 해당 필터를 뺀 요청으로 서버 목록을 받아 overlay(내 색·태그+shadow) 후 로컬에서 거른다.
@@ -234,8 +237,11 @@ def _team_local_filtered_for_account(
     # 워크스페이스 **중복 선택·개인 scope**는 구서버가 못 거른다(새 파라미터를 모른다). 그래서
     # 허브가 한 번 더 거른다 — 서버가 이미 걸렀으면 이 검사는 전부 통과라 손해가 없다.
     wset = {w for w in (want_ws or []) if w}
+    review_options = {"required_review_filter": review_filter} if review_filter else {}
     if not (cset or tset or aset or wset or workspace_scope):
-        return _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
+        return _overlay_personal_meta(
+            _proxy.proxy_get("/api/generations", request, **review_options), request,
+        )
 
     def _match(g: dict) -> bool:
         if cset and g.get("color") not in cset:
@@ -270,7 +276,9 @@ def _team_local_filtered_for_account(
             pairs.append(("cursor_ts", str(cur_ts)))
         if cur_id is not None:
             pairs.append(("cursor_id", str(cur_id)))
-        page = _proxy.proxy_json("GET", "/api/generations", raw_query=urllib.parse.urlencode(pairs))
+        page = _proxy.proxy_json(
+            "GET", "/api/generations", raw_query=urllib.parse.urlencode(pairs), **review_options,
+        )
         if not isinstance(page, list) or not page:
             break
         _overlay_personal_meta(page, request)  # 내 색·태그·shadow 덧입힘(in-place)
@@ -718,12 +726,14 @@ def list_generations(
     tags: list[str] = Query(default=[]),
     auto_tags: list[str] = Query(default=[]),
     shared_only: bool = False,
+    review_filter: Optional[Literal["shared", "held"]] = None,
     comment_only: bool = False,
     final_only: bool = False,
     limit: int = Query(500, ge=1, le=2000),
     # 키셋 커서(직전 페이지 마지막 행) — 무한 스크롤이 다음 묶음을 받을 때 전달. OFFSET 대체.
     cursor_ts: Optional[float] = None,
     cursor_id: Optional[str] = None,
+    response: Response = None,
 ):
     # 로컬 우선: 내 작업(tab=my)은 이 허브 로컬 DB가 정답 → 즉시·서버무관. 팀 공유(tab=team)만
     # 서버 DB로 위임(모두의 발행물이 거기 있음).
@@ -754,6 +764,7 @@ def list_generations(
             receive=request.receive,
         )
     if tab == "team" and _proxy.proxying():
+        review_options = {"required_review_filter": review_filter} if review_filter else {}
         # color/tags 는 작성자 전용이라 서버에 미러하지 않는다(개인 메타). 팀 목록은 서버 데이터라
         # '내 카드'의 개인 색·태그가 빠져 있으므로, 허브가 자기 로컬 DB에서 가져와 덧입힌다(A1 오버레이).
         # 색·태그·전역태그는 개인메타(로컬 전용)라 서버가 못 거른다 → 허브가 그 필터 뺀 요청으로 받아
@@ -765,12 +776,17 @@ def list_generations(
             data = _team_local_filtered(
                 request, colors, tags, auto_tags, picked_ws if workspace_scope else local_ws,
                 limit, cursor_ts, cursor_id, workspace_scope=workspace_scope,
+                review_filter=review_filter,
             )
         else:
-            data = _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
+            data = _overlay_personal_meta(
+                _proxy.proxy_get("/api/generations", request, **review_options), request,
+            )
         # 원격 이미지·영상 포스터는 목록을 받은 직후 작은 JPEG로 미리 준비한다.
         # 실제 원본 영상은 대상에 넣지 않으며, 캐시는 상한을 넘으면 오래된 것부터 정리된다.
         _schedule_remote_thumb_prewarm(background, data)
+        if review_filter and response is not None:
+            response.headers[_proxy.REVIEW_FILTER_HEADER] = review_filter
         return _strip_list_prompt(data) if lean_params else data
     # 로그인 계정이면 그 계정의 생성자 uid 로 '내 작업'을 한정(계정별 분리). 비로그인은 전체.
     account_uid = _account_uid(request)
@@ -804,6 +820,7 @@ def list_generations(
         tags=tags or None,
         auto_tags=auto_tags or None,
         shared_only=shared_only,
+        review_filter=review_filter,
         comment_only=comment_only,
         final_only=final_only,
         limit=limit,
@@ -861,6 +878,8 @@ def list_generations(
                         )
                         g["has_unread"] = c.get("has_unread", g.get("has_unread"))
     _schedule_remote_thumb_prewarm(background, result)
+    if review_filter and response is not None:
+        response.headers[_proxy.REVIEW_FILTER_HEADER] = review_filter
     return _strip_list_prompt(result) if lean_params else result
 
 

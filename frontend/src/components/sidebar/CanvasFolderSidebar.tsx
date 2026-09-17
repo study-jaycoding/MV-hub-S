@@ -5,6 +5,7 @@
 import type { Filters, Project } from "../../types";
 import type { FolderMenuKind } from "../../lib/folderContextMenu";
 import { ProjectSection } from "./ProjectSection";
+import { ResizableSidebar } from "../common/ResizableSidebar";
 
 export function CanvasFolderSidebar({
   filters,
@@ -32,7 +33,7 @@ export function CanvasFolderSidebar({
   // 닫기는 라이브러리(내작업) 탭과 동일하게 툴바의 필터 토글(▢/▷)에 위임한다 — 사이드바 내부에 별도
   // ✕ 를 두지 않는다(두 탭 UX 일치).
   return (
-    <aside className="sidebar">
+    <ResizableSidebar>
       <div className="sidebar-main">
         <ProjectSection
           projects={projects}
@@ -60,6 +61,6 @@ export function CanvasFolderSidebar({
           enableFolderDrag
         />
       </div>
-    </aside>
+    </ResizableSidebar>
   );
 }

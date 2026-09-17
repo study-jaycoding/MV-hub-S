@@ -1,10 +1,11 @@
-// 폴더 우클릭 메뉴(팀에 공유 / 최종 경로로 저장 / 모두 확인) — 순수 규칙. 사이드바(라이브러리·캔버스)가 같은 메뉴를 띄운다(2026-09-09).
+// 폴더 우클릭 메뉴(팀에 공유 / 골드만 저장 / 원본 위치 열기 / 모두 확인) — 순수 규칙.
 //  · 내 작업 탭: "팀에 공유" — 그 폴더(하위 포함)의 내 완료·미공유 결과물을 팀에 공유.
-//  · 공유&리뷰(팀) 탭: "최종 경로로 저장" — 저장 대상 최종본만 프로젝트 렌더 폴더에 폴더 구조대로 저장.
+//  · 공유&리뷰(팀) 탭: "골드만 저장" — 기존 최종본 저장.
+//  · 모든 탭: 메뉴 우상단 "원본 위치 열기" 아이콘 — 해당 실제 폴더만 연다.
 //  · 공유&리뷰(팀) 탭 + 새로 들어온 항목(+N)이 있으면: "모두 확인 (+N)" — 그 범위(프로젝트 행=전체, 폴더=하위 포함)의
 //    신규 항목을 한꺼번에 확인 처리(카드 글로우·+N 배지 해제). 프로젝트 행 우클릭은 이 단추만(Jay 2026-09-10).
 //  · 버튼 색은 폴더 자체의 아이콘 색(최상위=하늘색, 하위=라임). 선택 분홍과 무관(Jay). '모두 확인'은 +N 배지 색(라임).
-export type FolderMenuKind = "share" | "save-finals";
+export type FolderMenuKind = "share" | "save-finals" | "open-folder";
 export type FolderMenuTab = "my" | "team";
 
 export const FOLDER_MENU_W = 240;
@@ -46,12 +47,13 @@ export function freshItemsInScope<T extends FreshItemLike>(
   });
 }
 
-export function folderMenuKind(tab: FolderMenuTab): FolderMenuKind {
+export function folderMenuKind(tab: FolderMenuTab): Exclude<FolderMenuKind, "open-folder"> {
   return tab === "team" ? "save-finals" : "share";
 }
 
 export function folderMenuLabel(kind: FolderMenuKind): string {
-  return kind === "save-finals" ? "최종 경로로 저장" : "팀에 공유";
+  if (kind === "open-folder") return "원본 위치 열기";
+  return kind === "save-finals" ? "골드만 저장" : "팀에 공유";
 }
 
 // 트리 깊이 → 색조. FolderTreeView 의 .folder-tree-row.root(하늘색) / :not(.root)(라임)와 같은 기준.
@@ -59,9 +61,9 @@ export function folderTone(depth: number): "root" | "child" {
   return depth <= 0 ? "root" : "child";
 }
 
-export function folderConfirmText(kind: FolderMenuKind, name: string): string {
+export function folderConfirmText(kind: Exclude<FolderMenuKind, "open-folder">, name: string): string {
   return kind === "save-finals"
-    ? `'${name}' 폴더를 최종 경로로 저장하시겠습니까?\n하위 폴더를 포함한 저장 대상 최종본만 프로젝트 렌더 폴더에 저장합니다.`
+    ? `'${name}' 폴더의 골드만 저장하시겠습니까?\n하위 폴더를 포함한 저장 대상 최종본만 프로젝트 렌더 폴더에 저장합니다.`
     : `'${name}' 폴더를 공유하시겠습니까?\n하위 폴더까지 포함해 내가 만든 완료 결과물 중 아직 공유하지 않은 것을 모두 팀에 공유합니다.`;
 }
 

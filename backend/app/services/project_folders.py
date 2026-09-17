@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -206,6 +208,33 @@ def render_root_state(pid: str) -> dict[str, Any]:
     if not render:
         return {"render_path": "", "error": f"Render 폴더가 없습니다: {root}"}
     return {"render_path": str(render), "error": None}
+
+
+def open_project_folder(pid: str, folder_path: str) -> None:
+    """연결된 Render 하위의 기존 폴더만 연다. 생성·저장·전체 트리 스캔 없음."""
+    relative = folder_path.replace("\\", "/")
+    parts = relative.split("/")
+    if (not relative or relative.startswith("/") or
+            any(part in ("", ".", "..") or part.endswith((" ", ".")) for part in parts) or
+            any(char in relative for char in ':"<>|?*') or
+            any(ord(char) < 32 or ord(char) == 127 for char in relative)):
+        raise ValueError("올바른 하위 폴더 경로가 아닙니다")
+    state = render_root_state(pid)
+    if state["error"]:
+        raise FileNotFoundError("연결된 Render 폴더에 접근할 수 없습니다. 드라이브 연결을 확인해 주세요")
+    if not state["render_path"]:
+        raise ValueError("프로젝트의 Render 폴더가 연결되지 않았습니다")
+    target = safe_join(Path(state["render_path"]), Path(*parts))
+    if target is None:
+        raise ValueError("연결된 Render 폴더 밖의 위치는 열 수 없습니다")
+    if not target.is_dir():
+        raise FileNotFoundError("해당 폴더가 없습니다. 폴더 위치와 드라이브 연결을 확인해 주세요")
+    command = "explorer.exe" if sys.platform == "win32" else "open" if sys.platform == "darwin" else "xdg-open"
+    try:
+        subprocess.Popen([command, str(target)], shell=False)
+    except OSError as exc:
+        # 실행 파일 부재(FileNotFoundError)를 폴더 부재(404)와 구분한다.
+        raise OSError("탐색기를 실행할 수 없습니다") from exc
 
 
 def _scan_project_folder(root_raw: str) -> dict[str, Any]:

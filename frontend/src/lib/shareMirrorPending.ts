@@ -7,6 +7,7 @@ export interface MirrorPendingResult {
 export function withMirrorPendingNotice(
   message: string,
   result: MirrorPendingResult | null | undefined,
+  translate: (text: string) => string = (text) => text,
 ): string {
-  return result?.mirror_pending ? `${message} ${MIRROR_PENDING_NOTICE}` : message;
+  return result?.mirror_pending ? `${message} ${translate(MIRROR_PENDING_NOTICE)}` : message;
 }

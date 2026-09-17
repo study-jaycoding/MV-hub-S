@@ -94,6 +94,10 @@ def _normalize_observed(item: Mapping[str, Any], remote_id: str) -> dict[str, An
         "is_final": is_final,
         "id": str(item.get("id") or remote_id),
     }
+    if not observed["shared"] or is_final:
+        observed["is_held"] = False
+    elif isinstance(item.get("is_held"), bool):
+        observed["is_held"] = item["is_held"]
     for field in ("job_id", "final_by", "worker_id"):
         if item.get(field) is not None:
             observed[field] = item.get(field)
@@ -145,6 +149,7 @@ def _observe_remote_states(
             observed = {
                 "shared": False,
                 "is_final": False,
+                "is_held": False,
                 "id": remote_id,
                 "missing": True,
             }
@@ -199,12 +204,13 @@ def _unpublish_remote(
             if isinstance(payload, dict)
             else {"id": remote_id}
         )
-        observed.update({"shared": False, "is_final": False, "cleanup": "unpublished"})
+        observed.update({"shared": False, "is_final": False, "is_held": False, "cleanup": "unpublished"})
         return observed
     if status == 404 and _is_missing_generation(payload):
         return {
             "shared": False,
             "is_final": False,
+            "is_held": False,
             "id": remote_id,
             "missing": True,
             "cleanup": "already_missing",
@@ -266,6 +272,7 @@ def _apply_observed_local(
         local_id=intent.get("local_id"),
         shared=bool(observed.get("shared")),
         is_final=bool(observed.get("is_final")),
+        is_held=observed.get("is_held"),
         final_by=(str(observed.get("final_by")) if observed.get("final_by") else None),
         shared_by=(str(observed.get("worker_id")) if observed.get("worker_id") else None),
         preservation_reason=(
@@ -283,15 +290,21 @@ def _apply_observed_local(
 
 
 def _terminal_status(intent: Mapping[str, Any], observed: Mapping[str, Any]) -> str:
+    desired_held = intent.get("desired_held")
+    if desired_held is not None and not isinstance(observed.get("is_held"), bool):
+        raise _RemoteObservationError("remote_review_state_unsupported")
     desired = (
         bool(intent.get("desired_shared")),
         bool(intent.get("desired_final")),
     )
     actual = (bool(observed.get("shared")), bool(observed.get("is_final")))
-    if actual == desired:
+    held_matches = desired_held is None or bool(desired_held) == observed.get("is_held")
+    if actual == desired and held_matches:
         return "converged"
     base = (bool(intent.get("base_shared")), bool(intent.get("base_final")))
-    if intent.get("status") == "prepared" and actual == base:
+    base_held = intent.get("base_held")
+    base_matches = base_held is None or bool(base_held) == observed.get("is_held")
+    if intent.get("status") == "prepared" and actual == base and base_matches:
         # 서버 호출 전에 죽은 write-ahead는 명령을 재생하지 않고 확정 거절로 닫는다.
         return "rejected"
     return "superseded"

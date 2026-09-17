@@ -10,6 +10,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../../api";
+import { isHttpStatus } from "../../lib/http";
+import type { TeamFreshItem } from "../../lib/projectApi";
 import {
   ackAllLabel,
   clampMenuPosition,
@@ -34,7 +36,7 @@ import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { useCustomEvent } from "../../lib/useCustomEvent";
 import { useT } from "../../lib/i18n";
 import { loadJSON, saveJSON } from "../../lib/storage";
-import { reconcileArrayState, reconcileRecordState } from "../../lib/stateReconciliation";
+import { reconcileArrayState, reconcileValueState } from "../../lib/stateReconciliation";
 import {
   ackTeamFreshKeys,
   getTeamBase,
@@ -52,7 +54,7 @@ import {
   visibleProjectFolderRoots,
   type ProjectFolderEntry,
 } from "../../lib/projectFolderTree";
-import type { Project, ProjectFolderState } from "../../types";
+import type { FolderReviewCounts, Project, ProjectFolderState } from "../../types";
 import { FolderTreeView, type FolderTreeItem } from "../common/FolderTreeView";
 
 function SidebarFolderTree({
@@ -60,6 +62,7 @@ function SidebarFolderTree({
   loading,
   counts,
   newCounts,
+  reviewCounts,
   selectedPath,
   viewedPath,
   expanded,
@@ -75,6 +78,7 @@ function SidebarFolderTree({
   loading?: boolean;
   counts?: Record<string, number>;
   newCounts?: Record<string, number>; // 마지막 방문 이후 새로 공유된 개수(팀 탭) — 라임 배지
+  reviewCounts?: Record<string, FolderReviewCounts> | null;
   // 빨간 하이라이트 = 실제 생성 목적지(armedFolder). 서버 저장 selected_path 가 아니라 이걸 쓴다
   // — 무장이 풀리면(기본 라이브러리로 감) 하이라이트도 사라져 '어디로 생성되는지'와 정확히 일치.
   selectedPath?: string;
@@ -92,8 +96,8 @@ function SidebarFolderTree({
   // (훅 규칙상 아래 early return 들보다 먼저 호출)
   const roots = useMemo(() => {
     if (!state?.tree) return [] as FolderTreeItem[];
-    return buildFolderCountTree(visibleProjectFolderRoots(state.tree), counts, newCounts);
-  }, [state?.tree, counts, newCounts]);
+    return buildFolderCountTree(visibleProjectFolderRoots(state.tree), counts, newCounts, reviewCounts);
+  }, [state?.tree, counts, newCounts, reviewCounts]);
   const viewedInTree = useMemo(() => {
     if (!viewedPath) return false;
     const pending = [...roots];
@@ -146,6 +150,10 @@ export function ProjectSection({
   archivedCount,
   activeId,
   tab = "my",
+  showReviewCounts = false,
+  creatorUid,
+  countContextKey = "",
+  countQueryReady = true,
   deletedOnly,
   armedFolder,
   viewedFolder,
@@ -162,6 +170,10 @@ export function ProjectSection({
   archivedCount: number;
   activeId?: string;
   tab?: "my" | "team"; // 폴더 개수 뱃지를 현재 라이브러리 탭 기준으로 조회
+  showReviewCounts?: boolean; // 공유&리뷰에서만 상태별 숫자 표시. 캔버스는 기존 합계 유지.
+  creatorUid?: string; // 카드와 같은 생성자 필터. 선택하지 않으면 기존 전체 수량.
+  countContextKey?: string; // 계정/서버/공간 문맥이 바뀌면 이전 배지를 즉시 숨긴다.
+  countQueryReady?: boolean;
   deletedOnly: boolean;
   // 실제 생성 목적지(무장 폴더). 폴더 트리의 빨간 하이라이트를 이것에 연동 — 서버 selected_path 아님.
   armedFolder?: { projectId: string; path: string } | null;
@@ -176,7 +188,7 @@ export function ProjectSection({
   onDropToUnassigned?: (genId: string) => void;
   // 캔버스에서만 폴더 → Set 드래그를 켠다. 일반 작업공간에서는 기존 클릭 UX 유지.
   enableFolderDrag?: boolean;
-  // 폴더 우클릭 메뉴의 실행 — 내 작업 탭 "팀에 공유"(share) / 팀 탭 "최종 경로로 저장"(save-finals). 없으면 메뉴 없음.
+  // 폴더 우클릭 실행 — 공유 / 골드만 저장 / 로컬 원본 위치 열기. 없으면 메뉴 없음.
   onFolderAction?: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
 }) {
   const tr = useT();
@@ -193,6 +205,9 @@ export function ProjectSection({
     y: number;
   } | null>(null);
   const folderMenuRef = useRef<HTMLDivElement>(null);
+  // 원격 서버 접속에서 서버 PC의 탐색기를 열지 않는다. 최종 판정은 백엔드 로컬 가드가 맡는다.
+  const canOpenFolder = !!folderMenu && folderMenu.depth >= 0 &&
+    ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
   // 메뉴를 연 폴더 행 — Esc·확인창 닫힘 뒤 초점을 그 행으로 되돌린다. 안 하면 초점이 body 로 빠져 'd' 가 전역
   //  카드 단축키(선택 카드 비활성)로 새어 나간다(코덱스 코드 리뷰 P2). 바깥 클릭은 사용자가 고른 곳이 초점을 가지므로 복귀 안 함.
   const folderMenuAnchorRef = useRef<HTMLElement | null>(null);
@@ -248,17 +263,36 @@ export function ProjectSection({
   // 링크 목록과 실제 디스크 트리를 분리한다. 링크는 전 프로젝트를 가볍게 받고,
   // 트리는 현재 선택/고정된 프로젝트만 지연 로드한다.
   const [linkedFolderIds, setLinkedFolderIds] = useState<string[]>([]);
-  const [folderCounts, setFolderCounts] = useState<Record<string, Record<string, number>>>({});
+  const [archived, setArchived] = useState<Project[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
+  const [archivedLoaded, setArchivedLoaded] = useState(false);
+  const countProjectIds = [...new Set([...projects, ...(creatorUid && showArchived ? archived : [])].map(p => p.id))];
+  const countScopeKey = JSON.stringify([tab, countContextKey, countQueryReady, showReviewCounts, creatorUid, countProjectIds]);
+  const countScopeRef = useRef(countScopeKey);
+  countScopeRef.current = countScopeKey;
+  const [folderCountSnapshot, setFolderCountSnapshot] = useState<{
+    scopeKey: string;
+    counts: Record<string, Record<string, number>>;
+    reviewCounts?: Record<string, Record<string, FolderReviewCounts>>;
+    projectCounts?: Record<string, number>;
+    unassignedCount?: number;
+    error?: "update" | "failed";
+  }>({ scopeKey: "", counts: {} });
+  const currentCountSnapshot = countQueryReady && folderCountSnapshot.scopeKey === countScopeKey ? folderCountSnapshot : undefined;
+  const folderCounts = currentCountSnapshot?.error ? undefined : currentCountSnapshot?.counts;
+  const folderReviewCounts = folderCounts ? folderCountSnapshot.reviewCounts : undefined;
   // 팀 탭: 기준선 이후 공유된 항목 목록(서버) — 확인(클릭)분을 제외하고 +N 을 만든다.
-  const [teamFreshItems, setTeamFreshItems] = useState<
-    {
-      id: string;
-      project_id: string | null;
-      folder_path: string | null;
-      shared_at: string | null;
-      ack_key?: string | null;
-    }[]
-  >([]);
+  const [teamFreshSnapshot, setTeamFreshSnapshot] = useState<{ scopeKey: string; items: TeamFreshItem[] }>(
+    { scopeKey: "", items: [] },
+  );
+  const teamFreshItems = useMemo(() => {
+    if (!countQueryReady || teamFreshSnapshot.scopeKey !== countScopeKey) return [];
+    const items = teamFreshSnapshot.items;
+    if (!creatorUid) return items;
+    // 구서버 필드 누락이면 전체 +N을 선택 생성자의 숫자인 것처럼 보여주지 않는다.
+    if (items.some(item => item.creator_uid === undefined)) return [];
+    return items.filter(item => item.creator_uid === creatorUid);
+  }, [countQueryReady, countScopeKey, teamFreshSnapshot, creatorUid]);
   const [expandedFolders, setExpandedFolders] =
     useState<Record<string, Set<string>>>(loadProjectFolderExpansion);
   const projectTreeRef = useRef<HTMLDivElement>(null);
@@ -398,35 +432,38 @@ export function ProjectSection({
   const refreshCountsRef = useRef<() => void>(() => {});
   const refreshCounts = () => {
     const requestSeq = ++countRequestSeqRef.current;
-    const isLatest = () => requestSeq === countRequestSeqRef.current;
-    const wanted = projects.map((project) => project.id);
-    if (wanted.length) {
+    const isLatest = () => requestSeq === countRequestSeqRef.current && countScopeKey === countScopeRef.current;
+    if (!countQueryReady) return;
+    const wanted = countProjectIds;
+    if (wanted.length || creatorUid) {
       api
-        .projectFolderCountsBatch(wanted, tab)
+        .projectFolderCountsBatch(wanted, tab, creatorUid)
         .then((r) => {
           if (!isLatest()) return;
-          setFolderCounts((prev) => {
-            const next = { ...prev };
-            for (const pid of wanted) next[pid] = r.counts?.[pid] || {};
-            return reconcileRecordState(prev, next);
-          });
+          const counts = Object.fromEntries(wanted.map((pid) => [pid, r.counts?.[pid] || {}]));
+          const reviewCounts = tab === "team" && showReviewCounts ? r.review_counts : undefined;
+          setFolderCountSnapshot((prev) => reconcileValueState(prev, { scopeKey: countScopeKey, counts, reviewCounts,
+            projectCounts: r.project_counts, unassignedCount: r.unassigned_count }));
         })
-        .catch(() => {});
+        .catch((error) => {
+          if (creatorUid && isLatest()) setFolderCountSnapshot({ scopeKey: countScopeKey, counts: {},
+            error: isHttpStatus(error, 409) ? "update" : "failed" });
+        });
     }
     // 팀 탭: 기준선 이후 공유된 항목 목록(+N 원천)도 갱신 — 폴더뿐 아니라 미분류·프로젝트 행에도 배지.
     // 구버전 서버(라우트 없음 404)는 빈 목록 폴백 = 배지만 숨김.
     const since = tab === "team" ? getTeamBase() : null;
     if (since) {
       api
-        .teamFreshAll(since)
+        .teamFreshAll(since, countContextKey)
         .then((items) => {
           if (isLatest()) {
-            setTeamFreshItems((previous) => reconcileArrayState(previous, items));
+            setTeamFreshSnapshot((previous) => reconcileValueState(previous, { scopeKey: countScopeKey, items }));
           }
         })
         .catch(() => {
           if (isLatest()) {
-            setTeamFreshItems((previous) => reconcileArrayState(previous, []));
+            setTeamFreshSnapshot((previous) => reconcileValueState(previous, { scopeKey: countScopeKey, items: [] }));
           }
         });
     }
@@ -446,7 +483,7 @@ export function ProjectSection({
     };
     // 프로젝트 구성·탭·핀·활성 프로젝트가 바뀌면 조회 범위가 달라진다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, projectKey, tab]);
+  }, [activeId, countScopeKey]);
 
   // +N 계산 — 서버 신규 목록(teamFreshItems)에서 '확인(클릭)한 항목'을 제외해 폴더/프로젝트/미분류별 집계.
   // teamSeenVer 의존 — 카드 클릭 순간 스토어가 bump 되어 배지가 즉시 하나 줄어든다.
@@ -511,9 +548,6 @@ export function ProjectSection({
 
   const [unassignOver, setUnassignOver] = useState(false); // 카드를 '미분류'로 드래그 중 강조
 
-  const [archived, setArchived] = useState<Project[]>([]);
-  const [showArchived, setShowArchived] = useState(false);
-  const [archivedLoaded, setArchivedLoaded] = useState(false);
   const loadArchived = () =>
     api
       .projects("my", true)
@@ -583,7 +617,7 @@ export function ProjectSection({
                 +{fresh!.unassigned}
               </span>
             )}
-            <span className="proj-count">{unassignedCount}</span>
+            <span className="proj-count">{creatorUid ? currentCountSnapshot?.unassignedCount ?? "—" : unassignedCount}</span>
           </button>
           <button
             className={"proj-row proj-trash" + (deletedOnly ? " on sel-target" : "")}
@@ -597,6 +631,12 @@ export function ProjectSection({
 
       <section className="project-tree-section">
         <h4 className="auto-tag-head">{tr("프로젝트")}</h4>
+        {creatorUid && currentCountSnapshot?.error && <div className="side-folder-note" role="status">
+          {tr(currentCountSnapshot.error === "update"
+            ? "생성자별 개수 표시에는 앱과 공유 서버 업데이트가 필요합니다."
+            : "생성자별 개수를 불러오지 못했습니다.")}
+          <button onClick={() => refreshCountsRef.current()}>{tr("다시 조회")}</button>
+        </div>}
         <div
           className="proj-list project-tree-scroll"
           ref={projectTreeRef}
@@ -713,13 +753,14 @@ export function ProjectSection({
                       +{fresh!.byProject[project.id]}
                     </span>
                   )}
-                  <span className="proj-count">{project.count}</span>
+                  <span className="proj-count">{creatorUid ? currentCountSnapshot?.projectCounts?.[project.id] ?? "—" : project.count}</span>
                 </div>
                 {/* 폴더 트리는 기본 상시 표시 — 프로젝트 단위 접기(▸)로만 숨긴다. */}
                 {!isCollapsed && <SidebarFolderTree
                     state={folders[project.id]}
                     loading={folderLoading[project.id]}
-                    counts={folderCounts[project.id]}
+                    counts={folderCounts?.[project.id]}
+                    reviewCounts={showReviewCounts && tab === "team" ? folderReviewCounts?.[project.id] ?? null : undefined}
                     newCounts={fresh?.folderByProject[project.id]}
                     // 무장 폴더가 이 프로젝트일 때만 빨간 하이라이트. 아니면 없음(=기본 라이브러리로 생성).
                     selectedPath={
@@ -802,7 +843,7 @@ export function ProjectSection({
                     title={project.name}
                   >
                     <span className="proj-name">{project.name}</span>
-                    <span className="proj-count">{project.count}</span>
+                    <span className="proj-count">{creatorUid ? currentCountSnapshot?.projectCounts?.[project.id] ?? "—" : project.count}</span>
                   </button>
                 ))}
             </div>
@@ -827,8 +868,25 @@ export function ProjectSection({
             onKeyDown={(e) => e.stopPropagation()}
             onContextMenu={(e) => e.preventDefault()}
           >
-            <div className="folder-ctx-name" title={folderMenu.path || folderMenu.name}>
-              {folderMenu.name}
+            <div className="folder-ctx-head">
+              <div className="folder-ctx-name" title={folderMenu.path || folderMenu.name}>
+                {folderMenu.name}
+              </div>
+              {canOpenFolder && (
+                <button
+                  type="button"
+                  className="folder-ctx-open"
+                  aria-label="원본 위치 열기"
+                  title="원본 위치 열기 — 연결된 실제 폴더를 탐색기에서 엽니다"
+                  onClick={() => {
+                    const m = folderMenu;
+                    closeFolderMenu(true);
+                    void onFolderAction("open-folder", m.projectId, m.path, m.name);
+                  }}
+                >
+                  <span aria-hidden="true">📂</span>
+                </button>
+              )}
             </div>
             {/* 폴더 행(depth>=0)만 탭별 동작 단추. 프로젝트 행(depth -1)은 '모두 확인'만. */}
             {folderMenu.depth >= 0 && (

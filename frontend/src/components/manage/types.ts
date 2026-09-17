@@ -124,7 +124,7 @@ export const GEN_MIME = DRAG_TYPES.generation;
 // 보드 카드 상태 이동 드래그 키
 export const TASK_MIME = DRAG_TYPES.task;
 
-// 작업 상태(보드 열·테이블 셀 공유 단일 소스) — Notion 스타일 3그룹 7세분 상태.
+// 작업 상태(보드 열·테이블 셀 공유 단일 소스).
 // group: 보드를 큰 묶음(할 일/진행 중/완료)으로 띠 구분. color: 상태 칩·열 헤더 색.
 export interface StatusDef {
   v: string;
@@ -137,6 +137,7 @@ export const STATUSES: StatusDef[] = [
   { v: "not_started", ko: "시작 전", en: "Not started", color: "#9aa0a6", group: "할 일" },
   { v: "pending", ko: "대기", en: "Pending", color: "#c2557a", group: "진행 중" },
   { v: "in_progress", ko: "진행", en: "In progress", color: "#3b7bd4", group: "진행 중" },
+  { v: "hold", ko: "보류", en: "On hold", color: "#c9384a", group: "진행 중" },
   { v: "publish", ko: "게시", en: "Publish", color: "#3f9d6b", group: "진행 중" },
   { v: "done", ko: "완료", en: "Done", color: "#c79320", group: "완료" },
   { v: "omit", ko: "생략", en: "Omit", color: "#787c82", group: "완료" },
@@ -155,11 +156,12 @@ export function statusLabel(v?: string | null): string {
 export function statusColor(v?: string | null): string {
   return statusDef(v)?.color ?? "#787c82";
 }
-// 작업 테이블에서는 생성물의 실제 흐름이 바로 읽히도록 상태를 생성·공유·완료로 표현한다.
+// 작업 테이블에서는 생성물의 실제 흐름이 바로 읽히도록 상태를 생성·보류·공유·완료로 표현한다.
 const WORK_ACTIVITY_STATUS_LABELS: Record<string, string> = {
   not_started: "시작 전",
   pending: "대기",
   in_progress: "생성",
+  hold: "보류",
   publish: "공유",
   done: "완료",
   omit: "생략",
@@ -167,7 +169,7 @@ const WORK_ACTIVITY_STATUS_LABELS: Record<string, string> = {
 export function workActivityStatusLabel(v?: string | null): string {
   return (v && WORK_ACTIVITY_STATUS_LABELS[v]) || statusLabel(v);
 }
-// '시작 전'은 수동 작업·생성물 없는 계획 작업에 의미가 있어 보드 열·드롭다운·필터에 노출한다.
+// '시작 전'은 수동 작업·생성물 없는 계획 작업에 의미가 있어 테이블·드롭다운·필터에 노출한다.
 // (폴더 자동 작업은 생성물이 있으면 백엔드가 진행 이상으로 파생하므로 자연히 안 걸린다.)
 // 'pending'(대기)만 현재 워크플로에서 미사용이라 숨김. 보드/테이블/필터 단일 소스.
 export const HIDDEN_STATUSES = new Set(["pending"]);
@@ -242,6 +244,7 @@ export interface Cut {
   media_type?: string | null; // 'image' | 'video' | ... — 비디오면 <video> 로 렌더
   file_path?: string | null; // 원본 파일 경로(비디오 첫 프레임 표시용)
   is_final?: number | boolean; // 최종(골드)
+  is_held?: number | boolean; // 공유 검토 보류(shared && !is_final에서만 유효)
   shared?: number | boolean; // 팀 공유됨
   linked?: number | boolean; // 수동 드래그 링크(✕ 해제 가능). 시퀀스 자동 귀속은 false
   created_at?: string | null; // 생성일 — 캘린더(생성자별 활동) 날짜 배치용
@@ -275,7 +278,7 @@ export interface Task {
   id: string;
   project_id: string;
   name: string;
-  status: string; // not_started|pending|in_progress|publish|retake|omit|done
+  status: string; // not_started|pending|in_progress|hold|publish|retake|omit|done
   start_date?: string | null;
   due_date?: string | null;
   sort_order?: number | null;

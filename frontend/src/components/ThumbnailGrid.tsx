@@ -22,6 +22,7 @@ import { matchShortcut } from "../lib/shortcuts";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import type { GradeMode } from "../lib/gradeStep";
+import type { ReviewAction } from "../lib/generationReview";
 import { GenerationCard } from "./GenerationCard";
 import { useGenerationViewsSynced } from "../lib/useGenerationViewsSynced";
 import { TEAM_SCOPE } from "../lib/generationViews";
@@ -63,6 +64,9 @@ interface Props {
   onUnpublish: (g: Generation) => void;
   onFinalize: (g: Generation) => void; // v02 CMS: Supervisor 최종(골드) 지정
   onUnfinalize: (g: Generation) => void; // 최종 해제
+  onReview?: (g: Generation, action: ReviewAction) => void;
+  onBulkReview?: (action: ReviewAction) => void;
+  bulkReviewAllowed?: Record<ReviewAction, boolean>;
   canFinalize?: (g: Generation) => boolean; // 그 프로젝트 supervisor/PM 일 때만 최종 지정 가능(없으면 허용)
   onImport: (g: Generation) => void;
   onRestore: (g: Generation) => void; // 휴지통 복구
@@ -224,6 +228,8 @@ export function ThumbnailGrid(props: Props) {
       onUnpublish: (g: Generation) => propsRef.current.onUnpublish(g),
       onFinalize: (g: Generation) => propsRef.current.onFinalize(g),
       onUnfinalize: (g: Generation) => propsRef.current.onUnfinalize(g),
+      onReview: (g: Generation, action: ReviewAction) => propsRef.current.onReview?.(g, action),
+      onBulkReview: (action: ReviewAction) => propsRef.current.onBulkReview?.(action),
       onImport: (g: Generation) => propsRef.current.onImport(g),
       onRestore: (g: Generation) => propsRef.current.onRestore(g),
       onColor: (g: Generation, c: string | null) => propsRef.current.onColor(g, c),
@@ -287,6 +293,9 @@ export function ThumbnailGrid(props: Props) {
       onUnpublish={cb.onUnpublish}
       onFinalize={cb.onFinalize}
       onUnfinalize={cb.onUnfinalize}
+      onReview={props.onReview ? cb.onReview : undefined}
+      onBulkReview={props.onBulkReview ? cb.onBulkReview : undefined}
+      bulkReviewAllowed={props.bulkReviewAllowed}
       canFinalize={cb.canFinalize}
       onImport={cb.onImport}
       onRestore={cb.onRestore}

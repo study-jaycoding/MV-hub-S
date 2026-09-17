@@ -282,6 +282,7 @@ interface Props {
   colorFilter?: Set<string>;
   tagFilter?: Set<string>;
   sharedOnly?: boolean;
+  reviewFilter?: "shared" | "held";
   commentOnly?: boolean;
   finalOnly?: boolean;
   // 사이드바에서 선택한 폴더 — 그 폴더(하위 포함) 밖 완성카드를 딤 처리(어떤 게 들어갔는지 표시).
@@ -350,6 +351,7 @@ export function SceneBoard({
   colorFilter,
   tagFilter,
   sharedOnly = false,
+  reviewFilter = "shared",
   commentOnly = false,
   finalOnly = false,
   folderSel,
@@ -1348,15 +1350,15 @@ export function SceneBoard({
     let act: ((g: Generation) => void) | undefined;
     if (c.kind === "final") {
       if (g.is_final) {
-        patch({ is_final: false });
+        patch({ is_final: false, is_held: false });
         act = onUnfinalize;
       } else {
-        patch({ is_final: true, shared: true }); // 최종 지정은 공유도 함께
+        patch({ is_final: true, shared: true, is_held: false }); // 최종 지정은 공유·보류 해제를 함께
         act = onFinalize;
       }
     } else {
       if (g.shared) {
-        patch({ shared: false });
+        patch({ shared: false, is_held: false });
         act = onUnpublish;
       } else {
         patch({ shared: true });
@@ -3838,6 +3840,7 @@ export function SceneBoard({
                     colorFilter,
                     tagFilter,
                     sharedOnly,
+                    reviewFilter,
                     commentOnly,
                     finalOnly,
                     folderSel,
@@ -3913,6 +3916,7 @@ export function SceneBoard({
                     colorFilter,
                     tagFilter,
                     sharedOnly,
+                    reviewFilter,
                     commentOnly,
                     finalOnly,
                     folderSel,

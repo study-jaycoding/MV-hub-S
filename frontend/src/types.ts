@@ -79,6 +79,7 @@ export interface Generation {
   folder_path?: string | null; // 렌더 루트 기준 상대 폴더 경로(예 'ep001/c0010'). null=미지정
   deleted: boolean; // 휴지통(soft delete) — 카탈로그에서만 숨김. 힉스필드 원본 영향 없음
   is_final?: boolean; // v02 CMS: Supervisor 가 지정한 최종(골드)
+  is_held?: boolean; // 공유 검토 보류 — shared && !is_final 에서만 유효
   final_by?: string | null; // 최종 지정자 creator_uid
   mirror_pending?: boolean; // 서버 성공·로컬 미러 대기 — 실패가 아니며 재조회 후 자동 수렴
   depth?: number; // 히스토리 형제 전용: 자기 'derived' 체인 깊이(루트=0) — 깊이별 그룹화·연결 방향용
@@ -136,6 +137,13 @@ export interface ProjectsResponse {
   projects: Project[];
   unassigned: number; // 미분류 결과물 수
   archived_count?: number; // 보관된 프로젝트 수(보관함 지연 로딩 판단용)
+}
+
+/** 공유 폴더의 배타적 상태 개수. 일반 공유에는 최종/보류가 포함되지 않는다. */
+export interface FolderReviewCounts {
+  final: number;
+  held: number;
+  shared: number;
 }
 
 export interface ProjectFolderNode {
@@ -375,6 +383,7 @@ export interface GenQuery extends Filters {
   tags?: string[]; // 다중 태그(OR)
   auto_tags?: string[]; // 무장된 전역 태그(OR)
   shared_only?: boolean; // 팀 공유된 것만
+  review_filter?: "shared" | "held"; // 검토 중인 공유/보류만(최종 제외)
   comment_only?: boolean; // 코멘트 있는 것만
   final_only?: boolean; // 최종(골드)만
 }

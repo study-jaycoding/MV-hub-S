@@ -90,6 +90,8 @@ def test_migration_is_idempotent_and_has_contract_indexes(isolated_content_db):
         "desired_final",
         "base_shared",
         "base_final",
+        "desired_held",
+        "base_held",
         "expected_final_by",
         "intent_seq",
         "status",
@@ -545,7 +547,7 @@ def test_unfinalize_local_failure_is_200_mirror_pending_without_backout(isolated
 
     def proxy_json(_method, path, **_kwargs):
         remote_calls.append(path)
-        return {"id": "server-1", "job_id": "server-1", "shared": True, "is_final": False}
+        return {"id": "server-1", "job_id": "server-1", "shared": True, "is_final": False, "is_held": False}
 
     with (
         mock.patch.object(share._proxy, "proxying", return_value=True),
@@ -578,6 +580,7 @@ def test_unfinalize_no_target_is_200_mirror_pending_without_backout(isolated_con
                 "job_id": "server-1",
                 "shared": True,
                 "is_final": False,
+                "is_held": False,
             },
         ),
         mock.patch.object(
@@ -607,6 +610,7 @@ def test_unfinalize_success_closes_ledger_and_updates_local_atomically(isolated_
                 "job_id": "server-1",
                 "shared": True,
                 "is_final": False,
+                "is_held": False,
             },
         ),
     ):

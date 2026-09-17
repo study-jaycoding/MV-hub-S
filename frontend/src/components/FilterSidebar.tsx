@@ -1,8 +1,9 @@
-// 좌측 필터 사이드바 (~150px, DESIGN.md §4): 프로젝트 / 컬러 / 자동태그 / 생성자 / 공유.
+// 좌측 필터 사이드바: 프로젝트 / 컬러 / 자동태그 / 생성자 / 공유.
 import { useState } from "react";
 import { useT } from "../lib/i18n";
 import { loadJSON, saveJSON } from "../lib/storage";
 import { ColorFilterDots } from "./common/ColorFilterDots";
+import { ResizableSidebar } from "./common/ResizableSidebar";
 import type { Facets, Filters, Project } from "../types";
 import type { FolderMenuKind } from "../lib/folderContextMenu";
 import { ProjectSection } from "./sidebar/ProjectSection";
@@ -45,7 +46,7 @@ interface Props {
   onArmFolder?: (projectId: string, path: string) => void; // 폴더 선택 시 무장(생성 시 folder_path)
   onDropToFolder?: (projectId: string, path: string, genId: string) => void; // 카드 드래그 → 폴더 담기
   onDropToUnassigned?: (genId: string) => void; // 카드 드래그 → 미분류(귀속 해제)
-  // 폴더 우클릭 메뉴 실행(팀에 공유 / 최종 경로로 저장) — ProjectSection 으로 통과
+  // 폴더 우클릭 메뉴 실행(팀에 공유 / 골드만 저장 / 원본 위치 열기) — ProjectSection 으로 통과
   onFolderAction?: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
 }
 
@@ -91,7 +92,7 @@ export function FilterSidebar({
       return !open;
     });
   return (
-    <aside className="sidebar">
+    <ResizableSidebar>
       {/* 위 = 프로젝트/폴더(남는 높이를 다 쓰고 스스로 스크롤), 아래 = 컬러·전역태그·생성자 고정 */}
       <div className="sidebar-main">
         <ProjectSection
@@ -100,6 +101,11 @@ export function FilterSidebar({
           archivedCount={archivedCount}
           activeId={filters.project_id}
           tab={filters.tab === "team" ? "team" : "my"}
+          showReviewCounts={filters.tab === "team"}
+          creatorUid={filters.creator_uid}
+          countQueryReady={creatorQueryReady}
+          countContextKey={JSON.stringify([creatorContextKey, creatorWorkspaceFilter?.workspace_ids,
+            creatorWorkspaceFilter?.workspace_scope])}
           deletedOnly={!!filters.deleted_only}
           armedFolder={armedFolder}
           viewedFolder={viewedFolder}
@@ -221,6 +227,6 @@ export function FilterSidebar({
       </div>
 
       {/* 공유(SHARED) 섹션 제거 — 불필요. 휴지통(TRASH)도 프로젝트 섹션으로 통합됨. */}
-    </aside>
+    </ResizableSidebar>
   );
 }

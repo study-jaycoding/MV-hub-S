@@ -43,6 +43,7 @@ export function CutThumbs({
         const th = thumb(c.thumb, c.file_path, c.media_type);
         const localId = cutLocalId(c);
         const off = !!localId && disabled?.has(localId);
+        const held = !!c.shared && !c.is_final && !!c.is_held;
         const cls =
           "work-cut" +
           (c.is_final ? " final" : c.shared ? " shared" : "") +
@@ -51,7 +52,7 @@ export function CutThumbs({
           <span
             key={c.id}
             className={cls}
-            title={off ? "비활성화됨" : c.is_final ? "최종" : c.shared ? "공유됨" : undefined}
+            title={off ? "비활성화됨" : c.is_final ? "최종" : held ? t("보류") : c.shared ? "공유됨" : undefined}
           >
             <MediaThumbnail
               thumb={th}
@@ -62,6 +63,10 @@ export function CutThumbs({
             {c.is_final ? (
               <span className="work-cut-badge final" title="최종">
                 ★
+              </span>
+            ) : held ? (
+              <span className="work-cut-badge held" title={t("보류")}>
+                S
               </span>
             ) : c.shared ? (
               <span className="work-cut-badge shared" title="공유됨">

@@ -607,6 +607,44 @@ def assign_to_project(
         return len(rows)
 
 
+def _folder_counts_where(
+    project_ids: list[str],
+    account_uid: Optional[str] = None,
+    shared_only: bool = False,
+    team_member_projects: Optional[list[str]] = None,
+    actor_uid: Optional[str] = None,
+    *,
+    creator_uid: Optional[str] = None,
+    include_roots: bool = False,
+    include_unassigned: bool = False,
+) -> tuple[str, list[Any]]:
+    """숫자·검토 상태 집계가 같은 프로젝트·폴더·가시성 범위를 보도록 한다."""
+    placeholders = ",".join("?" for _ in project_ids)
+    project_scope = f"g.project_id IN ({placeholders})" if project_ids else "1=0"
+    if include_unassigned:
+        project_scope = f"({project_scope} OR g.project_id IS NULL)"
+    where = f"{project_scope} AND g.deleted_at IS NULL"
+    if not include_roots:
+        where += " AND g.folder_path IS NOT NULL AND g.folder_path <> ''"
+    args: list[Any] = [*project_ids]
+    if account_uid:
+        where += " AND g.creator_uid = ?"
+        args.append(account_uid)
+    if creator_uid:
+        # 선택한 생성자는 권한 신원이 아니다. 기존 본인 범위/팀 가시성과 교집합만 허용한다.
+        where += " AND g.creator_uid = ?"
+        args.append(creator_uid)
+    if shared_only:
+        where += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)"
+        visibility, visibility_args = team_generation_visibility_clause(
+            team_member_projects, actor_uid
+        )
+        if visibility:
+            where += f" AND {visibility}"
+            args += visibility_args
+    return where, args
+
+
 def folder_counts(
     project_id: str,
     account_uid: Optional[str] = None,
@@ -621,23 +659,10 @@ def folder_counts(
     team_member_projects/actor_uid: 팀 목록과 동일한 가시성(내 공유물 or 내가 멤버인 프로젝트)을 카운트에도
     적용해, 볼 수 없는 카드가 카운트에 새지 않게 한다. None=read_all·단독(전체 공유물). list_generations
     의 tab='team' 클로즈와 동일 규약(generations.py)."""
+    where, args = _folder_counts_where(
+        [project_id], account_uid, shared_only, team_member_projects, actor_uid
+    )
     with get_connection() as conn:
-        where = (
-            "g.project_id = ? AND g.folder_path IS NOT NULL AND g.folder_path <> '' "
-            "AND g.deleted_at IS NULL"
-        )
-        args: list[Any] = [project_id]
-        if account_uid:
-            where += " AND g.creator_uid = ?"
-            args.append(account_uid)
-        if shared_only:
-            where += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)"
-            visibility, visibility_args = team_generation_visibility_clause(
-                team_member_projects, actor_uid
-            )
-            if visibility:
-                where += f" AND {visibility}"
-                args += visibility_args
         rows = conn.execute(
             f"SELECT g.folder_path, COUNT(*) AS c FROM generation g WHERE {where} GROUP BY g.folder_path",
             args,
@@ -657,23 +682,9 @@ def folder_counts_batch(
     out: dict[str, dict[str, int]] = {pid: {} for pid in ids}
     if not ids:
         return out
-    placeholders = ",".join("?" for _ in ids)
-    where = (
-        f"g.project_id IN ({placeholders}) "
-        "AND g.folder_path IS NOT NULL AND g.folder_path <> '' AND g.deleted_at IS NULL"
+    where, args = _folder_counts_where(
+        ids, account_uid, shared_only, team_member_projects, actor_uid
     )
-    args: list[Any] = [*ids]
-    if account_uid:
-        where += " AND g.creator_uid = ?"
-        args.append(account_uid)
-    if shared_only:
-        where += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)"
-        visibility, visibility_args = team_generation_visibility_clause(
-            team_member_projects, actor_uid
-        )
-        if visibility:
-            where += f" AND {visibility}"
-            args += visibility_args
     with get_connection() as conn:
         rows = conn.execute(
             f"SELECT g.project_id, g.folder_path, COUNT(*) AS c FROM generation g "
@@ -685,6 +696,93 @@ def folder_counts_batch(
     return out
 
 
+def folder_review_counts_batch(
+    project_ids: list[str],
+    team_member_projects: Optional[list[str]] = None,
+    actor_uid: Optional[str] = None,
+) -> dict[str, dict[str, dict[str, int]]]:
+    """팀 공유 폴더의 전체·최종·보류·일반 공유 수를 한 SQL 스냅샷에서 얻는다."""
+    ids = list(dict.fromkeys(pid for pid in project_ids if pid))
+    out: dict[str, dict[str, dict[str, int]]] = {pid: {} for pid in ids}
+    if not ids:
+        return out
+    where, args = _folder_counts_where(
+        ids, shared_only=True, team_member_projects=team_member_projects, actor_uid=actor_uid
+    )
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT g.project_id, g.folder_path, COUNT(*) AS total, "
+            "SUM(CASE WHEN COALESCE(g.is_final, 0) <> 0 THEN 1 ELSE 0 END) AS final, "
+            "SUM(CASE WHEN COALESCE(g.is_final, 0) = 0 "
+            "AND COALESCE(g.is_held, 0) <> 0 THEN 1 ELSE 0 END) AS held "
+            f"FROM generation g WHERE {where} GROUP BY g.project_id, g.folder_path",
+            args,
+        ).fetchall()
+    for row in rows:
+        # 최종을 우선해 레거시 양쪽 플래그가 켜진 행도 중복해서 세지 않는다.
+        total, final, held = row["total"], row["final"], row["held"]
+        out[row["project_id"]][row["folder_path"]] = {
+            "total": total, "final": final, "held": held, "shared": total - final - held,
+        }
+    return out
+
+
+def creator_folder_counts_batch(
+    project_ids: list[str],
+    *,
+    creator_uid: str,
+    account_uid: Optional[str] = None,
+    shared_only: bool = False,
+    team_member_projects: Optional[list[str]] = None,
+    actor_uid: Optional[str] = None,
+    include_unassigned: bool = True,
+) -> dict[str, Any]:
+    """선택한 생성자의 폴더·프로젝트·미분류 합계를 같은 SQL 스냅샷으로 얻는다."""
+    ids = list(dict.fromkeys(pid for pid in project_ids if pid))
+    counts: dict[str, dict[str, int]] = {pid: {} for pid in ids}
+    review_counts: dict[str, dict[str, dict[str, int]]] = {pid: {} for pid in ids}
+    project_counts = {pid: 0 for pid in ids}
+    result: dict[str, Any] = {
+        "counts": counts, "project_counts": project_counts, "unassigned_count": 0,
+    }
+    if shared_only:
+        result["review_counts"] = review_counts
+    if not ids and not include_unassigned:
+        return result
+    where, args = _folder_counts_where(
+        ids, account_uid, shared_only, team_member_projects, actor_uid,
+        creator_uid=creator_uid, include_roots=True, include_unassigned=include_unassigned,
+    )
+    review_columns = (
+        ", SUM(CASE WHEN COALESCE(g.is_final, 0) <> 0 THEN 1 ELSE 0 END) AS final"
+        ", SUM(CASE WHEN COALESCE(g.is_final, 0) = 0 "
+        "AND COALESCE(g.is_held, 0) <> 0 THEN 1 ELSE 0 END) AS held"
+        if shared_only else ""
+    )
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT g.project_id, g.folder_path, COUNT(*) AS total{review_columns} "
+            f"FROM generation g WHERE {where} GROUP BY g.project_id, g.folder_path",
+            args,
+        ).fetchall()
+    for row in rows:
+        pid, path, total = row["project_id"], row["folder_path"], row["total"]
+        if pid is None:
+            result["unassigned_count"] += total
+            continue
+        # 프로젝트 루트(NULL/빈 폴더)의 작업도 프로젝트 합계에는 포함한다.
+        project_counts[pid] += total
+        if not path:
+            continue
+        counts[pid][path] = total
+        if shared_only:
+            final, held = row["final"], row["held"]
+            review_counts[pid][path] = {
+                "final": final, "held": held, "shared": total - final - held,
+            }
+    return result
+
+
 def team_fresh_items(
     since: str,
     team_member_projects: Optional[list[str]] = None,
@@ -693,7 +791,7 @@ def team_fresh_items(
     cursor_shared_at: Optional[str] = None,
     cursor_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """기준선(since) 이후 공유된 항목 [{id, project_id, folder_path, shared_at, ack_key}] — 사이드바 +N(신규) 배지용.
+    """기준선 이후 공유 항목(id/project_id/folder_path/creator_uid/shared_at/ack_key) — +N 배지용.
     id 목록을 주는 이유: 클라가 '확인(클릭)한 항목'을 제외하고 세야 하는데, 개수 빼기 방식은
     확인 항목이 공유해제·삭제되면 차감이 남아 다른 신규의 배지를 잡아먹는다(정확 집합 필요).
     가시성은 팀 목록(tab='team')과 동형: None=read_all(전체 공유물), 아니면 내 공유물+내 멤버 프로젝트.
@@ -718,7 +816,7 @@ def team_fresh_items(
         # ack_key = 확인(클릭) 대조용 앵커(job_id 우선, 없으면 id). 서버 행 id 는 자체 UUID 라
         # 로컬 카드 id 와 다르다 — 클라 확인 기록도 같은 앵커 키라 양쪽이 맞는다(코덱스 P1).
         rows = conn.execute(
-            f"SELECT g.id, g.project_id, g.folder_path, s.shared_at, "
+            f"SELECT g.id, g.project_id, g.folder_path, g.creator_uid, s.shared_at, "
             f"COALESCE(NULLIF(g.job_id, ''), g.id) AS ack_key "
             f"FROM share s JOIN generation g ON g.id = s.generation_id "
             f"WHERE {where} ORDER BY s.shared_at DESC, g.id DESC LIMIT ?",

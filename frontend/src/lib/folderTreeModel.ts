@@ -1,3 +1,5 @@
+import type { FolderReviewCounts } from "../types";
+
 export interface FolderCountTreeNode {
   name: string;
   path: string;
@@ -6,6 +8,8 @@ export interface FolderCountTreeNode {
   /** 디스크에 실제로 있는 파일 수. 생성물 수로 덮어쓰기 전의 원래 값을 보존한 것. */
   fileCount?: number | null;
   newCount?: number | null;
+  /** undefined=기존 총계 표시, null=팀 상태 상세 미지원/불일치. */
+  reviewCounts?: FolderReviewCounts | null;
   children?: FolderCountTreeNode[];
   virtual?: boolean;
 }
@@ -112,6 +116,7 @@ function overlayFolderCounts(
   nodes: FolderCountTreeNode[],
   counts: Record<string, number>,
   newCounts?: Record<string, number>,
+  reviewCounts?: Record<string, FolderReviewCounts> | null,
 ): FolderCountTreeNode[] {
   return nodes.map((node) => ({
     ...node,
@@ -121,10 +126,35 @@ function overlayFolderCounts(
     // 가상 폴더(디스크에 없는 folder_path)는 파일이 없으므로 0.
     fileCount: node.virtual ? 0 : node.count ?? 0,
     newCount: newCounts?.[node.path] || 0,
+    reviewCounts: reviewCounts === null ? null : reviewCounts
+      ? reviewCounts[node.path] ?? { final: 0, held: 0, shared: 0 } : undefined,
     children: node.children
-      ? overlayFolderCounts(node.children, counts, newCounts)
+      ? overlayFolderCounts(node.children, counts, newCounts, reviewCounts)
       : node.children,
   }));
+}
+
+// 같은 응답의 총계와 상세가 맞는 경우에만 상태를 표시한다. 누락을 일반 공유/0으로 추정하지 않는다.
+function cumulativeReviewCounts(
+  counts: Record<string, number>,
+  reviewCounts: Record<string, FolderReviewCounts>,
+): Record<string, FolderReviewCounts> | null {
+  const fields = ["final", "held", "shared"] as const;
+  for (const [path, total] of Object.entries(counts)) {
+    const parts = Object.prototype.hasOwnProperty.call(reviewCounts, path) ? reviewCounts[path] : undefined;
+    if (!parts || !fields.every((field) => Number.isSafeInteger(parts[field]) && parts[field] >= 0)
+      || parts.final + parts.held + parts.shared !== total) return null;
+  }
+  const out: Record<string, FolderReviewCounts> = Object.create(null);
+  for (const field of fields) {
+    // 총계에 없는 추가 상세 키는 가상 폴더나 상태 수를 만들지 않는다.
+    const values = Object.fromEntries(Object.keys(counts).map((path) => [path, reviewCounts[path][field]]));
+    const totals = cumulativeFolderCounts(normalizeFolderCounts(values));
+    for (const [path, count] of Object.entries(totals)) {
+      (out[path] ??= { final: 0, held: 0, shared: 0 })[field] = count;
+    }
+  }
+  return out;
 }
 
 /**
@@ -148,6 +178,7 @@ export function buildFolderCountTree(
   roots: FolderCountTreeNode[],
   counts?: Record<string, number>,
   newCounts?: Record<string, number>,
+  reviewCounts?: Record<string, FolderReviewCounts> | null,
 ): FolderCountTreeNode[] {
   if (!counts) return diskOnly(roots);
   // counts 가 비어 있어도(이 워크스페이스에 생성물 0건) 덮어쓴다 — 예전에는 디스크 파일 수를
@@ -159,5 +190,6 @@ export function buildFolderCountTree(
     withVirtualFolders,
     cumulativeFolderCounts(normalizedCounts),
     normalizedNewCounts ? cumulativeFolderCounts(normalizedNewCounts) : undefined,
+    reviewCounts == null ? reviewCounts : cumulativeReviewCounts(counts, reviewCounts),
   );
 }

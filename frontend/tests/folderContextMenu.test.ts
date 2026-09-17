@@ -37,11 +37,13 @@ describe("folderContextMenu", () => {
     expect(ackAllLabel(406)).toBe("모두 확인 (+406)");
     expect(folderMenuHeight(1)).toBe(FOLDER_MENU_H);
     expect(folderMenuHeight(2)).toBe(FOLDER_MENU_H + FOLDER_MENU_BTN_H);
+    expect(folderMenuHeight(3)).toBe(FOLDER_MENU_H + 2 * FOLDER_MENU_BTN_H);
     expect(folderMenuHeight(0)).toBe(FOLDER_MENU_H);
   });
-  it("내 작업 탭=팀에 공유 · 팀 탭=최종 경로로 저장", () => {
+  it("내 작업 탭=팀에 공유 · 팀 탭=골드만 저장과 원본 위치 열기", () => {
     expect(folderMenuLabel(folderMenuKind("my"))).toBe("팀에 공유");
-    expect(folderMenuLabel(folderMenuKind("team"))).toBe("최종 경로로 저장");
+    expect(folderMenuLabel(folderMenuKind("team"))).toBe("골드만 저장");
+    expect(folderMenuLabel("open-folder")).toBe("원본 위치 열기");
   });
   it("버튼 색조는 폴더 자체의 깊이(최상위=하늘색 root, 하위=라임 child) — 선택 분홍과 무관", () => {
     expect(folderTone(0)).toBe("root");
@@ -51,7 +53,7 @@ describe("folderContextMenu", () => {
   it("확인 문구에 폴더 이름과 범위(하위 포함·대상 기준)가 들어간다", () => {
     expect(folderConfirmText("share", "e020")).toContain("'e020' 폴더를 공유하시겠습니까?");
     expect(folderConfirmText("share", "e020")).toContain("하위 폴더까지 포함");
-    expect(folderConfirmText("save-finals", "c0010")).toContain("최종 경로로 저장하시겠습니까?");
+    expect(folderConfirmText("save-finals", "c0010")).toContain("골드만 저장하시겠습니까?");
     expect(folderConfirmText("save-finals", "c0010")).toContain("저장 대상 최종본만");
   });
   it("화면 가장자리에서 메뉴가 잘리지 않게 좌표를 안쪽으로 민다", () => {

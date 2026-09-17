@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS generation (
     hf_missing INTEGER NOT NULL DEFAULT 0,           -- 힉스필드에서 삭제됨(generate get 검증). 로컬-only 판정
     creator_uid TEXT,                                -- 생성자 식별자(result_url 의 user_<id>). 팀 워크스페이스에서 누가 만들었나
     is_final   INTEGER NOT NULL DEFAULT 0,           -- v02 CMS: Supervisor 가 지정한 최종(골드). 1=최종
+    is_held    INTEGER NOT NULL DEFAULT 0,           -- 공유 검토 보류(생성 진행 status와 별개)
     final_by   TEXT,                                 -- 최종 지정자 creator_uid(누가 골드 찍었나)
     final_at   TEXT,                                 -- 최종 지정 시각
     origin     TEXT,                                 -- 행 출생: 'synced'(동기화본) | 'local'(내 생성/가져오기). 동기화↔로컬 판별을 id==job_id 좌표에서 분리(id 통일 리팩터 0a)
@@ -279,8 +280,10 @@ CREATE TABLE IF NOT EXISTS share_state_intent (
     operation_kind       TEXT NOT NULL,
     desired_shared       INTEGER NOT NULL CHECK(desired_shared IN (0,1)),
     desired_final        INTEGER NOT NULL CHECK(desired_final IN (0,1)),
+    desired_held         INTEGER CHECK(desired_held IN (0,1)),
     base_shared          INTEGER NOT NULL CHECK(base_shared IN (0,1)),
     base_final           INTEGER NOT NULL CHECK(base_final IN (0,1)),
+    base_held            INTEGER CHECK(base_held IN (0,1)),
     expected_final_by    TEXT,
     intent_seq           INTEGER NOT NULL,
     status               TEXT NOT NULL CHECK(status IN (

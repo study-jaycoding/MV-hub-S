@@ -297,6 +297,7 @@ export function ComfyCard({
                         colorFilter={hist.colorFilter}
                         tagFilter={hist.tagFilter}
                         sharedOnly={hist.sharedOnly}
+                        reviewFilter={hist.reviewFilter}
                         commentOnly={hist.commentOnly}
                         finalOnly={hist.finalOnly}
                         folderSel={hist.folderSel}

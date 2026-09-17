@@ -72,12 +72,64 @@ def folder_share_candidates(project_id: str, folder_path: str, my_uid: Optional[
 def unpublish(gen_id: str) -> int:
     """팀 공유 해제 — 해당 generation 의 share 행 제거. 제거된 행 수 반환."""
     with get_connection() as conn:
-        cur = conn.execute("DELETE FROM share WHERE generation_id=?", (gen_id,))
-        return cur.rowcount
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute("DELETE FROM share WHERE generation_id=?", (gen_id,))
+            conn.execute("UPDATE generation SET is_held=0 WHERE id=?", (gen_id,))
+            conn.execute("COMMIT")
+            return cur.rowcount
+        except BaseException:
+            try:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
 
 
 class FinalGenerationUnpublishError(RuntimeError):
     """최종(골드) generation 의 공유 해제 시도를 나타낸다."""
+
+
+class GenerationHoldStateError(RuntimeError):
+    """보류/최종 검토 전이에 필요한 상태가 잠금 안에서 충족되지 않았다."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
+def set_generation_hold(gen_id: str, held: bool) -> None:
+    """일반 공유와 보류 사이를 전환한다. transaction-root 전용이다."""
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            state = conn.execute(
+                "SELECT g.status, g.deleted_at, g.is_final, "
+                "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
+                "FROM generation g WHERE g.id=?", (gen_id,),
+            ).fetchone()
+            if state is None:
+                raise GenerationHoldStateError("not_found")
+            if state["deleted_at"]:
+                raise GenerationHoldStateError("deleted")
+            if state["status"] != "done":
+                raise GenerationHoldStateError("not_done")
+            if state["is_final"]:
+                raise GenerationHoldStateError("final")
+            if not state["shared"]:
+                raise GenerationHoldStateError("not_shared")
+            conn.execute(
+                "UPDATE generation SET is_held=? WHERE id=?", (int(held), gen_id),
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            try:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
 
 
 def finalize_generation_with_share(
@@ -109,13 +161,62 @@ def finalize_generation_with_share(
                 )
             conn.execute(
                 "UPDATE generation "
-                "SET is_final=1, final_by=?, final_at=datetime('now') WHERE id=?",
+                "SET is_final=1, is_held=0, final_by=?, final_at=datetime('now') WHERE id=?",
                 (final_by, gen_id),
             )
             conn.execute("COMMIT")
             return was_shared
         except BaseException:
             # COMMIT 자체 실패나 취소 계열 예외에서도 원래 예외를 가리지 않고 정리한다.
+            try:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+
+
+def transition_final_review(gen_id: str, target: str, shared_by: str) -> dict[str, bool]:
+    """최종을 공유 해제/일반 공유/보류로 전환하고 잠금 안의 이전 상태를 반환한다.
+
+    transaction-root 전용. 기존 unpublish/hold의 최종 보호를 완화하지 않는다.
+    이미 최종이 아니면 낡은 메뉴 또는 경합이므로 같은 목적 상태여도 거절한다.
+    """
+    if target not in ("unshared", "shared", "held"):
+        raise ValueError("target must be unshared, shared or held")
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            state = conn.execute(
+                "SELECT g.status, g.deleted_at, g.is_final, g.is_held, "
+                "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
+                "FROM generation g WHERE g.id=?", (gen_id,),
+            ).fetchone()
+            if state is None:
+                raise GenerationHoldStateError("not_found")
+            if state["deleted_at"]:
+                raise GenerationHoldStateError("deleted")
+            if state["status"] != "done":
+                raise GenerationHoldStateError("not_done")
+            if not state["is_final"]:
+                raise GenerationHoldStateError("not_final")
+            previous = {key: bool(state[key]) for key in ("shared", "is_final", "is_held")}
+            if target == "unshared":
+                conn.execute("DELETE FROM share WHERE generation_id=?", (gen_id,))
+            else:
+                # 레거시 드리프트(is_final=1, share 없음)도 검수 권한 안에서 보강한다.
+                conn.execute(
+                    "INSERT INTO share(id, generation_id, shared_by, visibility) "
+                    "VALUES(?,?,?, 'team') ON CONFLICT(generation_id) DO NOTHING",
+                    (new_id(), gen_id, shared_by),
+                )
+            conn.execute(
+                "UPDATE generation SET is_final=0, final_by=NULL, final_at=NULL, is_held=? "
+                "WHERE id=?", (int(target == "held"), gen_id),
+            )
+            conn.execute("COMMIT")
+            return previous
+        except BaseException:
             try:
                 if conn.in_transaction:
                     conn.execute("ROLLBACK")
@@ -144,6 +245,7 @@ def unpublish_generation_if_not_final(gen_id: str) -> bool:
                 raise FinalGenerationUnpublishError(gen_id)
             was_shared = bool(state and state["shared"])
             conn.execute("DELETE FROM share WHERE generation_id=?", (gen_id,))
+            conn.execute("UPDATE generation SET is_held=0 WHERE id=?", (gen_id,))
             conn.execute("COMMIT")
             return was_shared
         except BaseException:

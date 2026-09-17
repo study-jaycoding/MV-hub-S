@@ -209,6 +209,9 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
   const [sharedOnly, setSharedOnly, setSharedOnlyAutomatic] = useManualState(
     () => LS.get("sharedOnly", "0") === "1", bumpManualRevision,
   );
+  const [reviewFilter, setReviewFilter] = useManualState<"shared" | "held">(
+    () => LS.get("reviewFilter", "shared") === "held" ? "held" : "shared", bumpManualRevision,
+  );
   const [tagFilter, setTagFilter, setTagFilterAutomatic] = useManualState<Set<string>>(
     () => LS.loadSet("tagFilter"), bumpManualRevision,
   );
@@ -333,6 +336,7 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
         tagFilter,
         armedAutoTags: filterAutoTags,
         sharedOnly,
+        reviewFilter,
         commentOnly,
         finalOnly,
       });
@@ -341,7 +345,7 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
       return { ...query, workspace_ids: undefined, workspace_id: undefined,
         ...(sharedMode === "auto" ? sharedWorkspaceFilter(workspace) : {}) };
     },
-    [filters, typeFilter, colorFilter, tagFilter, filterAutoTags, sharedOnly, commentOnly, finalOnly,
+    [filters, typeFilter, colorFilter, tagFilter, filterAutoTags, sharedOnly, reviewFilter, commentOnly, finalOnly,
       workspace, sharedMode],
   );
   // 자동 따라가기는 기존 수동 선택을 보존하고, 수동 필터 조작만 선택/비동기 응답을 무효화한다.
@@ -369,6 +373,7 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
     layout,
     scale,
     sharedOnly,
+    reviewFilter,
     showFilters,
     store: LS,
     tagFilter,
@@ -386,6 +391,7 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
     groupByDate, setGroupByDate,
     colorFilter, setColorFilter,
     sharedOnly, setSharedOnly,
+    reviewFilter, setReviewFilter,
     tagFilter, setTagFilter,
     tagPanelOpen, setTagPanelOpen,
     commentOnly, setCommentOnly,

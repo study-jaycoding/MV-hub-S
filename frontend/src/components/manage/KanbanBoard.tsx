@@ -15,7 +15,7 @@ import {
 
 // 보드는 실제 생성 흐름만 보여준다. 계획용 '시작 전'과 비활성 처리인 '생략'은
 // 테이블 필터에서 계속 확인할 수 있지만, 칸반 레이아웃에는 별도 열을 만들지 않는다.
-export const BOARD_STATUS_VALUES = ["in_progress", "publish", "done"] as const;
+export const BOARD_STATUS_VALUES = ["in_progress", "hold", "publish", "done"] as const;
 const BOARD_COLUMNS = STATUSES.filter((status) =>
   BOARD_STATUS_VALUES.includes(status.v as (typeof BOARD_STATUS_VALUES)[number]),
 );

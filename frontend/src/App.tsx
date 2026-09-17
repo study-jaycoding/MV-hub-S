@@ -120,6 +120,7 @@ import {
 import { useDisabledFolders } from "./lib/useDisabledFolders";
 import { useGradeStep } from "./lib/useGradeStep";
 import type { GradeMode } from "./lib/gradeStep";
+import { reviewTargets } from "./lib/generationReview";
 import { GradeStepModal } from "./components/GradeStepModal";
 import { useAskPrompt } from "./lib/prompt";
 import { makeStore } from "./lib/storage";
@@ -169,7 +170,7 @@ export default function App() {
     filters, setFilters, patch,
     typeFilter, setTypeFilter, scale, setScale, fill, setFill, layout, setLayout,
     showFilters, setShowFilters, groupByDate, setGroupByDate, colorFilter, setColorFilter,
-    sharedOnly, setSharedOnly, tagFilter, setTagFilter, tagPanelOpen, setTagPanelOpen,
+    sharedOnly, setSharedOnly, reviewFilter, setReviewFilter, tagFilter, setTagFilter, tagPanelOpen, setTagPanelOpen,
     commentOnly, setCommentOnly, finalOnly, setFinalOnly, grayOn, setGrayOn,
     armedAutoTags, setArmedAutoTags, armedFolder, setArmedFolder,
     generationScope, filterAutoTags, followLocation, toggleAutoTag, manualRevision,
@@ -904,19 +905,27 @@ export default function App() {
     flash,
     reload,
   });
-  // 폴더 우클릭 메뉴(라이브러리·캔버스 사이드바 공통) — 내 작업 탭 "팀에 공유" / 팀 탭 "최종 경로로 저장".
+  // 폴더 우클릭 메뉴 — 팀에 공유 / 골드만 저장 / 원본 위치 열기.
   //  저장은 관리 권한(프로젝트 매니저)이 필요하다 — 없으면 서버의 403 사유를 그대로 보여준다.
   const onFolderAction = async (kind: FolderMenuKind, projectId: string, path: string, name: string) => {
     if (kind === "share") {
       await folderShare(projectId, path, name);
       return;
     }
+    if (kind === "open-folder") {
+      try {
+        await api.openProjectFolder(projectId, path);
+      } catch (e) {
+        flash("원본 위치 열기 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+      }
+      return;
+    }
     try {
       const r = await manageApi.saveFinals(projectId, path);
       const failed = r.errors.length ? ` · 실패 ${r.errors.length}(${r.errors[0].reason})` : "";
-      flash(`'${name}' 최종 경로 저장 — 저장 ${r.saved} · 건너뜀 ${r.skipped}${failed}`);
+      flash(`'${name}' 골드만 저장 — 저장 ${r.saved} · 건너뜀 ${r.skipped}${failed}`);
     } catch (e) {
-      flash("최종 경로 저장 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+      flash("골드만 저장 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
     }
   };
   const {
@@ -1537,6 +1546,8 @@ export default function App() {
   const {
     onColor,
     onFinalize,
+    onReviewSelection,
+    onReview,
     onImport,
     onRecoveryRequeue,
     onRegenerate,
@@ -1548,6 +1559,7 @@ export default function App() {
     armedAutoTags,
     askPrompt,
     bumpBoard,
+    canFinalize,
     flash,
     navTab,
     reload,
@@ -1745,6 +1757,8 @@ export default function App() {
       colorFilter={colorFilter}
       onToggleColor={toggleColorFilter}
       sharedOnly={sharedOnly}
+      reviewFilter={reviewFilter}
+      onReviewFilter={setReviewFilter}
       onToggleShared={() => setSharedOnly((v) => !v)}
       commentOnly={commentOnly}
       onToggleComment={() => setCommentOnly((v) => !v)}
@@ -1770,6 +1784,13 @@ export default function App() {
           generations={gridGens}
           disabledIds={effectiveDisabled}
           onBulkGradeStep={onBulkGradeStep}
+          onBulkReview={(action) => void onReviewSelection(selectedGenerations, action, canFinalize)}
+          bulkReviewAllowed={{
+            unshared: reviewTargets(selectedGenerations, "unshared", canFinalize).length > 0,
+            shared: reviewTargets(selectedGenerations, "shared", canFinalize).length > 0,
+            held: reviewTargets(selectedGenerations, "held", canFinalize).length > 0,
+            final: reviewTargets(selectedGenerations, "final", canFinalize).length > 0,
+          }}
           tab={filters.tab === "team" ? "team" : "my"} // 캔버스 폴더 보기(compose)는 내 작업 격자
           myCreatorUid={account?.creator_uid ?? null}
           scale={scale}
@@ -1802,6 +1823,7 @@ export default function App() {
           onUnpublish={onUnpublish}
           onFinalize={onFinalize}
           onUnfinalize={onUnfinalize}
+          onReview={onReview}
           canFinalize={canFinalize}
           onImport={onImport}
           onRestore={onRestore}
@@ -1902,6 +1924,8 @@ export default function App() {
               colorFilter={colorFilter}
               onToggleColor={toggleColorFilter}
               sharedOnly={sharedOnly}
+              reviewFilter={reviewFilter}
+              onReviewFilter={setReviewFilter}
               onToggleShared={() => setSharedOnly((v) => !v)}
               commentOnly={commentOnly}
               onToggleComment={() => setCommentOnly((v) => !v)}
@@ -2032,6 +2056,7 @@ export default function App() {
                 colorFilter={colorFilter}
                 tagFilter={tagFilter}
                 sharedOnly={sharedOnly}
+                reviewFilter={reviewFilter}
                 commentOnly={commentOnly}
                 finalOnly={finalOnly}
                 // 사이드바에서 폴더를 선택(project_id+folder_path)했을 때만 그 폴더 밖 카드를 딤.
@@ -2066,6 +2091,7 @@ export default function App() {
               colorFilter={colorFilter}
               tagFilter={tagFilter}
               sharedOnly={sharedOnly}
+              reviewFilter={reviewFilter}
               commentOnly={commentOnly}
               finalOnly={finalOnly}
             />

@@ -58,6 +58,7 @@ from ..services.path_safety import safe_join
 AUTH_STATE_HEADER = "X-MVHub-Auth-State"
 AUTH_STATE_INVALID = "invalid"
 AUTH_STATE_PRESERVED = "preserved"
+REVIEW_FILTER_HEADER = "X-MVHub-Review-Filter"
 
 # 같은 화면의 여러 요청이 한꺼번에 401을 받아도 /api/auth/me 확인을 한 번만 수행한다.
 # 네트워크 왕복은 짧은 TTL 동안만 공유하고, 판정 불가도 잠깐 캐시해 장애 중 확인 폭주를 막는다.
@@ -170,6 +171,7 @@ def raw_request(
     timeout: int = 60,
     mutation_origin: Optional[tuple[str, str]] = None,
     super_token: Optional[str] = None,
+    required_review_filter: Optional[str] = None,
 ) -> tuple[int, Any]:
     """공유 서버로 보내는 저수준 stdlib HTTP(새 의존성 0). `(status, parsed|text)` 반환.
     연결 실패만 502 로 올리고, 4xx/5xx 는 (code, 본문)으로 돌려준다(호출자가 해석).
@@ -190,6 +192,12 @@ def raw_request(
         req.add_header(MUTATION_ID_HEADER, mutation_origin[1])
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
+            if required_review_filter is not None and 200 <= r.status < 300:
+                if r.headers.get(REVIEW_FILTER_HEADER) != required_review_filter:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="공유 서버가 검토 상태 필터를 지원하지 않습니다. 공유 서버를 업데이트해 주세요",
+                    )
             raw = decode_proxy_body(r.read(), r.headers.get("Content-Encoding"))
             try:
                 return r.status, json.loads(raw.decode() or "null")
@@ -303,6 +311,7 @@ def proxy_json(
     timeout: int = 60,
     raw_query: Optional[str] = None,
     use_super_admin: bool = False,
+    required_review_filter: Optional[str] = None,
 ) -> Any:
     """공유 서버 {base}{path} 로 위임하고 성공 본문(parsed JSON)을 반환.
 
@@ -317,6 +326,10 @@ def proxy_json(
 
     qs = ("?" + raw_query) if raw_query else _qs(params)
     url = base_url() + path + qs
+    review_options = (
+        {"required_review_filter": required_review_filter}
+        if required_review_filter is not None else {}
+    )
     status, parsed = raw_request(
         method,
         url,
@@ -325,8 +338,19 @@ def proxy_json(
         timeout=timeout,
         mutation_origin=_REQUEST_MUTATION_ORIGIN.get(),
         super_token=elevation_token() if use_super_admin else None,
+        **review_options,
     )
     if 200 <= status < 300:
+        if required_review_filter is not None and (
+            not isinstance(parsed, list) or any(
+                not isinstance(row, dict) or not isinstance(row.get("is_held"), bool)
+                for row in parsed
+            )
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="공유 서버의 보류 상태를 확인할 수 없습니다. 공유 서버를 업데이트해 주세요",
+            )
         return parsed
     detail = parsed.get("detail") if isinstance(parsed, dict) and "detail" in parsed else parsed
     if status == 401:
@@ -341,10 +365,16 @@ def proxy_json(
     raise HTTPException(status_code=status, detail=detail)
 
 
-def proxy_get(path: str, request: Request) -> Any:
+def proxy_get(
+    path: str, request: Request, *, required_review_filter: Optional[str] = None,
+) -> Any:
     """현재 GET 요청을 쿼리스트링 그대로 공유 서버에 위임하고 parsed JSON 반환.
     로컬우선 모델에서 'tab=team 목록'이나 '팀(서버) 항목 상세'를 조회할 때 핸들러가 호출한다."""
-    return proxy_json("GET", path, raw_query=request.url.query or None)
+    review_options = (
+        {"required_review_filter": required_review_filter}
+        if required_review_filter is not None else {}
+    )
+    return proxy_json("GET", path, raw_query=request.url.query or None, **review_options)
 
 
 def stream_download(

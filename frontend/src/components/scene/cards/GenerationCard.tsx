@@ -23,6 +23,7 @@ export type HistPass = {
   colorFilter: React.ComponentProps<typeof HistoryBoardNode>["colorFilter"];
   tagFilter: React.ComponentProps<typeof HistoryBoardNode>["tagFilter"];
   sharedOnly: React.ComponentProps<typeof HistoryBoardNode>["sharedOnly"];
+  reviewFilter?: React.ComponentProps<typeof HistoryBoardNode>["reviewFilter"];
   commentOnly: React.ComponentProps<typeof HistoryBoardNode>["commentOnly"];
   finalOnly: React.ComponentProps<typeof HistoryBoardNode>["finalOnly"];
   folderSel: React.ComponentProps<typeof HistoryBoardNode>["folderSel"];
@@ -124,6 +125,7 @@ export function GenerationCard({
           colorFilter={hist.colorFilter}
           tagFilter={hist.tagFilter}
           sharedOnly={hist.sharedOnly}
+          reviewFilter={hist.reviewFilter}
           commentOnly={hist.commentOnly}
           finalOnly={hist.finalOnly}
           folderSel={hist.folderSel}

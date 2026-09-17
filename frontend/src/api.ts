@@ -19,7 +19,10 @@ import {
   jsonFetch,
   setAuthToken,
   throwHttpError,
+  isRouteMissing,
 } from "./lib/http";
+import { t } from "./lib/i18n";
+import type { ReviewAction } from "./lib/generationReview";
 import { projectApi } from "./lib/projectApi";
 import { sharedApi } from "./lib/sharedApi";
 import { pathPart } from "./lib/url";
@@ -88,6 +91,7 @@ function buildQuery(q: GenQuery, cursor: GenCursor | null = null, limit = GEN_PA
   for (const t of q.tags || []) p.append("tags", t);
   for (const a of q.auto_tags || []) p.append("auto_tags", a);
   if (q.shared_only) p.set("shared_only", "true");
+  if (q.review_filter) p.set("review_filter", q.review_filter);
   if (q.comment_only) p.set("comment_only", "true");
   if (q.final_only) p.set("final_only", "true");
   p.set("limit", String(limit));
@@ -120,6 +124,23 @@ function normalizeHistoryGraph(graph: HistoryGraph): HistoryGraph {
 
 function generationFetch(path: string, init?: RequestInit): Promise<Generation> {
   return jsonFetch<Generation>(path, init).then(normalizeGenerationPromptCompatibility);
+}
+
+function reviewCompatibilityError(): Error {
+  return new Error(t("공유 보류 기능을 사용하려면 공유 서버와 이 PC의 MV Hub를 업데이트하세요."));
+}
+
+async function reviewFetch(id: string, action: "hold" | "unhold" | "final-review", state?: ReviewAction): Promise<Generation> {
+  try {
+    const result = await generationFetch(`/api/generations/${pathPart(id)}/${action}`, {
+      method: "POST", ...(state ? { body: jsonBody({ state }) } : {}),
+    });
+    if (typeof result.is_held !== "boolean") throw reviewCompatibilityError();
+    return result;
+  } catch (error) {
+    if (isRouteMissing(error)) throw reviewCompatibilityError();
+    throw error;
+  }
 }
 
 export interface GenerationCreateBody {
@@ -324,7 +345,18 @@ export const api = {
   listGenerations: (query: GenQuery, cursor: GenCursor | null = null, limit = GEN_PAGE) =>
     jsonFetch<Generation[]>(
       `/api/generations?${buildQuery(query, cursor, limit)}&lean_params=1`,
-    ).then(normalizeGenerations),
+      undefined,
+      query.review_filter ? (response) => {
+        if (response.headers.get("X-MVHub-Review-Filter") !== query.review_filter) {
+          throw reviewCompatibilityError();
+        }
+      } : undefined,
+    ).then((items) => {
+      if (query.review_filter && items.some((item) => typeof item.is_held !== "boolean")) {
+        throw reviewCompatibilityError();
+      }
+      return normalizeGenerations(items);
+    }),
 
   // 패널 파생값(내 실패 수·미확인 코멘트) — 클라이언트 전량 집계 대체.
   generationStats: () => jsonFetch<GenStats>("/api/generations-stats"),
@@ -805,6 +837,15 @@ export const api = {
     generationFetch(`/api/generations/${pathPart(id)}/finalize`, { method: "POST" }),
   unfinalize: (id: string) =>
     generationFetch(`/api/generations/${pathPart(id)}/unfinalize`, { method: "POST" }),
+  hold: (id: string) => reviewFetch(id, "hold"),
+  unhold: (id: string) => reviewFetch(id, "unhold"),
+  setReviewState: (generation: Generation, state: ReviewAction): Promise<Generation> => {
+    // 최종 해제+다음 상태는 새 원자 API 한 번으로. 구서버에 옵션을 보내 무시당하지 않는다.
+    if (generation.is_final && state !== "final") return reviewFetch(generation.id, "final-review", state);
+    if (state === "held") return reviewFetch(generation.id, "hold");
+    if (state === "shared") return reviewFetch(generation.id, "unhold");
+    return generationFetch(`/api/generations/${pathPart(generation.id)}/${state === "final" ? "finalize" : "unpublish"}`, { method: "POST" });
+  },
 
   importToWorkspace: (id: string) =>
     generationFetch(`/api/generations/${pathPart(id)}/import`, {

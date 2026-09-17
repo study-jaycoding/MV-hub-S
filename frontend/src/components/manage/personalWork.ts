@@ -16,6 +16,7 @@ function sum(cuts: Cut[], pick: (cut: Cut) => number | undefined): number {
 function personalStatus(task: Task, cuts: Cut[]): string {
   if (task.status === "omit" || !cuts.length) return task.status;
   if (cuts.some((cut) => !!cut.is_final)) return "done";
+  if (cuts.some((cut) => !!cut.shared && !!cut.is_held)) return "hold";
   if (cuts.some((cut) => !!cut.shared)) return "publish";
   return "in_progress";
 }

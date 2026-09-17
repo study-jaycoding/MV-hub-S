@@ -704,12 +704,12 @@ def set_final(gen_id: str, is_final: bool, by_uid: Optional[str] = None) -> None
     with get_connection() as conn:
         if is_final:
             conn.execute(
-                "UPDATE generation SET is_final=1, final_by=?, final_at=datetime('now') WHERE id=?",
+                "UPDATE generation SET is_final=1, is_held=0, final_by=?, final_at=datetime('now') WHERE id=?",
                 (by_uid, gen_id),
             )
         else:
             conn.execute(
-                "UPDATE generation SET is_final=0, final_by=NULL, final_at=NULL WHERE id=?",
+                "UPDATE generation SET is_final=0, is_held=0, final_by=NULL, final_at=NULL WHERE id=?",
                 (gen_id,),
             )
 

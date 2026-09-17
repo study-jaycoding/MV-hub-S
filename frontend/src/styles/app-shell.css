@@ -687,7 +687,7 @@
 /* ── 본문 레이아웃 ── */
 .body { flex: 1; display: flex; min-height: 0; }
 .sidebar {
-  width: 200px; flex: 0 0 200px; /* 에셋 파트(.assets-tree)와 동일 너비 */
+  width: var(--sidebar-w, 200px); flex: 0 0 var(--sidebar-w, 200px);
   padding: 18px 14px;
   background: var(--glass);
   backdrop-filter: blur(12px);
@@ -698,6 +698,17 @@
      사이드바는 읽는 곳이 아니라 조작하는 곳이라 글자 선택이 필요 없다. */
   user-select: none; -webkit-user-select: none;
 }
+.sidebar-resize-handle {
+  position: relative; z-index: 2; flex: 0 0 6px; width: 6px; margin-left: -6px;
+  align-self: stretch; cursor: ew-resize; touch-action: none; user-select: none;
+  outline: none;
+}
+.sidebar-resize-handle::after {
+  content: ""; position: absolute; top: 0; bottom: 0; right: 0; width: 2px;
+  background: var(--accent); opacity: 0;
+}
+.sidebar-resize-handle:hover::after, .sidebar-resize-handle:focus-visible::after,
+.sidebar-resize-handle.resizing::after { opacity: 1; }
 /* 프로젝트/폴더 = 남는 높이를 전부 차지한다. 실제 스크롤은 PROJECTS 아래 트리만 담당해
    라이브러리·미분류·휴지통과 하단 필터는 움직이지 않는다. */
 .sidebar-main {

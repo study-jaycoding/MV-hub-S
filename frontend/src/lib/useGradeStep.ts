@@ -4,6 +4,7 @@ import { postLibraryChanged } from "./libraryBroadcast";
 import { computeGradeStep, type GradeMode, type GradeStepResult } from "./gradeStep";
 import type { Generation } from "../types";
 import { withMirrorPendingNotice } from "./shareMirrorPending";
+import { t } from "./i18n";
 
 interface Args {
   canFinalize: (g: Generation) => boolean;
@@ -21,7 +22,7 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
     if (!selected.length) return;
     const r = computeGradeStep(selected, mode, canFinalize);
     if (r.applied === 0) {
-      flash("바꿀 수 있는 항목이 없습니다.");
+      flash(t("바꿀 수 있는 항목이 없습니다."));
       return;
     }
     setPending(r);
@@ -59,7 +60,9 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
           ? api.unpublish(o.gen.id)
           : o.action === "finalize"
             ? api.finalize(o.gen.id)
-            : api.unfinalize(o.gen.id),
+            : o.action === "unhold"
+              ? api.unhold(o.gen.id)
+              : api.unfinalize(o.gen.id),
       ),
     );
     ok += results.filter((x) => x.status === "fulfilled").length;
@@ -71,8 +74,10 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
     setBusy(false);
     flash(
       withMirrorPendingNotice(
-        fail ? `${ok}개 적용 · ${fail}개 실패/생략` : `${ok}개 적용`,
+        (fail ? t("{count}개 적용 · {failed}개 실패/생략") : t("{count}개 적용"))
+          .replace("{count}", String(ok)).replace("{failed}", String(fail)),
         { mirror_pending: mirrorPending },
+        t,
       ),
     );
     postLibraryChanged(); // 관리탭 상태(게시/완료) 즉시 재조회

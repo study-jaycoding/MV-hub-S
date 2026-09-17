@@ -76,6 +76,32 @@ describe("scopeTaskToCreator", () => {
     expect(scopeTaskToCreator(task(), "user-other")).toBeNull();
   });
 
+  it("본인 컷에만 완료 > 보류 > 공유 > 생성 우선순위를 적용한다", () => {
+    const source = task();
+    source.cuts![0].shared = true;
+    source.cuts![0].is_held = true;
+    // 본인의 다른 최종 컷이 우선한다.
+    expect(scopeTaskToCreator(source, "user-jay")?.status).toBe("done");
+    source.cuts![1].is_final = false;
+    expect(scopeTaskToCreator(source, "user-jay")?.status).toBe("hold");
+    expect(scopeTaskToCreator(source, "user-river")?.status).toBe("in_progress");
+    source.cuts![0].is_held = false;
+    expect(scopeTaskToCreator(source, "user-jay")?.status).toBe("publish");
+    source.cuts![0].shared = false;
+    source.cuts![0].is_held = true; // 미공유에 남은 잘못된 플래그는 무시한다.
+    expect(scopeTaskToCreator(source, "user-jay")?.status).toBe("in_progress");
+    source.status = "omit";
+    source.cuts![0].shared = true;
+    expect(scopeTaskToCreator(source, "user-jay")?.status).toBe("omit");
+  });
+
+  it("구서버의 보류 필드 누락을 보류로 추측하지 않는다", () => {
+    const source = task();
+    source.cuts![2].shared = true;
+    source.status = "hold";
+    expect(scopeTaskToCreator(source, "user-river")?.status).toBe("publish");
+  });
+
   it("휴면 백엔드가 보내는 assigned_creators 는 무시한다 — 배정 개념 폐기 계약", () => {
     // 백엔드 payload 는 여전히 이 필드를 실어올 수 있다(휴면 유지 결정). 프론트 계약은 "무시".
     const source = { ...task(), assigned_creators: [{ uid: "user-other", name: "오지짱" }] } as Task;

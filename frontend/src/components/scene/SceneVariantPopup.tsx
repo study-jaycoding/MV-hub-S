@@ -109,7 +109,7 @@ export function SceneVariantPopup({
   };
 }) {
   // 언어를 바꾼 즉시 상태 문구가 다시 그려지도록 구독한다(번역 자체는 generationDisplay).
-  useT();
+  const t = useT();
   // 배경 클릭 닫기는 '배경에서 누르기 시작한' 경우만. 팝업 안에서 시작한 드래그(마퀴·타일 끌기)가
   // 박스 밖에서 끝나면 브라우저가 공통 조상(배경)에 click 을 합성해 팝업이 닫히던 버그 방지.
   const backdropDownRef = useRef(false);
@@ -353,20 +353,22 @@ export function SceneVariantPopup({
                       <div className="card-tl">
                         {(gg.is_mine ||
                           gg.is_final ||
+                          gg.is_held ||
                           (gg.shared && (gen.canFinalize ? gen.canFinalize(gg) : true))) && (
                           <button
                             className={
-                              "card-sf" + (gg.shared ? " on" : "") + (gg.is_final ? " final" : "")
+                              "card-sf" + (gg.shared ? " on" : "") + (gg.is_final ? " final" : gg.is_held ? " held" : "")
                             }
-                            title={
+                            title={t(
                               gg.is_final
                                 ? "최종(골드) — 더블클릭=최종 해제"
+                                : gg.is_held ? "보류"
                                 : gg.is_mine
                                   ? gg.shared
                                     ? "팀 공유됨 · 클릭=해제 · 더블클릭=최종"
                                     : "팀에 공유 (클릭) · 최종은 공유 후 더블클릭"
                                   : "더블클릭=최종 지정 (Supervisor)"
-                            }
+                            )}
                             onMouseDown={(e) => e.stopPropagation()}
                             onClick={(e) => {
                               e.stopPropagation();

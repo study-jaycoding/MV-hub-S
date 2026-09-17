@@ -121,6 +121,7 @@ class GenerationOut(BaseModel):
     folder_path: Optional[str] = None  # 렌더 루트 기준 상대 폴더 경로(예 'ep001/c0010'). NULL=미지정
     deleted: bool = False  # 휴지통(soft delete) — 우리 카탈로그에서만 숨김. 힉스필드 원본 영향 없음
     is_final: bool = False  # v02 CMS: Supervisor 가 지정한 최종(골드)
+    is_held: bool = False  # 공유 검토 보류 — shared && !is_final에서만 유효
     final_by: Optional[str] = None  # 최종 지정자 creator_uid
     job_id: Optional[str] = None  # 힉스필드 잡 앵커 — 팀 카드(서버 UUID)↔로컬 행 매핑·확인(ack) 키(단건·목록 모두 채움)
     media_preservation_reason: Optional[str] = None  # shared|final|manual|admin
@@ -350,6 +351,12 @@ class CommentIn(BaseModel):
 class PublishIn(BaseModel):
     visibility: str = "team"
     shared_by: Optional[str] = None  # 없으면 기본 작업자
+
+
+class FinalReviewIn(BaseModel):
+    """최종 카드 검토 메뉴의 명시적인 목적 상태."""
+
+    state: Literal["unshared", "shared", "held"]
 
 
 class ImportIn(BaseModel):

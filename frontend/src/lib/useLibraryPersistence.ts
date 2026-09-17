@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import type { MediaFilter } from "./mediaTypes";
 import type { Store } from "./storage";
-import type { Filters } from "../types";
+import type { Filters, GenQuery } from "../types";
 
 /** 저장된 filters 의 형식 번호. 옛 저장값에만 도는 일회성 청소(useLibraryFilters)의 기준이다. */
 export const FILTERS_FORMAT = "2";
@@ -40,6 +40,7 @@ interface UseLibraryPersistenceArgs {
   groupByDate: boolean;
   layout: "grid" | "list";
   sharedOnly: boolean;
+  reviewFilter?: GenQuery["review_filter"];
   showFilters: boolean;
   store: Store;
   tagFilter: Set<string>;
@@ -63,6 +64,7 @@ export function useLibraryPersistence({
   layout,
   scale,
   sharedOnly,
+  reviewFilter = "shared",
   showFilters,
   store,
   tagFilter,
@@ -80,6 +82,7 @@ export function useLibraryPersistence({
   useEffect(() => store.set("groupByDate", groupByDate ? "1" : "0"), [groupByDate, store]);
   useEffect(() => store.setSet("colorFilter", colorFilter), [colorFilter, store]);
   useEffect(() => store.set("sharedOnly", sharedOnly ? "1" : "0"), [sharedOnly, store]);
+  useEffect(() => store.set("reviewFilter", reviewFilter), [reviewFilter, store]);
   useEffect(() => store.set("commentOnly", commentOnly ? "1" : "0"), [commentOnly, store]);
   useEffect(() => store.set("finalOnly", finalOnly ? "1" : "0"), [finalOnly, store]);
   useEffect(() => store.set("grayOn", grayOn ? "1" : "0"), [grayOn, store]);

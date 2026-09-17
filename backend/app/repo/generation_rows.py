@@ -46,6 +46,8 @@ def _attach_children(
             g["is_source"] = bool(g["is_source"])
         if "is_final" in g:
             g["is_final"] = bool(g["is_final"])  # v02 CMS 최종(골드) 여부
+        if "is_held" in g:
+            g["is_held"] = bool(g["is_held"])
         # 원본 보존 상태는 행이 없는 생성물도 명시적인 none으로 직렬화한다. 프론트가
         # shared/final 여부를 보고 상태를 추측하지 않게 서버가 단일 진실을 제공한다.
         g["media_preservation_reason"] = None
@@ -228,7 +230,7 @@ _GEN_SELECT_COLS = (
     "gr.recovery_probe_status, "  # 모호 제출 자동조사 결론 — 복구 UI 문구(외부 작업 없음 확인)용
     "gr.last_checked_at, gr.next_check_at, COALESCE(gr.check_failures,0) AS check_failures, "
     "g.creator_uid, g.workspace_scope, g.workspace_id, g.workspace_name, "
-    "g.project_id, g.folder_path, g.deleted_at, g.is_final, g.final_by, "
+    "g.project_id, g.folder_path, g.deleted_at, g.is_final, g.is_held, g.final_by, "
     # 이 컬럼셋은 단건 조회(_fetch_generation)·_fetch_gens 가 공유한다. job_id 는 목록 SQL
     # (generations_query)·GenerationOut(단건·목록 공용 모델)에도 노출된다 — 팀 카드(서버 UUID)↔로컬
     # 행을 잇는 앵커이고, 프론트 확인(ack)·개인메타 매칭이 job_id||id 키로 이 값을 쓴다.
