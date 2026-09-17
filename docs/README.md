@@ -6,7 +6,7 @@ tags:
   - mvhub
   - mvhub/문서
 status: active
-updated: 2026-09-17
+updated: 2026-09-18
 ---
 
 # MV Hub 개발 문서 안내
@@ -36,6 +36,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 목적 | 기준 문서 |
 |---|---|
 | 지금 완료된 것과 다음 작업 | [CURRENT_STATUS.md](CURRENT_STATUS.md) |
+| 현재 종합 점검·중복 구현 조사·Claude 설계 합의·실측 진척 | [PROGRAM_AUDIT_2026-09-17.md](PROGRAM_AUDIT_2026-09-17.md) |
 | 날짜별 상세 기록(회귀·실측·구현 근거) | [status/](status/) 노트 — 진입점은 [status/최근작업_2026-08-24.md](status/최근작업_2026-08-24.md) |
 | 프로그램 사용 | [사용설명서.md](사용설명서.md), [기능설명서.md](기능설명서.md) |
 | 현재 구조와 데이터 흐름 | [ARCHITECTURE.md](ARCHITECTURE.md), [AI_CONTEXT.md](AI_CONTEXT.md) |
@@ -52,6 +53,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 캔버스 생성 재시도 계약 | [CANVAS_GENERATION_IDEMPOTENCY.md](CANVAS_GENERATION_IDEMPOTENCY.md) |
 | 견적 CLI 동시 실행·취소 계약 | [CLI_ESTIMATE_LIFECYCLE.md](CLI_ESTIMATE_LIFECYCLE.md) |
 | 생성 제출 중단·중복 과금 방지 | [GENERATION_SUBMISSION_RECOVERY.md](GENERATION_SUBMISSION_RECOVERY.md) |
+| Comfy 접수 불명·같은 작업 결과 회수·저장 확인 | [COMFY_RESULT_RECOVERY.md](COMFY_RESULT_RECOVERY.md) |
 | 테스트와 배포 전 검증 | [TESTING.md](TESTING.md), [PREDEPLOY_100_USERS.md](PREDEPLOY_100_USERS.md) |
 | 서버 설치·운영·복구 | [SERVER.md](SERVER.md), [SERVER_RECOVERY.md](SERVER_RECOVERY.md) |
 | 공유 서버를 다른 PC 로 이전 | [SERVER_MIGRATION.md](SERVER_MIGRATION.md) |
@@ -78,7 +80,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | **현행 기준** | `ARCHITECTURE`, `AI_CONTEXT`, `DATA_OWNERSHIP`, `WORKSPACE_DATA_CONTRACT`, `신원과_모드_가이드` | 구현 전에 반드시 확인한다. |
 | **현재 현황 요약** | `CURRENT_STATUS` | 완료·잔여·검증 상태를 빠르게 확인한다. |
 | **현재 작업 목록** | `RISK_REDUCTION_PLAN_2026-08-15` | 위험 상태를 변경하는 단일 출처다. |
-| **현재 세부 계약** | `SHARE_STATE_RECONCILIATION_DESIGN`, `GENERATION_SUBMISSION_RECOVERY`, `CANVAS_GENERATION_IDEMPOTENCY`, `CLI_ESTIMATE_LIFECYCLE`, `AUTH_FAILURE_SEMANTICS`, `TELEMETRY_DRAIN_LIFECYCLE`, `WORKER_OFFDISK_BACKUP_CONTRACT` | 기능별 상태 전이·복구·검증 기준이다. 완료 여부는 위험 계획의 Gate 0 표를 따른다. |
+| **현재 세부 계약** | `SHARE_STATE_RECONCILIATION_DESIGN`, `GENERATION_SUBMISSION_RECOVERY`, `COMFY_RESULT_RECOVERY`, `CANVAS_GENERATION_IDEMPOTENCY`, `CLI_ESTIMATE_LIFECYCLE`, `AUTH_FAILURE_SEMANTICS`, `TELEMETRY_DRAIN_LIFECYCLE`, `WORKER_OFFDISK_BACKUP_CONTRACT` | 기능별 상태 전이·복구·검증 기준이다. 완료 여부는 위험 계획의 Gate 0 표를 따른다. |
 | **운영 기준** | `SERVER`, `SERVER_RECOVERY`, `TESTING`, `HF_CLI_UPGRADE` | 설치·업데이트·복구·검증 때 사용한다. |
 | **기능별 설계** | `ROADMAP_SCALE`(active — 착수 조건 재측정), `관리대시보드_통합계획`(draft — 미구현 계획), `DESIGN_id_unification`(draft — Phase 0a·0b 구현 완료, Phase 1~3 백로그) | 2026-08-26 코드 대조로 위상을 확정했다. draft 의 미완료 항목을 현재 작업으로 간주하지 않는다. |
 | **검증 기록** | `LOAD_TEST_2026-08-14`, `PREDEPLOY_100_USERS` | 해당 시점의 결과다. 새 배포를 자동 보증하지 않는다. |
@@ -157,6 +159,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | **현행 구조·계약 — 공통** | [ARCHITECTURE](ARCHITECTURE.md), [AI_CONTEXT](AI_CONTEXT.md), [DATA_OWNERSHIP](DATA_OWNERSHIP.md), [WORKSPACE_DATA_CONTRACT](WORKSPACE_DATA_CONTRACT.md), [신원과 모드 가이드](신원과_모드_가이드.md) |
 | **현행 구조·계약 — 기능별** | [AUTH_FAILURE_SEMANTICS](AUTH_FAILURE_SEMANTICS.md), [CANVAS_GENERATION_IDEMPOTENCY](CANVAS_GENERATION_IDEMPOTENCY.md), [CLI_ESTIMATE_LIFECYCLE](CLI_ESTIMATE_LIFECYCLE.md), [GENERATION_SUBMISSION_RECOVERY](GENERATION_SUBMISSION_RECOVERY.md), [TELEMETRY_DRAIN_LIFECYCLE](TELEMETRY_DRAIN_LIFECYCLE.md), [SHARE_STATE_RECONCILIATION_DESIGN](SHARE_STATE_RECONCILIATION_DESIGN.md), [WORKER_OFFDISK_BACKUP_CONTRACT](WORKER_OFFDISK_BACKUP_CONTRACT.md), [UPDATE_ANNOUNCEMENTS](UPDATE_ANNOUNCEMENTS.md) |
 | **운영·검증 절차** | [SERVER](SERVER.md), [SERVER_RECOVERY](SERVER_RECOVERY.md), [SERVER_RELOCATION](SERVER_RELOCATION.md), [TESTING](TESTING.md), [HF_CLI_UPGRADE](HF_CLI_UPGRADE.md) |
+| **현행 세부 계약 추가 — Comfy 결과 회수** | [COMFY_RESULT_RECOVERY](COMFY_RESULT_RECOVERY.md) — 비용·출처 강화 보류 계획과 별개 |
 | **사용자 안내** | [사용설명서](사용설명서.md), [기능설명서](기능설명서.md) |
 | **후속 설계(draft)·재측정(active)** | [DESIGN_id_unification](DESIGN_id_unification.md)(draft), [관리대시보드 통합계획](관리대시보드_통합계획.md)(draft), [ROADMAP_SCALE](ROADMAP_SCALE.md)(active), [COMFY_ENHANCE_PLAN](COMFY_ENHANCE_PLAN_2026-08-21.md)(보류 — 구현 미착수) |
 | **완료 작업의 개발 이력** | [PM_DASHBOARD_DESIGN](PM_DASHBOARD_DESIGN.md)(초기안 — §6 진행 순서 완료, 방식 변경분은 본문 NOTE), [CANVAS_MERGE_OPTIMIZATION_PLAN](CANVAS_MERGE_OPTIMIZATION_PLAN.md), [BACKLOG_PLAN](BACKLOG_PLAN_2026-08-20.md), [P2_CLOSEOUT_PLAN](P2_CLOSEOUT_PLAN_2026-08-20.md), [RL02_TASK_WORKSPACE_SNAPSHOT_PLAN](RL02_TASK_WORKSPACE_SNAPSHOT_PLAN.md) |

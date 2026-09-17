@@ -54,9 +54,9 @@ submitting
 | `pending` | 다음 에이전트가 claim | 가능 |
 | `claimed` | 같은 소유자가 제출을 시작하거나, 만료 시 `pending` 복귀 | 가능 |
 | `submitting` + `job_id` 없음 | `recovery_required` 격리 | 금지 |
-| `running/tracking/verifying` + `job_id` 있음 | 그 `job_id`만 계속 조회 | 금지 |
+| `running/tracking/verifying` + `job_id` 있음 | 그 `job_id`만 계속 조회. 삭제 대상의 정확한 종결 증거가 있으면 §11 예외 적용 | 금지 |
 | `recovery_required` | 외부 생성 여부 확인 전 유지 | 금지 |
-| `done/canceled` | 늦은 응답으로 되돌리지 않음 | 금지 |
+| `done/canceled` | 늦은 응답으로 되돌리지 않음. 명시적 휴지통 복원의 종결 마커는 §11 예외 적용 | 금지 |
 
 핵심 원칙은 **lease 만료가 곧 재생성 허가는 아니라는 것**이다.
 
@@ -272,3 +272,65 @@ Claude 독립 리뷰 후 레퍼런스 캐시 복구 범위와 NSFW 종료 사유
   제품 코드는 변경하지 않았으며 임시 DB 준비의 검사 의미·사용자 DB 격리도 독립 승인받았다.
 - 최종 독립 검토의 병합 차단 결함 없음. Jay가 dev 커밋·푸시·main 병합·릴리즈·NAS 게시를 승인했다.
   서버 적용은 제외한다. 실제 릴리즈 버전/해시는 고정 릴리즈 폴더의 게시 보고서를 기준으로 한다.
+
+## 11. 삭제 대상의 추적 종결과 명시적 복원 (2026-09-17)
+
+- owner: Codex
+- reviewer: Claude (설계 4차 합의, 독립 코드 리뷰 핵심 계약 승인)
+- status: 완료 — 격리 계약 검증, 운영 적용 제외
+- touched_paths: `backend/app/repo/_common.py`, `event_journal.py`, `generations.py`, `trash.py`, `backend/app/usecases/gen_requests.py`, `agent_push.py`, 관련 시험·운영 로그 뷰어, 이 문서
+- updated: 2026-09-17
+
+### 서로 다른 두 종결 증거
+
+생성물 본체가 사라진 terminal 결과만 추가 판정한다. 살아 있는 생성물의 기존 결과 수거·지연
+재조회는 그대로다. 요청 ID·생성물 ID·소유 계정은 같은 트랜잭션 안에서 다시 대조한다.
+
+| 증거 | 응답 | 변경 범위 |
+|---|---|---|
+| 현재 휴지통 행의 정확한 `job_id` 일치 | `target_retired` | 해당 non-terminal 요청 하나를 `canceled`로 종결하고 최초 종결 마커 보관 |
+| 본체·휴지통 모두 없고 정확한 gen/rid/job 앵커 이벤트 존재 | `stale_tracker_released` | 그 job의 에이전트 추적만 해제. 현재 도메인 행·이벤트 변경 없음 |
+| 둘 다 증명하지 못함 | `rejected` | 도메인 행·이벤트 변경 없음 |
+
+휴지통에 다른 job이 있으면 과거 앵커로 우회하지 않는다. 새 두 응답의 `applied`와
+`asset_saved`는 항상 false다. 에이전트는 HTTP200이고 `released_job_id`가 자신이 보고한
+job과 같을 때만 해당 추적을 해제한다. 성공 결과 저장 ACK와는 구분한다.
+실제 `request_status`를 재조회해 반환하므로 이미 done/failed/canceled인 요청을 강제로 취소하지 않는다.
+
+`provider_terminal` 마커는 해당 요청을 이번에 종결한 경우에만 처음 기록하며, 다른 요청의
+마커·손상된 기존 마커도 덮어쓰지 않는다. 원격 제공자의 새 URL을 자산으로 저장하지 않는다.
+`generation_target_retired`·`generation_tracker_released`·`generation_target_unverified` 운영 로그로
+판정을 관측하며, historical/rejected 경로는 관측 목적으로 DB 이벤트를 새로 쓰지 않는다.
+
+### 명시적 휴지통 복원
+
+마커의 rid/gen/job, `canceled` 상태와 전용 종결 사유, 다른 활성 요청 부재가 모두 맞을 때만
+생성물과 해당 요청을 함께 변경한다. 가드 실패 시 둘 다 이 분기에서 변경하지 않는다.
+기존 삭제 마커보다 이 종결 마커를 우선한다.
+
+- 실패 종결: 실패 상태로 복원한다.
+- 성공 종결 + 이미 보유한 사용 가능 자산: 완료 상태로 복원한다.
+- 성공 종결 + 보유 자산 없음: 요청 verifying/생성물 running으로 복원하여 기존 job을 다시 수거한다.
+  새 유료 제출은 하지 않는다. `/media/` 자산은 로컬 파일 존재도 확인하며, 보유 원격 URL은 유지한다.
+
+### 행동 변경과 남은 한계
+
+- 의도적 변경은 둘이다. 대상이 없는 non-terminal 요청의 success+자산 없음은 종전의
+  not_ready/요청 갱신에서 rejected/무변화로 바뀐다. 휴지통 same-job 종결은 해당 rid 하나를 canceled로 만든다.
+  초기 32개 설계 모델만으로 이 구현 경계를 검증한 것으로 주장하지 않는다.
+- 초기 설계의 모든 경로 바이트 동일 주장과 request_status 고정 canceled 표기는 철회했다.
+  도메인 무변화와 별개로 휴지통 연결 시 스키마 보장·레거시 job_id 백필은 수행될 수 있다.
+- 영구삭제 뒤 남은 tracking 정리(기존 부팅 reconcile 책임), 구 에이전트의 추적 슬롯 점유,
+  `_safe_code` 밖 job ID의 앵커 false-negative, 기존 done 처리의 gen_id 단위 UPDATE는 이번에 해결하지 않는다.
+- ATTACH된 두 WAL 파일의 프로세스 크래시 시 물리적 원자성은 보장하지 않는다.
+- 로컬 파일이 사라진 done 생성물도 해당 non-terminal 요청 마커가 있으면 복원 때 verifying으로
+  내려갈 수 있다. 재수거 후보는 기존 `origin='local'` 조건에 한정된다.
+- 실패 종결 사유는 기존 서버 오류와 같은 한국어 고정 문구다. 프런트 번역 범위를 새로 넓히지 않는다.
+- retire의 소유권 근거는 살아 있는 `gen_request.account_email`이며 휴지통 creator_uid와의
+  추가 교차 검증은 하지 않는다. 둘이 손상돼 불일치하는 데이터까지 방어한다고 주장하지 않는다.
+
+신규106개·관련441개+6 subtests를 격리 환경에서 검증하고 Claude 코드 승인을 받았다.
+후속 운영 로그 표시 3종과 회귀 보강은 E3 138개·기존 로그 48개, 총186개를 통과했다.
+핵심 제품6파일은 독립 승인본과 같고, 통합 담당자가 표시3줄·시험 변경과8파일 해시를 대조했다.
+상세 근거는 [종합 점검 장부](PROGRAM_AUDIT_2026-09-17.md)에 둔다.
+실제 유료 생성·운영 DB·설치본에는 적용하지 않았다.
