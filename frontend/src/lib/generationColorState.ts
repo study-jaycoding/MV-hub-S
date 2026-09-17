@@ -1,5 +1,16 @@
 import type { Generation } from "../types";
 
+export class ColorSaveError<T = unknown> extends Error {
+  constructor(readonly failed: number, readonly detail?: T) {
+    super("generation color save failed");
+  }
+}
+
+// 계정/씬 수명이 바뀐 작업은 네트워크 실패와 구분해 조용히 폐기한다.
+export class ColorScopeChangedError extends Error {
+  constructor() { super("generation color scope changed"); }
+}
+
 export function nextGenerationSelectionColor(
   generations: Generation[],
   ids: string[],

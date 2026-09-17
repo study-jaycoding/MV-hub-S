@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 
@@ -237,10 +238,10 @@ async def create_gen_request(body: GenRequestIn, request: Request):
 
     라우터는 HTTP/인증/권한/입력검증만 하고, 오케스트레이션(생성·큐잉·signal·PM)은
     usecases.gen_requests.submit_gen_request 가 수행한다(ARCHITECTURE.md)."""
-    if update_in_progress():
+    if await asyncio.to_thread(update_in_progress):
         raise HTTPException(
             status_code=409,
-            detail="프로그램 업데이트가 진행 중이라 새 생성을 시작할 수 없습니다",
+            detail="업데이트 중이거나 상태를 확인할 수 없어 새 생성을 시작할 수 없습니다. 프로그램을 다시 실행한 뒤에도 계속되면 관리자에게 문의하세요",
         )
     acc = _require_account(request)
     await _require_generation_deployment_open()
@@ -512,7 +513,7 @@ async def pending_gen_requests_exist(
     """idle 에이전트가 큐를 선점하지 않고 값싼 읽기로 깨움 신호 유실을 복구한다."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
-    if update_in_progress():
+    if await asyncio.to_thread(update_in_progress):
         return {"pending": False}
     await _require_generation_deployment_open()
     caps = {c.strip() for c in capability.split(",") if c.strip()}
@@ -549,7 +550,7 @@ async def pending_gen_requests(
     """
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
-    if update_in_progress():
+    if await asyncio.to_thread(update_in_progress):
         return []
     await _require_generation_deployment_open()
     # capability: 에이전트가 지원 기능을 콤마 목록으로 밝힌다.
@@ -571,6 +572,21 @@ async def pending_gen_requests(
     if claimed:
         schedule_telemetry_drain()
     return claimed
+
+
+async def _release_claim_on_abort(acc: dict, rid: str, agent_id: str) -> None:
+    """게이트 중단 뒤 반환을 끝내되 원래 취소/예외를 덮지 않는다."""
+    cleanup = asyncio.create_task(release_claim(acc["email"], realtime_scope(acc), rid, agent_id))
+    while not cleanup.done():
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await asyncio.shield(cleanup)
+    if cleanup.cancelled() or cleanup.exception() is not None:
+        log_event(
+            _generation_log,
+            "generation_claim_abort_cleanup_failed",
+            level=logging.WARNING,
+            request_id=rid,
+        )
 
 
 @router.post("/gen-requests/{rid}/begin-submission")
@@ -598,7 +614,13 @@ async def begin_gen_request_submission(
     # 순서가 핵심이다. 먼저 submitting을 DB에 기록해야 업데이트 시작 쪽의 2차 집계와
     # 어느 쪽이 먼저 실행돼도 안전하다. checking이 먼저였다면 이 요청을 즉시 pending으로
     # 되돌리고, submitting이 먼저였다면 업데이트 쪽이 활동 1건을 보고 중단한다.
-    if update_in_progress():
+    try:
+        blocked = await asyncio.to_thread(update_in_progress)
+    except BaseException:
+        # 이 await 전 이미 submitting이다. ACK는 아직 주지 않아 CLI는 실행되지 않았다.
+        await _release_claim_on_abort(acc, rid, agent_id)
+        raise
+    if blocked:
         await release_claim(
             acc["email"],
             realtime_scope(acc),
@@ -607,7 +629,7 @@ async def begin_gen_request_submission(
         )
         raise HTTPException(
             status_code=409,
-            detail="프로그램 업데이트가 진행 중이라 생성 제출을 시작하지 않습니다",
+            detail="업데이트 중이거나 상태를 확인할 수 없어 생성 제출을 시작하지 않습니다. 프로그램을 다시 실행한 뒤에도 계속되면 관리자에게 문의하세요",
         )
     return {"ok": True, "applied": True}
 

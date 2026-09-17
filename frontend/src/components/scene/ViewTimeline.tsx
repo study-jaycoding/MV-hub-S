@@ -3,6 +3,8 @@
 //    + 현재 위치)으로 재생헤드·스크러버를 계산한다. 이미지 클립은 IMG_DUR 초 동안 정지화면으로 재생.
 //  · 편집(트리밍/클립 이동)은 범위 밖 — 재생·미리보기 중심.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flashMsg } from "../../lib/flash";
+import { HttpError } from "../../lib/http";
 
 export interface TimelineClip {
   url: string;
@@ -287,7 +289,7 @@ export function ViewTimeline({
         "timeline",
       );
     } catch (e) {
-      console.warn("[timeline] 병합 다운로드 실패", e);
+      flashMsg(e instanceof HttpError ? e.detail : "영상 병합에 실패했습니다");
     } finally {
       setDownloading(false);
     }

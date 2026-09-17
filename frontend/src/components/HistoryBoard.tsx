@@ -630,6 +630,7 @@ export function HistoryBoard({
                   commentOnly={commentOnly}
                   finalOnly={finalOnly}
                   sConfirm={sConfirm?.id === g.id ? sConfirm : null}
+                  mayFinalize={canFinalize ? canFinalize(g) : true}
                   onSClick={onNodeSClick}
                   onSDouble={onNodeSDouble}
                   onSConfirmYes={onNodeSConfirmYes}

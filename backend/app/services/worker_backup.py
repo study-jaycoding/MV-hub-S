@@ -323,6 +323,15 @@ def _role_info(path: Path) -> dict[str, Any]:
     return {"size": path.stat().st_size, "sha256": _sha256(path)}
 
 
+_DEVICE_IDENTITY_LOCK = threading.Lock()
+
+
+def device_identity() -> dict[str, str]:
+    """같은 프로세스의 첫 캡처가 서로 다른 기기 ID를 기록하지 않게 한다."""
+    with _DEVICE_IDENTITY_LOCK:
+        return _device_identity()
+
+
 def _device_identity() -> dict[str, str]:
     """DB 밖에 유지되는 이 PC의 공개 식별정보를 반환한다.
 
@@ -529,7 +538,7 @@ def queue_backup_set(
             if source_signature == _source_signature(content_backup, trash_source)
             else None
         )
-        device = _device_identity()
+        device = device_identity()
         parent_backup_set_id = _lineage_parent(account_slug)
         roles_json = json.dumps(roles, sort_keys=True, separators=(",", ":"))
         # 같은 PC에서 DB 파일의 수정 시각만 달라진 경우에는 새 세트를 만들지 않는다.
@@ -744,9 +753,9 @@ def cleanup_stale_state() -> dict[str, int]:
     return {"rows": removed_rows, "directories": removed_dirs}
 
 
-def retry_pending() -> int:
+def retry_pending(*, account_email: str | None = None) -> int:
     """활성 계정의 대기 작업을 즉시 재시도 가능하게 만든다."""
-    account_slug = _active_slug()
+    account_slug = active_account.slug(account_email) if account_email is not None else _active_slug()
     if not account_slug:
         return 0
     with _connect() as conn:
@@ -761,6 +770,37 @@ def retry_pending() -> int:
 def _active_slug() -> str | None:
     email = active_account.account_key()
     return active_account.slug(email) if email else None
+
+
+def account_key_digest(account_slug: str) -> str:
+    """자식 기대값에는 원문 계정 폴더명 대신 같은 결정적 digest만 전달한다."""
+    return hashlib.sha256(account_slug.encode("utf-8")).hexdigest()
+
+
+def _backup_set_owner(backup_set_id: str) -> str | None:
+    with contextlib.closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT account_slug FROM worker_backup_outbox WHERE backup_set_id=?",
+            (backup_set_id,),
+        ).fetchone()
+        return row[0] if row else None
+
+
+def drain_one_expected(
+    expected_account_key: str, expected_backup_set_id: str | None = None,
+) -> dict[str, Any]:
+    """수동 요청의 계정·원본 세트 소유가 맞을 때만 기존 claim 흐름에 들어간다."""
+    pin = active_account.capture_account_pin()
+    changed = {"state": "account_changed", "error_code": "account_changed"}
+    if not pin[0] or account_key_digest(active_account.slug(pin[0])) != expected_account_key:
+        return changed
+    with active_account.pinned_account_scope(pin):
+        if expected_backup_set_id is not None:
+            owner = _backup_set_owner(expected_backup_set_id)
+            if owner is None or account_key_digest(owner) != expected_account_key:
+                return changed
+        # 원본 세트는 소유만 확인한다. 같은 계정의 더 오래된 백로그 처리 순서는 유지.
+        return drain_one()
 
 
 def has_due_backup() -> bool:
@@ -1192,16 +1232,25 @@ class PeriodicWorkerBackupUpload:
         with contextlib.suppress(Exception):
             await asyncio.to_thread(server_relocation.refresh)
 
-    async def run_now(self) -> dict[str, Any]:
+    async def run_now(
+        self, *, expected_account_key: str | None = None,
+        expected_backup_set_id: str | None = None,
+    ) -> dict[str, Any]:
         async with self._run_lock:
             if not await asyncio.to_thread(has_due_backup):
                 return {"state": "idle"}
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+            expected_args: list[str] = []
+            if expected_account_key is not None:
+                expected_args.extend(("--expect-account-key", expected_account_key))
+            if expected_backup_set_id is not None:
+                expected_args.extend(("--expect-backup-set", expected_backup_set_id))
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-m",
                 "app.services.worker_backup",
                 "--drain-one",
+                *expected_args,
                 cwd=str(BACKEND_DIR),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
@@ -1259,12 +1308,21 @@ periodic_worker_backup = PeriodicWorkerBackupUpload()
 def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--drain-one", action="store_true")
+    parser.add_argument("--expect-account-key")
+    parser.add_argument("--expect-backup-set")
     args = parser.parse_args(argv)
     if not args.drain_one:
         return 2
-    result = drain_one()
+    if any(value is not None and not _SET_ID_RE.fullmatch(value) for value in (args.expect_account_key, args.expect_backup_set)):
+        return 2
+    if args.expect_backup_set is not None and args.expect_account_key is None:
+        return 2
+    result = (
+        drain_one_expected(args.expect_account_key, args.expect_backup_set)
+        if args.expect_account_key is not None else drain_one()
+    )
     print(json.dumps(result, separators=(",", ":")), flush=True)
-    return 0 if result.get("state") in {"idle", "success", "login_required", "server_update_required"} else 1
+    return 0 if result.get("state") in {"idle", "success", "login_required", "server_update_required", "account_changed"} else 1
 
 
 if __name__ == "__main__":

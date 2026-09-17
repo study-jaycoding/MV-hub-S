@@ -9,15 +9,19 @@ Phase 2a: 연결된 레퍼런스(이미지·영상)를 타입별로 LoadImage/Lo
 """
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import threading
 import time
 import uuid
 from dataclasses import dataclass, replace
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
@@ -25,7 +29,8 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
-from .. import rbac, repo
+from .. import active_account, rbac, repo
+from ..emailnorm import norm_email
 from ..config import (
     AUTH_ENABLED,
     DEFAULT_WORKER_ID,
@@ -40,7 +45,7 @@ from ..deps import (
     require_agent_account,
     require_project_role,
 )
-from ..services import comfy_client, comfy_workflow, upload_limits, video_convert
+from ..services import comfy_client, comfy_run_journal as run_journal, comfy_workflow, upload_limits, video_convert, worker_backup
 from ..services.release_update import update_in_progress
 from ..services.request_guards import require_loopback_request
 
@@ -105,7 +110,148 @@ _RUN_FAILED = "failed"
 
 _RUN_JOBS_LOCK = threading.Lock()
 _RUN_JOBS: dict[str, dict[str, Any]] = {}
-_RUN_PERSIST_LOCK = threading.Lock()
+_RUN_PERSIST_LOCK = run_journal.LOCK
+_OUTPUT_REL = re.compile(r"^comfy/([0-9a-f]{16})-([0-9a-f]{32})-([0-9a-f]{16})\.([a-z0-9]{1,8})$")
+_MEDIA_SEGMENT = re.compile(r"[0-9A-Za-z_-][0-9A-Za-z._-]*")
+_NOT_FOUND = "작업을 찾을 수 없습니다(만료되었을 수 있습니다)"
+
+
+@dataclass(frozen=True)
+class _ComfyIdentity:
+    pin: tuple[str, Optional[str]]
+    owner: str
+    creator_uid: Optional[str]
+    device_id: str
+    scope: str
+    settings: dict
+    auth_enabled: bool
+
+
+@contextmanager
+def _comfy_request_scope(request: Request):
+    # 신원 조회도 반드시 먼저 캡처한 DB pin 아래에서. transition lock은 느린 I/O 전에 해제된다.
+    pin = active_account.capture_account_pin()
+    with active_account.pinned_account_scope(pin):
+        account = require_agent_account(request)
+        owner = norm_email(account.get("email")) if AUTH_ENABLED else (norm_email(pin[0]) or "local")
+        if not owner:
+            raise HTTPException(409, "계정 신원을 확인할 수 없습니다")
+        creator_uid = account_actor_uid(request) if AUTH_ENABLED else account.get("creator_uid")
+        settings = _raw_settings()
+        # public helper는 자체 기기 lock을 가진다. transition/PERSIST/DB 거래 밖에서만 호출.
+        try:
+            device = worker_backup.device_identity()["device_id"]
+        except (OSError, ValueError, KeyError) as error:
+            raise HTTPException(409, "이 PC의 식별정보를 저장할 수 없어 Comfy 작업을 진행할 수 없습니다") from error
+        scope = hashlib.sha256(f"comfy-owner-v1|{owner}|{device}".encode()).hexdigest()[:16]
+        identity = _ComfyIdentity(pin, owner, creator_uid, device, scope, settings, AUTH_ENABLED)
+        try:
+            run_journal.bootstrap(owner, AUTH_ENABLED)
+        except Exception as error:
+            raise HTTPException(409, "Comfy 실행 기록을 확인할 수 없어 작업을 진행할 수 없습니다") from error
+        yield identity
+
+
+def _target_fingerprint(settings: dict) -> str:
+    target = comfy_client.make_target(settings)
+    key = str(settings.get("comfy_api_key") or "")
+    key_hash = hashlib.sha256(key.encode()).hexdigest()[:16] if key else "none"
+    kind = "cloud" if target["cloud"] else "local"
+    return hashlib.sha256(f"comfy-target-v1|{kind}|{target['base']}|{key_hash}".encode()).hexdigest()[:16]
+
+
+def _new_run_record(job_id: str, identity: _ComfyIdentity) -> dict:
+    target = comfy_client.make_target(identity.settings)
+    url = urlsplit(target["base"])
+    host = (url.hostname or "") + (f":{url.port}" if url.port else "")
+    now = time.time()
+    return {
+        "v": 1, "job_id": job_id, "owner": identity.owner, "account_key": identity.pin[0],
+        "account_uid": identity.pin[1], "device_id": identity.device_id,
+        "target_kind": "cloud" if target["cloud"] else "local", "base_host": host[:100],
+        "target_fp": _target_fingerprint(identity.settings), "phase": "submitting",
+        "prompt_id": None, "terminal_kind": None, "created_at": now, "updated_at": now,
+        "cancel_attempted": False, "evidence_incomplete": False, "legacy_imported": False,
+        "collect_job_id": job_id, "collect_seq": 0, "outputs_enumerated": False,
+        "media_output_count": 0, "text_only": False, "outputs": [],
+    }
+
+
+def _merge_manifest(current: list, incoming: list) -> list:
+    merged = {item["rel"]: dict(item) for item in current}
+    for item in incoming:
+        old = merged.get(item["rel"], {})
+        merged[item["rel"]] = {**old, **item,
+            "downloaded": bool(old.get("downloaded") or item.get("downloaded")),
+            "acked": bool(old.get("acked") or item.get("acked"))}
+    return list(merged.values())
+
+
+def _patch_run_record(job_id: str, **updates: Any) -> bool:
+    """메모리를 먼저 보존하고 사후 원장은 best-effort. 낡은 collect 완료 쓰기는 버린다."""
+    with _RUN_JOBS_LOCK:
+        job = _RUN_JOBS.get(job_id)
+        if not job or not job.get("journal_record"):
+            return False
+        record = job["journal_record"]
+        # 메모리 전용 CAS 기대값. 사후 디스크 쓰기가 실패하면 마지막 성공 phase를 그대로 둔다.
+        expected_phase = job.setdefault("journal_persisted_phase", record.get("phase"))
+        if "outputs" in updates:
+            updates["outputs"] = _merge_manifest(record.get("outputs") or [], updates["outputs"])
+        record.update(updates, updated_at=time.time())
+        snapshot = copy.deepcopy(record)
+        identity = job["identity"]
+    try:
+        with run_journal.edit(identity.owner, identity.auth_enabled) as runs:
+            row = next((row for row in runs if row["job_id"] == snapshot["job_id"]), None)
+            if (not row or row.get("owner") != identity.owner
+                    or (row.get("collect_job_id"), row.get("collect_seq", 0))
+                    != (snapshot.get("collect_job_id"), snapshot.get("collect_seq", 0))
+                    or row.get("phase") != expected_phase):
+                log.info("comfy 낡은 원장 쓰기 생략 job_id=%s", job_id)
+                return False
+            outputs = _merge_manifest(row.get("outputs") or [], snapshot.get("outputs") or [])
+            row.update(snapshot, outputs=outputs)
+        # 반드시 원장 lock을 해제한 뒤 실행 메모리를 갱신한다(역순 lock 없음).
+        with _RUN_JOBS_LOCK:
+            current_job = _RUN_JOBS.get(job_id)
+            if current_job:
+                current_job["journal_persisted_phase"] = snapshot.get("phase")
+        return True
+    except Exception:
+        log.warning("comfy 사후 원장 저장 실패 job_id=%s (메모리 실행 유지)", job_id)
+        return False
+
+
+def _observe_terminal(job_id: Optional[str], kind: str) -> None:
+    if not job_id:
+        return
+    _update_run_job(job_id, remote_terminal_observed=True, terminal_kind=kind)
+    with _RUN_JOBS_LOCK:
+        phase = ((_RUN_JOBS.get(job_id) or {}).get("journal_record") or {}).get("phase")
+    _patch_run_record(job_id, terminal_kind=kind,
+                      phase=("collecting" if phase == "collecting" else "result_pending") if kind == "success" else "failed")
+
+
+def _retry_result(action, job_id: Optional[str], deadline: float):
+    """같은 결과 조회/다운로드만 총 4번. blocking 내부의 hard 시간 상한은 아니다."""
+    for attempt in range(4):
+        if time.monotonic() >= deadline:
+            raise comfy_client.ComfyError("결과 회수 시간 예산을 초과했습니다", cause_kind="timeout")
+        if job_id:
+            _update_run_job(job_id)
+        try:
+            return action()
+        except comfy_client.ComfyError as error:
+            status = error.status_code
+            transient = (status in (408, 429) or (status is not None and status >= 500)
+                         or (status is None and error.cause_kind in ("transport", "timeout", "dns", "connect_refused")))
+            if not transient or error.auth_error or attempt == 3:
+                raise
+            delay = 2.0 ** (attempt + 1)
+            if time.monotonic() + delay >= deadline:
+                raise
+            time.sleep(delay)
 
 
 def active_run_job_count() -> int:
@@ -189,6 +335,12 @@ def _create_run_job() -> str:
     return job_id
 
 
+def _discard_run_job(job_id: str) -> None:
+    """실행 전 접수를 거부한 잡은 실패 기록 없이 회수한다."""
+    with _RUN_JOBS_LOCK:
+        _RUN_JOBS.pop(job_id, None)
+
+
 def _update_run_job(job_id: str, **updates: Any) -> None:
     with _RUN_JOBS_LOCK:
         job = _RUN_JOBS.get(job_id)
@@ -225,63 +377,35 @@ def _fail_run_job(job_id: str, code: int, detail: Any) -> None:
     _forget_inflight_run(job_id)
 
 
-def _stored_inflight_runs_locked() -> list[dict[str, Any]]:
-    """app_setting JSON 을 읽어 최소 필드가 있는 항목만 되돌린다(_RUN_PERSIST_LOCK 보유 전제)."""
-    raw = repo.get_setting(_K_INFLIGHT_RUNS) or "[]"
-    try:
-        value = json.loads(raw)
-    except (TypeError, json.JSONDecodeError):
-        log.warning("comfy in-flight 영속 저장 형식이 손상돼 비웁니다")
-        return []
-    if not isinstance(value, list):
-        log.warning("comfy in-flight 영속 저장 형식이 목록이 아니어서 비웁니다")
-        return []
-    return [
-        item for item in value
-        if isinstance(item, dict)
-        and isinstance(item.get("job_id"), str)
-        and isinstance(item.get("prompt_id"), str)
-        and item.get("target") in ("local", "cloud")
-    ]
-
-
-def _write_inflight_runs_locked(runs: list[dict[str, Any]]) -> None:
-    """작은 JSON 목록 전체를 원자적으로 교체한다(_RUN_PERSIST_LOCK 보유 전제)."""
-    repo.set_setting(
-        _K_INFLIGHT_RUNS,
-        json.dumps(runs, ensure_ascii=False, separators=(",", ":")),
-    )
-
-
 def _track_inflight_run(job_id: str, prompt_id: str, target_kind: str) -> None:
-    """원격 제출 성공 직후 재시작 진단용 최소 흔적을 남긴다.
-
-    ★best-effort — 이 기록이 실패해도(순간 DB 잠금 등) 호출부는 실행을 계속한다.
-    이미 제출·과금된 멀쩡한 잡을 진단 기록 실패 때문에 취소하면 손해가 더 크다.
-    잃는 것은 '재시작 시 이 잡의 흔적 로그·Cloud 취소' 뿐이다.
-    """
-    record = {
-        "job_id": job_id,
-        "prompt_id": prompt_id,
-        "target": "cloud" if target_kind == "cloud" else "local",
-        "created_at": time.time(),
-    }
-    with _RUN_PERSIST_LOCK:
-        runs = [r for r in _stored_inflight_runs_locked() if r["job_id"] != job_id]
-        runs.append(record)
-        _write_inflight_runs_locked(runs)
+    """알려진 prompt를 메모리에 먼저 보존. 새 실행을 legacy 키에 쓰지 않는다."""
+    _update_run_job(job_id, prompt_id=prompt_id)
+    _patch_run_record(job_id, prompt_id=prompt_id, target_kind=target_kind, phase="running")
 
 
 def _forget_inflight_run(job_id: str) -> None:
-    """완료/실패가 확정된 잡의 재시작 흔적을 best-effort 로 제거한다."""
+    """미회수/ACK 대기는 실패 응답이어도 남긴다. 잃을 결과가 없는 확정 종결만 제거."""
+    with _RUN_JOBS_LOCK:
+        job = _RUN_JOBS.get(job_id)
+        if not job or not job.get("journal_record"):
+            return
+        record = copy.deepcopy(job["journal_record"])
+        identity = job["identity"]
+        expected_phase = job.get("journal_persisted_phase", record.get("phase"))
+    disposable = (record.get("phase") == "not_submitted" or record.get("terminal_kind") == "failure"
+                  or (record.get("text_only") and record.get("outputs_enumerated")
+                      and record.get("media_output_count") == 0))
+    if not disposable:
+        return
     try:
-        with _RUN_PERSIST_LOCK:
-            runs = _stored_inflight_runs_locked()
-            kept = [r for r in runs if r["job_id"] != job_id]
-            if len(kept) != len(runs):
-                _write_inflight_runs_locked(kept)
-    except Exception as e:  # noqa: BLE001 — 이미 끝난 실행 결과를 영속 정리 실패로 뒤집지 않는다.
-        log.warning("comfy in-flight 영속 정리 실패 job_id=%s: %s", job_id, e)
+        with run_journal.edit(identity.owner, identity.auth_enabled) as runs:
+            runs[:] = [row for row in runs if not (
+                row["job_id"] == record["job_id"] and row.get("owner") == identity.owner
+                and row.get("phase") == expected_phase
+                and (row.get("collect_job_id"), row.get("collect_seq", 0))
+                == (record.get("collect_job_id"), record.get("collect_seq", 0)))]
+    except Exception:
+        log.warning("comfy 확정 종결 원장 정리 실패 job_id=%s", job_id)
 
 
 def _raw_settings() -> dict:
@@ -312,7 +436,7 @@ def _cancel_remote_run(target: dict, prompt_id: str, reason: str,
         with _RUN_JOBS_LOCK:
             job = _RUN_JOBS.get(job_id)
             if job:
-                if job.get("cancel_attempted"):
+                if job.get("cancel_attempted") or job.get("remote_terminal_observed"):
                     return
                 job["cancel_attempted"] = True
                 job["updated_at"] = time.time()
@@ -347,52 +471,32 @@ def _cancel_failed_run(settings: dict, job_id: str, reason: str) -> None:
 
 
 def recover_interrupted_run_jobs() -> None:
-    """부팅 시 이전 프로세스의 in-flight 흔적을 운영 로그로 남기고 비운다.
-
-    풀 자동복구는 하지 않는다. 특히 Cloud 는 현재 저장된 API 키로 지정 prompt 취소를 한 번
-    시도해 재시작 뒤의 크레딧 누수를 줄인다. 키가 바뀌었거나 완료된 잡이면 실패/거절도 로그만
-    남기고, 이 PC는 더 이상 그 잡을 추적하지 않는다는 사실을 명확히 한다.
-    """
+    """명시 boot만 조건부 취소. lazy 첫 접근은 로컬 복원만 하며 근거를 삭제하지 않는다."""
+    pin = active_account.capture_account_pin()
+    owner = norm_email(pin[0]) or "local"
     try:
-        with _RUN_PERSIST_LOCK:
-            runs = _stored_inflight_runs_locked()
-    except Exception as e:  # noqa: BLE001 — 재시작 정리 실패가 서버 부팅을 막으면 안 된다.
-        log.warning("comfy in-flight 재시작 정리 조회 실패: %s", e)
-        return
-
-    try:
-        for run in runs:
-            job_id = run["job_id"]
-            prompt_id = run["prompt_id"]
-            target_kind = run["target"]
-            log.warning(
-                "comfy 서버 재시작으로 추적이 끊긴 잡 job_id=%s prompt_id=%s target=%s "
-                "(결과는 ComfyUI 히스토리에서 수동 확인 필요)",
-                job_id, prompt_id, target_kind,
-            )
-            if target_kind == "cloud":
-                if not EXTERNAL_RECOVERY_ENABLED:
-                    # 격리 드릴 서버 등 — 사본 DB의 키로 라이브 잡을 취소하면 안 된다. 로그만 남긴다.
-                    log.warning(
-                        "comfy Cloud 취소 생략(CONTENT_HUB_EXTERNAL_RECOVERY=0) prompt_id=%s",
-                        prompt_id,
-                    )
+        with active_account.pinned_account_scope(pin):
+            candidates = run_journal.bootstrap(owner, AUTH_ENABLED)
+            # AUTH on boot에는 요청 세션 owner가 없다. 다른 사용자 원격 자원에 접근하지 않는다.
+            if AUTH_ENABLED or not EXTERNAL_RECOVERY_ENABLED or not candidates:
+                return
+            device = worker_backup.device_identity()["device_id"]
+            settings = _raw_settings()
+            fingerprint = _target_fingerprint(settings)
+            target = comfy_client.make_target(settings)
+            for row in candidates:
+                if (row.get("owner") != owner or row.get("device_id") != device
+                        or row.get("target_fp") != fingerprint or row.get("evidence_incomplete")
+                        or row.get("terminal_kind") or row.get("cancel_attempted") or not row.get("prompt_id")):
                     continue
-                # 당시 키는 보관하지 않는다. 현재 Cloud 키로만 취소를 시도한다(없거나 바뀌면 로그만).
-                try:
-                    settings = _raw_settings()
-                    settings["comfy_target"] = "cloud"
-                    _cancel_remote_run(comfy_client.make_target(settings), prompt_id, "server restart")
-                except Exception as e:  # noqa: BLE001 — 한 항목 오류가 다른 Cloud 취소를 막지 않게 한다.
-                    log.warning("comfy 재시작 Cloud 취소 준비 실패 prompt_id=%s: %s", prompt_id, e)
-    finally:
-        # 이 라이트 버전은 재연결/결과 수집을 하지 않는다. 같은 흔적을 다음 부팅마다 반복하지 않게
-        # 취소 성공 여부와 무관하게 비운다.
-        try:
-            with _RUN_PERSIST_LOCK:
-                _write_inflight_runs_locked([])
-        except Exception as e:  # noqa: BLE001
-            log.warning("comfy in-flight 재시작 정리 저장 실패: %s", e)
+                with run_journal.edit(owner, AUTH_ENABLED) as runs:
+                    current = next((item for item in runs if item["job_id"] == row["job_id"]), None)
+                    if not current or current.get("phase") != "orphaned" or current.get("cancel_attempted"):
+                        continue
+                    current["cancel_attempted"] = True
+                _cancel_remote_run(target, row["prompt_id"], "server restart")  # 원장/DB 락 밖
+    except Exception:
+        log.warning("comfy 재시작 원장 복원을 완료하지 못했습니다 (원본 보존)")
 
 
 def _to_int(v, default: int) -> int:
@@ -610,8 +714,13 @@ def _wait(target: dict, prompt_id: str, job_id: Optional[str] = None) -> dict:
                 log.info("comfy cloud job %s status=%s", prompt_id, st or "(empty)")
                 last = st
             if st in comfy_client.CLOUD_DONE:
-                return comfy_client.cloud_job_detail(target, prompt_id)
+                _observe_terminal(job_id, "success")
+                result_deadline = time.monotonic() + _JOB_TIMEOUT
+                if job_id:
+                    _update_run_job(job_id, result_deadline=result_deadline)
+                return _retry_result(lambda: comfy_client.cloud_job_detail(target, prompt_id), job_id, result_deadline)
             if st in comfy_client.CLOUD_FAIL:
+                _observe_terminal(job_id, "failure")
                 detail = {}
                 try:
                     detail = comfy_client.cloud_job_detail(target, prompt_id)
@@ -667,6 +776,9 @@ def _wait(target: dict, prompt_id: str, job_id: Optional[str] = None) -> dict:
         _cancel_remote_run(target, prompt_id, "poll timeout", job_id)
         raise comfy_client.ComfyError(f"타임아웃 ({_JOB_TIMEOUT // 60}분) — 잡이 끝나지 않았습니다")
     err = comfy_client.history_error(entry)
+    _observe_terminal(job_id, "failure" if err else "success")
+    if job_id:
+        _update_run_job(job_id, result_deadline=time.monotonic() + _JOB_TIMEOUT)
     if err:
         raise comfy_client.ComfyError(
             f"워크플로우 실행 오류: {err}",
@@ -940,6 +1052,81 @@ def _read_saved_texts(target: dict, wf: dict) -> list[str]:
     return out
 
 
+def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[dict] = None) -> dict:
+    with _RUN_JOBS_LOCK:
+        job = _RUN_JOBS[job_id]
+        record = copy.deepcopy(job["journal_record"])
+        identity = job["identity"]
+        deadline = job.get("result_deadline") or (time.monotonic() + _JOB_TIMEOUT)
+    prompt_id = record["prompt_id"]
+    previous = {item["rel"]: item for item in record.get("outputs") or []}
+    remote = {}
+    planned = []
+    for item in comfy_client.collect_outputs(entry):
+        filename = str(item.get("filename") or "")
+        kind = _media_kind(filename)
+        if kind is None:
+            continue
+        ext = os.path.splitext(filename)[1].lower()
+        digest = hashlib.sha256(
+            f"comfy-out-v1|{prompt_id}|{item.get('type', '')}|{item.get('subfolder', '')}|{filename}".encode()
+        ).hexdigest()[:16]
+        rel = f"comfy/{identity.scope}-{record['job_id']}-{digest}{ext}"
+        if not _OUTPUT_REL.fullmatch(rel):
+            raise comfy_client.ComfyError("출력 파일 형식을 확인할 수 없습니다", cause_kind="body_shape")
+        if rel in remote:
+            continue
+        remote[rel] = item
+        planned.append({"rel": rel, "kind": kind, "name": filename.replace("\\", "/").rsplit("/", 1)[-1][:80],
+                        "downloaded": False, "acked": False, "unavailable": None})
+    manifest = _merge_manifest(list(previous.values()), planned)
+    for item in manifest:
+        if item["rel"] not in remote and not item.get("downloaded"):
+            item["unavailable"] = "detail_missing"
+    # 전체 출력 집합을 먼저 기록한다. 전체 manifest를 보존하며 개수/바이트 임의 절단은 없다.
+    _patch_run_record(job_id, outputs=manifest, outputs_enumerated=True,
+                      media_output_count=len(manifest), text_only=False)
+    for item in manifest:
+        if time.monotonic() >= deadline:
+            raise comfy_client.ComfyError("결과 회수 시간 예산을 초과했습니다", cause_kind="timeout")
+        rel = item["rel"]
+        if item.get("downloaded") or item.get("unavailable"):
+            continue
+        dst = MEDIA_DIR / rel
+        # 전체 파일 스캔/출력 추측은 하지 않는다. 이미 계획된 정확한 경로의 replace→flag 창만 회수.
+        if rel in previous and dst.is_file() and dst.stat().st_size > 0:
+            item["downloaded"] = True
+        else:
+            try:
+                _retry_result(lambda: comfy_client.download_view(target, remote[rel], dst, deadline=deadline), job_id, deadline)
+                item["downloaded"] = True
+            except comfy_client.ComfyError as error:
+                if error.status_code in (404, 410):
+                    item["unavailable"] = "provider_gone"
+                else:
+                    _patch_run_record(job_id, outputs=manifest, last_status_code=error.status_code,
+                                      last_error_class="download_failed")
+                    raise
+        _patch_run_record(job_id, outputs=manifest)
+    results = [{"kind": item["kind"], "url": f"/media/{item['rel']}"}
+               for item in manifest if item.get("downloaded")]
+    texts = list(comfy_client.collect_texts(entry))
+    if wf is not None:
+        texts.extend(_read_saved_texts(target, wf))
+    seen = set()
+    for text in texts:
+        text = text.strip()
+        if text and text not in seen:
+            seen.add(text)
+            results.append({"kind": "text", "text": text})
+    complete = bool(manifest) and all(item.get("downloaded") for item in manifest)
+    _patch_run_record(job_id, outputs=manifest, phase="collected" if complete else "result_pending",
+                      text_only=not manifest and bool(seen))
+    if not results:
+        raise comfy_client.ComfyError("실행은 끝났지만 아직 회수할 출력물이 없습니다", cause_kind="detail_failed")
+    return {"outputs": results, "prompt_id": prompt_id}
+
+
 def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
                         uploads: list[_MediaUpload], settings: dict) -> dict:
     """실제 무거운 실행 — 미디어 주입 → 제출 → 폴링 → 출력 수집. 백그라운드 스레드에서 돈다.
@@ -962,89 +1149,80 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
 
     tgt_kind = "cloud" if target["cloud"] else "local"
     prompt_id: Optional[str] = None
+    with _RUN_JOBS_LOCK:
+        job = _RUN_JOBS[job_id]
+        identity = job["identity"]
+        record = _new_run_record(job_id, identity)
+    try:
+        run_journal.admit(record, identity.auth_enabled)  # cap 최종 판정도 실제 제출 직전 같은 원자 구간.
+    except run_journal.JournalFull as error:
+        raise HTTPException(409, str(error)) from error
+    except Exception as error:
+        raise HTTPException(409, "Comfy 실행 기록을 저장하지 못해 제출하지 않았습니다") from error
+    _update_run_job(job_id, journal_record=record)
     try:
         prompt_id = comfy_client.submit(target, wf, settings["comfy_api_key"])
-        # 원격 제출 성공과 메모리 등록 사이의 재시작에도 prompt_id 를 잃지 않게 먼저 영속화한다.
-        # ★단, 이 기록은 재시작 진단용 best-effort 다 — 기록 실패(순간 DB 잠금 등)가
-        #  이미 제출·과금된 멀쩡한 잡을 취소·실패시키면 손해가 더 크다(통합 검토에서 완화).
-        try:
-            _track_inflight_run(job_id, prompt_id, tgt_kind)
-        except Exception as e:  # noqa: BLE001
-            log.warning("comfy in-flight 영속 기록 실패(실행은 계속) job_id=%s: %s", job_id, e)
-        _update_run_job(job_id, prompt_id=prompt_id)
+        _track_inflight_run(job_id, prompt_id, tgt_kind)
         log.info("comfy submit ok target=%s prompt_id=%s", tgt_kind, prompt_id)  # api_key 는 절대 안 찍음
         entry = _wait(target, prompt_id, job_id)
     except comfy_client.ComfyError as e:
+        if not prompt_id:
+            _patch_run_record(job_id, phase="not_submitted" if e.cause_kind in ("scheme", "dns", "connect_refused", "tls_cert") else "unknown",
+                              last_status_code=e.status_code, last_error_class=e.cause_kind)
         if prompt_id:
             _cancel_remote_run(target, prompt_id, "run failure", job_id)
         log.warning("comfy run 실패 target=%s: %s", tgt_kind, e)
         code = 402 if getattr(e, "auth_error", False) else 502
         raise HTTPException(code, str(e))
     except Exception:
-        # 영속 저장 실패처럼 ComfyError 가 아닌 예외도 제출 뒤라면 원격 잡은 남기지 않는다.
+        if not prompt_id:
+            _patch_run_record(job_id, phase="unknown", last_error_class="transport")
         if prompt_id:
             _cancel_remote_run(target, prompt_id, "run failure", job_id)
         raise
 
-    # 출력 수집 — 저장(OUTPUT) 노드가 내놓은 결과 전부. 미디어(이미지/영상)와 텍스트가 섞일 수 있고,
-    # 복수일 수 있다(SaveText/SaveImage/VideoCombine 등). 미디어는 MEDIA_DIR 로 받아 /media URL 로.
-    results: list[dict] = []
-    for item in comfy_client.collect_outputs(entry):
-        kind = _media_kind(item["filename"])
-        if kind is None:
-            continue  # 이미지/영상 확장자가 아니면 미디어로 저장하지 않는다(.txt 등 → 아래 텍스트 경로에서 처리)
-        ext = os.path.splitext(item["filename"])[1].lower()
-        rel = f"comfy/{uuid.uuid4().hex[:16]}{ext}"
-        try:
-            comfy_client.download_view(target, item, MEDIA_DIR / rel)
-        except comfy_client.ComfyError as e:
-            _cancel_remote_run(target, prompt_id, "output download failure", job_id)
-            raise HTTPException(502, f"출력물 다운로드 실패: {e}")
-        results.append({"kind": kind, "url": f"/media/{rel}"})
-
-    # 텍스트 출력: (1) 히스토리 UI 텍스트(ShowText 등) + (2) SaveText 가 쓴 파일 내용.
-    # ShowText 는 히스토리에 안 실리는 구성이 있어, SaveText(overwrite) 파일도 읽어 보완한다.
-    # append(누적) 모드 SaveText 는 과거 실행분이 쌓여 이번 실행만 못 뽑으므로 건너뛴다(중복 방지).
-    texts: list[str] = []
-    seen: set[str] = set()
-    for text in [*comfy_client.collect_texts(entry), *_read_saved_texts(target, wf)]:
-        key = text.strip()
-        if key and key not in seen:
-            seen.add(key)
-            texts.append(key)
-    for text in texts:
-        results.append({"kind": "text", "text": text})
-
-    if not results:
-        # 원본 outputs 전체를 로그로 남긴다(정확한 구조 파악용) — 카드에는 요약만.
-        try:
-            log.warning("comfy /run 출력 없음. raw outputs=%s",
-                        json.dumps(entry.get("outputs"), ensure_ascii=False)[:4000])
-        except Exception:  # noqa: BLE001
-            log.warning("comfy /run 출력 없음(직렬화 실패). keys=%s", list((entry.get("outputs") or {})))
-        _cancel_remote_run(target, prompt_id, "empty output", job_id)
-        raise HTTPException(
-            502, "실행은 끝났지만 표시할 출력물이 없습니다(ShowText/SaveImage/VideoCombine 등 결과 노드 필요). "
-            f"실제 출력 구조: {comfy_client.outputs_debug(entry, wf)}")
-    return {"outputs": results, "prompt_id": prompt_id}
+    return _collect_run_outputs(job_id, target, entry, wf)
 
 
 def _run_comfy_job_worker(job_id: str, wf: dict, pvals: Any, meta: list,
-                          uploads: list[_MediaUpload], settings: dict) -> None:
+                          uploads: list[_MediaUpload], settings: dict, identity: _ComfyIdentity) -> None:
+    with active_account.pinned_account_scope(identity.pin):
+        _execute_run_worker(job_id, settings,
+                            lambda: _run_comfy_job_impl(job_id, wf, pvals, meta, uploads, settings), uploads)
+
+
+def _mark_run_failure(job_id: str, code: int, detail: Any) -> None:
+    with _RUN_JOBS_LOCK:
+        record = copy.deepcopy((_RUN_JOBS.get(job_id) or {}).get("journal_record") or {})
+    if record and record.get("phase") not in ("unknown", "not_submitted", "failed"):
+        phase = "orphaned"
+        if record.get("terminal_kind") == "success":
+            phase = "collected" if run_journal.all_downloaded(record) else "result_pending"
+        _patch_run_record(job_id, phase=phase)
+    _fail_run_job(job_id, code, detail)
+
+
+def _execute_run_worker(job_id: str, settings: dict, action, uploads: list[_MediaUpload], *, cancel_on_failure: bool = True) -> None:
     """스레드 진입점 — 실행 결과/에러를 잡 레코드에 기록. HTTPException.status_code 로 402/502 보존.
     설정한 동시 실행 수만큼만 실제 제출하도록 슬롯을 획득한 뒤 실행한다(초과분은 슬롯 날 때까지 PENDING 대기)."""
     _acquire_run_slot(_to_int(settings.get("comfy_concurrency"), 3), job_id)
     try:
         _update_run_job(job_id, state=_RUN_RUNNING)
         try:
-            result = _run_comfy_job_impl(job_id, wf, pvals, meta, uploads, settings)
+            result = action()
         except HTTPException as e:
-            _cancel_failed_run(settings, job_id, "worker failure")
-            _fail_run_job(job_id, int(e.status_code or 500), e.detail)
+            if cancel_on_failure:
+                _cancel_failed_run(settings, job_id, "worker failure")
+            _mark_run_failure(job_id, int(e.status_code or 500), e.detail)
+        except comfy_client.ComfyError as e:
+            if cancel_on_failure:
+                _cancel_failed_run(settings, job_id, "worker failure")
+            _mark_run_failure(job_id, 402 if e.auth_error else 502, str(e))
         except Exception as e:  # noqa: BLE001
             log.exception("comfy async run 예외 job_id=%s", job_id)
-            _cancel_failed_run(settings, job_id, "worker unexpected failure")
-            _fail_run_job(job_id, 500, f"Comfy 실행 중 알 수 없는 오류가 발생했습니다: {e}")
+            if cancel_on_failure:
+                _cancel_failed_run(settings, job_id, "worker unexpected failure")
+            _mark_run_failure(job_id, 500, f"Comfy 실행 중 알 수 없는 오류가 발생했습니다: {e}")
         else:
             _finish_run_job(job_id, result)
     finally:
@@ -1054,6 +1232,7 @@ def _run_comfy_job_worker(job_id: str, wf: dict, pvals: Any, meta: list,
 
 @router.post("/run")
 def run(
+    request: Request,
     content: str = Form(...),
     param_values: str = Form("{}"),
     media_meta: str = Form("[]"),
@@ -1064,7 +1243,12 @@ def run(
     프론트는 /run_status?job_id= 를 폴링해 완료 시 기존과 동일한 {outputs, prompt_id} 를 받는다.
     멀티파트: content(워크플로우), param_values(JSON 플랫), media_meta(JSON [{type}]), media(파일들))."""
     if update_in_progress():
-        raise HTTPException(409, "프로그램 업데이트가 진행 중이라 새 Comfy 작업을 시작할 수 없습니다")
+        raise HTTPException(409, "업데이트 중이거나 상태를 확인할 수 없어 새 Comfy 작업을 시작할 수 없습니다. 프로그램을 다시 실행한 뒤에도 계속되면 관리자에게 문의하세요")
+    with _comfy_request_scope(request) as identity:
+        return _start_run(content, param_values, media_meta, media, identity)
+
+
+def _start_run(content: str, param_values: str, media_meta: str, media: list[UploadFile], identity: _ComfyIdentity):
     try:
         wf = json.loads(content)
         pvals = json.loads(param_values or "{}")
@@ -1080,21 +1264,30 @@ def run(
     if len(meta) != len(media_files):
         raise HTTPException(400, "media 파일 수와 media_meta 수가 일치하지 않습니다")
 
-    # UploadFile은 응답 후 닫히므로 앱 전용 임시파일에 제한 복사하고 스레드에는 경로만 넘긴다.
-    uploads = _stage_media_uploads(media_files)
+    # 준비 중인 잡도 업데이트의 활동 집계에 먼저 등록한다. checking 기록과 경합하면
+    # 준비 뒤 재검사에서 거부하고, 등록이 먼저 보이면 업데이트 쪽이 busy로 중단한다.
+    settings = identity.settings
+    if len(run_journal.read(identity.owner, identity.auth_enabled)) >= run_journal.CAP:
+        raise HTTPException(409, "미해결 Comfy 실행 기록이 가득 찼습니다. 설정에서 확인·정리한 뒤 실행하세요")
+    job_id = _create_run_job()
+    _update_run_job(job_id, identity=identity, owner=identity.owner)
+    uploads: list[_MediaUpload] = []
     try:
-        settings = _raw_settings()
-        job_id = _create_run_job()
+        # UploadFile은 응답 후 닫히므로 제한 복사하고 스레드에는 경로만 넘긴다.
+        uploads = _stage_media_uploads(media_files)
+        if update_in_progress():
+            raise HTTPException(409, "업데이트 중이거나 상태를 확인할 수 없어 새 Comfy 작업을 시작할 수 없습니다. 프로그램을 다시 실행한 뒤에도 계속되면 관리자에게 문의하세요")
     except Exception:
         _cleanup_media_uploads(uploads)
+        _discard_run_job(job_id)
         raise
-    thread = threading.Thread(
-        target=_run_comfy_job_worker,
-        args=(job_id, wf, pvals, meta, uploads, settings),
-        name=f"comfy-run-{job_id[:8]}",
-        daemon=True,
-    )
     try:
+        thread = threading.Thread(
+            target=_run_comfy_job_worker,
+            args=(job_id, wf, pvals, meta, uploads, settings, identity),
+            name=f"comfy-run-{job_id[:8]}",
+            daemon=True,
+        )
         thread.start()
     except Exception as e:  # noqa: BLE001 - 스레드 생성의 OS 오류도 같은 정리 경계를 적용한다.
         _cleanup_media_uploads(uploads)
@@ -1104,14 +1297,19 @@ def run(
 
 
 @router.get("/run_status")
-def run_status(job_id: str):
+def run_status(job_id: str, request: Request):
+    with _comfy_request_scope(request) as identity:
+        return _run_status_pinned(job_id, identity)
+
+
+def _run_status_pinned(job_id: str, identity: _ComfyIdentity):
     """실행 잡 상태 조회. 완료면 기존 /run 과 동일한 {outputs, prompt_id} 를, 실패면 원래 코드(402/502)로 던진다."""
     with _RUN_JOBS_LOCK:
         _sweep_run_jobs_locked()
         job = _RUN_JOBS.get(job_id)
         snapshot = dict(job) if job else None
-    if not snapshot:
-        raise HTTPException(404, "작업을 찾을 수 없습니다(만료되었을 수 있습니다)")
+    if not snapshot or snapshot.get("owner") != identity.owner:
+        raise HTTPException(404, _NOT_FOUND)
 
     state = snapshot.get("state")
     if state in (_RUN_PENDING, _RUN_RUNNING):
@@ -1125,8 +1323,179 @@ def run_status(job_id: str):
             return result
         raise HTTPException(500, "작업 결과가 올바르지 않습니다")
     if state == _RUN_FAILED:
-        raise HTTPException(int(snapshot.get("code") or 500), snapshot.get("error") or "Comfy 실행 실패")
+        record = snapshot.get("journal_record") or {}
+        unresolved = record.get("phase") in ("unknown", "orphaned", "result_pending", "collecting", "collected")
+        raise HTTPException(int(snapshot.get("code") or 500), snapshot.get("error") or "Comfy 실행 실패",
+                            headers={"X-Comfy-Unresolved": "1"} if unresolved else None)
     raise HTTPException(500, "작업 상태가 올바르지 않습니다")
+
+
+def _run_job_snapshot() -> dict[str, str]:
+    with _RUN_JOBS_LOCK:
+        _sweep_run_jobs_locked()
+        return {key: value.get("state") for key, value in _RUN_JOBS.items()}
+
+
+def _collect_available(row: dict, jobs: dict) -> bool:
+    owner_job = row.get("collect_job_id")
+    if row.get("phase") == "collecting":
+        return owner_job not in jobs
+    return row.get("phase") in ("result_pending", "orphaned") and jobs.get(owner_job) not in (_RUN_PENDING, _RUN_RUNNING)
+
+
+@router.get("/unresolved-runs")
+def list_unresolved_runs(request: Request):
+    with _comfy_request_scope(request) as identity:
+        jobs = _run_job_snapshot()  # 원장 lock을 잡은 상태에서 실행 lock을 획득하지 않는다.
+        rows = [row for row in run_journal.read(identity.owner, identity.auth_enabled) if row.get("owner") == identity.owner]
+        fingerprint = _target_fingerprint(identity.settings)
+        public = []
+        for row in rows:
+            device_matches = row.get("device_id") == identity.device_id
+            target_matches = row.get("target_fp") == fingerprint
+            incomplete = bool(row.get("evidence_incomplete"))
+            item = {key: row.get(key) for key in (
+                "job_id", "phase", "terminal_kind", "target_kind", "base_host", "created_at", "updated_at",
+                "last_status_code", "last_error_class", "legacy_imported", "outputs_enumerated", "media_output_count")}
+            item.update(
+                prompt_id=None if incomplete else row.get("prompt_id"),
+                outputs=[{"url": f"/media/{out['rel']}", **{key: out.get(key) for key in ("kind", "name", "downloaded", "acked", "unavailable")}}
+                         for out in row.get("outputs") or []],
+                device_matches_current=device_matches, target_matches_current=target_matches,
+                can_collect=bool(not incomplete and device_matches and target_matches and row.get("prompt_id") and _collect_available(row, jobs)),
+                can_resave=bool(not incomplete and device_matches and any(out.get("downloaded") and not out.get("acked") for out in row.get("outputs") or [])),
+                can_dismiss=jobs.get(row.get("collect_job_id")) not in (_RUN_PENDING, _RUN_RUNNING),
+            )
+            public.append(item)
+        return {"cap": run_journal.CAP, "used": len(rows), "runs": public}
+
+
+def _owned_record(rows: list[dict], job_id: str, owner: str) -> dict:
+    row = next((row for row in rows if row["job_id"] == job_id and row.get("owner") == owner), None)
+    if row is None:
+        raise HTTPException(404, _NOT_FOUND)
+    return row
+
+
+def _claim_token(row: dict) -> tuple:
+    return (row.get("collect_job_id"), int(row.get("collect_seq") or 0), row.get("phase"))
+
+
+def _collect_existing_run(job_id: str, identity: _ComfyIdentity) -> dict:
+    with _RUN_JOBS_LOCK:
+        row = copy.deepcopy(_RUN_JOBS[job_id]["journal_record"])
+    target = comfy_client.make_target(identity.settings)
+    prompt_id = row["prompt_id"]
+    deadline = time.monotonic() + _JOB_TIMEOUT
+    _update_run_job(job_id, result_deadline=deadline)
+    entry = None
+    if row.get("terminal_kind") != "success":
+        if target["cloud"]:
+            status = comfy_client.cloud_job_status(target, prompt_id)
+            if status in comfy_client.CLOUD_FAIL:
+                _observe_terminal(job_id, "failure")
+                raise comfy_client.ComfyError("원격 작업이 실패 또는 취소로 종료됐습니다", cause_kind="provider_failed")
+            if status not in comfy_client.CLOUD_DONE:
+                raise comfy_client.ComfyError("원격 작업이 아직 완료되지 않았습니다", cause_kind="not_ready")
+        else:
+            entry = comfy_client.get_history(target, prompt_id)
+            status = (entry or {}).get("status") or {}
+            error = comfy_client.history_error(entry) if entry else None
+            if error:
+                _observe_terminal(job_id, "failure")
+                raise comfy_client.ComfyError(f"워크플로우 실행 오류: {error}", cause_kind="provider_failed")
+            if not entry or not (status.get("completed") is True or status.get("status_str") == "success" or (not status and entry.get("outputs"))):
+                raise comfy_client.ComfyError("원격 작업이 아직 완료되지 않았습니다", cause_kind="not_ready")
+        _observe_terminal(job_id, "success")
+    if entry is None:
+        try:
+            entry = _retry_result(
+                lambda: comfy_client.cloud_job_detail(target, prompt_id) if target["cloud"] else comfy_client.get_history(target, prompt_id),
+                job_id, deadline,
+            )
+        except comfy_client.ComfyError as error:
+            if error.status_code not in (404, 410):
+                raise
+            _patch_run_record(job_id, last_status_code=error.status_code, last_error_class="detail_failed")
+            entry = {"outputs": {}}  # manifest에 이미 받은 항목/미수신 근거를 보존한다.
+    return _collect_run_outputs(job_id, target, entry or {"outputs": {}})
+
+
+def _collect_run_worker(job_id: str, identity: _ComfyIdentity) -> None:
+    with active_account.pinned_account_scope(identity.pin):
+        _execute_run_worker(job_id, identity.settings, lambda: _collect_existing_run(job_id, identity), [], cancel_on_failure=False)
+
+
+@router.post("/unresolved-runs/{job_id}/collect")
+def collect_unresolved_run(job_id: str, request: Request):
+    if update_in_progress():
+        raise HTTPException(409, "업데이트 중이거나 상태를 확인할 수 없어 결과 회수를 시작할 수 없습니다")
+    with _comfy_request_scope(request) as identity:
+        rows = run_journal.read(identity.owner, identity.auth_enabled)
+        row = _owned_record(rows, job_id, identity.owner)
+        expected = _claim_token(row)
+        if row.get("evidence_incomplete") or not row.get("prompt_id"):
+            raise HTTPException(409, "이 기록은 자동으로 회수할 수 없습니다. 원격 기록을 직접 확인하세요")
+        if row.get("device_id") != identity.device_id:
+            raise HTTPException(403, "다른 PC에서 실행된 결과는 이 PC에서 회수할 수 없습니다")
+        if row.get("target_fp") != _target_fingerprint(identity.settings):
+            raise HTTPException(403, "연결 대상 또는 자격정보가 바뀌어 결과를 회수할 수 없습니다")
+        collect_id = _create_run_job()
+        _update_run_job(collect_id, identity=identity, owner=identity.owner)
+        try:
+            if update_in_progress():
+                raise HTTPException(409, "업데이트 중이거나 상태를 확인할 수 없어 결과 회수를 시작할 수 없습니다")
+            jobs = _run_job_snapshot()
+            with run_journal.edit(identity.owner, identity.auth_enabled) as runs:
+                current = _owned_record(runs, job_id, identity.owner)
+                # snapshot 뒤 새 claim/phase 변경을 missing memory job으로 오인하지 않는다.
+                if _claim_token(current) != expected or not _collect_available(current, jobs):
+                    raise HTTPException(409, "이 결과는 이미 회수 중이거나 지금 회수할 수 없습니다")
+                previous_phase = current.get("phase")
+                if previous_phase == "collecting":
+                    previous_phase = "result_pending" if current.get("terminal_kind") == "success" else "orphaned"
+                current.update(phase="collecting", prev_phase=previous_phase, collect_job_id=collect_id,
+                               collect_seq=int(current.get("collect_seq") or 0) + 1,
+                               collect_started_at=time.time(), updated_at=time.time())
+                claimed = copy.deepcopy(current)
+            _update_run_job(collect_id, journal_record=claimed, prompt_id=claimed["prompt_id"],
+                            remote_terminal_observed=bool(claimed.get("terminal_kind")), terminal_kind=claimed.get("terminal_kind"))
+        except Exception:
+            _discard_run_job(collect_id)
+            raise
+        try:
+            threading.Thread(target=_collect_run_worker, args=(collect_id, identity),
+                             name=f"comfy-collect-{collect_id[:8]}", daemon=True).start()
+        except Exception as error:
+            _mark_run_failure(collect_id, 500, "결과 회수 스레드를 시작하지 못했습니다")
+            raise HTTPException(500, "결과 회수 스레드를 시작하지 못했습니다") from error
+        return {"job_id": collect_id}
+
+
+class DismissRunsReq(BaseModel):
+    job_ids: list[str]
+    acknowledged: bool = False
+
+
+@router.post("/unresolved-runs/dismiss")
+def dismiss_unresolved_runs(req: DismissRunsReq, request: Request):
+    if not req.acknowledged or not req.job_ids:
+        raise HTTPException(400, "확인한 실행 기록을 명시적으로 선택하세요")
+    with _comfy_request_scope(request) as identity:
+        selected = list(dict.fromkeys(req.job_ids))
+        rows = run_journal.read(identity.owner, identity.auth_enabled)
+        expected = {job_id: next((_claim_token(row) for row in rows
+                                 if row["job_id"] == job_id and row.get("owner") == identity.owner), None)
+                    for job_id in selected}
+        jobs = _run_job_snapshot()
+        with run_journal.edit(identity.owner, identity.auth_enabled) as rows:
+            for job_id in selected:
+                row = _owned_record(rows, job_id, identity.owner)
+                if (_claim_token(row) != expected[job_id]
+                        or jobs.get(row.get("collect_job_id")) in (_RUN_PENDING, _RUN_RUNNING)):
+                    raise HTTPException(409, "진행 중인 실행 기록은 정리할 수 없습니다")
+            rows[:] = [row for row in rows if row["job_id"] not in selected]
+        return {"dismissed": len(selected)}
 
 
 # ── Comfy 출력 → "내 작업" 라이브러리 저장 ────────────────────────────────────
@@ -1170,12 +1539,63 @@ def _pm(action) -> None:
 
 @router.post("/save-to-library")
 def save_to_library(req: SaveToLibraryReq, request: Request):
+    with _comfy_request_scope(request) as identity:
+        return _save_to_library_pinned(req, request, identity)
+
+
+def _ack_saved_outputs(identity: _ComfyIdentity, saved: list[dict], expected: dict) -> None:
+    urls = {item["url"] for item in saved}
+    if not urls:
+        return
+    try:
+        with run_journal.edit(identity.owner, identity.auth_enabled) as rows:
+            kept = []
+            for row in rows:
+                token = expected.get(row["job_id"])
+                current_token = (row.get("collect_job_id"), row.get("collect_seq", 0), row.get("phase"))
+                if row.get("owner") != identity.owner or token != current_token:
+                    kept.append(row)
+                    continue
+                for item in row.get("outputs") or []:
+                    if f"/media/{item['rel']}" in urls and item.get("downloaded"):
+                        item["acked"] = True
+                outputs = row.get("outputs") or []
+                complete = (row.get("outputs_enumerated") and len(outputs) == row.get("media_output_count")
+                            and bool(outputs) and all(item.get("acked") and not item.get("unavailable") for item in outputs))
+                if not complete:
+                    kept.append(row)
+            rows[:] = kept
+    except Exception:
+        # generation 커밋은 이미 끝났다. ACK 실패가 원래 저장 예외/응답을 가리지 않는다.
+        log.warning("comfy 저장 확인 기록 실패 (출력 및 실행 기록 보존)")
+
+
+def _preflight_local_output(url: str, scope: str) -> None:
+    """원문만 검사. Windows/URL 별칭을 legacy로 우회시키지 않고 rewrite·파일 조회는 하지 않는다."""
+    if not url.startswith("/media/"):
+        raise HTTPException(400, "저장 가능한 출력은 로컬 미디어(/media/…)만 지원합니다")
+    rel = url[len("/media/"):]
+    # 기존 공식 legacy(uuid/해시) 경로는 유지한다. 비정규 legacy 입력도 이제 400이다.
+    plain = bool(rel) and all(_MEDIA_SEGMENT.fullmatch(part) and not part.endswith(".") for part in rel.split("/"))
+    match = _OUTPUT_REL.fullmatch(rel)
+    if not plain or (not match and _OUTPUT_REL.fullmatch(rel.lower())):
+        raise HTTPException(400, "출력 주소 표기를 확인할 수 없습니다. 실행 결과에 표시된 주소로 저장하세요")
+    if match and match.group(1) != scope:
+        raise HTTPException(403, "다른 계정 또는 PC에서 실행한 결과입니다. 실행한 계정과 PC에서 저장하세요")
+
+
+def _save_to_library_pinned(req: SaveToLibraryReq, request: Request, identity: _ComfyIdentity):
     """Comfy 노드 출력(이미지/영상)을 라이브러리 generation 으로 물질화 → '내 작업'에 편입.
     힉스필드 생성물과 구분(generator='comfy', job_id 없음). 텍스트 출력은 제외.
     멱등: 같은 출력 파일(asset.file_path)이 이미 저장돼 있으면 그 gen 을 재사용(중복 방지)."""
-    acc = require_agent_account(request)
-    # 생성요청과 동일한 신원 규칙 — AUTH on 은 account_actor_uid(미링크는 acct:email), off 는 계정 uid.
-    creator_uid = account_actor_uid(request) if AUTH_ENABLED else acc.get("creator_uid")
+    creator_uid = identity.creator_uid
+    # 전체 배치를 먼저 대조한다. scope는 신규 파일의 계정/기기 소유 경계일 뿐 파일 존재 증명이 아니다.
+    for output in req.outputs:
+        if output.kind not in ("image", "video"):
+            continue
+        _preflight_local_output(output.url, identity.scope)
+    expected = {row["job_id"]: (row.get("collect_job_id"), row.get("collect_seq", 0), row.get("phase"))
+                for row in run_journal.read(identity.owner, identity.auth_enabled) if row.get("owner") == identity.owner}
 
     # project_id 검증(생성요청과 동일) — 존재 + 역할까지. 남의 프로젝트에 주입 방지. AUTH off 로컬은 통과.
     pid = (req.project_id or "").strip()
@@ -1216,30 +1636,19 @@ def save_to_library(req: SaveToLibraryReq, request: Request):
         )
 
     saved: list[dict[str, Any]] = []
-    for o in req.outputs:
-        if o.kind not in ("image", "video"):
-            continue  # 텍스트 등 미디어 아닌 출력은 라이브러리 저장 대상 아님
-        # Comfy 출력은 항상 로컬 /media/ 아래다 — 외부/임의 URL 저장 차단(HF 동기화 URL 과 겹쳐
-        # job_id 가 붙어 generator='comfy' 인데 HF 삭제검증 대상이 되는 불변식 붕괴 방지).
-        if not o.url.startswith("/media/"):
-            raise HTTPException(400, "저장 가능한 출력은 로컬 미디어(/media/…)만 지원합니다")
-        # 멱등은 create 내부에서 같은 트랜잭션(BEGIN IMMEDIATE)으로 판정 — find→create 사이
-        # 레이스로 중복 생성되던 것을 닫는다. (gen_id, existed) 반환.
-        gid, existed = repo.create_comfy_generation(
-            worker_id=DEFAULT_WORKER_ID,
-            creator_uid=creator_uid,
-            prompt=prompt,
-            display_prompt=None,
-            params=params,
-            kind=o.kind,
-            file_path=o.url,
-            thumbnail_path=None,
-            references=ref_dicts,
-            project_id=pid,
-            folder_path=req.folder_path,
-        )
-        # 새로 만든 것만 소요시간 기록(재저장은 원래 값 유지). '실행→결과' 시간을 PM 메트릭에.
-        if not existed and req.elapsed_seconds is not None:
-            _pm(lambda _m, g=gid: _m.record_elapsed(g, req.elapsed_seconds))
-        saved.append({"url": o.url, "generation_id": gid, "existed": existed})
+    try:
+        for o in req.outputs:
+            if o.kind not in ("image", "video"):
+                continue
+            # 기존 generation의 권한/멱등/별도 트랜잭션 계약은 그대로다.
+            gid, existed = repo.create_comfy_generation(
+                worker_id=DEFAULT_WORKER_ID, creator_uid=creator_uid, prompt=prompt,
+                display_prompt=None, params=params, kind=o.kind, file_path=o.url,
+                thumbnail_path=None, references=ref_dicts, project_id=pid, folder_path=req.folder_path,
+            )
+            saved.append({"url": o.url, "generation_id": gid, "existed": existed})
+            if not existed and req.elapsed_seconds is not None:
+                _pm(lambda _m, g=gid: _m.record_elapsed(g, req.elapsed_seconds))
+    finally:
+        _ack_saved_outputs(identity, saved, expected)
     return {"saved": saved}

@@ -1,3 +1,5 @@
+import type { Generation } from "../types";
+
 // API JSON 응답을 React state에 반영할 때 내용이 같으면 기존 참조를 유지한다.
 // 새 배열/객체를 그대로 setState 하면 실제 변경이 없어도 상위 화면과 SceneBoard가 다시 렌더된다.
 // 이 비교기는 JSON에서 올 수 있는 원시값·배열·일반 객체만 대상으로 한다(순환 객체는 대상 아님).
@@ -25,6 +27,34 @@ export function isStructurallyEqual(left: unknown, right: unknown): boolean {
     (key) => Object.prototype.hasOwnProperty.call(rightRecord, key)
       && isStructurallyEqual(leftRecord[key], rightRecord[key]),
   );
+}
+
+// 요청 전 기준과 그 WS 진행 상태 중 어느 쪽과도 다른 필드만 후속 편집으로 보존한다.
+// tags의 순서 변경도 편집이다. revision 없는 일반 값의 A→B→A는 구분할 수 없다.
+export function mergeFreshGeneration(
+  base: Generation,
+  current: Generation,
+  incoming: Generation,
+  expected: Generation,
+): Generation {
+  const before = base as unknown as Record<string, unknown>;
+  const now = current as unknown as Record<string, unknown>;
+  const fresh = incoming as unknown as Record<string, unknown>;
+  const progress = expected as unknown as Record<string, unknown>;
+  const next: Record<string, unknown> = { ...fresh };
+  const owns = (record: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(record, key);
+  for (const key of new Set([...Object.keys(now), ...Object.keys(fresh)])) {
+    if (!owns(fresh, key)) {
+      next[key] = now[key]; // 응답에 없는 로컬 전용 필드도 보존한다.
+    } else if (owns(now, key)) {
+      const changed = (!owns(before, key) || !isStructurallyEqual(now[key], before[key]))
+        && (!owns(progress, key) || !isStructurallyEqual(now[key], progress[key]));
+      if (changed || isStructurallyEqual(now[key], fresh[key])) next[key] = now[key];
+    } else if (owns(before, key)) {
+      delete next[key]; // undefined를 가진 키와 명시적으로 지운 키는 다르다.
+    }
+  }
+  return isStructurallyEqual(current, next) ? current : next as unknown as Generation;
 }
 
 export function reconcileValueState<T>(previous: T, incoming: T): T {

@@ -16,6 +16,10 @@ from ..config import DEFAULT_WORKER_ID, DEFAULT_WORKER_NAME, SHARED_DIR
 from ..db import get_connection
 from ..services import media_cache
 
+# '확인중' 마커 — job_id 는 확보했지만 결과가 미확정이면 running 상태와 함께 쓴다.
+# 재조정이 done/failed 로 확정하면 지우거나 실제 실패 사유로 바꾼다.
+VERIFYING_NOTE = "확인중 — 실제 상태 재확인 대기"
+
 
 def new_id() -> str:
     return str(uuid.uuid4())

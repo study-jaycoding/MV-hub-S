@@ -3,7 +3,7 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { api } from "../api";
 import { KEY_COLORS } from "./appConstants";
 import { toggleDisabledGen } from "./deactivated";
-import { applyGenerationColor, nextGenerationSelectionColor } from "./generationColorState";
+import { applyGenerationColor, ColorSaveError, nextGenerationSelectionColor } from "./generationColorState";
 import { createMutationQueue } from "./mutationQueue";
 import { matchShortcut } from "./shortcuts";
 import type { Filters, Generation } from "../types";
@@ -29,12 +29,6 @@ function isEditableTarget(target: EventTarget | null): boolean {
       element.tagName === "SELECT" ||
       element.isContentEditable)
   );
-}
-
-class ColorSaveError extends Error {
-  constructor(readonly failed: number) {
-    super("generation color save failed");
-  }
 }
 
 export function useGenerationKeyboardActions({

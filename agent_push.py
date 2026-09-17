@@ -746,13 +746,13 @@ def _http(method: str, url: str, token: str | None = None, body: dict | None = N
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
         return e.code, detail
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
         # ★일시 네트워크 오류로 에이전트를 죽이지 않는다 — 롱폴(_wait_event)은 관대하게 재대기하면서
         # 정작 작업 경로(push/claim/보고)는 sys.exit 로 종료하던 비대칭이, 와이파이 순단·서버 재시작
         # 한 번에 팀원 PC 의 에이전트를 조용히 죽였다. 호출부는 전부 status!=200 을 소프트 실패로
         # 처리하므로 0 을 돌려주면 다음 사이클/롱폴에서 자동 재시도된다.
         # (read timeout 은 URLError 가 아니라 socket.timeout=OSError 로 올 수 있어 함께 잡는다 —
-        #  _wait_event 의 except 와 동일 집합.)
+        #  깨진 JSON/UTF-8 응답도 서버 반영 여부를 모르므로 같은 미확인(0)으로 처리한다.)
         print(f"[경고] 서버 연결 실패({url.split('?')[0]}): {e} — 다음 사이클에 재시도")
         return 0, str(e)
 
@@ -2139,6 +2139,18 @@ def _tracked_save(server: str, account_email: str | None, tracked: dict) -> None
         )
 
 
+def _tracked_save_safe(server: str, account_email: str | None, tracked: dict) -> bool:
+    """저장 실패는 메모리 추적을 유지하고 다음 due 패스에서 재시도한다(스키마 변경 없음)."""
+    try:
+        _tracked_save(server, account_email, tracked)
+    except (sqlite3.Error, OSError) as exc:
+        tracked["persist_pending"] = True
+        print(f"  ⚠ 추적 저장 실패 — 메모리 보존·다음 패스 재시도: {tracked['job_id'][:8]} ({exc})")
+        return False
+    tracked.pop("persist_pending", None)
+    return True
+
+
 def _tracked_load(server: str, account_email: str | None) -> dict[str, dict]:
     server_key, account = _state_scope(server, account_email)
     now_wall = time.time()
@@ -2227,6 +2239,26 @@ def _anchor_with_retry(
         if attempt < total - 1:
             _retry_pause(attempt)
     return False
+
+
+def _anchor_tracked_safe(
+    server: str, token: str, account_email: str | None, tracked: dict, *, attempts: int = 3
+) -> None:
+    """이미 얻은 job_id만 재앵커한다. 디스크와 서버가 모두 실패하면 메모리에만 남는다."""
+    rid, job_id = tracked["rid"], tracked["job_id"]
+    tracked["anchor_pending"] = True  # 영속 표식이 아니다. 재시작 재전송은 outbox가 맡는다.
+    try:
+        _outbox_add(server, account_email, rid, job_id)
+    except (sqlite3.Error, OSError) as exc:
+        print(f"  ⚠ 앵커 저장 실패 — 서버 보고는 계속 시도: {job_id[:8]} ({exc})")
+    try:
+        if _anchor_with_retry(server, token, account_email, rid, job_id, attempts=attempts):
+            tracked.pop("anchor_pending", None)
+    except (sqlite3.Error, OSError) as exc:
+        # ACK 뒤 outbox 삭제가 실패해도 유료 작업은 버리지 않는다. 동일 앵커는 멱등이다.
+        print(f"  ⚠ 앵커 정리 실패 — 다음 패스 재시도: {job_id[:8]} ({exc})")
+    if tracked.get("anchor_pending"):
+        print(f"  ⚠ 앵커 미정착 — 메모리 추적·재전송 예정: {job_id[:8]}")
 
 
 def replay_outbox(
@@ -2495,12 +2527,9 @@ def _submit_one(
         suffix = "" if reported else " (서버 보고 실패 — lease 만료 시 자동 격리)"
         print(f"  ⚠ 제출 확인 필요 / Submission check needed — 자동 재실행하지 않습니다: {reason}{suffix}")
         return None
-    # 2) 즉시 앵커(크래시 세이프) — outbox 에 먼저 남기고 서버 ACK 재시도. ACK 실패해도 outbox 가
-    #    재조정 패스/재시작 때 재전송하므로 계속 진행한다(잡은 이미 힉스필드에 떠 있음).
-    _outbox_add(server, account_email, rid, job_id)
-    if not _anchor_with_retry(server, token, account_email, rid, job_id):
-        print(f"  ⚠ 앵커 보고 실패 — outbox 보관(재전송 예정): {job_id[:8]}")
-    return {
+    # 2) job_id 확보 뒤에는 로컬 기록 실패로 작업을 실패 처리하지 않는다. 메모리 추적부터
+    #    구성하고 outbox/서버 ACK를 시도한다. 둘 다 실패한 채 종료되면 서버 lease 복구 확인 대상이다.
+    tracked = {
         "rid": rid,
         "job_id": job_id,
         "expected_image_inputs": expected_image_inputs,
@@ -2509,6 +2538,8 @@ def _submit_one(
         "provider_status": None,
         "check_failures": 0,
     }
+    _anchor_tracked_safe(server, token, account_email, tracked)
+    return tracked
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -2725,6 +2756,8 @@ def _finalize_tracked_job(
         detailed = True
     if not (isinstance(job, dict) and job.get("id")):
         return False
+    if str(job.get("id")) != job_id:
+        return False
     kind = _provider_status_kind(job)
     if kind not in ("success", "failure"):
         return False
@@ -2773,8 +2806,13 @@ def _finalize_tracked_job(
     asset_saved = bool(body.get("asset_saved")) if isinstance(body, dict) else False
     finalized = bool(
         status == 200
-        and outcome in {"applied", "already_final_same_job"}
-        and (kind == "failure" or asset_saved)
+        and (
+            (outcome in {"applied", "already_final_same_job"} and (kind == "failure" or asset_saved))
+            or (
+                outcome in {"target_retired", "stale_tracker_released"}
+                and body.get("released_job_id") == job_id
+            )
+        )
     )
     if finalized:
         print(f"  ✓ 확정 보고({outcome}): {job_id[:8]}")
@@ -2826,6 +2864,16 @@ def _poll_active_jobs(
             #  미루면 '확인을 못 한 것' 이 '확인했는데 실패한 것' 으로 둔갑해, 다음 패스가 같은 잡을
             #  더 늦게 보게 된다(기아). 그대로 두면 다음 패스에서 여전히 맨 앞이다.
             break
+        if tracked.get("anchor_pending"):
+            _anchor_tracked_safe(server, token, account_email, tracked, attempts=1)
+        if not _budget_allows(budget_end):
+            break
+        persist_failed = False
+        if account_email is not None and tracked.get("persist_pending"):
+            persist_failed = not _tracked_save_safe(server, account_email, tracked)
+        if not _budget_allows(budget_end):
+            break
+        # 실패한 저장을 같은 due 항목의 아래 체크포인트에서 다시 시도하지 않는다.
         # ★시작을 허용했으면 **정상 timeout** 을 준다. 남은 예산으로 자르면 그 조회는
         #  끝낼 수 없는 시간만 받고 실패하고, check_failures 만 쌓인다(코덱스 재현:
         #  남은 1.0~1.2초 구간에서 1.2초짜리 응답이 매번 timeout). 예산은 **새 조회를
@@ -2841,8 +2889,8 @@ def _poll_active_jobs(
             tracked["check_failures"] = int(tracked.get("check_failures", 0)) + 1
             delay = min(120.0, _DIRECT_CHECK_INTERVAL_SECONDS * (2 ** min(2, tracked["check_failures"] - 1)))
             tracked["next_direct_check"] = time.monotonic() + delay
-            if account_email is not None:
-                _tracked_save(server, account_email, tracked)
+            if account_email is not None and not persist_failed:
+                _tracked_save_safe(server, account_email, tracked)
             if cli_error:
                 print(f"  ⚠ 상태 조회 실패({job_id[:8]}) — {int(delay)}초 뒤 재시도")
                 detail = " ".join(cli_error.split())[:300]
@@ -2850,8 +2898,8 @@ def _poll_active_jobs(
             continue
         if str(full.get("id")) != job_id:
             tracked["next_direct_check"] = time.monotonic() + 60.0
-            if account_email is not None:
-                _tracked_save(server, account_email, tracked)
+            if account_email is not None and not persist_failed:
+                _tracked_save_safe(server, account_email, tracked)
             print(f"  ⚠ 작업 ID 불일치 — 적용하지 않음: {job_id[:8]}")
             continue
         tracked["provider_status"] = _job_status(full)
@@ -2861,8 +2909,8 @@ def _poll_active_jobs(
             # 서버에도 원시 상태·마지막 확인 시각을 기록해 UI에서 확인 가능하게 한다.
             _report_reconcile(server, token, tracked["rid"], full)
             tracked["next_direct_check"] = time.monotonic() + _DIRECT_CHECK_INTERVAL_SECONDS
-            if account_email is not None:
-                _tracked_save(server, account_email, tracked)
+            if account_email is not None and not persist_failed:
+                _tracked_save_safe(server, account_email, tracked)
             continue
         if _finalize_tracked_job(server, token, cli, tracked, full, detailed=True):
             finished.append(job_id)
@@ -2870,13 +2918,17 @@ def _poll_active_jobs(
             tracked["next_direct_check"] = time.monotonic() + (
                 15.0 if kind == "success" else _DIRECT_CHECK_INTERVAL_SECONDS
             )
-            if account_email is not None:
-                _tracked_save(server, account_email, tracked)
+            if account_email is not None and not persist_failed:
+                _tracked_save_safe(server, account_email, tracked)
 
     for job_id in finished:
         active.pop(job_id, None)
         if account_email is not None:
-            _tracked_remove(server, account_email, job_id)
+            try:
+                _tracked_remove(server, account_email, job_id)
+            except (sqlite3.Error, OSError) as exc:
+                # 잔존 행은 재시작 때 재보고해 already_final_same_job으로 안전하게 정리한다.
+                print(f"  ⚠ 완료 추적 기록 정리 실패: {job_id[:8]} ({exc})")
     return len(finished)
 
 
@@ -2908,12 +2960,13 @@ def execute_pending(server: str, token: str, cli: str) -> int:
                         tracked = future.result()
                     except Exception as exc:  # noqa: BLE001
                         rid = request.get("id")
-                        _fail(server, token, rid, f"제출 처리 예외: {exc}")
-                        print(f"  ✗ 제출 처리 예외: {exc}")
+                        # 예상하지 못한 예외만으로 유료 CLI 호출 전/후를 단정할 수 없다.
+                        _require_submission_recovery(server, token, rid, f"제출 처리 예외: {exc}")
+                        print(f"  ⚠ 제출 처리 예외 — 자동 재실행 없이 복구 확인: {exc}")
                         continue
                     if tracked:
                         active[tracked["job_id"]] = tracked
-                        _tracked_save(server, account_email, tracked)
+                        _tracked_save_safe(server, account_email, tracked)
 
                 now = time.monotonic()
                 if active and now >= next_poll_at:

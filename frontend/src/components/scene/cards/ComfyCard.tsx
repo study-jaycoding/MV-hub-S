@@ -302,6 +302,7 @@ export function ComfyCard({
                         finalOnly={hist.finalOnly}
                         folderSel={hist.folderSel}
                         sConfirm={hist.sConfirm?.id === repGen.id ? hist.sConfirm : null}
+                        mayFinalize={hist.canFinalize ? hist.canFinalize(repGen) : true}
                         onSClick={hist.onSClick}
                         onSDouble={hist.onSDouble}
                         onSConfirmYes={hist.onSConfirmYes}

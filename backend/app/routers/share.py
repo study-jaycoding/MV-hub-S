@@ -335,14 +335,8 @@ def _pinned_account_scope():
     ★계정 키와 uid 는 한 쌍으로 캡처해 둘 다 고정한다. 키만 고정하면 라우트 본문의
     active_uid() 가 머신 포인터를 따로 읽어 'DB=A · 소유 uid=B' 오귀속이 남는다(R13-IMPORT-1).
     """
-    account_key, account_uid = _capture_account_pin()
-    account_token = active_account.set_override(account_key)
-    uid_token = active_account.set_uid_override(account_uid)
-    try:
+    with active_account.pinned_account_scope(_capture_account_pin()):
         yield
-    finally:
-        active_account.reset_uid_override(uid_token)
-        active_account.reset_override(account_token)
 
 
 def _account_scoped_route(fn):
@@ -491,8 +485,7 @@ def _capture_account_pin() -> tuple[str, str | None]:
 
     둘을 따로 읽으면 그 사이에 낀 전환이 'A DB 에 쓰면서 소유자는 B' 같은 조합을 조용히
     만든다 — 락 안에서 함께 떠야 (A,A) 아니면 (B,B) 만 나온다(R13-IMPORT-1)."""
-    with active_account.transition_lock:
-        return active_account.account_key() or "", active_account.active_uid()
+    return active_account.capture_account_pin()
 
 
 def _capture_account_scope() -> str:

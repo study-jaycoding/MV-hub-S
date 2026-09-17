@@ -23,6 +23,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
@@ -30,9 +31,10 @@ from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 from . import _proxy
-from .. import active_account, db, repo
+from .. import active_account, config, db, repo
 from ..config import AUTH_ENABLED, DATA_DIR
 from ..deps import require_admin
+from ..emailnorm import norm_email
 from ..repo import identity
 from ..services.db_scrub import SESSION_KEYS as _SESSION_KEYS
 from ..services.db_scrub import strip_transfer_secrets as _strip_session
@@ -44,6 +46,7 @@ from ..services.backup import backup_now, list_backups_info
 from ..services.worker_backup import (
     _verify_transfer_secrets_removed as _verify_secrets_removed,
     adopt_restored_backup,
+    account_key_digest,
     periodic_worker_backup,
     queue_backup_set,
     retry_pending,
@@ -184,11 +187,102 @@ def _strict_clear_active() -> None:
         active_account._cache[0], active_account._cache[1] = True, None
 
 
+@dataclass(frozen=True)
+class _RestoreTarget:
+    path: Path
+    auth_enabled: bool
+    account_auth_enabled: bool
+    configured_db: str | None
+    email: str
+    uid: str | None
+
+
+def _restore_target_changed() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail="복원 준비 중 계정 또는 DB 설정이 변경되었습니다. 현재 계정을 확인하고 다시 시도하세요",
+    )
+
+
+def _pointer_fields_ok(pointer: object) -> bool:
+    return isinstance(pointer, dict) and all(
+        value is None or isinstance(value, str)
+        for value in (pointer.get("email"), pointer.get("uid"))
+    )
+
+
+def _strict_read_pointer() -> dict:
+    """복원 접수에서는 손상·읽기 실패를 로그아웃으로 해석하지 않는다."""
+    try:
+        pointer = json.loads(active_account._POINTER.read_text("utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise _restore_target_changed() from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="활성 계정 정보를 읽을 수 없어 복원을 중단했습니다. 잠시 뒤에 다시 시도하세요",
+        ) from exc
+    if not _pointer_fields_ok(pointer):
+        raise _restore_target_changed()
+    return pointer
+
+
+def _capture_restore_target(*, path: Path | None = None) -> _RestoreTarget:
+    """접수 목적지만 보관한다. 서버 주소·토큰은 이 스냅샷에 넣지 않는다."""
+    with active_account.transition_lock:
+        email, uid = "", None
+        if not AUTH_ENABLED:
+            pointer = _strict_read_pointer()
+            email, uid = norm_email(pointer.get("email")), pointer.get("uid")
+            raw = active_account._read_pointer()
+            # 캐시 None은 미로그인이다. falsey 비문자열은 accessor가 None으로 접기 전에 거부.
+            if raw is not None and not _pointer_fields_ok(raw):
+                raise _restore_target_changed()
+            # 복원은 머신 포인터를 해제하므로 요청 ContextVar만 고정해선 안 된다.
+            # 고정 DB에서도 새 계정의 로그인 상태를 지우지 않도록 한 쌍을 대조한다.
+            live_email = active_account.account_key()
+            live_uid = active_account.active_uid()
+            # uid 비교 자체는 안전하지만 파일 검사 순서와 무관하게 쌍의 형식을 보장한다.
+            if any(value is not None and not isinstance(value, str) for value in (live_email, live_uid)):
+                raise _restore_target_changed()
+            if norm_email(live_email) != email or live_uid != uid:
+                raise _restore_target_changed()
+        return _RestoreTarget(
+            path=(db.get_db_path() if path is None else path).resolve(),
+            auth_enabled=AUTH_ENABLED,
+            account_auth_enabled=config.AUTH_ENABLED,
+            configured_db=os.environ.get("CONTENT_HUB_DB"),
+            email=email,
+            uid=uid,
+        )
+
+
+def _capture_restore_target_nowait() -> _RestoreTarget:
+    """async import의 첫 await 전 접수를 유지하되 전환 락을 기다리지는 않는다."""
+    if not active_account.transition_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=503,
+            detail="다른 DB 요청이 진행 중이라 복원을 잠시 뒤에 다시 시도하세요",
+        )
+    try:
+        return _capture_restore_target()
+    finally:
+        active_account.transition_lock.release()
+
+
+def _check_restore_target(expected: _RestoreTarget | None, *, path: Path | None = None) -> None:
+    if expected is not None and _capture_restore_target(path=path) != expected:
+        raise _restore_target_changed()
+
+
 def _install_db(
     tmp: Path,
     *,
     trash_tmp: Path | None = None,
     restore_trash_set: bool = False,
+    expected: _RestoreTarget | None = None,
 ) -> dict:
     """검증 끝난 DB를 현재 활성 DB로 교체하고 재로그인을 강제한다.
 
@@ -202,11 +296,14 @@ def _install_db(
         # ★계정 전환과의 상호배제(코덱스 재확인 P1) — 게이트는 DB 연결만 막으므로
         # set_active 가 그 사이 끼면 경로·포인터 판정이 어긋난다. transition_lock 을
         # 게이트보다 먼저 잡는다(전환은 게이트를 안 잡아 락 순서 역전 없음).
-        with active_account.transition_lock, db.maintenance_gate():
+        with active_account.transition_lock, contextlib.ExitStack() as gates:
+            _check_restore_target(expected)
+            gates.enter_context(db.maintenance_gate())
             # ★대상 경로·포인터 스냅샷도 게이트 '안'에서 확정(R7 0-B, 코덱스 P1) —
             # 게이트 전에 읽으면 계정 전환(set_active — 게이트 비참여)이 겹칠 때 설치
             # 대상 path 와 이후 단계가 보는 활성 DB 가 달라질 수 있다.
             path = db.get_db_path()
+            _check_restore_target(expected, path=path)
             path.parent.mkdir(parents=True, exist_ok=True)
             trash_path = path.parent / "content_hub_trash.db"
             staged = path.with_name(f".{path.name}.restore-{secrets.token_hex(8)}.tmp")
@@ -569,6 +666,8 @@ async def import_db(request: Request, file: UploadFile = File(...)):
             headers=upload_limits.limit_headers(upload_limits.DB_UPLOAD_FILE_MAX_BYTES),
         ) from exc
 
+    # 첫 await 전에 접수 계정을 확정한다. 경로/포인터만 읽고 DB 연결은 열지 않는다.
+    expected = _capture_restore_target_nowait()
     # 전체 파일을 bytes로 복제하지 않고 1MiB씩 임시파일로 옮긴 뒤 검증한다. 난수 이름으로
     # 동시 가져오기 충돌을 막고, 성공·실패 어느 경로에서도 finally로 정리한다.
     tmp = Path(tempfile.gettempdir()) / f"mvhub-import-{secrets.token_hex(8)}.db"
@@ -610,7 +709,7 @@ async def import_db(request: Request, file: UploadFile = File(...)):
         # 스레드로(R7 2-B) — 대형 DB 가져오기 중 다른 HTTP/WS 가 정지하지 않는다.
         # non-abandon(코덱스 P1): 취소돼도 설치 스레드 완료까지 기다린 뒤 취소를 올린다
         # (finally 의 tmp 삭제가 설치 도중의 원본을 지우지 않게).
-        return await to_thread_non_abandon(_install_db, tmp)
+        return await to_thread_non_abandon(_install_db, tmp, expected=expected)
     finally:
         try:
             tmp.unlink(missing_ok=True)
@@ -623,7 +722,7 @@ async def import_db(request: Request, file: UploadFile = File(...)):
 # 로그인해서 내려받아 그대로 작업(server-restore). 계정별 격리·관리는 서버가 세션 신원으로 강제.
 
 
-def _legacy_server_backup(source: Path) -> tuple[int, object]:
+def _legacy_server_backup(source: Path, *, server_url: str, token: str) -> tuple[int, object]:
     """세트 API가 없는 구버전 서버를 위한 콘텐츠 DB 1개 호환 업로드."""
     tmp = Path(tempfile.gettempdir()) / f"mvhub-srvbak-{secrets.token_hex(8)}.db"
     try:
@@ -634,10 +733,16 @@ def _legacy_server_backup(source: Path) -> tuple[int, object]:
         _verify_secrets_removed(tmp)
         validate_hub_db(tmp, require_integrity=True)
         return _multipart_upload(
-            f"{_proxy.base_url()}/api/db-backup", _proxy.token(), tmp
+            f"{server_url}/api/db-backup", token, tmp
         )
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _capture_backup_admission() -> tuple[tuple[str, str | None], str, str]:
+    """계정과 연결 쌍을 한 번만 읽는다. async 호출자는 워커 스레드에서 실행한다."""
+    with active_account.transition_lock:
+        return active_account.capture_account_pin(), _proxy.base_url(), _proxy.token()
 
 
 @router.post("/server-backup")
@@ -648,53 +753,60 @@ async def server_backup(request: Request):
     if not _proxy.proxying():
         raise HTTPException(status_code=400, detail="공유 서버에 로그인된 로컬 허브에서만 가능합니다")
 
-    try:
-        path = await asyncio.to_thread(backup_now)
-        if path is None:
-            raise HTTPException(status_code=404, detail="로컬 DB가 아직 없습니다")
-        backup_set_id = await asyncio.to_thread(queue_backup_set, path)
-        if not backup_set_id:
-            raise HTTPException(
-                status_code=409,
-                detail="아직 서버에 백업할 개인 작업 데이터가 없습니다",
+    pin, server_url, token = await asyncio.to_thread(_capture_backup_admission)
+    with active_account.pinned_account_scope(pin):
+        try:
+            path = await asyncio.to_thread(backup_now)
+            if path is None:
+                raise HTTPException(status_code=404, detail="로컬 DB가 아직 없습니다")
+            backup_set_id = await asyncio.to_thread(queue_backup_set, path, account_email=pin[0] or None)
+            if not backup_set_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="아직 서버에 백업할 개인 작업 데이터가 없습니다",
+                )
+            await asyncio.to_thread(retry_pending, account_email=pin[0] or None)
+            result = await periodic_worker_backup.run_now(
+                expected_account_key=account_key_digest(active_account.slug(pin[0])),
+                expected_backup_set_id=backup_set_id,
             )
-        await asyncio.to_thread(retry_pending)
-        result = await periodic_worker_backup.run_now()
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001 — 원문 경로·DB 내용은 브라우저로 보내지 않는다.
-        raise HTTPException(status_code=500, detail="백업 세트를 준비하지 못했습니다") from exc
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 원문 경로·DB 내용은 브라우저로 보내지 않는다.
+            raise HTTPException(status_code=500, detail="백업 세트를 준비하지 못했습니다") from exc
 
-    if result.get("state") == "success":
+        if result.get("state") == "success":
+            return {
+                "ok": True,
+                "state": "success",
+                "count": int(result.get("server_count") or 0),
+                "legacy_content_saved": False,
+            }
+        if result.get("state") == "idle":
+            return {
+                "ok": True,
+                "state": "unchanged",
+                "count": 0,
+                "legacy_content_saved": False,
+            }
+        if result.get("state") == "server_update_required":
+            status, body = await asyncio.to_thread(
+                _legacy_server_backup, path, server_url=server_url, token=token,
+            )
+            legacy_count = int(body.get("count") or 0) if isinstance(body, dict) else 0
+            return {
+                "ok": False,
+                "state": "server_update_required",
+                "count": legacy_count,
+                "legacy_content_saved": status == 200,
+            }
         return {
-            "ok": True,
-            "state": "success",
-            "count": int(result.get("server_count") or 0),
-            "legacy_content_saved": False,
-        }
-    if result.get("state") == "idle":
-        return {
-            "ok": True,
-            "state": "unchanged",
+            "ok": False,
+            "state": str(result.get("state") or "failed"),
+            "error_code": str(result.get("error_code") or "delivery_failed"),
             "count": 0,
             "legacy_content_saved": False,
         }
-    if result.get("state") == "server_update_required":
-        status, body = await asyncio.to_thread(_legacy_server_backup, path)
-        legacy_count = int(body.get("count") or 0) if isinstance(body, dict) else 0
-        return {
-            "ok": False,
-            "state": "server_update_required",
-            "count": legacy_count,
-            "legacy_content_saved": status == 200,
-        }
-    return {
-        "ok": False,
-        "state": str(result.get("state") or "failed"),
-        "error_code": str(result.get("error_code") or "delivery_failed"),
-        "count": 0,
-        "legacy_content_saved": False,
-    }
 
 
 @router.get("/backup-continuity")
@@ -718,8 +830,12 @@ async def retry_server_backup(request: Request):
     """백오프 중인 활성 계정 백업을 사용자가 즉시 다시 시도한다."""
     require_admin(request)
     _require_local_when_open(request)
-    await asyncio.to_thread(retry_pending)
-    result = await periodic_worker_backup.run_now()
+    pin = await asyncio.to_thread(active_account.capture_account_pin)
+    with active_account.pinned_account_scope(pin):
+        await asyncio.to_thread(retry_pending, account_email=pin[0] or None)
+        result = await periodic_worker_backup.run_now(
+            expected_account_key=account_key_digest(active_account.slug(pin[0])) if pin[0] else None,
+        )
     return {"ok": result.get("state") in {"idle", "success"}, **result}
 
 
@@ -729,9 +845,9 @@ def server_backups(request: Request):
     _require_local_when_open(request)
     if not _proxy.proxying():
         return {"backups": []}
-    status, body = _proxy.raw_request(
-        "GET", f"{_proxy.base_url()}/api/db-backup", token=_proxy.token()
-    )
+    with active_account.transition_lock:
+        server_url, token = _proxy.base_url(), _proxy.token()
+    status, body = _proxy.raw_request("GET", f"{server_url}/api/db-backup", token=token)
     if status == 200 and isinstance(body, dict):
         return body
     if status == 401:
@@ -752,9 +868,11 @@ def server_restore_version(backup_set_id: str, request: Request):
     if not _proxy.proxying():
         raise HTTPException(status_code=400, detail="공유 서버에 로그인된 로컬 허브에서만 가능합니다")
 
-    account_email = active_account.account_key()
-    server_url = _proxy.base_url()
-    token = _proxy.token()
+    with active_account.transition_lock:
+        expected = _capture_restore_target()
+        account_email = active_account.account_key()
+        server_url = _proxy.base_url()
+        token = _proxy.token()
     archive = Path(tempfile.gettempdir()) / f"mvhub-srvrestore-{secrets.token_hex(8)}.zip"
     status = _download_to(
         f"{server_url}/api/db-backup/sets/{backup_set_id}", token, archive
@@ -771,7 +889,9 @@ def server_restore_version(backup_set_id: str, request: Request):
     try:
         with tempfile.TemporaryDirectory(prefix="mvhub-restore-set-") as temp_dir:
             content, trash = _extract_backup_set(archive, Path(temp_dir))
-            result = _install_db(content, trash_tmp=trash, restore_trash_set=True)
+            result = _install_db(
+                content, trash_tmp=trash, restore_trash_set=True, expected=expected
+            )
     finally:
         archive.unlink(missing_ok=True)
 
@@ -807,9 +927,13 @@ def server_restore(request: Request):
     _require_local_when_open(request)
     if not _proxy.proxying():
         raise HTTPException(status_code=400, detail="공유 서버에 로그인된 로컬 허브에서만 가능합니다")
+    with active_account.transition_lock:
+        expected = _capture_restore_target()
+        server_url = _proxy.base_url()
+        token = _proxy.token()
     archive = Path(tempfile.gettempdir()) / f"mvhub-srvrestore-{secrets.token_hex(8)}.zip"
     status = _download_to(
-        f"{_proxy.base_url()}/api/db-backup/latest-set", _proxy.token(), archive
+        f"{server_url}/api/db-backup/latest-set", token, archive
     )
     if status == 200:
         try:
@@ -819,6 +943,7 @@ def server_restore(request: Request):
                     content,
                     trash_tmp=trash,
                     restore_trash_set=True,
+                    expected=expected,
                 )
         finally:
             archive.unlink(missing_ok=True)
@@ -830,20 +955,21 @@ def server_restore(request: Request):
         )
     # 혼합 버전 호환: 새 세트 API가 없거나 아직 세트가 없으면 기존 콘텐츠 단일 백업을 사용한다.
     tmp = Path(tempfile.gettempdir()) / f"mvhub-srvrestore-{secrets.token_hex(8)}.db"
-    status = _download_to(f"{_proxy.base_url()}/api/db-backup/latest", _proxy.token(), tmp)
-    if status == 404:
-        tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=404, detail="이 계정의 서버 백업이 없습니다")
-    if status != 200:
-        tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=502, detail=f"서버에서 백업을 받지 못했습니다(status={status})")
-    # 받은 파일 검증(SQLite + generation 테이블 + 무결성)
     try:
-        validate_hub_db(tmp, require_integrity=True)
-    except HubDbValidationError as exc:
-        tmp.unlink(missing_ok=True)
-        _raise_validation_error(exc, downloaded=True)
-    return _install_db(tmp)
+        status = _download_to(f"{server_url}/api/db-backup/latest", token, tmp)
+        if status == 404:
+            raise HTTPException(status_code=404, detail="이 계정의 서버 백업이 없습니다")
+        if status != 200:
+            raise HTTPException(status_code=502, detail=f"서버에서 백업을 받지 못했습니다(status={status})")
+        # 받은 파일 검증(SQLite + generation 테이블 + 무결성)
+        try:
+            validate_hub_db(tmp, require_integrity=True)
+        except HubDbValidationError as exc:
+            _raise_validation_error(exc, downloaded=True)
+        return _install_db(tmp, expected=expected)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
 
 
 # (구) /migrate-from-server 제거 — '서버 직결 시절' 서버에만 남은 개인 메타를 로컬로 1회 끌어오던

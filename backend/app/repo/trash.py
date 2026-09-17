@@ -25,8 +25,11 @@ from typing import Any, Iterator, Optional
 
 from ..db import get_connection, get_db_path
 from ..emailnorm import norm_email
+from ..services import media_cache
 from . import manage_telemetry as _manage_telemetry
 from . import tags
+from ._common import VERIFYING_NOTE
+from .event_journal import has_anchored_job_event
 from .generation_delete import delete_generation_rows as _delete_generation
 # 텔레메트리 표식은 전체 manage facade 가 아니라 leaf 에 직접 의존한다 — 지연 import 로
 # 순환을 피하던 시절의 잔재를 없애 import 순서 변화가 기능 누락으로 이어질 여지를 줄인다.
@@ -38,6 +41,8 @@ from .manage_telemetry import (  # noqa: F401 — leaf 직접 의존 계약(test
 
 _log = logging.getLogger("mvhub.trash")
 _DELETED_REQUEST_NOTE = "생성 전에 삭제되어 요청이 취소되었습니다"
+_RETIRED_REQUEST_NOTE = "삭제된 생성물의 원격 작업이 종료되어 요청이 취소되었습니다"
+_RETIRED_FAILURE_NOTE = "휴지통에 있는 동안 원격 생성에 실패했습니다"
 _NONTERMINAL_REQUEST_PHASES = (
     "preparing",
     "pending",
@@ -154,6 +159,91 @@ def _with_trash() -> Iterator[Any]:
 
 def _row(r: sqlite3.Row) -> dict[str, Any]:
     return {k: r[k] for k in r.keys()}
+
+
+def _payload_has_usable_asset(payload: dict[str, Any]) -> bool:
+    """이미 보유한 행만 본다. 원격 경로는 유지하고 /media 누락 파일은 완료로 치지 않는다."""
+    for asset in payload.get("assets") or []:
+        path = asset.get("file_path") if isinstance(asset, dict) else None
+        if isinstance(path, str) and path.strip():
+            if not path.startswith("/media/") or media_cache.local_media_exists(path):
+                return True
+    return False
+
+
+def resolve_missing_target(
+    gen_id: str, request_id: str, job_id: str, account_email: str,
+    *, provider_kind: str,
+) -> dict[str, Any]:
+    """휴지통의 현재 job 종결과 영구삭제 뒤 과거 tracker 해제를 분리한다.
+
+    owner/rid/gen/job 은 하나의 쓰기락 안에서 재검증한다. 역사 이벤트는 현재 요청을
+    바꿀 권한이 아니며, retired 외 분기는 ROLLBACK 으로 끝난다. ATTACH WAL의 전원
+    손실 원자성까지 보장하는 것은 아니므로 기존 부팅 정리 계약은 유지한다.
+    """
+    if not isinstance(job_id, str) or not job_id.strip() or provider_kind not in ("success", "failure"):
+        return {"decision": "unverified"}
+    owner = norm_email(account_email)
+    with _with_trash() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        req = conn.execute(
+            "SELECT * FROM gen_request WHERE id=? AND gen_id=? AND account_email=?",
+            (request_id, gen_id, owner),
+        ).fetchone()
+        if req is None:
+            return {"decision": "unverified"}
+        current = conn.execute(
+            "SELECT job_id, status, EXISTS(SELECT 1 FROM asset WHERE generation_id=g.id) AS assets "
+            "FROM generation g WHERE g.id=?", (gen_id,),
+        ).fetchone()
+        if current is not None:
+            return {"decision": "target_present", "current": _row(current)}
+        trashed = conn.execute(
+            "SELECT job_id, payload FROM trash.trashed WHERE id=?", (gen_id,),
+        ).fetchone()
+        if trashed is None:
+            anchored = has_anchored_job_event(
+                conn, generation_id=gen_id, request_id=request_id, job_id=job_id,
+            )
+            return {
+                "decision": "tracker_released" if anchored else "unverified",
+                "request_status": req["status"], "request_changed": False,
+            }
+        if trashed["job_id"] != job_id:
+            return {"decision": "unverified"}  # 휴지통 불일치에는 history fallback 금지.
+
+        payload = json.loads(trashed["payload"])
+        marker = payload.get("provider_terminal")
+        marker_recorded = isinstance(marker, dict) and (
+            marker.get("request_id"), marker.get("job_id"), marker.get("kind")
+        ) == (request_id, job_id, provider_kind)
+        changed = conn.execute(
+            "UPDATE gen_request SET status='canceled', error=?, lease_owner=NULL, "
+            "lease_expires_at=NULL, next_check_at=NULL, terminal_at=datetime('now'), "
+            "updated_at=datetime('now') WHERE id=? AND gen_id=? AND account_email=? "
+            f"AND status IN ({','.join('?' for _ in _NONTERMINAL_REQUEST_PHASES)})",
+            (_RETIRED_REQUEST_NOTE, request_id, gen_id, owner, *_NONTERMINAL_REQUEST_PHASES),
+        ).rowcount > 0
+        # 첫 기록만 복원 권한을 소유한다. 다른 rid/kind 또는 손상된 기존 마커도 덮지 않는다.
+        if changed and "provider_terminal" not in payload:
+            payload["provider_terminal"] = {
+                "request_id": request_id, "job_id": job_id, "kind": provider_kind,
+                "asset_saved": provider_kind == "success" and _payload_has_usable_asset(payload),
+                "recorded_at": conn.execute("SELECT datetime('now')").fetchone()[0],
+            }
+            conn.execute(
+                "UPDATE trash.trashed SET payload=? WHERE id=?",
+                (json.dumps(payload, ensure_ascii=False), gen_id),
+            )
+            marker_recorded = True
+        request_status = conn.execute(
+            "SELECT status FROM gen_request WHERE id=?", (request_id,),
+        ).fetchone()[0]
+        conn.execute("COMMIT")
+        return {
+            "decision": "retired", "request_status": request_status,
+            "request_changed": changed, "marker_recorded": marker_recorded,
+        }
 
 
 def _prepare_telemetry_outbox(conn: sqlite3.Connection) -> bool:
@@ -445,6 +535,45 @@ def _rewrite_payload_identities(p: dict[str, Any], remap: dict[str, str]) -> Non
             s["shared_by"] = sub(s["shared_by"])
 
 
+def _restore_retired_request(conn: sqlite3.Connection, gen_id: str, payload: dict[str, Any]) -> bool:
+    """이 마커가 직접 취소한 요청 하나만 복원한다. 가드 실패면 generation도 건드리지 않는다."""
+    marker = payload.get("provider_terminal")
+    if not isinstance(marker, dict):
+        return False
+    rid, job_id, kind = marker.get("request_id"), marker.get("job_id"), marker.get("kind")
+    if (
+        not isinstance(rid, str) or not rid
+        or not isinstance(job_id, str) or not job_id
+        or job_id != payload["generation"].get("job_id")
+        or kind not in ("success", "failure")
+    ):
+        return False
+    eligible = conn.execute(
+        "SELECT 1 FROM gen_request r WHERE r.id=? AND r.gen_id=? AND r.status='canceled' "
+        "AND r.error=? AND NOT EXISTS (SELECT 1 FROM gen_request active WHERE active.gen_id=r.gen_id "
+        f"AND active.status IN ({','.join('?' for _ in _NONTERMINAL_REQUEST_PHASES)}))",
+        (rid, gen_id, _RETIRED_REQUEST_NOTE, *_NONTERMINAL_REQUEST_PHASES),
+    ).fetchone()
+    if not eligible:
+        return False
+    if kind == "failure":
+        generation_status, request_status, note = "failed", "failed", _RETIRED_FAILURE_NOTE
+    elif _payload_has_usable_asset(payload):
+        generation_status, request_status, note = "done", "done", None
+    else:
+        generation_status, request_status, note = "running", "verifying", VERIFYING_NOTE
+    conn.execute(
+        "UPDATE gen_request SET status=?, error=?, lease_owner=NULL, lease_expires_at=NULL, "
+        "next_check_at=NULL, terminal_at=CASE WHEN ?='verifying' THEN NULL ELSE datetime('now') END, "
+        "updated_at=datetime('now') WHERE id=? AND gen_id=?",
+        (request_status, note, request_status, rid, gen_id),
+    )
+    conn.execute(
+        "UPDATE generation SET status=?, error=? WHERE id=?", (generation_status, note, gen_id),
+    )
+    return True
+
+
 def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
     """휴지통 항목을 메인 DB 에 그대로 재생성 + 휴지통에서 제거(원자). 없으면 False.
     account_uid 가 주어지면(AUTH on) 본인 것만 복구 — 남의 삭제물 복구·재노출 차단."""
@@ -472,9 +601,10 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
         # payload 안 stale acct: 신원을 user_ 로 치환(재유입 차단) — admin·단독 복원 포함 항상.
         _rewrite_payload_identities(p, _acct_remap(conn))
         _insert_row(conn, "generation", p["generation"])
+        request_marker_applied = _restore_retired_request(conn, gen_id, p)
         # 삭제할 때 미제출 요청이 취소된 카드는 복원해도 대기열로 되살리지 않는다. 카드가
         # 무한 pending처럼 보이지 않도록 실패 상태와 고정 안내를 함께 복원한다.
-        if conn.execute(
+        if not request_marker_applied and conn.execute(
             "SELECT 1 FROM gen_request r WHERE r.gen_id=? AND r.status='canceled' "
             "AND r.error=? AND NOT EXISTS ("
             "SELECT 1 FROM gen_request active WHERE active.gen_id=r.gen_id "
@@ -543,6 +673,11 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
         if telemetry_enabled:
             _manage_telemetry.mark_telemetry_dirty_in_connection(conn, [gen_id])
         conn.execute("COMMIT")
+    if "provider_terminal" in p:
+        try:
+            _log.info("generation_retired_restore gen_id=%s request_marker_applied=%s", gen_id, request_marker_applied)
+        except Exception:  # 복원이 커밋된 뒤 관측 실패로 결과를 뒤집지 않는다.
+            pass
     return True
 
 

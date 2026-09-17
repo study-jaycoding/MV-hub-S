@@ -145,9 +145,36 @@ function Write-UpdateState {
     if ($Recovery) {
         $Payload["recovery"] = $Recovery
     }
-    $TempState = "$StateFile.$PID.tmp"
-    $Payload | ConvertTo-Json | Set-Content -LiteralPath $TempState -Encoding UTF8
-    Move-Item -LiteralPath $TempState -Destination $StateFile -Force
+    $TempState = "$StateFile.$PID.$([Guid]::NewGuid().ToString('N')).tmp"
+    try {
+        $Payload | ConvertTo-Json | Set-Content -LiteralPath $TempState -Encoding UTF8
+        $StateDeadline = (Get-Date).AddSeconds(5)
+        while ($true) {
+            $ReplacingState = Test-Path -LiteralPath $StateFile
+            try {
+                if ($ReplacingState) {
+                    [System.IO.File]::Replace($TempState, $StateFile, [NullString]::Value)
+                } else {
+                    [System.IO.File]::Move($TempState, $StateFile)
+                }
+                break
+            }
+            catch {
+                $StateLockCode = Get-TransientLockCode -Exception $_.Exception
+                # A first-create collision only reselects Move versus Replace.
+                # Do not classify destination-exists as a general lock error.
+                $StateCreateRace = (-not $ReplacingState) -and ($StateLockCode -eq 183) -and (Test-Path -LiteralPath $StateFile -PathType Leaf)
+                if ((-not ($script:RetryableMoveCodes -contains $StateLockCode) -and -not $StateCreateRace) -or (Get-Date) -ge $StateDeadline) { throw }
+                Start-Sleep -Milliseconds 250
+            }
+        }
+    }
+    finally {
+        # Only this call's temporary file; other writers' evidence stays intact.
+        if (Test-Path -LiteralPath $TempState) {
+            Remove-Item -LiteralPath $TempState -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 # Windows error codes that mean "someone briefly holds a handle" - the only

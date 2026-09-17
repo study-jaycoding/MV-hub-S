@@ -77,7 +77,7 @@ def _reject_if_update_in_progress() -> None:
     if update_in_progress():
         raise HTTPException(
             status_code=409,
-            detail="프로그램 업데이트가 진행 중이라 Resolve 전송을 시작할 수 없습니다",
+            detail="업데이트 중이거나 상태를 확인할 수 없어 Resolve 전송을 시작할 수 없습니다. 프로그램을 다시 실행한 뒤에도 계속되면 관리자에게 문의하세요",
         )
 
 
@@ -102,11 +102,9 @@ async def _tracked_resolve_transfer() -> AsyncIterator[None]:
 def _capture_account_pin() -> tuple[str, str | None]:
     """계정 DB 키와 그 계정의 uid 를 **같은 전환 락 구간**에서 한 쌍으로 캡처한다.
 
-    둘을 따로 읽으면 그 사이에 낀 전환이 'A DB 를 읽으면서 소유자는 B' 조합을 만든다
-    (share.py 의 _capture_account_pin 과 같은 규율 — 그 모듈은 건드리지 않는다).
+    share·프로젝트 이동과 같은 공용 캡처를 사용하며 async 호출자는 워커에서 실행한다.
     """
-    with active_account.transition_lock:
-        return active_account.account_key() or "", active_account.active_uid()
+    return active_account.capture_account_pin()
 
 
 @contextlib.asynccontextmanager
@@ -121,14 +119,9 @@ async def _pinned_account_scope() -> AsyncIterator[str]:
     ★async 라우트라 전환 락은 워커 스레드에서 잡는다 — 이벤트 루프에서 기다리면
     로그인 마이그레이션·DB 복원이 초 단위로 서버 전체를 세운다.
     """
-    account_key, account_uid = await asyncio.to_thread(_capture_account_pin)
-    account_token = active_account.set_override(account_key)
-    uid_token = active_account.set_uid_override(account_uid)
-    try:
+    pin = await asyncio.to_thread(_capture_account_pin)
+    with active_account.pinned_account_scope(pin) as account_key:
         yield account_key
-    finally:
-        active_account.reset_uid_override(uid_token)
-        active_account.reset_override(account_token)
 
 
 @router.get("/script")
@@ -187,7 +180,7 @@ async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
     # 기록한 뒤 활동을 재확인하므로, 업데이트가 먼저 기록했으면 여기서 409, 이 요청이 먼저
     # 올라갔으면 업데이트 쪽이 busy 로 거부된다 — 어느 순서든 한쪽만 진행한다.
     async with _tracked_resolve_transfer():
-        _reject_if_update_in_progress()
+        await asyncio.to_thread(_reject_if_update_in_progress)
         async with _pinned_account_scope():
             return await _create_resolve_transfer_pinned(body, request)
 
@@ -276,7 +269,7 @@ async def retry_resolve_transfer(body: ResolveRetryIn, request: Request):
     """이미 준비된 v2 원본 manifest를 다시 읽어 Resolve 가져오기만 재실행한다."""
     _require_local_resolve(request)
     async with _tracked_resolve_transfer():
-        _reject_if_update_in_progress()
+        await asyncio.to_thread(_reject_if_update_in_progress)
         try:
             manifest = await load_manifest(body.project_id.strip(), body.transfer_id.strip())
 

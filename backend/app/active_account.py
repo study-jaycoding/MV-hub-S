@@ -18,9 +18,10 @@ import hashlib
 import json
 import re
 import threading
+from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from . import config
 from .emailnorm import norm_email
@@ -111,6 +112,35 @@ def account_dir(email: str) -> Path:
 # 되덮을 수 있었다. 복원(_install_db)이 이 lock 을 게이트 밖에서 잡고, 전환·해제도 같은
 # lock 을 지나므로 두 흐름이 겹치지 않는다(RLock — 복원 내부의 clear_active 재진입 허용).
 transition_lock = threading.RLock()
+
+
+def capture_account_pin() -> tuple[str, Optional[str]]:
+    """DB 키와 uid를 같은 전환 락 구간에서 캡처한다. 느린 작업은 락 밖에서 한다.
+
+    상류에서 오버라이드할 때도 키와 uid를 함께 고정해야 한다. 키만 고정한 구간에서는
+    그 키와 현재 머신 포인터의 uid가 섞일 수 있으므로 이 캡처를 중첩하지 않는다.
+    """
+    with transition_lock:
+        return account_key() or "", active_uid()
+
+
+@contextmanager
+def pinned_account_scope(
+    pin: tuple[str, Optional[str]] | None = None,
+) -> Iterator[str]:
+    """동기 요청의 DB·토큰·uid를 접수 계정에 고정하고 중첩/예외 뒤 원래 범위를 복원한다.
+
+    async 호출자는 capture_account_pin을 워커 스레드에서 실행한 뒤 pin을 넘긴다.
+    요청 종료 후의 BackgroundTask에는 캡처한 값을 명시적으로 전달해야 한다.
+    """
+    key, uid = capture_account_pin() if pin is None else pin
+    key_token = set_override(key)
+    uid_token = set_uid_override(uid)
+    try:
+        yield key
+    finally:
+        reset_uid_override(uid_token)
+        reset_override(key_token)
 
 
 def set_active(email: str, uid: Optional[str] = None) -> None:

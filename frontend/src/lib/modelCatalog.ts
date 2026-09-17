@@ -2,32 +2,42 @@
 // 정보팝업·관리 등)이 동일한 '정답' 모델 이름을 쓰게 한다. 카탈로그 미로딩/목록 밖 모델은
 // 하드코딩 교정맵 → 휴머나이즈 순으로 폴백. (이전엔 각 컴포넌트가 제각기 추측해 이름이 어긋났음)
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { fetchModelCatalog } from "./modelCatalogCache";
 import { MODEL_DISPLAY_NAMES } from "./useModels";
 
 let nameMap: Record<string, string> = {};
 let loaded = false;
 let loading: Promise<void> | null = null;
+let lastAttemptAt: number | null = null;
+const RETRY_INTERVAL_MS = 1000;
 const listeners = new Set<() => void>();
 
 export function ensureModelCatalog(): Promise<void> {
   if (loaded) return Promise.resolve();
-  if (!loading) {
-    loading = api
-      .models()
-      .then((ms) => {
-        const m: Record<string, string> = {};
-        for (const x of ms) {
-          if (x.job_set_type && x.display_name) m[x.job_set_type] = x.display_name;
+  if (loading) return loading;
+  const now = Date.now();
+  // 실패/빈 맵은 다음 mount·호출에서 재시도한다. picker의 명시적 재시도는 제한하지 않는다.
+  if (lastAttemptAt !== null && now - lastAttemptAt < RETRY_INTERVAL_MS) return Promise.resolve();
+  lastAttemptAt = now;
+  loading = fetchModelCatalog()
+    .then((ms) => {
+      const m: Record<string, string> = {};
+      for (const x of ms) {
+        if (typeof x.job_set_type === "string" && x.job_set_type.trim()
+          && typeof x.display_name === "string" && x.display_name.trim()) {
+          m[x.job_set_type] = x.display_name;
         }
-        nameMap = m;
-        loaded = true;
-        listeners.forEach((l) => l());
-      })
-      .catch(() => {
-        /* 실패해도 폴백(교정맵·휴머나이즈)으로 동작 */
-      });
-  }
+      }
+      nameMap = m;
+      loaded = Object.keys(m).length > 0;
+      if (loaded) listeners.forEach((l) => l());
+    })
+    .catch(() => {
+      /* 실패해도 폴백(교정맵·휴머나이즈)으로 동작 */
+    })
+    .finally(() => {
+      loading = null;
+    });
   return loading;
 }
 

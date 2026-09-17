@@ -599,12 +599,23 @@ async def merge_videos(req: MergeReq):
         # 조용히 잘라내면 일부 빠진 영상을 정상처럼 받게 되므로 명시적으로 거절.
         raise HTTPException(status_code=413, detail=f"한 번에 병합 가능한 항목은 최대 {MERGE_MAX_CLIPS}개입니다")
     items: list[tuple[Path, bool]] = []
-    for s in req.srcs:
+    missing: list[int] = []
+    for index, s in enumerate(req.srcs, start=1):
         r = await _resolve_local_media(s)
         if r:
             items.append(r)
+        else:
+            missing.append(index)
     if not items:
         raise HTTPException(status_code=400, detail="병합할 로컬 미디어를 찾을 수 없습니다")
+    if missing:
+        positions = ", ".join(f"{index}번째" for index in missing[:10])
+        if len(missing) > 10:
+            positions += f" 외 {len(missing) - 10}개"
+        raise HTTPException(
+            status_code=400,
+            detail=f"불러올 수 없는 항목이 있습니다({positions}). 목록을 다시 확인해 주세요",
+        )
     workdir = Path(tempfile.mkdtemp(prefix="mvhub_merge_"))
     try:
         out = await asyncio.to_thread(_merge_clips_sync, items, workdir)

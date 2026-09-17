@@ -1,7 +1,29 @@
 import type { MutableRefObject } from "react";
 import { api } from "../api";
 import { postLibraryChanged } from "./libraryBroadcast";
+import { HttpError } from "./http";
+import { t } from "./i18n";
 import type { Filters, Generation } from "../types";
+
+function normalizeAssignResult(value: unknown): { updated: number; teamSyncFailed: boolean } | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const result = value as Record<string, unknown>;
+  if ("ok" in result && result.ok !== true) return null;
+  const updated = result.updated;
+  if (typeof updated !== "number" || !Number.isSafeInteger(updated) || updated < 0) return null;
+  return { updated, teamSyncFailed: result.team_synced === false };
+}
+
+function assignFailureMessage(error: unknown): string {
+  let message = "옮기지 못했습니다. 연결 상태를 확인한 뒤 다시 시도해 주세요.";
+  if (error instanceof HttpError) {
+    if (error.status === 400) message = "담을 수 없는 대상입니다. 프로젝트와 워크스페이스를 확인한 뒤 다시 시도해 주세요.";
+    else if (error.status === 401 || error.status === 403) message = "이동할 권한이 없습니다. 로그인 상태와 권한을 확인해 주세요.";
+    else if (error.status === 404) message = "대상을 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도해 주세요.";
+    else if (error.status === 409) message = "다른 곳에서 먼저 바뀌었습니다. 새로고침한 뒤 다시 시도해 주세요.";
+  }
+  return t(message);
+}
 
 interface UseGenerationProjectActionsArgs {
   bumpBoard: () => void;
@@ -25,8 +47,9 @@ export function useGenerationProjectActions({
     folderPath?: string | null,
   ) => {
     if (!ids.length) return;
+    let result: Awaited<ReturnType<typeof api.assignProject>>;
     try {
-      const r = await api.assignProject(
+      result = await api.assignProject(
         ids,
         projectId,
         filtersRef.current.tab === "team" ? "team" : "my",
@@ -34,22 +57,33 @@ export function useGenerationProjectActions({
         // 자동 동기화가 아닌 사용자의 명시적 폴더 담기: 같은 폴더라도 보관 작업을 재개한다.
         !!projectId && !!folderPath?.trim(),
       );
-      await reload();
-      if (refreshBoard) bumpBoard();
-      postLibraryChanged(); // 관리탭(별도 창)이 즉시 재조회 — 담기/폴더이동/미분류 반영
-      const where = projectId
-        ? folderPath
-          ? `폴더(${folderPath})에 담음`
-          : "프로젝트에 담음"
-        : "미분류로 뺌";
-      // 공유물 이동이 서버(팀 공유)에 반영 실패하면 경고 — 로컬만 바뀌고 팀 뷰는 stale.
-      flash(
-        `${r.updated}개를 ${where}` +
-          (r.team_synced === false ? " · ⚠ 팀 공유 반영 실패(서버 미연결) — 재동기 필요" : ""),
-      );
-    } catch (e) {
-      flash("귀속 실패: " + String(e));
+    } catch (error) {
+      flash(assignFailureMessage(error));
+      return;
     }
+    // 재조회 전에 응답을 한 번만 읽는다. 결과 불명도 실패로 단정하거나 자동 재실행하지 않는다.
+    const confirmed = normalizeAssignResult(result);
+    let reloadFailed = false;
+    try {
+      await reload();
+    } catch {
+      reloadFailed = true;
+    }
+    if (refreshBoard) bumpBoard();
+    postLibraryChanged(); // 관리탭(별도 창)이 즉시 재조회 — 담기/폴더이동/미분류 반영
+    const message = projectId
+      ? folderPath
+        ? t("{count}개를 '{folder}' 폴더에 담았습니다.").replace("{folder}", () => folderPath)
+        : t("{count}개를 프로젝트에 담았습니다.")
+      : t("{count}개를 미분류로 옮겼습니다.");
+    const notices = [confirmed
+      ? message.replace("{count}", String(confirmed.updated))
+      : t("이동 결과를 확인할 수 없습니다. 다시 이동하기 전에 목록을 확인해 주세요.")];
+    if (confirmed?.teamSyncFailed) notices.push(t("⚠ 팀 공유 반영 실패(서버 미연결) — 재동기 필요"));
+    if (reloadFailed) notices.push(t(confirmed
+      ? "이동은 완료했지만 화면을 새로고침하지 못했습니다. 다시 불러와 주세요."
+      : "화면을 새로고침하지 못했습니다. 다시 불러와 주세요."));
+    flash(notices.join(" · "));
   };
 
   const assignSelectedToProject = async (

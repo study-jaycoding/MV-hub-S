@@ -5,7 +5,7 @@ import { downloadName, downloadOne } from "../../lib/download";
 import { thumbOf } from "../../lib/media";
 import { generationStatusLabelFor, generationStatusTitle } from "../../lib/generationDisplay";
 import { useT } from "../../lib/i18n";
-import { matchesReviewFilter, type ReviewFilter } from "../../lib/generationReview";
+import { canShowShareAction, matchesReviewFilter, type ReviewFilter } from "../../lib/generationReview";
 import type { Generation, InfoTarget, PreviewTarget } from "../../types";
 import { MediaThumbnail } from "../MediaThumbnail";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
@@ -35,6 +35,7 @@ interface Props {
   // 한눈에. path==="" 는 프로젝트 루트(전체) 선택이라 프로젝트만 일치하면 됨. 없으면 폴더 딤 없음.
   folderSel?: { projectId: string; path: string } | null;
   sConfirm: SConfirm;
+  mayFinalize?: boolean;
   onSClick: (generation: Generation) => void;
   onSDouble: (generation: Generation) => void;
   onSConfirmYes: (generation: Generation) => void;
@@ -67,6 +68,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
   finalOnly,
   folderSel,
   sConfirm,
+  mayFinalize = true,
   onSClick,
   onSDouble,
   onSConfirmYes,
@@ -78,6 +80,9 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
   onOpenComments,
 }: Props) {
   const t = useT();
+  // 대체 S/★ 버튼이 없는 읽기 전용 배지는 호버 중에도 남기고, T/C 버튼 자리를 비킨다.
+  const showShareAction = generation.status === "done" && canShowShareAction(generation, mayFinalize);
+  const sfReadonly = (generation.shared || generation.is_final) && !showShareAction;
   const asset = generation.assets[0];
   const thumb = thumbOf(generation);
   const dimmed =
@@ -104,6 +109,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
         (onLine && !isSelected && !isRoot ? " mainline" : "") +
         (isSelected ? " sel" : "") +
         (generation.is_final ? " final" : "") +
+        (sfReadonly ? " sf-readonly" : "") +
         (generation.color || generation.is_final ? " has-cbar" : "") +
         (disabled ? " disabled" : "") +
         (!generation.shared && !generation.is_mine ? " unshared" : "") +
@@ -176,7 +182,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
 
       <div className="linb-ov" onMouseDown={(e) => e.stopPropagation()}>
         <div className="linb-ov-top">
-          {generation.status === "done" && (
+          {showShareAction && (
             <button
               className={
                 "linb-ov-btn" +

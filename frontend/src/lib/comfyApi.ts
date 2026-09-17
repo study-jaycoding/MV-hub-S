@@ -1,4 +1,5 @@
-import { authFormHeaders, jsonBody, jsonFetch, throwHttpError } from "./http";
+import { authFormHeaders, HttpError, jsonBody, jsonFetch, throwHttpError } from "./http";
+import { t } from "./i18n";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const RUN_POLL_MS = 1500; // /run_status 폴링 간격
@@ -81,6 +82,64 @@ export interface ComfySaveResult {
   saved: { url: string; generation_id: string; existed: boolean }[];
 }
 
+export interface ComfyUnresolvedRun {
+  job_id: string;
+  phase: string;
+  prompt_id: string | null;
+  target_kind: string;
+  base_host: string | null;
+  created_at: number | null;
+  last_status_code: number | null;
+  last_error_class: string | null;
+  outputs: { url: string; kind: "image" | "video"; name: string; downloaded: boolean; acked: boolean; unavailable: string | null }[];
+  can_collect: boolean;
+  can_resave: boolean;
+  can_dismiss: boolean;
+  device_matches_current: boolean;
+  target_matches_current: boolean;
+}
+
+export class ComfyUnresolvedRunError extends HttpError {
+  readonly jobId: string;
+
+  constructor(error: HttpError, jobId: string) {
+    super(error.status, `${error.message} — ${t("설정의 Comfy 미회수 실행에서 확인하세요. 다시 생성하지 마세요.")}`, error.detail);
+    this.name = "ComfyUnresolvedRunError";
+    this.jobId = jobId;
+  }
+}
+
+async function waitForRun(jobId: string): Promise<ComfyRunResult> {
+  let netFails = 0;
+  for (;;) {
+    await sleep(RUN_POLL_MS);
+    let data: ComfyRunResult & { state?: string };
+    try {
+      const url = `/api/comfy/run_status?job_id=${encodeURIComponent(jobId)}`;
+      const response = await fetch(url, { headers: authFormHeaders() });
+      if (!response.ok) {
+        try {
+          await throwHttpError(response, url);
+        } catch (error) {
+          if (response.headers.get("X-Comfy-Unresolved") === "1" && error instanceof HttpError) {
+            throw new ComfyUnresolvedRunError(error, jobId);
+          }
+          throw error;
+        }
+      }
+      data = await response.json();
+    } catch (error) {
+      if (error instanceof TypeError && netFails < RUN_POLL_NET_TOLERANCE) {
+        netFails += 1;
+        continue;
+      }
+      throw error;
+    }
+    netFails = 0;
+    if (Array.isArray(data.outputs)) return data;
+  }
+}
+
 export const comfyApi = {
   settings: () => jsonFetch<ComfySettings>("/api/comfy/settings"),
   setSettings: (patch: Partial<Omit<ComfySettings, "has_api_key">>) =>
@@ -94,6 +153,14 @@ export const comfyApi = {
   // Comfy 출력(이미지/영상)을 라이브러리 generation 으로 저장 → '내 작업'에 편입. 텍스트는 서버가 제외.
   saveToLibrary: (payload: ComfySavePayload) =>
     jsonFetch<ComfySaveResult>("/api/comfy/save-to-library", { method: "POST", body: jsonBody(payload) }),
+  unresolvedRuns: () => jsonFetch<{ cap: number; used: number; runs: ComfyUnresolvedRun[] }>("/api/comfy/unresolved-runs"),
+  collectRun: async (jobId: string): Promise<ComfyRunResult> => {
+    const accepted = await jsonFetch<{ job_id: string }>(`/api/comfy/unresolved-runs/${encodeURIComponent(jobId)}/collect`, { method: "POST" });
+    return waitForRun(accepted.job_id);
+  },
+  dismissRuns: (jobIds: string[]) => jsonFetch<{ dismissed: number }>("/api/comfy/unresolved-runs/dismiss", {
+    method: "POST", body: jsonBody({ job_ids: jobIds, acknowledged: true }),
+  }),
   // 실행 — 멀티파트(FormData). content + param_values(JSON) + media_meta(JSON) + media 파일들.
   // media 순서가 백엔드의 타입별 슬롯 채움 순서를 결정한다.
   //  ★백엔드가 제출/폴링/다운로드를 백그라운드로 분리 → /run 은 즉시 job_id 만 주고, 여기서 /run_status 를
@@ -116,27 +183,6 @@ export const comfyApi = {
     const job_id = first.job_id;
     if (!job_id) throw new Error("실행 작업 ID를 받지 못했습니다");
 
-    // 완료까지 폴링. 짧은 요청이라 잘 안 끊기지만, 일시적 네트워크 실패는 관용(잡은 서버에서 계속 진행).
-    let netFails = 0;
-    for (;;) {
-      await sleep(RUN_POLL_MS);
-      let data: ComfyRunResult & { state?: string };
-      try {
-        data = await jsonFetch<ComfyRunResult & { state?: string }>(
-          `/api/comfy/run_status?job_id=${encodeURIComponent(job_id)}`,
-        );
-      } catch (e) {
-        // 서버가 4xx/5xx(실패)로 응답하면 jsonFetch 가 "코드: 메시지" 로 throw → 그대로 전파.
-        // "Failed to fetch"(네트워크 단절)만 일시적일 수 있어 관용 후 재시도.
-        if (e instanceof TypeError && netFails < RUN_POLL_NET_TOLERANCE) {
-          netFails += 1;
-          continue;
-        }
-        throw e;
-      }
-      netFails = 0;
-      if (Array.isArray(data.outputs)) return data; // 완료 — {outputs, prompt_id}
-      // else pending/running → 계속 대기
-    }
+    return waitForRun(job_id);
   },
 };

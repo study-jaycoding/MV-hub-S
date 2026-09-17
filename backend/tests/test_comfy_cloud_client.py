@@ -42,14 +42,15 @@ class SubmitTests(unittest.TestCase):
         calls = {}
 
         def fake(method, url, *, headers=None, json_body=None, data=None,
-                 content_type=None, timeout=60):
-            calls.update(method=method, url=url, headers=headers, json_body=json_body)
+                 content_type=None, timeout=60, follow_redirects=True):
+            calls.update(method=method, url=url, headers=headers, json_body=json_body, follow_redirects=follow_redirects)
             return 200, b'{"prompt_id": "pid-1"}'
 
         with mock.patch.object(comfy_client, "_request", fake):
             pid = comfy_client.submit(_cloud_target(), {"1": {"class_type": "X"}}, api_key="k-9")
         self.assertEqual(pid, "pid-1")
         self.assertEqual(calls["method"], "POST")
+        self.assertFalse(calls["follow_redirects"])
         self.assertEqual(calls["url"], "https://cloud.comfy.org/api/prompt")
         self.assertEqual(calls["headers"]["X-API-Key"], "k-123")
         self.assertEqual(calls["json_body"]["prompt"], {"1": {"class_type": "X"}})

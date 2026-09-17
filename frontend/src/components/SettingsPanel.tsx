@@ -34,6 +34,7 @@ import {
   ResolveScriptSettingsSection,
 } from "./settings/SettingsSections";
 import { ComfyConnectionSection } from "./settings/ComfyConnectionSection";
+import { ComfyUnresolvedRunsSection } from "./settings/ComfyUnresolvedRunsSection";
 import { SettingsDescription } from "./settings/SettingsDescription";
 import { SettingsGroup } from "./settings/SettingsGroup";
 import { saveResolveSelectionFollow, useResolveSelectionFollow } from "../lib/resolveSelectionSettings";
@@ -593,6 +594,7 @@ export function SettingsPanel({
 
           <SettingsGroup title={t("외부 프로그램")}>
             <ComfyConnectionSection />
+            <ComfyUnresolvedRunsSection />
 
             <ResolveScriptSettingsSection
               selectionFollow={resolveSelectionFollow}

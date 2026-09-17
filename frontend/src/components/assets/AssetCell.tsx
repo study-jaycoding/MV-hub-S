@@ -3,6 +3,8 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { downloadOne } from "../../lib/download";
+import { useT } from "../../lib/i18n";
+import { reportSourceLocationError } from "../../lib/sourceLocationFeedback";
 import { TagEditor } from "../TagEditor";
 import type { AssetMeta, AssetNode, InfoTarget } from "../../types";
 
@@ -57,6 +59,7 @@ export const AssetCell = memo(function AssetCell({
   // 다중 선택 복사 → 선택한 원본 이미지들을 OS 클립보드(파일 목록)에 올림(부모가 선택 전체를 앎)
   onCopyFiles?: (path: string) => Promise<void>;
 }) {
+  const t = useT();
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const cellRef = useRef<HTMLDivElement>(null);
@@ -397,12 +400,12 @@ export const AssetCell = memo(function AssetCell({
             </button>
             <button
               className="ov-icon"
-              title="원본 위치 열기 (탐색기)"
+              title={t("원본 위치 열기 (탐색기)")}
               onClick={(e) => {
                 e.stopPropagation();
                 api
                   .revealAsset(project, node.path)
-                  .catch((err) => alert(`원본 위치 열기 실패: ${err}`));
+                  .catch(reportSourceLocationError);
               }}
             >
               📂
@@ -425,10 +428,10 @@ export const AssetCell = memo(function AssetCell({
           </div>
           <button
             className="info-path-btn cd-path"
-            title="원본 위치 열기 (탐색기)"
+            title={t("원본 위치 열기 (탐색기)")}
             onClick={(e) => {
               e.stopPropagation();
-              api.revealAsset(project, node.path).catch((err) => alert(`원본 위치 열기 실패: ${err}`));
+              api.revealAsset(project, node.path).catch(reportSourceLocationError);
             }}
           >
             <span className="info-path">{node.path}</span>

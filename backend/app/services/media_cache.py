@@ -175,7 +175,8 @@ def _content_length(resp) -> Optional[int]:
     if not raw:
         return None
     try:
-        return int(raw)
+        length = int(raw)
+        return length if length >= 0 else None
     except (TypeError, ValueError):
         return None
 
@@ -365,6 +366,9 @@ def _download_once(url: str, target: Path, max_bytes: int = _MAX_BYTES) -> None:
                 f.write(chunk)
         if written <= 0:
             raise MediaCachePermanentError("empty media response")
+        # urllib은 본문 압축을 자동 해제하지 않는다. 향후 해제한다면 길이 검사는 전송 계층에서 한다.
+        if length is not None and length > 0 and written != length:
+            raise MediaCacheError(f"incomplete media response: expected={length}, received={written}")
         tmp.replace(target)  # 원자적 교체(부분 파일 방지)
     except urllib.error.HTTPError as e:
         try:

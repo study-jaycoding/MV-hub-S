@@ -9,17 +9,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from ..config import AUTH_ENABLED, BACKEND_DIR, PORT
 from .atomic_io import atomic_write_text
@@ -37,6 +39,13 @@ _ACTIVE_STATES = frozenset({"starting", "checking", "downloading", "installing",
 _STATE_STALE_SECONDS = 30 * 60
 _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 _START_LOCK = threading.Lock()
+_log = logging.getLogger(__name__)
+_STATE_CHECK_FAILED_MESSAGE = (
+    "업데이트 상태를 확인할 수 없습니다. 프로그램을 다시 실행한 뒤에도 계속되면 관리자에게 문의하세요"
+)
+_STATE_WRITE_FAILED_MESSAGE = "업데이트 상태를 저장하지 못했습니다. 잠시 뒤 다시 시도하세요"
+_STATE_WRITE_RETRY_SECONDS = 5.0
+_STATE_WRITE_RETRY_INTERVAL = 0.25
 _PYTHON_DLL_RE = re.compile(r"python3\d{2}\.dll", re.IGNORECASE)
 _RELEASE_PYTHON = (3, 14)
 _RUNTIME_PROBE = (
@@ -177,13 +186,35 @@ def state_path(root: Path = APP_ROOT) -> Path:
     return UPDATE_STATE_BASE / f"update-{identity}.json"
 
 
-def _read_state(root: Path = APP_ROOT) -> dict[str, Any]:
+def _load_state(
+    root: Path = APP_ROOT,
+) -> tuple[Literal["ok", "missing", "unreadable", "invalid"], dict[str, Any]]:
     path = state_path(root)
-    try:
-        value = json.loads(path.read_text("utf-8-sig"))
-    except (OSError, ValueError, TypeError):
-        return {}
-    return value if isinstance(value, dict) else {}
+    for attempt in range(3):
+        try:
+            value = json.loads(path.read_text("utf-8-sig"))
+        except (FileNotFoundError, NotADirectoryError):
+            return "missing", {}
+        except OSError:
+            if attempt < 2:
+                time.sleep(0.05)
+                continue
+            _log.warning("Update state: unreadable")
+            return "unreadable", {}
+        except (ValueError, TypeError):
+            _log.warning("Update state: invalid")
+            return "invalid", {}
+        if isinstance(value, dict):
+            return "ok", value
+        _log.warning("Update state: invalid")
+        return "invalid", {}
+    return "unreadable", {}  # 모든 읽기는 위의 유계 반복에서 분류된다.
+
+
+def _read_state(root: Path = APP_ROOT) -> dict[str, Any]:
+    """기존 조회 도구 호환 래퍼. 실행 허용 판단에는 분류를 보존하는 _load_state를 쓴다."""
+    kind, stored = _load_state(root)
+    return stored if kind == "ok" else {}
 
 
 def write_state(
@@ -201,10 +232,18 @@ def write_state(
         "latest_version": latest_version,
         "updated_at": _utc_now(),
     }
-    atomic_write_text(
-        state_path(root),
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-    )
+    path = state_path(root)
+    serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    deadline = time.monotonic() + _STATE_WRITE_RETRY_SECONDS
+    while True:
+        try:
+            atomic_write_text(path, serialized)
+            break
+        except OSError as exc:
+            # 상태 파일만 재시도한다. 원자 교체의 바이트 보장은 작성자 간 순서 보장이 아니다.
+            if getattr(exc, "winerror", None) not in {5, 32, 33} or time.monotonic() >= deadline:
+                raise
+            time.sleep(_STATE_WRITE_RETRY_INTERVAL)
     return payload
 
 
@@ -221,14 +260,17 @@ def _state_age_seconds(value: dict[str, Any]) -> float | None:
         return None
 
 
-def update_in_progress(root: Path = APP_ROOT) -> bool:
-    value = _read_state(root)
+def _active_and_fresh(value: dict[str, Any]) -> bool:
     age = _state_age_seconds(value)
     return bool(
-        value.get("state") in _ACTIVE_STATES
-        and age is not None
-        and age < _STATE_STALE_SECONDS
+        str(value.get("state") or "") in _ACTIVE_STATES
+        and (age is None or age < _STATE_STALE_SECONDS)
     )
+
+
+def update_in_progress(root: Path = APP_ROOT) -> bool:
+    kind, value = _load_state(root)
+    return kind in {"unreadable", "invalid"} or _active_and_fresh(value)
 
 
 def install_source(root: Path) -> str:
@@ -352,22 +394,67 @@ def _stored_can_update(stored: dict[str, Any]) -> bool:
     return False
 
 
+def _check_failed(base: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **base,
+        "state": "check_failed",
+        "message": _STATE_CHECK_FAILED_MESSAGE,
+        "can_update": False,
+        "updated_at": _utc_now(),
+    }
+
+
+def _commit_status(
+    root: Path,
+    base: dict[str, Any],
+    build: Callable[[dict[str, Any]], dict[str, Any]],
+) -> dict[str, Any]:
+    """최종 읽기·보존 판단·쓰기를 start_update와 직렬화한다. 느린 사전 검사는 호출부 몫."""
+    acquired = _START_LOCK.acquire(timeout=5.0)
+    try:
+        kind, stored = _load_state(root)
+        if kind in {"unreadable", "invalid"}:
+            return _check_failed(base)
+        if _active_and_fresh(stored) or stored.get("recovery") == "recovery_required":
+            return {**base, **stored, "install_mode": "release", "can_update": False}
+        if not acquired:
+            # 시작 중인 실행기를 오래 기다리지 않는다. 마지막 상태만 보여주고 쓰기는 하지 않는다.
+            if not stored:
+                return _check_failed(base)
+            return {**base, **stored, "install_mode": "release", "can_update": _stored_can_update(stored)}
+        try:
+            return build(stored)  # missing은 최초 사용이므로 최초 기록을 허용한다.
+        except OSError:
+            _log.warning("Update state: write failed")
+            return _check_failed(base)
+    finally:
+        if acquired:
+            _START_LOCK.release()
+
+
 def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any]:
     base = _base_status(root)
     if base["install_mode"] != "release":
         return base
 
-    stored = _read_state(root)
-    if stored.get("state") in _ACTIVE_STATES:
-        age = _state_age_seconds(stored)
-        if age is not None and age < _STATE_STALE_SECONDS:
+    kind, stored = _load_state(root)
+    if kind in {"unreadable", "invalid"}:
+        return _check_failed(base)
+    if str(stored.get("state") or "") in _ACTIVE_STATES:
+        if _active_and_fresh(stored):
             return {**base, **stored, "install_mode": "release", "can_update": False}
-        stored = write_state(
-            "failed",
-            "업데이트 상태가 30분 이상 멈췄습니다. 프로그램을 다시 실행한 뒤 재시도하세요.",
-            root=root,
-            latest_version=str(stored.get("latest_version") or ""),
+        stored = _commit_status(
+            root, base,
+            lambda current_state: write_state(
+                "failed",
+                "업데이트 상태가 30분 이상 멈췄습니다. 프로그램을 다시 실행한 뒤 재시도하세요.",
+                root=root,
+                current_version=base["current_version"],
+                latest_version=str(current_state.get("latest_version") or ""),
+            ),
         )
+        if str(stored.get("state") or "") in _ACTIVE_STATES or stored.get("state") == "check_failed":
+            return stored
 
     if stored.get("state") == "failed" and stored.get("recovery") == "recovery_required":
         # 반쯤 스왑된 트리 — 같은 버전 복구(current==latest)든 아니든 refresh 가 지우면
@@ -387,12 +474,17 @@ def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any
             healthy, reason = _installation_health(root)
             if not healthy:
                 latest_version = str(stored.get("latest_version") or _read_version(root))
-                return write_state(
-                    "available",
-                    f"현재 버전 설치가 손상되어 복구가 필요합니다: {reason}",
-                    root=root,
-                    latest_version=latest_version,
-                ) | {"install_mode": "release", "can_update": True, "repair_required": True}
+                current = _read_version(root)
+                return _commit_status(
+                    root, {**base, "current_version": current, "latest_version": latest_version},
+                    lambda _stored: write_state(
+                        "available",
+                        f"현재 버전 설치가 손상되어 복구가 필요합니다: {reason}",
+                        root=root,
+                        current_version=current,
+                        latest_version=latest_version,
+                    ) | {"install_mode": "release", "can_update": True, "repair_required": True},
+                )
         return {
             **base,
             **stored,
@@ -436,27 +528,36 @@ def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any
     if current == latest["version"]:
         healthy, reason = _installation_health(root, latest["higgsfield_cli_version"])
         if not healthy:
-            return write_state(
-                "available",
-                f"현재 버전 설치가 손상되어 복구가 필요합니다: {reason}",
+            return _commit_status(
+                root, {**base, "current_version": current, "latest_version": latest["version"]},
+                lambda _stored: write_state(
+                    "available",
+                    f"현재 버전 설치가 손상되어 복구가 필요합니다: {reason}",
+                    root=root,
+                    current_version=current,
+                    latest_version=latest["version"],
+                ) | {"install_mode": "release", "can_update": True, "repair_required": True},
+            )
+        return _commit_status(
+            root, {**base, "current_version": current, "latest_version": latest["version"]},
+            lambda _stored: write_state(
+                "up_to_date",
+                "최신 버전입니다.",
                 root=root,
                 current_version=current,
                 latest_version=latest["version"],
-            ) | {"install_mode": "release", "can_update": True, "repair_required": True}
-        return write_state(
-            "up_to_date",
-            "최신 버전입니다.",
+            ) | {"install_mode": "release", "can_update": False},
+        )
+    return _commit_status(
+        root, {**base, "current_version": current, "latest_version": latest["version"]},
+        lambda _stored: write_state(
+            "available",
+            f"업데이트 가능: {current or '미확인'} → {latest['version']}",
             root=root,
             current_version=current,
             latest_version=latest["version"],
-        ) | {"install_mode": "release", "can_update": False}
-    return write_state(
-        "available",
-        f"업데이트 가능: {current or '미확인'} → {latest['version']}",
-        root=root,
-        current_version=current,
-        latest_version=latest["version"],
-    ) | {"install_mode": "release", "can_update": True}
+        ) | {"install_mode": "release", "can_update": True},
+    )
 
 
 def _launch_bootstrap(script: Path, env: dict[str, str], log_path: Path) -> int:
@@ -497,7 +598,10 @@ def start_update(
     with _START_LOCK:
         if install_mode(root) != "release":
             raise ReleaseUpdateError("작업자 릴리스 설치본에서만 자동 업데이트할 수 있습니다")
-        if update_in_progress(root):
+        kind, stored = _load_state(root)
+        if kind in {"unreadable", "invalid"}:
+            raise ReleaseUpdateError(_STATE_CHECK_FAILED_MESSAGE)
+        if _active_and_fresh(stored):
             raise ReleaseUpdateError("업데이트가 이미 진행 중입니다")
         if activity_check() > 0:
             raise ReleaseUpdateBusyError("생성 작업이 진행 중입니다. 완료된 뒤 업데이트하세요")
@@ -507,10 +611,12 @@ def start_update(
         # up_to_date 조기 반환으로 워커를 건너뛰면 복구 진입점이 사라진다(코덱스 리뷰).
         # 이때는 무조건 워커를 실행한다 — 워커가 잔재를 격리 보존한 뒤 트리를 재검증하고
         # 필요하면 전체 재설치한다.
-        needs_recovery = (
-            _read_state(root).get("recovery") == "recovery_required"
-        )
-        write_state("checking", "최신 릴리스를 다시 확인하는 중…", root=root, current_version=current)
+        needs_recovery = stored.get("recovery") == "recovery_required"
+        try:
+            write_state("checking", "최신 릴리스를 다시 확인하는 중…", root=root, current_version=current)
+        except OSError as exc:
+            # 접수 기록 전 실패: 다운로드/실행도, 같은 파일에 failed 재기록도 하지 않는다.
+            raise ReleaseUpdateError(_STATE_WRITE_FAILED_MESSAGE) from exc
         latest_version = ""
         try:
             latest = fetch_latest(root)
@@ -518,13 +624,16 @@ def start_update(
             if current == latest["version"] and not needs_recovery:
                 healthy, _reason = _installation_health(root, latest["higgsfield_cli_version"])
                 if healthy:
-                    return write_state(
-                        "up_to_date",
-                        "이미 최신 버전입니다.",
-                        root=root,
-                        current_version=current,
-                        latest_version=latest["version"],
-                    ) | {"install_mode": "release", "can_update": False}
+                    try:
+                        return write_state(
+                            "up_to_date",
+                            "이미 최신 버전입니다.",
+                            root=root,
+                            current_version=current,
+                            latest_version=latest["version"],
+                        ) | {"install_mode": "release", "can_update": False}
+                    except OSError as exc:
+                        raise ReleaseUpdateError(_STATE_WRITE_FAILED_MESSAGE) from exc
             if activity_check() > 0:
                 raise ReleaseUpdateBusyError("확인 중 생성 작업이 시작됐습니다. 완료된 뒤 다시 시도하세요")
 
@@ -543,38 +652,48 @@ def start_update(
                     "MVHUB_UPDATE_READY_URL": ready_url or f"http://127.0.0.1:{PORT}/api/ready",
                 }
             )
-            write_state(
-                "starting",
-                "업데이트 실행기를 준비했습니다. 잠시 후 프로그램이 다시 시작됩니다.",
-                root=root,
-                current_version=current,
-                latest_version=latest["version"],
-            )
+            try:
+                starting = write_state(
+                    "starting",
+                    "업데이트 실행기를 준비했습니다. 잠시 후 프로그램이 다시 시작됩니다.",
+                    root=root,
+                    current_version=current,
+                    latest_version=latest["version"],
+                )
+            except OSError as exc:
+                raise ReleaseUpdateError(_STATE_WRITE_FAILED_MESSAGE) from exc
             _launch_bootstrap(launcher, env, UPDATE_STATE_BASE / "update.log")
+            kind, stored = _load_state(root)
             return {
-                **_read_state(root),
+                **(stored if kind == "ok" else starting),
                 "install_mode": "release",
                 "can_update": False,
                 "accepted": True,
             }
         except ReleaseUpdateBusyError:
-            write_state(
-                "available",
-                "생성 작업 완료 후 업데이트할 수 있습니다.",
-                root=root,
-                current_version=current,
-                latest_version=latest_version,
-            )
+            try:
+                write_state(
+                    "available",
+                    "생성 작업 완료 후 업데이트할 수 있습니다.",
+                    root=root,
+                    current_version=current,
+                    latest_version=latest_version,
+                )
+            except OSError:
+                _log.warning("Update state: busy status write failed")
             raise
         except Exception as exc:
-            message = str(exc) if isinstance(exc, ReleaseUpdateError) else f"업데이트를 시작하지 못했습니다: {exc}"
-            write_state(
-                "failed",
-                message,
-                root=root,
-                current_version=current,
-                latest_version=latest_version,
-            )
+            message = str(exc) if isinstance(exc, ReleaseUpdateError) else "업데이트를 시작하지 못했습니다. 잠시 뒤 다시 시도하세요"
+            try:
+                write_state(
+                    "failed",
+                    message,
+                    root=root,
+                    current_version=current,
+                    latest_version=latest_version,
+                )
+            except OSError:
+                _log.warning("Update state: failure status write failed")
             if isinstance(exc, ReleaseUpdateError):
                 raise
             raise ReleaseUpdateError(message) from exc

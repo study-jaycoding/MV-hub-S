@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { Generation } from "../types";
 import { computeMaxParallel, createBatchTracker, createLimiter, type StepOutcome } from "./comfyRunState";
-import type { ComfyOutput } from "./comfyApi";
+import { ComfyUnresolvedRunError, type ComfyOutput } from "./comfyApi";
 import {
   executeSceneComfy,
   isSceneComfyConfigCurrent,
@@ -363,7 +363,10 @@ export function useSceneComfyExecution({
         flashMsg("입력이 바뀌어 이전 실행 결과는 내 작업에 저장했습니다");
       }
       if (rejected) {
-        if (rejected.reason instanceof SceneComfyRunSupersededError || superseded) {
+        if (rejected.reason instanceof ComfyUnresolvedRunError) {
+          flashMsg(rejected.reason.message);
+          patchComfyRunIfOwner(sceneId, cardId, runId, { status: "failed", error: rejected.reason.message });
+        } else if (rejected.reason instanceof SceneComfyRunSupersededError || superseded) {
           patchComfyRunIfOwner(sceneId, cardId, runId, { status: "idle", error: null });
         } else {
           patchComfyRunIfOwner(sceneId, cardId, runId, {

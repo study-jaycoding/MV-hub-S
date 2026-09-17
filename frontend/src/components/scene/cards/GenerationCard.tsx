@@ -28,6 +28,8 @@ export type HistPass = {
   finalOnly: React.ComponentProps<typeof HistoryBoardNode>["finalOnly"];
   folderSel: React.ComponentProps<typeof HistoryBoardNode>["folderSel"];
   sConfirm: { id: string; kind: "share" | "final" } | null;
+  // 참조 그대로 통과. boolean 계산은 각 카드에서 — HBN은 primitive만 받아 memo를 유지한다.
+  canFinalize?: (g: Generation) => boolean;
   onSClick: React.ComponentProps<typeof HistoryBoardNode>["onSClick"];
   onSDouble: React.ComponentProps<typeof HistoryBoardNode>["onSDouble"];
   onSConfirmYes: React.ComponentProps<typeof HistoryBoardNode>["onSConfirmYes"];
@@ -130,6 +132,7 @@ export function GenerationCard({
           finalOnly={hist.finalOnly}
           folderSel={hist.folderSel}
           sConfirm={hist.sConfirm?.id === g.id ? hist.sConfirm : null}
+          mayFinalize={hist.canFinalize ? hist.canFinalize(g) : true}
           onSClick={hist.onSClick}
           onSDouble={hist.onSDouble}
           onSConfirmYes={hist.onSConfirmYes}

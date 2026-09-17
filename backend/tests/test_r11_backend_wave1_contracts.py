@@ -136,7 +136,7 @@ def test_legacy_server_backup_aborts_when_secrets_survive_the_scrub(
     monkeypatch.setattr(db_transfer, "_multipart_upload", refuse_upload)
 
     with pytest.raises(sqlite3.DatabaseError):
-        db_transfer._legacy_server_backup(source)
+        db_transfer._legacy_server_backup(source, server_url="http://synthetic.invalid", token="synthetic-token")
     assert list(tmp_path.glob("mvhub-srvbak-*.db")) == []
 
 
@@ -146,13 +146,17 @@ def test_legacy_server_backup_uploads_when_scrub_actually_removed_secrets(
     source = tmp_path / "content_hub_20260823.db"
     _make_hub_db(source, secret=True)
     monkeypatch.setattr(db_transfer.tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(db_transfer._proxy, "base_url", lambda: "http://server")
-    monkeypatch.setattr(db_transfer._proxy, "token", lambda: "tok")
+    def upload(url, token, path):
+        assert url == "http://synthetic.invalid/api/db-backup"
+        assert token == "synthetic-token"
+        assert path != source and path.is_file()
+        return 200, {"count": 3}
+
     monkeypatch.setattr(
-        db_transfer, "_multipart_upload", lambda *_args, **_kwargs: (200, {"count": 3})
+        db_transfer, "_multipart_upload", upload
     )
 
-    assert db_transfer._legacy_server_backup(source) == (200, {"count": 3})
+    assert db_transfer._legacy_server_backup(source, server_url="http://synthetic.invalid", token="synthetic-token") == (200, {"count": 3})
 
 
 # ── B2: 업로드 DB 검증은 읽기 전용 ─────────────────────────────────────────────

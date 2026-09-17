@@ -560,175 +560,177 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
     일반/전역 태그 테이블은 건드리지 않는다. 공유본은 팀 서버를 먼저 갱신하고, 실패하면
     로컬 변경을 시작하지 않아 양쪽에 서로 다른 귀속이 남는 경우를 최소화한다.
     """
-    workspace = _resolve_workspace_target(
-        request,
-        workspace_id=body.workspace_id,
-        workspace_name=body.workspace_name,
-    )
-    owner_uid = _my_uid(request)
-    if _proxy.proxying() and not owner_uid:
-        raise HTTPException(
-            status_code=409,
-            detail="로그인 계정의 생성자 정보를 확인한 뒤 다시 시도하세요",
+    with active_account.pinned_account_scope():
+        workspace = _resolve_workspace_target(
+            request,
+            workspace_id=body.workspace_id,
+            workspace_name=body.workspace_name,
         )
-    super_claims: dict[str, Any] | None = None
-    mutation_owner_uid = owner_uid
-    try:
-        preview = repo.plan_generation_workspace_batch(
-            body.generation_ids,
-            body.operation,
-            workspace,
-            owner_uid=owner_uid,
-        )
-    except repo.WorkspaceOwnershipError as exc:
-        # 공유 서버 본체에서 남의 카드가 섞였을 때만 10분 전용 권한을 요구한다. 로컬 허브의
-        # 일반(my) 경로는 권한을 넓히지 않고, 팀 탭 전용 라우트가 서버로 직접 전달한다.
-        if _proxy.proxying():
-            raise _workspace_assignment_error(exc)
-        super_claims = require_super_admin_workspace(request)
-        mutation_owner_uid = None
+        owner_uid = _my_uid(request)
+        if _proxy.proxying() and not owner_uid:
+            raise HTTPException(
+                status_code=409,
+                detail="로그인 계정의 생성자 정보를 확인한 뒤 다시 시도하세요",
+            )
+        super_claims: dict[str, Any] | None = None
+        mutation_owner_uid = owner_uid
         try:
             preview = repo.plan_generation_workspace_batch(
                 body.generation_ids,
                 body.operation,
                 workspace,
-                owner_uid=None,
+                owner_uid=owner_uid,
             )
-        except repo.WorkspaceAssignmentError as retry_exc:
-            raise _workspace_assignment_error(retry_exc)
-    except repo.WorkspaceAssignmentError as exc:
-        raise _workspace_assignment_error(exc)
-
-    # 공유된 내 카드는 팀 탭의 서버 복사본도 같은 값이어야 한다. 변경 여부와 관계없이 선택된
-    # 공유본 전부를 보내 재시도만으로 불일치가 수렴하게 한다(서버 연산은 멱등).
-    shared_server_ids: list[str] = []
-    if _proxy.proxying():
-        for row in preview["resolved"]:
-            if row.get("shared"):
-                # plan 결과 행에 job_id 가 이미 있다(R7 1-D) — 행마다 finalize_id_map
-                # 재조회(최대 500 커넥션)를 돌 이유가 없다. 서버 id=job_id(없으면 로컬 id).
-                server_id = row.get("job_id") or str(row["id"])
-                if server_id and server_id not in shared_server_ids:
-                    shared_server_ids.append(server_id)
-        if shared_server_ids:
-            remote = _proxy.proxy_json(
-                "PUT",
-                "/api/generations/workspace/batch",
-                body={
-                    "generation_ids": shared_server_ids,
-                    "operation": body.operation,
-                    "workspace_id": workspace["id"],
-                    "workspace_name": workspace["name"],
-                },
-                timeout=30,
-            )
-            remote_workspace = remote.get("workspace") if isinstance(remote, dict) else None
-            if not isinstance(remote_workspace, dict) or remote_workspace.get("id") != workspace["id"]:
-                raise HTTPException(
-                    status_code=409,
-                    detail="로컬과 서버의 워크스페이스 정보가 일치하지 않습니다. 계정 상태를 새로고침하세요",
+        except repo.WorkspaceOwnershipError as exc:
+            # 공유 서버 본체에서 남의 카드가 섞였을 때만 10분 전용 권한을 요구한다. 로컬 허브의
+            # 일반(my) 경로는 권한을 넓히지 않고, 팀 탭 전용 라우트가 서버로 직접 전달한다.
+            if _proxy.proxying():
+                raise _workspace_assignment_error(exc)
+            super_claims = require_super_admin_workspace(request)
+            mutation_owner_uid = None
+            try:
+                preview = repo.plan_generation_workspace_batch(
+                    body.generation_ids,
+                    body.operation,
+                    workspace,
+                    owner_uid=None,
                 )
+            except repo.WorkspaceAssignmentError as retry_exc:
+                raise _workspace_assignment_error(retry_exc)
+        except repo.WorkspaceAssignmentError as exc:
+            raise _workspace_assignment_error(exc)
 
-    try:
-        result = repo.set_generation_workspace_batch(
-            body.generation_ids,
-            body.operation,
-            workspace,
-            owner_uid=mutation_owner_uid,
-        )
-    except repo.WorkspaceAssignmentError as exc:
-        logger.error(
-            "워크스페이스 원격 검증 뒤 로컬 재검증 실패: operation=%s workspace=%s error=%s",
-            body.operation,
-            workspace["id"],
-            exc,
-        )
-        raise _workspace_assignment_error(exc)
+        # 공유된 내 카드는 팀 탭의 서버 복사본도 같은 값이어야 한다. 변경 여부와 관계없이 선택된
+        # 공유본 전부를 보내 재시도만으로 불일치가 수렴하게 한다(서버 연산은 멱등).
+        shared_server_ids: list[str] = []
+        if _proxy.proxying():
+            for row in preview["resolved"]:
+                if row.get("shared"):
+                    # plan 결과 행에 job_id 가 이미 있다(R7 1-D) — 행마다 finalize_id_map
+                    # 재조회(최대 500 커넥션)를 돌 이유가 없다. 서버 id=job_id(없으면 로컬 id).
+                    server_id = row.get("job_id") or str(row["id"])
+                    if server_id and server_id not in shared_server_ids:
+                        shared_server_ids.append(server_id)
+            if shared_server_ids:
+                remote = _proxy.proxy_json(
+                    "PUT",
+                    "/api/generations/workspace/batch",
+                    body={
+                        "generation_ids": shared_server_ids,
+                        "operation": body.operation,
+                        "workspace_id": workspace["id"],
+                        "workspace_name": workspace["name"],
+                    },
+                    timeout=30,
+                )
+                remote_workspace = remote.get("workspace") if isinstance(remote, dict) else None
+                if not isinstance(remote_workspace, dict) or remote_workspace.get("id") != workspace["id"]:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="로컬과 서버의 워크스페이스 정보가 일치하지 않습니다. 계정 상태를 새로고침하세요",
+                    )
 
-    # 격리 test_dev에서는 운영 서버 대신 로컬 manage_hub.db까지 같은 요청에서 갱신한다.
-    # 실패해도 workspace 변경은 완료되며 outbox가 남아 다음 대시보드 조회에서 재시도된다.
-    try:
-        drain_isolated_telemetry()
-    except Exception:  # noqa: BLE001
-        pass
-
-    # 항목마다 단건 재조회(N+1) 대신 로컬 id 를 한 번에 배치 직렬화한다.
-    # 응답 항목·순서는 resolved 순서 그대로, 없는 행 스킵 규칙도 종전과 같다.
-    refetched = repo.get_generations_batch([str(row["id"]) for row in result["resolved"]])
-    updates = []
-    for row in result["resolved"]:
-        generation = refetched.get(str(row["id"]))
-        if generation:
-            updates.append(
-                {"requested_id": str(row["requested_id"]), "generation": generation}
+        try:
+            result = repo.set_generation_workspace_batch(
+                body.generation_ids,
+                body.operation,
+                workspace,
+                owner_uid=mutation_owner_uid,
             )
-    if super_claims:
-        foreign_changed = [
-            str(row["requested_id"])
-            for row in result["changed"]
-            if row.get("creator_uid") != owner_uid
-        ]
-        for offset in range(0, len(foreign_changed), 50):
-            chunk = foreign_changed[offset : offset + 50]
-            if not chunk:
-                continue
-            journal_audit_event(
-                "generation.workspace_super_admin_changed",
-                actor_uid=actor_id(request),
-                target_type="generation_batch",
-                target_id=chunk[0] if len(foreign_changed) == 1 else None,
-                project_id=(result.get("assigned_project") or {}).get("id"),
-                fields=["workspace_id", "workspace_scope", "project_id"],
-                details={
-                    "generation_ids": chunk,
-                    "operation": body.operation,
-                    "workspace_id": workspace["id"],
-                    "super_session_id": str(super_claims["j"]),
-                    "item_count": len(foreign_changed),
-                    "chunk_index": offset // 50,
-                    "creator_unchanged": True,
-                },
+        except repo.WorkspaceAssignmentError as exc:
+            logger.error(
+                "워크스페이스 원격 검증 뒤 로컬 재검증 실패: operation=%s workspace=%s error=%s",
+                body.operation,
+                workspace["id"],
+                exc,
             )
-    return {
-        "workspace": workspace,
-        "operation": body.operation,
-        "changed": [str(row["requested_id"]) for row in result["changed"]],
-        "unchanged": [str(row["requested_id"]) for row in result["unchanged"]],
-        # #+ 가 함께 배정한 프로젝트(대상 워크스페이스의 유일 프로젝트) — 없으면 null.
-        "project": result.get("assigned_project"),
-        "updates": updates,
-    }
+            raise _workspace_assignment_error(exc)
+
+        # 격리 test_dev에서는 운영 서버 대신 로컬 manage_hub.db까지 같은 요청에서 갱신한다.
+        # 실패해도 workspace 변경은 완료되며 outbox가 남아 다음 대시보드 조회에서 재시도된다.
+        try:
+            drain_isolated_telemetry()
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 항목마다 단건 재조회(N+1) 대신 로컬 id 를 한 번에 배치 직렬화한다.
+        # 응답 항목·순서는 resolved 순서 그대로, 없는 행 스킵 규칙도 종전과 같다.
+        refetched = repo.get_generations_batch([str(row["id"]) for row in result["resolved"]])
+        updates = []
+        for row in result["resolved"]:
+            generation = refetched.get(str(row["id"]))
+            if generation:
+                updates.append(
+                    {"requested_id": str(row["requested_id"]), "generation": generation}
+                )
+        if super_claims:
+            foreign_changed = [
+                str(row["requested_id"])
+                for row in result["changed"]
+                if row.get("creator_uid") != owner_uid
+            ]
+            for offset in range(0, len(foreign_changed), 50):
+                chunk = foreign_changed[offset : offset + 50]
+                if not chunk:
+                    continue
+                journal_audit_event(
+                    "generation.workspace_super_admin_changed",
+                    actor_uid=actor_id(request),
+                    target_type="generation_batch",
+                    target_id=chunk[0] if len(foreign_changed) == 1 else None,
+                    project_id=(result.get("assigned_project") or {}).get("id"),
+                    fields=["workspace_id", "workspace_scope", "project_id"],
+                    details={
+                        "generation_ids": chunk,
+                        "operation": body.operation,
+                        "workspace_id": workspace["id"],
+                        "super_session_id": str(super_claims["j"]),
+                        "item_count": len(foreign_changed),
+                        "chunk_index": offset // 50,
+                        "creator_unchanged": True,
+                    },
+                )
+        return {
+            "workspace": workspace,
+            "operation": body.operation,
+            "changed": [str(row["requested_id"]) for row in result["changed"]],
+            "unchanged": [str(row["requested_id"]) for row in result["unchanged"]],
+            # #+ 가 함께 배정한 프로젝트(대상 워크스페이스의 유일 프로젝트) — 없으면 null.
+            "project": result.get("assigned_project"),
+            "updates": updates,
+        }
 
 
 @router.put("/generations/workspace/team-batch")
 def set_team_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Request):
     """팀 탭 선택을 로컬 복사본이 아니라 공유 서버의 권위 행에 직접 적용한다."""
-    if not _proxy.proxying():
-        return set_generation_workspace_batch(body, request)
-    workspace = _resolve_workspace_target(
-        request,
-        workspace_id=body.workspace_id,
-        workspace_name=body.workspace_name,
-    )
-    result = _proxy.proxy_json(
-        "PUT",
-        "/api/generations/workspace/batch",
-        body={
-            "generation_ids": body.generation_ids,
-            "operation": body.operation,
-            "workspace_id": workspace["id"],
-            "workspace_name": workspace["name"],
-        },
-        timeout=30,
-        use_super_admin=True,
-    )
-    remote_workspace = result.get("workspace") if isinstance(result, dict) else None
-    if not isinstance(remote_workspace, dict) or remote_workspace.get("id") != workspace["id"]:
-        raise HTTPException(
-            status_code=409,
-            detail="선택한 워크스페이스와 서버의 변경 결과가 일치하지 않습니다",
+    with active_account.pinned_account_scope():
+        if not _proxy.proxying():
+            return set_generation_workspace_batch(body, request)
+        workspace = _resolve_workspace_target(
+            request,
+            workspace_id=body.workspace_id,
+            workspace_name=body.workspace_name,
         )
-    return result
+        result = _proxy.proxy_json(
+            "PUT",
+            "/api/generations/workspace/batch",
+            body={
+                "generation_ids": body.generation_ids,
+                "operation": body.operation,
+                "workspace_id": workspace["id"],
+                "workspace_name": workspace["name"],
+            },
+            timeout=30,
+            use_super_admin=True,
+        )
+        remote_workspace = result.get("workspace") if isinstance(result, dict) else None
+        if not isinstance(remote_workspace, dict) or remote_workspace.get("id") != workspace["id"]:
+            raise HTTPException(
+                status_code=409,
+                detail="선택한 워크스페이스와 서버의 변경 결과가 일치하지 않습니다",
+            )
+        return result
 
 
 def _batch_meta_callbacks(request: Request):
@@ -1106,78 +1108,80 @@ def gen_comment_counts(body: CommentCountsIn, request: Request):
 @router.get("/generations/{gen_id}/comments")
 def list_gen_comments(gen_id: str, request: Request):
     """생성본 코멘트 스레드(작성자·시각 포함, 오래된→최신). 공유 스레드에 내 비공개(로컬)를 합친다."""
-    gen = repo.get_generation(gen_id)
-    if _comments_on_server(gen):
-        _, server_id = repo.finalize_id_map(gen_id)  # 공유본은 서버가 job_id 로 안다
-        shared = _proxy.proxy_get(f"/api/generations/{server_id}/comments", request)
-        # 비공개는 서버에 없다 — 작성과 같은 앵커 규칙(로컬 행 되찾기 포함)으로 합쳐야
-        # 팀 탭(서버 UUID)에서 연 스레드에도 내 비공개가 보인다(합의 BE-P1-4).
-        _, r_local_id, r_server_id = _resolve_local_or_reclaim(gen_id, request)
-        anchor = r_local_id or r_server_id
-        mine = repo.list_private_generation_comments(anchor, actor_id(request))
-        merged = ([*shared, *mine] if isinstance(shared, list) else mine)
-        merged.sort(key=lambda c: (str(c.get("created_at") or ""), str(c.get("id") or "")))
-        return merged
-    if not gen:
-        raise HTTPException(status_code=404, detail="generation 없음")
-    require_view_generation(request, gen)  # 비공개 남의 코멘트 열람 차단(공유/본인만)
-    return repo.list_generation_comments(gen_id, actor_id(request))
+    with _personal_meta_account_scope(request):
+        gen = repo.get_generation(gen_id)
+        if _comments_on_server(gen):
+            _, server_id = repo.finalize_id_map(gen_id)  # 공유본은 서버가 job_id 로 안다
+            shared = _proxy.proxy_get(f"/api/generations/{server_id}/comments", request)
+            # 비공개는 서버에 없다 — 작성과 같은 앵커 규칙(로컬 행 되찾기 포함)으로 합쳐야
+            # 팀 탭(서버 UUID)에서 연 스레드에도 내 비공개가 보인다(합의 BE-P1-4).
+            _, r_local_id, r_server_id = _resolve_local_or_reclaim(gen_id, request)
+            anchor = r_local_id or r_server_id
+            mine = repo.list_private_generation_comments(anchor, actor_id(request))
+            merged = ([*shared, *mine] if isinstance(shared, list) else mine)
+            merged.sort(key=lambda c: (str(c.get("created_at") or ""), str(c.get("id") or "")))
+            return merged
+        if not gen:
+            raise HTTPException(status_code=404, detail="generation 없음")
+        require_view_generation(request, gen)  # 비공개 남의 코멘트 열람 차단(공유/본인만)
+        return repo.list_generation_comments(gen_id, actor_id(request))
 
 
 @router.post("/generations/{gen_id}/comments")
 def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
-    gen = repo.get_generation(gen_id)
-    # ★비공개는 프록시를 타지 않는다 — 공유 생성물에 단 것이어도 내 로컬 DB 에만 남는다.
-    #  앵커는 목록과 같은 규칙(로컬 행 있으면 로컬 id) — 어디서 열어도 같은 스레드에 보이게.
-    if body.private:
-        # 공유 팀 서버 본체는 비공개 저장을 거절한다 — 브라우저가 서버에 직결된 배포에서
-        # private=true 가 중앙 DB 에 남으면 '비공개=내 로컬에만' 불변식이 깨진다(적대 리뷰 P1).
-        if _proxy.is_shared_team_server():
-            raise HTTPException(
-                status_code=400, detail="비공개 코멘트는 로컬 허브에서만 저장할 수 있습니다"
+    with _personal_meta_account_scope(request):
+        gen = repo.get_generation(gen_id)
+        # ★비공개는 프록시를 타지 않는다 — 공유 생성물에 단 것이어도 내 로컬 DB 에만 남는다.
+        #  앵커는 목록과 같은 규칙(로컬 행 있으면 로컬 id) — 어디서 열어도 같은 스레드에 보이게.
+        if body.private:
+            # 공유 팀 서버 본체는 비공개 저장을 거절한다 — 브라우저가 서버에 직결된 배포에서
+            # private=true 가 중앙 DB 에 남으면 '비공개=내 로컬에만' 불변식이 깨진다(적대 리뷰 P1).
+            if _proxy.is_shared_team_server():
+                raise HTTPException(
+                    status_code=400, detail="비공개 코멘트는 로컬 허브에서만 저장할 수 있습니다"
+                )
+            # 앵커 해석(합의 BE-P1-4) — 팀 탭 카드(서버 UUID)는 서버에서 job_id 를 되찾아
+            # 내 로컬 행(L)으로 정규화한다. 서버 UUID 그대로 저장하면 같은 생성물을 내 작업
+            # 탭(L)으로 열 때 스레드가 갈라져 비공개 메모가 사라져 보인다.
+            _, r_local_id, r_server_id = _resolve_local_or_reclaim(gen_id, request)
+            anchor = r_local_id or r_server_id
+            text = (body.text or "").strip()
+            if not text:
+                raise HTTPException(status_code=400, detail="빈 코멘트")
+            try:
+                cid = repo.add_generation_comment(
+                    anchor,
+                    actor_id(request),
+                    text,
+                    body.parent_id,
+                    body.muted,
+                    is_private=True,
+                    # 서버 공개 부모 → 로컬 비공개 답글(프록시)은 부모가 로컬에 없는 게 정상.
+                    allow_external_parent=_proxy.proxying(),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {"id": cid}
+        if _comments_on_server(gen):
+            _, server_id = repo.finalize_id_map(gen_id)
+            return _proxy.proxy_json(
+                "POST", f"/api/generations/{server_id}/comments", body=body.model_dump()
             )
-        # 앵커 해석(합의 BE-P1-4) — 팀 탭 카드(서버 UUID)는 서버에서 job_id 를 되찾아
-        # 내 로컬 행(L)으로 정규화한다. 서버 UUID 그대로 저장하면 같은 생성물을 내 작업
-        # 탭(L)으로 열 때 스레드가 갈라져 비공개 메모가 사라져 보인다.
-        _, r_local_id, r_server_id = _resolve_local_or_reclaim(gen_id, request)
-        anchor = r_local_id or r_server_id
+        if not gen:
+            raise HTTPException(status_code=404, detail="generation 없음")
+        require_view_generation(request, gen)  # 볼 수 있는 것(공유/본인)에만 코멘트 작성
         text = (body.text or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="빈 코멘트")
+        # 작성자는 로그인 신원(creator_uid)으로 귀속 — body.author 는 무시(클라가 'me' 로 보내던
+        # 값을 더는 신뢰하지 않는다). AUTH off 면 actor_id 가 'me' 로 떨어져 기존 단독 동작 유지.
         try:
             cid = repo.add_generation_comment(
-                anchor,
-                actor_id(request),
-                text,
-                body.parent_id,
-                body.muted,
-                is_private=True,
-                # 서버 공개 부모 → 로컬 비공개 답글(프록시)은 부모가 로컬에 없는 게 정상.
-                allow_external_parent=_proxy.proxying(),
+                gen_id, actor_id(request), text, body.parent_id, body.muted
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"id": cid}
-    if _comments_on_server(gen):
-        _, server_id = repo.finalize_id_map(gen_id)
-        return _proxy.proxy_json(
-            "POST", f"/api/generations/{server_id}/comments", body=body.model_dump()
-        )
-    if not gen:
-        raise HTTPException(status_code=404, detail="generation 없음")
-    require_view_generation(request, gen)  # 볼 수 있는 것(공유/본인)에만 코멘트 작성
-    text = (body.text or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="빈 코멘트")
-    # 작성자는 로그인 신원(creator_uid)으로 귀속 — body.author 는 무시(클라가 'me' 로 보내던
-    # 값을 더는 신뢰하지 않는다). AUTH off 면 actor_id 가 'me' 로 떨어져 기존 단독 동작 유지.
-    try:
-        cid = repo.add_generation_comment(
-            gen_id, actor_id(request), text, body.parent_id, body.muted
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"id": cid}
 
 
 # by-id 코멘트 연산(수정/삭제/확인) 라우팅: 공유본(share 있음)에 달린 코멘트는 — 로컬에 같은 id 가
@@ -1197,59 +1201,64 @@ def edit_gen_comment(comment_id: str, body: GenCommentEditIn, request: Request):
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="빈 코멘트")
-    if not _comment_local(comment_id):
-        return _proxy.proxy_json(
-            "PUT", f"/api/generation-comments/{comment_id}", body=body.model_dump()
-        )
-    try:
-        repo.edit_generation_comment(comment_id, actor_id(request), text)
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return {"ok": True}
+    # actor_id는 요청 신원이므로 DB 키만 고정하고 별도 uid override는 쓰지 않는다.
+    with _personal_meta_account_scope(request):
+        if not _comment_local(comment_id):
+            return _proxy.proxy_json(
+                "PUT", f"/api/generation-comments/{comment_id}", body=body.model_dump()
+            )
+        try:
+            repo.edit_generation_comment(comment_id, actor_id(request), text)
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        return {"ok": True}
 
 
 @router.delete("/generation-comments/{comment_id}")
 def delete_gen_comment(comment_id: str, request: Request):
-    # 로컬 비공개 답글이 달린 부모는 지우지 못한다(검증 P2) — 부모만 서버에서 사라지면
-    # 비공개 답글이 부모 없는 고아로 남는다. 프론트 잠금은 조언일 뿐이라 여기서 강제한다.
-    if repo.generation_comment_has_private_children(comment_id):
-        raise HTTPException(
-            status_code=409,
-            detail="비공개 답글이 달려 있어 삭제할 수 없습니다 — 비공개 답글을 먼저 지우세요",
-        )
-    if not _comment_local(comment_id):
-        return _proxy.proxy_json("DELETE", f"/api/generation-comments/{comment_id}")
-    try:
-        repo.delete_generation_comment(comment_id, actor_id(request))
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    return {"ok": True}
+    with _personal_meta_account_scope(request):
+        # 로컬 비공개 답글이 달린 부모는 지우지 못한다(검증 P2) — 부모만 서버에서 사라지면
+        # 비공개 답글이 부모 없는 고아로 남는다. 프론트 잠금은 조언일 뿐이라 여기서 강제한다.
+        if repo.generation_comment_has_private_children(comment_id):
+            raise HTTPException(
+                status_code=409,
+                detail="비공개 답글이 달려 있어 삭제할 수 없습니다 — 비공개 답글을 먼저 지우세요",
+            )
+        if not _comment_local(comment_id):
+            return _proxy.proxy_json("DELETE", f"/api/generation-comments/{comment_id}")
+        try:
+            repo.delete_generation_comment(comment_id, actor_id(request))
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        return {"ok": True}
 
 
 @router.post("/generations/{gen_id}/comments/read")
 def read_gen_comments(gen_id: str, body: GenCommentReadIn, request: Request):
-    gen = repo.get_generation(gen_id)
-    if _comments_on_server(gen):
-        _, server_id = repo.finalize_id_map(gen_id)
-        return _proxy.proxy_json(
-            "POST", f"/api/generations/{server_id}/comments/read", body=body.model_dump()
-        )
-    if not gen:
-        raise HTTPException(status_code=404, detail="generation 없음")
-    require_view_generation(request, gen)
-    repo.mark_generation_comments_read(actor_id(request), gen_id)
-    return {"ok": True}
+    with _personal_meta_account_scope(request):
+        gen = repo.get_generation(gen_id)
+        if _comments_on_server(gen):
+            _, server_id = repo.finalize_id_map(gen_id)
+            return _proxy.proxy_json(
+                "POST", f"/api/generations/{server_id}/comments/read", body=body.model_dump()
+            )
+        if not gen:
+            raise HTTPException(status_code=404, detail="generation 없음")
+        require_view_generation(request, gen)
+        repo.mark_generation_comments_read(actor_id(request), gen_id)
+        return {"ok": True}
 
 
 @router.post("/generation-comments/{comment_id}/seen")
 def seen_gen_comment(comment_id: str, request: Request):
     """코멘트 한 건 확인 처리(패널에서 NEW 코멘트 클릭). 개인 상태라 멱등·가벼운 처리."""
-    if not _comment_local(comment_id):  # 공유본(서버) 코멘트 확인은 서버 seen 으로
-        return _proxy.proxy_json("POST", f"/api/generation-comments/{comment_id}/seen")
-    repo.mark_generation_comment_seen(actor_id(request), comment_id)
-    return {"ok": True}
+    with _personal_meta_account_scope(request):
+        if not _comment_local(comment_id):  # 공유본(서버) 코멘트 확인은 서버 seen 으로
+            return _proxy.proxy_json("POST", f"/api/generation-comments/{comment_id}/seen")
+        repo.mark_generation_comment_seen(actor_id(request), comment_id)
+        return {"ok": True}
 
 
 @router.post("/generations/{gen_id}/cache")

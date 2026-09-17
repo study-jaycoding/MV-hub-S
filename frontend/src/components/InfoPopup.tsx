@@ -13,6 +13,7 @@ import {
   generationStatusLabelFor,
 } from "../lib/generationDisplay";
 import { useModelDisplayName } from "../lib/modelCatalog";
+import { reportSourceLocationError } from "../lib/sourceLocationFeedback";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../lib/media";
 import { refSrc } from "../lib/promptParts";
 import { useEscapeClose } from "../lib/useEscapeClose";
@@ -420,9 +421,9 @@ export function InfoPopup({
           value={
             <button
               className="info-path-btn"
-              title="원본 위치 열기 (탐색기)"
+              title={t("원본 위치 열기 (탐색기)")}
               onClick={() => {
-                api.revealAsset(project, node.path).catch((e) => alert(`원본 위치 열기 실패: ${e}`));
+                api.revealAsset(project, node.path).catch(reportSourceLocationError);
               }}
             >
               <span className="info-path">{node.path}</span>

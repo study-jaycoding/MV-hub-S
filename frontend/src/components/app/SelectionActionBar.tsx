@@ -46,9 +46,9 @@ export function BoardSelectionActionBar({
       <button onClick={() => onShare(selected)}>{t("↗ 팀에 공유")}</button>
       <button
         onClick={() => onDownload(selected)}
-        title="선택한 결과물 일괄 다운로드(레퍼런스 이름으로 저장)"
+        title={t("선택한 결과물 일괄 다운로드(레퍼런스 이름으로 저장)")}
       >
-        ⤓ 다운로드
+        ⤓ {t("다운로드")}
       </button>
       {onResolveTransfer && (
         <button
@@ -57,8 +57,8 @@ export function BoardSelectionActionBar({
           onClick={() => onResolveTransfer(selected)}
           title={
             resolveTransferBusy
-              ? `Resolve 작업 ${resolveTransferPendingCount ?? 0}건 처리 중 · 선택 항목을 대기열에 추가`
-              : "선택한 완료본을 프로젝트의 Render 폴더 구조로 저장하고 Resolve로 가져오기"
+              ? t("Resolve 작업 {count}건 처리 중 · 선택 항목을 대기열에 추가").replace("{count}", String(resolveTransferPendingCount ?? 0))
+              : t("선택한 완료본을 프로젝트의 Render 폴더 구조로 저장하고 Resolve로 가져오기")
           }
         >
           {resolveTransferBusy
@@ -70,22 +70,22 @@ export function BoardSelectionActionBar({
         <button
           className="sb-resolve"
           onClick={onResolveRetry}
-          title={`이미 준비된 원본을 다시 복사하지 않고 ${resolveRetryProjectName || "예정된 Resolve 프로젝트"}에 가져오기`}
+          title={t("이미 준비된 원본을 다시 복사하지 않고 {project}에 가져오기").replace("{project}", resolveRetryProjectName || t("예정된 Resolve 프로젝트"))}
         >
-          ↻ 준비 원본 다시 가져오기
+          ↻ {t("준비 원본 다시 가져오기")}
         </button>
       )}
       {selected.length >= 2 && (
         <button
           onClick={() => onCompare(selected)}
-          title="선택한 결과물들을 나란히 비교(프롬프트·파라미터 차이 색칠)"
+          title={t("선택한 결과물들을 나란히 비교(프롬프트·파라미터 차이 색칠)")}
         >
-          ⊞ 비교
+          ⊞ {t("비교")}
         </button>
       )}
       <ProjectAssignMenu projects={projects} onAssign={onAssign} />
-      <button className="sb-del" onClick={() => onDelete(selected)} title="휴지통으로 보내기">
-        🗑 삭제
+      <button className="sb-del" onClick={() => onDelete(selected)} title={t("휴지통으로 보내기")}>
+        🗑 {t("삭제")}
       </button>
     </div>
   );
@@ -160,9 +160,9 @@ export function LibrarySelectionActionBar({
         ))}
       <button
         onClick={() => onDownload(selectedGenerations)}
-        title="선택한 결과물 일괄 다운로드(레퍼런스 이름으로 저장)"
+        title={t("선택한 결과물 일괄 다운로드(레퍼런스 이름으로 저장)")}
       >
-        ⤓ 다운로드
+        ⤓ {t("다운로드")}
       </button>
       <button
         className="sb-resolve"
@@ -170,8 +170,8 @@ export function LibrarySelectionActionBar({
         onClick={() => onResolveTransfer(selectedGenerations)}
         title={
           resolveTransferBusy
-            ? `Resolve 작업 ${resolveTransferPendingCount}건 처리 중 · 선택 항목을 대기열에 추가`
-            : "선택한 완료본을 프로젝트의 Render 폴더 구조로 저장하고 Resolve로 가져오기"
+            ? t("Resolve 작업 {count}건 처리 중 · 선택 항목을 대기열에 추가").replace("{count}", String(resolveTransferPendingCount))
+            : t("선택한 완료본을 프로젝트의 Render 폴더 구조로 저장하고 Resolve로 가져오기")
         }
       >
         {resolveTransferBusy
@@ -182,32 +182,32 @@ export function LibrarySelectionActionBar({
         <button
           className="sb-resolve"
           onClick={onResolveRetry}
-          title={`이미 준비된 원본을 다시 복사하지 않고 ${resolveRetryProjectName || "예정된 Resolve 프로젝트"}에 가져오기`}
+          title={t("이미 준비된 원본을 다시 복사하지 않고 {project}에 가져오기").replace("{project}", resolveRetryProjectName || t("예정된 Resolve 프로젝트"))}
         >
-          ↻ 준비 원본 다시 가져오기
+          ↻ {t("준비 원본 다시 가져오기")}
         </button>
       )}
       {selectedCount >= 2 && (
         <button
           onClick={() => onCompare(selectedGenerations)}
-          title="선택한 버전들을 나란히 비교(프롬프트·파라미터 차이 색칠)"
+          title={t("선택한 버전들을 나란히 비교(프롬프트·파라미터 차이 색칠)")}
         >
-          ⊞ 비교
+          ⊞ {t("비교")}
         </button>
       )}
       <ProjectAssignMenu projects={projects} onAssign={onAssign} />
       {hasActive && (
-        <button className="sb-del" onClick={onDelete} title="휴지통으로 보내기">
-          🗑 삭제
+        <button className="sb-del" onClick={onDelete} title={t("휴지통으로 보내기")}>
+          🗑 {t("삭제")}
         </button>
       )}
       {hasDeleted && (
-        <button onClick={onRestore} title="휴지통에서 복구">
+        <button onClick={onRestore} title={t("휴지통에서 복구")}>
           ↺ {t("복구")}
         </button>
       )}
       {hasDeleted && (
-        <button className="sb-del" onClick={onPurge} title="휴지통에서 영구 삭제(복원 불가)">
+        <button className="sb-del" onClick={onPurge} title={t("휴지통에서 영구 삭제(복원 불가)")}>
           ⨯ {t("영구삭제")}
         </button>
       )}

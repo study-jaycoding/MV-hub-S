@@ -330,7 +330,8 @@ def test_db_import_streams_to_temp_and_always_removes_it(monkeypatch) -> None:
         monkeypatch.setattr(db_transfer.tempfile, "gettempdir", lambda: str(root))
         monkeypatch.setattr(db_transfer, "validate_hub_db", lambda path: seen.update(validated=path.read_bytes()))
 
-        def install(path: Path) -> dict:
+        def install(path: Path, *, expected) -> dict:
+            assert expected is not None
             seen["install_path"] = path
             seen["installed"] = path.read_bytes()
             return {"ok": True}

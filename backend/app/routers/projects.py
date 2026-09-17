@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from . import _proxy
-from .. import rbac, repo
+from .. import active_account, rbac, repo
 from ..deps import (
     account_actor_uid,
     account_global_roles,
@@ -450,71 +450,73 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
     """결과물들을 프로젝트에 귀속(project_id=None 이면 미분류로 해제).
     탭 인지: 팀 공유(team) 탭의 항목은 서버에 사는 팀 공유물이라 서버에 위임해야 팀 전체에 반영되고
     팀 탭 카운트·필터가 맞는다. 내 작업(my)은 내 로컬 생성물의 project_id 를 바꾸는 로컬 작업."""
-    if _proxy.proxying() and tab == "team":
-        # 팀 귀속은 서버에 위임 — tab=team 을 그대로 넘겨 서버가 '공유물 조직' 모드로 처리하게 한다.
-        return _proxy.proxy_json(
-            "POST", "/api/projects/assign", params={"tab": "team"}, body=body.model_dump()
-        )
-    # 내 작업(로컬) 귀속 — 프로젝트 정의는 서버에 있으므로 검증 통과를 위해 먼저 미러(캐시).
-    if _proxy.proxying() and body.project_id:
-        try:
-            data = _proxy.proxy_json("GET", "/api/projects")
-            repo.cache_projects(data.get("projects") or [] if isinstance(data, dict) else [])
-        except Exception:  # noqa: BLE001
-            pass
-    _require_assign_target(request, body.project_id)
-    try:
-        if tab == "team":
-            # 팀 공유 탭 귀속(서버 본체): 공유물을 프로젝트로 조직하는 팀 작업이다. read_all(admin·PM·PD)
-            # 은 생성자 무관하게 묶을 수 있게 스코프를 풀되, shared_only 로 '공유물'만 건드린다(남의
-            # 사적 작업물은 불가). 일반 멤버는 기존대로 본인 공유물만.
-            read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
-                account_global_roles(request), "read_all"
+    # 첫 프록시 판정부터 캐시·이동·후속 미러까지 하나의 계정으로 고정한다.
+    with active_account.pinned_account_scope():
+        if _proxy.proxying() and tab == "team":
+            # 팀 귀속은 서버에 위임 — tab=team 을 그대로 넘겨 서버가 '공유물 조직' 모드로 처리하게 한다.
+            return _proxy.proxy_json(
+                "POST", "/api/projects/assign", params={"tab": "team"}, body=body.model_dump()
             )
-            account_uid = None if read_all else account_scope_uid(request)
-            n = repo.assign_to_project(
-                body.generation_ids, body.project_id,
-                account_uid=account_uid, shared_only=True,
-                folder_path=body.folder_path,
-                resume_work=body.resume_work,
-            )
-        else:
-            # 내 작업: AUTH on 이면 내 생성물만 귀속(남의 작업물 이동 차단). 단독/AUTH off 는 None → 제약 없음.
-            n = repo.assign_to_project(
-                body.generation_ids, body.project_id,
-                account_uid=account_scope_uid(request), folder_path=body.folder_path,
-                resume_work=body.resume_work,
-            )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    # 팀 매니징: 귀속(프로젝트·폴더)이 바뀐 내 생성물을 텔레메트리 dirty 표시 → 다음 drain 에 반영.
-    if MANAGE_ENABLED and tab != "team":
-        try:
-            # 이동과 outbox 기록은 repo의 같은 트랜잭션에서 완료했다.
-            drain_isolated_telemetry()
-        except Exception:  # noqa: BLE001
-            pass
-    # 이동 양방향 동기(#2 Phase3): 내 작업에서 옮긴 게 이미 공유된 것이면 서버에도 같은 이동을
-    # 반영해 팀 공유 뷰가 안 어긋나게 한다. best-effort — 실패해도 로컬 이동은 유효(team_synced=False).
-    team_synced: Optional[bool] = None
-    if tab != "team" and _proxy.proxying():
-        anchors = repo.shared_generation_anchors(body.generation_ids)
-        if anchors:
+        # 내 작업(로컬) 귀속 — 프로젝트 정의는 서버에 있으므로 검증 통과를 위해 먼저 미러(캐시).
+        if _proxy.proxying() and body.project_id:
             try:
-                resp = _proxy.proxy_json(
-                    "POST", "/api/projects/assign", params={"tab": "team"},
-                    body={
-                        "generation_ids": anchors,  # 서버 앵커(job_id) — 로컬 uuid 아님
-                        "project_id": body.project_id,
-                        "folder_path": body.folder_path,
-                        "resume_work": body.resume_work,
-                    },
+                data = _proxy.proxy_json("GET", "/api/projects")
+                repo.cache_projects(data.get("projects") or [] if isinstance(data, dict) else [])
+            except Exception:  # noqa: BLE001
+                pass
+        _require_assign_target(request, body.project_id)
+        try:
+            if tab == "team":
+                # 팀 공유 탭 귀속(서버 본체): 공유물을 프로젝트로 조직하는 팀 작업이다. read_all(admin·PM·PD)
+                # 은 생성자 무관하게 묶을 수 있게 스코프를 풀되, shared_only 로 '공유물'만 건드린다(남의
+                # 사적 작업물은 불가). 일반 멤버는 기존대로 본인 공유물만.
+                read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
+                    account_global_roles(request), "read_all"
                 )
-                # 서버가 실제로 매칭·반영했는지(updated>0)까지 확인해야 진짜 동기 성공.
-                team_synced = ((resp or {}).get("updated") or 0) > 0
-            except Exception:  # noqa: BLE001 — 서버 미연결·오프라인 시 로컬만 반영(추후 재동기 필요)
-                team_synced = False
-    return {"ok": True, "updated": n, "team_synced": team_synced}
+                account_uid = None if read_all else account_scope_uid(request)
+                n = repo.assign_to_project(
+                    body.generation_ids, body.project_id,
+                    account_uid=account_uid, shared_only=True,
+                    folder_path=body.folder_path,
+                    resume_work=body.resume_work,
+                )
+            else:
+                # 내 작업: AUTH on 이면 내 생성물만 귀속(남의 작업물 이동 차단). 단독/AUTH off 는 None → 제약 없음.
+                n = repo.assign_to_project(
+                    body.generation_ids, body.project_id,
+                    account_uid=account_scope_uid(request), folder_path=body.folder_path,
+                    resume_work=body.resume_work,
+                )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        # 팀 매니징: 귀속(프로젝트·폴더)이 바뀐 내 생성물을 텔레메트리 dirty 표시 → 다음 drain 에 반영.
+        if MANAGE_ENABLED and tab != "team":
+            try:
+                # 이동과 outbox 기록은 repo의 같은 트랜잭션에서 완료했다.
+                drain_isolated_telemetry()
+            except Exception:  # noqa: BLE001
+                pass
+        # 이동 양방향 동기(#2 Phase3): 내 작업에서 옮긴 게 이미 공유된 것이면 서버에도 같은 이동을
+        # 반영해 팀 공유 뷰가 안 어긋나게 한다. best-effort — 실패해도 로컬 이동은 유효(team_synced=False).
+        team_synced: Optional[bool] = None
+        if tab != "team" and _proxy.proxying():
+            anchors = repo.shared_generation_anchors(body.generation_ids)
+            if anchors:
+                try:
+                    resp = _proxy.proxy_json(
+                        "POST", "/api/projects/assign", params={"tab": "team"},
+                        body={
+                            "generation_ids": anchors,  # 서버 앵커(job_id) — 로컬 uuid 아님
+                            "project_id": body.project_id,
+                            "folder_path": body.folder_path,
+                            "resume_work": body.resume_work,
+                        },
+                    )
+                    # 서버가 실제로 매칭·반영했는지(updated>0)까지 확인해야 진짜 동기 성공.
+                    team_synced = ((resp or {}).get("updated") or 0) > 0
+                except Exception:  # noqa: BLE001 — 서버 미연결·오프라인 시 로컬만 반영(추후 재동기 필요)
+                    team_synced = False
+        return {"ok": True, "updated": n, "team_synced": team_synced}
 
 
 # ── 프로젝트 멤버·역할 (v02 RBAC PART 1) ───────────────────────────────────

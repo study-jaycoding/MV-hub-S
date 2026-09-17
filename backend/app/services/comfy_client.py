@@ -13,6 +13,8 @@ import mimetypes
 import os
 import re
 import shutil
+import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -33,9 +35,12 @@ CLOUD_MAX_CONCURRENCY = 5  # Pro 티어 문서 기준
 
 
 class ComfyError(RuntimeError):
-    def __init__(self, message: str, auth_error: bool = False):
+    def __init__(self, message: str, auth_error: bool = False, *,
+                 status_code: int | None = None, cause_kind: str = "transport"):
         super().__init__(message)
         self.auth_error = auth_error  # 인증/크레딧 문제 → 배치 중단 사유
+        self.status_code = status_code
+        self.cause_kind = cause_kind
 
 
 def make_target(settings: dict) -> dict:
@@ -60,7 +65,8 @@ def _classify(status_code: int, text: str) -> ComfyError:
     # HTTP 상태코드로만 인증 오류 판정(401/402/403) — 본문 키워드 매칭은 일반 검증 오류를
     # 배치 중단으로 오분류할 수 있어 쓰지 않는다.
     auth = status_code in (401, 402, 403)
-    return ComfyError(f"ComfyUI 오류 (HTTP {status_code}): {text[:500]}", auth_error=auth)
+    return ComfyError(f"ComfyUI 오류 (HTTP {status_code}): {text[:500]}", auth_error=auth,
+                      status_code=status_code, cause_kind=f"http_{status_code // 100}xx")
 
 
 # 실행 중(history) 오류 메시지에서 인증/크레딧 문제를 식별하는 좁은 패턴
@@ -85,10 +91,29 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
+def _connection_error(error: BaseException, prefix: str = "ComfyUI에 연결할 수 없습니다") -> ComfyError:
+    """전송 전 증거는 URLError의 좁은 원인만. 일반 TLS/읽기 오류는 접수 불명이다."""
+    reason = error
+    wrapped = isinstance(error, urllib.error.URLError) and not isinstance(error, urllib.error.HTTPError)
+    seen = set()
+    while isinstance(reason, urllib.error.URLError) and id(reason) not in seen:
+        seen.add(id(reason))
+        reason = reason.reason
+    kind = "timeout" if isinstance(reason, TimeoutError) else "transport"
+    if wrapped:
+        if isinstance(reason, socket.gaierror):
+            kind = "dns"
+        elif isinstance(reason, ConnectionRefusedError):
+            kind = "connect_refused"
+        elif isinstance(reason, ssl.SSLCertVerificationError):
+            kind = "tls_cert"
+    return ComfyError(f"{prefix}: {error}", cause_kind=kind)
+
+
 def _request(method: str, url: str, *, headers: dict | None = None,
              json_body=None, data: bytes | Iterable[bytes] | None = None,
              content_type: str | None = None, content_length: int | None = None,
-             timeout: int = 60) -> tuple[int, bytes]:
+             timeout: int = 60, follow_redirects: bool = True) -> tuple[int, bytes]:
     """(status, body_bytes) 반환. 비-2xx 는 HTTPError 를 잡아 (code, body) 로 되돌린다.
     연결 실패는 ComfyError 로 올린다."""
     if json_body is not None:
@@ -96,7 +121,7 @@ def _request(method: str, url: str, *, headers: dict | None = None,
         content_type = "application/json"
     # http/https 만 허용 — file://·ftp:// 등으로 서버가 임의 로컬 자원을 읽는 것 차단(SSRF 2차 방어).
     if urllib.parse.urlsplit(url).scheme.lower() not in ("http", "https"):
-        raise ComfyError(f"허용되지 않은 URL 스킴입니다(http/https 만): {url[:80]}")
+        raise ComfyError("허용되지 않은 URL 스킴입니다(http/https 만)", cause_kind="scheme")
     req = urllib.request.Request(url, data=data, method=method.upper())
     if content_type:
         req.add_header("Content-Type", content_type)
@@ -105,12 +130,16 @@ def _request(method: str, url: str, *, headers: dict | None = None,
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        opener = urllib.request.urlopen if follow_redirects else _NO_REDIRECT_OPENER.open
+        with opener(req, timeout=timeout) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
-        return e.code, e.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise ComfyError(f"ComfyUI에 연결할 수 없습니다: {e}")
+        try:
+            return e.code, e.read()
+        except (OSError, http.client.HTTPException) as read_error:
+            raise _connection_error(read_error) from read_error
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
+        raise _connection_error(e) from e
 
 
 def _get_json(target: dict, route: str, *, timeout: int = 15, cloud_route=True) -> dict:
@@ -353,19 +382,20 @@ def submit(target: dict, workflow: dict, api_key: str = "") -> str:
     if api_key:
         body["extra_data"] = {"api_key_comfy_org": api_key}
     status, raw = _request("POST", _url(target, "/prompt"),
-                           headers=target["headers"], json_body=body, timeout=60)
+                           headers=target["headers"], json_body=body, timeout=60,
+                           follow_redirects=False)
     if status != 200:
         text = raw.decode("utf-8", "replace")
         friendly = _unsupported_node_message(text)  # Cloud 미지원 노드면 친절한 안내로 대체
         if friendly:
-            raise ComfyError(friendly)
+            raise ComfyError(friendly, status_code=status, cause_kind=f"http_{status // 100}xx")
         raise _classify(status, text)
     try:
         data = json.loads(raw.decode("utf-8") or "{}")
-    except json.JSONDecodeError:
-        raise ComfyError(f"ComfyUI 응답 JSON 파싱 실패: {raw[:200]!r}")
-    if "prompt_id" not in data:
-        raise ComfyError(f"prompt_id 없음: {str(data)[:300]}")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise ComfyError("ComfyUI 제출 응답을 해석할 수 없습니다", cause_kind="body_decode")
+    if not isinstance(data, dict) or not isinstance(data.get("prompt_id"), str) or not data["prompt_id"].strip():
+        raise ComfyError("ComfyUI 제출 응답에 유효한 prompt_id가 없습니다", cause_kind="body_shape")
     return data["prompt_id"]
 
 
@@ -530,8 +560,10 @@ def _open_view_stream(target: dict, params: dict):
                 redirected = guarded_opener().open(loc, timeout=600)
             except BlockedURLError as e2:
                 raise ComfyError(f"출력물 리다이렉트가 차단되었습니다(SSRF 방어): {e2}")
+            except urllib.error.HTTPError as e2:
+                raise _classify(e2.code, e2.read().decode("utf-8", "replace")[:200])
             except (urllib.error.URLError, TimeoutError, OSError) as e2:
-                raise ComfyError(f"출력물 다운로드 실패: {e2}")
+                raise _connection_error(e2, prefix="출력물 다운로드 실패")
             try:
                 yield redirected
             finally:
@@ -575,7 +607,20 @@ def _content_length(stream) -> int | None:
         return None
 
 
-def download_view(target: dict, item: dict, dst: Path) -> None:
+def _copy_stream_deadline(stream, out, deadline: float) -> None:
+    """반복 경계의 soft budget. chunked trailer/헤더 등 blocking 내부 상한은 보장하지 않는다."""
+    # read1이 없는 기존 스트림은 read로 폴백한다. 그 경우 검사 단위는 청크뿐이다.
+    read = getattr(stream, "read1", None) or stream.read
+    while True:
+        if time.monotonic() >= deadline:
+            raise ComfyError("결과 회수 시간 예산을 초과했습니다", cause_kind="timeout")
+        block = read(64 * 1024)
+        if not block:
+            return
+        out.write(block)
+
+
+def download_view(target: dict, item: dict, dst: Path, *, deadline: float | None = None) -> None:
     """/view 출력 파일을 chunk 스트리밍으로 dst 에 저장(R5 2-F) — 종전엔 전체 바이트를
     메모리에 올려 대형 영상 1건당 peak RAM 이 파일 크기만큼 커졌다. 같은 폴더의 고유
     .part 에 쓰고 성공 시에만 os.replace — 실패해도 기존 dst 는 보존되고 .part 는
@@ -589,7 +634,10 @@ def download_view(target: dict, item: dict, dst: Path) -> None:
         with _open_view_stream(target, item) as stream, open(tmp, "wb") as out:
             expected = _content_length(stream)
             try:
-                shutil.copyfileobj(stream, out, length=1024 * 1024)
+                if deadline is None:
+                    shutil.copyfileobj(stream, out, length=1024 * 1024)
+                else:
+                    _copy_stream_deadline(stream, out, deadline)
             except (
                 urllib.error.URLError,
                 TimeoutError,

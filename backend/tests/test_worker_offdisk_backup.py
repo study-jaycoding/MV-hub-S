@@ -762,6 +762,10 @@ def test_server_keeps_stale_device_as_conflict_until_user_activates_it(
 def test_selected_restore_uses_exact_version_and_adopts_it(
     worker_store: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    # A restore clears the machine pointer, so the request override must match it.
+    monkeypatch.setattr(active_account, "_POINTER", tmp_path / "active.json")
+    monkeypatch.setattr(active_account, "_cache", [False, None])
+    active_account.set_active("artist@example.com")
     content_path = tmp_path / "selected-content.db"
     trash_path = tmp_path / "selected-trash.db"
     content = _content_db(content_path, secret=False)
@@ -1002,18 +1006,37 @@ def test_new_worker_with_old_server_keeps_set_pending_and_uses_legacy_compatibil
     monkeypatch.setattr(db_transfer, "require_admin", lambda _request: None)
     monkeypatch.setattr(db_transfer, "_require_local_when_open", lambda _request: None)
     monkeypatch.setattr(db_transfer._proxy, "proxying", lambda: True)
+    email = "synthetic-backup@example.invalid"
+    monkeypatch.setattr(db_transfer, "_capture_backup_admission", lambda: ((email, "synthetic-uid"), "http://synthetic.invalid", "synthetic-token"))
     monkeypatch.setattr(db_transfer, "backup_now", lambda: source)
-    monkeypatch.setattr(db_transfer, "queue_backup_set", lambda _path: "a" * 64)
-    monkeypatch.setattr(db_transfer, "retry_pending", lambda: 1)
 
-    async def old_server_result():
+    def queue(path, *, account_email=None):
+        assert path == source and account_email == email
+        return "a" * 64
+
+    def retry(*, account_email=None):
+        assert account_email == email
+        return 1
+
+    monkeypatch.setattr(db_transfer, "queue_backup_set", queue)
+    monkeypatch.setattr(db_transfer, "retry_pending", retry)
+
+    async def old_server_result(*, expected_account_key=None, expected_backup_set_id=None):
+        assert expected_account_key == hashlib.sha256(active_account.slug(email).encode("utf-8")).hexdigest()
+        assert expected_backup_set_id == "a" * 64
         return {"state": "server_update_required", "error_code": "server_update_required"}
 
     monkeypatch.setattr(db_transfer.periodic_worker_backup, "run_now", old_server_result)
+
+    def legacy(path, *, server_url, token):
+        assert path == source
+        assert server_url == "http://synthetic.invalid" and token == "synthetic-token"
+        return 200, {"ok": True, "count": 4}
+
     monkeypatch.setattr(
         db_transfer,
         "_legacy_server_backup",
-        lambda _path: (200, {"ok": True, "count": 4}),
+        legacy,
     )
 
     result = asyncio.run(db_transfer.server_backup(object()))

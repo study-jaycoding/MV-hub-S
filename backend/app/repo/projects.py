@@ -897,56 +897,55 @@ def projects_where_role(creator_uid: str, roles: list[str]) -> list[str]:
     return out
 
 
-def list_project_members(pid: str) -> list[dict[str, Any]]:
-    """프로젝트 멤버 [{uid, roles[], name}] — 역할 관리 UI 용. 이름은 creator 에서 조인."""
+def _project_members_with_names(
+    conn: sqlite3.Connection, rows: list[sqlite3.Row]
+) -> dict[str, list[dict[str, Any]]]:
+    """멤버 행을 조립한다. 프로젝트 수와 무관하게 공용 이름 해석기는 1회만 호출한다."""
     from .. import rbac
+    from .identity import resolve_display_names
 
+    names = resolve_display_names(conn, [row["uid"] for row in rows])
+    out: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        out.setdefault(row["pid"], []).append(
+            {
+                "uid": row["uid"],
+                "roles": rbac.parse_project_roles(row["role"]),
+                "name": names.get(row["uid"]),
+            }
+        )
+    for members in out.values():
+        # 최종 표시이름 순, 이름 없는 팀원은 끝. 동명이인만 uid로 순서를 고정한다.
+        members.sort(key=lambda member: (member["name"] is None, member["name"] or "", member["uid"]))
+    return out
+
+
+def list_project_members(pid: str) -> list[dict[str, Any]]:
+    """프로젝트 멤버 [{uid, roles[], name}] — 공용 이름 정책·정렬을 적용한다."""
     with get_connection() as conn:
-        # 이름은 creator.name → account.name → 이메일 로컬파트 순 폴백(UI 는 절대 uid 를 보이지 않음).
         rows = conn.execute(
-            "SELECT m.creator_uid uid, m.project_role role, "
-            "COALESCE(NULLIF(c.name,''), NULLIF(a.name,'')) name, a.email email "
-            "FROM project_member m "
-            "LEFT JOIN creator c ON c.uid = m.creator_uid "
-            "LEFT JOIN account a ON a.creator_uid = m.creator_uid "
-            "WHERE m.project_id = ? ORDER BY name",
+            "SELECT project_id pid, creator_uid uid, project_role role "
+            "FROM project_member WHERE project_id = ?",
             (pid,),
         ).fetchall()
-    return [
-        {
-            "uid": r["uid"],
-            "roles": rbac.parse_project_roles(r["role"]),
-            "name": r["name"] or (r["email"].split("@")[0] if r["email"] else None),
-        }
-        for r in rows
-    ]
+        return _project_members_with_names(conn, rows).get(pid, [])
 
 
 def list_all_project_members() -> dict[str, list[dict[str, Any]]]:
-    """모든 프로젝트의 멤버를 한 쿼리로 {pid: [{uid, roles, name}]} 반환.
-    관리자 창이 프로젝트마다 따로 요청하던 것을 1회로 — 요청 N→1, 라운드트립 제거."""
-    from .. import rbac
-
-    out: dict[str, list[dict[str, Any]]] = {}
+    """모든 프로젝트의 멤버를 {pid: [{uid, roles, name}]} 반환.
+    멤버 조회 1회 + 공용 이름 조회 2회로 고정하며 프로젝트별 재조회는 하지 않는다."""
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT m.project_id pid, m.creator_uid uid, m.project_role role, c.name name "
-            "FROM project_member m LEFT JOIN creator c ON c.uid = m.creator_uid "
-            "ORDER BY m.project_id, c.name"
+            "SELECT project_id pid, creator_uid uid, project_role role "
+            "FROM project_member ORDER BY project_id"
         ).fetchall()
-    for r in rows:
-        out.setdefault(r["pid"], []).append(
-            {"uid": r["uid"], "roles": rbac.parse_project_roles(r["role"]), "name": r["name"]}
-        )
-    return out
+        return _project_members_with_names(conn, rows)
 
 
 def list_project_members_for_projects(
     project_ids: list[str],
 ) -> dict[str, list[dict[str, Any]]]:
-    """지정된 프로젝트들만 한 쿼리로 {pid: [멤버]} 반환한다."""
-    from .. import rbac
-
+    """지정된 프로젝트들만 공용 표시이름과 함께 {pid: [멤버]} 반환한다."""
     ids = list(dict.fromkeys(pid for pid in project_ids if pid))
     if not ids:
         return {}
@@ -954,17 +953,9 @@ def list_project_members_for_projects(
     out: dict[str, list[dict[str, Any]]] = {pid: [] for pid in ids}
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT m.project_id pid, m.creator_uid uid, m.project_role role, c.name name "
-            "FROM project_member m LEFT JOIN creator c ON c.uid = m.creator_uid "
-            f"WHERE m.project_id IN ({marks}) ORDER BY m.project_id, c.name",
+            "SELECT project_id pid, creator_uid uid, project_role role "
+            f"FROM project_member WHERE project_id IN ({marks}) ORDER BY project_id",
             ids,
         ).fetchall()
-    for row in rows:
-        out[row["pid"]].append(
-            {
-                "uid": row["uid"],
-                "roles": rbac.parse_project_roles(row["role"]),
-                "name": row["name"],
-            }
-        )
+        out.update(_project_members_with_names(conn, rows))
     return out

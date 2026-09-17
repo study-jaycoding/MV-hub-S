@@ -109,8 +109,8 @@ export function getLatestReleaseMetadata(): Promise<LatestReleaseMetadata> {
   return jsonFetch<LatestReleaseMetadata>("/api/release-update/latest-metadata");
 }
 
-/** force=true — 오류 잔여 카드로 '진행 중' 집계가 안 빠질 때 검사를 건너뛰고 강제 시작
- * (폴더의 update_release.bat 직접 실행과 동일). */
+/** force=true — 활동 수 검사만 우회하는 비상 옵션.
+ * 업데이트 상태 안전 검사는 유지하며, bat 직접 실행과 동일하지 않다. */
 export function startReleaseUpdate(force = false): Promise<ReleaseUpdateStatus> {
   return jsonFetch<ReleaseUpdateStatus>("/api/release-update/start", {
     method: "POST",

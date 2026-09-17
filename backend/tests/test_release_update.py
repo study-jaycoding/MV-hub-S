@@ -944,7 +944,7 @@ def test_failed_state_resolves_once_the_new_version_is_actually_installed(tmp_pa
 def _move_retry_harness(tmp_path: Path) -> Path:
     payload = _worker_payload()
     helper = payload[
-        payload.index("$script:RetryableMoveCodes") : payload.index("function Invoke-CheckedProcess")
+        payload.index("$script:RetryableMoveCodes =") : payload.index("function Invoke-CheckedProcess")
     ]
     harness = tmp_path / "move_retry.ps1"
     harness.write_text(
@@ -1043,7 +1043,7 @@ def test_move_with_retry_fails_fast_when_destination_exists(tmp_path: Path):
 def _quarantine_harness(tmp_path: Path) -> Path:
     payload = _worker_payload()
     move_helper = payload[
-        payload.index("$script:RetryableMoveCodes") : payload.index("function Invoke-CheckedProcess")
+        payload.index("$script:RetryableMoveCodes =") : payload.index("function Invoke-CheckedProcess")
     ]
     quarantine_fn = payload[
         payload.index("function Move-LeftoversToQuarantine") : payload.index("function New-StagedComponents")

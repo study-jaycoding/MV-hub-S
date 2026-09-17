@@ -927,6 +927,63 @@ async def reconcile_request(
         }
 
     current = await _sync_io(repo.get_generation, gen_id)
+    if current is None and provider_kind in ("success", "failure"):
+        result = normalize_job_result(parsed)
+        resolution = {"decision": "unverified"}
+        if isinstance(result.job_id, str) and result.job_id.strip():
+            resolution = await _sync_io(
+                repo.resolve_missing_target,
+                gen_id, request_row["id"], result.job_id, request_row["account_email"],
+                provider_kind=provider_kind,
+            )
+        decision = resolution["decision"]
+        if decision == "target_present":
+            # 읽기 뒤 복원됐으면 같은 트랜잭션의 새 job으로 아래 기존 conflict 검사를 다시 한다.
+            current = resolution["current"]
+        else:
+            response = {
+                "ok": True, "applied": False, "outcome": "rejected",
+                "status": result.status, "job_id": result.job_id, "asset_saved": False,
+            }
+            event = "generation_target_unverified"
+            if decision in ("retired", "tracker_released"):
+                response.update(
+                    released_job_id=result.job_id,
+                    request_status=resolution["request_status"],
+                    request_changed=resolution["request_changed"],
+                )
+                if decision == "retired":
+                    response.update(
+                        outcome="target_retired", retire_reason="trashed",
+                        marker_recorded=resolution["marker_recorded"],
+                    )
+                    event = "generation_target_retired"
+                else:
+                    response.update(
+                        outcome="stale_tracker_released", release_reason="purged_anchored_history",
+                    )
+                    event = "generation_tracker_released"
+            try:
+                log_event(
+                    _generation_log, event, generation_id=gen_id,
+                    request_id=request_row["id"], job_id=result.job_id,
+                    provider_status=raw_provider_status,
+                )
+            except Exception:  # 관측 실패가 이미 끝난 판정/ACK를 바꾸지 않는다.
+                pass
+            if decision == "retired":
+                # repo의 COMMIT/DETACH가 끝난 뒤에만 기록한다. 역사 추적해제/거절은 DB 쓰기 0.
+                try:
+                    await _sync_io(
+                        journal_generation_event, event, gen_id,
+                        request_id=request_row["id"], job_id=result.job_id,
+                        from_phase=request_row.get("status"), to_phase=resolution["request_status"],
+                        provider_status=raw_provider_status, reason_code="trashed", actor_uid=account_uid,
+                    )
+                except Exception:
+                    pass
+            # 대상이 없는 완료/빈 결과도 verifying으로 요청을 다시 쓰지 않는다.
+            return response
     expected_job_id = (current or {}).get("job_id")
 
     if expected_job_id and parsed_job_id and expected_job_id != parsed_job_id:

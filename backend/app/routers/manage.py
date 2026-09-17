@@ -913,29 +913,30 @@ def get_project_folder(pid: str, request: Request):
 
 @router.put("/project-folders/{pid}")
 def put_project_folder(pid: str, body: ProjectFolderIn, request: Request):
-    _require_project_manage(request, pid)
-    # 렌더 루트 경로는 팀 공유(서버 프로젝트 정의). selected_path(내가 보는 하위폴더)는 개인 로컬.
-    # ★루트가 '실제로 바뀔 때만' 서버에 저장한다 — 하위폴더만 클릭(selected 변경)해도 프론트가 같은
-    # root_path 를 함께 보내는데, 매번 서버 PATCH 를 쏘면 (1) 불필요한 쓰기 (2) create_project 없는
-    # 매니저가 폴더 탐색만 해도 403 이 난다. 값이 같으면 서버를 건드리지 않는다.
-    current_root = project_folders.effective_root_path(pid)
-    root_changed = False
-    if body.root_path is not None:
-        new_root = body.root_path.strip()
-        root_changed = new_root != current_root
-        if root_changed:  # 루트가 실제 변경됨
-            # 위임 모드: 공유 서버에 먼저 저장(실패 시 예외 전파 → 로컬 미변경으로 불일치 방지) → 로컬 미러.
-            if _proxy.proxying():
-                _proxy.proxy_json(
-                    "PATCH", f"/api/projects/{pid}", body={"render_root_path": new_root}
-                )
-            repo.set_render_root(pid, new_root)  # 로컬 미러(즉시 반영) / 서버 본체면 이게 진실
-    # root_path 를 생략한 구형 호출도 기존 루트를 지우지 않도록 보존한다.
-    root_for_local = body.root_path if body.root_path is not None else current_root
-    repo_manage.set_project_folder(pid, root_for_local, body.selected_path)
-    if root_changed:
-        project_folders.invalidate_project_folder(pid)
-    return project_folders.project_folder_state(pid, fresh=root_changed)
+    with active_account.pinned_account_scope():
+        _require_project_manage(request, pid)
+        # 렌더 루트 경로는 팀 공유(서버 프로젝트 정의). selected_path(내가 보는 하위폴더)는 개인 로컬.
+        # ★루트가 '실제로 바뀔 때만' 서버에 저장한다 — 하위폴더만 클릭(selected 변경)해도 프론트가 같은
+        # root_path 를 함께 보내는데, 매번 서버 PATCH 를 쏘면 (1) 불필요한 쓰기 (2) create_project 없는
+        # 매니저가 폴더 탐색만 해도 403 이 난다. 값이 같으면 서버를 건드리지 않는다.
+        current_root = project_folders.effective_root_path(pid)
+        root_changed = False
+        if body.root_path is not None:
+            new_root = body.root_path.strip()
+            root_changed = new_root != current_root
+            if root_changed:  # 루트가 실제 변경됨
+                # 위임 모드: 공유 서버에 먼저 저장(실패 시 예외 전파 → 로컬 미변경으로 불일치 방지) → 로컬 미러.
+                if _proxy.proxying():
+                    _proxy.proxy_json(
+                        "PATCH", f"/api/projects/{pid}", body={"render_root_path": new_root}
+                    )
+                repo.set_render_root(pid, new_root)  # 로컬 미러(즉시 반영) / 서버 본체면 이게 진실
+        # root_path 를 생략한 구형 호출도 기존 루트를 지우지 않도록 보존한다.
+        root_for_local = body.root_path if body.root_path is not None else current_root
+        repo_manage.set_project_folder(pid, root_for_local, body.selected_path)
+        if root_changed:
+            project_folders.invalidate_project_folder(pid)
+        return project_folders.project_folder_state(pid, fresh=root_changed)
 
 
 @router.patch("/project-folders/{pid}/selection")
@@ -1153,6 +1154,9 @@ def list_tasks_batch(
     gzip_encoded = _accepts_gzip(request.headers.get("accept-encoding"))
     response_key = (
         str(repo_manage_tasks.get_db_path()),
+        # 자동보관은 SQLite의 UTC now에 따라 바뀐다. DB 변경이 없어도 분마다
+        # 조건부 조회를 재평가하되, 저장소의 파일 표식과 짧은 읽기 캐시는 유지한다.
+        int(time.time() // 60),
         tuple(allowed),
         bool(include_archived),
         str(workspace_id or ""),

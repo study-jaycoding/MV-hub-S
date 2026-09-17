@@ -259,7 +259,8 @@ export interface GenerationWorkspaceBatchResponse {
 const GENERATION_BATCH_LIMIT = 500; // 백엔드 /api/generations/batch 계약 상한
 const GENERATION_BATCH_CONCURRENCY = 3;
 
-function fetchGenerationBatchPage(genIds: string[]): Promise<GenerationBatchResponse> {
+function fetchGenerationBatchPage(genIds: string[], assertCurrent?: () => void): Promise<GenerationBatchResponse> {
+  assertCurrent?.();
   return jsonFetch<GenerationBatchResponse>("/api/generations/batch", {
     method: "POST",
     body: jsonBody({ gen_ids: genIds }),
@@ -274,14 +275,14 @@ function fetchGenerationBatchPage(genIds: string[]): Promise<GenerationBatchResp
   }));
 }
 
-async function getGenerationsBatch(genIds: string[]): Promise<GenerationBatchResponse> {
+async function getGenerationsBatch(genIds: string[], assertCurrent?: () => void): Promise<GenerationBatchResponse> {
   const ids = Array.from(new Set(genIds.map((id) => id.trim()).filter(Boolean)));
   if (!ids.length) return { items: {}, materials: {}, missing: [] };
   const chunks: string[][] = [];
   for (let i = 0; i < ids.length; i += GENERATION_BATCH_LIMIT) {
     chunks.push(ids.slice(i, i + GENERATION_BATCH_LIMIT));
   }
-  if (chunks.length === 1) return fetchGenerationBatchPage(chunks[0]);
+  if (chunks.length === 1) return fetchGenerationBatchPage(chunks[0], assertCurrent);
 
   // 큰 씬도 서버 상한을 넘기지 않되 요청 수만큼 한꺼번에 연결하지 않는다. 한 페이지가 실패하면
   // 나머지 worker가 끝난 뒤 전체를 reject해 호출부가 기존 캐시를 유지하고 다음 tick에 다시 시도한다.
@@ -290,7 +291,7 @@ async function getGenerationsBatch(genIds: string[]): Promise<GenerationBatchRes
   const worker = async () => {
     while (nextPage < chunks.length) {
       const index = nextPage++;
-      pages[index] = await fetchGenerationBatchPage(chunks[index]);
+      pages[index] = await fetchGenerationBatchPage(chunks[index], assertCurrent);
     }
   };
   const workers = Array.from(
@@ -735,9 +736,10 @@ export const api = {
       body: jsonBody({ color }),
     }),
 
-  setColorsBatch: async (ids: string[], color: string | null) => {
+  setColorsBatch: async (ids: string[], color: string | null, assertCurrent?: () => void) => {
     const out = { succeeded: [] as string[], failed: [] as string[] };
     for (const chunk of chunked(ids)) {
+      assertCurrent?.();
       const res = await jsonFetch<{ succeeded: string[]; failed: string[] }>(
         "/api/generations/colors/batch",
         { method: "PUT", body: jsonBody({ items: chunk.map((id) => ({ id, color })) }) },

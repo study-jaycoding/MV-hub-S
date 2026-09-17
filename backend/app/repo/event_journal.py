@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 from typing import Any, Optional
 
 from ..db import get_connection
@@ -104,6 +105,23 @@ def record_generation_event(
             ),
         )
     return event_id
+
+
+def has_anchored_job_event(
+    conn: sqlite3.Connection, *, generation_id: str, request_id: str, job_id: str
+) -> bool:
+    """같은 트랜잭션에서 과거 앵커의 존재만 확인한다. 현재 job 판정에는 쓰지 않는다.
+
+    자체 get_connection 을 열면 풀의 중첩 컨텍스트가 호출자 트랜잭션을 커밋할 수 있다.
+    """
+    safe_job_id = _safe_code(job_id)
+    if not generation_id or not request_id or safe_job_id is None:
+        return False
+    return conn.execute(
+        "SELECT 1 FROM generation_event WHERE generation_id=? AND request_id=? "
+        "AND job_id=? AND event='generation_job_anchored' LIMIT 1",
+        (generation_id, request_id, safe_job_id),
+    ).fetchone() is not None
 
 
 def list_generation_events(

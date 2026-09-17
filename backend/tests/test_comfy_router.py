@@ -10,6 +10,8 @@ import io
 import threading
 import time
 import unittest
+from contextlib import nullcontext
+from fastapi import Request
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
@@ -196,13 +198,17 @@ class MediaStagingTests(unittest.TestCase):
             path = Path(d) / "staged.part"
             path.write_bytes(b"x")
             staged = [comfy._MediaUpload("x.png", path, 1)]
+            identity = comfy._ComfyIdentity(("", None), "local", None, "1" * 32, "2" * 16, {}, False)
             with mock.patch.object(comfy, "_stage_media_uploads", return_value=staged), \
+                 mock.patch.object(comfy, "_comfy_request_scope", return_value=nullcontext(identity)), \
+                 mock.patch.object(comfy.run_journal, "read", return_value=[]), \
                  mock.patch.object(comfy, "_raw_settings", return_value={}), \
                  mock.patch.object(comfy, "_create_run_job", return_value="job"), \
                  mock.patch.object(comfy, "_fail_run_job"), \
                  mock.patch.object(comfy.threading.Thread, "start", side_effect=OSError("no thread")):
                 with self.assertRaises(comfy.HTTPException) as cm:
                     comfy.run(
+                        request=Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1)}),
                         content='{"1":{"class_type":"LoadImage","inputs":{}}}',
                         param_values="{}",
                         media_meta='[{"type":"image"}]',
@@ -308,20 +314,30 @@ class InflightRunPersistenceTests(unittest.TestCase):
         def set_setting(key, value):
             values[key] = value
 
+        identity = comfy._ComfyIdentity(("local", None), "local", None, "device", "scope", {}, False)
+        record = {"job_id": "job-1", "owner": "local", "phase": "submitting", "created_at": 1,
+                  "collect_job_id": "job-1", "collect_seq": 0, "outputs": []}
         with mock.patch.object(comfy.repo, "get_setting", get_setting), \
-             mock.patch.object(comfy.repo, "set_setting", set_setting):
+             mock.patch.object(comfy.repo, "set_setting", set_setting), \
+             mock.patch.object(comfy.run_journal, "_JOURNAL_BOOTSTRAPPED", set()), \
+             mock.patch.object(comfy, "_RUN_JOBS", {"job-1": {"identity": identity, "journal_record": record}}):
+            comfy.run_journal.admit(record, False)
             comfy._track_inflight_run("job-1", "prompt-1", "cloud")
-            rows = json.loads(values[comfy._K_INFLIGHT_RUNS])
+            rows = json.loads(values[comfy.run_journal.KEY])["runs"]
             self.assertEqual(rows[0]["job_id"], "job-1")
             self.assertEqual(rows[0]["prompt_id"], "prompt-1")
-            self.assertEqual(rows[0]["target"], "cloud")
             self.assertIn("created_at", rows[0])
+            comfy._patch_run_record("job-1", terminal_kind="success", phase="collected")
             comfy._forget_inflight_run("job-1")
-        self.assertEqual(json.loads(values[comfy._K_INFLIGHT_RUNS]), [])
+            self.assertEqual(len(json.loads(values[comfy.run_journal.KEY])["runs"]), 1)  # ACK 전 보존.
+            comfy._patch_run_record("job-1", terminal_kind="failure", phase="failed")
+            comfy._forget_inflight_run("job-1")
+        self.assertEqual(json.loads(values[comfy.run_journal.KEY])["runs"], [])
+        self.assertNotIn(comfy.run_journal.LEGACY_KEY, values)
 
     def test_restart_logs_cloud_job_cancels_and_clears_store(self):
         values = {
-            comfy._K_INFLIGHT_RUNS: (
+            comfy.run_journal.LEGACY_KEY: (
                 '[{"job_id":"job-1","prompt_id":"cloud-prompt","target":"cloud","created_at":1},'
                 '{"job_id":"job-2","prompt_id":"local-prompt","target":"local","created_at":2}]'
             )
@@ -335,22 +351,25 @@ class InflightRunPersistenceTests(unittest.TestCase):
 
         with mock.patch.object(comfy.repo, "get_setting", get_setting), \
              mock.patch.object(comfy.repo, "set_setting", set_setting), \
+             mock.patch.object(comfy.run_journal, "_JOURNAL_BOOTSTRAPPED", set()), \
+             mock.patch.object(comfy, "AUTH_ENABLED", False), \
              mock.patch.object(comfy, "EXTERNAL_RECOVERY_ENABLED", True), \
              mock.patch.object(comfy, "_raw_settings", return_value={"comfy_api_key": "key"}), \
              mock.patch.object(comfy.comfy_client, "cloud_cancel_pending") as cancel:
             comfy.recover_interrupted_run_jobs()
-        cancel.assert_called_once()
-        self.assertEqual(cancel.call_args.args[1], "cloud-prompt")
-        self.assertEqual(json.loads(values[comfy._K_INFLIGHT_RUNS]), [])
+        cancel.assert_not_called()  # legacy에는 기기/대상 신원 증거가 없어 자동 취소하지 않는다.
+        rows = json.loads(values[comfy.run_journal.KEY])["runs"]
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row["evidence_incomplete"] and row["phase"] == "orphaned" for row in rows))
+        self.assertEqual(len(json.loads(values[comfy.run_journal.LEGACY_KEY])), 2)
 
     def test_restart_skips_cloud_cancel_when_external_recovery_disabled(self):
         """복원 드릴(격리 서버) 계약 — 사본 DB의 키로 라이브 Cloud 잡을 취소하면 안 된다.
 
-        CONTENT_HUB_EXTERNAL_RECOVERY=0 이면 취소 호출 없이 로그만 남기고 흔적은 비운다
-        (사본이므로 비워도 무해, 반복 로그 방지).
+        CONTENT_HUB_EXTERNAL_RECOVERY=0이면 취소 없이 v1으로 로컬 복원하고 원본은 보존한다.
         """
         values = {
-            comfy._K_INFLIGHT_RUNS: (
+            comfy.run_journal.LEGACY_KEY: (
                 '[{"job_id":"job-1","prompt_id":"cloud-prompt","target":"cloud","created_at":1}]'
             )
         }
@@ -363,13 +382,16 @@ class InflightRunPersistenceTests(unittest.TestCase):
 
         with mock.patch.object(comfy.repo, "get_setting", get_setting), \
              mock.patch.object(comfy.repo, "set_setting", set_setting), \
+             mock.patch.object(comfy.run_journal, "_JOURNAL_BOOTSTRAPPED", set()), \
+             mock.patch.object(comfy, "AUTH_ENABLED", False), \
              mock.patch.object(comfy, "EXTERNAL_RECOVERY_ENABLED", False), \
              mock.patch.object(comfy, "_raw_settings") as raw_settings, \
              mock.patch.object(comfy.comfy_client, "cloud_cancel_pending") as cancel:
             comfy.recover_interrupted_run_jobs()
         cancel.assert_not_called()
         raw_settings.assert_not_called()  # 설정(키) 접근 자체가 없어야 한다
-        self.assertEqual(json.loads(values[comfy._K_INFLIGHT_RUNS]), [])
+        self.assertEqual(len(json.loads(values[comfy.run_journal.LEGACY_KEY])), 1)
+        self.assertEqual(len(json.loads(values[comfy.run_journal.KEY])["runs"]), 1)
 
 
 class ComboChoiceTests(unittest.TestCase):

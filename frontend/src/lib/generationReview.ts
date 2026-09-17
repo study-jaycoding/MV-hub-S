@@ -3,6 +3,11 @@ import type { Generation, GenQuery } from "../types";
 export type ReviewFilter = NonNullable<GenQuery["review_filter"]>;
 export type ReviewAction = "unshared" | "shared" | "held" | "final";
 
+// 조작 진입점의 표시 규칙. 읽기 전용 공유/최종 배지의 표시 여부와는 별개다.
+export function canShowShareAction(generation: Generation, mayFinalize: boolean): boolean {
+  return !!(generation.is_mine || generation.is_final || generation.is_held || (generation.shared && mayFinalize));
+}
+
 export function reviewState(generation: Generation): ReviewAction {
   return generation.is_final ? "final" : generation.is_held ? "held" : generation.shared ? "shared" : "unshared";
 }

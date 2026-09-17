@@ -1,5 +1,5 @@
 import type { Generation } from "../types";
-import { comfyApi, type ComfyOutput, type ComfyRunMedia } from "./comfyApi";
+import { comfyApi, ComfyUnresolvedRunError, type ComfyOutput, type ComfyRunMedia } from "./comfyApi";
 import { fetchBlob } from "./download";
 import {
   prepareSceneComfyInputs,
@@ -186,6 +186,7 @@ export async function executeSceneComfy(
     }
     return { outputs: result.outputs, inputSnapshot, superseded };
   } catch (error) {
+    if (error instanceof ComfyUnresolvedRunError) throw error;
     // 실패 응답도 입력 교체 뒤 현재 카드에 표시되면 안 된다. 교체가 아니면 원래 오류를 보존한다.
     assertPreparedInputsCurrent(options, baseParams, prepared);
     throw error;

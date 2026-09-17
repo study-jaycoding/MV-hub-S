@@ -26,7 +26,7 @@ import {
 import { InlinePromptRefs, hasInlinePromptRefs } from "./common/InlinePromptRefs";
 import { GenerationConfirmOverlay } from "./generation/GenerationConfirmOverlay";
 import { GenerationReviewOverlay } from "./generation/GenerationReviewOverlay";
-import { reviewTargets, reviewState, type ReviewAction } from "../lib/generationReview";
+import { canShowShareAction, reviewTargets, reviewState, type ReviewAction } from "../lib/generationReview";
 import { GenerationCardStatusBar } from "./generation/GenerationCardStatusBar";
 import { ClockIcon, FrameIcon, GemIcon, ModelIcon } from "./generation/GenerationCardIcons";
 import { GenerationThumbOverlay } from "./generation/GenerationThumbOverlay";
@@ -150,6 +150,7 @@ function GenerationCardImpl({
   const [confirmFinal, setConfirmFinal] = useState(false);
   const [confirmShare, setConfirmShare] = useState(false); // S 단일클릭 → 공유/해제 확인(최종과 동일 UX)
   const [confirmReview, setConfirmReview] = useState(false);
+  const reviewOpenedAt = useRef(0);
   useEffect(() => setConfirmReview(false), [gen.id, gen.shared, gen.is_held, gen.is_final, selectedCount, tab]);
   // 미디어 로드 실패(원본 URL 죽음 = 힉스필드에서 삭제 등) → '원본 없음' 흐림 표시(즉시 감지 신호).
   // 소스가 바뀌면(리로드로 캐시 URL 전환 등) 초기화해 다시 시도.
@@ -160,6 +161,7 @@ function GenerationCardImpl({
   const isMultiGrade = selected && (selectedCount ?? 1) > 1 && !!onBulkGradeStep;
   const onSClick = () => {
     if (tab === "team" && (gen.shared || isMultiGrade)) {
+      reviewOpenedAt.current = performance.now();
       setConfirmReview(true);
       return; // 공유·보류·최종 모두 메뉴 → 명시적 Yes 확인 뒤에만 변경.
     }
@@ -180,6 +182,7 @@ function GenerationCardImpl({
     gen.shared ? onUnpublish(gen) : onPublish(gen);
   };
   const onSDouble = () => {
+    if (confirmReview) return; // 메뉴가 열리면 가림 배치와 무관하게 명시적 확인만 허용한다.
     if (tab === "team" && gen.shared) return;
     if (isMultiGrade) {
       sClick.onDouble(() => onBulkGradeStep!("double"));
@@ -211,7 +214,7 @@ function GenerationCardImpl({
   //  · 최종 권한자(그 프로젝트 supervisor/global admin)는 '공유된' 남의 카드에도 S 가 보여 최종 지정 가능
   //  · 최종(골드) 카드는 누구에게나 ★ 가 보인다(권한 없으면 읽기전용 표식 — 더블클릭은 무반응)
   const mayFinalize = canFinalize ? canFinalize(gen) : true;
-  const showSF = gen.is_mine || gen.is_final || gen.is_held || (gen.shared && mayFinalize);
+  const showSF = canShowShareAction(gen, mayFinalize);
   const reviewAllowed = isMultiGrade ? bulkReviewAllowed ?? { unshared: false, shared: false, held: false, final: false } : {
     unshared: !!onReview && reviewTargets([gen], "unshared", () => mayFinalize).length > 0,
     shared: !!onReview && reviewTargets([gen], "shared", () => mayFinalize).length > 0,
@@ -223,6 +226,13 @@ function GenerationCardImpl({
     if (!reviewAllowed[action]) return;
     if (isMultiGrade) onBulkReview?.(action);
     else onReview?.(gen, action);
+  };
+  const onReviewClickCapture = (event: React.MouseEvent) => {
+    // 즉시 열린 메뉴로 S 더블클릭의 두 번째 포인터 클릭이 넘어가지 않게 한다.
+    // 키보드 활성(detail=0)은 지연하지 않으며, Workspace의 단일/더블 동작은 그대로 둔다.
+    if (confirmReview && event.detail !== 0 && performance.now() - reviewOpenedAt.current < 220) {
+      event.stopPropagation();
+    }
   };
 
   const params = (gen.params || {}) as Record<string, unknown>;
@@ -548,6 +558,7 @@ function GenerationCardImpl({
         // ★탭 무관: 내 생성물은 작업 공간에도 같은 카드가 보이므로, 어디서 클릭하든 확인돼야
         //   팀 탭 배지와 어긋나지 않는다. 새것이 아니면 ackTeamFresh 가 no-op(기록 안 쌓임).
         onMouseDownCapture={() => ackTeamFresh(gen)}
+        onClickCapture={onReviewClickCapture}
       >
         <div className="card-clip">
         {cardConfirm}
@@ -653,6 +664,7 @@ function GenerationCardImpl({
       // ★탭 무관: 내 생성물은 작업 공간에도 같은 카드가 보이므로, 어디서 클릭하든 확인돼야
       //   팀 탭 배지와 어긋나지 않는다. 새것이 아니면 ackTeamFresh 가 no-op(기록 안 쌓임).
       onMouseDownCapture={() => ackTeamFresh(gen)}
+      onClickCapture={onReviewClickCapture}
     >
       <div className="card-clip">
       {cardConfirm}

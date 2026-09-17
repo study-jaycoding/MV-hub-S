@@ -579,47 +579,49 @@ class ElevateIn(BaseModel):
 def shared_server_elevate(body: ElevateIn, request: Request):
     """현재 로그인한 영구 admin 본인이 재인증해 10분 workspace 전용 권한을 받는다."""
     _require_local_shared_connection(request)
-    if not _is_admin():
-        raise HTTPException(status_code=403, detail="영구 Admin 역할이 있는 계정만 사용할 수 있습니다")
-    normal_token = repo.get_setting(_K_TOKEN)
-    if not normal_token:
-        raise HTTPException(status_code=401, detail="공유 서버 로그인이 필요합니다")
-    url = _validated_effective_url()
-    status, resp = _http_json(
-        "POST",
-        f"{url}/api/auth/super-admin/elevate",
-        token=normal_token,
-        body={"password": body.password},
-    )
-    if status != 200 or not isinstance(resp, dict) or not resp.get("token") or not resp.get("expires_at"):
-        raise HTTPException(status_code=400, detail=f"권한 부여 실패: {_flatten_detail(resp)}")
-    repo.set_setting(_K_ELEV_TOKEN, resp["token"])
-    repo.set_setting(_K_ELEV_EXPIRES, str(int(resp["expires_at"])))
-    repo.set_setting(_K_ELEV_EMAIL, repo.get_setting(_K_EMAIL))
-    repo.set_setting(_K_ELEV_NAME, repo.get_setting(_K_NAME))
-    return {"ok": True, **_shared_status()}
+    with _pinned_account_scope():
+        if not _is_admin():
+            raise HTTPException(status_code=403, detail="영구 Admin 역할이 있는 계정만 사용할 수 있습니다")
+        normal_token = repo.get_setting(_K_TOKEN)
+        if not normal_token:
+            raise HTTPException(status_code=401, detail="공유 서버 로그인이 필요합니다")
+        url = _validated_effective_url()
+        status, resp = _http_json(
+            "POST",
+            f"{url}/api/auth/super-admin/elevate",
+            token=normal_token,
+            body={"password": body.password},
+        )
+        if status != 200 or not isinstance(resp, dict) or not resp.get("token") or not resp.get("expires_at"):
+            raise HTTPException(status_code=400, detail=f"권한 부여 실패: {_flatten_detail(resp)}")
+        repo.set_setting(_K_ELEV_TOKEN, resp["token"])
+        repo.set_setting(_K_ELEV_EXPIRES, str(int(resp["expires_at"])))
+        repo.set_setting(_K_ELEV_EMAIL, repo.get_setting(_K_EMAIL))
+        repo.set_setting(_K_ELEV_NAME, repo.get_setting(_K_NAME))
+        return {"ok": True, **_shared_status()}
 
 
 @router.post("/shared-server/de-elevate")
 def shared_server_de_elevate(request: Request):
     """슈퍼 관리자 권한 해제(수동). 서버 해제가 실패해도 로컬 토큰은 즉시 버린다."""
     _require_local_shared_connection(request)
-    normal_token = repo.get_setting(_K_TOKEN)
-    super_token = repo.get_setting(_K_ELEV_TOKEN)
-    if normal_token and super_token:
-        try:
-            _http_json(
-                "POST",
-                f"{_validated_effective_url()}/api/auth/super-admin/revoke",
-                token=normal_token,
-                body={},
-                timeout=10,
-                super_token=super_token,
-            )
-        except HTTPException:
-            pass
-    _clear_elevation()
-    return {"ok": True, **_shared_status()}
+    with _pinned_account_scope():
+        normal_token = repo.get_setting(_K_TOKEN)
+        super_token = repo.get_setting(_K_ELEV_TOKEN)
+        if normal_token and super_token:
+            try:
+                _http_json(
+                    "POST",
+                    f"{_validated_effective_url()}/api/auth/super-admin/revoke",
+                    token=normal_token,
+                    body={},
+                    timeout=10,
+                    super_token=super_token,
+                )
+            except HTTPException:
+                pass
+        _clear_elevation()
+        return {"ok": True, **_shared_status()}
 
 
 @router.post("/shared-server/url")
@@ -1212,29 +1214,30 @@ def publish_to_shared(body: PublishToSharedIn, request: Request):
       이 DB에 바로 공유 표식만 남긴다(외부 서버 로그인 불필요 → 로그인창으로 튀지 않음).
       finalize 가 비프록시에서 로컬 repo.publish 로 처리하는 것과 동형.
     성공 시 로컬에도 share 표식을 남겨(공유됨 뱃지) 어떤 걸 올렸는지 보이게 한다."""
-    if not _proxy.proxying():
-        published = 0
-        # 상한 없는 gen_ids 의 단건 get_generation N회 → snapshot 배치 1회(R7 2-F).
-        # 권한 검사·항목별 repo.publish 순서·published 집계는 종전 그대로(중복 id 는
-        # dedupe 로 1회만 집계 — 종전에도 두 번째는 shared=True 로 걸러졌다).
-        unique_ids = list(dict.fromkeys(gid for gid in (body.gen_ids or []) if gid))
-        gens: dict = {}
-        for offset in range(0, len(unique_ids), 500):  # SQL 변수 상한 보호(코덱스 P2)
-            gens.update(repo.get_generations_batch(unique_ids[offset:offset + 500]))
-        for gid in unique_ids:
-            gen = gens.get(gid)
-            if not (gen and gen.get("status") == "done" and not gen.get("shared")):
-                continue
-            try:
-                require_edit_generation(request, gen)  # 본인(또는 admin)만 — 남의 작업 공유 차단
-            except HTTPException:
-                continue  # 권한 없는 항목은 건너뜀(벌크 전체를 막지 않음)
-            repo.publish(gid, actor_id(request), "team")
-            _touch_telemetry(gid)
-            published += 1
-        return {"ok": True, "published": published, "remote": {}}
-    r = publish_bundle_to_server(body.gen_ids)
-    return {"ok": True, **r}
+    with active_account.pinned_account_scope():
+        if not _proxy.proxying():
+            published = 0
+            # 상한 없는 gen_ids 의 단건 get_generation N회 → snapshot 배치 1회(R7 2-F).
+            # 권한 검사·항목별 repo.publish 순서·published 집계는 종전 그대로(중복 id 는
+            # dedupe 로 1회만 집계 — 종전에도 두 번째는 shared=True 로 걸러졌다).
+            unique_ids = list(dict.fromkeys(gid for gid in (body.gen_ids or []) if gid))
+            gens: dict = {}
+            for offset in range(0, len(unique_ids), 500):  # SQL 변수 상한 보호(코덱스 P2)
+                gens.update(repo.get_generations_batch(unique_ids[offset:offset + 500]))
+            for gid in unique_ids:
+                gen = gens.get(gid)
+                if not (gen and gen.get("status") == "done" and not gen.get("shared")):
+                    continue
+                try:
+                    require_edit_generation(request, gen)  # 본인(또는 admin)만 — 남의 작업 공유 차단
+                except HTTPException:
+                    continue  # 권한 없는 항목은 건너뜀(벌크 전체를 막지 않음)
+                repo.publish(gid, actor_id(request), "team")
+                _touch_telemetry(gid)
+                published += 1
+            return {"ok": True, "published": published, "remote": {}}
+        r = publish_bundle_to_server(body.gen_ids)
+        return {"ok": True, **r}
 
 
 # 폴더 우클릭 '팀에 공유'(2026-09-09, 코덱스 설계 검토 반영) — 한 번에 200건씩 순차 발행. 번들 SQL 은 id 수의 2배

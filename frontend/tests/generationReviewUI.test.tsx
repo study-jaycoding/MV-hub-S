@@ -21,6 +21,93 @@ vi.mock("../src/lib/modelPolicy", () => ({ modelBlockMessage: () => null }));
 vi.mock("../src/lib/libraryBroadcast", () => ({ postLibraryChanged: vi.fn() }));
 vi.mock("../src/api", () => ({ api: { setReviewState: vi.fn() } }));
 const noop = () => {};
+
+it("open review menu never lets a double event run a bulk grade action behind it", () => {
+  const p = { ...props(gen({ shared: false })), selected: true, selectedCount: 2,
+    onBulkGradeStep: vi.fn(), onBulkReview: vi.fn() };
+  act(() => root.render(<GenerationCard {...p} />));
+  click(".card-sf");
+  // CSS가 S를 가리는 현재 배치에 기대지 않고 핸들러 자체가 확인 단계를 지키는지 검사.
+  act(() => host.querySelector(".card-sf")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 })));
+  expect(p.onBulkGradeStep).not.toHaveBeenCalled();
+  expect(p.onBulkReview).not.toHaveBeenCalled();
+  expect(host.querySelectorAll(".review-option")).toHaveLength(3);
+});
+
+it.each(["single", "double"] as const)("Workspace %s keeps the existing confirmation flow", (kind) => {
+  vi.useFakeTimers();
+  const p = props();
+  act(() => root.render(<GenerationCard {...p} tab="my" />));
+  const button = host.querySelector(".card-sf")!;
+  act(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
+  if (kind === "double") {
+    act(() => {
+      vi.advanceTimersByTime(60);
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 }));
+      button.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
+    });
+  }
+  act(() => vi.advanceTimersByTime(220));
+  expect(host.querySelector(".review-confirm")).toBeNull();
+  expect(host.querySelector(".cs-final-q")?.textContent).toBe(kind === "single"
+    ? "공유 해제 할까요?" : "최종(골드)으로 지정할까요?");
+  expect(p.onUnpublish).not.toHaveBeenCalled(); expect(p.onFinalize).not.toHaveBeenCalled();
+  click(".cs-final-yes");
+  expect(kind === "single" ? p.onUnpublish : p.onFinalize).toHaveBeenCalledExactlyOnceWith(p.gen);
+  expect(kind === "single" ? p.onFinalize : p.onUnpublish).not.toHaveBeenCalled();
+});
+
+it.each(["grid", "list"] as const)("%s: rapid second pointer click stays in review menu until an intentional choice", (layout) => {
+  let now = 1000;
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+  const pointerClick = (selector: string, detail = 1) => act(() => {
+    host.querySelector(selector)!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail }));
+  });
+  try {
+    const p = props();
+    act(() => root.render(<GenerationCard {...p} layout={layout} />));
+    pointerClick(".card-sf");
+    expect(host.querySelectorAll(".review-option")).toHaveLength(3);
+    for (const detail of [1, 2]) {
+      now = 1060;
+      pointerClick(".review-unshared", detail);
+      expect(host.querySelectorAll(".review-option")).toHaveLength(3);
+      expect(host.querySelector(".cs-final-q")).toBeNull();
+    }
+    expect(p.onReview).not.toHaveBeenCalled();
+    expect(p.onUnpublish).not.toHaveBeenCalled();
+    expect(p.onFinalize).not.toHaveBeenCalled();
+    now = 1220;
+    pointerClick(".review-held");
+    expect(host.querySelector(".cs-final-q")?.textContent).toBe("보류할까요?");
+    expect(p.onReview).not.toHaveBeenCalled();
+    pointerClick(".cs-final-yes");
+    expect(p.onReview).toHaveBeenCalledExactlyOnceWith(p.gen, "held");
+  } finally { clock.mockRestore(); }
+});
+
+it("review keyboard activation is immediate and Escape/reopen restarts only the pointer guard", () => {
+  let now = 1000;
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+  try {
+    const p = props();
+    act(() => root.render(<GenerationCard {...p} />));
+    click(".card-sf");
+    // Keyboard/programmatic activation has detail=0, so it must not inherit pointer suppression.
+    click(".review-final");
+    expect(host.querySelector(".cs-final-q")?.textContent).toBe("최종(골드)으로 지정할까요?");
+    act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(host.querySelector(".review-confirm")).toBeNull();
+    now = 5000;
+    click(".card-sf");
+    act(() => host.querySelector(".review-held")!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
+    expect(host.querySelector(".cs-final-q")).toBeNull();
+    click(".review-held"); click(".cs-final-yes");
+    expect(p.onReview).toHaveBeenCalledExactlyOnceWith(p.gen, "held");
+    expect(p.onFinalize).not.toHaveBeenCalled();
+  } finally { clock.mockRestore(); }
+});
+
 const gen = (patch: Partial<Generation> = {}) => ({
   id: "g", prompt: "test", display_prompt: null, status: "done", created_at: "2026-09-17",
   shared: true, is_held: false, is_final: false, is_mine: true, deleted: false,

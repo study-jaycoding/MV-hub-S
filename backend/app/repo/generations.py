@@ -21,6 +21,7 @@ from .generation_sync import NO_REVIVE_ERROR
 from .lineage import _record_history  # generations 가 쓰는 lineage private helper (단방향: generations → lineage)
 from .personal_meta_transactions import _current_personal_meta_batch_connection
 from ._common import (
+    VERIFYING_NOTE,
     clean_folder_path as _clean_folder_path,
     new_id,
 )
@@ -547,10 +548,6 @@ def apply_local_fulfillment(
     return True
 
 
-# '확인중' 마커 — 모호한 결말(타임아웃/파싱실패)에서 job_id 만 확보했을 때 generation.error 에 담는다.
-#  status 는 running 유지(새 enum 안 만듦 — fail_orphaned_jobs 등 상태판정과 충돌 방지). 프론트는 이
-#  문구로 '확인중' 라벨을 띄우고, 재조정이 done/failed 로 확정하면 error 를 지우거나 실제 사유로 덮는다.
-VERIFYING_NOTE = "확인중 — 실제 상태 재확인 대기"
 RECOVERY_REQUIRED_NOTE = (
     "HF 확인 필요 — 외부 제출 여부가 불명확하여 자동 재생성을 차단했습니다"
 )

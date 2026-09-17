@@ -7,6 +7,51 @@ import { type Lang, loadLang, saveLang } from "./theme";
 
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
+  "설정의 Comfy 미회수 실행에서 확인하세요. 다시 생성하지 마세요.": "Check Comfy unresolved runs in Settings. Do not generate again.",
+  "Comfy 미회수 실행": "Comfy unresolved runs",
+  "카드가 없어도 실행 기록은 여기에 남습니다. 목록 확인은 원격 서비스를 호출하지 않습니다.": "Run records remain here even without a card. Refreshing this list does not contact the remote service.",
+  "미회수 실행이 없습니다.": "No unresolved runs.",
+  "제출 확인 중": "Checking submission",
+  "실행 중": "Running",
+  "제출 여부 불명": "Submission unknown",
+  "실행 확인 필요": "Run needs checking",
+  "결과 회수 필요": "Results need collecting",
+  "결과 회수 중": "Collecting results",
+  "로컬 저장 확인 필요": "Local save needs confirmation",
+  "원격 작업 ID": "Remote job ID",
+  "원격 서비스가 이미 접수했을 수 있습니다. 같은 계정에서 직접 확인하고 다시 생성하지 마세요.": "The remote service may already have accepted this run. Check the same account directly; do not generate again.",
+  "실행한 계정과 PC에서 확인하세요.": "Check using the account and PC that started this run.",
+  "결과 회수에는 실행 당시 연결 설정이 필요합니다. 로컬 재저장은 연결 변경과 무관합니다.": "Collecting results requires the original connection settings. Local saving is independent of connection changes.",
+  "받은 결과 {downloaded} · 저장 확인 {acked}": "Downloaded {downloaded} · Saved {acked}",
+  "일부 원격 결과를 찾을 수 없습니다. 받은 결과는 저장하고 기록 정리는 직접 결정하세요.": "Some remote results are unavailable. Save downloaded results and decide whether to dismiss this record.",
+  "결과 회수 · 새 생성 요청 없음": "Collect results · no new generation request",
+  "내 작업에 저장 · 원격 호출 없음": "Save to My Work · no remote calls",
+  "원격 상태를 확인했으며 이 복구 기록을 정리합니다. 원격 작업은 취소되지 않습니다.": "I checked the remote status and want to dismiss this recovery record. This does not cancel the remote job.",
+  "기록 정리": "Dismiss record",
+  "컬러 저장 {failed}건 실패 — 서버 상태 반영 {restored}건": "Failed to save colors for {failed} items — Applied server state to {restored} items",
+  "컬러 저장 {failed}건 실패 — 서버 상태를 확인하지 못했습니다": "Failed to save colors for {failed} items — could not verify the server state",
+  "다운로드": "Download",
+  "비교": "Compare",
+  "삭제": "Delete",
+  "복구": "Restore",
+  "영구삭제": "Delete forever",
+  "선택한 결과물 일괄 다운로드(레퍼런스 이름으로 저장)": "Download selected results using reference names",
+  "선택한 결과물들을 나란히 비교(프롬프트·파라미터 차이 색칠)": "Compare selected results side by side, highlighting prompt and parameter differences",
+  "선택한 버전들을 나란히 비교(프롬프트·파라미터 차이 색칠)": "Compare selected versions side by side, highlighting prompt and parameter differences",
+  "휴지통으로 보내기": "Move to trash",
+  "휴지통에서 복구": "Restore from trash",
+  "휴지통에서 영구 삭제(복원 불가)": "Delete permanently from trash (cannot be undone)",
+  "Resolve 작업 {count}건 처리 중 · 선택 항목을 대기열에 추가": "Processing {count} Resolve jobs · add selection to the queue",
+  "선택한 완료본을 프로젝트의 Render 폴더 구조로 저장하고 Resolve로 가져오기": "Save selected completed results in the project's Render folder structure and import into Resolve",
+  "이미 준비된 원본을 다시 복사하지 않고 {project}에 가져오기": "Import prepared sources into {project} without copying them again",
+  "예정된 Resolve 프로젝트": "the target Resolve project",
+  "준비 원본 다시 가져오기": "Import prepared sources again",
+  "원본 위치 열기 (탐색기)": "Open source location (file browser)",
+  "원본 파일이나 프로젝트를 찾을 수 없습니다.": "The source file or project could not be found.",
+  "원본 위치를 열 권한이 없습니다.": "You do not have permission to open the source location.",
+  "파일 탐색기를 열지 못했습니다.": "Could not open the file browser.",
+  "원본 위치를 열지 못했습니다. 연결 상태와 파일 위치를 확인해 주세요.":
+    "Could not open the source location. Check the connection and file location.",
   "사이드바 너비 조절": "Resize sidebar",
   "드래그하여 너비 조절 · 더블클릭하여 기본 너비로 복원": "Drag to resize · Double-click to reset width",
   "생성자별 개수 표시에는 앱과 공유 서버 업데이트가 필요합니다.": "Update the app and shared server to see counts by creator.",
@@ -337,6 +382,27 @@ const EN: Record<string, string> = {
     "Have you personally confirmed that no job was created for this request in Higgsfield?",
   "확인을 누르면 기존 요청을 다시 실행하며 크레딧이 사용될 수 있습니다.":
     "Confirming will run the existing request again and may use credits.",
+  // 프로젝트 담기·폴더 이동 안내
+  "{count}개를 프로젝트에 담았습니다.": "Moved {count} items into the project.",
+  "{count}개를 '{folder}' 폴더에 담았습니다.": "Moved {count} items into '{folder}'.",
+  "{count}개를 미분류로 옮겼습니다.": "Moved {count} items to Unsorted.",
+  "⚠ 팀 공유 반영 실패(서버 미연결) — 재동기 필요": "⚠ Team sync failed (server unreachable) — resync needed",
+  "이동은 완료했지만 화면을 새로고침하지 못했습니다. 다시 불러와 주세요.":
+    "The move finished, but the view could not be refreshed. Reload to see it.",
+  "이동 결과를 확인할 수 없습니다. 다시 이동하기 전에 목록을 확인해 주세요.":
+    "Could not confirm the move result. Check the list before moving the items again.",
+  "화면을 새로고침하지 못했습니다. 다시 불러와 주세요.":
+    "Could not refresh the view. Reload it to check the result.",
+  "담을 수 없는 대상입니다. 프로젝트와 워크스페이스를 확인한 뒤 다시 시도해 주세요.":
+    "Cannot move to this destination. Check the project and workspace, then try again.",
+  "이동할 권한이 없습니다. 로그인 상태와 권한을 확인해 주세요.":
+    "You do not have permission to move these items. Check your sign-in and permissions.",
+  "대상을 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도해 주세요.":
+    "The destination or items could not be found. Refresh the list and try again.",
+  "다른 곳에서 먼저 바뀌었습니다. 새로고침한 뒤 다시 시도해 주세요.":
+    "The items changed elsewhere. Refresh and try again.",
+  "옮기지 못했습니다. 연결 상태를 확인한 뒤 다시 시도해 주세요.":
+    "Could not move the items. Check your connection and try again.",
 };
 
 let _lang: Lang = loadLang();

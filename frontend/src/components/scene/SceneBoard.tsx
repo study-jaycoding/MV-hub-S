@@ -89,6 +89,7 @@ import {
   getComfyRunningVersion,
 } from "../../lib/sceneComfyRunningStore";
 import { useSceneGenData } from "../../lib/useSceneGenData";
+import { useSceneColorActions } from "../../lib/useSceneColorActions";
 import {
   useSceneComfyExecution,
   type SaveComfyOptions,
@@ -181,6 +182,8 @@ type CompareMediaItem = { url: string; name: string; type: "image" | "video"; fa
 
 interface Props {
   scene: Scene;
+  authKey?: string;
+  authReady?: boolean;
   onChange: (patch: Partial<Scene>) => void;
   // 좌상단 패널 — 현재 씬을 텍스트 파일로 저장 / 파일에서 새 탭으로 불러오기.
   //  · onSaveScene 은 저장 시점의 '라이브 카메라'를 받아 debounce 로 지연된 stale 카메라 대신 최신을 쓴다.
@@ -304,6 +307,8 @@ interface Props {
 
 export function SceneBoard({
   scene,
+  authKey = "",
+  authReady = true,
   onChange,
   topCenterOverlay,
   onSaveScene,
@@ -383,7 +388,9 @@ export function SceneBoard({
   const [tempWire, setTempWire] = useState<{ fromId: string; x2: number; y2: number } | null>(null);
   // genId→실제 생성물 바인딩·폴링·계보(refParents)·비활성/삭제 상태는 useSceneGenData 훅으로 추출(동작 보존).
   //  각 생성물이 '레퍼런스로 쓴' 부모 gen id(refParents)는 수동 연결선 색(레퍼런스 점선 vs 계보 실선) 판정 근거.
-  const { genData, setGenData, genDataRef, missingIds, disabledIds, refParents } = useSceneGenData(cards);
+  const { genData, setGenData, genDataRef, missingIds, disabledIds, refParents, colors, refreshGenerationAfter } = useSceneGenData(cards,
+    { sceneKey: cardsSceneId, authKey, authReady });
+  const { applyColorToGids } = useSceneColorActions(colors, genDataRef);
   // 캔버스에 있는 동안 관찰한 생성 카드 상태를 store 에 반영(전환 규칙은 store 가 판정). 초기 done/새로고침은
   //  store 가 baseline 으로만 처리해 glow 안 함. active→done 만 recentlyDone. (App watcher 와 공동으로 채움)
   useEffect(() => {
@@ -1367,14 +1374,9 @@ export function SceneBoard({
     }
     // App 핸들러(서버 쓰기)가 끝난 뒤 재조회해 서버 확정값으로 맞춘다 — 고정 지연이면 느린 네트워크에서
     // 쓰기 전 옛 값을 덮어써 카드가 되돌아갈 수 있어, 반드시 핸들러 완료 후에 조회한다.
-    Promise.resolve(act?.(g)).finally(() => {
-      void api
-        .getGeneration(g.id)
-        // 이미 로드된 카드만 갱신 — 씬 전환으로 prune 된 gen 을 재조회 응답이 되살려 넣지 않게(다른 핸들러와 동일 규칙).
-        .then((fresh) => fresh && setGenData((prev) => (prev[g.id] ? { ...prev, [g.id]: fresh } : prev)))
-        .catch(() => {});
-    });
-  }, []);
+    const settled = Promise.resolve(act?.(g));
+    refreshGenerationAfter(g.id, settled);
+  }, [refreshGenerationAfter]);
   const onNodeSConfirmNo = useCallback(() => setSConfirm(null), []);
   // T(태그) — 이 생성물이 얹힌 캔버스 카드를 찾아 그 카드의 태그 편집 팝업을 연다(# 키와 동일 경로).
   // 안정 참조(useCallback)라 HistoryBoardNode 의 memo 를 깨지 않는다.
@@ -2307,20 +2309,6 @@ export function SceneBoard({
   };
 
   // ── 색/비활성은 '대상 gid 배열'만 받는 command — 캔버스/팝업 두 레이어가 같은 로직 재사용 ──
-  // 색 지정/해제(라이브러리와 같은 토글: 전부 같은 색이면 해제). 로드된 결과만 대상.
-  const applyColorToGids = (gids: string[], color: string) => {
-    const ids = gids.filter((id) => !!genDataRef.current[id]);
-    if (!ids.length) return;
-    const gens = ids.map((id) => genDataRef.current[id]);
-    const next = gens.every((g) => g.color === color) ? null : color;
-    setGenData((prev) => {
-      const nx = { ...prev };
-      for (const id of ids) if (nx[id]) nx[id] = { ...nx[id], color: next };
-      return nx;
-    });
-    for (const id of ids)
-      api.setColor(id, next).catch((err) => console.warn("[scene] 색 적용 실패", id, err));
-  };
   // 레이어별 '선택 → 대상 gid' 변환.
   const canvasSelGids = () =>
     [...selectedRef.current]
@@ -3845,6 +3833,7 @@ export function SceneBoard({
                     finalOnly,
                     folderSel,
                     sConfirm,
+                    canFinalize,
                     onSClick: onNodeSClick,
                     onSDouble: onNodeSDouble,
                     onSConfirmYes: onNodeSConfirmYes,
@@ -3921,6 +3910,7 @@ export function SceneBoard({
                     finalOnly,
                     folderSel,
                     sConfirm,
+                    canFinalize,
                     onSClick: onNodeSClick,
                     onSDouble: onNodeSDouble,
                     onSConfirmYes: onNodeSConfirmYes,

@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import type { Dispatch, MutableRefObject, SetStateAction } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import { api, connectProgress } from "../api";
 import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
 import { postAssetsUpdated } from "./assetBroadcast";
@@ -10,6 +10,7 @@ import {
   type LibraryMutationOrigin,
 } from "./librarySync";
 import { isKnownGen, observeStatus } from "./sceneRecentDoneStore";
+import { mergeFreshGeneration } from "./stateReconciliation";
 import type { Generation, ProgressMessage } from "../types";
 
 /** progress 한 건을 카드에 반영한다. **서버가 말한 것만** 바꾸고, error 를 담지 않은
@@ -30,7 +31,8 @@ export function applyProgressToGen(g: Generation, m: ProgressMessage): Generatio
 
 interface UseGenerationProgressArgs {
   enabled: boolean;
-  gensRef: MutableRefObject<Generation[]>;
+  gens: Generation[];
+  scopeKey: string;
   setGens: Dispatch<SetStateAction<Generation[]>>;
   reload: (silent?: boolean, light?: boolean) => void | Promise<void>;
   bumpBoard: () => void;
@@ -43,6 +45,9 @@ const ACTIVE_PROGRESS_STATUSES = new Set(["pending", "queued", "running", "proce
 const SYNC_DEBOUNCE_MS = 400;
 const SYNC_WAIT_POLL_MS = 100;
 const SYNC_WAIT_MAX_MS = 5000;
+
+type DetailToken = { valid: boolean; inFlight: boolean };
+type DetailBook = { onCommit: (gens: Generation[], changedScope: boolean) => void };
 
 export function shouldObserveProgressStatus(
   generationId: string | null | undefined,
@@ -73,7 +78,8 @@ export function refreshVisibleSyncConsumers({
 
 export function useGenerationProgress({
   enabled,
-  gensRef,
+  gens,
+  scopeKey,
   setGens,
   reload,
   bumpBoard,
@@ -81,12 +87,42 @@ export function useGenerationProgress({
   historyBoardVisible,
   commentsVisible,
 }: UseGenerationProgressArgs) {
+  const committedRef = useRef({ scopeKey, gens });
+  const bookRef = useRef<DetailBook | null>(null);
+  useLayoutEffect(() => {
+    const changedScope = committedRef.current.scopeKey !== scopeKey;
+    // 중단된 렌더는 요청 기준/계정을 바꾸지 않는다. 새 committed 목록을 먼저 공개한다.
+    committedRef.current = { scopeKey, gens };
+    bookRef.current?.onCommit(gens, changedScope);
+  });
   // 표시 상태 변화만으로 WebSocket 연결을 다시 만들지 않도록 최신값은 ref로 읽는다.
   const visibleConsumersRef = useRef({ historyBoardVisible, commentsVisible });
   visibleConsumersRef.current = { historyBoardVisible, commentsVisible };
   useEffect(() => {
     // 로그인 화면·승인 대기 화면에서는 서버가 거절할 연결 자체를 만들지 않는다.
     if (!enabled) return;
+    let alive = true;
+    const pendingByGen = new Map<string, DetailToken>();
+    const book: DetailBook = {
+      onCommit(list, changedScope) {
+        if (!pendingByGen.size) return;
+        if (changedScope) {
+          for (const token of pendingByGen.values()) token.valid = false;
+          pendingByGen.clear();
+          return;
+        }
+        const liveIds = new Set(list.map((g) => g.id));
+        // Map 순회 중 현재 항목 삭제는 안전하다. 진행 중 요청에는 크기 기반 축출을 하지 않는다.
+        for (const [id, token] of pendingByGen) {
+          if (!token.inFlight && !liveIds.has(id)) {
+            // 불변식: 장부에서 사라진 token은 반드시 valid=false. queued updater도 이를 읽는다.
+            token.valid = false;
+            pendingByGen.delete(id);
+          }
+        }
+      },
+    };
+    bookRef.current = book;
     let syncedTimer: ReturnType<typeof setTimeout> | null = null;
     let pendingSyncOrigins: LibraryMutationOrigin[] | undefined;
     let forceFullSync = false;
@@ -138,6 +174,7 @@ export function useGenerationProgress({
 
     const off = connectProgress(
       (m) => {
+        if (!alive) return;
         if (m.type === "assets_changed") {
           // 어셋 파일 실시간 변경(watchdog) → BroadcastChannel 로 재전파해 어셋 창·캔버스가 각자 갱신.
           postAssetsUpdated(Array.isArray(m.projects) ? m.projects : [], m.origins);
@@ -154,31 +191,65 @@ export function useGenerationProgress({
         if (m.generation_id && shouldObserveProgressStatus(m.generation_id, m.status)) {
           observeStatus(m.generation_id, m.status);
         }
+        const generationId = m.generation_id;
+        const prior = generationId ? pendingByGen.get(generationId) : undefined;
+        if (prior) prior.valid = false;
+        const token: DetailToken | null = m.status === "done" && generationId
+          ? { valid: true, inFlight: true } : null;
+        if (generationId && token) pendingByGen.set(generationId, token);
+        else if (generationId && prior) {
+          prior.valid = false;
+          pendingByGen.delete(generationId);
+        }
+        // updater 밖에서 immutable 기준 둘을 잡는다. 진행 WS가 아직 commit되지 않아도 안전하다.
+        const requestScope = committedRef.current.scopeKey;
+        const base = token ? committedRef.current.gens.find((g) => g.id === generationId) : undefined;
+        const expected = base ? applyProgressToGen(base, m) : undefined;
         setGens((prev) =>
           prev.map((g) => (g.id === m.generation_id ? applyProgressToGen(g, m) : g)),
         );
         // 실패·NSFW 는 상세 재조회를 걸지 않는다. 사유는 위에서 WS 가 이미 실어 왔고, 재조회를
         // 걸면 그 답이 늦게 도착해 그사이 완료된 카드를 옛 실패로 되돌릴 수 있다(코덱스 리뷰).
-        if (m.status === "done" && m.generation_id) {
-          const generationId = m.generation_id;
+        if (token && generationId) {
+          const guarded = () => alive && requestScope === committedRef.current.scopeKey && token.valid;
+          const reloadIfCurrent = () => Promise.resolve()
+            .then(() => { if (guarded()) return reload(true, true); })
+            .catch(() => {}); // 동기 throw도 한 번만 처리하고 finally까지 연결한다.
           api
             .getGeneration(generationId)
             .then((fresh) => {
-              if (gensRef.current.some((g) => g.id === fresh.id)) {
-                setGens((prev) => prev.map((g) => (g.id === fresh.id ? fresh : g)));
-              } else {
-                void reload(true, true);
+              if (!guarded()) return;
+              if (!base || !expected) {
+                // 기준 없는 경로의 token 보유는 안전 필수가 아니라 settle 단일화 목적이다.
+                return reloadIfCurrent();
               }
+              setGens((prev) => {
+                if (!guarded()) return prev;
+                let changed = false;
+                const next = prev.map((current) => {
+                  if (current.id !== generationId || fresh.id !== generationId) return current;
+                  const merged = mergeFreshGeneration(base, current, fresh, expected);
+                  changed ||= merged !== current;
+                  return merged;
+                });
+                return changed ? next : prev; // append하지 않아 삭제/화면 이탈 카드를 되살리지 않는다.
+              });
             })
-            .catch(() => void reload(true, true));
+            .catch(() => { if (guarded()) return reloadIfCurrent(); })
+            .finally(() => { token.inFlight = false; });
+          // 응답 settle은 updater의 commit이 아니다. live ID token은 다음 메시지까지 남겨 둔다.
           bumpBoard();
         }
       },
       () => void reload(true),
     );
     return () => {
+      alive = false;
+      for (const token of pendingByGen.values()) token.valid = false;
+      pendingByGen.clear();
+      if (bookRef.current === book) bookRef.current = null;
       if (syncedTimer) clearTimeout(syncedTimer);
       off();
     };
-  }, [bumpBoard, enabled, gensRef, reload, setGens, setSyncTick]);
+  }, [bumpBoard, enabled, reload, setGens, setSyncTick]);
 }

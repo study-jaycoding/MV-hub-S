@@ -648,7 +648,8 @@ export default function App() {
   // WebSocket 진행률: 상태 전이 메시지를 받으면 해당 카드만 갱신하고, 놓친 전이는 reload 로 따라잡는다.
   useGenerationProgress({
     enabled: !!hubAccount,
-    gensRef,
+    gens,
+    scopeKey: JSON.stringify([libraryAuthKey, authReady && workspaceQueryReady, workspaceScopeKey]),
     setGens,
     reload,
     bumpBoard,
@@ -1974,6 +1975,8 @@ export default function App() {
             />
             {activeScene ? (
               <SceneBoard
+                authKey={libraryAuthKey}
+                authReady={authReady}
                 scene={activeScene}
                 onChange={(patch) => patchActiveScene(patch)}
                 // Ctrl+K 로 프롬프트 숨김 시 멀티선택 액션바를 캔버스 상단 중앙(씬 패널·미니맵 줄)에 얹는다.
