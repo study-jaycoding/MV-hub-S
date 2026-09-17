@@ -12,7 +12,9 @@ import {
   type SetStateAction,
 } from "react";
 import type { Store } from "./storage";
-import type { Filters, GenQuery } from "../types";
+import { useT } from "./i18n";
+import type { Filters, GenQuery, WorkspaceContext } from "../types";
+import { sharedWorkspaceFilter, workspaceViewKey, type SharedWorkspaceMode } from "./libraryWorkspaceScope";
 import type { MediaFilter } from "./mediaTypes";
 import { buildGenerationQuery } from "./appGenerationQuery";
 import {
@@ -126,7 +128,8 @@ export function restoreFilters(LS: Store): Filters {
   return { ...stored, ...(workspaceIds.length ? { workspace_ids: workspaceIds } : { workspace_ids: undefined }) };
 }
 
-export function useLibraryFilters(LS: Store) {
+export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
+  const t = useT();
   const [manualRevision, setManualRevision] = useState(0);
   const bumpManualRevision = useCallback(() => setManualRevision((value) => value + 1), []);
 
@@ -134,11 +137,32 @@ export function useLibraryFilters(LS: Store) {
   const [workspaceChips, setWorkspaceChips] = useState<WorkspaceChip[]>(
     () => LS.loadJSON<WorkspaceChip[]>("workspaceChips") ?? [],
   );
-  const [filters, rawSetFilters] = useState<Filters>(() => restoreFilters(LS));
+  const [storedFilters, rawSetFilters] = useState<Filters>(() => restoreFilters(LS));
+  const workspaceKey = workspace ? workspaceViewKey(workspace) : "";
+  // 전체 보기는 이번 공간에서만 유효하다. 영속화하지 않으므로 재실행도 자동 모드다.
+  const [sharedView, setSharedView] = useState<{ key: string; mode: SharedWorkspaceMode }>(
+    () => ({ key: "", mode: "auto" }),
+  );
+  let filters = storedFilters;
+  if (sharedView.key !== workspaceKey) {
+    setSharedView({ key: workspaceKey, mode: "auto" });
+    if (storedFilters.tab === "team") {
+      // 렌더 중 문맥 전환을 확정해 옛 폴더+새 공간의 중간 조회를 만들지 않는다.
+      // 생성 목적지(generationScope)에는 쓰지 않는 표시 전용 변경이다.
+      filters = { ...storedFilters, project_id: undefined, folder_path: undefined,
+        deleted_only: undefined, include_deleted: undefined, creator_uid: undefined };
+      rawSetFilters(filters);
+    }
+  }
+  const sharedMode = sharedView.key === workspaceKey ? sharedView.mode : "auto";
+  const workspaceScopeKey = workspace && filters.tab === "team"
+    ? JSON.stringify([workspaceKey, sharedMode]) : "";
+  const workspaceQueryReady = !workspace || filters.tab !== "team" || sharedMode === "all" ||
+    workspace.scope === "personal" || (workspace.scope === "team" && !!workspace.id);
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
   const [generationScope, rawSetGenerationScope] = useState<GenerationScope>(
-    () => restoreGenerationScope(LS, filters),
+    () => restoreGenerationScope(LS, storedFilters),
   );
   const generationScopeRef = useRef(generationScope);
   generationScopeRef.current = generationScope;
@@ -226,6 +250,16 @@ export function useLibraryFilters(LS: Store) {
     bumpManualRevision();
   }, [bumpManualRevision, commitGenerationScope]);
 
+  const setSharedWorkspaceMode = useCallback((mode: SharedWorkspaceMode) => {
+    setSharedView({ key: workspaceKey, mode });
+    // 다른 공간의 폴더에서 자동 모드로 복귀해 빈 교집합이 되는 것을 막는다.
+    const next = { ...filtersRef.current, project_id: undefined, folder_path: undefined,
+      deleted_only: undefined, include_deleted: undefined, creator_uid: undefined };
+    filtersRef.current = next;
+    rawSetFilters(next);
+    bumpManualRevision();
+  }, [workspaceKey, bumpManualRevision]);
+
   // 기존 공개 setter도 같은 updater를 두 집합에 적용해 이전 호출부의 동작을 보존한다.
   const setArmedAutoTags = useCallback<Dispatch<SetStateAction<Set<string>>>>((action) => {
     const previousArmed = armedAutoTagsRef.current;
@@ -263,7 +297,9 @@ export function useLibraryFilters(LS: Store) {
   }, [bumpManualRevision]);
 
   const followLocation = useCallback((location: GenerationScope) => {
-    const nextFilters: Filters = { tab: filtersRef.current.tab, ...location };
+    const previous = filtersRef.current;
+    const nextFilters: Filters = { tab: previous.tab, ...location,
+      ...(workspace && previous.tab === "team" ? { workspace_ids: previous.workspace_ids } : {}) };
     filtersRef.current = nextFilters;
     rawSetFilters(nextFilters);
     setTypeFilterAutomatic("all");
@@ -284,12 +320,13 @@ export function useLibraryFilters(LS: Store) {
     setSharedOnlyAutomatic,
     setTagFilterAutomatic,
     setTypeFilterAutomatic,
+    workspace,
   ]);
 
   // 흩어진 필터 상태(filters + 인스턴트 필터)를 서버 쿼리 하나로 합친다(서버가 전량 거름 → 무한스크롤).
   const genQuery = useMemo<GenQuery>(
-    () =>
-      buildGenerationQuery({
+    () => {
+      const query = buildGenerationQuery({
         filters,
         typeFilter,
         colorFilter,
@@ -298,11 +335,23 @@ export function useLibraryFilters(LS: Store) {
         sharedOnly,
         commentOnly,
         finalOnly,
-      }),
-    [filters, typeFilter, colorFilter, tagFilter, filterAutoTags, sharedOnly, commentOnly, finalOnly],
+      });
+      if (!workspace || filters.tab !== "team") return query;
+      // 저장된 수동 W 필터는 다른 탭을 위해 보존하고 공유 조회에만 자동 범위를 입힌다.
+      return { ...query, workspace_ids: undefined, workspace_id: undefined,
+        ...(sharedMode === "auto" ? sharedWorkspaceFilter(workspace) : {}) };
+    },
+    [filters, typeFilter, colorFilter, tagFilter, filterAutoTags, sharedOnly, commentOnly, finalOnly,
+      workspace, sharedMode],
   );
   // 자동 따라가기는 기존 수동 선택을 보존하고, 수동 필터 조작만 선택/비동기 응답을 무효화한다.
-  const selectionResetKey = String(manualRevision);
+  const selectionResetKey = workspaceScopeKey ? JSON.stringify([manualRevision, workspaceScopeKey]) : String(manualRevision);
+  const workspaceFollow = workspace && filters.tab === "team" ? {
+    mode: sharedMode,
+    label: workspace.scope === "personal" ? t("개인") : workspace.name || t("확인 중"),
+    pending: !workspaceQueryReady,
+    onChange: setSharedWorkspaceMode,
+  } : undefined;
 
   useLibraryPersistence({
     armedAutoTags,
@@ -346,6 +395,6 @@ export function useLibraryFilters(LS: Store) {
     filterAutoTags, toggleAutoTag,
     armedFolder, setArmedFolder,
     workspaceChips, setWorkspaceChips,
-    genQuery, selectionResetKey,
+    genQuery, selectionResetKey, workspaceFollow, workspaceScopeKey, workspaceQueryReady,
   };
 }

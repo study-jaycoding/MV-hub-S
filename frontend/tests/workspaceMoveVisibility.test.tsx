@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const setGenerationWorkspace = vi.fn();
 vi.mock("../src/api", () => ({ api: { setGenerationWorkspace: (...a: unknown[]) => setGenerationWorkspace(...a) } }));
+const { postLibraryChanged } = vi.hoisted(() => ({ postLibraryChanged: vi.fn() }));
+vi.mock("../src/lib/libraryBroadcast", () => ({ postLibraryChanged }));
 
 const { useGenerationWorkspaceActions } = await import("../src/lib/useGenerationWorkspaceActions");
 type Generation = Parameters<typeof useGenerationWorkspaceActions>[0]["gensRef"]["current"][number];
@@ -30,6 +32,8 @@ let host: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  postLibraryChanged.mockClear();
   setGenerationWorkspace.mockReset();
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -44,21 +48,26 @@ afterEach(() => {
 /** 훅을 제품 그대로 마운트하고, 명령 한 번을 돌린 뒤 남은 목록을 돌려준다. */
 async function moveCard(options: {
   armed?: string[];
+  scope?: "personal";
+  initial?: Generation[];
   operation: "assign" | "remove";
   to: string;
+  changed?: string[];
 }) {
-  const gens = [card("a1", "ws-a"), card("b1", "ws-b")];
+  const gens = options.initial ?? [card("a1", "ws-a"), card("b1", "ws-b")];
   const gensRef = { current: gens };
   let rendered: ReturnType<typeof useGenerationWorkspaceActions> | undefined;
   let latest = gens;
 
   setGenerationWorkspace.mockResolvedValue({
     workspace: { id: options.to, name: options.to },
-    changed: ["a1"],
+    changed: options.changed ?? ["a1"],
     updates: [
       {
         requested_id: "a1",
-        generation: { workspace_scope: "team", workspace_id: options.to, workspace_name: options.to },
+        generation: options.operation === "remove"
+          ? { workspace_scope: "personal", workspace_id: null, workspace_name: null }
+          : { workspace_scope: "team", workspace_id: options.to, workspace_name: options.to },
       },
     ],
   });
@@ -66,6 +75,7 @@ async function moveCard(options: {
   function Probe() {
     rendered = useGenerationWorkspaceActions({
       activeWorkspaceIds: options.armed,
+      activeWorkspaceScope: options.scope,
       flash: vi.fn(),
       gensRef,
       reload: vi.fn(),
@@ -86,6 +96,12 @@ async function moveCard(options: {
 }
 
 describe("카드를 옮긴 뒤 목록에서 빼는 판정", () => {
+  it("공간 변경 확정은 생성자 집계 갱신을 알리고 변경 없으면 알리지 않는다", async () => {
+    await moveCard({ armed: ["ws-a"], operation: "assign", to: "ws-b" });
+    expect(postLibraryChanged).toHaveBeenCalledTimes(1);
+    await moveCard({ armed: ["ws-a"], operation: "assign", to: "ws-a", changed: [] });
+    expect(postLibraryChanged).toHaveBeenCalledTimes(1);
+  });
   it("보고 있는 공간들 **안에서** 옮기면 계속 보인다 (A·B 를 보는 중 A→B)", async () => {
     expect(await moveCard({ armed: ["ws-a", "ws-b"], operation: "assign", to: "ws-b" })).toEqual([
       "a1",
@@ -107,5 +123,15 @@ describe("카드를 옮긴 뒤 목록에서 빼는 판정", () => {
 
   it("아무 공간도 안 고른 상태(전체 보기)면 옮겨도 안 뺀다", async () => {
     expect(await moveCard({ armed: [], operation: "assign", to: "ws-c" })).toEqual(["a1", "b1"]);
+  });
+
+  it("개인 자동 보기에서 팀으로 옮기면 빠지고 다른 개인 카드는 남는다", async () => {
+    const initial = ["a1", "p2"].map((id) => ({ ...card(id, ""), workspace_scope: "personal" as const, workspace_id: null }));
+    expect(await moveCard({ scope: "personal", initial, operation: "assign", to: "ws-a" })).toEqual(["p2"]);
+  });
+
+  it("개인 자동 보기에서 명시 제거 응답이 personal이면 카드를 유지한다", async () => {
+    const initial = [{ ...card("a1", ""), workspace_scope: "personal" as const, workspace_id: null }];
+    expect(await moveCard({ scope: "personal", initial, operation: "remove", to: "ws-a" })).toEqual(["a1"]);
   });
 });

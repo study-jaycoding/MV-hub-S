@@ -1,40 +1,52 @@
-import { useEffect, useState } from "react";
-import { api } from "../../api";
+import { useEffect } from "react";
 import { useT } from "../../lib/i18n";
-import type { Creator } from "../../types";
+import { useLibraryCreators } from "../../lib/useLibraryCreators";
+import type { LibraryWorkspaceFilter } from "../../lib/libraryWorkspaceScope";
 
 export function CreatorSection({
   activeUid,
   onFilter,
   tab,
   projectId,
+  workspaceFilter,
+  ready = true,
+  contextKey,
+  deletedOnly = false,
 }: {
   activeUid?: string;
   onFilter: (uid?: string) => void;
   onChanged?: () => void;
   tab: "my" | "team";
   projectId?: string;
+  workspaceFilter?: LibraryWorkspaceFilter;
+  ready?: boolean;
+  contextKey?: string;
+  deletedOnly?: boolean;
 }) {
   const tr = useT();
-  const [creators, setCreators] = useState<Creator[]>([]);
-  // 탭·프로젝트를 빠르게 바꾸면 이전 요청이 늦게 도착해 현재 목록을 덮는다 → 취소 가드로 버린다.
+  const sharedTrash = tab === "team" && deletedOnly;
+  const { creators, loading, error, reload } = useLibraryCreators({ tab, projectId, workspaceFilter,
+    ready: ready && !sharedTrash, contextKey });
+  // 공유 해제·이동으로 선택한 생성자의 마지막 카드가 사라져도 빈 필터에 갇히지 않는다.
   useEffect(() => {
-    let alive = true;
-    api
-      .creators(tab, projectId)
-      .then((items) => {
-        if (alive)
-          setCreators([...items].sort((a, b) => (a.is_mine === b.is_mine ? 0 : a.is_mine ? -1 : 1)));
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [tab, projectId]);
-  if (!creators.length) return null;
+    if (tab === "team" && !sharedTrash && ready && !loading && !error && activeUid &&
+        !creators.some((creator) => creator.uid === activeUid)) onFilter(undefined);
+  }, [tab, sharedTrash, ready, loading, error, activeUid, creators, onFilter]);
+  if (!ready) return null;
+  // 이 집계는 일반 공유물 기준이다. 휴지통에 적용해 선택을 자동 해제하거나 건수를 오인시키지 않는다.
+  if (sharedTrash) return activeUid ? <section>
+    <h4>{tr("생성자")}</h4>
+    <button className="creator-pick" onClick={() => onFilter(undefined)}>{tr("생성자 필터 해제")}</button>
+  </section> : null;
+  if (!creators.length && !loading && !error) return null;
   return (
-    <section>
+    <section aria-busy={loading}>
       <h4>{tr("생성자")}</h4>
+      {loading && !creators.length && <div className="creator-status" role="status">{tr("불러오는 중…")}</div>}
+      {error && <div role="status">
+        {error === "update" && <p className="creator-status">{tr("워크스페이스별 생성자 표시에는 공유 서버 업데이트가 필요합니다.")}</p>}
+        <button className="creator-pick" onClick={() => void reload()}>{tr("목록을 못 받았습니다 — 다시 시도")}</button>
+      </div>}
       {creators.map((creator) => (
         <div key={creator.uid} className={"creator-row" + (activeUid === creator.uid ? " on" : "")}>
           <button

@@ -77,6 +77,7 @@ function buildQuery(q: GenQuery, cursor: GenCursor | null = null, limit = GEN_PA
   //  한 개 선택은 그래도 걸리게 한다. 두 개 이상은 허브가 직접 거른다(library.py).
   for (const w of q.workspace_ids || []) p.append("workspace_ids", w);
   if (q.workspace_ids?.length === 1) p.set("workspace_id", q.workspace_ids[0]);
+  if (q.workspace_scope) p.set("workspace_scope", q.workspace_scope);
   if (q.project_id) p.set("project_id", q.project_id); // 서버사이드 — 누락 없이 정확
   if (q.folder_path) p.set("folder_path", q.folder_path); // 폴더 접두사 필터
   if (q.search) p.set("search", q.search);

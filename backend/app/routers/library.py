@@ -18,7 +18,7 @@ from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, StrictBool, ValidationError, model_serializer
 from starlette.background import BackgroundTask
 
 from . import _proxy
@@ -200,7 +200,29 @@ def _overlay_personal_meta(data, request: Request):
 
 
 def _team_local_filtered(
-    request: Request, want_colors, want_tags, want_auto, want_ws, limit: int, cursor_ts, cursor_id
+    request: Request, want_colors, want_tags, want_auto, want_ws, limit: int, cursor_ts, cursor_id,
+    *, workspace_scope: Optional[str] = None,
+):
+    # 여러 페이지를 조회하는 사이 계정이 바뀌어도 원격 토큰과 개인메타 DB를 섞지 않는다.
+    # 네트워크 왕복 동안 전환 락을 잡지 않고, 같은 임계구역에서 캡처한 key/uid만 고정한다.
+    with active_account.transition_lock:
+        account_key = active_account.account_key() or ""
+        account_uid = active_account.active_uid()
+    account_token = active_account.set_override(account_key)
+    uid_token = active_account.set_uid_override(account_uid)
+    try:
+        return _team_local_filtered_for_account(
+            request, want_colors, want_tags, want_auto, want_ws, limit, cursor_ts, cursor_id,
+            workspace_scope=workspace_scope,
+        )
+    finally:
+        active_account.reset_uid_override(uid_token)
+        active_account.reset_override(account_token)
+
+
+def _team_local_filtered_for_account(
+    request: Request, want_colors, want_tags, want_auto, want_ws, limit: int, cursor_ts, cursor_id,
+    *, workspace_scope: Optional[str] = None,
 ):
     """팀 탭 개인메타 필터(색/태그/전역태그) — 이들은 로컬 전용(서버 미러 안 함)이라 서버가 못 거른다.
     허브가 해당 필터를 뺀 요청으로 서버 목록을 받아 overlay(내 색·태그+shadow) 후 로컬에서 거른다.
@@ -209,10 +231,10 @@ def _team_local_filtered(
     cset = {c for c in (want_colors or []) if c}
     tset = {t for t in (want_tags or []) if t}
     aset = {a for a in (want_auto or []) if a}
-    # 워크스페이스 **중복 선택**은 서버가 옛 버전이면 못 거른다(새 파라미터를 모른다). 그래서
+    # 워크스페이스 **중복 선택·개인 scope**는 구서버가 못 거른다(새 파라미터를 모른다). 그래서
     # 허브가 한 번 더 거른다 — 서버가 이미 걸렀으면 이 검사는 전부 통과라 손해가 없다.
     wset = {w for w in (want_ws or []) if w}
-    if not (cset or tset or aset or wset):
+    if not (cset or tset or aset or wset or workspace_scope):
         return _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
 
     def _match(g: dict) -> bool:
@@ -223,6 +245,8 @@ def _team_local_filtered(
         if aset and not (aset & set(g.get("auto_tags") or [])):
             return False
         if wset and not (g.get("workspace_scope") == "team" and g.get("workspace_id") in wset):
+            return False
+        if workspace_scope and g.get("workspace_scope") != workspace_scope:
             return False
         return True
 
@@ -257,6 +281,10 @@ def _team_local_filtered(
         cur_ts, cur_id = last.get("sort_ts"), last.get("id")
         if cur_ts is None or cur_id is None:
             break
+    else:
+        if workspace_scope:
+            # 새 personal 조건을 모르는 구서버에서 희소한 결과를 조용히 잘라내지 않는다.
+            raise HTTPException(503, "워크스페이스 목록 조회 범위를 초과했습니다. 공유 서버를 업데이트해 주세요")
     return matches[:limit]
 
 
@@ -678,6 +706,7 @@ def list_generations(
     # 단수는 옛 프론트·옛 공유 서버 호환용. 새 프론트는 한 개를 고를 때 둘 다 보낸다.
     workspace_id: Optional[str] = None,
     workspace_ids: list[str] = Query(default=[]),
+    workspace_scope: Optional[Literal["personal"]] = None,
     project_id: Optional[str] = None,
     folder_path: Optional[str] = None,
     search: Optional[str] = None,
@@ -702,20 +731,40 @@ def list_generations(
     # ★이 함수는 시험에서 **직접** 호출되기도 한다 — 그때 기본값은 Query 객체 그대로라
     #  바로 순회하면 TypeError 다. 목록일 때만 쓴다.
     raw_ws = workspace_ids if isinstance(workspace_ids, (list, tuple)) else []
-    picked_ws = [w for w in raw_ws if isinstance(w, str) and w.strip()]
-    if not picked_ws and workspace_id:
-        picked_ws = [workspace_id]
+    supplied_ws = [*raw_ws, *([workspace_id] if workspace_id is not None else [])]
+    if len(raw_ws) > 200 or any(
+        not isinstance(w, str) or not w.strip() or len(w.strip()) > 200 for w in supplied_ws
+    ):
+        raise HTTPException(422, "워크스페이스 ID는 비어 있지 않은 200자 이하 문자열이어야 합니다")
+    picked_ws = list(dict.fromkeys(w.strip() for w in raw_ws))
+    if not picked_ws and workspace_id is not None:
+        picked_ws = [workspace_id.strip()]
+    if picked_ws:
+        # 구서버로도 정규화된 값을 보낸다. 복수 선택 때 단수 별칭을 남기면 구서버가
+        # 그 하나로 먼저 좁혀 다른 공간 결과를 잃으므로 단수 별칭은 1개일 때만 보낸다.
+        pairs = [
+            (key, value) for key, value in urllib.parse.parse_qsl(request.url.query, keep_blank_values=True)
+            if key not in ("workspace_id", "workspace_ids")
+        ]
+        pairs.extend(("workspace_ids", w) for w in picked_ws)
+        if len(picked_ws) == 1:
+            pairs.append(("workspace_id", picked_ws[0]))
+        request = Request(
+            {**request.scope, "query_string": urllib.parse.urlencode(pairs).encode("ascii")},
+            receive=request.receive,
+        )
     if tab == "team" and _proxy.proxying():
         # color/tags 는 작성자 전용이라 서버에 미러하지 않는다(개인 메타). 팀 목록은 서버 데이터라
         # '내 카드'의 개인 색·태그가 빠져 있으므로, 허브가 자기 로컬 DB에서 가져와 덧입힌다(A1 오버레이).
         # 색·태그·전역태그는 개인메타(로컬 전용)라 서버가 못 거른다 → 허브가 그 필터 뺀 요청으로 받아
         # overlay(내 색·태그+shadow) 후 로컬 필터. 나머지(media_type·folder 등)는 서버가 그대로 거름.
         # 한 개 선택은 단수 파라미터가 같이 나가 **서버가 거른다**(옛 서버에서도 동작, 상한 없음).
-        # 두 개 이상만 허브가 거른다 — 그 경로의 기존 한계(상위 약 12,000행)가 같이 적용된다.
+        # 두 개 이상과 새 personal scope는 허브가 재검증한다(구서버 미지원 방어).
         local_ws = picked_ws if len(picked_ws) > 1 else []
-        if colors or tags or auto_tags or local_ws:
+        if colors or tags or auto_tags or local_ws or workspace_scope:
             data = _team_local_filtered(
-                request, colors, tags, auto_tags, local_ws, limit, cursor_ts, cursor_id
+                request, colors, tags, auto_tags, picked_ws if workspace_scope else local_ws,
+                limit, cursor_ts, cursor_id, workspace_scope=workspace_scope,
             )
         else:
             data = _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
@@ -743,6 +792,7 @@ def list_generations(
         local_only=local_only,
         creator_uid=creator_uid,
         workspace_ids=picked_ws,
+        workspace_scope=workspace_scope,
         account_uid=account_uid,
         project_id=project_id,
         folder_path=folder_path,
@@ -898,6 +948,10 @@ class GenerationLocateIn(BaseModel):
     gen_ids: list[Annotated[str, Field(max_length=200)]] = Field(max_length=200)
     project_id: Optional[str] = Field(default=None, max_length=200)
     folder_path: Optional[str] = Field(default=None, max_length=4096)
+    workspace_ids: list[Annotated[str, Field(min_length=1, max_length=200, pattern=r"\S")]] = Field(
+        default_factory=list, max_length=200,
+    )
+    workspace_scope: Optional[Literal["personal"]] = None
 
 
 class GenerationLocateOut(BaseModel):
@@ -905,6 +959,14 @@ class GenerationLocateOut(BaseModel):
     focus_ids: list[str] = Field(max_length=200)
     project_id: Optional[str]
     folder_path: Optional[str]
+    workspace_filter_applied: Optional[StrictBool] = None
+
+    @model_serializer(mode="wrap")
+    def omit_unapplied_workspace_marker(self, handler):
+        data = handler(self)
+        if self.workspace_filter_applied is None:
+            data.pop("workspace_filter_applied", None)
+        return data
 
 
 @router.post("/generations/locate", response_model=GenerationLocateOut)
@@ -935,9 +997,18 @@ def locate_generation_targets(body: GenerationLocateIn, request: Request):
                 parsed = GenerationLocateOut.model_validate(remote)
             except ValidationError:
                 raise HTTPException(502, "공유 서버의 생성물 위치 응답을 확인할 수 없습니다") from None
+            picked_ws = payload.get("workspace_ids") or []
+            scope = payload.get("workspace_scope")
+            if (picked_ws or scope) and parsed.workspace_filter_applied is not True:
+                raise HTTPException(409, "워크스페이스별 다빈치 연동을 사용하려면 공유 서버를 업데이트해 주세요")
             if (
                 parsed.focus_ids != [item.id for item in parsed.items]
                 or any(not item.shared or item.deleted for item in parsed.items)
+                or any(
+                    (picked_ws and not (item.workspace_scope == "team" and item.workspace_id in picked_ws))
+                    or (scope and item.workspace_scope != scope)
+                    for item in parsed.items
+                )
             ):
                 raise HTTPException(502, "공유 서버의 생성물 위치 응답을 확인할 수 없습니다")
             return parsed.model_dump()
@@ -946,6 +1017,7 @@ def locate_generation_targets(body: GenerationLocateIn, request: Request):
             tab=body.tab, gen_ids=body.gen_ids, account_uid=viewer_uid,
             team_member_projects=member_projects,
             project_id=body.project_id, folder_path=body.folder_path,
+            workspace_ids=body.workspace_ids, workspace_scope=body.workspace_scope,
             fetch_team=fetch_team if team_proxy else None,
         )
         if team_proxy:

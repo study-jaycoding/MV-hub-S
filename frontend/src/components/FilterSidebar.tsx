@@ -7,6 +7,7 @@ import type { Facets, Filters, Project } from "../types";
 import type { FolderMenuKind } from "../lib/folderContextMenu";
 import { ProjectSection } from "./sidebar/ProjectSection";
 import { CreatorSection } from "./sidebar/CreatorSection";
+import type { LibraryWorkspaceFilter } from "../lib/libraryWorkspaceScope";
 
 // 하단 블록(컬러·전역태그·생성자) 접기 상태 — 접으면 그만큼 프로젝트 폴더가 넓어진다. 영속.
 const FOOT_OPEN_KEY = "ch.sidebarFootOpen";
@@ -14,6 +15,9 @@ const FOOT_OPEN_KEY = "ch.sidebarFootOpen";
 interface Props {
   facets: Facets;
   filters: Filters;
+  creatorWorkspaceFilter?: LibraryWorkspaceFilter;
+  creatorQueryReady?: boolean;
+  creatorContextKey?: string;
   onChange: (patch: Partial<Filters>) => void;
   // 프로젝트(작업 묶음) — App 이 단일 소스로 보유, 사이드바와 선택바가 공유
   projects: Project[];
@@ -48,6 +52,9 @@ interface Props {
 export function FilterSidebar({
   facets,
   filters,
+  creatorWorkspaceFilter,
+  creatorQueryReady,
+  creatorContextKey,
   onChange,
   colorDots,
   colorFilter,
@@ -205,10 +212,14 @@ export function FilterSidebar({
           onChanged={onCreatorChanged}
           tab={filters.tab === "team" ? "team" : "my"}
           projectId={
-            filters.project_id && filters.project_id !== "none"
+            filters.tab === "team"
               ? filters.project_id
-              : undefined
+              : filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined
           }
+          workspaceFilter={creatorWorkspaceFilter}
+          ready={creatorQueryReady}
+          contextKey={creatorContextKey}
+          deletedOnly={!!filters.deleted_only}
         />
       </div>
 

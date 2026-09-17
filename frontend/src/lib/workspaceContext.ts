@@ -11,8 +11,8 @@ export const UNKNOWN_WORKSPACE: WorkspaceContext = {
 /**
  * 선택 워크스페이스(크레딧 컨텍스트) 영속화.
  *
- * 예전에는 라이브러리 필터(workspace_id)가 이 역할을 겸했지만, 워크스페이스 전환이
- * 생성물 가시성을 바꾸지 않게 분리되면서 별도 키로 저장한다. 관리/에셋 창도 이 키를 따라간다.
+ * 라이브러리 수동 필터(workspace_id)와 별도 키로 저장한다. 공유·리뷰는 이 컨텍스트를
+ * 자동 조회에 사용하지만 작업 공간의 수동 필터는 유지한다. 관리/에셋 창도 이 키를 따라간다.
  */
 export function loadStoredWorkspaceContext(): WorkspaceContext | null {
   const value = loadJSON<Partial<WorkspaceContext>>(STORAGE_KEYS.workspaceContext);

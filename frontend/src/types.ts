@@ -368,6 +368,8 @@ export interface Filters {
 // 서버사이드 인스턴트 필터까지 포함한 조회 쿼리(무한 스크롤이 서버에서 거름).
 // App 이 흩어진 필터 상태(typeFilter/colorFilter/…)를 이 하나로 합쳐 보낸다.
 export interface GenQuery extends Filters {
+  // 개인 소속 전체(기존 조회 권한 내). unknown은 개인으로 추정하지 않는다.
+  workspace_scope?: "personal";
   media_type?: "image" | "video" | "audio"; // 'all' 은 생략
   colors?: string[]; // 다중 컬러(OR)
   tags?: string[]; // 다중 태그(OR)

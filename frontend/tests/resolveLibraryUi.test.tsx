@@ -74,6 +74,18 @@ function renderGrid(props: ComponentProps<typeof ThumbnailGrid>) {
   flushFrames();
   return host.querySelector<HTMLElement>(".gen-grid")!;
 }
+
+it("빈 필터 페이지에서 남은 항목은 없음으로 단정하지 않고 더 보기로 이어간다", () => {
+  const onLoadMore = vi.fn();
+  renderGrid(gridProps({ generations: [], hasMore: true, onLoadMore }));
+  expect(host.textContent).toContain("뒤쪽 페이지");
+  const next = [...host.querySelectorAll("button")].find((button) => button.textContent === "더 보기");
+  expect(next).toBeTruthy();
+  act(() => next!.click());
+  expect(onLoadMore).toHaveBeenCalledOnce();
+  renderGrid(gridProps({ generations: [], hasMore: true, loadingMore: true, onLoadMore }));
+  expect(host.querySelector<HTMLButtonElement>(".settings-action")?.disabled).toBe(true);
+});
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();

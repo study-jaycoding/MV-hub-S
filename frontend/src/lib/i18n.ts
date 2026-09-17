@@ -7,6 +7,14 @@ import { type Lang, loadLang, saveLang } from "./theme";
 
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
+  "더 보기": "Load more",
+  "뒤쪽 페이지에 조건에 맞는 항목이 있을 수 있습니다.": "Matching items may be on a later page.",
+  "휴지통 추가 조회에 실패했습니다. 새로고침 후 다시 시도하세요.": "Could not load more trash items. Refresh to try again.",
+  "태그 이름 입력 후 Enter": "Enter a tag name and press Enter",
+  "공유&리뷰의 워크스페이스 필터는 위쪽 W 메뉴에서 변경하세요.": "Use the W menu above to change the Share & Review workspace filter.",
+  "워크스페이스를 확인한 뒤 공유물을 표시합니다.": "Shared items will appear once the workspace is identified.",
+  "워크스페이스별 다빈치 확인에는 공유 서버 업데이트가 필요합니다. 임시로 전체 보기를 사용할 수 있습니다.": "Update the shared server for workspace-scoped Resolve selection. You can use All temporarily.",
+  "소속 미확인 생성물은 전체 보기에서 확인할 수 있습니다.": "Items with an unknown workspace are available in All.",
   // 상단바·탭
   "작업 공간": "Workspace",
   "공유 & 리뷰": "Share & Review",
@@ -83,6 +91,8 @@ const EN: Record<string, string> = {
   // 사이드바 필터 섹션
   "전역 태그": "Global tags",
   "생성자": "Creator",
+  "생성자 필터 해제": "Clear creator filter",
+  "워크스페이스별 생성자 표시에는 공유 서버 업데이트가 필요합니다.": "Update the shared server to show creators for this workspace.",
   "컬러": "Color",
   "프로젝트": "Projects",
   "공유": "Shared",
@@ -107,6 +117,11 @@ const EN: Record<string, string> = {
   "그리드": "Grid",
   // 워크스페이스 필터(라이브러리 툴바) — 공간 이름은 사용자 자료라 번역하지 않는다.
   "워크스페이스로 걸러 보기": "Filter by workspace",
+  "현재 워크스페이스 따라가기": "Follow current workspace",
+  "워크스페이스 변경 시 자동 적용으로 돌아갑니다.": "Switching workspaces restores automatic filtering.",
+  "전체 보기": "Show all",
+  "자동": "Auto",
+  "수동": "Manual",
   "이 워크스페이스만 빼기": "Remove this workspace",
   "나머지는 버튼을 눌러 목록에서 뺄 수 있습니다": "Open the menu to remove the rest",
   '지금 "{name}" 워크스페이스에 속한 것만 보는 중 (만든 곳이 아니라 현재 소속)':

@@ -5,6 +5,8 @@ import { EMPTY_FACETS } from "./appConstants";
 import { beginLibraryReload, finishLibraryReload } from "./librarySync";
 import { startLibraryRequests } from "./libraryRequestPlan";
 import { reconcileArrayState, reconcileValueState } from "./stateReconciliation";
+import { hasWorkspaceFilter, matchesWorkspaceFilter, workspaceFilterOf } from "./libraryWorkspaceScope";
+import { t } from "./i18n";
 import type { Facets, Filters, GenQuery, GenStats, Generation, Project } from "../types";
 
 interface UseGenerationLibraryDataArgs {
@@ -19,6 +21,7 @@ interface UseGenerationLibraryDataArgs {
   // 캔버스 '폴더 보기' 창이 열려 있으면 compose 탭에서도 목록(그리드)을 조회·추가 로드한다(2026-09-09).
   //  서버 목록 API 의 tab 은 my|team 만 받으므로 compose 는 my 로 보낸다(캔버스 격자 = 내 작업).
   composeListEnabled?: boolean;
+  workspaceScopeKey?: string;
 }
 
 export const GENERATION_TAB_CACHE_FRESH_MS = 15_000;
@@ -29,6 +32,7 @@ type GenerationTabCacheEntry = {
   sig: string;
   loadedAt: number;
   cursor?: GenCursor | null;
+  trashOffset?: number;
 };
 
 export function generationTabCacheIsFresh(
@@ -48,12 +52,15 @@ export function useGenerationLibraryData({
   genQuery,
   projectWorkspaceId,
   composeListEnabled = false,
+  workspaceScopeKey = "",
 }: UseGenerationLibraryDataArgs) {
   const [gens, setGens] = useState<Generation[]>([]);
   const [locatedReload, setLocatedReload] = useState(0);
   const [locatedVisibleIds, setLocatedVisibleIds] = useState<ReadonlySet<string> | null>(null);
   // Resolve의 오래된 대상은 페이지 밖에서도 보이지만, 다음 페이지 커서는 그 대상을 따라가지 않는다.
   const pageCursorRef = useRef<GenCursor | null>(null);
+  // 휴지통은 offset 방식이다. 공간 필터로 숨긴 행도 소비한 원본 건수에 포함한다.
+  const trashOffsetRef = useRef(0);
   const locatedRef = useRef<{ tab: "my" | "team"; location: GenerationLocation } | null>(null);
   const [facets, setFacets] = useState<Facets>(EMPTY_FACETS);
   const [loading, setLoading] = useState(false);
@@ -96,6 +103,34 @@ export function useGenerationLibraryData({
   const pendingArgsRef = useRef<{ silent: boolean; light: boolean } | null>(null);
   const pendingResolversRef = useRef<Array<() => void>>([]);
 
+  // 같은 공유 탭 안의 공간 전환도 비동기 응답의 문맥 경계다. 효과가 돌기 전부터 차단한다.
+  const workspaceScopeRef = useRef(workspaceScopeKey);
+  const resetWorkspaceRef = useRef(false);
+  if (workspaceScopeRef.current !== workspaceScopeKey) {
+    workspaceScopeRef.current = workspaceScopeKey;
+    reloadSeqRef.current++;
+    locatedRef.current = null;
+    resetWorkspaceRef.current = true;
+  }
+  useLayoutEffect(() => {
+    if (!resetWorkspaceRef.current) return;
+    resetWorkspaceRef.current = false;
+    setLocatedVisibleIds(null);
+    if (filtersRef.current.tab !== "team") return;
+    const sig = JSON.stringify([!!filtersRef.current.deleted_only, genQueryRef.current]);
+    const cached = tabCacheRef.current.team;
+    const reuse = generationTabCacheIsFresh(cached, sig) ? cached : undefined;
+    const next = reuse?.gens ?? [];
+    gensRef.current = next;
+    setGens(next);
+    pageCursorRef.current = reuse?.cursor ?? null;
+    trashOffsetRef.current = reuse?.trashOffset ?? 0;
+    setHasMore(reuse?.hasMore ?? false);
+    setLoadError(null);
+    lastLoadedTabRef.current = "team";
+    if (!reuse) delete tabCacheRef.current.team;
+  }, [workspaceScopeKey]);
+
   const authScope = JSON.stringify([authKey, authReady]);
   const authScopeRef = useRef(authScope);
   const resetAuthRef = useRef(false);
@@ -106,6 +141,7 @@ export function useGenerationLibraryData({
     locatedRef.current = null;
     tabCacheRef.current = {};
     pageCursorRef.current = null;
+    trashOffsetRef.current = 0;
     lastLoadedTabRef.current = null;
     projectsLoadedRef.current = false;
   }
@@ -124,10 +160,10 @@ export function useGenerationLibraryData({
   // 목록이 바뀌면(삭제·태그·컬러·추가 로드 등) 현재 탭 캐시도 동기화 —
   // 탭을 오갔다 돌아와도 방금 편집한 결과가 캐시 화면에 그대로 보이게.
   useEffect(() => {
-    const t = lastLoadedTabRef.current;
-    if (!t) return;
-    const c = tabCacheRef.current[t];
-    if (c) tabCacheRef.current[t] = { ...c, gens, hasMore, cursor: pageCursorRef.current };
+    const cachedTab = lastLoadedTabRef.current;
+    if (!cachedTab) return;
+    const c = tabCacheRef.current[cachedTab];
+    if (c) tabCacheRef.current[cachedTab] = { ...c, gens, hasMore, cursor: pageCursorRef.current, trashOffset: trashOffsetRef.current };
   }, [gens, hasMore]);
 
   // ★탭이 바뀌면 '그 자리에서' 화면 컨텍스트를 전환 — 진행 중 reload(코얼레싱 큐)가 끝나길 기다리면
@@ -143,11 +179,13 @@ export function useGenerationLibraryData({
     if (cached && cached.sig === sig) {
       setGens(cached.gens);
       pageCursorRef.current = cached.cursor ?? null;
+      trashOffsetRef.current = cached.trashOffset ?? 0;
       setHasMore(cached.hasMore);
       setLoading(false);
     } else {
       setGens([]);
       pageCursorRef.current = null;
+      trashOffsetRef.current = 0;
       setHasMore(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -165,7 +203,7 @@ export function useGenerationLibraryData({
 
   const revealLocated = useCallback((tab: "my" | "team", location: GenerationLocation) => {
     const sameView = isLocatedQuery(genQueryRef.current, tab, location);
-    const items = locatedItems(location, tab);
+    const items = locatedItems(location, tab, genQueryRef.current);
     const visibleIds = new Set(gensRef.current.map((item) => item.id));
     const sig = JSON.stringify([!!filtersRef.current.deleted_only, genQueryRef.current]);
     // 선택 대상은 직전 locate에서 서버 확인했다. 필터 해제/폴더 이동이 필요 없고
@@ -182,6 +220,7 @@ export function useGenerationLibraryData({
     if (!reusePage) delete tabCacheRef.current[tab];
     if (!sameView) {
       pageCursorRef.current = null;
+      trashOffsetRef.current = 0;
       setHasMore(false);
     }
     setGens((previous) => mergeLocatedGenerations(sameView ? previous : [], items));
@@ -251,6 +290,7 @@ export function useGenerationLibraryData({
       const locationCheck = located && isLocatedQuery(query, located.tab, located.location)
         ? api.locateGenerations({
             tab: located.tab, gen_ids: located.location.focus_ids,
+            ...workspaceFilterOf(query),
             project_id: located.location.project_id || "none",
             folder_path: located.location.folder_path,
           }).catch(() => null)
@@ -260,13 +300,14 @@ export function useGenerationLibraryData({
         if (seq !== reloadSeqRef.current) return;
         const last = page[page.length - 1];
         pageCursorRef.current = last ? { ts: last.sort_ts ?? 0, id: last.id } : null;
-        let g = page;
+        trashOffsetRef.current = trashMode ? page.length : 0;
+        let g = page.filter((item) => matchesWorkspaceFilter(item, query));
         if (located && located === locatedRef.current && isLocatedQuery(query, located.tab, located.location)) {
           const valid = checked && isLocatedQuery(query, located.tab, checked)
-            ? locatedItems(checked, located.tab) : [];
+            ? locatedItems(checked, located.tab, query) : [];
           const oldIds = new Set(located.location.focus_ids);
           // locate만 일시 실패해도 정상 목록에서 확인된 행은 보존하되 Resolve 강조는 해제한다.
-          g = checked ? mergeLocatedGenerations(page.filter((item) => !oldIds.has(item.id)), valid) : page;
+          g = checked ? mergeLocatedGenerations(g.filter((item) => !oldIds.has(item.id)), valid) : g;
           setLocatedVisibleIds(new Set(valid.map((item) => item.id)));
         }
         setGens((prev) => reconcileArrayState(prev, g));
@@ -277,6 +318,7 @@ export function useGenerationLibraryData({
           gens: g,
           hasMore: page.length >= GEN_PAGE,
           cursor: pageCursorRef.current,
+          trashOffset: trashOffsetRef.current,
           sig,
           loadedAt: Date.now(),
         };
@@ -387,6 +429,7 @@ export function useGenerationLibraryData({
   const beginComposeList = useCallback(() => {
     locatedRef.current = null;
     pageCursorRef.current = null;
+    trashOffsetRef.current = 0;
     lastLoadedTabRef.current = "compose";
     setGens([]);
     setHasMore(false);
@@ -397,31 +440,40 @@ export function useGenerationLibraryData({
     if (filtersRef.current.tab === "compose" && !composeListEnabledRef.current) return;
     loadingMoreRef.current = true;
     setLoadingMore(true);
+    const seq = reloadSeqRef.current;
+    const trashMode = !!filtersRef.current.deleted_only;
+    const query = listQuery();
     try {
       // 시작 시점 seq 스냅샷 — 응답이 오기 전에 탭/필터가 바뀌었으면(reload 가 seq 를 올림) 폐기.
       // 가드 없이는 '내 작업' 추가 페이지가 팀 탭 목록에 합쳐지고 탭 캐시까지 오염된다(코덱스 P1).
-      const seq = reloadSeqRef.current;
-      const trashMode = !!filtersRef.current.deleted_only;
       let batch: Generation[];
       if (trashMode) {
-        batch = await api.listTrash(genQueryRef.current.search, gensRef.current.length);
+        batch = await api.listTrash(query.search, trashOffsetRef.current);
       } else {
-        batch = await api.listGenerations(listQuery(), pageCursorRef.current);
+        batch = await api.listGenerations(query, pageCursorRef.current);
       }
       if (seq !== reloadSeqRef.current) return; // 다른 탭/쿼리로 바뀐 뒤 도착한 이전 컨텍스트 페이지
+      if (trashMode) trashOffsetRef.current += batch.length;
       const last = batch[batch.length - 1];
       if (last) pageCursorRef.current = { ts: last.sort_ts ?? 0, id: last.id };
+      const visibleBatch = batch.filter((item) => matchesWorkspaceFilter(item, query));
       // ★gens 누적 캡(A5)은 넣지 않는다(코덱스 리뷰로 폐기): 앞부분 트림이 휴지통 offset 페이지네이션·
       //  virtua 스크롤 앵커·focusIdx(인덱스 기반)·선택 Set 을 동시에 깨뜨린다. 항목당 메타 수 KB 뿐이고
       //  진짜 메모리(썸네일 비트맵·DOM)는 가상 스크롤이 이미 상한 — 실이득 대비 회귀 위험이 커서 제외.
       setGens((prev) => {
-        if (locatedRef.current && !trashMode) return mergeLocatedGenerations(prev, batch);
+        if (locatedRef.current && !trashMode) return mergeLocatedGenerations(prev, visibleBatch);
         const seen = new Set(prev.map((x) => x.id));
-        return [...prev, ...batch.filter((x) => !seen.has(x.id))];
+        return [...prev, ...visibleBatch.filter((x) => !seen.has(x.id))];
       });
       setHasMore(batch.length >= GEN_PAGE);
     } catch {
-      /* 다음 스크롤에 재시도 */
+      // 공간 밖 행만 있으면 App이 빈 페이지를 자동으로 당긴다. 실패한 같은 offset은
+      // 자동 반복하지 않고 명시적 새로고침을 기다린다. 옛 문맥의 실패는 현재 화면에 쓰지 않는다.
+      if (seq === reloadSeqRef.current && trashMode && hasWorkspaceFilter(query)) {
+        setHasMore(false);
+        setLoadError(t("휴지통 추가 조회에 실패했습니다. 새로고침 후 다시 시도하세요."));
+      }
+      // 일반 목록은 기존대로 다음 스크롤에 재시도한다.
     } finally {
       loadingMoreRef.current = false;
       setLoadingMore(false);

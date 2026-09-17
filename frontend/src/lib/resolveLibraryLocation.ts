@@ -1,6 +1,7 @@
 import type { Generation, GenQuery } from "../types";
+import { hasWorkspaceFilter, matchesWorkspaceFilter, type LibraryWorkspaceFilter } from "./libraryWorkspaceScope";
 
-export interface GenerationLocationRequest {
+export interface GenerationLocationRequest extends LibraryWorkspaceFilter {
   tab: "my" | "team";
   gen_ids: string[];
   project_id?: string | null;
@@ -8,6 +9,7 @@ export interface GenerationLocationRequest {
 }
 
 export interface GenerationLocation {
+  workspace_filter_applied?: boolean;
   items: Generation[];
   focus_ids: string[];
   project_id: string | null;
@@ -33,17 +35,23 @@ export function mergeLocatedGenerations(page: Generation[], targets: Generation[
 export function isLocatedQuery(query: GenQuery, tab: "my" | "team", location: GenerationLocation) {
   if (query.tab !== tab || query.project_id !== (location.project_id || "none") ||
       (query.folder_path || "") !== (location.folder_path || "")) return false;
-  const { tab: _tab, project_id: _project, folder_path: _folder, ...rest } = query;
+  // 위치를 찾는 단계에서도 동일한 공간을 적용했을 때만 자동 범위를 유지한 채 재사용한다.
+  const scoped = hasWorkspaceFilter(query);
+  if (scoped && (location.workspace_filter_applied !== true ||
+      location.items.some((item) => !matchesWorkspaceFilter(item, query)))) return false;
+  const { tab: _tab, project_id: _project, folder_path: _folder,
+    workspace_ids: _workspaceIds, workspace_scope: _workspaceScope, ...rest } = query;
   return Object.values(rest).every((value) =>
     Array.isArray(value) ? value.length === 0 : !value,
   );
 }
 
 // 서버 확인 뒤에도 표시 계약을 좁혀 방어한다. 숨김/취소 응답은 강조만 지우고 이동하지 않는다.
-export function locatedItems(location: GenerationLocation, tab: "my" | "team") {
+export function locatedItems(location: GenerationLocation, tab: "my" | "team", filter: LibraryWorkspaceFilter = {}) {
+  if (hasWorkspaceFilter(filter) && location.workspace_filter_applied !== true) return [];
   const ids = new Set(location.focus_ids);
   return location.items.filter((item) => ids.has(item.id) && !item.deleted &&
-    (tab !== "team" || item.shared) &&
+    (tab !== "team" || item.shared) && matchesWorkspaceFilter(item, filter) &&
     (item.project_id || null) === location.project_id &&
     (!location.folder_path || item.folder_path === location.folder_path ||
       item.folder_path?.startsWith(location.folder_path + "/")));

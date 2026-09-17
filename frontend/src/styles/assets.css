@@ -291,6 +291,25 @@
   font-size: 14px; line-height: 1; padding: 0 3px;
 }
 .lib-ws-chip-x:hover { color: var(--text); }
+/* 공유&리뷰 자동 필터는 칩+해제 버튼 대신 한 버튼만 쓴다. 긴 이름만 줄이고 모드는 남긴다. */
+.lib-ws-follow-wrap { flex: none; min-width: 0; max-width: 100%; }
+.lib-ws-follow-btn {
+  gap: 5px; max-width: 240px; min-width: 0; padding: 0 7px; white-space: nowrap;
+}
+.lib-ws-follow-mark {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; border-radius: 4px; font-size: 10px;
+  color: var(--accent-ink); background: var(--accent);
+}
+.lib-ws-follow-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-ws-follow-mode, .lib-ws-follow-caret { flex: none; }
+.lib-ws-follow-mode { font-size: 11px; }
+.lib-ws-follow-menu { left: 0; right: auto; max-width: min(320px, calc(100vw - 24px)); }
+.lib-ws-follow-menu .lib-ws-item-name { white-space: normal; }
+.lib-ws-follow-note {
+  max-width: 270px; border-top: 1px solid var(--border); margin-top: 3px;
+  padding-top: 9px; line-height: 1.45; white-space: normal;
+}
 
 /* C 자동 알림: 새(미확인) 코멘트가 있으면 필터 off 라도 앰버로 강조 */
 .af-c.alert { background: rgba(255,176,84,0.16); border-color: #ffb054; color: #ffce8f; }

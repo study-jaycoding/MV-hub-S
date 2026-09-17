@@ -8,9 +8,12 @@ proxy_json/overlay 를 모킹해 순수 로직만 검증.
 
 import unittest
 
+import pytest
+
 
 class TeamLocalFilterTests(unittest.TestCase):
     def _run(self, pages, *, colors=None, tags=None, auto=None, ws=None, limit=200,
+             workspace_scope=None,
              overlay_shadow=None, overlay_tags=None,
              query="tab=team&colors=%23ff0000&limit=200"):
         """pages: 서버가 커서별로 돌려줄 목록들. overlay_shadow/{id:color}·overlay_tags/{id:[tag]} 주입."""
@@ -42,7 +45,7 @@ class TeamLocalFilterTests(unittest.TestCase):
         library._overlay_personal_meta = fake_overlay
         try:
             out = library._team_local_filtered(
-                Req(), colors, tags, auto, ws, limit, None, None
+                Req(), colors, tags, auto, ws, limit, None, None, workspace_scope=workspace_scope
             )
         finally:
             library._proxy.proxy_json = orig_pj
@@ -77,6 +80,47 @@ class TeamLocalFilterTests(unittest.TestCase):
         page = [self._card("a", ws="ws-1"), self._card("b")]
         out, _ = self._run([page], ws=[])
         self.assertEqual([g["id"] for g in out], ["a", "b"])
+
+    def test_personal_scope_filters_old_server_rows_without_including_unknown(self):
+        personal = self._card("personal")
+        personal.update(workspace_scope="personal", creator_uid="other")
+        page = [personal, self._card("team", ws="ws-a"), self._card("unknown")]
+        out, calls = self._run([page], workspace_scope="personal", query="tab=team&workspace_scope=personal")
+        self.assertEqual([g["id"] for g in out], ["personal"])
+        self.assertIn("workspace_scope=personal", calls["queries"][0])
+
+    def test_personal_and_team_filters_intersect_even_when_old_server_ignores_both(self):
+        personal = self._card("personal", ws="ws-a")
+        personal["workspace_scope"] = "personal"
+        out, _ = self._run(
+            [[personal, self._card("team", ws="ws-a")]], ws=["ws-a"], workspace_scope="personal",
+        )
+        self.assertEqual(out, [])
+
+    def test_personal_old_server_fills_page_after_two_hundred_nonmatching_rows(self):
+        first = [self._card(f"team-{i}", ws="ws-a", ts=1000 - i) for i in range(200)]
+        personal = self._card("personal", ts=10)
+        personal["workspace_scope"] = "personal"
+        out, calls = self._run(
+            [first, [personal]], workspace_scope="personal", limit=1,
+            query="tab=team&workspace_scope=personal&project_id=p&limit=1",
+        )
+        self.assertEqual([g["id"] for g in out], ["personal"])
+        self.assertEqual(calls["n"], 2)
+        self.assertIn("cursor_id=team-199", calls["queries"][1])
+        self.assertIn("project_id=p", calls["queries"][1])
+
+    def test_personal_old_server_safety_limit_does_not_report_a_false_end_of_results(self):
+        from fastapi import HTTPException
+
+        pages = [
+            [self._card(f"team-{page}-{i}", ws="ws-a", ts=20000 - page * 200 - i) for i in range(200)]
+            for page in range(60)
+        ]
+        with self.assertRaises(HTTPException) as error:
+            self._run(pages, workspace_scope="personal")
+        self.assertEqual(error.exception.status_code, 503)
+        self.assertIn("업데이트", error.exception.detail)
 
     # ── 색 ──
     def test_filters_by_color_local(self):
@@ -158,19 +202,18 @@ class TeamTabDispatchTests(unittest.TestCase):
      · 두 개 이상 → 옛 서버는 `workspace_ids` 를 모른다 → **허브가** 거른다.
     """
 
-    def _call(self, ws_ids):
+    def _call(self, ws_ids, workspace_scope=None):
         from unittest import mock
 
         from fastapi import BackgroundTasks
+        from starlette.requests import Request
 
         from app.routers import library
 
-        class _Request:
-            class url:
-                query = "tab=team"
-
-            headers: dict = {}
-            cookies: dict = {}
+        request = Request({
+            "type": "http", "method": "GET", "path": "/api/generations",
+            "query_string": b"tab=team", "headers": [],
+        })
 
         with (
             mock.patch.object(library._proxy, "proxying", return_value=True),
@@ -180,8 +223,9 @@ class TeamTabDispatchTests(unittest.TestCase):
             mock.patch.object(library, "_schedule_remote_thumb_prewarm", return_value=False),
         ):
             library.list_generations(
-                _Request(), BackgroundTasks(), tab="team",
+                request, BackgroundTasks(), tab="team",
                 colors=[], tags=[], auto_tags=[], workspace_ids=ws_ids, limit=500,
+                workspace_scope=workspace_scope,
             )
         return local, passthrough
 
@@ -200,3 +244,70 @@ class TeamTabDispatchTests(unittest.TestCase):
         local, passthrough = self._call([])
         local.assert_not_called()
         passthrough.assert_called_once()
+
+    def test_personal_scope_uses_local_safety_filter_for_old_server(self):
+        local, passthrough = self._call([], workspace_scope="personal")
+        self.assertEqual(local.call_args.kwargs["workspace_scope"], "personal")
+        passthrough.assert_not_called()
+
+    def test_personal_scope_does_not_drop_single_workspace_intersection(self):
+        local, passthrough = self._call(["ws-a"], workspace_scope="personal")
+        self.assertEqual(local.call_args.args[4], ["ws-a"])
+        self.assertEqual(local.call_args.kwargs["workspace_scope"], "personal")
+        passthrough.assert_not_called()
+
+    def test_single_workspace_is_trimmed_and_deduplicated_before_old_server_proxy(self):
+        from urllib.parse import parse_qs
+
+        local, passthrough = self._call([" ws-a ", "ws-a"])
+        local.assert_not_called()
+        query = parse_qs(passthrough.call_args.args[1].url.query)
+        self.assertEqual(query["workspace_ids"], ["ws-a"])
+        self.assertEqual(query["workspace_id"], ["ws-a"])
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_personal_pagination_pins_account_key_and_uid_then_restores(monkeypatch, fail):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from app import active_account, config
+    from app.routers import library
+
+    monkeypatch.setattr(config, "AUTH_ENABLED", False)
+    monkeypatch.setattr(active_account, "_cache", [True, {"email": "a@example.test", "uid": "a"}])
+    calls = []
+
+    def proxy(*args, **kwargs):
+        assert active_account.account_key() == "a@example.test"
+        assert active_account.active_uid() == "a"
+        calls.append(kwargs)
+        if len(calls) == 1:
+            # 실제 로그인·DB는 바꾸지 않고 페이지 사이 머신 포인터 변경만 재현한다.
+            active_account._cache[:] = [True, {"email": "b@example.test", "uid": "b"}]
+            return [
+                {"id": f"team-{i}", "sort_ts": 1000 - i, "workspace_scope": "team", "workspace_id": "ws-a"}
+                for i in range(200)
+            ]
+        if fail:
+            raise HTTPException(502, "unavailable")
+        return [{"id": "personal", "sort_ts": 1, "workspace_scope": "personal"}]
+
+    def overlay(rows, request):
+        assert active_account.account_key() == "a@example.test"
+        assert active_account.active_uid() == "a"
+        return rows
+
+    monkeypatch.setattr(library._proxy, "proxy_json", proxy)
+    monkeypatch.setattr(library, "_overlay_personal_meta", overlay)
+    request = SimpleNamespace(url=SimpleNamespace(query="tab=team&workspace_scope=personal"))
+    if fail:
+        with pytest.raises(HTTPException):
+            library._team_local_filtered(request, [], [], [], [], 1, None, None, workspace_scope="personal")
+    else:
+        result = library._team_local_filtered(request, [], [], [], [], 1, None, None, workspace_scope="personal")
+        assert [row["id"] for row in result] == ["personal"]
+    assert len(calls) == 2
+    assert active_account.account_key() == "b@example.test"
+    assert active_account.active_uid() == "b"

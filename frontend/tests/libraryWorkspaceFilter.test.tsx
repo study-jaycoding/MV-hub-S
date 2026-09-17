@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 import { act } from "react";
+import { readFileSync } from "node:fs";
+import { URL as NodeURL } from "node:url";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LibraryToolbar } from "../src/components/LibraryToolbar";
 import { LibraryWorkspaceFilter } from "../src/components/common/LibraryWorkspaceFilter";
+import { setLang } from "../src/lib/i18n";
 import { restoreFilters } from "../src/lib/useLibraryFilters";
 import {
   FILTERS_FORMAT,
@@ -160,6 +163,7 @@ let host: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -168,6 +172,8 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+  setLang("ko");
+  vi.unstubAllGlobals();
 });
 
 function render(props: Partial<Parameters<typeof LibraryWorkspaceFilter>[0]> = {}) {
@@ -184,6 +190,7 @@ function render(props: Partial<Parameters<typeof LibraryWorkspaceFilter>[0]> = {
           onOpen={props.onOpen ?? vi.fn()}
           onToggle={onToggle}
           onClear={onClear}
+          follow={props.follow}
         />
         <button className="af-dot af-dot-gray" />
       </div>,
@@ -285,6 +292,116 @@ describe("워크스페이스 필터 — 여러 개를 고른다", () => {
   });
 });
 
+describe("공유&리뷰 워크스페이스 자동 필터", () => {
+  it("자동 모드는 W 이름·자동 버튼 하나만 표시하고 기존 수동 칩과 ✕는 표시하지 않는다", () => {
+    render({ value: ["ws-1", "ws-2"], follow: { mode: "auto", label: "R&D", onChange: vi.fn() } });
+    const button = host.querySelector<HTMLButtonElement>(".lib-ws-btn")!;
+    expect(button.textContent).toBe("WR&D· 자동▾");
+    expect(button.classList.contains("on")).toBe(true);
+    expect(button.title).toContain("R&D · 자동");
+    expect(host.querySelectorAll(".lib-ws-btn")).toHaveLength(1);
+    expect(host.querySelector(".lib-ws-chip")).toBeNull();
+    expect(host.querySelector(".lib-ws-chip-x")).toBeNull();
+    expect(host.querySelector(".lib-ws-count")).toBeNull();
+  });
+
+  it("메뉴는 자동/전체 두 항목이며 목록 재조회나 다른 워크스페이스 선택을 하지 않는다", () => {
+    const onOpen = vi.fn();
+    const onChange = vi.fn();
+    const { onToggle, onClear } = render({ onOpen, follow: { mode: "auto", label: "R&D", onChange } });
+    openMenu();
+    expect(items()).toHaveLength(2);
+    expect(items().map((item) => item.getAttribute("role"))).toEqual(["menuitemradio", "menuitemradio"]);
+    expect(items().map((item) => item.getAttribute("aria-checked"))).toEqual(["true", "false"]);
+    expect(host.querySelector(".lib-ws-follow-note")!.textContent).toBe("워크스페이스 변경 시 자동 적용으로 돌아갑니다.소속 미확인 생성물은 전체 보기에서 확인할 수 있습니다.");
+    expect(onOpen).not.toHaveBeenCalled();
+    act(() => itemNamed("전체 보기").click());
+    expect(onChange).toHaveBeenCalledExactlyOnceWith("all");
+    expect(onToggle).not.toHaveBeenCalled();
+    expect(onClear).not.toHaveBeenCalled();
+    expect(host.querySelector(".lib-ws-menu")).toBeNull();
+    expect(document.activeElement).toBe(host.querySelector(".lib-ws-btn"));
+  });
+
+  it("전체 보기 상태를 수동으로 분명히 표시하고 다시 자동을 선택할 수 있다", () => {
+    const onChange = vi.fn();
+    render({ follow: { mode: "all", label: "R&D", onChange } });
+    const button = host.querySelector<HTMLButtonElement>(".lib-ws-btn")!;
+    expect(button.textContent).toBe("W전체 보기· 수동▾");
+    expect(button.classList.contains("on")).toBe(false);
+    openMenu();
+    expect(items().map((item) => item.getAttribute("aria-checked"))).toEqual(["false", "true"]);
+    act(() => itemNamed("현재 워크스페이스 따라가기").click());
+    expect(onChange).toHaveBeenCalledExactlyOnceWith("auto");
+    expect(host.querySelector(".lib-ws-menu")).toBeNull();
+  });
+
+  it("현재 공간 확인 중에는 이전 이름 대신 확인 중으로 표시하며 선택을 임의로 풀지 않는다", () => {
+    const onChange = vi.fn();
+    render({ follow: { mode: "auto", label: "이전 공간", pending: true, onChange } });
+    const button = host.querySelector<HTMLButtonElement>(".lib-ws-btn")!;
+    expect(button.textContent).toBe("W확인 중· 자동▾");
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    expect(button.title).not.toContain("이전 공간");
+    expect(onChange).not.toHaveBeenCalled();
+    render({ follow: { mode: "auto", label: "새 공간", pending: false, onChange } });
+    expect(host.querySelector(".lib-ws-btn")!.textContent).toBe("W새 공간· 자동▾");
+    expect(host.querySelector(".lib-ws-btn")!.getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("영어 모드에서도 공간 이름은 보존하고 동작 문구만 번역한다", () => {
+    setLang("en");
+    render({ follow: { mode: "auto", label: "우리팀", onChange: vi.fn() } });
+    expect(host.querySelector(".lib-ws-btn")!.textContent).toBe("W우리팀· Auto▾");
+    openMenu();
+    expect(itemNamed("Follow current workspace")).toBeDefined();
+    expect(itemNamed("Show all")).toBeDefined();
+    expect(host.querySelector(".lib-ws-follow-note")!.textContent).toBe("Switching workspaces restores automatic filtering.Items with an unknown workspace are available in All.");
+  });
+
+  it("Escape는 메뉴만 닫고 버튼으로 포커스를 돌려주며 모드를 변경하지 않는다", () => {
+    const onChange = vi.fn();
+    render({ follow: { mode: "auto", label: "R&D", onChange } });
+    openMenu();
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    act(() => window.dispatchEvent(event));
+    expect(host.querySelector(".lib-ws-menu")).toBeNull();
+    expect(document.activeElement).toBe(host.querySelector(".lib-ws-btn"));
+    expect(event.defaultPrevented).toBe(true);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("메뉴 바깥을 누르면 선택을 바꾸지 않고 메뉴만 닫는다", () => {
+    const onChange = vi.fn();
+    render({ follow: { mode: "auto", label: "R&D", onChange } });
+    openMenu();
+    act(() => document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+    expect(host.querySelector(".lib-ws-menu")).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("긴 이름은 줄임표로, 모드 표시는 고정 폭으로 남기고 툴바 버튼은 두 줄로 나누지 않는다", () => {
+    // jsdom은 실제 폭을 배치하지 않으므로 CSS 계약만 확인한다. 실제 좁은 창은 브라우저 검증 대상.
+    const style = document.createElement("style");
+    style.textContent = readFileSync(new NodeURL("../src/styles/assets.css", import.meta.url), "utf8");
+    document.head.appendChild(style);
+    try {
+      const label = "R&D 아주 긴 워크스페이스 이름 확인";
+      render({ follow: { mode: "auto", label, onChange: vi.fn() } });
+      const button = host.querySelector<HTMLButtonElement>(".lib-ws-btn")!;
+      expect(button.title).toContain(label);
+      expect(getComputedStyle(button).whiteSpace).toBe("nowrap");
+      expect(getComputedStyle(button).maxWidth).toBe("240px");
+      expect(getComputedStyle(host.querySelector(".lib-ws-follow-name")!).textOverflow).toBe("ellipsis");
+      expect(getComputedStyle(host.querySelector(".lib-ws-follow-name")!).minWidth).toBe("0");
+      expect(getComputedStyle(host.querySelector(".lib-ws-follow-mode")!).flexShrink).toBe("0");
+      expect(getComputedStyle(host.querySelector(".assets-filters")!).flexWrap).toBe("wrap");
+    } finally {
+      style.remove();
+    }
+  });
+});
+
 // ── 툴바 배선 ────────────────────────────────────────────────────────────────
 // 컴포넌트가 멀쩡해도 툴바가 안 그리면 기능은 없는 것과 같다. 그리고 **구성 보드 툴바에는
 // 안 나와야** 한다 — 그쪽은 워크스페이스 조건 배선 자체가 없어 눌러도 아무 일도 안 일어난다.
@@ -329,6 +446,20 @@ function toolbarProps(workspaceFilter?: Parameters<typeof LibraryWorkspaceFilter
 }
 
 describe("툴바 배선", () => {
+  it("공유&리뷰 자동 필터도 회색 dot 앞에 버튼 하나로 배선된다", () => {
+    act(() => root.render(
+      <LibraryToolbar {...toolbarProps({
+        value: ["ws-3"], options: OPTIONS, loading: false, failed: false,
+        onOpen: vi.fn(), onToggle: vi.fn(), onClear: vi.fn(),
+        follow: { mode: "auto", label: "R&D", onChange: vi.fn() },
+      })} />,
+    ));
+    const group = host.querySelector(".assets-filters")!;
+    expect(Array.from(group.children).slice(0, 2).map((el) => el.className.split(" ")[0])).toEqual(["lib-ws-wrap", "af-dot"]);
+    expect(host.querySelector(".lib-ws-follow-name")!.textContent).toBe("R&D");
+    expect(host.querySelector(".lib-ws-chip")).toBeNull();
+  });
+
   it("라이브러리 툴바는 회색 dot 왼쪽에 [칩…][버튼] 을 그린다", () => {
     act(() => {
       root.render(

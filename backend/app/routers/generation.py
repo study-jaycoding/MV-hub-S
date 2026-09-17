@@ -12,15 +12,15 @@ import asyncio
 from contextlib import contextmanager
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
-from urllib.parse import quote
+from typing import Any, Literal, Optional
+from urllib.parse import parse_qsl, quote, urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from . import _proxy, _telemetry
 from ..services.async_tools import to_thread_non_abandon
-from .. import rbac, repo
+from .. import active_account, rbac, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
 from ..deps import (
     account_global_roles,
@@ -96,27 +96,57 @@ def list_creators(
     request: Request,
     tab: str = Query("my", pattern="^(my|team)$"),
     project_id: str | None = None,
+    workspace_ids: list[str] = Query(default=[]),
+    workspace_scope: Optional[Literal["personal"]] = None,
 ):
     """생성자 목록 — project_id 가 오면 그 프로젝트 참여 인원(멤버), 아니면 My=본인/Team=공유물 작성자."""
-    # 로컬 우선: team 생성자(공유물 작성자)는 서버에 있으므로 위임.
-    if tab == "team" and _proxy.proxying():
-        return _proxy.proxy_get("/api/creators", request)
-    # ★스코프 가드: tab='my' 에서 account_uid 가 None 이면 list_creators 가 필터를 안 걸어 '전체
-    # 생성자'(팀 전원 이름)를 노출한다. 미링크 AUTH-on 계정은 '\x00' 로 스코프해 빈 목록이 되게 한다.
-    account_uid = account_scope_uid(request)
-    team_member_projects = None
-    if tab == "team":
-        read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
-            account_global_roles(request), "read_all"
-        )
-        if not read_all:
-            team_member_projects = repo.my_member_projects(account_uid or "\x00")
-    return repo.list_creators(
-        account_uid=account_uid,
-        tab=tab,
-        project_id=project_id,
-        team_member_projects=team_member_projects,
-    )
+    raw_ws = workspace_ids if isinstance(workspace_ids, (list, tuple)) else []
+    if len(raw_ws) > 200 or any(
+        not isinstance(w, str) or not w.strip() or len(w.strip()) > 200 for w in raw_ws
+    ):
+        raise HTTPException(422, "워크스페이스 ID는 비어 있지 않은 200자 이하 문자열이어야 합니다")
+    picked_ws = list(dict.fromkeys(w.strip() for w in raw_ws)) if tab == "team" else []
+    scope = workspace_scope if tab == "team" else None
+    scoped = bool(picked_ws or scope)
+    # 같은 임계구역에서 캡처한 key/uid를 원격 왕복 끝까지 유지한다.
+    # 기존 개인메타 helper 자체의 동작은 바꾸지 않고 이 조회에서만 uid도 고정한다.
+    with _personal_meta_account_scope(request) as pinned_uid:
+        uid_token = active_account.set_uid_override(pinned_uid)
+        try:
+            # 로컬 우선: team 생성자와 전체 집계는 공유 서버가 권위다.
+            if tab == "team" and _proxy.proxying():
+                if not scoped:
+                    return _proxy.proxy_get("/api/creators", request)
+                pairs = [
+                    (key, value) for key, value in parse_qsl(request.url.query, keep_blank_values=True)
+                    if key not in ("workspace_ids", "workspace_scope")
+                ]
+                pairs.extend(("workspace_ids", w) for w in picked_ws)
+                if scope:
+                    pairs.append(("workspace_scope", scope))
+                data = _proxy.proxy_json("GET", "/api/creators", raw_query=urlencode(pairs))
+                if not isinstance(data, dict) or data.get("workspace_filter_applied") is not True:
+                    raise HTTPException(409, "워크스페이스별 생성자 집계를 사용하려면 공유 서버를 업데이트해 주세요")
+                if not isinstance(data.get("items"), list) or any(not isinstance(row, dict) for row in data["items"]):
+                    raise HTTPException(502, "공유 서버의 생성자 집계 응답을 확인할 수 없습니다")
+                return {"items": data["items"], "workspace_filter_applied": True}
+            # 미링크 AUTH-on 계정은 기존 impossible UID로 제한한다. None으로 완화하지 않는다.
+            account_uid = account_scope_uid(request)
+            team_member_projects = None
+            if tab == "team":
+                read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
+                    account_global_roles(request), "read_all"
+                )
+                if not read_all:
+                    team_member_projects = repo.my_member_projects(account_uid or "\x00")
+            items = repo.list_creators(
+                account_uid=account_uid, tab=tab, project_id=project_id,
+                team_member_projects=team_member_projects,
+                workspace_ids=picked_ws, workspace_scope=scope,
+            )
+            return {"items": items, "workspace_filter_applied": True} if scoped else items
+        finally:
+            active_account.reset_uid_override(uid_token)
 
 
 @router.get("/workspaces")

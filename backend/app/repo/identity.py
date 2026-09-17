@@ -102,6 +102,8 @@ def list_creators(
     tab: str = "my",
     project_id: Optional[str] = None,
     team_member_projects: Optional[list[str]] = None,
+    workspace_ids: Optional[list[str]] = None,
+    workspace_scope: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """생성자 목록 [{uid, name, count, is_mine}] — 사이드바 필터 + 이름붙이기.
 
@@ -113,39 +115,52 @@ def list_creators(
       · tab='team' → 현재 사용자가 볼 수 있는 공유 결과물의 작성자들.
       · account_uid 없음(비로그인/단독) → 전체(기존 동작 유지)."""
     my = account_uid or get_my_uid()
-    if project_id:
-        if tab == "team":
-            where = [
-                "g.creator_uid IS NOT NULL",
-                "g.deleted_at IS NULL",
-                "g.project_id = ?",
-                "EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)",
-            ]
-            args: list[Any] = [project_id]
-            visibility, visibility_args = team_generation_visibility_clause(
-                team_member_projects, account_uid
+    if tab == "team":
+        # 카드 목록과 같은 공유/권한/워크스페이스/프로젝트 범위로 서버에서 전체를 센다.
+        # 목록 페이지를 수집하지 않으므로 카드 로드 수나 프록시 스캔 상한에 좌우되지 않는다.
+        where = [
+            "g.creator_uid IS NOT NULL",
+            "g.deleted_at IS NULL",
+            "EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)",
+        ]
+        args: list[Any] = []
+        visibility, visibility_args = team_generation_visibility_clause(
+            team_member_projects, account_uid
+        )
+        if visibility:
+            where.append(visibility)
+            args += visibility_args
+        if project_id == "none":
+            where.append("g.project_id IS NULL")
+        elif project_id:
+            where.append("g.project_id = ?")
+            args.append(project_id)
+        else:
+            where.append(
+                "(g.project_id IS NULL OR g.project_id NOT IN "
+                "(SELECT id FROM project WHERE archived = 1))"
             )
-            if visibility:
-                where.append(visibility)
-                args += visibility_args
-            with get_connection() as conn:
-                rows = conn.execute(
-                    "SELECT g.creator_uid uid, COUNT(*) cnt "
-                    "FROM generation g "
-                    f"WHERE {' AND '.join(where)} "
-                    "GROUP BY g.creator_uid ORDER BY cnt DESC",
-                    args,
-                ).fetchall()
-                names = resolve_display_names(conn, [r["uid"] for r in rows])
-                return [
-                    {
-                        "uid": r["uid"],
-                        "name": names.get(r["uid"]),
-                        "count": r["cnt"],
-                        "is_mine": r["uid"] == my,
-                    }
-                    for r in rows
-                ]
+        picked = list(dict.fromkeys(
+            w.strip() for w in (workspace_ids or []) if isinstance(w, str) and w.strip()
+        ))
+        if picked:
+            where.append(f"(g.workspace_scope = 'team' AND g.workspace_id IN ({','.join('?' for _ in picked)}))")
+            args.extend(picked)
+        if workspace_scope is not None:
+            where.append("g.workspace_scope = ?")
+            args.append(workspace_scope)
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT g.creator_uid uid, COUNT(*) cnt FROM generation g "
+                f"WHERE {' AND '.join(where)} GROUP BY g.creator_uid ORDER BY cnt DESC",
+                args,
+            ).fetchall()
+            names = resolve_display_names(conn, [r["uid"] for r in rows])
+            return [
+                {"uid": r["uid"], "name": names.get(r["uid"]), "count": r["cnt"], "is_mine": r["uid"] == my}
+                for r in rows
+            ]
+    if project_id:
         # 프로젝트 생성자 = 배정 멤버 ∪ 그 프로젝트에 실제로 생성물을 만든 작성자.
         # (예전엔 project_member 만 봐서, 멤버 미배정 프로젝트는 생성자 섹션이 통째로 사라졌다.)
         # 이름은 creator→account→로컬파트 폴백(uid 노출 금지).
@@ -202,15 +217,7 @@ def list_creators(
             return result
     where = ["g.creator_uid IS NOT NULL", "g.deleted_at IS NULL"]
     args: list[Any] = []
-    if tab == "team":
-        where.append("EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)")
-        visibility, visibility_args = team_generation_visibility_clause(
-            team_member_projects, account_uid
-        )
-        if visibility:
-            where.append(visibility)
-            args += visibility_args
-    elif account_uid:
+    if account_uid:
         where.append("g.creator_uid = ?")
         args.append(account_uid)
     with get_connection() as conn:

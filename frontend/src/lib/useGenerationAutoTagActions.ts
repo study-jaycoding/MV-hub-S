@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import { api } from "../api";
+import { t } from "./i18n";
 import { cachedWorkspaceOptions, fetchWorkspaceOptions } from "./workspaceOptionsCache";
 import { toggleSetValue, withoutSetValue } from "./setUtils";
 import type { WorkspaceChip } from "./useLibraryFilters";
@@ -20,6 +21,7 @@ interface UseGenerationAutoTagActionsArgs {
   // 워크스페이스 침(옵트인 필터) 등록 — 같은 + 모달에서 `#+` 로 등록한다.
   workspaceContext: WorkspaceContext;
   setWorkspaceChips: Dispatch<SetStateAction<WorkspaceChip[]>>;
+  allowWorkspaceChipRegistration?: boolean;
 }
 
 export function useGenerationAutoTagActions({
@@ -29,6 +31,7 @@ export function useGenerationAutoTagActions({
   setArmedAutoTags,
   workspaceContext,
   setWorkspaceChips,
+  allowWorkspaceChipRegistration = true,
 }: UseGenerationAutoTagActionsArgs) {
   const toggleArmedAutoTag = (tag: string) => {
     setArmedAutoTags((prev) => toggleSetValue(prev, tag));
@@ -82,12 +85,17 @@ export function useGenerationAutoTagActions({
 
   const addAutoTag = async () => {
     const name = (
-      await askPrompt("전역 태그 이름", "", "태그 이름 입력 후 Enter · #+ = 워크스페이스 필터 등록", {
-        workspaceSuggest: true,
+      await askPrompt("전역 태그 이름", "", allowWorkspaceChipRegistration
+        ? "태그 이름 입력 후 Enter · #+ = 워크스페이스 필터 등록" : t("태그 이름 입력 후 Enter"), {
+        workspaceSuggest: allowWorkspaceChipRegistration,
       })
     )?.trim();
     if (!name) return;
     if (name.startsWith("#+")) {
+      if (!allowWorkspaceChipRegistration) {
+        flash(t("공유&리뷰의 워크스페이스 필터는 위쪽 W 메뉴에서 변경하세요."));
+        return;
+      }
       await addWorkspaceChip(name.slice(2).trim());
       return;
     }

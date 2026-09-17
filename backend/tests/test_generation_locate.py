@@ -40,7 +40,8 @@ def catalog(tmp_path, monkeypatch):
         )
 
     def add(gen_id, *, owner="viewer", project="p", folder="e001/c0010", shared=False,
-            deleted=False, final=False, sort=1.0, job_id=None, origin="local"):
+            deleted=False, final=False, sort=1.0, job_id=None, origin="local",
+            workspace_scope="unknown", workspace_id=None):
         with db.get_connection() as conn:
             conn.execute(
                 "INSERT INTO generation(id,worker_id,prompt,status,created_at,sort_ts,creator_uid,"
@@ -48,6 +49,10 @@ def catalog(tmp_path, monkeypatch):
                 "VALUES(?,'me',?,'done','2026-09-16',?,?,?,?,?,?,?,?)",
                 (gen_id, gen_id, sort, owner, project, folder, job_id, origin,
                  "2026-09-16" if deleted else None, int(final)),
+            )
+            conn.execute(
+                "UPDATE generation SET workspace_scope=?,workspace_id=? WHERE id=?",
+                (workspace_scope, workspace_id, gen_id),
             )
             if shared:
                 conn.execute(
@@ -66,9 +71,13 @@ def request(role="member", uid="viewer"):
     return req
 
 
-def locate(ids, *, tab="my", req=None, project_id=None, folder_path=None):
+def locate(ids, *, tab="my", req=None, project_id=None, folder_path=None,
+           workspace_ids=None, workspace_scope=None):
     return library.locate_generation_targets(
-        library.GenerationLocateIn(tab=tab, gen_ids=ids, project_id=project_id, folder_path=folder_path),
+        library.GenerationLocateIn(
+            tab=tab, gen_ids=ids, project_id=project_id, folder_path=folder_path,
+            workspace_ids=workspace_ids or [], workspace_scope=workspace_scope,
+        ),
         req or request(),
     )
 
@@ -105,6 +114,57 @@ def test_my_only_returns_viewer_rows_even_for_admin(catalog):
     other = catalog("other", owner="other", shared=True)
     deleted = catalog("deleted", deleted=True)
     assert locate([own, other, deleted], req=request("admin"))["focus_ids"] == [own]
+
+
+@pytest.mark.parametrize("role", ["member", "admin"])
+def test_personal_scope_keeps_existing_permissions_not_just_own_and_excludes_unknown(catalog, role):
+    ids = [
+        catalog("own-personal", workspace_scope="personal", shared=True),
+        catalog("other-personal", owner="other", workspace_scope="personal", shared=True),
+        catalog("hidden-personal", owner="other", project="q", workspace_scope="personal", shared=True),
+        catalog("private-personal", workspace_scope="personal"),
+        catalog("deleted-personal", workspace_scope="personal", shared=True, deleted=True),
+        catalog("team", workspace_scope="team", workspace_id="ws-a", shared=True),
+        catalog("unknown", shared=True),
+    ]
+    expected = {"own-personal", "other-personal"}
+    if role == "admin":
+        expected.add("hidden-personal")
+    visible = repo.list_generations(
+        tab="team", workspace_scope="personal", account_uid="viewer",
+        team_member_projects=["p"] if role == "member" else None,
+    )
+    assert {row["id"] for row in visible} == expected
+    # 그룹 우선순위와 무관하게 각 개인 카드 가시성이 목록과 일치한다.
+    for gen_id in ids:
+        result = locate([gen_id], tab="team", req=request(role), workspace_scope="personal")
+        assert result["focus_ids"] == ([gen_id] if gen_id in expected else [])
+        assert result["workspace_filter_applied"] is True
+
+
+def test_workspace_filter_precedes_multiselection_folder_preference(catalog):
+    wanted = catalog("wanted", shared=True, workspace_scope="team", workspace_id="ws-a", folder="a")
+    other_a = catalog("other-a", shared=True, workspace_scope="team", workspace_id="ws-b", folder="b")
+    other_b = catalog("other-b", shared=True, workspace_scope="team", workspace_id="ws-b", folder="b")
+    result = locate(
+        [wanted, other_a, other_b], tab="team", workspace_ids=["ws-a"],
+        project_id="p", folder_path="b",
+    )
+    assert result["focus_ids"] == [wanted]
+    assert result["folder_path"] == "a"
+    assert result["workspace_filter_applied"] is True
+
+
+def test_personal_scope_and_team_ids_are_intersection_not_union(catalog):
+    # 잘못 섞인 요청도 개인 또는 팀 전체로 완화하면 안 된다.
+    ids = [
+        catalog("personal", shared=True, workspace_scope="personal", workspace_id="ws-a"),
+        catalog("team", shared=True, workspace_scope="team", workspace_id="ws-a"),
+    ]
+    assert repo.list_generations(workspace_scope="personal", workspace_ids=["ws-a"]) == []
+    result = locate(ids, tab="team", workspace_scope="personal", workspace_ids=["ws-a"])
+    assert result["focus_ids"] == []
+    assert result["workspace_filter_applied"] is True
 
 
 def test_unlinked_account_does_not_relax_query_visibility(catalog):
@@ -287,6 +347,85 @@ def test_invalid_remote_contract_fails_closed(catalog, monkeypatch, response):
     assert error.value.status_code == 502
 
 
+@pytest.mark.parametrize("filters", [{"workspace_ids": ["ws-a"]}, {"workspace_scope": "personal"}])
+@pytest.mark.parametrize("marker", [None, False])
+def test_scoped_team_locate_rejects_legacy_server_that_ignored_filter(catalog, monkeypatch, filters, marker):
+    catalog("local", job_id="anchor", shared=True)
+    monkeypatch.setattr(_proxy, "proxying", lambda: True)
+    # 빈 응답도 서버가 범위 밖 폴더를 먼저 고른 결과일 수 있으므로 승인 표식이 필요하다.
+    response = {"items": [], "focus_ids": [], "project_id": None, "folder_path": None}
+    if marker is not None:
+        response["workspace_filter_applied"] = marker
+    fetch = Mock(return_value=response)
+    monkeypatch.setattr(_proxy, "proxy_json", fetch)
+    with pytest.raises(HTTPException) as error:
+        locate(["local"], tab="team", **filters)
+    assert error.value.status_code == 409
+    assert "업데이트" in error.value.detail
+    assert all(fetch.call_args.kwargs["body"][key] == value for key, value in filters.items())
+
+
+@pytest.mark.parametrize("marker", [1, "true", "yes"])
+def test_workspace_filter_marker_requires_actual_json_boolean(catalog, monkeypatch, marker):
+    catalog("local", job_id="anchor", shared=True)
+    monkeypatch.setattr(_proxy, "proxying", lambda: True)
+    monkeypatch.setattr(_proxy, "proxy_json", Mock(return_value={
+        "items": [], "focus_ids": [], "project_id": None, "folder_path": None,
+        "workspace_filter_applied": marker,
+    }))
+    with pytest.raises(HTTPException) as error:
+        locate(["local"], tab="team", workspace_scope="personal")
+    assert error.value.status_code == 502
+
+
+@pytest.mark.parametrize("filters,scope,workspace_id", [
+    ({"workspace_ids": ["ws-a"]}, "team", "ws-a"),
+    ({"workspace_scope": "personal"}, "personal", None),
+])
+def test_scoped_team_locate_accepts_verified_server_filter(catalog, monkeypatch, filters, scope, workspace_id):
+    catalog("local", job_id="anchor", shared=True)
+    monkeypatch.setattr(_proxy, "proxying", lambda: True)
+    card = {
+        **item("anchor"), "worker_id": "me", "prompt": "", "status": "done",
+        "created_at": "2026-09-16", "shared": True,
+        "workspace_scope": scope, "workspace_id": workspace_id,
+    }
+    monkeypatch.setattr(_proxy, "proxy_json", Mock(return_value={
+        "items": [card], "focus_ids": ["anchor"], "project_id": "p", "folder_path": "one",
+        "workspace_filter_applied": True,
+    }))
+    monkeypatch.setattr(library, "_overlay_personal_meta", Mock())
+    result = locate(["local"], tab="team", **filters)
+    assert result["focus_ids"] == ["anchor"]
+    assert result["workspace_filter_applied"] is True
+    # 필터 표식을 추가하면서 기존 GenerationOut 기본 필드가 사라지지 않는다.
+    assert result["items"][0]["assets"] == []
+    assert result["items"][0]["deleted"] is False
+
+
+@pytest.mark.parametrize("filters,scope,workspace_id", [
+    ({"workspace_ids": ["ws-a"]}, "team", "ws-b"),
+    ({"workspace_ids": ["ws-a"]}, "personal", "ws-a"),
+    ({"workspace_scope": "personal"}, "unknown", None),
+    ({"workspace_scope": "personal"}, "team", "ws-a"),
+])
+def test_scoped_team_locate_marker_does_not_allow_out_of_scope_rows(catalog, monkeypatch, filters, scope, workspace_id):
+    catalog("local", job_id="anchor", shared=True)
+    monkeypatch.setattr(_proxy, "proxying", lambda: True)
+    card = {
+        **item("anchor"), "worker_id": "me", "prompt": "", "status": "done",
+        "created_at": "2026-09-16", "shared": True,
+        "workspace_scope": scope, "workspace_id": workspace_id,
+    }
+    monkeypatch.setattr(_proxy, "proxy_json", Mock(return_value={
+        "items": [card], "focus_ids": ["anchor"], "project_id": "p", "folder_path": "one",
+        "workspace_filter_applied": True,
+    }))
+    with pytest.raises(HTTPException) as error:
+        locate(["local"], tab="team", **filters)
+    assert error.value.status_code == 502
+
+
 @pytest.mark.parametrize("shared,deleted", [(False, False), (True, True)])
 def test_remote_private_or_deleted_target_cannot_be_injected(catalog, monkeypatch, shared, deleted):
     catalog("local", job_id="anchor", shared=True)
@@ -356,3 +495,54 @@ def test_http_shape_limits_and_readonly_proxy_classification(catalog):
         assert client.post("/api/generations/locate", json={"tab": "my", "gen_ids": []}).json()["focus_ids"] == []
     assert _proxy.is_local_path("/api/generations/locate")
     assert notification_domains("POST", "/api/generations/locate", 200) == ()
+
+
+def test_http_workspace_filter_shape_validation_and_personal_list(catalog):
+    app = FastAPI()
+    app.include_router(library.router)
+
+    @app.middleware("http")
+    async def session(req, call_next):
+        req.state.account = request().state.account
+        return await call_next(req)
+
+    catalog("personal", workspace_scope="personal", shared=True)
+    catalog("other-personal", owner="other", workspace_scope="personal", shared=True)
+    catalog("unknown", shared=True)
+    catalog("team", workspace_scope="team", workspace_id="ws-a", shared=True)
+    with TestClient(app) as client:
+        response = client.get("/api/generations?tab=team&workspace_scope=personal")
+        assert response.status_code == 200
+        assert {row["id"] for row in response.json()} == {"personal", "other-personal"}
+        assert client.get("/api/generations?workspace_scope=unknown").status_code == 422
+        assert client.get("/api/generations?workspace_scope=personal&workspace_ids=ws-a").json() == []
+        for key in ("workspace_id", "workspace_ids"):
+            for invalid_id in ("", "   ", "x" * 201):
+                assert client.get("/api/generations", params={key: invalid_id}).status_code == 422
+            response = client.get("/api/generations", params={"tab": "team", key: " ws-a "})
+            assert response.status_code == 200
+            assert [row["id"] for row in response.json()] == ["team"]
+        response = client.get("/api/generations", params=[
+            ("tab", "team"), ("workspace_ids", " ws-a "), ("workspace_ids", "ws-a"),
+        ])
+        assert [row["id"] for row in response.json()] == ["team"]
+        assert [row["id"] for row in repo.list_generations(workspace_ids=[" ws-a ", "ws-a"])] == ["team"]
+        for invalid_ids in ([""], ["   "], [1], ["x" * 201], ["x"] * 201):
+            response = client.post("/api/generations/locate", json={
+                "tab": "team", "gen_ids": ["team"], "workspace_ids": invalid_ids,
+            })
+            assert response.status_code == 422
+        assert client.post("/api/generations/locate", json={
+            "tab": "team", "gen_ids": ["personal"], "workspace_scope": "unknown",
+        }).status_code == 422
+        response = client.post("/api/generations/locate", json={
+            "tab": "team", "gen_ids": ["team", "personal", "unknown"], "workspace_scope": "personal",
+        })
+        assert response.status_code == 200
+        assert response.json()["focus_ids"] == ["personal"]
+        assert response.json()["workspace_filter_applied"] is True
+        response = client.post("/api/generations/locate", json={
+            "tab": "team", "gen_ids": ["team", "personal"], "workspace_ids": [" ws-a ", "ws-a"],
+        })
+        assert response.status_code == 200
+        assert response.json()["focus_ids"] == ["team"]

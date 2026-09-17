@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { Filters, Generation } from "../types";
 import { locatedItems, locationFilters, type GenerationLocation } from "./resolveLibraryLocation";
+import { hasWorkspaceFilter, workspaceFilterOf, type LibraryWorkspaceFilter } from "./libraryWorkspaceScope";
 
 interface Args {
   filters: Filters;
@@ -14,6 +15,9 @@ interface Args {
   followLocation: (location: { project_id?: string; folder_path?: string }) => void;
   revealLocated: (tab: "my" | "team", location: GenerationLocation) => void;
   canFollow: () => boolean;
+  workspaceFilter?: LibraryWorkspaceFilter;
+  workspaceScopeKey?: string;
+  onWorkspaceFilterUnsupported?: () => void;
 }
 
 type Request = { ids: string[]; truncated: boolean; seq: number; context: string };
@@ -23,13 +27,15 @@ type Focus = { ids: string[]; nonce: number; context: string; location?: Generat
 export function useResolveLibraryFollow(args: Args) {
   const latest = useRef(args);
   latest.current = args;
-  const context = JSON.stringify([args.filters.tab, args.enabled, args.authReady, args.authKey, args.manualRevision]);
+  const context = JSON.stringify([args.filters.tab, args.enabled, args.authReady, args.authKey,
+    args.manualRevision, args.workspaceScopeKey, workspaceFilterOf(args.workspaceFilter ?? {})]);
   const contextRef = useRef(context);
   const sequence = useRef(0);
   const pending = useRef<Request | null>(null);
   const running = useRef(false);
   const mounted = useRef(true);
   const [focus, setFocus] = useState<Focus | null>(null);
+  const unsupportedContext = useRef<string | null>(null);
   if (contextRef.current !== context) {
     contextRef.current = context;
     sequence.current++;
@@ -59,12 +65,21 @@ export function useResolveLibraryFollow(args: Args) {
         try {
           const response = await api.locateGenerations({
             tab, gen_ids: request.ids,
+            ...workspaceFilterOf(before.workspaceFilter ?? {}),
             project_id: before.filters.project_id,
             folder_path: before.filters.folder_path,
           });
           if (!mounted.current || request.seq !== sequence.current ||
               request.context !== contextRef.current || !latest.current.canFollow()) continue;
-          const items = locatedItems(response, tab);
+          if (hasWorkspaceFilter(before.workspaceFilter ?? {}) && response.workspace_filter_applied !== true) {
+            if (unsupportedContext.current !== request.context) {
+              unsupportedContext.current = request.context;
+              latest.current.onWorkspaceFilterUnsupported?.();
+            }
+            setFocus(null);
+            continue;
+          }
+          const items = locatedItems(response, tab, before.workspaceFilter);
           if (!items.length) { setFocus(null); continue; }
           const automatic = before.enabled && !request.truncated;
           const location = { ...response, items, focus_ids: items.map((item) => item.id) };
@@ -78,9 +93,16 @@ export function useResolveLibraryFollow(args: Args) {
             nonce: request.seq, context: request.context,
             location: automatic ? location : undefined,
           });
-        } catch {
+        } catch (error) {
           // 구버전/오프라인/접근 거부: 화면을 바꾸거나 비공개 로컬 정보를 대신 보여주지 않는다.
-          if (mounted.current && request.seq === sequence.current) setFocus(null);
+          if (mounted.current && request.seq === sequence.current) {
+            setFocus(null);
+            if (hasWorkspaceFilter(before.workspaceFilter ?? {}) && String(error).includes("409") &&
+                unsupportedContext.current !== request.context) {
+              unsupportedContext.current = request.context;
+              latest.current.onWorkspaceFilterUnsupported?.();
+            }
+          }
         }
       }
     } finally { running.current = false; }

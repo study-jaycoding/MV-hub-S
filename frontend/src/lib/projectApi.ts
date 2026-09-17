@@ -8,7 +8,8 @@ import type {
   WorkspaceMemberCandidate,
   WorkspaceOption,
 } from "../types";
-import { jsonBody, jsonFetch } from "./http";
+import { HttpError, jsonBody, jsonFetch } from "./http";
+import { hasWorkspaceFilter, workspaceFilterOf, type LibraryWorkspaceFilter } from "./libraryWorkspaceScope";
 import { pathPart } from "./url";
 
 export interface TeamFreshItem {
@@ -217,10 +218,21 @@ export const projectApi = {
     ),
 
   // 생성자(팀 워크스페이스 작성자) — 목록
-  creators: (tab: "my" | "team" = "my", projectId?: string) => {
+  creators: async (tab: "my" | "team" = "my", projectId?: string, workspaceFilter?: LibraryWorkspaceFilter) => {
     const p = new URLSearchParams({ tab });
     if (projectId) p.set("project_id", projectId);
-    return jsonFetch<Creator[]>(`/api/creators?${p.toString()}`);
+    const scope = workspaceFilterOf(tab === "team" ? workspaceFilter ?? {} : {});
+    for (const id of scope.workspace_ids ?? []) p.append("workspace_ids", id);
+    if (scope.workspace_scope) p.set("workspace_scope", scope.workspace_scope);
+    const result = await jsonFetch<Creator[] | { items: Creator[]; workspace_filter_applied: boolean }>(
+      `/api/creators?${p.toString()}`,
+    );
+    if (!hasWorkspaceFilter(scope)) return result as Creator[];
+    // 구서버가 모르는 조건을 무시하고 전체 건수를 보내도 현재 공간의 집계로 표시하지 않는다.
+    if (!result || Array.isArray(result) || result.workspace_filter_applied !== true || !Array.isArray(result.items)) {
+      throw new HttpError(409, "워크스페이스별 생성자 표시에는 공유 서버 업데이트가 필요합니다.");
+    }
+    return result.items;
   },
 
   // 워크스페이스(팀 공유 UUID 공간) — **읽기만** 한다.

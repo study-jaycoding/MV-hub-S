@@ -72,13 +72,15 @@ async function mountBoard(initial: ResolveSceneSelectionTarget | null = null, in
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
+  localStorage.setItem("ch.workspaceContext", JSON.stringify({ scope: "team", id: "view-workspace", name: "View workspace" }));
   boundary = installPromptBoundaryMocks();
   gridSnapshot = null; promptSnapshot = null; librarySnapshot = null; sidebarSnapshot = null;
   refreshProjects = () => {};
-  locateGenerations = vi.fn().mockImplementation(async ({ gen_ids }: GenerationLocationRequest) => {
+  locateGenerations = vi.fn().mockImplementation(async ({ gen_ids, workspace_ids, workspace_scope }: GenerationLocationRequest) => {
     const first = gen_ids[0] ? libraryGeneration(gen_ids[0]) : null;
     const items = first ? gen_ids.map(libraryGeneration).filter((item) => item.project_id === first.project_id) : [];
-    return { items, focus_ids: items.map((item) => item.id), project_id: first?.project_id || null, folder_path: first?.folder_path || null };
+    return { items, focus_ids: items.map((item) => item.id), project_id: first?.project_id || null, folder_path: first?.folder_path || null,
+      ...(workspace_ids?.length || workspace_scope ? { workspace_filter_applied: true } : {}) };
   });
   Object.assign(boundary.api, { locateGenerations });
   boundary.api.getGenerationsBatch.mockResolvedValue({ materials: {}, missing: [], items: Object.fromEntries(
@@ -556,6 +558,51 @@ it("App 작업 공간: 복수 선택도 캔버스를 열지 않고 해당 폴더
   expect(view.container.querySelectorAll(".scene-varpop")).toHaveLength(0);
 });
 
+it("App 공유·리뷰: 공간 미확인은 안내와 전체 보기 버튼을 표시하고 명시 선택 뒤에만 조회한다", async () => {
+  localStorage.removeItem("ch.workspaceContext");
+  const send = await mountApp("team");
+  expect(gridSnapshot).toBeNull();
+  expect(view.container.querySelector('[role="status"]')?.textContent).toContain("워크스페이스를 확인한 뒤");
+  act(() => send(["target"]));
+  await settle();
+  expect(locateGenerations).not.toHaveBeenCalled();
+  const showAll = [...view.container.querySelectorAll("button")].find((button) => button.textContent === "전체 보기");
+  expect(showAll).toBeTruthy();
+  click(showAll!);
+  await settle();
+  expect(gridSnapshot).not.toBeNull();
+  act(() => send(["target"]));
+  await settle();
+  expect(libraryHighlightedIds()).toEqual(["target"]);
+  expect(locateGenerations.mock.calls.at(-1)?.[0].workspace_ids).toBeUndefined();
+});
+
+it.each([false, true])("App 휴지통: 회색필터 OFF에도 공간 밖 페이지를 당기며 상한을 지킨다 (cap=%s)", async (hitCap) => {
+  installAppBoundaries();
+  vi.doUnmock("../src/lib/useGenerationLibraryData");
+  const trash = Array.from({ length: hitCap ? 2400 : 400 }, (_, index) => ({
+    ...libraryGeneration(`hidden-${index}`), deleted: true, workspace_scope: "unknown" as const, workspace_id: null,
+  }));
+  trash.push({ ...libraryGeneration("target"), deleted: true });
+  const listTrash = vi.fn(async (_search: string | undefined, offset = 0) => trash.slice(offset, offset + 200));
+  Object.assign(boundary.api, {
+    listTrash, listGenerations: vi.fn(async () => []),
+    projects: vi.fn(async () => ({ projects: [], unassigned: 0 })),
+    facets: vi.fn(async () => ({ tags: [], auto_tags: [], models: [] })),
+    generationStats: vi.fn(async () => ({ failed_count: 0, has_unread: false })),
+  });
+  vi.doMock("../src/api", () => ({ api: boundary.api, GEN_PAGE: 200 }));
+  localStorage.setItem("ch.lib.filtersV2", JSON.stringify({ tab: "team", __v: "2" }));
+  const { default: App } = await import("../src/App");
+  act(() => view.root.render(<StrictMode><App /></StrictMode>)); await settle();
+  act(() => sidebarSnapshot!.onChange({ deleted_only: true }));
+  for (let step = 0; step < 15; step++) await settle();
+  const offsets = listTrash.mock.calls.map((call) => call[1]);
+  expect(offsets).toEqual(Array.from({ length: hitCap ? 11 : 3 }, (_, index) => index * 200));
+  expect(gridSnapshot?.generations.map((g) => g.id)).toEqual(hitCap ? [] : ["target"]);
+  expect(gridSnapshot?.hasMore).toBe(hitCap);
+});
+
 it("App 공유·리뷰: 미공유 응답은 이전 빨강만 지우고 탭·폴더·직접 선택을 그대로 둔다", async () => {
   const send = await mountApp("team");
   act(() => send(["target"]));
@@ -564,7 +611,7 @@ it("App 공유·리뷰: 미공유 응답은 이전 빨강만 지우고 탭·폴�
   const filters = librarySnapshot!.filters;
   locateGenerations.mockResolvedValueOnce({
     items: [{ ...libraryGeneration("other"), shared: false }], focus_ids: ["other"],
-    project_id: "other-project", folder_path: "episode/shot",
+    project_id: "other-project", folder_path: "episode/shot", workspace_filter_applied: true,
   });
   act(() => send(["other"]));
   await settle();

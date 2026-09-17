@@ -33,6 +33,13 @@ export interface WorkspaceFilterProps {
   onOpen: () => void; // 메뉴를 열 때 목록 갱신(stale-while-revalidate)
   onToggle: (id: string) => void; // 하나 넣고 빼기
   onClear: () => void; // 전체 보기로
+  // 공유&리뷰는 확인된 현재 공간을 따라간다. 공간 확인·목록 조건은 컨테이너가 관리한다.
+  follow?: {
+    mode: "auto" | "all";
+    label: string;
+    pending?: boolean;
+    onChange: (mode: "auto" | "all") => void;
+  };
 }
 
 export function LibraryWorkspaceFilter({
@@ -43,6 +50,7 @@ export function LibraryWorkspaceFilter({
   onOpen,
   onToggle,
   onClear,
+  follow,
 }: WorkspaceFilterProps) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -65,6 +73,68 @@ export function LibraryWorkspaceFilter({
   const hidden = value.length - shown.length;
   // 목록에 없는데 골라져 있는 공간 — 메뉴에도 넣어야 `+N` 에 가려진 것을 풀 수 있다.
   const orphans = value.filter((id) => !options.some((option) => option.id === id));
+
+  if (follow) {
+    const auto = follow.mode === "auto";
+    const name = auto ? (follow.pending ? t("확인 중") : follow.label) : t("전체 보기");
+    const modeLabel = auto ? t("자동") : t("수동");
+    const title = `${t("워크스페이스로 걸러 보기")} — ${name} · ${modeLabel}`;
+    const chooseMode = (mode: "auto" | "all") => {
+      follow.onChange(mode);
+      setOpen(false);
+      buttonRef.current?.focus();
+    };
+
+    return (
+      <div className="lib-ws-wrap lib-ws-follow-wrap" ref={wrapRef}>
+        <button
+          ref={buttonRef}
+          type="button"
+          className={"af-btn lib-ws-btn lib-ws-follow-btn" + (auto ? " on" : "")}
+          title={title}
+          aria-label={title}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-busy={auto && !!follow.pending}
+          onClick={() => setOpen((previous) => !previous)}
+        >
+          <span className="lib-ws-follow-mark" aria-hidden="true">W</span>
+          <span className="lib-ws-follow-name">{name}</span>
+          <span className="lib-ws-follow-mode">· {modeLabel}</span>
+          <span className="lib-ws-follow-caret" aria-hidden="true">▾</span>
+        </button>
+        {open && (
+          <div className="lib-ws-menu lib-ws-follow-menu" role="menu" aria-label={t("워크스페이스로 걸러 보기")}>
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={auto}
+              className={"lib-ws-item" + (auto ? " on" : "")}
+              onClick={() => chooseMode("auto")}
+            >
+              <span className="lib-ws-item-name">{t("현재 워크스페이스 따라가기")}</span>
+              {auto && <span className="lib-ws-check" aria-hidden="true">✓</span>}
+            </button>
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={!auto}
+              className={"lib-ws-item" + (auto ? "" : " on")}
+              onClick={() => chooseMode("all")}
+            >
+              <span className="lib-ws-item-name">{t("전체 보기")}</span>
+              {!auto && <span className="lib-ws-check" aria-hidden="true">✓</span>}
+            </button>
+            <div className="lib-ws-note lib-ws-follow-note">
+              {t("워크스페이스 변경 시 자동 적용으로 돌아갑니다.")}
+              <br />
+              {t("소속 미확인 생성물은 전체 보기에서 확인할 수 있습니다.")}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <>

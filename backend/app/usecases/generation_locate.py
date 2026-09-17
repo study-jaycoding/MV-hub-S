@@ -74,11 +74,15 @@ def locate_generations(
     team_member_projects: list[str] | None,
     project_id: str | None = None,
     folder_path: str | None = None,
+    workspace_ids: list[str] | None = None,
+    workspace_scope: str | None = None,
     fetch_team: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    picked_ws = list(dict.fromkeys(w.strip() for w in (workspace_ids or []) if w.strip()))
+    scoped = bool(picked_ws or workspace_scope)
     ids = list(dict.fromkeys(gen_id.strip() for gen_id in gen_ids if gen_id.strip()))
     if not ids:
-        return _empty_location()
+        return {**_empty_location(), **({"workspace_filter_applied": True} if scoped else {})}
     # 로컬 UUID와 공유 앵커를 동일시하지 않는다. 기존 직접 id > local origin 규칙을 재사용.
     resolved = repo.resolve_generation_meta_batch(ids)
     if tab == "team" and fetch_team is not None:
@@ -88,10 +92,15 @@ def locate_generations(
             for gen_id in ids
         ))
         # 공유 여부/폴더는 서버가 권위다. 로컬 shared나 경로가 있어도 서버 조회를 생략하지 않는다.
-        return fetch_team({
+        payload = {
             "tab": "team", "gen_ids": server_ids,
             "project_id": project_id, "folder_path": folder_path,
-        })
+        }
+        if picked_ws:
+            payload["workspace_ids"] = picked_ws
+        if workspace_scope:
+            payload["workspace_scope"] = workspace_scope
+        return fetch_team(payload)
 
     local_ids = list(dict.fromkeys(resolved[gen_id]["id"] for gen_id in ids if gen_id in resolved))
     items = repo.list_generations(
@@ -99,6 +108,11 @@ def locate_generations(
         account_uid=account_uid,
         team_member_projects=team_member_projects,
         generation_ids=local_ids,
+        workspace_ids=picked_ws,
+        workspace_scope=workspace_scope,
         limit=200,
     )
-    return _pick_location(items, project_id, folder_path)
+    result = _pick_location(items, project_id, folder_path)
+    if scoped:
+        result["workspace_filter_applied"] = True
+    return result

@@ -15,6 +15,7 @@ export function useAppNavigation({
   setBoardFocusId,
   setBoardArrange,
   setFilters,
+  previewScopeKey,
 }: {
   currentTab: Filters["tab"];
   lastBoardFocusRef: MutableRefObject<string | null>;
@@ -25,8 +26,16 @@ export function useAppNavigation({
   setBoardFocusId: Dispatch<SetStateAction<string | null>>;
   setBoardArrange: Dispatch<SetStateAction<number>>;
   setFilters: Dispatch<SetStateAction<Filters>>;
+  previewScopeKey?: string;
 }) {
   const navPayloadsRef = useRef(new Map<number, unknown>());
+  const previewScopeRef = useRef(previewScopeKey);
+  // 표시 공간/계정이 바뀌면 닫힌 미리보기도 뒤로가기로 복원하지 않는다.
+  // 히스토리 엔트리는 그대로 두고 payload만 비워, 새 공간의 이후 기록은 정상 사용한다.
+  if (previewScopeRef.current !== previewScopeKey) {
+    previewScopeRef.current = previewScopeKey;
+    navPayloadsRef.current.clear();
+  }
   const navSeqRef = useRef(0);
   const viewRef = useRef<NavView>({ tab: currentTab, focusId: null, ov: null, key: 0 });
 

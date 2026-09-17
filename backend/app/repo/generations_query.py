@@ -57,6 +57,7 @@ def list_generations(
     # 개인·미상 소속은 이 필터로 고를 수 없다 — workspace_id 를 못 가진다
     # (docs/WORKSPACE_DATA_CONTRACT.md 정합성 규칙 2).
     workspace_ids: Optional[Sequence[str]] = None,
+    workspace_scope: Optional[str] = None,  # personal만 명시 조회(unknown은 포함하지 않음)
     account_uid: Optional[str] = None,  # 로그인 계정의 생성자 uid — tab='my' 를 이 계정 것만으로 한정
     team_member_projects: Optional[list[str]] = None,  # tab='team' 일 때 내가 멤버인 프로젝트의 공유물만(None=전체)
     project_id: Optional[str] = None,  # 프로젝트 귀속 필터. 'none'=미분류(NULL), 그 외=해당 프로젝트
@@ -158,11 +159,16 @@ def list_generations(
     # ★빈 목록이면 조건을 아예 안 건다 = 전체. `scope='team'` 만 남기면 개인·미상 소속이
     #  전체 보기에서 통째로 사라진다. 그 scope 조건은 같은 id 가 남아 있는 비정상 행을
     #  걸러내므로 계속 필요하다(이 필터 자체는 권한 검사가 아니다).
-    picked = [w for w in (workspace_ids or []) if isinstance(w, str) and w.strip()]
+    picked = list(dict.fromkeys(
+        w.strip() for w in (workspace_ids or []) if isinstance(w, str) and w.strip()
+    ))
     if picked:
         marks = ",".join("?" for _ in picked)
         where.append(f"(g.workspace_scope = 'team' AND g.workspace_id IN ({marks}))")
         args.extend(picked)
+    if workspace_scope is not None:
+        where.append("g.workspace_scope = ?")
+        args.append(workspace_scope)
     if project_id == "none":
         where.append("g.project_id IS NULL")
     elif project_id:

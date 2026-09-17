@@ -1,5 +1,5 @@
 // 앱 루트: 탭·필터 상태, 데이터 로딩, WebSocket 진행률, 액션 오케스트레이션.
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 // 코드 스플리팅 — 드물게 여는 구성보드는 지연 로드해 초기 번들에서 분리.
 // 씬 카드가 선택되지 않았을 때의 트레이 바인딩 refs — 렌더마다 같은 참조여야 한다(아래 trayBinding 주석).
 const EMPTY_SCENE_REFS: SceneRef[] = [];
@@ -145,6 +145,8 @@ import { configureModelPolicy, currentModelPolicy, modelBlockMessage } from "./l
 import { normalizeSceneWorkspace, sceneMatchesWorkspace, type SceneMove, type SceneWorkspace } from "./lib/sceneWorkspace";
 import { modelAllowed } from "./lib/modelPolicyCore";
 import { STORAGE_KEYS } from "./lib/storageKeys";
+import { useT } from "./lib/i18n";
+import { hasWorkspaceFilter } from "./lib/libraryWorkspaceScope";
 
 // 마지막으로 보던 라이브러리 상태 영속화(탭·서브탭·필터·크기·레이아웃 등)
 const LS = makeStore("ch.lib.");
@@ -157,6 +159,11 @@ const COLOR_DOTS = [
 ];
 
 export default function App() {
+  const t = useT();
+  // 생성·과금 문맥은 기존대로 유지하고 공유&리뷰의 보기만 이 선택을 따라간다.
+  const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>(
+    () => loadStoredWorkspaceContext() ?? UNKNOWN_WORKSPACE,
+  );
   // 라이브러리 필터/뷰 상태 + genQuery/selectionResetKey 파생 + LS 저장(useLibraryPersistence)은 useLibraryFilters 훅으로 추출.
   const {
     filters, setFilters, patch,
@@ -167,13 +174,8 @@ export default function App() {
     armedAutoTags, setArmedAutoTags, armedFolder, setArmedFolder,
     generationScope, filterAutoTags, followLocation, toggleAutoTag, manualRevision,
     workspaceChips, setWorkspaceChips,
-    genQuery, selectionResetKey,
-  } = useLibraryFilters(LS);
-  // 워크스페이스 전환 = 크레딧 컨텍스트(생성 스탬프·차감 풀)만 바꾼다 — 라이브러리 가시성과 분리.
-  // 가시성은 사이드바 전역태그 옆 워크스페이스 침(옵트인 필터, filters.workspace_id)이 담당한다.
-  const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>(
-    () => loadStoredWorkspaceContext() ?? UNKNOWN_WORKSPACE,
-  );
+    genQuery, selectionResetKey, workspaceFollow, workspaceScopeKey, workspaceQueryReady,
+  } = useLibraryFilters(LS, workspaceContext);
   // 공간 변경은 **동기**다 — 네트워크를 타지 않으므로 늦게 온 응답이 선택을 덮을 일이 없다.
   //  (예전엔 허브에 `workspace set` 을 보내느라 변경 순번으로 옛 응답을 걸러야 했다. 2026-09-11 에
   //   허브가 CLI 전역을 안 건드리게 되면서 그 장치가 통째로 필요 없어졌다.)
@@ -388,6 +390,19 @@ export default function App() {
     resetKey: selectionResetKey,
   });
   const libraryAuthKey = JSON.stringify([hubAccount?.email, account?.email, account?.creator_uid, sharedSrv?.url]);
+  const previousWorkspaceView = useRef(workspaceScopeKey);
+  useLayoutEffect(() => {
+    if (previousWorkspaceView.current === workspaceScopeKey) return;
+    previousWorkspaceView.current = workspaceScopeKey;
+    if (filters.tab !== "team") return;
+    setInfo(null);
+    setPreview(null);
+    setCommentGenId(null);
+    setCompareGens(null);
+    setVideoCompare(null);
+    selectedRef.current = new Set();
+    setSelected(new Set());
+  }, [workspaceScopeKey, filters.tab]);
   const {
     archivedCount,
     facets,
@@ -412,27 +427,15 @@ export default function App() {
     stats,
     unassignedCount,
   } = useGenerationLibraryData({
-    authReady,
+    authReady: authReady && workspaceQueryReady,
     authKey: libraryAuthKey,
     filters,
     flash,
     genQuery,
+    workspaceScopeKey,
     projectWorkspaceId,
     composeListEnabled: folderPeek, // 창이 열려 있을 때만 compose 탭에서 목록 조회·추가 로드
   });
-  // 워크스페이스 전환(자동 동기화 포함) 시 사이드바 프로젝트 목록을 새 스코프로 재조회.
-  //  ★공간 변경 재조회는 **여기 하나뿐**이다 — 씬 탭·계정 메뉴가 각자 또 부르면 진행 중 조회를
-  //   무효화하고 다시 도는 두 번 실행이 된다(첫 결과는 버려진다).
-  //  ★첫 렌더는 초기 로드가 담당하므로 건너뛰되, 판정은 '값이 실제로 바뀌었나'로 한다. 예전엔
-  //   `projectsLoadedRef` 로 걸러서, **초기 로드가 끝나기 전에 공간을 바꾸면** 이 재조회가 통째로
-  //   생략되고 옛 스코프 응답이 그대로 적용됐다(코덱스 반례).
-  const reloadedWorkspaceScopeRef = useRef(projectWorkspaceId);
-  useEffect(() => {
-    if (reloadedWorkspaceScopeRef.current === projectWorkspaceId) return;
-    reloadedWorkspaceScopeRef.current = projectWorkspaceId;
-    void reload(true); // silent — 라이브러리 가시성은 공간과 무관하니 스피너로 깜빡일 이유가 없다
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectWorkspaceId]);
   // 캔버스(compose 탭)에서 태그하면 scheduleTagReload 가 compose·light 라 facets 를 안 불러와
   // '등록된 태그' 패널이 탭을 나갔다 와야 갱신되던 문제 → 새 태그 이름을 facets.tags 에 낙관적 병합해 즉시 반영.
   const mergeFacetTags = useCallback(
@@ -617,9 +620,15 @@ export default function App() {
   // authReadyRef 로 게이트하므로 authReady 가 false 면 no-op, true 로 바뀌면 여기서 다시 발화해 로드.
   // filters.tab 도 의존성에 포함 — compose 는 서버 쿼리상 'my' 로 합쳐져 serverFilterKey 가 같으므로,
   // 이게 없으면 compose→내작업 전환 때 즉시 reload 가 안 돌고 3초 폴링이 뒤늦게 채운다(전환 딜레이 원인).
+  const reloadedWorkspaceScopeRef = useRef(projectWorkspaceId);
   useEffect(() => {
-    void reloadIfStale();
-  }, [serverFilterKey, filters.tab, authReady, libraryAuthKey, reloadIfStale]);
+    const projectScopeChanged = reloadedWorkspaceScopeRef.current !== projectWorkspaceId;
+    reloadedWorkspaceScopeRef.current = projectWorkspaceId;
+    // 공간/필터를 한 번에 반영한다. my/compose의 목록 조건이 같아도 프로젝트는 다시 받는다.
+    if (projectScopeChanged) void reload(true);
+    else void reloadIfStale();
+  }, [serverFilterKey, filters.tab, authReady, libraryAuthKey, reloadIfStale, reload,
+    projectWorkspaceId, workspaceScopeKey, workspaceQueryReady]);
 
   // 프로젝트 미배정 = Supervisor 개념이 없음 → 본인 것이면 최종 가능(백엔드 require_edit 와 일치).
   const canFinalize = (g: Generation) => canFinalizeGeneration(g, finalizeProjects);
@@ -687,7 +696,8 @@ export default function App() {
     setGens,
   });
   const { onWorkspaceCommand } = useGenerationWorkspaceActions({
-    activeWorkspaceIds: filters.workspace_ids,
+    activeWorkspaceIds: genQuery.workspace_ids,
+    activeWorkspaceScope: genQuery.workspace_scope,
     flash,
     gensRef,
     reload,
@@ -752,6 +762,7 @@ export default function App() {
     setArmedAutoTags,
     workspaceContext,
     setWorkspaceChips,
+    allowWorkspaceChipRegistration: filters.tab !== "team",
   });
   // 워크스페이스 침(옵트인 필터) — 툴바 필터와 **같은 선택**을 넣고 뺀다(중복 선택).
   //  최신 state 기준으로 뒤집는다(연속 클릭이 서로를 덮지 않게).
@@ -783,6 +794,7 @@ export default function App() {
     onOpen: workspaceFilterOptions.reload,
     onToggle: toggleWorkspaceChip,
     onClear: () => patch({ workspace_ids: undefined }),
+    follow: workspaceFollow,
   };
 
   // comfy 노드 실행 중 목록(SceneBoard 통지) — '내 작업'에 임시 생성중 카드(Comfy 로고)를 프론트 전용으로 띄운다.
@@ -850,22 +862,24 @@ export default function App() {
     () => [...comfyPlaceholders, ...filterDisabledGenerations(visibleGens, effectiveDisabled, grayOn)],
     [comfyPlaceholders, visibleGens, effectiveDisabled, grayOn],
   );
-  // 이번에 받은 페이지가 회색필터로 전부 가려지면(빈 그리드) ThumbnailGrid 가 센티넬을 못 그려
+  // 회색/휴지통 공간 필터가 페이지를 전부 가리면(빈 그리드) ThumbnailGrid 가 센티넬을 못 그려
   // onLoadMore 가 영영 안 불린다 → 뒤 페이지의 활성 항목이 사라진 것처럼 보임. hasMore 인 한
   // 활성 항목이 나오거나 끝날 때까지 다음 페이지를 자동으로 당긴다(필터·페이지네이션 분리).
   // 단 연쇄에 상한을 둔다 — 비활성 항목이 수십 페이지 이어지는 데이터 분포에서 무한 자동
   // 순회(요청 폭주)를 막는다. 활성 항목이 한 번이라도 보이면 카운터는 리셋된다.
   const grayAutoLoadCountRef = useRef(0);
+  const scopedTrash = !!filters.deleted_only && hasWorkspaceFilter(genQuery);
+  useEffect(() => { grayAutoLoadCountRef.current = 0; }, [serverFilterKey, workspaceScopeKey, libraryAuthKey]);
   useEffect(() => {
-    if (!grayOn || gridGens.length > 0) {
+    if ((!grayOn && !scopedTrash) || gridGens.length > 0) {
       grayAutoLoadCountRef.current = 0;
       return;
     }
-    if (hasMore && !loadingMore && grayAutoLoadCountRef.current < 10) {
+    if (hasMore && !loading && !loadingMore && grayAutoLoadCountRef.current < 10) {
       grayAutoLoadCountRef.current += 1;
       loadMore();
     }
-  }, [grayOn, gridGens.length, hasMore, loadingMore, loadMore]);
+  }, [grayOn, scopedTrash, gridGens.length, hasMore, loading, loadingMore, loadMore, workspaceScopeKey]);
 
   // 미확인 코멘트 여부·내 실패 수는 서버 stats 에서 계산한다(전량 로드 대체).
   const hasAnyUnread = stats.has_unread;
@@ -932,6 +946,7 @@ export default function App() {
     openAdmin,
   } = useAppNavigation({
     currentTab: filters.tab,
+    previewScopeKey: JSON.stringify([workspaceContext.scope, workspaceContext.id, workspaceFollow?.mode ?? "auto", libraryAuthKey]),
     lastBoardFocusRef,
     setPreview,
     setCommentGenId,
@@ -948,8 +963,11 @@ export default function App() {
     } catch { return true; }
   }, []);
   const resolveLibrary = useResolveLibraryFollow({
-    filters, enabled: resolveSelectionFollow, authReady,
+    filters, enabled: resolveSelectionFollow, authReady: authReady && workspaceQueryReady,
     authKey: libraryAuthKey,
+    workspaceFilter: filters.tab === "team" ? genQuery : undefined,
+    workspaceScopeKey,
+    onWorkspaceFilterUnsupported: () => flash(t("워크스페이스별 다빈치 확인에는 공유 서버 업데이트가 필요합니다. 임시로 전체 보기를 사용할 수 있습니다.")),
     manualRevision, gens: gridGens, locatedVisibleIds, followLocation, revealLocated, canFollow: canFollowResolve,
   });
   useCustomEvent(APP_EVENTS.resolveSelection, (event) => {
@@ -2116,6 +2134,9 @@ export default function App() {
                 facets={facets}
                 filters={filters}
                 onChange={patch}
+                creatorWorkspaceFilter={filters.tab === "team" ? genQuery : undefined}
+                creatorQueryReady={authReady && workspaceQueryReady}
+                creatorContextKey={libraryAuthKey}
                 colorDots={COLOR_DOTS}
                 colorFilter={colorFilter}
                 onToggleColor={toggleColorFilter}
@@ -2128,7 +2149,7 @@ export default function App() {
                 viewedFolder={resolveLibrary.viewedFolder}
                 onAddAutoTag={addAutoTag}
                 onDeleteAutoTag={removeAutoTag}
-                workspaceChips={workspaceChips}
+                workspaceChips={filters.tab === "team" ? [] : workspaceChips}
                 onToggleWorkspaceChip={toggleWorkspaceChip}
                 onRemoveWorkspaceChip={removeWorkspaceChip}
                 armedFolder={armedFolder}
@@ -2150,7 +2171,14 @@ export default function App() {
             )}
             <main className="main">
               {libraryToolbar}
-              {thumbnailGrid}
+              {!workspaceQueryReady ? (
+                <div className="grid-wrap"><div className="empty" role="status">
+                  <p>{t("워크스페이스를 확인한 뒤 공유물을 표시합니다.")}</p>
+                  <button className="settings-action" onClick={() => workspaceFollow?.onChange("all")}>
+                    {t("전체 보기")}
+                  </button>
+                </div></div>
+              ) : thumbnailGrid}
             </main>
           </>
         )}

@@ -2,9 +2,12 @@ import { useRef, type Dispatch, type MutableRefObject, type SetStateAction } fro
 import { api } from "../api";
 import type { Generation } from "../types";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "./workspaceCommand";
+import { matchesWorkspaceFilter } from "./libraryWorkspaceScope";
+import { postLibraryChanged } from "./libraryBroadcast";
 
 interface UseGenerationWorkspaceActionsArgs {
   activeWorkspaceIds?: string[];
+  activeWorkspaceScope?: "personal";
   flash: (message: string) => void;
   gensRef: MutableRefObject<Generation[]>;
   reload: (silent?: boolean, light?: boolean) => void | Promise<void>;
@@ -27,6 +30,7 @@ function readableError(error: unknown): string {
 
 export function useGenerationWorkspaceActions({
   activeWorkspaceIds,
+  activeWorkspaceScope,
   flash,
   gensRef,
   reload,
@@ -36,6 +40,8 @@ export function useGenerationWorkspaceActions({
   teamTab,
 }: UseGenerationWorkspaceActionsArgs) {
   const runningRef = useRef(false);
+  const visibleFilterRef = useRef({ workspace_ids: activeWorkspaceIds, workspace_scope: activeWorkspaceScope });
+  visibleFilterRef.current = { workspace_ids: activeWorkspaceIds, workspace_scope: activeWorkspaceScope };
 
   const onWorkspaceCommand = async (
     focus: Generation,
@@ -71,18 +77,18 @@ export function useGenerationWorkspaceActions({
       // 지금 보고 있는 공간 **집합**에서 빠지는 카드만 목록에서 뺀다(중복 선택, 2026-09-14).
       //  A·B 를 같이 보는 중에 A 카드를 **B 로** 옮기면 계속 보여야 한다 — 단수 비교였다면
       //  '다른 공간으로 갔다'며 사라졌다.
-      const armed = activeWorkspaceIds ?? [];
-      const stillVisible = armed.includes(result.workspace.id);
-      const dropChanged = Boolean(
-        armed.length &&
-          ((operation === "remove" && stillVisible) || (operation === "assign" && !stillVisible)),
-      );
+      const droppedCardIds = new Set<string>();
       const apply = (generations: Generation[]) =>
         generations.flatMap((generation) => {
           const anchor = anchorOf(generation);
           const updated = byRequested.get(anchor);
           if (!updated) return [generation];
-          if (dropChanged && changedAnchors.has(anchor)) return [];
+          if (changedAnchors.has(anchor) && !matchesWorkspaceFilter(
+            { ...generation, ...updated }, visibleFilterRef.current,
+          )) {
+            droppedCardIds.add(generation.id);
+            return [];
+          }
           return [
             {
               ...generation,
@@ -99,10 +105,7 @@ export function useGenerationWorkspaceActions({
         gensRef.current = next;
         return next;
       });
-      if (dropChanged) {
-        const droppedCardIds = new Set(
-          targets.filter((g) => changedAnchors.has(anchorOf(g))).map((g) => g.id),
-        );
+      if (droppedCardIds.size) {
         setSelected((current) => {
           const next = new Set(current);
           for (const id of droppedCardIds) next.delete(id);
@@ -130,6 +133,7 @@ export function useGenerationWorkspaceActions({
       // 수 초라, 그동안 클릭이 전부 무시되면 '여러 번 눌러야 되는' 것처럼 보인다(팀원 실측).
       // reload 중 재클릭이 와도 서버는 unchanged 로 응답하므로 안전하다.
       runningRef.current = false;
+      if (result.changed.length) postLibraryChanged();
       try {
         await reload(false, false);
       } catch {

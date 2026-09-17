@@ -571,7 +571,14 @@ export function ThumbnailGrid(props: Props) {
     return (
       <div className="grid-wrap">
         <div className="empty">
-          {t("항목이 없습니다.")} <b>{t("+ 새 생성")}</b>
+          {props.hasMore ? (
+            <>
+              <div>{t("뒤쪽 페이지에 조건에 맞는 항목이 있을 수 있습니다.")}</div>
+              <button className="settings-action" disabled={props.loadingMore} onClick={props.onLoadMore}>
+                {props.loadingMore ? t("불러오는 중…") : t("더 보기")}
+              </button>
+            </>
+          ) : <>{t("항목이 없습니다.")} <b>{t("+ 새 생성")}</b></>}
         </div>
       </div>
     );
