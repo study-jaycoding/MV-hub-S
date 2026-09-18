@@ -27,6 +27,22 @@ ACCOUNT_A = "restore-a@example.invalid"
 ACCOUNT_B = "restore-b@example.invalid"
 
 
+# db_transfer 가 임시 폴더에 만드는 이름은 전부 소문자 `mvhub-` 로 시작한다
+# (mvhub-export-·import-·srvbak-·srvrestore-·restore-set-).
+_PRODUCT_TEMP_PREFIX = "mvhub-"
+
+
+def assert_no_restore_temp(hub):
+    """거부·완료된 복원이 **자기** 임시 산출물을 남기지 않았는지 본다.
+
+    폴더가 통째로 비었는지를 보던 단언은 전체 회귀 4회 중 2회 흔들렸다(2026-09-18): 남은 파일은
+    `MVHUB-SRVRESTORE-<HEX>.ZIP.tmp` — 제품도 이 시험도 만들지 않는 이름이다(대문자·`.tmp`). 설비가
+    프로세스 전역 `tempfile.tempdir` 를 이 폴더로 돌려 두므로 밖에서 온 파일이 섞일 수 있다(만든 쪽은
+    미확정 — 이 PC 의 실시간 검사가 유력). 그래서 제품이 만드는 이름만 본다. 대소문자를 구분한다.
+    """
+    assert not [p.name for p in hub.temp.iterdir() if p.name.startswith(_PRODUCT_TEMP_PREFIX)]
+
+
 def marker(path):
     with closing(sqlite3.connect(path)) as conn:
         return conn.execute(
@@ -174,7 +190,7 @@ def test_switch_rejects_before_flush_or_target_writes(hub, monkeypatch, route, f
     assert active_account.active_uid() == (None if change == "logout" else "uid-new" if change == "uid" else "uid-b")
     assert not list(hub.root.rglob("*.bak-*.db"))
     assert not list(hub.root.rglob("*.restore-*.tmp"))
-    assert not list(hub.temp.iterdir())
+    assert_no_restore_temp(hub)
     hub.adopt.assert_not_called()
     hub.activate.assert_not_called()
 
@@ -210,7 +226,7 @@ def test_unchanged_or_aba_target_preserves_restore_contract(
     backups = list(target.parent.glob(f"{target.stem}.bak-*.db"))
     assert len(backups) == 1
     assert marker(backups[0]) == ("fixed" if fixed else "legacy" if auth else "a")
-    assert not list(hub.temp.iterdir())
+    assert_no_restore_temp(hub)
 
 
 @pytest.mark.parametrize("route", ROUTES)
@@ -235,7 +251,7 @@ def test_mode_or_env_change_rejects_even_without_account_switch(hub, monkeypatch
     assert error.value.status_code == 409
     assert flush.call_count == 0
     assert marker(target) == "a"
-    assert not list(hub.temp.iterdir())
+    assert_no_restore_temp(hub)
 
 
 @pytest.mark.parametrize("route", ROUTES)
@@ -249,7 +265,7 @@ def test_stale_request_context_is_rejected_at_admission(hub, monkeypatch, route,
         invoke(hub, monkeypatch, route)
     assert error.value.status_code == 409
     hub.base_url.assert_not_called()
-    assert not list(hub.temp.iterdir())
+    assert_no_restore_temp(hub)
 
 
 def test_legacy_source_pair_is_not_reread_after_switch(hub, monkeypatch):
@@ -261,7 +277,7 @@ def test_legacy_source_pair_is_not_reread_after_switch(hub, monkeypatch):
         ("http://a.invalid/api/db-backup/latest", "synthetic-a"),
     ]
     assert hub.base_url.call_count == hub.token.call_count == 1
-    assert not list(hub.temp.iterdir())
+    assert_no_restore_temp(hub)
 
 
 @pytest.mark.parametrize("route", ("version", "latest_set", "legacy"))
@@ -418,7 +434,7 @@ def test_legacy_temp_is_cleaned_on_exception(hub, monkeypatch, failure):
         monkeypatch.setattr(db_transfer, "_install_db", Mock(side_effect=HTTPException(409, "synthetic conflict")))
     with pytest.raises((RuntimeError, HTTPException)):
         db_transfer.server_restore(hub.request)
-    assert not list(hub.temp.iterdir())
+    assert_no_restore_temp(hub)
 
 
 @pytest.mark.parametrize("raw", (
@@ -438,7 +454,7 @@ def test_invalid_pointer_is_rejected_without_repair(hub, monkeypatch, raw):
     assert active_account._POINTER.read_bytes() == raw
     assert active_account._cache == [True, None]
     flush.assert_not_called()
-    assert not list(hub.temp.iterdir())
+    assert_no_restore_temp(hub)
     assert not list(hub.root.rglob("*.bak"))
     assert not list(hub.root.rglob("*.restore-*.tmp"))
 
@@ -464,7 +480,7 @@ def test_unreadable_pointer_is_503_before_any_install(hub, monkeypatch, failure)
     assert pointer.read_bytes() == raw
     assert active_account._cache == cached
     flush.assert_not_called()
-    assert not list(hub.temp.iterdir())
+    assert_no_restore_temp(hub)
 
 
 @pytest.mark.parametrize("cached", (
@@ -534,7 +550,7 @@ def test_import_lock_contention_rejects_before_first_await(hub, monkeypatch):
     try:
         asyncio.run(check())
         seek.assert_not_called()
-        assert not list(hub.temp.iterdir())
+        assert_no_restore_temp(hub)
     finally:
         release.set()
         worker.join(2)
@@ -625,7 +641,7 @@ def test_pointer_corruption_after_admission_is_rejected_before_flush(hub, monkey
     assert {key: path.read_bytes() for key, path in hub.paths.items()} == before
     assert active_account._POINTER.read_bytes() == b"null"
     assert active_account._cache == cached
-    assert not list(hub.temp.iterdir())
+    assert_no_restore_temp(hub)
 
 
 @pytest.mark.parametrize("route", ROUTES)
@@ -672,7 +688,7 @@ def test_pointer_unreadable_on_recheck_rejects_before_flush_and_restore(hub, mon
     assert pointer.read_bytes() == pointer_before and active_account._cache == cached
     assert not list(hub.root.rglob("*.bak-*.db"))
     assert not list(hub.root.rglob("*.restore-*.tmp"))
-    assert not list(hub.temp.iterdir())
+    assert_no_restore_temp(hub)
     hub.adopt.assert_not_called()
     hub.activate.assert_not_called()
 
