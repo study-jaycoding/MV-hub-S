@@ -899,15 +899,15 @@ updated: 2026-09-18
 | 파일 | 약 줄 | 담당 화면 |
 |---|---:|---|
 | `base.css` | 104 | 전역 변수(`:root` 24개)·리셋 — 화면 특정 아님 |
-| `app-shell.css` | 865 | 최상위 앱 셸(`TopBar`·상단 메뉴) |
-| `generations.css` | 956 | 라이브러리 그리드·카드(`ThumbnailGrid`·`GenerationCard`) |
-| `scene.css` | 1539 | 씬 캔버스(`scene/`) — 죽은 클래스와 산 클래스 이름이 한 글자 차이(§5-b) |
-| `prompt-dock.css` | 568 | 스포트라이트 프롬프트 도크(`SpotlightPrompt`·`spotlight/`) |
-| `history.css` | 257 | 히스토리 보드(계보 그래프) |
-| `assets.css` | 852 | Assets 분리창(`AssetsView`·`assets/`) |
-| `project-sidebar.css` | 329 | 프로젝트 사이드바(`sidebar/ProjectSection`) |
-| `composition-manage.css` | 1382 | 관리(PM)창 구성·대시보드 화면 — **최소 3세대(옛 합성보드·옛 통계위젯·현행 작업보드)가 한 파일에 혼재**(§5-d) |
-| `admin-auth-compare.css` | 739 | 로그인·관리자 창·계정 비교 화면 |
+| `app-shell.css` | 796 | 최상위 앱 셸(`TopBar`·상단 메뉴) |
+| `generations.css` | 856 | 라이브러리 그리드·카드(`ThumbnailGrid`·`GenerationCard`) |
+| `scene.css` | 1513 | 씬 캔버스(`scene/`) — 비슷한 이름의 클래스가 많다(§5-b) |
+| `prompt-dock.css` | 566 | 스포트라이트 프롬프트 도크(`SpotlightPrompt`·`spotlight/`) |
+| `history.css` | 216 | 히스토리 보드(계보 그래프) |
+| `assets.css` | 817 | Assets 분리창(`AssetsView`·`assets/`) |
+| `project-sidebar.css` | 318 | 프로젝트 사이드바(`sidebar/ProjectSection`) |
+| `composition-manage.css` | 1098 | 관리(PM)창 구성·대시보드 화면. 옛 합성보드·옛 통계 위젯(도넛·퍼널 등)의 규칙은 2026-09-18 에 걷어냈다. 남은 휴면 규칙은 §5-d |
+| `admin-auth-compare.css` | 682 | 로그인·관리자 창·계정 비교 화면 |
 | `partial-edit.css` | 327 | 부분 수정 캔버스(`edit/PartialEditModal`) |
 | `resolve-library.css` | 22 | Resolve 관련 라이브러리 표시(소규모) |
 
@@ -1090,7 +1090,7 @@ updated: 2026-09-18
 - `components/GenerationCard.tsx`(라이브러리, 683줄) ↔ `components/scene/cards/GenerationCard.tsx`(캔버스, 336줄) — 완전히 다른 파일. grep 할 때 경로까지 봐야 한다.
 - `common/FolderTreeView.tsx`(공용) ↔ `assets/FolderTree.tsx`(에셋 전용) ↔ `admin/ProjectRenderTree.tsx` — 이름이 세 갈래로 비슷하다.
 - `CompareModal.tsx` ↔ `VideoCompareModal.tsx` — 후자는 이름과 달리 이미지도 다룬다.
-- `styles/scene.css` 안에서 `scene-listnode-text`(죽음) vs `scene-listrow-text`(삼), `scene-comfynode-run`(죽음) vs `scene-comfynode-status s-running`(삼) — 한 글자 차이라 "접두어로 grep 해서 안심"이 여기서는 안 통한다.
+- CSS 클래스는 **접두어가 같다고 같은 부품이 아니다.** 2026-09-18 정리 때 `scene-listnode-text`(안 쓰임)와 `scene-listrow-text`(쓰임), `scene-comfynode-run`(안 쓰임)과 `scene-comfynode-status s-running`(쓰임)이 한 글자 차이로 섞여 있었다 — "접두어로 grep 해서 쓰이니까 안심"이 통하지 않는다. 클래스가 쓰이는지는 **전체 이름**으로 확인하고, 규칙을 지울 때는 선택자 전부가 죽었는지(`:not(.x)` 는 x 가 없어도 일치한다) 본다.
 - `lib/` 의 이름 규칙이 4가지로 섞여 있다: "이름 + use이름"(`menuPlacement`/`useMenuPlacement`, `sceneDragSession`/`useSceneDragSession`, `gradeStep`/`useGradeStep`), "이름 + 이름Core"(`modelPolicy`/`modelPolicyCore`), "이름 + 이름Cache"(`modelCatalog`/`modelCatalogCache`), "이름Store"(`sceneGenDataStore` 등). 어느 쪽이 순수이고 어느 쪽이 IO 인지 이름만으로 안 갈린다.
 - `SpotlightRefRoleMenu`(spotlight) 의 `startReorder` ↔ `SceneBoard.tsx` 의 `startReorder` — 같은 이름, 다른 파일의 다른 구현.
 - `repo/manage.py`·`repo/manage_tasks.py`·`routers/manage.py`·`manage_db.py`(최상위) — 전부 "manage" 접두인데 계층이 다르다(라우터/repo 파사드/작업 CRUD/PM 전용 DB).
@@ -1111,7 +1111,7 @@ updated: 2026-09-18
 | 위치 | 남긴 결정 |
 |---|---|
 | `routers/manage.py` 의 작업 담당 배정 3라우트(`/tasks/{tid}/assignees/{uid}`·`/tasks/assignees/bulk`) + `repo/manage_tasks.py` 의 배정 쓰기 3함수 | 2026-08-21 Jay 확정(B안): 프런트 고아 코드만 제거하고 **백엔드는 휴면 유지**(DB 파괴 회피 + 혼재 버전 기간의 404 회피). [P2_CLOSEOUT_PLAN_2026-08-20.md](P2_CLOSEOUT_PLAN_2026-08-20.md) F절 |
-| `styles/` 의 `.planned-*`·`.dash-due` | 같은 결정의 "보고만 하고 유지". [OPT_PLAN_2026-08-21.md](OPT_PLAN_2026-08-21.md)·[OPT_PLAN2_2026-08-21.md](OPT_PLAN2_2026-08-21.md) 의 "CSS·휴면 셀렉터 삭제 금지"도 여기에 걸린다 |
+| `styles/` 의 `.planned-*`·`.dash-due`, 그리고 산 선택자와 한 규칙에 섞여 있는 `.manage-empty-row`·`.lib-expand` | 앞의 둘은 같은 결정의 "보고만 하고 유지". [OPT_PLAN2_2026-08-21.md](OPT_PLAN2_2026-08-21.md) 의 "CSS·휴면 셀렉터 삭제 금지"는 2026-09-18 Jay 지시("주석 처리 → 실측 재확인 → 정리")로 **죽은 규칙 309개에 한해** 재개·집행됐고([status/전체점검_2026-09-18.md](status/전체점검_2026-09-18.md)), 이 둘은 그때도 남겼다. 뒤의 둘은 규칙을 통째로 지우면 산 선택자까지 사라지는 자리다 |
 | `routers/manage.py` 의 `/api/manage/{timeseries,matrix,breakdown}` + `repo/manage_analytics.py`, `routers/auth.py` 의 `/api/auth/super-admin/status` | 현행 프런트는 부르지 않지만 **공유 서버는 구버전 앱의 호출도 받는다.** 서버 접근 로그로 호출자가 없음을 확인하기 전에는 지우지 않는다(2026-09-18 점검, Codex 검토) |
 | `lib/useModels.ts` 의 빈 `NUMERIC_RANGE` 와 그 분기 | 주석이 "현재 항목 없음 … 범용 메커니즘은 유지"라고 명시한다 |
 | `generation.py` 의 `POST /api/workspaces/select`·`/unselect` | 참조가 없어도 **의도된 410 묘비**다(옛 프런트가 200·403 을 성공으로 읽는다) |
