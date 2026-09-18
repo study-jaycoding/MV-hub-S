@@ -27,8 +27,8 @@ ACCOUNT_A = "restore-a@example.invalid"
 ACCOUNT_B = "restore-b@example.invalid"
 
 
-# db_transfer 가 임시 폴더에 만드는 이름은 전부 소문자 `mvhub-` 로 시작한다
-# (mvhub-export-·import-·srvbak-·srvrestore-·restore-set-).
+# db_transfer 와 그것이 부르는 서비스가 임시 폴더에 만드는 이름은 전부 소문자 `mvhub-` 로 시작한다
+# (예: mvhub-export-·import-·srvbak-·srvrestore-·restore-set-, test_snapshot 의 mvhub-test-snapshot-·test-db-).
 _PRODUCT_TEMP_PREFIX = "mvhub-"
 
 
@@ -38,7 +38,7 @@ def assert_no_restore_temp(hub):
     폴더가 통째로 비었는지를 보던 단언은 전체 회귀 4회 중 2회 흔들렸다(2026-09-18): 남은 파일은
     `MVHUB-SRVRESTORE-<HEX>.ZIP.tmp` — 제품도 이 시험도 만들지 않는 이름이다(대문자·`.tmp`). 설비가
     프로세스 전역 `tempfile.tempdir` 를 이 폴더로 돌려 두므로 밖에서 온 파일이 섞일 수 있다(만든 쪽은
-    미확정 — 이 PC 의 실시간 검사가 유력). 그래서 제품이 만드는 이름만 본다. 대소문자를 구분한다.
+    미확정 — 재현하지 못했다). 그래서 제품이 만드는 이름만 본다. 대소문자를 구분한다.
     """
     assert not [p.name for p in hub.temp.iterdir() if p.name.startswith(_PRODUCT_TEMP_PREFIX)]
 
