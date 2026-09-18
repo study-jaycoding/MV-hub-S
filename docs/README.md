@@ -143,28 +143,29 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 > git log --oneline --since=<updated> -- backend/app/<관련경로>
 > ```
 
-동작을 바꾸는 코드 커밋은 그 동작을 서술한 문서를 **같은 커밋에서** 함께 고친다. 문서를 나중에
-고치기로 미루면 그 사이에 `active` 인데 내용이 반대인 문서가 생긴다.
+동작을 바꾸는 코드는 그 동작을 서술한 문서를 **같은 작업 안에서** 함께 고친다. 커밋은 프로젝트
+지침(`AGENTS.md`·`CLAUDE.md`)대로 **코드와 문서를 분리**하되, 둘 다 그 작업에서 낸다. 문서를 다음
+작업으로 미루면 그 사이에 `active` 인데 내용이 반대인 문서가 생긴다.
 
 ### 전체 문서 분류
 
-아래 표는 현재 `docs` 아래 Markdown **62개**(`docs/*.md` 54 + `docs/status/*.md` 8)를 한 번씩
+아래 표는 현재 `docs` 아래 Markdown **69개**(`docs/*.md` 58 + `docs/status/*.md` 11)를 한 번씩
 분류한다. PDF는 특정 시점에 만든 외부 배포용 결과물이므로 현재 기술 판단의 기준으로 사용하지 않는다.
 
 | 상태 | 문서 |
 |---|---|
 | **문서 색인·갱신 규칙** | [README](README.md)(이 문서) |
 | **현황·작업 기준** | [CURRENT_STATUS](CURRENT_STATUS.md), [RISK_REDUCTION_PLAN_2026-08-15](RISK_REDUCTION_PLAN_2026-08-15.md) |
-| **날짜별 기록(`status/`)** | [최근작업](status/최근작업_2026-08-24.md), [RL 완료목록](status/RL_완료목록.md), [검증기록](status/검증기록.md), [구현완료](status/구현완료_RL-02_RL-23.md), [사전배포검증](status/사전배포검증_2026-08-19.md), [안정화](status/안정화_2026-08-18.md), [코드대조](status/코드대조_2026-08-26.md), [영상 포스터 오염](status/영상_포스터_오염_2026-08-27.md) |
+| **날짜별 기록(`status/`)** | [최근작업](status/최근작업_2026-08-24.md), [RL 완료목록](status/RL_완료목록.md), [검증기록](status/검증기록.md), [구현완료](status/구현완료_RL-02_RL-23.md), [사전배포검증](status/사전배포검증_2026-08-19.md), [안정화](status/안정화_2026-08-18.md), [코드대조](status/코드대조_2026-08-26.md), [영상 포스터 오염](status/영상_포스터_오염_2026-08-27.md), [최근작업 09-03](status/최근작업_2026-09-03.md), [최근작업 09-09](status/최근작업_2026-09-09.md), [성능·CLI정확도 점검 09-12](status/성능_CLI정확도_점검_2026-09-12.md) |
 | **현행 구조·계약 — 공통** | [ARCHITECTURE](ARCHITECTURE.md), [AI_CONTEXT](AI_CONTEXT.md), [DATA_OWNERSHIP](DATA_OWNERSHIP.md), [WORKSPACE_DATA_CONTRACT](WORKSPACE_DATA_CONTRACT.md), [신원과 모드 가이드](신원과_모드_가이드.md) |
-| **현행 구조·계약 — 기능별** | [AUTH_FAILURE_SEMANTICS](AUTH_FAILURE_SEMANTICS.md), [CANVAS_GENERATION_IDEMPOTENCY](CANVAS_GENERATION_IDEMPOTENCY.md), [CLI_ESTIMATE_LIFECYCLE](CLI_ESTIMATE_LIFECYCLE.md), [GENERATION_SUBMISSION_RECOVERY](GENERATION_SUBMISSION_RECOVERY.md), [TELEMETRY_DRAIN_LIFECYCLE](TELEMETRY_DRAIN_LIFECYCLE.md), [SHARE_STATE_RECONCILIATION_DESIGN](SHARE_STATE_RECONCILIATION_DESIGN.md), [WORKER_OFFDISK_BACKUP_CONTRACT](WORKER_OFFDISK_BACKUP_CONTRACT.md), [UPDATE_ANNOUNCEMENTS](UPDATE_ANNOUNCEMENTS.md) |
-| **운영·검증 절차** | [SERVER](SERVER.md), [SERVER_RECOVERY](SERVER_RECOVERY.md), [SERVER_RELOCATION](SERVER_RELOCATION.md), [TESTING](TESTING.md), [HF_CLI_UPGRADE](HF_CLI_UPGRADE.md) |
+| **현행 구조·계약 — 기능별** | [AUTH_FAILURE_SEMANTICS](AUTH_FAILURE_SEMANTICS.md), [CANVAS_GENERATION_IDEMPOTENCY](CANVAS_GENERATION_IDEMPOTENCY.md), [CLI_ESTIMATE_LIFECYCLE](CLI_ESTIMATE_LIFECYCLE.md), [GENERATION_SUBMISSION_RECOVERY](GENERATION_SUBMISSION_RECOVERY.md), [TELEMETRY_DRAIN_LIFECYCLE](TELEMETRY_DRAIN_LIFECYCLE.md), [SHARE_STATE_RECONCILIATION_DESIGN](SHARE_STATE_RECONCILIATION_DESIGN.md), [WORKER_OFFDISK_BACKUP_CONTRACT](WORKER_OFFDISK_BACKUP_CONTRACT.md), [UPDATE_ANNOUNCEMENTS](UPDATE_ANNOUNCEMENTS.md), [TASK_ACTIVITY_FACTS](TASK_ACTIVITY_FACTS.md) |
+| **운영·검증 절차** | [SERVER](SERVER.md), [SERVER_RECOVERY](SERVER_RECOVERY.md), [SERVER_RELOCATION](SERVER_RELOCATION.md), [TESTING](TESTING.md), [HF_CLI_UPGRADE](HF_CLI_UPGRADE.md), [SERVER_MIGRATION](SERVER_MIGRATION.md) |
 | **현행 세부 계약 추가 — Comfy 결과 회수** | [COMFY_RESULT_RECOVERY](COMFY_RESULT_RECOVERY.md) — 비용·출처 강화 보류 계획과 별개 |
 | **사용자 안내** | [사용설명서](사용설명서.md), [기능설명서](기능설명서.md) |
 | **후속 설계(draft)·재측정(active)** | [DESIGN_id_unification](DESIGN_id_unification.md)(draft), [관리대시보드 통합계획](관리대시보드_통합계획.md)(draft), [ROADMAP_SCALE](ROADMAP_SCALE.md)(active), [COMFY_ENHANCE_PLAN](COMFY_ENHANCE_PLAN_2026-08-21.md)(보류 — 구현 미착수) |
 | **완료 작업의 개발 이력** | [PM_DASHBOARD_DESIGN](PM_DASHBOARD_DESIGN.md)(초기안 — §6 진행 순서 완료, 방식 변경분은 본문 NOTE), [CANVAS_MERGE_OPTIMIZATION_PLAN](CANVAS_MERGE_OPTIMIZATION_PLAN.md), [BACKLOG_PLAN](BACKLOG_PLAN_2026-08-20.md), [P2_CLOSEOUT_PLAN](P2_CLOSEOUT_PLAN_2026-08-20.md), [RL02_TASK_WORKSPACE_SNAPSHOT_PLAN](RL02_TASK_WORKSPACE_SNAPSHOT_PLAN.md) |
 | **완료 작업의 개발 이력 — OPT_PLAN 시리즈(12개)** | [1](OPT_PLAN_2026-08-21.md), [2](OPT_PLAN2_2026-08-21.md), [3](OPT_PLAN3_2026-08-22.md), [4](OPT_PLAN4_2026-08-22.md), [5](OPT_PLAN5_2026-08-22.md), [6](OPT_PLAN6_2026-08-22.md), [7](OPT_PLAN7_2026-08-22.md), [8](OPT_PLAN8_2026-08-22.md), [9](OPT_PLAN9_2026-08-22.md), [10](OPT_PLAN10_2026-08-23.md), [11](OPT_PLAN11_2026-08-23.md), [12](OPT_PLAN12_2026-08-23.md) |
-| **시점 고정 검증 기록** | [LOAD_TEST_2026-08-14](LOAD_TEST_2026-08-14.md), [PREDEPLOY_100_USERS](PREDEPLOY_100_USERS.md) |
+| **시점 고정 검증 기록** | [LOAD_TEST_2026-08-14](LOAD_TEST_2026-08-14.md), [PREDEPLOY_100_USERS](PREDEPLOY_100_USERS.md), [PROGRAM_AUDIT 2026-09-17](PROGRAM_AUDIT_2026-09-17.md)(snapshot) |
 | **과거 기준·감사 보존** | [DESIGN_RESOLVE_QUEUE_V3](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md)(큐 v3 설계 이력 — `superseded`, 현행은 ARCHITECTURE §7.6), [SHARE_STATE_COMPENSATION](SHARE_STATE_COMPENSATION.md)(RL-11 보상 — 대체됨), [AUDIT_2026-08-15](AUDIT_2026-08-15.md), [DESIGN](DESIGN.md), [PROJECT_CHARTER_LEGACY](PROJECT_CHARTER_LEGACY.md), [REVIEW_2026-08-17](REVIEW_2026-08-17.md), [P2_CLOSEOUT_REVIEW](P2_CLOSEOUT_REVIEW_2026-08-20.md) |
 | **외부 설명 자료** | [투자자 소개서](투자자_소개서.md) |
 
@@ -187,18 +188,57 @@ Markdown 을 추가·이름 변경·삭제하거나 위상이 바뀌면 **같은
 | 위험 항목 상태·우선순위 | `RISK_REDUCTION_PLAN_2026-08-15` Gate 0 표 | `CURRENT_STATUS` 요약 |
 | 구조·데이터 흐름 | `ARCHITECTURE`, `AI_CONTEXT` | 관련 세부 계약 |
 | 기능별 상태 전이·안전 규칙 | 해당 세부 계약 | `ARCHITECTURE`, `TESTING` |
-| 실제 테스트 결과 | `CURRENT_STATUS` | 관련 위험 항목의 근거 |
+| 실제 테스트 결과 | 최신 전체 검증 요약은 `CURRENT_STATUS` · 상세와 증거는 해당 기록 문서(아래 규칙) | 관련 위험 항목의 근거 |
 | 설치·운영 절차 | `SERVER`, `SERVER_RECOVERY`, `TESTING` | `CURRENT_STATUS`의 잔여 확인 |
 
 `검증 통과`, `완료`, `배포 가능`은 서로 다른 말이다. 자동 테스트만 통과한 작업은 외부 프로그램과
 운영 설치본까지 확인하기 전에는 `배포 완료`로 기록하지 않는다.
 
+### 현황판에 무엇을 남기나
+
+`CURRENT_STATUS` 는 **지금 판단에 필요한 것만** 담는다. 완료된 작업의 기록장이 아니다.
+
+**남기는 것** — ① 현재 기준선(코드·검증·NAS 게시본·운영 적용본을 서로 **구분**한다. 모르는
+운영 버전은 미확인으로 둔다) ② 진행 중이거나 막힌 작업 ③ 미해결 위험과 검증 한계 ④ 다음 행동
+⑤ 최신 전체 검증 1회분.
+
+**내려놓는 것** — 완료된 작업의 상세·근거가 **연결된 기록 문서**에 보존돼 있고, **남은 작업이
+없거나** 남은 작업을 담당·다음 행동·근거 링크가 있는 **별도 현재 항목으로 옮긴 뒤** 그 완료
+기록을 내린다. 같은 잔여 항목이 이미 있으면 새로 만들지 않고 **갱신한다**.
+오래됐다고 내리지 않고, 잔여가 남았다고 완료분까지 붙잡지도 않는다.
+
+**항목 하나의 최소 구성** — 상태 · 잔여나 다음 행동 · 근거 링크. 진행 중이면 소유자도 적는다.
+
+**예산** — 이 표가 정본이다. 검사(`lint:docs`)는 숫자를 자기 코드에 적지 말고 여기서 읽는다.
+표를 찾지 못하거나 해석할 수 없으면 검사 오류로 처리한다.
+
+| 기준 | 값 |
+|---|---|
+| 운영 상한(초과 시 정리) | 전체 **20KiB** · 현재 항목 **15개** |
+| 정리 목표 | 전체 **16KiB** · 현재 항목 **12개** |
+
+상한 초과는 **도입 단계에서는 경고**이며, 검사 검증과 후속 문서 갱신 확인을 거쳐 해당 규칙을
+실패로 전환한다. **정리 목표는 검사 실패 기준이 아니다.** '현재 항목'을 세는 대상과 형식은
+`lint:docs` 설계에서 확정하고 이 절과 연결한다.
+★숫자를 맞추려고 미해결 위험이나 검증 한계를 지우면 실패다. 판정 기준은 "짧아졌다"가 아니라
+"무엇이 끝났고 무엇이 남았고 근거가 어디 있는지 혼동 없이 안다"이다.
+
+**"최신 검증 1회분"의 뜻** — 가장 최근의 성공만 고르는 규칙이 아니다. 최신 전체 검증의
+기준선·결과·한계를 적고, 그 뒤에 실패·중단·미검증 변경이 있으면 함께 적는다. 최근 부분
+시험이 이전 전체 시험을 대체하지 않는다.
+
+**위험 상태의 정본은 `RISK_REDUCTION_PLAN_2026-08-15` 의 Gate 0 표다.** 현황판에 독립적인
+위험 장부를 새로 만들지 않는다.
+
 ### 작업 종료 때 문서 확인 순서
 
 1. 위험 상태가 바뀌었다면 `RISK_REDUCTION_PLAN_2026-08-15`의 Gate 0 표를 먼저 수정한다.
 2. `CURRENT_STATUS`의 완료 항목·다음 작업·실제 검증 숫자를 맞춘다.
-3. 날짜별 상세 기록(회귀 수치·실측 결과·구현 근거)은 `status/`에 **새 노트**로 넣고,
-   `CURRENT_STATUS`에는 한 줄 링크만 추가한다. 현황판이 다시 길어지지 않게 한다.
+3. 날짜별 상세 기록(회귀 수치·실측 결과·구현 근거)은 `status/`에 **새 노트**로 넣는다.
+   현황판에는 **지금 판단에 필요한 링크만** 남긴다. 완료 이력은 그 기록 문서 안에 모으고,
+   이 문서의 분류표에는 **기록 문서를 문서당 한 번** 연결한다(작업마다 링크를 더하면
+   누적이 현황판에서 분류표로 옮겨갈 뿐이다). 상세가 이미 감사·계약 문서에 있으면
+   `status/`에 같은 내용을 다시 복사하지 않는다.
 4. 구조나 상태 전이가 바뀐 경우에만 `ARCHITECTURE`와 해당 세부 계약을 수정한다.
 5. 과거 감사·계획·시험 기록의 본문은 당시 근거로 보존하고, 필요하면 상단 안내만 보강한다.
 6. 로컬 링크 검사와 `git diff --check`를 통과한 뒤 문서 변경을 별도 커밋한다.

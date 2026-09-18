@@ -4,7 +4,7 @@ aliases:
 tags:
   - mvhub
   - mvhub/검증
-status: active
+status: snapshot
 updated: 2026-09-18
 ---
 
