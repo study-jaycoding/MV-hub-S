@@ -49,7 +49,7 @@ updated: 2026-09-18
 | 로그인/가입/계정 승인 | `components/LoginScreen.tsx`, `components/ServerLoginScreen.tsx` | `routers/auth.py`, `services/auth.py` | |
 | Assets 파일 탐색기(마운트·트리·업로드) | `components/AssetsView.tsx` | `routers/assets.py`, `services/asset_tree.py` | |
 | 프로젝트 CRUD·멤버·역할 | `components/manage/ProjectManagerPanel.tsx` | `routers/projects.py`, `repo/projects.py` | |
-| 작업(Task) 칸반/테이블/캘린더 | `components/manage/WorkBoard.tsx` | `routers/manage.py`, `repo/manage_tasks.py` | 소요시간 표기는 `lib/format.ts` 의 `fmtElapsed` 하나다(`1d2h3m4s`, 초를 버리지 않음 — 2026-09-18 에 뷰 5곳의 개별 구현을 합쳤다). 새 뷰도 이 함수를 쓴다 |
+| 작업(Task) 칸반/테이블/캘린더 | `components/manage/WorkBoard.tsx` | `routers/manage.py`, `repo/manage_tasks.py` | 소요시간 표기는 `lib/format.ts` 의 `fmtElapsed` 하나다(`1d2h3m4s`, 초를 버리지 않음, 하루 이상은 `1d1h` — Jay 확정 2026-09-18). PM 창 5곳과 정보 팝업(`InfoPopup`)의 '생성 시간'이 모두 이 함수를 쓴다. 새 뷰도 이 함수를 쓴다 |
 | 크레딧 풀·그룹 한도 설정 | `components/manage/CreditPoolSection.tsx`, `CreditPlanFields.tsx` | `repo/manage_credit_plan.py` | |
 | 알림 센터(코멘트·업데이트 공지) | `components/NotificationCenter.tsx` | `routers/notifications.py`, `routers/update_notices.py` | |
 | 부분 수정(마스크 편집 캔버스) | `components/edit/PartialEditModal.tsx` | — | 제출은 기존 생성 요청 경로 재사용. `PartialEditHost`는 커스텀 이벤트로만 열림(§3.5) |
