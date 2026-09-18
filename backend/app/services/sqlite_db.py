@@ -26,8 +26,15 @@ def hub_db_validation_detail(exc: HubDbValidationError, *, downloaded: bool = Fa
 def read_only_uri(path: Path, *, immutable: bool = False) -> str:
     """SQLite 읽기 전용 URI. f"file:{path}" 로 손수 조립하면 경로의 `#`·`%` 가 URI 문법으로
     읽혀 다른 파일을 가리킨다 — as_uri() 가 인코딩한다. immutable 은 WAL 을 무시하므로
-    -wal 이 없는 독립 파일(백업본)에만 켠다."""
-    return Path(path).resolve().as_uri() + ("?mode=ro&immutable=1" if immutable else "?mode=ro")
+    -wal 이 없는 독립 파일(백업본)에만 켠다.
+
+    ★resolve() 를 쓰지 않는다: Windows 에서 네트워크 드라이브(Z:)를 UNC 로 바꾸고, SQLite 는
+    file://server/share/… 의 server 를 authority 로 읽어 "invalid uri authority" 로 거부한다
+    (2026-09-18 실측). UNC 는 빈 authority + //server/share 인 file:////server/share/… 로만 열린다."""
+    uri = Path(path).absolute().as_uri()
+    if not uri.startswith("file:///"):  # UNC: file://server/share/… → file:////server/share/…
+        uri = "file:////" + uri[len("file://"):]
+    return uri + ("?mode=ro&immutable=1" if immutable else "?mode=ro")
 
 
 def _read_only_uri(path: Path) -> str:

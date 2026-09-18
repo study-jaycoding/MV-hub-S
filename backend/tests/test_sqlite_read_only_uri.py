@@ -36,6 +36,23 @@ def test_opens_a_path_with_uri_syntax_characters_and_stays_read_only(tmp_path):
             conn.execute("INSERT INTO t VALUES (8)")
 
 
+def test_a_drive_letter_is_kept_and_a_unc_path_gets_an_empty_authority():
+    # resolve() 는 네트워크 드라이브(Z:)를 UNC 로 바꾸고, SQLite 는 file://server/… 의 server 를
+    # authority 로 읽어 거부한다(2026-09-18 실측). 드라이브 문자는 그대로, UNC 는 슬래시 4개로.
+    assert read_only_uri(Path("Z:/a b/x.db")) == "file:///Z:/a%20b/x.db?mode=ro"
+    assert read_only_uri(Path(r"\\nas\share\d#1\x.db")) == "file:////nas/share/d%231/x.db?mode=ro"
+    assert read_only_uri(Path("Z:/x.db"), immutable=True).endswith("?mode=ro&immutable=1")
+
+
+def test_opens_a_real_database_through_a_unc_path(tmp_path):
+    db = _make_db(tmp_path / AWKWARD_DIR)
+    unc = Path(rf"\\localhost\{db.drive[0]}$") / db.relative_to(db.drive + "\\")
+    if not unc.exists():
+        pytest.skip("loopback admin share is not reachable on this machine")
+    with closing(sqlite3.connect(read_only_uri(unc), uri=True)) as conn:
+        assert conn.execute("SELECT x FROM t").fetchone() == (7,)
+
+
 def test_the_hand_built_form_it_replaced_misses_that_database(tmp_path):
     db = _make_db(tmp_path / AWKWARD_DIR)
     with pytest.raises(sqlite3.OperationalError):
