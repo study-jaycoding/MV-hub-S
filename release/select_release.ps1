@@ -89,9 +89,24 @@ $Latest = [ordered]@{
 
 $LatestDirectory = Split-Path -Parent $LatestPath
 New-Item -ItemType Directory -Force -Path $LatestDirectory | Out-Null
+$BackupPath = ""
 if (Test-Path -LiteralPath $LatestPath) {
+    $BackupDirectory = Join-Path $LatestDirectory "latest-backups"
+    $BackupFolder = [System.IO.Directory]::CreateDirectory($BackupDirectory)
+    if ($BackupFolder.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        throw "Backup directory must not be a link: $BackupDirectory"
+    }
     $BackupName = "latest.previous-{0}.json" -f (Get-Date -Format "yyyyMMdd-HHmmss")
-    Copy-Item -LiteralPath $LatestPath -Destination (Join-Path $LatestDirectory $BackupName)
+    $BackupPath = Join-Path $BackupDirectory $BackupName
+    if (Test-Path -LiteralPath $BackupPath) {
+        throw "Backup already exists; retry after one second: $BackupPath"
+    }
+    $PreviousHash = Get-Sha256Hex -Path $LatestPath
+    # Refuse overwrites even if another selector creates this name after the check.
+    [System.IO.File]::Copy($LatestPath, $BackupPath, $false)
+    if ((Get-Sha256Hex -Path $BackupPath) -ne $PreviousHash) {
+        throw "Backup verification failed; latest.json was not replaced: $BackupPath"
+    }
 }
 
 $TemporaryLatest = "$LatestPath.tmp-$PID"
@@ -108,4 +123,7 @@ Write-Host "  version: $Version"
 Write-Host "  cli    : $CliVersion"
 Write-Host "  package: $($Package.FullName)"
 Write-Host "  latest : $LatestPath"
+if ($BackupPath) {
+    Write-Host "  backup : $BackupPath"
+}
 Write-Host "Workers can now run update_release.bat to install this exact version."
