@@ -12,6 +12,8 @@ it("0인 단위는 생략한다", () => {
   expect(fmtElapsed(3600)).toBe("1h");
   expect(fmtElapsed(3605)).toBe("1h5s");
   expect(fmtElapsed(59)).toBe("59s");
+  expect(fmtElapsed(60)).toBe("1m");
+  expect(fmtElapsed(86400)).toBe("1d");
   expect(fmtElapsed(90000)).toBe("1d1h");
   expect(fmtElapsed(90061)).toBe("1d1h1m1s");
 });
