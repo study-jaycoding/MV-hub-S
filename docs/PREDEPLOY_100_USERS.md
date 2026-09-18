@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-10
+updated: 2026-09-18
 status: snapshot
 ---
 
@@ -93,9 +93,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File release\select_release.ps1 `
   -PackagePath Z:\mvutil\MV_hub_S\packages\MVHub-<직전정상버전>.zip
 ```
 
-이 도구는 기존 `latest.json`을 `latest.previous-날짜.json`으로 보관하고, 선택한 ZIP 내부의
+이 도구는 기존 `latest.json`을 같은 폴더 아래 `latest-backups\latest.previous-날짜-시각.json`으로 보관하고, 선택한 ZIP 내부의
 `VERSION.txt`, 크기, SHA256으로 새 `latest.json`을 만든다. 이후 작업자가 `update_release.bat`를
 실행하면 이전 버전으로도 정상 전환된다.
+동명 백업은 덮어쓰지 않고 중단하며 1초 뒤 재실행한다. 백업 저장·해시 확인 실패 시 현재
+`latest.json`은 교체하지 않는다. `make_release.ps1`의 자동 게시에는 이 백업 단계가 없다.
 
 ## 아직 필요한 실제 운영 검증
 

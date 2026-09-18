@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-26
+updated: 2026-09-18
 status: review-required
 ---
 
@@ -84,6 +84,8 @@ Z:\mvutil\MV_hub_S\packages
     MVHub_Install.bat
     latest.json
     MVHub-<버전>.zip
+    latest-backups\
+        latest.previous-<날짜-시각>.json
 ```
 
 설치기는 자신과 같은 폴더의 `latest.json`을 자동으로 사용하므로 서버 경로를 직접 편집하지 않습니다.
@@ -141,8 +143,13 @@ MV Hub를 종료하고 파일을 교체한 뒤 새 버전의 준비 완료까지
 .\select_release.ps1 -PackagePath Z:\mvutil\MV_hub_S\packages\MVHub-<직전정상버전>.zip
 ```
 
-기존 `latest.json`은 날짜가 붙은 `latest.previous-*.json`으로 보관됩니다. 선택한 ZIP의
-`VERSION.txt`와 SHA256으로 새 `latest.json`을 만든 뒤 작업자가 `update_release.bat`를 실행하면
+기존 `latest.json`은 같은 폴더 아래 `latest-backups\latest.previous-*.json`으로 보관됩니다.
+`-LatestPath`를 별도로 지정하면 그 파일이 있는 폴더 아래에 백업 폴더를 만듭니다.
+동일한 초에 만든 동명 백업은 덮어쓰지 않고 중단하므로 1초 뒤 다시 실행합니다.
+백업 생성·해시 확인에 실패하면 현재 `latest.json`을 바꾸지 않습니다. 기존 백업의 자동 이동·삭제는 하지 않습니다.
+검증에 실패해 남은 백업은 오류 메시지에 표시된 경로에서 수동 확인해야 하며, 정상 백업으로 간주하지 않습니다.
+백업은 이 선택 도구가 만들며, `make_release.ps1`의 자동 게시 경로는 백업을 만들지 않습니다.
+선택한 ZIP의 `VERSION.txt`와 SHA256으로 새 `latest.json`을 만든 뒤 작업자가 `update_release.bat`를 실행하면
 이전 버전으로 전환됩니다.
 
 설치/업데이트는 DB·미디어를 보존하고, 프로그램 영역은 폴더 단위로 깨끗하게 교체합니다. 릴리즈는 `backend\app`과 필요한 실행 파일만 허용 목록으로
