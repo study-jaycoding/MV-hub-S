@@ -23,12 +23,18 @@ def hub_db_validation_detail(exc: HubDbValidationError, *, downloaded: bool = Fa
     return "허브 DB 형식이 아닙니다(generation 테이블 없음)"
 
 
+def read_only_uri(path: Path, *, immutable: bool = False) -> str:
+    """SQLite 읽기 전용 URI. f"file:{path}" 로 손수 조립하면 경로의 `#`·`%` 가 URI 문법으로
+    읽혀 다른 파일을 가리킨다 — as_uri() 가 인코딩한다. immutable 은 WAL 을 무시하므로
+    -wal 이 없는 독립 파일(백업본)에만 켠다."""
+    return Path(path).resolve().as_uri() + ("?mode=ro&immutable=1" if immutable else "?mode=ro")
+
+
 def _read_only_uri(path: Path) -> str:
     """검증 대상은 남이 올린 파일이다 — 절대 read-write 로 열지 않는다(hot journal 롤백·WAL
     체크포인트가 원본을 바꾼다). 짝 -wal 이 없는 독립 파일이면 immutable 까지 붙인다: read-only
     연결은 자기가 만든 -wal/-shm 을 닫을 때 지우지 못해 사이드카가 폴더에 쌓인다."""
-    immutable = not Path(str(path) + "-wal").exists()
-    return path.resolve().as_uri() + ("?mode=ro&immutable=1" if immutable else "?mode=ro")
+    return read_only_uri(path, immutable=not Path(str(path) + "-wal").exists())
 
 
 def validate_hub_db(path: Path, *, require_integrity: bool = False) -> None:

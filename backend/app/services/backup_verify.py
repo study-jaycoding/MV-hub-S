@@ -12,7 +12,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from .sqlite_db import SQLITE_MAGIC
+from .sqlite_db import SQLITE_MAGIC, read_only_uri
 
 _REQUIRED_TABLES = {"generation", "worker", "account", "project", "share"}
 
@@ -40,8 +40,7 @@ BACKUP_SET_MEMBERS: dict[str, dict[str, Any]] = {
 
 def _sqlite_read_uri(path: Path, *, immutable: bool) -> str:
     """공백·한글·#·UNC를 안전하게 인코딩한 SQLite 읽기 전용 URI."""
-    suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
-    return path.resolve().as_uri() + suffix
+    return read_only_uri(path, immutable=immutable)
 
 
 def create_sqlite_snapshot(

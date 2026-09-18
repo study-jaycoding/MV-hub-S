@@ -33,7 +33,7 @@ from ..db import get_db_path
 from ..manage_db import MANAGE_DB_PATH
 from .async_tools import to_thread_non_abandon
 from .operational_logging import log_event
-from .sqlite_db import validate_hub_db
+from .sqlite_db import read_only_uri, validate_hub_db
 
 _backup_log = logging.getLogger("mvhub.backup")
 
@@ -237,8 +237,7 @@ def _cleanup_stale_tmp(d: Path) -> None:
 
 def _validate_sidecar(path: Path, expected_table: str) -> None:
     """휴지통/관리 DB의 SQLite 무결성과 핵심 테이블 존재를 확인한다."""
-    uri = f"file:{path.as_posix()}?mode=ro"
-    with contextlib.closing(sqlite3.connect(uri, uri=True)) as conn:
+    with contextlib.closing(sqlite3.connect(read_only_uri(path), uri=True)) as conn:
         result = conn.execute("PRAGMA quick_check").fetchone()
         if not result or result[0] != "ok":
             raise sqlite3.DatabaseError(f"quick_check failed: {result}")

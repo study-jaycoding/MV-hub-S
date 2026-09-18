@@ -36,7 +36,7 @@ from starlette.background import BackgroundTask
 from ..active_account import slug
 from ..config import DATA_DIR
 from ..deps import current_account
-from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db
+from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, read_only_uri, validate_hub_db
 from ..services import upload_limits
 from ..services.async_tools import to_thread_non_abandon
 from ..services.atomic_io import atomic_write_text
@@ -161,7 +161,7 @@ def _sha256(path: Path) -> str:
 
 
 def _validate_trash_db(path: Path) -> None:
-    with contextlib.closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as conn:
+    with contextlib.closing(sqlite3.connect(read_only_uri(path), uri=True)) as conn:
         conn.execute("PRAGMA query_only=ON")
         result = conn.execute("PRAGMA quick_check").fetchone()
         if not result or result[0] != "ok":

@@ -16,7 +16,7 @@ from contextlib import closing
 from pathlib import Path, PurePosixPath
 
 from .db_scrub import scrub_test_snapshot_db
-from .sqlite_db import HubDbValidationError, validate_hub_db
+from .sqlite_db import HubDbValidationError, read_only_uri, validate_hub_db
 
 SNAPSHOT_FORMAT = "mvhub-test-db-snapshot"
 SNAPSHOT_VERSION = 1
@@ -40,7 +40,7 @@ class TestSnapshotError(ValueError):
 
 def _sqlite_snapshot(source: Path, target: Path) -> None:
     """WAL에 남은 커밋까지 포함해 SQLite 파일 하나를 일관 복사한다."""
-    with closing(sqlite3.connect(f"file:{source.as_posix()}?mode=ro", uri=True)) as src:
+    with closing(sqlite3.connect(read_only_uri(source), uri=True)) as src:
         with closing(sqlite3.connect(target)) as dst:
             src.backup(dst)
 
@@ -181,7 +181,7 @@ def _validate_archive_entries(bundle: zipfile.ZipFile, manifest: dict) -> list[t
 
 def _validate_generic_sqlite(path: Path) -> None:
     try:
-        with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as conn:
+        with closing(sqlite3.connect(read_only_uri(path), uri=True)) as conn:
             row = conn.execute("PRAGMA integrity_check").fetchone()
     except sqlite3.DatabaseError as exc:
         raise TestSnapshotError(f"SQLite 파일을 읽을 수 없습니다: {path.name}") from exc

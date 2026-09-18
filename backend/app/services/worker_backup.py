@@ -37,7 +37,7 @@ from .async_tools import to_thread_non_abandon
 from .atomic_io import atomic_write_text
 from .db_scrub import SESSION_KEYS, strip_transfer_secrets
 from .operational_logging import log_event
-from .sqlite_db import validate_hub_db
+from .sqlite_db import read_only_uri, validate_hub_db
 
 STATE_DB = Path(
     os.environ.get(
@@ -167,12 +167,12 @@ def _sha256(path: Path) -> str:
 
 
 def _sqlite_user_version(path: Path) -> int:
-    with contextlib.closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as conn:
+    with contextlib.closing(sqlite3.connect(read_only_uri(path), uri=True)) as conn:
         return int(conn.execute("PRAGMA user_version").fetchone()[0])
 
 
 def _validate_trash(path: Path) -> None:
-    with contextlib.closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as conn:
+    with contextlib.closing(sqlite3.connect(read_only_uri(path), uri=True)) as conn:
         conn.execute("PRAGMA query_only=ON")
         result = conn.execute("PRAGMA quick_check").fetchone()
         if not result or result[0] != "ok":
@@ -189,7 +189,7 @@ def _verify_transfer_secrets_removed(path: Path) -> None:
     기존 정제 함수는 구형 DB 호환 때문에 SQLite 오류를 삼킨다. 자동 외부 전송은 보안상
     실패를 성공으로 간주할 수 없으므로 별도 확인을 통과하지 못하면 staging을 중단한다.
     """
-    with contextlib.closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as conn:
+    with contextlib.closing(sqlite3.connect(read_only_uri(path), uri=True)) as conn:
         conn.execute("PRAGMA query_only=ON")
         placeholders = ",".join("?" for _ in SESSION_KEYS)
         found = conn.execute(
@@ -385,7 +385,7 @@ def metadata_summary(content: Path, trash: Path | None = None) -> dict[str, int]
     """민감한 본문 없이 동기화 비교에 필요한 개수만 계산한다."""
     summary: dict[str, int] = {}
     with contextlib.closing(
-        sqlite3.connect(f"file:{Path(content).as_posix()}?mode=ro", uri=True)
+        sqlite3.connect(read_only_uri(content), uri=True)
     ) as conn:
         conn.execute("PRAGMA query_only=ON")
         existing = _existing_table_names(conn)
@@ -396,7 +396,7 @@ def metadata_summary(content: Path, trash: Path | None = None) -> dict[str, int]
     summary["trash"] = 0
     if trash is not None and Path(trash).is_file():
         with contextlib.closing(
-            sqlite3.connect(f"file:{Path(trash).as_posix()}?mode=ro", uri=True)
+            sqlite3.connect(read_only_uri(trash), uri=True)
         ) as conn:
             conn.execute("PRAGMA query_only=ON")
             summary["trash"] = _table_count(conn, "trashed")
