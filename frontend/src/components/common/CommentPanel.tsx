@@ -19,8 +19,13 @@ function loadFontPx(): number {
 const PRIV_KEY = "ch.cmt.private"; // 다음 코멘트를 비공개로 쓸지
 const SHOW_KEY = "ch.cmt.showPrivate"; // 목록에 내 비공개를 섞어 보여줄지
 const loadFlag = (key: string, def: boolean): boolean => {
-  const v = loadString(key);
-  return v === "" ? def : v === "1";
+  let v: string | null = null;
+  try {
+    v = localStorage.getItem(key);
+  } catch {
+    /* localStorage 불가 환경 → 기본값 */
+  }
+  return v === null ? def : v === "1";
 };
 const saveFlag = (key: string, v: boolean) => {
   try {

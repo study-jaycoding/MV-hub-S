@@ -20,8 +20,9 @@ from ..workspace_context import normalize_workspace_context
 from . import tags
 from .generations import RECOVERY_REQUIRED_NOTE
 
-# 복구 안내 뒤에 붙는 상세 진단의 머리말. 프론트 generationDisplay.SUBMIT_DIAGNOSTIC_MARK 와 짝 —
-# 팝업이 이 표식으로 상세만 잘라 쓴다(안내 문구는 팝업이 이미 따로 보여주므로 그대로 두면 겹친다).
+# 복구 안내 뒤에 붙는 상세 진단의 머리말. 프론트 lib/generationIssue.ts 의 diagnosticBody 가 같은
+# 문자열로 이 뒤의 상세만 떼어 원인을 분류한다 — 바꾸면 그쪽도 함께 바꾼다. 원문 전체는 정보 팝업의
+# '오류 원문' 접힘 칸에 그대로 보인다.
 SUBMIT_DIAGNOSTIC_PREFIX = "제출 진단: "
 
 
