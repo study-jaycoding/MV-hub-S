@@ -105,6 +105,26 @@ try {
     Write-Host "  reports: $ReportDirectory"
     Write-Host "  python : $PythonExe"
 
+    Invoke-Checked "Documentation lint" {
+        Push-Location (Join-Path $ProjectRoot "frontend")
+        try {
+            & npm.cmd run lint:docs
+        }
+        finally {
+            Pop-Location
+        }
+    }
+
+    Invoke-Checked "Architecture lint" {
+        Push-Location (Join-Path $ProjectRoot "frontend")
+        try {
+            & npm.cmd run lint:architecture
+        }
+        finally {
+            Pop-Location
+        }
+    }
+
     Invoke-Checked "Backend tests" {
         Push-Location (Join-Path $ProjectRoot "backend")
         try {
