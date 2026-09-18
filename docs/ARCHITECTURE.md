@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-16
+updated: 2026-09-18
 status: active
 ---
 
@@ -81,9 +81,10 @@ HTTP 요청
    ├─ auth_enforcement     : 토큰 → request.state.account  (CONTENT_HUB_AUTH=1 일 때 게이트)
    ├─ mutation_notify      : 성공한 쓰기를 library/assets/manage로 분류해 WS 갱신 신호 전파
    ├─ data_proxy           : 프록시 모드에서 로컬 전용 경로 외 데이터 요청을 공유 서버로 위임
+   ├─ list_gzip            : 생성물 목록 응답만 gzip(전역 압축 아님 — `list_gzip.py` 머리말의 실측 근거)
    ├─ upload_body_limit    : 선별된 업로드의 원시 본문을 multipart 파싱 전에 제한
    ├─ auth_off_remote_guard: AUTH off 서버에 원격 주소가 접근하면 차단(보안 경계)
-   └─ runtime_observation  : 요청 지표·운영 관측   (7개, `main.py` 등록 순)
+   └─ runtime_observation  : 요청 지표·운영 관측   (8개 — 등록 순서의 정본은 `main.py`)
    │
    ▼  routers/*.py   — HTTP 경계. 입력 검증(Pydantic) + deps(인증/RBAC) + actor_id 주입
    │
@@ -278,7 +279,7 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 | `storage.ts` | `makeStore`(prefix 스토어) + `loadJSON`(안전 파싱) |
 | `useFloatingPanel.ts` / `useModels.ts` / `useAccountStatus.ts` | 플로팅 패널·모델 목록·계정 상태 훅 |
 | `promptParts.ts` / `prompt.tsx` / `promptEditor.ts` | 프롬프트 파싱·@칩 렌더·편집 |
-| `format.ts` | `fmtWhen`(날짜 포맷, 공용) |
+| `format.ts` | `fmtWhen`(날짜 포맷)·`fmtElapsed`(소요시간 `1d2h3m4s` — PM 창과 정보 팝업의 단일 표기) |
 | `media.ts` | `thumbOf`(생성본 대표 썸네일 URL, 공용) |
 | `download.ts` | `download`·`downloadName`(파일 내려받기, 공용) |
 | `commentTree.ts` | `buildCommentTree<T>`(코멘트 부모-자식 트리 계산, 공용) |
@@ -293,7 +294,7 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 | `sceneDerive.ts` / `sceneComfySeeds.ts` | 그룹 기하·파생 상태 계산 / 워크플로 시드 변경 순수 함수 |
 | `librarySync.ts` | 쓰기 요청 id와 library/assets/manage 응답 영역을 추적해 자기 알림의 중복 reload만 안전하게 생략 |
 | `progressSocket.ts` | 앱 WS 연결·누락 보정 재조회. 지수 백오프에 ±20% jitter와 15초 상한을 적용하고 1008 인증 만료는 재시도하지 않고 로그인 화면·알림으로 전달 |
-| `assetBroadcast.ts` / `useManageRealtime.ts` | Assets 창 간 WS 전달 / 독립 PM 창의 직접 WS·숨김 상태 따라잡기 |
+| `assetBroadcast.ts` / `useManageRealtime.ts` | Assets 창 간 `BroadcastChannel` 전달(WS 아님) / 독립 PM 창의 직접 WS·숨김 상태 따라잡기 |
 
 > `format`·`media`·`download`·`commentTree`·`useClickSeparation` 은 여러 컴포넌트에 복붙돼 있던
 > 동일 로직을 통합한 결과물(중복 제거 리팩터). `MediaThumbnail` 도 같은 맥락의 공용 표현 컴포넌트.
@@ -666,16 +667,16 @@ MV-hub-S/
 │  ├─ schema.sql             DDL(SQLite)
 │  └─ app/
 │     ├─ main.py db.py db_migrations.py models.py config.py deps.py rbac.py ws.py manage_db.py
-│     ├─ routers/   24개(`__init__.py` 제외, 내부 _proxy·_telemetry·_assets_access 포함)
+│     ├─ routers/   HTTP 경계(내부 _proxy·_telemetry·_assets_access 포함 — 파일별 색인은 CODE_MAP.md §2.2)
 │     ├─ usecases/  gen_requests generation_media_cache generation_personal_meta hf_missing
-│     ├─ repo/      39개 모듈(파사드 __init__ 별도)
-│     ├─ services/  61개
+│     ├─ repo/      데이터 접근(파사드 __init__ + 모듈들 — CODE_MAP.md §2.4)
+│     ├─ services/  외부 연동·부수효과(CODE_MAP.md §2.5)
 │     └─ resources/resolve/  MVHub_Importer.py 등 Resolve 배포 스크립트
 └─ frontend/
    ├─ dist/                  빌드 산출물(백엔드가 서빙)
    └─ src/
       ├─ App.tsx api.ts types.ts main.tsx
-      ├─ lib/         160+ 훅·유틸(§5.1)
+      ├─ lib/         훅·유틸 약 200개(§5.1, 전체 색인은 CODE_MAP.md §3.3)
       └─ components/  12개 서브폴더 — scene/ assets/ manage/ spotlight/ settings/ history/
                       sidebar/ app/ generation/ compare/ common/ admin/ + 최상위 창·패널들
 ```

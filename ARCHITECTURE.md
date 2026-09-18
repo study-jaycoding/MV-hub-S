@@ -6,7 +6,7 @@ tags:
   - mvhub
   - mvhub/구조
   - 기준문서
-updated: 2026-08-27
+updated: 2026-09-18
 status: active
 ---
 
@@ -51,23 +51,24 @@ shared     여러 feature 가 공유 — ui(공통 컴포넌트) / lib(순수 �
 - **feature 끼리 직접 import 금지** (scene 이 manage 내부를 직접 가져다 쓰지 않는다). 공유가 필요하면 `shared` 로 올린다.
 
 > [!NOTE]
-> 지금 실제 폴더는 `components/`의 12개 그룹(`scene`·`assets`·`manage`·`spotlight`·`settings`…)
-> + `lib/`(175개 훅·유틸) 형태로, 이미 feature 성격의 그룹이 잡혀 있다. 위 구조는 그걸
+> 지금 실제 폴더는 `components/`의 기능 그룹(`scene`·`assets`·`manage`·`spotlight`·`settings`…)
+> + 평평한 `lib/`(훅·유틸 약 200개 — 파일별 색인은 [docs/CODE_MAP.md](docs/CODE_MAP.md) §3) 형태로, 이미 feature 성격의 그룹이 잡혀 있다. 위 구조는 그걸
 > **명시적 규칙으로 굳히는 것**이지 폴더를 대이사하자는 게 아니다. (대이사는 P 단계에서 필요할 때만, 조각으로.)
 
 ### 백엔드 (`backend/app`)
 
 ```
-routers     HTTP 만 — 요청/응답 변환, 인증 통과, usecase 호출          (24개)
+routers     HTTP 만 — 요청/응답 변환, 인증 통과, usecase 호출
   ▼
-usecases    업무 흐름 — 여러 repo·부수효과(WS·PM·agent signal)를 하나로 묶는다   (4개)
+usecases    업무 흐름 — 여러 repo·부수효과(WS·PM·agent signal)를 하나로 묶는다
   ▼
-repo        데이터 만 — SQL·트랜잭션 (facade __init__.py 유지, 내부만 분할)   (39개 모듈)
+repo        데이터 만 — SQL·트랜잭션 (facade __init__.py 유지, 내부만 분할)
 services    asset_tree·cli_bridge·media_cache·thumbs·syncer·resolve_*·
-            server_relocation 등 도메인 IO (usecase 가 호출)              (61개)
+            server_relocation 등 도메인 IO (usecase 가 호출)
 ```
 
-> 모듈 수는 `__init__.py` 를 뺀 개수다.
+> 모듈 개수는 코드가 자라면 바로 낡아서 적지 않는다. 파일별 색인과 라우터별 엔드포인트 수는
+> [docs/CODE_MAP.md](docs/CODE_MAP.md) §2 에 있고 `tools/check_code_map.py` 가 빠진 파일을 잡는다.
 
 **의존 방향:** `routers → usecases → repo/services`.
 - `repo` 는 `routers` 를 import 하지 않는다(역방향 금지).

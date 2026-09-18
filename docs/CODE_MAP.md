@@ -29,9 +29,9 @@ updated: 2026-09-18
 | 하고 싶은 일 | 프런트 진입 파일 | 백엔드 진입 파일 | 비고 |
 |---|---|---|---|
 | 라이브러리 카드 표시 문구·상태 라벨 바꾸기 | `components/GenerationCard.tsx`, `lib/generationDisplay.ts` | — | 상태 라벨은 순수 프런트 판정 |
-| 새 API 엔드포인트 추가하기 | `api.ts` | `routers/_proxy.py`(경로 소유권) + 해당 도메인 라우터 | 로컬 전용 경로는 `_proxy._LOCAL_PREFIXES/_LOCAL_EXACT` 갱신 + `backend/tests/test_proxy_ownership.py` 골든 스냅샷도 같이 고쳐야 함(§5-c) |
+| 새 API 엔드포인트 추가하기 | `api.ts` | `routers/_proxy.py`(경로 소유권) + 해당 도메인 라우터. **새 라우터 파일이면 `main.py` 의 `include_router()` 등록도** | 로컬 전용 경로는 `_proxy._LOCAL_PREFIXES/_LOCAL_EXACT` 갱신 + `backend/tests/test_proxy_ownership.py` 골든 스냅샷도 같이 고쳐야 함(§5-c) |
 | 캔버스(씬) 단축키 바꾸기 | `lib/useSceneKeyboardShortcuts.ts`, `lib/sceneKeyboard.ts` | — | |
-| 생성 제출 흐름(프롬프트→요청→CLI) | `components/spotlight/useSpotlightSubmit.ts`, `lib/spotlightSubmit.ts` | `routers/gen_requests.py`, `usecases/gen_requests.py`, `repo/gen_requests.py` | |
+| 생성 제출 흐름(프롬프트→요청→CLI) | `components/spotlight/useSpotlightSubmit.ts`, `lib/spotlightSubmit.ts` | `routers/gen_requests.py`, `usecases/gen_requests.py`, `repo/gen_requests.py` | 실제 CLI 제출·추적·완료 판정은 작업자 PC 의 `agent_push.py` 가 한다 — 서버 쪽만 봐서는 흐름이 끝까지 안 보인다 |
 | 팀 공유·검토(공유/최종/보류) | `lib/useGenerationShareActions.ts`, `components/generation/GenerationReviewOverlay.tsx` | `routers/share.py`, `repo/share.py`, `services/share_state_reconciler.py` | |
 | PM 대시보드 숫자·크레딧 표기 | `components/manage/WorkspaceUsageDashboard.tsx`, `lib/formatCredits.ts` | `repo/manage_credit_plan.py`, `routers/manage.py` | 크레딧은 소수 보존(반올림 금지) |
 | 어셋/생성물 썸네일 | `components/MediaThumbnail.tsx` | `services/thumbs.py`, `routers/library.py`(media-thumb) | |
@@ -44,17 +44,17 @@ updated: 2026-09-18
 | 문구 번역(i18n) 추가·수정 | `lib/i18n.ts` | — | 한국어 원문이 키. `t()` 는 서버가 준 문구도 런타임에 받으므로, 원문이 소스에 없다는 이유만으로 영문 키를 지우지 않는다 |
 | 화면별 CSS 파일 찾기 | `styles/*.css`(§3.4 표) | — | |
 | 라이브러리 필터·정렬·뷰 상태 | `lib/useLibraryFilters.ts`, `components/LibraryToolbar.tsx` | `routers/library.py` | |
-| 태그 편집(색/일반 태그) | `components/TagEditor.tsx`, `lib/generationTags.ts` | `repo/tags.py` | |
-| 휴지통(삭제·복원) | `lib/useGenerationTrashActions.ts` | `repo/trash.py`(별도 DB) | |
+| 태그 편집(색/일반 태그) | `components/TagEditor.tsx`, `lib/generationTags.ts` | `routers/generation.py`(HTTP 경계·권한·프록시, 단건과 배치), `repo/tags.py` | 에셋 쪽 색·태그는 `routers/assets_metadata.py` |
+| 휴지통(삭제·복원) | `lib/useGenerationTrashActions.ts` | `routers/generation.py`(삭제·복원), `routers/library.py`(`/api/trash` 목록·영구 삭제), `repo/trash.py`(별도 DB) | |
 | 로그인/가입/계정 승인 | `components/LoginScreen.tsx`, `components/ServerLoginScreen.tsx` | `routers/auth.py`, `services/auth.py` | |
 | Assets 파일 탐색기(마운트·트리·업로드) | `components/AssetsView.tsx` | `routers/assets.py`, `services/asset_tree.py` | |
 | 프로젝트 CRUD·멤버·역할 | `components/manage/ProjectManagerPanel.tsx` | `routers/projects.py`, `repo/projects.py` | |
 | 작업(Task) 칸반/테이블/캘린더 | `components/manage/WorkBoard.tsx` | `routers/manage.py`, `repo/manage_tasks.py` | 소요시간 표기는 `lib/format.ts` 의 `fmtElapsed` 하나다(`1d2h3m4s`, 초를 버리지 않음, 하루 이상은 `1d1h` — Jay 확정 2026-09-18). PM 창 5곳과 정보 팝업(`InfoPopup`)의 '생성 시간'이 모두 이 함수를 쓴다. 새 뷰도 이 함수를 쓴다 |
-| 크레딧 풀·그룹 한도 설정 | `components/manage/CreditPoolSection.tsx`, `CreditPlanFields.tsx` | `repo/manage_credit_plan.py` | |
+| 크레딧 풀·그룹 한도 설정 | `components/manage/CreditPoolSection.tsx`, `CreditPlanFields.tsx` | `routers/manage.py`(`/api/manage/credit-plan*` — 권한·API 계약), `repo/manage_credit_plan.py` | |
 | 알림 센터(코멘트·업데이트 공지) | `components/NotificationCenter.tsx` | `routers/notifications.py`, `routers/update_notices.py` | |
-| 부분 수정(마스크 편집 캔버스) | `components/edit/PartialEditModal.tsx` | — | 제출은 기존 생성 요청 경로 재사용. `PartialEditHost`는 커스텀 이벤트로만 열림(§3.5) |
+| 부분 수정(마스크 편집 캔버스) | `components/edit/PartialEditModal.tsx` | — | 제출은 기존 생성 요청 경로 재사용(위 '생성 제출 흐름' 행 — `agent_push.py` 까지). `PartialEditHost`는 커스텀 이벤트로만 열림(§3.5) |
 | 생성물 비교(Compare) | `components/CompareModal.tsx`, `VideoCompareModal.tsx` | — | |
-| 히스토리 보드(계보 그래프) | `components/HistoryBoard.tsx` | `repo/history.py`, `repo/lineage.py` | |
+| 히스토리 보드(계보 그래프) | `components/HistoryBoard.tsx` | `routers/generation.py`(`/history`·`/history-tree`), `repo/history.py`, `repo/lineage.py` | |
 | 스포트라이트 프롬프트 도크(@/# 피커) | `components/SpotlightPrompt.tsx`, `components/spotlight/SpotlightMentionPicker.tsx` | — | |
 | 씬 캔버스에 카드 종류 추가 | `lib/sceneNodeCatalog.ts`, `components/scene/cards/` | — | |
 | 씬 저장·undo/redo | `lib/scenes.ts`, `lib/useSceneHistory.ts` | `repo/scenes_backup.py`, `routers/scenes.py` | |
@@ -62,6 +62,12 @@ updated: 2026-09-18
 | 서버 자동시작·워치독·복구 | — | — | `MV_watchdog.bat`, `tools/server_watchdog.py`, `tools/server_supervisor.py`, `restart_server_task.ps1`(⚠ 진입 bat 는 실행금지 — §4) |
 | Higgsfield CLI 버전 핀 교체 | — | — | `hf_cli_version.txt`, `update_cli.bat`, `tools/hf_cli_check_update.py` |
 | 배포 전 검증(predeploy gate) | — | — | `tools/predeploy_gate.ps1` |
+| DB 스키마·마이그레이션 | — | `backend/schema.sql`, `db_migrations.py`, `db.py` | 새 컬럼·인덱스는 생성 순서가 중요하다(구형 DB 전환 경로). PM 전용 DB 는 `repo/manage_schema.py`·`manage_db.py`, 휴지통은 `repo/trash.py` 가 따로 만든다 |
+| 실행 모드·권한·프록시(서버/로컬 허브/격리 테스트) | — | `deps.py`, `routers/_proxy.py`, `rbac.py` | 모드별 차이의 정본은 [DATA_OWNERSHIP.md](DATA_OWNERSHIP.md) §2·[신원과_모드_가이드.md](신원과_모드_가이드.md) §4·[AI_CONTEXT.md](AI_CONTEXT.md) §2 |
+| 백그라운드 주기 작업·기동/종료 | — | `main.py`(lifespan 이 기동·회수), `services/backup.py`·`syncer.py`·`temp_sweeper.py`·`media_preservation.py`·`share_state_reconciler.py`·`worker_backup.py`·`remote_realtime.py`·`resolve_selection_monitor.py` | 작업별 계약 문서: [TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md)·[WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md) |
+| 작업자 에이전트 배포·계약 | — | `agent_push.py`, `routers/ingest.py`(`/api/agent/*` 배포·롱폴), `routers/gen_requests.py` | 계약 고정 시험 `backend/tests/test_agent_contracts.py` |
+| DB 복구·복원 훈련 | — | `routers/db_transfer.py`, `services/backup_verify.py`, `services/restore_runtime_verify.py` | 도구 `tools/verify_backup_restore.py` |
+| 이 파일을 고치면 어떤 시험을 돌리나 | `git grep -l <파일이름(확장자 빼고)> -- frontend/tests frontend/src` | `git grep -l <모듈이름> -- backend/tests` | 또는 `powershell -NoProfile -File tools\graft.ps1 callers <심볼>` — 시험 파일도 호출처로 나온다. 시험↔기능 색인 문서는 없다 |
 
 ---
 
@@ -481,7 +487,7 @@ updated: 2026-09-18
 | `generation/GenerationThumbOverlay.tsx`(122줄) | 썸네일 호버 오버레이(정보·미리보기·다운로드) | 〃 |
 | `generation/GenerationConfirmOverlay.tsx`(33줄) | 공유/최종 확인 오버레이 | 〃 |
 | `generation/GenerationReviewOverlay.tsx`(48줄) | 검토(공유/보류/반려) 확인 오버레이 | 〃 |
-| `generation/ConfirmQuestion.tsx`(25줄) | Yes/No 질문 조각 — 앱의 유일한 확인 프리미티브 | 〃 |
+| `generation/ConfirmQuestion.tsx`(25줄) | 생성물 확인용 Yes/No 조각(중복 제출 방지 포함). 확인 UI 는 이것 말고도 `admin-confirm-*`·`GradeStepModal` 계보가 있다(§5-e) | 〃 |
 | `TagEditor.tsx`(335줄) | 인라인 태그 에디터(칩·전역 태그·다중선택 적용) | `TagEditor` |
 | `GradeStepModal.tsx`(37줄) | 등급 S 다중선택 확인 모달 | `GradeStepModal` |
 | `GenCommentPanel.tsx`(123줄) | 생성물 코멘트 패널(seq 가드 보유 — §6 계약) | `GenCommentPanel` |
@@ -498,7 +504,7 @@ updated: 2026-09-18
 | `settings/SettingsGroup.tsx`(164줄) | 설정 그룹 → 옆으로 펼치는 플라이아웃(포털·직접 위치계산) | `SettingsGroup` |
 | `settings/SettingsDescription.tsx`(29줄) | 설명문 + `<details>` 더보기 | 〃 |
 | `settings/ComfyConnectionSection.tsx`(178줄) | Comfy 연결 설정·확인 | 〃 |
-| `settings/ComfyUnresolvedRunsSection.tsx`(51줄) | 미해결 Comfy 실행 목록 | 〃 |
+| `settings/ComfyUnresolvedRunsSection.tsx`(51줄) | 미해결 Comfy 실행 목록 + 결과 회수·로컬 재저장·기록 정리 | 〃 |
 | `ShortcutsWindow.tsx`(130줄) | 단축키 재지정 창 | `ShortcutsWindow` |
 | `AdminWindow.tsx`(610줄) | 관리자 창(탭 호스트) + 권한 상승 확인 + 서버 이전 공지 | `AdminWindow` |
 | `admin/ApprovalTab.tsx`(143줄) | 계정 승인·숨김·비번 초기화 표 | 〃 |
@@ -582,7 +588,7 @@ updated: 2026-09-18
 
 ### 3.3 lib (`frontend/src/lib/`, 212파일 — 하위 디렉터리 없이 평평함)
 
-역할 표기: `훅`=React import 있음 · `순수`=인자→값(React·fetch·localStorage 없음) · `store`=모듈 수준
+역할 표기: `훅`=React import 있음 · `순수`=인자→값(React·fetch·localStorage·브라우저 전역 없음) · `브라우저`=React 는 안 쓰지만 창·문서·소켓·BroadcastChannel·리스너·타이머를 만진다(부작용 있음) · `store`=모듈 수준
 가변 상태+구독 · `api`=HTTP IO · `저장`=localStorage IO.
 
 **1. HTTP·API 계층(13)**
@@ -607,11 +613,11 @@ updated: 2026-09-18
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
-| `appEvents.ts` | 순수 | 전역 커스텀 이벤트·BroadcastChannel 이름 사전 + 발행 |
+| `appEvents.ts` | 브라우저 | 전역 커스텀 이벤트·BroadcastChannel 이름 사전 + 발행 |
 | `librarySync.ts` | store | 내 변경 id 추적 → WS 동기화 신호의 자기-echo/중복 reload 판정 |
 | `libraryBroadcast.ts` | store | 생성물 변경을 창 간 즉시 통지(탭 id 로 자기창 제외) |
-| `assetBroadcast.ts` | 순수 | 에셋 변경 창간 채널 메시지 |
-| `progressSocket.ts` | 순수 | 진행률 WS 연결·재접속 지연 계산 |
+| `assetBroadcast.ts` | 브라우저 | Assets 창 간 `BroadcastChannel` 메시지 래퍼(WS 아님) |
+| `progressSocket.ts` | 브라우저+api | 진행률 WS 연결·재접속 지연 계산 |
 | `useManageRealtime.ts` | 훅 | 관리 창의 실시간 재조회 배선 |
 | `manageRefreshPolicy.ts` | 순수 | 관리 창 안전망 재조회 여부 판정 |
 | `useCustomEvent.ts` | 훅 | `ch:*` window 이벤트 구독(핸들러 ref 고정) |
@@ -646,7 +652,7 @@ updated: 2026-09-18
 | `manageWorkspaceScope.ts` | 저장 | 관리·에셋 창이 따라갈 workspace id 안전 추출 |
 | `useWorkspaceFilterOptions.ts` | 훅 | 툴바 워크스페이스 필터 목록 |
 | `useManageCaps.ts` | 훅 | 이 사용자의 프로젝트 관리 역량 판정 |
-| `useSyncStatus.ts` | 훅 | 텔레메트리 push 상태 주기 폴링 |
+| `useSyncStatus.ts` | 훅 | 텔레메트리·계정 보고 outbox 의 push 상태를 30초마다 폴링 |
 | `useSpotlightAgentStatus.ts` | 훅 | 허브/에이전트 연결 점 상태 폴링 |
 | `useGenerationWorkspaceActions.ts` | 훅 | 생성물 워크스페이스 이동 액션 |
 
@@ -659,7 +665,7 @@ updated: 2026-09-18
 | `modelCatalogCache.ts` | store | `/api/models` TTL 60초 + single-flight |
 | `modelPolicy.ts` | store | 그룹 허용 모델 정책 구독·조회·캐시 |
 | `modelPolicyCore.ts` | 순수 | 정책 키 계산·상태 전이·차단 문구(도메인) |
-| `aspectAuto.ts` | 순수 | `aspect_ratio:"auto"` 를 모델별 실제 비율로 해석 |
+| `aspectAuto.ts` | 브라우저 | `aspect_ratio:"auto"` 를 모델별 실제 비율로 해석 |
 
 **6. 생성 라이브러리 — 데이터·필터·진행(11)**
 
@@ -699,7 +705,7 @@ updated: 2026-09-18
 |---|---|---|
 | `useGenerationCardActions.ts` | 훅 | 카드 재생성·복구 재실행·최종·삭제 등 주 액션 |
 | `useGenerationTagActions.ts` | 훅 | 태그 추가/삭제(변경 큐 경유) |
-| `useGenerationAutoTagActions.ts` | 훅 | 자동 태그 필터·적용 |
+| `useGenerationAutoTagActions.ts` | 훅 | 자동 태그 생성·삭제·선택 + `#+` 워크스페이스 칩 등록 |
 | `useGenerationTrashActions.ts` | 훅 | 휴지통 이동·복구·영구삭제 |
 | `useGenerationShareActions.ts` | 훅 | 팀 공유·미러 대기 안내 |
 | `useGenerationProjectActions.ts` | 훅 | 프로젝트·폴더 담기 |
@@ -708,7 +714,7 @@ updated: 2026-09-18
 | `useGenerationUtilityActions.ts` | 훅 | 일괄 다운로드·히스토리·창 열기 |
 | `useGenerationSelection.ts` | 훅 | 그리드 선택 집합·바깥 클릭 해제 |
 | `usePromptCreatedActions.ts` | 훅 | 프롬프트로 생성 직후 후처리 |
-| `bulkGenerationActions.ts` | 순수 | 일괄 작업 결과 문구·확인 문구 |
+| `bulkGenerationActions.ts` | 순수 | 일괄 실행기(`runGenerationBulk` — 주입받은 비동기 작업을 돌려 실패 수 집계) + 결과·확인 문구 |
 | `shareMirrorPending.ts` | 순수 | 공유 미러 대기 안내 래핑 |
 
 **9. 씬·캔버스 — 데이터·저장·복구(9)**
@@ -769,7 +775,7 @@ updated: 2026-09-18
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `useSceneComfyExecution.ts` | 훅 | Comfy 단독/배치 실행 오케스트레이션·소유권·결과 저장 | 약 856줄 |
-| `sceneComfyExecutor.ts` | 순수 | 한 번의 Comfy 실행 경계(스냅샷 최신성·superseded) |
+| `sceneComfyExecutor.ts` | api | 한 번의 Comfy 실행 경계(스냅샷 최신성·superseded) |
 | `sceneComfyInputs.ts` | 순수 | Comfy 노드 입력(미디어·연결텍스트) 수집·지문 |
 | `sceneComfySeeds.ts` | 순수 | 배치 복사본 seed 무작위화 |
 | `sceneComfyRunningStore.ts` | store | Comfy '생성중' 표시(언마운트 생존, 버전 구독) |
@@ -783,7 +789,7 @@ updated: 2026-09-18
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `assetVersions.ts` | store+저장 | 에셋 파일 '버전'(mtime+크기) 전역 표 + 구독 |
-| `assetVersionRefresh.ts` | 순수 | 프로젝트별 1-in-flight 버전 갱신 실행기 + 포커스 리스너 |
+| `assetVersionRefresh.ts` | 브라우저+api | 프로젝트별 1-in-flight 버전 갱신 실행기(API 조회) + 포커스·가시성 복귀 리스너 |
 | `assetVirtualRows.ts` | 순수 | 에셋 그리드 행 모델(인덱스판) |
 | `folderTreeModel.ts` | 순수 | 폴더 경로 정규화 + 개수 트리 구성 |
 | `projectFolderTree.ts` | 저장 | 프로젝트 폴더 캐시·펼침 상태 |
@@ -836,15 +842,15 @@ updated: 2026-09-18
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
-| `media.ts` | 순수(+훅 1) | 썸네일 URL·미디어 종류·DataTransfer 파일 판정 |
+| `media.ts` | 순수+브라우저(+훅 1) | 썸네일 URL·미디어 종류·DataTransfer 파일 판정 |
 | `download.ts` | api | 다운로드 공용(허브 각인 → 직접 → 프록시 → 새 탭 폴백) |
 | `compareDiff.ts` | 순수 | 비교 모달의 프롬프트·파라미터 차이 계산 |
 | `compareWindow.ts` | 순수 | 비교 창 이동·크기·뷰포트 맞춤 |
-| `synchronizedVideos.ts` | 순수 | 비교 영상 재생·탐색 동기화 바인더 |
-| `popupWindows.ts` | 순수 | 임베드 창(에셋·관리) 열기·앞으로 |
+| `synchronizedVideos.ts` | 브라우저 | 비교 영상 재생·탐색 동기화 바인더 |
+| `popupWindows.ts` | 브라우저 | 임베드 창(에셋·관리) `window.open()`·재활성화 |
 | `historyGraphLayout.ts` | 순수 | 계보 보드 노드 배치·간선·하이라이트 추적 |
 | `useHistoryBoardState.ts` | 훅 | 계보 보드 상태(App.tsx 추출) |
-| `appWindow.ts` | 순수 | 앱 전용 창(`?appwin=1`) 감지 |
+| `appWindow.ts` | 브라우저+저장 | 앱 전용 창(`?appwin=1`) 감지 |
 
 **18. 코멘트·알림·토스트(7)**
 
@@ -871,7 +877,7 @@ updated: 2026-09-18
 | `useFloatingPanel.ts` | 훅 | 떠 있는 패널 위치·드래그·클램프 |
 | `useMenuPlacement.ts` | 훅 | 메뉴 배치 계산을 DOM 에 부착·재측정 |
 | `menuPlacement.ts` | 순수 | 잘리는 조상 안에서 메뉴 방향·높이 계산 |
-| `windowDrag.ts` | 순수 | window mouse/pointer 드래그 리스너 add/remove 4벌 |
+| `windowDrag.ts` | 브라우저 | window mouse/pointer 드래그 리스너 add/remove 4벌 |
 | `useDisabledGenerations.ts` / `useDisabledFolders.ts` | 훅(2파일) | 비활성 집합 구독 |
 
 **20. 소품·i18n(3)**
@@ -977,7 +983,7 @@ updated: 2026-09-18
 
 | 파일 | 한 줄 책임 | 호출 사슬 |
 |---|---|---|
-| `release/make_release.bat`(21줄) ⚠배포전용 | `.ps1` 1줄 호출(고정폴더 `MV-hub-S-release`에서만) | → `release/make_release.ps1` |
+| `release/make_release.bat`(21줄) ⚠배포전용 | `.ps1` 1줄 호출 래퍼. 고정 폴더 `MV-hub-S-release` 제약은 이 배치가 아니라 배포 절차(루트 `CLAUDE.md` 안전선)에 있다 | → `release/make_release.ps1` |
 | `release/make_release.ps1`(694줄) ⚠배포전용 | zip 제작: 런타임 동봉, CLI pin==번들 버전 대조, 금지파일 검사, 압축해제 실행검증, NAS 자동복사 | |
 | `release/select_release.ps1`(129줄) | 과거 zip 을 `latest.json` 으로 재선택(롤백), 백업 남김 | |
 | `release/MVHub_Install.bat`(355줄) | 워커 최초설치/업데이트 설치기, 자체 임베드 PS1, 바탕화면 바로가기 호출 | → `run_agent_session.py --ensure-shortcut` |
@@ -1081,7 +1087,7 @@ updated: 2026-09-18
 | `services/comfy_client.py` `_NoRedirect` ↔ `services/net_guard.py` `_NoRedirect` | 이름만 같고 동작이 반대다 — comfy 쪽은 3xx 를 올려 서명 URL 을 수동 검증(`return None`), net_guard 쪽은 3xx 자체를 차단(`raise BlockedURLError`). 합치면 Comfy Cloud 의 302 스토리지 리다이렉트가 막힌다(§(b) 참고) |
 | `_utc_now` 4벌(`release_update.py`·`resolve_import_worker.py`·`resolve_transfer.py`·`worker_backup.py`) | 2종 변형이다 — `timespec="seconds"` 유무가 갈린다(manifest·journal 은 초 단위, 상태 파일은 마이크로초). 통일하면 기존 파일과 문자열 비교가 어긋난다 |
 | `repo/gen_requests.py` 일반축(`o.id<>r.id`) ↔ 캔버스축(NULL-safe 비교) "다른 요청이 이 gen 을 쓰고 있나" 가드 | 형태는 다르지만 유니크 인덱스를 고려하면 효과는 같아 보인다(등가성은 시험으로 확인되지 않음 — 추정) |
-| `frontend/src/lib/sceneDragSession.ts` 의 `SceneDragEnvironment` 주입 인터페이스 | 구현이 하나뿐이라 "야그니"로 보이지만, 나중에 jsdom 시험을 붙일 자리로 의도된 DI 이음새다. 지금 인라인화하면 그 확장 지점이 사라진다 |
+| `frontend/src/lib/sceneDragSession.ts` 의 `SceneDragEnvironment` 주입 인터페이스 | 구현이 하나뿐이라 "야그니"로 보이지만, `frontend/tests/sceneDragSession.test.ts` 가 가짜 환경(`addListener`·`requestFrame`·`cancelFrame`)을 주입해 시험하는 DI 이음새다. 인라인화하면 그 시험이 설 자리가 사라진다 |
 | 씬(`scene/`)·스포트라이트(`spotlight/`) 사이의 근사 중복(삽입 위치 계산·드래그 세션·바깥클릭+Esc·가시성 폴러) | 알고리즘은 같지만 feature 경계(ARCHITECTURE §2 "feature 끼리 직접 import 금지") 때문에 각자 복제됐다 — **합칠 자리는 `shared`/`lib` 이지 서로를 참조하는 게 아니다** |
 | S2 — `restart_server_task.ps1`(`Test-MvHubServerCommandLine`) ↔ `tools/stop_local_hub_on_port.ps1`(`BundledPythonPath` 레거시 폴백 추가) | 포트 소유권 판정 로직이 거의 같지만, `stop_local_hub_on_port.ps1` 에만 있는 레거시 폴백의 존재 이유가 확인되지 않았다 — **합치기 전에 그 폴백이 지키는 것부터 확인**(안전장치로 확정된 것은 아니고, 확인이 필요하다는 뜻) |
 
