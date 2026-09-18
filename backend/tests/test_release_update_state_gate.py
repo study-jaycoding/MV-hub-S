@@ -204,7 +204,7 @@ def test_windows_exclusive_lock_never_opens_gate_or_loses_state(isolated, trial)
     h.put(_active())
     before = h.path.read_bytes()
     with _exclusive_handle(h.path):
-        assert service._read_state(h.root) == {}  # Compatibility wrapper only; not the gate.
+        assert service._load_state(h.root) == ("unreadable", {})
         assert service.update_in_progress(h.root) is True
         assert service.get_status(root=h.root, refresh=True)["state"] == "check_failed"
         with pytest.raises(service.ReleaseUpdateError):
@@ -247,10 +247,10 @@ def test_all_status_writes_reclassify_after_slow_preparation(isolated, monkeypat
     status = service.get_status(root=h.root, refresh=refresh)
     if new_state == "active":
         assert status["state"] == "starting" and status["can_update"] is False
-        assert service._read_state(h.root)["message"] == "preserve newer start"
+        assert service._load_state(h.root)[1]["message"] == "preserve newer start"
     elif new_state == "recovery":
         assert status["recovery"] == "recovery_required" and status["can_update"] is False
-        assert service._read_state(h.root)["recovery"] == "recovery_required"
+        assert service._load_state(h.root)[1]["recovery"] == "recovery_required"
     elif new_state == "invalid":
         assert status["state"] == "check_failed" and status["can_update"] is False
         assert h.path.read_bytes() == b"{"
@@ -419,8 +419,10 @@ def test_atomic_writer_with_one_hundred_concurrent_reads_has_no_false_block(isol
     assert len(writer_successes) + len(writer_errors) == 100
     assert writer_successes, "At least one atomic replacement must succeed; failed writes alone prove nothing"
     assert blocked == [False] * 100
-    assert service._read_state(h.root)["state"] == "idle"
-    assert service._read_state(h.root)["message"] == "synthetic replacement"
+    kind, stored = service._load_state(h.root)
+    assert kind == "ok"
+    assert stored["state"] == "idle"
+    assert stored["message"] == "synthetic replacement"
     assert not list(h.path.parent.glob(".*.tmp"))
 
 
@@ -462,7 +464,7 @@ def test_start_writer_cannot_enter_between_final_check_and_status_write(isolated
         entered.set()
         thread.join(5)
     assert not thread.is_alive() and not errors
-    assert service._read_state(h.root)["state"] == "starting"
+    assert service._load_state(h.root)[1]["state"] == "starting"
 
 
 @pytest.mark.parametrize("point", ["create", "begin", "comfy_before", "comfy_after", "resolve"])

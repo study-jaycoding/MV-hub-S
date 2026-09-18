@@ -29,11 +29,14 @@ from app.routers import generation as gen_router
 
 
 class SelectRouteGoneTests(unittest.TestCase):
+    def test_the_hub_has_no_global_cli_workspace_switch(self):
+        # ★허브는 CLI 전역을 건드리지 않는다 — 전환 함수 자체가 없어 다시 부를 길도 없다.
+        self.assertFalse(hasattr(gen_router.cli_bridge, "set_workspace"))
+        self.assertFalse(hasattr(gen_router.cli_bridge, "unset_workspace"))
+
     def test_select_is_gone_and_never_touches_the_cli(self):
         request = Mock()
-        with patch.object(gen_router.cli_bridge, "set_workspace", AsyncMock()) as set_ws, patch.object(
-            gen_router.cli_bridge, "list_workspaces", AsyncMock()
-        ) as listed:
+        with patch.object(gen_router.cli_bridge, "list_workspaces", AsyncMock()) as listed:
             with self.assertRaises(HTTPException) as caught:
                 asyncio.run(
                     gen_router.select_workspace(
@@ -43,17 +46,14 @@ class SelectRouteGoneTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.status_code, 410)
         self.assertIn("새로고침", caught.exception.detail)
-        set_ws.assert_not_awaited()  # ★허브는 CLI 전역을 건드리지 않는다
         listed.assert_not_awaited()
 
     def test_unselect_is_gone_too(self):
         request = Mock()
-        with patch.object(gen_router.cli_bridge, "unset_workspace", AsyncMock()) as unset:
-            with self.assertRaises(HTTPException) as caught:
-                asyncio.run(gen_router.unselect_workspace(request))
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(gen_router.unselect_workspace(request))
 
         self.assertEqual(caught.exception.status_code, 410)
-        unset.assert_not_awaited()
 
     def test_the_status_code_is_not_403(self):
         """403 은 옛 씬 코드가 '하우스 계정 아님 = 정상' 으로 읽어 성공 처리한다 — 폐기 신호가 못 된다."""

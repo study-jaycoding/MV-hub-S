@@ -211,12 +211,6 @@ def _load_state(
     return "unreadable", {}  # 모든 읽기는 위의 유계 반복에서 분류된다.
 
 
-def _read_state(root: Path = APP_ROOT) -> dict[str, Any]:
-    """기존 조회 도구 호환 래퍼. 실행 허용 판단에는 분류를 보존하는 _load_state를 쓴다."""
-    kind, stored = _load_state(root)
-    return stored if kind == "ok" else {}
-
-
 def write_state(
     state: str,
     message: str,

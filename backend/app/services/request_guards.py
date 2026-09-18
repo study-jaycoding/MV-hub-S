@@ -41,14 +41,6 @@ def require_loopback_request(request: Request, detail: str) -> None:
         raise HTTPException(status_code=403, detail=detail)
 
 
-def request_host_header(request: Request) -> str:
-    """요청의 Host 헤더 원문(없으면 빈 문자열). scope 를 직접 읽어 client_host 와 같은 방식."""
-    for name, value in request.scope.get("headers") or ():
-        if name.lower() == b"host":
-            return value.decode("latin-1")
-    return ""
-
-
 def _authority_hostname(raw: str) -> str:
     """Host 헤더 형태("host[:port]")에서 hostname 만 — 형식 불량이면 빈 문자열.
     userinfo·경로·쿼리·제어문자가 섞인 값은 정상 Host 가 아니므로 전부 거부한다."""
@@ -72,18 +64,6 @@ def _is_loopback_name(hostname: str) -> bool:
         return ipaddress.ip_address(_normalized_ip(hostname)).is_loopback
     except ValueError:  # localhost 외의 도메인 이름 — 해석하지 않고 거부
         return False
-
-
-def is_loopback_host_header(raw: str) -> bool:
-    """Host 헤더가 이 PC 자신을 가리키는 이름(localhost/127.0.0.1/[::1], 포트 무관)인가.
-
-    빈 값(=Host 헤더 없음)은 통과시킨다. HTTP/1.1 브라우저는 Host 를 반드시 붙이므로,
-    헤더가 없는 요청은 브라우저가 아니고 이 검사가 막으려는 공격 경로도 아니다.
-    """
-    if not raw.strip():
-        return True
-    hostname = _authority_hostname(raw)
-    return bool(hostname) and _is_loopback_name(hostname)
 
 
 def _request_header_values(request: Request, name: str) -> list[str]:

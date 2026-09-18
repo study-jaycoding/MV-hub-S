@@ -154,11 +154,6 @@ def periods_inclusive(base_start: str, day: str, period: str, anchor: int = 1) -
     return (t.year - b.year) * 12 + (t.month - b.month) + 1
 
 
-def months_inclusive(base_month: str, month: str) -> int:
-    """(호환) 'YYYY-MM' 두 달 사이 포함 개월 수."""
-    return periods_inclusive(f"{base_month}-01", f"{month}-01", "month")
-
-
 # ── 팩트 사용량 ───────────────────────────────────────────────────────────────
 def _usage_index(workspace_id: str, day_from: str) -> Usage:
     """{(day, email): {credits, count, unknown}} — 팩트 한 스냅샷(지연 import: manage_db 는 다른 DB)."""

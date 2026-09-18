@@ -1115,15 +1115,5 @@ async def list_workspaces(timeout: float = 30.0) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
-async def set_workspace(workspace_id: str, timeout: float = 30.0) -> None:
-    """이후 모든 요청을 이 워크스페이스(팀 공유 UUID 공간)로 스코프. CLI 전역 상태."""
-    await _run("workspace", "set", workspace_id, timeout=timeout)
-
-
-async def unset_workspace(timeout: float = 30.0) -> None:
-    """워크스페이스 해제 → 개인 계정 컨텍스트로 복귀."""
-    await _run("workspace", "unset", timeout=timeout)
-
-
 # (create_job/get_job 제거 — 푸시 모델에선 서버가 CLI 로 직접 생성하지 않는다. 생성은 각 PC 의
 #  push_agent 가 로컬 CLI 로 수행하고 결과만 ingest 로 올린다. 미사용 사장 코드였음.)

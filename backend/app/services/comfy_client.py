@@ -520,19 +520,6 @@ def collect_texts(entry: dict) -> list[str]:
     return out
 
 
-def outputs_debug(entry: dict, wf: dict | None = None) -> str:
-    """출력물이 안 잡힐 때 실제 history outputs 구조를 사람이 읽게 요약(진단용)."""
-    parts = []
-    for nid, no in (entry.get("outputs") or {}).items():
-        ct = str(((wf or {}).get(nid) or {}).get("class_type", "?"))
-        if isinstance(no, dict):
-            body = ", ".join(f"{k}:{type(v).__name__}" for k, v in no.items()) or "빈dict"
-        else:
-            body = type(no).__name__
-        parts.append(f"{nid}[{ct}]={{{body}}}")
-    return " | ".join(parts) or "출력 노드 없음"
-
-
 @contextmanager
 def _open_view_stream(target: dict, params: dict):
     """/view 응답 스트림을 연다 — redirect·SSRF 방어는 종전 view_bytes 와 동일 계약.
