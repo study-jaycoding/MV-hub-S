@@ -67,6 +67,18 @@ venv 위치는 클론마다 다르다(이 클론은 저장소 루트 `.venv`). �
 - 저장소 md 의 링크는 **표준 상대경로**로 쓴다(옵시디언 그래프·GitHub 양쪽에서 동작).
   콜아웃은 양쪽이 지원하는 5종(NOTE·TIP·IMPORTANT·WARNING·CAUTION)만, 커스텀 제목 없이.
 
+## 코드 탐색 도구 (graft)
+
+- **항상 래퍼로 부른다**: `powershell -NoProfile -File tools\graft.ps1 <명령>`. 직접 부르면
+  편집기가 심어 둔 `ELECTRON_RUN_AS_NODE` 때문에 죽고, `build` 가 `.gitignore` 와 `.ignore` 를
+  멋대로 고친다. 설치 함정과 이유는 래퍼 머리말에 있다. **`init` 금지** — `AGENTS.md` 를 덮는다.
+- 쓰는 것: `callers <심볼>`(부르는 곳) · `grep "<정규식>"`(정의·참조와 in-edges) ·
+  `blast --base <ref>`(변경의 영향 범위와 **시험이 닿는 비율**) · `skeleton <파일>`(API 표면).
+- **보조 색인이지 근거가 아니다.** 중요한 결론은 해당 소스와 시험을 열어 확인한다. `ask` 의
+  자연어 결과는 후보일 뿐 답으로 인용하지 않는다(키 없이는 키워드 순위기다 — 실측에서 틀렸다).
+- `graft/` 는 재생성되는 로컬 캐시다(git 무시, 재빌드 2~3초). 배포 게이트·`lint:docs`·제품 실행
+  경로에 **연결하지 않는다.** 팀원 필수 설치도 아니다.
+
 ## 함정
 
 - Git 명령 전 `git rev-parse --show-toplevel` 로 **저장소 루트를 확인**한다. 셸의 현재 위치가 상위 폴더로 바뀌어 있을 수 있다.
