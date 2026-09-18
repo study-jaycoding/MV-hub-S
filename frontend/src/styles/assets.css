@@ -112,7 +112,6 @@
 .assets-view-head .assets-search input { font-size: 12.5px; }
 .assets-view-head .assets-search .as-icon { font-size: 14px; }
 /* 사이드바로 옮긴 프롬프트·태그 검색 — 사이드바 폭에 꽉 차게(상단 배치) */
-/*DEAD-CSS .sidebar .sidebar-search { margin: 0 0 12px; } */
 .assets-search .as-icon { color: var(--muted2); font-size: 15px; }
 .assets-search input {
   flex: 1; min-width: 0; background: transparent; border: none; outline: none;
@@ -173,7 +172,6 @@
 .assets-crumb .tag-pill-x { color: var(--muted2); font-size: 10px; }
 .assets-crumb .tag-pill-x:hover { color: #ff6b6b; text-decoration: none; }
 .crumb-sep { color: var(--muted2); }
-/*DEAD-CSS .crumb-count { margin-left: 6px; color: var(--muted2); } */
 .assets-tools { margin-left: auto; display: flex; align-items: center; gap: 14px; }
 /* ⚠️ '.assets-crumb button' 포괄 규칙(투명 배경·accent색·hover 밑줄)이 타입 슬라이더 점의
    배경을 지우던 것 복구 — 생성 툴바와 동일 외형 유지. */
@@ -599,11 +597,6 @@
 .assets-virtual .asset-cell { content-visibility: visible; contain-intrinsic-size: auto; }
 .asset-media:hover .thumb-overlay { opacity: 1; }
 .asset-media:hover .play-badge { opacity: 0; }
-/*DEAD-CSS .asset-type-tag {
-  font-size: 13px; padding: 1px 6px; border-radius: 6px;
-  background: rgba(8,9,12,0.6); backdrop-filter: blur(6px);
-  border: 1px solid rgba(255,255,255,0.14);
-} */
 /* 오디오 카드: 썸네일 없는 음악 글리프 타일 */
 .audio-tile {
   width: 100%; aspect-ratio: 1 / 1;
@@ -658,8 +651,6 @@
 .cd-type-ic { font-size: 14px; }
 .cd-path { max-width: 100%; }
 .cd-path .info-path { font-size: 12.5px; }
-
-/*DEAD-CSS .crumb-hint { margin-left: auto; color: var(--muted2); font-size: 11px; } */
 
 /* ── 정보 팝업 (휠클릭) — 예전 플로팅 패널 구성 재사용 ── */
 .info-catcher { position: fixed; inset: 0; z-index: 230; }
@@ -748,22 +739,6 @@
 }
 .info-recovery-btn:hover:not(:disabled) { background: rgba(255, 174, 65, 0.24); }
 .info-recovery-btn:disabled { opacity: 0.55; cursor: wait; }
-/*DEAD-CSS .info-preservation {
-  display: grid; grid-template-columns: 80px 1fr; gap: 6px 10px;
-  margin: 2px 0; padding: 8px 10px; border-radius: 8px;
-  background: rgba(190, 255, 59, 0.06); border: 1px solid rgba(190, 255, 59, 0.2);
-} */
-/*DEAD-CSS .info-preservation.is-failed, .info-preservation.is-partial, .info-preservation.is-capacity {
-  background: rgba(255, 174, 65, 0.08); border-color: rgba(255, 174, 65, 0.35);
-} */
-/*DEAD-CSS .info-preservation-label { color: var(--muted2); font-size: 11px; font-weight: 700; } */
-/*DEAD-CSS .info-preservation-text { color: var(--text); font-size: 12px; } */
-/*DEAD-CSS .info-preservation-btn {
-  grid-column: 2; justify-self: start; padding: 5px 8px; border-radius: 7px;
-  border: 1px solid rgba(190, 255, 59, 0.5); background: rgba(190, 255, 59, 0.1);
-  color: var(--accent); font-size: 11px; font-weight: 700; cursor: pointer;
-} */
-/*DEAD-CSS .info-preservation-btn:disabled { opacity: 0.55; cursor: wait; } */
 .info-path { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--muted); }
 /* 경로 클릭 → 탐색기에서 원본 위치 열기 */
 .info-path-btn {
@@ -775,16 +750,6 @@
 .info-path-icon { color: var(--accent); font-size: 11px; flex-shrink: 0; }
 .info-color { display: inline-flex; align-items: center; gap: 6px; }
 .info-swatch { width: 13px; height: 13px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.4); }
-/*DEAD-CSS .info-cached { color: #57d97e; font-weight: 600; } */
-/*DEAD-CSS .info-uncached { color: #ffb454; } */
-/* '로컬 보관됨' → 클릭 시 탐색기로 원본 위치 열기 */
-/*DEAD-CSS .info-reveal-btn {
-  display: inline-flex; align-items: center; gap: 5px;
-  border: none; background: transparent; padding: 0; cursor: pointer; font: inherit;
-} */
-/*DEAD-CSS .info-reveal-btn:hover { text-decoration: underline; } */
-/*DEAD-CSS .info-reveal-btn .info-path-icon { color: #57d97e; } */
-
 /* 사용된 소스 갤러리 (출처) */
 .info-sources { border-top: 1px solid var(--border); padding-top: 10px; }
 .info-sources-head { font-size: 11px; color: var(--muted2); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 8px; }

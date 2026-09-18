@@ -379,13 +379,6 @@
   padding: 8px 8px 24px; font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
 }
 .scene-textnode-ph2 { color: #666; }
-/* 연결된 입력 텍스트(comfy 결과·텍스트 노드) — 읽기전용, 편집 영역 위에 표시. */
-/*DEAD-CSS .scene-textnode-incoming {
-  flex: 0 0 auto; max-height: 45%; overflow-y: auto; box-sizing: border-box;
-  background: rgba(181, 122, 255, 0.10); color: #d9c8ff;
-  border-bottom: 1px solid rgba(181, 122, 255, 0.35); border-radius: 10px 10px 0 0;
-  padding: 6px 8px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
-} */
 /* 인라인 @레퍼런스 알약 — 문장 속에서 썸네일 + @imageN. */
 .scene-inlinetok {
   display: inline-flex; align-items: center; gap: 3px; vertical-align: middle;
@@ -477,10 +470,6 @@
   align-items: center; justify-content: center;
   color: var(--muted); font-size: 11px; padding: 8px; text-align: center;
 }
-/*DEAD-CSS .scene-listnode-text {
-  align-self: stretch; width: 100%; min-height: 0; text-align: left; font-size: 10.5px; color: #cdd3dc;
-  white-space: pre-wrap; word-break: break-word; overflow: hidden; max-height: 100%;
-} */
 /* 텍스트/생성물 리스트 — 각 항목을 한 행으로. flex:1+min-height:0 로 body 를 채우고 넘치면 스크롤. */
 .scene-listrows {
   align-self: stretch; width: 100%; flex: 1 1 0; min-height: 0; overflow: auto;
@@ -698,11 +687,6 @@
 .scene-comfynode-preview { border-radius: 6px; overflow: hidden; background: #0c0e12; }
 .scene-comfynode-preview img,
 .scene-comfynode-preview video { display: block; width: 100%; max-height: 120px; object-fit: contain; }
-/*DEAD-CSS .scene-comfynode-run {
-  margin-top: auto; background: var(--accent); color: var(--accent-ink); border: 0;
-  border-radius: 6px; padding: 5px 8px; font-size: 12px; font-weight: 700; cursor: pointer;
-} */
-/*DEAD-CSS .scene-comfynode-run:disabled { opacity: 0.6; cursor: default; } */
 .scene-comfynode-errwrap { position: relative; }
 .scene-comfynode-err {
   padding-right: 26px;
@@ -753,15 +737,6 @@
   border-radius: 4px; font-size: 11px; padding: 1px 5px; cursor: pointer;
 }
 .scene-comfynode-copy:hover { color: var(--text); }
-/* Comfy 출력이 '내 작업' 생성물로 저장됐을 때, 기존 변형 팝업을 여는 배지. */
-/*DEAD-CSS .scene-comfynode-saved {
-  align-self: center; margin-top: 2px; padding: 2px 9px; border-radius: 999px;
-  border: 1px solid var(--border2); background: #1b1e24; color: var(--muted);
-  font-size: 10px; font-weight: 800; letter-spacing: 0.02em; cursor: pointer;
-} */
-/*DEAD-CSS .scene-comfynode-saved:hover {
-  border-color: var(--accent); color: var(--accent);
-} */
 
 /* Comfy 모달 — 모델 모달 골격 재사용 + API 로드/카탈로그 */
 .scene-comfymodal-body { display: flex; flex-direction: column; gap: 12px; max-height: 70vh; overflow-y: auto; }
@@ -1164,7 +1139,6 @@
 .scene-portedit-name:focus,
 .scene-portedit-sel:focus { border-color: var(--accent); }
 .scene-portedit-name::placeholder { color: var(--muted); font-weight: 500; }
-/*DEAD-CSS .scene-portnode-empty { color: var(--muted); font-weight: 500; } */
 
 /* ── Head(제목) 노드 — 포트 없는 큰 글씨 주석. 배경/테두리 없음, 크기 조절 시 글자도 커짐. ── */
 /* head = 박스가 글씨에 맞춰 자동 크기(폭·높이). 고정 dims 없음 → 글씨 크기만 바꾸면 박스가 따라온다. */

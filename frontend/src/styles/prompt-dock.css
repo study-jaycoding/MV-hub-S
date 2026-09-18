@@ -549,8 +549,6 @@
 .host-exit-actions > .settings-action,
 .host-exit-actions > .settings-action.ghost { flex: 1 1 0; width: auto; }
 
-/*DEAD-CSS .spotlight-spacer { flex: 1; } */
-
 .ref-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .ref-chip {
   font-size: 11px; background: rgba(255,255,255,0.05);

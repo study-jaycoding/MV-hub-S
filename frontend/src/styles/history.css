@@ -11,23 +11,12 @@
 
 /* ── 구성탭 히스토리 트리(HistoryBoard) ── */
 .linb { display: flex; flex-direction: column; height: 100%; min-height: 0; flex: 1; }
-/*DEAD-CSS .linb-bar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); } */
-/*DEAD-CSS .linb-title { font-size: 14px; font-weight: 800; color: var(--text); } */
-/*DEAD-CSS .linb-count { font-size: 12px; color: var(--muted); } */
-/*DEAD-CSS .linb-busy { font-size: 12px; color: var(--accent); } */
-/*DEAD-CSS .linb-legend { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); } */
-/*DEAD-CSS .linb-leg { display: inline-block; width: 22px; height: 0; border-top: 2px solid var(--muted); margin: 0 2px 0 10px; } */
-/*DEAD-CSS .linb-leg.solid { border-top-style: solid; border-color: var(--accent); } */
-/*DEAD-CSS .linb-leg.dashed { border-top-style: dashed; border-color: #8ea0ff; } */
 .linb-err { padding: 8px 16px; color: #ff8a8a; font-size: 12px; }
 .linb-scroll { flex: 1; min-height: 0; overflow: hidden; padding: 0; position: relative; background:
   radial-gradient(circle at 1px 1px, rgba(255,255,255,0.05) 1px, transparent 0) 0 0 / 22px 22px; }
 .linb-scroll.panning { cursor: grabbing; }
 .linb-scroll.panning * { cursor: grabbing !important; pointer-events: none; } /* 패닝 중 노드 커서/상호작용 잠금 */
-/*DEAD-CSS .linb-zoomwrap { position: relative; } */
 .linb-canvas { position: relative; user-select: none; }
-/*DEAD-CSS .linb-zoombtn { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 8px; border: 1px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; } */
-/*DEAD-CSS .linb-zoombtn:hover { color: var(--text); border-color: var(--accent); } */
 .linb-marquee {
   position: absolute; z-index: 5; pointer-events: none;
   background: rgba(var(--accent-rgb), 0.16);
@@ -126,8 +115,6 @@
   background-size: 240% 100%;
   animation: goldSheen 2.3s linear infinite;
 }
-/* 컬러바가 있으면 캡션을 그 위로 올림(겹침 방지) */
-/*DEAD-CSS .linb-node.has-cbar .linb-cap { bottom: 9px; } */
 /* 툴바 필터에 안 맞는 노드는 흐리게(그래프 구조는 유지).
    ※ !important: .offline/.unshared 가 :not(.sel) 로 특이도가 더 높아 dim 을 덮어쓰던 버그
       (라인 밖·비공유 노드가 필터에 반응 안 하던 문제) 차단 — 필터 미스매치는 무조건 흐리게. */
@@ -147,10 +134,6 @@
 .linb-node.focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),0.3), 0 3px 14px rgba(0,0,0,0.5); }
 /* 선택 카드 — 라임 테두리 + 살짝 확대(시인성). 위로 떠오르게 z-index. */
 .linb-node.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent); transform: scale(1.14); z-index: 7; }
-/* 선택 경로 위의 노드(조상) — 흰 테두리로 강조, 나머지는 흐리게 */
-/*DEAD-CSS .linb-node.onpath { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,0.85); } */
-/*DEAD-CSS .linb-node.faded { opacity: 0.32; } */
-/*DEAD-CSS .linb-node.faded:hover { opacity: 0.7; } */
 /* 공유 안 됐고 내 것도 아닌(계보로만 보이는) 노드 — 약간 작고 투명하게 표시(공유물과 구분).
    선택 시엔 원래 크기·불투명으로 복원(자세히 보려는 의도 존중). */
 .linb-node.unshared:not(.sel) { transform: scale(0.9); opacity: 0.5; }
@@ -162,7 +145,6 @@
    같은 패턴). 선택 중엔 자세히 보려는 의도라 원래 크기 유지(:not(.sel)). */
 .linb-node.disabled { filter: grayscale(1) brightness(0.5); border-color: #4a4d54; }
 .linb-node.disabled:not(.sel) { transform: scale(0.7); }
-/*DEAD-CSS .linb-node.disabled .linb-cap { color: #9aa; } */
 .linb-node.disabled .linb-tag.root-tag { background: #6b6f78; color: #1a1c20; }
 /* 호버 오버레이 액션(그리드 카드와 동일) */
 .linb-ov {
@@ -199,17 +181,7 @@
   background: linear-gradient(135deg, #f5c542, #e0a316); color: #2a1d00;
   border-color: #ffd966; font-size: 16px;
 }
-/*DEAD-CSS .linb-check { position: absolute; top: 5px; left: 5px; width: 18px; height: 18px; border-radius: 50%; background: var(--grad); color: var(--accent-ink); font-size: 12px; font-weight: 900; display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(0,0,0,0.5); } */
-/* 원본 태그는 우상단으로 옮겨 좌상단 선택 체크와 안 겹치므로, 선택 시에도 그대로 보인다. */
-/*DEAD-CSS .linb-selinfo { display: inline-flex; align-items: center; gap: 6px; } */
-/*DEAD-CSS .linb-selcount { font-size: 12px; font-weight: 700; color: var(--accent); } */
-/*DEAD-CSS .linb-cmp { font-size: 12px; font-weight: 800; padding: 4px 10px; border-radius: 9px; border: 1px solid var(--accent); background: var(--grad); color: var(--accent-ink); cursor: pointer; } */
-/*DEAD-CSS .linb-cmp:hover { filter: brightness(1.1); } */
 /* 선택바 삭제(파괴적) — 빨강(그리드 .sb-del 과 동일 톤) */
-/*DEAD-CSS .linb-cmp.linb-seldel { background: rgba(244,63,94,0.18); border-color: rgba(244,63,94,0.5); color: var(--text); } */
-/*DEAD-CSS .linb-cmp.linb-seldel:hover { background: rgba(244,63,94,0.32); filter: none; } */
-/*DEAD-CSS .linb-selclear { font-size: 12px; padding: 3px 7px; border-radius: 8px; border: 1px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; } */
-/*DEAD-CSS .linb-selclear:hover { color: var(--text); } */
 .linb-ph { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; font-size: 12px; color: var(--muted); }
 .linb-tag { position: absolute; top: 5px; left: 5px; font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 8px; transition: opacity 0.12s; }
 /* 원본 태그 — 좌상단 S 배지와 겹쳐 가려지므로 우상단으로(정보 ⓘ 자리). 호버하면 오버레이 ⓘ 가
@@ -238,20 +210,7 @@
 .linb-node.sf-readonly .linb-ov-top { padding-left: 31px; }
 /* 메인 라인 위의 노드 — 절제된 accent 글로우(생성 순서 강조). 선택/포커스(더 강한 강조)는 그대로 우선. */
 .linb-node.mainline { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb),0.5), 0 3px 12px rgba(0,0,0,0.45); }
-/* 생성 순번 뱃지 — 좌상단 원형(원본 태그와 안 겹치게 살짝 아래). 라임 배경엔 검은 글씨(--accent-ink). */
-/*DEAD-CSS .linb-seq {
-  position: absolute; top: 5px; left: 5px; z-index: 2;
-  min-width: 18px; height: 18px; padding: 0 4px; border-radius: 10px;
-  background: var(--accent); color: var(--accent-ink);
-  font-size: 11px; font-weight: 900; line-height: 18px; text-align: center;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.55);
-} */
 /* 원본(루트) 태그가 있으면 순번 뱃지는 그 아래로 — 겹침 방지 */
-/*DEAD-CSS .linb-node.root .linb-seq { top: 28px; } */
-/*DEAD-CSS .linb-cap {
-  position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 6px; font-size: 10px; color: #fff;
-  background: linear-gradient(transparent, rgba(0,0,0,0.78)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-} */
 .linb-empty { display: flex; align-items: center; justify-content: center; height: 100%; flex: 1; padding: 24px; }
 .linb-empty-card { max-width: 440px; text-align: center; color: var(--muted); font-size: 13px; line-height: 1.7; }
 .linb-empty-title { font-size: 16px; font-weight: 800; color: var(--text); margin-bottom: 8px; }
