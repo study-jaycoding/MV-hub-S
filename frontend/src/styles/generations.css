@@ -7,11 +7,11 @@
   display: grid; gap: 12px; align-content: start; grid-auto-rows: max-content;
   padding: 14px 16px 124px; user-select: none; outline: none; /* 에셋 masonry 와 동일 간격 */
 }
-.gen-list {
+/*DEAD-CSS .gen-list {
   flex: 1; min-height: 0; overflow-y: auto;
   scrollbar-gutter: stable;
-  padding: 10px 14px 124px; display: flex; flex-direction: column; gap: 6px; /* 에셋 리스트와 동일 간격 */
-}
+  padding: 10px 14px 124px; display: flex; flex-direction: column; gap: 6px; / * 에셋 리스트와 동일 간격 * /
+} */
 /* ── 가상 스크롤(virtua) 모드 — .gen-grid 를 순수 스크롤 컨테이너로. 레이아웃은 행 단위로 위임 ── */
 /* 좌우 padding 은 "컨테이너"에 둔다 → 컬럼 측정(clientWidth 기준)이 실제 카드 행 폭과 일치. */
 .gen-grid.gen-grid-virtual { display: block; padding: 0 16px; }
@@ -66,7 +66,7 @@
 .gen-grid .card.card-grid > .card-clip > .card-thumb { flex: 0 0 auto; aspect-ratio: 1; }
 
 /* ── 카드 (미디어 풀블리드) ── */
-.grid-cell { padding: 9px; }
+/*DEAD-CSS .grid-cell { padding: 9px; } */
 .card {
   position: relative; /* 전체 카드 확인 오버레이(.sconfirm) 기준 */
   height: 100%;
@@ -144,13 +144,13 @@
   border: 2px solid rgba(255, 255, 255, 0.85);
   box-shadow: 0 2px 8px rgba(0,0,0,0.5);
 }
-.type-badge {
+/*DEAD-CSS .type-badge {
   position: absolute; top: 8px; right: 8px;
   background: rgba(8, 9, 12, 0.7); backdrop-filter: blur(6px);
   color: #fff; font-size: 11px; font-weight: 600;
   padding: 3px 8px; border-radius: 20px;
   border: 1px solid var(--border);
-}
+} */
 .status-pill {
   position: absolute; bottom: 8px; left: 8px;
   max-width: calc(100% - 16px); overflow-wrap: anywhere;
@@ -321,24 +321,24 @@
   position: relative;
 }
 /* 버튼은 불투명 — 아래 컬러 레이어의 영향을 받지 않는다 */
-.cs-btn {
+/*DEAD-CSS .cs-btn {
   flex: 1; height: 30px; padding: 0; border-radius: 8px;
   display: inline-flex; align-items: center; justify-content: center;
   background: #16171c; border: 1px solid var(--border);
   color: var(--muted2); font-size: 10px; font-weight: 800; letter-spacing: 0.5px;
   line-height: 1; position: relative; z-index: 1;
-}
-.cs-btn:not(:disabled):hover { color: var(--text); border-color: var(--border2); }
-.cs-btn:disabled { opacity: 0.55; cursor: default; }
+} */
+/*DEAD-CSS .cs-btn:not(:disabled):hover { color: var(--text); border-color: var(--border2); } */
+/*DEAD-CSS .cs-btn:disabled { opacity: 0.55; cursor: default; } */
 /* 활성(정보 있음): 라임 바탕 + 검은 글씨로 강조(힉스필드 액센트) */
-.cs-btn.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-size: 17px; }
+/*DEAD-CSS .cs-btn.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-size: 17px; } */
 
 /* v02 CMS — 최종(골드): Supervisor 가 S 더블클릭으로 지정. 골드 바탕 + 별 */
-.cs-btn.s.final {
+/*DEAD-CSS .cs-btn.s.final {
   background: linear-gradient(135deg, #f5c542, #e0a316);
   color: #2a1d00; border-color: #ffd966; font-size: 19px;
   box-shadow: 0 0 0 1px #ffd966, 0 0 10px rgba(245,197,66,0.5);
-}
+} */
 /* 최종(골드) 카드 — 별도 골드 테두리 없음(요청). 골드/빛 표현은 하단 컬러바(.card-colorbar.final)와 ★. */
 
 /* (보드 노드 전체 광택 제거 — 빛 흐름은 노드 하단 컬러바 .linb-colorbar.final 로 이동. 카드와 일관) */
@@ -365,13 +365,13 @@
 .reduce-motion .linb-colorbar.final { animation: none; }
 
 /* S 더블클릭 확인 플로팅(최종 지정/해제) */
-.cs-final-confirm {
+/*DEAD-CSS .cs-final-confirm {
   position: absolute; left: 10px; right: 10px; bottom: calc(100% + 6px);
   z-index: 31; border-radius: 10px; padding: 10px 11px;
   background: #1b1d24; border: 1px solid #e8b62c;
   box-shadow: 0 10px 28px rgba(0,0,0,0.55);
   display: flex; flex-direction: column; gap: 9px;
-}
+} */
 .cs-final-q { font-size: 12px; font-weight: 700; color: var(--text); text-align: center; }
 .confirm-panel { display: flex; flex-direction: column; gap: 9px; width: 100%; min-width: 0; }
 .cs-final-actions { display: flex; gap: 7px; width: 100%; }
@@ -466,16 +466,16 @@
 .te-empty { font-size: 11px; color: var(--muted); padding: 2px 0; }
 
 /* # 버튼 토글 시 카드 위로 떠오르는 태그 목록 플로팅 팝업 */
-.cs-btn.t.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+/*DEAD-CSS .cs-btn.t.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); } */
 /* T 자리의 생성자(누가 만들었는지) 칩 — 팀원 카드에만. 버튼 아니고 라벨(녹색, creator-badge 톤). */
-.cs-creator {
+/*DEAD-CSS .cs-creator {
   flex: 1; min-width: 0; height: 30px; padding: 0 8px; border-radius: 8px;
   display: inline-flex; align-items: center; justify-content: center; gap: 4px;
   background: rgba(74,222,128,0.92); color: #052e13;
   font-size: 11px; font-weight: 800; line-height: 1; position: relative; z-index: 1;
-}
-.cs-creator-ic { flex: none; font-size: 11px; }
-.cs-creator-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+} */
+/*DEAD-CSS .cs-creator-ic { flex: none; font-size: 11px; } */
+/*DEAD-CSS .cs-creator-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } */
 /* 하단 컬러 마커 스트립 — 버튼이 모두 카드 위로 빠진 뒤, r/g/b 컬러만 얇게 표시(그리드). 색은 인라인. */
 .card-colorbar { flex: 0 0 auto; height: 14px; width: 100%; border-top: 1px solid rgba(0,0,0,0.35); }
 /* 최종(골드) — 컬러바가 골드 + 빛 흐름(테두리 대신 여기로). */
@@ -484,31 +484,31 @@
   background-size: 240% 100%;
   animation: goldSheen 2.3s linear infinite;
 }
-.cs-tagpop {
+/*DEAD-CSS .cs-tagpop {
   position: absolute; left: 10px; right: 10px; bottom: calc(100% + 6px);
   z-index: 30; border-radius: 10px;
   background: #1b1d24; border: 1px solid var(--border2);
   box-shadow: 0 10px 28px rgba(0,0,0,0.5);
   padding: 8px 10px 10px;
-}
-.cs-tagpop-head {
+} */
+/*DEAD-CSS .cs-tagpop-head {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 8px;
-}
-.cs-tagpop-title { font-size: 11px; font-weight: 700; color: var(--muted2); letter-spacing: 0.4px; }
-.cs-tagpop-close {
+} */
+/*DEAD-CSS .cs-tagpop-title { font-size: 11px; font-weight: 700; color: var(--muted2); letter-spacing: 0.4px; } */
+/*DEAD-CSS .cs-tagpop-close {
   width: 20px; height: 20px; padding: 0; border: none; border-radius: 6px;
   display: inline-flex; align-items: center; justify-content: center;
   background: transparent; color: var(--muted2); font-size: 15px; line-height: 1;
-}
-.cs-tagpop-close:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+} */
+/*DEAD-CSS .cs-tagpop-close:hover { background: rgba(255,255,255,0.08); color: var(--text); } */
 /* 칩은 '등록된 태그' 패널과 동일한 .tag-pill 로 통일 — cs-tag-chip/x 는 제거됨 */
-.cs-tagpop-body { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+/*DEAD-CSS .cs-tagpop-body { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; } */
 
 .card-actions { margin-left: auto; display: flex; gap: 4px; opacity: 0; transition: opacity 0.14s; }
 .card:hover .card-actions { opacity: 1; }
 .card-actions button { padding: 4px 8px; font-size: 12px; background: rgba(255,255,255,0.05); }
-.shared-badge { font-size: 11px; color: #57d97e; align-self: center; font-weight: 600; }
+/*DEAD-CSS .shared-badge { font-size: 11px; color: #57d97e; align-self: center; font-weight: 600; } */
 
 /* ── 라이브러리 툴바 (힉스필드식: 서브탭 + 크기 슬라이더 + List/Grid) ── */
 .lib-toolbar {
@@ -522,14 +522,14 @@
   /* 카드 마퀴 드래그가 이 줄을 지날 때 라벨이 파랗게 긁히지 않게 — 조작용 줄이라 글자 선택이 필요 없다. */
   user-select: none; -webkit-user-select: none;
 }
-.lib-tabs { display: flex; gap: 4px; }
-.lib-tabs button {
+/*DEAD-CSS .lib-tabs { display: flex; gap: 4px; } */
+/*DEAD-CSS .lib-tabs button {
   background: transparent; border: none;
   padding: 7px 12px; border-radius: 9px;
   font-size: 14px; font-weight: 600; color: var(--muted);
-}
-.lib-tabs button:hover { color: var(--text); background: rgba(255,255,255,0.05); }
-.lib-tabs button.on { color: #fff; background: rgba(255,255,255,0.08); }
+} */
+/*DEAD-CSS .lib-tabs button:hover { color: var(--text); background: rgba(255,255,255,0.05); } */
+/*DEAD-CSS .lib-tabs button.on { color: #fff; background: rgba(255,255,255,0.08); } */
 /* 건수 라벨 — 줄바꿈 금지. 오른쪽에 칩이 들어오면 '전체 · 128건' 이 세 줄로 접혀 툴바가
    두꺼워진다(2026-09-14 실측). 줄이는 쪽은 칩이다(assets.css). */
 .lib-count { font-size: 12.5px; color: var(--muted); font-weight: 500; white-space: nowrap; flex: none; }
@@ -621,8 +621,8 @@
 }
 .size-slider { display: flex; align-items: center; gap: 7px; }
 /* 구성탭: 크기 슬라이더 옆 화면 줌%(클릭=초기화) */
-.size-zoom { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 8px; border: 1px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; white-space: nowrap; }
-.size-zoom:hover { color: var(--accent-ink); background: var(--grad); border-color: var(--accent); }
+/*DEAD-CSS .size-zoom { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 8px; border: 1px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; white-space: nowrap; } */
+/*DEAD-CSS .size-zoom:hover { color: var(--accent-ink); background: var(--grad); border-color: var(--accent); } */
 .size-slider input[type="range"] {
   -webkit-appearance: none; appearance: none;
   width: 130px; height: 4px; border-radius: 3px;
@@ -662,7 +662,7 @@
 .layout-toggle button.on { background: rgba(255,255,255,0.09); color: #fff; }
 
 /* ── 리스트 레이아웃 카드 (좌측 큰 썸네일 + 우측 상세 패널) ── */
-.grid-cell.list { padding: 7px 10px; }
+/*DEAD-CSS .grid-cell.list { padding: 7px 10px; } */
 .card.list { flex-direction: row; align-items: stretch; }
 .card.list:hover { transform: none; } /* 큰 카드라 들썩임 제거 */
 /* 리스트 썸네일: 행 높이를 꽉 채우는 정사각(인라인 aspect-ratio:1) — 이미지·영상 동일 크기 */
@@ -713,12 +713,12 @@
   font-size: 11px; color: var(--muted2);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%;
 }
-.cd-actions { display: flex; gap: 5px; opacity: 0; transition: opacity 0.14s; }
-.card.list:hover .cd-actions { opacity: 1; }
-.cd-actions button {
+/*DEAD-CSS .cd-actions { display: flex; gap: 5px; opacity: 0; transition: opacity 0.14s; } */
+/*DEAD-CSS .card.list:hover .cd-actions { opacity: 1; } */
+/*DEAD-CSS .cd-actions button {
   padding: 5px 9px; font-size: 12px; border-radius: 7px;
   background: rgba(255,255,255,0.05);
-}
+} */
 .cd-date { margin-left: auto; font-size: 12.5px; color: var(--muted2); }
 
 /* 영상 재생 배지 (썸네일 중앙) */
@@ -859,14 +859,14 @@
 .creator-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .creator-count { font-size: 11px; color: var(--muted); }
 .creator-status { font-size: 12px; color: var(--muted); line-height: 1.5; white-space: normal; }
-.creator-edit {
+/*DEAD-CSS .creator-edit {
   background: transparent; border: none; cursor: pointer; color: var(--muted);
   font-size: 12px; padding: 3px 5px; border-radius: 6px;
-}
-.creator-edit:hover { color: var(--text); background: rgba(255,255,255,0.08); }
+} */
+/*DEAD-CSS .creator-edit:hover { color: var(--text); background: rgba(255,255,255,0.08); } */
 
 /* 워크스페이스 선택기 — 로고 옆 */
-.ws-selector { position: relative; }
+/*DEAD-CSS .ws-selector { position: relative; } */
 .ws-btn {
   display: inline-flex; align-items: center; gap: 7px;
   padding: 6px 11px; border-radius: 9px;
@@ -875,17 +875,17 @@
 }
 .ws-btn:hover { background: rgba(255,255,255,0.09); }
 .ws-btn:disabled { opacity: 0.6; cursor: default; }
-.ws-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted2); }
-.ws-btn.team .ws-dot { background: #4ade80; box-shadow: 0 0 8px #4ade80; } /* 팀 컨텍스트 = 초록 */
-.ws-caret { font-size: 10px; color: var(--muted); }
-.ws-catcher { position: fixed; inset: 0; z-index: 55; }
+/*DEAD-CSS .ws-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted2); } */
+/*DEAD-CSS .ws-btn.team .ws-dot { background: #4ade80; box-shadow: 0 0 8px #4ade80; } */ /* 팀 컨텍스트 = 초록 */
+/*DEAD-CSS .ws-caret { font-size: 10px; color: var(--muted); } */
+/*DEAD-CSS .ws-catcher { position: fixed; inset: 0; z-index: 55; } */
 .ws-menu {
   position: absolute; top: calc(100% + 5px); left: 0; z-index: 60;
   min-width: 260px; padding: 6px;
   background: var(--panel2, #16171c); border: 1px solid var(--border);
   border-radius: 11px; box-shadow: 0 14px 36px rgba(0,0,0,0.55);
 }
-.ws-menu-title { font-size: 11px; color: var(--muted); padding: 5px 9px 7px; font-weight: 700; }
+/*DEAD-CSS .ws-menu-title { font-size: 11px; color: var(--muted); padding: 5px 9px 7px; font-weight: 700; } */
 .ws-item {
   display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
   text-align: left; background: transparent; border: none; cursor: pointer;
@@ -893,11 +893,11 @@
 }
 .ws-item:hover { background: rgba(255,255,255,0.06); }
 .ws-item.on { background: var(--grad-soft); }
-.ws-item-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/*DEAD-CSS .ws-item-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; } */
 .ws-item-name { font-size: 13px; font-weight: 600; color: var(--muted); }
 /* 선택된 워크스페이스만 밝게(라임), 선택 안 된 것은 어둡게(muted) */
 .ws-item.on .ws-item-name { color: var(--accent); font-weight: 700; }
-.ws-item-meta { font-size: 11px; color: var(--muted2); }
+/*DEAD-CSS .ws-item-meta { font-size: 11px; color: var(--muted2); } */
 .ws-check { color: #4ade80; font-weight: 700; }
 
 /* ── 선택 일괄 작업 바 ── */

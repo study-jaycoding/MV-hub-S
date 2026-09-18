@@ -64,24 +64,24 @@
 .topbar .sync { margin-left: auto; background: rgba(255,255,255,0.05); }
 
 /* 동기화 아이콘(축소) — 자동 주기 동기화가 돌고 있어 작게. margin-left:auto 는 상속 유지 */
-.topbar .sync-icon { width: 36px; padding: 8px 0; text-align: center; font-size: 15px; }
-.topbar .sync-icon.on { color: var(--accent); }
+/*DEAD-CSS .topbar .sync-icon { width: 36px; padding: 8px 0; text-align: center; font-size: 15px; } */
+/*DEAD-CSS .topbar .sync-icon.on { color: var(--accent); } */
 /* 상단바 "⋯ 공유" 드롭다운 — 자주 안 쓰는 공유·보관 동작 묶음 */
-.topbar-menu { position: relative; }
-.topbar-menu .sync { margin-left: 0; } /* 메뉴 버튼은 아이콘 바로 옆에(추가 auto 밀림 방지) */
-.topbar-menu-pop {
+/*DEAD-CSS .topbar-menu { position: relative; } */
+/*DEAD-CSS .topbar-menu .sync { margin-left: 0; } */ /* 메뉴 버튼은 아이콘 바로 옆에(추가 auto 밀림 방지) */
+/*DEAD-CSS .topbar-menu-pop {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
   min-width: 172px; display: flex; flex-direction: column; gap: 2px; padding: 5px;
   background: var(--panel, #1c1c22); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-}
-.topbar-menu-pop button {
+} */
+/*DEAD-CSS .topbar-menu-pop button {
   text-align: left; padding: 8px 11px; border-radius: 7px; font-size: 12.5px; font-weight: 500;
   background: transparent; border: none; color: var(--text); white-space: nowrap; cursor: pointer;
-}
-.topbar-menu-pop button:hover { background: rgba(255,255,255,0.1); }
-.topbar-menu-pop button:disabled { opacity: 0.5; cursor: default; }
-.tm-sep { height: 1px; background: var(--border); margin: 3px 0; }
+} */
+/*DEAD-CSS .topbar-menu-pop button:hover { background: rgba(255,255,255,0.1); } */
+/*DEAD-CSS .topbar-menu-pop button:disabled { opacity: 0.5; cursor: default; } */
+/*DEAD-CSS .tm-sep { height: 1px; background: var(--border); margin: 3px 0; } */
 
 /* 상단바 검색 — Assets 서치바(.assets-search) 스타일을 컴팩트하게, 우측 pill */
 .topbar-spacer { flex: 1; } /* 좌(로고·탭) ↔ 우(동기화·검색·Assets·계정) 분리 */
@@ -269,9 +269,9 @@
 .acct-sync-warn { font-size: 11px; color: #e0a23a; background: rgba(224,162,58,0.12); line-height: 1.4; padding: 6px 10px; margin: 2px 8px; border-radius: 6px; }
 .acct-hint-sm { padding: 4px 10px 2px; }
 /* 폴백(Mac/Linux·고급) 접이식 */
-.agent-adv { margin-top: 11px; }
-.agent-adv summary { font-size: 11px; color: var(--muted2); cursor: pointer; padding: 2px 0; }
-.agent-adv .settings-action { margin-top: 8px; }
+/*DEAD-CSS .agent-adv { margin-top: 11px; } */
+/*DEAD-CSS .agent-adv summary { font-size: 11px; color: var(--muted2); cursor: pointer; padding: 2px 0; } */
+/*DEAD-CSS .agent-adv .settings-action { margin-top: 8px; } */
 /* 읽기전용 워크스페이스(보고값) — 클릭 불가, 커서/호버 없음 */
 .acct-item.readonly { cursor: default; opacity: 0.92; }
 .acct-item.readonly:hover { background: none; }
@@ -497,15 +497,15 @@
 .resolve-diagnostics-details > summary { cursor: pointer; color: var(--muted); font-weight: 700; }
 .resolve-diagnostics-details p { margin: 6px 0 0; overflow-wrap: anywhere; user-select: text; }
 /* 팀 크레딧 집계 */
-.team-credits { display: flex; flex-direction: column; gap: 2px; }
-.tc-total { display: flex; justify-content: space-between; align-items: baseline;
-  padding: 7px 10px; margin-bottom: 4px; border-radius: 8px; background: var(--grad-soft); }
-.tc-total-label { font-size: 12px; font-weight: 700; }
-.tc-total-val { font-size: 14px; font-weight: 800; }
-.tc-row { display: flex; justify-content: space-between; padding: 5px 10px; font-size: 12px; }
-.tc-row:nth-child(odd) { background: rgba(127,127,127,0.05); border-radius: 6px; }
-.tc-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
-.tc-cr { color: var(--muted); font-variant-numeric: tabular-nums; }
+/*DEAD-CSS .team-credits { display: flex; flex-direction: column; gap: 2px; } */
+/*DEAD-CSS .tc-total { display: flex; justify-content: space-between; align-items: baseline;
+  padding: 7px 10px; margin-bottom: 4px; border-radius: 8px; background: var(--grad-soft); } */
+/*DEAD-CSS .tc-total-label { font-size: 12px; font-weight: 700; } */
+/*DEAD-CSS .tc-total-val { font-size: 14px; font-weight: 800; } */
+/*DEAD-CSS .tc-row { display: flex; justify-content: space-between; padding: 5px 10px; font-size: 12px; } */
+/*DEAD-CSS .tc-row:nth-child(odd) { background: rgba(127,127,127,0.05); border-radius: 6px; } */
+/*DEAD-CSS .tc-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; } */
+/*DEAD-CSS .tc-cr { color: var(--muted); font-variant-numeric: tabular-nums; } */
 .accent-swatches { display: flex; flex-wrap: wrap; gap: 10px; }
 .accent-swatch {
   width: 30px; height: 30px; border-radius: 50%; padding: 0; border: 2px solid transparent;
@@ -631,7 +631,7 @@
 .manage-row-value.mono { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted2); }
 
 /* 제공자 신원 칩 — 클릭하면 표시이름 변경(공유 파일명·작성자 표기 기준) */
-.provider-chip {
+/*DEAD-CSS .provider-chip {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 7px 12px;
   background: rgba(255, 255, 255, 0.04);
@@ -640,30 +640,30 @@
   color: var(--muted);
   font-size: 13px;
   white-space: nowrap;
-}
-.provider-chip:hover { color: var(--text); border-color: var(--accent); }
+} */
+/*DEAD-CSS .provider-chip:hover { color: var(--text); border-color: var(--accent); } */
 
 /* 스포트라이트 트리거 (커맨드 바) */
-.spotlight-trigger {
+/*DEAD-CSS .spotlight-trigger {
   display: flex; align-items: center; gap: 9px;
   padding: 8px 13px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--muted);
-}
-.spotlight-trigger:hover { border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),0.14); }
-.spotlight-trigger .st-icon {
+} */
+/*DEAD-CSS .spotlight-trigger:hover { border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),0.14); } */
+/*DEAD-CSS .spotlight-trigger .st-icon {
   background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
   font-size: 15px;
-}
-.spotlight-trigger .st-label { font-size: 13px; font-weight: 500; }
-.spotlight-trigger kbd {
+} */
+/*DEAD-CSS .spotlight-trigger .st-label { font-size: 13px; font-weight: 500; } */
+/*DEAD-CSS .spotlight-trigger kbd {
   font-size: 10px; font-family: inherit;
   background: rgba(255,255,255,0.06);
   border: 1px solid var(--border); border-radius: 5px;
   padding: 2px 6px; color: var(--muted);
-}
+} */
 
 /* Assets(구성) 버튼 — image1 형태(초록 썸네일 + 라벨) */
 .assets-btn {
@@ -827,7 +827,7 @@
 .trash-empty:hover { background: rgba(255,80,80,0.16); border-color: rgba(255,80,80,0.5); }
 
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.main-head { padding: 12px 20px 4px; color: var(--muted); font-size: 13px; font-weight: 500; }
+/*DEAD-CSS .main-head { padding: 12px 20px 4px; color: var(--muted); font-size: 13px; font-weight: 500; } */
 /* 하단 패딩으로 항상 떠 있는 프롬프트 도크 공간 확보(마지막 행이 도크 위로 스크롤됨) */
 .grid-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .empty { padding: 56px; color: var(--muted); text-align: center; line-height: 1.8; }

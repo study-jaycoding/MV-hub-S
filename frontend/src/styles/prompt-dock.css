@@ -549,7 +549,7 @@
 .host-exit-actions > .settings-action,
 .host-exit-actions > .settings-action.ghost { flex: 1 1 0; width: auto; }
 
-.spotlight-spacer { flex: 1; }
+/*DEAD-CSS .spotlight-spacer { flex: 1; } */
 
 .ref-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .ref-chip {
