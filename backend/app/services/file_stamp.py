@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import struct
 import subprocess
 import tempfile
 import zlib
 from pathlib import Path
 from typing import Optional
+
+from .video_convert import find_ffmpeg
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def _ffmpeg() -> Optional[str]:
     """ffmpeg 경로(1회 조회 캐시). 없는 PC 도 있으므로 None 이면 영상 각인은 건너뛴다."""
     global _FFMPEG_BIN, _FFMPEG_LOOKED
     if not _FFMPEG_LOOKED:
-        _FFMPEG_BIN = shutil.which("ffmpeg")
+        _FFMPEG_BIN = find_ffmpeg()  # CONTENT_HUB_FFMPEG 우선 — 변환·썸네일·각인이 같은 ffmpeg 을 본다
         _FFMPEG_LOOKED = True
     return _FFMPEG_BIN
 

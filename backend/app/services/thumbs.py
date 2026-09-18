@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-import shutil
 import subprocess
 import threading
 import time
@@ -21,6 +20,7 @@ from typing import Callable, Optional
 from ..config import MEDIA_DIR
 from .media_types import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from .path_safety import safe_join
+from .video_convert import find_ffmpeg
 
 THUMB_DIR = MEDIA_DIR / ".thumbs"  # 에셋 썸네일과 같은 디스크 캐시 폴더
 
@@ -139,7 +139,7 @@ def _ffmpeg_bin() -> Optional[str]:
     """ffmpeg 실행 경로(1회 조회 캐시). 없으면 None → 비디오 포스터 생성 불가."""
     global _FFMPEG_BIN, _FFMPEG_LOOKED
     if not _FFMPEG_LOOKED:
-        _FFMPEG_BIN = shutil.which("ffmpeg")
+        _FFMPEG_BIN = find_ffmpeg()  # CONTENT_HUB_FFMPEG 우선 — 변환·썸네일·각인이 같은 ffmpeg 을 본다
         _FFMPEG_LOOKED = True
     return _FFMPEG_BIN
 

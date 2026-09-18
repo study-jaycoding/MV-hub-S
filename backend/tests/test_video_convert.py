@@ -43,6 +43,18 @@ class FindFfmpegTests(unittest.TestCase):
             with mock.patch.object(video_convert.shutil, "which", lambda n: "/usr/bin/ffmpeg"):
                 self.assertEqual(video_convert.find_ffmpeg(), "/usr/bin/ffmpeg")
 
+    def test_thumbnails_and_file_stamp_honour_the_same_override(self):
+        # 변환만 CONTENT_HUB_FFMPEG 를 보면, PATH 없이 그 변수로만 지정한 PC 는 썸네일·각인을 조용히 건너뛴다.
+        from app.services import file_stamp, thumbs
+
+        with mock.patch.dict("os.environ", {"CONTENT_HUB_FFMPEG": __file__}), \
+             mock.patch.object(thumbs, "_FFMPEG_LOOKED", False), \
+             mock.patch.object(file_stamp, "_FFMPEG_LOOKED", False), \
+             mock.patch.object(thumbs, "_FFMPEG_BIN", None), \
+             mock.patch.object(file_stamp, "_FFMPEG_BIN", None):
+            self.assertEqual(thumbs._ffmpeg_bin(), __file__)
+            self.assertEqual(file_stamp._ffmpeg(), __file__)
+
 
 if __name__ == "__main__":
     unittest.main()
