@@ -1,7 +1,7 @@
 // 관리자 창 — 로드맵 §4-5. 좌측 상단 "Content Hub" 클릭으로 열림.
 // 멤버 전역 역할(복수) 관리 + 프로젝트 역할 관리. ⚠️ enforcement off 면 '식별·표시'까지만 —
 // 실제 접근 차단은 CONTENT_HUB_AUTH=1 일 때. 지금은 누구나 열 수 있다(2겹 차단은 나중).
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { ApprovalTab, type AdminConfirmState } from "./admin/ApprovalTab";
 import { MemberRolesTab } from "./admin/MemberRolesTab";
@@ -328,7 +328,14 @@ export function AdminWindow({
       alert("처리 실패: " + String(e));
     }
   };
-  useEscapeClose(onClose);
+  // 안쪽 확인창이 열려 있으면 Esc 는 그것만 닫는다 — 창 전체를 닫으면 입력하던 비밀번호가 사라진다.
+  const closeTopmost = useCallback(() => {
+    if (confirm) setConfirm(null);
+    else if (elevOpen) setElevOpen(false);
+    else if (publishOpen) setPublishOpen(false);
+    else onClose();
+  }, [confirm, elevOpen, publishOpen, onClose]);
+  useEscapeClose(closeTopmost);
 
   // 저장 중인 멤버 — 칩을 연타하면 낡은 value 로 만든 목록이 뒤에 도착해 먼저 준 역할을
   // 지운다(PUT 이 전체 목록을 덮어쓰는 계약) → 응답이 올 때까지 그 멤버 칩을 잠근다.

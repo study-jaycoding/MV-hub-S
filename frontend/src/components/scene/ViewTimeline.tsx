@@ -269,11 +269,13 @@ export function ViewTimeline({
     const up = () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
+      window.removeEventListener("blur", up);
       dragCleanupRef.current = null;
     };
     dragCleanupRef.current = up;
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
+    window.addEventListener("blur", up); // Alt-Tab 으로 창을 떠나면 mouseup 을 못 받는다 — 리스너가 남지 않게
   };
 
   const togglePlay = () => setPlaying((p) => !p);

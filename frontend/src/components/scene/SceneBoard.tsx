@@ -1793,6 +1793,7 @@ export function SceneBoard({
   // head 노드 글씨 색 저장.
   const setNodeColor = (cardId: string, color: string) => {
     const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, color } : c));
+    cardsRef.current = nextCards; // 형제(setNodeText·setCardBatch)와 같이 즉시 반영 — 같은 틱의 다음 변경이 이 값을 잃지 않게
     setCards(nextCards);
     persist(nextCards, edgesRef.current);
   };
@@ -1800,6 +1801,7 @@ export function SceneBoard({
   const setNodeFontSize = (cardId: string, fontSize: number) => {
     const fs = Math.max(12, Math.min(200, Math.round(fontSize)));
     const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, fontSize: fs } : c));
+    cardsRef.current = nextCards;
     setCards(nextCards);
     persist(nextCards, edgesRef.current);
   };

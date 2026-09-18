@@ -1,7 +1,7 @@
 // 프로젝트 관리 패널 — 관리자 창의 '프로젝트' 탭을 이식한 오버레이. 프로젝트 생성/편집·렌더 폴더
 // 라벨링·멤버 프로젝트 역할 부여·보관/삭제·순서변경. 권한(create_project/grant_project_role)은
 // 백엔드가 강제하며 여기선 UI 노출만 게이팅한다. 대시보드 상단의 '+ 프로젝트'로 연다.
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { manageApi } from "../../lib/manageApi";
 import { refreshModelPolicy } from "../../lib/modelPolicy";
@@ -65,7 +65,6 @@ type ProjectDialogState =
     };
 
 export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
-  useEscapeClose(onClose);
   const caps = useManageCaps();
   const [members, setMembers] = useState<Member[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -73,6 +72,13 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
   const workspaceLabels = workspaceCommandLabels(workspaceOptions);
   const [workspaceMembers, setWorkspaceMembers] = useState<Record<string, WorkspaceMemberCandidate[]>>({});
   const [projectDialog, setProjectDialog] = useState<ProjectDialogState | null>(null);
+  // 프로젝트 대화상자가 열려 있으면 Esc 는 그것만 닫는다 — 창 전체를 닫으면 입력하던 이름이 사라진다.
+  const projectDialogOpen = projectDialog !== null;
+  const closeTopmost = useCallback(() => {
+    if (projectDialogOpen) setProjectDialog(null);
+    else onClose();
+  }, [projectDialogOpen, onClose]);
+  useEscapeClose(closeTopmost);
   const [projFolders, setProjFolders] = useState<Record<string, ProjectFolderEntry>>({});
   // 렌더폴더 트리를 펼친 프로젝트 — 열 때마다 접힌 상태로 시작한다(Jay 요청 2026-09-16).
   // 이전에는 펼침 목록을 localStorage 에 기억해 복원했는데, 패널을 열면 트리가 저절로

@@ -7,6 +7,7 @@ import { isHttpStatus, isRouteMissing } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
 import { useModelDisplayName } from "../../lib/modelCatalog";
 import { BUDGET_PERIOD_OPTIONS } from "../../lib/projectPlanning";
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { ALLOWED } from "../../lib/useModels";
 import { formatCredits } from "../../lib/formatCredits";
 import {
@@ -264,6 +265,8 @@ export function CreditPlanFields({
   const [editing, setEditing] = useState<DraftGroup | null>(null);
   // 그룹 삭제 확인 — 브라우저 기본 창 대신 우리 디자인 확인창(이름을 보여 주고 묻는다).
   const [deleting, setDeleting] = useState<DraftGroup | null>(null);
+  // 그룹 창·삭제 확인의 Esc 는 여기서 먼저 소비한다 — 흘려 보내면 바깥 프로젝트 대화상자가 닫혀 입력이 사라진다.
+  useEscapeClose(() => (deleting ? setDeleting(null) : setEditing(null)), !!(deleting || editing), true, true);
   const [topupBusy, setTopupBusy] = useState("");
   const [topupError, setTopupError] = useState("");
   const loaded = draft && draft.loadedFor === workspaceId;

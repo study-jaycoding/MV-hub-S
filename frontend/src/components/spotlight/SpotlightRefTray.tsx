@@ -102,6 +102,7 @@ export function SpotlightRefTray({
     const finish = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("blur", finish);
       cleanupRef.current = null;
       setLine(null);
       setFromIdx(null);
@@ -115,6 +116,8 @@ export function SpotlightRefTray({
     cleanupRef.current = finish;
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    // Alt-Tab 으로 창을 떠나면 mouseup 을 못 받는다. 순서는 바꾸지 않고(onUp 아님) 정리만 한다.
+    window.addEventListener("blur", finish);
   };
 
   return (

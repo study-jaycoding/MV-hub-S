@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, Ref } from "react";
 import { buildCommentTree } from "../../lib/commentTree";
 import { fmtWhen } from "../../lib/format";
+import { loadString } from "../../lib/storage";
 
 // 코멘트 본문 글씨 크기(px) — 사용자별 localStorage 저장, 패널마다 공통 적용.
 const FS_KEY = "ch.cmt.fontPx";
@@ -9,7 +10,7 @@ const FS_MIN = 11;
 const FS_MAX = 24;
 const FS_DEF = 13;
 function loadFontPx(): number {
-  const v = Number(localStorage.getItem(FS_KEY));
+  const v = Number(loadString(FS_KEY)); // 저장소 접근이 막힌 환경(사이트 데이터 차단 등)에서도 렌더가 죽지 않게
   return v >= FS_MIN && v <= FS_MAX ? v : FS_DEF;
 }
 
@@ -18,8 +19,8 @@ function loadFontPx(): number {
 const PRIV_KEY = "ch.cmt.private"; // 다음 코멘트를 비공개로 쓸지
 const SHOW_KEY = "ch.cmt.showPrivate"; // 목록에 내 비공개를 섞어 보여줄지
 const loadFlag = (key: string, def: boolean): boolean => {
-  const v = localStorage.getItem(key);
-  return v === null ? def : v === "1";
+  const v = loadString(key);
+  return v === "" ? def : v === "1";
 };
 const saveFlag = (key: string, v: boolean) => {
   try {

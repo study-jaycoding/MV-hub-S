@@ -5,6 +5,7 @@ import type {
   ProjectMember,
   WorkspaceMemberCandidate,
 } from "../../types";
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { memberRoleRank, ProjectRolePicker } from "../admin/RolePickers";
 
 type MemberCandidate = Member | WorkspaceMemberCandidate;
@@ -81,6 +82,8 @@ export function ProjectMembersPanel({
     if (adding) return;
     resetAddDialog();
   };
+  // 멤버 추가 창의 Esc 는 여기서 먼저 소비한다 — 흘려 보내면 바깥 프로젝트 관리 창이 통째로 닫힌다.
+  useEscapeClose(closeAddDialog, addOpen, true, true);
 
   const toggleSelected = (uid: string) => {
     setSelected((current) => {
