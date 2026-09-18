@@ -22,6 +22,7 @@ import type { Generation, InfoTarget, PreviewTarget, Project, Reference } from "
 import { InlinePromptRefs } from "./common/InlinePromptRefs";
 import { MediaThumbnail } from "./MediaThumbnail";
 
+import { fmtElapsed } from "../lib/format";
 import { formatCredits } from "../lib/formatCredits";
 interface Props {
   target: InfoTarget;
@@ -44,14 +45,6 @@ function clampStart(x: number, y: number) {
   const left = Math.min(Math.max(8, x + 8), window.innerWidth - POP_W - 8);
   const top = Math.min(Math.max(8, y + 8), window.innerHeight - 200);
   return { x: left, y: top };
-}
-
-function formatElapsed(sec: number): string {
-  const s = Math.round(sec);
-  if (s < 60) return `${s}초`;
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  return rem ? `${m}분 ${rem}초` : `${m}분`;
 }
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -317,7 +310,7 @@ export function InfoPopup({
           </>
         )}
         {metrics?.elapsed_seconds != null && (
-          <Row label="생성 시간" value={formatElapsed(metrics.elapsed_seconds)} />
+          <Row label="생성 시간" value={fmtElapsed(metrics.elapsed_seconds)} />
         )}
         <Row
           label="생성자"

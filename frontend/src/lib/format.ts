@@ -7,9 +7,9 @@ export function timestampMs(s: string): number {
   return new Date(normalized).getTime();
 }
 
-// 소요시간(초) → "1d2h3m4s". 0인 단위는 생략하되 **초를 버리지 않는다**(Jay 2026-09-18 "초까지 보이게").
-// PM 창의 대시보드·사용량·칸반·캘린더·표가 이 함수 하나를 쓴다 — 예전엔 5벌이 갈려 같은 작업의
-// 3661초가 어디선 "1h1m", 어디선 "1h1m1s" 로 보였다.
+// 소요시간(초) → "1d2h3m4s". 0인 단위는 생략하되 **초를 버리지 않고**, 하루 이상은 "1d1h" 로 쓴다
+// (Jay 2026-09-18 확정). PM 창의 대시보드·사용량·칸반·캘린더·표와 정보 팝업의 '생성 시간'이 이 함수
+// 하나를 쓴다 — 예전엔 6벌이 갈려 같은 3661초가 "1h1m"·"1h1m1s"·"61분 1초" 로 보였다.
 export function fmtElapsed(sec?: number | null): string {
   if (!sec || sec <= 0) return "—";
   let rest = Math.floor(sec);
