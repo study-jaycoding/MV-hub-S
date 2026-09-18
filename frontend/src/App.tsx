@@ -1545,7 +1545,6 @@ export default function App() {
     }
   }, [generationScope.folder_path, generationScope.project_id, armedFolder, setArmedFolder]);
   const {
-    onColor,
     onFinalize,
     onReviewSelection,
     onReview,
@@ -1553,12 +1552,10 @@ export default function App() {
     onRecoveryRequeue,
     onRegenerate,
     onSetSource,
-    onTags,
     onUnfinalize,
     onUnpublish,
   } = useGenerationCardActions({
     armedAutoTags,
-    askPrompt,
     bumpBoard,
     canFinalize,
     flash,
@@ -1829,8 +1826,6 @@ export default function App() {
           onImport={onImport}
           onRestore={onRestore}
           dimDeleted={!filters.deleted_only}
-          onColor={onColor}
-          onTags={onTags}
       onInfo={handleInfo}
       onPreview={openPreview}
       onShowHistory={onShowHistory}

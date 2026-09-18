@@ -10,15 +10,8 @@ import { withMirrorPendingNotice } from "./shareMirrorPending";
 import { generationIssueFor } from "./generationDisplay";
 import { reviewTargets, type ReviewAction } from "./generationReview";
 
-type AskPrompt = (
-  title: string,
-  initial?: string,
-  placeholder?: string,
-) => Promise<string | null>;
-
 interface UseGenerationCardActionsArgs {
   armedAutoTags: Set<string>;
-  askPrompt: AskPrompt;
   bumpBoard: () => void;
   canFinalize: (generation: Generation) => boolean;
   flash: (message: string) => void;
@@ -29,7 +22,6 @@ interface UseGenerationCardActionsArgs {
 
 export function useGenerationCardActions({
   armedAutoTags,
-  askPrompt,
   bumpBoard,
   canFinalize,
   flash,
@@ -201,27 +193,6 @@ export function useGenerationCardActions({
     }
   };
 
-  const onColor = async (g: Generation, color: string | null) => {
-    try {
-      await api.setColor(g.id, color);
-      await reload();
-    } catch (e) {
-      flash("컬러 변경 실패: " + String(e));
-    }
-  };
-
-  const onTags = async (g: Generation) => {
-    const input = await askPrompt("태그 (쉼표 구분)", g.tags.join(", "), "태그1, 태그2, …");
-    if (input === null) return;
-    const tags = input.split(",").map((t) => t.trim()).filter(Boolean);
-    try {
-      await api.setTags(g.id, tags);
-      await reload();
-    } catch (e) {
-      flash("태그 변경 실패: " + String(e));
-    }
-  };
-
   const onSetSource = async (g: Generation, name: string | null, isSource: boolean) => {
     try {
       await api.setSource(g.id, name, isSource);
@@ -232,7 +203,6 @@ export function useGenerationCardActions({
   };
 
   return {
-    onColor,
     onFinalize,
     onReviewSelection,
     onReview,
@@ -240,7 +210,6 @@ export function useGenerationCardActions({
     onRecoveryRequeue,
     onRegenerate,
     onSetSource,
-    onTags,
     onUnfinalize,
     onUnpublish,
   };

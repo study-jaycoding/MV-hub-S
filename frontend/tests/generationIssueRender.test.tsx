@@ -53,8 +53,8 @@ function libraryProps(gen: Generation): ComponentProps<typeof GenerationCard> {
   return {
     gen, tab: "my", onSetSource: noop, onSetTags: noop, onOpenComments: noop,
     onRequestEdit: noop, onEditDone: noop, onRegenerate: noop, onPublish: noop, onUnpublish: noop,
-    onFinalize: noop, onUnfinalize: noop, onImport: noop, onRestore: noop, onColor: noop,
-    onTags: noop, onInfo: noop, onPreview: noop,
+    onFinalize: noop, onUnfinalize: noop, onImport: noop, onRestore: noop,
+    onInfo: noop, onPreview: noop,
   };
 }
 
@@ -275,7 +275,7 @@ it("원인을 표시해도 recovery_required 재생성은 차단하고 추가 �
   let actions: ReturnType<typeof useGenerationCardActions>;
   function Host() {
     actions = useGenerationCardActions({
-      armedAutoTags: new Set(), askPrompt: async () => null, bumpBoard: noop, flash,
+      armedAutoTags: new Set(), bumpBoard: noop, flash,
       canFinalize: () => true,
       navTab: noop, reload: async () => {}, workspace: { scope: "personal", id: null, name: null },
     });
@@ -294,7 +294,7 @@ it.each(["ko", "en"] as const)("%s 재실행 동의에는 원인과 과금 주�
   let actions: ReturnType<typeof useGenerationCardActions>;
   function Host() {
     actions = useGenerationCardActions({
-      armedAutoTags: new Set(), askPrompt: async () => null, bumpBoard: noop, flash: noop,
+      armedAutoTags: new Set(), bumpBoard: noop, flash: noop,
       canFinalize: () => true,
       navTab: noop, reload: async () => {}, workspace: { scope: "personal", id: null, name: null },
     });

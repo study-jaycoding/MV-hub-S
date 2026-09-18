@@ -62,8 +62,6 @@ interface Props {
   onImport: (g: Generation) => void;
   onRestore: (g: Generation) => void; // 휴지통 복구
   dimDeleted?: boolean; // 지운 카드 흐림('함께 보기'만 true)
-  onColor: (g: Generation, color: string | null) => void;
-  onTags: (g: Generation) => void;
   onInfo: (t: InfoTarget) => void;
   onPreview: (t: PreviewTarget) => void;
   lastViewed?: boolean; // 생성 탭에서 마지막으로 크게 열어본 결과인가('Last viewed' 배지)

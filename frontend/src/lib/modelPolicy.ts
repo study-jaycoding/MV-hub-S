@@ -16,7 +16,6 @@ import {
   appliedResponse,
   cacheOf,
   initialState,
-  modelAllowed,
   NO_POLICY,
   policyKey,
   submitBlockMessage,
@@ -143,10 +142,6 @@ export function useModelPolicy(): ModelPolicyState {
 /** 비컴포넌트(제출 함수 안 등)용 — 지금 상태 읽기. */
 export function currentModelPolicy(): ModelPolicyState {
   return state;
-}
-
-export function isModelAllowed(model: string | null | undefined): boolean {
-  return modelAllowed(state, model);
 }
 
 /** 제출 직전 가드 문구(통과면 null). 캔버스 Render·재생성·복구 재실행처럼 useModels 를 안 거치는 경로가 쓴다.

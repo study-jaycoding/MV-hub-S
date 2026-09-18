@@ -121,7 +121,7 @@ it.each([
 ] as const)("%s translates success/failure UI but preserves original error details", async (handler, apiMethod, success, failure) => {
   let actions!: ReturnType<typeof useGenerationCardActions>;
   const flash = vi.fn(), reload = vi.fn().mockResolvedValue(undefined);
-  function Harness() { actions = useGenerationCardActions({ armedAutoTags: new Set(), askPrompt: async () => null,
+  function Harness() { actions = useGenerationCardActions({ armedAutoTags: new Set(),
     bumpBoard: noop, canFinalize: () => true, flash, navTab: noop, reload,
     workspace: { scope: "personal", id: null, name: null } }); return null; }
   act(() => root.render(<Harness />));

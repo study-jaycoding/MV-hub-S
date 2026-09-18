@@ -27,18 +27,6 @@ export function generationErrorFallback(status: string): string {
     : t("실패 사유 정보가 없습니다.");
 }
 
-// 복구 보류 카드의 error 는 "안내 문구 + 줄바꿈 + 제출 진단: <상세>" 형태다(서버
-// repo.gen_requests.SUBMIT_DIAGNOSTIC_PREFIX 와 짝). 팝업은 안내를 이미 따로 보여주므로
-// 상세만 잘라 쓴다 — 통째로 붙이면 같은 말이 두 번 나온다.
-export const SUBMIT_DIAGNOSTIC_MARK = "제출 진단: ";
-
-export function submitDiagnostic(error: string | null | undefined): string | null {
-  if (!error) return null;
-  const at = error.indexOf(SUBMIT_DIAGNOSTIC_MARK);
-  if (at < 0) return null;
-  return error.slice(at + SUBMIT_DIAGNOSTIC_MARK.length).trim() || null;
-}
-
 // pending/running 카드는 '내 PC 에이전트가 실행'하는 로컬 생성 — 에이전트가 떠 있어야 완료된다.
 export const LOCAL_EXEC_HINT =
   "내 PC의 에이전트가 로컬 CLI로 생성 중입니다. 에이전트(push_agent --watch)가 떠 있어야 완료됩니다.";

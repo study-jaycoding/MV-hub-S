@@ -202,25 +202,8 @@ export const assetsApi = {
     return res.json() as Promise<{ ok: boolean }>;
   },
 
-  // ☁ 서버에 백업 — 내 계정 DB(메타데이터)를 공유 서버에 올린다(계정별 보관).
-  serverBackup: () =>
-    jsonFetch<{
-      ok: boolean;
-      state: string;
-      count: number;
-      legacy_content_saved: boolean;
-      error_code?: string;
-    }>(
-      "/api/db/server-backup",
-      { method: "POST" },
-    ),
   backupContinuity: () =>
     jsonFetch<BackupContinuityStatus>("/api/db/backup-continuity"),
-  retryBackup: () =>
-    jsonFetch<{ ok: boolean; state: string; error_code?: string }>(
-      "/api/db/backup-retry",
-      { method: "POST" },
-    ),
   serverBackups: () =>
     jsonFetch<{ backups: ServerBackupVersion[] }>("/api/db/server-backups"),
   serverRestore: (backupSetId: string) =>
@@ -308,11 +291,6 @@ export const assetsApi = {
     }
     return { ok: true, count };
   },
-  setAssetColor: (project: string, path: string, color: string | null) =>
-    jsonFetch(`/api/assets/color`, {
-      method: "PUT",
-      body: jsonBody({ project, path, color }),
-    }),
   setAssetColorsBatch: async (project: string, paths: string[], color: string | null) => {
     let count = 0;
     for (const chunk of chunked(paths)) {

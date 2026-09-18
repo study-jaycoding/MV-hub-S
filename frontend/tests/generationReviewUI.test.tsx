@@ -117,7 +117,7 @@ function props(generation = gen()): ComponentProps<typeof GenerationCard> {
   return { gen: generation, tab: "team", onSetSource: noop, onSetTags: noop, onOpenComments: noop,
     onRequestEdit: noop, onEditDone: noop, onRegenerate: noop, onPublish: vi.fn(), onUnpublish: vi.fn(),
     onFinalize: vi.fn(), onUnfinalize: vi.fn(), onReview: vi.fn(),
-    onImport: noop, onRestore: noop, onColor: noop, onTags: noop, onInfo: noop, onPreview: noop,
+    onImport: noop, onRestore: noop, onInfo: noop, onPreview: noop,
   };
 }
 function toolbarProps(): ComponentProps<typeof LibraryToolbar> {
@@ -273,7 +273,7 @@ it("history/canvas shared node uses held badge and selected review mode", () => 
 it("bulk review rechecks eligible targets and reports partial failure without touching denied/final rows", async () => {
   let actions!: ReturnType<typeof useGenerationCardActions>;
   const flash = vi.fn(), reload = vi.fn().mockResolvedValue(undefined), bumpBoard = vi.fn();
-  function Harness() { actions = useGenerationCardActions({ armedAutoTags: new Set(), askPrompt: async () => null,
+  function Harness() { actions = useGenerationCardActions({ armedAutoTags: new Set(),
     bumpBoard, canFinalize: () => true, flash, navTab: noop, reload, workspace: { scope: "personal", id: null, name: null } }); return null; }
   act(() => root.render(<Harness />));
   vi.mocked(api.setReviewState).mockResolvedValueOnce(gen({ is_held: true, mirror_pending: true })).mockRejectedValueOnce(new Error("denied"));
@@ -289,7 +289,7 @@ it("bulk review rechecks eligible targets and reports partial failure without to
 it("reopening a pending result cannot submit it twice", async () => {
   let actions!: ReturnType<typeof useGenerationCardActions>;
   const flash = vi.fn(), reload = vi.fn().mockResolvedValue(undefined);
-  function Harness() { actions = useGenerationCardActions({ armedAutoTags: new Set(), askPrompt: async () => null,
+  function Harness() { actions = useGenerationCardActions({ armedAutoTags: new Set(),
     bumpBoard: noop, canFinalize: () => true, flash, navTab: noop, reload, workspace: { scope: "personal", id: null, name: null } }); return null; }
   act(() => root.render(<Harness />));
   let finish!: (g: Generation) => void;
@@ -305,7 +305,7 @@ it("reopening a pending result cannot submit it twice", async () => {
 it("single-card review rechecks actual permission before making a request", async () => {
   let actions!: ReturnType<typeof useGenerationCardActions>;
   const flash = vi.fn(), reload = vi.fn().mockResolvedValue(undefined);
-  function Harness() { actions = useGenerationCardActions({ armedAutoTags: new Set(), askPrompt: async () => null,
+  function Harness() { actions = useGenerationCardActions({ armedAutoTags: new Set(),
     bumpBoard: noop, canFinalize: () => false, flash, navTab: noop, reload,
     workspace: { scope: "personal", id: null, name: null } }); return null; }
   act(() => root.render(<Harness />));

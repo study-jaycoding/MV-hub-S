@@ -58,7 +58,7 @@ function gridProps(patch: Partial<ComponentProps<typeof ThumbnailGrid>> = {}): C
     selectedIds: new Set(), onSelectedChange: vi.fn(), onToggleSelect: vi.fn(),
     onSetSource: noop, onSetTags: noop, onOpenComments: noop, onRegenerate: noop,
     onPublish: noop, onUnpublish: noop, onFinalize: noop, onUnfinalize: noop,
-    onImport: noop, onRestore: noop, dimDeleted: false, onColor: noop, onTags: noop,
+    onImport: noop, onRestore: noop, dimDeleted: false,
     onInfo: noop, onPreview: noop, ...patch,
   };
 }

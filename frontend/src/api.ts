@@ -730,12 +730,6 @@ export const api = {
       method: "DELETE",
     }),
 
-  setColor: (id: string, color: string | null) =>
-    generationFetch(`/api/generations/${pathPart(id)}/color`, {
-      method: "PUT",
-      body: jsonBody({ color }),
-    }),
-
   setColorsBatch: async (ids: string[], color: string | null, assertCurrent?: () => void) => {
     const out = { succeeded: [] as string[], failed: [] as string[] };
     for (const chunk of chunked(ids)) {

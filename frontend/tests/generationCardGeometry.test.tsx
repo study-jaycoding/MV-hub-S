@@ -19,7 +19,7 @@ const props = (layout: "grid" | "list" = "grid"): ComponentProps<typeof Generati
   tab: "team", layout, selected: true, resolveHighlighted: true,
   onSetSource: noop, onSetTags: noop, onOpenComments: noop, onRequestEdit: noop, onEditDone: noop,
   onRegenerate: noop, onPublish: noop, onUnpublish: noop, onFinalize: noop, onUnfinalize: noop,
-  onReview: noop, onImport: noop, onRestore: noop, onColor: noop, onTags: noop, onInfo: noop, onPreview: noop,
+  onReview: noop, onImport: noop, onRestore: noop, onInfo: noop, onPreview: noop,
 });
 let root: Root;
 let host: HTMLDivElement;

@@ -71,8 +71,6 @@ interface Props {
   onImport: (g: Generation) => void;
   onRestore: (g: Generation) => void; // 휴지통 복구
   dimDeleted: boolean; // 지운 카드 흐림 적용('함께 보기'만 true, '지운 것만'은 false)
-  onColor: (g: Generation, color: string | null) => void;
-  onTags: (g: Generation) => void;
   onInfo: (t: InfoTarget) => void;
   onPreview: (t: PreviewTarget) => void;
   onShowHistory?: (g: Generation) => void; // 히스토리 뱃지 → 가계 패널
@@ -232,8 +230,6 @@ export function ThumbnailGrid(props: Props) {
       onBulkReview: (action: ReviewAction) => propsRef.current.onBulkReview?.(action),
       onImport: (g: Generation) => propsRef.current.onImport(g),
       onRestore: (g: Generation) => propsRef.current.onRestore(g),
-      onColor: (g: Generation, c: string | null) => propsRef.current.onColor(g, c),
-      onTags: (g: Generation) => propsRef.current.onTags(g),
       onInfo: (target: InfoTarget) => propsRef.current.onInfo(target),
       onPreview: (target: PreviewTarget) => propsRef.current.onPreview(target),
       onShowHistory: (g: Generation) => propsRef.current.onShowHistory?.(g),
@@ -299,8 +295,6 @@ export function ThumbnailGrid(props: Props) {
       canFinalize={cb.canFinalize}
       onImport={cb.onImport}
       onRestore={cb.onRestore}
-      onColor={cb.onColor}
-      onTags={cb.onTags}
       onInfo={cb.onInfo}
       onPreview={cb.onPreview}
       onShowHistory={props.onShowHistory ? cb.onShowHistory : undefined}
