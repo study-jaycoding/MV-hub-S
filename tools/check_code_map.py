@@ -35,7 +35,7 @@ def main() -> int:
     in_scope = [
         p for p in tracked
         if p.endswith(CODE_EXT)
-        and (p.startswith(MAPPED_DIRS) or "/" not in p)
+        and (p.startswith(MAPPED_DIRS) or "/" not in p or p.rsplit("/", 1)[0] in ("backend", "frontend"))  # serve.py·vite.config.ts 등
         and "/tests/" not in p
         and not p.endswith(("__init__.py", ".test.ts", ".test.tsx", ".d.ts"))
     ]
