@@ -41,6 +41,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 프로그램 사용 | [사용설명서.md](사용설명서.md), [기능설명서.md](기능설명서.md) |
 | 현재 구조와 데이터 흐름 | [ARCHITECTURE.md](ARCHITECTURE.md), [AI_CONTEXT.md](AI_CONTEXT.md) |
 | 무엇을 고치려면 어느 파일을 여나(파일 단위 색인·함정 지도) | [CODE_MAP.md](CODE_MAP.md) — 계층 원칙·흐름 설명과 충돌하면 위 두 문서가 이긴다 |
+| 코드에서 뽑은 목록(손으로 고치지 않는다 — `python tools/gen_inventory.py`) | [inventory/endpoints.md](inventory/endpoints.md) · [inventory/env_vars.md](inventory/env_vars.md) · [inventory/db_tables.md](inventory/db_tables.md) · [inventory/background_jobs.md](inventory/background_jobs.md) |
 | 로컬·공유 서버 데이터 경계 | [DATA_OWNERSHIP.md](DATA_OWNERSHIP.md), [WORKSPACE_DATA_CONTRACT.md](WORKSPACE_DATA_CONTRACT.md) |
 | 신원·권한·실행 모드 | [신원과_모드_가이드.md](신원과_모드_가이드.md) |
 | 401 인증 실패·로그인 보존 계약 | [AUTH_FAILURE_SEMANTICS.md](AUTH_FAILURE_SEMANTICS.md) |

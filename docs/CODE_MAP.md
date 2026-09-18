@@ -62,9 +62,10 @@ updated: 2026-09-18
 | 서버 자동시작·워치독·복구 | — | — | `MV_watchdog.bat`, `tools/server_watchdog.py`, `tools/server_supervisor.py`, `restart_server_task.ps1`(⚠ 진입 bat 는 실행금지 — §4) |
 | Higgsfield CLI 버전 핀 교체 | — | — | `hf_cli_version.txt`, `update_cli.bat`, `tools/hf_cli_check_update.py` |
 | 배포 전 검증(predeploy gate) | — | — | `tools/predeploy_gate.ps1` |
-| DB 스키마·마이그레이션 | — | `backend/schema.sql`, `db_migrations.py`, `db.py` | 새 컬럼·인덱스는 생성 순서가 중요하다(구형 DB 전환 경로). PM 전용 DB 는 `repo/manage_schema.py`·`manage_db.py`, 휴지통은 `repo/trash.py` 가 따로 만든다 |
-| 실행 모드·권한·프록시(서버/로컬 허브/격리 테스트) | — | `deps.py`, `routers/_proxy.py`, `rbac.py` | 모드별 차이의 정본은 [DATA_OWNERSHIP.md](DATA_OWNERSHIP.md) §2·[신원과_모드_가이드.md](신원과_모드_가이드.md) §4·[AI_CONTEXT.md](AI_CONTEXT.md) §2 |
-| 백그라운드 주기 작업·기동/종료 | — | `main.py`(lifespan 이 기동·회수), `services/backup.py`·`syncer.py`·`temp_sweeper.py`·`media_preservation.py`·`share_state_reconciler.py`·`worker_backup.py`·`remote_realtime.py`·`resolve_selection_monitor.py` | 작업별 계약 문서: [TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md)·[WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md) |
+| DB 스키마·마이그레이션 | — | `backend/schema.sql`, `db_migrations.py`, `db.py` | 새 컬럼·인덱스는 생성 순서가 중요하다(구형 DB 전환 경로). PM 사이드카 테이블은 `repo/manage_schema.py` 가 **같은 콘텐츠 DB 안에** 만들고, 팀 텔레메트리만 `manage_db.py` 가 별도 `manage_hub.db` 에, 휴지통은 `repo/trash.py` 가 ATTACH 한 DB 에 만든다. **테이블별 DB·정의 파일·쓰는/읽는 모듈: [inventory/db_tables.md](inventory/db_tables.md)**(생성 문서) |
+| 환경변수(설정 스위치)가 무엇이 있고 기본값이 뭔가 | `vite.config.ts` | `config.py` 가 중심이지만 40여 파일이 직접 읽는다 | **전체 목록: [inventory/env_vars.md](inventory/env_vars.md)**(생성 문서 — 이름·기본값·직접 읽는 파일·설정하는 스크립트) |
+| 실행 모드·권한·프록시(서버/로컬 허브/격리 테스트) | — | `deps.py`, `routers/_proxy.py`, `rbac.py` | 모드별 차이의 정본은 [DATA_OWNERSHIP.md](DATA_OWNERSHIP.md) §2·[신원과_모드_가이드.md](신원과_모드_가이드.md) §4·[AI_CONTEXT.md](AI_CONTEXT.md) §2. **엔드포인트 전체와 경로별 프록시 분류(로컬 예외/기본 중계): [inventory/endpoints.md](inventory/endpoints.md)**(생성 문서) |
+| 백그라운드 주기 작업·기동/종료 | — | `main.py`(lifespan 이 기동·회수), `services/backup.py`·`syncer.py`·`temp_sweeper.py`·`media_preservation.py`·`share_state_reconciler.py`·`worker_backup.py`·`remote_realtime.py`·`resolve_selection_monitor.py` | 작업별 계약 문서: [TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md)·[WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md). **기동 때 무엇이 어떤 조건(실행 모드)에서 시작되나·응답 뒤 작업·에이전트 상주 루프: [inventory/background_jobs.md](inventory/background_jobs.md)**(생성 문서) |
 | 작업자 에이전트 배포·계약 | — | `agent_push.py`, `routers/ingest.py`(`/api/agent/*` 배포·롱폴), `routers/gen_requests.py` | 계약 고정 시험 `backend/tests/test_agent_contracts.py` |
 | DB 복구·복원 훈련 | — | `routers/db_transfer.py`, `services/backup_verify.py`, `services/restore_runtime_verify.py` | 도구 `tools/verify_backup_restore.py` |
 | 이 파일을 고치면 어떤 시험을 돌리나 | `git grep -l <파일이름(확장자 빼고)> -- frontend/tests frontend/src` | `git grep -l <모듈이름> -- backend/tests` | 또는 `powershell -NoProfile -File tools\graft.ps1 callers <심볼>` — 시험 파일도 호출처로 나온다. 시험↔기능 색인 문서는 없다 |
@@ -398,6 +399,16 @@ updated: 2026-09-18
 - `read_utf8_sig_first_line.py` — `print()` 가 자식 프로세스 IPC 채널로 쓰이는 모듈 중 하나(§5 참고)
 
 프런트엔드 쪽 숨은 진입점(`?embed=`, 커스텀 이벤트)은 §3.5 참고.
+
+### 2.7 `backend/` 바로 밑의 실행 스크립트 (`backend/app` 밖)
+
+| 파일 | 한 줄 책임 | 주의 |
+|---|---|---|
+| `backend/serve.py` | **서버 기동기** — IPv4(0.0.0.0)와 IPv6 루프백(::1)을 함께 듣는다(Windows `localhost` 의 IPv6 우선 폴백 지연 제거). 호스트·포트는 `app.config` 의 `HOST`/`PORT` 상수를 받아 쓰고, SSL 인증서·접근 로그 환경변수만 여기서 직접 읽는다. `app` import 전에 stdout 을 `errors="replace"` 로 바꿔 cp949 로그에서 em dash 한 글자가 기동을 죽이는 것을 막는다 | `--reload` 금지. 워치독·supervisor·`stop_local_hub_on_port.ps1` 이 이 프로세스를 대상으로 삼는다 |
+| `backend/reset_db.py` | ⚠ **DB 완전 초기화**(content·trash·계정별 DB·`active.json`). 기본은 점검(dry-run), `--yes` 일 때만 백업 후 삭제 | 사용자 데이터를 지운다 — 검증용으로 돌리지 않는다. 허브/서버를 멈춘 뒤에만 |
+| `backend/backfill_import.py` | 과거 이력 전체 백필 — MCP 로 덤프해 둔 JSON 을 `cli_bridge.parse_job` → `repo.upsert_synced_generation` 으로 멱등 import(허브 본체와 분리된 독립 도구) | `--dry-run` 있음. 실제 DB 에 쓴다 |
+| `backend/cleanup_orphan_creators.py` | 계정 없는 외부 생성자('팀원')와 그 생성물 점검·귀속 전환. 표준 라이브러리만 | 기본 점검만, `--apply` 일 때만 변경. 공유 서버 PC 에서 실행 |
+| `backend/schema.sql` | 콘텐츠 DB 의 기본 스키마(테이블 전체 목록은 [inventory/db_tables.md](inventory/db_tables.md)) | 이후 변경은 `db_migrations.py` |
 
 ---
 
@@ -1060,6 +1071,7 @@ updated: 2026-09-18
 | `tools/graft.ps1`(72줄) | graft CLI 래퍼(`callers`/`grep`/`blast`/`skeleton`) — 항상 이 래퍼로만 호출 |
 | `tools/lint_docs.ps1`(272줄) | 문서 규칙 검사(`npm run lint:docs` 가 호출) |
 | `tools/check_code_map.py` | 이 문서와 저장소의 양방향 대조(없는 파일 이름·빠진 파일) — 수동 실행, 게이트 미연결(§6) |
+| `tools/gen_inventory.py` | 코드에서 뽑는 목록 `docs/inventory/*.md`(엔드포인트·환경변수·DB 테이블·백그라운드 작업) 생성기. 표준 라이브러리만·앱 import 없음. `--check` = 어긋남만 확인. 낡으면 `backend/tests/test_docs_inventory_fresh.py` 가 실패한다(§6) |
 
 **에이전트 코어**
 
@@ -1139,6 +1151,11 @@ updated: 2026-09-18
 - 고친 뒤 `python tools/check_code_map.py` 로 양방향 대조를 한다 — 문서에 적힌 파일 이름이 전부 실제로
   있는지, 코드 파일이 전부 문서에 실려 있는지. 배포 게이트에는 묶지 않았다(수동 도구).
 - 라우트를 추가·삭제하면 §2.2 의 해당 라우터 행(라우트 수)과 §1(관련 있으면)을 함께 고친다.
+- **손으로 쓰면 낡는 목록은 이 문서에 적지 않고 코드에서 뽑는다** — [inventory/](inventory/) 의 네 문서(엔드포인트·환경변수·
+  DB 테이블·백그라운드 작업). 엔드포인트·환경변수·테이블·백그라운드 시작점을 바꾸면
+  `backend/tests/test_docs_inventory_fresh.py` 가 떨어진다. 그때 저장소 루트에서 `python tools/gen_inventory.py` 를 돌리고
+  바뀐 `docs/inventory/` 를 문서 커밋으로 올린다. 생성 문서는 손으로 고치지 않는다(다음 생성 때 사라진다).
+  `CREATE TABLE` 을 새 파일에 두면 생성 자체가 실패한다 — 도구의 `DB_FAMILY` 표에 그 테이블이 사는 DB 를 추가한다.
 - 수정 후보·버그 발견·리팩터 제안은 이 문서에 넣지 않는다 — 그런 목록은 며칠이면 낡고, 이 문서는
   "파일이 어디 있나"만 답하면 된다. 후보는 별도 리뷰 문서에 남긴다.
 - 큰 구조 변경(폴더 대이사·계층 이동)은 루트 `ARCHITECTURE.md` 를 먼저 갱신한 뒤 이 문서를 따라 고친다.
