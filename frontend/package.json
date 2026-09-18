@@ -10,6 +10,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint:architecture": "eslint \"src/**/*.{ts,tsx}\"",
+    "lint:docs": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\tools\\lint_docs.ps1",
     "preview": "vite preview",
     "test": "vitest run"
   },
