@@ -12,6 +12,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 지금 상태·다음 작업 | `docs/CURRENT_STATUS.md` (한 장 요약) |
 | 날짜별 상세 기록 | `docs/status/` — 필요한 노트만 |
 | 코드를 어디에 둘지 | 루트 `ARCHITECTURE.md` §1~3 |
+| 무엇을 고치려면 어느 파일을 여나 · 합치면 안 되는 중복 · 지우면 안 되는 휴면 코드 | `docs/CODE_MAP.md` (§1 빠른 찾기 · §5 함정 지도) |
 | 동시성·상태 계약(새 코드 규칙) | 루트 `ARCHITECTURE.md` §6 |
 | 실행 구조·데이터 흐름 | `docs/ARCHITECTURE.md`, `docs/AI_CONTEXT.md` |
 | 주요 문서 색인·문서 위상 | `docs/README.md` |
