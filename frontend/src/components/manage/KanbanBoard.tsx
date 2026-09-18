@@ -1,6 +1,7 @@
 // 보드 뷰 — 상태별 칸반. Notion식 카드 드래그로 상태 이동, 생성물(컷) 드롭 연결.
 // 데이터·핸들러는 WorkBoard 가 주입(WorkViewProps). 프레젠테이션 전용.
 import { useState } from "react";
+import { fmtElapsed } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { ColorTag } from "./ColorTag";
 import { CutThumbs } from "./CutThumbs";
@@ -19,18 +20,6 @@ export const BOARD_STATUS_VALUES = ["in_progress", "hold", "publish", "done"] as
 const BOARD_COLUMNS = STATUSES.filter((status) =>
   BOARD_STATUS_VALUES.includes(status.v as (typeof BOARD_STATUS_VALUES)[number]),
 );
-
-function fmtDuration(seconds?: number): string {
-  if (!seconds || seconds <= 0) return "";
-  let rest = Math.floor(seconds);
-  const hours = Math.floor(rest / 3600);
-  rest %= 3600;
-  const minutes = Math.floor(rest / 60);
-  const secs = rest % 60;
-  return [hours ? `${hours}h` : "", minutes ? `${minutes}m` : "", secs || (!hours && !minutes) ? `${secs}s` : ""]
-    .filter(Boolean)
-    .join("");
-}
 
 export function BoardView(props: WorkViewProps) {
   const { tasks, seqOptions, thumb, disabled, colorMap, readOnly, onPatch, onLinkGen, onUnlinkGen } = props;
@@ -162,7 +151,7 @@ export function BoardView(props: WorkViewProps) {
                 <div className="work-card-meta">
                   {!!t.gen_count && <span title="생성 수">생성 {t.gen_count.toLocaleString()}개</span>}
                   {!!t.credits && <span title="사용 크레딧">{t.credits.toLocaleString()} cr</span>}
-                  {!!t.elapsed && <span title="생성시간">⏱ {fmtDuration(t.elapsed)}</span>}
+                  {!!t.elapsed && <span title="생성시간">⏱ {fmtElapsed(t.elapsed)}</span>}
                   {!!t.comment_count && <span title="코멘트">💬 {t.comment_count}</span>}
                   {(t.due_date || t.derived_due) && (
                     <span title={t.due_date ? "마감" : "최근 생성일"}>📅 {t.due_date || t.derived_due}</span>

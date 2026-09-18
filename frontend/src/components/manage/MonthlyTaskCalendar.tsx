@@ -2,6 +2,7 @@
 // 기간이 여러 주에 걸치면 주 단위로 잘라 그린다(주마다 겹치는 작업만 레인에 배치).
 // 시작/마감은 PM 입력값 우선, 없으면 파생값(연결 생성물 생성일 범위). 날짜 없는 작업은 표시 안 함.
 import { useMemo } from "react";
+import { fmtElapsed } from "../../lib/format";
 import { statusColor, workActivityStatusLabel, type Task } from "./types";
 
 const DOW = ["일", "월", "화", "수", "목", "금", "토"];
@@ -31,18 +32,6 @@ export function taskSpan(t: Task): { start: Date; end: Date; label: string } | n
   return { start: s, end: e, label: seq || t.name || "작업" };
 }
 
-function fmtDuration(seconds?: number): string {
-  if (!seconds || seconds <= 0) return "—";
-  let rest = Math.floor(seconds);
-  const hours = Math.floor(rest / 3600);
-  rest %= 3600;
-  const minutes = Math.floor(rest / 60);
-  const secs = rest % 60;
-  return [hours ? `${hours}h` : "", minutes ? `${minutes}m` : "", secs || (!hours && !minutes) ? `${secs}s` : ""]
-    .filter(Boolean)
-    .join("");
-}
-
 // 월간 막대는 좁으므로 상세 수치는 툴팁에서 제공한다. 같은 Task 객체의 실시간 집계값을
 // 그대로 사용해 테이블·보드·캘린더 사이에 서로 다른 숫자가 생기지 않게 한다.
 export function taskCalendarTitle(t: Task, label: string, start: Date, end: Date): string {
@@ -52,7 +41,7 @@ export function taskCalendarTitle(t: Task, label: string, start: Date, end: Date
   return [
     `${project}${label}`,
     `상태: ${workActivityStatusLabel(t.status)} · 생성자: ${creators}`,
-    `생성: ${(t.gen_count || 0).toLocaleString()}개 · 크레딧: ${(t.credits || 0).toLocaleString()} cr · 생성시간: ${fmtDuration(t.elapsed)}`,
+    `생성: ${(t.gen_count || 0).toLocaleString()}개 · 크레딧: ${(t.credits || 0).toLocaleString()} cr · 생성시간: ${fmtElapsed(t.elapsed)}`,
     `생성기간: ${period}`,
   ].join("\n");
 }

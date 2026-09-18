@@ -23,17 +23,8 @@ import { HoverMetric, WorkspaceUsageDashboard } from "./WorkspaceUsageDashboard"
 import type { ManageProject, ProjectFolderUsage } from "./types";
 import { creditCoverageText, usageSourceLabel } from "./usageSource";
 
+import { fmtElapsed } from "../../lib/format";
 import { formatCredits } from "../../lib/formatCredits";
-function fmtDur(sec: number): string {
-  if (!sec || sec <= 0) return "—";
-  const wholeSeconds = Math.floor(sec);
-  const h = Math.floor(wholeSeconds / 3600);
-  const m = Math.floor((wholeSeconds % 3600) / 60);
-  const s = wholeSeconds % 60;
-  if (h) return `${h}h${m ? `${m}m` : ""}`;
-  if (m) return `${m}m${s ? `${s}s` : ""}`;
-  return `${s}s`;
-}
 function fmtBudgetCr(n: number): string {
   return formatCredits(n || 0);
 }
@@ -113,7 +104,7 @@ function UsageMetricCells({ row }: { row: ProjectFolderUsage }) {
       <td className="tnum">
         <HoverMetric value={row.credits} rows={models} metric="credits" title="모델별 크레딧 사용" suffix=" cr" />
       </td>
-      <td className="tnum">{fmtDur(row.elapsed_seconds)}</td>
+      <td className="tnum">{fmtElapsed(row.elapsed_seconds)}</td>
       <td className="tnum dash-generation-period">{generationPeriod(row.created_start, row.created_end)}</td>
     </>
   );

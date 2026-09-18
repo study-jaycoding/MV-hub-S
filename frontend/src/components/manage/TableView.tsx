@@ -2,6 +2,7 @@
 // 행 체크박스로 다중선택(하단 선택바에서 삭제), 드래그 핸들(⠿)로 순서 변경. 격자선으로 표 가독성.
 // 생성자는 실제 생성자(연결 컷 파생)만 — 수동 담당 배정 개념은 폐기됨(2026-08-21).
 import { Fragment, useState } from "react";
+import { fmtElapsed } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { ColorTag } from "./ColorTag";
 import { CutThumbs } from "./CutThumbs";
@@ -18,24 +19,6 @@ import {
 } from "./types";
 
 const ROW_MIME = "application/x-work-row"; // 행 순서변경 드래그 키(생성물 드롭과 구분)
-
-// 생성시간(제작 소요) — 1d2h10s 식으로 0인 단위는 생략해 압축 표기.
-function fmtDur(sec?: number): string {
-  if (!sec || sec <= 0) return "—";
-  let rest = Math.floor(sec);
-  const d = Math.floor(rest / 86400);
-  rest %= 86400;
-  const h = Math.floor(rest / 3600);
-  rest %= 3600;
-  const m = Math.floor(rest / 60);
-  const s = rest % 60;
-  let out = "";
-  if (d) out += `${d}d`;
-  if (h) out += `${h}h`;
-  if (m) out += `${m}m`;
-  if (s || !out) out += `${s}s`;
-  return out;
-}
 
 // YYYY-MM-DD → M/D(월/일). 기간 표시용 짧은 포맷.
 function fmtMD(d?: string | null): string {
@@ -259,7 +242,7 @@ export function TableView(props: WorkViewProps) {
                     suffix=" cr"
                   />
                 </td>
-                <td>{fmtDur(t.elapsed)}</td>
+                <td>{fmtElapsed(t.elapsed)}</td>
                 <td>
                   {/* 마감일 — PM 입력값 우선, 없으면 연결 생성물의 최종 생성일 자동 표시.
                       아래에 시작~끝(생성일 범위) 기간을 함께 보여 시퀀스 진행 폭을 파악. */}
@@ -300,7 +283,7 @@ export function TableView(props: WorkViewProps) {
                     <div className="work-mobile-detail-grid">
                       <div>
                         <span className="work-mobile-detail-label">생성시간</span>
-                        <b>{fmtDur(t.elapsed)}</b>
+                        <b>{fmtElapsed(t.elapsed)}</b>
                       </div>
                       <div>
                         <span className="work-mobile-detail-label">생성기간</span>

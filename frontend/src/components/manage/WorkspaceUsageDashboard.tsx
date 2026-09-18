@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { fmtElapsed } from "../../lib/format";
 import { isHttpStatus } from "../../lib/http";
 import {
   manageApi,
@@ -44,18 +45,6 @@ type ModelTooltipRow = Pick<TeamModelRow, "model" | "count" | "credits"> & {
 
 function n(value: number): string {
   return Math.round(value || 0).toLocaleString();
-}
-
-// 일반 멤버 뷰의 '생성 시간 합' — 에피소드·시퀀스 표(DashboardView.fmtDur)와 같은 h/m/s 표기.
-function elapsedText(sec: number): string {
-  if (!sec || sec <= 0) return "—";
-  const wholeSeconds = Math.floor(sec);
-  const h = Math.floor(wholeSeconds / 3600);
-  const m = Math.floor((wholeSeconds % 3600) / 60);
-  const s = wholeSeconds % 60;
-  if (h) return `${h}h${m ? `${m}m` : ""}`;
-  if (m) return `${m}m${s ? `${s}s` : ""}`;
-  return `${s}s`;
 }
 
 function credits(value: number): string {
@@ -751,7 +740,7 @@ export function WorkspaceUsageDashboard({
               <div><span>사용 모델</span><strong>{n(totals.models)}</strong></div>
               <div><span>최종 선택</span><strong>{n(totals.final_count)}</strong></div>
               {mine
-                ? <div><span>생성 시간 합</span><strong>{elapsedText(totals.elapsed_seconds)}</strong></div>
+                ? <div><span>생성 시간 합</span><strong>{fmtElapsed(totals.elapsed_seconds)}</strong></div>
                 : <div><span>인원당 평균 생성</span><strong>{totals.workers ? n(totals.count / totals.workers) : "0"}</strong></div>}
               <div><span>생성당 평균 크레딧</span><strong>{totals.count ? credits(totals.credits / totals.count) : "0"}</strong></div>
             </div>
