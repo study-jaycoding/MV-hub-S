@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-09-19
+updated: 2026-09-20
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -918,10 +918,10 @@ updated: 2026-09-19
 |---|---:|---|
 | `base.css` | 104 | 전역 변수(`:root` 24개)·리셋 — 화면 특정 아님 |
 | `app-shell.css` | 796 | 최상위 앱 셸(`TopBar`·상단 메뉴) |
-| `generations.css` | 856 | 라이브러리 그리드·카드(`ThumbnailGrid`·`GenerationCard`) |
+| `generations.css` | 856 | 라이브러리 그리드·카드(`ThumbnailGrid`·`GenerationCard`). ★**끝없이 도는 CSS 애니메이션은 합성 가능한 속성(transform·opacity)만** — `background-position`·`box-shadow` 를 무한으로 움직이면 요소 하나만 화면에 있어도 브라우저가 매 프레임 다시 그려 가만히 둔 탭이 CPU 를 계속 쓴다(골드 광택 실측: 0장 1% · 1장 24~38% of one core). 골드 빛의 계약 시험 = `frontend/tests/goldSheenCss.test.ts`. 남은 같은 부류: `card-fresh-glow`(새 항목 글로우, box-shadow 무한 — 미측정) |
 | `scene.css` | 1513 | 씬 캔버스(`scene/`) — 비슷한 이름의 클래스가 많다(§5-b) |
 | `prompt-dock.css` | 566 | 스포트라이트 프롬프트 도크(`SpotlightPrompt`·`spotlight/`) |
-| `history.css` | 216 | 히스토리 보드(계보 그래프) |
+| `history.css` | 216 | 히스토리 보드(계보 그래프). 최종 노드는 `content-visibility` 가 풀려 있어 화면 밖에서도 그린다 — 여기에 무한 애니메이션을 두지 않는다 |
 | `assets.css` | 817 | Assets 분리창(`AssetsView`·`assets/`) |
 | `project-sidebar.css` | 318 | 프로젝트 사이드바(`sidebar/ProjectSection`) |
 | `composition-manage.css` | 1098 | 관리(PM)창 구성·대시보드 화면. 옛 합성보드·옛 통계 위젯(도넛·퍼널 등)의 규칙은 2026-09-18 에 걷어냈다. 남은 휴면 규칙은 §5-d |
