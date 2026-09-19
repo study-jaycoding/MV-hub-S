@@ -54,6 +54,15 @@ def leftover_restore_stages(root):
     return [p for p in root.rglob("*") if re.fullmatch(r"\..+\.restore-[0-9a-f]{16}\.tmp", p.name)]
 
 
+def test_leftover_restore_stages_sees_product_names_only(tmp_path):
+    (tmp_path / "db").mkdir()
+    (tmp_path / "db" / ".CONTENT_HUB.DB.RESTORE-85A47FB34FF64566.TMP.tmp").write_bytes(b"")  # 외부 프로세스가 남긴 꼴
+    assert leftover_restore_stages(tmp_path) == []
+    (tmp_path / "db" / ".content_hub.db.restore-85a47fb34ff64566.tmp").write_bytes(b"")
+    (tmp_path / "db" / ".content_hub_trash.db.restore-0123456789abcdef.tmp").write_bytes(b"")
+    assert len(leftover_restore_stages(tmp_path)) == 2  # 제품 누수(본 DB·휴지통)는 그대로 잡는다
+
+
 def marker(path):
     with closing(sqlite3.connect(path)) as conn:
         return conn.execute(
