@@ -466,6 +466,11 @@ def _server_environment(
             "CONTENT_HUB_PORT": str(port),
             "CONTENT_HUB_BACKUP_INTERVAL": "0",
             "CONTENT_HUB_SERVER_SYNC": "0",
+            # 기동 때의 실제 CLI 계정 조회를 끈다.
+            "CONTENT_HUB_EXTERNAL_RECOVERY": "0",
+            # ★"0" 으로 못 박는다 — AUTH on 이라 위임은 어차피 불가능하고, 부른 셸의 NO_PROXY=1 을 물려받으면
+            # 공유 서버 본체가 아닌 격리 경로(is_shared_team_server()=False·telemetry 로컬 저장)를 재게 된다.
+            "CONTENT_HUB_NO_PROXY": "0",
             "CONTENT_HUB_METRICS_LOG_INTERVAL": "0",
             "CONTENT_HUB_FRONTEND_DIST": str(data_dir / "no-frontend"),
         }
