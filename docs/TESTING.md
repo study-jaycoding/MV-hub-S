@@ -708,6 +708,16 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
 ### 격리 브라우저 실측 (유료·운영 서버 접촉 없이 화면 전체를 재는 법)
 
 2026-09-19 에 Claude·Codex 가 각각 이 방법으로 전 기능을 쟀다(기록: [status/브라우저실측_2026-09-19.md](status/브라우저실측_2026-09-19.md)).
+그때 쓴 도구를 `tools/browser_measure/` 에 보관했다(릴리스에는 들어가지 않는다). **venv 파이썬**으로 저장소 루트에서 돌린다:
+
+```powershell
+& '.\.venv\Scripts\python.exe' tools\browser_measure\servers.py start   # 복사·토큰 제거·두 대 기동·격리 확인(실패하면 스스로 내림)
+& '.\.venv\Scripts\python.exe' tools\browser_measure\smoke.py           # 핵심 화면 41단계. 실패나 생성 요청이 있으면 종료 코드 1
+& '.\.venv\Scripts\python.exe' tools\browser_measure\servers.py stop    # 내가 띄운 것만 종료 + 복사본·브라우저 프로필 삭제
+```
+
+결과(`results_smoke.json`·`shots\`)는 `%TEMP%\mvhub-browser-measure` 에 남는다. 화면에 시험 DB 의 실제 계정 이름·이메일이 찍힐 수 있으니
+**저장소나 보고서로 옮기지 않는다.** 새 단계는 `smoke.py` 머리말의 요령대로 더한다. 아래는 도구가 하는 일의 설명이다.
 
 - **데이터**: `backend\data_test\db\*.db` 를 SQLite **읽기 전용 backup** 으로 임시 폴더에 복사해 쓴다(돌고 있는 `test_dev` 세션을
   건드리지 않는다). 복사본에서 `app_setting` 의 `shared_server_token`·`shared_server_elev_*` 를 지우고 `shared_server_url` 을
