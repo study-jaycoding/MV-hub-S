@@ -918,7 +918,7 @@ updated: 2026-09-20
 |---|---:|---|
 | `base.css` | 104 | 전역 변수(`:root` 24개)·리셋 — 화면 특정 아님 |
 | `app-shell.css` | 796 | 최상위 앱 셸(`TopBar`·상단 메뉴) |
-| `generations.css` | 856 | 라이브러리 그리드·카드(`ThumbnailGrid`·`GenerationCard`). ★**끝없이 도는 CSS 애니메이션은 합성 가능한 속성(transform·opacity)만** — `background-position`·`box-shadow` 를 무한으로 움직이면 요소 하나만 화면에 있어도 브라우저가 매 프레임 다시 그려 가만히 둔 탭이 CPU 를 계속 쓴다(골드 광택 실측: 0장 1% · 1장 24~38% of one core). 골드 빛의 계약 시험 = `frontend/tests/goldSheenCss.test.ts`. 남은 같은 부류: `card-fresh-glow`(새 항목 글로우, box-shadow 무한 — 미측정) |
+| `generations.css` | 856 | 라이브러리 그리드·카드(`ThumbnailGrid`·`GenerationCard`). ★**끝없이 도는 CSS 애니메이션은 합성 가능한 속성(transform·opacity)만** — `background-position`·`box-shadow` 를 무한으로 움직이면 요소 하나만 화면에 있어도 브라우저가 매 프레임 다시 그려 가만히 둔 탭이 CPU 를 계속 쓴다(골드 광택 실측: 0장 1% · 1장 24~38% of one core). 골드 빛의 계약 시험 = `frontend/tests/goldSheenCss.test.ts`. 남은 같은 부류: `card-fresh-glow`(팀 탭 새 항목 글로우, box-shadow 무한 — Codex 의 창 있는 크롬 실측에서 카드 1장 42~49% · 19장 113~124%, 클릭할 때까지 남는다. Jay 결정 대기) |
 | `scene.css` | 1513 | 씬 캔버스(`scene/`) — 비슷한 이름의 클래스가 많다(§5-b) |
 | `prompt-dock.css` | 566 | 스포트라이트 프롬프트 도크(`SpotlightPrompt`·`spotlight/`) |
 | `history.css` | 216 | 히스토리 보드(계보 그래프). 최종 노드는 `content-visibility` 가 풀려 있어 화면 밖에서도 그린다 — 여기에 무한 애니메이션을 두지 않는다 |
