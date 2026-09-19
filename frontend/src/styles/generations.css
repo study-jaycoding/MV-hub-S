@@ -312,25 +312,36 @@
 /* (보드 노드 전체 광택 제거 — 빛 흐름은 노드 하단 컬러바 .linb-colorbar.final 로 이동. 카드와 일관) */
 /* ★ 별 위로만 흐르는 빛 — 버튼 내부로 클립(overflow), 별 글리프 위를 밝은 띠가 스윕 */
 .card-sf.final { overflow: hidden; }
+/* ★골드 빛은 **평소엔 멈춰 있고**, 카드·노드에 마우스를 올리거나 ★ 에 키보드 포커스가 갈 때 **한 번만** 지나간다(2026-09-20, Jay 3안).
+   종전에는 `background-position` 을 2.3초 주기로 끝없이 움직였다 — 합성(GPU)으로 처리되지 않는 속성이라 골드 카드가 **한 장만** 화면에
+   있어도 브라우저가 매 프레임 다시 그렸고, 가만히 열어 둔 탭이 CPU 코어의 1/4~1 개를 계속 썼다(Claude 의 격리 헤드리스 실측: 골드 0장 1% ·
+   1장 24~38% · 19장 110%, 모션 끄기 0.3%. Codex 의 별도 실측도 "내 작업" 그리드에서만 20~34% 를 재현했다 — 원인을 광택으로 좁힌 것은
+   Claude 쪽 대조다. 기록: docs/status/브라우저실측_2026-09-19.md). 그래서 ①밝은 띠를 `transform` 으로만 옮기고 ②기본 상태에는
+   애니메이션을 두지 않는다. `will-change` 는 걸지 않는다 — 골드 카드 수만큼 레이어 메모리를 상시 잡는다. */
 .card-sf.final::after {
-  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 1;
-  background: linear-gradient(105deg, transparent 30%, rgba(255,255,255,0.92) 50%, transparent 70%);
-  background-size: 240% 100%;
-  animation: goldSheen 2.3s linear infinite;
+  content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 96%; pointer-events: none; z-index: 1;
+  border-radius: inherit;
+  background: linear-gradient(105deg, transparent 0%, rgba(255,255,255,0.92) 50%, transparent 100%);
+  transform: translateX(-100%); /* 평소엔 버튼 왼쪽 밖에 서 있다(overflow 로 안 보임) */
 }
-@keyframes goldSheen {
-  0%   { background-position: 120% 0; }
-  100% { background-position: -20% 0; }
-}
+.card:hover .card-sf.final::after,
+.scene-varpop-cell:hover .card-sf.final::after,
+.card-sf.final:focus-visible::after { animation: goldSheenStar 1.4s linear 1; }
+.card:hover .card-colorbar.final::after { animation: goldSheenBar 1.4s linear 1; }
+/* 이동 거리는 종전 배경 이동과 같은 궤적이다(띠 중심이 요소 폭의 -48% → 148%). 움직이는 속성은 transform 하나뿐이어야 한다 —
+   frontend/tests/goldSheenCss.test.ts 가 이 계약(무한 반복 없음·transform 만·모션 끄기)을 지킨다. */
+@keyframes goldSheenStar { from { transform: translateX(-100%); } to { transform: translateX(104.17%); } }
+@keyframes goldSheenBar { from { transform: translateX(-70%); } to { transform: translateX(11.67%); } }
 /* 모션 끄기 — OS 설정(prefers-reduced-motion) 또는 앱 설정(html.reduce-motion).
-   ★ 광택(::after)은 숨기고(opacity 0), 골드 컬러바는 색은 유지하되 빛 흐름만 정지. */
+   ★ 광택(::after)은 숨기고(opacity 0), 골드 컬러바는 색은 유지하되 빛 흐름만 정지. 마우스를 올려도 흐르지 않는다
+   (위 :hover 규칙보다 우선해야 해서 !important). */
 @media (prefers-reduced-motion: reduce) {
-  .card-sf.final::after { animation: none; opacity: 0; }
-  .card-colorbar.final, .linb-colorbar.final { animation: none; }
+  .card-sf.final::after { animation: none !important; opacity: 0; }
+  .card-colorbar.final::after, .linb-colorbar.final::after { animation: none !important; }
 }
-.reduce-motion .card-sf.final::after { animation: none; opacity: 0; }
-.reduce-motion .card-colorbar.final,
-.reduce-motion .linb-colorbar.final { animation: none; }
+.reduce-motion .card-sf.final::after { animation: none !important; opacity: 0; }
+.reduce-motion .card-colorbar.final::after,
+.reduce-motion .linb-colorbar.final::after { animation: none !important; }
 
 /* S 더블클릭 확인 플로팅(최종 지정/해제) */
 .cs-final-q { font-size: 12px; font-weight: 700; color: var(--text); text-align: center; }
@@ -428,11 +439,12 @@
 
 /* 하단 컬러 마커 스트립 — 버튼이 모두 카드 위로 빠진 뒤, r/g/b 컬러만 얇게 표시(그리드). 색은 인라인. */
 .card-colorbar { flex: 0 0 auto; height: 14px; width: 100%; border-top: 1px solid rgba(0,0,0,0.35); }
-/* 최종(골드) — 컬러바가 골드 + 빛 흐름(테두리 대신 여기로). */
-.card-colorbar.final {
+/* 최종(골드) — 컬러바가 골드 + 빛(테두리 대신 여기로). 빛은 ::after 띠이고 평소엔 멈춰 있다 — 위 "골드 빛" 주석 참고. */
+.card-colorbar.final { background: #ffcf33; position: relative; overflow: hidden; }
+.card-colorbar.final::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 240%; pointer-events: none;
   background: linear-gradient(105deg, #ffcf33 0%, #ffe7a0 38%, #fff8df 50%, #ffe7a0 62%, #ffcf33 100%);
-  background-size: 240% 100%;
-  animation: goldSheen 2.3s linear infinite;
+  transform: translateX(-70%);
 }
 /* 칩은 '등록된 태그' 패널과 동일한 .tag-pill 로 통일 — cs-tag-chip/x 는 제거됨 */
 
