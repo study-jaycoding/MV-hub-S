@@ -31,8 +31,7 @@ status: active
 py -3 -m venv .venv
 & '.\.venv\Scripts\python.exe' -m pip install -r backend\requirements-dev.txt
 
-# 테스트는 backend 폴더 기준으로 실행한다
-$env:CONTENT_HUB_NO_PROXY = '1'
+# 테스트는 backend 폴더 기준으로 실행한다(격리 변수는 conftest 가 기본으로 넣는다 — 아래 설명)
 Push-Location backend
 try { & '..\.venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider }
 finally { Pop-Location }
@@ -53,9 +52,18 @@ npm.cmd run build
 `lint:architecture`는 P1 단계에서 경고 우선으로 운영한다. 종료 코드는 성공이어도
 표시된 경고는 현재 구조 부채이며, 새 경고를 만들지 않는 것을 원칙으로 한다.
 
-자동 테스트는 운영 DB 를 쓰지 않는다. 공통 fixture 는 없고(`conftest.py` 는 `CONTENT_HUB_DB_POOL=0` 만 설정) 격리 방식은
-테스트마다 다르다 — 임시 경로의 `CONTENT_HUB_DB` 환경변수, `db.init_db(db_path)` 직접 호출, 함수 인자로 경로 전달,
-`config.DATA_DIR` monkeypatch·mock. `CONTENT_HUB_DATA` 환경변수로 격리하는 테스트는 없다.
+환경변수 없이 하는 표준 pytest 실행은 운영 DB·실제 `backend/data` 를 쓰지 않는다. `backend/tests/conftest.py` 가 **격리 기본값**을 넣는다 — `CONTENT_HUB_DB_POOL=0`,
+`CONTENT_HUB_NO_PROXY=1`(저장된 공유 서버 토큰이 있어도 운영 서버로 중계하지 않는다), `CONTENT_HUB_DATA=<실행마다 새 임시 폴더>`
+(계정 포인터 `active.json`·`manage_hub.db`·`cost_cache_v2.json`·`device_identity.json` 같은 `DATA_DIR` 파생 경로가 실제
+`backend/data` 를 보지 않는다). 비어 있지 않은 값을 직접 지정하면 그 값을 따르고(빈 문자열은 기본값으로 바꾼다), 임시 폴더는 실행이 끝날 때 지우기를 시도한다(파일 잠금이 2초 넘게 이어지면 경고만 남기고 폴더가 남을 수 있다). 이 기본값이 풀리면
+`tests/test_pytest_isolation_defaults.py` 가 실패한다(실제 `backend/data` 를 명시한 실행도 실패한다 — 다만 이 가드는 여느 시험과 같은 순서로 돌 뿐이라, 다른 시험이 먼저 도는 것을 막지는 못한다).
+그 위의 격리 방식은 테스트마다 다르다 — 임시 경로의 `CONTENT_HUB_DB` 환경변수, `db.init_db(db_path)` 직접 호출, 함수 인자로 경로 전달,
+`config.DATA_DIR` monkeypatch·mock.
+
+> [!NOTE]
+> 보장 범위는 **pytest 수집 경로**뿐이다. conftest 보다 먼저 `app` 을 import 하는 외부 플러그인(`-p`)과 직접 실행하는 도구
+> (`tools/*.py`, `tests/*_mutation_check.py`)는 각자 환경변수를 고정한다. 2026-09-19 이전에는 "돌리는 쪽이 `CONTENT_HUB_NO_PROXY=1` 을
+> 넣는다"가 규칙이었고 `tools\predeploy_gate.ps1` 도 변수를 넣지 않았다 — 그 구멍을 conftest 한 곳에서 막았다.
 
 ### 사전 배포 통합 게이트
 
@@ -71,6 +79,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\predeploy_gate.ps1
 `-LoadServerPriority`, `-LoadMaxRssMb`를 명시하고 결과 JSON에 남은 값을 함께 보고한다.
 `-SkipLoad`, `-SkipBackupDrill`, `-AllowDirty` 결과는 빠른 개발 확인용이며 최종 배포 승인 근거로
 사용하지 않는다.
+
+게이트 스크립트는 환경변수를 넣지 않는다. 백엔드 테스트의 격리는 위 conftest 기본값이 맡는다. 백업·복원 드릴의 기본 실행은
+**현재 DB 를 읽기 전용으로 스냅샷해** 임시 폴더에서 검증한다(원본에 쓰지 않는다 — conftest 의 보호 대상이 아니다). 100명 부하 서버는
+임시 `CONTENT_HUB_DATA/DB` + `CONTENT_HUB_SERVER_SYNC=0` + `CONTENT_HUB_EXTERNAL_RECOVERY=0`(기동 때 실제 CLI 를 부르지 않는다)로 뜬다.
+`CONTENT_HUB_NO_PROXY` 는 도구가 `0` 으로 못 박는다 — AUTH on 이라 위임은 어차피 불가능하고, 부른 셸의 `1` 을 물려받으면 공유 서버 본체가 아닌
+격리 경로(`is_shared_team_server()=False`·telemetry 로컬 저장)를 재게 된다. 2026-09-19 이전의 게이트 결과는 부른 셸에 따라 어느 쪽이었는지 알 수 없다.
 
 ## 생성 제출 중단 복구(RL-05)
 
@@ -721,7 +735,9 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
 
 결과(`results_smoke.json`)는 `%TEMP%\mvhub-browser-measure` 에 생기고 **`servers.py stop` 이 복사본과 함께 지운다**(`--keep` 이면 남김).
 시험 DB 의 실제 계정 이름·이메일이 섞일 수 있어서 기본 모드의 결과·터미널에는 **자유 문장을 남기지 않는다** — 카드 수·선택 수·떠 있는 창의
-클래스 이름, 이벤트의 종류와 주소 경로, 고정 어휘의 실패 사유(대상 없음 / 기대와 다름 / 예외 종류)만 남긴다. 단계 메모·예외·콘솔·대화상자 원문과
+클래스 이름, 이벤트의 종류와 **라우트 틀**(`/api/auth/accounts/{email}/status` — 실제 경로의 동적 조각에는 마운트·프로젝트 이름이 실린다.
+틀은 `docs/inventory/endpoints.md` 에서 읽고, 틀에 없는 경로는 `/api/{…}` 로 줄인다), 고정 어휘의 실패 사유(대상 없음 / 기대와 다름 / 예외 종류)만 남긴다.
+생성 요청 0건 판정은 가리기 전의 원문에서 센다. 단계 메모·예외·콘솔·대화상자 원문과
 검색어가 든 주소는 `--verbose`, 스크린샷은 `--shots` 를 줬을 때만(그때도 이메일 꼴은 `%40` 으로 인코딩된 것까지 가린다). 결과·스크린샷을 **저장소나 보고서로 옮기지 않는다.**
 새 단계는 `smoke.py` 머리말의 요령대로 더하고, 단계의 메모에는 화면 글자 대신 클래스 이름·개수·참/거짓을 돌려준다. 아래는 도구가 하는 일의 설명이다.
 
@@ -732,8 +748,11 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
 
 - **데이터**: `backend\data_test\db\*.db` 를 SQLite **읽기 전용 backup** 으로 임시 폴더에 복사해 쓴다(돌고 있는 `test_dev` 세션을
   건드리지 않는다). 복사본에서 `app_setting` 의 `shared_server_token`·`shared_server_elev_*` 를 지우고 `shared_server_url` 을
-  죽은 주소(`http://127.0.0.1:9`)로 바꾼다 — 화면에서 무엇을 눌러도 운영 서버에 닿지 않는다.
-- **환경변수**: `backend/app/services/restore_runtime_verify.py` 의 격리 드릴 값을 기준으로 `CONTENT_HUB_NO_PROXY=1`,
+  죽은 주소(`http://127.0.0.1:9`)로 바꾼다 — 화면에서 무엇을 눌러도 운영 서버에 닿지 않는다. `project_folder_link` 행과
+  `project.render_root_path` 도 비운다 — Assets 창이 프로젝트의 실제 폴더를 자동 마운트하지 못하게.
+- **환경변수**: 부모 셸의 `CONTENT_HUB_*` 는 **전부 버리고** 시작한다(작업자 백업 상태 DB·outbox·기기 신원·로그 폴더 같은 경로 변수는
+  `DATA_DIR` 보다 우선해서, 하나라도 물려받으면 격리 폴더 밖에 쓴다). 그 위에
+  `backend/app/services/restore_runtime_verify.py` 의 격리 드릴 값을 기준으로 `CONTENT_HUB_NO_PROXY=1`,
   `CONTENT_HUB_SERVER_SYNC=0`, `CONTENT_HUB_EXTERNAL_RECOVERY=0`, `CONTENT_HUB_HOST=127.0.0.1`, `CONTENT_HUB_PORT=<비사용 포트>`,
   `NO_PROXY=127.0.0.1,localhost`, 임시 `CONTENT_HUB_DATA/DB/MEDIA/SHARED/ASSETS_DIR/BACKUP_DIR`, `CONTENT_HUB_FRONTEND_DIST=frontend\dist`
   를 준다. AUTH-on 서버에는 `CONTENT_HUB_AUTH=1`, `CONTENT_HUB_MANAGE=1`, 일회용 `CONTENT_HUB_ADMIN_EMAIL/PASSWORD/AUTH_SECRET` 를
@@ -746,11 +765,13 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
 - **브라우저**: Playwright 없이 헤드리스 Chrome + DevTools 프로토콜(`--remote-debugging-port`, venv 의 `websockets`)로 충분하다.
   `Page.javascriptDialogOpening` 을 처리하지 않으면 삭제의 `confirm()` 에서 모든 명령이 멈춘다. 비-GET 요청을 전부 기록해
   `/api/gen-requests` POST 가 0건임을 증거로 남긴다.
-- **누르지 않는 것**: Generate · 도크의 `Alt+Enter` · 카드의 ↻ 재생성 · Comfy 실행 · Resolve로 보내기 · 프로그램 업데이트 · HF 체크.
+- **누르지 않는 것**: Generate · 도크의 `Alt+Enter` · 카드의 ↻ 재생성 · Comfy 실행 · Resolve로 보내기 · 프로그램 업데이트 · HF 체크 ·
+  Assets 의 **폴더 등록**.
 
 > [!WARNING]
-> 격리 DB 를 써도 **Assets 창은 DB 에 등록된 실제 폴더(마운트·프로젝트 렌더 폴더)를 읽는다.** Assets 그리드에 파일을 끌어 놓으면
-> 그 **실제 폴더에 저장**된다(`POST /api/assets/upload`). 격리 실측에서는 Assets 의 파일 조작을 하지 않는다 — 컬러·태그·비활성처럼
+> Assets 창은 등록된 **실제 폴더**를 열고, 그리드에 파일을 끌어 놓으면 그 **실제 폴더에 저장**한다(`POST /api/assets/upload`).
+> 도구는 복사본에서 프로젝트 폴더 경로를 비워 **자동 마운트만** 없앤다. 실측 중에 손으로 폴더를 등록하면 탐색기 열기·업로드·클립보드 복사가
+> 다시 실제 폴더를 건드린다 — 이것은 **운영 규칙으로 금지하는 것이지 도구가 막아 주는 것이 아니다.** Assets 에서는 컬러·태그·비활성처럼
 > DB·브라우저에만 남는 메타만 잰다.
 
 ## 최신 서버 DB로 배포 직전 확인

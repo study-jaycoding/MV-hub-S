@@ -1046,7 +1046,7 @@ updated: 2026-09-18
 |---|---|---|
 | `tools/predeploy_gate.ps1`(238줄) | 문서린트+아키텍처린트+테스트+빌드+백업훈련+부하시험을 순서대로, 실패시 즉시 중단 | → 프론트 npm 스크립트들, `tools/verify_backup_restore.py`, `tools/load_test_100.py` |
 | `tools/deploy_fence_check.py`(158줄) | 배포 직전 생성 파이프라인이 완전히 비었는지 판정(종료코드 0/2/3) | |
-| `tools/load_test_100.py`(1620줄) | 100명 격리 부하시험(로그인/WS/에이전트 롱폴/읽기쓰기) | `endurance_probe.py`·`run_https_soak.ps1`·`predeploy_gate.ps1` 이 재사용 |
+| `tools/load_test_100.py`(1620줄) | 100명 격리 부하시험(로그인/WS/에이전트 롱폴/읽기쓰기). 서버 환경은 부모 셸의 `CONTENT_HUB_*` 를 버리고 다시 짠다 — `NO_PROXY=0`(공유 서버 본체 경로를 잰다)·`EXTERNAL_RECOVERY=0`(기동 때 실제 CLI 를 안 부른다) | `endurance_probe.py`·`run_https_soak.ps1`·`predeploy_gate.ps1` 이 재사용 |
 | `tools/run_https_soak.ps1`(334줄) | HTTPS 로 30분 자격시험+8시간 지구력 소크 오케스트레이션 | → `tools/load_test_100.py` |
 | `tools/endurance_probe.py`(1370줄) | 시간의존 안정성 격리 프로브(load_test_100 함수 직접 import 재사용) | |
 | `tools/baseline_metrics.py`(1277줄) | 운영 DB 사본(읽기전용 URI)의 기준선 지표+orphan 후보 산출 | → backend `media_cache`·`thumbs` |
@@ -1072,9 +1072,9 @@ updated: 2026-09-18
 | `tools/graft.ps1`(72줄) | graft CLI 래퍼(`callers`/`grep`/`blast`/`skeleton`) — 항상 이 래퍼로만 호출 |
 | `tools/lint_docs.ps1`(272줄) | 문서 규칙 검사(`npm run lint:docs` 가 호출) |
 | `tools/check_code_map.py` | 이 문서와 저장소의 양방향 대조(없는 파일 이름·빠진 파일) — 수동 실행, 게이트 미연결(§6) |
-| `tools/browser_measure/servers.py` | **격리 브라우저 실측용 서버 두 대**(H=AUTH off 허브·S=AUTH on+일회용 관리자) 기동·종료. 시험 DB 를 읽기 전용 backup 으로 복사 → 공유 서버 토큰·주소 제거 → CLI 를 뺀 PATH → 기동 뒤 격리를 **확인 못 하면 스스로 내림**. `stop` 은 자기가 띄운 것만 종료하고 복사본을 지운다. 안전 장치 시험 `backend/tests/test_browser_measure_isolation.py`. 절차 = [TESTING.md](TESTING.md) "격리 브라우저 실측". ⚠ 격리 DB 여도 Assets 는 실제 폴더에 쓴다 |
+| `tools/browser_measure/servers.py` | **격리 브라우저 실측용 서버 두 대**(H=AUTH off 허브·S=AUTH on+일회용 관리자) 기동·종료. 시험 DB 를 읽기 전용 backup 으로 복사 → 공유 서버 토큰·주소와 프로젝트의 실제 폴더 경로(`project_folder_link`·`render_root_path`) 제거 → 부모 셸의 `CONTENT_HUB_*` 를 전부 버린 환경(`server_env`) + CLI 를 뺀 PATH → 기동 뒤 격리를 **확인 못 하면 스스로 내림**. `stop` 은 자기가 띄운 것만 종료하고 복사본을 지운다. 안전 장치 시험 `backend/tests/test_browser_measure_isolation.py`. 절차 = [TESTING.md](TESTING.md) "격리 브라우저 실측". ⚠ 도구가 없애는 것은 Assets **자동 마운트**뿐이다 — 손으로 폴더를 등록하면 실제 폴더에 쓴다(운영 규칙으로 금지) |
 | `tools/browser_measure/cdp.py` | 헤드리스 Chrome/Edge 를 DevTools 프로토콜로 모는 드라이버(venv 의 `websockets` 만). 콘솔·실패 응답·**모든 비-GET 요청**·네이티브 대화상자를 모은다(`confirm()` 을 처리하지 않으면 모든 명령이 멈춘다) |
-| `tools/browser_measure/walk.py` | 실측 단계 러너(동작→상태 조사→이벤트 회수, 단계별 JSON) + 로그인·선택자 도우미. 판정은 `ok`/`stale`(대상 없음 = 시나리오가 낡음)/`failed`(제품 확인). **기본 모드의 결과에는 자유 문장을 남기지 않는다**(수치·클래스·이벤트 종류와 경로·고정 어휘 `reason`만, 원문은 verbose, 이메일은 `%40` 꼴까지 가림). → `cdp.py` |
+| `tools/browser_measure/walk.py` | 실측 단계 러너(동작→상태 조사→이벤트 회수, 단계별 JSON) + 로그인·선택자 도우미. 판정은 `ok`/`stale`(대상 없음 = 시나리오가 낡음)/`failed`(제품 확인). **기본 모드의 결과에는 자유 문장을 남기지 않는다**(수치·클래스·이벤트 종류와 **라우트 틀**·고정 어휘 `reason`만 — 실제 경로의 동적 조각에는 이름이 실리므로 `docs/inventory/endpoints.md` 의 틀로 바꾸고 틀에 없으면 `/api/{…}` 로 줄인다. 원문은 verbose, 이메일은 `%40` 꼴까지 가림). 생성 요청 수(`gen_requests`)는 가리기 전 원문에서 센다. → `cdp.py`, `docs/inventory/endpoints.md` |
 | `tools/browser_measure/smoke.py` | 핵심 화면 41단계 시나리오(보기·검색·카드 단축키·미리보기·다중 선택·탭·도크·**처음 연 창의 Esc 1회**·분리 창). 종료 코드 0 통과 · 1 제품 확인 필요(실패·`/api/gen-requests` 요청 발생) · 2 시나리오만 낡음. `--shots`·`--verbose` 는 선택. 유료·외부 실행 단추는 누르지 않는다. → `walk.py` |
 | `tools/gen_inventory.py` | 코드에서 뽑는 목록 `docs/inventory/*.md`(엔드포인트·환경변수·DB 테이블·백그라운드 작업) 생성기. 표준 라이브러리만·앱 import 없음. `--check` = 어긋남만 확인. 낡으면 `backend/tests/test_docs_inventory_fresh.py` 가 실패한다(§6) |
 
