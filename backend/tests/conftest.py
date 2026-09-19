@@ -11,13 +11,54 @@ GC 타이밍에 달려 있다. tearDown 의 TemporaryDirectory.cleanup() 이 그
 (운영 동작 무변경 — 풀은 CONTENT_HUB_DB_POOL 기본값 1 로 운영에서 계속 켜져 있다.)
 """
 
+import atexit
 import os
+import shutil
+import sys
 import tempfile
 import time
 
 # app.db 가 import 시점에 _POOL_ENABLED 를 읽으므로, 어떤 테스트 모듈보다 먼저
 # (conftest 로드 시점에) 환경변수를 심는다. 이미 명시된 값이 있으면 존중한다.
 os.environ.setdefault("CONTENT_HUB_DB_POOL", "0")
+
+# 격리 기본값 — 변수를 빠뜨린 실행이 실제 데이터·운영 공유 서버에 닿지 않게 한다(2026-09-19).
+#
+# 종전에는 "돌리는 쪽이 CONTENT_HUB_NO_PROXY=1 을 넣는다"가 규칙이었는데, 사람도 에이전트도
+# predeploy_gate.ps1 도 빠뜨릴 수 있었다. 게다가 CONTENT_HUB_DB 만 임시로 돌리는 시험이 많아
+# DATA_DIR 파생 경로(active.json 계정 포인터·manage_hub.db·cost_cache_v2.json·device_identity.json)
+# 는 실제 backend/data 를 봤다 — 계정 포인터와 그 계정 DB 의 실제 토큰이 있으면 proxying() 이
+# 성립해 시험 요청이 운영 서버로 중계된다. config 가 import 시점에 경로를 굳히므로 여기서 심는다.
+# ★보장 범위는 pytest 수집 경로뿐이다 — conftest 보다 먼저 app 을 import 하는 외부 플러그인(-p)과
+#  직접 실행하는 도구(tools/*.py, tests/*_mutation_check.py)는 각자 env 를 고정한다.
+# 비어 있지 않은 명시값은 존중한다(프록시 모드를 시험하는 곳은 스스로 "0" 을 넣는다). ★빈 문자열은 기본값으로
+# 바꾼다 — setdefault 는 "" 를 '있음'으로 보는데, 빈 NO_PROXY 는 위임 허용이고 빈 DATA 는 현재 폴더(backend)다.
+# pytest-xdist 는 쓰지 않는 전제다(워커들이 이 임시 DATA 하나를 물려받아 공유한다 — 종전의 실제 폴더 공유와 같다).
+if not os.environ.get("CONTENT_HUB_NO_PROXY"):
+    os.environ["CONTENT_HUB_NO_PROXY"] = "1"
+
+if not os.environ.get("CONTENT_HUB_DATA"):
+    _data_root = tempfile.mkdtemp(prefix="mvhub-pytest-data-")
+    os.environ["CONTENT_HUB_DATA"] = _data_root
+
+    def _remove_data_root():
+        # 아래 TemporaryDirectory 정리와 같은 재시도 정책. 끝내 못 지우면 경고만 남기고
+        # 시험 결과는 바꾸지 않는다(임시 폴더 잔존은 시험 실패가 아니다).
+        for _attempt in range(10):
+            try:
+                shutil.rmtree(_data_root)
+                return
+            except FileNotFoundError:
+                return
+            except OSError:
+                time.sleep(0.2)
+        # ASCII 로만 쓴다 - 종료 시점의 stderr 인코딩을 믿지 않는다(cp949 콘솔·파일 리다이렉트).
+        print(f"[conftest] could not remove temp data dir: {_data_root!r}", file=sys.stderr)
+
+    atexit.register(_remove_data_root)
+
+# 실제 레이아웃처럼 db/ 를 미리 둔다 — 기본 DB 를 바로 여는 시험(test_generation_media_cache)이 폴더 부재로 깨지지 않게.
+os.makedirs(os.path.join(os.environ["CONTENT_HUB_DATA"], "db"), exist_ok=True)
 
 # TemporaryDirectory 정리에 짧은 재시도를 더한다.
 #

@@ -1,6 +1,8 @@
 """생성물 원격 미디어 보관 흐름의 특성화 테스트.
 
-다운로드 서비스와 repo를 가짜로 바꿔 실제 네트워크·파일·DB에는 접근하지 않는다.
+다운로드 서비스와 repo 의 행 갱신 함수를 가짜로 바꿔 실제 네트워크·파일에는 접근하지 않는다.
+DB 는 예외다 — `repo.apply_generation_media_cache_updates` 가 기본 DB 를 열어 `BEGIN IMMEDIATE`
+트랜잭션을 건다(행은 안 바뀐다). 그 기본 DB 는 conftest 가 심는 임시 `CONTENT_HUB_DATA` 아래다.
 """
 
 from types import SimpleNamespace
