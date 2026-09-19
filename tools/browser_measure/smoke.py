@@ -1,7 +1,8 @@
 """격리 서버(S) 위에서 핵심 화면을 한 바퀴 도는 실측 시나리오 — 2026-09-19 실측에서 통과가 확인된 단계만 담았다.
 
   1) <venv python> tools/browser_measure/servers.py start
-  2) <venv python> tools/browser_measure/smoke.py            (결과: 작업 폴더의 results_smoke.json · shots/)
+  2) <venv python> tools/browser_measure/smoke.py            (결과: 작업 폴더의 results_smoke.json. `--shots` 를 주면 shots/ 에 화면도)
+     종료 코드: 0 = 전부 통과 · 1 = 제품 쪽 확인 필요(기대와 다름·예외·생성 요청 발생) · 2 = 시나리오만 낡음(대상을 찾지 못함 — UI 가 바뀌었다)
   3) <venv python> tools/browser_measure/servers.py stop
 
 ★누르지 않는다: Generate · 도크의 Alt+Enter · 카드의 ↻ 재생성 · Comfy 실행 · Resolve로 보내기 · 프로그램 업데이트 · HF 체크 · Assets 파일 조작.
@@ -26,10 +27,10 @@ CARD = "document.querySelectorAll('.gen-cell .card')"
 TOOL_DOT = "[...document.querySelectorAll('.lib-tools .af-dot, .assets-filters .af-dot')]"
 
 
-async def run(base: str, work: Path, debug_port: int) -> int:
+async def run(base: str, work: Path, debug_port: int, shots: bool, verbose: bool) -> int:
     creds = json.loads((work / "S" / "creds.json").read_text(encoding="utf-8"))
     async with Page(debug_port, work / "chrome_profile") as pg:
-        w = Walker(pg, "smoke", work)
+        w = Walker(pg, "smoke", work, shots=shots, verbose=verbose)
         has_cards = lambda s, n: True if s.get("cards", 0) > 0 else "카드가 없다"  # noqa: E731
         one_selected = lambda s, n: True if s.get("selected") == 1 else f"선택 {s.get('selected')}개"  # noqa: E731
 
@@ -137,10 +138,17 @@ async def run(base: str, work: Path, debug_port: int) -> int:
         await w.step("분리 창", "PM 관리", lambda: goto(base + "?embed=manage"), settle=6, expect=lambda s, n: True if "manage-window" in s["layers"] else f"{s['layers']}")
 
         path = w.save()
-        failed = [r for r in w.results if not r["ok"]]
+        failed = [r for r in w.results if r["verdict"] == "failed"]
+        stale = [r for r in w.results if r["verdict"] == "stale"]
         submitted = [m for r in w.results for m in r["mutations"] if "gen-requests" in m]
-        print(f"\n단계 {len(w.results)} · 실패 {len(failed)} · 생성 요청 {len(submitted)}건 · 결과 {path}")
-        return 1 if failed or submitted else 0
+        print(f"\n단계 {len(w.results)} · 실패 {len(failed)} · 낡은 단계 {len(stale)} · 생성 요청 {len(submitted)}건 · 결과 {path}")
+        if failed and not verbose:
+            print("실패한 단계의 자세한 원인(기대값·화면 값)은 기본 모드에 남기지 않는다 — `--verbose` 로 다시 돌려 본다: "
+                  + ", ".join(f"{r['n']:03d} {r['step']} ({r['reason']})" for r in failed))
+        if stale:
+            print("낡은 단계 = 화면이 바뀌어 대상을 못 찾은 것이다. 제품 결함이 아니라 이 시나리오를 고칠 차례: "
+                  + ", ".join(f"{r['n']:03d} {r['step']}" for r in stale))
+        return 1 if failed or submitted else (2 if stale else 0)
 
 
 def main() -> int:
@@ -148,8 +156,10 @@ def main() -> int:
     ap.add_argument("--work", type=Path, default=Path(tempfile.gettempdir()) / "mvhub-browser-measure", help="servers.py 와 같은 작업 폴더")
     ap.add_argument("--server-port", type=int, default=8232)
     ap.add_argument("--debug-port", type=int, default=9331, help="브라우저 원격 디버깅 포트")
+    ap.add_argument("--shots", action="store_true", help="단계마다 스크린샷 저장(실제 계정 이름이 찍힐 수 있다 — 저장소·보고서로 옮기지 않는다)")
+    ap.add_argument("--verbose", action="store_true", help="콘솔·대화상자 원문까지 결과에 남긴다(기본은 종류와 경로만 — 원문에는 이름이 섞일 수 있다)")
     args = ap.parse_args()
-    return asyncio.run(run(f"http://127.0.0.1:{args.server_port}/", args.work.resolve(), args.debug_port))
+    return asyncio.run(run(f"http://127.0.0.1:{args.server_port}/", args.work.resolve(), args.debug_port, args.shots, args.verbose))
 
 
 if __name__ == "__main__":

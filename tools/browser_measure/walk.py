@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 
@@ -61,47 +62,91 @@ async def login(pg: Page, base_url: str, creds: dict) -> str:
     return "ok" if ok else "FAILED"
 
 
+# 이메일은 요청 **경로** 안에 URL 인코딩된 꼴(`…/accounts/name%40host/status`)로도 실려 다닌다 — 두 꼴을 모두 가린다.
+EMAIL = re.compile(r"[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", re.I)
+
+
+def mask(value):
+    """결과에 남기기 전에 이메일 꼴 문자열을 가린다(문자열·목록·사전을 재귀로). 표시 이름은 기계로 못 가린다 — 그래서 스크린샷은 기본 끔."""
+    if isinstance(value, str):
+        return EMAIL.sub("<email>", value)
+    if isinstance(value, list):
+        return [mask(v) for v in value]
+    if isinstance(value, dict):
+        return {k: mask(v) for k, v in value.items()}
+    return value
+
+
+URL = re.compile(r"https?://[^\s\"']+")
+
+
+def url_path(url: str) -> str:
+    """주소에서 호스트와 질의(?…)를 뗀 경로만 — 질의에는 검색어·이름이 실릴 수 있다."""
+    return "/" + url.split("://", 1)[-1].split("/", 1)[-1].split("?", 1)[0].split("#", 1)[0] if "://" in url else url.split("?", 1)[0]
+
+
+def redact(events: dict) -> dict:
+    """콘솔·네트워크·쓰기 요청·대화상자에서 **종류와 경로만** 남긴다. 원문에는 표시 이름·프로젝트 이름이 섞일 수 있다."""
+    return {
+        "console": [{"kind": e["kind"], "paths": [mask(url_path(u)) for u in URL.findall(e.get("text", ""))][:2]} for e in events["console"]],
+        "network": [{"status": e.get("status"), "method": e.get("method"), "path": mask(url_path(e.get("url", "")))} for e in events["network"]],
+        "mutations": [mask(m.split("?", 1)[0]) for m in events["mutations"]],
+        "dialogs": [{"type": d.get("type"), "accepted": d.get("accepted"), "chars": len(d.get("message", ""))} for d in events["dialogs"]],
+    }
+
+
 class Walker:
-    def __init__(self, pg: Page, tag: str, out: Path):
-        self.pg, self.tag, self.out, self.results, self.n = pg, tag, out, [], 0
+    """기본 모드의 결과·터미널에는 **자유 문장이 하나도 남지 않는다** — 단계의 메모(note)·예외 원문·검색어가 든 주소·네트워크 오류 원문은
+    `verbose` 일 때만 남긴다(그때도 이메일은 가린다). 기본 모드에서 실패 원인은 고정 어휘 `reason`(대상 없음 / 기대와 다름 / 예외 종류)으로만 알린다."""
+
+    def __init__(self, pg: Page, tag: str, out: Path, shots: bool = False, verbose: bool = False):
+        self.pg, self.tag, self.out, self.shots, self.verbose, self.results, self.n = pg, tag, out, shots, verbose, [], 0
 
     async def step(self, feature: str, name: str, action, settle: float = 1.2, expect=None) -> dict:
         """action: 메모(str/dict)를 돌려주는 async 호출. 대상을 못 찾으면 False. expect(state, note) 는 True 또는 실패 사유."""
         self.n += 1
         self.pg.drain()
-        started, ok = time.time(), True
+        # verdict: ok / stale(대상을 못 찾음 = 시나리오가 낡았다 — UI 가 바뀐 것) / failed(기대와 다름·예외 = 제품 쪽을 본다)
+        started, verdict, reason = time.time(), "ok", ""
         try:
             note = await action()
             if note is False:
-                ok, note = False, "대상을 찾지 못함"
+                verdict, reason, note = "stale", "대상을 찾지 못함", None
         except Exception as e:  # noqa: BLE001 — 한 단계의 실패가 실측 전체를 멈추지 않게
-            ok, note = False, f"예외 {type(e).__name__}: {str(e)[:300]}"
+            verdict, reason, note = "failed", f"예외 {type(e).__name__}", f"{type(e).__name__}: {str(e)[:300]}"
         await asyncio.sleep(settle)
         try:
             state = await self.pg.eval(PROBE)
         except Exception as e:  # noqa: BLE001
             state = {"probe_error": str(e)[:200]}
-        if ok and expect is not None:
-            verdict = expect(state, note)
-            if verdict is not True:
-                ok, note = False, f"기대와 다름: {verdict} | {note}"
-        shot = f"{self.tag}_{self.n:03d}.png"
-        try:
-            await self.pg.shot(self.out / "shots" / shot)
-        except Exception:  # noqa: BLE001
-            shot = None
-        events = self.pg.drain()
-        record = {"n": self.n, "feature": feature, "step": name, "ok": ok, "note": note, "state": state, "shot": shot,
-                  "console": events["console"][:8], "network": events["network"][:8], "mutations": events["mutations"][:12],
-                  "dialogs": events["dialogs"], "sec": round(time.time() - started, 1)}
+        if verdict == "ok" and expect is not None:
+            why = expect(state, note)
+            if why is not True:
+                verdict, reason, note = "failed", "기대와 다름", f"{why} | {note}"
+        shot = None
+        if self.shots:  # 화면에는 실제 계정 이름이 찍힐 수 있다 — 요청했을 때만 저장한다
+            shot = f"{self.tag}_{self.n:03d}.png"
+            try:
+                await self.pg.shot(self.out / "shots" / shot)
+            except Exception:  # noqa: BLE001
+                shot = None
+        raw = self.pg.drain()
+        events = mask(raw) if self.verbose else redact(raw)  # 원문은 --verbose 일 때만(이메일은 그때도 가린다)
+        ok = verdict == "ok"
+        safe_state = {k: state.get(k) for k in ("cards", "selected", "layers")}  # url(검색어)·건수 글자는 기본 모드에서 뺀다
+        record = mask({"n": self.n, "feature": feature, "step": name, "ok": ok, "verdict": verdict, "reason": reason,
+                       "note": note if self.verbose else None, "state": state if self.verbose else safe_state,
+                       "shot": shot, "console": events["console"][:8], "network": events["network"][:8],
+                       "mutations": events["mutations"][:12], "dialogs": events["dialogs"], "sec": round(time.time() - started, 1)})
         self.results.append(record)
         extra = "".join([
-            f" console={len(events['console'])}" if events["console"] else "",
-            f" net={len(events['network'])}" if events["network"] else "",
-            " 쓰기=" + ",".join(m.split("?")[0] for m in events["mutations"][:3]) if events["mutations"] else "",
-            " 대화상자=" + json.dumps([d["message"][:60] for d in events["dialogs"]], ensure_ascii=False) if events["dialogs"] else "",
+            f" console={len(raw['console'])}" if raw["console"] else "",
+            f" net={len(raw['network'])}" if raw["network"] else "",
+            " 쓰기=" + ",".join(mask(m.split("?")[0]) for m in raw["mutations"][:3]) if raw["mutations"] else "",
+            f" 대화상자={len(raw['dialogs'])}" if raw["dialogs"] else "",
         ])
-        print(f"[{'OK ' if ok else 'FAIL'}] {self.n:03d} {feature} / {name} -> {json.dumps(note, ensure_ascii=False)[:140]}"
+        shown = json.dumps(record["note"], ensure_ascii=False)[:140] if self.verbose else (reason or "ok")
+        print(f"[{ {'ok': 'OK   ', 'stale': 'STALE', 'failed': 'FAIL '}[verdict] }] {self.n:03d} {feature} / {name} -> {shown}"
               f" | cards={state.get('cards')} sel={state.get('selected')}{extra}", flush=True)
         return record
 
@@ -124,7 +169,8 @@ class Walker:
 
     def js(self, expression: str):
         async def act():
-            return await self.pg.eval(expression)
+            value = await self.pg.eval(expression)
+            return "false" if value is False else value  # False 는 "대상을 찾지 못함"의 신호라, 값으로서의 false 와 구분한다
         return act
 
     def appeared(self, action, settle: float = 1.5):

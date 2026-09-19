@@ -2,7 +2,7 @@
 
   <venv python> tools/browser_measure/servers.py start     스냅샷 복사 → 토큰 제거 → H·S 기동 → 격리 확인(실패하면 즉시 내림)
   <venv python> tools/browser_measure/servers.py status
-  <venv python> tools/browser_measure/servers.py stop      이 도구가 띄운 프로세스만 종료 + 복사본 삭제(계정 정보가 들어 있다). --keep 으로 남김
+  <venv python> tools/browser_measure/servers.py stop      이 도구가 띄운 프로세스만 종료 + 복사본·실측 결과 삭제(계정 정보가 들어 있다). --keep 으로 남김
 
   H = 로컬 허브 보기(AUTH off, 기본 8231) · S = 서버 보기(AUTH on + 일회용 관리자, 기본 8232)
 
@@ -159,10 +159,13 @@ def stop(work: Path, keep: bool) -> int:
         pids_file.unlink()
     if not keep:
         time.sleep(1)  # 방금 종료한 프로세스의 파일 핸들이 풀릴 시간
-        # 이 도구들이 만든 하위 폴더만 지운다(작업 폴더 자체는 건드리지 않는다). 결과 JSON·shots 는 사람이 보라고 남긴다.
-        for name in ("H", "S", "chrome_profile"):
+        # 이 도구들이 만든 것만 지운다(작업 폴더 자체는 건드리지 않는다). 결과·스크린샷에도 실제 계정 이름이 남을 수 있어 함께 지운다.
+        for name in ("H", "S", "chrome_profile", "shots"):
             shutil.rmtree(work / name, ignore_errors=True)
-            print(f"복사본 삭제: {work / name}" + (" (일부 남음 — 다시 stop)" if (work / name).exists() else ""))
+            print(f"삭제: {work / name}" + (" (일부 남음 — 다시 stop)" if (work / name).exists() else ""))
+        for result in work.glob("results_*.json"):
+            result.unlink(missing_ok=True)
+            print(f"삭제: {result}")
     return 0
 
 

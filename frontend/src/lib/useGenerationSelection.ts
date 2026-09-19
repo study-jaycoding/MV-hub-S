@@ -15,7 +15,9 @@ export function useGenerationSelection({
   selectedRef.current = selected;
 
   const toggleSelect = (id: string) => setSelected((prev) => toggleSetValue(prev, id));
-  const clearSelect = () => setSelected(new Set());
+  // 이미 비어 있으면 같은 Set 을 돌려 재렌더를 만들지 않는다 — Esc 마다 App 이 다시 그려지면 같은 Esc 를 기다리던
+  // 다른 keydown 리스너가 전달 도중 재구독되며 첫 입력을 놓친다(2026-09-19 실측, useEscapeClose 와 한 쌍).
+  const clearSelect = () => setSelected((prev) => (prev.size ? new Set() : prev));
 
   useEffect(() => {
     const onDocDown = (e: MouseEvent) => {
