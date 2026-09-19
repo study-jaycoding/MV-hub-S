@@ -36,7 +36,7 @@ ADMIN_DOMAIN = "@localhost.invalid"
 
 
 def snapshot(src: Path, dst: Path) -> None:
-    """읽기 전용 연결의 backup API 로 복사한다(돌고 있는 세션의 WAL DB 도 안전). 복사본에서 공유 서버 토큰·주소를 지운다."""
+    """읽기 전용 연결의 backup API 로 복사한다(돌고 있는 세션의 WAL DB 도 안전). 복사본에서 공유 서버 토큰·주소와 프로젝트의 실제 폴더 경로를 지운다."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.unlink(missing_ok=True)
     with sqlite3.connect(src.absolute().as_uri() + "?mode=ro", uri=True) as a, sqlite3.connect(dst) as b:
@@ -45,6 +45,38 @@ def snapshot(src: Path, dst: Path) -> None:
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_setting'").fetchone():
             conn.execute(f"DELETE FROM app_setting WHERE key IN ({','.join('?' * len(SCRUB_KEYS))})", SCRUB_KEYS)
             conn.execute("INSERT INTO app_setting(key, value) VALUES ('shared_server_url', ?)", (DEAD_URL,))
+        # Assets 창은 프로젝트의 폴더 경로를 자동 마운트한다(routers/assets.py `_auto_project_mounts`) — 남겨 두면 격리 복사본이어도
+        # 실제 NAS·로컬 폴더가 열리고 업로드가 거기에 저장된다. ★손으로 폴더를 등록하는 것까지는 못 막는다(운영 규칙으로 금지).
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "project_folder_link" in tables:
+            conn.execute("DELETE FROM project_folder_link")
+        if "project" in tables and any(col[1] == "render_root_path" for col in conn.execute("PRAGMA table_info(project)")):
+            conn.execute("UPDATE project SET render_root_path = NULL")
+
+
+def isolated_base_env(parent) -> dict[str, str]:
+    """부모 셸의 `CONTENT_HUB_*` 를 **전부** 버린다 — 경로 변수(작업자 백업 상태 DB·outbox·기기 신원·로그 폴더 등)는 DATA_DIR 보다
+    우선하므로, 하나라도 물려받으면 격리 폴더 밖에 쓴다. 필요한 값은 start() 가 아래에서 다시 넣는다."""
+    dropped = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "ELECTRON_RUN_AS_NODE")
+    return {k: v for k, v in parent.items() if not k.upper().startswith("CONTENT_HUB_") and k.upper() not in dropped}
+
+
+def server_env(parent, name: str, port: int, data: Path) -> dict[str, str]:
+    """격리 서버 한 대의 환경 — 부모의 `CONTENT_HUB_*` 없이, 모든 경로가 작업 폴더(data) 안을 가리킨다."""
+    env = isolated_base_env(parent)
+    env.update({
+        "PATH": clean_path(env.get("PATH", "")),
+        "CONTENT_HUB_DATA": str(data), "CONTENT_HUB_DB": str(data / "db" / "content_hub.db"),
+        "CONTENT_HUB_MEDIA": str(data / "media"), "CONTENT_HUB_SHARED": str(data / "shared"),
+        "CONTENT_HUB_ASSETS_DIR": str(data / "assets"), "CONTENT_HUB_BACKUP_DIR": str(data / "backups"),
+        "CONTENT_HUB_FRONTEND_DIST": str(REPO / "frontend" / "dist"),
+        "CONTENT_HUB_BACKUP_INTERVAL": "0", "CONTENT_HUB_SERVER_SYNC": "0", "CONTENT_HUB_METRICS_LOG_INTERVAL": "0",
+        "CONTENT_HUB_ACCESS_LOG": "1", "CONTENT_HUB_NO_PROXY": "1", "CONTENT_HUB_EXTERNAL_RECOVERY": "0",
+        "CONTENT_HUB_SHARED_URL": DEAD_URL, "CONTENT_HUB_MANAGE": "1", "CONTENT_HUB_DB_BACKEND": "sqlite",
+        "CONTENT_HUB_HOST": "127.0.0.1", "CONTENT_HUB_PORT": str(port), "CONTENT_HUB_AUTH": "1" if name == "S" else "0",
+        "NO_PROXY": "127.0.0.1,localhost", "PYTHONIOENCODING": "utf-8",
+    })
+    return env
 
 
 def clean_path(path_value: str) -> str:
@@ -108,22 +140,7 @@ def start(work: Path, ports: dict[str, int], seed: bool) -> int:
         for db_name in ("content_hub.db", "content_hub_trash.db", "manage_hub.db"):
             if (SOURCE_DB_DIR / db_name).is_file():
                 snapshot(SOURCE_DB_DIR / db_name, data / "db" / db_name)
-        env = os.environ.copy()
-        for key in ("CONTENT_HUB_SSL_CERTFILE", "CONTENT_HUB_SSL_KEYFILE", "CONTENT_HUB_TEST_SNAPSHOT_EXPORT",
-                    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "ELECTRON_RUN_AS_NODE"):
-            env.pop(key, None)
-        env.update({
-            "PATH": clean_path(env.get("PATH", "")),
-            "CONTENT_HUB_DATA": str(data), "CONTENT_HUB_DB": str(data / "db" / "content_hub.db"),
-            "CONTENT_HUB_MEDIA": str(data / "media"), "CONTENT_HUB_SHARED": str(data / "shared"),
-            "CONTENT_HUB_ASSETS_DIR": str(data / "assets"), "CONTENT_HUB_BACKUP_DIR": str(data / "backups"),
-            "CONTENT_HUB_FRONTEND_DIST": str(REPO / "frontend" / "dist"),
-            "CONTENT_HUB_BACKUP_INTERVAL": "0", "CONTENT_HUB_SERVER_SYNC": "0", "CONTENT_HUB_METRICS_LOG_INTERVAL": "0",
-            "CONTENT_HUB_ACCESS_LOG": "1", "CONTENT_HUB_NO_PROXY": "1", "CONTENT_HUB_EXTERNAL_RECOVERY": "0",
-            "CONTENT_HUB_SHARED_URL": DEAD_URL, "CONTENT_HUB_MANAGE": "1", "CONTENT_HUB_DB_BACKEND": "sqlite",
-            "CONTENT_HUB_HOST": "127.0.0.1", "CONTENT_HUB_PORT": str(port), "CONTENT_HUB_AUTH": "1" if name == "S" else "0",
-            "NO_PROXY": "127.0.0.1,localhost", "PYTHONIOENCODING": "utf-8",
-        })
+        env = server_env(os.environ, name, port, data)
         if name == "S":
             creds = {"email": f"bm-{secrets.token_hex(4)}{ADMIN_DOMAIN}", "password": secrets.token_urlsafe(18)}
             env.update({"CONTENT_HUB_ADMIN_EMAIL": creds["email"], "CONTENT_HUB_ADMIN_PASSWORD": creds["password"],

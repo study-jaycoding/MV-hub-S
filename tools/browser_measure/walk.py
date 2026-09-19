@@ -78,19 +78,50 @@ def mask(value):
 
 
 URL = re.compile(r"https?://[^\s\"']+")
+# 경로의 동적 조각(마운트 이름·프로젝트 이름·이메일)에도 이름이 실린다 → 기본 모드는 실제 경로 대신 **라우트 틀**을 남긴다.
+# 틀의 출처는 코드에서 생성되는 목록(낡으면 backend/tests/test_docs_inventory_fresh.py 가 실패한다).
+ENDPOINTS_MD = Path(__file__).resolve().parents[2] / "docs" / "inventory" / "endpoints.md"
+_ROUTES: list[tuple[re.Pattern, str]] | None = None
 
 
-def url_path(url: str) -> str:
-    """주소에서 호스트와 질의(?…)를 뗀 경로만 — 질의에는 검색어·이름이 실릴 수 있다."""
-    return "/" + url.split("://", 1)[-1].split("/", 1)[-1].split("?", 1)[0].split("#", 1)[0] if "://" in url else url.split("?", 1)[0]
+def _routes() -> list[tuple[re.Pattern, str]]:
+    global _ROUTES
+    if _ROUTES is None:
+        try:
+            found = set(re.findall(r"^\| `[A-Z]+` \| `(/[^`]+)` \|", ENDPOINTS_MD.read_text(encoding="utf-8"), re.M))
+        except OSError:
+            found = set()  # 목록을 못 읽으면 전부 축약된다(안전한 쪽으로 실패)
+        found.discard("/{full_path:path}")  # SPA 폴백은 무엇이든 받으므로 틀로 쓰지 않는다
+        # 고정 경로가 동적 경로보다 먼저 맞도록: `{` 가 적은 틀부터
+        _ROUTES = [(re.compile("".join(
+            (".+" if part.endswith(":path}") else "[^/]+") if part.startswith("{") else re.escape(part)
+            for part in re.split(r"(\{[^}]+\})", template))), template)
+            for template in sorted(found, key=lambda t: (t.count("{"), t))]
+    return _ROUTES
+
+
+def route_of(url: str) -> str:
+    """주소 → 호스트·질의를 뗀 뒤 라우트 틀(`/api/auth/accounts/{email}/status`). 틀에 없으면 첫 조각만 남기고 축약한다."""
+    path = "/" + url.split("://", 1)[-1].split("/", 1)[-1] if "://" in url else "/" + url.lstrip("/")
+    path = path.split("?", 1)[0].split("#", 1)[0]
+    for pattern, template in _routes():
+        if pattern.fullmatch(path):
+            return template
+    first = path.split("/")[1] if path.count("/") > 1 else ""
+    return f"/{first}/{{…}}" if first in ("api", "media", "assets") else ("/" if path == "/" else "/{…}")
+
+
+def _mutation(entry: str) -> str:
+    method, _, rest = entry.partition(" ")  # cdp.py 가 "METHOD 경로" 꼴로 모은다
+    return f"{method} {route_of(rest)}"
 
 
 def redact(events: dict) -> dict:
-    """콘솔·네트워크·쓰기 요청·대화상자에서 **종류와 경로만** 남긴다. 원문에는 표시 이름·프로젝트 이름이 섞일 수 있다."""
+    """콘솔·네트워크·쓰기 요청·대화상자에서 **종류와 라우트 틀만** 남긴다. 원문·실제 경로에는 표시 이름·프로젝트 이름이 섞일 수 있다."""
     return {
-        "console": [{"kind": e["kind"], "paths": [mask(url_path(u)) for u in URL.findall(e.get("text", ""))][:2]} for e in events["console"]],
-        "network": [{"status": e.get("status"), "method": e.get("method"), "path": mask(url_path(e.get("url", "")))} for e in events["network"]],
-        "mutations": [mask(m.split("?", 1)[0]) for m in events["mutations"]],
+        "console": [{"kind": e["kind"], "paths": [route_of(u) for u in URL.findall(e.get("text", ""))][:2]} for e in events["console"]],
+        "network": [{"status": e.get("status"), "method": e.get("method"), "path": route_of(e.get("url", ""))} for e in events["network"]],
+        "mutations": [_mutation(m) for m in events["mutations"]],
         "dialogs": [{"type": d.get("type"), "accepted": d.get("accepted"), "chars": len(d.get("message", ""))} for d in events["dialogs"]],
     }
 
@@ -101,6 +132,7 @@ class Walker:
 
     def __init__(self, pg: Page, tag: str, out: Path, shots: bool = False, verbose: bool = False):
         self.pg, self.tag, self.out, self.shots, self.verbose, self.results, self.n = pg, tag, out, shots, verbose, [], 0
+        self.gen_requests = 0  # 생성 요청 수는 가리기 전의 원문에서 센다 — 안전 판정이 축약·12건 자르기에 기대지 않게
 
     async def step(self, feature: str, name: str, action, settle: float = 1.2, expect=None) -> dict:
         """action: 메모(str/dict)를 돌려주는 async 호출. 대상을 못 찾으면 False. expect(state, note) 는 True 또는 실패 사유."""
@@ -131,6 +163,7 @@ class Walker:
             except Exception:  # noqa: BLE001
                 shot = None
         raw = self.pg.drain()
+        self.gen_requests += sum("gen-requests" in m for m in raw["mutations"])
         events = mask(raw) if self.verbose else redact(raw)  # 원문은 --verbose 일 때만(이메일은 그때도 가린다)
         ok = verdict == "ok"
         safe_state = {k: state.get(k) for k in ("cards", "selected", "layers")}  # url(검색어)·건수 글자는 기본 모드에서 뺀다
@@ -142,7 +175,7 @@ class Walker:
         extra = "".join([
             f" console={len(raw['console'])}" if raw["console"] else "",
             f" net={len(raw['network'])}" if raw["network"] else "",
-            " 쓰기=" + ",".join(mask(m.split("?")[0]) for m in raw["mutations"][:3]) if raw["mutations"] else "",
+            " 쓰기=" + ",".join(events["mutations"][:3]) if raw["mutations"] else "",  # 기본 모드는 라우트 틀, verbose 는 이메일만 가린 원문
             f" 대화상자={len(raw['dialogs'])}" if raw["dialogs"] else "",
         ])
         shown = json.dumps(record["note"], ensure_ascii=False)[:140] if self.verbose else (reason or "ok")

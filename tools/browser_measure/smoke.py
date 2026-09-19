@@ -140,15 +140,14 @@ async def run(base: str, work: Path, debug_port: int, shots: bool, verbose: bool
         path = w.save()
         failed = [r for r in w.results if r["verdict"] == "failed"]
         stale = [r for r in w.results if r["verdict"] == "stale"]
-        submitted = [m for r in w.results for m in r["mutations"] if "gen-requests" in m]
-        print(f"\n단계 {len(w.results)} · 실패 {len(failed)} · 낡은 단계 {len(stale)} · 생성 요청 {len(submitted)}건 · 결과 {path}")
+        print(f"\n단계 {len(w.results)} · 실패 {len(failed)} · 낡은 단계 {len(stale)} · 생성 요청 {w.gen_requests}건 · 결과 {path}")
         if failed and not verbose:
             print("실패한 단계의 자세한 원인(기대값·화면 값)은 기본 모드에 남기지 않는다 — `--verbose` 로 다시 돌려 본다: "
                   + ", ".join(f"{r['n']:03d} {r['step']} ({r['reason']})" for r in failed))
         if stale:
             print("낡은 단계 = 화면이 바뀌어 대상을 못 찾은 것이다. 제품 결함이 아니라 이 시나리오를 고칠 차례: "
                   + ", ".join(f"{r['n']:03d} {r['step']}" for r in stale))
-        return 1 if failed or submitted else (2 if stale else 0)
+        return 1 if failed or w.gen_requests else (2 if stale else 0)
 
 
 def main() -> int:
