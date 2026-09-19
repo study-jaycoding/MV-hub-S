@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-09-18
+updated: 2026-09-19
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
