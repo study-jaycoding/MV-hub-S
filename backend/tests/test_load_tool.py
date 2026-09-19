@@ -391,6 +391,8 @@ class LoadToolTests(unittest.TestCase):
                 "CONTENT_HUB_SSL_CERTFILE": r"C:\inherited\cert.pem",
                 "CONTENT_HUB_SSL_KEYFILE": r"C:\inherited\key.pem",
                 "CONTENT_HUB_NO_PROXY": "1",
+                "CONTENT_HUB_ASSETS_DIR": "D:/inherited/assets",
+                "CONTENT_HUB_LOG_DIR": "D:/inherited/logs",
             },
         ):
             plain = load_tool._server_environment(
@@ -403,6 +405,10 @@ class LoadToolTests(unittest.TestCase):
         # 기동 때 실제 CLI 를 부르지 않는다. 부른 셸의 NO_PROXY=1 을 물려받지 않는다(공유 서버 본체 경로를 잰다).
         self.assertEqual(plain["CONTENT_HUB_EXTERNAL_RECOVERY"], "0")
         self.assertEqual(plain["CONTENT_HUB_NO_PROXY"], "0")
+        # 부모 셸의 경로 변수는 하나도 넘어가지 않는다(DATA_DIR 보다 우선해서 격리 폴더 밖에 쓰게 된다).
+        self.assertNotIn("CONTENT_HUB_ASSETS_DIR", plain)
+        self.assertNotIn("CONTENT_HUB_LOG_DIR", plain)
+        self.assertFalse([v for v in plain.values() if v.startswith("D:/inherited")])
 
         tls = load_tool._server_environment(
             Path(r"C:\Temp\data"),

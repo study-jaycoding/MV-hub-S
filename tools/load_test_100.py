@@ -450,10 +450,10 @@ def _server_environment(
     ssl_certfile: Optional[Path] = None,
     ssl_keyfile: Optional[Path] = None,
 ) -> dict[str, str]:
-    env = os.environ.copy()
-    # 호출한 셸의 TLS 설정이 HTTP 회귀 시험에 우연히 섞이지 않도록 항상 명시적으로 재구성한다.
-    env.pop("CONTENT_HUB_SSL_CERTFILE", None)
-    env.pop("CONTENT_HUB_SSL_KEYFILE", None)
+    # 호출한 셸의 `CONTENT_HUB_*` 는 전부 버리고 아래에서 다시 짠다 — TLS 설정이 HTTP 회귀 시험에 섞이지 않게 하던 것을
+    # 넓혔다. 경로 변수(ASSETS_DIR·LOG_DIR·WORKER_BACKUP_*·DEVICE_IDENTITY_FILE)는 DATA_DIR 보다 우선하므로, 하나라도
+    # 물려받으면 격리 서버가 임시 폴더 밖에 폴더를 만들고 로그를 쓴다.
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("CONTENT_HUB_")}
     env.update(
         {
             "PYTHONUTF8": "1",
