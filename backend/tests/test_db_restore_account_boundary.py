@@ -7,6 +7,7 @@ extraction are mocked; existing backup-set tests cover archive validation itself
 import asyncio
 import io
 import json
+import re
 import shutil
 import sqlite3
 import threading
@@ -41,6 +42,16 @@ def assert_no_restore_temp(hub):
     미확정 — 재현하지 못했다). 그래서 제품이 만드는 이름만 본다. 대소문자를 구분한다.
     """
     assert not [p.name for p in hub.temp.iterdir() if p.name.startswith(_PRODUCT_TEMP_PREFIX)]
+
+
+def leftover_restore_stages(root):
+    """제품이 만든 복원 임시본(`.<DB 이름>.restore-<소문자 hex 16>.tmp`, `db_transfer._install_db`)만 찾는다.
+
+    `rglob("*.restore-*.tmp")` 는 Windows 에서 대소문자를 가리지 않아, 위 `assert_no_restore_temp` 와 같은 외부 파일
+    (`.CONTENT_HUB.DB.RESTORE-<HEX>.TMP.tmp` — 제품 이름을 대문자로 바꾸고 `.tmp` 를 덧붙인 꼴)에 걸렸다(2026-09-19,
+    배포 게이트 리허설의 전체 실행에서 1회. 같은 날 전체 실행 2회는 통과). 제품 누수는 그대로 잡는다.
+    """
+    return [p for p in root.rglob("*") if re.fullmatch(r"\..+\.restore-[0-9a-f]{16}\.tmp", p.name)]
 
 
 def marker(path):
@@ -189,7 +200,7 @@ def test_switch_rejects_before_flush_or_target_writes(hub, monkeypatch, route, f
     assert active_account.account_key() == expected_email
     assert active_account.active_uid() == (None if change == "logout" else "uid-new" if change == "uid" else "uid-b")
     assert not list(hub.root.rglob("*.bak-*.db"))
-    assert not list(hub.root.rglob("*.restore-*.tmp"))
+    assert not leftover_restore_stages(hub.root)
     assert_no_restore_temp(hub)
     hub.adopt.assert_not_called()
     hub.activate.assert_not_called()
@@ -357,7 +368,7 @@ def test_expected_restore_preserves_security_failure_rollback(hub, monkeypatch):
     assert active_account._POINTER.read_bytes() == original_pointer
     assert active_account.account_key() == ACCOUNT_A
     assert source.exists()
-    assert not list(hub.root.rglob("*.restore-*.tmp"))
+    assert not leftover_restore_stages(hub.root)
 
 
 def test_expected_install_holds_transition_lock_through_pointer_clear(hub, monkeypatch):
@@ -456,7 +467,7 @@ def test_invalid_pointer_is_rejected_without_repair(hub, monkeypatch, raw):
     flush.assert_not_called()
     assert_no_restore_temp(hub)
     assert not list(hub.root.rglob("*.bak"))
-    assert not list(hub.root.rglob("*.restore-*.tmp"))
+    assert not leftover_restore_stages(hub.root)
 
 
 @pytest.mark.parametrize("failure", (PermissionError, IsADirectoryError, NotADirectoryError, OSError))
@@ -687,7 +698,7 @@ def test_pointer_unreadable_on_recheck_rejects_before_flush_and_restore(hub, mon
     assert {key: path.read_bytes() for key, path in hub.paths.items()} == before
     assert pointer.read_bytes() == pointer_before and active_account._cache == cached
     assert not list(hub.root.rglob("*.bak-*.db"))
-    assert not list(hub.root.rglob("*.restore-*.tmp"))
+    assert not leftover_restore_stages(hub.root)
     assert_no_restore_temp(hub)
     hub.adopt.assert_not_called()
     hub.activate.assert_not_called()
