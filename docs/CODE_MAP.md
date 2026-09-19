@@ -46,7 +46,8 @@ updated: 2026-09-18
 | 라이브러리 필터·정렬·뷰 상태 | `lib/useLibraryFilters.ts`, `components/LibraryToolbar.tsx` | `routers/library.py` | |
 | 태그 편집(색/일반 태그) | `components/TagEditor.tsx`, `lib/generationTags.ts` | `routers/generation.py`(HTTP 경계·권한·프록시, 단건과 배치), `repo/tags.py` | 에셋 쪽 색·태그는 `routers/assets_metadata.py` |
 | 휴지통(삭제·복원) | `lib/useGenerationTrashActions.ts` | `routers/generation.py`(삭제·복원), `routers/library.py`(`/api/trash` 목록·영구 삭제), `repo/trash.py`(별도 DB) | |
-| 로그인/가입/계정 승인 | `components/LoginScreen.tsx`, `components/ServerLoginScreen.tsx` | `routers/auth.py`, `services/auth.py` | |
+| 로그인/가입/계정 승인 | `components/LoginScreen.tsx`(서버 본체 AUTH 로그인), `components/ServerLoginScreen.tsx`(로컬 허브의 팀 서버 로그인 게이트·서버 주소 변경), `lib/useHubAuth.ts` | `routers/auth.py`, `services/auth.py`, `routers/publish.py`(`/api/shared-server/*`), `services/shared_connection.py` | 로컬 허브는 팀 서버 세션이 없으면 라이브러리 대신 게이트를 띄운다 |
+| 창을 Esc/✕ 로 닫는 규칙 | `lib/useEscapeClose.ts`(공용 — 리스너 1회 등록+콜백 ref), `lib/useAppNavigation.ts`(관리자 창·미리보기는 브라우저 history 로 여닫음) | — | 코멘트 패널·Host 콘솔은 Esc 로 안 닫힌다(설계). 회귀 시험 `frontend/tests/escapeCloseNesting.test.tsx` |
 | Assets 파일 탐색기(마운트·트리·업로드) | `components/AssetsView.tsx` | `routers/assets.py`, `services/asset_tree.py` | |
 | 프로젝트 CRUD·멤버·역할 | `components/manage/ProjectManagerPanel.tsx` | `routers/projects.py`, `repo/projects.py` | |
 | 작업(Task) 칸반/테이블/캘린더 | `components/manage/WorkBoard.tsx` | `routers/manage.py`, `repo/manage_tasks.py` | 소요시간 표기는 `lib/format.ts` 의 `fmtElapsed` 하나다(`1d2h3m4s`, 초를 버리지 않음, 하루 이상은 `1d1h` — Jay 확정 2026-09-18). PM 창 5곳과 정보 팝업(`InfoPopup`)의 '생성 시간'이 모두 이 함수를 쓴다. 새 뷰도 이 함수를 쓴다 |

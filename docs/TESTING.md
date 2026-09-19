@@ -705,6 +705,33 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
 현재 버전은 `test_dev.bat`으로 열린 CMD 창을 닫으면 그 세션이 시작한 로컬 허브·Vite·생성
 에이전트도 함께 종료한다. 다시 실행할 때 이전 세션의 포트나 에이전트가 남지 않아야 한다.
 
+### 격리 브라우저 실측 (유료·운영 서버 접촉 없이 화면 전체를 재는 법)
+
+2026-09-19 에 Claude·Codex 가 각각 이 방법으로 전 기능을 쟀다(기록: [status/브라우저실측_2026-09-19.md](status/브라우저실측_2026-09-19.md)).
+
+- **데이터**: `backend\data_test\db\*.db` 를 SQLite **읽기 전용 backup** 으로 임시 폴더에 복사해 쓴다(돌고 있는 `test_dev` 세션을
+  건드리지 않는다). 복사본에서 `app_setting` 의 `shared_server_token`·`shared_server_elev_*` 를 지우고 `shared_server_url` 을
+  죽은 주소(`http://127.0.0.1:9`)로 바꾼다 — 화면에서 무엇을 눌러도 운영 서버에 닿지 않는다.
+- **환경변수**: `backend/app/services/restore_runtime_verify.py` 의 격리 드릴 값을 기준으로 `CONTENT_HUB_NO_PROXY=1`,
+  `CONTENT_HUB_SERVER_SYNC=0`, `CONTENT_HUB_EXTERNAL_RECOVERY=0`, `CONTENT_HUB_HOST=127.0.0.1`, `CONTENT_HUB_PORT=<비사용 포트>`,
+  `NO_PROXY=127.0.0.1,localhost`, 임시 `CONTENT_HUB_DATA/DB/MEDIA/SHARED/ASSETS_DIR/BACKUP_DIR`, `CONTENT_HUB_FRONTEND_DIST=frontend\dist`
+  를 준다. AUTH-on 서버에는 `CONTENT_HUB_AUTH=1`, `CONTENT_HUB_MANAGE=1`, 일회용 `CONTENT_HUB_ADMIN_EMAIL/PASSWORD/AUTH_SECRET` 를
+  더한다. 두 대 모두 `CONTENT_HUB_SHARED_URL=http://127.0.0.1:9` 를 주고 복사본의 공유 토큰을 지운다.
+- **CLI 차단**: `PATH` 에서 `higgsfield`(또는 `hf`) 실행 파일이 발견되는 **모든** 경로를 뺀다. 서버를 띄운 뒤 `/api/health` 의
+  `cli_available` 이 `false` 인지 **확인하고 나서** 브라우저를 연다(확인 없이 "차단됐다"고 믿지 않는다).
+- **두 대**: AUTH off(로컬 허브 보기)와 AUTH on + 일회용 관리자. 로컬 허브는 팀 서버
+  세션이 없으면 로그인 게이트에서 멈추므로, 허브의 서버 주소를 **내 격리 AUTH-on 서버**로 바꿔 로그인한다. 일회용 관리자는 생성물이
+  0개라 "내 작업"이 비어 있다 — 복사본에서 `account.creator_uid` 를 최다 소유자와 맞바꾸면 재료가 생긴다.
+- **브라우저**: Playwright 없이 헤드리스 Chrome + DevTools 프로토콜(`--remote-debugging-port`, venv 의 `websockets`)로 충분하다.
+  `Page.javascriptDialogOpening` 을 처리하지 않으면 삭제의 `confirm()` 에서 모든 명령이 멈춘다. 비-GET 요청을 전부 기록해
+  `/api/gen-requests` POST 가 0건임을 증거로 남긴다.
+- **누르지 않는 것**: Generate · 도크의 `Alt+Enter` · 카드의 ↻ 재생성 · Comfy 실행 · Resolve로 보내기 · 프로그램 업데이트 · HF 체크.
+
+> [!WARNING]
+> 격리 DB 를 써도 **Assets 창은 DB 에 등록된 실제 폴더(마운트·프로젝트 렌더 폴더)를 읽는다.** Assets 그리드에 파일을 끌어 놓으면
+> 그 **실제 폴더에 저장**된다(`POST /api/assets/upload`). 격리 실측에서는 Assets 의 파일 조작을 하지 않는다 — 컬러·태그·비활성처럼
+> DB·브라우저에만 남는 메타만 잰다.
+
 ## 최신 서버 DB로 배포 직전 확인
 
 다음 순서를 그대로 따른다.
