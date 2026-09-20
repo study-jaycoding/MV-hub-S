@@ -156,10 +156,10 @@ export function TagEditor({
     }
     const add = draft.split(",").map((s) => s.trim()).filter(Boolean);
     const fresh = add.filter((t) => !baseTags.includes(t));
-    if (fresh.length) {
-      applyTags([...baseTags, ...fresh]); // 이 카드
-      if (multi) onBulkAdd?.(fresh); // 나머지 선택 카드
-    }
+    if (fresh.length) applyTags([...baseTags, ...fresh]); // 이 카드
+    // 나머지 선택 카드 — 이 카드에 이미 있는 태그도 넘긴다. fresh 만 넘기면 기준 카드가 가진 태그를 선택 전체에 붙이려 할 때
+    // 조용히 아무 일도 안 일어난다(2026-09-21 실측: 12장 중 5장만 가진 태그 → 쓰기 0건). 중복은 받는 쪽이 카드별로 거른다.
+    if (multi && add.length) onBulkAdd?.(add);
     setWorkspaceError(null);
     setDraft("");
   };

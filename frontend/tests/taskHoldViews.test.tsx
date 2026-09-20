@@ -81,3 +81,25 @@ it("keeps activity labels consistently Korean while translating status definitio
   act(() => root.render(<CutThumbs task={task} thumb={props.thumb} onUnlinkGen={props.onUnlinkGen} />));
   expect(host.querySelector(".work-cut-badge.held")?.getAttribute("title")).toBe("On hold");
 });
+
+// 폴더 자동 작업의 상태는 서버가 컷에서 파생한다(repo/manage_tasks.py) — 보드에서 끌기를 받아 주면 열이 강조되고 PATCH 까지 나가는데
+// 카드는 제자리였다(2026-09-21 실측). 폴더 작업은 끌 수 없고 놓아도 저장하지 않는다. 수동(레거시) 작업의 끌기는 그대로다.
+it("board ignores status drags for folder-derived tasks but keeps them for manual tasks", () => {
+  const onPatch = vi.fn();
+  const derived: Task = { ...task, id: "derived", folder_path: "ep001/c0010", status: "in_progress" };
+  const manual: Task = { ...task, id: "manual", folder_path: null, status: "in_progress" };
+  act(() => root.render(<BoardView {...props} onPatch={onPatch} tasks={[derived, manual]} />));
+  const cards = [...host.querySelectorAll<HTMLElement>(".kanban-card")];
+  expect(cards.map((card) => card.getAttribute("draggable"))).toEqual(["false", "true"]);
+  expect(cards[0].title).toContain("자동");
+  const target = host.querySelectorAll(".kanban-col")[2];
+  const drop = (taskId: string) => {
+    const event = new Event("drop", { bubbles: true, cancelable: true });
+    Object.assign(event, { dataTransfer: { getData: () => taskId, types: [] } });
+    act(() => { target.dispatchEvent(event); });
+  };
+  drop("derived");
+  expect(onPatch).not.toHaveBeenCalled();
+  drop("manual");
+  expect(onPatch).toHaveBeenCalledExactlyOnceWith("manual", { status: "publish" });
+});

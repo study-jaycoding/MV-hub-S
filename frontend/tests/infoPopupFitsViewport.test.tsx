@@ -20,10 +20,15 @@ beforeEach(() => {
   resized = null;
   popupHeight = 600;
   vi.stubGlobal("ResizeObserver", class { constructor(cb: () => void) { resized = cb; } observe() {} disconnect() {} });
-  // jsdom 은 배치를 하지 않는다 — 팝업의 상자를 style.top + 고정 높이로 흉내 낸다.
+  // jsdom 은 배치를 하지 않는다 — 팝업의 배치 높이(offsetHeight)를 고정 값으로 흉내 낸다.
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains("info-popup") ? popupHeight : 0;
+  });
+  // 열리는 애니메이션(scale 0.98) 동안의 화면 상자는 2% 작다 — 이 값으로 재면 그만큼 덜 올라가 아래가 잘린다(2026-09-21 창 있는 크롬 실측).
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     const top = this.classList.contains("info-popup") ? parseFloat(this.style.top) || 0 : 0;
-    return { top, bottom: top + popupHeight, left: 0, right: 380, width: 380, height: popupHeight, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+    const height = popupHeight * 0.98;
+    return { top, bottom: top + height, left: 0, right: 380, width: 380, height, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
   });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });

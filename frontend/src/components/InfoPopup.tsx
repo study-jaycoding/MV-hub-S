@@ -114,7 +114,9 @@ export function InfoPopup({
     const fit = () => {
       if (movedRef.current) return;
       // 넘친 만큼 빼지 않고 '들어갈 수 있는 가장 아래 top' 으로 맞춘다 — 같은 측정으로 두 번 불려도(StrictMode) 한 번만 올라간다.
-      const maxY = Math.max(8, window.innerHeight - 8 - el.getBoundingClientRect().height);
+      // 높이는 offsetHeight — 열리는 애니메이션(sl-rise, scale 0.98)이 도는 동안 getBoundingClientRect 는 2% 작게 나와
+      // 그만큼 덜 올라간다(2026-09-21 창 있는 크롬 실측: 6px 잘림 — 헤드리스에서는 안 보였다).
+      const maxY = Math.max(8, window.innerHeight - 8 - el.offsetHeight);
       setPos((p) => (p.y > maxY ? { x: p.x, y: maxY } : p));
     };
     fit();

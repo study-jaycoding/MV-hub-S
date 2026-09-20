@@ -1,4 +1,4 @@
-// 보드 뷰 — 상태별 칸반. Notion식 카드 드래그로 상태 이동, 생성물(컷) 드롭 연결.
+// 보드 뷰 — 상태별 칸반. 폴더 자동 작업의 상태는 컷에서 파생(끌기 없음), 수동 작업만 카드 드래그로 상태 이동. 생성물(컷) 드롭 연결.
 // 데이터·핸들러는 WorkBoard 가 주입(WorkViewProps). 프레젠테이션 전용.
 import { useState } from "react";
 import { fmtElapsed } from "../../lib/format";
@@ -44,7 +44,8 @@ export function BoardView(props: WorkViewProps) {
               setDragOver(null);
               const tid = e.dataTransfer.getData(TASK_MIME);
               const task = tasks.find((item) => item.id === tid);
-              if (task && !taskIsReadOnly(task, readOnly)) onPatch(tid, { status: col.v });
+              // 폴더 자동 작업의 상태는 서버가 컷에서 파생한다 — 저장해도 다음 조회에서 되돌아오므로 받지 않는다.
+              if (task && !task.folder_path && !taskIsReadOnly(task, readOnly)) onPatch(tid, { status: col.v });
             }}
           >
             <div className="kanban-col-head">
@@ -53,13 +54,17 @@ export function BoardView(props: WorkViewProps) {
             </div>
             {items.map((t) => {
               const locked = taskIsReadOnly(t, readOnly);
+              // 폴더 자동 작업은 상태를 끌어서 못 바꾼다(서버가 컷의 공유·보류·최종으로 매번 정한다, repo/manage_tasks.py).
+              // 끌기를 받아 주면 열이 강조되고 저장까지 되는데 카드는 제자리라 고장처럼 보인다(2026-09-21 실측). 수동 작업만 끈다.
+              const derived = !!t.folder_path;
               return (
               <div
                 key={t.id}
                 className={
                   "kanban-card work-card" + (locked ? " read-only" : "") + (t.archived ? " work-row-archived" : "")
                 }
-                draggable={!locked}
+                draggable={!locked && !derived}
+                title={derived ? "상태는 컷의 공유·보류·최종에 따라 자동으로 정해집니다" : undefined}
                 onDragStart={(e) => {
                   e.dataTransfer.setData(TASK_MIME, t.id);
                   e.dataTransfer.effectAllowed = "move";

@@ -6,6 +6,8 @@ import {
   bulkResultText,
   purgeConfirmText,
   runGenerationBulk,
+  runGenerationTrash,
+  trashResultText,
   trashConfirmText,
 } from "./bulkGenerationActions";
 
@@ -51,12 +53,12 @@ export function useGenerationTrashActions({
     if (!ids.length) return;
     if (!window.confirm(trashConfirmText(ids.length, false))) return;
     try {
-      const failed = await runGenerationBulk(ids, (id) => api.deleteGeneration(id));
+      const { shared, failed } = await runGenerationTrash(ids, (id) => api.deleteGeneration(id));
       setBoardSelected([]);
       await reload();
       bumpBoard();
       postLibraryChanged();
-      flash(bulkResultText(ids.length, failed, "휴지통으로 보냈습니다.", "휴지통 이동"));
+      flash(trashResultText(ids.length, shared, failed));
     } catch (e) {
       flash("삭제 실패: " + String(e));
     }
@@ -67,9 +69,7 @@ export function useGenerationTrashActions({
     const ids = sel.map((g) => g.id);
     if (!ids.length) return [];
     if (!window.confirm(trashConfirmText(ids.length, false))) return [];
-    const results = await Promise.allSettled(ids.map((id) => api.deleteGeneration(id)));
-    const done = ids.filter((_, i) => results[i].status === "fulfilled");
-    const failed = ids.length - done.length;
+    const { done, shared, failed } = await runGenerationTrash(ids, (id) => api.deleteGeneration(id));
     // 실제 삭제된 id 는 항상 돌려준다 — 후처리(reload) 실패로 호출자(씬 정리)가 막히지 않게.
     try {
       await reload();
@@ -78,7 +78,7 @@ export function useGenerationTrashActions({
     } catch {
       /* 라이브러리 갱신 실패는 무시 — 삭제 자체는 성공 */
     }
-    flash(bulkResultText(ids.length, failed, "휴지통으로 보냈습니다.", "휴지통 이동"));
+    flash(trashResultText(ids.length, shared, failed));
     return done;
   };
 
@@ -86,11 +86,11 @@ export function useGenerationTrashActions({
     const ids = [...selected];
     if (!ids.length) return;
     if (!window.confirm(trashConfirmText(ids.length, true))) return;
-    const failed = await runGenerationBulk(ids, (id) => api.deleteGeneration(id));
+    const { shared, failed } = await runGenerationTrash(ids, (id) => api.deleteGeneration(id));
     clearSelect();
     await reload();
     postLibraryChanged();
-    flash(bulkResultText(ids.length, failed, "휴지통으로 보냈습니다.", "휴지통 이동"));
+    flash(trashResultText(ids.length, shared, failed));
   };
 
   const bulkRestore = async () => {
