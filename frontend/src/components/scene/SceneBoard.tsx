@@ -2691,6 +2691,11 @@ export function SceneBoard({
     onUndo: undo,
     onRedo: redo,
     onCopy: copySelectedNodes,
+    onSelectAll: () => {
+      setSelected(new Set(cardsRef.current.map((c) => c.id)));
+      setSelectedGroupIds(new Set());
+      setRowSel({ listId: "", cids: new Set() });
+    },
     onGroup: groupSelected,
     onFrame: frameView,
     onAutoConnect: autoConnectSelection,

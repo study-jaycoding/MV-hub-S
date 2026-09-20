@@ -88,7 +88,7 @@ export function AppearanceSettingsSection({
           </button>
         </div>
         <SettingsDescription summary={t("카드 장식 애니메이션을 켜거나 끕니다.")}>
-          <p>{t("ON은 최종 카드의 흐르는 빛을 재생하고, OFF는 장식 움직임을 멈춥니다.")}</p>
+          <p>{t("ON은 최종 카드에 마우스를 올릴 때 지나가는 빛과 '생성 중' 표시의 움직임을 재생하고, OFF는 이 움직임을 멈춥니다.")}</p>
         </SettingsDescription>
       </section>
     </>

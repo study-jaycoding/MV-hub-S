@@ -204,6 +204,9 @@ const EN: Record<string, string> = {
   "모션": "Motion",
   "모션 끄기 (골드 글로우 등 애니메이션 정지)": "Reduce motion (stop gold glow etc.)",
   "켜면 최종(골드) 카드의 흐르는 빛 같은 장식 애니메이션이 멈춥니다.": "When on, decorative animations like the gold sheen on final cards stop.",
+  "카드 장식 애니메이션을 켜거나 끕니다.": "Turn decorative card animations on or off.",
+  "ON은 최종 카드에 마우스를 올릴 때 지나가는 빛과 '생성 중' 표시의 움직임을 재생하고, OFF는 이 움직임을 멈춥니다.":
+    "ON plays the sheen that passes when you hover a final card and the motion of the 'generating' indicators; OFF stops them.",
   "내 힉스필드 연결 (에이전트)": "Connect my Higgsfield (agent)",
   "팀 크레딧": "Team credits",
   "팀 전체": "Team total",

@@ -22,6 +22,7 @@ interface SceneKeyboardActions {
   onUndo: () => void;
   onRedo: () => void;
   onCopy: () => void;
+  onSelectAll: () => void;
   onGroup: () => void;
   onFrame: () => void;
   onAutoConnect: () => boolean;
@@ -75,6 +76,8 @@ export function useSceneKeyboardShortcuts(actions: SceneKeyboardActions): void {
           if (current.onPopupDisable()) event.preventDefault();
         } else if (matchShortcut(event, "tag")) {
           if (current.onPopupTag()) event.preventDefault();
+        } else if (matchShortcut(event, "selectAll")) {
+          event.preventDefault(); // 결과 팝업이 떠 있을 때는 선택을 바꾸지 않되, 브라우저의 글자 전체 선택은 막는다
         }
         return;
       }
@@ -96,6 +99,10 @@ export function useSceneKeyboardShortcuts(actions: SceneKeyboardActions): void {
         case "create-node":
           event.preventDefault();
           current.onCreateNode(intent.kind);
+          return;
+        case "select-all":
+          event.preventDefault();
+          if (!current.isPickerOpen()) current.onSelectAll(); // 노드 선택기가 열려 있으면 선택기 우선(선택은 그대로)
           return;
         case "undo":
           event.preventDefault();

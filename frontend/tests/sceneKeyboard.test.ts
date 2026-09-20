@@ -97,6 +97,19 @@ describe("scene keyboard intent", () => {
     expect(sceneKeyIntent(key("Delete"), { pickerOpen: false, selectionCount: 0 })).toBeNull();
   });
 
+  it("전체 선택 단축키는 캔버스의 전체 선택이 된다 — 안 받으면 브라우저가 화면 글자를 통째로 선택한다", () => {
+    const selectAll = (_event: SceneKeyLike, shortcut: string) => shortcut === "selectAll";
+    expect(sceneKeyIntent(key("a", { ctrlKey: true }), { pickerOpen: false, selectionCount: 0 }, selectAll)).toEqual({
+      type: "select-all",
+    });
+    // 같은 글자를 쓰는 자동 정렬(a)보다 먼저 판정한다
+    const both = (_event: SceneKeyLike, shortcut: string) => shortcut === "selectAll" || shortcut === "boardArrange";
+    expect(sceneKeyIntent(key("a", { ctrlKey: true }), { pickerOpen: false, selectionCount: 2 }, both)).toEqual({
+      type: "select-all",
+    });
+    expect(sceneKeyIntent(key("a", { ctrlKey: true }), { pickerOpen: false, selectionCount: 0 })).toBeNull(); // 단축키를 다른 키로 바꿨으면 Ctrl+A 는 캔버스 것이 아니다
+  });
+
   it("사용자가 바꾼 연결 키는 주입된 매칭 규칙으로 판정한다", () => {
     const matches = (_event: SceneKeyLike, shortcut: string) => shortcut === "boardConnect";
     expect(sceneKeyIntent(key("x"), { pickerOpen: false, selectionCount: 2 }, matches)).toEqual({

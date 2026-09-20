@@ -2,7 +2,7 @@
 // (예전 Assets 플로팅 패널의 '구성'을 이 정보 팝업에 재사용)
 // 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
 import { useT } from "../lib/i18n";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { APP_EVENTS } from "../lib/appEvents";
 import {
@@ -103,6 +103,27 @@ export function InfoPopup({
 
   useEscapeClose(onClose);
 
+  // 화면 아래로 나가지 않게 — clampStart 는 높이를 모른 채 top 만 막는데(아래 200px), 팝업은 80vh 까지 자라고 견적·썸네일이
+  // 늦게 채워져 열린 뒤에도 커진다. 아래쪽 줄 카드를 열면 단추 절반이 화면 밖이었다(2026-09-20 실측: 1664×905 에서 210px).
+  // 크기가 바뀔 때마다 화면 안에 들어오는 자리까지만 올린다. 사용자가 끌어 옮긴 뒤에는 건드리지 않는다.
+  const popRef = useRef<HTMLDivElement>(null);
+  const movedRef = useRef(false);
+  useLayoutEffect(() => {
+    const el = popRef.current;
+    if (!el) return;
+    const fit = () => {
+      if (movedRef.current) return;
+      // 넘친 만큼 빼지 않고 '들어갈 수 있는 가장 아래 top' 으로 맞춘다 — 같은 측정으로 두 번 불려도(StrictMode) 한 번만 올라간다.
+      const maxY = Math.max(8, window.innerHeight - 8 - el.getBoundingClientRect().height);
+      setPos((p) => (p.y > maxY ? { x: p.x, y: maxY } : p));
+    };
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // 크레딧 — 실제 사용값(generation_metrics.real_credits) 우선, 없으면 모델+옵션 견적(/api/cost) 폴백.
   // 소요시간(elapsed_seconds)도 metrics 에서 함께 받는다.
   // 팝업은 카드가 바뀌어도 열린 채 대상만 갈아끼우므로, 이전 카드의 늦은 응답이 지금 카드
@@ -150,6 +171,7 @@ export function InfoPopup({
   const onDragMove = (e: PointerEvent) => {
     const d = drag.current;
     if (!d) return;
+    movedRef.current = true; // 실제로 움직였을 때만 — 머리를 누르기만 한 것은 옮긴 게 아니다
     setPos({ x: e.clientX - d.dx, y: e.clientY - d.dy });
   };
   const onDragEnd = () => {
@@ -448,7 +470,7 @@ export function InfoPopup({
   return (
     <>
       <div className="info-catcher" onMouseDown={onClose} />
-      <div className="info-popup" style={{ left: pos.x, top: pos.y, width: POP_W }}>
+      <div className="info-popup" ref={popRef} style={{ left: pos.x, top: pos.y, width: POP_W }}>
         <header className="info-head" onPointerDown={onDragStart}>
           <span className="info-title" title={title}>
             {target.kind === "generation" ? "ℹ 생성 정보" : "ℹ 파일 정보"}

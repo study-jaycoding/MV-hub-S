@@ -256,6 +256,7 @@
 .thumb-placeholder .gen-comfy-logo { width: 72%; max-width: 150px; height: auto; object-fit: contain; animation: gen-comfy-pulse 1.4s steps(4) infinite; }
 @keyframes gen-comfy-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .gen-comfy-logo { animation: none; opacity: 0.9; } }
+.reduce-motion .gen-comfy-logo { animation: none; opacity: 0.9; } /* 앱 설정의 모션 끄기도 같게 — 캔버스 로고·막대는 멈추는데 이것만 OS 설정에서만 멈췄다 */
 /* 모션 끄기(OS·앱) — 애니메이션 정지 + 막대는 중간 높이로 고정(상태는 전달) */
 @media (prefers-reduced-motion: reduce) { .gen-wave-bar { animation: none; transform: scaleY(0.6); } }
 .reduce-motion .gen-wave-bar { animation: none; transform: scaleY(0.6); }

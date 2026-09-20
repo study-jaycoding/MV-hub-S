@@ -23,6 +23,7 @@ export type SceneKeyIntent =
   | { type: "undo" }
   | { type: "redo" }
   | { type: "copy" }
+  | { type: "select-all" }
   | { type: "group" }
   | { type: "frame" }
   | { type: "auto-connect" }
@@ -58,6 +59,7 @@ export type SceneShortcutMatcher = (
   shortcut:
     | "boardArrange"
     | "boardConnect"
+    | "selectAll"
     | "boardDisable"
     | "colorRed"
     | "colorGreen"
@@ -139,6 +141,8 @@ export function sceneKeyIntent(
   if (sceneCopyShortcut(event, context.selectionCount)) {
     return { type: "copy" };
   }
+  // 전체 선택 — 캔버스가 안 받으면 브라우저가 화면 글자를 통째로 선택한다(씬 탭·검색칸·상태줄이 파랗게 반전, 2026-09-20 실측).
+  if (matchesShortcut(event, "selectAll")) return { type: "select-all" };
   if (mod && lower === "g") return { type: "group" };
   if (plain && lower === "f") return { type: "frame" };
   if (plain && lower === "c" && context.selectionCount >= 2) {
