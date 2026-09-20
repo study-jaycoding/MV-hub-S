@@ -1,8 +1,8 @@
-// 최종(골드) 광택의 CSS 계약 — 가만히 열어 둔 탭이 CPU 를 계속 쓰지 않게 한다.
-// 종전의 `background-position` 무한 애니메이션은 골드 카드 한 장만 있어도 브라우저가 매 프레임 다시 그리게 했다
-// (격리 실측: 골드 0장 1% · 1장 24~38% · 모션 끄기 0.3% of one core). CPU 자체는 여기서 못 잰다 — 원인이 된 CSS 모양만 막는다.
+// 가만히 열어 둔 탭이 CPU 를 계속 쓰지 않게 하는 CSS 계약 — 카드에 **상시** 붙는 장식 둘(최종 골드 · 팀 탭 새 항목).
+// 합성으로 처리되지 않는 속성(`background-position`·`box-shadow`)을 끝없이 움직이면, 그런 카드가 한 장만 화면에 있어도 브라우저가 매 프레임
+// 다시 그린다(격리 실측, 브라우저 전체: 골드 1장 24~38% · 새 항목 1장 42~49% of one core, 없을 때 1%). CPU 자체는 여기서 못 잰다 — 원인이 된 CSS 모양만 막는다.
 // 계약만 본다(이름·시간·정확한 문법은 묶지 않는다): ①골드 요소의 애니메이션은 끝없이 돌지 않고 기본 상태에는 없다
-// ②그 키프레임은 합성 가능한 속성(transform·opacity)만 움직인다 ③모션 끄기에서 멈춘다.
+// ②그 키프레임은 합성 가능한 속성(transform·opacity)만 움직인다 ③모션 끄기에서 멈춘다 ④새 항목 글로우는 멈춰 있다.
 import { readFileSync } from "node:fs";
 import { URL as NodeURL } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -49,5 +49,18 @@ describe("골드 광택 CSS", () => {
     for (const gold of GOLD) expect(app.some((r) => r.stops && r.selector.includes(gold))).toBe(true);
     const media = [...generations.matchAll(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}/g)].map((m) => m[1]).join("\n");
     for (const gold of GOLD) expect(media).toMatch(new RegExp(`${gold.replace(/\./g, "\\.")}[^{}]*\\{[^{}]*animation\\s*:\\s*none`));
+  });
+});
+
+describe("새 항목 글로우 CSS", () => {
+  const freshRules = [...all.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .map((m) => ({ selector: m[1].trim().replace(/\s+/g, " "), body: m[2] }))
+    .filter((r) => r.selector.includes(".card.fresh"));
+
+  it("라임 링과 글로우는 있되, 애니메이션은 없다 — 클릭할 때까지 남는 표시라서 돌리면 상시 비용이다", () => {
+    const glow = freshRules.find((r) => /box-shadow\s*:/.test(r.body));
+    expect(glow, "새 항목 글로우 규칙").toBeDefined(); // 표시 자체가 사라진 것도 회귀다
+    expect(glow!.selector).toContain(":not(.selected)"); // 선택 링이 우선
+    for (const rule of freshRules) if (!/animation\s*:\s*none/.test(rule.body)) expect(rule.body).not.toMatch(/animation(-name)?\s*:/);
   });
 });
