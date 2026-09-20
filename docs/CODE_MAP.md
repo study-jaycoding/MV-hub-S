@@ -546,7 +546,7 @@ updated: 2026-09-20
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `MediaPreview.tsx`(280줄) | 이미지/영상 미리보기 플로팅 창. 원본이 오는 동안 연 곳이 넘긴 썸네일(`PreviewItem.thumb`)을 그림은 바탕·영상은 표지로 깐다 | `MediaPreview`·`fitPreviewBox` |
-| `InfoPopup.tsx`(531줄) | 생성 정보 팝업(드래그 이동·프롬프트·레퍼런스·오류) | `InfoPopup` |
+| `InfoPopup.tsx`(546줄) | 생성 정보 팝업(드래그 이동·프롬프트·레퍼런스·오류). 크기가 바뀔 때마다 화면 아래로 넘치지 않게 올린다(끌어 옮긴 뒤에는 그대로) | `InfoPopup` |
 | `CompareModal.tsx`(397줄) | 생성본 N개 비교(프롬프트 diff + 창 이동/리사이즈/최대화 + A/B 와이프) | `CompareModal` |
 | `VideoCompareModal.tsx`(250줄) | 생성정보 없는 미디어 N개 비교(+ 같은 A/B 와이프) | `VideoCompareModal` — 이름과 달리 이미지도 다룸(§5-b) |
 | `compare/CompareGenerationColumn.tsx`(209줄) | 비교 모달의 한 열(미디어·파라미터) | 〃 |
@@ -753,7 +753,7 @@ updated: 2026-09-20
 | `sceneViewport.ts` | 순수 | 카메라 줌·팬·프레이밍 계산 |
 | `sceneLayout.ts` | 순수 | 선택 노드 자동 정렬(열 분해) |
 | `sceneAutoConnect.ts` | 순수 | `c` 자동 연결 계획 |
-| `sceneKeyboard.ts` | 순수 | 캔버스 키 의도·Escape 우선순위 |
+| `sceneKeyboard.ts` | 순수 | 캔버스 키 의도(전체 선택 포함)·Escape 우선순위 |
 | `sceneNodeCatalog.ts` | 순수 | 새로 만들 수 있는 노드 단일 카탈로그 |
 | `sceneMedia.ts` | 순수 | 씬 레퍼런스 썸네일·미디어 종류 |
 | `sceneSet.ts` | 순수 | Set 노드 태그 파싱·폴더 드래그 페이로드 |
