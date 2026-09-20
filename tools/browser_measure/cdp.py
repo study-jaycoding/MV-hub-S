@@ -173,9 +173,19 @@ class Page:
             await self.send("Input.dispatchMouseEvent", type=kind, x=x, y=y, button=button, clickCount=count, modifiers=modifiers)
 
     async def click(self, js_element: str, button: str = "left", count: int = 1, modifiers: int = 0) -> bool:
-        """js_element = Element 로 평가되는 JS 식. 요소 중앙에 진짜 마우스 이벤트를 보낸다. modifiers: Alt=1 Ctrl=2 Meta=4 Shift=8."""
+        """js_element = Element 로 평가되는 JS 식. 요소 중앙에 진짜 마우스 이벤트를 보낸다. modifiers: Alt=1 Ctrl=2 Meta=4 Shift=8.
+        ★화면 밖이면 스크롤한 뒤 **잠깐 기다렸다가** 좌표를 잰다 — 스크롤 직후의 좌표는 가상 목록이 자리를 다시 잡으면서 어긋나
+        클릭이 빈 곳에 떨어진다(2026-09-21 실측: 새 줄 첫 카드가 '선택 안 됨'으로 보였다 — 제품 결함이 아니었다)."""
+        scrolled = await self.eval(
+            f"(() => {{ const e = {js_element}; if (!e) return null; const r = e.getBoundingClientRect();"
+            " if (r.top >= 0 && r.left >= 0 && r.bottom <= innerHeight && r.right <= innerWidth) return false;"
+            " e.scrollIntoView({block: 'center', inline: 'center'}); return true; })()")
+        if scrolled is None:
+            return False
+        if scrolled:
+            await asyncio.sleep(0.45)
         box = await self.eval(
-            f"(() => {{ const e = {js_element}; if (!e) return null; e.scrollIntoView({{block: 'center', inline: 'center'}});"
+            f"(() => {{ const e = {js_element}; if (!e) return null;"
             " const r = e.getBoundingClientRect(); return {x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width, h: r.height}; })()")
         if not box or not box["w"] or not box["h"]:
             return False
