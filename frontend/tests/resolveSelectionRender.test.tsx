@@ -115,7 +115,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("StrictMode에서 캔버스를 처음 열어도 Resolve 선택 신호 한 번으로 선택 표시한다", async () => {
+// 시간 제한 20초 — App 전체를 StrictMode 로 렌더하는 첫 마운트라 단독 1.4~1.8초인데, 전체 실행(파일 병렬·jsdom 기동 경합)에서는 기본 5초를 넘는다.
+// 2026-09-20 실측: 시험 파일이 하나 늘 때마다 넘었고 단독으로는 3/3 통과. 이 시험에만 올린다(전역 제한은 그대로 — 다른 시험의 무한 대기를 가리지 않게).
+it("StrictMode에서 캔버스를 처음 열어도 Resolve 선택 신호 한 번으로 선택 표시한다", { timeout: 20_000 }, async () => {
   const { onChange } = await mountBoard(request());
   expect(view.container.querySelectorAll(".scene-varpop-item")).toHaveLength(2);
   expect(selectedIds()).toEqual(["target"]);
