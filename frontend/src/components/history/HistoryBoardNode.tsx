@@ -140,6 +140,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
           type: asset.type,
           name: generation.prompt.slice(0, 50),
           genId: generation.id,
+          thumb,
         })
       }
       onAuxClick={(e) => {

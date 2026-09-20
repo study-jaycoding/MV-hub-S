@@ -243,6 +243,7 @@ function GenerationCardImpl({
         type: asset.type,
         name: previewName,
         genId: gen.id,
+        thumb,
         // Share & Review 는 자기 칸(@team)에 '마지막으로 본' 을 남긴다 — Workspace('')와 따로.
         sceneId: tab === "team" ? TEAM_SCOPE : undefined,
       });

@@ -797,6 +797,9 @@
   max-width: 78vw; max-height: 74vh; object-fit: contain;
   display: block; border-radius: 6px;
 }
+/* 원본이 오는 동안의 자리 표시(썸네일)와 원본을 같은 칸에 겹친다 — 원본이 위라 받는 대로 덮어 그린다 */
+.media-preview-stack { display: grid; place-items: center; }
+.media-preview-stack > img { grid-area: 1 / 1; }
 
 /* ── 토스트 ── */
 .toast {

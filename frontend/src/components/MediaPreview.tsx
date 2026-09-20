@@ -27,6 +27,15 @@ function previewDownloadName(url: string, name: string, type: string, uniq?: str
   return `${base}${suffix}.${ext}`;
 }
 
+// 자리 표시 크기 = 원본이 놓일 크기. assets.css 의 `.media-preview-body img, video`(max 78vw × 74vh, contain)와 같은 상자에
+// 썸네일 비율로 맞춘다 — 원본이 그 상자보다 크면(생성물 대부분) 원본이 와도 크기가 안 바뀐다.
+// ponytail: 원본 치수를 모른다. 원본이 상자보다 작으면(옛 512px 생성물 등) 원본이 올 때 한 번 줄어든다. 썸네일 제 크기로
+// 두면 반대로 흔한 경우(큰 원본)마다 커지며 튄다 — 목록 응답에 원본 치수가 실리면 그것으로 바꾼다.
+export function fitPreviewBox(nw: number, nh: number, vw: number, vh: number, upscale = true): { w: number; h: number } {
+  const k = Math.min((vw * 0.78) / nw, (vh * 0.74) / nh, upscale ? Infinity : 1);
+  return { w: Math.round(nw * k), h: Math.round(nh * k) };
+}
+
 export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
   const [pos, setPos] = useState({ x: 0, y: 0 }); // 화면 중앙 기준 오프셋
   const drag = useRef<{ ox: number; oy: number; sx: number; sy: number } | null>(null);
@@ -76,6 +85,41 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
     // cleanup 없음 — img.src="" 는 진행 중 요청을 못 멈추고 오히려 문서 URL 재요청을 유발할 수 있어 뺀다.
     // 프리페치는 곧 볼 이미지라 완료돼도 낭비가 아니다(브라우저 캐시로 재사용). Image 객체는 곧 GC 된다.
   }, [items, idx]);
+
+  // 원본이 오는 동안의 자리 표시 — 연 곳이 이미 띄운 썸네일(브라우저 캐시)을 원본이 놓일 크기로 먼저 깐다.
+  // 원본은 Higgsfield CDN 에서 오고 첫 바이트까지 ~0.9초·영상은 2~3초(2026-09-20 실측)라 그동안 창이 비어 있었다.
+  // 받는 시간은 그대로고 빈 화면만 없앤다. 썸네일이 없거나 못 읽으면 ph=null → 종전과 같은 화면.
+  const [ph, setPh] = useState<{ url: string; w: number; h: number } | null>(null);
+  const [readyUrl, setReadyUrl] = useState<string | null>(null); // 원본이 제 크기로 그려질 수 있게 된 url
+  // 항목이 바뀌면 준비 표시를 바로 지운다 — A→B→A 로 돌아오면 A 의 img·video 는 새로 마운트되는데 옛 표시가
+  // 남아 있으면 자리 표시가 곧장 걷힌다(Codex 리뷰). effect 가 아니라 렌더 중에 고쳐 한 프레임도 새지 않게.
+  const [seenUrl, setSeenUrl] = useState(cur.url);
+  if (seenUrl !== cur.url) {
+    setSeenUrl(cur.url);
+    setReadyUrl(null);
+  }
+  const thumb = cur.type === "audio" ? null : cur.thumb || null;
+  useEffect(() => {
+    setPh(null);
+    if (!thumb) return;
+    let alive = true;
+    const im = new Image();
+    im.onload = () => {
+      if (alive && im.naturalWidth && im.naturalHeight)
+        setPh({ url: thumb, ...fitPreviewBox(im.naturalWidth, im.naturalHeight, window.innerWidth, window.innerHeight) });
+    };
+    im.src = thumb;
+    return () => {
+      alive = false;
+    };
+  }, [thumb]);
+  const waiting = ph && ph.url === thumb && readyUrl !== cur.url ? ph : null;
+  // 영상은 표지를 보여 주는 동안 **표지 크기**가 제 크기다(HTML 규격) — 재생 정보가 왔다고 고정 크기를 풀면 재생이 시작될
+  // 때까지(자동 재생이 막히면 계속) 창이 썸네일 크기(256px)로 줄어든다(2026-09-20 브라우저 실측). 재생 정보가 오면 영상의
+  // 실제 크기로 바꿔 잡고(CSS 가 냈을 크기 = 상자보다 크면 맞추고 작으면 그대로), 실제로 재생이 시작되면 CSS 에 돌려준다.
+  const [videoBox, setVideoBox] = useState<{ url: string; w: number; h: number } | null>(null);
+  const videoSize =
+    !thumb || readyUrl === cur.url ? undefined : videoBox && videoBox.url === cur.url ? videoBox : waiting;
 
   useEffect(() => {
     // 크게 보기는 정보팝업/그리드 위에 떠 있으므로 키를 캡처 단계에서 먼저 가로챈다.
@@ -186,10 +230,47 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
         </header>
         <div className="media-preview-body">
           {cur.type === "video" ? (
-            <video ref={videoRef} key={cur.url} src={cur.url} controls autoPlay loop />
+            <video
+              ref={videoRef}
+              key={cur.url}
+              src={cur.url}
+              poster={thumb ?? undefined}
+              style={videoSize ? { width: videoSize.w, height: videoSize.h } : undefined}
+              onLoadedMetadata={(e) => {
+                const v = e.currentTarget;
+                if (thumb && v.videoWidth && v.videoHeight)
+                  setVideoBox({ url: cur.url, ...fitPreviewBox(v.videoWidth, v.videoHeight, window.innerWidth, window.innerHeight, false) });
+              }}
+              onPlaying={() => setReadyUrl(cur.url)}
+              controls
+              autoPlay
+              loop
+            />
           ) : cur.type === "audio" ? (
             <audio src={cur.url} controls autoPlay />
+          ) : thumb ? (
+            <div className="media-preview-stack">
+              {waiting && (
+                <img
+                  className="media-preview-ph"
+                  src={waiting.url}
+                  alt=""
+                  aria-hidden="true"
+                  draggable={false}
+                  style={{ width: waiting.w, height: waiting.h }}
+                />
+              )}
+              {/* 항목마다 새 img — 앞 장이 남아 새 자리 표시를 가리지 않게 */}
+              <img
+                key={cur.url}
+                src={cur.url}
+                alt={cur.name}
+                draggable={false}
+                onLoad={() => setReadyUrl(cur.url)}
+              />
+            </div>
           ) : (
+            // 썸네일을 안 넘기는 곳(Assets·레퍼런스·정보 팝업)은 종전 마크업 그대로
             <img src={cur.url} alt={cur.name} draggable={false} />
           )}
         </div>

@@ -1411,6 +1411,7 @@ export function SceneBoard({
                 type: av.type,
                 name: genDataRef.current[id]?.prompt?.slice(0, 50) || "결과",
                 genId: id,
+                thumb: thumbOf(genDataRef.current[id]), // 노드가 띄우는 것과 같은 URL(HistoryBoardNode)
                 // '마지막으로 본' 표시를 남길 묶음 — card_id 는 씬 간 유일하지 않아 씬과 짝으로 보낸다.
                 sceneId: sceneIdRef.current,
                 cardId,

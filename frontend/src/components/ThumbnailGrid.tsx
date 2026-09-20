@@ -489,7 +489,7 @@ export function ThumbnailGrid(props: Props) {
   };
 
   const onPreviewCell = (g: Generation) => {
-    const target = previewTargetFromGenerations(generations, g);
+    const target = previewTargetFromGenerations(generations, g, thumbSize);
     // Share & Review 는 자기 칸(@team) — items 는 MediaPreview 에서 target 의 sceneId 를 물려받는다.
     if (target) props.onPreview(props.tab === "team" ? { ...target, sceneId: TEAM_SCOPE } : target);
   };

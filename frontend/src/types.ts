@@ -472,6 +472,9 @@ export interface PreviewItem {
   type: "image" | "video" | "audio";
   name: string;
   genId?: string; // 결과물 미리보기면 그 generation id('구성에서 보기'용). 에셋(파일)이면 없음.
+  // 연 곳이 이미 화면에 띄운 썸네일 URL(같은 URL 이어야 브라우저 캐시에서 즉시 뜬다). 원본이 오는 동안 그림은 바탕,
+  // 영상은 표지로 깐다. 없으면 종전대로 원본만.
+  thumb?: string | null;
   // '마지막으로 본' 표시를 어느 묶음에 남길지. 캔버스에서 열었을 때만 둘 다 채운다 —
   // card_id 는 씬 간 유일하지 않아(importScene) scene_id 와 짝이어야 한다.
   sceneId?: string;
@@ -482,6 +485,7 @@ export interface PreviewTarget {
   type: "image" | "video" | "audio";
   name: string;
   genId?: string; // 결과물 미리보기면 그 generation id('구성에서 보기'용). 에셋(파일)이면 없음.
+  thumb?: string | null; // PreviewItem 과 같은 뜻
   sceneId?: string; // PreviewItem 과 같은 뜻 — 캔버스에서 연 경우에만
   cardId?: string;
   // 같은 목록(그리드/폴더)의 이미지·영상 — 있으면 ←/→ 방향키로 이전·다음 이동(생성·에셋 공통).
