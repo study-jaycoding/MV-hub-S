@@ -147,6 +147,8 @@
 .notification-progress-spin {
   width: 11px; height: 11px; flex: none; border-radius: 50%;
   border: 2px solid var(--border2); border-top-color: var(--accent);
+  /* 무한 애니메이션은 계단식이 원칙이지만(generations.css "생성중" 주석) 이 스피너는 예외다 — 11px 짜리라 다시 합치는 넓이가 작아
+     부드럽게 돌려도 비용이 없었다(실측: 선형 1.6~2.0% · steps(8) 1.6~1.7%, 기준선 1.7~2.3%). 크게 키우면 다시 잰다. */
   animation: notification-spin 0.8s linear infinite;
 }
 @keyframes notification-spin { to { transform: rotate(360deg); } }

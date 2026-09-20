@@ -705,9 +705,10 @@
   display: flex; align-items: center; justify-content: center;
   height: 150px; border-radius: 8px; background: #0d0d0d;
 }
+/* 무한 애니메이션은 계단식으로만 — 이유와 실측은 generations.css 의 "생성중" 주석. */
 .scene-comfynode-loading-logo {
   width: 60%; max-width: 170px; height: auto;
-  animation: comfy-loading-pulse 1.4s ease-in-out infinite;
+  animation: comfy-loading-pulse 1.4s steps(4) infinite;
 }
 @keyframes comfy-loading-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .scene-comfynode-loading-logo { animation: none; opacity: 0.85; } }
@@ -717,7 +718,7 @@
 /* 생성카드 생성중 — 컨피 노드 로딩과 동일하게 힉스필드 로고를 크게 맥동. */
 .scene-genloading-logo {
   width: 60%; max-width: 170px; height: auto;
-  animation: comfy-loading-pulse 1.4s ease-in-out infinite;
+  animation: comfy-loading-pulse 1.4s steps(4) infinite;
 }
 @media (prefers-reduced-motion: reduce) { .scene-genloading-logo { animation: none; opacity: 0.85; } }
 .reduce-motion .scene-genloading-logo { animation: none; opacity: 0.85; }
@@ -810,22 +811,15 @@
 /* 결과 노드가 든 카드는 아래 has-node 규칙이 box-shadow 를 지운다. 종전에는 애니메이션 선언이
    일반 선언을 이겨 링이 남았으므로, 링을 더 높은 선택자로 되살려 보이는 모습을 맞춘다. */
 .scene-card.has-node.glow { box-shadow: 0 0 0 2px var(--accent); }
-/* z-index:-1 — 카드 내용과 포트(연결 원) 위로 덮이지 않게, 종전 box-shadow 와 같은 순서로 그린다. */
+/* z-index:-1 — 카드 내용과 포트(연결 원) 위로 덮이지 않게, 종전 box-shadow 와 같은 순서로 그린다.
+   ★'방금 생성' 글로우는 **멈춰 있다**(2026-09-20 — 팀 탭 새 항목 글로우와 같은 결정). 종전에는 opacity 를 1.4초 주기로 끝없이 움직였고,
+   카드를 클릭할 때까지(최대 24시간) 남는 표시라 상시 비용이었다(보이는 카드 1장 7~10% of one core → 정지 0.3%). 밝기는 종전 맥동의 가장
+   밝은 지점 그대로. 돌릴 것이 없으므로 모션 끄기용 규칙도 없다. */
 .scene-card.glow::after {
   content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit;
   pointer-events: none;
   box-shadow: 0 0 26px 7px rgba(210, 255, 60, 0.78);
-  animation: scene-card-glow 1.4s ease-in-out infinite;
 }
-@keyframes scene-card-glow {
-  0%, 100% { opacity: 0.4; }  /* 종전 맥동의 가장 어두운 지점과 밝기를 맞춘다 */
-  50% { opacity: 1; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .scene-card.glow::after { animation: none; opacity: 0.8; }
-}
-/* 앱 설정 '모션 끄기'도 존중(OS 설정과 별개 축) — 누락 보완 */
-.reduce-motion .scene-card.glow::after { animation: none; opacity: 0.8; }
 /* 생성중(결과 없는) 생성 카드는 완성 카드처럼 자체 테두리(파랑) 유지 + 라임 '링'만 — 통짜 라임 방지 */
 .scene-card-gen.sel:not(.has-node) { border-color: #2b3a55; }
 /* 결과가 든 생성 카드 = 히스토리 노드(.linb-node)가 뼈대를 대체 → 카드 자체 테두리/배경 제거.

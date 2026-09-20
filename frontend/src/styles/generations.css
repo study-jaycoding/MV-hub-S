@@ -231,25 +231,29 @@
 .status-running { color: #E7A93C; }
 .status-pending { color: var(--muted); }
 /* 생성중 — 오디오 이퀄라이저식 웨이브 막대 5개(색은 status-running 앰버 상속) + 작은 캡션 */
+/* ★끝없이 도는 애니메이션은 **계단식(`steps()`)** 으로만 쓴다(2026-09-20). 부드러운 무한 애니메이션은 opacity·transform 이어도 화면에 하나만
+   있으면 브라우저가 페이지를 초당 60번 새로 합친다(실측, 브라우저 전체: '생성 중' 로고 1장 17~20% of one core → steps(4) 3%, 주기만 늦추면 효과 없음).
+   계단식은 구간 사이에 값이 안 바뀌어 그 작업이 크게 준다. 장식(상시 글로우)은 아예 멈추고, '진행 중'처럼 움직임이 뜻을 갖는 것만 계단식으로 남긴다.
+   계약 시험 = frontend/tests/idleCssAnimations.test.ts(무한 애니메이션은 같은 선언에 steps() 가 있어야 한다). */
 .gen-generating { display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .gen-wave { display: flex; align-items: center; gap: 3px; height: 26px; }
 .gen-wave-bar {
   width: 4px; height: 100%; border-radius: 2px;
   background: currentColor; /* running=앰버 / pending=muted 상속 유지 */
   transform: scaleY(0.35);
-  animation: gen-wave 1s ease-in-out infinite;
+  animation: gen-wave 1s steps(4) infinite;
 }
-/* 막대별 시차 → 위아래로 춤추는 물결 */
+/* 막대별 시차 → 위아래로 춤추는 물결. 시차는 계단 간격(0.5초 ÷ 4 = 0.125초)의 배수 — 다섯 막대가 같은 순간에만 바뀐다. */
 .gen-wave-bar:nth-child(1) { animation-delay: 0s; }
-.gen-wave-bar:nth-child(2) { animation-delay: 0.12s; }
-.gen-wave-bar:nth-child(3) { animation-delay: 0.24s; }
-.gen-wave-bar:nth-child(4) { animation-delay: 0.36s; }
-.gen-wave-bar:nth-child(5) { animation-delay: 0.48s; }
+.gen-wave-bar:nth-child(2) { animation-delay: 0.125s; }
+.gen-wave-bar:nth-child(3) { animation-delay: 0.25s; }
+.gen-wave-bar:nth-child(4) { animation-delay: 0.375s; }
+.gen-wave-bar:nth-child(5) { animation-delay: 0.5s; }
 .gen-generating-label { font-size: 11px; opacity: 0.85; }
 @keyframes gen-wave { 0%, 100% { transform: scaleY(0.35); } 50% { transform: scaleY(1); } }
 /* comfy/힉스필드 생성중 로고(라임)를 맥동. ★.thumb-placeholder 로 스코프해 .card-thumb img(width/height:100%
    · object-fit:cover)보다 명시도를 높인다 — 안 그러면 로고가 카드 전체로 늘어나 cover 로 잘린다. */
-.thumb-placeholder .gen-comfy-logo { width: 72%; max-width: 150px; height: auto; object-fit: contain; animation: gen-comfy-pulse 1.4s ease-in-out infinite; }
+.thumb-placeholder .gen-comfy-logo { width: 72%; max-width: 150px; height: auto; object-fit: contain; animation: gen-comfy-pulse 1.4s steps(4) infinite; }
 @keyframes gen-comfy-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .gen-comfy-logo { animation: none; opacity: 0.9; } }
 /* 모션 끄기(OS·앱) — 애니메이션 정지 + 막대는 중간 높이로 고정(상태는 전달) */
