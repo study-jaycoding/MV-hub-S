@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-09-20
+updated: 2026-09-21
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -500,7 +500,7 @@ updated: 2026-09-20
 | `generation/GenerationConfirmOverlay.tsx`(33줄) | 공유/최종 확인 오버레이 | 〃 |
 | `generation/GenerationReviewOverlay.tsx`(48줄) | 검토(공유/보류/반려) 확인 오버레이 | 〃 |
 | `generation/ConfirmQuestion.tsx`(25줄) | 생성물 확인용 Yes/No 조각(중복 제출 방지 포함). 확인 UI 는 이것 말고도 `admin-confirm-*`·`GradeStepModal` 계보가 있다(§5-e) | 〃 |
-| `TagEditor.tsx`(335줄) | 인라인 태그 에디터(칩·전역 태그·다중선택 적용) | `TagEditor` |
+| `TagEditor.tsx`(335줄) | 인라인 태그 에디터(칩·전역 태그·다중선택 적용 — 다중 선택에는 이 카드가 이미 가진 태그도 넘긴다) | `TagEditor` |
 | `GradeStepModal.tsx`(37줄) | 등급 S 다중선택 확인 모달 | `GradeStepModal` |
 | `GenCommentPanel.tsx`(123줄) | 생성물 코멘트 패널(seq 가드 보유 — §6 계약) | `GenCommentPanel` |
 
@@ -546,7 +546,7 @@ updated: 2026-09-20
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `MediaPreview.tsx`(280줄) | 이미지/영상 미리보기 플로팅 창. 원본이 오는 동안 연 곳이 넘긴 썸네일(`PreviewItem.thumb`)을 그림은 바탕·영상은 표지로 깐다 | `MediaPreview`·`fitPreviewBox` |
-| `InfoPopup.tsx`(546줄) | 생성 정보 팝업(드래그 이동·프롬프트·레퍼런스·오류). 크기가 바뀔 때마다 화면 아래로 넘치지 않게 올린다(끌어 옮긴 뒤에는 그대로) | `InfoPopup` |
+| `InfoPopup.tsx`(548줄) | 생성 정보 팝업(드래그 이동·프롬프트·레퍼런스·오류). 크기가 바뀔 때마다 화면 아래로 넘치지 않게 올린다(끌어 옮긴 뒤에는 그대로). ★높이는 `offsetHeight` 로 — 열리는 애니메이션(scale 0.98) 중의 `getBoundingClientRect` 는 2% 작다 | `InfoPopup` |
 | `CompareModal.tsx`(397줄) | 생성본 N개 비교(프롬프트 diff + 창 이동/리사이즈/최대화 + A/B 와이프) | `CompareModal` |
 | `VideoCompareModal.tsx`(250줄) | 생성정보 없는 미디어 N개 비교(+ 같은 A/B 와이프) | `VideoCompareModal` — 이름과 달리 이미지도 다룸(§5-b) |
 | `compare/CompareGenerationColumn.tsx`(209줄) | 비교 모달의 한 열(미디어·파라미터) | 〃 |
@@ -589,7 +589,7 @@ updated: 2026-09-20
 | `manage/CreditPoolSection.tsx`(399줄) · `CreditPlanFields.tsx`(508줄) | 크레딧 풀 표시 / 그룹·충전 편집 창 | 각 절 |
 | `manage/WorkBoard.tsx`(888줄) | 작업 탭 컨테이너 — 병합·필터·핸들러 주입 | `WorkBoard` |
 | `manage/WorkFilterBar.tsx`(280줄) | 노션식 칩 필터 바 | 〃 |
-| `manage/KanbanBoard.tsx`(185줄) · `TableView.tsx`(351줄) · `CalendarView.tsx`(206줄) · `MonthlyTaskCalendar.tsx`(190줄) | 작업 뷰 4종(프레젠테이션 전용, `WorkViewProps` 주입) — 소요시간 포맷터가 뷰마다 다름(§5-b) | 〃 |
+| `manage/KanbanBoard.tsx`(179줄 — 폴더 자동 작업은 상태가 컷에서 파생되므로 끌 수 없다, 수동 작업만 끌기) · `TableView.tsx`(351줄) · `CalendarView.tsx`(206줄) · `MonthlyTaskCalendar.tsx`(190줄) | 작업 뷰 4종(프레젠테이션 전용, `WorkViewProps` 주입) — 소요시간 포맷터가 뷰마다 다름(§5-b) | 〃 |
 | `manage/CutThumbs.tsx`(105줄) · `ColorTag.tsx`(35줄) | 컷 썸네일 / 색 라벨 | |
 | `manage/ExportView.tsx`(222줄) | 완료 탭 — 최종본 렌더 폴더 저장 | |
 | `manage/ProjectManagerPanel.tsx`(708줄) | 프로젝트 관리 오버레이(생성·편집·역할·보관·순서) | |
@@ -726,7 +726,7 @@ updated: 2026-09-20
 | `useGenerationUtilityActions.ts` | 훅 | 일괄 다운로드·히스토리·창 열기 |
 | `useGenerationSelection.ts` | 훅 | 그리드 선택 집합·바깥 클릭 해제 |
 | `usePromptCreatedActions.ts` | 훅 | 프롬프트로 생성 직후 후처리 |
-| `bulkGenerationActions.ts` | 순수 | 일괄 실행기(`runGenerationBulk` — 주입받은 비동기 작업을 돌려 실패 수 집계) + 결과·확인 문구 |
+| `bulkGenerationActions.ts` | 순수 | 일괄 실행기(`runGenerationBulk` — 주입받은 비동기 작업을 돌려 실패 수 집계, `runGenerationTrash` — 휴지통 전용: 공유 중 409 를 '건너뜀'으로 따로 센다) + 결과·확인 문구 |
 | `shareMirrorPending.ts` | 순수 | 공유 미러 대기 안내 래핑 |
 
 **9. 씬·캔버스 — 데이터·저장·복구(9)**
