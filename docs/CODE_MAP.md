@@ -545,7 +545,7 @@ updated: 2026-09-20
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `MediaPreview.tsx`(199줄) | 이미지/영상 미리보기 플로팅 창 | `MediaPreview` |
+| `MediaPreview.tsx`(280줄) | 이미지/영상 미리보기 플로팅 창. 원본이 오는 동안 연 곳이 넘긴 썸네일(`PreviewItem.thumb`)을 그림은 바탕·영상은 표지로 깐다 | `MediaPreview`·`fitPreviewBox` |
 | `InfoPopup.tsx`(531줄) | 생성 정보 팝업(드래그 이동·프롬프트·레퍼런스·오류) | `InfoPopup` |
 | `CompareModal.tsx`(397줄) | 생성본 N개 비교(프롬프트 diff + 창 이동/리사이즈/최대화 + A/B 와이프) | `CompareModal` |
 | `VideoCompareModal.tsx`(250줄) | 생성정보 없는 미디어 N개 비교(+ 같은 A/B 와이프) | `VideoCompareModal` — 이름과 달리 이미지도 다룸(§5-b) |
