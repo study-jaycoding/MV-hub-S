@@ -9,6 +9,11 @@ import type { Generation, ModelParam, WorkspaceContext } from "../src/types";
 import type { SpotlightCreateBody } from "../src/lib/spotlightSubmit";
 import type { CanvasGenerationLink } from "../src/lib/canvasGenerationRecovery";
 
+// 이 장치를 쓰는 시험 파일은 프롬프트 도크(또는 App 전체)를 통째로 마운트한다 — 파일의 첫 시험은 단독 0.8~1.8초인데, 전체 실행(파일 병렬·jsdom 기동
+// 경합)에서는 기본 5초를 넘는다. 2026-09-20 에 두 시험에만 20초를 줬지만 09-21 에 같은 장치를 쓰는 다른 두 파일에서 또 났다(시험 파일이 늘 때마다 자리를
+// 옮겨 가며 재발). 그래서 개별 시험이 아니라 **이 장치를 들여오는 파일 전체**에 20초를 준다 — 전역 제한은 그대로라 다른 시험의 무한 대기는 5초에 드러난다.
+vi.setConfig({ testTimeout: 20_000 });
+
 export function installPromptStyles(): HTMLStyleElement {
   // Vitest의 기본 CSS 비활성화 플러그인은 .css?raw도 빈 문자열로 바꾼다.
   // Vite 변환을 거치지 않고 제품 파일 자체를 읽는다(시험 실행 중에만 읽음).
