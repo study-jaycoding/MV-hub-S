@@ -150,6 +150,12 @@
    같은 패턴). 선택 중엔 자세히 보려는 의도라 원래 크기 유지(:not(.sel)). */
 .linb-node.disabled { filter: grayscale(1) brightness(0.5); border-color: #4a4d54; }
 .linb-node.disabled:not(.sel) { transform: scale(0.7); }
+/* 비활성 빗금 — 라이브러리 카드와 같은 무늬(styles/generations.css "비활성 = 회색 + 굵은 빗금"). 호버 단추 층(.linb-ov)은 그 위로 올린다. */
+.linb-node.disabled::after {
+  content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: repeating-linear-gradient(135deg, rgba(0, 0, 0, 0.55) 0 4px, rgba(255, 255, 255, 0.1) 4px 5px, transparent 5px 14px);
+}
+.linb-node.disabled .linb-ov { z-index: 2; }
 .linb-node.disabled .linb-tag.root-tag { background: #6b6f78; color: #1a1c20; }
 /* 호버 오버레이 액션(그리드 카드와 동일) */
 .linb-ov {

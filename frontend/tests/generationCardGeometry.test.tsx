@@ -64,6 +64,55 @@ it("selection reveals one frame surface without a second stroke; focus brightens
   expect(resolveCss).toContain("inset 0 0 0 2px #ff304f, 0 0 0 2px #ff304f, 0 0 18px 5px rgba(255, 48, 79, 0.72)");
 });
 
+// 2026-09-21 Jay(모의 화면 B안): d 키로 끈 카드는 회색에 더해 굵은 빗금 — 그림 영역에만, 호버 단추·배지보다 아래, 클릭은 통과, 움직이지 않는다.
+it("deactivated cards get a static hatch over the thumbnail only, beneath the hover controls", () => {
+  // jsdom 은 ::after 의 계산값을 못 준다 — 규칙 본문을 직접 읽는다.
+  const body = (css: string, selector: string) => { const from = css.indexOf(selector); expect(from, selector).toBeGreaterThanOrEqual(0); return css.slice(from, css.indexOf("}", from)); };
+  const historyCss = css("history");
+  for (const rule of [body(generationsCss, ".gen-cell.deactivated .card-thumb::after"), body(historyCss, ".linb-node.disabled::after")]) {
+    expect(rule).toContain("repeating-linear-gradient(135deg");
+    expect(rule).toContain("pointer-events: none");
+    expect(rule).toContain("z-index: 1;"); // .thumb-overlay(z 2)·.card-tl(z 4)·.linb-ov(z 2) 아래
+    expect(rule).not.toContain("animation");
+  }
+  expect(generationsCss).toContain(".asset-cell.deactivated .asset-media::after");
+});
+
+it.each(["grid", "list"] as const)("%s: gold star is centered, and all content shares one rounded clip", (layout) => {
+  act(() => root.render(<><style>{allCss}</style><div className="gen-cell"><GenerationCard {...props(layout)} /></div></>));
+  const button = host.querySelector<HTMLButtonElement>(".card-sf.final")!;
+  const icon = button.querySelector<SVGElement>(".card-final-star")!;
+  const buttonStyle = getComputedStyle(button);
+  expect(buttonStyle.display).toBe("inline-flex");
+  expect(buttonStyle.alignItems).toBe("center"); expect(buttonStyle.justifyContent).toBe("center");
+  expect(buttonStyle.padding).toBe("0px"); expect(buttonStyle.position).toBe("relative");
+  expect(getComputedStyle(icon).display).toBe("block");
+  expect(getComputedStyle(icon).width).toBe("1em"); expect(getComputedStyle(icon).height).toBe("1em");
+  // 도형 경계가 viewBox 양끝에 맞아 글꼴 baseline/여백에 영향을 받지 않는다.
+  const points = icon.querySelector("polygon")!.getAttribute("points")!.split(" ").map((point) => point.split(",").map(Number));
+  expect([Math.min(...points.map(([x]) => x)), Math.min(...points.map(([, y]) => y)),
+    Math.max(...points.map(([x]) => x)), Math.max(...points.map(([, y]) => y))]).toEqual([2, 0, 98, 91]);
+  expect(icon.getAttribute("viewBox")).toBe("2 0 96 91");
+  act(() => button.click());
+  expect(getComputedStyle(host.querySelector(".card-clip > .sconfirm")!).borderRadius).toBe("0");
+  expect(getComputedStyle(host.querySelector(".card")!).borderRadius).toBe("14px");
+  expect(getComputedStyle(host.querySelector(".card")!).overflow).toBe("visible");
+  expect(host.querySelector(".card")!.children).toHaveLength(1);
+  const clip = getComputedStyle(host.querySelector(".card-clip")!);
+  expect(clip.clipPath).toBe("inset(3px round 10px)"); // 1px 여백 + 3px = 4px 선택 테두리(2026-09-21 Jay: 조금 더 두껍게)
+  expect(["", "0", "0px"]).toContain(clip.borderRadius);
+  expect(host.querySelector(".card.selected.resolve-highlighted")).not.toBeNull();
+});
+
+it("selection reveals one frame surface without a second stroke; focus brightens the card's own border, Resolve glow remains", () => {
+  expect(generationsCss).not.toContain(".card.selected::after");
+  expect(generationsCss).toContain("clip-path: inset(3px round 10px)");
+  // 포커스는 다른 색 링을 두르지 않는다(종전: 흰 링 + 라임 링) — 자기 상태색 테두리가 밝아지고 같은 색 1px 링만(2026-09-21 Jay).
+  expect(generationsCss).not.toContain("0 0 0 2px #fff, 0 0 0 4px var(--accent)");
+  expect(generationsCss).toContain(".gen-cell.focused .card, .gen-cell.focused .card.selected:hover { background: var(--st-hi); box-shadow: 0 0 0 1px var(--st-ring); }");
+  expect(resolveCss).toContain("inset 0 0 0 2px #ff304f, 0 0 0 2px #ff304f, 0 0 18px 5px rgba(255, 48, 79, 0.72)");
+});
+
 it.each(["grid", "list"] as const)("%s: selection keeps frame padding and content layout unchanged", (layout) => {
   // jsdom은 var()가 든 border 축약값을 longhand 폭으로 풀지 못한다. 색만 치환하고 폭은 실제 CSS로 검사한다.
   const layoutCss = allCss.replaceAll("var(--border)", "rgba(255, 255, 255, 0.08)");
