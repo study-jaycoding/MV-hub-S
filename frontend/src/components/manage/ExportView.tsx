@@ -419,10 +419,8 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                       ? "폴더의 파일은 바꾸지 않고 읽기만 합니다. 파일이 많으면 조금 걸릴 수 있습니다."
                       : "공유본과 최종본 가운데 폴더에 없는 것만 저장합니다. 이미 있는 파일은 건너뜁니다."}
               </p>
+              {/* 단추 순서 = 예 · 아니오(Jay 2026-09-21) */}
               <div className="export-modal-btns">
-                <button type="button" className="export-ghost-btn" onClick={() => setAsk(null)}>
-                  아니오
-                </button>
                 <button
                   type="button"
                   className="export-ghost-btn strong"
@@ -435,6 +433,9 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                   }}
                 >
                   예
+                </button>
+                <button type="button" className="export-ghost-btn" onClick={() => setAsk(null)}>
+                  아니오
                 </button>
               </div>
             </div>
@@ -463,11 +464,11 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                 </ul>
               )}
               <div className="export-modal-btns">
-                <button type="button" className="export-ghost-btn" onClick={() => setAsk(null)}>
-                  아니오
-                </button>
                 <button type="button" className="export-ghost-btn danger strong" onClick={() => onMirror(!!ask.many)}>
                   예 — {compare.extra.length}개 옮기고 {compare.to_add.length}개 저장
+                </button>
+                <button type="button" className="export-ghost-btn" onClick={() => setAsk(null)}>
+                  아니오
                 </button>
               </div>
             </div>

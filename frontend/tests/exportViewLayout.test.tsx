@@ -63,6 +63,7 @@ it("공유 저장과 최종 저장은 각자의 종류로만 저장을 부른다
   expect(button("최종 저장").classList.contains("export-btn-final")).toBe(true);
   await act(async () => { button("공유 저장").click(); });
   expect(host.querySelector(".export-modal h3")!.textContent).toBe("공유본 2개를 저장하시겠습니까?");
+  expect(texts(".export-modal button")).toEqual(["예", "아니오"]); // 단추 순서 = 예 · 아니오(Jay 2026-09-21)
   expect(saveFinals).not.toHaveBeenCalled(); // 단추를 눌렀다고 바로 저장하지 않는다
   await answer("아니오");
   expect(host.querySelector(".export-modal")).toBeNull();
