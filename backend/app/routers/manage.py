@@ -1575,6 +1575,71 @@ def _save_finals_facts(project_id: str, kind: str = "final") -> tuple[list[dict]
     return _save_finals_targets_facts(project_id, kind), False
 
 
+@router.get("/save-finals/compare")
+def save_finals_compare(project_id: str, request: Request):
+    """비교 — 프로그램이 원하는 집합(최종+공유)과 이 PC 에서 보이는 렌더 폴더를 견준다. **읽기만** 한다(설계: docs/EXPORT_SYNC_DESIGN.md).
+    로컬 전용(_LOCAL_EXACT) — 디스크는 이 PC 의 것. 파일 이름·상태가 나가므로 프로젝트 관리 권한.
+    · to_add  프로그램에는 있는데 폴더에 없다(업데이트가 저장하는 것)
+    · extra   폴더에만 남은 **우리 파일** — 이름 규칙(<시퀀스>_<gen 앞 12자>)이 맞고 각인의 gen_id 도 그 이름과 맞는데 더는 대상이 아니다
+    · unknown 그 밖의 파일(사람이 넣은 것·각인 없는 것) — 세기만 하고 절대 건드리지 않는다
+    훑는 범위는 대상·대장에 나온 폴더뿐이다(렌더 루트 전체를 재귀로 훑지 않는다)."""
+    _require_project_manage(request, project_id)
+    state = project_folders.render_root_state(project_id)
+    if state.get("error"):
+        raise HTTPException(status_code=400, detail=state["error"])
+    if not state.get("render_path"):
+        raise HTTPException(status_code=400, detail="렌더 폴더가 연결되지 않았습니다")
+    render = Path(state["render_path"])
+    root = render.resolve()  # safe_dest 가 돌려주는 경로와 같은 꼴(매핑 드라이브는 UNC 로 풀린다)
+    facts, server_outdated = _save_finals_facts(project_id)
+    if server_outdated:
+        raise HTTPException(status_code=400, detail="공유 서버 업데이트가 필요합니다(완료본 저장 API 없음)")
+    shared_facts, shared_outdated = _save_finals_facts(project_id, "shared")  # 실패하면 비교 전체를 실패시킨다 — 반쪽 비교로 '남은 것'을 잘못 세지 않게
+    facts = [*facts, *shared_facts]
+    ledger = repo_manage.export_dest_paths([t["gen_id"] for t in facts])
+    to_add: list[dict] = []
+    blocked: list[dict] = []
+    wanted: set[Path] = set()
+    same = 0
+    for t in facts:
+        kind = t.get("kind") or "final"
+        item = {"gen_id": t["gen_id"], "kind": kind, "folder_path": project_folders.export_folder(t.get("folder_path") or "", kind), "filename": t.get("filename") or ""}
+        dest = None if t.get("reason") else project_folders.safe_dest(render, item["folder_path"], item["filename"])
+        if dest is None:
+            blocked.append({**item, "reason": t.get("reason") or "경로 안전성 위반"})
+            continue
+        wanted.add(dest)
+        dest_state = _dest_state(dest, t["gen_id"], ledger)
+        if dest_state == "missing":
+            to_add.append(item)
+        elif dest_state == "conflict":
+            blocked.append({**item, "reason": _DEST_CONFLICT})
+        else:
+            same += 1
+    folders = {dest.parent for dest in wanted}
+    for entry in repo_manage.list_exports(project_id, limit=5000):  # 이 PC 가 예전에 저장한 자리(폴더가 바뀐 컷의 옛 폴더)
+        old = Path(entry["dest_path"])
+        if old.is_relative_to(root):  # 렌더 폴더 밖을 가리키는 옛 기록은 훑지 않는다
+            folders.add(old.parent)
+    extra: list[dict] = []
+    unknown = 0
+    for folder in sorted(folders):
+        if not folder.is_dir():
+            continue
+        for child in folder.iterdir():
+            if not child.is_file() or child in wanted or child.name.endswith(".part"):
+                continue
+            prefix = child.stem.rsplit("_", 1)[-1] if "_" in child.stem else ""
+            stamped = file_stamp.gen_id_of(file_stamp.read_stamp(child)) if len(prefix) == 12 else None
+            # 12자 접두 일치는 **보여 주기용** 판정이다 — 파일을 옮기는 미러는 각인의 gen_id 전체가 맞을 때만 허용한다.
+            if stamped and stamped[:12] == prefix and folder.is_relative_to(root):
+                extra.append({"gen_id": stamped, "kind": "shared" if folder.name == project_folders.SHARED_SUBFOLDER else "final",
+                              "folder_path": folder.relative_to(root).as_posix(), "filename": child.name})
+            else:
+                unknown += 1
+    return {"shared_supported": not shared_outdated, "to_add": to_add, "extra": extra, "blocked": blocked, "same": same, "unknown": unknown}
+
+
 @router.get("/save-finals")
 def save_finals_status(project_id: str, request: Request):
     """저장 대상(최종본) 미리보기 + 저장 이력(대장). 읽기 전용 — 다운로드/복사 없음.

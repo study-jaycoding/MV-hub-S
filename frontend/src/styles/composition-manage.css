@@ -583,6 +583,27 @@ tr.work-row-archived td { opacity: .62; }
 .export-card .manage-proj-select { width: 100%; }
 .export-act { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .export-act .export-btn { align-self: center; }
+.export-act-sep { width: 1px; height: 26px; margin: 0 4px; background: var(--border); }
+/* 아이콘 단추 — 전역 button padding 이 폭 하한을 만들므로 0 으로 고정하고 정중앙에 둔다 */
+.export-icon-btn { display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border-radius: 8px; border: 1px solid var(--border); background: #17191b; color: var(--text); cursor: pointer; }
+.export-icon-btn svg { width: 17px; height: 17px; }
+.export-icon-btn.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.export-ghost-btn { display: inline-flex; align-items: center; gap: 7px; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border); background: #17191b; color: var(--text); font-size: 13.5px; font-weight: 700; cursor: pointer; }
+.export-ghost-btn svg { width: 14px; height: 14px; }
+.export-ghost-btn.danger { border-color: rgba(255,98,119,.45); }
+.export-icon-btn:disabled, .export-ghost-btn:disabled { opacity: .4; cursor: not-allowed; }
+.export-hint-two { line-height: 1.55; } .export-hint-two b { color: var(--text); font-weight: 700; }
+/* 비교 결과 판 */
+.export-compare { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
+.export-compare-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 16px; }
+.export-compare-head b { font-size: 14px; margin-right: 2px; }
+.export-compare-group { padding: 10px 16px 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+.export-pill { font-size: 11.5px; font-weight: 800; padding: 3px 9px; border-radius: 999px; background: rgba(127,127,127,.18); color: var(--muted); }
+.export-pill.add { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.export-pill.rm { background: rgba(255,98,119,.14); color: #ff6277; }
+.export-pill.unk { background: rgba(217,138,74,.16); color: #d98a4a; }
+.export-sign { flex: 0 0 auto; width: 14px; text-align: center; font-weight: 800; }
+.export-sign.add { color: var(--accent); } .export-sign.rm { color: #ff6277; }
 .export-side { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 16px; align-items: start; min-width: 0; }
 .export-desc { font-size: 12.5px; line-height: 1.55; color: var(--muted); margin: 5px 0 0; }
 .export-desc code { padding: 1px 5px; border-radius: 4px; background: rgba(127,127,127,.15); font-size: 12px; }

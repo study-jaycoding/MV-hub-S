@@ -228,6 +228,9 @@ export const manageApi = {
       }),
       { method: "POST" },
     ),
+  // 비교 — 프로그램이 원하는 집합(최종+공유) vs 이 PC 의 렌더 폴더. 읽기만 한다.
+  saveFinalsCompare: (projectId: string) =>
+    jsonFetch<SaveFinalsCompare>(withQuery("/api/manage/save-finals/compare", { project_id: projectId })),
   // 저장 대상 미리보기 + 이력(읽기 전용, 다운로드 없음).
   saveFinalsStatus: (projectId: string) =>
     jsonFetch<SaveFinalsStatus>(withQuery("/api/manage/save-finals", { project_id: projectId })),
@@ -409,6 +412,23 @@ export interface SaveFinalsTarget {
   filename: string;
   saved: boolean; // 이미 렌더폴더에 존재
   reason: string | null; // null=저장 가능, 값 있으면 저장 불가 사유
+}
+
+export interface SaveFinalsCompareItem {
+  gen_id: string;
+  kind: SaveFinalsKind;
+  folder_path: string; // 렌더 폴더 아래 저장 폴더(공유본은 …/shared)
+  filename: string;
+  reason?: string;
+}
+
+export interface SaveFinalsCompare {
+  shared_supported: boolean;
+  to_add: SaveFinalsCompareItem[]; // 프로그램에는 있는데 폴더에 없다
+  extra: SaveFinalsCompareItem[]; // 폴더에만 남은 우리 파일(이름 규칙 + 각인 일치)
+  blocked: SaveFinalsCompareItem[]; // 저장 불가(사유)
+  same: number;
+  unknown: number; // 모르는 파일 — 세기만 하고 건드리지 않는다
 }
 
 export interface SaveFinalsHistory {

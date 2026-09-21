@@ -6,10 +6,32 @@ import { api } from "../../api";
 import { reconcileArrayState, reconcileValueState } from "../../lib/stateReconciliation";
 import {
   manageApi,
+  type SaveFinalsCompare,
   type SaveFinalsKind,
   type SaveFinalsResult,
   type SaveFinalsStatus,
 } from "../../lib/manageApi";
+
+// 비교 = 마주 도는 두 화살표 · 미러 = 굵은 오른쪽 화살표 · 업데이트 = 꺾쇠(Jay 지정 2026-09-21).
+const ICON = { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
+const CompareIcon = () => (
+  <svg {...ICON} strokeWidth={2.5}>
+    <path d="M4 11V9a2 2 0 0 1 2-2h12" />
+    <path d="M15 3.5 18.5 7 15 10.5" />
+    <path d="M20 13v2a2 2 0 0 1-2 2H6" />
+    <path d="M9 13.5 5.5 17 9 20.5" />
+  </svg>
+);
+const MirrorIcon = () => (
+  <svg {...ICON}>
+    <path d="M3.5 9.5h9v-4l8 6.5-8 6.5v-4h-9z" fill="currentColor" stroke="none" />
+  </svg>
+);
+const UpdateIcon = () => (
+  <svg {...ICON} strokeWidth={2.8}>
+    <path d="M8.5 4.5 16 12l-7.5 7.5" />
+  </svg>
+);
 
 export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const [projects, setProjects] = useState<{ pid: string; name: string }[]>([]);
@@ -18,6 +40,15 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<SaveFinalsResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // 비교 결과 — 미러·업데이트는 이것이 있을 때만 켜진다. 프로젝트를 바꾸거나 저장·새로고침으로 상태가 달라지면 버린다(낡은 비교로 실행 금지).
+  const [compare, setCompare] = useState<SaveFinalsCompare | null>(null);
+  const [comparing, setComparing] = useState(false);
+  const compareRequestRef = useRef(0);
+  const dropCompare = () => {
+    compareRequestRef.current += 1;
+    setCompare(null);
+    setComparing(false);
+  };
   const pidRef = useRef(pid);
   const seenReloadSignalRef = useRef(reloadSignal);
   const statusRequestRef = useRef(0);
@@ -61,6 +92,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   useEffect(() => {
     setResult(null);
     setErr(null);
+    dropCompare();
     loadStatus(pid);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid]);
@@ -68,6 +100,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   useEffect(() => {
     if (seenReloadSignalRef.current === reloadSignal) return;
     seenReloadSignalRef.current = reloadSignal;
+    dropCompare();
     loadProjects();
     loadStatus(pidRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -91,8 +124,24 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   };
   const canSave = !!pid && !!renderPath && !status?.error && !serverOutdated && !busy;
 
-  const onSave = async (kind: SaveFinalsKind) => {
+  const onCompare = async () => {
+    if (!canSave || comparing) return;
+    const requestId = ++compareRequestRef.current;
+    setComparing(true);
+    setErr(null);
+    try {
+      const next = await manageApi.saveFinalsCompare(pid);
+      if (compareRequestRef.current === requestId) setCompare(next);
+    } catch (e: any) {
+      if (compareRequestRef.current === requestId) setErr(String(e?.message || e));
+    } finally {
+      if (compareRequestRef.current === requestId) setComparing(false);
+    }
+  };
+
+  const onSave = async (kind: SaveFinalsKind | "all") => {
     if (!canSave) return;
+    dropCompare(); // 저장하면 폴더가 달라진다 — 다시 비교해야 미러·업데이트가 켜진다
     setBusy(true);
     setResult(null);
     setErr(null);
@@ -205,10 +254,42 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
             >
               최종 저장 ({pending.final})
             </button>
-            <span className="export-hint">{busy ? "저장 중…" : "이미 저장된 파일은 건너뜁니다."}</span>
+            <span className="export-act-sep" />
+            <button
+              type="button"
+              className={"export-icon-btn" + (compare ? " on" : "")}
+              disabled={!canSave || comparing}
+              onClick={onCompare}
+              title="비교 — 프로그램에 있는 것(공유+최종)과 렌더 폴더를 견준다. 읽기만 한다"
+              aria-label="비교"
+              aria-pressed={!!compare}
+            >
+              <CompareIcon />
+            </button>
+            {/* 미러는 파일을 옮기는 첫 기능이라, 여러 PC 가 같은 폴더를 쓸 때의 안전장치(협력 잠금·공유 저장 목록)를 넣은 뒤에 연다. */}
+            <button type="button" className="export-ghost-btn danger" disabled title="준비 중 — 여러 PC 가 같은 폴더를 쓸 때의 안전장치를 먼저 넣습니다. 지금은 비교에서 '폴더에만 남은 것'을 확인만 할 수 있습니다">
+              <MirrorIcon />
+              미러{compare ? ` (+${compare.to_add.length} · −${compare.extra.length})` : ""}
+            </button>
+            <button
+              type="button"
+              className="export-ghost-btn"
+              disabled={!canSave || !compare || compare.to_add.length === 0}
+              onClick={() => onSave("all")}
+              title={compare ? "새로 저장할 것만 올린다(공유+최종)" : "비교를 먼저 실행하세요"}
+            >
+              <UpdateIcon />
+              업데이트{compare ? ` (+${compare.to_add.length})` : ""}
+            </button>
+            <span className="export-hint export-hint-two">
+              <b>미러</b>는 똑같이 맞춘다.
+              <br />
+              <b>업데이트</b>는 추가된 것만 올린다.
+            </span>
           </div>
+          <span className="export-hint">{busy ? "저장 중…" : comparing ? "비교하는 중…" : "이미 저장된 파일은 건너뜁니다."}</span>
 
-          {err && <div className="export-err">저장 실패: {err}</div>}
+          {err && <div className="export-err">실패: {err}</div>}
 
           {result && (
             <div className="export-result">
@@ -233,6 +314,39 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
             </div>
           )}
         </div>
+
+        {compare && (
+          <div className="export-compare">
+            <div className="export-compare-head">
+              <b>비교 결과</b>
+              <span className="export-pill add">새로 저장할 것 {compare.to_add.length}</span>
+              <span className="export-pill rm">폴더에만 남은 것 {compare.extra.length}</span>
+              <span className="export-pill">같음 {compare.same}</span>
+              {compare.blocked.length > 0 && <span className="export-pill unk">저장 불가 {compare.blocked.length}</span>}
+              {compare.unknown > 0 && <span className="export-pill unk">모르는 파일 {compare.unknown} · 건드리지 않음</span>}
+            </div>
+            {[
+              { key: "add", sign: "+", title: "새로 저장할 것 — 프로그램에는 있는데 폴더에 없다(업데이트가 저장)", items: compare.to_add },
+              { key: "rm", sign: "−", title: "폴더에만 남은 것 — 우리 파일인데 프로그램에서는 더 이상 저장 대상이 아니다(미러가 정리할 것)", items: compare.extra },
+            ].map((group) =>
+              group.items.length ? (
+                <div key={group.key} className="export-compare-group">
+                  <div className="export-history-head">{group.title}</div>
+                  <ul className="export-history-list export-target-list">
+                    {group.items.map((item) => (
+                      <li key={group.key + item.folder_path + item.filename}>
+                        <span className={"export-sign " + group.key}>{group.sign}</span>
+                        <code className="export-history-path">{item.folder_path} · {item.filename}</code>
+                        <span className={"export-badge kind-" + item.kind}>{item.kind === "final" ? "최종" : "공유"}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null,
+            )}
+            {!compare.to_add.length && !compare.extra.length && <div className="export-hint export-compare-group">폴더가 프로그램과 같습니다.</div>}
+          </div>
+        )}
 
         <div className="export-side">
           <div className="export-history">

@@ -9,14 +9,16 @@ import type { SaveFinalsKind, SaveFinalsStatus } from "../src/lib/manageApi";
 
 let status: SaveFinalsStatus;
 const saveFinals = vi.hoisted(() => vi.fn());
+const saveFinalsCompare = vi.hoisted(() => vi.fn());
 vi.mock("../src/api", () => ({ api: { projects: async () => ({ projects: [{ id: "p1", name: "fixture" }] }) } }));
-vi.mock("../src/lib/manageApi", () => ({ manageApi: { saveFinalsStatus: async () => status, saveFinals } }));
+vi.mock("../src/lib/manageApi", () => ({ manageApi: { saveFinalsStatus: async () => status, saveFinals, saveFinalsCompare } }));
 const target = (gen_id: string, saved: boolean, reason: string | null, kind: SaveFinalsKind = "final", filename = gen_id + ".mp4") => ({ gen_id, kind, folder_path: "ep001/" + gen_id, filename, saved, reason });
 let root: Root, host: HTMLDivElement;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   saveFinals.mockReset().mockResolvedValue({ saved: 1, skipped: 0, errors: [] });
+  saveFinalsCompare.mockReset();
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
@@ -70,4 +72,30 @@ it("구버전 서버라 대상을 알 수 없을 때는 '저장할 최종본이 
   act(() => root.unmount()); root = createRoot(host);
   await mount();
   expect(host.querySelector(".export-side")!.textContent).toContain("저장할 최종본이 없습니다");
+});
+
+it("비교를 실행해야 업데이트가 켜지고, 저장하면 다시 꺼진다 — 미러는 아직 꺼 둔다", async () => {
+  status = { render_path: "R:/render", error: null, shared_supported: true, targets: [target("c0030", false, null), target("c0040", false, null, "shared")], history: [] };
+  saveFinalsCompare.mockResolvedValue({ shared_supported: true, same: 3, unknown: 2, blocked: [],
+    to_add: [{ gen_id: "c0030", kind: "final", folder_path: "ep001/c0030", filename: "c0030.mp4" }, { gen_id: "c0040", kind: "shared", folder_path: "ep001/c0040/shared", filename: "c0040.mp4" }],
+    extra: [{ gen_id: "old", kind: "final", folder_path: "ep001/c0010", filename: "c0010_old.mp4" }] });
+  await mount();
+  const compareButton = () => host.querySelector<HTMLButtonElement>(".export-icon-btn")!;
+  expect(button("업데이트").disabled).toBe(true);
+  expect(button("업데이트").title).toContain("비교를 먼저");
+  expect(button("미러").disabled).toBe(true);
+  expect(host.querySelector(".export-hint-two")!.textContent).toBe("미러는 똑같이 맞춘다.업데이트는 추가된 것만 올린다.");
+  await act(async () => { compareButton().click(); });
+  expect(saveFinalsCompare).toHaveBeenCalledWith("p1");
+  expect(compareButton().classList.contains("on")).toBe(true);
+  expect(button("업데이트").textContent).toBe("업데이트 (+2)");
+  expect(button("업데이트").disabled).toBe(false);
+  expect(button("미러").textContent).toBe("미러 (+2 · −1)");
+  expect(button("미러").disabled).toBe(true); // 여러 PC 안전장치가 들어갈 때까지 꺼 둔다
+  expect(texts(".export-pill")).toEqual(["새로 저장할 것 2", "폴더에만 남은 것 1", "같음 3", "모르는 파일 2 · 건드리지 않음"]);
+  expect(texts(".export-compare code")).toEqual(["ep001/c0030 · c0030.mp4", "ep001/c0040/shared · c0040.mp4", "ep001/c0010 · c0010_old.mp4"]);
+  await act(async () => { button("업데이트").click(); });
+  expect(saveFinals).toHaveBeenLastCalledWith("p1", undefined, "all");
+  expect(host.querySelector(".export-compare")).toBeNull(); // 폴더가 달라졌다 — 낡은 비교는 버린다
+  expect(button("업데이트").disabled).toBe(true);
 });

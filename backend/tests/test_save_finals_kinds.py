@@ -142,6 +142,38 @@ class SaveFinalsKindTests(unittest.TestCase):
                 asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
         self.assertEqual((out["saved"], [e["gen_id"] for e in out["errors"]]), (1, ["(shared)"]))
 
+    def test_compare_reads_only_and_splits_new_leftover_unknown(self):
+        render = Path(self.tmp.name) / "Render"
+        cut = render / "ep" / "c1"
+        (cut / "shared").mkdir(parents=True)
+        (cut / "c1_final0000001.png").write_bytes(b"saved")                 # 같음(각인 없음 = 종전처럼 저장된 것으로 본다)
+        (cut / "c1_oldfinal0000.png").write_bytes(b"ours-but-not-wanted")   # 폴더에만 남은 우리 파일(최종 해제 등)
+        (cut / "shared" / "c1_gone00000000.png").write_bytes(b"ours")       # 폴더에만 남은 우리 공유본
+        (cut / "사람이넣은파일.png").write_bytes(b"human")                     # 모르는 파일 — 이름 규칙이 아니다
+        (cut / "c1_fakeprefix00.png").write_bytes(b"no-stamp")              # 이름은 맞지만 각인이 없다 — 모르는 파일
+        (cut / "c1_x.png.abcd.part").write_bytes(b"temp")                   # 저장 중 임시 파일은 세지 않는다
+        stamps = {"c1_oldfinal0000.png": "oldfinal0000-full-id", "c1_gone00000000.png": "gone00000000-full-id"}
+        before = sorted(str(f) for f in render.rglob("*"))
+        state = {"render_path": str(render), "error": None}
+        read = lambda path: {file_stamp.KEY_GEN: stamps[path.name]} if path.name in stamps else {}  # noqa: E731
+        with mock.patch.object(project_folders, "render_root_state", return_value=state), \
+                mock.patch.object(manage_router, "_require_project_manage"), \
+                mock.patch.object(file_stamp, "read_stamp", side_effect=read):
+            out = manage_router.save_finals_compare("p1", mock.Mock())
+        self.assertEqual(sorted(str(f) for f in render.rglob("*")), before)  # 읽기만 한다
+        self.assertEqual({(t["gen_id"], t["folder_path"]) for t in out["to_add"]}, {("shared000001", "ep/c1/shared"), ("held00000001", "ep/c1/shared")})
+        self.assertEqual({(t["filename"], t["kind"], t["folder_path"]) for t in out["extra"]},
+                         {("c1_oldfinal0000.png", "final", "ep/c1"), ("c1_gone00000000.png", "shared", "ep/c1/shared")})
+        self.assertEqual((out["same"], out["unknown"], out["blocked"], out["shared_supported"]), (1, 2, [], True))
+
+    def test_compare_is_local_only_but_targets_and_content_stay_delegated(self):
+        from app.routers import _proxy
+
+        self.assertTrue(_proxy.is_local_path("/api/manage/save-finals/compare"))
+        self.assertTrue(_proxy.is_local_path("/api/manage/save-finals"))
+        self.assertFalse(_proxy.is_local_path("/api/manage/save-finals/targets"))
+        self.assertFalse(_proxy.is_local_path("/api/manage/save-finals/content/abc"))
+
     def test_save_writes_each_kind_to_its_folder_and_is_idempotent(self):
         render = Path(self.tmp.name) / "Render"
         media = Path(self.tmp.name) / "media"
