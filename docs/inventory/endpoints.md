@@ -10,7 +10,7 @@
 - `로컬 예외 · 핸들러가 _proxy 호출` 은 핸들러 **본문이 `_proxy` 를 직접 참조**할 때만 붙는다(팀 탭 등에서 핸들러가 골라서 위임). 헬퍼·usecase 를 거쳐 위임하면 안 보이므로, 이 표시가 없다고 위임이 없다는 뜻은 아니다.
 - `Depends` 칸은 라우터·데코레이터·핸들러 인자에 직접 적힌 것만이다. 인증 미들웨어와 핸들러 본문의 권한 검사는 안 나온다.
 
-전체 291개.
+전체 292개.
 
 ## `backend/app/main.py` — 10개
 
@@ -256,7 +256,7 @@
 | `DELETE` | `/api/trash/{gen_id}` | `purge_trashed_item` | 로컬 예외 | — |
 | `GET` | `/api/trash` | `list_trash` | 로컬 예외 | — |
 
-## `backend/app/routers/manage.py` — 42개
+## `backend/app/routers/manage.py` — 43개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
@@ -269,6 +269,7 @@
 | `GET` | `/api/manage/hf-missing-candidates` | `hf_missing_candidates` | 기본 중계 | — |
 | `POST` | `/api/manage/local-task-previews` | `local_task_previews` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `GET` | `/api/manage/matrix` | `matrix` | 기본 중계 | — |
+| `GET` | `/api/manage/member-table` | `member_table` | 기본 중계 | — |
 | `GET` | `/api/manage/planning/{pid}` | `get_planning` | 기본 중계 | — |
 | `PUT` | `/api/manage/planning/{pid}` | `put_planning` | 기본 중계 | — |
 | `POST` | `/api/manage/project-folders/reveal` | `reveal_project_folder` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |

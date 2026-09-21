@@ -52,6 +52,7 @@ updated: 2026-09-21
 | 프로젝트 CRUD·멤버·역할 | `components/manage/ProjectManagerPanel.tsx` | `routers/projects.py`, `repo/projects.py` | |
 | 작업(Task) 칸반/테이블/캘린더 | `components/manage/WorkBoard.tsx` | `routers/manage.py`, `repo/manage_tasks.py` | 소요시간 표기는 `lib/format.ts` 의 `fmtElapsed` 하나다(`1d2h3m4s`, 초를 버리지 않음, 하루 이상은 `1d1h` — Jay 확정 2026-09-18). PM 창 5곳과 정보 팝업(`InfoPopup`)의 '생성 시간'이 모두 이 함수를 쓴다. 새 뷰도 이 함수를 쓴다 |
 | 크레딧 풀·그룹 한도 설정 | `components/manage/CreditPoolSection.tsx`, `CreditPlanFields.tsx` | `routers/manage.py`(`/api/manage/credit-plan*` — 권한·API 계약), `repo/manage_credit_plan.py` | |
+| 관리 표(멤버·그룹·프로젝트 참여를 표에서 고치기) | `components/manage/MemberTable.tsx`, `lib/memberTable.ts` | `routers/manage.py`(`GET /api/manage/member-table`), `repo/manage_member_table.py` | 표에는 자기만의 쓰기 API 가 없다 — 칸마다 기존 API(`PUT credit-plan`·`PATCH/DELETE projects/{pid}/members`). 그룹 저장은 **받은 그룹을 전부** 되보내야 한다(빠진 그룹은 서버가 지운다). 가입·등급 칸은 서버의 마지막 admin 보호가 들어갈 때까지 보기만. 설계 `docs/MEMBER_TABLE_DESIGN.md` |
 | 알림 센터(코멘트·업데이트 공지) | `components/NotificationCenter.tsx` | `routers/notifications.py`, `routers/update_notices.py` | |
 | 부분 수정(마스크 편집 캔버스) | `components/edit/PartialEditModal.tsx` | — | 제출은 기존 생성 요청 경로 재사용(위 '생성 제출 흐름' 행 — `agent_push.py` 까지). `PartialEditHost`는 커스텀 이벤트로만 열림(§3.5) |
 | 생성물 비교(Compare) | `components/CompareModal.tsx`, `VideoCompareModal.tsx` | — | |
@@ -257,6 +258,7 @@ updated: 2026-09-21
 | `manage_tasks.py` | 1297 | 작업 조회·자동 폴더 작업·담당자 배정·CRUD·순서·배치삭제 | `manage.list_tasks`·`sync_folder_tasks` |
 | `manage_schema.py` | 733 | 사이드카 테이블·멱등 마이그레이션 경계(모든 manage 모듈이 먼저 부름) | `ensure_manage_schema` |
 | `manage_credit_plan.py` | 756 | 크레딧 풀·그룹 한도·긴급충전·기간 계산 + 대시보드 읽기 모델 | `manage_credit_plan.get_settings`·`plan_view` |
+| `manage_member_table.py` | 133 | 관리 표 읽기 — 계정(이메일) 한 줄에 그룹·프로젝트 역할·HF 플랜·사용량 조인. **쓰기 없음**. uid 없는·어긋난 계정은 `project_lock` | `member_table` |
 | `manage_transactions.py` | 483 | 계정 크레딧 거래 적재 + 생성물 근접 매칭 | `manage_transactions.record_transactions` |
 | `manage_telemetry.py` | 395 | 로컬 텔레메트리 outbox 저장·조회·전송 정산 | `manage_telemetry.mark_telemetry_dirty*` |
 | `manage_account_reports.py` | 310 | 계정 상태·거래 보고의 내구성 outbox(재시도·409·dead-letter) | `manage_account_reports.queue_account_reports` |
@@ -584,14 +586,15 @@ updated: 2026-09-21
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `ManageWindow.tsx`(147줄) | `?embed=manage` 분리 창 + 탭 호스트(§3.5) | `ManageWindow` |
-| `manage/DashboardView.tsx`(603줄) | 통합 대시보드(프로젝트 요약 + 에피소드/시퀀스 트리) | `DashboardView` |
-| `manage/WorkspaceUsageDashboard.tsx`(966줄) | 워크스페이스 사용 현황(크레딧 링·추이 차트·멤버/모델 표) | `WorkspaceUsageDashboard`·`HoverMetric` |
+| `manage/DashboardView.tsx`(601줄) | 통합 대시보드(프로젝트 요약 + 에피소드/시퀀스 트리) | `DashboardView` |
+| `manage/WorkspaceUsageDashboard.tsx`(1008줄) | 워크스페이스 사용 현황 · 머리글(＋프로젝트 · 관리 표 아이콘 · 보고서 내려받기 메뉴)(크레딧 링·추이 차트·멤버/모델 표) | `WorkspaceUsageDashboard`·`HoverMetric` |
 | `manage/CreditPoolSection.tsx`(399줄) · `CreditPlanFields.tsx`(508줄) | 크레딧 풀 표시 / 그룹·충전 편집 창 | 각 절 |
+| `manage/MemberTable.tsx`(264줄) | **관리 표** — 계정 한 줄에 등급·크레딧 그룹·프로젝트 참여·보고된 사실. 칸을 고치면 기존 API 로 즉시 저장(직렬 큐 → 큐가 비면 재조회). 설계 `docs/MEMBER_TABLE_DESIGN.md` | `MemberTable` |
 | `manage/WorkBoard.tsx`(892줄) | 작업 탭 컨테이너 — 병합·필터·핸들러 주입. 머리글 오른쪽 = 검색 상자 · 보관 기록(아이콘) · 내 작업만 · 보기 전환 | `WorkBoard` |
 | `manage/WorkFilterBar.tsx`(280줄) | 노션식 칩 필터 바(칩 · +필터) + 머리글에 놓이는 검색 상자 `WorkSearchBox` | 〃 |
 | `manage/KanbanBoard.tsx`(179줄 — 폴더 자동 작업은 상태가 컷에서 파생되므로 끌 수 없다, 수동 작업만 끌기) · `TableView.tsx`(351줄) · `CalendarView.tsx`(206줄) · `MonthlyTaskCalendar.tsx`(190줄) | 작업 뷰 4종(프레젠테이션 전용, `WorkViewProps` 주입) — 소요시간 포맷터가 뷰마다 다름(§5-b) | 〃 |
 | `manage/CutThumbs.tsx`(105줄) · `ColorTag.tsx`(35줄) | 컷 썸네일 / 색 라벨 | |
-| `manage/ExportView.tsx`(240줄) | 완료 탭 — 최종본 렌더 폴더 저장. 2단(왼쪽 판 = 프로젝트·저장 위치·건수·저장 / 오른쪽 = 저장 대상 목록·이력) | |
+| `manage/ExportView.tsx`(249줄) | 완료 탭 — 최종본 렌더 폴더 저장. 위 = 판 하나(프로젝트·저장 위치 → 건수 → 저장) · 아래 = 저장 대상 \| 저장 이력(렌더 폴더 아래 경로만 표시) | |
 | `manage/ProjectManagerPanel.tsx`(708줄) | 프로젝트 관리 오버레이(생성·편집·역할·보관·순서) | |
 | `manage/ProjectMembersPanel.tsx`(236줄) · `ProjectPlanningDialog.tsx`(92줄) | 프로젝트 멤버 / 일정·예산 대화상자 | |
 | `manage/ProjectDateRangePicker.tsx`(156줄) · `UsagePeriodPicker.tsx`(204줄) | 손으로 짠 달력 2종 | |
@@ -834,6 +837,7 @@ updated: 2026-09-21
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `creditPlan.ts` | 순수 | 크레딧 풀·그룹 한도·이월·잔액 추이 타입 + 설정 초안 검증 | 약 415줄 |
+| `memberTable.ts` | 순수 | 관리 표 응답 타입 · 그룹 한 줄 저장 본문(`groupAssignBody` — 받은 그룹 전부 재전송·허용 모델 키 생략) · 역할 낙관 반영 | 약 83줄 |
 | `projectPlanning.ts` | 순수 | 프로젝트 예산 기간·입력 검증 |
 | `usageReport.ts` | 순수 | 사용량 CSV(주입 방지 포함)·출력 종류 집계 |
 | `usagePeriod.ts` | 순수 | 기간 범위·추이 버킷 채우기·라벨 |
