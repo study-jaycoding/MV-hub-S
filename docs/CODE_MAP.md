@@ -388,7 +388,7 @@ updated: 2026-09-21
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `final_export.py` | 완료본 내보내기 '대상 판정' 순수 정책 단일 출처 | `manage` |
+| `final_export.py` | 완료 탭 저장 '대상 판정' 순수 정책 단일 출처 — 종류 `final`(최종) · `shared`(공유 중·최종 아님, 보류 포함). 두 집합은 겹치지 않는다 | `manage` |
 
 ### 2.6 숨은 진입점
 
@@ -594,7 +594,7 @@ updated: 2026-09-21
 | `manage/WorkFilterBar.tsx`(280줄) | 노션식 칩 필터 바(칩 · +필터) + 머리글에 놓이는 검색 상자 `WorkSearchBox` | 〃 |
 | `manage/KanbanBoard.tsx`(179줄 — 폴더 자동 작업은 상태가 컷에서 파생되므로 끌 수 없다, 수동 작업만 끌기) · `TableView.tsx`(351줄) · `CalendarView.tsx`(206줄) · `MonthlyTaskCalendar.tsx`(190줄) | 작업 뷰 4종(프레젠테이션 전용, `WorkViewProps` 주입) — 소요시간 포맷터가 뷰마다 다름(§5-b) | 〃 |
 | `manage/CutThumbs.tsx`(105줄) · `ColorTag.tsx`(35줄) | 컷 썸네일 / 색 라벨 | |
-| `manage/ExportView.tsx`(249줄) | 완료 탭 — 최종본 렌더 폴더 저장. 위 = 판 하나(프로젝트·저장 위치 → 건수 → 저장) · 아래 = 저장 대상 \| 저장 이력(렌더 폴더 아래 경로만 표시) | |
+| `manage/ExportView.tsx`(279줄) | 완료 탭 — **공유 저장 · 최종 저장(골드)**. 위 = 판 하나(프로젝트·저장 위치 → 종류별 건수 → 단추) · 아래 = 저장 대상(종류 배지) ∣ 저장 이력(렌더 폴더 아래 경로만). 설계 `docs/EXPORT_SYNC_DESIGN.md` | |
 | `manage/ProjectManagerPanel.tsx`(708줄) | 프로젝트 관리 오버레이(생성·편집·역할·보관·순서) | |
 | `manage/ProjectMembersPanel.tsx`(236줄) · `ProjectPlanningDialog.tsx`(92줄) | 프로젝트 멤버 / 일정·예산 대화상자 | |
 | `manage/ProjectDateRangePicker.tsx`(156줄) · `UsagePeriodPicker.tsx`(204줄) | 손으로 짠 달력 2종 | |
