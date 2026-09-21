@@ -218,11 +218,13 @@ export const manageApi = {
     ),
   // 완료본 렌더폴더 저장 — 완료 작업의 최종본만 물리 저장(멱등). saved/skipped/errors 반환.
   //  folderPath 를 주면 그 폴더(하위 포함)의 저장 대상만(폴더 우클릭 '최종 경로로 저장'). 없으면 프로젝트 전체.
-  saveFinals: (projectId: string, folderPath?: string) =>
+  //  kind: final(기본 — 최종본) · shared(공유 중·최종 아님 → 컷 폴더의 shared/) · all(둘 다).
+  saveFinals: (projectId: string, folderPath?: string, kind?: SaveFinalsKind | "all") =>
     jsonFetch<SaveFinalsResult>(
       withQuery("/api/manage/save-finals", {
         project_id: projectId,
         ...(folderPath ? { folder_path: folderPath } : {}),
+        ...(kind ? { kind } : {}),
       }),
       { method: "POST" },
     ),
@@ -398,8 +400,11 @@ export interface SaveFinalsResult {
   errors: { gen_id: string; reason: string }[];
 }
 
+export type SaveFinalsKind = "final" | "shared";
+
 export interface SaveFinalsTarget {
   gen_id: string;
+  kind?: SaveFinalsKind; // 구백엔드는 없음(= final)
   folder_path: string | null;
   filename: string;
   saved: boolean; // 이미 렌더폴더에 존재
@@ -419,6 +424,9 @@ export interface SaveFinalsStatus {
   // 위임 모드에서 공유 서버가 구버전(targets API 없음)이라 대상 판정이 불가한 상태 —
   // 0건으로 오인되지 않게 UI 가 "서버 업데이트 필요"를 표시한다(구백엔드 응답엔 필드 자체가 없음).
   server_outdated?: boolean;
+  // 공유 저장을 쓸 수 있나 — 공유 서버가 구버전이면 false(최종 저장은 그대로 된다). 구백엔드 응답엔 필드가 없다.
+  shared_supported?: boolean;
+  shared_error?: string | null; // 구버전이 아닌 이유로 공유 목록을 못 읽었을 때
   targets: SaveFinalsTarget[];
   history: SaveFinalsHistory[];
 }

@@ -1450,11 +1450,11 @@ def unlink_generation(tid: str, gen_id: str, request: Request):
 # 는 서버 targets 를 받아 로컬 디스크 판정(saved·render 연결)과 조합한다.
 
 
-def _save_finals_targets_facts(project_id: str) -> list[dict]:
+def _save_finals_targets_facts(project_id: str, kind: str = "final") -> list[dict]:
     """저장 대상 '사실'만 — render_path/saved 등 디스크 판정 절대 미포함(그건 저장하는 PC 의 몫).
     filename 은 원본 확장자가 필요해 여기(사실 보유측)서 계산한다."""
     out: list[dict] = []
-    for f in final_export.finals_to_export(project_id):
+    for f in final_export.finals_to_export(project_id, kind):
         fp = f.get("folder_path")
         file_path = f.get("file_path")
         reason: Optional[str] = None
@@ -1470,6 +1470,7 @@ def _save_finals_targets_facts(project_id: str) -> list[dict]:
         out.append(
             {
                 "gen_id": f["gen_id"],
+                "kind": kind,  # final | shared — 저장 폴더가 갈린다(project_folders.export_folder)
                 "folder_path": fp,
                 "media_type": f.get("media_type"),
                 "filename": filename,
@@ -1480,11 +1481,14 @@ def _save_finals_targets_facts(project_id: str) -> list[dict]:
 
 
 @router.get("/save-finals/targets")
-def save_finals_targets(project_id: str, request: Request):
+def save_finals_targets(project_id: str, request: Request, kind: str = "final"):
     """위임 모드의 판정 권위 API — 로컬 허브가 프록시 미들웨어로 이 경로를 서버에 위임한다
     (_LOCAL_EXACT 는 /save-finals 본체만이라 하위 경로는 자동 프록시). 서버 DB 기준 사실만."""
     _require_project_read(request, project_id)
-    return {"targets": _save_finals_targets_facts(project_id)}
+    if kind not in final_export.KINDS:
+        raise HTTPException(status_code=400, detail=f"알 수 없는 저장 종류: {kind}")
+    # 응답의 kind 는 계약이다 — 이 값을 되돌려 주지 않는 구서버의 응답(최종 목록)을 로컬 허브가 공유 목록으로 오인하지 않게.
+    return {"kind": kind, "targets": _save_finals_targets_facts(project_id, kind)}
 
 
 @router.get("/save-finals/content/{gen_id}")
@@ -1546,22 +1550,29 @@ def save_finals_content(gen_id: str, request: Request):
     raise HTTPException(status_code=404, detail="원본 파일 없음")
 
 
-def _save_finals_facts(project_id: str) -> tuple[list[dict], bool]:
+def _save_finals_facts(project_id: str, kind: str = "final") -> tuple[list[dict], bool]:
     """저장 대상 사실 목록 — 위임 모드면 서버 targets(판정 권위), 아니면 로컬 DB.
-    반환: (facts, server_outdated). 구서버(라우트 없음 404)는 0건으로 숨기지 않고 표식을 올린다."""
+    반환: (facts, server_outdated). 구서버(라우트 없음 404)는 0건으로 숨기지 않고 표식을 올린다.
+    kind=shared 는 서버가 응답에 kind 를 되돌려 줄 때만 믿는다 — 구서버는 kind 를 모르고 **최종 목록**을 주므로
+    그대로 쓰면 최종본이 shared/ 폴더로 들어간다. 되돌아온 kind 가 다르면 구서버로 본다."""
     if _proxy.proxying():
         try:
             r = _proxy.proxy_json(
-                "GET", "/api/manage/save-finals/targets", params={"project_id": project_id}
+                "GET", "/api/manage/save-finals/targets", params={"project_id": project_id, "kind": kind}
             )
-            return (r or {}).get("targets") or [], False
+            echoed = (r or {}).get("kind")
+            if kind != "final" and echoed != kind:
+                return [], True
+            if kind == "final" and echoed not in (None, "final"):  # 최종 요청에 다른 종류가 오면 믿지 않는다(구서버는 kind 가 없다)
+                raise HTTPException(status_code=502, detail=f"공유 서버가 다른 종류의 저장 대상을 돌려줬습니다: {echoed}")
+            return [{**t, "kind": kind} for t in ((r or {}).get("targets") or [])], False
         except HTTPException as e:
             # 구서버 판별은 '라우트 없음'의 표준 본문("Not Found")만 — 프로젝트 404("없는 프로젝트"
             # 등 상세 사유)까지 구서버로 오인하면 진짜 오류가 "서버 업데이트 필요"로 가려진다(코덱스 P2).
             if e.status_code == 404 and str(e.detail).strip() == "Not Found":
                 return [], True  # 구서버 — UI 가 "서버 업데이트 필요"로 표시(완료조건 ①)
             raise
-    return _save_finals_targets_facts(project_id), False
+    return _save_finals_targets_facts(project_id, kind), False
 
 
 @router.get("/save-finals")
@@ -1573,6 +1584,16 @@ def save_finals_status(project_id: str, request: Request):
     render_path = state.get("render_path") or ""
     render = Path(render_path) if render_path else None
     facts, server_outdated = _save_finals_facts(project_id)
+    shared_supported, shared_error = True, None
+    if not server_outdated:
+        # 공유 쪽 조회가 실패해도 최종 저장 화면은 그대로 떠야 한다(새 기능의 장애가 기존 기능을 막지 않게 — 코덱스 P1).
+        try:
+            shared_facts, shared_outdated = _save_finals_facts(project_id, "shared")
+            shared_supported = not shared_outdated  # 구서버면 공유 저장만 끈다(최종 저장은 그대로)
+            facts = [*facts, *shared_facts]
+        except HTTPException as e:
+            shared_supported, shared_error = False, str(e.detail)
+    ledger = repo_manage.export_dest_paths([t["gen_id"] for t in facts])
     targets: list[dict] = []
     for t in facts:
         reason = t.get("reason")
@@ -1583,14 +1604,20 @@ def save_finals_status(project_id: str, request: Request):
             if render is None:
                 reason = "렌더 폴더 미연결"
             else:
-                dest = project_folders.safe_dest(render, t.get("folder_path") or "", filename)
+                dest = project_folders.safe_dest(
+                    render, project_folders.export_folder(t.get("folder_path") or "", t.get("kind")), filename
+                )
                 if dest is None:
                     reason = "경로 안전성 위반"
                 else:
-                    saved = bool(dest.exists())
+                    state_ = _dest_state(dest, t["gen_id"], ledger)
+                    saved = state_ == "saved"
+                    if state_ == "conflict":
+                        reason = _DEST_CONFLICT
         targets.append(
             {
                 "gen_id": t["gen_id"],
+                "kind": t.get("kind") or "final",
                 "folder_path": t.get("folder_path"),
                 "filename": filename,
                 "saved": saved,
@@ -1605,9 +1632,31 @@ def save_finals_status(project_id: str, request: Request):
         "render_path": render_path,
         "error": state.get("error"),
         "server_outdated": server_outdated,
+        "shared_supported": shared_supported,
+        "shared_error": shared_error,  # 구서버가 아닌 이유로 공유 목록을 못 읽었을 때의 사유
         "targets": targets,
         "history": history,
     }
+
+
+_DEST_CONFLICT = "같은 이름의 다른 파일이 있습니다(덮어쓰지 않음)"
+
+
+def _dest_state(dest: Path, gen_id: str, ledger: dict[str, str]) -> str:
+    """목적지 파일의 상태 — missing | saved | conflict.
+
+    파일 이름에는 gen_id 앞 12자만 들어가므로 이름이 같다고 같은 생성물은 아니다(코덱스 P0). 그래서:
+    · 이 PC 의 대장이 같은 경로를 기억하면 saved(가장 싸다 — NAS 의 영상에 ffmpeg 를 돌리지 않는다).
+    · 아니면 각인을 읽는다. 각인의 gen_id 가 **다른 생성물**이면 conflict — 건너뛰지도 덮어쓰지도 않고 알린다.
+    · 각인이 없거나 못 읽으면 종전처럼 saved 로 본다(각인 이전에 저장된 파일·다른 PC 가 저장한 파일이 전부
+      '충돌'로 뒤집히지 않게). 미러처럼 파일을 옮기는 동작은 이 느슨한 판정을 쓰지 않는다."""
+    if not dest.exists():
+        return "missing"
+    recorded = ledger.get(gen_id)
+    if recorded and Path(recorded) == dest:
+        return "saved"
+    stamped = file_stamp.gen_id_of(file_stamp.read_stamp(dest))
+    return "conflict" if stamped and stamped != gen_id else "saved"
 
 
 # 프로젝트별 완료본 저장 직렬화(R7 2-E) — 같은 프로젝트 동시 요청이 둘 다 '목적지 없음'을
@@ -1656,7 +1705,10 @@ def _only_in_folder(items: list[dict], folder_path: Optional[str]) -> list[dict]
 
 
 @router.post("/save-finals")
-async def save_finals(project_id: str, request: Request, folder_path: Optional[str] = None):
+async def save_finals(
+    project_id: str, request: Request, folder_path: Optional[str] = None,
+    kind: Literal["final", "shared", "all"] = "final",
+):
     """완료 작업의 최종본만 렌더 폴더 경로 구조 그대로 물리 저장(멱등).
     로컬 전용(_proxy 로컬 목록) — render_root 는 이 PC 의 디스크(Z:\\…).
     위임 모드: 대상은 서버 targets(판정 권위), 바이트는 content 스트림으로 받아 이 PC 가 저장."""
@@ -1671,14 +1723,27 @@ async def save_finals(project_id: str, request: Request, folder_path: Optional[s
     render = Path(render_path)
 
     async with _save_finals_lock(project_id):
-        return await _save_finals_locked(project_id, request, render, folder_path)
+        kinds = final_export.KINDS if kind == "all" else (kind,)
+        total: dict = {"saved": 0, "skipped": 0, "errors": []}
+        for one in kinds:  # 최종 먼저 — 공유→최종이 된 컷의 최종본이 먼저 자리 잡는다
+            try:
+                part = await _save_finals_locked(project_id, request, render, folder_path, one)
+            except HTTPException as e:
+                # all 에서 한 종류가 통째로 막혀도(예: 구서버라 공유 불가) 이미 저장한 쪽의 결과를 잃지 않는다(코덱스 P1).
+                if kind != "all":
+                    raise
+                part = {"saved": 0, "skipped": 0, "errors": [{"gen_id": f"({one})", "reason": str(e.detail)}]}
+            total["saved"] += part["saved"]
+            total["skipped"] += part["skipped"]
+            total["errors"] += part["errors"]
+        return total
 
 
 async def _save_finals_locked(
-    project_id: str, request: Request, render: Path, folder_path: Optional[str] = None
+    project_id: str, request: Request, render: Path, folder_path: Optional[str] = None, kind: str = "final"
 ):
     if _proxy.proxying():
-        facts, server_outdated = await to_thread_non_abandon(_save_finals_facts, project_id)
+        facts, server_outdated = await to_thread_non_abandon(_save_finals_facts, project_id, kind)
         facts = _only_in_folder(facts, folder_path)
         if server_outdated:
             raise HTTPException(
@@ -1687,6 +1752,7 @@ async def _save_finals_locked(
             )
         saved, skipped = 0, 0
         errors: list[dict[str, str]] = []
+        ledger = await to_thread_non_abandon(repo_manage.export_dest_paths, [t["gen_id"] for t in facts])
         # 순차 처리 — NAS 대역폭·서버 부하를 한 줄로(동시 다운로드 폭주 방지).
         for t in facts:
             gen_id = t["gen_id"]
@@ -1695,12 +1761,16 @@ async def _save_finals_locked(
                     errors.append({"gen_id": gen_id, "reason": t["reason"]})
                     continue
                 dest = project_folders.safe_dest(
-                    render, t.get("folder_path") or "", t.get("filename") or ""
+                    render, project_folders.export_folder(t.get("folder_path") or "", kind), t.get("filename") or ""
                 )
                 if dest is None:
                     errors.append({"gen_id": gen_id, "reason": "경로 안전성 위반(트래버설)"})
                     continue
-                if await to_thread_non_abandon(dest.exists):  # 멱등 — 이미 저장됨(NAS stat 오프로드)
+                dest_state = await to_thread_non_abandon(_dest_state, dest, gen_id, ledger)  # NAS stat·각인 읽기 오프로드
+                if dest_state == "conflict":
+                    errors.append({"gen_id": gen_id, "reason": _DEST_CONFLICT})
+                    continue
+                if dest_state == "saved":  # 멱등 — 이미 저장됨
                     await to_thread_non_abandon(
                         repo_manage.record_export, gen_id, str(dest), project_id
                     )
@@ -1735,10 +1805,11 @@ async def _save_finals_locked(
                 errors.append({"gen_id": gen_id, "reason": str(e)})
         return {"saved": saved, "skipped": skipped, "errors": errors}
 
-    finals = await to_thread_non_abandon(final_export.finals_to_export, project_id)
+    finals = await to_thread_non_abandon(final_export.finals_to_export, project_id, kind)
     finals = _only_in_folder(finals, folder_path)
     saved, skipped = 0, 0
     errors: list[dict[str, str]] = []
+    ledger = await to_thread_non_abandon(repo_manage.export_dest_paths, [f["gen_id"] for f in finals])
     for f in finals:
         gen_id = f["gen_id"]
         # 파일 1건 처리 전체를 격리 — 한 건 실패(경로/DB/OS)가 나머지 저장을 막지 않게(코덱스 #7).
@@ -1752,12 +1823,16 @@ async def _save_finals_locked(
                 errors.append({"gen_id": gen_id, "reason": "원본 파일 없음"})
                 continue
             filename = project_folders.export_filename(folder_path, gen_id, file_path, f.get("media_type"))
-            dest = project_folders.safe_dest(render, folder_path, filename)
+            dest = project_folders.safe_dest(render, project_folders.export_folder(folder_path, kind), filename)
             if dest is None:
                 errors.append({"gen_id": gen_id, "reason": "경로 안전성 위반(트래버설)"})
                 continue
+            dest_state = await to_thread_non_abandon(_dest_state, dest, gen_id, ledger)  # NAS stat·각인 읽기 오프로드(R7 2-E)
+            if dest_state == "conflict":
+                errors.append({"gen_id": gen_id, "reason": _DEST_CONFLICT})
+                continue
             # 멱등: 목적지 파일이 이미 있으면 skip(사용자가 지웠으면 재복사 — 자기치유).
-            if await to_thread_non_abandon(dest.exists):  # NAS stat 오프로드(R7 2-E)
+            if dest_state == "saved":
                 await to_thread_non_abandon(
                     repo_manage.record_export, gen_id, str(dest), project_id
                 )

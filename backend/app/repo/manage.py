@@ -709,7 +709,7 @@ def final_export_task_facts(
 ) -> list[dict[str, Any]]:
     """완료본 내보내기 판정용 '원자료'만 반환 — 판정(정책)은 하지 않는다.
 
-    반환: [{task_id, status(raw), folder_path, archived, cuts:[{id,status,is_final}]}].
+    반환: [{task_id, status(raw), folder_path, archived, cuts:[{id,status,is_final,shared}]}].
     · 작업 status 는 파생 전 raw 값이다 — 폴더 자동 작업의 '완료' 파생(최종 컷 존재)은
       정책 계층이 cuts.is_final 로 동일하게 재현한다(list_tasks 파생 규칙에서 유도).
     · gen_id 를 주면 cuts 를 그 생성물로만 제한하고(레인 SQL 수준), 폴더 자동 작업
@@ -759,7 +759,7 @@ def final_export_task_facts(
             "folder_path": t["folder_path"],
             "archived": t["archived"],
             "cuts": [
-                {"id": g["id"], "status": g["status"], "is_final": bool(g["is_final"])}
+                {"id": g["id"], "status": g["status"], "is_final": bool(g["is_final"]), "shared": bool(g["shared"])}
                 for g in rows_by_task.get(t["id"], [])
             ],
         }
@@ -804,6 +804,19 @@ def record_export(gen_id: str, dest_path: str, project_id: Optional[str] = None)
             "  project_id=COALESCE(excluded.project_id, final_export.project_id)",
             (gen_id, dest_path, project_id),
         )
+
+
+def export_dest_paths(gen_ids: "list[str] | set[str]") -> dict[str, str]:
+    """이 PC 의 저장 대장에서 gen_id → 마지막 저장 경로. '이 파일은 우리가 여기 저장했다'의 가장 싼 증거."""
+    ids = list(dict.fromkeys(g for g in (gen_ids or []) if g))
+    out: dict[str, str] = {}
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        for id_batch in _batched(ids):
+            ph = ",".join("?" * len(id_batch))
+            for r in conn.execute(f"SELECT gen_id, dest_path FROM final_export WHERE gen_id IN ({ph})", list(id_batch)):
+                out[r["gen_id"]] = r["dest_path"]
+    return out
 
 
 def list_exports(project_id: str, limit: int = 20) -> list[dict[str, Any]]:

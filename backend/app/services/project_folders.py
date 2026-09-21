@@ -87,6 +87,16 @@ def export_filename(folder_path: str, gen_id: str, file_path: str, media_type: s
     return f"{seq}_{gen_id[:12]}{export_ext(file_path, media_type)}"
 
 
+SHARED_SUBFOLDER = "shared"
+
+
+def export_folder(folder_path: str, kind: str | None) -> str:
+    """저장 폴더 — 최종본은 컷 폴더 그대로, 공유본은 그 안의 `shared/`(Jay 결정 2026-09-21: 이미 저장된 최종본의
+    경로가 안 바뀌고, 폴더만 봐도 어느 것이 최종인지 구분된다)."""
+    fp = (folder_path or "").strip().replace("\\", "/").strip("/")
+    return f"{fp}/{SHARED_SUBFOLDER}" if kind == "shared" and fp else fp
+
+
 def safe_dest(render: Path, folder_path: str, filename: str) -> Path | None:
     """render_root/<folder_path>/<filename> 을 검증해 반환. 트래버설·절대경로·드라이브문자 거부."""
     render = render.resolve()

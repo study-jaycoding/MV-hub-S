@@ -6,6 +6,7 @@ import { api } from "../../api";
 import { reconcileArrayState, reconcileValueState } from "../../lib/stateReconciliation";
 import {
   manageApi,
+  type SaveFinalsKind,
   type SaveFinalsResult,
   type SaveFinalsStatus,
 } from "../../lib/manageApi";
@@ -75,23 +76,28 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const renderPath = status?.render_path || "";
   const targets = status?.targets ?? [];
   const serverOutdated = !!status?.server_outdated; // 구서버 — 대상 판정 불가(0건과 구별)
-  const pending = targets.filter((t) => !t.saved && !t.reason).length; // 새로 저장 가능
-  const alreadySaved = targets.filter((t) => t.saved && !t.reason).length;
+  // 종류별 건수 — final=최종(★) · shared=공유 중이지만 최종은 아닌 것(컷 폴더의 shared/ 에 저장된다). 구백엔드는 kind 가 없다(= final).
+  const kindOf = (t: { kind?: SaveFinalsKind }) => t.kind ?? "final";
+  const count = (kind: SaveFinalsKind, saved: boolean) =>
+    targets.filter((t) => kindOf(t) === kind && !t.reason && t.saved === saved).length;
+  const pending = { final: count("final", false), shared: count("shared", false) }; // 새로 저장 가능
+  const alreadySaved = { final: count("final", true), shared: count("shared", true) };
+  const sharedSupported = status?.shared_supported === true; // 서버가 된다고 한 때만 켠다 — 구버전·조회 실패면 공유 저장만 꺼진다
   const blocked = targets.filter((t) => t.reason); // 저장 불가(사유 있음)
   // 저장 이력은 렌더 폴더 아래 부분만 보여 준다 — 반 폭 칸에서 파일 이름이 잘리지 않게(전체 경로는 툴팁).
   const underRender = (path: string) => {
-    const root = renderPath.replace(/[\/]+$/, "");
-    return root && path.toLowerCase().startsWith(root.toLowerCase()) ? path.slice(root.length).replace(/^[\/]+/, "") || path : path;
+    const root = renderPath.replace(/[\\/]+$/, "");
+    return root && path.toLowerCase().startsWith(root.toLowerCase()) ? path.slice(root.length).replace(/^[\\/]+/, "") || path : path;
   };
   const canSave = !!pid && !!renderPath && !status?.error && !serverOutdated && !busy;
 
-  const onSave = async () => {
+  const onSave = async (kind: SaveFinalsKind) => {
     if (!canSave) return;
     setBusy(true);
     setResult(null);
     setErr(null);
     try {
-      const r = await manageApi.saveFinals(pid);
+      const r = await manageApi.saveFinals(pid, undefined, kind);
       setResult(r);
       loadStatus(pid); // 저장 후 대상·이력 갱신
     } catch (e: any) {
@@ -107,8 +113,8 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
         <div>
           <h1>완료본 저장</h1>
           <p className="export-desc">
-            완료(★최종) 상태의 생성물만 렌더 폴더의 경로 구조(예: <code>ep001/c0010</code>) 그대로
-            저장합니다.
+            공유·최종 상태의 생성물을 렌더 폴더의 경로 구조(예: <code>ep001/c0010</code>) 그대로 저장합니다.
+            공유본은 그 컷 폴더 안의 <code>shared</code> 폴더에 들어갑니다.
           </p>
         </div>
       </header>
@@ -155,29 +161,51 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
           )}
 
           <div className="export-counts">
-            <div className={pending ? "new" : "zero"}>
-              <b>{pending}</b>
+            <div className="kind-final">
+              <span className="export-kind-label">★ 최종</span>
+              <b className={pending.final ? "new" : "zero"}>{pending.final}</b>
               <span>새로 저장</span>
-            </div>
-            <div className={alreadySaved ? "" : "zero"}>
-              <b>{alreadySaved}</b>
+              <b className={alreadySaved.final ? "" : "zero"}>{alreadySaved.final}</b>
               <span>이미 저장</span>
             </div>
-            <div className={blocked.length ? "bad" : "zero"}>
-              <b>{blocked.length}</b>
-              <span>저장 불가</span>
+            <div className="kind-shared">
+              <span className="export-kind-label">공유</span>
+              <b className={pending.shared ? "new" : "zero"}>{pending.shared}</b>
+              <span>새로 저장</span>
+              <b className={alreadySaved.shared ? "" : "zero"}>{alreadySaved.shared}</b>
+              <span>이미 저장</span>
+            </div>
+            <div>
+              <span className="export-kind-label">저장 불가</span>
+              <b className={blocked.length ? "bad" : "zero"}>{blocked.length}</b>
+              <span>원본 없음 등</span>
             </div>
           </div>
 
           <div className="export-act">
-            <button className="export-btn" disabled={!canSave || pending === 0} onClick={onSave}>
-              {busy
-                ? `저장 중… (최대 ${pending}개)`
-                : pending === 0
-                  ? "새로 저장할 최종본 없음"
-                  : `완료만 저장하기 (${pending})`}
+            <button
+              className="export-btn"
+              disabled={!canSave || !sharedSupported || pending.shared === 0}
+              onClick={() => onSave("shared")}
+              title={
+                sharedSupported
+                  ? "공유 중인 것(최종 제외) 중 폴더에 없는 것만 저장 — 컷 폴더의 shared 폴더로"
+                  : status?.shared_error
+                    ? `공유 목록을 읽지 못했습니다 — ${status.shared_error}`
+                    : "공유 서버 업데이트 뒤 쓸 수 있습니다"
+              }
+            >
+              공유 저장 ({pending.shared})
             </button>
-            <span className="export-hint">이미 저장된 파일은 건너뜁니다.</span>
+            <button
+              className="export-btn export-btn-final"
+              disabled={!canSave || pending.final === 0}
+              onClick={() => onSave("final")}
+              title="최종(★)인 것 중 폴더에 없는 것만 저장"
+            >
+              최종 저장 ({pending.final})
+            </button>
+            <span className="export-hint">{busy ? "저장 중…" : "이미 저장된 파일은 건너뜁니다."}</span>
           </div>
 
           {err && <div className="export-err">저장 실패: {err}</div>}
@@ -214,9 +242,11 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                 {targets.map((t) => (
                   <li key={t.gen_id}>
                     <code className="export-history-path">
-                      {[t.folder_path, t.filename].filter(Boolean).join(" · ") || t.gen_id.slice(0, 8)}
+                      {[t.folder_path && kindOf(t) === "shared" ? t.folder_path + "/shared" : t.folder_path, t.filename].filter(Boolean).join(" · ") ||
+                        t.gen_id.slice(0, 8)}
                     </code>
                     {t.reason && <span className="export-target-reason">{t.reason}</span>}
+                    <span className={"export-badge kind-" + kindOf(t)}>{kindOf(t) === "final" ? "최종" : "공유"}</span>
                     <span className={"export-badge " + (t.reason ? "bad" : t.saved ? "done" : "new")}>
                       {t.reason ? "저장 불가" : t.saved ? "이미 저장" : "새로 저장"}
                     </span>
