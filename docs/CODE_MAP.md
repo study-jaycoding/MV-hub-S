@@ -594,7 +594,7 @@ updated: 2026-09-21
 | `manage/WorkFilterBar.tsx`(280줄) | 노션식 칩 필터 바(칩 · +필터) + 머리글에 놓이는 검색 상자 `WorkSearchBox` | 〃 |
 | `manage/KanbanBoard.tsx`(179줄 — 폴더 자동 작업은 상태가 컷에서 파생되므로 끌 수 없다, 수동 작업만 끌기) · `TableView.tsx`(351줄) · `CalendarView.tsx`(206줄) · `MonthlyTaskCalendar.tsx`(190줄) | 작업 뷰 4종(프레젠테이션 전용, `WorkViewProps` 주입) — 소요시간 포맷터가 뷰마다 다름(§5-b) | 〃 |
 | `manage/CutThumbs.tsx`(105줄) · `ColorTag.tsx`(35줄) | 컷 썸네일 / 색 라벨 | |
-| `manage/ExportView.tsx`(393줄) | 완료 탭 — **공유 저장 · 최종 저장(골드) │ 비교 · 미러(준비 중) · 업데이트**. 미러·업데이트는 비교 결과가 있을 때만 켜지고, 저장·프로젝트 변경·새로고침이면 비교를 버린다. 위 = 판 하나 · 가운데 = 비교 결과 · 아래 = 저장 대상 ∣ 저장 이력. 설계 `docs/EXPORT_SYNC_DESIGN.md` | |
+| `manage/ExportView.tsx`(478줄) | 완료 탭 — **공유 저장 · 최종 저장(골드) │ 비교 · 미러 · 업데이트**. 미러·업데이트는 비교 결과가 있을 때만 켜지고, 저장·프로젝트 변경·새로고침이면 비교를 버린다. 미러는 확인 창(옮길 파일 목록)을 거친다. 위 = 판 하나 · 가운데 = 비교 결과 · 아래 = 저장 대상 ∣ 저장 이력. 설계 `docs/EXPORT_SYNC_DESIGN.md` | |
 | `manage/ProjectManagerPanel.tsx`(708줄) | 프로젝트 관리 오버레이(생성·편집·역할·보관·순서) | |
 | `manage/ProjectMembersPanel.tsx`(236줄) · `ProjectPlanningDialog.tsx`(92줄) | 프로젝트 멤버 / 일정·예산 대화상자 | |
 | `manage/ProjectDateRangePicker.tsx`(156줄) · `UsagePeriodPicker.tsx`(204줄) | 손으로 짠 달력 2종 | |
