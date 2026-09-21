@@ -802,12 +802,25 @@ table.dash-tree td.l { text-align: left; }
   color: var(--accent-ink, #14210a); font-weight: 800;
 }
 .usage-actions .usage-project-button:hover { border-color: var(--accent); filter: brightness(1.06); }
-.usage-actions .usage-export-button {
-  display: inline-flex; align-items: center; gap: 7px; padding: 9px 14px;
-  border-color: #f2f2f2; background: #f2f2f2; color: #111315; font-weight: 700;
+/* 머리글 아이콘 단추(관리 표 · 보고서 내려받기) — 전역 button padding 이 폭 하한을 만들므로 0 으로 고정하고 정중앙에 둔다 */
+.usage-actions .usage-icon-button { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; }
+.usage-actions .usage-icon-button.on {
+  border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
-.usage-actions .usage-export-button:hover { border-color: #fff; background: #fff; }
-.usage-export-button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.usage-export-wrap { position: relative; display: flex; }
+.usage-export-wrap .work-pop-backdrop { z-index: 29; }
+.usage-actions .usage-export-menu {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; width: 300px; padding: 6px;
+  display: grid; gap: 2px; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; background: #1b1d22;
+  box-shadow: 0 14px 40px rgba(0,0,0,.6);
+}
+.usage-actions .usage-export-menu button {
+  display: grid; gap: 2px; padding: 9px 10px; border: 0; border-radius: 7px; background: transparent; text-align: left;
+}
+.usage-actions .usage-export-menu button:hover { background: rgba(255,255,255,.06); }
+.usage-export-menu b { font-size: 12.5px; }
+.usage-export-menu span { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+.usage-icon-button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .usage-overview { display: grid; grid-template-columns: 250px 1fr; gap: 10px; }
 .usage-credit-ring {
   display: grid; place-items: center; align-content: center; gap: 7px; min-height: 190px;
@@ -1112,3 +1125,58 @@ table.dash-tree td.l { text-align: left; }
 .work-mine-toggle { background: var(--panel-2, #232323); border: 1px solid var(--border, #2b2b2b); color: var(--text-dim, #9a9a9a); border-radius: 7px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; margin-right: 8px; }
 .work-mine-toggle:hover { border-color: var(--accent, #c6f24e); }
 .work-mine-toggle.on { background: var(--accent, #c6f24e); color: var(--accent-ink, #14210a); border-color: var(--accent, #c6f24e); }
+
+/* ── 관리 표(대시보드 머리글의 표 아이콘) — 설계: docs/MEMBER_TABLE_DESIGN.md ── */
+.mtable { display: grid; gap: 10px; min-width: 0; }
+.mtable-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mtable-bar b { font-size: 15px; }
+.mtable-gap { flex: 1; }
+.mtable-hint, .mtable-note { color: var(--muted); font-size: 11.5px; }
+.mtable-notice { font-size: 11.5px; }
+.mtable-notice.ok { color: var(--accent); }
+.mtable-notice.bad { color: #e9bc62; }
+.mtable-scroll { overflow-x: auto; border: 1px solid var(--usage-line); border-radius: 10px; background: var(--usage-card); }
+.mtable table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+.mtable th, .mtable td {
+  height: 32px; padding: 0 9px; text-align: left; white-space: nowrap;
+  border-right: 1px solid var(--usage-line); border-bottom: 1px solid var(--usage-line);
+}
+.mtable th:last-child, .mtable td:last-child { border-right: 0; }
+.mtable tbody tr:last-child td { border-bottom: 0; }
+.mtable th { height: 28px; background: #101214; color: var(--muted); font-size: 11px; font-weight: 700; }
+.mtable-groups th { height: 24px; background: #0c0e10; color: var(--text); text-align: center; }
+.mtable th.ed::after { content: "✎"; margin-left: 5px; opacity: .55; }
+.mtable th.ro::after { content: "🔒"; margin-left: 5px; font-size: 9px; opacity: .7; }
+.mtable .num { text-align: right; }
+.mtable td.ro { background: rgba(0,0,0,.18); color: #aeb3bd; }
+.mtable-sticky { position: sticky; left: 0; z-index: 1; background: var(--usage-card); }
+.mtable th.mtable-sticky { background: #101214; }
+.mtable-name { font-weight: 700; }
+.mtable td.status-approved { color: var(--accent); }
+.mtable td.status-pending { color: #d98a4a; }
+.mtable-dim { color: var(--muted) !important; }
+.mtable td select {
+  width: 100%; min-width: 110px; border: 0; background: transparent; color: var(--text); font: inherit; cursor: pointer;
+}
+.mtable td select:focus-visible, .mtable-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mtable td select option { background: #1b1d22; color: var(--text); }
+.mtable-chip {
+  display: inline-block; margin-right: 3px; padding: 2px 7px; border: 1px solid transparent; border-radius: 6px;
+  background: rgba(127,127,127,.2); color: var(--text); font-size: 10.5px; font-weight: 800; line-height: 1.4;
+}
+button.mtable-chip { cursor: pointer; }
+button.mtable-chip.off { background: transparent; border-color: var(--usage-line); color: var(--muted); opacity: .55; font-weight: 600; }
+button.mtable-chip.off:hover { opacity: 1; border-color: var(--accent); }
+.mtable-chip.role-admin { background: rgba(255,98,119,.16); color: #ff6277; }
+.mtable-chip.role-product_manager, .mtable-chip.role-project_manager:not(.off) { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.mtable-chip.role-supervisor:not(.off) { background: rgba(245,197,66,.18); color: #f5c542; }
+.mtable-off {
+  color: var(--muted); background: repeating-linear-gradient(135deg, rgba(255,255,255,.035) 0 4px, transparent 4px 9px);
+}
+.mtable-empty { height: 64px; text-align: center !important; color: var(--muted); }
+.mtable-sheets { display: flex; gap: 2px; }
+.mtable-sheets span {
+  padding: 7px 16px; border: 1px solid var(--usage-line); border-top: 0; border-radius: 0 0 8px 8px;
+  background: #0e1012; color: var(--muted); font-size: 12px;
+}
+.mtable-sheets span.on { background: var(--usage-card); color: var(--text); font-weight: 700; box-shadow: inset 0 -2px 0 var(--accent); }

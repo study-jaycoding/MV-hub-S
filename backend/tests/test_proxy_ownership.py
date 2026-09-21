@@ -79,6 +79,8 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/manage/credit-plan/my-models",
         "/api/manage/credit-plan/{workspace_id}",
         "/api/manage/credit-plan/{workspace_id}/settings",
+        # 관리 표(2026-09-21) — 계정·그룹·프로젝트 참여의 진실원천이 팀 서버라 위임한다(쓰기는 칸마다 기존 API).
+        "/api/manage/member-table",
         "/api/members",
         "/api/members/{uid}/global-roles",
         "/api/notifications/comments",

@@ -20,6 +20,7 @@ import {
   type ProjectSequenceUsage,
 } from "./projectUsageHierarchy";
 import { HoverMetric, WorkspaceUsageDashboard } from "./WorkspaceUsageDashboard";
+import { MemberTable } from "./MemberTable";
 import type { ManageProject, ProjectFolderUsage } from "./types";
 import { creditCoverageText, usageSourceLabel } from "./usageSource";
 
@@ -304,9 +305,12 @@ export function DashboardView({
   >(null);
   const [members, setMembers] = useState<Map<string, ProjectMember[]>>(new Map());
   const [showPanel, setShowPanel] = useState(false); // 프로젝트 관리 오버레이(＋프로젝트)
+  const [showTable, setShowTable] = useState(false); // 관리 표 — 대시보드 자리에 열린다
   const [summaryPage, setSummaryPage] = useState(1);
   const [summaryPageSize, setSummaryPageSize] = useState<number>(USAGE_PAGE_SIZES[0]);
   const canManageProjects = caps.createProject || caps.grantRole;
+  // 관리 표는 계정 상세(이메일·가입 상태)가 나가므로 서버가 관리자·PM 에게만 연다 — 아이콘도 같은 조건으로.
+  const canOpenTable = caps.authOff || caps.system || caps.grantRole;
   // 매니저(read_all·인증 off)=팀 전체, 일반 멤버=내 사용량만(서버가 (uid, email) 로 강제 — Jay 2026-09-10).
   // 사용 현황 패널은 둘 다 보이고 범위·문구만 다르다. 전체 요약 API(summary) 는 매니저만.
   const readAll = caps.authOff || caps.readAll;
@@ -567,17 +571,20 @@ export function DashboardView({
         workspaceId={workspaceId}
         onWorkspaceIdChange={onWorkspaceIdChange}
         scope={mine ? "mine" : "all"}
+        tableOpen={showTable && canOpenTable}
+        onToggleTable={canOpenTable ? () => setShowTable((open) => !open) : undefined}
+        tableSlot={showTable && canOpenTable ? <MemberTable key={workspaceId || ""} workspaceId={workspaceId} reloadSignal={reloadSignal} /> : null}
       />
 
-      {/* 하나의 외곽 패널 안에서 프로젝트 요약과 선택 프로젝트 시퀀스를 확인한다. */}
-      <ProjectDetail
+      {/* 하나의 외곽 패널 안에서 프로젝트 요약과 선택 프로젝트 시퀀스를 확인한다. 관리 표가 열려 있으면 자리를 내준다. */}
+      {showTable && canOpenTable ? null : <ProjectDetail
         summaryCard={summaryCard}
         pid={selectedPid}
         folders={selProj?.folders || []}
         projName={selName}
         usageSource={summary?.usage_source}
         usageScope={summary?.usage_scope}
-      />
+      />}
 
       {/* 프로젝트 관리 오버레이 — 생성·보관·삭제·멤버 역할 */}
       {showPanel && (

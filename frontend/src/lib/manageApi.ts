@@ -11,6 +11,7 @@ import type {
 } from "../components/manage/types";
 import type { WorkspaceOption } from "../types";
 import type { CreditPlanSaveBody, CreditPlanSettings, CreditPlanView, MyModelPolicy } from "./creditPlan";
+import type { MemberTableData } from "./memberTable";
 
 // 구서버(배치 라우트 없음) 판별 — 404/405 만 폴백 사유다. 400/401/403/5xx 를 폴백하면
 // 권한·서버 장애가 "구버전"으로 오인돼 조용히 다른 경로로 재시도된다(합의 설계).
@@ -71,6 +72,9 @@ export const manageApi = {
       body: jsonBody(body),
     }),
   // 본인 그룹이 쓸 수 있는 모델(생성 창·캔버스 모델 노드가 모델 목록을 거를 때) — 매니저도 본인 이메일 기준. 구서버는 404.
+  // 관리 표 — 계정 한 줄에 등급·그룹·프로젝트 참여·보고된 사실(서버 조인). 구서버는 404.
+  memberTable: (workspaceId?: string) =>
+    jsonFetch<MemberTableData>(withQuery("/api/manage/member-table", { workspace_id: workspaceId })),
   creditPlanMyModels: (workspaceId: string) =>
     jsonFetch<MyModelPolicy>(withQuery("/api/manage/credit-plan/my-models", { workspace_id: workspaceId })),
   listTasks: (projectId: string, workspaceId?: string, includeArchived = false) =>

@@ -1,7 +1,8 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { fmtElapsed } from "../../lib/format";
 import { isHttpStatus } from "../../lib/http";
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import {
   manageApi,
   type TeamModelRow,
@@ -295,6 +296,17 @@ function UsageCreditRing({
   );
 }
 
+function TableIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <line x1="3" y1="10" x2="21" y2="10" />
+      <line x1="3" y1="15" x2="21" y2="15" />
+      <line x1="9.5" y1="4" x2="9.5" y2="20" />
+    </svg>
+  );
+}
+
 function DownloadIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20">
@@ -398,6 +410,9 @@ export function WorkspaceUsageDashboard({
   workspaceId = "",
   onWorkspaceIdChange,
   scope = "all",
+  tableOpen = false,
+  onToggleTable,
+  tableSlot,
 }: {
   reloadSignal?: number;
   canCreateProject?: boolean;
@@ -406,8 +421,13 @@ export function WorkspaceUsageDashboard({
   onWorkspaceIdChange?: (workspaceId?: string) => void;
   /** all=매니저(팀 전체) · mine=일반 멤버 — 서버가 본인 기록으로 강제하므로 여기서는 문구·카드만 바꾼다. */
   scope?: "all" | "mine";
+  /** 관리 표(설계: docs/MEMBER_TABLE_DESIGN.md) — onToggleTable 이 있으면 표 아이콘을 그리고, 열려 있으면 머리글 아래에 tableSlot 만 그린다. */
+  tableOpen?: boolean;
+  onToggleTable?: () => void;
+  tableSlot?: ReactNode;
 }) {
   const mine = scope === "mine";
+  const showTable = tableOpen && Boolean(tableSlot);
   // 구서버(read_all 전용)에 새 프론트가 붙으면 멤버는 403 — 빈 결과와 구분해 안내만 한다(코덱스 P2).
   const describeUsageError = (reason: unknown) =>
     mine && isHttpStatus(reason, 403)
@@ -624,8 +644,13 @@ export function WorkspaceUsageDashboard({
       setExporting("");
     }
   };
-  const exportCsv = () => runExport("hf");
-  const exportDetailCsv = () => runExport("detail");
+  // 다운로드 메뉴 — 보고서 2종을 아이콘 하나에서 고른다(한 번에 하나만 내려받는다).
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  useEscapeClose(() => setExportMenuOpen(false), exportMenuOpen);
+  const pickExport = (kind: "hf" | "detail") => {
+    setExportMenuOpen(false);
+    void runExport(kind);
+  };
 
   const projectCreateButton = canCreateProject && onCreateProject ? (
     <button
@@ -638,14 +663,28 @@ export function WorkspaceUsageDashboard({
     </button>
   ) : null;
 
+  const tableButton = onToggleTable ? (
+    <button
+      type="button"
+      className={"usage-icon-button" + (tableOpen ? " on" : "")}
+      onClick={onToggleTable}
+      title="관리 표 — 멤버·그룹·프로젝트 참여를 표로 보고 고친다"
+      aria-label="관리 표"
+      aria-pressed={tableOpen}
+    >
+      <TableIcon />
+    </button>
+  ) : null;
+
   if (!loading && !workspaces.length && !overview) {
     return (
       <section className="usage-dashboard usage-empty">
         <header className="usage-head">
           <h2>{mine ? "내 사용 현황" : "워크스페이스 사용 현황"}</h2>
-          <div className="usage-actions">{projectCreateButton}</div>
+          <div className="usage-actions">{projectCreateButton}{tableButton}</div>
         </header>
-        {error ? (
+        {/* 워크스페이스가 아직 하나도 보고되지 않았어도 관리 표는 전체 계정을 보여 준다 */}
+        {showTable ? tableSlot : error ? (
           // 조회 실패(권한·구버전 서버 404 등)를 "워크스페이스 없음"으로 위장하지 않는다.
           <p className="usage-error">{error}</p>
         ) : (
@@ -697,33 +736,47 @@ export function WorkspaceUsageDashboard({
         </div>
         <div className="usage-actions">
           {projectCreateButton}
-          <button
-            type="button"
-            className="usage-export-button"
-            onClick={exportCsv}
-            disabled={!overview || Boolean(exporting)}
-            title="힉스필드 멤버 사용량 보고서와 같은 모양(날짜·멤버·모델 합계)"
-          >
-            <DownloadIcon />{exporting === "hf" ? "Exporting…" : "Export usage report"}
-          </button>
-          <button
-            type="button"
-            className="usage-export-button"
-            onClick={exportDetailCsv}
-            disabled={!overview || Boolean(exporting)}
-            title="생성물 한 건이 한 줄 — 프로젝트·에피소드·컷·작성자·크레딧·생성 소요시간"
-          >
-            <DownloadIcon />{exporting === "detail" ? "내려받는 중…" : "프로젝트 상세 보고서"}
-          </button>
+          {tableButton}
+          <div className="usage-export-wrap">
+            <button
+              type="button"
+              className={"usage-icon-button" + (exportMenuOpen ? " on" : "")}
+              onClick={() => setExportMenuOpen((open) => !open)}
+              disabled={!overview || Boolean(exporting)}
+              title={exporting ? "내려받는 중…" : "보고서 내려받기"}
+              aria-label="보고서 내려받기"
+              aria-haspopup="menu"
+              aria-expanded={exportMenuOpen}
+            >
+              <DownloadIcon />
+            </button>
+            {exportMenuOpen ? (
+              <>
+                <div className="work-pop-backdrop" onClick={() => setExportMenuOpen(false)} />
+                <div className="usage-export-menu" role="menu">
+                  <button type="button" role="menuitem" onClick={() => pickExport("hf")}>
+                    <b>Export usage report</b>
+                    <span>힉스필드 멤버 사용량 보고서와 같은 모양(날짜·멤버·모델 합계)</span>
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => pickExport("detail")}>
+                    <b>프로젝트 상세 보고서</b>
+                    <span>생성물 한 건이 한 줄 — 프로젝트·에피소드·컷·작성자·크레딧·생성 소요시간</span>
+                  </button>
+                </div>
+              </>
+            ) : null}
+          </div>
         </div>
       </header>
 
+      {showTable ? tableSlot : null}
+
       {error && <div className="usage-error">{error}</div>}
-      {loading && !overview ? <div className="usage-loading">사용량 계산 중…</div> : null}
-      {mine && overview && totals && !totals.count ? (
+      {!showTable && loading && !overview ? <div className="usage-loading">사용량 계산 중…</div> : null}
+      {!showTable && mine && overview && totals && !totals.count ? (
         <div className="usage-scope-note">아직 보고된 내 기록이 없습니다. 에이전트가 연결·동기화되면 표시됩니다.</div>
       ) : null}
-      {overview && totals ? (
+      {!showTable && overview && totals ? (
         <>
           <div className="usage-overview">
             <UsageCreditRing

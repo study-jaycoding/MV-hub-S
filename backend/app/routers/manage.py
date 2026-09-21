@@ -45,6 +45,7 @@ from ..deps import (
 )
 from ..repo import manage as repo_manage
 from ..repo import manage_credit_plan as repo_credit
+from ..repo import manage_member_table as repo_member_table
 from ..repo import manage_tasks as repo_manage_tasks
 from ..services import cli_bridge, file_stamp, final_export, media_cache, project_folders
 from ..services.event_journal import journal_audit_event
@@ -772,6 +773,24 @@ def credit_plan(request: Request, workspace_id: str = ""):
             raise HTTPException(status_code=403, detail="이 워크스페이스의 멤버가 아닙니다")
     _refresh_isolated_telemetry()
     return repo_credit.plan_view(workspace_id, viewer)
+
+
+@router.get("/member-table")
+def member_table(request: Request, workspace_id: Optional[str] = Query(None, max_length=128)):
+    """관리 표 — 계정 한 줄에 등급·크레딧 그룹·프로젝트 참여·보고된 사실(설계: docs/MEMBER_TABLE_DESIGN.md).
+    계정 상세(이메일·가입 상태·등급)가 나가므로 `/api/members` 가 상세를 주는 조건과 같게 연다 — grant_global 또는
+    grant_project_role. read_all 만으로는 안 된다(감독 등급까지 넓어진다 — 코덱스 P1). 쓰기는 칸마다 기존 API."""
+    roles = account_global_roles(request) if AUTH_ENABLED else None
+    can = (lambda cap: True) if roles is None else (lambda cap: rbac.has_global_cap(roles, cap))
+    if not (can("grant_global") or can("grant_project_role")):
+        raise HTTPException(status_code=403, detail="권한이 없습니다")
+    out = repo_member_table.member_table((workspace_id or "").strip() or None, with_credit=can("create_project"))
+    out["caps"] = {
+        "account": can("grant_global"),
+        "credit": can("create_project"),
+        "project_roles": can("grant_project_role"),
+    }
+    return out
 
 
 @router.get("/credit-plan/my-models")
