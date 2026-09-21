@@ -153,10 +153,15 @@ class SaveFinalsKindTests(unittest.TestCase):
         (cut / "c1_fakeprefix00.png").write_bytes(b"no-stamp")              # 이름은 맞지만 각인이 없다 — 모르는 파일
         (cut / "c1_x.png.abcd.part").write_bytes(b"temp")                   # 저장 중 임시 파일은 세지 않는다
         stamps = {"c1_oldfinal0000.png": "oldfinal0000-full-id", "c1_gone00000000.png": "gone00000000-full-id"}
+        media = Path(self.tmp.name) / "media"
+        media.mkdir()
+        for gid in ("final0000001", "shared000001", "held00000001"):
+            (media / f"{gid}.png").write_bytes(b"src")
         before = sorted(str(f) for f in render.rglob("*"))
         state = {"render_path": str(render), "error": None}
         read = lambda path: {file_stamp.KEY_GEN: stamps[path.name]} if path.name in stamps else {}  # noqa: E731
         with mock.patch.object(project_folders, "render_root_state", return_value=state), \
+                mock.patch.object(manage_router, "MEDIA_DIR", media), \
                 mock.patch.object(manage_router, "_require_project_manage"), \
                 mock.patch.object(file_stamp, "read_stamp", side_effect=read):
             out = manage_router.save_finals_compare("p1", mock.Mock())
@@ -173,6 +178,41 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertTrue(_proxy.is_local_path("/api/manage/save-finals"))
         self.assertFalse(_proxy.is_local_path("/api/manage/save-finals/targets"))
         self.assertFalse(_proxy.is_local_path("/api/manage/save-finals/content/abc"))
+
+    def test_missing_local_original_falls_back_to_source_url_or_is_flagged_up_front(self):
+        media = Path(self.tmp.name) / "media"
+        media.mkdir()
+        (media / "final0000001.png").write_bytes(b"src")
+        with db.get_connection() as conn:  # 공유본 하나는 힉스필드 원본 주소가 남아 있고, 하나는 아무것도 없다
+            conn.execute("UPDATE asset SET source_url='https://cdn.example/shared.png' WHERE generation_id='shared000001'")
+        with mock.patch.object(manage_router, "MEDIA_DIR", media):
+            self.assertEqual(manage_router._export_source("/media/final0000001.png", None), "/media/final0000001.png")
+            self.assertEqual(manage_router._export_source("/media/gone.png", "https://cdn.example/x.png"), "https://cdn.example/x.png")
+            self.assertIsNone(manage_router._export_source("/media/gone.png", "ftp://nope"))
+            self.assertIsNone(manage_router._export_source("/media/../outside.png", None))  # 미디어 폴더 밖은 원본으로 치지 않는다
+            reasons = {t["gen_id"]: t["reason"] for t in manage_router._save_finals_targets_facts("p1", "shared")}
+        self.assertIsNone(reasons["shared000001"])  # 원본 주소로 다시 받을 수 있다
+        self.assertEqual(reasons["held00000001"], "원본 파일 없음(다시 받을 주소도 없음)")  # 누르기 전에 알린다
+
+        render = Path(self.tmp.name) / "Render"
+        render.mkdir()
+        fetched = media / "refetched.png"
+
+        async def fake_cache(url):
+            if str(url).startswith("https://"):
+                fetched.write_bytes(b"from-cdn")
+                return "/media/refetched.png"
+            return url
+
+        state = {"render_path": str(render), "error": None}
+        with mock.patch.object(project_folders, "render_root_state", return_value=state), \
+                mock.patch.object(manage_router, "MEDIA_DIR", media), \
+                mock.patch.object(manage_router.media_cache, "cache_url", side_effect=fake_cache), \
+                mock.patch.object(manage_router, "_require_project_manage"), \
+                mock.patch.object(file_stamp, "stamp_file", return_value=True):
+            out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
+        self.assertEqual((out["saved"], [e["gen_id"] for e in out["errors"]]), (1, ["held00000001"]))
+        self.assertEqual((render / "ep" / "c1" / "shared" / "c1_shared000001.png").read_bytes(), b"from-cdn")
 
     def test_save_writes_each_kind_to_its_folder_and_is_idempotent(self):
         render = Path(self.tmp.name) / "Render"

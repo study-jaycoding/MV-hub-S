@@ -1450,6 +1450,22 @@ def unlink_generation(tid: str, gen_id: str, request: Request):
 # 는 서버 targets 를 받아 로컬 디스크 판정(saved·render 연결)과 조합한다.
 
 
+def _is_http(url: Optional[str]) -> bool:
+    return bool(url) and str(url).startswith(("http://", "https://"))
+
+
+def _export_source(file_path: Optional[str], source_url: Optional[str]) -> Optional[str]:
+    """저장에 쓸 원본 — 로컬 `/media/…` 파일이 있으면 그것, 없으면 남아 있는 원본 주소(source_url). 둘 다 없으면 None.
+    미디어 파일이 정리·누락돼도(DB 만 옮긴 PC, 캐시 정리) 힉스필드 원본 주소가 살아 있으면 다시 받아 저장한다."""
+    if _is_http(file_path):
+        return file_path
+    if file_path and file_path.startswith("/media/"):
+        local = safe_join(MEDIA_DIR, file_path.removeprefix("/media/"))
+        if local is not None and local.exists():
+            return file_path
+    return source_url if _is_http(source_url) else None
+
+
 def _save_finals_targets_facts(project_id: str, kind: str = "final") -> list[dict]:
     """저장 대상 '사실'만 — render_path/saved 등 디스크 판정 절대 미포함(그건 저장하는 PC 의 몫).
     filename 은 원본 확장자가 필요해 여기(사실 보유측)서 계산한다."""
@@ -1463,6 +1479,8 @@ def _save_finals_targets_facts(project_id: str, kind: str = "final") -> list[dic
             reason = "폴더 경로 없음"
         elif not file_path:
             reason = "원본 파일 없음"
+        elif not _export_source(file_path, f.get("source_url")):
+            reason = "원본 파일 없음(다시 받을 주소도 없음)"  # 누르기 전에 알린다 — 종전엔 저장을 눌러야 "로컬 원본 없음"이 나왔다
         else:
             filename = project_folders.export_filename(
                 fp, f["gen_id"], file_path, f.get("media_type")
@@ -1507,7 +1525,7 @@ def save_finals_content(gen_id: str, request: Request):
     fin = final_export.final_to_export(gen["project_id"], gen_id)
     if not fin:
         raise HTTPException(status_code=404, detail="저장 대상이 아닙니다")
-    file_path = fin.get("file_path") or ""
+    file_path = _export_source(fin.get("file_path"), fin.get("source_url")) or ""
     if file_path.startswith("/media/"):
         src = safe_join(MEDIA_DIR, file_path.removeprefix("/media/"))
         if src is None or not src.exists():
@@ -1903,7 +1921,11 @@ async def _save_finals_locked(
                 )
                 skipped += 1
                 continue
-            rel = await media_cache.cache_url(file_path)
+            source = await to_thread_non_abandon(_export_source, file_path, f.get("source_url"))
+            if not source:
+                errors.append({"gen_id": gen_id, "reason": "원본 파일 없음(다시 받을 주소도 없음)"})
+                continue
+            rel = await media_cache.cache_url(source)  # 원격이면 이 PC 미디어 캐시로 내려받는다
             if not rel:
                 errors.append({"gen_id": gen_id, "reason": "원본 다운로드 실패"})
                 continue

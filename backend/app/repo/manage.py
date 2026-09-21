@@ -783,7 +783,8 @@ def final_export_sources(
             rows = conn.execute(
                 f"SELECT g.id AS gen_id, g.folder_path AS folder_path, "
                 f"  (SELECT a.file_path FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS file_path, "
-                f"  (SELECT a.type FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS media_type "
+                f"  (SELECT a.type FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS media_type, "
+                f"  (SELECT a.source_url FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS source_url "
                 f"FROM generation g WHERE g.id IN ({ph}) AND g.project_id=? AND g.deleted_at IS NULL",
                 [*id_batch, project_id],
             ).fetchall()
