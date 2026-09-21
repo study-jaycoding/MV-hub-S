@@ -67,6 +67,21 @@ def effective_root_path(pid: str) -> str:
     return (repo_manage.get_project_folder(pid).get("root_path") or "").strip()
 
 
+def projects_sharing_root(pid: str) -> list[str]:
+    """이 프로젝트와 **같은 렌더 폴더**를 쓰는 다른 프로젝트의 id — 경로 글자만 견준다(디스크에 묻지 않는다).
+    파일의 각인에는 프로젝트가 없어서, 한 폴더를 두 프로젝트가 쓰면 미러는 어느 파일이 어느 프로젝트의 것인지 가릴 수 없다
+    (생성물을 다른 프로젝트로 옮긴 경우 이 PC 의 대장 증거까지 옛 프로젝트에 남는다) → 부르는 쪽이 정리를 하지 않는다.
+    ponytail: 매핑 드라이브와 UNC 처럼 글자가 다른 같은 폴더는 못 잡는다(드라이브 매핑은 팀 공통 전제) — 필요해지면 resolve 비교로."""
+    def key(raw: str) -> str:
+        text = (raw or "").strip().replace("\\", "/").rstrip("/").casefold()
+        return text[: -len("/render")] if text.endswith("/render") else text
+
+    mine = key(effective_root_path(pid))
+    if not mine:
+        return []
+    return [other for other, _ in repo_projects.list_id_names() if other != pid and key(effective_root_path(other)) == mine]
+
+
 _EXT_BY_TYPE = {"video": ".mp4", "image": ".png", "audio": ".mp3", "3d": ".glb"}
 
 
@@ -97,9 +112,8 @@ def export_folder(folder_path: str, kind: str | None) -> str:
     return f"{fp}/{SHARED_SUBFOLDER}" if kind == "shared" and fp else fp
 
 
-def safe_dest(render: Path, folder_path: str, filename: str) -> Path | None:
-    """render_root/<folder_path>/<filename> 을 검증해 반환. 트래버설·절대경로·드라이브문자 거부."""
-    render = render.resolve()
+def _dest_parts(folder_path: str, filename: str) -> list[str] | None:
+    """목적지의 글자 검증(디스크에 묻지 않는다) — 트래버설·절대경로·드라이브문자 거부. 통과하면 경로 마디들."""
     fp = (folder_path or "").strip().replace("\\", "/")
     segs = [s for s in fp.split("/") if s]
     if not segs or any(s in ("..", ".") for s in segs):
@@ -108,7 +122,23 @@ def safe_dest(render: Path, folder_path: str, filename: str) -> Path | None:
         return None
     if not filename or "/" in filename or "\\" in filename or ".." in filename:
         return None
-    return safe_join(render, Path(*segs) / filename)
+    return [*segs, filename]
+
+
+def safe_dest(render: Path, folder_path: str, filename: str) -> Path | None:
+    """render_root/<folder_path>/<filename> 을 검증해 반환. 트래버설·절대경로·드라이브문자 거부."""
+    render = render.resolve()
+    parts = _dest_parts(folder_path, filename)
+    return safe_join(render, Path(*parts)) if parts else None
+
+
+def ledger_dest(render_resolved: Path, folder_path: str, filename: str) -> Path | None:
+    """저장 대장과 견줄 목적지 — **디스크에 묻지 않는다**(완료 탭을 열 때의 상태 조회 전용: 대상 수백 건마다 `resolve()` 를 하면
+    NAS 에서는 건마다 네트워크 왕복이다). `render_resolved` 는 부르는 쪽이 한 번만 해석해 넘긴다. 쓰기·스캔은 safe_dest 를 쓴다.
+    ponytail: 렌더 폴더 안쪽에 심볼릭 링크·junction 이 있으면 대장의 해석 경로와 달라 '이미 저장'이 '새로 저장'으로 보인다
+    (저장은 실제 폴더를 확인해 건너뛴다) — 그런 구성이 생기면 상태 조회도 safe_dest 로 되돌린다."""
+    parts = _dest_parts(folder_path, filename)
+    return render_resolved.joinpath(*parts) if parts else None
 
 
 def render_root(root: Path) -> Path | None:

@@ -440,6 +440,7 @@ export interface SaveFinalsCompare {
   blocked: SaveFinalsCompareItem[]; // 저장 불가(사유)
   same: number;
   unknown: number; // 모르는 파일 — 세기만 하고 건드리지 않는다
+  cleanup_blocked?: string | null; // 정리를 하지 않는 이유(같은 렌더 폴더를 다른 프로젝트도 씀) — 있으면 extra 는 언제나 비어 있다
 }
 
 export interface SaveFinalsHistory {

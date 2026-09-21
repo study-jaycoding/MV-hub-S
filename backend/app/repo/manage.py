@@ -797,6 +797,7 @@ def record_export(gen_id: str, dest_path: str, project_id: Optional[str] = None)
     권위 키(팀원 생성물은 로컬 generation 조인이 불가) — 신코드는 항상 채운다."""
     with get_connection() as conn:
         _ensure_schema(conn)
+        _note_old_exports(conn, "gen_id=? AND dest_path<>?", [gen_id, dest_path], project_id)  # 아래 UPSERT 가 옛 경로를 덮어쓴다
         conn.execute(
             "INSERT INTO final_export(gen_id, dest_path, project_id, exported_at) "
             "VALUES(?,?,?, datetime('now')) "
@@ -826,14 +827,50 @@ def export_dest_paths(gen_ids: "list[str] | set[str]") -> dict[str, str]:
     return {gen_id: record[0] for gen_id, record in export_records(gen_ids).items()}
 
 
-def forget_exports(gen_ids: "list[str] | set[str]") -> None:
-    """대장에서 지운다 — 비교가 '대장에는 있는데 폴더에는 없는' 파일을 찾았을 때(누가 손으로 지웠거나 미러가 옮김)."""
+def _note_old_exports(conn, where: str, params: list, project_id: Optional[str]) -> None:
+    """대장 줄이 사라지기(덮어쓰기·지우기) 직전에 그 경로를 옛 저장 자리로 남긴다 — 컷 폴더가 바뀐 생성물의 옛 파일을
+    비교·미러가 찾을 단서(어느 폴더를 훑을지만 정한다). 프로젝트를 모르는 줄은 남기지 않는다(조회는 프로젝트로 한정)."""
+    conn.execute(
+        "INSERT OR IGNORE INTO final_export_old(dest_path, gen_id, project_id) "
+        f"SELECT dest_path, gen_id, COALESCE(project_id, ?) FROM final_export WHERE {where} AND COALESCE(project_id, ?) IS NOT NULL",
+        [project_id, *params, project_id],
+    )
+
+
+def forget_exports(gen_ids: "list[str] | set[str]", project_id: Optional[str] = None) -> None:
+    """대장에서 지운다 — 비교가 '대장에는 있는데 (지금의) 목적지에는 없는' 파일을 찾았을 때. 손으로 지웠을 수도 있지만
+    **컷 폴더가 바뀌어** 옛 자리에 그대로 있을 수도 있으므로 경로는 옛 저장 자리로 남긴다(없는 파일이면 다음 비교가 지운다)."""
     ids = list(dict.fromkeys(g for g in (gen_ids or []) if g))
     with get_connection() as conn:
         _ensure_schema(conn)
         for id_batch in _batched(ids):
             ph = ",".join("?" * len(id_batch))
+            _note_old_exports(conn, f"gen_id IN ({ph})", list(id_batch), project_id)
             conn.execute(f"DELETE FROM final_export WHERE gen_id IN ({ph})", list(id_batch))
+
+
+def export_places(project_id: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """이 PC 가 이 프로젝트를 위해 저장했다고 적어 둔 자리 — (지금 자리들, 옛 자리들), 각 항목 = (gen_id, dest_path). **상한 없이 전부**
+    (list_exports 는 이력 표시용이라 상한이 있다). 미러가 '우리 파일'로 볼 수 있는 유일한 양성 증거다 — 각인에는 프로젝트가 없다.
+    project_id 가 NULL 인 옛 줄은 list_exports 와 같은 generation 조인 폴백."""
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        now = conn.execute(
+            "SELECT fe.gen_id, fe.dest_path FROM final_export fe LEFT JOIN generation g ON g.id=fe.gen_id "
+            "WHERE (fe.project_id=?) OR (fe.project_id IS NULL AND g.project_id=? AND g.deleted_at IS NULL)",
+            (project_id, project_id),
+        ).fetchall()
+        old = conn.execute("SELECT gen_id, dest_path FROM final_export_old WHERE project_id=?", (project_id,)).fetchall()
+        return [(r["gen_id"], r["dest_path"]) for r in now], [(r["gen_id"], r["dest_path"]) for r in old]
+
+
+def drop_old_exports(dest_paths: "list[str]") -> None:
+    """옛 저장 자리에서 지운다 — 그 파일이 더 이상 없을 때(미러가 옮겼거나 손으로 지움)."""
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        for batch in _batched(list(dest_paths or [])):
+            ph = ",".join("?" * len(batch))
+            conn.execute(f"DELETE FROM final_export_old WHERE dest_path IN ({ph})", list(batch))
 
 
 def list_exports(project_id: str, limit: int = 20) -> list[dict[str, Any]]:

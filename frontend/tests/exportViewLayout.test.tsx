@@ -8,16 +8,18 @@ import { ExportView } from "../src/components/manage/ExportView";
 import type { SaveFinalsKind, SaveFinalsStatus } from "../src/lib/manageApi";
 
 let status: SaveFinalsStatus;
+let projectList = [{ id: "p1", name: "fixture" }];
 const saveFinals = vi.hoisted(() => vi.fn());
 const saveFinalsCompare = vi.hoisted(() => vi.fn());
 const saveFinalsMirror = vi.hoisted(() => vi.fn());
-vi.mock("../src/api", () => ({ api: { projects: async () => ({ projects: [{ id: "p1", name: "fixture" }] }) } }));
+vi.mock("../src/api", () => ({ api: { projects: async () => ({ projects: projectList }) } }));
 vi.mock("../src/lib/manageApi", () => ({ manageApi: { saveFinalsStatus: async () => status, saveFinals, saveFinalsCompare, saveFinalsMirror } }));
 const target = (gen_id: string, saved: boolean, reason: string | null, kind: SaveFinalsKind = "final", filename = gen_id + ".mp4") => ({ gen_id, kind, folder_path: "ep001/" + gen_id, filename, saved, reason });
 let root: Root, host: HTMLDivElement;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  projectList = [{ id: "p1", name: "fixture" }];
   saveFinals.mockReset().mockResolvedValue({ saved: 1, skipped: 0, errors: [] });
   saveFinalsCompare.mockReset();
   saveFinalsMirror.mockReset();
@@ -187,4 +189,46 @@ it("거르기 단추는 하나만 켜지고, 고른 종류·상태의 줄만 남
   await act(async () => { chip("이미 저장").click(); });
   expect(texts(".export-table code")).toEqual(["c0010.mp4"]);
   expect(host.querySelector(".export-side")!.classList.contains("two")).toBe(false); // 이력이 없으면 표가 가로 전체를 쓴다
+});
+
+it("저장이 도는 동안 프로젝트 선택이 잠기고, 그사이 프로젝트가 바뀌었으면 앞 프로젝트의 결과를 띄우지 않는다", async () => {
+  projectList = [{ id: "p1", name: "one" }, { id: "p2", name: "two" }];
+  status = { render_path: "R:/render", error: null, shared_supported: true, targets: [target("c0030", false, null)], history: [] };
+  let finish!: (value: { saved: number; skipped: number; errors: never[] }) => void;
+  saveFinals.mockReset().mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  await mount();
+  const select = host.querySelector<HTMLSelectElement>(".export-card select")!;
+  await act(async () => { button("최종 저장").click(); });
+  await answer("예");
+  expect(select.disabled).toBe(true); // 실행 중에는 바꿀 수 없다
+  // 잠금을 뚫고 바뀐 경우(방어) — 끝난 결과는 시작한 프로젝트의 것이다
+  await act(async () => { select.value = "p2"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  await act(async () => { finish({ saved: 7, skipped: 0, errors: [] }); });
+  expect(saveFinals).toHaveBeenCalledWith("p1", undefined, "final");
+  expect(host.querySelector(".export-result")).toBeNull();
+  expect(select.disabled).toBe(false);
+});
+
+it("렌더 폴더 미연결은 줄마다 되풀이하지 않고 건수 칸에 한 번만 말한다 — 개별 사유는 그대로 보인다", async () => {
+  status = { render_path: "", error: null, shared_supported: true, history: [], targets: [target("c0030", false, "렌더 폴더 미연결"), target("c0040", false, "렌더 폴더 미연결", "shared")] };
+  await mount();
+  expect(texts(".export-table .export-badge:not([class*=kind-])")).toEqual(["저장 불가", "저장 불가"]);
+  expect(texts(".export-target-reason")).toEqual([]);
+  expect(host.querySelector(".export-counts > div:last-child")!.textContent).toContain("렌더 폴더 미연결");
+  status = { render_path: "R:/render", error: null, shared_supported: true, history: [], targets: [target("c0030", false, "원본 파일 없음"), target("c0040", false, "경로 안전성 위반", "shared")] };
+  act(() => root.unmount()); root = createRoot(host);
+  await mount();
+  expect(texts(".export-target-reason")).toEqual(["원본 파일 없음", "경로 안전성 위반"]);
+  expect(host.querySelector(".export-counts > div:last-child")!.textContent).toContain("원본 없음 등");
+});
+
+it("같은 렌더 폴더를 다른 프로젝트도 쓰면 비교 결과가 정리를 하지 않는 이유를 말한다", async () => {
+  status = { render_path: "R:/render", error: null, shared_supported: true, targets: [], history: [] };
+  saveFinalsCompare.mockResolvedValue({ shared_supported: true, same: 4, unknown: 2, blocked: [], to_add: [], extra: [], cleanup_blocked: "같은 렌더 폴더를 쓰는 다른 프로젝트가 1개 있어 폴더에 남은 파일은 정리하지 않습니다" });
+  await mount();
+  await act(async () => { host.querySelector<HTMLButtonElement>(".export-icon-btn")!.click(); });
+  await answer("예");
+  expect(host.querySelector(".export-compare")!.textContent).toContain("다른 프로젝트가 1개");
+  expect(host.querySelector(".export-compare")!.textContent).not.toContain("폴더가 프로그램과 같습니다");
+  expect(button("미러").disabled).toBe(true); // 옮길 것도 저장할 것도 없다
 });

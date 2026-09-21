@@ -1597,7 +1597,8 @@ def _save_finals_facts(project_id: str, kind: str = "final") -> tuple[list[dict]
 def _save_finals_scan(project_id: str, render: Path) -> dict:
     """프로그램이 원하는 집합(최종+공유)과 이 PC 에서 보이는 렌더 폴더를 견준다 — **읽기만** 한다(비교·미러 공용).
     · to_add  프로그램에는 있는데 폴더에 없다
-    · extra   폴더에만 남은 **우리 파일** — 이름 규칙(<시퀀스>_<gen 앞 12자>)이 맞고, 각인이 우리 것(hub 표식)이며 각인의 gen_id 가 그 이름과 맞는다
+    · extra   폴더에만 남은 **우리 파일** — 이름 규칙(<시퀀스>_<gen 앞 12자>)이 맞고, 각인이 우리 것(hub 표식)이며 각인의 gen_id 가 그 이름과 맞고,
+              **이 PC 의 대장이 그 생성물을 이 프로젝트로 바로 그 경로에 저장했다고 기억한다**(다른 PC 가 저장한 파일은 그 PC 에서 정리한다)
     · unknown 그 밖의 파일(사람이 넣은 것·각인 없는 것) — 세기만 하고 절대 건드리지 않는다
     훑는 범위는 대상 목적지의 폴더와 이 PC 대장에 남은 옛 저장 자리뿐이다(렌더 루트 전체를 재귀로 훑지 않는다 —
     격리 폴더 `_mvhub_removed`·잠금 폴더 `_mvhub_sync` 는 그래서 절대 잡히지 않는다).
@@ -1646,29 +1647,48 @@ def _save_finals_scan(project_id: str, render: Path) -> dict:
     # 저장 대장을 실제 폴더에 맞춘다 — 탭을 열 때의 빠른 표시(대장만 봄)가 비교 한 번으로 정확해진다.
     for gen_id, dest_path in found:
         repo_manage.record_export(gen_id, dest_path, project_id)
-    repo_manage.forget_exports(lost)
-    folders = {dest.parent for dest in protected}
-    for entry in repo_manage.list_exports(project_id, limit=5000):  # 이 PC 가 예전에 저장한 자리(폴더가 바뀐 컷의 옛 폴더)
-        old = Path(entry["dest_path"])
-        if old.is_relative_to(root):  # 렌더 폴더 밖을 가리키는 옛 기록은 훑지 않는다
-            folders.add(old.parent)
+    repo_manage.forget_exports(lost, project_id)  # 경로는 옛 저장 자리로 남는다 — 컷 폴더가 바뀐 것이면 파일이 거기 그대로 있다
+    # 이 PC 가 **이 프로젝트를 위해 바로 그 자리에 저장했다고 적어 둔** 파일만 '우리 파일(extra)'이 될 수 있다 — 각인에는 프로젝트가 없어서,
+    # 각인·이름만 보면 같은 폴더에 있는 다른 프로젝트의 파일까지 옮긴다(2026-09-21 실측 A6). 증거 = (gen_id, 정확한 경로):
+    #  · 지금 자리 = 대장 final_export(대상에서 빠진 생성물의 파일)  · 옛 자리 = final_export_old(컷 폴더가 바뀐 생성물 — 대장은 생성물당
+    #    한 줄이라 다시 저장하면 경로가 덮어써진다). 렌더 폴더 밖 경로는 훑지도 확인하지도 지우지도 않는다(폴더를 되돌릴 수 있다).
+    # 같은 렌더 폴더를 다른 프로젝트도 쓰면 정리 후보를 아예 내지 않는다 — 그 프로젝트로 옮겨 간 생성물의 **지금 파일**이
+    # 이 프로젝트의 대장 증거(같은 gen_id·같은 경로)를 그대로 통과한다(코덱스 P1, 2026-09-21). 저장(to_add)은 그대로 된다.
+    sharing = project_folders.projects_sharing_root(project_id)
+    now_places, old_rows = repo_manage.export_places(project_id)
+    old_places = [(raw, old) for raw, old in ((raw, Path(raw)) for _, raw in old_rows) if old.is_relative_to(root)]
+    ours: dict[Path, set[str]] = {}
+    for gen_id, raw in [*now_places, *old_rows]:
+        place = Path(raw)
+        if place.is_relative_to(root):
+            ours.setdefault(place, set()).add(gen_id)
+    folders = {dest.parent for dest in protected} | {place.parent for place in ours}
     extra: list[dict] = []
     unknown = 0
+    listed: dict[Path, set[str]] = {}  # 실제로 열거에 성공한 폴더 → 그 안의 이름(소문자)
     for folder in sorted(folders):
         if not folder.is_dir() or not folder.is_relative_to(root):
             continue
+        names = listed.setdefault(folder, set())
         for child in folder.iterdir():
+            names.add(child.name.casefold())
             if not child.is_file() or child in protected or child.name.endswith(".part"):
                 continue
             prefix = child.stem.rsplit("_", 1)[-1] if "_" in child.stem else ""
             stamp = file_stamp.read_stamp(child) if len(prefix) == 12 else {}
             stamped = file_stamp.gen_id_of(stamp)
-            if stamped and stamped[:12] == prefix and stamp.get(file_stamp.KEY_HUB) == file_stamp.HUB_TAG and stamped not in blocked_ids:
+            if not sharing and stamped and stamped[:12] == prefix and stamp.get(file_stamp.KEY_HUB) == file_stamp.HUB_TAG and stamped not in blocked_ids and stamped in ours.get(child, ()):
                 extra.append({"gen_id": stamped, "kind": "shared" if folder.name == project_folders.SHARED_SUBFOLDER else "final",
                               "folder_path": folder.relative_to(root).as_posix(), "filename": child.name, "_path": child})
             else:
                 unknown += 1
-    return {"shared_supported": not shared_outdated, "to_add": to_add, "extra": extra, "blocked": blocked, "same": same, "unknown": unknown, "_root": root}
+    # 옛 저장 자리를 잊는 조건 = **그 폴더를 열거했는데 그 이름이 없었다**. is_file() 의 False 는 NAS 순간 단절·권한 오류일 수도 있어
+    # 근거로 쓰지 않는다(코덱스 P1 — 파이썬 3.14 는 모든 OSError 를 False 로 삼킨다). 폴더가 안 보이면 단서를 그대로 둔다.
+    repo_manage.drop_old_exports([raw for raw, old in old_places if old.parent in listed and old.name.casefold() not in listed[old.parent]])
+    # 이름은 넣지 않는다 — 이 사용자에게 안 보이는 프로젝트일 수 있다(코덱스 P2). 어느 프로젝트인지는 관리자가 렌더 폴더 설정에서 본다.
+    cleanup_blocked = f"같은 렌더 폴더를 쓰는 다른 프로젝트가 {len(sharing)}개 있어 폴더에 남은 파일은 정리하지 않습니다(어느 파일이 어느 프로젝트의 것인지 가릴 수 없습니다)" if sharing else None
+    return {"shared_supported": not shared_outdated, "to_add": to_add, "extra": extra, "blocked": blocked, "same": same, "unknown": unknown,
+            "cleanup_blocked": cleanup_blocked, "_root": root}
 
 
 def _render_for_sync(project_id: str) -> Path:
@@ -1830,12 +1850,13 @@ async def save_finals_mirror(project_id: str, body: MirrorIn, request: Request):
 def save_finals_status(project_id: str, request: Request):
     """저장 대상(최종·공유) 미리보기 + 저장 이력(대장). 읽기 전용 — 다운로드/복사 없음.
     ★`saved` 는 **이 PC 의 저장 대장(DB)** 만 보고 정한다 — 대상마다 NAS 를 확인하면(공유본은 수백 건) 탭을 열 때마다 느리다.
+    디스크에 가는 것은 렌더 폴더 경로 해석 1회와 저장 이력 최근 20건의 파일 확인뿐이다(목적지는 ledger_dest 로 글자만 결합).
     대장은 저장할 때 적히고, **비교**가 실제 폴더와 맞춘다(있는데 안 적힌 것은 적고, 적혔는데 없는 것은 지운다).
     그래서 다른 PC 가 저장한 파일·손으로 지운 파일은 비교를 한 번 하기 전까지 여기에 반영되지 않는다. 저장 자체는 언제나 실제 폴더를 확인한다."""
     _require_project_read(request, project_id)
     state = project_folders.render_root_state(project_id)
     render_path = state.get("render_path") or ""
-    render = Path(render_path) if render_path else None
+    render = Path(render_path).resolve() if render_path else None  # 해석은 여기서 한 번만 — 대상마다 하면 NAS 왕복이 수백 번이다
     facts, server_outdated = _save_finals_facts(project_id)
     shared_supported, shared_error = True, None
     if not server_outdated:
@@ -1857,7 +1878,7 @@ def save_finals_status(project_id: str, request: Request):
             if render is None:
                 reason = "렌더 폴더 미연결"
             else:
-                dest = project_folders.safe_dest(
+                dest = project_folders.ledger_dest(
                     render, project_folders.export_folder(t.get("folder_path") or "", t.get("kind")), filename
                 )
                 if dest is None:

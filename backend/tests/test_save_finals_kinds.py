@@ -155,7 +155,15 @@ class SaveFinalsKindTests(unittest.TestCase):
         (cut / "c1_fakeprefix00.png").write_bytes(b"no-stamp")              # 이름은 맞지만 각인이 없다 — 모르는 파일
         (cut / "c1_x.png.abcd.part").write_bytes(b"temp")                   # 저장 중 임시 파일은 세지 않는다
         (cut / "c1_otherhub0000.png").write_bytes(b"foreign")               # 각인은 있지만 우리 표식(hub)이 아니다 — 모르는 파일
-        stamps = {"c1_oldfinal0000.png": "oldfinal0000-full-id", "c1_gone00000000.png": "gone00000000-full-id"}
+        (cut / "c1_otherproj000.png").write_bytes(b"another-project")       # 각인도 이름도 맞지만 이 PC 의 대장은 **다른 프로젝트**로 기억한다 — 모르는 파일
+        (cut / "c1_otherpc00000.png").write_bytes(b"another-pc")            # 각인도 이름도 맞지만 이 PC 의 대장에 없다(다른 PC 가 저장) — 모르는 파일
+        (cut / "c1_oldfinal0000.mp4").write_bytes(b"same-gen-other-path")   # 아는 생성물이지만 적어 둔 **그 경로가 아니다** — 모르는 파일
+        stamps = {"c1_oldfinal0000.png": "oldfinal0000-full-id", "c1_gone00000000.png": "gone00000000-full-id", "c1_otherproj000.png": "otherproj000-full-id",
+                  "c1_otherpc00000.png": "otherpc00000-full-id", "c1_oldfinal0000.mp4": "oldfinal0000-full-id"}
+        # 각인에는 프로젝트가 없다 → '우리 파일'의 증거는 이 PC 의 대장뿐이다(2026-09-21 실측 A6: 다른 프로젝트의 파일을 미러가 옮겼다)
+        repo_manage.record_export("oldfinal0000-full-id", str((cut / "c1_oldfinal0000.png").resolve()), "p1")
+        repo_manage.record_export("gone00000000-full-id", str((cut / "shared" / "c1_gone00000000.png").resolve()), "p1")
+        repo_manage.record_export("otherproj000-full-id", str((cut / "c1_otherproj000.png").resolve()), "p2")
         media = Path(self.tmp.name) / "media"
         media.mkdir()
         for gid in ("final0000001", "shared000001", "held00000001"):
@@ -176,7 +184,7 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertEqual({(t["gen_id"], t["folder_path"]) for t in out["to_add"]}, {("shared000001", "ep/c1/shared"), ("held00000001", "ep/c1/shared")})
         self.assertEqual({(t["filename"], t["kind"], t["folder_path"]) for t in out["extra"]},
                          {("c1_oldfinal0000.png", "final", "ep/c1"), ("c1_gone00000000.png", "shared", "ep/c1/shared")})
-        self.assertEqual((out["same"], out["unknown"], out["blocked"], out["shared_supported"]), (1, 3, [], True))
+        self.assertEqual((out["same"], out["unknown"], out["blocked"], out["shared_supported"]), (1, 6, [], True))
         self.assertFalse(any(key.startswith("_") for item in out["extra"] for key in item))  # 내부 경로는 응답에 안 나간다
 
     def test_compare_is_local_only_but_targets_and_content_stay_delegated(self):
@@ -235,6 +243,7 @@ class SaveFinalsKindTests(unittest.TestCase):
         names = {"c1_oldfinal0000.png": cut, "c1_unconfirmed0.png": cut, "c1_justsaved000.png": cut, "c1_gone00000000.png": cut / "shared"}
         for name, folder in names.items():
             (folder / name).write_bytes(b"ours-" + name.encode())
+            repo_manage.record_export(name.rsplit(".", 1)[0].rsplit("_", 1)[-1] + "-full", str((folder / name).resolve()), "p1")  # 이 PC 가 저장했었다(대장 = 증거)
             if name != "c1_justsaved000.png":  # 방금 쓰인 파일 하나 — 다른 PC 가 막 저장했을 수 있다
                 os.utime(folder / name, (old, old))
         (cut / "사람이넣은파일.png").write_bytes(b"human")
@@ -441,6 +450,139 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertEqual({(t["kind"], t["saved"]) for t in status["targets"]}, {("final", True), ("shared", True)})
         # 표의 '저장한 때' — 대상마다 대장의 저장 시각을 함께 준다(저장 이력은 최근 20건뿐이라 표를 못 채운다)
         self.assertTrue(all(re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", t["saved_at"]) for t in status["targets"]))
+
+    def test_old_folder_of_a_moved_cut_stays_findable_until_its_file_is_gone(self):
+        """컷 폴더가 바뀐 생성물(대장 = 옛 자리) — 비교가 옛 파일을 '폴더에만 남은 것'으로 찾는다. 대장 줄이 지워지거나(비교의 맞추기)
+        덮어써져도(저장) 옛 자리는 따로 기억되고, 그 파일이 없어지면 기억도 지운다. (2026-09-21 실측: 종전엔 extra 가 비고 증거까지 지워졌다)"""
+        render, cut, patches = self._mirror_fixture()
+        old_dir = render / "ep_old" / "c9"  # 지금은 어떤 대상의 폴더도 아니다
+        old_dir.mkdir(parents=True)
+        long_ago = __import__("time").time() - 3600
+        moved_cut, deleted_gen, human = old_dir / "c9_final0000001.png", old_dir / "c9_purged000001.png", old_dir / "메모.png"
+        for path in (moved_cut, deleted_gen, human):
+            path.write_bytes(b"old-" + path.name.encode())
+            os.utime(path, (long_ago, long_ago))
+        self._stamps = {moved_cut.name: "final0000001", deleted_gen.name: "purged000001"}
+        repo_manage.record_export("final0000001", str(moved_cut.resolve()), "p1")   # 이 PC 가 옛 자리에 저장했었다
+        repo_manage.record_export("purged000001", str(deleted_gen.resolve()), "p1")
+        repo_manage.record_export("purged000001", str((render / "ep" / "c1" / "c1_purged000001.png").resolve()), "p1")  # 다시 저장 → 옛 자리로 남는다
+        repo_manage.purge_generation_sidecar("purged000001")  # 그 생성물은 영구 삭제됐다 — 옛 자리의 단서는 고아 정리 대상이 아니다
+        in_old = lambda scan: sorted(e["filename"] for e in scan["extra"] if e["folder_path"] == "ep_old/c9")  # noqa: E731
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            first = manage_router.save_finals_compare("p1", mock.Mock())
+            again = manage_router.save_finals_compare("p1", mock.Mock())  # 첫 비교가 대장 줄을 지운 뒤에도
+            self.assertEqual((in_old(first), in_old(again)), ([moved_cut.name, deleted_gen.name],) * 2)
+            self.assertEqual(first["unknown"], again["unknown"])  # 사람 파일은 세기만 한다
+            asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="all"))  # 저장이 대장 줄을 새 경로로 덮어쓴 뒤에도
+            self.assertEqual(in_old(manage_router.save_finals_compare("p1", mock.Mock())), [moved_cut.name, deleted_gen.name])
+            confirm = [{"folder_path": "ep_old/c9", "filename": name} for name in (moved_cut.name, deleted_gen.name, human.name)]
+            out = asyncio.run(manage_router.save_finals_mirror("p1", manage_router.MirrorIn(confirm=confirm), mock.Mock()))
+            self.assertEqual(sorted(m["filename"] for m in out["moved"]), [moved_cut.name, deleted_gen.name])
+            self.assertTrue(human.is_file())  # 옛 자리는 '어느 폴더를 볼지'만 정한다 — 사람 파일은 옮기지 않는다
+            manage_router.save_finals_compare("p1", mock.Mock())
+        self.assertEqual(repo_manage.export_places("p1")[1], [])  # 파일이 없어진 옛 자리는 잊는다
+
+    def test_old_places_outside_the_render_folder_are_neither_scanned_nor_forgotten(self):
+        render, cut, patches = self._mirror_fixture()
+        outside = Path(self.tmp.name) / "OtherRender" / "ep" / "c1" / "c1_final0000001.png"
+        repo_manage.record_export("final0000001", str(outside), "p1")
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            with mock.patch.object(Path, "is_file", autospec=True, side_effect=lambda path: self.assertNotIn("OtherRender", str(path)) or False):
+                manage_router.save_finals_compare("p1", mock.Mock())
+        self.assertEqual([path for _, path in repo_manage.export_places("p1")[1]], [str(outside)])  # 렌더 폴더를 되돌릴 수 있다 — 확인도 삭제도 하지 않는다
+
+    def test_old_place_is_forgotten_only_when_its_folder_was_listed_without_that_file(self):
+        """옛 저장 자리를 잊는 근거는 '폴더를 열거했는데 없었다'뿐이다 — 폴더가 안 보이는 것(NAS 순간 단절일 수 있다)은 근거가 아니다."""
+        render, cut, patches = self._mirror_fixture()
+        listed_but_absent = str((cut / "c1_handdeleted0.png").resolve())        # 폴더는 보이는데 그 파일이 없다 → 잊는다
+        folder_not_visible = str((render / "ep_offline" / "c2" / "c2_stillthere00.png").resolve())  # 폴더가 안 보인다 → 그대로 둔다
+        with db.get_connection() as conn:
+            conn.executemany("INSERT INTO final_export_old(dest_path, gen_id, project_id) VALUES(?,?, 'p1')",
+                             [(listed_but_absent, "handdeleted0"), (folder_not_visible, "stillthere00")])
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            manage_router.save_finals_compare("p1", mock.Mock())
+        self.assertEqual([path for _, path in repo_manage.export_places("p1")[1]], [folder_not_visible])
+
+    def test_no_cleanup_when_another_project_uses_the_same_render_folder(self):
+        """각인에는 프로젝트가 없다 — 한 렌더 폴더를 두 프로젝트가 쓰면(생성물을 옮겨 간 경우 대장 증거까지 옛 프로젝트에 남는다) 미러는
+        어느 파일이 누구 것인지 가릴 수 없다 → 정리 후보를 내지 않고 이유를 말한다. 저장은 그대로 된다. 경로는 글자만 견준다(끝의 /Render·대소문자·구분자 무시)."""
+        render, cut, patches = self._mirror_fixture()
+        with db.get_connection() as conn:
+            conn.execute("INSERT INTO project(id, name, kind, archived) VALUES('p2','둘째 프로젝트','team',0)")
+            conn.execute("UPDATE project SET render_root_path=? WHERE id='p1'", (str(render.parent),))
+            conn.execute("UPDATE project SET render_root_path=? WHERE id='p2'", (str(render).upper().replace("\\", "/") + "/",))
+        confirm = [{"folder_path": "ep/c1", "filename": "c1_oldfinal0000.png"}]
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            scan = manage_router.save_finals_compare("p1", mock.Mock())
+            out = asyncio.run(manage_router.save_finals_mirror("p1", manage_router.MirrorIn(confirm=confirm), mock.Mock()))
+        self.assertEqual(scan["extra"], [])
+        self.assertIn("다른 프로젝트가 1개", scan["cleanup_blocked"])
+        self.assertNotIn("둘째 프로젝트", scan["cleanup_blocked"])  # 이름은 내보내지 않는다 — 보는 사람에게 안 보이는 프로젝트일 수 있다
+        self.assertEqual(len(scan["to_add"]), 3)  # 저장할 것은 그대로 보인다
+        self.assertEqual((out["saved"], out["moved"]), (3, []))
+        self.assertTrue((cut / "c1_oldfinal0000.png").is_file())
+        with db.get_connection() as conn:
+            conn.execute("UPDATE project SET render_root_path='Z:/elsewhere' WHERE id='p2'")
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            alone = manage_router.save_finals_compare("p1", mock.Mock())
+        self.assertIsNone(alone["cleanup_blocked"])
+        self.assertIn("c1_oldfinal0000.png", {e["filename"] for e in alone["extra"]})  # 혼자 쓰는 폴더면 종전처럼 찾는다
+
+    def test_ledger_evidence_has_no_row_limit(self):
+        """증거 조회는 이력 표시용 상한(list_exports)을 쓰지 않는다 — 대장이 5,000줄을 넘어도 오래된 저장 자리가 '우리 파일'로 남는다."""
+        render, cut, patches = self._mirror_fixture()
+        with db.get_connection() as conn:
+            conn.execute("UPDATE final_export SET exported_at='2000-01-01 00:00:00' WHERE gen_id='oldfinal0000-full'")
+            conn.executemany("INSERT INTO final_export(gen_id, dest_path, project_id) VALUES(?,?, 'p1')", [(f"filler{i:06d}", f"X:/elsewhere/f{i}.png") for i in range(5001)])
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            out = manage_router.save_finals_compare("p1", mock.Mock())
+        self.assertIn("c1_oldfinal0000.png", {e["filename"] for e in out["extra"]})
+
+    def test_status_builds_destinations_without_touching_the_disk(self):
+        """탭을 열 때 — 대상 수백 건마다 경로를 디스크에 묻지 않는다(2026-09-21 실측: safe_dest 408건 = 228ms, NAS 면 건마다 왕복)."""
+        render = Path(self.tmp.name) / "Render"
+        render.mkdir()
+        dest = (render / "ep" / "c1" / "c1_final0000001.png").resolve()
+        repo_manage.record_export("final0000001", str(dest), "p1")
+        real = manage_router._save_finals_facts
+
+        def with_bad_path(project_id, kind="final"):
+            facts, outdated = real(project_id, kind)
+            bad = {"gen_id": "evil00000001", "kind": kind, "folder_path": "../evil", "filename": "x.png", "reason": None}
+            return ([*facts, bad] if kind == "final" else facts), outdated
+
+        media = Path(self.tmp.name) / "media"
+        media.mkdir()
+        for gid in ("final0000001", "shared000001", "held00000001"):
+            (media / f"{gid}.png").write_bytes(b"src")
+        state = {"render_path": str(render), "error": None}
+        blocked = AssertionError("상태 조회가 대상마다 디스크에 경로를 물었다")
+        with mock.patch.object(project_folders, "render_root_state", return_value=state), mock.patch.object(manage_router, "_require_project_read"), \
+                mock.patch.object(manage_router, "MEDIA_DIR", media), mock.patch.object(manage_router, "_save_finals_facts", side_effect=with_bad_path), \
+                mock.patch.object(project_folders, "safe_dest", side_effect=blocked), mock.patch.object(project_folders, "safe_join", side_effect=blocked):
+            targets ={t["gen_id"]: t for t in manage_router.save_finals_status("p1", mock.Mock())["targets"]}
+        self.assertEqual((targets["final0000001"]["saved"], bool(targets["final0000001"]["saved_at"])), (True, True))
+        self.assertEqual((targets["shared000001"]["saved"], targets["shared000001"]["saved_at"]), (False, None))
+        self.assertEqual(targets["evil00000001"]["reason"], "경로 안전성 위반")  # 글자 검증은 그대로다
+
+    def test_ledger_dest_validates_exactly_like_safe_dest(self):
+        render = (Path(self.tmp.name) / "Render").resolve()
+        cases = [("ep/c1", "a.png"), ("ep\\c1/", "a.png"), ("ep/c1/shared", "한글 이름.mp4"), ("", "a.png"), ("../x", "a.png"), ("ep/./c1", "a.png"), ("Z:/ep", "a.png"),
+                 ("/ep/c1", "a.png"), ("ep/c1", ""), ("ep/c1", "../a.png"), ("ep/c1", "b/a.png"), ("ep/c1", "b\\a.png")]
+        for folder, name in cases:
+            self.assertEqual(project_folders.ledger_dest(render, folder, name), project_folders.safe_dest(render, folder, name), (folder, name))
 
 
 if __name__ == "__main__":

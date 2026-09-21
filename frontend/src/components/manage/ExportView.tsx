@@ -129,6 +129,9 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const alreadySaved = { final: count("final", true), shared: count("shared", true) };
   const sharedSupported = status?.shared_supported === true; // 서버가 된다고 한 때만 켠다 — 구버전·조회 실패면 공유 저장만 꺼진다
   const blocked = targets.filter((t) => t.reason); // 저장 불가(사유 있음)
+  // 렌더 폴더 미연결은 위 판에 이미 크게 나온다 — 대상 수백 줄에 같은 글을 되풀이하지 않는다(개별 사유는 그대로 보인다).
+  const RENDER_UNLINKED = "렌더 폴더 미연결";
+  const commonReason = blocked.length > 0 && blocked.every((t) => t.reason === blocked[0].reason) ? blocked[0].reason : null;
   // 저장 이력은 렌더 폴더 아래 부분만 보여 준다 — 반 폭 칸에서 파일 이름이 잘리지 않게(전체 경로는 툴팁).
   const underRender = (path: string) => {
     const root = renderPath.replace(/[\\/]+$/, "");
@@ -177,16 +180,19 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const onMirror = async (allowMany: boolean) => {
     if (!canSave || !compare) return;
     const confirm = compare.extra.map((item) => ({ folder_path: item.folder_path, filename: item.filename }));
+    const startedPid = pid; // 실행 중에는 프로젝트 선택을 잠그지만, 끝난 결과는 시작한 프로젝트의 화면에만 반영한다(2026-09-21 실측 기록 A3)
     setAsk(null);
     setBusy(true);
     setResult(null);
     setErr(null);
     try {
-      const r = await manageApi.saveFinalsMirror(pid, confirm, allowMany);
+      const r = await manageApi.saveFinalsMirror(startedPid, confirm, allowMany);
+      if (pidRef.current !== startedPid) return;
       dropCompare();
       setResult(r);
-      loadStatus(pid);
+      loadStatus(startedPid);
     } catch (e: any) {
+      if (pidRef.current !== startedPid) return;
       if (isHttpStatus(e, 409) && !allowMany && String(e?.message || "").includes("정리할 파일")) setAsk({ action: "mirror", many: true });
       else {
         dropCompare();
@@ -199,16 +205,18 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
 
   const onSave = async (kind: SaveFinalsKind | "all") => {
     if (!canSave) return;
+    const startedPid = pid;
     dropCompare(); // 저장하면 폴더가 달라진다 — 다시 비교해야 미러·업데이트가 켜진다
     setBusy(true);
     setResult(null);
     setErr(null);
     try {
-      const r = await manageApi.saveFinals(pid, undefined, kind);
+      const r = await manageApi.saveFinals(startedPid, undefined, kind);
+      if (pidRef.current !== startedPid) return;
       setResult(r);
-      loadStatus(pid); // 저장 후 대상·이력 갱신
+      loadStatus(startedPid); // 저장 후 대상·이력 갱신
     } catch (e: any) {
-      setErr(String(e?.message || e));
+      if (pidRef.current === startedPid) setErr(String(e?.message || e));
     } finally {
       setBusy(false);
     }
@@ -235,6 +243,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
               <select
                 className="manage-proj-select"
                 value={pid}
+                disabled={busy}
                 onChange={(e) => setPid(e.target.value)}
               >
                 {!projects.length && <option value="">(프로젝트 없음)</option>}
@@ -285,7 +294,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
             <div>
               <span className="export-kind-label">저장 불가</span>
               <b className={blocked.length ? "bad" : "zero"}>{blocked.length}</b>
-              <span>원본 없음 등</span>
+              <span>{commonReason ?? "원본 없음 등"}</span>
             </div>
           </div>
 
@@ -508,7 +517,8 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                 </div>
               ) : null,
             )}
-            {!compare.to_add.length && !compare.extra.length && <div className="export-hint export-compare-group">폴더가 프로그램과 같습니다.</div>}
+            {compare.cleanup_blocked && <div className="export-target-err export-compare-group">⚠ {compare.cleanup_blocked}</div>}
+            {!compare.to_add.length && !compare.extra.length && !compare.cleanup_blocked && <div className="export-hint export-compare-group">폴더가 프로그램과 같습니다.</div>}
           </div>
         )}
 
@@ -559,7 +569,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                                 <td>{t.cut || "—"}</td>
                                 <td className="file" title={t.filename || undefined}>
                                   <code>{t.filename || t.gen_id.slice(0, 8)}</code>
-                                  {t.reason && <span className="export-target-reason">{t.reason}</span>}
+                                  {t.reason && t.reason !== RENDER_UNLINKED && <span className="export-target-reason">{t.reason}</span>}
                                 </td>
                                 <td className="dim">{media ? MEDIA_LABEL[media] : "—"}</td>
                                 <td>

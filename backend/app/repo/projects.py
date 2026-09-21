@@ -404,6 +404,12 @@ def get_render_root(pid: str) -> str:
         return (row["render_root_path"] if row and row["render_root_path"] else "") or ""
 
 
+def list_id_names() -> list[tuple[str, str]]:
+    """모든 프로젝트의 (id, 이름) — 보관된 것 포함(렌더 폴더의 파일은 보관해도 남는다)."""
+    with get_connection() as conn:
+        return [(r["id"], r["name"]) for r in conn.execute("SELECT id, name FROM project")]
+
+
 def set_render_root(pid: str, path: Optional[str]) -> None:
     """프로젝트의 팀 공유 렌더 폴더 경로 저장(서버 본체·비프록시). 빈 값=연결 해제(NULL)."""
     p = (path or "").strip()

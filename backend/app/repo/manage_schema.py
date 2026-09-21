@@ -100,6 +100,15 @@ _SCHEMA = (
         dest_path   TEXT NOT NULL,
         exported_at TEXT NOT NULL DEFAULT (datetime('now'))
     )""",
+    # 옛 저장 자리 — final_export 는 생성물당 한 줄이라 다시 저장하면 경로가 덮어써진다. 컷 폴더가 바뀐 생성물의
+    # 옛 파일을 비교·미러가 찾으려면 그 폴더를 알아야 한다(어느 폴더를 훑을지만 정한다 — 파일을 옮길 근거가 아니다).
+    # 영구 삭제의 고아 정리 대상이 아니다: 생성물이 지워져도 NAS 에 남은 우리 파일을 찾을 마지막 단서다.
+    """CREATE TABLE IF NOT EXISTS final_export_old (
+        dest_path  TEXT PRIMARY KEY,
+        gen_id     TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        noted_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
     """CREATE TABLE IF NOT EXISTS telemetry_outbox (
         local_gen_id     TEXT PRIMARY KEY,
         dirty_at         TEXT NOT NULL DEFAULT (datetime('now')),
