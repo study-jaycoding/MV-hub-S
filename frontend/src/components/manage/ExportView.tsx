@@ -1,9 +1,11 @@
 // 완료 탭 — 완료 작업의 최종본(★)만 렌더 폴더 경로 구조 그대로 물리 저장.
 // 프로젝트를 고르면 그 프로젝트의 렌더 폴더 연결 상태를 확인하고, 버튼으로 저장을 실행한다.
 // 저장은 로컬 전용(이 PC 디스크). 이미 저장된 건 건너뛴다(멱등).
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
+import { fmtWhen } from "../../lib/format";
 import { isHttpStatus } from "../../lib/http";
+import { referenceMediaTypeFromName } from "../../lib/media";
 import { reconcileArrayState, reconcileValueState } from "../../lib/stateReconciliation";
 import {
   manageApi,
@@ -11,7 +13,11 @@ import {
   type SaveFinalsKind,
   type SaveFinalsResult,
   type SaveFinalsStatus,
+  type SaveFinalsTarget,
 } from "../../lib/manageApi";
+
+type TargetFilter = "all" | SaveFinalsKind | "new" | "saved" | "bad";
+const MEDIA_LABEL = { image: "이미지", video: "영상", audio: "소리" } as const;
 
 // 비교 = 마주 도는 두 화살표 · 미러 = 굵은 오른쪽 화살표 · 업데이트 = 꺾쇠(Jay 지정 2026-09-21).
 const ICON = { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
@@ -44,6 +50,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   // 비교 결과 — 미러·업데이트는 이것이 있을 때만 켜진다. 프로젝트를 바꾸거나 저장·새로고침으로 상태가 달라지면 버린다(낡은 비교로 실행 금지).
   const [compare, setCompare] = useState<SaveFinalsCompare | null>(null);
   const [comparing, setComparing] = useState(false);
+  const [filter, setFilter] = useState<TargetFilter>("all"); // 저장 대상 표의 거르기 단추
   // 확인 창 — 단추 다섯 개 모두 '~하시겠습니까? 예/아니오'를 거친다(Jay 2026-09-21). many = 미러에서 정리가 남는 것보다 많다는 서버의 재확인 요청.
   const [ask, setAsk] = useState<null | { action: SaveFinalsKind | "compare" | "update" | "mirror"; many?: boolean }>(null);
   const compareRequestRef = useRef(0);
@@ -96,6 +103,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   useEffect(() => {
     setResult(null);
     setErr(null);
+    setFilter("all"); // 앞 프로젝트에서 고른 거르기가 남아 새 프로젝트의 표가 비어 보이지 않게
     dropCompare();
     loadStatus(pid);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -127,6 +135,28 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
     return root && path.toLowerCase().startsWith(root.toLowerCase()) ? path.slice(root.length).replace(/^[\\/]+/, "") || path : path;
   };
   const canSave = !!pid && !!renderPath && !status?.error && !serverOutdated && !busy;
+
+  // 저장 대상 표 — 거르기 단추 하나만 켜지고, 줄은 씬(폴더의 앞부분)별로 묶는다. 컷 = 폴더의 마지막 마디.
+  const stateOf = (t: SaveFinalsTarget) => (t.reason ? "bad" : t.saved ? "saved" : "new");
+  const FILTERS: { key: TargetFilter; label: string; count: number }[] = [
+    { key: "all", label: "전체", count: targets.length },
+    { key: "final", label: "★ 최종", count: targets.filter((t) => kindOf(t) === "final").length },
+    { key: "shared", label: "공유", count: targets.filter((t) => kindOf(t) === "shared").length },
+    { key: "new", label: "새로 저장", count: pending.final + pending.shared },
+    { key: "saved", label: "이미 저장", count: alreadySaved.final + alreadySaved.shared },
+    { key: "bad", label: "저장 불가", count: blocked.length },
+  ];
+  const groups = new Map<string, (SaveFinalsTarget & { cut: string })[]>();
+  for (const t of targets) {
+    if (filter !== "all" && filter !== kindOf(t) && filter !== stateOf(t)) continue;
+    const parts = (t.folder_path || "").split(/[\\/]+/).filter(Boolean);
+    const cut = parts.pop() ?? "";
+    const scene = parts.join("/") || (cut ? "(최상위)" : "폴더 없음");
+    groups.set(scene, [...(groups.get(scene) ?? []), { ...t, cut }]);
+  }
+  const sceneGroups = [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+    .map(([scene, rows]) => [scene, rows.sort((a, b) => a.cut.localeCompare(b.cut, undefined, { numeric: true }) || kindOf(a).localeCompare(kindOf(b)))] as const);
 
   const onCompare = async () => {
     if (!canSave || comparing) return;
@@ -321,9 +351,9 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
               업데이트{compare ? ` (+${compare.to_add.length})` : ""}
             </button>
             <span className="export-hint export-hint-two">
-              <b>미러</b>는 똑같이 맞춘다.
+              <b>미러</b> - 실시간 동기화 (삭제 및 변경 가능)
               <br />
-              <b>업데이트</b>는 추가된 것만 올린다.
+              <b>업데이트</b> - 추가분 누적 동기화
             </span>
           </div>
           <span className="export-hint">{busy ? "저장 중…" : comparing ? "비교하는 중…" : "이미 저장된 파일은 건너뜁니다."}</span>
@@ -477,25 +507,78 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
           </div>
         )}
 
-        <div className="export-side">
+        <div className={"export-side" + (status && status.history.length > 0 ? " two" : "")}>
           <div className="export-history">
-            <div className="export-history-head">저장 대상 ({targets.length})</div>
-            {targets.length ? (
-              <ul className="export-history-list export-target-list">
-                {targets.map((t) => (
-                  <li key={t.gen_id}>
-                    <code className="export-history-path">
-                      {[t.folder_path && kindOf(t) === "shared" ? t.folder_path + "/shared" : t.folder_path, t.filename].filter(Boolean).join(" · ") ||
-                        t.gen_id.slice(0, 8)}
-                    </code>
-                    {t.reason && <span className="export-target-reason">{t.reason}</span>}
-                    <span className={"export-badge kind-" + kindOf(t)}>{kindOf(t) === "final" ? "최종" : "공유"}</span>
-                    <span className={"export-badge " + (t.reason ? "bad" : t.saved ? "done" : "new")}>
-                      {t.reason ? "저장 불가" : t.saved ? "이미 저장" : "새로 저장"}
-                    </span>
-                  </li>
+            <div className="export-history-head export-filter-head">
+              <span>저장 대상 ({targets.length})</span>
+              {targets.length > 0 &&
+                FILTERS.map((f, i) => (
+                  <Fragment key={f.key}>
+                    {i === 3 && <i className="export-filter-sep" />}
+                    <button type="button" className={"export-filter" + (filter === f.key ? " on" : "")} aria-pressed={filter === f.key} onClick={() => setFilter(f.key)}>
+                      {f.label} {f.count}
+                    </button>
+                  </Fragment>
                 ))}
-              </ul>
+            </div>
+            {targets.length ? (
+              <div className="export-table-body">
+                <div className="export-table-wrap">
+                  <table className="export-table">
+                    <thead>
+                      <tr>
+                        <th>구분</th>
+                        <th>컷</th>
+                        <th className="file">파일 이름</th>
+                        <th>종류</th>
+                        <th>상태</th>
+                        <th>저장한 때</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sceneGroups.map(([scene, rows]) => (
+                        <Fragment key={scene}>
+                          <tr className="export-group">
+                            <td colSpan={6}>
+                              {scene}
+                              <span>{rows.length}개</span>
+                            </td>
+                          </tr>
+                          {rows.map((t) => {
+                            const media = referenceMediaTypeFromName(t.filename);
+                            return (
+                              <tr key={t.gen_id}>
+                                <td>
+                                  <span className={"export-badge kind-" + kindOf(t)}>{kindOf(t) === "final" ? "최종" : "공유"}</span>
+                                </td>
+                                <td>{t.cut || "—"}</td>
+                                <td className="file" title={t.filename || undefined}>
+                                  <code>{t.filename || t.gen_id.slice(0, 8)}</code>
+                                  {t.reason && <span className="export-target-reason">{t.reason}</span>}
+                                </td>
+                                <td className="dim">{media ? MEDIA_LABEL[media] : "—"}</td>
+                                <td>
+                                  <span className={"export-badge " + (t.reason ? "bad" : t.saved ? "done" : "new")}>
+                                    {t.reason ? "저장 불가" : t.saved ? "이미 저장" : "새로 저장"}
+                                  </span>
+                                </td>
+                                <td className="dim">{t.saved_at ? fmtWhen(t.saved_at) : "—"}</td>
+                              </tr>
+                            );
+                          })}
+                        </Fragment>
+                      ))}
+                      {!sceneGroups.length && (
+                        <tr>
+                          <td colSpan={6} className="export-table-empty">
+                            해당하는 것이 없습니다.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             ) : status && !serverOutdated ? (
               <div className="export-hint">저장할 최종본이 없습니다.</div>
             ) : null}
@@ -507,7 +590,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
               <ul className="export-history-list">
                 {status.history.map((h) => (
                   <li key={h.gen_id} className={h.exists ? "" : "missing"}>
-                    <span className="export-history-when">{h.exported_at}</span>
+                    <span className="export-history-when">{fmtWhen(h.exported_at)}</span>
                     <code className="export-history-path" title={h.dest_path}>{underRender(h.dest_path)}</code>
                     {!h.exists && <span className="export-history-gone">파일 없음</span>}
                   </li>

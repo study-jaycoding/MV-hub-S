@@ -573,7 +573,12 @@ tr.work-row-archived td { opacity: .62; }
 
 /* 완료 탭 — 완료본 렌더폴더 저장 */
 /* 완료 탭 — 위: 한 장의 판(프로젝트·저장 위치 → 건수 → 저장, 줄마다 구분선) · 아래: 저장 대상 | 저장 이력(좁으면 위아래) */
-.export-cols { display: flex; flex-direction: column; gap: 18px; }
+/* 완료 탭은 창 높이를 채운다 — 저장 대상 표가 창 바닥까지 늘어난다(Jay 2026-09-21). 내용이 창보다 길면 줄어들지 않고 창이 스크롤된다(flex-shrink 0). */
+.manage-window:has(> .export-root) { display: flex; flex-direction: column; }
+.manage-window:has(> .export-root) > .manage-tabs { flex: 0 0 auto; }
+.export-root { flex: 1 0 auto; width: 100%; box-sizing: border-box; display: flex; flex-direction: column; padding-bottom: 18px; }
+.export-cols { flex: 1 0 auto; display: flex; flex-direction: column; gap: 18px; }
+.export-cols > * { flex: 0 0 auto; }
 .export-card { display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
 .export-card > * { padding: 16px 18px; }
 .export-card > * + * { border-top: 1px solid var(--border); }
@@ -613,7 +618,12 @@ tr.work-row-archived td { opacity: .62; }
 .export-pill.unk { background: rgba(217,138,74,.16); color: #d98a4a; }
 .export-sign { flex: 0 0 auto; width: 14px; text-align: center; font-weight: 800; }
 .export-sign.add { color: var(--accent); } .export-sign.rm { color: #ff6277; }
-.export-side { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 16px; align-items: start; min-width: 0; }
+/* 아래 = 저장 대상 표 | 저장 이력(이력이 있을 때만 two · 좁으면 위아래). 첫 줄(표)이 남는 높이를 다 가진다. */
+.export-cols > .export-side { flex: 1 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 16px; min-width: 0; }
+@media (min-width: 860px) {
+  .export-side.two { grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr); }
+  .export-side.two .export-history-list { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+}
 .export-desc { font-size: 12.5px; line-height: 1.55; color: var(--muted); margin: 5px 0 0; }
 .export-desc code { padding: 1px 5px; border-radius: 4px; background: rgba(127,127,127,.15); font-size: 12px; }
 .export-target { display: flex; flex-direction: column; gap: 5px; }
@@ -656,7 +666,7 @@ tr.work-row-archived td { opacity: .62; }
 .export-err-list code { padding: 0 4px; border-radius: 3px; background: rgba(127,127,127,.18); }
 
 /* 완료 탭 — 저장 대상 목록 + 저장 이력(같은 줄 모양) */
-.export-history { display: flex; flex-direction: column; gap: 6px; }
+.export-history { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
 .export-target-list { max-height: 340px; overflow-y: auto; }
 .export-target-reason { flex: 0 0 auto; color: #d98a4a; }
 .export-badge { flex: 0 0 auto; font-size: 10.5px; font-weight: 800; padding: 2px 7px; border-radius: 6px; background: rgba(127,127,127,.18); color: var(--muted); }
@@ -672,6 +682,26 @@ tr.work-row-archived td { opacity: .62; }
 .export-history-when { flex: 0 0 auto; opacity: .6; font-variant-numeric: tabular-nums; }
 .export-history-path { flex: 1 1 auto; min-width: 0; word-break: break-all; opacity: .85; }
 .export-history-gone { flex: 0 0 auto; color: #d98a4a; font-weight: 700; }
+/* 저장 대상 표(작업 탭 같은 격자선) — 표는 제 칸을 절대 위치로 채워서 408줄이어도 판의 높이를 밀어내지 않는다. 최소 340px(종전 목록 높이). */
+.export-filter-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; opacity: 1; }
+.export-filter-head > span { opacity: .6; margin-right: 6px; }
+.export-filter { padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--muted); font: inherit; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; cursor: pointer; }
+.export-filter.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.export-filter-sep { width: 1px; height: 14px; margin: 0 3px; background: var(--border); }
+.export-table-body { flex: 1 1 auto; position: relative; min-height: 340px; }
+.export-table-wrap { position: absolute; inset: 0; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+.export-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+.export-table th, .export-table td { padding: 6px 10px; text-align: center; white-space: nowrap; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.export-table th:last-child, .export-table td:last-child { border-right: 0; }
+.export-table th { position: sticky; top: 0; z-index: 1; background: #101214; color: var(--muted); font-size: 11.5px; font-weight: 700; }
+.export-table .file { text-align: left; }
+.export-table td.file { width: 99%; max-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.export-table td.dim { color: var(--muted); }
+.export-table .export-target-reason { display: block; margin-top: 2px; font-size: 11px; }
+.export-table tbody tr:not(.export-group):hover td { background: rgba(127,127,127,.07); }
+.export-group td { padding: 5px 10px; text-align: left; font-size: 11.5px; font-weight: 700; background: #0c0e10; }
+.export-group td span { margin-left: 8px; font-weight: 400; color: var(--muted); }
+.export-table td.export-table-empty { padding: 28px; color: var(--muted); }
 
 /* ── 통합 대시보드 (요약+팀전체) ─────────────────────────────────────────── */
 .dash-view { padding: 12px; display: flex; flex-direction: column; gap: 12px; }

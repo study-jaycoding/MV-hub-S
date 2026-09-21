@@ -807,17 +807,23 @@ def record_export(gen_id: str, dest_path: str, project_id: Optional[str] = None)
         )
 
 
-def export_dest_paths(gen_ids: "list[str] | set[str]") -> dict[str, str]:
-    """이 PC 의 저장 대장에서 gen_id → 마지막 저장 경로. '이 파일은 우리가 여기 저장했다'의 가장 싼 증거."""
+def export_records(gen_ids: "list[str] | set[str]") -> dict[str, tuple[str, str]]:
+    """이 PC 의 저장 대장에서 gen_id → (마지막 저장 경로, 저장 시각 UTC). 완료 탭 표의 '저장한 때'는 여기서 온다
+    (저장 이력 list_exports 는 최근 20건뿐이라 대상 수백 건을 못 채운다)."""
     ids = list(dict.fromkeys(g for g in (gen_ids or []) if g))
-    out: dict[str, str] = {}
+    out: dict[str, tuple[str, str]] = {}
     with get_connection() as conn:
         _ensure_schema(conn)
         for id_batch in _batched(ids):
             ph = ",".join("?" * len(id_batch))
-            for r in conn.execute(f"SELECT gen_id, dest_path FROM final_export WHERE gen_id IN ({ph})", list(id_batch)):
-                out[r["gen_id"]] = r["dest_path"]
+            for r in conn.execute(f"SELECT gen_id, dest_path, exported_at FROM final_export WHERE gen_id IN ({ph})", list(id_batch)):
+                out[r["gen_id"]] = (r["dest_path"], r["exported_at"])
     return out
+
+
+def export_dest_paths(gen_ids: "list[str] | set[str]") -> dict[str, str]:
+    """이 PC 의 저장 대장에서 gen_id → 마지막 저장 경로. '이 파일은 우리가 여기 저장했다'의 가장 싼 증거."""
+    return {gen_id: record[0] for gen_id, record in export_records(gen_ids).items()}
 
 
 def forget_exports(gen_ids: "list[str] | set[str]") -> None:

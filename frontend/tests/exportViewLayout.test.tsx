@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // 완료 탭(2026-09-21 Jay 확정: 위 = 한 장의 판 · 아래 = 저장 대상 | 저장 이력) — 프로젝트 고르기는 머리글이 아니라 판 안에 있고,
-// 저장은 공유 저장 · 최종 저장(골드) 두 단추로 나뉜다. 저장 대상은 줄마다 종류·상태·저장 불가 사유를, 이력은 렌더 폴더 아래 경로만 보여 준다.
+// 저장은 공유 저장 · 최종 저장(골드) 두 단추로 나뉜다. 저장 대상은 씬별로 묶은 격자선 표(구분·컷·파일 이름·종류·상태·저장한 때)이고 거르기 단추가 붙는다. 이력은 렌더 폴더 아래 경로만 보여 준다.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -30,17 +30,25 @@ const texts = (selector: string) => [...host.querySelectorAll(selector)].map((el
 const answer = async (label: "예" | "아니오") => { await act(async () => { [...host.querySelectorAll<HTMLButtonElement>(".export-modal button")].find((item) => item.textContent!.startsWith(label))!.click(); }); };
 const button = (label: string) => [...host.querySelectorAll<HTMLButtonElement>(".export-act button")].find((item) => item.textContent!.startsWith(label))!;
 
-it("프로젝트 고르기는 판 안에 있고, 저장 대상 줄마다 종류·상태·사유가 붙는다", async () => {
+it("프로젝트 고르기는 판 안에 있고, 저장 대상은 씬별로 묶인 표에 종류·상태·사유가 붙는다", async () => {
   status = { render_path: "\\\\NAS\\proj\\Render", error: null, shared_supported: true,
-    targets: [target("c0030", false, null), target("c0010", true, null), target("c0050", false, "원본 파일 없음", "final", ""), target("c0040", false, null, "shared"), target("c0041", false, null, "shared")],
+    targets: [target("c0030", false, null), { ...target("c0010", true, null), saved_at: "2026-09-18 05:02:00" }, target("c0050", false, "원본 파일 없음", "final", ""), target("c0040", false, null, "shared", "c0040.png"), { ...target("s0010", false, null, "shared"), folder_path: "ep002/sq01/s0010" }],
     history: [{ gen_id: "h1", dest_path: "\\\\NAS\\proj\\Render\\ep001\\c0010\\c0010.mp4", exported_at: "2026-09-18 14:02", exists: true }, { gen_id: "h2", dest_path: "Z:/other/x.mp4", exported_at: "2026-09-18 14:02", exists: false }] };
   await mount();
   expect(host.querySelector(".manage-head select")).toBeNull();
   expect(host.querySelector(".export-card select.manage-proj-select")).not.toBeNull();
   expect(texts(".export-counts b")).toEqual(["1", "1", "2", "0", "1"]); // 최종(새로·이미) · 공유(새로·이미) · 저장 불가
-  expect(texts(".export-target-list .export-badge:not([class*=kind-])")).toEqual(["새로 저장", "이미 저장", "저장 불가", "새로 저장", "새로 저장"]);
-  expect(texts(".export-target-list .export-badge[class*=kind-]")).toEqual(["최종", "최종", "최종", "공유", "공유"]);
-  expect(texts(".export-target-list code")).toEqual(["ep001/c0030 · c0030.mp4", "ep001/c0010 · c0010.mp4", "ep001/c0050", "ep001/c0040/shared · c0040.mp4", "ep001/c0041/shared · c0041.mp4"]);
+  // 씬(폴더의 앞부분)별 묶음 줄 → 그 안은 컷 순서. 컷 = 폴더의 마지막 마디.
+  expect(texts(".export-group td")).toEqual(["ep0014개", "ep002/sq011개"]);
+  expect(texts(".export-table tbody tr:not(.export-group) td:nth-child(2)")).toEqual(["c0010", "c0030", "c0040", "c0050", "s0010"]);
+  expect(texts(".export-table .export-badge:not([class*=kind-])")).toEqual(["이미 저장", "새로 저장", "새로 저장", "저장 불가", "새로 저장"]);
+  expect(texts(".export-table .export-badge[class*=kind-]")).toEqual(["최종", "최종", "공유", "최종", "공유"]);
+  expect(texts(".export-table code")).toEqual(["c0010.mp4", "c0030.mp4", "c0040.png", "c0050", "s0010.mp4"]);
+  expect(texts(".export-table tbody tr:not(.export-group) td:nth-child(4)")).toEqual(["영상", "영상", "이미지", "—", "영상"]);
+  const when = texts(".export-table tbody tr:not(.export-group) td:nth-child(6)");
+  expect(when.slice(1)).toEqual(["—", "—", "—", "—"]);
+  expect(when[0]).not.toBe("—"); // 저장 대장의 시각(UTC)을 이 PC 의 시각으로 보여 준다
+  expect(when[0]).not.toContain("05:02");
   expect(texts(".export-target-reason")).toEqual(["원본 파일 없음"]);
   // 이력은 렌더 폴더 아래 부분만 — 윈도우 경로(역슬래시)에서도 앞의 구분자가 남지 않는다. 렌더 폴더 밖이면 전체 경로 그대로.
   expect(texts(".export-side .export-history-list:not(.export-target-list) code")).toEqual(["ep001\\c0010\\c0010.mp4", "Z:/other/x.mp4"]);
@@ -97,7 +105,7 @@ it("비교를 실행해야 미러·업데이트가 켜지고, 저장하면 다�
   expect(button("업데이트").disabled).toBe(true);
   expect(button("업데이트").title).toContain("비교를 먼저");
   expect(button("미러").disabled).toBe(true);
-  expect(host.querySelector(".export-hint-two")!.textContent).toBe("미러는 똑같이 맞춘다.업데이트는 추가된 것만 올린다.");
+  expect(host.querySelector(".export-hint-two")!.textContent).toBe("미러 - 실시간 동기화 (삭제 및 변경 가능)업데이트 - 추가분 누적 동기화");
   await act(async () => { compareButton().click(); });
   expect(host.querySelector(".export-modal h3")!.textContent).toBe("프로그램과 렌더 폴더를 비교하시겠습니까?");
   expect(saveFinalsCompare).not.toHaveBeenCalled();
@@ -160,4 +168,21 @@ it("미러 창에서 아니오를 누르면 아무것도 보내지 않는다", a
   await answer("아니오");
   expect(host.querySelector(".export-modal")).toBeNull();
   expect(saveFinalsMirror).not.toHaveBeenCalled();
+});
+
+it("거르기 단추는 하나만 켜지고, 고른 종류·상태의 줄만 남긴다", async () => {
+  status = { render_path: "R:/render", error: null, shared_supported: true, history: [],
+    targets: [target("c0030", false, null), target("c0010", true, null), target("c0050", false, "원본 파일 없음"), target("c0040", false, null, "shared")] };
+  await mount();
+  const chip = (label: string) => [...host.querySelectorAll<HTMLButtonElement>(".export-filter")].find((item) => item.textContent!.startsWith(label))!;
+  expect(texts(".export-filter")).toEqual(["전체 4", "★ 최종 3", "공유 1", "새로 저장 2", "이미 저장 1", "저장 불가 1"]);
+  expect(chip("전체").getAttribute("aria-pressed")).toBe("true");
+  await act(async () => { chip("공유").click(); });
+  expect(texts(".export-table code")).toEqual(["c0040.mp4"]);
+  expect(chip("전체").getAttribute("aria-pressed")).toBe("false");
+  await act(async () => { chip("저장 불가").click(); });
+  expect(texts(".export-table code")).toEqual(["c0050.mp4"]);
+  await act(async () => { chip("이미 저장").click(); });
+  expect(texts(".export-table code")).toEqual(["c0010.mp4"]);
+  expect(host.querySelector(".export-side")!.classList.contains("two")).toBe(false); // 이력이 없으면 표가 가로 전체를 쓴다
 });

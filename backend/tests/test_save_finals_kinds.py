@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import ExitStack
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -404,8 +405,10 @@ class SaveFinalsKindTests(unittest.TestCase):
             # 탭을 열 때: 대상마다 NAS 를 확인하지 않는다(공유본은 수백 건) — 각인도 읽지 않는다
             with mock.patch.object(manage_router, "_dest_state", side_effect=AssertionError("상태 조회가 폴더를 확인했다")), \
                     mock.patch.object(file_stamp, "read_stamp", side_effect=AssertionError("상태 조회가 각인을 읽었다")):
-                before = {t["gen_id"]: t["saved"] for t in manage_router.save_finals_status("p1", mock.Mock())["targets"]}
+                opened = manage_router.save_finals_status("p1", mock.Mock())["targets"]
+                before = {t["gen_id"]: t["saved"] for t in opened}
             self.assertEqual(before, {"final0000001": False, "shared000001": True, "held00000001": False})  # 대장 그대로(아직 폴더와 안 맞는다)
+            self.assertEqual({t["gen_id"] for t in opened if t["saved_at"]}, {"shared000001"})  # 저장한 때는 대장에 적힌 것에만 붙는다
             with mock.patch.object(file_stamp, "read_stamp", return_value={}):
                 compare = manage_router.save_finals_compare("p1", mock.Mock())
             self.assertEqual({t["gen_id"] for t in compare["to_add"]}, {"shared000001", "held00000001"})
@@ -436,6 +439,8 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertFalse((render / "ep" / "c1" / "c1_shared000001.png").exists())
         self.assertTrue(status["shared_supported"])
         self.assertEqual({(t["kind"], t["saved"]) for t in status["targets"]}, {("final", True), ("shared", True)})
+        # 표의 '저장한 때' — 대상마다 대장의 저장 시각을 함께 준다(저장 이력은 최근 20건뿐이라 표를 못 채운다)
+        self.assertTrue(all(re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", t["saved_at"]) for t in status["targets"]))
 
 
 if __name__ == "__main__":

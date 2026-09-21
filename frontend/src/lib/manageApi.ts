@@ -421,6 +421,7 @@ export interface SaveFinalsTarget {
   folder_path: string | null;
   filename: string;
   saved: boolean; // 이미 렌더폴더에 존재
+  saved_at?: string | null; // 저장 대장의 저장 시각(UTC) — 구백엔드는 없음
   reason: string | null; // null=저장 가능, 값 있으면 저장 불가 사유
 }
 

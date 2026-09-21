@@ -1846,12 +1846,12 @@ def save_finals_status(project_id: str, request: Request):
             facts = [*facts, *shared_facts]
         except HTTPException as e:
             shared_supported, shared_error = False, str(e.detail)
-    ledger = repo_manage.export_dest_paths([t["gen_id"] for t in facts])
+    ledger = repo_manage.export_records([t["gen_id"] for t in facts])
     targets: list[dict] = []
     for t in facts:
         reason = t.get("reason")
         filename = t.get("filename") or ""
-        saved = False
+        saved, saved_at = False, None
         # 저장 불가 사유를 미리 알려 헛클릭 방지(POST 와 같은 판정 순서).
         if not reason:
             if render is None:
@@ -1863,8 +1863,9 @@ def save_finals_status(project_id: str, request: Request):
                 if dest is None:
                     reason = "경로 안전성 위반"
                 else:
-                    recorded = ledger.get(t["gen_id"])
+                    recorded, recorded_at = ledger.get(t["gen_id"], ("", None))
                     saved = bool(recorded) and Path(recorded) == dest
+                    saved_at = recorded_at if saved else None
         targets.append(
             {
                 "gen_id": t["gen_id"],
@@ -1872,6 +1873,7 @@ def save_finals_status(project_id: str, request: Request):
                 "folder_path": t.get("folder_path"),
                 "filename": filename,
                 "saved": saved,
+                "saved_at": saved_at,  # 대장의 저장 시각(UTC) — 표의 '저장한 때'
                 "reason": reason,  # None=저장 가능, 값 있으면 저장 불가 사유
             }
         )
