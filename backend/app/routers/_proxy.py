@@ -510,6 +510,7 @@ _LOCAL_EXACT = frozenset(
         "/api/backup",
         "/api/facets",     # 필터 facet(컬러/태그/생성자) — my=로컬, team=핸들러 프록시
         "/api/cache-all",  # 전 generation 소스·결과물을 이 PC 디스크로 byte-cache(출처 영속화) — 로컬 실행(서버 디스크 대상 아님)
+        "/api/manage/save-finals/mirror",  # 미러도 이 PC 의 디스크를 옮긴다 — 이 경로만
         "/api/manage/save-finals/compare",  # 비교도 이 PC 의 디스크를 본다 — 이 경로만(접두를 통째로 로컬로 돌리면 targets·content 위임이 깨진다)
         "/api/manage/save-finals",  # 완료본을 이 PC 렌더 폴더(Z:\…)에 저장 — 반드시 로컬 실행(서버엔 디스크 없음)
         # ★ /api/auth/config 만 로컬(게이트가 auth_enabled 로 ServerLoginScreen 판정).

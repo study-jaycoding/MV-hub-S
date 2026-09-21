@@ -591,6 +591,14 @@ tr.work-row-archived td { opacity: .62; }
 .export-ghost-btn { display: inline-flex; align-items: center; gap: 7px; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border); background: #17191b; color: var(--text); font-size: 13.5px; font-weight: 700; cursor: pointer; }
 .export-ghost-btn svg { width: 14px; height: 14px; }
 .export-ghost-btn.danger { border-color: rgba(255,98,119,.45); }
+.export-ghost-btn.danger.strong { border-color: #ff6277; color: #ff6277; }
+/* 미러 확인 창 */
+.export-modal { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 18px; background: rgba(0,0,0,.62); }
+.export-modal-box { width: min(560px, 100%); max-height: 80vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 18px 20px; border: 1px solid rgba(255,255,255,.16); border-radius: 14px; background: #1b1d22; box-shadow: 0 20px 60px rgba(0,0,0,.7); }
+.export-modal-box h3 { margin: 0; font-size: 15px; }
+.export-modal-box p { margin: 0; font-size: 12.5px; line-height: 1.6; color: #c9ccd3; }
+.export-modal-box b.add { color: var(--accent); } .export-modal-box b.rm { color: #ff6277; }
+.export-modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .export-icon-btn:disabled, .export-ghost-btn:disabled { opacity: .4; cursor: not-allowed; }
 .export-hint-two { line-height: 1.55; } .export-hint-two b { color: var(--text); font-weight: 700; }
 /* 비교 결과 판 */

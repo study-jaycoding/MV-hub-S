@@ -1479,12 +1479,13 @@ def _save_finals_targets_facts(project_id: str, kind: str = "final") -> list[dic
             reason = "폴더 경로 없음"
         elif not file_path:
             reason = "원본 파일 없음"
-        elif not _export_source(file_path, f.get("source_url")):
-            reason = "원본 파일 없음(다시 받을 주소도 없음)"  # 누르기 전에 알린다 — 종전엔 저장을 눌러야 "로컬 원본 없음"이 나왔다
         else:
             filename = project_folders.export_filename(
                 fp, f["gen_id"], file_path, f.get("media_type")
             )
+            if not _export_source(file_path, f.get("source_url")):
+                # 누르기 전에 알린다(종전엔 저장을 눌러야 "로컬 원본 없음"이 나왔다). 이름은 그대로 준다 — 이미 저장돼 있던 파일을 미러가 지키려면 목적지를 알아야 한다.
+                reason = "원본 파일 없음(다시 받을 주소도 없음)"
         out.append(
             {
                 "gen_id": f["gen_id"],
@@ -1593,37 +1594,37 @@ def _save_finals_facts(project_id: str, kind: str = "final") -> tuple[list[dict]
     return _save_finals_targets_facts(project_id, kind), False
 
 
-@router.get("/save-finals/compare")
-def save_finals_compare(project_id: str, request: Request):
-    """비교 — 프로그램이 원하는 집합(최종+공유)과 이 PC 에서 보이는 렌더 폴더를 견준다. **읽기만** 한다(설계: docs/EXPORT_SYNC_DESIGN.md).
-    로컬 전용(_LOCAL_EXACT) — 디스크는 이 PC 의 것. 파일 이름·상태가 나가므로 프로젝트 관리 권한.
-    · to_add  프로그램에는 있는데 폴더에 없다(업데이트가 저장하는 것)
-    · extra   폴더에만 남은 **우리 파일** — 이름 규칙(<시퀀스>_<gen 앞 12자>)이 맞고 각인의 gen_id 도 그 이름과 맞는데 더는 대상이 아니다
+def _save_finals_scan(project_id: str, render: Path) -> dict:
+    """프로그램이 원하는 집합(최종+공유)과 이 PC 에서 보이는 렌더 폴더를 견준다 — **읽기만** 한다(비교·미러 공용).
+    · to_add  프로그램에는 있는데 폴더에 없다
+    · extra   폴더에만 남은 **우리 파일** — 이름 규칙(<시퀀스>_<gen 앞 12자>)이 맞고, 각인이 우리 것(hub 표식)이며 각인의 gen_id 가 그 이름과 맞는다
     · unknown 그 밖의 파일(사람이 넣은 것·각인 없는 것) — 세기만 하고 절대 건드리지 않는다
-    훑는 범위는 대상·대장에 나온 폴더뿐이다(렌더 루트 전체를 재귀로 훑지 않는다)."""
-    _require_project_manage(request, project_id)
-    state = project_folders.render_root_state(project_id)
-    if state.get("error"):
-        raise HTTPException(status_code=400, detail=state["error"])
-    if not state.get("render_path"):
-        raise HTTPException(status_code=400, detail="렌더 폴더가 연결되지 않았습니다")
-    render = Path(state["render_path"])
+    훑는 범위는 대상 목적지의 폴더와 이 PC 대장에 남은 옛 저장 자리뿐이다(렌더 루트 전체를 재귀로 훑지 않는다 —
+    격리 폴더 `_mvhub_removed`·잠금 폴더 `_mvhub_sync` 는 그래서 절대 잡히지 않는다).
+    공유 쪽 조회가 실패하면 전체를 실패시킨다 — 반쪽 집합으로 '남은 것'을 잘못 세면 미러가 멀쩡한 파일을 치운다."""
     root = render.resolve()  # safe_dest 가 돌려주는 경로와 같은 꼴(매핑 드라이브는 UNC 로 풀린다)
     facts, server_outdated = _save_finals_facts(project_id)
     if server_outdated:
         raise HTTPException(status_code=400, detail="공유 서버 업데이트가 필요합니다(완료본 저장 API 없음)")
-    shared_facts, shared_outdated = _save_finals_facts(project_id, "shared")  # 실패하면 비교 전체를 실패시킨다 — 반쪽 비교로 '남은 것'을 잘못 세지 않게
+    shared_facts, shared_outdated = _save_finals_facts(project_id, "shared")
     facts = [*facts, *shared_facts]
     ledger = repo_manage.export_dest_paths([t["gen_id"] for t in facts])
     to_add: list[dict] = []
     blocked: list[dict] = []
     wanted: set[Path] = set()
+    # protected = 지금 대상인 모든 파일의 자리(저장할 수 있든 없든) + 그 생성물 id. 원본을 잃어 '저장 불가'가 된 대상의
+    # **이미 저장돼 있던 파일**을 extra 로 오인해 치우지 않게(코덱스 P0) — wanted(저장·같음 계산용)와 따로 둔다.
+    protected: set[Path] = set()
+    blocked_ids: set[str] = set()
     same = 0
     for t in facts:
         kind = t.get("kind") or "final"
         item = {"gen_id": t["gen_id"], "kind": kind, "folder_path": project_folders.export_folder(t.get("folder_path") or "", kind), "filename": t.get("filename") or ""}
-        dest = None if t.get("reason") else project_folders.safe_dest(render, item["folder_path"], item["filename"])
-        if dest is None:
+        dest = project_folders.safe_dest(render, item["folder_path"], item["filename"])
+        if dest is not None:
+            protected.add(dest)
+        if dest is None or t.get("reason"):
+            blocked_ids.add(t["gen_id"])
             blocked.append({**item, "reason": t.get("reason") or "경로 안전성 위반"})
             continue
         wanted.add(dest)
@@ -1631,10 +1632,11 @@ def save_finals_compare(project_id: str, request: Request):
         if dest_state == "missing":
             to_add.append(item)
         elif dest_state == "conflict":
+            blocked_ids.add(t["gen_id"])
             blocked.append({**item, "reason": _DEST_CONFLICT})
         else:
             same += 1
-    folders = {dest.parent for dest in wanted}
+    folders = {dest.parent for dest in protected}
     for entry in repo_manage.list_exports(project_id, limit=5000):  # 이 PC 가 예전에 저장한 자리(폴더가 바뀐 컷의 옛 폴더)
         old = Path(entry["dest_path"])
         if old.is_relative_to(root):  # 렌더 폴더 밖을 가리키는 옛 기록은 훑지 않는다
@@ -1642,20 +1644,175 @@ def save_finals_compare(project_id: str, request: Request):
     extra: list[dict] = []
     unknown = 0
     for folder in sorted(folders):
-        if not folder.is_dir():
+        if not folder.is_dir() or not folder.is_relative_to(root):
             continue
         for child in folder.iterdir():
-            if not child.is_file() or child in wanted or child.name.endswith(".part"):
+            if not child.is_file() or child in protected or child.name.endswith(".part"):
                 continue
             prefix = child.stem.rsplit("_", 1)[-1] if "_" in child.stem else ""
-            stamped = file_stamp.gen_id_of(file_stamp.read_stamp(child)) if len(prefix) == 12 else None
-            # 12자 접두 일치는 **보여 주기용** 판정이다 — 파일을 옮기는 미러는 각인의 gen_id 전체가 맞을 때만 허용한다.
-            if stamped and stamped[:12] == prefix and folder.is_relative_to(root):
+            stamp = file_stamp.read_stamp(child) if len(prefix) == 12 else {}
+            stamped = file_stamp.gen_id_of(stamp)
+            if stamped and stamped[:12] == prefix and stamp.get(file_stamp.KEY_HUB) == file_stamp.HUB_TAG and stamped not in blocked_ids:
                 extra.append({"gen_id": stamped, "kind": "shared" if folder.name == project_folders.SHARED_SUBFOLDER else "final",
-                              "folder_path": folder.relative_to(root).as_posix(), "filename": child.name})
+                              "folder_path": folder.relative_to(root).as_posix(), "filename": child.name, "_path": child})
             else:
                 unknown += 1
-    return {"shared_supported": not shared_outdated, "to_add": to_add, "extra": extra, "blocked": blocked, "same": same, "unknown": unknown}
+    return {"shared_supported": not shared_outdated, "to_add": to_add, "extra": extra, "blocked": blocked, "same": same, "unknown": unknown, "_root": root}
+
+
+def _render_for_sync(project_id: str) -> Path:
+    state = project_folders.render_root_state(project_id)
+    if state.get("error"):
+        raise HTTPException(status_code=400, detail=state["error"])
+    if not state.get("render_path"):
+        raise HTTPException(status_code=400, detail="렌더 폴더가 연결되지 않았습니다")
+    return Path(state["render_path"])
+
+
+def _public_scan(scan: dict) -> dict:
+    return {**{k: v for k, v in scan.items() if not k.startswith("_")}, "extra": [{k: v for k, v in e.items() if not k.startswith("_")} for e in scan["extra"]]}
+
+
+@router.get("/save-finals/compare")
+def save_finals_compare(project_id: str, request: Request):
+    """비교 — 읽기만 한다(설계: docs/EXPORT_SYNC_DESIGN.md). 로컬 전용(_LOCAL_EXACT) — 디스크는 이 PC 의 것.
+    파일 이름·상태가 나가므로 프로젝트 관리 권한."""
+    _require_project_manage(request, project_id)
+    return _public_scan(_save_finals_scan(project_id, _render_for_sync(project_id)))
+
+
+# ── 미러 — 폴더를 프로그램과 똑같이 맞춘다(이 앱에서 NAS 의 파일을 없애는 유일한 동작) ─────────────
+_MIRROR_QUARANTINE = "_mvhub_removed"   # 정리된 파일이 가는 곳 — 지우지 않는다. 되돌리기 = 제자리로 옮기기
+_MIRROR_LOCK_DIR = "_mvhub_sync"
+_MIRROR_MIN_AGE_SEC = 10 * 60            # 방금 쓰인 파일은 옮기지 않는다 — 다른 PC 가 막 저장한 파일을 낡은 판단으로 치우지 않게
+
+
+class MirrorIn(BaseModel):
+    # 사용자가 확인 창에서 본 '정리될 파일' 그대로 — 서버는 이것과 지금 다시 훑은 결과의 **교집합**만 옮긴다(안 보여 준 파일은 절대 안 옮긴다).
+    confirm: list[dict] = Field(default_factory=list, max_length=5000)
+    allow_many: bool = False  # 정리 비율이 비정상적으로 클 때 한 번 더 받은 확인
+
+
+def _nas_lock_path(root: Path, project_id: str) -> Path:
+    return root / _MIRROR_LOCK_DIR / (hashlib.sha1(project_id.encode("utf-8")).hexdigest()[:16] + ".lock")
+
+
+def _nas_lock_acquire(root: Path, project_id: str) -> tuple[Path, str]:
+    """여러 PC 가 같은 렌더 폴더를 동시에 미러하지 못하게 NAS 에 잠금 파일을 둔다(O_EXCL — 먼저 만든 쪽이 이긴다).
+    프로세스 안의 `_save_finals_lock` 은 다른 PC 를 못 막는다. 저장(업데이트)은 아무것도 없애지 않으므로 이 잠금을 잡지 않는다.
+    ★오래된 잠금을 **자동으로 넘겨받지 않는다** — 큰 프로젝트의 미러(다운로드·각인·NAS 지연)는 얼마든지 오래 걸리고,
+    살아 있는 미러의 잠금을 죽은 것으로 보고 지우면 두 PC 가 동시에 정리한다(코덱스 P0). 죽은 잠금은 사람이 지운다."""
+    lock = _nas_lock_path(root, project_id)
+    token = uuid.uuid4().hex
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        age_min = int(max(0, time.time() - lock.stat().st_mtime) // 60) if lock.exists() else 0
+        hint = f" {age_min}분째 잡혀 있습니다 — 정리 중인 PC 가 없는 게 확실하면 렌더 폴더의 {_MIRROR_LOCK_DIR}/{lock.name} 을 지우세요." if age_min >= 15 else ""
+        raise HTTPException(status_code=409, detail="다른 PC 가 이 프로젝트의 렌더 폴더를 정리하는 중입니다. 잠시 뒤 다시 시도하세요." + hint)
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=f"렌더 폴더에 잠금 파일을 만들지 못했습니다: {exc}")
+    with os.fdopen(fd, "w", encoding="ascii") as handle:
+        handle.write(token)
+    return lock, token
+
+
+def _nas_lock_release(lock: Path, token: str) -> None:
+    """내가 만든 잠금일 때만 지운다 — 누가 손으로 지우고 다른 PC 가 새로 잡았다면 그 잠금을 건드리지 않는다."""
+    try:
+        if lock.read_text(encoding="ascii").strip() == token:
+            lock.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _mirror_move(scan: dict, confirm: list[dict], allow_many: bool) -> dict:
+    """확인받은 것 ∩ 지금도 남은 것 ∩ 충분히 오래된 것만 격리 폴더로 옮긴다."""
+    root: Path = scan["_root"]
+    confirmed = {(str(c.get("folder_path") or ""), str(c.get("filename") or "")) for c in confirm}
+    now = time.time()
+    chosen, recent = [], 0
+    for e in scan["extra"]:
+        if (e["folder_path"], e["filename"]) not in confirmed:
+            continue
+        if now - e["_path"].stat().st_mtime < _MIRROR_MIN_AGE_SEC:
+            recent += 1
+            continue
+        chosen.append(e)
+    # 원하는 집합이 비어 보여서 전부 치우는 것이 최악의 사고다 — 남는 것보다 치우는 게 많으면 한 번 더 확인받는다.
+    if len(chosen) > 5 and len(chosen) > scan["same"] and not allow_many:
+        raise HTTPException(status_code=409, detail=f"정리할 파일({len(chosen)}개)이 남는 파일({scan['same']}개)보다 많습니다. 비교 결과를 다시 확인한 뒤 진행하세요")
+    moved: list[dict] = []
+    errors: list[dict] = []
+    bucket = None
+    for e in chosen:
+        try:
+            if bucket is None:
+                bucket = root / _MIRROR_QUARANTINE / (time.strftime("%Y-%m-%d_%H%M%S") + "_" + uuid.uuid4().hex[:8])  # 실행마다 고유 — 덮어쓰지 않는다
+            target = safe_join(bucket, str(Path(e["folder_path"]) / e["filename"]))
+            if target is None:
+                raise OSError("격리 경로 안전성 위반")
+            # 훑은 뒤 그 자리의 파일이 바뀌었을 수 있다(잠금을 모르는 구버전 앱·mtime 을 보존하는 복사) — 옮기기 직전에 각인 전체를 다시 확인한다(코덱스 P0).
+            stamp = file_stamp.read_stamp(e["_path"])
+            if file_stamp.gen_id_of(stamp) != e["gen_id"] or stamp.get(file_stamp.KEY_HUB) != file_stamp.HUB_TAG:
+                errors.append({"gen_id": e["gen_id"], "reason": "옮기지 않음: 비교한 뒤 파일이 바뀌었습니다"})
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(e["_path"], target)  # 같은 볼륨 안의 이름 바꾸기 — 중간 상태가 없다(볼륨이 다르면 실패하고 원본은 그대로)
+            # 위 확인과 이름 바꾸기 사이에도 틈이 있다(잠금을 모르는 구버전 앱) — **실제로 옮겨진 파일**을 한 번 더 읽어,
+            # 다른 파일이 딸려 왔으면 제자리로 돌려놓는다. 그 사이 제자리에 새 파일이 생겼으면 덮지 않고 격리 폴더에 둔 채 알린다.
+            after = file_stamp.read_stamp(target)
+            if file_stamp.gen_id_of(after) != e["gen_id"]:
+                if not e["_path"].exists():
+                    os.replace(target, e["_path"])
+                    errors.append({"gen_id": e["gen_id"], "reason": "옮기지 않음: 옮기는 순간 파일이 바뀌어 제자리로 돌려놓았습니다"})
+                else:
+                    errors.append({"gen_id": e["gen_id"], "reason": f"확인 필요: 옮기는 순간 파일이 바뀌었습니다 — 격리 폴더의 {e['filename']} 을 확인하세요"})
+                    moved.append({"folder_path": e["folder_path"], "filename": e["filename"]})
+                continue
+            moved.append({"folder_path": e["folder_path"], "filename": e["filename"]})
+        except OSError as exc:
+            errors.append({"gen_id": e["gen_id"], "reason": f"옮기지 못함: {exc}"})
+    return {"moved": moved, "skipped_recent": recent, "errors": errors, "quarantine": bucket.relative_to(root).as_posix() if bucket and moved else None}
+
+
+@router.post("/save-finals/mirror")
+async def save_finals_mirror(project_id: str, body: MirrorIn, request: Request):
+    """미러 — ①없는 것 저장(최종 먼저) ②폴더에만 남은 우리 파일을 격리 폴더로 옮긴다. 로컬 전용(_LOCAL_EXACT).
+    낡은 비교로 실행하지 않는다: 저장이 끝난 뒤 **다시 훑고**, 그 결과와 사용자가 확인한 목록의 교집합만 옮긴다."""
+    _require_project_manage(request, project_id)
+    render = await asyncio.to_thread(_render_for_sync, project_id)
+    async with _save_finals_lock(project_id):
+        lock, token = await to_thread_non_abandon(_nas_lock_acquire, render.resolve(), project_id)
+        try:
+            first = await to_thread_non_abandon(_save_finals_scan, project_id, render)  # 공유를 못 읽으면 여기서 실패 — 아무것도 안 건드린다
+            if not first["shared_supported"]:
+                raise HTTPException(status_code=400, detail="공유 서버 업데이트가 필요합니다 — 공유 목록을 모르는 채로는 폴더를 정리하지 않습니다")
+            # 정리가 남는 것보다 많으면 **저장하기 전에** 되묻는다(저장 뒤에 물으면 결과가 반쪽이 된다).
+            confirmed = {(str(c.get("folder_path") or ""), str(c.get("filename") or "")) for c in body.confirm}
+            asked = sum((e["folder_path"], e["filename"]) in confirmed for e in first["extra"])
+            if asked > 5 and asked > first["same"] + len(first["to_add"]) and not body.allow_many:
+                raise HTTPException(status_code=409, detail=f"정리할 파일({asked}개)이 남는 파일({first['same'] + len(first['to_add'])}개)보다 많습니다. 비교 결과를 다시 확인한 뒤 진행하세요")
+            saved = {"saved": 0, "skipped": 0, "errors": []}
+            for kind in final_export.KINDS:
+                part = await _save_finals_locked(project_id, request, render, None, kind)
+                saved["saved"] += part["saved"]
+                saved["skipped"] += part["skipped"]
+                saved["errors"] += part["errors"]
+            try:
+                scan = await to_thread_non_abandon(_save_finals_scan, project_id, render)
+                result = await to_thread_non_abandon(_mirror_move, scan, body.confirm, body.allow_many)
+            except (HTTPException, OSError) as exc:  # OSError = NAS 가 훑는 도중 끊김 등
+                if isinstance(exc, HTTPException) and exc.status_code == 409 and saved["saved"] == 0:
+                    raise  # 아직 아무것도 안 바꿨다 — 재확인 요청(정리가 너무 많음)을 그대로 돌려준다
+                # 저장은 이미 끝났다 — 결과를 잃지 않고 정리만 하지 않는다(코덱스 P1)
+                why = exc.detail if isinstance(exc, HTTPException) else exc
+                result = {"moved": [], "skipped_recent": 0, "quarantine": None, "errors": [{"gen_id": "(미러)", "reason": f"정리하지 않음: {why} — 다시 비교하세요"}]}
+        finally:
+            await to_thread_non_abandon(_nas_lock_release, lock, token)
+    log_event(_manage_log, "save_finals_mirror", project_id=project_id, saved=saved["saved"], moved=len(result["moved"]), errors=len(saved["errors"]) + len(result["errors"]))
+    return {**saved, "errors": [*saved["errors"], *result["errors"]], "moved": result["moved"], "skipped_recent": result["skipped_recent"], "quarantine": result["quarantine"]}
 
 
 @router.get("/save-finals")

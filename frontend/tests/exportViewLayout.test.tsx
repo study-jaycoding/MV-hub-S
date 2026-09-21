@@ -10,8 +10,9 @@ import type { SaveFinalsKind, SaveFinalsStatus } from "../src/lib/manageApi";
 let status: SaveFinalsStatus;
 const saveFinals = vi.hoisted(() => vi.fn());
 const saveFinalsCompare = vi.hoisted(() => vi.fn());
+const saveFinalsMirror = vi.hoisted(() => vi.fn());
 vi.mock("../src/api", () => ({ api: { projects: async () => ({ projects: [{ id: "p1", name: "fixture" }] }) } }));
-vi.mock("../src/lib/manageApi", () => ({ manageApi: { saveFinalsStatus: async () => status, saveFinals, saveFinalsCompare } }));
+vi.mock("../src/lib/manageApi", () => ({ manageApi: { saveFinalsStatus: async () => status, saveFinals, saveFinalsCompare, saveFinalsMirror } }));
 const target = (gen_id: string, saved: boolean, reason: string | null, kind: SaveFinalsKind = "final", filename = gen_id + ".mp4") => ({ gen_id, kind, folder_path: "ep001/" + gen_id, filename, saved, reason });
 let root: Root, host: HTMLDivElement;
 
@@ -19,6 +20,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   saveFinals.mockReset().mockResolvedValue({ saved: 1, skipped: 0, errors: [] });
   saveFinalsCompare.mockReset();
+  saveFinalsMirror.mockReset();
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
@@ -74,7 +76,7 @@ it("구버전 서버라 대상을 알 수 없을 때는 '저장할 최종본이 
   expect(host.querySelector(".export-side")!.textContent).toContain("저장할 최종본이 없습니다");
 });
 
-it("비교를 실행해야 업데이트가 켜지고, 저장하면 다시 꺼진다 — 미러는 아직 꺼 둔다", async () => {
+it("비교를 실행해야 미러·업데이트가 켜지고, 저장하면 다시 꺼진다", async () => {
   status = { render_path: "R:/render", error: null, shared_supported: true, targets: [target("c0030", false, null), target("c0040", false, null, "shared")], history: [] };
   saveFinalsCompare.mockResolvedValue({ shared_supported: true, same: 3, unknown: 2, blocked: [],
     to_add: [{ gen_id: "c0030", kind: "final", folder_path: "ep001/c0030", filename: "c0030.mp4" }, { gen_id: "c0040", kind: "shared", folder_path: "ep001/c0040/shared", filename: "c0040.mp4" }],
@@ -91,11 +93,52 @@ it("비교를 실행해야 업데이트가 켜지고, 저장하면 다시 꺼진
   expect(button("업데이트").textContent).toBe("업데이트 (+2)");
   expect(button("업데이트").disabled).toBe(false);
   expect(button("미러").textContent).toBe("미러 (+2 · −1)");
-  expect(button("미러").disabled).toBe(true); // 여러 PC 안전장치가 들어갈 때까지 꺼 둔다
+  expect(button("미러").disabled).toBe(false);
   expect(texts(".export-pill")).toEqual(["새로 저장할 것 2", "폴더에만 남은 것 1", "같음 3", "모르는 파일 2 · 건드리지 않음"]);
   expect(texts(".export-compare code")).toEqual(["ep001/c0030 · c0030.mp4", "ep001/c0040/shared · c0040.mp4", "ep001/c0010 · c0010_old.mp4"]);
   await act(async () => { button("업데이트").click(); });
   expect(saveFinals).toHaveBeenLastCalledWith("p1", undefined, "all");
   expect(host.querySelector(".export-compare")).toBeNull(); // 폴더가 달라졌다 — 낡은 비교는 버린다
   expect(button("업데이트").disabled).toBe(true);
+});
+
+it("미러는 확인 창에서 본 목록을 그대로 보내고, 정리가 너무 많다는 답이 오면 한 번 더 묻는다", async () => {
+  status = { render_path: "R:/render", error: null, shared_supported: true, targets: [target("c0030", false, null)], history: [] };
+  const extra = [{ gen_id: "old1", kind: "final" as const, folder_path: "ep001/c0010", filename: "c0010_old.mp4" }, { gen_id: "old2", kind: "shared" as const, folder_path: "ep001/c0020/shared", filename: "c0020_old.mp4" }];
+  saveFinalsCompare.mockResolvedValue({ shared_supported: true, same: 1, unknown: 3, blocked: [], to_add: [{ gen_id: "c0030", kind: "final", folder_path: "ep001/c0030", filename: "c0030.mp4" }], extra });
+  const { HttpError } = await import("../src/lib/http");
+  saveFinalsMirror.mockRejectedValueOnce(new HttpError(409, "정리할 파일(2개)이 남는 파일(1개)보다 많습니다."))
+    .mockResolvedValue({ saved: 1, skipped: 0, errors: [], moved: [{ folder_path: "ep001/c0010", filename: "c0010_old.mp4" }], skipped_recent: 1, quarantine: "_mvhub_removed/2026-09-21_143200_ab12cd34" });
+  await mount();
+  await act(async () => { host.querySelector<HTMLButtonElement>(".export-icon-btn")!.click(); });
+  expect(host.querySelector(".export-modal")).toBeNull();
+  await act(async () => { button("미러").click(); });
+  const modal = () => host.querySelector(".export-modal")!;
+  expect(modal().textContent).toContain("지우지 않고");
+  expect(modal().textContent).toContain("모르는 파일 3개는 건드리지 않습니다");
+  expect([...modal().querySelectorAll("code.export-history-path")].map((item) => item.textContent)).toEqual(["ep001/c0010 · c0010_old.mp4", "ep001/c0020/shared · c0020_old.mp4"]);
+  expect(saveFinalsMirror).not.toHaveBeenCalled(); // 단추를 눌렀다고 바로 옮기지 않는다
+  const go = () => [...modal().querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent!.includes("옮기고"))!;
+  expect(go().textContent).toBe("2개 옮기고 1개 저장");
+  await act(async () => { go().click(); });
+  expect(saveFinalsMirror).toHaveBeenLastCalledWith("p1", extra.map(({ folder_path, filename }) => ({ folder_path, filename })), false);
+  expect(modal().textContent).toContain("정리할 파일이 남는 파일보다 많습니다"); // 서버의 재확인 요청 — 창을 다시 띄운다
+  await act(async () => { go().click(); });
+  expect(saveFinalsMirror).toHaveBeenLastCalledWith("p1", expect.any(Array), true);
+  expect(host.querySelector(".export-modal")).toBeNull();
+  expect(host.querySelector(".export-result")!.textContent).toContain("정리 1");
+  expect(host.querySelector(".export-result")!.textContent).toContain("_mvhub_removed/2026-09-21_143200_ab12cd34");
+  expect(host.querySelector(".export-result")!.textContent).toContain("방금 쓰인 파일 1개는 옮기지 않았습니다");
+  expect(button("미러").disabled).toBe(true); // 폴더가 달라졌다 — 다시 비교해야 켜진다
+});
+
+it("미러 창에서 취소하면 아무것도 보내지 않는다", async () => {
+  status = { render_path: "R:/render", error: null, shared_supported: true, targets: [], history: [] };
+  saveFinalsCompare.mockResolvedValue({ shared_supported: true, same: 1, unknown: 0, blocked: [], to_add: [], extra: [{ gen_id: "old1", kind: "final", folder_path: "ep001/c0010", filename: "c0010_old.mp4" }] });
+  await mount();
+  await act(async () => { host.querySelector<HTMLButtonElement>(".export-icon-btn")!.click(); });
+  await act(async () => { button("미러").click(); });
+  await act(async () => { [...host.querySelectorAll<HTMLButtonElement>(".export-modal button")].find((item) => item.textContent === "취소")!.click(); });
+  expect(host.querySelector(".export-modal")).toBeNull();
+  expect(saveFinalsMirror).not.toHaveBeenCalled();
 });

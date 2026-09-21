@@ -3,6 +3,7 @@
 // 저장은 로컬 전용(이 PC 디스크). 이미 저장된 건 건너뛴다(멱등).
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
+import { isHttpStatus } from "../../lib/http";
 import { reconcileArrayState, reconcileValueState } from "../../lib/stateReconciliation";
 import {
   manageApi,
@@ -43,11 +44,13 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   // 비교 결과 — 미러·업데이트는 이것이 있을 때만 켜진다. 프로젝트를 바꾸거나 저장·새로고침으로 상태가 달라지면 버린다(낡은 비교로 실행 금지).
   const [compare, setCompare] = useState<SaveFinalsCompare | null>(null);
   const [comparing, setComparing] = useState(false);
+  const [mirrorAsk, setMirrorAsk] = useState<null | { many: boolean }>(null); // 미러 확인 창(many = 정리가 남는 것보다 많다는 서버의 재확인 요청)
   const compareRequestRef = useRef(0);
   const dropCompare = () => {
     compareRequestRef.current += 1;
     setCompare(null);
     setComparing(false);
+    setMirrorAsk(null);
   };
   const pidRef = useRef(pid);
   const seenReloadSignalRef = useRef(reloadSignal);
@@ -136,6 +139,30 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
       if (compareRequestRef.current === requestId) setErr(String(e?.message || e));
     } finally {
       if (compareRequestRef.current === requestId) setComparing(false);
+    }
+  };
+
+  // 미러 — 확인 창에서 본 목록을 그대로 보낸다. 서버는 그 목록과 '지금 다시 훑은 결과'의 교집합만 격리 폴더로 옮긴다.
+  const onMirror = async (allowMany: boolean) => {
+    if (!canSave || !compare) return;
+    const confirm = compare.extra.map((item) => ({ folder_path: item.folder_path, filename: item.filename }));
+    setMirrorAsk(null);
+    setBusy(true);
+    setResult(null);
+    setErr(null);
+    try {
+      const r = await manageApi.saveFinalsMirror(pid, confirm, allowMany);
+      dropCompare();
+      setResult(r);
+      loadStatus(pid);
+    } catch (e: any) {
+      if (isHttpStatus(e, 409) && !allowMany && String(e?.message || "").includes("정리할 파일")) setMirrorAsk({ many: true });
+      else {
+        dropCompare();
+        setErr(String(e?.message || e));
+      }
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -266,8 +293,19 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
             >
               <CompareIcon />
             </button>
-            {/* 미러는 파일을 옮기는 첫 기능이라, 여러 PC 가 같은 폴더를 쓸 때의 안전장치(협력 잠금·공유 저장 목록)를 넣은 뒤에 연다. */}
-            <button type="button" className="export-ghost-btn danger" disabled title="준비 중 — 여러 PC 가 같은 폴더를 쓸 때의 안전장치를 먼저 넣습니다. 지금은 비교에서 '폴더에만 남은 것'을 확인만 할 수 있습니다">
+            <button
+              type="button"
+              className="export-ghost-btn danger"
+              disabled={!canSave || !compare || !compare.shared_supported || compare.to_add.length + compare.extra.length === 0}
+              onClick={() => setMirrorAsk({ many: false })}
+              title={
+                !compare
+                  ? "비교를 먼저 실행하세요"
+                  : compare.shared_supported
+                    ? "폴더를 프로그램과 똑같이 맞춘다 — 없는 것은 저장하고, 폴더에만 남은 우리 파일은 격리 폴더로 옮긴다"
+                    : "공유 서버 업데이트 뒤 쓸 수 있습니다(공유 목록을 모르는 채로는 정리하지 않습니다)"
+              }
+            >
               <MirrorIcon />
               미러{compare ? ` (+${compare.to_add.length} · −${compare.extra.length})` : ""}
             </button>
@@ -295,6 +333,12 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
             <div className="export-result">
               <div className="export-result-line">
                 저장 <b>{result.saved}</b> · 건너뜀 <b>{result.skipped}</b>
+                {result.moved ? (
+                  <>
+                    {" "}
+                    · 정리 <b>{result.moved.length}</b>
+                  </>
+                ) : null}
                 {result.errors.length > 0 && (
                   <>
                     {" "}
@@ -302,6 +346,14 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                   </>
                 )}
               </div>
+              {result.quarantine ? (
+                <div className="export-hint">
+                  정리한 파일은 지우지 않고 렌더 폴더의 <code>{result.quarantine}</code> 로 옮겼습니다. 되돌리려면 제자리로 옮기면 됩니다.
+                </div>
+              ) : null}
+              {result.skipped_recent ? (
+                <div className="export-hint">방금 쓰인 파일 {result.skipped_recent}개는 옮기지 않았습니다(다른 PC 가 저장 중일 수 있어 10분 뒤에 다시 정리됩니다).</div>
+              ) : null}
               {result.errors.length > 0 && (
                 <ul className="export-err-list">
                   {result.errors.map((e, i) => (
@@ -314,6 +366,39 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
             </div>
           )}
         </div>
+
+        {mirrorAsk && compare && (
+          <div className="export-modal" role="dialog" aria-modal="true" aria-label="미러 확인">
+            <div className="export-modal-box">
+              <h3>렌더 폴더를 프로그램과 똑같이 맞출까요?</h3>
+              <p>
+                새로 저장 <b className="add">{compare.to_add.length}</b>개 · 정리 <b className="rm">{compare.extra.length}</b>개.
+                <br />
+                정리되는 파일은 지우지 않고 렌더 폴더의 <code>_mvhub_removed</code> 아래로 옮깁니다. 우리 앱이 저장한 파일(이름 규칙과 파일 안의 각인이 모두 맞는 것)만 옮기고,
+                {compare.unknown > 0 ? ` 모르는 파일 ${compare.unknown}개는` : " 사람이 넣은 파일은"} 건드리지 않습니다.
+              </p>
+              {mirrorAsk.many && <p className="export-err">정리할 파일이 남는 파일보다 많습니다. 목록이 맞는지 한 번 더 확인해 주세요.</p>}
+              {compare.extra.length > 0 && (
+                <ul className="export-history-list export-target-list">
+                  {compare.extra.map((item) => (
+                    <li key={item.folder_path + item.filename}>
+                      <span className="export-sign rm">−</span>
+                      <code className="export-history-path">{item.folder_path} · {item.filename}</code>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="export-modal-btns">
+                <button type="button" className="export-ghost-btn" onClick={() => setMirrorAsk(null)}>
+                  취소
+                </button>
+                <button type="button" className="export-ghost-btn danger strong" onClick={() => onMirror(mirrorAsk.many)}>
+                  {compare.extra.length}개 옮기고 {compare.to_add.length}개 저장
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {compare && (
           <div className="export-compare">

@@ -231,6 +231,12 @@ export const manageApi = {
   // 비교 — 프로그램이 원하는 집합(최종+공유) vs 이 PC 의 렌더 폴더. 읽기만 한다.
   saveFinalsCompare: (projectId: string) =>
     jsonFetch<SaveFinalsCompare>(withQuery("/api/manage/save-finals/compare", { project_id: projectId })),
+  // 미러 — 없는 것을 저장하고, 폴더에만 남은 우리 파일을 격리 폴더로 옮긴다. confirm = 사용자가 확인 창에서 본 목록(서버는 그 교집합만 옮긴다).
+  saveFinalsMirror: (projectId: string, confirm: { folder_path: string; filename: string }[], allowMany = false) =>
+    jsonFetch<SaveFinalsResult>(withQuery("/api/manage/save-finals/mirror", { project_id: projectId }), {
+      method: "POST",
+      body: jsonBody({ confirm, allow_many: allowMany }),
+    }),
   // 저장 대상 미리보기 + 이력(읽기 전용, 다운로드 없음).
   saveFinalsStatus: (projectId: string) =>
     jsonFetch<SaveFinalsStatus>(withQuery("/api/manage/save-finals", { project_id: projectId })),
@@ -401,6 +407,10 @@ export interface SaveFinalsResult {
   saved: number;
   skipped: number;
   errors: { gen_id: string; reason: string }[];
+  // 미러만: 격리 폴더로 옮긴 파일 · 방금 쓰여서 안 옮긴 수 · 격리 폴더(렌더 폴더 아래 경로)
+  moved?: { folder_path: string; filename: string }[];
+  skipped_recent?: number;
+  quarantine?: string | null;
 }
 
 export type SaveFinalsKind = "final" | "shared";
