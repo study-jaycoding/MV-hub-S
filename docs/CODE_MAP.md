@@ -539,7 +539,7 @@ updated: 2026-09-21
 | `InlinePromptRefs.tsx`(70줄) | 프롬프트의 `@소스`를 썸네일 칩으로 | 3 |
 | `ResizableSidebar.tsx`(105줄) | 폭 조절 사이드바 껍데기 | 2 |
 | `FolderReviewCount.tsx`(18줄) | 폴더 검토 카운트 배지 | 1(`FolderTreeView` 전용 — 공용 폴더에 있지만 실제 공용 아님, §5-b) |
-| `ViewIcons.tsx`(29줄) | 리스트/그리드 SVG | 1(`ViewControls` 전용) |
+| `ViewIcons.tsx`(39줄) | 리스트/그리드 SVG · 작업 탭 "보관 기록" 아이콘(`ArchiveHistoryIcon` — 상자+시곗바늘) | 2(`ViewControls`·`manage/WorkBoard`) |
 
 #### 미디어 보기·비교·부분수정(최상위 + `compare/` + `edit/`, 9파일)
 
@@ -587,8 +587,8 @@ updated: 2026-09-21
 | `manage/DashboardView.tsx`(603줄) | 통합 대시보드(프로젝트 요약 + 에피소드/시퀀스 트리) | `DashboardView` |
 | `manage/WorkspaceUsageDashboard.tsx`(966줄) | 워크스페이스 사용 현황(크레딧 링·추이 차트·멤버/모델 표) | `WorkspaceUsageDashboard`·`HoverMetric` |
 | `manage/CreditPoolSection.tsx`(399줄) · `CreditPlanFields.tsx`(508줄) | 크레딧 풀 표시 / 그룹·충전 편집 창 | 각 절 |
-| `manage/WorkBoard.tsx`(888줄) | 작업 탭 컨테이너 — 병합·필터·핸들러 주입 | `WorkBoard` |
-| `manage/WorkFilterBar.tsx`(280줄) | 노션식 칩 필터 바 | 〃 |
+| `manage/WorkBoard.tsx`(892줄) | 작업 탭 컨테이너 — 병합·필터·핸들러 주입. 머리글 오른쪽 = 검색 상자 · 보관 기록(아이콘) · 내 작업만 · 보기 전환 | `WorkBoard` |
+| `manage/WorkFilterBar.tsx`(280줄) | 노션식 칩 필터 바(칩 · +필터) + 머리글에 놓이는 검색 상자 `WorkSearchBox` | 〃 |
 | `manage/KanbanBoard.tsx`(179줄 — 폴더 자동 작업은 상태가 컷에서 파생되므로 끌 수 없다, 수동 작업만 끌기) · `TableView.tsx`(351줄) · `CalendarView.tsx`(206줄) · `MonthlyTaskCalendar.tsx`(190줄) | 작업 뷰 4종(프레젠테이션 전용, `WorkViewProps` 주입) — 소요시간 포맷터가 뷰마다 다름(§5-b) | 〃 |
 | `manage/CutThumbs.tsx`(105줄) · `ColorTag.tsx`(35줄) | 컷 썸네일 / 색 라벨 | |
 | `manage/ExportView.tsx`(222줄) | 완료 탭 — 최종본 렌더 폴더 저장 | |
