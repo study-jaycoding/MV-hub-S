@@ -383,6 +383,36 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertTrue(all(e["_path"].is_file() for e in scan["extra"]))  # 아무것도 안 옮겼다
 
+    def test_status_reads_only_the_ledger_and_compare_syncs_the_ledger_to_the_folder(self):
+        render = Path(self.tmp.name) / "Render"
+        cut = render / "ep" / "c1"
+        (cut / "shared").mkdir(parents=True)
+        media = Path(self.tmp.name) / "media"
+        media.mkdir()
+        for gid in ("final0000001", "shared000001", "held00000001"):
+            (media / f"{gid}.png").write_bytes(b"src")
+        other_pc = cut / "c1_final0000001.png"
+        other_pc.write_bytes(b"saved-by-another-pc")  # 다른 PC 가 저장해 둔 파일 — 이 PC 의 대장에는 없다
+        gone = cut / "shared" / "c1_shared000001.png"
+        repo_manage.record_export("shared000001", str(gone.resolve()), "p1")  # 대장에는 있는데 누가 손으로 지웠다
+        state = {"render_path": str(render), "error": None}
+        common = [mock.patch.object(project_folders, "render_root_state", return_value=state), mock.patch.object(manage_router, "MEDIA_DIR", media),
+                  mock.patch.object(manage_router, "_require_project_read"), mock.patch.object(manage_router, "_require_project_manage")]
+        with ExitStack() as stack:
+            for item in common:
+                stack.enter_context(item)
+            # 탭을 열 때: 대상마다 NAS 를 확인하지 않는다(공유본은 수백 건) — 각인도 읽지 않는다
+            with mock.patch.object(manage_router, "_dest_state", side_effect=AssertionError("상태 조회가 폴더를 확인했다")), \
+                    mock.patch.object(file_stamp, "read_stamp", side_effect=AssertionError("상태 조회가 각인을 읽었다")):
+                before = {t["gen_id"]: t["saved"] for t in manage_router.save_finals_status("p1", mock.Mock())["targets"]}
+            self.assertEqual(before, {"final0000001": False, "shared000001": True, "held00000001": False})  # 대장 그대로(아직 폴더와 안 맞는다)
+            with mock.patch.object(file_stamp, "read_stamp", return_value={}):
+                compare = manage_router.save_finals_compare("p1", mock.Mock())
+            self.assertEqual({t["gen_id"] for t in compare["to_add"]}, {"shared000001", "held00000001"})
+            after = {t["gen_id"]: t["saved"] for t in manage_router.save_finals_status("p1", mock.Mock())["targets"]}
+        self.assertEqual(after, {"final0000001": True, "shared000001": False, "held00000001": False})  # 비교 한 번으로 대장이 폴더와 같아졌다
+        self.assertEqual(other_pc.read_bytes(), b"saved-by-another-pc")  # 폴더는 읽기만 했다
+
     def test_save_writes_each_kind_to_its_folder_and_is_idempotent(self):
         render = Path(self.tmp.name) / "Render"
         media = Path(self.tmp.name) / "media"

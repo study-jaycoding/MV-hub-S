@@ -26,6 +26,8 @@ beforeEach(() => {
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
 const mount = async () => { await act(async () => { root.render(<ExportView />); }); await act(async () => {}); };
 const texts = (selector: string) => [...host.querySelectorAll(selector)].map((element) => element.textContent);
+// 확인 창의 단추 — 단추 다섯 개 모두 "~하시겠습니까? 예/아니오"를 거친다(Jay 2026-09-21)
+const answer = async (label: "예" | "아니오") => { await act(async () => { [...host.querySelectorAll<HTMLButtonElement>(".export-modal button")].find((item) => item.textContent!.startsWith(label))!.click(); }); };
 const button = (label: string) => [...host.querySelectorAll<HTMLButtonElement>(".export-act button")].find((item) => item.textContent!.startsWith(label))!;
 
 it("프로젝트 고르기는 판 안에 있고, 저장 대상 줄마다 종류·상태·사유가 붙는다", async () => {
@@ -52,8 +54,17 @@ it("공유 저장과 최종 저장은 각자의 종류로만 저장을 부른다
   expect(button("최종 저장").textContent).toBe("최종 저장 (1)");
   expect(button("최종 저장").classList.contains("export-btn-final")).toBe(true);
   await act(async () => { button("공유 저장").click(); });
+  expect(host.querySelector(".export-modal h3")!.textContent).toBe("공유본 2개를 저장하시겠습니까?");
+  expect(saveFinals).not.toHaveBeenCalled(); // 단추를 눌렀다고 바로 저장하지 않는다
+  await answer("아니오");
+  expect(host.querySelector(".export-modal")).toBeNull();
+  expect(saveFinals).not.toHaveBeenCalled();
+  await act(async () => { button("공유 저장").click(); });
+  await answer("예");
   expect(saveFinals).toHaveBeenLastCalledWith("p1", undefined, "shared");
   await act(async () => { button("최종 저장").click(); });
+  expect(host.querySelector(".export-modal h3")!.textContent).toBe("최종본 1개를 저장하시겠습니까?");
+  await answer("예");
   expect(saveFinals).toHaveBeenLastCalledWith("p1", undefined, "final");
 });
 
@@ -88,6 +99,9 @@ it("비교를 실행해야 미러·업데이트가 켜지고, 저장하면 다�
   expect(button("미러").disabled).toBe(true);
   expect(host.querySelector(".export-hint-two")!.textContent).toBe("미러는 똑같이 맞춘다.업데이트는 추가된 것만 올린다.");
   await act(async () => { compareButton().click(); });
+  expect(host.querySelector(".export-modal h3")!.textContent).toBe("프로그램과 렌더 폴더를 비교하시겠습니까?");
+  expect(saveFinalsCompare).not.toHaveBeenCalled();
+  await answer("예");
   expect(saveFinalsCompare).toHaveBeenCalledWith("p1");
   expect(compareButton().classList.contains("on")).toBe(true);
   expect(button("업데이트").textContent).toBe("업데이트 (+2)");
@@ -97,6 +111,8 @@ it("비교를 실행해야 미러·업데이트가 켜지고, 저장하면 다�
   expect(texts(".export-pill")).toEqual(["새로 저장할 것 2", "폴더에만 남은 것 1", "같음 3", "모르는 파일 2 · 건드리지 않음"]);
   expect(texts(".export-compare code")).toEqual(["ep001/c0030 · c0030.mp4", "ep001/c0040/shared · c0040.mp4", "ep001/c0010 · c0010_old.mp4"]);
   await act(async () => { button("업데이트").click(); });
+  expect(host.querySelector(".export-modal h3")!.textContent).toBe("새로 추가된 2개를 올리시겠습니까?");
+  await answer("예");
   expect(saveFinals).toHaveBeenLastCalledWith("p1", undefined, "all");
   expect(host.querySelector(".export-compare")).toBeNull(); // 폴더가 달라졌다 — 낡은 비교는 버린다
   expect(button("업데이트").disabled).toBe(true);
@@ -111,6 +127,7 @@ it("미러는 확인 창에서 본 목록을 그대로 보내고, 정리가 너�
     .mockResolvedValue({ saved: 1, skipped: 0, errors: [], moved: [{ folder_path: "ep001/c0010", filename: "c0010_old.mp4" }], skipped_recent: 1, quarantine: "_mvhub_removed/2026-09-21_143200_ab12cd34" });
   await mount();
   await act(async () => { host.querySelector<HTMLButtonElement>(".export-icon-btn")!.click(); });
+  await answer("예");
   expect(host.querySelector(".export-modal")).toBeNull();
   await act(async () => { button("미러").click(); });
   const modal = () => host.querySelector(".export-modal")!;
@@ -118,8 +135,9 @@ it("미러는 확인 창에서 본 목록을 그대로 보내고, 정리가 너�
   expect(modal().textContent).toContain("모르는 파일 3개는 건드리지 않습니다");
   expect([...modal().querySelectorAll("code.export-history-path")].map((item) => item.textContent)).toEqual(["ep001/c0010 · c0010_old.mp4", "ep001/c0020/shared · c0020_old.mp4"]);
   expect(saveFinalsMirror).not.toHaveBeenCalled(); // 단추를 눌렀다고 바로 옮기지 않는다
+  expect(modal().querySelector("h3")!.textContent).toBe("렌더 폴더를 프로그램과 똑같이 맞추시겠습니까?");
   const go = () => [...modal().querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent!.includes("옮기고"))!;
-  expect(go().textContent).toBe("2개 옮기고 1개 저장");
+  expect(go().textContent).toBe("예 — 2개 옮기고 1개 저장");
   await act(async () => { go().click(); });
   expect(saveFinalsMirror).toHaveBeenLastCalledWith("p1", extra.map(({ folder_path, filename }) => ({ folder_path, filename })), false);
   expect(modal().textContent).toContain("정리할 파일이 남는 파일보다 많습니다"); // 서버의 재확인 요청 — 창을 다시 띄운다
@@ -132,13 +150,14 @@ it("미러는 확인 창에서 본 목록을 그대로 보내고, 정리가 너�
   expect(button("미러").disabled).toBe(true); // 폴더가 달라졌다 — 다시 비교해야 켜진다
 });
 
-it("미러 창에서 취소하면 아무것도 보내지 않는다", async () => {
+it("미러 창에서 아니오를 누르면 아무것도 보내지 않는다", async () => {
   status = { render_path: "R:/render", error: null, shared_supported: true, targets: [], history: [] };
   saveFinalsCompare.mockResolvedValue({ shared_supported: true, same: 1, unknown: 0, blocked: [], to_add: [], extra: [{ gen_id: "old1", kind: "final", folder_path: "ep001/c0010", filename: "c0010_old.mp4" }] });
   await mount();
   await act(async () => { host.querySelector<HTMLButtonElement>(".export-icon-btn")!.click(); });
+  await answer("예");
   await act(async () => { button("미러").click(); });
-  await act(async () => { [...host.querySelectorAll<HTMLButtonElement>(".export-modal button")].find((item) => item.textContent === "취소")!.click(); });
+  await answer("아니오");
   expect(host.querySelector(".export-modal")).toBeNull();
   expect(saveFinalsMirror).not.toHaveBeenCalled();
 });

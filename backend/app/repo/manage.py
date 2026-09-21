@@ -820,6 +820,16 @@ def export_dest_paths(gen_ids: "list[str] | set[str]") -> dict[str, str]:
     return out
 
 
+def forget_exports(gen_ids: "list[str] | set[str]") -> None:
+    """대장에서 지운다 — 비교가 '대장에는 있는데 폴더에는 없는' 파일을 찾았을 때(누가 손으로 지웠거나 미러가 옮김)."""
+    ids = list(dict.fromkeys(g for g in (gen_ids or []) if g))
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        for id_batch in _batched(ids):
+            ph = ",".join("?" * len(id_batch))
+            conn.execute(f"DELETE FROM final_export WHERE gen_id IN ({ph})", list(id_batch))
+
+
 def list_exports(project_id: str, limit: int = 20) -> list[dict[str, Any]]:
     """이 프로젝트의 저장 이력(대장) — 최근 limit 개만. dest 파일 존재 확인(UNC stat)은
     라우터가 이 범위에서만 수행한다(이력이 쌓여도 네트워크 stat 폭주 방지).

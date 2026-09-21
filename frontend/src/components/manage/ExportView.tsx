@@ -44,13 +44,14 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   // 비교 결과 — 미러·업데이트는 이것이 있을 때만 켜진다. 프로젝트를 바꾸거나 저장·새로고침으로 상태가 달라지면 버린다(낡은 비교로 실행 금지).
   const [compare, setCompare] = useState<SaveFinalsCompare | null>(null);
   const [comparing, setComparing] = useState(false);
-  const [mirrorAsk, setMirrorAsk] = useState<null | { many: boolean }>(null); // 미러 확인 창(many = 정리가 남는 것보다 많다는 서버의 재확인 요청)
+  // 확인 창 — 단추 다섯 개 모두 '~하시겠습니까? 예/아니오'를 거친다(Jay 2026-09-21). many = 미러에서 정리가 남는 것보다 많다는 서버의 재확인 요청.
+  const [ask, setAsk] = useState<null | { action: SaveFinalsKind | "compare" | "update" | "mirror"; many?: boolean }>(null);
   const compareRequestRef = useRef(0);
   const dropCompare = () => {
     compareRequestRef.current += 1;
     setCompare(null);
     setComparing(false);
-    setMirrorAsk(null);
+    setAsk(null);
   };
   const pidRef = useRef(pid);
   const seenReloadSignalRef = useRef(reloadSignal);
@@ -146,7 +147,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const onMirror = async (allowMany: boolean) => {
     if (!canSave || !compare) return;
     const confirm = compare.extra.map((item) => ({ folder_path: item.folder_path, filename: item.filename }));
-    setMirrorAsk(null);
+    setAsk(null);
     setBusy(true);
     setResult(null);
     setErr(null);
@@ -156,7 +157,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
       setResult(r);
       loadStatus(pid);
     } catch (e: any) {
-      if (isHttpStatus(e, 409) && !allowMany && String(e?.message || "").includes("정리할 파일")) setMirrorAsk({ many: true });
+      if (isHttpStatus(e, 409) && !allowMany && String(e?.message || "").includes("정리할 파일")) setAsk({ action: "mirror", many: true });
       else {
         dropCompare();
         setErr(String(e?.message || e));
@@ -262,7 +263,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
             <button
               className="export-btn"
               disabled={!canSave || !sharedSupported || pending.shared === 0}
-              onClick={() => onSave("shared")}
+              onClick={() => setAsk({ action: "shared" })}
               title={
                 sharedSupported
                   ? "공유 중인 것(최종 제외) 중 폴더에 없는 것만 저장 — 컷 폴더의 shared 폴더로"
@@ -276,7 +277,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
             <button
               className="export-btn export-btn-final"
               disabled={!canSave || pending.final === 0}
-              onClick={() => onSave("final")}
+              onClick={() => setAsk({ action: "final" })}
               title="최종(★)인 것 중 폴더에 없는 것만 저장"
             >
               최종 저장 ({pending.final})
@@ -286,7 +287,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
               type="button"
               className={"export-icon-btn" + (compare ? " on" : "")}
               disabled={!canSave || comparing}
-              onClick={onCompare}
+              onClick={() => setAsk({ action: "compare" })}
               title="비교 — 프로그램에 있는 것(공유+최종)과 렌더 폴더를 견준다. 읽기만 한다"
               aria-label="비교"
               aria-pressed={!!compare}
@@ -297,7 +298,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
               type="button"
               className="export-ghost-btn danger"
               disabled={!canSave || !compare || !compare.shared_supported || compare.to_add.length + compare.extra.length === 0}
-              onClick={() => setMirrorAsk({ many: false })}
+              onClick={() => setAsk({ action: "mirror" })}
               title={
                 !compare
                   ? "비교를 먼저 실행하세요"
@@ -313,7 +314,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
               type="button"
               className="export-ghost-btn"
               disabled={!canSave || !compare || compare.to_add.length === 0}
-              onClick={() => onSave("all")}
+              onClick={() => setAsk({ action: "update" })}
               title={compare ? "새로 저장할 것만 올린다(공유+최종)" : "비교를 먼저 실행하세요"}
             >
               <UpdateIcon />
@@ -367,17 +368,60 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
           )}
         </div>
 
-        {mirrorAsk && compare && (
+        {ask && ask.action !== "mirror" && (
+          <div className="export-modal" role="dialog" aria-modal="true" aria-label="확인">
+            <div className="export-modal-box">
+              <h3>
+                {ask.action === "shared"
+                  ? `공유본 ${pending.shared}개를 저장하시겠습니까?`
+                  : ask.action === "final"
+                    ? `최종본 ${pending.final}개를 저장하시겠습니까?`
+                    : ask.action === "compare"
+                      ? "프로그램과 렌더 폴더를 비교하시겠습니까?"
+                      : `새로 추가된 ${compare?.to_add.length ?? 0}개를 올리시겠습니까?`}
+              </h3>
+              <p>
+                {ask.action === "shared"
+                  ? "공유 중인 것(최종 제외) 가운데 폴더에 없는 것만 컷 폴더의 shared 폴더에 저장합니다."
+                  : ask.action === "final"
+                    ? "최종(★)인 것 가운데 폴더에 없는 것만 저장합니다."
+                    : ask.action === "compare"
+                      ? "폴더의 파일은 바꾸지 않고 읽기만 합니다. 파일이 많으면 조금 걸릴 수 있습니다."
+                      : "공유본과 최종본 가운데 폴더에 없는 것만 저장합니다. 이미 있는 파일은 건너뜁니다."}
+              </p>
+              <div className="export-modal-btns">
+                <button type="button" className="export-ghost-btn" onClick={() => setAsk(null)}>
+                  아니오
+                </button>
+                <button
+                  type="button"
+                  className="export-ghost-btn strong"
+                  onClick={() => {
+                    const action = ask.action;
+                    setAsk(null);
+                    if (action === "compare") void onCompare();
+                    else if (action === "update") void onSave("all");
+                    else if (action !== "mirror") void onSave(action);
+                  }}
+                >
+                  예
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {ask?.action === "mirror" && compare && (
           <div className="export-modal" role="dialog" aria-modal="true" aria-label="미러 확인">
             <div className="export-modal-box">
-              <h3>렌더 폴더를 프로그램과 똑같이 맞출까요?</h3>
+              <h3>렌더 폴더를 프로그램과 똑같이 맞추시겠습니까?</h3>
               <p>
                 새로 저장 <b className="add">{compare.to_add.length}</b>개 · 정리 <b className="rm">{compare.extra.length}</b>개.
                 <br />
                 정리되는 파일은 지우지 않고 렌더 폴더의 <code>_mvhub_removed</code> 아래로 옮깁니다. 우리 앱이 저장한 파일(이름 규칙과 파일 안의 각인이 모두 맞는 것)만 옮기고,
                 {compare.unknown > 0 ? ` 모르는 파일 ${compare.unknown}개는` : " 사람이 넣은 파일은"} 건드리지 않습니다.
               </p>
-              {mirrorAsk.many && <p className="export-err">정리할 파일이 남는 파일보다 많습니다. 목록이 맞는지 한 번 더 확인해 주세요.</p>}
+              {ask.many && <p className="export-err">정리할 파일이 남는 파일보다 많습니다. 목록이 맞는지 한 번 더 확인해 주세요.</p>}
               {compare.extra.length > 0 && (
                 <ul className="export-history-list export-target-list">
                   {compare.extra.map((item) => (
@@ -389,11 +433,11 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                 </ul>
               )}
               <div className="export-modal-btns">
-                <button type="button" className="export-ghost-btn" onClick={() => setMirrorAsk(null)}>
-                  취소
+                <button type="button" className="export-ghost-btn" onClick={() => setAsk(null)}>
+                  아니오
                 </button>
-                <button type="button" className="export-ghost-btn danger strong" onClick={() => onMirror(mirrorAsk.many)}>
-                  {compare.extra.length}개 옮기고 {compare.to_add.length}개 저장
+                <button type="button" className="export-ghost-btn danger strong" onClick={() => onMirror(!!ask.many)}>
+                  예 — {compare.extra.length}개 옮기고 {compare.to_add.length}개 저장
                 </button>
               </div>
             </div>

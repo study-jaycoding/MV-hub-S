@@ -1616,6 +1616,8 @@ def _save_finals_scan(project_id: str, render: Path) -> dict:
     # **이미 저장돼 있던 파일**을 extra 로 오인해 치우지 않게(코덱스 P0) — wanted(저장·같음 계산용)와 따로 둔다.
     protected: set[Path] = set()
     blocked_ids: set[str] = set()
+    found: list[tuple[str, str]] = []
+    lost: list[str] = []
     same = 0
     for t in facts:
         kind = t.get("kind") or "final"
@@ -1629,6 +1631,11 @@ def _save_finals_scan(project_id: str, render: Path) -> dict:
             continue
         wanted.add(dest)
         dest_state = _dest_state(dest, t["gen_id"], ledger)
+        recorded = ledger.get(t["gen_id"])
+        if dest_state == "saved" and (not recorded or Path(recorded) != dest):
+            found.append((t["gen_id"], str(dest)))  # 폴더에는 있는데 대장에 없다(다른 PC 가 저장)
+        elif dest_state == "missing" and recorded:
+            lost.append(t["gen_id"])  # 대장에는 있는데 폴더에 없다(손으로 지웠거나 옮겨짐)
         if dest_state == "missing":
             to_add.append(item)
         elif dest_state == "conflict":
@@ -1636,6 +1643,10 @@ def _save_finals_scan(project_id: str, render: Path) -> dict:
             blocked.append({**item, "reason": _DEST_CONFLICT})
         else:
             same += 1
+    # 저장 대장을 실제 폴더에 맞춘다 — 탭을 열 때의 빠른 표시(대장만 봄)가 비교 한 번으로 정확해진다.
+    for gen_id, dest_path in found:
+        repo_manage.record_export(gen_id, dest_path, project_id)
+    repo_manage.forget_exports(lost)
     folders = {dest.parent for dest in protected}
     for entry in repo_manage.list_exports(project_id, limit=5000):  # 이 PC 가 예전에 저장한 자리(폴더가 바뀐 컷의 옛 폴더)
         old = Path(entry["dest_path"])
@@ -1817,8 +1828,10 @@ async def save_finals_mirror(project_id: str, body: MirrorIn, request: Request):
 
 @router.get("/save-finals")
 def save_finals_status(project_id: str, request: Request):
-    """저장 대상(최종본) 미리보기 + 저장 이력(대장). 읽기 전용 — 다운로드/복사 없음.
-    targets: 사실(서버/로컬) + 이 PC 디스크 판정(saved·렌더 연결) 조합. history: 대장(파일 존재)."""
+    """저장 대상(최종·공유) 미리보기 + 저장 이력(대장). 읽기 전용 — 다운로드/복사 없음.
+    ★`saved` 는 **이 PC 의 저장 대장(DB)** 만 보고 정한다 — 대상마다 NAS 를 확인하면(공유본은 수백 건) 탭을 열 때마다 느리다.
+    대장은 저장할 때 적히고, **비교**가 실제 폴더와 맞춘다(있는데 안 적힌 것은 적고, 적혔는데 없는 것은 지운다).
+    그래서 다른 PC 가 저장한 파일·손으로 지운 파일은 비교를 한 번 하기 전까지 여기에 반영되지 않는다. 저장 자체는 언제나 실제 폴더를 확인한다."""
     _require_project_read(request, project_id)
     state = project_folders.render_root_state(project_id)
     render_path = state.get("render_path") or ""
@@ -1850,10 +1863,8 @@ def save_finals_status(project_id: str, request: Request):
                 if dest is None:
                     reason = "경로 안전성 위반"
                 else:
-                    state_ = _dest_state(dest, t["gen_id"], ledger)
-                    saved = state_ == "saved"
-                    if state_ == "conflict":
-                        reason = _DEST_CONFLICT
+                    recorded = ledger.get(t["gen_id"])
+                    saved = bool(recorded) and Path(recorded) == dest
         targets.append(
             {
                 "gen_id": t["gen_id"],
