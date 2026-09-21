@@ -463,9 +463,13 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                   ))}
                 </ul>
               )}
+              {/* 문구는 단추에서 떼어 단추 바로 앞에 둔다(Jay 2026-09-21 A안) — 누르기 전에 개수를 읽게 */}
               <div className="export-modal-btns">
+                <span className="export-modal-note">
+                  <b className="rm">{compare.extra.length}</b>개 옮기고 <b className="add">{compare.to_add.length}</b>개 저장
+                </span>
                 <button type="button" className="export-ghost-btn danger strong" onClick={() => onMirror(!!ask.many)}>
-                  예 — {compare.extra.length}개 옮기고 {compare.to_add.length}개 저장
+                  예
                 </button>
                 <button type="button" className="export-ghost-btn" onClick={() => setAsk(null)}>
                   아니오

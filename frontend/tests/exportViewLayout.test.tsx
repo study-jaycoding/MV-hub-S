@@ -145,8 +145,9 @@ it("미러는 확인 창에서 본 목록을 그대로 보내고, 정리가 너�
   expect([...modal().querySelectorAll("code.export-history-path")].map((item) => item.textContent)).toEqual(["ep001/c0010 · c0010_old.mp4", "ep001/c0020/shared · c0020_old.mp4"]);
   expect(saveFinalsMirror).not.toHaveBeenCalled(); // 단추를 눌렀다고 바로 옮기지 않는다
   expect(modal().querySelector("h3")!.textContent).toBe("렌더 폴더를 프로그램과 똑같이 맞추시겠습니까?");
-  const go = () => [...modal().querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent!.includes("옮기고"))!;
-  expect(go().textContent).toBe("예 — 2개 옮기고 1개 저장");
+  // 문구는 단추에서 떼어 단추 바로 앞에 둔다(Jay 2026-09-21 A안) — 단추에는 "예"만, 순서는 문구 · 예 · 아니오
+  const go = () => [...modal().querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === "예")!;
+  expect([...modal().querySelector(".export-modal-btns")!.children].map((item) => item.textContent)).toEqual(["2개 옮기고 1개 저장", "예", "아니오"]);
   await act(async () => { go().click(); });
   expect(saveFinalsMirror).toHaveBeenLastCalledWith("p1", extra.map(({ folder_path, filename }) => ({ folder_path, filename })), false);
   expect(modal().textContent).toContain("정리할 파일이 남는 파일보다 많습니다"); // 서버의 재확인 요청 — 창을 다시 띄운다

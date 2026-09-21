@@ -604,7 +604,8 @@ tr.work-row-archived td { opacity: .62; }
 .export-modal-box h3 { margin: 0; font-size: 15px; }
 .export-modal-box p { margin: 0; font-size: 12.5px; line-height: 1.6; color: #c9ccd3; }
 .export-modal-box b.add { color: var(--accent); } .export-modal-box b.rm { color: #ff6277; }
-.export-modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.export-modal-btns { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 4px; }
+.export-modal-note { margin-right: 6px; font-size: 13px; color: #c9ccd3; }
 .export-icon-btn:disabled, .export-ghost-btn:disabled { opacity: .4; cursor: not-allowed; }
 .export-hint-two { line-height: 1.55; } .export-hint-two b { color: var(--text); font-weight: 700; }
 /* 비교 결과 판 */
