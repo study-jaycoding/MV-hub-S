@@ -807,6 +807,7 @@ updated: 2026-09-21
 | `projectFolderTree.ts` | 저장 | 프로젝트 폴더 캐시·펼침 상태 |
 | `folderContextMenu.ts` | 순수 | 폴더 우클릭 메뉴 규칙·위치 클램프 |
 | `teamSeen.ts` | store+저장 | 공유&리뷰 '새로 들어옴' 항목별 확인(ack) 모델 |
+| `stateGlow.ts` | store+저장 | 내가 방금 공유·보류·최종으로 바꾼 카드의 빛 — 쓰기 지점은 `armStateGlow(후보 id)` 만, `ThumbnailGrid` 가 재조회에서 상태가 달라진 후보를 기록하고 **새로 선택된** 카드를 확인 처리. ★이전 상태 비교는 탭별(로컬 행↔서버 행의 미러 지연), 저장 키는 `job_id` 앵커 |
 | `spotlightAssetRefs.ts` | 저장 | 에셋 드래그 페이로드 읽기/쓰기(창간) |
 
 **14. 프롬프트·스포트라이트(14)**
