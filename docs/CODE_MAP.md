@@ -143,7 +143,7 @@ updated: 2026-09-21
 | `auth.py`(513줄) | `POST /api/auth/{login\|access\|register}`·`PATCH /accounts/{email}/*` (16) | 가입·로그인·세션쿠키·계정 승인/역할/숨김 + 10분 super-admin 승격 | 0곳(로컬·서버 겸용 코드) |
 | `members.py`(65줄) | `GET /api/members`·`PATCH /members/{uid}/global-roles` (2) | 전역 멤버 목록·전역역할 변경 | 0곳 |
 | `projects.py`(622줄) | `GET /api/projects`·`POST /assign`·`GET /{pid}/folder-counts` 등 (17) | 프로젝트 CRUD·배정·멤버 역할·폴더 카운트 | 19곳 |
-| `manage.py`(1814줄) | `POST /telemetry/push`·`GET /team-overview`·`GET /tasks[-batch]`·`POST /save-finals` (42) | PM 대시보드: 텔레메트리 수신·팀 집계·크레딧 플랜·작업 CRUD·골드 저장 | 11곳. 서로 무관한 5개 도메인이 한 파일(§5) |
+| `manage.py`(2311줄) | `POST /telemetry/push`·`GET /team-overview`·`GET /tasks[-batch]`·`POST /save-finals`·`GET /save-finals/progress`·`POST /save-finals/cancel` (47) | PM 대시보드: 텔레메트리 수신·팀 집계·크레딧 플랜·작업 CRUD·골드 저장 | 11곳. 서로 무관한 5개 도메인이 한 파일(§5) |
 | `update_notices.py`(174줄) | `GET /api/update-notices`·`POST /admin/register` (7) | 릴리스 공지 등록·고정·공표·읽음 | 0곳(쓰기는 서버 Admin 역할 게이트로 제한 — 프록시 위임과는 다른 종류의 서버 제약) |
 
 **로컬 PC 기능(이 PC 에서만)**
@@ -595,7 +595,7 @@ updated: 2026-09-21
 | `manage/WorkFilterBar.tsx`(280줄) | 노션식 칩 필터 바(칩 · +필터) + 머리글에 놓이는 검색 상자 `WorkSearchBox` | 〃 |
 | `manage/KanbanBoard.tsx`(179줄 — 폴더 자동 작업은 상태가 컷에서 파생되므로 끌 수 없다, 수동 작업만 끌기) · `TableView.tsx`(351줄) · `CalendarView.tsx`(206줄) · `MonthlyTaskCalendar.tsx`(190줄) | 작업 뷰 4종(프레젠테이션 전용, `WorkViewProps` 주입) — 소요시간 포맷터가 뷰마다 다름(§5-b) | 〃 |
 | `manage/CutThumbs.tsx`(105줄) · `ColorTag.tsx`(35줄) | 컷 썸네일 / 색 라벨 | |
-| `manage/ExportView.tsx`(605줄) | 완료 탭 — **공유 저장 · 최종 저장(골드) │ 비교 · 미러 · 업데이트**. 미러·업데이트는 비교 결과가 있을 때만 켜지고, 저장·프로젝트 변경·새로고침이면 비교를 버린다. 단추 다섯 개 모두 예/아니오 확인 창(미러는 옮길 파일 목록 포함). 위 = 판 하나 · 가운데 = 비교 결과 · 아래 = 저장 대상 표(씬별 묶음 · 거르기 단추 · 창 높이를 따라 늘어남) ∣ 저장 이력. 설계 `docs/EXPORT_SYNC_DESIGN.md` | |
+| `manage/ExportView.tsx`(696줄) | 완료 탭 — **공유 저장 · 최종 저장(골드) │ 비교 · 미러 · 업데이트**. 저장이 도는 동안 진행률(`N / M 처리 중`)과 취소. 미러·업데이트는 비교 결과가 있을 때만 켜지고, 저장·프로젝트 변경·새로고침이면 비교를 버린다. 단추 다섯 개 모두 예/아니오 확인 창(미러는 옮길 파일 목록 포함). 위 = 판 하나 · 가운데 = 비교 결과 · 아래 = 저장 대상 표(씬별 묶음 · 거르기 단추 · 창 높이를 따라 늘어남) ∣ 저장 이력. 설계 `docs/EXPORT_SYNC_DESIGN.md` | |
 | `manage/ProjectManagerPanel.tsx`(708줄) | 프로젝트 관리 오버레이(생성·편집·역할·보관·순서) | |
 | `manage/ProjectMembersPanel.tsx`(236줄) · `ProjectPlanningDialog.tsx`(92줄) | 프로젝트 멤버 / 일정·예산 대화상자 | |
 | `manage/ProjectDateRangePicker.tsx`(156줄) · `UsagePeriodPicker.tsx`(204줄) | 손으로 짠 달력 2종 | |
