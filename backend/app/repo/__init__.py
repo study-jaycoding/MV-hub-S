@@ -47,6 +47,7 @@ from .scene_cards import *  # noqa: F401,F403  (캔버스 카드 소속 — leaf
 from .generation_views import *  # noqa: F401,F403  (마지막으로 본 생성물 표시 — leaf)
 from .manage_task_previews import local_task_previews
 from .accounts import *  # noqa: F401,F403
+from .last_admin import LastAdminError  # noqa: F401 (라우터가 409 로 바꾸는 예외 — 명시 re-export)
 
 # ── cross-module/외부에서 쓰일 수 있는 private 명시 re-export ──────────────
 from .identity import _MY_UID_CACHE, ensure_worker, get_setting, set_setting

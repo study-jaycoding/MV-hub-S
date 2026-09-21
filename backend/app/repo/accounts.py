@@ -14,6 +14,7 @@ from .. import rbac
 from ..db import get_connection
 from ..emailnorm import norm_email
 from ..services import auth
+from .last_admin import last_admin_guard
 
 _PUBLIC = "email, name, status, global_role, creator_uid, created_at, approved_at, password_changed_at, COALESCE(hidden,0) AS hidden"
 
@@ -209,25 +210,37 @@ def set_account_hidden(email: str, hidden: bool) -> Optional[dict[str, Any]]:
 
 
 def set_account_status(email: str, status: str) -> Optional[dict[str, Any]]:
-    """승인/거부/대기 전환. approved 면 approved_at 기록."""
+    """승인/거부/대기 전환. approved 면 approved_at 기록.
+    마지막 관리자를 승인에서 내리면 LastAdminError — 승인이 풀리면 권한도 같이 사라진다."""
     if status not in ("pending", "approved", "rejected"):
         raise ValueError(f"잘못된 상태: {status}")
     email = norm_email(email)
     with get_connection() as conn:
-        if not conn.execute("SELECT 1 FROM account WHERE email=?", (email,)).fetchone():
-            return None
-        if status == "approved":
-            # 승인 시 전역 역할이 비어 있으면 기본 member 로 보장(승인된 계정의 기본 역할=member).
-            conn.execute(
-                "UPDATE account SET status='approved', "
-                "approved_at=COALESCE(approved_at, datetime('now')), "
-                "global_role=CASE WHEN global_role IS NULL OR global_role='' "
-                "THEN 'member' ELSE global_role END WHERE email=?",
-                (email,),
-            )
-        else:
-            conn.execute("UPDATE account SET status=? WHERE email=?", (status, email))
-        account = _row(conn, email)
+        # 검사~쓰기를 한 쓰기락으로 — 관리자 둘이 동시에 서로를 내리면 둘 다 '나 말고 또 있다'를
+        # 보고 통과하는 경합이 있다. ★transaction-root 전용(중첩 호출 금지).
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if not conn.execute("SELECT 1 FROM account WHERE email=?", (email,)).fetchone():
+                conn.execute("COMMIT")
+                return None
+            with last_admin_guard(conn):
+                if status == "approved":
+                    # 승인 시 전역 역할이 비어 있으면 기본 member 로 보장(승인된 계정의 기본 역할=member).
+                    conn.execute(
+                        "UPDATE account SET status='approved', "
+                        "approved_at=COALESCE(approved_at, datetime('now')), "
+                        "global_role=CASE WHEN global_role IS NULL OR global_role='' "
+                        "THEN 'member' ELSE global_role END WHERE email=?",
+                        (email,),
+                    )
+                else:
+                    conn.execute("UPDATE account SET status=? WHERE email=?", (status, email))
+            account = _row(conn, email)
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:  # BEGIN 자체가 실패했으면 되돌릴 것이 없다(원래 오류를 가리지 않게)
+                conn.execute("ROLLBACK")
+            raise
     if status == "approved":
         _link_accounts_to_creators()
         return get_account(email) or account
@@ -264,18 +277,26 @@ def set_account_global_roles(
     csv = rbac.roles_to_str(global_roles) or rbac.MEMBER
     email = norm_email(email)
     with get_connection() as conn:
-        cur = conn.execute(
-            "UPDATE account SET global_role=? WHERE email=?", (csv, email)
-        )
-        if not cur.rowcount:
-            return None
-        row = conn.execute(
-            "SELECT creator_uid FROM account WHERE email=?", (email,)
-        ).fetchone()
-        if row and row["creator_uid"]:
-            conn.execute(
-                "INSERT INTO creator(uid, global_role) VALUES(?,?) "
-                "ON CONFLICT(uid) DO UPDATE SET global_role=excluded.global_role",
-                (row["creator_uid"], csv),
-            )
-        return _row(conn, email)
+        conn.execute("BEGIN IMMEDIATE")  # ★transaction-root 전용 — 위 set_account_status 와 같은 이유
+        try:
+            if not conn.execute("SELECT 1 FROM account WHERE email=?", (email,)).fetchone():
+                conn.execute("COMMIT")
+                return None
+            with last_admin_guard(conn):
+                conn.execute("UPDATE account SET global_role=? WHERE email=?", (csv, email))
+            row = conn.execute(
+                "SELECT creator_uid FROM account WHERE email=?", (email,)
+            ).fetchone()
+            if row and row["creator_uid"]:
+                conn.execute(
+                    "INSERT INTO creator(uid, global_role) VALUES(?,?) "
+                    "ON CONFLICT(uid) DO UPDATE SET global_role=excluded.global_role",
+                    (row["creator_uid"], csv),
+                )
+            account = _row(conn, email)
+            conn.execute("COMMIT")
+            return account
+        except Exception:
+            if conn.in_transaction:  # BEGIN 자체가 실패했으면 되돌릴 것이 없다(원래 오류를 가리지 않게)
+                conn.execute("ROLLBACK")
+            raise

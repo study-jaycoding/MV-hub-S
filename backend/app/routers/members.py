@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from .. import rbac, repo
 from ..config import AUTH_ENABLED
@@ -53,7 +53,10 @@ def list_members(request: Request):
 def set_member_global_roles(uid: str, body: GlobalRolesIn, request: Request):
     """v02 전역 역할(복수) 부여 — grant_global 역량(admin)만. 갱신된 멤버 목록 반환."""
     require_global_cap(request, "grant_global")
-    repo.set_member_global_roles(uid, body.global_roles)
+    try:
+        repo.set_member_global_roles(uid, body.global_roles)
+    except repo.LastAdminError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     journal_audit_event(
         "member.global_roles_changed",
         actor_uid=actor_id(request),

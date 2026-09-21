@@ -403,6 +403,8 @@ def set_status(email: str, body: StatusIn, request: Request):
     require_admin(request)
     try:
         acc = repo.set_account_status(email, body.status)
+    except repo.LastAdminError as e:  # ValueError(400) 보다 먼저 — 순서가 바뀌면 409 가 400 이 된다
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not acc:
@@ -422,7 +424,10 @@ def set_status(email: str, body: StatusIn, request: Request):
 def set_global_roles(email: str, body: AccountGlobalRolesIn, request: Request):
     """v02 전역 역할(복수) 부여 — grant_global 역량(admin)만. enforcement 가 읽는 축."""
     require_global_cap(request, "grant_global")
-    acc = repo.set_account_global_roles(email, body.global_roles)
+    try:
+        acc = repo.set_account_global_roles(email, body.global_roles)
+    except repo.LastAdminError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if not acc:
         raise HTTPException(status_code=404, detail="없는 계정")
     journal_audit_event(

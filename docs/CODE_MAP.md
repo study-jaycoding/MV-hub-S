@@ -175,7 +175,7 @@ updated: 2026-09-21
 | `hf_missing.py`(129줄) | HF 원본 누락분 휴지통 이동 흐름 | `trash_missing_generations` | `routers/generation.py` |
 | `generation_locate.py`(118줄) | 선택 생성물의 현재 라이브러리 위치 해석(읽기 전용) | `locate_generations` | `routers/library.py` |
 
-### 2.4 repo (`backend/app/repo/`, 44파일 — `__init__.py` 는 `from .X import *` 전량 re-export 파사드)
+### 2.4 repo (`backend/app/repo/`, 46파일 — `__init__.py` 는 `from .X import *` 전량 re-export 파사드)
 
 **생성물 코어 — 읽기·쓰기·행 보강**
 
@@ -212,8 +212,9 @@ updated: 2026-09-21
 
 | 파일 | 약 줄 | 한 줄 책임 | 주 진입점 |
 |---|---:|---|---|
-| `identity.py` | 1212 | worker·app_setting·creator·provider 신원 + 워크스페이스 등록부·멤버·크레딧 요약 | `repo.get_my_uid`·`list_members`·`list_workspace_options` |
-| `accounts.py` | 281 | 로그인 계정 CRUD·인증·전역역할·숨김 | `repo.register`·`authenticate` |
+| `identity.py` | 1222 | worker·app_setting·creator·provider 신원 + 워크스페이스 등록부·멤버·크레딧 요약 | `repo.get_my_uid`·`list_members`·`list_workspace_options` |
+| `accounts.py` | 340 | 로그인 계정 CRUD·인증·전역역할·숨김 | `repo.register`·`authenticate` |
+| `last_admin.py` | 49 | **마지막 관리자 보호** — 승인된 admin 이 0이 되는 쓰기를 같은 트랜잭션에서 되돌린다(`last_admin_guard`). `accounts`·`identity` 양쪽이 쓰므로 별도 모듈(한쪽에 두면 repo 안 import 순환). 설계 `docs/MEMBER_TABLE_DESIGN.md` §5-1 | `repo.LastAdminError`·`routers/auth`·`routers/members` |
 | `super_admin_sessions.py` | 106 | 10분 슈퍼관리자 세션 발급·조회·회수 | `repo.issue_super_admin_session` |
 | `project_membership.py` | 108 | 워크스페이스 자기보고 → 프로젝트 멤버 자동편입/수동제외 | `enroll_workspace_members_into_project` |
 

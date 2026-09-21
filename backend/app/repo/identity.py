@@ -10,6 +10,7 @@ from ..db import get_connection
 from ..emailnorm import norm_email
 from ._common import _UID_RE, _email_localpart
 from ._visibility import team_generation_visibility_clause
+from .last_admin import last_admin_guard
 
 
 # ── 작업자 ───────────────────────────────────────────────────────────────
@@ -1124,19 +1125,28 @@ def list_members(viewer_uid: Optional[str] = None) -> list[dict[str, Any]]:
 
 
 def set_member_global_roles(uid: str, global_roles) -> None:
-    """멤버 전역 역할(복수) 부여 — 리스트/CSV → CSV 저장. 연결된 account 에도 미러."""
+    """멤버 전역 역할(복수) 부여 — 리스트/CSV → CSV 저장. 연결된 account 에도 미러.
+    한 uid 에 account 가 여럿이면 한 번에 바뀐다 — 마지막 관리자가 사라지면 LastAdminError."""
     from .. import rbac
 
     csv = rbac.roles_to_str(global_roles)
     with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO creator(uid, global_role) VALUES(?,?) "
-            "ON CONFLICT(uid) DO UPDATE SET global_role=excluded.global_role",
-            (uid, csv),
-        )
-        conn.execute(
-            "UPDATE account SET global_role=? WHERE creator_uid=?", (csv or rbac.MEMBER, uid)
-        )
+        conn.execute("BEGIN IMMEDIATE")  # ★transaction-root 전용 — 검사~쓰기 직렬화
+        try:
+            with last_admin_guard(conn):
+                conn.execute(
+                    "INSERT INTO creator(uid, global_role) VALUES(?,?) "
+                    "ON CONFLICT(uid) DO UPDATE SET global_role=excluded.global_role",
+                    (uid, csv),
+                )
+                conn.execute(
+                    "UPDATE account SET global_role=? WHERE creator_uid=?", (csv or rbac.MEMBER, uid)
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:  # BEGIN 자체가 실패했으면 되돌릴 것이 없다(원래 오류를 가리지 않게)
+                conn.execute("ROLLBACK")
+            raise
 
 
 def set_creator_name(uid: str, name: Optional[str], overwrite: bool = True) -> None:
