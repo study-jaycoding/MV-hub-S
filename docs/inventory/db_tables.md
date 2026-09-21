@@ -10,7 +10,7 @@
 - **쓰는 모듈** = 리터럴 안의 `INSERT INTO`·`REPLACE INTO`·`UPDATE`·`DELETE FROM <테이블>`, **읽는 모듈** = `FROM`·`JOIN <테이블>`. 테이블 이름 자체를 `{}` 로 끼워 조립한 SQL 과 `FROM a, b` 의 둘째 이름은 못 잡는다 — **빈칸이 '아무도 안 쓴다'는 뜻은 아니다.** 경로는 `backend/app/` 을 뗀 것이다.
 - 컬럼은 싣지 않는다. 정의 파일의 `CREATE TABLE` 과 그 뒤 `ALTER TABLE … ADD COLUMN` 마이그레이션을 본다.
 
-테이블 69개.
+테이블 70개.
 
 | 테이블 | DB | 정의 파일 | 쓰는 모듈 | 읽는 모듈 |
 | --- | --- | --- | --- | --- |
@@ -28,6 +28,7 @@
 | `creator` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/accounts.py` `repo/identity.py` | `backend/cleanup_orphan_creators.py` `repo/identity.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_telemetry.py` `repo/share.py` `repo/trash.py` |
 | `credit_txn` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/manage_transactions.py` | `repo/manage.py` `repo/manage_schema.py` `repo/manage_transactions.py` |
 | `final_export` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` |
+| `final_export_old` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` |
 | `gen_auto_tag` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/generation_delete.py` `repo/identity.py` `repo/tags.py` | `repo/generation_rows.py` `repo/generations.py` `repo/generations_query.py` `repo/id_resolve.py` `repo/manage_tasks.py` `repo/share.py` `repo/trash.py` |
 | `gen_color_overlay` | content DB | `backend/schema.sql` `repo/id_resolve.py` | `repo/id_resolve.py` | `repo/id_resolve.py` |
 | `gen_reference` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/generation_delete.py` `repo/generation_references.py` | `repo/gen_requests.py` `repo/generation_rows.py` `repo/generation_sync.py` `repo/generations.py` `repo/history.py` `repo/share.py` `repo/trash.py` |
