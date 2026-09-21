@@ -132,7 +132,7 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertEqual((status["shared_supported"], status["shared_error"]), (False, "공유 서버 응답 없음"))
         self.assertEqual([t["gen_id"] for t in status["targets"]], ["final0000001"])  # 최종 목록은 그대로 뜬다
 
-        async def locked(project_id, request, render, folder_path=None, kind="final"):
+        async def locked(project_id, request, render, folder_path=None, kind="final", run=None):
             if kind == "shared":
                 raise HTTPException(status_code=400, detail="공유 서버 업데이트가 필요합니다")
             return {"saved": 1, "skipped": 0, "errors": []}

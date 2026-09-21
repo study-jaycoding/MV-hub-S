@@ -12,8 +12,10 @@ let projectList = [{ id: "p1", name: "fixture" }];
 const saveFinals = vi.hoisted(() => vi.fn());
 const saveFinalsCompare = vi.hoisted(() => vi.fn());
 const saveFinalsMirror = vi.hoisted(() => vi.fn());
+const saveFinalsProgress = vi.hoisted(() => vi.fn());
+const saveFinalsCancel = vi.hoisted(() => vi.fn());
 vi.mock("../src/api", () => ({ api: { projects: async () => ({ projects: projectList }) } }));
-vi.mock("../src/lib/manageApi", () => ({ manageApi: { saveFinalsStatus: async () => status, saveFinals, saveFinalsCompare, saveFinalsMirror } }));
+vi.mock("../src/lib/manageApi", () => ({ manageApi: { saveFinalsStatus: async () => status, saveFinals, saveFinalsCompare, saveFinalsMirror, saveFinalsProgress, saveFinalsCancel } }));
 const target = (gen_id: string, saved: boolean, reason: string | null, kind: SaveFinalsKind = "final", filename = gen_id + ".mp4") => ({ gen_id, kind, folder_path: "ep001/" + gen_id, filename, saved, reason });
 let root: Root, host: HTMLDivElement;
 
@@ -23,6 +25,8 @@ beforeEach(() => {
   saveFinals.mockReset().mockResolvedValue({ saved: 1, skipped: 0, errors: [] });
   saveFinalsCompare.mockReset();
   saveFinalsMirror.mockReset();
+  saveFinalsProgress.mockReset().mockResolvedValue({ progress: null });
+  saveFinalsCancel.mockReset().mockResolvedValue({ ok: true });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
@@ -231,4 +235,50 @@ it("같은 렌더 폴더를 다른 프로젝트도 쓰면 비교 결과가 정�
   expect(host.querySelector(".export-compare")!.textContent).toContain("다른 프로젝트가 1개");
   expect(host.querySelector(".export-compare")!.textContent).not.toContain("폴더가 프로그램과 같습니다");
   expect(button("미러").disabled).toBe(true); // 옮길 것도 저장할 것도 없다
+});
+
+it("저장이 도는 동안 진행률과 취소 단추가 보이고, 취소는 그 실행 세대로 보낸다", async () => {
+  status = { render_path: "R:/render", error: null, shared_supported: true, targets: [target("c0030", false, null, "shared")], history: [] };
+  let finish!: (value: { saved: number; skipped: number; errors: never[] }) => void;
+  saveFinals.mockReset().mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  const run = { run: 7, kind: "shared", total: 406, done: 12, saved: 12, skipped: 0, failed: 0, running: true, cancelled: false, started_at: 0, ended_at: null };
+  saveFinalsProgress.mockResolvedValue({ progress: run });
+  await mount();
+  expect(host.querySelector(".export-progress")!.textContent).toContain("이미 저장된 파일은 건너뜁니다");
+  await act(async () => { button("공유 저장").click(); });
+  await answer("예");
+  await act(async () => {}); // 첫 조회가 도착한다
+  const hint = () => host.querySelector(".export-progress")!.textContent!;
+  expect(hint()).toContain("12 / 406");
+  expect(hint()).toContain("처리 중"); // '끝난 수'가 아니라 '손댄 수'라 "저장 중"이라고 하지 않는다
+  const cancel = () => host.querySelector<HTMLButtonElement>(".export-cancel")!;
+  await act(async () => { cancel().click(); });
+  expect(saveFinalsCancel).toHaveBeenCalledWith("p1", 7); // 실행 세대를 같이 보낸다
+  await act(async () => { finish({ saved: 12, skipped: 0, errors: [] }); });
+  expect(host.querySelector(".export-cancel")).toBeNull(); // 끝나면 사라진다
+});
+
+it("진행률을 못 읽어도(구서버·권한 없음) 저장은 그대로 되고 화면만 종전처럼 보인다", async () => {
+  status = { render_path: "R:/render", error: null, shared_supported: true, targets: [target("c0030", false, null, "shared")], history: [] };
+  let finish!: (value: { saved: number; skipped: number; errors: never[] }) => void;
+  saveFinals.mockReset().mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  saveFinalsProgress.mockRejectedValue(new Error("404"));
+  await mount();
+  await act(async () => { button("공유 저장").click(); });
+  await answer("예");
+  await act(async () => {});
+  expect(host.querySelector(".export-progress")!.textContent).toBe("저장 중…");
+  expect(host.querySelector(".export-cancel")).toBeNull();
+  await act(async () => { finish({ saved: 1, skipped: 0, errors: [] }); });
+  expect(host.querySelector(".export-result")!.textContent).toContain("저장 1");
+});
+
+it("취소로 멈춘 결과는 취소됐다고 알려 준다", async () => {
+  status = { render_path: "R:/render", error: null, shared_supported: true, targets: [target("c0030", false, null, "shared")], history: [] };
+  saveFinals.mockReset().mockResolvedValue({ saved: 12, skipped: 0, errors: [], cancelled: true });
+  await mount();
+  await act(async () => { button("공유 저장").click(); });
+  await answer("예");
+  expect(host.querySelector(".export-result")!.textContent).toContain("취소됨");
+  expect(host.querySelector(".export-result")!.textContent).toContain("저장 12");
 });

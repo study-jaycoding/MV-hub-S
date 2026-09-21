@@ -232,6 +232,16 @@ export const manageApi = {
   saveFinalsCompare: (projectId: string) =>
     jsonFetch<SaveFinalsCompare>(withQuery("/api/manage/save-finals/compare", { project_id: projectId })),
   // 미러 — 없는 것을 저장하고, 폴더에만 남은 우리 파일을 격리 폴더로 옮긴다. confirm = 사용자가 확인 창에서 본 목록(서버는 그 교집합만 옮긴다).
+  // 저장 진행률·취소 — 저장이 이 PC 에서 돌므로 둘 다 로컬 전용 경로다(구서버는 404 → 화면이 진행률만 감춘다).
+  saveFinalsProgress: (projectId: string) =>
+    jsonFetch<{ progress: SaveFinalsProgress | null }>(
+      withQuery("/api/manage/save-finals/progress", { project_id: projectId }),
+    ),
+  saveFinalsCancel: (projectId: string, run: number) =>
+    jsonFetch<{ ok: boolean; reason?: string }>(
+      withQuery("/api/manage/save-finals/cancel", { project_id: projectId }),
+      { method: "POST", body: jsonBody({ run }) },
+    ),
   saveFinalsMirror: (projectId: string, confirm: { folder_path: string; filename: string }[], allowMany = false) =>
     jsonFetch<SaveFinalsResult>(withQuery("/api/manage/save-finals/mirror", { project_id: projectId }), {
       method: "POST",
@@ -403,6 +413,22 @@ export interface TeamBucket {
   elapsed_seconds: number;
 }
 
+// 지금 이 프로젝트의 저장이 어디까지 갔나. 저장은 프로젝트당 한 번만 돌아서 작업 id 가 없다.
+// `run` = 실행 세대 — 취소할 때 같이 보내 끝난 저장의 취소가 다음 저장을 죽이지 않게 한다.
+export interface SaveFinalsProgress {
+  run: number;
+  kind: string;
+  total: number;
+  done: number;
+  saved: number;
+  skipped: number;
+  failed: number;
+  running: boolean;
+  cancelled: boolean;
+  started_at: number;
+  ended_at: number | null;
+}
+
 export interface SaveFinalsResult {
   saved: number;
   skipped: number;
@@ -411,6 +437,7 @@ export interface SaveFinalsResult {
   moved?: { folder_path: string; filename: string }[];
   skipped_recent?: number;
   quarantine?: string | null;
+  cancelled?: boolean; // 취소로 멈췄다 — 저장한 것은 그대로다(다시 누르면 이어서)
 }
 
 export type SaveFinalsKind = "final" | "shared";

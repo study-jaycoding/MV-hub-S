@@ -607,6 +607,9 @@ tr.work-row-archived td { opacity: .62; }
 .export-modal-btns { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 4px; }
 .export-modal-note { margin-right: 6px; font-size: 13px; color: #c9ccd3; }
 .export-icon-btn:disabled, .export-ghost-btn:disabled { opacity: .4; cursor: not-allowed; }
+.export-progress b { color: var(--accent); font-variant-numeric: tabular-nums; }
+.export-progress .export-cancel { margin-left: 10px; padding: 3px 10px; font-size: 11.5px; vertical-align: 1px; }
+.export-cancelled { color: #d98a4a; }
 .export-hint-two { line-height: 1.55; } .export-hint-two b { color: var(--text); font-weight: 700; }
 /* 비교 결과 판 */
 .export-compare { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }

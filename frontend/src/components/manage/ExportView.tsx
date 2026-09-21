@@ -11,6 +11,7 @@ import {
   manageApi,
   type SaveFinalsCompare,
   type SaveFinalsKind,
+  type SaveFinalsProgress,
   type SaveFinalsResult,
   type SaveFinalsStatus,
   type SaveFinalsTarget,
@@ -51,6 +52,11 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const [compare, setCompare] = useState<SaveFinalsCompare | null>(null);
   const [comparing, setComparing] = useState(false);
   const [filter, setFilter] = useState<TargetFilter>("all"); // 저장 대상 표의 거르기 단추
+  // 저장 진행률 — 공유본이 수백 건이라 끝날 때까지 아무것도 안 보이면 멈춘 것과 구별되지 않는다.
+  const [progress, setProgress] = useState<SaveFinalsProgress | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const progressRunningRef = useRef(false);
+  const [pollTick, setPollTick] = useState(0); // 조회 결과가 '돌고 있음'이면 폴링을 이어간다
   // 확인 창 — 단추 다섯 개 모두 '~하시겠습니까? 예/아니오'를 거친다(Jay 2026-09-21). many = 미러에서 정리가 남는 것보다 많다는 서버의 재확인 요청.
   const [ask, setAsk] = useState<null | { action: SaveFinalsKind | "compare" | "update" | "mirror"; many?: boolean }>(null);
   const compareRequestRef = useRef(0);
@@ -160,6 +166,53 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const sceneGroups = [...groups.entries()]
     .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
     .map(([scene, rows]) => [scene, rows.sort((a, b) => a.cut.localeCompare(b.cut, undefined, { numeric: true }) || kindOf(a).localeCompare(kindOf(b)))] as const);
+
+  // 저장이 도는 동안에만 물어본다. 구서버·권한 없음이면 조용히 접는다(진행률은 부가 정보다).
+  useEffect(() => {
+    if (!pid) {
+      setProgress(null);
+      setCancelling(false);
+      return;
+    }
+    let alive = true;
+    const tick = () => {
+      manageApi
+        .saveFinalsProgress(pid)
+        .then((r) => {
+          if (!alive) return;
+          setProgress(r.progress);
+          const running = !!r.progress && r.progress.running;
+          if (running !== progressRunningRef.current) {
+            progressRunningRef.current = running;
+            setPollTick((n) => n + 1); // 폴링을 켜고 끈다
+          }
+        })
+        .catch(() => {
+          if (!alive) return;
+          setProgress(null); // 구서버·권한 없음 — 진행률은 부가 정보라 조용히 접는다
+          progressRunningRef.current = false;
+        });
+    };
+    tick();
+    // 저장 중이 아니어도 프로젝트를 고르면 한 번은 본다 — 창을 닫았다 열어도 '지난 저장' 결과가 보이고,
+    // 다른 창에서 도는 저장도 잡힌다. 계속 묻는 것은 실제로 도는 동안만.
+    const timer = busy || progressRunningRef.current ? window.setInterval(tick, 1000) : 0;
+    return () => {
+      alive = false;
+      if (timer) window.clearInterval(timer);
+    };
+  }, [busy, pid, pollTick]);
+
+  const onCancel = async () => {
+    if (!progress || !progress.running || cancelling) return;
+    setCancelling(true);
+    try {
+      const r = await manageApi.saveFinalsCancel(pid, progress.run);
+      if (!r.ok) setCancelling(false); // 이미 끝났거나 다른 저장이다 — 단추를 '멈추는 중'으로 붙잡아 두지 않는다
+    } catch {
+      setCancelling(false); // 실패하면 다시 누를 수 있게(저장은 계속 돈다)
+    }
+  };
 
   const onCompare = async () => {
     if (!canSave || comparing) return;
@@ -365,13 +418,36 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
               <b>업데이트</b> - 추가분 누적 동기화
             </span>
           </div>
-          <span className="export-hint">{busy ? "저장 중…" : comparing ? "비교하는 중…" : "이미 저장된 파일은 건너뜁니다."}</span>
+          <span className="export-hint export-progress">
+            {busy && progress && progress.total > 0 ? (
+              <>
+                <b>
+                  {progress.done} / {progress.total}
+                </b>{" "}
+                처리 중{progress.cancelled ? " — 멈추는 중(받던 파일 하나는 마칩니다)" : "…"}
+                {progress.running && !progress.cancelled && (
+                  <button type="button" className="export-ghost-btn export-cancel" disabled={cancelling} onClick={onCancel}>
+                    {cancelling ? "멈추는 중…" : "취소"}
+                  </button>
+                )}
+              </>
+            ) : busy ? (
+              "저장 중…"
+            ) : progress && !progress.running && progress.done > 0 ? (
+              `지난 저장: ${progress.done}건 처리${progress.cancelled ? "하고 멈춤" : " 완료"}`
+            ) : comparing ? (
+              "비교하는 중…"
+            ) : (
+              "이미 저장된 파일은 건너뜁니다."
+            )}
+          </span>
 
           {err && <div className="export-err">실패: {err}</div>}
 
           {result && (
             <div className="export-result">
               <div className="export-result-line">
+                {result.cancelled && <b className="export-cancelled">취소됨 — </b>}
                 저장 <b>{result.saved}</b> · 건너뜀 <b>{result.skipped}</b>
                 {result.moved ? (
                   <>

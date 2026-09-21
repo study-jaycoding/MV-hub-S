@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import gzip
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -1826,11 +1827,25 @@ async def save_finals_mirror(project_id: str, body: MirrorIn, request: Request):
             if asked > 5 and asked > first["same"] + len(first["to_add"]) and not body.allow_many:
                 raise HTTPException(status_code=409, detail=f"정리할 파일({asked}개)이 남는 파일({first['same'] + len(first['to_add'])}개)보다 많습니다. 비교 결과를 다시 확인한 뒤 진행하세요")
             saved = {"saved": 0, "skipped": 0, "errors": []}
-            for kind in final_export.KINDS:
-                part = await _save_finals_locked(project_id, request, render, None, kind)
-                saved["saved"] += part["saved"]
-                saved["skipped"] += part["skipped"]
-                saved["errors"] += part["errors"]
+            run = _progress_start(project_id, "mirror")
+            try:
+                for kind in final_export.KINDS:
+                    if _cancelled(run):
+                        break
+                    part = await _save_finals_locked(project_id, request, render, None, kind, run)
+                    saved["saved"] += part["saved"]
+                    saved["skipped"] += part["skipped"]
+                    saved["errors"] += part["errors"]
+                    _progress_tally(run, saved)
+            finally:
+                _progress_end(run)
+            if _cancelled(run):
+                # 취소 — 저장한 것까지만 두고 **정리는 시작하지 않는다**(파일을 옮기기 시작하면 중간에 멈출 수 없다).
+                result = {"moved": [], "skipped_recent": 0, "quarantine": None,
+                          "errors": [{"gen_id": "(미러)", "reason": "취소되어 정리하지 않았습니다 — 다시 비교하세요"}]}
+                log_event(_manage_log, "save_finals_mirror_cancelled", project_id=project_id, saved=saved["saved"])
+                return {**saved, "errors": [*saved["errors"], *result["errors"]], "moved": [],
+                        "skipped_recent": 0, "quarantine": None, "cancelled": True}
             try:
                 scan = await to_thread_non_abandon(_save_finals_scan, project_id, render)
                 result = await to_thread_non_abandon(_mirror_move, scan, body.confirm, body.allow_many)
@@ -1844,6 +1859,32 @@ async def save_finals_mirror(project_id: str, body: MirrorIn, request: Request):
             await to_thread_non_abandon(_nas_lock_release, lock, token)
     log_event(_manage_log, "save_finals_mirror", project_id=project_id, saved=saved["saved"], moved=len(result["moved"]), errors=len(saved["errors"]) + len(result["errors"]))
     return {**saved, "errors": [*saved["errors"], *result["errors"]], "moved": result["moved"], "skipped_recent": result["skipped_recent"], "quarantine": result["quarantine"]}
+
+
+class SaveFinalsCancelIn(BaseModel):
+    run: int  # 진행률 조회가 준 실행 세대 — 끝난 저장에 늦게 도착한 취소가 다음 저장을 죽이지 않게(코덱스 P1)
+
+
+@router.get("/save-finals/progress")
+async def save_finals_progress(project_id: str, request: Request):
+    """지금 이 프로젝트의 저장이 어디까지 갔나 — 로컬 전용(저장이 이 PC 에서 돈다).
+    저장은 프로젝트당 한 번만 돌아서(`_save_finals_lock`) 작업 id 없이 기록 하나면 된다.
+    ★async 로 둔다 — 동기 라우트는 워커 스레드에서 돌아 카운터 갱신과 겹쳐 읽을 수 있다(코덱스)."""
+    _require_project_manage(request, project_id)
+    return {"progress": _progress_view(project_id)}
+
+
+@router.post("/save-finals/cancel")
+async def save_finals_cancel(project_id: str, body: SaveFinalsCancelIn, request: Request):
+    """지금 도는 저장을 멈춘다 — 받던 파일 하나는 끝내고 그다음을 시작하지 않는다.
+    이미 저장된 것은 그대로 둔다(저장은 더하기만 한다 — 다시 누르면 이어서 한다)."""
+    _require_project_manage(request, project_id)
+    run = _SAVE_PROGRESS.get(project_id)
+    if run is None or run["run"] != body.run or not run["running"]:
+        return {"ok": False, "reason": "이미 끝났거나 다른 저장입니다"}
+    run["cancelled"] = True
+    log_event(_manage_log, "save_finals_cancel", project_id=project_id, run=body.run, done=run["done"])
+    return {"ok": True}
 
 
 @router.get("/save-finals")
@@ -1939,6 +1980,74 @@ def _dest_state(dest: Path, gen_id: str, ledger: dict[str, str]) -> str:
 # 마지막 사용자가 레지스트리에서 제거. 레지스트리 갱신은 await 없는 동기 구간(단일 루프)만.
 # ★단일 프로세스·단일 이벤트 루프 계약 — 다중 워커/타 PC 의 NAS 경합까지는 못 막는다
 # (그건 종전처럼 고유 .part+원자 교체+멱등 skip 이 방어선).
+# ── 저장 진행률·취소 ────────────────────────────────────────────────────────
+# 저장은 프로젝트당 한 번만 돈다(`_save_finals_lock`) → '지금 이 프로젝트의 저장'은 언제나 하나다.
+# 그래서 작업 id·시작/조회/취소 수명주기를 만들지 않고 프로젝트별 기록 하나만 둔다.
+# `run` 은 실행 세대 — 끝난 저장에 늦게 도착한 취소가 **다음** 저장을 죽이지 않게 한다(코덱스 P1).
+# 기록은 메모리에만 있다: 서버를 다시 켜면 사라지고, 프로세스가 여럿이면(지금은 하나) 잠금과
+# 마찬가지로 프로세스마다 따로라 지원하지 않는다.
+_SAVE_PROGRESS: dict[str, dict] = {}
+_SAVE_RUN_SEQ = itertools.count(1)
+_SAVE_PROGRESS_KEEP_SEC = 600  # 끝난 기록을 남겨 두는 시간 — 창을 닫았다 열어도 마지막 결과를 보여 준다
+
+
+def _progress_start(project_id: str, kind: str) -> dict:
+    """★잠금을 잡은 **뒤에** 부른다 — 잠금을 기다리던 다음 요청이 먼저 기록을 덮으면
+    앞 실행의 진행 수와 취소가 섞인다(코덱스 P1)."""
+    now = time.time()
+    # 조회되지 않은 프로젝트의 끝난 기록이 프로세스 수명 동안 쌓이지 않게, 시작할 때 한 번 쓸어낸다(코덱스 P2).
+    for other, old in [(k, v) for k, v in _SAVE_PROGRESS.items() if k != project_id]:
+        if not old["running"] and now - (old["ended_at"] or 0) > _SAVE_PROGRESS_KEEP_SEC:
+            _SAVE_PROGRESS.pop(other, None)
+    run = {
+        "run": next(_SAVE_RUN_SEQ), "kind": kind, "total": 0, "done": 0,
+        "saved": 0, "skipped": 0, "failed": 0, "running": True, "cancelled": False,
+        "started_at": now, "ended_at": None,
+    }
+    _SAVE_PROGRESS[project_id] = run
+    return run
+
+
+def _progress_end(run: dict) -> None:
+    run["running"] = False
+    run["ended_at"] = time.time()
+
+
+def _progress_add_total(run: Optional[dict], count: int) -> None:
+    """이 종류의 대상 수를 더한다. kind='all' 이면 최종 → 공유 순으로 두 번 더해져 도중에 총수가 는다."""
+    if run is not None:
+        run["total"] += count
+
+
+def _progress_begin_item(run: Optional[dict]) -> None:
+    """한 건을 **시작할 때** 센다 — `done` 은 '끝난 수'가 아니라 '손댄 수'다(계약).
+    순차 처리라 한 번에 하나뿐이라 끝난 수와 최대 1 차이이고, 루프 본문이 `continue` 로 여러 군데서
+    빠져나가도 세는 자리가 하나로 남는다(끝난 뒤에 세려면 본문 전체를 감싸 크게 들여써야 한다)."""
+    if run is not None:
+        run["done"] += 1
+
+
+def _progress_tally(run: Optional[dict], totals: dict) -> None:
+    """한 종류가 끝날 때 합계를 옮긴다(건마다 옮기면 루프 본문 열 군데를 고쳐야 한다)."""
+    if run is not None:
+        run.update(saved=totals["saved"], skipped=totals["skipped"], failed=len(totals["errors"]))
+
+
+def _cancelled(run: Optional[dict]) -> bool:
+    return bool(run and run["cancelled"])
+
+
+def _progress_view(project_id: str) -> Optional[dict]:
+    """조회용 사본 — 끝난 지 오래된 기록은 그때 버린다(타이머 없이)."""
+    run = _SAVE_PROGRESS.get(project_id)
+    if run is None:
+        return None
+    if not run["running"] and time.time() - (run["ended_at"] or 0) > _SAVE_PROGRESS_KEEP_SEC:
+        _SAVE_PROGRESS.pop(project_id, None)
+        return None
+    return dict(run)
+
+
 _SAVE_FINALS_LOCKS: dict[str, tuple[asyncio.Lock, int]] = {}
 
 
@@ -1997,24 +2106,32 @@ async def save_finals(
     render = Path(render_path)
 
     async with _save_finals_lock(project_id):
-        kinds = final_export.KINDS if kind == "all" else (kind,)
-        total: dict = {"saved": 0, "skipped": 0, "errors": []}
-        for one in kinds:  # 최종 먼저 — 공유→최종이 된 컷의 최종본이 먼저 자리 잡는다
-            try:
-                part = await _save_finals_locked(project_id, request, render, folder_path, one)
-            except HTTPException as e:
-                # all 에서 한 종류가 통째로 막혀도(예: 구서버라 공유 불가) 이미 저장한 쪽의 결과를 잃지 않는다(코덱스 P1).
-                if kind != "all":
-                    raise
-                part = {"saved": 0, "skipped": 0, "errors": [{"gen_id": f"({one})", "reason": str(e.detail)}]}
-            total["saved"] += part["saved"]
-            total["skipped"] += part["skipped"]
-            total["errors"] += part["errors"]
-        return total
+        run = _progress_start(project_id, kind)  # ★잠금을 잡은 뒤에 — 기다리던 다음 요청이 앞 실행의 기록을 덮지 않게
+        try:
+            kinds = final_export.KINDS if kind == "all" else (kind,)
+            total: dict = {"saved": 0, "skipped": 0, "errors": []}
+            for one in kinds:  # 최종 먼저 — 공유→최종이 된 컷의 최종본이 먼저 자리 잡는다
+                if _cancelled(run):
+                    break
+                try:
+                    part = await _save_finals_locked(project_id, request, render, folder_path, one, run)
+                except HTTPException as e:
+                    # all 에서 한 종류가 통째로 막혀도(예: 구서버라 공유 불가) 이미 저장한 쪽의 결과를 잃지 않는다(코덱스 P1).
+                    if kind != "all":
+                        raise
+                    part = {"saved": 0, "skipped": 0, "errors": [{"gen_id": f"({one})", "reason": str(e.detail)}]}
+                total["saved"] += part["saved"]
+                total["skipped"] += part["skipped"]
+                total["errors"] += part["errors"]
+                _progress_tally(run, total)
+            return {**total, "cancelled": _cancelled(run)}
+        finally:
+            _progress_end(run)  # 요청이 끊겨도(탭 닫기) 기록이 '진행 중'으로 남지 않게
 
 
 async def _save_finals_locked(
-    project_id: str, request: Request, render: Path, folder_path: Optional[str] = None, kind: str = "final"
+    project_id: str, request: Request, render: Path, folder_path: Optional[str] = None, kind: str = "final",
+    run: Optional[dict] = None,
 ):
     if _proxy.proxying():
         facts, server_outdated = await to_thread_non_abandon(_save_finals_facts, project_id, kind)
@@ -2027,8 +2144,12 @@ async def _save_finals_locked(
         saved, skipped = 0, 0
         errors: list[dict[str, str]] = []
         ledger = await to_thread_non_abandon(repo_manage.export_dest_paths, [t["gen_id"] for t in facts])
+        _progress_add_total(run, len(facts))
         # 순차 처리 — NAS 대역폭·서버 부하를 한 줄로(동시 다운로드 폭주 방지).
         for t in facts:
+            if _cancelled(run):  # 취소는 **건 사이**에만 본다 — 받던 파일 하나는 끝낸다(반쪽을 남기지 않는다)
+                break
+            _progress_begin_item(run)
             gen_id = t["gen_id"]
             try:
                 if t.get("reason"):
@@ -2084,7 +2205,11 @@ async def _save_finals_locked(
     saved, skipped = 0, 0
     errors: list[dict[str, str]] = []
     ledger = await to_thread_non_abandon(repo_manage.export_dest_paths, [f["gen_id"] for f in finals])
+    _progress_add_total(run, len(finals))
     for f in finals:
+        if _cancelled(run):  # 취소 — 받던 파일 하나는 끝내고 그다음을 시작하지 않는다
+            break
+        _progress_begin_item(run)
         gen_id = f["gen_id"]
         # 파일 1건 처리 전체를 격리 — 한 건 실패(경로/DB/OS)가 나머지 저장을 막지 않게(코덱스 #7).
         try:
