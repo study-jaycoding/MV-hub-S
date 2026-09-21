@@ -5,7 +5,7 @@ status: active
 
 # 완료 탭 — 공유 저장 · 최종 저장 · 비교 · 미러 · 업데이트 설계
 
-owner: Claude · reviewer: Codex(설계 검토 2026-09-21 — "고쳐서 진행, 미러는 조건을 갖춘 뒤") · status: 검증 중(1단계 구현 · Codex 코드 리뷰 반영, 2단계 비교부터 미착수)
+owner: Claude · reviewer: Codex(설계 검토 2026-09-21 — "고쳐서 진행, 미러는 조건을 갖춘 뒤") · status: 구현 중(1단계 · 2단계 비교 · 3가 업데이트 구현, 3나 미러 미착수 — 단추는 꺼 둠)
 touched_paths: `backend/app/services/final_export.py` · `services/project_folders.py` · `routers/manage.py`(save-finals 계열) ·
 `repo/manage.py` · `frontend/src/components/manage/ExportView.tsx` · `lib/manageApi.ts`
 
@@ -42,6 +42,16 @@ PM 창 '완료' 탭의 "완료만 저장하기"를 넓힌다(Jay 2026-09-21).
   `all` 에서 한 종류가 통째로 막히면(예: 구서버라 공유 불가) 이미 저장한 쪽의 결과를 잃지 않고 오류 줄로만 남긴다(Codex P1).
 - 상태 조회에서 공유 쪽 조회만 실패하면 최종 목록은 그대로 주고 `shared_supported=false`·`shared_error` 로 알린다 — 새 기능의 장애가 기존 최종 저장을 막지 않는다(Codex P1). 프런트는 `shared_supported === true` 일 때만 공유 저장을 켠다.
 - 대장에 없는 기존 파일은 상태 조회 때 각인을 읽는다(영상은 ffmpeg) — 다른 PC 가 저장한 파일이 많은 첫 조회는 느릴 수 있다(알려진 비용).
+
+## 3-1. 비교 · 업데이트(구현)
+
+- `GET /api/manage/save-finals/compare?project_id=` — **로컬 전용**(`_LOCAL_EXACT` 에 이 경로만), 프로젝트 관리 권한, 읽기만 한다.
+  `to_add`(프로그램에는 있는데 폴더에 없다) · `extra`(폴더에만 남은 우리 파일 — 이름 규칙 `<시퀀스>_<gen 앞 12자>` + 각인의 앞 12자 일치) · `blocked`(저장 불가·같은 이름의 다른 파일) · `same` · `unknown`(세기만).
+  훑는 폴더 = 대상 목적지의 부모 + 이 PC 대장에 남은 옛 저장 자리(렌더 루트 아래만). 렌더 루트 전체를 재귀로 훑지 않는다.
+  공유 쪽 조회가 실패하면 비교 전체를 실패시킨다 — 반쪽 비교로 '폴더에만 남은 것'을 잘못 세지 않게.
+  ★`extra` 의 12자 접두 일치는 **보여 주기용**이다. 미러가 파일을 옮길 때는 각인의 gen_id 전체 일치만 허용한다.
+- 업데이트 = `POST …/save-finals?kind=all`. 비교 결과의 목록이 아니라 **그 시점의 대상**을 저장한다 — 저장만 하므로 비교 뒤 새 대상이 더 들어가도 안전하고, 충돌 방어는 POST 가 그대로 한다.
+- 화면: 비교 결과는 프로젝트 변경·저장·새로고침 신호 때 버린다(요청 순번으로 늦게 온 응답도 버린다). 미러 단추는 개수만 보여 주고 꺼져 있다.
 
 ## 4. 미러를 열기 전에 풀어야 하는 것(Codex P0·P1)
 
