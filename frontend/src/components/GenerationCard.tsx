@@ -84,6 +84,7 @@ interface Props {
   ) => Promise<boolean>;
   thumbSize?: number; // 썸네일 요청 폭(px) — 그리드가 카드 표시크기×DPR 로 산출(작게 보이면 256). 없으면 512.
   fresh?: boolean; // 팀 탭 '새로 들어옴' — 라임 글로우(캔버스 방금생성과 같은 시각 언어)
+  stateGlow?: boolean; // 내가 방금 공유·보류·최종으로 바꾼 카드 — 선택 전까지 상태색 빛(lib/stateGlow)
 }
 
 function GenerationCardImpl({
@@ -93,6 +94,7 @@ function GenerationCardImpl({
   layout,
   thumbSize,
   fresh = false,
+  stateGlow = false,
   fill = true,
   selected = false,
   resolveHighlighted = false,
@@ -142,6 +144,9 @@ function GenerationCardImpl({
   // 표시크기×DPR 로 준 값(작게 보이면 256 → 디코딩 메모리 1/4). 없으면 512.
   const thumb = thumbOf(gen, thumbSize ?? 512);
   const isList = layout === "list";
+  // 테두리의 상태색(공유 라임·보류 빨강·최종 골드·실패 빨강) — 휴지통 카드는 상태 표시 대상이 아니다. 실패·차단은 공유될 수 없어 검토 상태와 겹치지 않는다.
+  const failed = gen.status === "failed" || gen.status === "nsfw";
+  const stateClass = gen.deleted ? "" : failed ? "failed" : reviewState(gen) === "unshared" ? "" : reviewState(gen);
   const videoRef = useRef<HTMLVideoElement>(null);
   // T 버튼 → 적용된 태그 목록 팝업(보기/✕삭제). 태그 '입력'은 # 키(editingField) 로만 — 에셋과 동일.
   // v02 CMS — S 더블클릭 → 최종(골드) 확인 플로팅. 단일클릭(공유 토글)과 충돌 방지용 타이머.
@@ -548,6 +553,8 @@ function GenerationCardImpl({
           (selected ? " selected" : "") +
           (resolveHighlighted ? " resolve-highlighted" : "") +
           (gen.is_final ? " final" : "") +
+          (stateClass ? " st-" + stateClass : "") +
+          (stateGlow && stateClass && !failed ? " state-new" : "") +
           (fresh ? " fresh" : "") +
           (gen.deleted && dimDeleted ? " deleted" : "")
         }
@@ -654,6 +661,8 @@ function GenerationCardImpl({
         (selected ? " selected" : "") +
         (resolveHighlighted ? " resolve-highlighted" : "") +
         (gen.is_final ? " final" : "") +
+        (stateClass ? " st-" + stateClass : "") +
+        (stateGlow && stateClass && !failed ? " state-new" : "") +
         (fresh ? " fresh" : "") +
         (gen.deleted && dimDeleted ? " deleted" : "")
       }

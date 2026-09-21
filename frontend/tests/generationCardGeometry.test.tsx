@@ -50,15 +50,17 @@ it.each(["grid", "list"] as const)("%s: gold star is centered, and all content s
   expect(getComputedStyle(host.querySelector(".card")!).overflow).toBe("visible");
   expect(host.querySelector(".card")!.children).toHaveLength(1);
   const clip = getComputedStyle(host.querySelector(".card-clip")!);
-  expect(clip.clipPath).toBe("inset(2px round 11px)");
+  expect(clip.clipPath).toBe("inset(3px round 10px)"); // 1px 여백 + 3px = 4px 선택 테두리(2026-09-21 Jay: 조금 더 두껍게)
   expect(["", "0", "0px"]).toContain(clip.borderRadius);
   expect(host.querySelector(".card.selected.resolve-highlighted")).not.toBeNull();
 });
 
-it("selection reveals one frame surface without a second stroke, while focus/Resolve glows remain", () => {
+it("selection reveals one frame surface without a second stroke; focus brightens the card's own border, Resolve glow remains", () => {
   expect(generationsCss).not.toContain(".card.selected::after");
-  expect(generationsCss).toContain("clip-path: inset(2px round 11px)");
-  expect(generationsCss).toContain("0 0 0 2px #fff, 0 0 0 4px var(--accent)");
+  expect(generationsCss).toContain("clip-path: inset(3px round 10px)");
+  // 포커스는 다른 색 링을 두르지 않는다(종전: 흰 링 + 라임 링) — 자기 상태색 테두리가 밝아지고 같은 색 1px 링만(2026-09-21 Jay).
+  expect(generationsCss).not.toContain("0 0 0 2px #fff, 0 0 0 4px var(--accent)");
+  expect(generationsCss).toContain(".gen-cell.focused .card, .gen-cell.focused .card.selected:hover { background: var(--st-hi); box-shadow: 0 0 0 1px var(--st-ring); }");
   expect(resolveCss).toContain("inset 0 0 0 2px #ff304f, 0 0 0 2px #ff304f, 0 0 18px 5px rgba(255, 48, 79, 0.72)");
 });
 

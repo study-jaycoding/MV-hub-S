@@ -155,7 +155,25 @@ it.each(["grid", "list"] as const)("%s: shared S opens immediate menu then Yes/N
   expect(p.onReview).toHaveBeenCalledWith(p.gen, "held"); expect(p.onUnpublish).not.toHaveBeenCalled();
 });
 
-it("held shows a red S without changing card border, return/finalize use exact actions", () => {
+// 2026-09-21 Jay: 테두리가 상태색을 따른다(공유 라임·보류 빨강·최종 골드 — styles/generations.css "테두리의 상태색"). 종전의 '보류는 테두리를 안 바꾼다'를 뒤집었다.
+it("card carries its review state as a border class, glows only when told, and never for trashed cards", () => {
+  const cls = (generation: Generation, extra: Partial<ComponentProps<typeof GenerationCard>> = {}) => {
+    act(() => root.render(<GenerationCard {...props(generation)} {...extra} />));
+    return [...host.querySelector(".card")!.classList].filter((name) => name.startsWith("st-") || name === "state-new");
+  };
+  expect(cls(gen({ shared: false }))).toEqual([]);
+  expect(cls(gen())).toEqual(["st-shared"]);
+  expect(cls(gen({ is_held: true }))).toEqual(["st-held"]);
+  expect(cls(gen({ is_final: true }))).toEqual(["st-final"]);
+  expect(cls(gen({ is_final: true }), { stateGlow: true })).toEqual(["st-final", "state-new"]);
+  expect(cls(gen({ shared: false }), { stateGlow: true })).toEqual([]); // 일반 카드는 빛나지 않는다
+  expect(cls(gen({ deleted: true }), { stateGlow: true })).toEqual([]);
+  expect(cls(gen({ shared: false, status: "failed" }))).toEqual(["st-failed"]); // 실패·차단 카드 = 빨강 테두리
+  expect(cls(gen({ shared: false, status: "nsfw" }), { stateGlow: true })).toEqual(["st-failed"]);
+  expect(cls(gen({ is_held: true }), { layout: "list" })).toEqual(["st-held"]);
+});
+
+it("held shows a red S, return/finalize use exact actions", () => {
   const p = props(gen({ is_held: true }));
   act(() => root.render(<GenerationCard {...p} />));
   expect(host.querySelector(".card-sf.held")?.textContent).toBe("S");

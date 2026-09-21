@@ -5,6 +5,7 @@ import { computeGradeStep, type GradeMode, type GradeStepResult } from "./gradeS
 import type { Generation } from "../types";
 import { withMirrorPendingNotice } from "./shareMirrorPending";
 import { t } from "./i18n";
+import { armStateGlow } from "./stateGlow";
 
 interface Args {
   canFinalize: (g: Generation) => boolean;
@@ -33,6 +34,7 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
   const confirm = async () => {
     if (!pending || busy) return;
     setBusy(true);
+    armStateGlow(pending.ops.map((o) => o.gen.id)); // 단계가 바뀐 카드가 재조회 뒤 그 상태색으로 빛난다
     const { ops } = pending;
     let ok = 0;
     let fail = 0;

@@ -9,6 +9,7 @@ import type { CanvasGenerationLink } from "./canvasGenerationRecovery";
 import { withMirrorPendingNotice } from "./shareMirrorPending";
 import { generationIssueFor } from "./generationDisplay";
 import { reviewTargets, type ReviewAction } from "./generationReview";
+import { armStateGlow } from "./stateGlow";
 
 interface UseGenerationCardActionsArgs {
   armedAutoTags: Set<string>;
@@ -136,6 +137,7 @@ export function useGenerationCardActions({
       .filter((generation) => !reviewInFlightRef.current.has(generation.id));
     if (!targets.length) { flash(t("바꿀 수 있는 항목이 없습니다.")); return; }
     for (const generation of targets) reviewInFlightRef.current.add(generation.id);
+    armStateGlow(targets.map((generation) => generation.id)); // 뒤이은 재조회에서 이 중 상태가 달라진 카드만 빛난다
     try {
       // 기존 다중 등급 처리와 같은 부분 성공 방식. 요청 헤더는 이 호출 문맥에서 함께 고정한다.
       const results = await Promise.allSettled(targets.map((generation) => api.setReviewState(generation, action)));
@@ -161,6 +163,7 @@ export function useGenerationCardActions({
   const onReview = (generation: Generation, action: ReviewAction) => onReviewSelection([generation], action, canFinalize);
 
   const onFinalize = async (g: Generation) => {
+    armStateGlow([g.id]);
     try {
       const result = await api.finalize(g.id);
       flash(withMirrorPendingNotice(t("최종(골드)으로 지정했습니다."), result, t));
@@ -172,6 +175,7 @@ export function useGenerationCardActions({
   };
 
   const onUnfinalize = async (g: Generation) => {
+    armStateGlow([g.id]);
     try {
       const result = await api.unfinalize(g.id);
       flash(withMirrorPendingNotice(t("최종 지정을 해제했습니다."), result, t));

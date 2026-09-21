@@ -26,6 +26,7 @@ import type { ReviewAction } from "../lib/generationReview";
 import { GenerationCard } from "./GenerationCard";
 import { useGenerationViewsSynced } from "../lib/useGenerationViewsSynced";
 import { TEAM_SCOPE } from "../lib/generationViews";
+import { ackStateGlow, getStateGlowVersion, observeReviewStates, stateGlowOf, subscribeStateGlow } from "../lib/stateGlow";
 import { getTeamSeenVersion, isFreshGen, subscribeTeamSeen } from "../lib/teamSeen";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../lib/workspaceCommand";
 
@@ -115,6 +116,17 @@ export function ThumbnailGrid(props: Props) {
   // '마지막으로 본' 결과 — Workspace 는 '' 칸, Share & Review 는 @team 칸(각자 하나씩, 사용자 확정).
   const genViews = useGenerationViewsSynced(props.tab === "team" ? TEAM_SCOPE : "");
   void teamSeenVer;
+  // '방금 내가 상태를 바꾼 카드'의 빛(lib/stateGlow) — 목록이 바뀔 때 달라진 상태를 집고, **새로 선택된** 카드는 확인된 것으로 끈다.
+  // 상태를 바꾸는 순간 이미 선택돼 있던 카드는 그대로 둔다(선택을 풀었을 때 빛이 보여야 한다) — 그래서 '선택돼 있음'이 아니라 '새로 들어옴'만 본다.
+  void useSyncExternalStore(subscribeStateGlow, getStateGlowVersion);
+  useEffect(() => observeReviewStates(generations, props.tab), [generations, props.tab]);
+  const ackedSelectionRef = useRef(selectedIds);
+  useEffect(() => {
+    const before = ackedSelectionRef.current;
+    ackedSelectionRef.current = selectedIds;
+    const added = generations.filter((generation) => selectedIds.has(generation.id) && !before.has(generation.id));
+    if (added.length) ackStateGlow(added);
+  }, [selectedIds, generations]);
 
   // 날짜별 그룹은 rowModel.dateGroups 로 통합(별도 O(n) 스캔 제거) — 아래 rowModel 참고.
 
@@ -258,6 +270,7 @@ export function ThumbnailGrid(props: Props) {
       lastViewed={genViews.card[""] === generation.id}
       tab={props.tab}
       fresh={props.tab === "team" && isFreshGen(generation)}
+      stateGlow={stateGlowOf(generation) !== null}
       myCreatorUid={props.myCreatorUid}
       layout={cardLayout}
       thumbSize={thumbSize}

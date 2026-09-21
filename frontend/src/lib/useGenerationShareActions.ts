@@ -4,6 +4,7 @@ import type { Generation } from "../types";
 import { shareableGenerations } from "./generationDisplay";
 import { withMirrorPendingNotice } from "./shareMirrorPending";
 import { t } from "./i18n";
+import { armStateGlow } from "./stateGlow";
 
 interface UseGenerationShareActionsArgs {
   bumpBoard: () => void;
@@ -18,6 +19,7 @@ export function useGenerationShareActions({
 }: UseGenerationShareActionsArgs) {
   const pushShare = async (ids: string[]): Promise<number> => {
     if (!ids.length) return 0;
+    armStateGlow(ids); // 공유로 바뀐 카드가 재조회 뒤 라임으로 빛난다
     try {
       const r = await api.publishToShared(ids);
       // mirror_pending은 서버 반영 성공이다. 로컬 published 수가 0이어도 blocked가 아닌 대상은
