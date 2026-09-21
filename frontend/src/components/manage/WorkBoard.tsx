@@ -21,13 +21,14 @@ import {
   type KeyedMutationQueue,
 } from "../../lib/mutationQueue";
 import { reconcileArrayState } from "../../lib/stateReconciliation";
+import { ArchiveHistoryIcon } from "../common/ViewIcons";
 import { CalendarView } from "./CalendarView";
 import { BoardView } from "./KanbanBoard";
 import { type ColorMap, loadColorMap, saveColorMap } from "./manageColors";
 import { scopeTasksToCreator } from "./personalWork";
 import { applyTaskPreviews, cutLocalId, prepareTaskPreviews, taskPreviewCandidates } from "./taskPreviews";
 import { TableView } from "./TableView";
-import { WorkFilterBar } from "./WorkFilterBar";
+import { WorkFilterBar, WorkSearchBox } from "./WorkFilterBar";
 import { useT } from "../../lib/i18n";
 import {
   emptyWorkFilters,
@@ -814,12 +815,15 @@ export function WorkBoard({
           </p>
         </div>
         <div className="work-head-ctl">
+          <WorkSearchBox value={filters.search} onChange={(search) => setFilters((f) => ({ ...f, search }))} />
           <button
             className={"work-history-toggle" + (showHistory ? " on" : "")}
             onClick={() => setShowHistory((value) => !value)}
-            title="보관된 작업(오래 새 생성이 없는 폴더·보관 프로젝트)까지 포함"
+            title="보관 기록 — 보관된 작업(오래 새 생성이 없는 폴더·보관 프로젝트)까지 포함"
+            aria-label="보관 기록"
+            aria-pressed={showHistory}
           >
-            보관 기록
+            <ArchiveHistoryIcon />
           </button>
           {/* 실제로 만든 생성물을 현재 작업자 기준으로 표시한다. */}
           {myUid ? (

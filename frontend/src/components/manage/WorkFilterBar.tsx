@@ -50,6 +50,21 @@ export function workFilterOptions(field: WorkFilterField, tasks: Task[]): Opt[] 
   return [...set].sort().map((v) => ({ value: v, label: v }));
 }
 
+// 검색 상자 — 작업 탭 머리글에서 보관 기록 단추 왼쪽에 놓인다(필터 막대에는 칩과 +필터만 남는다).
+export function WorkSearchBox({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="work-search">
+      <span className="work-search-ic">🔍</span>
+      <input value={value} placeholder="검색" onChange={(e) => onChange(e.target.value)} />
+      {value && (
+        <button className="work-search-x" title="지우기" onClick={() => onChange("")}>
+          ✕
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function WorkFilterBar({
   tasks,
   filters,
@@ -134,21 +149,6 @@ export function WorkFilterBar({
           </div>
         );
       })}
-      </div>
-
-      {/* 검색 — 남는 폭을 채워 넓게(칩과 +필터 사이) */}
-      <div className="work-search">
-        <span className="work-search-ic">🔍</span>
-        <input
-          value={filters.search}
-          placeholder="검색"
-          onChange={(e) => onChange({ ...filters, search: e.target.value })}
-        />
-        {filters.search && (
-          <button className="work-search-x" title="지우기" onClick={() => onChange({ ...filters, search: "" })}>
-            ✕
-          </button>
-        )}
       </div>
 
       {/* 필터 추가 — 우측 끝 */}
