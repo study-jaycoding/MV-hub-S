@@ -78,6 +78,11 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const pending = targets.filter((t) => !t.saved && !t.reason).length; // 새로 저장 가능
   const alreadySaved = targets.filter((t) => t.saved && !t.reason).length;
   const blocked = targets.filter((t) => t.reason); // 저장 불가(사유 있음)
+  // 저장 이력은 렌더 폴더 아래 부분만 보여 준다 — 반 폭 칸에서 파일 이름이 잘리지 않게(전체 경로는 툴팁).
+  const underRender = (path: string) => {
+    const root = renderPath.replace(/[\/]+$/, "");
+    return root && path.toLowerCase().startsWith(root.toLowerCase()) ? path.slice(root.length).replace(/^[\/]+/, "") || path : path;
+  };
   const canSave = !!pid && !!renderPath && !status?.error && !serverOutdated && !busy;
 
   const onSave = async () => {
@@ -108,36 +113,38 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
         </div>
       </header>
 
-      {/* 2단 — 왼쪽: 고르고 저장하는 판 · 오른쪽: 무엇이 저장되는지(대상)와 저장 이력 */}
+      {/* 위 = 한 장의 판(프로젝트 → 저장 위치 → 건수 → 저장) · 아래 = 왼쪽 저장 대상 / 오른쪽 저장 이력 */}
       <div className="export-cols">
         <div className="export-card">
-          <label className="export-target">
-            <span className="export-target-label">프로젝트</span>
-            <select
-              className="manage-proj-select"
-              value={pid}
-              onChange={(e) => setPid(e.target.value)}
-            >
-              {!projects.length && <option value="">(프로젝트 없음)</option>}
-              {projects.map((p) => (
-                <option key={p.pid} value={p.pid}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="export-fields">
+            <label className="export-target">
+              <span className="export-target-label">프로젝트</span>
+              <select
+                className="manage-proj-select"
+                value={pid}
+                onChange={(e) => setPid(e.target.value)}
+              >
+                {!projects.length && <option value="">(프로젝트 없음)</option>}
+                {projects.map((p) => (
+                  <option key={p.pid} value={p.pid}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-          <div className="export-target">
-            <span className="export-target-label">저장 위치 (렌더 폴더)</span>
-            {status?.error ? (
-              <span className="export-target-err">⚠ {status.error}</span>
-            ) : renderPath ? (
-              <code className="export-target-path">{renderPath}</code>
-            ) : (
-              <span className="export-target-err">
-                렌더 폴더가 연결되지 않았습니다. 관리자 창에서 프로젝트 폴더를 먼저 연결하세요.
-              </span>
-            )}
+            <div className="export-target">
+              <span className="export-target-label">저장 위치 (렌더 폴더)</span>
+              {status?.error ? (
+                <span className="export-target-err">⚠ {status.error}</span>
+              ) : renderPath ? (
+                <code className="export-target-path">{renderPath}</code>
+              ) : (
+                <span className="export-target-err">
+                  렌더 폴더가 연결되지 않았습니다. 관리자 창에서 프로젝트 폴더를 먼저 연결하세요.
+                </span>
+              )}
+            </div>
           </div>
 
           {serverOutdated && (
@@ -162,14 +169,16 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
             </div>
           </div>
 
-          <button className="export-btn" disabled={!canSave || pending === 0} onClick={onSave}>
-            {busy
-              ? `저장 중… (최대 ${pending}개)`
-              : pending === 0
-                ? "새로 저장할 최종본 없음"
-                : `완료만 저장하기 (${pending})`}
-          </button>
-          <span className="export-hint">이미 저장된 파일은 건너뜁니다.</span>
+          <div className="export-act">
+            <button className="export-btn" disabled={!canSave || pending === 0} onClick={onSave}>
+              {busy
+                ? `저장 중… (최대 ${pending}개)`
+                : pending === 0
+                  ? "새로 저장할 최종본 없음"
+                  : `완료만 저장하기 (${pending})`}
+            </button>
+            <span className="export-hint">이미 저장된 파일은 건너뜁니다.</span>
+          </div>
 
           {err && <div className="export-err">저장 실패: {err}</div>}
 
@@ -226,7 +235,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                 {status.history.map((h) => (
                   <li key={h.gen_id} className={h.exists ? "" : "missing"}>
                     <span className="export-history-when">{h.exported_at}</span>
-                    <code className="export-history-path">{h.dest_path}</code>
+                    <code className="export-history-path" title={h.dest_path}>{underRender(h.dest_path)}</code>
                     {!h.exists && <span className="export-history-gone">파일 없음</span>}
                   </li>
                 ))}

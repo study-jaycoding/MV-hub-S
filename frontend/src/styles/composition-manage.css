@@ -572,22 +572,26 @@ tr.work-row-archived td { opacity: .62; }
 
 
 /* 완료 탭 — 완료본 렌더폴더 저장 */
-/* 완료 탭 — 2단: 왼쪽 판(프로젝트·저장 위치·건수·저장) · 오른쪽(저장 대상·이력). 좁으면 한 단으로 */
-.export-cols { display: grid; grid-template-columns: 350px minmax(0, 1fr); gap: 16px; align-items: start; }
-@media (max-width: 820px) { .export-cols { grid-template-columns: minmax(0, 1fr); } }
-.export-card {
-  display: flex; flex-direction: column; gap: 14px; padding: 16px 18px;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-}
+/* 완료 탭 — 위: 한 장의 판(프로젝트·저장 위치 → 건수 → 저장, 줄마다 구분선) · 아래: 저장 대상 | 저장 이력(좁으면 위아래) */
+.export-cols { display: flex; flex-direction: column; gap: 18px; }
+.export-card { display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
+.export-card > * { padding: 16px 18px; }
+.export-card > * + * { border-top: 1px solid var(--border); }
+.export-fields { display: flex; gap: 18px; flex-wrap: wrap; }
+.export-fields > :first-child { flex: 0 0 240px; }
+.export-fields > :last-child { flex: 1 1 320px; min-width: 0; }
 .export-card .manage-proj-select { width: 100%; }
-.export-card .export-btn { align-self: stretch; }
-.export-side { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.export-act { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.export-act .export-btn { align-self: center; }
+.export-side { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 16px; align-items: start; min-width: 0; }
 .export-desc { font-size: 12.5px; line-height: 1.55; color: var(--muted); margin: 5px 0 0; }
 .export-desc code { padding: 1px 5px; border-radius: 4px; background: rgba(127,127,127,.15); font-size: 12px; }
 .export-target { display: flex; flex-direction: column; gap: 5px; }
 .export-target-label { font-size: 11.5px; font-weight: 700; color: var(--muted); }
-.export-counts { display: flex; gap: 18px; }
-.export-counts b { display: block; font-size: 20px; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.export-card > .export-counts { display: flex; padding: 0; }
+.export-counts > div { flex: 1; padding: 14px 18px; }
+.export-counts > div + div { border-left: 1px solid var(--border); }
+.export-counts b { display: block; font-size: 24px; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .export-counts span, .export-hint { font-size: 11.5px; color: var(--muted); }
 .export-counts .new b { color: var(--accent); }
 .export-counts .bad b { color: #d98a4a; }
@@ -627,7 +631,7 @@ tr.work-row-archived td { opacity: .62; }
 }
 .export-history-list li.missing { opacity: .6; }
 .export-history-when { flex: 0 0 auto; opacity: .6; font-variant-numeric: tabular-nums; }
-.export-history-path { flex: 1 1 auto; word-break: break-all; opacity: .85; }
+.export-history-path { flex: 1 1 auto; min-width: 0; word-break: break-all; opacity: .85; }
 .export-history-gone { flex: 0 0 auto; color: #d98a4a; font-weight: 700; }
 
 /* ── 통합 대시보드 (요약+팀전체) ─────────────────────────────────────────── */
