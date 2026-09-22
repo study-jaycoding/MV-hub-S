@@ -542,7 +542,7 @@ updated: 2026-09-21
 | `InlinePromptRefs.tsx`(70줄) | 프롬프트의 `@소스`를 썸네일 칩으로 | 3 |
 | `ResizableSidebar.tsx`(105줄) | 폭 조절 사이드바 껍데기 | 2 |
 | `FolderReviewCount.tsx`(18줄) | 폴더 검토 카운트 배지 | 1(`FolderTreeView` 전용 — 공용 폴더에 있지만 실제 공용 아님, §5-b) |
-| `ViewIcons.tsx`(39줄) | 리스트/그리드 SVG · 작업 탭 "보관 기록" 아이콘(`ArchiveHistoryIcon` — 상자+시곗바늘) | 2(`ViewControls`·`manage/WorkBoard`) |
+| `ViewIcons.tsx`(67줄) | 리스트/그리드 SVG · 작업 탭 "보관 기록" 아이콘(`ArchiveHistoryIcon` — 상자+시곗바늘) · 꽉 채우기/필터 사이드바/정보(`FitIcon`·`FilterPanelIcon`·`InfoIcon` — 글자 ▣▢▷ⓘ 가 기준선 탓에 1~1.6px 아래라 SVG 로, 2026-09-22 실측) | 9(`ViewControls`·`LibraryToolbar`·`CompareModal`·`VideoCompareModal`·`assets/AssetCell`·`generation/GenerationThumbOverlay`·`scene/SceneVariantPopup`·`history/HistoryBoardNode`·`manage/WorkBoard`) |
 
 #### 미디어 보기·비교·부분수정(최상위 + `compare/` + `edit/`, 9파일)
 
@@ -1112,6 +1112,7 @@ updated: 2026-09-21
 | `repo/gen_requests.py` 일반축(`o.id<>r.id`) ↔ 캔버스축(NULL-safe 비교) "다른 요청이 이 gen 을 쓰고 있나" 가드 | 형태는 다르지만 유니크 인덱스를 고려하면 효과는 같아 보인다(등가성은 시험으로 확인되지 않음 — 추정) |
 | `frontend/src/lib/sceneDragSession.ts` 의 `SceneDragEnvironment` 주입 인터페이스 | 구현이 하나뿐이라 "야그니"로 보이지만, `frontend/tests/sceneDragSession.test.ts` 가 가짜 환경(`addListener`·`requestFrame`·`cancelFrame`)을 주입해 시험하는 DI 이음새다. 인라인화하면 그 시험이 설 자리가 사라진다 |
 | 씬(`scene/`)·스포트라이트(`spotlight/`) 사이의 근사 중복(삽입 위치 계산·드래그 세션·바깥클릭+Esc·가시성 폴러) | 알고리즘은 같지만 feature 경계(ARCHITECTURE §2 "feature 끼리 직접 import 금지") 때문에 각자 복제됐다 — **합칠 자리는 `shared`/`lib` 이지 서로를 참조하는 게 아니다** |
+| 글자 아이콘 단추의 `@supports (text-box …)` 규칙 3곳(`styles/generations.css` `.card-sf`·`.card-cm`·`.ov-icon` · `styles/history.css` `.linb-ov-btn`·`.linb-sf` · `styles/assets.css` `.af-btn`) | 같은 처방(글자 칸을 대문자 높이로 다듬어 정중앙)이지만 한 규칙으로 못 합친다 — text-box 는 flex·grid 안 글자에 안 먹어 단추마다 block 으로 바꿔야 하고, SVG 를 담는 상태(최종 ★·ⓘ·가계 보기)·span 그립은 클래스별로 빼야 한다. 미지원 브라우저는 `@supports` 밖의 옛 flex 정렬 그대로 |
 | S2 — `restart_server_task.ps1`(`Test-MvHubServerCommandLine`) ↔ `tools/stop_local_hub_on_port.ps1`(`BundledPythonPath` 레거시 폴백 추가) | 포트 소유권 판정 로직이 거의 같지만, `stop_local_hub_on_port.ps1` 에만 있는 레거시 폴백의 존재 이유가 확인되지 않았다 — **합치기 전에 그 폴백이 지키는 것부터 확인**(안전장치로 확정된 것은 아니고, 확인이 필요하다는 뜻) |
 
 ### (b) 이름이 같은데 동작이 다른 것 / 이름이 헷갈리는 쌍
