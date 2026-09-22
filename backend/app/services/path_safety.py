@@ -9,8 +9,36 @@
 
 from __future__ import annotations
 
+import ctypes
+import os
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import Optional, Union
+
+
+def unc_for_drive(path: str) -> Optional[str]:
+    """연결된 네트워크 드라이브(Z: 등)로 시작하면 그 공유의 UNC 로 바꾼다. 드라이브 글자가 없거나 로컬 드라이브면 그대로.
+    드라이브 글자인데 어디에 걸렸는지 이 PC 에서 알 수 없으면 None(모름) — 같은 폴더인지 판정하는 쪽이 안전측을 고른다.
+
+    같은 NAS 를 `Z:` 와 UNC 로 달리 적으면 경로 대조가 빗나간다(Codex P1 — Resolve 라이브러리·완료 탭 미러).
+    Windows 가 기억하는 드라이브 → 공유 대응표(WNetGetConnectionW)와 드라이브 종류(GetDriveTypeW)만 묻고 네트워크는
+    건드리지 않는다. ★연결 안 된 빈 글자도 로컬 드라이브와 같은 2250(ERROR_NOT_CONNECTED)을 돌려준다(2026-09-22 이 PC
+    실측 — C:·D: 와 Q:·Y:) → 드라이브 종류로 '있는 로컬 드라이브'일 때만 그대로 둔다.
+    """
+    drive, rest = os.path.splitdrive(path)
+    if os.name != "nt" or len(drive) != 2 or drive[1] != ":":
+        return path
+    buffer = ctypes.create_unicode_buffer(1024)
+    size = ctypes.c_ulong(len(buffer))
+    try:
+        code = ctypes.windll.mpr.WNetGetConnectionW(drive, buffer, ctypes.byref(size))
+        # 0 = 연결됨, 1201 = 지금은 끊겼지만 기억된 연결 — 둘 다 대응표로는 유효하다.
+        if code in (0, 1201) and buffer.value:
+            return buffer.value + rest
+        kind = ctypes.windll.kernel32.GetDriveTypeW(drive + "\\")
+    except (AttributeError, OSError):
+        return None
+    # 2 이동식 · 3 고정 · 5 CD · 6 RAM 디스크 = 로컬. 0 모름 · 1 없는 글자 · 4 네트워크인데 대응표를 못 읽음 = 모름.
+    return path if kind in (2, 3, 5, 6) else None
 
 
 def path_comparison_key(path: PurePath) -> PurePath:

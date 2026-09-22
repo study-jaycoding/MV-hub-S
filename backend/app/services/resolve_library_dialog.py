@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import json
 import hashlib
 import os
@@ -13,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .path_safety import unc_for_drive
 from .resolve_diagnostics import resolve_environment_snapshot
 from .resolve_status_runner import resolve_mutation_slot, run_resolve_library_list_isolated
 
@@ -392,30 +392,9 @@ def _dblist_path() -> Path:
     )
 
 
-def _unc_for_drive(path: str) -> str:
-    """연결된 네트워크 드라이브(Z: 등)로 시작하면 그 공유의 UNC 로 바꾼다. 아니면 그대로.
-
-    같은 NAS 를 `Z:` 와 UNC 로 달리 적으면 경로 대조가 빗나가 막다른 골목이 된다(Codex P1,
-    이 PC 의 Z: 가 바로 Jay 라이브러리가 걸린 공유다). Windows 가 기억하는 드라이브 → 공유
-    대응표만 묻고(WNetGetConnectionW) 네트워크는 건드리지 않는다.
-    """
-    drive, rest = os.path.splitdrive(path)
-    if os.name != "nt" or len(drive) != 2 or drive[1] != ":":
-        return path
-    buffer = ctypes.create_unicode_buffer(1024)
-    size = ctypes.c_ulong(len(buffer))
-    try:
-        code = ctypes.windll.mpr.WNetGetConnectionW(drive, buffer, ctypes.byref(size))
-    except (AttributeError, OSError):
-        return path
-    # 0 = 연결됨, 1201 = 지금은 끊겼지만 기억된 연결 — 둘 다 대응표로는 유효하다.
-    if code not in (0, 1201) or not buffer.value:
-        return path
-    return buffer.value + rest
-
-
 def _folder_key(value: str) -> str:
-    return os.path.normcase(os.path.normpath(_unc_for_drive(value))).rstrip("\\/")
+    # Z: 와 UNC 로 달리 적은 같은 NAS 폴더를 맞춘다(path_safety.unc_for_drive). 모르면(None) 적힌 그대로 견준다.
+    return os.path.normcase(os.path.normpath(unc_for_drive(value) or value)).rstrip("\\/")
 
 
 def registered_library_name(library_root: Path) -> str | None:

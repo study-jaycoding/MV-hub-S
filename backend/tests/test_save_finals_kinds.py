@@ -529,14 +529,41 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertEqual(len(scan["to_add"]), 3)  # 저장할 것은 그대로 보인다
         self.assertEqual((out["saved"], out["moved"]), (3, []))
         self.assertTrue((cut / "c1_oldfinal0000.png").is_file())
-        with db.get_connection() as conn:
-            conn.execute("UPDATE project SET render_root_path='Z:/elsewhere' WHERE id='p2'")
+        with db.get_connection() as conn:  # 다른 로컬 폴더 — 드라이브 글자(Z: 등)는 PC 마다 대응이 달라 쓰지 않는다
+            conn.execute("UPDATE project SET render_root_path=? WHERE id='p2'", (str(render.parent.parent / "elsewhere"),))
         with ExitStack() as stack:
             for item in patches:
                 stack.enter_context(item)
             alone = manage_router.save_finals_compare("p1", mock.Mock())
         self.assertIsNone(alone["cleanup_blocked"])
         self.assertIn("c1_oldfinal0000.png", {e["filename"] for e in alone["extra"]})  # 혼자 쓰는 폴더면 종전처럼 찾는다
+
+    def test_drive_letter_and_unc_forms_of_one_render_folder_are_the_same_folder(self):
+        """같은 NAS 폴더를 `Z:` 와 UNC 로 달리 적어도 같은 렌더 폴더다(Codex P1 2026-09-22). 드라이브 대응을 이 PC 에서
+        알 수 없으면 같은 폴더일 수 있다고 보고 넣는다(정리를 막는 쪽). 로컬 드라이브는 종전처럼 글자로 견준다."""
+        def fake_unc(path):
+            head = path[:2].upper()
+            if head == "Z:":
+                return "\\\\nas\\share" + path[2:]
+            return None if head == "Y:" else path
+
+        with db.get_connection() as conn:
+            conn.execute("INSERT INTO project(id, name, kind, archived) VALUES('p2','둘째 프로젝트','team',0)")
+        cases = [
+            ("Z:\\PROJ", "\\\\NAS\\share\\proj\\Render", ["p2"]),  # 같은 폴더를 드라이브·UNC 로
+            ("C:\\proj", "C:/PROJ/Render/", ["p2"]),               # 로컬 — 글자로(대소문자·구분자·끝 /Render 무시)
+            ("C:\\proj", "C:\\other", []),
+            ("C:\\proj", "Y:\\proj", ["p2"]),                      # 모름 → 같을 수 있다
+            ("Y:\\proj", "C:\\other", ["p2"]),
+            ("C:\\proj", "", []),                                  # 렌더 폴더 없는 프로젝트는 빼고
+        ]
+        for mine, theirs, expected in cases:
+            with self.subTest(mine=mine, theirs=theirs):
+                with db.get_connection() as conn:
+                    conn.execute("UPDATE project SET render_root_path=? WHERE id='p1'", (mine,))
+                    conn.execute("UPDATE project SET render_root_path=? WHERE id='p2'", (theirs,))
+                with mock.patch.object(project_folders, "unc_for_drive", side_effect=fake_unc):
+                    self.assertEqual(project_folders.projects_sharing_root("p1"), expected)
 
     def test_ledger_evidence_has_no_row_limit(self):
         """증거 조회는 이력 표시용 상한(list_exports)을 쓰지 않는다 — 대장이 5,000줄을 넘어도 오래된 저장 자리가 '우리 파일'로 남는다."""

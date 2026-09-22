@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .path_safety import safe_join
+from .path_safety import safe_join, unc_for_drive
 from ..repo import manage as repo_manage
 from ..repo import projects as repo_projects
 
@@ -68,18 +68,30 @@ def effective_root_path(pid: str) -> str:
 
 
 def projects_sharing_root(pid: str) -> list[str]:
-    """이 프로젝트와 **같은 렌더 폴더**를 쓰는 다른 프로젝트의 id — 경로 글자만 견준다(디스크에 묻지 않는다).
+    """이 프로젝트와 **같은 렌더 폴더**를 쓰는 다른 프로젝트의 id — 경로 글자로 견준다(디스크에 묻지 않는다).
     파일의 각인에는 프로젝트가 없어서, 한 폴더를 두 프로젝트가 쓰면 미러는 어느 파일이 어느 프로젝트의 것인지 가릴 수 없다
     (생성물을 다른 프로젝트로 옮긴 경우 이 PC 의 대장 증거까지 옛 프로젝트에 남는다) → 부르는 쪽이 정리를 하지 않는다.
-    ponytail: 매핑 드라이브와 UNC 처럼 글자가 다른 같은 폴더는 못 잡는다(드라이브 매핑은 팀 공통 전제) — 필요해지면 resolve 비교로."""
-    def key(raw: str) -> str:
-        text = (raw or "").strip().replace("\\", "/").rstrip("/").casefold()
+    매핑 드라이브(Z:)는 이 PC 의 대응표로 UNC 로 바꿔 견준다 — `Z:\\x` 와 `\\\\nas\\share\\x` 는 같은 폴더다(Codex P1 2026-09-22).
+    드라이브 대응을 알 수 없는 경로는 같은 폴더일 수 있다고 보고 넣는다(정리를 막는 쪽)."""
+    def key(raw: str) -> str | None:
+        text = (raw or "").strip()
+        if not text:
+            return ""
+        unc = unc_for_drive(text)
+        if unc is None:
+            return None
+        text = unc.replace("\\", "/").rstrip("/").casefold()
         return text[: -len("/render")] if text.endswith("/render") else text
 
     mine = key(effective_root_path(pid))
-    if not mine:
+    if mine == "":
         return []
-    return [other for other, _ in repo_projects.list_id_names() if other != pid and key(effective_root_path(other)) == mine]
+    sharing = []
+    for other, _ in repo_projects.list_id_names():
+        theirs = key(effective_root_path(other)) if other != pid else ""
+        if theirs != "" and (mine is None or theirs is None or theirs == mine):
+            sharing.append(other)
+    return sharing
 
 
 _EXT_BY_TYPE = {"video": ".mp4", "image": ".png", "audio": ".mp3", "3d": ".glb"}

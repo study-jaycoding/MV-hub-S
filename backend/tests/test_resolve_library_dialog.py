@@ -348,39 +348,13 @@ class ResolveRegisteredLibraryTests(unittest.TestCase):
         def fake_unc(path):
             return path.replace("Z:", r"\\nas\share", 1) if path[:2].upper() == "Z:" else path
 
-        with mock.patch.object(resolve_library_dialog, "_unc_for_drive", side_effect=fake_unc):
+        with mock.patch.object(resolve_library_dialog, "unc_for_drive", side_effect=fake_unc):
             self.assertEqual(self._lookup(r"Z:\PROJECT_MUDX\10_ai\@davinci"), "MVHub - 뻘뻘뻘")
             content = "MVHub - 뻘뻘뻘:Z\\PROJECT_MUDX\\10_ai\\@davinci::::DISK\r\n"
             self.assertEqual(self._lookup(r"\\nas\share\PROJECT_MUDX\10_ai\@davinci", content), "MVHub - 뻘뻘뻘")
-
-    def test_unc_for_drive_asks_windows_only_for_drive_letters(self):
-        calls = []
-
-        def fake_wnet(drive, buffer, _size):
-            calls.append(drive)
-            buffer.value = r"\\nas\share"
-            return 0
-
-        fake = mock.Mock()
-        fake.mpr.WNetGetConnectionW.side_effect = fake_wnet
-        with (
-            mock.patch.object(resolve_library_dialog.os, "name", "nt"),
-            mock.patch.object(resolve_library_dialog.ctypes, "windll", fake, create=True),
-        ):
-            self.assertEqual(
-                resolve_library_dialog._unc_for_drive(r"Z:\PROJECT\@davinci"), r"\\nas\share\PROJECT\@davinci"
-            )
-            self.assertEqual(resolve_library_dialog._unc_for_drive(r"\\nas\share\x"), r"\\nas\share\x")
-        self.assertEqual(calls, ["Z:"])
-
-    def test_unc_for_drive_leaves_local_or_unknown_drives_alone(self):
-        fake = mock.Mock()
-        fake.mpr.WNetGetConnectionW.return_value = 2250  # ERROR_NOT_CONNECTED — 네트워크 드라이브가 아니다
-        with (
-            mock.patch.object(resolve_library_dialog.os, "name", "nt"),
-            mock.patch.object(resolve_library_dialog.ctypes, "windll", fake, create=True),
-        ):
-            self.assertEqual(resolve_library_dialog._unc_for_drive(r"C:\Users"), r"C:\Users")
+        # 드라이브 대응을 모르면(None) 적힌 그대로 견준다 — 종전 동작.
+        with mock.patch.object(resolve_library_dialog, "unc_for_drive", return_value=None):
+            self.assertEqual(self._lookup(r"\\nas\share\PROJECT_MUDX\10_ai\@davinci"), "MVHub - 뻘뻘뻘")
 
     def test_non_disk_libraries_are_ignored(self):
         content = SAMPLE_DBLIST + "Server:10.0.0.5:5432:resolve:user:PostgreSQL\r\n"

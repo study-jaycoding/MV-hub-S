@@ -196,3 +196,34 @@ def test_safe_join_preserves_long_extended_io_path(tmp_path):
     assert str(result).startswith("\\\\?\\")
     assert len(str(result)) > 260
     assert result.read_bytes() == b"long-path-content"
+
+
+def _fake_windll(wnet_code: int, unc: str = "", drive_type: int = 3):
+    calls = []
+
+    def fake_wnet(drive, buffer, _size):
+        calls.append(drive)
+        buffer.value = unc
+        return wnet_code
+
+    fake = mock.Mock()
+    fake.mpr.WNetGetConnectionW.side_effect = fake_wnet
+    fake.kernel32.GetDriveTypeW.return_value = drive_type
+    return fake, calls
+
+
+def test_unc_for_drive_maps_network_drives_and_asks_windows_only_for_drive_letters():
+    fake, calls = _fake_windll(0, r"\\nas\share")
+    with mock.patch.object(path_safety.os, "name", "nt"), mock.patch.object(path_safety.ctypes, "windll", fake, create=True):
+        assert path_safety.unc_for_drive(r"Z:\PROJECT\@davinci") == r"\\nas\share\PROJECT\@davinci"
+        assert path_safety.unc_for_drive(r"\\nas\share\x") == r"\\nas\share\x"
+        assert path_safety.unc_for_drive("relative/x") == "relative/x"
+    assert calls == ["Z:"]
+
+
+@pytest.mark.parametrize(("drive_type", "expected"), [(3, r"C:\Users"), (2, r"C:\Users"), (1, None), (0, None), (4, None)])
+def test_unc_for_drive_keeps_local_drives_and_says_unknown_otherwise(drive_type, expected):
+    # 2250(ERROR_NOT_CONNECTED)은 로컬 드라이브와 연결 안 된 빈 글자가 똑같이 돌려준다(2026-09-22 실측) — 종류로 가른다.
+    fake, _ = _fake_windll(2250, drive_type=drive_type)
+    with mock.patch.object(path_safety.os, "name", "nt"), mock.patch.object(path_safety.ctypes, "windll", fake, create=True):
+        assert path_safety.unc_for_drive(r"C:\Users") == expected
