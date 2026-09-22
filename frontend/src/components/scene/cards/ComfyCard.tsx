@@ -20,6 +20,7 @@ import { gatherComfyMedia, hasTextConnection } from "../../../lib/sceneComfyInpu
 import { isComfyRunning } from "../../../lib/sceneComfyRunningStore";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../../../lib/media";
 import { HistoryBoardNode } from "../../history/HistoryBoardNode";
+import { StepIcon } from "../../common/ViewIcons";
 import { MediaThumbnail } from "../../MediaThumbnail";
 import { TagEditor } from "../../TagEditor";
 import comfyLogo from "../../../assets/comfy-logo.svg";
@@ -492,7 +493,7 @@ export function ComfyCard({
               actions.setCardBatch(card.id, cardBatch(card) - 1);
             }}
           >
-            −
+            <StepIcon />
           </button>
           <span className="scene-cardgen-n" title="한 번에 생성할 장수(배치)">
             {cardBatch(card)}
@@ -505,7 +506,7 @@ export function ComfyCard({
               actions.setCardBatch(card.id, cardBatch(card) + 1);
             }}
           >
-            +
+            <StepIcon plus />
           </button>
           <button
             className="scene-cardgen-go"

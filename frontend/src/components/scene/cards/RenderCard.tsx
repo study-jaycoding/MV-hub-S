@@ -6,6 +6,7 @@ import { cardBatch, variantIds } from "../../../lib/scenes";
 import type { Generation, PreviewTarget } from "../../../types";
 import { collectRenderGenCardIds } from "../../../lib/sceneEdges";
 import { hideBrokenImg, showLoadedImg, thumbOf } from "../../../lib/media";
+import { StepIcon } from "../../common/ViewIcons";
 
 export function RenderCard({
   card,
@@ -151,7 +152,7 @@ export function RenderCard({
               setCardBatch(card.id, cardBatch(card) - 1);
             }}
           >
-            −
+            <StepIcon />
           </button>
           <span className="scene-cardgen-n" title="각 카드에서 생성할 장수(배치)">
             {cardBatch(card)}
@@ -164,7 +165,7 @@ export function RenderCard({
               setCardBatch(card.id, cardBatch(card) + 1);
             }}
           >
-            +
+            <StepIcon plus />
           </button>
           <button
             className="scene-cardgen-go"

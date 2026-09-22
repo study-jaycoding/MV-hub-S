@@ -1188,9 +1188,11 @@
   background: #14171c; border: 1px solid var(--border2); border-radius: 999px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
 }
+/* −/+ 는 SVG(StepIcon) — 글자는 기준선 탓에 2.4px 아래였다. ★padding:0 이 없으면 전역 button 여백 때문에
+   가로로 늘어난 타원이 된다(2026-09-22 실측). */
 .scene-cardgen-step {
-  width: 22px; height: 22px; flex: none; border: 0; border-radius: 50%; cursor: pointer;
-  background: #23262d; color: var(--text); font-size: 15px; font-weight: 800; line-height: 1;
+  width: 22px; height: 22px; flex: none; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
+  background: #23262d; color: var(--text);
   display: flex; align-items: center; justify-content: center;
 }
 .scene-cardgen-step:hover { background: #30343c; }

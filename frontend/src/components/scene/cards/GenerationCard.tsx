@@ -9,6 +9,7 @@ import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../..
 import { generationStatusLabelFor, generationStatusTitle } from "../../../lib/generationDisplay";
 import { useT } from "../../../lib/i18n";
 import { HistoryBoardNode } from "../../history/HistoryBoardNode";
+import { StepIcon } from "../../common/ViewIcons";
 import { LastViewedBadge } from "../LastViewedBadge";
 import { TagEditor } from "../../TagEditor";
 import higgsfieldLogo from "../../../assets/higgsfield-logo.svg";
@@ -260,7 +261,7 @@ export function GenerationCard({
               actions.setCardBatch(card.id, cardBatch(card) - 1);
             }}
           >
-            −
+            <StepIcon />
           </button>
           <span className="scene-cardgen-n" title="한 번에 생성할 장수(배치)">
             {cardBatch(card)}
@@ -273,7 +274,7 @@ export function GenerationCard({
               actions.setCardBatch(card.id, cardBatch(card) + 1);
             }}
           >
-            +
+            <StepIcon plus />
           </button>
           <button
             className="scene-cardgen-go"

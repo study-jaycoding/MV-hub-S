@@ -345,9 +345,12 @@
 .assets-tools .layout-toggle button:hover { color: var(--text); }
 .assets-tools .layout-toggle button.on { color: #fff; }
 
-/* 정렬 버튼(⇅) + 드롭다운 — 그리드 토글 옆. 이름/날짜/유형 · 오름/내림(윈도우 탐색기식) */
+/* 정렬 버튼(위아래 화살표) + 드롭다운 — 그리드 토글 옆. 이름/날짜/유형 · 오름/내림(윈도우 탐색기식) */
 .asset-sort { position: relative; display: inline-flex; }
-.asort-btn { font-size: 13px; }
+/* 폭 28px 은 예전 글자 단추와 같게(툴바 안 자리가 움직이지 않게). '.assets-tools .af-btn' 의 좌우 여백을
+   이기도록 더 구체적으로 — 14px 아이콘이 28×24 안에 정수 자리로 정중앙. */
+.asset-sort .af-btn.asort-btn { width: 28px; padding: 0; display: grid; place-items: center; }
+.asort-btn svg { display: block; }
 .asort-menu {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 90;
   min-width: 148px; padding: 6px; display: flex; flex-direction: column; gap: 2px;
