@@ -276,7 +276,7 @@ updated: 2026-09-22
 |---|---|---|
 | `atomic_io.py` | 같은 폴더 tmp→`os.replace` 원자 텍스트 쓰기 | `active_account`·`db_backup`·서비스 7곳 |
 | `async_tools.py` | `to_thread_non_abandon`(§6 계약) | 라우터 9곳 + 서비스 7곳 |
-| `path_safety.py` | `safe_join`·`path_comparison_key`(traversal 차단) | `main`·`_proxy`·`assets`·`library`·`manage` |
+| `path_safety.py` | `safe_join`·`path_comparison_key`(traversal 차단) · `unc_for_drive`(매핑 드라이브 → UNC, 모르면 None — 같은 NAS 폴더를 Z: 와 UNC 로 달리 적은 것 맞추기) | `main`·`_proxy`·`assets`·`library`·`manage`·`project_folders`·`resolve_library_dialog` |
 | `net_guard.py` | SSRF: `assert_public_http_url`·`guarded_opener`·TLS strict 해제 | `library`·`manage`·`publish`·`comfy_client`·`media_cache` |
 | `request_guards.py` | 로컬 전용 라우트 출처 가드 3종(§6) | `main`·라우터 10곳 |
 | `operational_logging.py` | JSON 회전 로그 + 비밀값 redact + `log_event` | `main`·라우터 6곳·서비스 9곳 |
@@ -325,7 +325,7 @@ updated: 2026-09-22
 | `asset_mounts.py` | 계정별 마운트 JSON 저장소(파일 잠금 + 원자 저장) | `routers/assets` |
 | `asset_tree.py`(309줄) | 폴더 트리 재귀 탐색 + TTL 캐시 + 무효화 | `routers/assets` |
 | `asset_watcher.py`(881줄) | watchdog 감시 → 캐시 무효화 + `assets_changed` WS 브로드캐스트 | `main`·`projects` |
-| `project_folders.py` | 프로젝트 Render 루트 상태·폴더 트리 TTL 캐시·탐색기 열기 | `manage`·`asset_tree` |
+| `project_folders.py` | 프로젝트 Render 루트 상태·폴더 트리 TTL 캐시·탐색기 열기 · 같은 렌더 폴더를 쓰는 다른 프로젝트(`projects_sharing_root` — Z:·UNC 를 맞춰 견주고, 드라이브 대응을 모르면 같을 수 있다고 봐 미러 정리를 막는다) | `manage`·`asset_tree` |
 
 **ComfyUI**
 
@@ -353,7 +353,7 @@ updated: 2026-09-22
 | `resolve_library_dialog.py` | Assets `@davinci` 경로를 Project Library 로 연결(Connect 까지). 이미 등록됐는지는 Resolve 의 `dblist.conf` 를 **경로로** 대조(드라이브↔UNC 맞춤), Connect 뒤 성공은 Resolve API 목록으로 판정 | `routers/assets`, `services/resolve_project_library` |
 | `resolve_library_list_worker.py` | 호환 Python 자식에서 Resolve 에 올라온 Disk 라이브러리 이름만 읽는다(읽기 전용) | `services/resolve_status_runner` |
 | `resolve_project_library.py` | Disk Project Library의 `Project.db` 위치를 목록화하고 검증된 열기 요청 구성. 대표 그림과 카드 정보(타임라인 수·해상도·fps — `Sm2Sequence` 에서, 타임라인마다 다르면 비움)는 `Project.db` **복사본에서만** 꺼낸다(`BtThumnail`, 원본은 SQLite 로 열지 않음 · Resolve API 는 이 값을 주지 않는다). Resolve 켜기는 켜기 창을 먼저 열고(`launch_id`) 켠 뒤 바로 돌아온다(준비는 화면이 `launch-state` 로 봄) | `routers/assets` |
-| `resolve_project_open_worker.py` | 연결된 Disk Library 프로젝트를 여는 격리 자식. 지금 프로젝트는 **닫는 호출(라이브러리 전환·LoadProject) 바로 앞에서만** 정리 — 이름 있으면 저장, Resolve 가 켜질 때 여는 빈 'Untitled Project' 는 묻지 않고 저장 없이 넘김(저장하면 이름 창이 뜬다), 작업 든 Untitled 는 멈춤. CloseProject 금지 | `resolve_status_runner` |
+| `resolve_project_open_worker.py` | 연결된 Disk Library 프로젝트를 여는 격리 자식. 지금 프로젝트는 **닫는 호출(라이브러리 전환·LoadProject) 바로 앞에서만** 정리 — 이름 있으면 저장, Resolve 가 켜질 때 여는 빈 'Untitled Project' 는 묻지 않고 저장 없이 넘김(저장하면 이름 창이 뜬다), 작업 든 Untitled 는 멈춤. CloseProject 금지. 지금 열린 게 바로 그 프로젝트(같은 라이브러리·이름이 라이브러리에서 하나뿐·글자 그대로 같음)면 저장·다시 불러오기 없이 `already_open` | `resolve_status_runner` |
 | `resolve_script_installer.py` | Scripts 메뉴에 Exporter/Importer 설치(원자 교체·백업) | `resolve_integration`·`diagnostics` |
 | `resolve_python_registry.py` | 레지스트리에서 설치된 64비트 Python 조사 | `diagnostics`·`status_runner` |
 | `resolve_python_installer.py` | 호환 Python 없는 PC 용 반자동 설치(고정 SHA256) | `resolve_integration` |
@@ -467,7 +467,7 @@ updated: 2026-09-22
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `scene/SceneVariantPopup.tsx`(563줄) | 결과 모아보기 팝업 — 다중선택·대표지정·액션바·드래그 재사용 | `SceneVariantPopup` |
+| `scene/SceneVariantPopup.tsx`(564줄) | 결과 모아보기 팝업 — 다중선택·대표지정·액션바·드래그 재사용 | `SceneVariantPopup` |
 | `scene/ViewTimeline.tsx`(419줄) | View 연속재생 플레이어 — 클립 이어보기·스크럽·전체화면·병합 다운로드 | `ViewTimeline` |
 | `scene/SceneComfyModal.tsx`(202줄) | Comfy 워크플로 JSON 로드 + 노출 파라미터 체크리스트 | `SceneComfyModal` |
 | `scene/SceneWorkspaceMenu.tsx`(177줄) | 씬 탭 우클릭 메뉴 — 이름 변경 + 워크스페이스 지정 | `SceneWorkspaceMenu` |
@@ -481,7 +481,7 @@ updated: 2026-09-22
 | `SpotlightPrompt.tsx`(1,376줄) | 프롬프트 도크 본체 — contentEditable 편집, @/# 피커, 트레이·씬 카드 양방향 바인딩 | `SpotlightPrompt`(forwardRef)·`SpotlightPromptHandle` |
 | `spotlight/SpotlightOptionsBar.tsx`(447줄) | 모델·타입·파라미터 칩/드롭다운/고급 옵션 | `SpotlightOptionsBar` |
 | `spotlight/useSpotlightSubmit.ts`(293줄) | 제출 1건 — 검증·body 조립·배치 병렬 create·캔버스 링크 정산·히스토리 저장 | `useSpotlightSubmit`·`SPOTLIGHT_MAX_COUNT` |
-| `spotlight/ServerConsolePanel.tsx`(297줄) | 상태줄 + Host 콘솔 창(버전·CLI·로그 꼬리·앱 종료) | `ServerConsolePanel`·`LogTail` |
+| `spotlight/ServerConsolePanel.tsx`(298줄) | 상태줄 + Host 콘솔 창(버전·CLI·로그 꼬리·앱 종료) | `ServerConsolePanel`·`LogTail` |
 | `spotlight/SpotlightRefTray.tsx`(226줄) | 확장(+) 레퍼런스 트레이 — 드롭·순서변경·역할 배지 | `SpotlightRefTray` |
 | `spotlight/SpotlightMentionPicker.tsx`(152줄) | @/# 피커 목록(트레이 항목 + 소스 + 태그) | `SpotlightMentionPicker` |
 | `spotlight/SpotlightPromptRow.tsx`(92줄) | 프롬프트 입력 행(순수 프레젠테이션) | `SpotlightPromptRow` |
@@ -517,16 +517,16 @@ updated: 2026-09-22
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `AccountMenu.tsx`(502줄) | 계정·워크스페이스 드롭다운(포털) | `AccountMenu` |
-| `ManageAccount.tsx`(228줄) | 내 계정 플로팅 창(정보·표시이름) | `ManageAccount` |
+| `ManageAccount.tsx`(229줄) | 내 계정 플로팅 창(정보·표시이름) | `ManageAccount` |
 | `NotificationCenter.tsx`(631줄) | 벨 + 알림 패널(코멘트·릴리스 공지 병합, 포털) | `NotificationCenter` |
-| `SettingsPanel.tsx`(670줄) | 설정 플로팅 창 껍데기 + 생성물 점검/백필 | `SettingsPanel` |
+| `SettingsPanel.tsx`(671줄) | 설정 플로팅 창 껍데기 + 생성물 점검/백필 | `SettingsPanel` |
 | `settings/SettingsSections.tsx`(611줄) | 설정 4개 절(외형·다운로드 위치·메타 연속성·Resolve) | 4개 export |
-| `settings/SettingsGroup.tsx`(164줄) | 설정 그룹 → 옆으로 펼치는 플라이아웃(포털·직접 위치계산) | `SettingsGroup` |
+| `settings/SettingsGroup.tsx`(165줄) | 설정 그룹 → 옆으로 펼치는 플라이아웃(포털·직접 위치계산) | `SettingsGroup` |
 | `settings/SettingsDescription.tsx`(29줄) | 설명문 + `<details>` 더보기 | 〃 |
 | `settings/ComfyConnectionSection.tsx`(178줄) | Comfy 연결 설정·확인 | 〃 |
 | `settings/ComfyUnresolvedRunsSection.tsx`(51줄) | 미해결 Comfy 실행 목록 + 결과 회수·로컬 재저장·기록 정리 | 〃 |
-| `ShortcutsWindow.tsx`(130줄) | 단축키 재지정 창 | `ShortcutsWindow` |
-| `AdminWindow.tsx`(610줄) | 관리자 창(탭 호스트) + 권한 상승 확인 + 서버 이전 공지 | `AdminWindow` |
+| `ShortcutsWindow.tsx`(131줄) | 단축키 재지정 창 | `ShortcutsWindow` |
+| `AdminWindow.tsx`(618줄) | 관리자 창(탭 호스트) + 권한 상승 확인 + 서버 이전 공지 | `AdminWindow` |
 | `admin/ApprovalTab.tsx`(143줄) | 계정 승인·숨김·비번 초기화 표 | 〃 |
 | `admin/MemberRolesTab.tsx`(82줄) | 전역 역할 표 | 〃 |
 | `admin/RolePickers.tsx`(70줄) | 전역/프로젝트 역할 선택기 + 정렬 랭크 | 〃 |
@@ -547,19 +547,19 @@ updated: 2026-09-22
 | `InlinePromptRefs.tsx`(70줄) | 프롬프트의 `@소스`를 썸네일 칩으로 | 3 |
 | `ResizableSidebar.tsx`(105줄) | 폭 조절 사이드바 껍데기 | 2 |
 | `FolderReviewCount.tsx`(18줄) | 폴더 검토 카운트 배지 | 1(`FolderTreeView` 전용 — 공용 폴더에 있지만 실제 공용 아님, §5-b) |
-| `ViewIcons.tsx`(76줄) | 리스트/그리드 SVG(기본 16px — 15px 는 선이 반 픽셀에 걸려 0.5px 아래였다) · 작업 탭 "보관 기록" 아이콘(`ArchiveHistoryIcon` — 상자+시곗바늘) · 꽉 채우기/필터 사이드바/정보(`FitIcon`·`FilterPanelIcon`·`InfoIcon` — 글자 ▣▢▷ⓘ 가 기준선 탓에 1~1.6px 아래라 SVG 로, 2026-09-22 실측) · 캔버스 카드 배치 빼기·더하기(`StepIcon` — 글자 −/+ 는 2.4px 아래) | 13(`ViewControls`·`LibraryToolbar`·`CompareModal`·`VideoCompareModal`·`assets/AssetCell`·`assets/ResolveProjectBrowser`·`generation/GenerationThumbOverlay`·`scene/SceneVariantPopup`·`history/HistoryBoardNode`·`manage/WorkBoard`·`scene/cards/{Generation,Comfy,Render}Card`) |
+| `ViewIcons.tsx`(99줄) | 리스트/그리드 SVG(기본 16px — 15px 는 선이 반 픽셀에 걸려 0.5px 아래였다) · 작업 탭 "보관 기록" 아이콘(`ArchiveHistoryIcon` — 상자+시곗바늘) · 꽉 채우기/필터 사이드바/정보(`FitIcon`·`FilterPanelIcon`·`InfoIcon` — 글자 ▣▢▷ⓘ 가 기준선 탓에 1~1.6px 아래라 SVG 로, 2026-09-22 실측) · 빼기·더하기(`StepIcon` — 캔버스 카드 배치 12px·줌 8px, 글자 −/+ 는 1.5~2.4px 아래) · 닫기(`CloseIcon` — `.assets-x` 12곳·씬 팝업, 글자 ✕·× 는 1.3~1.5px 아래) · 비교 창 크게/원래(`MaximizeIcon`, 글자 □ 3.4px 아래) | 23(`ViewControls`·`LibraryToolbar`·`CompareModal`·`VideoCompareModal`·`assets/AssetCell`·`assets/ResolveProjectBrowser`·`generation/GenerationThumbOverlay`·`scene/SceneVariantPopup`·`history/HistoryBoardNode`·`manage/WorkBoard`·`scene/cards/{Generation,Comfy,Render}Card`·닫기 단추 창 10곳 — `AdminWindow`·`InfoPopup`·`ManageAccount`·`MediaPreview`·`SettingsPanel`·`ShortcutsWindow`·`assets/MountManager`·`edit/PartialEditModal`·`settings/SettingsGroup`·`spotlight/ServerConsolePanel`) |
 
 #### 미디어 보기·비교·부분수정(최상위 + `compare/` + `edit/`, 9파일)
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `MediaPreview.tsx`(280줄) | 이미지/영상 미리보기 플로팅 창. 원본이 오는 동안 연 곳이 넘긴 썸네일(`PreviewItem.thumb`)을 그림은 바탕·영상은 표지로 깐다 | `MediaPreview`·`fitPreviewBox` |
-| `InfoPopup.tsx`(548줄) | 생성 정보 팝업(드래그 이동·프롬프트·레퍼런스·오류). 크기가 바뀔 때마다 화면 아래로 넘치지 않게 올린다(끌어 옮긴 뒤에는 그대로). ★높이는 `offsetHeight` 로 — 열리는 애니메이션(scale 0.98) 중의 `getBoundingClientRect` 는 2% 작다 | `InfoPopup` |
-| `CompareModal.tsx`(397줄) | 생성본 N개 비교(프롬프트 diff + 창 이동/리사이즈/최대화 + A/B 와이프) | `CompareModal` |
-| `VideoCompareModal.tsx`(250줄) | 생성정보 없는 미디어 N개 비교(+ 같은 A/B 와이프) | `VideoCompareModal` — 이름과 달리 이미지도 다룸(§5-b) |
+| `MediaPreview.tsx`(281줄) | 이미지/영상 미리보기 플로팅 창. 원본이 오는 동안 연 곳이 넘긴 썸네일(`PreviewItem.thumb`)을 그림은 바탕·영상은 표지로 깐다 | `MediaPreview`·`fitPreviewBox` |
+| `InfoPopup.tsx`(549줄) | 생성 정보 팝업(드래그 이동·프롬프트·레퍼런스·오류). 크기가 바뀔 때마다 화면 아래로 넘치지 않게 올린다(끌어 옮긴 뒤에는 그대로). ★높이는 `offsetHeight` 로 — 열리는 애니메이션(scale 0.98) 중의 `getBoundingClientRect` 는 2% 작다 | `InfoPopup` |
+| `CompareModal.tsx`(398줄) | 생성본 N개 비교(프롬프트 diff + 창 이동/리사이즈/최대화 + A/B 와이프) | `CompareModal` |
+| `VideoCompareModal.tsx`(251줄) | 생성정보 없는 미디어 N개 비교(+ 같은 A/B 와이프) | `VideoCompareModal` — 이름과 달리 이미지도 다룸(§5-b) |
 | `compare/CompareGenerationColumn.tsx`(209줄) | 비교 모달의 한 열(미디어·파라미터) | 〃 |
 | `compare/CompareSourceLightbox.tsx`(29줄) | 비교 모달 위 원본 라이트박스 | 〃 |
-| `edit/PartialEditModal.tsx`(965줄) | 부분 수정 캔버스(펜·도형·마스크·A/B) | `PartialEditModal` |
+| `edit/PartialEditModal.tsx`(966줄) | 부분 수정 캔버스(펜·도형·마스크·A/B) | `PartialEditModal` |
 | `edit/PartialEditHost.tsx`(47줄) | `partialEdit` 이벤트 → 최신 Generation 조회 → 모달 개방 | `PartialEditHost`(§3.5 숨은 진입점) |
 | `FloatingPrompt.tsx`(104줄) | `window.prompt` 대체 플로팅 입력 | `FloatingPrompt` |
 
@@ -572,7 +572,7 @@ updated: 2026-09-22
 | `assets/AssetCell.tsx`(454줄) | 셀 1개(썸네일·호버 오버레이·상태줄) memo |
 | `assets/AssetsCrumbBar.tsx`(216줄) · `AssetsSidebar.tsx`(62줄) · `FolderTree.tsx`(69줄) | 경로 빵부스러기 / 좌측 패널 / 폴더 트리(`common/FolderTreeView.tsx` 와 다른 에셋 전용 트리, §5-b) |
 | `assets/ResolveProjectBrowser.tsx`(571줄) | `@davinci` 루트의 Resolve 프로젝트 카드 목록·라이브러리 연결·프로젝트 열기 |
-| `assets/AssetSortMenu.tsx`(120줄) · `MountManager.tsx`(205줄) | 정렬 드롭다운 / 외부 폴더 등록 창 |
+| `assets/AssetSortMenu.tsx`(120줄) · `MountManager.tsx`(206줄) | 정렬 드롭다운 / 외부 폴더 등록 창 |
 | `assets/assetsViewModel.ts`(247줄) · `treeUtils.ts`(114줄) · `exportDrag.ts`(27줄) · `assetRefreshPolicy.ts`(26줄) | 순수 계산(필터·정렬·트리·OS 드래그·복귀 갱신 정책) |
 | `assets/useAssetViewData.ts`·`useAssetMetaActions.ts`·`useAssetCommentActions.ts`·`useAssetFilterActions.ts`·`useAssetSelectionPersistence.ts`·`useAssetViewPersistence.ts`·`useAssetBroadcastSync.ts`·`useAssetDropImport.ts`·`useAssetProjectData.ts`·`useAssetViewerIdentity.ts`(10개, 806줄) | 컨테이너 훅 — 뷰 데이터·메타 저장·코멘트·필터·선택 영속·뷰 영속·브로드캐스트·드롭임포트·프로젝트 데이터·뷰어 신원(파일명 순서와 1:1) |
 | `sidebar/ProjectSection.tsx`(930줄) | 프로젝트·폴더 사이드바(트리 파생·폴더 컨텍스트 메뉴·보관함) |
@@ -930,11 +930,11 @@ updated: 2026-09-22
 |---|---:|---|
 | `base.css` | 104 | 전역 변수(`:root` 24개)·리셋 — 화면 특정 아님 |
 | `app-shell.css` | 796 | 최상위 앱 셸(`TopBar`·상단 메뉴) |
-| `generations.css` | 856 | 라이브러리 그리드·카드(`ThumbnailGrid`·`GenerationCard`). ★**끝없이 도는 CSS 애니메이션은 합성 가능한 속성(transform·opacity)만** — `background-position`·`box-shadow` 를 무한으로 움직이면 요소 하나만 화면에 있어도 브라우저가 매 프레임 다시 그려 가만히 둔 탭이 CPU 를 계속 쓴다(골드 광택 실측: 0장 1% · 1장 24~38% of one core). 팀 탭 새 항목 글로우(`.card.fresh`)도 같은 이유로 **멈춘 빛**이다(box-shadow 무한: 1장 42~49% · 19장 86~124% → 정지 2~3%. opacity 층으로 바꿔도 절반이 남았다 — 끝없이 도는 한 합성 비용은 남는다). ★**부드러운 무한 애니메이션은 opacity·transform 이어도 비싸다**(화면에 하나만 있어도 페이지를 초당 60번 새로 합친다 — '생성 중' 로고 1장 17%). 그래서 장식은 멈추고 '진행 중' 표시만 계단식 `steps(4)`(17% → 3%)로 남긴다. 계약 시험 = `frontend/tests/idleCssAnimations.test.ts`(모든 CSS 의 `infinite` 는 같은 선언에 `steps(` — 예외는 재서 비용이 없던 11px 알림 스피너 선언 하나). 전수 조사 기록 = `docs/status/브라우저실측_2026-09-19.md` "부하 전수 조사" |
-| `scene.css` | 1509 | 씬 캔버스(`scene/`) — 비슷한 이름의 클래스가 많다(§5-b) |
+| `generations.css` | 907 | 라이브러리 그리드·카드(`ThumbnailGrid`·`GenerationCard`). ★**끝없이 도는 CSS 애니메이션은 합성 가능한 속성(transform·opacity)만** — `background-position`·`box-shadow` 를 무한으로 움직이면 요소 하나만 화면에 있어도 브라우저가 매 프레임 다시 그려 가만히 둔 탭이 CPU 를 계속 쓴다(골드 광택 실측: 0장 1% · 1장 24~38% of one core). 팀 탭 새 항목 글로우(`.card.fresh`)도 같은 이유로 **멈춘 빛**이다(box-shadow 무한: 1장 42~49% · 19장 86~124% → 정지 2~3%. opacity 층으로 바꿔도 절반이 남았다 — 끝없이 도는 한 합성 비용은 남는다). ★**부드러운 무한 애니메이션은 opacity·transform 이어도 비싸다**(화면에 하나만 있어도 페이지를 초당 60번 새로 합친다 — '생성 중' 로고 1장 17%). 그래서 장식은 멈추고 '진행 중' 표시만 계단식 `steps(4)`(17% → 3%)로 남긴다. 계약 시험 = `frontend/tests/idleCssAnimations.test.ts`(모든 CSS 의 `infinite` 는 같은 선언에 `steps(` — 예외는 재서 비용이 없던 11px 알림 스피너 선언 하나). 전수 조사 기록 = `docs/status/브라우저실측_2026-09-19.md` "부하 전수 조사" |
+| `scene.css` | 1514 | 씬 캔버스(`scene/`) — 비슷한 이름의 클래스가 많다(§5-b) |
 | `prompt-dock.css` | 566 | 스포트라이트 프롬프트 도크(`SpotlightPrompt`·`spotlight/`) |
 | `history.css` | 216 | 히스토리 보드(계보 그래프). 최종 노드는 `content-visibility` 가 풀려 있어 화면 밖에서도 그린다 — 여기에 무한 애니메이션을 두지 않는다 |
-| `assets.css` | 961 | Assets 분리창(`AssetsView`·`assets/`) |
+| `assets.css` | 963 | Assets 분리창(`AssetsView`·`assets/`) |
 | `project-sidebar.css` | 318 | 프로젝트 사이드바(`sidebar/ProjectSection`) |
 | `composition-manage.css` | 1098 | 관리(PM)창 구성·대시보드 화면. 옛 합성보드·옛 통계 위젯(도넛·퍼널 등)의 규칙은 2026-09-18 에 걷어냈다. 남은 휴면 규칙은 §5-d |
 | `admin-auth-compare.css` | 682 | 로그인·관리자 창·계정 비교 화면 |
@@ -1119,7 +1119,7 @@ updated: 2026-09-22
 | `frontend/src/lib/sceneDragSession.ts` 의 `SceneDragEnvironment` 주입 인터페이스 | 구현이 하나뿐이라 "야그니"로 보이지만, `frontend/tests/sceneDragSession.test.ts` 가 가짜 환경(`addListener`·`requestFrame`·`cancelFrame`)을 주입해 시험하는 DI 이음새다. 인라인화하면 그 시험이 설 자리가 사라진다 |
 | 씬(`scene/`)·스포트라이트(`spotlight/`) 사이의 근사 중복(삽입 위치 계산·드래그 세션·바깥클릭+Esc·가시성 폴러) | 알고리즘은 같지만 feature 경계(ARCHITECTURE §2 "feature 끼리 직접 import 금지") 때문에 각자 복제됐다 — **합칠 자리는 `shared`/`lib` 이지 서로를 참조하는 게 아니다** |
 | `common/ViewIcons.tsx` `InfoIcon`(선 1.5) ↔ `assets/ResolveProjectBrowser.tsx` 안의 `InfoIcon`(선 2) | 모양은 같고 굵기가 다르다 — 카드 오버레이 ⓘ 는 원래 글자 ⓘ 의 가는 선에, Resolve 머리글 ⓘ 는 Jay 가 시안으로 본 굵기(도구 줄 사슬 아이콘과 한 벌)에 맞췄다. 합치면 한쪽 모양이 바뀐다 |
-| 글자 아이콘 단추의 `@supports (text-box …)` 규칙 3곳(`styles/generations.css` `.card-sf`·`.card-cm`·`.ov-icon` · `styles/history.css` `.linb-ov-btn`·`.linb-sf` · `styles/assets.css` `.af-btn`) | 같은 처방(글자 칸을 대문자 높이로 다듬어 정중앙)이지만 한 규칙으로 못 합친다 — text-box 는 flex·grid 안 글자에 안 먹어 단추마다 block 으로 바꿔야 하고, SVG 를 담는 상태(최종 ★·ⓘ·가계 보기)·span 그립은 클래스별로 빼야 한다. 미지원 브라우저는 `@supports` 밖의 옛 flex 정렬 그대로 |
+| 글자 아이콘 단추의 `@supports (text-box …)` 규칙 4곳(`styles/generations.css` `.card-sf`·`.card-cm`·`.ov-icon` · 같은 파일 캔버스 줌 `.zc-fit` · `styles/history.css` `.linb-ov-btn`·`.linb-sf` · `styles/assets.css` `.af-btn`) | 같은 처방(글자 칸을 대문자 높이로 다듬어 정중앙)이지만 한 규칙으로 못 합친다 — text-box 는 flex·grid 안 글자에 안 먹어 단추마다 block 으로 바꿔야 하고, SVG 를 담는 상태(최종 ★·ⓘ·가계 보기)·span 그립은 클래스별로 빼야 한다. 미지원 브라우저는 `@supports` 밖의 옛 flex 정렬 그대로 |
 | S2 — `restart_server_task.ps1`(`Test-MvHubServerCommandLine`) ↔ `tools/stop_local_hub_on_port.ps1`(`BundledPythonPath` 레거시 폴백 추가) | 포트 소유권 판정 로직이 거의 같지만, `stop_local_hub_on_port.ps1` 에만 있는 레거시 폴백의 존재 이유가 확인되지 않았다 — **합치기 전에 그 폴백이 지키는 것부터 확인**(안전장치로 확정된 것은 아니고, 확인이 필요하다는 뜻) |
 
 ### (b) 이름이 같은데 동작이 다른 것 / 이름이 헷갈리는 쌍

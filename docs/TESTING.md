@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-21
+updated: 2026-09-22
 status: active
 ---
 
@@ -52,18 +52,33 @@ npm.cmd run build
 `lint:architecture`는 P1 단계에서 경고 우선으로 운영한다. 종료 코드는 성공이어도
 표시된 경고는 현재 구조 부채이며, 새 경고를 만들지 않는 것을 원칙으로 한다.
 
-환경변수 없이 하는 표준 pytest 실행은 운영 DB·실제 `backend/data` 를 쓰지 않는다. `backend/tests/conftest.py` 가 **격리 기본값**을 넣는다 — `CONTENT_HUB_DB_POOL=0`,
-`CONTENT_HUB_NO_PROXY=1`(저장된 공유 서버 토큰이 있어도 운영 서버로 중계하지 않는다), `CONTENT_HUB_DATA=<실행마다 새 임시 폴더>`
-(계정 포인터 `active.json`·`manage_hub.db`·`cost_cache_v2.json`·`device_identity.json` 같은 `DATA_DIR` 파생 경로가 실제
-`backend/data` 를 보지 않는다). 비어 있지 않은 값을 직접 지정하면 그 값을 따르고(빈 문자열은 기본값으로 바꾼다), 임시 폴더는 실행이 끝날 때 지우기를 시도한다(파일 잠금이 2초 넘게 이어지면 경고만 남기고 폴더가 남을 수 있다). 이 기본값이 풀리면
-`tests/test_pytest_isolation_defaults.py` 가 실패한다(실제 `backend/data` 를 명시한 실행도 실패한다 — 다만 이 가드는 여느 시험과 같은 순서로 돌 뿐이라, 다른 시험이 먼저 도는 것을 막지는 못한다).
+pytest 실행은 운영 DB·실제 `backend/data`·운영 공유 서버를 쓰지 않는다. `backend/tests/conftest.py` 가 부모(셸·배포 게이트·도구)가 넘긴
+`CONTENT_HUB_*` 를 **이름의 대소문자와 상관없이 전부 버리고** 시험용 값만 다시 넣는다(2026-09-22 — 전에는 비어 있지 않은 명시값을 따랐는데,
+경로·주소를 담는 변수가 DATA 말고도 많아 셸에 실제 값이 남아 있으면 샐 수 있었다):
+
+- `CONTENT_HUB_DB_POOL=0`
+- `CONTENT_HUB_NO_PROXY=1`: 저장된 공유 서버 토큰이 있어도 운영 서버로 중계하지 않는다.
+- `CONTENT_HUB_DATA=<실행마다 새 임시 폴더>`: 계정 포인터 `active.json`·`manage_hub.db`·`cost_cache_v2.json`·`device_identity.json` 같은 `DATA_DIR` 파생 경로가 실제 `backend/data` 를 보지 않는다.
+- `CONTENT_HUB_EXTERNAL_RECOVERY=0`: 앱 기동이 CLI 신원 캡처 같은 바깥 동작을 하지 않는다.
+
+시험 안에서 필요한 값은 그 시험이 monkeypatch 로 넣는다. 임시 폴더는 실행이 끝날 때 지우기를 시도한다. 파일 잠금이 2초 넘게 이어지면 경고만 남기고 폴더가 남을 수 있다.
+
+`tests/test_pytest_isolation_defaults.py` 가 이 격리를 지킨다.
+
+- 오염된 환경(`CONTENT_HUB_DATA=가짜 폴더`·`NO_PROXY=0`·`SHARED_URL=죽은 주소`)으로 자식 pytest 를 띄운다.
+- 그 안에서 DATA 가 conftest 의 임시 폴더인지, 중계가 막혔는지 확인한다.
 그 위의 격리 방식은 테스트마다 다르다 — 임시 경로의 `CONTENT_HUB_DB` 환경변수, `db.init_db(db_path)` 직접 호출, 함수 인자로 경로 전달,
 `config.DATA_DIR` monkeypatch·mock.
 
 > [!NOTE]
-> 보장 범위는 **pytest 수집 경로**뿐이다. conftest 보다 먼저 `app` 을 import 하는 외부 플러그인(`-p`)과 직접 실행하는 도구
-> (`tools/*.py`, `tests/*_mutation_check.py`)는 각자 환경변수를 고정한다. 2026-09-19 이전에는 "돌리는 쪽이 `CONTENT_HUB_NO_PROXY=1` 을
-> 넣는다"가 규칙이었고 `tools\predeploy_gate.ps1` 도 변수를 넣지 않았다 — 그 구멍을 conftest 한 곳에서 막았다.
+> 보장 범위는 **pytest 수집 경로**뿐이다. conftest 보다 먼저 `app` 을 import 하는 외부 플러그인(`-p`)과 직접 실행하는 도구는
+> 각자 환경변수를 고정한다(`tools/*.py`, `tests/*_mutation_check.py`). 돌연변이 검사 2개는 부모의 `CONTENT_HUB_*` 를 버리고 임시 값만 넘긴다.
+>
+> 지금까지의 경과:
+>
+> - 2026-09-19 이전에는 "돌리는 쪽이 `CONTENT_HUB_NO_PROXY=1` 을 넣는다"가 규칙이었고, `tools\predeploy_gate.ps1` 도 변수를 넣지 않았다.
+> - 2026-09-19 에 conftest 가 빈 값을 채우게 했다.
+> - 2026-09-22 에 부모 값을 아예 버리게 했다(Codex P0).
 
 ### 사전 배포 통합 게이트
 
