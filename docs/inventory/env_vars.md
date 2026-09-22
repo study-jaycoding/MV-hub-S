@@ -149,13 +149,18 @@
 | 이름 | 넘기는 파일 |
 | --- | --- |
 | `HIGGSFIELD_WORKSPACE_ID` | `agent_push.py` |
+| `MVHUB_CLEANUP_ONLY` | `backend/app/services/resolve_library_dialog.py` |
 | `MVHUB_CLIP_LIST` | `backend/app/routers/assets.py` |
+| `MVHUB_LIBRARY_NAME` | `backend/app/services/resolve_library_dialog.py` |
+| `MVHUB_LIBRARY_PATH` | `backend/app/services/resolve_library_dialog.py` |
+| `MVHUB_RESOLVE_EXE` | `backend/app/services/resolve_library_dialog.py` |
+| `MVHUB_RESULT_PREFIX` | `backend/app/services/resolve_library_dialog.py` |
 
 ## Windows 가 주는 변수 (제품 설정 아님)
 
 | 이름 | 직접 읽는 파일 |
 | --- | --- |
-| `APPDATA` | `backend/app/services/resolve_script_installer.py` |
+| `APPDATA` | `backend/app/services/resolve_library_dialog.py` `backend/app/services/resolve_script_installer.py` |
 | `COMPUTERNAME` | `backend/app/services/worker_backup.py` |
 | `LOCALAPPDATA` | `agent_push.py` `backend/app/services/release_update.py` `run_agent_session.py` |
 | `PROGRAMDATA` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_script_installer.py` |

@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-09-21
+updated: 2026-09-22
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -37,6 +37,7 @@ updated: 2026-09-21
 | 어셋/생성물 썸네일 | `components/MediaThumbnail.tsx` | `services/thumbs.py`, `routers/library.py`(media-thumb) | |
 | ComfyUI 실행(로컬/Cloud) | `lib/useSceneComfyExecution.ts`, `components/scene/cards/ComfyCard.tsx` | `routers/comfy.py`, `services/comfy_client.py` | |
 | DaVinci Resolve 전송 | `lib/useResolveTransferActions.ts` | `routers/resolve_integration.py`, `services/resolve_transfer.py` | |
+| Assets의 DaVinci 프로젝트 목록·열기 | `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/resolve_project_library.py`, `services/resolve_project_open_worker.py` | `@davinci` 내부 DB 폴더는 일반 Assets 트리에 펼치지 않는다 |
 | 앱 자동 업데이트·릴리스 절차 | `lib/releaseUpdate.ts` | `routers/release_update.py`, `services/release_update.py` | 배포 스크립트는 §4 |
 | DB 백업·복원 | — | `routers/db_backup.py`, `routers/db_transfer.py`, `services/backup.py` | |
 | 계정 전환·워크스페이스 전환 | `components/AccountMenu.tsx`, `lib/useHubAuth.ts` | `active_account.py`, `routers/auth.py` | |
@@ -48,7 +49,7 @@ updated: 2026-09-21
 | 휴지통(삭제·복원) | `lib/useGenerationTrashActions.ts` | `routers/generation.py`(삭제·복원), `routers/library.py`(`/api/trash` 목록·영구 삭제), `repo/trash.py`(별도 DB) | |
 | 로그인/가입/계정 승인 | `components/LoginScreen.tsx`(서버 본체 AUTH 로그인), `components/ServerLoginScreen.tsx`(로컬 허브의 팀 서버 로그인 게이트·서버 주소 변경), `lib/useHubAuth.ts` | `routers/auth.py`, `services/auth.py`, `routers/publish.py`(`/api/shared-server/*`), `services/shared_connection.py` | 로컬 허브는 팀 서버 세션이 없으면 라이브러리 대신 게이트를 띄운다 |
 | 창을 Esc/✕ 로 닫는 규칙 | `lib/useEscapeClose.ts`(공용 — 리스너 1회 등록+콜백 ref), `lib/useAppNavigation.ts`(관리자 창·미리보기는 브라우저 history 로 여닫음) | — | 코멘트 패널·Host 콘솔은 Esc 로 안 닫힌다(설계). 회귀 시험 `frontend/tests/escapeCloseNesting.test.tsx` |
-| Assets 파일 탐색기(마운트·트리·업로드) | `components/AssetsView.tsx` | `routers/assets.py`, `services/asset_tree.py` | |
+| Assets 파일 탐색기(마운트·트리·업로드) | `components/AssetsView.tsx`, `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/asset_tree.py`, `services/resolve_project_library.py` | `@davinci` 루트는 Resolve 프로젝트 전용 화면 |
 | 프로젝트 CRUD·멤버·역할 | `components/manage/ProjectManagerPanel.tsx` | `routers/projects.py`, `repo/projects.py` | |
 | 작업(Task) 칸반/테이블/캘린더 | `components/manage/WorkBoard.tsx` | `routers/manage.py`, `repo/manage_tasks.py` | 소요시간 표기는 `lib/format.ts` 의 `fmtElapsed` 하나다(`1d2h3m4s`, 초를 버리지 않음, 하루 이상은 `1d1h` — Jay 확정 2026-09-18). PM 창 5곳과 정보 팝업(`InfoPopup`)의 '생성 시간'이 모두 이 함수를 쓴다. 새 뷰도 이 함수를 쓴다 |
 | 크레딧 풀·그룹 한도 설정 | `components/manage/CreditPoolSection.tsx`, `CreditPlanFields.tsx` | `routers/manage.py`(`/api/manage/credit-plan*` — 권한·API 계약), `repo/manage_credit_plan.py` | |
@@ -150,10 +151,10 @@ updated: 2026-09-21
 
 | 파일 | URL·라우트 수 | 한 줄 책임 | 프록시 위임 |
 |---|---|---|---|
-| `assets.py`(1222줄) | `GET /api/assets/{tree\|file\|thumb}`·`POST /upload\|capture\|clipboard-copy` (18) | 마운트·폴더 트리·파일/썸네일 서빙·업로드·캡처·zip·탐색기 열기 | 0곳 |
+| `assets.py`(1372줄) | `GET /api/assets/{tree\|file\|thumb}`·`/resolve-library/projects`·`POST /resolve-library/{connect-dialog\|open}` 외 (24) | 마운트·폴더 트리·파일/썸네일 서빙·업로드·캡처·zip·탐색기·Resolve 프로젝트 열기 | 0곳 |
 | `assets_metadata.py`(313줄) | `GET /api/assets/meta`·`PUT /tags[/batch]`·`/color[s/batch]`·`POST /comments` (11, `assets.py`에 마운트) | Assets 의 개인 태그·색·코멘트(계정 DB) 와 팀 코멘트(서버 DB) 경계 | 9곳 |
 | `comfy.py`(1654줄) | `POST /api/comfy/{run\|parse\|save-to-library}`·`GET /run_status\|/unresolved-runs` (11) | ComfyUI(로컬·Cloud) 연결·그래프 파싱·비동기 실행·미회수 결과 수거 | 0곳 |
-| `resolve_integration.py`(351줄) | `POST /api/resolve/transfers`·`GET /api/resolve/{status\|script\|locks}` (10) | DaVinci Resolve 스크립트 설치·연결 진단·전송 접수/재시도 | 1곳 |
+| `resolve_integration.py`(364줄) | `POST /api/resolve/transfers`·`GET /api/resolve/{status\|script\|locks}` (10) | DaVinci Resolve 스크립트 설치·연결 진단·전송 접수/재시도 | 1곳 |
 | `release_update.py`(131줄) | `GET /api/release-update/status`·`POST /start` (3) | 작업자 PC 앱 업데이트 상태·시작(로컬 요청만) | 0곳 |
 | `console.py`(142줄) | `GET /api/console/summary`·`POST /close-app` (2) | cmd 창 정보(버전·CLI·로그 tail)·앱 종료 | 0곳 |
 | `scenes.py`(86줄) | `GET·PUT /api/scenes/{backup\|cards}` (4) | 브라우저 localStorage 씬·카드링크의 DB 미러 동기화 | 0곳 |
@@ -267,7 +268,7 @@ updated: 2026-09-21
 | `manage_task_activity.py` | 268 | 작업 목록 전용 메타 병합(뷰어 정규화·캐시키·폴더 소스·컷) | `manage_task_activity.load_activity_snapshot` |
 | `manage_task_previews.py` | 71 | 작업의 본인 미리보기(로컬 DB만 읽음) — 파사드가 유일하게 이름 지정 import | `repo.local_task_previews` |
 
-### 2.5 services (`backend/app/services/`, 66파일) + resources (`backend/app/resources/resolve/`, 2파일)
+### 2.5 services (`backend/app/services/`, 70파일) + resources (`backend/app/resources/resolve/`, 2파일)
 
 **공용 기반(leaf — repo·routers 를 모른다)**
 
@@ -322,7 +323,7 @@ updated: 2026-09-21
 |---|---|---|
 | `asset_io.py` | 청크 업로드 저장·지문·중복 탐색·충돌 없는 확정 | `routers/assets` |
 | `asset_mounts.py` | 계정별 마운트 JSON 저장소(파일 잠금 + 원자 저장) | `routers/assets` |
-| `asset_tree.py`(302줄) | 폴더 트리 재귀 탐색 + TTL 캐시 + 무효화 | `routers/assets` |
+| `asset_tree.py`(309줄) | 폴더 트리 재귀 탐색 + TTL 캐시 + 무효화 | `routers/assets` |
 | `asset_watcher.py`(881줄) | watchdog 감시 → 캐시 무효화 + `assets_changed` WS 브로드캐스트 | `main`·`projects` |
 | `project_folders.py` | 프로젝트 Render 루트 상태·폴더 트리 TTL 캐시·탐색기 열기 | `manage`·`asset_tree` |
 
@@ -334,21 +335,25 @@ updated: 2026-09-21
 | `comfy_workflow.py` | API 포맷 워크플로 파싱(파라미터/미디어 슬롯 감지) | `routers/comfy` |
 | `comfy_run_journal.py` | 미회수 실행 원장 로컬 I/O(네트워크 미소유) | `routers/comfy` |
 
-**DaVinci Resolve(16파일 + 리소스 2)**
+**DaVinci Resolve(18파일 + 리소스 2)**
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `resolve_transfer.py`(784줄) | 생성물 원본을 `Render/<folder>` 로 모으고 manifest 기록 | `resolve_integration`·`release_update`·`selection_monitor` |
-| `resolve_bridge.py`(1325줄) | Media Pool 조작 계층 — 상대 import 0(자식 프로세스 겸용, §5-a) | `probe`·`import_worker`·`status_runner`·`selection_worker`·`diagnostics` |
-| `resolve_status_runner.py` | fusionscript 작업을 자식 프로세스로 격리·인터프리터 폴백 | `resolve_integration`·`diagnostics`·`selection_monitor` |
+| `resolve_bridge.py`(1334줄) | Media Pool 조작 계층 — 상대 import 0(자식 프로세스 겸용, §5-a) | `probe`·`import_worker`·`status_runner`·`selection_worker`·`diagnostics` |
+| `resolve_status_runner.py` | fusionscript 상태·가져오기·프로젝트 열기를 자식 프로세스로 격리·인터프리터 폴백. **켜기 창**: 앱이 Resolve 를 켜는 동안(최대 90초) 모든 Resolve API 호출을 `_select_interpreter` 한 곳에서 막고, 켤 때 받은 `launch_id` 를 가진 열기만 통과시킨다 — 새 Resolve 호출 경로도 반드시 여기를 지나야 관문이 적용된다 | `resolve_integration`·`diagnostics`·`selection_monitor`·`project_library`·`routers/assets` |
 | `resolve_probe.py` | 연결 상태 검사 자식 프로세스 진입점(`-m`, §2.6) | `resolve_status_runner` |
 | `resolve_import_worker.py` | 가져오기 자식 프로세스 진입점(§2.6) + `AttemptJournal` | `resolve_status_runner` |
-| `resolve_selection_monitor.py`(543줄) | 선택 감시 자식의 수명·WS 전달·일시정지 컨텍스트 | `main`·`resolve_integration` |
+| `resolve_selection_monitor.py`(547줄) | 선택 감시 자식의 수명·WS 전달·일시정지 컨텍스트(켜기 창 중에도 멈춤 — `_held()`) | `main`·`resolve_integration`·`routers/assets` |
 | `resolve_selection_worker.py` | Media Pool 선택을 읽는 장기 자식(JSONL 1줄, §2.6) | `resolve_selection_monitor` |
 | `resolve_queue.py`(33줄) | 큐 v3 잔재 중 남은 `run_non_abandon` 하나뿐 | `resolve_integration`·`selection_monitor` |
 | `resolve_lock.py` | 기기 락 파일 경로·host_id·프로세스 생성시각 | `resolve_integration` |
 | `resolve_transfer_gate.py` | 릴리스 업데이트 ↔ 전송 프로세스 간 상호 배제(핸들 락) | `resolve_integration`·`import_worker`·`resolve_transfer` |
 | `resolve_diagnostics.py` | 설치·Python·API·연결을 분리해 읽기 전용 진단 | `resolve_integration` |
+| `resolve_library_dialog.py` | Assets `@davinci` 경로를 Project Library 로 연결(Connect 까지). 이미 등록됐는지는 Resolve 의 `dblist.conf` 를 **경로로** 대조(드라이브↔UNC 맞춤), Connect 뒤 성공은 Resolve API 목록으로 판정 | `routers/assets`, `services/resolve_project_library` |
+| `resolve_library_list_worker.py` | 호환 Python 자식에서 Resolve 에 올라온 Disk 라이브러리 이름만 읽는다(읽기 전용) | `services/resolve_status_runner` |
+| `resolve_project_library.py` | Disk Project Library의 `Project.db` 위치를 목록화하고 검증된 열기 요청 구성. 대표 그림과 카드 정보(타임라인 수·해상도·fps — `Sm2Sequence` 에서, 타임라인마다 다르면 비움)는 `Project.db` **복사본에서만** 꺼낸다(`BtThumnail`, 원본은 SQLite 로 열지 않음 · Resolve API 는 이 값을 주지 않는다). Resolve 켜기는 켜기 창을 먼저 열고(`launch_id`) 켠 뒤 바로 돌아온다(준비는 화면이 `launch-state` 로 봄) | `routers/assets` |
+| `resolve_project_open_worker.py` | 연결된 Disk Library 프로젝트를 여는 격리 자식. 지금 프로젝트는 **닫는 호출(라이브러리 전환·LoadProject) 바로 앞에서만** 정리 — 이름 있으면 저장, Resolve 가 켜질 때 여는 빈 'Untitled Project' 는 묻지 않고 저장 없이 넘김(저장하면 이름 창이 뜬다), 작업 든 Untitled 는 멈춤. CloseProject 금지 | `resolve_status_runner` |
 | `resolve_script_installer.py` | Scripts 메뉴에 Exporter/Importer 설치(원자 교체·백업) | `resolve_integration`·`diagnostics` |
 | `resolve_python_registry.py` | 레지스트리에서 설치된 64비트 Python 조사 | `diagnostics`·`status_runner` |
 | `resolve_python_installer.py` | 호환 Python 없는 PC 용 반자동 설치(고정 SHA256) | `resolve_integration` |
@@ -445,10 +450,10 @@ updated: 2026-09-21
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `cards/GenerationCard.tsx`(336줄) | 생성 카드 본문 — HistoryBoardNode 위임 + 배치바·태그편집·복구버튼 | `GenerationCard` |
-| `cards/ComfyCard.tsx`(556줄) | Comfy 노드 본문 — 워크플로 로드·파라미터 인라인 컨트롤·실행바·출력 썸네일 | `ComfyCard` |
+| `cards/GenerationCard.tsx`(337줄) | 생성 카드 본문 — HistoryBoardNode 위임 + 배치바·태그편집·복구버튼 | `GenerationCard` |
+| `cards/ComfyCard.tsx`(557줄) | Comfy 노드 본문 — 워크플로 로드·파라미터 인라인 컨트롤·실행바·출력 썸네일 | `ComfyCard` |
 | `cards/ListCard.tsx`(272줄) | 리스트(동종 수집기) — 생성물 행 / 텍스트 행 / 레퍼런스 썸네일 3분기 | `ListCard` |
-| `cards/RenderCard.tsx`(195줄) | 렌더(배치 생성) — 체크박스 달린 생성물 행 + Render 실행바 | `RenderCard` |
+| `cards/RenderCard.tsx`(196줄) | 렌더(배치 생성) — 체크박스 달린 생성물 행 + Render 실행바 | `RenderCard` |
 | `cards/TextCard.tsx`(186줄) | 텍스트 노드 — textarea 편집(캐럿 복원) + @토큰 인라인 미리보기 | `TextCard` |
 | `cards/ReferenceCard.tsx`(126줄) | 레퍼런스 카드 — 썸네일 격자·정보/미리보기 | `ReferenceCard` |
 | `cards/HeadCard.tsx`(121줄) | 제목(Head) 노드 — 글씨 크기·색 팝오버 | `HeadCard` |
@@ -542,7 +547,7 @@ updated: 2026-09-21
 | `InlinePromptRefs.tsx`(70줄) | 프롬프트의 `@소스`를 썸네일 칩으로 | 3 |
 | `ResizableSidebar.tsx`(105줄) | 폭 조절 사이드바 껍데기 | 2 |
 | `FolderReviewCount.tsx`(18줄) | 폴더 검토 카운트 배지 | 1(`FolderTreeView` 전용 — 공용 폴더에 있지만 실제 공용 아님, §5-b) |
-| `ViewIcons.tsx`(67줄) | 리스트/그리드 SVG · 작업 탭 "보관 기록" 아이콘(`ArchiveHistoryIcon` — 상자+시곗바늘) · 꽉 채우기/필터 사이드바/정보(`FitIcon`·`FilterPanelIcon`·`InfoIcon` — 글자 ▣▢▷ⓘ 가 기준선 탓에 1~1.6px 아래라 SVG 로, 2026-09-22 실측) | 9(`ViewControls`·`LibraryToolbar`·`CompareModal`·`VideoCompareModal`·`assets/AssetCell`·`generation/GenerationThumbOverlay`·`scene/SceneVariantPopup`·`history/HistoryBoardNode`·`manage/WorkBoard`) |
+| `ViewIcons.tsx`(76줄) | 리스트/그리드 SVG(기본 16px — 15px 는 선이 반 픽셀에 걸려 0.5px 아래였다) · 작업 탭 "보관 기록" 아이콘(`ArchiveHistoryIcon` — 상자+시곗바늘) · 꽉 채우기/필터 사이드바/정보(`FitIcon`·`FilterPanelIcon`·`InfoIcon` — 글자 ▣▢▷ⓘ 가 기준선 탓에 1~1.6px 아래라 SVG 로, 2026-09-22 실측) · 캔버스 카드 배치 빼기·더하기(`StepIcon` — 글자 −/+ 는 2.4px 아래) | 13(`ViewControls`·`LibraryToolbar`·`CompareModal`·`VideoCompareModal`·`assets/AssetCell`·`assets/ResolveProjectBrowser`·`generation/GenerationThumbOverlay`·`scene/SceneVariantPopup`·`history/HistoryBoardNode`·`manage/WorkBoard`·`scene/cards/{Generation,Comfy,Render}Card`) |
 
 #### 미디어 보기·비교·부분수정(최상위 + `compare/` + `edit/`, 9파일)
 
@@ -558,16 +563,17 @@ updated: 2026-09-21
 | `edit/PartialEditHost.tsx`(47줄) | `partialEdit` 이벤트 → 최신 Generation 조회 → 모달 개방 | `PartialEditHost`(§3.5 숨은 진입점) |
 | `FloatingPrompt.tsx`(104줄) | `window.prompt` 대체 플로팅 입력 | `FloatingPrompt` |
 
-#### Assets(구성) 화면(`assets/` + `sidebar/` + 최상위, 27파일)
+#### Assets(구성) 화면(`assets/` + `sidebar/` + 최상위, 28파일)
 
 | 파일 | 한 줄 책임 |
 |---|---|
-| `AssetsView.tsx`(932줄) | Assets 뷰 본체 — 가상 그리드·마퀴 선택·드롭 임포트·플로팅 패널 오케스트레이션 |
+| `AssetsView.tsx`(940줄) | Assets 뷰 본체 — 가상 그리드·마퀴 선택·드롭 임포트·플로팅 패널 오케스트레이션 |
 | `AssetsWindow.tsx`(27줄) | `?embed=assets` 분리 창 껍데기(§3.5) |
 | `assets/AssetCell.tsx`(454줄) | 셀 1개(썸네일·호버 오버레이·상태줄) memo |
 | `assets/AssetsCrumbBar.tsx`(216줄) · `AssetsSidebar.tsx`(62줄) · `FolderTree.tsx`(69줄) | 경로 빵부스러기 / 좌측 패널 / 폴더 트리(`common/FolderTreeView.tsx` 와 다른 에셋 전용 트리, §5-b) |
-| `assets/AssetSortMenu.tsx`(95줄) · `MountManager.tsx`(205줄) | 정렬 드롭다운 / 외부 폴더 등록 창 |
-| `assets/assetsViewModel.ts`(247줄) · `treeUtils.ts`(97줄) · `exportDrag.ts`(27줄) · `assetRefreshPolicy.ts`(26줄) | 순수 계산(필터·정렬·트리·OS 드래그·복귀 갱신 정책) |
+| `assets/ResolveProjectBrowser.tsx`(571줄) | `@davinci` 루트의 Resolve 프로젝트 카드 목록·라이브러리 연결·프로젝트 열기 |
+| `assets/AssetSortMenu.tsx`(120줄) · `MountManager.tsx`(205줄) | 정렬 드롭다운 / 외부 폴더 등록 창 |
+| `assets/assetsViewModel.ts`(247줄) · `treeUtils.ts`(114줄) · `exportDrag.ts`(27줄) · `assetRefreshPolicy.ts`(26줄) | 순수 계산(필터·정렬·트리·OS 드래그·복귀 갱신 정책) |
 | `assets/useAssetViewData.ts`·`useAssetMetaActions.ts`·`useAssetCommentActions.ts`·`useAssetFilterActions.ts`·`useAssetSelectionPersistence.ts`·`useAssetViewPersistence.ts`·`useAssetBroadcastSync.ts`·`useAssetDropImport.ts`·`useAssetProjectData.ts`·`useAssetViewerIdentity.ts`(10개, 806줄) | 컨테이너 훅 — 뷰 데이터·메타 저장·코멘트·필터·선택 영속·뷰 영속·브로드캐스트·드롭임포트·프로젝트 데이터·뷰어 신원(파일명 순서와 1:1) |
 | `sidebar/ProjectSection.tsx`(930줄) | 프로젝트·폴더 사이드바(트리 파생·폴더 컨텍스트 메뉴·보관함) |
 | `sidebar/CanvasFolderSidebar.tsx`(66줄) · `CreatorSection.tsx`(71줄) | 캔버스용 슬림 사이드바 / 생성자 필터 절 |
@@ -925,10 +931,10 @@ updated: 2026-09-21
 | `base.css` | 104 | 전역 변수(`:root` 24개)·리셋 — 화면 특정 아님 |
 | `app-shell.css` | 796 | 최상위 앱 셸(`TopBar`·상단 메뉴) |
 | `generations.css` | 856 | 라이브러리 그리드·카드(`ThumbnailGrid`·`GenerationCard`). ★**끝없이 도는 CSS 애니메이션은 합성 가능한 속성(transform·opacity)만** — `background-position`·`box-shadow` 를 무한으로 움직이면 요소 하나만 화면에 있어도 브라우저가 매 프레임 다시 그려 가만히 둔 탭이 CPU 를 계속 쓴다(골드 광택 실측: 0장 1% · 1장 24~38% of one core). 팀 탭 새 항목 글로우(`.card.fresh`)도 같은 이유로 **멈춘 빛**이다(box-shadow 무한: 1장 42~49% · 19장 86~124% → 정지 2~3%. opacity 층으로 바꿔도 절반이 남았다 — 끝없이 도는 한 합성 비용은 남는다). ★**부드러운 무한 애니메이션은 opacity·transform 이어도 비싸다**(화면에 하나만 있어도 페이지를 초당 60번 새로 합친다 — '생성 중' 로고 1장 17%). 그래서 장식은 멈추고 '진행 중' 표시만 계단식 `steps(4)`(17% → 3%)로 남긴다. 계약 시험 = `frontend/tests/idleCssAnimations.test.ts`(모든 CSS 의 `infinite` 는 같은 선언에 `steps(` — 예외는 재서 비용이 없던 11px 알림 스피너 선언 하나). 전수 조사 기록 = `docs/status/브라우저실측_2026-09-19.md` "부하 전수 조사" |
-| `scene.css` | 1513 | 씬 캔버스(`scene/`) — 비슷한 이름의 클래스가 많다(§5-b) |
+| `scene.css` | 1509 | 씬 캔버스(`scene/`) — 비슷한 이름의 클래스가 많다(§5-b) |
 | `prompt-dock.css` | 566 | 스포트라이트 프롬프트 도크(`SpotlightPrompt`·`spotlight/`) |
 | `history.css` | 216 | 히스토리 보드(계보 그래프). 최종 노드는 `content-visibility` 가 풀려 있어 화면 밖에서도 그린다 — 여기에 무한 애니메이션을 두지 않는다 |
-| `assets.css` | 817 | Assets 분리창(`AssetsView`·`assets/`) |
+| `assets.css` | 961 | Assets 분리창(`AssetsView`·`assets/`) |
 | `project-sidebar.css` | 318 | 프로젝트 사이드바(`sidebar/ProjectSection`) |
 | `composition-manage.css` | 1098 | 관리(PM)창 구성·대시보드 화면. 옛 합성보드·옛 통계 위젯(도넛·퍼널 등)의 규칙은 2026-09-18 에 걷어냈다. 남은 휴면 규칙은 §5-d |
 | `admin-auth-compare.css` | 682 | 로그인·관리자 창·계정 비교 화면 |
@@ -1112,6 +1118,7 @@ updated: 2026-09-21
 | `repo/gen_requests.py` 일반축(`o.id<>r.id`) ↔ 캔버스축(NULL-safe 비교) "다른 요청이 이 gen 을 쓰고 있나" 가드 | 형태는 다르지만 유니크 인덱스를 고려하면 효과는 같아 보인다(등가성은 시험으로 확인되지 않음 — 추정) |
 | `frontend/src/lib/sceneDragSession.ts` 의 `SceneDragEnvironment` 주입 인터페이스 | 구현이 하나뿐이라 "야그니"로 보이지만, `frontend/tests/sceneDragSession.test.ts` 가 가짜 환경(`addListener`·`requestFrame`·`cancelFrame`)을 주입해 시험하는 DI 이음새다. 인라인화하면 그 시험이 설 자리가 사라진다 |
 | 씬(`scene/`)·스포트라이트(`spotlight/`) 사이의 근사 중복(삽입 위치 계산·드래그 세션·바깥클릭+Esc·가시성 폴러) | 알고리즘은 같지만 feature 경계(ARCHITECTURE §2 "feature 끼리 직접 import 금지") 때문에 각자 복제됐다 — **합칠 자리는 `shared`/`lib` 이지 서로를 참조하는 게 아니다** |
+| `common/ViewIcons.tsx` `InfoIcon`(선 1.5) ↔ `assets/ResolveProjectBrowser.tsx` 안의 `InfoIcon`(선 2) | 모양은 같고 굵기가 다르다 — 카드 오버레이 ⓘ 는 원래 글자 ⓘ 의 가는 선에, Resolve 머리글 ⓘ 는 Jay 가 시안으로 본 굵기(도구 줄 사슬 아이콘과 한 벌)에 맞췄다. 합치면 한쪽 모양이 바뀐다 |
 | 글자 아이콘 단추의 `@supports (text-box …)` 규칙 3곳(`styles/generations.css` `.card-sf`·`.card-cm`·`.ov-icon` · `styles/history.css` `.linb-ov-btn`·`.linb-sf` · `styles/assets.css` `.af-btn`) | 같은 처방(글자 칸을 대문자 높이로 다듬어 정중앙)이지만 한 규칙으로 못 합친다 — text-box 는 flex·grid 안 글자에 안 먹어 단추마다 block 으로 바꿔야 하고, SVG 를 담는 상태(최종 ★·ⓘ·가계 보기)·span 그립은 클래스별로 빼야 한다. 미지원 브라우저는 `@supports` 밖의 옛 flex 정렬 그대로 |
 | S2 — `restart_server_task.ps1`(`Test-MvHubServerCommandLine`) ↔ `tools/stop_local_hub_on_port.ps1`(`BundledPythonPath` 레거시 폴백 추가) | 포트 소유권 판정 로직이 거의 같지만, `stop_local_hub_on_port.ps1` 에만 있는 레거시 폴백의 존재 이유가 확인되지 않았다 — **합치기 전에 그 폴백이 지키는 것부터 확인**(안전장치로 확정된 것은 아니고, 확인이 필요하다는 뜻) |
 
@@ -1171,5 +1178,3 @@ updated: 2026-09-21
 - 수정 후보·버그 발견·리팩터 제안은 이 문서에 넣지 않는다 — 그런 목록은 며칠이면 낡고, 이 문서는
   "파일이 어디 있나"만 답하면 된다. 후보는 별도 리뷰 문서에 남긴다.
 - 큰 구조 변경(폴더 대이사·계층 이동)은 루트 `ARCHITECTURE.md` 를 먼저 갱신한 뒤 이 문서를 따라 고친다.
-
-
