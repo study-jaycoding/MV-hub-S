@@ -11,6 +11,7 @@ import { ColorFilterDots } from "./common/ColorFilterDots";
 import { LibraryWorkspaceFilter, type WorkspaceFilterProps } from "./common/LibraryWorkspaceFilter";
 import { TagFilterPanel } from "./common/TagFilterPanel";
 import { ViewControls } from "./common/ViewControls";
+import { FilterPanelIcon } from "./common/ViewIcons";
 
 const LIB_LS = makeStore("ch.lib.");
 
@@ -156,7 +157,7 @@ export function LibraryToolbar({
           onClick={onToggleFilters}
           title={filtersOpen ? t("필터 사이드바 닫기") : t("필터 사이드바 열기")}
         >
-          {filtersOpen ? "▢" : "▷"}
+          <FilterPanelIcon open={filtersOpen} />
         </button>
       )}
       {/* 미디어 타입 — 4개 점 슬라이더(전체·이미지·영상·오디오). 슬라이드/점클릭 모두 전환.

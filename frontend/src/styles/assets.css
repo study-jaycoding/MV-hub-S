@@ -231,6 +231,8 @@
   min-width: 26px; height: 24px; padding: 0 7px; border-radius: 7px;
   background: rgba(255,255,255,0.05); border: 1px solid var(--border);
   color: var(--muted2); font-size: 12px; font-weight: 800;
+  /* S·T·C 글자를 대문자 높이로 다듬어 정중앙에 — 0.8px 아래였다(2026-09-22 픽셀 실측). flex·grid 단추(SVG)엔 안 먹는다. */
+  text-box: trim-both cap alphabetic;
 }
 .af-btn:hover { color: var(--text); }
 /* 눌림(활성) — 또렷한 색 변화(솔리드 accent) */

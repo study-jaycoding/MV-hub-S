@@ -18,6 +18,7 @@ import { DRAG_TYPES } from "../../lib/dragTypes";
 import { MediaThumbnail } from "../MediaThumbnail";
 import { TagEditor } from "../TagEditor";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
+import { InfoIcon } from "../common/ViewIcons";
 import { BoardSelectionActionBar } from "../app/SelectionActionBar";
 
 // Resolve 전송 컨트롤 묶음 — App 의 resolveTransfer 파이프라인을 SceneBoard 를 거쳐 그대로 전달.
@@ -466,7 +467,7 @@ export function SceneVariantPopup({
                               gen.onInfo?.({ kind: "generation", gen: gg, x: e.clientX, y: e.clientY });
                             }}
                           >
-                            ⓘ
+                            <InfoIcon />
                           </button>
                         </div>
                         <div className="ov-bottom">

@@ -1,4 +1,4 @@
-import { GridIcon, ListIcon } from "./ViewIcons";
+import { FitIcon, GridIcon, ListIcon } from "./ViewIcons";
 
 type LayoutMode = "grid" | "list";
 
@@ -50,7 +50,7 @@ export function ViewControls({
             : "꽉 채우기(크롭) — 클릭 시 전체 보기"
         }
       >
-        {fitContain ? "▢" : "▣"}
+        <FitIcon filled={!fitContain} />
       </button>
       {zoomControl ? (
         <div className="zoom-cluster">

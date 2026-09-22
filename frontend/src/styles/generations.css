@@ -699,9 +699,14 @@
 }
 /* 호버 = '이걸 누른다' 라임 강조(보드 .linb-ov-btn:hover 와 동일 — 전역 일관) */
 .ov-icon:hover { background: var(--grad); color: var(--accent-ink); border-color: var(--accent); }
-/* ⓘ(U+24D8) 글리프는 폴백 폰트 메트릭 때문에 중앙보다 1px 아래로 렌더됨(실측) —
-   ⓘ 버튼에만 보정. 다른 글리프(⤓ ↺ ↻ S)는 이미 정중앙이라 전체 이동 금지. */
-.ov-info { padding: 0 0 2px; }
+/* 글자 아이콘(S·T·C·⤓ ↺ ↻ @ ⬇ 📋 📂)을 대문자 높이로 다듬어 정중앙에 — 글꼴 기준선 탓에 0.8~1.6px 아래였다
+   (2026-09-22 픽셀 실측). text-box 는 flex 안 글자에 안 먹어 block + align-content 로 세로 가운데. 지원하지 않는
+   브라우저는 위의 flex 그대로. SVG 를 담는 최종 ★·ⓘ·가계 보기는 뺀다. 캔버스 노드(history.css)도 같은 규칙. */
+@supports (text-box: trim-both cap alphabetic) {
+  .card-sf:not(.final), .card-cm, .ov-icon:not(.ov-info):not(.ov-lineage) {
+    display: inline-block; align-content: center; text-align: center; text-box: trim-both cap alphabetic;
+  }
+}
 /* 공유됨 → 해제 버튼: accent 강조(클릭하면 공유 해제). 라임 위 굵은 검은 아이콘(시인성) */
 .ov-icon-on { background: var(--accent); color: var(--accent-ink); font-weight: 900; font-size: 17px; }
 .ov-icon-on:hover { background: var(--accent); filter: brightness(1.12); }
@@ -713,6 +718,7 @@
 @container (max-width: 155px) {
   .ov-bottom { gap: 3px; flex-wrap: nowrap; }
   .ov-top .ov-icon, .ov-bottom .ov-icon { width: 23px; height: 23px; font-size: 12px; }
+  .ov-top .ov-info svg { width: 15px; height: 15px; } /* 홀수(23px) 단추엔 홀수 아이콘 — 짝수면 반 픽셀에 걸린다 */
   .ov-icon-on { font-size: 13px; }
   .ov-lineage { min-width: 23px; padding: 0 4px; }
   .ov-lineage .lineage-count { font-size: 10px; }

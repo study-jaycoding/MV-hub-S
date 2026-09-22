@@ -10,6 +10,7 @@ import {
 } from "../lib/compareDiff";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import { bindSynchronizedVideos } from "../lib/synchronizedVideos";
+import { FitIcon } from "./common/ViewIcons";
 import {
   compareImageSource,
   fitCompareWindowToViewport,
@@ -247,7 +248,7 @@ export function CompareModal({
                   : "꽉 채우기(크롭) — 클릭 시 전체 보기"
               }
             >
-              {fitContain || maximized ? "▢" : "▣"}
+              <FitIcon filled={!(fitContain || maximized)} />
             </button>
             <label className="cmp-onlydiff">
               <input

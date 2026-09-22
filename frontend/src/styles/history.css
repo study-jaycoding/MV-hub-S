@@ -217,6 +217,13 @@
   border: 1px solid #ffd966; font-size: 16px;
   box-shadow: 0 0 0 1px #ffd966, 0 0 10px rgba(245,197,66,0.55);
 }
+/* 글자 아이콘을 대문자 높이로 다듬어 정중앙에 — 그리드 .card-sf·.ov-icon 과 같은 규칙(generations.css, 2026-09-22 실측).
+   끌기 그립(span ⠿)·ⓘ(SVG)·최종 ★ 는 뺀다. */
+@supports (text-box: trim-both cap alphabetic) {
+  button.linb-ov-btn:not(.ov-info):not(.final), .linb-sf:not(.final) {
+    display: block; align-content: center; text-align: center; text-box: trim-both cap alphabetic;
+  }
+}
 .linb-node:hover:not(.sf-readonly) .linb-sf { opacity: 0; }
 .linb-node.sf-readonly .linb-ov-top { padding-left: 31px; }
 /* 메인 라인 위의 노드 — 절제된 accent 글로우(생성 순서 강조). 선택/포커스(더 강한 강조)는 그대로 우선. */

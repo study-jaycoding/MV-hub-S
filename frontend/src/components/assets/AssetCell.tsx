@@ -6,6 +6,7 @@ import { downloadOne } from "../../lib/download";
 import { useT } from "../../lib/i18n";
 import { reportSourceLocationError } from "../../lib/sourceLocationFeedback";
 import { TagEditor } from "../TagEditor";
+import { InfoIcon } from "../common/ViewIcons";
 import type { AssetMeta, AssetNode, InfoTarget } from "../../types";
 
 export const AssetCell = memo(function AssetCell({
@@ -365,7 +366,7 @@ export const AssetCell = memo(function AssetCell({
         >
           <div className="ov-top">
             <button className="ov-icon ov-info" title="정보" onClick={(e) => info(e.clientX, e.clientY)}>
-              ⓘ
+              <InfoIcon />
             </button>
           </div>
           <div className="ov-bottom">

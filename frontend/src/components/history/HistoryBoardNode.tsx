@@ -9,6 +9,7 @@ import { canShowShareAction, matchesReviewFilter, type ReviewFilter } from "../.
 import type { Generation, InfoTarget, PreviewTarget } from "../../types";
 import { MediaThumbnail } from "../MediaThumbnail";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
+import { InfoIcon } from "../common/ViewIcons";
 
 type SConfirm = { id: string; kind: "share" | "final" } | null;
 
@@ -249,7 +250,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
             title="정보"
             onClick={(e) => onInfo({ kind: "generation", gen: generation, x: e.clientX, y: e.clientY })}
           >
-            ⓘ
+            <InfoIcon />
           </button>
         </div>
         <span

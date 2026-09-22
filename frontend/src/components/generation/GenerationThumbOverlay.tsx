@@ -2,6 +2,7 @@ import { downloadName, downloadOne } from "../../lib/download";
 import { APP_EVENTS, dispatchAppEvent } from "../../lib/appEvents";
 import type { Asset, Generation, InfoTarget } from "../../types";
 import { BranchIcon } from "./GenerationCardIcons";
+import { InfoIcon } from "../common/ViewIcons";
 
 export function GenerationThumbOverlay({
   asset,
@@ -50,7 +51,7 @@ export function GenerationThumbOverlay({
             onInfo({ kind: "generation", gen, x: event.clientX, y: event.clientY })
           }
         >
-          ⓘ
+          <InfoIcon />
         </button>
       </div>
       <div className="ov-bottom">
