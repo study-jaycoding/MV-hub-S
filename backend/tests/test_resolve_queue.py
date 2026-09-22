@@ -250,6 +250,11 @@ class ErrorCodeContractTests(ResolveQueueTestBase):
         crashed = subprocess.CompletedProcess(
             args=[], returncode=3221225477, stdout="", stderr=""
         )
+        # 아래 subprocess.run 가짜는 'Resolve 켜져 있나' 확인(tasklist)까지 삼켜 '꺼짐'으로 읽히게
+        # 한다 — 이 시험은 그 관문 뒤의 이름표를 보므로 켜짐으로 고정한다.
+        running = mock.patch.object(resolve_status_runner, "resolve_process_running", return_value=True)
+        running.start()
+        self.addCleanup(running.stop)
         with (
             mock.patch.object(
                 resolve_status_runner,

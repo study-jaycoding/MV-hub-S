@@ -15,11 +15,15 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from .resolve_bridge import resolve_process_running
 from .resolve_import_worker import RESULT_PREFIX as IMPORT_RESULT_PREFIX
+from .resolve_library_list_worker import RESULT_PREFIX as LIBRARY_LIST_RESULT_PREFIX
+from .resolve_project_open_worker import RESULT_PREFIX as PROJECT_OPEN_RESULT_PREFIX
 from .resolve_probe import RESULT_PREFIX
 from .resolve_python_registry import parse_python_version, registry_python_installations
 
@@ -36,11 +40,74 @@ _FALLBACK_MIN_VERSION = (3, 9)
 _SELECT_REUSE_SECONDS = 1.0
 
 _SELECT_LOCK = threading.Lock()
-_IMPORT_LOCK = threading.Lock()
+_RESOLVE_MUTATION_LOCK = threading.Lock()
 # 마지막으로 fusionscript 로드에 성공한 인터프리터 경로 (프로세스 수명 캐시).
 _working_interpreter: str | None = None
 # 직전 선택 결과: (monotonic 시각, 인터프리터, 검사 결과, 실패 설명)
 _last_selection: tuple[float, str | None, dict[str, Any] | None, str] | None = None
+
+# ── 앱이 Resolve 를 켜는 동안(켜기 창) ──
+# 켜지는 중인 Resolve 에는 스크립트 API 를 부르지 않는다 — 상태 조회·선택 감시·가져오기·라이브러리 목록·
+# 다른 열기 모두(Codex P1, Jay 2026-09-22 B안). 예외는 그 켜기를 부른 열기뿐이고, 켤 때 받은 일회용
+# launch_id 로 가린다. 열기가 Resolve 의 답을 받으면 바로 끝나고, 아니면 90초 뒤 저절로 끝난다.
+# 켜다 죽었으면(작업 목록에 없음) 그 자리에서 끝낸다.
+LAUNCH_WINDOW_SECONDS = 90.0
+# 켠 직후 작업 목록에 아직 안 보일 수 있는 틈(추정) — 이 안에서는 '안 보임'을 '꺼짐'으로 읽지 않는다.
+_LAUNCH_GRACE_SECONDS = 10.0
+LAUNCHING_MESSAGE = "DaVinci Resolve 를 켜는 중입니다. 잠시 뒤 다시 시도하세요."
+_launch_lock = threading.Lock()
+_launch_started: float | None = None
+_launch_id = ""
+
+
+class ResolveLaunching(Exception):
+    """켜기 창 중이라 Resolve API 를 부르지 않았다."""
+
+
+def _launch_state() -> tuple[float, str] | None:
+    """(창 나이, launch_id). 창이 없거나 만료됐으면 None(만료면 비운다)."""
+    global _launch_started, _launch_id
+    with _launch_lock:
+        if _launch_started is None:
+            return None
+        age = time.monotonic() - _launch_started
+        if age >= LAUNCH_WINDOW_SECONDS:
+            _launch_started, _launch_id = None, ""
+            return None
+        return age, _launch_id
+
+
+def launch_window_active() -> bool:
+    return _launch_state() is not None
+
+
+def _blocked_by_launch(launch_id: str) -> bool:
+    state = _launch_state()
+    return state is not None and not (launch_id and launch_id == state[1])
+
+
+def begin_launch_window() -> str:
+    """창을 열고 그 launch_id 를 돌려준다. 진행 중인 Resolve 검사가 끝난 뒤에 연다 — 검사 시작과 켜기가
+    같은 잠금으로 줄을 선다(Codex P1)."""
+    global _launch_started, _launch_id
+    with _SELECT_LOCK, _launch_lock:
+        _launch_started, _launch_id = time.monotonic(), uuid.uuid4().hex
+        return _launch_id
+
+
+def end_launch_window() -> None:
+    global _launch_started, _launch_id
+    with _launch_lock:
+        _launch_started, _launch_id = None, ""
+
+
+def end_launch_window_if_closed(running: bool | None) -> None:
+    """켠 지 조금 지났는데 작업 목록에 Resolve 가 없으면 켜다 죽은 것 — 창을 닫아 다시 켤 수 있게(Codex P1)."""
+    if running is not False:
+        return
+    state = _launch_state()
+    if state is not None and state[0] >= _LAUNCH_GRACE_SECONDS:
+        end_launch_window()
 
 
 def _unavailable(
@@ -72,6 +139,19 @@ def _timeout_message() -> str:
         f"DaVinci Resolve가 {_STATUS_TIMEOUT_SECONDS:g}초 안에 응답하지 않았습니다. "
         "작업을 저장하고 Resolve를 다시 실행하세요"
     )
+
+
+NOT_RUNNING_MESSAGE = "DaVinci Resolve가 실행 중이지 않습니다. 먼저 Resolve를 켜세요."
+
+
+def _resolve_is_closed() -> bool:
+    """Resolve가 꺼진 게 확실한가.
+
+    꺼져 있으면 검사 프로세스가 scriptapp 재시도로 13초쯤 붙잡히는데 부모는 8초만
+    기다린다 — 그래서 진짜 이유 대신 '시간 초과'가 나갔다(2026-09-22 실측). 목록·상태
+    경로는 이미 이 관문을 쓰고 있었고, 열기·가져오기만 빠져 있었다. 확인 자체는 0.3초다.
+    """
+    return resolve_process_running() is False
 
 
 def _fallback_interpreters() -> list[str]:
@@ -180,11 +260,19 @@ def _probe_with(interpreter: str) -> tuple[dict[str, Any] | None, str]:
     return result, ""
 
 
-def _select_interpreter() -> tuple[str | None, dict[str, Any] | None, str]:
-    """fusionscript 로드에 성공하는 인터프리터를 골라 (경로, 검사 결과, 실패 설명)을 반환한다."""
+def _select_interpreter(
+    *, launch_id: str = ""
+) -> tuple[str | None, dict[str, Any] | None, str]:
+    """fusionscript 로드에 성공하는 인터프리터를 골라 (경로, 검사 결과, 실패 설명)을 반환한다.
+
+    켜기 창 중이면 검사하지 않고 ResolveLaunching — 모든 Resolve API 호출이 여기를 지나므로 관문도 한 곳이다.
+    창의 launch_id 를 가진 호출(그 켜기를 부른 열기)만 지나간다.
+    """
     global _working_interpreter, _last_selection
     failures: list[str] = []
     with _SELECT_LOCK:
+        if _blocked_by_launch(launch_id):
+            raise ResolveLaunching(LAUNCHING_MESSAGE)
         last = _last_selection
         if last is not None and time.monotonic() - last[0] < _SELECT_REUSE_SECONDS:
             _stamp, interpreter, result, failure = last
@@ -208,6 +296,10 @@ def _select_interpreter() -> tuple[str | None, dict[str, Any] | None, str]:
 def resolve_connection_status_bounded() -> dict[str, Any]:
     """별도 검사 프로세스를 실행하고 제한 시간 초과 시 안전한 상태를 반환한다."""
     running = resolve_process_running()
+    # 켜는 중이면 작업 목록만 보고 Resolve API 는 부르지 않는다. 켜다 죽었으면 창을 닫고 '꺼짐'을 알린다.
+    end_launch_window_if_closed(running)
+    if launch_window_active():
+        return _unavailable(LAUNCHING_MESSAGE, status="starting")
     if running is False:
         return _unavailable(
             "DaVinci Resolve가 실행 중이지 않습니다", process_running=False
@@ -216,6 +308,8 @@ def resolve_connection_status_bounded() -> dict[str, Any]:
         _interpreter, result, failure = _select_interpreter()
     except subprocess.TimeoutExpired:
         return _unavailable(_timeout_message())
+    except ResolveLaunching:
+        return _unavailable(LAUNCHING_MESSAGE, status="starting")
     if result is not None:
         return result
     return _unavailable(_no_interpreter_message(failure), status="python_incompatible")
@@ -233,6 +327,8 @@ def resolve_compatible_interpreter() -> tuple[str | None, str]:
         interpreter, _result, failure = _select_interpreter()
     except subprocess.TimeoutExpired:
         return None, _timeout_message()
+    except ResolveLaunching:
+        return None, LAUNCHING_MESSAGE
     return interpreter, failure
 
 
@@ -252,6 +348,25 @@ def _import_unavailable(message: str, *, error_code: str) -> dict[str, Any]:
     }
 
 
+def _project_open_unavailable(message: str, *, error_code: str) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "error_code": error_code,
+        "error": message,
+    }
+
+
+@contextmanager
+def resolve_mutation_slot(*, blocking: bool = True):
+    """Resolve 상태를 바꾸는 부모 작업을 한 번에 하나만 허용한다."""
+    acquired = _RESOLVE_MUTATION_LOCK.acquire(blocking=blocking)
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            _RESOLVE_MUTATION_LOCK.release()
+
+
 def run_resolve_import_isolated(manifest: dict[str, Any]) -> dict[str, Any]:
     """가져오기를 호환 인터프리터의 자식 프로세스로 실행한다 (fusionscript 크래시 격리).
 
@@ -260,11 +375,15 @@ def run_resolve_import_isolated(manifest: dict[str, Any]) -> dict[str, Any]:
     프로젝트 구조가 중간 상태로 남을 수 있기 때문이다. 이는 기존 in-process
     실행과 같은 동작이다. 인터프리터 선택 검사만 8초 제한을 갖는다.
     """
-    with _IMPORT_LOCK:
+    if _resolve_is_closed():
+        return _import_unavailable(NOT_RUNNING_MESSAGE, error_code="not_running")
+    with resolve_mutation_slot():
         try:
             interpreter, _status, failure = _select_interpreter()
         except subprocess.TimeoutExpired:
             return _import_unavailable(_timeout_message(), error_code="api_unavailable")
+        except ResolveLaunching:
+            return _import_unavailable(LAUNCHING_MESSAGE, error_code="launching")
         if interpreter is None:
             return _import_unavailable(
                 _no_interpreter_message(failure), error_code="python_incompatible"
@@ -296,3 +415,95 @@ def run_resolve_import_isolated(manifest: dict[str, Any]) -> dict[str, Any]:
         # 자식 결과는 브리지가 항상 error_code 를 실어 보낸다. 여기서 키를 덧붙이지 않는다
         # (부모가 결과를 그대로 전달한다는 기존 계약 유지).
         return result
+
+
+def run_resolve_project_open_isolated(
+    payload: dict[str, Any], *, launch_id: str = ""
+) -> dict[str, Any]:
+    """프로젝트 전환을 호환 인터프리터의 자식 프로세스에서 실행한다.
+
+    launch_id = 이 열기가 부른 켜기의 번호 — 켜기 창 중에는 이것이 맞는 열기만 Resolve 에 닿는다.
+    """
+    if _resolve_is_closed():
+        return _project_open_unavailable(NOT_RUNNING_MESSAGE, error_code="not_running")
+    with resolve_mutation_slot(blocking=False) as acquired:
+        if not acquired:
+            return _project_open_unavailable(
+                "Resolve에서 다른 가져오기나 연결 작업이 진행 중입니다.",
+                error_code="resolve_busy",
+            )
+        try:
+            interpreter, _status, failure = _select_interpreter(launch_id=launch_id)
+        except subprocess.TimeoutExpired:
+            return _project_open_unavailable(
+                _timeout_message(), error_code="api_unavailable"
+            )
+        except ResolveLaunching:
+            # 다른 화면·탭이 켠 Resolve 가 아직 켜지는 중 — 기다리면 풀린다(라우트가 503).
+            return _project_open_unavailable(LAUNCHING_MESSAGE, error_code="launching")
+        if interpreter is None:
+            return _project_open_unavailable(
+                _no_interpreter_message(failure), error_code="python_incompatible"
+            )
+        try:
+            completed = _run_child(
+                interpreter,
+                "app.services.resolve_project_open_worker",
+                timeout=120,
+                input_text=json.dumps(payload, ensure_ascii=True),
+            )
+        except subprocess.TimeoutExpired:
+            return _project_open_unavailable(
+                "Resolve 프로젝트가 120초 안에 열리지 않았습니다.",
+                error_code="open_timeout",
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return _project_open_unavailable(
+                f"Resolve 프로젝트 열기 프로세스를 실행할 수 없습니다: {exc}",
+                error_code="spawn_failed",
+            )
+        result = _parse_result(completed.stdout, PROJECT_OPEN_RESULT_PREFIX)
+        if result is not None:
+            return result
+        detail = _tail_text(completed.stderr) or f"프로세스 종료 코드 {completed.returncode}"
+        return _project_open_unavailable(
+            f"Resolve 프로젝트 열기 결과를 읽을 수 없습니다: {detail}",
+            error_code="child_crashed" if completed.returncode else "invalid_child_result",
+        )
+
+
+def _library_list_failed(error_code: str) -> dict[str, Any]:
+    return {"status": "failed", "error_code": error_code, "names": []}
+
+
+def run_resolve_library_list_isolated() -> dict[str, Any]:
+    """Resolve에 등록된 Disk 라이브러리 이름만 읽는다.
+
+    mutation slot 은 잡지 않는다 — 부르는 쪽(연결 창)이 이미 쥔 채로 Connect 뒤 등록을
+    확인하는 데 쓰기 때문이다(잡으면 자기 자신과 부딪힌다). 실패는 예외 대신
+    status="failed"로 돌려주며, 호출자는 '확인하지 못함'으로 다룬다.
+    """
+    if _resolve_is_closed():
+        return _library_list_failed("not_running")
+    try:
+        interpreter, _status, _failure = _select_interpreter()
+    except subprocess.TimeoutExpired:
+        return _library_list_failed("api_unavailable")
+    except ResolveLaunching:
+        return _library_list_failed("launching")
+    if interpreter is None:
+        return _library_list_failed("python_incompatible")
+    try:
+        completed = _run_child(
+            interpreter, "app.services.resolve_library_list_worker", timeout=30
+        )
+    except subprocess.TimeoutExpired:
+        return _library_list_failed("list_timeout")
+    except (OSError, subprocess.SubprocessError):
+        return _library_list_failed("spawn_failed")
+    result = _parse_result(completed.stdout, LIBRARY_LIST_RESULT_PREFIX)
+    if result is None:
+        return _library_list_failed(
+            "child_crashed" if completed.returncode else "invalid_child_result"
+        )
+    return result

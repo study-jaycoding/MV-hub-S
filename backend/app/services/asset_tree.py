@@ -21,6 +21,7 @@ from .project_folders import hidden_folder
 
 _TREE_MAX_DEPTH = 24
 _TREE_MAX_NODES = 20000
+_OPAQUE_FOLDER_NAMES = {"@davinci"}
 _TREE_TTL = max(
     1.0, float(os.environ.get("CONTENT_HUB_ASSET_TREE_CACHE_TTL", "30"))
 )
@@ -171,18 +172,24 @@ def build_tree(
             except OSError:
                 continue
             _budget[0] -= 1
+            opaque = rel.replace("\\", "/").casefold() in _OPAQUE_FOLDER_NAMES
+            child_nodes = (
+                []
+                if opaque
+                else build_tree(
+                    Path(entry.path),
+                    rel + "/",
+                    hidden_names=hidden_names,
+                    _depth=_depth + 1,
+                    _budget=_budget,
+                )
+            )
             out.append(
                 {
                     "name": entry.name,
                     "type": "dir",
                     "path": rel,
-                    "children": build_tree(
-                        Path(entry.path),
-                        rel + "/",
-                        hidden_names=hidden_names,
-                        _depth=_depth + 1,
-                        _budget=_budget,
-                    ),
+                    "children": child_nodes,
                 }
             )
             continue

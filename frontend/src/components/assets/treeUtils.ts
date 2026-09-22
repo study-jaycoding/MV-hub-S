@@ -14,14 +14,29 @@ function hiddenFolderNames(project: string): ReadonlySet<string> | undefined {
   return HIDDEN_FOLDER_NAMES_BY_PROJECT[project];
 }
 
+function isDavinciRoot(path: string): boolean {
+  return path.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase() === "@davinci";
+}
+
+function containsDavinciRoot(nodes: AssetNode[]): boolean {
+  return nodes.some(
+    (node) =>
+      node.type === "dir" &&
+      (isDavinciRoot(node.path) || containsDavinciRoot(node.children || [])),
+  );
+}
+
 /** 프로젝트별 표시 제외 폴더를 트리와 검색 범위에서 제거한다. 원본 트리는 변경하지 않는다. */
 export function visibleAssetTree(project: string, nodes: AssetNode[]): AssetNode[] {
   const hidden = hiddenFolderNames(project);
-  if (!hidden) return nodes;
+  if (!hidden && !containsDavinciRoot(nodes)) return nodes;
 
   return nodes.flatMap((node) => {
     if (node.type !== "dir") return [node];
-    if (hidden.has(node.name.trim().toUpperCase())) return [];
+    if (hidden?.has(node.name.trim().toUpperCase())) return [];
+    if (isDavinciRoot(node.path)) {
+      return node.children?.length ? [{ ...node, children: [] }] : [node];
+    }
     const children = visibleAssetTree(project, node.children || []);
     return children === node.children ? [node] : [{ ...node, children }];
   });
@@ -29,8 +44,10 @@ export function visibleAssetTree(project: string, nodes: AssetNode[]): AssetNode
 
 /** 마지막으로 열었던 경로가 현재 프로젝트의 표시 제외 폴더인지 확인한다. */
 export function isAssetFolderHidden(project: string, path: string): boolean {
+  const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
+  if (parts[0]?.toLowerCase() === "@davinci" && parts.length > 1) return true;
   const hidden = hiddenFolderNames(project);
-  return !!hidden && path.split(/[\\/]/).some((part) => hidden.has(part.trim().toUpperCase()));
+  return !!hidden && parts.some((part) => hidden.has(part.trim().toUpperCase()));
 }
 
 // 제작 폴더의 약속된 표시 순서: PR을 Reference보다 먼저 보여준다.

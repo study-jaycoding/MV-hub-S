@@ -107,3 +107,32 @@ describe("프로젝트별 에셋 폴더 표시", () => {
     expect(isAssetFolderHidden("다른 프로젝트", "MOSAIC/EP01")).toBe(false);
   });
 });
+
+describe("DaVinci 프로젝트 라이브러리 표시", () => {
+  it("예전 캐시에 남은 @davinci 내부 폴더를 화면 트리에서 제거한다", () => {
+    const davinci: AssetNode = {
+      name: "@davinci",
+      path: "@davinci",
+      type: "dir",
+      children: [
+        {
+          name: "Resolve Projects",
+          path: "@davinci/Resolve Projects",
+          type: "dir",
+          children: [folder("@davinci/Resolve Projects/Users")],
+        },
+      ],
+    };
+
+    const visible = visibleAssetTree("뻘뻘뻘", [davinci, folder("BG")]);
+
+    expect(visible[0]).toMatchObject({ name: "@davinci", children: [] });
+    expect(davinci.children).toHaveLength(1);
+  });
+
+  it("@davinci 자체는 열 수 있고 예전 하위 저장 경로만 숨김으로 판단한다", () => {
+    expect(isAssetFolderHidden("뻘뻘뻘", "@davinci")).toBe(false);
+    expect(isAssetFolderHidden("뻘뻘뻘", "@davinci/Resolve Projects/Users")).toBe(true);
+    expect(isAssetFolderHidden("다른 프로젝트", "@davinci\\Resolve Projects")).toBe(true);
+  });
+});

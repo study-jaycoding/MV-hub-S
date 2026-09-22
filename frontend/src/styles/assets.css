@@ -130,6 +130,142 @@
 
 .assets-grid-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
 
+/* 머리글은 스크롤 밖에 두고 목록(.resolve-project-body)만 스크롤한다 — 머리글 배경을 에셋 툴바처럼
+   투명하게 둬야 색이 같다(흰 덧칠 0.025 가 한 단계 밝게 보였다, 2026-09-22 픽셀 실측 14 vs 8). */
+.resolve-project-browser {
+  flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column;
+}
+/* 간격·여백·선·글자는 .assets-crumb 가 준다(Jay 2026-09-22 — 에셋 툴바와 같은 색·크기·단추 자리).
+   높이 49px = 에셋 툴바(맞춤 단추 30px + 여백 10/8 + 선 1) — 여기엔 30px 짜리 단추가 없어 직접 맞춘다. */
+.resolve-project-header { flex: none; min-height: 49px; box-sizing: border-box; }
+/* 'DaVinci Resolve · 12' + 상태 칩('Resolve', 색으로 상태) + 작업 결과 한 줄. 제목 색은 흰색 그대로(Jay). */
+.resolve-project-heading {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+}
+.resolve-project-heading strong {
+  flex: none; color: var(--text); font-size: 14px; font-weight: 700; white-space: nowrap;
+}
+.resolve-project-heading .rp-count {
+  flex: none; color: var(--muted); font-size: 12.5px; font-weight: 500; white-space: nowrap;
+}
+.resolve-project-heading .rp-note {
+  min-width: 0; margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font-size: 12px;
+}
+.resolve-library-connect-button {
+  flex: none; min-width: 128px; height: 34px; padding: 0 14px;
+  border: 1px solid rgba(190,255,64,0.48); border-radius: 7px;
+  background: rgba(190,255,64,0.09); color: var(--accent);
+  font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.resolve-library-connect-button:hover:not(:disabled) { background: rgba(190,255,64,0.16); }
+.resolve-library-connect-button:disabled { opacity: 0.55; cursor: wait; }
+.resolve-library-connect-button.big { min-width: 160px; height: 40px; font-size: 13px; }
+/* 사슬·ⓘ 묶음 = 에셋 툴바 S·T·C 묶음(.assets-filters)과 같은 간격. */
+.resolve-project-tools .rp-pair { display: flex; align-items: center; gap: 7px; margin-right: 10px; }
+/* 사슬(다시 연결)·ⓘ(정보) — '.assets-tools .af-btn' 의 좌우 여백 7px 이 26px 폭 안의 아이콘을 밀지 않게
+   더 구체적인 선택자로 여백 0, 아이콘은 정중앙(grid center). */
+.resolve-project-tools .af-btn.rp-icon-btn {
+  width: 26px; min-width: 26px; padding: 0; display: grid; place-items: center; cursor: pointer;
+}
+.resolve-project-tools .rp-icon-btn svg { display: block; }
+.resolve-project-tools .rp-icon-btn:disabled { opacity: 0.55; cursor: wait; }
+.resolve-project-state { padding: 36px 22px; color: var(--muted); font-size: 13px; }
+/* 라이브러리가 아직 안 붙었을 때 — 할 일이 하나뿐이라 단추를 빈 자리 한가운데 둔다. */
+.resolve-project-empty {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 22px;
+  padding: 24px 22px; text-align: center;
+}
+.resolve-project-empty .rpe-lead { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.resolve-project-empty .rpe-hint {
+  color: var(--muted); font-size: 11px; line-height: 1.5; opacity: 0.8;
+}
+/* 날짜로 나누면 (날짜줄 + 격자)가 여러 벌 나오므로 여백은 이 바깥 칸이 갖는다. */
+.resolve-project-body {
+  flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; padding: 14px 22px 28px;
+}
+.resolve-project-body .gen-date-header { font-size: 13px; cursor: default; }
+/* 카드 = Resolve Project Manager 모양(Jay 2026-09-22): 대표 그림 위, 이름·정보 아래. 카드 전체가 여는 단추.
+   --rp-scale = 머리글 크기 막대(0.7~1.7). */
+.resolve-project-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(calc(190px * var(--rp-scale, 1)), 1fr));
+  gap: 22px 18px;
+}
+.resolve-project-grid + .gen-date-header,
+.resolve-project-list + .gen-date-header { margin-top: 12px; }
+.resolve-project-card {
+  min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 0; border: 0; background: none; color: var(--text); font: inherit;
+  text-align: center; cursor: pointer;
+}
+.resolve-project-card:disabled { opacity: 0.62; cursor: wait; }
+.rp-thumb {
+  position: relative; width: 100%; aspect-ratio: 16 / 9; display: grid; place-items: center;
+  border: 1px solid rgba(255,255,255,0.14); border-radius: 6px; overflow: hidden; background: var(--panel);
+}
+.rp-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+/* 그림을 못 읽은 프로젝트 — Resolve 아이콘을 가운데 작게. */
+.rp-thumb img.rp-placeholder { width: 42px; height: 42px; object-fit: contain; }
+.resolve-project-card:hover:not(:disabled) .rp-thumb { border-color: var(--accent); }
+.resolve-project-card:focus-visible { outline: none; }
+.resolve-project-card:focus-visible .rp-thumb { outline: 2px solid var(--accent); outline-offset: 2px; }
+.resolve-project-card.is-open .rp-thumb { border: 2px solid var(--accent); }
+.rp-open {
+  position: absolute; left: 6px; top: 6px; padding: 2px 8px; border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink, #10140a); font-size: 10.5px; font-weight: 800;
+  white-space: nowrap;
+}
+/* 넘겨 보기 — Resolve 처럼 마우스가 있는 자리에 세로선 하나(Jay 2026-09-22). */
+.rp-scrub {
+  position: absolute; top: 0; bottom: 0; width: 1px; transform: translateX(-0.5px);
+  background: rgba(255,255,255,0.9); box-shadow: 0 0 2px rgba(0,0,0,0.6); pointer-events: none;
+}
+.rp-busy {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  background: rgba(8,9,10,0.62); color: var(--accent); font-size: 12px; font-weight: 700;
+}
+.resolve-project-copy {
+  width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px;
+}
+.resolve-project-copy strong {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;
+}
+.resolve-project-copy span {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font-size: 10.5px;
+}
+/* 리스트 — 작은 그림 + 이름 · 날짜 한 줄 */
+.resolve-project-list { display: flex; flex-direction: column; gap: 4px; }
+.resolve-project-list .resolve-project-card {
+  flex-direction: row; gap: 12px; padding: 6px 10px; border: 1px solid var(--border);
+  border-radius: 7px; background: var(--panel); text-align: left;
+}
+.resolve-project-list .resolve-project-card:hover:not(:disabled) { border-color: rgba(196,232,74,0.42); }
+.resolve-project-list .rp-thumb { flex: none; width: calc(64px * var(--rp-scale, 1)); border-radius: 4px; }
+.resolve-project-list .rp-thumb img.rp-placeholder { width: 22px; height: 22px; }
+.resolve-project-list .rp-open { display: none; }
+.resolve-project-list .resolve-project-copy { flex-direction: row; align-items: baseline; gap: 10px; }
+.resolve-project-list .resolve-project-copy strong { flex: none; max-width: 60%; font-size: 13px; }
+/* Resolve 상태 칩 — 제목 옆. 라이브러리를 바꾸지 않고 받은 정보만 쓴다. */
+.rp-status {
+  display: inline-flex; align-items: center; gap: 7px; min-width: 0; padding: 2px 10px 2px 8px;
+  border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,0.03);
+  color: var(--muted); font-size: 11.5px; line-height: 1.5;
+}
+.rp-status b { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.rp-status.on { border-color: rgba(196,232,74,0.35); }
+.rp-status.on b { background: var(--accent); box-shadow: 0 0 6px rgba(196,232,74,0.7); }
+.rp-status.warn { border-color: rgba(232,180,74,0.35); }
+.rp-status.warn b { background: #e8b44a; }
+.rp-status.off b { background: transparent; border: 1.5px solid var(--muted); }
+.rp-status.error { border-color: rgba(224,98,91,0.4); }
+.rp-status.error b { background: #e0625b; }
+
+@media (max-width: 620px) {
+  .resolve-project-grid { grid-template-columns: repeat(auto-fill, minmax(calc(150px * var(--rp-scale, 1)), 1fr)); }
+}
+
 /* 외부 파일 드롭 가져오기 오버레이 */
 .assets-dropzone {
   position: absolute; inset: 0; z-index: 40;

@@ -247,7 +247,7 @@ def build_resolve_diagnostics(
                 str(connection.get("python_executable") or ""),
             )
         )
-    elif connection_state == "not_running":
+    elif connection_state in ("not_running", "starting"):  # starting = 앱이 켜는 중(켜기 창)
         checks.append(_check("connection", "실제 연결", "info", connection.get("message", "Resolve가 실행 중이지 않습니다")))
     else:
         checks.append(_check("connection", "실제 연결", "warning", connection.get("message", "Resolve에 연결하지 못했습니다")))

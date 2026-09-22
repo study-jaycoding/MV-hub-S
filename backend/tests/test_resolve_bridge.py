@@ -618,6 +618,23 @@ class ResolveBridgeTests(unittest.TestCase):
         self.assertEqual(result["project_id"], "resolve-project-1")
         self.assertEqual(result["project_name"], "임시 테스트")
 
+    def test_connection_status_names_the_current_library_without_switching(self):
+        # Assets 의 Resolve 화면이 '열려 있음'을 판정할 때 쓴다 — 같은 이름이 다른 라이브러리에도 있을 수 있다.
+        manager = self.resolve.GetProjectManager()
+        manager.GetCurrentDatabase = mock.Mock(return_value={"DbType": "Disk", "DbName": "MVHub - 뻘뻘뻘"})
+        manager.SetCurrentDatabase = mock.Mock()
+        with mock.patch.object(resolve_bridge, "_connect_resolve", return_value=self.resolve):
+            result = resolve_bridge.resolve_connection_status()
+
+        self.assertEqual(result["database_name"], "MVHub - 뻘뻘뻘")
+        manager.SetCurrentDatabase.assert_not_called()
+
+        manager.GetCurrentDatabase = mock.Mock(side_effect=RuntimeError("API 멈춤"))
+        with mock.patch.object(resolve_bridge, "_connect_resolve", return_value=self.resolve):
+            result = resolve_bridge.resolve_connection_status()
+        self.assertEqual(result["status"], "ready")  # 라이브러리 이름을 못 읽어도 상태는 그대로
+        self.assertEqual(result["database_name"], "")
+
     def test_changed_project_is_rejected_before_media_pool_changes(self):
         manifest = self._manifest()
         manifest["resolve_target"] = {

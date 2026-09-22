@@ -30,15 +30,19 @@ const FIELDS: { key: AssetSortField; label: string }[] = [
   { key: "type", label: "유형" },
 ];
 
-export function AssetSortMenu({
+// 기준 목록을 바꿔 쓰는 곳이 있다 — Resolve 프로젝트 목록은 '유형' 대신 타임라인 수·해상도·프레임 레이트.
+// 그래서 기준 키는 부르는 쪽이 정한다(기본은 에셋 기준).
+export function AssetSortMenu<F extends string = AssetSortField>({
   field,
   dir,
+  fields = FIELDS as unknown as { key: F; label: string }[],
   onField,
   onDir,
 }: {
-  field: AssetSortField;
+  field: F;
   dir: AssetSortDir;
-  onField: (f: AssetSortField) => void;
+  fields?: { key: F; label: string }[];
+  onField: (f: F) => void;
   onDir: (d: AssetSortDir) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -64,7 +68,7 @@ export function AssetSortMenu({
     };
   }, [open]);
 
-  const fieldLabel = FIELDS.find((f) => f.key === field)?.label ?? "정렬";
+  const fieldLabel = fields.find((f) => f.key === field)?.label ?? "정렬";
 
   return (
     <div className="asset-sort" ref={ref}>
@@ -81,7 +85,7 @@ export function AssetSortMenu({
       </button>
       {open && (
         <div className="asort-menu" role="menu">
-          {FIELDS.map((f) => (
+          {fields.map((f) => (
             <button
               type="button"
               key={f.key}

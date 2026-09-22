@@ -49,13 +49,21 @@ from ..services.media_types import (
     asset_content_type,
 )
 from ..services.async_tools import to_thread_non_abandon
-from ..services.request_guards import require_local_machine_request, require_loopback_request
+from ..services.request_guards import (
+    require_local_machine_request,
+    require_loopback_browser_request,
+    require_loopback_request,
+)
 from ..services import (
     asset_io,
     asset_mounts,
     asset_paths,
     asset_tree,
     asset_watcher,
+    resolve_library_dialog,
+    resolve_project_library,
+    resolve_selection_monitor,
+    resolve_status_runner,
     thumbs,
     upload_limits,
 )
@@ -1144,6 +1152,148 @@ def reveal_file(body: RevealIn, request: Request):
 class ClipboardCopyIn(BaseModel):
     project: str
     paths: list[str]
+
+
+class ResolveLibraryDialogIn(BaseModel):
+    project: str = Field(min_length=1, max_length=200)
+    dir: str = Field(min_length=1, max_length=1000)
+
+
+class ResolveProjectOpenIn(ResolveLibraryDialogIn):
+    name: str = Field(min_length=1, max_length=500)
+    folder_path: str = Field(default="", max_length=1000)
+    # 이 열기가 부른 켜기의 번호(/resolve-library/launch 응답) — 켜는 동안엔 이것이 맞는 열기만 Resolve 에 닿는다.
+    launch_id: str = Field(default="", max_length=64)
+
+
+# 열기가 이 이유로 실패하면 'Resolve 가 아직 준비되지 않음'이다 — 화면이 Resolve 를 켜고 다시 시도한다(503).
+# resolve_busy(다른 가져오기·연결이 Resolve 를 쓰는 중)·launching(다른 화면이 켠 Resolve 가 켜지는 중)도
+# 기다리면 풀린다(Codex P1).
+_RESOLVE_NOT_READY_CODES = frozenset(
+    {"not_running", "api_unavailable", "manager_unavailable", "resolve_busy", "launching"}
+)
+
+
+def _resolve_davinci_root(project: str, directory: str, request: Request) -> Path:
+    normalized_dir = directory.replace("\\", "/").strip("/")
+    if normalized_dir.casefold() != "@davinci":
+        raise HTTPException(status_code=400, detail="프로젝트 루트의 @davinci 폴더만 사용할 수 있습니다")
+    project_dir = _safe_project_dir(project, request)
+    if not project_dir:
+        raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
+    target = _safe_project_resolve(project, project_dir, normalized_dir)
+    if not target:
+        raise HTTPException(status_code=400, detail="잘못된 @davinci 경로입니다")
+    return target
+
+
+@router.get("/resolve-library/projects", dependencies=[Depends(_require_local_assets)])
+def list_resolve_library_projects(
+    request: Request,
+    project: str = Query(..., min_length=1, max_length=200),
+    dir: str = Query("@davinci", min_length=1, max_length=1000),
+):
+    target = _resolve_davinci_root(project, dir, request)
+    try:
+        projects = resolve_project_library.list_disk_projects(target)
+    except resolve_project_library.ResolveProjectLibraryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        # Resolve 에 실제로 등록된 이름(해시 전 옛 이름일 수 있다) — 화면이 상태의 database_name 과 비교한다.
+        "library_name": resolve_library_dialog.registered_library_name(target)
+        or resolve_library_dialog.library_name_for_project(project, target),
+        "library_path": str(target),
+        "projects": projects,
+    }
+
+
+@router.get("/resolve-library/thumbnails", dependencies=[Depends(_require_local_assets)])
+async def list_resolve_library_thumbnails(
+    request: Request,
+    project: str = Query(..., min_length=1, max_length=200),
+    dir: str = Query("@davinci", min_length=1, max_length=1000),
+):
+    """프로젝트마다 Resolve 가 저장해 둔 대표 그림(JPEG base64)과 카드 정보(타임라인 수·해상도·fps).
+
+    표시 전용 — 못 읽은 것은 빠진다. {"thumbnails": {...}, "details": {...}}(details 는 2026-09-22 추가).
+    """
+    target = _resolve_davinci_root(project, dir, request)
+    try:
+        return await asyncio.to_thread(resolve_project_library.project_cards, target)
+    except resolve_project_library.ResolveProjectLibraryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/resolve-library/launch", dependencies=[Depends(_require_local_assets)])
+async def launch_resolve_for_library(request: Request):
+    """Resolve 가 꺼져 있으면 켜고 바로 돌아온다({status: running|starting, launch_id}). 준비는 화면이 launch-state 로 본다.
+
+    선택 감시를 멈춘 채 켠다 — Resolve 가 막 꺼졌을 때 아직 살아 있던 감시 자식을 먼저 거둔다(Codex P1).
+    켜기 창이 열린 뒤엔 감시의 _held() 가 재시작을 막는다.
+    """
+    require_loopback_browser_request(request, "Resolve 켜기는 로컬 MV Hub에서만 사용할 수 있습니다")
+    try:
+        async with resolve_selection_monitor.selection_monitor.suspended():
+            return await asyncio.to_thread(resolve_project_library.launch_resolve)
+    except resolve_project_library.ResolveProjectLibraryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/resolve-library/launch-state", dependencies=[Depends(_require_local_assets)])
+async def resolve_launch_state():
+    """Resolve 가 떴는지·창이 생겼는지(작업 목록만 본다 — Resolve API 는 부르지 않는다)."""
+    title = await asyncio.to_thread(resolve_project_library.resolve_window_title)
+    return {"running": title is not None, "window": bool(title)}
+
+
+@router.post("/resolve-library/connect-dialog", dependencies=[Depends(_require_local_assets)])
+async def open_resolve_library_connect_dialog(body: ResolveLibraryDialogIn, request: Request):
+    """Assets의 루트 @davinci 폴더를 Resolve 프로젝트 라이브러리로 연결한다(Connect 까지).
+
+    OS 프로그램을 앞으로 가져오는 부수효과가 있으므로 loopback 브라우저 문맥까지 확인한다.
+    이미 등록된 폴더면 창을 열지 않는다(resolve_library_dialog.open_library_connect_dialog).
+    """
+    require_loopback_browser_request(
+        request, "Resolve 라이브러리 연결은 로컬 MV Hub에서만 사용할 수 있습니다"
+    )
+    target = _resolve_davinci_root(body.project, body.dir, request)
+    try:
+        async with resolve_selection_monitor.selection_monitor.suspended():
+            return await to_thread_non_abandon(
+                resolve_library_dialog.open_library_connect_dialog,
+                target,
+                body.project,
+            )
+    except resolve_library_dialog.ResolveLibraryDialogError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/resolve-library/open", dependencies=[Depends(_require_local_assets)])
+async def open_resolve_library_project(body: ResolveProjectOpenIn, request: Request):
+    require_loopback_browser_request(
+        request, "Resolve 프로젝트 열기는 로컬 MV Hub에서만 사용할 수 있습니다"
+    )
+    target = _resolve_davinci_root(body.project, body.dir, request)
+    try:
+        async with resolve_selection_monitor.selection_monitor.suspended():
+            result = await to_thread_non_abandon(
+                resolve_project_library.open_disk_project,
+                target,
+                body.project,
+                body.name,
+                body.folder_path.replace("\\", "/").strip("/"),
+                body.launch_id.strip(),
+            )
+    except resolve_project_library.ResolveProjectLibraryError as exc:
+        not_ready = exc.code in _RESOLVE_NOT_READY_CODES
+        # 코드가 있는 실패 = Resolve 쪽 작업이 답했다 → 켜기는 끝났다. 코드가 빈 실패는 디스크 쪽(목록·폴더)이라
+        # Resolve 준비와 무관하다 — 창은 그대로 두고 만료나 다음 성공에 맡긴다.
+        if exc.code and not not_ready:
+            resolve_status_runner.end_launch_window()
+        raise HTTPException(status_code=503 if not_ready else 400, detail=str(exc)) from exc
+    # 열렸다(complete) = Resolve API 가 준비됐다 → 켜기 창을 닫는다.
+    resolve_status_runner.end_launch_window()
+    return result
 
 
 # 이미지는 Claude 지원 세트(JPEG/PNG/GIF/WebP)만(BMP 제외). 여기에 모든 영상·오디오를 더한다.

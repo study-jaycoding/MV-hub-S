@@ -59,6 +59,48 @@ export interface ServerBackupVersion {
   branch_status?: "current" | "history" | "conflict";
 }
 
+export interface ResolveLibraryDialogResult {
+  ok: boolean;
+  message: string;
+  process_id: number;
+  library_name: string;
+  library_path: string;
+}
+
+export interface ResolveLibraryProject {
+  name: string;
+  folder_path: string;
+  mtime: number;
+  size: number;
+}
+
+export interface ResolveLibraryProjectsResult {
+  library_name: string;
+  library_path: string;
+  projects: ResolveLibraryProject[];
+}
+
+export interface ResolveProjectOpenResult {
+  status: "complete";
+  project_name: string;
+  already_open: boolean;
+  message: string;
+  library_name: string;
+}
+
+export interface ResolveLaunchState {
+  running: boolean;
+  window: boolean;
+}
+
+// 카드 정보 — Project.db 복사본에서 읽는다. 해상도·fps 는 모든 타임라인이 같을 때만 온다.
+export interface ResolveProjectDetail {
+  timelines: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+}
+
 /** 자동 동기화에 사용할 서버 기준본을 고른다.
  * 충돌본이 더 최근에 올라왔더라도 서버가 활성화한 current를 우선한다.
  * 구버전 서버처럼 current 표식이 없을 때만 수신 시각이 가장 최신인 세트를 사용한다.
@@ -118,6 +160,59 @@ export const assetsApi = {
   // fresh=true 면 백엔드 트리 캐시를 건너뛰고 다시 훑는다(변경된 파일 버전 즉시 반영 — 창 포커스 재조회).
   assetTree: (project: string, fresh = false) =>
     jsonFetch<AssetTree>(assetTreeUrl(project, fresh)),
+
+  // 프로젝트 루트의 @davinci를 Resolve 프로젝트 라이브러리로 연결한다(Connect 까지). 이미 등록돼 있으면 창을 열지 않는다.
+  openResolveLibraryConnectDialog: (project: string, dir: string) =>
+    jsonFetch<ResolveLibraryDialogResult>("/api/assets/resolve-library/connect-dialog", {
+      method: "POST",
+      body: jsonBody({ project, dir }),
+    }),
+
+  resolveLibraryProjects: (project: string, dir: string) =>
+    jsonFetch<ResolveLibraryProjectsResult>(
+      withQuery("/api/assets/resolve-library/projects", { project, dir }),
+    ),
+
+  openResolveLibraryProject: (
+    project: string,
+    dir: string,
+    name: string,
+    folderPath: string,
+    // 이 열기가 부른 켜기의 번호(launchResolve 응답) — 켜는 동안엔 이것이 맞는 열기만 서버가 Resolve 로 보낸다.
+    launchId = "",
+  ) =>
+    jsonFetch<ResolveProjectOpenResult>(
+      "/api/assets/resolve-library/open",
+      {
+        method: "POST",
+        body: jsonBody({
+          project,
+          dir,
+          name,
+          folder_path: folderPath,
+          launch_id: launchId,
+        }),
+      },
+    ),
+
+  // 프로젝트마다 Resolve 가 저장해 둔 대표 그림(JPEG base64, 저장 순서)과 카드 정보. 키 = "<folder_path>/<name>".
+  // details 는 2026-09-22 추가 — 옛 서버엔 없다.
+  resolveLibraryThumbnails: (project: string, dir: string) =>
+    jsonFetch<{ thumbnails: Record<string, string[]>; details?: Record<string, ResolveProjectDetail> }>(
+      withQuery("/api/assets/resolve-library/thumbnails", { project, dir }),
+    ),
+
+  // Resolve 가 꺼져 있으면 켜고 바로 돌아온다. 준비는 resolveLaunchState 로 본다.
+  // launch_id 는 이번에 실제로 켰을 때만 온다(다른 화면이 켜는 중이면 빈 값).
+  launchResolve: () =>
+    jsonFetch<{ status: "running" | "starting"; launch_id?: string }>("/api/assets/resolve-library/launch", {
+      method: "POST",
+    }),
+
+  resolveLaunchState: () =>
+    jsonFetch<ResolveLaunchState>("/api/assets/resolve-library/launch-state", {
+      cache: "no-store",
+    }),
 
   // 파일 URL (원본/미리보기). 프록시를 통해 백엔드가 서빙.
   assetFileUrl: buildAssetFileUrl,

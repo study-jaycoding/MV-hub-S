@@ -302,6 +302,13 @@ def resolve_connection_status() -> dict[str, Any]:
             resolve_version = str(get_version() or "") if callable(get_version) else ""
             get_product = getattr(resolve, "GetProductName", None)
             resolve_product = str(get_product() or "") if callable(get_product) else ""
+            # 지금 보고 있는 프로젝트 라이브러리 — 같은 이름 프로젝트가 다른 라이브러리에도 있을 수 있어
+            # 화면이 '열려 있음'을 판정할 때 함께 본다. 라이브러리를 바꾸지 않는 읽기다.
+            try:
+                current_database = dict(project_manager.GetCurrentDatabase() or {}) if project_manager else {}
+            except Exception:  # noqa: BLE001 - 없으면 화면이 '확인 불가'로 다룬다.
+                current_database = {}
+            database_name = str(current_database.get("DbName") or "")
         if not project:
             return {
                 "status": "no_project",
@@ -310,6 +317,7 @@ def resolve_connection_status() -> dict[str, Any]:
                 "project_open": False,
                 "project_id": "",
                 "project_name": "",
+                "database_name": database_name,
                 "resolve_version": resolve_version,
                 "resolve_product": resolve_product,
                 "message": "DaVinci Resolve는 연결됐지만 열려 있는 프로젝트가 없습니다",
@@ -322,6 +330,7 @@ def resolve_connection_status() -> dict[str, Any]:
             "project_open": True,
             "project_id": project_id,
             "project_name": project_name,
+            "database_name": database_name,
             "resolve_version": resolve_version,
             "resolve_product": resolve_product,
             "message": f"DaVinci Resolve 연결됨 · {project_name}",

@@ -93,12 +93,16 @@ export interface ResolveConnectionStatus {
     | "not_running"
     | "api_unavailable"
     | "module_unavailable"
-    | "python_incompatible";
+    | "python_incompatible"
+    // 앱이 Resolve 를 켜는 중 — 서버가 Resolve API 를 부르지 않고 이것만 돌려준다(resolve_status_runner 켜기 창).
+    | "starting";
   connected: boolean;
   process_running: boolean;
   project_open: boolean;
   project_id: string;
   project_name: string;
+  // 지금 Resolve 가 보고 있는 프로젝트 라이브러리 이름. 구버전 서버엔 없다 — 없으면 '확인 불가'로 다룬다.
+  database_name?: string;
   resolve_version?: string;
   resolve_product?: string;
   message: string;

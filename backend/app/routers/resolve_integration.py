@@ -19,6 +19,8 @@ from ..deps import (
 )
 from ..services import resolve_lock, resolve_queue
 from ..services.resolve_status_runner import (
+    LAUNCHING_MESSAGE,
+    launch_window_active,
     resolve_connection_status_bounded,
     run_resolve_import_isolated,
 )
@@ -70,6 +72,15 @@ class ResolveManualResultIn(BaseModel):
     skipped: int = Field(ge=0, le=500)
     error_count: int = Field(ge=0, le=500)
     error: str | None = Field(default=None, max_length=1000)
+
+
+def _reject_while_launching() -> None:
+    """앱이 Resolve 를 켜는 중이면 준비·가져오기를 시작하지 않는다(503) — 전송 기록에 실패를 남기지 않게(Codex P1).
+
+    실행 직전 관문(run_resolve_import_isolated → _select_interpreter)은 이 확인과 켜기 사이 경쟁 구간을 막는다.
+    """
+    if launch_window_active():
+        raise HTTPException(status_code=503, detail=LAUNCHING_MESSAGE)
 
 
 def _reject_if_update_in_progress() -> None:
@@ -176,6 +187,7 @@ async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
     동시에 호출하지 않으며, 이 요청 한 건 안에서 준비·가져오기·결과 저장을 끝낸다.
     """
     _require_local_resolve(request)
+    _reject_while_launching()
     # 순서가 계약이다: 카운터 증가 → 업데이트 게이트. release_update.start_update 는 checking 을
     # 기록한 뒤 활동을 재확인하므로, 업데이트가 먼저 기록했으면 여기서 409, 이 요청이 먼저
     # 올라갔으면 업데이트 쪽이 busy 로 거부된다 — 어느 순서든 한쪽만 진행한다.
@@ -268,6 +280,7 @@ async def _create_resolve_transfer_pinned(body: ResolveTransferIn, request: Requ
 async def retry_resolve_transfer(body: ResolveRetryIn, request: Request):
     """이미 준비된 v2 원본 manifest를 다시 읽어 Resolve 가져오기만 재실행한다."""
     _require_local_resolve(request)
+    _reject_while_launching()
     async with _tracked_resolve_transfer():
         await asyncio.to_thread(_reject_if_update_in_progress)
         try:

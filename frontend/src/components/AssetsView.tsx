@@ -45,6 +45,7 @@ import { useAssetSelectionPersistence } from "./assets/useAssetSelectionPersiste
 import { useAssetViewData } from "./assets/useAssetViewData";
 import { useAssetViewPersistence } from "./assets/useAssetViewPersistence";
 import { useAssetViewerIdentity } from "./assets/useAssetViewerIdentity";
+import { ResolveProjectBrowser } from "./assets/ResolveProjectBrowser";
 import { isAssetFolderHidden, visibleAssetTree } from "./assets/treeUtils";
 import { useOutsideDragSelect } from "../lib/useOutsideDragSelect";
 
@@ -106,7 +107,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   } = useAssetProjectData({ onTreeLoaded: seedInitialExpandedDirs, workspaceId });
   const displayTree = useMemo(() => visibleAssetTree(project, tree), [project, tree]);
   useEffect(() => {
-    if (isAssetFolderHidden(project, dir)) setDir("");
+    if (isAssetFolderHidden(project, dir)) {
+      setDir(dir.replace(/\\/g, "/").toLowerCase().startsWith("@davinci/") ? "@davinci" : "");
+    }
   }, [dir, project]);
   const toggleDir = useCallback((path: string) => {
     setExpanded((prev) => {
@@ -180,6 +183,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
 
   // 등록 폴더(마운트) 관리 창
   const [mountOpen, setMountOpen] = useState(false);
+  const isResolveLibraryRoot = dir.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase() === "@davinci";
 
   useAssetViewPersistence({
     activeColors,
@@ -818,12 +822,12 @@ export function AssetsView({ onInfo, onPreview }: Props) {
 
         <main
           className="assets-grid-wrap"
-          onDragEnter={onZoneDragEnter}
-          onDragOver={onZoneDragOver}
-          onDragLeave={onZoneDragLeave}
-          onDrop={onZoneDrop}
+          onDragEnter={isResolveLibraryRoot ? undefined : onZoneDragEnter}
+          onDragOver={isResolveLibraryRoot ? undefined : onZoneDragOver}
+          onDragLeave={isResolveLibraryRoot ? undefined : onZoneDragLeave}
+          onDrop={isResolveLibraryRoot ? undefined : onZoneDrop}
         >
-          {dropActive && (
+          {!isResolveLibraryRoot && dropActive && (
             <div className="assets-dropzone">
               <div className="assets-dropzone-card">
                 <span className="adz-icon">⤓</span>
@@ -832,8 +836,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
               </div>
             </div>
           )}
-          {importing && <div className="assets-importing">가져오는 중…</div>}
-          <AssetsCrumbBar
+          {!isResolveLibraryRoot && importing && <div className="assets-importing">가져오는 중…</div>}
+          {!isResolveLibraryRoot && <AssetsCrumbBar
             tagPanelOpen={tagPanelOpen}
             allTags={allTags}
             activeTags={activeTags}
@@ -874,7 +878,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             sortDir={sortDir}
             onSortField={setSortField}
             onSortDir={setSortDir}
-          />
+          />}
 
           {commentPath && (
             <CommentPanel
@@ -895,8 +899,12 @@ export function AssetsView({ onInfo, onPreview }: Props) {
 
           {error && <div className="error" style={{ padding: 12 }}>{error}</div>}
 
-          {files.length === 0 && !loading ? (
-            <div className="assets-empty">{t("이 폴더에 미디어가 없습니다.")}</div>
+          {isResolveLibraryRoot && !loading ? (
+            <ResolveProjectBrowser key={`${project}\u0000${dir}`} project={project} dir={dir} />
+          ) : files.length === 0 && !loading ? (
+            isResolveLibraryRoot ? null : (
+              <div className="assets-empty">{t("이 폴더에 미디어가 없습니다.")}</div>
+            )
           ) : (
             <div
               className={

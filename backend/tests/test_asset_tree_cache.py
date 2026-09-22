@@ -345,6 +345,36 @@ class AssetTreeCacheTests(unittest.TestCase):
         self.assertEqual(tree[0]["children"][0]["path"], "shots/frame.png")
         self.assertIn("version", tree[1])
 
+    def test_build_tree_keeps_davinci_root_but_not_its_internal_database_folders(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            (root / "@davinci" / "Resolve Projects" / "Users").mkdir(parents=True)
+            (root / "@davinci" / "Resolve Projects" / "Users" / "hidden.png").write_bytes(
+                b"hidden"
+            )
+            (root / "shots").mkdir()
+            (root / "shots" / "frame.png").write_bytes(b"visible")
+
+            tree = asset_tree.build_tree(root, "")
+
+        by_name = {node["name"]: node for node in tree}
+        self.assertEqual(by_name["@davinci"]["children"], [])
+        self.assertEqual(by_name["shots"]["children"][0]["name"], "frame.png")
+
+    def test_build_tree_does_not_hide_nested_folder_with_davinci_name(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            nested = root / "shots" / "@davinci"
+            nested.mkdir(parents=True)
+            (nested / "frame.png").write_bytes(b"visible")
+
+            tree = asset_tree.build_tree(root, "")
+
+        self.assertEqual(
+            tree[0]["children"][0]["children"][0]["path"],
+            "shots/@davinci/frame.png",
+        )
+
     def test_assets_router_uses_tree_service_without_changing_response(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)

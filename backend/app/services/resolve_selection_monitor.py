@@ -24,7 +24,7 @@ from . import local_agent_pair
 from .async_tools import to_thread_non_abandon
 from .resolve_queue import run_non_abandon
 from .resolve_selection_worker import MAX_SELECTIONS, RESULT_PREFIX
-from .resolve_status_runner import resolve_compatible_interpreter
+from .resolve_status_runner import launch_window_active, resolve_compatible_interpreter
 from .resolve_transfer import manifest_generation_entries, manifest_source_roots
 
 
@@ -98,6 +98,10 @@ class ResolveSelectionMonitor:
             self._index_cache = None
             self._roots_cache = None
 
+    def _held(self) -> bool:
+        """멈춰 있어야 하나 — 변경 작업 중(suspended)이거나 앱이 Resolve 를 켜는 중(켜기 창, Codex P1)."""
+        return bool(self._pause_count) or launch_window_active()
+
     async def _stop_process(self) -> None:
         await run_non_abandon(self._stop_process_locked())
 
@@ -135,7 +139,7 @@ class ResolveSelectionMonitor:
 
     async def _start_process(self) -> None:
         async with self._process_lock:
-            if self._pause_count or self._stopping:
+            if self._held() or self._stopping:
                 return
             # _run의 판정 뒤 suspend가 들어와도 생성·참조 등록·reader 시작을
             # 한 단위로 마친다. 호출자는 이 단위가 끝난 뒤에 취소를 전파한다.
@@ -149,7 +153,7 @@ class ResolveSelectionMonitor:
 
     async def _launch_process(self) -> asyncio.subprocess.Process | None:
         interpreter, _failure = await asyncio.to_thread(resolve_compatible_interpreter)
-        if not interpreter or self._pause_count or self._stopping:
+        if not interpreter or self._held() or self._stopping:
             return None
         child_env = os.environ.copy()
         child_env["PYTHONIOENCODING"] = "utf-8"
@@ -167,7 +171,7 @@ class ResolveSelectionMonitor:
         )
         # 인터프리터 probe 중 suspend/stop이 들어온 경쟁 구간을 닫는다. 대입 전이라
         # _stop_process가 볼 수 없었던 자식은 여기서 직접 회수한다.
-        if self._pause_count or self._stopping:
+        if self._held() or self._stopping:
             await self._terminate_process(process)
             return None
         self._priming = True
@@ -481,7 +485,7 @@ class ResolveSelectionMonitor:
         restart_index = 0
         while not self._stopping:
             stats = await manager.stats()
-            if self._pause_count or stats.get("connections", 0) <= 0:
+            if self._held() or stats.get("connections", 0) <= 0:
                 await self._stop_process()
                 self._last_selection_key = None
                 restart_index = 0
