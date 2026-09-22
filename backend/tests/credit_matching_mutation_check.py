@@ -100,7 +100,9 @@ def main():
             "old": old, "new": new, "test": test,
         }
         with tempfile.TemporaryDirectory(prefix="mvhub-credit-mutation-") as folder:
-            env = {**os.environ, "CONTENT_HUB_NO_PROXY": "1", "CONTENT_HUB_DB_POOL": "0",
+            # 부모의 CONTENT_HUB_* 는 버린다 — 자식이 pytest 보다 먼저 app 을 import 해 conftest 격리가 늦다.
+            env = {**{k: v for k, v in os.environ.items() if not k.upper().startswith("CONTENT_HUB_")},
+                   "CONTENT_HUB_NO_PROXY": "1", "CONTENT_HUB_DB_POOL": "0",
                    "CONTENT_HUB_DATA": folder, "CONTENT_HUB_DB": str(Path(folder) / "default.db"),
                    "PYTHONIOENCODING": "utf-8"}
             result = subprocess.run(
