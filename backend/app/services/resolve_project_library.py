@@ -139,8 +139,9 @@ def open_disk_project(
     """디스크에 실제 존재하는 프로젝트만 공식 Resolve API로 연다.
 
     이름 없는 빈 새 프로젝트가 열려 있으면 묻지 않고 저장만 건너뛰어 연다(resolve_project_open_worker.
-    _settle_current_project). launch_id = 이 열기가 부른 켜기의 번호(launch_resolve) — 켜는 동안엔 이것이 맞는
-    열기만 Resolve 에 닿는다.
+    _release_current). launch_id = 이 열기가 부른 켜기의 번호(launch_resolve) — 켜는 동안엔 이것이 맞는
+    열기만 Resolve 에 닿는다. 이름이 라이브러리에서 하나뿐이면 name_unique 를 넘겨, 지금 열린 게 그 프로젝트일 때
+    워커가 다시 불러오지 않게 한다(이름은 글자 그대로 센다 — 대소문자·공백을 다듬으면 다른 프로젝트로 오판한다).
     """
     projects = list_disk_projects(library_root)
     target = next(
@@ -164,6 +165,7 @@ def open_disk_project(
             "library_name": library_name,
             "project_name": project_name,
             "folder_parts": [part for part in folder_path.split("/") if part],
+            "name_unique": sum(item["name"] == project_name for item in projects) == 1,
         },
         launch_id=launch_id,
     )

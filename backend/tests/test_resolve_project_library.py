@@ -98,10 +98,26 @@ class ResolveProjectLibraryTests(unittest.TestCase):
                 "library_name": expected_library_name,
                 "project_name": "Project B",
                 "folder_parts": ["Episodes"],
+                "name_unique": True,
             },
             launch_id="",  # Resolve 를 켜지 않은 열기
         )
         self.assertEqual(result["library_name"], expected_library_name)
+
+    def test_open_says_name_is_not_unique_when_another_folder_has_it(self):
+        # 이름은 글자 그대로 센다 — 대소문자만 다른 'project b' 는 다른 이름이다.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
+            root = Path(temp)
+            for relative in ("Episodes/Project B", "Archive/Project B", "Other/project b"):
+                _make_project(root, relative)
+            completed = {"status": "complete", "project_name": "Project B", "message": "열었습니다."}
+            with (
+                mock.patch.object(resolve_project_library, "registered_library_name", return_value="Lib"),
+                mock.patch.object(resolve_project_library, "run_resolve_project_open_isolated", return_value=completed) as run,
+            ):
+                resolve_project_library.open_disk_project(root, "뻘뻘뻘", "Project B", "Episodes")
+                resolve_project_library.open_disk_project(root, "뻘뻘뻘", "project b", "Other")
+        self.assertEqual([c.args[0]["name_unique"] for c in run.call_args_list], [False, True])
 
     def test_open_uses_the_name_resolve_registered_for_this_folder(self):
         # 2026-09-22 실측: Resolve 에는 `MVHub - 뻘뻘뻘`(해시 없는 옛 이름)로 등록돼 있었고,
@@ -393,7 +409,68 @@ class ResolveProjectOpenWorkerTests(unittest.TestCase):
         self.assertEqual(result["error_code"], "untitled_unsaved")
         self._nothing_changed(manager)
 
+    def test_already_open_project_is_neither_saved_nor_reloaded(self):
+        # Codex P2 2026-09-22 — 지금 열린 게 바로 그 프로젝트(같은 라이브러리·이름이 라이브러리에서 하나뿐)면 저장·다시
+        # 불러오기 없이 끝낸다. 대상이 Resolve 목록에 있는지는 확인한 뒤다.
+        manager = _FakeProjectManager()
+        manager.current_database = manager.databases[1]
+        manager.current_project = _FakeProject("Target")
+        resolve = mock.Mock()
+        resolve.GetProjectManager.return_value = manager
+        with mock.patch.object(resolve_project_open_worker, "_connect_resolve", return_value=resolve):
+            result = resolve_project_open_worker.open_project(
+                {"library_name": "MVHub - 뻘뻘뻘", "project_name": "Target", "name_unique": True}
+            )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertTrue(result["already_open"])
+        self.assertEqual(manager.events, ["root", "list"])  # 저장·닫기·불러오기 없음
+        self.assertEqual(manager.closed, [])
+
+    def test_already_open_needs_same_library_listed_target_and_exact_name(self):
+        cases = (
+            # (라벨, 지금 라이브러리가 같은가, 지금 프로젝트 이름, 여는 이름, 기대 결과)
+            ("다른 라이브러리의 같은 이름", False, "Target", "Target", "load"),
+            ("Resolve 목록에 없는 대상", True, "Missing", "Missing", "project_missing"),
+            ("대소문자만 다름", True, "target", "Target", "load"),
+            ("끝 공백만 다름", True, "Target ", "Target", "load"),
+        )
+        for label, same_library, current_name, wanted, expected in cases:
+            with self.subTest(label):
+                manager = _FakeProjectManager()
+                if same_library:
+                    manager.current_database = manager.databases[1]
+                manager.current_project = _FakeProject(current_name)
+                resolve = mock.Mock()
+                resolve.GetProjectManager.return_value = manager
+                with mock.patch.object(resolve_project_open_worker, "_connect_resolve", return_value=resolve):
+                    result = resolve_project_open_worker.open_project(
+                        {"library_name": "MVHub - 뻘뻘뻘", "project_name": wanted, "name_unique": True}
+                    )
+                if expected == "load":
+                    self.assertFalse(result["already_open"])
+                    self.assertEqual(manager.loaded, wanted)
+                else:
+                    self.assertEqual(result["error_code"], expected)
+                    self.assertEqual(manager.loaded, "")
+
+    def test_project_name_keeps_its_spaces(self):
+        # 앞뒤 공백도 Resolve 이름의 일부다 — 다듬으면 다른 프로젝트를 연다(Codex 2026-09-22).
+        manager = _FakeProjectManager()
+        manager.current_database = manager.databases[1]
+        manager.GetProjectListInCurrentFolder = lambda: ["Target "]
+        resolve = mock.Mock()
+        resolve.GetProjectManager.return_value = manager
+        with mock.patch.object(resolve_project_open_worker, "_connect_resolve", return_value=resolve):
+            result = resolve_project_open_worker.open_project({"library_name": "MVHub - 뻘뻘뻘", "project_name": "Target "})
+            blank = resolve_project_open_worker.open_project({"library_name": "MVHub - 뻘뻘뻘", "project_name": "  "})
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(manager.loaded, "Target ")
+        self.assertEqual(blank["error_code"], "invalid_request")
+
     def test_same_named_current_project_is_reloaded_from_selected_folder(self):
+        # 같은 이름이 라이브러리의 다른 폴더에도 있으면(name_unique 없음) 지금 열린 게 어느 것인지 몰라 종전처럼 연다.
         manager = _FakeProjectManager()
         manager.current_database = manager.databases[1]
         manager.current_project = _FakeProject("Target")

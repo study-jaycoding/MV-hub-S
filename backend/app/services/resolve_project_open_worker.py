@@ -77,9 +77,11 @@ def _release_current(manager: Any) -> dict[str, Any] | None:
 
 def open_project(payload: dict[str, Any]) -> dict[str, Any]:
     library_name = str(payload.get("library_name") or "").strip()
-    project_name = str(payload.get("project_name") or "").strip()
+    # 이름은 그대로 둔다 — 앞뒤 공백도 Resolve 이름의 일부다(Codex 2026-09-22). 비었는지만 공백을 빼고 본다.
+    project_name = str(payload.get("project_name") or "")
     folder_parts = [str(part) for part in payload.get("folder_parts") or [] if str(part)]
-    if not library_name or not project_name:
+    name_unique = bool(payload.get("name_unique"))
+    if not library_name or not project_name.strip():
         return _failure("Resolve 라이브러리와 프로젝트 이름이 필요합니다.", "invalid_request")
 
     try:
@@ -105,8 +107,8 @@ def open_project(payload: dict[str, Any]) -> dict[str, Any]:
                 "library_not_connected",
             )
 
-        current_database = dict(manager.GetCurrentDatabase() or {})
-        if not _same_database(current_database, target_database):
+        same_database = _same_database(dict(manager.GetCurrentDatabase() or {}), target_database)
+        if not same_database:
             # SetCurrentDatabase 가 열린 프로젝트를 닫는다(21.1 설명서) — 그 바로 앞에서 정리한다.
             if stopped := _release_current(manager):
                 return stopped
@@ -131,6 +133,17 @@ def open_project(payload: dict[str, Any]) -> dict[str, Any]:
                 "Resolve 라이브러리에서 선택한 프로젝트를 찾지 못했습니다.",
                 "project_missing",
             )
+        # 지금 열린 것이 바로 이 프로젝트면 저장·다시 불러오기 없이 끝낸다(Codex P2 2026-09-22). 대상이 Resolve 에 있는지
+        # 확인한 뒤에만 본다. 상태에는 폴더가 없어, 같은 이름이 라이브러리의 다른 폴더에도 있으면(name_unique 거짓 —
+        # 서버가 디스크 목록으로 센다) 어느 것인지 모르니 종전처럼 연다. 이름은 글자 그대로 견준다.
+        current = manager.GetCurrentProject() if same_database and name_unique else None
+        if current is not None and str(current.GetName() or "") == project_name:
+            return {
+                "status": "complete",
+                "project_name": project_name,
+                "already_open": True,
+                "message": f"{project_name} 프로젝트는 이미 열려 있습니다.",
+            }
         # 같은 라이브러리면 LoadProject 가 열린 프로젝트를 갈아 끼운다 — 그 바로 앞에서 정리한다
         # (라이브러리를 바꿨으면 이미 닫혀 None 이라 할 일이 없다).
         if stopped := _release_current(manager):
