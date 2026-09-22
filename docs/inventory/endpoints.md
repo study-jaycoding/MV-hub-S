@@ -284,9 +284,9 @@
 | `PUT` | `/api/manage/project-folders/{pid}` | `put_project_folder` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `GET` | `/api/manage/project-folders` | `project_folder_links` | 로컬 예외 | — |
 | `GET` | `/api/manage/project-summary` | `project_summary` | 기본 중계 | — |
+| `POST` | `/api/manage/save-finals/cancel` | `save_finals_cancel` | 로컬 예외 | — |
 | `GET` | `/api/manage/save-finals/compare` | `save_finals_compare` | 로컬 예외 | — |
 | `GET` | `/api/manage/save-finals/content/{gen_id}` | `save_finals_content` | 기본 중계 | — |
-| `POST` | `/api/manage/save-finals/cancel` | `save_finals_cancel` | 로컬 예외 | — |
 | `POST` | `/api/manage/save-finals/mirror` | `save_finals_mirror` | 로컬 예외 | — |
 | `GET` | `/api/manage/save-finals/progress` | `save_finals_progress` | 로컬 예외 | — |
 | `GET` | `/api/manage/save-finals/targets` | `save_finals_targets` | 기본 중계 | — |
