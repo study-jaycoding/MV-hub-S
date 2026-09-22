@@ -24,6 +24,7 @@ import { MediaThumbnail } from "./MediaThumbnail";
 
 import { fmtElapsed } from "../lib/format";
 import { formatCredits } from "../lib/formatCredits";
+import { CloseIcon } from "./common/ViewIcons";
 interface Props {
   target: InfoTarget;
   onClose: () => void;
@@ -519,7 +520,7 @@ export function InfoPopup({
             </div>
           )}
           <button className="assets-x" onClick={onClose} title="닫기">
-            ✕
+            <CloseIcon />
           </button>
         </header>
         <div className="info-body">

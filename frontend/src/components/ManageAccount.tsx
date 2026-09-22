@@ -14,6 +14,7 @@ import { useEscapeClose } from "../lib/useEscapeClose";
 import type { Account } from "../types";
 
 import { formatCredits } from "../lib/formatCredits";
+import { CloseIcon } from "./common/ViewIcons";
 export function ManageAccount({
   provider,
   account,
@@ -109,7 +110,7 @@ export function ManageAccount({
         <header className="admin-head">
           <span className="admin-title">⚙ 내 계정</span>
           <button className="assets-x" onClick={onClose} title="닫기">
-            ✕
+            <CloseIcon />
           </button>
         </header>
 

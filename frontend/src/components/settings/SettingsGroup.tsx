@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { CloseIcon } from "../common/ViewIcons";
 
 const FLYOUT_GAP = 8;
 const FLYOUT_WIDTH = 330;
@@ -134,7 +135,7 @@ export function SettingsGroup({
               aria-label={`${title} 닫기`}
               onClick={closeFlyout}
             >
-              ✕
+              <CloseIcon />
             </button>
           </header>
           <div className="settings-group-content">{children}</div>

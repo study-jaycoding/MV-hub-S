@@ -552,7 +552,15 @@
   display: flex; align-items: center;
   border: 1px solid var(--border); border-radius: 8px;
 }
-.zoom-cluster .zc-group button { border: none; border-radius: 0; padding: 3px 8px; }
+/* −/+ 는 SVG(StepIcon 8px) — 글자는 1.5px 아래였다(2026-09-22 실측). 크기는 글자 때(24x22) 그대로 고정. */
+.zoom-cluster .zc-group button {
+  width: 24px; height: 22px; padding: 0; border: none; border-radius: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+/* "Fit" 글자는 기준선 탓에 0.7px 아래였다 — S/T/C 와 같은 처방. 높이는 지금 그대로 24px. */
+@supports (text-box: trim-both cap alphabetic) {
+  .zoom-cluster .zc-fit { height: 24px; display: inline-block; align-content: center; text-box: trim-both cap alphabetic; }
+}
 .zoom-cluster .zc-pct {
   min-width: 42px; text-align: center; font-size: 12px; color: var(--text);
   font-variant-numeric: tabular-nums;

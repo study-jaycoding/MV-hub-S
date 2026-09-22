@@ -5,6 +5,7 @@ import { api } from "../../api";
 import type { WorkspaceContext } from "../../types";
 import { isAppWindow } from "../../lib/appWindow";
 import type { ConsoleSummary } from "../../types";
+import { CloseIcon } from "../common/ViewIcons";
 
 const MODE_LABEL: Record<string, string> = {
   release: "릴리스 설치본",
@@ -152,7 +153,7 @@ export function ServerConsolePanel({
             <header className="admin-head">
               <span className="admin-title">🖥 Host 콘솔</span>
               <button className="assets-x" onClick={() => setOpen(false)} title="닫기">
-                ✕
+                <CloseIcon />
               </button>
             </header>
             <div className="admin-body">

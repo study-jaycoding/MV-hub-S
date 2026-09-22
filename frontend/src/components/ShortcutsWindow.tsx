@@ -15,6 +15,7 @@ import {
   prettyBinding,
   type ShortcutId,
 } from "../lib/shortcuts";
+import { CloseIcon } from "./common/ViewIcons";
 
 export function ShortcutsWindow({ onClose }: { onClose: () => void }) {
   const t = useT();
@@ -68,7 +69,7 @@ export function ShortcutsWindow({ onClose }: { onClose: () => void }) {
         <header className="admin-head">
           <span className="admin-title">⌨ {t("단축키")}</span>
           <button className="assets-x" onClick={onClose} title={t("닫기")}>
-            ✕
+            <CloseIcon />
           </button>
         </header>
         <div className="admin-body">

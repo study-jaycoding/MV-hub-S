@@ -18,7 +18,7 @@ import { DRAG_TYPES } from "../../lib/dragTypes";
 import { MediaThumbnail } from "../MediaThumbnail";
 import { TagEditor } from "../TagEditor";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
-import { InfoIcon } from "../common/ViewIcons";
+import { CloseIcon, InfoIcon } from "../common/ViewIcons";
 import { BoardSelectionActionBar } from "../app/SelectionActionBar";
 
 // Resolve 전송 컨트롤 묶음 — App 의 resolveTransfer 파이프라인을 SceneBoard 를 거쳐 그대로 전달.
@@ -242,7 +242,7 @@ export function SceneVariantPopup({
           <div className="scene-varpop-hd">
             <span>생성 결과 {ids.length}개</span>
             <button className="scene-varpop-x" title="닫기" onClick={() => actions.setCardMenu(null)}>
-              ×
+              <CloseIcon size={16} />
             </button>
           </div>
           <div className="scene-varpop-grid" ref={ui.varGridRef} onMouseDown={ui.onVarGridMouseDown}>

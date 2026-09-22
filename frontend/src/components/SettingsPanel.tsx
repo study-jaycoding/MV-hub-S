@@ -56,6 +56,7 @@ import {
   UPDATE_WAIT_VERSION_KEY,
   type ReleaseUpdateStatus,
 } from "../lib/releaseUpdate";
+import { CloseIcon } from "./common/ViewIcons";
 
 export function SettingsPanel({
   onClose,
@@ -547,7 +548,7 @@ export function SettingsPanel({
         <header className="admin-head">
           <span className="admin-title">⚙ {t("설정")}</span>
           <button className="assets-x" onClick={onClose} title={t("닫기")}>
-            ✕
+            <CloseIcon />
           </button>
         </header>
 

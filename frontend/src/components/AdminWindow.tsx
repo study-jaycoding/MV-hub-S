@@ -16,6 +16,7 @@ import { getLatestReleaseMetadata, type LatestReleaseMetadata } from "../lib/rel
 import { updateNoticeApi, type UpdateNotice } from "../lib/updateNotices";
 import { hasGlobalCap } from "../types";
 import type { Account, Member } from "../types";
+import { CloseIcon } from "./common/ViewIcons";
 
 type AdminTab = "approve" | "roles" | "server";
 
@@ -373,7 +374,7 @@ export function AdminWindow({
           </button>
           )}
           <button className="assets-x" onClick={onClose} title="닫기">
-            ✕
+            <CloseIcon />
           </button>
         </header>
 

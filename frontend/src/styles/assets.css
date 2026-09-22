@@ -83,8 +83,10 @@
 .assets-project option.linked {
   color: var(--accent);
 }
+/* 닫기 — 여러 창이 함께 쓴다. 아이콘은 SVG(CloseIcon)를 가운데에(글자 ✕ 는 1.25px 아래였다, 2026-09-22 실측). */
 .assets-x {
   width: 28px; height: 28px; padding: 0; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
   background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border);
 }
 

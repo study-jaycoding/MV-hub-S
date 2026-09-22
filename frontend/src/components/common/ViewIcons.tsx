@@ -55,12 +55,35 @@ export function InfoIcon() {
     </svg>
   );
 }
-// 배치 빼기·더하기(캔버스 카드) — 글자 −/+ 는 2.4px 아래였다(2026-09-22 실측, 1.1배).
-export function StepIcon({ plus }: { plus?: boolean }) {
+// 빼기·더하기 — 글자 −/+ 는 1.5~2.4px 아래였다(2026-09-22 실측). 기본은 캔버스 카드 배치(굵게), 줌은 8px·선 2.
+export function StepIcon({ plus, size = 12, stroke = 3 }: { plus?: boolean; size?: number; stroke?: number }) {
   return (
-    <svg {...TOGGLE_ICON} width={12} height={12} strokeWidth={3}>
+    <svg {...TOGGLE_ICON} width={size} height={size} strokeWidth={stroke}>
       <line x1="5" y1="12" x2="19" y2="12" />
       {plus && <line x1="12" y1="5" x2="12" y2="19" />}
+    </svg>
+  );
+}
+// 닫기 — 글자 ✕·× 는 1.3~1.5px 아래였다(2026-09-22 실측). 크기는 옛 글자의 잉크 높이에 맞춘 값.
+export function CloseIcon({ size = 20 }: { size?: number }) {
+  return (
+    <svg {...TOGGLE_ICON} width={size} height={size} aria-hidden="true">
+      <path d="M6 6 18 18M18 6 6 18" />
+    </svg>
+  );
+}
+// 창 크게(□)·원래 크기(❐) — 글자는 3.4px 아래였다(2026-09-22 실측).
+export function MaximizeIcon({ restore }: { restore?: boolean }) {
+  return (
+    <svg {...TOGGLE_ICON} width={14} height={14} strokeWidth={1.5} aria-hidden="true">
+      {restore ? (
+        <>
+          <rect x="4" y="8" width="12" height="12" rx="1.5" />
+          <path d="M8 8V5.5A1.5 1.5 0 0 1 9.5 4h9A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H16" />
+        </>
+      ) : (
+        <rect x="5" y="5" width="14" height="14" rx="1.5" />
+      )}
     </svg>
   );
 }

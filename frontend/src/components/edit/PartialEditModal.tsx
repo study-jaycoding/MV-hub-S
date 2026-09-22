@@ -22,6 +22,7 @@ import { generationIssueFor } from "../../lib/generationDisplay";
 import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import { useModels } from "../../lib/useModels";
 import type { Generation, WorkspaceContext } from "../../types";
+import { CloseIcon } from "../common/ViewIcons";
 
 const MAX_WORK_PIXELS = 12_000_000; // 12MP — 주석/평면화 캔버스 동시 보유 상한
 // 편집 전용 고정 모델 — 웹 편집기와 동일(원본 재현 충실, 실측). 그룹 사용 모델 정책의 면제 목록과 같은 값이어야
@@ -694,7 +695,7 @@ export function PartialEditModal({
           </span>
           {closable && (
             <button className="assets-x" onClick={onClose} title="닫기">
-              ✕
+              <CloseIcon />
             </button>
           )}
         </header>

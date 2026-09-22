@@ -1,4 +1,4 @@
-import { FitIcon, GridIcon, ListIcon } from "./ViewIcons";
+import { FitIcon, GridIcon, ListIcon, StepIcon } from "./ViewIcons";
 
 type LayoutMode = "grid" | "list";
 
@@ -63,11 +63,11 @@ export function ViewControls({
           </button>
           <div className="zc-group">
             <button onClick={() => zoomControl.onStep(-1)} title={t("축소")}>
-              −
+              <StepIcon size={8} stroke={2} />
             </button>
             <span className="zc-pct">{zoomControl.pct}%</span>
             <button onClick={() => zoomControl.onStep(1)} title={t("확대")}>
-              +
+              <StepIcon plus size={8} stroke={2} />
             </button>
           </div>
         </div>

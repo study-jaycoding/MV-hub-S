@@ -7,6 +7,7 @@ import { APP_EVENTS } from "../lib/appEvents";
 import { downloadOne } from "../lib/download";
 import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
 import type { PreviewTarget } from "../types";
+import { CloseIcon } from "./common/ViewIcons";
 
 interface Props {
   target: PreviewTarget;
@@ -225,7 +226,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
             </button>
           </div>
           <button className="assets-x" onClick={onClose} title="닫기">
-            ✕
+            <CloseIcon />
           </button>
         </header>
         <div className="media-preview-body">

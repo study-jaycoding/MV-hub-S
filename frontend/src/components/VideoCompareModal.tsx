@@ -3,7 +3,7 @@
 // 영상 동기 로직은 CompareModal 과 공용 — 재생·정지·수동 탐색을 함께, 길이 다르면 가장 긴 것 끝에 되감기.
 import { useEffect, useRef, useState } from "react";
 import { bindSynchronizedVideos } from "../lib/synchronizedVideos";
-import { FitIcon } from "./common/ViewIcons";
+import { CloseIcon, FitIcon } from "./common/ViewIcons";
 import {
   CompareSourceLightbox,
   type CompareSourcePreview,
@@ -126,7 +126,7 @@ export function VideoCompareModal({
               <FitIcon filled={!fitContain} />
             </button>
             <button className="assets-x" onClick={onClose} title="닫기">
-              ✕
+              <CloseIcon />
             </button>
           </div>
         </header>

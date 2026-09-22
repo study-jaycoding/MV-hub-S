@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { api } from "../../api";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import type { AssetMount } from "../../types";
+import { CloseIcon } from "../common/ViewIcons";
 
 export function MountManager({
   onClose,
@@ -110,7 +111,7 @@ export function MountManager({
         <header className="admin-head">
           <span className="admin-title">🗂 폴더 등록</span>
           <button className="assets-x" onClick={onClose} title="닫기">
-            ✕
+            <CloseIcon />
           </button>
         </header>
 

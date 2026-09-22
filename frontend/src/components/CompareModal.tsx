@@ -10,7 +10,7 @@ import {
 } from "../lib/compareDiff";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import { bindSynchronizedVideos } from "../lib/synchronizedVideos";
-import { FitIcon } from "./common/ViewIcons";
+import { CloseIcon, FitIcon, MaximizeIcon } from "./common/ViewIcons";
 import {
   compareImageSource,
   fitCompareWindowToViewport,
@@ -222,10 +222,10 @@ export function CompareModal({
               title={maximized ? "창 크기로 복원" : "전체화면"}
               aria-label={maximized ? "창 크기로 복원" : "전체화면"}
             >
-              {maximized ? "❐" : "□"}
+              <MaximizeIcon restore={maximized} />
             </button>
             <button className="assets-x" onClick={onClose} title="닫기">
-              ✕
+              <CloseIcon />
             </button>
           </div>
         </header>

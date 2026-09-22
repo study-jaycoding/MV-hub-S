@@ -981,7 +981,12 @@
   display: flex; align-items: center; justify-content: space-between; padding: 9px 12px;
   font-size: 12.5px; font-weight: 800; color: var(--text); border-bottom: 1px solid var(--border2);
 }
-.scene-varpop-x { border: 0; background: transparent; color: var(--muted); font-size: 18px; cursor: pointer; line-height: 1; }
+/* 닫기 × 는 SVG(CloseIcon 16px) — 글자는 1.5px 아래였다(2026-09-22 실측). ★padding:0 과 크기 고정(전역 button 여백이 되살아나면
+   40x28 로 커진다). 폭은 짝수 — 16px 아이콘이 반 픽셀 없이 가운데 놓인다(글자 때 37px). */
+.scene-varpop-x {
+  width: 36px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; background: transparent; color: var(--muted); cursor: pointer;
+}
 .scene-varpop-x:hover { color: var(--text); }
 .scene-varpop-grid {
   position: relative; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px;
