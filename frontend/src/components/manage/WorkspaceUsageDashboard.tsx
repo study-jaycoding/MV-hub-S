@@ -614,8 +614,13 @@ export function WorkspaceUsageDashboard({
   const workspaceLabels = workspaceCommandLabels(workspaces);
   const paginationScope = baseScopeKey;
   const detailPaginationScope = drillDisplayKey || baseScopeKey;
-  const memberPage = useUsagePagination(overview?.by_worker || [], paginationScope);
-  const projectPage = useUsagePagination(overview?.by_project || [], paginationScope);
+  // ★고른 축의 목록은 그대로 두고 **다른 축만 좁힌다**(2026-09-23, Jay 요청).
+  //  멤버를 고르면 '프로젝트 사용량'이 그 멤버의 프로젝트별 사용량이 되고, 프로젝트를 고르면
+  //  '멤버 사용량'이 그 프로젝트에 쓴 사람만 남는다. 고른 쪽 목록을 좁히면 다른 대상으로 갈아탈 수 없다.
+  const memberRows = selectedProject ? scopedOverview?.by_worker || [] : overview?.by_worker || [];
+  const projectRows = selectedWorker ? scopedOverview?.by_project || [] : overview?.by_project || [];
+  const memberPage = useUsagePagination(memberRows, selectedProject ? detailPaginationScope : paginationScope);
+  const projectPage = useUsagePagination(projectRows, selectedWorker ? detailPaginationScope : paginationScope);
   const modelPage = useUsagePagination(scopedModels, detailPaginationScope);
   const folderPage = useUsagePagination(scopedFolders, detailPaginationScope);
 
@@ -860,7 +865,11 @@ export function WorkspaceUsageDashboard({
             {/* 일반 멤버는 본인 한 명뿐이라 멤버 카드를 빼고 모델 카드를 한 줄 전체로 */}
             {!mine && (
             <div className="usage-card">
-              <div className="usage-card-head"><h3>멤버 사용량</h3><span>{overview.by_worker.length}명</span></div>
+              <div className="usage-card-head">
+                <h3>멤버 사용량</h3>
+                {selectedProject ? <DrillLabel project={selectedProject} worker={null} onClear={clearDrill} /> : null}
+                <span>{memberRows.length}명</span>
+              </div>
               <div className="usage-table-scroll">
                 <table className="usage-table">
                   <thead><tr><th>멤버</th><th>생성 수</th><th>크레딧</th><th>최종</th></tr></thead>
@@ -913,7 +922,11 @@ export function WorkspaceUsageDashboard({
 
           <div className="usage-two-columns">
             <div className="usage-card">
-              <div className="usage-card-head"><h3>프로젝트 사용량</h3><span>{overview.by_project.length}개</span></div>
+              <div className="usage-card-head">
+                <h3>프로젝트 사용량</h3>
+                {selectedWorker ? <DrillLabel project={null} worker={selectedWorker} onClear={clearDrill} /> : null}
+                <span>{projectRows.length}개</span>
+              </div>
               <div className="usage-table-scroll">
                 <table className="usage-table">
                   <thead><tr><th>프로젝트</th><th>생성 수</th><th>크레딧</th><th>최종</th></tr></thead>
