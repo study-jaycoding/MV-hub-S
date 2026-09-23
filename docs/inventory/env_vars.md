@@ -11,7 +11,7 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 126개.
+제품 환경변수 127개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
@@ -119,6 +119,7 @@
 | `CONTENT_HUB_THUMB_REPAIR_DELAY` | `"20"` | `backend/app/services/thumbnail_repair.py` | — |
 | `CONTENT_HUB_THUMB_SOURCE_CACHE_MAX_BYTES` | `str(2 * 1024 * 1024 * 1024)` | `backend/app/services/media_cache.py` | — |
 | `CONTENT_HUB_THUMB_SOURCE_FILE_MAX_BYTES` | `str(128 * 1024 * 1024)` | `backend/app/services/media_cache.py` | — |
+| `CONTENT_HUB_TZ` | — | `backend/app/config.py` | — |
 | `CONTENT_HUB_UPLOAD_MAX_BYTES` | `str(media_cache._MAX_BYTES)` | `backend/app/services/asset_io.py` | — |
 | `CONTENT_HUB_VIDEO_THUMB_PREWARM_LIMIT` | `"400"` | `backend/app/services/thumbs.py` | — |
 | `CONTENT_HUB_WORKER_BACKUP_OUTBOX_DIR` | `str(DATA_DIR / "worker-backup-outbox")` | `backend/app/services/worker_backup.py` | — |
