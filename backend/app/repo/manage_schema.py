@@ -185,6 +185,7 @@ _SCHEMA = (
         base_balance INTEGER NOT NULL DEFAULT 0,
         sort_order INTEGER NOT NULL DEFAULT 0,
         allowed_models TEXT NOT NULL DEFAULT '[]',
+        color TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         UNIQUE(workspace_id, name)
     )""",
@@ -623,8 +624,10 @@ def ensure_manage_schema(conn) -> None:
         conn.execute("UPDATE workspace_credit_group SET base_start = base_month || '-01' WHERE base_start IS NULL")
     if group_columns and "allowed_models" not in group_columns:  # 그룹이 쓸 수 있는 모델(JSON 배열, 빈 목록=제한 없음)
         conn.execute("ALTER TABLE workspace_credit_group ADD COLUMN allowed_models TEXT NOT NULL DEFAULT '[]'")
+    if group_columns and "color" not in group_columns:  # 그룹 표시색(#rrggbb) · NULL=기본색
+        conn.execute("ALTER TABLE workspace_credit_group ADD COLUMN color TEXT")
     plan_columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_credit_plan)")}
-    if plan_columns and "topup_day" not in plan_columns:  # 매월 충전 기준일(1~28) — 예산 '매월'·그룹 이월의 달 경계
+    if plan_columns and "topup_day" not in plan_columns:  # 매월 충전 기준일(1~31, 없는 날짜는 월말) — 예산 '매월'·그룹 이월의 달 경계
         conn.execute("ALTER TABLE workspace_credit_plan ADD COLUMN topup_day INTEGER NOT NULL DEFAULT 1")
 
     task_columns = {row[1] for row in conn.execute("PRAGMA table_info(project_task)")}

@@ -15,9 +15,11 @@ import {
   draftMemberCount,
   formatThousands,
   mergeTopupsFromServer,
+  newDraftGroup,
   newGroupId,
   periodSuffix,
   stripThousands,
+  TOPUP_DAY_OPTIONS,
   todayLocal,
   topupsOnlyBody,
   validateTopup,
@@ -44,16 +46,20 @@ const SELECTABLE_MODEL_GROUPS: { title: string; ids: readonly string[] }[] = [
 ];
 
 // ── 그룹 창(힉스필드 "Add new group" 과 같은 두 칸 구성) ──────────────────────
-function GroupEditor({
+export function GroupEditor({
   draft,
   group,
   onClose,
   onApply,
+  busy = false,
+  externalError = "",
 }: {
   draft: CreditPlanDraft;
   group: DraftGroup; // 새 그룹이면 isNew=true 로 미리 만든 것
   onClose: () => void;
   onApply: (next: DraftGroup, memberEmails: string[]) => void;
+  busy?: boolean;
+  externalError?: string;
 }) {
   const [name, setName] = useState(group.name);
   const [unlimited, setUnlimited] = useState(group.unlimited);
@@ -125,6 +131,7 @@ function GroupEditor({
                   inputMode="numeric"
                   value={formatThousands(limitInput)}
                   placeholder="예: 5,000"
+                  maxLength={11}
                   onChange={(event) => { setLimitInput(stripThousands(event.target.value)); setError(""); }}
                 />
                 <em>크레딧</em>
@@ -183,11 +190,11 @@ function GroupEditor({
               </div>
             ) : null}
           </div>
-          {error ? <div className="login-error">{error}</div> : null}
+          {error || externalError ? <div className="login-error">{error || externalError}</div> : null}
           {/* 삭제는 그룹 표의 휴지통에서 한다(Jay 2026-09-11) — 편집 창에서는 저장·닫기만. */}
           <div className="credit-modal-actions">
-            <button type="button" className="admin-confirm-yes" onClick={save}>저장</button>
-            <button type="button" className="credit-modal-delete" onClick={onClose}>닫기</button>
+            <button type="button" className="admin-confirm-yes" onClick={save} disabled={busy}>{busy ? "저장 중…" : "저장"}</button>
+            <button type="button" className="credit-modal-delete" onClick={onClose} disabled={busy}>닫기</button>
           </div>
         </div>
         <div className="credit-modal-right">
@@ -198,7 +205,7 @@ function GroupEditor({
               {!picking && candidates.length ? (
                 <button type="button" className="credit-pill" onClick={() => setPicking(true)}>+ 멤버 추가</button>
               ) : null}
-              <button type="button" className="credit-modal-close" aria-label="닫기" onClick={onClose}>×</button>
+              <button type="button" className="credit-modal-close" aria-label="닫기" onClick={onClose} disabled={busy}>×</button>
             </div>
           </div>
           {picking ? (
@@ -322,10 +329,7 @@ export function CreditPlanFields({
     });
     setEditing(null);
   };
-  const startNew = () => setEditing({
-    id: newGroupId(), isNew: true, name: "", limitInput: "", limitPeriod: "month", unlimited: false,
-    remaining: null, usedMonth: 0, memberCount: 0, allowedModels: [],
-  });
+  const startNew = () => setEditing(newDraftGroup());
   const updateTopup = (id: string, patch: Partial<DraftTopup>) => {
     if (!draft) return;
     update({ topups: draft.topups.map((topup) => (topup.id === id ? { ...topup, ...patch } : topup)) });
@@ -373,12 +377,13 @@ export function CreditPlanFields({
             <div className="manage-budget-limit credit-topup-day">
               <em>매월</em>
               <select
-                value={draft.topupDay}
+                value={draft.topupDay === Number(todayLocal().slice(8, 10)) ? "today" : draft.topupDay}
                 aria-label="매월 충전 기준일"
-                title="힉스필드가 이 워크스페이스에 크레딧을 넣는 날 — 이날부터 다음 달 전날까지를 '이번 달'로 셉니다(예산 한도·그룹 이월·풀 카드 공통)"
-                onChange={(event) => update({ topupDay: Number(event.target.value) })}
+                title="힉스필드가 이 워크스페이스에 크레딧을 넣는 날 — 이날부터 다음 충전일 전날까지를 한 기간으로 셉니다. 없는 날짜는 월말을 씁니다."
+                onChange={(event) => update({ topupDay: event.target.value === "today" ? Number(todayLocal().slice(8, 10)) : Number(event.target.value) })}
               >
-                {Array.from({ length: 28 }, (_, index) => index + 1).map((day) => (
+                <option value="today">오늘</option>
+                {TOPUP_DAY_OPTIONS.map((day) => (
                   <option key={day} value={day}>{day}일</option>
                 ))}
               </select>

@@ -884,17 +884,31 @@ _PERIOD_MATCH = {  # 예산 주기 비교식 — content 경로에서 쓰던 식
 
 
 def _period_conditions(month_anchor_day: int = 1) -> dict[str, str]:
-    """예산 주기 비교식 — '매월'은 충전 기준일(1~28)로 달 경계를 옮긴다: 날짜를 (기준일−1)일 앞당기면
-    기준일~다음 달 전날이 달력상 한 달로 겹쳐 strftime('%Y-%m') 비교로 판정된다(예: 15일 기준 → 9/15~10/14).
-    기본 1일이면 종전 식 그대로."""
-    shift = max(0, min(int(month_anchor_day or 1), 28) - 1)
+    """예산 주기 비교식 — '매월'은 충전 기준일(1~31)로 달 경계를 옮긴다.
+    29~31일이 없는 달은 월말을 기준일로 쓴다. 기본 1일이면 종전 식 그대로."""
+    anchor = max(1, min(int(month_anchor_day or 1), 31))
+    shift = anchor - 1
     if not shift:
         return dict(_PERIOD_MATCH)
     out = dict(_PERIOD_MATCH)
-    out["month"] = (
-        f"strftime('%Y-%m', created_at,'localtime','-{shift} days') = "
-        f"strftime('%Y-%m','now','localtime','-{shift} days')"
-    )
+    if anchor <= 28:
+        out["month"] = (
+            f"strftime('%Y-%m', created_at,'localtime','-{shift} days') = "
+            f"strftime('%Y-%m','now','localtime','-{shift} days')"
+        )
+        return out
+
+    def cycle_key(value: str) -> str:
+        local_day = f"date({value},'localtime')"
+        last_day = f"CAST(strftime('%d',date({value},'localtime','start of month','+1 month','-1 day')) AS INTEGER)"
+        cutoff = f"MIN({anchor},{last_day})"
+        return (
+            f"CASE WHEN CAST(strftime('%d',{local_day}) AS INTEGER)>={cutoff} "
+            f"THEN strftime('%Y-%m',{local_day}) "
+            f"ELSE strftime('%Y-%m',{local_day},'start of month','-1 day') END"
+        )
+
+    out["month"] = f"({cycle_key('created_at')}) = ({cycle_key("'now'")})"
     return out
 
 
@@ -930,7 +944,7 @@ def fact_usage(
     month_anchor_day: int = 1,
 ) -> dict[str, Any]:
     """관리 요약용 팩트 사용량을 **한 읽기 스냅샷**에서 전부 센다(코덱스 P2 — 조회 범위·스냅샷).
-    month_anchor_day = 워크스페이스의 매월 충전 기준일(1~28) — 예산 '매월' 집계의 달 경계(`_period_conditions`).
+    month_anchor_day = 워크스페이스의 매월 충전 기준일(1~31) — 예산 '매월' 집계의 달 경계(`_period_conditions`).
 
     반환:
       stats         {pid: gen_count·done_count·final_count·shared_count(PC 보고 is_shared 합)·real_credits·credits·

@@ -293,7 +293,7 @@ def _project_folder_breakdowns(
 
 
 def _credit_topup_day(conn, workspace_id: Optional[str]) -> int:
-    """워크스페이스의 매월 충전 기준일(1~28, 기본 1) — 예산 '매월' 계산의 달 경계. 워크스페이스 미지정이면 1일."""
+    """워크스페이스의 매월 충전 기준일(1~31, 기본 1) — 예산 '매월' 계산의 달 경계. 워크스페이스 미지정이면 1일."""
     if not workspace_id:
         return 1
     row = conn.execute(
@@ -303,7 +303,7 @@ def _credit_topup_day(conn, workspace_id: Optional[str]) -> int:
         day = int(row["topup_day"]) if row and row["topup_day"] is not None else 1
     except (TypeError, ValueError):
         day = 1
-    return day if 1 <= day <= 28 else 1
+    return day if 1 <= day <= 31 else 1
 
 
 def _budget_periods(planning: dict[str, dict[str, Any]], project_ids: list[str]) -> dict[str, str]:

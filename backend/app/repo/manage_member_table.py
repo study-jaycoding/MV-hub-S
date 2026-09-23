@@ -13,6 +13,7 @@ from .. import rbac
 from ..emailnorm import norm_email
 from . import identity
 from . import manage_credit_plan as credit_plan
+from .manage_schema import _ensure_schema
 from ..db import get_connection
 
 
@@ -25,12 +26,14 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
     with_credit=False 면 그룹 설정 원문(credit)은 주지 않는다(줄의 group_id 는 준다)."""
     settings = credit_plan.get_settings(workspace_id) if workspace_id else None
     with get_connection() as conn:
+        _ensure_schema(conn)
         accounts = {
             r["email"]: r
             for r in conn.execute(
                 "SELECT a.email, a.status, a.global_role, a.creator_uid, COALESCE(a.hidden,0) AS hidden, "
                 "COALESCE(NULLIF(c.name,''), NULLIF(a.name,'')) AS name "
-                "FROM account a LEFT JOIN creator c ON c.uid=a.creator_uid"
+                "FROM account a LEFT JOIN creator c ON c.uid=a.creator_uid "
+                "ORDER BY a.created_at, a.email"
             ).fetchall()
         }
         seen_rows = conn.execute(
@@ -38,14 +41,31 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
             "FROM workspace_member" + (" WHERE workspace_id=?" if workspace_id else "") + " GROUP BY account_email",
             (workspace_id,) if workspace_id else (),
         ).fetchall()
+        project_rows = conn.execute(
+            "SELECT p.id, p.name, pp.project_id AS planning_id, pp.status, pp.start_date, pp.due_date, "
+            "pp.budget_credits, pp.budget_period, pp.archive_after_days, pp.note "
+            "FROM project p LEFT JOIN project_planning pp ON pp.project_id=p.id "
+            "WHERE p.kind='team' AND COALESCE(p.archived,0)=0"
+            + (" AND p.workspace_scope='team' AND p.workspace_id=?" if workspace_id else "")
+            + " ORDER BY p.sort_order IS NULL, p.sort_order, p.name COLLATE NOCASE",
+            (workspace_id,) if workspace_id else (),
+        ).fetchall()
         projects = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT id, name FROM project WHERE kind='team' AND COALESCE(archived,0)=0"
-                + (" AND workspace_scope='team' AND workspace_id=?" if workspace_id else "")
-                + " ORDER BY sort_order IS NULL, sort_order, name COLLATE NOCASE",
-                (workspace_id,) if workspace_id else (),
-            ).fetchall()
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "planning": None if not r["planning_id"] else {
+                    "project_id": r["id"],
+                    "status": r["status"],
+                    "start_date": r["start_date"],
+                    "due_date": r["due_date"],
+                    "budget_credits": r["budget_credits"],
+                    "budget_period": r["budget_period"],
+                    "archive_after_days": r["archive_after_days"],
+                    "note": r["note"],
+                },
+            }
+            for r in project_rows
         ]
         roles_by_uid: dict[str, dict[str, list[str]]] = {}
         if projects:
@@ -75,7 +95,28 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
             slot["unknown"] += int(u["unknown"] or 0)
 
     if settings:
-        base = settings["members"]
+        base = list(settings["members"])
+        base_uids: set[str] = set()
+        for member in base:
+            account = accounts.get(member["email"])
+            account_uid = _real_uid(account["creator_uid"] if account else None)
+            reported_uid = _real_uid((seen.get(member["email"]) or {"uid": None})["uid"])
+            if account_uid or reported_uid:
+                base_uids.add(account_uid or reported_uid)
+        # 워크스페이스 등록부에는 없어도 이 워크스페이스 프로젝트에 직접 추가된 가입 계정은
+        # 관리 표에 남긴다. 같은 uid의 복수 계정은 한 줄만 보강한다.
+        for account in accounts.values():
+            uid = _real_uid(account["creator_uid"])
+            if account["hidden"] or not uid or uid in base_uids or uid not in roles_by_uid:
+                continue
+            base.append({
+                "email": account["email"],
+                "name": account["name"],
+                "workspace_role": None,
+                "is_available": False,
+                "group_id": None,
+            })
+            base_uids.add(uid)
     else:
         base = [
             {"email": a["email"], "name": a["name"], "workspace_role": None, "is_available": None, "group_id": None}
@@ -122,11 +163,12 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
     return {
         "workspace_id": workspace_id or None,
         "cycle_start": settings["cycle_start"] if settings else None,
+        "cycle_end": settings["cycle_end"] if settings else None,
         "rows": rows,
         "projects": projects,
         # 그룹 이름·한도·남은 양은 보기만 하는 사람에게도 준다(칸 표시용). 저장에 쓰는 원문은 credit 에만.
         "groups": [
-            {k: g[k] for k in ("id", "name", "monthly_limit", "limit_period", "remaining", "member_count")}
+            {k: g[k] for k in ("id", "name", "monthly_limit", "limit_period", "remaining", "member_count", "color")}
             for g in (settings["groups"] if settings else [])
         ],
         "credit": settings if (settings and with_credit) else None,

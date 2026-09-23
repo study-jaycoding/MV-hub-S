@@ -175,6 +175,7 @@ export interface Member {
   is_mine: boolean;
   count: number; // 생성물 수
   email: string | null; // '나'(제공자)만
+  status?: string | null; // 관리/PM에게만 제공. 일반 사용자는 null 또는 생략.
 }
 
 // 로그인 계정(보안) — 로드맵 §4-1/§4-2

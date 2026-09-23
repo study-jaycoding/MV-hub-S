@@ -723,12 +723,13 @@ def project_summary(request: Request, workspace_id: Optional[str] = None):
 class CreditGroupIn(BaseModel):
     id: Optional[str] = None
     name: str
-    monthly_limit: Optional[int] = Field(default=None, ge=0)  # None = ∞
+    monthly_limit: Optional[int] = Field(default=None, ge=0, le=999_999_999)  # None = ∞
     limit_period: Literal["day", "week", "month"] = "month"  # month 만 이월, day/week 는 그 기간 안에서만
     remaining_override: Optional[int] = None  # 지금 남은 양 보정(이월 포함) — 저장 시 재기준화
     # 그룹이 쓸 수 있는 모델(job_type 목록, **허용 목록** — 빈 목록=제한 없음). None(키 없음)=기존값 유지 —
     # 이 필드를 모르는 구버전 앱·'추정' 맞추기 저장이 제한을 지우지 않게. 명시 [] 만 해제.
     allowed_models: Optional[list[str]] = None
+    color: Optional[str] = None  # #rrggbb · None(키 없음)=기존값 유지, 빈 문자열=기본색
 
 
 class CreditMemberIn(BaseModel):
@@ -747,7 +748,7 @@ class CreditPlanIn(BaseModel):
     # 월 충전액은 안 받는다 — 프로젝트 '예산 한도(매월)' 합에서 파생(Jay: 같은 값이라 칸 하나만).
     revision: int = 0
     note: Optional[str] = None
-    topup_day: Optional[int] = Field(default=None, ge=1, le=28)  # 매월 충전 기준일 · None=그대로
+    topup_day: Optional[int] = Field(default=None, ge=1, le=31)  # 매월 충전 기준일 · 없는 날짜는 월말 · None=그대로
     groups: Optional[list[CreditGroupIn]] = None  # None=그룹·배정 그대로(충전 기록만 저장)
     members: Optional[list[CreditMemberIn]] = None
     topups: Optional[list[CreditTopupIn]] = None  # 긴급 충전 기록 전체 교체 · None=그대로
@@ -790,6 +791,7 @@ def member_table(request: Request, workspace_id: Optional[str] = Query(None, max
         "account": can("grant_global"),
         "credit": can("create_project"),
         "project_roles": can("grant_project_role"),
+        "planning": can("system") or can("create_project") or can("grant_project_role"),
     }
     return out
 

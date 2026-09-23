@@ -13,6 +13,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from app import db, manage_db
+from app.repo import manage as manage_repo
 from app.repo import manage_credit_plan as plan_repo
 from app.repo import manage_member_table as table_repo
 from app.routers import manage as manage_router
@@ -30,7 +31,10 @@ class MemberTableTests(unittest.TestCase):
         db.init_db()
         manage_db.init_manage_db()
         with db.get_connection() as conn:
-            conn.executemany("INSERT INTO creator(uid, name) VALUES(?,?)", [("u_a", "하늘"), ("u_b", "바다")])
+            conn.executemany(
+                "INSERT INTO creator(uid, name) VALUES(?,?)",
+                [("u_a", "하늘"), ("u_b", "바다"), ("u_d", "노을"), ("u_h", "숨김")],
+            )
             conn.executemany(
                 "INSERT INTO account(email, name, password_hash, status, global_role, creator_uid) VALUES(?,?,?,?,?,?)",
                 [
@@ -38,7 +42,8 @@ class MemberTableTests(unittest.TestCase):
                     ("a2@x", "A2", "h", "approved", "member", "u_a"),  # 같은 uid 에 묶인 두 번째 계정
                     ("b@x", "B", "h", "approved", "member", "u_b"),
                     ("c@x", "구름", "h", "pending", "member", "acct:c@x"),  # 에이전트 미연결 — 합성 uid
-                    ("h@x", "H", "h", "approved", "member", None),
+                    ("d@x", "D", "h", "approved", "member", "u_d"),
+                    ("h@x", "H", "h", "approved", "member", "u_h"),
                 ],
             )
             conn.execute("UPDATE account SET hidden=1 WHERE email='h@x'")
@@ -57,9 +62,17 @@ class MemberTableTests(unittest.TestCase):
                 "INSERT INTO project_member(project_id, creator_uid, project_role) VALUES(?,?,?)",
                 [("p1", "u_a", "project_manager"), ("p1", "u_b", "creator,supervisor"), ("p3", "u_b", "creator")],
             )
+            conn.executemany(
+                "INSERT INTO project_member(project_id, creator_uid, project_role) VALUES(?,?,?)",
+                [("p1", "u_d", "creator"), ("p1", "u_h", "creator")],
+            )
+        manage_repo.set_planning(
+            "p1", status="active", start_date="2026-09-01", due_date="2026-10-01",
+            budget_credits=20000, budget_period="month", archive_after_days=45, note="본편 계획",
+        )
         saved = plan_repo.save_settings(
             "ws1", revision=0, note=None,
-            groups=[{"id": "a" * 32, "name": "3rd floor", "monthly_limit": 5000}],
+            groups=[{"id": "a" * 32, "name": "3rd floor", "monthly_limit": 5000, "color": "#3b82f6"}],
             members=[{"email": "b@x", "group_id": "a" * 32}],
         )
         self.revision = saved["plan"]["revision"]
@@ -77,8 +90,10 @@ class MemberTableTests(unittest.TestCase):
     def test_rows_join_group_projects_usage_and_flag_unlinked_accounts(self) -> None:
         out = table_repo.member_table("ws1", with_credit=True)
         rows = {r["email"]: r for r in out["rows"]}
-        self.assertEqual(set(rows), {"a@x", "b@x", "c@x"})  # 숨긴 계정은 빠진다
+        self.assertEqual(set(rows), {"a@x", "b@x", "c@x", "d@x"})  # 프로젝트 직접 추가 계정은 보강, 숨긴 계정은 제외
         self.assertEqual([p["id"] for p in out["projects"]], ["p1"])  # 보관·다른 공간 프로젝트는 열에 없다
+        self.assertEqual(out["projects"][0]["planning"]["budget_credits"], 20000)
+        self.assertEqual(out["projects"][0]["planning"]["archive_after_days"], 45)
         b = rows["b@x"]
         self.assertEqual((b["uid"], b["project_editable"], b["group_id"]), ("u_b", True, "a" * 32))
         self.assertEqual(b["projects"], {"p1": ["creator", "supervisor"]})
@@ -89,6 +104,10 @@ class MemberTableTests(unittest.TestCase):
         self.assertEqual((c["uid"], c["project_editable"], c["project_lock"], c["status"], c["projects"]), (None, False, "unlinked", "pending", {}))
         self.assertEqual(out["credit"]["plan"]["revision"], self.revision)
         self.assertEqual(out["groups"][0]["name"], "3rd floor")
+        self.assertEqual(out["groups"][0]["color"], "#3b82f6")
+        self.assertEqual(rows["d@x"]["projects"], {"p1": ["creator"]})
+        self.assertFalse(rows["d@x"]["is_available"])
+        self.assertNotIn("a2@x", rows)  # 같은 uid의 두 번째 계정은 보강하지 않는다
         self.assertIsNone(table_repo.member_table("ws1", with_credit=False)["credit"])
         # 계정의 uid 와 워크스페이스 보고의 uid 가 서로 다르면 누구에게 역할을 줄지 알 수 없다 → 프로젝트 칸을 잠근다
         with db.get_connection() as conn:
@@ -98,7 +117,7 @@ class MemberTableTests(unittest.TestCase):
 
     def test_without_workspace_lists_all_visible_accounts(self) -> None:
         out = table_repo.member_table(None, with_credit=True)
-        self.assertEqual({r["email"] for r in out["rows"]}, {"a@x", "a2@x", "b@x", "c@x"})
+        self.assertEqual({r["email"] for r in out["rows"]}, {"a@x", "a2@x", "b@x", "c@x", "d@x"})
         self.assertEqual({p["id"] for p in out["projects"]}, {"p1", "p3"})
         self.assertIsNone(out["credit"])
         self.assertIsNone(out["rows"][0]["usage"])
@@ -110,10 +129,10 @@ class MemberTableTests(unittest.TestCase):
                     manage_router.member_table(_acc("x@x", "u_x", role), workspace_id="ws1")
                 self.assertEqual(ctx.exception.status_code, 403)
             pm = manage_router.member_table(_acc("b@x", "u_b", "product_manager"), workspace_id="ws1")
-            self.assertEqual(pm["caps"], {"account": False, "credit": True, "project_roles": True})
+            self.assertEqual(pm["caps"], {"account": False, "credit": True, "project_roles": True, "planning": True})
             self.assertIsNotNone(pm["credit"])
             admin = manage_router.member_table(_acc("a@x", "u_a", "admin"), workspace_id="ws1")
-            self.assertEqual(admin["caps"], {"account": True, "credit": False, "project_roles": False})
+            self.assertEqual(admin["caps"], {"account": True, "credit": False, "project_roles": False, "planning": True})
             self.assertIsNone(admin["credit"])  # 저장에 쓰는 원문은 저장 권한이 있을 때만
             self.assertEqual(admin["groups"][0]["id"], "a" * 32)  # 그룹 이름·남은 양은 보기용으로 준다
         self.assertEqual(manage_router.member_table(_acc("x@x", None), workspace_id=None)["caps"]["account"], True)  # AUTH off

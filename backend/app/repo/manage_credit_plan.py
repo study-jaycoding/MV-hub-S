@@ -5,7 +5,7 @@
 힉스필드는 충전·그룹·배정을 알려주지 않으므로(status 에 칸 없음, CLI 명령 없음) 매니저가 손으로 적는다.
 
 저장(모두 content DB 사이드카, `manage_schema._SCHEMA`):
-  workspace_credit_plan          워크스페이스당 1행 — note·**topup_day**(매월 충전 기준일 1~28)·revision(낙관적 잠금).
+  workspace_credit_plan          워크스페이스당 1행 — note·**topup_day**(매월 충전 기준일 1~31)·revision(낙관적 잠금).
                                  **월 충전액은 저장하지 않는다** — 프로젝트들의 '예산 한도(매월)' 합에서 파생(Jay: 같은 값).
   workspace_credit_group         그룹 — monthly_limit(NULL=∞)·limit_period(day/week/month)·base_start·base_balance(재기준점)
   workspace_credit_group_member  이메일 → 그룹(워크스페이스당 이메일 1개 = 힉스필드 Members 와 같은 키.
@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from calendar import monthrange
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
@@ -46,6 +47,7 @@ _PERIODS = ("day", "week", "month")
 # 강제는 힉스필드가 하고 우리 앱은 목록에서 숨기고 제출을 막는다(안내용). 모르는 id 도 저장한다(미래 모델·구버전 앱).
 _MODEL_ID_RE = re.compile(r"[a-z0-9_]{1,64}")
 _MAX_ALLOWED_MODELS = 64
+_GROUP_COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}")
 
 
 def normalize_allowed_models(values: Any) -> list[str]:
@@ -69,6 +71,16 @@ def normalize_allowed_models(values: Any) -> list[str]:
     if len(out) > _MAX_ALLOWED_MODELS:
         raise ValueError(f"사용 모델은 {_MAX_ALLOWED_MODELS}개까지입니다")
     return out
+
+
+def normalize_group_color(value: Any) -> Optional[str]:
+    """그룹 표시색 정규화. 빈 문자열은 기본색(NULL), 형식 위반은 ValueError(→400)."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if not _GROUP_COLOR_RE.fullmatch(text):
+        raise ValueError("그룹 색상은 #rrggbb 형식이어야 합니다")
+    return text
 
 
 def _parse_allowed(raw: Any) -> list[str]:
@@ -109,7 +121,12 @@ def _clamp_anchor(anchor: Any) -> int:
         value = int(anchor or 1)
     except (TypeError, ValueError):
         return 1
-    return value if 1 <= value <= 28 else 1
+    return value if 1 <= value <= 31 else 1
+
+
+def _month_anchor(year: int, month: int, anchor: int) -> date:
+    """그 달의 충전일. 29~31일이 없으면 그 달 마지막 날을 쓴다."""
+    return date(year, month, min(_clamp_anchor(anchor), monthrange(year, month)[1]))
 
 
 def period_start(day: str, period: str, anchor: int = 1) -> str:
@@ -120,10 +137,11 @@ def period_start(day: str, period: str, anchor: int = 1) -> str:
         return (d - timedelta(days=d.weekday())).isoformat()
     if period == "month":
         a = _clamp_anchor(anchor)
-        if d.day >= a:
-            return d.replace(day=a).isoformat()
+        current = _month_anchor(d.year, d.month, a)
+        if d >= current:
+            return current.isoformat()
         prev = d.replace(day=1) - timedelta(days=1)
-        return prev.replace(day=a).isoformat()
+        return _month_anchor(prev.year, prev.month, a).isoformat()
     return d.isoformat()
 
 
@@ -134,7 +152,8 @@ def period_end(day: str, period: str, anchor: int = 1) -> str:
         return start.isoformat()
     if period == "week":
         return (start + timedelta(days=6)).isoformat()
-    nxt = (start.replace(day=1) + timedelta(days=32)).replace(day=_clamp_anchor(anchor))
+    next_month = (start.replace(day=1) + timedelta(days=32)).replace(day=1)
+    nxt = _month_anchor(next_month.year, next_month.month, anchor)
     return (nxt - timedelta(days=1)).isoformat()
 
 
@@ -318,6 +337,7 @@ def _group_summary(group: dict, emails: set[str], usage: Usage, today: str, anch
         "unknown_since_base": unknown_since,
         "estimated": unknown_since > 0,
         "allowed_models": list(group.get("allowed_models") or []),
+        "color": group.get("color"),
     }
 
 
@@ -423,13 +443,14 @@ def save_settings(
 ) -> dict[str, Any]:
     """전체 저장(한 트랜잭션). revision 이 현재와 다르면 CreditPlanConflict(409).
 
-    topup_day: 매월 충전 기준일(1~28) · None 이면 그대로. 바뀌면 달 경계가 바뀌므로 매월 한도 그룹은 재기준화된다.
+    topup_day: 매월 충전 기준일(1~31) · None 이면 그대로. 없는 날짜는 월말로 맞춘다. 바뀌면 달 경계가 바뀌므로 매월 한도 그룹은 재기준화된다.
     groups=None 이면 그룹·배정은 **그대로 두고** 긴급 충전 기록(topups)·note·topup_day 만 바꾼다(설정 창의 줄 단위 저장 —
     편집 중인 그룹 초안을 건드리지 않게). members 는 groups 와 함께일 때만 뜻이 있다.
-    groups: [{id?, name, monthly_limit|None, limit_period?, remaining_override?, allowed_models?}] — 목록에 없는 기존 그룹은 삭제(배정도 삭제).
+    groups: [{id?, name, monthly_limit|None, limit_period?, remaining_override?, allowed_models?, color?}] — 목록에 없는 기존 그룹은 삭제(배정도 삭제).
     allowed_models: 그룹이 쓸 수 있는 모델(job_type 목록, **빈 목록=제한 없음**). **키가 없으면(None) 기존 그룹은 기존값 유지·
     새 그룹은 []**, 명시 [] 는 제한 해제 — 이 필드를 모르는 구버전 앱·대시보드 '추정' 맞추기(그룹 전체 재전송)가
     설정을 지우지 않게(코덱스 P0).
+    color: 그룹 표시색(#rrggbb). **키가 없거나 None 이면 기존값 유지·새 그룹은 기본색(NULL)**, 빈 문자열은 기본색으로 해제.
     id 가 없거나 모르는 uuid hex 면 새 그룹(클라이언트가 미리 붙인 id 로 같은 저장에 멤버 배정 가능).
     members: [{email, group_id|None}] — **적힌 이메일만** 바꾼다(None=배정 해제). 안 적힌 이메일은 그대로(코덱스 P2).
     group_id 는 이 워크스페이스 그룹이어야 한다(아니면 ValueError → 400).
@@ -448,8 +469,8 @@ def save_settings(
             raise CreditPlanConflict(f"revision {revision} != {cur_rev}")
         old_anchor = _plan_anchor(plan)
         new_anchor = old_anchor if topup_day is None else _clamp_anchor(topup_day)
-        if topup_day is not None and not 1 <= int(topup_day) <= 28:
-            raise ValueError("충전 기준일은 1~28 사이여야 합니다")
+        if topup_day is not None and not 1 <= int(topup_day) <= 31:
+            raise ValueError("충전 기준일은 1~31 사이여야 합니다")
         old_by_id = {g["id"]: g for g in old_groups}
         prepared_topups = (
             None if topups is None else _prepare_topups(topups, {t["id"] for t in old_topups})
@@ -492,10 +513,11 @@ def save_settings(
                 allowed = list(old_row.get("allowed_models") or []) if old_row else []
             else:
                 allowed = normalize_allowed_models(g.get("allowed_models"))
+            color = old_row.get("color") if g.get("color") is None and old_row else normalize_group_color(g.get("color"))
             prepared.append(
                 {"id": gid, "name": name, "monthly_limit": limit, "limit_period": period, "sort_order": order,
                  "remaining_override": g.get("remaining_override"), "is_new": gid not in old_by_id,
-                 "allowed_json": json.dumps(allowed, ensure_ascii=False)}
+                 "allowed_json": json.dumps(allowed, ensure_ascii=False), "color": color}
             )
         valid_ids = {p["id"] for p in prepared}
         if len({p["name"] for p in prepared}) != len(prepared):
@@ -542,10 +564,10 @@ def save_settings(
             )
             override = p["remaining_override"]
             if old is not None and not changed and override is None:
-                # 한도·주기·소속이 그대로면 재기준화 없이 이름·순서·사용 모델만 갱신(모델 설정은 base_* 와 무관 — 코덱스 P1).
+                # 한도·주기·소속이 그대로면 재기준화 없이 표시 설정만 갱신(base_* 와 무관 — 코덱스 P1).
                 conn.execute(
-                    "UPDATE workspace_credit_group SET name=?, sort_order=?, allowed_models=? WHERE id=?",
-                    (p["name"], p["sort_order"], p["allowed_json"], gid),
+                    "UPDATE workspace_credit_group SET name=?, sort_order=?, allowed_models=?, color=? WHERE id=?",
+                    (p["name"], p["sort_order"], p["allowed_json"], p["color"], gid),
                 )
                 continue
             if limit is None:
@@ -563,16 +585,16 @@ def save_settings(
             if old is None:
                 conn.execute(
                     "INSERT INTO workspace_credit_group(id, workspace_id, name, monthly_limit, limit_period, "
-                    "base_start, base_month, base_balance, sort_order, allowed_models) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "base_start, base_month, base_balance, sort_order, allowed_models, color) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (gid, workspace_id, p["name"], limit, period, cur_start, cur_start[:7], base_balance, p["sort_order"],
-                     p["allowed_json"]),
+                     p["allowed_json"], p["color"]),
                 )
             else:
                 conn.execute(
                     "UPDATE workspace_credit_group SET name=?, monthly_limit=?, limit_period=?, base_start=?, "
-                    "base_month=?, base_balance=?, sort_order=?, allowed_models=? WHERE id=?",
+                    "base_month=?, base_balance=?, sort_order=?, allowed_models=?, color=? WHERE id=?",
                     (p["name"], limit, period, cur_start, cur_start[:7], base_balance, p["sort_order"],
-                     p["allowed_json"], gid),
+                     p["allowed_json"], p["color"], gid),
                 )
         # 4) 배정 전체 재기록(이 워크스페이스만)
         conn.execute("DELETE FROM workspace_credit_group_member WHERE workspace_id=?", (workspace_id,))

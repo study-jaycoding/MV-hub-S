@@ -1,6 +1,7 @@
 // PM 대시보드 '관리 표' — 응답 모양과 저장 본문(설계: docs/MEMBER_TABLE_DESIGN.md).
 // 표에는 자기만의 쓰기 API 가 없다 — 칸마다 기존 API 를 부른다.
-import type { CreditPlanSaveBody, CreditPlanSettings, LimitPeriod } from "./creditPlan";
+import { stripThousands, type CreditPlanSaveBody, type CreditPlanSettings, type DraftGroup, type LimitPeriod } from "./creditPlan";
+import type { Planning } from "../components/manage/types";
 
 export interface MemberTableRow {
   email: string;
@@ -27,20 +28,22 @@ export interface MemberTableGroup {
   limit_period?: LimitPeriod;
   remaining: number | null;
   member_count: number;
+  color?: string | null;
 }
 
 export interface MemberTableData {
   workspace_id: string | null;
   cycle_start: string | null;
+  cycle_end: string | null;
   rows: MemberTableRow[];
-  projects: { id: string; name: string }[];
+  projects: { id: string; name: string; planning?: Planning | null }[];
   groups: MemberTableGroup[];
   credit: CreditPlanSettings | null; // 그룹 저장에 쓰는 원문 — create_project 가 없으면 null
-  caps: { account: boolean; credit: boolean; project_roles: boolean };
+  caps: { account: boolean; credit: boolean; project_roles: boolean; planning?: boolean };
 }
 
 /** 한 사람의 그룹만 바꾸는 저장 본문. 서버는 목록에 없는 그룹을 **지우므로** 마지막에 받은 그룹을 전부 되보낸다.
- *  allowed_models·remaining_override 키는 보내지 않는다(= 유지). members 는 바꾼 한 줄만 — 안 적힌 이메일은 그대로다. */
+ *  allowed_models·color·remaining_override 키는 보내지 않는다(= 유지). members 는 바꾼 한 줄만 — 안 적힌 이메일은 그대로다. */
 export function groupAssignBody(credit: CreditPlanSettings, email: string, groupId: string | null): CreditPlanSaveBody {
   return {
     revision: credit.plan.revision ?? 0,
@@ -52,6 +55,82 @@ export function groupAssignBody(credit: CreditPlanSettings, email: string, group
       limit_period: group.limit_period ?? "month",
     })),
     members: [{ email, group_id: groupId }],
+  };
+}
+
+/** 그룹 추가·편집 본문. 그룹 목록은 최신 전체를 보내되 허용 모델은 편집한 그룹에만 명시하고,
+ * 멤버는 실제로 바뀐 이메일만 보내 필터 밖 배정을 보존한다. */
+export function groupEditBody(credit: CreditPlanSettings, edited: DraftGroup, memberEmails: string[]): CreditPlanSaveBody {
+  const selected = new Set(memberEmails);
+  const currentByEmail = new Map(credit.members.map((member) => [member.email, member]));
+  const members: { email: string; group_id: string | null }[] = [];
+  for (const member of credit.members) {
+    if (selected.has(member.email) && member.group_id !== edited.id) {
+      members.push({ email: member.email, group_id: edited.id });
+    } else if (!selected.has(member.email) && member.group_id === edited.id) {
+      members.push({ email: member.email, group_id: null });
+    }
+  }
+  for (const email of selected) {
+    if (!currentByEmail.has(email)) members.push({ email, group_id: edited.id });
+  }
+
+  const editedBody = {
+    id: edited.id,
+    name: edited.name.trim(),
+    monthly_limit: edited.unlimited ? null : Number(stripThousands(edited.limitInput)),
+    limit_period: edited.limitPeriod,
+    allowed_models: [...edited.allowedModels],
+    ...(edited.color ? { color: edited.color } : {}),
+  };
+  const exists = credit.groups.some((group) => group.id === edited.id);
+  return {
+    revision: credit.plan.revision,
+    note: credit.plan.note,
+    groups: [
+      ...credit.groups.map((group) => (group.id === edited.id ? editedBody : {
+        id: group.id,
+        name: group.name,
+        monthly_limit: group.monthly_limit,
+        limit_period: group.limit_period ?? "month",
+      })),
+      ...(exists ? [] : [editedBody]),
+    ],
+    members,
+  };
+}
+
+/** 그룹 색상 한 칸 저장. 다른 그룹의 color 키는 빼서 동시에 바뀐 색을 덮지 않는다. */
+export function groupColorBody(credit: CreditPlanSettings, groupId: string, color: string): CreditPlanSaveBody {
+  return {
+    revision: credit.plan.revision,
+    note: credit.plan.note,
+    groups: credit.groups.map((group) => ({
+      id: group.id,
+      name: group.name,
+      monthly_limit: group.monthly_limit,
+      limit_period: group.limit_period ?? "month",
+      ...(group.id === groupId ? { color } : {}),
+    })),
+  };
+}
+
+/** 그룹 한도 한 줄 저장. 다른 그룹의 모델·색상과 전체 멤버 배정은 키를 빼서 기존값을 유지한다. */
+export function groupTermsBody(
+  credit: CreditPlanSettings,
+  groupId: string,
+  monthlyLimit: number | null,
+  limitPeriod: LimitPeriod,
+): CreditPlanSaveBody {
+  return {
+    revision: credit.plan.revision,
+    note: credit.plan.note,
+    groups: credit.groups.map((group) => ({
+      id: group.id,
+      name: group.name,
+      monthly_limit: group.id === groupId ? monthlyLimit : group.monthly_limit,
+      limit_period: group.id === groupId ? limitPeriod : group.limit_period ?? "month",
+    })),
   };
 }
 

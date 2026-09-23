@@ -9,7 +9,7 @@ export interface BalancePoint {
 
 export interface CreditPool {
   monthly_topup: number | null; // 파생값 — 이 워크스페이스 프로젝트들의 예산 한도(매월) 합
-  topup_day?: number; // 매월 충전 기준일(1~28) — 달 경계
+  topup_day?: number; // 매월 충전 기준일(1~31, 없는 날짜는 월말) — 달 경계
   note: string | null;
   used_month: number; // 팀 기록 장부(팩트) 이번 달 합
   unknown_month: number; // 크레딧을 모르는 건 수(0원 아님)
@@ -28,6 +28,17 @@ export interface CreditTopup {
 }
 
 export type LimitPeriod = "day" | "week" | "month"; // month 만 이월, day/week 는 그 기간 안에서만
+
+export const DEFAULT_GROUP_COLOR = "#64748b";
+export const GROUP_COLOR_PALETTE = [
+  "#84cc16", "#22c55e", "#14b8a6", "#06b6d4", "#3b82f6", "#6366f1",
+  "#a855f7", "#ec4899", "#ef4444", "#f97316", "#f59e0b", "#94a3b8",
+] as const;
+export const TOPUP_DAY_OPTIONS = Array.from({ length: 31 }, (_, index) => index + 1);
+
+export function groupColor(value: string | null | undefined): string {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : DEFAULT_GROUP_COLOR;
+}
 
 export function periodSuffix(period: LimitPeriod | undefined): string {
   return period === "day" ? "/일" : period === "week" ? "/주" : "/월";
@@ -70,6 +81,7 @@ export interface CreditGroupSummary {
   my_used_month?: number; // 멤버 뷰만
   my_unknown_month?: number;
   allowed_models?: string[]; // 그룹이 쓸 수 있는 모델(job_type, **빈 목록=제한 없음**) — 구서버는 없음
+  color?: string | null; // 그룹 표시색(#rrggbb) · 구서버/NULL은 기본색
 }
 
 /** GET /api/manage/credit-plan/my-models — 본인 그룹이 쓸 수 있는 모델(생성 창·캔버스 모델 노드가 거르는 근거). */
@@ -113,6 +125,9 @@ export interface CreditPlanMember {
 export interface CreditPlanSettings {
   workspace_id: string;
   month: string;
+  today?: string;
+  cycle_start?: string;
+  cycle_end?: string;
   plan: { monthly_topup: number | null; topup_day?: number; note: string | null; revision: number; updated_at: string | null };
   groups: CreditGroupSummary[];
   members: CreditPlanMember[];
@@ -123,8 +138,8 @@ export interface CreditPlanSaveBody {
   revision: number;
   note: string | null;
   topup_day?: number; // 매월 충전 기준일 · 없으면 그대로
-  // allowed_models: 키를 빼면 서버가 기존값을 유지하고, [] 를 보내야 제한이 풀린다(구버전 앱·'추정' 맞추기가 설정을 지우지 않게).
-  groups?: { id?: string; name: string; monthly_limit: number | null; limit_period: LimitPeriod; remaining_override?: number | null; allowed_models?: string[] }[]; // 없으면그룹·배정 그대로
+  // allowed_models/color: 키를 빼면 서버가 기존값을 유지한다(구버전 앱·'추정' 맞추기가 설정을 지우지 않게).
+  groups?: { id?: string; name: string; monthly_limit: number | null; limit_period: LimitPeriod; remaining_override?: number | null; allowed_models?: string[]; color?: string | null }[]; // 없으면그룹·배정 그대로
   members?: { email: string; group_id: string | null }[];
   topups?: { id?: string; day: string; credits: number; note: string | null }[]; // 전체 교체 · 없으면 그대로
 }
@@ -252,6 +267,16 @@ export interface DraftGroup {
   usedMonth: number;
   memberCount: number; // 서버 기준(표시용) — 초안의 실제 인원은 members 로 센다
   allowedModels: string[]; // 그룹이 쓸 수 있는 모델(job_type). 빈 배열=제한 없음. 앱이 모르는 id 도 그대로 보존한다
+  color: string | null; // #rrggbb · null은 서버 기본색을 그대로 유지
+}
+
+export function newDraftGroup(): DraftGroup {
+  const id = newGroupId();
+  const paletteIndex = Number.parseInt(id.slice(-2), 16) % GROUP_COLOR_PALETTE.length;
+  return {
+    id, isNew: true, name: "", limitInput: "", limitPeriod: "month", unlimited: false,
+    remaining: null, usedMonth: 0, memberCount: 0, allowedModels: [], color: GROUP_COLOR_PALETTE[paletteIndex],
+  };
 }
 
 export interface DraftTopup {
@@ -265,7 +290,7 @@ export interface CreditPlanDraft {
   loadedFor: string; // workspaceId
   revision: number;
   monthlyTopup: number | null; // 파생값(예산 한도 매월 합) — 표시만
-  topupDay: number; // 매월 충전 기준일(1~28)
+  topupDay: number; // 매월 충전 기준일(1~31, 없는 날짜는 월말)
   note: string;
   groups: DraftGroup[];
   members: CreditPlanMember[];
@@ -294,6 +319,7 @@ export function draftFromSettings(settings: CreditPlanSettings): CreditPlanDraft
       usedMonth: group.used_month,
       memberCount: group.member_count,
       allowedModels: [...(group.allowed_models ?? [])],
+      color: group.color ?? null,
     })),
     members: settings.members.map((member) => ({ ...member })),
     dirty: false,
@@ -374,6 +400,7 @@ export function draftToBody(draft: CreditPlanDraft): CreditPlanSaveBody {
       // 설정 창은 항상 명시한다(빈 배열 = 제한 없음). 초안에 값이 없는 비정상 상태에서는 키를 빼
       // 서버가 기존값을 유지하게 한다 — 크래시도, 조용한 설정 해제도 없게.
       ...(Array.isArray(group.allowedModels) ? { allowed_models: [...group.allowedModels] } : {}),
+      ...(group.color ? { color: group.color } : {}),
     })),
     members: draft.members.map((member) => ({
       email: member.email,

@@ -349,6 +349,29 @@ class CreditPlanTests(unittest.TestCase):
                                    "allowed_models": ["future_model_9"]}], [])
         self.assertEqual(self._group(settings, "Artist")["allowed_models"], ["future_model_9"])
 
+    def test_group_color_save_contract(self) -> None:
+        with db.get_connection() as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_credit_group)")}
+        self.assertIn("color", columns)
+
+        settings = self._save(0, [{"name": "Artist", "monthly_limit": 1000, "color": " #A855F7 "}], [])
+        artist = self._group(settings, "Artist")
+        gid = artist["id"]
+        base = (artist["base_start"], artist["base_balance"])
+        self.assertEqual(artist["color"], "#a855f7")
+
+        # 키 없음 = 구버전 앱 호환 유지. 색상만 바꿔도 크레딧 기준값은 재계산하지 않는다.
+        settings = self._save(1, [{"id": gid, "name": "Artist", "monthly_limit": 1000}], [])
+        self.assertEqual(self._group(settings, "Artist")["color"], "#a855f7")
+        settings = self._save(2, [{"id": gid, "name": "Artist", "monthly_limit": 1000, "color": "#06B6D4"}], [])
+        artist = self._group(settings, "Artist")
+        self.assertEqual((artist["color"], artist["base_start"], artist["base_balance"]), ("#06b6d4", *base))
+
+        settings = self._save(3, [{"id": gid, "name": "Artist", "monthly_limit": 1000, "color": ""}], [])
+        self.assertIsNone(self._group(settings, "Artist")["color"])
+        with self.assertRaises(ValueError):
+            self._save(4, [{"id": gid, "name": "Artist", "monthly_limit": 1000, "color": "purple"}], [])
+
     def test_my_models_and_router(self) -> None:
         settings = self._save(
             0,
@@ -417,6 +440,10 @@ class CreditPlanTests(unittest.TestCase):
             self.assertIn("pool", full)
             self.assertEqual(manage_router.credit_plan_settings("ws1", pm)["plan"]["revision"], 1)
 
+    def test_group_limit_rejects_values_too_large_for_product_contract(self) -> None:
+        with self.assertRaises(ValueError):
+            manage_router.CreditGroupIn(name="Artist", monthly_limit=1_000_000_000)
+
     def test_day_and_week_limits_carry_over_by_period(self) -> None:
         # a 의 이번 달 170 은 전부 '지금' 만든 것 → 오늘·이번 주 사용도 170. b 는 이번 주 30(지난달 70 은 밖).
         # 일·주 한도도 enterprise 라 이월된다(Jay) — 기준일부터 지난 기간 수 × 한도가 쌓이고 사용만큼 빠진다.
@@ -454,8 +481,13 @@ class CreditPlanTests(unittest.TestCase):
         self.assertEqual(ps("2026-09-14", "month", 15), "2026-08-15")
         self.assertEqual(ps("2026-09-15", "month", 15), "2026-09-15")
         self.assertEqual(ps("2026-03-01", "month", 28), "2026-02-28")
+        self.assertEqual(ps("2026-02-27", "month", 31), "2026-01-31")
+        self.assertEqual(ps("2026-02-28", "month", 31), "2026-02-28")
+        self.assertEqual(ps("2026-03-30", "month", 31), "2026-02-28")
+        self.assertEqual(ps("2026-03-31", "month", 31), "2026-03-31")
         self.assertEqual(plan_repo.period_end("2026-09-20", "month", 15), "2026-10-14")
         self.assertEqual(plan_repo.period_end("2026-09-20", "month", 1), "2026-09-30")
+        self.assertEqual(plan_repo.period_end("2026-02-28", "month", 31), "2026-03-30")
         self.assertEqual(ps("2026-09-10", "week"), "2026-09-07")  # 목요일 → 월요일
         self.assertEqual(plan_repo.periods_inclusive("2026-08-15", "2026-10-14", "month", 15), 2)
         self.assertEqual(plan_repo.periods_inclusive("2026-08-15", "2026-10-15", "month", 15), 3)
@@ -467,6 +499,14 @@ class CreditPlanTests(unittest.TestCase):
             cond = manage_db._period_conditions(15)["month"].replace("created_at", "'2026-09-15T03:00:00Z'").replace(
                 "'now'", "'2026-09-20'")
             self.assertEqual(conn.execute(f"SELECT {cond}").fetchone()[0], 1)
+            for created_at, expected in (
+                ("2026-02-27T12:00:00Z", 0),
+                ("2026-02-28T12:00:00Z", 1),
+                ("2026-03-01T12:00:00Z", 1),
+            ):
+                cond = manage_db._period_conditions(31)["month"].replace("created_at", f"'{created_at}'").replace(
+                    "'now'", "'2026-03-15T12:00:00Z'")
+                self.assertEqual(conn.execute(f"SELECT {cond}").fetchone()[0], expected)
 
     def test_topup_day_moves_the_month_boundary_everywhere(self) -> None:
         today = datetime.now()
@@ -491,8 +531,10 @@ class CreditPlanTests(unittest.TestCase):
                                            members=[{"email": "b@x", "group_id": gid}])
         g = settings["groups"][0]
         self.assertEqual((g["base_start"], g["used_month"], g["remaining"]), (view["cycle_start"], 70, 930))
+        settings = plan_repo.save_settings("ws1", revision=3, note=None, groups=None, topup_day=31)
+        self.assertEqual(settings["plan"]["topup_day"], 31)
         with self.assertRaises(ValueError):
-            plan_repo.save_settings("ws1", revision=3, note=None, groups=None, topup_day=31)
+            plan_repo.save_settings("ws1", revision=4, note=None, groups=None, topup_day=32)
 
     # ── 월 충전(파생)·긴급 충전 ──
     def test_monthly_topup_is_derived_from_monthly_budgets(self) -> None:
