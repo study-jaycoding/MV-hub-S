@@ -11,6 +11,15 @@ from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
+# ★팀 표준시 고정(2026-09-23). 사용량·예산·크레딧 기간 경계는 SQLite `localtime` 과 파이썬 지역시간으로
+#  계산한다. 그런데 공유 서버 OS 시간대가 UTC 면(2026-09-10 실측) 시·일·주·월 경계가 통째로 9시간 밀린다
+#  — 어제 저녁에 쓴 크레딧이 오늘로 잡히고, '이번 달' 경계도 같이 어긋난다.
+#  Windows 런타임은 TZ 를 **첫 사용 때 한 번만** 읽으므로(실행 중 변경은 안 먹는다 — 실측) DB·시간 함수를
+#  건드리기 전인 여기서 못 박는다. 이 모듈은 db·manage_db 가 import 하는 가장 이른 설정 모듈이다.
+#  밖에서 TZ 를 명시했으면 그대로 둔다(다른 표준시 팀·시험). `KST-9` 는 POSIX 표기라 부호가 반대다
+#  — '자오선에서 9시간 뺀 곳'이 아니라 UTC+9 를 뜻한다.
+os.environ.setdefault("TZ", "KST-9")
+
 # 데이터 루트 — DB·미디어·공유를 한 폴더 아래로 분리(backend 루트 오염 방지).
 #   data/db/      content_hub.db      (사실+오버레이 = 내 누적 DB)
 #   data/media/   로컬 보관 결과물

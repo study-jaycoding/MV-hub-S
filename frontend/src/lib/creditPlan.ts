@@ -27,7 +27,7 @@ export interface CreditTopup {
   note: string | null;
 }
 
-export type LimitPeriod = "day" | "week" | "month"; // month 만 이월, day/week 는 그 기간 안에서만
+export type LimitPeriod = "day" | "week" | "month"; // 세 주기 모두 이월된다(안 쓴 몫이 다음 기간으로 넘어간다)
 
 export const DEFAULT_GROUP_COLOR = "#64748b";
 export const GROUP_COLOR_PALETTE = [

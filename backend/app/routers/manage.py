@@ -724,7 +724,9 @@ class CreditGroupIn(BaseModel):
     id: Optional[str] = None
     name: str
     monthly_limit: Optional[int] = Field(default=None, ge=0, le=999_999_999)  # None = ∞
-    limit_period: Literal["day", "week", "month"] = "month"  # month 만 이월, day/week 는 그 기간 안에서만
+    # ★세 주기 모두 이월된다(enterprise, Jay) — 종전 주석은 'month 만 이월'이라고 적혀 있었지만
+    #  `_group_remaining` 은 주기와 무관하게 base 이후 기간 수만큼 한도를 쌓는다(`test_credit_plan` 이 고정).
+    limit_period: Literal["day", "week", "month"] = "month"
     remaining_override: Optional[int] = None  # 지금 남은 양 보정(이월 포함) — 저장 시 재기준화
     # 그룹이 쓸 수 있는 모델(job_type 목록, **허용 목록** — 빈 목록=제한 없음). None(키 없음)=기존값 유지 —
     # 이 필드를 모르는 구버전 앱·'추정' 맞추기 저장이 제한을 지우지 않게. 명시 [] 만 해제.
