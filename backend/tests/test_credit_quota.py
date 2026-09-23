@@ -23,6 +23,21 @@ def _iso(delta_days: int = 0) -> str:
     return (datetime.now(timezone.utc) + timedelta(days=delta_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+class _DummyState:
+    account = None
+
+
+class _DummyRequest:
+    """AUTH off 기본값이라 권한 게이트를 통과한다(다른 라우터 시험과 같은 방식)."""
+
+    def __init__(self) -> None:
+        self.state = _DummyState()
+
+
+def _request() -> _DummyRequest:
+    return _DummyRequest()
+
+
 def _fact(gid: str, email: str, uid: str, credits: float) -> dict:
     return {
         "local_gen_id": gid, "job_id": f"job-{gid}", "workspace_scope": "team", "workspace_id": "ws1",
@@ -220,6 +235,30 @@ class CreditQuotaTests(unittest.TestCase):
                 members=[{"email": "a@x", "group_id": None}],
             )
             self.assertIsNone(quota_of(s))
+
+    def test_http_body_keeps_three_states(self) -> None:
+        """**HTTP 경계**에서도 세 상태가 살아 있어야 한다 — 저장소만 직접 부르는 시험은
+        라우터의 `exclude_unset` 을 떼어내도 통과한다(조립식 시험의 함정 · Codex 코드 리뷰 2026-09-23)."""
+        from app.routers import manage as manage_router
+
+        s = self._group(900, ["a@x", "b@x", "c@x"], quotas={"a@x": 500})
+        gid = s["groups"][0]["id"]
+
+        def put(member_body: dict) -> dict:
+            body = manage_router.CreditPlanIn.model_validate({
+                "revision": plan_repo.get_settings("ws1")["plan"]["revision"],
+                "groups": [{"id": gid, "name": "Artist", "monthly_limit": 900}],
+                "members": [member_body],
+            })
+            return manage_router.put_credit_plan("ws1", body, _request())
+
+        with self.subTest("몫 키가 없는 본문(구버전 앱)은 기존 몫을 지우지 않는다"):
+            out = put({"email": "a@x", "group_id": gid})
+            self.assertEqual(self._member_row(out, "a@x")["quota"], 500)
+        with self.subTest("명시적 null 은 자동으로 되돌린다"):
+            out = put({"email": "a@x", "quota": None})
+            self.assertIsNone(self._member_row(out, "a@x")["quota"])
+            self.assertEqual(self._member_row(out, "a@x")["quota_effective"], 300)
 
     def test_quota_null_resets_to_auto(self) -> None:
         s = self._group(900, ["a@x", "b@x", "c@x"], quotas={"a@x": 500})
