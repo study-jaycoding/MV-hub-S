@@ -82,6 +82,15 @@ export interface CreditGroupSummary {
   my_unknown_month?: number;
   allowed_models?: string[]; // 그룹이 쓸 수 있는 모델(job_type, **빈 목록=제한 없음**) — 구서버는 없음
   color?: string | null; // 그룹 표시색(#rrggbb) · 구서버/NULL은 기본색
+  // 사람별 몫 나누기(2026-09-23) — 구서버는 없음
+  quota_fixed?: number; // 손으로 덮어쓴 몫의 합
+  quota_auto?: number | null; // 나머지 사람 한 명 몫(null = 나눌 수 없음: 무제한이거나 자동 인원 0명)
+  quota_over?: boolean; // 덮어쓴 합이 그룹 한도를 넘음(경고만)
+  // 멤버 뷰만 — 내 몫은 **이번 기간** 기준이고, 그룹 이월은 group_carryover 로 따로 온다
+  my_quota?: number | null;
+  my_quota_source?: "manual" | "auto" | "none";
+  my_remaining?: number | null; // 내 몫 − 이번 기간 내 사용(음수 = 초과)
+  group_carryover?: number; // 지난 기간에서 그룹으로 넘어온 여유분
 }
 
 /** GET /api/manage/credit-plan/my-models — 본인 그룹이 쓸 수 있는 모델(생성 창·캔버스 모델 노드가 거르는 근거). */
@@ -120,6 +129,13 @@ export interface CreditPlanMember {
   workspace_role: string | null;
   is_available: boolean;
   group_id: string | null;
+  // 사람별 몫(2026-09-23) — 구서버는 없음
+  quota?: number | null; // 손으로 덮어쓴 값(null = 자동)
+  quota_effective?: number | null; // 실제 적용되는 몫(자동이면 계산값)
+  quota_source?: "manual" | "auto" | "none";
+  used_period?: number; // 이번 기간(그룹 주기) 내 사용
+  unknown_period?: number;
+  remaining?: number | null; // 몫 − 사용
 }
 
 export interface CreditPlanSettings {
@@ -128,7 +144,16 @@ export interface CreditPlanSettings {
   today?: string;
   cycle_start?: string;
   cycle_end?: string;
-  plan: { monthly_topup: number | null; topup_day?: number; note: string | null; revision: number; updated_at: string | null };
+  plan: {
+    monthly_topup: number | null; // 손 입력이 있으면 그 값, 없으면 프로젝트 '매월 예산' 합에서 파생
+    monthly_topup_source?: "manual" | "derived";
+    recurring_topup?: number | null; // 손 입력 원본(null = 파생)
+    derived_topup?: number | null; // 손 입력을 지우면 돌아갈 값
+    topup_day?: number;
+    note: string | null;
+    revision: number;
+    updated_at: string | null;
+  };
   groups: CreditGroupSummary[];
   members: CreditPlanMember[];
   topups: CreditTopup[];
@@ -140,7 +165,10 @@ export interface CreditPlanSaveBody {
   topup_day?: number; // 매월 충전 기준일 · 없으면 그대로
   // allowed_models/color: 키를 빼면 서버가 기존값을 유지한다(구버전 앱·'추정' 맞추기가 설정을 지우지 않게).
   groups?: { id?: string; name: string; monthly_limit: number | null; limit_period: LimitPeriod; remaining_override?: number | null; allowed_models?: string[]; color?: string | null }[]; // 없으면그룹·배정 그대로
-  members?: { email: string; group_id: string | null }[];
+  // quota: 키를 빼면 서버가 기존 몫을 유지하고, null 을 보내야 자동으로 돌아간다(구버전 저장이 몫을 지우지 않게).
+  //  group_id 도 같은 규칙이라 '몫만 바꾸기'는 group_id 키 없이 보낸다.
+  members?: { email: string; group_id?: string | null; quota?: number | null }[];
+  recurring_topup?: number | null; // 정기 충전 손 입력 · 키 없음=그대로 · null=파생으로
   topups?: { id?: string; day: string; credits: number; note: string | null }[]; // 전체 교체 · 없으면 그대로
 }
 

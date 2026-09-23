@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemberTable } from "../src/components/manage/MemberTable";
 import { draftFromSettings, GROUP_COLOR_PALETTE, newDraftGroup, todayLocal, type CreditPlanSettings } from "../src/lib/creditPlan";
 import { HttpError } from "../src/lib/http";
-import { groupAssignBody, groupColorBody, groupEditBody, groupTermsBody, lastSeenLabel, type MemberTableData, type MemberTableRow } from "../src/lib/memberTable";
+import { groupAssignBody, groupColorBody, groupEditBody, groupTermsBody, lastSeenLabel, memberQuotaBody, type MemberTableData, type MemberTableRow } from "../src/lib/memberTable";
 
 const mocks = vi.hoisted(() => ({ memberTable: vi.fn(), saveCreditPlan: vi.fn(), setPlanning: vi.fn(), members: vi.fn(), setProjectRoles: vi.fn(), removeProjectMember: vi.fn(), models: vi.fn() }));
 vi.mock("../src/lib/manageApi", () => ({ manageApi: { memberTable: mocks.memberTable, saveCreditPlan: mocks.saveCreditPlan, setPlanning: mocks.setPlanning } }));
@@ -686,4 +686,33 @@ it("그룹 저장 직후 충전 기준일을 바꿔도 큐 안의 최신 revisio
   await settle();
   expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(2);
   expect(mocks.saveCreditPlan).toHaveBeenLastCalledWith("ws1", { revision: 4, note: "메모", topup_day: 15 });
+});
+
+it("몫 칸은 소속을 건드리지 않고 사람별 몫만 저장한다", async () => {
+  // 서버가 몫을 지우지 않는 계약: group_id 키는 싣지 않고 quota 만 보낸다(비우면 null = 자동).
+  const body = memberQuotaBody(credit(9), "b@x", 600);
+  expect(body.members).toEqual([{ email: "b@x", quota: 600 }]);
+  expect(body.members![0]).not.toHaveProperty("group_id");
+  expect(memberQuotaBody(credit(9), "b@x", null).members).toEqual([{ email: "b@x", quota: null }]);
+
+  const data = table(3, [row("a@x", { group_id: "g1", usage: { credits: 320, count: 2, unknown: 0 } })]);
+  data.credit!.members = [
+    { email: "a@x", name: "a", workspace_role: "member", is_available: true, group_id: "g1",
+      quota: null, quota_effective: 5000, quota_source: "auto", used_period: 320, unknown_period: 0, remaining: 4680 },
+  ];
+  mocks.memberTable.mockResolvedValue(data);
+  mocks.saveCreditPlan.mockResolvedValue(credit(4));
+  await mount();
+  await openSheet("크레딧 관리");
+
+  const sheet = host.querySelector('table[aria-label="개인별 크레딧 사용량"]')!;
+  expect(sheet.textContent).toContain("4,680 cr"); // 남은 몫
+  const input = sheet.querySelector<HTMLInputElement>('[aria-label="a 몫"]')!;
+  expect(input.placeholder).toBe("자동 5,000"); // 비어 있으면 자동 몫이 얼마인지 보여 준다
+  await typeInput(input, "600");
+  await act(async () => { input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); });
+  await settle();
+  expect(mocks.saveCreditPlan).toHaveBeenLastCalledWith("ws1", expect.objectContaining({
+    revision: 3, members: [{ email: "a@x", quota: 600 }],
+  }));
 });

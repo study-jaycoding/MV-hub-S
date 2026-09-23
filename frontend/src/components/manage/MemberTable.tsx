@@ -29,6 +29,7 @@ import {
   applyProjectRoles,
   groupAssignBody,
   groupColorBody,
+  memberQuotaBody,
   groupEditBody,
   groupTermsBody,
   matchesMemberQuery,
@@ -212,11 +213,13 @@ function GroupColorPicker({ label, color, disabled, onCommit }: {
   );
 }
 
-function GroupLimitInput({ label, value, disabled, onCommit }: {
+function GroupLimitInput({ label, value, disabled, onCommit, field = "한도", placeholder = "제한 없음" }: {
   label: string;
   value: number | null;
   disabled: boolean;
   onCommit: (value: number | null) => boolean;
+  field?: string;       // 읽어 주는 칸 이름 — 그룹 '한도' / 사람 '몫'
+  placeholder?: string; // 비었을 때의 뜻 — 그룹은 '제한 없음', 사람은 '자동'
 }) {
   const serverValue = value === null ? "" : String(value);
   const [input, setInput] = useState(serverValue);
@@ -233,8 +236,8 @@ function GroupLimitInput({ label, value, disabled, onCommit }: {
       <input
         type="text"
         inputMode="numeric"
-        aria-label={`${label} 한도`}
-        placeholder="제한 없음"
+        aria-label={`${label} ${field}`}
+        placeholder={placeholder}
         maxLength={11}
         value={formatThousands(input)}
         disabled={disabled}
@@ -427,6 +430,31 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
         setCreditError(isHttpStatus(reason, 409)
           ? "다른 곳에서 먼저 바꿨습니다. 최신 값을 읽었으니 다시 저장해 주세요."
           : `그룹 색상을 저장하지 못했습니다. ${String(reason).replace(/^Error:\s*/, "")}`);
+        throw reason;
+      } finally {
+        setCreditBusy(false);
+      }
+    });
+    return true;
+  };
+
+  /** 사람별 몫 한 칸 저장 — 비우면(null) 그룹 한도를 인원으로 나눈 자동 몫으로 돌아간다.
+   *  소속은 건드리지 않는다(본문에 group_id 키를 싣지 않는다). */
+  const saveMemberQuota = (email: string, quota: number | null) => {
+    if (!data || !inScope || !workspaceId || creditBusy || groupEditor) return false;
+    if (quota !== null && (!Number.isFinite(quota) || quota < 0)) return false;
+    setCreditBusy(true);
+    setCreditError("");
+    save(async () => {
+      try {
+        const credit = creditRef.current;
+        if (!credit) throw new Error("크레딧 설정을 읽지 못했습니다");
+        creditRef.current = await manageApi.saveCreditPlan(workspaceId, memberQuotaBody(credit, email, quota));
+        setNotice({ tone: "ok", text: quota === null ? "저장됨 · 몫을 자동으로" : "저장됨 · 개인 몫" });
+      } catch (reason) {
+        setCreditError(isHttpStatus(reason, 409)
+          ? "다른 곳에서 먼저 바꿨습니다. 최신 값을 읽었으니 다시 저장해 주세요."
+          : `개인 몫을 저장하지 못했습니다. ${String(reason).replace(/^Error:\s*/, "")}`);
         throw reason;
       } finally {
         setCreditBusy(false);
@@ -715,6 +743,9 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
   if (!data) return <div className="usage-loading">관리 표를 불러오는 중…</div>;
 
   const groupById = new Map(data.groups.map((group) => [group.id, group]));
+  // 사람별 몫·남은 몫은 크레딧 설정 원문에 있다(이메일 기준). 구서버 응답엔 없으므로 undefined 를 그대로 다룬다.
+  const creditMembers = new Map((data.credit?.members || []).map((member) => [member.email, member]));
+  const quotaOf = (email: string) => creditMembers.get(email);
   const rows = data.rows.filter((row) => {
     if (sheet === "projects") return true;
     if (!matchesMemberQuery(row, query)) return false;
@@ -1188,7 +1219,9 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                   <th className="mtable-sticky">이름</th>
                   <th>이메일</th>
                   <th>그룹</th>
+                  <th className={canGroup ? "ed num" : "ro num"} title={lock(canGroup, "PM(프로젝트 생성 권한)만 바꿀 수 있습니다")}>몫</th>
                   <th className="num">사용 크레딧</th>
+                  <th className="num">남은 몫</th>
                   <th className="num">금액 미상</th>
                 </tr>
               </thead>
@@ -1198,12 +1231,27 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                     <td className="mtable-sticky mtable-name">{row.name}</td>
                     <td>{row.email}</td>
                     <td><GroupChip group={row.group_id ? groupById.get(row.group_id) : undefined} /></td>
+                    <td className="num">
+                      {!row.group_id ? <span className="mtable-muted">그룹 없음</span> : (
+                        <GroupLimitInput
+                          label={row.name}
+                          field="몫"
+                          placeholder={quotaOf(row.email)?.quota_effective != null ? `자동 ${credits(quotaOf(row.email)!.quota_effective!)}` : "자동"}
+                          value={quotaOf(row.email)?.quota ?? null}
+                          disabled={!canGroup || creditBusy || Boolean(groupEditor)}
+                          onCommit={(value) => saveMemberQuota(row.email, value)}
+                        />
+                      )}
+                    </td>
                     <td className="num">{row.usage ? `${credits(row.usage.credits)} cr` : "—"}</td>
+                    <td className={`num${(quotaOf(row.email)?.remaining ?? 0) < 0 ? " mtable-over" : ""}`}>
+                      {quotaOf(row.email)?.remaining == null ? "—" : `${credits(quotaOf(row.email)!.remaining!)} cr`}
+                    </td>
                     <td className="num">{row.usage ? (row.usage.unknown ? `${row.usage.unknown.toLocaleString()}건` : "없음") : "—"}</td>
                   </tr>
                 ))}
                 {!rows.length ? (
-                  <tr><td className="mtable-empty" colSpan={5}>{query ? "검색 결과가 없습니다." : "표시할 크레딧 사용량이 없습니다."}</td></tr>
+                  <tr><td className="mtable-empty" colSpan={7}>{query ? "검색 결과가 없습니다." : "표시할 크레딧 사용량이 없습니다."}</td></tr>
                 ) : null}
               </tbody>
             </table>

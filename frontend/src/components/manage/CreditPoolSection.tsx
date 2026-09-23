@@ -259,8 +259,8 @@ export function CreditPoolSection({
     return (
       <div className="usage-card credit-card">
         <div className="usage-card-head">
-          <div><h3>내 그룹 · {monthLabel(view.month)}</h3></div>
-          <span>힉스필드 그룹 한도 기준 · 남은 양은 이월 포함</span>
+          <div><h3>내 크레딧 · {monthLabel(view.month)}</h3></div>
+          <span>내 몫은 이번 기간 기준 · 그룹 이월은 따로 표시</span>
         </div>
         {!mine ? (
           <div className="credit-scope-note">
@@ -269,16 +269,31 @@ export function CreditPoolSection({
         ) : (
           <div className="credit-pool-grid mine">
             <div><span>그룹</span><strong>{mine.name}</strong><em>{mine.member_count}명</em></div>
-            <div><span>한도 {periodSuffix(mine.limit_period)}</span><strong>{mine.monthly_limit == null ? "∞" : cr(mine.monthly_limit)}</strong></div>
+            {/* 내 몫 = 그룹 한도를 사람 수로 나눈 값(매니저가 덮어썼으면 그 값). 이번 기간 기준이라
+                그룹 이월은 섞지 않고 아래 '그룹 여유분'으로 따로 보여 준다. */}
             <div>
-              <span>그룹 {periodUsageLabel(mine.limit_period)} 사용</span>
-              <strong>{cr(mine.used_period ?? mine.used_month)}</strong>
-              <em>그중 내 사용 {cr(mine.my_used_period ?? mine.my_used_month)}{(mine.my_unknown_period ?? mine.my_unknown_month) ? ` · 미상 ${mine.my_unknown_period ?? mine.my_unknown_month}건` : ""}</em>
+              <span>내 몫 {periodSuffix(mine.limit_period)}</span>
+              <strong>{mine.my_quota == null ? "제한 없음" : cr(mine.my_quota)}</strong>
+              <em>{mine.my_quota_source === "manual" ? "따로 정해진 몫" : mine.my_quota_source === "auto" ? `그룹 한도 ${mine.monthly_limit == null ? "∞" : cr(mine.monthly_limit)} ÷ ${mine.member_count}명` : "그룹 한도 없음"}</em>
             </div>
-            <div className={`left tone-${remainingTone(mine.remaining, mine.monthly_limit)}`}>
-              <span>남은 양 (이월 포함)</span>
-              <strong>{mine.remaining == null ? "∞" : cr(mine.remaining)}</strong>
-              <em>{mine.estimated ? `미상 ${mine.unknown_since_base}건 섞임 · 추정` : "팀 기록 장부 기준"}</em>
+            <div>
+              <span>{periodUsageLabel(mine.limit_period)} 내 사용</span>
+              <strong>{cr(mine.my_used_period ?? mine.my_used_month)}</strong>
+              <em>
+                그룹 전체 {cr(mine.used_period ?? mine.used_month)}
+                {(mine.my_unknown_period ?? mine.my_unknown_month) ? ` · 미상 ${mine.my_unknown_period ?? mine.my_unknown_month}건` : ""}
+              </em>
+            </div>
+            <div className={`left tone-${remainingTone(mine.my_remaining ?? null, mine.my_quota ?? null)}`}>
+              <span>내 남은 몫</span>
+              <strong>{mine.my_remaining == null ? "∞" : cr(mine.my_remaining)}</strong>
+              <em>
+                {mine.my_remaining != null && mine.my_remaining < 0
+                  ? `내 몫보다 ${cr(Math.abs(mine.my_remaining))} 더 썼습니다`
+                  : mine.group_carryover
+                    ? `그룹 여유분 ${cr(mine.group_carryover)} 따로 있음`
+                    : mine.estimated ? `미상 ${mine.unknown_since_base}건 섞임 · 추정` : "팀 기록 장부 기준"}
+              </em>
             </div>
           </div>
         )}

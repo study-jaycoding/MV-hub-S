@@ -134,6 +134,31 @@ export function groupTermsBody(
   };
 }
 
+/** 사람별 몫 한 칸 저장. `quota` 만 싣고 `group_id` 키는 빼서 소속을 건드리지 않는다
+ *  (null = 자동 몫으로 되돌리기). 그룹 목록은 서버가 목록에 없는 그룹을 지우므로 최신 전체를 되보낸다. */
+export function memberQuotaBody(
+  credit: CreditPlanSettings,
+  email: string,
+  quota: number | null,
+): CreditPlanSaveBody {
+  return {
+    revision: credit.plan.revision,
+    note: credit.plan.note,
+    groups: credit.groups.map((group) => ({
+      id: group.id,
+      name: group.name,
+      monthly_limit: group.monthly_limit,
+      limit_period: group.limit_period ?? "month",
+    })),
+    members: [{ email, quota }],
+  };
+}
+
+/** 정기 충전 손 입력 저장(null = 프로젝트 월 예산 합에서 파생으로 되돌리기). 그룹·배정은 건드리지 않는다. */
+export function recurringTopupBody(credit: CreditPlanSettings, value: number | null): CreditPlanSaveBody {
+  return { revision: credit.plan.revision, note: credit.plan.note, recurring_topup: value };
+}
+
 /** 낙관 반영 — 프로젝트 역할은 uid 기준이라 같은 uid 의 줄이 함께 바뀐다. roles 가 비면 그 프로젝트에서 빠진다. */
 export function applyProjectRoles(rows: MemberTableRow[], uid: string, pid: string, roles: string[]): MemberTableRow[] {
   return rows.map((row) => {
