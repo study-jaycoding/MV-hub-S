@@ -74,7 +74,8 @@ def audit(content_db: Path, manage_db: Path | None, samples: int) -> int:
     )
 
     kinds: Counter[str] = Counter()
-    delta = 0.0  # 장부가 실제보다 얼마나 더(+) 또는 덜(−) 적혔나
+    delta = {"metrics": 0.0, "fact": 0.0}  # 장부가 실제보다 얼마나 더(+)/덜(−) 적혔나 — 자리별로
+    repair_gens: set[tuple[str, str]] = set()  # 고쳐야 할 **생성물**(자리 수가 아니라)
     shown = 0
     print(f"거래(spend, 생성물에 연결됨) {len(rows)}건 검사 — {content_db}")
     for r in rows:
@@ -103,7 +104,8 @@ def audit(content_db: Path, manage_db: Path | None, samples: int) -> int:
             # 옛 코드는 파이썬 round() 였다 — SQLite round() 와 .5 규칙이 달라 여기서도 파이썬으로 판정한다.
             if _is_int(observed) and abs(observed - float(round(exact))) <= EPS and not _is_int(exact):
                 kinds[f"rounded_{where}"] += 1
-                delta += observed - exact
+                delta[where] += observed - exact
+                repair_gens.add((r["email"], r["matched_gen_id"]))
                 if shown < samples:
                     shown += 1
                     print(
@@ -125,11 +127,16 @@ def audit(content_db: Path, manage_db: Path | None, samples: int) -> int:
                  "other_mismatch", "no_value"):
         if kinds[kind]:
             print(f"  {kind:<16} {kinds[kind]}")
-    repairable = kinds["rounded_metrics"] + kinds["rounded_fact"]
-    print(f"\n되살릴 수 있는 행 {repairable}건 · 장부가 실제보다 {delta:+.2f} 크레딧 어긋나 있다")
+    # ★같은 생성물이 로컬·서버 두 곳에서 틀릴 수 있다 — 자리 수를 더하면 고칠 생성물이 두 배로 보이고
+    #  어긋난 금액도 두 배가 된다. 생성물 수는 한 번만 세고, 금액은 **자리별로** 따로 적는다.
+    print(
+        f"\n고쳐야 할 생성물 {len(repair_gens)}건"
+        f" — 로컬 메트릭 {kinds['rounded_metrics']}자리({delta['metrics']:+.2f} cr) ·"
+        f" 서버 팩트 {kinds['rounded_fact']}자리({delta['fact']:+.2f} cr)"
+    )
     if not facts:
-        print("(서버 팩트 DB 를 안 줬다 — `--manage` 로 주면 영구 삭제된 생성물까지 본다)")
-    return repairable
+        print("(서버 팩트 DB 를 안 줬다 — `--manage` 로 주면 화면이 읽는 값까지 본다)")
+    return len(repair_gens)
 
 
 def main() -> None:
