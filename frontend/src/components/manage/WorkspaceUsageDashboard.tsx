@@ -435,6 +435,9 @@ export function WorkspaceUsageDashboard({
       : `사용량을 불러오지 못했습니다. ${String(reason)}`;
   const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([]);
   const [chartPeriodUnit, setChartPeriodUnit] = useState<UsagePeriodUnit>("week");
+  // ★기간을 표·통계·CSV 에도 적용할지(2026-09-23). 기본은 꺼짐 = 종전처럼 표는 전 기간, 차트만 기간별.
+  //  켜면 상단 통계·멤버·프로젝트·모델·Yield·내보내기가 **차트와 같은 범위**를 본다.
+  const [periodAppliesToAll, setPeriodAppliesToAll] = useState(false);
   const [chartAnchorDate, setChartAnchorDate] = useState(() => new Date());
   const [chartMetric, setChartMetric] = useState<Metric>("credits");
   const [chartModel, setChartModel] = useState("");
@@ -457,6 +460,19 @@ export function WorkspaceUsageDashboard({
   const selectedCreatorFilter = selectedWorker
     ? selectedWorker.creator_uid || "__none__"
     : undefined;
+  // 표·상단 통계·내보내기가 함께 쓰는 필터. 드릴은 늘 걸리고, 기간·모델은 '전체 적용'일 때만 걸린다.
+  const panelFilters = useMemo(() => ({
+    workspaceId: workspaceId || undefined,
+    ...(periodAppliesToAll
+      ? {
+          dateFrom: chartRange.dateFrom,
+          dateTo: chartRange.dateTo,
+          timeFrom: chartRange.timeFrom,
+          timeTo: chartRange.timeTo,
+          model: chartModel || undefined,
+        }
+      : {}),
+  }), [chartModel, chartRange, periodAppliesToAll, workspaceId]);
   const selectedProjectFilter = selectedProject
     ? selectedProject.project_id || "__none__"
     : undefined;
@@ -497,7 +513,7 @@ export function WorkspaceUsageDashboard({
     }
     setLoading(true);
     setError("");
-    manageApi.teamOverview({ workspaceId: workspaceId || undefined })
+    manageApi.teamOverview(panelFilters)
       .then((nextOverview) => {
         if (!active) return;
         setOverview((prev) => reconcileValueState(prev, nextOverview));
@@ -505,7 +521,8 @@ export function WorkspaceUsageDashboard({
       .catch((reason) => active && setError(describeUsageError(reason)))
       .finally(() => active && setLoading(false));
     return () => { active = false; };
-  }, [reloadSignal, workspaceId]);
+    // panelFilters: 기간을 '전체 적용'으로 켜거나 범위를 바꾸면 표·통계도 다시 읽는다.
+  }, [panelFilters, reloadSignal, workspaceId]);
 
   useEffect(() => {
     if (!drillTargetKey) {
@@ -516,7 +533,7 @@ export function WorkspaceUsageDashboard({
     let active = true;
     setDrillErrorKey("");
     manageApi.teamOverview({
-      workspaceId: workspaceId || undefined,
+      ...panelFilters,
       creatorUid: selectedCreatorFilter,
       projectId: selectedProjectFilter,
     })
@@ -529,7 +546,7 @@ export function WorkspaceUsageDashboard({
     return () => { active = false; };
     // reloadSignal: 같은 드릴 대상을 주기 재조회 — 성공 시 같은 표시 키로 교체되므로
     // 재조회 중에도 이전 스냅샷이 계속 표시된다(깜빡임 없음).
-  }, [drillDisplayKey, drillTargetKey, reloadSignal, selectedCreatorFilter, selectedProjectFilter, workspaceId]);
+  }, [drillDisplayKey, drillTargetKey, panelFilters, reloadSignal, selectedCreatorFilter, selectedProjectFilter, workspaceId]);
 
   // 기간·필터·워크스페이스가 바뀌면 이전 차트가 잘못된 데이터라 비우고 다시 그린다.
   // 반면 reloadSignal(30초 안전망)만 바뀐 재조회는 이전 데이터를 유지한 채 성공 시 교체 —
@@ -625,7 +642,13 @@ export function WorkspaceUsageDashboard({
     setExporting(kind);
     setError("");
     try {
-      const filters = { workspaceId: workspaceId || undefined };
+      // ★화면에 보이는 조건 그대로 내보낸다(2026-09-23). 종전엔 워크스페이스만 보내
+      //  기간·드릴·모델을 고르고 받은 CSV 가 화면 숫자와 달랐다.
+      const filters = {
+        ...panelFilters,
+        creatorUid: selectedCreatorFilter,
+        projectId: selectedProjectFilter,
+      };
       if (kind === "hf") {
         const response = await manageApi.usageExport(filters);
         downloadCsv(buildHfUsageCsv(response.rows || [], modelDisplayName), HF_USAGE_REPORT_FILENAME);
@@ -723,7 +746,7 @@ export function WorkspaceUsageDashboard({
                 </option>
               ))}
             </select>
-            <p>{mine ? "내 기록 · 전체 기간" : `${selectedWorkspace?.member_count ?? totals?.workers ?? 0} members · 전체 기간`}</p>
+            <p>{`${mine ? "내 기록" : `${selectedWorkspace?.member_count ?? totals?.workers ?? 0} members`} · ${periodAppliesToAll ? chartRange.label : "전체 기간"}`}</p>
             <p className="work-source-label">
               {mine ? "출처 · 에이전트 자동 보고(내 기록만 · 삭제분 포함)" : "출처 · 에이전트 자동 보고(팀 텔레메트리 집계)"}
               {totals?.estimated_count ? (
@@ -962,6 +985,15 @@ export function WorkspaceUsageDashboard({
                   onUnitChange={setChartPeriodUnit}
                   onDateChange={setChartAnchorDate}
                 />
+                {/* 켜면 위쪽 표·통계와 내려받는 CSV 도 이 기간만 본다. 기본은 꺼짐(표는 전 기간). */}
+                <label className="usage-period-all" title="켜면 위 표·통계·내려받기도 이 기간만 봅니다">
+                  <input
+                    type="checkbox"
+                    checked={periodAppliesToAll}
+                    onChange={(event) => setPeriodAppliesToAll(event.target.checked)}
+                  />
+                  전체 적용
+                </label>
                 <select value={chartModel} onChange={(event) => setChartModel(event.target.value)} aria-label="그래프 모델 필터">
                   <option value="">모든 모델</option>
                   {(overview.by_model || []).filter((row) => row.model !== "알 수 없음").map((row) => (

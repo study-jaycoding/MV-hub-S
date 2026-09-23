@@ -1231,7 +1231,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                     <td className="mtable-sticky mtable-name">{row.name}</td>
                     <td>{row.email}</td>
                     <td><GroupChip group={row.group_id ? groupById.get(row.group_id) : undefined} /></td>
-                    <td className="num">
+                    <td className="num mtable-quota-cell">
                       {!row.group_id ? <span className="mtable-muted">그룹 없음</span> : (
                         <GroupLimitInput
                           label={row.name}

@@ -472,6 +472,31 @@ def telemetry_push(body: TelemetryPushIn, request: Request):
     return {"upserted": n, "skipped": skipped}
 
 
+def _usage_emails(
+    viewer, workspace_id: Optional[str], group_id: Optional[str], account_email: Optional[str]
+) -> Optional[list[str]]:
+    """사용량 조회의 **사람 필터** — 그룹 드릴(그룹 → 이메일 집합)과 사람 드릴을 한 규칙으로 만든다.
+
+    · 일반 멤버(viewer 있음)는 서버가 이미 본인으로 강제한다 → 받은 필터는 **버린다**(남의 사용량 차단).
+    · 그룹 드릴은 `workspace_id` 와 함께여야 한다 — 그래야 그 그룹이 이 워크스페이스 것인지 확인할 수 있다.
+    · 아무도 안 걸리면 **빈 목록**을 돌려 '결과 없음'이 되게 한다(전체로 폴백하면 값이 샌다).
+    · None 은 '사람 필터 없음'이다."""
+    if viewer is not None or (not group_id and not account_email):
+        return None
+    emails: Optional[set[str]] = None
+    if group_id:
+        if not workspace_id:
+            raise HTTPException(status_code=400, detail="그룹으로 보려면 워크스페이스를 먼저 고르세요")
+        settings = repo_credit.get_settings(workspace_id)
+        if not any(g["id"] == group_id for g in settings["groups"]):
+            raise HTTPException(status_code=404, detail="이 워크스페이스의 그룹이 아닙니다")
+        emails = {m["email"] for m in settings["members"] if m["group_id"] == group_id}
+    if account_email:
+        one = {norm_email(account_email)}
+        emails = one if emails is None else (emails & one)
+    return sorted(emails or [])
+
+
 @router.get("/team-overview")
 def team_overview(
     request: Request,
@@ -481,6 +506,10 @@ def team_overview(
     creator_uid: Optional[str] = None,
     workspace_id: Optional[str] = None,
     model: Optional[str] = None,
+    time_from: Optional[str] = None,
+    time_to: Optional[str] = None,
+    group_id: Optional[str] = None,
+    account_email: Optional[str] = None,
 ):
     """팀 전체 집계(합계+작업자별+프로젝트별+매트릭스). 집계는 서버 manage_hub.db 에 있으므로
     로컬 허브는 서버로 위임(프록시), 서버 본체는 로컬 manage_hub.db 를 읽는다.
@@ -494,7 +523,11 @@ def team_overview(
     _refresh_isolated_telemetry()
     from ..manage_db import team_overview as _ov
 
-    out = _ov(date_from, date_to, project_id, creator_uid, workspace_id, model, viewer=viewer)
+    emails = _usage_emails(viewer, workspace_id, group_id, account_email)
+    out = _ov(
+        date_from, date_to, project_id, creator_uid, workspace_id, model, viewer=viewer,
+        account_emails=emails, time_from=time_from, time_to=time_to,
+    )
     out["usage_scope"] = "all" if viewer is None else "mine"
     # 거래 원장(사용·환불·순사용) — 팩트와 **별도 필드**로 붙인다. 둘을 더하면 이중 집계다
     # (팩트=생성물별 실제 또는 견적, 원장=실제로 오간 거래). 환불은 여기서만 반영된다.
@@ -504,7 +537,7 @@ def team_overview(
 
     out["ledger"] = (
         None
-        if (project_id or creator_uid or model)
+        if (project_id or creator_uid or model or group_id or account_email)
         else ledger_totals(
             workspace_id=workspace_id,
             date_from=date_from,
@@ -543,6 +576,8 @@ def team_timeseries(
     bucket: str = "day",
     time_from: Optional[str] = None,
     time_to: Optional[str] = None,
+    group_id: Optional[str] = None,
+    account_email: Optional[str] = None,
 ):
     """팀 전체 기간별 추이(시간/일/주/월 버킷). 프록시/권한 규칙은 team-overview 와 동일(멤버=본인 강제)."""
     if _proxy.proxying():
@@ -557,6 +592,7 @@ def team_timeseries(
         "buckets": _ts(
             date_from, date_to, project_id, creator_uid, workspace_id, model, bucket,
             time_from, time_to, viewer=viewer,
+            account_emails=_usage_emails(viewer, workspace_id, group_id, account_email),
         )
     }
 
@@ -570,6 +606,10 @@ def usage_export(
     creator_uid: Optional[str] = None,
     workspace_id: Optional[str] = None,
     model: Optional[str] = None,
+    time_from: Optional[str] = None,
+    time_to: Optional[str] = None,
+    group_id: Optional[str] = None,
+    account_email: Optional[str] = None,
 ):
     """HF 보고서와 호환되는 날짜·사용자·모델 단위 사용량 행. 권한 규칙은 team-overview 와 동일(멤버=본인 강제)."""
     if _proxy.proxying():
@@ -582,7 +622,9 @@ def usage_export(
 
     return {
         "rows": _export(
-            date_from, date_to, project_id, creator_uid, workspace_id, model, viewer=viewer
+            date_from, date_to, project_id, creator_uid, workspace_id, model, viewer=viewer,
+            account_emails=_usage_emails(viewer, workspace_id, group_id, account_email),
+            time_from=time_from, time_to=time_to,
         )
     }
 
@@ -596,6 +638,10 @@ def usage_detail_export(
     creator_uid: Optional[str] = None,
     workspace_id: Optional[str] = None,
     model: Optional[str] = None,
+    time_from: Optional[str] = None,
+    time_to: Optional[str] = None,
+    group_id: Optional[str] = None,
+    account_email: Optional[str] = None,
 ):
     """'프로젝트 상세 보고서' — 생성물 1건 = 1행(프로젝트·폴더·작성자·크레딧·소요시간). HF 호환 usage-export 와
     별도 단추(Jay 결정 2026-09-10, 2안). 권한 규칙은 usage-export 와 동일(멤버=본인 강제)."""
@@ -609,7 +655,9 @@ def usage_detail_export(
 
     return {
         "rows": _export(
-            date_from, date_to, project_id, creator_uid, workspace_id, model, viewer=viewer
+            date_from, date_to, project_id, creator_uid, workspace_id, model, viewer=viewer,
+            account_emails=_usage_emails(viewer, workspace_id, group_id, account_email),
+            time_from=time_from, time_to=time_to,
         )
     }
 

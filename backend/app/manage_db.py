@@ -446,7 +446,15 @@ def _agg_where(
     project_id: Optional[str], creator_uid: Optional[str],
     workspace_id: Optional[str] = None, model: Optional[str] = None,
     viewer: Optional[Viewer] = None,
+    account_emails: Optional[list[str]] = None,
+    time_from: Optional[str] = None, time_to: Optional[str] = None,
 ) -> tuple[str, list[Any]]:
+    """사용량 집계의 **공통 필터 한 곳**. team_overview·team_timeseries·내보내기 2종이 그대로 쓴다
+    (2026-09-23: 네 곳이 서로 다른 조건을 받던 것을 합쳤다 — 화면·차트·CSV 가 다른 범위를 보여 주면 안 된다).
+
+    account_emails: 사람 단위 필터(그룹 드릴은 라우터가 그룹 → 이메일 집합으로 바꿔 넘긴다).
+      **빈 목록은 '결과 없음'** 이다 — 전체로 폴백하면 아무에게도 안 보여야 할 값이 새어 나간다.
+    time_from/time_to: 'YYYY-MM-DDTHH:MM:SS'(팀 표준시) 시각 경계. 시간 단위 차트가 쓴다."""
     where: list[str] = []
     args: list[Any] = []
     _viewer_clause(viewer, where, args)
@@ -482,6 +490,21 @@ def _agg_where(
     if model:
         where.append("model = ?")
         args.append(model)
+    if account_emails is not None:
+        if not account_emails:
+            where.append("1 = 0")  # 빈 집합 = 결과 없음(전체로 폴백 금지)
+        else:
+            marks = ",".join("?" for _ in account_emails)
+            where.append(f"account_email IN ({marks})")
+            args.extend(account_emails)
+    # 시각 경계 — 범위는 **인자 쪽**을 변환해 julianday(created_at) 인덱스에 닿게 한다(날짜 범위와 같은 규칙).
+    # 종료는 '그 초 + 1초 미만' 이다: 프런트가 HH:59:59 를 보내는데 소수 초를 가진 행이 빠지지 않게(코덱스).
+    if time_from:
+        where.append("julianday(created_at) >= julianday(datetime(?), 'utc')")
+        args.append(time_from)
+    if time_to:
+        where.append("julianday(created_at) < julianday(datetime(?), '+1 second', 'utc')")
+        args.append(time_to)
     return (("WHERE " + " AND ".join(where)) if where else ""), args
 
 
@@ -595,6 +618,8 @@ def team_overview(
     project_id: Optional[str] = None, creator_uid: Optional[str] = None,
     workspace_id: Optional[str] = None, model: Optional[str] = None,
     viewer: Optional[Viewer] = None,
+    account_emails: Optional[list[str]] = None,
+    time_from: Optional[str] = None, time_to: Optional[str] = None,
 ) -> dict[str, Any]:
     """워크스페이스 사용량 대시보드 한 방 집계.
 
@@ -609,7 +634,8 @@ def team_overview(
      동점이 깨질 수 있다. 그 변화도 허용한다.
     """
     where, args = _agg_where(
-        date_from, date_to, project_id, creator_uid, workspace_id, model, viewer
+        date_from, date_to, project_id, creator_uid, workspace_id, model, viewer,
+        account_emails=account_emails, time_from=time_from, time_to=time_to,
     )
     with get_connection() as conn:
         conn.execute("BEGIN")  # 한 번만 훑지만 읽기 시점을 WAL 스냅샷에 고정한다.
@@ -758,10 +784,13 @@ def team_usage_export(
     project_id: Optional[str] = None, creator_uid: Optional[str] = None,
     workspace_id: Optional[str] = None, model: Optional[str] = None,
     viewer: Optional[Viewer] = None,
+    account_emails: Optional[list[str]] = None,
+    time_from: Optional[str] = None, time_to: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """HF ``team-members-usage.csv``와 같은 날짜·멤버·모델 단위 사용량 행. viewer 는 team_overview 와 동일."""
     where, args = _agg_where(
-        date_from, date_to, project_id, creator_uid, workspace_id, model, viewer
+        date_from, date_to, project_id, creator_uid, workspace_id, model, viewer,
+        account_emails=account_emails, time_from=time_from, time_to=time_to,
     )
     created_clause = f"{'AND' if where else 'WHERE'} created_at IS NOT NULL"
     with get_connection() as conn:
@@ -782,6 +811,8 @@ def team_usage_detail_export(
     project_id: Optional[str] = None, creator_uid: Optional[str] = None,
     workspace_id: Optional[str] = None, model: Optional[str] = None,
     viewer: Optional[Viewer] = None,
+    account_emails: Optional[list[str]] = None,
+    time_from: Optional[str] = None, time_to: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """'프로젝트 상세 보고서' — 생성물 1건 = 1행(묶지 않음). 프로젝트·폴더(에피소드/컷)·작성자·모델·
     크레딧·생성 소요시간까지 팩트 열을 그대로 내보낸다(Jay 요청 2026-09-10, HF 호환 CSV 와 별도).
@@ -792,7 +823,8 @@ def team_usage_detail_export(
     싣는다(코덱스 P2 — 기간 필터가 있으면 date() 비교에서 자연히 빠진다). 정렬은 원본 문자열이 아니라
     julianday 로 — 'YYYY-MM-DD HH:MM:SS' 와 'YYYY-MM-DDTHH:MM:SSZ' 가 섞이면 문자열 순서가 시간 순서와 어긋난다."""
     where, args = _agg_where(
-        date_from, date_to, project_id, creator_uid, workspace_id, model, viewer
+        date_from, date_to, project_id, creator_uid, workspace_id, model, viewer,
+        account_emails=account_emails, time_from=time_from, time_to=time_to,
     )
     with get_connection() as conn:
         rows = conn.execute(
@@ -824,6 +856,7 @@ def team_timeseries(
     workspace_id: Optional[str] = None, model: Optional[str] = None,
     bucket: str = "day", time_from: Optional[str] = None, time_to: Optional[str] = None,
     viewer: Optional[Viewer] = None,
+    account_emails: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """기간별 추이 — 시간/일/주/월 버킷별 크레딧·건수. created_at(생성일) 기준. viewer 는 team_overview 와 동일."""
     fmt = {
@@ -832,26 +865,11 @@ def team_timeseries(
         "week": "%Y-W%W",
         "month": "%Y-%m",
     }.get(bucket, "%Y-%m-%d")
+    # 시각 경계도 공통 필터가 건다(2026-09-23) — 차트만 쓰던 조건을 overview·CSV 와 같은 자리로 옮겼다.
     where, args = _agg_where(
-        date_from, date_to, project_id, creator_uid, workspace_id, model, viewer
+        date_from, date_to, project_id, creator_uid, workspace_id, model, viewer,
+        account_emails=account_emails, time_from=time_from, time_to=time_to,
     )
-    # time_from/to 는 프론트가 보내는 브라우저 로컬(KST) 나이브 문자열 — created_at(UTC)을
-    # localtime 으로 맞춰 비교해야 시간 차트가 9시간 밀리지 않는다.
-    # 범위 필터는 인자 쪽을 변환한다(위 `_agg_where` 주석 참조). 여기는 날짜가 아니라 시각이다.
-    # ★`datetime(?)` 으로 **초 단위로 정규화**하고 종료는 **다음 초 미만**으로 쓴다(2026-09-12).
-    #  종전 `datetime(created_at,'localtime') <= datetime(?)` 은 양쪽 다 소수 초를 **버리고**
-    #  비교했다. `julianday` 는 소수 초까지 비교하므로 그대로 `<=` 로 두면 `06:59:59.500Z` 같은
-    #  행이 빠진다(코덱스가 team_timeseries 로 재현). 프론트는 종료를 `HH:59:59` 로 보낸다.
-    if time_from:
-        where += (
-            " AND " if where else "WHERE "
-        ) + "julianday(created_at) >= julianday(datetime(?), 'utc')"
-        args.append(time_from)
-    if time_to:
-        where += (
-            " AND " if where else "WHERE "
-        ) + "julianday(created_at) < julianday(datetime(?), '+1 second', 'utc')"
-        args.append(time_to)
     with get_connection() as conn:
         rows = conn.execute(
             f"SELECT strftime('{fmt}', created_at, 'localtime') AS bucket, COUNT(*) AS count, "

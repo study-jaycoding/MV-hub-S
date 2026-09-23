@@ -173,10 +173,14 @@ export const manageApi = {
       withQuery("/api/manage/team-overview", {
         date_from: f.dateFrom,
         date_to: f.dateTo,
+        time_from: f.timeFrom,
+        time_to: f.timeTo,
         project_id: f.projectId,
         creator_uid: f.creatorUid,
         workspace_id: f.workspaceId,
         model: f.model,
+        group_id: f.groupId,
+        account_email: f.accountEmail,
       }),
     ),
   teamTimeseries: (bucket: "minute" | "hour" | "day" | "week" | "month" = "day", f: TeamFilters = {}) =>
@@ -191,6 +195,8 @@ export const manageApi = {
         creator_uid: f.creatorUid,
         workspace_id: f.workspaceId,
         model: f.model,
+        group_id: f.groupId,
+        account_email: f.accountEmail,
       }),
     ),
   usageExport: (f: TeamFilters = {}) =>
@@ -198,10 +204,14 @@ export const manageApi = {
       withQuery("/api/manage/usage-export", {
         date_from: f.dateFrom,
         date_to: f.dateTo,
+        time_from: f.timeFrom,
+        time_to: f.timeTo,
         project_id: f.projectId,
         creator_uid: f.creatorUid,
         workspace_id: f.workspaceId,
         model: f.model,
+        group_id: f.groupId,
+        account_email: f.accountEmail,
       }),
     ),
   // 프로젝트 상세 보고서 — 생성물 1건 = 1행(프로젝트·폴더·작성자·크레딧·소요시간). HF 호환 usageExport 와 별도.
@@ -210,10 +220,14 @@ export const manageApi = {
       withQuery("/api/manage/usage-detail-export", {
         date_from: f.dateFrom,
         date_to: f.dateTo,
+        time_from: f.timeFrom,
+        time_to: f.timeTo,
         project_id: f.projectId,
         creator_uid: f.creatorUid,
         workspace_id: f.workspaceId,
         model: f.model,
+        group_id: f.groupId,
+        account_email: f.accountEmail,
       }),
     ),
   // 완료본 렌더폴더 저장 — 완료 작업의 최종본만 물리 저장(멱등). saved/skipped/errors 반환.
@@ -252,6 +266,8 @@ export const manageApi = {
     jsonFetch<SaveFinalsStatus>(withQuery("/api/manage/save-finals", { project_id: projectId })),
 };
 
+/** 사용량 조회의 **공통 필터** — 상단 통계·차트·CSV 가 같은 값을 쓴다(2026-09-23).
+ *  종전엔 기간·시각을 차트만 보내고 다른 패널은 전 기간이라, 화면의 숫자와 내려받은 CSV 가 달랐다. */
 export interface TeamFilters {
   dateFrom?: string;
   dateTo?: string;
@@ -261,6 +277,8 @@ export interface TeamFilters {
   creatorUid?: string;
   workspaceId?: string;
   model?: string;
+  groupId?: string;       // 그룹 축 드릴 — workspaceId 와 함께일 때만(서버가 그룹 소유를 확인한다)
+  accountEmail?: string;  // 사람 축 드릴 — 크레딧 몫·그룹과 같은 키
 }
 
 export interface TeamTotals {

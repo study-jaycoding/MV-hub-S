@@ -955,6 +955,11 @@ table.dash-tree td.l { text-align: left; }
   background: #17191b; color: var(--text); font: inherit; font-size: 10px; outline: none;
 }
 .usage-chart-filters select:focus { border-color: rgba(190,255,50,.5); }
+/* 기간을 표·통계·CSV 에도 적용하는 스위치 — 기간 피커 옆에 붙는 작은 체크 */
+.usage-period-all { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.usage-period-all input { margin: 0; accent-color: rgba(190,255,50,.9); cursor: pointer; }
+.mtable-over { color: #f87171; }
+.mtable-muted { color: var(--muted); }
 .usage-period-picker { position: relative; }
 .usage-period-trigger {
   display: inline-flex; align-items: center; gap: 7px; min-height: 30px; padding: 5px 9px;
@@ -1335,6 +1340,9 @@ button.mtable-chip.off:hover { opacity: 1; border-color: var(--accent); }
 }
 .mtable-group-limit input:hover:not(:disabled), .mtable-group-limit input:focus { border-color: var(--usage-line); background: #111315; outline: 0; }
 .mtable-group-limit span, .mtable-project-budget span { color: #b7bec8; font-size: 11px; font-style: normal; white-space: nowrap; }
+/* 개인별 사용량 표의 '몫' 칸 — 그룹 한도 칸과 같은 입력이지만 줄이 여럿이라 좁게 잡는다(빈 칸 = 자동 몫 안내). */
+.mtable-quota-cell { width: 148px; }
+.mtable-quota-cell .mtable-group-limit { grid-template-columns: minmax(64px, 1fr) auto; justify-content: end; }
 .mtable-project-table { min-width: 1120px; }
 .mtable-project-table td { padding: 4px 6px; }
 .mtable-project-table td input,

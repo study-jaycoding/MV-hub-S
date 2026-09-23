@@ -3,6 +3,8 @@ Jay 결정 2026-09-10. team-overview·team-timeseries·usage-export·workspaces 
 import os
 import tempfile
 import unittest
+
+from fastapi import HTTPException
 from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
@@ -266,6 +268,46 @@ class MyUsageScopeTests(unittest.TestCase):
         self.assertEqual([w["id"] for w in everything], ["ws1", "ws2"])
         self.assertEqual(nobody, [])
         self.assertEqual(no_email, [])  # 이메일 없으면 전체로 폴백하지 않는다(코덱스)
+
+
+    # ── 사람·그룹 축 드릴(2026-09-23) ─────────────────────────────────────────
+    # 화면이 멤버나 그룹을 고르면 **모든 패널과 CSV 가 같은 필터**를 써야 한다. 그 필터의 경계를 고정한다.
+    def test_group_and_person_filter_scope_usage(self) -> None:
+        from app.repo import manage_credit_plan as plan_repo
+
+        admin = _account("admin@x", "u_admin", role="admin")
+        settings = plan_repo.save_settings(
+            "ws1", revision=0, note=None,
+            groups=[{"name": "Artist", "monthly_limit": 1000}], members=[],
+        )
+        gid = settings["groups"][0]["id"]
+        plan_repo.save_settings(
+            "ws1", revision=settings["plan"]["revision"], note=None,
+            groups=[{"id": gid, "name": "Artist", "monthly_limit": 1000}],
+            members=[{"email": "a@x", "group_id": gid}],
+        )
+        with auth_on():
+            by_person = manage_router.team_overview(admin, account_email="A@x")  # 대소문자 무관
+            by_group = manage_router.team_overview(admin, workspace_id="ws1", group_id=gid)
+            everyone = manage_router.team_overview(admin)
+            rows = manage_router.usage_export(admin, account_email="b@x")["rows"]
+        self.assertEqual(by_person["totals"]["count"], 2)  # a 의 2건만
+        self.assertEqual(by_group["totals"]["count"], 2)  # 그 그룹에 든 사람 = a
+        self.assertEqual(everyone["totals"]["count"], 3)
+        self.assertIsNone(by_person["ledger"])  # 원장은 사람 축을 모른다 — 드릴에선 주지 않는다
+        self.assertEqual([r["user_email"] for r in rows], ["b@x"])  # CSV 도 같은 필터를 받는다
+        with self.subTest("그룹 드릴은 워크스페이스가 있어야 하고, 남의 워크스페이스 그룹은 404"):
+            with auth_on():
+                with self.assertRaises(HTTPException) as no_ws:
+                    manage_router.team_overview(admin, group_id=gid)
+                self.assertEqual(no_ws.exception.status_code, 400)
+                with self.assertRaises(HTTPException) as bad_group:
+                    manage_router.team_overview(admin, workspace_id="ws1", group_id="deadbeef")
+                self.assertEqual(bad_group.exception.status_code, 404)
+        with self.subTest("일반 멤버가 남을 지목해도 본인 범위로 강제된다"):
+            with auth_on():
+                out = manage_router.team_overview(_account("a@x", "u_a"), account_email="b@x")
+            self.assertEqual((out["usage_scope"], out["totals"]["count"]), ("mine", 2))
 
 
 if __name__ == "__main__":
