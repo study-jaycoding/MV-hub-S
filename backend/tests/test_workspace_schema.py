@@ -1074,6 +1074,16 @@ class WorkspaceManageDatabaseMigrationTests(unittest.TestCase):
             dt = datetime.strptime(utc_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_tz.utc)
             return dt.astimezone().strftime(fmt)
 
+        # 주 버킷은 그 주 **월요일 날짜**다(2026-09-23). 종전 `%Y-W%W` 는 연초의 같은 주를 `W00`/`W01` 로
+        # 갈라 놓았고, 크레딧 그룹의 주 경계(월요일)와 표기도 달랐다.
+        weekly = manage_db.team_timeseries(
+            workspace_id="ws-millionvolt", project_id="p1", bucket="week"
+        )
+        for row in weekly:
+            day = datetime.strptime(row["bucket"], "%Y-%m-%d")
+            self.assertEqual(day.weekday(), 0, f"주 버킷이 월요일이 아니다: {row['bucket']}")
+        self.assertEqual(sum(row["count"] for row in weekly), 2)
+
         hourly = manage_db.team_timeseries(
             workspace_id="ws-millionvolt", project_id="p1", bucket="hour"
         )

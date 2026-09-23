@@ -859,12 +859,15 @@ def team_timeseries(
     account_emails: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """기간별 추이 — 시간/일/주/월 버킷별 크레딧·건수. created_at(생성일) 기준. viewer 는 team_overview 와 동일."""
-    fmt = {
-        "minute": "%Y-%m-%dT%H:%M",
-        "hour": "%Y-%m-%dT%H:00",
-        "week": "%Y-W%W",
-        "month": "%Y-%m",
-    }.get(bucket, "%Y-%m-%d")
+    # ★주 버킷은 **그 주 월요일의 날짜**다(2026-09-23). 종전 `%Y-W%W` 는 연초의 같은 주를 둘로 갈랐고
+    #  (1월 1일이 목요일이면 그 주가 `W00`/`W01` 로 쪼개진다) 크레딧 그룹의 주 경계(월요일)와도 표기가 달랐다.
+    #  화면은 주를 일 버킷으로 그리므로 영향받는 곳이 없다 — 저장값(base_start)도 건드리지 않는다.
+    bucket_sql = {
+        "minute": "strftime('%Y-%m-%dT%H:%M', created_at, 'localtime')",
+        "hour": "strftime('%Y-%m-%dT%H:00', created_at, 'localtime')",
+        "week": "date(created_at, 'localtime', 'weekday 0', '-6 days')",
+        "month": "strftime('%Y-%m', created_at, 'localtime')",
+    }.get(bucket, "strftime('%Y-%m-%d', created_at, 'localtime')")
     # 시각 경계도 공통 필터가 건다(2026-09-23) — 차트만 쓰던 조건을 overview·CSV 와 같은 자리로 옮겼다.
     where, args = _agg_where(
         date_from, date_to, project_id, creator_uid, workspace_id, model, viewer,
@@ -872,7 +875,7 @@ def team_timeseries(
     )
     with get_connection() as conn:
         rows = conn.execute(
-            f"SELECT strftime('{fmt}', created_at, 'localtime') AS bucket, COUNT(*) AS count, "
+            f"SELECT {bucket_sql} AS bucket, COUNT(*) AS count, "
             f"COALESCE(SUM({_CREDIT}),0) AS credits, COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds "
             f"FROM team_generation_fact {where} "
             f"{'AND' if where else 'WHERE'} created_at IS NOT NULL "
