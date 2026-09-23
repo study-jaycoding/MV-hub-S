@@ -162,6 +162,7 @@ _SCHEMA = (
         workspace_id TEXT PRIMARY KEY,
         note TEXT,
         topup_day INTEGER NOT NULL DEFAULT 1,
+        recurring_topup REAL,
         revision INTEGER NOT NULL DEFAULT 1,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )""",
@@ -193,6 +194,7 @@ _SCHEMA = (
         workspace_id TEXT NOT NULL,
         account_email TEXT NOT NULL,
         group_id TEXT NOT NULL,
+        quota REAL,
         PRIMARY KEY (workspace_id, account_email)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_wcg_workspace ON workspace_credit_group(workspace_id, sort_order)",
@@ -626,9 +628,16 @@ def ensure_manage_schema(conn) -> None:
         conn.execute("ALTER TABLE workspace_credit_group ADD COLUMN allowed_models TEXT NOT NULL DEFAULT '[]'")
     if group_columns and "color" not in group_columns:  # 그룹 표시색(#rrggbb) · NULL=기본색
         conn.execute("ALTER TABLE workspace_credit_group ADD COLUMN color TEXT")
+    # 사람별 몫(덮어쓰기) — NULL 이면 그룹 한도를 자동 인원으로 나눈 몫을 쓴다(CREDIT_QUOTA_DESIGN §2).
+    member_columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_credit_group_member)")}
+    if member_columns and "quota" not in member_columns:
+        conn.execute("ALTER TABLE workspace_credit_group_member ADD COLUMN quota REAL")
     plan_columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_credit_plan)")}
     if plan_columns and "topup_day" not in plan_columns:  # 매월 충전 기준일(1~31, 없는 날짜는 월말) — 예산 '매월'·그룹 이월의 달 경계
         conn.execute("ALTER TABLE workspace_credit_plan ADD COLUMN topup_day INTEGER NOT NULL DEFAULT 1")
+    # 정기 충전 손 입력 — NULL 이면 프로젝트 '매월 예산' 합에서 파생(종전 동작).
+    if plan_columns and "recurring_topup" not in plan_columns:
+        conn.execute("ALTER TABLE workspace_credit_plan ADD COLUMN recurring_topup REAL")
 
     task_columns = {row[1] for row in conn.execute("PRAGMA table_info(project_task)")}
     for column in ("sequence", "description", "folder_path", "source_last_seen_at"):

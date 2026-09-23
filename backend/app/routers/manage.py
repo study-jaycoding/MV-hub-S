@@ -736,7 +736,11 @@ class CreditGroupIn(BaseModel):
 
 class CreditMemberIn(BaseModel):
     email: str
-    group_id: Optional[str] = None  # None = 배정 해제
+    group_id: Optional[str] = None  # 키 없음=소속 유지 · None=배정 해제 · 값=그 그룹으로
+    # 사람별 몫(크레딧). 키 없음=기존 몫 유지 · None=자동(그룹 한도 ÷ 인원)으로 되돌림 · 숫자=덮어쓰기.
+    # ★생략과 명시적 null 을 갈라야 하므로 아래 저장 경로는 `model_dump(exclude_unset=True)` 로 보낸다
+    #  — 기본 model_dump() 는 둘 다 None 이라, 몫을 모르는 구버전 앱 저장이 모두의 몫을 지운다.
+    quota: Optional[float] = Field(default=None, ge=0)
 
 
 class CreditTopupIn(BaseModel):
@@ -751,6 +755,8 @@ class CreditPlanIn(BaseModel):
     revision: int = 0
     note: Optional[str] = None
     topup_day: Optional[int] = Field(default=None, ge=1, le=31)  # 매월 충전 기준일 · 없는 날짜는 월말 · None=그대로
+    # 정기 충전 손 입력. 키 없음=그대로 · null=프로젝트 '매월 예산' 합에서 파생으로 되돌림 · 숫자=손 입력(Jay 2026-09-23).
+    recurring_topup: Optional[float] = Field(default=None, ge=0)
     groups: Optional[list[CreditGroupIn]] = None  # None=그룹·배정 그대로(충전 기록만 저장)
     members: Optional[list[CreditMemberIn]] = None
     topups: Optional[list[CreditTopupIn]] = None  # 긴급 충전 기록 전체 교체 · None=그대로
@@ -840,8 +846,12 @@ def put_credit_plan(workspace_id: str, body: CreditPlanIn, request: Request):
             note=body.note,
             topup_day=body.topup_day,
             groups=None if body.groups is None else [g.model_dump() for g in body.groups],
-            members=None if body.members is None else [m.model_dump() for m in body.members],
+            # exclude_unset: 안 보낸 칸(몫·소속)은 키 자체가 없어야 저장소가 '유지'로 읽는다.
+            members=None if body.members is None else [m.model_dump(exclude_unset=True) for m in body.members],
             topups=None if body.topups is None else [t.model_dump() for t in body.topups],
+            recurring_topup=(
+                body.recurring_topup if "recurring_topup" in body.model_fields_set else repo_credit.KEEP
+            ),
         )
     except repo_credit.CreditPlanConflict:
         raise HTTPException(status_code=409, detail="다른 곳에서 먼저 저장됐습니다. 설정을 다시 열어 주세요.")
