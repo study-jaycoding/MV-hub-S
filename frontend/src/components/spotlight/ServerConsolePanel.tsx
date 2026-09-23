@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import type { WorkspaceContext } from "../../types";
 import { isAppWindow } from "../../lib/appWindow";
+import { formatCredits } from "../../lib/formatCredits";
 import type { ConsoleSummary } from "../../types";
 import { CloseIcon } from "../common/ViewIcons";
 
@@ -280,7 +281,7 @@ export function ServerConsolePanel({
           <>
             <span className="sl-status-sep">·</span>
             <span className="sl-status-credits">
-              {account.credits.toLocaleString(undefined, { maximumFractionDigits: 2 })} credits
+              {formatCredits(account.credits)} credits
             </span>
           </>
         )}

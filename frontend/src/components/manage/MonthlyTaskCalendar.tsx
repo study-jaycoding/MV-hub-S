@@ -3,6 +3,7 @@
 // 시작/마감은 PM 입력값 우선, 없으면 파생값(연결 생성물 생성일 범위). 날짜 없는 작업은 표시 안 함.
 import { useMemo } from "react";
 import { fmtElapsed } from "../../lib/format";
+import { formatCredits } from "../../lib/formatCredits";
 import { statusColor, workActivityStatusLabel, type Task } from "./types";
 
 const DOW = ["일", "월", "화", "수", "목", "금", "토"];
@@ -41,7 +42,7 @@ export function taskCalendarTitle(t: Task, label: string, start: Date, end: Date
   return [
     `${project}${label}`,
     `상태: ${workActivityStatusLabel(t.status)} · 생성자: ${creators}`,
-    `생성: ${(t.gen_count || 0).toLocaleString()}개 · 크레딧: ${(t.credits || 0).toLocaleString()} cr · 생성시간: ${fmtElapsed(t.elapsed)}`,
+    `생성: ${(t.gen_count || 0).toLocaleString()}개 · 크레딧: ${formatCredits(t.credits || 0)} cr · 생성시간: ${fmtElapsed(t.elapsed)}`,
     `생성기간: ${period}`,
   ].join("\n");
 }

@@ -26,6 +26,7 @@ import {
   type DraftTopup,
   type LimitPeriod,
 } from "../../lib/creditPlan";
+import { formatCredits as credits } from "../../lib/formatCredits";
 import { isHttpStatus, isRouteMissing } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
 import {
@@ -55,7 +56,7 @@ import type { Planning } from "./types";
 
 const STATUS_LABEL: Record<string, string> = { approved: "승인", pending: "대기", rejected: "거절" };
 const short = (label: string | undefined, fallback: string) => (label ? label.split(" · ")[0] : fallback);
-const credits = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+// 크레딧 표기는 공용 계약을 따른다(소수 2자리 — 0.12 를 0 으로 찍던 옛 버릇을 막는다). 이름만 짧게 빌린다.
 type TableSheet = "members" | "projects" | "groups" | "credits";
 const UNASSIGNED = "__unassigned__";
 const GLOBAL_ROLE_ORDER = ["admin", "production_director", "product_manager", "member"] as const;

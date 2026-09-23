@@ -2,6 +2,7 @@
 // 데이터·핸들러는 WorkBoard 가 주입(WorkViewProps). 프레젠테이션 전용.
 import { useState } from "react";
 import { fmtElapsed } from "../../lib/format";
+import { formatCredits } from "../../lib/formatCredits";
 import { useT } from "../../lib/i18n";
 import { ColorTag } from "./ColorTag";
 import { CutThumbs } from "./CutThumbs";
@@ -155,7 +156,7 @@ export function BoardView(props: WorkViewProps) {
 
                 <div className="work-card-meta">
                   {!!t.gen_count && <span title="생성 수">생성 {t.gen_count.toLocaleString()}개</span>}
-                  {!!t.credits && <span title="사용 크레딧">{t.credits.toLocaleString()} cr</span>}
+                  {!!t.credits && <span title="사용 크레딧">{formatCredits(t.credits)} cr</span>}
                   {!!t.elapsed && <span title="생성시간">⏱ {fmtElapsed(t.elapsed)}</span>}
                   {!!t.comment_count && <span title="코멘트">💬 {t.comment_count}</span>}
                   {(t.due_date || t.derived_due) && (

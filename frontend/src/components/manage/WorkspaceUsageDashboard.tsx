@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { fmtElapsed } from "../../lib/format";
+import { formatCredits, roundCredits } from "../../lib/formatCredits";
 import { isHttpStatus } from "../../lib/http";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import {
@@ -48,9 +49,9 @@ function n(value: number): string {
   return Math.round(value || 0).toLocaleString();
 }
 
+// 표기는 공용 계약을 따른다. 더하기·나누기를 거친 값이라 잡음을 먼저 정리하고 넘긴다(roundCredits).
 function credits(value: number): string {
-  const rounded = Math.round((value || 0) * 100) / 100;
-  return rounded.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return formatCredits(roundCredits(value || 0));
 }
 
 function chartScaleMax(value: number): number {
