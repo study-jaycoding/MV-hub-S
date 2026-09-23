@@ -102,7 +102,12 @@ function GroupRemaining({ group, adjust }: { group: CreditGroupSummary; adjust?:
   );
 }
 
-function BalanceChart({ history, month, topups }: { history: BalancePoint[]; month: string; topups: CreditTopup[] }) {
+function BalanceChart({ history, month, cycleStart, topups }: {
+  history: BalancePoint[];
+  month: string;
+  cycleStart?: string; // 이번 충전 달의 시작일(기준일 기준) — 없으면 옛 서버라 1일로 본다
+  topups: CreditTopup[];
+}) {
   if (history.length < 2) {
     return (
       <div className="credit-chart-empty">
@@ -125,7 +130,8 @@ function BalanceChart({ history, month, topups }: { history: BalancePoint[]; mon
   const last = history[history.length - 1];
   const area = `M${x(firstDay).toFixed(1)},${y(0).toFixed(1)} L${points.join(" L")} L${x(last.day).toFixed(1)},${y(0).toFixed(1)} Z`;
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => maxValue * ratio);
-  const monthStartDay = `${month}-01`;
+  // ★세로선은 달력 1일이 아니라 **충전 기준일**에 긋는다(2026-09-23) — 기준일이 15일이면 9/15 가 달의 시작이다.
+  const monthStartDay = cycleStart || `${month}-01`;
   return (
     <svg className="credit-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="워크스페이스 잔액 추이">
       {ticks.map((tick) => (
@@ -417,7 +423,7 @@ export function CreditPoolSection({
           <div><h3>잔액 추이 · 최근 60일</h3></div>
           <span>{`관측 ${view.history?.length || 0}일 · 매달 1일 세로선 · 늘어난 곳=충전(관측) · 점선=최근 7일 속도 예상`}</span>
         </div>
-        <BalanceChart history={view.history || []} month={view.month} topups={topups} />
+        <BalanceChart history={view.history || []} month={view.month} cycleStart={view.cycle_start} topups={topups} />
       </div>
     </>
   );
