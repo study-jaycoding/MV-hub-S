@@ -631,7 +631,11 @@
   padding: 12px 16px; border-bottom: 1px solid #2a2e36;
   font-weight: 700; font-size: 14px; color: var(--text);
 }
-.scene-modelmodal-x { background: transparent; border: 0; color: var(--muted); cursor: pointer; font-size: 15px; }
+.scene-modelmodal-x {
+  background: transparent; border: 0; color: var(--muted); cursor: pointer;
+  /* 아이콘 닫기 — 20px SVG 가 30px 상자 가운데(여백 5px, 반 픽셀 없음). 전역 button padding 을 끈다 */
+  width: 30px; height: 30px; padding: 0; display: grid; place-items: center;
+}
 .scene-modelmodal-x:hover { color: var(--text); }
 .scene-modelmodal-body { padding: 16px; }
 .scene-modelmodal-ft {
@@ -1319,6 +1323,8 @@
   background: rgba(255, 255, 255, 0.08); color: var(--text); font-size: 15px;
 }
 .vtl-icon { font-size: 14px; }
+/* 닫기만 아이콘 상자 — `.vtl-icon` 은 아직 글자라 건드리지 않는다 */
+.vtl-close { padding: 0; display: grid; place-items: center; }
 .vtl-icon:hover, .vtl-close:hover { background: rgba(255, 255, 255, 0.16); }
 /* 전체화면 — .vtl 이 화면을 꽉 채우고 무대가 남는 공간을 차지 */
 .vtl:fullscreen, .vtl:-webkit-full-screen {

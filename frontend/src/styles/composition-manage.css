@@ -56,7 +56,9 @@
 .manage-proj-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .manage-proj-head h2 { font-size: 17px; font-weight: 800; margin: 0; }
 .manage-proj-close {
-  border: none; background: transparent; color: var(--text); opacity: .6; cursor: pointer; font-size: 16px;
+  border: none; background: transparent; color: var(--text); opacity: .6; cursor: pointer;
+  /* 아이콘 닫기 — 20px SVG 가 30px 상자 가운데(여백 5px, 반 픽셀 없음). 전역 button padding 을 끈다 */
+  width: 30px; height: 30px; padding: 0; display: grid; place-items: center;
 }
 .manage-proj-close:hover { opacity: 1; }
 .manage-table { width: 100%; border-collapse: collapse; font-size: 13px; }

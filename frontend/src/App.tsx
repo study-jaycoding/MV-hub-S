@@ -148,6 +148,7 @@ import { modelAllowed } from "./lib/modelPolicyCore";
 import { STORAGE_KEYS } from "./lib/storageKeys";
 import { useT } from "./lib/i18n";
 import { hasWorkspaceFilter } from "./lib/libraryWorkspaceScope";
+import { CloseIcon } from "./components/common/ViewIcons";
 
 // 마지막으로 보던 라이브러리 상태 영속화(탭·서브탭·필터·크기·레이아웃 등)
 const LS = makeStore("ch.lib.");
@@ -2140,7 +2141,7 @@ export default function App() {
                       onClick={() => setFolderPeek(false)}
                       title="닫기 (Esc)"
                     >
-                      ✕
+                      <CloseIcon />
                     </button>
                   </header>
                   {libraryToolbar}

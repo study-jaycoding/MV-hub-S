@@ -38,6 +38,7 @@ import type {
   WorkspaceMemberCandidate,
   WorkspaceOption,
 } from "../../types";
+import { CloseIcon } from "../common/ViewIcons";
 
 type ProjectDialogState =
   | {
@@ -421,9 +422,7 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
       >
         <header className="manage-proj-head">
           <h2>프로젝트 관리</h2>
-          <button className="manage-proj-close" onClick={onClose} title="닫기">
-            ✕
-          </button>
+          <button className="manage-proj-close" onClick={onClose} title="닫기"><CloseIcon /></button>
         </header>
 
         <div className={`project-admin-layout${activeMembersProject ? " members-open" : ""}`}>

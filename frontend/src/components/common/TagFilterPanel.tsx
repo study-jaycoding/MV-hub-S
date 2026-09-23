@@ -7,6 +7,7 @@ import type {
 import { useMemo, useState } from "react";
 import { uniqueTagNames } from "../../lib/generationTags";
 import { loadJSON, saveJSON } from "../../lib/storage";
+import { CloseIcon } from "./ViewIcons";
 
 // 태그 글씨 크기(px) — 사용자별 localStorage 저장, 모든 태그창 공통 적용.
 const FS_KEY = "ch.tag.fontPx";
@@ -135,7 +136,7 @@ export function TagFilterPanel({
             onMouseDown={(e) => e.stopPropagation()}
             onClick={onClose}
           >
-            ✕
+            <CloseIcon />
           </button>
         )}
       </div>

@@ -3,6 +3,7 @@ import type { CSSProperties, MouseEvent as ReactMouseEvent, Ref } from "react";
 import { buildCommentTree } from "../../lib/commentTree";
 import { fmtWhen } from "../../lib/format";
 import { loadString } from "../../lib/storage";
+import { CloseIcon } from "./ViewIcons";
 
 // 코멘트 본문 글씨 크기(px) — 사용자별 localStorage 저장, 패널마다 공통 적용.
 const FS_KEY = "ch.cmt.fontPx";
@@ -264,8 +265,8 @@ export function CommentPanel<T extends CommentPanelItem>({
             A+
           </button>
         </div>
-        <button className="cmt-x" onMouseDown={(e) => e.stopPropagation()} onClick={onClose}>
-          ✕
+        <button className="cmt-x" aria-label="코멘트 패널 닫기" onMouseDown={(e) => e.stopPropagation()} onClick={onClose}>
+          <CloseIcon />
         </button>
       </div>
 
