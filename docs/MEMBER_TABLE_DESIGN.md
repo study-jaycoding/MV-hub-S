@@ -1,13 +1,15 @@
 ---
-updated: 2026-09-21
+updated: 2026-09-22
 status: active
 ---
 
 # PM 대시보드 "관리 표" 설계
 
-owner: Claude · reviewer: Codex(설계 검토 2026-09-21 — "고쳐서 진행", 아래 §5 반영) · status: 검증 중(0·1단계 구현, Codex 코드 리뷰 반영)
-touched_paths: `backend/app/repo/manage_member_table.py` · `backend/app/routers/manage.py` ·
-`frontend/src/components/manage/MemberTable*.tsx` · `WorkspaceUsageDashboard.tsx` · `lib/manageApi.ts`
+owner: Claude/Codex · reviewer: Claude(이전 범위 승인, 정기 충전·31일 계산 변경 미검토) · status: 검토 요청
+touched_paths: `backend/app/manage_db.py` · `backend/app/repo/manage_member_table.py` · `backend/app/repo/manage_credit_plan.py` ·
+`backend/app/repo/manage_schema.py` · `backend/app/routers/manage.py` ·
+`frontend/src/components/manage/MemberTable*.tsx` · `frontend/src/styles/composition-manage.css` ·
+`WorkspaceUsageDashboard.tsx` · `lib/manageApi.ts` · `lib/memberTable.ts`
 
 ## 1. 왜
 
@@ -19,19 +21,30 @@ touched_paths: `backend/app/repo/manage_member_table.py` · `backend/app/routers
 
 - 머리글: `+ 프로젝트` · **표 아이콘** · **다운로드 아이콘**(누르면 "Export usage report" / "프로젝트 상세 보고서" 메뉴).
 - 표 아이콘을 누르면 대시보드 자리에 **관리 표**가 열린다(다시 누르면 대시보드). 워크스페이스 선택을 그대로 따른다.
-- 시트(아래쪽 탭): **멤버**(1단계) · 그룹 · 충전 기록(2단계).
+- 시트(아래쪽 탭): **멤버** · **프로젝트** · **그룹** · **크레딧 관리**.
 - 칸 표시: ✎ = 고치면 즉시 저장 · 🔒 = 보기만(힉스필드·에이전트가 알려 주는 값, 또는 권한 없음 — 이유를 툴팁으로).
+- 검색은 세 시트가 공유한다. 필터는 시트별로 유지하며 **표시만 거른다**. 저장 본문은 필터 결과로 만들지 않는다.
+- 멤버·그룹·충전 기록 추가는 표 위 별도 버튼이 아니라 각 표의 마지막 행에서 시작한다. 요약값은 표 아래에 둔다.
+
+시트별 범위
+
+| 시트 | 표시·편집 범위 | 필터 |
+|---|---|---|
+| 멤버 | 사람 · 계정 · 프로젝트 참여 · 가입 계정의 프로젝트 추가 | 가입 상태 · 전역 등급 · 프로젝트 |
+| 프로젝트 | 상태 · 시작일 · 마감일 · 예산/주기 · 보관 전환 일수 · 메모 | 상태 |
+| 그룹 | 그룹별 한도 현황 · 표시 색상 · 멤버 배정 · 그룹 추가/편집 | 그룹 · 미배정 |
+| 크레딧 관리 | 프로젝트 월 예산과 동기화된 정기 충전 · 충전 기준일 · 개인별 사용량 · 전 기간 긴급 충전 기록 · 긴급 충전 추가/수정/삭제 | 그룹 · 사용 있음/0 · 금액 미상 |
 
 멤버 시트의 열
 
 | 묶음 | 열 | 편집 | 저장 경로 |
 |---|---|---|---|
 | 사람 | 이름 · 이메일 | 보기만 | — |
-| 계정 | 가입 상태 · 전역 등급 | **2단계**(그 전에는 보기만) | `PATCH /api/auth/accounts/{email}/status` · `PATCH /api/members/{uid}/global-roles` |
-| 크레딧 그룹 | 그룹 | `create_project` | `PUT /api/manage/credit-plan/{ws}` |
-| 크레딧 그룹 | 남은 양 / 한도 | 보기만 | — |
-| 프로젝트 참여 | 활성 프로젝트마다 한 열(역할 칩) | **전역 `grant_project_role` 만**(표를 여는 조건과 같다 — 그 프로젝트의 `manage_members` 만 가진 사람은 기존 프로젝트 설정 창을 쓴다) | `PATCH`·`DELETE /api/projects/{pid}/members` |
-| 보고된 사실 | HF 플랜 · 마지막 보고 · 이번 충전 달 크레딧 · 생성 수 | 보기만 | — |
+| 계정 | 가입 상태 · 전역 등급 | **후속**(현재 보기만) | `PATCH /api/auth/accounts/{email}/status` · `PATCH /api/members/{uid}/global-roles` |
+| 프로젝트 참여 | 활성 프로젝트마다 한 열(역할 칩) · 마지막 행에서 가입 계정 추가 | **전역 `grant_project_role` 만**(표를 여는 조건과 같다 — 그 프로젝트의 `manage_members` 만 가진 사람은 기존 프로젝트 설정 창을 쓴다) | `PATCH`·`DELETE /api/projects/{pid}/members` |
+
+전역 등급은 데이터 저장 순서와 관계없이 **Admin → Director → Manager → Member**, 프로젝트 역할은
+**PM → Supervisor → Creator** 고정 슬롯으로 표시한다. 없는 역할도 빈 슬롯 폭을 남겨 행마다 위치가 같다.
 
 ## 3. 읽기 — `GET /api/manage/member-table?workspace_id=`
 
@@ -40,17 +53,27 @@ touched_paths: `backend/app/repo/manage_member_table.py` · `backend/app/routers
 
 - 권한: **`grant_global` 또는 `grant_project_role`** — `/api/members` 가 계정 상세를 주는 조건과 같다. `read_all` 만으로는 안 된다(감독 등급까지 이메일·가입 상태가 넓어진다). AUTH off 단독 모드는 통과.
 - 프록시: `/api/manage/*` 라 로컬 허브가 공유 서버로 그대로 넘긴다(로컬 목록에 넣지 않는다). 구서버는 404 → 화면은 "공유 서버 업데이트 뒤 표시".
-- 줄 = **계정(이메일)**. 워크스페이스를 고르면 그 워크스페이스 멤버(+등록부에서 빠졌지만 그룹 배정이 남은 이메일), 안 고르면 숨기지 않은 전체 계정.
+- 줄 = **계정(이메일)**. 워크스페이스를 고르면 그 워크스페이스 멤버(+그룹 배정이 남은 이메일 + 워크스페이스 프로젝트에 직접 추가된 실제 uid 계정), 안 고르면 숨기지 않은 전체 계정.
 - 줄마다 `uid`(로그인 계정의 실제 `creator_uid` 우선, 없으면 워크스페이스 보고의 것 · 없거나 합성 `acct:` 이면 `null`), `project_editable`·`project_lock`(`unlinked` · `uid_conflict` = 두 uid 가 서로 다름), `linked_accounts`(같은 uid 에 묶인 계정 수 — 등급·프로젝트 변경은 묶인 계정 전체에 적용된다).
 - `credit`: 그 워크스페이스의 `get_settings` 결과 전체(그룹 저장에 최신 전체 목록과 `revision` 이 필요하다). `create_project` 가 없으면 `null` — 그룹 칸은 보기만.
-- `caps`: `{account, credit, project_roles}` — 화면이 칸을 열지 말지는 이 값으로만 정한다(로컬 AUTH off 가 서버 권한을 대신하지 않는다).
+- `projects[].planning`: 프로젝트 시트가 별도 N회 조회하지 않도록 기존 `project_planning` 사이드카 값을 함께 준다.
+- `caps`: `{account, credit, project_roles, planning}` — 화면이 칸을 열지 말지는 이 값으로 정한다(로컬 AUTH off 가 서버 권한을 대신하지 않는다). `planning`을 모르는 배포 중 구서버 응답은 기존 관리 권한(`account`·`credit`·`project_roles`) 중 하나로 호환 판정하되, `projects[].planning` 원문까지 없으면 기본값으로 기존 일정을 덮지 않도록 편집을 잠근다.
 
 ## 4. 쓰기 — 새 쓰기 API 를 만들지 않는다
 
 칸 하나를 바꾸면 그 칸의 기존 API 를 즉시 부른다. 권한 검사·감사 기록·재기준화 규칙을 그대로 물려받는다.
 
-- **그룹 배정**: `groups` = 서버가 마지막에 준 그룹 **전부**(id·name·monthly_limit·limit_period 만, `allowed_models`·`remaining_override` 키는 보내지 않는다 = 유지), `members` = 바꾼 한 줄, `revision`. 목록에서 빠진 그룹은 서버가 지우므로 "최신 전체를 그대로 되보낸다"가 계약이다. 멤버를 옮기면 두 그룹이 재기준화된다(의도된 동작).
-- 워크스페이스 단위 저장은 직렬 큐 하나로 줄 세운다. 성공·실패 모두 표를 다시 읽는다(다른 창·다른 사람의 변경은 큐 밖이다). 409 는 자동 재시도하지 않고 다시 읽은 뒤 알린다.
+- **그룹 배정**: `groups` = 서버가 마지막에 준 그룹 **전부**(id·name·monthly_limit·limit_period 만, `allowed_models`·`color`·`remaining_override` 키는 보내지 않는다 = 유지), `members` = 바꾼 한 줄, `revision`. 목록에서 빠진 그룹은 서버가 지우므로 "최신 전체를 그대로 되보낸다"가 계약이다. 멤버를 옮기면 두 그룹이 재기준화된다(의도된 동작).
+- **그룹 추가·편집**: 프로젝트 설정 창과 같은 `GroupEditor` 를 쓴다. 창을 연 시점의 그룹 전체와 `revision` 을 저장 기준으로 고정하고, `allowed_models`·`color`는 편집 그룹에만 명시한다. 멤버는 바뀐 이메일만 보내 필터 밖 배정을 보존한다. 창이 열린 사이 다른 저장이 있으면 409로 막고 창을 다시 열게 해 조용한 덮어쓰기를 피한다.
+- **그룹 색상**: 그룹명 셀 맨 왼쪽에서 기본 12색 또는 커스텀 색을 고른다. 그룹명은 그룹 현황·멤버 배정·크레딧 사용량에서 멤버 탭 역할과 같은 태그 디자인으로 표시하며, 행 전체에는 색을 넣지 않는다. `workspace_credit_group.color`에 소문자 `#rrggbb`를 저장하며, 키 없음/`null`은 기존값 유지(새 그룹은 기본색), 빈 문자열은 기본색으로 해제한다. 색상 한 칸 저장은 대상 그룹에만 `color`를 싣고 다른 그룹은 키를 생략한다. 색상은 `base_start`·`base_balance` 재기준화 조건이 아니다.
+- **그룹 한도**: 그룹 현황 행에서 한도 주기와 한도를 바로 편집한다. 주기는 별도 칸에 표시하므로 한도 단위는 `cr`만 붙인다. 저장은 대상 그룹의 `monthly_limit`·`limit_period`만 바꾼 전체 그룹 목록을 기존 크레딧 설정 API로 보낸다. `members`와 다른 그룹의 `allowed_models`·`color`는 보내지 않아 유지한다.
+- **긴급 충전 추가·수정·삭제**: `get_settings` 가 주는 **전 기간** `topups` 전체를 기준으로 새 줄을 합치거나, 같은 id 한 줄을 교체하거나, 선택한 id 한 줄만 제외해 보낸다. 수정 시 날짜·크레딧·메모를 한 행에서 바꾼다. 대시보드 읽기 모델의 최근 3개월 목록과 혼동해 잘라 보내면 과거 기록이 삭제된다. `topup_day` 는 보내지 않는다.
+- **정기 충전 표시**: 별도 기록을 저장하지 않는다. 월 주기 프로젝트 예산 합계인 `plan.monthly_topup`을 충전 기록 표의 읽기 전용 `정기 충전` 행으로 표시한다. 프로젝트 예산이 바뀌면 다음 조회에서 즉시 동기화된다. 긴급 충전은 기존 `topups` 수기 기록으로 구분한다.
+- **가입 계정 프로젝트 추가**: `/api/members` 중 `approved`이고 이메일과 실제 uid가 있는 계정만 후보로 쓴다. 합성 `acct:` uid, 대기/거절 계정, 이미 해당 프로젝트에 참여한 uid는 제외한다. 저장은 기존 `PATCH /api/projects/{pid}/members`를 쓴다.
+- **프로젝트 일정·예산**: 기존 `PUT /api/manage/planning/{pid}`에 상태·두 날짜·예산·주기·보관 일수·메모 **7개 필드를 모두** 보낸다. 부분 본문으로 기존 값을 지우지 않는다.
+- **충전 기준일**: 충전 기록 표의 `구분` 오른쪽에서 `오늘` 바로가기 또는 매월 1~31일을 고른다. 29~31일이 없는 달은 그 달 마지막 날을 기준일로 삼는다. 변경 전 월 한도 그룹의 잔액 재기준화를 확인받고, `revision`·`note`·`topup_day`만 기존 크레딧 설정 API로 보낸다. 그룹 편집 중에는 바꾸지 못한다.
+- 워크스페이스 단위 저장은 직렬 큐 하나로 줄 세운다. 크레딧 저장의 `revision`은 클릭 시점이 아니라 **큐 안에서 실행될 때** `creditRef.current`의 최신 값을 읽는다(자기 직전 저장과 충돌하지 않게). 성공·실패 모두 표를 다시 읽는다(다른 창·다른 사람의 변경은 큐 밖이다). 409 는 자동 재시도하지 않고 다시 읽은 뒤 알린다.
+- 프로젝트 일정/예산 API에는 `revision`이 없다. 편집 중 다시 조회되면 사용자가 손대지 않은 칸은 최신 서버 값을 합쳐 저장하지만, 같은 칸을 여러 관리자가 동시에 저장하면 **마지막 저장이 이긴다**. 조용한 덮어쓰기를 서버에서 완전히 막으려면 후속으로 `project_planning` revision 계약을 추가해야 한다.
 - 실패해도 칸을 하나씩 되돌리지 않는다 — 큐가 비면 표를 통째로 다시 읽으므로 늦게 온 실패가 최신 값을 덮지 않는다(칸별 순번이 필요 없다).
 - 저장이 걸리거나 끝나는 사이에 떠난 조회는 버린다(낡은 `revision` 이 다음 그룹 저장을 409 로 만들지 않게). 워크스페이스를 바꾸면 표를 새로 만든다 — 이전 표로 새 워크스페이스에 저장하지 않는다.
 - 확인 1회: 프로젝트에서 제거(tombstone — 자동 편입이 되살리지 못한다).
@@ -84,7 +107,7 @@ touched_paths: `backend/app/repo/manage_member_table.py` · `backend/app/routers
 
 - **0단계**: 머리글(표 아이콘·다운로드 메뉴).
 - **1단계**: 읽기 API + 멤버 시트(그룹 배정·프로젝트 참여 편집, 계정 칸은 보기만).
-- **2단계**: ~~서버 보호(마지막 admin)~~(2026-09-21 완료 — §5-1) → 가입·등급 편집 · 그룹 시트 · 충전 기록 시트.
+- **2단계**: ~~서버 보호(마지막 admin)~~(2026-09-21 완료 — §5-1) · 프로젝트/그룹/크레딧 시트 · 시트별 필터 · 가입 계정의 프로젝트 추가 · 일정/예산 편집 · 그룹 추가/편집 · 충전 기준일/긴급 충전 추가·수정·삭제. 가입 상태·전역 등급 편집은 남음.
 - **3단계 후보(Jay 결정)**: 멤버별 메모·체크 열(새 테이블·새 쓰기 API) · MV Hub 설치·에이전트 연결 열(에이전트 보고 확장).
 
 ## 7. 하지 않는 것
@@ -92,3 +115,17 @@ touched_paths: `backend/app/repo/manage_member_table.py` · `backend/app/routers
 - 힉스필드 쪽 값(플랜·워크스페이스 소속)을 표에서 고치기 — 쓰기 경로가 없다.
 - 셀 범위 붙여넣기·수식·열 추가 같은 스프레드시트 기능.
 - 기존 화면(관리자 창·프로젝트 설정 창) 제거 — 표는 같은 데이터의 다른 입구다.
+
+## 8. 현재 입력 항목 전수(2026-09-22)
+
+| 영역 | 실제 입력 항목 | 관리 표 위치 |
+|---|---|---|
+| 프로젝트 기본 | 프로젝트 이름 · 워크스페이스 · 렌더 폴더 경로 | 기존 프로젝트 설정 유지 |
+| 일정·예산 | 상태 · 시작일 · 마감일 · 보관 전환 일수 · 예산 크레딧 · 예산 주기(일/주/월) · 메모 | 프로젝트 시트 한 행에서 편집 |
+| 그룹 | 이름 · 표시 색상 · 한도 없음 · 한도값 · 한도 주기 · 허용 모델 · 멤버 배정 | 그룹 시트 추가/편집 |
+| 크레딧 | 정기 충전(프로젝트 월 예산 파생) · 충전 기준일 · 긴급 충전 날짜/크레딧/메모 | 크레딧 시트에서 추가/수정/삭제 |
+| 멤버 | 프로젝트 역할 · 가입된 계정의 프로젝트 추가 · 가입 상태 · 전역 등급 | 프로젝트 참여 구현, 가입 상태·전역 등급은 후속 |
+| 특수 보정 | 그룹 남은 양 수동 보정 | 기존 크레딧 대시보드 유지 |
+
+월 충전액은 프로젝트의 매월 예산 한도 합에서 계산되는 파생값이라 직접 입력하지 않는다. HF 플랜, 마지막 보고,
+사용 크레딧·건수·미상, 워크스페이스 잔액은 보고된 사실이라 관리 표에서 고치지 않는다.

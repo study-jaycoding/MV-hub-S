@@ -53,7 +53,7 @@
 | `project_folder_link` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` `routers/assets.py` |
 | `project_member` | content DB | `backend/schema.sql` | `repo/identity.py` `repo/project_membership.py` `repo/projects.py` | `db_migrations.py` `deps.py` `repo/identity.py` `repo/manage_member_table.py` `repo/projects.py` |
 | `project_member_removed` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/project_membership.py` | `repo/identity.py` `repo/project_membership.py` |
-| `project_planning` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` `repo/manage_credit_plan.py` `repo/manage_tasks.py` |
+| `project_planning` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_tasks.py` |
 | `project_task` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/manage_tasks.py` | `repo/manage.py` `repo/manage_schema.py` `repo/manage_task_activity.py` `repo/manage_tasks.py` |
 | `reference` | content DB | `backend/schema.sql` | `repo/generation_references.py` `repo/generation_sync.py` `repo/generations.py` | `repo/gen_requests.py` `repo/generation_rows.py` `repo/generations.py` `repo/history.py` `repo/share.py` `repo/trash.py` `routers/assets.py` |
 | `release_update_notice` | content DB | `backend/schema.sql` | `repo/release_update_notices.py` | `repo/release_update_notices.py` |
