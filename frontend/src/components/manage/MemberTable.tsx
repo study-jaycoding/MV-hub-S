@@ -6,11 +6,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { api } from "../../api";
 import {
   draftFromSettings,
+  formatDecimal,
   formatThousands,
   GROUP_COLOR_PALETTE,
   groupColor,
   newDraftGroup,
   newGroupId,
+  stripDecimal,
   stripThousands,
   TOPUP_DAY_OPTIONS,
   todayLocal,
@@ -30,6 +32,7 @@ import {
   groupAssignBody,
   groupColorBody,
   memberQuotaBody,
+  recurringTopupBody,
   groupEditBody,
   groupTermsBody,
   matchesMemberQuery,
@@ -213,13 +216,14 @@ function GroupColorPicker({ label, color, disabled, onCommit }: {
   );
 }
 
-function GroupLimitInput({ label, value, disabled, onCommit, field = "한도", placeholder = "제한 없음" }: {
+function GroupLimitInput({ label, value, disabled, onCommit, field = "한도", placeholder = "제한 없음", decimals = false }: {
   label: string;
   value: number | null;
   disabled: boolean;
   onCommit: (value: number | null) => boolean;
   field?: string;       // 읽어 주는 칸 이름 — 그룹 '한도' / 사람 '몫'
   placeholder?: string; // 비었을 때의 뜻 — 그룹은 '제한 없음', 사람은 '자동'
+  decimals?: boolean;   // 크레딧은 소수다 — 몫·정기 충전은 소수점을 지우면 안 된다(그룹 한도는 서버가 정수만 받는다)
 }) {
   const serverValue = value === null ? "" : String(value);
   const [input, setInput] = useState(serverValue);
@@ -239,9 +243,9 @@ function GroupLimitInput({ label, value, disabled, onCommit, field = "한도", p
         aria-label={`${label} ${field}`}
         placeholder={placeholder}
         maxLength={11}
-        value={formatThousands(input)}
+        value={decimals ? formatDecimal(input) : formatThousands(input)}
         disabled={disabled}
-        onChange={(event) => setInput(stripThousands(event.target.value))}
+        onChange={(event) => setInput(decimals ? stripDecimal(event.target.value) : stripThousands(event.target.value))}
         onBlur={commit}
         onKeyDown={(event) => {
           if (event.key === "Enter") event.currentTarget.blur();
@@ -430,6 +434,30 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
         setCreditError(isHttpStatus(reason, 409)
           ? "다른 곳에서 먼저 바꿨습니다. 최신 값을 읽었으니 다시 저장해 주세요."
           : `그룹 색상을 저장하지 못했습니다. ${String(reason).replace(/^Error:\s*/, "")}`);
+        throw reason;
+      } finally {
+        setCreditBusy(false);
+      }
+    });
+    return true;
+  };
+
+  /** 정기 충전액 저장 — 비우면(null) 프로젝트 '매월 예산' 합에서 파생하던 종전 값으로 돌아간다. */
+  const saveRecurringTopup = (value: number | null) => {
+    if (!data || !inScope || !workspaceId || creditBusy || groupEditor) return false;
+    if (value !== null && (!Number.isFinite(value) || value < 0)) return false;
+    setCreditBusy(true);
+    setCreditError("");
+    save(async () => {
+      try {
+        const credit = creditRef.current;
+        if (!credit) throw new Error("크레딧 설정을 읽지 못했습니다");
+        creditRef.current = await manageApi.saveCreditPlan(workspaceId, recurringTopupBody(credit, value));
+        setNotice({ tone: "ok", text: value === null ? "저장됨 · 정기 충전을 예산 합계로" : "저장됨 · 정기 충전" });
+      } catch (reason) {
+        setCreditError(isHttpStatus(reason, 409)
+          ? "다른 곳에서 먼저 바꿨습니다. 최신 값을 읽었으니 다시 저장해 주세요."
+          : `정기 충전을 저장하지 못했습니다. ${String(reason).replace(/^Error:\s*/, "")}`);
         throw reason;
       } finally {
         setCreditBusy(false);
@@ -778,6 +806,9 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
   const topupTotal = topups.reduce((sum, topup) => sum + topup.credits, 0);
   const todayDay = Number(todayLocal().slice(8, 10));
   const recurringTopup = data.credit?.plan.monthly_topup ?? null;
+  // 정기 충전은 손 입력이 우선이고, 비면 프로젝트 '매월 예산' 합에서 파생한다(Jay 2026-09-23).
+  const derivedTopup = data.credit?.plan.derived_topup ?? null;
+  const manualTopup = data.credit?.plan.monthly_topup_source === "manual";
   const cycleRange = data.cycle_start && data.cycle_end ? `${data.cycle_start} ~ ${data.cycle_end}` : "—";
   const topupEditorRow = (draft: DraftTopup, label: string) => (
     <tr key={`editor-${draft.id}`} className="mtable-topup-row" aria-label={label}>
@@ -1236,6 +1267,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                         <GroupLimitInput
                           label={row.name}
                           field="몫"
+                          decimals
                           placeholder={quotaOf(row.email)?.quota_effective != null ? `자동 ${credits(quotaOf(row.email)!.quota_effective!)}` : "자동"}
                           value={quotaOf(row.email)?.quota ?? null}
                           disabled={!canGroup || creditBusy || Boolean(groupEditor)}
@@ -1287,8 +1319,22 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                         {TOPUP_DAY_OPTIONS.map((day) => <option key={day} value={day}>매월 {day}일</option>)}
                       </select>
                     </td>
-                    <td className="num mtable-credit-plus">{recurringTopup === null ? "미설정" : `+${credits(recurringTopup)} cr`}</td>
-                    <td>프로젝트 월 예산 합계와 자동 동기화</td>
+                    <td className="num mtable-quota-cell">
+                      <GroupLimitInput
+                        label="정기 충전"
+                        field="충전액"
+                        decimals
+                        placeholder={derivedTopup === null ? "예산 합계" : `예산 합계 ${credits(derivedTopup)}`}
+                        value={data.credit.plan.recurring_topup ?? null}
+                        disabled={!canGroup || creditBusy || Boolean(groupEditor)}
+                        onCommit={saveRecurringTopup}
+                      />
+                    </td>
+                    <td>
+                      {manualTopup
+                        ? "손으로 적은 값 — 비우면 프로젝트 월 예산 합계로 돌아갑니다"
+                        : "프로젝트 월 예산 합계와 자동 동기화"}
+                    </td>
                     <td>—</td>
                   </tr>
                 ) : null}
@@ -1321,7 +1367,10 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
           {data.credit ? (
             <div className="mtable-table-summary mtable-credit-summary" aria-label="충전 요약">
               <div><span>충전 기간</span><strong>{cycleRange}</strong></div>
-              <div title="월 주기로 설정된 프로젝트 예산의 합계입니다"><span>정기 충전액</span><strong>{recurringTopup === null ? "미설정" : `${credits(recurringTopup)} cr`}</strong></div>
+              <div title={manualTopup ? "손으로 적은 정기 충전액입니다" : "월 주기로 설정된 프로젝트 예산의 합계입니다"}>
+                <span>정기 충전액{manualTopup ? " (손 입력)" : ""}</span>
+                <strong>{recurringTopup === null ? "미설정" : `${credits(recurringTopup)} cr`}</strong>
+              </div>
               <div><span>긴급 충전 합계</span><strong>{topups.length ? `+${credits(topupTotal)} cr` : "없음"}</strong></div>
             </div>
           ) : null}

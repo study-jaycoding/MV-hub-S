@@ -274,6 +274,24 @@ export function formatThousands(digits: string): string {
   return clean ? Number(clean).toLocaleString("en-US") : "";
 }
 
+/** 소수를 허용하는 숫자 입력 정리 — **크레딧은 소수다**(−1.5·0.12·33.33). 사람별 몫·정기 충전 칸이 쓴다.
+ *  점은 하나만 남기고(둘째 점부터는 버린다) 숫자 아닌 글자는 지운다. 그룹 한도·긴급 충전은 서버가 정수만
+ *  받으므로 그쪽은 종전 `stripThousands` 를 그대로 쓴다. */
+export function stripDecimal(text: string): string {
+  const cleaned = text.replace(/[^\d.]/g, "");
+  const [head, ...rest] = cleaned.split(".");
+  return rest.length ? `${head}.${rest.join("")}` : head;
+}
+
+/** 소수 입력을 천 단위 구분으로 보여 준다("24491.5" → "24,491.5"). 입력 중인 끝점("12.")은 그대로 둔다. */
+export function formatDecimal(value: string): string {
+  const clean = stripDecimal(value);
+  if (!clean) return "";
+  const [head, tail] = clean.split(".");
+  const intPart = head ? Number(head).toLocaleString("en-US") : "0";
+  return tail === undefined ? intPart : `${intPart}.${tail}`;
+}
+
 /** 새 그룹에 클라이언트가 미리 붙이는 id(uuid hex 32자) — 같은 저장에 멤버 배정을 실을 수 있게. 서버가 형식·소유를 검사한다. */
 export function newGroupId(): string {
   const g = globalThis.crypto as Crypto | undefined;

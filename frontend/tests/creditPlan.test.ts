@@ -5,11 +5,13 @@ import {
   draftFromSettings,
   draftMemberCount,
   draftToBody,
+  formatDecimal,
   formatThousands,
   limitTotal,
   mergeTopupsFromServer,
   newGroupId,
   niceCeil,
+  stripDecimal,
   overrideBody,
   periodSuffix,
   periodUsageLabel,
@@ -216,4 +218,15 @@ describe("숫자 입력 — 천 단위 구분", () => {
     expect(stripThousands("1,234,567")).toBe("1234567");
     expect(stripThousands("abc")).toBe("");
   });
+});
+
+it("몫·정기 충전 입력은 소수점을 지우지 않는다", () => {
+  // 크레딧은 소수다(−1.5 · 0.12 · 33.33). 정수만 받던 한도 입력을 그대로 쓰면 24,491.5 가 244,915 로 저장된다.
+  expect(stripDecimal("24,491.5 cr")).toBe("24491.5");
+  expect(stripDecimal("33.33.33")).toBe("33.3333"); // 점은 하나만 남긴다
+  expect(stripDecimal("abc")).toBe("");
+  expect(formatDecimal("24491.5")).toBe("24,491.5");
+  expect(formatDecimal("12.")).toBe("12."); // 입력 중인 끝점은 지우지 않는다
+  expect(formatDecimal(".5")).toBe("0.5");
+  expect(formatDecimal("")).toBe("");
 });

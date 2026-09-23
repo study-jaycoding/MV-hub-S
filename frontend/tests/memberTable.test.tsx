@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemberTable } from "../src/components/manage/MemberTable";
 import { draftFromSettings, GROUP_COLOR_PALETTE, newDraftGroup, todayLocal, type CreditPlanSettings } from "../src/lib/creditPlan";
 import { HttpError } from "../src/lib/http";
-import { groupAssignBody, groupColorBody, groupEditBody, groupTermsBody, lastSeenLabel, memberQuotaBody, type MemberTableData, type MemberTableRow } from "../src/lib/memberTable";
+import { groupAssignBody, groupColorBody, groupEditBody, groupTermsBody, lastSeenLabel, memberQuotaBody, recurringTopupBody, type MemberTableData, type MemberTableRow } from "../src/lib/memberTable";
 
 const mocks = vi.hoisted(() => ({ memberTable: vi.fn(), saveCreditPlan: vi.fn(), setPlanning: vi.fn(), members: vi.fn(), setProjectRoles: vi.fn(), removeProjectMember: vi.fn(), models: vi.fn() }));
 vi.mock("../src/lib/manageApi", () => ({ manageApi: { memberTable: mocks.memberTable, saveCreditPlan: mocks.saveCreditPlan, setPlanning: mocks.setPlanning } }));
@@ -715,4 +715,22 @@ it("몫 칸은 소속을 건드리지 않고 사람별 몫만 저장한다", asy
   expect(mocks.saveCreditPlan).toHaveBeenLastCalledWith("ws1", expect.objectContaining({
     revision: 3, members: [{ email: "a@x", quota: 600 }],
   }));
+});
+
+it("정기 충전은 손으로 적고, 비우면 프로젝트 예산 합계로 돌아간다", async () => {
+  expect(recurringTopupBody(credit(4), 24491.5)).toEqual({ revision: 4, note: "메모", recurring_topup: 24491.5 });
+  expect(recurringTopupBody(credit(4), null)).toEqual({ revision: 4, note: "메모", recurring_topup: null });
+
+  const data = table(6, [row("a@x", { group_id: "g1" })]);
+  data.credit!.plan = { ...data.credit!.plan, monthly_topup: 20000, monthly_topup_source: "derived", derived_topup: 20000, recurring_topup: null };
+  mocks.memberTable.mockResolvedValue(data);
+  mocks.saveCreditPlan.mockResolvedValue(credit(7));
+  await mount();
+  await openSheet("크레딧 관리");
+  const input = host.querySelector<HTMLInputElement>('[aria-label="정기 충전 충전액"]')!;
+  expect(input.placeholder).toBe("예산 합계 20,000"); // 비었을 때 어디서 온 값인지 알려 준다
+  await typeInput(input, "24491.5");
+  await act(async () => { input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); });
+  await settle();
+  expect(mocks.saveCreditPlan).toHaveBeenLastCalledWith("ws1", { revision: 6, note: "메모", recurring_topup: 24491.5 });
 });
