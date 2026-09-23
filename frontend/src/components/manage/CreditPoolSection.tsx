@@ -368,7 +368,7 @@ export function CreditPoolSection({
         <div className="usage-table-scroll">
           <table className="usage-table credit-group-table">
             <thead>
-              <tr><th>그룹</th><th>인원</th><th>한도</th><th>기간 사용</th><th>남음</th><th>사용률</th></tr>
+              <tr><th>그룹</th><th>인원</th><th>한도</th><th>1인 몫</th><th>기간 사용</th><th>남음</th><th>사용률</th></tr>
             </thead>
             <tbody>
               {groups.map((group) => (
@@ -376,6 +376,15 @@ export function CreditPoolSection({
                   <td><b>{group.name}</b></td>
                   <td className="tnum">{group.member_count}</td>
                   <td className="tnum">{group.monthly_limit == null ? "∞" : `${n(group.monthly_limit)} ${periodSuffix(group.limit_period)}`}</td>
+                  {/* 1인 몫 = (한도 − 직접 정한 몫들) ÷ 나머지 인원. 직접 정한 사람이 있으면 그 합도 알려 준다. */}
+                  <td className="tnum">
+                    {group.quota_auto == null ? "—" : n(group.quota_auto)}
+                    {group.quota_fixed ? (
+                      <span className={`credit-est${group.quota_over ? " bad" : ""}`}>
+                        {` · 직접 ${n(group.quota_fixed)}${group.quota_over ? " (한도 초과)" : ""}`}
+                      </span>
+                    ) : null}
+                  </td>
                   <td className="tnum">
                     {n(group.used_period ?? group.used_month)}
                     <span className="credit-est"> {periodUsageLabel(group.limit_period)}{(group.unknown_period ?? group.unknown_month) ? ` · 미상 ${group.unknown_period ?? group.unknown_month}` : ""}</span>
@@ -388,13 +397,14 @@ export function CreditPoolSection({
                   <td><b>그룹 없음</b> <span className="credit-est bad">배정 안 됨 — 힉스필드 그룹과 대조 필요</span></td>
                   <td className="tnum">{unassigned.member_count}</td>
                   <td className="tnum">—</td>
+                  <td className="tnum">—</td>
                   <td className="tnum">{n(unassigned.used_month)}{unassigned.unknown_month ? <span className="credit-est"> · 미상 {unassigned.unknown_month}</span> : null}</td>
                   <td className="tnum">—</td>
                   <td><span className="credit-pct tone-bad">!</span></td>
                 </tr>
               ) : null}
               {!groups.length && !(unassigned && (unassigned.member_count > 0 || unassigned.used_month > 0)) ? (
-                <tr><td colSpan={6} className="usage-inline-state">프로젝트 설정 → 크레딧 풀 · 그룹에서 힉스필드 User Group 과 같은 이름으로 만드세요.</td></tr>
+                <tr><td colSpan={7} className="usage-inline-state">프로젝트 설정 → 크레딧 풀 · 그룹에서 힉스필드 User Group 과 같은 이름으로 만드세요.</td></tr>
               ) : null}
             </tbody>
           </table>
