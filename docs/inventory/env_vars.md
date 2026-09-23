@@ -42,7 +42,7 @@
 | `CONTENT_HUB_CORS` | `"http://localhost:5173,http://127.0.0.1:5173"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_COST_TTL` | `7 * 86400` | `backend/app/services/cli_bridge.py` | — |
 | `CONTENT_HUB_DATA` | `BACKEND_DIR / "data"` `Path(__file__).resolve().parent / "data"` `str(REPO_ROOT / "backend" / "data")` | `backend/app/config.py` `backend/cleanup_orphan_creators.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/server_move.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` |
-| `CONTENT_HUB_DB` | `""` `None` | `backend/app/db_paths.py` `backend/app/routers/db_transfer.py` `backend/cleanup_orphan_creators.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/preflight_task_workspace.py` `tools/server_move.py` `tools/verify_generation_submission_recovery.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` `tools/preflight_task_workspace.py` `tools/verify_generation_submission_recovery.py` |
+| `CONTENT_HUB_DB` | `""` `None` | `backend/app/db_paths.py` `backend/app/routers/db_transfer.py` `backend/cleanup_orphan_creators.py` `tools/credit_round_audit.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/preflight_task_workspace.py` `tools/server_move.py` `tools/verify_generation_submission_recovery.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` `tools/preflight_task_workspace.py` `tools/verify_generation_submission_recovery.py` |
 | `CONTENT_HUB_DB_BACKEND` | `"sqlite"` | `backend/app/db.py` | — |
 | `CONTENT_HUB_DB_POOL` | `"1"` | `backend/app/db.py` | — |
 | `CONTENT_HUB_DB_UPLOAD_FILE_MAX_BYTES` | `512 * MIB` | `backend/app/services/upload_limits.py` | — |
