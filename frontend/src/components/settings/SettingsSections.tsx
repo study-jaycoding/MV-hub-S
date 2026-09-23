@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ACCENT_PRESETS, type Lang } from "../../lib/theme";
 import { fsaSupported } from "../../lib/downloadDir";
+import { fmtBackupWhen } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import type { BackupContinuityStatus, ServerBackupVersion } from "../../lib/assetsApi";
 import {
@@ -184,7 +185,7 @@ export function MetadataContinuitySection({
   };
   const shared = backupContinuity?.shared;
   const lastSuccess = shared?.last_success_at
-    ? new Date(shared.last_success_at).toLocaleString()
+    ? fmtBackupWhen(shared.last_success_at)
     : "아직 없음";
   const formatBytes = (size: number) =>
     size >= 1024 * 1024
@@ -197,9 +198,7 @@ export function MetadataContinuitySection({
       : metadataSyncTargetState === "empty" || !metadataSyncTarget
         ? "동기화할 서버 메타데이터가 없습니다."
         : `동기화 대상: ${metadataSyncTarget.device?.device_name || "알 수 없는 PC"} · ${
-          metadataSyncTarget.created_at
-            ? new Date(metadataSyncTarget.created_at).toLocaleString()
-            : new Date(metadataSyncTarget.mtime * 1000).toLocaleString()
+          fmtBackupWhen(metadataSyncTarget.created_at, metadataSyncTarget.mtime)
         } · 앱 ${metadataSyncTarget.app_version || "—"}`;
   return (
     <section className="settings-section">
@@ -243,9 +242,7 @@ export function MetadataContinuitySection({
             ) : (
               serverBackups.map((backup) => {
                 const summary = backup.summary || {};
-                const created = backup.created_at
-                  ? new Date(backup.created_at).toLocaleString()
-                  : new Date(backup.mtime * 1000).toLocaleString();
+                const created = fmtBackupWhen(backup.created_at, backup.mtime);
                 const label = backup.is_current
                   ? "현재"
                   : backup.branch_status === "conflict"

@@ -22,6 +22,13 @@ export function fmtElapsed(sec?: number | null): string {
   return `${d ? `${d}d` : ""}${h ? `${h}h` : ""}${m ? `${m}m` : ""}${s || !(d || h || m) ? `${s}s` : ""}`;
 }
 
+// 백업·동기화 시각 — 서버가 주는 ISO(`created_at`)가 있으면 그것, 없으면 파일 시각(`mtime`, 초)으로.
+// ★일부러 `fmtWhen` 을 쓰지 않는다: 이 자리는 **연·월·일·시·분·초를 다 보여야** 하고(어느 백업인지 고르는 화면),
+// `fmtWhen` 은 월/일·시:분만 낸다. 기존 네이티브 표기를 그대로 보존하려고 `toLocaleString()` 을 그냥 부른다.
+export function fmtBackupWhen(createdAt?: string | null, mtimeSeconds?: number | null): string {
+  return new Date(createdAt || (mtimeSeconds ?? 0) * 1000).toLocaleString();
+}
+
 export function fmtWhen(s: string, locale = "ko-KR"): string {
   const d = new Date(timestampMs(s));
   if (isNaN(d.getTime())) return s;

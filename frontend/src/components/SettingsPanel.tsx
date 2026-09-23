@@ -12,6 +12,7 @@ import {
   saveReduceMotion,
   type Lang,
 } from "../lib/theme";
+import { fmtBackupWhen } from "../lib/format";
 import { setLang, useT } from "../lib/i18n";
 import {
   clearDownloadDir,
@@ -476,9 +477,7 @@ export function SettingsPanel({
 
   const serverRestore = async (backup: ServerBackupVersion) => {
     const backupSetId = backup.backup_set_id || backup.name;
-    const when = backup.created_at
-      ? new Date(backup.created_at).toLocaleString()
-      : new Date(backup.mtime * 1000).toLocaleString();
+    const when = fmtBackupWhen(backup.created_at, backup.mtime);
     const device = backup.device?.device_name || "알 수 없는 PC";
     if (
       !window.confirm(
