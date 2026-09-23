@@ -5,7 +5,7 @@ status: active
 
 # 크레딧 할당량 · 사용량 드릴 설계 (합의안 v2)
 
-owner: Claude · reviewer: Codex(적대적 검토 2026-09-23 — 치명 7·중요 7 반영) · status: 구현 중
+owner: Claude · reviewer: Codex(적대적 검토 2026-09-23 — 치명 7·중요 7 반영) · status: 검증 중(1~3단계 구현·실측 · Codex 코드 리뷰 대기)
 touched_paths: `backend/app/repo/manage_credit_plan.py` · `backend/app/repo/manage_schema.py` ·
 `backend/app/repo/manage_member_table.py` · `backend/app/manage_db.py` · `backend/app/routers/manage.py` ·
 `backend/app/config.py` · `backend/app/repo/identity.py` · `backend/app/repo/manage.py` ·
@@ -142,10 +142,11 @@ Pydantic 기본값 `None` 은 "키 없음"과 "명시적 null"을 구분하지 �
 | 단계 | 내용 | 무엇을 확인하면 성공인가 |
 |---|---|---|
 | 0 | 인계 커밋 · P0-2 · P0-3 | **완료** (커밋 `f14cbd56`·`a9b535be`·`33b76e9b`) |
-| 1 | 할당량 저장·계산·API | 인수 시험: 자동 몫 경계 6종 · 한도 상향(4,000→5,000) · 무제한 · 고정분 초과 · **quota 보존 5경로** · 3상태 |
-| 2 | 화면(내 몫 카드·관리 표 칸) | 격리 브라우저 실측(헤드리스 + 창 있는 크롬) |
-| 3 | 공통 필터·드릴·기간 전역·내보내기 | 같은 조건에서 **화면 합계 = CSV 합계** |
-| 4 | 실측·문서·기억 | 실제 데이터로 한 사람 값 손 대조 |
+| — | P0-1 판별 도구 | **완료** — `tools/credit_round_audit.py`(읽기 전용, 시험 4개). 보정은 Jay 승인 뒤 |
+| 1 | 할당량 저장·계산·API | **완료** (`cec26fb6`) — 시험 9개·하위 13개: 자동 몫 경계 6종 · 한도 상향(4,000→5,000) · 무제한 · 고정분 초과 · quota 보존 5경로 · 3상태 |
+| 2 | 화면(내 몫 카드·관리 표 칸) | **완료** (`ff965775`) — vitest 27개 · 격리 서버 실측(관리자·멤버 각각 로그인, 합성 데이터) |
+| 3 | 공통 필터·드릴·기간 전역·내보내기 | **완료** (`92f89606`) — 새 축(`account_email`·`group_id`)·권한·빈 집합 시험. 기간 '전체 적용' 스위치(기본 꺼짐) |
+| 4 | 실측·문서·기억 | **남음** — 실제 데이터로 한 사람 값 손 대조(서버 배포 뒤), P0-1 보정 승인 |
 
 충전 기준일 인수 시험: `topup_day=31` 에서 `1/31~2/27`, `2/28~3/30`, 윤년 `2/29`.
 

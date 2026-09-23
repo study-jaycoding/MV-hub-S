@@ -53,6 +53,7 @@ updated: 2026-09-22
 | 프로젝트 CRUD·멤버·역할 | `components/manage/ProjectManagerPanel.tsx` | `routers/projects.py`, `repo/projects.py` | |
 | 작업(Task) 칸반/테이블/캘린더 | `components/manage/WorkBoard.tsx` | `routers/manage.py`, `repo/manage_tasks.py` | 소요시간 표기는 `lib/format.ts` 의 `fmtElapsed` 하나다(`1d2h3m4s`, 초를 버리지 않음, 하루 이상은 `1d1h` — Jay 확정 2026-09-18). PM 창 5곳과 정보 팝업(`InfoPopup`)의 '생성 시간'이 모두 이 함수를 쓴다. 새 뷰도 이 함수를 쓴다 |
 | 크레딧 풀·그룹 한도 설정 | `components/manage/CreditPoolSection.tsx`, `CreditPlanFields.tsx` | `routers/manage.py`(`/api/manage/credit-plan*` — 권한·API 계약), `repo/manage_credit_plan.py` | |
+| 사람별 몫(할당량)·정기 충전 손 입력 | `components/manage/MemberTable.tsx`(크레딧 시트 '몫' 칸), `CreditPoolSection.tsx`(내 몫 카드), `lib/memberTable.ts`(`memberQuotaBody`) | `repo/manage_credit_plan.py`(`_quota_split`·`_member_quota`·`save_settings` 의 몫 보존), `routers/manage.py`(3상태 `exclude_unset`) | 설계 `docs/CREDIT_QUOTA_DESIGN.md` · **본문에 `quota` 키가 없으면 유지**(배정을 통째로 다시 쓰므로 안 그러면 사라진다) |
 | 관리 표(멤버·그룹·프로젝트 참여를 표에서 고치기) | `components/manage/MemberTable.tsx`, `lib/memberTable.ts` | `routers/manage.py`(`GET /api/manage/member-table`), `repo/manage_member_table.py` | 표에는 자기만의 쓰기 API 가 없다 — 칸마다 기존 API(`PUT credit-plan`·`PATCH/DELETE projects/{pid}/members`). 그룹 저장은 **받은 그룹을 전부** 되보내야 한다(빠진 그룹은 서버가 지운다). 가입·등급 칸은 서버의 마지막 admin 보호가 들어갈 때까지 보기만. 설계 `docs/MEMBER_TABLE_DESIGN.md` |
 | 알림 센터(코멘트·업데이트 공지) | `components/NotificationCenter.tsx` | `routers/notifications.py`, `routers/update_notices.py` | |
 | 부분 수정(마스크 편집 캔버스) | `components/edit/PartialEditModal.tsx` | — | 제출은 기존 생성 요청 경로 재사용(위 '생성 제출 흐름' 행 — `agent_push.py` 까지). `PartialEditHost`는 커스텀 이벤트로만 열림(§3.5) |
@@ -1088,6 +1089,7 @@ updated: 2026-09-22
 | `tools/browser_measure/cdp.py` | 헤드리스 Chrome/Edge 를 DevTools 프로토콜로 모는 드라이버(venv 의 `websockets` 만). 콘솔·실패 응답·**모든 비-GET 요청**·네이티브 대화상자를 모은다(`confirm()` 을 처리하지 않으면 모든 명령이 멈춘다) |
 | `tools/browser_measure/walk.py` | 실측 단계 러너(동작→상태 조사→이벤트 회수, 단계별 JSON) + 로그인·선택자 도우미. 판정은 `ok`/`stale`(대상 없음 = 시나리오가 낡음)/`failed`(제품 확인). **기본 모드의 결과에는 자유 문장을 남기지 않는다**(수치·클래스·이벤트 종류와 **라우트 틀**·고정 어휘 `reason`만 — 실제 경로의 동적 조각에는 이름이 실리므로 `docs/inventory/endpoints.md` 의 틀로 바꾸고 틀에 없으면 `/api/{…}` 로 줄인다. 원문은 verbose, 이메일은 `%40` 꼴까지 가림). 생성 요청 수(`gen_requests`)는 가리기 전 원문에서 센다. → `cdp.py`, `docs/inventory/endpoints.md` |
 | `tools/browser_measure/smoke.py` | 핵심 화면 41단계 시나리오(보기·검색·카드 단축키·미리보기·다중 선택·탭·도크·**처음 연 창의 Esc 1회**·분리 창). 종료 코드 0 통과 · 1 제품 확인 필요(실패·`/api/gen-requests` 요청 발생) · 2 시나리오만 낡음. `--shots`·`--verbose` 는 선택. 유료·외부 실행 단추는 누르지 않는다. → `walk.py` |
+| `tools/credit_round_audit.py` | 옛 반올림 크레딧 판별(읽기 전용). `credit_txn.credits`(소수 원본) ↔ `generation_metrics.real_credits`/서버 팩트를 대조해 **되살릴 행만** 가린다 — 원래 정수 거래·환불·한 생성물에 붙은 거래 여럿은 제외. 보정은 하지 않는다 → `backend/tests/test_credit_round_audit.py` |
 | `tools/gen_inventory.py` | 코드에서 뽑는 목록 `docs/inventory/*.md`(엔드포인트·환경변수·DB 테이블·백그라운드 작업) 생성기. 표준 라이브러리만·앱 import 없음. `--check` = 어긋남만 확인. 낡으면 `backend/tests/test_docs_inventory_fresh.py` 가 실패한다(§6) |
 
 **에이전트 코어**
