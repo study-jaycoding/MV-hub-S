@@ -600,6 +600,32 @@ class CreditPlanTests(unittest.TestCase):
         # 멤버 뷰엔 이력이 없다
         self.assertNotIn("history", plan_repo.plan_view("ws1", viewer=("u_a", "a@x")))
 
+    # ── 팀 잔액 합계·워크스페이스 풀 (2026-09-23) ──
+    def test_team_total_counts_each_pool_once(self) -> None:
+        """팀 워크스페이스 잔액은 **공유 풀**이다 — 같은 공간을 쓰는 사람 수만큼 더하면 안 된다.
+        종전 합계는 계정별 보고 잔액을 그냥 더해, 5명이 한 공간을 쓰면 5배로 나왔다."""
+        for email in ("a@x", "b@x", "c@x"):
+            repo.record_account_status(
+                email, {"email": email, "credits": 7865.5, "workspaces": [{**WS, "credits": 7865.5}]}
+            )
+        summary = repo.credit_summary()
+        self.assertEqual(summary["total"], 7865.5)  # 3명이 보고해도 풀은 하나
+        self.assertEqual(len(summary["accounts"]), 3)  # 사람별 줄은 그대로 준다
+        # 공간 목록이 없는 옛 보고(개인 컨텍스트)는 그 계정 잔액을 따로 더한다
+        repo.record_account_status("d@x", {"email": "d@x", "credits": 12.25})
+        self.assertEqual(repo.credit_summary()["total"], 7877.75)
+
+    def test_workspace_pool_uses_latest_report_not_list_order(self) -> None:
+        """풀 값은 **마지막으로 도착한 보고**다. 종전엔 계정 목록에서 마지막으로 읽힌 계정 값을 써서,
+        먼저 등록된 계정이 나중에 보고해도 그 값이 무시됐다. 팀 공간은 plan_type 이 enterprise 라
+        종전의 `=='team'` 필터로는 목록이 늘 비어 있었다(2026-09-23 CLI 실측)."""
+        repo.record_account_status("a@x", {"email": "a@x", "workspaces": [{**WS, "credits": 100}]})
+        repo.record_account_status("b@x", {"email": "b@x", "workspaces": [{**WS, "credits": 90}]})
+        repo.record_account_status("a@x", {"email": "a@x", "workspaces": [{**WS, "credits": 80}]})
+        pools = {w["id"]: w["credits"] for w in manage._workspace_credits()}
+        self.assertEqual(pools["ws1"], 80)
+        self.assertEqual([w["id"] for w in manage._workspace_credits("ws1")], ["ws1"])
+
 
 if __name__ == "__main__":
     unittest.main()

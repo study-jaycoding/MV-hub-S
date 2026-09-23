@@ -1020,7 +1020,8 @@ def list_account_statuses() -> dict[str, Any]:
 
 def credit_summary() -> dict[str, Any]:
     """팀 크레딧 집계 — 각 계정 에이전트가 push 때 보고한 마지막 account_status 기준.
-    생성정보엔 크레딧이 없으므로 이 '마지막 보고값'으로 전체 합계·구성원별을 만든다."""
+    생성정보엔 크레딧이 없으므로 이 '마지막 보고값'으로 전체 합계·구성원별을 만든다.
+    **합계는 워크스페이스 풀 단위**로 센다(사람 수만큼 중복해서 더하지 않는다 — 아래 주석)."""
     statuses = list_account_statuses()  # {email: {credits, plan, ...}}
     with get_connection() as conn:
         names = {
@@ -1028,7 +1029,12 @@ def credit_summary() -> dict[str, Any]:
             for r in conn.execute("SELECT email, name FROM account").fetchall()
         }
     rows: list[dict[str, Any]] = []
-    total = 0.0
+    # ★합계는 **워크스페이스 풀 단위**로 센다(2026-09-23). 팀 워크스페이스의 잔액은 한 사람 몫이 아니라
+    #  모두가 함께 쓰는 풀이라, 같은 공간을 쓰는 사람 수만큼 더하면 팀 합계가 그 배로 부풀어난다.
+    #  공간마다 값은 하나뿐이고 사람마다 보고 시점만 조금 다르므로, 마지막으로 읽힌 보고값을 쓴다.
+    #  공간 목록을 보고하지 않은 계정(개인 컨텍스트·옛 에이전트)만 그 계정 잔액을 따로 더한다.
+    pools: dict[str, float] = {}
+    solo_total = 0.0
     for email, st in statuses.items():
         if not isinstance(st, dict):
             continue
@@ -1037,8 +1043,15 @@ def credit_summary() -> dict[str, Any]:
             crv = float(cr) if cr is not None else None
         except (TypeError, ValueError):
             crv = None
-        if crv is not None:
-            total += crv
+        reported = [w for w in (st.get("workspaces") or []) if isinstance(w, dict) and w.get("id")]
+        if reported:
+            for ws in reported:
+                try:
+                    pools[str(ws["id"])] = float(ws.get("credits"))
+                except (TypeError, ValueError):
+                    continue
+        elif crv is not None:
+            solo_total += crv
         rows.append(
             {
                 "email": email,
@@ -1048,7 +1061,7 @@ def credit_summary() -> dict[str, Any]:
             }
         )
     rows.sort(key=lambda r: -(r["credits"] or 0))
-    return {"total": round(total, 2), "accounts": rows}
+    return {"total": round(sum(pools.values()) + solo_total, 2), "accounts": rows}
 
 
 def list_members(viewer_uid: Optional[str] = None) -> list[dict[str, Any]]:

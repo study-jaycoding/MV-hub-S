@@ -604,34 +604,34 @@ def project_dashboard_summary(
 
 
 def _workspace_credits(workspace_id: Optional[str] = None) -> list[dict[str, Any]]:
-    """계정들이 보고한 워크스페이스별 크레딧 풀(account status.workspaces 집계). 같은 워크스페이스는
-    가장 최근 보고값으로 dedup. CLI 가 주는 팀 과금 풀 차원 — 이미 수집된 데이터(hf_status:*) 활용."""
-    from .identity import list_account_statuses
+    """워크스페이스별 크레딧 풀 — 등록부(`workspace_registry`) 값. 등록부에는 **이름 있는(팀) 공간만**
+    들어간다(개인 컨텍스트는 이름이 없어 등록되지 않는다 — `identity.record_account_status`).
 
-    out: dict[str, dict[str, Any]] = {}
+    ★2026-09-23 두 가지를 고쳤다.
+     ① 종전엔 계정별 `hf_status:*` 보고를 훑어 **목록에서 마지막으로 읽힌 계정**의 값으로 덮었다.
+        보고 시각을 비교하지 않아 오래된 보고가 새 값을 이길 수 있었다(주석은 '가장 최근'이라고 적혀 있었다).
+        등록부는 보고가 도착할 때마다 갱신되므로 **마지막으로 도착한 보고값**이 그대로 들어 있다.
+     ② `plan_type=='team'` 으로 걸렀는데 힉스필드의 실제 팀 공간은 `enterprise` 다(2026-09-23 CLI 실측:
+        free 1 + enterprise 4). 그래서 이 목록은 늘 비어 있었다. 등록부 자체가 팀 공간만 담으므로 필터를 뺀다.
+     `user_role` 은 워크스페이스가 아니라 **사람**의 속성이라 뺐다(종전 값은 마지막으로 훑힌 계정의 역할이었다)."""
+    from .identity import list_workspace_options
+
     try:
-        statuses = list_account_statuses()
+        rows = list_workspace_options()
     except Exception:  # noqa: BLE001
         return []
-    for _email, st in (statuses or {}).items():
-        if not isinstance(st, dict):
-            continue
-        for ws in st.get("workspaces") or []:
-            if not isinstance(ws, dict) or not ws.get("id"):
-                continue
-            if workspace_id and ws.get("id") != workspace_id:
-                continue
-            # 팀 과금 풀만 — 개인(free/personal) 플랜은 제외(PM 관점에서 팀 크레딧만 의미).
-            if (ws.get("plan_type") or "").lower() != "team":
-                continue
-            out[ws["id"]] = {
-                "id": ws.get("id"),
-                "name": ws.get("name") or "(이름없음)",
-                "credits": ws.get("credits"),
-                "plan_type": ws.get("plan_type"),
-                "user_role": ws.get("user_role"),
-            }
-    return sorted(out.values(), key=lambda w: (w["credits"] is None, -(w["credits"] or 0)))
+    out = [
+        {
+            "id": r["id"],
+            "name": r.get("name") or "(이름없음)",
+            "credits": r.get("credits"),
+            "plan_type": r.get("plan_type"),
+            "member_count": r.get("member_count"),
+        }
+        for r in rows
+        if r.get("id") and (not workspace_id or r.get("id") == workspace_id)
+    ]
+    return sorted(out, key=lambda w: (w["credits"] is None, -(w["credits"] or 0)))
 
 
 # ── 프로젝트 일정/예산 ────────────────────────────────────────────────────────
