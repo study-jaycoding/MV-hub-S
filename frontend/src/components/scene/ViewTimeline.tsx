@@ -5,7 +5,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flashMsg } from "../../lib/flash";
 import { HttpError } from "../../lib/http";
-import { CloseIcon } from "../common/ViewIcons";
 
 export interface TimelineClip {
   url: string;
@@ -332,7 +331,9 @@ export function ViewTimeline({
                 {downloading ? "병합 중…" : "⬇ 다운로드"}
               </button>
             )}
-            <button className="vtl-close" title="닫기 (Esc)" onClick={onClose}><CloseIcon /></button>
+            <button className="vtl-close" title="닫기 (Esc)" onClick={onClose}>
+              ✕
+            </button>
           </div>
         </div>
         <div className="vtl-stage">

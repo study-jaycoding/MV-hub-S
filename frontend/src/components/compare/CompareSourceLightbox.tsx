@@ -1,4 +1,3 @@
-import { CloseIcon } from "../common/ViewIcons";
 export type CompareSourcePreview = { url: string; type: "image" | "video" | "audio"; name: string };
 
 export function CompareSourceLightbox({
@@ -13,7 +12,9 @@ export function CompareSourceLightbox({
   return (
     <div className="cmp-srcbox" onMouseDown={onClose}>
       <div className="cmp-srcbox-inner" onMouseDown={(e) => e.stopPropagation()}>
-        <button className="cmp-srcbox-x" title="닫기" onClick={onClose}><CloseIcon /></button>
+        <button className="cmp-srcbox-x" title="닫기" onClick={onClose}>
+          ✕
+        </button>
         {preview.type === "video" ? (
           <video src={preview.url} controls autoPlay muted loop playsInline />
         ) : preview.type === "audio" ? (

@@ -7,7 +7,6 @@ import type {
 } from "../../types";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { memberRoleRank, ProjectRolePicker } from "../admin/RolePickers";
-import { CloseIcon } from "../common/ViewIcons";
 
 type MemberCandidate = Member | WorkspaceMemberCandidate;
 
@@ -120,7 +119,7 @@ export function ProjectMembersPanel({
             <small>{project.name}</small>
           </span>
         </div>
-        <button type="button" onClick={onClose} aria-label="멤버 패널 닫기"><CloseIcon /></button>
+        <button type="button" onClick={onClose} aria-label="멤버 패널 닫기">✕</button>
       </header>
 
       <button
@@ -181,7 +180,9 @@ export function ProjectMembersPanel({
               onClick={closeAddDialog}
               disabled={adding}
               aria-label="멤버 추가 닫기"
-            ><CloseIcon /></button>
+            >
+              ✕
+            </button>
             <div className="project-member-add-symbol">👥</div>
             <h3>멤버 추가</h3>
             <p>{project.workspace_name || "전체 멤버"}에서 프로젝트 멤버를 선택하세요.</p>

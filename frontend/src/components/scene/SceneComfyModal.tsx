@@ -4,7 +4,6 @@
 import { useEffect, useRef, useState } from "react";
 import { comfyApi, type ComfyParamCandidate } from "../../lib/comfyApi";
 import type { SceneComfyCfg } from "../../lib/scenes";
-import { CloseIcon } from "../common/ViewIcons";
 
 export function SceneComfyModal({
   initial,
@@ -114,7 +113,9 @@ export function SceneComfyModal({
       <div className="scene-modelmodal scene-comfymodal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="scene-modelmodal-hd">
           <span>Comfy 워크플로우 {name ? `— ${name}` : ""}</span>
-          <button className="scene-modelmodal-x" onClick={onClose} title="닫기"><CloseIcon /></button>
+          <button className="scene-modelmodal-x" onClick={onClose} title="닫기">
+            ✕
+          </button>
         </div>
 
         <div className="scene-modelmodal-body scene-comfymodal-body">

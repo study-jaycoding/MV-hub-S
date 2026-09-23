@@ -7,7 +7,6 @@ import { useModelPolicy } from "../../lib/modelPolicy";
 import { inferModelType, stripHiddenParams, useModels } from "../../lib/useModels";
 import { SpotlightOptionsBar } from "../spotlight/SpotlightOptionsBar";
 import type { SceneModelCfg } from "../../lib/scenes";
-import { CloseIcon } from "../common/ViewIcons";
 
 export function SceneModelModal({
   initial,
@@ -76,7 +75,9 @@ export function SceneModelModal({
       <div className="scene-modelmodal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="scene-modelmodal-hd">
           <span>모델 설정</span>
-          <button className="scene-modelmodal-x" onClick={onClose} title="닫기"><CloseIcon /></button>
+          <button className="scene-modelmodal-x" onClick={onClose} title="닫기">
+            ✕
+          </button>
         </div>
         <div className="scene-modelmodal-body">
           {blockedNote ? <div className="scene-modelmodal-note">{blockedNote}</div> : null}

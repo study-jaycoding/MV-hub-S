@@ -88,7 +88,6 @@ import {
   subscribeComfyRunning,
   getComfyRunningVersion,
 } from "../../lib/sceneComfyRunningStore";
-import { CloseIcon } from "../common/ViewIcons";
 import { useSceneGenData } from "../../lib/useSceneGenData";
 import { useSceneColorActions } from "../../lib/useSceneColorActions";
 import {
@@ -4199,7 +4198,7 @@ export function SceneBoard({
                 onClick={() => setViewTextModal(null)}
                 title="닫기"
               >
-                <CloseIcon />
+                ✕
               </button>
             </div>
             <div className="scene-textview-body">
@@ -4233,11 +4232,10 @@ export function SceneBoard({
               <b>이 카드에 생성물 붙이기</b>
               <button
                 className="scene-modelmodal-x"
-                aria-label="닫기"
                 disabled={!!canvasRecovery.claimingId}
                 onClick={() => setCanvasRecovery(null)}
               >
-                <CloseIcon />
+                ✕
               </button>
             </div>
             <div className="scene-comfymodal-body scene-recovery-list">
