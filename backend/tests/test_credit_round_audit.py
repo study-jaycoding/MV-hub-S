@@ -79,6 +79,23 @@ class CreditRoundAuditTests(unittest.TestCase):
         _content_db(content, [("t1", "a@x", 1.5, "refund", "g1", 2.0)])
         self.assertEqual(audit_mod.audit(content, None, samples=0), 0)
 
+    def test_local_and_server_are_judged_separately(self) -> None:
+        """로컬이 맞아도 서버 팩트가 반올림이면 잡아야 한다 — 화면이 읽는 값은 서버 쪽이다.
+        (한쪽만 보면 통째로 ok 로 넘어간다 — Codex 코드 리뷰 2026-09-23)"""
+        content = self.dir / "content_hub.db"
+        _content_db(content, [("t1", "a@x", -1.5, "spend", "g1", 1.5)])  # 로컬은 정확
+        manage = self.dir / "manage_hub.db"
+        mconn = sqlite3.connect(manage)
+        mconn.execute(
+            "CREATE TABLE team_generation_fact (account_email TEXT, local_gen_id TEXT, real_credits REAL)"
+        )
+        mconn.execute(
+            "INSERT INTO team_generation_fact(account_email, local_gen_id, real_credits) VALUES('a@x','g1',2.0)"
+        )  # 서버만 반올림
+        mconn.commit()
+        mconn.close()
+        self.assertEqual(audit_mod.audit(content, manage, samples=0), 1)
+
     def test_server_fact_only_row_is_found(self) -> None:
         """생성물이 지워져 메트릭이 없어도 서버 팩트에 반올림 값이 남아 있으면 잡는다."""
         content = self.dir / "content_hub.db"

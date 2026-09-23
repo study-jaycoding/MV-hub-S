@@ -22,8 +22,6 @@ import signal
 import socket
 import sys
 
-import uvicorn
-
 
 def _make_stdio_crash_proof() -> None:
     """콘솔 인코딩 때문에 print 한 줄이 서버를 죽이지 못하게 한다.
@@ -53,7 +51,12 @@ def _make_stdio_crash_proof() -> None:
 
 _make_stdio_crash_proof()
 
+# ★순서 주의: stdio 보호 → **app.config**(여기서 팀 표준시 TZ 를 못 박는다) → uvicorn.
+#  Windows 런타임은 TZ 를 첫 시간 함수 사용 때 한 번만 읽으므로, 시간을 건드릴 수 있는 큰 라이브러리를
+#  먼저 import 하면 그 전 시간대가 굳어 고정이 늦을 수 있다(UTC 서버에서만 드러난다 — 2026-09-23 Codex 지적).
 from app.config import HOST, PORT  # noqa: E402 — stdio 보호를 app import 보다 먼저
+
+import uvicorn  # noqa: E402 — 표준시 고정(app.config) 뒤에 부른다
 
 
 def _parse_args(argv: list[str] | None = None) -> None:

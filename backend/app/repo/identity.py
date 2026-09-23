@@ -1028,10 +1028,15 @@ def credit_summary() -> dict[str, Any]:
             r["email"]: r["name"]
             for r in conn.execute("SELECT email, name FROM account").fetchall()
         }
+        registry = {
+            r["id"]: (None if r["credits"] is None else float(r["credits"]))
+            for r in conn.execute("SELECT id, credits FROM workspace_registry").fetchall()
+        }
     rows: list[dict[str, Any]] = []
     # ★합계는 **워크스페이스 풀 단위**로 센다(2026-09-23). 팀 워크스페이스의 잔액은 한 사람 몫이 아니라
     #  모두가 함께 쓰는 풀이라, 같은 공간을 쓰는 사람 수만큼 더하면 팀 합계가 그 배로 부풀어난다.
-    #  공간마다 값은 하나뿐이고 사람마다 보고 시점만 조금 다르므로, 마지막으로 읽힌 보고값을 쓴다.
+    #  ★풀 값은 **등록부(`workspace_registry`)** 에서 읽는다(Codex 코드 리뷰 2026-09-23): 보고를 계정 순서로
+    #   훑으면 마지막에 훑힌 계정의 **오래된** 잔액이 이길 수 있다. 등록부는 보고가 도착할 때마다 갱신된다.
     #  공간 목록을 보고하지 않은 계정(개인 컨텍스트·옛 에이전트)만 그 계정 잔액을 따로 더한다.
     pools: dict[str, float] = {}
     solo_total = 0.0
@@ -1046,10 +1051,9 @@ def credit_summary() -> dict[str, Any]:
         reported = [w for w in (st.get("workspaces") or []) if isinstance(w, dict) and w.get("id")]
         if reported:
             for ws in reported:
-                try:
-                    pools[str(ws["id"])] = float(ws.get("credits"))
-                except (TypeError, ValueError):
-                    continue
+                ws_id = str(ws.get("id") or "")
+                if ws_id:
+                    pools[ws_id] = registry.get(ws_id)  # 값은 등록부에서(없으면 아래에서 버린다)
         elif crv is not None:
             solo_total += crv
         rows.append(
@@ -1061,7 +1065,8 @@ def credit_summary() -> dict[str, Any]:
             }
         )
     rows.sort(key=lambda r: -(r["credits"] or 0))
-    return {"total": round(sum(pools.values()) + solo_total, 2), "accounts": rows}
+    pool_total = sum(value for value in pools.values() if value is not None)
+    return {"total": round(pool_total + solo_total, 2), "accounts": rows}
 
 
 def list_members(viewer_uid: Optional[str] = None) -> list[dict[str, Any]]:

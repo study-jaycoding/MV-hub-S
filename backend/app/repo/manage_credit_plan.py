@@ -359,13 +359,22 @@ def _quota_split(group: dict, emails: set[str], quotas: dict[str, Optional[float
     fixed_sum = float(sum(fixed))
     auto_count = len(emails) - len(fixed)
     if limit is None:
-        return {"quota_fixed": _shown(fixed_sum), "quota_auto": None, "quota_over": False}
+        return {"quota_fixed": fixed_sum, "quota_auto": None, "quota_over": False}
     limit = float(limit)
     auto = None if auto_count <= 0 else max(0.0, limit - fixed_sum) / auto_count
+    return {"quota_fixed": fixed_sum, "quota_auto": auto, "quota_over": fixed_sum > limit}
+
+
+def _shown_quota(split: dict[str, Any]) -> dict[str, Any]:
+    """몫 나누기를 **화면으로 내보낼 때만** 둘째 자리로 줄인다.
+
+    ★계산 중간에 줄이면 안 된다(Codex 코드 리뷰 2026-09-23): 100÷3 을 33.33 으로 먼저 깎으면
+     세 사람 몫 합이 99.99 가 되고, 33.335 를 쓴 사람의 남은 양이 −0.01 로 보인다. 원값으로 계산하고
+     표시만 줄인다."""
     return {
-        "quota_fixed": _shown(fixed_sum),
-        "quota_auto": None if auto is None else _shown(auto),
-        "quota_over": fixed_sum > limit,
+        "quota_fixed": _shown(split["quota_fixed"]),
+        "quota_auto": None if split["quota_auto"] is None else _shown(split["quota_auto"]),
+        "quota_over": split["quota_over"],
     }
 
 
@@ -394,7 +403,7 @@ def _group_summary(
     used_period, unknown_period = _sum_usage(usage, emails, day_from=cur_start)
     remaining, unknown_since = _group_remaining(group, emails, usage, today, anchor)
     return {
-        **_quota_split(group, emails, quotas or {}),
+        **_shown_quota(_quota_split(group, emails, quotas or {})),
         "id": group["id"],
         "name": group["name"],
         "monthly_limit": group.get("monthly_limit"),

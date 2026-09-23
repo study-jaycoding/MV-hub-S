@@ -17,10 +17,11 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parents[1]
 
 
-def _run(code: str, env_tz: str | None) -> str:
-    env = {k: v for k, v in os.environ.items() if k != "TZ"}
+def _run(code: str, env_tz: str | None, extra: dict[str, str] | None = None) -> str:
+    env = {k: v for k, v in os.environ.items() if k not in ("TZ", "CONTENT_HUB_TZ")}
     if env_tz is not None:
         env["TZ"] = env_tz
+    env.update(extra or {})
     env["PYTHONPATH"] = str(BACKEND)
     out = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, env=env, cwd=str(BACKEND)
@@ -34,9 +35,24 @@ class TeamTimezoneTests(unittest.TestCase):
         """TZ 가 없으면 설정 모듈이 KST 로 못 박는다 — 서버 OS 가 UTC 여도 경계가 안 밀린다."""
         self.assertEqual(_run("import os, app.config; print(os.environ['TZ'])", None), "KST-9")
 
-    def test_explicit_tz_is_respected(self) -> None:
-        """밖에서 명시한 TZ 는 덮지 않는다(다른 표준시 팀·시험)."""
-        self.assertEqual(_run("import os, app.config; print(os.environ['TZ'])", "UTC0"), "UTC0")
+    def test_outside_tz_does_not_unpin_us(self) -> None:
+        """밖에 `TZ=UTC0` 이 있어도 **우리가 덮어쓴다** — 그러지 않으면 'KST 고정'이 조용히 풀린다
+        (Codex 코드 리뷰 2026-09-23). 다른 표준시로 돌리려면 우리 변수로 명시해야 한다."""
+        self.assertEqual(_run("import os, app.config; print(os.environ['TZ'])", "UTC0"), "KST-9")
+
+    def test_our_variable_can_change_it(self) -> None:
+        env = {"CONTENT_HUB_TZ": "UTC0"}
+        self.assertEqual(_run("import os, app.config; print(os.environ['TZ'])", None, extra=env), "UTC0")
+
+    def test_server_entry_pins_before_heavy_imports(self) -> None:
+        """`serve.py` 는 **app.config 를 uvicorn 보다 먼저** 부른다 — 시간대는 런타임이 첫 시간 함수에서
+        한 번만 읽으므로, 시간을 건드릴 수 있는 큰 라이브러리를 먼저 부르면 고정이 늦는다.
+        (KST 인 개발 PC 에서는 차이가 안 보여 순서로 고정한다 — Codex 코드 리뷰 2026-09-23)"""
+        source = (BACKEND / "serve.py").read_text(encoding="utf-8")
+        self.assertLess(
+            source.index("from app.config import"), source.index("import uvicorn"),
+            "serve.py 가 uvicorn 을 app.config 보다 먼저 import 한다 — 표준시 고정이 늦을 수 있다",
+        )
 
     def test_sqlite_localtime_is_kst(self) -> None:
         """집계가 쓰는 `localtime` 이 KST 다 — 9/22 15:30Z 는 KST 로 **다음 날** 00:30 이다."""

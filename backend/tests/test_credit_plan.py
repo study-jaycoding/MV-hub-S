@@ -615,6 +615,14 @@ class CreditPlanTests(unittest.TestCase):
         repo.record_account_status("d@x", {"email": "d@x", "credits": 12.25})
         self.assertEqual(repo.credit_summary()["total"], 7877.75)
 
+    def test_team_total_uses_latest_balance_not_the_last_account_seen(self) -> None:
+        """합계도 **마지막으로 도착한 보고**를 써야 한다 — 계정을 훑는 순서로 옛 잔액이 이기면 안 된다.
+        (등록부가 단일 출처 — Codex 코드 리뷰 2026-09-23)"""
+        repo.record_account_status("a@x", {"email": "a@x", "workspaces": [{**WS, "credits": 5000}]})
+        repo.record_account_status("b@x", {"email": "b@x", "workspaces": [{**WS, "credits": 4000}]})
+        repo.record_account_status("a@x", {"email": "a@x", "workspaces": [{**WS, "credits": 3000}]})  # 최신
+        self.assertEqual(repo.credit_summary()["total"], 3000)
+
     def test_workspace_pool_uses_latest_report_not_list_order(self) -> None:
         """풀 값은 **마지막으로 도착한 보고**다. 종전엔 계정 목록에서 마지막으로 읽힌 계정 값을 써서,
         먼저 등록된 계정이 나중에 보고해도 그 값이 무시됐다. 팀 공간은 plan_type 이 enterprise 라

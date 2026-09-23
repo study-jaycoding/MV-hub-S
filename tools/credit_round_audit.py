@@ -13,7 +13,8 @@
 
 분류:
   rounded_metrics   원본은 소수인데 `generation_metrics.real_credits` 가 그 값을 반올림한 정수 — 되살릴 수 있다
-  rounded_fact      위와 같은데 서버 팩트(`team_generation_fact.real_credits`)에서 관측 — 서버도 고쳐야 한다
+  rounded_fact      서버 팩트(`team_generation_fact.real_credits`)가 반올림 — 화면이 읽는 값이라 이쪽도 고쳐야 한다
+                    (두 곳을 **각각** 본다 — 한쪽이 맞아도 다른 쪽이 틀릴 수 있다)
   purged            거래는 남았는데 생성물 메트릭이 없다(영구 삭제) — 서버 팩트만 보정 대상
   ambiguous         한 생성물에 거래가 여럿 붙었거나 같은 거래 신원이 여러 행 — 손으로 봐야 한다
   other_mismatch    반올림으로 설명되지 않는 차이 — 손으로 봐야 한다
@@ -84,38 +85,44 @@ def audit(content_db: Path, manage_db: Path | None, samples: int) -> int:
             per_gen[(r["email"], r["matched_gen_id"])] > 1
             or per_identity[(r["email"], r["created_at"], r["credits"], r["action"], r["display_name"])] > 1
         )
-        observed = stored if stored is not None else fact
-        if observed is None:
+        # ★로컬 메트릭과 서버 팩트를 **각각** 본다(Codex 코드 리뷰 2026-09-23). 한쪽만 보면
+        #  '로컬은 맞는데 서버만 반올림' 같은 경우를 통째로 ok 로 넘긴다 — 화면은 서버 팩트를 읽는다.
+        places = [("metrics", stored), ("fact", fact)]
+        if all(value is None for _, value in places):
             kinds["purged" if r["metrics_gen"] is None else "no_value"] += 1
             continue
-        if abs(observed - exact) <= EPS:
-            kinds["ok"] += 1
-            continue
-        if ambiguous:
-            kinds["ambiguous"] += 1
-            continue
-        # 옛 코드는 파이썬 round() 였다 — SQLite round() 와 .5 규칙이 달라 여기서도 파이썬으로 판정한다.
-        if _is_int(observed) and abs(observed - float(round(exact))) <= EPS and not _is_int(exact):
-            kinds["rounded_metrics" if stored is not None else "rounded_fact"] += 1
-            delta += observed - exact
+        for where, observed in places:
+            if observed is None:
+                continue
+            if abs(observed - exact) <= EPS:
+                kinds[f"ok_{where}"] += 1
+                continue
+            if ambiguous:
+                kinds["ambiguous"] += 1
+                continue
+            # 옛 코드는 파이썬 round() 였다 — SQLite round() 와 .5 규칙이 달라 여기서도 파이썬으로 판정한다.
+            if _is_int(observed) and abs(observed - float(round(exact))) <= EPS and not _is_int(exact):
+                kinds[f"rounded_{where}"] += 1
+                delta += observed - exact
+                if shown < samples:
+                    shown += 1
+                    print(
+                        f"  [반올림·{where}] {r['created_at']} {r['email']} {r['matched_gen_id']} "
+                        f"장부 {observed} ← 실제 {exact} (차이 {observed - exact:+.2f})"
+                    )
+                continue
+            kinds["other_mismatch"] += 1
             if shown < samples:
                 shown += 1
                 print(
-                    f"  [반올림] {r['created_at']} {r['email']} {r['matched_gen_id']} "
-                    f"장부 {observed} ← 실제 {exact} (차이 {observed - exact:+.2f})"
+                    f"  [설명안됨·{where}] {r['created_at']} {r['email']} {r['matched_gen_id']} "
+                    f"장부 {observed} vs 실제 {exact}"
                 )
-            continue
-        kinds["other_mismatch"] += 1
-        if shown < samples:
-            shown += 1
-            print(
-                f"  [설명안됨] {r['created_at']} {r['email']} {r['matched_gen_id']} "
-                f"장부 {observed} vs 실제 {exact}"
-            )
     conn.close()
 
     print("\n분류별 건수")
-    for kind in ("ok", "rounded_metrics", "rounded_fact", "purged", "ambiguous", "other_mismatch", "no_value"):
+    for kind in ("ok_metrics", "ok_fact", "rounded_metrics", "rounded_fact", "purged", "ambiguous",
+                 "other_mismatch", "no_value"):
         if kinds[kind]:
             print(f"  {kind:<16} {kinds[kind]}")
     repairable = kinds["rounded_metrics"] + kinds["rounded_fact"]

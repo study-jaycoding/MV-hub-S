@@ -16,9 +16,10 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 #  — 어제 저녁에 쓴 크레딧이 오늘로 잡히고, '이번 달' 경계도 같이 어긋난다.
 #  Windows 런타임은 TZ 를 **첫 사용 때 한 번만** 읽으므로(실행 중 변경은 안 먹는다 — 실측) DB·시간 함수를
 #  건드리기 전인 여기서 못 박는다. 이 모듈은 db·manage_db 가 import 하는 가장 이른 설정 모듈이다.
-#  밖에서 TZ 를 명시했으면 그대로 둔다(다른 표준시 팀·시험). `KST-9` 는 POSIX 표기라 부호가 반대다
-#  — '자오선에서 9시간 뺀 곳'이 아니라 UTC+9 를 뜻한다.
-os.environ.setdefault("TZ", "KST-9")
+#  `KST-9` 는 POSIX 표기라 부호가 반대다 — '자오선에서 9시간 뺀 곳'이 아니라 UTC+9 를 뜻한다.
+os.environ["TZ"] = os.environ.get("CONTENT_HUB_TZ") or "KST-9"
+#  ★`setdefault` 가 아니라 **덮어쓴다**(Codex 코드 리뷰 2026-09-23): 밖에 `TZ=UTC0` 이 있으면
+#   "KST 고정"이 조용히 풀렸다. 다른 표준시로 돌려야 하면 우리 변수 `CONTENT_HUB_TZ` 로 명시한다.
 
 # 데이터 루트 — DB·미디어·공유를 한 폴더 아래로 분리(backend 루트 오염 방지).
 #   data/db/      content_hub.db      (사실+오버레이 = 내 누적 DB)

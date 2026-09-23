@@ -141,13 +141,28 @@ class CreditQuotaTests(unittest.TestCase):
             self.assertIsNone(s["groups"][0]["quota_auto"])
             self.assertEqual(self._member_row(s, "a@x")["quota_effective"], 300)
             self.assertIsNone(self._member_row(s, "b@x")["quota_effective"])
-        with self.subTest("소수 — 100÷3 을 반올림하지 않는다"):
+        with self.subTest("소수 — 표시는 33.33 이지만 계산은 33.333… 그대로다"):
             s = self._group(100, ["a@x", "b@x", "c@x"])
-            self.assertEqual(s["groups"][0]["quota_auto"], 33.33)
+            self.assertEqual(s["groups"][0]["quota_auto"], 33.33)  # 화면 값(둘째 자리)
+            # ★계산은 깎인 값을 쓰면 안 된다(Codex 코드 리뷰): 33.33 으로 먼저 줄이면 세 사람 합이 99.99 가 되고
+            #  33.335 를 쓴 사람의 남은 양이 −0.01 로 보인다. 저장소 내부 값은 원값이어야 한다.
+            from app.repo.manage_credit_plan import _quota_split
+
+            raw = _quota_split({"monthly_limit": 100}, {"a@x", "b@x", "c@x"}, {})
+            self.assertAlmostEqual(raw["quota_auto"] * 3, 100.0, places=9)
         with self.subTest("숫자가 아니거나 음수면 400"):
             for bad in (-1, "x", float("inf")):
                 with self.assertRaises(ValueError):
                     self._group(100, ["a@x"], quotas={"a@x": bad})
+
+    def test_remaining_uses_unrounded_share(self) -> None:
+        """몫 33.333… 인 사람이 33.335 를 쓰면 남은 양은 **0 근처**다(−0.0017).
+        몫을 33.33 으로 먼저 깎고 빼면 −0.01 이 되어 '초과'로 보인다(Codex 코드 리뷰가 든 예)."""
+        self._group(100, ["a@x", "b@x", "c@x"])
+        manage_db.upsert_facts("a@x", "u_a", [_fact("g1", "a@x", "u_a", 33.335)])
+        view = plan_repo.plan_view("ws1", viewer=("u_a", "a@x"))["my_group"]
+        self.assertEqual(view["my_quota"], 33.33)  # 화면 값은 둘째 자리
+        self.assertEqual(view["my_remaining"], 0)  # 깎인 몫으로 계산하면 −0.01
 
     def test_personal_quota_has_no_carryover_but_group_does(self) -> None:
         """개인 몫은 이번 기간만 본다(Jay). 그룹의 이월은 'group_carryover' 로 따로 알려 준다."""
