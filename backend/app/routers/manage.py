@@ -487,10 +487,11 @@ def _usage_emails(
     if group_id:
         if not workspace_id:
             raise HTTPException(status_code=400, detail="그룹으로 보려면 워크스페이스를 먼저 고르세요")
-        settings = repo_credit.get_settings(workspace_id)
-        if not any(g["id"] == group_id for g in settings["groups"]):
+        # 가벼운 조회(두 SELECT)를 쓴다 — 설정 전체는 팩트 사용량까지 집계해서 드릴마다 부르기엔 무겁다.
+        found = repo_credit.group_emails(workspace_id, group_id)
+        if found is None:
             raise HTTPException(status_code=404, detail="이 워크스페이스의 그룹이 아닙니다")
-        emails = {m["email"] for m in settings["members"] if m["group_id"] == group_id}
+        emails = set(found)
     if account_email:
         one = {norm_email(account_email)}
         emails = one if emails is None else (emails & one)

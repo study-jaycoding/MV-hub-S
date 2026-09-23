@@ -873,6 +873,26 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
     }
 
 
+def group_emails(workspace_id: str, group_id: str) -> Optional[list[str]]:
+    """그룹에 배정된 이메일 목록. 그 그룹이 이 워크스페이스 것이 아니면 **None**(라우터가 404 로 바꾼다).
+
+    사용량 드릴이 요청마다 부르므로 **가볍게** 끝낸다 — `get_settings`/`plan_view` 는 팩트 사용량을
+    통째로 집계하므로(수만 행 스캔) 소속만 알면 되는 이 경로에 쓰면 안 된다(2026-09-23).
+    """
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        owns = conn.execute(
+            "SELECT 1 FROM workspace_credit_group WHERE id=? AND workspace_id=?", (group_id, workspace_id)
+        ).fetchone()
+        if not owns:
+            return None
+        rows = conn.execute(
+            "SELECT account_email FROM workspace_credit_group_member WHERE workspace_id=? AND group_id=?",
+            (workspace_id, group_id),
+        ).fetchall()
+    return sorted(r["account_email"] for r in rows)
+
+
 def my_models(workspace_id: str, email: str) -> dict[str, Any]:
     """본인(이메일)의 그룹이 쓸 수 있는 모델 — 생성 창·캔버스 모델 노드가 모델 목록을 거를 때 부른다(자주 호출).
     plan_view 와 달리 사용량(팩트)을 계산하지 않고, 배정·그룹·revision 을 **한 SELECT** 로 읽는다 — 배정이 없어도
