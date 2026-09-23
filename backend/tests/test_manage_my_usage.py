@@ -310,5 +310,27 @@ class MyUsageScopeTests(unittest.TestCase):
             self.assertEqual((out["usage_scope"], out["totals"]["count"]), ("mine", 2))
 
 
+    def test_screen_totals_match_csv_rows_under_the_same_filter(self) -> None:
+        """화면(표·통계)과 내려받는 CSV 는 **같은 필터**를 쓴다 — 합계가 어긋나면 안 된다.
+        종전엔 내보내기가 워크스페이스만 받아, 기간·사람을 고르고 받은 CSV 가 화면과 달랐다."""
+        from app import manage_db
+
+        cases = [
+            {},
+            {"account_emails": ["a@x"]},
+            {"workspace_id": "ws1"},
+            {"date_from": "2020-01-01", "date_to": "2099-12-31"},
+        ]
+        for filters in cases:
+            with self.subTest(filters=filters or "필터 없음"):
+                screen = manage_db.team_overview(**filters)["totals"]
+                rows = manage_db.team_usage_export(**filters)
+                self.assertAlmostEqual(screen["credits"], sum(r["credits_used"] for r in rows), places=6)
+                self.assertEqual(screen["count"], sum(r["jobs"] for r in rows))
+        with self.subTest("상세 보고서도 같은 건수를 본다"):
+            detail = manage_db.team_usage_detail_export(account_emails=["a@x"])
+            self.assertEqual(len(detail), manage_db.team_overview(account_emails=["a@x"])["totals"]["count"])
+
+
 if __name__ == "__main__":
     unittest.main()
