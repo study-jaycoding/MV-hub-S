@@ -609,7 +609,9 @@ export function WorkspaceUsageDashboard({
   const scopedModels = scopedOverview?.by_model || [];
   const scopedFolders = scopedOverview?.folder_efficiency || [];
   const maxModelCredits = Math.max(1, ...scopedModels.map((row) => row.credits));
-  const totals = overview?.totals;
+  // ★상단 통계도 드릴을 따라간다(2026-09-23, Codex 코드 리뷰): 멤버를 골랐는데 위 숫자만 팀 전체면
+  //  같은 화면에서 두 범위가 섞여 읽힌다. 드릴 결과가 아직 없으면(조회 중) 이전 값을 그대로 둔다.
+  const totals = (drillTargetKey ? scopedOverview?.totals : overview?.totals) ?? overview?.totals;
   const selectedWorkspace = workspaces.find((item) => item.id === workspaceId);
   const workspaceLabels = workspaceCommandLabels(workspaces);
   const paginationScope = baseScopeKey;
@@ -751,7 +753,10 @@ export function WorkspaceUsageDashboard({
                 </option>
               ))}
             </select>
-            <p>{`${mine ? "내 기록" : `${selectedWorkspace?.member_count ?? totals?.workers ?? 0} members`} · ${periodAppliesToAll ? chartRange.label : "전체 기간"}`}</p>
+            <p>
+              {`${mine ? "내 기록" : `${selectedWorkspace?.member_count ?? totals?.workers ?? 0} members`} · ${periodAppliesToAll ? chartRange.label : "전체 기간"}`}
+              {selectedWorker ? ` · 인원: ${selectedWorker.creator_name || "이름 없는 멤버"}` : selectedProject ? ` · 프로젝트: ${selectedProject.project_name || "미분류"}` : ""}
+            </p>
             <p className="work-source-label">
               {mine ? "출처 · 에이전트 자동 보고(내 기록만 · 삭제분 포함)" : "출처 · 에이전트 자동 보고(팀 텔레메트리 집계)"}
               {totals?.estimated_count ? (
@@ -782,6 +787,15 @@ export function WorkspaceUsageDashboard({
               <>
                 <div className="work-pop-backdrop" onClick={() => setExportMenuOpen(false)} />
                 <div className="usage-export-menu" role="menu">
+                  {/* ★무엇이 담기는지 먼저 적는다(2026-09-23, Codex 코드 리뷰): 화면에서 기간·멤버를 고르고
+                      받은 CSV 가 다른 범위였던 적이 있다. 지금 나가는 조건을 그대로 보여 준다. */}
+                  <div className="usage-export-scope">
+                    {`담기는 범위 · ${periodAppliesToAll ? chartRange.label : "전체 기간"}`}
+                    {selectedWorker ? ` · 인원 ${selectedWorker.creator_name || "이름 없는 멤버"}` : ""}
+                    {selectedProject ? ` · 프로젝트 ${selectedProject.project_name || "미분류"}` : ""}
+                    {periodAppliesToAll && chartModel ? ` · 모델 ${modelDisplayName(chartModel)}` : ""}
+                    {!periodAppliesToAll ? " (기간을 담으려면 아래 차트의 '전체 적용'을 켜세요)" : ""}
+                  </div>
                   <button type="button" role="menuitem" onClick={() => pickExport("hf")}>
                     <b>Export usage report</b>
                     <span>힉스필드 멤버 사용량 보고서와 같은 모양(날짜·멤버·모델 합계)</span>
@@ -859,7 +873,13 @@ export function WorkspaceUsageDashboard({
           ) : null}
 
           {/* 크레딧 풀·그룹 한도·잔액 추이 — 고리·통계 격자 바로 아래(Jay 2026-09-10). 워크스페이스를 고른 때만. */}
-          <CreditPoolSection scope={scope} workspaceId={workspaceId || undefined} reloadSignal={reloadSignal} canAdjust={canCreateProject} />
+          <CreditPoolSection
+            scope={scope}
+            workspaceId={workspaceId || undefined}
+            reloadSignal={reloadSignal}
+            canAdjust={canCreateProject}
+            focusMember={selectedWorker ? { uid: selectedWorker.creator_uid, name: selectedWorker.creator_name } : null}
+          />
 
           <div className={`usage-two-columns${mine ? " single" : ""}`}>
             {/* 일반 멤버는 본인 한 명뿐이라 멤버 카드를 빼고 모델 카드를 한 줄 전체로 */}

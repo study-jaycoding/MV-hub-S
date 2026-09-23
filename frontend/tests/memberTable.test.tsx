@@ -734,3 +734,18 @@ it("정기 충전은 손으로 적고, 비우면 프로젝트 예산 합계로 �
   await settle();
   expect(mocks.saveCreditPlan).toHaveBeenLastCalledWith("ws1", { revision: 6, note: "메모", recurring_topup: 24491.5 });
 });
+
+it("구서버(몫을 모르는 서버)면 몫 칸을 잠그고 이유를 적는다", async () => {
+  // 구서버는 quota_source 키 자체가 없다. 그대로 열어 두면 저장해도 조용히 무시된다.
+  const data = table(3, [row("a@x", { group_id: "g1" })]);
+  data.credit!.members = [
+    { email: "a@x", name: "a", workspace_role: "member", is_available: true, group_id: "g1" },
+  ];
+  mocks.memberTable.mockResolvedValue(data);
+  await mount();
+  await openSheet("크레딧 관리");
+  const input = host.querySelector<HTMLInputElement>('[aria-label="a 몫"]')!;
+  expect(input.disabled).toBe(true);
+  const header = [...host.querySelectorAll("th")].find((th) => th.textContent === "몫")!;
+  expect(header.getAttribute("title")).toContain("공유 서버를 업데이트");
+});

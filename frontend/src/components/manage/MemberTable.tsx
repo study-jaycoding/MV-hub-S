@@ -774,6 +774,9 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
   // 사람별 몫·남은 몫은 크레딧 설정 원문에 있다(이메일 기준). 구서버 응답엔 없으므로 undefined 를 그대로 다룬다.
   const creditMembers = new Map((data.credit?.members || []).map((member) => [member.email, member]));
   const quotaOf = (email: string) => creditMembers.get(email);
+  // ★서버가 몫 계약을 모르면(구서버) 저장해도 조용히 무시된다 — 칸을 잠그고 이유를 적는다(Codex 코드 리뷰).
+  const quotaSupported = (data.credit?.members || []).some((member) => member.quota_source !== undefined);
+  const quotaLock = quotaSupported ? "" : "공유 서버를 업데이트하면 사람별 몫을 정할 수 있습니다";
   const rows = data.rows.filter((row) => {
     if (sheet === "projects") return true;
     if (!matchesMemberQuery(row, query)) return false;
@@ -1250,7 +1253,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                   <th className="mtable-sticky">이름</th>
                   <th>이메일</th>
                   <th>그룹</th>
-                  <th className={canGroup ? "ed num" : "ro num"} title={lock(canGroup, "PM(프로젝트 생성 권한)만 바꿀 수 있습니다")}>몫</th>
+                  <th className={canGroup && quotaSupported ? "ed num" : "ro num"} title={quotaLock || lock(canGroup, "PM(프로젝트 생성 권한)만 바꿀 수 있습니다")}>몫</th>
                   <th className="num">사용 크레딧</th>
                   <th className="num">남은 몫</th>
                   <th className="num">금액 미상</th>
@@ -1270,7 +1273,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                           decimals
                           placeholder={quotaOf(row.email)?.quota_effective != null ? `자동 ${credits(quotaOf(row.email)!.quota_effective!)}` : "자동"}
                           value={quotaOf(row.email)?.quota ?? null}
-                          disabled={!canGroup || creditBusy || Boolean(groupEditor)}
+                          disabled={!canGroup || !quotaSupported || creditBusy || Boolean(groupEditor)}
                           onCommit={(value) => saveMemberQuota(row.email, value)}
                         />
                       )}
@@ -1326,7 +1329,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                         decimals
                         placeholder={derivedTopup === null ? "예산 합계" : `예산 합계 ${credits(derivedTopup)}`}
                         value={data.credit.plan.recurring_topup ?? null}
-                        disabled={!canGroup || creditBusy || Boolean(groupEditor)}
+                        disabled={!canGroup || !quotaSupported || creditBusy || Boolean(groupEditor)}
                         onCommit={saveRecurringTopup}
                       />
                     </td>

@@ -186,12 +186,16 @@ export function CreditPoolSection({
   workspaceId,
   reloadSignal = 0,
   canAdjust = false,
+  focusMember = null,
 }: {
   scope: "all" | "mine";
   workspaceId?: string;
   reloadSignal?: number;
   /** '추정' 맞추기 단추 — 저장(PUT credit-plan)은 전역 create_project 라 read_all 만 있는 열람자에겐 숨긴다(눌러도 403). */
   canAdjust?: boolean;
+  /** 대시보드에서 멤버를 고른 상태 — 이 카드의 숫자는 **워크스페이스 전체**라는 것을 밝히려고 받는다
+   *  (사람별 몫은 관리 표 '크레딧' 시트에 있다). 고른 사람에 맞춰 숫자를 바꾸지 않는다. */
+  focusMember?: { uid: string | null; name: string | null } | null;
 }) {
   const [view, setView] = useState<CreditPlanView | null>(null);
   const [error, setError] = useState("");
@@ -262,6 +266,8 @@ export function CreditPoolSection({
 
   if (scope === "mine") {
     const mine = view.my_group;
+    // 구서버는 몫 계약을 모른다 — 키가 아예 없으면(undefined) '몫 없음(null)'과 구분해 안내한다.
+    const quotaUnsupported = Boolean(mine) && mine!.my_quota_source === undefined;
     return (
       <div className="usage-card credit-card">
         <div className="usage-card-head">
@@ -279,8 +285,20 @@ export function CreditPoolSection({
                 그룹 이월은 섞지 않고 아래 '그룹 여유분'으로 따로 보여 준다. */}
             <div>
               <span>내 몫 {periodSuffix(mine.limit_period)}</span>
-              <strong>{mine.my_quota == null ? "제한 없음" : cr(mine.my_quota)}</strong>
-              <em>{mine.my_quota_source === "manual" ? "따로 정해진 몫" : mine.my_quota_source === "auto" ? `그룹 한도 ${mine.monthly_limit == null ? "∞" : cr(mine.monthly_limit)} ÷ ${mine.member_count}명` : "그룹 한도 없음"}</em>
+              {/* ★구서버(이 계약을 모르는 서버)는 `my_quota_source` 키 자체가 없다. 그때 null 을 '제한 없음'으로
+                  읽으면 몫이 없는 것처럼 보인다 — 서버 업데이트가 필요하다고 밝힌다(Codex 코드 리뷰). */}
+              <strong>
+                {quotaUnsupported ? "—" : mine.my_quota == null ? "제한 없음" : cr(mine.my_quota)}
+              </strong>
+              <em>
+                {quotaUnsupported
+                  ? "서버 업데이트 뒤 표시됩니다"
+                  : mine.my_quota_source === "manual"
+                    ? "따로 정해진 몫"
+                    : mine.my_quota_source === "auto"
+                      ? `그룹 한도 ${mine.monthly_limit == null ? "∞" : cr(mine.monthly_limit)} ÷ ${mine.member_count}명`
+                      : "그룹 한도 없음"}
+              </em>
             </div>
             <div>
               <span>{periodUsageLabel(mine.limit_period)} 내 사용</span>
@@ -292,7 +310,7 @@ export function CreditPoolSection({
             </div>
             <div className={`left tone-${remainingTone(mine.my_remaining ?? null, mine.my_quota ?? null)}`}>
               <span>내 남은 몫</span>
-              <strong>{mine.my_remaining == null ? "∞" : cr(mine.my_remaining)}</strong>
+              <strong>{quotaUnsupported ? "—" : mine.my_remaining == null ? "∞" : cr(mine.my_remaining)}</strong>
               <em>
                 {mine.my_remaining != null && mine.my_remaining < 0
                   ? `내 몫보다 ${cr(Math.abs(mine.my_remaining))} 더 썼습니다`
@@ -318,7 +336,14 @@ export function CreditPoolSection({
     <>
       <div className="usage-card credit-card">
         <div className="usage-card-head">
-          <div><h3>크레딧 풀 · {cycleLabel(view, pool?.topup_day)}</h3></div>
+          <div>
+            <h3>크레딧 풀 · {cycleLabel(view, pool?.topup_day)}</h3>
+            {focusMember ? (
+              <span className="credit-scope-hint">
+                {`인원 · ${focusMember.name || "이름 없는 멤버"} 을(를) 고른 중 — 이 카드는 워크스페이스 전체이고, 사람별 몫은 관리 표 '크레딧' 에 있습니다`}
+              </span>
+            ) : null}
+          </div>
           <span>{view.configured ? `월 충전=예산 한도(매월 ${pool?.topup_day ?? 1}일 기준) · 잔액은 힉스필드 보고 · 사용은 팀 기록 장부` : "프로젝트 설정에서 예산 한도(매월)와 그룹을 적으면 채워집니다"}</span>
         </div>
         {pool ? (
