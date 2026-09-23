@@ -10,6 +10,7 @@ import {
   limitTotal,
   mergeTopupsFromServer,
   newGroupId,
+  autoShareLabel,
   niceCeil,
   stripDecimal,
   overrideBody,
@@ -229,4 +230,10 @@ it("몫·정기 충전 입력은 소수점을 지우지 않는다", () => {
   expect(formatDecimal("12.")).toBe("12."); // 입력 중인 끝점은 지우지 않는다
   expect(formatDecimal(".5")).toBe("0.5");
   expect(formatDecimal("")).toBe("");
+});
+
+it("자동 몫은 나누어떨어지지 않으면 근사 표시를 붙인다", () => {
+  expect(autoShareLabel(300)).toBe("300");        // 딱 나눠지면 그대로
+  expect(autoShareLabel(100 / 3)).toBe("≈33.33"); // 33.333… 은 근사
+  expect(autoShareLabel(null)).toBe("—");
 });

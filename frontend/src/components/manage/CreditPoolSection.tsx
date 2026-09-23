@@ -7,6 +7,7 @@ import { isHttpStatus, isRouteMissing } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
 import { formatCredits } from "../../lib/formatCredits";
 import {
+  autoShareLabel,
   cycleLabel,
   limitTotal,
   niceCeil,
@@ -409,7 +410,7 @@ export function CreditPoolSection({
                   <td className="tnum">{group.monthly_limit == null ? "∞" : `${n(group.monthly_limit)} ${periodSuffix(group.limit_period)}`}</td>
                   {/* 1인 몫 = (한도 − 직접 정한 몫들) ÷ 나머지 인원. 직접 정한 사람이 있으면 그 합도 알려 준다. */}
                   <td className="tnum">
-                    {group.quota_auto == null ? "—" : n(group.quota_auto)}
+                    {autoShareLabel(group.quota_auto)}
                     {group.quota_fixed ? (
                       <span className={`credit-est${group.quota_over ? " bad" : ""}`}>
                         {` · 직접 ${n(group.quota_fixed)}${group.quota_over ? " (한도 초과)" : ""}`}

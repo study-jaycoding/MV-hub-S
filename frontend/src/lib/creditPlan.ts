@@ -1,3 +1,5 @@
+import { formatCredits } from "./formatCredits";
+
 // 크레딧 풀 · 그룹 한도 · 잔액 추이 — 타입과 순수 계산(대시보드 카드·프로젝트 설정 창 공용).
 // 힉스필드가 한도를 강제하고 우리는 보여주기·경고만 한다(Jay 2026-09-10). 서버 계약은
 // backend/app/repo/manage_credit_plan.py — 남은 양(이월 포함)·미상 건수는 서버가 계산해 준다.
@@ -272,6 +274,14 @@ export function stripThousands(text: string): string {
 export function formatThousands(digits: string): string {
   const clean = stripThousands(digits);
   return clean ? Number(clean).toLocaleString("en-US") : "";
+}
+
+/** 자동으로 나눈 몫 표기 — 나누어떨어지지 않으면 `≈` 를 붙인다(33.333… 을 33.33 으로 보여 주므로).
+ *  사람이 직접 정한 몫은 정확한 값이라 이 표기를 쓰지 않는다. */
+export function autoShareLabel(value: number | null | undefined): string {
+  if (value == null) return "—";
+  const shown = formatCredits(value);
+  return Number(shown.replace(/,/g, "")) === value ? shown : `≈${shown}`;
 }
 
 /** 소수를 허용하는 숫자 입력 정리 — **크레딧은 소수다**(−1.5·0.12·33.33). 사람별 몫·정기 충전 칸이 쓴다.

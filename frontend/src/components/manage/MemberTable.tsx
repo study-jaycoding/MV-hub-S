@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { api } from "../../api";
 import {
   draftFromSettings,
+  autoShareLabel,
   formatDecimal,
   formatThousands,
   GROUP_COLOR_PALETTE,
@@ -1271,7 +1272,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                           label={row.name}
                           field="몫"
                           decimals
-                          placeholder={quotaOf(row.email)?.quota_effective != null ? `자동 ${credits(quotaOf(row.email)!.quota_effective!)}` : "자동"}
+                          placeholder={quotaOf(row.email)?.quota_effective != null ? `자동 ${autoShareLabel(quotaOf(row.email)!.quota_effective)}` : "자동"}
                           value={quotaOf(row.email)?.quota ?? null}
                           disabled={!canGroup || !quotaSupported || creditBusy || Boolean(groupEditor)}
                           onCommit={(value) => saveMemberQuota(row.email, value)}
