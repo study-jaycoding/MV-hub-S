@@ -21,6 +21,8 @@ export function ColorFilterDots({
   onToggleGray,
   finalOnly,
   onToggleFinal,
+  apply,
+  disabled,
 }: {
   colorDots: ColorDotDef[];
   activeColors: Set<string>;
@@ -29,13 +31,17 @@ export function ColorFilterDots({
   onToggleGray?: () => void;
   finalOnly?: boolean;
   onToggleFinal?: () => void;
+  // 같은 점을 '고른 카드에 입히는' 단추로도 쓴다(Resolve 프로젝트 카드) — 모양·동작은 같고 설명 글만 다르다.
+  apply?: boolean;
+  disabled?: boolean; // 고른 카드가 없을 때
 }) {
   return (
     <>
       {onToggleGray && (
         <button
           className={"af-dot af-dot-gray" + (grayOn ? " on" : "")}
-          title="비활성화(회색)된 카드만 숨기기 (다른 dot 과 반대)"
+          disabled={disabled}
+          title={apply ? "고른 카드 비활성(회색) — 단축키 d" : "비활성화(회색)된 카드만 숨기기 (다른 dot 과 반대)"}
           onClick={onToggleGray}
         />
       )}
@@ -59,7 +65,8 @@ export function ColorFilterDots({
               borderColor: on ? "#fff" : "rgba(0,0,0,0.4)",
               boxShadow: on ? `0 0 0 2px ${hex}, 0 0 11px ${hex}` : "none",
             }}
-            title={`${k.toUpperCase()} 컬러만 보기`}
+            disabled={disabled}
+            title={apply ? `고른 카드에 ${k.toUpperCase()} 컬러 — 단축키 ${k}` : `${k.toUpperCase()} 컬러만 보기`}
             onClick={() => onToggleColor(hex)}
           />
         );

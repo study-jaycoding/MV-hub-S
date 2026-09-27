@@ -45,6 +45,12 @@ const READY_ELSEWHERE = {
 let host: HTMLDivElement;
 let root: Root;
 
+// 카드는 한 번 누르면 고르고 **두 번 누르면 연다**(Jay 2026-09-28) — 여는 시험은 이 도움 함수로.
+const openCard = (card: HTMLElement) => {
+  card.click();
+  card.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+};
+
 async function settle() {
   await act(async () => {
     await Promise.resolve();
@@ -107,7 +113,7 @@ it("프로젝트 카드를 누르면 이름과 Resolve 폴더 경로를 그대�
   const card = [...host.querySelectorAll<HTMLButtonElement>(".resolve-project-card")]
     .find((button) => button.textContent?.includes("Episode 1"));
 
-  await act(async () => card!.click());
+  await act(async () => openCard(card!));
 
   expect(api.openResolveLibraryProject).toHaveBeenCalledExactlyOnceWith(
     "뻘뻘뻘",
@@ -144,7 +150,7 @@ it("프로젝트를 여는 동안 라이브러리 연결을 동시에 시작할 
   await settle();
 
   await act(async () => {
-    host.querySelector<HTMLButtonElement>(".resolve-project-card")!.click();
+    openCard(host.querySelector<HTMLButtonElement>(".resolve-project-card")!);
     await Promise.resolve();
   });
 
@@ -305,7 +311,8 @@ it("머리글은 에셋 툴바와 같은 CSS 를 받고, 같은 단추는 같은
   expect(host.querySelector(".resolve-project-header")?.classList.contains("assets-crumb")).toBe(true);
   expect(host.querySelector(".resolve-project-tools")?.classList.contains("assets-tools")).toBe(true);
   const tools = [...host.querySelectorAll(".resolve-project-tools > *")].map((el) => el.className);
-  expect(tools).toEqual(["rp-pair", "size-slider", "layout-toggle", "asset-sort"]); // 에셋 툴바와 같은 순서
+  // 에셋 툴바와 같은 순서 + d·r·g·b 는 사슬(다시 연결) **왼쪽**(Jay 2026-09-28)
+  expect(tools).toEqual(["assets-filters rp-marks", "rp-pair", "size-slider", "layout-toggle", "asset-sort"]);
   const pair = [...host.querySelectorAll(".rp-pair > *")].map((el) => el.className);
   expect(pair).toEqual([
     "af-btn rp-icon-btn rp-relink",
@@ -434,7 +441,7 @@ it("Resolve 가 이 라이브러리의 프로젝트를 열고 있으면 그 카�
   expect(chip.getAttribute("aria-label")).toBe("Resolve 연결됨 · 지금 열린 프로젝트 Mud_Ai");
   expect(chip.getAttribute("title")).toBe(chip.getAttribute("aria-label"));
 
-  await act(async () => card.click());
+  await act(async () => openCard(card));
   expect(mocks.open).toHaveBeenCalledTimes(1); // 상태가 낡았을 수 있다 — 막지 않는다(Codex P1)
 });
 
@@ -466,7 +473,7 @@ it("Resolve 를 켜는 동안에는 창으로 돌아와도 상태를 묻지 않�
   mocks.launchState.mockReturnValueOnce(new Promise((resolve) => { windowUp = resolve; }));
   act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
   await settle();
-  await act(async () => host.querySelector<HTMLButtonElement>(".resolve-project-card")!.click());
+  await act(async () => openCard(host.querySelector<HTMLButtonElement>(".resolve-project-card")!));
   await settle();
   const before = mocks.status.mock.calls.length;
 
@@ -496,7 +503,7 @@ it("Resolve 에 이름 없는 빈 새 프로젝트가 열려 있어도 묻지 �
   const card = [...host.querySelectorAll<HTMLButtonElement>(".resolve-project-card")]
     .find((button) => button.textContent?.includes("Episode 1"))!;
 
-  await act(async () => card.click());
+  await act(async () => openCard(card));
   await settle();
 
   expect(mocks.open).toHaveBeenCalledExactlyOnceWith("뻘뻘뻘", "@davinci", "Episode 1", "Episodes", "");
@@ -510,7 +517,7 @@ it("이름 없는 새 프로젝트에 작업이 들어 있으면 서버가 멈�
   act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
   await settle();
 
-  await act(async () => host.querySelector<HTMLButtonElement>(".resolve-project-card")!.click());
+  await act(async () => openCard(host.querySelector<HTMLButtonElement>(".resolve-project-card")!));
   await settle();
 
   expect(mocks.open).toHaveBeenCalledTimes(1);
@@ -527,7 +534,7 @@ it("열기가 '준비 안 됨'(503)이면 Resolve 를 켜고 창이 뜨면 다�
   act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
   await settle();
 
-  await act(async () => host.querySelector<HTMLButtonElement>(".resolve-project-card")!.click());
+  await act(async () => openCard(host.querySelector<HTMLButtonElement>(".resolve-project-card")!));
   await settle();
 
   expect(mocks.launch).toHaveBeenCalledTimes(1);
@@ -541,7 +548,7 @@ it("400 같은 진짜 실패면 Resolve 를 켜지 않고 이유를 보여 준�
   act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
   await settle();
 
-  await act(async () => host.querySelector<HTMLButtonElement>(".resolve-project-card")!.click());
+  await act(async () => openCard(host.querySelector<HTMLButtonElement>(".resolve-project-card")!));
   await settle();
 
   expect(mocks.launch).not.toHaveBeenCalled();
@@ -555,7 +562,7 @@ it("Resolve 를 켜는 동안 화면을 떠나면 늦게라도 열기를 보내�
   act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
   await settle();
 
-  await act(async () => host.querySelector<HTMLButtonElement>(".resolve-project-card")!.click());
+  await act(async () => openCard(host.querySelector<HTMLButtonElement>(".resolve-project-card")!));
   await settle();
   expect(host.querySelector(".rp-busy")?.textContent).toBe("Resolve 켜는 중…");
 
@@ -573,7 +580,7 @@ it("Resolve 를 켰으면 서버가 준 켜기 번호를 붙여 다시 연다 �
   act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
   await settle();
 
-  await act(async () => host.querySelector<HTMLButtonElement>(".resolve-project-card")!.click());
+  await act(async () => openCard(host.querySelector<HTMLButtonElement>(".resolve-project-card")!));
   await settle();
 
   expect(mocks.open.mock.calls.map((call) => call[4])).toEqual(["", "L1"]);
@@ -705,7 +712,7 @@ it("이미 켜진 Resolve 가 다른 작업 중이라 기다리면 '켜는 중'�
   act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
   await settle();
 
-  await act(async () => host.querySelector<HTMLButtonElement>(".resolve-project-card")!.click());
+  await act(async () => openCard(host.querySelector<HTMLButtonElement>(".resolve-project-card")!));
   await settle();
   expect(host.querySelector(".rp-busy")?.textContent).toBe("기다리는 중…");
 
@@ -713,6 +720,70 @@ it("이미 켜진 Resolve 가 다른 작업 중이라 기다리면 '켜는 중'�
   await settle();
   expect(mocks.open).toHaveBeenCalledTimes(2);
   expect(host.textContent).toContain("Mud_Ai 프로젝트를 열었습니다.");
+});
+
+it("한 번 누르면 고르기만 하고, 두 번 눌러야 연다", async () => {
+  act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
+  await settle();
+  const card = () =>
+    [...host.querySelectorAll<HTMLButtonElement>(".resolve-project-card")].find((button) =>
+      button.textContent?.includes("Episode 1"),
+    )!;
+
+  await act(async () => card().click());
+  expect(mocks.open).not.toHaveBeenCalled(); // 한 번 누르는 것으로는 Resolve 를 건드리지 않는다
+  expect(card().className).toContain("picked");
+
+  await act(async () => openCard(card()));
+  await settle();
+  expect(api.openResolveLibraryProject).toHaveBeenCalledExactlyOnceWith(
+    "뻘뻘뻘",
+    "@davinci",
+    "Episode 1",
+    "Episodes",
+    "",
+  );
+});
+
+it("머리글 d·r·g·b 는 고른 카드에 입힌다 — 고른 게 없으면 꺼져 있고, 빈 자리를 누르면 풀린다", async () => {
+  act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
+  await settle();
+  const dots = () => [...host.querySelectorAll<HTMLButtonElement>(".rp-marks .af-dot")];
+  const cardOf = (name: string) =>
+    [...host.querySelectorAll<HTMLButtonElement>(".resolve-project-card")].find((button) =>
+      button.textContent?.includes(name),
+    )!;
+
+  expect(dots()).toHaveLength(4); // d · r · g · b
+  expect(dots().every((dot) => dot.disabled)).toBe(true); // 고른 카드가 없으면 누를 수 없다
+
+  await act(async () => cardOf("Mud_Ai").click());
+  await act(async () =>
+    cardOf("Episode 1").dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true })),
+  );
+  expect(host.querySelectorAll(".resolve-project-card.picked")).toHaveLength(2); // Ctrl 은 더하기
+
+  await act(async () => dots()[1].click()); // r
+  expect([...host.querySelectorAll<HTMLElement>(".rp-colorbar")].map((bar) => bar.style.background)).toEqual([
+    "rgb(255, 69, 58)",
+    "rgb(255, 69, 58)",
+  ]);
+  expect(dots()[1].className).toContain("on"); // 고른 것이 모두 같은 색이면 켜져 보인다
+
+  await act(async () => dots()[0].click()); // d
+  expect(host.querySelectorAll(".resolve-project-card.deactivated")).toHaveLength(2);
+
+  await act(async () =>
+    host.querySelector(".resolve-project-body")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
+  );
+  expect(host.querySelectorAll(".resolve-project-card.picked")).toHaveLength(0);
+  expect(dots().every((dot) => dot.disabled)).toBe(true);
+
+  // 푼 뒤 Shift 로 누르면 '보이지 않는 옛 기준'부터 잡히지 않는다 — 그 카드 하나만.
+  await act(async () =>
+    cardOf("Episode 1").dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true })),
+  );
+  expect(host.querySelectorAll(".resolve-project-card.picked")).toHaveLength(1);
 });
 
 it("마우스를 올린 카드에 r·d — 색 띠와 비활성이 그 카드에만, 다시 열어도 남고 다른 라이브러리엔 안 번진다", async () => {

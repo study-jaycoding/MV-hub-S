@@ -10,7 +10,7 @@ import {
   type ResolveConnectionStatus,
 } from "../../lib/resolveTransfer";
 import { makeStore } from "../../lib/storage";
-import { ASSET_COLOR_BY_KEY } from "../common/ColorFilterDots";
+import { ASSET_COLOR_BY_KEY, ASSET_COLOR_DOTS, ColorFilterDots } from "../common/ColorFilterDots";
 import { GridIcon, ListIcon } from "../common/ViewIcons";
 import { AssetSortMenu } from "./AssetSortMenu";
 import type { AssetSortDir } from "./assetsViewModel";
@@ -183,45 +183,85 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
   );
   const [offKeys, setOffKeys] = useState<Set<string>>(() => LS.loadSet(`disabled.${project}`));
   const hoverRef = useRef("");
+  // 고른 카드 — 한 번 누르면 고르고, 두 번 누르면 연다(Jay 2026-09-28). 색·비활성은 고른 것 전체에.
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const pickedRef = useRef(picked);
+  pickedRef.current = picked;
+  const anchorRef = useRef(""); // Shift 로 범위를 고를 때의 기준
 
   useEffect(() => LS.setJSON(`colors.${project}`, colorMarks), [colorMarks, project]);
   useEffect(() => LS.setSet(`disabled.${project}`, offKeys), [offKeys, project]);
 
-  // 마우스를 올린(없으면 초점이 있는) 카드에 r·g·b 로 색, d 로 비활성 — 에셋 카드와 같은 손놀림.
+  // 고른 것 풀기 — Shift 범위의 기준도 같이 지운다(안 지우면 안 보이는 카드부터 범위가 잡힌다, Codex).
+  const clearPick = useCallback(() => {
+    anchorRef.current = "";
+    setPicked((prev) => (prev.size ? new Set() : prev));
+  }, []);
+
+  // 색·비활성 적용 — 고른 것이 모두 같은 표시면 끄고(토글), 아니면 모두 켠다(에셋·생성물 카드와 같은 규칙).
+  const applyColor = useCallback((keys: string[], hex: string) => {
+    if (!keys.length) return;
+    setColorMarks((prev) => {
+      const next = { ...prev };
+      const allSame = keys.every((key) => prev[key] === hex);
+      keys.forEach((key) => {
+        if (allSame) delete next[key];
+        else next[key] = hex;
+      });
+      return next;
+    });
+  }, []);
+  const applyOff = useCallback((keys: string[]) => {
+    if (!keys.length) return;
+    setOffKeys((prev) => {
+      const next = new Set(prev);
+      const allOn = keys.every((key) => prev.has(key));
+      keys.forEach((key) => (allOn ? next.delete(key) : next.add(key)));
+      return next;
+    });
+  }, []);
+
+  // 고른 카드에, 고른 것이 없으면 마우스를 올린(없으면 초점이 있는) 카드에 r·g·b 로 색, d 로 비활성.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       const from = event.target as HTMLElement | null;
       if (from && (from.tagName === "INPUT" || from.tagName === "TEXTAREA" || from.isContentEditable)) return;
-      const key =
+      // 정렬 메뉴가 열려 있으면 키는 그 메뉴 것이다 — Escape 는 메뉴가 닫고, r/g/b/d 도 카드에 새지 않는다(Codex).
+      if (document.querySelector(".asort-menu")) return;
+      if (event.key === "Escape") {
+        clearPick();
+        return;
+      }
+      const one =
         hoverRef.current ||
         (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(".resolve-project-card")?.dataset
           .rpKey ||
         "";
-      if (!key) return;
+      const keys = pickedRef.current.size ? [...pickedRef.current] : one ? [one] : [];
+      if (!keys.length) return;
       const lower = event.key.toLowerCase();
       const hex = ASSET_COLOR_BY_KEY[lower];
       if (hex) {
         event.preventDefault();
-        setColorMarks((prev) => {
-          const next = { ...prev };
-          // 같은 색을 다시 누르면 꺼진다.
-          if (next[key] === hex) delete next[key];
-          else next[key] = hex;
-          return next;
-        });
+        applyColor(keys, hex);
       } else if (lower === "d") {
         event.preventDefault();
-        setOffKeys((prev) => {
-          const next = new Set(prev);
-          if (!next.delete(key)) next.add(key);
-          return next;
-        });
+        applyOff(keys);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [applyColor, applyOff, clearPick]);
+
+  // 목록이 바뀌면 사라진 프로젝트는 고른 것에서 뺀다 — 안 그러면 보이지도 않는 카드에 머리글 점이 켜진다(Codex).
+  useEffect(() => {
+    const alive = new Set(projects.map(projectKey));
+    setPicked((prev) => {
+      const next = new Set([...prev].filter((key) => alive.has(key)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [projects]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -451,6 +491,40 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
   // 머리글 끝의 한 줄 — 작업 결과(열었습니다·실패 이유), 빈 화면이면 라이브러리 경로.
   const headerNote = empty ? libraryPath : message;
 
+  // 카드 고르기 — 한 번 누르면 그 카드만, Ctrl/⌘ 은 더하고 빼기, Shift 는 기준 카드부터 범위(격자 차례대로).
+  const pickCard = (item: ResolveLibraryProject, event: ReactMouseEvent<HTMLElement>) => {
+    const key = projectKey(item);
+    if (event.shiftKey && anchorRef.current) {
+      const order = sorted.map(projectKey);
+      const from = order.indexOf(anchorRef.current);
+      const to = order.indexOf(key);
+      if (from >= 0 && to >= 0) {
+        setPicked(new Set(order.slice(Math.min(from, to), Math.max(from, to) + 1)));
+        return;
+      }
+    }
+    anchorRef.current = key;
+    if (event.ctrlKey || event.metaKey) {
+      setPicked((prev) => {
+        const next = new Set(prev);
+        if (!next.delete(key)) next.add(key);
+        return next;
+      });
+      return;
+    }
+    setPicked(new Set([key]));
+  };
+  // 카드 밖(빈 자리)을 누르면 고른 것을 푼다 — 격자·리스트 어디서나.
+  const clearPickOnBlank = (event: ReactMouseEvent<HTMLElement>) => {
+    if (!(event.target as HTMLElement).closest(".resolve-project-card")) clearPick();
+  };
+  const pickedKeys = [...picked];
+  // 머리글 점의 켜짐 = 고른 것이 **모두** 그 표시일 때(누르면 꺼진다 — 키와 같은 규칙).
+  const allPickedColored = (hex: string) =>
+    pickedKeys.length > 0 && pickedKeys.every((key) => colorMarks[key] === hex);
+  const allPickedOff = pickedKeys.length > 0 && pickedKeys.every((key) => offKeys.has(key));
+  const pickedColors = new Set(ASSET_COLOR_DOTS.map(({ hex }) => hex).filter(allPickedColored));
+
   const onScrub = (event: ReactMouseEvent<HTMLElement>, key: string) => {
     const rect = event.currentTarget.getBoundingClientRect();
     if (rect.width <= 0) return;
@@ -475,6 +549,19 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
         </div>
         {!empty && !loading && (
           <div className="resolve-project-tools assets-tools">
+            {/* d·r·g·b — 고른 카드에 비활성·색을 입힌다(Jay 2026-09-28: 다시 연결 왼쪽). 에셋 툴바의 점과 같은 모양이되
+                여기선 '거르기'가 아니라 '입히기'다. 고른 카드가 없으면 꺼 둔다. */}
+            <div className="assets-filters rp-marks">
+              <ColorFilterDots
+                apply
+                disabled={!pickedKeys.length}
+                colorDots={ASSET_COLOR_DOTS}
+                activeColors={pickedColors}
+                onToggleColor={(hex) => applyColor(pickedKeys, hex)}
+                grayOn={allPickedOff}
+                onToggleGray={() => applyOff(pickedKeys)}
+              />
+            </div>
             {/* 에셋 툴바의 S·T·C 자리 — 사슬(다시 연결)과 ⓘ(정보). 목록이 보여도 Resolve 쪽에 라이브러리가 안 붙어
                 있을 수 있어(열기가 그때 거절한다) 다시 연결을 남긴다. */}
             <div className="rp-pair">
@@ -561,7 +648,11 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
           </div>
         </div>
       ) : (
-        <div className="resolve-project-body" style={{ "--rp-scale": scale } as CSSProperties}>
+        <div
+          className="resolve-project-body"
+          style={{ "--rp-scale": scale } as CSSProperties}
+          onMouseDown={clearPickOnBlank}
+        >
           {sections.map((section) => (
             <Fragment key={section.key}>
               {groupByDate && <div className="gen-date-header">{section.label}</div>}
@@ -581,19 +672,28 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
                     <button
                       type="button"
                       className={
-                        "resolve-project-card" + (isOpen ? " is-open" : "") + (off ? " deactivated" : "")
+                        "resolve-project-card" +
+                        (isOpen ? " is-open" : "") +
+                        (off ? " deactivated" : "") +
+                        (picked.has(key) ? " picked" : "")
                       }
                       key={key}
                       data-rp-key={key}
+                      aria-pressed={picked.has(key)} // 누르는 뜻이 '열기'에서 '고르기'로 바뀌었다 — 읽어 주는 프로그램에도 알린다
                       disabled={busy}
-                      onClick={() => void openProject(item)}
+                      // 한 번 = 고르기, 두 번 = 열기(Jay 2026-09-28). 키보드는 Enter 로 연다.
+                      onClick={(event) => pickCard(item, event)}
+                      onDoubleClick={() => void openProject(item)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") void openProject(item);
+                      }}
                       onMouseEnter={() => {
                         hoverRef.current = key;
                       }}
                       onMouseLeave={() => {
                         if (hoverRef.current === key) hoverRef.current = "";
                       }}
-                      title={`${item.name} 프로젝트 열기${off ? " · 비활성 표시" : ""}`}
+                      title={`${item.name} — 두 번 누르면 열기${off ? " · 비활성 표시" : ""}`}
                     >
                       <span
                         className="rp-thumb"
