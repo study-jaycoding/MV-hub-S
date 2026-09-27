@@ -714,3 +714,48 @@ it("이미 켜진 Resolve 가 다른 작업 중이라 기다리면 '켜는 중'�
   expect(mocks.open).toHaveBeenCalledTimes(2);
   expect(host.textContent).toContain("Mud_Ai 프로젝트를 열었습니다.");
 });
+
+it("마우스를 올린 카드에 r·d — 색 띠와 비활성이 그 카드에만, 다시 열어도 남고 다른 라이브러리엔 안 번진다", async () => {
+  const cardOf = (name: string) =>
+    [...host.querySelectorAll<HTMLButtonElement>(".resolve-project-card")].find((button) =>
+      button.textContent?.includes(name),
+    )!;
+  const press = (key: string) =>
+    act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    });
+  const remount = async (project: string) => {
+    act(() => root.unmount());
+    root = createRoot(host);
+    act(() => root.render(<ResolveProjectBrowser project={project} dir="@davinci" />));
+    await settle();
+  };
+
+  await remount("뻘뻘뻘");
+  // React 는 mouseover/mouseout 으로 enter/leave 를 만든다 — 실제 마우스처럼 mouseover 를 쏜다.
+  await act(async () => {
+    cardOf("Episode 1").dispatchEvent(
+      new MouseEvent("mouseover", { bubbles: true, relatedTarget: document.body }),
+    );
+  });
+
+  await press("r");
+  // 색은 에셋 카드와 같은 팔레트(#ff453a)
+  expect(cardOf("Episode 1").querySelector<HTMLElement>(".rp-colorbar")!.style.background).toBe(
+    "rgb(255, 69, 58)",
+  );
+  expect(host.querySelectorAll(".rp-colorbar")).toHaveLength(1); // 올려놓은 카드에만
+
+  await press("d");
+  expect(cardOf("Episode 1").className).toContain("deactivated");
+  expect(cardOf("Mud_Ai").className).not.toContain("deactivated");
+
+  await press("r"); // 같은 색을 다시 누르면 꺼진다
+  expect(host.querySelectorAll(".rp-colorbar")).toHaveLength(0);
+
+  await remount("뻘뻘뻘"); // 다음에 열어도 남아 있다(localStorage)
+  expect(cardOf("Episode 1").className).toContain("deactivated");
+
+  await remount("다른쇼"); // 저장은 라이브러리별 — 같은 이름이라도 번지지 않는다
+  expect(host.querySelector(".resolve-project-card.deactivated")).toBeNull();
+});

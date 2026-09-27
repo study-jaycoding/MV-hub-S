@@ -10,6 +10,7 @@ import {
   type ResolveConnectionStatus,
 } from "../../lib/resolveTransfer";
 import { makeStore } from "../../lib/storage";
+import { ASSET_COLOR_BY_KEY } from "../common/ColorFilterDots";
 import { GridIcon, ListIcon } from "../common/ViewIcons";
 import { AssetSortMenu } from "./AssetSortMenu";
 import type { AssetSortDir } from "./assetsViewModel";
@@ -173,6 +174,55 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
   useEffect(() => LS.set("groupByDate", groupByDate ? "1" : "0"), [groupByDate]);
   useEffect(() => LS.set("scale", String(scale)), [scale]);
   useEffect(() => LS.set("info", showInfo ? "1" : "0"), [showInfo]);
+
+  // 색 마커·비활성 — 이 PC 에만 남는 시각 표시다(서버도 asset_meta 도 모른다, Jay 2026-09-28: "assets 이니 나만 보이면 된다").
+  // 색은 에셋 카드와 같은 팔레트(ASSET_COLOR_BY_KEY), 저장은 라이브러리(Assets 프로젝트)별로 나눠 같은 이름이 섞이지 않게.
+  // 이 컴포넌트는 project·dir 이 바뀌면 다시 붙으므로(AssetsView 의 key) 처음 값만 읽으면 된다.
+  const [colorMarks, setColorMarks] = useState<Record<string, string>>(
+    () => LS.loadJSON<Record<string, string>>(`colors.${project}`) ?? {},
+  );
+  const [offKeys, setOffKeys] = useState<Set<string>>(() => LS.loadSet(`disabled.${project}`));
+  const hoverRef = useRef("");
+
+  useEffect(() => LS.setJSON(`colors.${project}`, colorMarks), [colorMarks, project]);
+  useEffect(() => LS.setSet(`disabled.${project}`, offKeys), [offKeys, project]);
+
+  // 마우스를 올린(없으면 초점이 있는) 카드에 r·g·b 로 색, d 로 비활성 — 에셋 카드와 같은 손놀림.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const from = event.target as HTMLElement | null;
+      if (from && (from.tagName === "INPUT" || from.tagName === "TEXTAREA" || from.isContentEditable)) return;
+      const key =
+        hoverRef.current ||
+        (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(".resolve-project-card")?.dataset
+          .rpKey ||
+        "";
+      if (!key) return;
+      const lower = event.key.toLowerCase();
+      const hex = ASSET_COLOR_BY_KEY[lower];
+      if (hex) {
+        event.preventDefault();
+        setColorMarks((prev) => {
+          const next = { ...prev };
+          // 같은 색을 다시 누르면 꺼진다.
+          if (next[key] === hex) delete next[key];
+          else next[key] = hex;
+          return next;
+        });
+      } else if (lower === "d") {
+        event.preventDefault();
+        setOffKeys((prev) => {
+          const next = new Set(prev);
+          if (!next.delete(key)) next.add(key);
+          return next;
+        });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -525,14 +575,25 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
                     : frames[0];
                   const isOpen = openKey === key;
                   const detail = details[key];
+                  const color = colorMarks[key];
+                  const off = offKeys.has(key);
                   return (
                     <button
                       type="button"
-                      className={"resolve-project-card" + (isOpen ? " is-open" : "")}
+                      className={
+                        "resolve-project-card" + (isOpen ? " is-open" : "") + (off ? " deactivated" : "")
+                      }
                       key={key}
+                      data-rp-key={key}
                       disabled={busy}
                       onClick={() => void openProject(item)}
-                      title={`${item.name} 프로젝트 열기`}
+                      onMouseEnter={() => {
+                        hoverRef.current = key;
+                      }}
+                      onMouseLeave={() => {
+                        if (hoverRef.current === key) hoverRef.current = "";
+                      }}
+                      title={`${item.name} 프로젝트 열기${off ? " · 비활성 표시" : ""}`}
                     >
                       <span
                         className="rp-thumb"
@@ -548,6 +609,13 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
                         {scrubbing && <span className="rp-scrub" style={{ left: `${scrub.x * 100}%` }} />}
                         {opening === key && <span className="rp-busy">{phase}</span>}
                       </span>
+                      {/* 색은 카드 아래 띠(생성물 .card-colorbar 와 같은 자리), 리스트에서는 에셋 리스트와 같은 왼쪽 세로 띠. */}
+                      {color && (
+                        <span
+                          className={layout === "list" ? "list-color-bar" : "rp-colorbar"}
+                          style={{ background: color }}
+                        />
+                      )}
                       <span className="resolve-project-copy">
                         <strong>{item.name}</strong>
                         {showInfo && detail && <span className="rp-format">{formatLine(detail)}</span>}
