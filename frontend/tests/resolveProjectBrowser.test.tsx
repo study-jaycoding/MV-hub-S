@@ -772,9 +772,13 @@ it("고른 카드 여러 장에 키로 색·비활성 — 빈 자리를 누르�
   await press("d");
   expect(host.querySelectorAll(".resolve-project-card.deactivated")).toHaveLength(2);
 
-  await act(async () =>
-    host.querySelector(".resolve-project-body")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
-  );
+  // 빈 자리를 눌렀다 놓으면 풀린다(끌면 상자 고르기 — 그래서 놓을 때 판정한다)
+  await act(async () => {
+    host
+      .querySelector(".resolve-project-body")!
+      .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    window.dispatchEvent(new MouseEvent("mouseup"));
+  });
   expect(host.querySelectorAll(".resolve-project-card.picked")).toHaveLength(0);
 
   // 푼 뒤 Shift 로 누르면 '보이지 않는 옛 기준'부터 잡히지 않는다 — 그 카드 하나만.
@@ -782,6 +786,58 @@ it("고른 카드 여러 장에 키로 색·비활성 — 빈 자리를 누르�
     cardOf("Episode 1").dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true })),
   );
   expect(host.querySelectorAll(".resolve-project-card.picked")).toHaveLength(1);
+});
+
+it("여러 장 고르기 — 빈 자리에서 끌면 상자로, Ctrl+A 는 보이는 것 전부(에셋 격자와 같은 방식)", async () => {
+  act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
+  await settle();
+  const body = () => host.querySelector(".resolve-project-body")!;
+  const pickedCount = () => host.querySelectorAll(".resolve-project-card.picked").length;
+
+  // 빈 자리에서 끌기 — 상자가 뜨고, 지나간 카드가 모두 고른 것이 된다
+  await act(async () => {
+    body().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 0, clientY: 0, button: 0 }));
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 400, clientY: 300, buttons: 1 }));
+  });
+  expect(host.querySelector(".assets-marquee")).not.toBeNull();
+  expect(pickedCount()).toBe(2);
+
+  await act(async () => window.dispatchEvent(new MouseEvent("mouseup", { clientX: 400, clientY: 300 })));
+  expect(host.querySelector(".assets-marquee")).toBeNull(); // 상자는 사라지고 고른 것은 남는다
+  expect(pickedCount()).toBe(2);
+
+  // 끌지 않고 빈 자리를 누르면 풀린다
+  await act(async () => {
+    body().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 5, clientY: 5, button: 0 }));
+    window.dispatchEvent(new MouseEvent("mouseup", { clientX: 5, clientY: 5 }));
+  });
+  expect(pickedCount()).toBe(0);
+
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true }));
+  });
+  expect(pickedCount()).toBe(2);
+
+  // 고른 채로 카드 위에서 끌면(옮기려다 흔든 것) 고른 것이 한 장으로 줄지 않는다
+  const card = host.querySelector<HTMLButtonElement>(".resolve-project-card")!;
+  await act(async () => {
+    card.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 10, clientY: 10, button: 0 }));
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 60, clientY: 40, buttons: 1 }));
+    window.dispatchEvent(new MouseEvent("mouseup", { clientX: 60, clientY: 40 }));
+    card.click(); // 브라우저가 이어서 보내는 클릭
+  });
+  expect(host.querySelector(".assets-marquee")).toBeNull(); // 카드에서 시작한 끌기는 상자를 만들지 않는다
+  expect(pickedCount()).toBe(2);
+
+  // 창 밖에서 놓아 mouseup 을 못 받아도, 단추를 뗀 채 움직이면 끌기가 끝나 있다
+  await act(async () => {
+    body().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 0, clientY: 0, button: 0 }));
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 200, buttons: 1 }));
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 320, clientY: 210, buttons: 0 }));
+  });
+  expect(host.querySelector(".assets-marquee")).toBeNull();
+  await act(async () => window.dispatchEvent(new MouseEvent("mousemove", { clientX: 10, clientY: 10 })));
+  expect(host.querySelector(".assets-marquee")).toBeNull(); // 단추를 안 눌러도 선택이 계속 바뀌지 않는다
 });
 
 it("머리글 d·r·g·b 는 에셋 탭과 같은 거르기 — 그 색만 보이고, 회색은 비활성을 숨긴다", async () => {

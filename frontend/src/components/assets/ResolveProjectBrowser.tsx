@@ -9,8 +9,10 @@ import {
   getResolveConnectionStatus,
   type ResolveConnectionStatus,
 } from "../../lib/resolveTransfer";
+import { computeMarquee, marqueeHits, type MarqueeRect } from "../../lib/marquee";
 import { toggleSetValue } from "../../lib/setUtils";
 import { makeStore } from "../../lib/storage";
+import { addWindowMouseDrag, removeWindowMouseDrag } from "../../lib/windowDrag";
 import { ASSET_COLOR_BY_KEY, ASSET_COLOR_DOTS, ColorFilterDots } from "../common/ColorFilterDots";
 import { GridIcon, ListIcon } from "../common/ViewIcons";
 import { AssetSortMenu } from "./AssetSortMenu";
@@ -193,6 +195,19 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
   const pickedRef = useRef(picked);
   pickedRef.current = picked;
   const anchorRef = useRef(""); // Shift 로 범위를 고를 때의 기준
+  // 끌어서 상자로 고르기(러버밴드) — 에셋 격자와 같은 공용 계산(lib/marquee)을 쓴다.
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    x: number;
+    y: number;
+    moved: boolean;
+    base: string[];
+    additive: boolean;
+    fromCard: boolean; // 카드 위에서 시작한 끌기 — 상자는 안 그리고 '클릭 아님'만 기억한다
+  } | null>(null);
+  const suppressClickRef = useRef(false); // 끌고 난 뒤의 클릭은 고르기로 치지 않는다(Codex)
+  const [marquee, setMarquee] = useState<MarqueeRect | null>(null);
+  const visibleKeysRef = useRef<string[]>([]); // Ctrl+A 가 쓸 '지금 보이는 카드'
 
   useEffect(() => LS.setJSON(`colors.${project}`, colorMarks), [colorMarks, project]);
   useEffect(() => LS.setSet(`disabled.${project}`, offKeys), [offKeys, project]);
@@ -231,9 +246,15 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
   // 고른 카드에, 고른 것이 없으면 마우스를 올린(없으면 초점이 있는) 카드에 r·g·b 로 색, d 로 비활성.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
       const from = event.target as HTMLElement | null;
       if (from && (from.tagName === "INPUT" || from.tagName === "TEXTAREA" || from.isContentEditable)) return;
+      // Ctrl/⌘+A = 지금 보이는 카드 전부 고르기(에셋 격자와 같은 단축키).
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        setPicked(new Set(visibleKeysRef.current));
+        return;
+      }
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
       // 정렬 메뉴가 열려 있으면 키는 그 메뉴 것이다 — Escape 는 메뉴가 닫고, r/g/b/d 도 카드에 새지 않는다(Codex).
       if (document.querySelector(".asort-menu")) return;
       if (event.key === "Escape") {
@@ -443,6 +464,8 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
     return list;
   }, [activeColors, colorMarks, grayOn, offKeys, projects]);
 
+  visibleKeysRef.current = visible.map(projectKey);
+
   // 화면에서 사라진 프로젝트(목록이 바뀌었거나 점으로 걸러졌다)는 고른 것에서 뺀다 —
   // 안 그러면 보이지도 않는 카드에 키가 먹는다(Codex).
   useEffect(() => {
@@ -515,6 +538,10 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
 
   // 카드 고르기 — 한 번 누르면 그 카드만, Ctrl/⌘ 은 더하고 빼기, Shift 는 기준 카드부터 범위(격자 차례대로).
   const pickCard = (item: ResolveLibraryProject, event: ReactMouseEvent<HTMLElement>) => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false; // 방금 끈 것이다 — 고른 것을 그대로 둔다
+      return;
+    }
     const key = projectKey(item);
     if (event.shiftKey && anchorRef.current) {
       const order = sorted.map(projectKey);
@@ -536,9 +563,61 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
     }
     setPicked(new Set([key]));
   };
-  // 카드 밖(빈 자리)을 누르면 고른 것을 푼다 — 격자·리스트 어디서나.
-  const clearPickOnBlank = (event: ReactMouseEvent<HTMLElement>) => {
-    if (!(event.target as HTMLElement).closest(".resolve-project-card")) clearPick();
+  // 빈 자리에서 끌면 상자로 여러 장 고른다(에셋 격자와 같은 방식). 끌지 않고 놓으면 고른 것을 푼다.
+  const dragUpRef = useRef<() => void>(() => {});
+  const onDragMove = useCallback((event: MouseEvent) => {
+    const drag = dragRef.current;
+    const grid = bodyRef.current;
+    if (!drag || !grid) return;
+    // 창 밖에서 단추를 놓으면 mouseup 이 안 온다 — 돌아왔을 때 눌린 단추가 없으면 끝난 것으로 본다(Codex).
+    if (event.buttons === 0) {
+      dragUpRef.current();
+      return;
+    }
+    if (!drag.moved && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 5) return;
+    drag.moved = true;
+    if (drag.fromCard) return; // 카드에서 시작한 끌기는 상자를 만들지 않는다(카드 옮기기 기능 없음)
+    const { rect, b } = computeMarquee(grid, drag, event);
+    setMarquee(rect);
+    setPicked(
+      marqueeHits<string>(
+        grid,
+        ".resolve-project-card",
+        b,
+        drag.additive ? drag.base : [],
+        (el) => el.dataset.rpKey,
+      ),
+    );
+  }, []);
+  const onDragUp = useCallback(() => {
+    const drag = dragRef.current;
+    dragRef.current = null;
+    removeWindowMouseDrag(onDragMove, onDragUp);
+    setMarquee(null);
+    if (!drag) return;
+    // 끌고 난 뒤에 오는 클릭은 고르기가 아니다 — 안 그러면 여러 장 고른 것이 한 장으로 줄어든다(Codex).
+    suppressClickRef.current = drag.moved;
+    if (!drag.moved && !drag.additive && !drag.fromCard) clearPick(); // 빈 자리를 그냥 눌렀다 = 풀기
+  }, [clearPick, onDragMove]);
+  dragUpRef.current = onDragUp;
+  useEffect(() => () => removeWindowMouseDrag(onDragMove, onDragUp), [onDragMove, onDragUp]);
+
+  const onBodyMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    const fromCard = !!target.closest(".resolve-project-card");
+    // 카드 말고 다른 조작거리(날짜줄의 label·input 등) 위에서는 아무것도 시작하지 않는다.
+    if (!fromCard && target.closest("button, label, input")) return;
+    if (!fromCard) event.preventDefault(); // 빈 자리에서 끌 때 글자가 잡히지 않게(카드는 초점·클릭을 살린다)
+    dragRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      moved: false,
+      base: [...picked],
+      additive: event.ctrlKey || event.metaKey || event.shiftKey,
+      fromCard,
+    };
+    addWindowMouseDrag(onDragMove, onDragUp);
   };
   const onScrub = (event: ReactMouseEvent<HTMLElement>, key: string) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -663,9 +742,16 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
       ) : (
         <div
           className="resolve-project-body"
+          ref={bodyRef}
           style={{ "--rp-scale": scale } as CSSProperties}
-          onMouseDown={clearPickOnBlank}
+          onMouseDown={onBodyMouseDown}
         >
+          {marquee && (
+            <div
+              className="assets-marquee"
+              style={{ left: marquee.l, top: marquee.t, width: marquee.w, height: marquee.h }}
+            />
+          )}
           {/* 라이브러리에 프로젝트는 있는데 점 거르기에 하나도 안 걸린 경우 — 빈 화면만 남지 않게 까닭을 적는다. */}
           {!sorted.length && <div className="resolve-project-state">점으로 걸러서 보이는 프로젝트가 없습니다.</div>}
           {sections.map((section) => (

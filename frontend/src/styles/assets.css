@@ -184,7 +184,9 @@
   color: var(--muted); font-size: 11px; line-height: 1.5; opacity: 0.8;
 }
 /* 날짜로 나누면 (날짜줄 + 격자)가 여러 벌 나오므로 여백은 이 바깥 칸이 갖는다. */
+/* position:relative = 끌어서 고르는 상자(.assets-marquee)의 기준 칸. */
 .resolve-project-body {
+  position: relative;
   flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; padding: 14px 22px 28px;
 }
 .resolve-project-body .gen-date-header { font-size: 13px; cursor: default; }
