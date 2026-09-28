@@ -11,9 +11,9 @@ import hashlib
 import os
 import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import BinaryIO, Optional, Protocol
 
 from . import media_cache
 from .async_tools import to_thread_non_abandon
@@ -120,8 +120,20 @@ async def stream_upload_tmp(
     tmp = dest_dir / f".upload-{uuid.uuid4().hex}.part"
     digest = hashlib.sha256()
     written = 0
+    target: Optional[BinaryIO] = None
+    target_holder: list[BinaryIO] = []
+
+    def _open_part() -> None:
+        # to_thread_non_abandon이 open 완료 뒤 취소를 다시 올려도 반환 핸들을 잃지 않게
+        # 바깥 홀더에 먼저 소유권을 넘긴다(Windows는 열린 파일을 unlink할 수 없다).
+        target_holder.append(tmp.open("xb"))
+
     try:
-        with tmp.open("xb") as target:
+        # dest_dir 는 NAS 일 수 있다. open/close(Flush 포함)도 write와 같은 non-abandon
+        # 스레드 관문을 타야 죽은 공유가 이벤트 루프 전체를 세우지 않는다.
+        await to_thread_non_abandon(_open_part)
+        target = target_holder[0]
+        try:
             while True:
                 chunk = await upload.read(UPLOAD_CHUNK_SIZE)
                 if not chunk:
@@ -131,9 +143,22 @@ async def stream_upload_tmp(
                     raise UploadTooLarge()
                 digest.update(chunk)
                 await to_thread_non_abandon(target.write, chunk)
+        except BaseException:
+            # 원래 읽기/쓰기/취소 오류가 close 오류에 가려지지 않게 한다.
+            with suppress(BaseException):
+                await to_thread_non_abandon(target.close)
+            raise
+        await to_thread_non_abandon(target.close)
         return tmp, written, digest.hexdigest()
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        # open 스레드는 성공했지만 요청 취소가 뒤늦게 전파되면 대입 전이라 target은 None이다.
+        # 홀더의 핸들을 먼저 닫아야 Windows에서도 .part를 지울 수 있다.
+        if target is None and target_holder:
+            with suppress(BaseException):
+                await to_thread_non_abandon(target_holder[0].close)
+        # open이 파일을 만든 뒤 취소됐거나 close가 실패해도 .part 정리를 끝낸 뒤 원래 오류를 올린다.
+        with suppress(BaseException):
+            await to_thread_non_abandon(tmp.unlink, missing_ok=True)
         raise
 
 

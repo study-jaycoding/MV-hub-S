@@ -67,7 +67,7 @@ from ..services import (
     thumbs,
     upload_limits,
 )
-from ..services.path_safety import safe_join
+from ..services.path_safety import path_comparison_key, safe_join, unc_for_drive
 
 
 _require_mount_manager = _assets_access.require_mount_manager
@@ -166,6 +166,26 @@ def _validate_upload_batch(files: list[UploadFile]) -> None:
             ),
             headers=upload_limits.limit_headers(_UPLOAD_TOTAL_MAX_BYTES),
         ) from exc
+
+
+def _prepare_project_import_dir(project: str, request: Request) -> tuple[Path, Path, bool]:
+    """프로젝트의 imports 폴더를 준비한다. NAS 경로를 만지므로 async 라우트는 스레드에서 부른다."""
+    proj_dir = _safe_project_dir(project, request)
+    if not proj_dir:
+        raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
+    dest = (proj_dir / _PROMPT_IMPORT_PROJECT).resolve()
+    try:
+        dest.relative_to(proj_dir)
+    except ValueError:
+        raise HTTPException(status_code=500, detail="imports 경로 오류") from None
+    try:
+        dest.mkdir(parents=True)
+        created = True
+    except FileExistsError:
+        if not dest.is_dir():
+            raise HTTPException(status_code=500, detail="imports 경로가 폴더가 아닙니다")
+        created = False
+    return proj_dir, dest, created
 
 
 def _owner_mounts(owner: str) -> list[dict[str, str]]:
@@ -910,16 +930,12 @@ async def upload_capture(request: Request, project: str = Form(""), file: Upload
     없으므로(화면 캡처·새로 그린 것) 반입처럼 '이미 있는 원본 찾기'는 하지 않고 바로 저장한다."""
     if not project or project == _COMBINED_INTERNAL:
         raise HTTPException(status_code=400, detail="프로젝트를 먼저 고르세요")
-    proj_dir = _safe_project_dir(project, request)
-    if not proj_dir:
-        raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
     _validate_upload_batch([file])
-    cap_dir = (proj_dir / _PROMPT_IMPORT_PROJECT).resolve()
-    try:
-        cap_dir.relative_to(proj_dir)
-    except ValueError:
-        raise HTTPException(status_code=500, detail="imports 경로 오류")
-    cap_dir.mkdir(parents=True, exist_ok=True)
+    # _safe_project_dir·resolve·mkdir 는 죽은 NAS 에서 오래 막힐 수 있다. async 이벤트 루프 밖에서,
+    # 폴더 쓰기가 취소돼도 중간에 버려지지 않는 관문으로 실행한다(upload_assets 와 같은 계약).
+    proj_dir, cap_dir, _created = await to_thread_non_abandon(
+        _prepare_project_import_dir, project, request
+    )
     try:
         tmp, size, digest = await _stream_upload_tmp(file, cap_dir)
     except _UploadTooLarge:
@@ -981,7 +997,7 @@ async def upload_capture(request: Request, project: str = Form(""), file: Upload
 # 동작하고, reference 가 참조 중이면 지우지 않는다(코덱스 합의). 단일 프로세스 전제의
 # 인메모리 토큰(TTL 15분) — 앱 재시작이면 토큰 소멸 = 정리 포기(비파괴 방향).
 _CAPTURE_DISCARD_TTL = 15 * 60.0
-# token -> (프로젝트, 상대경로, 확정 당시 절대경로, 내용 지문, 만료 monotonic)
+# token -> (프로젝트, 상대경로, 확정 당시 물리경로 비교키, 내용 지문, 만료 monotonic)
 #  ★2026-09-28: 캡처가 프로젝트 폴더로 옮겨가면서 파일명 하나로는 대상을 특정할 수 없다.
 #  지우기 직전에 **그때 그 파일이 맞는지**(절대경로·지문)까지 확인한다 — 15분 사이 프로젝트
 #  폴더 설정이 바뀌면 같은 상대경로가 다른 파일을 가리킬 수 있다(Codex 지적).
@@ -989,6 +1005,14 @@ _capture_discard_tokens: dict[str, tuple[str, str, str, str, float]] = {}
 # RLock: reuse 확정(_finalize_reused_capture)과 삭제(discard)가 같은 락 경계를 공유해야
 # 'B 가 reused 로 고른 파일을 A 의 discard 가 그 사이 지우는' 경합이 닫힌다(코덱스 BLOCK).
 _capture_discard_lock = threading.RLock()
+
+
+def _capture_path_key(target: Path) -> str:
+    """같은 물리 파일의 드라이브 대소문자·extended path·알려진 UNC 별칭을 한 키로 맞춘다."""
+    resolved = path_comparison_key(target.resolve())
+    mapped = unc_for_drive(str(resolved))
+    comparable = path_comparison_key(Path(mapped or str(resolved)))
+    return os.path.normcase(str(comparable))
 
 
 def _commit_capture_with_discard_token(
@@ -1006,7 +1030,9 @@ def _commit_capture_with_discard_token(
         target, reused = asset_io.find_or_commit_media(tmp, cap_dir, name, digest, "image", size)
         rel = target.relative_to(proj_dir).as_posix()
         if reused:
-            _invalidate_capture_discard_tokens(project, rel)
+            # project 이름이 달라도 같은 물리 폴더를 가리킬 수 있다. 논리 토큰이 아니라 파일 키로
+            # 옛 정리 권한을 없애야 다른 별칭에서 재사용한 파일을 먼저 올린 쪽이 지우지 못한다.
+            _invalidate_capture_discard_tokens(target)
             if not target.exists():
                 raise HTTPException(status_code=409, detail="캡처가 방금 정리되었습니다 — 다시 시도하세요")
             return target, True, None
@@ -1015,22 +1041,24 @@ def _commit_capture_with_discard_token(
 
 def _issue_capture_discard_token(project: str, rel: str, target: Path, digest: str) -> str:
     now = time.monotonic()
+    target_key = _capture_path_key(target)
     with _capture_discard_lock:
         # 만료 청소 + 같은 파일을 가리키는 옛 토큰 제거(새 업로드가 상태의 기준)
-        for t, (p, r, _abs, _sha, exp) in list(_capture_discard_tokens.items()):
-            if exp < now or (p == project and r == rel):
+        for t, (_p, _r, key, _sha, exp) in list(_capture_discard_tokens.items()):
+            if exp < now or key == target_key:
                 _capture_discard_tokens.pop(t, None)
         token = secrets.token_urlsafe(16)
         _capture_discard_tokens[token] = (
-            project, rel, str(target), digest, now + _CAPTURE_DISCARD_TTL,
+            project, rel, target_key, digest, now + _CAPTURE_DISCARD_TTL,
         )
     return token
 
 
-def _invalidate_capture_discard_tokens(project: str, rel: str) -> None:
+def _invalidate_capture_discard_tokens(target: Path) -> None:
+    target_key = _capture_path_key(target)
     with _capture_discard_lock:
-        for t, (p, r, _abs, _sha, _exp) in list(_capture_discard_tokens.items()):
-            if p == project and r == rel:
+        for t, (_p, _r, key, _sha, _exp) in list(_capture_discard_tokens.items()):
+            if key == target_key:
                 _capture_discard_tokens.pop(t, None)
 
 
@@ -1054,7 +1082,7 @@ def discard_capture(body: CaptureDiscardIn, request: Request):
         entry = _capture_discard_tokens.pop(body.token, None)
         if entry is None or entry[4] < now:
             raise HTTPException(status_code=404, detail="정리 토큰이 없거나 만료되었습니다")
-        project, rel, committed_path, committed_sha = entry[0], entry[1], entry[2], entry[3]
+        project, rel, committed_key, committed_sha = entry[0], entry[1], entry[2], entry[3]
         with get_connection() as conn:
             row = conn.execute(
                 "SELECT 1 FROM reference WHERE file_path = ? LIMIT 1",
@@ -1068,12 +1096,19 @@ def discard_capture(body: CaptureDiscardIn, request: Request):
             raise HTTPException(status_code=400, detail="잘못된 경로")
         # ★올릴 때의 그 파일이 맞을 때만 지운다 — 그 사이 프로젝트 폴더 설정이 바뀌었거나
         #  같은 자리를 다른 파일이 차지했으면 지우지 않고 보류한다(Codex 2026-09-28).
-        if str(target) != committed_path or _sha256_file(target) != committed_sha:
+        if _capture_path_key(target) != committed_key:
             raise HTTPException(status_code=409, detail="그때 올린 파일이 아니라 지우지 않습니다")
-        try:
-            target.unlink(missing_ok=True)
-        except OSError:
-            raise HTTPException(status_code=409, detail="파일을 지우지 못했습니다")
+        # 이미 없으면 정리 목적은 달성됐다. 파일이 있을 때만 지문을 확인해 같은 자리에 생긴
+        # 다른 파일을 지우지 않는다. 토큰은 위에서 pop 했으므로 이 성공도 1회용이다.
+        if target.exists():
+            if _sha256_file(target) != committed_sha:
+                raise HTTPException(status_code=409, detail="그때 올린 파일이 아니라 지우지 않습니다")
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                raise HTTPException(status_code=409, detail="파일을 지우지 못했습니다")
+        # 한계: 업로드 재사용 없이 다른 project 별칭으로 직접 참조한 경우 exact logical 조회는
+        # 그 별칭을 못 본다. 완전 차단은 reference 에 물리경로 색인을 추가하는 별도 DB 작업이다.
     asset_tree.invalidate_project_tree(proj_dir)
     invalidate_size_index(proj_dir)
     return {"ok": True}
@@ -1179,21 +1214,14 @@ async def upload_reference_import(
     dir 폼 인자는 받지 않는다 — 목적지가 그때그때 달라지면 옛 'CH/import/import' 오염이 재발한다."""
     if not project or project == _COMBINED_INTERNAL:
         raise HTTPException(status_code=400, detail="프로젝트를 먼저 고르세요")
-    project_dir = _safe_project_dir(project, request)
-    if not project_dir:
-        raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
     out_project = project
-    dest = (project_dir / _PROMPT_IMPORT_PROJECT).resolve()
-    try:
-        dest.relative_to(project_dir)
-    except ValueError:
-        raise HTTPException(status_code=500, detail="imports 경로 오류")
     # 임시 .part 는 imports 안에 받는다 — 프로젝트 루트에 받으면 루트 쓰기 권한이 없는 NAS 에서
     # 반입 자체가 막히고, 강제 종료 시 잔재가 청소 범위 밖에 남는다(Codex 2026-09-28).
     # 검사를 폴더 만들기보다 **먼저** 한다 — 상한 초과로 막힌 요청이 빈 폴더를 남기지 않게.
     _validate_upload_batch(files)
-    created_dest = not dest.exists()  # 이 요청이 만든 폴더만 나중에 도로 치운다(남의 빈 폴더 보존)
-    dest.mkdir(parents=True, exist_ok=True)
+    project_dir, dest, created_dest = await to_thread_non_abandon(
+        _prepare_project_import_dir, project, request
+    )
 
     saved: list[dict[str, Any]] = []
     skipped: list[str] = []

@@ -50,7 +50,16 @@ class AssetIoTests(unittest.TestCase):
     def test_stream_upload_removes_partial_file_over_limit(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             root = Path(tmp_dir)
-            with self.assertRaises(asset_io.UploadTooLarge):
+            calls: list[str] = []
+
+            async def non_abandon(func, *args, **kwargs):
+                calls.append(func.__name__)
+                return func(*args, **kwargs)
+
+            with (
+                patch.object(asset_io, "to_thread_non_abandon", side_effect=non_abandon),
+                self.assertRaises(asset_io.UploadTooLarge),
+            ):
                 asyncio.run(
                     asset_io.stream_upload_tmp(
                         _ChunkUpload(b"1234", b"5678"),
@@ -59,6 +68,7 @@ class AssetIoTests(unittest.TestCase):
                     )
                 )
 
+            self.assertEqual(calls, ["_open_part", "write", "close", "unlink"])
             self.assertEqual(list(root.glob(".upload-*.part")), [])
 
     def test_stream_upload_uses_non_abandon_writes_in_chunk_order(self) -> None:
@@ -66,9 +76,13 @@ class AssetIoTests(unittest.TestCase):
             root = Path(tmp_dir)
             chunks: list[bytes] = []
 
-            async def non_abandon(write, chunk):
-                chunks.append(chunk)
-                return write(chunk)
+            calls: list[str] = []
+
+            async def non_abandon(func, *args, **kwargs):
+                calls.append(func.__name__)
+                if args and isinstance(args[0], bytes):
+                    chunks.append(args[0])
+                return func(*args, **kwargs)
 
             with patch.object(
                 asset_io,
@@ -84,7 +98,8 @@ class AssetIoTests(unittest.TestCase):
                 )
 
             self.assertEqual(chunks, [b"first", b"second"])
-            self.assertEqual(offload.await_count, 2)
+            self.assertEqual(calls, ["_open_part", "write", "write", "close"])
+            self.assertEqual(offload.await_count, 4)
             self.assertEqual(tmp.read_bytes(), b"firstsecond")
             self.assertEqual(size, len(b"firstsecond"))
             self.assertEqual(digest, hashlib.sha256(b"firstsecond").hexdigest())
@@ -101,9 +116,41 @@ class AssetIoTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             root = Path(tmp_dir)
-            with self.assertRaises(asyncio.CancelledError):
+            calls: list[str] = []
+
+            async def non_abandon(func, *args, **kwargs):
+                calls.append(func.__name__)
+                return func(*args, **kwargs)
+
+            with (
+                patch.object(asset_io, "to_thread_non_abandon", side_effect=non_abandon),
+                self.assertRaises(asyncio.CancelledError),
+            ):
                 asyncio.run(asset_io.stream_upload_tmp(CancelledUpload(), root))
 
+            self.assertEqual(calls, ["_open_part", "write", "close", "unlink"])
+            self.assertEqual(list(root.glob(".upload-*.part")), [])
+
+    def test_stream_upload_closes_handle_when_cancelled_after_open(self) -> None:
+        """open 스레드 완료 직후 취소돼 반환값을 못 받아도 Windows 핸들을 닫고 .part를 지운다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            calls: list[str] = []
+
+            async def cancel_after_open(func, *args, **kwargs):
+                calls.append(func.__name__)
+                result = func(*args, **kwargs)
+                if func.__name__ == "_open_part":
+                    raise asyncio.CancelledError
+                return result
+
+            with (
+                patch.object(asset_io, "to_thread_non_abandon", side_effect=cancel_after_open),
+                self.assertRaises(asyncio.CancelledError),
+            ):
+                asyncio.run(asset_io.stream_upload_tmp(_ChunkUpload(b"unused"), root))
+
+            self.assertEqual(calls, ["_open_part", "close", "unlink"])
             self.assertEqual(list(root.glob(".upload-*.part")), [])
 
     def test_commit_unique_never_overwrites_existing_file(self) -> None:
@@ -392,9 +439,12 @@ class AssetIoTests(unittest.TestCase):
             self.assertTrue(result["path"].startswith("imports/"))
             self.assertEqual((proj / result["path"]).read_bytes(), b"capture-image")
             self.assertEqual(list(root.rglob(".upload-*.part")), [])
-            self.assertEqual(offload.await_count, 1)
-            # 커밋+토큰 부기 원자화 래퍼가 스레드로 offload 된다(안에서 find_or_commit_media 호출)
-            self.assertEqual(offloaded, [assets._commit_capture_with_discard_token])
+            self.assertEqual(offload.await_count, 2)
+            # NAS 목적지 준비와 커밋+토큰 부기 모두 non-abandon 스레드 관문을 탄다.
+            self.assertEqual(
+                offloaded,
+                [assets._prepare_project_import_dir, assets._commit_capture_with_discard_token],
+            )
             self.assertTrue(result["discard_token"])  # 신규 파일 — 정리 토큰 발급
 
     def test_reference_import_route_saves_media_and_cleans_temp_on_failure(self) -> None:
@@ -427,8 +477,11 @@ class AssetIoTests(unittest.TestCase):
             self.assertEqual(saved["bytes"], len(b"reference-image"))
             self.assertTrue(saved["sha256"])  # 나중에 내용으로 다시 찾기 위한 지문
             self.assertEqual(list(root.rglob(".upload-*.part")), [])
-            self.assertEqual(offload.await_count, 1)
-            self.assertEqual(offloaded, [asset_io.find_or_commit_media])
+            self.assertEqual(offload.await_count, 2)
+            self.assertEqual(
+                offloaded,
+                [assets._prepare_project_import_dir, asset_io.find_or_commit_media],
+            )
 
             failed = UploadFile(filename="broken.png", file=io.BytesIO(b"broken-image"))
             with (

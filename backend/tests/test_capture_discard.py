@@ -115,13 +115,12 @@ def test_discard_rejects_expired_and_unknown_tokens(local_only, captures_root, m
 
 
 def test_reused_upload_invalidates_prior_tokens(local_only, captures_root, monkeypatch):
-    """같은 내용이 재업로드(reused)되면 그 파일을 가리키던 옛 토큰은 무효 — 다른 제출이
-    참조하기 시작한 파일을 최초 업로더가 지우는 경합 차단."""
+    """다른 project 별칭이어도 같은 물리 파일이 재사용되면 옛 토큰은 무효."""
     _fake_db(monkeypatch, [])
     f = captures_root / "imports" / "capture-x.png"
     f.write_bytes(b"png")
     token = assets._issue_capture_discard_token("proj", "imports/capture-x.png", f, _sha(f))
-    assets._invalidate_capture_discard_tokens("proj", "imports/capture-x.png")  # reused 경로가 부르는 함수
+    assets._invalidate_capture_discard_tokens(f)  # reused 경로는 논리 이름 대신 물리 파일로 무효화
     with pytest.raises(HTTPException) as exc:
         assets.discard_capture(assets.CaptureDiscardIn(token=token), _request())
     assert exc.value.status_code == 404
@@ -171,5 +170,24 @@ def test_missing_file_is_not_an_error(local_only, captures_root, monkeypatch):
     f = captures_root / "imports" / "gone.png"
     f.write_bytes(b"png")
     token = assets._issue_capture_discard_token("proj", "imports/gone.png", f, _sha(f))
+    f.unlink()  # 정리 호출 전에 이미 사라진 실제 회귀 조건
     assert assets.discard_capture(assets.CaptureDiscardIn(token=token), _request()) == {"ok": True}
     assert not f.exists()
+    with pytest.raises(HTTPException) as exc:  # missing 성공도 토큰은 소비한다
+        assets.discard_capture(assets.CaptureDiscardIn(token=token), _request())
+    assert exc.value.status_code == 404
+
+
+def test_discard_refuses_file_replaced_after_token(local_only, captures_root, monkeypatch):
+    """같은 경로에 다른 내용이 생기면 신규 파일을 지우지 않는다."""
+    _fake_db(monkeypatch, [])
+    f = captures_root / "imports" / "capture-x.png"
+    f.write_bytes(b"original")
+    token = assets._issue_capture_discard_token("proj", "imports/capture-x.png", f, _sha(f))
+    f.write_bytes(b"replacement")
+
+    with pytest.raises(HTTPException) as exc:
+        assets.discard_capture(assets.CaptureDiscardIn(token=token), _request())
+
+    assert exc.value.status_code == 409
+    assert f.read_bytes() == b"replacement"

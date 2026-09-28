@@ -72,6 +72,8 @@ def test_asset_commit_cancellation_still_invalidates_both_tree_caches(
 
     async def commit_then_cancel(func, /, *args, **kwargs):
         result = func(*args, **kwargs)
+        if func is assets._prepare_project_import_dir:
+            return result  # 목적지 준비 뒤, 실제 파일 커밋 시점의 취소만 재현
         # capture 는 (target, reused, discard_token) 3-튜플(토큰 부기 원자화), 임포트는 2-튜플
         target, reused = result[0], result[1]
         assert target.is_file()
@@ -82,7 +84,7 @@ def test_asset_commit_cancellation_still_invalidates_both_tree_caches(
     monkeypatch.setattr(assets, "to_thread_non_abandon", commit_then_cancel)
     monkeypatch.setattr(assets.asset_tree, "invalidate_project_tree", project_invalidate)
     monkeypatch.setattr(assets.asset_tree, "invalidate_combined_tree", combined_invalidate)
-    # 반입(reference-import)은 2026-09-28 부터 **프로젝트 폴더** 기준이다 — 캡처만 내장 폴더에 남는다.
+    # 반입·캡처 모두 2026-09-28 부터 **프로젝트 폴더** 기준이다.
     proj_dir = tmp_path / "proj"
     proj_dir.mkdir()
     monkeypatch.setattr(assets, "_safe_project_dir", lambda *_: proj_dir)

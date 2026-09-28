@@ -806,6 +806,14 @@ it("여러 장 고르기 — 빈 자리에서 끌면 상자로, Ctrl+A 는 보�
   expect(host.querySelector(".assets-marquee")).toBeNull(); // 상자는 사라지고 고른 것은 남는다
   expect(pickedCount()).toBe(2);
 
+  // 빈자리 marquee에는 뒤따르는 카드 click이 없다. 한 task가 지나면 억제가 자동으로 풀려
+  // 다음 정상 클릭은 먹히지 않고 그 카드 한 장을 고른다.
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  });
+  await act(async () => host.querySelector<HTMLButtonElement>(".resolve-project-card")!.click());
+  expect(pickedCount()).toBe(1);
+
   // 끌지 않고 빈 자리를 누르면 풀린다
   await act(async () => {
     body().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 5, clientY: 5, button: 0 }));

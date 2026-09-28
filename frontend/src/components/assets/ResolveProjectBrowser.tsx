@@ -597,6 +597,13 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
     if (!drag) return;
     // 끌고 난 뒤에 오는 클릭은 고르기가 아니다 — 안 그러면 여러 장 고른 것이 한 장으로 줄어든다(Codex).
     suppressClickRef.current = drag.moved;
+    if (drag.moved) {
+      // 브라우저의 합성 click은 mouseup과 같은 task에서 먼저 온다. 그 click만 삼킨 뒤 자동으로
+      // 풀어야, 빈자리 marquee처럼 click이 아예 안 온 드래그가 다음 정상 클릭까지 먹지 않는다.
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+    }
     if (!drag.moved && !drag.additive && !drag.fromCard) clearPick(); // 빈 자리를 그냥 눌렀다 = 풀기
   }, [clearPick, onDragMove]);
   dragUpRef.current = onDragUp;
