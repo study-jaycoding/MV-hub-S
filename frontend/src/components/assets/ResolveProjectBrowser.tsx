@@ -9,6 +9,7 @@ import {
   getResolveConnectionStatus,
   type ResolveConnectionStatus,
 } from "../../lib/resolveTransfer";
+import { toggleSetValue } from "../../lib/setUtils";
 import { makeStore } from "../../lib/storage";
 import { ASSET_COLOR_BY_KEY, ASSET_COLOR_DOTS, ColorFilterDots } from "../common/ColorFilterDots";
 import { GridIcon, ListIcon } from "../common/ViewIcons";
@@ -182,6 +183,10 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
     () => LS.loadJSON<Record<string, string>>(`colors.${project}`) ?? {},
   );
   const [offKeys, setOffKeys] = useState<Set<string>>(() => LS.loadSet(`disabled.${project}`));
+  // 머리글 d·r·g·b = **거르기**(에셋 탭과 같은 뜻, Jay 2026-09-28) — 색 점은 그 색만 보기, 회색 점은 비활성 숨기기.
+  // 색을 **입히는** 것은 고른 카드에 키(r·g·b·d)로 한다. 거르기는 에셋처럼 라이브러리와 무관하게 하나만 기억한다.
+  const [activeColors, setActiveColors] = useState<Set<string>>(() => LS.loadSet("filterColors"));
+  const [grayOn, setGrayOn] = useState(() => LS.get("grayOn", "0") === "1");
   const hoverRef = useRef("");
   // 고른 카드 — 한 번 누르면 고르고, 두 번 누르면 연다(Jay 2026-09-28). 색·비활성은 고른 것 전체에.
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -191,6 +196,8 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
 
   useEffect(() => LS.setJSON(`colors.${project}`, colorMarks), [colorMarks, project]);
   useEffect(() => LS.setSet(`disabled.${project}`, offKeys), [offKeys, project]);
+  useEffect(() => LS.setSet("filterColors", activeColors), [activeColors]);
+  useEffect(() => LS.set("grayOn", grayOn ? "1" : "0"), [grayOn]);
 
   // 고른 것 풀기 — Shift 범위의 기준도 같이 지운다(안 지우면 안 보이는 카드부터 범위가 잡힌다, Codex).
   const clearPick = useCallback(() => {
@@ -253,15 +260,6 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [applyColor, applyOff, clearPick]);
-
-  // 목록이 바뀌면 사라진 프로젝트는 고른 것에서 뺀다 — 안 그러면 보이지도 않는 카드에 머리글 점이 켜진다(Codex).
-  useEffect(() => {
-    const alive = new Set(projects.map(projectKey));
-    setPicked((prev) => {
-      const next = new Set([...prev].filter((key) => alive.has(key)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, [projects]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -431,6 +429,30 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
     [connecting, dir, opening, project, refreshStatus, target],
   );
 
+  // 거르기 — 에셋 탭(buildAssetRows)과 같은 규칙: 색 점이 하나라도 켜져 있으면 그 색만(색 없는 카드는 숨김),
+  // 회색 점이 켜져 있으면 비활성 카드를 숨긴다.
+  const visible = useMemo(() => {
+    let list = projects;
+    if (activeColors.size) {
+      list = list.filter((item) => {
+        const color = colorMarks[projectKey(item)];
+        return color ? activeColors.has(color) : false;
+      });
+    }
+    if (grayOn) list = list.filter((item) => !offKeys.has(projectKey(item)));
+    return list;
+  }, [activeColors, colorMarks, grayOn, offKeys, projects]);
+
+  // 화면에서 사라진 프로젝트(목록이 바뀌었거나 점으로 걸러졌다)는 고른 것에서 뺀다 —
+  // 안 그러면 보이지도 않는 카드에 키가 먹는다(Codex).
+  useEffect(() => {
+    const alive = new Set(visible.map(projectKey));
+    setPicked((prev) => {
+      const next = new Set([...prev].filter((key) => alive.has(key)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [visible]);
+
   const sorted = useMemo(() => {
     const rank = sortDir === "asc" ? 1 : -1;
     // 정렬 값 — 타임라인·해상도·fps 는 카드 정보(Project.db 복사본)에서. 해상도는 화소 수로 비교한다.
@@ -442,7 +464,7 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
       if (sortField === "fps") return detail?.fps;
       return undefined;
     };
-    return [...projects].sort((a, b) => {
+    return [...visible].sort((a, b) => {
       let base = 0;
       if (sortField === "name") {
         base = NAME_COLLATOR.compare(a.name, b.name);
@@ -462,7 +484,7 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
       if (byName) return byName;
       return a.folder_path < b.folder_path ? -1 : a.folder_path > b.folder_path ? 1 : 0;
     });
-  }, [details, projects, sortDir, sortField]);
+  }, [details, sortDir, sortField, visible]);
 
   // 날짜로 나누기 — 정렬된 차례를 그대로 두고 날짜가 바뀌는 곳에서만 끊는다(에셋 탭 buildAssetRows 와 같은 규칙).
   const sections = useMemo(() => {
@@ -518,13 +540,6 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
   const clearPickOnBlank = (event: ReactMouseEvent<HTMLElement>) => {
     if (!(event.target as HTMLElement).closest(".resolve-project-card")) clearPick();
   };
-  const pickedKeys = [...picked];
-  // 머리글 점의 켜짐 = 고른 것이 **모두** 그 표시일 때(누르면 꺼진다 — 키와 같은 규칙).
-  const allPickedColored = (hex: string) =>
-    pickedKeys.length > 0 && pickedKeys.every((key) => colorMarks[key] === hex);
-  const allPickedOff = pickedKeys.length > 0 && pickedKeys.every((key) => offKeys.has(key));
-  const pickedColors = new Set(ASSET_COLOR_DOTS.map(({ hex }) => hex).filter(allPickedColored));
-
   const onScrub = (event: ReactMouseEvent<HTMLElement>, key: string) => {
     const rect = event.currentTarget.getBoundingClientRect();
     if (rect.width <= 0) return;
@@ -538,7 +553,8 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
       <header className="resolve-project-header assets-crumb" aria-live="polite">
         <div className="resolve-project-heading">
           <strong>DaVinci Resolve</strong>
-          <span className="rp-count">· {loading ? "확인 중" : projects.length}</span>
+          {/* 건수는 **걸러진 뒤** 보이는 수 — 에셋 툴바의 '타입 · 건수'와 같다. */}
+          <span className="rp-count">· {loading ? "확인 중" : sorted.length}</span>
           {chip && (
             <span className={`rp-status ${chip.tone}`} role="img" title={chip.detail} aria-label={chip.detail}>
               <b aria-hidden="true" />
@@ -549,17 +565,14 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
         </div>
         {!empty && !loading && (
           <div className="resolve-project-tools assets-tools">
-            {/* d·r·g·b — 고른 카드에 비활성·색을 입힌다(Jay 2026-09-28: 다시 연결 왼쪽). 에셋 툴바의 점과 같은 모양이되
-                여기선 '거르기'가 아니라 '입히기'다. 고른 카드가 없으면 꺼 둔다. */}
+            {/* d·r·g·b — 에셋 탭과 같은 거르기(Jay 2026-09-28: 다시 연결 왼쪽). 색을 입히는 것은 고른 카드에 키로. */}
             <div className="assets-filters rp-marks">
               <ColorFilterDots
-                apply
-                disabled={!pickedKeys.length}
                 colorDots={ASSET_COLOR_DOTS}
-                activeColors={pickedColors}
-                onToggleColor={(hex) => applyColor(pickedKeys, hex)}
-                grayOn={allPickedOff}
-                onToggleGray={() => applyOff(pickedKeys)}
+                activeColors={activeColors}
+                onToggleColor={(hex) => setActiveColors((prev) => toggleSetValue(prev, hex))}
+                grayOn={grayOn}
+                onToggleGray={() => setGrayOn((on) => !on)}
               />
             </div>
             {/* 에셋 툴바의 S·T·C 자리 — 사슬(다시 연결)과 ⓘ(정보). 목록이 보여도 Resolve 쪽에 라이브러리가 안 붙어
@@ -653,6 +666,8 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
           style={{ "--rp-scale": scale } as CSSProperties}
           onMouseDown={clearPickOnBlank}
         >
+          {/* 라이브러리에 프로젝트는 있는데 점 거르기에 하나도 안 걸린 경우 — 빈 화면만 남지 않게 까닭을 적는다. */}
+          {!sorted.length && <div className="resolve-project-state">점으로 걸러서 보이는 프로젝트가 없습니다.</div>}
           {sections.map((section) => (
             <Fragment key={section.key}>
               {groupByDate && <div className="gen-date-header">{section.label}</div>}

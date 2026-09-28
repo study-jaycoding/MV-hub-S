@@ -745,17 +745,17 @@ it("한 번 누르면 고르기만 하고, 두 번 눌러야 연다", async () =
   );
 });
 
-it("머리글 d·r·g·b 는 고른 카드에 입힌다 — 고른 게 없으면 꺼져 있고, 빈 자리를 누르면 풀린다", async () => {
+it("고른 카드 여러 장에 키로 색·비활성 — 빈 자리를 누르면 풀리고 Shift 기준도 사라진다", async () => {
   act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
   await settle();
-  const dots = () => [...host.querySelectorAll<HTMLButtonElement>(".rp-marks .af-dot")];
   const cardOf = (name: string) =>
     [...host.querySelectorAll<HTMLButtonElement>(".resolve-project-card")].find((button) =>
       button.textContent?.includes(name),
     )!;
-
-  expect(dots()).toHaveLength(4); // d · r · g · b
-  expect(dots().every((dot) => dot.disabled)).toBe(true); // 고른 카드가 없으면 누를 수 없다
+  const press = (key: string) =>
+    act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    });
 
   await act(async () => cardOf("Mud_Ai").click());
   await act(async () =>
@@ -763,27 +763,68 @@ it("머리글 d·r·g·b 는 고른 카드에 입힌다 — 고른 게 없으면
   );
   expect(host.querySelectorAll(".resolve-project-card.picked")).toHaveLength(2); // Ctrl 은 더하기
 
-  await act(async () => dots()[1].click()); // r
+  await press("r");
   expect([...host.querySelectorAll<HTMLElement>(".rp-colorbar")].map((bar) => bar.style.background)).toEqual([
     "rgb(255, 69, 58)",
     "rgb(255, 69, 58)",
   ]);
-  expect(dots()[1].className).toContain("on"); // 고른 것이 모두 같은 색이면 켜져 보인다
 
-  await act(async () => dots()[0].click()); // d
+  await press("d");
   expect(host.querySelectorAll(".resolve-project-card.deactivated")).toHaveLength(2);
 
   await act(async () =>
     host.querySelector(".resolve-project-body")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
   );
   expect(host.querySelectorAll(".resolve-project-card.picked")).toHaveLength(0);
-  expect(dots().every((dot) => dot.disabled)).toBe(true);
 
   // 푼 뒤 Shift 로 누르면 '보이지 않는 옛 기준'부터 잡히지 않는다 — 그 카드 하나만.
   await act(async () =>
     cardOf("Episode 1").dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true })),
   );
   expect(host.querySelectorAll(".resolve-project-card.picked")).toHaveLength(1);
+});
+
+it("머리글 d·r·g·b 는 에셋 탭과 같은 거르기 — 그 색만 보이고, 회색은 비활성을 숨긴다", async () => {
+  act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
+  await settle();
+  const dots = () => [...host.querySelectorAll<HTMLButtonElement>(".rp-marks .af-dot")];
+  const names = () =>
+    [...host.querySelectorAll(".resolve-project-card strong")].map((el) => el.textContent);
+  const cardOf = (name: string) =>
+    [...host.querySelectorAll<HTMLButtonElement>(".resolve-project-card")].find((button) =>
+      button.textContent?.includes(name),
+    )!;
+  const press = (key: string) =>
+    act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    });
+
+  expect(dots()).toHaveLength(4); // d · r · g · b
+
+  // Mud_Ai 만 빨강, Episode 1 은 비활성으로 표시해 둔다(키로 입힌다)
+  await act(async () => cardOf("Mud_Ai").click());
+  await press("r");
+  await act(async () => cardOf("Episode 1").click());
+  await press("d");
+
+  await act(async () => dots()[1].click()); // r 만 보기
+  expect(names()).toEqual(["Mud_Ai"]);
+  expect(host.querySelector(".rp-count")?.textContent).toBe("· 1"); // 건수도 걸러진 수
+
+  await act(async () => dots()[1].click()); // 다시 누르면 해제
+  expect(names()).toHaveLength(2);
+
+  await act(async () => dots()[0].click()); // 회색 = 비활성 숨기기
+  expect(names()).toEqual(["Mud_Ai"]);
+
+  await act(async () => dots()[2].click()); // g 도 켜면 초록이 없어 아무것도 안 남는다
+  expect(names()).toHaveLength(0);
+  expect(host.querySelector(".resolve-project-state")?.textContent).toBe(
+    "점으로 걸러서 보이는 프로젝트가 없습니다.",
+  );
+  expect(host.querySelector(".resolve-library-connect-button")).toBeNull(); // '연결' 빈 화면이 아니다
+
+  expect(localStorage.getItem("ch.resolve.grayOn")).toBe("1"); // 거르기는 기억한다(에셋과 같게)
 });
 
 it("마우스를 올린 카드에 r·d — 색 띠와 비활성이 그 카드에만, 다시 열어도 남고 다른 라이브러리엔 안 번진다", async () => {
