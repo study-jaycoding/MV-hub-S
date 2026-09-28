@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastapi import HTTPException
 from starlette.datastructures import UploadFile
 
 from app.routers import assets
@@ -365,8 +366,11 @@ class AssetIoTests(unittest.TestCase):
             invalidate.assert_called_once_with(root)
 
     def test_capture_route_saves_image_without_leaving_temp_file(self) -> None:
+        # ★2026-09-28: 붙여넣기·부분수정 그림도 **프로젝트 폴더의 imports** 에 저장한다.
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             root = Path(tmp_dir)
+            proj = root / "proj"
+            proj.mkdir()
             upload = UploadFile(filename="capture.png", file=io.BytesIO(b"capture-image"))
             offloaded: list[object] = []
 
@@ -376,14 +380,17 @@ class AssetIoTests(unittest.TestCase):
 
             with (
                 patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_safe_project_dir", return_value=proj),
                 patch.object(assets.asset_tree, "invalidate_project_tree"),
-                patch.object(assets.asset_tree, "invalidate_combined_tree"),
                 patch.object(assets, "to_thread_non_abandon", side_effect=non_abandon) as offload,
             ):
-                result = asyncio.run(assets.upload_capture(SimpleNamespace(), upload))
+                result = asyncio.run(
+                    assets.upload_capture(SimpleNamespace(), project="proj", file=upload)
+                )
 
-            self.assertEqual(result["project"], "captures")
-            self.assertEqual((root / "captures" / result["path"]).read_bytes(), b"capture-image")
+            self.assertEqual(result["project"], "proj")
+            self.assertTrue(result["path"].startswith("imports/"))
+            self.assertEqual((proj / result["path"]).read_bytes(), b"capture-image")
             self.assertEqual(list(root.rglob(".upload-*.part")), [])
             self.assertEqual(offload.await_count, 1)
             # 커밋+토큰 부기 원자화 래퍼가 스레드로 offload 된다(안에서 find_or_commit_media 호출)
@@ -391,8 +398,11 @@ class AssetIoTests(unittest.TestCase):
             self.assertTrue(result["discard_token"])  # 신규 파일 — 정리 토큰 발급
 
     def test_reference_import_route_saves_media_and_cleans_temp_on_failure(self) -> None:
+        # ★2026-09-28 계약 변경: 반입은 **그 프로젝트 폴더** 기준으로 기록한다(이 PC 안 imports 아님).
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             root = Path(tmp_dir)
+            proj = root / "proj"
+            proj.mkdir()
             upload = UploadFile(filename="reference.png", file=io.BytesIO(b"reference-image"))
             offloaded: list[object] = []
 
@@ -402,17 +412,20 @@ class AssetIoTests(unittest.TestCase):
 
             with (
                 patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_safe_project_dir", return_value=proj),
                 patch.object(assets.asset_tree, "invalidate_project_tree"),
-                patch.object(assets.asset_tree, "invalidate_combined_tree"),
                 patch.object(assets, "to_thread_non_abandon", side_effect=non_abandon) as offload,
             ):
                 result = asyncio.run(
-                    assets.upload_reference_import(SimpleNamespace(), files=[upload])
+                    assets.upload_reference_import(SimpleNamespace(), project="proj", files=[upload])
                 )
 
             saved = result["saved"][0]
-            self.assertEqual(saved["project"], "imports")
-            self.assertEqual((root / "imports" / saved["path"]).read_bytes(), b"reference-image")
+            self.assertEqual(saved["project"], "proj")
+            self.assertEqual(saved["path"], "imports/reference.png")  # 프로젝트 루트 기준 상대경로
+            self.assertEqual((proj / saved["path"]).read_bytes(), b"reference-image")
+            self.assertEqual(saved["bytes"], len(b"reference-image"))
+            self.assertTrue(saved["sha256"])  # 나중에 내용으로 다시 찾기 위한 지문
             self.assertEqual(list(root.rglob(".upload-*.part")), [])
             self.assertEqual(offload.await_count, 1)
             self.assertEqual(offloaded, [asset_io.find_or_commit_media])
@@ -420,13 +433,196 @@ class AssetIoTests(unittest.TestCase):
             failed = UploadFile(filename="broken.png", file=io.BytesIO(b"broken-image"))
             with (
                 patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_safe_project_dir", return_value=proj),
                 # AIO-2 계약 변경: 라우터는 검색과 확정을 분리하지 않고 이 함수 한 번에 위임한다.
                 patch.object(asset_io, "find_or_commit_media", side_effect=RuntimeError("hash failed")),
                 self.assertRaises(RuntimeError),
             ):
-                asyncio.run(assets.upload_reference_import(SimpleNamespace(), files=[failed]))
+                asyncio.run(
+                    assets.upload_reference_import(SimpleNamespace(), project="proj", files=[failed])
+                )
 
             self.assertEqual(list(root.rglob(".upload-*.part")), [])
+
+    def test_reference_import_reuses_existing_project_file_instead_of_copying(self) -> None:
+        """끌어다 놓은 파일이 이미 프로젝트 안에 있으면 사본을 만들지 않고 그 경로를 쓴다.
+        (브라우저는 원래 경로를 주지 않으므로 내용으로 찾는다 — Jay 2026-09-28)"""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            proj = root / "proj"
+            (proj / "BG" / "갯벌").mkdir(parents=True)
+            original = proj / "BG" / "갯벌" / "sea.png"
+            original.write_bytes(b"same-bytes")
+            decoy = proj / "BG" / "other.png"
+            decoy.write_bytes(b"same-size!")  # 크기는 같고 내용이 다른 파일 — 잡히면 안 된다
+            self.assertEqual(len(b"same-size!"), len(b"same-bytes"))
+
+            upload = UploadFile(filename="sea.png", file=io.BytesIO(b"same-bytes"))
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_safe_project_dir", return_value=proj),
+                patch.object(assets.asset_tree, "invalidate_project_tree"),
+            ):
+                assets.invalidate_size_index(proj)
+                result = asyncio.run(
+                    assets.upload_reference_import(SimpleNamespace(), project="proj", files=[upload])
+                )
+
+            saved = result["saved"][0]
+            self.assertEqual(saved["path"], "BG/갯벌/sea.png")  # 원본 자리를 그대로 가리킨다
+            self.assertTrue(saved["reused"])
+            self.assertFalse((proj / "imports").exists())  # 사본을 만들지 않았다
+            self.assertEqual(list(root.rglob(".upload-*.part")), [])
+
+    def test_locate_moves_legacy_local_copies_to_project_originals(self) -> None:
+        """옛 씬의 '이 PC 안 사본' 토큰을 내용이 같은 프로젝트 원본으로 바꿔 준다(자동 복구).
+        여러 프로젝트에 같은 파일이 있으면 어느 것인지 단정할 수 없어 바꾸지 않는다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            (root / "imports" / "sea.png").write_bytes(b"same-bytes")
+            (root / "imports" / "only-here.png").write_bytes(b"nowhere-else")
+            (root / "imports" / "both.png").write_bytes(b"in-two-places")
+            proj_a = root / "A"
+            (proj_a / "BG").mkdir(parents=True)
+            (proj_a / "BG" / "sea.png").write_bytes(b"same-bytes")
+            (proj_a / "both.png").write_bytes(b"in-two-places")
+            proj_b = root / "B"
+            proj_b.mkdir()
+            (proj_b / "both.png").write_bytes(b"in-two-places")
+
+            dirs = {"A": proj_a, "B": proj_b}
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(
+                    assets, "_auto_project_mounts", return_value=[{"name": "A"}, {"name": "B"}]
+                ),
+                patch.object(assets, "_owner_mounts", return_value=[]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+            ):
+                for proj_dir in dirs.values():
+                    assets.invalidate_size_index(proj_dir)
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(
+                        tokens=[
+                            "asset:imports|sea.png",
+                            "asset:imports|only-here.png",
+                            "asset:imports|both.png",
+                            "asset:A|BG/sea.png",  # 이미 프로젝트 기준 — 건드리지 않는다
+                        ]
+                    ),
+                    SimpleNamespace(),
+                )
+
+            self.assertEqual(
+                reply["fixed"],
+                [{"project": "A", "path": "BG/sea.png", "sha256": hashlib.sha256(b"same-bytes").hexdigest(),
+                  "bytes": len(b"same-bytes"), "token": "asset:imports|sea.png"}],
+            )
+            self.assertEqual(
+                reply["unresolved"],
+                ["asset:imports|only-here.png", "asset:imports|both.png", "asset:A|BG/sea.png"],
+            )
+
+            # 개인 등록 폴더만 있어도 찾는다 — 이름이 한쪽에만 있으면 어느 PC 에서나 같은 뜻이다
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_auto_project_mounts", return_value=[]),
+                patch.object(assets, "_owner_mounts", return_value=[{"name": "A"}]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+            ):
+                manual_only = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:imports|sea.png"]), SimpleNamespace()
+                )
+            self.assertEqual([(f["project"], f["path"]) for f in manual_only["fixed"]], [("A", "BG/sea.png")])
+
+            # 같은 이름이 **양쪽(PM·개인)**에 있으면 이 PC 해석이 남과 갈리므로 건드리지 않는다
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_auto_project_mounts", return_value=[{"name": "A"}]),
+                patch.object(assets, "_owner_mounts", return_value=[{"name": "A"}]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+            ):
+                shadowed = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:imports|sea.png"]), SimpleNamespace()
+                )
+            self.assertEqual(shadowed["fixed"], [])
+            self.assertEqual(shadowed["unresolved"], ["asset:imports|sea.png"])
+
+    def test_reference_import_requires_a_project(self) -> None:
+        """프로젝트를 모르면 이 PC 안에 몰래 사본을 만들지 않고 막는다(남에게 안 보이는 사본 방지)."""
+        upload = UploadFile(filename="x.png", file=io.BytesIO(b"x"))
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(assets.upload_reference_import(SimpleNamespace(), project="", files=[upload]))
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_locate_rescans_so_a_file_added_elsewhere_is_not_missed(self) -> None:
+        """자동 복구는 **다시 훑는다** — 60초 캐시를 그대로 믿으면 다른 PC 가 방금 넣은 같은 파일을
+        못 보고 '한 곳에만 있다'고 단정한다(Codex 2026-09-28)."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            (root / "imports" / "x.png").write_bytes(b"shared-bytes")
+            proj_a, proj_b = root / "A", root / "B"
+            proj_a.mkdir()
+            proj_b.mkdir()
+            (proj_a / "x.png").write_bytes(b"shared-bytes")
+            dirs = {"A": proj_a, "B": proj_b}
+            ctx = (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_auto_project_mounts", return_value=[{"name": "A"}, {"name": "B"}]),
+                patch.object(assets, "_owner_mounts", return_value=[]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+            )
+            with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4]:
+                first = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:imports|x.png"]), SimpleNamespace()
+                )
+                self.assertEqual(len(first["fixed"]), 1)  # 아직 A 에만 있다 → 고친다
+                (proj_b / "x.png").write_bytes(b"shared-bytes")  # 다른 PC 가 B 에도 넣었다
+                second = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:imports|x.png"]), SimpleNamespace()
+                )
+            self.assertEqual(second["fixed"], [])  # 두 곳에 있으니 손대지 않는다
+            self.assertEqual(second["unresolved"], ["asset:imports|x.png"])
+
+    def test_reference_import_leaves_no_empty_imports_folder(self) -> None:
+        """전부 기존 원본으로 이어졌으면 이 요청이 만든 빈 imports 폴더는 도로 치운다.
+        단 **원래 있던** 빈 폴더는 남의 것이라 건드리지 않는다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            proj = root / "proj"
+            proj.mkdir()
+            (proj / "keep.png").write_bytes(b"already-here")
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_safe_project_dir", return_value=proj),
+                patch.object(assets.asset_tree, "invalidate_project_tree"),
+            ):
+                assets.invalidate_size_index(proj)
+                asyncio.run(
+                    assets.upload_reference_import(
+                        SimpleNamespace(),
+                        project="proj",
+                        files=[UploadFile(filename="keep.png", file=io.BytesIO(b"already-here"))],
+                    )
+                )
+                self.assertFalse((proj / "imports").exists())  # 만들었다가 도로 치웠다
+
+                (proj / "imports").mkdir()  # 사람이 미리 만들어 둔 빈 폴더
+                assets.invalidate_size_index(proj)
+                asyncio.run(
+                    assets.upload_reference_import(
+                        SimpleNamespace(),
+                        project="proj",
+                        files=[UploadFile(filename="keep.png", file=io.BytesIO(b"already-here"))],
+                    )
+                )
+                self.assertTrue((proj / "imports").exists())  # 남의 폴더는 그대로 둔다
 
 
 class AssetMountStoreTests(unittest.TestCase):

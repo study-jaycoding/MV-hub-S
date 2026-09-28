@@ -12,6 +12,9 @@ export type SpotlightAssetDragItem = {
   name: string;
   type: string;
   reused?: boolean;
+  // 내용 지문·크기(2026-09-28) — 원본이 옮겨져도 내용으로 다시 찾게 씬 레퍼런스까지 들고 간다.
+  sha256?: string;
+  bytes?: number;
 };
 
 export function readSpotlightAssetCtx(): { project: string; dir: string } {

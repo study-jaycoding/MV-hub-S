@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -19,6 +20,10 @@ from starlette.requests import Request
 
 from app.routers import assets
 from app.services import request_guards
+
+
+def _sha(path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _request(host: str = "127.0.0.1") -> Request:
@@ -37,10 +42,12 @@ def local_only(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture()
 def captures_root(tmp_path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(assets, "ASSETS_ROOT", tmp_path)
-    (tmp_path / "captures").mkdir()
+    proj = tmp_path / "proj"
+    (proj / "imports").mkdir(parents=True)
+    monkeypatch.setattr(assets, "_safe_project_dir", lambda *_: proj)
     # 전역 토큰 저장소를 테스트 간 격리
     monkeypatch.setattr(assets, "_capture_discard_tokens", {})
-    return tmp_path
+    return proj
 
 
 def _fake_db(monkeypatch: pytest.MonkeyPatch, referenced_paths: list[str]):
@@ -61,9 +68,9 @@ def _fake_db(monkeypatch: pytest.MonkeyPatch, referenced_paths: list[str]):
 
 def test_discard_deletes_unreferenced_new_capture(local_only, captures_root, monkeypatch):
     _fake_db(monkeypatch, [])
-    f = captures_root / "captures" / "capture-x.png"
+    f = captures_root / "imports" / "capture-x.png"
     f.write_bytes(b"png")
-    token = assets._issue_capture_discard_token("capture-x.png")
+    token = assets._issue_capture_discard_token("proj", "imports/capture-x.png", f, _sha(f))
     body = assets.CaptureDiscardIn(token=token)
     assert assets.discard_capture(body, _request()) == {"ok": True}
     assert not f.exists()
@@ -75,10 +82,10 @@ def test_discard_deletes_unreferenced_new_capture(local_only, captures_root, mon
 
 def test_discard_refuses_referenced_file(local_only, captures_root, monkeypatch):
     """생성물이 이미 참조하는 파일은 지우지 않는다(레퍼런스 깨짐 방지)."""
-    _fake_db(monkeypatch, ["asset:captures|capture-x.png"])
-    f = captures_root / "captures" / "capture-x.png"
+    _fake_db(monkeypatch, ["asset:proj|imports/capture-x.png"])
+    f = captures_root / "imports" / "capture-x.png"
     f.write_bytes(b"png")
-    token = assets._issue_capture_discard_token("capture-x.png")
+    token = assets._issue_capture_discard_token("proj", "imports/capture-x.png", f, _sha(f))
     with pytest.raises(HTTPException) as exc:
         assets.discard_capture(assets.CaptureDiscardIn(token=token), _request())
     assert exc.value.status_code == 409
@@ -87,7 +94,9 @@ def test_discard_refuses_referenced_file(local_only, captures_root, monkeypatch)
 
 def test_discard_is_local_machine_only(local_only, captures_root, monkeypatch):
     _fake_db(monkeypatch, [])
-    token = assets._issue_capture_discard_token("capture-x.png")
+    f = captures_root / "imports" / "capture-x.png"
+    f.write_bytes(b"png")
+    token = assets._issue_capture_discard_token("proj", "imports/capture-x.png", f, _sha(f))
     with pytest.raises(HTTPException) as exc:
         assets.discard_capture(assets.CaptureDiscardIn(token=token), _request("192.168.10.44"))
     assert exc.value.status_code == 403
@@ -99,7 +108,7 @@ def test_discard_rejects_expired_and_unknown_tokens(local_only, captures_root, m
         assets.discard_capture(assets.CaptureDiscardIn(token="no-such"), _request())
     assert exc.value.status_code == 404
     # 만료 토큰 — 직접 과거 만료로 심는다
-    assets._capture_discard_tokens["old"] = ("capture-x.png", time.monotonic() - 1.0)
+    assets._capture_discard_tokens["old"] = ("proj", "imports/capture-x.png", "x", "y", time.monotonic() - 1.0)
     with pytest.raises(HTTPException) as exc:
         assets.discard_capture(assets.CaptureDiscardIn(token="old"), _request())
     assert exc.value.status_code == 404
@@ -109,10 +118,10 @@ def test_reused_upload_invalidates_prior_tokens(local_only, captures_root, monke
     """같은 내용이 재업로드(reused)되면 그 파일을 가리키던 옛 토큰은 무효 — 다른 제출이
     참조하기 시작한 파일을 최초 업로더가 지우는 경합 차단."""
     _fake_db(monkeypatch, [])
-    f = captures_root / "captures" / "capture-x.png"
+    f = captures_root / "imports" / "capture-x.png"
     f.write_bytes(b"png")
-    token = assets._issue_capture_discard_token("capture-x.png")
-    assets._invalidate_capture_discard_tokens("capture-x.png")  # reused 경로가 부르는 함수
+    token = assets._issue_capture_discard_token("proj", "imports/capture-x.png", f, _sha(f))
+    assets._invalidate_capture_discard_tokens("proj", "imports/capture-x.png")  # reused 경로가 부르는 함수
     with pytest.raises(HTTPException) as exc:
         assets.discard_capture(assets.CaptureDiscardIn(token=token), _request())
     assert exc.value.status_code == 404
@@ -125,18 +134,20 @@ def test_commit_capture_token_bookkeeping_is_atomic_with_discard(
     """커밋/재사용 판정 + 토큰 발급·무효화가 discard 와 같은 락 경계(코덱스 BLOCK 해소):
     신규 커밋은 락 안에서 토큰까지 발급, reuse 는 옛 토큰 무효화 + 실존 검증(없으면 409)."""
     _fake_db(monkeypatch, [])
-    cap_dir = captures_root / "captures"
+    cap_dir = captures_root / "imports"
     f = cap_dir / "capture-x.png"
     f.write_bytes(b"png")
     # 신규 커밋 경로 — 토큰이 같은 임계구역에서 발급된다
     monkeypatch.setattr(assets.asset_io, "find_or_commit_media", lambda *a, **k: (f, False))
     target, reused, token = assets._commit_capture_with_discard_token(
-        f, cap_dir, "capture-x.png", "digest", 3
+        f, cap_dir, "capture-x.png", "digest", 3, "proj", captures_root
     )
     assert (target, reused) == (f, False) and token
     # 이어서 reuse — 방금 발급된 신규 토큰을 무효화하고 실존을 검증한다
     monkeypatch.setattr(assets.asset_io, "find_or_commit_media", lambda *a, **k: (f, True))
-    assert assets._commit_capture_with_discard_token(f, cap_dir, "capture-x.png", "digest", 3) == (
+    assert assets._commit_capture_with_discard_token(
+        f, cap_dir, "capture-x.png", "digest", 3, "proj", captures_root
+    ) == (
         f,
         True,
         None,
@@ -148,12 +159,17 @@ def test_commit_capture_token_bookkeeping_is_atomic_with_discard(
     # 파일이 이미 정리된 뒤의 reuse 는 사라진 경로 응답 대신 409(재시도 유도)
     f.unlink()
     with pytest.raises(HTTPException) as exc:
-        assets._commit_capture_with_discard_token(f, cap_dir, "capture-x.png", "digest", 3)
+        assets._commit_capture_with_discard_token(
+        f, cap_dir, "capture-x.png", "digest", 3, "proj", captures_root
+    )
     assert exc.value.status_code == 409
 
 
 def test_missing_file_is_not_an_error(local_only, captures_root, monkeypatch):
     """이미 사라진 파일(missing_ok) — 정리 목적은 달성된 것이라 ok."""
     _fake_db(monkeypatch, [])
-    token = assets._issue_capture_discard_token("gone.png")
+    f = captures_root / "imports" / "gone.png"
+    f.write_bytes(b"png")
+    token = assets._issue_capture_discard_token("proj", "imports/gone.png", f, _sha(f))
     assert assets.discard_capture(assets.CaptureDiscardIn(token=token), _request()) == {"ok": True}
+    assert not f.exists()

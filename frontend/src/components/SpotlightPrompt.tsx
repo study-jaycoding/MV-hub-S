@@ -638,8 +638,14 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     }
     if (!blob) return false; // 이미지 없음 → 기본 동작(텍스트 붙여넣기)
     e.preventDefault();
+    // 붙여넣은 그림도 프로젝트 폴더 기준으로 저장한다(Jay 2026-09-28) — 프로젝트를 모르면 넣지 않는다.
+    const captureProject = readSpotlightAssetCtx().project;
+    if (!captureProject) {
+      flashMsg("Assets 에서 프로젝트를 먼저 고르세요");
+      return true;
+    }
     api
-      .uploadCapture(blob)
+      .uploadCapture(blob, captureProject)
       .then((r) => {
         addAssetRefs(JSON.stringify([{ project: r.project, path: r.path, name: r.name, type: "image" }]));
         // 임포트와 동일하게 에셋창에 변경 신호 — 캡쳐도 실시간 반영되도록.
@@ -949,8 +955,13 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     }
     setError(null);
     try {
+      // 프로젝트 폴더 기준으로 기록한다(Jay 2026-09-28) — 어느 프로젝트인지 모르면 넣지 않는다.
       const ctx = readSpotlightAssetCtx();
-      const res = await api.uploadReferenceFiles(accepted, ctx.project, ctx.dir);
+      if (!ctx.project) {
+        setError("Assets 에서 프로젝트를 먼저 고르세요 — 그 프로젝트 폴더 기준으로 저장합니다.");
+        return;
+      }
+      const res = await api.uploadReferenceFiles(accepted, ctx.project);
       const items: SpotlightAssetDragItem[] = res.saved || [];
       const skipped = res.skipped || [];
       if (items.length) {

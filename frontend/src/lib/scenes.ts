@@ -68,6 +68,10 @@ export interface SceneRef {
   // 출처 — 'asset'(우리 에셋 패널에서 가져옴) vs 'upload'(임포트/캡쳐). 레퍼런스 카드 테두리 색 구분용.
   //  (없으면 upload 취급 = 파란색. 지문·제출에는 영향 없음.)
   origin?: "asset" | "upload";
+  // 파일 내용 지문·크기(2026-09-28) — 원본이 옮겨져도 **내용으로 다시 찾기** 위한 표식.
+  // 없어도 동작한다(옛 씬). 씬 파일로 함께 나가고 들어온다.
+  content_sha?: string;
+  bytes?: number;
 }
 
 // 캔버스가 생성 요청보다 먼저 저장하는 복구 표식. 브라우저가 요청 직후 종료돼도 generation id와

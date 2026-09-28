@@ -55,7 +55,7 @@ def test_elapsed_lookup_existing_db_keeps_normal_query_behavior(
 @pytest.mark.parametrize(
     ("route", "filename", "payload", "project"),
     [
-        ("capture", "capture.png", b"capture-after-cancel", "captures"),
+        ("capture", "capture.png", b"capture-after-cancel", "imports"),
         ("reference-import", "reference.png", b"reference-after-cancel", "imports"),
     ],
 )
@@ -82,21 +82,27 @@ def test_asset_commit_cancellation_still_invalidates_both_tree_caches(
     monkeypatch.setattr(assets, "to_thread_non_abandon", commit_then_cancel)
     monkeypatch.setattr(assets.asset_tree, "invalidate_project_tree", project_invalidate)
     monkeypatch.setattr(assets.asset_tree, "invalidate_combined_tree", combined_invalidate)
+    # 반입(reference-import)은 2026-09-28 부터 **프로젝트 폴더** 기준이다 — 캡처만 내장 폴더에 남는다.
+    proj_dir = tmp_path / "proj"
+    proj_dir.mkdir()
+    monkeypatch.setattr(assets, "_safe_project_dir", lambda *_: proj_dir)
     upload = UploadFile(filename=filename, file=io.BytesIO(payload))
 
     async def scenario() -> None:
         with pytest.raises(asyncio.CancelledError):
             if route == "capture":
-                await assets.upload_capture(SimpleNamespace(), upload)
+                await assets.upload_capture(SimpleNamespace(), project="proj", file=upload)
             else:
-                await assets.upload_reference_import(SimpleNamespace(), files=[upload])
+                await assets.upload_reference_import(
+                    SimpleNamespace(), project="proj", files=[upload]
+                )
 
     asyncio.run(scenario())
 
-    destination = tmp_path / project
+    destination = proj_dir / project
     assert [path.read_bytes() for path in destination.iterdir()] == [payload]
-    project_invalidate.assert_called_once_with(destination)
-    combined_invalidate.assert_called_once_with(tmp_path, assets._INTERNAL_FOLDERS)
+    project_invalidate.assert_called_once_with(proj_dir)
+    combined_invalidate.assert_not_called()  # 프로젝트 폴더에 저장하므로 내장 합본과 무관
 
 
 def test_worker_backup_bootstrap_survives_two_cancellations_until_work_finishes(

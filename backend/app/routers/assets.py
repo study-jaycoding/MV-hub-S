@@ -375,6 +375,91 @@ def _index_by_sha(
     return index, True
 
 
+# ── 반입 파일의 '이미 있는 원본' 찾기 ────────────────────────────────────────
+# 끌어다 놓은 파일은 브라우저가 **내용만** 준다(원래 경로는 주지 않는다). 그래서 NAS 에 있는
+# 파일을 끌어와도 어디서 왔는지 알 수 없어 사본이 생겼고, 그 사본은 그 PC 안에만 있어
+# 씬을 남에게 주면 빈칸이 됐다(2026-09-28 Jay). → 반입할 때 프로젝트 폴더에서 **같은 내용**을
+# 찾아, 있으면 복사하지 않고 그 경로를 쓴다.
+#
+# 비용: 파일 내용을 다 읽으면 NAS 에서 너무 느리다 → **크기(stat)로 후보를 좁히고 그 후보만**
+# 지문을 계산한다. 크기 색인은 짧은 TTL 로 캐시한다(여러 장을 한꺼번에 떨어뜨릴 때 한 번만 훑게).
+_LOCATE_TTL = 60.0
+_LOCATE_LIMIT = 60000  # 이 개수를 넘기면 색인을 끊는다(끊기면 '없다'고 단정하지 않는다)
+_LOCATE_CACHE: dict[str, tuple[float, dict[int, list[str]], bool]] = {}
+_LOCATE_GUARD = threading.Lock()
+
+
+def _size_index(proj_dir: Path, fresh: bool = False) -> tuple[dict[int, list[str]], bool]:
+    """프로젝트 폴더의 (파일 크기 → 상대경로들) 색인. 내용은 읽지 않고 stat 만 본다.
+    (index, scanned_all) — limit 로 끊기거나 읽기 오류면 scanned_all=False.
+    fresh=True 면 캐시를 쓰지 않고 다시 훑는다 — 자동 복구(locate)는 다른 PC 가 방금 넣은
+    파일까지 봐야 '한 곳에만 있다'를 단정할 수 있다(Codex 2026-09-28)."""
+    key = str(proj_dir)
+    now = time.monotonic()
+    if not fresh:
+        with _LOCATE_GUARD:
+            hit = _LOCATE_CACHE.get(key)
+            if hit and now - hit[0] < _LOCATE_TTL:
+                return hit[1], hit[2]
+    index: dict[int, list[str]] = {}
+    scanned_all = True
+    count = 0
+    try:
+        for p in proj_dir.rglob("*"):
+            try:
+                if not p.is_file() or not _media_type(p.name):
+                    continue
+                rel = p.resolve().relative_to(proj_dir)
+            except OSError:
+                scanned_all = False  # 못 읽은 파일이 있으면 '없다'고 단정하지 않는다(Codex)
+                continue
+            except ValueError:
+                continue
+            if any(asset_tree.is_hidden_name(part) for part in rel.parts):
+                continue
+            count += 1
+            if count > _LOCATE_LIMIT:
+                scanned_all = False
+                break
+            try:
+                index.setdefault(p.stat().st_size, []).append(rel.as_posix())
+            except OSError:
+                scanned_all = False
+                continue
+    except OSError:
+        scanned_all = False
+    with _LOCATE_GUARD:
+        _LOCATE_CACHE[key] = (now, index, scanned_all)
+    return index, scanned_all
+
+
+def invalidate_size_index(proj_dir: Path) -> None:
+    """이 폴더에 파일을 새로 넣었으면 색인을 버린다(다음 반입이 새로 훑게)."""
+    with _LOCATE_GUARD:
+        _LOCATE_CACHE.pop(str(proj_dir), None)
+
+
+def _locate_by_content(
+    proj_dir: Path, size: int, digest: str, name: str
+) -> tuple[Optional[str], bool]:
+    """(내용이 같은 파일의 상대경로, 폴더를 끝까지 훑었는가). 못 찾으면 (None, 완주여부).
+    후보 순서: 파일명이 같은 것 먼저 → 경로가 짧은 것 → 사전순(같은 입력이면 늘 같은 답).
+    ★완주 여부를 함께 돌려주는 이유: 훑다 끊긴 결과를 '없다'로 단정하면 옛 씬을 엉뚱한
+    프로젝트로 이어 버린다(Codex 2026-09-28)."""
+    if size <= 0 or not digest:
+        return None, True
+    index, scanned_all = _size_index(proj_dir)
+    same_size = index.get(size) or []
+    if not same_size:
+        return None, scanned_all
+    ordered = sorted(same_size, key=lambda rel: (rel.rsplit("/", 1)[-1] != name, len(rel), rel))
+    for rel in ordered:
+        target = _safe_resolve(proj_dir, rel)
+        if target and target.is_file() and _sha256_file(target) == digest:
+            return rel, scanned_all
+    return None, scanned_all
+
+
 def _resolve_broken_sources(request: Request, prune: bool) -> tuple[int, list[str]]:
     """원경로에서 사라진 내 소스를 내용 지문으로 재매칭해 다시 잇는다(자가 치유).
     prune=True 면, 재매칭도 실패하고 '폴더를 끝까지 훑어 확실히 없는' 소스만 소스 지정을 해제한다
@@ -817,12 +902,23 @@ async def _upload_files_loop(
 
 
 @router.post("/capture", dependencies=[Depends(_require_local_assets)])
-async def upload_capture(request: Request, file: UploadFile = File(...)):
-    """클립보드 캡쳐(이미지)를 내장 'captures' 폴더에 저장 + asset 토큰용 정보 반환.
-    저장 즉시 레퍼런스(asset:captures|name)로 쓸 수 있고, Assets 에서도 탐색·태그·소스지정 가능.
-    captures 는 내장 ASSETS_ROOT/captures 폴더(마운트 아님)라 owner 무관하게 thumb/file 서빙됨."""
+async def upload_capture(request: Request, project: str = Form(""), file: UploadFile = File(...)):
+    """붙여넣은 그림·부분수정 결과를 **그 프로젝트 폴더**의 imports 에 저장 + asset 토큰용 정보 반환.
+
+    ★2026-09-28 Jay: 가져온 방식과 무관하게 프로젝트 폴더 기준으로 기록한다 — 전엔 이 PC 안
+    captures 폴더라 씬을 남에게 주면 빈칸이었다. 붙여넣기·부분수정 그림은 NAS 에 원본이 있을 수
+    없으므로(화면 캡처·새로 그린 것) 반입처럼 '이미 있는 원본 찾기'는 하지 않고 바로 저장한다."""
+    if not project or project == _COMBINED_INTERNAL:
+        raise HTTPException(status_code=400, detail="프로젝트를 먼저 고르세요")
+    proj_dir = _safe_project_dir(project, request)
+    if not proj_dir:
+        raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
     _validate_upload_batch([file])
-    cap_dir = (ASSETS_ROOT / "captures").resolve()
+    cap_dir = (proj_dir / _PROMPT_IMPORT_PROJECT).resolve()
+    try:
+        cap_dir.relative_to(proj_dir)
+    except ValueError:
+        raise HTTPException(status_code=500, detail="imports 경로 오류")
     cap_dir.mkdir(parents=True, exist_ok=True)
     try:
         tmp, size, digest = await _stream_upload_tmp(file, cap_dir)
@@ -850,6 +946,8 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
             name,
             digest,
             size,
+            project,
+            proj_dir,
         )
     except BaseException:
         # 스트리밍이 끝난 뒤 중복 검사·최종 확정에서 실패해도 .part 파일을 남기지 않는다.
@@ -857,15 +955,21 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
         raise
     finally:
         if commit_attempted:
-            asset_tree.invalidate_project_tree(cap_dir)
-            asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
+            asset_tree.invalidate_project_tree(proj_dir)
+            invalidate_size_index(proj_dir)
+    rel = target.relative_to(proj_dir).as_posix()
     if reused:
-        return {"project": "captures", "path": target.name, "name": target.name, "type": "image", "reused": True}
+        return {
+            "project": project, "path": rel, "name": target.name, "type": "image",
+            "reused": True, "sha256": digest, "bytes": size,
+        }
     return {
-        "project": "captures",
-        "path": target.name,
+        "project": project,
+        "path": rel,
         "name": target.name,
         "type": "image",
+        "sha256": digest,  # 나중에 원본이 옮겨져도 내용으로 다시 찾기 위한 표식
+        "bytes": size,
         # 신규 파일에만 1회용 정리 토큰 — 생성 요청이 확정 거절(4xx)로 끝난 고아만
         # 프론트가 이 토큰으로 지울 수 있다(아래 /capture-discard).
         "discard_token": discard_token,
@@ -877,14 +981,18 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
 # 동작하고, reference 가 참조 중이면 지우지 않는다(코덱스 합의). 단일 프로세스 전제의
 # 인메모리 토큰(TTL 15분) — 앱 재시작이면 토큰 소멸 = 정리 포기(비파괴 방향).
 _CAPTURE_DISCARD_TTL = 15 * 60.0
-_capture_discard_tokens: dict[str, tuple[str, float]] = {}  # token -> (파일명, 만료 monotonic)
+# token -> (프로젝트, 상대경로, 확정 당시 절대경로, 내용 지문, 만료 monotonic)
+#  ★2026-09-28: 캡처가 프로젝트 폴더로 옮겨가면서 파일명 하나로는 대상을 특정할 수 없다.
+#  지우기 직전에 **그때 그 파일이 맞는지**(절대경로·지문)까지 확인한다 — 15분 사이 프로젝트
+#  폴더 설정이 바뀌면 같은 상대경로가 다른 파일을 가리킬 수 있다(Codex 지적).
+_capture_discard_tokens: dict[str, tuple[str, str, str, str, float]] = {}
 # RLock: reuse 확정(_finalize_reused_capture)과 삭제(discard)가 같은 락 경계를 공유해야
 # 'B 가 reused 로 고른 파일을 A 의 discard 가 그 사이 지우는' 경합이 닫힌다(코덱스 BLOCK).
 _capture_discard_lock = threading.RLock()
 
 
 def _commit_capture_with_discard_token(
-    tmp: Path, cap_dir: Path, name: str, digest: str, size: int
+    tmp: Path, cap_dir: Path, name: str, digest: str, size: int, project: str, proj_dir: Path
 ) -> tuple[Path, bool, Optional[str]]:
     """워커 스레드에서 실행 — 커밋/재사용 판정과 토큰 발급·무효화를 discard 와 같은 락
     안에서 원자로 처리한다(코덱스 BLOCK 2차: 신규 커밋과 토큰 발급 사이에 reuse 가
@@ -896,30 +1004,33 @@ def _commit_capture_with_discard_token(
       이미 지워졌으면 사라진 경로 응답 대신 409 로 재시도를 유도한다."""
     with _capture_discard_lock:
         target, reused = asset_io.find_or_commit_media(tmp, cap_dir, name, digest, "image", size)
+        rel = target.relative_to(proj_dir).as_posix()
         if reused:
-            _invalidate_capture_discard_tokens(target.name)
+            _invalidate_capture_discard_tokens(project, rel)
             if not target.exists():
                 raise HTTPException(status_code=409, detail="캡처가 방금 정리되었습니다 — 다시 시도하세요")
             return target, True, None
-        return target, False, _issue_capture_discard_token(target.name)
+        return target, False, _issue_capture_discard_token(project, rel, target, digest)
 
 
-def _issue_capture_discard_token(name: str) -> str:
+def _issue_capture_discard_token(project: str, rel: str, target: Path, digest: str) -> str:
     now = time.monotonic()
     with _capture_discard_lock:
-        # 만료 청소 + 같은 파일명을 가리키는 옛 토큰 제거(새 업로드가 상태의 기준)
-        for t, (n, exp) in list(_capture_discard_tokens.items()):
-            if exp < now or n == name:
+        # 만료 청소 + 같은 파일을 가리키는 옛 토큰 제거(새 업로드가 상태의 기준)
+        for t, (p, r, _abs, _sha, exp) in list(_capture_discard_tokens.items()):
+            if exp < now or (p == project and r == rel):
                 _capture_discard_tokens.pop(t, None)
         token = secrets.token_urlsafe(16)
-        _capture_discard_tokens[token] = (name, now + _CAPTURE_DISCARD_TTL)
+        _capture_discard_tokens[token] = (
+            project, rel, str(target), digest, now + _CAPTURE_DISCARD_TTL,
+        )
     return token
 
 
-def _invalidate_capture_discard_tokens(name: str) -> None:
+def _invalidate_capture_discard_tokens(project: str, rel: str) -> None:
     with _capture_discard_lock:
-        for t, (n, _exp) in list(_capture_discard_tokens.items()):
-            if n == name:
+        for t, (p, r, _abs, _sha, _exp) in list(_capture_discard_tokens.items()):
+            if p == project and r == rel:
                 _capture_discard_tokens.pop(t, None)
 
 
@@ -941,27 +1052,115 @@ def discard_capture(body: CaptureDiscardIn, request: Request):
     # 락 안의 sqlite 1건 조회는 짧고(로컬 파일 DB) capture 업로드는 드물어 병목 아님.
     with _capture_discard_lock:
         entry = _capture_discard_tokens.pop(body.token, None)
-        if entry is None or entry[1] < now:
+        if entry is None or entry[4] < now:
             raise HTTPException(status_code=404, detail="정리 토큰이 없거나 만료되었습니다")
-        name = entry[0]
+        project, rel, committed_path, committed_sha = entry[0], entry[1], entry[2], entry[3]
         with get_connection() as conn:
             row = conn.execute(
                 "SELECT 1 FROM reference WHERE file_path = ? LIMIT 1",
-                (f"asset:captures|{name}",),
+                (f"asset:{project}|{rel}",),
             ).fetchone()
         if row:
             raise HTTPException(status_code=409, detail="생성물이 참조하는 파일이라 지우지 않습니다")
-        cap_dir = (ASSETS_ROOT / "captures").resolve()
-        target = (cap_dir / name).resolve()
-        if target.parent != cap_dir:  # 토큰은 서버 발급이라 정상경로지만 이중 방어
-            raise HTTPException(status_code=400, detail="잘못된 파일명")
+        proj_dir = _safe_project_dir(project, request)
+        target = _safe_resolve(proj_dir, rel) if proj_dir else None
+        if not proj_dir or target is None:  # 토큰은 서버 발급이라 정상경로지만 이중 방어
+            raise HTTPException(status_code=400, detail="잘못된 경로")
+        # ★올릴 때의 그 파일이 맞을 때만 지운다 — 그 사이 프로젝트 폴더 설정이 바뀌었거나
+        #  같은 자리를 다른 파일이 차지했으면 지우지 않고 보류한다(Codex 2026-09-28).
+        if str(target) != committed_path or _sha256_file(target) != committed_sha:
+            raise HTTPException(status_code=409, detail="그때 올린 파일이 아니라 지우지 않습니다")
         try:
             target.unlink(missing_ok=True)
         except OSError:
             raise HTTPException(status_code=409, detail="파일을 지우지 못했습니다")
-    asset_tree.invalidate_project_tree(cap_dir)
-    asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
+    asset_tree.invalidate_project_tree(proj_dir)
+    invalidate_size_index(proj_dir)
     return {"ok": True}
+
+
+class LocateIn(BaseModel):
+    tokens: list[str] = Field(default_factory=list)
+
+
+_LOCATE_MAX_TOKENS = 200
+
+
+@router.post("/locate", dependencies=[Depends(_require_local_assets)])
+def locate_legacy_assets(body: LocateIn, request: Request):
+    """이 PC 안 사본(imports·captures)을 가리키는 옛 토큰을 **프로젝트 폴더의 같은 파일**로 옮겨 준다.
+
+    ★왜 필요한가: 예전에는 끌어다 놓은 파일이 설치 폴더 안에 복사돼, 그 씬을 남에게 주면 빈칸이었다.
+    원본은 NAS(프로젝트 폴더)에 그대로 있으므로 **내용 지문이 같은 파일**을 찾아 주소만 바꾼다.
+    정확히 한 프로젝트에서만 찾혔을 때만 바꾼다 — 여러 프로젝트에 같은 파일이 있으면 어느 것인지
+    단정할 수 없어 그대로 둔다(잘못된 자동 수정 방지)."""
+    fixed: list[dict[str, Any]] = []
+    unresolved: list[str] = []
+    # 대상 = PM 프로젝트 + 내가 등록한 폴더. 단 **같은 이름이 양쪽에 있으면 건너뛴다** —
+    # 이 PC 는 개인 폴더를 먼저 보는데 남의 PC 는 PM 을 보므로, 그 이름으로 바꾸면 또 갈린다
+    # (Codex 2026-09-28). 이름이 한쪽에만 있으면 어느 PC 에서나 같은 뜻이다.
+    manual = {m["name"] for m in _owner_mounts(actor_id(request))}
+    auto = {m["name"] for m in _auto_project_mounts(request)}
+    project_dirs: list[tuple[str, Path]] = []
+    for name in sorted((manual | auto) - (manual & auto)):
+        if name in _INTERNAL_FOLDERS or name == _COMBINED_INTERNAL:
+            continue
+        proj_dir = _safe_project_dir(name, request)
+        if proj_dir:
+            project_dirs.append((name, proj_dir))
+
+    # 요청마다 각 프로젝트를 **한 번 새로 훑는다** — 그 뒤 토큰들은 이 색인을 함께 쓴다.
+    for _name, proj_dir in project_dirs:
+        _size_index(proj_dir, fresh=True)
+
+    seen: dict[str, Optional[dict[str, Any]]] = {}  # 같은 토큰이 여러 카드에 있어도 한 번만 계산
+    for token in body.tokens[:_LOCATE_MAX_TOKENS]:
+        if token in seen:
+            if seen[token]:
+                fixed.append({**seen[token], "token": token})  # type: ignore[dict-item]
+            else:
+                unresolved.append(token)
+            continue
+        seen[token] = None
+        head, sep, rest = token.partition("|")
+        old_project = head[len("asset:"):] if head.startswith("asset:") else ""
+        if not sep or not old_project:
+            unresolved.append(token)
+            continue
+        old_project, rest = asset_paths.real_meta_key(old_project, rest)
+        if old_project not in _INTERNAL_FOLDERS:
+            unresolved.append(token)  # 이미 프로젝트 기준 토큰 — 건드리지 않는다
+            continue
+        local = _safe_resolve((ASSETS_ROOT / old_project).resolve(), rest)
+        if not local or not local.is_file():
+            unresolved.append(token)  # 사본조차 없으면 지문을 낼 수 없다
+            continue
+        try:
+            size = local.stat().st_size
+        except OSError:
+            unresolved.append(token)
+            continue
+        digest = _sha256_file(local)
+        if not digest:
+            unresolved.append(token)
+            continue
+        hits: list[tuple[str, str]] = []
+        complete = True
+        for name, proj_dir in project_dirs:
+            found, scanned_all = _locate_by_content(proj_dir, size, digest, local.name)
+            if not scanned_all:
+                complete = False  # 못 훑은 폴더가 있으면 '한 곳에만 있다'고 단정할 수 없다
+            if found:
+                hits.append((name, found))
+            if len(hits) > 1:
+                break  # 여러 프로젝트에 있으면 고르지 않는다
+        if len(hits) != 1 or not complete:
+            unresolved.append(token)
+            continue
+        entry = {"project": hits[0][0], "path": hits[0][1], "sha256": digest, "bytes": size}
+        seen[token] = entry
+        fixed.append({**entry, "token": token})
+    return {"fixed": fixed, "unresolved": unresolved}
 
 
 @router.post("/reference-import", dependencies=[Depends(_require_local_assets)])
@@ -971,19 +1170,30 @@ async def upload_reference_import(
     dir: str = Form(""),
     files: list[UploadFile] = File(...),
 ):
-    """프롬프트/레퍼런스 트레이에 외부 파일을 직접 드롭할 때 쓰는 내장 가져오기.
-    captures 처럼 **항상 전용 imports 폴더 하나**로 모은다(같은 파일은 해시로 재사용).
-    project/dir 폼 인자는 하위호환으로 받되 무시 — 예전엔 '선택된 폴더 안 {dir}/import'로 저장해
-    실제 프로젝트 폴더를 오염시켰다(CH/import, CH/import/import ...). 이제 흩뿌리지 않는다."""
-    out_project = _PROMPT_IMPORT_PROJECT
-    project_dir: Optional[Path] = None  # 항상 None → 저장 경로가 flat(파일명만, captures 와 동일)
-    dest = (ASSETS_ROOT / _PROMPT_IMPORT_PROJECT).resolve()
+    """프롬프트/캔버스/트레이에 외부 파일을 직접 드롭할 때 쓰는 가져오기.
+
+    ★2026-09-28 Jay: "어셋에서 가지고오는것처럼 경로가 입력되는거다" — **프로젝트 폴더 기준**으로
+    기록한다. 끌어다 놓은 파일은 브라우저가 내용만 주므로(원래 경로 없음) 먼저 그 프로젝트 안에서
+    **같은 내용의 파일**을 찾아, 있으면 복사하지 않고 그 경로를 돌려준다. 없을 때만 프로젝트의
+    'imports' 폴더에 저장한다. 그래야 씬을 남에게 줘도 같은 그림이 보인다(전엔 이 PC 안 사본이라 빈칸).
+    dir 폼 인자는 받지 않는다 — 목적지가 그때그때 달라지면 옛 'CH/import/import' 오염이 재발한다."""
+    if not project or project == _COMBINED_INTERNAL:
+        raise HTTPException(status_code=400, detail="프로젝트를 먼저 고르세요")
+    project_dir = _safe_project_dir(project, request)
+    if not project_dir:
+        raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
+    out_project = project
+    dest = (project_dir / _PROMPT_IMPORT_PROJECT).resolve()
     try:
-        dest.relative_to(ASSETS_ROOT)
+        dest.relative_to(project_dir)
     except ValueError:
         raise HTTPException(status_code=500, detail="imports 경로 오류")
-    dest.mkdir(parents=True, exist_ok=True)
+    # 임시 .part 는 imports 안에 받는다 — 프로젝트 루트에 받으면 루트 쓰기 권한이 없는 NAS 에서
+    # 반입 자체가 막히고, 강제 종료 시 잔재가 청소 범위 밖에 남는다(Codex 2026-09-28).
+    # 검사를 폴더 만들기보다 **먼저** 한다 — 상한 초과로 막힌 요청이 빈 폴더를 남기지 않게.
     _validate_upload_batch(files)
+    created_dest = not dest.exists()  # 이 요청이 만든 폴더만 나중에 도로 치운다(남의 빈 폴더 보존)
+    dest.mkdir(parents=True, exist_ok=True)
 
     saved: list[dict[str, Any]] = []
     skipped: list[str] = []
@@ -1009,6 +1219,23 @@ async def upload_reference_import(
                 tmp.unlink(missing_ok=True)
                 skipped.append(raw)
                 continue
+            # ★먼저 프로젝트 안에 같은 내용이 이미 있는지 본다 — 있으면 사본을 만들지 않는다.
+            #  (NAS 에서 끌어온 파일은 여기서 원래 자리를 되찾는다.)
+            existing, _scanned_all = await asyncio.to_thread(
+                _locate_by_content, project_dir, size, digest, raw
+            )
+            if existing:
+                tmp.unlink(missing_ok=True)
+                saved.append({
+                    "project": out_project,
+                    "path": existing,
+                    "name": existing.rsplit("/", 1)[-1],
+                    "type": mt,
+                    "reused": True,
+                    "sha256": digest,
+                    "bytes": size,
+                })
+                continue
             # 중복 재검색부터 최종 확정까지 같은 동기 임계구역에서 수행하고, 취소돼도 스레드를 버리지 않는다.
             try:
                 commit_attempted = True  # 취소 재전파 전 실제 파일 확정 가능 — finally 무효화 기준
@@ -1022,17 +1249,14 @@ async def upload_reference_import(
                     size,
                 )
                 if reused:
-                    rel = (
-                        target.relative_to(project_dir).as_posix()
-                        if project_dir
-                        else target.name
-                    )
                     saved.append({
                         "project": out_project,
-                        "path": rel,
+                        "path": target.relative_to(project_dir).as_posix(),
                         "name": target.name,
                         "type": mt,
                         "reused": True,
+                        "sha256": digest,
+                        "bytes": size,
                     })
                     continue
             except BaseException:
@@ -1040,21 +1264,23 @@ async def upload_reference_import(
                 tmp.unlink(missing_ok=True)
                 raise
             committed_new = True
-            rel = (
-                target.relative_to(project_dir).as_posix()
-                if project_dir
-                else target.name
-            )
             saved.append({
                 "project": out_project,
-                "path": rel,
+                "path": target.relative_to(project_dir).as_posix(),
                 "name": target.name,
                 "type": mt,
+                "sha256": digest,
+                "bytes": size,
             })
     finally:
         if committed_new or commit_attempted:
-            asset_tree.invalidate_project_tree(dest)
-            asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
+            asset_tree.invalidate_project_tree(project_dir)
+            invalidate_size_index(project_dir)  # 새로 넣은 파일이 다음 반입에서 바로 후보가 되게
+        elif created_dest:
+            try:  # 이 요청이 만든 폴더인데 아무것도 안 넣었으면 도로 치운다(비어 있을 때만 성공)
+                dest.rmdir()
+            except OSError:
+                pass
     return {"saved": saved, "skipped": skipped}
 
 

@@ -241,9 +241,11 @@ export const assetsApi = {
     return res.json() as Promise<{ saved: string[]; skipped: string[] }>;
   },
 
-  // 클립보드 캡쳐(이미지 blob)를 내장 'captures' 폴더에 저장 → 레퍼런스용 asset 정보 반환.
-  uploadCapture: async (blob: Blob) => {
+  // 붙여넣은 그림·부분수정 결과를 **그 프로젝트 폴더**의 imports 에 저장 → 레퍼런스용 asset 정보 반환.
+  // (2026-09-28: 전엔 이 PC 안 captures 폴더라 씬을 남에게 주면 빈칸이었다.)
+  uploadCapture: async (blob: Blob, project: string) => {
     const fd = new FormData();
+    fd.append("project", project);
     fd.append("file", blob, "capture.png");
     const res = await fetch("/api/assets/capture", {
       method: "POST",
@@ -257,6 +259,8 @@ export const assetsApi = {
       name: string;
       type: string;
       reused?: boolean;
+      sha256?: string;
+      bytes?: number;
       discard_token?: string; // 신규 파일에만 — 생성 확정 실패(4xx) 시 고아 정리용 1회용 토큰
     }>;
   },
@@ -269,12 +273,12 @@ export const assetsApi = {
       body: JSON.stringify({ token }),
     }),
 
-  // 프롬프트/레퍼런스 트레이 외부 드롭 파일 → captures 처럼 항상 내장 imports 폴더에 저장.
-  // (project/dir 은 하위호환으로 보내되 서버가 무시 — 예전엔 선택 폴더 안에 흩어졌다.)
-  uploadReferenceFiles: async (files: File[], project = "", dir = "") => {
+  // 프롬프트/캔버스/트레이 외부 드롭 파일 → **그 프로젝트 폴더 기준**으로 기록(Jay 2026-09-28).
+  // 서버가 같은 내용의 파일을 프로젝트 안에서 먼저 찾고(있으면 사본 없이 그 경로), 없을 때만
+  // 프로젝트의 imports 폴더에 저장한다. project 가 없으면 서버가 400 으로 막는다.
+  uploadReferenceFiles: async (files: File[], project: string) => {
     const fd = new FormData();
     fd.append("project", project);
-    fd.append("dir", dir);
     for (const f of files) fd.append("files", f);
     const res = await fetch("/api/assets/reference-import", {
       method: "POST",
@@ -283,10 +287,27 @@ export const assetsApi = {
     });
     if (!res.ok) await throwHttpError(res, "/api/assets/reference-import");
     return res.json() as Promise<{
-      saved: { project: string; path: string; name: string; type: string; reused?: boolean }[];
+      // sha256·bytes = 나중에 원본이 옮겨져도 내용으로 다시 찾기 위한 지문(씬 레퍼런스에 함께 보관).
+      saved: {
+        project: string;
+        path: string;
+        name: string;
+        type: string;
+        reused?: boolean;
+        sha256?: string;
+        bytes?: number;
+      }[];
       skipped: string[];
     }>;
   },
+
+  // 옛 씬의 '이 PC 안 사본' 참조를 프로젝트 폴더 원본으로 옮겨 주는 조회(내용 지문으로 찾는다).
+  // 정확히 한 프로젝트에서 찾혔을 때만 fixed 에 담겨 온다 — 나머지는 그대로 둔다.
+  locateAssets: (tokens: string[]) =>
+    jsonFetch<{
+      fixed: { token: string; project: string; path: string; sha256?: string; bytes?: number }[];
+      unresolved: string[];
+    }>("/api/assets/locate", { method: "POST", body: JSON.stringify({ tokens }) }),
 
   // 내 로컬 DB(메타데이터) 가져오기 — 통째 교체(다른 PC에서 내보낸 .db).
   importDb: async (file: File) => {

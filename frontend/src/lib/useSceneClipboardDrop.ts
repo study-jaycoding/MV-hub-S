@@ -16,6 +16,7 @@ import { isSceneTextEntryTarget, scenePasteShortcut } from "./sceneKeyboard";
 import {
   notifySpotlightAssetsChanged,
   parseSpotlightAssetItems,
+  readSpotlightAssetCtx,
   readSpotlightAssetPayload,
   referenceDropTypeFromFile,
   spotlightAssetRefBase,
@@ -68,6 +69,9 @@ const assetItemToRef = (item: SpotlightAssetDragItem): SceneRef => {
     type: base.type,
     name: base.name,
     thumb: base.thumb,
+    // 지문을 함께 남긴다 — 나중에 원본이 옮겨져도 내용으로 다시 찾을 수 있다(2026-09-28).
+    ...(item.sha256 ? { content_sha: item.sha256 } : {}),
+    ...(item.bytes ? { bytes: item.bytes } : {}),
   };
 };
 
@@ -135,8 +139,15 @@ export function useSceneClipboardDrop(
       const accepted = files.filter((file) => referenceDropTypeFromFile(file));
       if (!accepted.length) return;
       const sceneId = optionsRef.current.sceneIdRef.current;
+      // 어느 프로젝트 폴더에 기록할지 — Assets 에서 고른 프로젝트를 따른다(Jay 2026-09-28).
+      // 프로젝트를 모르면 이 PC 안에 사본을 만들지 않고 알린다(사본은 남에게 안 보인다).
+      const project = readSpotlightAssetCtx().project;
+      if (!project) {
+        window.alert("Assets 에서 프로젝트를 먼저 고르세요 — 그 프로젝트 폴더 기준으로 저장합니다.");
+        return;
+      }
       try {
-        const response = await api.uploadReferenceFiles(accepted);
+        const response = await api.uploadReferenceFiles(accepted, project);
         const items = response.saved || [];
         if (items.length) {
           if (optionsRef.current.sceneIdRef.current === sceneId) {
@@ -342,8 +353,14 @@ export function useSceneClipboardDrop(
         }
 
         const sceneId = current.sceneIdRef.current;
+        // 붙여넣은 그림도 프로젝트 폴더 기준으로(Jay 2026-09-28) — 모르면 이 PC 사본을 만들지 않는다.
+        const captureProject = readSpotlightAssetCtx().project;
+        if (!captureProject) {
+          window.alert("Assets 에서 프로젝트를 먼저 고르세요 — 그 프로젝트 폴더 기준으로 저장합니다.");
+          return;
+        }
         void api
-          .uploadCapture(image)
+          .uploadCapture(image, captureProject)
           .then((result) => {
             if (optionsRef.current.sceneIdRef.current === sceneId) {
               addReferenceCards(
@@ -354,6 +371,8 @@ export function useSceneClipboardDrop(
                       path: result.path,
                       name: result.name,
                       type: result.type || "image",
+                      sha256: result.sha256,
+                      bytes: result.bytes,
                     }),
                     origin: "upload" as const,
                   },
