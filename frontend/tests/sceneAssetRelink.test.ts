@@ -1,7 +1,7 @@
 // 옛 씬의 '이 PC 안 사본' 참조를 프로젝트 폴더 원본으로 되돌리는 순수 계산(2026-09-28).
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { applyRelink, legacyAssetTokens, relinkLegacyAssetRefs } from "../src/lib/sceneAssetRelink";
+import { applyRelink, relinkSceneAssetRefs, sceneAssetTokens } from "../src/lib/sceneAssetRelink";
 import { saveScenes, type Scene } from "../src/lib/scenes";
 
 const locate = vi.fn();
@@ -18,27 +18,30 @@ const scene = (refs: { file_path: string; thumb?: string | null }[]): Scene =>
     edges: [],
   }) as unknown as Scene;
 
-describe("옛 참조 찾기", () => {
-  it("이 PC 안 사본(imports·captures·합본)만 고른다", () => {
+describe("물어볼 참조 모으기", () => {
+  it("에셋 참조를 모두 고른다 — 어느 것이 안 열리는지는 폴더를 보는 서버만 안다", () => {
     const scenes = [
       scene([
         { file_path: "asset:imports|a.png" },
         { file_path: "asset:captures|b.png" },
         { file_path: "asset:imp/cap|imports/c.png" },
-        { file_path: "asset:뻘뻘뻘|BG/d.png" }, // 이미 프로젝트 기준 — 대상 아님
-        { file_path: "https://cdn.example/e.png" }, // 원격 URL — 대상 아님
+        // 프로젝트 이름이 붙어도 그 프로젝트를 못 보면 빈칸이다 — 이것도 물어봐야 한다
+        { file_path: "asset:뻘뻘뻘_RnD|CH/바바라/d.png" },
+        { file_path: "https://cdn.example/e.png" }, // 원격 URL — 에셋이 아니다
+        { file_path: "asset:깨진것" }, // 구분자(|)가 없다 — 물어볼 수 없다
       ]),
     ];
-    expect(legacyAssetTokens(scenes)).toEqual([
+    expect(sceneAssetTokens(scenes)).toEqual([
       "asset:imports|a.png",
       "asset:captures|b.png",
       "asset:imp/cap|imports/c.png",
+      "asset:뻘뻘뻘_RnD|CH/바바라/d.png",
     ]);
   });
 
   it("같은 토큰이 여러 카드에 있어도 한 번만 묻는다", () => {
     const scenes = [scene([{ file_path: "asset:imports|a.png" }]), scene([{ file_path: "asset:imports|a.png" }])];
-    expect(legacyAssetTokens(scenes)).toEqual(["asset:imports|a.png"]);
+    expect(sceneAssetTokens(scenes)).toEqual(["asset:imports|a.png"]);
   });
 });
 
@@ -84,7 +87,7 @@ describe("서버에 묻고 갈아끼우기", () => {
     saveScenes(null, [scene(refs)]);
     locate.mockResolvedValue({ fixed: [], unresolved: [] });
 
-    await relinkLegacyAssetRefs();
+    await relinkSceneAssetRefs();
 
     // 250개 = 200 + 50 두 번. 한 번만 보내면 뒤 50개가 조용히 잘린다.
     expect(locate).toHaveBeenCalledTimes(2);
@@ -99,11 +102,11 @@ describe("서버에 묻고 갈아끼우기", () => {
       unresolved: [],
     });
 
-    expect(await relinkLegacyAssetRefs()).toBe(1);
+    expect(await relinkSceneAssetRefs()).toBe(1);
     expect(locate).toHaveBeenCalledTimes(1);
 
     // 저장된 씬은 이미 프로젝트 주소라 다시 물을 토큰이 없다
-    expect(await relinkLegacyAssetRefs()).toBe(0);
+    expect(await relinkSceneAssetRefs()).toBe(0);
     expect(locate).toHaveBeenCalledTimes(1);
   });
 
@@ -111,12 +114,12 @@ describe("서버에 묻고 갈아끼우기", () => {
     saveScenes(null, [scene([{ file_path: "asset:imports|retry.png" }])]);
     locate.mockRejectedValueOnce(new Error("서버 없음"));
 
-    expect(await relinkLegacyAssetRefs()).toBe(0); // 화면은 지금까지처럼 동작
+    expect(await relinkSceneAssetRefs()).toBe(0); // 화면은 지금까지처럼 동작
 
     locate.mockResolvedValue({
       fixed: [{ token: "asset:imports|retry.png", project: "P", path: "BG/a.png" }],
       unresolved: [],
     });
-    expect(await relinkLegacyAssetRefs()).toBe(1); // 실패는 '물어봤다'로 치지 않는다
+    expect(await relinkSceneAssetRefs()).toBe(1); // 실패는 '물어봤다'로 치지 않는다
   });
 });

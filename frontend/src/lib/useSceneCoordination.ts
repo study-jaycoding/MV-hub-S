@@ -14,7 +14,7 @@ import {
   saveScenes,
   updateScene,
 } from "./scenes";
-import { relinkLegacyAssetRefs } from "./sceneAssetRelink";
+import { relinkSceneAssetRefs } from "./sceneAssetRelink";
 import { applySceneMove, type SceneMove, type SceneWorkspace } from "./sceneWorkspace";
 import { clearSceneHistory } from "./sceneUndoStore";
 import {
@@ -101,7 +101,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
       // 옛 씬의 '이 PC 안 사본' 참조를 프로젝트 폴더 원본으로 되돌린다(2026-09-28) — 찾은 것만 조용히.
       //  씬 복구·카드 소속 합치기가 끝난 뒤에 돈다(그 둘이 씬을 다시 쓰므로 순서가 중요).
       .then(() =>
-        relinkLegacyAssetRefs(() => sceneActionRef.current?.flushPending()).then((changed) => {
+        relinkSceneAssetRefs(() => sceneActionRef.current?.flushPending()).then((changed) => {
           if (!changed) return;
           setScenes(listScenes(null));
           flashRef.current?.(`씬 그림 ${changed}개를 프로젝트 폴더의 원본으로 다시 이었습니다.`);
@@ -188,7 +188,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     selectScene(s.id);
     // 남이 준 씬 파일에 '그 사람 PC 안 사본'을 가리키는 그림이 있으면, 내 프로젝트 폴더의
     // 같은 파일로 조용히 이어 준다(2026-09-28). 못 찾으면 지금처럼 빈칸이다.
-    void relinkLegacyAssetRefs(() => sceneActionRef.current?.flushPending()).then((changed) => {
+    void relinkSceneAssetRefs(() => sceneActionRef.current?.flushPending()).then((changed) => {
       if (!changed) return;
       refreshScenes();
       flashRef.current?.(`씬 그림 ${changed}개를 프로젝트 폴더의 원본으로 다시 이었습니다.`);
@@ -226,7 +226,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
       );
       // 가져온 씬의 '다른 PC 사본' 그림도 내 프로젝트 폴더의 같은 파일로 이어 준다(2026-09-28).
       if (added) {
-        void relinkLegacyAssetRefs(() => sceneActionRef.current?.flushPending()).then((changed) => {
+        void relinkSceneAssetRefs(() => sceneActionRef.current?.flushPending()).then((changed) => {
           if (changed) refreshScenes();
         });
       }

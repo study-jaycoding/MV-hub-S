@@ -1,21 +1,24 @@
-// 옛 씬의 '이 PC 안 사본' 참조를 프로젝트 폴더의 원본으로 되돌린다(Jay 2026-09-28).
+// 씬의 에셋 참조 중 **이 PC 에서 열리지 않는 것**을 서버가 찾아 준 자리로 이어 준다(Jay 2026-09-28).
 //
-// 왜: 예전에는 캔버스·프롬프트에 끌어다 놓거나 붙여넣은 그림이 설치 폴더 안(imports·captures)에
-// 복사됐다. 그 사본은 그 PC 에만 있어 씬을 남에게 주면 빈칸이 됐다. 원본은 대개 NAS(프로젝트 폴더)에
-// 그대로 있으므로, 사본의 **내용 지문**으로 원본을 찾아 주소만 바꾼다. 서버가 정확히 한 프로젝트에서
-// 찾았을 때만 바꿔 주므로(assets.locate) 여기서는 받은 것만 반영한다 — 묻지 않는다.
+// 왜: "어느 방식으로 가져와도 서버에 그 파일이 있다면 모두에게 똑같이 보이게". 안 열리는 이유가 둘이다.
+//  · 예전에 끌어다 놓은 그림이 설치 폴더 안(imports·captures)으로 복사됐다 — 그 PC 에만 있는 사본
+//  · 프로젝트 이름은 붙었지만 이 PC 가 그 프로젝트를 못 본다 — 같은 폴더를 사람마다 다른 이름·다른
+//    깊이로 등록해 생긴다(`뻘뻘뻘`=…/10_ai, `뻘뻘뻘_RnD`=…/10_ai/assets)
+// 그래서 **모든 에셋 참조**를 서버에 보내고, 서버가 지문·경로·이름 순으로 찾아 정확히 한 곳에서만
+// 찾혔을 때 답을 준다(assets.locate). 여기서는 받은 것만 반영한다 — 묻지 않는다.
 import { api } from "../api";
 import { listScenes, saveScenes, type Scene } from "./scenes";
 
-// 이 PC 안 내장 폴더를 가리키는 옛 토큰(imports·captures·합본).
-const LEGACY_TOKEN = /^asset:(?:imports|captures|imp\/cap)\|/;
+// 에셋 참조 토큰 전부. 이미 잘 열리는 것은 서버가 그대로 두므로 여기서 거르지 않는다 —
+// 어느 것이 안 열리는지는 폴더를 볼 수 있는 서버만 안다.
+const ASSET_TOKEN = /^asset:[^|]+\|/;
 
-export function legacyAssetTokens(scenes: Scene[]): string[] {
+export function sceneAssetTokens(scenes: Scene[]): string[] {
   const out = new Set<string>();
   for (const scene of scenes) {
     for (const card of scene.cards) {
       for (const ref of card.refs || []) {
-        if (ref.file_path && LEGACY_TOKEN.test(ref.file_path)) out.add(ref.file_path);
+        if (ref.file_path && ASSET_TOKEN.test(ref.file_path)) out.add(ref.file_path);
       }
     }
   }
@@ -71,11 +74,11 @@ let inFlight: Promise<number> | null = null;
  * (남이 준 씬을 여는 것이 바로 이 기능이 필요한 자리다 — Codex 2026-09-28).
  * flushPending 은 호출부가 넘긴다 — 저장 직전에 캔버스의 디바운스 편집을 확정시켜 덮어쓰지 않게.
  */
-export async function relinkLegacyAssetRefs(flushPending?: () => void): Promise<number> {
+export async function relinkSceneAssetRefs(flushPending?: () => void): Promise<number> {
   if (inFlight) return inFlight; // 겹쳐 부르면 한 번만 — 폴더 스캔이 중복되지 않게
   const pending = (): string[] => {
     const now = Date.now();
-    return legacyAssetTokens(listScenes(null)).filter((token) => {
+    return sceneAssetTokens(listScenes(null)).filter((token) => {
       const at = asked.get(token);
       return at === undefined || now - at > ASK_AGAIN_AFTER;
     });
@@ -91,7 +94,12 @@ export async function relinkLegacyAssetRefs(flushPending?: () => void): Promise<
         const batch = tokens.slice(at, at + LOCATE_BATCH); // 서버 상한을 넘기면 뒤가 조용히 잘린다
         const reply = await api.locateAssets(batch);
         batch.forEach((token) => asked.set(token, Date.now())); // 실제로 보낸 것만 '물어봤다'
-        reply.fixed.forEach((item) => found.set(item.token, item));
+        reply.fixed.forEach((item) => {
+          found.set(item.token, item);
+          // 서버가 방금 찾아준 자리다 — 새 토큰까지 '물어봤다'로 쳐서 같은 요청을 한 번 더
+          // 보내지 않는다(요청마다 프로젝트 폴더를 새로 훑으므로 값싼 일이 아니다).
+          asked.set(`asset:${item.project}|${item.path}`, Date.now());
+        });
       }
       if (!found.size) continue;
       flushPending?.(); // 캔버스가 아직 저장하지 않은 편집을 먼저 확정(안 하면 되돌려 덮는다)

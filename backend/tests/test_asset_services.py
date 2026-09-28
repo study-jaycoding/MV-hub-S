@@ -591,19 +591,57 @@ class AssetIoTests(unittest.TestCase):
                 )
             self.assertEqual([(f["project"], f["path"]) for f in manual_only["fixed"]], [("A", "BG/sea.png")])
 
-            # 같은 이름이 **양쪽(PM·개인)**에 있으면 이 PC 해석이 남과 갈리므로 건드리지 않는다
+            # 이름이 개인·PM 양쪽에 등록돼 있어도 찾는다 — 둘 다 같은 서버(NAS)를 가리키므로
+            # 어느 쪽에서 찾든 같은 파일이다(Jay 2026-09-28).
             with (
                 patch.object(assets, "ASSETS_ROOT", root),
-                patch.object(assets, "_auto_project_mounts", return_value=[{"name": "A"}]),
-                patch.object(assets, "_owner_mounts", return_value=[{"name": "A"}]),
+                patch.object(
+                    assets,
+                    "_auto_project_mounts",
+                    return_value=[{"name": "A", "path": str(proj_a), "project_id": "p1"}],
+                ),
+                patch.object(assets, "_owner_mounts", return_value=[{"name": "A", "path": str(proj_a)}]),
                 patch.object(assets, "actor_id", return_value="me"),
                 patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
             ):
-                shadowed = assets.locate_legacy_assets(
+                both_sides = assets.locate_legacy_assets(
                     assets.LocateIn(tokens=["asset:imports|sea.png"]), SimpleNamespace()
                 )
-            self.assertEqual(shadowed["fixed"], [])
-            self.assertEqual(shadowed["unresolved"], ["asset:imports|sea.png"])
+            self.assertEqual(
+                [(f["project"], f["path"]) for f in both_sides["fixed"]], [("A", "BG/sea.png")]
+            )
+
+    def test_locate_treats_one_folder_registered_twice_as_one_file(self) -> None:
+        """같은 폴더를 두 이름·두 깊이로 등록했을 때 — 한 그림이 두 곳에서 찾히지만 같은 파일이다.
+
+        ★Jay 의 실제 구성: `뻘뻘뻘`=…\10_ai, `뻘뻘뻘_RnD`=…\10_ai\assets. 이걸 '여럿'으로 세면
+        도리어 아무것도 못 고친다 — 물리 경로로 묶어 하나로 본다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            outer = root / "P"  # …/10_ai 에 해당
+            (outer / "assets" / "CH").mkdir(parents=True)
+            (outer / "assets" / "CH" / "hero.png").write_bytes(b"one picture")
+            inner = outer / "assets"  # …/10_ai/assets 에 해당 — 같은 폴더를 더 깊이 등록
+
+            dirs = {"P": outer, "P_RnD": inner}
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_auto_project_mounts", return_value=[{"name": "P"}]),
+                patch.object(assets, "_owner_mounts", return_value=[{"name": "P_RnD"}]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+            ):
+                reply = assets.locate_legacy_assets(
+                    # 이 PC 에 없는 제3의 이름으로 적힌 참조 — 두 등록 모두에서 같은 파일이 찾힌다
+                    assets.LocateIn(tokens=["asset:다른이름|CH/hero.png"]), SimpleNamespace()
+                )
+
+            self.assertEqual(len(reply["fixed"]), 1)
+            self.assertEqual(reply["fixed"][0]["token"], "asset:다른이름|CH/hero.png")
+            # 어느 이름으로 잡히든 가리키는 파일은 하나다
+            got = dirs[reply["fixed"][0]["project"]] / reply["fixed"][0]["path"]
+            self.assertEqual(got.read_bytes(), b"one picture")
 
     def test_reference_import_requires_a_project(self) -> None:
         """프로젝트를 모르면 이 PC 안에 몰래 사본을 만들지 않고 막는다(남에게 안 보이는 사본 방지)."""
@@ -611,6 +649,172 @@ class AssetIoTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as caught:
             asyncio.run(assets.upload_reference_import(SimpleNamespace(), project="", files=[upload]))
         self.assertEqual(caught.exception.status_code, 400)
+
+    def test_locate_finds_by_path_or_name_when_there_is_no_local_copy(self) -> None:
+        """사본이 없어도(남이 준 씬) 경로·이름으로 서버에서 찾아 잇는다.
+
+        ★Jay 2026-09-28: 같은 폴더를 사람마다 다른 깊이로 등록하면 같은 그림이 `CH/x.png` 도 되고
+        `assets/CH/x.png` 도 된다. 사본이 없으니 지문은 낼 수 없다 — 그래서 경로 뒷부분, 그것도
+        없으면 파일 이름으로 찾는다. 여러 곳에 있으면 단정하지 않는다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()  # 사본은 하나도 없다 — 남이 준 씬과 같은 상황
+            proj = root / "P"
+            (proj / "assets" / "CH" / "바바라").mkdir(parents=True)
+            (proj / "assets" / "CH" / "바바라" / "body.png").write_bytes(b"x")
+            (proj / "assets" / "CH" / "낙지").mkdir(parents=True)
+            (proj / "assets" / "CH" / "낙지" / "octopus.png").write_bytes(b"y")
+            (proj / "assets" / "BG").mkdir(parents=True)
+            (proj / "assets" / "BG" / "twice.png").write_bytes(b"z")
+            (proj / "twice.png").write_bytes(b"z")  # 같은 이름이 두 곳 — 고르지 않는다
+
+            dirs = {"P": proj}
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_auto_project_mounts", return_value=[{"name": "P"}]),
+                patch.object(assets, "_owner_mounts", return_value=[]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+            ):
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(
+                        tokens=[
+                            # 프로젝트 이름이 이 PC 에 없다 + 경로가 assets/ 만큼 짧다
+                            "asset:P_RnD|CH/바바라/body.png",
+                            # 사본 참조인데 사본이 없다 → 이름으로 찾는다
+                            "asset:imports|octopus.png",
+                            "asset:P_RnD|CH/없는것.png",  # 서버에도 없다
+                            "asset:P_RnD|twice.png",  # 같은 이름이 두 곳 — 그대로 둔다
+                        ]
+                    ),
+                    SimpleNamespace(),
+                )
+
+            self.assertEqual(
+                [(f["token"], f["project"], f["path"]) for f in reply["fixed"]],
+                [
+                    ("asset:P_RnD|CH/바바라/body.png", "P", "assets/CH/바바라/body.png"),
+                    ("asset:imports|octopus.png", "P", "assets/CH/낙지/octopus.png"),
+                ],
+            )
+            self.assertEqual(
+                reply["unresolved"], ["asset:P_RnD|CH/없는것.png", "asset:P_RnD|twice.png"]
+            )
+
+    def test_locate_stops_when_the_local_copy_says_the_contents_differ(self) -> None:
+        """사본이 있는데 내용이 같은 파일이 없으면 거기서 멈춘다.
+
+        ★이름만 같은 다른 그림을 붙이면 조용히 **틀린 그림**이 씬에 박힌다(Codex 2026-09-28).
+        근거가 센 단계(지문)를 쓸 수 있었다면, 약한 단계로 내려가지 않는다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            (root / "imports" / "octopus.png").write_bytes(b"mine")
+            proj = root / "P"
+            (proj / "CH").mkdir(parents=True)
+            (proj / "CH" / "octopus.png").write_bytes(b"a different picture")  # 이름만 같다
+
+            dirs = {"P": proj}
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_auto_project_mounts", return_value=[{"name": "P"}]),
+                patch.object(assets, "_owner_mounts", return_value=[]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+            ):
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:imports|octopus.png"]), SimpleNamespace()
+                )
+
+            self.assertEqual(reply["fixed"], [])
+            self.assertEqual(reply["unresolved"], ["asset:imports|octopus.png"])
+
+    def test_locate_prefers_a_path_match_over_a_name_match_in_another_project(self) -> None:
+        """경로 뒷부분까지 맞는 것이 이름만 맞는 것을 이긴다 — 프로젝트가 달라도 마찬가지."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            a = root / "A"
+            (a / "assets" / "CH").mkdir(parents=True)
+            (a / "assets" / "CH" / "hero.png").write_bytes(b"1")  # 경로 뒷부분 일치
+            b_dir = root / "B"
+            b_dir.mkdir()
+            (b_dir / "hero.png").write_bytes(b"2")  # 이름만 일치
+
+            dirs = {"A": a, "B": b_dir}
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(
+                    assets, "_auto_project_mounts", return_value=[{"name": "A"}, {"name": "B"}]
+                ),
+                patch.object(assets, "_owner_mounts", return_value=[]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+            ):
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:Q|CH/hero.png"]), SimpleNamespace()
+                )
+
+            self.assertEqual(
+                [(f["project"], f["path"]) for f in reply["fixed"]], [("A", "assets/CH/hero.png")]
+            )
+
+    def test_locate_will_not_choose_between_two_projects_with_the_same_name(self) -> None:
+        """서로 다른 프로젝트에 같은 이름이 있으면 고르지 않는다 — 어느 쪽인지 단정할 수 없다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            a = root / "A"
+            a.mkdir()
+            (a / "hero.png").write_bytes(b"1")
+            b_dir = root / "B"
+            b_dir.mkdir()
+            (b_dir / "hero.png").write_bytes(b"2")
+
+            dirs = {"A": a, "B": b_dir}
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(
+                    assets, "_auto_project_mounts", return_value=[{"name": "A"}, {"name": "B"}]
+                ),
+                patch.object(assets, "_owner_mounts", return_value=[]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+            ):
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:Q|hero.png"]), SimpleNamespace()
+                )
+
+            self.assertEqual(reply["fixed"], [])
+
+    def test_locate_leaves_references_that_already_open_here(self) -> None:
+        """이 PC 에서 이미 열리는 참조는 건드리지 않는다 — 멀쩡한 것을 옮기면 더 나빠진다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            a = root / "A"
+            (a / "BG").mkdir(parents=True)
+            (a / "BG" / "same.png").write_bytes(b"1")
+            b_dir = root / "B"
+            (b_dir / "BG").mkdir(parents=True)
+            (b_dir / "BG" / "same.png").write_bytes(b"1")  # B 에도 같은 이름이 있다
+
+            dirs = {"A": a, "B": b_dir}
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(
+                    assets, "_auto_project_mounts", return_value=[{"name": "A"}, {"name": "B"}]
+                ),
+                patch.object(assets, "_owner_mounts", return_value=[]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+            ):
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:A|BG/same.png"]), SimpleNamespace()
+                )
+
+            self.assertEqual(reply["fixed"], [])
+            self.assertEqual(reply["unresolved"], ["asset:A|BG/same.png"])
 
     def test_locate_rescans_so_a_file_added_elsewhere_is_not_missed(self) -> None:
         """자동 복구는 **다시 훑는다** — 60초 캐시를 그대로 믿으면 다른 PC 가 방금 넣은 같은 파일을

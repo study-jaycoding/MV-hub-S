@@ -405,13 +405,21 @@ def _index_by_sha(
 # 지문을 계산한다. 크기 색인은 짧은 TTL 로 캐시한다(여러 장을 한꺼번에 떨어뜨릴 때 한 번만 훑게).
 _LOCATE_TTL = 60.0
 _LOCATE_LIMIT = 60000  # 이 개수를 넘기면 색인을 끊는다(끊기면 '없다'고 단정하지 않는다)
-_LOCATE_CACHE: dict[str, tuple[float, dict[int, list[str]], bool]] = {}
+# (크기 색인, 파일이름 색인, 완주여부) — 한 번 훑어 둘 다 만든다.
+_LOCATE_CACHE: dict[str, tuple[float, dict[int, list[str]], dict[str, list[str]], bool]] = {}
 _LOCATE_GUARD = threading.Lock()
 
 
-def _size_index(proj_dir: Path, fresh: bool = False) -> tuple[dict[int, list[str]], bool]:
-    """프로젝트 폴더의 (파일 크기 → 상대경로들) 색인. 내용은 읽지 않고 stat 만 본다.
-    (index, scanned_all) — limit 로 끊기거나 읽기 오류면 scanned_all=False.
+def _project_index(
+    proj_dir: Path, fresh: bool = False, max_age: float = _LOCATE_TTL
+) -> tuple[dict[int, list[str]], dict[str, list[str]], bool]:
+    """프로젝트 폴더를 한 번 훑어 두 색인을 만든다 — (크기 → 상대경로들), (파일이름 → 상대경로들).
+    내용은 읽지 않고 stat·이름만 본다. 세 번째 값은 완주 여부(limit 로 끊기거나 읽기 오류면 False).
+
+    ★이름 색인이 필요한 이유: 남이 준 씬에는 **이 PC 에 사본이 없다**. 사본이 없으면 지문을 낼 수
+    없으므로 내용으로는 못 찾는다. 그래서 이름·경로로도 찾을 수 있어야 '서버에 있으면 보인다'가
+    성립한다(Jay 2026-09-28).
+
     fresh=True 면 캐시를 쓰지 않고 다시 훑는다 — 자동 복구(locate)는 다른 PC 가 방금 넣은
     파일까지 봐야 '한 곳에만 있다'를 단정할 수 있다(Codex 2026-09-28)."""
     key = str(proj_dir)
@@ -419,9 +427,10 @@ def _size_index(proj_dir: Path, fresh: bool = False) -> tuple[dict[int, list[str
     if not fresh:
         with _LOCATE_GUARD:
             hit = _LOCATE_CACHE.get(key)
-            if hit and now - hit[0] < _LOCATE_TTL:
-                return hit[1], hit[2]
+            if hit and now - hit[0] < max_age:
+                return hit[1], hit[2], hit[3]
     index: dict[int, list[str]] = {}
+    names: dict[str, list[str]] = {}
     scanned_all = True
     count = 0
     try:
@@ -441,16 +450,18 @@ def _size_index(proj_dir: Path, fresh: bool = False) -> tuple[dict[int, list[str
             if count > _LOCATE_LIMIT:
                 scanned_all = False
                 break
+            rel_posix = rel.as_posix()
+            names.setdefault(rel.name.casefold(), []).append(rel_posix)
             try:
-                index.setdefault(p.stat().st_size, []).append(rel.as_posix())
+                index.setdefault(p.stat().st_size, []).append(rel_posix)
             except OSError:
                 scanned_all = False
                 continue
     except OSError:
         scanned_all = False
     with _LOCATE_GUARD:
-        _LOCATE_CACHE[key] = (now, index, scanned_all)
-    return index, scanned_all
+        _LOCATE_CACHE[key] = (now, index, names, scanned_all)
+    return index, names, scanned_all
 
 
 def invalidate_size_index(proj_dir: Path) -> None:
@@ -468,7 +479,7 @@ def _locate_by_content(
     프로젝트로 이어 버린다(Codex 2026-09-28)."""
     if size <= 0 or not digest:
         return None, True
-    index, scanned_all = _size_index(proj_dir)
+    index, _names, scanned_all = _project_index(proj_dir)
     same_size = index.get(size) or []
     if not same_size:
         return None, scanned_all
@@ -478,6 +489,30 @@ def _locate_by_content(
         if target and target.is_file() and _sha256_file(target) == digest:
             return rel, scanned_all
     return None, scanned_all
+
+
+def _same_folder(a: Path, b: Path) -> bool:
+    """두 경로가 같은 물리 폴더인가 — 드라이브 문자·UNC 별칭·대소문자를 한 꼴로 맞춰 본다."""
+    try:
+        return _capture_path_key(a) == _capture_path_key(b)
+    except OSError:
+        return False
+
+
+def _locate_by_path(proj_dir: Path, rel: str) -> tuple[list[str], list[str], bool]:
+    """상대경로로 같은 파일을 찾는다 — 사본이 없어 지문을 낼 수 없을 때의 길.
+
+    (경로 뒷부분까지 맞는 것, 파일 이름만 맞는 것, 완주 여부). 같은 그림이라도 프로젝트를 어느
+    깊이로 등록했느냐에 따라 `CH/바바라/x.png` 도 되고 `assets/CH/바바라/x.png` 도 된다 —
+    그래서 뒷부분 일치를 따로 모은다. 고르는 책임은 부르는 쪽에 둔다(여러 곳이면 바꾸지 않는다).
+    """
+    _index, names, scanned_all = _project_index(proj_dir)
+    same_name = names.get(rel.rsplit("/", 1)[-1].casefold()) or []
+    if not same_name:
+        return [], [], scanned_all
+    tail = "/" + rel.casefold().lstrip("/")
+    exact = [r for r in same_name if ("/" + r.casefold()).endswith(tail)]
+    return exact, [r for r in same_name if r not in exact], scanned_all
 
 
 def _resolve_broken_sources(request: Request, prune: bool) -> tuple[int, list[str]]:
@@ -1123,21 +1158,33 @@ _LOCATE_MAX_TOKENS = 200
 
 @router.post("/locate", dependencies=[Depends(_require_local_assets)])
 def locate_legacy_assets(body: LocateIn, request: Request):
-    """이 PC 안 사본(imports·captures)을 가리키는 옛 토큰을 **프로젝트 폴더의 같은 파일**로 옮겨 준다.
+    """지금 이 PC 에서 **열리지 않는** 씬 참조를, 보이는 프로젝트 폴더의 같은 파일로 이어 준다.
 
-    ★왜 필요한가: 예전에는 끌어다 놓은 파일이 설치 폴더 안에 복사돼, 그 씬을 남에게 주면 빈칸이었다.
-    원본은 NAS(프로젝트 폴더)에 그대로 있으므로 **내용 지문이 같은 파일**을 찾아 주소만 바꾼다.
-    정확히 한 프로젝트에서만 찾혔을 때만 바꾼다 — 여러 프로젝트에 같은 파일이 있으면 어느 것인지
-    단정할 수 없어 그대로 둔다(잘못된 자동 수정 방지)."""
+    ★Jay 2026-09-28: "어느 방식으로 가져와도 서버에 그 파일이 있다면 모두에게 똑같이 보이게".
+    그래서 두 가지를 모두 본다.
+      · `imports`·`captures` 사본 참조 — 예전에 설치 폴더 안으로 복사된 것
+      · 프로젝트 이름은 붙었지만 **이 PC 가 그 프로젝트를 못 보는** 참조 — 같은 폴더를 사람마다
+        다른 이름·다른 깊이로 등록해 생긴다(`뻘뻘뻘`=…/10_ai, `뻘뻘뻘_RnD`=…/10_ai/assets).
+
+    찾는 순서는 근거가 센 것부터다. ① 이 PC 에 사본이 있으면 **내용 지문** ② 없으면 **경로 뒷부분**
+    ③ 그것도 없으면 **파일 이름**. 어느 단계든 **정확히 한 곳에서만** 찾혔을 때만 바꾼다 — 여러 곳에
+    있으면 어느 것인지 단정할 수 없어 그대로 둔다."""
     fixed: list[dict[str, Any]] = []
     unresolved: list[str] = []
     # 대상 = PM 프로젝트 + 내가 등록한 폴더. 단 **같은 이름이 양쪽에 있으면 건너뛴다** —
     # 이 PC 는 개인 폴더를 먼저 보는데 남의 PC 는 PM 을 보므로, 그 이름으로 바꾸면 또 갈린다
     # (Codex 2026-09-28). 이름이 한쪽에만 있으면 어느 PC 에서나 같은 뜻이다.
-    manual = {m["name"] for m in _owner_mounts(actor_id(request))}
-    auto = {m["name"] for m in _auto_project_mounts(request)}
+    owner = actor_id(request)
+    # 내가 등록한 폴더도 PM 프로젝트도 **모두** 뒤진다 — 둘 다 같은 서버(NAS)를 가리키므로
+    # 어느 쪽에서 찾든 같은 파일이다(Jay 2026-09-28). 이름이 겹쳐도 빼지 않는다. 대신 아래에서
+    # 후보를 **물리 경로로 묶어** 같은 파일이 두 번 세어지지 않게 한다 — 같은 폴더를 두 이름·두
+    # 깊이로 등록하면(`뻘뻘뻘`=…/10_ai, `뻘뻘뻘_RnD`=…/10_ai/assets) 한 그림이 두 곳에서
+    # 찾히는데, 그걸 '여럿'으로 세면 도리어 아무것도 못 고친다.
+    names = {m["name"] for m in _owner_mounts(owner)} | {
+        m["name"] for m in _auto_project_mounts(request)
+    }
     project_dirs: list[tuple[str, Path]] = []
-    for name in sorted((manual | auto) - (manual & auto)):
+    for name in sorted(names):
         if name in _INTERNAL_FOLDERS or name == _COMBINED_INTERNAL:
             continue
         proj_dir = _safe_project_dir(name, request)
@@ -1145,8 +1192,45 @@ def locate_legacy_assets(body: LocateIn, request: Request):
             project_dirs.append((name, proj_dir))
 
     # 요청마다 각 프로젝트를 **한 번 새로 훑는다** — 그 뒤 토큰들은 이 색인을 함께 쓴다.
+    # 배치 사이에 캐시를 이어 쓰면 다른 PC 가 방금 넣은 동명 파일을 못 보고 '유일하다'고
+    # 잘못 단정한다. 이름만으로도 잇게 된 뒤로는 그 오판이 더 위험하다(기존 재스캔 계약 유지).
     for _name, proj_dir in project_dirs:
-        _size_index(proj_dir, fresh=True)
+        _project_index(proj_dir, fresh=True)
+
+    dirs_by_name = dict(project_dirs)
+
+    def dedupe(cands: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """같은 물리 파일을 가리키는 후보는 하나로 본다 — 한 폴더를 두 이름으로 등록했을 때
+        같은 그림이 두 번 세어져 '여럿이라 못 고른다'가 되는 것을 막는다."""
+        out: list[tuple[str, str]] = []
+        seen_files: set[str] = set()
+        for name, rel in cands:
+            base = dirs_by_name.get(name)
+            target = _safe_resolve(base, rel) if base else None
+            key = _capture_path_key(target) if target else f"{name}|{rel}"
+            if key in seen_files:
+                continue
+            seen_files.add(key)
+            out.append((name, rel))
+        return out
+
+    def pick(cands: list[tuple[str, str]], complete: bool) -> Optional[dict[str, Any]]:
+        """후보가 (같은 파일끼리 묶고 나서) 정확히 하나이고, 폴더를 끝까지 훑었을 때만 고른다."""
+        if not complete:
+            return None
+        merged = dedupe(cands)
+        if len(merged) != 1:
+            return None
+        return {"project": merged[0][0], "path": merged[0][1]}
+
+    # 한 씬의 참조 수백 개가 같은 프로젝트를 가리킨다 — 폴더 해석은 이름마다 한 번만 한다
+    # (수동 마운트 조회 + PM DB 조회가 들어 있다, Codex 2026-09-28).
+    dir_cache: dict[str, Optional[Path]] = {}
+
+    def project_dir_of(name: str) -> Optional[Path]:
+        if name not in dir_cache:
+            dir_cache[name] = _safe_project_dir(name, request)
+        return dir_cache[name]
 
     seen: dict[str, Optional[dict[str, Any]]] = {}  # 같은 토큰이 여러 카드에 있어도 한 번만 계산
     for token in body.tokens[:_LOCATE_MAX_TOKENS]:
@@ -1159,40 +1243,71 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         seen[token] = None
         head, sep, rest = token.partition("|")
         old_project = head[len("asset:"):] if head.startswith("asset:") else ""
-        if not sep or not old_project:
+        if not sep or not old_project or not rest:
             unresolved.append(token)
             continue
         old_project, rest = asset_paths.real_meta_key(old_project, rest)
-        if old_project not in _INTERNAL_FOLDERS:
-            unresolved.append(token)  # 이미 프로젝트 기준 토큰 — 건드리지 않는다
-            continue
-        local = _safe_resolve((ASSETS_ROOT / old_project).resolve(), rest)
-        if not local or not local.is_file():
-            unresolved.append(token)  # 사본조차 없으면 지문을 낼 수 없다
-            continue
-        try:
-            size = local.stat().st_size
-        except OSError:
-            unresolved.append(token)
-            continue
-        digest = _sha256_file(local)
-        if not digest:
-            unresolved.append(token)
-            continue
-        hits: list[tuple[str, str]] = []
+        internal = old_project in _INTERNAL_FOLDERS
+
+        # 이미 이 PC 에서 열리는 참조는 손대지 않는다 — 멀쩡한 것을 옮기면 더 나빠진다.
+        if not internal:
+            current = project_dir_of(old_project)
+            here = _safe_resolve(current, rest) if current else None
+            if here and here.is_file():
+                unresolved.append(token)
+                continue
+
+        # ① 내용 지문 — 이 PC 에 사본이 있을 때만 가능(가장 확실한 근거).
+        digest = ""
+        size = 0
+        if internal:
+            local = _safe_resolve((ASSETS_ROOT / old_project).resolve(), rest)
+            if local and local.is_file():
+                try:
+                    size = local.stat().st_size
+                except OSError:
+                    size = 0
+                if size > 0:
+                    digest = _sha256_file(local)
+
+        entry: Optional[dict[str, Any]] = None
         complete = True
-        for name, proj_dir in project_dirs:
-            found, scanned_all = _locate_by_content(proj_dir, size, digest, local.name)
-            if not scanned_all:
-                complete = False  # 못 훑은 폴더가 있으면 '한 곳에만 있다'고 단정할 수 없다
-            if found:
-                hits.append((name, found))
-            if len(hits) > 1:
-                break  # 여러 프로젝트에 있으면 고르지 않는다
-        if len(hits) != 1 or not complete:
+        if digest and size > 0:
+            hits: list[tuple[str, str]] = []
+            for name, proj_dir in project_dirs:
+                found, scanned_all = _locate_by_content(proj_dir, size, digest, rest.rsplit("/", 1)[-1])
+                if not scanned_all:
+                    complete = False
+                if found:
+                    hits.append((name, found))
+                # 여기서 일찍 끊지 않는다 — 같은 파일을 두 이름으로 등록했을 수도 있어,
+                # 묶어 보기 전에는 '여럿'인지 알 수 없다.
+            entry = pick(hits, complete)
+            if entry is None:
+                # 지문을 낼 수 있었는데 같은 내용이 없다(또는 여러 곳에 있다). 그런데도 이름만 같은
+                # 파일로 이으면 **다른 그림**이 붙는다 — 근거가 약한 단계로 내려가지 않는다
+                # (Codex 2026-09-28).
+                unresolved.append(token)
+                continue
+            entry |= {"sha256": digest, "bytes": size}
+
+        # ② 경로 뒷부분 → ③ 파일 이름. 사본이 없는 참조(남이 준 씬)는 여기서만 살아난다.
+        if entry is None:
+            by_path: list[tuple[str, str]] = []
+            by_name: list[tuple[str, str]] = []
+            complete = True
+            for name, proj_dir in project_dirs:
+                exact, named, scanned_all = _locate_by_path(proj_dir, rest)
+                if not scanned_all:
+                    complete = False
+                by_path += [(name, r) for r in exact]
+                by_name += [(name, r) for r in named]
+                # 위와 같은 이유로 일찍 끊지 않는다.
+            entry = pick(by_path, complete) or (pick(by_name, complete) if not by_path else None)
+
+        if entry is None:
             unresolved.append(token)
             continue
-        entry = {"project": hits[0][0], "path": hits[0][1], "sha256": digest, "bytes": size}
         seen[token] = entry
         fixed.append({**entry, "token": token})
     return {"fixed": fixed, "unresolved": unresolved}
