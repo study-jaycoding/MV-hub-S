@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-09-22
+updated: 2026-09-28
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -745,6 +745,7 @@ updated: 2026-09-22
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `scenes.ts` | 저장+store | 씬(카드·연결·카메라) localStorage 데이터 계층 + 내보내기/가져오기 |
+| `sceneAssetRelink.ts` | api+store | 옛 로컬 에셋 참조를 프로젝트 원본으로 재연결하고 씬 저장 갱신 |
 | `sceneBackup.ts` | api+store | 씬 localStorage → DB 단방향 미러·복구 |
 | `sceneCardLinks.ts` | api+store | 카드 소속(담긴 생성물) 로컬 DB 기록·서버 병합 |
 | `sceneUndoStore.ts` | store | 씬별 undo/redo 히스토리(언마운트 생존) |
