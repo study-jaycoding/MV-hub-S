@@ -40,7 +40,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%UPDATE_PS1%" -TargetDir "%TARGET_DIR%" -StateFile "%MVHUB_UPDATE_STATE_FILE%" -RestartAfterInstall "%MVHUB_UPDATE_RESTART%" -ReadyUrl "%MVHUB_UPDATE_READY_URL%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%UPDATE_PS1%" -TargetDir "%TARGET_DIR%" -StateFile "%MVHUB_UPDATE_STATE_FILE%" -RestartAfterInstall "%MVHUB_UPDATE_RESTART%" -ReadyUrl "%MVHUB_UPDATE_READY_URL%" -ForceReinstall "%MVHUB_UPDATE_FORCE%"
 set "UPDATE_EXIT=%ERRORLEVEL%"
 del "%UPDATE_PS1%" >nul 2>nul
 
@@ -86,7 +86,11 @@ param(
     [string]$TargetDir,
     [string]$StateFile = "",
     [string]$RestartAfterInstall = "0",
-    [string]$ReadyUrl = ""
+    [string]$ReadyUrl = "",
+    # "1" when the user pressed Force update. A matching version then still gets a
+    # full reinstall: that is the "version is right but the tree is broken" case
+    # people hit, and without this the force button does nothing here.
+    [string]$ForceReinstall = "0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -1186,9 +1190,13 @@ try {
 
     # Recovery assets prove the tree may be half-swapped: shallow layout checks
     # cannot certify it, so a matching version never skips the full reinstall.
-    $NeedsInstall = ($CurrentVersion -ne [string]$Latest.version) -or $script:HadRecoveryAssets
+    $Forced = ($ForceReinstall -eq "1")
+    $NeedsInstall = ($CurrentVersion -ne [string]$Latest.version) -or $script:HadRecoveryAssets -or $Forced
     if ($script:HadRecoveryAssets) {
         Write-Host "[2/3] Previous update left recovery backups behind - forcing a full reinstall."
+    }
+    elseif ($Forced -and $CurrentVersion -eq [string]$Latest.version) {
+        Write-Host "[2/3] Force update requested - reinstalling the same version."
     }
     if (-not $NeedsInstall) {
         try {

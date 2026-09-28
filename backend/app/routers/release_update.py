@@ -123,6 +123,7 @@ async def release_update_start(
             start_update,
             activity_check=(lambda: 0) if body.force else active_total,
             ready_url=ready_url,
+            force=body.force,
         )
     except ReleaseUpdateBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

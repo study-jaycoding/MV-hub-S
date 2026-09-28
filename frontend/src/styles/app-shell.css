@@ -796,3 +796,78 @@
 .folder-peek > .lib-toolbar { border-bottom: 1px solid var(--border); }
 /* 창 안 선택 액션바 — 라이브러리와 같은 요소를 창 바닥에 */
 .folder-peek-selbar { border-top: 1px solid var(--border); padding: 6px 10px; display: flex; justify-content: center; }
+
+/* ── 업데이트 진행 덮개 ─────────────────────────────────────────────────────────
+   업데이트를 누르면 화면 가운데에 떠서 진행을 알린다(Jay 2026-09-28). 파일을 바꾸는 중에
+   다른 조작이 들어가면 2차 실패가 나므로 화면 전체를 막는다. z-index 는 알림센터(400)보다 위. */
+.upd-veil {
+  position: fixed; inset: 0; z-index: 500;
+  background: rgba(0, 0, 0, 0.58); backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.upd-box {
+  width: 520px; max-width: 100%;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 16px; padding: 30px 32px 26px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.65);
+}
+.upd-ring {
+  width: 46px; height: 46px; border-radius: 50%; margin: 0 auto 16px;
+  border: 3px solid rgba(255, 255, 255, 0.12); border-top-color: var(--accent);
+  /* steps() — 끝없이 도는 애니메이션은 매 프레임 다시 그리지 않는다(09-20 골드 광택 CPU 규칙). */
+  animation: upd-spin 0.96s steps(12) infinite;
+}
+@keyframes upd-spin { to { transform: rotate(360deg); } }
+/* 움직임을 줄이는 설정에서는 돌리지 않고 기울여 둔다(진행 표시는 막대가 맡는다). */
+@media (prefers-reduced-motion: reduce) {
+  .upd-ring { animation: none; transform: rotate(38deg); }
+}
+.upd-bang {
+  width: 46px; height: 46px; border-radius: 50%; margin: 0 auto 16px;
+  border: 2px solid rgba(245, 166, 35, 0.55); color: #f5a623;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; font-weight: 800; line-height: 1;
+}
+.upd-title { margin: 0 0 6px; font-size: 20px; font-weight: 800; text-align: center; color: var(--text); }
+.upd-step { margin: 0 0 20px; text-align: center; font-size: 13px; color: var(--muted); line-height: 1.6; }
+
+.upd-bar { height: 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.09); overflow: hidden; }
+/* 퍼센트를 아직 모를 때(준비 중)는 폭 대신 옅은 띠만 — 0% 로 보이면 멈춘 것처럼 읽힌다. */
+.upd-bar i { display: block; height: 100%; width: 12%; border-radius: 999px; background: var(--accent); }
+.upd-pct { display: flex; justify-content: space-between; margin-top: 9px; font-size: 12px; color: var(--muted); }
+.upd-pct b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.upd-stages { margin: 22px 0 0; padding: 0; list-style: none; display: grid; gap: 9px; }
+.upd-stages li { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--muted2); }
+.upd-stages li.done { color: var(--muted); }
+.upd-stages li.now { color: var(--text); font-weight: 700; }
+.upd-dot {
+  flex: none; width: 16px; height: 16px; border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.16);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 10px; line-height: 1;
+}
+.upd-stages li.done .upd-dot { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.upd-stages li.now .upd-dot { border-color: var(--accent); border-width: 2.5px; }
+
+.upd-warn {
+  margin: 22px 0 0; padding: 11px 13px; border-radius: 10px; text-align: center;
+  background: rgba(245, 166, 35, 0.1); border: 1px solid rgba(245, 166, 35, 0.3);
+  color: #f5a623; font-size: 12px; font-weight: 600;
+}
+.upd-ver { margin: 14px 0 0; text-align: center; font-size: 11.5px; color: var(--muted2); }
+.upd-ver b { color: var(--muted); font-weight: 700; font-variant-numeric: tabular-nums; }
+.upd-actions { display: flex; gap: 10px; justify-content: center; margin-top: 18px; flex-wrap: wrap; }
+.upd-actions button { min-width: 116px; }
+/* 강제 업데이트가 주 동작 — 실패로 멈춘 설치를 푸는 유일한 길이다(라임 위 검은 글자). */
+.upd-force { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 700; }
+.upd-force:hover:not(:disabled) { background: var(--accent); filter: brightness(1.06); }
+.upd-forcefail { margin: 16px 0 0; text-align: center; font-size: 12px; color: #f5a623; line-height: 1.55; }
+/* 강제 확인 — 무엇이 끊기는지 말한 뒤에 진행한다. */
+.upd-confirm {
+  margin-top: 18px; padding: 14px 16px 16px; border-radius: 10px;
+  background: rgba(245, 166, 35, 0.08); border: 1px solid rgba(245, 166, 35, 0.28);
+}
+.upd-confirmtext { margin: 0; text-align: center; font-size: 12px; color: var(--text); line-height: 1.6; }
+.upd-confirm .upd-actions { margin-top: 14px; }
+/* 덮개가 키보드 포커스를 가두므로 상자 자체가 포커스를 받는다 — 테두리는 그리지 않는다. */
+.upd-box:focus { outline: none; }

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
 
@@ -221,8 +222,9 @@ def test_start_route_force_skips_activity_check(monkeypatch: pytest.MonkeyPatch)
     )
     captured: dict[str, object] = {}
 
-    def fake_start_update(*, activity_check, ready_url=None):
+    def fake_start_update(*, activity_check, ready_url=None, force=False):
         captured["blocked"] = activity_check() > 0
+        captured["force"] = force
         return {"state": "starting", "can_update": False}
 
     monkeypatch.setattr(release_update_router, "start_update", fake_start_update)
@@ -238,6 +240,8 @@ def test_start_route_force_skips_activity_check(monkeypatch: pytest.MonkeyPatch)
         )
     )
     assert captured["blocked"] is False  # 강제 — active 3건이어도 게이트 통과
+    # force 는 서비스까지 닿아야 한다 — 여기서 끊기면 막힌 상태를 푸는 화면 단추가 조용히 무력해진다.
+    assert captured["force"] is True
     assert result["active_total"] == 3  # 응답에는 실제 카운트가 그대로 남는다
 
     asyncio.run(
@@ -1147,3 +1151,131 @@ def test_checked_process_handles_spaced_paths_and_captures_output(tmp_path: Path
     output = completed.stdout + completed.stderr
     assert completed.returncode == 0, output
     assert "checked-process-ok" in output
+
+
+# ── 강제 업데이트 — 막힌 상태를 푸는 수단(Jay 2026-09-28) ──────────────────────────
+# 실패 뒤 상태 파일이 'installing' 인 채 남으면 30분 동안 다시 시작할 수 없었다. 그 30분을
+# 못 기다려 재설치하는 일이 있어, 강제는 **죽은 진행 상태**를 뚫도록 했다.
+
+
+def _stale_state(root: Path, state: str, *, age_seconds: float) -> None:
+    at = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+    release_update.state_path(root).parent.mkdir(parents=True, exist_ok=True)
+    release_update.state_path(root).write_text(
+        json.dumps(
+            {
+                "state": state,
+                "message": "",
+                "updated_at": at.isoformat().replace("+00:00", "Z"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_force_starts_over_a_dead_in_progress_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root, source = _release_root(tmp_path)
+    _latest(source)
+    _stale_state(root, "installing", age_seconds=120)  # 2분 전에 멈춘 업데이트
+    monkeypatch.setattr(release_update, "_launch_bootstrap", lambda *_a, **_k: 111)
+
+    # 평소 업데이트는 그대로 막힌다 — 진짜로 돌고 있을 수도 있으니.
+    with pytest.raises(release_update.ReleaseUpdateError, match="이미 진행 중"):
+        release_update.start_update(activity_check=lambda: 0, root=root)
+
+    result = release_update.start_update(activity_check=lambda: 0, root=root, force=True)
+    assert result["accepted"] is True
+    assert result["state"] == "starting"
+
+
+def test_force_still_respects_a_live_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root, source = _release_root(tmp_path)
+    _latest(source)
+    _stale_state(root, "downloading", age_seconds=2)  # 방금 갱신 — 워커가 살아 있다
+    monkeypatch.setattr(release_update, "_launch_bootstrap", lambda *_a, **_k: 222)
+
+    # 실행기에는 동시 실행 보호가 없다 — 둘이 같은 파일을 건드리면 설치가 깨진다.
+    with pytest.raises(release_update.ReleaseUpdateError, match="방금 시작"):
+        release_update.start_update(activity_check=lambda: 0, root=root, force=True)
+
+
+def test_force_reinstalls_even_when_version_already_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root, source = _release_root(tmp_path, version="1.1.0")
+    _latest(source, version="1.1.0")  # 같은 버전 + 건강 검사 통과(fixture)
+    launched: dict[str, object] = {}
+
+    def fake_launch(_script: Path, env: dict[str, str], _log: Path) -> int:
+        launched.update(env)
+        return 333
+
+    monkeypatch.setattr(release_update, "_launch_bootstrap", fake_launch)
+
+    # 평소에는 '이미 최신'으로 끝난다.
+    assert release_update.start_update(activity_check=lambda: 0, root=root)["state"] == "up_to_date"
+
+    # 강제는 다시 설치한다 — 버전은 맞는데 설치가 망가진 경우가 바로 강제를 누르는 상황이다.
+    forced = release_update.start_update(activity_check=lambda: 0, root=root, force=True)
+    assert forced["accepted"] is True
+    assert forced["state"] == "starting"
+    # ★워커에도 닿아야 한다. 안 닿으면 워커가 '버전 같음'으로 설치를 건너뛰어 강제가 헛돈다
+    #  (Codex 2026-09-28 — update_release_worker.bat 의 $NeedsInstall).
+    assert launched["MVHUB_UPDATE_FORCE"] == "1"
+
+
+def test_normal_update_does_not_tell_the_worker_to_force(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root, source = _release_root(tmp_path)
+    _latest(source)
+    launched: dict[str, object] = {}
+    monkeypatch.setattr(
+        release_update, "_launch_bootstrap", lambda _s, env, _l: (launched.update(env), 444)[1]
+    )
+
+    release_update.start_update(activity_check=lambda: 0, root=root)
+    assert launched["MVHUB_UPDATE_FORCE"] == "0"
+
+
+def test_lock_probe_tells_a_held_lock_from_a_permission_problem(tmp_path: Path):
+    """PermissionError 라고 다 잠금이 아니다 — ACL 거부까지 '워커가 살아 있다'로 보면
+    그런 설치에서는 강제가 영영 거절된다(Codex 2026-09-28)."""
+    root = tmp_path / "installed"
+    root.mkdir()
+    assert release_update._updater_lock_held(root) is False  # 잠금 파일 자체가 없다
+
+    (root / ".update.lock").write_bytes(b"")
+    assert release_update._updater_lock_held(root) is False  # 있지만 아무도 안 쥐었다
+
+    original = Path.open
+
+    def refuse(self: Path, *args: object, **kwargs: object):
+        if self.name == ".update.lock":
+            raise PermissionError(13, "Access is denied", str(self), 5)  # ACL 거부
+        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(Path, "open", refuse)
+        assert release_update._updater_lock_held(root) is False  # 잠금이 아니다 → 강제 허용
+
+    def share_violation(self: Path, *args: object, **kwargs: object):
+        if self.name == ".update.lock":
+            raise PermissionError(13, "being used by another process", str(self), 32)
+        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(Path, "open", share_violation)
+        assert release_update._updater_lock_held(root) is True  # 워커가 쥐고 있다 → 거절
+
+
+def test_force_is_refused_while_the_worker_holds_the_install_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """워커가 .update.lock 을 쥐고 있으면 강제도 거절한다 — 상태 나이보다 정확한 신호다."""
+    root, source = _release_root(tmp_path)
+    _latest(source)
+    _stale_state(root, "downloading", age_seconds=600)  # 나이만 보면 '죽은' 것으로 보인다
+    monkeypatch.setattr(release_update, "_updater_lock_held", lambda _root: True)
+    monkeypatch.setattr(release_update, "_launch_bootstrap", lambda *_a, **_k: 555)
+
+    with pytest.raises(release_update.ReleaseUpdateError, match="방금 시작"):
+        release_update.start_update(activity_check=lambda: 0, root=root, force=True)

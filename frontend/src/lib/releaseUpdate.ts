@@ -109,6 +109,18 @@ export function getLatestReleaseMetadata(): Promise<LatestReleaseMetadata> {
   return jsonFetch<LatestReleaseMetadata>("/api/release-update/latest-metadata");
 }
 
+// 업데이트를 시작하는 자리가 둘이다(설정 패널·알림센터). 진행 덮개가 어느 쪽에서 눌러도 뜨도록
+// 호출부마다 붙이지 않고 **시작 함수 한 곳에서** 알린다(Jay 2026-09-28).
+const startListeners = new Set<() => void>();
+
+/** 업데이트가 시작되면 부른다. 반환값을 호출하면 구독을 푼다. */
+export function onReleaseUpdateStarted(fn: () => void): () => void {
+  startListeners.add(fn);
+  return () => {
+    startListeners.delete(fn);
+  };
+}
+
 /** force=true — 활동 수 검사만 우회하는 비상 옵션.
  * 업데이트 상태 안전 검사는 유지하며, bat 직접 실행과 동일하지 않다. */
 export function startReleaseUpdate(force = false): Promise<ReleaseUpdateStatus> {
@@ -116,7 +128,35 @@ export function startReleaseUpdate(force = false): Promise<ReleaseUpdateStatus> 
     method: "POST",
     headers: { "X-MVHub-Update": "1" },
     body: jsonBody({ confirm: true, force }),
+  }).then((status) => {
+    // 대기 표시 — 업데이트가 앱을 재시작시키므로, 새 화면이 떠도 덮개가 이어지게 남긴다.
+    try {
+      if (status.latest_version) {
+        window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, status.latest_version);
+      }
+    } catch {
+      // 사생활 보호 창 등 — 없어도 같은 화면에서는 시작 신호로 동작한다.
+    }
+    startListeners.forEach((fn) => fn());
+    return status;
   });
+}
+
+/** 진행 덮개의 단계 목록 — 실행기가 지나가는 순서 그대로. */
+export const UPDATE_STAGES: { key: ReleaseUpdateState; label: string }[] = [
+  { key: "checking", label: "최신 버전 확인" },
+  { key: "downloading", label: "파일 내려받기" },
+  { key: "installing", label: "검증 후 설치" },
+  { key: "restarting", label: "새 버전으로 다시 시작" },
+];
+
+/** 지금 몇 번째 단계인가. 끝난 단계는 이 값보다 작다. complete 는 전부 끝난 것(=길이). */
+export function updateStageIndex(state: ReleaseUpdateState): number {
+  if (state === "complete") return UPDATE_STAGES.length;
+  // starting 은 실행기를 띄우는 중 — 첫 단계(확인)를 진행 중으로 본다.
+  if (state === "starting") return 0;
+  const at = UPDATE_STAGES.findIndex((s) => s.key === state);
+  return at < 0 ? 0 : at;
 }
 
 /** 업데이트를 막는 진행 중 작업을 사람이 읽는 문구로 — 유료 생성·Comfy 와 Resolve 전송을 나눠 말한다. */

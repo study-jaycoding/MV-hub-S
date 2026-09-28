@@ -37,6 +37,13 @@ UPDATE_STATE_BASE = Path(
 
 _ACTIVE_STATES = frozenset({"starting", "checking", "downloading", "installing", "restarting"})
 _STATE_STALE_SECONDS = 30 * 60
+# 강제 업데이트의 보조 판정. 주 판정은 워커의 설치 잠금(_updater_lock_held)이고, 이것은 워커가
+# 아직 잠금을 잡기 전 몇 초를 메운다. 죽은 업데이트는 20초면 풀려, 30분을 기다리거나 재설치할
+# 일이 없다.
+_FORCE_STALE_SECONDS = 20.0
+# 워커가 잠금을 쥐고 있을 때만 나는 오류. ERROR_SHARING_VIOLATION(32)·ERROR_LOCK_VIOLATION(33).
+# ACL 거부(5) 같은 다른 PermissionError 와 반드시 구분한다(update_release_worker.bat 과 같은 기준).
+_SHARING_VIOLATION = frozenset({32, 33})
 _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 _START_LOCK = threading.Lock()
 _log = logging.getLogger(__name__)
@@ -259,6 +266,45 @@ def _active_and_fresh(value: dict[str, Any]) -> bool:
     return bool(
         str(value.get("state") or "") in _ACTIVE_STATES
         and (age is None or age < _STATE_STALE_SECONDS)
+    )
+
+
+def _updater_lock_held(root: Path) -> bool:
+    """워커(update_release_worker.bat)가 설치 잠금을 쥐고 있나 — 살아 있는지의 **진짜 신호**.
+
+    워커는 `.update.lock` 을 FileShare.None 으로 연다. 같은 파일을 여기서 열어 보면, 잡혀 있을
+    때만 공유 위반(Windows ERROR_SHARING_VIOLATION → PermissionError)이 난다. 상태 파일의
+    나이로 살아 있음을 추정하는 것보다 정확하다 — 다운로드는 5% 단위로만 상태를 쓰고
+    재시작 대기는 3분까지 간다(Codex 지적, 2026-09-28).
+    """
+    path = root / ".update.lock"
+    try:
+        with path.open("r+b"):
+            return False
+    except PermissionError as exc:
+        # PermissionError 에는 ACL 접근 거부(5)·읽기 전용도 섞인다. 그것까지 '워커가 쥐고 있다'로
+        # 보면 그런 설치에서는 강제가 영영 거절된다 — 워커와 같은 기준(공유/잠금 위반)만 본다
+        # (Codex 2026-09-28, update_release_worker.bat 의 32/33 판정과 같은 계약).
+        return getattr(exc, "winerror", None) in _SHARING_VIOLATION
+    except OSError:
+        # 없음·경로 문제 등 — 잠금 근거가 아니므로 막지 않는다(상태 나이가 뒤에서 걸러 준다).
+        return False
+
+
+def _force_blocked(value: dict[str, Any], root: Path) -> bool:
+    """강제 업데이트를 막아야 하나 — 워커가 **살아 있을 때만**.
+
+    ① 설치 잠금을 쥐고 있으면 확실히 살아 있다. ② 잠금을 아직 잡기 전(시작 직후 몇 초)일 수
+    있으므로, 방금 갱신된 진행 상태도 막는다. 시각을 모르는 상태(updated_at 없음/깨짐)는
+    신뢰할 수 없으므로 막지 않는다 — 강제는 바로 그런 망가진 상태를 푸는 수단이다.
+    """
+    if _updater_lock_held(root):
+        return True
+    age = _state_age_seconds(value)
+    return bool(
+        str(value.get("state") or "") in _ACTIVE_STATES
+        and age is not None
+        and age < _FORCE_STALE_SECONDS
     )
 
 
@@ -583,6 +629,7 @@ def start_update(
     activity_check: Callable[[], int],
     ready_url: str | None = None,
     root: Path = APP_ROOT,
+    force: bool = False,
 ) -> dict[str, Any]:
     """업데이트를 단일 실행으로 시작하고 즉시 상태를 반환한다.
 
@@ -593,9 +640,16 @@ def start_update(
         if install_mode(root) != "release":
             raise ReleaseUpdateError("작업자 릴리스 설치본에서만 자동 업데이트할 수 있습니다")
         kind, stored = _load_state(root)
+        # 읽을 수 없는 상태 파일은 **강제로도 뚫지 않는다**. 쓰기 도중인 파일일 수 있고,
+        # 그 위에 덮어쓰면 살아 있는 워커의 상태를 파괴한다(test_release_update_state_gate 계약).
         if kind in {"unreadable", "invalid"}:
             raise ReleaseUpdateError(_STATE_CHECK_FAILED_MESSAGE)
-        if _active_and_fresh(stored):
+        if force:
+            if _force_blocked(stored, root):
+                raise ReleaseUpdateError(
+                    "업데이트를 방금 시작했습니다. 잠시 기다린 뒤 다시 시도하세요"
+                )
+        elif _active_and_fresh(stored):
             raise ReleaseUpdateError("업데이트가 이미 진행 중입니다")
         if activity_check() > 0:
             raise ReleaseUpdateBusyError("생성 작업이 진행 중입니다. 완료된 뒤 업데이트하세요")
@@ -605,7 +659,9 @@ def start_update(
         # up_to_date 조기 반환으로 워커를 건너뛰면 복구 진입점이 사라진다(코덱스 리뷰).
         # 이때는 무조건 워커를 실행한다 — 워커가 잔재를 격리 보존한 뒤 트리를 재검증하고
         # 필요하면 전체 재설치한다.
-        needs_recovery = stored.get("recovery") == "recovery_required"
+        # 강제는 복구와 같은 취급 — 버전이 같고 얕은 검사를 통과해도 워커를 돌려 다시 설치한다.
+        # 사람이 강제를 누르는 상황이 바로 '버전은 맞는데 설치가 망가진' 경우다.
+        needs_recovery = stored.get("recovery") == "recovery_required" or force
         try:
             write_state("checking", "최신 릴리스를 다시 확인하는 중…", root=root, current_version=current)
         except OSError as exc:
@@ -644,6 +700,9 @@ def start_update(
                     "MVHUB_UPDATE_STATE_FILE": str(status_file),
                     "MVHUB_UPDATE_RESTART": "1",
                     "MVHUB_UPDATE_READY_URL": ready_url or f"http://127.0.0.1:{PORT}/api/ready",
+                    # 워커도 강제를 알아야 한다 — 모르면 버전이 같을 때 설치를 건너뛰어
+                    # '강제 업데이트'가 아무 일도 하지 않는다(Codex 지적, 2026-09-28).
+                    "MVHUB_UPDATE_FORCE": "1" if force else "0",
                 }
             )
             try:

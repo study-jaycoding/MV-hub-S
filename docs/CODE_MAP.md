@@ -38,7 +38,7 @@ updated: 2026-09-28
 | ComfyUI 실행(로컬/Cloud) | `lib/useSceneComfyExecution.ts`, `components/scene/cards/ComfyCard.tsx` | `routers/comfy.py`, `services/comfy_client.py` | |
 | DaVinci Resolve 전송 | `lib/useResolveTransferActions.ts` | `routers/resolve_integration.py`, `services/resolve_transfer.py` | |
 | Assets의 DaVinci 프로젝트 목록·열기 | `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/resolve_project_library.py`, `services/resolve_project_open_worker.py` | `@davinci` 내부 DB 폴더는 일반 Assets 트리에 펼치지 않는다 |
-| 앱 자동 업데이트·릴리스 절차 | `lib/releaseUpdate.ts` | `routers/release_update.py`, `services/release_update.py` | 배포 스크립트는 §4 |
+| 앱 자동 업데이트·릴리스 절차 | `lib/releaseUpdate.ts`, `components/UpdateProgressOverlay.tsx`(진행 덮개) | `routers/release_update.py`, `services/release_update.py`, `update_release_worker.bat` | 배포 스크립트는 §4. 강제 업데이트는 **워커까지** 닿아야 재설치가 된다(`MVHUB_UPDATE_FORCE` → `-ForceReinstall`) |
 | DB 백업·복원 | — | `routers/db_backup.py`, `routers/db_transfer.py`, `services/backup.py` | |
 | 계정 전환·워크스페이스 전환 | `components/AccountMenu.tsx`, `lib/useHubAuth.ts` | `active_account.py`, `routers/auth.py` | |
 | 실시간 갱신(WebSocket) | `lib/progressSocket.ts` | `ws.py`, `mutation_notify.py` | |
@@ -520,6 +520,7 @@ updated: 2026-09-28
 | `AccountMenu.tsx`(502줄) | 계정·워크스페이스 드롭다운(포털) | `AccountMenu` |
 | `ManageAccount.tsx`(229줄) | 내 계정 플로팅 창(정보·표시이름) | `ManageAccount` |
 | `NotificationCenter.tsx`(631줄) | 벨 + 알림 패널(코멘트·릴리스 공지 병합, 포털) | `NotificationCenter` |
+| `UpdateProgressOverlay.tsx`(246줄) | 업데이트 진행 덮개(포털·화면 차단·자체 폴링·강제 확인) | `UpdateProgressOverlay` |
 | `SettingsPanel.tsx`(671줄) | 설정 플로팅 창 껍데기 + 생성물 점검/백필 | `SettingsPanel` |
 | `settings/SettingsSections.tsx`(611줄) | 설정 4개 절(외형·다운로드 위치·메타 연속성·Resolve) | 4개 export |
 | `settings/SettingsGroup.tsx`(165줄) | 설정 그룹 → 옆으로 펼치는 플라이아웃(포털·직접 위치계산) | `SettingsGroup` |

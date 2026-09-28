@@ -111,6 +111,7 @@ import {
 } from "./lib/resolveSelection";
 import { useResolveSelectionFollow } from "./lib/resolveSelectionSettings";
 import { postLibraryChanged } from "./lib/libraryBroadcast";
+import { UpdateProgressOverlay } from "./components/UpdateProgressOverlay";
 import { PartialEditHost } from "./components/edit/PartialEditHost";
 import {
   canFinalizeGeneration,
@@ -2313,6 +2314,8 @@ export default function App() {
       {/* 부분 수정(브러시 인페인트) — InfoPopup 의 partialEdit 이벤트로 열림.
           onQueued 는 좁은 목록 merge 만 — handlePromptCreated 를 재사용하면 구성 탭
           선택 상태에 따라 무관한 부모가 derived 로 붙는다(코덱스 설계 검토 반영). */}
+      {/* 업데이트 진행 덮개 — 설정·알림센터 어느 쪽에서 눌러도 뜬다(포털로 body 에 그린다). */}
+      <UpdateProgressOverlay />
       <PartialEditHost
         workspace={workspaceContext}
         onQueued={(g) => {
