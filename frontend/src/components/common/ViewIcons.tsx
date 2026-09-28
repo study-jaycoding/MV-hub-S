@@ -29,11 +29,13 @@ export function ArchiveHistoryIcon() {
   );
 }
 // 꽉 채우기(속 찬 네모)·전체 보기(빈 네모). 글자 ▣ 는 기준선 탓에 1.6px 아래였다(2026-09-22 픽셀 실측).
+// 틀은 다른 토글(리스트·그리드)과 같은 18 칸, 채움은 그 안을 거의 메운다 — 5.3px 점은 '꽉 참'으로
+// 읽히지 않았다(Jay 2026-09-28).
 export function FitIcon({ filled }: { filled: boolean }) {
   return (
     <svg {...TOGGLE_ICON} strokeWidth={1.5}>
-      <rect x="3.75" y="3.75" width="16.5" height="16.5" rx="1.5" />
-      {filled && <rect x="8" y="8" width="8" height="8" rx="1" fill="currentColor" stroke="none" />}
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      {filled && <rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none" />}
     </svg>
   );
 }

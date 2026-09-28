@@ -529,7 +529,9 @@
 }
 
 .lib-filter, .lib-expand {
-  width: 30px; height: 30px; border-radius: 8px;
+  /* padding:0 — 전역 button 의 좌우 12px 가 30px 단추의 속을 6px 로 좁혀 SVG 를 찌그러뜨린다
+     (.fit-toggle 과 같은 원인, 2026-09-28 실측). */
+  width: 30px; height: 30px; border-radius: 8px; padding: 0;
   background: transparent; border: none;
   color: var(--muted2); font-size: 16px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -539,6 +541,8 @@
 .lib-filter-ic:hover { color: var(--text); }
 .lib-filter:hover, .lib-expand:hover { color: var(--text); background: rgba(255,255,255,0.06); }
 .lib-filter.on, .lib-expand.on { color: #fff; }
+/* 사이드바 토글만은 열림도 닫힘과 같은 색 — 상태는 글리프(▢·▷)가 말한다(Jay 2026-09-28). */
+.lib-filter-ic.on { color: var(--muted); }
 .lib-expand svg, .lib-filter svg { display: block; }
 
 /* 캔버스 줌 클러스터 — [맞춤] [− % +] (씬 캔버스에서 무동작 슬라이더를 대체) */
@@ -587,7 +591,9 @@
 /* 채움↔전체보기 토글 */
 .fit-toggle {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 30px; height: 30px; border-radius: 8px;
+  /* padding:0 이 없으면 전역 button 의 좌우 12px 가 30px 단추의 속을 6px 로 좁혀,
+     16px SVG 가 6px 로 찌그러진다(2026-09-28 픽셀 실측). 글자 ▣ 때는 넘쳐서 드러나지 않았다. */
+  width: 30px; height: 30px; border-radius: 8px; padding: 0;
   background: transparent; border: none; cursor: pointer;
   font-size: 15px; color: var(--muted);
 }
