@@ -9,6 +9,7 @@ import {
   listScenes,
   saveScenes,
   getActiveSceneId,
+  exportSceneText,
   parseSceneImport,
   SCENE_EXPORT_FORMAT,
   SCENE_EXPORT_VERSION,
@@ -286,5 +287,29 @@ describe("parseSceneImport 방어(#3)", () => {
 
   it("알 수 없는 카드 종류는 여전히 거부", () => {
     expect(() => parseSceneImport(wrap([{ id: "X", kind: "bogus", x: 0, y: 0 }]))).toThrow();
+  });
+});
+
+describe("씬 파일이 캔버스의 공간을 들고 다닌다", () => {
+  // 남이 열었을 때 '그 공간에 등록된 프로젝트 폴더'에서 그림을 찾게 하려면 공간이 파일에 있어야
+  // 한다(Jay 2026-09-28). 예전에는 공간 id 가 파일로 도는 것을 꺼려 일부러 뺐다.
+  const base = (over: Partial<Scene> = {}): Scene =>
+    ({ id: "s1", name: "씬", cards: [], edges: [], created_at: 1, ...over }) as Scene;
+
+  it("내보낸 파일에 공간이 담기고, 다시 읽으면 그대로 돌아온다", () => {
+    const text = exportSceneText(base({ workspace: { id: "ws-1", name: "가" } }));
+    expect(JSON.parse(text).scene.workspace).toEqual({ id: "ws-1", name: "가" });
+    expect(parseSceneImport(text).workspace).toEqual({ id: "ws-1", name: "가" });
+  });
+
+  it("공간을 지정하지 않은 캔버스는 그대로 비어 있다", () => {
+    expect(parseSceneImport(exportSceneText(base())).workspace).toBeUndefined();
+  });
+
+  it("손상된 공간 값은 버린다 — 남이 만든 파일이다", () => {
+    const text = exportSceneText(base({ workspace: { id: "ws-1", name: "가" } }));
+    const broken = JSON.parse(text);
+    broken.scene.workspace = { id: 7, name: [] };
+    expect(parseSceneImport(JSON.stringify(broken)).workspace).toBeUndefined();
   });
 });

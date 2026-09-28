@@ -338,6 +338,10 @@ export interface SceneSnapshot {
   edges: SceneEdge[];
   groups?: SceneGroup[];
   camera?: { z: number; x: number; y: number };
+  // 이 캔버스가 속한 팀 워크스페이스 — 남이 열었을 때 **그 공간에 등록된 프로젝트 폴더**에서
+  // 그림을 찾게 하려고 담는다(Jay 2026-09-28). 예전에는 공간 id 가 파일로 도는 것을 꺼려 뺐지만,
+  // 그 정보가 없으면 받는 쪽이 어느 폴더를 뒤져야 할지 몰라 빈칸이 된다.
+  workspace?: { id: string; name: string | null };
 }
 
 // 저장용 정규화 — 임시 상태만 정리하고 '내용'(refs 순서·프롬프트·텍스트)은 그대로 둔다.
@@ -365,6 +369,7 @@ export function exportSceneText(scene: Scene): string {
     edges: scene.edges,
     groups: scene.groups,
     camera: scene.camera,
+    workspace: scene.workspace,
   };
   return JSON.stringify(
     { format: SCENE_EXPORT_FORMAT, version: SCENE_EXPORT_VERSION, savedAt: Date.now(), name: scene.name, scene: snapshot },
@@ -374,6 +379,14 @@ export function exportSceneText(scene: Scene): string {
 }
 
 const isFiniteNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+
+/** 씬 파일의 워크스페이스는 남이 만든 값이다 — 모양이 맞을 때만 받는다. */
+function readImportedWorkspace(raw: unknown): { id: string; name: string | null } | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const w = raw as { id?: unknown; name?: unknown };
+  if (typeof w.id !== "string" || !w.id) return undefined;
+  return { id: w.id, name: typeof w.name === "string" ? w.name : null };
+}
 
 // 불러온 카드의 소비처 크래시를 막는 최소 정규화: 좌표는 유한수로, 배열/객체여야 하는 필드는 형태를 강제한다.
 //  (손상/악성 씬 파일이 refs.map·genIds 순회·comfyCfg.outputs.filter·arrangeNodes 좌표계산에서 터지는 것 방지.)
@@ -499,6 +512,7 @@ export function parseSceneImport(text: string): SceneSnapshot {
     edges,
     groups: groups.length ? groups : undefined,
     camera,
+    workspace: readImportedWorkspace(s.workspace),
   };
 }
 
@@ -512,6 +526,7 @@ export function importScene(projectId: string | null, snap: SceneSnapshot): Scen
     edges: snap.edges,
     groups: snap.groups,
     camera: snap.camera,
+    workspace: snap.workspace,
     created_at: Date.now(),
   };
   saveScenes(projectId, [...scenes, scene]);

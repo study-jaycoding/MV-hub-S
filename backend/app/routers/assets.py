@@ -10,6 +10,7 @@ safe_project_dir / safe_resolve 가드를 그대로 따른다.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import secrets
 import subprocess
@@ -18,6 +19,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -45,6 +47,7 @@ from ..deps import (
 )
 from ..services.media_types import (
     AUDIO_EXTENSIONS,
+    IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
     asset_content_type,
 )
@@ -67,6 +70,7 @@ from ..services import (
     thumbs,
     upload_limits,
 )
+from ..services.operational_logging import log_event
 from ..services.path_safety import path_comparison_key, safe_join, unc_for_drive
 
 
@@ -410,18 +414,88 @@ _LOCATE_CACHE: dict[str, tuple[float, dict[int, list[str]], dict[str, list[str]]
 _LOCATE_GUARD = threading.Lock()
 
 
+def _walk_media(proj_dir: Path, limit: int = _LOCATE_LIMIT) -> tuple[list[tuple[str, str, int]], bool]:
+    """프로젝트 폴더의 미디어 파일 (상대경로, 이름, 크기) 목록과 완주 여부.
+
+    ★os.scandir 로 한 번에 훑는다 — 목록 조회가 항목의 종류·크기를 함께 주므로 파일마다 NAS 에
+    다시 묻지 않는다. 예전 `rglob` → 파일마다 `is_file`·`resolve`·`stat` 은 NAS 왕복이 여러 번이라
+    뻘뻘뻘(항목 3만) 한 곳에 13.3초가 걸렸다(2026-09-28 실측, scandir 로 2.4초).
+
+    예전과 같게 지키는 것:
+      · 숨김 이름은 후보가 아니다 — 숨김 폴더는 **아예 내려가지 않는다**. 그래서 숨김 폴더 안의
+        읽기 오류로 '완주 못 함'이 되지 않는다(그 안은 어차피 후보가 아니므로 이쪽이 더 맞다).
+      · 링크·정션 폴더는 따라가지 않는다 — 루트 밖으로 샐 수 있다.
+      · 파일 링크는 **실제 대상이 루트 안일 때만** 받고, 상대경로도 예전처럼 **대상 자리**로 둔다
+        (옛 씬 토큰이 대상 경로를 담고 있을 수 있다 — 바꾸면 경로 뒷부분 일치가 사라진다, Codex).
+      · 미디어 수가 limit 를 넘으면 거기서 멈추고 완주가 아니라고 알린다(넘친 항목은 넣지 않는다).
+      · 못 읽은 폴더·파일이 있으면 완주가 아니다 — '없다'고 단정하지 않게.
+    """
+    found: list[tuple[str, str, int]] = []
+    scanned_all = True
+    stack: list[tuple[str, str]] = [("", str(proj_dir))]
+    while stack:
+        rel_dir, abs_dir = stack.pop()
+        try:
+            entries = os.scandir(abs_dir)
+        except OSError:
+            scanned_all = False
+            continue
+        with entries:
+            for entry in entries:
+                name = entry.name
+                if asset_tree.is_hidden_name(name):
+                    continue
+                rel = f"{rel_dir}/{name}" if rel_dir else name
+                try:
+                    linked = entry.is_symlink() or entry.is_junction()
+                    if entry.is_dir(follow_symlinks=False):
+                        if not linked:
+                            stack.append((rel, entry.path))
+                        continue
+                    if not _media_type(name):
+                        continue
+                    if linked:
+                        target = Path(entry.path).resolve()
+                        rel = target.relative_to(proj_dir).as_posix()  # 루트 밖이면 ValueError
+                        name = target.name
+                        if not target.is_file():
+                            continue
+                        size = target.stat().st_size
+                    else:
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        size = entry.stat(follow_symlinks=False).st_size
+                except ValueError:
+                    continue
+                except OSError:
+                    scanned_all = False
+                    continue
+                if len(found) >= limit:
+                    return found, False
+                found.append((rel, name, size))
+    return found, scanned_all
+
+
+def _build_index(proj_dir: Path) -> tuple[dict[int, list[str]], dict[str, list[str]], bool]:
+    """한 번 훑어 두 색인을 만든다 — (크기 → 상대경로들), (파일이름 → 상대경로들). 캐시 없음."""
+    entries, scanned_all = _walk_media(proj_dir)
+    index: dict[int, list[str]] = {}
+    names: dict[str, list[str]] = {}
+    for rel, name, size in entries:
+        index.setdefault(size, []).append(rel)
+        names.setdefault(name.casefold(), []).append(rel)
+    return index, names, scanned_all
+
+
 def _project_index(
     proj_dir: Path, fresh: bool = False, max_age: float = _LOCATE_TTL
 ) -> tuple[dict[int, list[str]], dict[str, list[str]], bool]:
-    """프로젝트 폴더를 한 번 훑어 두 색인을 만든다 — (크기 → 상대경로들), (파일이름 → 상대경로들).
-    내용은 읽지 않고 stat·이름만 본다. 세 번째 값은 완주 여부(limit 로 끊기거나 읽기 오류면 False).
+    """반입(reference-import)이 쓰는 색인 — 짧은 TTL 캐시를 둔 `_build_index`.
 
     ★이름 색인이 필요한 이유: 남이 준 씬에는 **이 PC 에 사본이 없다**. 사본이 없으면 지문을 낼 수
     없으므로 내용으로는 못 찾는다. 그래서 이름·경로로도 찾을 수 있어야 '서버에 있으면 보인다'가
-    성립한다(Jay 2026-09-28).
-
-    fresh=True 면 캐시를 쓰지 않고 다시 훑는다 — 자동 복구(locate)는 다른 PC 가 방금 넣은
-    파일까지 봐야 '한 곳에만 있다'를 단정할 수 있다(Codex 2026-09-28)."""
+    성립한다(Jay 2026-09-28). 자동 복구(locate)는 이 캐시를 쓰지 않고 자기 스냅샷을 쓴다
+    (`_locate_snapshot` — 다른 PC 가 방금 넣은 파일까지 봐야 '한 곳에만 있다'를 단정할 수 있다)."""
     key = str(proj_dir)
     now = time.monotonic()
     if not fresh:
@@ -429,39 +503,73 @@ def _project_index(
             hit = _LOCATE_CACHE.get(key)
             if hit and now - hit[0] < max_age:
                 return hit[1], hit[2], hit[3]
-    index: dict[int, list[str]] = {}
-    names: dict[str, list[str]] = {}
-    scanned_all = True
-    count = 0
-    try:
-        for p in proj_dir.rglob("*"):
-            try:
-                if not p.is_file() or not _media_type(p.name):
-                    continue
-                rel = p.resolve().relative_to(proj_dir)
-            except OSError:
-                scanned_all = False  # 못 읽은 파일이 있으면 '없다'고 단정하지 않는다(Codex)
-                continue
-            except ValueError:
-                continue
-            if any(asset_tree.is_hidden_name(part) for part in rel.parts):
-                continue
-            count += 1
-            if count > _LOCATE_LIMIT:
-                scanned_all = False
-                break
-            rel_posix = rel.as_posix()
-            names.setdefault(rel.name.casefold(), []).append(rel_posix)
-            try:
-                index.setdefault(p.stat().st_size, []).append(rel_posix)
-            except OSError:
-                scanned_all = False
-                continue
-    except OSError:
-        scanned_all = False
+    index, names, scanned_all = _build_index(proj_dir)
     with _LOCATE_GUARD:
         _LOCATE_CACHE[key] = (now, index, names, scanned_all)
     return index, names, scanned_all
+
+
+# ── 자동 복구 스냅샷 ─────────────────────────────────────────────────────────────
+# F5 한 번의 자동 복구가 참조를 200개씩 여러 번 묻는다. 요청마다 NAS 를 처음부터 다시 훑으면
+# 같은 폴더를 여러 번 훑는다(실측: 요청 3번 × 16초). 그래서 **같은 복구 작업(scan_id)** 의 요청들은
+# 첫 스캔을 같이 쓴다. 새 F5 는 새 scan_id 라 다시 훑으므로 '다른 PC 가 방금 넣은 동명 파일'을
+# 놓쳐 '유일하다'고 오판하지 않는다(Codex 2026-09-28).
+# 반입이 쓰는 60초 캐시(_LOCATE_CACHE)와는 **따로** 둔다 — 새 F5 가 그 캐시를 재사용하지 않게.
+_SCAN_TTL = 300.0
+_SCAN_MAX = 16  # 동시에 들고 있는 (계정·작업·폴더) 스냅샷 수 상한 — 넘치면 오래된 것부터 버린다
+_SCAN_WAIT = 60.0  # 같은 폴더를 먼저 훑는 요청을 기다리는 최대 시간
+_SCAN_SESSIONS: "OrderedDict[tuple[str, str, str], tuple[float, tuple[dict[int, list[str]], dict[str, list[str]], bool]]]" = OrderedDict()
+# 지금 훑는 중인 폴더 — **작업 id 와 무관하게 폴더 기준**. NAS 가 멈춘 채 F5 를 되풀이하면 새 작업 id 마다
+# 새 스캔이 같은 죽은 폴더에 붙잡혀 스레드가 쌓인다(Codex 2026-09-28). 폴더당 한 스캔만 돌게 한다.
+_SCAN_INFLIGHT: dict[tuple[str, str], threading.Event] = {}
+_SCAN_GUARD = threading.Lock()
+
+
+def _locate_snapshot(
+    owner: str, scan_id: str, proj_dir: Path
+) -> tuple[dict[int, list[str]], dict[str, list[str]], bool]:
+    """같은 복구 작업 안에서는 첫 스캔을 같이 쓴다. scan_id 가 없으면 매번 새로 훑는다.
+
+    키 = 계정 + 작업 + 폴더 — 다른 계정·다른 작업이 섞이지 않게. 같은 키로 동시에 오면 **하나만**
+    훑고 나머지는 그 결과를 기다린다(같은 폴더를 동시에 두 번 훑지 않게, Codex).
+    """
+    if not scan_id:
+        return _build_index(proj_dir)
+    folder = os.path.normcase(str(proj_dir))
+    key = (owner, scan_id, folder)
+    flight = (owner, folder)  # 같은 폴더는 작업 id 가 달라도 동시에 한 번만 훑는다
+    while True:
+        with _SCAN_GUARD:
+            now = time.monotonic()
+            for stale in [k for k, (t, _s) in _SCAN_SESSIONS.items() if now - t > _SCAN_TTL]:
+                _SCAN_SESSIONS.pop(stale, None)
+            hit = _SCAN_SESSIONS.get(key)
+            if hit:
+                _SCAN_SESSIONS.move_to_end(key)
+                return hit[1]
+            waiting = _SCAN_INFLIGHT.get(flight)
+            mine = waiting is None
+            if mine:
+                waiting = threading.Event()
+                _SCAN_INFLIGHT[flight] = waiting
+        if not mine:
+            if waiting.wait(timeout=_SCAN_WAIT):  # type: ignore[union-attr]
+                continue  # 끝났으면 캐시에 있다. 실패했으면 내가 다시 훑는다.
+            # 먼저 훑는 쪽이 NAS 에 멈춰 있다 — 영원히 기다리지 않고 이번엔 '완주 못 함'으로 돌린다.
+            # 그러면 이 폴더로는 아무것도 바꾸지 않고, 다음 복구에서 다시 시도한다(Codex 2026-09-28).
+            return {}, {}, False
+        try:
+            snap = _build_index(proj_dir)
+            with _SCAN_GUARD:
+                _SCAN_SESSIONS[key] = (time.monotonic(), snap)
+                _SCAN_SESSIONS.move_to_end(key)
+                while len(_SCAN_SESSIONS) > _SCAN_MAX:
+                    _SCAN_SESSIONS.popitem(last=False)
+            return snap
+        finally:
+            with _SCAN_GUARD:
+                _SCAN_INFLIGHT.pop(flight, None)
+            waiting.set()  # type: ignore[union-attr]
 
 
 def invalidate_size_index(proj_dir: Path) -> None:
@@ -471,7 +579,11 @@ def invalidate_size_index(proj_dir: Path) -> None:
 
 
 def _locate_by_content(
-    proj_dir: Path, size: int, digest: str, name: str
+    proj_dir: Path,
+    size: int,
+    digest: str,
+    name: str,
+    snapshot: Optional[tuple[dict[int, list[str]], dict[str, list[str]], bool]] = None,
 ) -> tuple[Optional[str], bool]:
     """(내용이 같은 파일의 상대경로, 폴더를 끝까지 훑었는가). 못 찾으면 (None, 완주여부).
     후보 순서: 파일명이 같은 것 먼저 → 경로가 짧은 것 → 사전순(같은 입력이면 늘 같은 답).
@@ -479,7 +591,7 @@ def _locate_by_content(
     프로젝트로 이어 버린다(Codex 2026-09-28)."""
     if size <= 0 or not digest:
         return None, True
-    index, _names, scanned_all = _project_index(proj_dir)
+    index, _names, scanned_all = snapshot or _project_index(proj_dir)
     same_size = index.get(size) or []
     if not same_size:
         return None, scanned_all
@@ -491,28 +603,45 @@ def _locate_by_content(
     return None, scanned_all
 
 
-def _same_folder(a: Path, b: Path) -> bool:
-    """두 경로가 같은 물리 폴더인가 — 드라이브 문자·UNC 별칭·대소문자를 한 꼴로 맞춰 본다."""
-    try:
-        return _capture_path_key(a) == _capture_path_key(b)
-    except OSError:
-        return False
+# 확장자만 바뀐 파일을 같은 그림으로 볼 수 있는 묶음 — 이미지는 이미지끼리, 영상은 영상끼리.
+_EXT_FAMILIES = (IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS)
 
 
-def _locate_by_path(proj_dir: Path, rel: str) -> tuple[list[str], list[str], bool]:
+def _locate_by_path(
+    proj_dir: Path,
+    rel: str,
+    snapshot: Optional[tuple[dict[int, list[str]], dict[str, list[str]], bool]] = None,
+) -> tuple[list[str], list[str], list[str], bool]:
     """상대경로로 같은 파일을 찾는다 — 사본이 없어 지문을 낼 수 없을 때의 길.
 
-    (경로 뒷부분까지 맞는 것, 파일 이름만 맞는 것, 완주 여부). 같은 그림이라도 프로젝트를 어느
-    깊이로 등록했느냐에 따라 `CH/바바라/x.png` 도 되고 `assets/CH/바바라/x.png` 도 된다 —
-    그래서 뒷부분 일치를 따로 모은다. 고르는 책임은 부르는 쪽에 둔다(여러 곳이면 바꾸지 않는다).
+    (경로 뒷부분까지 맞는 것, 파일 이름만 맞는 것, 확장자만 다른 것, 완주 여부).
+      · 같은 그림이라도 프로젝트를 어느 깊이로 등록했느냐에 따라 `CH/바바라/x.png` 도 되고
+        `assets/CH/바바라/x.png` 도 된다 — 그래서 뒷부분 일치를 따로 모은다.
+      · 확장자만 다른 것: 누가 `x.png` 를 `x.jpeg` 로 바꿔 저장해 두면 씬은 옛 `.png` 를 가리킨다
+        (Jay 2026-09-28 실측: 매튜_바바라받으려는동작(e025)). **같은 종류끼리**(이미지↔이미지)이고
+        **폴더 경로까지 같을 때만** 모은다 — 근거가 가장 약하므로 부르는 쪽이 맨 마지막에 쓴다.
+    고르는 책임은 부르는 쪽에 둔다(여러 곳이면 바꾸지 않는다).
     """
-    _index, names, scanned_all = _project_index(proj_dir)
-    same_name = names.get(rel.rsplit("/", 1)[-1].casefold()) or []
-    if not same_name:
-        return [], [], scanned_all
+    _index, names, scanned_all = snapshot or _project_index(proj_dir)
+    name = rel.rsplit("/", 1)[-1]
+    same_name = names.get(name.casefold()) or []
     tail = "/" + rel.casefold().lstrip("/")
     exact = [r for r in same_name if ("/" + r.casefold()).endswith(tail)]
-    return exact, [r for r in same_name if r not in exact], scanned_all
+    named = [r for r in same_name if r not in exact]
+
+    other_ext: list[str] = []
+    stem, dot, ext = name.rpartition(".")
+    if dot and stem:
+        mine = "." + ext.lower()
+        family = next((f for f in _EXT_FAMILIES if mine in f), ())
+        tail_stem = tail[: -len(mine)]  # 확장자를 뺀 경로 뒷부분
+        for other in family:
+            if other == mine:
+                continue
+            for cand in names.get((stem + other).casefold(), []):
+                if ("/" + cand.casefold()).rsplit(".", 1)[0].endswith(tail_stem):
+                    other_ext.append(cand)
+    return exact, named, other_ext, scanned_all
 
 
 def _resolve_broken_sources(request: Request, prune: bool) -> tuple[int, list[str]]:
@@ -1151,9 +1280,17 @@ def discard_capture(body: CaptureDiscardIn, request: Request):
 
 class LocateIn(BaseModel):
     tokens: list[str] = Field(default_factory=list)
+    # 이 캔버스 탭에 지정된 팀 워크스페이스(씬 파일에 함께 온다). 있으면 **그 공간에 등록된
+    # 프로젝트 폴더부터** 찾고, 거기서 찾히면 다른 곳은 보지 않는다 — 같은 이름이 여러 곳에
+    # 있어도 헷갈리지 않는다(Jay 2026-09-28).
+    workspace_id: str = ""
+    # 자동 복구 한 번(F5 한 번)을 가리키는 id. 같은 id 의 요청들은 첫 스캔을 같이 쓴다 —
+    # 참조를 200개씩 여러 번 묻는 동안 같은 NAS 폴더를 매번 다시 훑지 않게. 없으면 매번 새로 훑는다.
+    scan_id: str = Field(default="", max_length=64)
 
 
 _LOCATE_MAX_TOKENS = 200
+_log = logging.getLogger("mvhub.assets")
 
 
 @router.post("/locate", dependencies=[Depends(_require_local_assets)])
@@ -1169,11 +1306,9 @@ def locate_legacy_assets(body: LocateIn, request: Request):
     찾는 순서는 근거가 센 것부터다. ① 이 PC 에 사본이 있으면 **내용 지문** ② 없으면 **경로 뒷부분**
     ③ 그것도 없으면 **파일 이름**. 어느 단계든 **정확히 한 곳에서만** 찾혔을 때만 바꾼다 — 여러 곳에
     있으면 어느 것인지 단정할 수 없어 그대로 둔다."""
+    started = time.perf_counter()
     fixed: list[dict[str, Any]] = []
     unresolved: list[str] = []
-    # 대상 = PM 프로젝트 + 내가 등록한 폴더. 단 **같은 이름이 양쪽에 있으면 건너뛴다** —
-    # 이 PC 는 개인 폴더를 먼저 보는데 남의 PC 는 PM 을 보므로, 그 이름으로 바꾸면 또 갈린다
-    # (Codex 2026-09-28). 이름이 한쪽에만 있으면 어느 PC 에서나 같은 뜻이다.
     owner = actor_id(request)
     # 내가 등록한 폴더도 PM 프로젝트도 **모두** 뒤진다 — 둘 다 같은 서버(NAS)를 가리키므로
     # 어느 쪽에서 찾든 같은 파일이다(Jay 2026-09-28). 이름이 겹쳐도 빼지 않는다. 대신 아래에서
@@ -1191,13 +1326,46 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         if proj_dir:
             project_dirs.append((name, proj_dir))
 
-    # 요청마다 각 프로젝트를 **한 번 새로 훑는다** — 그 뒤 토큰들은 이 색인을 함께 쓴다.
-    # 배치 사이에 캐시를 이어 쓰면 다른 PC 가 방금 넣은 동명 파일을 못 보고 '유일하다'고
-    # 잘못 단정한다. 이름만으로도 잇게 된 뒤로는 그 오판이 더 위험하다(기존 재스캔 계약 유지).
-    for _name, proj_dir in project_dirs:
-        _project_index(proj_dir, fresh=True)
+    # 폴더는 **미리 다 훑지 않는다** — 필요할 때 그 폴더만 훑는다. 공간(1바퀴)에서 다 찾히면 나머지
+    # 프로젝트는 아예 안 훑는다. 예전에는 공간으로 좁히기 전에 전부 훑어 좁히기가 속도에 아무
+    # 효과가 없었다(Codex 2026-09-28).
+    # 한 요청 안에서는 같은 폴더를 한 번만 훑고, 같은 복구 작업(scan_id)의 다음 요청도 그 스냅샷을
+    # 이어 쓴다. 새 복구 작업은 새로 훑는다 — 방금 추가된 동명 파일을 놓치지 않게.
+    scan_id = (body.scan_id or "").strip()
+    snapshots: dict[str, tuple[dict[int, list[str]], dict[str, list[str]], bool]] = {}
+
+    def snapshot_of(proj_dir: Path) -> tuple[dict[int, list[str]], dict[str, list[str]], bool]:
+        key = str(proj_dir)
+        if key not in snapshots:
+            snapshots[key] = _locate_snapshot(owner, scan_id, proj_dir)
+        return snapshots[key]
 
     dirs_by_name = dict(project_dirs)
+    # 캔버스 탭에 워크스페이스가 지정돼 있으면 **그 공간의 프로젝트만** 먼저 본다(1바퀴).
+    # 거기서 못 찾았을 때만 전체를 본다(2바퀴).
+    workspace_id = (body.workspace_id or "").strip()
+    rounds: list[list[tuple[str, Path]]] = []
+    if workspace_id:
+        try:
+            scoped_mounts = _auto_project_mounts(request, workspace_id)
+        except Exception:  # noqa: BLE001 — 그 공간을 못 읽으면 전체로 넘어간다
+            scoped_mounts = []
+        scoped: list[tuple[str, Path]] = []
+        for mount in scoped_mounts:
+            # 이름이 아니라 **공간에 등록된 실제 폴더**를 훑는다. 이 PC 는 같은 이름의 개인 등록을
+            # 먼저 보므로, 이름으로 좁히면 공간 밖 폴더를 훑게 된다(Codex 2026-09-28).
+            space_dir = _resolve_mount_path(mount["path"])
+            if space_dir is None:
+                continue
+            # 이 PC 에서 그 이름이 **다른 폴더**로 풀리면 쓰지 않는다 — 고친 참조가 이 PC 에서는
+            # 엉뚱한 폴더를 가리키게 된다.
+            here = dirs_by_name.get(mount["name"])
+            if here is not None and _capture_path_key(here) != _capture_path_key(space_dir):
+                continue
+            scoped.append((mount["name"], space_dir))
+        if scoped:
+            rounds.append(scoped)
+    rounds.append(project_dirs)
 
     def dedupe(cands: list[tuple[str, str]]) -> list[tuple[str, str]]:
         """같은 물리 파일을 가리키는 후보는 하나로 본다 — 한 폴더를 두 이름으로 등록했을 때
@@ -1273,16 +1441,22 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         entry: Optional[dict[str, Any]] = None
         complete = True
         if digest and size > 0:
-            hits: list[tuple[str, str]] = []
-            for name, proj_dir in project_dirs:
-                found, scanned_all = _locate_by_content(proj_dir, size, digest, rest.rsplit("/", 1)[-1])
-                if not scanned_all:
-                    complete = False
-                if found:
-                    hits.append((name, found))
-                # 여기서 일찍 끊지 않는다 — 같은 파일을 두 이름으로 등록했을 수도 있어,
-                # 묶어 보기 전에는 '여럿'인지 알 수 없다.
-            entry = pick(hits, complete)
+            for scope in rounds:
+                hits: list[tuple[str, str]] = []
+                complete = True
+                for name, proj_dir in scope:
+                    found, scanned_all = _locate_by_content(
+                        proj_dir, size, digest, rest.rsplit("/", 1)[-1], snapshot=snapshot_of(proj_dir)
+                    )
+                    if not scanned_all:
+                        complete = False
+                    if found:
+                        hits.append((name, found))
+                    # 여기서 일찍 끊지 않는다 — 같은 파일을 두 이름으로 등록했을 수도 있어,
+                    # 묶어 보기 전에는 '여럿'인지 알 수 없다.
+                entry = pick(hits, complete)
+                if entry:
+                    break
             if entry is None:
                 # 지문을 낼 수 있었는데 같은 내용이 없다(또는 여러 곳에 있다). 그런데도 이름만 같은
                 # 파일로 이으면 **다른 그림**이 붙는다 — 근거가 약한 단계로 내려가지 않는다
@@ -1293,23 +1467,48 @@ def locate_legacy_assets(body: LocateIn, request: Request):
 
         # ② 경로 뒷부분 → ③ 파일 이름. 사본이 없는 참조(남이 준 씬)는 여기서만 살아난다.
         if entry is None:
-            by_path: list[tuple[str, str]] = []
-            by_name: list[tuple[str, str]] = []
-            complete = True
-            for name, proj_dir in project_dirs:
-                exact, named, scanned_all = _locate_by_path(proj_dir, rest)
-                if not scanned_all:
-                    complete = False
-                by_path += [(name, r) for r in exact]
-                by_name += [(name, r) for r in named]
-                # 위와 같은 이유로 일찍 끊지 않는다.
-            entry = pick(by_path, complete) or (pick(by_name, complete) if not by_path else None)
+            for scope in rounds:
+                by_path: list[tuple[str, str]] = []
+                by_name: list[tuple[str, str]] = []
+                by_ext: list[tuple[str, str]] = []
+                complete = True
+                for name, proj_dir in scope:
+                    exact, named, other_ext, scanned_all = _locate_by_path(
+                        proj_dir, rest, snapshot=snapshot_of(proj_dir)
+                    )
+                    if not scanned_all:
+                        complete = False
+                    by_path += [(name, r) for r in exact]
+                    by_name += [(name, r) for r in named]
+                    by_ext += [(name, r) for r in other_ext]
+                    # 위와 같은 이유로 일찍 끊지 않는다.
+                # 근거가 센 것부터 — 앞 단계에 후보가 하나라도 있으면 뒤 단계로 내려가지 않는다.
+                # ④ 확장자만 다른 것(.png → .jpeg)은 가장 약하므로 맨 마지막이다.
+                if by_path:
+                    entry = pick(by_path, complete)
+                elif by_name:
+                    entry = pick(by_name, complete)
+                else:
+                    entry = pick(by_ext, complete)
+                if entry:
+                    break
 
         if entry is None:
             unresolved.append(token)
             continue
         seen[token] = entry
         fixed.append({**entry, "token": token})
+    log_event(
+        _log,
+        "assets_locate",
+        tokens=len(body.tokens),
+        fixed=len(fixed),
+        workspace=bool(workspace_id),
+        scan=scan_id[:8],
+        projects=len(project_dirs),
+        scanned_folders=len(snapshots),
+        elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+    )
     return {"fixed": fixed, "unresolved": unresolved}
 
 

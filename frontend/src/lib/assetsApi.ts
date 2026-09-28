@@ -303,11 +303,16 @@ export const assetsApi = {
 
   // 옛 씬의 '이 PC 안 사본' 참조를 프로젝트 폴더 원본으로 옮겨 주는 조회(내용 지문으로 찾는다).
   // 정확히 한 프로젝트에서 찾혔을 때만 fixed 에 담겨 온다 — 나머지는 그대로 둔다.
-  locateAssets: (tokens: string[]) =>
+  // workspaceId — 그 캔버스 탭에 지정된 공간. 서버가 그 공간의 프로젝트 폴더부터 찾는다.
+  // scanId — 자동 복구 한 번을 가리킨다. 같은 id 의 요청들은 서버의 첫 스캔을 같이 쓴다.
+  locateAssets: (tokens: string[], workspaceId = "", scanId = "") =>
     jsonFetch<{
       fixed: { token: string; project: string; path: string; sha256?: string; bytes?: number }[];
       unresolved: string[];
-    }>("/api/assets/locate", { method: "POST", body: JSON.stringify({ tokens }) }),
+    }>("/api/assets/locate", {
+      method: "POST",
+      body: JSON.stringify({ tokens, workspace_id: workspaceId, scan_id: scanId }),
+    }),
 
   // 내 로컬 DB(메타데이터) 가져오기 — 통째 교체(다른 PC에서 내보낸 .db).
   importDb: async (file: File) => {

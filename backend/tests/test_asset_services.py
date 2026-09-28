@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import os
 import tempfile
 import threading
 import time
@@ -783,6 +784,313 @@ class AssetIoTests(unittest.TestCase):
             ):
                 reply = assets.locate_legacy_assets(
                     assets.LocateIn(tokens=["asset:Q|hero.png"]), SimpleNamespace()
+                )
+
+            self.assertEqual(reply["fixed"], [])
+
+    def test_locate_searches_the_scene_workspace_first(self) -> None:
+        """캔버스 탭에 지정된 공간의 프로젝트 폴더부터 찾는다.
+
+        ★Jay 2026-09-28: 탭에 공간을 걸면 Assets 폴더가 그 공간으로 좁혀진다 — 찾기도 같은
+        규칙을 쓴다. 그러면 다른 프로젝트에 같은 이름이 있어도 헷갈리지 않는다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            a = root / "A"
+            a.mkdir()
+            (a / "hero.png").write_bytes(b"in A")
+            b_dir = root / "B"
+            b_dir.mkdir()
+            (b_dir / "hero.png").write_bytes(b"in B")
+
+            dirs = {"A": a, "B": b_dir}
+
+            def auto(_request, workspace_id=None):
+                # 'ws-1' 공간에는 A 만 등록돼 있다(Assets 목록이 좁혀지는 것과 같은 규칙).
+                ma = {"name": "A", "path": str(a), "project_id": "pa"}
+                mb = {"name": "B", "path": str(b_dir), "project_id": "pb"}
+                return [ma] if workspace_id == "ws-1" else [ma, mb]
+
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_auto_project_mounts", side_effect=auto),
+                patch.object(assets, "_owner_mounts", return_value=[]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+            ):
+                scoped = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:Q|hero.png"], workspace_id="ws-1"), SimpleNamespace()
+                )
+                wide = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:Q|hero.png"]), SimpleNamespace()
+                )
+
+            # 공간이 지정되면 그 안에서 하나로 좁혀진다
+            self.assertEqual([(f["project"], f["path"]) for f in scoped["fixed"]], [("A", "hero.png")])
+            # 지정이 없으면 두 곳에 있어 고르지 않는다
+            self.assertEqual(wide["fixed"], [])
+
+    def _locate_env(self, root: Path, dirs: dict, auto):
+        """locate 시험 공통 — 폴더 해석만 가짜로, 나머지는 실제 코드."""
+        return (
+            patch.object(assets, "ASSETS_ROOT", root),
+            patch.object(assets, "_auto_project_mounts", side_effect=auto),
+            patch.object(assets, "_owner_mounts", return_value=[]),
+            patch.object(assets, "actor_id", return_value="me"),
+            patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+        )
+
+    def test_locate_reuses_the_scan_within_one_relink_and_rescans_on_the_next(self) -> None:
+        """한 번의 자동 복구(scan_id) 안에서는 폴더를 한 번만 훑는다 — 200개씩 여러 번 묻는 동안
+        같은 NAS 를 매번 다시 훑던 것(요청 3번 × 16초) 을 막는다. 새 복구는 다시 훑는다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            proj = root / "P"
+            proj.mkdir()
+            (proj / "a.png").write_bytes(b"a")
+            dirs = {"P": proj}
+            scans: list[str] = []
+            real = assets._build_index
+
+            def counting(d):
+                scans.append(str(d))
+                return real(d)
+
+            env = self._locate_env(root, dirs, lambda _r, _w=None: [{"name": "P"}])
+            with env[0], env[1], env[2], env[3], env[4], patch.object(assets, "_build_index", side_effect=counting):
+                for _ in range(3):  # 같은 복구의 배치 3개
+                    assets.locate_legacy_assets(
+                        assets.LocateIn(tokens=["asset:Q|a.png"], scan_id="run-1"), SimpleNamespace()
+                    )
+                self.assertEqual(len(scans), 1)
+
+                assets.locate_legacy_assets(  # 다음 F5 — 새로 훑는다
+                    assets.LocateIn(tokens=["asset:Q|a.png"], scan_id="run-2"), SimpleNamespace()
+                )
+                self.assertEqual(len(scans), 2)
+
+                assets.locate_legacy_assets(  # 작업 id 가 없으면 예전처럼 매번 새로 훑는다
+                    assets.LocateIn(tokens=["asset:Q|a.png"]), SimpleNamespace()
+                )
+                self.assertEqual(len(scans), 3)
+
+    def test_locate_does_not_scan_other_projects_when_the_workspace_answers(self) -> None:
+        """캔버스의 공간에서 다 찾히면 다른 프로젝트는 **아예 훑지 않는다** — 예전에는 좁히기 전에
+        전부 훑어 좁히기가 속도에 아무 효과가 없었다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            mine = root / "Mine"
+            mine.mkdir()
+            (mine / "hero.png").write_bytes(b"x")
+            big = root / "Big"
+            big.mkdir()
+            (big / "other.png").write_bytes(b"y")
+            dirs = {"Mine": mine, "Big": big}
+            scanned: list[str] = []
+            real = assets._build_index
+
+            def counting(d):
+                scanned.append(Path(d).name)
+                return real(d)
+
+            def auto(_r, workspace_id=None):
+                m = {"name": "Mine", "path": str(mine), "project_id": "p1"}
+                g = {"name": "Big", "path": str(big), "project_id": "p2"}
+                return [m] if workspace_id == "ws" else [m, g]
+
+            env = self._locate_env(root, dirs, auto)
+            with env[0], env[1], env[2], env[3], env[4], patch.object(assets, "_build_index", side_effect=counting):
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:Q|hero.png"], workspace_id="ws"), SimpleNamespace()
+                )
+
+            self.assertEqual([(f["project"], f["path"]) for f in reply["fixed"]], [("Mine", "hero.png")])
+            self.assertEqual(scanned, ["Mine"])  # Big 은 훑지 않았다
+
+    def test_walk_skips_hidden_folders_and_stops_at_the_limit(self) -> None:
+        """빠른 걸음도 예전 계약을 지킨다 — 숨김은 후보가 아니고, 한도를 넘으면 완주가 아니다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "CH").mkdir()
+            (root / "CH" / "a.png").write_bytes(b"1")
+            (root / "CH" / "b.png").write_bytes(b"22")
+            (root / "CH" / "note.txt").write_bytes(b"not media")
+            (root / ".cache").mkdir()
+            (root / ".cache" / "hidden.png").write_bytes(b"333")
+
+            entries, complete = assets._walk_media(root)
+            self.assertTrue(complete)
+            self.assertEqual(sorted((rel, size) for rel, _n, size in entries), [("CH/a.png", 1), ("CH/b.png", 2)])
+
+            capped, complete = assets._walk_media(root, limit=1)
+            self.assertEqual(len(capped), 1)  # 넘친 항목은 넣지 않는다
+            self.assertFalse(complete)  # 끊겼으면 '없다'고 단정하지 않게
+
+    def test_workspace_scope_ignores_a_name_that_points_elsewhere_on_this_pc(self) -> None:
+        """공간의 프로젝트 이름이 이 PC 에서는 **다른 폴더**(개인 등록)로 풀리면 쓰지 않는다.
+
+        ★공간 범위를 이름으로 만들면 실제로는 개인 폴더를 훑게 되고, 고친 참조가 이 PC 에서
+        엉뚱한 폴더를 가리킨다 — 공간이 신뢰 경계라는 결정이 뚫린다(Codex 2026-09-28)."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            space = root / "space_P"  # 공간에 등록된 P
+            space.mkdir()
+            (space / "hero.png").write_bytes(b"space")
+            mine = root / "my_P"  # 이 PC 에서 개인 등록한 같은 이름 P — 다른 폴더
+            mine.mkdir()
+            (mine / "hero.png").write_bytes(b"mine")
+
+            def auto(_r, workspace_id=None):
+                return [{"name": "P", "path": str(space), "project_id": "p1"}]
+
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_auto_project_mounts", side_effect=auto),
+                patch.object(assets, "_owner_mounts", return_value=[{"name": "P", "path": str(mine)}]),
+                patch.object(assets, "actor_id", return_value="me"),
+                # 이 PC 는 개인 등록을 먼저 본다
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: mine if name == "P" else None),
+            ):
+                scanned: list[str] = []
+                real = assets._build_index
+
+                def counting(d):
+                    scanned.append(Path(d).name)
+                    return real(d)
+
+                with patch.object(assets, "_build_index", side_effect=counting):
+                    reply = assets.locate_legacy_assets(
+                        assets.LocateIn(tokens=["asset:Q|hero.png"], workspace_id="ws"), SimpleNamespace()
+                    )
+
+            self.assertNotIn("space_P", scanned)  # 공간 라운드에서 쓰지 않았다
+            # 전체 라운드는 이 PC 의 해석(개인 폴더)대로 — 고친 참조가 이 PC 에서 가리키는 곳과 같다
+            self.assertEqual([(f["project"], f["path"]) for f in reply["fixed"]], [("P", "hero.png")])
+
+    def test_waiting_on_a_stuck_scan_gives_up_instead_of_hanging(self) -> None:
+        """같은 폴더를 먼저 훑는 요청이 NAS 에 멈추면, 기다리던 요청은 영원히 붙잡히지 않고 포기한다
+        ('완주 못 함' — 그 폴더로는 아무것도 바꾸지 않는다, Codex 2026-09-28)."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            proj = root / "P"
+            proj.mkdir()
+            (proj / "hero.png").write_bytes(b"x")
+            # 다른 F5(다른 작업 id)가 이 폴더를 훑다가 NAS 에 멈춘 상태 — 폴더 기준으로 막힌다
+            flight = ("me", os.path.normcase(str(proj)))
+            with assets._SCAN_GUARD:
+                assets._SCAN_INFLIGHT[flight] = threading.Event()
+            try:
+                with patch.object(assets, "_SCAN_WAIT", 0.05):
+                    snap = assets._locate_snapshot("me", "another-run", proj)
+                    # 엔드포인트까지 — 그 폴더로는 아무것도 바꾸지 않고 unresolved 로 둔다
+                    with (
+                        patch.object(assets, "ASSETS_ROOT", root),
+                        patch.object(assets, "_auto_project_mounts", return_value=[{"name": "P"}]),
+                        patch.object(assets, "_owner_mounts", return_value=[]),
+                        patch.object(assets, "actor_id", return_value="me"),
+                        patch.object(assets, "_safe_project_dir", side_effect=lambda n, _r: proj if n == "P" else None),
+                    ):
+                        reply = assets.locate_legacy_assets(
+                            assets.LocateIn(tokens=["asset:Q|hero.png"], scan_id="third-run"), SimpleNamespace()
+                        )
+            finally:
+                with assets._SCAN_GUARD:
+                    assets._SCAN_INFLIGHT.pop(flight, None)
+            self.assertEqual(snap, ({}, {}, False))
+            self.assertEqual(reply["fixed"], [])
+            self.assertEqual(reply["unresolved"], ["asset:Q|hero.png"])
+
+    def test_locate_follows_a_picture_whose_extension_was_changed(self) -> None:
+        """누가 `x.png` 를 `x.jpeg` 로 바꿔 저장해 두면 씬은 옛 `.png` 를 가리킨다 — 같은 종류이고
+        **폴더 경로까지 같을 때만** 이어 준다(Jay 2026-09-28 실측: 매튜_바바라받으려는동작(e025))."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            proj = root / "P"
+            (proj / "assets" / "CH" / "매튜").mkdir(parents=True)
+            (proj / "assets" / "CH" / "매튜" / "catch.jpeg").write_bytes(b"x")  # png 가 jpeg 로 바뀌었다
+            (proj / "assets" / "CH" / "매튜" / "clip.mp4").write_bytes(b"v")  # 종류가 다르다
+            (proj / "BG").mkdir()
+            (proj / "BG" / "far.jpeg").write_bytes(b"f")  # 폴더가 다르다
+            (proj / "assets" / "CH" / "매튜" / "twin.jpeg").write_bytes(b"1")
+            (proj / "assets" / "CH" / "매튜" / "twin.webp").write_bytes(b"2")  # 후보가 둘
+
+            dirs = {"P": proj}
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_auto_project_mounts", return_value=[{"name": "P"}]),
+                patch.object(assets, "_owner_mounts", return_value=[]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+            ):
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(
+                        tokens=[
+                            "asset:P|assets/CH/매튜/catch.png",  # → catch.jpeg
+                            "asset:P|assets/CH/매튜/clip.png",  # 영상으로 잇지 않는다
+                            "asset:P|CH/매튜/far.png",  # 다른 폴더의 far.jpeg 로 잇지 않는다
+                            "asset:P|assets/CH/매튜/twin.png",  # jpeg·webp 둘 — 고르지 않는다
+                        ]
+                    ),
+                    SimpleNamespace(),
+                )
+
+            self.assertEqual(
+                [(f["token"], f["path"]) for f in reply["fixed"]],
+                [("asset:P|assets/CH/매튜/catch.png", "assets/CH/매튜/catch.jpeg")],
+            )
+
+    def test_an_exact_path_match_beats_a_changed_extension(self) -> None:
+        """원래 확장자 그대로의 파일이 있으면 그것을 쓴다 — 확장자만 다른 것은 맨 마지막 근거다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            proj = root / "P"
+            (proj / "CH").mkdir(parents=True)
+            (proj / "CH" / "hero.png").write_bytes(b"png")
+            (proj / "CH" / "hero.jpeg").write_bytes(b"jpeg")
+
+            dirs = {"P": proj}
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_auto_project_mounts", return_value=[{"name": "P"}]),
+                patch.object(assets, "_owner_mounts", return_value=[]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+            ):
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:Q|CH/hero.png"]), SimpleNamespace()
+                )
+
+            self.assertEqual([f["path"] for f in reply["fixed"]], ["CH/hero.png"])
+
+    def test_an_ambiguous_name_match_does_not_fall_through_to_a_changed_extension(self) -> None:
+        """이름이 같은 파일이 여럿이라 고르지 못했으면, 확장자만 다른 것이 하나 있어도 내려가지 않는다 —
+        앞 단계에 후보가 있었다는 건 '이 이름의 파일이 실제로 있다'는 뜻이다(Codex 2026-09-28)."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            proj = root / "P"
+            for sub in ("A", "B", "X"):
+                (proj / sub).mkdir(parents=True)
+            (proj / "A" / "hero.png").write_bytes(b"a")  # 이름만 일치 — 둘이라 모호
+            (proj / "B" / "hero.png").write_bytes(b"b")
+            (proj / "X" / "hero.jpeg").write_bytes(b"x")  # 확장자만 다름 — 하나뿐
+
+            dirs = {"P": proj}
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_auto_project_mounts", return_value=[{"name": "P"}]),
+                patch.object(assets, "_owner_mounts", return_value=[]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
+            ):
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:Q|X/hero.png"]), SimpleNamespace()
                 )
 
             self.assertEqual(reply["fixed"], [])
