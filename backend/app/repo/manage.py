@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from ..db import get_connection
+from .event_journal import _edit_conflict_detail, _record_audit_event, safe_identity
 from .identity import resolve_display_names
 from .manage_schema import _SCHEMA_ENSURED, _ensure_schema, unresolved_workspace_sql
 from .manage_tasks import (
@@ -635,6 +636,24 @@ def _workspace_credits(workspace_id: Optional[str] = None) -> list[dict[str, Any
 
 
 # ── 프로젝트 일정/예산 ────────────────────────────────────────────────────────
+class PlanningConflict(Exception):
+    def __init__(self, expected_revision: int):
+        self.expected_revision = expected_revision
+        super().__init__(f"planning revision {expected_revision} is stale")
+
+
+def planning_conflict_detail(pid: str, expected_revision: int) -> dict[str, Any]:
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        conn.execute("BEGIN")
+        row = conn.execute("SELECT * FROM project_planning WHERE project_id=?", (pid,)).fetchone()
+        latest = dict(row) if row else {"revision": 0}
+        return _edit_conflict_detail(
+            conn, latest=latest, latest_revision=latest["revision"], expected_revision=expected_revision,
+            action="project.planning_changed", target_type="project_planning", target_id=pid, project_id=pid,
+        )
+
+
 def get_planning(pid: str) -> Optional[dict[str, Any]]:
     with get_connection() as conn:
         _ensure_schema(conn)
@@ -654,26 +673,25 @@ def set_planning(
     budget_period: Optional[str] = None,
     archive_after_days: Optional[int] = None,
     note: Optional[str] = None,
+    revision: Optional[int] = None,
+    actor_uid: Optional[str] = None,
 ) -> dict[str, Any]:
     """프로젝트 일정/예산 upsert. project_planning 사이드카만 건드린다(코어 project 무수정)."""
     with get_connection() as conn:
         _ensure_schema(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute("SELECT * FROM project_planning WHERE project_id=?", (pid,)).fetchone()
+        cur_rev = int(existing["revision"]) if existing else 0
+        if revision is not None and revision != cur_rev:
+            raise PlanningConflict(revision)
         # 구버전 클라이언트는 budget_period를 보내지 않는다. 기존 설정은 보존하고,
         # 최초 저장일 때만 매월을 기본값으로 사용한다.
         if budget_period not in {"day", "week", "month"}:
-            existing = conn.execute(
-                "SELECT budget_period, archive_after_days FROM project_planning WHERE project_id=?",
-                (pid,),
-            ).fetchone()
             budget_period = (
                 existing["budget_period"]
                 if existing and existing["budget_period"] in {"day", "week", "month"}
                 else "month"
             )
-        else:
-            existing = conn.execute(
-                "SELECT archive_after_days FROM project_planning WHERE project_id=?", (pid,)
-            ).fetchone()
         if archive_after_days is None:
             archive_after_days = (
                 existing["archive_after_days"]
@@ -684,23 +702,36 @@ def set_planning(
         conn.execute(
             """INSERT INTO project_planning
                    (project_id, status, start_date, due_date, budget_credits, budget_period,
-                    archive_after_days, note)
-               VALUES (?,?,?,?,?,?,?,?)
+                    archive_after_days, note, revision, updated_by, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
                ON CONFLICT(project_id) DO UPDATE SET
                    status=excluded.status, start_date=excluded.start_date,
                    due_date=excluded.due_date, budget_credits=excluded.budget_credits,
                    budget_period=excluded.budget_period,
-                   archive_after_days=excluded.archive_after_days, note=excluded.note""",
+                   archive_after_days=excluded.archive_after_days, note=excluded.note,
+                   revision=excluded.revision, updated_by=excluded.updated_by, updated_at=excluded.updated_at
+               WHERE project_planning.revision=?""",
             (
                 pid, status, start_date, due_date, budget_credits, budget_period,
-                archive_after_days, note,
+                archive_after_days, note, cur_rev + 1, safe_identity(actor_uid), cur_rev,
             ),
         )
-        return dict(
+        result = dict(
             conn.execute(
                 "SELECT * FROM project_planning WHERE project_id=?", (pid,)
             ).fetchone()
         )
+        before = dict(existing) if existing else {"budget_period": "month", "archive_after_days": 30}
+        fields = [
+            key for key in ("status", "start_date", "due_date", "budget_credits", "budget_period", "archive_after_days", "note")
+            if before.get(key) != result[key]
+        ]
+        _record_audit_event(
+            conn, "project.planning_changed", actor_uid=actor_uid, target_type="project_planning",
+            target_id=pid, project_id=pid, fields=fields,
+            details={"revision": result["revision"], "expected_revision": revision, "fields_complete": True},
+        )
+        return result
 
 
 # ── 완료본 렌더폴더 저장(Phase 3) ─────────────────────────────────────────────

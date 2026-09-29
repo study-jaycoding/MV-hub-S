@@ -26,8 +26,8 @@ import { ProjectRenderTree } from "../admin/ProjectRenderTree";
 import { ProjectMembersPanel } from "./ProjectMembersPanel";
 import { ProjectPlanningFields } from "./ProjectPlanningDialog";
 import { CreditPlanFields } from "./CreditPlanFields";
-import { draftToBody, validateDraft, type CreditPlanDraft } from "../../lib/creditPlan";
-import { isHttpStatus } from "../../lib/http";
+import { draftFromSettings, draftToBody, validateDraft, type CreditPlanDraft } from "../../lib/creditPlan";
+import { useManageEditConflict } from "./useManageEditConflict";
 import type { Planning } from "./types";
 import { defaultProjectRoles } from "../../types";
 import type {
@@ -46,6 +46,7 @@ type ProjectDialogState =
       rootPath: string;
       workspaceId: string;
       planning: Planning;
+      planningBaseline: Planning;
       budgetInput: string;
       creditPlan?: CreditPlanDraft | null; // 워크스페이스 크레딧 풀·그룹 초안(설정 절이 불러와 채움)
       busy?: boolean;
@@ -58,6 +59,7 @@ type ProjectDialogState =
       rootPath: string;
       workspaceId: string;
       planning: Planning;
+      planningBaseline: Planning;
       budgetInput: string;
       creditPlan?: CreditPlanDraft | null;
       busy?: boolean;
@@ -65,6 +67,7 @@ type ProjectDialogState =
     };
 
 export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
+  const conflict = useManageEditConflict();
   const caps = useManageCaps();
   const [members, setMembers] = useState<Member[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -72,13 +75,15 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
   const workspaceLabels = workspaceCommandLabels(workspaceOptions);
   const [workspaceMembers, setWorkspaceMembers] = useState<Record<string, WorkspaceMemberCandidate[]>>({});
   const [projectDialog, setProjectDialog] = useState<ProjectDialogState | null>(null);
+  const [creditRowBusy, setCreditRowBusy] = useState(false);
   // 프로젝트 대화상자가 열려 있으면 Esc 는 그것만 닫는다 — 창 전체를 닫으면 입력하던 이름이 사라진다.
   const projectDialogOpen = projectDialog !== null;
   const closeTopmost = useCallback(() => {
+    if (projectDialog?.busy || creditRowBusy) return;
     if (projectDialogOpen) setProjectDialog(null);
     else onClose();
-  }, [projectDialogOpen, onClose]);
-  useEscapeClose(closeTopmost);
+  }, [projectDialogOpen, projectDialog?.busy, creditRowBusy, onClose]);
+  useEscapeClose(closeTopmost, !conflict.active);
   const [projFolders, setProjFolders] = useState<Record<string, ProjectFolderEntry>>({});
   // 렌더폴더 트리를 펼친 프로젝트 — 열 때마다 접힌 상태로 시작한다(Jay 요청 2026-09-16).
   // 이전에는 펼침 목록을 localStorage 에 기억해 복원했는데, 패널을 열면 트리가 저절로
@@ -211,6 +216,7 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
       rootPath: "",
       workspaceId,
       planning: { status: "active", budget_period: "month" },
+      planningBaseline: {},
       budgetInput: "",
     });
     if (workspaceId) void loadWorkspaceMembers(workspaceId);
@@ -232,6 +238,7 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
         rootPath: folder?.root_path || "",
         workspaceId,
         planning: { status: "active", ...planning },
+        planningBaseline: planning,
         budgetInput: planningBudgetInput(planning),
       });
       if (workspaceId) void loadWorkspaceMembers(workspaceId);
@@ -267,7 +274,7 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
     }
   };
   const saveProjectDialog = async () => {
-    if (!projectDialog || projectDialog.busy) return;
+    if (!projectDialog || projectDialog.busy || creditRowBusy) return;
     const name = projectDialog.name.trim();
     const rootPath = projectDialog.rootPath.trim();
     if (!name) {
@@ -302,52 +309,44 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
     }
     const workspaceContext = { scope: "team" as const, id: workspace.id, name: workspace.name };
     setProjectDialog({ ...projectDialog, busy: true, error: "" });
-    let createdProjectId = "";
+    let pending = projectDialog;
+    const savedParts: string[] = [];
     let folderSaveFailed = false;
     try {
       if (projectDialog.mode === "create") {
         const created = await api.createProject(name, "team", workspaceContext);
-        createdProjectId = created.id;
-        await manageApi.setPlanning(created.id, planningResult.planning);
-        if (rootPath) folderSaveFailed = !(await saveProjectFolderLink(created.id, rootPath, ""));
+        pending = { ...projectDialog, mode: "rename", project: created };
+        savedParts.push("프로젝트 생성");
       } else {
         await api.updateProject(projectDialog.project.id, { name, workspace: workspaceContext });
-        await manageApi.setPlanning(projectDialog.project.id, planningResult.planning);
-        const prev = projFolders[projectDialog.project.id];
-        if (rootPath || prev?.root_path) {
-          folderSaveFailed = !(await saveProjectFolderLink(
-            projectDialog.project.id,
-            rootPath,
-            rootPath ? prev?.selected_path || "" : "",
-          ));
-        }
+        savedParts.push("프로젝트 이름·워크스페이스");
       }
-      // 크레딧 풀·그룹(워크스페이스 단위)은 별도 저장 — 프로젝트 저장과 실패를 분리한다.
-      let creditSaveNote = "";
+      if (pending.mode !== "rename") return;
+      const planning = await conflict.savePlanning(pending.project.id, pending.planningBaseline, planningResult.planning);
+      pending = { ...pending, planning, planningBaseline: planning, budgetInput: planningBudgetInput(planning) };
+      savedParts.push("일정·예산");
+      setProjectDialog({ ...pending, busy: true });
+      const prev = projFolders[pending.project.id];
+      if (rootPath || prev?.root_path) {
+        folderSaveFailed = !(await saveProjectFolderLink(pending.project.id, rootPath, rootPath ? prev?.selected_path || "" : ""));
+        if (!folderSaveFailed) savedParts.push("렌더 폴더");
+      }
       if (creditDraft?.dirty && creditDraft.loadedFor === workspace.id) {
-        try {
-          await manageApi.saveCreditPlan(workspace.id, draftToBody(creditDraft));
-          refreshModelPolicy(); // 같은 앱에서 그룹(사용 모델)을 바꿨으면 내 정책도 바로 다시 읽는다
-        } catch (reason) {
-          creditSaveNote = isHttpStatus(reason, 409)
-            ? " 크레딧 풀·그룹은 다른 곳에서 먼저 저장돼 반영하지 못했습니다. 설정을 다시 열어 주세요."
-            : ` 크레딧 풀·그룹 저장 실패: ${String(reason).replace(/^Error:\s*/, "")}`;
-        }
+        if (!creditDraft.baseline) throw new Error("크레딧 편집 시작값이 없습니다. 입력은 유지됩니다.");
+        const saved = await conflict.saveCredit(workspace.id, creditDraft.baseline, draftToBody(creditDraft));
+        pending = { ...pending, creditPlan: draftFromSettings(saved) };
+        savedParts.push("크레딧 풀·그룹");
+        refreshModelPolicy();
       }
+      if (folderSaveFailed) throw new Error("렌더 폴더 경로 저장 실패. 나머지 저장은 취소되지 않았습니다.");
       setProjectDialog(null);
-      if (!folderSaveFailed) setActMsg(`${name} 프로젝트 설정을 저장했습니다.${creditSaveNote}`);
-      else if (creditSaveNote) setActMsg((cur) => `${cur}${creditSaveNote}`);
+      setActMsg(`${name} 프로젝트 설정을 저장했습니다.`);
       loadProjects();
     } catch (e) {
-      if (createdProjectId) {
-        setProjectDialog(null);
-        setActMsg(
-          `${name} 프로젝트는 생성됐지만 일정·예산 저장에 실패했습니다. 연필 수정에서 다시 저장하세요.`,
-        );
-        loadProjects();
-        return;
-      }
-      setProjectDialog({ ...projectDialog, busy: false, error: String(e).replace(/^Error:\s*/, "") });
+      const partial = savedParts.length ? `일부 저장됨: ${savedParts.join(", ")}. 이미 저장한 항목은 취소되지 않습니다. ` : "";
+      const error = `${partial}${String(e).replace(/^Error:\s*/, "")} 미저장 입력은 유지했습니다.`;
+      setProjectDialog({ ...pending, busy: false, error });
+      if (savedParts.length) { setActMsg(error); loadProjects(); }
     }
   };
   const toggleFolderTree = (pid: string) => {
@@ -414,14 +413,14 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
     : undefined;
 
   return (
-    <div className="manage-proj-overlay" onMouseDown={onClose}>
+    <div className="manage-proj-overlay" onMouseDown={() => { if (!projectDialog?.busy && !creditRowBusy) onClose(); }}>
       <div
         className={`manage-proj-modal${activeMembersProject ? " members-open" : ""}`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <header className="manage-proj-head">
           <h2>프로젝트 관리</h2>
-          <button className="manage-proj-close" onClick={onClose} title="닫기">
+          <button className="manage-proj-close" disabled={projectDialog?.busy || creditRowBusy} onClick={onClose} title="닫기">
             ✕
           </button>
         </header>
@@ -579,10 +578,11 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
         </div>
 
         {projectDialog && (
-          <div className="admin-confirm-backdrop" onMouseDown={() => setProjectDialog(null)}>
+          <div className="admin-confirm-backdrop" onMouseDown={() => { if (!projectDialog.busy && !creditRowBusy) setProjectDialog(null); }}>
             {/* 카드 + 카드 밖 하단 중앙의 저장·닫기(Jay 2026-09-10) — 세로 묶음이라 카드가 길어도 단추는 항상 아래에 */}
             <div className="project-dialog-stack" onMouseDown={(e) => e.stopPropagation()}>
             <div className="admin-confirm admin-project-dialog">
+              <fieldset className="manage-edit-fields" disabled={projectDialog.busy || creditRowBusy}>
               <p className="admin-confirm-q">
                 {projectDialog.mode === "create" ? "새 프로젝트" : "프로젝트 설정"}
               </p>
@@ -690,24 +690,28 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
                   })}
                 />
               </section>
+              </fieldset>
               <CreditPlanFields
                 workspaceId={projectDialog.workspaceId}
                 draft={projectDialog.creditPlan ?? null}
+                onBusyChange={setCreditRowBusy}
+                disabled={projectDialog.busy}
                 onChange={(creditPlan) => setProjectDialog((cur) => (cur ? { ...cur, creditPlan, error: "" } : cur))}
               />
               {projectDialog.error && <div className="login-error">{projectDialog.error}</div>}
             </div>
             <div className="admin-confirm-actions project-dialog-actions">
-              <button className="admin-confirm-yes" onClick={saveProjectDialog} disabled={projectDialog.busy}>
+              <button className="admin-confirm-yes" onClick={saveProjectDialog} disabled={projectDialog.busy || creditRowBusy}>
                 {projectDialog.busy ? "저장 중…" : "저장"}
               </button>
-              <button className="admin-confirm-no" onClick={() => setProjectDialog(null)}>
+              <button className="admin-confirm-no" disabled={projectDialog.busy || creditRowBusy} onClick={() => setProjectDialog(null)}>
                 닫기
               </button>
             </div>
             </div>
           </div>
         )}
+        {conflict.dialog}
       </div>
     </div>
   );

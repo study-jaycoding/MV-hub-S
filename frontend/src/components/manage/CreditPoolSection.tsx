@@ -2,6 +2,7 @@
 // 매니저: 풀 카드(월 충전·이번 달 사용·현재 잔액·월초 잔액) → 그룹별 한도 표 → 잔액 추이(관측값).
 // 일반 멤버: '내 그룹' 카드 하나(그룹 합계는 보이되 팀원 개인 내역은 없음).
 // 힉스필드가 한도를 강제하므로 여기서는 보여주고 경고만 한다. 구서버(라우트 없음)·권한 없음이면 조용히 숨긴다.
+// ★그룹 한도 = **인당** 한도(Jay 2026-09-29) — 그룹 남은 양·사용률은 몫 합계(quota_total) 기준이고 이월은 없다.
 import { useEffect, useState } from "react";
 import { isHttpStatus, isRouteMissing } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
@@ -11,10 +12,10 @@ import {
   cycleLabel,
   limitTotal,
   niceCeil,
-  overrideBody,
   periodSuffix,
   periodUsageLabel,
   projectDepletion,
+  usagePercentLabel,
   remainingTone,
   topupSteps,
   usagePercent,
@@ -47,54 +48,18 @@ function dayLabel(day: string): string {
   return `${Number(m)}/${Number(d)}`;
 }
 
-interface AdjustState {
-  open: boolean;
-  value: string;
-  busy: boolean;
-  error: string;
-  onOpen: () => void;
-  onChange: (value: string) => void;
-  onSubmit: () => void;
-  onCancel: () => void;
-}
-
-function GroupRemaining({ group, adjust }: { group: CreditGroupSummary; adjust?: AdjustState }) {
-  const tone = remainingTone(group.remaining, group.monthly_limit);
-  const percent = usagePercent(group.used_period ?? group.used_month, group.monthly_limit);
+function GroupRemaining({ group }: { group: CreditGroupSummary }) {
+  const base = group.quota_total ?? null;
+  const tone = remainingTone(group.remaining, base);
+  const percent = usagePercent(group.used_period ?? group.used_month, base);
   return (
     <>
-      <td className="tnum" title="이월 포함">
+      <td className="tnum" title="몫 합계 − 이번 기간 사용(이월 없음)">
         {group.remaining == null ? "—" : n(group.remaining)}
-        {group.estimated && adjust && !adjust.open ? (
-          <button
-            type="button"
-            className="credit-est-btn"
-            title={`미상 ${group.unknown_since_base}건이 섞여 추정치 — 누르면 힉스필드 관리 창의 남은 양으로 맞춥니다`}
-            onClick={adjust.onOpen}
-          >
-            추정
-          </button>
-        ) : group.estimated ? <span className="credit-est" title={`미상 ${group.unknown_since_base}건이 섞여 추정치`}> 추정</span> : null}
-        {adjust?.open ? (
-          <div className="credit-adjust" onClick={(event) => event.stopPropagation()}>
-            <input
-              type="text"
-              inputMode="numeric"
-              autoFocus
-              value={adjust.value}
-              placeholder="힉스필드 남은 양"
-              aria-label="힉스필드 남은 양"
-              onChange={(event) => adjust.onChange(event.target.value)}
-              onKeyDown={(event) => { if (event.key === "Enter") adjust.onSubmit(); if (event.key === "Escape") adjust.onCancel(); }}
-            />
-            <button type="button" disabled={adjust.busy} onClick={adjust.onSubmit}>{adjust.busy ? "저장 중…" : "맞추기"}</button>
-            <button type="button" className="ghost" disabled={adjust.busy} onClick={adjust.onCancel}>취소</button>
-            {adjust.error ? <span className="credit-est bad">{adjust.error}</span> : null}
-          </div>
-        ) : null}
+        {group.estimated ? <span className="credit-est" title={`미상 ${group.unknown_since_base}건이 섞여 추정치`}> 추정</span> : null}
       </td>
       <td>
-        <span className={`credit-pct tone-${tone}`}>{percent == null ? "∞" : `${percent}%`}</span>
+        <span className={`credit-pct tone-${tone}`}>{usagePercentLabel(group.used_period ?? group.used_month, base)}</span>
         {percent != null ? (
           <span className="credit-mini"><i className={`tone-${tone}`} style={{ width: `${Math.min(100, percent)}%` }} /></span>
         ) : null}
@@ -186,14 +151,11 @@ export function CreditPoolSection({
   scope,
   workspaceId,
   reloadSignal = 0,
-  canAdjust = false,
   focusMember = null,
 }: {
   scope: "all" | "mine";
   workspaceId?: string;
   reloadSignal?: number;
-  /** '추정' 맞추기 단추 — 저장(PUT credit-plan)은 전역 create_project 라 read_all 만 있는 열람자에겐 숨긴다(눌러도 403). */
-  canAdjust?: boolean;
   /** 대시보드에서 멤버를 고른 상태 — 이 카드의 숫자는 **워크스페이스 전체**라는 것을 밝히려고 받는다
    *  (사람별 몫은 관리 표 '크레딧' 시트에 있다). 고른 사람에 맞춰 숫자를 바꾸지 않는다. */
   focusMember?: { uid: string | null; name: string | null } | null;
@@ -201,8 +163,6 @@ export function CreditPoolSection({
   const [view, setView] = useState<CreditPlanView | null>(null);
   const [error, setError] = useState("");
   const [hidden, setHidden] = useState(false);
-  const [tick, setTick] = useState(0); // '추정 맞추기' 저장 뒤 다시 읽기
-  const [adjust, setAdjust] = useState<{ id: string; value: string; busy: boolean; error: string } | null>(null);
 
   useEffect(() => {
     if (!workspaceId) {
@@ -227,39 +187,7 @@ export function CreditPoolSection({
         setError(`크레딧 풀을 불러오지 못했습니다. ${String(reason)}`);
       });
     return () => { active = false; };
-  }, [workspaceId, reloadSignal, tick]);
-
-  // '추정' → 힉스필드 관리 창의 남은 양을 적어 우리 계산을 그 값에 맞춘다(그룹 재기준화, 배정·다른 그룹은 그대로).
-  const submitAdjust = async () => {
-    if (!view || !adjust || !workspaceId || adjust.busy) return;
-    const digits = adjust.value.replace(/[^\d-]/g, "");
-    if (!digits || !Number.isInteger(Number(digits))) {
-      setAdjust({ ...adjust, error: "정수로 입력" });
-      return;
-    }
-    setAdjust({ ...adjust, busy: true, error: "" });
-    try {
-      await manageApi.saveCreditPlan(workspaceId, overrideBody(view, adjust.id, Number(digits)));
-      setAdjust(null);
-      setTick((value) => value + 1);
-    } catch (reason) {
-      setAdjust({
-        ...adjust,
-        busy: false,
-        error: isHttpStatus(reason, 409) ? "설정이 바뀜 — 새로고침 뒤 다시" : `실패: ${String(reason).replace(/^Error:\s*/, "")}`,
-      });
-    }
-  };
-  const adjustFor = (groupId: string): AdjustState => ({
-    open: adjust?.id === groupId,
-    value: adjust?.id === groupId ? adjust.value : "",
-    busy: adjust?.id === groupId ? adjust.busy : false,
-    error: adjust?.id === groupId ? adjust.error : "",
-    onOpen: () => setAdjust({ id: groupId, value: "", busy: false, error: "" }),
-    onChange: (value) => setAdjust((current) => (current && current.id === groupId ? { ...current, value: value.replace(/[^\d-]/g, "").replace(/\B(?=(\d{3})+(?!\d))/g, ","), error: "" } : current)),
-    onSubmit: () => { void submitAdjust(); },
-    onCancel: () => setAdjust(null),
-  });
+  }, [workspaceId, reloadSignal]);
 
   if (!workspaceId || hidden) return null;
   if (error) return <div className="usage-error">{error}</div>;
@@ -267,13 +195,14 @@ export function CreditPoolSection({
 
   if (scope === "mine") {
     const mine = view.my_group;
-    // 구서버는 몫 계약을 모른다 — 키가 아예 없으면(undefined) '몫 없음(null)'과 구분해 안내한다.
-    const quotaUnsupported = Boolean(mine) && mine!.my_quota_source === undefined;
+    // 구서버는 인당 몫 계약을 모른다 — `quota_total` 키가 없으면(09-23 '÷ 인원' 서버도 포함) 숫자를 믿지 않고
+    // 서버 업데이트를 안내한다. 옛 서버도 `my_quota_source` 는 주므로 그것만으로는 못 가른다(Codex 설계 검토 2026-09-29).
+    const quotaUnsupported = Boolean(mine) && mine!.quota_total === undefined;
     return (
       <div className="usage-card credit-card">
         <div className="usage-card-head">
           <div><h3>내 크레딧 · {monthLabel(view.month)}</h3></div>
-          <span>내 몫은 이번 기간 기준 · 그룹 이월은 따로 표시</span>
+          <span>내 몫은 이번 기간 기준 · 이월 없음</span>
         </div>
         {!mine ? (
           <div className="credit-scope-note">
@@ -282,12 +211,10 @@ export function CreditPoolSection({
         ) : (
           <div className="credit-pool-grid mine">
             <div><span>그룹</span><strong>{mine.name}</strong><em>{mine.member_count}명</em></div>
-            {/* 내 몫 = 그룹 한도를 사람 수로 나눈 값(매니저가 덮어썼으면 그 값). 이번 기간 기준이라
-                그룹 이월은 섞지 않고 아래 '그룹 여유분'으로 따로 보여 준다. */}
+            {/* 내 몫 = 그룹 인당 한도(매니저가 덮어썼으면 그 값). 이번 기간 기준이고 이월은 없다. */}
             <div>
               <span>내 몫 {periodSuffix(mine.limit_period)}</span>
-              {/* ★구서버(이 계약을 모르는 서버)는 `my_quota_source` 키 자체가 없다. 그때 null 을 '제한 없음'으로
-                  읽으면 몫이 없는 것처럼 보인다 — 서버 업데이트가 필요하다고 밝힌다(Codex 코드 리뷰). */}
+              {/* ★구서버의 null 을 '제한 없음'으로 읽으면 몫이 없는 것처럼 보인다 — 서버 업데이트가 필요하다고 밝힌다. */}
               <strong>
                 {quotaUnsupported ? "—" : mine.my_quota == null ? "제한 없음" : cr(mine.my_quota)}
               </strong>
@@ -297,7 +224,7 @@ export function CreditPoolSection({
                   : mine.my_quota_source === "manual"
                     ? "따로 정해진 몫"
                     : mine.my_quota_source === "auto"
-                      ? `그룹 한도 ${mine.monthly_limit == null ? "∞" : cr(mine.monthly_limit)} ÷ ${mine.member_count}명`
+                      ? "그룹 인당 한도"
                       : "그룹 한도 없음"}
               </em>
             </div>
@@ -315,9 +242,7 @@ export function CreditPoolSection({
               <em>
                 {mine.my_remaining != null && mine.my_remaining < 0
                   ? `내 몫보다 ${cr(Math.abs(mine.my_remaining))} 더 썼습니다`
-                  : mine.group_carryover
-                    ? `그룹 여유분 ${cr(mine.group_carryover)} 따로 있음`
-                    : mine.estimated ? `미상 ${mine.unknown_since_base}건 섞임 · 추정` : "팀 기록 장부 기준"}
+                  : mine.estimated ? `미상 ${mine.unknown_since_base}건 섞임 · 추정` : "팀 기록 장부 기준"}
               </em>
             </div>
           </div>
@@ -331,8 +256,8 @@ export function CreditPoolSection({
   const unassigned = view.unassigned;
   const total = limitTotal(groups);
   const topups = view.topups || [];
-  const poolIn = pool ? (pool.monthly_topup ?? 0) + (pool.topups_month?.credits ?? 0) : 0;
-  const overTopup = pool?.monthly_topup != null && total > poolIn;
+  // 인당 규칙 서버가 아니면(quota_total 없음) 몫·남음·사용률을 옛 뜻으로 잘못 그리게 된다 — 비우고 안내한다.
+  const perPersonServer = groups.every((group) => group.quota_total !== undefined);
   return (
     <>
       <div className="usage-card credit-card">
@@ -393,14 +318,14 @@ export function CreditPoolSection({
           <div><h3>그룹별 한도 · {cycleLabel(view, pool?.topup_day)}</h3></div>
           <span>
             {groups.length
-              ? `${groups.length}그룹 · 한도 합 ${n(total)}${overTopup ? ` (충전 ${n(pool?.monthly_topup)} 초과 — 경고만)` : ""}`
+              ? perPersonServer ? `${groups.length}그룹 · 매월 그룹 몫 합 ${n(total)}` : `${groups.length}그룹 · 서버 업데이트 뒤 몫 표시`
               : "그룹 없음"}
           </span>
         </div>
         <div className="usage-table-scroll">
           <table className="usage-table credit-group-table">
             <thead>
-              <tr><th>그룹</th><th>인원</th><th>한도</th><th>1인 몫</th><th>기간 사용</th><th>남음</th><th>사용률</th></tr>
+              <tr><th>그룹</th><th>인원</th><th>인당 한도</th><th>몫 합계</th><th>기간 사용</th><th>남음</th><th>사용률</th></tr>
             </thead>
             <tbody>
               {groups.map((group) => (
@@ -408,20 +333,18 @@ export function CreditPoolSection({
                   <td><b>{group.name}</b></td>
                   <td className="tnum">{group.member_count}</td>
                   <td className="tnum">{group.monthly_limit == null ? "∞" : `${n(group.monthly_limit)} ${periodSuffix(group.limit_period)}`}</td>
-                  {/* 1인 몫 = (한도 − 직접 정한 몫들) ÷ 나머지 인원. 직접 정한 사람이 있으면 그 합도 알려 준다. */}
+                  {/* 몫 합계 = 인당 한도 × 덮어쓰지 않은 사람 + 직접 정한 몫들. 직접 정한 몫이 있으면 그 합도 알려 준다. */}
                   <td className="tnum">
-                    {autoShareLabel(group.quota_auto)}
-                    {group.quota_fixed ? (
-                      <span className={`credit-est${group.quota_over ? " bad" : ""}`}>
-                        {` · 직접 ${n(group.quota_fixed)}${group.quota_over ? " (한도 초과)" : ""}`}
-                      </span>
+                    {!perPersonServer ? "—" : group.quota_total == null ? "∞" : autoShareLabel(group.quota_total)}
+                    {perPersonServer && group.quota_fixed ? (
+                      <span className="credit-est">{` · 직접 ${n(group.quota_fixed)} 포함`}</span>
                     ) : null}
                   </td>
                   <td className="tnum">
                     {n(group.used_period ?? group.used_month)}
                     <span className="credit-est"> {periodUsageLabel(group.limit_period)}{(group.unknown_period ?? group.unknown_month) ? ` · 미상 ${group.unknown_period ?? group.unknown_month}` : ""}</span>
                   </td>
-                  <GroupRemaining group={group} adjust={canAdjust ? adjustFor(group.id) : undefined} />
+                  {perPersonServer ? <GroupRemaining group={group} /> : <><td className="tnum">—</td><td>—</td></>}
                 </tr>
               ))}
               {unassigned && (unassigned.member_count > 0 || unassigned.used_month > 0) ? (

@@ -77,6 +77,8 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/manage/credit-plan",
         # 본인 그룹이 쓸 수 있는 모델 — 그룹·배정의 진실원천이 팀 서버이므로 로컬 허브는 위임한다.
         "/api/manage/credit-plan/my-models",
+        # Personal allowance and usage must come from the shared server, not a local copy.
+        "/api/manage/credit-plan/my-quota",
         "/api/manage/credit-plan/{workspace_id}",
         "/api/manage/credit-plan/{workspace_id}/settings",
         # 관리 표(2026-09-21) — 계정·그룹·프로젝트 참여의 진실원천이 팀 서버라 위임한다(쓰기는 칸마다 기존 API).

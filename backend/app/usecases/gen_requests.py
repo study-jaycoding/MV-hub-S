@@ -236,6 +236,7 @@ class GenRequestCommand:
     canvas_link: dict[str, str] | None = None
     idempotency_key: str | None = None  # 일반(비캔버스) 제출 의도 UUID
     request_contract: dict | None = None  # 파생 기본값을 제외한 정규화 HTTP payload
+    quota_block_reason: str | None = None
 
 
 class CanvasGenerationConflict(RuntimeError):
@@ -244,6 +245,10 @@ class CanvasGenerationConflict(RuntimeError):
 
 class GenerationIdempotencyConflict(RuntimeError):
     """같은 일반 요청 키가 서로 다른 생성 payload를 가리킬 때의 안전 중단."""
+
+
+class PersonalQuotaExceeded(RuntimeError):
+    """The shared usage snapshot reports an exhausted personal allowance."""
 
 
 def _canvas_command_contract(cmd: GenRequestCommand) -> dict:
@@ -1375,6 +1380,10 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
                 )
             return existing_gen
 
+    # An already accepted idempotent retry must still return its original card after
+    # that request's usage exhausts the quota. Only new/preparing requests are gated.
+    if cmd.quota_block_reason:
+        raise PersonalQuotaExceeded(cmd.quota_block_reason)
     gen_id = (
         cmd.canvas_link["generation_id"]
         if cmd.canvas_link

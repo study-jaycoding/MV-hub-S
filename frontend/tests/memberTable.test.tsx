@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({ memberTable: vi.fn(), saveCreditPlan: vi.fn(),
 vi.mock("../src/lib/manageApi", () => ({ manageApi: { memberTable: mocks.memberTable, saveCreditPlan: mocks.saveCreditPlan, setPlanning: mocks.setPlanning } }));
 vi.mock("../src/api", () => ({ api: { members: mocks.members, setProjectRoles: mocks.setProjectRoles, removeProjectMember: mocks.removeProjectMember, models: mocks.models } }));
 
-const group = (id: string, name: string) => ({ id, name, monthly_limit: 5000, limit_period: "month" as const, remaining: 3480, member_count: 1, used_month: 0, unknown_month: 0, unknown_since_base: 0, estimated: false, allowed_models: ["seedance"], color: id === "g1" ? "#3b82f6" : "#f59e0b" });
+const group = (id: string, name: string) => ({ id, name, monthly_limit: 5000, limit_period: "month" as const, remaining: 3480, quota_total: 5000, member_count: 1, used_month: 0, unknown_month: 0, unknown_since_base: 0, estimated: false, allowed_models: ["seedance"], color: id === "g1" ? "#3b82f6" : "#f59e0b" });
 const credit = (revision: number): CreditPlanSettings => ({ workspace_id: "ws1", month: "2026-09", plan: { monthly_topup: null, note: "메모", revision, updated_at: null }, groups: [group("g1", "2nd floor"), group("g2", "3rd floor")], members: [], topups: [] });
 const row = (email: string, extra: Partial<MemberTableRow> = {}): MemberTableRow => ({ email, name: email.split("@")[0], status: "approved", global_roles: ["member"], uid: "u_" + email[0], project_editable: true, linked_accounts: 1, workspace_role: "member", is_available: true, last_seen_at: null, hf_plan: null, group_id: null, projects: {}, usage: { credits: 0, count: 0, unknown: 0 }, ...extra });
 const table = (revision: number, rows: MemberTableRow[]): MemberTableData => ({ workspace_id: "ws1", cycle_start: "2026-09-01", cycle_end: "2026-09-30", rows, projects: [{ id: "p1", name: "본편", planning: { status: "active", start_date: null, due_date: null, budget_credits: null, budget_period: "month", archive_after_days: 30, note: null } }], groups: credit(revision).groups, credit: credit(revision), caps: { account: false, credit: true, project_roles: true, planning: true } });
@@ -41,6 +41,19 @@ const openGroupColor = async (name = "2nd floor") => {
   const trigger = host.querySelector<HTMLButtonElement>(`[aria-label^="${name} 색상 선택"]`)!;
   await act(async () => { trigger.click(); });
   return host.querySelector<HTMLInputElement>(`[aria-label="${name} 커스텀 색상"]`)!;
+};
+const conflictError = (latest: CreditPlanSettings) => new HttpError(409, "conflict", JSON.stringify({
+  kind: "manage_edit_conflict", latest, latest_revision: latest.plan.revision,
+  changes: [
+    { revision: latest.plan.revision - 1, actor_uid: "a", actor_name: "Manager A", fields: ["topups.t1.credits"], created_at: "2026-09-28 01:00" },
+    { revision: latest.plan.revision, actor_uid: "b", actor_name: "Manager B", fields: ["note"], created_at: "2026-09-28 01:01" },
+  ], history_complete: false,
+}));
+const confirmMerge = async () => { await act(async () => { host.querySelector<HTMLButtonElement>(".manage-conflict .admin-confirm-yes")!.click(); }); await settle(); };
+const chooseMerge = async (value: "mine" | "remote") => {
+  await act(async () => {
+    for (const select of host.querySelectorAll<HTMLSelectElement>(".manage-conflict select")) { select.value = value; select.dispatchEvent(new Event("change", { bubbles: true })); }
+  });
 };
 
 it("그룹 저장 본문은 받은 그룹을 전부 되보내고 허용 모델 키는 싣지 않는다", () => {
@@ -240,7 +253,7 @@ it("그룹 편집은 창을 연 revision으로 저장해 다른 관리자의 변
   expect(body.members).toEqual([]);
   expect(body.groups[0].allowed_models).toEqual(["seedance"]);
   expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(1);
-  expect(host.querySelector('[role="dialog"] .login-error')!.textContent).toContain("창을 닫았다 다시 열어");
+  expect(host.querySelector('[role="dialog"] .login-error')!.textContent).toContain("입력은 유지");
 });
 
 it("그룹 탭에서 고른 색은 대상 그룹만 기존 크레딧 설정 API 로 저장한다", async () => {
@@ -252,7 +265,7 @@ it("그룹 탭에서 고른 색은 대상 그룹만 기존 크레딧 설정 API 
   await openSheet("그룹");
 
   const headers = [...host.querySelectorAll('table[aria-label="크레딧 그룹 현황"] th')].map((cell) => cell.textContent);
-  expect(headers).toEqual(["그룹", "멤버", "한도 주기", "한도", "남은 양"]);
+  expect(headers).toEqual(["그룹", "멤버", "한도 주기", "인당 한도", "남은 양"]);
   expect(host.querySelector(".mtable-group-dot")).toBeNull();
   const trigger = host.querySelector<HTMLButtonElement>('[aria-label^="2nd floor 색상 선택"]')!;
   expect(trigger.getAttribute("aria-label")).toContain("현재 파랑");
@@ -475,7 +488,7 @@ it("409 는 자동으로 다시 보내지 않고 최신 값으로 다시 읽은 
   await settle();
   expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(1);
   expect(mocks.memberTable).toHaveBeenCalledTimes(2);
-  expect(host.querySelector(".mtable-notice.bad")!.textContent).toContain("다른 사람이 먼저");
+  expect(host.textContent).toContain("다른 사람이 먼저");
   expect(host.querySelector<HTMLSelectElement>('table[aria-label="멤버 그룹 배정"] tbody select')!.value).toBe(""); // 서버 값으로 돌아왔다
 });
 
@@ -589,6 +602,7 @@ it("프로젝트 일정과 예산은 검증한 전체 설정을 한 번에 저�
   await settle();
 
   expect(mocks.setPlanning).toHaveBeenCalledWith("p1", {
+    revision: 0,
     status: "hold",
     start_date: "2026-09-10",
     due_date: "2026-10-20",
@@ -599,12 +613,13 @@ it("프로젝트 일정과 예산은 검증한 전체 설정을 한 번에 저�
   });
 });
 
-it("프로젝트 편집 중 다시 읽으면 손대지 않은 칸은 최신 서버 값으로 저장한다", async () => {
+it("프로젝트 편집 중 재조회는 기준을 바꾸지 않고 409 선택 후 손대지 않은 서버 값을 보존한다", async () => {
   const initial = table(1, [row("a@x")]);
   const external = table(1, [row("a@x")]);
-  external.projects[0].planning = { ...external.projects[0].planning, due_date: "2026-12-01", budget_credits: 9999 };
+  external.projects[0].planning = { ...external.projects[0].planning, revision: 2, due_date: "2026-12-01", budget_credits: 9999 };
   mocks.memberTable.mockResolvedValueOnce(initial).mockResolvedValue(external);
-  mocks.setPlanning.mockResolvedValue({ ...external.projects[0].planning, note: "내 메모" });
+  mocks.setPlanning.mockRejectedValueOnce(new HttpError(409, "conflict", JSON.stringify({ kind: "manage_edit_conflict", latest: external.projects[0].planning, latest_revision: 2, changes: [], history_complete: false })))
+    .mockResolvedValue({ ...external.projects[0].planning, note: "내 메모" });
   await mount();
   await openSheet("프로젝트");
 
@@ -612,12 +627,16 @@ it("프로젝트 편집 중 다시 읽으면 손대지 않은 칸은 최신 서�
   await typeInput(host.querySelector<HTMLInputElement>('[aria-label="본편 예산 크레딧"]')!, "25000");
   await act(async () => { root.render(<MemberTable workspaceId="ws1" reloadSignal={1} />); });
   await settle();
-  expect(host.querySelector<HTMLInputElement>('[aria-label="본편 마감일"]')!.value).toBe("2026-12-01");
+  expect(host.querySelector<HTMLInputElement>('[aria-label="본편 마감일"]')!.value).toBe("");
   expect(host.querySelector<HTMLInputElement>('[aria-label="본편 예산 크레딧"]')!.value).toBe("25,000");
   await act(async () => { host.querySelector<HTMLButtonElement>('table[aria-label="프로젝트 일정 예산 관리"] button.mtable-add')!.click(); });
   await settle();
-
-  expect(mocks.setPlanning).toHaveBeenCalledWith("p1", expect.objectContaining({ due_date: "2026-12-01", budget_credits: 25000, note: "내 메모" }));
+  expect(mocks.setPlanning.mock.calls[0][1]).toMatchObject({ revision: 0, due_date: null });
+  const choice = host.querySelector<HTMLSelectElement>('[aria-label="예산 충돌 선택"]')!;
+  await act(async () => { choice.value = "mine"; choice.dispatchEvent(new Event("change", { bubbles: true })); });
+  await act(async () => { host.querySelector<HTMLButtonElement>('.manage-conflict .admin-confirm-yes')!.click(); });
+  await settle();
+  expect(mocks.setPlanning).toHaveBeenLastCalledWith("p1", expect.objectContaining({ revision: 2, due_date: "2026-12-01", budget_credits: 25000, note: "내 메모" }));
 });
 
 it("구버전 서버가 planning 권한 필드를 생략해도 기존 관리 권한으로 프로젝트 설정을 연다", async () => {
@@ -708,7 +727,7 @@ it("몫 칸은 소속을 건드리지 않고 사람별 몫만 저장한다", asy
   const sheet = host.querySelector('table[aria-label="개인별 크레딧 사용량"]')!;
   expect(sheet.textContent).toContain("4,680 cr"); // 남은 몫
   const input = sheet.querySelector<HTMLInputElement>('[aria-label="a 몫"]')!;
-  expect(input.placeholder).toBe("자동 5,000"); // 비어 있으면 자동 몫이 얼마인지 보여 준다
+  expect(input.placeholder).toBe("그룹 5,000"); // 비어 있으면 그룹 인당 한도가 얼마인지 보여 준다
   await typeInput(input, "600");
   await act(async () => { input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); });
   await settle();
@@ -748,4 +767,215 @@ it("구서버(몫을 모르는 서버)면 몫 칸을 잠그고 이유를 적는�
   expect(input.disabled).toBe(true);
   const header = [...host.querySelectorAll("th")].find((th) => th.textContent === "몫")!;
   expect(header.getAttribute("title")).toContain("공유 서버를 업데이트");
+});
+
+it("09-23 '÷ 인원' 서버(quota_total 없음)면 몫 칸을 잠그고 옛 몫·남은 몫을 보이지 않는다", async () => {
+  // 옛 서버도 quota_source 는 준다 — 그것만 보면 571.43 같은 나눈 값을 인당 몫처럼 보여 주게 된다.
+  const data = table(3, [row("a@x", { group_id: "g1" })]);
+  data.credit!.groups = data.credit!.groups.map(({ quota_total: _dropped, ...rest }) => rest);
+  data.credit!.members = [
+    { email: "a@x", name: "a", workspace_role: "member", is_available: true, group_id: "g1",
+      quota: null, quota_effective: 571.43, quota_source: "auto", used_period: 0, unknown_period: 0, remaining: 571.43 },
+  ];
+  mocks.memberTable.mockResolvedValue(data);
+  await mount();
+  await openSheet("크레딧 관리");
+  const sheet = host.querySelector('table[aria-label="개인별 크레딧 사용량"]')!;
+  expect(sheet.querySelector<HTMLInputElement>('[aria-label="a 몫"]')!.disabled).toBe(true);
+  expect(sheet.textContent).not.toContain("571.43");
+});
+
+it("멤버 배정 시트는 그룹 인당 한도만 보인다(사람별 남은 몫은 크레딧 시트에만)", async () => {
+  mocks.memberTable.mockResolvedValue(table(3, [row("a@x", { group_id: "g1" })]));
+  await mount();
+  await openSheet("그룹");
+  const assign = host.querySelector('table[aria-label="멤버 그룹 배정"]')!;
+  expect(assign.textContent).toContain("5,000 /월");
+  expect(assign.textContent).not.toContain("3,480");
+});
+
+it("deleted topup stays a draft on refresh/cancel and is not recreated when remote deletion is chosen", async () => {
+  const initial = table(1, [row("a@x")]);
+  initial.credit!.topups = [{ id: "t1", day: "2026-09-18", credits: 100, note: "old" }];
+  const latest = credit(3);
+  const external = { ...initial, credit: latest };
+  mocks.memberTable.mockResolvedValueOnce(initial).mockResolvedValue(external);
+  mocks.saveCreditPlan.mockRejectedValueOnce(conflictError(latest)).mockRejectedValueOnce(conflictError(latest)).mockResolvedValue(credit(4));
+  await mount(); await openSheet("크레딧 관리");
+  await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="2026-09-18 긴급 충전 수정"]')!.click(); });
+  await typeInput(host.querySelector<HTMLInputElement>('[aria-label="충전 크레딧"]')!, "200");
+  await act(async () => { root.render(<MemberTable workspaceId="ws1" reloadSignal={1} />); });
+  expect(host.querySelector<HTMLInputElement>('[aria-label="충전 크레딧"]')!.value).toBe("200");
+  expect(host.textContent).toContain("편집 중인 입력과 시작값은 유지");
+  const saveTopup = async () => { await act(async () => { host.querySelector<HTMLButtonElement>(".mtable-topup-actions .mtable-add")!.click(); }); await settle(); };
+  await saveTopup();
+  expect(mocks.saveCreditPlan.mock.calls[0][1].revision).toBe(1);
+  expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(1);
+  const dialog = host.querySelector(".manage-conflict")!;
+  expect(dialog.textContent).toContain("내 입력으로 복원");
+  expect(dialog.textContent).toContain("변경자를 모두 확인할 수 없습니다");
+  const history = dialog.querySelectorAll("li");
+  expect(history[0].textContent).toContain("Manager A");
+  expect(history[0].textContent).not.toContain("메모");
+  expect(history[1].textContent).toContain("Manager B");
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  await settle();
+  expect(host.querySelector(".manage-conflict")).toBeNull();
+  expect(host.querySelector<HTMLInputElement>('[aria-label="충전 크레딧"]')!.value).toBe("200");
+  expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(1);
+  await saveTopup();
+  expect(mocks.saveCreditPlan.mock.calls[1][1].revision).toBe(1);
+  await chooseMerge("remote"); await confirmMerge();
+  expect(mocks.saveCreditPlan.mock.calls[2][1]).toMatchObject({ revision: 3, topups: [] });
+  expect(host.querySelector('[aria-label="충전 크레딧"]')).toBeNull();
+});
+
+it("a second 409 requires a fresh decision and never reuses an earlier keep-mine choice", async () => {
+  const initial = table(1, []), remote = credit(2), newer = credit(3);
+  initial.credit!.plan.recurring_topup = 100;
+  remote.plan.recurring_topup = 300; newer.plan.recurring_topup = 400;
+  mocks.memberTable.mockResolvedValue(initial);
+  mocks.saveCreditPlan.mockRejectedValueOnce(conflictError(remote)).mockRejectedValueOnce(conflictError(newer)).mockResolvedValue(newer);
+  await mount(); await openSheet("크레딧 관리");
+  const input = host.querySelector<HTMLInputElement>('[aria-label="정기 충전액 크레딧"]') ?? host.querySelector<HTMLInputElement>('.mtable-group-limit input')!;
+  await typeInput(input, "200");
+  await act(async () => { input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); });
+  await settle();
+  await chooseMerge("mine"); await confirmMerge();
+  expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(2);
+  expect(host.querySelector<HTMLSelectElement>(".manage-conflict select")!.value).toBe("");
+  expect(host.querySelector<HTMLButtonElement>(".manage-conflict .admin-confirm-yes")!.disabled).toBe(true);
+  await chooseMerge("remote"); await confirmMerge();
+  expect(mocks.saveCreditPlan.mock.calls[2][1]).toMatchObject({ revision: 3, recurring_topup: 400 });
+  expect(input.value).toBe("400");
+});
+
+it("dirty group limit survives refresh and successful save releases the dirty baseline", async () => {
+  const initial = table(1, []), external = table(2, []), saved = credit(3), refreshed = table(4, []);
+  external.groups[0].monthly_limit = 6000; external.credit!.groups[0].monthly_limit = 6000;
+  saved.groups[0].monthly_limit = 7000; refreshed.groups[0].monthly_limit = 8000; refreshed.credit!.groups[0].monthly_limit = 8000;
+  mocks.memberTable.mockResolvedValueOnce(initial).mockResolvedValueOnce(external).mockResolvedValueOnce({ ...external, groups: saved.groups, credit: saved }).mockResolvedValue(refreshed);
+  mocks.saveCreditPlan.mockRejectedValueOnce(conflictError(external.credit!)).mockResolvedValue(saved);
+  await mount(); await openSheet("그룹");
+  const input = host.querySelector<HTMLInputElement>('[aria-label="2nd floor 한도"]')!;
+  await typeInput(input, "7000");
+  await act(async () => { root.render(<MemberTable workspaceId="ws1" reloadSignal={1} />); });
+  expect(input.value).toBe("7,000");
+  await act(async () => { input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); });
+  await settle();
+  expect(mocks.saveCreditPlan.mock.calls[0][1].revision).toBe(1);
+  await chooseMerge("mine"); await confirmMerge();
+  expect(input.value).toBe("7,000");
+  await act(async () => { root.render(<MemberTable workspaceId="ws1" reloadSignal={2} />); });
+  expect(input.value).toBe("8,000");
+});
+
+it.each(["cancel", "failure"])("inline %s preserves the captured baseline and explicit retry uses it again", async (mode) => {
+  const initial = table(1, []), external = table(2, []), saved = credit(3);
+  external.groups[0].monthly_limit = 6000; external.credit!.groups[0].monthly_limit = 6000;
+  saved.groups[0].monthly_limit = 7000;
+  mocks.memberTable.mockResolvedValueOnce(initial).mockResolvedValue(external);
+  mocks.saveCreditPlan.mockRejectedValueOnce(mode === "cancel" ? conflictError(external.credit!) : new Error("offline"))
+    .mockRejectedValueOnce(conflictError(external.credit!)).mockResolvedValue(saved);
+  await mount(); await openSheet("그룹");
+  const input = host.querySelector<HTMLInputElement>('[aria-label="2nd floor 한도"]')!;
+  await typeInput(input, "7000");
+  await act(async () => { input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); }); await settle();
+  if (mode === "cancel") { await act(async () => { host.querySelector<HTMLButtonElement>(".manage-conflict .credit-modal-delete")!.click(); }); await settle(); }
+  expect(input.value).toBe("7,000");
+  expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(1);
+  const retry = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "입력 유지 · 다시 저장")!;
+  await act(async () => { retry.click(); }); await settle();
+  expect(mocks.saveCreditPlan.mock.calls[1][1].revision).toBe(1);
+  await chooseMerge("mine"); await confirmMerge();
+  expect(mocks.saveCreditPlan.mock.calls[2][1].revision).toBe(2);
+  expect(host.textContent).not.toContain("미저장 입력:");
+});
+
+it("a color palette pins its edit baseline even when the table refreshes while open", async () => {
+  const initial = table(1, []), external = table(2, []);
+  external.groups[0].color = "#ff0000"; external.credit!.groups[0].color = "#ff0000";
+  mocks.memberTable.mockResolvedValueOnce(initial).mockResolvedValue(external);
+  mocks.saveCreditPlan.mockRejectedValue(conflictError(external.credit!));
+  await mount(); await openSheet("그룹");
+  const input = await openGroupColor();
+  await act(async () => { root.render(<MemberTable workspaceId="ws1" reloadSignal={1} />); });
+  expect(input.value).toBe("#3b82f6");
+  await act(async () => { input.value = "#00ff00"; input.dispatchEvent(new Event("change", { bubbles: true })); }); await settle();
+  expect(mocks.saveCreditPlan.mock.calls[0][1].revision).toBe(1);
+  expect(host.querySelector('.manage-conflict')).not.toBeNull();
+});
+
+it("reload of an acknowledged own credit save does not warn a dirty planning draft about remote credit changes", async () => {
+  const initial = table(1, []), own = table(2, []), external = table(3, []);
+  own.credit!.plan.recurring_topup = 200;
+  external.credit!.plan.recurring_topup = 300;
+  mocks.memberTable.mockResolvedValueOnce(initial).mockResolvedValueOnce(own).mockResolvedValue(external);
+  mocks.saveCreditPlan.mockResolvedValue(own.credit);
+  await mount(); await openSheet("프로젝트");
+  await typeInput(host.querySelector<HTMLInputElement>('[aria-label="본편 메모"]')!, "draft");
+  await openSheet("크레딧 관리");
+  const input = host.querySelector<HTMLInputElement>('[aria-label="정기 충전 충전액"]')!;
+  await typeInput(input, "200");
+  await act(async () => { input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); }); await settle();
+  expect(host.textContent).not.toContain("서버 설정이 갱신됐습니다");
+  expect(host.querySelector(".mtable-notice.ok")).not.toBeNull();
+  await act(async () => { root.render(<MemberTable workspaceId="ws1" reloadSignal={1} />); });
+  expect(host.textContent).toContain("서버 설정이 갱신됐습니다");
+  await openSheet("프로젝트");
+  expect(host.querySelector<HTMLInputElement>('[aria-label="본편 메모"]')!.value).toBe("draft");
+});
+
+it("returning a numeric input to its original value releases dirty state before the next refresh", async () => {
+  const initial = table(1, []), external = table(2, []);
+  external.groups[0].monthly_limit = 6000; external.credit!.groups[0].monthly_limit = 6000;
+  mocks.memberTable.mockResolvedValueOnce(initial).mockResolvedValue(external);
+  await mount(); await openSheet("그룹");
+  const input = host.querySelector<HTMLInputElement>('[aria-label="2nd floor 한도"]')!;
+  await typeInput(input, "7000"); await typeInput(input, "5000");
+  await act(async () => { input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); }); await settle();
+  expect(mocks.saveCreditPlan).not.toHaveBeenCalled();
+  await act(async () => { root.render(<MemberTable workspaceId="ws1" reloadSignal={1} />); });
+  expect(input.value).toBe("6,000");
+  expect(host.textContent).not.toContain("서버 설정이 갱신됐습니다");
+});
+
+it("a synchronous numeric validation refusal clears the unsent edit, unlike an async failure", async () => {
+  const initial = table(1, []), external = table(2, []);
+  external.credit!.plan.recurring_topup = 300;
+  mocks.memberTable.mockResolvedValueOnce(initial).mockResolvedValue(external);
+  await mount(); await openSheet("크레딧 관리");
+  const input = host.querySelector<HTMLInputElement>('[aria-label="정기 충전 충전액"]')!;
+  await typeInput(input, ".");
+  await act(async () => { input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); }); await settle();
+  expect(mocks.saveCreditPlan).not.toHaveBeenCalled();
+  expect(input.value).toBe("");
+  await act(async () => { root.render(<MemberTable workspaceId="ws1" reloadSignal={1} />); });
+  expect(input.value).toBe("300");
+  expect(host.textContent).not.toContain("서버 설정이 갱신됐습니다");
+});
+
+it("the initial assignment conflict dialog requires a deleted-group decision before keeping my move", async () => {
+  const initial = table(1, [row("a@x", { group_id: "g2" })]);
+  initial.groups.push(group("g3", "Other"));
+  initial.credit!.groups.push(group("g3", "Other"));
+  initial.credit!.members = [{ email: "a@x", name: "a", group_id: "g2", quota: null, workspace_role: "member", is_available: true }];
+  const latest = { ...initial.credit!, plan: { ...initial.credit!.plan, revision: 2 }, groups: initial.credit!.groups.filter((item) => item.id !== "g1"), members: [{ ...initial.credit!.members[0], group_id: "g3", quota: 23 }] };
+  mocks.memberTable.mockResolvedValue(initial);
+  mocks.saveCreditPlan.mockRejectedValueOnce(conflictError(latest)).mockResolvedValue({ ...latest, plan: { ...latest.plan, revision: 3 } });
+  await mount(); await openSheet("그룹");
+  const groupSelect = host.querySelector<HTMLSelectElement>('table[aria-label="멤버 그룹 배정"] tbody select')!;
+  await act(async () => { groupSelect.value = "g1"; groupSelect.dispatchEvent(new Event("change", { bubbles: true })); }); await settle();
+  const selectors = host.querySelectorAll<HTMLSelectElement>(".manage-conflict select");
+  expect(selectors).toHaveLength(2);
+  const groupChoice = host.querySelector<HTMLSelectElement>('[aria-label="그룹 / g1 충돌 선택"]')!;
+  const memberChoice = [...selectors].find((item) => item !== groupChoice)!;
+  await act(async () => { memberChoice.value = "mine"; memberChoice.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(host.querySelector<HTMLButtonElement>(".manage-conflict .admin-confirm-yes")!.disabled).toBe(true);
+  expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(1);
+  await act(async () => { groupChoice.value = "mine"; groupChoice.dispatchEvent(new Event("change", { bubbles: true })); });
+  await confirmMerge();
+  expect(mocks.saveCreditPlan.mock.calls[1][1]).toMatchObject({ revision: 2, members: [{ email: "a@x", group_id: "g1" }] });
+  expect(mocks.saveCreditPlan.mock.calls[1][1].groups).toContainEqual(expect.objectContaining({ id: "g1" }));
+  expect(host.querySelector(".manage-conflict")).toBeNull();
 });

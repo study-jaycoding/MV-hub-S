@@ -4,6 +4,9 @@ import { getLang } from "../../lib/i18n";
 
 export interface Planning {
   project_id?: string;
+  revision?: number;
+  updated_by?: string | null;
+  updated_at?: string | null;
   status?: string | null; // active | done | hold
   start_date?: string | null;
   due_date?: string | null;

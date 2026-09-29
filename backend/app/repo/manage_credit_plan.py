@@ -7,19 +7,19 @@
 저장(모두 content DB 사이드카, `manage_schema._SCHEMA`):
   workspace_credit_plan          워크스페이스당 1행 — note·**topup_day**(매월 충전 기준일 1~31)·revision(낙관적 잠금).
                                  **월 충전액은 저장하지 않는다** — 프로젝트들의 '예산 한도(매월)' 합에서 파생(Jay: 같은 값).
-  workspace_credit_group         그룹 — monthly_limit(NULL=∞)·limit_period(day/week/month)·base_start·base_balance(재기준점)
+  workspace_credit_group         그룹 — monthly_limit(**인당** 한도, NULL=∞)·limit_period(day/week/month)·
+                                 base_start·base_balance(옛 이월 재기준점 — 2026-09-29 부터 동결, 읽지 않는다)
   workspace_credit_group_member  이메일 → 그룹(워크스페이스당 이메일 1개 = 힉스필드 Members 와 같은 키.
                                  팩트 account_email 과 직결되고 uid 위조와 무관)
   workspace_credit_topup         긴급 충전 기록 — day·credits·note (정기 충전 밖의 추가 충전, 손 입력)
   workspace_balance_daily(코어)   에이전트 status 보고 때 하루 한 행(잔액 관측) — 추이 그래프용
 
 달 경계 = 충전 기준일(topup_day): 기준일 15 이면 9/15~10/14 가 '이번 달'. 예산 '매월'(manage_db._period_conditions)·
-그룹 이월·풀 카드의 이번 달 사용·긴급 충전 합·월초 잔액이 모두 이 경계를 쓴다. 주 = 월요일 시작, 일 = 그날.
-이월 계산(그룹, 세 주기 공통 — enterprise 는 일·주·월 어느 주기든 안 쓴 양이 넘어간다, Jay):
-  remaining = base_balance + limit × (base_start 가 속한 기간 ~ 이번 기간 개수) − base_start 이후 사용 합.
-**재기준화(코덱스 P2)**: 한도·주기·소속이 바뀌면 과거가 소급되지 않게 저장 시점에 base_start=이번 기간 시작,
-base_balance=이번 기간으로 넘어온 이월분(옛 소속·옛 한도로 지난 기간까지)으로 다시 잡는다(remaining_override 가
-있으면 지금 남은 양이 그 값이 되게). 사용량은 팩트(`manage_db.workspace_email_usage`, 날짜×이메일) — 삭제분(tombstone)
+그룹 기간·풀 카드의 이번 달 사용·긴급 충전 합·월초 잔액이 모두 이 경계를 쓴다. 주 = 월요일 시작, 일 = 그날.
+**그룹 한도 = 인당 한도(Jay 2026-09-29, docs/CREDIT_QUOTA_DESIGN.md 09-29 절)**:
+  내 몫 = 덮어쓴 값 또는 그룹 한도 · 그룹 몫합 = Σ 내 몫 · 그룹 남음 = 몫합 − 이번 기간 그룹 사용(이월 없음).
+  (옛 규칙 '한도 ÷ 인원 + 그룹 이월'은 폐기. base_* 는 동결하고 remaining_override 는 받아서 무시한다.)
+사용량은 팩트(`manage_db.workspace_email_usage`, 날짜×이메일) — 삭제분(tombstone)
 포함, 크레딧 = COALESCE(실제, 견적, 0), 미상(둘 다 없음) 건수는 따로 세어 '추정' 표시 근거로 준다.
 날짜는 팩트 created_at 의 localtime(서버 KST).
 """
@@ -35,6 +35,7 @@ from typing import Any, Optional
 from ..db import get_connection
 from ..emailnorm import norm_email
 from ._common import _email_localpart
+from .event_journal import _edit_conflict_detail, _record_audit_event, account_target, safe_identity
 from .manage_schema import _ensure_schema
 
 _CLIENT_ID_RE = re.compile(r"[0-9a-f]{32}")  # 클라이언트가 새 그룹·충전 기록에 미리 붙이는 id(uuid hex) 형식
@@ -100,6 +101,10 @@ Usage = dict[tuple[str, str], dict[str, Any]]  # {(day 'YYYY-MM-DD', email): {cr
 
 class CreditPlanConflict(Exception):
     """다른 곳에서 먼저 저장됨(revision 불일치) — 라우터가 409 로 바꾼다."""
+
+    def __init__(self, expected_revision: int):
+        self.expected_revision = expected_revision
+        super().__init__(f"credit plan revision {expected_revision} is stale")
 
 
 # ── 달력 ──────────────────────────────────────────────────────────────────────
@@ -219,30 +224,32 @@ def _group_period(group: dict[str, Any]) -> str:
     return period if period in _PERIODS else "month"
 
 
-def _group_remaining(
-    group: dict[str, Any], emails: set[str], usage: Usage, today: str, anchor: int
-) -> tuple[Optional[float], int]:
-    """(남은 양(이월 포함) 또는 None(∞), base 이후 미상 수)."""
-    limit = group.get("monthly_limit")
-    base = group["base_start"]
-    used_since, unknown_since = _sum_usage(usage, emails, day_from=base)
-    if limit is None:
-        return None, unknown_since
-    n = periods_inclusive(base, today, _group_period(group), anchor)
-    return float(group["base_balance"] or 0) + float(limit) * n - used_since, unknown_since
-
-
-def _carry_in(group: dict[str, Any], emails: set[str], usage: Usage, today: str, anchor: int) -> float:
-    """이번 기간 시작 시점에 넘어온 양(이월분) — base 부터 지난 기간까지, **옛 소속·옛 한도·옛 주기**로. ∞ 는 0.
-    재기준화의 근거: 이번 기간 사용은 항상 현재 소속·현재 한도로 다시 세고, 과거 기간은 소급하지 않는다."""
-    limit = group.get("monthly_limit")
-    if limit is None:
-        return 0.0
-    period = _group_period(group)
-    cur_start = period_start(today, period, anchor)
-    periods_before = max(0, periods_inclusive(group["base_start"], today, period, anchor) - 1)
-    used_before, _ = _sum_usage(usage, emails, day_from=group["base_start"], before_day=cur_start)
-    return float(group["base_balance"] or 0) + float(limit) * periods_before - used_before
+# ★2026-09-29 인당 한도 전환으로 그룹 이월을 폐기했다(Jay: 그룹 남음은 이번 기간만). 호출은 모두 끊었고,
+#  덩어리 삭제 규칙(주석 처리 → 재확인 → 정리)에 따라 다음 단계에서 지운다. base_* 칸은 동결.
+# def _group_remaining(
+#     group: dict[str, Any], emails: set[str], usage: Usage, today: str, anchor: int
+# ) -> tuple[Optional[float], int]:
+#     """(남은 양(이월 포함) 또는 None(∞), base 이후 미상 수)."""
+#     limit = group.get("monthly_limit")
+#     base = group["base_start"]
+#     used_since, unknown_since = _sum_usage(usage, emails, day_from=base)
+#     if limit is None:
+#         return None, unknown_since
+#     n = periods_inclusive(base, today, _group_period(group), anchor)
+#     return float(group["base_balance"] or 0) + float(limit) * n - used_since, unknown_since
+#
+#
+# def _carry_in(group: dict[str, Any], emails: set[str], usage: Usage, today: str, anchor: int) -> float:
+#     """이번 기간 시작 시점에 넘어온 양(이월분) — base 부터 지난 기간까지, **옛 소속·옛 한도·옛 주기**로. ∞ 는 0.
+#     재기준화의 근거: 이번 기간 사용은 항상 현재 소속·현재 한도로 다시 세고, 과거 기간은 소급하지 않는다."""
+#     limit = group.get("monthly_limit")
+#     if limit is None:
+#         return 0.0
+#     period = _group_period(group)
+#     cur_start = period_start(today, period, anchor)
+#     periods_before = max(0, periods_inclusive(group["base_start"], today, period, anchor) - 1)
+#     used_before, _ = _sum_usage(usage, emails, day_from=group["base_start"], before_day=cur_start)
+#     return float(group["base_balance"] or 0) + float(limit) * periods_before - used_before
 
 
 # ── 저장소 읽기 ───────────────────────────────────────────────────────────────
@@ -317,9 +324,10 @@ def _monthly_budget(conn, workspace_id: str) -> Optional[int]:
     return int(row["total"] or 0)
 
 
-def _day_from_for(groups: list[dict], cycle_start: str) -> str:
-    """팩트를 읽을 시작일 — 그룹 base 중 가장 이른 날과 이번 충전 달 시작 중 이른 것(미배정 '이번 달' 합에도 필요)."""
-    return min([g["base_start"] for g in groups if g.get("base_start")] + [cycle_start])
+def _day_from_for(groups: list[dict], today: str, anchor: int) -> str:
+    """팩트를 읽을 시작일 — 각 그룹의 이번 기간 시작과 이번 충전 달 시작 중 가장 이른 날
+    (주 단위 그룹의 월요일이 충전 달 시작보다 앞설 수 있다. 미배정 '이번 달' 합에도 필요)."""
+    return min([period_start(today, _group_period(g), anchor) for g in groups] + [period_start(today, "month", anchor)])
 
 
 def _workspace_row(conn, workspace_id: str) -> Optional[dict]:
@@ -348,32 +356,28 @@ def _valid_quota(value: Any) -> Optional[float]:
 
 
 def _quota_split(group: dict, emails: set[str], quotas: dict[str, Optional[float]]) -> dict[str, Any]:
-    """그룹의 몫 나누기 — (고정분 합, 자동 몫, 고정분 초과 여부). 규칙은 docs/CREDIT_QUOTA_DESIGN.md §2.
+    """그룹의 몫 — (덮어쓴 몫 합, 기본 몫, 몫 합계). 규칙은 docs/CREDIT_QUOTA_DESIGN.md 09-29 절.
 
-    · 자동 인원이 0명이면 자동 몫은 **없다**(나눗셈을 하지 않는다).
-    · 한도가 무제한(None)이면 자동 몫도 없다 — 덮어쓴 사람만 자기 몫이 있다(개인 목표치).
-    · 고정분이 한도를 넘으면 자동 몫은 0 이고 `over=True`(경고만, 저장은 막지 않는다).
-    · 소수를 반올림하지 않는다 — 100÷3 은 33.333… 그대로 두고 화면에서만 둘째 자리로 보여 준다."""
+    · **그룹 한도가 곧 한 사람의 기본 몫**이다(인당 — Jay 2026-09-29). 인원으로 나누지 않는다.
+    · 덮어쓴 사람은 그 값이 몫이다. 다른 사람의 몫은 바뀌지 않는다.
+    · 한도가 무제한(None)이면 기본 몫도 몫 합계도 없다(None) — 덮어쓴 사람만 자기 몫이 있다(개인 목표치).
+    · `quota_over` 는 인당 규칙에서 뜻이 없어 늘 False(구버전 앱이 읽는 키라 남긴다)."""
     limit = group.get("monthly_limit")
     fixed = [q for e in emails if (q := quotas.get(e)) is not None]
     fixed_sum = float(sum(fixed))
-    auto_count = len(emails) - len(fixed)
     if limit is None:
-        return {"quota_fixed": fixed_sum, "quota_auto": None, "quota_over": False}
+        return {"quota_fixed": fixed_sum, "quota_auto": None, "quota_total": None, "quota_over": False}
     limit = float(limit)
-    auto = None if auto_count <= 0 else max(0.0, limit - fixed_sum) / auto_count
-    return {"quota_fixed": fixed_sum, "quota_auto": auto, "quota_over": fixed_sum > limit}
+    total = fixed_sum + limit * (len(emails) - len(fixed))
+    return {"quota_fixed": fixed_sum, "quota_auto": limit, "quota_total": total, "quota_over": False}
 
 
 def _shown_quota(split: dict[str, Any]) -> dict[str, Any]:
-    """몫 나누기를 **화면으로 내보낼 때만** 둘째 자리로 줄인다.
-
-    ★계산 중간에 줄이면 안 된다(Codex 코드 리뷰 2026-09-23): 100÷3 을 33.33 으로 먼저 깎으면
-     세 사람 몫 합이 99.99 가 되고, 33.335 를 쓴 사람의 남은 양이 −0.01 로 보인다. 원값으로 계산하고
-     표시만 줄인다."""
+    """몫을 **화면으로 내보낼 때만** 둘째 자리로 줄인다(계산은 원값 — Codex 코드 리뷰 2026-09-23)."""
     return {
         "quota_fixed": _shown(split["quota_fixed"]),
         "quota_auto": None if split["quota_auto"] is None else _shown(split["quota_auto"]),
+        "quota_total": None if split["quota_total"] is None else _shown(split["quota_total"]),
         "quota_over": split["quota_over"],
     }
 
@@ -381,29 +385,32 @@ def _shown_quota(split: dict[str, Any]) -> dict[str, Any]:
 def _member_quota(
     email: str, group: Optional[dict], emails: set[str], quotas: dict[str, Optional[float]]
 ) -> tuple[Optional[float], str]:
-    """(내 몫, 근거) — 근거는 manual(덮어씀) · auto(그룹 한도 ÷ 자동 인원) · none(무제한이라 몫 없음)."""
+    """(내 몫, 근거) — 근거는 manual(덮어씀) · auto(그룹 인당 한도) · none(무제한이라 몫 없음).
+    emails 는 호출 쪽 서명을 지키려고 받는다(인당 규칙에서는 인원이 몫에 영향을 주지 않는다)."""
     if group is None:
         return None, "none"
     own = quotas.get(email)
     if own is not None:
         return own, "manual"
-    split = _quota_split(group, emails, quotas)
-    auto = split["quota_auto"]
-    return (None, "none") if auto is None else (auto, "auto")
+    limit = group.get("monthly_limit")
+    return (None, "none") if limit is None else (float(limit), "auto")
 
 
 def _group_summary(
     group: dict, emails: set[str], usage: Usage, today: str, anchor: int,
     quotas: Optional[dict[str, Optional[float]]] = None,
 ) -> dict[str, Any]:
-    """그룹 한 줄 — 이번 기간 사용(used_period)·이번 충전 달 사용(used_month)·남은 양(이월 포함)·미상·몫 나누기."""
+    """그룹 한 줄 — 이번 기간 사용(used_period)·이번 충전 달 사용(used_month)·남은 양(몫 합계 − 이번 기간 사용,
+    이월 없음)·미상·몫."""
     period = _group_period(group)
     cur_start = period_start(today, period, anchor)
     used_month, unknown_month = _sum_usage(usage, emails, day_from=period_start(today, "month", anchor))
     used_period, unknown_period = _sum_usage(usage, emails, day_from=cur_start)
-    remaining, unknown_since = _group_remaining(group, emails, usage, today, anchor)
+    split = _quota_split(group, emails, quotas or {})
+    remaining = None if split["quota_total"] is None else split["quota_total"] - used_period
+    unknown_since = unknown_period  # 옛 키 이름(unknown_since_base) 유지 — 이제 '이번 기간' 미상이다
     return {
-        **_shown_quota(_quota_split(group, emails, quotas or {})),
+        **_shown_quota(split),
         "id": group["id"],
         "name": group["name"],
         "monthly_limit": group.get("monthly_limit"),
@@ -426,24 +433,41 @@ def _group_summary(
 # ── 설정(매니저) ───────────────────────────────────────────────────────────────
 def get_settings(workspace_id: str) -> dict[str, Any]:
     """프로젝트 설정 창용 — 플랜·그룹(현재 남은 양 포함)·멤버(이메일 기준, 접근 불가·과거 배정도 포함)·긴급 충전 기록."""
-    today = today_local()
     with get_connection() as conn:
         _ensure_schema(conn)
-        plan, groups, members, topups, quotas = _load(conn, workspace_id)
-        monthly_topup = _monthly_budget(conn, workspace_id)
-        rows = conn.execute(
-            "SELECT m.account_email AS email, m.is_available, m.user_role, "
-            "COALESCE(NULLIF(c.name,''), NULLIF(a.name,'')) AS name "
-            "FROM workspace_member m "
-            "LEFT JOIN account a ON a.email=m.account_email "
-            "LEFT JOIN creator c ON c.uid=COALESCE(m.creator_uid, a.creator_uid) "
-            "WHERE m.workspace_id=? ORDER BY m.is_available DESC, name COLLATE NOCASE, m.account_email",
-            (workspace_id,),
-        ).fetchall()
+        conn.execute("BEGIN")
+        return _get_settings(conn, workspace_id)
+
+
+def settings_conflict_detail(workspace_id: str, expected_revision: int) -> dict[str, Any]:
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        conn.execute("BEGIN")
+        latest = _get_settings(conn, workspace_id)
+        return _edit_conflict_detail(
+            conn, latest=latest, latest_revision=latest["plan"]["revision"], expected_revision=expected_revision,
+            action="workspace.credit_plan_changed", target_type="workspace_credit_plan", target_id=workspace_id,
+        )
+
+
+def _get_settings(conn, workspace_id: str) -> dict[str, Any]:
+    """All editable fields share the caller's snapshot; usage lives in a separate DB."""
+    today = today_local()
+    plan, groups, members, topups, quotas = _load(conn, workspace_id)
+    monthly_topup = _monthly_budget(conn, workspace_id)
+    rows = conn.execute(
+        "SELECT m.account_email AS email, m.is_available, m.user_role, "
+        "COALESCE(NULLIF(c.name,''), NULLIF(a.name,'')) AS name "
+        "FROM workspace_member m "
+        "LEFT JOIN account a ON a.email=m.account_email "
+        "LEFT JOIN creator c ON c.uid=COALESCE(m.creator_uid, a.creator_uid) "
+        "WHERE m.workspace_id=? ORDER BY m.is_available DESC, name COLLATE NOCASE, m.account_email",
+        (workspace_id,),
+    ).fetchall()
     anchor = _plan_anchor(plan)
     recurring = _plan_recurring(plan)
     cycle_start = period_start(today, "month", anchor)
-    usage = _usage_index(workspace_id, _day_from_for(groups, cycle_start))
+    usage = _usage_index(workspace_id, _day_from_for(groups, today, anchor))
     assigned: dict[str, str] = {}
     for gid, emails in members.items():
         for email in emails:
@@ -495,6 +519,7 @@ def get_settings(workspace_id: str) -> dict[str, Any]:
             "note": plan["note"] if plan else None,
             "revision": int(plan["revision"]) if plan else 0,
             "updated_at": plan["updated_at"] if plan else None,
+            "updated_by": plan["updated_by"] if plan else None,
         },
         "groups": [_group_summary(g, members.get(g["id"], set()), usage, today, anchor, quotas) for g in groups],
         "members": member_list,
@@ -545,13 +570,14 @@ def save_settings(
     topups: Optional[list[dict[str, Any]]] = None,
     topup_day: Optional[int] = None,
     recurring_topup: Any = KEEP,
+    actor_uid: Optional[str] = None,
 ) -> dict[str, Any]:
     """전체 저장(한 트랜잭션). revision 이 현재와 다르면 CreditPlanConflict(409).
 
-    topup_day: 매월 충전 기준일(1~31) · None 이면 그대로. 없는 날짜는 월말로 맞춘다. 바뀌면 달 경계가 바뀌므로 매월 한도 그룹은 재기준화된다.
+    topup_day: 매월 충전 기준일(1~31) · None 이면 그대로. 없는 날짜는 월말로 맞춘다(바뀌면 매월 그룹의 '이번 기간'도 옮겨진다).
     groups=None 이면 그룹·배정은 **그대로 두고** 긴급 충전 기록(topups)·note·topup_day 만 바꾼다(설정 창의 줄 단위 저장 —
     편집 중인 그룹 초안을 건드리지 않게). members 는 groups 와 함께일 때만 뜻이 있다.
-    groups: [{id?, name, monthly_limit|None, limit_period?, remaining_override?, allowed_models?, color?}] — 목록에 없는 기존 그룹은 삭제(배정도 삭제).
+    groups: [{id?, name, monthly_limit(인당)|None, limit_period?, remaining_override?(무시), allowed_models?, color?}] — 목록에 없는 기존 그룹은 삭제(배정도 삭제).
     allowed_models: 그룹이 쓸 수 있는 모델(job_type 목록, **빈 목록=제한 없음**). **키가 없으면(None) 기존 그룹은 기존값 유지·
     새 그룹은 []**, 명시 [] 는 제한 해제 — 이 필드를 모르는 구버전 앱·대시보드 '추정' 맞추기(그룹 전체 재전송)가
     설정을 지우지 않게(코덱스 P0).
@@ -559,23 +585,22 @@ def save_settings(
     id 가 없거나 모르는 uuid hex 면 새 그룹(클라이언트가 미리 붙인 id 로 같은 저장에 멤버 배정 가능).
     members: [{email, group_id?, quota?}] — **적힌 이메일만** 바꾼다. 안 적힌 이메일은 그대로(코덱스 P2).
     group_id: 키 없음=소속 유지 · None=배정 해제 · 값=그 그룹으로. 이 워크스페이스 그룹이어야 한다(아니면 400).
-    quota(사람별 몫): **키 없음=기존 몫 유지** · None=자동(그룹 한도 ÷ 인원)으로 되돌림 · 숫자=덮어쓰기.
+    quota(사람별 몫): **키 없음=기존 몫 유지** · None=자동(그룹 인당 한도)으로 되돌림 · 숫자=덮어쓰기.
       배정은 저장 때 통째로 지우고 다시 넣으므로, 키가 없으면 읽어 둔 옛 몫을 그대로 되넣는다 —
       안 그러면 그룹 색 한 칸만 바꿔도 모두의 몫이 사라진다(Codex 2026-09-23 치명 ②).
     recurring_topup(정기 충전): KEEP(키 없음)=그대로 · None=파생으로 되돌림 · 숫자=손 입력.
     topups: [{id?, day, credits, note?}] — 긴급 충전 기록 전체 교체(None 이면 그대로 둔다).
-    재기준화(코덱스 P2 — 과거 소급 금지): 한도·주기·소속(·달 경계)이 바뀐 그룹은 base_start=이번 기간 시작으로 옮기고
-    base_balance 에 "이번 기간으로 넘어온 이월분"(`_carry_in`, 옛 규칙으로 지난 기간까지 계산)을 넣는다. 그러면
-    지난 기간까지는 그대로, 이번 기간은 현재 소속·한도로 다시 센다. remaining_override 가 있으면 지금 남은 양이
-    그 값이 되게 잡는다(대시보드 '추정' → 힉스필드 값 맞추기). ∞→한도 전환·새 그룹은 이월분 0 에서 시작."""
+    그룹 이월 폐기(2026-09-29): base_start·base_balance 는 **동결** — 기존 그룹은 쓰지 않고, 새 그룹만 NOT NULL 을
+    채우려고 이번 기간 시작·0 을 넣는다. remaining_override 는 받아서 무시한다(구버전 앱 저장 호환)."""
     today = today_local()
     with get_connection() as conn:
         _ensure_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
         plan, old_groups, old_members, old_topups, old_quotas = _load(conn, workspace_id)
+        before = (plan, old_groups, old_members, old_topups, old_quotas)
         cur_rev = int(plan["revision"]) if plan else 0
         if int(revision or 0) != cur_rev:
-            raise CreditPlanConflict(f"revision {revision} != {cur_rev}")
+            raise CreditPlanConflict(revision)
         old_anchor = _plan_anchor(plan)
         new_anchor = old_anchor if topup_day is None else _clamp_anchor(topup_day)
         if topup_day is not None and not 1 <= int(topup_day) <= 31:
@@ -584,15 +609,12 @@ def save_settings(
         prepared_topups = (
             None if topups is None else _prepare_topups(topups, {t["id"] for t in old_topups})
         )
-        if groups is None:  # 충전 기록·note·기준일만 — 그룹·배정은 손대지 않는다(달 경계가 바뀌면 매월 그룹만 재기준화)
-            if new_anchor != old_anchor:
-                _rebase_month_groups_for_anchor(conn, workspace_id, old_groups, old_members, today, old_anchor, new_anchor)
+        if groups is None:  # 충전 기록·note·기준일만 — 그룹·배정은 손대지 않는다
             _write_topups_and_plan(
-                conn, workspace_id, prepared_topups, note, cur_rev, new_anchor, recurring_topup
+                conn, workspace_id, prepared_topups, note, cur_rev, new_anchor, recurring_topup, actor_uid
             )
-            conn.execute("COMMIT")  # get_settings 는 새 커넥션으로 읽으므로 먼저 확정한다(컨텍스트 종료 commit 은 no-op)
-            return get_settings(workspace_id)
-        usage = _usage_index(workspace_id, _day_from_for(old_groups, period_start(today, "month", min(old_anchor, new_anchor))))
+            _record_settings_edit(conn, workspace_id, before, revision, actor_uid)
+            return _get_settings(conn, workspace_id)
 
         # 1) 새 소속표 = 기존 배정에 요청의 변경만 덮는다.
         new_assign: dict[str, str] = {}
@@ -627,7 +649,7 @@ def save_settings(
             color = old_row.get("color") if g.get("color") is None and old_row else normalize_group_color(g.get("color"))
             prepared.append(
                 {"id": gid, "name": name, "monthly_limit": limit, "limit_period": period, "sort_order": order,
-                 "remaining_override": g.get("remaining_override"), "is_new": gid not in old_by_id,
+                 "is_new": gid not in old_by_id,
                  "allowed_json": json.dumps(allowed, ensure_ascii=False), "color": color}
             )
         valid_ids = {p["id"] for p in prepared}
@@ -660,9 +682,6 @@ def save_settings(
             new_quota.pop(email, None)
         for email in [e for e in new_quota if e not in new_assign]:  # 배정 없는 몫은 남기지 않는다
             new_quota.pop(email, None)
-        new_members: dict[str, set[str]] = {p["id"]: set() for p in prepared}
-        for email, gid in new_assign.items():
-            new_members[gid].add(email)
 
         # 2) 그룹 삭제를 먼저, 남는 그룹은 이름을 임시값으로 비워 UNIQUE(workspace_id, name) 충돌을 피한다 —
         #    삭제 뒤 같은 이름으로 다시 만들기·두 그룹 이름 맞바꾸기가 500 으로 죽지 않게(코덱스 P2).
@@ -670,55 +689,22 @@ def save_settings(
             conn.execute("DELETE FROM workspace_credit_group WHERE id=?", (gid,))
         for gid in valid_ids & set(old_by_id):
             conn.execute("UPDATE workspace_credit_group SET name=? WHERE id=?", (f"\x00{gid}", gid))
-        # 3) 그룹 upsert + 재기준화
+        # 3) 그룹 upsert — base_start·base_balance 는 동결(2026-09-29 그룹 이월 폐기). 새 그룹만 NOT NULL 을 채운다.
         for p in prepared:
             gid = p["id"]
-            emails_new = new_members[gid]
-            limit = p["monthly_limit"]
-            period = p["limit_period"]
-            cur_start = period_start(today, period, new_anchor)
-            used_period_new, _ = _sum_usage(usage, emails_new, day_from=cur_start)
-            old = old_by_id.get(gid)
-            changed = (
-                old is None
-                or old.get("monthly_limit") != limit
-                or _group_period(old) != period
-                or old_members.get(gid, set()) != emails_new
-                or (period == "month" and new_anchor != old_anchor)
-            )
-            override = p["remaining_override"]
-            if old is not None and not changed and override is None:
-                # 한도·주기·소속이 그대로면 재기준화 없이 표시 설정만 갱신(base_* 와 무관 — 코덱스 P1).
-                conn.execute(
-                    "UPDATE workspace_credit_group SET name=?, sort_order=?, allowed_models=?, color=? WHERE id=?",
-                    (p["name"], p["sort_order"], p["allowed_json"], p["color"], gid),
-                )
-                continue
-            if limit is None:
-                base_balance = 0
-            elif override is not None:
-                # ★반올림하지 않는다(2026-09-11) — 여기서 깎인 소수는 **DB 에 저장**돼 영구 손실이
-                #  된다(표시 문제가 아니다). 크레딧은 0.12 단위까지 실재한다(실측). INTEGER 컬럼
-                #  이어도 SQLite 는 소수를 그대로 보관한다(affinity 확인).
-                base_balance = float(override) - float(limit) + used_period_new
-            elif old is not None and old.get("monthly_limit") is not None:
-                # 이월분만 넘기고 이번 기간은 새 소속·새 한도·새 주기로 다시 센다(옛 주기·옛 달 경계로 지난 기간까지 계산).
-                base_balance = _carry_in(old, old_members.get(gid, set()), usage, today, old_anchor)
-            else:  # 새 그룹·∞→한도 전환은 이월 0 에서 시작
-                base_balance = 0
-            if old is None:
+            if gid not in old_by_id:
+                cur_start = period_start(today, p["limit_period"], new_anchor)
                 conn.execute(
                     "INSERT INTO workspace_credit_group(id, workspace_id, name, monthly_limit, limit_period, "
-                    "base_start, base_month, base_balance, sort_order, allowed_models, color) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                    (gid, workspace_id, p["name"], limit, period, cur_start, cur_start[:7], base_balance, p["sort_order"],
-                     p["allowed_json"], p["color"]),
+                    "base_start, base_month, base_balance, sort_order, allowed_models, color) VALUES(?,?,?,?,?,?,?,0,?,?,?)",
+                    (gid, workspace_id, p["name"], p["monthly_limit"], p["limit_period"], cur_start, cur_start[:7],
+                     p["sort_order"], p["allowed_json"], p["color"]),
                 )
             else:
                 conn.execute(
-                    "UPDATE workspace_credit_group SET name=?, monthly_limit=?, limit_period=?, base_start=?, "
-                    "base_month=?, base_balance=?, sort_order=?, allowed_models=?, color=? WHERE id=?",
-                    (p["name"], limit, period, cur_start, cur_start[:7], base_balance, p["sort_order"],
-                     p["allowed_json"], p["color"], gid),
+                    "UPDATE workspace_credit_group SET name=?, monthly_limit=?, limit_period=?, sort_order=?, "
+                    "allowed_models=?, color=? WHERE id=?",
+                    (p["name"], p["monthly_limit"], p["limit_period"], p["sort_order"], p["allowed_json"], p["color"], gid),
                 )
         # 4) 배정 전체 재기록(이 워크스페이스만)
         conn.execute("DELETE FROM workspace_credit_group_member WHERE workspace_id=?", (workspace_id,))
@@ -728,27 +714,63 @@ def save_settings(
         )
         # 5) 긴급 충전 기록 전체 교체(요청에 있을 때만) + 6) 플랜·revision
         _write_topups_and_plan(
-            conn, workspace_id, prepared_topups, note, cur_rev, new_anchor, recurring_topup
+            conn, workspace_id, prepared_topups, note, cur_rev, new_anchor, recurring_topup, actor_uid
         )
-    return get_settings(workspace_id)
+        _record_settings_edit(conn, workspace_id, before, revision, actor_uid)
+        return _get_settings(conn, workspace_id)
 
 
-def _rebase_month_groups_for_anchor(
-    conn, workspace_id: str, groups: list[dict], members: dict[str, set[str]], today: str, old_anchor: int, new_anchor: int
-) -> None:
-    """충전 기준일만 바뀐 저장(groups=None) — 매월 한도 그룹의 달 경계가 옮겨지므로 옛 경계로 이월분을 계산해
-    새 경계의 이번 달 시작으로 재기준화한다(그룹·배정 자체는 그대로)."""
-    month_groups = [g for g in groups if _group_period(g) == "month" and g.get("monthly_limit") is not None]
-    if not month_groups:
-        return
-    usage = _usage_index(workspace_id, _day_from_for(month_groups, period_start(today, "month", min(old_anchor, new_anchor))))
-    new_start = period_start(today, "month", new_anchor)
-    for g in month_groups:
-        carry = _carry_in(g, members.get(g["id"], set()), usage, today, old_anchor)  # 저장값 — 반올림 금지
-        conn.execute(
-            "UPDATE workspace_credit_group SET base_start=?, base_month=?, base_balance=? WHERE id=?",
-            (new_start, new_start[:7], carry, g["id"]),
-        )
+def _record_settings_edit(conn, workspace_id, before, expected_revision, actor_uid) -> None:
+    after = _load(conn, workspace_id)
+    fields: set[str] = set()
+    old_plan, old_groups, old_members, old_topups, old_quotas = before
+    plan, groups, members, topups, quotas = after
+    for key, default in (("note", None), ("topup_day", 1), ("recurring_topup", None)):
+        if (old_plan or {}).get(key, default) != plan[key]:
+            fields.add(f"plan.{key}")
+    for prefix, old_rows, rows, keys in (
+        ("groups", old_groups, groups, ("name", "monthly_limit", "limit_period", "sort_order", "allowed_models", "color")),
+        ("topups", old_topups, topups, ("day", "credits", "note")),
+    ):
+        old_by_id = {row["id"]: row for row in old_rows}
+        by_id = {row["id"]: row for row in rows}
+        for row_id in old_by_id.keys() | by_id.keys():
+            old, new = old_by_id.get(row_id, {}), by_id.get(row_id, {})
+            # Legacy IDs may contain user text. Only UUID hex is safe in a journal path.
+            path = f"{prefix}.{row_id}" if _CLIENT_ID_RE.fullmatch(row_id) else prefix
+            fields.update(f"{path}.{key}" for key in keys if old.get(key, KEEP) != new.get(key, KEEP))
+    old_assign = {email: gid for gid, emails in old_members.items() for email in emails}
+    assigned = {email: gid for gid, emails in members.items() for email in emails}
+    for email in old_assign.keys() | assigned.keys():
+        path = f"members.{account_target(email)}" if "@" in email else "members"
+        if old_assign.get(email) != assigned.get(email):
+            fields.add(f"{path}.group_id")
+        if old_quotas.get(email) != quotas.get(email):
+            fields.add(f"{path}.quota")
+    _record_audit_event(
+        conn, "workspace.credit_plan_changed", actor_uid=actor_uid, target_type="workspace_credit_plan",
+        target_id=workspace_id, fields=sorted(fields),
+        details={"revision": plan["revision"], "expected_revision": expected_revision, "fields_complete": len(fields) <= 100},
+    )
+
+
+# ★2026-09-29 그룹 이월 폐기로 호출을 끊었다(base_* 동결). 덩어리 삭제 규칙에 따라 다음 단계에서 지운다.
+# def _rebase_month_groups_for_anchor(
+#     conn, workspace_id: str, groups: list[dict], members: dict[str, set[str]], today: str, old_anchor: int, new_anchor: int
+# ) -> None:
+#     """충전 기준일만 바뀐 저장(groups=None) — 매월 한도 그룹의 달 경계가 옮겨지므로 옛 경계로 이월분을 계산해
+#     새 경계의 이번 달 시작으로 재기준화한다(그룹·배정 자체는 그대로)."""
+#     month_groups = [g for g in groups if _group_period(g) == "month" and g.get("monthly_limit") is not None]
+#     if not month_groups:
+#         return
+#     usage = _usage_index(workspace_id, _day_from_for(month_groups, period_start(today, "month", min(old_anchor, new_anchor))))
+#     new_start = period_start(today, "month", new_anchor)
+#     for g in month_groups:
+#         carry = _carry_in(g, members.get(g["id"], set()), usage, today, old_anchor)  # 저장값 — 반올림 금지
+#         conn.execute(
+#             "UPDATE workspace_credit_group SET base_start=?, base_month=?, base_balance=? WHERE id=?",
+#             (new_start, new_start[:7], carry, g["id"]),
+#         )
 
 
 def _write_topups_and_plan(
@@ -759,6 +781,7 @@ def _write_topups_and_plan(
     cur_rev: int,
     topup_day: int,
     recurring_topup: Any = KEEP,
+    actor_uid: Optional[str] = None,
 ) -> None:
     """긴급 충전 기록 전체 교체(None 이면 그대로) + 플랜 note·topup_day·정기 충전·revision+1. 호출측 트랜잭션 안에서.
     recurring_topup: KEEP=그대로 · None=파생으로 되돌림 · 숫자=손 입력(0 이상 유한)."""
@@ -771,11 +794,11 @@ def _write_topups_and_plan(
     recurring_sql = "" if recurring_topup is KEEP else ", recurring_topup=excluded.recurring_topup"
     recurring_value = None if recurring_topup is KEEP else _valid_quota(recurring_topup)
     conn.execute(
-        "INSERT INTO workspace_credit_plan(workspace_id, note, topup_day, recurring_topup, revision, updated_at) "
-        "VALUES(?,?,?,?,?,datetime('now')) "
+        "INSERT INTO workspace_credit_plan(workspace_id, note, topup_day, recurring_topup, revision, updated_by, updated_at) "
+        "VALUES(?,?,?,?,?,?,datetime('now')) "
         "ON CONFLICT(workspace_id) DO UPDATE SET note=excluded.note, topup_day=excluded.topup_day"
-        f"{recurring_sql}, revision=workspace_credit_plan.revision+1, updated_at=excluded.updated_at",
-        (workspace_id, (note or "").strip() or None, topup_day, recurring_value, cur_rev + 1),
+        f"{recurring_sql}, revision=workspace_credit_plan.revision+1, updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+        (workspace_id, (note or "").strip() or None, topup_day, recurring_value, cur_rev + 1, safe_identity(actor_uid)),
     )
 
 
@@ -810,7 +833,7 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
     recurring = _plan_recurring(plan)
     cycle_start = period_start(today, "month", anchor)
     cycle_end = period_end(today, "month", anchor)
-    usage = _usage_index(workspace_id, _day_from_for(groups, cycle_start))
+    usage = _usage_index(workspace_id, _day_from_for(groups, today, anchor))
 
     if viewer is not None:
         email = viewer[1]
@@ -828,14 +851,12 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
             summary["my_unknown_month"] = my_unknown
             summary["my_used_period"] = _shown(my_p)
             summary["my_unknown_period"] = my_p_unknown
-            # ★내 몫은 **이번 기간만** 본다(Jay 2026-09-23). 그룹의 이월분은 내 몫에 더하지 않고
-            #  '그룹 여유분'으로 따로 준다 — 두 숫자가 같은 돈인 척하면 안 된다(Codex 치명 ③).
+            # ★내 몫은 **이번 기간만** 본다(Jay 2026-09-23). 그룹 이월도 2026-09-29 에 폐기했다.
             my_quota, source = _member_quota(email, mine, emails, quotas)
             summary["my_quota"] = None if my_quota is None else _shown(my_quota)
             summary["my_quota_source"] = source
             summary["my_remaining"] = None if my_quota is None else _shown(my_quota - my_p)
-            carry = _carry_in(mine, emails, usage, today, anchor)
-            summary["group_carryover"] = _shown(carry)
+            summary["group_carryover"] = 0.0  # 그룹 이월 폐기(2026-09-29) — 구버전 앱이 '그룹 여유분'을 띄우지 않게 0
             out["my_group"] = summary
         return out
 

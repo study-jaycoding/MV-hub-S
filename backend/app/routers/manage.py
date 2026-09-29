@@ -26,7 +26,7 @@ from typing import Literal, NoReturn, Optional
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
-from . import _proxy
+from . import _proxy, manage_quota
 from ..services.async_tools import to_thread_non_abandon
 from .. import active_account, rbac, repo
 from ..config import AUTH_ENABLED, MEDIA_DIR
@@ -49,7 +49,6 @@ from ..repo import manage_credit_plan as repo_credit
 from ..repo import manage_member_table as repo_member_table
 from ..repo import manage_tasks as repo_manage_tasks
 from ..services import cli_bridge, file_stamp, final_export, media_cache, project_folders
-from ..services.event_journal import journal_audit_event
 from ..services.telemetry_drain import drain_isolated_telemetry
 from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
 from ..services.path_safety import safe_join
@@ -57,6 +56,7 @@ from ..services.request_guards import require_loopback_browser_request
 from ..services.operational_logging import log_event
 
 router = APIRouter(prefix="/api/manage", tags=["manage"])
+router.include_router(manage_quota.router)
 _manage_log = logging.getLogger("mvhub.manage")
 
 
@@ -772,11 +772,11 @@ def project_summary(request: Request, workspace_id: Optional[str] = None):
 class CreditGroupIn(BaseModel):
     id: Optional[str] = None
     name: str
-    monthly_limit: Optional[int] = Field(default=None, ge=0, le=999_999_999)  # None = ∞
-    # ★세 주기 모두 이월된다(enterprise, Jay) — 종전 주석은 'month 만 이월'이라고 적혀 있었지만
-    #  `_group_remaining` 은 주기와 무관하게 base 이후 기간 수만큼 한도를 쌓는다(`test_credit_plan` 이 고정).
-    limit_period: Literal["day", "week", "month"] = "month"
-    remaining_override: Optional[int] = None  # 지금 남은 양 보정(이월 포함) — 저장 시 재기준화
+    monthly_limit: Optional[int] = Field(default=None, ge=0, le=999_999_999)  # **인당** 한도 · None = ∞
+    limit_period: Literal["day", "week", "month"] = "month"  # 기간마다 몫이 새로 시작한다(이월 없음, 2026-09-29)
+    # 옛 '추정 → 힉스필드 값 맞추기'. 그룹 이월 폐기(2026-09-29)로 **받아서 무시**한다 —
+    # 400 을 내면 이 키를 보내는 구버전 앱의 그룹 저장이 깨진다.
+    remaining_override: Optional[int] = None
     # 그룹이 쓸 수 있는 모델(job_type 목록, **허용 목록** — 빈 목록=제한 없음). None(키 없음)=기존값 유지 —
     # 이 필드를 모르는 구버전 앱·'추정' 맞추기 저장이 제한을 지우지 않게. 명시 [] 만 해제.
     allowed_models: Optional[list[str]] = None
@@ -786,7 +786,7 @@ class CreditGroupIn(BaseModel):
 class CreditMemberIn(BaseModel):
     email: str
     group_id: Optional[str] = None  # 키 없음=소속 유지 · None=배정 해제 · 값=그 그룹으로
-    # 사람별 몫(크레딧). 키 없음=기존 몫 유지 · None=자동(그룹 한도 ÷ 인원)으로 되돌림 · 숫자=덮어쓰기.
+    # 사람별 몫(크레딧). 키 없음=기존 몫 유지 · None=자동(그룹 인당 한도)으로 되돌림 · 숫자=덮어쓰기.
     # ★생략과 명시적 null 을 갈라야 하므로 아래 저장 경로는 `model_dump(exclude_unset=True)` 로 보낸다
     #  — 기본 model_dump() 는 둘 다 None 이라, 몫을 모르는 구버전 앱 저장이 모두의 몫을 지운다.
     quota: Optional[float] = Field(default=None, ge=0)
@@ -892,6 +892,7 @@ def put_credit_plan(workspace_id: str, body: CreditPlanIn, request: Request):
         return repo_credit.save_settings(
             workspace_id,
             revision=body.revision,
+            actor_uid=actor_id(request),
             note=body.note,
             topup_day=body.topup_day,
             groups=None if body.groups is None else [g.model_dump() for g in body.groups],
@@ -902,14 +903,19 @@ def put_credit_plan(workspace_id: str, body: CreditPlanIn, request: Request):
                 body.recurring_topup if "recurring_topup" in body.model_fields_set else repo_credit.KEEP
             ),
         )
-    except repo_credit.CreditPlanConflict:
-        raise HTTPException(status_code=409, detail="다른 곳에서 먼저 저장됐습니다. 설정을 다시 열어 주세요.")
+    except repo_credit.CreditPlanConflict as exc:
+        require_global_cap(request, "create_project")
+        _require_known_workspace(workspace_id)
+        raise HTTPException(
+            status_code=409, detail=repo_credit.settings_conflict_detail(workspace_id, exc.expected_revision)
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ── 프로젝트 일정/예산 ────────────────────────────────────────────────────────
 class PlanningIn(BaseModel):
+    revision: Optional[int] = Field(default=None, ge=0)
     status: Optional[str] = None        # active | done | hold
     start_date: Optional[str] = None
     due_date: Optional[str] = None
@@ -1034,31 +1040,19 @@ def patch_project_folder_selection(pid: str, body: ProjectFolderSelectionIn, req
 @router.get("/planning/{pid}")
 def get_planning(pid: str, request: Request):
     _require_project_read(request, pid)
-    return repo_manage.get_planning(pid) or {}
+    return repo_manage.get_planning(pid) or {"revision": 0}
 
 
 @router.put("/planning/{pid}")
 def put_planning(pid: str, body: PlanningIn, request: Request):
     _require_project_manage(request, pid)
-    result = repo_manage.set_planning(pid, **body.model_dump())
-    changed = body.model_dump(exclude_none=True)
-    journal_audit_event(
-        "project.planning_changed",
-        actor_uid=actor_id(request),
-        target_type="project_planning",
-        target_id=pid,
-        project_id=pid,
-        fields=list(changed.keys()),
-        details={
-            "status": body.status,
-            "budget_credits": body.budget_credits,
-            "budget_period": body.budget_period,
-            "start_date": body.start_date,
-            "due_date": body.due_date,
-            "archive_after_days": body.archive_after_days,
-        },
-    )
-    return result
+    try:
+        return repo_manage.set_planning(pid, **body.model_dump(), actor_uid=actor_id(request))
+    except repo_manage.PlanningConflict as exc:
+        _require_project_manage(request, pid)
+        raise HTTPException(
+            status_code=409, detail=repo_manage.planning_conflict_detail(pid, exc.expected_revision)
+        ) from exc
 
 
 # ── 작업(Task) ────────────────────────────────────────────────────────────────

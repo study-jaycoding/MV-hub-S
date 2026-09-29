@@ -1,5 +1,5 @@
-// 프로젝트 설정 창의 '크레딧 풀 · 그룹' 절 — 워크스페이스 단위 설정(월 충전·그룹 월 한도·멤버 배정).
-// 힉스필드 관리 창(User Group)과 같은 흐름: 그룹 표 + "그룹 추가" → 그룹 창(이름·한도 없음 토글·월 한도·남은 양 보정 |
+// 프로젝트 설정 창의 '크레딧 풀 · 그룹' 절 — 워크스페이스 단위 설정(월 충전·그룹 인당 한도·멤버 배정).
+// 힉스필드 관리 창(User Group)과 같은 흐름: 그룹 표 + "그룹 추가" → 그룹 창(이름·한도 없음 토글·인당 한도 |
 // 멤버 목록·멤버 추가). 저장은 ProjectManagerPanel 이 프로젝트 저장 뒤 별도 PUT 으로(revision 낙관적 잠금 — 409).
 // 초안 상태는 부모(다이얼로그 state)가 들고, 여기서는 초안만 바꾼다. 숫자 칸은 천 단위 구분으로 보여 준다.
 import { useEffect, useState } from "react";
@@ -10,6 +10,7 @@ import { BUDGET_PERIOD_OPTIONS } from "../../lib/projectPlanning";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { ALLOWED } from "../../lib/useModels";
 import { formatCredits } from "../../lib/formatCredits";
+import { useManageEditConflict } from "./useManageEditConflict";
 import {
   draftFromSettings,
   draftMemberCount,
@@ -93,7 +94,7 @@ export function GroupEditor({
       return;
     }
     if (!unlimited && !stripThousands(limitInput)) {
-      setError("월 한도를 입력하거나 '한도 없음'을 켜세요.");
+      setError("인당 한도를 입력하거나 '한도 없음'을 켜세요.");
       return;
     }
     onApply(
@@ -105,6 +106,7 @@ export function GroupEditor({
   return (
     <div className="credit-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div className="credit-modal" role="dialog" aria-label={group.isNew ? "그룹 추가" : "그룹 편집"}>
+        <fieldset className="manage-group-fields" disabled={busy}>
         <div className="credit-modal-left">
           <h4>{group.isNew ? "그룹 추가" : "그룹 편집"}</h4>
           <label className="credit-modal-field">
@@ -124,7 +126,7 @@ export function GroupEditor({
           </label>
           {!unlimited ? (
             <label className="credit-modal-field">
-              <span>한도</span>
+              <span>인당 한도</span>
               <div className="manage-budget-limit">
                 <input
                   type="text"
@@ -138,7 +140,7 @@ export function GroupEditor({
                 <select
                   value={limitPeriod}
                   aria-label="한도 주기"
-                  title="매월만 남은 양이 다음 달로 넘어갑니다(힉스필드 enterprise). 매일·매주는 그 기간 안에서만 셉니다."
+                  title="한 사람이 이 기간마다 쓸 수 있는 양입니다. 기간이 바뀌면 새로 시작합니다(이월 없음)."
                   onChange={(event) => setLimitPeriod(event.target.value as LimitPeriod)}
                 >
                   {BUDGET_PERIOD_OPTIONS.map((option) => (
@@ -252,6 +254,7 @@ export function GroupEditor({
             </div>
           )}
         </div>
+        </fieldset>
       </div>
     </div>
   );
@@ -262,18 +265,23 @@ export function CreditPlanFields({
   workspaceId,
   draft,
   onChange,
+  onBusyChange,
+  disabled = false,
 }: {
   workspaceId: string;
   draft: CreditPlanDraft | null;
   onChange: (draft: CreditPlanDraft | null) => void;
+  onBusyChange?: (busy: boolean) => void;
+  disabled?: boolean;
 }) {
+  const conflict = useManageEditConflict();
   const [status, setStatus] = useState<"idle" | "loading" | "unsupported" | "error">("idle");
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<DraftGroup | null>(null);
   // 그룹 삭제 확인 — 브라우저 기본 창 대신 우리 디자인 확인창(이름을 보여 주고 묻는다).
   const [deleting, setDeleting] = useState<DraftGroup | null>(null);
   // 그룹 창·삭제 확인의 Esc 는 여기서 먼저 소비한다 — 흘려 보내면 바깥 프로젝트 대화상자가 닫혀 입력이 사라진다.
-  useEscapeClose(() => (deleting ? setDeleting(null) : setEditing(null)), !!(deleting || editing), true, true);
+  useEscapeClose(() => (deleting ? setDeleting(null) : setEditing(null)), !!(deleting || editing) && !conflict.active, true, true);
   const [topupBusy, setTopupBusy] = useState("");
   const [topupError, setTopupError] = useState("");
   const loaded = draft && draft.loadedFor === workspaceId;
@@ -340,29 +348,37 @@ export function CreditPlanFields({
   };
   // 줄 단위 저장·삭제 — 이 줄이 반영된 충전 기록 전체를 바로 서버에 쓴다(그룹 초안은 안 보냄). 성공하면 revision·기록을 서버값으로.
   const saveTopups = async (rowId: string, nextTopups: DraftTopup[]) => {
-    if (!draft || topupBusy) return;
+    if (!draft || topupBusy || disabled) return;
     const invalid = nextTopups.map(validateTopup).find(Boolean);
     if (invalid) {
       setTopupError(invalid);
       return;
     }
     setTopupBusy(rowId);
+    onBusyChange?.(true);
     setTopupError("");
     try {
-      const saved = await manageApi.saveCreditPlan(workspaceId, topupsOnlyBody(draft, nextTopups));
+      const baseline = draft.topupBaseline ?? draft.baseline;
+      if (!baseline) throw new Error("편집 시작값이 없습니다. 입력은 유지됩니다.");
+      const body = topupsOnlyBody(draft, nextTopups);
+      body.note = baseline.plan.note;
+      const saved = await conflict.saveCredit(workspaceId, baseline, body);
       onChange(mergeTopupsFromServer(draft, saved));
     } catch (reason) {
       setTopupError(isHttpStatus(reason, 409)
-        ? "다른 곳에서 먼저 저장됐습니다. 설정 창을 닫았다가 다시 열어 주세요."
+        ? "다른 곳에서 먼저 저장됐습니다. 입력은 유지했습니다. 다시 저장해 주세요."
         : `저장하지 못했습니다. ${String(reason).replace(/^Error:\s*/, "")}`);
     } finally {
       setTopupBusy("");
+      onBusyChange?.(false);
     }
   };
   const unassigned = draft ? draft.members.filter((member) => member.is_available && !member.group_id).length : 0;
 
   return (
     <section className="project-settings-section credit-plan-fields">
+      {conflict.dialog}
+      <fieldset className="manage-edit-fields" disabled={!!topupBusy || disabled}>
       <h5>
         크레딧 풀 · 그룹
         <small> 워크스페이스 단위 · 힉스필드 User Group 과 이름을 맞춰 두세요 · 한도 강제는 힉스필드가 합니다</small>
@@ -438,7 +454,7 @@ export function CreditPlanFields({
           </div>
           {draft.groups.length ? (
             <table className="credit-plan-table">
-              <thead><tr><th>그룹</th><th>한도</th><th>인원</th><th title="이월 포함 · 힉스필드 값과 다르면 대시보드 그룹 표의 '추정'에서 맞춥니다">지금 남은 양</th><th aria-label="삭제" /></tr></thead>
+              <thead><tr><th>그룹</th><th>인당 한도</th><th>인원</th><th title="몫 합계 − 이번 기간 사용(이월 없음)">지금 남은 양</th><th aria-label="삭제" /></tr></thead>
               <tbody>
                 {draft.groups.map((group) => (
                   <tr key={group.id} onClick={() => setEditing(group)} title="클릭하면 그룹 창이 열립니다">
@@ -511,6 +527,7 @@ export function CreditPlanFields({
           ) : null}
         </>
       ) : null}
+      </fieldset>
     </section>
   );
 }

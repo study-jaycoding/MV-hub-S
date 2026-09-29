@@ -13,11 +13,11 @@ import {
   autoShareLabel,
   niceCeil,
   stripDecimal,
-  overrideBody,
   periodSuffix,
   periodUsageLabel,
   projectDepletion,
   remainingTone,
+  usagePercentLabel,
   stripThousands,
   topupSteps,
   topupsOnlyBody,
@@ -38,13 +38,19 @@ describe("remainingTone — 남은 양 기준 경고색", () => {
     expect(remainingTone(200, 1000)).toBe("warn");
     expect(remainingTone(201, 1000)).toBe("ok");
   });
+  it("사용률 문구는 무제한(∞)과 쓸 몫 없음(—)을 가른다", () => {
+    expect(usagePercentLabel(300, 1000)).toBe("30%");
+    expect(usagePercentLabel(300, null)).toBe("∞");
+    expect(usagePercentLabel(0, 0)).toBe("—"); // 인당 한도 0 · 멤버 0명 — '제한 없음'처럼 보이면 안 된다
+  });
   it("이번 달 사용률은 한도 없으면 null", () => {
     expect(usagePercent(300, 1000)).toBe(30);
     expect(usagePercent(300, null)).toBeNull();
     expect(usagePercent(300, 0)).toBeNull();
-    expect(limitTotal([{ monthly_limit: 1000 }, { monthly_limit: null }, { monthly_limit: 500 }])).toBe(1500);
-    // 매일·매주 한도는 월 충전과 비교할 수 없어 합에서 뺀다
-    expect(limitTotal([{ monthly_limit: 1000, limit_period: "month" }, { monthly_limit: 300, limit_period: "day" }, { monthly_limit: 700, limit_period: "week" }])).toBe(1000);
+    // 몫 합은 인당 한도가 아니라 그룹의 몫 합계(quota_total)를 더한다(2026-09-29). ∞(null)·구서버(키 없음)는 0.
+    expect(limitTotal([{ quota_total: 3000 }, { quota_total: null }, { quota_total: 500 }, {}])).toBe(3500);
+    // 매일·매주 그룹은 매월 합에서 뺀다
+    expect(limitTotal([{ quota_total: 1000, limit_period: "month" }, { quota_total: 300, limit_period: "day" }, { quota_total: 700, limit_period: "week" }])).toBe(1000);
     expect([periodSuffix("day"), periodSuffix("week"), periodSuffix("month"), periodSuffix(undefined)]).toEqual(["/일", "/주", "/월", "/월"]);
     expect([periodUsageLabel("day"), periodUsageLabel("week"), periodUsageLabel(undefined)]).toEqual(["오늘", "이번 주", "이번 달"]);
   });
@@ -163,7 +169,7 @@ describe("설정 초안 — 검사와 저장 본문", () => {
 });
 
 describe("긴급 충전 줄 단위 저장", () => {
-  it("본문엔 그룹·배정이 없고(서버가 그대로 둠), 응답을 초안에 합치면 revision·기록만 바뀐다", () => {
+  it("충전 저장 응답은 충전 기준만 갱신하고 미저장 그룹의 revision을 유지한다", () => {
     const draft = draftFromSettings({
       workspace_id: "ws1", month: "2026-09", plan: { monthly_topup: 20000, note: null, revision: 3, updated_at: null },
       groups: [], members: [], topups: [{ id: "t1", day: "2026-09-03", credits: 3000, note: null }],
@@ -176,30 +182,13 @@ describe("긴급 충전 줄 단위 저장", () => {
       workspace_id: "ws1", month: "2026-09", plan: { monthly_topup: 25000, note: null, revision: 4, updated_at: null },
       groups: [], members: [], topups: [{ id: "t1", day: "2026-09-03", credits: 3500, note: "추가" }],
     });
-    expect(merged.revision).toBe(4);
+    expect(merged.revision).toBe(3);
+    expect(merged.baseline?.plan.revision).toBe(3);
+    expect(merged.topupBaseline?.plan.revision).toBe(4);
     expect(merged.monthlyTopup).toBe(25000);
     expect(merged.topups[0].creditsInput).toBe("3500");
     expect(merged.groups[0].name).toBe("편집중"); // 편집 중인 그룹 초안은 그대로
     expect(validateTopup({ id: "x", day: "2026-09-10", creditsInput: "", note: "" })).toContain("크레딧");
-  });
-});
-
-describe("추정 → 힉스필드 값 맞추기 본문", () => {
-  it("그룹 목록은 그대로, 대상 그룹만 remaining_override, 배정은 안 보낸다", () => {
-    const body = overrideBody({
-      month: "2026-09", configured: true, revision: 7,
-      groups: [
-        { id: "g1", name: "Artist", monthly_limit: 1000, limit_period: "day", member_count: 1, used_month: 0, unknown_month: 0, remaining: 900, unknown_since_base: 2, estimated: true },
-        { id: "g2", name: "TD", monthly_limit: null, member_count: 0, used_month: 0, unknown_month: 0, remaining: null, unknown_since_base: 0, estimated: false },
-      ],
-    }, "g1", 3200);
-    expect(body.revision).toBe(7);
-    expect(body.groups).toEqual([
-      { id: "g1", name: "Artist", monthly_limit: 1000, limit_period: "day", remaining_override: 3200 },
-      { id: "g2", name: "TD", monthly_limit: null, limit_period: "month", remaining_override: null },
-    ]);
-    expect("members" in body).toBe(false);
-    expect(body.groups?.every((group) => !("color" in group))).toBe(true);
   });
 });
 

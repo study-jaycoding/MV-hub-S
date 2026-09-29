@@ -43,7 +43,8 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
         ).fetchall()
         project_rows = conn.execute(
             "SELECT p.id, p.name, pp.project_id AS planning_id, pp.status, pp.start_date, pp.due_date, "
-            "pp.budget_credits, pp.budget_period, pp.archive_after_days, pp.note "
+            "pp.budget_credits, pp.budget_period, pp.archive_after_days, pp.note, "
+            "pp.revision, pp.updated_by, pp.updated_at "
             "FROM project p LEFT JOIN project_planning pp ON pp.project_id=p.id "
             "WHERE p.kind='team' AND COALESCE(p.archived,0)=0"
             + (" AND p.workspace_scope='team' AND p.workspace_id=?" if workspace_id else "")
@@ -63,6 +64,9 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
                     "budget_period": r["budget_period"],
                     "archive_after_days": r["archive_after_days"],
                     "note": r["note"],
+                    "revision": r["revision"],
+                    "updated_by": r["updated_by"],
+                    "updated_at": r["updated_at"],
                 },
             }
             for r in project_rows

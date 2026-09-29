@@ -1,7 +1,7 @@
 // PM 대시보드 '관리 표' — 엑셀 시트처럼 멤버·그룹·크레딧을 나눠 보고, 편집 가능한 칸은 바로 저장한다.
-// 설계: docs/MEMBER_TABLE_DESIGN.md. 표에는 자기만의 쓰기 API 가 없다 — 칸마다 기존 API 를 부른다(권한·감사·재기준화 그대로).
+// 설계: docs/MEMBER_TABLE_DESIGN.md. 표에는 자기만의 쓰기 API 가 없다 — 칸마다 기존 API 를 부른다(권한·감사 그대로).
 // 저장은 직렬 큐 하나로 줄 세우고, 큐가 비면 성공·실패와 관계없이 표를 다시 읽는다(다른 창·다른 사람의 변경은 큐 밖이다).
-// 실패해도 칸을 하나씩 되돌리지 않는다 — 서버 값으로 통째로 다시 읽으므로 늦게 온 실패가 최신 값을 덮는 일이 없다.
+// 재조회는 서버 표시만 갱신한다. 편집 기준과 실패한 저장 의도는 성공할 때까지 보존한다.
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { api } from "../../api";
 import {
@@ -13,6 +13,7 @@ import {
   groupColor,
   newDraftGroup,
   newGroupId,
+  periodSuffix,
   stripDecimal,
   stripThousands,
   TOPUP_DAY_OPTIONS,
@@ -21,6 +22,7 @@ import {
   validateTopup,
   type CreditPlanDraft,
   type CreditPlanSettings,
+  type CreditPlanSaveBody,
   type CreditTopup,
   type DraftGroup,
   type DraftTopup,
@@ -53,6 +55,8 @@ import { defaultProjectRoles, GLOBAL_ROLE_LABEL, PROJECT_ROLE_LABEL, PROJECT_ROL
 import { GroupEditor } from "./CreditPlanFields";
 import { PROJECT_STATUS_OPTIONS } from "./ProjectPlanningDialog";
 import type { Planning } from "./types";
+import { mergeCreditPlan } from "../../lib/creditPlanMerge";
+import { useManageEditConflict } from "./useManageEditConflict";
 
 const STATUS_LABEL: Record<string, string> = { approved: "승인", pending: "대기", rejected: "거절" };
 const short = (label: string | undefined, fallback: string) => (label ? label.split(" · ")[0] : fallback);
@@ -81,6 +85,7 @@ interface MemberAddState {
 }
 
 interface PlanningDraft {
+  baseline: Planning;
   form: Planning;
   budgetInput: string;
   touched: Partial<Record<Exclude<keyof Planning, "project_id"> | "budgetInput", true>>;
@@ -127,13 +132,16 @@ function GroupColorInput({ label, color, disabled, onCommit }: {
   return <input ref={inputRef} type="color" aria-label={label} title={label} defaultValue={color} disabled={disabled} />;
 }
 
-function GroupColorPicker({ label, color, disabled, onCommit }: {
+function GroupColorPicker({ label, color, disabled, onCommit, onEditingChange }: {
   label: string;
   color: string;
   disabled: boolean;
   onCommit: (color: string) => boolean;
+  onEditingChange?: (editing: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [editingColor, setEditingColor] = useState(color);
+  const commitRef = useRef(onCommit);
   const [position, setPosition] = useState({ top: 0, left: 0 });
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -161,14 +169,17 @@ function GroupColorPicker({ label, color, disabled, onCommit }: {
     };
   }, [open]);
   useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  useEffect(() => { onEditingChange?.(open); }, [open, onEditingChange]);
 
   const choose = (nextColor: string) => {
-    const accepted = onCommit(nextColor);
+    if (disabled) return false;
+    const accepted = commitRef.current(nextColor);
     if (accepted) setOpen(false);
     return accepted;
   };
   const toggle = () => {
     if (disabled) return;
+    if (!open) { commitRef.current = onCommit; setEditingColor(color); }
     const rect = buttonRef.current?.getBoundingClientRect();
     if (rect) {
       const width = 222;
@@ -210,7 +221,7 @@ function GroupColorPicker({ label, color, disabled, onCommit }: {
           </div>
           <div className="mtable-color-custom">
             <span>커스텀</span>
-            <GroupColorInput label={`${label} 커스텀 색상`} color={color} disabled={disabled} onCommit={choose} />
+            <GroupColorInput label={`${label} 커스텀 색상`} color={editingColor} disabled={disabled} onCommit={choose} />
           </div>
         </div>
       ) : null}
@@ -218,11 +229,12 @@ function GroupColorPicker({ label, color, disabled, onCommit }: {
   );
 }
 
-function GroupLimitInput({ label, value, disabled, onCommit, field = "한도", placeholder = "제한 없음", decimals = false }: {
+function GroupLimitInput({ label, value, disabled, onCommit, onDirtyChange, field = "한도", placeholder = "제한 없음", decimals = false }: {
   label: string;
   value: number | null;
   disabled: boolean;
-  onCommit: (value: number | null) => boolean;
+  onCommit: (value: number | null, accepted: (value: number | null) => void) => boolean;
+  onDirtyChange?: (dirty: boolean) => void;
   field?: string;       // 읽어 주는 칸 이름 — 그룹 '한도' / 사람 '몫'
   placeholder?: string; // 비었을 때의 뜻 — 그룹은 '제한 없음', 사람은 '자동'
   decimals?: boolean;   // 크레딧은 소수다 — 몫·정기 충전은 소수점을 지우면 안 된다(그룹 한도는 서버가 정수만 받는다)
@@ -230,12 +242,21 @@ function GroupLimitInput({ label, value, disabled, onCommit, field = "한도", p
   const serverValue = value === null ? "" : String(value);
   const [input, setInput] = useState(serverValue);
   const skipCommitRef = useRef(false);
-  useEffect(() => setInput(serverValue), [serverValue]);
+  const dirtyRef = useRef(false);
+  const commitRef = useRef(onCommit);
+  const originalRef = useRef(value);
+  useEffect(() => { if (!dirtyRef.current) setInput(serverValue); }, [serverValue]);
+  const finish = (nextValue: number | null) => {
+    dirtyRef.current = false;
+    originalRef.current = nextValue;
+    setInput(nextValue === null ? "" : String(nextValue));
+    onDirtyChange?.(false);
+  };
   const commit = () => {
     if (skipCommitRef.current) return;
     const next = input ? Number(input) : null;
-    if (next === value) return;
-    if (!onCommit(next)) setInput(serverValue);
+    if (!dirtyRef.current) return;
+    if (next === originalRef.current || !commitRef.current(next, finish)) finish(value);
   };
   return (
     <div className="mtable-group-limit">
@@ -247,13 +268,21 @@ function GroupLimitInput({ label, value, disabled, onCommit, field = "한도", p
         maxLength={11}
         value={decimals ? formatDecimal(input) : formatThousands(input)}
         disabled={disabled}
-        onChange={(event) => setInput(decimals ? stripDecimal(event.target.value) : stripThousands(event.target.value))}
+        onFocus={() => { if (!dirtyRef.current) { commitRef.current = onCommit; originalRef.current = value; } }}
+        onChange={(event) => {
+          if (!dirtyRef.current) { commitRef.current = onCommit; originalRef.current = value; }
+          const nextInput = decimals ? stripDecimal(event.target.value) : stripThousands(event.target.value);
+          if ((nextInput ? Number(nextInput) : null) === originalRef.current) { finish(value); return; }
+          dirtyRef.current = true;
+          onDirtyChange?.(true);
+          setInput(nextInput);
+        }}
         onBlur={commit}
         onKeyDown={(event) => {
           if (event.key === "Enter") event.currentTarget.blur();
           if (event.key === "Escape") {
             skipCommitRef.current = true;
-            setInput(serverValue);
+            finish(value);
             event.currentTarget.blur();
             skipCommitRef.current = false;
           }
@@ -272,6 +301,7 @@ const emptyFilters = (): TableFilters => ({
 });
 
 export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceId?: string; reloadSignal?: number }) {
+  const conflict = useManageEditConflict();
   const [data, setData] = useState<MemberTableData | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
@@ -289,6 +319,14 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
   const [topup, setTopup] = useState<DraftTopup | null>(null);
   const [creditBusy, setCreditBusy] = useState(false);
   const [creditError, setCreditError] = useState("");
+  const [retries, setRetries] = useState<{ key: string; label: string; operation: () => Promise<void> }[]>([]);
+  const topupSourceRef = useRef<CreditPlanSettings | null>(null);
+  const inlineDirtyRef = useRef(new Set<string>());
+  const dirtyRef = useRef(false);
+  dirtyRef.current = !!groupEditor || !!topup || Object.keys(planningEdits).length > 0 || retries.length > 0;
+  const dataRef = useRef(data);
+  dataRef.current = data;
+  const ownCreditRef = useRef<CreditPlanSettings | null>(null);
   const creditRef = useRef<CreditPlanSettings | null>(null); // 그룹 저장에 쓰는 최신 원문(revision 포함)
   const requestRef = useRef(0);
   // 저장이 걸리거나 끝날 때마다 올린다 — 그 사이에 떠난 조회(reloadSignal 등)는 저장 전 값일 수 있어 버린다.
@@ -302,12 +340,26 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
     try {
       const next = await manageApi.memberTable(workspaceId || undefined);
       if (stale()) return;
+      const previous = dataRef.current;
+      const ownCredit = ownCreditRef.current;
+      const acknowledgedCredit = ownCredit && ownCredit.workspace_id === next.credit?.workspace_id && ownCredit.plan.revision === next.credit.plan.revision;
+      if (previous && (dirtyRef.current || inlineDirtyRef.current.size) && (
+        (previous.credit?.plan.revision !== next.credit?.plan.revision && !acknowledgedCredit) ||
+        JSON.stringify(previous.projects.map((p) => p.planning)) !== JSON.stringify(next.projects.map((p) => p.planning))
+      )) setNotice({ tone: "bad", text: "서버 설정이 갱신됐습니다. 편집 중인 입력과 시작값은 유지했습니다. 저장 시 변경 내용을 확인합니다." });
       creditRef.current = next.credit;
-      setData(next);
+      setData(previous ? {
+        ...next,
+        groups: [...next.groups, ...previous.groups.filter((group) => (inlineDirtyRef.current.has(group.id) || inlineDirtyRef.current.has(`color:${group.id}`)) && !next.groups.some((item) => item.id === group.id))],
+        rows: [...next.rows, ...previous.rows.filter((row) => inlineDirtyRef.current.has(row.email) && !next.rows.some((item) => item.email === row.email))],
+      } : next);
       setError("");
     } catch (reason) {
       if (stale()) return;
-      setData(null);
+      if (dataRef.current) {
+        setNotice({ tone: "bad", text: `다시 읽지 못했습니다. 입력은 유지했습니다. ${String(reason)}` });
+        return;
+      }
       setError(
         isRouteMissing(reason)
           ? "이 서버 버전은 관리 표를 지원하지 않습니다. 공유 서버 업데이트 뒤 표시됩니다."
@@ -328,6 +380,10 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
     setPlanningBusy(new Set());
     setGroupEditor(null);
     setTopup(null);
+    topupSourceRef.current = null;
+    ownCreditRef.current = null;
+    inlineDirtyRef.current.clear();
+    setRetries([]);
     setCreditError("");
   }, [workspaceId]);
 
@@ -352,15 +408,31 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
   );
 
   // 저장 한 건 — 걸 때와 끝날 때 epoch 를 올려 그 사이의 조회를 무효로 만든다.
-  const save = (operation: () => Promise<void>) => {
+  const save = (operation: () => Promise<void>, retained?: { key: string; label: string }) => {
     epochRef.current += 1;
     void queue.enqueue(async () => {
       try {
         await operation();
+        if (retained) setRetries((current) => current.filter((retry) => retry.key !== retained.key));
+      } catch (reason) {
+        if (retained) setRetries((current) => [...current.filter((retry) => retry.key !== retained.key), { ...retained, operation }]);
+        throw reason;
       } finally {
         epochRef.current += 1;
       }
     });
+  };
+  const saveInline = (key: string, label: string, operation: () => Promise<void>) => save(operation, { key, label });
+  const saveCredit = async (source: CreditPlanSettings, body: CreditPlanSaveBody) => {
+    const own = ownCreditRef.current;
+    if (own && own.plan.revision > source.plan.revision) {
+      const merged = mergeCreditPlan(source, body, own);
+      if (!merged.changes.some((change) => change.conflict)) { source = own; body = merged.value; }
+    }
+    const saved = await conflict.saveCredit(workspaceId, source, body);
+    ownCreditRef.current = saved;
+    creditRef.current = saved;
+    return saved;
   };
   // 표가 지금 고른 워크스페이스의 것일 때만 고친다 — 전환 직후 이전 표로 새 워크스페이스에 저장하는 일을 막는다(코덱스 P0).
   const inScope = (data?.workspace_id ?? "") === workspaceId;
@@ -370,12 +442,12 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
 
   const setGroup = (row: MemberTableRow, groupId: string | null) => {
     if (!data || !inScope || !workspaceId || groupId === row.group_id) return;
+    const source = data.credit;
+    if (!source) return;
     const groupName = data.groups.find((group) => group.id === groupId)?.name ?? "그룹 없음";
     setData({ ...data, rows: data.rows.map((item) => (item.email === row.email ? { ...item, group_id: groupId } : item)) });
-    save(async () => {
-      const credit = creditRef.current;
-      if (!credit) throw new Error("그룹 설정을 읽지 못했습니다");
-      creditRef.current = await manageApi.saveCreditPlan(workspaceId, groupAssignBody(credit, row.email, groupId));
+    saveInline(`assign:${row.email}`, `${row.name} 그룹: ${groupName}`, async () => {
+      await saveCredit(source, groupAssignBody(source, row.email, groupId));
       setNotice({ tone: "ok", text: `저장됨 · 그룹 (${row.name} → ${groupName})` });
     });
   };
@@ -399,12 +471,12 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
     setCreditError("");
     save(async () => {
       try {
-        creditRef.current = await manageApi.saveCreditPlan(workspaceId, groupEditBody(source, edited, memberEmails));
+        await saveCredit(source, groupEditBody(source, edited, memberEmails));
         setGroupEditor(null);
         setNotice({ tone: "ok", text: `저장됨 · 그룹 (${edited.name.trim()})` });
       } catch (reason) {
         setCreditError(isHttpStatus(reason, 409)
-          ? "다른 곳에서 먼저 바꿨습니다. 창을 닫았다 다시 열어 최신 값에서 수정해 주세요."
+          ? "다른 곳에서 먼저 바꿨습니다. 입력은 유지했습니다. 다시 저장해 주세요."
           : `그룹을 저장하지 못했습니다. ${String(reason).replace(/^Error:\s*/, "")}`);
         throw reason;
       } finally {
@@ -415,6 +487,8 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
 
   const saveGroupColor = (groupId: string, color: string) => {
     if (!data || !inScope || !workspaceId || creditBusy || groupEditor) return false;
+    const source = data.credit;
+    if (!source) return false;
     const nextColor = groupColor(color);
     setData((current) => current ? {
       ...current,
@@ -426,11 +500,9 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
     } : current);
     setCreditBusy(true);
     setCreditError("");
-    save(async () => {
+    saveInline(`color:${groupId}`, `그룹 색상: ${nextColor}`, async () => {
       try {
-        const credit = creditRef.current;
-        if (!credit) throw new Error("크레딧 설정을 읽지 못했습니다");
-        creditRef.current = await manageApi.saveCreditPlan(workspaceId, groupColorBody(credit, groupId, nextColor));
+        await saveCredit(source, groupColorBody(source, groupId, nextColor));
         setNotice({ tone: "ok", text: "저장됨 · 그룹 색상" });
       } catch (reason) {
         setCreditError(isHttpStatus(reason, 409)
@@ -445,16 +517,17 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
   };
 
   /** 정기 충전액 저장 — 비우면(null) 프로젝트 '매월 예산' 합에서 파생하던 종전 값으로 돌아간다. */
-  const saveRecurringTopup = (value: number | null) => {
+  const saveRecurringTopup = (value: number | null, accepted?: (value: number | null) => void) => {
     if (!data || !inScope || !workspaceId || creditBusy || groupEditor) return false;
     if (value !== null && (!Number.isFinite(value) || value < 0)) return false;
+    const source = data.credit;
+    if (!source) return false;
     setCreditBusy(true);
     setCreditError("");
-    save(async () => {
+    saveInline("recurring", `정기 충전: ${value ?? "자동"}`, async () => {
       try {
-        const credit = creditRef.current;
-        if (!credit) throw new Error("크레딧 설정을 읽지 못했습니다");
-        creditRef.current = await manageApi.saveCreditPlan(workspaceId, recurringTopupBody(credit, value));
+        const saved = await saveCredit(source, recurringTopupBody(source, value));
+        accepted?.(saved.plan.recurring_topup ?? null);
         setNotice({ tone: "ok", text: value === null ? "저장됨 · 정기 충전을 예산 합계로" : "저장됨 · 정기 충전" });
       } catch (reason) {
         setCreditError(isHttpStatus(reason, 409)
@@ -468,18 +541,19 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
     return true;
   };
 
-  /** 사람별 몫 한 칸 저장 — 비우면(null) 그룹 한도를 인원으로 나눈 자동 몫으로 돌아간다.
+  /** 사람별 몫 한 칸 저장 — 비우면(null) 그룹 인당 한도로 돌아간다.
    *  소속은 건드리지 않는다(본문에 group_id 키를 싣지 않는다). */
-  const saveMemberQuota = (email: string, quota: number | null) => {
+  const saveMemberQuota = (email: string, quota: number | null, accepted?: (value: number | null) => void) => {
     if (!data || !inScope || !workspaceId || creditBusy || groupEditor) return false;
     if (quota !== null && (!Number.isFinite(quota) || quota < 0)) return false;
+    const source = data.credit;
+    if (!source) return false;
     setCreditBusy(true);
     setCreditError("");
-    save(async () => {
+    saveInline(`quota:${email}`, `${email} 몫: ${quota ?? "자동"}`, async () => {
       try {
-        const credit = creditRef.current;
-        if (!credit) throw new Error("크레딧 설정을 읽지 못했습니다");
-        creditRef.current = await manageApi.saveCreditPlan(workspaceId, memberQuotaBody(credit, email, quota));
+        const saved = await saveCredit(source, memberQuotaBody(source, email, quota));
+        accepted?.(saved.members.find((member) => member.email === email)?.quota ?? null);
         setNotice({ tone: "ok", text: quota === null ? "저장됨 · 몫을 자동으로" : "저장됨 · 개인 몫" });
       } catch (reason) {
         setCreditError(isHttpStatus(reason, 409)
@@ -493,11 +567,13 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
     return true;
   };
 
-  const saveGroupTerms = (groupId: string, monthlyLimit: number | null, limitPeriod: LimitPeriod) => {
+  const saveGroupTerms = (groupId: string, monthlyLimit: number | null, limitPeriod: LimitPeriod, accepted?: (value: number | null) => void) => {
     if (!data || !inScope || !workspaceId || creditBusy || groupEditor) return false;
     const current = data.groups.find((group) => group.id === groupId);
     if (!current || monthlyLimit !== null && (!Number.isInteger(monthlyLimit) || monthlyLimit < 0)) return false;
     if (current.monthly_limit === monthlyLimit && (current.limit_period ?? "month") === limitPeriod) return true;
+    const source = data.credit;
+    if (!source) return false;
     const updateGroup = <T extends { id: string; monthly_limit: number | null; limit_period?: LimitPeriod }>(group: T): T => (
       group.id === groupId ? { ...group, monthly_limit: monthlyLimit, limit_period: limitPeriod } : group
     );
@@ -508,11 +584,10 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
     } : value);
     setCreditBusy(true);
     setCreditError("");
-    save(async () => {
+    saveInline(`terms:${groupId}`, `${current.name} 한도: ${monthlyLimit ?? "제한 없음"} (${limitPeriod})`, async () => {
       try {
-        const credit = creditRef.current;
-        if (!credit) throw new Error("크레딧 설정을 읽지 못했습니다");
-        creditRef.current = await manageApi.saveCreditPlan(workspaceId, groupTermsBody(credit, groupId, monthlyLimit, limitPeriod));
+        const saved = await saveCredit(source, groupTermsBody(source, groupId, monthlyLimit, limitPeriod));
+        accepted?.(saved.groups.find((group) => group.id === groupId)?.monthly_limit ?? null);
         setNotice({ tone: "ok", text: "저장됨 · 그룹 한도" });
       } catch (reason) {
         setCreditError(isHttpStatus(reason, 409)
@@ -529,12 +604,14 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
   const startTopup = () => {
     if (!data?.credit || !inScope || !workspaceId) return;
     setCreditError("");
+    topupSourceRef.current = data.credit;
     setTopup({ id: newGroupId(), day: todayLocal(), creditsInput: "", note: "" });
   };
 
   const editTopup = (item: CreditTopup) => {
     if (!inScope || !workspaceId || creditBusy || topup) return;
     setCreditError("");
+    topupSourceRef.current = data?.credit ?? null;
     setTopup({ id: item.id, day: item.day, creditsInput: String(item.credits), note: item.note || "" });
   };
 
@@ -546,19 +623,19 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
       return;
     }
     const pending = { ...topup };
+    const source = topupSourceRef.current;
+    if (!source) return;
     setCreditBusy(true);
     setCreditError("");
     save(async () => {
       try {
-        const credit = creditRef.current;
-        if (!credit) throw new Error("크레딧 설정을 읽지 못했습니다");
-        const draft = draftFromSettings(credit);
+        const draft = draftFromSettings(source);
         const editing = draft.topups.some((item) => item.id === pending.id);
         const nextTopups = editing
           ? draft.topups.map((item) => item.id === pending.id ? pending : item)
           : [pending, ...draft.topups];
-        creditRef.current = await manageApi.saveCreditPlan(
-          workspaceId,
+        await saveCredit(
+          source,
           topupsOnlyBody(draft, nextTopups),
         );
         setTopup(null);
@@ -577,16 +654,16 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
   const deleteTopup = (item: CreditTopup) => {
     if (!inScope || !workspaceId || creditBusy || topup) return;
     if (!window.confirm(`${item.day} 긴급 충전 ${credits(item.credits)} cr을 삭제할까요?`)) return;
+    const source = data?.credit;
+    if (!source) return;
     setCreditBusy(true);
     setCreditError("");
-    save(async () => {
+    saveInline(`delete-topup:${item.id}`, `${item.day} 긴급 충전 삭제`, async () => {
       try {
-        const credit = creditRef.current;
-        if (!credit) throw new Error("크레딧 설정을 읽지 못했습니다");
-        const draft = draftFromSettings(credit);
+        const draft = draftFromSettings(source);
         const nextTopups = draft.topups.filter((topupItem) => topupItem.id !== item.id);
         if (nextTopups.length === draft.topups.length) throw new Error("삭제할 긴급 충전 기록을 찾지 못했습니다");
-        creditRef.current = await manageApi.saveCreditPlan(workspaceId, topupsOnlyBody(draft, nextTopups));
+        await saveCredit(source, topupsOnlyBody(draft, nextTopups));
         setNotice({ tone: "ok", text: "저장됨 · 긴급 충전 삭제" });
       } catch (reason) {
         setCreditError(isHttpStatus(reason, 409)
@@ -603,18 +680,17 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
     if (!data?.credit || !creditRef.current || !inScope || !workspaceId || creditBusy || groupEditor) return;
     const previous = data.credit.plan.topup_day ?? 1;
     if (topupDay === previous) return;
+    const source = data.credit;
     const monthEndNote = topupDay > 28 ? " (없는 날짜는 그 달 마지막 날)" : "";
-    if (!window.confirm(`충전 기준일을 매월 ${topupDay}일${monthEndNote}로 바꿀까요?\n월 한도 그룹의 현재 잔액도 새 기준일에 맞춰 다시 계산됩니다.`)) return;
+    if (!window.confirm(`충전 기준일을 매월 ${topupDay}일${monthEndNote}로 바꿀까요?\n월 한도 그룹의 '이번 달' 기간도 새 기준일로 바뀝니다.`)) return;
     setData({ ...data, credit: { ...data.credit, plan: { ...data.credit.plan, topup_day: topupDay } } });
     setCreditBusy(true);
     setCreditError("");
-    save(async () => {
+    saveInline("topup-day", `충전 기준일: ${topupDay}일`, async () => {
       try {
-        const credit = creditRef.current;
-        if (!credit) throw new Error("크레딧 설정을 읽지 못했습니다");
-        creditRef.current = await manageApi.saveCreditPlan(workspaceId, {
-          revision: credit.plan.revision,
-          note: credit.plan.note,
+        await saveCredit(source, {
+          revision: source.plan.revision,
+          note: source.plan.note,
           topup_day: topupDay,
         });
         setNotice({ tone: "ok", text: `저장됨 · 충전 기준일 (매월 ${topupDay}일)` });
@@ -714,6 +790,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
 
   const planningDraft = (project: MemberTableData["projects"][number]): PlanningDraft => {
     const saved = planningEdits[project.id];
+    if (saved) return saved;
     const form: Planning = {
       status: project.planning?.status || "active",
       start_date: project.planning?.start_date || null,
@@ -723,17 +800,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
       archive_after_days: project.planning?.archive_after_days ?? 30,
       note: project.planning?.note || null,
     };
-    if (!saved) return { form, budgetInput: planningBudgetInput(form), touched: {} };
-    const touchedForm = Object.fromEntries(
-      (Object.keys(saved.touched) as (Exclude<keyof Planning, "project_id"> | "budgetInput")[])
-        .filter((key) => key !== "budgetInput")
-        .map((key) => [key, saved.form[key]]),
-    ) as Partial<Planning>;
-    return {
-      form: { ...form, ...touchedForm },
-      budgetInput: saved.touched.budgetInput ? saved.budgetInput : planningBudgetInput(form),
-      touched: saved.touched,
-    };
+    return { baseline: project.planning ?? {}, form, budgetInput: planningBudgetInput(form), touched: {} };
   };
 
   const editPlanning = (project: MemberTableData["projects"][number], patch: Partial<Planning>, budgetInput?: string) => {
@@ -743,7 +810,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
     if (budgetInput !== undefined) touched.budgetInput = true;
     setPlanningEdits((edits) => ({
       ...edits,
-      [project.id]: { form: { ...current.form, ...patch }, budgetInput: budgetInput ?? current.budgetInput, touched },
+      [project.id]: { ...current, form: { ...current.form, ...patch }, budgetInput: budgetInput ?? current.budgetInput, touched },
     }));
   };
 
@@ -759,7 +826,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
     setPlanningBusy((busy) => new Set(busy).add(project.id));
     save(async () => {
       try {
-        const planning = await manageApi.setPlanning(project.id, planningBody);
+        const planning = await conflict.savePlanning(project.id, draft.baseline, planningBody);
         setData((current) => current ? { ...current, projects: current.projects.map((item) => item.id === project.id ? { ...item, planning } : item) } : current);
         setPlanningEdits((edits) => { const next = { ...edits }; delete next[project.id]; return next; });
         setNotice({ tone: "ok", text: `저장됨 · 프로젝트 설정 (${project.name})` });
@@ -773,12 +840,15 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
   if (!data) return <div className="usage-loading">관리 표를 불러오는 중…</div>;
 
   const groupById = new Map(data.groups.map((group) => [group.id, group]));
-  // 사람별 몫·남은 몫은 크레딧 설정 원문에 있다(이메일 기준). 구서버 응답엔 없으므로 undefined 를 그대로 다룬다.
-  const creditMembers = new Map((data.credit?.members || []).map((member) => [member.email, member]));
-  const quotaOf = (email: string) => creditMembers.get(email);
   // ★서버가 몫 계약을 모르면(구서버) 저장해도 조용히 무시된다 — 칸을 잠그고 이유를 적는다(Codex 코드 리뷰).
-  const quotaSupported = (data.credit?.members || []).some((member) => member.quota_source !== undefined);
+  //  09-23 '÷ 인원' 서버도 quota_source 는 주므로, 인당 규칙 서버의 표식(그룹의 quota_total)까지 있어야 연다
+  //  — 옛 서버의 몫·남은 몫을 인당 값처럼 보여 주지 않는다(Codex 설계 검토 2026-09-29).
+  const quotaSupported = (data.credit?.members || []).some((member) => member.quota_source !== undefined)
+    && (data.credit?.groups || []).every((group) => group.quota_total !== undefined);
   const quotaLock = quotaSupported ? "" : "공유 서버를 업데이트하면 사람별 몫을 정할 수 있습니다";
+  // 사람별 몫·남은 몫은 크레딧 설정 원문에 있다(이메일 기준). 구서버면 보이지 않는다(undefined).
+  const creditMembers = new Map((data.credit?.members || []).map((member) => [member.email, member]));
+  const quotaOf = (email: string) => (quotaSupported ? creditMembers.get(email) : undefined);
   const rows = data.rows.filter((row) => {
     if (sheet === "projects") return true;
     if (!matchesMemberQuery(row, query)) return false;
@@ -817,7 +887,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
   const cycleRange = data.cycle_start && data.cycle_end ? `${data.cycle_start} ~ ${data.cycle_end}` : "—";
   const topupEditorRow = (draft: DraftTopup, label: string) => (
     <tr key={`editor-${draft.id}`} className="mtable-topup-row" aria-label={label}>
-      <td><input type="date" aria-label="충전 날짜" value={draft.day} onChange={(event) => setTopup({ ...draft, day: event.target.value })} /></td>
+      <td><input type="date" aria-label="충전 날짜" disabled={creditBusy} value={draft.day} onChange={(event) => setTopup({ ...draft, day: event.target.value })} /></td>
       <td><span className="mtable-chip mtable-charge-kind emergency">긴급 충전</span></td>
       <td>—</td>
       <td>
@@ -825,12 +895,13 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
           type="text"
           inputMode="numeric"
           aria-label="충전 크레딧"
+          disabled={creditBusy}
           value={formatThousands(draft.creditsInput)}
           placeholder="크레딧"
           onChange={(event) => setTopup({ ...draft, creditsInput: stripThousands(event.target.value) })}
         />
       </td>
-      <td><input aria-label="충전 메모" value={draft.note} placeholder="메모 (선택)" onChange={(event) => setTopup({ ...draft, note: event.target.value })} /></td>
+      <td><input aria-label="충전 메모" disabled={creditBusy} value={draft.note} placeholder="메모 (선택)" onChange={(event) => setTopup({ ...draft, note: event.target.value })} /></td>
       <td>
         <div className="mtable-topup-actions">
           <button type="button" className="mtable-add" disabled={creditBusy} onClick={saveTopup}>{creditBusy ? "저장 중…" : "저장"}</button>
@@ -866,6 +937,14 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
 
   return (
     <div className="mtable">
+      {conflict.dialog}
+      {retries.map((retry) => <div className="mtable-notice bad" role="status" key={retry.key}>
+        미저장 입력: {retry.label}
+        <button type="button" disabled={creditBusy || conflict.active} onClick={() => {
+          setCreditBusy(true);
+          save(async () => { try { await retry.operation(); } finally { setCreditBusy(false); } }, retry);
+        }}>입력 유지 · 다시 저장</button>
+      </div>)}
       <div className="mtable-bar">
         <b>{sheet === "members" ? "멤버 관리" : sheet === "projects" ? "프로젝트 관리" : sheet === "groups" ? "그룹 관리" : "크레딧 관리"}</b>
         <span className="mtable-hint">
@@ -1120,8 +1199,8 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                     <th>그룹</th>
                     <th className="num">멤버</th>
                     <th>한도 주기</th>
-                    <th className="num">한도</th>
-                    <th className="num">남은 양</th>
+                    <th className="num">인당 한도</th>
+                    <th className="num" title="몫 합계 − 이번 기간 사용(이월 없음)">남은 양</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1134,6 +1213,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                             color={groupColor(group.color)}
                             disabled={!canGroup || creditBusy || Boolean(groupEditor)}
                             onCommit={(color) => saveGroupColor(group.id, color)}
+                            onEditingChange={(editing) => { if (editing) inlineDirtyRef.current.add(`color:${group.id}`); else inlineDirtyRef.current.delete(`color:${group.id}`); }}
                           />
                           {canGroup ? (
                             <button type="button" className="mtable-chip mtable-group-chip" style={groupColorStyle(group.color)} disabled={creditBusy} onClick={() => openGroupEditor(group.id)} title="그룹 편집">{group.name}</button>
@@ -1159,7 +1239,8 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                           label={group.name}
                           value={group.monthly_limit}
                           disabled={!canGroup || creditBusy || Boolean(groupEditor)}
-                          onCommit={(value) => saveGroupTerms(group.id, value, group.limit_period ?? "month")}
+                          onCommit={(value, accepted) => saveGroupTerms(group.id, value, group.limit_period ?? "month", accepted)}
+                          onDirtyChange={(dirty) => { if (dirty) inlineDirtyRef.current.add(group.id); else inlineDirtyRef.current.delete(group.id); }}
                         />
                       </td>
                       <td className="num">{group.remaining === null ? "제한 없음" : `${credits(group.remaining)} cr`}</td>
@@ -1194,7 +1275,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                     <th className="mtable-sticky">이름</th>
                     <th>이메일</th>
                     <th className={canGroup ? "ed" : "ro"} title={lock(canGroup, "PM(프로젝트 생성 권한)만 바꿀 수 있습니다")}>배정</th>
-                    <th className="ro num">남은 양 / 한도</th>
+                    <th className="ro num">인당 한도</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1227,7 +1308,8 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                           )}
                         </td>
                         <td className="ro num">
-                          {!group ? "—" : group.monthly_limit === null ? "제한 없음" : `${credits(group.remaining ?? 0)} / ${credits(group.monthly_limit)}`}
+                          {/* 그룹의 인당 한도만 보인다 — 사람별 몫·남은 몫은 PM 권한인 '크레딧' 시트에만 있다. */}
+                          {!group ? "—" : group.monthly_limit === null ? "제한 없음" : `${credits(group.monthly_limit)} ${periodSuffix(group.limit_period)}`}
                         </td>
                       </tr>
                     );
@@ -1273,10 +1355,11 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                           label={row.name}
                           field="몫"
                           decimals
-                          placeholder={quotaOf(row.email)?.quota_effective != null ? `자동 ${autoShareLabel(quotaOf(row.email)!.quota_effective)}` : "자동"}
+                          placeholder={quotaOf(row.email)?.quota_effective != null ? `그룹 ${autoShareLabel(quotaOf(row.email)!.quota_effective)}` : "그룹"}
                           value={quotaOf(row.email)?.quota ?? null}
                           disabled={!canGroup || !quotaSupported || creditBusy || Boolean(groupEditor)}
-                          onCommit={(value) => saveMemberQuota(row.email, value)}
+                          onCommit={(value, accepted) => saveMemberQuota(row.email, value, accepted)}
+                          onDirtyChange={(dirty) => { if (dirty) inlineDirtyRef.current.add(row.email); else inlineDirtyRef.current.delete(row.email); }}
                         />
                       )}
                     </td>
@@ -1333,6 +1416,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                         value={data.credit.plan.recurring_topup ?? null}
                         disabled={!canGroup || !quotaSupported || creditBusy || Boolean(groupEditor)}
                         onCommit={saveRecurringTopup}
+                        onDirtyChange={(dirty) => { if (dirty) inlineDirtyRef.current.add("recurring"); else inlineDirtyRef.current.delete("recurring"); }}
                       />
                     </td>
                     <td>

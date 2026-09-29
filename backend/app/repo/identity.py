@@ -548,6 +548,8 @@ _REMAP_EXEMPT: dict[tuple[str, str], str] = {
     ("account", "creator_uid"): "remap authority/소스 — 이 값 기준으로 acct:<email>→user_ 매핑을 만든다",
     ("generation_event", "actor_uid"): "append-only 장애 이력 actor — 이메일 기반 임시 신원은 저장 전에 비가역 지문화",
     ("audit_event", "actor_uid"): "append-only 감사 actor — 당시 기록을 수정하지 않고 이메일 기반 신원은 비가역 지문화",
+    ("project_planning", "updated_by"): "저장 당시 감사 actor 스냅샷 — 이메일 기반 임시 신원은 비가역 지문화",
+    ("workspace_credit_plan", "updated_by"): "저장 당시 감사 actor 스냅샷 — 이메일 기반 임시 신원은 비가역 지문화",
     ("super_admin_session", "subject_uid"): (
         "10분 권한 발급 당시의 서명 토큰 sub 스냅샷 — 신원 remap 시 토큰과 DB를 서로 다르게 "
         "고치지 않고 즉시 fail-closed 무효화"

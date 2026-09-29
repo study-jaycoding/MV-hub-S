@@ -2,7 +2,8 @@ import { formatCredits } from "./formatCredits";
 
 // 크레딧 풀 · 그룹 한도 · 잔액 추이 — 타입과 순수 계산(대시보드 카드·프로젝트 설정 창 공용).
 // 힉스필드가 한도를 강제하고 우리는 보여주기·경고만 한다(Jay 2026-09-10). 서버 계약은
-// backend/app/repo/manage_credit_plan.py — 남은 양(이월 포함)·미상 건수는 서버가 계산해 준다.
+// backend/app/repo/manage_credit_plan.py — 몫·남은 양·미상 건수는 서버가 계산해 준다.
+// ★그룹 한도 = **인당** 한도(Jay 2026-09-29). 그룹 남은 양 = 몫 합계 − 이번 기간 사용(이월 없음).
 
 export interface BalancePoint {
   day: string; // YYYY-MM-DD (서버 KST)
@@ -29,7 +30,7 @@ export interface CreditTopup {
   note: string | null;
 }
 
-export type LimitPeriod = "day" | "week" | "month"; // 세 주기 모두 이월된다(안 쓴 몫이 다음 기간으로 넘어간다)
+export type LimitPeriod = "day" | "week" | "month"; // 기간마다 몫이 새로 시작한다(이월 없음, 2026-09-29)
 
 export const DEFAULT_GROUP_COLOR = "#64748b";
 export const GROUP_COLOR_PALETTE = [
@@ -66,33 +67,35 @@ export function cycleLabel(view: { month: string; cycle_start?: string; cycle_en
 export interface CreditGroupSummary {
   id: string;
   name: string;
-  monthly_limit: number | null; // null = ∞
+  monthly_limit: number | null; // **인당** 한도 · null = ∞
   limit_period?: LimitPeriod; // 구서버는 없음(=month)
   used_period?: number; // 한도 주기 안 사용(month 면 used_month 와 같음)
   unknown_period?: number;
   my_used_period?: number; // 멤버 뷰만
   my_unknown_period?: number;
-  base_start?: string; // 재기준일(YYYY-MM-DD) — 매니저 설정 창만
+  base_start?: string; // 옛 이월 재기준점 — 2026-09-29 부터 동결(쓰지 않는다)
   base_balance?: number;
   member_count: number;
   used_month: number;
   unknown_month: number;
-  remaining: number | null; // 이월 포함 · ∞ 면 null
+  remaining: number | null; // 몫 합계 − 이번 기간 사용(이월 없음) · ∞ 면 null
   unknown_since_base: number;
   estimated: boolean; // 미상 건이 섞여 추정치
   my_used_month?: number; // 멤버 뷰만
   my_unknown_month?: number;
   allowed_models?: string[]; // 그룹이 쓸 수 있는 모델(job_type, **빈 목록=제한 없음**) — 구서버는 없음
   color?: string | null; // 그룹 표시색(#rrggbb) · 구서버/NULL은 기본색
-  // 사람별 몫 나누기(2026-09-23) — 구서버는 없음
+  // 사람별 몫(2026-09-23) — 구서버는 없음
   quota_fixed?: number; // 손으로 덮어쓴 몫의 합
-  quota_auto?: number | null; // 나머지 사람 한 명 몫(null = 나눌 수 없음: 무제한이거나 자동 인원 0명)
-  quota_over?: boolean; // 덮어쓴 합이 그룹 한도를 넘음(경고만)
-  // 멤버 뷰만 — 내 몫은 **이번 기간** 기준이고, 그룹 이월은 group_carryover 로 따로 온다
+  quota_auto?: number | null; // 덮어쓰지 않은 사람의 몫 = 인당 한도(null = 무제한)
+  // 몫 합계(Σ 사람별 몫, null = 무제한). **인당 규칙 서버(2026-09-29)만** 준다 — 이 키가 없으면 옛 '÷ 인원' 서버다.
+  quota_total?: number | null;
+  quota_over?: boolean; // 옛 계약 — 인당 규칙 서버는 늘 false
+  // 멤버 뷰만 — 내 몫은 **이번 기간** 기준
   my_quota?: number | null;
   my_quota_source?: "manual" | "auto" | "none";
   my_remaining?: number | null; // 내 몫 − 이번 기간 내 사용(음수 = 초과)
-  group_carryover?: number; // 지난 기간에서 그룹으로 넘어온 여유분
+  group_carryover?: number; // 옛 계약 — 그룹 이월 폐기로 늘 0
 }
 
 /** GET /api/manage/credit-plan/my-models — 본인 그룹이 쓸 수 있는 모델(생성 창·캔버스 모델 노드가 거르는 근거). */
@@ -116,7 +119,7 @@ export interface CreditPlanView {
   cycle_start?: string; // 이번 충전 달 범위(기준일 기준) — 예: 09-15 ~ 10-14
   cycle_end?: string;
   configured: boolean;
-  revision?: number; // 매니저만 — 대시보드에서 '추정 → 힉스필드 값 맞추기' 저장에 쓴다
+  revision?: number; // 매니저만
   pool?: CreditPool; // 매니저만
   groups?: CreditGroupSummary[]; // 매니저만
   unassigned?: CreditUnassigned; // 매니저만
@@ -133,7 +136,7 @@ export interface CreditPlanMember {
   group_id: string | null;
   // 사람별 몫(2026-09-23) — 구서버는 없음
   quota?: number | null; // 손으로 덮어쓴 값(null = 자동)
-  quota_effective?: number | null; // 실제 적용되는 몫(자동이면 계산값)
+  quota_effective?: number | null; // 실제 적용되는 몫(자동이면 그룹 인당 한도)
   quota_source?: "manual" | "auto" | "none";
   used_period?: number; // 이번 기간(그룹 주기) 내 사용
   unknown_period?: number;
@@ -155,6 +158,7 @@ export interface CreditPlanSettings {
     note: string | null;
     revision: number;
     updated_at: string | null;
+    updated_by?: string | null;
   };
   groups: CreditGroupSummary[];
   members: CreditPlanMember[];
@@ -165,8 +169,8 @@ export interface CreditPlanSaveBody {
   revision: number;
   note: string | null;
   topup_day?: number; // 매월 충전 기준일 · 없으면 그대로
-  // allowed_models/color: 키를 빼면 서버가 기존값을 유지한다(구버전 앱·'추정' 맞추기가 설정을 지우지 않게).
-  groups?: { id?: string; name: string; monthly_limit: number | null; limit_period: LimitPeriod; remaining_override?: number | null; allowed_models?: string[]; color?: string | null }[]; // 없으면그룹·배정 그대로
+  // allowed_models/color: 키를 빼면 서버가 기존값을 유지한다(구버전 앱이 설정을 지우지 않게).
+  groups?: { id?: string; name: string; monthly_limit: number | null; limit_period: LimitPeriod; allowed_models?: string[]; color?: string | null }[]; // 없으면그룹·배정 그대로
   // quota: 키를 빼면 서버가 기존 몫을 유지하고, null 을 보내야 자동으로 돌아간다(구버전 저장이 몫을 지우지 않게).
   //  group_id 도 같은 규칙이라 '몫만 바꾸기'는 group_id 키 없이 보낸다.
   members?: { email: string; group_id?: string | null; quota?: number | null }[];
@@ -177,8 +181,8 @@ export interface CreditPlanSaveBody {
 // ── 표시 판정 ──────────────────────────────────────────────────────────────
 export type LimitTone = "none" | "ok" | "warn" | "bad";
 
-/** 남은 양 기준 경고색 — 이월이 있으면 '이번 달 사용/한도' 100% 가 소진이 아니라서(코덱스 P2) 남은 양으로 판정한다.
- *  bad = 다 씀(0 이하), warn = 한도의 20% 이하, ok = 그 외, none = ∞. */
+/** 남은 양 기준 경고색. limit 는 그 남은 양의 기준 몫(그룹이면 몫 합계, 사람이면 내 몫).
+ *  bad = 다 씀(0 이하), warn = 몫의 20% 이하, ok = 그 외, none = ∞. */
 export function remainingTone(remaining: number | null, limit: number | null): LimitTone {
   if (limit == null || remaining == null) return "none";
   if (remaining <= 0) return "bad";
@@ -186,16 +190,25 @@ export function remainingTone(remaining: number | null, limit: number | null): L
   return "ok";
 }
 
-/** 이번 달 사용 / 월 한도(%). 한도 없음·0 이면 null. */
+/** 기간 사용 / 기준 몫(%). 몫 없음·0 이면 null. 그룹이면 몫 합계(quota_total)를 넘긴다. */
 export function usagePercent(used: number, limit: number | null): number | null {
   if (!limit || limit <= 0) return null;
   return Math.round((used / limit) * 100);
 }
 
-/** 유한한 **매월** 한도의 합(∞·매일·매주 그룹 제외). 충전액(월)과 비교해 "한도 합이 충전을 넘음" 경고에 쓴다. */
-export function limitTotal(groups: { monthly_limit: number | null; limit_period?: LimitPeriod }[]): number {
+/** 사용률 칸 문구 — 기준 몫이 null(무제한)이면 "∞", 0(쓸 몫 없음: 인당 한도 0·멤버 0명)이면 "—", 그 밖엔 "N%".
+ *  0 을 "∞" 로 그리면 쓸 몫이 없는 그룹이 '제한 없음'처럼 보인다(Codex 코드 리뷰 2026-09-29). */
+export function usagePercentLabel(used: number, base: number | null): string {
+  if (base == null) return "∞";
+  const percent = usagePercent(used, base);
+  return percent == null ? "—" : `${percent}%`;
+}
+
+/** 유한한 **매월** 그룹의 몫 합계(∞·매일·매주 그룹 제외) — 대시보드 머리의 '몫 합' 표시용.
+ *  충전액을 넘어도 정상이다(Jay 2026-09-29: 지갑은 매니저가 충전으로 채운다) — 경고에 쓰지 않는다. */
+export function limitTotal(groups: { quota_total?: number | null; limit_period?: LimitPeriod }[]): number {
   return groups.reduce(
-    (sum, group) => sum + ((group.limit_period ?? "month") === "month" ? group.monthly_limit ?? 0 : 0),
+    (sum, group) => sum + ((group.limit_period ?? "month") === "month" ? group.quota_total ?? 0 : 0),
     0,
   );
 }
@@ -276,8 +289,7 @@ export function formatThousands(digits: string): string {
   return clean ? Number(clean).toLocaleString("en-US") : "";
 }
 
-/** 자동으로 나눈 몫 표기 — 나누어떨어지지 않으면 `≈` 를 붙인다(33.333… 을 33.33 으로 보여 주므로).
- *  사람이 직접 정한 몫은 정확한 값이라 이 표기를 쓰지 않는다. */
+/** 몫 표기 — 둘째 자리로 줄여 보여 줄 때 값이 달라지면 `≈` 를 붙인다(33.333… 을 33.33 으로 보여 주므로). */
 export function autoShareLabel(value: number | null | undefined): string {
   if (value == null) return "—";
   const shown = formatCredits(value);
@@ -343,6 +355,8 @@ export interface DraftTopup {
 }
 
 export interface CreditPlanDraft {
+  baseline?: CreditPlanSettings; // Fixed until this draft's edits are saved or explicitly resolved.
+  topupBaseline?: CreditPlanSettings; // Independent row saves must not rebase unsaved groups.
   loadedFor: string; // workspaceId
   revision: number;
   monthlyTopup: number | null; // 파생값(예산 한도 매월 합) — 표시만
@@ -356,6 +370,8 @@ export interface CreditPlanDraft {
 
 export function draftFromSettings(settings: CreditPlanSettings): CreditPlanDraft {
   return {
+    baseline: settings,
+    topupBaseline: settings,
     loadedFor: settings.workspace_id,
     revision: settings.plan.revision,
     monthlyTopup: settings.plan.monthly_topup,
@@ -417,23 +433,6 @@ export function validateDraft(draft: CreditPlanDraft): string | null {
   return null;
 }
 
-/** 대시보드 '추정 → 힉스필드 값 맞추기' 저장 본문 — 그룹 목록은 그대로(배정은 안 보내 서버가 유지), 한 그룹만 남은 양을
- *  사용 모델은 일부러 싣지 않는다 — 키가 없으면 서버가 기존값을 유지하므로, 오래된 대시보드 응답이 다른 매니저의 변경을 덮지 않는다.R 로.
- *  view 는 매니저 응답(revision·groups 포함)이어야 한다. */
-export function overrideBody(view: CreditPlanView, groupId: string, remaining: number): CreditPlanSaveBody {
-  return {
-    revision: view.revision ?? 0,
-    note: null,
-    groups: (view.groups || []).map((group) => ({
-      id: group.id,
-      name: group.name,
-      monthly_limit: group.monthly_limit,
-      limit_period: group.limit_period ?? "month",
-      remaining_override: group.id === groupId ? remaining : null,
-    })),
-  };
-}
-
 /** 초안 → 저장 본문. 새 그룹도 클라이언트 id 를 그대로 보내므로 멤버 배정을 같은 저장에 싣는다.
  *  초안에서 사라진 그룹을 가리키는 배정은 해제(null)로 보낸다. */
 export function draftToBody(draft: CreditPlanDraft): CreditPlanSaveBody {
@@ -479,13 +478,13 @@ export function topupsOnlyBody(draft: CreditPlanDraft, topups: DraftTopup[]): Cr
   };
 }
 
-/** 줄 단위 저장 응답을 초안에 반영 — 그룹·배정 초안은 그대로, revision·충전 기록·월 충전·기준일만 서버값으로. */
+/** 충전 저장만 확정한다. 다른 초안의 revision·기준일은 유지해 다음 저장에서도 충돌을 검사한다. */
 export function mergeTopupsFromServer(draft: CreditPlanDraft, settings: CreditPlanSettings): CreditPlanDraft {
   return {
     ...draft,
-    revision: settings.plan.revision,
+    topupBaseline: settings,
+    baseline: draft.baseline ? { ...draft.baseline, topups: settings.topups } : undefined,
     monthlyTopup: settings.plan.monthly_topup,
-    topupDay: settings.plan.topup_day ?? draft.topupDay,
     topups: (settings.topups || []).map((topup) => ({
       id: topup.id, day: topup.day, creditsInput: String(topup.credits), note: topup.note || "",
     })),

@@ -2,9 +2,10 @@
 
 힉스필드는 그룹 한도까지만 알려 주고 개인은 자기 몫을 못 본다. 우리 앱이 그 칸을 채운다.
 여기서 고정하는 것:
-- 몫 = 덮어쓴 값, 없으면 (그룹 한도 − 고정분) ÷ 자동 인원. 한도를 올리면 **즉시** 반영된다(Jay 예시 4,000→5,000).
-- 남은 양 = 내 몫 − **이번 기간** 내 사용. 개인에겐 이월이 없다(그룹 이월은 'group_carryover' 로 따로).
-- 경계: 자동 인원 0명·무제한·한도 0·고정분 초과·소수 분배.
+- 몫 = 덮어쓴 값, 없으면 **그룹 한도 그대로**(인당 — Jay 2026-09-29, 인원으로 나누지 않는다).
+  한도를 올리면 **즉시** 반영된다(Jay 예시 4,000→5,000).
+- 남은 양 = 내 몫 − **이번 기간** 내 사용. 개인도 그룹도 이월이 없다(group_carryover 는 늘 0).
+- 경계: 모두 덮어씀·무제한·한도 0·덮어쓴 값이 한도보다 큼·멤버 0명·소수 몫.
 - **저장이 몫을 지우지 않는다**: 구버전 본문(몫 키 없음)·그룹 한 칸 저장·그룹 이동·그룹 삭제·추정 맞추기.
 """
 
@@ -107,18 +108,23 @@ class CreditQuotaTests(unittest.TestCase):
         return next(m for m in settings["members"] if m["email"] == email)
 
     # ── 계산 규칙 ──
-    def test_auto_share_splits_limit_by_head_count(self) -> None:
+    def test_group_limit_is_each_persons_share(self) -> None:
+        """Jay 실례: artist_test 한도 4,000·7명 → 각자 4,000(옛 규칙은 571.43)."""
         s = self._group(900, ["a@x", "b@x", "c@x"])
-        self.assertEqual(s["groups"][0]["quota_auto"], 300)
-        self.assertEqual(self._member_row(s, "a@x")["quota_effective"], 300)
+        group = s["groups"][0]
+        self.assertEqual((group["quota_auto"], group["quota_total"]), (900, 2700))
+        self.assertEqual(self._member_row(s, "a@x")["quota_effective"], 900)
         self.assertEqual(self._member_row(s, "a@x")["quota_source"], "auto")
 
-    def test_manual_override_takes_the_rest_from_the_others(self) -> None:
+    def test_manual_override_does_not_change_the_others(self) -> None:
         s = self._group(1000, ["a@x", "b@x", "c@x"], quotas={"a@x": 600})
         group = s["groups"][0]
-        self.assertEqual((group["quota_fixed"], group["quota_auto"], group["quota_over"]), (600, 200, False))
+        self.assertEqual(
+            (group["quota_fixed"], group["quota_auto"], group["quota_total"], group["quota_over"]),
+            (600, 1000, 2600, False),
+        )
         self.assertEqual(self._member_row(s, "a@x")["quota_source"], "manual")
-        self.assertEqual(self._member_row(s, "b@x")["quota_effective"], 200)
+        self.assertEqual(self._member_row(s, "b@x")["quota_effective"], 1000)
 
     def test_raising_the_limit_shows_up_right_away(self) -> None:
         """Jay 예시: 4,000 을 다 썼는데 한도를 5,000 으로 올리면 남은 양이 1,000 이 된다."""
@@ -141,30 +147,27 @@ class CreditQuotaTests(unittest.TestCase):
         self.assertEqual(view["my_remaining"], -30)
 
     def test_boundaries(self) -> None:
-        with self.subTest("자동 인원 0명 — 나눗셈을 하지 않는다"):
+        with self.subTest("모두 덮어씀 — 몫 합계는 덮어쓴 값의 합, 기본 몫은 한도 그대로"):
             s = self._group(1000, ["a@x"], quotas={"a@x": 400})
-            self.assertIsNone(s["groups"][0]["quota_auto"])
-        with self.subTest("고정분이 한도를 넘으면 자동 몫 0 + 경고"):
+            group = s["groups"][0]
+            self.assertEqual((group["quota_auto"], group["quota_total"]), (1000, 400))
+        with self.subTest("덮어쓴 값이 한도보다 커도 경고하지 않는다(인당 규칙에선 뜻이 없다)"):
             s = self._group(500, ["a@x", "b@x"], quotas={"a@x": 900})
             group = s["groups"][0]
-            self.assertEqual((group["quota_auto"], group["quota_over"]), (0, True))
+            self.assertEqual((group["quota_auto"], group["quota_total"], group["quota_over"]), (500, 1400, False))
         with self.subTest("한도 0 — 쓸 몫이 없다"):
             s = self._group(0, ["a@x", "b@x"])
-            self.assertEqual(s["groups"][0]["quota_auto"], 0)
-        with self.subTest("무제한 그룹 — 자동 몫은 없고 덮어쓴 사람만 몫이 있다"):
+            self.assertEqual((s["groups"][0]["quota_auto"], s["groups"][0]["quota_total"]), (0, 0))
+        with self.subTest("무제한 그룹 — 기본 몫·몫 합계는 없고 덮어쓴 사람만 몫이 있다"):
             s = self._group(None, ["a@x", "b@x"], quotas={"a@x": 300})
             self.assertIsNone(s["groups"][0]["quota_auto"])
+            self.assertIsNone(s["groups"][0]["quota_total"])
+            self.assertIsNone(s["groups"][0]["remaining"])
             self.assertEqual(self._member_row(s, "a@x")["quota_effective"], 300)
             self.assertIsNone(self._member_row(s, "b@x")["quota_effective"])
-        with self.subTest("소수 — 표시는 33.33 이지만 계산은 33.333… 그대로다"):
-            s = self._group(100, ["a@x", "b@x", "c@x"])
-            self.assertEqual(s["groups"][0]["quota_auto"], 33.33)  # 화면 값(둘째 자리)
-            # ★계산은 깎인 값을 쓰면 안 된다(Codex 코드 리뷰): 33.33 으로 먼저 줄이면 세 사람 합이 99.99 가 되고
-            #  33.335 를 쓴 사람의 남은 양이 −0.01 로 보인다. 저장소 내부 값은 원값이어야 한다.
-            from app.repo.manage_credit_plan import _quota_split
-
-            raw = _quota_split({"monthly_limit": 100}, {"a@x", "b@x", "c@x"}, {})
-            self.assertAlmostEqual(raw["quota_auto"] * 3, 100.0, places=9)
+        with self.subTest("멤버 0명 — 몫 합계 0"):
+            s = self._group(700, [])
+            self.assertEqual((s["groups"][0]["quota_total"], s["groups"][0]["remaining"]), (0, 0))
         with self.subTest("숫자가 아니거나 음수면 400"):
             for bad in (-1, "x", float("inf")):
                 with self.assertRaises(ValueError):
@@ -172,26 +175,27 @@ class CreditQuotaTests(unittest.TestCase):
 
     def test_remaining_uses_unrounded_share(self) -> None:
         """몫 33.333… 인 사람이 33.335 를 쓰면 남은 양은 **0 근처**다(−0.0017).
-        몫을 33.33 으로 먼저 깎고 빼면 −0.01 이 되어 '초과'로 보인다(Codex 코드 리뷰가 든 예)."""
-        self._group(100, ["a@x", "b@x", "c@x"])
+        몫을 33.33 으로 먼저 깎고 빼면 −0.01 이 되어 '초과'로 보인다(Codex 코드 리뷰가 든 예).
+        인당 규칙에선 나눗셈이 없으니 소수 몫은 덮어쓰기로 만든다."""
+        self._group(100, ["a@x", "b@x", "c@x"], quotas={"a@x": 100 / 3})
         manage_db.upsert_facts("a@x", "u_a", [_fact("g1", "a@x", "u_a", 33.335)])
         view = plan_repo.plan_view("ws1", viewer=("u_a", "a@x"))["my_group"]
         self.assertEqual(view["my_quota"], 33.33)  # 화면 값은 둘째 자리
         self.assertEqual(view["my_remaining"], 0)  # 깎인 몫으로 계산하면 −0.01
 
-    def test_personal_quota_has_no_carryover_but_group_does(self) -> None:
-        """개인 몫은 이번 기간만 본다(Jay). 그룹의 이월은 'group_carryover' 로 따로 알려 준다."""
+    def test_neither_person_nor_group_carries_over(self) -> None:
+        """개인·그룹 모두 이번 기간만 본다(Jay 2026-09-29). 옛 base_* 가 어제로 남아 있어도 이월이 생기지 않는다."""
         s = self._group(100, ["a@x"])
         gid = s["groups"][0]["id"]
-        with db.get_connection() as conn:  # 그룹이 어제부터 있었던 것으로 — 어제 몫 100 이 이월된다
+        with db.get_connection() as conn:  # 옛 규칙이면 어제 몫 100 이 이월됐을 상태
             yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
             conn.execute(
                 "UPDATE workspace_credit_group SET base_start=?, limit_period='day' WHERE id=?", (yesterday, gid)
             )
         view = plan_repo.plan_view("ws1", viewer=("u_a", "a@x"))["my_group"]
-        self.assertEqual(view["my_quota"], 100)  # 내 몫은 오늘치 100 뿐
-        self.assertEqual(view["remaining"], 200)  # 그룹은 이월 포함 200
-        self.assertEqual(view["group_carryover"], 100)
+        self.assertEqual(view["my_quota"], 100)
+        self.assertEqual(view["remaining"], 100)
+        self.assertEqual(view["group_carryover"], 0)
 
     # ── 저장이 몫을 지우지 않는다(Codex 치명 ②) ──
     def test_quota_survives_other_saves(self) -> None:
@@ -258,7 +262,7 @@ class CreditQuotaTests(unittest.TestCase):
         with self.subTest("명시적 null 은 자동으로 되돌린다"):
             out = put({"email": "a@x", "quota": None})
             self.assertIsNone(self._member_row(out, "a@x")["quota"])
-            self.assertEqual(self._member_row(out, "a@x")["quota_effective"], 300)
+            self.assertEqual(self._member_row(out, "a@x")["quota_effective"], 900)
 
     def test_quota_null_resets_to_auto(self) -> None:
         s = self._group(900, ["a@x", "b@x", "c@x"], quotas={"a@x": 500})
@@ -269,7 +273,7 @@ class CreditQuotaTests(unittest.TestCase):
             members=[{"email": "a@x", "quota": None}],  # 소속은 안 건드리고 몫만 자동으로
         )
         self.assertIsNone(self._member_row(s, "a@x")["quota"])
-        self.assertEqual(self._member_row(s, "a@x")["quota_effective"], 300)
+        self.assertEqual(self._member_row(s, "a@x")["quota_effective"], 900)
 
     # ── 정기 충전(손 입력 우선, 비면 파생) ──
     def test_recurring_topup_manual_wins_and_null_falls_back(self) -> None:

@@ -42,7 +42,10 @@ _SCHEMA = (
         budget_credits INTEGER,
         budget_period  TEXT NOT NULL DEFAULT 'month',
         archive_after_days INTEGER NOT NULL DEFAULT 30,
-        note           TEXT
+        note           TEXT,
+        revision       INTEGER NOT NULL DEFAULT 0,
+        updated_by     TEXT,
+        updated_at     TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS project_folder_link (
         project_id    TEXT PRIMARY KEY,
@@ -164,6 +167,7 @@ _SCHEMA = (
         topup_day INTEGER NOT NULL DEFAULT 1,
         recurring_topup REAL,
         revision INTEGER NOT NULL DEFAULT 1,
+        updated_by TEXT,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )""",
     """CREATE TABLE IF NOT EXISTS workspace_credit_topup (
@@ -628,16 +632,18 @@ def ensure_manage_schema(conn) -> None:
         conn.execute("ALTER TABLE workspace_credit_group ADD COLUMN allowed_models TEXT NOT NULL DEFAULT '[]'")
     if group_columns and "color" not in group_columns:  # 그룹 표시색(#rrggbb) · NULL=기본색
         conn.execute("ALTER TABLE workspace_credit_group ADD COLUMN color TEXT")
-    # 사람별 몫(덮어쓰기) — NULL 이면 그룹 한도를 자동 인원으로 나눈 몫을 쓴다(CREDIT_QUOTA_DESIGN §2).
+    # 사람별 몫(덮어쓰기) — NULL 이면 그룹 인당 한도를 쓴다(CREDIT_QUOTA_DESIGN 09-29 절).
     member_columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_credit_group_member)")}
     if member_columns and "quota" not in member_columns:
         conn.execute("ALTER TABLE workspace_credit_group_member ADD COLUMN quota REAL")
     plan_columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_credit_plan)")}
-    if plan_columns and "topup_day" not in plan_columns:  # 매월 충전 기준일(1~31, 없는 날짜는 월말) — 예산 '매월'·그룹 이월의 달 경계
+    if plan_columns and "topup_day" not in plan_columns:  # 매월 충전 기준일(1~31, 없는 날짜는 월말) — 예산 '매월'·그룹 기간의 달 경계
         conn.execute("ALTER TABLE workspace_credit_plan ADD COLUMN topup_day INTEGER NOT NULL DEFAULT 1")
     # 정기 충전 손 입력 — NULL 이면 프로젝트 '매월 예산' 합에서 파생(종전 동작).
     if plan_columns and "recurring_topup" not in plan_columns:
         conn.execute("ALTER TABLE workspace_credit_plan ADD COLUMN recurring_topup REAL")
+    if plan_columns and "updated_by" not in plan_columns:
+        conn.execute("ALTER TABLE workspace_credit_plan ADD COLUMN updated_by TEXT")
 
     task_columns = {row[1] for row in conn.execute("PRAGMA table_info(project_task)")}
     for column in ("sequence", "description", "folder_path", "source_last_seen_at"):
@@ -677,6 +683,11 @@ def ensure_manage_schema(conn) -> None:
     _ensure_credit_transaction_identity(conn)
 
     planning_columns = {row[1] for row in conn.execute("PRAGMA table_info(project_planning)")}
+    if "revision" not in planning_columns:
+        conn.execute("ALTER TABLE project_planning ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+    for column in ("updated_by", "updated_at"):
+        if column not in planning_columns:
+            conn.execute(f"ALTER TABLE project_planning ADD COLUMN {column} TEXT")
     if "budget_period" not in planning_columns:
         conn.execute(
             "ALTER TABLE project_planning ADD COLUMN budget_period TEXT NOT NULL DEFAULT 'month'"

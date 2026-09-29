@@ -154,25 +154,94 @@ def record_audit_event(
     fields: Optional[list[str]] = None,
     details: Optional[dict[str, Any]] = None,
 ) -> str:
+    with get_connection() as conn:
+        return _record_audit_event(
+            conn, action, actor_uid=actor_uid, target_type=target_type,
+            target_id=target_id, project_id=project_id, fields=fields, details=details,
+        )
+
+
+def _record_audit_event(
+    conn: sqlite3.Connection,
+    action: str,
+    *,
+    actor_uid: Optional[str],
+    target_type: str,
+    target_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    fields: Optional[list[str]] = None,
+    details: Optional[dict[str, Any]] = None,
+) -> str:
+    """Use the caller's transaction; never open or commit a nested connection."""
     event_id = new_id()
     safe_fields = sorted({str(field)[:80] for field in (fields or []) if field})[:100]
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO audit_event"
-            "(id,action,actor_uid,target_type,target_id,project_id,fields,details) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (
-                event_id,
-                str(action)[:100],
-                safe_identity(actor_uid),
-                str(target_type)[:80],
-                safe_identity(target_id),
-                safe_identity(project_id),
-                json.dumps(safe_fields, ensure_ascii=False),
-                json.dumps(_safe_details(details), ensure_ascii=False),
-            ),
-        )
+    conn.execute(
+        "INSERT INTO audit_event"
+        "(id,action,actor_uid,target_type,target_id,project_id,fields,details) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (
+            event_id,
+            str(action)[:100],
+            safe_identity(actor_uid),
+            str(target_type)[:80],
+            safe_identity(target_id),
+            safe_identity(project_id),
+            json.dumps(safe_fields, ensure_ascii=False),
+            json.dumps(_safe_details(details), ensure_ascii=False),
+        ),
+    )
     return event_id
+
+
+def _edit_conflict_detail(
+    conn: sqlite3.Connection,
+    *,
+    latest: dict[str, Any],
+    latest_revision: int,
+    expected_revision: int,
+    action: str,
+    target_type: str,
+    target_id: str,
+    project_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Read scoped history in the same snapshot as editable settings, after authorization."""
+    from .identity import resolve_display_names
+
+    rows = conn.execute(
+        "SELECT actor_uid, fields, details, created_at FROM audit_event "
+        "WHERE action=? AND target_type=? AND target_id=? AND project_id IS ? "
+        "AND json_valid(details) AND json_type(details, '$.revision')='integer' "
+        "AND json_extract(details, '$.revision')>? AND json_extract(details, '$.revision')<=? "
+        "ORDER BY json_extract(details, '$.revision') DESC LIMIT 200",
+        (action, target_type, safe_identity(target_id), safe_identity(project_id),
+         expected_revision, latest_revision),
+    ).fetchall()
+    names = resolve_display_names(conn, {row["actor_uid"] for row in rows})
+    changes = []
+    complete = 0 <= expected_revision <= latest_revision
+    for row in reversed(rows):
+        details = json.loads(row["details"])
+        fields = json.loads(row["fields"])
+        name = _safe_scalar(names.get(row["actor_uid"]))
+        changes.append({
+            "revision": details["revision"],
+            "actor_uid": row["actor_uid"],
+            "actor_name": name if name and name != "<redacted>" else "팀원",
+            "fields": fields,
+            "created_at": row["created_at"],
+        })
+        complete = complete and details.get("fields_complete") is True
+    revisions = [change["revision"] for change in changes]
+    complete = complete and len(revisions) == latest_revision - expected_revision and all(
+        rev == expected_revision + i + 1 for i, rev in enumerate(revisions)
+    )
+    return {
+        "kind": "manage_edit_conflict",
+        "latest": latest,
+        "latest_revision": latest_revision,
+        "changes": changes,
+        "history_complete": complete,
+    }
 
 
 def list_audit_events(*, project_id: Optional[str] = None, limit: int = 200) -> list[dict[str, Any]]:

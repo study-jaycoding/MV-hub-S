@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-09-28
+updated: 2026-09-29
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -846,7 +846,7 @@ updated: 2026-09-28
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
-| `creditPlan.ts` | 순수 | 크레딧 풀·그룹 한도·이월·잔액 추이 타입 + 설정 초안 검증 | 약 415줄 |
+| `creditPlan.ts` | 순수 | 크레딧 풀·그룹 인당 한도·잔액 추이 타입 + 설정 초안 검증 | 약 415줄 |
 | `memberTable.ts` | 순수 | 관리 표 응답 타입 · 그룹 한 줄 저장 본문(`groupAssignBody` — 받은 그룹 전부 재전송·허용 모델 키 생략) · 역할 낙관 반영 | 약 83줄 |
 | `projectPlanning.ts` | 순수 | 프로젝트 예산 기간·입력 검증 |
 | `usageReport.ts` | 순수 | 사용량 CSV(주입 방지 포함)·출력 종류 집계 |

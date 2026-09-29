@@ -30,6 +30,7 @@ import { ManageAccount } from "./ManageAccount";
 import { SettingsPanel } from "./SettingsPanel";
 import { manageApi } from "../lib/manageApi";
 import { formatCredits } from "../lib/formatCredits";
+import { hasPersonalQuota, quotaUncertainty, useMyCreditQuota } from "../lib/myCreditQuota";
 import type { Account, ReportedHfStatus, Workspace, WorkspaceContext } from "../types";
 
 // 게이지 분모 규칙(Jay 지정): MILLIONVOLT(본사 공용 워크스페이스)는 고정 200,000.
@@ -225,7 +226,7 @@ export function AccountMenu({
   // 에서 같은 워크스페이스를 다시 조회하던 것 제거. 관리창에서 바뀐 예산은 다음 열기 때 갱신.
   const budgetFetchedWsRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!activeWsId || fixedMaxWs || manageEnabled === false) {
+    if (!activeWsId || fixedMaxWs || manageEnabled === false || workspaceContext.scope === "team") {
       // 관리 기능이 꺼진 서버엔 planning 라우트가 없다 — 프로젝트 수만큼 404 를 만들지 않는다.
       setBudgetMax(null);
       budgetFetchedWsRef.current = null;
@@ -249,14 +250,24 @@ export function AccountMenu({
     return () => {
       alive = false;
     };
-  }, [activeWsId, fixedMaxWs, open, manageEnabled]);
-  const gaugeMax = budgetMax ?? MONTHLY_CREDIT_MAX;
+  }, [activeWsId, fixedMaxWs, open, manageEnabled, workspaceContext.scope]);
+  const quotaWorkspaceId = manageEnabled !== false && workspaceContext.scope === "team"
+    ? workspaceContext.id || null : null;
+  const quotaState = useMyCreditQuota(quotaWorkspaceId, account?.email || provider?.email || "", open);
+  const myQuota = quotaState.value;
+  const personalQuota = hasPersonalQuota(myQuota) ? myQuota : null;
+  const uncertainty = quotaUncertainty(myQuota);
+  // 그룹 한도가 없으면(제한 없음) 내 몫이 없다 — 대신 워크스페이스 잔액을 남은 크레딧으로 보인다(Jay 2026-09-29).
+  //  고리는 그리지 않는다: 멤버에게 줄 월 충전 분모가 없고, 풀 충전 정보는 멤버에게 주지 않는 원칙을 지킨다.
+  const unlimitedQuota = Boolean(quotaWorkspaceId) && myQuota?.source === "unlimited";
+  const gaugeMax = quotaWorkspaceId ? personalQuota?.quota ?? 0 : budgetMax ?? MONTHLY_CREDIT_MAX;
 
   // 크레딧 — 하우스는 활성 워크스페이스 잔액, 비-하우스는 에이전트가 보고한 내 잔액.
   // 숫자로 정규화 — CLI 가 문자열/누락/이상값을 줘도 NaN·Infinity 로 링/aria/CSS 가 깨지지 않게 한다.
   // 잔액 = 고른 공간의 값만. 폴백 없음, 못 찾으면 미확인(null) — 규칙은 scopedCredits 한 곳에 있다.
   const activeCredits = scopedCredits(wsList, workspaceContext);
-  const gaugeCredits = activeCredits != null ? Math.max(0, activeCredits) : null; // 음수는 0으로(빈 게이지)
+  const displayedCredits = quotaWorkspaceId ? personalQuota?.remaining ?? null : activeCredits;
+  const gaugeCredits = displayedCredits != null ? Math.max(0, displayedCredits) : null;
   // 게이지 채움 비율 = 남은 크레딧 / 예산 한도(0~100% 클램프 — 탑업으로 한도 초과해도 안 넘침).
   const creditPct =
     gaugeCredits != null && gaugeMax > 0
@@ -308,7 +319,7 @@ export function AccountMenu({
         title={
           `${displayName}${account && roleText ? ` · ${roleText}` : ""}` +
           (activeCredits != null
-            ? `\nCredits ${formatCredits(activeCredits)} left`
+            ? `\n워크스페이스 잔액 ${formatCredits(activeCredits)} cr`
             : "") +
           "\n워크스페이스·계정 관리"
         }
@@ -414,26 +425,47 @@ export function AccountMenu({
 
           {/* 잔여 크레딧(힉스필드 스타일) — "Credits  N left" + 점 세그먼트 게이지(남은 비율).
               로그인 계정=내 에이전트 보고값(검증), 비로그인=라이브 활성 워크스페이스 */}
-          {activeCredits != null && creditPct != null && (
+          {(quotaWorkspaceId || activeCredits != null && creditPct != null) && (
             <div className="acct-credits">
               <div className="acct-credits-top">
-                <span className="acct-credits-label">Credits</span>
-                <span className="acct-credits-left">
-                  {formatCredits(activeCredits)} left
+                <span className="acct-credits-label">{unlimitedQuota ? "워크스페이스 잔액" : quotaWorkspaceId ? "내 크레딧" : "Credits"}</span>
+                <span className="acct-credits-left" title={uncertainty || undefined}>
+                  {unlimitedQuota
+                    ? activeCredits == null ? "확인 불가" : `${formatCredits(activeCredits)} cr`
+                    : quotaWorkspaceId
+                    ? personalQuota
+                      ? `${uncertainty ? "≈ " : ""}${formatCredits(personalQuota.remaining)} cr`
+                      : quotaState.loading ? "확인 중" : myQuota?.source === "unassigned" ? "미배정"
+                        : myQuota?.source === "unlimited" ? "한도 없음" : "확인 불가"
+                    : `${formatCredits(activeCredits ?? 0)} left`}
                 </span>
               </div>
+              {personalQuota ? (
+                <div className="acct-quota-summary" title={personalQuota.source === "auto" ? "그룹 인당 한도" : "매니저가 지정한 개인 몫"}>
+                  <span>{personalQuota.limit_period === "day" ? "일" : personalQuota.limit_period === "week" ? "주" : "월"} 한도 {formatCredits(personalQuota.quota)} cr</span>
+                  <span>사용 {uncertainty ? "≈ " : ""}{formatCredits(personalQuota.used)} cr</span>
+                </div>
+              ) : null}
+              {gaugeMax > 0 && creditPct != null ? (
               <div
                 className="acct-dots"
                 role="meter"
-                aria-label="Credits remaining"
+                aria-label={quotaWorkspaceId ? "내 남은 크레딧" : "Credits remaining"}
                 aria-valuemin={0}
                 aria-valuemax={gaugeMax}
-                aria-valuenow={Math.round(gaugeCredits ?? 0)}
+                aria-valuenow={Math.min(gaugeMax, gaugeCredits ?? 0)}
               >
                 {Array.from({ length: DOT_COUNT }, (_, i) => (
                   <span key={i} className={"acct-dot" + (i < litDots ? " on" : "")} />
                 ))}
               </div>
+              ) : null}
+              {uncertainty ? <div className="acct-quota-note">{uncertainty}</div> : null}
+              {unlimitedQuota ? (
+                <div className="acct-quota-note">그룹 한도 없음 · 공용 잔액 안에서 씁니다</div>
+              ) : quotaWorkspaceId ? (
+                <div className="acct-quota-note">워크스페이스 잔액 {activeCredits == null ? "확인 불가" : `${formatCredits(activeCredits)} cr`}</div>
+              ) : null}
             </div>
           )}
           {!liveMode && reported?.reported && (

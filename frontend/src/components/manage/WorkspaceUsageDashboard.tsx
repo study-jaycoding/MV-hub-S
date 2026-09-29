@@ -878,7 +878,6 @@ export function WorkspaceUsageDashboard({
             scope={scope}
             workspaceId={workspaceId || undefined}
             reloadSignal={reloadSignal}
-            canAdjust={canCreateProject}
             focusMember={selectedWorker ? { uid: selectedWorker.creator_uid, name: selectedWorker.creator_name } : null}
           />
 

@@ -24,9 +24,9 @@ export interface MemberTableRow {
 export interface MemberTableGroup {
   id: string;
   name: string;
-  monthly_limit: number | null;
+  monthly_limit: number | null; // 인당 한도(2026-09-29)
   limit_period?: LimitPeriod;
-  remaining: number | null;
+  remaining: number | null; // 몫 합계 − 이번 기간 사용(이월 없음)
   member_count: number;
   color?: string | null;
 }
@@ -43,7 +43,7 @@ export interface MemberTableData {
 }
 
 /** 한 사람의 그룹만 바꾸는 저장 본문. 서버는 목록에 없는 그룹을 **지우므로** 마지막에 받은 그룹을 전부 되보낸다.
- *  allowed_models·color·remaining_override 키는 보내지 않는다(= 유지). members 는 바꾼 한 줄만 — 안 적힌 이메일은 그대로다. */
+ *  allowed_models·color 키는 보내지 않는다(= 유지). members 는 바꾼 한 줄만 — 안 적힌 이메일은 그대로다. */
 export function groupAssignBody(credit: CreditPlanSettings, email: string, groupId: string | null): CreditPlanSaveBody {
   return {
     revision: credit.plan.revision ?? 0,
