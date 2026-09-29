@@ -183,6 +183,14 @@ const CARD_MIN_H = GRID * 3; // 66
 // 그룹 멤버 카드를 이 속도(화면 px/ms) 이상으로 경계 밖으로 빼면 '속도 이탈' — 프레임이 카드를 놓아주고
 //  그룹에서 빠진다(느리게 빼면 기존처럼 프레임이 늘어나 덮음). 폴더에서 아이콘 확 빼내는 제스처.
 const GROUP_EJECT_SPEED = 3.0;
+// 상태를 바꾸면서 그 상태를 비추는 ref 도 바로 맞춘다 — 다음 렌더 전에 같은 입력 처리가 ref 를 읽을 때(범위 선택 확정).
+const setAndSync =
+  <T,>(ref: MutableRefObject<T>, set: (value: T) => void) =>
+  (action: React.SetStateAction<T>) => {
+    const next = typeof action === "function" ? (action as (prev: T) => T)(ref.current) : action;
+    ref.current = next;
+    set(next);
+  };
 
 // refThumbSrc·refTypeLabel — lib/sceneMedia.ts 로 이동(R2 카드 분할로 카드 컴포넌트들과 공용).
 // refMediaSrc·refMediaType·mediaFileName 은 순수 헬퍼라 sceneMedia.ts 로 분리(상단에서 import).
@@ -762,6 +770,26 @@ export function SceneBoard({
     return () => bc.close();
   }, [refreshAssetVersions]);
   const cardEls = useRef<Record<string, HTMLDivElement | null>>({});
+  // 범위 선택 미리보기(Jay 2026-09-30 b안) — 끄는 동안에는 선택 상태를 바꾸지 않고 카드·그룹의 선택 표시만 직접 켜고 끈다.
+  //  연결선 색·미니맵·카드 위 조절 칸은 확정 때 바뀐다. cards 가 없으면(null) 마지막으로 그린 선택대로 되돌린다 — 훅이
+  //  확정 직전에, 씬 전환은 버린 끌기를 지울 때 부른다. 그 뒤 React 는 이전 속성과 비교해 바뀐 카드의 클래스만 다시 쓴다.
+  const paintMarqueePreview = useCallback((cards?: ReadonlySet<string> | null, groups?: ReadonlySet<string> | null) => {
+    const cardSel = cards ?? selectedRef.current;
+    for (const [id, el] of Object.entries(cardEls.current)) {
+      if (!el) continue;
+      const on = cardSel.has(id);
+      el.classList.toggle("sel", on);
+      // 완료 생성 카드는 선택 링을 안쪽 노드가 그린다(scene.css .scene-card.has-node.sel) — 함께 켠다.
+      if (el.classList.contains("has-node")) el.querySelectorAll(".linb-node").forEach((node) => node.classList.toggle("sel", on));
+    }
+    const groupSel = cards ? groups : selectedGroupIdsRef.current;
+    if (!groupSel) return;
+    canvasRef.current?.querySelectorAll<HTMLElement>(".scene-group[data-group-id]").forEach((el) => {
+      const on = groupSel.has(el.dataset.groupId as string);
+      el.classList.toggle("selected", on);
+      el.dataset.selected = on ? "true" : "false";
+    });
+  }, [canvasRef]);
   const heightsRef = useRef<Record<string, number>>({});
   const widthsRef = useRef<Record<string, number>>({}); // head 등 폭도 내용에 맞춰 자동측정
   const [heightTick, bumpHeights] = useState(0);
@@ -1668,6 +1696,10 @@ export function SceneBoard({
     abortDrag();
     scrollRef.current?.classList.remove("dragging", "panning");
     setMarquee(null);
+    // 버린 범위 선택은 확정하지 않고(다음 키 입력이 새 씬에서 확정하지 않게) 직접 켜 둔 선택 표시도 지운다 — 새 씬에
+    //  id 가 같은 카드가 있으면 요소가 재사용돼 선택돼 보였다.
+    forgetBoardMarquee();
+    paintMarqueePreview();
     setDraggingIds((ids) => (ids.length ? [] : ids));
     setEjectedIds((ids) => (ids.size ? new Set() : ids));
     setEdgesToCut((ids) => (ids.size ? new Set() : ids));
@@ -2454,7 +2486,7 @@ export function SceneBoard({
     pruneGenIdsFromHistory(cardId, removed); // 삭제된 변형을 히스토리에서도 제거 — undo 로 되살려 깨진 참조 방지
   };
 
-  const beginVariantMarquee = useSceneMarqueeSelection<string>({
+  const { begin: beginVariantMarquee } = useSceneMarqueeSelection<string>({
     selected: popupSel,
     surfaceRef: varGridRef,
     setSelected: setUserPopupSel,
@@ -2922,11 +2954,16 @@ export function SceneBoard({
     reconcileGenerationRefs: withGenRefs,
     persist,
   });
-  const beginBoardMarquee = useSceneMarqueeSelection<string, string>({
+  const {
+    begin: beginBoardMarquee,
+    settle: settleBoardMarquee,
+    forget: forgetBoardMarquee,
+  } = useSceneMarqueeSelection<string, string>({
     selected,
     surfaceRef: scrollRef,
     hitRootRef: canvasRef,
-    setSelected,
+    // 확정할 때 ref 도 바로 맞춘다 — 확정 직후 같은 입력(Delete·카드 끌기)이 selectedRef 를 읽는다(Codex P1).
+    setSelected: setAndSync(selectedRef, setSelected),
     setMarquee,
     beginDrag,
     cellSelector: ".scene-card",
@@ -2934,17 +2971,29 @@ export function SceneBoard({
     // 사각형이 그룹을 통째로 감싸면 그룹도 함께 잡는다 — 그래야 전체를 끌 때 프레임이 남지 않는다.
     secondary: {
       selected: selectedGroupIds,
-      setSelected: setSelectedGroupIds,
+      setSelected: setAndSync(selectedGroupIdsRef, setSelectedGroupIds),
       cellSelector: ".scene-group",
       keyOf: (element) => element.dataset.groupId,
     },
     preserveSelectionOnEmptyDrag: true,
+    // 끄는 동안은 선택 표시만 — 걸음마다 선택을 바꾸면 캔버스 전체를 다시 그려 12% 에서 끊겼다(33ms 넘는 장면 5~7 → 0~2 실측).
+    previewSelection: paintMarqueePreview,
     onPlainClick: () => {
       setSelected(new Set());
       setSelectedGroupIds(new Set());
       setRowSel({ listId: "", cids: new Set() });
     },
   });
+  // 끄는 도중 다른 입력(키·새 마우스 누름)이 오면 미리보기를 먼저 확정한다 — 단축키(Delete·Esc·Ctrl+A)와 카드·그룹 끌기가
+  //  선택을 읽기 전에(window capture 라 가장 먼저 돈다). 안 그러면 화면에서 꺼 둔 옛 선택을 지우거나 옮겼다(Codex P1).
+  useEffect(() => {
+    window.addEventListener("keydown", settleBoardMarquee, true);
+    window.addEventListener("mousedown", settleBoardMarquee, true);
+    return () => {
+      window.removeEventListener("keydown", settleBoardMarquee, true);
+      window.removeEventListener("mousedown", settleBoardMarquee, true);
+    };
+  }, [settleBoardMarquee]);
 
   // 보드 밖(사이드바 여백·상단바)에서 시작한 드래그도 선택으로 — 생성 탭과 같은 규칙.
   //  카드 이동·가위·패닝은 보드 안에서만 의미가 있으므로 바깥에서는 선택만 시작한다.

@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-09-29
+updated: 2026-09-30
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -786,7 +786,7 @@ updated: 2026-09-29
 | `useSceneCardMove.ts` | 훅 | 카드 드래그 이동·그룹 재배정·이탈 |
 | `useSceneGroupMove.ts` | 훅 | 그룹 드래그 이동 |
 | `useSceneCardResize.ts` | 훅 | 카드 리사이즈 드래그 |
-| `useSceneMarqueeSelection.ts` | 훅 | 캔버스 마퀴 선택(캔버스 사각형은 상태 없이 요소를 직접 옮김) |
+| `useSceneMarqueeSelection.ts` | 훅 | 캔버스 마퀴 선택(캔버스 사각형은 상태 없이 요소를 직접 옮김 · `previewSelection` 이 있으면 끄는 동안은 선택 표시만, 손 떼거나 blur 때 한 번 확정 · `settle` = 다른 입력 전에 지금 확정, `forget` = 버린 끌기 잊기) |
 | `useSceneDragSession.ts` | 훅 | `createSceneDragSession` 에 window/rAF 주입 · `abort`(마지막 움직임 반영 없이 버림 — 씬 전환용) |
 | `useSceneHistory.ts` | 훅 | 씬 undo/redo 조작 |
 | `useSceneKeyboardShortcuts.ts` | 훅 | 캔버스 단축키 배선 |
@@ -1169,6 +1169,7 @@ updated: 2026-09-29
 - **로깅 경로가 둘이다(services).** 구조화 `log_event`(10개 파일)와 맨 `print()`(`asset_watcher`·`syncer`·`backup`·`thumbs`). `print` 중 일부(`resolve_probe`·`resolve_import_worker`·`resolve_selection_worker`·`server_relocation`·`read_utf8_sig_first_line`)는 **자식 프로세스의 IPC 채널**이라 로거로 바꾸면 안 된다 — 그 구별이 코드에서 바로 안 보인다.
 - **저장 모드가 4가지(`live`/`deferUser`/`persistUser`/`persistDerived`, `SceneBoard.applyCards`)인데 이를 우회하는 직접 `persist()` 호출이 아직 10곳 넘게 남아 있다.** 어느 편집이 undo 스택에 쌓이는지 호출부마다 확인해야 한다.
 - **"파이썬 실행파일 찾기"가 스크립트마다 3가지 변종(4단계/3단계/2단계)으로 8개 이상 파일에 흩어져 있다**(`run_py.bat`·`MV_agent.bat`·`MV_watchdog.bat`·`MV_server.bat`·`test_push-db.bat`·`test_pull-db.bat`·`tools/update_git_worker.bat` 등). 새 후보 경로를 넣으려면 이 파일들을 다 찾아 고쳐야 한다.
+- **캔버스 선택을 읽는 길이 둘이다 — React 상태(`selected`·`selectedRef`)와 화면의 `.scene-card.sel`·그룹 `.selected`.** 범위 선택을 끄는 동안에는 `SceneBoard.paintMarqueePreview` 가 화면 표시만 직접 바꾸고 상태는 손을 뗄 때 바뀌므로 둘이 다르다(2026-09-30). 선택이 필요한 코드는 상태를 읽고, 화면의 `.sel` 로 판단하지 않는다.
 
 ---
 
