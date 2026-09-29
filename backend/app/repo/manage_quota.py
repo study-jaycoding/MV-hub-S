@@ -23,7 +23,8 @@ def my_quota(workspace_id: str, email: str) -> dict[str, Any]:
         _ensure_schema(conn)
         if not conn.in_transaction:
             conn.execute("BEGIN")
-        plan, groups, members, _, quotas = credit_plan._load(conn, workspace_id)
+        plan, groups, members, topups, quotas = credit_plan._load(conn, workspace_id)
+        derived_topup = credit_plan._monthly_budget(conn, workspace_id)
 
     group = next((g for g in groups if email in members.get(g["id"], set())), None)
     result: dict[str, Any] = {
@@ -44,6 +45,7 @@ def my_quota(workspace_id: str, email: str) -> dict[str, Any]:
         "period_end": None,
         "revision": int(plan["revision"]) if plan else 0,
         "enforcement": "advisory",
+        "pool_total": None,
     }
     if group is None:
         return result
@@ -94,4 +96,15 @@ def my_quota(workspace_id: str, email: str) -> dict[str, Any]:
         period_start=start.isoformat(),
         period_end=end.isoformat(),
     )
+    if quota is None:
+        # 그룹 한도가 없으면 내 몫이 없다 — 계정 메뉴가 워크스페이스 잔액을 '이번 충전 달에 채운 총량'에 대어
+        # 고리로 그린다(Jay 2026-09-29). 총량 = 정기 충전(손 입력, 없으면 프로젝트 매월 예산 합) + 이번 달 긴급 충전.
+        # 몫이 있는 사람에게는 주지 않는다(충전 정보는 필요한 경우에만 멤버에게 보인다).
+        recurring = credit_plan._plan_recurring(plan)
+        monthly = recurring if recurring is not None else derived_topup
+        cycle_start = credit_plan.period_start(today, "month", anchor)
+        cycle_end = credit_plan.period_end(today, "month", anchor)
+        emergency = credit_plan._topup_summary(topups, cycle_start, cycle_end)["credits"]
+        if monthly is not None or emergency:
+            result["pool_total"] = credit_plan._shown(float(monthly or 0) + float(emergency))
     return result

@@ -74,6 +74,7 @@ def test_finite_override_and_exhausted_remaining():
         "estimated_count": 1, "unknown_count": 0, "used": 4000.0, "remaining": 0.0, "exhausted": True,
         "limit_period": "month", "period_start": "2026-09-01T00:00:00+09:00",
         "period_end": "2026-10-01T00:00:00+09:00", "revision": 7, "enforcement": "advisory",
+        "pool_total": None,  # 몫이 있는 사람에게는 충전 총량을 주지 않는다
     }
 
 
@@ -108,6 +109,33 @@ def test_override_is_finite_even_in_unlimited_group(quota):
     unlimited = my_quota("ws1", "b@x")
     assert (unlimited["source"], unlimited["quota"], unlimited["remaining"]) == ("unlimited", None, None)
     assert unlimited["limit_period"] == "month"
+
+
+def test_unlimited_member_gets_this_cycles_pool_total():
+    """제한 없음이면 계정 메뉴 고리의 분모 = 정기 충전 + 이번 충전 달 긴급 충전(Jay 2026-09-29)."""
+    _group(None, quotas={"a@x": None, "b@x": 500})
+    with db.get_connection() as conn:
+        conn.execute("UPDATE workspace_credit_plan SET recurring_topup=20000 WHERE workspace_id='ws1'")
+        conn.executemany(
+            "INSERT INTO workspace_credit_topup(id, workspace_id, day, credits) VALUES(?, 'ws1', ?, ?)",
+            [("t-now", "2026-09-10", 3000), ("t-old", "2026-08-20", 999)],  # 지난달 충전은 빠진다
+        )
+    assert my_quota("ws1", "a@x")["pool_total"] == 23000
+    assert my_quota("ws1", "b@x")["pool_total"] is None  # 몫이 있는 사람은 주지 않는다
+    with db.get_connection() as conn:
+        conn.execute("UPDATE workspace_credit_plan SET recurring_topup=NULL WHERE workspace_id='ws1'")
+        conn.execute("DELETE FROM workspace_credit_topup")
+    assert my_quota("ws1", "a@x")["pool_total"] is None  # 충전을 모르면 고리를 그리지 않는다
+    # 손 입력이 없으면 프로젝트 '매월 예산' 합에서 파생한다(대시보드 월 충전과 같은 규칙)
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO project(id, name, kind, workspace_scope, workspace_id, workspace_name) "
+            "VALUES('p1', 'P', 'team', 'team', 'ws1', 'WS1')"
+        )
+    from app.repo import manage
+
+    manage.set_planning("p1", budget_credits=20000, budget_period="month")
+    assert my_quota("ws1", "a@x")["pool_total"] == 20000
 
 
 def test_unassigned_has_no_quota_or_period_but_preserves_revision():

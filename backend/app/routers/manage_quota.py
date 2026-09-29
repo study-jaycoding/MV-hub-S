@@ -22,7 +22,7 @@ def my_credit_quota(request: Request, workspace_id: str = Query(min_length=1, ma
             "group_name": None, "quota": None, "used_real": 0, "used_estimated": 0,
             "estimated_count": 0, "unknown_count": 0, "used": 0, "remaining": None, "exhausted": False,
             "limit_period": None, "period_start": None, "period_end": None,
-            "revision": 0, "enforcement": "advisory",
+            "revision": 0, "enforcement": "advisory", "pool_total": None,
         }
     account = current_account(request) or {}
     email = norm_email(account.get("email"))

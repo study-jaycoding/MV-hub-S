@@ -19,6 +19,8 @@ export interface MyCreditQuota {
   period_end: string | null;
   revision: number;
   enforcement: "advisory";
+  // 그룹 한도 없음(source=unlimited)일 때만 — 이번 충전 달의 정기 + 긴급 충전 총량. 구서버는 키 없음.
+  pool_total?: number | null;
 }
 
 export function hasPersonalQuota(value: MyCreditQuota | null): value is MyCreditQuota & { quota: number; remaining: number } {
