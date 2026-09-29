@@ -934,7 +934,7 @@ updated: 2026-09-29
 | `base.css` | 104 | 전역 변수(`:root` 24개)·리셋 — 화면 특정 아님 |
 | `app-shell.css` | 796 | 최상위 앱 셸(`TopBar`·상단 메뉴) |
 | `generations.css` | 907 | 라이브러리 그리드·카드(`ThumbnailGrid`·`GenerationCard`). ★**끝없이 도는 CSS 애니메이션은 합성 가능한 속성(transform·opacity)만** — `background-position`·`box-shadow` 를 무한으로 움직이면 요소 하나만 화면에 있어도 브라우저가 매 프레임 다시 그려 가만히 둔 탭이 CPU 를 계속 쓴다(골드 광택 실측: 0장 1% · 1장 24~38% of one core). 팀 탭 새 항목 글로우(`.card.fresh`)도 같은 이유로 **멈춘 빛**이다(box-shadow 무한: 1장 42~49% · 19장 86~124% → 정지 2~3%. opacity 층으로 바꿔도 절반이 남았다 — 끝없이 도는 한 합성 비용은 남는다). ★**부드러운 무한 애니메이션은 opacity·transform 이어도 비싸다**(화면에 하나만 있어도 페이지를 초당 60번 새로 합친다 — '생성 중' 로고 1장 17%). 그래서 장식은 멈추고 '진행 중' 표시만 계단식 `steps(4)`(17% → 3%)로 남긴다. 계약 시험 = `frontend/tests/idleCssAnimations.test.ts`(모든 CSS 의 `infinite` 는 같은 선언에 `steps(` — 예외는 재서 비용이 없던 11px 알림 스피너 선언 하나). 전수 조사 기록 = `docs/status/브라우저실측_2026-09-19.md` "부하 전수 조사" |
-| `scene.css` | 1514 | 씬 캔버스(`scene/`) — 비슷한 이름의 클래스가 많다(§5-b) |
+| `scene.css` | 1574 | 씬 캔버스(`scene/`) — 비슷한 이름의 클래스가 많다(§5-b). ★**카드 안에 스크롤 칸을 새로 만들 때 기본 규칙에 `overflow:auto` 를 쓰지 않는다** — 파일 앞쪽 "카드 안 스크롤 칸" 규칙 한 쌍의 목록에 넣는다(평소 hidden, 호버·포커스한 카드만 auto, 막대 숨김). 넘치는 auto 칸은 합성 레이어가 되고 그 위에 겹친 포트·배지까지 레이어가 되어, 큰 씬에서 화면 이동·확대가 끊겼다(기록 = `docs/status/캔버스_버벅임_2026-09-29.md`) |
 | `prompt-dock.css` | 566 | 스포트라이트 프롬프트 도크(`SpotlightPrompt`·`spotlight/`) |
 | `history.css` | 216 | 히스토리 보드(계보 그래프). 최종 노드는 `content-visibility` 가 풀려 있어 화면 밖에서도 그린다 — 여기에 무한 애니메이션을 두지 않는다 |
 | `assets.css` | 963 | Assets 분리창(`AssetsView`·`assets/`) |
