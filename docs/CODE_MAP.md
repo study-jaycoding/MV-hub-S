@@ -764,7 +764,7 @@ updated: 2026-09-29
 | `sceneEdges.ts` | 순수 | 연결 기하·그래프·실행 계획·Comfy 출력·엣지 역할 — 캔버스 계산 중심 | 약 1,380줄. 씬 구역의 실질적 병목(§5) |
 | `sceneDerive.ts` | 순수 | 그룹 사각형·참조 정합·빈 그룹 제거 |
 | `sceneInteractions.ts` | 순수 | 스냅·리사이즈·복사/붙여넣기·드롭 분류·그룹 재배정 |
-| `sceneViewport.ts` | 순수 | 카메라 줌·팬·프레이밍 계산 |
+| `sceneViewport.ts` | 순수 | 카메라 줌·팬·프레이밍 계산 · 컬링 문턱·단순화 배율 · 미니맵 보는 영역 상자(정수 px) |
 | `sceneLayout.ts` | 순수 | 선택 노드 자동 정렬(열 분해) |
 | `sceneAutoConnect.ts` | 순수 | `c` 자동 연결 계획 |
 | `sceneKeyboard.ts` | 순수 | 캔버스 키 의도(전체 선택 포함)·Escape 우선순위 |
@@ -786,8 +786,8 @@ updated: 2026-09-29
 | `useSceneCardMove.ts` | 훅 | 카드 드래그 이동·그룹 재배정·이탈 |
 | `useSceneGroupMove.ts` | 훅 | 그룹 드래그 이동 |
 | `useSceneCardResize.ts` | 훅 | 카드 리사이즈 드래그 |
-| `useSceneMarqueeSelection.ts` | 훅 | 캔버스 마퀴 선택 |
-| `useSceneDragSession.ts` | 훅 | `createSceneDragSession` 에 window/rAF 주입 |
+| `useSceneMarqueeSelection.ts` | 훅 | 캔버스 마퀴 선택(캔버스 사각형은 상태 없이 요소를 직접 옮김) |
+| `useSceneDragSession.ts` | 훅 | `createSceneDragSession` 에 window/rAF 주입 · `abort`(마지막 움직임 반영 없이 버림 — 씬 전환용) |
 | `useSceneHistory.ts` | 훅 | 씬 undo/redo 조작 |
 | `useSceneKeyboardShortcuts.ts` | 훅 | 캔버스 단축키 배선 |
 | `useSceneClipboardDrop.ts` | 훅 | 붙여넣기·파일/에셋 드롭 처리 |

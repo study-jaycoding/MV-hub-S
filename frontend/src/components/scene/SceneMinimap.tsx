@@ -5,6 +5,7 @@
 //       부모의 applyTransform 이 매 팬/줌마다 이 update() 를 호출한다(updateRef 로 연결).
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { MutableRefObject, RefObject } from "react";
+import { minimapViewBox } from "../../lib/sceneViewport";
 
 export interface MinimapBox {
   id: string;
@@ -83,20 +84,17 @@ export function SceneMinimap({
       sx0 < -eps || sy0 < -eps || sx1 > vp.width + eps || sy1 > vp.height + eps;
     const display = offscreen ? "block" : "none";
     if (wrap.style.display !== display) wrap.style.display = display;
-    // 현재 보는 영역(뷰포트)을 월드로 환산 → 미니맵 좌표. 미니맵 박스 안으로 클램프.
+    // 현재 보는 영역(뷰포트)을 월드로 환산 → 미니맵 좌표. 미니맵 박스 안으로 자르고 정수 px 로(minimapViewBox) —
+    //  바뀐 값만 쓴다. 소수 px 로 걸음마다 쓰면 25% 이하에서 미니맵을 매번 다시 칠했다.
     const vwl = -pan.x / z;
     const vwt = -pan.y / z;
     const left = (vwl - wMinX) * scale;
     const top = (vwt - wMinY) * scale;
-    const right = left + (vp.width / z) * scale;
-    const bottom = top + (vp.height / z) * scale;
-    const cl = Math.max(0, Math.min(left, mmW));
-    const ct = Math.max(0, Math.min(top, mmH));
-    const cr = Math.max(0, Math.min(right, mmW));
-    const cb = Math.max(0, Math.min(bottom, mmH));
-    view.style.transform = `translate(${cl}px, ${ct}px)`;
-    const width = Math.max(0, cr - cl) + "px";
-    const height = Math.max(0, cb - ct) + "px";
+    const box = minimapViewBox(left, top, left + (vp.width / z) * scale, top + (vp.height / z) * scale, mmW, mmH);
+    const transform = `translate(${box.x}px, ${box.y}px)`;
+    if (view.style.transform !== transform) view.style.transform = transform;
+    const width = box.w + "px";
+    const height = box.h + "px";
     if (view.style.width !== width) view.style.width = width;
     if (view.style.height !== height) view.style.height = height;
   };

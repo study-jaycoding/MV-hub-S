@@ -33,7 +33,8 @@ interface UseSceneMarqueeSelectionOptions<Key, Secondary = never> {
   surfaceRef: ElementRef;
   hitRootRef?: ElementRef;
   setSelected: Dispatch<SetStateAction<Set<Key>>>;
-  setMarquee: Dispatch<SetStateAction<MarqueeRect | null>>;
+  // 사각형 표시 — 상태 setter 도, 요소를 직접 옮기는 함수도 된다(캔버스는 직접, 2026-09-29).
+  setMarquee: (rect: MarqueeRect | null) => void;
   beginDrag: BeginSceneDrag;
   cellSelector: string;
   keyOf: (element: HTMLElement) => Key | null | undefined;

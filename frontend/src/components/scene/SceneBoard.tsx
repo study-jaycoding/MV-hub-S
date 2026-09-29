@@ -401,7 +401,19 @@ export function SceneBoard({
   useSyncExternalStore(subscribeRecentDone, getRecentDoneVersion, getRecentDoneVersion);
   // 드래그 중인 카드 id — 컬링(keepIds)이 이동 중 카드를 마진 밖으로 나가도 언마운트하지 않게 유지한다.
   const [draggingIds, setDraggingIds] = useState<readonly string[]>([]);
-  const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
+  // 범위 선택 사각형 — 상태가 아니라 늘 있는 요소를 직접 옮긴다(2026-09-29). 상태로 그리면 끄는 한 걸음마다 캔버스
+  //  전체(카드 수백 장)를 다시 맞춰, 12% 에서 한 프레임이 0.05초까지 멈췄다(40걸음에 다시 그리기 42번 실측).
+  const marqueeElRef = useRef<HTMLDivElement>(null);
+  const setMarquee = useCallback((rect: { l: number; t: number; w: number; h: number } | null) => {
+    const el = marqueeElRef.current;
+    if (!el) return;
+    el.hidden = !rect;
+    if (!rect) return;
+    el.style.left = `${rect.l}px`;
+    el.style.top = `${rect.t}px`;
+    el.style.width = `${rect.w}px`;
+    el.style.height = `${rect.h}px`;
+  }, []);
   const [tempWire, setTempWire] = useState<{ fromId: string; x2: number; y2: number } | null>(null);
   // genId→실제 생성물 바인딩·폴링·계보(refParents)·비활성/삭제 상태는 useSceneGenData 훅으로 추출(동작 보존).
   //  각 생성물이 '레퍼런스로 쓴' 부모 gen id(refParents)는 수동 연결선 색(레퍼런스 점선 vs 계보 실선) 판정 근거.
@@ -1643,7 +1655,43 @@ export function SceneBoard({
   };
 
   // 전역 mousemove/mouseup/blur 생명주기와 프레임당 이동 합치기는 전용 훅이 담당한다.
-  const beginDrag = useSceneDragSession();
+  const { begin: beginDrag, abort: abortDrag } = useSceneDragSession();
+  // 씬을 바꾸면 옛 씬의 카드·그룹·좌표에 묶인 창·조작 상태를 비운다(2026-09-29, Codex 전수 표). 안 그러면 안 보이는 결과
+  //  팝업이 단축키를 막고(Esc 전까지 Ctrl+A 가 안 먹음), 노드 선택기가 새 씬에 떠서 옛 좌표에 카드를 만든다. 진행 중 끌기는
+  //  마지막 움직임을 반영하지 않고 버리고(abort — blur 취소처럼 반영하면 옛 끌기를 새 씬에 한 번 더 쓴다), 끌기가 붙인 보드
+  //  표시(dragging·panning)도 뗀다. 선택·그룹 선택·행 선택·히스토리는 위 씬 동기화 effect 가 맡는다. 가위(cutHeld)는 Y 키를
+  //  누르고 있는 동안의 상태라 그대로 둔다.
+  const uiSceneIdRef = useRef(scene.id);
+  useEffect(() => {
+    if (uiSceneIdRef.current === scene.id) return;
+    uiSceneIdRef.current = scene.id;
+    abortDrag();
+    scrollRef.current?.classList.remove("dragging", "panning");
+    setMarquee(null);
+    setDraggingIds((ids) => (ids.length ? [] : ids));
+    setEjectedIds((ids) => (ids.size ? new Set() : ids));
+    setEdgesToCut((ids) => (ids.size ? new Set() : ids));
+    setCardMenu(null);
+    setNodePicker(null);
+    setTempWire(null);
+    setEditTextId(null);
+    setEditingGroupId(null);
+    setColorPopId(null);
+    setTagEditCardId(null);
+    setTagEditNodeGenId(null);
+    setCanvasRecovery(null);
+    setModelModalId(null);
+    setComfyModalId(null);
+    setViewTextModal(null);
+    setViewTimeline(null);
+    setGripDragging(false);
+    setPopupMarq(null);
+    setCutStroke(null);
+    setReorderLine(null);
+    setReorderFrom(null);
+    setSConfirm(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scene.id]);
   const onResizeDown = useSceneCardResize({
     cardsRef,
     edgesRef,
@@ -3074,7 +3122,7 @@ export function SceneBoard({
     }
     return { minX, minY, maxX, maxY };
   }, [mmBoxes]);
-  // ★그래프 파생값 memo — 셀렉션/마퀴 드래그(selected·marquee 만 변경) 중엔 cards/edges/groups 가
+  // ★그래프 파생값 memo — 셀렉션/마퀴 드래그(selected 만 변경) 중엔 cards/edges/groups 가
   //  안 바뀌므로 아래 Set/Map·분류·정렬을 매 프레임 재계산하지 않는다(드래그 렌더 비용 절감).
   // grayOn: 비활성(회색) 카드 숨김 — 그 카드와 연결선을 렌더에서 제외(상태는 유지).
   const grayHidden = useMemo(
@@ -4108,12 +4156,9 @@ export function SceneBoard({
         />
       )}
 
-      {marquee && (
-        <div
-          className="scene-marquee"
-          style={{ left: marquee.l, top: marquee.t, width: marquee.w, height: marquee.h }}
-        />
-      )}
+      {/* 범위 선택 사각형 — 늘 있고 숨겨 두었다가 setMarquee 가 직접 보이고 옮긴다(다시 그리기 없음). */}
+      <div ref={marqueeElRef} className="scene-marquee" hidden />
+
 
       {/* 순서변경 삽입 위치 — 화면좌표 기준(fixed) 흰 선. 항목 사이 어디에 놓일지 보여준다. */}
       {reorderLine && (

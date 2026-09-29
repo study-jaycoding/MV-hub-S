@@ -36,6 +36,29 @@ export interface SceneViewRect {
   b: number;
 }
 
+/** 미니맵의 '보는 영역' 상자(미니맵 px) — 지도 안으로 자르고 정수 px 로 반올림한다(2026-09-29). 25% 이하에서는 상자가
+ *  지도 가장자리에서 잘려 걸음마다 크기가 0.2px 씩 바뀌었고, 그때마다 미니맵을 다시 칠했다(60걸음 133ms → 상자만 숨기면
+ *  12ms 실측). 조금이라도 보이면 최소 1px — 반올림으로 0 이 되어 테두리가 사라지지 않게(Codex).
+ *  ★폭·높이는 '잘린 실제 크기'를 반올림한다. 양 끝을 따로 반올림해 빼면 상자가 옮겨지기만 해도 50·51px 로 번갈아 바뀌어
+ *  (37%·88% 처럼 잘리지 않는 배율에서도) 걸음마다 다시 칠했다(실측 37% Paint 16 → 107ms). */
+export function minimapViewBox(
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+  mapW: number,
+  mapH: number,
+): { x: number; y: number; w: number; h: number } {
+  const clamp = (value: number, max: number) => Math.max(0, Math.min(value, max));
+  const [cl, ct, cr, cb] = [clamp(left, mapW), clamp(top, mapH), clamp(right, mapW), clamp(bottom, mapH)];
+  const size = (from: number, to: number) => (to > from ? Math.max(1, Math.round(to - from)) : 0);
+  const [w, h] = [size(cl, cr), size(ct, cb)];
+  // 크기를 정한 뒤 위치를 지도 안으로 다시 넣는다 — 오른쪽·아래 끝에 1px 미만만 걸친 상자가 반올림으로 지도 밖(x=폭)에
+  //  놓여 안 보이지 않게(Codex).
+  const place = (from: number, span: number, max: number) => Math.max(0, Math.min(Math.round(from), max - span));
+  return { x: place(cl, w, mapW), y: place(ct, h, mapH), w, h };
+}
+
 /** 씬 파일·저장본에서 온 확대값을 화면이 만들 수 있는 범위로 맞춘다 — 범위 밖(z:3·z:0·NaN)이면 점 격자 층의 64px 여백
  *  가정(최대 22px×2.5)이 깨지고, 0 이면 격자 계산이 NaN 이 된다(Codex 2026-09-29). */
 export function clampSceneZoom(z: number | undefined): number {

@@ -4,6 +4,7 @@ import {
   clampSceneZoom,
   clientToScenePoint,
   frameSceneRects,
+  minimapViewBox,
   panSceneCamera,
   SCENE_CULL_REFRESH_DISTANCE,
   SCENE_MAX_ZOOM,
@@ -90,6 +91,18 @@ describe("scene viewport calculations", () => {
       ),
     ).toEqual({ z: 0.05, x: -2100, y: -2200 });
     expect(frameSceneRects([], { width: 800, height: 600 }, 1)).toBeNull();
+  });
+
+  it("미니맵 보는 영역 상자는 지도 안으로 자르고 정수 px 로 — 조금이라도 보이면 최소 1px(Codex)", () => {
+    expect(minimapViewBox(10.4, 20.6, 60.2, 50.5, 180, 130)).toEqual({ x: 10, y: 21, w: 50, h: 30 });
+    expect(minimapViewBox(-30, -10, 100.3, 200, 180, 130)).toEqual({ x: 0, y: 0, w: 100, h: 130 }); // 가장자리에서 잘림
+    expect(minimapViewBox(50.2, 40, 50.4, 40.3, 180, 130)).toEqual({ x: 50, y: 40, w: 1, h: 1 }); // 아주 작아도 1px
+    expect(minimapViewBox(200, 150, 260, 190, 180, 130)).toEqual({ x: 180, y: 130, w: 0, h: 0 }); // 지도 밖
+    // 오른쪽·아래 끝에 1px 미만만 걸쳐도 지도 안에 보인다 — 반올림으로 x=180 에 놓이면 안 보였다(Codex)
+    expect(minimapViewBox(179.6, 129.7, 180.4, 130.5, 180, 130)).toEqual({ x: 179, y: 129, w: 1, h: 1 });
+    // 잘리지 않은 상자를 옮기기만 하면 크기는 그대로다 — 양 끝을 따로 반올림하면 50·51 로 흔들려 걸음마다 다시 칠했다
+    const moved = [10.4, 10.6, 10.8].map((x) => minimapViewBox(x, 5.3, x + 50.1, 35.3, 180, 130));
+    expect(new Set(moved.map((box) => `${box.w}x${box.h}`))).toEqual(new Set(["50x30"]));
   });
 
   it("씬 파일에서 온 확대값은 화면이 만들 수 있는 범위로 맞춘다(격자 층 여백·NaN 방지, Codex)", () => {
