@@ -3722,19 +3722,22 @@ export function SceneBoard({
           const isGen = card.kind === "generation";
           const g = isGen && card.genId ? genData[card.genId] : null; // 바인딩된 실제 생성물
           const showNode = !!g && String(g.status) === "done"; // 완료 → 히스토리 카드로 표시
+          // 빨간 테두리는 '서버 어디에도 없음'(받은 사람)일 때만 — '이 PC 에만'(가진 사람)은 오른쪽 위 마크만(Jay 2026-09-29).
+          const missingHere = (refs: SceneRef[] | undefined) =>
+            !!refs?.some((r) => refServerStatus(refWorkspaceId, r.file_path) === "missing");
           const kindCls =
             card.kind === "reference"
               ? "scene-card-ref" +
                 (card.refs?.[0]?.origin === "asset" ? " from-asset" : "") +
-                (card.refs?.some((r) => refServerStatus(refWorkspaceId, r.file_path)) ? " off-server" : "")
+                (missingHere(card.refs) ? " off-server" : "")
               : card.kind === "generation"
                 ? "scene-card-gen"
                 : "scene-card-" +
                   card.kind +
-                  // 리스트 — 모은 레퍼런스 카드에 서버에 없는 참조가 하나라도 있으면 빨간 테두리(Jay 2026-09-29)
+                  // 리스트 — 모은 레퍼런스 카드에 서버 어디에도 없는 참조가 하나라도 있으면 빨간 테두리(Jay 2026-09-29)
                   (card.kind === "list" &&
                   collectListInputs(card.id, cardsById, resolvedEdges).referenceCardIds.some((rid) =>
-                    cardsById.get(rid)?.refs?.some((r) => refServerStatus(refWorkspaceId, r.file_path)),
+                    missingHere(cardsById.get(rid)?.refs),
                   )
                     ? " off-server"
                     : ""); // text/model/list

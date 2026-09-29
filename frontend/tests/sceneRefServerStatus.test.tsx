@@ -64,7 +64,7 @@ const refScene = (id: string, workspaceId: string, cards: { id: string; refs: Sc
     cards: cards.map((c, i) => ({ id: c.id, kind: "reference", x: i * 200, y: 0, refs: c.refs })),
   }) as unknown as Scene;
 
-it("서버에 없는 참조는 빨간 테두리 + 안내, 이 PC 에만 있는 참조는 그림 + 오른쪽 위 마크", async () => {
+it("서버에 없는 참조는 빨간 테두리 + 안내, 이 PC 에만 있는 참조는 테두리 없이 그림 + 오른쪽 위 마크", async () => {
   const scene = refScene("offserver", "ws-1", [
     { id: "missing", refs: [ref("asset:Q|CH/gone.png", "gone.png")] },
     { id: "local", refs: [ref("asset:imports|mine.png", "mine.png")] },
@@ -90,9 +90,9 @@ it("서버에 없는 참조는 빨간 테두리 + 안내, 이 PC 에만 있는 �
   expect(missing.querySelector(".scene-refthumb-ph.off-server")).not.toBeNull();
   expect(missing.querySelector("img, video")).toBeNull();
 
-  // 가진 사람 — 그림은 그대로 + 오른쪽 위 마크
+  // 가진 사람 — 그림은 그대로 + 오른쪽 위 마크. 빨간 테두리는 없다(Jay 2026-09-29 — 마크만 유지)
   const local = cardEl("local");
-  expect(local.classList.contains("off-server")).toBe(true);
+  expect(local.classList.contains("off-server")).toBe(false);
   expect(local.querySelector("img")).not.toBeNull();
   expect(local.querySelector(".scene-ref-offmark")?.getAttribute("title")).toContain("이 PC 에만");
   expect(local.querySelector(".scene-ref-offmsg")).toBeNull();
@@ -233,7 +233,7 @@ it("다른 공간으로 물어본 판정은 이 캔버스에 번지지 않는다
   expect(cardEl("b").querySelector(".scene-ref-offmsg")).toBeNull();
 });
 
-it("리스트도 같은 판정 — 첫 장이 서버에 없으면 붉은 빗금 + 아이콘, 이 PC 에만 있으면 오른쪽 위 마크, 테두리 빨강", async () => {
+it("리스트도 같은 판정 — 첫 장이 서버에 없으면 붉은 빗금 + 아이콘·테두리 빨강, 이 PC 에만 있으면 오른쪽 위 마크만", async () => {
   const scene = {
     id: "listscene", name: "씬", created_at: 0, workspace: { id: "ws-l", name: "가" },
     cards: [
@@ -242,12 +242,14 @@ it("리스트도 같은 판정 — 첫 장이 서버에 없으면 붉은 빗금 
       { id: "lr-ok", kind: "reference", x: 0, y: 400, refs: [ref("asset:P|list-ok.png", "list-ok.png")] },
       { id: "L", kind: "list", x: 300, y: 0 },
       { id: "L2", kind: "list", x: 600, y: 0 },
+      { id: "L3", kind: "list", x: 900, y: 0 },
     ],
     edges: [
       { id: "e1", from: "lr-miss", to: "L" },
       { id: "e2", from: "lr-local", to: "L" },
       { id: "e3", from: "lr-ok", to: "L" },
       { id: "e4", from: "lr-ok", to: "L2" },
+      { id: "e5", from: "lr-local", to: "L3" },
     ],
   } as unknown as Scene;
   saveScenes(null, [scene]);
@@ -264,6 +266,9 @@ it("리스트도 같은 판정 — 첫 장이 서버에 없으면 붉은 빗금 
 
   expect(cardEl("L").classList.contains("off-server")).toBe(true);
   expect(cardEl("L2").classList.contains("off-server")).toBe(false); // 서버에 다 있는 리스트는 그대로
+  // 이 PC 에만 있는 레퍼런스만 든 리스트 — 테두리는 그대로, 그 칸의 마크만(Jay 2026-09-29)
+  expect(cardEl("L3").classList.contains("off-server")).toBe(false);
+  expect(cardEl("L3").querySelector(".scene-listthumb .scene-ref-offmark")).not.toBeNull();
   const cells = [...cardEl("L").querySelectorAll<HTMLElement>(".scene-listthumb")];
   expect(cells).toHaveLength(3);
   const [miss, local, ok] = cells;

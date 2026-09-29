@@ -315,7 +315,8 @@
 .scene-card-ref:hover { border-color: #8ea0ff; } /* 임포트/캡쳐 = 파랑 */
 .scene-card-ref.from-asset:hover { border-color: var(--accent); } /* 우리 에셋에서 가져옴 = 형광 */
 /* 서버에 없는 레퍼런스(Jay 2026-09-29) — 빨간 테두리(앱 오류색). 선택해도 빨강은 남고 라임 링은 바깥(box-shadow).
-   판정은 서버(assets.locate): 받은 사람 = 서버 어디에도 없음 / 가진 사람 = 이 PC 설치 폴더 안 사본에만 있음. */
+   판정은 서버(assets.locate). 테두리는 받은 사람(서버 어디에도 없음)만 — 가진 사람(이 PC 설치 폴더 안 사본에만
+   있음)은 그림 그대로 + 오른쪽 위 마크만 둔다(Jay 2026-09-29 뒤 결정, 붙는 곳은 SceneBoard 의 missingHere). */
 .scene-card-ref.off-server,
 .scene-card-ref.off-server:hover,
 .scene-card.sel.off-server { border-color: #ff6b6b; }
@@ -509,7 +510,7 @@
 /* ── 리스트 노드 — 연결된 생성 카드 모음(재생) ── */
 .scene-card-list { border: 2px solid #3a4a2b; }
 .scene-card-list:hover { border-color: var(--accent); }
-/* 서버에 없는 레퍼런스가 든 리스트(Jay 2026-09-29) — 레퍼런스 카드와 같은 빨간 테두리 */
+/* 서버 어디에도 없는 레퍼런스가 든 리스트(Jay 2026-09-29) — 레퍼런스 카드와 같은 빨간 테두리('이 PC 에만'은 칸의 마크만) */
 .scene-card-list.off-server,
 .scene-card-list.off-server:hover { border-color: #ff6b6b; }
 .scene-card-hd.list { color: var(--accent); background: rgba(var(--accent-rgb), 0.10); }
