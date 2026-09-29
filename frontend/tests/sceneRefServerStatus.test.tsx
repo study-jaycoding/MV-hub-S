@@ -1,10 +1,10 @@
 // 서버에 없는 레퍼런스(Jay 2026-09-29) — 서버 판정 → 가게 → 실제 SceneBoard·ReferenceCard 까지 한 번에 본다.
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, useLayoutEffect, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SceneBoard } from "../src/components/scene/SceneBoard";
-import { relinkSceneAssetRefs } from "../src/lib/sceneAssetRelink";
+import { relinkKey, relinkSceneAssetRefs } from "../src/lib/sceneAssetRelink";
 import { saveScenes, type Scene, type SceneRef } from "../src/lib/scenes";
 import type { SceneGenDataApi } from "../src/lib/useSceneGenData";
 
@@ -28,6 +28,7 @@ vi.mock("../src/api", async (importOriginal) => {
 });
 
 const noop = () => {};
+type SceneBoardActionRef = NonNullable<ComponentProps<typeof SceneBoard>["actionRef"]>;
 let host: HTMLDivElement;
 let root: Root;
 
@@ -109,7 +110,7 @@ it("서버에 없는 참조는 빨간 테두리 + 안내, 이 PC 에만 있는 �
   expect(multi.querySelector(".scene-ref-offmsg")).toBeNull();
 });
 
-it("로컬 파일을 끌어다 놓으면 프로젝트를 고르지 않아도 이 PC 에 두고, 곧바로 '이 PC에만' + 자동 복구 요청", async () => {
+it("로컬 파일을 끌어다 놓으면 프로젝트를 고르지 않아도 이 PC 에 두고 자동 복구를 부른다 — 표시는 서버 답으로만(2026-09-29)", async () => {
   const scene = refScene("dropscene", "ws-drop", []);
   saveScenes(null, [scene]);
   fixture.upload.mockResolvedValue({
@@ -135,9 +136,88 @@ it("로컬 파일을 끌어다 놓으면 프로젝트를 고르지 않아도 이
 
   expect(fixture.upload).toHaveBeenCalledWith([file]); // 프로젝트 없이 — 이 PC 설치 폴더로
   const card = host.querySelector<HTMLElement>(".scene-card-ref");
-  expect(card?.classList.contains("off-server")).toBe(true);
-  expect(card?.querySelector(".scene-ref-offmark")).not.toBeNull();
+  expect(card).not.toBeNull();
+  // 서버가 확인하기 전에는 '이 PC에만'을 켜지 않는다 — NAS 에 있는 파일도 답이 올 때까지 빨갛게 보였다
+  expect(card?.classList.contains("off-server")).toBe(false);
+  expect(card?.querySelector(".scene-ref-offmark")).toBeNull();
   expect(onLocalRefsAdded).toHaveBeenCalledTimes(1);
+});
+
+it("자동 복구 답은 열린 캔버스의 메모리 카드에 입혀진다 — 치던 글도, 이은 참조도 남는다(2026-09-29)", async () => {
+  const scene = {
+    id: "relink-board", name: "씬", created_at: 0, edges: [],
+    cards: [
+      { id: "r1", kind: "reference", x: 0, y: 0, refs: [ref("asset:imports|a.png", "a.png")] },
+      { id: "t1", kind: "text", x: 300, y: 0, text: "처음" },
+    ],
+  } as unknown as Scene;
+  const onChange = vi.fn();
+  const actionRef: SceneBoardActionRef = { current: null };
+  await act(async () => {
+    root.render(<SceneBoard scene={scene} onChange={onChange} actionRef={actionRef} />);
+  });
+  expect(actionRef.current?.sceneId).toBe("relink-board");
+
+  // 텍스트 카드에 글을 친다 — 저장은 아직 디바운스 중이다
+  await act(async () => {
+    cardEl("t1").querySelector(".scene-textview-inline")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  });
+  const textarea = cardEl("t1").querySelector("textarea")!;
+  onChange.mockClear();
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "복구 중에 친 글");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(onChange).not.toHaveBeenCalled();
+
+  let changed = 0;
+  await act(async () => {
+    changed = actionRef.current!.applyAssetRelink(
+      new Map([[relinkKey("", "asset:imports|a.png"), { project: "P", path: "CH/a.png" }]]),
+    );
+  });
+
+  expect(changed).toBe(1);
+  // 친 글을 먼저 한 단계로 저장하고, 그 위에 복구를 입힌다 — 둘 다 남는다
+  expect(onChange).toHaveBeenCalledTimes(2);
+  const saved = onChange.mock.calls[1][0] as Partial<Scene>;
+  expect(saved.cards!.find((c) => c.id === "t1")!.text).toBe("복구 중에 친 글");
+  expect(saved.cards!.find((c) => c.id === "r1")!.refs![0].file_path).toBe("asset:P|CH/a.png");
+  expect((cardEl("t1").querySelector("textarea") as HTMLTextAreaElement).value).toBe("복구 중에 친 글");
+});
+
+it("씬 전환 첫 렌더에는 핸들이 아직 옛 씬을 말한다 — 새 씬 id 로 온 복구 답이 옛 카드를 새 씬에 쓰지 않게(Codex)", async () => {
+  // 씬 A→B 로 바꾸는 첫 렌더에는 cards 가 아직 A 다(동기화는 useEffect). 그 커밋의 핸들이 B 를 말하면,
+  // 활성 씬(B) 확인을 통과해 A 의 카드에 답을 입히고 B 로 저장한다. 같은 커밋의 레이아웃 효과로 들여다본다.
+  const sceneOf = (id: string) =>
+    ({
+      id, name: id, created_at: 0, edges: [],
+      cards: [{ id: `${id}-r`, kind: "reference", x: 0, y: 0, refs: [ref(`asset:imports|${id}.png`, `${id}.png`)] }],
+    }) as unknown as Scene;
+  const actionRef: SceneBoardActionRef = { current: null };
+  const seen: (string | null)[] = [];
+  function Probe() {
+    useLayoutEffect(() => {
+      seen.push(actionRef.current?.sceneId ?? null); // SceneBoard 다음 형제 — 같은 커밋에서 핸들이 묶인 뒤 본다
+    });
+    return null;
+  }
+  const board = (scene: Scene) => (
+    <>
+      <SceneBoard scene={scene} onChange={noop} actionRef={actionRef} />
+      <Probe />
+    </>
+  );
+  await act(async () => {
+    root.render(board(sceneOf("A")));
+  });
+  seen.length = 0;
+  await act(async () => {
+    root.render(board(sceneOf("B")));
+  });
+
+  expect(seen[0]).toBe("A"); // 전환 첫 커밋 — cards 가 아직 A 이므로 핸들도 A
+  expect(actionRef.current?.sceneId).toBe("B"); // 동기화가 끝난 뒤에야 B(형제 Probe 는 그 커밋에 다시 안 돈다)
 });
 
 it("다른 공간으로 물어본 판정은 이 캔버스에 번지지 않는다", async () => {

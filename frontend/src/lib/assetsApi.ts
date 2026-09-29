@@ -304,11 +304,13 @@ export const assetsApi = {
   // workspaceId — 그 캔버스 탭에 지정된 공간. 서버가 그 공간의 프로젝트 폴더부터 찾는다.
   // scanId — 자동 복구 한 번을 가리킨다. 같은 id 의 요청들은 서버의 첫 스캔을 같이 쓴다.
   // fingerprints — 토큰 → 참조가 든 내용 지문(2026-09-29). 사본이 이 PC 에 없어도 내용으로 찾게 한다.
+  // signal — 멈춘 NAS 에 요청이 영원히 매달리지 않게 부르는 쪽이 시간 한도를 건다.
   locateAssets: (
     tokens: string[],
     workspaceId = "",
     scanId = "",
     fingerprints: Record<string, { sha256: string; bytes: number }> = {},
+    signal?: AbortSignal,
   ) =>
     jsonFetch<{
       fixed: { token: string; project: string; path: string; sha256?: string; bytes?: number }[];
@@ -318,6 +320,7 @@ export const assetsApi = {
     }>("/api/assets/locate", {
       method: "POST",
       body: JSON.stringify({ tokens, workspace_id: workspaceId, scan_id: scanId, fingerprints }),
+      signal,
     }),
 
   // 내 로컬 DB(메타데이터) 가져오기 — 통째 교체(다른 PC에서 내보낸 .db).

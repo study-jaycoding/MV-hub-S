@@ -14,7 +14,7 @@ import {
   saveScenes,
   updateScene,
 } from "./scenes";
-import { relinkSceneAssetRefs } from "./sceneAssetRelink";
+import { relinkSceneAssetRefs, type RelinkTarget } from "./sceneAssetRelink";
 import { applySceneMove, type SceneMove, type SceneWorkspace } from "./sceneWorkspace";
 import { clearSceneHistory } from "./sceneUndoStore";
 import {
@@ -100,13 +100,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
       .then(() => initSceneCardLinks())
       // 옛 씬의 '이 PC 안 사본' 참조를 프로젝트 폴더 원본으로 되돌린다(2026-09-28) — 찾은 것만 조용히.
       //  씬 복구·카드 소속 합치기가 끝난 뒤에 돈다(그 둘이 씬을 다시 쓰므로 순서가 중요).
-      .then(() =>
-        relinkSceneAssetRefs(() => sceneActionRef.current?.flushPending()).then((changed) => {
-          if (!changed) return;
-          setScenes(listScenes(null));
-          flashRef.current?.(`씬 그림 ${changed}개를 프로젝트 폴더의 원본으로 다시 이었습니다.`);
-        }, () => undefined),
-      )
+      .then(() => relinkAssets(true))
       // 자동 복구가 닿지 못한 씬(다른 브라우저 프로필이 올려 둔 것)이 있으면 개수를 알아 둔다.
       .then(() => countBackupOnlyScenes().then(setBackupOnly, () => setBackupOnly(0)));
     return () => {
@@ -152,9 +146,11 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   // 씬 캔버스에서 선택된 결과 카드들 → 프롬프트 위 선택바. 삭제는 명령형 핸들로.
   const [sceneSelGens, setSceneSelGens] = useState<Generation[]>([]);
   const sceneActionRef = useRef<{
+    sceneId: string; // 이 캔버스가 보고 있는 씬 — 비동기 결과를 입히기 전에 활성 씬과 같은지 본다
     deleteSelected: () => void;
     setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
     flushPending: () => void; // 밀린 입력 저장 확정 — 씬 전환 직전 호출
+    applyAssetRelink: (found: Map<string, RelinkTarget>) => number; // 자산 자동 복구 답을 메모리 카드에 입힘
     zoomFit: () => void; // 툴바 '맞춤'(f 키 프레이밍과 동일)
     zoomStep: (dir: 1 | -1) => void; // 툴바 −/+ 한 단계 확대/축소
   } | null>(null);
@@ -169,6 +165,24 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   }, []);
 
   const refreshScenes = () => setScenes(listScenes(null));
+  // 자산 자동 복구 — 네 계기(앱 시작·씬 불러오기·드롭 뒤·백업 가져오기)가 모두 이 하나로 부른다(2026-09-29).
+  //  답을 받은 그 순간 열린 캔버스의 최신 메모리 카드에 참조만 바꿔 끼우고, 나머지 씬은 저장 직후 화면에 맞춘다.
+  //  끝난 뒤 목록을 통째로 다시 읽지 않는다 — 그 사이 친 글이 지워지거나, 옮긴 카드가 옛 참조를 도로 저장했다.
+  const relinkAssets = (announce: boolean): Promise<void> =>
+    relinkSceneAssetRefs({
+      applyToBoard: (found) => {
+        const board = sceneActionRef.current;
+        // 캔버스가 **지금 활성 씬**을 보고 있을 때만 — 씬 전환 중 낡은 핸들이 다른 씬에 쓰지 않게(Codex).
+        return board && board.sceneId === activeSceneIdRef.current ? board.applyAssetRelink(found) : null;
+      },
+      onSaved: (next, boardApplied) => {
+        const activeId = activeSceneIdRef.current;
+        // 캔버스가 받았으면 활성 씬은 캔버스가 저장한 값을 지킨다(null = 활성 씬 보호). 안 열렸으면 통째로 받는다.
+        setScenes((prev) => mergePatchedSceneList(prev, next, activeId, boardApplied ? null : activeId));
+      },
+    }).then((changed) => {
+      if (announce && changed) flashRef.current?.(`씬 그림 ${changed}개를 프로젝트 폴더의 원본으로 다시 이었습니다.`);
+    });
   const selectScene = (id: string | null) => {
     // ★씬을 바꾸기 전에 SceneBoard 의 밀린 입력 저장을 확정 — 그때는 activeScene 이 아직 옛 씬이라 정확히
     //  저장된다. add/import/delete 도 모두 이 selectScene 을 거치므로 전환 경로 전체가 여기서 커버된다.
@@ -188,19 +202,13 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     selectScene(s.id);
     // 남이 준 씬 파일에 '그 사람 PC 안 사본'을 가리키는 그림이 있으면, 내 프로젝트 폴더의
     // 같은 파일로 조용히 이어 준다(2026-09-28). 못 찾으면 지금처럼 빈칸이다.
-    void relinkSceneAssetRefs(() => sceneActionRef.current?.flushPending()).then((changed) => {
-      if (!changed) return;
-      refreshScenes();
-      flashRef.current?.(`씬 그림 ${changed}개를 프로젝트 폴더의 원본으로 다시 이었습니다.`);
-    });
+    void relinkAssets(true);
     return s;
   };
   // 로컬 파일을 캔버스에 넣은 직후(끌어다 놓기·붙여넣기) — 자동 복구를 한 번 더 돌려 서버 판정을 받는다.
-  //  같은 내용이 서버에 있으면 원본으로 잇고(씬 갱신), 없으면 '이 PC에만' 표시가 남는다(Jay 2026-09-29).
+  //  같은 내용이 서버에 있으면 원본으로 잇고(씬 갱신), 없으면 '이 PC에만' 표시가 켜진다(Jay 2026-09-29).
   const relinkSceneRefsNow = () => {
-    void relinkSceneAssetRefs(() => sceneActionRef.current?.flushPending()).then((changed) => {
-      if (changed) refreshScenes();
-    });
+    void relinkAssets(false);
   };
   const renameScene = (id: string, name: string) => {
     updateScene(null, id, { name });
@@ -232,11 +240,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
         added ? `DB 백업에서 씬 ${added}개를 가져왔습니다.` : "가져올 씬이 없습니다.",
       );
       // 가져온 씬의 '다른 PC 사본' 그림도 내 프로젝트 폴더의 같은 파일로 이어 준다(2026-09-28).
-      if (added) {
-        void relinkSceneAssetRefs(() => sceneActionRef.current?.flushPending()).then((changed) => {
-          if (changed) refreshScenes();
-        });
-      }
+      if (added) void relinkAssets(false);
     } catch (e) {
       flashRef.current?.(e instanceof Error ? e.message : "씬을 가져오지 못했습니다.");
     }

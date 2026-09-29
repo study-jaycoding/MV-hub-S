@@ -3,9 +3,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyRelink,
+  forgetRefsAsked,
   getRefServerStatusVersion,
-  markRefsLocal,
   refServerStatus,
+  relinkCards,
   relinkKey,
   relinkSceneAssetRefs,
   sceneAssetGroups,
@@ -13,13 +14,13 @@ import {
   sceneRefWorkspaceId,
   subscribeRefServerStatus,
 } from "../src/lib/sceneAssetRelink";
-import { saveScenes, type Scene } from "../src/lib/scenes";
+import { listScenes, saveScenes, type Scene } from "../src/lib/scenes";
 
 const locate = vi.fn();
 vi.mock("../src/api", () => ({
   api: {
-    locateAssets: (tokens: string[], ws?: string, scanId?: string, fingerprints?: unknown) =>
-      locate(tokens, ws, scanId, fingerprints),
+    locateAssets: (tokens: string[], ws?: string, scanId?: string, fingerprints?: unknown, signal?: unknown) =>
+      locate(tokens, ws, scanId, fingerprints, signal),
   },
 }));
 
@@ -187,6 +188,21 @@ describe("찾은 것 갈아끼우기", () => {
     expect(changed).toBe(0);
     expect(next).toBe(scenes);
   });
+
+  it("바뀐 카드·씬만 새 객체다 — 안 바뀐 것은 같은 객체라 화면이 다시 그리지 않는다(2026-09-29)", () => {
+    const touched = { ...scene([{ file_path: "asset:imports|a.png" }]), id: "t" };
+    const untouched = { ...scene([{ file_path: "asset:P|CH/b.png" }]), id: "u" };
+    const found = new Map([[relinkKey("", "asset:imports|a.png"), { project: "P", path: "CH/a.png" }]]);
+
+    const { scenes: next } = applyRelink([touched, untouched], found);
+    expect(next[0]).not.toBe(touched);
+    expect(next[0].cards[1]).toBe(touched.cards[1]); // 같은 씬의 안 바뀐 카드(생성 카드)
+    expect(next[1]).toBe(untouched);
+
+    const cards = relinkCards(untouched.cards, "", found);
+    expect(cards).toEqual({ cards: untouched.cards, changed: 0 });
+    expect(cards.cards).toBe(untouched.cards);
+  });
 });
 
 describe("서버에 묻고 갈아끼우기", () => {
@@ -238,6 +254,85 @@ describe("서버에 묻고 갈아끼우기", () => {
 
     expect(locate.mock.calls[0][0]).toEqual(["asset:imports|with.png", "asset:imports|without.png"]);
     expect(locate.mock.calls[0][3]).toEqual({ "asset:imports|with.png": { sha256: "c".repeat(64), bytes: 7 } });
+  });
+
+  it("답을 받은 그 자리에서 열린 캔버스에 먼저 입히고, 나머지 씬은 저장 직후 화면에 맞춘다(2026-09-29)", async () => {
+    const active = { ...scene([{ file_path: "asset:imports|a.png" }]), id: "active" };
+    const other = { ...scene([{ file_path: "asset:imports|a.png" }]), id: "other" };
+    saveScenes(null, [active, other]);
+    locate.mockResolvedValue({
+      fixed: [{ token: "asset:imports|a.png", project: "P", path: "CH/a.png" }],
+      unresolved: [],
+      missing: [],
+      local: [],
+    });
+    const order: string[] = [];
+    const applyToBoard = vi.fn((found: Map<string, unknown>) => {
+      order.push("board");
+      expect(found.has(relinkKey("", "asset:imports|a.png"))).toBe(true);
+      // 캔버스는 자기 메모리의 활성 씬을 고쳐 저장한다(여기서는 그것을 흉내 낸다)
+      const saved = listScenes(null).map((s) => (s.id === "active" ? applyRelink([s], found as never).scenes[0] : s));
+      saveScenes(null, saved);
+      return 1;
+    });
+    const onSaved = vi.fn((next: Scene[], boardApplied: boolean) => {
+      order.push("saved");
+      // 저장된 값 그대로 — 끝난 뒤 목록을 다시 읽지 않아도 화면이 맞다
+      expect(next).toEqual(listScenes(null));
+      expect(boardApplied).toBe(true);
+    });
+
+    expect(await relinkSceneAssetRefs({ applyToBoard, onSaved })).toBe(2);
+    expect(order).toEqual(["board", "saved"]);
+    expect(listScenes(null).map((s) => s.cards[0].refs![0].file_path)).toEqual([
+      "asset:P|CH/a.png",
+      "asset:P|CH/a.png",
+    ]);
+  });
+
+  it("캔버스가 안 열렸으면 활성 씬도 저장 직후 통째로 받는다(boardApplied=false)", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:imports|b.png" }])]);
+    locate.mockResolvedValue({
+      fixed: [{ token: "asset:imports|b.png", project: "P", path: "CH/b.png" }],
+      unresolved: [],
+      missing: [],
+      local: [],
+    });
+    const onSaved = vi.fn();
+    expect(await relinkSceneAssetRefs({ applyToBoard: () => null, onSaved })).toBe(1);
+    expect(onSaved).toHaveBeenCalledTimes(1);
+    expect(onSaved.mock.calls[0][1]).toBe(false);
+  });
+
+  it("중간에 실패해도 이미 반영한 바퀴는 화면·저장소에 남고, 그만큼을 돌려준다(2026-09-29)", async () => {
+    // 첫 바퀴가 고친 뒤, 도는 동안 새 참조가 생겨 다음 바퀴에서 묻다가 서버가 실패한다
+    saveScenes(null, [scene([{ file_path: "asset:imports|first.png" }])]);
+    locate
+      .mockImplementationOnce(async () => {
+        saveScenes(null, [
+          ...listScenes(null),
+          { ...scene([{ file_path: "asset:imports|second.png" }]), id: "s2" },
+        ]);
+        return {
+          fixed: [{ token: "asset:imports|first.png", project: "P", path: "CH/first.png" }],
+          unresolved: [],
+          missing: [],
+          local: [],
+        };
+      })
+      .mockRejectedValueOnce(new Error("NAS 멈춤"));
+    const onSaved = vi.fn();
+
+    expect(await relinkSceneAssetRefs({ onSaved })).toBe(1);
+    expect(onSaved).toHaveBeenCalledTimes(1);
+    expect(listScenes(null)[0].cards[0].refs![0].file_path).toBe("asset:P|CH/first.png");
+  });
+
+  it("멈춘 NAS 에 영원히 매달리지 않게 요청마다 시간 한도(AbortSignal)를 건다(2026-09-29)", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:imports|slow.png" }])]);
+    locate.mockResolvedValue({ fixed: [], unresolved: [], missing: [], local: [] });
+    await relinkSceneAssetRefs();
+    expect(locate.mock.calls[0][4]).toBeInstanceOf(AbortSignal);
   });
 
   it("서버가 실패하면 삼키고, 다음 기회에 다시 묻는다", async () => {
@@ -322,23 +417,24 @@ describe("방금 이 PC 에 넣은 참조(2026-09-29 옛 방식)", () => {
     locate.mockReset();
   });
 
-  it("서버 답 전에 먼저 '이 PC에만'으로 보이고, 서버에 같은 내용이 있다는 답이 오면 표시가 지워진다", async () => {
+  it("서버 답 전에는 '이 PC에만'을 켜지 않는다 — 판정은 서버가 한다(2026-09-29)", async () => {
     const heard = vi.fn();
     const off = subscribeRefServerStatus(heard);
-    markRefsLocal("ws-m", ["asset:imports|dropped.png"]);
-    off();
-    expect(refServerStatus("ws-m", "asset:imports|dropped.png")).toBe("local");
-    expect(heard).toHaveBeenCalledTimes(1);
+    forgetRefsAsked("ws-m", ["asset:imports|dropped.png"]);
+    expect(refServerStatus("ws-m", "asset:imports|dropped.png")).toBeUndefined();
+    expect(heard).not.toHaveBeenCalled(); // 예전에는 NAS 에 있는 파일도 답이 올 때까지 빨갛게 보였다
 
     saveScenes(null, [scene([{ file_path: "asset:imports|dropped.png" }], { id: "ws-m", name: "가" })]);
     locate.mockResolvedValue({
-      fixed: [{ token: "asset:imports|dropped.png", project: "P", path: "BG/d.png" }],
-      unresolved: [],
+      fixed: [],
+      unresolved: ["asset:imports|dropped.png"],
       missing: [],
-      local: [],
+      local: ["asset:imports|dropped.png"],
     });
     await relinkSceneAssetRefs();
-    expect(refServerStatus("ws-m", "asset:imports|dropped.png")).toBeUndefined();
+    off();
+    expect(refServerStatus("ws-m", "asset:imports|dropped.png")).toBe("local"); // 서버가 확인한 뒤에만
+    expect(heard).toHaveBeenCalledTimes(1);
   });
 
   it("같은 파일을 2분 안에 다시 끌어다 놓아도 다시 물어 원본으로 잇는다(Codex)", async () => {
@@ -350,12 +446,12 @@ describe("방금 이 PC 에 넣은 참조(2026-09-29 옛 방식)", () => {
       local: [],
     });
     saveScenes(null, [scene([{ file_path: token }], { id: "ws-a", name: "가" })]);
-    markRefsLocal("ws-a", [token]);
+    forgetRefsAsked("ws-a", [token]);
     expect(await relinkSceneAssetRefs()).toBe(1);
 
     // 곧바로 같은 파일을 다시 끌어다 놓음 — 같은 이 PC 사본 토큰이 다시 생긴다
     saveScenes(null, [scene([{ file_path: token }], { id: "ws-a", name: "가" })]);
-    markRefsLocal("ws-a", [token]);
+    forgetRefsAsked("ws-a", [token]);
     expect(await relinkSceneAssetRefs()).toBe(1);
     expect(locate).toHaveBeenCalledTimes(2);
   });

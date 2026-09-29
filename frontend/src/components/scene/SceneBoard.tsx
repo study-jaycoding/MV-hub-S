@@ -110,11 +110,13 @@ import {
   getRecentDoneVersion,
 } from "../../lib/sceneRecentDoneStore";
 import {
+  forgetRefsAsked,
   getRefServerStatusVersion,
-  markRefsLocal,
   refServerStatus,
+  relinkCards,
   sceneRefWorkspaceId,
   subscribeRefServerStatus,
+  type RelinkTarget,
 } from "../../lib/sceneAssetRelink";
 import { flashMsg } from "../../lib/flash";
 import { useSceneHistory } from "../../lib/useSceneHistory";
@@ -241,9 +243,11 @@ interface Props {
   onSelectionGens?: (gens: Generation[]) => void;
   // 선택바의 '삭제'·트레이 편집이 부를 명령형 핸들.
   actionRef?: MutableRefObject<{
+    sceneId: string; // 이 캔버스가 보고 있는 씬 — App 이 비동기 결과를 입히기 전에 활성 씬과 같은지 본다
     deleteSelected: () => void;
     setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
     flushPending: () => void; // 밀린 입력 저장 확정 — App 이 씬 전환 직전 호출(옛 씬에 정확히 저장)
+    applyAssetRelink: (found: Map<string, RelinkTarget>) => number; // 자산 자동 복구 답을 메모리 카드에 입힘
     zoomFit: () => void; // 툴바 '맞춤' — f 키와 동일(선택 있으면 선택 중심, 없으면 전체)
     zoomStep: (dir: 1 | -1) => void; // 툴바 −/+ — 화면 중앙 기준 한 단계 확대/축소
   } | null>;
@@ -1536,9 +1540,9 @@ export function SceneBoard({
     persist,
     onLoadSceneFile,
     onDroppedGenerationFile,
-    // 이 PC 설치 폴더에만 있는 새 참조 — 먼저 '이 PC에만'으로 보이고, 자동 복구 답이 덮는다.
+    // 이 PC 설치 폴더에만 있는 새 참조 — 자동 복구가 다시 묻게 하고 부른다. '이 PC에만' 표시는 서버 답으로만 켠다.
     onLocalRefsAdded: (tokens) => {
-      markRefsLocal(refWorkspaceId, tokens);
+      forgetRefsAsked(refWorkspaceId, tokens);
       onLocalRefsAdded?.();
     },
     cardWidth: CARD_W,
@@ -1593,6 +1597,21 @@ export function SceneBoard({
     setCards(nextCards);
     persist(nextCards, edgesRef.current);
     return nextRefs;
+  };
+
+  // 자산 자동 복구의 답을 **지금 메모리의 카드**에 입힌다(2026-09-29) — 저장본으로 화면을 갈아끼우지 않으므로
+  //  디바운스 중인 글·끌고 있는 카드가 그대로 남는다(useSceneCardMove 는 매 프레임 cardsRef 를 쓴다). 예전에는
+  //  복구가 저장소만 고치고 몇 초 뒤 화면을 통째로 바꿔, 그 사이 친 글이 지워지거나 옮긴 카드가 옛 참조를 도로
+  //  저장했다. App 이 sceneActionRef 로, 이 캔버스가 활성 씬을 보고 있을 때만 부른다.
+  const applyAssetRelink = (found: Map<string, RelinkTarget>): number => {
+    flushPending(); // 밀린 입력을 undo 한 단계로 먼저 확정 — 아래 파생 저장에 섞여 undo 에서 빠지지 않게
+    const { cards: nextCards, changed } = relinkCards(cardsRef.current, refWorkspaceId, found);
+    if (!changed) return 0;
+    cardsRef.current = nextCards;
+    setCards(nextCards);
+    // 복구는 사용자 편집이 아니다 — undo 단계를 만들지 않고 저장·부모만 최신화(연결 refs 재동기화와 같은 관문).
+    commitDerivedState({ cards: nextCards, edges: edgesRef.current, groups: groupsRef.current });
+    return changed;
   };
 
   // 전역 mousemove/mouseup/blur 생명주기와 프레임당 이동 합치기는 전용 훅이 담당한다.
@@ -2544,9 +2563,13 @@ export function SceneBoard({
   useLayoutEffect(() => {
     if (actionRef)
       actionRef.current = {
+        // props 의 scene.id 가 아니라 **지금 cards 가 속한 씬** — 씬 전환 첫 렌더에는 cards·cardsRef 가 아직 옛 씬이다
+        //  (동기화는 useEffect). 그때 비동기 결과가 새 씬 id 로 들어와 옛 카드를 새 씬에 저장하지 않게(Codex).
+        sceneId: cardsSceneId,
         deleteSelected: () => deleteCards(selResultCardIds()),
         setCardRefs,
         flushPending,
+        applyAssetRelink,
         zoomFit: frameView,
         zoomStep: stepZoom,
       };
