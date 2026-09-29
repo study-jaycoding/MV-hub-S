@@ -73,7 +73,6 @@ class ReferenceOut(BaseModel):
 
 class GenerationOut(BaseModel):
     id: str
-    quota_warning: Optional[str] = None
     worker_id: str
     worker_name: Optional[str] = None
     prompt: str

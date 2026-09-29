@@ -138,6 +138,27 @@ def test_unlimited_member_gets_this_cycles_pool_total():
     assert my_quota("ws1", "a@x")["pool_total"] == 20000
 
 
+def test_unassigned_member_also_sees_the_workspace_pool():
+    """그룹에 들지 않은 사람도 기본으로 워크스페이스 남은 크레딧을 본다(Jay 2026-09-29) — 고리 분모가 같다."""
+    _group(900, quotas={"b@x": None})
+    with db.get_connection() as conn:
+        conn.execute("UPDATE workspace_credit_plan SET recurring_topup=20000 WHERE workspace_id='ws1'")
+        conn.execute(
+            "INSERT INTO workspace_credit_topup(id, workspace_id, day, credits) VALUES('t-now', 'ws1', '2026-09-10', 3000)"
+        )
+    result = my_quota("ws1", "a@x")
+    assert (result["source"], result["quota"], result["pool_total"]) == ("unassigned", None, 23000)
+    assert my_quota("ws1", "b@x")["pool_total"] is None  # 몫이 있는 사람은 주지 않는다
+    with db.get_connection() as conn:
+        conn.execute("UPDATE workspace_credit_plan SET recurring_topup=NULL WHERE workspace_id='ws1'")
+        conn.execute("DELETE FROM workspace_credit_topup")
+    assert my_quota("ws1", "a@x")["pool_total"] is None  # 충전을 모르면 고리를 그리지 않는다
+    assert my_quota("ws2", "a@x")["pool_total"] is None  # 계획이 아예 없는 공간도 그대로 동작한다
+    with db.get_connection() as conn:
+        conn.execute("UPDATE workspace_credit_plan SET recurring_topup=0 WHERE workspace_id='ws1'")
+    assert my_quota("ws1", "a@x")["pool_total"] == 0  # 0 은 '모름'이 아니다 — 이번 달 충전 0
+
+
 def test_unassigned_has_no_quota_or_period_but_preserves_revision():
     assert my_quota("ws1", "a@x")["revision"] == 0
     _group(900, quotas={"b@x": None})

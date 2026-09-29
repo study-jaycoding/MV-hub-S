@@ -146,6 +146,7 @@ updated: 2026-09-30
 | `members.py`(65줄) | `GET /api/members`·`PATCH /members/{uid}/global-roles` (2) | 전역 멤버 목록·전역역할 변경 | 0곳 |
 | `projects.py`(622줄) | `GET /api/projects`·`POST /assign`·`GET /{pid}/folder-counts` 등 (17) | 프로젝트 CRUD·배정·멤버 역할·폴더 카운트 | 19곳 |
 | `manage.py`(2311줄) | `POST /telemetry/push`·`GET /team-overview`·`GET /tasks[-batch]`·`POST /save-finals`·`GET /save-finals/progress`·`POST /save-finals/cancel` (47) | PM 대시보드: 텔레메트리 수신·팀 집계·크레딧 플랜·작업 CRUD·골드 저장 | 11곳. 서로 무관한 5개 도메인이 한 파일(§5) |
+| `manage_quota.py`(33줄) | `GET /api/manage/credit-plan/my-quota` (1) | 내 크레딧 몫·이번 기간 사용·남은 몫 조회 — 공유 서버 위임·본인 워크스페이스 멤버만. **표시 전용**(생성은 이 값을 확인하지 않는다, 2026-09-30) | 0곳 |
 | `update_notices.py`(174줄) | `GET /api/update-notices`·`POST /admin/register` (7) | 릴리스 공지 등록·고정·공표·읽음 | 0곳(쓰기는 서버 Admin 역할 게이트로 제한 — 프록시 위임과는 다른 종류의 서버 제약) |
 
 **로컬 PC 기능(이 PC 에서만)**
@@ -262,6 +263,7 @@ updated: 2026-09-30
 | `manage_schema.py` | 733 | 사이드카 테이블·멱등 마이그레이션 경계(모든 manage 모듈이 먼저 부름) | `ensure_manage_schema` |
 | `manage_credit_plan.py` | 756 | 크레딧 풀·그룹 한도·긴급충전·기간 계산 + 대시보드 읽기 모델 | `manage_credit_plan.get_settings`·`plan_view` |
 | `manage_member_table.py` | 133 | 관리 표 읽기 — 계정(이메일) 한 줄에 그룹·프로젝트 역할·HF 플랜·사용량 조인. **쓰기 없음**. uid 없는·어긋난 계정은 `project_lock` | `member_table` |
+| `manage_quota.py` | 117 | 내 몫 읽기 모델 — 그룹 인당 한도·덮어쓰기·이번 기간 사용(실제+견적). 몫이 없으면(미배정·한도 없음) `pool_total`(이번 달 정기+긴급 충전) | `my_quota` |
 | `manage_transactions.py` | 483 | 계정 크레딧 거래 적재 + 생성물 근접 매칭 | `manage_transactions.record_transactions` |
 | `manage_telemetry.py` | 395 | 로컬 텔레메트리 outbox 저장·조회·전송 정산 | `manage_telemetry.mark_telemetry_dirty*` |
 | `manage_account_reports.py` | 310 | 계정 상태·거래 보고의 내구성 outbox(재시도·409·dead-letter) | `manage_account_reports.queue_account_reports` |
@@ -599,6 +601,7 @@ updated: 2026-09-30
 | `manage/WorkspaceUsageDashboard.tsx`(1008줄) | 워크스페이스 사용 현황 · 머리글(＋프로젝트 · 관리 표 아이콘 · 보고서 내려받기 메뉴)(크레딧 링·추이 차트·멤버/모델 표) | `WorkspaceUsageDashboard`·`HoverMetric` |
 | `manage/CreditPoolSection.tsx`(399줄) · `CreditPlanFields.tsx`(508줄) | 크레딧 풀 표시 / 그룹·충전 편집 창 | 각 절 |
 | `manage/MemberTable.tsx`(264줄) | **관리 표** — 계정 한 줄에 등급·크레딧 그룹·프로젝트 참여·보고된 사실. 칸을 고치면 기존 API 로 즉시 저장(직렬 큐 → 큐가 비면 재조회). 설계 `docs/MEMBER_TABLE_DESIGN.md` | `MemberTable` |
+| `manage/useManageEditConflict.tsx`(134줄) | 관리 설정·프로젝트 기획 저장의 revision 충돌(409) 창 — 바뀐 칸을 보여 주고 칸마다 내 값/최신 값을 골라 병합 저장 | `useManageEditConflict` |
 | `manage/WorkBoard.tsx`(892줄) | 작업 탭 컨테이너 — 병합·필터·핸들러 주입. 머리글 오른쪽 = 검색 상자 · 보관 기록(아이콘) · 내 작업만 · 보기 전환 | `WorkBoard` |
 | `manage/WorkFilterBar.tsx`(280줄) | 노션식 칩 필터 바(칩 · +필터) + 머리글에 놓이는 검색 상자 `WorkSearchBox` | 〃 |
 | `manage/KanbanBoard.tsx`(179줄 — 폴더 자동 작업은 상태가 컷에서 파생되므로 끌 수 없다, 수동 작업만 끌기) · `TableView.tsx`(351줄) · `CalendarView.tsx`(206줄) · `MonthlyTaskCalendar.tsx`(190줄) | 작업 뷰 4종(프레젠테이션 전용, `WorkViewProps` 주입) — 소요시간 포맷터가 뷰마다 다름(§5-b) | 〃 |
@@ -849,6 +852,8 @@ updated: 2026-09-30
 |---|---|---|
 | `creditPlan.ts` | 순수 | 크레딧 풀·그룹 인당 한도·잔액 추이 타입 + 설정 초안 검증 | 약 415줄 |
 | `memberTable.ts` | 순수 | 관리 표 응답 타입 · 그룹 한 줄 저장 본문(`groupAssignBody` — 받은 그룹 전부 재전송·허용 모델 키 생략) · 역할 낙관 반영 | 약 83줄 |
+| `creditPlanMerge.ts` | 순수 | 크레딧 설정·기획 저장 충돌의 칸 단위 비교·병합(`mergeCreditPlan`·`mergePlanning`)과 칸 이름 표기 | 약 173줄 |
+| `myCreditQuota.ts` | 훅 | 계정 메뉴의 내 몫 조회(`useMyCreditQuota`, 메뉴 열린 동안 30초·이벤트 갱신)·몫 유무 판정(`hasPersonalQuota`·`showsWorkspacePool`) | 약 97줄 |
 | `projectPlanning.ts` | 순수 | 프로젝트 예산 기간·입력 검증 |
 | `usageReport.ts` | 순수 | 사용량 CSV(주입 방지 포함)·출력 종류 집계 |
 | `usagePeriod.ts` | 순수 | 기간 범위·추이 버킷 채우기·라벨 |

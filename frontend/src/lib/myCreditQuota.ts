@@ -19,7 +19,8 @@ export interface MyCreditQuota {
   period_end: string | null;
   revision: number;
   enforcement: "advisory";
-  // 그룹 한도 없음(source=unlimited)일 때만 — 이번 충전 달의 정기 + 긴급 충전 총량. 구서버는 키 없음.
+  // 내 몫이 없을 때만(그룹 한도 없음 unlimited · 그룹 미배정 unassigned) — 이번 충전 달의 정기 + 긴급 충전 총량.
+  // 구서버는 키 없음.
   pool_total?: number | null;
 }
 
@@ -27,6 +28,11 @@ export function hasPersonalQuota(value: MyCreditQuota | null): value is MyCredit
   return Boolean(value && (value.source === "auto" || value.source === "override") &&
     typeof value.quota === "number" && Number.isFinite(value.quota) && value.quota >= 0 &&
     typeof value.remaining === "number" && Number.isFinite(value.remaining));
+}
+
+// 내 몫 대신 워크스페이스 남은 크레딧을 보여 줄 사람 — 그룹 한도가 없거나 그룹에 들지 않았다(Jay 2026-09-29).
+export function showsWorkspacePool(value: MyCreditQuota | null): boolean {
+  return value?.source === "unlimited" || value?.source === "unassigned";
 }
 
 export function quotaUncertainty(value: MyCreditQuota | null): string {
