@@ -13,11 +13,17 @@ import { listScenes, saveScenes, type Scene } from "./scenes";
 // 어느 것이 안 열리는지는 폴더를 볼 수 있는 서버만 안다.
 const ASSET_TOKEN = /^asset:[^|]+\|/;
 
+/** 이 씬의 그림을 **어느 공간 폴더부터** 찾을지 — 탭에 사람이 고른 공간, 없으면 씬 파일로 받은 힌트.
+ *  묻기·답 반영·서버에 없음 표시가 모두 이 하나로 열쇠를 만든다(어긋나면 표시가 엉뚱한 참조에 붙는다). */
+export function sceneRefWorkspaceId(scene: Pick<Scene, "workspace" | "refWorkspaceHint">): string {
+  return scene.workspace?.id || scene.refWorkspaceHint?.id || "";
+}
+
 /** 물어볼 참조를 **캔버스 탭의 공간별로** 묶는다 — 서버가 그 공간의 프로젝트부터 찾게(Jay 2026-09-28). */
 export function sceneAssetGroups(scenes: Scene[]): { workspaceId: string; tokens: string[] }[] {
   const byWorkspace = new Map<string, Set<string>>();
   for (const scene of scenes) {
-    const ws = scene.workspace?.id || "";
+    const ws = sceneRefWorkspaceId(scene);
     for (const card of scene.cards) {
       for (const ref of card.refs || []) {
         if (!ref.file_path || !ASSET_TOKEN.test(ref.file_path)) continue;
@@ -59,7 +65,7 @@ export function applyRelink(
     cards: scene.cards.map((card) => {
       if (!card.refs?.length) return card;
       let touched = false;
-      const ws = scene.workspace?.id || "";
+      const ws = sceneRefWorkspaceId(scene);
       const refs = card.refs.map((ref) => {
         const hit = ref.file_path ? found.get(relinkKey(ws, ref.file_path)) : undefined;
         if (!hit) return ref;

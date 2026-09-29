@@ -113,6 +113,7 @@ import {
   getRefServerStatusVersion,
   markRefsLocal,
   refServerStatus,
+  sceneRefWorkspaceId,
   subscribeRefServerStatus,
 } from "../../lib/sceneAssetRelink";
 import { flashMsg } from "../../lib/flash";
@@ -698,7 +699,7 @@ export function SceneBoard({
   useSyncExternalStore(subscribeComfyRunning, getComfyRunningVersion, getComfyRunningVersion);
   // 서버에 없는 레퍼런스 판정(assets.locate) 구독 — 판정이 오면 레퍼런스 카드를 빨간 테두리로 다시 그린다.
   useSyncExternalStore(subscribeRefServerStatus, getRefServerStatusVersion, getRefServerStatusVersion);
-  const refWorkspaceId = scene.workspace?.id || ""; // 판정 열쇠의 공간 — 자동 복구가 물을 때와 같은 식
+  const refWorkspaceId = sceneRefWorkspaceId(scene); // 판정 열쇠의 공간 — 자동 복구가 물을 때와 같은 도우미
 
   // 카드가 참조하는 어셋 프로젝트들(only 로 제한 가능)을 다시 읽어 전역 버전 표를 갱신한다.
   // 프로젝트별 in-flight 로 중복 조회를 막는다. 포커스 재조회(Phase 1)와 실시간 변경 수신(Phase 2) 공용.

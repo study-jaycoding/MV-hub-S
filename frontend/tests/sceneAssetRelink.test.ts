@@ -10,6 +10,7 @@ import {
   relinkSceneAssetRefs,
   sceneAssetGroups,
   sceneAssetTokens,
+  sceneRefWorkspaceId,
   subscribeRefServerStatus,
 } from "../src/lib/sceneAssetRelink";
 import { saveScenes, type Scene } from "../src/lib/scenes";
@@ -66,6 +67,23 @@ describe("물어볼 참조 모으기", () => {
       { workspaceId: "ws-2", tokens: ["asset:P|b.png"] },
       { workspaceId: "", tokens: ["asset:P|c.png"] },
     ]);
+  });
+
+  it("씬 파일로 받은 공간 힌트로도 묶는다 — 탭에 고른 공간이 있으면 그것이 앞선다(2026-09-29)", () => {
+    const hinted = { ...scene([{ file_path: "asset:P|a.png" }]), refWorkspaceHint: { id: "ws-h", name: "힌트" } };
+    const both = {
+      ...scene([{ file_path: "asset:P|b.png" }], { id: "ws-tab", name: "탭" }),
+      refWorkspaceHint: { id: "ws-h", name: "힌트" },
+    };
+    expect(sceneRefWorkspaceId(hinted)).toBe("ws-h");
+    expect(sceneRefWorkspaceId(both)).toBe("ws-tab");
+    expect(sceneAssetGroups([hinted, both])).toEqual([
+      { workspaceId: "ws-h", tokens: ["asset:P|a.png"] },
+      { workspaceId: "ws-tab", tokens: ["asset:P|b.png"] },
+    ]);
+    // 답도 같은 열쇠로 받는다 — 물을 때와 반영할 때의 공간이 어긋나지 않게
+    const found = new Map([[relinkKey("ws-h", "asset:P|a.png"), { project: "Q", path: "CH/a.png" }]]);
+    expect(applyRelink([hinted], found).scenes[0].cards[0].refs![0].file_path).toBe("asset:Q|CH/a.png");
   });
 
   it("같은 토큰이 여러 카드에 있어도 한 번만 묻는다", () => {
