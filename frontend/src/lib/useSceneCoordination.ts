@@ -195,6 +195,13 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     });
     return s;
   };
+  // 로컬 파일을 캔버스에 넣은 직후(끌어다 놓기·붙여넣기) — 자동 복구를 한 번 더 돌려 서버 판정을 받는다.
+  //  같은 내용이 서버에 있으면 원본으로 잇고(씬 갱신), 없으면 '이 PC에만' 표시가 남는다(Jay 2026-09-29).
+  const relinkSceneRefsNow = () => {
+    void relinkSceneAssetRefs(() => sceneActionRef.current?.flushPending()).then((changed) => {
+      if (changed) refreshScenes();
+    });
+  };
   const renameScene = (id: string, name: string) => {
     updateScene(null, id, { name });
     refreshScenes();
@@ -302,6 +309,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     selectScene,
     addScene,
     importSceneSnapshot,
+    relinkSceneRefsNow,
     renameScene,
     removeSceneById,
     patchSceneById,

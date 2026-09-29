@@ -79,12 +79,69 @@ export function applyRelink(
   return { scenes: changed ? next : scenes, changed };
 }
 
+// 서버가 판정한 '서버에 없는' 참조(Jay 2026-09-29) — 캔버스가 빨간 테두리로 그린다.
+//  · missing = 이 PC 에서도 안 열리고 서버 어디에도 없다(받은 사람)
+//  · local = 이 PC 설치 폴더 안 사본에만 있다(가진 사람)
+// 씬 파일에는 담지 않는다 — 폴더를 보는 건 서버뿐이라 복구할 때마다 다시 받는다. 열쇠는 found 와 같은
+// (공간, 토큰): 같은 옛 참조라도 공간마다 고쳐짐 여부가 갈릴 수 있다.
+export type RefServerStatus = "missing" | "local";
+const serverStatus = new Map<string, RefServerStatus>();
+const statusListeners = new Set<() => void>();
+let statusVersion = 0;
+
+export function refServerStatus(workspaceId: string, token: string): RefServerStatus | undefined {
+  return serverStatus.get(relinkKey(workspaceId, token));
+}
+
+export function subscribeRefServerStatus(cb: () => void): () => void {
+  statusListeners.add(cb);
+  return () => {
+    statusListeners.delete(cb);
+  };
+}
+
+// useSyncExternalStore 용 — 판정이 바뀔 때만 올라가는 버전.
+export function getRefServerStatusVersion(): number {
+  return statusVersion;
+}
+
+/** 배치 답 하나를 반영한다 — 보낸 토큰마다 새 판정으로 덮고, 판정이 없으면(고쳐짐·열림·모름) 지운다. */
+function noteServerStatus(workspaceId: string, sent: string[], missing: string[], local: string[]): void {
+  const miss = new Set(missing);
+  const loc = new Set(local);
+  let changed = false;
+  for (const token of sent) {
+    const key = relinkKey(workspaceId, token);
+    const next = miss.has(token) ? "missing" : loc.has(token) ? "local" : undefined;
+    if (serverStatus.get(key) === next) continue;
+    if (next) serverStatus.set(key, next);
+    else serverStatus.delete(key);
+    changed = true;
+  }
+  if (!changed) return;
+  statusVersion += 1;
+  statusListeners.forEach((cb) => cb());
+}
+
+/** 방금 이 PC 설치 폴더에 저장한 참조(끌어다 놓기·붙여넣기, 2026-09-29 옛 방식) — 서버 답이 오기 전에
+ *  먼저 '이 PC에만'으로 보인다. 곧 부르는 자동 복구의 답이 그대로 덮는다(서버에 같은 내용이 있으면
+ *  원본으로 이어져 표시가 사라지고, 판정할 수 없으면 지워진다). */
+export function markRefsLocal(workspaceId: string, tokens: string[]): void {
+  // 같은 파일을 곧바로 다시 넣으면 같은 사본 토큰이 다시 생긴다 — '물어봤다' 기록을 지워 자동 복구가
+  //  다시 묻게 한다(안 지우면 2분 동안 원본으로 못 잇고 '이 PC에만'으로 남는다, Codex 2026-09-29).
+  tokens.forEach((token) => asked.delete(relinkKey(workspaceId, token)));
+  noteServerStatus(workspaceId, tokens, [], tokens);
+}
+
 // 이미 물어본 토큰 → 물어본 시각. 곧바로 다시 묻지 않되 **영원히 포기하지는 않는다** —
 // NAS 가 잠깐 끊겼거나 폴더를 그 사이 등록했을 수 있다(Codex 2026-09-28). 실패한 호출은 담지 않는다.
 const asked = new Map<string, number>();
 const ASK_AGAIN_AFTER = 120_000; // 2분
 const LOCATE_BATCH = 200; // 서버가 한 번에 받는 상한과 같게 — 넘치면 나눠 보낸다
 let inFlight: Promise<number> | null = null;
+// 도는 중에 또 불렸다 — 끝나면 한 번 더 돈다. 마지막 바퀴를 확인한 뒤에 들어온 참조(방금 끌어다 놓은
+// 로컬 파일 등)를 다음 기회까지 놓치지 않게(Codex 2026-09-29).
+let rerun = false;
 
 function newScanId(): string {
   try {
@@ -100,7 +157,10 @@ function newScanId(): string {
  * flushPending 은 호출부가 넘긴다 — 저장 직전에 캔버스의 디바운스 편집을 확정시켜 덮어쓰지 않게.
  */
 export async function relinkSceneAssetRefs(flushPending?: () => void): Promise<number> {
-  if (inFlight) return inFlight; // 겹쳐 부르면 한 번만 — 폴더 스캔이 중복되지 않게
+  if (inFlight) {
+    rerun = true; // 겹쳐 부르면 합친다 — 폴더 스캔은 겹치지 않고, 끝난 뒤 한 번 더 확인한다
+    return inFlight;
+  }
   const pending = (): { workspaceId: string; tokens: string[] }[] => {
     const now = Date.now();
     const fresh = (workspaceId: string) => (token: string) => {
@@ -128,6 +188,7 @@ export async function relinkSceneAssetRefs(flushPending?: () => void): Promise<n
           const reply = await api.locateAssets(batch, ws, scanId);
           // 실제로 보낸 것만 '물어봤다' — 공간별로 따로 센다(같은 참조라도 공간마다 답이 다르다).
           batch.forEach((token) => asked.set(relinkKey(ws, token), Date.now()));
+          noteServerStatus(ws, batch, reply.missing, reply.local);
           reply.fixed.forEach((item) => {
             found.set(relinkKey(ws, item.token), item);
             // 서버가 방금 찾아준 자리다 — 새 토큰까지 '물어봤다'로 쳐서 같은 요청을 한 번 더
@@ -145,10 +206,19 @@ export async function relinkSceneAssetRefs(flushPending?: () => void): Promise<n
     }
     return changedTotal;
   };
-  inFlight = run()
-    .catch(() => 0) // 서버가 옛 버전이거나 폴더를 못 읽어도 화면은 지금까지처럼 동작한다
-    .finally(() => {
+  inFlight = (async () => {
+    try {
+      let total = 0;
+      do {
+        rerun = false;
+        total += await run();
+      } while (rerun); // 확인과 비우기(finally) 사이에 틈이 없다 — 겹친 호출을 흘리지 않는다
+      return total;
+    } catch {
+      return 0; // 서버가 옛 버전이거나 폴더를 못 읽어도 화면은 지금까지처럼 동작한다
+    } finally {
       inFlight = null;
-    });
+    }
+  })();
   return inFlight;
 }

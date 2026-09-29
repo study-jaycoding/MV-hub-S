@@ -243,9 +243,9 @@ export const assetsApi = {
 
   // 붙여넣은 그림·부분수정 결과를 **그 프로젝트 폴더**의 imports 에 저장 → 레퍼런스용 asset 정보 반환.
   // (2026-09-28: 전엔 이 PC 안 captures 폴더라 씬을 남에게 주면 빈칸이었다.)
-  uploadCapture: async (blob: Blob, project: string) => {
+  // 붙여넣기·부분수정 그림은 이 PC 설치 폴더(captures)에 저장된다(Jay 2026-09-29 옛 방식).
+  uploadCapture: async (blob: Blob) => {
     const fd = new FormData();
-    fd.append("project", project);
     fd.append("file", blob, "capture.png");
     const res = await fetch("/api/assets/capture", {
       method: "POST",
@@ -273,12 +273,10 @@ export const assetsApi = {
       body: JSON.stringify({ token }),
     }),
 
-  // 프롬프트/캔버스/트레이 외부 드롭 파일 → **그 프로젝트 폴더 기준**으로 기록(Jay 2026-09-28).
-  // 서버가 같은 내용의 파일을 프로젝트 안에서 먼저 찾고(있으면 사본 없이 그 경로), 없을 때만
-  // 프로젝트의 imports 폴더에 저장한다. project 가 없으면 서버가 400 으로 막는다.
-  uploadReferenceFiles: async (files: File[], project: string) => {
+  // 프롬프트/캔버스/트레이 외부 드롭 파일 → **이 PC 설치 폴더(imports)** 에 저장(Jay 2026-09-29 옛 방식).
+  // 서버에 같은 내용이 있으면 자동 복구(/locate)가 원본으로 이어 준다.
+  uploadReferenceFiles: async (files: File[]) => {
     const fd = new FormData();
-    fd.append("project", project);
     for (const f of files) fd.append("files", f);
     const res = await fetch("/api/assets/reference-import", {
       method: "POST",
@@ -309,6 +307,8 @@ export const assetsApi = {
     jsonFetch<{
       fixed: { token: string; project: string; path: string; sha256?: string; bytes?: number }[];
       unresolved: string[];
+      missing: string[]; // 이 PC 에서도 안 열리고 서버 어디에도 없다(2026-09-29)
+      local: string[]; // 이 PC 설치 폴더 안 사본에만 있다
     }>("/api/assets/locate", {
       method: "POST",
       body: JSON.stringify({ tokens, workspace_id: workspaceId, scan_id: scanId }),

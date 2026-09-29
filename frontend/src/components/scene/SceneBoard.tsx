@@ -109,6 +109,12 @@ import {
   subscribeRecentDone,
   getRecentDoneVersion,
 } from "../../lib/sceneRecentDoneStore";
+import {
+  getRefServerStatusVersion,
+  markRefsLocal,
+  refServerStatus,
+  subscribeRefServerStatus,
+} from "../../lib/sceneAssetRelink";
 import { flashMsg } from "../../lib/flash";
 import { useSceneHistory } from "../../lib/useSceneHistory";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
@@ -192,6 +198,9 @@ interface Props {
   // 각인된 생성물 파일을 캔버스에 떨어뜨렸을 때 — 레시피를 새 씬 탭으로 열었으면 true.
   //  false 면 평범한 미디어로 보고 레퍼런스 카드가 된다(기존 동작).
   onDroppedGenerationFile?: (file: File) => Promise<boolean>;
+  // 로컬 파일(끌어다 놓기·붙여넣기)로 레퍼런스를 만든 직후 — 자동 복구를 한 번 불러 서버 판정을 받는다
+  //  (같은 내용이 서버에 있으면 원본으로 잇고, 없으면 '이 PC에만' 표시가 남는다, Jay 2026-09-29).
+  onLocalRefsAdded?: () => void;
   // 씬 탭 바 호버 여부 — true 면 좌상단 씬 패널(저장/불러오기)을 보인다(평소엔 숨김).
   ioPanelHot?: boolean;
   // 씬의 생성 카드 1개만 선택되면 그 카드(id+연결된 레퍼런스)를 하단 프롬프트에 바인딩하도록 App 에 알림.
@@ -314,6 +323,7 @@ export function SceneBoard({
   onSaveScene,
   onLoadSceneFile,
   onDroppedGenerationFile,
+  onLocalRefsAdded,
   ioPanelHot,
   onBindingChange,
   onCameraChange,
@@ -686,6 +696,9 @@ export function SceneBoard({
   useSyncExternalStore(subscribeAssetVersions, assetVersionsSnapshot, assetVersionsSnapshot);
   // Comfy '생성중' 모듈 store 구독 — 탭 전환(언마운트·재마운트)에도 실행중 표시가 살아있게(#2).
   useSyncExternalStore(subscribeComfyRunning, getComfyRunningVersion, getComfyRunningVersion);
+  // 서버에 없는 레퍼런스 판정(assets.locate) 구독 — 판정이 오면 레퍼런스 카드를 빨간 테두리로 다시 그린다.
+  useSyncExternalStore(subscribeRefServerStatus, getRefServerStatusVersion, getRefServerStatusVersion);
+  const refWorkspaceId = scene.workspace?.id || ""; // 판정 열쇠의 공간 — 자동 복구가 물을 때와 같은 식
 
   // 카드가 참조하는 어셋 프로젝트들(only 로 제한 가능)을 다시 읽어 전역 버전 표를 갱신한다.
   // 프로젝트별 in-flight 로 중복 조회를 막는다. 포커스 재조회(Phase 1)와 실시간 변경 수신(Phase 2) 공용.
@@ -1522,6 +1535,11 @@ export function SceneBoard({
     persist,
     onLoadSceneFile,
     onDroppedGenerationFile,
+    // 이 PC 설치 폴더에만 있는 새 참조 — 먼저 '이 PC에만'으로 보이고, 자동 복구 답이 덮는다.
+    onLocalRefsAdded: (tokens) => {
+      markRefsLocal(refWorkspaceId, tokens);
+      onLocalRefsAdded?.();
+    },
     cardWidth: CARD_W,
     cardHeight: CARD_H,
   });
@@ -3682,10 +3700,20 @@ export function SceneBoard({
           const showNode = !!g && String(g.status) === "done"; // 완료 → 히스토리 카드로 표시
           const kindCls =
             card.kind === "reference"
-              ? "scene-card-ref" + (card.refs?.[0]?.origin === "asset" ? " from-asset" : "")
+              ? "scene-card-ref" +
+                (card.refs?.[0]?.origin === "asset" ? " from-asset" : "") +
+                (card.refs?.some((r) => refServerStatus(refWorkspaceId, r.file_path)) ? " off-server" : "")
               : card.kind === "generation"
                 ? "scene-card-gen"
-                : "scene-card-" + card.kind; // text/model/list
+                : "scene-card-" +
+                  card.kind +
+                  // 리스트 — 모은 레퍼런스 카드에 서버에 없는 참조가 하나라도 있으면 빨간 테두리(Jay 2026-09-29)
+                  (card.kind === "list" &&
+                  collectListInputs(card.id, cardsById, resolvedEdges).referenceCardIds.some((rid) =>
+                    cardsById.get(rid)?.refs?.some((r) => refServerStatus(refWorkspaceId, r.file_path)),
+                  )
+                    ? " off-server"
+                    : ""); // text/model/list
           return (
             <div
               key={card.id}
@@ -3719,6 +3747,7 @@ export function SceneBoard({
                 <ReferenceCard
                   card={card}
                   fill={fill}
+                  workspaceId={refWorkspaceId}
                   getGen={(id) => genDataRef.current[id]}
                   onInfo={onInfo}
                   onPreview={onPreview}
@@ -3760,6 +3789,7 @@ export function SceneBoard({
                   rowSel={rowSel}
                   reorderFrom={reorderFrom}
                   cardWidth={widthOf(card)}
+                  workspaceId={refWorkspaceId}
                   toggleRowSel={toggleRowSel}
                   startReorder={startReorder}
                   getNodePreview={getNodePreview}

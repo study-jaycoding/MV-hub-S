@@ -218,7 +218,8 @@ export default function App() {
   const {
     scenes, activeSceneId, activeScene,
     sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
-    flushScenePending, selectScene, addScene, importSceneSnapshot, renameScene, removeSceneById,
+    flushScenePending, selectScene, addScene, importSceneSnapshot, relinkSceneRefsNow, renameScene,
+    removeSceneById,
     patchSceneById, patchActiveScene, reorderScenes, setSceneWorkspace, backupOnly, importBackupScenes,
   } = useSceneCoordination(flash);
   const [resolveSceneSelection, setResolveSceneSelection] =
@@ -1980,6 +1981,7 @@ export default function App() {
                 onSaveScene={handleSaveScene}
                 onLoadSceneFile={handleLoadSceneFile}
                 onDroppedGenerationFile={openRecipeFromFile}
+                onLocalRefsAdded={relinkSceneRefsNow}
                 ioPanelHot={sceneBarHover}
                 onBindingChange={setSceneBinding}
                 // 세션 중 씬 전환했다 돌아와도 복원되게 카메라도 저장.

@@ -19,7 +19,6 @@ import { fetchBlob } from "../../lib/download";
 import { flashMsg } from "../../lib/flash";
 import { HttpError } from "../../lib/http";
 import { generationIssueFor } from "../../lib/generationDisplay";
-import { readSpotlightAssetCtx } from "../../lib/spotlightAssetRefs";
 import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import { useModels } from "../../lib/useModels";
 import type { Generation, WorkspaceContext } from "../../types";
@@ -542,10 +541,8 @@ export function PartialEditModal({
     fctx.drawImage(annot, 0, 0);
     const blob = await new Promise<Blob | null>((resolve) => flat.toBlob(resolve, "image/png"));
     if (!blob) throw new Error("주석 이미지 인코딩 실패");
-    // 주석 평면화 그림도 프로젝트 폴더 기준으로 저장한다(Jay 2026-09-28) — 이 PC 사본이면 남에게 안 보인다.
-    const captureProject = readSpotlightAssetCtx().project;
-    if (!captureProject) throw new Error("Assets 에서 프로젝트를 먼저 고르세요");
-    const up = await api.uploadCapture(blob, captureProject);
+    // 주석 평면화 그림은 이 PC 설치 폴더(captures)에 저장한다(Jay 2026-09-29 옛 방식).
+    const up = await api.uploadCapture(blob);
     return {
       file_path: `asset:${up.project}|${up.path}`,
       thumbnail: api.assetThumbUrl(up.project, up.path, 256),

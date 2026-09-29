@@ -172,26 +172,6 @@ def _validate_upload_batch(files: list[UploadFile]) -> None:
         ) from exc
 
 
-def _prepare_project_import_dir(project: str, request: Request) -> tuple[Path, Path, bool]:
-    """프로젝트의 imports 폴더를 준비한다. NAS 경로를 만지므로 async 라우트는 스레드에서 부른다."""
-    proj_dir = _safe_project_dir(project, request)
-    if not proj_dir:
-        raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
-    dest = (proj_dir / _PROMPT_IMPORT_PROJECT).resolve()
-    try:
-        dest.relative_to(proj_dir)
-    except ValueError:
-        raise HTTPException(status_code=500, detail="imports 경로 오류") from None
-    try:
-        dest.mkdir(parents=True)
-        created = True
-    except FileExistsError:
-        if not dest.is_dir():
-            raise HTTPException(status_code=500, detail="imports 경로가 폴더가 아닙니다")
-        created = False
-    return proj_dir, dest, created
-
-
 def _owner_mounts(owner: str) -> list[dict[str, str]]:
     """그 계정(owner)이 등록한 마운트만 — 각자 자기 것만 본다."""
     return asset_mounts.owner_mounts(_mounts_file(), owner, DEFAULT_WORKER_ID)
@@ -322,6 +302,11 @@ def _project_dir_info(project: str, request: Request) -> Optional[tuple[Path, bo
     if project == _COMBINED_INTERNAL:
         return ASSETS_ROOT, False, f"combined-root:{project}"
     owner = actor_id(request)
+    # 내장 폴더(imports·captures)는 등록 폴더보다 먼저 이 PC 설치 폴더로 푼다 — 같은 이름의 등록
+    # 폴더가 있어도 NAS 로 새지 않게(Jay 2026-09-29 옛 방식 복귀, Codex).
+    if project in _INTERNAL_FOLDERS:
+        cand = (ASSETS_ROOT / project).resolve()
+        return (cand, False, asset_watcher.manual_registration_id(owner, project)) if cand.is_dir() else None
     # 내(owner)가 등록한 외부 폴더(마운트)가 있으면 그 경로 우선 — 임의 위치 허용.
     md = _mount_dir(project, owner)
     if md:
@@ -399,19 +384,13 @@ def _index_by_sha(
     return index, True
 
 
-# ── 반입 파일의 '이미 있는 원본' 찾기 ────────────────────────────────────────
-# 끌어다 놓은 파일은 브라우저가 **내용만** 준다(원래 경로는 주지 않는다). 그래서 NAS 에 있는
-# 파일을 끌어와도 어디서 왔는지 알 수 없어 사본이 생겼고, 그 사본은 그 PC 안에만 있어
-# 씬을 남에게 주면 빈칸이 됐다(2026-09-28 Jay). → 반입할 때 프로젝트 폴더에서 **같은 내용**을
-# 찾아, 있으면 복사하지 않고 그 경로를 쓴다.
+# ── 이 PC 사본을 가리키는 참조의 '서버 원본' 찾기(자동 복구 /locate) ──────────────────
+# 끌어다 놓은 파일은 브라우저가 **내용만** 준다(원래 경로는 주지 않는다). 그래서 이 PC 사본을 가리키는
+# 참조는 자동 복구가 프로젝트 폴더에서 **같은 내용**(사본이 없으면 경로·이름)을 찾아 원본으로 잇는다.
 #
 # 비용: 파일 내용을 다 읽으면 NAS 에서 너무 느리다 → **크기(stat)로 후보를 좁히고 그 후보만**
-# 지문을 계산한다. 크기 색인은 짧은 TTL 로 캐시한다(여러 장을 한꺼번에 떨어뜨릴 때 한 번만 훑게).
-_LOCATE_TTL = 60.0
+# 지문을 계산한다. 폴더 목록은 자동 복구 한 번(scan_id) 동안만 같이 쓴다(아래 스냅샷).
 _LOCATE_LIMIT = 60000  # 이 개수를 넘기면 색인을 끊는다(끊기면 '없다'고 단정하지 않는다)
-# (크기 색인, 파일이름 색인, 완주여부) — 한 번 훑어 둘 다 만든다.
-_LOCATE_CACHE: dict[str, tuple[float, dict[int, list[str]], dict[str, list[str]], bool]] = {}
-_LOCATE_GUARD = threading.Lock()
 
 
 def _walk_media(proj_dir: Path, limit: int = _LOCATE_LIMIT) -> tuple[list[tuple[str, str, int]], bool]:
@@ -487,34 +466,11 @@ def _build_index(proj_dir: Path) -> tuple[dict[int, list[str]], dict[str, list[s
     return index, names, scanned_all
 
 
-def _project_index(
-    proj_dir: Path, fresh: bool = False, max_age: float = _LOCATE_TTL
-) -> tuple[dict[int, list[str]], dict[str, list[str]], bool]:
-    """반입(reference-import)이 쓰는 색인 — 짧은 TTL 캐시를 둔 `_build_index`.
-
-    ★이름 색인이 필요한 이유: 남이 준 씬에는 **이 PC 에 사본이 없다**. 사본이 없으면 지문을 낼 수
-    없으므로 내용으로는 못 찾는다. 그래서 이름·경로로도 찾을 수 있어야 '서버에 있으면 보인다'가
-    성립한다(Jay 2026-09-28). 자동 복구(locate)는 이 캐시를 쓰지 않고 자기 스냅샷을 쓴다
-    (`_locate_snapshot` — 다른 PC 가 방금 넣은 파일까지 봐야 '한 곳에만 있다'를 단정할 수 있다)."""
-    key = str(proj_dir)
-    now = time.monotonic()
-    if not fresh:
-        with _LOCATE_GUARD:
-            hit = _LOCATE_CACHE.get(key)
-            if hit and now - hit[0] < max_age:
-                return hit[1], hit[2], hit[3]
-    index, names, scanned_all = _build_index(proj_dir)
-    with _LOCATE_GUARD:
-        _LOCATE_CACHE[key] = (now, index, names, scanned_all)
-    return index, names, scanned_all
-
-
 # ── 자동 복구 스냅샷 ─────────────────────────────────────────────────────────────
 # F5 한 번의 자동 복구가 참조를 200개씩 여러 번 묻는다. 요청마다 NAS 를 처음부터 다시 훑으면
 # 같은 폴더를 여러 번 훑는다(실측: 요청 3번 × 16초). 그래서 **같은 복구 작업(scan_id)** 의 요청들은
 # 첫 스캔을 같이 쓴다. 새 F5 는 새 scan_id 라 다시 훑으므로 '다른 PC 가 방금 넣은 동명 파일'을
 # 놓쳐 '유일하다'고 오판하지 않는다(Codex 2026-09-28).
-# 반입이 쓰는 60초 캐시(_LOCATE_CACHE)와는 **따로** 둔다 — 새 F5 가 그 캐시를 재사용하지 않게.
 _SCAN_TTL = 300.0
 _SCAN_MAX = 16  # 동시에 들고 있는 (계정·작업·폴더) 스냅샷 수 상한 — 넘치면 오래된 것부터 버린다
 _SCAN_WAIT = 60.0  # 같은 폴더를 먼저 훑는 요청을 기다리는 최대 시간
@@ -572,12 +528,6 @@ def _locate_snapshot(
             waiting.set()  # type: ignore[union-attr]
 
 
-def invalidate_size_index(proj_dir: Path) -> None:
-    """이 폴더에 파일을 새로 넣었으면 색인을 버린다(다음 반입이 새로 훑게)."""
-    with _LOCATE_GUARD:
-        _LOCATE_CACHE.pop(str(proj_dir), None)
-
-
 def _locate_by_content(
     proj_dir: Path,
     size: int,
@@ -591,7 +541,7 @@ def _locate_by_content(
     프로젝트로 이어 버린다(Codex 2026-09-28)."""
     if size <= 0 or not digest:
         return None, True
-    index, _names, scanned_all = snapshot or _project_index(proj_dir)
+    index, _names, scanned_all = snapshot or _build_index(proj_dir)
     same_size = index.get(size) or []
     if not same_size:
         return None, scanned_all
@@ -622,7 +572,7 @@ def _locate_by_path(
         **폴더 경로까지 같을 때만** 모은다 — 근거가 가장 약하므로 부르는 쪽이 맨 마지막에 쓴다.
     고르는 책임은 부르는 쪽에 둔다(여러 곳이면 바꾸지 않는다).
     """
-    _index, names, scanned_all = snapshot or _project_index(proj_dir)
+    _index, names, scanned_all = snapshot or _build_index(proj_dir)
     name = rel.rsplit("/", 1)[-1]
     same_name = names.get(name.casefold()) or []
     tail = "/" + rel.casefold().lstrip("/")
@@ -1087,19 +1037,15 @@ async def _upload_files_loop(
 
 @router.post("/capture", dependencies=[Depends(_require_local_assets)])
 async def upload_capture(request: Request, project: str = Form(""), file: UploadFile = File(...)):
-    """붙여넣은 그림·부분수정 결과를 **그 프로젝트 폴더**의 imports 에 저장 + asset 토큰용 정보 반환.
+    """붙여넣은 그림·부분수정 결과를 **이 PC 설치 폴더의 captures** 에 저장 + asset 토큰용 정보 반환.
 
-    ★2026-09-28 Jay: 가져온 방식과 무관하게 프로젝트 폴더 기준으로 기록한다 — 전엔 이 PC 안
-    captures 폴더라 씬을 남에게 주면 빈칸이었다. 붙여넣기·부분수정 그림은 NAS 에 원본이 있을 수
-    없으므로(화면 캡처·새로 그린 것) 반입처럼 '이미 있는 원본 찾기'는 하지 않고 바로 저장한다."""
-    if not project or project == _COMBINED_INTERNAL:
-        raise HTTPException(status_code=400, detail="프로젝트를 먼저 고르세요")
+    ★2026-09-29 Jay "옛 방식으로 해야한다": 09-28 에 프로젝트 폴더(NAS)로 옮겼던 것을 되돌렸다.
+    그 PC 에만 있으므로 캔버스가 빨간 테두리·오른쪽 위 마크로 알린다. project 폼 값은 하위호환으로
+    받되 쓰지 않는다."""
     _validate_upload_batch([file])
-    # _safe_project_dir·resolve·mkdir 는 죽은 NAS 에서 오래 막힐 수 있다. async 이벤트 루프 밖에서,
-    # 폴더 쓰기가 취소돼도 중간에 버려지지 않는 관문으로 실행한다(upload_assets 와 같은 계약).
-    proj_dir, cap_dir, _created = await to_thread_non_abandon(
-        _prepare_project_import_dir, project, request
-    )
+    project = "captures"  # 응답 토큰도 asset:captures|… 로 고정(같은 이름의 등록 폴더로 새지 않게)
+    proj_dir = cap_dir = (ASSETS_ROOT / project).resolve()
+    cap_dir.mkdir(parents=True, exist_ok=True)
     try:
         tmp, size, digest = await _stream_upload_tmp(file, cap_dir)
     except _UploadTooLarge:
@@ -1136,7 +1082,7 @@ async def upload_capture(request: Request, project: str = Form(""), file: Upload
     finally:
         if commit_attempted:
             asset_tree.invalidate_project_tree(proj_dir)
-            invalidate_size_index(proj_dir)
+            asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)  # Assets 의 imp/cap 합본
     rel = target.relative_to(proj_dir).as_posix()
     if reused:
         return {
@@ -1274,7 +1220,7 @@ def discard_capture(body: CaptureDiscardIn, request: Request):
         # 한계: 업로드 재사용 없이 다른 project 별칭으로 직접 참조한 경우 exact logical 조회는
         # 그 별칭을 못 본다. 완전 차단은 reference 에 물리경로 색인을 추가하는 별도 DB 작업이다.
     asset_tree.invalidate_project_tree(proj_dir)
-    invalidate_size_index(proj_dir)
+    asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
     return {"ok": True}
 
 
@@ -1305,26 +1251,49 @@ def locate_legacy_assets(body: LocateIn, request: Request):
 
     찾는 순서는 근거가 센 것부터다. ① 이 PC 에 사본이 있으면 **내용 지문** ② 없으면 **경로 뒷부분**
     ③ 그것도 없으면 **파일 이름**. 어느 단계든 **정확히 한 곳에서만** 찾혔을 때만 바꾼다 — 여러 곳에
-    있으면 어느 것인지 단정할 수 없어 그대로 둔다."""
+    있으면 어느 것인지 단정할 수 없어 그대로 둔다.
+
+    못 고친 참조 중 둘은 따로 알려 준다(Jay 2026-09-29 — 캔버스가 빨간 테두리로 그린다).
+      · `missing` — 이 PC 에서도 안 열리고, 등록한 폴더를 **전부 끝까지** 훑어도 후보가 하나도 없다
+      · `local` — 설치 폴더 안 옛 사본(imports·captures)에만 있다. 같은 내용이 서버에 한 곳도 없다
+    NAS 가 끊겨 폴더를 못 읽으면 어느 쪽도 말하지 않는다 — '없는 것'과 '못 읽는 것'을 섞지 않는다."""
     started = time.perf_counter()
     fixed: list[dict[str, Any]] = []
     unresolved: list[str] = []
+    missing: list[str] = []
+    local_only: list[str] = []
+    status_of: dict[str, list[str]] = {}  # 토큰 → 실린 목록(missing/local) — 중복 토큰에 같은 답을 싣는다
     owner = actor_id(request)
     # 내가 등록한 폴더도 PM 프로젝트도 **모두** 뒤진다 — 둘 다 같은 서버(NAS)를 가리키므로
     # 어느 쪽에서 찾든 같은 파일이다(Jay 2026-09-28). 이름이 겹쳐도 빼지 않는다. 대신 아래에서
     # 후보를 **물리 경로로 묶어** 같은 파일이 두 번 세어지지 않게 한다 — 같은 폴더를 두 이름·두
     # 깊이로 등록하면(`뻘뻘뻘`=…/10_ai, `뻘뻘뻘_RnD`=…/10_ai/assets) 한 그림이 두 곳에서
     # 찾히는데, 그걸 '여럿'으로 세면 도리어 아무것도 못 고친다.
-    names = {m["name"] for m in _owner_mounts(owner)} | {
-        m["name"] for m in _auto_project_mounts(request)
-    }
+    mounts = [
+        m
+        for m in [*_owner_mounts(owner), *_auto_project_mounts(request)]
+        if m["name"] not in _INTERNAL_FOLDERS and m["name"] != _COMBINED_INTERNAL
+    ]
+    names = {m["name"] for m in mounts}
     project_dirs: list[tuple[str, Path]] = []
     for name in sorted(names):
-        if name in _INTERNAL_FOLDERS or name == _COMBINED_INTERNAL:
-            continue
         proj_dir = _safe_project_dir(name, request)
         if proj_dir:
             project_dirs.append((name, proj_dir))
+    # '서버에 없다'는 등록한 폴더를 **모두 훑었을 때만** 말한다(Codex 2026-09-29). 이름 해석
+    # (_safe_project_dir)은 ① 죽은 등록 대신 설치 폴더의 같은 이름 폴더로 넘어가고 ② 같은 이름을 개인
+    # 등록과 PM 이 다른 폴더로 가리키면 개인 쪽만 준다 — 그래서 등록한 **원래 경로**가 살아 있고,
+    # 그 이름으로 실제로 훑는 폴더와 같은 곳인지 하나씩 본다. 방금 해석한 경로라 대부분 TTL 캐시를 친다.
+    # ponytail: 고장 난 옛 등록이 하나라도 있으면 그 PC 는 빨강을 못 낸다(안전한 쪽). 필요해지면
+    #   그 경로의 공유 뿌리가 닿는지로 '옛 등록'과 'NAS 끊김'을 가른다.
+    searched = dict(project_dirs)
+
+    def searched_as_registered(m: dict[str, str]) -> bool:
+        real = _resolve_mount_path(m["path"]) if m.get("path") else None
+        here = searched.get(m["name"])
+        return real is not None and here is not None and _capture_path_key(real) == _capture_path_key(here)
+
+    can_judge = bool(project_dirs) and all(searched_as_registered(m) for m in mounts)
 
     # 폴더는 **미리 다 훑지 않는다** — 필요할 때 그 폴더만 훑는다. 공간(1바퀴)에서 다 찾히면 나머지
     # 프로젝트는 아예 안 훑는다. 예전에는 공간으로 좁히기 전에 전부 훑어 좁히기가 속도에 아무
@@ -1407,6 +1376,8 @@ def locate_legacy_assets(body: LocateIn, request: Request):
                 fixed.append({**seen[token], "token": token})  # type: ignore[dict-item]
             else:
                 unresolved.append(token)
+                if token in status_of:
+                    status_of[token].append(token)
             continue
         seen[token] = None
         head, sep, rest = token.partition("|")
@@ -1440,8 +1411,10 @@ def locate_legacy_assets(body: LocateIn, request: Request):
 
         entry: Optional[dict[str, Any]] = None
         complete = True
+        content_absent = False  # 전체 바퀴를 끝까지 훑었는데 같은 내용이 한 곳에도 없다
+        nothing_found = False  # 전체 바퀴를 끝까지 훑었는데 경로·이름·확장자 후보가 하나도 없다
         if digest and size > 0:
-            for scope in rounds:
+            for i, scope in enumerate(rounds):
                 hits: list[tuple[str, str]] = []
                 complete = True
                 for name, proj_dir in scope:
@@ -1457,17 +1430,23 @@ def locate_legacy_assets(body: LocateIn, request: Request):
                 entry = pick(hits, complete)
                 if entry:
                     break
+                if i == len(rounds) - 1:  # 마지막 바퀴 = 등록 폴더 전체
+                    content_absent = complete and not hits
             if entry is None:
                 # 지문을 낼 수 있었는데 같은 내용이 없다(또는 여러 곳에 있다). 그런데도 이름만 같은
                 # 파일로 이으면 **다른 그림**이 붙는다 — 근거가 약한 단계로 내려가지 않는다
                 # (Codex 2026-09-28).
                 unresolved.append(token)
+                # 서버 어디에도 같은 내용이 없다 = 이 PC 안 사본에만 있다(여럿이면 서버에 있는 것이다)
+                if can_judge and content_absent:
+                    local_only.append(token)
+                    status_of[token] = local_only
                 continue
             entry |= {"sha256": digest, "bytes": size}
 
         # ② 경로 뒷부분 → ③ 파일 이름. 사본이 없는 참조(남이 준 씬)는 여기서만 살아난다.
         if entry is None:
-            for scope in rounds:
+            for i, scope in enumerate(rounds):
                 by_path: list[tuple[str, str]] = []
                 by_name: list[tuple[str, str]] = []
                 by_ext: list[tuple[str, str]] = []
@@ -1492,9 +1471,14 @@ def locate_legacy_assets(body: LocateIn, request: Request):
                     entry = pick(by_ext, complete)
                 if entry:
                     break
+                if i == len(rounds) - 1:  # 마지막 바퀴 = 등록 폴더 전체
+                    nothing_found = complete and not (by_path or by_name or by_ext)
 
         if entry is None:
             unresolved.append(token)
+            if can_judge and nothing_found:
+                missing.append(token)
+                status_of[token] = missing
             continue
         seen[token] = entry
         fixed.append({**entry, "token": token})
@@ -1507,9 +1491,12 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         scan=scan_id[:8],
         projects=len(project_dirs),
         scanned_folders=len(snapshots),
+        missing=len(missing),
+        local=len(local_only),
+        judge=can_judge,
         elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
     )
-    return {"fixed": fixed, "unresolved": unresolved}
+    return {"fixed": fixed, "unresolved": unresolved, "missing": missing, "local": local_only}
 
 
 @router.post("/reference-import", dependencies=[Depends(_require_local_assets)])
@@ -1519,23 +1506,19 @@ async def upload_reference_import(
     dir: str = Form(""),
     files: list[UploadFile] = File(...),
 ):
-    """프롬프트/캔버스/트레이에 외부 파일을 직접 드롭할 때 쓰는 가져오기.
+    """프롬프트/캔버스/트레이에 외부 파일을 직접 드롭할 때 쓰는 가져오기 — **이 PC 설치 폴더의
+    imports** 한 곳에 모은다(같은 내용은 지문으로 재사용).
 
-    ★2026-09-28 Jay: "어셋에서 가지고오는것처럼 경로가 입력되는거다" — **프로젝트 폴더 기준**으로
-    기록한다. 끌어다 놓은 파일은 브라우저가 내용만 주므로(원래 경로 없음) 먼저 그 프로젝트 안에서
-    **같은 내용의 파일**을 찾아, 있으면 복사하지 않고 그 경로를 돌려준다. 없을 때만 프로젝트의
-    'imports' 폴더에 저장한다. 그래야 씬을 남에게 줘도 같은 그림이 보인다(전엔 이 PC 안 사본이라 빈칸).
-    dir 폼 인자는 받지 않는다 — 목적지가 그때그때 달라지면 옛 'CH/import/import' 오염이 재발한다."""
-    if not project or project == _COMBINED_INTERNAL:
-        raise HTTPException(status_code=400, detail="프로젝트를 먼저 고르세요")
-    out_project = project
-    # 임시 .part 는 imports 안에 받는다 — 프로젝트 루트에 받으면 루트 쓰기 권한이 없는 NAS 에서
-    # 반입 자체가 막히고, 강제 종료 시 잔재가 청소 범위 밖에 남는다(Codex 2026-09-28).
-    # 검사를 폴더 만들기보다 **먼저** 한다 — 상한 초과로 막힌 요청이 빈 폴더를 남기지 않게.
+    ★2026-09-29 Jay "옛 방식으로 해야한다": 09-28 에 프로젝트 폴더(NAS)로 올리던 것을 되돌렸다.
+    로컬 파일은 그 PC 에만 두고, 캔버스가 빨간 테두리·오른쪽 위 마크로 서버에 없음을 알린다.
+    같은 내용이 서버에 있으면 자동 복구(/locate)가 원본으로 이어 준다 — 그래서 여기서는 NAS 를
+    훑지 않는다(끌어다 놓을 때마다 NAS 전체를 훑던 2초대 지연도 함께 사라진다).
+    project/dir 폼 값은 하위호환으로 받되 쓰지 않는다 — 목적지가 그때그때 달라지면 옛
+    CH/import/import 오염이 재발한다."""
+    out_project = _PROMPT_IMPORT_PROJECT  # 응답 토큰도 asset:imports|… 로 고정
     _validate_upload_batch(files)
-    project_dir, dest, created_dest = await to_thread_non_abandon(
-        _prepare_project_import_dir, project, request
-    )
+    dest = (ASSETS_ROOT / out_project).resolve()
+    dest.mkdir(parents=True, exist_ok=True)
 
     saved: list[dict[str, Any]] = []
     skipped: list[str] = []
@@ -1561,23 +1544,6 @@ async def upload_reference_import(
                 tmp.unlink(missing_ok=True)
                 skipped.append(raw)
                 continue
-            # ★먼저 프로젝트 안에 같은 내용이 이미 있는지 본다 — 있으면 사본을 만들지 않는다.
-            #  (NAS 에서 끌어온 파일은 여기서 원래 자리를 되찾는다.)
-            existing, _scanned_all = await asyncio.to_thread(
-                _locate_by_content, project_dir, size, digest, raw
-            )
-            if existing:
-                tmp.unlink(missing_ok=True)
-                saved.append({
-                    "project": out_project,
-                    "path": existing,
-                    "name": existing.rsplit("/", 1)[-1],
-                    "type": mt,
-                    "reused": True,
-                    "sha256": digest,
-                    "bytes": size,
-                })
-                continue
             # 중복 재검색부터 최종 확정까지 같은 동기 임계구역에서 수행하고, 취소돼도 스레드를 버리지 않는다.
             try:
                 commit_attempted = True  # 취소 재전파 전 실제 파일 확정 가능 — finally 무효화 기준
@@ -1593,7 +1559,7 @@ async def upload_reference_import(
                 if reused:
                     saved.append({
                         "project": out_project,
-                        "path": target.relative_to(project_dir).as_posix(),
+                        "path": target.name,
                         "name": target.name,
                         "type": mt,
                         "reused": True,
@@ -1608,7 +1574,7 @@ async def upload_reference_import(
             committed_new = True
             saved.append({
                 "project": out_project,
-                "path": target.relative_to(project_dir).as_posix(),
+                "path": target.name,
                 "name": target.name,
                 "type": mt,
                 "sha256": digest,
@@ -1616,13 +1582,8 @@ async def upload_reference_import(
             })
     finally:
         if committed_new or commit_attempted:
-            asset_tree.invalidate_project_tree(project_dir)
-            invalidate_size_index(project_dir)  # 새로 넣은 파일이 다음 반입에서 바로 후보가 되게
-        elif created_dest:
-            try:  # 이 요청이 만든 폴더인데 아무것도 안 넣었으면 도로 치운다(비어 있을 때만 성공)
-                dest.rmdir()
-            except OSError:
-                pass
+            asset_tree.invalidate_project_tree(dest)
+            asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)  # Assets 의 imp/cap 합본
     return {"saved": saved, "skipped": skipped}
 
 

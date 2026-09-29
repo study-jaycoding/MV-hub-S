@@ -300,6 +300,11 @@
 .scene-card-ref { border: 2px solid var(--border2); } /* 기본: 실선 */
 .scene-card-ref:hover { border-color: #8ea0ff; } /* 임포트/캡쳐 = 파랑 */
 .scene-card-ref.from-asset:hover { border-color: var(--accent); } /* 우리 에셋에서 가져옴 = 형광 */
+/* 서버에 없는 레퍼런스(Jay 2026-09-29) — 빨간 테두리(앱 오류색). 선택해도 빨강은 남고 라임 링은 바깥(box-shadow).
+   판정은 서버(assets.locate): 받은 사람 = 서버 어디에도 없음 / 가진 사람 = 이 PC 설치 폴더 안 사본에만 있음. */
+.scene-card-ref.off-server,
+.scene-card-ref.off-server:hover,
+.scene-card.sel.off-server { border-color: #ff6b6b; }
 /* 레퍼런스 헤더(이미지/비디오/오디오 라벨) — 기본 숨김, 카드 선택 시에만 '배경색 없이 글씨만' 오버레이로
    표시. 헤더를 흐름에서 빼 미디어가 카드를 꽉 채운다(헤더가 이미지 일부를 가리거나 밀어내지 않음). */
 .scene-card-ref .scene-card-inner { position: relative; }
@@ -337,6 +342,32 @@
   display: block; width: 100%; height: 100%;
   background: repeating-linear-gradient(45deg, #15171d, #15171d 4px, #0f1116 4px, #0f1116 8px);
 }
+/* 받은 사람 — 붉은 빗금 + 가운데 안내(한 장) 또는 작은 아이콘(여러 장) */
+.scene-refthumb-ph.off-server,
+.scene-listthumb-ph.off-server {
+  background: repeating-linear-gradient(45deg, #1f1215, #1f1215 4px, #140c0e 4px, #140c0e 8px);
+}
+.scene-ref-offmsg {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; padding: 0 8px; color: #ff6b6b; text-align: center; pointer-events: none;
+}
+.scene-ref-offmsg svg { width: 22px; height: 22px; margin-bottom: 2px; }
+.scene-ref-offmsg b { font-size: 11.5px; font-weight: 800; letter-spacing: 0.02em; }
+.scene-ref-offmsg small {
+  max-width: 100%; font-size: 9.5px; color: #b9a3a6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.scene-ref-offmini { position: absolute; inset: 0; display: grid; place-items: center; color: #ff6b6b; pointer-events: none; }
+.scene-ref-offmini svg { width: 14px; height: 14px; }
+/* 가진 사람 — 오른쪽 위 마크(빗금 바탕 + 빨간 아이콘). 선택 때 뜨는 헤더 글씨(z 3)보다 위, 여러 장 칸은 작게 */
+.scene-ref-offmark {
+  position: absolute; top: 5px; right: 5px; z-index: 4; width: 22px; height: 22px; border-radius: 5px;
+  display: grid; place-items: center; color: #ff6b6b;
+  background: repeating-linear-gradient(45deg, #1f1215, #1f1215 4px, #140c0e 4px, #140c0e 8px);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+}
+.scene-ref-offmark svg { width: 14px; height: 14px; }
+.scene-card-body:not(.single) .scene-ref-offmark { top: 3px; right: 3px; width: 16px; height: 16px; border-radius: 4px; }
+.scene-card-body:not(.single) .scene-ref-offmark svg { width: 10px; height: 10px; }
 /* 영상(▶)·오디오(♪) 표시 — 여러 장(그리드)일 땐 작게 우하단 */
 .scene-refthumb-vid {
   position: absolute; right: 2px; bottom: 1px; font-size: 8px; color: #fff;
@@ -464,6 +495,9 @@
 /* ── 리스트 노드 — 연결된 생성 카드 모음(재생) ── */
 .scene-card-list { border: 2px solid #3a4a2b; }
 .scene-card-list:hover { border-color: var(--accent); }
+/* 서버에 없는 레퍼런스가 든 리스트(Jay 2026-09-29) — 레퍼런스 카드와 같은 빨간 테두리 */
+.scene-card-list.off-server,
+.scene-card-list.off-server:hover { border-color: #ff6b6b; }
 .scene-card-hd.list { color: var(--accent); background: rgba(var(--accent-rgb), 0.10); }
 .scene-listnode-body {
   flex: 1; min-height: 0; display: flex; flex-direction: column;
@@ -548,6 +582,18 @@
 .scene-listthumb-cnt {
   position: absolute; right: 2px; bottom: 1px; font-size: var(--lt-badge-fs, 8px); font-weight: 800;
   background: rgba(127, 169, 255, 0.85); color: #06101f; padding: 0 3px; border-radius: 3px; line-height: 1.4;
+}
+/* 리스트 칸의 서버에 없음 표시(2026-09-29) — 번호·장수 배지처럼 리스트 크기를 따라 커진다(--lt-badge-fs).
+   기본 8px 에서 아이콘 14px·마크 16px = 레퍼런스 카드의 여러 장 칸과 같고, 크게 늘려도 번호 배지보다 커지지 않게 완만히. */
+.scene-listthumb .scene-ref-offmini svg {
+  width: calc(6px + var(--lt-badge-fs, 8px)); height: calc(6px + var(--lt-badge-fs, 8px));
+}
+.scene-listthumb .scene-ref-offmark {
+  top: 2px; right: 2px; border-radius: 4px;
+  width: calc(8px + var(--lt-badge-fs, 8px)); height: calc(8px + var(--lt-badge-fs, 8px));
+}
+.scene-listthumb .scene-ref-offmark svg {
+  width: calc(2px + var(--lt-badge-fs, 8px)); height: calc(2px + var(--lt-badge-fs, 8px));
 }
 
 /* ── View 노드 — 재생 끝점(연결된 생성물 순차 재생) ── */
