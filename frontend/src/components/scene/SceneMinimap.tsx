@@ -64,12 +64,13 @@ export function SceneMinimap({
   const mmH = Math.max(30, worldH * scale);
 
   // 표시여부(화면 밖 카드 존재)와 뷰포트 박스를 DOM 에 직접 반영 — 리렌더 없이 팬/줌에 반응.
+  //  팬은 매 프레임 불리므로 바뀐 값만 쓰고, 박스 이동은 transform 으로 한다(위치·크기를 매번 쓰면 보드를 다시 칠했다).
   const update = () => {
     const wrap = wrapRef.current;
     const view = viewRef.current;
     const sc = scrollRef.current;
     if (!wrap || !view || !sc) return;
-    const vp = sc.getBoundingClientRect();
+    const vp = { width: sc.clientWidth, height: sc.clientHeight };
     const z = zoomRef.current;
     const pan = panRef.current;
     // 월드 콘텐츠의 화면상 사각형 — 한 변이라도 뷰포트를 벗어나면 '화면 밖 카드 있음'.
@@ -80,7 +81,8 @@ export function SceneMinimap({
     const eps = 2;
     const offscreen =
       sx0 < -eps || sy0 < -eps || sx1 > vp.width + eps || sy1 > vp.height + eps;
-    wrap.style.display = offscreen ? "block" : "none";
+    const display = offscreen ? "block" : "none";
+    if (wrap.style.display !== display) wrap.style.display = display;
     // 현재 보는 영역(뷰포트)을 월드로 환산 → 미니맵 좌표. 미니맵 박스 안으로 클램프.
     const vwl = -pan.x / z;
     const vwt = -pan.y / z;
@@ -92,10 +94,11 @@ export function SceneMinimap({
     const ct = Math.max(0, Math.min(top, mmH));
     const cr = Math.max(0, Math.min(right, mmW));
     const cb = Math.max(0, Math.min(bottom, mmH));
-    view.style.left = cl + "px";
-    view.style.top = ct + "px";
-    view.style.width = Math.max(0, cr - cl) + "px";
-    view.style.height = Math.max(0, cb - ct) + "px";
+    view.style.transform = `translate(${cl}px, ${ct}px)`;
+    const width = Math.max(0, cr - cl) + "px";
+    const height = Math.max(0, cb - ct) + "px";
+    if (view.style.width !== width) view.style.width = width;
+    if (view.style.height !== height) view.style.height = height;
   };
 
   // 매 렌더마다 최신 geometry 를 담은 update() 를 부모 ref 에 연결(+ 즉시 1회 반영).

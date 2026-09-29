@@ -5,6 +5,11 @@ export const SCENE_CULL_MARGIN = 1500;
 // 보이는 범위(viewRect)는 네 변 중 하나가 이 canvas px 넘게 움직일 때만 새로 잡는다 — 팬·줌마다
 // SceneBoard 전체를 다시 그리지 않게. 여백의 1/3 이라 갱신 전에도 나머지 2/3 가 팝인을 막는다.
 export const SCENE_CULL_REFRESH_DISTANCE = SCENE_CULL_MARGIN / 3;
+// 툴바에 보이는 % 가 이 값 이하이면 카드의 작은 조각을 숨긴다(Jay 2026-09-29 시안 승인, scene.css '멀리서 볼 때 단순화').
+export const SCENE_LOD_PCT = 25;
+// 툴바 % 가 이 값 미만이면 카드 글을 읽을 수 없다 — 넘치는 칸의 아래 흐림(scene.css)을 뺀다. 흐림은 칸마다 합성 레이어를
+// 늘려(41% 실측 레이어 97 → 184, 메인 스레드 +10%) 넘치는 칸이 많이 보이는 저배율일수록 비싸다.
+export const SCENE_TEXT_FAR_PCT = 50;
 
 export interface SceneCamera {
   z: number;
@@ -29,6 +34,12 @@ export interface SceneViewRect {
   t: number;
   r: number;
   b: number;
+}
+
+/** 씬 파일·저장본에서 온 확대값을 화면이 만들 수 있는 범위로 맞춘다 — 범위 밖(z:3·z:0·NaN)이면 점 격자 층의 64px 여백
+ *  가정(최대 22px×2.5)이 깨지고, 0 이면 격자 계산이 NaN 이 된다(Codex 2026-09-29). */
+export function clampSceneZoom(z: number | undefined): number {
+  return Number.isFinite(z) ? Math.min(SCENE_MAX_ZOOM, Math.max(SCENE_MIN_ZOOM, z as number)) : 1;
 }
 
 export function clientToScenePoint(

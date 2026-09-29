@@ -660,6 +660,7 @@ export function SceneBoard({
   const {
     scrollRef,
     canvasRef,
+    gridRef,
     zoomRef,
     panRef,
     minimapUpdateRef: mmUpdateRef,
@@ -3386,6 +3387,7 @@ export function SceneBoard({
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
+      <div className="scene-grid" ref={gridRef} />
       <div className="scene-canvas" ref={canvasRef} style={{ transformOrigin: "0 0" }}>
         {/* 그룹 프레임(펼침)·막대(접힘) — 카드 뒤(맨 앞 렌더). 헤더만 잡기/이름변경/접기 가능 */}
         {groupViews.map(({ g, frame, bar }) => {

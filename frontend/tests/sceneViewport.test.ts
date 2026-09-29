@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   centerSceneCamera,
+  clampSceneZoom,
   clientToScenePoint,
   frameSceneRects,
   panSceneCamera,
   SCENE_CULL_REFRESH_DISTANCE,
+  SCENE_MAX_ZOOM,
+  SCENE_MIN_ZOOM,
   sameSceneViewRect,
   sceneViewRect,
   zoomSceneCameraAt,
@@ -87,6 +90,14 @@ describe("scene viewport calculations", () => {
       ),
     ).toEqual({ z: 0.05, x: -2100, y: -2200 });
     expect(frameSceneRects([], { width: 800, height: 600 }, 1)).toBeNull();
+  });
+
+  it("씬 파일에서 온 확대값은 화면이 만들 수 있는 범위로 맞춘다(격자 층 여백·NaN 방지, Codex)", () => {
+    expect(clampSceneZoom(3)).toBe(SCENE_MAX_ZOOM);
+    expect(clampSceneZoom(0)).toBe(SCENE_MIN_ZOOM);
+    expect(clampSceneZoom(Number.NaN)).toBe(1);
+    expect(clampSceneZoom(undefined)).toBe(1);
+    expect(clampSceneZoom(0.4)).toBe(0.4);
   });
 
   it("보이는 범위는 네 변 중 하나가 500 canvas px 넘게 움직일 때만 새로 잡는다", () => {
