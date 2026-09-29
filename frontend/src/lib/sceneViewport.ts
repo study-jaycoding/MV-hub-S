@@ -1,6 +1,10 @@
 export const SCENE_MIN_ZOOM = 0.05;
 export const SCENE_MAX_ZOOM = 2.5;
-export const SCENE_VIEW_RECT_EPS = 0.5;
+// 뷰포트 밖 이 canvas px 까지는 카드를 유지한다(가장자리 팝인 완화). 다이얼: 줄이면 메모리↓·팝인↑
+export const SCENE_CULL_MARGIN = 1500;
+// 보이는 범위(viewRect)는 네 변 중 하나가 이 canvas px 넘게 움직일 때만 새로 잡는다 — 팬·줌마다
+// SceneBoard 전체를 다시 그리지 않게. 여백의 1/3 이라 갱신 전에도 나머지 2/3 가 팝인을 막는다.
+export const SCENE_CULL_REFRESH_DISTANCE = SCENE_CULL_MARGIN / 3;
 
 export interface SceneCamera {
   z: number;
@@ -55,7 +59,7 @@ export function sceneViewRect(
 export function sameSceneViewRect(
   left: SceneViewRect | null,
   right: SceneViewRect,
-  eps = SCENE_VIEW_RECT_EPS,
+  eps = SCENE_CULL_REFRESH_DISTANCE,
 ) {
   return (
     !!left &&

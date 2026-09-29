@@ -741,7 +741,7 @@ updated: 2026-09-29
 | `bulkGenerationActions.ts` | 순수 | 일괄 실행기(`runGenerationBulk` — 주입받은 비동기 작업을 돌려 실패 수 집계, `runGenerationTrash` — 휴지통 전용: 공유 중 409 를 '건너뜀'으로 따로 센다) + 결과·확인 문구 |
 | `shareMirrorPending.ts` | 순수 | 공유 미러 대기 안내 래핑 |
 
-**9. 씬·캔버스 — 데이터·저장·복구(9)**
+**9. 씬·캔버스 — 데이터·저장·복구(10)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
@@ -752,6 +752,7 @@ updated: 2026-09-29
 | `sceneUndoStore.ts` | store | 씬별 undo/redo 히스토리(언마운트 생존) |
 | `sceneGenDataStore.ts` | store | genId → 생성물 캐시(언마운트 생존) |
 | `sceneRecentDoneStore.ts` | store | '방금 생성됨' glow 상태(언마운트 생존, 버전 구독) |
+| `sceneZoomStore.ts` | store | 캔버스 확대 % — 툴바 % 글자만 구독(휠마다 App 전체 재렌더 방지) |
 | `sceneWorkspace.ts` | 순수 | 씬별 워크스페이스 지정·탭 순서 이동(연산 기반) |
 | `canvasGenerationRecovery.ts` | 순수 | create-first 링크(attempt_id) 생성·정착·재조정 |
 | `canvasDetached.ts` | 순수 | 카드에서 떨어진 생성물 판정 |

@@ -186,6 +186,55 @@ it("자동 복구 답은 열린 캔버스의 메모리 카드에 입혀진다 �
   expect((cardEl("t1").querySelector("textarea") as HTMLTextAreaElement).value).toBe("복구 중에 친 글");
 });
 
+it("자동 복구 뒤 Ctrl+Z·Ctrl+Shift+Z 는 사용자 편집만 오간다 — 참조는 계속 원본 경로(2026-09-29)", async () => {
+  const scene = {
+    id: "relink-undo", name: "씬", created_at: 0, edges: [],
+    cards: [
+      { id: "r1", kind: "reference", x: 0, y: 0, refs: [ref("asset:imports|a.png", "a.png")] },
+      { id: "t1", kind: "text", x: 300, y: 0, text: "처음" },
+    ],
+  } as unknown as Scene;
+  const onChange = vi.fn();
+  const actionRef: SceneBoardActionRef = { current: null };
+  await act(async () => {
+    root.render(<SceneBoard scene={scene} onChange={onChange} actionRef={actionRef} />);
+  });
+  const saved = () => (onChange.mock.lastCall![0] as Partial<Scene>).cards!;
+  const refPath = () => saved().find((c) => c.id === "r1")!.refs![0].file_path;
+  const text = () => saved().find((c) => c.id === "t1")!.text;
+  const press = (shiftKey: boolean) =>
+    act(async () => {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, shiftKey, bubbles: true }));
+    });
+
+  // 사용자 편집 한 단계 — 글을 고치고 편집을 끝낸다
+  await act(async () => {
+    cardEl("t1").querySelector(".scene-textview-inline")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  });
+  const textarea = cardEl("t1").querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "고친 글");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => textarea.blur());
+  expect(text()).toBe("고친 글");
+
+  await act(async () => {
+    actionRef.current!.applyAssetRelink(
+      new Map([[relinkKey("", "asset:imports|a.png"), { project: "P", path: "CH/a.png" }]]),
+    );
+  });
+  expect(refPath()).toBe("asset:P|CH/a.png");
+
+  await press(false); // Ctrl+Z — 글만 되돌아가고, 참조는 옛 사본으로 돌아가지 않는다
+  expect(text()).toBe("처음");
+  expect(refPath()).toBe("asset:P|CH/a.png");
+
+  await press(true); // Ctrl+Shift+Z — 글이 다시 오고, 참조는 그대로
+  expect(text()).toBe("고친 글");
+  expect(refPath()).toBe("asset:P|CH/a.png");
+});
+
 it("씬 전환 첫 렌더에는 핸들이 아직 옛 씬을 말한다 — 새 씬 id 로 온 복구 답이 옛 카드를 새 씬에 쓰지 않게(Codex)", async () => {
   // 씬 A→B 로 바꾸는 첫 렌더에는 cards 가 아직 A 다(동기화는 useEffect). 그 커밋의 핸들이 B 를 말하면,
   // 활성 씬(B) 확인을 통과해 A 의 카드에 답을 입히고 B 로 저장한다. 같은 커밋의 레이아웃 효과로 들여다본다.

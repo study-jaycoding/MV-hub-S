@@ -63,7 +63,7 @@ interface Props {
   zoomValue?: number; // 현재 보드 줌(0.3~2.5)
   onZoomValue?: (v: number) => void; // 슬라이더 드래그 → 보드 줌 설정
   // 씬 캔버스 전용: 슬라이더 대신 [맞춤][−][%][+] 클러스터(씬 카메라에 직접 배선).
-  sceneZoom?: { pct: number; onFit: () => void; onStep: (dir: 1 | -1) => void };
+  sceneZoom?: { onFit: () => void; onStep: (dir: 1 | -1) => void };
   // 그래프 보드(히스토리/구성) 모드 — 의미 없는 컨트롤(리스트/그리드 토글 등)을 숨긴다.
   boardMode?: boolean;
   // 보드 모드라도 필터 사이드바 토글(▢/▷)을 보인다 — 캔버스는 폴더 사이드바가 있어 열고닫아야 함.

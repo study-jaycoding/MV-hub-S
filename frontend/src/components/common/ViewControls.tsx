@@ -1,6 +1,12 @@
+import { useSceneZoomPct } from "../../lib/sceneZoomStore";
 import { FitIcon, GridIcon, ListIcon, StepIcon } from "./ViewIcons";
 
 type LayoutMode = "grid" | "list";
+
+// 씬 확대 % — 휠 확대 때 이 글자만 다시 그린다(App·툴바는 그대로).
+function SceneZoomPct() {
+  return <span className="zc-pct">{useSceneZoomPct()}%</span>;
+}
 
 interface Props {
   fitContain: boolean;
@@ -16,7 +22,7 @@ interface Props {
   onToggleGroupByDate: () => void;
   showLayout?: boolean;
   // 씬 캔버스 줌 — 있으면 슬라이더 대신 [맞춤][−][%][+] 클러스터를 그린다.
-  zoomControl?: { pct: number; onFit: () => void; onStep: (dir: 1 | -1) => void };
+  zoomControl?: { onFit: () => void; onStep: (dir: 1 | -1) => void };
   t?: (text: string) => string;
 }
 
@@ -65,7 +71,7 @@ export function ViewControls({
             <button onClick={() => zoomControl.onStep(-1)} title={t("축소")}>
               <StepIcon size={8} stroke={2} />
             </button>
-            <span className="zc-pct">{zoomControl.pct}%</span>
+            <SceneZoomPct />
             <button onClick={() => zoomControl.onStep(1)} title={t("확대")}>
               <StepIcon plus size={8} stroke={2} />
             </button>

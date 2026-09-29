@@ -12,6 +12,7 @@ import {
   type SceneViewRect,
   type SceneWorldRect,
 } from "./sceneViewport";
+import { setSceneZoomPct } from "./sceneZoomStore";
 
 const CAMERA_SAVE_DELAY_MS = 400;
 const FRAME_TRANSITION_MS = 250;
@@ -32,8 +33,6 @@ interface UseSceneViewportOptions {
   onCameraChange?: (camera: SceneCamera) => void;
   cullingEnabled: boolean;
   gridSize?: number;
-  // 툴바 % 표시용 — 반올림 % 가 실제로 바뀔 때만 호출(팬만 하면 안 부른다).
-  onZoomPctChange?: (pct: number) => void;
 }
 
 const normalizedCamera = (camera?: SceneCamera): SceneCamera => ({
@@ -49,7 +48,6 @@ export function useSceneViewport({
   onCameraChange,
   cullingEnabled,
   gridSize = 22,
-  onZoomPctChange,
 }: UseSceneViewportOptions) {
   const initialCamera = normalizedCamera(camera);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -66,9 +64,6 @@ export function useSceneViewport({
   incomingCameraRef.current = camera;
   const onCameraChangeRef = useRef(onCameraChange);
   onCameraChangeRef.current = onCameraChange;
-  const onZoomPctChangeRef = useRef(onZoomPctChange);
-  onZoomPctChangeRef.current = onZoomPctChange;
-  const lastZoomPctRef = useRef(-1);
 
   const getCamera = useCallback(
     (): SceneCamera => ({ z: zoomRef.current, x: panRef.current.x, y: panRef.current.y }),
@@ -86,11 +81,7 @@ export function useSceneViewport({
 
   const applyTransform = useCallback(() => {
     const current = getCamera();
-    const pct = Math.round(current.z * 100);
-    if (pct !== lastZoomPctRef.current) {
-      lastZoomPctRef.current = pct;
-      onZoomPctChangeRef.current?.(pct);
-    }
+    setSceneZoomPct(Math.round(current.z * 100)); // 툴바 % — 반올림 % 가 바뀔 때만 알린다
     const canvas = canvasRef.current;
     if (canvas) {
       canvas.style.transform = `translate(${current.x}px, ${current.y}px) scale(${current.z})`;

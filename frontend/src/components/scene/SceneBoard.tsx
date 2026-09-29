@@ -169,11 +169,11 @@ import {
   type ResolveOpenPopup,
   type ResolveSceneSelectionTarget,
 } from "../../lib/resolveSelection";
+import { SCENE_CULL_MARGIN as CULL_MARGIN } from "../../lib/sceneViewport";
 // ── 뷰포트 컬링(가상화) 플래그 — 화면 밖 카드를 렌더에서 빼 메모리·DOM 절감. 단계 롤아웃용. ──
 // CULL_ENABLED=false 면 완전 무동작(rAF·setState·ResizeObserver 없음, renderCards===visibleCards).
 // Phase 1: 켜되 마진 넉넉(먼 카드만 언마운트) — 문제 시 이 값만 false 로 되돌리면 즉시 원복.
 const CULL_ENABLED = true;
-const CULL_MARGIN = 1500; // 뷰포트 밖 이 canvas px 까지는 유지(가장자리 팝인 완화). 다이얼: 줄이면 메모리↓·팝인↑
 // 점 배경 격자 간격(scene.css 의 22px 와 동일). 카드 이동·크기조절이 이 격자에 스냅된다.
 // 카드 최소 크기(격자 배수). 너비는 완료 카드 상단 버튼(S/T/C/ⓘ)이 안 잘리게 넉넉히, 높이는 더 낮게 허용.
 const CARD_MIN_W = GRID * 5; // 110
@@ -214,8 +214,6 @@ interface Props {
   resolveSelection?: ResolveSceneSelectionTarget | null;
   onResolveSelectionConsumed?: (nonce: number) => void;
   onResolvePopupChange?: (popup: ResolveOpenPopup | null) => void;
-  // 툴바 줌 클러스터([맞춤][−][%][+])의 % 표시 — 반올림 % 가 바뀔 때만 올라온다.
-  onZoomPct?: (pct: number) => void;
   // 생성 결과 카드 = 히스토리 카드(HistoryBoardNode). 히스토리와 동일한 액션을 그대로 위임.
   onPreview?: (t: PreviewTarget) => void;
   onInfo?: (t: InfoTarget) => void;
@@ -335,7 +333,6 @@ export function SceneBoard({
   resolveSelection,
   onResolveSelectionConsumed,
   onResolvePopupChange,
-  onZoomPct,
   onPreview,
   onInfo,
   onRegenerate,
@@ -679,7 +676,6 @@ export function SceneBoard({
     onCameraChange,
     cullingEnabled: CULL_ENABLED,
     gridSize: GRID,
-    onZoomPctChange: onZoomPct,
   });
   // 캔버스 위 마지막 마우스 좌표(클라이언트) — 선택 없이 n 눌렀을 때 이 위치에 카드 생성.
   const lastMouseRef = useRef<{ x: number; y: number; over: boolean }>({ x: 0, y: 0, over: false });
@@ -832,6 +828,7 @@ export function SceneBoard({
     commitDerivedState,
     hasUncommittedCardsOrEdges,
     propagateGenIdsToHistory,
+    propagateAssetRelinkToHistory,
     pruneGenIdsFromHistory,
     undo,
     redo,
@@ -1611,6 +1608,8 @@ export function SceneBoard({
     setCards(nextCards);
     // 복구는 사용자 편집이 아니다 — undo 단계를 만들지 않고 저장·부모만 최신화(연결 refs 재동기화와 같은 관문).
     commitDerivedState({ cards: nextCards, edges: edgesRef.current, groups: groupsRef.current });
+    // 과거 스냅샷에도 입힌다 — 안 그러면 Ctrl+Z 가 옛 참조를 되살린다.
+    propagateAssetRelinkToHistory(refWorkspaceId, found);
     return changed;
   };
 
@@ -3090,7 +3089,7 @@ export function SceneBoard({
   }, [selected, editTextId, comfyWaitingIds, draggingIds, cards, heightTick]);
   // 실제 렌더 대상 — 플래그 off/뷰포트 미측정이면 전체(visibleCards). on 이면 뷰포트+마진 교차 || keepIds.
   // 확장 뷰포트(뷰포트 ± 마진) — 카드·연결선 컬링이 공유하는 단 하나의 기준 사각형. 컬링 꺼졌거나
-  // 뷰포트 미측정이면 null → 전부 렌더(무동작). viewRect 는 팬/줌 시 rAF+엡실론 게이트로만 갱신됨.
+  // 뷰포트 미측정이면 null → 전부 렌더(무동작). viewRect 는 팬/줌 시 rAF 로, 네 변 중 하나가 SCENE_CULL_REFRESH_DISTANCE 넘게 움직일 때만 갱신됨.
   const cullRect = useMemo(() => {
     if (!CULL_ENABLED || !viewRect) return null;
     return {
