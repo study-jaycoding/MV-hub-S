@@ -4,7 +4,7 @@ import { act, useLayoutEffect, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SceneBoard } from "../src/components/scene/SceneBoard";
-import { relinkKey, relinkSceneAssetRefs } from "../src/lib/sceneAssetRelink";
+import { relinkKey, relinkSceneAssetRefs, resetRelinkSessionForTest } from "../src/lib/sceneAssetRelink";
 import { saveScenes, type Scene, type SceneRef } from "../src/lib/scenes";
 import type { SceneGenDataApi } from "../src/lib/useSceneGenData";
 
@@ -40,6 +40,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("Unexpected network in isolated UI test"))));
   localStorage.clear();
   sessionStorage.clear();
+  resetRelinkSessionForTest(); // 판정 기억은 모듈 캐시 — 시험마다 새 세션처럼
   fixture.locate.mockReset();
   fixture.upload.mockReset();
   fixture.data = {
@@ -233,6 +234,39 @@ it("자동 복구 뒤 Ctrl+Z·Ctrl+Shift+Z 는 사용자 편집만 오간다 —
   await press(true); // Ctrl+Shift+Z — 글이 다시 오고, 참조는 그대로
   expect(text()).toBe("고친 글");
   expect(refPath()).toBe("asset:P|CH/a.png");
+});
+
+it("'레퍼런스 찾기' 단추 — 이 씬으로 찾기를 부르고, 도는 동안 개수와 '대기 중단'을 보이며, 다시 누르면 기다리기만 멈춘다(2026-09-29)", async () => {
+  const scene = refScene("find-scene", "ws-f", [
+    { id: "r1", refs: [ref("asset:imports|a.png", "a.png"), ref("asset:Q|b.png", "b.png")] },
+    { id: "r2", refs: [ref("asset:Q|b.png", "b.png")] },
+  ]);
+  let finish = () => {};
+  const onFindRefs = vi.fn(
+    (_sceneId: string, _signal: AbortSignal) =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  await act(async () => {
+    root.render(<SceneBoard scene={scene} onChange={noop} onFindRefs={onFindRefs} />);
+  });
+  const button = () => [...host.querySelectorAll<HTMLButtonElement>(".scene-io-btn")].at(-1)!;
+  expect(button().textContent).toBe("레퍼런스 찾기");
+
+  await act(async () => button().click());
+  expect(onFindRefs).toHaveBeenCalledTimes(1);
+  expect(onFindRefs.mock.calls[0][0]).toBe("find-scene");
+  const signal = onFindRefs.mock.calls[0][1];
+  expect(button().textContent).toBe("◌ 레퍼런스 2개 찾는 중… · 대기 중단"); // 같은 토큰은 한 번만 센다
+  expect(host.querySelector(".scene-io-panel")!.classList.contains("io-hidden")).toBe(false); // 도는 동안 숨지 않는다
+
+  await act(async () => button().click()); // 대기 중단
+  expect(signal.aborted).toBe(true);
+  expect(onFindRefs).toHaveBeenCalledTimes(1);
+
+  await act(async () => finish());
+  expect(button().textContent).toBe("레퍼런스 찾기");
 });
 
 it("씬 전환 첫 렌더에는 핸들이 아직 옛 씬을 말한다 — 새 씬 id 로 온 복구 답이 옛 카드를 새 씬에 쓰지 않게(Codex)", async () => {

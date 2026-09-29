@@ -39,7 +39,7 @@ export function ReferenceCard({
           {(card.refs || []).map((r, i) => {
             const isVid = refMediaType(r) === "video";
             // missing = 서버 어디에도 없음(받은 사람) · local = 이 PC 안 사본에만 있음(가진 사람)
-            const status = r.file_path ? refServerStatus(workspaceId, r.file_path) : undefined;
+            const status = refServerStatus(workspaceId, r);
             const missing = status === "missing";
             return (
               <div

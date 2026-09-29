@@ -1,26 +1,38 @@
 // 옛 씬의 '이 PC 안 사본' 참조를 프로젝트 폴더 원본으로 되돌리는 순수 계산(2026-09-28).
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setAccountScope } from "../src/lib/accountScope";
 import {
   applyRelink,
-  forgetRefsAsked,
+  findSceneAssetRefs,
+  findSummaryText,
+  forceRefsAsk,
+  forceSceneRefsAsk,
   getRefServerStatusVersion,
   refServerStatus,
   relinkCards,
   relinkKey,
   relinkSceneAssetRefs,
+  resetRelinkSessionForTest,
   sceneAssetGroups,
   sceneAssetTokens,
   sceneRefWorkspaceId,
   subscribeRefServerStatus,
 } from "../src/lib/sceneAssetRelink";
 import { listScenes, saveScenes, type Scene } from "../src/lib/scenes";
+import { STORAGE_KEYS } from "../src/lib/storageKeys";
 
 const locate = vi.fn();
 vi.mock("../src/api", () => ({
   api: {
-    locateAssets: (tokens: string[], ws?: string, scanId?: string, fingerprints?: unknown, signal?: unknown) =>
-      locate(tokens, ws, scanId, fingerprints, signal),
+    locateAssets: (
+      tokens: string[],
+      ws?: string,
+      scanId?: string,
+      fingerprints?: unknown,
+      signal?: unknown,
+      includeRender?: boolean,
+    ) => locate(tokens, ws, scanId, fingerprints, signal, includeRender),
   },
 }));
 
@@ -38,6 +50,15 @@ const scene = (
     ],
     edges: [],
   }) as unknown as Scene;
+
+// 참조 하나의 표시 판정(서버에 없음·이 PC 에만) — 표시는 참조의 지문까지 본다.
+const status = (ws: string, file_path: string, fp: { content_sha?: string; bytes?: number } = {}) =>
+  refServerStatus(ws, { file_path, ...fp });
+// 서버 답 — 빈 목록 기본값
+const answer = (reply: Record<string, unknown>) => ({ fixed: [], unresolved: [], missing: [], local: [], ...reply });
+// 이 계정(로그인 없음 = local) 칸에 저장된 판정 열쇠
+const storedKeys = (ns = "local") =>
+  Object.keys((JSON.parse(localStorage.getItem(STORAGE_KEYS.sceneRefVerdicts) || "{}") as Record<string, object>)[ns] || {});
 
 describe("물어볼 참조 모으기", () => {
   it("에셋 참조를 모두 고른다 — 어느 것이 안 열리는지는 폴더를 보는 서버만 안다", () => {
@@ -208,6 +229,7 @@ describe("찾은 것 갈아끼우기", () => {
 describe("서버에 묻고 갈아끼우기", () => {
   beforeEach(() => {
     localStorage.clear();
+    resetRelinkSessionForTest();
     locate.mockReset();
   });
 
@@ -225,6 +247,8 @@ describe("서버에 묻고 갈아끼우기", () => {
     // 한 번의 복구는 같은 작업 id 를 싣는다 — 서버가 두 번째 배치에서 NAS 를 다시 훑지 않게
     expect(locate.mock.calls[0][2]).toBeTruthy();
     expect(locate.mock.calls[1][2]).toBe(locate.mock.calls[0][2]);
+    // 자동 복구는 render 폴더를 훑지 않는다(단추만)
+    expect(locate.mock.calls[0][5]).toBeFalsy();
   });
 
   it("찾은 것을 씬에 저장하고, 곧바로 다시 부르면 같은 것을 또 묻지 않는다", async () => {
@@ -304,8 +328,8 @@ describe("서버에 묻고 갈아끼우기", () => {
     expect(onSaved.mock.calls[0][1]).toBe(false);
   });
 
-  it("중간에 실패해도 이미 반영한 바퀴는 화면·저장소에 남고, 그만큼을 돌려준다(2026-09-29)", async () => {
-    // 첫 바퀴가 고친 뒤, 도는 동안 새 참조가 생겨 다음 바퀴에서 묻다가 서버가 실패한다
+  it("중간에 실패해도 이미 받은 답은 화면·저장소에 남고, 그만큼을 돌려준다(2026-09-29)", async () => {
+    // 첫 배치가 고친 뒤, 도는 동안 새 참조가 생겨 다음 바퀴에서 묻다가 서버가 실패한다
     saveScenes(null, [scene([{ file_path: "asset:imports|first.png" }])]);
     locate
       .mockImplementationOnce(async () => {
@@ -352,6 +376,7 @@ describe("서버에 묻고 갈아끼우기", () => {
 describe("서버에 없는 참조 기억하기(2026-09-29)", () => {
   beforeEach(() => {
     localStorage.clear();
+    resetRelinkSessionForTest();
     locate.mockReset();
   });
 
@@ -379,49 +404,46 @@ describe("서버에 없는 참조 기억하기(2026-09-29)", () => {
     await relinkSceneAssetRefs();
     off();
 
-    expect(refServerStatus("ws-s", "asset:Q|gone.png")).toBe("missing");
-    expect(refServerStatus("ws-s", "asset:imports|mine.png")).toBe("local");
-    expect(refServerStatus("ws-s", "asset:P|ok.png")).toBeUndefined(); // 열리는 것은 표시 없음
-    expect(refServerStatus("", "asset:Q|gone.png")).toBeUndefined(); // 다른 공간의 씬에는 번지지 않는다
+    expect(status("ws-s", "asset:Q|gone.png")).toBe("missing");
+    expect(status("ws-s", "asset:imports|mine.png")).toBe("local");
+    expect(status("ws-s", "asset:P|ok.png")).toBeUndefined(); // 열리는 것은 표시 없음
+    expect(status("", "asset:Q|gone.png")).toBeUndefined(); // 다른 공간의 씬에는 번지지 않는다
     expect(getRefServerStatusVersion()).toBe(before + 1);
     expect(heard).toHaveBeenCalledTimes(1);
   });
 
-  it("다음에 물었을 때 답에서 빠지면(고쳐졌거나 이제 열림) 표시를 지운다", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      saveScenes(null, [scene([{ file_path: "asset:Q|later.png" }])]);
-      locate.mockResolvedValue({
-        fixed: [],
-        unresolved: ["asset:Q|later.png"],
-        missing: ["asset:Q|later.png"],
-        local: [],
-      });
-      await relinkSceneAssetRefs();
-      expect(refServerStatus("", "asset:Q|later.png")).toBe("missing");
+  it("앱을 다시 켜도 저장된 판정은 다시 묻지 않고, '레퍼런스 찾기'가 다시 물어 표시를 고친다", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:Q|later.png" }])]);
+    locate.mockResolvedValue(answer({ unresolved: ["asset:Q|later.png"], missing: ["asset:Q|later.png"] }));
+    await relinkSceneAssetRefs();
+    expect(status("", "asset:Q|later.png")).toBe("missing");
 
-      vi.setSystemTime(Date.now() + 3 * 60_000); // 2분이 지나면 같은 참조를 다시 묻는다
-      locate.mockResolvedValue({ fixed: [], unresolved: ["asset:Q|later.png"], missing: [], local: [] });
-      await relinkSceneAssetRefs();
-      expect(locate).toHaveBeenCalledTimes(2);
-      expect(refServerStatus("", "asset:Q|later.png")).toBeUndefined();
-    } finally {
-      vi.useRealTimers();
-    }
+    resetRelinkSessionForTest(); // 앱을 다시 켬
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(1);
+    expect(status("", "asset:Q|later.png")).toBe("missing"); // 새로 켜도 표시는 기억에서 바로 나온다
+
+    // NAS 에 나중에 올렸다 — 단추가 다시 묻는다
+    locate.mockResolvedValue(answer({ unresolved: ["asset:Q|later.png"], open: ["asset:Q|later.png"] }));
+    const summary = await findSceneAssetRefs("s1", {});
+    expect(locate).toHaveBeenCalledTimes(2);
+    expect(summary).toMatchObject({ asked: 1, open: 1, missing: 0, aborted: false });
+    expect(status("", "asset:Q|later.png")).toBeUndefined();
   });
 });
 
 describe("방금 이 PC 에 넣은 참조(2026-09-29 옛 방식)", () => {
   beforeEach(() => {
     localStorage.clear();
+    resetRelinkSessionForTest();
     locate.mockReset();
   });
 
   it("서버 답 전에는 '이 PC에만'을 켜지 않는다 — 판정은 서버가 한다(2026-09-29)", async () => {
     const heard = vi.fn();
     const off = subscribeRefServerStatus(heard);
-    forgetRefsAsked("ws-m", ["asset:imports|dropped.png"]);
-    expect(refServerStatus("ws-m", "asset:imports|dropped.png")).toBeUndefined();
+    forceRefsAsk("ws-m", ["asset:imports|dropped.png"]);
+    expect(status("ws-m", "asset:imports|dropped.png")).toBeUndefined();
     expect(heard).not.toHaveBeenCalled(); // 예전에는 NAS 에 있는 파일도 답이 올 때까지 빨갛게 보였다
 
     saveScenes(null, [scene([{ file_path: "asset:imports|dropped.png" }], { id: "ws-m", name: "가" })]);
@@ -433,11 +455,11 @@ describe("방금 이 PC 에 넣은 참조(2026-09-29 옛 방식)", () => {
     });
     await relinkSceneAssetRefs();
     off();
-    expect(refServerStatus("ws-m", "asset:imports|dropped.png")).toBe("local"); // 서버가 확인한 뒤에만
+    expect(status("ws-m", "asset:imports|dropped.png")).toBe("local"); // 서버가 확인한 뒤에만
     expect(heard).toHaveBeenCalledTimes(1);
   });
 
-  it("같은 파일을 2분 안에 다시 끌어다 놓아도 다시 물어 원본으로 잇는다(Codex)", async () => {
+  it("같은 파일을 다시 끌어다 놓으면 저장된 판정과 무관하게 다시 물어 원본으로 잇는다(Codex)", async () => {
     const token = "asset:imports|again.png";
     locate.mockResolvedValue({
       fixed: [{ token, project: "P", path: "BG/again.png" }],
@@ -446,12 +468,12 @@ describe("방금 이 PC 에 넣은 참조(2026-09-29 옛 방식)", () => {
       local: [],
     });
     saveScenes(null, [scene([{ file_path: token }], { id: "ws-a", name: "가" })]);
-    forgetRefsAsked("ws-a", [token]);
+    forceRefsAsk("ws-a", [token]);
     expect(await relinkSceneAssetRefs()).toBe(1);
 
-    // 곧바로 같은 파일을 다시 끌어다 놓음 — 같은 이 PC 사본 토큰이 다시 생긴다
+    // 곧바로 같은 파일을 다시 끌어다 놓음 — 같은 이 PC 사본 토큰이 다시 생긴다(판정은 fixed 로 기억돼 있다)
     saveScenes(null, [scene([{ file_path: token }], { id: "ws-a", name: "가" })]);
-    forgetRefsAsked("ws-a", [token]);
+    forceRefsAsk("ws-a", [token]);
     expect(await relinkSceneAssetRefs()).toBe(1);
     expect(locate).toHaveBeenCalledTimes(2);
   });
@@ -475,5 +497,334 @@ describe("방금 이 PC 에 넣은 참조(2026-09-29 옛 방식)", () => {
 
     const asked = new Set(locate.mock.calls.flatMap((call) => call[0] as string[]));
     expect(tokens.filter((token) => !asked.has(token))).toEqual([]); // 한 번에 다섯 바퀴를 넘어도 끝까지 물었다
+  });
+});
+
+describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+    resetRelinkSessionForTest();
+    locate.mockReset();
+  });
+
+  it("앱을 다시 켜면 판정을 받은 참조는 묻지 않고, 판정을 못 끝낸 것·새 참조만 묻는다", async () => {
+    const tokens = [
+      "asset:P|open.png",
+      "asset:Q|gone.png",
+      "asset:imports|nas-down.png",
+      "asset:imports|twice.png",
+      "asset:imports|found.png",
+    ];
+    saveScenes(null, [scene(tokens.map((file_path) => ({ file_path })))]);
+    locate.mockResolvedValueOnce(
+      answer({
+        fixed: [{ token: "asset:imports|found.png", project: "P", path: "CH/found.png" }],
+        unresolved: tokens.slice(0, 4),
+        open: ["asset:P|open.png"],
+        missing: ["asset:Q|gone.png"],
+        incomplete: ["asset:imports|nas-down.png"],
+      }),
+    );
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(1);
+
+    await relinkSceneAssetRefs(); // 같은 세션 — 판정을 못 끝낸 것도 다음 앱 시작까지 다시 묻지 않는다
+    expect(locate).toHaveBeenCalledTimes(1);
+
+    resetRelinkSessionForTest(); // 앱을 다시 켬 + 새 참조 하나
+    const [saved] = listScenes(null);
+    saveScenes(null, [
+      {
+        ...saved,
+        cards: [
+          ...saved.cards,
+          { id: "c9", kind: "reference", x: 0, y: 0, refs: [{ type: "image", file_path: "asset:imports|new.png" }] },
+        ],
+      } as Scene,
+    ]);
+    locate.mockResolvedValueOnce(answer({ unresolved: ["asset:imports|nas-down.png", "asset:imports|new.png"] }));
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(2);
+    // 열림·없음·후보 여럿(판정 끝)·원본으로 이어진 새 토큰은 묻지 않는다
+    expect(locate.mock.calls[1][0]).toEqual(["asset:imports|nas-down.png", "asset:imports|new.png"]);
+  });
+
+  it("씬 파일·백업으로 들어온 씬은 저장된 판정과 무관하게 한 번 묻는다", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:Q|known.png" }])]);
+    locate.mockResolvedValue(answer({ unresolved: ["asset:Q|known.png"], missing: ["asset:Q|known.png"] }));
+    await relinkSceneAssetRefs();
+    resetRelinkSessionForTest();
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(1); // 저장된 판정 — 안 묻는다
+
+    forceSceneRefsAsk(listScenes(null)); // 이 씬이 방금 들어왔다
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(2);
+    await relinkSceneAssetRefs(); // 강제는 한 번뿐
+    expect(locate).toHaveBeenCalledTimes(2);
+  });
+
+  it("계정마다 따로 기억한다 — 다른 계정의 판정으로 건너뛰거나 표시하지 않는다", async () => {
+    try {
+      setAccountScope("a@team");
+      saveScenes(null, [scene([{ file_path: "asset:Q|acct.png" }])]);
+      locate.mockResolvedValue(answer({ unresolved: ["asset:Q|acct.png"], missing: ["asset:Q|acct.png"] }));
+      await relinkSceneAssetRefs();
+      expect(status("", "asset:Q|acct.png")).toBe("missing");
+
+      setAccountScope("b@team");
+      expect(status("", "asset:Q|acct.png")).toBeUndefined();
+      saveScenes(null, [scene([{ file_path: "asset:Q|acct.png" }])]);
+      resetRelinkSessionForTest();
+      await relinkSceneAssetRefs();
+      expect(locate).toHaveBeenCalledTimes(2); // 다른 계정은 자기 판정이 없어 다시 묻는다
+
+      setAccountScope("a@team");
+      expect(status("", "asset:Q|acct.png")).toBe("missing"); // 앞 계정의 칸은 그대로
+    } finally {
+      setAccountScope("");
+    }
+  });
+
+  it("한 토큰의 참조들이 지문이 다르면 지문 없는 열쇠로 기억하고, 각 참조의 지문으로도 찾는다", async () => {
+    const a = { content_sha: "a".repeat(64), bytes: 1 };
+    const b = { content_sha: "b".repeat(64), bytes: 2 };
+    saveScenes(null, [scene([{ file_path: "asset:imports|x.png", ...a }, { file_path: "asset:imports|x.png", ...b }])]);
+    locate.mockResolvedValue(answer({ unresolved: ["asset:imports|x.png"], local: ["asset:imports|x.png"] }));
+    await relinkSceneAssetRefs();
+    expect(locate.mock.calls[0][3]).toEqual({}); // 지문이 달라 싣지 않았다
+    expect(status("", "asset:imports|x.png", a)).toBe("local");
+    expect(status("", "asset:imports|x.png", b)).toBe("local");
+  });
+
+  it("지금 씬들이 쓰지 않는 판정은 다음 복구 때 버린다", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:Q|old.png" }])]);
+    locate.mockResolvedValue(answer({ unresolved: ["asset:Q|old.png"], missing: ["asset:Q|old.png"] }));
+    await relinkSceneAssetRefs();
+    expect(storedKeys()).toHaveLength(1);
+
+    saveScenes(null, []); // 그 씬을 지웠다
+    await relinkSceneAssetRefs();
+    expect(storedKeys()).toHaveLength(0);
+  });
+
+  it("다른 탭이 바꾼 판정을 다시 읽고, 이 탭이 저장할 때도 더 나중 판정을 지킨다", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:Q|tab.png" }])]);
+    locate.mockResolvedValue(answer({ unresolved: ["asset:Q|tab.png"], missing: ["asset:Q|tab.png"] }));
+    await relinkSceneAssetRefs();
+    expect(status("", "asset:Q|tab.png")).toBe("missing");
+
+    // 다른 탭이 같은 참조를 더 나중에 '이 PC 에만'으로 확인했다
+    const all = JSON.parse(localStorage.getItem(STORAGE_KEYS.sceneRefVerdicts)!);
+    for (const key of Object.keys(all.local)) all.local[key] = ["local", Date.now() + 1000];
+    localStorage.setItem(STORAGE_KEYS.sceneRefVerdicts, JSON.stringify(all));
+    const heard = vi.fn();
+    const off = subscribeRefServerStatus(heard);
+    window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEYS.sceneRefVerdicts }));
+    off();
+    expect(heard).toHaveBeenCalledTimes(1);
+    expect(status("", "asset:Q|tab.png")).toBe("local");
+
+    // 이 탭이 다른 참조의 판정을 저장해도(합치기) 더 나중 판정은 남는다
+    saveScenes(null, [scene([{ file_path: "asset:Q|tab.png" }, { file_path: "asset:Q|other.png" }])]);
+    locate.mockResolvedValue(answer({ unresolved: ["asset:Q|other.png"], missing: ["asset:Q|other.png"] }));
+    await relinkSceneAssetRefs();
+    expect(status("", "asset:Q|tab.png")).toBe("local");
+    expect(status("", "asset:Q|other.png")).toBe("missing");
+  });
+
+  it("묻는 사이 계정이 바뀌면 그 답은 버린다 — 옛 계정 폴더의 답을 새 계정 씬·판정에 쓰지 않게(Codex)", async () => {
+    try {
+      for (const account of ["b@team", "a@team"]) {
+        setAccountScope(account);
+        saveScenes(null, [scene([{ file_path: "asset:imports|acct.png" }])]);
+      }
+      locate.mockImplementation(async () => {
+        setAccountScope("b@team"); // 답이 오기 전에 다른 계정으로 바뀌었다
+        return answer({ fixed: [{ token: "asset:imports|acct.png", project: "P", path: "CH/acct.png" }] });
+      });
+      expect(await relinkSceneAssetRefs()).toBe(0);
+      expect(listScenes(null)[0].cards[0].refs![0].file_path).toBe("asset:imports|acct.png"); // B 의 씬은 그대로
+      expect(storedKeys("acct:b@team")).toEqual([]);
+      setAccountScope("a@team");
+      expect(listScenes(null)[0].cards[0].refs![0].file_path).toBe("asset:imports|acct.png"); // A 도 — 답을 버렸다
+      expect(storedKeys("acct:a@team")).toEqual([]);
+    } finally {
+      setAccountScope("");
+    }
+  });
+
+  it("강제로 다시 물었는데 판정을 못 끝내면 옛 판정을 지워 다음 시작에 다시 묻는다(Codex)", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:imports|re.png" }])]);
+    locate.mockResolvedValueOnce(answer({ unresolved: ["asset:imports|re.png"], local: ["asset:imports|re.png"] }));
+    await relinkSceneAssetRefs();
+    expect(status("", "asset:imports|re.png")).toBe("local");
+
+    forceRefsAsk("", ["asset:imports|re.png"]); // 같은 파일을 다시 넣었는데 NAS 가 끊겼다
+    locate.mockResolvedValueOnce(answer({ unresolved: ["asset:imports|re.png"], incomplete: ["asset:imports|re.png"] }));
+    await relinkSceneAssetRefs();
+    expect(status("", "asset:imports|re.png")).toBeUndefined();
+
+    resetRelinkSessionForTest();
+    locate.mockResolvedValueOnce(answer({ unresolved: ["asset:imports|re.png"], local: ["asset:imports|re.png"] }));
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(3); // 다음 시작에 다시 물었다
+  });
+
+  it("원본으로 이었다는 판정은 씬 저장이 된 뒤에만 기억한다 — 저장 실패면 다음에 다시 묻는다(Codex)", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:imports|nospace.png" }])]);
+    const realSet = Storage.prototype.setItem;
+    const full = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key === STORAGE_KEYS.scenes) throw new Error("QuotaExceededError"); // 씬 저장만 실패
+      return realSet.call(this, key, value);
+    });
+    locate.mockResolvedValue(answer({ fixed: [{ token: "asset:imports|nospace.png", project: "P", path: "CH/n.png" }] }));
+    try {
+      expect(await relinkSceneAssetRefs()).toBe(0);
+    } finally {
+      full.mockRestore();
+    }
+    expect(listScenes(null)[0].cards[0].refs![0].file_path).toBe("asset:imports|nospace.png");
+
+    resetRelinkSessionForTest();
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(2); // fixed 를 기억하지 않아 다시 물었다 — 이번엔 저장된다
+    expect(listScenes(null)[0].cards[0].refs![0].file_path).toBe("asset:P|CH/n.png");
+  });
+
+  it("5,000건을 넘으면 오래 확인한 것부터 버린다", async () => {
+    const tokens = Array.from({ length: 5050 }, (_, i) => `asset:Q|many/${i}.png`);
+    saveScenes(null, [scene(tokens.map((file_path) => ({ file_path })))]);
+    locate.mockImplementation(async (batch: string[]) => answer({ unresolved: batch }));
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(26);
+    expect(storedKeys()).toHaveLength(5000);
+  });
+
+  it("옛 서버 답(open·incomplete 없음)에도, 망가진 저장값에도 복구는 돈다", async () => {
+    localStorage.setItem(STORAGE_KEYS.sceneRefVerdicts, "{망가짐");
+    saveScenes(null, [scene([{ file_path: "asset:P|x.png" }])]);
+    locate.mockResolvedValue({ fixed: [], unresolved: ["asset:P|x.png"], missing: [], local: [] });
+    await relinkSceneAssetRefs();
+    resetRelinkSessionForTest();
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(1); // 옛 서버의 미해결도 '판정 끝'으로 기억했다
+  });
+});
+
+describe("레퍼런스 찾기 단추(Jay 2026-09-29)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetRelinkSessionForTest();
+    locate.mockReset();
+  });
+
+  it("이 씬만, render 까지, 새 작업 id 로, 저장된 판정과 무관하게 묻고 한 줄로 알린다", async () => {
+    const s1 = { ...scene([{ file_path: "asset:imports|a.png" }, { file_path: "asset:Q|b.png" }]), id: "s1" };
+    const s2 = { ...scene([{ file_path: "asset:Q|other.png" }]), id: "s2" };
+    saveScenes(null, [s1, s2]);
+    locate.mockResolvedValueOnce(
+      answer({
+        unresolved: ["asset:imports|a.png", "asset:Q|b.png", "asset:Q|other.png"],
+        local: ["asset:imports|a.png"],
+        missing: ["asset:Q|b.png", "asset:Q|other.png"],
+      }),
+    );
+    await relinkSceneAssetRefs();
+    const autoScan = locate.mock.calls[0][2];
+
+    locate.mockResolvedValueOnce(
+      answer({
+        fixed: [{ token: "asset:imports|a.png", project: "P", path: "Render/a.png" }],
+        unresolved: ["asset:Q|b.png"],
+        missing: ["asset:Q|b.png"],
+      }),
+    );
+    const onSaved = vi.fn();
+    const summary = await findSceneAssetRefs("s1", { onSaved });
+
+    expect(locate).toHaveBeenCalledTimes(2);
+    const [tokens, , scanId, , , includeRender] = locate.mock.calls[1];
+    expect(tokens).toEqual(["asset:imports|a.png", "asset:Q|b.png"]); // 이 씬만
+    expect(includeRender).toBe(true);
+    expect(scanId).not.toBe(autoScan); // 폴더를 새로 훑는다 — 나중에 올린 파일도 찾게
+    expect(summary).toMatchObject({ asked: 2, fixed: 1, missing: 1, local: 0, aborted: false });
+    expect(findSummaryText(summary)).toBe(
+      "레퍼런스 찾기 끝 — 원본 연결 1 · 이 PC에만 0 · 서버에 없음 1 · 판정 보류 0",
+    );
+    expect(listScenes(null).find((s) => s.id === "s1")!.cards[0].refs![0].file_path).toBe("asset:P|Render/a.png");
+    expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it("자동 복구가 도는 중에 누르면 끝난 뒤에 돈다 — 늦게 온 답이 새 답을 덮지 않게(Codex)", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:Q|slow.png" }])]);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const order: string[] = [];
+    locate.mockImplementation(async (...args: unknown[]) => {
+      const includeRender = args[5] === true;
+      order.push(includeRender ? "find" : "auto");
+      if (!includeRender) await gate;
+      return includeRender
+        ? answer({ unresolved: ["asset:Q|slow.png"], open: ["asset:Q|slow.png"] })
+        : answer({ unresolved: ["asset:Q|slow.png"], missing: ["asset:Q|slow.png"] });
+    });
+
+    const auto = relinkSceneAssetRefs();
+    const find = findSceneAssetRefs("s1", {});
+    await vi.waitFor(() => expect(order).toEqual(["auto"]));
+    release();
+    await auto;
+    await find;
+
+    expect(order).toEqual(["auto", "find"]);
+    expect(status("", "asset:Q|slow.png")).toBeUndefined(); // 단추의 답(열림)이 마지막 — 자동의 '없음'이 덮지 않았다
+  });
+
+  it("대기 중단 — 기다리기를 멈추고, 멈춘 배치의 답은 기억하지 않는다", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:Q|stuck.png" }])]);
+    locate.mockImplementation(
+      (...args: unknown[]) =>
+        new Promise((_resolve, reject) => {
+          const signal = args[4] as AbortSignal;
+          signal.addEventListener("abort", () => reject(signal.reason));
+        }),
+    );
+    const ctrl = new AbortController();
+    const find = findSceneAssetRefs("s1", {}, ctrl.signal);
+    await vi.waitFor(() => expect(locate).toHaveBeenCalledTimes(1));
+    ctrl.abort();
+    const summary = await find;
+
+    expect(summary.aborted).toBe(true);
+    expect(findSummaryText(summary)).toContain("기다리기를 멈췄습니다");
+    // 기억하지 않았다 — 앱을 다시 켜면 자동 복구가 다시 묻는다
+    resetRelinkSessionForTest();
+    locate.mockReset();
+    locate.mockResolvedValue(answer({ unresolved: ["asset:Q|stuck.png"] }));
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(1);
+  });
+
+  it("찾을 참조가 없으면 묻지 않고, 서버 실패는 던진다(부르는 쪽이 알린다)", async () => {
+    saveScenes(null, [scene([])]);
+    const none = await findSceneAssetRefs("s1", {});
+    expect(locate).not.toHaveBeenCalled();
+    expect(findSummaryText(none)).toBe("이 씬에는 찾을 레퍼런스가 없습니다.");
+
+    saveScenes(null, [scene([{ file_path: "asset:Q|x.png" }])]);
+    locate.mockRejectedValue(new Error("서버 없음"));
+    await expect(findSceneAssetRefs("s1", {})).rejects.toThrow("서버 없음");
+  });
+
+  it("모두 열리면 그렇게, 판정 보류는 끝까지 못 훑은 것까지 센다", () => {
+    const base = { asked: 3, open: 3, fixed: 0, local: 0, missing: 0, unresolved: 0, incomplete: 0, aborted: false };
+    expect(findSummaryText(base)).toBe("레퍼런스 3개가 모두 원본과 이어져 있습니다.");
+    expect(findSummaryText({ ...base, open: 1, unresolved: 1, incomplete: 1 })).toBe(
+      "레퍼런스 찾기 끝 — 원본 연결 0 · 이 PC에만 0 · 서버에 없음 0 · 판정 보류 2",
+    );
   });
 });

@@ -1149,12 +1149,24 @@ class AssetIoTests(unittest.TestCase):
             self.assertEqual(([rel for rel, _n, _s in pruned], complete), (["CH/hero.png"], True))
 
             tokens = ["asset:Q|CH/render/turn.png", "asset:Q|CH/hero.png"]
+            gone = "asset:Q|CH/render/gone.png"  # render 안을 가리키는데 어디에도 없다
             mount = {"name": "P", "path": str(proj)}
             env = self._locate_env(root, {"P": proj}, lambda _r, _w=None: [mount])  # PM 프로젝트
             with env[0], env[1], env[2], env[3], env[4]:
-                as_pm = assets.locate_legacy_assets(assets.LocateIn(tokens=tokens), SimpleNamespace())
+                as_pm = assets.locate_legacy_assets(assets.LocateIn(tokens=[*tokens, gone]), SimpleNamespace())
             self.assertEqual([f["path"] for f in as_pm["fixed"]], ["CH/hero.png"])
             self.assertEqual(as_pm["missing"], [])  # render 안 참조 — 안 훑었으니 없다고 하지 않는다
+            # 그래도 '판정 못 끝냄'은 아니다 — 자동 복구는 render 를 원래 안 훑는다(앱이 기억하고 다시 안 묻는다)
+            self.assertEqual(as_pm["incomplete"], [])
+
+            # '레퍼런스 찾기' 단추(include_render) — PM 프로젝트도 render 까지 훑어 잇고, 없는 것은 없다고 한다
+            env = self._locate_env(root, {"P": proj}, lambda _r, _w=None: [mount])
+            with env[0], env[1], env[2], env[3], env[4]:
+                with_render = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=[*tokens, gone], include_render=True), SimpleNamespace()
+                )
+            self.assertEqual([f["path"] for f in with_render["fixed"]], ["CH/render/turn.png", "CH/hero.png"])
+            self.assertEqual(with_render["missing"], [gone])
 
             env = self._locate_env(root, {"P": proj}, lambda _r, _w=None: [])
             with env[0], env[1], env[3], env[4], patch.object(assets, "_owner_mounts", return_value=[mount]):
@@ -1410,6 +1422,7 @@ class AssetIoTests(unittest.TestCase):
                             "asset:P|BG/here.png",  # 이미 열린다 → 표시 없음
                             "asset:imports|both.png",  # 서버에 있지만 두 곳이라 못 고른다 → 표시 없음
                             "asset:Q|CH/gone.png",  # 같은 토큰이 또 와도 같은 답
+                            "asset:P|BG/here.png",
                         ]
                     ),
                     SimpleNamespace(),
@@ -1422,6 +1435,12 @@ class AssetIoTests(unittest.TestCase):
             )
             self.assertEqual(reply["local"], ["asset:imports|mine.png"])
             self.assertIn("asset:imports|both.png", reply["unresolved"])
+            # 이미 열리는 참조는 open(중복도 같은 답), 두 곳이라 못 고른 것은 '판정 끝' — 앱이 기억하고 다시 안 묻는다
+            self.assertEqual(reply["open"], ["asset:P|BG/here.png", "asset:P|BG/here.png"])
+            self.assertEqual(reply["incomplete"], [])
+            buckets = [set(reply[k]) for k in ("missing", "local", "open", "incomplete")]
+            self.assertTrue(all(b <= set(reply["unresolved"]) for b in buckets))  # 모두 unresolved 의 부분집합
+            self.assertEqual(sum(len(b) for b in buckets), len(set().union(*buckets)))  # 한 토큰은 한 목록에만
 
     def test_locate_only_calls_a_ref_missing_after_a_full_search(self) -> None:
         """후보가 여럿이거나, 끝까지 못 훑었거나, 볼 폴더가 없으면 '서버에 없음'이라 하지 않는다."""
@@ -1442,7 +1461,9 @@ class AssetIoTests(unittest.TestCase):
                 reply = assets.locate_legacy_assets(assets.LocateIn(tokens=tokens), SimpleNamespace())
             self.assertEqual(reply["missing"], ["asset:Q|gone.png"])  # 두 곳에 있는 twice 는 빠진다
             self.assertEqual(reply["local"], ["asset:imports|mine.png"])
+            self.assertEqual(reply["incomplete"], [])  # twice 는 끝까지 훑고도 못 고른 것 — 판정 끝
 
+            # 끝까지 못 훑었거나 볼 폴더가 없으면 셋 다 '판정 못 끝냄' — 앱이 기억하지 않고 다음 실행에 다시 묻는다
             real = assets._build_index
             env = self._locate_env(root, dirs, lambda _r, _w=None: mounts)
             with (
@@ -1451,11 +1472,13 @@ class AssetIoTests(unittest.TestCase):
             ):
                 reply = assets.locate_legacy_assets(assets.LocateIn(tokens=tokens), SimpleNamespace())
             self.assertEqual((reply["missing"], reply["local"]), ([], []))  # 끝까지 못 훑었다
+            self.assertEqual(reply["incomplete"], tokens)
 
             env = self._locate_env(root, {}, lambda _r, _w=None: [])
             with env[0], env[1], env[2], env[3], env[4]:
                 reply = assets.locate_legacy_assets(assets.LocateIn(tokens=tokens), SimpleNamespace())
             self.assertEqual((reply["missing"], reply["local"]), ([], []))  # 볼 폴더가 없다
+            self.assertEqual(reply["incomplete"], tokens)
 
     def test_locate_says_nothing_is_missing_while_a_registered_folder_is_unreachable(self) -> None:
         """등록한 폴더를 하나라도 못 읽으면(NAS 끊김) '서버에 없음'·'이 PC 에만'을 말하지 않는다.

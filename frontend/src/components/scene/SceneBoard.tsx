@@ -110,10 +110,11 @@ import {
   getRecentDoneVersion,
 } from "../../lib/sceneRecentDoneStore";
 import {
-  forgetRefsAsked,
+  forceRefsAsk,
   getRefServerStatusVersion,
   refServerStatus,
   relinkCards,
+  sceneAssetTokens,
   sceneRefWorkspaceId,
   subscribeRefServerStatus,
   type RelinkTarget,
@@ -204,6 +205,9 @@ interface Props {
   // 로컬 파일(끌어다 놓기·붙여넣기)로 레퍼런스를 만든 직후 — 자동 복구를 한 번 불러 서버 판정을 받는다
   //  (같은 내용이 서버에 있으면 원본으로 잇고, 없으면 '이 PC에만' 표시가 남는다, Jay 2026-09-29).
   onLocalRefsAdded?: () => void;
+  // '레퍼런스 찾기' 단추(Jay 2026-09-29) — 이 씬의 참조를 저장된 판정과 무관하게 render 폴더까지 다시 찾는다.
+  //  signal = '대기 중단'(기다리기만 멈춘다). 끝나면 부르는 쪽이 결과를 알린다.
+  onFindRefs?: (sceneId: string, signal: AbortSignal) => Promise<void>;
   // 씬 탭 바 호버 여부 — true 면 좌상단 씬 패널(저장/불러오기)을 보인다(평소엔 숨김).
   ioPanelHot?: boolean;
   // 씬의 생성 카드 1개만 선택되면 그 카드(id+연결된 레퍼런스)를 하단 프롬프트에 바인딩하도록 App 에 알림.
@@ -327,6 +331,7 @@ export function SceneBoard({
   onLoadSceneFile,
   onDroppedGenerationFile,
   onLocalRefsAdded,
+  onFindRefs,
   ioPanelHot,
   onBindingChange,
   onCameraChange,
@@ -499,7 +504,10 @@ export function SceneBoard({
     const t = setTimeout(() => setIoPanelLinger(false), 350);
     return () => clearTimeout(t);
   }, [ioPanelHot]);
-  const ioPanelVisible = !!ioPanelHot || ioPanelLinger || ioPanelHover;
+  // '레퍼런스 찾기' 도는 중 — 이 씬에서 누른 것만 표시한다(씬을 바꾸면 그 씬은 평소 단추). 도는 동안 패널을 숨기지 않는다.
+  const [findRun, setFindRun] = useState<{ sceneId: string; count: number; ctrl: AbortController } | null>(null);
+  const finding = findRun?.sceneId === scene.id ? findRun : null;
+  const ioPanelVisible = !!ioPanelHot || ioPanelLinger || ioPanelHover || !!finding;
   const varpopWrapRef = useRef<HTMLDivElement>(null);
   // 변형 팝업 태그 에디터를 '편집 중인 타일 바로 아래'에 띄우기 위한 위치(wrap 기준). 타일은
   // overflow:hidden 이라 안에 넣으면 잘리므로 wrap 레벨에 절대배치하되, 타일 rect 를 측정해 그 밑에 둔다.
@@ -1538,9 +1546,10 @@ export function SceneBoard({
     persist,
     onLoadSceneFile,
     onDroppedGenerationFile,
-    // 이 PC 설치 폴더에만 있는 새 참조 — 자동 복구가 다시 묻게 하고 부른다. '이 PC에만' 표시는 서버 답으로만 켠다.
+    // 이 PC 설치 폴더에만 있는 새 참조 — 저장된 판정과 무관하게 한 번 묻게 하고 자동 복구를 부른다(같은 파일을 다시
+    //  넣으면 같은 사본 토큰이다). '이 PC에만' 표시는 서버 답으로만 켠다.
     onLocalRefsAdded: (tokens) => {
-      forgetRefsAsked(refWorkspaceId, tokens);
+      forceRefsAsk(refWorkspaceId, tokens);
       onLocalRefsAdded?.();
     },
     cardWidth: CARD_W,
@@ -1612,6 +1621,25 @@ export function SceneBoard({
     // 과거 스냅샷에도 입힌다 — 안 그러면 Ctrl+Z 가 옛 참조를 되살린다.
     propagateAssetRelinkToHistory(refWorkspaceId, found);
     return changed;
+  };
+
+  // '레퍼런스 찾기' 단추 — 도는 중에 다시 누르면 '대기 중단'(기다리기만 멈춘다, 서버는 하던 확인을 끝까지 한다).
+  const onFindClick = () => {
+    if (finding) {
+      finding.ctrl.abort();
+      return;
+    }
+    if (!onFindRefs) return;
+    flushPending(); // 친 글·옮긴 카드를 먼저 저장 — 찾기는 저장된 씬을 본다
+    const run = {
+      sceneId: scene.id,
+      count: sceneAssetTokens([{ ...scene, cards: cardsRef.current }]).length,
+      ctrl: new AbortController(),
+    };
+    setFindRun(run);
+    void onFindRefs(run.sceneId, run.ctrl.signal).finally(() =>
+      setFindRun((current) => (current === run ? null : current)),
+    );
   };
 
   // 전역 mousemove/mouseup/blur 생명주기와 프레임당 이동 합치기는 전용 훅이 담당한다.
@@ -3725,7 +3753,7 @@ export function SceneBoard({
           const showNode = !!g && String(g.status) === "done"; // 완료 → 히스토리 카드로 표시
           // 빨간 테두리는 '서버 어디에도 없음'(받은 사람)일 때만 — '이 PC 에만'(가진 사람)은 오른쪽 위 마크만(Jay 2026-09-29).
           const missingHere = (refs: SceneRef[] | undefined) =>
-            !!refs?.some((r) => refServerStatus(refWorkspaceId, r.file_path) === "missing");
+            !!refs?.some((r) => refServerStatus(refWorkspaceId, r) === "missing");
           const kindCls =
             card.kind === "reference"
               ? "scene-card-ref" +
@@ -4099,8 +4127,8 @@ export function SceneBoard({
         <div className="scene-cut-hint">✂ 연결 자르기 — 드래그로 선을 지나가고 손을 떼면 끊깁니다</div>
       )}
 
-      {/* 좌상단 씬 패널 — 씬 이름 + 저장(파일로)/불러오기(새 탭). 미디어 없이 참조만 저장(ComfyUI식 가벼운 텍스트). */}
-      {(onSaveScene || onLoadSceneFile) && (
+      {/* 좌상단 씬 패널 — 씬 이름 + 저장(파일로)/불러오기(새 탭)/레퍼런스 찾기. 미디어 없이 참조만 저장(ComfyUI식 가벼운 텍스트). */}
+      {(onSaveScene || onLoadSceneFile || onFindRefs) && (
         <div
           className={"scene-io-panel" + (ioPanelVisible ? "" : " io-hidden")}
           onMouseDown={(e) => e.stopPropagation()}
@@ -4125,6 +4153,19 @@ export function SceneBoard({
                 onClick={() => sceneFileRef.current?.click()}
               >
                 불러오기
+              </button>
+            )}
+            {onFindRefs && (
+              <button
+                className="scene-io-btn"
+                title={
+                  finding
+                    ? "기다리기만 멈춥니다 — 서버는 하던 확인을 끝까지 합니다"
+                    : "이 씬의 레퍼런스를 NAS 에서 다시 찾아 원본으로 잇습니다(렌더 폴더 포함). NAS 에 나중에 올린 파일도 이걸로 찾습니다"
+                }
+                onClick={onFindClick}
+              >
+                {finding ? `◌ 레퍼런스 ${finding.count}개 찾는 중… · 대기 중단` : "레퍼런스 찾기"}
               </button>
             )}
           </div>

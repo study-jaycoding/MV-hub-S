@@ -8,7 +8,10 @@
 // 지문이 있으면 내용으로만, 지문 없는 사본은 잇지 않고, 지문 없는 프로젝트 참조는 경로 끝 두 조각 이상으로
 // 찾는다 — 이름만 같은 것으로는 잇지 않는다(2026-09-29). 여기서는 받은 것만 반영한다 — 묻지 않는다.
 import { api } from "../api";
-import { listScenes, saveScenes, type Scene, type SceneCard } from "./scenes";
+import { getAccountNamespace } from "./accountScope";
+import { listScenes, saveScenes, type Scene, type SceneCard, type SceneRef } from "./scenes";
+import { loadJSON, saveJSON } from "./storage";
+import { STORAGE_KEYS } from "./storageKeys";
 
 // 에셋 참조 토큰 전부. 이미 잘 열리는 것은 서버가 그대로 두므로 여기서 거르지 않는다 —
 // 어느 것이 안 열리는지는 폴더를 볼 수 있는 서버만 안다.
@@ -127,18 +130,119 @@ export function applyRelink(
   return { scenes: changed ? next : scenes, changed };
 }
 
-// 서버가 판정한 '서버에 없는' 참조(Jay 2026-09-29) — 캔버스가 빨간 테두리로 그린다.
-//  · missing = 이 PC 에서도 안 열리고 서버 어디에도 없다(받은 사람)
-//  · local = 이 PC 설치 폴더 안 사본에만 있다(가진 사람)
-// 씬 파일에는 담지 않는다 — 폴더를 보는 건 서버뿐이라 복구할 때마다 다시 받는다. 열쇠는 found 와 같은
-// (공간, 토큰): 같은 옛 참조라도 공간마다 고쳐짐 여부가 갈릴 수 있다.
+// ── 서버 판정 기억(Jay 2026-09-29 "2 새 안") ────────────────────────────────────────────────────────────
+// 한 번 답을 받은 참조는 앱을 다시 켜도 자동으로 다시 묻지 않는다 — 켤 때마다 모든 씬의 그림으로 NAS 를 훑던 것을 없앤다.
+//  · 판정 = open(이미 열림)·fixed(원본으로 이음)·local(이 PC 에만)·missing(서버에 없음)·unresolved(끝까지 봤지만 못 이음 —
+//    후보 여럿·근거 없음). 서버가 incomplete(끝까지 못 훑음)라 한 것과 오류·시간 초과·대기 중단은 저장하지 않고 있던 판정도
+//    덮지 않는다 — 다음 앱 시작에 다시 묻는다. fixed 도 기억한다 — 지문이 달라 못 바꾼 옛 토큰을 시작마다 다시 훑지 않게.
+//  · 계정별 맵(STORAGE_KEYS.sceneRefVerdicts) — 서버가 계정의 등록 폴더로 판정한다. 열쇠 = (공간, 토큰, 묶음 지문)의 53비트
+//    해시(씬도 localStorage 에 있어 용량이 빠듯하다). 충돌하면(5,000건에 약 10억분의 1) 그 참조를 '이미 확인함'으로 잘못 알아
+//    자동으로 안 묻는다 — '레퍼런스 찾기' 단추가 풀어 준다.
+//  · 만료는 없다. NAS 에 나중에 올린 파일은 단추를 눌러야 안다(Jay 가 받아들인 대가).
+//  · 정리: 자동 복구·단추가 끝날 때 지금 씬들이 쓰지 않는 열쇠를 버리고, 그래도 5,000건을 넘으면 오래 확인한 것부터 버린다.
+//    저장 직전에 다시 읽어 다른 탭이 쓴 것과 합친다(같은 열쇠는 나중에 확인한 쪽).
+// 판정은 씬 파일에 담지 않는다 — 폴더를 보는 건 서버뿐이고, 사람·PC 마다 답이 다르다.
 export type RefServerStatus = "missing" | "local";
-const serverStatus = new Map<string, RefServerStatus>();
+type Verdict = "open" | "fixed" | "local" | "missing" | "unresolved";
+type VerdictEntry = [Verdict, number]; // [판정, 확인 시각]
+type Verdicts = Record<string, VerdictEntry>;
+const VERDICT_CAP = 5000;
+let verdictCache: Verdicts | null = null;
+let verdictCacheNs: string | null = null;
 const statusListeners = new Set<() => void>();
 let statusVersion = 0;
 
-export function refServerStatus(workspaceId: string, token: string): RefServerStatus | undefined {
-  return serverStatus.get(relinkKey(workspaceId, token));
+// 53비트 문자열 해시(cyrb53, 공개 도메인) — 짧은 열쇠로 localStorage 용량을 아낀다.
+function cyrb53(text: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+const verdictKey = (workspaceId: string, token: string, fp?: RefFingerprint | null): string =>
+  cyrb53(JSON.stringify([workspaceId, token, fp?.sha256 ?? "", fp?.bytes ?? 0]));
+
+function loadVerdicts(): Verdicts {
+  const ns = getAccountNamespace();
+  if (verdictCache && verdictCacheNs === ns) return verdictCache;
+  const mine = loadJSON<Record<string, Verdicts>>(STORAGE_KEYS.sceneRefVerdicts)?.[ns];
+  verdictCache = mine && typeof mine === "object" ? { ...mine } : {};
+  verdictCacheNs = ns;
+  return verdictCache;
+}
+
+function verdictOf(key: string): Verdict | undefined {
+  const entry = loadVerdicts()[key];
+  return Array.isArray(entry) ? entry[0] : undefined;
+}
+
+function notifyStatus(): void {
+  statusVersion += 1;
+  statusListeners.forEach((cb) => cb());
+}
+
+/** 저장 — 다른 탭이 그 사이 쓴 것과 합치고(같은 열쇠는 나중에 확인한 쪽), keep 이 있으면 그 밖의 열쇠를 버린 뒤 상한을 지킨다.
+ *  drop = 이번에 지운 열쇠 — 합치기가 디스크의 옛 판정을 도로 살리지 않게 합친 뒤에 다시 지운다.
+ *  다른 계정의 칸은 건드리지 않는다. 저장 실패(용량)는 삼킨다 — 기억은 속도를 위한 것이라 없어도 동작은 같다. */
+function saveVerdicts(keep?: Set<string>, drop?: Set<string>): void {
+  const ns = getAccountNamespace();
+  const mine = loadVerdicts();
+  const all = loadJSON<Record<string, Verdicts>>(STORAGE_KEYS.sceneRefVerdicts) || {};
+  const disk = all[ns];
+  if (disk && typeof disk === "object") {
+    for (const [key, entry] of Object.entries(disk)) {
+      const cur = mine[key];
+      if (Array.isArray(entry) && (!Array.isArray(cur) || cur[1] < entry[1])) mine[key] = entry;
+    }
+  }
+  if (drop) for (const key of drop) delete mine[key];
+  if (keep) for (const key of Object.keys(mine)) if (!keep.has(key)) delete mine[key];
+  const keys = Object.keys(mine);
+  if (keys.length > VERDICT_CAP) {
+    keys.sort((a, b) => mine[a][1] - mine[b][1]);
+    for (const key of keys.slice(0, keys.length - VERDICT_CAP)) delete mine[key];
+  }
+  all[ns] = mine;
+  saveJSON(STORAGE_KEYS.sceneRefVerdicts, all);
+}
+
+/** 지금 씬들이 쓰는 열쇠만 남긴다 — 지운 씬·원본으로 이어져 사라진 옛 토큰의 판정이 쌓이지 않게. */
+function pruneVerdicts(): void {
+  const keep = new Set<string>();
+  for (const group of sceneAssetGroups(listScenes(null))) {
+    for (const token of group.tokens) keep.add(verdictKey(group.workspaceId, token, group.fingerprints[token]));
+  }
+  saveVerdicts(keep);
+}
+
+// 다른 탭이 판정을 바꾸면 다시 읽고 표시도 다시 그린다(key null = 다른 탭의 전체 비우기).
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== null && event.key !== STORAGE_KEYS.sceneRefVerdicts) return;
+    verdictCache = null;
+    notifyStatus();
+  });
+}
+
+/** 이 참조의 서버 판정 중 캔버스가 그리는 것(서버에 없음·이 PC 에만). 참조의 지문 열쇠가 먼저, 없으면 지문 없는 열쇠 —
+ *  한 토큰의 참조들이 지문이 달라 묶음 지문 없이 물었을 때는 그 열쇠에 저장된다(sceneAssetGroups). */
+export function refServerStatus(
+  workspaceId: string,
+  ref: Pick<SceneRef, "file_path" | "content_sha" | "bytes">,
+): RefServerStatus | undefined {
+  if (!ref.file_path) return undefined;
+  const own = ref.content_sha && ref.bytes ? { sha256: ref.content_sha, bytes: ref.bytes } : null;
+  const verdict =
+    (own && verdictOf(verdictKey(workspaceId, ref.file_path, own))) ||
+    verdictOf(verdictKey(workspaceId, ref.file_path, null));
+  return verdict === "missing" || verdict === "local" ? verdict : undefined;
 }
 
 export function subscribeRefServerStatus(cb: () => void): () => void {
@@ -153,37 +257,24 @@ export function getRefServerStatusVersion(): number {
   return statusVersion;
 }
 
-/** 배치 답 하나를 반영한다 — 보낸 토큰마다 새 판정으로 덮고, 판정이 없으면(고쳐짐·열림·모름) 지운다. */
-function noteServerStatus(workspaceId: string, sent: string[], missing: string[], local: string[]): void {
-  const miss = new Set(missing);
-  const loc = new Set(local);
-  let changed = false;
-  for (const token of sent) {
-    const key = relinkKey(workspaceId, token);
-    const next = miss.has(token) ? "missing" : loc.has(token) ? "local" : undefined;
-    if (serverStatus.get(key) === next) continue;
-    if (next) serverStatus.set(key, next);
-    else serverStatus.delete(key);
-    changed = true;
-  }
-  if (!changed) return;
-  statusVersion += 1;
-  statusListeners.forEach((cb) => cb());
+// 이 세션에 답을 받은 참조(공간+토큰) — 세션 동안 자동으로 다시 묻지 않는다(판정을 못 끝낸 것도 — 다음 앱 시작에 다시).
+// 실패한 요청은 담지 않는다 — 다음 계기에 다시 묻는다.
+const asked = new Set<string>();
+// 저장된 판정과 무관하게 한 번 물을 참조(공간+토큰) — 답을 받으면 뺀다.
+const forced = new Set<string>();
+
+/** 이 참조들은 저장된 판정과 무관하게 다음 자동 복구에서 한 번 묻는다 — 방금 끌어다 놓은 파일(같은 파일을 다시 넣으면
+ *  같은 사본 토큰이 되는데, 저장된 판정으로 건너뛰면 원본으로 못 잇는다). ★서버 답 전에 '이 PC에만'을 먼저 켜지 않는다
+ *  — 판정은 서버가 한다(Jay 규칙). 예전에는 NAS 에 있는 파일도 답이 올 때까지 빨갛게 보였다(2026-09-29). */
+export function forceRefsAsk(workspaceId: string, tokens: string[]): void {
+  tokens.forEach((token) => forced.add(relinkKey(workspaceId, token)));
 }
 
-/** 방금 이 PC 설치 폴더에 저장한 참조(끌어다 놓기·붙여넣기, 2026-09-29 옛 방식) — 곧 부르는 자동 복구가
- *  **다시 묻게** 한다. 같은 파일을 곧바로 다시 넣으면 같은 사본 토큰이 다시 생기는데, '물어봤다' 기록이 남아
- *  있으면 2분 동안 원본으로 못 잇는다(Codex 2026-09-29).
- *  ★서버 답 전에 '이 PC에만'을 먼저 켜지 않는다 — 판정은 서버가 한다(Jay 규칙). 예전에는 NAS 에 있는
- *  파일도 답이 올 때까지 빨갛게 보였다(2026-09-29). */
-export function forgetRefsAsked(workspaceId: string, tokens: string[]): void {
-  tokens.forEach((token) => asked.delete(relinkKey(workspaceId, token)));
+/** 씬 파일·DB 백업으로 방금 들어온 씬의 참조를 forceRefsAsk — 남이 준 씬은 열 때 그 씬만 한 번 확인한다. */
+export function forceSceneRefsAsk(scenes: Scene[]): void {
+  for (const group of sceneAssetGroups(scenes)) forceRefsAsk(group.workspaceId, group.tokens);
 }
 
-// 이미 물어본 토큰 → 물어본 시각. 곧바로 다시 묻지 않되 **영원히 포기하지는 않는다** —
-// NAS 가 잠깐 끊겼거나 폴더를 그 사이 등록했을 수 있다(Codex 2026-09-28). 실패한 호출은 담지 않는다.
-const asked = new Map<string, number>();
-const ASK_AGAIN_AFTER = 120_000; // 2분
 const LOCATE_BATCH = 200; // 서버가 한 번에 받는 상한과 같게 — 넘치면 나눠 보낸다
 // 요청 하나를 기다리는 한도 — 정상 요청도 등록 폴더 수 × 2~3초라 1분대가 될 수 있어 넉넉히 둔다(짧으면 큰
 // 구성에서 매번 끊기고 새 작업 id 로 처음부터 다시 훑는다). 멈춘 NAS 가 자동 복구를 새로고침 전까지 막지
@@ -193,6 +284,14 @@ let inFlight: Promise<number> | null = null;
 // 도는 중에 또 불렸다 — 끝나면 한 번 더 돈다. 마지막 바퀴를 확인한 뒤에 들어온 참조(방금 끌어다 놓은
 // 로컬 파일 등)를 다음 기회까지 놓치지 않게(Codex 2026-09-29).
 let rerun = false;
+// 자동 복구와 '레퍼런스 찾기'는 한 줄로 선다 — 동시에 돌면 늦게 온 답이 새 답을 덮을 수 있다(Codex 2026-09-29).
+let queue: Promise<unknown> = Promise.resolve();
+
+function exclusive<T>(job: () => Promise<T>): Promise<T> {
+  const run = queue.then(job, job);
+  queue = run.catch(() => undefined);
+  return run;
+}
 
 function newScanId(): string {
   try {
@@ -211,82 +310,235 @@ export interface RelinkHooks {
   onSaved?: (next: Scene[], boardApplied: boolean) => void;
 }
 
+type LocateReply = Awaited<ReturnType<typeof api.locateAssets>>;
+type RefGroup = ReturnType<typeof sceneAssetGroups>[number];
+type Answer = Verdict | "incomplete";
+/** 답 종류별 토큰 수. */
+export type FindCounts = Record<Answer, number>;
+
+const emptyCounts = (): FindCounts => ({ open: 0, fixed: 0, local: 0, missing: 0, unresolved: 0, incomplete: 0 });
+
+/** 한 배치의 답을 판정 기억에 싣고 토큰마다 답 종류를 센다. 보낸 토큰은 이 세션에 '물어봤다'로 치되(같은 복구 안에서
+ *  되풀이해 묻지 않게), 판정은 답에 든 토큰만 기억한다. */
+function noteReply(
+  ws: string,
+  batch: string[],
+  fingerprints: Record<string, RefFingerprint>,
+  reply: LocateReply,
+  counts: FindCounts,
+): void {
+  const answer = new Map<string, Answer>();
+  reply.unresolved.forEach((token) => answer.set(token, "unresolved"));
+  (reply.open ?? []).forEach((token) => answer.set(token, "open"));
+  (reply.incomplete ?? []).forEach((token) => answer.set(token, "incomplete"));
+  (reply.local ?? []).forEach((token) => answer.set(token, "local"));
+  (reply.missing ?? []).forEach((token) => answer.set(token, "missing"));
+  reply.fixed.forEach((item) => answer.set(item.token, "fixed"));
+  const store = loadVerdicts();
+  const now = Date.now();
+  const dropped = new Set<string>();
+  let changed = false;
+  for (const token of batch) {
+    const at = relinkKey(ws, token);
+    asked.add(at);
+    const wasForced = forced.delete(at);
+    const got = answer.get(token);
+    if (!got) continue;
+    counts[got] += 1;
+    const key = verdictKey(ws, token, fingerprints[token]);
+    if (got === "incomplete") {
+      // 판정 못 끝냄 — 기억하지 않는다. 강제로 다시 물은 참조(같은 파일을 다시 넣음·씬을 새로 받음)면 확인 못 한
+      //  옛 판정도 지워 다음 시작에 다시 묻게 한다 — 안 그러면 그 옛 판정이 굳는다(Codex 2026-09-29).
+      if (wasForced && store[key]) {
+        if (verdictOf(key) === "missing" || verdictOf(key) === "local") changed = true;
+        delete store[key];
+        dropped.add(key);
+      }
+      continue;
+    }
+    if (got === "fixed") continue; // 씬에 입혀 저장한 뒤에 기억한다(rememberFixed)
+    if (verdictOf(key) !== got) changed = true;
+    store[key] = [got, now];
+  }
+  saveVerdicts(undefined, dropped);
+  if (changed) notifyStatus();
+}
+
+/** 원본으로 이은 참조를 기억한다 — 씬에 입혀 **저장한 뒤에만**(저장이 실패해 옛 토큰이 남았는데 fixed 로 기억하면 다시 안
+ *  묻는다, Codex). 이은 새 토큰은 '열림'으로 기억한다 — 다음 실행에 다시 묻지 않게(새 토큰 참조의 지문 = 답의 지문). */
+function rememberFixed(ws: string, fixed: LocateReply["fixed"], fingerprints: Record<string, RefFingerprint>): void {
+  if (!fixed.length) return;
+  const store = loadVerdicts();
+  const now = Date.now();
+  for (const item of fixed) {
+    store[verdictKey(ws, item.token, fingerprints[item.token])] = ["fixed", now];
+    const token = `asset:${item.project}|${item.path}`;
+    asked.add(relinkKey(ws, token));
+    const fp = item.sha256 && item.bytes ? { sha256: item.sha256, bytes: item.bytes } : null;
+    store[verdictKey(ws, token, fp)] = ["open", now];
+  }
+  saveVerdicts();
+}
+
+/** 찾은 것을 화면·저장소에 입힌다. ① 열린 캔버스는 자기 메모리 카드에 참조만 바꿔 끼운다(저장본으로 갈아끼우지 않는다 —
+ *  그 사이 친 글·옮긴 카드가 남게). ② 나머지 씬은 저장 직전에 다시 읽어 고친다(다른 탭 변경을 덮지 않게).
+ *  같은 (공간, 토큰)을 쓰는 씬은 모두 받는다 — 판정도 씬이 아니라 (공간, 토큰, 지문)으로 기억하기 때문이다.
+ *  바꾼 수와 저장 성공 여부를 준다(저장 실패면 fixed 를 기억하지 않는다). */
+function applyFound(found: Map<string, RelinkTarget>, hooks: RelinkHooks): { total: number; saved: boolean } {
+  if (!found.size) return { total: 0, saved: true };
+  const onBoard = hooks.applyToBoard?.(found) ?? null;
+  let total = onBoard ?? 0;
+  const { scenes: next, changed } = applyRelink(listScenes(null), found);
+  if (!changed) return { total, saved: true };
+  if (!saveScenes(null, next)) return { total, saved: false };
+  hooks.onSaved?.(next, onBoard !== null);
+  total += changed;
+  return { total, saved: true };
+}
+
+/** 묶음을 200개씩 물어, 답마다 곧바로 판정을 기억하고 찾은 것을 입힌다 — 중간에 실패·중단해도 이미 받은 답은 남는다
+ *  (fixed 로 기억한 참조가 원본으로 안 바뀐 채 남지 않게). 바꾼 참조 수는 done.total 에 더한다(실패해도 센 만큼 남는다).
+ *  묻는 사이 계정이 바뀌면 그 답은 버리고 멈춘다 — 옛 계정의 폴더로 받은 답을 새 계정의 씬·판정에 쓰지 않게(Codex). */
+async function askGroups(
+  groups: RefGroup[],
+  opts: {
+    scanId: string;
+    hooks: RelinkHooks;
+    counts: FindCounts;
+    done: { total: number };
+    includeRender?: boolean;
+    signal?: AbortSignal;
+  },
+): Promise<void> {
+  const ns = getAccountNamespace();
+  for (const group of groups) {
+    for (let at = 0; at < group.tokens.length; at += LOCATE_BATCH) {
+      const batch = group.tokens.slice(at, at + LOCATE_BATCH); // 상한을 넘기면 뒤가 조용히 잘린다
+      const ws = group.workspaceId;
+      const fingerprints = Object.fromEntries(
+        batch.filter((token) => group.fingerprints[token]).map((token) => [token, group.fingerprints[token]]),
+      );
+      const timeout = AbortSignal.timeout(LOCATE_TIMEOUT_MS);
+      const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
+      const reply = await api.locateAssets(batch, ws, opts.scanId, fingerprints, signal, opts.includeRender);
+      if (getAccountNamespace() !== ns) throw new Error("account changed while locating");
+      noteReply(ws, batch, group.fingerprints, reply, opts.counts);
+      const found = new Map(reply.fixed.map((item) => [relinkKey(ws, item.token), item] as const));
+      const applied = applyFound(found, opts.hooks);
+      opts.done.total += applied.total;
+      if (applied.saved) rememberFixed(ws, reply.fixed, group.fingerprints);
+    }
+  }
+}
+
 /**
- * 옛 참조를 찾아 고친다. 앱 시작 때는 물론, **씬 파일을 나중에 열었을 때도** 다시 부른다
- * (남이 준 씬을 여는 것이 바로 이 기능이 필요한 자리다 — Codex 2026-09-28).
- * 반환 = 바꾼 참조 수(알림용). 중간에 실패해도 이미 반영한 바퀴까지 센다 — 반영은 바퀴마다 끝난다.
+ * 자동 복구 — 앱 시작·씬 불러오기·DB 백업 가져오기·끌어다 놓기 뒤에 부른다(useSceneCoordination).
+ * 묻는 것은 **판정이 저장되지 않은 참조**와 강제 목록(방금 들어온 씬·방금 놓은 파일)뿐이다 — 앱을 켤 때마다 모든 씬의
+ * 그림으로 NAS 를 훑지 않는다(Jay 2026-09-29 "2 새 안"). render 폴더는 훑지 않는다(단추가 훑는다).
+ * 반환 = 바꾼 참조 수(알림용). 중간에 실패해도 이미 반영한 만큼 센다.
  */
 export async function relinkSceneAssetRefs(hooks: RelinkHooks = {}): Promise<number> {
   if (inFlight) {
     rerun = true; // 겹쳐 부르면 합친다 — 폴더 스캔은 겹치지 않고, 끝난 뒤 한 번 더 확인한다
     return inFlight;
   }
-  const pending = () => {
-    const now = Date.now();
-    const fresh = (workspaceId: string) => (token: string) => {
-      const at = asked.get(relinkKey(workspaceId, token));
-      return at === undefined || now - at > ASK_AGAIN_AFTER;
-    };
-    return sceneAssetGroups(listScenes(null))
-      .map((g) => ({ ...g, tokens: g.tokens.filter(fresh(g.workspaceId)) }))
-      .filter((g) => g.tokens.length > 0);
-  };
-  let total = 0; // 바꾼 참조 수 — 바퀴마다 반영이 끝나므로 중간에 실패해도 그때까지 센다
-  const run = async (): Promise<void> => {
-    // 이번 복구 한 번의 id — 200개씩 여러 번 묻는 동안 서버가 같은 NAS 폴더를 매번 다시 훑지
-    // 않게 한다. 다음 복구는 새 id 라 서버가 새로 훑는다(방금 추가된 파일을 놓치지 않게).
-    const scanId = newScanId();
-    // 씬을 새로 열면 토큰이 늘어난다 — 도는 동안 생긴 것까지 한 번 더 받아 준다(최대 5바퀴).
-    for (let round = 0; round < 5; round += 1) {
-      const groups = pending();
-      if (!groups.length) break;
-      const found = new Map<string, RelinkTarget>();
-      for (const group of groups) {
-        for (let at = 0; at < group.tokens.length; at += LOCATE_BATCH) {
-          const batch = group.tokens.slice(at, at + LOCATE_BATCH); // 상한을 넘기면 뒤가 조용히 잘린다
-          const ws = group.workspaceId;
-          const fingerprints = Object.fromEntries(
-            batch.filter((token) => group.fingerprints[token]).map((token) => [token, group.fingerprints[token]]),
-          );
-          const reply = await api.locateAssets(batch, ws, scanId, fingerprints, AbortSignal.timeout(LOCATE_TIMEOUT_MS));
-          // 실제로 보낸 것만 '물어봤다' — 공간별로 따로 센다(같은 참조라도 공간마다 답이 다르다).
-          batch.forEach((token) => asked.set(relinkKey(ws, token), Date.now()));
-          noteServerStatus(ws, batch, reply.missing, reply.local);
-          reply.fixed.forEach((item) => {
-            found.set(relinkKey(ws, item.token), item);
-            // 서버가 방금 찾아준 자리다 — 새 토큰까지 '물어봤다'로 쳐서 같은 요청을 한 번 더
-            // 보내지 않는다(요청마다 프로젝트 폴더를 새로 훑으므로 값싼 일이 아니다).
-            asked.set(relinkKey(ws, `asset:${item.project}|${item.path}`), Date.now());
-          });
-        }
-      }
-      if (!found.size) continue;
-      // ★답을 받은 **이 동기 구간**에서 화면과 저장소를 함께 맞춘다(2026-09-29). 예전에는 저장소만 고치고 모든
-      //  바퀴가 끝난 뒤 목록을 통째로 다시 읽어, 그 사이 친 글이 지워지거나 끌어 옮긴 카드가 옛 참조를 도로 저장했다.
-      //  ① 열린 캔버스는 자기 메모리 카드에 참조만 바꿔 끼운다 — 저장본으로 갈아끼우지 않는다.
-      const onBoard = hooks.applyToBoard?.(found) ?? null;
-      total += onBoard ?? 0;
-      //  ② 나머지 씬 — 저장 직전에 다시 읽는다(그 사이 다른 탭 변경을 덮지 않게). 활성 씬은 ①에서 이미 바뀌었다.
-      const latest = listScenes(null);
-      const { scenes: next, changed } = applyRelink(latest, found);
-      if (changed && saveScenes(null, next)) {
-        hooks.onSaved?.(next, onBoard !== null);
-        total += changed;
-      }
-    }
-  };
-  inFlight = (async () => {
+  const pending = (): RefGroup[] =>
+    sceneAssetGroups(listScenes(null))
+      .map((group) => ({
+        ...group,
+        tokens: group.tokens.filter((token) => {
+          const at = relinkKey(group.workspaceId, token);
+          if (forced.has(at)) return true;
+          return !asked.has(at) && !verdictOf(verdictKey(group.workspaceId, token, group.fingerprints[token]));
+        }),
+      }))
+      .filter((group) => group.tokens.length > 0);
+  const done = { total: 0 };
+  const counts = emptyCounts();
+  inFlight = exclusive(async () => {
     try {
       do {
         rerun = false;
-        await run();
+        // 이번 복구 한 번의 id — 200개씩 여러 번 묻는 동안 서버가 같은 NAS 폴더를 매번 다시 훑지 않게 한다.
+        const scanId = newScanId();
+        // 씬을 새로 열면 토큰이 늘어난다 — 도는 동안 생긴 것까지 한 번 더 받아 준다(최대 5바퀴).
+        for (let round = 0; round < 5; round += 1) {
+          const groups = pending();
+          if (!groups.length) break;
+          await askGroups(groups, { scanId, hooks, counts, done });
+        }
       } while (rerun); // 확인과 비우기(finally) 사이에 틈이 없다 — 겹친 호출을 흘리지 않는다
     } catch {
-      // 서버가 옛 버전이거나 폴더를 못 읽어도(시간 초과 포함) 화면은 지금까지처럼 동작한다 — 이미 반영한 바퀴는 남는다
+      // 서버가 옛 버전이거나 폴더를 못 읽어도(시간 초과 포함) 화면은 지금까지처럼 동작한다 — 이미 받은 답은 남는다
     } finally {
+      pruneVerdicts();
       inFlight = null;
     }
-    return total;
-  })();
+    return done.total;
+  });
   return inFlight;
+}
+
+/** '레퍼런스 찾기' 결과 — 토큰 수 기준. asked = 물으려던 참조 수, aborted = 사용자가 기다리기를 멈췄다. */
+export interface FindSummary extends FindCounts {
+  asked: number;
+  aborted: boolean;
+}
+
+/**
+ * '레퍼런스 찾기' 단추(Jay 2026-09-29) — 이 씬의 참조를 저장된 판정과 무관하게 다시 묻는다. PM 프로젝트의 render 폴더까지
+ * 훑고, 새 작업 id 로 폴더를 새로 훑는다(나중에 NAS 에 올린 파일도 찾는다). 자동 복구와는 한 줄로 서서 답이 서로를
+ * 덮지 않는다. signal = '대기 중단' — 기다리기만 멈춘다(서버는 하던 확인을 끝까지 한다). 멈춘 배치의 답은 기억하지 않는다.
+ * 서버 실패는 던진다(부르는 쪽이 알린다).
+ */
+export function findSceneAssetRefs(sceneId: string, hooks: RelinkHooks, signal?: AbortSignal): Promise<FindSummary> {
+  return exclusive(async () => {
+    const counts = emptyCounts();
+    const scene = listScenes(null).find((s) => s.id === sceneId);
+    // 묶음 지문은 자동 복구와 같게 — 모든 씬으로 묶고 이 씬의 토큰만 남긴다(판정 열쇠가 어긋나지 않게)
+    const mine = new Set(
+      (scene ? sceneAssetGroups([scene]) : []).flatMap((g) => g.tokens.map((t) => relinkKey(g.workspaceId, t))),
+    );
+    const groups = sceneAssetGroups(listScenes(null))
+      .map((group) => ({ ...group, tokens: group.tokens.filter((t) => mine.has(relinkKey(group.workspaceId, t))) }))
+      .filter((group) => group.tokens.length > 0);
+    const summary = (aborted: boolean): FindSummary => ({ ...counts, asked: mine.size, aborted });
+    try {
+      if (signal?.aborted) return summary(true);
+      await askGroups(groups, {
+        scanId: newScanId(),
+        hooks,
+        counts,
+        done: { total: 0 },
+        includeRender: true,
+        signal,
+      });
+    } catch (error) {
+      if (signal?.aborted) return summary(true);
+      throw error;
+    } finally {
+      pruneVerdicts();
+    }
+    return summary(false);
+  });
+}
+
+/** '레퍼런스 찾기' 끝 알림 한 줄. 판정 보류 = 끝까지 봤지만 못 이음 + 끝까지 못 훑음. */
+export function findSummaryText(s: FindSummary): string {
+  if (s.aborted) return "레퍼런스 찾기 — 기다리기를 멈췄습니다(서버는 하던 확인을 끝까지 합니다).";
+  if (!s.asked) return "이 씬에는 찾을 레퍼런스가 없습니다.";
+  const held = s.unresolved + s.incomplete;
+  if (!s.fixed && !s.local && !s.missing && !held) return `레퍼런스 ${s.asked}개가 모두 원본과 이어져 있습니다.`;
+  return `레퍼런스 찾기 끝 — 원본 연결 ${s.fixed} · 이 PC에만 ${s.local} · 서버에 없음 ${s.missing} · 판정 보류 ${held}`;
+}
+
+/** 시험 전용 — 새 세션처럼(물어본 기록·강제 목록·판정 캐시·줄 세우기를 비운다). localStorage 는 그대로 둔다. */
+export function resetRelinkSessionForTest(): void {
+  asked.clear();
+  forced.clear();
+  verdictCache = null;
+  verdictCacheNs = null;
+  inFlight = null;
+  rerun = false;
+  queue = Promise.resolve();
 }

@@ -210,8 +210,8 @@ export function ListCard({
                 const src = refs[0] ? refThumbSrc(refs[0]) : null;
                 // 서버에 없는 레퍼런스(Jay 2026-09-29) — 대표(첫 장)가 서버에 없으면 붉은 빗금 + 아이콘,
                 //  그 밖에 서버에 없는 장이 있으면(이 PC 에만 등) 오른쪽 위 마크. 판정은 ReferenceCard 와 같은 가게.
-                const first = refs[0] ? refServerStatus(workspaceId, refs[0].file_path) : undefined;
-                const flagged = refs.some((r) => refServerStatus(workspaceId, r.file_path));
+                const first = refs[0] ? refServerStatus(workspaceId, refs[0]) : undefined;
+                const flagged = refs.some((r) => refServerStatus(workspaceId, r));
                 return (
                   <div
                     key={cid}

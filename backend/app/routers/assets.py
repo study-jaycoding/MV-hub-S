@@ -1271,6 +1271,9 @@ class LocateIn(BaseModel):
     # (남이 준 씬) 내용으로 찾게 한다. 한 토큰을 쓰는 참조가 **모두 같은 지문**일 때만 온다(클라이언트가 거른다).
     # 한 번에 받는 토큰 수만큼만 받는다 — 무관한 지문 수만 개로 메모리·CPU 를 쓰게 두지 않는다(Codex).
     fingerprints: dict[str, LocateFingerprint] = Field(default_factory=dict, max_length=_LOCATE_MAX_TOKENS)
+    # '레퍼런스 찾기' 단추(사용자가 누를 때만, Jay 2026-09-29) — PM 프로젝트의 render 폴더까지 훑고, render 안을
+    # 가리키는 참조에도 '서버에 없음'을 말한다. 자동 복구는 render 를 훑지 않는다(렌더 프레임이 폴더를 채워 느리다).
+    include_render: bool = False
 
 
 def _valid_fingerprint(fp: Optional[LocateFingerprint]) -> Optional[tuple[str, int]]:
@@ -1310,13 +1313,28 @@ def locate_legacy_assets(body: LocateIn, request: Request):
       · `missing` — 이 PC 에서도 안 열리고, 등록한 폴더를 **전부 끝까지** 훑어도 후보가 하나도 없다.
         이 PC 사본이 참조의 지문과 **다른 그림**이어도 missing 이다(안 그러면 그 다른 그림이 그대로 보인다).
       · `local` — 설치 폴더 안 옛 사본(imports·captures)에만 있다. 같은 내용이 서버에 한 곳도 없다
-    NAS 가 끊겨 폴더를 못 읽으면 어느 쪽도 말하지 않는다 — '없는 것'과 '못 읽는 것'을 섞지 않는다."""
+    NAS 가 끊겨 폴더를 못 읽으면 어느 쪽도 말하지 않는다 — '없는 것'과 '못 읽는 것'을 섞지 않는다.
+
+    나머지 미해결도 둘을 따로 알려 준다(2026-09-29 — 앱이 판정을 기억해 다음 실행에 다시 훑지 않게, Jay "2 새 안").
+      · `open` — 이 PC 에서 이미 열린다(손대지 않은 참조).
+      · `incomplete` — 판정을 못 끝냈다: 볼 폴더를 다 해석하지 못했거나(NAS 끊김·죽은 옛 등록) 끝까지 못 훑었다.
+        앱은 이것만 기억하지 않고 다음 실행에 다시 묻는다. 후보가 여럿이거나 근거가 없어 못 이은 것은 여기 없다.
+    missing·local·open·incomplete 는 모두 `unresolved` 의 부분집합이고, 한 토큰은 많아야 하나에 들어간다.
+    옛 앱은 open·incomplete 를 모르고 지나간다."""
     started = time.perf_counter()
     fixed: list[dict[str, Any]] = []
     unresolved: list[str] = []
     missing: list[str] = []
     local_only: list[str] = []
-    status_of: dict[str, list[str]] = {}  # 토큰 → 실린 목록(missing/local) — 중복 토큰에 같은 답을 싣는다
+    opened: list[str] = []
+    incomplete: list[str] = []
+    # 토큰 → 실린 목록(missing/local/open/incomplete 중 하나) — 중복 토큰에 같은 답을 싣는다
+    status_of: dict[str, list[str]] = {}
+
+    def note(token: str, bucket: list[str]) -> None:
+        bucket.append(token)
+        status_of[token] = bucket
+
     owner = actor_id(request)
     # 내가 등록한 폴더도 PM 프로젝트도 **모두** 뒤진다 — 둘 다 같은 서버(NAS)를 가리키므로
     # 어느 쪽에서 찾든 같은 파일이다(Jay 2026-09-28). 이름이 겹쳐도 빼지 않는다. 대신 아래에서
@@ -1350,6 +1368,8 @@ def locate_legacy_assets(body: LocateIn, request: Request):
     render_hidden: dict[str, bool] = {}
 
     def hides_render(name: str) -> bool:
+        if body.include_render:  # '레퍼런스 찾기' 단추 — render 까지 훑는다
+            return False
         if name not in render_hidden:
             render_hidden[name] = name in auto_names and (
                 name not in manual_names or _mount_dir(name, owner) is None
@@ -1391,6 +1411,11 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         if key not in snapshots:
             snapshots[key] = _locate_snapshot(owner, scan_id, proj_dir, hide)
         return snapshots[key]
+
+    def cut_short() -> bool:
+        """판정을 못 끝냈는가 — 볼 폴더를 다 해석하지 못했거나, 이번 요청에서 훑은 폴더 중 끝까지 못 훑은 것이 있다.
+        못 이은 참조는 모두 마지막 바퀴(등록 폴더 전체)를 거쳐 오므로 그때쯤 스냅샷이 다 모여 있다 — 새로 훑지 않는다."""
+        return not can_judge or any(not snap[2] for snap in snapshots.values())
 
     dirs_by_name = dict(project_dirs)
     # 캔버스 탭에 워크스페이스가 지정돼 있으면 **그 공간의 프로젝트만** 먼저 본다(1바퀴).
@@ -1511,7 +1536,10 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         old_project, rest = asset_paths.real_meta_key(old_project, rest)
         internal = old_project in _INTERNAL_FOLDERS
         # render 폴더 안을 가리키는 참조에는 '서버에 없음'을 말하지 않는다 — PM 프로젝트는 render 를 훑지 않는다.
-        judgeable = can_judge and "render" not in {part.lower() for part in rest.split("/")}
+        # '레퍼런스 찾기' 단추는 render 까지 훑으므로 말한다.
+        judgeable = can_judge and (
+            body.include_render or "render" not in {part.lower() for part in rest.split("/")}
+        )
 
         # 이미 이 PC 에서 열리는 참조는 손대지 않는다 — 멀쩡한 것을 옮기면 더 나빠진다.
         if not internal:
@@ -1519,6 +1547,7 @@ def locate_legacy_assets(body: LocateIn, request: Request):
             here = _safe_resolve(current, rest) if current else None
             if here and here.is_file():
                 unresolved.append(token)
+                note(token, opened)
                 continue
 
         # ① 내용 지문 — 참조가 든 지문(씬에 함께 온 것)이 먼저, 없으면 이 PC 사본의 지문. 둘이 다르면 이 PC
@@ -1568,18 +1597,17 @@ def locate_legacy_assets(body: LocateIn, request: Request):
                 if judgeable and content_absent:
                     if digest == local_digest:
                         # 서버 어디에도 같은 내용이 없다 = 이 PC 안 사본에만 있다(여럿이면 서버에 있는 것이다)
-                        local_only.append(token)
-                        status_of[token] = local_only
+                        note(token, local_only)
                     elif internal and (local_digest or not local_exists):
                         # 받은 사람(사본 없음)이거나, 이 PC 사본이 다른 그림 — 그대로 두면 그 다른 그림이 보인다.
                         # 사본 파일이 있는데 지문을 못 냈으면(0바이트·읽기 실패) 같은 그림인지 몰라 말하지 않는다.
-                        missing.append(token)
-                        status_of[token] = missing
+                        note(token, missing)
                     elif not internal and path_candidates(rest, link=False)[1]:
                         # 프로젝트 참조 — 같은 내용이 없어도 그 경로·이름의 파일이 있으면(고쳐 저장됐을 수 있다)
                         # '없다'고 하지 않는다.
-                        missing.append(token)
-                        status_of[token] = missing
+                        note(token, missing)
+                if token not in status_of and cut_short():
+                    note(token, incomplete)
                 continue
             entry |= {"sha256": digest, "bytes": size}
         elif internal:
@@ -1587,8 +1615,10 @@ def locate_legacy_assets(body: LocateIn, request: Request):
             # 등록 폴더 어디에도 같은 이름조차 없을 때만 '서버에 없음'이다.
             unresolved.append(token)
             if judgeable and not local_exists and path_candidates(rest, link=False)[1]:
-                missing.append(token)
-                status_of[token] = missing
+                note(token, missing)
+            elif not local_exists and cut_short():
+                # 사본 파일은 있는데 지문을 못 낸 것(0바이트·읽기 실패)은 다시 훑어도 같다 — incomplete 아님
+                note(token, incomplete)
             continue
         else:
             # ② 경로(끝 두 조각 이상) → 확장자만 다름. 지문 없는 프로젝트 참조(남이 준 씬·다른 등록 깊이)의 길.
@@ -1597,8 +1627,9 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         if entry is None:
             unresolved.append(token)
             if judgeable and nothing_found:
-                missing.append(token)
-                status_of[token] = missing
+                note(token, missing)
+            elif cut_short():
+                note(token, incomplete)
             continue
         seen[token] = entry
         fixed.append({**entry, "token": token})
@@ -1614,10 +1645,20 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         scanned_folders=len(snapshots),
         missing=len(missing),
         local=len(local_only),
+        open=len(opened),
+        incomplete=len(incomplete),
+        render=body.include_render,
         judge=can_judge,
         elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
     )
-    return {"fixed": fixed, "unresolved": unresolved, "missing": missing, "local": local_only}
+    return {
+        "fixed": fixed,
+        "unresolved": unresolved,
+        "missing": missing,
+        "local": local_only,
+        "open": opened,
+        "incomplete": incomplete,
+    }
 
 
 @router.post("/reference-import", dependencies=[Depends(_require_local_assets)])
