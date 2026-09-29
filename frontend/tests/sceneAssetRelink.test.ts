@@ -18,12 +18,13 @@ import { saveScenes, type Scene } from "../src/lib/scenes";
 const locate = vi.fn();
 vi.mock("../src/api", () => ({
   api: {
-    locateAssets: (tokens: string[], ws?: string, scanId?: string) => locate(tokens, ws, scanId),
+    locateAssets: (tokens: string[], ws?: string, scanId?: string, fingerprints?: unknown) =>
+      locate(tokens, ws, scanId, fingerprints),
   },
 }));
 
 const scene = (
-  refs: { file_path: string; thumb?: string | null }[],
+  refs: { file_path: string; thumb?: string | null; content_sha?: string; bytes?: number }[],
   workspace?: { id: string; name: string | null },
 ): Scene =>
   ({
@@ -63,10 +64,35 @@ describe("물어볼 참조 모으기", () => {
     const b = scene([{ file_path: "asset:P|b.png" }], { id: "ws-2", name: "나" });
     const none = scene([{ file_path: "asset:P|c.png" }]); // 공간 지정 없음
     expect(sceneAssetGroups([a, b, none])).toEqual([
-      { workspaceId: "ws-1", tokens: ["asset:P|a.png"] },
-      { workspaceId: "ws-2", tokens: ["asset:P|b.png"] },
-      { workspaceId: "", tokens: ["asset:P|c.png"] },
+      { workspaceId: "ws-1", tokens: ["asset:P|a.png"], fingerprints: {} },
+      { workspaceId: "ws-2", tokens: ["asset:P|b.png"], fingerprints: {} },
+      { workspaceId: "", tokens: ["asset:P|c.png"], fingerprints: {} },
     ]);
+  });
+
+  it("참조가 든 지문을 함께 싣되, 한 토큰의 참조가 모두 같은 지문일 때만 싣는다(2026-09-29, Codex)", () => {
+    const fp = { content_sha: "a".repeat(64), bytes: 10 };
+    const scenes = [
+      scene([
+        { file_path: "asset:imports|same.png", ...fp },
+        { file_path: "asset:imports|mixed.png", ...fp },
+        { file_path: "asset:imports|differs.png", ...fp },
+        { file_path: "asset:imports|none.png" },
+      ]),
+      scene([
+        { file_path: "asset:imports|same.png", ...fp },
+        { file_path: "asset:imports|mixed.png" }, // 지문 없는 옛 참조가 같은 토큰을 쓴다
+        { file_path: "asset:imports|differs.png", content_sha: "b".repeat(64), bytes: 10 },
+      ]),
+    ];
+    const [group] = sceneAssetGroups(scenes);
+    expect(group.tokens).toEqual([
+      "asset:imports|same.png",
+      "asset:imports|mixed.png",
+      "asset:imports|differs.png",
+      "asset:imports|none.png",
+    ]);
+    expect(group.fingerprints).toEqual({ "asset:imports|same.png": { sha256: "a".repeat(64), bytes: 10 } });
   });
 
   it("씬 파일로 받은 공간 힌트로도 묶는다 — 탭에 고른 공간이 있으면 그것이 앞선다(2026-09-29)", () => {
@@ -78,8 +104,8 @@ describe("물어볼 참조 모으기", () => {
     expect(sceneRefWorkspaceId(hinted)).toBe("ws-h");
     expect(sceneRefWorkspaceId(both)).toBe("ws-tab");
     expect(sceneAssetGroups([hinted, both])).toEqual([
-      { workspaceId: "ws-h", tokens: ["asset:P|a.png"] },
-      { workspaceId: "ws-tab", tokens: ["asset:P|b.png"] },
+      { workspaceId: "ws-h", tokens: ["asset:P|a.png"], fingerprints: {} },
+      { workspaceId: "ws-tab", tokens: ["asset:P|b.png"], fingerprints: {} },
     ]);
     // 답도 같은 열쇠로 받는다 — 물을 때와 반영할 때의 공간이 어긋나지 않게
     const found = new Map([[relinkKey("ws-h", "asset:P|a.png"), { project: "Q", path: "CH/a.png" }]]);
@@ -133,6 +159,28 @@ describe("찾은 것 갈아끼우기", () => {
     expect(next[1].cards[0].refs![0].file_path).toBe("asset:B|CH/hero.png");
   });
 
+  it("참조가 든 지문과 다른 답은 적용하지 않는다 — 같은 토큰의 다른 그림·지문 없는 경로 답(2026-09-29, Codex)", () => {
+    const mine = "a".repeat(64);
+    const scenes = [
+      scene([
+        { file_path: "asset:imports|x.png", content_sha: mine, bytes: 10 }, // 이 그림의 지문
+        { file_path: "asset:imports|x.png" }, // 같은 토큰, 지문 없는 옛 참조
+      ]),
+    ];
+    const answer = (hit: { sha256?: string; bytes?: number }) =>
+      applyRelink(scenes, new Map([[relinkKey("", "asset:imports|x.png"), { project: "P", path: "CH/x.png", ...hit }]]))
+        .scenes[0].cards[0].refs!.map((ref) => ref.file_path);
+
+    // 같은 지문의 답 — 둘 다 잇는다
+    expect(answer({ sha256: mine, bytes: 10 })).toEqual(["asset:P|CH/x.png", "asset:P|CH/x.png"]);
+    // 다른 그림의 답 — 지문을 가진 참조는 그대로
+    expect(answer({ sha256: "b".repeat(64), bytes: 10 })).toEqual(["asset:imports|x.png", "asset:P|CH/x.png"]);
+    // 지문 없이 경로로 찾은 답 — 지문을 가진 참조는 그대로(내용으로만 잇는다)
+    expect(answer({})).toEqual(["asset:imports|x.png", "asset:P|CH/x.png"]);
+    // 지문은 같은데 크기가 다르면 — 그대로
+    expect(answer({ sha256: mine, bytes: 11 })).toEqual(["asset:imports|x.png", "asset:P|CH/x.png"]);
+  });
+
   it("찾은 게 없으면 씬 객체를 그대로 돌려준다(저장도 일어나지 않게)", () => {
     const scenes = [scene([{ file_path: "asset:imports|a.png" }])];
     const { scenes: next, changed } = applyRelink(scenes, new Map());
@@ -177,6 +225,19 @@ describe("서버에 묻고 갈아끼우기", () => {
     // 저장된 씬은 이미 프로젝트 주소라 다시 물을 토큰이 없다
     expect(await relinkSceneAssetRefs()).toBe(0);
     expect(locate).toHaveBeenCalledTimes(1);
+  });
+
+  it("참조가 든 지문을 그 배치의 토큰만큼 함께 보낸다(2026-09-29)", async () => {
+    const fp = { content_sha: "c".repeat(64), bytes: 7 };
+    saveScenes(null, [
+      scene([{ file_path: "asset:imports|with.png", ...fp }, { file_path: "asset:imports|without.png" }]),
+    ]);
+    locate.mockResolvedValue({ fixed: [], unresolved: [], missing: [], local: [] });
+
+    await relinkSceneAssetRefs();
+
+    expect(locate.mock.calls[0][0]).toEqual(["asset:imports|with.png", "asset:imports|without.png"]);
+    expect(locate.mock.calls[0][3]).toEqual({ "asset:imports|with.png": { sha256: "c".repeat(64), bytes: 7 } });
   });
 
   it("서버가 실패하면 삼키고, 다음 기회에 다시 묻는다", async () => {

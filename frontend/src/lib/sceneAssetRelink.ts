@@ -4,8 +4,9 @@
 //  · 예전에 끌어다 놓은 그림이 설치 폴더 안(imports·captures)으로 복사됐다 — 그 PC 에만 있는 사본
 //  · 프로젝트 이름은 붙었지만 이 PC 가 그 프로젝트를 못 본다 — 같은 폴더를 사람마다 다른 이름·다른
 //    깊이로 등록해 생긴다(`뻘뻘뻘`=…/10_ai, `뻘뻘뻘_RnD`=…/10_ai/assets)
-// 그래서 **모든 에셋 참조**를 서버에 보내고, 서버가 지문·경로·이름 순으로 찾아 정확히 한 곳에서만
-// 찾혔을 때 답을 준다(assets.locate). 여기서는 받은 것만 반영한다 — 묻지 않는다.
+// 그래서 **모든 에셋 참조**를 서버에 보내고, 서버가 정확히 한 곳에서만 찾혔을 때 답을 준다(assets.locate).
+// 지문이 있으면 내용으로만, 지문 없는 사본은 잇지 않고, 지문 없는 프로젝트 참조는 경로 끝 두 조각 이상으로
+// 찾는다 — 이름만 같은 것으로는 잇지 않는다(2026-09-29). 여기서는 받은 것만 반영한다 — 묻지 않는다.
 import { api } from "../api";
 import { listScenes, saveScenes, type Scene } from "./scenes";
 
@@ -19,21 +20,45 @@ export function sceneRefWorkspaceId(scene: Pick<Scene, "workspace" | "refWorkspa
   return scene.workspace?.id || scene.refWorkspaceHint?.id || "";
 }
 
-/** 물어볼 참조를 **캔버스 탭의 공간별로** 묶는다 — 서버가 그 공간의 프로젝트부터 찾게(Jay 2026-09-28). */
-export function sceneAssetGroups(scenes: Scene[]): { workspaceId: string; tokens: string[] }[] {
-  const byWorkspace = new Map<string, Set<string>>();
+export interface RefFingerprint {
+  sha256: string;
+  bytes: number;
+}
+
+/** 물어볼 참조를 **캔버스 탭의 공간별로** 묶는다 — 서버가 그 공간의 프로젝트부터 찾게(Jay 2026-09-28).
+ *  참조가 든 지문(content_sha·bytes)도 함께 싣는다(2026-09-29) — 사본이 이 PC 에 없어도 내용으로 찾게.
+ *  한 토큰을 쓰는 참조가 **모두 같은 지문**일 때만 싣는다. 하나라도 없거나 다르면 싣지 않는다 — 한 지문으로
+ *  찾은 답이 지문 없는·다른 지문의 참조까지 덮지 않게(Codex). */
+export function sceneAssetGroups(
+  scenes: Scene[],
+): { workspaceId: string; tokens: string[]; fingerprints: Record<string, RefFingerprint> }[] {
+  const byWorkspace = new Map<string, Map<string, RefFingerprint | null>>();
   for (const scene of scenes) {
     const ws = sceneRefWorkspaceId(scene);
     for (const card of scene.cards) {
       for (const ref of card.refs || []) {
         if (!ref.file_path || !ASSET_TOKEN.test(ref.file_path)) continue;
         let bucket = byWorkspace.get(ws);
-        if (!bucket) byWorkspace.set(ws, (bucket = new Set()));
-        bucket.add(ref.file_path);
+        if (!bucket) byWorkspace.set(ws, (bucket = new Map()));
+        const mine = ref.content_sha && ref.bytes ? { sha256: ref.content_sha, bytes: ref.bytes } : null;
+        if (!bucket.has(ref.file_path)) {
+          bucket.set(ref.file_path, mine);
+          continue;
+        }
+        const seen = bucket.get(ref.file_path);
+        if (seen && (!mine || seen.sha256 !== mine.sha256 || seen.bytes !== mine.bytes)) {
+          bucket.set(ref.file_path, null); // 모두 같지 않다 — 이 토큰은 지문 없이 묻는다
+        }
       }
     }
   }
-  return [...byWorkspace].map(([workspaceId, tokens]) => ({ workspaceId, tokens: [...tokens] }));
+  return [...byWorkspace].map(([workspaceId, bucket]) => ({
+    workspaceId,
+    tokens: [...bucket.keys()],
+    fingerprints: Object.fromEntries(
+      [...bucket].filter((entry): entry is [string, RefFingerprint] => entry[1] !== null),
+    ),
+  }));
 }
 
 export function sceneAssetTokens(scenes: Scene[]): string[] {
@@ -69,6 +94,11 @@ export function applyRelink(
       const refs = card.refs.map((ref) => {
         const hit = ref.file_path ? found.get(relinkKey(ws, ref.file_path)) : undefined;
         if (!hit) return ref;
+        // 이 참조가 든 지문과 다른 답은 적용하지 않는다 — 같은 토큰을 쓰는 다른 그림이거나(PC 마다 imports 이름이
+        //  겹친다), 지문 없이 경로로 찾은 답이다. 지문을 가진 참조는 내용으로만 잇는다(2026-09-29, Codex).
+        if (ref.content_sha && (hit.sha256 !== ref.content_sha || (ref.bytes && hit.bytes && ref.bytes !== hit.bytes))) {
+          return ref;
+        }
         touched = true;
         changed += 1;
         return {
@@ -167,14 +197,14 @@ export async function relinkSceneAssetRefs(flushPending?: () => void): Promise<n
     rerun = true; // 겹쳐 부르면 합친다 — 폴더 스캔은 겹치지 않고, 끝난 뒤 한 번 더 확인한다
     return inFlight;
   }
-  const pending = (): { workspaceId: string; tokens: string[] }[] => {
+  const pending = () => {
     const now = Date.now();
     const fresh = (workspaceId: string) => (token: string) => {
       const at = asked.get(relinkKey(workspaceId, token));
       return at === undefined || now - at > ASK_AGAIN_AFTER;
     };
     return sceneAssetGroups(listScenes(null))
-      .map((g) => ({ workspaceId: g.workspaceId, tokens: g.tokens.filter(fresh(g.workspaceId)) }))
+      .map((g) => ({ ...g, tokens: g.tokens.filter(fresh(g.workspaceId)) }))
       .filter((g) => g.tokens.length > 0);
   };
   const run = async (): Promise<number> => {
@@ -191,7 +221,10 @@ export async function relinkSceneAssetRefs(flushPending?: () => void): Promise<n
         for (let at = 0; at < group.tokens.length; at += LOCATE_BATCH) {
           const batch = group.tokens.slice(at, at + LOCATE_BATCH); // 상한을 넘기면 뒤가 조용히 잘린다
           const ws = group.workspaceId;
-          const reply = await api.locateAssets(batch, ws, scanId);
+          const fingerprints = Object.fromEntries(
+            batch.filter((token) => group.fingerprints[token]).map((token) => [token, group.fingerprints[token]]),
+          );
+          const reply = await api.locateAssets(batch, ws, scanId, fingerprints);
           // 실제로 보낸 것만 '물어봤다' — 공간별로 따로 센다(같은 참조라도 공간마다 답이 다르다).
           batch.forEach((token) => asked.set(relinkKey(ws, token), Date.now()));
           noteServerStatus(ws, batch, reply.missing, reply.local);

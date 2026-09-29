@@ -59,6 +59,8 @@ _ASSET_NO_CHANGE_PATHS = frozenset(
     {
         "/api/assets/reveal",
         "/api/assets/clipboard-copy",
+        # 자동 복구의 '찾기'는 읽기뿐이다 — 끌어다 놓을 때마다 돌아 다른 창이 에셋 목록을 매번 다시 읽었다(2026-09-29).
+        "/api/assets/locate",
     }
 )
 _MANAGE_ALSO_LIBRARY_PATHS = frozenset(

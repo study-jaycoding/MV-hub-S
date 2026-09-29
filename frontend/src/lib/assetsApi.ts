@@ -303,7 +303,13 @@ export const assetsApi = {
   // 정확히 한 프로젝트에서 찾혔을 때만 fixed 에 담겨 온다 — 나머지는 그대로 둔다.
   // workspaceId — 그 캔버스 탭에 지정된 공간. 서버가 그 공간의 프로젝트 폴더부터 찾는다.
   // scanId — 자동 복구 한 번을 가리킨다. 같은 id 의 요청들은 서버의 첫 스캔을 같이 쓴다.
-  locateAssets: (tokens: string[], workspaceId = "", scanId = "") =>
+  // fingerprints — 토큰 → 참조가 든 내용 지문(2026-09-29). 사본이 이 PC 에 없어도 내용으로 찾게 한다.
+  locateAssets: (
+    tokens: string[],
+    workspaceId = "",
+    scanId = "",
+    fingerprints: Record<string, { sha256: string; bytes: number }> = {},
+  ) =>
     jsonFetch<{
       fixed: { token: string; project: string; path: string; sha256?: string; bytes?: number }[];
       unresolved: string[];
@@ -311,7 +317,7 @@ export const assetsApi = {
       local: string[]; // 이 PC 설치 폴더 안 사본에만 있다
     }>("/api/assets/locate", {
       method: "POST",
-      body: JSON.stringify({ tokens, workspace_id: workspaceId, scan_id: scanId }),
+      body: JSON.stringify({ tokens, workspace_id: workspaceId, scan_id: scanId, fingerprints }),
     }),
 
   // 내 로컬 DB(메타데이터) 가져오기 — 통째 교체(다른 PC에서 내보낸 .db).
