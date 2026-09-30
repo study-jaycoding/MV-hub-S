@@ -16,7 +16,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "docs" / "inventory"
-SKIP_DIRS = {"node_modules", ".venv", "__pycache__", "dist", "graft", "data", "data_test", "_pm_test_data_snapshots"}
+# _staging = release/make_release.ps1 이 남기는 직전 배포판 복사본(git 무시). 훑으면 릴리스 폴더에서 옛 코드의
+#  환경변수·백그라운드 작업이 섞여 목록 시험이 떨어졌다(2026-09-30 게이트).
+SKIP_DIRS = {"node_modules", ".venv", "__pycache__", "dist", "graft", "data", "data_test", "_pm_test_data_snapshots",
+             "_staging"}
 METHODS = ("get", "post", "put", "patch", "delete", "head", "options", "websocket", "api_route")
 WINDOWS_BUILTIN = {"APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "COMPUTERNAME", "USERNAME", "USERPROFILE", "TEMP", "TMP",
                    "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "HOMEDRIVE", "HOMEPATH", "PROGRAMFILES"}
