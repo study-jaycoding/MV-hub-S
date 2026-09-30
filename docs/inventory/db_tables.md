@@ -10,7 +10,7 @@
 - **쓰는 모듈** = 리터럴 안의 `INSERT INTO`·`REPLACE INTO`·`UPDATE`·`DELETE FROM <테이블>`, **읽는 모듈** = `FROM`·`JOIN <테이블>`. 테이블 이름 자체를 `{}` 로 끼워 조립한 SQL 과 `FROM a, b` 의 둘째 이름은 못 잡는다 — **빈칸이 '아무도 안 쓴다'는 뜻은 아니다.** 경로는 `backend/app/` 을 뗀 것이다.
 - 컬럼은 싣지 않는다. 정의 파일의 `CREATE TABLE` 과 그 뒤 `ALTER TABLE … ADD COLUMN` 마이그레이션을 본다.
 
-테이블 70개.
+테이블 71개.
 
 | 테이블 | DB | 정의 파일 | 쓰는 모듈 | 읽는 모듈 |
 | --- | --- | --- | --- | --- |
@@ -46,14 +46,14 @@
 | `generation_view` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/generation_views.py` | `repo/generation_views.py` |
 | `history` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/generation_delete.py` `repo/lineage.py` `repo/share.py` | `repo/gen_requests.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/history.py` `repo/lineage.py` `repo/share.py` `repo/trash.py` |
 | `history_import_audit` | content DB | `backend/schema.sql` | `repo/history_import_audit.py` | `repo/history_import_audit.py` |
-| `manage_schema_state` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` | `repo/manage_schema.py` |
+| `manage_schema_state` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/workspace_console.py` | `repo/console_guard.py` `repo/manage_schema.py` `repo/workspace_console.py` |
 | `media_preservation` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/media_preservation.py` `repo/share_state_intents.py` | `repo/generation_rows.py` `repo/media_preservation.py` |
 | `meta` | agent_state.db (작업자 PC) | `agent_push.py` | `agent_push.py` | `agent_push.py` |
-| `project` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/projects.py` | `db_migrations.py` `repo/facets.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/identity.py` `repo/manage.py` `repo/manage_analytics.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_tasks.py` `repo/manage_telemetry.py` `repo/project_membership.py` `repo/projects.py` `repo/trash.py` `repo/workspace_assignments.py` |
+| `project` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/projects.py` | `db_migrations.py` `repo/console_guard.py` `repo/facets.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/identity.py` `repo/manage.py` `repo/manage_analytics.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_tasks.py` `repo/manage_telemetry.py` `repo/project_membership.py` `repo/projects.py` `repo/trash.py` `repo/workspace_assignments.py` `repo/workspace_console.py` |
 | `project_folder_link` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` `routers/assets.py` |
 | `project_member` | content DB | `backend/schema.sql` | `repo/identity.py` `repo/project_membership.py` `repo/projects.py` | `db_migrations.py` `deps.py` `repo/identity.py` `repo/manage_member_table.py` `repo/projects.py` |
 | `project_member_removed` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/project_membership.py` | `repo/identity.py` `repo/project_membership.py` |
-| `project_planning` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_tasks.py` |
+| `project_planning` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_tasks.py` `repo/workspace_console.py` |
 | `project_task` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/manage_tasks.py` | `repo/manage.py` `repo/manage_schema.py` `repo/manage_task_activity.py` `repo/manage_tasks.py` |
 | `reference` | content DB | `backend/schema.sql` | `repo/generation_references.py` `repo/generation_sync.py` `repo/generations.py` | `repo/gen_requests.py` `repo/generation_rows.py` `repo/generations.py` `repo/history.py` `repo/share.py` `repo/trash.py` `routers/assets.py` |
 | `release_update_notice` | content DB | `backend/schema.sql` | `repo/release_update_notices.py` | `repo/release_update_notices.py` |
@@ -78,12 +78,13 @@
 | `worker_backup_outbox` | worker_backup_state.db | `services/worker_backup.py` | `services/worker_backup.py` | `services/worker_backup.py` |
 | `worker_backup_source_state` | worker_backup_state.db | `services/worker_backup.py` | `services/worker_backup.py` | `services/worker_backup.py` |
 | `workspace_balance_daily` | content DB | `backend/schema.sql` | `repo/identity.py` | `repo/manage_credit_plan.py` |
+| `workspace_console` | content DB | `repo/manage_schema.py` | `repo/workspace_console.py` | `repo/console_guard.py` `repo/identity.py` `repo/manage_member_table.py` `repo/workspace_console.py` |
 | `workspace_credit_group` | content DB | `repo/manage_schema.py` | `repo/manage_credit_plan.py` `repo/manage_schema.py` | `repo/manage_credit_plan.py` |
-| `workspace_credit_group_member` | content DB | `repo/manage_schema.py` | `repo/manage_credit_plan.py` | `repo/manage_credit_plan.py` |
-| `workspace_credit_plan` | content DB | `repo/manage_schema.py` | `repo/manage_credit_plan.py` | `repo/manage.py` `repo/manage_credit_plan.py` |
-| `workspace_credit_topup` | content DB | `repo/manage_schema.py` | `repo/manage_credit_plan.py` | `repo/manage_credit_plan.py` |
-| `workspace_member` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/identity.py` | `repo/identity.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/project_membership.py` `repo/workspace_assignments.py` |
-| `workspace_registry` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/identity.py` | `db_migrations.py` `repo/identity.py` `repo/manage_credit_plan.py` `repo/workspace_assignments.py` |
+| `workspace_credit_group_member` | content DB | `repo/manage_schema.py` | `repo/manage_credit_plan.py` | `repo/manage_credit_plan.py` `repo/workspace_console.py` |
+| `workspace_credit_plan` | content DB | `repo/manage_schema.py` | `repo/manage_credit_plan.py` `repo/workspace_console.py` | `repo/manage.py` `repo/manage_credit_plan.py` `repo/workspace_console.py` |
+| `workspace_credit_topup` | content DB | `repo/manage_schema.py` | `repo/manage_credit_plan.py` | `repo/manage_credit_plan.py` `repo/workspace_console.py` |
+| `workspace_member` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/identity.py` | `repo/identity.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/project_membership.py` `repo/workspace_assignments.py` `repo/workspace_console.py` |
+| `workspace_registry` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/identity.py` | `db_migrations.py` `repo/identity.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/workspace_assignments.py` `repo/workspace_console.py` |
 
 ## 재구축용 임시 테이블
 

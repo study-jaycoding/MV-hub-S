@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-09-29
+updated: 2026-09-30
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -55,6 +55,7 @@ updated: 2026-09-29
 | 크레딧 풀·그룹 한도 설정 | `components/manage/CreditPoolSection.tsx`, `CreditPlanFields.tsx` | `routers/manage.py`(`/api/manage/credit-plan*` — 권한·API 계약), `repo/manage_credit_plan.py` | |
 | 사람별 몫(할당량)·정기 충전 손 입력 | `components/manage/MemberTable.tsx`(크레딧 시트 '몫' 칸), `CreditPoolSection.tsx`(내 몫 카드), `lib/memberTable.ts`(`memberQuotaBody`) | `repo/manage_credit_plan.py`(`_quota_split`·`_member_quota`·`save_settings` 의 몫 보존), `routers/manage.py`(3상태 `exclude_unset`) | 설계 `docs/CREDIT_QUOTA_DESIGN.md` · **본문에 `quota` 키가 없으면 유지**(배정을 통째로 다시 쓰므로 안 그러면 사라진다) |
 | 관리 표(멤버·그룹·프로젝트 참여를 표에서 고치기) | `components/manage/MemberTable.tsx`, `lib/memberTable.ts` | `routers/manage.py`(`GET /api/manage/member-table`), `repo/manage_member_table.py` | 표에는 자기만의 쓰기 API 가 없다 — 칸마다 기존 API(`PUT credit-plan`·`PATCH/DELETE projects/{pid}/members`). 그룹 저장은 **받은 그룹을 전부** 되보내야 한다(빠진 그룹은 서버가 지운다). 가입·등급 칸은 서버의 마지막 admin 보호가 들어갈 때까지 보기만. 설계 `docs/MEMBER_TABLE_DESIGN.md` |
+| 워크스페이스 콘솔(서브스페이스 — 대시보드 '워크스페이스' 단추, 메인·서브) | `components/manage/console/WorkspaceConsole.tsx`(목록·메인 조율·만들기), `ConsoleSubView.tsx`(그룹·크레딧·참가자), `lib/workspaceConsole.ts`(`topupAddBody`) | `routers/workspace_console.py`(`/api/manage/console/*`), `repo/workspace_console.py`(시드·연결·메인 최초 지정(바꾸지 않음)·개요), `repo/console_guard.py`(보호 판정) | 설계 `docs/WORKSPACE_CONSOLE_DESIGN.md` · 앱은 힉스필드 워크스페이스를 **못 만든다** — '만들기'=보고된 것을 서브로 연결. 할당·그룹·참가자 쓰기는 기존 `PUT credit-plan` 뿐이고 **note·topups 전체를 되보내야** 한다(빼면 지운다) |
 | 알림 센터(코멘트·업데이트 공지) | `components/NotificationCenter.tsx` | `routers/notifications.py`, `routers/update_notices.py` | |
 | 부분 수정(마스크 편집 캔버스) | `components/edit/PartialEditModal.tsx` | — | 제출은 기존 생성 요청 경로 재사용(위 '생성 제출 흐름' 행 — `agent_push.py` 까지). `PartialEditHost`는 커스텀 이벤트로만 열림(§3.5) |
 | 생성물 비교(Compare) | `components/CompareModal.tsx`, `VideoCompareModal.tsx` | — | |
@@ -146,6 +147,7 @@ updated: 2026-09-29
 | `members.py`(65줄) | `GET /api/members`·`PATCH /members/{uid}/global-roles` (2) | 전역 멤버 목록·전역역할 변경 | 0곳 |
 | `projects.py`(622줄) | `GET /api/projects`·`POST /assign`·`GET /{pid}/folder-counts` 등 (17) | 프로젝트 CRUD·배정·멤버 역할·폴더 카운트 | 19곳 |
 | `manage.py`(2311줄) | `POST /telemetry/push`·`GET /team-overview`·`GET /tasks[-batch]`·`POST /save-finals`·`GET /save-finals/progress`·`POST /save-finals/cancel` (47) | PM 대시보드: 텔레메트리 수신·팀 집계·크레딧 플랜·작업 CRUD·골드 저장 | 11곳. 서로 무관한 5개 도메인이 한 파일(§5) |
+| `workspace_console.py`(102줄) | `GET /console/overview`·`POST /console/workspaces`·`PATCH /console/workspaces/{id}`·`PUT /console/allocation-base`·`PUT /console/main` (5) | 워크스페이스 콘솔(서브스페이스) — `manage.py` 가 include(접두 `/api/manage`) | 없음(서버 권위, 미들웨어가 위임) |
 | `update_notices.py`(174줄) | `GET /api/update-notices`·`POST /admin/register` (7) | 릴리스 공지 등록·고정·공표·읽음 | 0곳(쓰기는 서버 Admin 역할 게이트로 제한 — 프록시 위임과는 다른 종류의 서버 제약) |
 
 **로컬 PC 기능(이 PC 에서만)**
@@ -262,6 +264,8 @@ updated: 2026-09-29
 | `manage_schema.py` | 733 | 사이드카 테이블·멱등 마이그레이션 경계(모든 manage 모듈이 먼저 부름) | `ensure_manage_schema` |
 | `manage_credit_plan.py` | 756 | 크레딧 풀·그룹 한도·긴급충전·기간 계산 + 대시보드 읽기 모델 | `manage_credit_plan.get_settings`·`plan_view` |
 | `manage_member_table.py` | 133 | 관리 표 읽기 — 계정(이메일) 한 줄에 그룹·프로젝트 역할·HF 플랜·사용량 조인. **쓰기 없음**. uid 없는·어긋난 계정은 `project_lock` | `member_table` |
+| `workspace_console.py` | 616 | 워크스페이스 콘솔(서브스페이스) — 메인 1·서브 N 표식(`workspace_console` 표), 첫 사용 시드(MILLIONVOLT), 연결·내리기·메인 최초 지정(한 번 정하면 바꾸지 않음 — 409, 등록부에서 사라지면 `main_orphan`), 메인 조율 개요(서브마다 `plan_view` 숫자만) | `workspace_console.overview`·`link_sub`·`set_main` |
+| `console_guard.py` | 43 | 서브스페이스 보호 판정 잎 모듈 — 전환 표식·상태 짝·`managed_sub`·`guard_project_change`·`ConsoleManaged`. 다른 repo 를 import 하지 않아 크레딧 계획·프로젝트·신원 모듈과의 import 순환을 끊는다(`workspace_console` 이 재노출) | `managed_sub`·`guard_project_change` |
 | `manage_transactions.py` | 483 | 계정 크레딧 거래 적재 + 생성물 근접 매칭 | `manage_transactions.record_transactions` |
 | `manage_telemetry.py` | 395 | 로컬 텔레메트리 outbox 저장·조회·전송 정산 | `manage_telemetry.mark_telemetry_dirty*` |
 | `manage_account_reports.py` | 310 | 계정 상태·거래 보고의 내구성 outbox(재시도·409·dead-letter) | `manage_account_reports.queue_account_reports` |
@@ -595,10 +599,12 @@ updated: 2026-09-29
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `ManageWindow.tsx`(147줄) | `?embed=manage` 분리 창 + 탭 호스트(§3.5) | `ManageWindow` |
-| `manage/DashboardView.tsx`(601줄) | 통합 대시보드(프로젝트 요약 + 에피소드/시퀀스 트리) | `DashboardView` |
+| `manage/DashboardView.tsx`(601줄) | 통합 대시보드(머리 '상세' 단추 → 프로젝트 상세 + 에피소드/시퀀스 트리 · '워크스페이스' → 서브스페이스 ↔ 관리 표) | `DashboardView` |
 | `manage/WorkspaceUsageDashboard.tsx`(1008줄) | 워크스페이스 사용 현황 · 머리글(＋프로젝트 · 관리 표 아이콘 · 보고서 내려받기 메뉴)(크레딧 링·추이 차트·멤버/모델 표) | `WorkspaceUsageDashboard`·`HoverMetric` |
 | `manage/CreditPoolSection.tsx`(399줄) · `CreditPlanFields.tsx`(508줄) | 크레딧 풀 표시 / 그룹·충전 편집 창 | 각 절 |
 | `manage/MemberTable.tsx`(264줄) | **관리 표** — 계정 한 줄에 등급·크레딧 그룹·프로젝트 참여·보고된 사실. 칸을 고치면 기존 API 로 즉시 저장(직렬 큐 → 큐가 비면 재조회). 설계 `docs/MEMBER_TABLE_DESIGN.md` | `MemberTable` |
+| `manage/WorkspacePicker.tsx`(78줄) | 대시보드 머리의 **워크스페이스 선택** — 서브스페이스 머리 모양 단추(이름 ▾) + 단추 밖 메인/서브 칩, 펼치면 서브스페이스 순서(`console_tier`·`console_order`, `/api/manage/workspaces`) | `WorkspacePicker` |
+| `manage/console/WorkspaceConsole.tsx` · `ConsoleSubView.tsx` · `ConsoleMainParts.tsx` · `CreditCalendar.tsx` · `ConsoleFilterBar.tsx` · `ConsoleFolderDialog.tsx` · `ConsolePeriodDialog.tsx` | **서브스페이스 탭** — 왼쪽 목록(상태 묶음·끌기) + 메인(풀 카드·서브 표·달력) / 서브(그룹·참가자·크레딧). 서브 상태·보관·기획·순서·렌더 폴더·기간은 **프로젝트 관리 창과 같은 API**, 크레딧 쓰기는 `useManageEditConflict().saveCredit` | `WorkspaceConsole`·`ConsoleSubView`·`CreditCalendar` |
 | `manage/WorkBoard.tsx`(892줄) | 작업 탭 컨테이너 — 병합·필터·핸들러 주입. 머리글 오른쪽 = 검색 상자 · 보관 기록(아이콘) · 내 작업만 · 보기 전환 | `WorkBoard` |
 | `manage/WorkFilterBar.tsx`(280줄) | 노션식 칩 필터 바(칩 · +필터) + 머리글에 놓이는 검색 상자 `WorkSearchBox` | 〃 |
 | `manage/KanbanBoard.tsx`(179줄 — 폴더 자동 작업은 상태가 컷에서 파생되므로 끌 수 없다, 수동 작업만 끌기) · `TableView.tsx`(351줄) · `CalendarView.tsx`(206줄) · `MonthlyTaskCalendar.tsx`(190줄) | 작업 뷰 4종(프레젠테이션 전용, `WorkViewProps` 주입) — 소요시간 포맷터가 뷰마다 다름(§5-b) | 〃 |
@@ -848,6 +854,7 @@ updated: 2026-09-29
 |---|---|---|
 | `creditPlan.ts` | 순수 | 크레딧 풀·그룹 인당 한도·잔액 추이 타입 + 설정 초안 검증 | 약 415줄 |
 | `memberTable.ts` | 순수 | 관리 표 응답 타입 · 그룹 한 줄 저장 본문(`groupAssignBody` — 받은 그룹 전부 재전송·허용 모델 키 생략) · 역할 낙관 반영 | 약 83줄 |
+| `workspaceConsole.ts` | 순수 | 콘솔 개요 응답 타입 · 크레딧 본문(`topupAddBody`·`recurringPlanBody`·`recurringEditBody` — 날짜 안 만지면 다음 주기 시작) · 서브스페이스·관리 표 공용 `syncConsoleStatus`(콘솔 상태→보관→기획)·`nextRecurringDay`·`consoleLimitView` | 약 256줄 |
 | `projectPlanning.ts` | 순수 | 프로젝트 예산 기간·입력 검증 |
 | `usageReport.ts` | 순수 | 사용량 CSV(주입 방지 포함)·출력 종류 집계 |
 | `usagePeriod.ts` | 순수 | 기간 범위·추이 버킷 채우기·라벨 |
