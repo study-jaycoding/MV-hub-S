@@ -251,7 +251,17 @@ class ControllerTests(unittest.TestCase):
         self.assertLess(time.monotonic() - t0, 15)
         self.assertEqual((end, files, note), (None, [], "시간 초과 — 자식을 끝냄"))
 
+    def test_start_clears_work_files_left_by_a_hard_kill(self) -> None:
+        work = svc.DATA_DIR / "asset_registry"
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "job-dead.json").write_text("{}", encoding="utf-8")
+        (work / "out-dead.jsonl").write_text("", encoding="utf-8")
+        with patch.object(svc, "ASSET_REGISTRY_INTERVAL_MIN", 0):
+            self.ctl.start()
+        self.assertEqual(sorted(p.name for p in work.glob("*-dead*")), [])
+
     def test_stop_kills_the_running_child(self) -> None:
+        self._run()  # 먼저 완주 기록 하나 — 끊긴 훑기가 이것을 덮지 않아야 한다
         sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
         real_popen = subprocess.Popen
         seen: list[subprocess.Popen] = []
@@ -278,8 +288,9 @@ class ControllerTests(unittest.TestCase):
         with get_connection() as conn:
             scan = {r["project_id"]: r for r in registry.scan_rows(conn)}.get(self.pid)
         self.assertIsNotNone(scan)
-        self.assertEqual(scan["state"], "failed")
-        self.assertEqual(self.rows(), {})
+        # 서버가 끄느라 끊은 것은 NAS 상태가 아니다 — 마지막 완주 기록이 그대로 남아 찾기가 대장을 계속 쓴다
+        self.assertEqual((scan["state"], scan["complete"]), ("ok", 1))
+        self.assertEqual(set(self.rows()), {"assets/CH/m.png", "assets/CH/n.png"})
 
 
 if __name__ == "__main__":

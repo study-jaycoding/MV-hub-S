@@ -188,6 +188,10 @@ class AssetRegistryController:
     def start(self) -> None:
         """자동 주기를 켠다(간격 > 0 일 때만). 수동 훑기는 request_scan 이 언제든 받는다."""
         self._stopping = False
+        # 서버가 강제로 꺼지면 작업 파일(경로 목록)이 남는다 — 기동 때 치운다. 아직 멈추는 중인 옛 자식이 쥔 것은 다음 기동에.
+        for leftover in (DATA_DIR / "asset_registry").glob("*-*.json*"):
+            with contextlib.suppress(OSError):
+                leftover.unlink()
         if ASSET_REGISTRY_INTERVAL_MIN > 0 and (self._loop_task is None or self._loop_task.done()):
             self._loop_task = asyncio.create_task(self._loop(ASSET_REGISTRY_INTERVAL_MIN * 60), name="asset-registry-loop")
 
@@ -274,6 +278,12 @@ class AssetRegistryController:
             "hide_render": True,
         }
         end, files, pending, note = await self._run_child(job, deadline_s)
+        if note == "stopping":
+            # 서버가 끄느라 끊은 것이지 NAS 상태가 아니다 — 결과는 버리고 마지막 훑기 기록도 덮지 않는다. 덮으면 그 프로젝트는
+            # 다음 완주 전까지 레퍼런스 찾기에서 대장을 안 쓴다(2026-09-30 실측: 훑는 중 서버 재기동).
+            log_event(_log, "asset_registry_scan", project_id=pid, state="stopped",
+                      elapsed_ms=int((time.monotonic() - t0) * 1000))
+            return {"state": "stopped", "large": []}
         complete = bool(end and end.get("complete"))
         scan = registry.RegistryScan(complete, files if complete else [])
         if complete:
@@ -355,6 +365,8 @@ class AssetRegistryController:
                     await _kill(self._proc)
                     return None, [], [], note
                 await asyncio.sleep(0.5)
+            if self._stopping:  # stop() 이 자식을 먼저 끝냈다 — 비정상 종료가 아니라 서버 종료다
+                return None, [], [], "stopping"
             if self._proc.returncode != 0:
                 return None, [], [], f"자식 비정상 종료({self._proc.returncode})"
             end, files, pending = await asyncio.to_thread(read_result, out_path)
