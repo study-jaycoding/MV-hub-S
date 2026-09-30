@@ -32,12 +32,13 @@ vi.mock("../src/api", () => ({
       fingerprints?: unknown,
       signal?: unknown,
       includeRender?: boolean,
-    ) => locate(tokens, ws, scanId, fingerprints, signal, includeRender),
+      registryIds?: unknown,
+    ) => locate(tokens, ws, scanId, fingerprints, signal, includeRender, registryIds),
   },
 }));
 
 const scene = (
-  refs: { file_path: string; thumb?: string | null; content_sha?: string; bytes?: number }[],
+  refs: { file_path: string; thumb?: string | null; content_sha?: string; bytes?: number; registry_asset_id?: string }[],
   workspace?: { id: string; name: string | null },
 ): Scene =>
   ({
@@ -86,9 +87,9 @@ describe("물어볼 참조 모으기", () => {
     const b = scene([{ file_path: "asset:P|b.png" }], { id: "ws-2", name: "나" });
     const none = scene([{ file_path: "asset:P|c.png" }]); // 공간 지정 없음
     expect(sceneAssetGroups([a, b, none])).toEqual([
-      { workspaceId: "ws-1", tokens: ["asset:P|a.png"], fingerprints: {} },
-      { workspaceId: "ws-2", tokens: ["asset:P|b.png"], fingerprints: {} },
-      { workspaceId: "", tokens: ["asset:P|c.png"], fingerprints: {} },
+      { workspaceId: "ws-1", tokens: ["asset:P|a.png"], fingerprints: {}, registryIds: {} },
+      { workspaceId: "ws-2", tokens: ["asset:P|b.png"], fingerprints: {}, registryIds: {} },
+      { workspaceId: "", tokens: ["asset:P|c.png"], fingerprints: {}, registryIds: {} },
     ]);
   });
 
@@ -126,8 +127,8 @@ describe("물어볼 참조 모으기", () => {
     expect(sceneRefWorkspaceId(hinted)).toBe("ws-h");
     expect(sceneRefWorkspaceId(both)).toBe("ws-tab");
     expect(sceneAssetGroups([hinted, both])).toEqual([
-      { workspaceId: "ws-h", tokens: ["asset:P|a.png"], fingerprints: {} },
-      { workspaceId: "ws-tab", tokens: ["asset:P|b.png"], fingerprints: {} },
+      { workspaceId: "ws-h", tokens: ["asset:P|a.png"], fingerprints: {}, registryIds: {} },
+      { workspaceId: "ws-tab", tokens: ["asset:P|b.png"], fingerprints: {}, registryIds: {} },
     ]);
     // 답도 같은 열쇠로 받는다 — 물을 때와 반영할 때의 공간이 어긋나지 않게
     const found = new Map([[relinkKey("ws-h", "asset:P|a.png"), { project: "Q", path: "CH/a.png" }]]);
@@ -826,5 +827,94 @@ describe("레퍼런스 찾기 단추(Jay 2026-09-29)", () => {
     expect(findSummaryText({ ...base, open: 1, unresolved: 1, incomplete: 1 })).toBe(
       "레퍼런스 찾기 끝 — 원본 연결 0 · 이 PC에만 0 · 서버에 없음 0 · 판정 보류 2",
     );
+  });
+});
+
+describe("에셋 대장 번호(2026-09-30)", () => {
+  const OLD = "a".repeat(64);
+  const NEW = "b".repeat(64);
+
+  beforeEach(() => {
+    localStorage.clear();
+    resetRelinkSessionForTest();
+    locate.mockReset();
+  });
+
+  it("한 토큰의 참조가 모두 같은 번호일 때만 번호를 싣는다(Codex — 다른 번호끼리 한 답을 나눠 갖지 않게)", () => {
+    const [group] = sceneAssetGroups([
+      scene([
+        { file_path: "asset:P|a.png", registry_asset_id: "r1" },
+        { file_path: "asset:P|b.png", registry_asset_id: "r2" },
+        { file_path: "asset:P|c.png", registry_asset_id: "r3" },
+      ]),
+      scene([
+        { file_path: "asset:P|a.png", registry_asset_id: "r1" },
+        { file_path: "asset:P|b.png" }, // 번호 없는 옛 참조가 같은 토큰을 쓴다
+        { file_path: "asset:P|c.png", registry_asset_id: "r9" },
+      ]),
+    ]);
+    expect(group.registryIds).toEqual({ "asset:P|a.png": "r1" });
+  });
+
+  it("번호가 같으면 넣을 때 판과 달라도 새 자리로 따라가고, 넣을 때 판은 지킨다", () => {
+    const cards = scene([{ file_path: "asset:P|CH/x.png", thumb: "t", content_sha: OLD, bytes: 1, registry_asset_id: "r1" }])
+      .cards;
+    const found = new Map([
+      [relinkKey("", "asset:P|CH/x.png"), { project: "P", path: "CH/old/x_v2.png", sha256: NEW, bytes: 2, registry_asset_id: "r1" }],
+    ]);
+    const { cards: next, changed } = relinkCards(cards, "", found);
+    expect(changed).toBe(1);
+    expect(next[0].refs?.[0]).toMatchObject({
+      file_path: "asset:P|CH/old/x_v2.png",
+      thumb: null,
+      content_sha: OLD,
+      bytes: 1,
+      registry_asset_id: "r1",
+    });
+  });
+
+  it("번호가 있는 참조는 다른 번호·번호 없는 답을 받지 않는다", () => {
+    const cards = scene([{ file_path: "asset:P|CH/x.png", registry_asset_id: "r1" }]).cards;
+    for (const hit of [
+      { project: "P", path: "CH/y.png", registry_asset_id: "r2" },
+      { project: "P", path: "CH/y.png" },
+    ]) {
+      const { changed } = relinkCards(cards, "", new Map([[relinkKey("", "asset:P|CH/x.png"), hit]]));
+      expect(changed).toBe(0);
+    }
+  });
+
+  it("열리는 참조에는 번호만 붙이고 썸네일·주소는 그대로 둔다 — 이미 번호가 있으면 덮지 않는다", () => {
+    const cards = scene([
+      { file_path: "asset:P|a.png", thumb: "keep" },
+      { file_path: "asset:P|b.png", thumb: "keep", registry_asset_id: "mine" },
+    ]).cards;
+    const found = new Map([
+      [relinkKey("", "asset:P|a.png"), { project: "P", path: "a.png", registry_asset_id: "r1" }],
+      [relinkKey("", "asset:P|b.png"), { project: "P", path: "b.png", registry_asset_id: "other" }],
+    ]);
+    const { cards: next, changed } = relinkCards(cards, "", found);
+    expect(changed).toBe(1);
+    expect(next[0].refs?.[0]).toMatchObject({ file_path: "asset:P|a.png", thumb: "keep", registry_asset_id: "r1" });
+    expect(next[0].refs?.[1]).toMatchObject({ registry_asset_id: "mine" });
+  });
+
+  it("서버가 알려 준 번호(open_ids)를 씬에 저장하고, 다음 복구는 다시 묻지 않는다 — 원본 연결 수에는 넣지 않는다", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:P|a.png" }])]);
+    locate.mockResolvedValue(answer({ open: ["asset:P|a.png"], open_ids: { "asset:P|a.png": "r1" } }));
+
+    expect(await relinkSceneAssetRefs()).toBe(0);
+    expect(listScenes(null)[0].cards[0].refs?.[0].registry_asset_id).toBe("r1");
+
+    resetRelinkSessionForTest(); // 앱을 다시 켠 것처럼
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(1); // 번호 열쇠로 '열림'을 기억했다
+  });
+
+  it("번호가 붙은 참조는 번호를 함께 보낸다", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:P|a.png", registry_asset_id: "r1" }, { file_path: "asset:P|b.png" }])]);
+    locate.mockResolvedValue(answer({}));
+    await relinkSceneAssetRefs();
+    expect(locate.mock.calls[0][6]).toEqual({ "asset:P|a.png": "r1" });
   });
 });

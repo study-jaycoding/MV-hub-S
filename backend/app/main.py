@@ -38,6 +38,7 @@ from . import active_account, repo
 from .list_gzip import ListGzipMiddleware
 from .config import (
     ALLOW_REMOTE_AUTH_OFF,
+    ASSET_REGISTRY_ENABLED,
     AUTH_ENABLED,
     BACKEND_DIR,
     CORS_ORIGINS,
@@ -65,6 +66,7 @@ from .static_files import ImmutableStaticFiles
 from .services.test_snapshot import SNAPSHOT_EXPORT_ENV, SNAPSHOT_EXPORT_PATH
 from .routers import (
     _proxy,
+    asset_registry,
     assets,
     auth,
     comfy,
@@ -100,6 +102,7 @@ from .services.worker_backup import (
 )
 from .services.temp_sweeper import periodic_sweeper
 from .services.media_preservation import periodic_media_preservation
+from .services.asset_registry import controller as asset_registry_controller
 from .services.share_state_reconciler import (
     configure_share_state_router_deps,
     periodic_share_state_reconciler,
@@ -244,6 +247,7 @@ async def _application_lifespan(app: FastAPI):
     periodic_backup_started = False
     periodic_sweeper_started = False
     media_preservation_started = False
+    asset_registry_started = False
     share_state_reconciler_started = False
     agent_loop_bound = False
     asset_watcher_started = False
@@ -483,6 +487,11 @@ async def _application_lifespan(app: FastAPI):
         if MEDIA_PRESERVATION_ENABLED:
             periodic_media_preservation.start()  # 명시적 opt-in 설치만 영구 보존
             media_preservation_started = True
+        if ASSET_REGISTRY_ENABLED:
+            # 에셋 대장(서버) — 수동 훑기는 언제든 받고, 자동 주기는 간격을 설정했을 때만 돈다.
+            # NAS 를 읽는 자식 프로세스는 health·ready 와 무관하다(NAS 가 멈춰도 워치독 재시작 루프가 없게).
+            asset_registry_controller.start()
+            asset_registry_started = True
         # 계층 경계(services→routers 금지) 때문에 reconciler 의 라우터 의존은 여기서 주입한다.
         from .routers import _proxy as _share_proxy
         from .routers._telemetry import touch_generation_telemetry
@@ -563,6 +572,9 @@ async def _application_lifespan(app: FastAPI):
         # 남아 있으면 뒤따르는 정리·프로세스 종료와 겹쳐 원본 rename 이 깨진다(WinError 32).
         if thumb_prewarm_started:
             _attempt_sync_cleanup(_stop_thumb_prewarm)
+        # 에셋 대장 훑기 자식을 일찍 끝낸다 — 새 실행 금지 → taskkill /T /F → 반영 안 한 결과는 버린다.
+        if asset_registry_started:
+            await _attempt_async_cleanup(asset_registry_controller.stop)
         if runtime_report_task:
             await _attempt_async_cleanup(
                 lambda: _cancel_background_task(runtime_report_task)
@@ -717,6 +729,7 @@ app.include_router(db_transfer.router)
 app.include_router(db_backup.router)
 app.include_router(comfy.router)
 app.include_router(scenes.router)
+app.include_router(asset_registry.router)
 
 # ── PM 대시보드(분리형 사이드카) — 플래그 on 일 때만 등록 ────────────────────────
 # 기본 on(config.MANAGE_ENABLED). CONTENT_HUB_MANAGE=0 이면 import 자체를 안 해 라우터·사이드카 테이블이

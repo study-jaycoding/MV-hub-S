@@ -69,9 +69,12 @@ export interface SceneRef {
   //  (없으면 upload 취급 = 파란색. 지문·제출에는 영향 없음.)
   origin?: "asset" | "upload";
   // 파일 내용 지문·크기(2026-09-28) — 원본이 옮겨져도 **내용으로 다시 찾기** 위한 표식.
-  // 없어도 동작한다(옛 씬). 씬 파일로 함께 나가고 들어온다.
+  // 없어도 동작한다(옛 씬). 씬 파일로 함께 나가고 들어온다. 에셋 대장 번호가 붙은 뒤에는 '넣을 때 판'이다.
   content_sha?: string;
   bytes?: number;
+  // 에셋 대장 번호(2026-09-30, docs/ASSET_REGISTRY.md) — NAS 파일의 논리 번호. 이름을 바꾸거나 옮겨도 같은 번호라
+  // 레퍼런스 찾기가 새 자리로 따라간다(고쳐 저장한 새 판이어도). 서버 답(open_ids·fixed)으로만 붙는다.
+  registry_asset_id?: string;
 }
 
 // 캔버스가 생성 요청보다 먼저 저장하는 복구 표식. 브라우저가 요청 직후 종료돼도 generation id와

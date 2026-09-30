@@ -177,11 +177,10 @@ export function useSceneClipboardDrop(
         const items = parseSpotlightAssetItems(readSpotlightAssetPayload(event.dataTransfer));
         if (!items.length) return;
         const point = current.toCanvas(event.clientX, event.clientY);
-        addReferenceCards(
-          items.map((item) => ({ ...assetItemToRef(item), origin: "asset" as const })),
-          point.x,
-          point.y,
-        );
+        const refs = items.map((item) => ({ ...assetItemToRef(item), origin: "asset" as const }));
+        addReferenceCards(refs, point.x, point.y);
+        // 한 번 물어 에셋 대장 번호(open_ids)를 받아 둔다 — 나중에 NAS 에서 이름을 바꾸거나 옮겨도 따라가게(2026-09-30).
+        current.onLocalRefsAdded?.(refs.map((ref) => ref.file_path));
         return;
       }
 

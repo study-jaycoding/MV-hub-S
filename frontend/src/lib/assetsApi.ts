@@ -313,14 +313,23 @@ export const assetsApi = {
     fingerprints: Record<string, { sha256: string; bytes: number }> = {},
     signal?: AbortSignal,
     includeRender = false,
+    registryIds: Record<string, string> = {}, // 토큰 → 에셋 대장 번호(2026-09-30, 모든 참조가 같은 번호일 때만)
   ) =>
     jsonFetch<{
-      fixed: { token: string; project: string; path: string; sha256?: string; bytes?: number }[];
+      fixed: {
+        token: string;
+        project: string;
+        path: string;
+        sha256?: string;
+        bytes?: number;
+        registry_asset_id?: string; // 에셋 대장이 확인한 자리(2026-09-30)
+      }[];
       unresolved: string[];
       missing: string[]; // 이 PC 에서도 안 열리고 서버 어디에도 없다(2026-09-29)
       local: string[]; // 이 PC 설치 폴더 안 사본에만 있다
       open?: string[]; // 이미 이 PC 에서 열린다(2026-09-29 — 옛 서버엔 없다)
       incomplete?: string[]; // 끝까지 못 훑어 판정을 못 끝냈다 — 기억하지 않고 다음 실행에 다시 묻는다
+      open_ids?: Record<string, string>; // 열리는 참조의 에셋 대장 번호(토큰 → 번호, 2026-09-30 — 옛 허브엔 없다)
     }>("/api/assets/locate", {
       method: "POST",
       body: JSON.stringify({
@@ -329,6 +338,7 @@ export const assetsApi = {
         scan_id: scanId,
         fingerprints,
         include_render: includeRender,
+        registry_ids: registryIds,
       }),
       signal,
     }),

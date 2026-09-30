@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from . import _assets_access, assets_metadata
+from . import asset_registry as _asset_registry_api
 from .. import rbac, repo
 from ..config import (
     ASSETS_ROOT,
@@ -1274,6 +1275,9 @@ class LocateIn(BaseModel):
     # '레퍼런스 찾기' 단추(사용자가 누를 때만, Jay 2026-09-29) — PM 프로젝트의 render 폴더까지 훑고, render 안을
     # 가리키는 참조에도 '서버에 없음'을 말한다. 자동 복구는 render 를 훑지 않는다(렌더 프레임이 폴더를 채워 느리다).
     include_render: bool = False
+    # 토큰 → 참조에 적힌 에셋 대장 번호(2026-09-30). 한 토큰의 참조가 **모두 같은 번호**일 때만 온다(지문과 같은 규칙).
+    # 번호가 있으면 논리 파일을 따른다 — 옮겨졌으면 새 자리로(넣을 때 판과 달라도, 대장이 아는 지금 판이 맞으면).
+    registry_ids: dict[str, str] = Field(default_factory=dict, max_length=_LOCATE_MAX_TOKENS)
 
 
 def _valid_fingerprint(fp: Optional[LocateFingerprint]) -> Optional[tuple[str, int]]:
@@ -1284,6 +1288,13 @@ def _valid_fingerprint(fp: Optional[LocateFingerprint]) -> Optional[tuple[str, i
     if fp.bytes > 0 and len(sha) == 64 and all(c in "0123456789abcdef" for c in sha):
         return sha, fp.bytes
     return None
+
+
+def lookup_registry(
+    request: Request, ids: list[str], shas: list[tuple[str, int]], tails: list[str]
+) -> Optional[dict[str, Any]]:
+    """에셋 대장 후보 조회(위임 모드면 공유 서버, 아니면 자기 DB). 실패·옛 서버·대장 없음 = None → 직접 훑기."""
+    return _asset_registry_api.lookup_for_request(request, ids, shas, tails)
 
 
 _log = logging.getLogger("mvhub.assets")
@@ -1517,6 +1528,116 @@ def locate_legacy_assets(body: LocateIn, request: Request):
             dir_cache[name] = _safe_project_dir(name, request)
         return dir_cache[name]
 
+    # 이 PC 사본(imports·captures)의 (지문, 크기, 파일 있음) — 대장 단계와 아래 본 판정이 같은 값을 쓴다(두 번 안 읽게).
+    local_cache: dict[tuple[str, str], tuple[str, int, bool]] = {}
+
+    def local_copy(project: str, rest_path: str) -> tuple[str, int, bool]:
+        key = (project, rest_path)
+        if key not in local_cache:
+            digest_, size_, exists_ = "", 0, False
+            local = _safe_resolve((ASSETS_ROOT / project).resolve(), rest_path)
+            if local and local.is_file():
+                exists_ = True
+                try:
+                    size_ = local.stat().st_size
+                except OSError:
+                    size_ = 0
+                if size_ > 0:
+                    digest_ = _sha256_file(local) or ""
+            local_cache[key] = (digest_, size_, exists_)
+        return local_cache[key]
+
+    # ── 에셋 대장 먼저(2026-09-30, docs/ASSET_REGISTRY.md) ─────────────────────────────────────
+    # 대장은 **후보**일 뿐이다(Codex 합의): 후보를 이 PC 의 PM 마운트로 풀어 파일을 열고, 크기·수정시각이 대장이 훑은
+    # 그 판과 같을 때(다르면 지문을 직접 내어 같을 때)만 잇는다. 그 프로젝트의 마지막 훑기가 완주가 아니거나, 대장이
+    # 없으면(옛 서버·꺼짐·실패) 아무것도 하지 않고 아래 직접 훑기가 그대로 맡는다. missing·local·incomplete 판정은
+    # 대장이 내지 않는다(훑기 사이 틈). 열리는 참조에는 번호만 알려 준다(open_ids — 같은 물리 파일일 때만).
+    registry_fixed: dict[str, dict[str, Any]] = {}
+    open_ids: dict[str, str] = {}
+    registry_used = False
+    pre: dict[str, dict[str, Any]] = {}
+    for token in dict.fromkeys(body.tokens[:_LOCATE_MAX_TOKENS]):
+        head, sep, rest = token.partition("|")
+        project = head[len("asset:"):] if head.startswith("asset:") else ""
+        if not sep or not project or not rest:
+            continue
+        project, rest = asset_paths.real_meta_key(project, rest)
+        internal = project in _INTERNAL_FOLDERS
+        info: dict[str, Any] = {"rest": rest, "internal": internal, "open": None,
+                                "id": (body.registry_ids.get(token) or "").strip()}
+        fp = _valid_fingerprint(body.fingerprints.get(token))
+        if internal:
+            digest, size, _exists = local_copy(project, rest)
+            fp = fp or ((digest, size) if digest and size > 0 else None)
+        else:
+            current = project_dir_of(project)
+            here = _safe_resolve(current, rest) if current else None
+            info["open"] = here if here and here.is_file() else None
+        info["fp"] = fp
+        pre[token] = info
+    keys_ids = [i["id"] for i in pre.values() if i["id"]]
+    keys_shas = [i["fp"] for i in pre.values() if i["fp"]]
+    keys_tails = [i["rest"] for i in pre.values() if not i["internal"] and len([p for p in i["rest"].split("/") if p]) >= 2]
+    found = lookup_registry(request, keys_ids, keys_shas, keys_tails) if pre else None
+    if found:
+        registry_used = True
+        complete_pids = {pid for pid, p in (found.get("projects") or {}).items() if p and p.get("complete")}
+        mount_by_pid = {m.get("project_id"): m for m in auto_mounts if m.get("project_id")}
+
+        def usable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [r for r in rows if r and r.get("state") == "present" and r.get("project_id") in complete_pids]
+
+        def local_of(row: dict[str, Any]) -> Optional[tuple[str, Path]]:
+            mount = mount_by_pid.get(row["project_id"])
+            if not mount or mount["name"] in split_names:
+                return None
+            base = dirs_by_name.get(mount["name"])
+            real = _resolve_mount_path(mount["path"]) if mount.get("path") else None
+            if base is None or real is None or _capture_path_key(base) != _capture_path_key(real):
+                return None  # 이 PC 에서 그 이름이 다른 폴더로 풀린다 — 이으면 엉뚱한 곳을 가리킨다
+            target = _safe_resolve(base, row["path"])
+            return (mount["name"], target) if target else None
+
+        def same_version(row: dict[str, Any], target: Path) -> bool:
+            try:
+                st = target.stat()
+            except OSError:
+                return False
+            if st.st_size != row.get("bytes"):
+                return False
+            if row.get("mtime_ns") and st.st_mtime_ns == row["mtime_ns"]:
+                return True  # 같은 NAS 의 같은 자리·크기·시각 = 대장이 지문을 낸 그 판
+            return _sha256_file(target) == row.get("sha256")
+
+        for token, info in pre.items():
+            if info["open"] is not None:
+                rows = usable((found.get("tails") or {}).get(info["rest"]) or [])
+                key = _capture_path_key(info["open"])
+                ids = {r["registry_asset_id"] for r in rows
+                       for loc in [local_of(r)] if loc and _capture_path_key(loc[1]) == key}
+                if len(ids) == 1:
+                    open_ids[token] = ids.pop()
+                continue
+            if info["id"]:
+                row = (found.get("ids") or {}).get(info["id"])
+                cands = usable([row] if row else [])
+            elif info["fp"]:
+                sha, size = info["fp"]
+                cands = [r for r in usable((found.get("shas") or {}).get(sha) or []) if r.get("bytes") == size]
+            elif not info["internal"]:
+                cands = usable((found.get("tails") or {}).get(info["rest"]) or [])
+            else:
+                continue  # 지문 없는 사본 — 대장으로도 근거가 없다(이름으로 잇지 않는다)
+            hits: dict[str, tuple[str, dict[str, Any]]] = {}
+            for r in cands:
+                loc = local_of(r)
+                if loc and same_version(r, loc[1]):
+                    hits.setdefault(_capture_path_key(loc[1]), (loc[0], r))
+            if len(hits) == 1:
+                name, r = next(iter(hits.values()))
+                registry_fixed[token] = {"project": name, "path": r["path"], "sha256": r["sha256"],
+                                         "bytes": r["bytes"], "registry_asset_id": r["registry_asset_id"]}
+
     seen: dict[str, Optional[dict[str, Any]]] = {}  # 같은 토큰이 여러 카드에 있어도 한 번만 계산
     for token in body.tokens[:_LOCATE_MAX_TOKENS]:
         if token in seen:
@@ -1550,20 +1671,18 @@ def locate_legacy_assets(body: LocateIn, request: Request):
                 note(token, opened)
                 continue
 
+        # ⓪ 에셋 대장이 확인까지 마친 자리(위 대장 단계).
+        if token in registry_fixed:
+            seen[token] = registry_fixed[token]
+            fixed.append({**registry_fixed[token], "token": token})
+            continue
+
         # ① 내용 지문 — 참조가 든 지문(씬에 함께 온 것)이 먼저, 없으면 이 PC 사본의 지문. 둘이 다르면 이 PC
         #    사본은 같은 이름의 **다른 그림**이다(PC 마다 imports 이름이 겹칠 수 있다).
         local_exists = False
         local_digest, local_size = "", 0
         if internal:
-            local = _safe_resolve((ASSETS_ROOT / old_project).resolve(), rest)
-            if local and local.is_file():
-                local_exists = True
-                try:
-                    local_size = local.stat().st_size
-                except OSError:
-                    local_size = 0
-                if local_size > 0:
-                    local_digest = _sha256_file(local) or ""
+            local_digest, local_size, local_exists = local_copy(old_project, rest)
         carried = _valid_fingerprint(body.fingerprints.get(token))
         fingerprints_used += bool(carried)
         digest, size = carried or (local_digest, local_size if local_digest else 0)
@@ -1649,6 +1768,9 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         incomplete=len(incomplete),
         render=body.include_render,
         judge=can_judge,
+        registry=registry_used,
+        registry_fixed=len(registry_fixed),
+        registry_open_ids=len(open_ids),
         elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
     )
     return {
@@ -1658,6 +1780,8 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         "local": local_only,
         "open": opened,
         "incomplete": incomplete,
+        # 열리는 참조의 에셋 대장 번호(토큰 → 번호). 앱이 참조에 적어 두면 나중에 옮겨져도 따라간다. 옛 앱은 모른다.
+        "open_ids": open_ids,
     }
 
 

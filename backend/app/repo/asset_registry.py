@@ -230,7 +230,7 @@ def registry_counts(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
     return out
 
 
-_ROW_COLS = ("registry_asset_id", "project_id", "path", "sha256", "bytes", "state")
+_ROW_COLS = ("registry_asset_id", "project_id", "path", "sha256", "bytes", "mtime_ns", "state")
 
 
 def _rows(conn: sqlite3.Connection, where: str, args: Iterable[Any], visible: Optional[set[str]]) -> list[dict[str, Any]]:
@@ -326,8 +326,14 @@ def backfill_reference_links(conn: sqlite3.Connection, complete_projects: dict[s
         옛 경로 이력·이름·다른 이름의 프로젝트로는 채우지 않는다(그때 어느 판이었는지 모른다).
     complete_projects: 이름 → project_id (clean·complete 훑기를 마친 프로젝트만)."""
     verified = possible = 0
+    # 이 이름들의 토큰이거나 지문이 있는 행만 본다 — 훑기마다 레퍼런스 전체를 다시 읽지 않게.
+    # (LIKE 의 _·% 는 넓게 걸릴 뿐이고, 아래에서 이름을 정확히 다시 대조한다.)
+    names = [n for n in complete_projects if n]
+    like = " OR ".join("file_path LIKE ?" for _ in names)
+    where = "registry_asset_id IS NULL AND (content_sha IS NOT NULL" + (f" OR {like})" if like else ")")
     for ref_id, sha, size, fp in conn.execute(
-        "SELECT id, content_sha, content_bytes, file_path FROM reference WHERE registry_asset_id IS NULL"
+        f"SELECT id, content_sha, content_bytes, file_path FROM reference WHERE {where}",
+        tuple(f"asset:{n}|%" for n in names),
     ).fetchall():
         if sha and size:
             rid = resolve_reference_asset_id(conn, sha, size, fp or "")

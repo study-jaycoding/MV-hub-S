@@ -32,10 +32,16 @@ export interface RefFingerprint {
  *  참조가 든 지문(content_sha·bytes)도 함께 싣는다(2026-09-29) — 사본이 이 PC 에 없어도 내용으로 찾게.
  *  한 토큰을 쓰는 참조가 **모두 같은 지문**일 때만 싣는다. 하나라도 없거나 다르면 싣지 않는다 — 한 지문으로
  *  찾은 답이 지문 없는·다른 지문의 참조까지 덮지 않게(Codex). */
-export function sceneAssetGroups(
-  scenes: Scene[],
-): { workspaceId: string; tokens: string[]; fingerprints: Record<string, RefFingerprint> }[] {
+export function sceneAssetGroups(scenes: Scene[]): {
+  workspaceId: string;
+  tokens: string[];
+  fingerprints: Record<string, RefFingerprint>;
+  registryIds: Record<string, string>;
+}[] {
   const byWorkspace = new Map<string, Map<string, RefFingerprint | null>>();
+  // 에셋 대장 번호도 지문과 같은 규칙 — 한 토큰의 참조가 **모두 같은 번호**일 때만 싣는다(Codex P0 — 다른 번호의
+  //  참조끼리 한 답을 나눠 갖지 않게). 하나라도 없거나 다르면 번호 없이 묻는다.
+  const idsByWorkspace = new Map<string, Map<string, string | null>>();
   for (const scene of scenes) {
     const ws = sceneRefWorkspaceId(scene);
     for (const card of scene.cards) {
@@ -43,15 +49,20 @@ export function sceneAssetGroups(
         if (!ref.file_path || !ASSET_TOKEN.test(ref.file_path)) continue;
         let bucket = byWorkspace.get(ws);
         if (!bucket) byWorkspace.set(ws, (bucket = new Map()));
+        let ids = idsByWorkspace.get(ws);
+        if (!ids) idsByWorkspace.set(ws, (ids = new Map()));
         const mine = ref.content_sha && ref.bytes ? { sha256: ref.content_sha, bytes: ref.bytes } : null;
+        const myId = ref.registry_asset_id || null;
         if (!bucket.has(ref.file_path)) {
           bucket.set(ref.file_path, mine);
+          ids.set(ref.file_path, myId);
           continue;
         }
         const seen = bucket.get(ref.file_path);
         if (seen && (!mine || seen.sha256 !== mine.sha256 || seen.bytes !== mine.bytes)) {
           bucket.set(ref.file_path, null); // 모두 같지 않다 — 이 토큰은 지문 없이 묻는다
         }
+        if (ids.get(ref.file_path) !== myId) ids.set(ref.file_path, null);
       }
     }
   }
@@ -60,6 +71,9 @@ export function sceneAssetGroups(
     tokens: [...bucket.keys()],
     fingerprints: Object.fromEntries(
       [...bucket].filter((entry): entry is [string, RefFingerprint] => entry[1] !== null),
+    ),
+    registryIds: Object.fromEntries(
+      [...(idsByWorkspace.get(workspaceId) || [])].filter((entry): entry is [string, string] => !!entry[1]),
     ),
   }));
 }
@@ -75,6 +89,8 @@ export interface RelinkTarget {
   path: string;
   sha256?: string;
   bytes?: number;
+  // 에셋 대장 번호 — 대장이 확인한 답(fixed)이거나, 토큰은 그대로인 번호 알림(open_ids)
+  registry_asset_id?: string;
 }
 
 /** 결과의 열쇠 — **공간 + 참조**. 같은 옛 참조라도 캔버스의 공간이 다르면 다른 파일로 찾힐 수 있다.
@@ -95,19 +111,38 @@ export function relinkCards(
     const refs = card.refs.map((ref) => {
       const hit = ref.file_path ? found.get(relinkKey(ws, ref.file_path)) : undefined;
       if (!hit) return ref;
-      // 이 참조가 든 지문과 다른 답은 적용하지 않는다 — 같은 토큰을 쓰는 다른 그림이거나(PC 마다 imports 이름이
-      //  겹친다), 지문 없이 경로로 찾은 답이다. 지문을 가진 참조는 내용으로만 잇는다(2026-09-29, Codex).
-      if (ref.content_sha && (hit.sha256 !== ref.content_sha || (ref.bytes && hit.bytes && ref.bytes !== hit.bytes))) {
+      const nextPath = `asset:${hit.project}|${hit.path}`;
+      if (nextPath === ref.file_path) {
+        // 토큰은 그대로 — 대장 번호만 알려 준 답(open_ids). 이미 번호가 있으면 덮지 않는다.
+        if (!hit.registry_asset_id || ref.registry_asset_id) return ref;
+        touched = true;
+        changed += 1;
+        return { ...ref, registry_asset_id: hit.registry_asset_id };
+      }
+      if (ref.registry_asset_id) {
+        // 대장 번호가 있는 참조는 **같은 번호의 답만** 받는다(Codex P0). 같은 번호면 논리 파일이 같으니, 넣을 때 판
+        //  (content_sha)과 지금 판이 달라도 따라간다 — 고쳐 저장한 새 판을 보여 주는 것이 지금 캔버스 동작과 같다.
+        if (hit.registry_asset_id !== ref.registry_asset_id) return ref;
+      } else if (
+        ref.content_sha &&
+        (hit.sha256 !== ref.content_sha || (ref.bytes && hit.bytes && ref.bytes !== hit.bytes))
+      ) {
+        // 이 참조가 든 지문과 다른 답은 적용하지 않는다 — 같은 토큰을 쓰는 다른 그림이거나(PC 마다 imports 이름이
+        //  겹친다), 지문 없이 경로로 찾은 답이다. 지문을 가진 참조는 내용으로만 잇는다(2026-09-29, Codex).
         return ref;
       }
       touched = true;
       changed += 1;
       return {
         ...ref,
-        file_path: `asset:${hit.project}|${hit.path}`,
+        file_path: nextPath,
         thumb: null, // 옛 주소로 만든 썸네일은 버린다
-        content_sha: hit.sha256 ?? ref.content_sha,
-        bytes: hit.bytes ?? ref.bytes,
+        // 넣을 때 판은 지킨다(대장 번호로 따라간 새 판과 다를 수 있다). 없던 참조만 이번에 찾은 판을 적는다.
+        content_sha: ref.content_sha ?? hit.sha256,
+        bytes: ref.content_sha
+          ? (ref.bytes ?? (hit.sha256 === ref.content_sha ? hit.bytes : undefined))
+          : (hit.bytes ?? ref.bytes),
+        ...(hit.registry_asset_id ? { registry_asset_id: hit.registry_asset_id } : {}),
       };
     });
     return touched ? { ...card, refs } : card;
@@ -166,8 +201,16 @@ function cyrb53(text: string): string {
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 }
 
-const verdictKey = (workspaceId: string, token: string, fp?: RefFingerprint | null): string =>
-  cyrb53(JSON.stringify([workspaceId, token, fp?.sha256 ?? "", fp?.bytes ?? 0]));
+// 대장 번호가 있으면 열쇠에 넣는다(Codex P0 — 같은 토큰이라도 번호가 다르면 다른 참조). 번호가 없으면 예전과 똑같은
+//  열쇠 — 저장된 판정이 한꺼번에 무효가 되어 앱 시작에 모든 그림으로 NAS 를 다시 훑는 일이 없게.
+const verdictKey = (workspaceId: string, token: string, fp?: RefFingerprint | null, registryId?: string | null): string =>
+  cyrb53(
+    JSON.stringify(
+      registryId
+        ? [workspaceId, token, fp?.sha256 ?? "", fp?.bytes ?? 0, registryId]
+        : [workspaceId, token, fp?.sha256 ?? "", fp?.bytes ?? 0],
+    ),
+  );
 
 function loadVerdicts(): Verdicts {
   const ns = getAccountNamespace();
@@ -217,7 +260,9 @@ function saveVerdicts(keep?: Set<string>, drop?: Set<string>): void {
 function pruneVerdicts(): void {
   const keep = new Set<string>();
   for (const group of sceneAssetGroups(listScenes(null))) {
-    for (const token of group.tokens) keep.add(verdictKey(group.workspaceId, token, group.fingerprints[token]));
+    for (const token of group.tokens) {
+      keep.add(verdictKey(group.workspaceId, token, group.fingerprints[token], group.registryIds[token]));
+    }
   }
   saveVerdicts(keep);
 }
@@ -235,13 +280,19 @@ if (typeof window !== "undefined") {
  *  한 토큰의 참조들이 지문이 달라 묶음 지문 없이 물었을 때는 그 열쇠에 저장된다(sceneAssetGroups). */
 export function refServerStatus(
   workspaceId: string,
-  ref: Pick<SceneRef, "file_path" | "content_sha" | "bytes">,
+  ref: Pick<SceneRef, "file_path" | "content_sha" | "bytes" | "registry_asset_id">,
 ): RefServerStatus | undefined {
   if (!ref.file_path) return undefined;
   const own = ref.content_sha && ref.bytes ? { sha256: ref.content_sha, bytes: ref.bytes } : null;
-  const verdict =
-    (own && verdictOf(verdictKey(workspaceId, ref.file_path, own))) ||
-    verdictOf(verdictKey(workspaceId, ref.file_path, null));
+  // 번호가 붙은 참조는 번호 열쇠가 먼저(묶음이 번호를 실어 물었을 때), 없으면 번호 없는 열쇠(번호가 서로 달라 뺐을 때).
+  const ids = ref.registry_asset_id ? [ref.registry_asset_id, null] : [null];
+  let verdict: Verdict | undefined;
+  for (const id of ids) {
+    verdict =
+      (own && verdictOf(verdictKey(workspaceId, ref.file_path, own, id))) ||
+      verdictOf(verdictKey(workspaceId, ref.file_path, null, id));
+    if (verdict) break;
+  }
   return verdict === "missing" || verdict === "local" ? verdict : undefined;
 }
 
@@ -324,6 +375,7 @@ function noteReply(
   ws: string,
   batch: string[],
   fingerprints: Record<string, RefFingerprint>,
+  registryIds: Record<string, string>,
   reply: LocateReply,
   counts: FindCounts,
 ): void {
@@ -345,7 +397,7 @@ function noteReply(
     const got = answer.get(token);
     if (!got) continue;
     counts[got] += 1;
-    const key = verdictKey(ws, token, fingerprints[token]);
+    const key = verdictKey(ws, token, fingerprints[token], registryIds[token]);
     if (got === "incomplete") {
       // 판정 못 끝냄 — 기억하지 않는다. 강제로 다시 물은 참조(같은 파일을 다시 넣음·씬을 새로 받음)면 확인 못 한
       //  옛 판정도 지워 다음 시작에 다시 묻게 한다 — 안 그러면 그 옛 판정이 굳는다(Codex 2026-09-29).
@@ -366,17 +418,44 @@ function noteReply(
 
 /** 원본으로 이은 참조를 기억한다 — 씬에 입혀 **저장한 뒤에만**(저장이 실패해 옛 토큰이 남았는데 fixed 로 기억하면 다시 안
  *  묻는다, Codex). 이은 새 토큰은 '열림'으로 기억한다 — 다음 실행에 다시 묻지 않게(새 토큰 참조의 지문 = 답의 지문). */
-function rememberFixed(ws: string, fixed: LocateReply["fixed"], fingerprints: Record<string, RefFingerprint>): void {
+function rememberFixed(
+  ws: string,
+  fixed: LocateReply["fixed"],
+  fingerprints: Record<string, RefFingerprint>,
+  registryIds: Record<string, string>,
+): void {
   if (!fixed.length) return;
   const store = loadVerdicts();
   const now = Date.now();
   for (const item of fixed) {
-    store[verdictKey(ws, item.token, fingerprints[item.token])] = ["fixed", now];
+    store[verdictKey(ws, item.token, fingerprints[item.token], registryIds[item.token])] = ["fixed", now];
     const token = `asset:${item.project}|${item.path}`;
     asked.add(relinkKey(ws, token));
-    const fp = item.sha256 && item.bytes ? { sha256: item.sha256, bytes: item.bytes } : null;
-    store[verdictKey(ws, token, fp)] = ["open", now];
+    // 새 토큰 참조의 지문 = 넣을 때 판이 있으면 그것(relinkCards 가 지킨다), 없으면 답의 판. 번호도 같은 규칙.
+    const fp = fingerprints[item.token] ?? (item.sha256 && item.bytes ? { sha256: item.sha256, bytes: item.bytes } : null);
+    store[verdictKey(ws, token, fp, item.registry_asset_id ?? registryIds[item.token])] = ["open", now];
   }
+  saveVerdicts();
+}
+
+/** 열리는 참조에 서버가 알려 준 대장 번호(open_ids)를 적는다 — 토큰은 그대로, 번호만. 저장한 뒤에만 번호 열쇠로 '열림'을
+ *  기억한다(번호가 붙으면 열쇠가 바뀌어 다음 시작에 다시 묻지 않게). 바꾼 수는 '원본으로 이음' 알림에 넣지 않는다. */
+function attachOpenIds(
+  ws: string,
+  openIds: Record<string, string> | undefined,
+  fingerprints: Record<string, RefFingerprint>,
+  hooks: RelinkHooks,
+): void {
+  const found = new Map<string, RelinkTarget>();
+  for (const [token, id] of Object.entries(openIds ?? {})) {
+    const head = token.split("|", 1)[0];
+    if (!id || !head.startsWith("asset:")) continue;
+    found.set(relinkKey(ws, token), { project: head.slice("asset:".length), path: token.slice(head.length + 1), registry_asset_id: id });
+  }
+  if (!found.size || !applyFound(found, hooks).saved) return;
+  const store = loadVerdicts();
+  const now = Date.now();
+  for (const [token, id] of Object.entries(openIds ?? {})) store[verdictKey(ws, token, fingerprints[token], id)] = ["open", now];
   saveVerdicts();
 }
 
@@ -418,15 +497,19 @@ async function askGroups(
       const fingerprints = Object.fromEntries(
         batch.filter((token) => group.fingerprints[token]).map((token) => [token, group.fingerprints[token]]),
       );
+      const registryIds = Object.fromEntries(
+        batch.filter((token) => group.registryIds[token]).map((token) => [token, group.registryIds[token]]),
+      );
       const timeout = AbortSignal.timeout(LOCATE_TIMEOUT_MS);
       const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
-      const reply = await api.locateAssets(batch, ws, opts.scanId, fingerprints, signal, opts.includeRender);
+      const reply = await api.locateAssets(batch, ws, opts.scanId, fingerprints, signal, opts.includeRender, registryIds);
       if (getAccountNamespace() !== ns) throw new Error("account changed while locating");
-      noteReply(ws, batch, group.fingerprints, reply, opts.counts);
+      noteReply(ws, batch, group.fingerprints, group.registryIds, reply, opts.counts);
       const found = new Map(reply.fixed.map((item) => [relinkKey(ws, item.token), item] as const));
       const applied = applyFound(found, opts.hooks);
       opts.done.total += applied.total;
-      if (applied.saved) rememberFixed(ws, reply.fixed, group.fingerprints);
+      if (applied.saved) rememberFixed(ws, reply.fixed, group.fingerprints, group.registryIds);
+      attachOpenIds(ws, reply.open_ids, group.fingerprints, opts.hooks);
     }
   }
 }
@@ -449,7 +532,10 @@ export async function relinkSceneAssetRefs(hooks: RelinkHooks = {}): Promise<num
         tokens: group.tokens.filter((token) => {
           const at = relinkKey(group.workspaceId, token);
           if (forced.has(at)) return true;
-          return !asked.has(at) && !verdictOf(verdictKey(group.workspaceId, token, group.fingerprints[token]));
+          return (
+            !asked.has(at) &&
+            !verdictOf(verdictKey(group.workspaceId, token, group.fingerprints[token], group.registryIds[token]))
+          );
         }),
       }))
       .filter((group) => group.tokens.length > 0);
