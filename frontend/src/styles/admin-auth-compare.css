@@ -52,6 +52,9 @@
 }
 .admin-table td { padding: 7px 8px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: middle; }
 .admin-table tr.archived { opacity: 0.5; }
+/* 에셋 대장 표 — 한글 칸이 글자 단위로 꺾이지 않게 한 줄로, 넘치면 표만 옆으로 민다 */
+.admin-registry-wrap { overflow-x: auto; }
+.admin-registry th, .admin-registry td { white-space: nowrap; }
 .admin-member { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .admin-dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; flex: none; }
 .admin-dot.mine { background: var(--accent); }

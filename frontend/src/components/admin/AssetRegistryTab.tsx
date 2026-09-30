@@ -19,7 +19,9 @@ function duration(ms: number): string {
 function when(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+  // 좁은 관리자 창의 표 한 칸에 들어가게 짧게(9/30 14:08)
+  const short = { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false } as const;
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString("ko-KR", short);
 }
 
 export function AssetRegistryTab() {
@@ -119,21 +121,23 @@ export function AssetRegistryTab() {
         </div>
       )}
       {status && status.projects.length > 0 && (
-        <table className="admin-table">
-          <thead>
-            <tr>
-              <th>프로젝트</th>
-              <th>상태</th>
-              <th>파일</th>
-              <th>대장</th>
-              <th>이번에 읽음</th>
-              <th>미판정 · 대기</th>
-              <th>걸린 시간</th>
-              <th>마지막</th>
-            </tr>
-          </thead>
-          <tbody>{status.projects.map(row)}</tbody>
-        </table>
+        <div className="admin-registry-wrap">
+          <table className="admin-table admin-registry">
+            <thead>
+              <tr>
+                <th>프로젝트</th>
+                <th>상태</th>
+                <th>파일</th>
+                <th>대장</th>
+                <th>이번에 읽음</th>
+                <th>미판정 · 대기</th>
+                <th>걸린 시간</th>
+                <th>마지막</th>
+              </tr>
+            </thead>
+            <tbody>{status.projects.map(row)}</tbody>
+          </table>
+        </div>
       )}
       {status?.enabled && status.projects.length === 0 && <div className="admin-empty">아직 훑은 적이 없습니다.</div>}
     </section>
