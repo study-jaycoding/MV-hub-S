@@ -19,6 +19,7 @@ import {
   findSummaryText,
   forceSceneRefsAsk,
   relinkSceneAssetRefs,
+  sceneRefWorkspaceId,
   type RelinkHooks,
   type RelinkTarget,
 } from "./sceneAssetRelink";
@@ -63,6 +64,20 @@ export function mergePatchedSceneList(
   const previousIndex = previous.findIndex((scene) => scene.id === activeSceneId);
   merged.splice(Math.min(Math.max(previousIndex, 0), merged.length), 0, inMemoryActive);
   return merged;
+}
+
+// 위에서 고른 워크스페이스(열쇠)가 바뀌면 relink 를 한 번 부른다 — 탭에 공간이 없는 씬은 그 공간으로 묻는다(2026-10-01
+//  점검 R2-2: 카드 안내 "워크스페이스를 고르면 이어짐"이 세션 안에서 안 됐다). 첫 mount 는 앱 시작 복구가 따로 있고, 이름만
+//  보완된 같은 공간은 열쇠가 같아 건너뛴다. relink 는 매 렌더 새 함수라 ref 로 부른다.
+export function useRelinkOnWorkspaceChange(workspaceKey: string, relink: () => void): void {
+  const relinkRef = useRef(relink);
+  relinkRef.current = relink;
+  const previous = useRef<string | null>(null);
+  useEffect(() => {
+    const before = previous.current;
+    previous.current = workspaceKey;
+    if (before !== null && before !== workspaceKey) relinkRef.current();
+  }, [workspaceKey]);
 }
 
 export function useSceneCoordination(flash?: (msg: string) => void) {
@@ -318,8 +333,19 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   };
 
   // 씬의 워크스페이스 지정/해제 — 최신 씬의 workspace 만 바꾼다(patchSceneById 가 저장 실패도 처리).
+  //  공간이 바뀌면 판정 열쇠도 바뀐다 → 그 씬의 참조를 새 공간으로 한 번 묻는다. 강제로 묻는 까닭: 세션 안에서 이미 물은 공간으로
+  //  되돌리면(해제, W0→W1→W0) '물어봤다' 기억이 막고 옛 판정은 정리돼 '확인 중'에 멈췄다(2026-10-01 점검 R2-2). 실제로 바뀌어
+  //  저장됐을 때만 — 판정 열쇠의 공간(탭 공간, 없으면 씬 파일의 공간 힌트)이 그대로거나 저장이 실패했거나(옛 값 그대로) 다른
+  //  탭이 씬을 지웠으면 묻지 않는다(Codex 코드 리뷰).
   const setSceneWorkspace = (sceneId: string, workspace: SceneWorkspace | null) => {
+    const wanted = workspace?.id ?? "";
+    const previous = listScenes(null).find((s) => s.id === sceneId);
     patchSceneById(sceneId, { workspace: workspace ?? undefined });
+    const scene = listScenes(null).find((s) => s.id === sceneId);
+    if (!scene || (scene.workspace?.id ?? "") !== wanted) return;
+    if (previous && sceneRefWorkspaceId(previous) === sceneRefWorkspaceId(scene)) return;
+    forceSceneRefsAsk([scene]);
+    void relinkAssets(false);
   };
 
   // setScenes/refreshScenes 는 내부 전용(반환 안 함) — 외부는 CRUD·두 patch 관문으로만 씬을 바꾼다.

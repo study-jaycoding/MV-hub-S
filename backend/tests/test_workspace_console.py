@@ -324,6 +324,18 @@ def test_sub_gets_one_project_on_link_and_backfill_but_main_does_not(client):
     assert "project.created" in [e["action"] for e in event_journal.list_audit_events(limit=100)]
 
 
+def test_switch_after_done_opens_no_write_transaction(isolated, monkeypatch):
+    """2026-10-01 점검 R1-6 — 전환이 끝난 뒤 콘솔을 다시 열어도 쓰기 잠금(BEGIN IMMEDIATE)을 잡지 않는다."""
+    _registry([("mv", "MILLIONVOLT", 0), ("a", "A", 0)])
+    console.overview(backfill_projects=True)  # 시드 + 1회 전환
+    writes = []
+    real_write = console._write
+    monkeypatch.setattr(console, "_write", lambda fn: (writes.append(fn), real_write(fn))[1])
+    console._switch_to_console_credits("u_pm")
+    console._switch_to_console_credits("u_pm")
+    assert writes == []
+
+
 def _pid_of(ws):
     with db.get_connection() as conn:
         return conn.execute("SELECT id FROM project WHERE workspace_id=?", (ws,)).fetchone()["id"]

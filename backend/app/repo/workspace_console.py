@@ -123,6 +123,12 @@ def _switch_to_console_credits(actor_uid: Optional[str]) -> None:
             (_RECURRING_COPY_KEY,),
         )
 
+    # 이미 옮겼으면 쓰기 트랜잭션을 열지 않는다 — 콘솔을 열 때마다 쓰기 잠금 줄에 서지 않게(2026-10-01 점검 R1-6).
+    #  run 안의 재확인은 그대로 둬 동시에 두 번 열려도 한 번만 옮긴다.
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        if conn.execute("SELECT 1 FROM manage_schema_state WHERE key=?", (_RECURRING_COPY_KEY,)).fetchone():
+            return
     _write(run)
 
 

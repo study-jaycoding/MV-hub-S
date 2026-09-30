@@ -79,6 +79,7 @@ function installAppBoundaries() {
     listScenes: () => [scene],
   }));
   vi.doMock("../src/lib/useSceneCoordination", () => ({
+    useRelinkOnWorkspaceChange: noop,
     useSceneCoordination: () => {
       const [, bump] = useState(0);
       const sceneActionRef = useRef(null);

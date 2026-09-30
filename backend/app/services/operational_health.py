@@ -36,8 +36,9 @@ _ACTIVE_PHASES = (
     "recovery_required",
 )
 # 업데이트가 프로세스를 끊으면 실제 제출·추적 중인 유료 작업을 잃을 수 있는 단계만 별도로 센다.
-# pending/claimed는 업데이트 게이트가 새 claim·begin-submission을 멈추고, blocked/recovery_required는
-# DB에 복구 상태가 남아 재시작 뒤 이어서 처리할 수 있으므로 일반 업데이트를 막지 않는다.
+# pending은 업데이트 게이트가 새 claim을 멈추고, blocked/recovery_required는 DB에 복구 상태가 남아 재시작 뒤
+# 이어서 처리할 수 있으므로 일반 업데이트를 막지 않는다. claimed는 lease 가 살아 있는 것만 따로 더한다
+# (generation_queue_snapshot — 레퍼런스를 올리는 중에 끊기면 claim 을 되돌리지 못한다, 2026-10-01 점검 R3-2).
 _UPDATE_BLOCKING_PHASES = (
     "submitting",
     "running",
@@ -162,7 +163,8 @@ def generation_queue_snapshot() -> dict[str, Any]:
             "oldest_age_seconds, "
             "SUM(CASE WHEN next_check_at IS NOT NULL AND next_check_at < datetime('now') "
             "THEN 1 ELSE 0 END) overdue_count, "
-            "COALESCE(SUM(check_failures),0) check_failure_sum "
+            "COALESCE(SUM(check_failures),0) check_failure_sum, "
+            "SUM(CASE WHEN lease_expires_at > datetime('now') THEN 1 ELSE 0 END) live_lease "
             "FROM gen_request GROUP BY status ORDER BY status"
         ).fetchall()
         unanchored_stale = conn.execute(
@@ -173,6 +175,10 @@ def generation_queue_snapshot() -> dict[str, Any]:
         ).fetchone()[0]
 
     phase_counts = {row["status"]: int(row["count"]) for row in rows}
+    # 레퍼런스를 올리는 중(claimed)인 요청도 업데이트를 막는다 — 업데이터가 에이전트를 끄면 claim 을 되돌리지 못해 30분 멈추고,
+    #  그사이 다시 누르면 둘 다 돌아 이중 과금(2026-10-01 점검 R3-2). lease 가 끝난 claim(에이전트가 죽어 남은 것)은 세지
+    #  않는다 — 세면 만료 정리 전까지 업데이트가 계속 막힌다. submitting·running 도 lease 가 있으니 claimed 칸만 쓴다.
+    live_claimed = next((int(row["live_lease"] or 0) for row in rows if row["status"] == "claimed"), 0)
     active_rows = [row for row in rows if row["status"] in _ACTIVE_PHASES]
     oldest = max(
         (int(row["oldest_age_seconds"] or 0) for row in active_rows), default=0
@@ -184,7 +190,8 @@ def generation_queue_snapshot() -> dict[str, Any]:
             int(row["count"])
             for row in rows
             if row["status"] in _UPDATE_BLOCKING_PHASES
-        ),
+        )
+        + live_claimed,
         "oldest_active_age_seconds": oldest,
         "overdue_checks": sum(int(row["overdue_count"] or 0) for row in active_rows),
         "check_failures_total": sum(

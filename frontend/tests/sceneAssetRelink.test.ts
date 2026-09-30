@@ -1200,3 +1200,85 @@ describe("판정을 받았는데 그림이 안 뜨면 한 번 다시 묻는다(2
     expect(recheckBrokenRef("", { file_path: "asset:P|a.png" })).toBe(false); // 다시 '열림'인데 또 깨짐 — 더 묻지 않는다
   });
 });
+
+describe("선택 공간을 바꾸면 세션 안에서도 새 공간으로 한 번 묻는다(2026-10-01 점검 R2-2)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetRelinkSessionForTest();
+    locate.mockReset();
+  });
+
+  const pick = (id: string) =>
+    localStorage.setItem(STORAGE_KEYS.workspaceContext, JSON.stringify({ scope: "team", id, name: id }));
+  const A = "asset:P|CH/a.png";
+  const B = "asset:P|CH/b.png";
+  const asked = () => locate.mock.calls.map((c) => c[1]);
+  const nextTick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("보류만 새 공간으로 한 번 묻고 열림은 안 묻는다 — 같은 공간이면 다시 안 묻는다", async () => {
+    pick("W0");
+    saveScenes(null, [scene([{ file_path: A }, { file_path: B }])]);
+    locate.mockResolvedValueOnce(answer({ unresolved: [A, B], open: [B] }));
+    await relinkSceneAssetRefs();
+    await relinkSceneAssetRefs();
+    expect(asked()).toEqual(["W0"]);
+
+    pick("W1"); // 앱을 다시 켜지 않고 위에서 공간만 바꿨다
+    locate.mockResolvedValue(answer({ unresolved: [A] }));
+    await relinkSceneAssetRefs();
+    expect(locate.mock.calls[1][0]).toEqual([A]);
+    await relinkSceneAssetRefs();
+    expect(asked()).toEqual(["W0", "W1"]);
+  });
+
+  it("옛 공간의 답이 늦게 와도 새 공간 질문을 막지 않는다", async () => {
+    pick("W0");
+    saveScenes(null, [scene([{ file_path: A }])]);
+    let finishW0!: (reply: unknown) => void;
+    locate.mockImplementationOnce(() => new Promise((resolve) => { finishW0 = resolve; }));
+    locate.mockResolvedValue(answer({ unresolved: [A] }));
+    const first = relinkSceneAssetRefs();
+    await nextTick();
+    pick("W1");
+    const second = relinkSceneAssetRefs(); // 도는 중 — 끝난 뒤 한 번 더
+    finishW0(answer({ unresolved: [A] }));
+    await first;
+    await second;
+    expect(asked()).toEqual(["W0", "W1"]);
+    await relinkSceneAssetRefs();
+    expect(asked()).toEqual(["W0", "W1"]);
+  });
+
+  it("옛 공간 질문이 실패해도 그 사이 바꾼 새 공간으로는 묻는다(Codex 코드 리뷰)", async () => {
+    pick("W0");
+    saveScenes(null, [scene([{ file_path: A }])]);
+    let failW0!: (error: Error) => void;
+    locate.mockImplementationOnce(() => new Promise((_resolve, reject) => { failW0 = reject; }));
+    locate.mockResolvedValue(answer({ unresolved: [A] }));
+    const first = relinkSceneAssetRefs();
+    await nextTick();
+    pick("W1");
+    const second = relinkSceneAssetRefs();
+    failW0(new Error("hub down"));
+    await first;
+    await second;
+    expect(asked()).toEqual(["W0", "W1"]);
+  });
+
+  it("공간을 빨리 오가도 (공간, 토큰)마다 한 번까지 — 판정 못 끝냄도 같은 공간에선 다시 안 묻는다", async () => {
+    pick("W0");
+    saveScenes(null, [scene([{ file_path: A }])]);
+    locate.mockResolvedValueOnce(answer({ incomplete: [A] }));
+    locate.mockResolvedValue(answer({ unresolved: [A] }));
+    await relinkSceneAssetRefs();
+    await relinkSceneAssetRefs();
+    expect(asked()).toEqual(["W0"]);
+    pick("W1");
+    await relinkSceneAssetRefs();
+    pick("W0");
+    await relinkSceneAssetRefs();
+    pick("W1");
+    await relinkSceneAssetRefs();
+    expect(asked()).toEqual(["W0", "W1"]);
+  });
+});

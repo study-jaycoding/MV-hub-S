@@ -112,6 +112,45 @@ def test_generation_queue_snapshot_merged_query_matches_per_status_semantics():
             db.flush_pool()
 
 
+def test_update_blocking_counts_only_claims_with_a_live_lease():
+    """2026-10-01 점검 R3-2 — 레퍼런스를 올리는 중(claimed)이면 업데이트를 막는다(끊기면 claim 을 못 되돌려 30분 멈추고,
+    다시 누르면 이중 과금). lease 가 끝났거나 없는 claim 은 세지 않는다(에이전트가 죽어 남은 것이 업데이트를 계속 막지 않게).
+    submitting 도 lease 가 있지만 그 칸을 한 번 더 세면 안 된다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        old = os.environ.get("CONTENT_HUB_DB")
+        os.environ["CONTENT_HUB_DB"] = str(Path(tmp) / "content_hub.db")
+        db.flush_pool()
+        try:
+            db.init_db()
+            repo.ensure_default_worker()
+            rows = [
+                repo.create_gen_request(
+                    "worker@example.com", None,
+                    repo.create_local_generation({"model": "test-model", "prompt": "p"}, "me"),
+                    "create", {"model": "m"},
+                )
+                for _ in range(4)
+            ]
+            with db.get_connection() as conn:
+                for rid, status, lease in zip(rows, ("claimed", "claimed", "claimed", "submitting"), (
+                    "datetime('now','+30 minutes')", "datetime('now','-1 minutes')", "NULL", "datetime('now','+30 minutes')",
+                )):
+                    conn.execute(
+                        f"UPDATE gen_request SET status='{status}', lease_expires_at={lease} WHERE id=?", (rid,)
+                    )
+
+            snapshot = operational_health.generation_queue_snapshot()
+            assert snapshot["phase_counts"] == {"claimed": 3, "submitting": 1}
+            assert snapshot["update_blocking_total"] == 2  # submitting 1 + 살아 있는 claimed 1
+        finally:
+            db.flush_pool()
+            if old is None:
+                os.environ.pop("CONTENT_HUB_DB", None)
+            else:
+                os.environ["CONTENT_HUB_DB"] = old
+            db.flush_pool()
+
+
 def test_database_readiness_checks_core_tables(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         old = os.environ.get("CONTENT_HUB_DB")

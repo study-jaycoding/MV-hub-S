@@ -28,6 +28,7 @@ let promptSnapshot: PromptProps | null;
 let librarySnapshot: { filters: Filters; genQuery: GenQuery; projectWorkspaceId?: string } | null;
 let sidebarSnapshot: ComponentProps<typeof import("../src/components/FilterSidebar").FilterSidebar> | null;
 let refreshProjects: () => void;
+const relinkOnWorkspaceChange = vi.fn();
 const libraryHighlightedIds = () => [...(gridSnapshot?.resolveHighlightedIds || [])];
 const libraryGeneration = (id: string): Generation => ({
   id, status: "done", prompt: id, assets: [], tags: [], auto_tags: [], references: [],
@@ -399,7 +400,9 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
   vi.doMock("../src/lib/useWorkspaceFilterOptions", () => ({
     useWorkspaceFilterOptions: () => ({ options: [], loading: false, failed: false, reload: noop }),
   }));
+  relinkOnWorkspaceChange.mockClear();
   vi.doMock("../src/lib/useSceneCoordination", () => ({
+    useRelinkOnWorkspaceChange: relinkOnWorkspaceChange,
     useSceneCoordination: () => {
       const [activeSceneId, setActiveSceneId] = useState(initialSceneId);
       return { scenes: appScenes, activeSceneId, activeScene: appScenes.find((scene) => scene.id === activeSceneId),
@@ -480,6 +483,8 @@ it("App: 자동 조회는 모든 보기 필터만 해제하며 없는 프로젝�
   act(() => view.root.render(<StrictMode><App /></StrictMode>));
   await settle();
   expect(promptSnapshot?.activeProjectId).toBe("generation-project");
+  // 위에서 고른 워크스페이스가 바뀌면 레퍼런스를 다시 묻는 훅에 공간 열쇠를 넘긴다(2026-10-01 점검 R2-2)
+  expect(relinkOnWorkspaceChange.mock.calls.map((call) => call[0])).toContain("team:generation-workspace");
   act(() => window.dispatchEvent(new CustomEvent("ch:resolve-selection", { detail: { generationId: "target", selectionId: "scope-follow" } })));
   await settle();
   const locatedFilters = { tab: "my", project_id: "resolve-project", folder_path: "episode/shot" };

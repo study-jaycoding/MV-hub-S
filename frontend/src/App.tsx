@@ -95,7 +95,7 @@ import { useAppToast } from "./lib/useAppToast";
 import { useDisabledGenerations } from "./lib/useDisabledGenerations";
 import { useLibraryFilters } from "./lib/useLibraryFilters";
 import { useWorkspaceFilterOptions } from "./lib/useWorkspaceFilterOptions";
-import { useSceneCoordination } from "./lib/useSceneCoordination";
+import { useRelinkOnWorkspaceChange, useSceneCoordination } from "./lib/useSceneCoordination";
 import { useSceneCompletionWatcher } from "./lib/useSceneCompletionWatcher";
 import { seedPending } from "./lib/sceneRecentDoneStore";
 import { useHistoryBoardState } from "./lib/useHistoryBoardState";
@@ -220,6 +220,9 @@ export default function App() {
     removeSceneById,
     patchSceneById, patchActiveScene, reorderScenes, setSceneWorkspace, backupOnly, importBackupScenes,
   } = useSceneCoordination(flash);
+  // 위에서 고른 워크스페이스가 바뀌면 탭에 공간이 없는 씬의 참조를 새 공간으로 한 번 묻는다(2026-10-01 점검 R2-2).
+  //  ★선택 저장 effect(위 190행) 뒤에 둔다 — 묻는 쪽이 저장된 선택을 읽는다(앞에 두면 옛 공간으로 묻는다).
+  useRelinkOnWorkspaceChange(`${workspaceContext.scope}:${workspaceContext.id ?? ""}`, relinkSceneRefsNow);
   const [resolveSceneSelection, setResolveSceneSelection] =
     useState<ResolveSceneSelectionTarget | null>(null);
   const resolveSelectionNonceRef = useRef(0);

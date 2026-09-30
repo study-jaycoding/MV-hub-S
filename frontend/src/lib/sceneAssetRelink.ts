@@ -399,9 +399,12 @@ export function getRefServerStatusVersion(): number {
   return statusVersion;
 }
 
-// 이 세션에 답을 받은 참조(공간+토큰) — 세션 동안 자동으로 다시 묻지 않는다(판정을 못 끝낸 것도 — 다음 앱 시작에 다시).
-// 실패한 요청은 담지 않는다 — 다음 계기에 다시 묻는다.
+// 이 세션에 답을 받은 참조(공간+실은 공간+토큰) — 세션 동안 자동으로 다시 묻지 않는다(판정을 못 끝낸 것도 — 다음 앱 시작에 다시).
+// 실패한 요청은 담지 않는다 — 다음 계기에 다시 묻는다. 실은 공간(askWs)까지 넣어야 탭에 공간이 없는 씬이 위에서 고른
+// 워크스페이스를 바꿨을 때 새 공간으로 한 번 묻는다 — 늦게 온 옛 공간의 답이 새 공간 질문을 막지도 않는다(2026-10-01 점검 R2-2).
 const asked = new Set<string>();
+const askedKey = (workspaceId: string, askWs: string, token: string): string =>
+  relinkKey(workspaceId, relinkKey(askWs, token));
 // 저장된 판정과 무관하게 한 번 물을 참조(공간+토큰) — 답을 받으면 뺀다.
 const forced = new Set<string>();
 
@@ -512,7 +515,7 @@ function noteReply(
   let changed = false;
   for (const token of batch) {
     const at = relinkKey(ws, token);
-    asked.add(at);
+    asked.add(askedKey(ws, askWs, token));
     forced.delete(at);
     const got = answer.get(token);
     if (!got) continue;
@@ -567,6 +570,7 @@ function noteReply(
  *  묻는다, Codex). 이은 새 토큰은 '열림'으로 기억한다 — 다음 실행에 다시 묻지 않게(새 토큰 참조의 지문 = 답의 지문). */
 function rememberFixed(
   ws: string,
+  askWs: string,
   fixed: LocateReply["fixed"],
   fingerprints: Record<string, RefFingerprint>,
   registryIds: Record<string, string>,
@@ -577,7 +581,7 @@ function rememberFixed(
   for (const item of fixed) {
     store[verdictKey(ws, item.token, fingerprints[item.token], registryIds[item.token])] = ["fixed", now];
     const token = `asset:${item.project}|${item.path}`;
-    asked.add(relinkKey(ws, token));
+    asked.add(askedKey(ws, askWs, token));
     // 새 토큰 참조의 지문 = 넣을 때 판이 있으면 그것(relinkCards 가 지킨다), 없으면 답의 판. 번호도 같은 규칙.
     const fp = fingerprints[item.token] ?? (item.sha256 && item.bytes ? { sha256: item.sha256, bytes: item.bytes } : null);
     store[verdictKey(ws, token, fp, item.registry_asset_id ?? registryIds[item.token])] = ["open", now];
@@ -658,7 +662,7 @@ async function askGroups(
       const found = new Map(reply.fixed.map((item) => [relinkKey(ws, item.token), item] as const));
       const applied = applyFound(found, opts.hooks);
       opts.done.total += applied.total;
-      if (applied.saved) rememberFixed(ws, reply.fixed, group.fingerprints, group.registryIds);
+      if (applied.saved) rememberFixed(ws, askWs, reply.fixed, group.fingerprints, group.registryIds);
       attachOpenIds(ws, reply.open_ids, group.fingerprints, opts.hooks);
     }
   }
@@ -683,7 +687,7 @@ export async function relinkSceneAssetRefs(hooks: RelinkHooks = {}): Promise<num
           const at = relinkKey(group.workspaceId, token);
           if (forced.has(at)) return true;
           return (
-            !asked.has(at) &&
+            !asked.has(askedKey(group.workspaceId, askWorkspaceOf(group.workspaceId), token)) &&
             !settled(
               verdictKey(group.workspaceId, token, group.fingerprints[token], group.registryIds[token]),
               askWorkspaceOf(group.workspaceId),
@@ -696,20 +700,26 @@ export async function relinkSceneAssetRefs(hooks: RelinkHooks = {}): Promise<num
   const counts = emptyCounts();
   inFlight = exclusive(async () => {
     const stop = (autoAbort = new AbortController());
+    const ns = getAccountNamespace();
     try {
       do {
         rerun = false;
-        // 이번 복구 한 번의 id — 200개씩 여러 번 묻는 동안 서버가 같은 NAS 폴더를 매번 다시 훑지 않게 한다.
-        const scanId = newScanId();
-        // 씬을 새로 열면 토큰이 늘어난다 — 도는 동안 생긴 것까지 한 번 더 받아 준다(최대 5바퀴).
-        for (let round = 0; round < 5; round += 1) {
-          const groups = pending();
-          if (!groups.length) break;
-          await askGroups(groups, { scanId, hooks, counts, done, signal: stop.signal });
+        try {
+          // 이번 복구 한 번의 id — 200개씩 여러 번 묻는 동안 서버가 같은 NAS 폴더를 매번 다시 훑지 않게 한다.
+          const scanId = newScanId();
+          // 씬을 새로 열면 토큰이 늘어난다 — 도는 동안 생긴 것까지 한 번 더 받아 준다(최대 5바퀴).
+          for (let round = 0; round < 5; round += 1) {
+            const groups = pending();
+            if (!groups.length) break;
+            await askGroups(groups, { scanId, hooks, counts, done, signal: stop.signal });
+          }
+        } catch {
+          // 서버가 옛 버전이거나 폴더를 못 읽어도(시간 초과 포함) 화면은 지금까지처럼 동작한다 — 이미 받은 답은 남는다.
+          //  도는 중에 또 불렸으면(예: 위에서 워크스페이스를 바꿈) 실패해도 한 번 더 돈다 — 여기서 끝내면 새 공간 질문을 잃었다
+          //  (2026-10-01 Codex 코드 리뷰). [레퍼런스 찾기]가 끊었거나(끝난 뒤 단추가 다시 부른다) 계정이 바뀌었으면 멈춘다.
+          if (stop.signal.aborted || getAccountNamespace() !== ns) break;
         }
       } while (rerun); // 확인과 비우기(finally) 사이에 틈이 없다 — 겹친 호출을 흘리지 않는다
-    } catch {
-      // 서버가 옛 버전이거나 폴더를 못 읽어도(시간 초과 포함) 화면은 지금까지처럼 동작한다 — 이미 받은 답은 남는다
     } finally {
       if (autoAbort === stop) autoAbort = null;
       pruneVerdicts();
