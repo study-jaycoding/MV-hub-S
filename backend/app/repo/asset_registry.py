@@ -96,15 +96,19 @@ def plan_changes(prev_rows: list[dict[str, Any]], scan: RegistryScan) -> dict[st
     plan: dict[str, list] = {"inserts": [], "updates": [], "events": []}
     if not scan.complete:
         return plan
-    by_path = {r["path"]: r for r in prev_rows}
+    by_path: dict[str, list[dict[str, Any]]] = {}
     by_cf: dict[str, list[dict[str, Any]]] = {}
     for r in prev_rows:
+        by_path.setdefault(r["path"], []).append(r)
         by_cf.setdefault(r["path_cf"], []).append(r)
     matched: set[str] = set()
     new_files: list[RegistryFile] = []
 
     for f in scan.files:
-        row = by_path.get(f.path)
+        same_path = by_path.get(f.path) or []
+        row = same_path[0] if same_path else None
+        # 같은 경로의 행이 여럿이면(비정상 — 생기면 안 된다) 나머지도 '본 것'으로 쳐 사라짐·missing 으로 세지 않는다(Codex P2).
+        matched.update(r["registry_asset_id"] for r in same_path[1:])
         if row is None:
             same_cf = by_cf.get(f.path.casefold()) or []
             row = same_cf[0] if len(same_cf) == 1 and same_cf[0]["registry_asset_id"] not in matched else None

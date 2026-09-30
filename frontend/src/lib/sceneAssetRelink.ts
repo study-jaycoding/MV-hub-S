@@ -409,6 +409,9 @@ function noteReply(
       continue;
     }
     if (got === "fixed") continue; // 씬에 입혀 저장한 뒤에 기억한다(rememberFixed)
+    // 번호가 온 '열림'은 번호를 씬에 저장한 뒤에만 번호 열쇠로 기억한다(attachOpenIds, Codex P1) — 여기서 먼저 기억하면
+    //  저장이 실패했을 때 번호 없는 채로 굳어 다시 묻지 않는다(나중에 원본이 옮겨져도 번호로 못 따라간다).
+    if (got === "open" && reply.open_ids?.[token]) continue;
     if (verdictOf(key) !== got) changed = true;
     store[key] = [got, now];
   }

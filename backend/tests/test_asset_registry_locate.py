@@ -184,6 +184,18 @@ class RegistryApiTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/asset-registry/scan", json={}).status_code, 503)
         self.assertEqual(self.client.post("/api/asset-registry/lookup", json={"tails": ["x"] * 501}).status_code, 422)
 
+    def test_oversized_inputs_are_rejected_before_work(self) -> None:
+        from pydantic import ValidationError
+
+        self.assertEqual(self.client.post("/api/asset-registry/lookup", json={"ids": ["x" * 65]}).status_code, 422)
+        self.assertEqual(self.client.post("/api/asset-registry/lookup", json={"tails": ["a/" + "b" * 1100]}).status_code, 422)
+        with self.assertRaises(ValidationError):
+            assets.LocateIn(tokens=[f"asset:P|{i}.png" for i in range(201)])
+        with self.assertRaises(ValidationError):
+            assets.LocateIn(tokens=["asset:P|" + "x" * 5000])
+        with self.assertRaises(ValidationError):
+            assets.LocateIn(tokens=["asset:P|a.png"], registry_ids={"asset:P|a.png": "r" * 65})
+
     def test_registry_calls_do_not_refresh_everyones_library(self) -> None:
         for path in ("/api/asset-registry/lookup", "/api/asset-registry/scan"):
             self.assertEqual(notification_domains("POST", path, 200), ())

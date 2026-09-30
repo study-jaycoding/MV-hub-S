@@ -911,6 +911,27 @@ describe("에셋 대장 번호(2026-09-30)", () => {
     expect(locate).toHaveBeenCalledTimes(1); // 번호 열쇠로 '열림'을 기억했다
   });
 
+  it("번호 저장이 실패하면 '열림'도 기억하지 않아 다음에 다시 묻는다(Codex P1)", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:P|a.png" }])]);
+    const realSet = Storage.prototype.setItem;
+    const full = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key === STORAGE_KEYS.scenes) throw new Error("QuotaExceededError"); // 씬 저장만 실패
+      return realSet.call(this, key, value);
+    });
+    locate.mockResolvedValue(answer({ open: ["asset:P|a.png"], open_ids: { "asset:P|a.png": "r1" } }));
+    try {
+      await relinkSceneAssetRefs();
+    } finally {
+      full.mockRestore();
+    }
+    expect(listScenes(null)[0].cards[0].refs?.[0].registry_asset_id).toBeUndefined();
+
+    resetRelinkSessionForTest();
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(2); // 다시 물었다 — 이번엔 번호가 저장된다
+    expect(listScenes(null)[0].cards[0].refs?.[0].registry_asset_id).toBe("r1");
+  });
+
   it("번호가 붙은 참조는 번호를 함께 보낸다", async () => {
     saveScenes(null, [scene([{ file_path: "asset:P|a.png", registry_asset_id: "r1" }, { file_path: "asset:P|b.png" }])]);
     locate.mockResolvedValue(answer({}));

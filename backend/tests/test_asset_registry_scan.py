@@ -90,6 +90,39 @@ class ChildScanTests(unittest.TestCase):
             child.run(_job(self.root, self.out))
         self.assertFalse(_lines(self.out)[0]["complete"])
 
+    def test_one_file_whose_info_cannot_be_read_is_only_that_file(self) -> None:
+        """파일 하나의 정보 읽기 실패는 그 파일만 미판정이다 — 루트 전체를 버리지 않는다(Codex P1)."""
+        real_scandir = os.scandir
+
+        class Entry:
+            def __init__(self, entry):
+                self._entry = entry
+
+            def __getattr__(self, key):
+                return getattr(self._entry, key)
+
+            def stat(self, **kw):
+                if self._entry.name == "a.png":
+                    raise PermissionError("locked")
+                return self._entry.stat(**kw)
+
+        class Listing:
+            def __init__(self, path):
+                self._it = real_scandir(path)
+
+            def __enter__(self):
+                return [Entry(e) for e in self._it.__enter__()]
+
+            def __exit__(self, *exc):
+                return self._it.__exit__(*exc)
+
+        with patch("app.services.asset_registry_scan.os.scandir", side_effect=Listing):
+            child.run(_job(self.root, self.out))
+        end, files = _lines(self.out)
+        self.assertTrue(end["complete"])
+        self.assertEqual((files["CH/a.png"]["st"], files["CH/a.png"]["why"]), ("undetermined", "stat"))
+        self.assertEqual(files["CH/b.mp4"]["st"], "ok")
+
     def test_too_many_entries_is_incomplete(self) -> None:
         child.run(_job(self.root, self.out, max_entries=1))
         self.assertEqual(_lines(self.out)[0]["note"], "항목 상한 초과")
@@ -116,6 +149,18 @@ class ChildScanTests(unittest.TestCase):
         end, files = _lines(self.out)
         self.assertEqual(sorted(files), ["CH/b.mp4"])
         self.assertEqual(files["CH/b.mp4"]["st"], "ok")
+
+    def test_child_stops_when_its_parent_is_gone(self) -> None:
+        """부모(서버)가 강제로 꺼지면 고아로 남아 NAS 를 계속 읽지 않는다."""
+        parent = subprocess.Popen([sys.executable, "-c", "pass"])
+        parent.wait()
+        self.assertFalse(child._process_alive(parent.pid))
+        self.assertTrue(child._process_alive(os.getpid()))
+        with patch.object(child._ParentWatch, "__init__", lambda s, pid, every=2.0: (
+                setattr(s, "pid", pid), setattr(s, "every", 0.0), setattr(s, "last", 0.0), None)[-1]):
+            child.run(_job(self.root, self.out, parent_pid=parent.pid))
+        end = _lines(self.out)[0]
+        self.assertEqual((end["complete"], end["note"]), (False, "부모 프로세스가 없음"))
 
     def test_hidden_rule_matches_the_asset_tree(self) -> None:
         for name in ("a.png", ".git", "_work", "README.md", "readme.md", "x_y.png", "render"):

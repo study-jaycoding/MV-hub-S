@@ -94,6 +94,19 @@ class IdentityRuleTests(RegistryDb):
         self.assertEqual(self.scan([F("ch/mat.png", 3, 1, "s1", "ok")]), {})
         self.assertEqual(self.rows()["ch/mat.png"]["registry_asset_id"], rid)
 
+    def test_duplicate_rows_for_one_path_never_go_missing(self) -> None:
+        self.scan([F("a/x.png", 3, 1, "s1", "ok")])
+        self.conn.execute(  # 비정상 중복 행(생기면 안 되지만 생겨도 멀쩡한 파일을 없어짐으로 만들지 않게)
+            "INSERT INTO asset_registry(registry_asset_id, project_id, path, path_cf, name_cf, sha256, bytes, mtime_ns, "
+            "state, miss_count, first_seen, last_seen, updated_at) VALUES('dup','P','a/x.png','a/x.png','x.png','s1',3,1,"
+            "'present',0,'t','t','t')"
+        )
+        self.conn.commit()
+        for _ in range(3):
+            self.scan([F("a/x.png", 3, 1, "s1", "ok")])
+        states = {r[0]: r[1] for r in self.conn.execute("SELECT registry_asset_id, state FROM asset_registry")}
+        self.assertEqual(set(states.values()), {"present"})
+
     def test_projects_are_scanned_apart(self) -> None:
         self.scan([F("a/x.png", 3, 1, "s1", "ok")], project="P")
         # 다른 프로젝트의 같은 지문 새 파일은 P 의 이동이 아니다(프로젝트 간 이동 = 새 번호)

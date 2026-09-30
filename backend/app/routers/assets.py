@@ -22,7 +22,7 @@ import zipfile
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
@@ -1260,7 +1260,9 @@ class LocateFingerprint(BaseModel):
 
 
 class LocateIn(BaseModel):
-    tokens: list[str] = Field(default_factory=list)
+    # 한 번에 받는 수·길이 상한(2026-09-30 Codex P2) — 앱은 200개씩 보낸다(LOCATE_BATCH). 같은 PC 의 같은 버전 허브만
+    # 부르는 로컬 경로라 옛 앱과 섞이지 않는다.
+    tokens: list[Annotated[str, Field(max_length=4096)]] = Field(default_factory=list, max_length=_LOCATE_MAX_TOKENS)
     # 이 캔버스 탭에 지정된 팀 워크스페이스(씬 파일에 함께 온다). 있으면 **그 공간에 등록된
     # 프로젝트 폴더부터** 찾고, 거기서 찾히면 다른 곳은 보지 않는다 — 같은 이름이 여러 곳에
     # 있어도 헷갈리지 않는다(Jay 2026-09-28).
@@ -1277,7 +1279,7 @@ class LocateIn(BaseModel):
     include_render: bool = False
     # 토큰 → 참조에 적힌 에셋 대장 번호(2026-09-30). 한 토큰의 참조가 **모두 같은 번호**일 때만 온다(지문과 같은 규칙).
     # 번호가 있으면 논리 파일을 따른다 — 옮겨졌으면 새 자리로(넣을 때 판과 달라도, 대장이 아는 지금 판이 맞으면).
-    registry_ids: dict[str, str] = Field(default_factory=dict, max_length=_LOCATE_MAX_TOKENS)
+    registry_ids: dict[str, Annotated[str, Field(max_length=64)]] = Field(default_factory=dict, max_length=_LOCATE_MAX_TOKENS)
 
 
 def _valid_fingerprint(fp: Optional[LocateFingerprint]) -> Optional[tuple[str, int]]:
@@ -1548,8 +1550,8 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         return local_cache[key]
 
     # ── 에셋 대장 먼저(2026-09-30, docs/ASSET_REGISTRY.md) ─────────────────────────────────────
-    # 대장은 **후보**일 뿐이다(Codex 합의): 후보를 이 PC 의 PM 마운트로 풀어 파일을 열고, 크기·수정시각이 대장이 훑은
-    # 그 판과 같을 때(다르면 지문을 직접 내어 같을 때)만 잇는다. 그 프로젝트의 마지막 훑기가 완주가 아니거나, 대장이
+    # 대장은 **후보**일 뿐이다(Codex 합의): 후보를 이 PC 의 PM 마운트로 풀어 파일을 열고, 크기와 **지문**이 대장이 훑은
+    # 그 판과 같을 때만 잇는다. 그 프로젝트의 마지막 훑기가 완주가 아니거나, 대장이
     # 없으면(옛 서버·꺼짐·실패) 아무것도 하지 않고 아래 직접 훑기가 그대로 맡는다. missing·local·incomplete 판정은
     # 대장이 내지 않는다(훑기 사이 틈). 열리는 참조에는 번호만 알려 준다(open_ids — 같은 물리 파일일 때만).
     registry_fixed: dict[str, dict[str, Any]] = {}
@@ -1599,15 +1601,13 @@ def locate_legacy_assets(body: LocateIn, request: Request):
             return (mount["name"], target) if target else None
 
         def same_version(row: dict[str, Any], target: Path) -> bool:
+            # 크기가 같아도 **지문까지** 대조한다(Codex P1 2026-09-30) — 같은 크기로 내용을 바꾸고 수정시각을 보존하면
+            # 크기·시각만으로는 다른 그림이 붙는다. 후보 몇 개만 읽으니 NAS 부하는 작다(size+시각은 훑기의 재지문 생략용일 뿐).
             try:
                 st = target.stat()
             except OSError:
                 return False
-            if st.st_size != row.get("bytes"):
-                return False
-            if row.get("mtime_ns") and st.st_mtime_ns == row["mtime_ns"]:
-                return True  # 같은 NAS 의 같은 자리·크기·시각 = 대장이 지문을 낸 그 판
-            return _sha256_file(target) == row.get("sha256")
+            return st.st_size == row.get("bytes") and _sha256_file(target) == row.get("sha256")
 
         for token, info in pre.items():
             if info["open"] is not None:

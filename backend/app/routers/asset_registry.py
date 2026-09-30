@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -28,8 +28,12 @@ _log = logging.getLogger("mvhub.asset_registry")
 _MAX_KEYS = 500
 
 
+_Id = Annotated[str, Field(max_length=64)]  # 번호·프로젝트 id(uuid) 길이 상한 — 큰 본문을 먼저 다 읽지 않게(Codex P2)
+_Tail = Annotated[str, Field(max_length=1024)]
+
+
 class ScanIn(BaseModel):
-    project_ids: list[str] = Field(default_factory=list, max_length=200)
+    project_ids: list[_Id] = Field(default_factory=list, max_length=200)
 
 
 class ShaKey(BaseModel):
@@ -38,9 +42,9 @@ class ShaKey(BaseModel):
 
 
 class LookupIn(BaseModel):
-    ids: list[str] = Field(default_factory=list, max_length=_MAX_KEYS)
+    ids: list[_Id] = Field(default_factory=list, max_length=_MAX_KEYS)
     shas: list[ShaKey] = Field(default_factory=list, max_length=_MAX_KEYS)
-    tails: list[str] = Field(default_factory=list, max_length=_MAX_KEYS)
+    tails: list[_Tail] = Field(default_factory=list, max_length=_MAX_KEYS)
 
 
 def visible_project_ids(request: Optional[Request]) -> Optional[set[str]]:

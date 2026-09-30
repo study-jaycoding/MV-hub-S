@@ -168,13 +168,17 @@ class AssetRegistryController:
         with get_connection() as conn:
             scans = registry.scan_rows(conn)
             counts = registry.registry_counts(conn)
+        names = {
+            str(p.get("id")): str(p.get("name") or "")
+            for p in repo.list_projects(include_archived=True).get("projects") or [] if isinstance(p, dict)
+        }
         return {
             "enabled": self.enabled,
             "interval_min": ASSET_REGISTRY_INTERVAL_MIN,
             "running": self.busy(),
             "current": dict(self._current),
             "last": dict(self._last),
-            "projects": scans,
+            "projects": [{**row, "name": names.get(row["project_id"], "")} for row in scans],
             "counts": counts,
             "waiting_large": dict(self._waiting),
         }
@@ -331,7 +335,7 @@ class AssetRegistryController:
         work.mkdir(parents=True, exist_ok=True)
         tag = uuid.uuid4().hex
         job_path, out_path = work / f"job-{tag}.json", work / f"out-{tag}.jsonl"
-        job = {**job, "out": str(out_path)}
+        job = {**job, "out": str(out_path), "parent_pid": os.getpid()}  # 부모가 강제로 꺼지면 자식도 스스로 멈춘다
         note = ""
         try:
             job_path.write_bytes(json.dumps(job, ensure_ascii=False).encode("utf-8"))

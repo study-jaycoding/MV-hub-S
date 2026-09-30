@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { ApprovalTab, type AdminConfirmState } from "./admin/ApprovalTab";
+import { AssetRegistryTab } from "./admin/AssetRegistryTab";
 import { MemberRolesTab } from "./admin/MemberRolesTab";
 import {
   systemMemberUids,
@@ -18,7 +19,7 @@ import { hasGlobalCap } from "../types";
 import type { Account, Member } from "../types";
 import { CloseIcon } from "./common/ViewIcons";
 
-type AdminTab = "approve" | "roles" | "server";
+type AdminTab = "approve" | "roles" | "server" | "registry";
 
 export function AdminWindow({
   account,
@@ -216,6 +217,8 @@ export function AdminWindow({
     { key: "roles", label: "멤버 · 전역 역할", visible: hasGlobalCap(viewerRoles, "grant_global") },
     // 공유 서버 주소 — 로그인한 공유 서버 계정이 admin 일 때만(로컬 허브 설정값).
     { key: "server", label: "공유 서버", visible: !!shared?.is_admin },
+    // 에셋 대장(2026-09-30) — 공유 서버 운영(system) 권한만. 훑기는 NAS 를 오래 읽는다.
+    { key: "registry", label: "에셋 대장", visible: isPermanentAdmin },
   ];
   const visibleTabs = tabDefs.filter((t) => t.visible);
   const [tab, setTab] = useState<AdminTab>("approve");
@@ -452,6 +455,8 @@ export function AdminWindow({
                   approve={approve}
                 />
               )}
+
+              {activeTab === "registry" && <AssetRegistryTab />}
 
               {activeTab === "server" && (
               <>
