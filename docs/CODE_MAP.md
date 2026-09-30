@@ -287,7 +287,7 @@ updated: 2026-10-01
 |---|---|---|
 | `atomic_io.py` | 같은 폴더 tmp→`os.replace` 원자 텍스트 쓰기 | `active_account`·`db_backup`·서비스 7곳 |
 | `async_tools.py` | `to_thread_non_abandon`(§6 계약) | 라우터 9곳 + 서비스 7곳 |
-| `path_safety.py` | `safe_join`·`path_comparison_key`(traversal 차단) · `unc_for_drive`(매핑 드라이브 → UNC, 모르면 None — 같은 NAS 폴더를 Z: 와 UNC 로 달리 적은 것 맞추기) | `main`·`_proxy`·`assets`·`library`·`manage`·`project_folders`·`resolve_library_dialog` |
+| `path_safety.py` | `safe_join`·`path_comparison_key`(traversal 차단) · `unc_for_drive`(매핑 드라이브 → UNC, 모르면 None — 같은 NAS 폴더를 Z: 와 UNC 로 달리 적은 것 맞추기) · `extended_path`(긴 경로용 `\\?\` 접두 — `assets._resolve_mount_path` 가 등록 폴더에 붙여 LongPathsEnabled 꺼진 PC 에서도 260자 넘는 NAS 경로를 연다. ★탐색기·클립보드·Resolve·썸네일 캐시 열쇠에는 `path_comparison_key` 로 보통 형태로 되돌려 넘긴다) | `main`·`_proxy`·`assets`·`library`·`manage`·`project_folders`·`resolve_library_dialog` |
 | `net_guard.py` | SSRF: `assert_public_http_url`·`guarded_opener`·TLS strict 해제 | `library`·`manage`·`publish`·`comfy_client`·`media_cache` |
 | `request_guards.py` | 로컬 전용 라우트 출처 가드 3종(§6) | `main`·라우터 10곳 |
 | `operational_logging.py` | JSON 회전 로그 + 비밀값 redact + `log_event` | `main`·라우터 6곳·서비스 9곳 |
