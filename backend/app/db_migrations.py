@@ -277,6 +277,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ref_cols = {row[1] for row in conn.execute("PRAGMA table_info(reference)")}
     if "share_url" not in ref_cols:
         conn.execute("ALTER TABLE reference ADD COLUMN share_url TEXT")
+    # 에셋 대장(2026-09-30): 레퍼런스에 '그때 쓴 판'(내용 지문)과 대장 번호를 붙인다.
+    # 색인은 여기서 만든다 — 옛 DB 는 schema.sql 이 도는 시점에 아직 이 칼럼이 없다.
+    for col, decl in (
+        ("content_sha", "TEXT"),
+        ("content_bytes", "INTEGER"),
+        ("registry_asset_id", "TEXT"),
+        ("version_verified", "INTEGER"),
+    ):
+        if col not in ref_cols:
+            conn.execute(f"ALTER TABLE reference ADD COLUMN {col} {decl}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reference_registry_asset "
+        "ON reference(registry_asset_id) WHERE registry_asset_id IS NOT NULL"
+    )
 
     gen_cols = {row[1] for row in conn.execute("PRAGMA table_info(generation)")}
     if "job_id" not in gen_cols:

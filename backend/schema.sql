@@ -119,8 +119,14 @@ CREATE TABLE IF NOT EXISTS reference (
     thumbnail_path TEXT,
     source         TEXT,                             -- 'uploaded' | 'from_generation'
     source_url     TEXT,                             -- 원본 원격 URL 보존(소스 재사용 영속성)
-    share_url      TEXT                              -- ★공유 전용: 힉스필드 공개 URL. 로컬 동작엔 미사용
+    share_url      TEXT,                             -- ★공유 전용: 힉스필드 공개 URL. 로컬 동작엔 미사용
                                                      --   (로컬은 file_path 토큰 그대로, 번들 export 만 이걸 씀)
+    -- 에셋 대장(2026-09-30): 제출 때 실제로 넘긴 파일의 내용 지문(판 고정)과 대장 번호.
+    -- version_verified: 1 = 그때 판이 확인됨(지문으로 이음), 0 = 가능 연결(옛 기록 — 판 미확인), NULL = 모름
+    content_sha       TEXT,
+    content_bytes     INTEGER,
+    registry_asset_id TEXT,
+    version_verified  INTEGER
 );
 
 -- generation ↔ reference 다대다 연결. role 에 @Image/@Video 슬롯 저장
@@ -642,3 +648,59 @@ CREATE INDEX IF NOT EXISTS idx_genref_gen         ON gen_reference(generation_id
 CREATE INDEX IF NOT EXISTS idx_gentag_gen         ON gen_tag(generation_id);
 CREATE INDEX IF NOT EXISTS idx_history_parent     ON history(parent_gen_id);
 CREATE INDEX IF NOT EXISTS idx_history_child      ON history(child_gen_id);
+
+-- ── 에셋 대장(2026-09-30, docs/ASSET_REGISTRY.md) ─────────────────────────────
+-- PM 프로젝트 공유 루트의 미디어 파일마다 번호(registry_asset_id)를 붙여 이름 변경·이동·고쳐 저장을 따라간다.
+-- 공유 서버가 권위(서버가 훑고 반영). 로컬·계정 DB 에도 표는 생기지만 비어 있다(훑기는 켠 곳에서만).
+-- FK 는 두지 않는다 — 프로젝트 삭제·보관과 대장 이력의 수명을 떼어 둔다(PM 사이드카와 같은 이유).
+--  · path = 프로젝트 루트 기준 상대경로(슬래시, 원래 대소문자). path_cf 는 비교용이며 유일하지 않다.
+--  · state: present | missing(완주·미판정 없는 훑기에서 연속 2번 없을 때). miss_count 가 그 카운터.
+CREATE TABLE IF NOT EXISTS asset_registry (
+    registry_asset_id TEXT PRIMARY KEY,
+    project_id        TEXT NOT NULL,
+    path              TEXT NOT NULL,
+    path_cf           TEXT NOT NULL,
+    name_cf           TEXT NOT NULL,
+    sha256            TEXT NOT NULL,
+    bytes             INTEGER NOT NULL,
+    mtime_ns          INTEGER,
+    state             TEXT NOT NULL DEFAULT 'present',
+    miss_count        INTEGER NOT NULL DEFAULT 0,
+    first_seen        TEXT NOT NULL,
+    last_seen         TEXT NOT NULL,
+    missing_since     TEXT,
+    updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_asset_registry_sha  ON asset_registry(sha256);
+CREATE INDEX IF NOT EXISTS idx_asset_registry_path ON asset_registry(project_id, path_cf);
+CREATE INDEX IF NOT EXISTS idx_asset_registry_name ON asset_registry(name_cf);
+-- 변화만 적는 이력: new | edited | moved(old_path 있음) | missing | back. 바뀌지 않은 파일은 적지 않는다.
+CREATE TABLE IF NOT EXISTS asset_registry_event (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    registry_asset_id TEXT NOT NULL,
+    kind              TEXT NOT NULL,
+    project_id        TEXT NOT NULL,
+    path              TEXT NOT NULL,
+    old_path          TEXT,
+    sha256            TEXT,
+    bytes             INTEGER,
+    at                TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_asset_registry_event_asset ON asset_registry_event(registry_asset_id, id);
+-- 프로젝트마다 마지막 훑기 결과 한 줄(덮어쓴다). complete = 루트 목록을 끝까지 읽음, clean = 미판정·대기 0.
+CREATE TABLE IF NOT EXISTS asset_registry_scan (
+    project_id   TEXT PRIMARY KEY,
+    root         TEXT,
+    state        TEXT NOT NULL,
+    started_at   TEXT,
+    finished_at  TEXT,
+    complete     INTEGER NOT NULL DEFAULT 0,
+    clean        INTEGER NOT NULL DEFAULT 0,
+    files        INTEGER NOT NULL DEFAULT 0,
+    hashed       INTEGER NOT NULL DEFAULT 0,
+    hashed_bytes INTEGER NOT NULL DEFAULT 0,
+    undetermined INTEGER NOT NULL DEFAULT 0,
+    pending      INTEGER NOT NULL DEFAULT 0,
+    elapsed_ms   INTEGER NOT NULL DEFAULT 0,
+    note         TEXT
+);
