@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-29
+updated: 2026-09-30
 status: active
 ---
 
@@ -94,6 +94,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\predeploy_gate.ps1
 `-LoadServerPriority`, `-LoadMaxRssMb`를 명시하고 결과 JSON에 남은 값을 함께 보고한다.
 `-SkipLoad`, `-SkipBackupDrill`, `-AllowDirty` 결과는 빠른 개발 확인용이며 최종 배포 승인 근거로
 사용하지 않는다.
+
+고정 릴리스 폴더(`MV-hub-S-release`)에는 `backend/data` 가 없어 백업·복원 드릴이 기본값(현재 DB)으로는
+`FileNotFoundError` 로 멈춘다. 실제 `content_hub.db` 를 읽기 전용으로 복사해 `-BackupSource <복사본 경로>` 로 준다
+(2026-09-30). 목록 시험(`test_docs_inventory_fresh`)은 직전 제작이 남긴 `release/_staging` 을 건너뛴다.
 
 게이트 스크립트는 환경변수를 넣지 않는다. 백엔드 테스트의 격리는 위 conftest 기본값이 맡는다. 백업·복원 드릴의 기본 실행은
 **현재 DB 를 읽기 전용으로 스냅샷해** 임시 폴더에서 검증한다(원본에 쓰지 않는다 — conftest 의 보호 대상이 아니다). 100명 부하 서버는
