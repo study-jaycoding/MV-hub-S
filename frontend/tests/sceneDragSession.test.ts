@@ -130,4 +130,20 @@ describe("createSceneDragSession", () => {
     expect(h.listenerCount()).toBe(0);
     expect(h.frameCount()).toBe(0);
   });
+
+  it("dispose 뒤에도 같은 세션으로 새 끌기를 시작할 수 있다(씬 전환의 abort 뒤, Codex)", () => {
+    const h = harness();
+    const order: string[] = [];
+    h.session.begin(() => order.push("old-move"), () => order.push("old-up"));
+    h.emit("mousemove", { id: "pending" });
+    h.session.dispose();
+
+    h.session.begin((event) => order.push(`new-move:${event.id}`), () => order.push("new-up"));
+    h.emit("mousemove", { id: "next" });
+    h.flushFrames();
+    h.emit("mouseup");
+
+    expect(order).toEqual(["new-move:next", "new-up"]);
+    expect(h.listenerCount()).toBe(0);
+  });
 });

@@ -50,6 +50,7 @@ updated: 2026-09-30
 | 로그인/가입/계정 승인 | `components/LoginScreen.tsx`(서버 본체 AUTH 로그인), `components/ServerLoginScreen.tsx`(로컬 허브의 팀 서버 로그인 게이트·서버 주소 변경), `lib/useHubAuth.ts` | `routers/auth.py`, `services/auth.py`, `routers/publish.py`(`/api/shared-server/*`), `services/shared_connection.py` | 로컬 허브는 팀 서버 세션이 없으면 라이브러리 대신 게이트를 띄운다 |
 | 창을 Esc/✕ 로 닫는 규칙 | `lib/useEscapeClose.ts`(공용 — 리스너 1회 등록+콜백 ref), `lib/useAppNavigation.ts`(관리자 창·미리보기는 브라우저 history 로 여닫음) | — | 코멘트 패널·Host 콘솔은 Esc 로 안 닫힌다(설계). 회귀 시험 `frontend/tests/escapeCloseNesting.test.tsx` |
 | Assets 파일 탐색기(마운트·트리·업로드) | `components/AssetsView.tsx`, `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/asset_tree.py`, `services/resolve_project_library.py` | `@davinci` 루트는 Resolve 프로젝트 전용 화면 |
+| 에셋 대장(NAS 그림 번호·이름 변경/이동 추적·레퍼런스 찾기 가속·생성 기록의 쓴 판) | `lib/sceneAssetRelink.ts`, `components/admin/AssetRegistryTab.tsx` | `repo/asset_registry.py`(판정), `services/asset_registry.py`(관리자)·`asset_registry_scan.py`(훑기 자식), `routers/asset_registry.py`, `routers/assets.py`(locate '대장 먼저') | 설계·운영 [ASSET_REGISTRY.md](ASSET_REGISTRY.md). 기본 꺼짐(서버에서 켠다) |
 | 프로젝트 CRUD·멤버·역할 | `components/manage/ProjectManagerPanel.tsx` | `routers/projects.py`, `repo/projects.py` | |
 | 작업(Task) 칸반/테이블/캘린더 | `components/manage/WorkBoard.tsx` | `routers/manage.py`, `repo/manage_tasks.py` | 소요시간 표기는 `lib/format.ts` 의 `fmtElapsed` 하나다(`1d2h3m4s`, 초를 버리지 않음, 하루 이상은 `1d1h` — Jay 확정 2026-09-18). PM 창 5곳과 정보 팝업(`InfoPopup`)의 '생성 시간'이 모두 이 함수를 쓴다. 새 뷰도 이 함수를 쓴다 |
 | 크레딧 풀·그룹 한도 설정 | `components/manage/CreditPoolSection.tsx`, `CreditPlanFields.tsx` | `routers/manage.py`(`/api/manage/credit-plan*` — 권한·API 계약), `repo/manage_credit_plan.py` | |
@@ -148,6 +149,7 @@ updated: 2026-09-30
 | `projects.py`(622줄) | `GET /api/projects`·`POST /assign`·`GET /{pid}/folder-counts` 등 (17) | 프로젝트 CRUD·배정·멤버 역할·폴더 카운트 | 19곳 |
 | `manage.py`(2311줄) | `POST /telemetry/push`·`GET /team-overview`·`GET /tasks[-batch]`·`POST /save-finals`·`GET /save-finals/progress`·`POST /save-finals/cancel` (47) | PM 대시보드: 텔레메트리 수신·팀 집계·크레딧 플랜·작업 CRUD·골드 저장 | 11곳. 서로 무관한 5개 도메인이 한 파일(§5) |
 | `workspace_console.py`(102줄) | `GET /console/overview`·`POST /console/workspaces`·`PATCH /console/workspaces/{id}`·`PUT /console/allocation-base`·`PUT /console/main` (5) | 워크스페이스 콘솔(서브스페이스) — `manage.py` 가 include(접두 `/api/manage`) | 없음(서버 권위, 미들웨어가 위임) |
+| `manage_quota.py`(33줄) | `GET /api/manage/credit-plan/my-quota` (1) | 내 크레딧 몫·이번 기간 사용·남은 몫 조회 — 공유 서버 위임·본인 워크스페이스 멤버만. **표시 전용**(생성은 이 값을 확인하지 않는다, 2026-09-30) | 0곳 |
 | `update_notices.py`(174줄) | `GET /api/update-notices`·`POST /admin/register` (7) | 릴리스 공지 등록·고정·공표·읽음 | 0곳(쓰기는 서버 Admin 역할 게이트로 제한 — 프록시 위임과는 다른 종류의 서버 제약) |
 
 **로컬 PC 기능(이 PC 에서만)**
@@ -156,8 +158,10 @@ updated: 2026-09-30
 |---|---|---|---|
 | `assets.py`(1372줄) | `GET /api/assets/{tree\|file\|thumb}`·`/resolve-library/projects`·`POST /resolve-library/{connect-dialog\|open}` 외 (24) | 마운트·폴더 트리·파일/썸네일 서빙·업로드·캡처·zip·탐색기·Resolve 프로젝트 열기 | 0곳 |
 | `assets_metadata.py`(313줄) | `GET /api/assets/meta`·`PUT /tags[/batch]`·`/color[s/batch]`·`POST /comments` (11, `assets.py`에 마운트) | Assets 의 개인 태그·색·코멘트(계정 DB) 와 팀 코멘트(서버 DB) 경계 | 9곳 |
+| `asset_registry.py`(약 300줄) | `POST /api/asset-registry/{lookup\|scan}`·`GET /status`·`/usage/{id}` + 도우미 `helper/{projects\|lease\|renew\|release\|result}` (9) | 에셋 대장 — **공유 서버 권위**(로컬 전용 경로 아님, 데이터 프록시가 서버로 넘김). 조회는 가시 프로젝트만, 훑기·상태는 관리자. 레퍼런스 찾기가 쓰는 `lookup_for_request`(위임 모드면 서버, 아니면 자기 DB). 도우미 PC 결과는 엄격 검증 후 기존 `_apply` 로(§10). 설계 [ASSET_REGISTRY.md](ASSET_REGISTRY.md) | 1곳 |
 | `comfy.py`(1654줄) | `POST /api/comfy/{run\|parse\|save-to-library}`·`GET /run_status\|/unresolved-runs` (11) | ComfyUI(로컬·Cloud) 연결·그래프 파싱·비동기 실행·미회수 결과 수거 | 0곳 |
 | `resolve_integration.py`(364줄) | `POST /api/resolve/transfers`·`GET /api/resolve/{status\|script\|locks}` (10) | DaVinci Resolve 스크립트 설치·연결 진단·전송 접수/재시도 | 1곳 |
+| `registry_helper.py`(약 40줄) | `POST /api/registry-helper/scan`·`GET /status` (2) | 에셋 대장 도우미 훑기 — **이 PC 전용**(`_LOCAL_PREFIXES`). 서버가 NAS 를 못 읽을 때 관리자 PC 가 대신 훑는다(ASSET_REGISTRY §10) | 0곳 |
 | `release_update.py`(131줄) | `GET /api/release-update/status`·`POST /start` (3) | 작업자 PC 앱 업데이트 상태·시작(로컬 요청만) | 0곳 |
 | `console.py`(142줄) | `GET /api/console/summary`·`POST /close-app` (2) | cmd 창 정보(버전·CLI·로그 tail)·앱 종료 | 0곳 |
 | `scenes.py`(86줄) | `GET·PUT /api/scenes/{backup\|cards}` (4) | 브라우저 localStorage 씬·카드링크의 DB 미러 동기화 | 0곳 |
@@ -196,6 +200,7 @@ updated: 2026-09-30
 | `facets.py` | 82 | 필터 사이드바 facet(컬러·태그·자동태그·워커) | `repo.get_facets` |
 | `sources.py` | 170 | 스포트라이트 @/# 피커의 소스 검색 | `repo.search_sources` |
 | `assets.py` | 756 | 분리창 파일 메타 + 에셋 코멘트·생성본 코멘트 두 스레드 전체 | `repo.get_asset_meta`·`list_generation_comments`(33개) |
+| `asset_registry.py` | 340 | 에셋 대장 표 읽기·쓰기 · 훑기 결과 반영(정체 판정 — 순수 함수 `plan_changes` → 한 트랜잭션 `apply_plan`) · 조회(가시 프로젝트 밖은 전부 '없음') · 레퍼런스 번호 연결(지문=판 확인, 이름·경로 정확 일치=가능 연결). **파사드 별표 export 안 함** — `from app.repo import asset_registry` | `plan_changes`·`apply_plan`·`lookup_*`·`attach_reference_registry`·`backfill_reference_links` |
 
 **생성 요청 원장·감사**
 
@@ -266,6 +271,7 @@ updated: 2026-09-30
 | `manage_member_table.py` | 133 | 관리 표 읽기 — 계정(이메일) 한 줄에 그룹·프로젝트 역할·HF 플랜·사용량 조인. **쓰기 없음**. uid 없는·어긋난 계정은 `project_lock` | `member_table` |
 | `workspace_console.py` | 616 | 워크스페이스 콘솔(서브스페이스) — 메인 1·서브 N 표식(`workspace_console` 표), 첫 사용 시드(MILLIONVOLT), 연결·내리기·메인 최초 지정(한 번 정하면 바꾸지 않음 — 409, 등록부에서 사라지면 `main_orphan`), 메인 조율 개요(서브마다 `plan_view` 숫자만) | `workspace_console.overview`·`link_sub`·`set_main` |
 | `console_guard.py` | 43 | 서브스페이스 보호 판정 잎 모듈 — 전환 표식·상태 짝·`managed_sub`·`guard_project_change`·`ConsoleManaged`. 다른 repo 를 import 하지 않아 크레딧 계획·프로젝트·신원 모듈과의 import 순환을 끊는다(`workspace_console` 이 재노출) | `managed_sub`·`guard_project_change` |
+| `manage_quota.py` | 117 | 내 몫 읽기 모델 — 그룹 인당 한도·덮어쓰기·이번 기간 사용(실제+견적). 몫이 없으면(미배정·한도 없음) `pool_total`(이번 달 정기+긴급 충전) | `my_quota` |
 | `manage_transactions.py` | 483 | 계정 크레딧 거래 적재 + 생성물 근접 매칭 | `manage_transactions.record_transactions` |
 | `manage_telemetry.py` | 395 | 로컬 텔레메트리 outbox 저장·조회·전송 정산 | `manage_telemetry.mark_telemetry_dirty*` |
 | `manage_account_reports.py` | 310 | 계정 상태·거래 보고의 내구성 outbox(재시도·409·dead-letter) | `manage_account_reports.queue_account_reports` |
@@ -330,6 +336,9 @@ updated: 2026-09-30
 | `asset_mounts.py` | 계정별 마운트 JSON 저장소(파일 잠금 + 원자 저장) | `routers/assets` |
 | `asset_tree.py`(309줄) | 폴더 트리 재귀 탐색 + TTL 캐시 + 무효화 | `routers/assets` |
 | `asset_watcher.py`(881줄) | watchdog 감시 → 캐시 무효화 + `assets_changed` WS 브로드캐스트 | `main`·`projects` |
+| `asset_registry.py`(약 330줄) | 에셋 대장 관리자(서버, 기본 꺼짐) — 훑기 자식 하나·시간 상한+30초 `taskkill /T /F`·완주 결과만 `BEGIN IMMEDIATE` 한 번에 반영·큰 파일 전용 실행·자동 주기·서버 종료 때 먼저 정리(끊긴 훑기는 기록을 안 덮음). health·ready 와 무관 | `main`(lifespan)·`routers/asset_registry` |
+| `asset_registry_helper.py`(약 230줄) | 에셋 대장 **도우미 PC 훑기**(로컬 허브) — 관리자 상속, 서버 자리(lease)로 프로젝트 전체를 감싸고 결과를 서버로 올림. 시작 때 토큰 고정·공유 주소(UNC) 대조 | `routers/registry_helper`·`main`(종료) |
+| `asset_registry_scan.py`(약 250줄) | 에셋 대장 훑기 **자식 프로세스 전용** — NAS 목록·지문만(DB 안 씀), 폴더 초당 20·지문 1 MiB 속도 상한, 파일 단위 미판정, 부모가 사라지면 스스로 멈춤 | `services/asset_registry`(`python -m`, §2.6) |
 | `project_folders.py` | 프로젝트 Render 루트 상태·폴더 트리 TTL 캐시·탐색기 열기 · 같은 렌더 폴더를 쓰는 다른 프로젝트(`projects_sharing_root` — Z:·UNC 를 맞춰 견주고, 드라이브 대응을 모르면 같을 수 있다고 봐 미러 정리를 막는다) | `manage`·`asset_tree` |
 
 **ComfyUI**
@@ -408,6 +417,7 @@ updated: 2026-09-30
 - `resolve_selection_worker.py` — Media Pool 선택 감시 장기 자식(`resolve_selection_monitor.py` 가 기동, JSONL 1줄 IPC)
 - `resolve_bridge.py` — **상대 import 금지**(부모·자식 양쪽에서 로드됨). import 한 줄만 추가해도 자식 실행이 깨진다
 - `server_relocation.py <source>` — 자식 프로세스 스크립트 겸용, 최상단 상대 import 금지
+- `python -m app.services.asset_registry_scan <job.json>` — 에셋 대장 훑기 자식(`services/asset_registry.py` 가 기동). 무거운 앱 모듈을 불러오지 않는다(`media_types` 만) — SMB 에 멈추면 부모가 프로세스째 끝낸다
 - `worker_backup.py` 의 `_main`(별도 프로세스) — 작업자 개인 DB 백업 세트 전달
 - `resources/resolve/MVHub_Clip_Exporter.py`·`MVHub_Importer.py` — Resolve Workspace›Scripts 메뉴에서만 진입(외부 무의존)
 - `read_utf8_sig_first_line.py` — `print()` 가 자식 프로세스 IPC 채널로 쓰이는 모듈 중 하나(§5 참고)
@@ -535,6 +545,7 @@ updated: 2026-09-30
 | `AdminWindow.tsx`(618줄) | 관리자 창(탭 호스트) + 권한 상승 확인 + 서버 이전 공지 | `AdminWindow` |
 | `admin/ApprovalTab.tsx`(143줄) | 계정 승인·숨김·비번 초기화 표 | 〃 |
 | `admin/MemberRolesTab.tsx`(82줄) | 전역 역할 표 | 〃 |
+| `admin/AssetRegistryTab.tsx`(약 150줄) | 에셋 대장 — 프로젝트별 마지막 훑기 상태 표 + [지금 훑기](한 번 더 확인). 영구 관리자(system)만 | 〃 |
 | `admin/RolePickers.tsx`(70줄) | 전역/프로젝트 역할 선택기 + 정렬 랭크 | 〃 |
 | `admin/ProjectRenderTree.tsx`(29줄) | 프로젝트 렌더 폴더 트리 표시 | 〃 |
 | `LoginScreen.tsx`(92줄) / `ServerLoginScreen.tsx`(230줄) | 로컬 AUTH 로그인 / 팀 서버 로그인·가입 | 각 컴포넌트 |
@@ -605,6 +616,7 @@ updated: 2026-09-30
 | `manage/MemberTable.tsx`(264줄) | **관리 표** — 계정 한 줄에 등급·크레딧 그룹·프로젝트 참여·보고된 사실. 칸을 고치면 기존 API 로 즉시 저장(직렬 큐 → 큐가 비면 재조회). 설계 `docs/MEMBER_TABLE_DESIGN.md` | `MemberTable` |
 | `manage/WorkspacePicker.tsx`(78줄) | 대시보드 머리의 **워크스페이스 선택** — 서브스페이스 머리 모양 단추(이름 ▾) + 단추 밖 메인/서브 칩, 펼치면 서브스페이스 순서(`console_tier`·`console_order`, `/api/manage/workspaces`) | `WorkspacePicker` |
 | `manage/console/WorkspaceConsole.tsx` · `ConsoleSubView.tsx` · `ConsoleMainParts.tsx` · `CreditCalendar.tsx` · `ConsoleFilterBar.tsx` · `ConsoleFolderDialog.tsx` · `ConsolePeriodDialog.tsx` | **서브스페이스 탭** — 왼쪽 목록(상태 묶음·끌기) + 메인(풀 카드·서브 표·달력) / 서브(그룹·참가자·크레딧). 서브 상태·보관·기획·순서·렌더 폴더·기간은 **프로젝트 관리 창과 같은 API**, 크레딧 쓰기는 `useManageEditConflict().saveCredit` | `WorkspaceConsole`·`ConsoleSubView`·`CreditCalendar` |
+| `manage/useManageEditConflict.tsx`(134줄) | 관리 설정·프로젝트 기획 저장의 revision 충돌(409) 창 — 바뀐 칸을 보여 주고 칸마다 내 값/최신 값을 골라 병합 저장 | `useManageEditConflict` |
 | `manage/WorkBoard.tsx`(892줄) | 작업 탭 컨테이너 — 병합·필터·핸들러 주입. 머리글 오른쪽 = 검색 상자 · 보관 기록(아이콘) · 내 작업만 · 보기 전환 | `WorkBoard` |
 | `manage/WorkFilterBar.tsx`(280줄) | 노션식 칩 필터 바(칩 · +필터) + 머리글에 놓이는 검색 상자 `WorkSearchBox` | 〃 |
 | `manage/KanbanBoard.tsx`(179줄 — 폴더 자동 작업은 상태가 컷에서 파생되므로 끌 수 없다, 수동 작업만 끌기) · `TableView.tsx`(351줄) · `CalendarView.tsx`(206줄) · `MonthlyTaskCalendar.tsx`(190줄) | 작업 뷰 4종(프레젠테이션 전용, `WorkViewProps` 주입) — 소요시간 포맷터가 뷰마다 다름(§5-b) | 〃 |
@@ -630,6 +642,7 @@ updated: 2026-09-30
 | `batching.ts` | 순수 | 서버 배치 상한(500) 분할 |
 | `assetUrls.ts` | 순수 | 에셋 트리·파일·썸네일·코멘트 URL 생성 |
 | `assetsApi.ts` | api | 에셋 트리/메타/색·태그/마운트/DB 백업·복원 HTTP |
+| `assetRegistryApi.ts` | api | 에셋 대장 상태·수동 훑기 HTTP(관리자 창) |
 | `authApi.ts` | api | 로그인·계정 관리 HTTP |
 | `comfyApi.ts` | api | Comfy 파싱·실행·저장·미회수 실행 HTTP |
 | `manageApi.ts` | api | PM 대시보드·크레딧 플랜·작업 HTTP(+구서버 폴백) |
@@ -747,17 +760,18 @@ updated: 2026-09-30
 | `bulkGenerationActions.ts` | 순수 | 일괄 실행기(`runGenerationBulk` — 주입받은 비동기 작업을 돌려 실패 수 집계, `runGenerationTrash` — 휴지통 전용: 공유 중 409 를 '건너뜀'으로 따로 센다) + 결과·확인 문구 |
 | `shareMirrorPending.ts` | 순수 | 공유 미러 대기 안내 래핑 |
 
-**9. 씬·캔버스 — 데이터·저장·복구(9)**
+**9. 씬·캔버스 — 데이터·저장·복구(10)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `scenes.ts` | 저장+store | 씬(카드·연결·카메라) localStorage 데이터 계층 + 내보내기/가져오기 |
-| `sceneAssetRelink.ts` | api+store | 옛 로컬 에셋 참조를 프로젝트 원본으로 재연결하고 씬 저장 갱신 |
+| `sceneAssetRelink.ts` | api+store | 옛 로컬 에셋 참조를 프로젝트 원본으로 재연결하고 씬 저장 갱신 · 서버 판정 기억(계정별 localStorage — 판정 받은 참조는 다음 실행에 NAS 를 다시 안 훑음) · '레퍼런스 찾기' 단추(이 씬만·render 포함)와 자동 복구를 한 줄로 |
 | `sceneBackup.ts` | api+store | 씬 localStorage → DB 단방향 미러·복구 |
 | `sceneCardLinks.ts` | api+store | 카드 소속(담긴 생성물) 로컬 DB 기록·서버 병합 |
 | `sceneUndoStore.ts` | store | 씬별 undo/redo 히스토리(언마운트 생존) |
 | `sceneGenDataStore.ts` | store | genId → 생성물 캐시(언마운트 생존) |
 | `sceneRecentDoneStore.ts` | store | '방금 생성됨' glow 상태(언마운트 생존, 버전 구독) |
+| `sceneZoomStore.ts` | store | 캔버스 확대 % — 툴바 % 글자만 구독(휠마다 App 전체 재렌더 방지) |
 | `sceneWorkspace.ts` | 순수 | 씬별 워크스페이스 지정·탭 순서 이동(연산 기반) |
 | `canvasGenerationRecovery.ts` | 순수 | create-first 링크(attempt_id) 생성·정착·재조정 |
 | `canvasDetached.ts` | 순수 | 카드에서 떨어진 생성물 판정 |
@@ -769,7 +783,7 @@ updated: 2026-09-30
 | `sceneEdges.ts` | 순수 | 연결 기하·그래프·실행 계획·Comfy 출력·엣지 역할 — 캔버스 계산 중심 | 약 1,380줄. 씬 구역의 실질적 병목(§5) |
 | `sceneDerive.ts` | 순수 | 그룹 사각형·참조 정합·빈 그룹 제거 |
 | `sceneInteractions.ts` | 순수 | 스냅·리사이즈·복사/붙여넣기·드롭 분류·그룹 재배정 |
-| `sceneViewport.ts` | 순수 | 카메라 줌·팬·프레이밍 계산 |
+| `sceneViewport.ts` | 순수 | 카메라 줌·팬·프레이밍 계산 · 컬링 문턱·단순화 배율 · 미니맵 보는 영역 상자(정수 px) |
 | `sceneLayout.ts` | 순수 | 선택 노드 자동 정렬(열 분해) |
 | `sceneAutoConnect.ts` | 순수 | `c` 자동 연결 계획 |
 | `sceneKeyboard.ts` | 순수 | 캔버스 키 의도(전체 선택 포함)·Escape 우선순위 |
@@ -791,8 +805,8 @@ updated: 2026-09-30
 | `useSceneCardMove.ts` | 훅 | 카드 드래그 이동·그룹 재배정·이탈 |
 | `useSceneGroupMove.ts` | 훅 | 그룹 드래그 이동 |
 | `useSceneCardResize.ts` | 훅 | 카드 리사이즈 드래그 |
-| `useSceneMarqueeSelection.ts` | 훅 | 캔버스 마퀴 선택 |
-| `useSceneDragSession.ts` | 훅 | `createSceneDragSession` 에 window/rAF 주입 |
+| `useSceneMarqueeSelection.ts` | 훅 | 캔버스 마퀴 선택(캔버스 사각형은 상태 없이 요소를 직접 옮김 · `previewSelection` 이 있으면 끄는 동안은 선택 표시만, 손 떼거나 blur 때 한 번 확정 · `settle` = 다른 입력 전에 지금 확정, `forget` = 버린 끌기 잊기) |
+| `useSceneDragSession.ts` | 훅 | `createSceneDragSession` 에 window/rAF 주입 · `abort`(마지막 움직임 반영 없이 버림 — 씬 전환용) |
 | `useSceneHistory.ts` | 훅 | 씬 undo/redo 조작 |
 | `useSceneKeyboardShortcuts.ts` | 훅 | 캔버스 단축키 배선 |
 | `useSceneClipboardDrop.ts` | 훅 | 붙여넣기·파일/에셋 드롭 처리 |
@@ -855,6 +869,8 @@ updated: 2026-09-30
 | `creditPlan.ts` | 순수 | 크레딧 풀·그룹 인당 한도·잔액 추이 타입 + 설정 초안 검증 | 약 415줄 |
 | `memberTable.ts` | 순수 | 관리 표 응답 타입 · 그룹 한 줄 저장 본문(`groupAssignBody` — 받은 그룹 전부 재전송·허용 모델 키 생략) · 역할 낙관 반영 | 약 83줄 |
 | `workspaceConsole.ts` | 순수 | 콘솔 개요 응답 타입 · 크레딧 본문(`topupAddBody`·`recurringPlanBody`·`recurringEditBody` — 날짜 안 만지면 다음 주기 시작) · 서브스페이스·관리 표 공용 `syncConsoleStatus`(콘솔 상태→보관→기획)·`nextRecurringDay`·`consoleLimitView` | 약 256줄 |
+| `creditPlanMerge.ts` | 순수 | 크레딧 설정·기획 저장 충돌의 칸 단위 비교·병합(`mergeCreditPlan`·`mergePlanning`)과 칸 이름 표기 | 약 173줄 |
+| `myCreditQuota.ts` | 훅 | 계정 메뉴의 내 몫 조회(`useMyCreditQuota`, 메뉴 열린 동안 30초·이벤트 갱신)·몫 유무 판정(`hasPersonalQuota`·`showsWorkspacePool`) | 약 97줄 |
 | `projectPlanning.ts` | 순수 | 프로젝트 예산 기간·입력 검증 |
 | `usageReport.ts` | 순수 | 사용량 CSV(주입 방지 포함)·출력 종류 집계 |
 | `usagePeriod.ts` | 순수 | 기간 범위·추이 버킷 채우기·라벨 |
@@ -941,7 +957,7 @@ updated: 2026-09-30
 | `base.css` | 104 | 전역 변수(`:root` 24개)·리셋 — 화면 특정 아님 |
 | `app-shell.css` | 796 | 최상위 앱 셸(`TopBar`·상단 메뉴) |
 | `generations.css` | 907 | 라이브러리 그리드·카드(`ThumbnailGrid`·`GenerationCard`). ★**끝없이 도는 CSS 애니메이션은 합성 가능한 속성(transform·opacity)만** — `background-position`·`box-shadow` 를 무한으로 움직이면 요소 하나만 화면에 있어도 브라우저가 매 프레임 다시 그려 가만히 둔 탭이 CPU 를 계속 쓴다(골드 광택 실측: 0장 1% · 1장 24~38% of one core). 팀 탭 새 항목 글로우(`.card.fresh`)도 같은 이유로 **멈춘 빛**이다(box-shadow 무한: 1장 42~49% · 19장 86~124% → 정지 2~3%. opacity 층으로 바꿔도 절반이 남았다 — 끝없이 도는 한 합성 비용은 남는다). ★**부드러운 무한 애니메이션은 opacity·transform 이어도 비싸다**(화면에 하나만 있어도 페이지를 초당 60번 새로 합친다 — '생성 중' 로고 1장 17%). 그래서 장식은 멈추고 '진행 중' 표시만 계단식 `steps(4)`(17% → 3%)로 남긴다. 계약 시험 = `frontend/tests/idleCssAnimations.test.ts`(모든 CSS 의 `infinite` 는 같은 선언에 `steps(` — 예외는 재서 비용이 없던 11px 알림 스피너 선언 하나). 전수 조사 기록 = `docs/status/브라우저실측_2026-09-19.md` "부하 전수 조사" |
-| `scene.css` | 1514 | 씬 캔버스(`scene/`) — 비슷한 이름의 클래스가 많다(§5-b) |
+| `scene.css` | 1574 | 씬 캔버스(`scene/`) — 비슷한 이름의 클래스가 많다(§5-b). ★**카드 안에 스크롤 칸을 새로 만들 때 기본 규칙에 `overflow:auto` 를 쓰지 않는다** — 파일 앞쪽 "카드 안 스크롤 칸" 규칙 한 쌍의 목록에 넣는다(평소 hidden, 호버·포커스한 카드만 auto, 막대 숨김). 넘치는 auto 칸은 합성 레이어가 되고 그 위에 겹친 포트·배지까지 레이어가 되어, 큰 씬에서 화면 이동·확대가 끊겼다(기록 = `docs/status/캔버스_버벅임_2026-09-29.md`) |
 | `prompt-dock.css` | 566 | 스포트라이트 프롬프트 도크(`SpotlightPrompt`·`spotlight/`) |
 | `history.css` | 216 | 히스토리 보드(계보 그래프). 최종 노드는 `content-visibility` 가 풀려 있어 화면 밖에서도 그린다 — 여기에 무한 애니메이션을 두지 않는다 |
 | `assets.css` | 963 | Assets 분리창(`AssetsView`·`assets/`) |
@@ -1145,6 +1161,8 @@ updated: 2026-09-30
 - `lib/` 의 이름 규칙이 4가지로 섞여 있다: "이름 + use이름"(`menuPlacement`/`useMenuPlacement`, `sceneDragSession`/`useSceneDragSession`, `gradeStep`/`useGradeStep`), "이름 + 이름Core"(`modelPolicy`/`modelPolicyCore`), "이름 + 이름Cache"(`modelCatalog`/`modelCatalogCache`), "이름Store"(`sceneGenDataStore` 등). 어느 쪽이 순수이고 어느 쪽이 IO 인지 이름만으로 안 갈린다.
 - `SpotlightRefRoleMenu`(spotlight) 의 `startReorder` ↔ `SceneBoard.tsx` 의 `startReorder` — 같은 이름, 다른 파일의 다른 구현.
 - `repo/manage.py`·`repo/manage_tasks.py`·`routers/manage.py`·`manage_db.py`(최상위) — 전부 "manage" 접두인데 계층이 다르다(라우터/repo 파사드/작업 CRUD/PM 전용 DB).
+- **에셋 대장 번호 `registry_asset_id` ≠ 생성 결과물 `asset.id`** — `asset` 표(`schema.sql`)는 생성 결과물이고 `generations.py` 도 그 id 를 `asset_id` 라 부른다. 대장 번호는 NAS 파일의 논리 번호다(Codex P1, 2026-09-30). 같은 파일 이름 `asset_registry.py` 가 repo·services·routers 세 계층에 있다(표·관리자·API).
+- **locate '대장 먼저'가 직접 잇는 것은 이동(옮기기 전 경로)·번호·지문 후보뿐** — 지금 경로가 참조와 같은 후보는 직접 훑기가 잇고 대장은 번호만 붙인다. 이것까지 대장이 지문 대조하면 찾기가 6배 느려지고(실측 335MB), 대장만 믿으면 PM 만 세어 개인 폴더의 같은 경로 다른 파일을 놓친다(Codex, 2026-09-30).
 
 ### (c) "호출자처럼 보이지만 아닌 것"
 
@@ -1175,6 +1193,7 @@ updated: 2026-09-30
 - **로깅 경로가 둘이다(services).** 구조화 `log_event`(10개 파일)와 맨 `print()`(`asset_watcher`·`syncer`·`backup`·`thumbs`). `print` 중 일부(`resolve_probe`·`resolve_import_worker`·`resolve_selection_worker`·`server_relocation`·`read_utf8_sig_first_line`)는 **자식 프로세스의 IPC 채널**이라 로거로 바꾸면 안 된다 — 그 구별이 코드에서 바로 안 보인다.
 - **저장 모드가 4가지(`live`/`deferUser`/`persistUser`/`persistDerived`, `SceneBoard.applyCards`)인데 이를 우회하는 직접 `persist()` 호출이 아직 10곳 넘게 남아 있다.** 어느 편집이 undo 스택에 쌓이는지 호출부마다 확인해야 한다.
 - **"파이썬 실행파일 찾기"가 스크립트마다 3가지 변종(4단계/3단계/2단계)으로 8개 이상 파일에 흩어져 있다**(`run_py.bat`·`MV_agent.bat`·`MV_watchdog.bat`·`MV_server.bat`·`test_push-db.bat`·`test_pull-db.bat`·`tools/update_git_worker.bat` 등). 새 후보 경로를 넣으려면 이 파일들을 다 찾아 고쳐야 한다.
+- **캔버스 선택을 읽는 길이 둘이다 — React 상태(`selected`·`selectedRef`)와 화면의 `.scene-card.sel`·그룹 `.selected`.** 범위 선택을 끄는 동안에는 `SceneBoard.paintMarqueePreview` 가 화면 표시만 직접 바꾸고 상태는 손을 뗄 때 바뀌므로 둘이 다르다(2026-09-30). 선택이 필요한 코드는 상태를 읽고, 화면의 `.sel` 로 판단하지 않는다.
 
 ---
 

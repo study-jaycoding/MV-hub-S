@@ -6,7 +6,7 @@ tags:
   - mvhub
   - mvhub/구조
   - 기준문서
-updated: 2026-09-18
+updated: 2026-09-30
 status: active
 ---
 
@@ -86,6 +86,7 @@ services    asset_tree·cli_bridge·media_cache·thumbs·syncer·resolve_*·
 |---|---|---|
 | `services/resolve_*` | DaVinci Resolve 전송 | 코드가 현행 기준(설계 이력은 [docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md)) |
 | `services/server_relocation.py` | 공유 서버 주소 이사 공지 발행·수신·전환 | [docs/SERVER_RELOCATION.md](docs/SERVER_RELOCATION.md) |
+| `services/asset_registry*` | 에셋 대장 — NAS 훑기(자식 프로세스)·정체 판정 반영·조회 | [docs/ASSET_REGISTRY.md](docs/ASSET_REGISTRY.md) |
 | `services/telemetry_drain*` | 관리 텔레메트리 전송·재시도·마지막 성공 관측 | [docs/TELEMETRY_DRAIN_LIFECYCLE.md](docs/TELEMETRY_DRAIN_LIFECYCLE.md) |
 | `services/cli_bridge.py` | Higgsfield CLI 호출 경계(필드 매핑·pin) | [docs/HF_CLI_UPGRADE.md](docs/HF_CLI_UPGRADE.md) |
 

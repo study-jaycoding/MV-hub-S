@@ -12,7 +12,10 @@ param(
     [switch]$SkipBackupDrill,
     [switch]$AllowDirty,
     [string]$PythonExe = "",
-    [string]$ReportDirectory = ""
+    [string]$ReportDirectory = "",
+    # Source DB for the SQLite backup/restore drill (default: the current DB). The fixed release folder has
+    # no backend/data, so pass a copy of a real content_hub.db here (2026-09-30).
+    [string]$BackupSource = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -157,7 +160,9 @@ try {
 
     if (-not $SkipBackupDrill) {
         Invoke-Checked "SQLite online backup and restore drill" {
-            & $PythonExe (Join-Path $ProjectRoot "tools\verify_backup_restore.py")
+            $DrillArgs = @()
+            if ($BackupSource) { $DrillArgs += @("--source", $BackupSource) }
+            & $PythonExe (Join-Path $ProjectRoot "tools\verify_backup_restore.py") @DrillArgs
         }
     }
     else {

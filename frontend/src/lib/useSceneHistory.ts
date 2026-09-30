@@ -23,6 +23,7 @@ import {
   reviveCardGenerations,
   serverCardLinks,
 } from "./sceneCardLinks";
+import { relinkCards, type RelinkTarget } from "./sceneAssetRelink";
 
 interface UseSceneHistoryOptions {
   sceneId: string;
@@ -220,6 +221,17 @@ export function useSceneHistory({
     persistSceneHistory(sceneIdRef.current);
   };
 
+  // 자산 자동 복구(옛 참조 → 원본 경로)를 과거 스냅샷에도 입혀, undo/redo 가 옛 참조를 되살리지 않게 한다.
+  const propagateAssetRelinkToHistory = (workspaceId: string, found: Map<string, RelinkTarget>) => {
+    const patchSnapshot = (snapshot: SceneSnap): SceneSnap => {
+      const { cards, changed } = relinkCards(snapshot.cards, workspaceId, found);
+      return changed ? { ...snapshot, cards } : snapshot;
+    };
+    undoStackRef.current = undoStackRef.current.map(patchSnapshot);
+    redoStackRef.current = redoStackRef.current.map(patchSnapshot);
+    persistSceneHistory(sceneIdRef.current);
+  };
+
   const pruneGenIdsFromHistory = (cardId: string, removed: Set<string>) => {
     const patchCard = (card: SceneCard): SceneCard => {
       if (card.id !== cardId) return card;
@@ -264,6 +276,7 @@ export function useSceneHistory({
     commitDerivedState,
     hasUncommittedCardsOrEdges,
     propagateGenIdsToHistory,
+    propagateAssetRelinkToHistory,
     pruneGenIdsFromHistory,
     undo,
     redo,

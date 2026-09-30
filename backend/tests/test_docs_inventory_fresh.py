@@ -19,6 +19,18 @@ def _load_generator():
     return module
 
 
+def test_release_staging_copy_is_not_scanned(tmp_path, monkeypatch):
+    """make_release 가 남기는 release/_staging(직전 배포판 복사본, git 무시)은 목록에 섞이지 않는다 —
+    릴리스 폴더의 사전 게이트가 이것 때문에 떨어졌다(2026-09-30)."""
+    gen = _load_generator()
+    (tmp_path / "release" / "_staging" / "tools").mkdir(parents=True)
+    (tmp_path / "release" / "make_release.bat").write_text("@echo off\n", encoding="utf-8")
+    (tmp_path / "release" / "_staging" / "tools" / "old_copy.bat").write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(gen, "ROOT", tmp_path)
+
+    assert [p.name for p in gen.files("release", ".bat")] == ["make_release.bat"]
+
+
 def test_generated_inventory_matches_the_code():
     gen = _load_generator()
     rendered = gen.render()

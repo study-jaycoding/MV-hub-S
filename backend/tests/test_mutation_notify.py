@@ -57,6 +57,7 @@ def test_asset_writes_use_only_the_asset_refresh_channel():
     assert notification_domains("POST", "/api/assets/comments/read", 200) == (DOMAIN_ASSETS,)
     assert notification_domains("POST", "/api/assets/reveal", 200) == ()
     assert notification_domains("POST", "/api/assets/clipboard-copy", 200) == ()
+    assert notification_domains("POST", "/api/assets/locate", 200) == ()  # 자동 복구 찾기는 읽기뿐
 
 
 def test_manage_writes_use_manage_channel_and_hf_cleanup_also_changes_library():

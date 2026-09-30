@@ -383,6 +383,17 @@ def test_predeploy_gate_defaults_to_a_repeatable_low_spec_server_profile():
     assert "load_max_rss_bytes_observed" in gate
 
 
+def test_predeploy_gate_can_point_the_backup_drill_at_a_source_db():
+    """고정 릴리스 폴더엔 backend/data 가 없어 백업 연습이 FileNotFoundError 로 떨어졌다 — 원본을 -BackupSource 로
+    넘길 수 있어야 한다(2026-09-30)."""
+    project_root = Path(__file__).resolve().parents[2]
+    gate = (project_root / "tools" / "predeploy_gate.ps1").read_text(encoding="utf-8")
+
+    assert '[string]$BackupSource = ""' in gate
+    assert '$DrillArgs += @("--source", $BackupSource)' in gate
+    assert 'verify_backup_restore.py") @DrillArgs' in gate
+
+
 def test_https_soak_runner_enforces_the_documented_low_spec_profile():
     project_root = Path(__file__).resolve().parents[2]
     soak = (project_root / "tools" / "run_https_soak.ps1").read_text(encoding="utf-8")

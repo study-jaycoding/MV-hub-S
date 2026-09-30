@@ -712,6 +712,8 @@ def _to_generation_out(payload: dict[str, Any]) -> dict[str, Any]:
             "file_path": r.get("file_path", ""), "thumbnail_path": r.get("thumbnail_path"),
             "source": r.get("source"), "role": gr.get("role"),
             "source_url": r.get("source_url"), "cached": _cached(r.get("file_path")),
+            "content_sha": r.get("content_sha"), "content_bytes": r.get("content_bytes"),
+            "registry_asset_id": r.get("registry_asset_id"), "version_verified": r.get("version_verified"),
         }
 
     return {

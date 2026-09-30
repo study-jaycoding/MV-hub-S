@@ -103,6 +103,21 @@ MEDIA_PRESERVATION_ENABLED = os.environ.get(
     "CONTENT_HUB_MEDIA_PRESERVATION", "0"
 ).lower() in ("1", "true", "yes", "on")
 
+# ── 에셋 대장(docs/ASSET_REGISTRY.md) ─────────────────────────────────────
+# 켠 곳(공유 서버)만 PM 프로젝트 루트를 훑어 파일마다 번호를 붙인다. 기본은 꺼짐 — 첫 전체 훑기는 관리자가
+# 사람 적은 시간에 수동으로 하고(POST /api/asset-registry/scan), 자동 주기는 NAS 부하를 잰 뒤에 켠다.
+ASSET_REGISTRY_ENABLED = os.environ.get("CONTENT_HUB_ASSET_REGISTRY", "0").lower() in ("1", "true", "yes", "on")
+# 자동 훑기 간격(분). 0 = 자동 없음(수동만).
+ASSET_REGISTRY_INTERVAL_MIN = float(os.environ.get("CONTENT_HUB_ASSET_REGISTRY_INTERVAL_MIN", "0") or 0)
+# 서버가 볼 드라이브 → 공유 주소. 드라이브 글자는 PC 마다 다르고 서비스 계정엔 안 보일 수 있다.
+# 예: "Z:=\\192.168.1.203\millionvolt;X:=\\192.168.1.51\millionvolt"
+ASSET_REGISTRY_DRIVES = os.environ.get("CONTENT_HUB_ASSET_REGISTRY_DRIVES", "")
+# 지문 읽기 속도 상한(MiB/초) "수동,자동" — NAS·작업자 체감 부하를 막는 손잡이(Codex 권장 시작값 8,5).
+ASSET_REGISTRY_MIBPS = os.environ.get("CONTENT_HUB_ASSET_REGISTRY_MIBPS", "8,5")
+# 도우미 PC 훑기 결과를 받는다(서버가 NAS 를 못 읽을 때 — 관리자 PC 가 대신 훑어 올린다). 서버 자체 훑기와 독립.
+# 서버는 이때도 DRIVES 대응표가 있어야 한다(도우미 PC 가 같은 공유를 훑는지 공유 주소로 대조한다).
+ASSET_REGISTRY_HELPER = os.environ.get("CONTENT_HUB_ASSET_REGISTRY_HELPER", "0").lower() in ("1", "true", "yes", "on")
+
 # 서버 바인딩 — 인증이 꺼진 개인/개발 모드는 기본적으로 로컬에만 묶는다. 공유 서버 스크립트는
 # CONTENT_HUB_AUTH=1 + CONTENT_HUB_HOST=0.0.0.0 을 명시하므로 LAN 공개 동작은 그대로 유지된다.
 HOST = os.environ.get(

@@ -74,6 +74,7 @@ def test_finite_override_and_exhausted_remaining():
         "estimated_count": 1, "unknown_count": 0, "used": 4000.0, "remaining": 0.0, "exhausted": True,
         "limit_period": "month", "period_start": "2026-09-01T00:00:00+09:00",
         "period_end": "2026-10-01T00:00:00+09:00", "revision": 7, "enforcement": "advisory",
+        "pool_total": None,  # 몫이 있는 사람에게는 충전 총량을 주지 않는다
     }
 
 
@@ -108,6 +109,63 @@ def test_override_is_finite_even_in_unlimited_group(quota):
     unlimited = my_quota("ws1", "b@x")
     assert (unlimited["source"], unlimited["quota"], unlimited["remaining"]) == ("unlimited", None, None)
     assert unlimited["limit_period"] == "month"
+
+
+def test_unlimited_member_gets_this_cycles_pool_total():
+    """제한 없음이면 계정 메뉴 고리의 분모 = 정기 충전 + 이번 충전 달 긴급 충전(Jay 2026-09-29)."""
+    _group(None, quotas={"a@x": None, "b@x": 500})
+    with db.get_connection() as conn:
+        conn.execute("UPDATE workspace_credit_plan SET recurring_topup=20000 WHERE workspace_id='ws1'")
+        conn.executemany(
+            "INSERT INTO workspace_credit_topup(id, workspace_id, day, credits) VALUES(?, 'ws1', ?, ?)",
+            [("t-now", "2026-09-10", 3000), ("t-old", "2026-08-20", 999)],  # 지난달 충전은 빠진다
+        )
+    assert my_quota("ws1", "a@x")["pool_total"] == 23000
+    assert my_quota("ws1", "b@x")["pool_total"] is None  # 몫이 있는 사람은 주지 않는다
+    # 서브스페이스가 정기 크레딧을 매주·매일 자동으로 주면 '이번 달 총량' 이 맞지 않아 주지 않는다(고리 숨김) — 수동은 달 단위 그대로
+    with db.get_connection() as conn:
+        conn.execute("UPDATE workspace_credit_plan SET recurring_auto=1, recurring_period='week' WHERE workspace_id='ws1'")
+    assert my_quota("ws1", "a@x")["pool_total"] is None
+    with db.get_connection() as conn:
+        conn.execute("UPDATE workspace_credit_plan SET recurring_auto=0 WHERE workspace_id='ws1'")
+    assert my_quota("ws1", "a@x")["pool_total"] == 23000
+    with db.get_connection() as conn:
+        conn.execute("UPDATE workspace_credit_plan SET recurring_auto=1, recurring_period='month' WHERE workspace_id='ws1'")
+    with db.get_connection() as conn:
+        conn.execute("UPDATE workspace_credit_plan SET recurring_topup=NULL WHERE workspace_id='ws1'")
+        conn.execute("DELETE FROM workspace_credit_topup")
+    assert my_quota("ws1", "a@x")["pool_total"] is None  # 충전을 모르면 고리를 그리지 않는다
+    # 손 입력이 없으면 프로젝트 '매월 예산' 합에서 파생한다(대시보드 월 충전과 같은 규칙)
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO project(id, name, kind, workspace_scope, workspace_id, workspace_name) "
+            "VALUES('p1', 'P', 'team', 'team', 'ws1', 'WS1')"
+        )
+    from app.repo import manage
+
+    manage.set_planning("p1", budget_credits=20000, budget_period="month")
+    assert my_quota("ws1", "a@x")["pool_total"] == 20000
+
+
+def test_unassigned_member_also_sees_the_workspace_pool():
+    """그룹에 들지 않은 사람도 기본으로 워크스페이스 남은 크레딧을 본다(Jay 2026-09-29) — 고리 분모가 같다."""
+    _group(900, quotas={"b@x": None})
+    with db.get_connection() as conn:
+        conn.execute("UPDATE workspace_credit_plan SET recurring_topup=20000 WHERE workspace_id='ws1'")
+        conn.execute(
+            "INSERT INTO workspace_credit_topup(id, workspace_id, day, credits) VALUES('t-now', 'ws1', '2026-09-10', 3000)"
+        )
+    result = my_quota("ws1", "a@x")
+    assert (result["source"], result["quota"], result["pool_total"]) == ("unassigned", None, 23000)
+    assert my_quota("ws1", "b@x")["pool_total"] is None  # 몫이 있는 사람은 주지 않는다
+    with db.get_connection() as conn:
+        conn.execute("UPDATE workspace_credit_plan SET recurring_topup=NULL WHERE workspace_id='ws1'")
+        conn.execute("DELETE FROM workspace_credit_topup")
+    assert my_quota("ws1", "a@x")["pool_total"] is None  # 충전을 모르면 고리를 그리지 않는다
+    assert my_quota("ws2", "a@x")["pool_total"] is None  # 계획이 아예 없는 공간도 그대로 동작한다
+    with db.get_connection() as conn:
+        conn.execute("UPDATE workspace_credit_plan SET recurring_topup=0 WHERE workspace_id='ws1'")
+    assert my_quota("ws1", "a@x")["pool_total"] == 0  # 0 은 '모름'이 아니다 — 이번 달 충전 0
 
 
 def test_unassigned_has_no_quota_or_period_but_preserves_revision():

@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import io
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -16,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
 from app.routers import assets
@@ -414,11 +416,12 @@ class AssetIoTests(unittest.TestCase):
             invalidate.assert_called_once_with(root)
 
     def test_capture_route_saves_image_without_leaving_temp_file(self) -> None:
-        # ★2026-09-28: 붙여넣기·부분수정 그림도 **프로젝트 폴더의 imports** 에 저장한다.
+        # ★2026-09-29 Jay "옛 방식": 붙여넣기·부분수정 그림은 **이 PC 설치 폴더의 captures** 에 둔다.
+        #  폼의 project 는 받되 쓰지 않는다(NAS 프로젝트 폴더로 올리지 않는다).
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             root = Path(tmp_dir)
-            proj = root / "proj"
-            proj.mkdir()
+            nas = root / "nas"
+            nas.mkdir()
             upload = UploadFile(filename="capture.png", file=io.BytesIO(b"capture-image"))
             offloaded: list[object] = []
 
@@ -428,32 +431,31 @@ class AssetIoTests(unittest.TestCase):
 
             with (
                 patch.object(assets, "ASSETS_ROOT", root),
-                patch.object(assets, "_safe_project_dir", return_value=proj),
+                patch.object(assets, "_safe_project_dir", return_value=nas),
                 patch.object(assets.asset_tree, "invalidate_project_tree"),
-                patch.object(assets, "to_thread_non_abandon", side_effect=non_abandon) as offload,
+                patch.object(assets.asset_tree, "invalidate_combined_tree") as combined,
+                patch.object(assets, "to_thread_non_abandon", side_effect=non_abandon),
             ):
                 result = asyncio.run(
                     assets.upload_capture(SimpleNamespace(), project="proj", file=upload)
                 )
 
-            self.assertEqual(result["project"], "proj")
-            self.assertTrue(result["path"].startswith("imports/"))
-            self.assertEqual((proj / result["path"]).read_bytes(), b"capture-image")
+            self.assertEqual(result["project"], "captures")
+            self.assertNotIn("/", result["path"])  # 설치 폴더 captures 바로 아래
+            self.assertEqual((root / "captures" / result["path"]).read_bytes(), b"capture-image")
+            self.assertEqual(list(nas.iterdir()), [])  # NAS 쪽에는 아무것도 안 생긴다
             self.assertEqual(list(root.rglob(".upload-*.part")), [])
-            self.assertEqual(offload.await_count, 2)
-            # NAS 목적지 준비와 커밋+토큰 부기 모두 non-abandon 스레드 관문을 탄다.
-            self.assertEqual(
-                offloaded,
-                [assets._prepare_project_import_dir, assets._commit_capture_with_discard_token],
-            )
+            self.assertEqual(offloaded, [assets._commit_capture_with_discard_token])
             self.assertTrue(result["discard_token"])  # 신규 파일 — 정리 토큰 발급
+            self.assertTrue(result["sha256"])  # 씬 참조의 내용 지문
+            combined.assert_called_once_with(root, assets._INTERNAL_FOLDERS)  # Assets 의 imp/cap 합본
 
     def test_reference_import_route_saves_media_and_cleans_temp_on_failure(self) -> None:
-        # ★2026-09-28 계약 변경: 반입은 **그 프로젝트 폴더** 기준으로 기록한다(이 PC 안 imports 아님).
+        # ★2026-09-29 Jay "옛 방식": 끌어다 놓은 파일은 **이 PC 설치 폴더의 imports** 에 둔다.
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             root = Path(tmp_dir)
-            proj = root / "proj"
-            proj.mkdir()
+            nas = root / "nas"
+            nas.mkdir()
             upload = UploadFile(filename="reference.png", file=io.BytesIO(b"reference-image"))
             offloaded: list[object] = []
 
@@ -463,31 +465,29 @@ class AssetIoTests(unittest.TestCase):
 
             with (
                 patch.object(assets, "ASSETS_ROOT", root),
-                patch.object(assets, "_safe_project_dir", return_value=proj),
+                patch.object(assets, "_safe_project_dir", return_value=nas),
                 patch.object(assets.asset_tree, "invalidate_project_tree"),
-                patch.object(assets, "to_thread_non_abandon", side_effect=non_abandon) as offload,
+                patch.object(assets.asset_tree, "invalidate_combined_tree") as combined,
+                patch.object(assets, "to_thread_non_abandon", side_effect=non_abandon),
             ):
                 result = asyncio.run(
                     assets.upload_reference_import(SimpleNamespace(), project="proj", files=[upload])
                 )
 
             saved = result["saved"][0]
-            self.assertEqual(saved["project"], "proj")
-            self.assertEqual(saved["path"], "imports/reference.png")  # 프로젝트 루트 기준 상대경로
-            self.assertEqual((proj / saved["path"]).read_bytes(), b"reference-image")
+            self.assertEqual(saved["project"], "imports")
+            self.assertEqual(saved["path"], "reference.png")  # 설치 폴더 imports 바로 아래
+            self.assertEqual((root / "imports" / saved["path"]).read_bytes(), b"reference-image")
+            self.assertEqual(list(nas.iterdir()), [])  # NAS 쪽에는 아무것도 안 생긴다
             self.assertEqual(saved["bytes"], len(b"reference-image"))
             self.assertTrue(saved["sha256"])  # 나중에 내용으로 다시 찾기 위한 지문
             self.assertEqual(list(root.rglob(".upload-*.part")), [])
-            self.assertEqual(offload.await_count, 2)
-            self.assertEqual(
-                offloaded,
-                [assets._prepare_project_import_dir, asset_io.find_or_commit_media],
-            )
+            self.assertEqual(offloaded, [asset_io.find_or_commit_media])
+            combined.assert_called_once_with(root, assets._INTERNAL_FOLDERS)  # Assets 의 imp/cap 합본
 
             failed = UploadFile(filename="broken.png", file=io.BytesIO(b"broken-image"))
             with (
                 patch.object(assets, "ASSETS_ROOT", root),
-                patch.object(assets, "_safe_project_dir", return_value=proj),
                 # AIO-2 계약 변경: 라우터는 검색과 확정을 분리하지 않고 이 함수 한 번에 위임한다.
                 patch.object(asset_io, "find_or_commit_media", side_effect=RuntimeError("hash failed")),
                 self.assertRaises(RuntimeError),
@@ -498,34 +498,32 @@ class AssetIoTests(unittest.TestCase):
 
             self.assertEqual(list(root.rglob(".upload-*.part")), [])
 
-    def test_reference_import_reuses_existing_project_file_instead_of_copying(self) -> None:
-        """끌어다 놓은 파일이 이미 프로젝트 안에 있으면 사본을 만들지 않고 그 경로를 쓴다.
-        (브라우저는 원래 경로를 주지 않으므로 내용으로 찾는다 — Jay 2026-09-28)"""
+    def test_reference_import_keeps_the_file_on_this_pc_without_scanning_the_project(self) -> None:
+        """★2026-09-29 Jay "옛 방식으로 해야한다": 반입은 NAS 프로젝트 폴더를 훑지 않고 이 PC 설치
+        폴더에 둔다 — 프로젝트에 같은 내용이 있어도 그렇다. 서버 원본으로 잇는 일은 자동 복구(/locate)가
+        한다. (09-28 에는 여기서 프로젝트 전체를 훑어 끌어다 놓을 때마다 2초대가 걸렸다.)"""
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             root = Path(tmp_dir)
             proj = root / "proj"
-            (proj / "BG" / "갯벌").mkdir(parents=True)
-            original = proj / "BG" / "갯벌" / "sea.png"
-            original.write_bytes(b"same-bytes")
-            decoy = proj / "BG" / "other.png"
-            decoy.write_bytes(b"same-size!")  # 크기는 같고 내용이 다른 파일 — 잡히면 안 된다
-            self.assertEqual(len(b"same-size!"), len(b"same-bytes"))
+            (proj / "BG").mkdir(parents=True)
+            (proj / "BG" / "sea.png").write_bytes(b"same-bytes")  # 서버에도 같은 내용이 있다
 
             upload = UploadFile(filename="sea.png", file=io.BytesIO(b"same-bytes"))
             with (
                 patch.object(assets, "ASSETS_ROOT", root),
                 patch.object(assets, "_safe_project_dir", return_value=proj),
+                patch.object(assets, "_build_index", side_effect=AssertionError("반입은 NAS 를 훑지 않는다")),
                 patch.object(assets.asset_tree, "invalidate_project_tree"),
+                patch.object(assets.asset_tree, "invalidate_combined_tree"),
             ):
-                assets.invalidate_size_index(proj)
                 result = asyncio.run(
                     assets.upload_reference_import(SimpleNamespace(), project="proj", files=[upload])
                 )
 
             saved = result["saved"][0]
-            self.assertEqual(saved["path"], "BG/갯벌/sea.png")  # 원본 자리를 그대로 가리킨다
-            self.assertTrue(saved["reused"])
-            self.assertFalse((proj / "imports").exists())  # 사본을 만들지 않았다
+            self.assertEqual((saved["project"], saved["path"]), ("imports", "sea.png"))
+            self.assertEqual((root / "imports" / "sea.png").read_bytes(), b"same-bytes")
+            self.assertFalse((proj / "imports").exists())  # 프로젝트 폴더는 건드리지 않는다
             self.assertEqual(list(root.rglob(".upload-*.part")), [])
 
     def test_locate_moves_legacy_local_copies_to_project_originals(self) -> None:
@@ -555,8 +553,6 @@ class AssetIoTests(unittest.TestCase):
                 patch.object(assets, "actor_id", return_value="me"),
                 patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
             ):
-                for proj_dir in dirs.values():
-                    assets.invalidate_size_index(proj_dir)
                 reply = assets.locate_legacy_assets(
                     assets.LocateIn(
                         tokens=[
@@ -644,19 +640,46 @@ class AssetIoTests(unittest.TestCase):
             got = dirs[reply["fixed"][0]["project"]] / reply["fixed"][0]["path"]
             self.assertEqual(got.read_bytes(), b"one picture")
 
-    def test_reference_import_requires_a_project(self) -> None:
-        """프로젝트를 모르면 이 PC 안에 몰래 사본을 만들지 않고 막는다(남에게 안 보이는 사본 방지)."""
-        upload = UploadFile(filename="x.png", file=io.BytesIO(b"x"))
-        with self.assertRaises(HTTPException) as caught:
-            asyncio.run(assets.upload_reference_import(SimpleNamespace(), project="", files=[upload]))
-        self.assertEqual(caught.exception.status_code, 400)
+    def test_internal_folders_stay_on_this_pc_even_with_same_named_mounts(self) -> None:
+        """반입은 프로젝트 없이도 된다(옛 방식). 그리고 내장 폴더 imports·captures 는 같은 이름의 등록
+        폴더가 있어도 이 PC 설치 폴더로 풀린다 — 파일·썸네일·캡처 정리가 NAS 로 새지 않게(Codex)."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            nas = root / "nas"
+            (nas / "imports").mkdir(parents=True)
+            (nas / "captures").mkdir(parents=True)
+            mounts = [
+                {"name": "imports", "path": str(nas / "imports")},
+                {"name": "captures", "path": str(nas / "captures")},
+            ]
+            upload = UploadFile(filename="x.png", file=io.BytesIO(b"x"))
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_owner_mounts", return_value=mounts),
+                patch.object(assets, "_auto_project_mounts", return_value=[]),
+                patch.object(assets, "actor_id", return_value="me"),
+                patch.object(assets.asset_tree, "invalidate_project_tree"),
+                patch.object(assets.asset_tree, "invalidate_combined_tree"),
+            ):
+                result = asyncio.run(
+                    assets.upload_reference_import(SimpleNamespace(), project="", files=[upload])
+                )
+                (root / "captures").mkdir()
+                imports_dir = assets._safe_project_dir("imports", SimpleNamespace())
+                captures_dir = assets._safe_project_dir("captures", SimpleNamespace())
 
-    def test_locate_finds_by_path_or_name_when_there_is_no_local_copy(self) -> None:
-        """사본이 없어도(남이 준 씬) 경로·이름으로 서버에서 찾아 잇는다.
+            self.assertEqual(result["saved"][0]["project"], "imports")
+            self.assertEqual(imports_dir, (root / "imports").resolve())
+            self.assertEqual(captures_dir, (root / "captures").resolve())
+            self.assertEqual(list((nas / "imports").iterdir()), [])
+
+    def test_locate_finds_by_path_but_never_by_name_alone(self) -> None:
+        """사본이 없어도(남이 준 씬) 프로젝트 참조는 경로로 서버에서 찾아 잇는다 — 이름만으로는 잇지 않는다.
 
         ★Jay 2026-09-28: 같은 폴더를 사람마다 다른 깊이로 등록하면 같은 그림이 `CH/x.png` 도 되고
-        `assets/CH/x.png` 도 된다. 사본이 없으니 지문은 낼 수 없다 — 그래서 경로 뒷부분, 그것도
-        없으면 파일 이름으로 찾는다. 여러 곳에 있으면 단정하지 않는다."""
+        `assets/CH/x.png` 도 된다. 에셋 창에서 끌어온 참조는 지문이 없다 — 그래서 경로 끝 두 조각 이상
+        (부모 폴더/이름)으로 찾는다. ★2026-09-29: 이름만 같은 것으로 이으면 `download.jpg` 같은 흔한 이름이
+        엉뚱한 그림을 붙인다 — 지문 없는 사본 참조는 잇지 않고, 한 조각(이름뿐)짜리 경로도 잇지 않는다."""
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             root = Path(tmp_dir)
             (root / "imports").mkdir()  # 사본은 하나도 없다 — 남이 준 씬과 같은 상황
@@ -665,9 +688,9 @@ class AssetIoTests(unittest.TestCase):
             (proj / "assets" / "CH" / "바바라" / "body.png").write_bytes(b"x")
             (proj / "assets" / "CH" / "낙지").mkdir(parents=True)
             (proj / "assets" / "CH" / "낙지" / "octopus.png").write_bytes(b"y")
-            (proj / "assets" / "BG").mkdir(parents=True)
-            (proj / "assets" / "BG" / "twice.png").write_bytes(b"z")
-            (proj / "twice.png").write_bytes(b"z")  # 같은 이름이 두 곳 — 고르지 않는다
+            (proj / "CH" / "매튜").mkdir(parents=True)
+            (proj / "CH" / "매튜" / "deep.png").write_bytes(b"d")
+            (proj / "only-root.png").write_bytes(b"r")
 
             dirs = {"P": proj}
             with (
@@ -682,10 +705,14 @@ class AssetIoTests(unittest.TestCase):
                         tokens=[
                             # 프로젝트 이름이 이 PC 에 없다 + 경로가 assets/ 만큼 짧다
                             "asset:P_RnD|CH/바바라/body.png",
-                            # 사본 참조인데 사본이 없다 → 이름으로 찾는다
+                            # 반대로 참조가 더 길다(이 PC 가 더 깊이 등록) — 끝 두 조각 CH/매튜/deep.png 로 맞는다
+                            "asset:P_top|art/CH/매튜/deep.png",
+                            # 사본 참조인데 사본이 없고 지문도 없다 → 이름이 같아도 잇지 않는다
                             "asset:imports|octopus.png",
-                            "asset:P_RnD|CH/없는것.png",  # 서버에도 없다
-                            "asset:P_RnD|twice.png",  # 같은 이름이 두 곳 — 그대로 둔다
+                            # 폴더가 다른 같은 이름 — 잇지 않는다
+                            "asset:P_RnD|BG/octopus.png",
+                            # 한 조각(이름뿐) — 등록 깊이를 알 수 없어 잇지 않는다
+                            "asset:P_RnD|only-root.png",
                         ]
                     ),
                     SimpleNamespace(),
@@ -695,12 +722,121 @@ class AssetIoTests(unittest.TestCase):
                 [(f["token"], f["project"], f["path"]) for f in reply["fixed"]],
                 [
                     ("asset:P_RnD|CH/바바라/body.png", "P", "assets/CH/바바라/body.png"),
-                    ("asset:imports|octopus.png", "P", "assets/CH/낙지/octopus.png"),
+                    ("asset:P_top|art/CH/매튜/deep.png", "P", "CH/매튜/deep.png"),
                 ],
             )
             self.assertEqual(
-                reply["unresolved"], ["asset:P_RnD|CH/없는것.png", "asset:P_RnD|twice.png"]
+                reply["unresolved"],
+                ["asset:imports|octopus.png", "asset:P_RnD|BG/octopus.png", "asset:P_RnD|only-root.png"],
             )
+
+    def test_locate_uses_the_fingerprint_a_reference_carries(self) -> None:
+        """참조가 든 지문(씬 파일로 함께 온 content_sha·bytes)으로 찾는다 — 이 PC 에 사본이 없어도(2026-09-29).
+
+        · 사본이 없는 받은 사람도 내용으로 잇는다
+        · 이 PC 사본이 같은 이름의 **다른 그림**이면 참조의 지문을 믿는다 — 서버에도 없으면 '서버에 없음'
+          (안 그러면 그 다른 그림이 그대로 보인다, Codex)
+        · 지문이 있으면 이름이 같아도 내용이 다른 파일로는 잇지 않는다"""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            (root / "imports" / "download.jpg").write_bytes(b"my own different picture")
+            proj = root / "P"
+            (proj / "CH").mkdir(parents=True)
+            (proj / "CH" / "sent.png").write_bytes(b"the sender's picture")
+            (proj / "CH" / "download.jpg").write_bytes(b"yet another picture")  # 이름만 같다
+            dirs = {"P": proj}
+            mounts = [{"name": "P", "path": str(proj)}]
+
+            def fp(data: bytes) -> dict:
+                return {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+
+            env = self._locate_env(root, dirs, lambda _r, _w=None: mounts)
+            with env[0], env[1], env[2], env[3], env[4]:
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(
+                        tokens=["asset:imports|sent.png", "asset:imports|download.jpg"],
+                        fingerprints={
+                            "asset:imports|sent.png": fp(b"the sender's picture"),
+                            "asset:imports|download.jpg": fp(b"the sender's download"),  # 서버 어디에도 없다
+                        },
+                    ),
+                    SimpleNamespace(),
+                )
+
+            self.assertEqual(
+                reply["fixed"],
+                [{"project": "P", "path": "CH/sent.png", "sha256": hashlib.sha256(b"the sender's picture").hexdigest(),
+                  "bytes": len(b"the sender's picture"), "token": "asset:imports|sent.png"}],
+            )
+            # 내 imports 의 download.jpg 는 다른 그림이다 — 이음도 '이 PC 에만'도 아니고 서버에 없음
+            self.assertEqual(reply["missing"], ["asset:imports|download.jpg"])
+            self.assertEqual(reply["local"], [])
+
+            # 모양이 틀린 지문은 없는 것으로 본다 — 그러면 이 PC 사본의 지문으로 판정한다(이 PC 에만)
+            env = self._locate_env(root, dirs, lambda _r, _w=None: mounts)
+            with env[0], env[1], env[2], env[3], env[4]:
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(
+                        tokens=["asset:imports|download.jpg"],
+                        fingerprints={"asset:imports|download.jpg": {"sha256": "not-a-sha", "bytes": 5}},
+                    ),
+                    SimpleNamespace(),
+                )
+            self.assertEqual((reply["missing"], reply["local"]), ([], ["asset:imports|download.jpg"]))
+
+    def test_locate_takes_at_most_one_batch_of_fingerprints(self) -> None:
+        """지문은 한 번에 받는 토큰 수(200)까지만 받고, 처리하는 토큰의 것만 읽는다 — 무관한 지문 수만 개로
+        메모리·CPU 를 쓰게 두지 않는다(Codex 2026-09-29)."""
+        fp = {"sha256": "a" * 64, "bytes": 1}
+        with self.assertRaises(ValidationError):
+            assets.LocateIn(tokens=["asset:imports|x.png"], fingerprints={f"t{i}": fp for i in range(201)})
+        self.assertEqual(
+            len(assets.LocateIn(fingerprints={f"t{i}": fp for i in range(200)}).fingerprints), 200
+        )
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            proj = root / "P"
+            (proj / "CH").mkdir(parents=True)
+            (proj / "CH" / "x.png").write_bytes(b"x")
+            env = self._locate_env(root, {"P": proj}, lambda _r, _w=None: [{"name": "P", "path": str(proj)}])
+            with env[0], env[1], env[2], env[3], env[4]:
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(
+                        tokens=["asset:Q|CH/x.png"],
+                        # 다른 토큰의 지문은 이 토큰의 판단에 쓰이지 않는다
+                        fingerprints={"asset:Q|CH/other.png": {"sha256": "b" * 64, "bytes": 9}},
+                    ),
+                    SimpleNamespace(),
+                )
+            self.assertEqual([f["path"] for f in reply["fixed"]], ["CH/x.png"])
+
+    def test_locate_says_nothing_about_an_unreadable_local_copy(self) -> None:
+        """이 PC 사본 파일은 있는데 0바이트라 지문을 못 내면 '서버에 없음'·'이 PC 에만' 둘 다 말하지 않는다 —
+        같은 그림이 서버에 있는지 알 수 없다(2026-09-29). 사본 파일이 아예 없으면 이름조차 없을 때만 서버에 없음."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            (root / "imports" / "empty.png").write_bytes(b"")
+            proj = root / "P"
+            (proj / "BG").mkdir(parents=True)
+            (proj / "BG" / "named.png").write_bytes(b"n")
+            dirs = {"P": proj}
+            mounts = [{"name": "P", "path": str(proj)}]
+            env = self._locate_env(root, dirs, lambda _r, _w=None: mounts)
+            with env[0], env[1], env[2], env[3], env[4]:
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(
+                        tokens=["asset:imports|empty.png", "asset:imports|named.png", "asset:imports|nowhere.png"]
+                    ),
+                    SimpleNamespace(),
+                )
+            self.assertEqual(reply["fixed"], [])
+            self.assertEqual(reply["local"], [])
+            # named.png 는 같은 이름이 서버에 있어 모른다, empty.png 는 이 PC 에 파일이 있다
+            self.assertEqual(reply["missing"], ["asset:imports|nowhere.png"])
 
     def test_locate_stops_when_the_local_copy_says_the_contents_differ(self) -> None:
         """사본이 있는데 내용이 같은 파일이 없으면 거기서 멈춘다.
@@ -761,16 +897,16 @@ class AssetIoTests(unittest.TestCase):
             )
 
     def test_locate_will_not_choose_between_two_projects_with_the_same_name(self) -> None:
-        """서로 다른 프로젝트에 같은 이름이 있으면 고르지 않는다 — 어느 쪽인지 단정할 수 없다."""
+        """서로 다른 프로젝트에 같은 경로가 있으면 고르지 않는다 — 어느 쪽인지 단정할 수 없다."""
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             root = Path(tmp_dir)
             (root / "imports").mkdir()
             a = root / "A"
-            a.mkdir()
-            (a / "hero.png").write_bytes(b"1")
+            (a / "CH").mkdir(parents=True)
+            (a / "CH" / "hero.png").write_bytes(b"1")
             b_dir = root / "B"
-            b_dir.mkdir()
-            (b_dir / "hero.png").write_bytes(b"2")
+            (b_dir / "CH").mkdir(parents=True)
+            (b_dir / "CH" / "hero.png").write_bytes(b"2")
 
             dirs = {"A": a, "B": b_dir}
             with (
@@ -783,7 +919,7 @@ class AssetIoTests(unittest.TestCase):
                 patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
             ):
                 reply = assets.locate_legacy_assets(
-                    assets.LocateIn(tokens=["asset:Q|hero.png"]), SimpleNamespace()
+                    assets.LocateIn(tokens=["asset:Q|CH/hero.png"]), SimpleNamespace()
                 )
 
             self.assertEqual(reply["fixed"], [])
@@ -797,11 +933,11 @@ class AssetIoTests(unittest.TestCase):
             root = Path(tmp_dir)
             (root / "imports").mkdir()
             a = root / "A"
-            a.mkdir()
-            (a / "hero.png").write_bytes(b"in A")
+            (a / "CH").mkdir(parents=True)
+            (a / "CH" / "hero.png").write_bytes(b"in A")
             b_dir = root / "B"
-            b_dir.mkdir()
-            (b_dir / "hero.png").write_bytes(b"in B")
+            (b_dir / "CH").mkdir(parents=True)
+            (b_dir / "CH" / "hero.png").write_bytes(b"in B")
 
             dirs = {"A": a, "B": b_dir}
 
@@ -819,14 +955,14 @@ class AssetIoTests(unittest.TestCase):
                 patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
             ):
                 scoped = assets.locate_legacy_assets(
-                    assets.LocateIn(tokens=["asset:Q|hero.png"], workspace_id="ws-1"), SimpleNamespace()
+                    assets.LocateIn(tokens=["asset:Q|CH/hero.png"], workspace_id="ws-1"), SimpleNamespace()
                 )
                 wide = assets.locate_legacy_assets(
-                    assets.LocateIn(tokens=["asset:Q|hero.png"]), SimpleNamespace()
+                    assets.LocateIn(tokens=["asset:Q|CH/hero.png"]), SimpleNamespace()
                 )
 
             # 공간이 지정되면 그 안에서 하나로 좁혀진다
-            self.assertEqual([(f["project"], f["path"]) for f in scoped["fixed"]], [("A", "hero.png")])
+            self.assertEqual([(f["project"], f["path"]) for f in scoped["fixed"]], [("A", "CH/hero.png")])
             # 지정이 없으면 두 곳에 있어 고르지 않는다
             self.assertEqual(wide["fixed"], [])
 
@@ -853,9 +989,9 @@ class AssetIoTests(unittest.TestCase):
             scans: list[str] = []
             real = assets._build_index
 
-            def counting(d):
+            def counting(d, **kw):
                 scans.append(str(d))
-                return real(d)
+                return real(d, **kw)
 
             env = self._locate_env(root, dirs, lambda _r, _w=None: [{"name": "P"}])
             with env[0], env[1], env[2], env[3], env[4], patch.object(assets, "_build_index", side_effect=counting):
@@ -882,8 +1018,8 @@ class AssetIoTests(unittest.TestCase):
             root = Path(tmp_dir)
             (root / "imports").mkdir()
             mine = root / "Mine"
-            mine.mkdir()
-            (mine / "hero.png").write_bytes(b"x")
+            (mine / "CH").mkdir(parents=True)
+            (mine / "CH" / "hero.png").write_bytes(b"x")
             big = root / "Big"
             big.mkdir()
             (big / "other.png").write_bytes(b"y")
@@ -891,9 +1027,9 @@ class AssetIoTests(unittest.TestCase):
             scanned: list[str] = []
             real = assets._build_index
 
-            def counting(d):
+            def counting(d, **kw):
                 scanned.append(Path(d).name)
-                return real(d)
+                return real(d, **kw)
 
             def auto(_r, workspace_id=None):
                 m = {"name": "Mine", "path": str(mine), "project_id": "p1"}
@@ -903,10 +1039,10 @@ class AssetIoTests(unittest.TestCase):
             env = self._locate_env(root, dirs, auto)
             with env[0], env[1], env[2], env[3], env[4], patch.object(assets, "_build_index", side_effect=counting):
                 reply = assets.locate_legacy_assets(
-                    assets.LocateIn(tokens=["asset:Q|hero.png"], workspace_id="ws"), SimpleNamespace()
+                    assets.LocateIn(tokens=["asset:Q|CH/hero.png"], workspace_id="ws"), SimpleNamespace()
                 )
 
-            self.assertEqual([(f["project"], f["path"]) for f in reply["fixed"]], [("Mine", "hero.png")])
+            self.assertEqual([(f["project"], f["path"]) for f in reply["fixed"]], [("Mine", "CH/hero.png")])
             self.assertEqual(scanned, ["Mine"])  # Big 은 훑지 않았다
 
     def test_walk_skips_hidden_folders_and_stops_at_the_limit(self) -> None:
@@ -928,20 +1064,150 @@ class AssetIoTests(unittest.TestCase):
             self.assertEqual(len(capped), 1)  # 넘친 항목은 넣지 않는다
             self.assertFalse(complete)  # 끊겼으면 '없다'고 단정하지 않게
 
+    def test_walk_survives_a_nas_that_drops_while_listing(self) -> None:
+        """목록을 읽는 **도중** NAS 가 끊겨도(반복 중 OSError) locate 가 500 이 되지 않는다 — 읽은 데까지만
+        쓰고 완주가 아니라고 한다. 그러면 '서버에 없음'도 말하지 않는다(2026-09-29)."""
+        real_scandir = os.scandir
+
+        class _DropsAfterOne:
+            def __init__(self, path):
+                self._it = real_scandir(path)
+                self._given = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                self._it.close()
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self._given >= 1:
+                    raise OSError(64, "The specified network name is no longer available")
+                self._given += 1
+                return next(self._it)
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            proj = root / "P"
+            proj.mkdir()
+            for name in ("a.png", "b.png", "c.png"):
+                (proj / name).write_bytes(name.encode())
+
+            with patch.object(assets.os, "scandir", side_effect=_DropsAfterOne):
+                entries, complete = assets._walk_media(proj)
+            self.assertFalse(complete)
+            self.assertLessEqual(len(entries), 1)
+
+            env = self._locate_env(root, {"P": proj}, lambda _r, _w=None: [{"name": "P", "path": str(proj)}])
+            with env[0], env[1], env[2], env[3], env[4], patch.object(assets.os, "scandir", side_effect=_DropsAfterOne):
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:Q|CH/gone.png"]), SimpleNamespace()
+                )
+            self.assertEqual((reply["fixed"], reply["missing"]), ([], []))
+            self.assertEqual(reply["unresolved"], ["asset:Q|CH/gone.png"])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows 정션")
+    def test_walk_does_not_follow_a_junction(self) -> None:
+        """정션 폴더는 따라가지 않는다 — 에셋 트리와 같은 재분석 지점 속성으로 가린다(DirEntry.is_junction 은
+        파이썬 3.12+ 전용이라 3.11 에서는 locate 가 통째로 실패했다, 2026-09-29)."""
+        import _winapi
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir) / "root"
+            (root / "CH").mkdir(parents=True)
+            (root / "CH" / "a.png").write_bytes(b"1")
+            outside = Path(tmp_dir) / "outside"
+            outside.mkdir()
+            (outside / "secret.png").write_bytes(b"2")
+            _winapi.CreateJunction(str(outside), str(root / "link"))
+
+            entries, complete = assets._walk_media(root)
+            self.assertTrue(complete)
+            self.assertEqual([rel for rel, _name, _size in entries], ["CH/a.png"])
+
+    def test_pm_projects_skip_render_folders_like_the_asset_tree(self) -> None:
+        """PM 프로젝트로 풀린 폴더는 에셋 트리처럼 render 에 내려가지 않는다(깊이 무관·대소문자 무시) — 렌더 프레임이
+        한도(6만)를 채워 그 프로젝트 전체가 '완주 못 함'이 되지 않게(2026-09-29). 개인 등록으로 풀리면 트리도
+        render 를 보여 주므로 훑는다. render 안을 가리키는 참조는 '서버에 없음'을 말하지 않는다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            proj = root / "P"
+            (proj / "CH" / "render").mkdir(parents=True)
+            (proj / "CH" / "hero.png").write_bytes(b"h")
+            (proj / "CH" / "render" / "turn.png").write_bytes(b"t")
+            (proj / "Render" / "v1").mkdir(parents=True)
+            (proj / "Render" / "v1" / "frame.png").write_bytes(b"f")
+
+            everything, _ = assets._walk_media(proj)
+            pruned, complete = assets._walk_media(proj, hide_render=True)
+            self.assertEqual(len(everything), 3)
+            self.assertEqual(([rel for rel, _n, _s in pruned], complete), (["CH/hero.png"], True))
+
+            tokens = ["asset:Q|CH/render/turn.png", "asset:Q|CH/hero.png"]
+            gone = "asset:Q|CH/render/gone.png"  # render 안을 가리키는데 어디에도 없다
+            mount = {"name": "P", "path": str(proj)}
+            env = self._locate_env(root, {"P": proj}, lambda _r, _w=None: [mount])  # PM 프로젝트
+            with env[0], env[1], env[2], env[3], env[4]:
+                as_pm = assets.locate_legacy_assets(assets.LocateIn(tokens=[*tokens, gone]), SimpleNamespace())
+            self.assertEqual([f["path"] for f in as_pm["fixed"]], ["CH/hero.png"])
+            self.assertEqual(as_pm["missing"], [])  # render 안 참조 — 안 훑었으니 없다고 하지 않는다
+            # 그래도 '판정 못 끝냄'은 아니다 — 자동 복구는 render 를 원래 안 훑는다(앱이 기억하고 다시 안 묻는다)
+            self.assertEqual(as_pm["incomplete"], [])
+
+            # '레퍼런스 찾기' 단추(include_render) — PM 프로젝트도 render 까지 훑어 잇고, 없는 것은 없다고 한다
+            env = self._locate_env(root, {"P": proj}, lambda _r, _w=None: [mount])
+            with env[0], env[1], env[2], env[3], env[4]:
+                with_render = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=[*tokens, gone], include_render=True), SimpleNamespace()
+                )
+            self.assertEqual([f["path"] for f in with_render["fixed"]], ["CH/render/turn.png", "CH/hero.png"])
+            self.assertEqual(with_render["missing"], [gone])
+
+            env = self._locate_env(root, {"P": proj}, lambda _r, _w=None: [])
+            with env[0], env[1], env[3], env[4], patch.object(assets, "_owner_mounts", return_value=[mount]):
+                as_manual = assets.locate_legacy_assets(assets.LocateIn(tokens=tokens), SimpleNamespace())
+            self.assertEqual(
+                [f["path"] for f in as_manual["fixed"]], ["CH/render/turn.png", "CH/hero.png"]
+            )
+
+    def test_a_bare_name_is_not_linked_through_a_changed_extension(self) -> None:
+        """이름뿐인 참조는 확장자만 다른 파일로도 잇지 않는다 — 폴더 근거가 없다. 대신 그런 파일이 있으니
+        '서버에 없음'이라고도 하지 않는다(2026-09-29)."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            proj = root / "P"
+            (proj / "CH").mkdir(parents=True)
+            (proj / "CH" / "hero.jpeg").write_bytes(b"j")
+            env = self._locate_env(root, {"P": proj}, lambda _r, _w=None: [{"name": "P", "path": str(proj)}])
+            with env[0], env[1], env[2], env[3], env[4]:
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:Q|hero.png", "asset:Q|CH/hero.png"]), SimpleNamespace()
+                )
+            self.assertEqual([(f["token"], f["path"]) for f in reply["fixed"]], [("asset:Q|CH/hero.png", "CH/hero.jpeg")])
+            self.assertEqual(reply["missing"], [])
+
     def test_workspace_scope_ignores_a_name_that_points_elsewhere_on_this_pc(self) -> None:
         """공간의 프로젝트 이름이 이 PC 에서는 **다른 폴더**(개인 등록)로 풀리면 쓰지 않는다.
 
         ★공간 범위를 이름으로 만들면 실제로는 개인 폴더를 훑게 되고, 고친 참조가 이 PC 에서
-        엉뚱한 폴더를 가리킨다 — 공간이 신뢰 경계라는 결정이 뚫린다(Codex 2026-09-28)."""
+        엉뚱한 폴더를 가리킨다 — 공간이 신뢰 경계라는 결정이 뚫린다(Codex 2026-09-28).
+        ★2026-09-29: 전체 바퀴에서도 그 이름으로는 잇지 않는다 — 다른 PC 는 PM 쪽으로 풀어 같은 참조가
+        PC 마다 다른 폴더를 가리킨다(같은 이름·다른 폴더)."""
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             root = Path(tmp_dir)
             (root / "imports").mkdir()
             space = root / "space_P"  # 공간에 등록된 P
-            space.mkdir()
-            (space / "hero.png").write_bytes(b"space")
+            (space / "CH").mkdir(parents=True)
+            (space / "CH" / "hero.png").write_bytes(b"space")
             mine = root / "my_P"  # 이 PC 에서 개인 등록한 같은 이름 P — 다른 폴더
-            mine.mkdir()
-            (mine / "hero.png").write_bytes(b"mine")
+            (mine / "CH").mkdir(parents=True)
+            (mine / "CH" / "hero.png").write_bytes(b"mine")
 
             def auto(_r, workspace_id=None):
                 return [{"name": "P", "path": str(space), "project_id": "p1"}]
@@ -957,18 +1223,19 @@ class AssetIoTests(unittest.TestCase):
                 scanned: list[str] = []
                 real = assets._build_index
 
-                def counting(d):
+                def counting(d, **kw):
                     scanned.append(Path(d).name)
-                    return real(d)
+                    return real(d, **kw)
 
                 with patch.object(assets, "_build_index", side_effect=counting):
                     reply = assets.locate_legacy_assets(
-                        assets.LocateIn(tokens=["asset:Q|hero.png"], workspace_id="ws"), SimpleNamespace()
+                        assets.LocateIn(tokens=["asset:Q|CH/hero.png"], workspace_id="ws"), SimpleNamespace()
                     )
 
             self.assertNotIn("space_P", scanned)  # 공간 라운드에서 쓰지 않았다
-            # 전체 라운드는 이 PC 의 해석(개인 폴더)대로 — 고친 참조가 이 PC 에서 가리키는 곳과 같다
-            self.assertEqual([(f["project"], f["path"]) for f in reply["fixed"]], [("P", "hero.png")])
+            # 전체 라운드도 그 이름으로는 잇지 않는다 — 같은 이름이 개인·PM 에서 다른 폴더다
+            self.assertEqual(reply["fixed"], [])
+            self.assertEqual(reply["missing"], [])
 
     def test_waiting_on_a_stuck_scan_gives_up_instead_of_hanging(self) -> None:
         """같은 폴더를 먼저 훑는 요청이 NAS 에 멈추면, 기다리던 요청은 영원히 붙잡히지 않고 포기한다
@@ -1124,6 +1391,144 @@ class AssetIoTests(unittest.TestCase):
             self.assertEqual(reply["fixed"], [])
             self.assertEqual(reply["unresolved"], ["asset:A|BG/same.png"])
 
+    def test_locate_reports_what_is_nowhere_on_the_server(self) -> None:
+        """못 고친 참조 중 '서버 어디에도 없는 것'을 따로 알려 준다(Jay 2026-09-29 — 캔버스가 빨갛게
+        그린다). missing = 이 PC 에서도 안 열리고 후보가 하나도 없음 · local = 설치 폴더 안 사본에만 있음."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            (root / "imports" / "mine.png").write_bytes(b"only-on-this-pc")
+            (root / "imports" / "shared.png").write_bytes(b"also-on-the-nas")
+            proj = root / "P"
+            (proj / "BG").mkdir(parents=True)
+            (proj / "BG" / "shared.png").write_bytes(b"also-on-the-nas")
+            (proj / "BG" / "here.png").write_bytes(b"h")
+            (root / "imports" / "both.png").write_bytes(b"in-two-projects")
+            (proj / "both.png").write_bytes(b"in-two-projects")
+            proj2 = root / "P2"
+            proj2.mkdir()
+            (proj2 / "both.png").write_bytes(b"in-two-projects")  # 서버 두 곳에 있다 — '이 PC 에만' 아님
+            dirs = {"P": proj, "P2": proj2}
+            mounts = [{"name": "P", "path": str(proj)}, {"name": "P2", "path": str(proj2)}]
+            env = self._locate_env(root, dirs, lambda _r, _w=None: mounts)
+            with env[0], env[1], env[2], env[3], env[4]:
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(
+                        tokens=[
+                            "asset:imports|mine.png",  # 이 PC 안 사본에만 있다 → local
+                            "asset:imports|shared.png",  # 서버에 같은 내용이 있다 → 고친다
+                            "asset:Q|CH/gone.png",  # 남이 준 씬 — 어디에도 없다 → missing
+                            "asset:imports|other-pc.png",  # 남의 PC 사본 — 여기에도 서버에도 없다
+                            "asset:P|BG/here.png",  # 이미 열린다 → 표시 없음
+                            "asset:imports|both.png",  # 서버에 있지만 두 곳이라 못 고른다 → 표시 없음
+                            "asset:Q|CH/gone.png",  # 같은 토큰이 또 와도 같은 답
+                            "asset:P|BG/here.png",
+                        ]
+                    ),
+                    SimpleNamespace(),
+                )
+
+            self.assertEqual([f["token"] for f in reply["fixed"]], ["asset:imports|shared.png"])
+            self.assertEqual(
+                reply["missing"],
+                ["asset:Q|CH/gone.png", "asset:imports|other-pc.png", "asset:Q|CH/gone.png"],
+            )
+            self.assertEqual(reply["local"], ["asset:imports|mine.png"])
+            self.assertIn("asset:imports|both.png", reply["unresolved"])
+            # 이미 열리는 참조는 open(중복도 같은 답), 두 곳이라 못 고른 것은 '판정 끝' — 앱이 기억하고 다시 안 묻는다
+            self.assertEqual(reply["open"], ["asset:P|BG/here.png", "asset:P|BG/here.png"])
+            self.assertEqual(reply["incomplete"], [])
+            buckets = [set(reply[k]) for k in ("missing", "local", "open", "incomplete")]
+            self.assertTrue(all(b <= set(reply["unresolved"]) for b in buckets))  # 모두 unresolved 의 부분집합
+            self.assertEqual(sum(len(b) for b in buckets), len(set().union(*buckets)))  # 한 토큰은 한 목록에만
+
+    def test_locate_only_calls_a_ref_missing_after_a_full_search(self) -> None:
+        """후보가 여럿이거나, 끝까지 못 훑었거나, 볼 폴더가 없으면 '서버에 없음'이라 하지 않는다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            (root / "imports" / "mine.png").write_bytes(b"only-on-this-pc")
+            proj = root / "P"
+            (proj / "BG").mkdir(parents=True)
+            (proj / "BG" / "twice.png").write_bytes(b"1")
+            (proj / "twice.png").write_bytes(b"2")
+            dirs = {"P": proj}
+            mounts = [{"name": "P", "path": str(proj)}]
+            tokens = ["asset:Q|twice.png", "asset:Q|gone.png", "asset:imports|mine.png"]
+
+            env = self._locate_env(root, dirs, lambda _r, _w=None: mounts)
+            with env[0], env[1], env[2], env[3], env[4]:
+                reply = assets.locate_legacy_assets(assets.LocateIn(tokens=tokens), SimpleNamespace())
+            self.assertEqual(reply["missing"], ["asset:Q|gone.png"])  # 두 곳에 있는 twice 는 빠진다
+            self.assertEqual(reply["local"], ["asset:imports|mine.png"])
+            self.assertEqual(reply["incomplete"], [])  # twice 는 끝까지 훑고도 못 고른 것 — 판정 끝
+
+            # 끝까지 못 훑었거나 볼 폴더가 없으면 셋 다 '판정 못 끝냄' — 앱이 기억하지 않고 다음 실행에 다시 묻는다
+            real = assets._build_index
+            env = self._locate_env(root, dirs, lambda _r, _w=None: mounts)
+            with (
+                env[0], env[1], env[2], env[3], env[4],
+                patch.object(assets, "_build_index", side_effect=lambda d, **kw: (*real(d, **kw)[:2], False)),
+            ):
+                reply = assets.locate_legacy_assets(assets.LocateIn(tokens=tokens), SimpleNamespace())
+            self.assertEqual((reply["missing"], reply["local"]), ([], []))  # 끝까지 못 훑었다
+            self.assertEqual(reply["incomplete"], tokens)
+
+            env = self._locate_env(root, {}, lambda _r, _w=None: [])
+            with env[0], env[1], env[2], env[3], env[4]:
+                reply = assets.locate_legacy_assets(assets.LocateIn(tokens=tokens), SimpleNamespace())
+            self.assertEqual((reply["missing"], reply["local"]), ([], []))  # 볼 폴더가 없다
+            self.assertEqual(reply["incomplete"], tokens)
+
+    def test_locate_says_nothing_is_missing_while_a_registered_folder_is_unreachable(self) -> None:
+        """등록한 폴더를 하나라도 못 읽으면(NAS 끊김) '서버에 없음'·'이 PC 에만'을 말하지 않는다.
+        이름 해석이 설치 폴더의 같은 이름 폴더로 넘어가 열린 것처럼 보여도 등록한 원래 경로로 본다(Codex)."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            (root / "imports" / "mine.png").write_bytes(b"only-on-this-pc")
+            proj = root / "P"
+            proj.mkdir()
+            fallback = root / "NAS"  # 설치 폴더 안 같은 이름 폴더 — 이름 해석은 이리로 넘어간다
+            fallback.mkdir()
+            dirs = {"P": proj, "NAS": fallback}
+            mounts = [
+                {"name": "P", "path": str(proj)},
+                {"name": "NAS", "path": str(root / "unreachable" / "NAS")},  # 원래 경로는 안 닿는다
+            ]
+            env = self._locate_env(root, dirs, lambda _r, _w=None: mounts)
+            with env[0], env[1], env[2], env[3], env[4]:
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:Q|gone.png", "asset:imports|mine.png"]),
+                    SimpleNamespace(),
+                )
+
+            self.assertEqual((reply["missing"], reply["local"]), ([], []))
+            self.assertEqual(reply["unresolved"], ["asset:Q|gone.png", "asset:imports|mine.png"])
+
+    def test_locate_says_nothing_is_missing_when_one_name_points_to_two_folders(self) -> None:
+        """같은 이름을 개인 등록과 PM 이 서로 다른 폴더로 가리키면 이름으로는 개인 쪽만 훑는다 — 안 훑은
+        PM 폴더에 있을 수 있으니 '서버에 없음'이라 하지 않는다(Codex 2026-09-29)."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "imports").mkdir()
+            mine = root / "mine"
+            mine.mkdir()
+            team = root / "team"
+            team.mkdir()
+            (team / "only-in-team.png").write_bytes(b"t")  # PM 폴더에만 있다
+            env = self._locate_env(root, {"P": mine}, lambda _r, _w=None: [{"name": "P", "path": str(team)}])
+            with (
+                env[0], env[1], env[3], env[4],
+                patch.object(assets, "_owner_mounts", return_value=[{"name": "P", "path": str(mine)}]),
+            ):
+                reply = assets.locate_legacy_assets(
+                    assets.LocateIn(tokens=["asset:Q|only-in-team.png"]), SimpleNamespace()
+                )
+
+            self.assertEqual(reply["missing"], [])
+            self.assertEqual(reply["unresolved"], ["asset:Q|only-in-team.png"])
+
     def test_locate_rescans_so_a_file_added_elsewhere_is_not_missed(self) -> None:
         """자동 복구는 **다시 훑는다** — 60초 캐시를 그대로 믿으면 다른 PC 가 방금 넣은 같은 파일을
         못 보고 '한 곳에만 있다'고 단정한다(Codex 2026-09-28)."""
@@ -1154,40 +1559,6 @@ class AssetIoTests(unittest.TestCase):
                 )
             self.assertEqual(second["fixed"], [])  # 두 곳에 있으니 손대지 않는다
             self.assertEqual(second["unresolved"], ["asset:imports|x.png"])
-
-    def test_reference_import_leaves_no_empty_imports_folder(self) -> None:
-        """전부 기존 원본으로 이어졌으면 이 요청이 만든 빈 imports 폴더는 도로 치운다.
-        단 **원래 있던** 빈 폴더는 남의 것이라 건드리지 않는다."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
-            root = Path(tmp_dir)
-            proj = root / "proj"
-            proj.mkdir()
-            (proj / "keep.png").write_bytes(b"already-here")
-            with (
-                patch.object(assets, "ASSETS_ROOT", root),
-                patch.object(assets, "_safe_project_dir", return_value=proj),
-                patch.object(assets.asset_tree, "invalidate_project_tree"),
-            ):
-                assets.invalidate_size_index(proj)
-                asyncio.run(
-                    assets.upload_reference_import(
-                        SimpleNamespace(),
-                        project="proj",
-                        files=[UploadFile(filename="keep.png", file=io.BytesIO(b"already-here"))],
-                    )
-                )
-                self.assertFalse((proj / "imports").exists())  # 만들었다가 도로 치웠다
-
-                (proj / "imports").mkdir()  # 사람이 미리 만들어 둔 빈 폴더
-                assets.invalidate_size_index(proj)
-                asyncio.run(
-                    assets.upload_reference_import(
-                        SimpleNamespace(),
-                        project="proj",
-                        files=[UploadFile(filename="keep.png", file=io.BytesIO(b"already-here"))],
-                    )
-                )
-                self.assertTrue((proj / "imports").exists())  # 남의 폴더는 그대로 둔다
 
 
 class AssetMountStoreTests(unittest.TestCase):

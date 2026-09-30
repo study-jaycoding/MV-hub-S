@@ -22,7 +22,7 @@ import zipfile
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
@@ -30,7 +30,9 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from . import _assets_access, assets_metadata
+from . import asset_registry as _asset_registry_api
 from .. import rbac, repo
+from ..repo import asset_registry as _registry_repo
 from ..config import (
     ASSETS_ROOT,
     AUTH_ENABLED,
@@ -172,26 +174,6 @@ def _validate_upload_batch(files: list[UploadFile]) -> None:
         ) from exc
 
 
-def _prepare_project_import_dir(project: str, request: Request) -> tuple[Path, Path, bool]:
-    """프로젝트의 imports 폴더를 준비한다. NAS 경로를 만지므로 async 라우트는 스레드에서 부른다."""
-    proj_dir = _safe_project_dir(project, request)
-    if not proj_dir:
-        raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
-    dest = (proj_dir / _PROMPT_IMPORT_PROJECT).resolve()
-    try:
-        dest.relative_to(proj_dir)
-    except ValueError:
-        raise HTTPException(status_code=500, detail="imports 경로 오류") from None
-    try:
-        dest.mkdir(parents=True)
-        created = True
-    except FileExistsError:
-        if not dest.is_dir():
-            raise HTTPException(status_code=500, detail="imports 경로가 폴더가 아닙니다")
-        created = False
-    return proj_dir, dest, created
-
-
 def _owner_mounts(owner: str) -> list[dict[str, str]]:
     """그 계정(owner)이 등록한 마운트만 — 각자 자기 것만 본다."""
     return asset_mounts.owner_mounts(_mounts_file(), owner, DEFAULT_WORKER_ID)
@@ -322,6 +304,11 @@ def _project_dir_info(project: str, request: Request) -> Optional[tuple[Path, bo
     if project == _COMBINED_INTERNAL:
         return ASSETS_ROOT, False, f"combined-root:{project}"
     owner = actor_id(request)
+    # 내장 폴더(imports·captures)는 등록 폴더보다 먼저 이 PC 설치 폴더로 푼다 — 같은 이름의 등록
+    # 폴더가 있어도 NAS 로 새지 않게(Jay 2026-09-29 옛 방식 복귀, Codex).
+    if project in _INTERNAL_FOLDERS:
+        cand = (ASSETS_ROOT / project).resolve()
+        return (cand, False, asset_watcher.manual_registration_id(owner, project)) if cand.is_dir() else None
     # 내(owner)가 등록한 외부 폴더(마운트)가 있으면 그 경로 우선 — 임의 위치 허용.
     md = _mount_dir(project, owner)
     if md:
@@ -399,22 +386,19 @@ def _index_by_sha(
     return index, True
 
 
-# ── 반입 파일의 '이미 있는 원본' 찾기 ────────────────────────────────────────
-# 끌어다 놓은 파일은 브라우저가 **내용만** 준다(원래 경로는 주지 않는다). 그래서 NAS 에 있는
-# 파일을 끌어와도 어디서 왔는지 알 수 없어 사본이 생겼고, 그 사본은 그 PC 안에만 있어
-# 씬을 남에게 주면 빈칸이 됐다(2026-09-28 Jay). → 반입할 때 프로젝트 폴더에서 **같은 내용**을
-# 찾아, 있으면 복사하지 않고 그 경로를 쓴다.
+# ── 이 PC 사본을 가리키는 참조의 '서버 원본' 찾기(자동 복구 /locate) ──────────────────
+# 끌어다 놓은 파일은 브라우저가 **내용만** 준다(원래 경로는 주지 않는다). 그래서 이 PC 사본을 가리키는
+# 참조는 자동 복구가 프로젝트 폴더에서 **같은 내용**(사본이 없으면 경로·이름)을 찾아 원본으로 잇는다.
 #
 # 비용: 파일 내용을 다 읽으면 NAS 에서 너무 느리다 → **크기(stat)로 후보를 좁히고 그 후보만**
-# 지문을 계산한다. 크기 색인은 짧은 TTL 로 캐시한다(여러 장을 한꺼번에 떨어뜨릴 때 한 번만 훑게).
-_LOCATE_TTL = 60.0
+# 지문을 계산한다. 폴더 목록은 자동 복구 한 번(scan_id) 동안만 같이 쓴다(아래 스냅샷).
 _LOCATE_LIMIT = 60000  # 이 개수를 넘기면 색인을 끊는다(끊기면 '없다'고 단정하지 않는다)
-# (크기 색인, 파일이름 색인, 완주여부) — 한 번 훑어 둘 다 만든다.
-_LOCATE_CACHE: dict[str, tuple[float, dict[int, list[str]], dict[str, list[str]], bool]] = {}
-_LOCATE_GUARD = threading.Lock()
+_REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT — 정션 폴더(asset_tree.build_tree 와 같은 판정)
 
 
-def _walk_media(proj_dir: Path, limit: int = _LOCATE_LIMIT) -> tuple[list[tuple[str, str, int]], bool]:
+def _walk_media(
+    proj_dir: Path, limit: int = _LOCATE_LIMIT, *, hide_render: bool = False
+) -> tuple[list[tuple[str, str, int]], bool]:
     """프로젝트 폴더의 미디어 파일 (상대경로, 이름, 크기) 목록과 완주 여부.
 
     ★os.scandir 로 한 번에 훑는다 — 목록 조회가 항목의 종류·크기를 함께 주므로 파일마다 NAS 에
@@ -424,11 +408,15 @@ def _walk_media(proj_dir: Path, limit: int = _LOCATE_LIMIT) -> tuple[list[tuple[
     예전과 같게 지키는 것:
       · 숨김 이름은 후보가 아니다 — 숨김 폴더는 **아예 내려가지 않는다**. 그래서 숨김 폴더 안의
         읽기 오류로 '완주 못 함'이 되지 않는다(그 안은 어차피 후보가 아니므로 이쪽이 더 맞다).
-      · 링크·정션 폴더는 따라가지 않는다 — 루트 밖으로 샐 수 있다.
+      · 링크·정션 폴더는 따라가지 않는다 — 루트 밖으로 샐 수 있다. 정션은 에셋 트리와 같게 재분석 지점
+        속성으로 가린다(DirEntry.is_junction 은 파이썬 3.12+ 전용이라 3.11 에서는 locate 가 통째로 실패했다).
       · 파일 링크는 **실제 대상이 루트 안일 때만** 받고, 상대경로도 예전처럼 **대상 자리**로 둔다
         (옛 씬 토큰이 대상 경로를 담고 있을 수 있다 — 바꾸면 경로 뒷부분 일치가 사라진다, Codex).
       · 미디어 수가 limit 를 넘으면 거기서 멈추고 완주가 아니라고 알린다(넘친 항목은 넣지 않는다).
-      · 못 읽은 폴더·파일이 있으면 완주가 아니다 — '없다'고 단정하지 않게.
+      · 못 읽은 폴더·파일이 있으면 완주가 아니다 — '없다'고 단정하지 않게. 목록을 읽는 **도중** NAS 가
+        끊겨도(반복 중 OSError) 마찬가지다 — 예전에는 요청 전체가 500 이 됐다(2026-09-29).
+    hide_render: PM 프로젝트로 풀린 폴더는 에셋 트리처럼 render 폴더(깊이 무관)에 내려가지 않는다 — 렌더
+    프레임이 한도를 채워 그 프로젝트 전체가 '완주 못 함'이 되지 않게(2026-09-29). 참조가 생길 수 없는 곳이다.
     """
     found: list[tuple[str, str, int]] = []
     scanned_all = True
@@ -441,44 +429,50 @@ def _walk_media(proj_dir: Path, limit: int = _LOCATE_LIMIT) -> tuple[list[tuple[
             scanned_all = False
             continue
         with entries:
-            for entry in entries:
-                name = entry.name
-                if asset_tree.is_hidden_name(name):
-                    continue
-                rel = f"{rel_dir}/{name}" if rel_dir else name
-                try:
-                    linked = entry.is_symlink() or entry.is_junction()
-                    if entry.is_dir(follow_symlinks=False):
-                        if not linked:
-                            stack.append((rel, entry.path))
+            try:
+                for entry in entries:
+                    name = entry.name
+                    if asset_tree.is_hidden_name(name):
                         continue
-                    if not _media_type(name):
+                    rel = f"{rel_dir}/{name}" if rel_dir else name
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            attrs = getattr(entry.stat(follow_symlinks=False), "st_file_attributes", 0)
+                            linked_dir = entry.is_symlink() or bool(attrs & _REPARSE_POINT)
+                            if not linked_dir and not (hide_render and name.lower() == "render"):
+                                stack.append((rel, entry.path))
+                            continue
+                        if not _media_type(name):
+                            continue
+                        if entry.is_symlink():
+                            target = Path(entry.path).resolve()
+                            rel = target.relative_to(proj_dir).as_posix()  # 루트 밖이면 ValueError
+                            name = target.name
+                            if not target.is_file():
+                                continue
+                            size = target.stat().st_size
+                        else:
+                            if not entry.is_file(follow_symlinks=False):
+                                continue
+                            size = entry.stat(follow_symlinks=False).st_size
+                    except ValueError:
                         continue
-                    if linked:
-                        target = Path(entry.path).resolve()
-                        rel = target.relative_to(proj_dir).as_posix()  # 루트 밖이면 ValueError
-                        name = target.name
-                        if not target.is_file():
-                            continue
-                        size = target.stat().st_size
-                    else:
-                        if not entry.is_file(follow_symlinks=False):
-                            continue
-                        size = entry.stat(follow_symlinks=False).st_size
-                except ValueError:
-                    continue
-                except OSError:
-                    scanned_all = False
-                    continue
-                if len(found) >= limit:
-                    return found, False
-                found.append((rel, name, size))
+                    except OSError:
+                        scanned_all = False
+                        continue
+                    if len(found) >= limit:
+                        return found, False
+                    found.append((rel, name, size))
+            except OSError:
+                scanned_all = False  # 목록을 읽는 도중 끊겼다 — 읽은 데까지만 쓰고 완주가 아니라고 한다
     return found, scanned_all
 
 
-def _build_index(proj_dir: Path) -> tuple[dict[int, list[str]], dict[str, list[str]], bool]:
+def _build_index(
+    proj_dir: Path, *, hide_render: bool = False
+) -> tuple[dict[int, list[str]], dict[str, list[str]], bool]:
     """한 번 훑어 두 색인을 만든다 — (크기 → 상대경로들), (파일이름 → 상대경로들). 캐시 없음."""
-    entries, scanned_all = _walk_media(proj_dir)
+    entries, scanned_all = _walk_media(proj_dir, hide_render=hide_render)
     index: dict[int, list[str]] = {}
     names: dict[str, list[str]] = {}
     for rel, name, size in entries:
@@ -487,38 +481,15 @@ def _build_index(proj_dir: Path) -> tuple[dict[int, list[str]], dict[str, list[s
     return index, names, scanned_all
 
 
-def _project_index(
-    proj_dir: Path, fresh: bool = False, max_age: float = _LOCATE_TTL
-) -> tuple[dict[int, list[str]], dict[str, list[str]], bool]:
-    """반입(reference-import)이 쓰는 색인 — 짧은 TTL 캐시를 둔 `_build_index`.
-
-    ★이름 색인이 필요한 이유: 남이 준 씬에는 **이 PC 에 사본이 없다**. 사본이 없으면 지문을 낼 수
-    없으므로 내용으로는 못 찾는다. 그래서 이름·경로로도 찾을 수 있어야 '서버에 있으면 보인다'가
-    성립한다(Jay 2026-09-28). 자동 복구(locate)는 이 캐시를 쓰지 않고 자기 스냅샷을 쓴다
-    (`_locate_snapshot` — 다른 PC 가 방금 넣은 파일까지 봐야 '한 곳에만 있다'를 단정할 수 있다)."""
-    key = str(proj_dir)
-    now = time.monotonic()
-    if not fresh:
-        with _LOCATE_GUARD:
-            hit = _LOCATE_CACHE.get(key)
-            if hit and now - hit[0] < max_age:
-                return hit[1], hit[2], hit[3]
-    index, names, scanned_all = _build_index(proj_dir)
-    with _LOCATE_GUARD:
-        _LOCATE_CACHE[key] = (now, index, names, scanned_all)
-    return index, names, scanned_all
-
-
 # ── 자동 복구 스냅샷 ─────────────────────────────────────────────────────────────
 # F5 한 번의 자동 복구가 참조를 200개씩 여러 번 묻는다. 요청마다 NAS 를 처음부터 다시 훑으면
 # 같은 폴더를 여러 번 훑는다(실측: 요청 3번 × 16초). 그래서 **같은 복구 작업(scan_id)** 의 요청들은
 # 첫 스캔을 같이 쓴다. 새 F5 는 새 scan_id 라 다시 훑으므로 '다른 PC 가 방금 넣은 동명 파일'을
 # 놓쳐 '유일하다'고 오판하지 않는다(Codex 2026-09-28).
-# 반입이 쓰는 60초 캐시(_LOCATE_CACHE)와는 **따로** 둔다 — 새 F5 가 그 캐시를 재사용하지 않게.
 _SCAN_TTL = 300.0
 _SCAN_MAX = 16  # 동시에 들고 있는 (계정·작업·폴더) 스냅샷 수 상한 — 넘치면 오래된 것부터 버린다
 _SCAN_WAIT = 60.0  # 같은 폴더를 먼저 훑는 요청을 기다리는 최대 시간
-_SCAN_SESSIONS: "OrderedDict[tuple[str, str, str], tuple[float, tuple[dict[int, list[str]], dict[str, list[str]], bool]]]" = OrderedDict()
+_SCAN_SESSIONS: "OrderedDict[tuple[str, str, str, bool], tuple[float, tuple[dict[int, list[str]], dict[str, list[str]], bool]]]" = OrderedDict()
 # 지금 훑는 중인 폴더 — **작업 id 와 무관하게 폴더 기준**. NAS 가 멈춘 채 F5 를 되풀이하면 새 작업 id 마다
 # 새 스캔이 같은 죽은 폴더에 붙잡혀 스레드가 쌓인다(Codex 2026-09-28). 폴더당 한 스캔만 돌게 한다.
 _SCAN_INFLIGHT: dict[tuple[str, str], threading.Event] = {}
@@ -526,18 +497,19 @@ _SCAN_GUARD = threading.Lock()
 
 
 def _locate_snapshot(
-    owner: str, scan_id: str, proj_dir: Path
+    owner: str, scan_id: str, proj_dir: Path, hide_render: bool = False
 ) -> tuple[dict[int, list[str]], dict[str, list[str]], bool]:
     """같은 복구 작업 안에서는 첫 스캔을 같이 쓴다. scan_id 가 없으면 매번 새로 훑는다.
 
-    키 = 계정 + 작업 + 폴더 — 다른 계정·다른 작업이 섞이지 않게. 같은 키로 동시에 오면 **하나만**
-    훑고 나머지는 그 결과를 기다린다(같은 폴더를 동시에 두 번 훑지 않게, Codex).
+    키 = 계정 + 작업 + 폴더 + render 가지치기 — 다른 계정·다른 작업이 섞이지 않게. 같은 물리 폴더를 개인
+    등록(render 보임)과 PM(render 숨김)으로 둘 다 훑을 수 있어 가지치기도 키에 넣는다(2026-09-29). 같은 폴더로
+    동시에 오면 **하나만** 훑고 나머지는 그 결과를 기다린다(같은 폴더를 동시에 두 번 훑지 않게, Codex).
     """
     if not scan_id:
-        return _build_index(proj_dir)
+        return _build_index(proj_dir, hide_render=hide_render)
     folder = os.path.normcase(str(proj_dir))
-    key = (owner, scan_id, folder)
-    flight = (owner, folder)  # 같은 폴더는 작업 id 가 달라도 동시에 한 번만 훑는다
+    key = (owner, scan_id, folder, hide_render)
+    flight = (owner, folder)  # 같은 폴더는 작업 id·가지치기가 달라도 동시에 한 번만 훑는다
     while True:
         with _SCAN_GUARD:
             now = time.monotonic()
@@ -559,7 +531,7 @@ def _locate_snapshot(
             # 그러면 이 폴더로는 아무것도 바꾸지 않고, 다음 복구에서 다시 시도한다(Codex 2026-09-28).
             return {}, {}, False
         try:
-            snap = _build_index(proj_dir)
+            snap = _build_index(proj_dir, hide_render=hide_render)
             with _SCAN_GUARD:
                 _SCAN_SESSIONS[key] = (time.monotonic(), snap)
                 _SCAN_SESSIONS.move_to_end(key)
@@ -570,12 +542,6 @@ def _locate_snapshot(
             with _SCAN_GUARD:
                 _SCAN_INFLIGHT.pop(flight, None)
             waiting.set()  # type: ignore[union-attr]
-
-
-def invalidate_size_index(proj_dir: Path) -> None:
-    """이 폴더에 파일을 새로 넣었으면 색인을 버린다(다음 반입이 새로 훑게)."""
-    with _LOCATE_GUARD:
-        _LOCATE_CACHE.pop(str(proj_dir), None)
 
 
 def _locate_by_content(
@@ -591,7 +557,7 @@ def _locate_by_content(
     프로젝트로 이어 버린다(Codex 2026-09-28)."""
     if size <= 0 or not digest:
         return None, True
-    index, _names, scanned_all = snapshot or _project_index(proj_dir)
+    index, _names, scanned_all = snapshot or _build_index(proj_dir)
     same_size = index.get(size) or []
     if not same_size:
         return None, scanned_all
@@ -612,24 +578,36 @@ def _locate_by_path(
     rel: str,
     snapshot: Optional[tuple[dict[int, list[str]], dict[str, list[str]], bool]] = None,
 ) -> tuple[list[str], list[str], list[str], bool]:
-    """상대경로로 같은 파일을 찾는다 — 사본이 없어 지문을 낼 수 없을 때의 길.
+    """상대경로로 같은 파일을 찾는다 — 지문이 없는 프로젝트 참조의 길(에셋 창에서 끌어온 참조는 지문이 없다).
 
-    (경로 뒷부분까지 맞는 것, 파일 이름만 맞는 것, 확장자만 다른 것, 완주 여부).
-      · 같은 그림이라도 프로젝트를 어느 깊이로 등록했느냐에 따라 `CH/바바라/x.png` 도 되고
-        `assets/CH/바바라/x.png` 도 된다 — 그래서 뒷부분 일치를 따로 모은다.
+    (경로로 맞는 것, 파일 이름만 맞는 것, 확장자만 다른 것, 완주 여부).
+      · 경로로 맞는 것 = 경로 **끝의 두 조각 이상**(부모 폴더/파일 이름)이 같은 것. 양방향이다 — 같은 그림이라도
+        프로젝트를 어느 깊이로 등록했느냐에 따라 `CH/바바라/x.png` 도 되고 `assets/CH/바바라/x.png` 도 된다.
+        한 조각(이름뿐)은 넣지 않는다 — 등록 깊이가 다르면 루트의 `x.png` 가 어느 깊이의 것인지 구조 근거가
+        없다(2026-09-29, Codex 합의).
+      · 이름만 맞는 것은 **잇는 데 쓰지 않는다** — `download.jpg` 같은 흔한 이름이 엉뚱한 그림을 붙였다
+        (2026-09-29). 부르는 쪽이 '서버에 없음' 판정과 확장자 단계를 막는 데만 쓴다.
       · 확장자만 다른 것: 누가 `x.png` 를 `x.jpeg` 로 바꿔 저장해 두면 씬은 옛 `.png` 를 가리킨다
         (Jay 2026-09-28 실측: 매튜_바바라받으려는동작(e025)). **같은 종류끼리**(이미지↔이미지)이고
-        **폴더 경로까지 같을 때만** 모은다 — 근거가 가장 약하므로 부르는 쪽이 맨 마지막에 쓴다.
+        **폴더 경로까지 같을 때만** 모은다 — 근거가 가장 약해 맨 마지막이다. 한 조각짜리 참조의 것은
+        부르는 쪽이 판정에만 쓴다(잇지 않는다).
     고르는 책임은 부르는 쪽에 둔다(여러 곳이면 바꾸지 않는다).
     """
-    _index, names, scanned_all = snapshot or _project_index(proj_dir)
+    _index, names, scanned_all = snapshot or _build_index(proj_dir)
+    parts = [part for part in rel.casefold().split("/") if part]
     name = rel.rsplit("/", 1)[-1]
     same_name = names.get(name.casefold()) or []
-    tail = "/" + rel.casefold().lstrip("/")
-    exact = [r for r in same_name if ("/" + r.casefold()).endswith(tail)]
+
+    def tail_matches(cand: str) -> bool:
+        cand_parts = [part for part in cand.casefold().split("/") if part]
+        k = min(len(parts), len(cand_parts))
+        return k >= 2 and parts[-k:] == cand_parts[-k:]
+
+    exact = [r for r in same_name if tail_matches(r)]
     named = [r for r in same_name if r not in exact]
 
     other_ext: list[str] = []
+    tail = "/" + rel.casefold().lstrip("/")
     stem, dot, ext = name.rpartition(".")
     if dot and stem:
         mine = "." + ext.lower()
@@ -1087,19 +1065,15 @@ async def _upload_files_loop(
 
 @router.post("/capture", dependencies=[Depends(_require_local_assets)])
 async def upload_capture(request: Request, project: str = Form(""), file: UploadFile = File(...)):
-    """붙여넣은 그림·부분수정 결과를 **그 프로젝트 폴더**의 imports 에 저장 + asset 토큰용 정보 반환.
+    """붙여넣은 그림·부분수정 결과를 **이 PC 설치 폴더의 captures** 에 저장 + asset 토큰용 정보 반환.
 
-    ★2026-09-28 Jay: 가져온 방식과 무관하게 프로젝트 폴더 기준으로 기록한다 — 전엔 이 PC 안
-    captures 폴더라 씬을 남에게 주면 빈칸이었다. 붙여넣기·부분수정 그림은 NAS 에 원본이 있을 수
-    없으므로(화면 캡처·새로 그린 것) 반입처럼 '이미 있는 원본 찾기'는 하지 않고 바로 저장한다."""
-    if not project or project == _COMBINED_INTERNAL:
-        raise HTTPException(status_code=400, detail="프로젝트를 먼저 고르세요")
+    ★2026-09-29 Jay "옛 방식으로 해야한다": 09-28 에 프로젝트 폴더(NAS)로 옮겼던 것을 되돌렸다.
+    그 PC 에만 있으므로 캔버스가 빨간 테두리·오른쪽 위 마크로 알린다. project 폼 값은 하위호환으로
+    받되 쓰지 않는다."""
     _validate_upload_batch([file])
-    # _safe_project_dir·resolve·mkdir 는 죽은 NAS 에서 오래 막힐 수 있다. async 이벤트 루프 밖에서,
-    # 폴더 쓰기가 취소돼도 중간에 버려지지 않는 관문으로 실행한다(upload_assets 와 같은 계약).
-    proj_dir, cap_dir, _created = await to_thread_non_abandon(
-        _prepare_project_import_dir, project, request
-    )
+    project = "captures"  # 응답 토큰도 asset:captures|… 로 고정(같은 이름의 등록 폴더로 새지 않게)
+    proj_dir = cap_dir = (ASSETS_ROOT / project).resolve()
+    cap_dir.mkdir(parents=True, exist_ok=True)
     try:
         tmp, size, digest = await _stream_upload_tmp(file, cap_dir)
     except _UploadTooLarge:
@@ -1136,7 +1110,7 @@ async def upload_capture(request: Request, project: str = Form(""), file: Upload
     finally:
         if commit_attempted:
             asset_tree.invalidate_project_tree(proj_dir)
-            invalidate_size_index(proj_dir)
+            asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)  # Assets 의 imp/cap 합본
     rel = target.relative_to(proj_dir).as_posix()
     if reused:
         return {
@@ -1274,12 +1248,22 @@ def discard_capture(body: CaptureDiscardIn, request: Request):
         # 한계: 업로드 재사용 없이 다른 project 별칭으로 직접 참조한 경우 exact logical 조회는
         # 그 별칭을 못 본다. 완전 차단은 reference 에 물리경로 색인을 추가하는 별도 DB 작업이다.
     asset_tree.invalidate_project_tree(proj_dir)
-    invalidate_size_index(proj_dir)
+    asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
     return {"ok": True}
 
 
+_LOCATE_MAX_TOKENS = 200
+
+
+class LocateFingerprint(BaseModel):
+    sha256: str = Field(default="", max_length=128)
+    bytes: int = 0
+
+
 class LocateIn(BaseModel):
-    tokens: list[str] = Field(default_factory=list)
+    # 한 번에 받는 수·길이 상한(2026-09-30 Codex P2) — 앱은 200개씩 보낸다(LOCATE_BATCH). 같은 PC 의 같은 버전 허브만
+    # 부르는 로컬 경로라 옛 앱과 섞이지 않는다.
+    tokens: list[Annotated[str, Field(max_length=4096)]] = Field(default_factory=list, max_length=_LOCATE_MAX_TOKENS)
     # 이 캔버스 탭에 지정된 팀 워크스페이스(씬 파일에 함께 온다). 있으면 **그 공간에 등록된
     # 프로젝트 폴더부터** 찾고, 거기서 찾히면 다른 곳은 보지 않는다 — 같은 이름이 여러 곳에
     # 있어도 헷갈리지 않는다(Jay 2026-09-28).
@@ -1287,9 +1271,35 @@ class LocateIn(BaseModel):
     # 자동 복구 한 번(F5 한 번)을 가리키는 id. 같은 id 의 요청들은 첫 스캔을 같이 쓴다 —
     # 참조를 200개씩 여러 번 묻는 동안 같은 NAS 폴더를 매번 다시 훑지 않게. 없으면 매번 새로 훑는다.
     scan_id: str = Field(default="", max_length=64)
+    # 토큰 → 그 참조가 든 내용 지문(씬에 함께 저장된 content_sha·bytes, 2026-09-29). 이 PC 에 사본이 없어도
+    # (남이 준 씬) 내용으로 찾게 한다. 한 토큰을 쓰는 참조가 **모두 같은 지문**일 때만 온다(클라이언트가 거른다).
+    # 한 번에 받는 토큰 수만큼만 받는다 — 무관한 지문 수만 개로 메모리·CPU 를 쓰게 두지 않는다(Codex).
+    fingerprints: dict[Annotated[str, Field(max_length=4096)], LocateFingerprint] = Field(default_factory=dict, max_length=_LOCATE_MAX_TOKENS)
+    # '레퍼런스 찾기' 단추(사용자가 누를 때만, Jay 2026-09-29) — PM 프로젝트의 render 폴더까지 훑고, render 안을
+    # 가리키는 참조에도 '서버에 없음'을 말한다. 자동 복구는 render 를 훑지 않는다(렌더 프레임이 폴더를 채워 느리다).
+    include_render: bool = False
+    # 토큰 → 참조에 적힌 에셋 대장 번호(2026-09-30). 한 토큰의 참조가 **모두 같은 번호**일 때만 온다(지문과 같은 규칙).
+    # 번호가 있으면 논리 파일을 따른다 — 옮겨졌으면 새 자리로(넣을 때 판과 달라도, 대장이 아는 지금 판이 맞으면).
+    registry_ids: dict[Annotated[str, Field(max_length=4096)], Annotated[str, Field(max_length=64)]] = Field(default_factory=dict, max_length=_LOCATE_MAX_TOKENS)
 
 
-_LOCATE_MAX_TOKENS = 200
+def _valid_fingerprint(fp: Optional[LocateFingerprint]) -> Optional[tuple[str, int]]:
+    """모양이 맞는 지문만 쓴다(sha256 16진 64자·크기 1 이상) — 아니면 없는 것으로 본다."""
+    if fp is None:
+        return None
+    sha = fp.sha256.strip().lower()
+    if fp.bytes > 0 and len(sha) == 64 and all(c in "0123456789abcdef" for c in sha):
+        return sha, fp.bytes
+    return None
+
+
+def lookup_registry(
+    request: Request, ids: list[str], shas: list[tuple[str, int]], tails: list[str]
+) -> Optional[dict[str, Any]]:
+    """에셋 대장 후보 조회(위임 모드면 공유 서버, 아니면 자기 DB). 실패·옛 서버·대장 없음 = None → 직접 훑기."""
+    return _asset_registry_api.lookup_for_request(request, ids, shas, tails)
+
+
 _log = logging.getLogger("mvhub.assets")
 
 
@@ -1303,28 +1313,103 @@ def locate_legacy_assets(body: LocateIn, request: Request):
       · 프로젝트 이름은 붙었지만 **이 PC 가 그 프로젝트를 못 보는** 참조 — 같은 폴더를 사람마다
         다른 이름·다른 깊이로 등록해 생긴다(`뻘뻘뻘`=…/10_ai, `뻘뻘뻘_RnD`=…/10_ai/assets).
 
-    찾는 순서는 근거가 센 것부터다. ① 이 PC 에 사본이 있으면 **내용 지문** ② 없으면 **경로 뒷부분**
-    ③ 그것도 없으면 **파일 이름**. 어느 단계든 **정확히 한 곳에서만** 찾혔을 때만 바꾼다 — 여러 곳에
-    있으면 어느 것인지 단정할 수 없어 그대로 둔다."""
+    무엇으로 같은 그림인지 알아보는지는 참조마다 다르다(2026-09-29, Codex 합의 — `download.jpg` 같은
+    흔한 이름이 엉뚱한 그림을 붙였다).
+      · **지문이 있으면 내용으로만** — 참조가 든 지문(요청 fingerprints)이 먼저, 없으면 이 PC 사본의 지문.
+        못 찾으면 거기서 멈춘다(경로·이름으로 내려가지 않는다).
+      · 지문 없는 **사본** 참조(imports·captures)는 **잇지 않는다** — 그 경로는 그 PC 안 임의 사본 자리라
+        이름 말고는 근거가 없다. 경로·이름 후보는 '서버에 없음' 판정에만 쓴다.
+      · 지문 없는 **프로젝트** 참조(에셋 창에서 끌어온 것 — 지문이 원래 없다)는 경로로 — 끝의 두 조각 이상이
+        같은 것(양방향), 없으면 폴더 경로가 같고 확장자만 다른 것. 이름만 같은 것으로는 잇지 않는다.
+    어느 단계든 **정확히 한 곳에서만** 찾혔을 때만 바꾼다 — 여러 곳에 있으면 어느 것인지 단정할 수 없어 그대로 둔다.
+
+    못 고친 참조 중 둘은 따로 알려 준다(Jay 2026-09-29 — 캔버스가 빨간 테두리로 그린다).
+      · `missing` — 이 PC 에서도 안 열리고, 등록한 폴더를 **전부 끝까지** 훑어도 후보가 하나도 없다.
+        이 PC 사본이 참조의 지문과 **다른 그림**이어도 missing 이다(안 그러면 그 다른 그림이 그대로 보인다).
+      · `local` — 설치 폴더 안 옛 사본(imports·captures)에만 있다. 같은 내용이 서버에 한 곳도 없다
+    NAS 가 끊겨 폴더를 못 읽으면 어느 쪽도 말하지 않는다 — '없는 것'과 '못 읽는 것'을 섞지 않는다.
+
+    나머지 미해결도 둘을 따로 알려 준다(2026-09-29 — 앱이 판정을 기억해 다음 실행에 다시 훑지 않게, Jay "2 새 안").
+      · `open` — 이 PC 에서 이미 열린다(손대지 않은 참조).
+      · `incomplete` — 판정을 못 끝냈다: 볼 폴더를 다 해석하지 못했거나(NAS 끊김·죽은 옛 등록) 끝까지 못 훑었다.
+        앱은 이것만 기억하지 않고 다음 실행에 다시 묻는다. 후보가 여럿이거나 근거가 없어 못 이은 것은 여기 없다.
+    missing·local·open·incomplete 는 모두 `unresolved` 의 부분집합이고, 한 토큰은 많아야 하나에 들어간다.
+    옛 앱은 open·incomplete 를 모르고 지나간다."""
     started = time.perf_counter()
     fixed: list[dict[str, Any]] = []
     unresolved: list[str] = []
+    missing: list[str] = []
+    local_only: list[str] = []
+    opened: list[str] = []
+    incomplete: list[str] = []
+    # 토큰 → 실린 목록(missing/local/open/incomplete 중 하나) — 중복 토큰에 같은 답을 싣는다
+    status_of: dict[str, list[str]] = {}
+
+    def note(token: str, bucket: list[str]) -> None:
+        bucket.append(token)
+        status_of[token] = bucket
+
     owner = actor_id(request)
     # 내가 등록한 폴더도 PM 프로젝트도 **모두** 뒤진다 — 둘 다 같은 서버(NAS)를 가리키므로
     # 어느 쪽에서 찾든 같은 파일이다(Jay 2026-09-28). 이름이 겹쳐도 빼지 않는다. 대신 아래에서
     # 후보를 **물리 경로로 묶어** 같은 파일이 두 번 세어지지 않게 한다 — 같은 폴더를 두 이름·두
     # 깊이로 등록하면(`뻘뻘뻘`=…/10_ai, `뻘뻘뻘_RnD`=…/10_ai/assets) 한 그림이 두 곳에서
     # 찾히는데, 그걸 '여럿'으로 세면 도리어 아무것도 못 고친다.
-    names = {m["name"] for m in _owner_mounts(owner)} | {
-        m["name"] for m in _auto_project_mounts(request)
+    manual_mounts = _owner_mounts(owner)
+    auto_mounts = _auto_project_mounts(request)
+    mounts = [
+        m
+        for m in [*manual_mounts, *auto_mounts]
+        if m["name"] not in _INTERNAL_FOLDERS and m["name"] != _COMBINED_INTERNAL
+    ]
+    names = {m["name"] for m in mounts}
+    manual_names = {m["name"] for m in manual_mounts}
+    auto_names = {m["name"] for m in auto_mounts}
+
+    def same_folder(a: dict[str, str], b: dict[str, str]) -> bool:
+        pa = _resolve_mount_path(a["path"]) if a.get("path") else None
+        pb = _resolve_mount_path(b["path"]) if b.get("path") else None
+        return pa is not None and pb is not None and _capture_path_key(pa) == _capture_path_key(pb)
+
+    # 같은 이름을 개인 등록과 PM 이 **서로 다른 실제 폴더**로 가리키면 그 이름으로는 잇지 않는다(2026-09-29,
+    # Codex 합의) — 이 PC 는 개인 쪽으로 푸는데 다른 PC 는 PM 쪽으로 풀어, 이은 참조가 PC 마다 다른 폴더를
+    # 가리킨다. 한쪽을 해석할 수 없어도 다른 것으로 본다. 같은 폴더를 양쪽에 등록한 흔한 구성은 그대로 잇는다.
+    split_names = {
+        a["name"] for a in auto_mounts for m in manual_mounts if m["name"] == a["name"] and not same_folder(m, a)
     }
+    # 에셋 트리와 같은 규칙 — PM 프로젝트로 풀리는 이름만 render 를 숨긴다(개인 등록이 살아 있으면 이 PC 는
+    # 개인 쪽으로 풀어 render 가 보인다, _project_dir_info). 이름마다 한 번만 판정한다.
+    render_hidden: dict[str, bool] = {}
+
+    def hides_render(name: str) -> bool:
+        if body.include_render:  # '레퍼런스 찾기' 단추 — render 까지 훑는다
+            return False
+        if name not in render_hidden:
+            render_hidden[name] = name in auto_names and (
+                name not in manual_names or _mount_dir(name, owner) is None
+            )
+        return render_hidden[name]
+
+    fingerprints_used = 0  # 참조가 든 지문으로 찾은 토큰 수(기록용) — 지문은 처리하는 토큰 것만 읽는다
     project_dirs: list[tuple[str, Path]] = []
     for name in sorted(names):
-        if name in _INTERNAL_FOLDERS or name == _COMBINED_INTERNAL:
-            continue
         proj_dir = _safe_project_dir(name, request)
         if proj_dir:
             project_dirs.append((name, proj_dir))
+    # '서버에 없다'는 등록한 폴더를 **모두 훑었을 때만** 말한다(Codex 2026-09-29). 이름 해석
+    # (_safe_project_dir)은 ① 죽은 등록 대신 설치 폴더의 같은 이름 폴더로 넘어가고 ② 같은 이름을 개인
+    # 등록과 PM 이 다른 폴더로 가리키면 개인 쪽만 준다 — 그래서 등록한 **원래 경로**가 살아 있고,
+    # 그 이름으로 실제로 훑는 폴더와 같은 곳인지 하나씩 본다. 방금 해석한 경로라 대부분 TTL 캐시를 친다.
+    # ponytail: 고장 난 옛 등록이 하나라도 있으면 그 PC 는 빨강을 못 낸다(안전한 쪽). 필요해지면
+    #   그 경로의 공유 뿌리가 닿는지로 '옛 등록'과 'NAS 끊김'을 가른다.
+    searched = dict(project_dirs)
+
+    def searched_as_registered(m: dict[str, str]) -> bool:
+        real = _resolve_mount_path(m["path"]) if m.get("path") else None
+        here = searched.get(m["name"])
+        return real is not None and here is not None and _capture_path_key(real) == _capture_path_key(here)
+
+    can_judge = bool(project_dirs) and all(searched_as_registered(m) for m in mounts)
 
     # 폴더는 **미리 다 훑지 않는다** — 필요할 때 그 폴더만 훑는다. 공간(1바퀴)에서 다 찾히면 나머지
     # 프로젝트는 아예 안 훑는다. 예전에는 공간으로 좁히기 전에 전부 훑어 좁히기가 속도에 아무
@@ -1332,13 +1417,19 @@ def locate_legacy_assets(body: LocateIn, request: Request):
     # 한 요청 안에서는 같은 폴더를 한 번만 훑고, 같은 복구 작업(scan_id)의 다음 요청도 그 스냅샷을
     # 이어 쓴다. 새 복구 작업은 새로 훑는다 — 방금 추가된 동명 파일을 놓치지 않게.
     scan_id = (body.scan_id or "").strip()
-    snapshots: dict[str, tuple[dict[int, list[str]], dict[str, list[str]], bool]] = {}
+    snapshots: dict[tuple[str, bool], tuple[dict[int, list[str]], dict[str, list[str]], bool]] = {}
 
-    def snapshot_of(proj_dir: Path) -> tuple[dict[int, list[str]], dict[str, list[str]], bool]:
-        key = str(proj_dir)
+    def snapshot_of(name: str, proj_dir: Path) -> tuple[dict[int, list[str]], dict[str, list[str]], bool]:
+        hide = hides_render(name)
+        key = (str(proj_dir), hide)
         if key not in snapshots:
-            snapshots[key] = _locate_snapshot(owner, scan_id, proj_dir)
+            snapshots[key] = _locate_snapshot(owner, scan_id, proj_dir, hide)
         return snapshots[key]
+
+    def cut_short() -> bool:
+        """판정을 못 끝냈는가 — 볼 폴더를 다 해석하지 못했거나, 이번 요청에서 훑은 폴더 중 끝까지 못 훑은 것이 있다.
+        못 이은 참조는 모두 마지막 바퀴(등록 폴더 전체)를 거쳐 오므로 그때쯤 스냅샷이 다 모여 있다 — 새로 훑지 않는다."""
+        return not can_judge or any(not snap[2] for snap in snapshots.values())
 
     dirs_by_name = dict(project_dirs)
     # 캔버스 탭에 워크스페이스가 지정돼 있으면 **그 공간의 프로젝트만** 먼저 본다(1바퀴).
@@ -1383,13 +1474,53 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         return out
 
     def pick(cands: list[tuple[str, str]], complete: bool) -> Optional[dict[str, Any]]:
-        """후보가 (같은 파일끼리 묶고 나서) 정확히 하나이고, 폴더를 끝까지 훑었을 때만 고른다."""
+        """후보가 (같은 파일끼리 묶고 나서) 정확히 하나이고, 폴더를 끝까지 훑었을 때만 고른다.
+        개인·PM 이 서로 다른 폴더로 가리키는 이름으로는 잇지 않는다 — 같은 파일이 다른 이름으로도
+        찾히면 그 이름을 쓰도록, 묶기 전에 그런 이름을 뒤로 보낸다."""
         if not complete:
             return None
-        merged = dedupe(cands)
-        if len(merged) != 1:
+        merged = dedupe(sorted(cands, key=lambda cand: cand[0] in split_names))
+        if len(merged) != 1 or merged[0][0] in split_names:
             return None
         return {"project": merged[0][0], "path": merged[0][1]}
+
+    def path_candidates(rest: str, link: bool) -> tuple[Optional[dict[str, Any]], bool]:
+        """(이을 곳, 등록 폴더를 끝까지 훑었는데 경로·이름·확장자 후보가 하나도 없는가).
+
+        link=False 면 잇지 않고 판정만 한다(지문 없는 사본 참조·지문을 못 찾은 참조) — 그때는 전체 바퀴만 본다.
+        잇는 순서: 경로(끝 두 조각 이상) → 이름만 같은 것이 있으면 거기서 멈춤 → 확장자만 다름(참조가 두 조각
+        이상일 때만 — 이름뿐인 참조는 폴더 근거가 없다). 이름만 같은 파일이 있다는 건 '이 이름의 그림이 실제로
+        있다'는 뜻이라 확장자 단계로 내려가지 않는다(Codex 2026-09-28). 후보는 잇지 않을 때도 판정에는 센다."""
+        multi_part = len([part for part in rest.split("/") if part]) >= 2
+        scopes = rounds if link else rounds[-1:]
+        for i, scope in enumerate(scopes):
+            by_path: list[tuple[str, str]] = []
+            by_name: list[tuple[str, str]] = []
+            by_ext: list[tuple[str, str]] = []
+            complete = True
+            for name, proj_dir in scope:
+                exact, named, other_ext, scanned_all = _locate_by_path(
+                    proj_dir, rest, snapshot=snapshot_of(name, proj_dir)
+                )
+                if not scanned_all:
+                    complete = False
+                by_path += [(name, r) for r in exact]
+                by_name += [(name, r) for r in named]
+                by_ext += [(name, r) for r in other_ext]
+                # 일찍 끊지 않는다 — 같은 파일을 두 이름으로 등록했을 수도 있어 묶어 보기 전에는 '여럿'인지 모른다.
+            if link:
+                if by_path:
+                    entry = pick(by_path, complete)
+                elif by_name or not multi_part:
+                    # 같은 이름이 다른 폴더에 있거나 참조가 이름뿐이다 — 이름으로 잇지도, 확장자 단계로 내려가지도 않는다
+                    entry = None
+                else:
+                    entry = pick(by_ext, complete)
+                if entry:
+                    return entry, False
+            if i == len(scopes) - 1:  # 마지막 바퀴 = 등록 폴더 전체
+                return None, complete and not (by_path or by_name or by_ext)
+        return None, False
 
     # 한 씬의 참조 수백 개가 같은 프로젝트를 가리킨다 — 폴더 해석은 이름마다 한 번만 한다
     # (수동 마운트 조회 + PM DB 조회가 들어 있다, Codex 2026-09-28).
@@ -1400,6 +1531,131 @@ def locate_legacy_assets(body: LocateIn, request: Request):
             dir_cache[name] = _safe_project_dir(name, request)
         return dir_cache[name]
 
+    # 이 PC 사본(imports·captures)의 (지문, 크기, 파일 있음) — 대장 단계와 아래 본 판정이 같은 값을 쓴다(두 번 안 읽게).
+    local_cache: dict[tuple[str, str], tuple[str, int, bool]] = {}
+
+    def local_copy(project: str, rest_path: str) -> tuple[str, int, bool]:
+        key = (project, rest_path)
+        if key not in local_cache:
+            digest_, size_, exists_ = "", 0, False
+            local = _safe_resolve((ASSETS_ROOT / project).resolve(), rest_path)
+            if local and local.is_file():
+                exists_ = True
+                try:
+                    size_ = local.stat().st_size
+                except OSError:
+                    size_ = 0
+                if size_ > 0:
+                    digest_ = _sha256_file(local) or ""
+            local_cache[key] = (digest_, size_, exists_)
+        return local_cache[key]
+
+    # ── 에셋 대장 먼저(2026-09-30, docs/ASSET_REGISTRY.md) ─────────────────────────────────────
+    # 대장은 **후보**일 뿐이다(Codex 합의): 후보를 이 PC 의 PM 마운트로 풀어 파일을 열고, 크기와 **지문**이 대장이 훑은
+    # 그 판과 같을 때만 잇는다(지금 경로가 참조와 같은 후보는 예외 — 아래 path_ids). 그 프로젝트의 마지막 훑기가 완주가 아니거나, 대장이
+    # 없으면(옛 서버·꺼짐·실패) 아무것도 하지 않고 아래 직접 훑기가 그대로 맡는다. missing·local·incomplete 판정은
+    # 대장이 내지 않는다(훑기 사이 틈). 열리는 참조에는 번호만 알려 준다(open_ids — 같은 물리 파일일 때만).
+    registry_fixed: dict[str, dict[str, Any]] = {}
+    open_ids: dict[str, str] = {}
+    # 토큰 → {물리 경로 열쇠: 번호} — 지금 경로가 참조와 같은 대장 후보. 잇기는 직접 훑기가 하고, 그 답이 이 파일이면 번호만 붙인다.
+    path_ids: dict[str, dict[str, Optional[str]]] = {}
+    registry_used = False
+    pre: dict[str, dict[str, Any]] = {}
+    for token in dict.fromkeys(body.tokens[:_LOCATE_MAX_TOKENS]):
+        head, sep, rest = token.partition("|")
+        project = head[len("asset:"):] if head.startswith("asset:") else ""
+        if not sep or not project or not rest:
+            continue
+        project, rest = asset_paths.real_meta_key(project, rest)
+        internal = project in _INTERNAL_FOLDERS
+        info: dict[str, Any] = {"rest": rest, "internal": internal, "open": None,
+                                "id": (body.registry_ids.get(token) or "").strip()}
+        fp = _valid_fingerprint(body.fingerprints.get(token))
+        if internal:
+            digest, size, _exists = local_copy(project, rest)
+            fp = fp or ((digest, size) if digest and size > 0 else None)
+        else:
+            current = project_dir_of(project)
+            here = _safe_resolve(current, rest) if current else None
+            info["open"] = here if here and here.is_file() else None
+        info["fp"] = fp
+        pre[token] = info
+    keys_ids = [i["id"] for i in pre.values() if i["id"]]
+    keys_shas = [i["fp"] for i in pre.values() if i["fp"]]
+    keys_tails = [i["rest"] for i in pre.values() if not i["internal"] and len([p for p in i["rest"].split("/") if p]) >= 2]
+    found = lookup_registry(request, keys_ids, keys_shas, keys_tails) if pre else None
+    if found:
+        registry_used = True
+        complete_pids = {pid for pid, p in (found.get("projects") or {}).items() if p and p.get("complete")}
+        mount_by_pid = {m.get("project_id"): m for m in auto_mounts if m.get("project_id")}
+
+        def usable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [r for r in rows if r and r.get("state") == "present" and r.get("project_id") in complete_pids]
+
+        def local_of(row: dict[str, Any]) -> Optional[tuple[str, Path]]:
+            mount = mount_by_pid.get(row["project_id"])
+            if not mount or mount["name"] in split_names:
+                return None
+            base = dirs_by_name.get(mount["name"])
+            real = _resolve_mount_path(mount["path"]) if mount.get("path") else None
+            if base is None or real is None or _capture_path_key(base) != _capture_path_key(real):
+                return None  # 이 PC 에서 그 이름이 다른 폴더로 풀린다 — 이으면 엉뚱한 곳을 가리킨다
+            target = _safe_resolve(base, row["path"])
+            return (mount["name"], target) if target else None
+
+        def same_version(row: dict[str, Any], target: Path) -> bool:
+            # 크기가 같아도 **지문까지** 대조한다(Codex P1 2026-09-30) — 같은 크기로 내용을 바꾸고 수정시각을 보존하면
+            # 크기·시각만으로는 다른 그림이 붙는다. 후보 몇 개만 읽으니 NAS 부하는 작다(size+시각은 훑기의 재지문 생략용일 뿐).
+            try:
+                st = target.stat()
+            except OSError:
+                return False
+            return st.st_size == row.get("bytes") and _sha256_file(target) == row.get("sha256")
+
+        for token, info in pre.items():
+            if info["open"] is not None:
+                rows = usable((found.get("tails") or {}).get(info["rest"]) or [])
+                key = _capture_path_key(info["open"])
+                ids = {r["registry_asset_id"] for r in rows
+                       for loc in [local_of(r)] if loc and _capture_path_key(loc[1]) == key}
+                if len(ids) == 1:
+                    open_ids[token] = ids.pop()
+                continue
+            if info["id"]:
+                row = (found.get("ids") or {}).get(info["id"])
+                cands = usable([row] if row else [])
+            elif info["fp"]:
+                sha, size = info["fp"]
+                cands = [r for r in usable((found.get("shas") or {}).get(sha) or []) if r.get("bytes") == size]
+            elif not info["internal"]:
+                cands = usable((found.get("tails") or {}).get(info["rest"]) or [])
+                # 지금 경로가 참조와 같은 후보가 있으면 잇기는 아래 직접 훑기에 맡긴다 — 그쪽은 개인 등록 폴더까지 세어 유일할
+                # 때만 잇는데, 대장은 PM 만 봐서 개인 폴더의 같은 경로 **다른 파일**을 못 센다(Codex 2026-09-30). 그 답이 이 후보와
+                # 같은 물리 파일이면 번호만 붙인다. 지문도 읽지 않는다(실측: 36개 335MB 를 매번 읽어 찾기 2.6초 → 15~18초).
+                now = [r for r in cands if _registry_repo.tail_matches(info["rest"], r["path"])]
+                if now:
+                    ids_here: dict[str, Optional[str]] = {}
+                    for r in now:
+                        loc = local_of(r)
+                        if loc:
+                            k = _capture_path_key(loc[1])
+                            # 한 물리 파일에 번호가 둘(같은 폴더를 두 PM 프로젝트로 등록)이면 어느 것인지 몰라 붙이지 않는다
+                            ids_here[k] = r["registry_asset_id"] if ids_here.get(k, r["registry_asset_id"]) == r["registry_asset_id"] else None
+                    path_ids[token] = ids_here
+                    continue
+            else:
+                continue  # 지문 없는 사본 — 대장으로도 근거가 없다(이름으로 잇지 않는다)
+            hits: dict[str, tuple[str, dict[str, Any]]] = {}
+            for r in cands:
+                loc = local_of(r)
+                if loc and same_version(r, loc[1]):
+                    hits.setdefault(_capture_path_key(loc[1]), (loc[0], r))
+            if len(hits) == 1:
+                name, r = next(iter(hits.values()))
+                registry_fixed[token] = {"project": name, "path": r["path"], "sha256": r["sha256"],
+                                         "bytes": r["bytes"], "registry_asset_id": r["registry_asset_id"]}
+
+    registry_path_ids = 0  # 직접 훑기가 이은 답에 대장 번호를 붙인 수(기록용)
     seen: dict[str, Optional[dict[str, Any]]] = {}  # 같은 토큰이 여러 카드에 있어도 한 번만 계산
     for token in body.tokens[:_LOCATE_MAX_TOKENS]:
         if token in seen:
@@ -1407,6 +1663,8 @@ def locate_legacy_assets(body: LocateIn, request: Request):
                 fixed.append({**seen[token], "token": token})  # type: ignore[dict-item]
             else:
                 unresolved.append(token)
+                if token in status_of:
+                    status_of[token].append(token)
             continue
         seen[token] = None
         head, sep, rest = token.partition("|")
@@ -1416,6 +1674,11 @@ def locate_legacy_assets(body: LocateIn, request: Request):
             continue
         old_project, rest = asset_paths.real_meta_key(old_project, rest)
         internal = old_project in _INTERNAL_FOLDERS
+        # render 폴더 안을 가리키는 참조에는 '서버에 없음'을 말하지 않는다 — PM 프로젝트는 render 를 훑지 않는다.
+        # '레퍼런스 찾기' 단추는 render 까지 훑으므로 말한다.
+        judgeable = can_judge and (
+            body.include_render or "render" not in {part.lower() for part in rest.split("/")}
+        )
 
         # 이미 이 PC 에서 열리는 참조는 손대지 않는다 — 멀쩡한 것을 옮기면 더 나빠진다.
         if not internal:
@@ -1423,30 +1686,35 @@ def locate_legacy_assets(body: LocateIn, request: Request):
             here = _safe_resolve(current, rest) if current else None
             if here and here.is_file():
                 unresolved.append(token)
+                note(token, opened)
                 continue
 
-        # ① 내용 지문 — 이 PC 에 사본이 있을 때만 가능(가장 확실한 근거).
-        digest = ""
-        size = 0
+        # ⓪ 에셋 대장이 확인까지 마친 자리(위 대장 단계).
+        if token in registry_fixed:
+            seen[token] = registry_fixed[token]
+            fixed.append({**registry_fixed[token], "token": token})
+            continue
+
+        # ① 내용 지문 — 참조가 든 지문(씬에 함께 온 것)이 먼저, 없으면 이 PC 사본의 지문. 둘이 다르면 이 PC
+        #    사본은 같은 이름의 **다른 그림**이다(PC 마다 imports 이름이 겹칠 수 있다).
+        local_exists = False
+        local_digest, local_size = "", 0
         if internal:
-            local = _safe_resolve((ASSETS_ROOT / old_project).resolve(), rest)
-            if local and local.is_file():
-                try:
-                    size = local.stat().st_size
-                except OSError:
-                    size = 0
-                if size > 0:
-                    digest = _sha256_file(local)
+            local_digest, local_size, local_exists = local_copy(old_project, rest)
+        carried = _valid_fingerprint(body.fingerprints.get(token))
+        fingerprints_used += bool(carried)
+        digest, size = carried or (local_digest, local_size if local_digest else 0)
 
         entry: Optional[dict[str, Any]] = None
-        complete = True
+        nothing_found = False  # 전체 바퀴를 끝까지 훑었는데 경로·이름·확장자 후보가 하나도 없다
         if digest and size > 0:
-            for scope in rounds:
+            content_absent = False  # 전체 바퀴를 끝까지 훑었는데 같은 내용이 한 곳에도 없다
+            for i, scope in enumerate(rounds):
                 hits: list[tuple[str, str]] = []
                 complete = True
                 for name, proj_dir in scope:
                     found, scanned_all = _locate_by_content(
-                        proj_dir, size, digest, rest.rsplit("/", 1)[-1], snapshot=snapshot_of(proj_dir)
+                        proj_dir, size, digest, rest.rsplit("/", 1)[-1], snapshot=snapshot_of(name, proj_dir)
                     )
                     if not scanned_all:
                         complete = False
@@ -1457,44 +1725,56 @@ def locate_legacy_assets(body: LocateIn, request: Request):
                 entry = pick(hits, complete)
                 if entry:
                     break
+                if i == len(rounds) - 1:  # 마지막 바퀴 = 등록 폴더 전체
+                    content_absent = complete and not hits
             if entry is None:
-                # 지문을 낼 수 있었는데 같은 내용이 없다(또는 여러 곳에 있다). 그런데도 이름만 같은
-                # 파일로 이으면 **다른 그림**이 붙는다 — 근거가 약한 단계로 내려가지 않는다
-                # (Codex 2026-09-28).
+                # 지문이 있는데 같은 내용이 없다(또는 여러 곳에 있다). 그런데도 경로·이름으로 이으면 **다른
+                # 그림**이 붙는다 — 근거가 약한 단계로 내려가지 않는다(Codex 2026-09-28).
                 unresolved.append(token)
+                if judgeable and content_absent:
+                    if digest == local_digest:
+                        # 서버 어디에도 같은 내용이 없다 = 이 PC 안 사본에만 있다(여럿이면 서버에 있는 것이다)
+                        note(token, local_only)
+                    elif internal and (local_digest or not local_exists):
+                        # 받은 사람(사본 없음)이거나, 이 PC 사본이 다른 그림 — 그대로 두면 그 다른 그림이 보인다.
+                        # 사본 파일이 있는데 지문을 못 냈으면(0바이트·읽기 실패) 같은 그림인지 몰라 말하지 않는다.
+                        note(token, missing)
+                    elif not internal and path_candidates(rest, link=False)[1]:
+                        # 프로젝트 참조 — 같은 내용이 없어도 그 경로·이름의 파일이 있으면(고쳐 저장됐을 수 있다)
+                        # '없다'고 하지 않는다.
+                        note(token, missing)
+                if token not in status_of and cut_short():
+                    note(token, incomplete)
                 continue
             entry |= {"sha256": digest, "bytes": size}
-
-        # ② 경로 뒷부분 → ③ 파일 이름. 사본이 없는 참조(남이 준 씬)는 여기서만 살아난다.
-        if entry is None:
-            for scope in rounds:
-                by_path: list[tuple[str, str]] = []
-                by_name: list[tuple[str, str]] = []
-                by_ext: list[tuple[str, str]] = []
-                complete = True
-                for name, proj_dir in scope:
-                    exact, named, other_ext, scanned_all = _locate_by_path(
-                        proj_dir, rest, snapshot=snapshot_of(proj_dir)
-                    )
-                    if not scanned_all:
-                        complete = False
-                    by_path += [(name, r) for r in exact]
-                    by_name += [(name, r) for r in named]
-                    by_ext += [(name, r) for r in other_ext]
-                    # 위와 같은 이유로 일찍 끊지 않는다.
-                # 근거가 센 것부터 — 앞 단계에 후보가 하나라도 있으면 뒤 단계로 내려가지 않는다.
-                # ④ 확장자만 다른 것(.png → .jpeg)은 가장 약하므로 맨 마지막이다.
-                if by_path:
-                    entry = pick(by_path, complete)
-                elif by_name:
-                    entry = pick(by_name, complete)
-                else:
-                    entry = pick(by_ext, complete)
-                if entry:
-                    break
+        elif internal:
+            # 지문 없는 사본 참조 — 경로·이름으로는 **잇지 않는다**(2026-09-29). 이 PC 에도 사본 파일이 없고
+            # 등록 폴더 어디에도 같은 이름조차 없을 때만 '서버에 없음'이다.
+            unresolved.append(token)
+            if judgeable and not local_exists and path_candidates(rest, link=False)[1]:
+                note(token, missing)
+            elif not local_exists and cut_short():
+                # 사본 파일은 있는데 지문을 못 낸 것(0바이트·읽기 실패)은 다시 훑어도 같다 — incomplete 아님
+                note(token, incomplete)
+            continue
+        else:
+            # ② 경로(끝 두 조각 이상) → 확장자만 다름. 지문 없는 프로젝트 참조(남이 준 씬·다른 등록 깊이)의 길.
+            entry, nothing_found = path_candidates(rest, link=True)
+            ids_here = path_ids.get(token)
+            if entry and ids_here:
+                base = dirs_by_name.get(entry["project"])
+                target = _safe_resolve(base, entry["path"]) if base else None
+                rid = ids_here.get(_capture_path_key(target)) if target else None
+                if rid:
+                    entry["registry_asset_id"] = rid
+                    registry_path_ids += 1
 
         if entry is None:
             unresolved.append(token)
+            if judgeable and nothing_found:
+                note(token, missing)
+            elif cut_short():
+                note(token, incomplete)
             continue
         seen[token] = entry
         fixed.append({**entry, "token": token})
@@ -1502,14 +1782,34 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         _log,
         "assets_locate",
         tokens=len(body.tokens),
+        fingerprints=fingerprints_used,
         fixed=len(fixed),
         workspace=bool(workspace_id),
         scan=scan_id[:8],
         projects=len(project_dirs),
         scanned_folders=len(snapshots),
+        missing=len(missing),
+        local=len(local_only),
+        open=len(opened),
+        incomplete=len(incomplete),
+        render=body.include_render,
+        judge=can_judge,
+        registry=registry_used,
+        registry_fixed=len(registry_fixed),
+        registry_path_ids=registry_path_ids,
+        registry_open_ids=len(open_ids),
         elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
     )
-    return {"fixed": fixed, "unresolved": unresolved}
+    return {
+        "fixed": fixed,
+        "unresolved": unresolved,
+        "missing": missing,
+        "local": local_only,
+        "open": opened,
+        "incomplete": incomplete,
+        # 열리는 참조의 에셋 대장 번호(토큰 → 번호). 앱이 참조에 적어 두면 나중에 옮겨져도 따라간다. 옛 앱은 모른다.
+        "open_ids": open_ids,
+    }
 
 
 @router.post("/reference-import", dependencies=[Depends(_require_local_assets)])
@@ -1519,23 +1819,19 @@ async def upload_reference_import(
     dir: str = Form(""),
     files: list[UploadFile] = File(...),
 ):
-    """프롬프트/캔버스/트레이에 외부 파일을 직접 드롭할 때 쓰는 가져오기.
+    """프롬프트/캔버스/트레이에 외부 파일을 직접 드롭할 때 쓰는 가져오기 — **이 PC 설치 폴더의
+    imports** 한 곳에 모은다(같은 내용은 지문으로 재사용).
 
-    ★2026-09-28 Jay: "어셋에서 가지고오는것처럼 경로가 입력되는거다" — **프로젝트 폴더 기준**으로
-    기록한다. 끌어다 놓은 파일은 브라우저가 내용만 주므로(원래 경로 없음) 먼저 그 프로젝트 안에서
-    **같은 내용의 파일**을 찾아, 있으면 복사하지 않고 그 경로를 돌려준다. 없을 때만 프로젝트의
-    'imports' 폴더에 저장한다. 그래야 씬을 남에게 줘도 같은 그림이 보인다(전엔 이 PC 안 사본이라 빈칸).
-    dir 폼 인자는 받지 않는다 — 목적지가 그때그때 달라지면 옛 'CH/import/import' 오염이 재발한다."""
-    if not project or project == _COMBINED_INTERNAL:
-        raise HTTPException(status_code=400, detail="프로젝트를 먼저 고르세요")
-    out_project = project
-    # 임시 .part 는 imports 안에 받는다 — 프로젝트 루트에 받으면 루트 쓰기 권한이 없는 NAS 에서
-    # 반입 자체가 막히고, 강제 종료 시 잔재가 청소 범위 밖에 남는다(Codex 2026-09-28).
-    # 검사를 폴더 만들기보다 **먼저** 한다 — 상한 초과로 막힌 요청이 빈 폴더를 남기지 않게.
+    ★2026-09-29 Jay "옛 방식으로 해야한다": 09-28 에 프로젝트 폴더(NAS)로 올리던 것을 되돌렸다.
+    로컬 파일은 그 PC 에만 두고, 캔버스가 빨간 테두리·오른쪽 위 마크로 서버에 없음을 알린다.
+    같은 내용이 서버에 있으면 자동 복구(/locate)가 원본으로 이어 준다 — 그래서 여기서는 NAS 를
+    훑지 않는다(끌어다 놓을 때마다 NAS 전체를 훑던 2초대 지연도 함께 사라진다).
+    project/dir 폼 값은 하위호환으로 받되 쓰지 않는다 — 목적지가 그때그때 달라지면 옛
+    CH/import/import 오염이 재발한다."""
+    out_project = _PROMPT_IMPORT_PROJECT  # 응답 토큰도 asset:imports|… 로 고정
     _validate_upload_batch(files)
-    project_dir, dest, created_dest = await to_thread_non_abandon(
-        _prepare_project_import_dir, project, request
-    )
+    dest = (ASSETS_ROOT / out_project).resolve()
+    dest.mkdir(parents=True, exist_ok=True)
 
     saved: list[dict[str, Any]] = []
     skipped: list[str] = []
@@ -1561,23 +1857,6 @@ async def upload_reference_import(
                 tmp.unlink(missing_ok=True)
                 skipped.append(raw)
                 continue
-            # ★먼저 프로젝트 안에 같은 내용이 이미 있는지 본다 — 있으면 사본을 만들지 않는다.
-            #  (NAS 에서 끌어온 파일은 여기서 원래 자리를 되찾는다.)
-            existing, _scanned_all = await asyncio.to_thread(
-                _locate_by_content, project_dir, size, digest, raw
-            )
-            if existing:
-                tmp.unlink(missing_ok=True)
-                saved.append({
-                    "project": out_project,
-                    "path": existing,
-                    "name": existing.rsplit("/", 1)[-1],
-                    "type": mt,
-                    "reused": True,
-                    "sha256": digest,
-                    "bytes": size,
-                })
-                continue
             # 중복 재검색부터 최종 확정까지 같은 동기 임계구역에서 수행하고, 취소돼도 스레드를 버리지 않는다.
             try:
                 commit_attempted = True  # 취소 재전파 전 실제 파일 확정 가능 — finally 무효화 기준
@@ -1593,7 +1872,7 @@ async def upload_reference_import(
                 if reused:
                     saved.append({
                         "project": out_project,
-                        "path": target.relative_to(project_dir).as_posix(),
+                        "path": target.name,
                         "name": target.name,
                         "type": mt,
                         "reused": True,
@@ -1608,7 +1887,7 @@ async def upload_reference_import(
             committed_new = True
             saved.append({
                 "project": out_project,
-                "path": target.relative_to(project_dir).as_posix(),
+                "path": target.name,
                 "name": target.name,
                 "type": mt,
                 "sha256": digest,
@@ -1616,13 +1895,8 @@ async def upload_reference_import(
             })
     finally:
         if committed_new or commit_attempted:
-            asset_tree.invalidate_project_tree(project_dir)
-            invalidate_size_index(project_dir)  # 새로 넣은 파일이 다음 반입에서 바로 후보가 되게
-        elif created_dest:
-            try:  # 이 요청이 만든 폴더인데 아무것도 안 넣었으면 도로 치운다(비어 있을 때만 성공)
-                dest.rmdir()
-            except OSError:
-                pass
+            asset_tree.invalidate_project_tree(dest)
+            asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)  # Assets 의 imp/cap 합본
     return {"saved": saved, "skipped": skipped}
 
 

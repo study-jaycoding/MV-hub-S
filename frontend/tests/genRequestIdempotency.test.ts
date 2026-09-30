@@ -8,17 +8,6 @@ function okResponse(result: unknown): Pick<Response, "ok" | "json"> {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("general generation request idempotency", () => {
-  it("shows an advisory warning without losing the accepted generation", async () => {
-    const dispatchEvent = vi.fn();
-    vi.stubGlobal("window", { dispatchEvent });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okResponse({ id: "accepted", quota_warning: "Quota unavailable" })));
-    const result = await api.prepareCreate(
-      { prompt: "test", model: "nano" }, { scope: "team", id: "ws", name: "Test" },
-    )();
-    expect(result.id).toBe("accepted");
-    expect(dispatchEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "ch:flash", detail: "Quota unavailable" }));
-  });
-
   it("한 제출 의도의 HTTP 재시도는 같은 키를 쓰고 새 의도는 새 키를 쓴다", async () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse({ id: "pending" }));
     vi.stubGlobal("fetch", fetchMock);

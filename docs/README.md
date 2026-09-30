@@ -49,6 +49,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 공유·최종 상태 계약 | [SHARE_STATE_RECONCILIATION_DESIGN.md](SHARE_STATE_RECONCILIATION_DESIGN.md)(현행·원장 수렴). [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md) 는 RL-11 보상 계약으로 **대체됨** |
 | Resolve 전송 (직접 전송 — 현행 흐름은 [ARCHITECTURE.md](ARCHITECTURE.md) §7.6) | `backend/app/routers/resolve_integration.py` · 큐 v3 설계 이력 [DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md)(현행 아님 — 큐 라우트·프론트 헬퍼는 2026-08-27 제거, 모듈은 잔존) |
 | 공유 서버 주소 이사 | [SERVER_RELOCATION.md](SERVER_RELOCATION.md) |
+| 에셋 대장(NAS 그림 번호·이름 변경/이동 추적·생성 기록의 쓴 판) 설계·운영 | [ASSET_REGISTRY.md](ASSET_REGISTRY.md) |
 | 업데이트 등록·고정·알림 공지 | [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md) |
 | 작업자 PC 오프디스크 백업 설계·완료 조건 | [WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md) |
 | 현재 위험과 다음 작업 | [RISK_REDUCTION_PLAN_2026-08-15.md](RISK_REDUCTION_PLAN_2026-08-15.md) |
@@ -151,16 +152,16 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 
 ### 전체 문서 분류
 
-아래 표는 현재 `docs` 아래 Markdown **77개**(`docs/*.md` 61 + `docs/status/*.md` 16)를 한 번씩
+아래 표는 현재 `docs` 아래 Markdown **78개**(`docs/*.md` 61 + `docs/status/*.md` 17)를 한 번씩
 분류한다. PDF는 특정 시점에 만든 외부 배포용 결과물이므로 현재 기술 판단의 기준으로 사용하지 않는다.
 
 | 상태 | 문서 |
 |---|---|
 | **문서 색인·갱신 규칙** | [README](README.md)(이 문서) |
 | **현황·작업 기준** | [CURRENT_STATUS](CURRENT_STATUS.md), [RISK_REDUCTION_PLAN_2026-08-15](RISK_REDUCTION_PLAN_2026-08-15.md) |
-| **날짜별 기록(`status/`)** | [최근작업](status/최근작업_2026-08-24.md), [RL 완료목록](status/RL_완료목록.md), [검증기록](status/검증기록.md), [구현완료](status/구현완료_RL-02_RL-23.md), [사전배포검증](status/사전배포검증_2026-08-19.md), [안정화](status/안정화_2026-08-18.md), [코드대조](status/코드대조_2026-08-26.md), [영상 포스터 오염](status/영상_포스터_오염_2026-08-27.md), [최근작업 09-03](status/최근작업_2026-09-03.md), [최근작업 09-09](status/최근작업_2026-09-09.md), [성능·CLI정확도 점검 09-12](status/성능_CLI정확도_점검_2026-09-12.md), [최근작업 09-18](status/최근작업_2026-09-18.md), [dev 실측 09-21](status/dev_실측_2026-09-21.md), [전체점검 09-18](status/전체점검_2026-09-18.md), [브라우저실측 09-19](status/브라우저실측_2026-09-19.md), [dev 검토 09-22](status/dev_검토_2026-09-22.md) |
+| **날짜별 기록(`status/`)** | [최근작업](status/최근작업_2026-08-24.md), [RL 완료목록](status/RL_완료목록.md), [검증기록](status/검증기록.md), [구현완료](status/구현완료_RL-02_RL-23.md), [사전배포검증](status/사전배포검증_2026-08-19.md), [안정화](status/안정화_2026-08-18.md), [코드대조](status/코드대조_2026-08-26.md), [영상 포스터 오염](status/영상_포스터_오염_2026-08-27.md), [최근작업 09-03](status/최근작업_2026-09-03.md), [최근작업 09-09](status/최근작업_2026-09-09.md), [성능·CLI정확도 점검 09-12](status/성능_CLI정확도_점검_2026-09-12.md), [최근작업 09-18](status/최근작업_2026-09-18.md), [dev 실측 09-21](status/dev_실측_2026-09-21.md), [전체점검 09-18](status/전체점검_2026-09-18.md), [브라우저실측 09-19](status/브라우저실측_2026-09-19.md), [dev 검토 09-22](status/dev_검토_2026-09-22.md), [캔버스 버벅임 09-29](status/캔버스_버벅임_2026-09-29.md) |
 | **현행 구조·계약 — 공통** | [ARCHITECTURE](ARCHITECTURE.md), [AI_CONTEXT](AI_CONTEXT.md), [DATA_OWNERSHIP](DATA_OWNERSHIP.md), [WORKSPACE_DATA_CONTRACT](WORKSPACE_DATA_CONTRACT.md), [신원과 모드 가이드](신원과_모드_가이드.md) |
-| **현행 구조·계약 — 기능별** | [AUTH_FAILURE_SEMANTICS](AUTH_FAILURE_SEMANTICS.md), [CANVAS_GENERATION_IDEMPOTENCY](CANVAS_GENERATION_IDEMPOTENCY.md), [CLI_ESTIMATE_LIFECYCLE](CLI_ESTIMATE_LIFECYCLE.md), [GENERATION_SUBMISSION_RECOVERY](GENERATION_SUBMISSION_RECOVERY.md), [TELEMETRY_DRAIN_LIFECYCLE](TELEMETRY_DRAIN_LIFECYCLE.md), [SHARE_STATE_RECONCILIATION_DESIGN](SHARE_STATE_RECONCILIATION_DESIGN.md), [WORKER_OFFDISK_BACKUP_CONTRACT](WORKER_OFFDISK_BACKUP_CONTRACT.md), [UPDATE_ANNOUNCEMENTS](UPDATE_ANNOUNCEMENTS.md), [TASK_ACTIVITY_FACTS](TASK_ACTIVITY_FACTS.md), [MEMBER_TABLE_DESIGN](MEMBER_TABLE_DESIGN.md), [EXPORT_SYNC_DESIGN](EXPORT_SYNC_DESIGN.md), [CREDIT_QUOTA_DESIGN](CREDIT_QUOTA_DESIGN.md), [WORKSPACE_CONSOLE_DESIGN](WORKSPACE_CONSOLE_DESIGN.md)(서브스페이스 탭 — 브랜치 `feature/workspace-console`) |
+| **현행 구조·계약 — 기능별** | [AUTH_FAILURE_SEMANTICS](AUTH_FAILURE_SEMANTICS.md), [ASSET_REGISTRY](ASSET_REGISTRY.md), [CANVAS_GENERATION_IDEMPOTENCY](CANVAS_GENERATION_IDEMPOTENCY.md), [CLI_ESTIMATE_LIFECYCLE](CLI_ESTIMATE_LIFECYCLE.md), [GENERATION_SUBMISSION_RECOVERY](GENERATION_SUBMISSION_RECOVERY.md), [TELEMETRY_DRAIN_LIFECYCLE](TELEMETRY_DRAIN_LIFECYCLE.md), [SHARE_STATE_RECONCILIATION_DESIGN](SHARE_STATE_RECONCILIATION_DESIGN.md), [WORKER_OFFDISK_BACKUP_CONTRACT](WORKER_OFFDISK_BACKUP_CONTRACT.md), [UPDATE_ANNOUNCEMENTS](UPDATE_ANNOUNCEMENTS.md), [TASK_ACTIVITY_FACTS](TASK_ACTIVITY_FACTS.md), [MEMBER_TABLE_DESIGN](MEMBER_TABLE_DESIGN.md), [EXPORT_SYNC_DESIGN](EXPORT_SYNC_DESIGN.md), [CREDIT_QUOTA_DESIGN](CREDIT_QUOTA_DESIGN.md), [WORKSPACE_CONSOLE_DESIGN](WORKSPACE_CONSOLE_DESIGN.md)(서브스페이스 — 대시보드 '워크스페이스' 단추) |
 | **운영·검증 절차** | [SERVER](SERVER.md), [SERVER_RECOVERY](SERVER_RECOVERY.md), [SERVER_RELOCATION](SERVER_RELOCATION.md), [TESTING](TESTING.md), [HF_CLI_UPGRADE](HF_CLI_UPGRADE.md), [SERVER_MIGRATION](SERVER_MIGRATION.md) |
 | **현행 세부 계약 추가 — Comfy 결과 회수** | [COMFY_RESULT_RECOVERY](COMFY_RESULT_RECOVERY.md) — 비용·출처 강화 보류 계획과 별개 |
 | **사용자 안내** | [사용설명서](사용설명서.md), [기능설명서](기능설명서.md) |

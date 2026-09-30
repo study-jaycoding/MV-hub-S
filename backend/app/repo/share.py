@@ -368,7 +368,7 @@ def export_bundle(
         # 레퍼런스 위치(role = @Image1/@Video 슬롯) — 프롬프트 내 레퍼런스 위치 필터정보의 핵심.
         for r in conn.execute(
             f"SELECT gr.generation_id, gr.role, r.id, r.type, r.file_path, r.source, "
-            f"r.source_url, r.share_url "
+            f"r.source_url, r.share_url, r.content_sha, r.content_bytes, r.registry_asset_id, r.version_verified "
             f"FROM gen_reference gr JOIN reference r ON r.id = gr.reference_id "
             f"WHERE gr.generation_id IN ({ph}) ORDER BY gr.rowid",
             ids,
@@ -384,6 +384,10 @@ def export_bundle(
                     # @소스명(칩 이름) — 받는 쪽 buildPromptParts 가 display_prompt 토큰과
                     # 매칭해 인라인 소스 위치를 복원하는 키. 누락 시 'uploaded' 로 떨어져 위치 손실.
                     "source": r["source"],
+                    "content_sha": r["content_sha"],
+                    "content_bytes": r["content_bytes"],
+                    "registry_asset_id": r["registry_asset_id"],
+                    "version_verified": r["version_verified"],
                 }
             )
 

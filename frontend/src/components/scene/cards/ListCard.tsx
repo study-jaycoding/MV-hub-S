@@ -7,7 +7,9 @@ import { variantIds } from "../../../lib/scenes";
 import type { Generation, PreviewTarget } from "../../../types";
 import { collectListInputs, collectRenderGenCardIds, effectiveTextOf } from "../../../lib/sceneEdges";
 import { refThumbSrc } from "../../../lib/sceneMedia";
+import { refServerStatus } from "../../../lib/sceneAssetRelink";
 import { hideBrokenImg, showLoadedImg, thumbOf } from "../../../lib/media";
+import { CloudOffIcon } from "../../common/ViewIcons";
 import { CARD_W } from "../sceneColors";
 
 export function ListCard({
@@ -19,6 +21,7 @@ export function ListCard({
   rowSel,
   reorderFrom,
   cardWidth,
+  workspaceId,
   toggleRowSel,
   startReorder,
   getNodePreview,
@@ -35,6 +38,7 @@ export function ListCard({
   rowSel: { listId: string; cids: Set<string> };
   reorderFrom: string | null;
   cardWidth: number; // widthOf(card) — 부모 계산(head 폭 측정 ref 의존이라 값으로 받음)
+  workspaceId: string; // 서버에 없는 레퍼런스 판정의 열쇠(캔버스 탭의 공간) — ReferenceCard 와 같은 값
   toggleRowSel: (listId: string, cid: string, additive: boolean) => void;
   startReorder: (e: React.MouseEvent, listId: string, cid: string, axis: "v" | "h") => void;
   getNodePreview: (cardId: string) => (p: PreviewTarget) => void;
@@ -204,15 +208,30 @@ export function ListCard({
                 const rc = cardsById.get(cid);
                 const refs = rc?.refs || [];
                 const src = refs[0] ? refThumbSrc(refs[0]) : null;
+                // 서버에 없는 레퍼런스(Jay 2026-09-29) — 대표(첫 장)가 서버에 없으면 붉은 빗금 + 아이콘,
+                //  그 밖에 서버에 없는 장이 있으면(이 PC 에만 등) 오른쪽 위 마크. 판정은 ReferenceCard 와 같은 가게.
+                const first = refs[0] ? refServerStatus(workspaceId, refs[0]) : undefined;
+                const flagged = refs.some((r) => refServerStatus(workspaceId, r));
                 return (
                   <div
                     key={cid}
                     className={"scene-listthumb" + (reorderFrom === cid ? " reordering" : "")}
                     data-reid={cid}
-                    title={`${i + 1}번 (레퍼런스 ${refs.length}장) — 드래그해 이 리스트의 순서 변경`}
+                    title={
+                      `${i + 1}번 (레퍼런스 ${refs.length}장)` +
+                      (flagged ? " · 서버에 없는 레퍼런스 있음" : "") +
+                      " — 드래그해 이 리스트의 순서 변경"
+                    }
                     onMouseDown={(e) => startReorder(e, card.id, cid, "h")}
                   >
-                    {src ? (
+                    {first === "missing" ? (
+                      <>
+                        <span className="scene-listthumb-ph off-server" />
+                        <span className="scene-ref-offmini">
+                          <CloudOffIcon />
+                        </span>
+                      </>
+                    ) : src ? (
                       <img src={src} alt="" draggable={false} onError={hideBrokenImg} onLoad={showLoadedImg} />
                     ) : (
                       <span className="scene-listthumb-ph" />
@@ -220,6 +239,20 @@ export function ListCard({
                     <span className="scene-listthumb-n">{i + 1}</span>
                     {refs.length > 1 && (
                       <span className="scene-listthumb-cnt">{refs.length}</span>
+                    )}
+                    {flagged && first !== "missing" && (
+                      <span
+                        className="scene-ref-offmark"
+                        role="img"
+                        aria-label="서버에 없음"
+                        title={
+                          first === "local"
+                            ? "서버에 없음 — 이 PC 에만 있어 다른 사람에게는 안 보입니다"
+                            : "이 카드의 레퍼런스 중 서버에 없는 것이 있습니다"
+                        }
+                      >
+                        <CloudOffIcon />
+                      </span>
                     )}
                   </div>
                 );

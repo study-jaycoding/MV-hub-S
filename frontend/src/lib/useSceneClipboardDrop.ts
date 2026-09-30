@@ -16,7 +16,6 @@ import { isSceneTextEntryTarget, scenePasteShortcut } from "./sceneKeyboard";
 import {
   notifySpotlightAssetsChanged,
   parseSpotlightAssetItems,
-  readSpotlightAssetCtx,
   readSpotlightAssetPayload,
   referenceDropTypeFromFile,
   spotlightAssetRefBase,
@@ -41,6 +40,9 @@ interface UseSceneClipboardDropOptions {
   // 각인된 생성물 파일을 떨어뜨렸을 때 — 레시피를 노드로 여는 데 성공하면 true.
   // false 면 평범한 미디어 파일로 보고 레퍼런스 카드가 된다.
   onDroppedGenerationFile?: (file: File) => Promise<boolean>;
+  // 로컬 파일(끌어다 놓기·붙여넣기)로 레퍼런스 카드를 만든 직후 — 새 참조 토큰을 넘긴다.
+  //  이 PC 설치 폴더에만 있으므로 부르는 쪽이 서버에 없음을 표시하고 자동 복구를 부른다(2026-09-29).
+  onLocalRefsAdded?: (tokens: string[]) => void;
   cardWidth: number;
   cardHeight: number;
 }
@@ -139,23 +141,15 @@ export function useSceneClipboardDrop(
       const accepted = files.filter((file) => referenceDropTypeFromFile(file));
       if (!accepted.length) return;
       const sceneId = optionsRef.current.sceneIdRef.current;
-      // 어느 프로젝트 폴더에 기록할지 — Assets 에서 고른 프로젝트를 따른다(Jay 2026-09-28).
-      // 프로젝트를 모르면 이 PC 안에 사본을 만들지 않고 알린다(사본은 남에게 안 보인다).
-      const project = readSpotlightAssetCtx().project;
-      if (!project) {
-        window.alert("Assets 에서 프로젝트를 먼저 고르세요 — 그 프로젝트 폴더 기준으로 저장합니다.");
-        return;
-      }
       try {
-        const response = await api.uploadReferenceFiles(accepted, project);
+        // 로컬 파일은 이 PC 설치 폴더(imports)에만 둔다 — 서버에 올리지 않는다(Jay 2026-09-29 옛 방식).
+        const response = await api.uploadReferenceFiles(accepted);
         const items = response.saved || [];
         if (items.length) {
           if (optionsRef.current.sceneIdRef.current === sceneId) {
-            addReferenceCards(
-              items.map((item) => ({ ...assetItemToRef(item), origin: "upload" as const })),
-              centerX,
-              centerY,
-            );
+            const refs = items.map((item) => ({ ...assetItemToRef(item), origin: "upload" as const }));
+            addReferenceCards(refs, centerX, centerY);
+            optionsRef.current.onLocalRefsAdded?.(refs.map((ref) => ref.file_path));
           }
           notifySpotlightAssetsChanged(items);
         }
@@ -183,11 +177,10 @@ export function useSceneClipboardDrop(
         const items = parseSpotlightAssetItems(readSpotlightAssetPayload(event.dataTransfer));
         if (!items.length) return;
         const point = current.toCanvas(event.clientX, event.clientY);
-        addReferenceCards(
-          items.map((item) => ({ ...assetItemToRef(item), origin: "asset" as const })),
-          point.x,
-          point.y,
-        );
+        const refs = items.map((item) => ({ ...assetItemToRef(item), origin: "asset" as const }));
+        addReferenceCards(refs, point.x, point.y);
+        // 한 번 물어 에셋 대장 번호(open_ids)를 받아 둔다 — 나중에 NAS 에서 이름을 바꾸거나 옮겨도 따라가게(2026-09-30).
+        current.onLocalRefsAdded?.(refs.map((ref) => ref.file_path));
         return;
       }
 
@@ -353,34 +346,24 @@ export function useSceneClipboardDrop(
         }
 
         const sceneId = current.sceneIdRef.current;
-        // 붙여넣은 그림도 프로젝트 폴더 기준으로(Jay 2026-09-28) — 모르면 이 PC 사본을 만들지 않는다.
-        const captureProject = readSpotlightAssetCtx().project;
-        if (!captureProject) {
-          window.alert("Assets 에서 프로젝트를 먼저 고르세요 — 그 프로젝트 폴더 기준으로 저장합니다.");
-          return;
-        }
+        // 붙여넣은 그림은 이 PC 설치 폴더(captures)에만 둔다(Jay 2026-09-29 옛 방식).
         void api
-          .uploadCapture(image, captureProject)
+          .uploadCapture(image)
           .then((result) => {
             if (optionsRef.current.sceneIdRef.current === sceneId) {
-              addReferenceCards(
-                [
-                  {
-                    ...assetItemToRef({
-                      project: result.project,
-                      path: result.path,
-                      name: result.name,
-                      type: result.type || "image",
-                      sha256: result.sha256,
-                      bytes: result.bytes,
-                    }),
-                    origin: "upload" as const,
-                  },
-                ],
-                centerX,
-                centerY,
-                connectTo,
-              );
+              const ref = {
+                ...assetItemToRef({
+                  project: result.project,
+                  path: result.path,
+                  name: result.name,
+                  type: result.type || "image",
+                  sha256: result.sha256,
+                  bytes: result.bytes,
+                }),
+                origin: "upload" as const,
+              };
+              addReferenceCards([ref], centerX, centerY, connectTo);
+              optionsRef.current.onLocalRefsAdded?.([ref.file_path]);
             }
             notifySpotlightAssetsChanged([
               {

@@ -160,6 +160,29 @@ def test_restore_commits_generation_and_tombstone_release_together(trash_db):
     assert row["attempts"] == 7
 
 
+def test_trash_restore_preserves_reference_provenance(trash_db):
+    _seed_generation()
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO reference(id, type, file_path, content_sha, content_bytes, registry_asset_id, version_verified) "
+            "VALUES('r1','image','asset:P|a/ref.png',?,3,'registry-1',1)",
+            ("a" * 64,),
+        )
+        conn.execute("INSERT INTO gen_reference(generation_id, reference_id, role) VALUES('g1','r1','@Image1')")
+
+    assert trash.move_to_trash("g1") is True
+    deleted = trash.list_trash()[0]["references"][0]
+    assert (deleted["content_sha"], deleted["content_bytes"], deleted["registry_asset_id"], deleted["version_verified"]) == (
+        "a" * 64, 3, "registry-1", 1,
+    )
+    assert trash.restore_from_trash("g1") is True
+    with db.get_connection() as conn:
+        restored = conn.execute(
+            "SELECT content_sha, content_bytes, registry_asset_id, version_verified FROM reference WHERE id='r1'"
+        ).fetchone()
+    assert tuple(restored) == ("a" * 64, 3, "registry-1", 1)
+
+
 def test_manage_off_delete_and_restore_do_not_create_sidecar(trash_db, monkeypatch):
     monkeypatch.setattr(config, "MANAGE_ENABLED", False)
     _seed_generation()

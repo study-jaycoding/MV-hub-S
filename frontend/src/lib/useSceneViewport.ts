@@ -2,16 +2,19 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { BeginSceneDrag } from "./useSceneDragSession";
 import {
   centerSceneCamera,
+  clampSceneZoom,
   clientToScenePoint,
   frameSceneRects,
   panSceneCamera,
   sameSceneViewRect,
+  SCENE_LOD_PCT,
   sceneViewRect,
   zoomSceneCameraAt,
   type SceneCamera,
   type SceneViewRect,
   type SceneWorldRect,
 } from "./sceneViewport";
+import { setSceneZoomPct } from "./sceneZoomStore";
 
 const CAMERA_SAVE_DELAY_MS = 400;
 const FRAME_TRANSITION_MS = 250;
@@ -32,12 +35,10 @@ interface UseSceneViewportOptions {
   onCameraChange?: (camera: SceneCamera) => void;
   cullingEnabled: boolean;
   gridSize?: number;
-  // 툴바 % 표시용 — 반올림 % 가 실제로 바뀔 때만 호출(팬만 하면 안 부른다).
-  onZoomPctChange?: (pct: number) => void;
 }
 
 const normalizedCamera = (camera?: SceneCamera): SceneCamera => ({
-  z: camera?.z ?? 1,
+  z: clampSceneZoom(camera?.z),
   x: camera?.x ?? 0,
   y: camera?.y ?? 0,
 });
@@ -49,11 +50,11 @@ export function useSceneViewport({
   onCameraChange,
   cullingEnabled,
   gridSize = 22,
-  onZoomPctChange,
 }: UseSceneViewportOptions) {
   const initialCamera = normalizedCamera(camera);
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef(initialCamera.z);
   const panRef = useRef({ x: initialCamera.x, y: initialCamera.y });
   const minimapUpdateRef = useRef<(() => void) | null>(null);
@@ -66,9 +67,6 @@ export function useSceneViewport({
   incomingCameraRef.current = camera;
   const onCameraChangeRef = useRef(onCameraChange);
   onCameraChangeRef.current = onCameraChange;
-  const onZoomPctChangeRef = useRef(onZoomPctChange);
-  onZoomPctChangeRef.current = onZoomPctChange;
-  const lastZoomPctRef = useRef(-1);
 
   const getCamera = useCallback(
     (): SceneCamera => ({ z: zoomRef.current, x: panRef.current.x, y: panRef.current.y }),
@@ -87,20 +85,28 @@ export function useSceneViewport({
   const applyTransform = useCallback(() => {
     const current = getCamera();
     const pct = Math.round(current.z * 100);
-    if (pct !== lastZoomPctRef.current) {
-      lastZoomPctRef.current = pct;
-      onZoomPctChangeRef.current?.(pct);
-    }
+    setSceneZoomPct(pct); // 툴바 % — 반올림 % 가 바뀔 때만 알린다
     const canvas = canvasRef.current;
     if (canvas) {
       canvas.style.transform = `translate(${current.x}px, ${current.y}px) scale(${current.z})`;
     }
 
+    const grid = gridRef.current;
+    if (grid) {
+      // 점 격자는 따로 둔 층을 한 칸 안에서만 민다(음수 팬도 0..cell) — 보드 배경 위치를 바꾸면 보드 전체를
+      //  다시 칠했다. 크기는 확대 때만 바꾼다. 층이 사방 64px 넘쳐 있어(scene.css) 미는 동안 빈틈이 없다.
+      //  미는 양은 화면 픽셀로 반올림한다 — 소수 픽셀만큼 옮긴 층은 GPU 가 보간해 점이 번진다(0.5px 이하 오차).
+      const cell = gridSize * current.z;
+      const size = `${cell}px ${cell}px`;
+      if (grid.style.backgroundSize !== size) grid.style.backgroundSize = size;
+      const dpr = window.devicePixelRatio || 1;
+      const snap = (v: number) => Math.round((((v % cell) + cell) % cell) * dpr) / dpr;
+      grid.style.transform = `translate(${snap(current.x)}px, ${snap(current.y)}px)`;
+    }
     const board = scrollRef.current;
     if (board) {
-      const cell = gridSize * current.z;
-      board.style.backgroundSize = `${cell}px ${cell}px`;
-      board.style.backgroundPosition = `${current.x}px ${current.y}px`;
+      // 멀리서 볼 때 단순화 — React 가 쓰지 않는 속성이라 className 이 다시 그려져도 남는다.
+      board.toggleAttribute("data-lod-low", pct <= SCENE_LOD_PCT);
     }
     minimapUpdateRef.current?.();
 
@@ -183,17 +189,12 @@ export function useSceneViewport({
 
       const canvas = canvasRef.current;
       if (canvas) {
+        // 점 격자는 따라 미끄러지지 않고 끝 위치로 바로 간다 — 한 칸 안에서만 미는 층이라 전환이 엉뚱한 쪽으로 돈다.
         canvas.style.transition = `transform ${FRAME_TRANSITION_MS / 1000}s ease`;
-        if (scrollRef.current) {
-          scrollRef.current.style.transition =
-            `background-position ${FRAME_TRANSITION_MS / 1000}s ease, ` +
-            `background-size ${FRAME_TRANSITION_MS / 1000}s ease`;
-        }
         if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
         transitionTimerRef.current = window.setTimeout(() => {
           transitionTimerRef.current = undefined;
           if (canvasRef.current) canvasRef.current.style.transition = "";
-          if (scrollRef.current) scrollRef.current.style.transition = "";
         }, FRAME_TRANSITION_CLEAR_MS);
       }
 
@@ -312,6 +313,7 @@ export function useSceneViewport({
   return {
     scrollRef,
     canvasRef,
+    gridRef,
     zoomRef,
     panRef,
     minimapUpdateRef,

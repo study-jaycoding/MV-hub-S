@@ -243,9 +243,9 @@ export const assetsApi = {
 
   // 붙여넣은 그림·부분수정 결과를 **그 프로젝트 폴더**의 imports 에 저장 → 레퍼런스용 asset 정보 반환.
   // (2026-09-28: 전엔 이 PC 안 captures 폴더라 씬을 남에게 주면 빈칸이었다.)
-  uploadCapture: async (blob: Blob, project: string) => {
+  // 붙여넣기·부분수정 그림은 이 PC 설치 폴더(captures)에 저장된다(Jay 2026-09-29 옛 방식).
+  uploadCapture: async (blob: Blob) => {
     const fd = new FormData();
-    fd.append("project", project);
     fd.append("file", blob, "capture.png");
     const res = await fetch("/api/assets/capture", {
       method: "POST",
@@ -273,12 +273,10 @@ export const assetsApi = {
       body: JSON.stringify({ token }),
     }),
 
-  // 프롬프트/캔버스/트레이 외부 드롭 파일 → **그 프로젝트 폴더 기준**으로 기록(Jay 2026-09-28).
-  // 서버가 같은 내용의 파일을 프로젝트 안에서 먼저 찾고(있으면 사본 없이 그 경로), 없을 때만
-  // 프로젝트의 imports 폴더에 저장한다. project 가 없으면 서버가 400 으로 막는다.
-  uploadReferenceFiles: async (files: File[], project: string) => {
+  // 프롬프트/캔버스/트레이 외부 드롭 파일 → **이 PC 설치 폴더(imports)** 에 저장(Jay 2026-09-29 옛 방식).
+  // 서버에 같은 내용이 있으면 자동 복구(/locate)가 원본으로 이어 준다.
+  uploadReferenceFiles: async (files: File[]) => {
     const fd = new FormData();
-    fd.append("project", project);
     for (const f of files) fd.append("files", f);
     const res = await fetch("/api/assets/reference-import", {
       method: "POST",
@@ -305,13 +303,44 @@ export const assetsApi = {
   // 정확히 한 프로젝트에서 찾혔을 때만 fixed 에 담겨 온다 — 나머지는 그대로 둔다.
   // workspaceId — 그 캔버스 탭에 지정된 공간. 서버가 그 공간의 프로젝트 폴더부터 찾는다.
   // scanId — 자동 복구 한 번을 가리킨다. 같은 id 의 요청들은 서버의 첫 스캔을 같이 쓴다.
-  locateAssets: (tokens: string[], workspaceId = "", scanId = "") =>
+  // fingerprints — 토큰 → 참조가 든 내용 지문(2026-09-29). 사본이 이 PC 에 없어도 내용으로 찾게 한다.
+  // signal — 멈춘 NAS 에 요청이 영원히 매달리지 않게 부르는 쪽이 시간 한도를 건다.
+  // includeRender — '레퍼런스 찾기' 단추만 켠다. PM 프로젝트의 render 폴더까지 훑는다(2026-09-29).
+  locateAssets: (
+    tokens: string[],
+    workspaceId = "",
+    scanId = "",
+    fingerprints: Record<string, { sha256: string; bytes: number }> = {},
+    signal?: AbortSignal,
+    includeRender = false,
+    registryIds: Record<string, string> = {}, // 토큰 → 에셋 대장 번호(2026-09-30, 모든 참조가 같은 번호일 때만)
+  ) =>
     jsonFetch<{
-      fixed: { token: string; project: string; path: string; sha256?: string; bytes?: number }[];
+      fixed: {
+        token: string;
+        project: string;
+        path: string;
+        sha256?: string;
+        bytes?: number;
+        registry_asset_id?: string; // 에셋 대장이 확인한 자리(2026-09-30)
+      }[];
       unresolved: string[];
+      missing: string[]; // 이 PC 에서도 안 열리고 서버 어디에도 없다(2026-09-29)
+      local: string[]; // 이 PC 설치 폴더 안 사본에만 있다
+      open?: string[]; // 이미 이 PC 에서 열린다(2026-09-29 — 옛 서버엔 없다)
+      incomplete?: string[]; // 끝까지 못 훑어 판정을 못 끝냈다 — 기억하지 않고 다음 실행에 다시 묻는다
+      open_ids?: Record<string, string>; // 열리는 참조의 에셋 대장 번호(토큰 → 번호, 2026-09-30 — 옛 허브엔 없다)
     }>("/api/assets/locate", {
       method: "POST",
-      body: JSON.stringify({ tokens, workspace_id: workspaceId, scan_id: scanId }),
+      body: JSON.stringify({
+        tokens,
+        workspace_id: workspaceId,
+        scan_id: scanId,
+        fingerprints,
+        include_render: includeRender,
+        registry_ids: registryIds,
+      }),
+      signal,
     }),
 
   // 내 로컬 DB(메타데이터) 가져오기 — 통째 교체(다른 PC에서 내보낸 .db).

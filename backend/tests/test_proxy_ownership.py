@@ -22,6 +22,17 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/admin/audit-events",
         "/api/admin/generation-events",
         "/api/admin/runtime",
+        # 에셋 대장(2026-09-30) — 공유 서버가 NAS 를 훑어 가진 대장이 원천. 로컬 locate 는 lookup_for_request 로 서버에 묻는다.
+        # 도우미 PC 훑기 — 관리자 PC 의 로컬 허브가 서버 자리를 받아 결과를 올린다(서버만 번호를 만든다).
+        "/api/asset-registry/helper/lease",
+        "/api/asset-registry/helper/projects",
+        "/api/asset-registry/helper/release",
+        "/api/asset-registry/helper/renew",
+        "/api/asset-registry/helper/result",
+        "/api/asset-registry/lookup",
+        "/api/asset-registry/scan",
+        "/api/asset-registry/status",
+        "/api/asset-registry/usage/{registry_asset_id}",
         "/api/auth/access",
         "/api/auth/accounts",
         "/api/auth/accounts/{email}/global-roles",
@@ -161,6 +172,8 @@ class ProxyOwnershipTests(unittest.TestCase):
             "/api/sync-status",  # 로컬 허브 자기 상태 — 서버 위임 금지
             "/api/scenes/backup",  # 개인 캔버스 — 팀 서버 전송 금지
             "/api/scenes/cards",   # 개인 캔버스 카드 소속 — 위와 같은 이유
+            "/api/registry-helper/scan",  # 에셋 대장 도우미 — 이 PC 가 NAS 를 읽는다(서버로 보내면 서버가 훑으려 든다)
+            "/api/registry-helper/status",
         ):
             self.assertTrue(is_local_path(p), f"{p} 는 로컬로 들어와 핸들러가 재분기해야 한다(서버 오프록시 금지)")
 

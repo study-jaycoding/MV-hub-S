@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app import db, db_migrations, repo
+from app.repo import asset_registry
 from app.repo import gen_requests as gen_requests_repo
 
 
@@ -186,6 +187,59 @@ class TestGenerationStateEngine:
         # ACK가 유실돼 같은 owner가 재호출해도 다시 시작된 것으로 집계하지 않는다.
         second = repo.begin_request_submission(rid, "worker@example.com", "agent-1")
         assert second == {"gen_id": gen_id, "transitioned": False}
+
+    def test_submission_ref_digests_pin_matching_references_without_overwrite(self):
+        sha = "a" * 64
+        kept_sha = "b" * 64
+        gen_id = repo.create_local_generation(
+            {
+                "prompt": "state test", "model": "model", "params": {},
+                "references": [
+                    {"file_path": "asset:P|a/pinned.png", "type": "image"},
+                    {"file_path": "asset:P|a/kept.png", "type": "image"},
+                    {"file_path": "asset:P|a/missing.png", "type": "image"},
+                ],
+            },
+            "me", creator_uid="creator-1",
+        )
+        rid = repo.create_gen_request(
+            "worker@example.com", "creator-1", gen_id, "create", {"model": "model", "prompt": "state test"},
+        )
+        with db.get_connection() as conn:
+            asset_registry.apply_plan(
+                conn, "p", {"inserts": [("registry-pinned", asset_registry.RegistryFile("a/pinned.png", 7, 1, sha, "ok"))], "updates": [], "events": []},
+                now="2026-09-30T00:00:00Z",
+            )
+            conn.execute(
+                "UPDATE reference SET content_sha=?, content_bytes=? WHERE file_path='asset:P|a/kept.png'",
+                (kept_sha, 99),
+            )
+        repo.claim_pending_requests("worker@example.com", limit=1, lease_owner="agent-1", submission_stage_capable=True)
+        fingerprint = {
+            "version": 1, "model": "model", "prompt_sha256": "c" * 64, "params": {}, "reference_roles": [],
+            "ref_digests": {
+                "asset:P|a/pinned.png": {"sha256": sha, "bytes": 7},
+                "asset:P|a/kept.png": {"sha256": "d" * 64, "bytes": 8},
+                "asset:P|a/missing.png": {"sha256": "e" * 64, "bytes": 9},
+                "asset:P|a/not-a-reference.png": {"sha256": "f" * 64, "bytes": 10},
+            },
+        }
+        assert repo.begin_request_submission(rid, "worker@example.com", "agent-1", fingerprint)
+        with db.get_connection() as conn:
+            rows = {
+                row["file_path"]: dict(row)
+                for row in conn.execute(
+                    "SELECT file_path, content_sha, content_bytes, registry_asset_id, version_verified FROM reference"
+                )
+            }
+        assert rows["asset:P|a/pinned.png"] == {
+            "file_path": "asset:P|a/pinned.png", "content_sha": sha, "content_bytes": 7,
+            "registry_asset_id": "registry-pinned", "version_verified": 1,
+        }
+        assert rows["asset:P|a/kept.png"]["content_sha"] == kept_sha
+        assert rows["asset:P|a/kept.png"]["content_bytes"] == 99
+        assert rows["asset:P|a/missing.png"]["registry_asset_id"] is None
+        assert "asset:P|a/not-a-reference.png" not in rows
 
     def test_missing_begin_ack_can_release_server_applied_transition_before_cli(self):
         rid, gen_id = self._request()

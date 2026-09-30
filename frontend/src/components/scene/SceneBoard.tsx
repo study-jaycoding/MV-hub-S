@@ -109,6 +109,16 @@ import {
   subscribeRecentDone,
   getRecentDoneVersion,
 } from "../../lib/sceneRecentDoneStore";
+import {
+  forceRefsAsk,
+  getRefServerStatusVersion,
+  refServerStatus,
+  relinkCards,
+  sceneAssetTokens,
+  sceneRefWorkspaceId,
+  subscribeRefServerStatus,
+  type RelinkTarget,
+} from "../../lib/sceneAssetRelink";
 import { flashMsg } from "../../lib/flash";
 import { useSceneHistory } from "../../lib/useSceneHistory";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
@@ -160,11 +170,11 @@ import {
   type ResolveOpenPopup,
   type ResolveSceneSelectionTarget,
 } from "../../lib/resolveSelection";
+import { SCENE_CULL_MARGIN as CULL_MARGIN } from "../../lib/sceneViewport";
 // ── 뷰포트 컬링(가상화) 플래그 — 화면 밖 카드를 렌더에서 빼 메모리·DOM 절감. 단계 롤아웃용. ──
 // CULL_ENABLED=false 면 완전 무동작(rAF·setState·ResizeObserver 없음, renderCards===visibleCards).
 // Phase 1: 켜되 마진 넉넉(먼 카드만 언마운트) — 문제 시 이 값만 false 로 되돌리면 즉시 원복.
 const CULL_ENABLED = true;
-const CULL_MARGIN = 1500; // 뷰포트 밖 이 canvas px 까지는 유지(가장자리 팝인 완화). 다이얼: 줄이면 메모리↓·팝인↑
 // 점 배경 격자 간격(scene.css 의 22px 와 동일). 카드 이동·크기조절이 이 격자에 스냅된다.
 // 카드 최소 크기(격자 배수). 너비는 완료 카드 상단 버튼(S/T/C/ⓘ)이 안 잘리게 넉넉히, 높이는 더 낮게 허용.
 const CARD_MIN_W = GRID * 5; // 110
@@ -173,6 +183,14 @@ const CARD_MIN_H = GRID * 3; // 66
 // 그룹 멤버 카드를 이 속도(화면 px/ms) 이상으로 경계 밖으로 빼면 '속도 이탈' — 프레임이 카드를 놓아주고
 //  그룹에서 빠진다(느리게 빼면 기존처럼 프레임이 늘어나 덮음). 폴더에서 아이콘 확 빼내는 제스처.
 const GROUP_EJECT_SPEED = 3.0;
+// 상태를 바꾸면서 그 상태를 비추는 ref 도 바로 맞춘다 — 다음 렌더 전에 같은 입력 처리가 ref 를 읽을 때(범위 선택 확정).
+const setAndSync =
+  <T,>(ref: MutableRefObject<T>, set: (value: T) => void) =>
+  (action: React.SetStateAction<T>) => {
+    const next = typeof action === "function" ? (action as (prev: T) => T)(ref.current) : action;
+    ref.current = next;
+    set(next);
+  };
 
 // refThumbSrc·refTypeLabel — lib/sceneMedia.ts 로 이동(R2 카드 분할로 카드 컴포넌트들과 공용).
 // refMediaSrc·refMediaType·mediaFileName 은 순수 헬퍼라 sceneMedia.ts 로 분리(상단에서 import).
@@ -192,6 +210,12 @@ interface Props {
   // 각인된 생성물 파일을 캔버스에 떨어뜨렸을 때 — 레시피를 새 씬 탭으로 열었으면 true.
   //  false 면 평범한 미디어로 보고 레퍼런스 카드가 된다(기존 동작).
   onDroppedGenerationFile?: (file: File) => Promise<boolean>;
+  // 로컬 파일(끌어다 놓기·붙여넣기)로 레퍼런스를 만든 직후 — 자동 복구를 한 번 불러 서버 판정을 받는다
+  //  (같은 내용이 서버에 있으면 원본으로 잇고, 없으면 '이 PC에만' 표시가 남는다, Jay 2026-09-29).
+  onLocalRefsAdded?: () => void;
+  // '레퍼런스 찾기' 단추(Jay 2026-09-29) — 이 씬의 참조를 저장된 판정과 무관하게 render 폴더까지 다시 찾는다.
+  //  signal = '대기 중단'(기다리기만 멈춘다). 끝나면 부르는 쪽이 결과를 알린다.
+  onFindRefs?: (sceneId: string, signal: AbortSignal) => Promise<void>;
   // 씬 탭 바 호버 여부 — true 면 좌상단 씬 패널(저장/불러오기)을 보인다(평소엔 숨김).
   ioPanelHot?: boolean;
   // 씬의 생성 카드 1개만 선택되면 그 카드(id+연결된 레퍼런스)를 하단 프롬프트에 바인딩하도록 App 에 알림.
@@ -202,8 +226,6 @@ interface Props {
   resolveSelection?: ResolveSceneSelectionTarget | null;
   onResolveSelectionConsumed?: (nonce: number) => void;
   onResolvePopupChange?: (popup: ResolveOpenPopup | null) => void;
-  // 툴바 줌 클러스터([맞춤][−][%][+])의 % 표시 — 반올림 % 가 바뀔 때만 올라온다.
-  onZoomPct?: (pct: number) => void;
   // 생성 결과 카드 = 히스토리 카드(HistoryBoardNode). 히스토리와 동일한 액션을 그대로 위임.
   onPreview?: (t: PreviewTarget) => void;
   onInfo?: (t: InfoTarget) => void;
@@ -231,9 +253,11 @@ interface Props {
   onSelectionGens?: (gens: Generation[]) => void;
   // 선택바의 '삭제'·트레이 편집이 부를 명령형 핸들.
   actionRef?: MutableRefObject<{
+    sceneId: string; // 이 캔버스가 보고 있는 씬 — App 이 비동기 결과를 입히기 전에 활성 씬과 같은지 본다
     deleteSelected: () => void;
     setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
     flushPending: () => void; // 밀린 입력 저장 확정 — App 이 씬 전환 직전 호출(옛 씬에 정확히 저장)
+    applyAssetRelink: (found: Map<string, RelinkTarget>) => number; // 자산 자동 복구 답을 메모리 카드에 입힘
     zoomFit: () => void; // 툴바 '맞춤' — f 키와 동일(선택 있으면 선택 중심, 없으면 전체)
     zoomStep: (dir: 1 | -1) => void; // 툴바 −/+ — 화면 중앙 기준 한 단계 확대/축소
   } | null>;
@@ -314,13 +338,14 @@ export function SceneBoard({
   onSaveScene,
   onLoadSceneFile,
   onDroppedGenerationFile,
+  onLocalRefsAdded,
+  onFindRefs,
   ioPanelHot,
   onBindingChange,
   onCameraChange,
   resolveSelection,
   onResolveSelectionConsumed,
   onResolvePopupChange,
-  onZoomPct,
   onPreview,
   onInfo,
   onRegenerate,
@@ -384,7 +409,19 @@ export function SceneBoard({
   useSyncExternalStore(subscribeRecentDone, getRecentDoneVersion, getRecentDoneVersion);
   // 드래그 중인 카드 id — 컬링(keepIds)이 이동 중 카드를 마진 밖으로 나가도 언마운트하지 않게 유지한다.
   const [draggingIds, setDraggingIds] = useState<readonly string[]>([]);
-  const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
+  // 범위 선택 사각형 — 상태가 아니라 늘 있는 요소를 직접 옮긴다(2026-09-29). 상태로 그리면 끄는 한 걸음마다 캔버스
+  //  전체(카드 수백 장)를 다시 맞춰, 12% 에서 한 프레임이 0.05초까지 멈췄다(40걸음에 다시 그리기 42번 실측).
+  const marqueeElRef = useRef<HTMLDivElement>(null);
+  const setMarquee = useCallback((rect: { l: number; t: number; w: number; h: number } | null) => {
+    const el = marqueeElRef.current;
+    if (!el) return;
+    el.hidden = !rect;
+    if (!rect) return;
+    el.style.left = `${rect.l}px`;
+    el.style.top = `${rect.t}px`;
+    el.style.width = `${rect.w}px`;
+    el.style.height = `${rect.h}px`;
+  }, []);
   const [tempWire, setTempWire] = useState<{ fromId: string; x2: number; y2: number } | null>(null);
   // genId→실제 생성물 바인딩·폴링·계보(refParents)·비활성/삭제 상태는 useSceneGenData 훅으로 추출(동작 보존).
   //  각 생성물이 '레퍼런스로 쓴' 부모 gen id(refParents)는 수동 연결선 색(레퍼런스 점선 vs 계보 실선) 판정 근거.
@@ -487,7 +524,10 @@ export function SceneBoard({
     const t = setTimeout(() => setIoPanelLinger(false), 350);
     return () => clearTimeout(t);
   }, [ioPanelHot]);
-  const ioPanelVisible = !!ioPanelHot || ioPanelLinger || ioPanelHover;
+  // '레퍼런스 찾기' 도는 중 — 이 씬에서 누른 것만 표시한다(씬을 바꾸면 그 씬은 평소 단추). 도는 동안 패널을 숨기지 않는다.
+  const [findRun, setFindRun] = useState<{ sceneId: string; count: number; ctrl: AbortController } | null>(null);
+  const finding = findRun?.sceneId === scene.id ? findRun : null;
+  const ioPanelVisible = !!ioPanelHot || ioPanelLinger || ioPanelHover || !!finding;
   const varpopWrapRef = useRef<HTMLDivElement>(null);
   // 변형 팝업 태그 에디터를 '편집 중인 타일 바로 아래'에 띄우기 위한 위치(wrap 기준). 타일은
   // overflow:hidden 이라 안에 넣으면 잘리므로 wrap 레벨에 절대배치하되, 타일 rect 를 측정해 그 밑에 둔다.
@@ -648,6 +688,7 @@ export function SceneBoard({
   const {
     scrollRef,
     canvasRef,
+    gridRef,
     zoomRef,
     panRef,
     minimapUpdateRef: mmUpdateRef,
@@ -664,7 +705,6 @@ export function SceneBoard({
     onCameraChange,
     cullingEnabled: CULL_ENABLED,
     gridSize: GRID,
-    onZoomPctChange: onZoomPct,
   });
   // 캔버스 위 마지막 마우스 좌표(클라이언트) — 선택 없이 n 눌렀을 때 이 위치에 카드 생성.
   const lastMouseRef = useRef<{ x: number; y: number; over: boolean }>({ x: 0, y: 0, over: false });
@@ -686,6 +726,9 @@ export function SceneBoard({
   useSyncExternalStore(subscribeAssetVersions, assetVersionsSnapshot, assetVersionsSnapshot);
   // Comfy '생성중' 모듈 store 구독 — 탭 전환(언마운트·재마운트)에도 실행중 표시가 살아있게(#2).
   useSyncExternalStore(subscribeComfyRunning, getComfyRunningVersion, getComfyRunningVersion);
+  // 서버에 없는 레퍼런스 판정(assets.locate) 구독 — 판정이 오면 레퍼런스 카드를 빨간 테두리로 다시 그린다.
+  useSyncExternalStore(subscribeRefServerStatus, getRefServerStatusVersion, getRefServerStatusVersion);
+  const refWorkspaceId = sceneRefWorkspaceId(scene); // 판정 열쇠의 공간 — 자동 복구가 물을 때와 같은 도우미
 
   // 카드가 참조하는 어셋 프로젝트들(only 로 제한 가능)을 다시 읽어 전역 버전 표를 갱신한다.
   // 프로젝트별 in-flight 로 중복 조회를 막는다. 포커스 재조회(Phase 1)와 실시간 변경 수신(Phase 2) 공용.
@@ -727,6 +770,26 @@ export function SceneBoard({
     return () => bc.close();
   }, [refreshAssetVersions]);
   const cardEls = useRef<Record<string, HTMLDivElement | null>>({});
+  // 범위 선택 미리보기(Jay 2026-09-30 b안) — 끄는 동안에는 선택 상태를 바꾸지 않고 카드·그룹의 선택 표시만 직접 켜고 끈다.
+  //  연결선 색·미니맵·카드 위 조절 칸은 확정 때 바뀐다. cards 가 없으면(null) 마지막으로 그린 선택대로 되돌린다 — 훅이
+  //  확정 직전에, 씬 전환은 버린 끌기를 지울 때 부른다. 그 뒤 React 는 이전 속성과 비교해 바뀐 카드의 클래스만 다시 쓴다.
+  const paintMarqueePreview = useCallback((cards?: ReadonlySet<string> | null, groups?: ReadonlySet<string> | null) => {
+    const cardSel = cards ?? selectedRef.current;
+    for (const [id, el] of Object.entries(cardEls.current)) {
+      if (!el) continue;
+      const on = cardSel.has(id);
+      el.classList.toggle("sel", on);
+      // 완료 생성 카드는 선택 링을 안쪽 노드가 그린다(scene.css .scene-card.has-node.sel) — 함께 켠다.
+      if (el.classList.contains("has-node")) el.querySelectorAll(".linb-node").forEach((node) => node.classList.toggle("sel", on));
+    }
+    const groupSel = cards ? groups : selectedGroupIdsRef.current;
+    if (!groupSel) return;
+    canvasRef.current?.querySelectorAll<HTMLElement>(".scene-group[data-group-id]").forEach((el) => {
+      const on = groupSel.has(el.dataset.groupId as string);
+      el.classList.toggle("selected", on);
+      el.dataset.selected = on ? "true" : "false";
+    });
+  }, [canvasRef]);
   const heightsRef = useRef<Record<string, number>>({});
   const widthsRef = useRef<Record<string, number>>({}); // head 등 폭도 내용에 맞춰 자동측정
   const [heightTick, bumpHeights] = useState(0);
@@ -814,6 +877,7 @@ export function SceneBoard({
     commitDerivedState,
     hasUncommittedCardsOrEdges,
     propagateGenIdsToHistory,
+    propagateAssetRelinkToHistory,
     pruneGenIdsFromHistory,
     undo,
     redo,
@@ -1522,6 +1586,12 @@ export function SceneBoard({
     persist,
     onLoadSceneFile,
     onDroppedGenerationFile,
+    // 이 PC 설치 폴더에만 있는 새 참조 — 저장된 판정과 무관하게 한 번 묻게 하고 자동 복구를 부른다(같은 파일을 다시
+    //  넣으면 같은 사본 토큰이다). '이 PC에만' 표시는 서버 답으로만 켠다.
+    onLocalRefsAdded: (tokens) => {
+      forceRefsAsk(refWorkspaceId, tokens);
+      onLocalRefsAdded?.();
+    },
     cardWidth: CARD_W,
     cardHeight: CARD_H,
   });
@@ -1576,8 +1646,84 @@ export function SceneBoard({
     return nextRefs;
   };
 
+  // 자산 자동 복구의 답을 **지금 메모리의 카드**에 입힌다(2026-09-29) — 저장본으로 화면을 갈아끼우지 않으므로
+  //  디바운스 중인 글·끌고 있는 카드가 그대로 남는다(useSceneCardMove 는 매 프레임 cardsRef 를 쓴다). 예전에는
+  //  복구가 저장소만 고치고 몇 초 뒤 화면을 통째로 바꿔, 그 사이 친 글이 지워지거나 옮긴 카드가 옛 참조를 도로
+  //  저장했다. App 이 sceneActionRef 로, 이 캔버스가 활성 씬을 보고 있을 때만 부른다.
+  const applyAssetRelink = (found: Map<string, RelinkTarget>): number => {
+    flushPending(); // 밀린 입력을 undo 한 단계로 먼저 확정 — 아래 파생 저장에 섞여 undo 에서 빠지지 않게
+    const { cards: nextCards, changed } = relinkCards(cardsRef.current, refWorkspaceId, found);
+    if (!changed) return 0;
+    cardsRef.current = nextCards;
+    setCards(nextCards);
+    // 복구는 사용자 편집이 아니다 — undo 단계를 만들지 않고 저장·부모만 최신화(연결 refs 재동기화와 같은 관문).
+    commitDerivedState({ cards: nextCards, edges: edgesRef.current, groups: groupsRef.current });
+    // 과거 스냅샷에도 입힌다 — 안 그러면 Ctrl+Z 가 옛 참조를 되살린다.
+    propagateAssetRelinkToHistory(refWorkspaceId, found);
+    return changed;
+  };
+
+  // '레퍼런스 찾기' 단추 — 도는 중에 다시 누르면 '대기 중단'(기다리기만 멈춘다, 서버는 하던 확인을 끝까지 한다).
+  const onFindClick = () => {
+    if (finding) {
+      finding.ctrl.abort();
+      return;
+    }
+    if (!onFindRefs) return;
+    flushPending(); // 친 글·옮긴 카드를 먼저 저장 — 찾기는 저장된 씬을 본다
+    const run = {
+      sceneId: scene.id,
+      count: sceneAssetTokens([{ ...scene, cards: cardsRef.current }]).length,
+      ctrl: new AbortController(),
+    };
+    setFindRun(run);
+    void onFindRefs(run.sceneId, run.ctrl.signal).finally(() =>
+      setFindRun((current) => (current === run ? null : current)),
+    );
+  };
+
   // 전역 mousemove/mouseup/blur 생명주기와 프레임당 이동 합치기는 전용 훅이 담당한다.
-  const beginDrag = useSceneDragSession();
+  const { begin: beginDrag, abort: abortDrag } = useSceneDragSession();
+  // 씬을 바꾸면 옛 씬의 카드·그룹·좌표에 묶인 창·조작 상태를 비운다(2026-09-29, Codex 전수 표). 안 그러면 안 보이는 결과
+  //  팝업이 단축키를 막고(Esc 전까지 Ctrl+A 가 안 먹음), 노드 선택기가 새 씬에 떠서 옛 좌표에 카드를 만든다. 진행 중 끌기는
+  //  마지막 움직임을 반영하지 않고 버리고(abort — blur 취소처럼 반영하면 옛 끌기를 새 씬에 한 번 더 쓴다), 끌기가 붙인 보드
+  //  표시(dragging·panning)도 뗀다. 선택·그룹 선택·행 선택·히스토리는 위 씬 동기화 effect 가 맡는다. 가위(cutHeld)는 Y 키를
+  //  누르고 있는 동안의 상태라 그대로 둔다.
+  const uiSceneIdRef = useRef(scene.id);
+  useEffect(() => {
+    if (uiSceneIdRef.current === scene.id) return;
+    uiSceneIdRef.current = scene.id;
+    abortDrag();
+    scrollRef.current?.classList.remove("dragging", "panning");
+    setMarquee(null);
+    // 버린 범위 선택은 확정하지 않고(다음 키 입력이 새 씬에서 확정하지 않게) 직접 켜 둔 선택 표시도 지운다 — 새 씬에
+    //  id 가 같은 카드가 있으면 요소가 재사용돼 선택돼 보였다.
+    forgetBoardMarquee();
+    paintMarqueePreview();
+    setDraggingIds((ids) => (ids.length ? [] : ids));
+    setEjectedIds((ids) => (ids.size ? new Set() : ids));
+    setEdgesToCut((ids) => (ids.size ? new Set() : ids));
+    setCardMenu(null);
+    setNodePicker(null);
+    setTempWire(null);
+    setEditTextId(null);
+    setEditingGroupId(null);
+    setColorPopId(null);
+    setTagEditCardId(null);
+    setTagEditNodeGenId(null);
+    setCanvasRecovery(null);
+    setModelModalId(null);
+    setComfyModalId(null);
+    setViewTextModal(null);
+    setViewTimeline(null);
+    setGripDragging(false);
+    setPopupMarq(null);
+    setCutStroke(null);
+    setReorderLine(null);
+    setReorderFrom(null);
+    setSConfirm(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scene.id]);
   const onResizeDown = useSceneCardResize({
     cardsRef,
     edgesRef,
@@ -2340,7 +2486,7 @@ export function SceneBoard({
     pruneGenIdsFromHistory(cardId, removed); // 삭제된 변형을 히스토리에서도 제거 — undo 로 되살려 깨진 참조 방지
   };
 
-  const beginVariantMarquee = useSceneMarqueeSelection<string>({
+  const { begin: beginVariantMarquee } = useSceneMarqueeSelection<string>({
     selected: popupSel,
     surfaceRef: varGridRef,
     setSelected: setUserPopupSel,
@@ -2525,9 +2671,13 @@ export function SceneBoard({
   useLayoutEffect(() => {
     if (actionRef)
       actionRef.current = {
+        // props 의 scene.id 가 아니라 **지금 cards 가 속한 씬** — 씬 전환 첫 렌더에는 cards·cardsRef 가 아직 옛 씬이다
+        //  (동기화는 useEffect). 그때 비동기 결과가 새 씬 id 로 들어와 옛 카드를 새 씬에 저장하지 않게(Codex).
+        sceneId: cardsSceneId,
         deleteSelected: () => deleteCards(selResultCardIds()),
         setCardRefs,
         flushPending,
+        applyAssetRelink,
         zoomFit: frameView,
         zoomStep: stepZoom,
       };
@@ -2804,11 +2954,16 @@ export function SceneBoard({
     reconcileGenerationRefs: withGenRefs,
     persist,
   });
-  const beginBoardMarquee = useSceneMarqueeSelection<string, string>({
+  const {
+    begin: beginBoardMarquee,
+    settle: settleBoardMarquee,
+    forget: forgetBoardMarquee,
+  } = useSceneMarqueeSelection<string, string>({
     selected,
     surfaceRef: scrollRef,
     hitRootRef: canvasRef,
-    setSelected,
+    // 확정할 때 ref 도 바로 맞춘다 — 확정 직후 같은 입력(Delete·카드 끌기)이 selectedRef 를 읽는다(Codex P1).
+    setSelected: setAndSync(selectedRef, setSelected),
     setMarquee,
     beginDrag,
     cellSelector: ".scene-card",
@@ -2816,17 +2971,29 @@ export function SceneBoard({
     // 사각형이 그룹을 통째로 감싸면 그룹도 함께 잡는다 — 그래야 전체를 끌 때 프레임이 남지 않는다.
     secondary: {
       selected: selectedGroupIds,
-      setSelected: setSelectedGroupIds,
+      setSelected: setAndSync(selectedGroupIdsRef, setSelectedGroupIds),
       cellSelector: ".scene-group",
       keyOf: (element) => element.dataset.groupId,
     },
     preserveSelectionOnEmptyDrag: true,
+    // 끄는 동안은 선택 표시만 — 걸음마다 선택을 바꾸면 캔버스 전체를 다시 그려 12% 에서 끊겼다(33ms 넘는 장면 5~7 → 0~2 실측).
+    previewSelection: paintMarqueePreview,
     onPlainClick: () => {
       setSelected(new Set());
       setSelectedGroupIds(new Set());
       setRowSel({ listId: "", cids: new Set() });
     },
   });
+  // 끄는 도중 다른 입력(키·새 마우스 누름)이 오면 미리보기를 먼저 확정한다 — 단축키(Delete·Esc·Ctrl+A)와 카드·그룹 끌기가
+  //  선택을 읽기 전에(window capture 라 가장 먼저 돈다). 안 그러면 화면에서 꺼 둔 옛 선택을 지우거나 옮겼다(Codex P1).
+  useEffect(() => {
+    window.addEventListener("keydown", settleBoardMarquee, true);
+    window.addEventListener("mousedown", settleBoardMarquee, true);
+    return () => {
+      window.removeEventListener("keydown", settleBoardMarquee, true);
+      window.removeEventListener("mousedown", settleBoardMarquee, true);
+    };
+  }, [settleBoardMarquee]);
 
   // 보드 밖(사이드바 여백·상단바)에서 시작한 드래그도 선택으로 — 생성 탭과 같은 규칙.
   //  카드 이동·가위·패닝은 보드 안에서만 의미가 있으므로 바깥에서는 선택만 시작한다.
@@ -3004,7 +3171,7 @@ export function SceneBoard({
     }
     return { minX, minY, maxX, maxY };
   }, [mmBoxes]);
-  // ★그래프 파생값 memo — 셀렉션/마퀴 드래그(selected·marquee 만 변경) 중엔 cards/edges/groups 가
+  // ★그래프 파생값 memo — 셀렉션/마퀴 드래그(selected 만 변경) 중엔 cards/edges/groups 가
   //  안 바뀌므로 아래 Set/Map·분류·정렬을 매 프레임 재계산하지 않는다(드래그 렌더 비용 절감).
   // grayOn: 비활성(회색) 카드 숨김 — 그 카드와 연결선을 렌더에서 제외(상태는 유지).
   const grayHidden = useMemo(
@@ -3048,7 +3215,7 @@ export function SceneBoard({
   }, [selected, editTextId, comfyWaitingIds, draggingIds, cards, heightTick]);
   // 실제 렌더 대상 — 플래그 off/뷰포트 미측정이면 전체(visibleCards). on 이면 뷰포트+마진 교차 || keepIds.
   // 확장 뷰포트(뷰포트 ± 마진) — 카드·연결선 컬링이 공유하는 단 하나의 기준 사각형. 컬링 꺼졌거나
-  // 뷰포트 미측정이면 null → 전부 렌더(무동작). viewRect 는 팬/줌 시 rAF+엡실론 게이트로만 갱신됨.
+  // 뷰포트 미측정이면 null → 전부 렌더(무동작). viewRect 는 팬/줌 시 rAF 로, 네 변 중 하나가 SCENE_CULL_REFRESH_DISTANCE 넘게 움직일 때만 갱신됨.
   const cullRect = useMemo(() => {
     if (!CULL_ENABLED || !viewRect) return null;
     return {
@@ -3345,6 +3512,7 @@ export function SceneBoard({
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
+      <div className="scene-grid" ref={gridRef} />
       <div className="scene-canvas" ref={canvasRef} style={{ transformOrigin: "0 0" }}>
         {/* 그룹 프레임(펼침)·막대(접힘) — 카드 뒤(맨 앞 렌더). 헤더만 잡기/이름변경/접기 가능 */}
         {groupViews.map(({ g, frame, bar }) => {
@@ -3680,12 +3848,25 @@ export function SceneBoard({
           const isGen = card.kind === "generation";
           const g = isGen && card.genId ? genData[card.genId] : null; // 바인딩된 실제 생성물
           const showNode = !!g && String(g.status) === "done"; // 완료 → 히스토리 카드로 표시
+          // 빨간 테두리는 '서버 어디에도 없음'(받은 사람)일 때만 — '이 PC 에만'(가진 사람)은 오른쪽 위 마크만(Jay 2026-09-29).
+          const missingHere = (refs: SceneRef[] | undefined) =>
+            !!refs?.some((r) => refServerStatus(refWorkspaceId, r) === "missing");
           const kindCls =
             card.kind === "reference"
-              ? "scene-card-ref" + (card.refs?.[0]?.origin === "asset" ? " from-asset" : "")
+              ? "scene-card-ref" +
+                (card.refs?.[0]?.origin === "asset" ? " from-asset" : "") +
+                (missingHere(card.refs) ? " off-server" : "")
               : card.kind === "generation"
                 ? "scene-card-gen"
-                : "scene-card-" + card.kind; // text/model/list
+                : "scene-card-" +
+                  card.kind +
+                  // 리스트 — 모은 레퍼런스 카드에 서버 어디에도 없는 참조가 하나라도 있으면 빨간 테두리(Jay 2026-09-29)
+                  (card.kind === "list" &&
+                  collectListInputs(card.id, cardsById, resolvedEdges).referenceCardIds.some((rid) =>
+                    missingHere(cardsById.get(rid)?.refs),
+                  )
+                    ? " off-server"
+                    : ""); // text/model/list
           return (
             <div
               key={card.id}
@@ -3719,6 +3900,7 @@ export function SceneBoard({
                 <ReferenceCard
                   card={card}
                   fill={fill}
+                  workspaceId={refWorkspaceId}
                   getGen={(id) => genDataRef.current[id]}
                   onInfo={onInfo}
                   onPreview={onPreview}
@@ -3760,6 +3942,7 @@ export function SceneBoard({
                   rowSel={rowSel}
                   reorderFrom={reorderFrom}
                   cardWidth={widthOf(card)}
+                  workspaceId={refWorkspaceId}
                   toggleRowSel={toggleRowSel}
                   startReorder={startReorder}
                   getNodePreview={getNodePreview}
@@ -4022,12 +4205,9 @@ export function SceneBoard({
         />
       )}
 
-      {marquee && (
-        <div
-          className="scene-marquee"
-          style={{ left: marquee.l, top: marquee.t, width: marquee.w, height: marquee.h }}
-        />
-      )}
+      {/* 범위 선택 사각형 — 늘 있고 숨겨 두었다가 setMarquee 가 직접 보이고 옮긴다(다시 그리기 없음). */}
+      <div ref={marqueeElRef} className="scene-marquee" hidden />
+
 
       {/* 순서변경 삽입 위치 — 화면좌표 기준(fixed) 흰 선. 항목 사이 어디에 놓일지 보여준다. */}
       {reorderLine && (
@@ -4041,8 +4221,8 @@ export function SceneBoard({
         <div className="scene-cut-hint">✂ 연결 자르기 — 드래그로 선을 지나가고 손을 떼면 끊깁니다</div>
       )}
 
-      {/* 좌상단 씬 패널 — 씬 이름 + 저장(파일로)/불러오기(새 탭). 미디어 없이 참조만 저장(ComfyUI식 가벼운 텍스트). */}
-      {(onSaveScene || onLoadSceneFile) && (
+      {/* 좌상단 씬 패널 — 씬 이름 + 저장(파일로)/불러오기(새 탭)/레퍼런스 찾기. 미디어 없이 참조만 저장(ComfyUI식 가벼운 텍스트). */}
+      {(onSaveScene || onLoadSceneFile || onFindRefs) && (
         <div
           className={"scene-io-panel" + (ioPanelVisible ? "" : " io-hidden")}
           onMouseDown={(e) => e.stopPropagation()}
@@ -4067,6 +4247,19 @@ export function SceneBoard({
                 onClick={() => sceneFileRef.current?.click()}
               >
                 불러오기
+              </button>
+            )}
+            {onFindRefs && (
+              <button
+                className="scene-io-btn"
+                title={
+                  finding
+                    ? "기다리기만 멈춥니다 — 서버는 하던 확인을 끝까지 합니다"
+                    : "이 씬의 레퍼런스를 NAS 에서 다시 찾아 원본으로 잇습니다(렌더 폴더 포함). NAS 에 나중에 올린 파일도 이걸로 찾습니다"
+                }
+                onClick={onFindClick}
+              >
+                {finding ? `◌ 레퍼런스 ${finding.count}개 찾는 중… · 대기 중단` : "레퍼런스 찾기"}
               </button>
             )}
           </div>

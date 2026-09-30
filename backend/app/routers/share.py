@@ -907,6 +907,10 @@ def _remote_generation_item(remote: dict[str, Any]) -> dict[str, Any]:
                 "file_path": url,
                 "role": r.get("role"),
                 "source": r.get("source") or "uploaded",
+                "content_sha": r.get("content_sha"),
+                "content_bytes": r.get("content_bytes"),
+                "registry_asset_id": r.get("registry_asset_id"),
+                "version_verified": r.get("version_verified"),
             }
         )
 

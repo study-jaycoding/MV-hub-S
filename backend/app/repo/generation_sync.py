@@ -12,6 +12,7 @@ from ..db import get_connection
 from ..generation_result import stored_error
 from ..workspace_context import normalize_workspace_context, workspace_columns
 from ._common import _cached_or_remote, new_id
+from . import asset_registry
 from .generation_references import _link_reference, _upsert_reference
 
 
@@ -282,8 +283,11 @@ def _upsert_synced(
                     source=ref.get("source") or "uploaded",
                     thumbnail_path=thumb,
                     source_url=src,
+                    content_sha=ref.get("content_sha"),
+                    content_bytes=ref.get("content_bytes"),
                 )
                 _link_reference(conn, target_id, rid, ref.get("role"))
+                asset_registry.attach_reference_registry(conn, rid)
 
         # ★공유 전용 share_url 백필 — 로컬 토큰 레퍼런스(asset:캡쳐 등)에도 힉스필드 공개 URL 을 보관해
         # 두면, 팀에 공유했을 때 받는 쪽이 내 PC 파일 없이도 그 소스를 쓸 수 있다. 로컬 동작(file_path/

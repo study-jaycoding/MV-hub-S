@@ -68,12 +68,15 @@ class ReferenceOut(BaseModel):
     source: Optional[str] = None
     role: Optional[str] = None  # gen_reference.role (조회 맥락에 따라 채워짐)
     source_url: Optional[str] = None  # 원본 원격 URL
+    content_sha: Optional[str] = None
+    content_bytes: Optional[int] = None
+    registry_asset_id: Optional[str] = None
+    version_verified: Optional[int] = None
     cached: bool = False
 
 
 class GenerationOut(BaseModel):
     id: str
-    quota_warning: Optional[str] = None
     worker_id: str
     worker_name: Optional[str] = None
     prompt: str
@@ -304,6 +307,7 @@ class SubmissionFingerprintIn(BaseModel):
     prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     params: dict[str, Any] = Field(default_factory=dict)
     reference_roles: list[str] = Field(default_factory=list, max_length=32)
+    ref_digests: dict[str, dict[str, Any]] = Field(default_factory=dict, max_length=32)
 
 
 class RecoveryProbeResultIn(BaseModel):

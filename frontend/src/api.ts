@@ -31,7 +31,6 @@ import { isGenerationWorkspaceReady } from "./lib/workspaceContext";
 import type { CanvasGenerationLink } from "./lib/canvasGenerationRecovery";
 import type { CardHistoryCursor, CardHistoryLink } from "./lib/canvasDetached";
 import { getAccountNamespace } from "./lib/accountScope";
-import { APP_EVENTS, dispatchAppEvent } from "./lib/appEvents";
 import type { GenerationLocation, GenerationLocationRequest } from "./lib/resolveLibraryLocation";
 
 export { getAuthToken, jsonFetch, setAuthToken };
@@ -124,10 +123,7 @@ function normalizeHistoryGraph(graph: HistoryGraph): HistoryGraph {
 }
 
 function generationFetch(path: string, init?: RequestInit): Promise<Generation> {
-  return jsonFetch<Generation & { quota_warning?: string }>(path, init).then((generation) => {
-    if (generation.quota_warning) dispatchAppEvent(APP_EVENTS.flash, generation.quota_warning);
-    return normalizeGenerationPromptCompatibility(generation);
-  });
+  return jsonFetch<Generation>(path, init).then(normalizeGenerationPromptCompatibility);
 }
 
 function reviewCompatibilityError(): Error {

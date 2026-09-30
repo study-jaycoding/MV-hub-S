@@ -10,6 +10,7 @@ import {
   saveScenes,
   getActiveSceneId,
   exportSceneText,
+  importScene,
   parseSceneImport,
   SCENE_EXPORT_FORMAT,
   SCENE_EXPORT_VERSION,
@@ -311,5 +312,29 @@ describe("씬 파일이 캔버스의 공간을 들고 다닌다", () => {
     const broken = JSON.parse(text);
     broken.scene.workspace = { id: 7, name: [] };
     expect(parseSceneImport(JSON.stringify(broken)).workspace).toBeUndefined();
+  });
+
+  // ★2026-09-29: 받은 공간은 '어느 폴더부터 찾을지' 힌트일 뿐이다. 탭의 공간(workspace)은 생성 크레딧이 빠지는
+  //  곳이라, 거기 넣으면 남의 씬을 여는 것만으로 과금 공간이 바뀌거나 생성이 막혔다.
+  it("받은 씬은 공간을 찾기 힌트로만 가진다 — 탭의 과금 공간은 비어 있다", () => {
+    installStorageMocks();
+    try {
+      const text = exportSceneText(base({ workspace: { id: "ws-1", name: "가" } }));
+      const scene = importScene(null, parseSceneImport(text));
+      expect(scene.workspace).toBeUndefined();
+      expect(scene.refWorkspaceHint).toEqual({ id: "ws-1", name: "가" });
+      const saved = listScenes(null).find((s) => s.id === scene.id);
+      expect(saved?.workspace).toBeUndefined();
+      expect(saved?.refWorkspaceHint).toEqual({ id: "ws-1", name: "가" });
+    } finally {
+      delete (globalThis as { sessionStorage?: Storage }).sessionStorage;
+    }
+  });
+
+  it("받은 씬을 다시 보내면 힌트가 이어지고, 탭에 고른 공간이 있으면 그것이 앞선다", () => {
+    const hinted = base({ refWorkspaceHint: { id: "ws-1", name: "가" } });
+    expect(JSON.parse(exportSceneText(hinted)).scene.workspace).toEqual({ id: "ws-1", name: "가" });
+    const both = base({ refWorkspaceHint: { id: "ws-1", name: "가" }, workspace: { id: "ws-2", name: "나" } });
+    expect(JSON.parse(exportSceneText(both)).scene.workspace).toEqual({ id: "ws-2", name: "나" });
   });
 });

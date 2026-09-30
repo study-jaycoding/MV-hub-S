@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasPersonalQuota, quotaUncertainty, type MyCreditQuota } from "../src/lib/myCreditQuota";
+import { hasPersonalQuota, quotaUncertainty, showsWorkspacePool, type MyCreditQuota } from "../src/lib/myCreditQuota";
 
 const quota = {
   workspace_id: "ws", source: "override", quota: 4000, remaining: 2765.5,
@@ -19,6 +19,14 @@ describe("personal quota presentation", () => {
     expect(hasPersonalQuota(null)).toBe(false);
     expect(hasPersonalQuota({ ...quota, remaining: Number.NaN })).toBe(false);
     expect(hasPersonalQuota({ ...quota, quota: Infinity })).toBe(false);
+  });
+  it("shows the workspace pool to members without a personal allocation — no group limit or no group (Jay 2026-09-29)", () => {
+    expect(showsWorkspacePool({ ...quota, source: "unassigned" })).toBe(true);
+    expect(showsWorkspacePool({ ...quota, source: "unlimited" })).toBe(true);
+    for (const source of ["auto", "override", "unavailable"] as const) {
+      expect(showsWorkspacePool({ ...quota, source })).toBe(false);
+    }
+    expect(showsWorkspacePool(null)).toBe(false);
   });
   it("marks estimates including free estimates and unknown usage", () => {
     expect(quotaUncertainty({ ...quota, estimated_count: 1, unknown_count: 2 })).toBe("견적 사용량 1건 포함 · 사용량 미확인 2건");

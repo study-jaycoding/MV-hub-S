@@ -69,9 +69,12 @@ export interface SceneRef {
   //  (없으면 upload 취급 = 파란색. 지문·제출에는 영향 없음.)
   origin?: "asset" | "upload";
   // 파일 내용 지문·크기(2026-09-28) — 원본이 옮겨져도 **내용으로 다시 찾기** 위한 표식.
-  // 없어도 동작한다(옛 씬). 씬 파일로 함께 나가고 들어온다.
+  // 없어도 동작한다(옛 씬). 씬 파일로 함께 나가고 들어온다. 에셋 대장 번호가 붙은 뒤에는 '넣을 때 판'이다.
   content_sha?: string;
   bytes?: number;
+  // 에셋 대장 번호(2026-09-30, docs/ASSET_REGISTRY.md) — NAS 파일의 논리 번호. 이름을 바꾸거나 옮겨도 같은 번호라
+  // 레퍼런스 찾기가 새 자리로 따라간다(고쳐 저장한 새 판이어도). 서버 답(open_ids·fixed)으로만 붙는다.
+  registry_asset_id?: string;
 }
 
 // 캔버스가 생성 요청보다 먼저 저장하는 복구 표식. 브라우저가 요청 직후 종료돼도 generation id와
@@ -141,8 +144,11 @@ export interface Scene {
   groups?: SceneGroup[]; // 카드 그룹(선택 후 Ctrl+G) — 없으면 그룹 없음
   camera?: { z: number; x: number; y: number };
   // 이 캔버스가 속한 팀 워크스페이스(탭 우클릭으로 지정, 없으면 '지정 없음' = 어디서나 정상 표시).
-  // 판정·표시 규칙은 sceneWorkspace.ts. 파일 export 에는 넣지 않는다(남의 공간 id 가 파일로 도는 걸 막는다).
+  // 판정·표시 규칙은 sceneWorkspace.ts. **생성 크레딧이 빠지는 공간**이다 — 이 브라우저에서 사람이 고른 것만 담는다.
   workspace?: { id: string; name: string | null };
+  // 씬 파일로 받은 '보낸 사람 캔버스의 공간'(2026-09-29) — 그림을 그 공간 폴더부터 찾으라는 **힌트일 뿐**이다.
+  // workspace 에 넣으면 남의 씬을 여는 것만으로 과금 공간이 바뀌거나 생성이 막혔다. 찾기 열쇠는 sceneRefWorkspaceId.
+  refWorkspaceHint?: { id: string; name: string | null };
   created_at: number;
 }
 
@@ -341,6 +347,7 @@ export interface SceneSnapshot {
   // 이 캔버스가 속한 팀 워크스페이스 — 남이 열었을 때 **그 공간에 등록된 프로젝트 폴더**에서
   // 그림을 찾게 하려고 담는다(Jay 2026-09-28). 예전에는 공간 id 가 파일로 도는 것을 꺼려 뺐지만,
   // 그 정보가 없으면 받는 쪽이 어느 폴더를 뒤져야 할지 몰라 빈칸이 된다.
+  // ★받는 쪽은 Scene.refWorkspaceHint 로만 쓴다(과금 지정 아님, 2026-09-29).
   workspace?: { id: string; name: string | null };
 }
 
@@ -369,7 +376,8 @@ export function exportSceneText(scene: Scene): string {
     edges: scene.edges,
     groups: scene.groups,
     camera: scene.camera,
-    workspace: scene.workspace,
+    // 받아 온 씬을 다시 보낼 때도 힌트가 이어진다(다음 사람도 같은 공간 폴더부터 찾게).
+    workspace: scene.workspace ?? scene.refWorkspaceHint,
   };
   return JSON.stringify(
     { format: SCENE_EXPORT_FORMAT, version: SCENE_EXPORT_VERSION, savedAt: Date.now(), name: scene.name, scene: snapshot },
@@ -526,7 +534,8 @@ export function importScene(projectId: string | null, snap: SceneSnapshot): Scen
     edges: snap.edges,
     groups: snap.groups,
     camera: snap.camera,
-    workspace: snap.workspace,
+    // 파일의 공간은 찾기 힌트로만 — 탭의 과금 공간(workspace)으로 넣지 않는다(2026-09-29).
+    refWorkspaceHint: snap.workspace,
     created_at: Date.now(),
   };
   saveScenes(projectId, [...scenes, scene]);

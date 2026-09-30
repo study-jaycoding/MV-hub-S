@@ -204,8 +204,6 @@ export default function App() {
   const projectWorkspaceId =
     workspaceContext.scope === "team" ? workspaceContext.id || undefined : undefined;
   const [compareGens, setCompareGens] = useState<Generation[] | null>(null); // DAM 버전 비교
-  // 씬 캔버스 줌 %(툴바 [맞춤][−][%][+] 표시) — SceneBoard 가 반올림 % 바뀔 때만 올린다.
-  const [sceneZoomPct, setSceneZoomPct] = useState(100);
   // 단순 미디어 비교(레퍼런스 포함) — 열림 대상 + 씬 선택이 미디어비교 가능한지(상단 선택바가 비교버튼 표시).
   type CompareMedia = { url: string; name: string; type: "image" | "video"; fallback?: string; full?: string };
   const [videoCompare, setVideoCompare] = useState<CompareMedia[] | null>(null);
@@ -218,7 +216,8 @@ export default function App() {
   const {
     scenes, activeSceneId, activeScene,
     sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
-    flushScenePending, selectScene, addScene, importSceneSnapshot, renameScene, removeSceneById,
+    flushScenePending, selectScene, addScene, importSceneSnapshot, relinkSceneRefsNow, findSceneRefs, renameScene,
+    removeSceneById,
     patchSceneById, patchActiveScene, reorderScenes, setSceneWorkspace, backupOnly, importBackupScenes,
   } = useSceneCoordination(flash);
   const [resolveSceneSelection, setResolveSceneSelection] =
@@ -1942,7 +1941,6 @@ export default function App() {
               sceneZoom={
                 activeScene
                   ? {
-                      pct: sceneZoomPct,
                       onFit: () => sceneActionRef.current?.zoomFit(),
                       onStep: (dir) => sceneActionRef.current?.zoomStep(dir),
                     }
@@ -1980,6 +1978,8 @@ export default function App() {
                 onSaveScene={handleSaveScene}
                 onLoadSceneFile={handleLoadSceneFile}
                 onDroppedGenerationFile={openRecipeFromFile}
+                onLocalRefsAdded={relinkSceneRefsNow}
+                onFindRefs={findSceneRefs}
                 ioPanelHot={sceneBarHover}
                 onBindingChange={setSceneBinding}
                 // 세션 중 씬 전환했다 돌아와도 복원되게 카메라도 저장.
@@ -2020,7 +2020,6 @@ export default function App() {
                 onVariantDelete={deleteReturningIds}
                 onSelectionGens={setSceneSelGens}
                 actionRef={sceneActionRef}
-                onZoomPct={setSceneZoomPct}
                 onGenerateCard={(cardId, batch, assignment) =>
                   spotlightPromptRef.current?.submit(batch, assignment, {
                     sceneId: activeScene.id,

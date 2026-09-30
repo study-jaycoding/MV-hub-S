@@ -19,8 +19,8 @@ import time
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import active_account, rbac, repo
-from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MANAGE_ENABLED
+from .. import rbac, repo
+from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..deps import (
     account_actor_uid,
     actor_id,
@@ -46,14 +46,12 @@ from ..models import (
     WorkspaceContext,
 )
 from ..services.agent_signals import agent_signals
-from ..services.credit_quota import UNAVAILABLE_WARNING, quota_decision
 from ..services.operational_logging import log_event
 from ..services.release_update import update_in_progress
 from ..usecases.gen_requests import (
     CanvasGenerationConflict,
     GenRequestCommand,
     GenerationIdempotencyConflict,
-    PersonalQuotaExceeded,
     RecoveryRequeueBlocked,
     anchor_request,
     begin_submission,
@@ -70,7 +68,6 @@ from ..usecases.gen_requests import (
 )
 from ..ws import manager
 from ._telemetry import schedule_telemetry_drain
-from . import _proxy
 
 # 규율: 이 파일의 async 핸들러에서 동기 repo(SQLite) 호출을 직접 하지 않는다.
 # DB만 쓰는 핸들러는 def로 FastAPI 워커 스레드에서 실행하고, WebSocket 알림 등 await가
@@ -235,23 +232,6 @@ def _require_account(request: Request) -> dict:
     return require_agent_account(request)
 
 
-def _read_generation_quota(account: dict, workspace_id: str):
-    # Keep the proxy URL/token on the requesting account across local account switches.
-    email = account["email"]
-    pin = ("" if email == "local" else email, account.get("creator_uid"))
-    with active_account.pinned_account_scope(pin):
-        if _proxy.proxying():
-            return _proxy.proxy_json(
-                "GET", "/api/manage/credit-plan/my-quota",
-                params={"workspace_id": workspace_id}, timeout=5,
-            )
-        if AUTH_ENABLED:
-            from ..repo.manage_quota import my_quota
-
-            return my_quota(workspace_id, email)
-        return None
-
-
 @router.post("/gen-requests", response_model=GenerationOut, status_code=201)
 async def create_gen_request(body: GenRequestIn, request: Request):
     """버튼이 호출 — placeholder 카드 즉시 생성 + 로컬 실행요청 큐잉. placeholder 반환.
@@ -380,35 +360,13 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             ),
         )
 
-    quota_warning = None
-    if MANAGE_ENABLED and workspace.scope == "team":
-        try:
-            quota = await asyncio.wait_for(asyncio.to_thread(
-                _read_generation_quota, acc, workspace.id,
-            ), timeout=6)
-            cmd.quota_block_reason, quota_warning = quota_decision(quota, workspace.id)
-        except HTTPException as exc:
-            if exc.status_code in (401, 403):
-                raise
-            quota_warning = UNAVAILABLE_WARNING
-        except Exception as exc:
-            # User-selected advisory mode: unavailable authority warns, not blocks.
-            quota_warning = UNAVAILABLE_WARNING
-            log_event(
-                _generation_log, "generation_quota_unavailable",
-                level=logging.WARNING, error_type=type(exc).__name__,
-            )
     try:
         gen = await submit_gen_request(cmd)
-    except PersonalQuotaExceeded as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (CanvasGenerationConflict, GenerationIdempotencyConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not gen:
         raise HTTPException(status_code=500, detail="placeholder 생성 실패")
     schedule_telemetry_drain()
-    if quota_warning:
-        gen = {**gen, "quota_warning": quota_warning}
     return gen
 
 
