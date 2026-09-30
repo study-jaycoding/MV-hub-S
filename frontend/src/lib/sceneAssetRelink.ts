@@ -412,6 +412,30 @@ export function forceRefsAsk(workspaceId: string, tokens: string[]): void {
   tokens.forEach((token) => forced.add(relinkKey(workspaceId, token)));
 }
 
+// 이 세션에 '그림이 안 떠' 다시 물은 참조(공간+토큰) — 한 번만(파일 자체가 깨져 늘 안 뜨는 참조가 되풀이해 묻지 않게).
+const rechecked = new Set<string>();
+
+/** 판정을 받은 참조의 그림이 안 뜬다 — 그사이 NAS 에서 이름이 바뀌었거나 옮겨졌을 수 있다(2026-09-30 실측: 저장된
+ *  '열림' 은 자동 복구가 다시 묻지 않아 아무 말 없는 빗금으로 남았다). 그 판정을 지워 '확인 중'으로 그리고, 다음 자동 복구에서
+ *  한 번 묻게 한다 — 번호가 있으면 대장이 폴더를 훑지 않고 새 자리를 준다. 세션마다 한 번. 물을 것이 생겼으면 true. */
+export function recheckBrokenRef(workspaceId: string, ref: RefKeyed): boolean {
+  if (!ref.file_path.startsWith("asset:")) return false;
+  const at = relinkKey(workspaceId, ref.file_path);
+  if (rechecked.has(at) || !refJudged(workspaceId, ref)) return false;
+  rechecked.add(at);
+  const store = loadVerdicts();
+  const dropped = new Set<string>();
+  for (const key of refReadKeys(workspaceId, ref)) {
+    if (!store[key]) continue;
+    delete store[key];
+    dropped.add(key);
+  }
+  saveVerdicts(undefined, dropped);
+  forced.add(at);
+  notifyStatus();
+  return true;
+}
+
 /** 씬 파일·DB 백업으로 방금 들어온 씬의 참조를 forceRefsAsk — 남이 준 씬은 열 때 그 씬만 한 번 확인한다. */
 export function forceSceneRefsAsk(scenes: Scene[]): void {
   for (const group of sceneAssetGroups(scenes)) forceRefsAsk(group.workspaceId, group.tokens);
@@ -428,6 +452,9 @@ let inFlight: Promise<number> | null = null;
 let rerun = false;
 // 자동 복구와 '레퍼런스 찾기'는 한 줄로 선다 — 동시에 돌면 늦게 온 답이 새 답을 덮을 수 있다(Codex 2026-09-29).
 let queue: Promise<unknown> = Promise.resolve();
+// 도는 자동 복구를 끊는 손잡이 — '레퍼런스 찾기'는 끊고 앞선다(Codex P1 2026-09-30: NAS 가 멈추면 깨진 그림이 부른 자동
+//  복구가 단추를 최대 5분 줄 세웠다). 끊긴 배치의 답은 받지 않는다(브라우저만 멈추고 서버는 하던 확인을 끝낸다).
+let autoAbort: AbortController | null = null;
 
 function exclusive<T>(job: () => Promise<T>): Promise<T> {
   const run = queue.then(job, job);
@@ -668,6 +695,7 @@ export async function relinkSceneAssetRefs(hooks: RelinkHooks = {}): Promise<num
   const done = { total: 0 };
   const counts = emptyCounts();
   inFlight = exclusive(async () => {
+    const stop = (autoAbort = new AbortController());
     try {
       do {
         rerun = false;
@@ -677,12 +705,13 @@ export async function relinkSceneAssetRefs(hooks: RelinkHooks = {}): Promise<num
         for (let round = 0; round < 5; round += 1) {
           const groups = pending();
           if (!groups.length) break;
-          await askGroups(groups, { scanId, hooks, counts, done });
+          await askGroups(groups, { scanId, hooks, counts, done, signal: stop.signal });
         }
       } while (rerun); // 확인과 비우기(finally) 사이에 틈이 없다 — 겹친 호출을 흘리지 않는다
     } catch {
       // 서버가 옛 버전이거나 폴더를 못 읽어도(시간 초과 포함) 화면은 지금까지처럼 동작한다 — 이미 받은 답은 남는다
     } finally {
+      if (autoAbort === stop) autoAbort = null;
       pruneVerdicts();
       inFlight = null;
     }
@@ -700,11 +729,13 @@ export interface FindSummary extends FindCounts {
 /**
  * '레퍼런스 찾기' 단추(Jay 2026-09-29) — 이 씬의 참조를 저장된 판정과 무관하게 다시 묻는다. PM 프로젝트의 render 폴더까지
  * 훑고, 새 작업 id 로 폴더를 새로 훑는다(나중에 NAS 에 올린 파일도 찾는다). 자동 복구와는 한 줄로 서서 답이 서로를
- * 덮지 않는다. signal = '대기 중단' — 기다리기만 멈춘다(서버는 하던 확인을 끝까지 한다). 멈춘 배치의 답은 기억하지 않는다.
- * 서버 실패는 던진다(부르는 쪽이 알린다).
+ * 덮지 않는다 — 도는 자동 복구는 끊고 앞선다(autoAbort). signal = '대기 중단' — 기다리기만 멈춘다(서버는 하던 확인을
+ * 끝까지 한다). 멈춘 배치의 답은 기억하지 않는다. 서버 실패는 던진다(부르는 쪽이 알린다).
  */
 export function findSceneAssetRefs(sceneId: string, hooks: RelinkHooks, signal?: AbortSignal): Promise<FindSummary> {
-  return exclusive(async () => {
+  const cut = autoAbort;
+  cut?.abort();
+  const run = exclusive(async () => {
     const counts = emptyCounts();
     const scene = listScenes(null).find((s) => s.id === sceneId);
     // 묶음 지문은 자동 복구와 같게 — 모든 씬으로 묶고 이 씬의 토큰만 남긴다(판정 열쇠가 어긋나지 않게)
@@ -733,6 +764,9 @@ export function findSceneAssetRefs(sceneId: string, hooks: RelinkHooks, signal?:
     }
     return summary(false);
   });
+  // 끊은 자동 복구가 못 다 물은 것(도는 중 새로 들어와 다음 바퀴를 기다리던 참조 포함)은 단추 뒤에 한 번 더 돈다(Codex P1)
+  if (cut) void run.finally(() => relinkSceneAssetRefs(hooks)).catch(() => undefined);
+  return run;
 }
 
 /** '레퍼런스 찾기' 끝 알림 한 줄. 판정 보류 = 끝까지 봤지만 못 이음 + 끝까지 못 훑음. */
@@ -748,6 +782,7 @@ export function findSummaryText(s: FindSummary): string {
 export function resetRelinkSessionForTest(): void {
   asked.clear();
   forced.clear();
+  rechecked.clear();
   incompleteNow.clear();
   verdictCache = null;
   verdictCacheNs = null;

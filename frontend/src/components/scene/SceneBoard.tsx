@@ -112,6 +112,7 @@ import {
 import {
   forceRefsAsk,
   getRefServerStatusVersion,
+  recheckBrokenRef,
   refServerStatus,
   relinkCards,
   sceneAssetTokens,
@@ -3909,6 +3910,10 @@ export function SceneBoard({
                   onInfo={onInfo}
                   onPreview={onPreview}
                   onOutPortDown={onOutPortDown}
+                  // 판정을 받았는데 그림이 안 뜬다 — 한 번 다시 묻는다(onLocalRefsAdded = 자동 복구를 지금 한 번 부르기)
+                  onBroken={(r) => {
+                    if (recheckBrokenRef(refWorkspaceId, r)) onLocalRefsAdded?.();
+                  }}
                 />
               ) : card.kind === "text" ? (
                 <TextCard

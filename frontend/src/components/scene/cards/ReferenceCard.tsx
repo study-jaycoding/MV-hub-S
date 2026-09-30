@@ -20,6 +20,7 @@ export function ReferenceCard({
   onInfo,
   onPreview,
   onOutPortDown,
+  onBroken,
 }: {
   card: SceneCard;
   fill: boolean;
@@ -28,6 +29,7 @@ export function ReferenceCard({
   onInfo?: (target: InfoTarget) => void;
   onPreview?: (t: PreviewTarget) => void;
   onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
+  onBroken?: (r: SceneRef) => void; // 그림이 끝내 안 떴다 — 옮겨졌을 수 있어 한 번 다시 묻는다(recheckBrokenRef)
 }) {
   const single = (card.refs?.length ?? 0) <= 1;
   return (
@@ -183,6 +185,7 @@ export function ReferenceCard({
                         </>
                       )
                     }
+                    onError={() => onBroken?.(r)}
                     retrySrcOnThumbError
                   />
                 )}

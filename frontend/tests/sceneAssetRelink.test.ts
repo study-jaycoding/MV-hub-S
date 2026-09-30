@@ -10,6 +10,7 @@ import {
   forceSceneRefsAsk,
   heldText,
   getRefServerStatusVersion,
+  recheckBrokenRef,
   refHeldInfo,
   refJudged,
   refServerStatus,
@@ -789,6 +790,43 @@ describe("레퍼런스 찾기 단추(Jay 2026-09-29)", () => {
     expect(status("", "asset:Q|slow.png")).toBeUndefined(); // 단추의 답(열림)이 마지막 — 자동의 '없음'이 덮지 않았다
   });
 
+  it("이미 도는 자동 복구는 끊고 앞선다 — 멈춘 NAS 에 걸린 자동 요청 뒤에 5분 줄 서지 않는다(Codex P1 2026-09-30)", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:Q|stuck.png" }])]);
+    locate.mockImplementationOnce(
+      (...args: unknown[]) =>
+        new Promise((_, reject) => (args[4] as AbortSignal).addEventListener("abort", () => reject(new Error("aborted")))),
+    );
+    const auto = relinkSceneAssetRefs();
+    await vi.waitFor(() => expect(locate).toHaveBeenCalledTimes(1));
+    locate.mockResolvedValueOnce(answer({ unresolved: ["asset:Q|stuck.png"], missing: ["asset:Q|stuck.png"] }));
+
+    const summary = await findSceneAssetRefs("s1", {});
+    await auto;
+    expect(locate).toHaveBeenCalledTimes(2);
+    expect(summary).toMatchObject({ missing: 1, aborted: false });
+    expect(status("", "asset:Q|stuck.png")).toBe("missing");
+  });
+
+  it("끊은 자동 복구가 다음 바퀴로 미뤄 둔 참조는 단추 뒤에 자동 복구가 한 번 더 돌아 묻는다(Codex P1 재검토)", async () => {
+    const s1 = { ...scene([{ file_path: "asset:Q|stuck.png" }]), id: "s1" };
+    saveScenes(null, [s1]);
+    locate.mockImplementation((...args: unknown[]) => {
+      const tokens = args[0] as string[];
+      if (tokens.includes("asset:Q|new.png")) return Promise.resolve(answer({ open: ["asset:Q|new.png"] }));
+      if (args[5] === true) return Promise.resolve(answer({ open: ["asset:Q|stuck.png"] }));
+      return new Promise((_, reject) => (args[4] as AbortSignal).addEventListener("abort", () => reject(new Error("aborted"))));
+    });
+    const auto = relinkSceneAssetRefs();
+    await vi.waitFor(() => expect(locate).toHaveBeenCalledTimes(1));
+    // 도는 중에 다른 씬에 새 참조가 들어와 자동 복구를 또 부른다 → 다음 바퀴 예약
+    saveScenes(null, [s1, { ...scene([{ file_path: "asset:Q|new.png" }]), id: "s2" }]);
+    void relinkSceneAssetRefs();
+
+    await findSceneAssetRefs("s1", {});
+    await auto;
+    await vi.waitFor(() => expect(locate.mock.calls.some((c) => (c[0] as string[]).includes("asset:Q|new.png"))).toBe(true));
+  });
+
   it("대기 중단 — 기다리기를 멈추고, 멈춘 배치의 답은 기억하지 않는다", async () => {
     saveScenes(null, [scene([{ file_path: "asset:Q|stuck.png" }])]);
     locate.mockImplementation(
@@ -1114,5 +1152,51 @@ describe("판정 못 끝냄은 같은 토큰을 쓰는 모든 참조의 옛 판�
     expect(locate.mock.calls[1][3]).toEqual({}); // 지문이 서로 달라 지문 없이 물었다
     expect(seenOnNotify).toEqual(["incomplete"]);
     expect(status("", "asset:imports|x.png", b)).toBe("incomplete");
+  });
+});
+
+describe("판정을 받았는데 그림이 안 뜨면 한 번 다시 묻는다(2026-09-30 실측)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetRelinkSessionForTest();
+    locate.mockReset();
+  });
+
+  it("번호를 받은 뒤 NAS 에서 옮겨져 그림이 깨지면 '확인 중'으로 되돌려 한 번 묻고, 번호로 새 자리를 받는다", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:P|CH/p.png" }])]);
+    locate.mockResolvedValueOnce(answer({ open: ["asset:P|CH/p.png"], open_ids: { "asset:P|CH/p.png": "r1" } }));
+    await relinkSceneAssetRefs();
+    const ref = listScenes(null)[0].cards[0].refs![0];
+    expect(ref.registry_asset_id).toBe("r1");
+
+    resetRelinkSessionForTest(); // 앱을 다시 켰다 — 저장된 '열림'은 묻지 않는다
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(1);
+
+    // 그림이 안 뜬다 → 판정을 지우고(화면은 '확인 중') 다음 복구에서 번호를 실어 묻는다
+    expect(recheckBrokenRef("", ref)).toBe(true);
+    expect(refJudged("", ref)).toBe(false);
+    locate.mockResolvedValueOnce(
+      answer({
+        fixed: [{ token: "asset:P|CH/p.png", project: "P", path: "CH/old/p_v2.png", registry_asset_id: "r1" }],
+        unresolved: ["asset:P|CH/p.png"],
+      }),
+    );
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(2);
+    expect(locate.mock.calls[1][6]).toEqual({ "asset:P|CH/p.png": "r1" });
+    expect(listScenes(null)[0].cards[0].refs?.[0]).toMatchObject({ file_path: "asset:P|CH/old/p_v2.png", registry_asset_id: "r1" });
+  });
+
+  it("세션마다 한 번만 — 파일이 깨져 늘 안 뜨는 참조가 되풀이해 묻지 않는다. 판정 전·사본 아닌 토큰은 건드리지 않는다", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:P|a.png" }])]);
+    expect(recheckBrokenRef("", { file_path: "asset:P|a.png" })).toBe(false); // 판정 전 — 자동 복구가 어차피 묻는다
+    expect(recheckBrokenRef("", { file_path: "gen:abc" })).toBe(false);
+    locate.mockResolvedValue(answer({ open: ["asset:P|a.png"] }));
+    await relinkSceneAssetRefs();
+    expect(recheckBrokenRef("", { file_path: "asset:P|a.png" })).toBe(true);
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(2);
+    expect(recheckBrokenRef("", { file_path: "asset:P|a.png" })).toBe(false); // 다시 '열림'인데 또 깨짐 — 더 묻지 않는다
   });
 });
