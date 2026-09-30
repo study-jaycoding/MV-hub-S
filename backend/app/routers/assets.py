@@ -1771,8 +1771,11 @@ def locate_legacy_assets(body: LocateIn, request: Request):
                     if len(dedupe(last_hits)) > 1:
                         held_why[token] = reason("multiple", last_hits)  # 같은 내용이 여러 곳
                     elif not internal and content_absent:
-                        # 같은 자리·이름의 파일은 있는데 내용이 다르다(넣은 뒤 고쳐졌거나 다른 그림)
-                        held_why[token] = {**(path_candidates(rest, link=False)[2] or reason("", [])), "why": "changed"}
+                        # 같은 자리의 파일은 있는데 내용이 다르다(넣은 뒤 고쳐졌거나 다른 그림). 이름만 같은 파일이 다른 폴더에
+                        #  있는 것은 '이름만 같음' 그대로 둔다 — '내용이 다름'은 같은 자리일 때만(Codex P1)
+                        found = path_candidates(rest, link=False)[2] or reason("", [])
+                        held_why[token] = found if found["why"] == "name_only" else {
+                            **found, "why": "changed" if found["count"] else "unknown"}
                     else:
                         held_why[token] = reason("unknown", last_hits)
                 continue

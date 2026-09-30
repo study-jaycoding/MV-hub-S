@@ -491,10 +491,17 @@ function noteReply(
       // 판정 못 끝냄 — 기억하지 않는다(이번 실행 화면에만 회색 '확인 못 함'). 다시 물었는데 확인을 못 했으면 옛 판정도
       //  지워 다음 시작에 다시 묻게 한다 — 안 그러면 NAS 가 끊긴 동안 옛 '서버에 없음'이 굳는다(Codex 2026-09-29·30:
       //  강제로 다시 물은 참조뿐 아니라 '레퍼런스 찾기' 단추도. 자동 복구는 저장된 판정을 묻지 않으므로 같은 규칙이 맞다).
-      if (store[key]) {
-        changed = true;
-        delete store[key];
-        dropped.add(key);
+      //  표시가 읽는 대체 열쇠(지문·번호 없는 열쇠)까지 지운다 — 하나라도 남으면 옛 빨강이 그대로 보인다(Codex P1).
+      const fp = fingerprints[token];
+      const rid = registryIds[token];
+      for (const id of rid ? [rid, null] : [null]) {
+        for (const f of fp ? [fp, null] : [null]) {
+          const k = verdictKey(ws, token, f, id);
+          if (!store[k]) continue;
+          changed = true;
+          delete store[k];
+          dropped.add(k);
+        }
       }
       continue;
     }

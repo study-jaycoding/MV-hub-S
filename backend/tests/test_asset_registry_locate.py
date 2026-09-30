@@ -133,6 +133,18 @@ class LocateWithRegistryTests(unittest.TestCase):
         self.assertNotIn("asset:imports|gone.png", held)  # 서버에 없음은 보류가 아니다
         self.assertEqual(reply["missing"], ["asset:imports|gone.png"])
 
+    def test_changed_only_when_the_same_spot_has_other_content(self) -> None:
+        # 지문 있는 참조 — 같은 자리 파일의 내용이 다르면 '내용이 다름', 다른 폴더에 이름만 같으면 '이름만 같음'(Codex P1)
+        self.put("assets/CH/m/face.png", b"NOW")
+        self.put("assets/CH/x/only.png", b"OTHER")
+        fp = {"sha256": _sha(b"ORIGINAL"), "bytes": 8}
+        reply = self.locate(
+            ["asset:PM_RnD|CH/m/face.png", "asset:PM_RnD|CH/y/only.png"],
+            fingerprints={"asset:PM_RnD|CH/m/face.png": fp, "asset:PM_RnD|CH/y/only.png": fp},
+        )
+        self.assertEqual(reply["held"]["asset:PM_RnD|CH/m/face.png"]["why"], "changed")
+        self.assertEqual(reply["held"]["asset:PM_RnD|CH/y/only.png"]["why"], "name_only")
+
     def test_registry_number_follows_a_move_even_after_an_edit(self) -> None:
         self.put("assets/CH/m/pose.png", b"V1")
         self.scan()

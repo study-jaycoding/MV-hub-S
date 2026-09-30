@@ -1066,3 +1066,25 @@ describe("연결 안 된 레퍼런스 표시(Jay 2026-09-30 시안 — 보류도
     expect(locate).toHaveBeenCalledTimes(3);
   });
 });
+
+describe("판정 못 끝냄은 대체 열쇠의 옛 판정까지 지운다(Codex P1 2026-09-30)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetRelinkSessionForTest();
+    locate.mockReset();
+  });
+
+  it("지문 없이 '서버에 없음'으로 기억한 참조에 나중에 지문이 붙고, 찾기가 판정을 못 끝내면 회색이 된다", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:Q|gone.png" }])]);
+    locate.mockResolvedValueOnce(answer({ unresolved: ["asset:Q|gone.png"], missing: ["asset:Q|gone.png"] }));
+    await relinkSceneAssetRefs();
+    expect(status("", "asset:Q|gone.png")).toBe("missing");
+
+    const fp = { content_sha: "a".repeat(64), bytes: 5 };
+    saveScenes(null, [scene([{ file_path: "asset:Q|gone.png", ...fp }])]); // 넣을 때 판이 붙었다
+    expect(status("", "asset:Q|gone.png", fp)).toBe("missing"); // 표시는 지문 없는 옛 열쇠를 읽는다
+    locate.mockResolvedValueOnce(answer({ unresolved: ["asset:Q|gone.png"], incomplete: ["asset:Q|gone.png"] }));
+    await findSceneAssetRefs("s1", {});
+    expect(status("", "asset:Q|gone.png", fp)).toBe("incomplete");
+  });
+});
