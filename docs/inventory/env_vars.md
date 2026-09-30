@@ -21,7 +21,7 @@
 | `CONTENT_HUB_ADMIN_PASSWORD` | — | `backend/app/main.py` | — |
 | `CONTENT_HUB_ALLOW_REMOTE_AUTH_OFF` | `"0"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSETS_DIR` | `str(DATA_DIR / "assets")` | `backend/app/config.py` | — |
-| `CONTENT_HUB_ASSET_REGISTRY` | `"0"` | `backend/app/config.py` | — |
+| `CONTENT_HUB_ASSET_REGISTRY` | `"0"` | `backend/app/config.py` | `test_dev.bat` |
 | `CONTENT_HUB_ASSET_REGISTRY_DRIVES` | `""` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSET_REGISTRY_HELPER` | `"0"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSET_REGISTRY_INTERVAL_MIN` | `"0"` | `backend/app/config.py` | — |
