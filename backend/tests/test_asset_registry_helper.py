@@ -224,8 +224,8 @@ class HelperFlowTests(_ServerCase):
         self.helper = helper_mod.HelperController()
         self.token = "tok"
 
-        def fake_call(method, path, body=None, timeout=60):
-            if helper_mod.shared_connection.token() != self.helper._token:
+        def fake_call(method, path, body=None, timeout=60, pinned_ok=False):
+            if not pinned_ok and helper_mod.shared_connection.token() != self.helper._token:
                 raise helper_mod._Abort("로그인이 바뀌어 멈췄습니다")
             res = self.client.request(method, path, json=body)
             if res.status_code >= 400:
@@ -321,6 +321,7 @@ class HelperFlowTests(_ServerCase):
         self.assertIn("로그인", status["abort"])
         self.assertEqual(status["results"][0]["state"], "aborted")
         self.assertEqual(self.rows(), {})
+        self.assertFalse(svc.leases.active())  # 자리는 시작 때 토큰으로 돌려준다 — 서버가 10분 동안 막히지 않게(Codex)
 
     def test_lost_lease_stops_that_project(self) -> None:
         # 서버가 재시작돼 자리를 잃었다 → 연장이 409 → 올려도 거부되니 그 프로젝트를 멈춘다

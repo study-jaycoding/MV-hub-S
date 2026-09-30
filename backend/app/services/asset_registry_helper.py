@@ -86,8 +86,11 @@ class HelperController(AssetRegistryController):
         return self._stopping or bool(self._abort) or self._lease_lost
 
     # ── 서버 호출(시작할 때 고정한 주소·토큰으로만) ─────────────────────────────────
-    def _call(self, method: str, path: str, body: Optional[dict[str, Any]] = None, timeout: float = 60) -> Any:
-        if shared_connection.token() != self._token:
+    def _call(
+        self, method: str, path: str, body: Optional[dict[str, Any]] = None, timeout: float = 60, pinned_ok: bool = False
+    ) -> Any:
+        # pinned_ok: 로그인이 바뀐 뒤에도 시작 때 토큰으로 보낸다 — 자기 자리 반납만(안 풀면 서버가 10분 동안 막힌다, Codex)
+        if not pinned_ok and shared_connection.token() != self._token:
             raise _Abort("로그인이 바뀌어 멈췄습니다")
         data = json.dumps(body).encode("utf-8") if body is not None else None
         req = urllib.request.Request(self._base + path, data=data, method=method)
@@ -164,7 +167,8 @@ class HelperController(AssetRegistryController):
                 with contextlib.suppress(asyncio.CancelledError):
                     await renew
                 with contextlib.suppress(Exception):
-                    await asyncio.to_thread(self._call, "POST", "/api/asset-registry/helper/release", {"lease_id": lease_id})
+                    await asyncio.to_thread(self._call, "POST", "/api/asset-registry/helper/release", {"lease_id": lease_id},
+                                            pinned_ok=True)
                 self._lease = {}
         except _Abort as exc:
             self._abort = str(exc)
