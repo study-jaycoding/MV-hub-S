@@ -12,6 +12,7 @@ import { getAccountNamespace } from "./accountScope";
 import { listScenes, saveScenes, type Scene, type SceneCard, type SceneRef } from "./scenes";
 import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
+import { loadStoredWorkspaceContext } from "./workspaceContext";
 
 // 에셋 참조 토큰 전부. 이미 잘 열리는 것은 서버가 그대로 두므로 여기서 거르지 않는다 —
 // 어느 것이 안 열리는지는 폴더를 볼 수 있는 서버만 안다.
@@ -497,6 +498,10 @@ async function askGroups(
     for (let at = 0; at < group.tokens.length; at += LOCATE_BATCH) {
       const batch = group.tokens.slice(at, at + LOCATE_BATCH); // 상한을 넘기면 뒤가 조용히 잘린다
       const ws = group.workspaceId;
+      // 탭에 공간이 없으면 **지금 선택된 워크스페이스**의 프로젝트부터 찾는다(Jay 2026-09-30). 판정 열쇠·찾은 답의 열쇠는
+      //  그대로 탭 기준(ws)이다 — 열쇠까지 바꾸면 워크스페이스를 바꿀 때마다 기억한 표시가 사라진다.
+      const selected = loadStoredWorkspaceContext();
+      const askWs = ws || (selected?.scope === "team" ? selected.id || "" : "");
       const fingerprints = Object.fromEntries(
         batch.filter((token) => group.fingerprints[token]).map((token) => [token, group.fingerprints[token]]),
       );
@@ -505,7 +510,7 @@ async function askGroups(
       );
       const timeout = AbortSignal.timeout(LOCATE_TIMEOUT_MS);
       const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
-      const reply = await api.locateAssets(batch, ws, opts.scanId, fingerprints, signal, opts.includeRender, registryIds);
+      const reply = await api.locateAssets(batch, askWs, opts.scanId, fingerprints, signal, opts.includeRender, registryIds);
       if (getAccountNamespace() !== ns) throw new Error("account changed while locating");
       noteReply(ws, batch, group.fingerprints, group.registryIds, reply, opts.counts);
       const found = new Map(reply.fixed.map((item) => [relinkKey(ws, item.token), item] as const));

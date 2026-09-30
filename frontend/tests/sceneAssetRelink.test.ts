@@ -939,3 +939,35 @@ describe("에셋 대장 번호(2026-09-30)", () => {
     expect(locate.mock.calls[0][6]).toEqual({ "asset:P|a.png": "r1" });
   });
 });
+
+describe("탭에 공간이 없으면 지금 선택된 워크스페이스로 찾는다(Jay 2026-09-30)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetRelinkSessionForTest();
+    locate.mockReset();
+  });
+
+  it("공간 없는 탭은 선택된 팀 공간을 싣고, 판정·연결 열쇠는 그대로 탭 기준이다", async () => {
+    localStorage.setItem(STORAGE_KEYS.workspaceContext, JSON.stringify({ scope: "team", id: "ws-mudx", name: "뻘뻘뻘" }));
+    saveScenes(null, [scene([{ file_path: "asset:뻘뻘뻘_RnD|CH/m/a.png" }])]);
+    locate.mockResolvedValue(
+      answer({ fixed: [{ token: "asset:뻘뻘뻘_RnD|CH/m/a.png", project: "뻘뻘뻘", path: "assets/CH/m/a.png" }] }),
+    );
+    await findSceneAssetRefs("s1", {});
+    expect(locate.mock.calls[0][1]).toBe("ws-mudx");
+    expect(listScenes(null)[0].cards[0].refs?.[0].file_path).toBe("asset:뻘뻘뻘|assets/CH/m/a.png"); // 빈 공간 열쇠로 적용됐다
+  });
+
+  it("탭에 공간이 있으면 그 공간이 먼저다 — 선택이 개인·미정이면 싣지 않는다", async () => {
+    localStorage.setItem(STORAGE_KEYS.workspaceContext, JSON.stringify({ scope: "team", id: "ws-other", name: "다른 곳" }));
+    saveScenes(null, [scene([{ file_path: "asset:P|x/a.png" }], { id: "ws-tab", name: "탭" })]);
+    locate.mockResolvedValue(answer({ unresolved: ["asset:P|x/a.png"] }));
+    await findSceneAssetRefs("s1", {});
+    expect(locate.mock.calls[0][1]).toBe("ws-tab");
+
+    localStorage.setItem(STORAGE_KEYS.workspaceContext, JSON.stringify({ scope: "personal" }));
+    saveScenes(null, [scene([{ file_path: "asset:P|x/a.png" }])]);
+    await findSceneAssetRefs("s1", {});
+    expect(locate.mock.calls[1][1]).toBe("");
+  });
+});
