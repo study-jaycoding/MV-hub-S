@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-09-30
+updated: 2026-10-01
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -1074,7 +1074,7 @@ updated: 2026-09-30
 
 | 파일 | 한 줄 책임 | 호출 사슬 |
 |---|---|---|
-| `hf_cli_version.txt`(1줄, 현재 `1.1.25`) | 고정버전 단일 소스 | `MV_agent.bat`·업데이트/릴리스 스크립트 전부 참조 |
+| `hf_cli_version.txt`(1줄, 현재 `1.1.26`) | 고정버전 단일 소스 | `MV_agent.bat`·업데이트/릴리스 스크립트 전부 참조 |
 | `tools/hf_cli_check_update.py`(100줄) | 최신버전 유무+문서 diff 예고편(네트워크 GitHub) | |
 | `tools/hf_cli_contract_smoke.py`(260줄) | 설치 후 실제 CLI JSON 출력 계약 스모크(무료, 생성 없음) | |
 

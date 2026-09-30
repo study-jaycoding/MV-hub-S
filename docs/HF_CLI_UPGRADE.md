@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-16
+updated: 2026-10-01
 status: active
 ---
 
@@ -22,7 +22,7 @@ status: active
 
 ## 버전 pin 단일 출처
 
-- `hf_cli_version.txt` (저장소 루트) — 한 줄, 현재 `1.1.25`.
+- `hf_cli_version.txt` (저장소 루트) — 한 줄, 현재 `1.1.26`.
 - 이 값을 런처(`MV_agent.bat`)·업데이트(`update_cli.bat`)·릴리스(`release/make_release.ps1`)·
   서버 생성 bat(`backend/app/routers/ingest.py`)·초기설치(`setup_clone_git.bat`)가 모두 읽어
   **정확히 이 버전**을 설치/검증한다. `MV_agent.bat` 은 매 실행 때 설치본이 pin 과 다르면 교정한다.
@@ -104,6 +104,40 @@ seedance 모델 스키마(`image_references` 존재, `medias` 가 있으면 **�
 
 스모크는 **코드보다 관대하면 안 된다**(통과했는데 코드가 깨지는 오탐 방지). CLI 출력을 새로
 읽는 코드가 생기면 스모크에도 그 계약 검증을 추가한다.
+
+## 최근 검증 — 1.1.25 → 1.1.26 (2026-10-01)
+
+- 아래 09-28 사전 검토(다른 세션)를 이어 받아 절차대로 확인했다. 후보는 **별도 npm prefix** 에 설치했다 —
+  전역 CLI(1.1.25)와 실사용 설치본은 바꾸지 않았다. 설치 때 1.1.26 의 체크섬 검증이 통과했다. 후보 빌드 `69f3a33c`.
+- pin 을 먼저 1.1.26 으로 바꾸고 후보를 PATH 앞에 둔 채 무료 계약 스모크: **34 PASS / WARN·FAIL 0**(`version == pin` 1.1.26 확인).
+- 추가 조회(무료): `model list` 가 옛·새 모두 **98개로 같고**, 98개 모델의 `model get` 파라미터 스키마 **차이 0**.
+  전역 선택 워크스페이스는 앞뒤로 바뀌지 않았다. `MODELS.md`·`README.md` 도 변경 없음(`hf_cli_check_update.py`).
+- pin 관련 시험 7파일 83 통과(`test_cli_pin_reader`·`test_update_cli_batch`·`test_cli_tool_safety`·`test_agent_workspace_env_pin`·
+  `test_console_panel`·`test_sparse_checkout_scripts`·`test_select_release_backups`).
+- **하지 않은 것**: 유료 생성 실측(5단계 — Jay 별도 승인 필요), 호출별 workspace 환경의 거래 조회, 실제 create 의 과금 공간 고정.
+  CLI 쪽 변경이 설치 검증과 `website secrets set` 플래그뿐이라(사전 검토) 우리 생성 경로와 무관하다고 판단했지만, 실과금 경로는
+  이번에 다시 증명한 것이 아니다 — 적용 뒤 첫 실사용 생성의 완료·과금 공간을 확인한다.
+- 배포: 릴리스는 이 후보 prefix 를 `-HiggsfieldRoot` 로 지정해 고정 릴리스 폴더에서 만들고, ZIP pin·npm manifest·번들
+  `hf.exe version` 이 1.1.26 인지 확인한다. 되돌리기 기준 = 직전 게시본 `2026.09.30-2238`(CLI 1.1.25) — 코드와 pin 을 함께.
+
+## 사전 검토 — 1.1.25 → 1.1.26 (2026-09-28, 설치 전)
+
+> [!NOTE]
+> **판정: 우리 앱 기준 기능 변경 없음 · 보안(설치 검증) 개선.** pin 은 아직 `1.1.25` 그대로다.
+> 올리려면 위 "버전 올리는 절차" 그대로 스모크를 거친다(서두를 이유는 없다).
+
+- 배포: npm `1.1.26` 2026-09-18 (빌드 `69f3a33c`). GitHub 릴리스 본문은 여전히 비어 있다.
+- `MODELS.md`·`README.md`(태그 v1.1.25 ↔ v1.1.26): **완전히 동일** → 모델·파라미터 스키마 변화 없음.
+- linux_amd64 바이너리의 전체 `--help` 트리(모든 하위 명령 재귀) diff: **`website secrets set` 1곳만** 바뀜.
+  - `--value <값>` 플래그 **삭제** → 숨김 대화형 입력 또는 `--value-stdin`(stdin, 최대 1 MiB) 으로 대체.
+  - 우리 코드·graft 카드 어디에도 `website` 명령 호출이 없다 → **영향 없음**.
+- 바이너리 내 `json:"..."` 태그·플래그 문자열 집합: 동일 → 출력 JSON 필드 개명 징후 없음.
+- `version` 출력 형식 동일(`higgsfield <ver> (<commit>) built <time>`) → `update_cli.bat` 파싱 영향 없음.
+- npm 래퍼: `install.js` 가 받은 아카이브의 **SHA-256 을 패키지 내 `checksums.json` 과 대조**하고
+  불일치·누락 시 설치를 거부한다(`checksums.js` 추가). 다운로드는 임시 staging 폴더 경유.
+  → 공급망 보안 개선. 프록시/미러로 아카이브가 바뀌는 환경이면 설치가 **실패**할 수 있다는 점만 유의.
+- 한계: 무료 계약 스모크(`tools/hf_cli_contract_smoke.py`)·실생성은 아직 돌리지 않았다(로그인 필요).
+  서버 응답 형식은 CLI 버전이 아니라 서버 쪽에서도 바뀔 수 있으므로 bump 시 스모크로 확정한다.
 
 ## 최근 검증 — 1.1.24 → 1.1.25 (2026-09-16)
 

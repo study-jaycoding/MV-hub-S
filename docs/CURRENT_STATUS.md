@@ -16,6 +16,7 @@ owner: Claude(구현) · reviewer: Codex xhigh·Claude Fable(설계 4회), Codex
 
 - 점검(공유 서버도 2238): P0 없음, P1 1 = 워크스페이스를 바꿔도 레퍼런스를 다시 안 물음 → 고침(앱). 함께: 레퍼런스 올리는 중이면
   업데이트 막기(앱)·서브스페이스 콘솔 빈 쓰기 잠금 제거(서버). 서버 생성 일시정지는 서버 큐만 멈춘다([SERVER.md](SERVER.md)).
+- Higgsfield CLI pin 1.1.25 → **1.1.26**: 무료 계약 스모크 34/0/0 · 모델 98개 스키마 차이 0. 유료 실측은 안 함([HF_CLI_UPGRADE.md](HF_CLI_UPGRADE.md)).
 
 ## 09-30 에셋 대장
 
