@@ -40,6 +40,10 @@ set "CONTENT_HUB_DB=%ROOT%backend\data_test\db\content_hub.db"
 set "CONTENT_HUB_AUTH=1"
 set "CONTENT_HUB_NO_PROXY=1"
 set "CONTENT_HUB_SERVER_SYNC=0"
+REM Asset registry (docs\ASSET_REGISTRY.md): this backend is its own server, so it keeps the
+REM registry that gives NAS pictures their numbers. Scans run only from the admin window
+REM (asset registry tab) and only read the NAS.
+if not defined CONTENT_HUB_ASSET_REGISTRY set "CONTENT_HUB_ASSET_REGISTRY=1"
 set "MVHUB_OPEN_URL=%FRONTEND_URL%"
 set "MVHUB_DEV_FRONTEND_DIR=%ROOT%frontend"
 set "MVHUB_DEV_FRONTEND_PORT=%FRONTEND_PORT%"
