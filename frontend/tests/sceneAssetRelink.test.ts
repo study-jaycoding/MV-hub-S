@@ -1088,3 +1088,31 @@ describe("판정 못 끝냄은 대체 열쇠의 옛 판정까지 지운다(Codex
     expect(status("", "asset:Q|gone.png", fp)).toBe("incomplete");
   });
 });
+
+describe("판정 못 끝냄은 같은 토큰을 쓰는 모든 참조의 옛 판정을 지운다(Codex P1 재검토)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetRelinkSessionForTest();
+    locate.mockReset();
+  });
+
+  it("지문 A 로 '서버에 없음' → 같은 토큰에 지문 B 참조가 더해짐 → 찾기가 판정을 못 끝내면 A 도 회색", async () => {
+    const a = { content_sha: "a".repeat(64), bytes: 5 };
+    const b = { content_sha: "b".repeat(64), bytes: 6 };
+    saveScenes(null, [scene([{ file_path: "asset:imports|x.png", ...a }])]);
+    locate.mockResolvedValueOnce(answer({ unresolved: ["asset:imports|x.png"], missing: ["asset:imports|x.png"] }));
+    await relinkSceneAssetRefs();
+    expect(status("", "asset:imports|x.png", a)).toBe("missing");
+
+    saveScenes(null, [scene([{ file_path: "asset:imports|x.png", ...a }, { file_path: "asset:imports|x.png", ...b }])]);
+    locate.mockResolvedValueOnce(answer({ unresolved: ["asset:imports|x.png"], incomplete: ["asset:imports|x.png"] }));
+    // 화면은 알림이 올 때 다시 그린다 — 그 순간 읽는 값이 맞아야 한다(끝의 가지치기는 알리지 않는다)
+    const seenOnNotify: (string | undefined)[] = [];
+    const off = subscribeRefServerStatus(() => seenOnNotify.push(status("", "asset:imports|x.png", a)));
+    await findSceneAssetRefs("s1", {});
+    off();
+    expect(locate.mock.calls[1][3]).toEqual({}); // 지문이 서로 달라 지문 없이 물었다
+    expect(seenOnNotify).toEqual(["incomplete"]);
+    expect(status("", "asset:imports|x.png", b)).toBe("incomplete");
+  });
+});
