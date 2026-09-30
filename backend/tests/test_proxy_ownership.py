@@ -22,6 +22,11 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/admin/audit-events",
         "/api/admin/generation-events",
         "/api/admin/runtime",
+        # 에셋 대장(2026-09-30) — 공유 서버가 NAS 를 훑어 가진 대장이 원천. 로컬 locate 는 lookup_for_request 로 서버에 묻는다.
+        "/api/asset-registry/lookup",
+        "/api/asset-registry/scan",
+        "/api/asset-registry/status",
+        "/api/asset-registry/usage/{registry_asset_id}",
         "/api/auth/access",
         "/api/auth/accounts",
         "/api/auth/accounts/{email}/global-roles",
