@@ -388,6 +388,19 @@
 .scene-ref-offmsg small {
   max-width: 100%; font-size: 9.5px; color: #b9a3a6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* 판정 보류의 이유 줄(Jay 2026-09-30 — 후보 여럿·사본 등). 제목(b)과 파일 이름(small) 사이 */
+.scene-ref-offmsg .scene-ref-why { font-size: 9.5px; line-height: 1.35; color: #e6c3c6; }
+/* 판정 전(확인 중)·판정 못 끝냄(확인 못 함) — 회색. 연결 안 됨이 확정된 것만 빨강이다 */
+.scene-ref-checkmsg {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; padding: 0 8px; color: #8d93a3; text-align: center; pointer-events: none;
+}
+.scene-ref-checkmsg svg { width: 20px; height: 20px; margin-bottom: 2px; }
+.scene-ref-checkmsg b { font-size: 11px; font-weight: 800; letter-spacing: 0.02em; }
+.scene-ref-checkmsg span { font-size: 9.5px; color: #767b88; }
+.scene-ref-checkmsg small {
+  max-width: 100%; font-size: 9.5px; color: #6f7483; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .scene-ref-offmini { position: absolute; inset: 0; display: grid; place-items: center; color: #ff6b6b; pointer-events: none; }
 .scene-ref-offmini svg { width: 14px; height: 14px; }
 /* 가진 사람 — 오른쪽 위 마크(빗금 바탕 + 빨간 아이콘). 선택 때 뜨는 헤더 글씨(z 3)보다 위, 여러 장 칸은 작게 */

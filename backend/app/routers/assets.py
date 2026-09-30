@@ -1344,6 +1344,8 @@ def locate_legacy_assets(body: LocateIn, request: Request):
     incomplete: list[str] = []
     # 토큰 → 실린 목록(missing/local/open/incomplete 중 하나) — 중복 토큰에 같은 답을 싣는다
     status_of: dict[str, list[str]] = {}
+    # 판정 보류(어느 목록에도 안 든 unresolved)의 이유 — 캔버스가 빨간 테두리 안에 적는다(Jay 2026-09-30)
+    held_why: dict[str, dict[str, Any]] = {}
 
     def note(token: str, bucket: list[str]) -> None:
         bucket.append(token)
@@ -1484,8 +1486,15 @@ def locate_legacy_assets(body: LocateIn, request: Request):
             return None
         return {"project": merged[0][0], "path": merged[0][1]}
 
-    def path_candidates(rest: str, link: bool) -> tuple[Optional[dict[str, Any]], bool]:
-        """(이을 곳, 등록 폴더를 끝까지 훑었는데 경로·이름·확장자 후보가 하나도 없는가).
+    def reason(why: str, cands: list[tuple[str, str]]) -> dict[str, Any]:
+        """보류 이유(Jay 2026-09-30 — 캔버스가 빨간 테두리 안에 적는다). 물리 파일로 묶은 뒤의 후보 수·프로젝트 이름."""
+        merged = dedupe(cands)
+        return {"why": why, "count": len(merged), "projects": sorted({name for name, _rel in merged})[:5]}
+
+    def path_candidates(
+        rest: str, link: bool
+    ) -> tuple[Optional[dict[str, Any]], bool, Optional[dict[str, Any]]]:
+        """(이을 곳, 등록 폴더를 끝까지 훑었는데 경로·이름·확장자 후보가 하나도 없는가, 못 이었을 때 마지막 바퀴의 보류 이유).
 
         link=False 면 잇지 않고 판정만 한다(지문 없는 사본 참조·지문을 못 찾은 참조) — 그때는 전체 바퀴만 본다.
         잇는 순서: 경로(끝 두 조각 이상) → 이름만 같은 것이 있으면 거기서 멈춤 → 확장자만 다름(참조가 두 조각
@@ -1517,10 +1526,20 @@ def locate_legacy_assets(body: LocateIn, request: Request):
                 else:
                     entry = pick(by_ext, complete)
                 if entry:
-                    return entry, False
+                    return entry, False, None
             if i == len(scopes) - 1:  # 마지막 바퀴 = 등록 폴더 전체
-                return None, complete and not (by_path or by_name or by_ext)
-        return None, False
+                if len(dedupe(by_path)) > 1:
+                    hint = reason("multiple", by_path)
+                elif by_path:
+                    hint = reason("unknown", by_path)  # 하나지만 이을 수 없다(끝까지 못 훑음·개인/PM 이 다른 폴더)
+                elif by_name:
+                    hint = reason("name_only", by_name)  # 같은 이름이 다른 폴더에 있다
+                elif len(dedupe(by_ext)) > 1:
+                    hint = reason("multiple", by_ext)
+                else:
+                    hint = reason("unknown", by_ext)
+                return None, complete and not (by_path or by_name or by_ext), hint
+        return None, False, None
 
     # 한 씬의 참조 수백 개가 같은 프로젝트를 가리킨다 — 폴더 해석은 이름마다 한 번만 한다
     # (수동 마운트 조회 + PM DB 조회가 들어 있다, Codex 2026-09-28).
@@ -1707,8 +1726,10 @@ def locate_legacy_assets(body: LocateIn, request: Request):
 
         entry: Optional[dict[str, Any]] = None
         nothing_found = False  # 전체 바퀴를 끝까지 훑었는데 경로·이름·확장자 후보가 하나도 없다
+        hint: Optional[dict[str, Any]] = None
         if digest and size > 0:
             content_absent = False  # 전체 바퀴를 끝까지 훑었는데 같은 내용이 한 곳에도 없다
+            last_hits: list[tuple[str, str]] = []
             for i, scope in enumerate(rounds):
                 hits: list[tuple[str, str]] = []
                 complete = True
@@ -1727,6 +1748,7 @@ def locate_legacy_assets(body: LocateIn, request: Request):
                     break
                 if i == len(rounds) - 1:  # 마지막 바퀴 = 등록 폴더 전체
                     content_absent = complete and not hits
+                    last_hits = hits
             if entry is None:
                 # 지문이 있는데 같은 내용이 없다(또는 여러 곳에 있다). 그런데도 경로·이름으로 이으면 **다른
                 # 그림**이 붙는다 — 근거가 약한 단계로 내려가지 않는다(Codex 2026-09-28).
@@ -1745,21 +1767,35 @@ def locate_legacy_assets(body: LocateIn, request: Request):
                         note(token, missing)
                 if token not in status_of and cut_short():
                     note(token, incomplete)
+                if token not in status_of:
+                    if len(dedupe(last_hits)) > 1:
+                        held_why[token] = reason("multiple", last_hits)  # 같은 내용이 여러 곳
+                    elif not internal and content_absent:
+                        # 같은 자리·이름의 파일은 있는데 내용이 다르다(넣은 뒤 고쳐졌거나 다른 그림)
+                        held_why[token] = {**(path_candidates(rest, link=False)[2] or reason("", [])), "why": "changed"}
+                    else:
+                        held_why[token] = reason("unknown", last_hits)
                 continue
             entry |= {"sha256": digest, "bytes": size}
         elif internal:
             # 지문 없는 사본 참조 — 경로·이름으로는 **잇지 않는다**(2026-09-29). 이 PC 에도 사본 파일이 없고
             # 등록 폴더 어디에도 같은 이름조차 없을 때만 '서버에 없음'이다.
             unresolved.append(token)
-            if judgeable and not local_exists and path_candidates(rest, link=False)[1]:
+            # 후보는 늘 센다 — 사본 파일이 이 PC 에 있어도 서버의 같은 이름을 알려 준다(Codex). '서버에 없음'은 사본이 없을 때만.
+            judged = path_candidates(rest, link=False)
+            if judgeable and not local_exists and judged[1]:
                 note(token, missing)
             elif not local_exists and cut_short():
                 # 사본 파일은 있는데 지문을 못 낸 것(0바이트·읽기 실패)은 다시 훑어도 같다 — incomplete 아님
                 note(token, incomplete)
+            if token not in status_of:
+                # 서버에 같은 이름이 있는 사본 — 같은 그림인지 확인할 수 없어 잇지 않는다(A안, Jay 2026-09-30)
+                found = judged[2] or reason("", [])
+                held_why[token] = {**found, "why": "copy_name" if found["count"] else "unknown"}
             continue
         else:
             # ② 경로(끝 두 조각 이상) → 확장자만 다름. 지문 없는 프로젝트 참조(남이 준 씬·다른 등록 깊이)의 길.
-            entry, nothing_found = path_candidates(rest, link=True)
+            entry, nothing_found, hint = path_candidates(rest, link=True)
             ids_here = path_ids.get(token)
             if entry and ids_here:
                 base = dirs_by_name.get(entry["project"])
@@ -1775,9 +1811,13 @@ def locate_legacy_assets(body: LocateIn, request: Request):
                 note(token, missing)
             elif cut_short():
                 note(token, incomplete)
+            if token not in status_of:
+                held_why[token] = hint or reason("unknown", [])
             continue
         seen[token] = entry
         fixed.append({**entry, "token": token})
+    # 판정 보류 = 못 이었고 서버에 없음·이 PC 에만·열림·판정 못 끝냄 어디에도 안 든 것. 이유를 붙여 준다(옛 앱은 모른다).
+    held = {t: held_why.get(t) or reason("unknown", []) for t in dict.fromkeys(unresolved) if t not in status_of}
     log_event(
         _log,
         "assets_locate",
@@ -1792,6 +1832,7 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         local=len(local_only),
         open=len(opened),
         incomplete=len(incomplete),
+        held=len(held),
         render=body.include_render,
         judge=can_judge,
         registry=registry_used,
@@ -1809,6 +1850,8 @@ def locate_legacy_assets(body: LocateIn, request: Request):
         "incomplete": incomplete,
         # 열리는 참조의 에셋 대장 번호(토큰 → 번호). 앱이 참조에 적어 두면 나중에 옮겨져도 따라간다. 옛 앱은 모른다.
         "open_ids": open_ids,
+        # 판정 보류의 이유(토큰 → {why: multiple·name_only·copy_name·changed·unknown, count, projects}) — Jay 2026-09-30
+        "held": held,
     }
 
 

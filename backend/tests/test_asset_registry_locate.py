@@ -114,6 +114,25 @@ class LocateWithRegistryTests(unittest.TestCase):
         reply = self.locate(["asset:PM_RnD|CH/m/b.png"], personal={"MINE": mine})
         self.assertEqual(reply["fixed"], [])
 
+    def test_held_references_say_why(self) -> None:
+        # 판정 보류에 이유를 붙인다 — 캔버스가 빨간 테두리 안에 적는다(Jay 2026-09-30)
+        self.put("assets/CH/m/b.png", b"PM")
+        self.put("assets/CH/m/octo.png", b"OCTO")
+        self.put("assets/CH/m/face.png", b"FACE")
+        mine = self.root / "mine"
+        (mine / "CH" / "m").mkdir(parents=True)
+        (mine / "CH" / "m" / "b.png").write_bytes(b"OTHER")
+        reply = self.locate(
+            ["asset:PM_RnD|CH/m/b.png", "asset:imports|octo.png", "asset:PM_RnD|X/m/face.png", "asset:imports|gone.png"],
+            personal={"MINE": mine},
+        )
+        held = reply["held"]
+        self.assertEqual(held["asset:PM_RnD|CH/m/b.png"], {"why": "multiple", "count": 2, "projects": ["MINE", "PM"]})
+        self.assertEqual(held["asset:imports|octo.png"], {"why": "copy_name", "count": 1, "projects": ["PM"]})
+        self.assertEqual(held["asset:PM_RnD|X/m/face.png"]["why"], "name_only")
+        self.assertNotIn("asset:imports|gone.png", held)  # 서버에 없음은 보류가 아니다
+        self.assertEqual(reply["missing"], ["asset:imports|gone.png"])
+
     def test_registry_number_follows_a_move_even_after_an_edit(self) -> None:
         self.put("assets/CH/m/pose.png", b"V1")
         self.scan()

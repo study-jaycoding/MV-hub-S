@@ -3,10 +3,10 @@
 import type React from "react";
 import type { SceneCard, SceneRef } from "../../../lib/scenes";
 import type { Generation, InfoTarget, PreviewTarget } from "../../../types";
-import { refServerStatus } from "../../../lib/sceneAssetRelink";
+import { heldText, refHeldInfo, refJudged, refServerStatus } from "../../../lib/sceneAssetRelink";
 import { refMediaSrc, refMediaType, refThumbSrc, refTypeLabel } from "../../../lib/sceneMedia";
 import { MediaThumbnail } from "../../MediaThumbnail";
-import { CloudOffIcon } from "../../common/ViewIcons";
+import { CloudOffIcon, CopyIcon, LinkOffIcon, PendingIcon } from "../../common/ViewIcons";
 
 // 안내에 보일 파일 이름 — 이름이 없으면 경로 끝.
 const refFileName = (r: SceneRef): string =>
@@ -41,13 +41,21 @@ export function ReferenceCard({
             // missing = 서버 어디에도 없음(받은 사람) · local = 이 PC 안 사본에만 있음(가진 사람)
             const status = refServerStatus(workspaceId, r);
             const missing = status === "missing";
+            // 판정 보류 = 못 이었고 이유가 있다 — 서버에 없음처럼 빨간 빗금 + 이유(Jay 2026-09-30)
+            const held = status === "held" ? heldText(refHeldInfo(workspaceId, r)!) : null;
+            const unlinked = missing || !!held;
             return (
               <div
                 className="scene-refthumb"
                 key={i}
                 title={
                   (r.name || `레퍼런스 ${i + 1}`) +
-                  (missing ? " · 서버에 없음 · 미들클릭=정보" : " · 더블클릭=큰 화면 · 미들클릭=정보")
+                  (missing
+                    ? " · 서버에 없음 · 미들클릭=정보"
+                    : held
+                      ? ` · ${held.title}${held.detail ? ` — ${held.detail}` : ""} · ${held.fix}` +
+                        `${held.more ? ` · ${held.more}` : ""} · 미들클릭=정보`
+                      : " · 더블클릭=큰 화면 · 미들클릭=정보")
                 }
                 onMouseDown={(e) => {
                   if (e.button === 1) e.preventDefault(); // 휠클릭 자동스크롤 방지(정보는 auxclick 에서)
@@ -104,7 +112,7 @@ export function ReferenceCard({
                 }
                 onDoubleClick={(e) => {
                   e.stopPropagation();
-                  if (missing) return; // 서버에 없어 열 것이 없다
+                  if (unlinked) return; // 서버에 없거나 연결 안 돼 열 것이 없다
                   const url = refMediaSrc(r);
                   if (url) onPreview?.({ url, type: refMediaType(r), name: r.name || "레퍼런스" });
                 }}
@@ -126,16 +134,59 @@ export function ReferenceCard({
                       </span>
                     )}
                   </>
+                ) : held ? (
+                  // 판정 보류 — 서버에 없음과 같게 썸네일을 부르지 않는다(남은 옛 썸네일이 안내를 가리지 않게)
+                  <>
+                    <span className="scene-refthumb-ph off-server" />
+                    {single ? (
+                      <span className="scene-ref-offmsg">
+                        {held.copy ? <CopyIcon /> : <LinkOffIcon />}
+                        <b>{held.title}</b>
+                        {held.detail && <span className="scene-ref-why">{held.detail}</span>}
+                        <span className="scene-ref-why">{held.fix}</span>
+                        <small>{refFileName(r)}</small>
+                      </span>
+                    ) : (
+                      <span className="scene-ref-offmini">{held.copy ? <CopyIcon /> : <LinkOffIcon />}</span>
+                    )}
+                  </>
+                ) : status === "incomplete" ? (
+                  // 판정을 못 끝냈다(NAS 끊김 등) — 빨강 아님(없는지 모른다), 다음 시작·찾기 단추에 다시 묻는다
+                  <>
+                    <span className="scene-refthumb-ph" />
+                    {single && (
+                      <span className="scene-ref-checkmsg">
+                        <PendingIcon />
+                        <b>확인 못 함</b>
+                        <span>NAS 연결 확인 뒤 레퍼런스 찾기</span>
+                        <small>{refFileName(r)}</small>
+                      </span>
+                    )}
+                  </>
                 ) : (
                   <MediaThumbnail
                     thumb={refThumbSrc(r)}
                     isVideo={isVid}
                     src={refMediaSrc(r)}
-                    fallback={<span className="scene-refthumb-ph" />}
+                    fallback={
+                      // 그림이 안 뜨는데 서버가 아직 판정 전이면 '확인 중'(아무 말 없는 빗금은 판정 전에만 남긴다)
+                      !single || refJudged(workspaceId, r) ? (
+                        <span className="scene-refthumb-ph" />
+                      ) : (
+                        <>
+                          <span className="scene-refthumb-ph" />
+                          <span className="scene-ref-checkmsg">
+                            <PendingIcon />
+                            <b>확인 중…</b>
+                            <small>{refFileName(r)}</small>
+                          </span>
+                        </>
+                      )
+                    }
                     retrySrcOnThumbError
                   />
                 )}
-                {missing ? null : isVid ? (
+                {unlinked ? null : isVid ? (
                   <span className="scene-refthumb-vid vid">▶</span>
                 ) : refMediaType(r) === "audio" ? (
                   <span className="scene-refthumb-vid aud">♪</span>

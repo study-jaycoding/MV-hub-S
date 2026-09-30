@@ -3848,9 +3848,13 @@ export function SceneBoard({
           const isGen = card.kind === "generation";
           const g = isGen && card.genId ? genData[card.genId] : null; // 바인딩된 실제 생성물
           const showNode = !!g && String(g.status) === "done"; // 완료 → 히스토리 카드로 표시
-          // 빨간 테두리는 '서버 어디에도 없음'(받은 사람)일 때만 — '이 PC 에만'(가진 사람)은 오른쪽 위 마크만(Jay 2026-09-29).
+          // 빨간 테두리 = 서버 원본과 연결 안 됨 — 서버 어디에도 없음·판정 보류(Jay 2026-09-30: 후보 여럿·사본도 빨강).
+          //  '이 PC 에만'(가진 사람)은 오른쪽 위 마크만(Jay 2026-09-29, 09-30 유지), 판정 못 끝냄(incomplete)은 빨강 아님.
           const missingHere = (refs: SceneRef[] | undefined) =>
-            !!refs?.some((r) => refServerStatus(refWorkspaceId, r) === "missing");
+            !!refs?.some((r) => {
+              const status = refServerStatus(refWorkspaceId, r);
+              return status === "missing" || status === "held";
+            });
           const kindCls =
             card.kind === "reference"
               ? "scene-card-ref" +

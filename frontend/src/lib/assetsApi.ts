@@ -330,6 +330,8 @@ export const assetsApi = {
       open?: string[]; // 이미 이 PC 에서 열린다(2026-09-29 — 옛 서버엔 없다)
       incomplete?: string[]; // 끝까지 못 훑어 판정을 못 끝냈다 — 기억하지 않고 다음 실행에 다시 묻는다
       open_ids?: Record<string, string>; // 열리는 참조의 에셋 대장 번호(토큰 → 번호, 2026-09-30 — 옛 허브엔 없다)
+      // 판정 보류의 이유(토큰 → 이유) — 캔버스가 빨간 테두리 안에 적는다(2026-09-30 — 옛 허브엔 없다)
+      held?: Record<string, { why: string; count: number; projects: string[] }>;
     }>("/api/assets/locate", {
       method: "POST",
       body: JSON.stringify({

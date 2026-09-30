@@ -363,3 +363,42 @@ it("리스트도 같은 판정 — 첫 장이 서버에 없으면 붉은 빗금 
   expect(ok.querySelector("img")).not.toBeNull();
   expect(ok.querySelector(".scene-ref-offmark, .scene-ref-offmini")).toBeNull();
 });
+
+it("판정 보류도 빨간 테두리 + 이유(후보 여럿·사본), 판정 못 끝냄은 회색 '확인 못 함'이고 빨강이 아니다(Jay 2026-09-30)", async () => {
+  const scene = refScene("held", "ws-1", [
+    { id: "multi", refs: [ref("asset:뻘뻘뻘_RnD|CH/m/a.png", "a.png")] },
+    { id: "copy", refs: [ref("asset:imports|copy.png", "copy.png")] },
+    { id: "slow", refs: [ref("asset:Q|slow.png", "slow.png")] },
+  ]);
+  saveScenes(null, [scene]);
+  fixture.locate.mockResolvedValue({
+    fixed: [],
+    unresolved: ["asset:뻘뻘뻘_RnD|CH/m/a.png", "asset:imports|copy.png", "asset:Q|slow.png"],
+    missing: [],
+    local: [],
+    incomplete: ["asset:Q|slow.png"],
+    held: {
+      "asset:뻘뻘뻘_RnD|CH/m/a.png": { why: "multiple", count: 2, projects: ["RnD", "뻘뻘뻘"] },
+      "asset:imports|copy.png": { why: "copy_name", count: 1, projects: ["뻘뻘뻘"] },
+    },
+  });
+  await relinkSceneAssetRefs();
+  await act(async () => {
+    root.render(<SceneBoard scene={scene} onChange={noop} />);
+  });
+
+  const multi = cardEl("multi");
+  expect(multi.classList.contains("off-server")).toBe(true);
+  expect(multi.querySelector(".scene-ref-offmsg")?.textContent).toBe(
+    "연결 안 됨 · 후보 2곳RnD · 뻘뻘뻘 에 같은 파일워크스페이스를 고르면 이어짐a.png",
+  );
+  expect(multi.querySelector("img, video")).toBeNull(); // 썸네일을 부르지 않는다
+
+  const copy = cardEl("copy");
+  expect(copy.classList.contains("off-server")).toBe(true);
+  expect(copy.querySelector(".scene-ref-offmsg b")?.textContent).toBe("사본 · 서버에 같은 이름");
+
+  const slow = cardEl("slow");
+  expect(slow.classList.contains("off-server")).toBe(false); // 없는지 모른다 — 빨강 아님
+  expect(slow.querySelector(".scene-ref-checkmsg b")?.textContent).toBe("확인 못 함");
+});

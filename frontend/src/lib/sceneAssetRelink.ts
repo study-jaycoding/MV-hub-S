@@ -178,17 +178,61 @@ export function applyRelink(
 //  · 정리: 자동 복구·단추가 끝날 때 지금 씬들이 쓰지 않는 열쇠를 버리고, 그래도 5,000건을 넘으면 오래 확인한 것부터 버린다.
 //    저장 직전에 다시 읽어 다른 탭이 쓴 것과 합친다(같은 열쇠는 나중에 확인한 쪽).
 // 판정은 씬 파일에 담지 않는다 — 폴더를 보는 건 서버뿐이고, 사람·PC 마다 답이 다르다.
-export type RefServerStatus = "missing" | "local";
+// held = 판정 보류(못 이었고 이유가 있다 — 빨간 테두리, Jay 2026-09-30) · incomplete = 이번 실행에서 판정을 못 끝냄(회색)
+export type RefServerStatus = "missing" | "local" | "held" | "incomplete";
 type Verdict = "open" | "fixed" | "local" | "missing" | "unresolved";
-// [판정, 확인 시각, 물을 때 실은 공간] — 공간은 '보류'(unresolved)에만 적는다. 보류는 어느 공간부터 찾았느냐에 따라 달라지고
-//  (서버는 그 공간에서 유일하면 잇는다), 서버에 없음·열림·이 PC 에만은 공간과 무관하다.
-type VerdictEntry = [Verdict, number, string?];
+// [판정, 확인 시각, 물을 때 실은 공간, 보류 이유] — 공간·이유는 '보류'(unresolved)에만 적는다. 보류는 어느 공간부터 찾았느냐에
+//  따라 달라지고(서버는 그 공간에서 유일하면 잇는다), 서버에 없음·열림·이 PC 에만은 공간과 무관하다.
+type VerdictEntry = [Verdict, number, string?, RefHeld?];
+/** 판정 보류의 이유(서버 locate 의 held, 2026-09-30) — 카드가 빨간 테두리 안에 적는다. 옛 허브의 답이면 why=unknown. */
+export interface RefHeld {
+  why: "multiple" | "name_only" | "copy_name" | "changed" | "unknown" | string;
+  count: number;
+  projects: string[];
+}
+
+/** 보류 안내 문구(Jay 2026-09-30 시안 — 연결 안 된 레퍼런스는 빨간 테두리 + 이유). detail = 무엇이 문제인지(늘 보임),
+ *  fix = 푸는 법(한 줄), more = 마우스 설명에만 붙는 긴 안내, copy = 사본 아이콘. 레퍼런스 카드 폭(약 150px 고정)에 들어가게 짧게. */
+export function heldText(h: RefHeld): { title: string; detail: string; fix: string; more?: string; copy: boolean } {
+  const where = h.projects.join(" · ");
+  switch (h.why) {
+    case "multiple":
+      return {
+        title: `연결 안 됨 · 후보 ${h.count}곳`,
+        detail: where ? `${where} 에 같은 파일` : "같은 파일이 여러 곳에 있음",
+        fix: "워크스페이스를 고르면 이어짐",
+        copy: false,
+      };
+    case "copy_name":
+      // A안(Jay 2026-09-30) — 글로만 알린다. 이름만 같은 파일은 자동으로 잇지 않는다(download.jpg 사고)
+      return {
+        title: "사본 · 서버에 같은 이름",
+        detail: "같은 그림인지 확인 못 함",
+        fix: "에셋에서 끌어와 바꾸기",
+        more: "이 사본이 있는 원래 PC 에서 레퍼런스 찾기를 누르면 내용으로 이어집니다",
+        copy: true,
+      };
+    case "name_only":
+      return {
+        title: "연결 안 됨 · 이름만 같음",
+        detail: where ? `${where} 의 다른 폴더에 있음` : "다른 폴더에 같은 이름이 있음",
+        fix: "에셋에서 끌어와 바꾸기",
+        copy: false,
+      };
+    case "changed":
+      return { title: "연결 안 됨 · 내용이 다름", detail: "같은 이름 파일이 넣은 뒤 바뀜", fix: "에셋에서 끌어와 바꾸기", copy: false };
+    default:
+      return { title: "연결 안 됨", detail: "", fix: "레퍼런스 찾기로 다시 확인", copy: false };
+  }
+}
 type Verdicts = Record<string, VerdictEntry>;
 const VERDICT_CAP = 5000;
 let verdictCache: Verdicts | null = null;
 let verdictCacheNs: string | null = null;
 const statusListeners = new Set<() => void>();
 let statusVersion = 0;
+// 이번 실행에서 판정을 못 끝낸 열쇠(NAS 끊김 등) — 저장하지 않는다(다음 시작에 다시 묻는다). 표시(회색 '확인 못 함')에만 쓴다.
+const incompleteNow = new Set<string>();
 
 // 53비트 문자열 해시(cyrb53, 공개 도메인) — 짧은 열쇠로 localStorage 용량을 아낀다.
 function cyrb53(text: string): string {
@@ -296,22 +340,45 @@ if (typeof window !== "undefined") {
 
 /** 이 참조의 서버 판정 중 캔버스가 그리는 것(서버에 없음·이 PC 에만). 참조의 지문 열쇠가 먼저, 없으면 지문 없는 열쇠 —
  *  한 토큰의 참조들이 지문이 달라 묶음 지문 없이 물었을 때는 그 열쇠에 저장된다(sceneAssetGroups). */
-export function refServerStatus(
-  workspaceId: string,
-  ref: Pick<SceneRef, "file_path" | "content_sha" | "bytes" | "registry_asset_id">,
-): RefServerStatus | undefined {
-  if (!ref.file_path) return undefined;
+type RefKeyed = Pick<SceneRef, "file_path" | "content_sha" | "bytes" | "registry_asset_id">;
+
+/** 이 참조에 저장된 판정(없으면 undefined)과, 이번 실행에서 판정을 못 끝냈는가. 열쇠 순서는 아래 refServerStatus 설명대로. */
+function refEntry(workspaceId: string, ref: RefKeyed): { entry?: VerdictEntry; incomplete: boolean } {
+  if (!ref.file_path) return { incomplete: false };
   const own = ref.content_sha && ref.bytes ? { sha256: ref.content_sha, bytes: ref.bytes } : null;
   // 번호가 붙은 참조는 번호 열쇠가 먼저(묶음이 번호를 실어 물었을 때), 없으면 번호 없는 열쇠(번호가 서로 달라 뺐을 때).
   const ids = ref.registry_asset_id ? [ref.registry_asset_id, null] : [null];
-  let verdict: Verdict | undefined;
+  const store = loadVerdicts();
+  let incomplete = false;
   for (const id of ids) {
-    verdict =
-      (own && verdictOf(verdictKey(workspaceId, ref.file_path, own, id))) ||
-      verdictOf(verdictKey(workspaceId, ref.file_path, null, id));
-    if (verdict) break;
+    for (const key of own ? [verdictKey(workspaceId, ref.file_path, own, id), verdictKey(workspaceId, ref.file_path, null, id)]
+      : [verdictKey(workspaceId, ref.file_path, null, id)]) {
+      const entry = store[key];
+      if (Array.isArray(entry)) return { entry, incomplete: false };
+      incomplete ||= incompleteNow.has(key);
+    }
   }
-  return verdict === "missing" || verdict === "local" ? verdict : undefined;
+  return { incomplete };
+}
+
+export function refServerStatus(workspaceId: string, ref: RefKeyed): RefServerStatus | undefined {
+  const { entry, incomplete } = refEntry(workspaceId, ref);
+  const verdict = entry?.[0];
+  if (verdict === "missing" || verdict === "local") return verdict;
+  if (verdict === "unresolved") return "held";
+  return !entry && incomplete ? "incomplete" : undefined;
+}
+
+/** 판정 보류의 이유(held 일 때만). 옛 허브의 답으로 저장된 보류는 why=unknown. */
+export function refHeldInfo(workspaceId: string, ref: RefKeyed): RefHeld | undefined {
+  const { entry } = refEntry(workspaceId, ref);
+  return entry?.[0] === "unresolved" ? (entry[3] ?? { why: "unknown", count: 0, projects: [] }) : undefined;
+}
+
+/** 서버가 이 참조를 한 번이라도 판정했는가(열림·연결·보류·없음 등) — 아니면 썸네일이 안 뜰 때 '확인 중'으로 그린다. */
+export function refJudged(workspaceId: string, ref: RefKeyed): boolean {
+  const { entry, incomplete } = refEntry(workspaceId, ref);
+  return !!entry || incomplete;
 }
 
 export function subscribeRefServerStatus(cb: () => void): () => void {
@@ -412,16 +479,20 @@ function noteReply(
   for (const token of batch) {
     const at = relinkKey(ws, token);
     asked.add(at);
-    const wasForced = forced.delete(at);
+    forced.delete(at);
     const got = answer.get(token);
     if (!got) continue;
     counts[got] += 1;
     const key = verdictKey(ws, token, fingerprints[token], registryIds[token]);
+    if (got === "incomplete" ? !incompleteNow.has(key) : incompleteNow.has(key)) changed = true;
+    if (got === "incomplete") incompleteNow.add(key);
+    else incompleteNow.delete(key);
     if (got === "incomplete") {
-      // 판정 못 끝냄 — 기억하지 않는다. 강제로 다시 물은 참조(같은 파일을 다시 넣음·씬을 새로 받음)면 확인 못 한
-      //  옛 판정도 지워 다음 시작에 다시 묻게 한다 — 안 그러면 그 옛 판정이 굳는다(Codex 2026-09-29).
-      if (wasForced && store[key]) {
-        if (verdictOf(key) === "missing" || verdictOf(key) === "local") changed = true;
+      // 판정 못 끝냄 — 기억하지 않는다(이번 실행 화면에만 회색 '확인 못 함'). 다시 물었는데 확인을 못 했으면 옛 판정도
+      //  지워 다음 시작에 다시 묻게 한다 — 안 그러면 NAS 가 끊긴 동안 옛 '서버에 없음'이 굳는다(Codex 2026-09-29·30:
+      //  강제로 다시 물은 참조뿐 아니라 '레퍼런스 찾기' 단추도. 자동 복구는 저장된 판정을 묻지 않으므로 같은 규칙이 맞다).
+      if (store[key]) {
+        changed = true;
         delete store[key];
         dropped.add(key);
       }
@@ -431,8 +502,11 @@ function noteReply(
     // 번호가 온 '열림'은 번호를 씬에 저장한 뒤에만 번호 열쇠로 기억한다(attachOpenIds, Codex P1) — 여기서 먼저 기억하면
     //  저장이 실패했을 때 번호 없는 채로 굳어 다시 묻지 않는다(나중에 원본이 옮겨져도 번호로 못 따라간다).
     if (got === "open" && reply.open_ids?.[token]) continue;
-    if (verdictOf(key) !== got) changed = true;
-    store[key] = got === "unresolved" ? [got, now, askWs] : [got, now];
+    if (verdictOf(key) !== got || got === "unresolved") changed = true;
+    store[key] =
+      got === "unresolved"
+        ? [got, now, askWs, reply.held?.[token] ?? { why: "unknown", count: 0, projects: [] }]
+        : [got, now];
   }
   saveVerdicts(undefined, dropped);
   if (changed) notifyStatus();
@@ -650,6 +724,7 @@ export function findSummaryText(s: FindSummary): string {
 export function resetRelinkSessionForTest(): void {
   asked.clear();
   forced.clear();
+  incompleteNow.clear();
   verdictCache = null;
   verdictCacheNs = null;
   inFlight = null;

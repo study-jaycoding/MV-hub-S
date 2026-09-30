@@ -117,3 +117,52 @@ export function CloudOffIcon() {
     </svg>
   );
 }
+
+// 연결 안 됨 — 끊어진 고리(판정 보류 레퍼런스, 2026-09-30). 크기는 쓰는 곳의 CSS 가 정한다.
+export function LinkOffIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71" />
+      <path d="m5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71" />
+      <path d="M8 2v3" />
+      <path d="M2 8h3" />
+      <path d="M16 19v3" />
+      <path d="M19 16h3" />
+    </svg>
+  );
+}
+
+// 사본 — 겹친 두 장(서버에 같은 이름이 있는 사본 레퍼런스, 2026-09-30)
+export function CopyIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="8" y="8" width="14" height="14" rx="2" />
+      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+    </svg>
+  );
+}
+
+// 확인 중 — 열린 원(돌지 않는다: 가만히 둔 탭의 CPU 를 쓰지 않게)
+export function PendingIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
+      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+    </svg>
+  );
+}

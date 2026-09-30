@@ -8,7 +8,10 @@ import {
   findSummaryText,
   forceRefsAsk,
   forceSceneRefsAsk,
+  heldText,
   getRefServerStatusVersion,
+  refHeldInfo,
+  refJudged,
   refServerStatus,
   relinkCards,
   relinkKey,
@@ -397,6 +400,7 @@ describe("서버에 없는 참조 기억하기(2026-09-29)", () => {
       unresolved: ["asset:Q|gone.png", "asset:imports|mine.png", "asset:P|ok.png"],
       missing: ["asset:Q|gone.png"],
       local: ["asset:imports|mine.png"],
+      open: ["asset:P|ok.png"],
     });
     const heard = vi.fn();
     const off = subscribeRefServerStatus(heard);
@@ -665,7 +669,7 @@ describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
     forceRefsAsk("", ["asset:imports|re.png"]); // 같은 파일을 다시 넣었는데 NAS 가 끊겼다
     locate.mockResolvedValueOnce(answer({ unresolved: ["asset:imports|re.png"], incomplete: ["asset:imports|re.png"] }));
     await relinkSceneAssetRefs();
-    expect(status("", "asset:imports|re.png")).toBeUndefined();
+    expect(status("", "asset:imports|re.png")).toBe("incomplete"); // 옛 '이 PC 에만'은 지우고, 이번 실행엔 회색 '확인 못 함'
 
     resetRelinkSessionForTest();
     locate.mockResolvedValueOnce(answer({ unresolved: ["asset:imports|re.png"], local: ["asset:imports|re.png"] }));
@@ -1003,5 +1007,62 @@ describe("'보류' 판정은 물을 때 실은 공간과 함께 기억한다(Cod
     expect(locate.mock.calls[1][0]).toEqual(["asset:뻘뻘뻘_RnD|CH/m/a.png"]);
     expect(locate.mock.calls[1][1]).toBe("ws-A");
     expect(status("", "asset:imports|gone.png")).toBe("missing"); // 서버에 없음 표시는 그대로
+  });
+});
+
+describe("연결 안 된 레퍼런스 표시(Jay 2026-09-30 시안 — 보류도 빨강 + 이유)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetRelinkSessionForTest();
+    locate.mockReset();
+  });
+
+  it("보류는 이유와 함께 기억하고, 판정 전·판정 못 끝냄은 따로 구별한다", async () => {
+    saveScenes(null, [
+      scene([
+        { file_path: "asset:뻘뻘뻘_RnD|CH/m/a.png" },
+        { file_path: "asset:imports|copy.png" },
+        { file_path: "asset:P|old.png" },
+        { file_path: "asset:Q|slow.png" },
+      ]),
+    ]);
+    const ref = (file_path: string) => ({ file_path });
+    expect(refJudged("", ref("asset:뻘뻘뻘_RnD|CH/m/a.png"))).toBe(false); // 아직 묻기 전 = '확인 중'
+    locate.mockResolvedValue(
+      answer({
+        unresolved: ["asset:뻘뻘뻘_RnD|CH/m/a.png", "asset:imports|copy.png", "asset:P|old.png", "asset:Q|slow.png"],
+        incomplete: ["asset:Q|slow.png"],
+        held: {
+          "asset:뻘뻘뻘_RnD|CH/m/a.png": { why: "multiple", count: 2, projects: ["RnD", "뻘뻘뻘"] },
+          "asset:imports|copy.png": { why: "copy_name", count: 1, projects: ["뻘뻘뻘"] },
+        },
+      }),
+    );
+    await relinkSceneAssetRefs();
+    expect(status("", "asset:뻘뻘뻘_RnD|CH/m/a.png")).toBe("held");
+    expect(heldText(refHeldInfo("", ref("asset:뻘뻘뻘_RnD|CH/m/a.png"))!)).toMatchObject({
+      title: "연결 안 됨 · 후보 2곳",
+      detail: "RnD · 뻘뻘뻘 에 같은 파일",
+      fix: "워크스페이스를 고르면 이어짐",
+    });
+    expect(heldText(refHeldInfo("", ref("asset:imports|copy.png"))!)).toMatchObject({ title: "사본 · 서버에 같은 이름", copy: true });
+    // 옛 허브의 답(이유 없음)이면 '연결 안 됨'
+    expect(heldText(refHeldInfo("", ref("asset:P|old.png"))!).title).toBe("연결 안 됨");
+    expect(status("", "asset:Q|slow.png")).toBe("incomplete"); // 회색 — 빨강 아님
+    expect(refJudged("", ref("asset:뻘뻘뻘_RnD|CH/m/a.png"))).toBe(true);
+  });
+
+  it("레퍼런스 찾기가 판정을 못 끝내면 옛 '서버에 없음'을 지운다 — NAS 가 끊긴 동안 빨강이 굳지 않게(Codex)", async () => {
+    saveScenes(null, [scene([{ file_path: "asset:Q|gone.png" }])]);
+    locate.mockResolvedValueOnce(answer({ unresolved: ["asset:Q|gone.png"], missing: ["asset:Q|gone.png"] }));
+    await relinkSceneAssetRefs();
+    expect(status("", "asset:Q|gone.png")).toBe("missing");
+    locate.mockResolvedValueOnce(answer({ unresolved: ["asset:Q|gone.png"], incomplete: ["asset:Q|gone.png"] }));
+    await findSceneAssetRefs("s1", {});
+    expect(status("", "asset:Q|gone.png")).toBe("incomplete");
+    resetRelinkSessionForTest(); // 다시 켜면 다시 묻는다
+    locate.mockResolvedValueOnce(answer({ unresolved: ["asset:Q|gone.png"], missing: ["asset:Q|gone.png"] }));
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(3);
   });
 });
