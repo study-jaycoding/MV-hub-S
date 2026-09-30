@@ -7,9 +7,6 @@ export const SCENE_CULL_MARGIN = 1500;
 export const SCENE_CULL_REFRESH_DISTANCE = SCENE_CULL_MARGIN / 3;
 // 툴바에 보이는 % 가 이 값 이하이면 카드의 작은 조각을 숨긴다(Jay 2026-09-29 시안 승인, scene.css '멀리서 볼 때 단순화').
 export const SCENE_LOD_PCT = 25;
-// 툴바 % 가 이 값 미만이면 카드 글을 읽을 수 없다 — 넘치는 칸의 아래 흐림(scene.css)을 뺀다. 흐림은 칸마다 합성 레이어를
-// 늘려(41% 실측 레이어 97 → 184, 메인 스레드 +10%) 넘치는 칸이 많이 보이는 저배율일수록 비싸다.
-export const SCENE_TEXT_FAR_PCT = 50;
 
 export interface SceneCamera {
   z: number;

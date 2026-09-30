@@ -8,7 +8,6 @@ import {
   panSceneCamera,
   sameSceneViewRect,
   SCENE_LOD_PCT,
-  SCENE_TEXT_FAR_PCT,
   sceneViewRect,
   zoomSceneCameraAt,
   type SceneCamera,
@@ -106,9 +105,8 @@ export function useSceneViewport({
     }
     const board = scrollRef.current;
     if (board) {
-      // 멀리서 볼 때 단순화·글 흐림 끄기 — React 가 쓰지 않는 속성이라 className 이 다시 그려져도 남는다.
+      // 멀리서 볼 때 단순화 — React 가 쓰지 않는 속성이라 className 이 다시 그려져도 남는다.
       board.toggleAttribute("data-lod-low", pct <= SCENE_LOD_PCT);
-      board.toggleAttribute("data-text-far", pct < SCENE_TEXT_FAR_PCT);
     }
     minimapUpdateRef.current?.();
 
