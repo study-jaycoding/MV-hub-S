@@ -133,6 +133,41 @@ class ShareAuthorityTests(unittest.TestCase):
         self.assertEqual(counts["blocked"], 1)
         self.assertEqual(counts["blocked_ids"], ["job-1"])
 
+    def test_bundle_exports_and_imports_reference_digest(self):
+        source_id = repo.create_local_generation(
+            {
+                "prompt": "digest", "model": "model", "params": {},
+                "references": [{"file_path": "https://cdn.example/ref.png", "type": "image"}],
+            },
+            "me", creator_uid="user_owner",
+        )
+        # 판은 요청 데이터가 아니라 에이전트의 실제 제출 지문으로만 붙는다(begin-submission) — 여기서는 그 결과를 직접 넣는다.
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE reference SET content_sha=?, content_bytes=3, registry_asset_id='client-registry', "
+                "version_verified=1 WHERE id IN (SELECT reference_id FROM gen_reference WHERE generation_id=?)",
+                ("a" * 64, source_id),
+            )
+        bundle = repo.export_bundle(gen_ids=[source_id])
+        reference = bundle["generations"][0]["references"][0]
+        self.assertEqual(
+            (reference["content_sha"], reference["content_bytes"], reference["registry_asset_id"], reference["version_verified"]),
+            ("a" * 64, 3, "client-registry", 1),
+        )
+
+        with db.get_connection() as conn:
+            ref_id = conn.execute(
+                "SELECT reference_id FROM gen_reference WHERE generation_id=?", (source_id,)
+            ).fetchone()["reference_id"]
+            conn.execute("DELETE FROM generation WHERE id=?", (source_id,))
+            conn.execute("DELETE FROM reference WHERE id=?", (ref_id,))
+        self.assertEqual(repo.import_bundle_payload(bundle, "me")["inserted"], 1)
+        with db.get_connection() as conn:
+            restored = conn.execute(
+                "SELECT content_sha, content_bytes, registry_asset_id, version_verified FROM reference"
+            ).fetchone()
+        self.assertEqual(tuple(restored), ("a" * 64, 3, None, None))
+
 
 if __name__ == "__main__":
     unittest.main()

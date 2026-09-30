@@ -26,6 +26,49 @@ from .generations import RECOVERY_REQUIRED_NOTE
 SUBMIT_DIAGNOSTIC_PREFIX = "제출 진단: "
 
 
+def _submission_ref_digests(fingerprint: Optional[dict[str, Any]]) -> list[tuple[str, str, int]]:
+    """에이전트 보고에서 형식이 맞는 실제 제출판 지문만 고른다."""
+    raw = fingerprint.get("ref_digests") if isinstance(fingerprint, dict) else None
+    if not isinstance(raw, dict):
+        return []
+    digests: list[tuple[str, str, int]] = []
+    for file_path, value in raw.items():
+        sha256 = value.get("sha256") if isinstance(value, dict) else None
+        size = value.get("bytes") if isinstance(value, dict) else None
+        if (
+            isinstance(file_path, str)
+            and isinstance(sha256, str)
+            and len(sha256) == 64
+            and all(ch in "0123456789abcdef" for ch in sha256)
+            and isinstance(size, int)
+            and not isinstance(size, bool)
+            and size >= 0
+        ):
+            digests.append((file_path, sha256, size))
+    return digests
+
+
+def _attach_submission_ref_digests(
+    conn: sqlite3.Connection, gen_id: str, fingerprint: Optional[dict[str, Any]]
+) -> None:
+    """실제 CLI 제출 직전의 지문을 같은 generation의 정확한 레퍼런스에만 고정한다."""
+    from . import asset_registry
+
+    for file_path, sha256, size in _submission_ref_digests(fingerprint):
+        rows = conn.execute(
+            "SELECT r.id FROM reference r JOIN gen_reference gr ON gr.reference_id=r.id "
+            "WHERE gr.generation_id=? AND r.file_path=?",
+            (gen_id, file_path),
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                "UPDATE reference SET content_sha=COALESCE(content_sha, ?), "
+                "content_bytes=COALESCE(content_bytes, ?) WHERE id=?",
+                (sha256, size, row["id"]),
+            )
+            asset_registry.attach_reference_registry(conn, row["id"])
+
+
 _AMBIGUOUS_ACTIVE_PHASES = (
     "submitting",
     "running",
@@ -157,6 +200,7 @@ def begin_request_submission(
             else None
         )
         if transitioned:
+            _attach_submission_ref_digests(conn, str(row["gen_id"]), submission_fingerprint)
             if encoded_fingerprint:
                 # 재큐 뒤 새 제출은 과거 제출의 시각/지문을 물려받으면 안 된다. 실제 create 직전
                 # claimed→submitting 전이에서 이번 제출 ledger를 한 번만 새 값으로 확정한다.

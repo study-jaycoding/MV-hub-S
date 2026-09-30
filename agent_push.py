@@ -1487,6 +1487,29 @@ def _file_fingerprint(path: str) -> tuple[str, int] | None:
         my_ev.set()
 
 
+def _reference_digest(path: str) -> dict | None:
+    """실제 CLI 입력 파일의 대장용 지문(원시 SHA-256 + bytes)."""
+    try:
+        before = os.stat(path)
+    except OSError as e:
+        print(f"[경고] 레퍼런스 해시 계산 실패({path}): {e}")
+        return None
+    # 제출 기록에는 캐시된 과거 값이 아닌, 지금 CLI에 넘길 파일을 다시 읽은 값만 쓴다.
+    fingerprint = _compute_file_fingerprint(path)
+    if not fingerprint:
+        return None
+    try:
+        after = os.stat(path)
+    except OSError as e:
+        print(f"[경고] 레퍼런스 해시 계산 실패({path}): {e}")
+        return None
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        print(f"[경고] 레퍼런스 해시 중 파일 변경 감지({path})")
+        return None
+    sha256, size = fingerprint
+    return {"sha256": sha256.removeprefix("sha256:"), "bytes": size}
+
+
 def _upload_cache_key(upload_cache: dict, digest: str) -> str:
     return f"{upload_cache.get('_namespace') or 'unknown'}|{digest}"
 
@@ -2439,6 +2462,7 @@ def _submit_one(
     upload_failed: list = []
     seedance_media_ids: list = []  # [(role, upload_id)] — 1.x references 플래그용
     seedance_cached_paths: list[str] = []
+    ref_digests: dict[str, dict] = {}
     expected_image_inputs = 0  # 우리가 실제로 CLI 에 넣은 입력 이미지 개수(사후 부착 검증용)
     for ref in refs:
         val = ref.get("file_path")
@@ -2485,6 +2509,15 @@ def _submit_one(
     submission_fingerprint = _submission_fingerprint(
         model, prompt, params, allowed_params, refs
     )
+    for ref in refs:
+        val = ref.get("file_path")
+        resolved = ref_cache.get(val)
+        if val and resolved:
+            digest = _reference_digest(resolved)
+            if digest:
+                ref_digests[val] = digest
+    if ref_digests:
+        submission_fingerprint["ref_digests"] = ref_digests
     # 프롬프트 원문은 agent.log 에 영속하지 않는다(Host 콘솔 /summary 로도 노출되므로) — 길이만
     print(f"  → {model}: 프롬프트 {len(prompt)}자")
     # 1) 비대기 제출 → job_id 즉시 확보(create 가 과금원). 응답 실측은 ["<uuid>"] 배열.

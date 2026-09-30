@@ -83,6 +83,9 @@ def create_local_generation(
                     thumbnail_path=ref.get("thumbnail"),  # 표시용(에셋 소스 썸네일)
                     source=ref.get("name") or "uploaded",  # 칩 이름(@소스명) — 인라인 칩 복원 키
                     source_url=ref.get("source_url"),
+                    # ★판(content_sha·bytes)·대장 번호는 요청 데이터에서 받지 않는다 — 판의 진실은 에이전트가 실제로
+                    #  제출한 파일의 지문 하나다(begin-submission 의 ref_digests). 여기서 먼저 채우면 COALESCE 때문에
+                    #  그 실제 지문이 기록되지 못한다(2026-09-30 Claude 검토, 에셋 대장 5단계).
                 )
                 _link_reference(conn, gen_id, rid, ref.get("role"))
                 sgid = ref.get("source_gen_id")
@@ -179,6 +182,7 @@ def create_comfy_generation(
                     thumbnail_path=ref.get("thumbnail"),
                     source=ref.get("name") or "uploaded",
                     source_url=ref.get("source_url"),
+                    # 판·대장 번호는 받지 않는다 — create_local_generation 과 같은 이유(실제 제출 지문만이 판).
                 )
                 _link_reference(conn, gen_id, rid, ref.get("role"))
                 sgid = ref.get("source_gen_id")

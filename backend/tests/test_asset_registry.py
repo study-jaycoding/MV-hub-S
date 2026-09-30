@@ -157,5 +157,54 @@ class ReferenceLinkTests(RegistryDb):
         self.assertIsNone(ar.attach_reference_registry(self.conn, "r2"))
 
 
+class RequestDataCannotPinVersionTests(unittest.TestCase):
+    """판(content_sha·bytes)·대장 번호는 에이전트가 실제로 제출한 파일의 지문(begin-submission)으로만 붙는다.
+    생성 요청 데이터가 먼저 채우면 COALESCE 때문에 그 실제 지문이 영영 기록되지 못한다(2026-09-30 Claude 검토)."""
+
+    def test_create_local_generation_ignores_client_version_fields(self) -> None:
+        from app import repo
+        from app.db import get_connection
+
+        init_db()
+        repo.ensure_default_worker()
+        gid = repo.create_local_generation(
+            {"prompt": "p", "model": "m", "params": {}, "references": [{
+                "file_path": "asset:P|a.png", "type": "image", "content_sha": "c" * 64, "content_bytes": 9,
+                "registry_asset_id": "client-says", "version_verified": 1,
+            }]},
+            "me",
+        )
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT r.content_sha, r.content_bytes, r.registry_asset_id, r.version_verified FROM reference r "
+                "JOIN gen_reference gr ON gr.reference_id = r.id WHERE gr.generation_id=?",
+                (gid,),
+            ).fetchone()
+        self.assertEqual(tuple(row), (None, None, None, None))
+
+
+class BackupCoverageTests(RegistryDb):
+    """대장 번호는 생성 기록이 가리켜 다시 만들 수 없다 — 백업 복원 연습·서버 이사가 대장 표의 행까지 지켜야 한다.
+    두 도구 모두 모든 표의 행 수를 복원 전후로 대조한다(backup_verify.inspect_sqlite_database). 필수 표에는 넣지 않는다 —
+    대장 표가 없는 옛 백업도 복원할 수 있어야 한다(Codex P1)."""
+
+    def test_restore_drill_counts_registry_rows_and_old_backups_still_pass(self) -> None:
+        from app.services.backup_verify import create_sqlite_snapshot, inspect_sqlite_database, verify_restore_drill
+
+        self.scan([F("a/x.png", 3, 1, "s1", "ok"), F("a/y.png", 4, 1, "s2", "ok")])
+        self.conn.close()
+        root = Path(self._tmp.name)
+        backup = create_sqlite_snapshot(self.db, root / "backup.db")
+        self.assertEqual(inspect_sqlite_database(backup)["table_counts"]["asset_registry"], 2)
+        self.assertEqual(inspect_sqlite_database(backup)["table_counts"]["asset_registry_event"], 2)
+        self.assertTrue(verify_restore_drill(backup, root / "restored.db")["ok"])
+        # 대장 표가 없는 옛 DB 도 그대로 통과한다
+        old = sqlite3.connect(root / "restored.db")
+        old.executescript("DROP TABLE asset_registry; DROP TABLE asset_registry_event; DROP TABLE asset_registry_scan;")
+        old.close()
+        self.assertNotIn("asset_registry", inspect_sqlite_database(root / "restored.db")["tables"])
+        self.conn = sqlite3.connect(self.db)  # tearDown 이 닫는다
+
+
 if __name__ == "__main__":
     unittest.main()

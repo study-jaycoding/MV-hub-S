@@ -110,7 +110,8 @@ def _attach_children(
 
     for r in conn.execute(
         f"SELECT gr.generation_id, r.id, r.type, r.file_path, r.thumbnail_path, "
-        f"r.source, r.source_url, gr.role FROM gen_reference gr "
+        f"r.source, r.source_url, r.content_sha, r.content_bytes, r.registry_asset_id, "
+        f"r.version_verified, gr.role FROM gen_reference gr "
         f"JOIN reference r ON r.id = gr.reference_id "
         f"WHERE gr.generation_id IN ({placeholders}) "
         f"ORDER BY gr.rowid",  # 삽입(=제출) 순서 보장 → 인라인 칩 위치 매칭

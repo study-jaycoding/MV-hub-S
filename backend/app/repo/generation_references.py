@@ -17,14 +17,26 @@ def _upsert_reference(
     source: str,
     thumbnail_path: Optional[str] = None,
     source_url: Optional[str] = None,
+    content_sha: Optional[str] = None,
+    content_bytes: Optional[int] = None,
+    registry_asset_id: Optional[str] = None,
+    version_verified: Optional[int] = None,
 ) -> str:
     rid = ref_id or new_id()
     conn.execute(
-        "INSERT INTO reference(id, type, file_path, thumbnail_path, source, source_url) "
-        "VALUES(?,?,?,?,?,?) "
+        "INSERT INTO reference(id, type, file_path, thumbnail_path, source, source_url, "
+        "content_sha, content_bytes, registry_asset_id, version_verified) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(id) DO UPDATE SET file_path=excluded.file_path, "
-        "type=excluded.type, source_url=COALESCE(reference.source_url, excluded.source_url)",
-        (rid, type_, file_path, thumbnail_path, source, source_url),
+        "type=excluded.type, source_url=COALESCE(reference.source_url, excluded.source_url), "
+        "content_sha=COALESCE(reference.content_sha, excluded.content_sha), "
+        "content_bytes=COALESCE(reference.content_bytes, excluded.content_bytes), "
+        "registry_asset_id=COALESCE(reference.registry_asset_id, excluded.registry_asset_id), "
+        "version_verified=COALESCE(reference.version_verified, excluded.version_verified)",
+        (
+            rid, type_, file_path, thumbnail_path, source, source_url,
+            content_sha, content_bytes, registry_asset_id, version_verified,
+        ),
     )
     return rid
 

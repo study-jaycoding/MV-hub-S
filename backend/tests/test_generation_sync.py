@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from app import db, repo
+from app.repo import asset_registry
 from app.repo import manage
 from app.repo.generation_sync import NO_REVIVE_ERROR
 
@@ -82,6 +83,29 @@ class GenerationSyncTests(unittest.TestCase):
                 ).fetchone()["c"],
                 1,
             )
+
+    def test_sync_reference_round_trip_attaches_server_registry_without_trusting_client_id(self) -> None:
+        sha = "a" * 64
+        with db.get_connection() as conn:
+            asset_registry.apply_plan(
+                conn, "p", {"inserts": [("server-registry", asset_registry.RegistryFile("a/ref.png", 3, 1, sha, "ok"))], "updates": [], "events": []},
+                now="2026-09-30T00:00:00Z",
+            )
+        parsed = self.parsed("job-reference")
+        parsed["references"] = [{
+            "id": "client-ref", "type": "image", "file_path": "asset:P|a/ref.png", "role": "@Image1",
+            "content_sha": sha, "content_bytes": 3,
+            "registry_asset_id": "untrusted-client-id", "version_verified": 0,
+        }]
+        self.assertEqual(repo.upsert_synced_generation(parsed, "me"), "inserted")
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT content_sha, content_bytes, registry_asset_id, version_verified FROM reference WHERE id='client-ref'"
+            ).fetchone()
+        self.assertEqual(dict(row), {
+            "content_sha": sha, "content_bytes": 3,
+            "registry_asset_id": "server-registry", "version_verified": 1,
+        })
 
     def test_sync_update_prefers_new_error(self) -> None:
         for status in ("failed", "nsfw"):

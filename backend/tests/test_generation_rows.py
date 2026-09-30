@@ -50,7 +50,8 @@ class GenerationRowsTests(unittest.TestCase):
                 "VALUES('a1','g1','image','/media/x.png')"
             )
             conn.execute(
-                "INSERT INTO reference(id, type, file_path) VALUES('r1','image','/media/ref.png')"
+                "INSERT INTO reference(id, type, file_path, content_sha, content_bytes, registry_asset_id, version_verified) "
+                "VALUES('r1','image','/media/ref.png','sha',3,'registry-1',1)"
             )
             conn.execute(
                 "INSERT INTO gen_reference(generation_id, reference_id, role) VALUES('g1','r1','@Image1')"
@@ -78,6 +79,10 @@ class GenerationRowsTests(unittest.TestCase):
         self.assertEqual(len(g["references"]), 1)
         self.assertEqual(g["references"][0]["role"], "@Image1")
         self.assertTrue(g["references"][0]["cached"])
+        self.assertEqual(g["references"][0]["content_sha"], "sha")
+        self.assertEqual(g["references"][0]["content_bytes"], 3)
+        self.assertEqual(g["references"][0]["registry_asset_id"], "registry-1")
+        self.assertEqual(g["references"][0]["version_verified"], 1)
         # tags / auto_tags(별도 네임스페이스)
         self.assertEqual(g["tags"], ["cat"])
         self.assertEqual(g["auto_tags"], ["mytag"])

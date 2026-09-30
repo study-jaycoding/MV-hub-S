@@ -1731,6 +1731,67 @@ def _submission_request(*, staged: bool = True):
     return request
 
 
+def test_submit_reports_actual_reference_digest_in_mib_blocks(tmp_path, monkeypatch):
+    """제출 직전 실제 임시 파일의 원시 SHA-256/bytes만 서버에 보낸다."""
+    import builtins
+    import hashlib
+
+    agent = _load_agent()
+    source = tmp_path / "reference.bin"
+    payload = b"a" * (1024 * 1024) + b"tail"
+    source.write_bytes(payload)
+    reads: list[int] = []
+    real_open = builtins.open
+
+    class TrackedFile:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def read(self, size=-1):
+            reads.append(size)
+            return self.handle.read(size)
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+    def tracked_open(path, *args, **kwargs):
+        return TrackedFile(real_open(path, *args, **kwargs)) if str(path) == str(source) else real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(agent, "open", tracked_open, raising=False)
+    digest = agent._reference_digest(str(source))
+    assert digest == {"sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)}
+    assert reads[:2] == [1024 * 1024, 1024 * 1024]
+
+
+def test_submit_sends_reference_digest_with_begin_submission(tmp_path):
+    import hashlib
+
+    agent = _load_agent()
+    source = tmp_path / "reference.png"
+    payload = b"submitted-reference"
+    source.write_bytes(payload)
+    request = _submission_request()
+    ref_value = "https://cdn.example/reference.png"
+    request["references"] = [{"file_path": ref_value, "type": "image", "role": "@Image1"}]
+    job_id = "12345678-1234-1234-1234-123456789abc"
+    with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
+        agent, "_ensure_request_workspace", return_value=("ws-test", None)
+    ), patch.object(agent, "_begin_submission", return_value=True) as begin, patch.object(
+        agent, "_run_cli_json", return_value=([job_id], None)
+    ), patch.object(agent, "_outbox_add"), patch.object(agent, "_anchor_with_retry", return_value=True):
+        assert agent._submit_one(
+            "http://hub", "token-1", "higgsfield", "user@example.com", request,
+            {ref_value: str(source)}, {}, agent.Lock(), agent.Lock(), "agent-1",
+        )
+    assert begin.call_args.args[4]["ref_digests"] == {
+        ref_value: {"sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)}
+    }
+
+
 def test_staged_agent_gets_server_ack_before_paid_cli_create():
     agent = _load_agent()
     job_id = "12345678-1234-1234-1234-123456789abc"
