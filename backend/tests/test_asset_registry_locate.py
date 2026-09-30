@@ -195,6 +195,12 @@ class RegistryApiTests(unittest.TestCase):
             assets.LocateIn(tokens=["asset:P|" + "x" * 5000])
         with self.assertRaises(ValidationError):
             assets.LocateIn(tokens=["asset:P|a.png"], registry_ids={"asset:P|a.png": "r" * 65})
+        with self.assertRaises(ValidationError):
+            assets.LocateIn(tokens=["asset:P|a.png"], registry_ids={"k" * 5000: "r"})
+        with self.assertRaises(ValidationError):
+            assets.LocateIn(tokens=["asset:P|a.png"], fingerprints={"k" * 5000: {"sha256": "f" * 64, "bytes": 1}})
+        with self.assertRaises(ValidationError):
+            assets.LocateIn(tokens=["asset:P|a.png"], fingerprints={"asset:P|a.png": {"sha256": "f" * 200, "bytes": 1}})
 
     def test_registry_calls_do_not_refresh_everyones_library(self) -> None:
         for path in ("/api/asset-registry/lookup", "/api/asset-registry/scan"):

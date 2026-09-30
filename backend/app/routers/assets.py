@@ -1255,7 +1255,7 @@ _LOCATE_MAX_TOKENS = 200
 
 
 class LocateFingerprint(BaseModel):
-    sha256: str = ""
+    sha256: str = Field(default="", max_length=128)
     bytes: int = 0
 
 
@@ -1273,13 +1273,13 @@ class LocateIn(BaseModel):
     # 토큰 → 그 참조가 든 내용 지문(씬에 함께 저장된 content_sha·bytes, 2026-09-29). 이 PC 에 사본이 없어도
     # (남이 준 씬) 내용으로 찾게 한다. 한 토큰을 쓰는 참조가 **모두 같은 지문**일 때만 온다(클라이언트가 거른다).
     # 한 번에 받는 토큰 수만큼만 받는다 — 무관한 지문 수만 개로 메모리·CPU 를 쓰게 두지 않는다(Codex).
-    fingerprints: dict[str, LocateFingerprint] = Field(default_factory=dict, max_length=_LOCATE_MAX_TOKENS)
+    fingerprints: dict[Annotated[str, Field(max_length=4096)], LocateFingerprint] = Field(default_factory=dict, max_length=_LOCATE_MAX_TOKENS)
     # '레퍼런스 찾기' 단추(사용자가 누를 때만, Jay 2026-09-29) — PM 프로젝트의 render 폴더까지 훑고, render 안을
     # 가리키는 참조에도 '서버에 없음'을 말한다. 자동 복구는 render 를 훑지 않는다(렌더 프레임이 폴더를 채워 느리다).
     include_render: bool = False
     # 토큰 → 참조에 적힌 에셋 대장 번호(2026-09-30). 한 토큰의 참조가 **모두 같은 번호**일 때만 온다(지문과 같은 규칙).
     # 번호가 있으면 논리 파일을 따른다 — 옮겨졌으면 새 자리로(넣을 때 판과 달라도, 대장이 아는 지금 판이 맞으면).
-    registry_ids: dict[str, Annotated[str, Field(max_length=64)]] = Field(default_factory=dict, max_length=_LOCATE_MAX_TOKENS)
+    registry_ids: dict[Annotated[str, Field(max_length=4096)], Annotated[str, Field(max_length=64)]] = Field(default_factory=dict, max_length=_LOCATE_MAX_TOKENS)
 
 
 def _valid_fingerprint(fp: Optional[LocateFingerprint]) -> Optional[tuple[str, int]]:

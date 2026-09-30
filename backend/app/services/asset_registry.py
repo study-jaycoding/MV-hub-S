@@ -57,7 +57,8 @@ def _rates() -> tuple[float, float]:
     """(수동, 자동) 바이트/초. 설정이 이상하면 합의한 시작값(8, 5 MiB/s)."""
     try:
         manual, auto = (float(x) for x in ASSET_REGISTRY_MIBPS.split(",", 1))
-        if manual > 0 and auto > 0:
+        # 1 MiB/s 미만은 받지 않는다 — 1 MiB 조각마다 쉬는 시간이 1초를 넘으면 그동안 부모 감시가 멈춘다(Codex P2).
+        if manual >= 1 and auto >= 1:
             return manual * MIB, auto * MIB
     except ValueError:
         pass

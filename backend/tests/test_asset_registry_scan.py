@@ -183,6 +183,12 @@ class DriveMapTests(unittest.TestCase):
         self.assertEqual(svc.resolve_root(r"Y:\a\b", mapping), r"Y:\a\b")  # 대응표에 없으면 그대로
         self.assertEqual(svc.resolve_root(r"\\nas\x\y", mapping), r"\\nas\x\y")
 
+    def test_speed_below_one_mib_falls_back_to_defaults(self) -> None:
+        # 1 MiB 조각마다 쉬는 동안 부모 감시가 멈추므로 1 MiB/s 미만은 받지 않는다(Codex P2)
+        for raw, want in (("12,6", (12, 6)), ("0.01,5", (8, 5)), ("8,0", (8, 5)), ("x", (8, 5))):
+            with patch.object(svc, "ASSET_REGISTRY_MIBPS", raw):
+                self.assertEqual(svc._rates(), (want[0] * svc.MIB, want[1] * svc.MIB))
+
 
 class ControllerTests(unittest.TestCase):
     @classmethod
