@@ -41,6 +41,24 @@ def unc_for_drive(path: str) -> Optional[str]:
     return path if kind in (2, 3, 5, 6) else None
 
 
+def extended_path(path: Path) -> Path:
+    """Windows 에서 260자가 넘는 경로도 열리게 확장 접두(드라이브 `\\\\?\\` · UNC `\\\\?\\UNC\\`)를 붙인다.
+
+    시스템 설정 LongPathsEnabled 가 꺼진 PC(윈도우 기본)는 긴 경로의 목록·열기가 OSError 라, NAS 의 깊은 폴더를 가진
+    프로젝트를 끝까지 못 훑어 레퍼런스가 전부 '확인 못 함'이 됐다(2026-10-01 실측 — 뻘뻘뻘 1,142항목이 260자 이상).
+    확장 접두는 이 설정과 무관하게 동작한다. 이미 붙었거나 상대경로거나 Windows 가 아니면 그대로.
+    비교·표시·외부 프로그램(탐색기·클립보드)에는 path_comparison_key 로 되돌린 보통 형태를 쓴다.
+    """
+    if os.name != "nt" or not path.is_absolute():
+        return path
+    text = str(path)
+    if text.startswith("\\\\?\\"):
+        return path
+    if text.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + text[2:])
+    return Path("\\\\?\\" + text)
+
+
 def path_comparison_key(path: PurePath) -> PurePath:
     """해석된 경로의 비교용 키. IO 경로를 바꾸거나 다시 resolve하지 않는다.
 

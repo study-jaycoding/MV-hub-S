@@ -1064,6 +1064,33 @@ class AssetIoTests(unittest.TestCase):
             self.assertEqual(len(capped), 1)  # 넘친 항목은 넣지 않는다
             self.assertFalse(complete)  # 끊겼으면 '없다'고 단정하지 않게
 
+    @unittest.skipUnless(os.name == "nt", "Windows 긴 경로(확장 접두)")
+    def test_registered_folder_reads_paths_longer_than_260(self) -> None:
+        """LongPathsEnabled 가 꺼진 PC(윈도우 기본)에서도 등록 폴더 아래 260자 넘는 경로를 끝까지 훑는다 — 등록 폴더를
+        확장 접두로 풀어 그 아래 모든 경로가 따라가게(2026-10-01: 뻘뻘뻘 1,142항목이 260자 이상이라 전부 '확인 못 함')."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            deep = assets.extended_path(root)  # 만들 때도 접두로 — 시험 PC 의 설정과 무관하게
+            for i in range(6):
+                deep = deep / f"깊은폴더_{'x' * 40}{i}"
+            deep.mkdir(parents=True)
+            (deep / "hero.png").write_bytes(b"1234")
+            assets._MOUNT_PATH_CACHE.clear()
+
+            resolved = assets._resolve_mount_path(str(root))
+            self.assertTrue(str(resolved).startswith("\\\\?\\"))
+            entries, complete = assets._walk_media(resolved)
+            self.assertTrue(complete)
+            [(rel, name, size)] = entries
+            self.assertEqual((name, size), ("hero.png", 4))
+            self.assertGreater(len(str(assets.path_comparison_key(resolved / rel))), 260)
+
+            # 등록 폴더 경로 자체가 260자를 넘어도 풀린다(접두를 resolve 보다 먼저 붙인다).
+            assets._MOUNT_PATH_CACHE.clear()
+            long_root = assets._resolve_mount_path(str(assets.path_comparison_key(deep)))
+            self.assertTrue(str(long_root).startswith("\\\\?\\"))
+            self.assertEqual([e[1] for e in assets._walk_media(long_root)[0]], ["hero.png"])
+
     def test_walk_survives_a_nas_that_drops_while_listing(self) -> None:
         """목록을 읽는 **도중** NAS 가 끊겨도(반복 중 OSError) locate 가 500 이 되지 않는다 — 읽은 데까지만
         쓰고 완주가 아니라고 한다. 그러면 '서버에 없음'도 말하지 않는다(2026-09-29)."""

@@ -227,3 +227,15 @@ def test_unc_for_drive_keeps_local_drives_and_says_unknown_otherwise(drive_type,
     fake, _ = _fake_windll(2250, drive_type=drive_type)
     with mock.patch.object(path_safety.os, "name", "nt"), mock.patch.object(path_safety.ctypes, "windll", fake, create=True):
         assert path_safety.unc_for_drive(r"C:\Users") == expected
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 확장 접두")
+@pytest.mark.parametrize("plain", ["Z:" + chr(92) + "PROJECT" + chr(92) + "a.png",
+                                   chr(92) * 2 + "192.168.1.203" + chr(92) + "millionvolt" + chr(92) + "PROJECT" + chr(92) + "a.png"])
+def test_extended_path_round_trips_to_the_plain_form(plain: str):
+    """긴 경로용 확장 접두(2026-10-01) — 비교·표시용 보통 형태로 그대로 돌아오고, 두 번 붙이지 않고, 상대경로는 그대로."""
+    extended = path_safety.extended_path(Path(plain))
+    assert str(extended).startswith(chr(92) * 2 + "?" + chr(92))
+    assert str(path_safety.path_comparison_key(extended)) == plain
+    assert path_safety.extended_path(extended) == extended
+    assert path_safety.extended_path(Path("rel") / "x.png") == Path("rel") / "x.png"

@@ -73,7 +73,7 @@ from ..services import (
     upload_limits,
 )
 from ..services.operational_logging import log_event
-from ..services.path_safety import path_comparison_key, safe_join, unc_for_drive
+from ..services.path_safety import extended_path, path_comparison_key, safe_join, unc_for_drive
 
 
 _require_mount_manager = _assets_access.require_mount_manager
@@ -208,7 +208,10 @@ def _resolve_mount_path(raw: str) -> Optional[Path]:
         pending.wait(timeout=35.0)
     try:
         try:
-            p = Path(raw).resolve()
+            # 확장 접두로 돌려준다 — 이 폴더 아래의 모든 경로(safe_join 결과)가 260자를 넘어도 열리게(LongPathsEnabled
+            #  꺼진 PC, 2026-10-01). 비교는 path_comparison_key 가, 탐색기·클립보드는 보통 형태로 되돌려 쓴다.
+            #  resolve 보다 먼저 붙인다 — 등록 폴더 자체가 260자를 넘어도 풀리게. resolve 는 붙은 접두를 유지한다.
+            p = extended_path(Path(os.path.abspath(raw))).resolve()
             result = p if p.is_dir() else None
         except OSError:
             result = None
@@ -747,9 +750,10 @@ def add_mount(body: MountIn, request: Request):
         raise HTTPException(status_code=400, detail="이름을 입력하세요")
     if not path:
         raise HTTPException(status_code=400, detail="폴더 경로를 입력하세요")
-    p = Path(path).resolve()
+    p = extended_path(Path(os.path.abspath(path))).resolve()  # 260자 넘는 폴더도 확인되게(_resolve_mount_path 와 같은 이유)
     if not p.is_dir():
         raise HTTPException(status_code=400, detail=f"폴더가 존재하지 않습니다: {path}")
+    p = Path(str(path_comparison_key(p)))  # 저장·비교는 보통 형태로
     # 내 항목 중 같은 이름만 교체(남의 마운트는 그대로 보존).
     previous = next((m for m in _owner_mounts(owner) if m["name"] == name), None)
     asset_mounts.upsert(_mounts_file(), name=name, location=str(p), owner=owner)
@@ -2027,7 +2031,7 @@ def reveal_file(body: RevealIn, request: Request):
             #  명령 '문자열'로 넘겨 경로만 따옴표로 감싼(/select,"<경로>") 올바른 형태가 explorer 에
             #  그대로 전달되게 한다. shell=False 라 파일명 속 &, ^ 등 셸 메타문자도 그대로 리터럴(주입 없음).
             #  explorer 는 성공해도 종료코드 1 을 반환하므로 검사하지 않음.
-            subprocess.Popen(f'explorer /select,"{target}"')
+            subprocess.Popen(f'explorer /select,"{path_comparison_key(target)}"')  # 탐색기는 확장 접두를 못 읽는다
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-R", str(target)])
         else:
@@ -2072,7 +2076,8 @@ def _resolve_davinci_root(project: str, directory: str, request: Request) -> Pat
     target = _safe_project_resolve(project, project_dir, normalized_dir)
     if not target:
         raise HTTPException(status_code=400, detail="잘못된 @davinci 경로입니다")
-    return target
+    # Resolve 와 그 설정 파일(dblist.conf)에는 보통 형태로 — 등록 폴더의 긴 경로용 확장 접두를 넘기지 않는다(2026-10-01)
+    return Path(str(path_comparison_key(target)))
 
 
 @router.get("/resolve-library/projects", dependencies=[Depends(_require_local_assets)])
@@ -2215,7 +2220,7 @@ def clipboard_copy_files(body: ClipboardCopyIn, request: Request):
         if not target or not target.is_file() or target.suffix.lower() not in _CLIPBOARD_MEDIA_EXT:
             skipped += 1
             continue
-        key = str(target)
+        key = str(path_comparison_key(target))  # 클립보드를 받는 앱에는 확장 접두 없는 보통 형태로
         if key in seen:  # 중복 제거(순서 보존)
             continue
         seen.add(key)

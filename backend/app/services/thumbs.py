@@ -19,7 +19,7 @@ from typing import Callable, Optional
 
 from ..config import MEDIA_DIR
 from .media_types import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
-from .path_safety import safe_join
+from .path_safety import path_comparison_key, safe_join
 from .video_convert import find_ffmpeg
 
 THUMB_DIR = MEDIA_DIR / ".thumbs"  # 에셋 썸네일과 같은 디스크 캐시 폴더
@@ -83,7 +83,8 @@ def cache_path(target: Path, w: int) -> Path:
     초 단위 mtime 은 같은 1초 안에 덮어쓴 변경을 놓친다 → 나노초+파일크기로 키를 잡아 확실히 구분한다
     (원본을 같은 이름으로 덮어쓰면 새 썸네일이 새 키로 구워져 옛 캐시와 섞이지 않는다)."""
     st = target.stat()
-    key = hashlib.sha1(f"{target}|{st.st_mtime_ns}-{st.st_size}|{w}".encode("utf-8")).hexdigest()
+    # 열쇠는 확장 접두(긴 경로용, 2026-10-01) 없는 보통 형태로 — 접두가 붙어도 이미 구운 썸네일을 그대로 쓴다.
+    key = hashlib.sha1(f"{path_comparison_key(target)}|{st.st_mtime_ns}-{st.st_size}|{w}".encode("utf-8")).hexdigest()
     return THUMB_DIR / f"{key}.jpg"
 
 
