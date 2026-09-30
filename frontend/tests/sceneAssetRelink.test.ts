@@ -971,3 +971,37 @@ describe("탭에 공간이 없으면 지금 선택된 워크스페이스로 찾�
     expect(locate.mock.calls[1][1]).toBe("");
   });
 });
+
+describe("'보류' 판정은 물을 때 실은 공간과 함께 기억한다(Codex P2 2026-09-30)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetRelinkSessionForTest();
+    locate.mockReset();
+  });
+
+  const pick = (id: string) =>
+    localStorage.setItem(STORAGE_KEYS.workspaceContext, JSON.stringify({ scope: "team", id, name: id }));
+
+  it("선택 공간을 바꾸면 자동 복구가 보류를 다시 묻고, 같은 공간이면 다시 안 묻는다 — 서버에 없음은 공간과 무관하다", async () => {
+    pick("ws-B");
+    saveScenes(null, [scene([{ file_path: "asset:뻘뻘뻘_RnD|CH/m/a.png" }, { file_path: "asset:imports|gone.png" }])]);
+    locate.mockResolvedValue(
+      answer({ unresolved: ["asset:뻘뻘뻘_RnD|CH/m/a.png", "asset:imports|gone.png"], missing: ["asset:imports|gone.png"] }),
+    );
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(1);
+
+    resetRelinkSessionForTest(); // 앱을 다시 켬 — 같은 공간이면 기억으로 끝
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(1);
+
+    pick("ws-A"); // 다른 공간을 고르고 다시 켬 → 보류만 다시 묻는다
+    resetRelinkSessionForTest();
+    locate.mockResolvedValue(answer({ unresolved: ["asset:뻘뻘뻘_RnD|CH/m/a.png"] }));
+    await relinkSceneAssetRefs();
+    expect(locate).toHaveBeenCalledTimes(2);
+    expect(locate.mock.calls[1][0]).toEqual(["asset:뻘뻘뻘_RnD|CH/m/a.png"]);
+    expect(locate.mock.calls[1][1]).toBe("ws-A");
+    expect(status("", "asset:imports|gone.png")).toBe("missing"); // 서버에 없음 표시는 그대로
+  });
+});

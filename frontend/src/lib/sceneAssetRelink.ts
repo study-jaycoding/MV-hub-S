@@ -180,7 +180,9 @@ export function applyRelink(
 // 판정은 씬 파일에 담지 않는다 — 폴더를 보는 건 서버뿐이고, 사람·PC 마다 답이 다르다.
 export type RefServerStatus = "missing" | "local";
 type Verdict = "open" | "fixed" | "local" | "missing" | "unresolved";
-type VerdictEntry = [Verdict, number]; // [판정, 확인 시각]
+// [판정, 확인 시각, 물을 때 실은 공간] — 공간은 '보류'(unresolved)에만 적는다. 보류는 어느 공간부터 찾았느냐에 따라 달라지고
+//  (서버는 그 공간에서 유일하면 잇는다), 서버에 없음·열림·이 PC 에만은 공간과 무관하다.
+type VerdictEntry = [Verdict, number, string?];
 type Verdicts = Record<string, VerdictEntry>;
 const VERDICT_CAP = 5000;
 let verdictCache: Verdicts | null = null;
@@ -225,6 +227,21 @@ function loadVerdicts(): Verdicts {
 function verdictOf(key: string): Verdict | undefined {
   const entry = loadVerdicts()[key];
   return Array.isArray(entry) ? entry[0] : undefined;
+}
+
+/** 서버에 실어 보낼 공간 — 탭 공간, 없으면 지금 선택된 팀 워크스페이스(Jay 2026-09-30). 개인·미정이면 "". */
+function askWorkspaceOf(ws: string): string {
+  if (ws) return ws;
+  const selected = loadStoredWorkspaceContext();
+  return selected?.scope === "team" ? selected.id || "" : "";
+}
+
+/** 자동 복구가 다시 묻지 않아도 되는 판정인가 — '보류'는 그때 실은 공간이 지금과 같을 때만(Codex P2: 선택 공간을 바꾸면
+ *  그 공간에서 유일하게 찾힐 수 있다. 단추는 판정과 무관하게 늘 다시 묻는다). */
+function settled(key: string, askWs: string): boolean {
+  const entry = loadVerdicts()[key];
+  if (!Array.isArray(entry)) return false;
+  return entry[0] !== "unresolved" || (entry[2] ?? "") === askWs;
 }
 
 function notifyStatus(): void {
@@ -374,6 +391,7 @@ const emptyCounts = (): FindCounts => ({ open: 0, fixed: 0, local: 0, missing: 0
  *  되풀이해 묻지 않게), 판정은 답에 든 토큰만 기억한다. */
 function noteReply(
   ws: string,
+  askWs: string,
   batch: string[],
   fingerprints: Record<string, RefFingerprint>,
   registryIds: Record<string, string>,
@@ -414,7 +432,7 @@ function noteReply(
     //  저장이 실패했을 때 번호 없는 채로 굳어 다시 묻지 않는다(나중에 원본이 옮겨져도 번호로 못 따라간다).
     if (got === "open" && reply.open_ids?.[token]) continue;
     if (verdictOf(key) !== got) changed = true;
-    store[key] = [got, now];
+    store[key] = got === "unresolved" ? [got, now, askWs] : [got, now];
   }
   saveVerdicts(undefined, dropped);
   if (changed) notifyStatus();
@@ -500,8 +518,7 @@ async function askGroups(
       const ws = group.workspaceId;
       // 탭에 공간이 없으면 **지금 선택된 워크스페이스**의 프로젝트부터 찾는다(Jay 2026-09-30). 판정 열쇠·찾은 답의 열쇠는
       //  그대로 탭 기준(ws)이다 — 열쇠까지 바꾸면 워크스페이스를 바꿀 때마다 기억한 표시가 사라진다.
-      const selected = loadStoredWorkspaceContext();
-      const askWs = ws || (selected?.scope === "team" ? selected.id || "" : "");
+      const askWs = askWorkspaceOf(ws);
       const fingerprints = Object.fromEntries(
         batch.filter((token) => group.fingerprints[token]).map((token) => [token, group.fingerprints[token]]),
       );
@@ -512,7 +529,7 @@ async function askGroups(
       const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
       const reply = await api.locateAssets(batch, askWs, opts.scanId, fingerprints, signal, opts.includeRender, registryIds);
       if (getAccountNamespace() !== ns) throw new Error("account changed while locating");
-      noteReply(ws, batch, group.fingerprints, group.registryIds, reply, opts.counts);
+      noteReply(ws, askWs, batch, group.fingerprints, group.registryIds, reply, opts.counts);
       const found = new Map(reply.fixed.map((item) => [relinkKey(ws, item.token), item] as const));
       const applied = applyFound(found, opts.hooks);
       opts.done.total += applied.total;
@@ -542,7 +559,10 @@ export async function relinkSceneAssetRefs(hooks: RelinkHooks = {}): Promise<num
           if (forced.has(at)) return true;
           return (
             !asked.has(at) &&
-            !verdictOf(verdictKey(group.workspaceId, token, group.fingerprints[token], group.registryIds[token]))
+            !settled(
+              verdictKey(group.workspaceId, token, group.fingerprints[token], group.registryIds[token]),
+              askWorkspaceOf(group.workspaceId),
+            )
           );
         }),
       }))
