@@ -143,6 +143,7 @@ def status(request: Request) -> dict[str, Any]:
 # 관리자 PC 의 로컬 허브가 서버에서 자리(lease)를 받아 자기 PC 로 NAS 를 훑고 **완주 결과**를 올린다. 판정·번호 발급은
 # 서버의 기존 _apply 그대로(서버만 번호를 만든다). 서버 자체 훑기 코드는 바꾸지 않는다 — 둘은 leases 로 서로 막는다.
 HELPER_MAX_FILES = 100_000
+_INT_MAX = (1 << 62)  # SQLite 정수(64비트) 안 — 큰 값으로 기록 단계가 500 이 되지 않게(Codex P2)
 
 
 class HelperLeaseIn(BaseModel):
@@ -159,16 +160,16 @@ class HelperFile(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
     p: str = Field(min_length=1, max_length=1024)
     b: int = Field(ge=0, le=1 << 44)
-    m: int = Field(ge=0)
+    m: int = Field(ge=0, le=_INT_MAX)
     s: Optional[str] = None
     st: Literal["ok", "undetermined", "pending"]
 
 
 class HelperStats(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    hashed: int = Field(default=0, ge=0)
-    hashed_bytes: int = Field(default=0, ge=0)
-    elapsed_ms: int = Field(default=0, ge=0)
+    hashed: int = Field(default=0, ge=0, le=_INT_MAX)
+    hashed_bytes: int = Field(default=0, ge=0, le=_INT_MAX)
+    elapsed_ms: int = Field(default=0, ge=0, le=_INT_MAX)
 
 
 class HelperResultIn(BaseModel):

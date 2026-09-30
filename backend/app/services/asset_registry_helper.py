@@ -75,10 +75,15 @@ class HelperController(AssetRegistryController):
         self._detail: dict[str, Any] = {}  # 마지막 _apply 가 남긴 것(화면용)
         self._results: list[dict[str, Any]] = []
         self._abort = ""
+        self._lease_lost = False  # 연장이 거부됐다(만료·서버 재시작) — 올려도 거부되니 그 프로젝트를 멈춘다
 
     @property
     def enabled(self) -> bool:
         return True  # 관리자 창에서 누를 때만 돈다(자동 주기 없음 — 결정 8)
+
+    def _halted(self) -> bool:
+        # 로그인이 바뀌었거나 자리를 잃었으면 도는 자식을 곧바로 끝낸다(결과를 올릴 때까지 기다리지 않는다, Codex P1)
+        return self._stopping or bool(self._abort) or self._lease_lost
 
     # ── 서버 호출(시작할 때 고정한 주소·토큰으로만) ─────────────────────────────────
     def _call(self, method: str, path: str, body: Optional[dict[str, Any]] = None, timeout: float = 60) -> Any:
@@ -135,7 +140,8 @@ class HelperController(AssetRegistryController):
         if self._abort:
             return "aborted"
         outcome: dict[str, Any] = {"project_id": pid, "name": name}
-        self._detail = {}
+        failure: Optional[tuple[str, str]] = None
+        self._detail, self._lease_lost = {}, False
         try:
             try:
                 lease = await asyncio.to_thread(self._call, "POST", "/api/asset-registry/helper/lease", {"project_id": pid})
@@ -149,6 +155,10 @@ class HelperController(AssetRegistryController):
                 if not await asyncio.to_thread(_same_share, root, unc):
                     raise _ProjectFail("이 PC 의 드라이브가 서버가 아는 공유 주소와 다릅니다")
                 outcome["state"] = await super()._project_run(pid, name, unc, rate, deadline)
+                if self._abort:
+                    raise _Abort(self._abort)
+                if self._lease_lost:
+                    raise _ProjectFail("서버 자리를 잃었습니다(만료·서버 재시작) — 다시 누릅니다")
             finally:
                 renew.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -158,10 +168,12 @@ class HelperController(AssetRegistryController):
                 self._lease = {}
         except _Abort as exc:
             self._abort = str(exc)
-            outcome.update(state="aborted", note=str(exc))
+            failure = ("aborted", str(exc))
         except _ProjectFail as exc:
-            outcome.update(state="failed", note=str(exc))
-        outcome.update(self._detail)
+            failure = ("failed", str(exc))
+        outcome.update(self._detail)  # 마지막으로 올린 판의 상태(큰 파일 보충 뒤면 그 결과, Codex P2)
+        if failure:
+            outcome.update(state=failure[0], note=failure[1])
         self._results.append(outcome)
         log_event(_log, "asset_registry_helper_project", project_id=pid, state=outcome.get("state"),
                   note=outcome.get("note", ""))
@@ -170,9 +182,16 @@ class HelperController(AssetRegistryController):
     async def _renew_loop(self, lease_id: str) -> None:
         while True:
             await asyncio.sleep(RENEW_EVERY_S)
-            # 실패해도 여기서는 멈추지 않는다 — 자리를 잃었으면 결과 올리기가 409 로 알려 준다
-            with contextlib.suppress(Exception):
+            try:
                 await asyncio.to_thread(self._call, "POST", "/api/asset-registry/helper/renew", {"lease_id": lease_id})
+            except _Abort as exc:  # 로그인 바뀜·권한 — 전체를 멈춘다(_halted 가 자식을 끝낸다)
+                self._abort = str(exc)
+                return
+            except _ProjectFail:  # 자리를 잃었다 — 이 프로젝트를 멈춘다
+                self._lease_lost = True
+                return
+            except Exception:  # noqa: BLE001 — 잠깐 끊김 등: 만료(10분)까지 다시 시도한다
+                continue
 
     def _known(self, pid: str) -> dict[str, list]:
         known = dict(self._lease.get("known") or {})
@@ -181,7 +200,7 @@ class HelperController(AssetRegistryController):
 
     def _apply(self, pid: str, name: str, scan: registry.RegistryScan, stats: dict[str, Any]) -> dict[str, int]:
         """결과를 DB 대신 서버로 올린다(완주만). 연결 오류는 같은 순번으로 한 번 더 — 서버가 같은 내용이면 같은 답을 준다."""
-        self._detail = {"files": int(stats.get("files") or 0), "note": str(stats.get("note") or "")}
+        self._detail = {"files": int(stats.get("files") or 0), "note": str(stats.get("note") or ""), "state": "failed"}
         if not scan.complete:
             return {}
         self._lease["seq"] += 1
@@ -199,7 +218,8 @@ class HelperController(AssetRegistryController):
                 if attempt == 2:
                     raise _ProjectFail("서버에 결과를 올리지 못했습니다(연결)") from exc
         kinds = {k: int(v) for k, v in (ack.get("kinds") or {}).items()}
-        self._detail.update(clean=bool(ack.get("clean")), kinds=kinds)
+        clean = bool(ack.get("clean"))
+        self._detail.update(state="ok" if clean else "partial", clean=clean, kinds=kinds)
         return kinds
 
 

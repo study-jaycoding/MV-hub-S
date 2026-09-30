@@ -350,6 +350,10 @@ class AssetRegistryController:
             self._last = summary
             log_event(_log, "asset_registry_run", **summary)
 
+    def _halted(self) -> bool:
+        """자식을 멈춰야 하나 — 서버는 종료 중일 때만. 도우미는 로그인 바뀜·서버 자리 잃음도(services/asset_registry_helper)."""
+        return self._stopping
+
     def _projects(self) -> list[tuple[str, str, str]]:
         """(project_id, 이름, 루트). 서버는 자기 PM 목록 — 도우미 PC 는 서버에 묻는다(services/asset_registry_helper)."""
         return pm_projects()
@@ -358,7 +362,7 @@ class AssetRegistryController:
         """프로젝트 하나: 일반 훑기 → 예산 밖 큰 파일이 있으면 전용 실행 → 다시 훑기. 첫 훑기의 상태를 돌려준다."""
         result = await self._scan_project(pid, name, root, rate, deadline)
         large = result.get("large") or []
-        if large and not self._stopping:
+        if large and not self._halted():
             if await self._hash_large(pid, root, large, rate):
                 # 큰 파일 지문이 캐시에 들어왔다 — 목록을 한 번 더 돌려 이동·새 파일 판정을 온전히 한다.
                 await self._scan_project(pid, name, root, rate, deadline)
@@ -459,7 +463,7 @@ class AssetRegistryController:
         note = ""
         try:
             job_path.write_bytes(json.dumps(job, ensure_ascii=False).encode("utf-8"))
-            if self._stopping:
+            if self._halted():
                 return None, [], [], "stopping"
             self._proc = subprocess.Popen(
                 [sys.executable, "-m", "app.services.asset_registry_scan", str(job_path)],
@@ -469,12 +473,12 @@ class AssetRegistryController:
             )
             limit = time.monotonic() + deadline_s + KILL_GRACE_S
             while self._proc.poll() is None:
-                if self._stopping or time.monotonic() > limit:
-                    note = "stopping" if self._stopping else "시간 초과 — 자식을 끝냄"
+                if self._halted() or time.monotonic() > limit:
+                    note = "stopping" if self._halted() else "시간 초과 — 자식을 끝냄"
                     await _kill(self._proc)
                     return None, [], [], note
                 await asyncio.sleep(0.5)
-            if self._stopping:  # stop() 이 자식을 먼저 끝냈다 — 비정상 종료가 아니라 서버 종료다
+            if self._halted():  # stop() 이 자식을 먼저 끝냈다 — 비정상 종료가 아니라 서버 종료다
                 return None, [], [], "stopping"
             if self._proc.returncode != 0:
                 return None, [], [], f"자식 비정상 종료({self._proc.returncode})"

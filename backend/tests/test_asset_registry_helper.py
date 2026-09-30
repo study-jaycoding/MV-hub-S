@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -148,13 +150,17 @@ class HelperServerTests(_ServerCase):
             {**_ok("a/x.png", b"A"), "s": None}, {**_ok("a/x.png", b"A"), "s": "A" * 64},
             {**_ok("a/x.png", b"A"), "b": 0}, {"p": "a/x.png", "b": 1, "m": 1, "s": "f" * 64, "st": "pending"},
             {**_ok("a/x.png", b"A"), "b": True}, {**_ok("a/x.png", b"A"), "st": "done"},
-            {**_ok("a/x.png", b"A"), "extra": 1},
+            {**_ok("a/x.png", b"A"), "extra": 1}, {**_ok("a/x.png", b"A"), "m": 1 << 63},
         ]
         for i, f in enumerate(bad):
             res = self.result(lease["lease_id"], 1, [f])
             self.assertEqual(res.status_code, 422, (i, f, res.text))
         dup = self.result(lease["lease_id"], 1, [_ok("a/X.png", b"A"), _ok("a/x.png", b"B")])
         self.assertEqual(dup.status_code, 422)
+        huge = self.client.post("/api/asset-registry/helper/result", json={  # SQLite 정수 밖 → 기록 단계 500 대신 422(Codex P2)
+            "lease_id": lease["lease_id"], "seq": 1, "complete": True, "files": [],
+            "stats": {"hashed_bytes": 1 << 63}})
+        self.assertEqual(huge.status_code, 422)
         # render 라는 이름의 **파일**·미판정 파일(지문 없음)은 받는다(자식도 그렇게 쓴다)
         good = [_ok("a/render.png", b"R"), {"p": "a/lock.png", "b": 0, "m": 0, "s": None, "st": "undetermined"}]
         self.assertEqual(self.result(lease["lease_id"], 1, good).status_code, 200)
@@ -182,6 +188,18 @@ class HelperPieceTests(unittest.TestCase):
             self.assertIsInstance(err(code, detail), helper_mod._Abort, code)
         for code, detail in ((404, "없는 프로젝트입니다"), (409, "훑는 중"), (413, ""), (422, "x")):
             self.assertIsInstance(err(code, detail), helper_mod._ProjectFail, code)
+
+    def test_result_state_follows_the_last_upload(self) -> None:
+        # 큰 파일 보충 뒤 다시 훑어 완주·clean 이 되면 이 PC 결과도 '완료' — 첫 훑기의 '일부 대기'로 남지 않는다(Codex P2)
+        h = helper_mod.HelperController()
+        h._lease = {"id": "L", "seq": 0}
+        scan = registry.RegistryScan(True, [registry.RegistryFile("a/x.png", 1, 1, "f" * 64, "ok")])
+        for clean, want in ((False, "partial"), (True, "ok")):
+            with patch.object(h, "_call", return_value={"clean": clean, "kinds": {}}):
+                h._apply("p", "n", scan, {"files": 1})
+            self.assertEqual(h._detail["state"], want)
+        h._apply("p", "n", registry.RegistryScan(False, []), {"files": 0, "note": "폴더 읽기 실패"})
+        self.assertEqual(h._detail["state"], "failed")
 
     def test_same_share_only_when_this_pc_maps_the_drive_to_the_server_unc(self) -> None:
         mapping = {r"Z:\PROJ": UNC.upper() + "\\", r"C:\PROJ": r"C:\PROJ", r"Q:\PROJ": None, UNC: UNC}
@@ -264,6 +282,54 @@ class HelperFlowTests(_ServerCase):
         status = self.helper.helper_status()
         self.assertIn("로그인", status["abort"])
         self.assertEqual(self.rows(), {})
+
+    def _run_with_hanging_child(self, after_child_starts) -> tuple[dict, float, list]:
+        """자식을 60초 자는 프로세스로 바꿔, 도는 도중 after_child_starts() 를 부른 뒤 끝날 때까지 잰다."""
+        sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
+        real_popen = subprocess.Popen
+        seen: list = []
+
+        def fake_popen(_args, **kw):
+            proc = real_popen(sleeper, **kw)
+            seen.append(proc)
+            return proc
+
+        async def scenario() -> float:
+            with patch.object(svc.subprocess, "Popen", side_effect=fake_popen), \
+                    patch.object(helper_mod, "RENEW_EVERY_S", 0.2):
+                self.assertTrue(self.helper.begin(None)[0])
+                for _ in range(200):
+                    if seen:
+                        break
+                    await asyncio.sleep(0.05)
+                after_child_starts()
+                t0 = time.monotonic()
+                for _ in range(400):
+                    if not self.helper.busy():
+                        break
+                    await asyncio.sleep(0.05)
+                return time.monotonic() - t0
+
+        took = asyncio.run(scenario())
+        return self.helper.helper_status(), took, seen
+
+    def test_login_change_during_a_long_scan_stops_the_child_now(self) -> None:
+        # 연장(1분마다)이 로그인 바뀜을 알아차리면 결과를 올릴 때까지 기다리지 않고 자식을 끝낸다(Codex P1)
+        status, took, seen = self._run_with_hanging_child(lambda: setattr(self, "token", "someone-else"))
+        self.assertLess(took, 10)
+        self.assertTrue(seen and seen[0].poll() is not None)
+        self.assertIn("로그인", status["abort"])
+        self.assertEqual(status["results"][0]["state"], "aborted")
+        self.assertEqual(self.rows(), {})
+
+    def test_lost_lease_stops_that_project(self) -> None:
+        # 서버가 재시작돼 자리를 잃었다 → 연장이 409 → 올려도 거부되니 그 프로젝트를 멈춘다
+        status, took, seen = self._run_with_hanging_child(lambda: setattr(svc.leases, "_lease", None))
+        self.assertLess(took, 10)
+        self.assertTrue(seen and seen[0].poll() is not None)
+        self.assertEqual(status["abort"], "")
+        self.assertEqual(status["results"][0]["state"], "failed")
+        self.assertIn("자리", status["results"][0]["note"])
 
     def test_server_already_scanning_skips_the_project(self) -> None:
         with patch.object(svc.controller, "busy", return_value=True):
