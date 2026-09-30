@@ -476,6 +476,7 @@ _LOCAL_PREFIXES = (
     "/api/workspaces",     # CLI 워크스페이스
     "/api/stamp/",         # 끌어다 놓은 로컬 파일의 각인 읽기 — 파일이 이 PC 에 있으므로 로컬 처리
     "/api/shared-server/", # 공유 서버 로그인/토큰/주소(이 허브의 로컬 설정)
+    "/api/registry-helper/",  # 에셋 대장 도우미 훑기 — 이 PC 가 NAS 를 읽어 서버에 올린다(서버 위임 금지)
     # ── 로컬 우선: 내 작업 데이터는 로컬 DB가 정답. 핸들러가 tab=team/팀항목일 때만 서버로 위임.
     "/api/generations",    # 목록·상세·히스토리·코멘트·태그·컬러·소스·발행 등(내 것=로컬, 팀=핸들러가 프록시)
     "/api/generation-comments/",  # by-id 코멘트 수정/삭제/seen — 핸들러(_comment_local)가 비공개=로컬·공유=서버로 재분기.

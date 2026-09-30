@@ -55,6 +55,7 @@ _NOTIFY_NO_LIBRARY_CHANGE_PREFIXES = (
     "/api/assets/",  # Assets는 별도 assets_changed/BroadcastChannel 갱신 영역
     "/api/manage/",  # PM 집계·작업 DB는 manage_changed로 분리
     "/api/asset-registry/",  # 에셋 대장 조회·훑기 요청 — 생성물 목록을 바꾸지 않는다(찾기마다 팀 전체가 다시 읽지 않게)
+    "/api/registry-helper/",  # 에셋 대장 도우미 훑기 시작(이 PC) — 같은 이유
 )
 _ASSET_NO_CHANGE_PATHS = frozenset(
     {

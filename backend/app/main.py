@@ -82,6 +82,7 @@ from .routers import (
     notifications,
     projects,
     publish,
+    registry_helper,
     release_update,
     resolve_integration,
     scenes,
@@ -103,6 +104,7 @@ from .services.worker_backup import (
 from .services.temp_sweeper import periodic_sweeper
 from .services.media_preservation import periodic_media_preservation
 from .services.asset_registry import controller as asset_registry_controller
+from .services.asset_registry_helper import helper as asset_registry_helper
 from .services.share_state_reconciler import (
     configure_share_state_router_deps,
     periodic_share_state_reconciler,
@@ -575,6 +577,8 @@ async def _application_lifespan(app: FastAPI):
         # 에셋 대장 훑기 자식을 일찍 끝낸다 — 새 실행 금지 → taskkill /T /F → 반영 안 한 결과는 버린다.
         if asset_registry_started:
             await _attempt_async_cleanup(asset_registry_controller.stop)
+        # 도우미 훑기(이 PC 가 관리자 창에서 시작했을 때만 돈다) — 같은 방법으로 끝낸다. 안 돌았으면 할 일이 없다.
+        await _attempt_async_cleanup(asset_registry_helper.stop)
         if runtime_report_task:
             await _attempt_async_cleanup(
                 lambda: _cancel_background_task(runtime_report_task)
@@ -730,6 +734,7 @@ app.include_router(db_backup.router)
 app.include_router(comfy.router)
 app.include_router(scenes.router)
 app.include_router(asset_registry.router)
+app.include_router(registry_helper.router)
 
 # ── PM 대시보드(분리형 사이드카) — 플래그 on 일 때만 등록 ────────────────────────
 # 기본 on(config.MANAGE_ENABLED). CONTENT_HUB_MANAGE=0 이면 import 자체를 안 해 라우터·사이드카 테이블이

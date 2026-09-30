@@ -248,6 +248,7 @@ def test_every_upload_route_has_a_positive_request_limit() -> None:
         "/api/db/import",
         "/api/db-backup",
         "/api/db-backup/sets",
+        "/api/asset-registry/helper/result",  # 에셋 대장 도우미 결과(JSON) — 파싱 전에 막는다
     }
     assert all(value > 0 for value in upload_limits.UPLOAD_REQUEST_LIMITS.values())
 

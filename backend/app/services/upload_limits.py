@@ -62,6 +62,8 @@ UPLOAD_REQUEST_LIMITS: dict[str, int] = {
     "/api/db/import": DB_UPLOAD_FILE_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
     "/api/db-backup": DB_UPLOAD_FILE_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
     "/api/db-backup/sets": DB_UPLOAD_FILE_MAX_BYTES * 2 + _MULTIPART_OVERHEAD_BYTES,
+    # 에셋 대장 도우미 결과(JSON, 파일 10만 개 상한) — 파싱 전에 막는다(Codex P0). 실측 1,352개 = 약 0.3MB.
+    "/api/asset-registry/helper/result": 32 * MIB,
 }
 
 _log = logging.getLogger("mvhub.upload")

@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -29,6 +30,7 @@ from .. import repo
 from ..config import (
     ASSET_REGISTRY_DRIVES,
     ASSET_REGISTRY_ENABLED,
+    ASSET_REGISTRY_HELPER,
     ASSET_REGISTRY_INTERVAL_MIN,
     ASSET_REGISTRY_MIBPS,
     BACKEND_DIR,
@@ -51,6 +53,7 @@ AUTO_DEADLINE_S = 5 * 60
 LARGE_CAP_S = 45 * 60  # 큰 파일 전용 실행의 최대 시간 — 넘으면 '수동 스캔 대기'로 남긴다
 KILL_GRACE_S = 30
 _STARTUP_DELAY_S = 60
+LEASE_TTL_S = 10 * 60  # 도우미가 1분마다 연장한다 — 도우미가 죽어도 서버 훑기를 오래 막지 않게
 
 
 def _rates() -> tuple[float, float]:
@@ -84,6 +87,13 @@ def resolve_root(root: str, mapping: Optional[dict[str, str]] = None) -> str:
         return root.strip()
     rest = m.group(2).replace("/", "\\").strip("\\")
     return mapping[m.group(1).upper()] + ("\\" + rest if rest else "")
+
+
+def canonical_unc(root: str) -> Optional[str]:
+    """프로젝트 루트의 공유 주소 — 루트가 이미 UNC 면 그대로, 드라이브 글자면 DRIVES 대응표로. 모르면 None.
+    도우미 PC 가 '같은 NAS 의 같은 폴더'를 훑는지 이것으로 대조한다(드라이브 글자는 PC 마다 다를 수 있다)."""
+    resolved = resolve_root(root).replace("/", "\\").rstrip("\\")
+    return resolved if resolved.startswith("\\\\") else None
 
 
 def pm_projects() -> list[tuple[str, str, str]]:
@@ -143,6 +153,87 @@ async def _kill(proc: subprocess.Popen) -> None:
         await asyncio.sleep(0.1)
 
 
+class HelperLeases:
+    """도우미 PC 훑기 자리 하나(서버 메모리 — 재시작하면 사라지고, 그 뒤 올라온 결과는 거부된다).
+    서버 자체 훑기와 서로 막는다: 한 번에 하나만 NAS 를 읽고 대장에 반영한다(request_scan 도 이 잠금 안에서 본다).
+    반영(applying) 중에는 만료되지 않는다. 같은 순번·같은 내용의 재전송은 저장한 답을 다시 준다(응답 유실 대비)."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self._lease: Optional[dict[str, Any]] = None
+
+    def alive_locked(self) -> bool:
+        lease = self._lease
+        return lease is not None and (lease["applying"] or lease["expires"] > time.monotonic())
+
+    def active(self) -> bool:
+        with self.lock:
+            return self.alive_locked()
+
+    def summary(self) -> Optional[dict[str, Any]]:
+        with self.lock:
+            lease = self._lease
+            if lease is None or not self.alive_locked():
+                return None
+            return {"project_id": lease["project_id"], "name": lease["name"], "started_at": lease["started_at"]}
+
+    def acquire(self, project_id: str, name: str, owner: str, unc: str, busy) -> Optional[dict[str, Any]]:
+        """자리를 준다. 서버 훑기(busy())나 살아 있는 다른 자리가 있으면 None."""
+        with self.lock:
+            if busy() or self.alive_locked():
+                return None
+            self._lease = {
+                "id": uuid.uuid4().hex, "project_id": project_id, "name": name, "owner": owner, "unc": unc,
+                "started_at": registry.utc_now(), "expires": time.monotonic() + LEASE_TTL_S, "applying": False,
+                "seq": 0, "digest": "", "ack": None,
+            }
+            return dict(self._lease)
+
+    def _mine_locked(self, lease_id: str, owner: str) -> dict[str, Any]:
+        lease = self._lease
+        if lease is None or lease["id"] != lease_id or lease["owner"] != owner or not self.alive_locked():
+            raise LookupError("훑기 자리가 없거나 만료됐습니다")
+        return lease
+
+    def renew(self, lease_id: str, owner: str) -> None:
+        with self.lock:
+            self._mine_locked(lease_id, owner)["expires"] = time.monotonic() + LEASE_TTL_S
+
+    def begin_apply(self, lease_id: str, owner: str, seq: int, digest: str) -> tuple[str, Any]:
+        """("ack", 저장한 답) — 같은 순번·같은 내용의 재전송. ("apply", 자리) — 반영해도 된다(applying 으로 묶는다).
+        그 밖(낡은 순번·같은 순번의 다른 내용·반영 중)은 ValueError."""
+        with self.lock:
+            lease = self._mine_locked(lease_id, owner)
+            if lease["applying"]:
+                raise ValueError("이전 결과를 반영하는 중입니다")
+            if seq == lease["seq"] and digest == lease["digest"] and lease["ack"] is not None:
+                return "ack", lease["ack"]
+            if seq != lease["seq"] + 1:
+                raise ValueError("순번이 맞지 않습니다")
+            lease["applying"] = True
+            return "apply", dict(lease)
+
+    def finish_apply(self, lease_id: str, seq: int, digest: str, ack: Optional[dict[str, Any]]) -> None:
+        """반영을 끝낸다. ack 가 None(반영 실패)이면 순번을 올리지 않는다 — 같은 순번으로 다시 올릴 수 있다."""
+        with self.lock:
+            lease = self._lease
+            if lease is None or lease["id"] != lease_id:
+                return
+            lease["applying"] = False
+            lease["expires"] = time.monotonic() + LEASE_TTL_S
+            if ack is not None:
+                lease.update(seq=seq, digest=digest, ack=ack)
+
+    def release(self, lease_id: str, owner: str) -> None:
+        with self.lock:
+            lease = self._lease
+            if lease is not None and lease["id"] == lease_id and lease["owner"] == owner and not lease["applying"]:
+                self._lease = None
+
+
+leases = HelperLeases()
+
+
 class AssetRegistryController:
     def __init__(self) -> None:
         self._run_task: Optional[asyncio.Task] = None
@@ -175,6 +266,8 @@ class AssetRegistryController:
         }
         return {
             "enabled": self.enabled,
+            "helper_enabled": ASSET_REGISTRY_HELPER,
+            "lease": leases.summary(),
             "interval_min": ASSET_REGISTRY_INTERVAL_MIN,
             "running": self.busy(),
             "current": dict(self._current),
@@ -188,13 +281,17 @@ class AssetRegistryController:
     def start(self) -> None:
         """자동 주기를 켠다(간격 > 0 일 때만). 수동 훑기는 request_scan 이 언제든 받는다."""
         self._stopping = False
-        # 서버가 강제로 꺼지면 작업 파일(경로 목록)이 남는다 — 기동 때 치운다. 아직 멈추는 중인 옛 자식이 쥔 것은 다음 기동에.
+        self._clear_leftovers()
+        if ASSET_REGISTRY_INTERVAL_MIN > 0 and (self._loop_task is None or self._loop_task.done()):
+            self._loop_task = asyncio.create_task(self._loop(ASSET_REGISTRY_INTERVAL_MIN * 60), name="asset-registry-loop")
+
+    @staticmethod
+    def _clear_leftovers() -> None:
+        """강제 종료가 남긴 작업 파일(경로 목록)을 치운다 — 자식이 없을 때만 부른다. 아직 멈추는 중인 옛 자식이 쥔 것은 다음에."""
         work = DATA_DIR / "asset_registry"
         for leftover in [*work.glob("job-*.json"), *work.glob("out-*.jsonl")]:
             with contextlib.suppress(OSError):
                 leftover.unlink()
-        if ASSET_REGISTRY_INTERVAL_MIN > 0 and (self._loop_task is None or self._loop_task.done()):
-            self._loop_task = asyncio.create_task(self._loop(ASSET_REGISTRY_INTERVAL_MIN * 60), name="asset-registry-loop")
 
     async def stop(self) -> None:
         """새 실행을 막고 → 자식을 끝내고 → 기다린다. 반영 안 한 결과는 버린다."""
@@ -212,9 +309,11 @@ class AssetRegistryController:
         self._loop_task = None
 
     def request_scan(self, project_ids: Optional[list[str]] = None, mode: str = "manual") -> bool:
-        if self._stopping or self.busy():
-            return False
-        self._run_task = asyncio.create_task(self._run(project_ids, mode), name=f"asset-registry-{mode}")
+        # 도우미 PC 가 훑는 중(자리가 살아 있음)이면 서버도 안 훑는다 — 자동·수동 모두 여기를 지난다(Codex P0).
+        with leases.lock:
+            if self._stopping or self.busy() or leases.alive_locked():
+                return False
+            self._run_task = asyncio.create_task(self._run(project_ids, mode), name=f"asset-registry-{mode}")
         return True
 
     async def _loop(self, interval_s: float) -> None:
@@ -232,21 +331,16 @@ class AssetRegistryController:
         started = time.monotonic()
         summary: dict[str, Any] = {"mode": mode, "projects": 0, "failed": 0}
         try:
-            projects = await asyncio.to_thread(pm_projects)
+            projects = await asyncio.to_thread(self._projects)
             if project_ids:
                 wanted = set(project_ids)
                 projects = [p for p in projects if p[0] in wanted]
             for pid, name, root in projects:
                 if self._stopping:
                     break
-                result = await self._scan_project(pid, name, root, rate, deadline)
+                state = await self._project_run(pid, name, root, rate, deadline)
                 summary["projects"] += 1
-                summary["failed"] += int(result.get("state") == "failed")
-                large = result.get("large") or []
-                if large and not self._stopping:
-                    if await self._hash_large(pid, root, large, rate):
-                        # 큰 파일 지문이 캐시에 들어왔다 — 목록을 한 번 더 돌려 이동·새 파일 판정을 온전히 한다.
-                        await self._scan_project(pid, name, root, rate, deadline)
+                summary["failed"] += int(state == "failed")
         except Exception:  # noqa: BLE001 — 한 번 실패해도 다음 실행을 막지 않는다
             log_event(_log, "asset_registry_run_failed", level=logging.WARNING, exc_info=True)
         finally:
@@ -255,6 +349,20 @@ class AssetRegistryController:
             summary["finished_at"] = registry.utc_now()
             self._last = summary
             log_event(_log, "asset_registry_run", **summary)
+
+    def _projects(self) -> list[tuple[str, str, str]]:
+        """(project_id, 이름, 루트). 서버는 자기 PM 목록 — 도우미 PC 는 서버에 묻는다(services/asset_registry_helper)."""
+        return pm_projects()
+
+    async def _project_run(self, pid: str, name: str, root: str, rate: float, deadline: float) -> str:
+        """프로젝트 하나: 일반 훑기 → 예산 밖 큰 파일이 있으면 전용 실행 → 다시 훑기. 첫 훑기의 상태를 돌려준다."""
+        result = await self._scan_project(pid, name, root, rate, deadline)
+        large = result.get("large") or []
+        if large and not self._stopping:
+            if await self._hash_large(pid, root, large, rate):
+                # 큰 파일 지문이 캐시에 들어왔다 — 목록을 한 번 더 돌려 이동·새 파일 판정을 온전히 한다.
+                await self._scan_project(pid, name, root, rate, deadline)
+        return str(result.get("state") or "")
 
     def _known(self, pid: str) -> dict[str, list]:
         with get_connection() as conn:

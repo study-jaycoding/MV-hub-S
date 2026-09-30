@@ -7,20 +7,27 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-from typing import Annotated, Any, Optional
+import os
+from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .. import rbac, repo
-from ..config import AUTH_ENABLED
+from ..config import ASSET_REGISTRY_HELPER, AUTH_ENABLED
 from ..db import get_connection
 from ..deps import account_global_roles, account_scope_uid, require_global_cap
 from ..repo import asset_registry as registry
-from ..services.asset_registry import controller
+from ..services.asset_registry import LEASE_TTL_S, canonical_unc, controller, leases, pm_projects
+from ..services.asset_registry_scan import hidden_name
+from ..services.media_types import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from ..services.operational_logging import log_event
 from . import _proxy
+
+_MEDIA = frozenset(IMAGE_EXTENSIONS + VIDEO_EXTENSIONS + AUDIO_EXTENSIONS)  # 훑기 자식과 같은 집합
 
 router = APIRouter(prefix="/api/asset-registry", tags=["asset-registry"])
 _log = logging.getLogger("mvhub.asset_registry")
@@ -130,3 +137,164 @@ async def scan(body: ScanIn, request: Request) -> dict[str, Any]:
 def status(request: Request) -> dict[str, Any]:
     require_global_cap(request, "system")
     return controller.status()
+
+
+# ── 도우미 PC 훑기(서버가 NAS 를 못 읽을 때, 2026-09-30 Claude 설계·Codex 합의) ─────────────────────────────
+# 관리자 PC 의 로컬 허브가 서버에서 자리(lease)를 받아 자기 PC 로 NAS 를 훑고 **완주 결과**를 올린다. 판정·번호 발급은
+# 서버의 기존 _apply 그대로(서버만 번호를 만든다). 서버 자체 훑기 코드는 바꾸지 않는다 — 둘은 leases 로 서로 막는다.
+HELPER_MAX_FILES = 100_000
+
+
+class HelperLeaseIn(BaseModel):
+    project_id: _Id
+
+
+class HelperLeaseRef(BaseModel):
+    lease_id: _Id
+
+
+class HelperFile(BaseModel):
+    """자식 훑기가 내는 한 줄과 같은 모양 — 서버 훑기가 절대 만들지 않는 행이 들어오지 않게 엄격히 받는다(Codex P0)."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+    p: str = Field(min_length=1, max_length=1024)
+    b: int = Field(ge=0, le=1 << 44)
+    m: int = Field(ge=0)
+    s: Optional[str] = None
+    st: Literal["ok", "undetermined", "pending"]
+
+
+class HelperStats(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    hashed: int = Field(default=0, ge=0)
+    hashed_bytes: int = Field(default=0, ge=0)
+    elapsed_ms: int = Field(default=0, ge=0)
+
+
+class HelperResultIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    lease_id: _Id
+    seq: int = Field(ge=1, le=10_000)
+    complete: bool
+    files: list[HelperFile] = Field(default_factory=list, max_length=HELPER_MAX_FILES)
+    stats: HelperStats = Field(default_factory=HelperStats)
+
+
+def _helper_owner(request: Request) -> str:
+    require_global_cap(request, "system")
+    if not ASSET_REGISTRY_HELPER:
+        raise HTTPException(status_code=503, detail="도우미 훑기가 꺼져 있습니다(CONTENT_HUB_ASSET_REGISTRY_HELPER=1)")
+    return account_scope_uid(request) or "local"
+
+
+def _bad_file(index: int, why: str) -> HTTPException:
+    # 경로는 돌려주지 않는다(로그·응답에 경로 목록을 남기지 않는다) — 순번과 이유만
+    return HTTPException(status_code=422, detail=f"{index}번째 파일을 받을 수 없습니다: {why}")
+
+
+def _checked_files(files: list[HelperFile]) -> list[registry.RegistryFile]:
+    """자식 훑기의 규칙과 같게 거른다: 상대 경로·숨김 조각 없음·render 폴더 밖·미디어 확장자, ok 면 64자 지문과 크기."""
+    out: list[registry.RegistryFile] = []
+    seen: set[str] = set()
+    for i, f in enumerate(files):
+        parts = f.p.split("/")
+        if "\\" in f.p or ":" in f.p or any(part in ("", ".", "..") for part in parts):
+            raise _bad_file(i, "상대 경로가 아닙니다")
+        if any(hidden_name(part) for part in parts) or any(part.casefold() == "render" for part in parts[:-1]):
+            raise _bad_file(i, "훑지 않는 자리입니다")
+        if os.path.splitext(parts[-1])[1].lower() not in _MEDIA:
+            raise _bad_file(i, "미디어 파일이 아닙니다")
+        key = f.p.casefold()
+        if key in seen:
+            raise _bad_file(i, "같은 경로가 두 번 있습니다")
+        seen.add(key)
+        if f.st == "ok":
+            if f.b <= 0 or not (f.s and len(f.s) == 64 and all(c in "0123456789abcdef" for c in f.s)):
+                raise _bad_file(i, "지문이 올바르지 않습니다")
+        elif f.s is not None:
+            raise _bad_file(i, "미판정 파일에 지문이 있습니다")
+        out.append(registry.RegistryFile(f.p, f.b, f.m, f.s, f.st))
+    return out
+
+
+@router.get("/helper/projects")
+def helper_projects(request: Request) -> dict[str, Any]:
+    """도우미가 훑을 PM 프로젝트 — unc 가 없으면(서버 DRIVES 대응표에 없음) 그 프로젝트는 도우미도 못 훑는다."""
+    _helper_owner(request)
+    return {"projects": [{"project_id": pid, "name": name, "root": root, "unc": canonical_unc(root)}
+                         for pid, name, root in pm_projects()]}
+
+
+@router.post("/helper/lease")
+def helper_lease(body: HelperLeaseIn, request: Request) -> dict[str, Any]:
+    owner = _helper_owner(request)
+    found = {pid: (name, root) for pid, name, root in pm_projects()}.get(body.project_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="없는 프로젝트입니다")
+    name, root = found
+    unc = canonical_unc(root)
+    if unc is None:
+        raise HTTPException(status_code=422, detail="서버가 이 프로젝트 루트의 공유 주소를 모릅니다(CONTENT_HUB_ASSET_REGISTRY_DRIVES)")
+    lease = leases.acquire(body.project_id, name, owner, unc, controller.busy)
+    if lease is None:
+        raise HTTPException(status_code=409, detail="이미 다른 곳에서 훑는 중입니다")
+    with get_connection() as conn:
+        rows = registry.registry_rows(conn, body.project_id)
+    known = [{"p": r["path"], "b": r["bytes"], "m": r["mtime_ns"] or 0, "s": r["sha256"]}
+             for r in rows if r["state"] == "present"]
+    log_event(_log, "asset_registry_helper_lease", project_id=body.project_id, known=len(known))
+    return {"lease_id": lease["id"], "unc": unc, "ttl_s": LEASE_TTL_S, "known": known}
+
+
+@router.post("/helper/renew")
+def helper_renew(body: HelperLeaseRef, request: Request) -> dict[str, Any]:
+    owner = _helper_owner(request)
+    try:
+        leases.renew(body.lease_id, owner)
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ttl_s": LEASE_TTL_S}
+
+
+@router.post("/helper/release")
+def helper_release(body: HelperLeaseRef, request: Request) -> dict[str, Any]:
+    leases.release(body.lease_id, _helper_owner(request))
+    return {"released": True}
+
+
+@router.post("/helper/result")
+def helper_result(body: HelperResultIn, request: Request) -> dict[str, Any]:
+    """완주 결과만 반영한다. 미완주(도우미 쪽 NAS 끊김·시간 초과)는 대장도 마지막 훑기 기록도 바꾸지 않는다 —
+    도우미 PC 사정일 수 있어 서버 훑기의 failed 기록과 다르게 둔다(Codex 합의)."""
+    owner = _helper_owner(request)
+    files = _checked_files(body.files)
+    digest = hashlib.sha256(json.dumps(body.model_dump(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    try:
+        state, value = leases.begin_apply(body.lease_id, owner, body.seq, digest)
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if state == "ack":
+        return value
+    lease = value
+    ack: Optional[dict[str, Any]] = None
+    try:
+        kinds: dict[str, int] = {}
+        clean = False
+        if body.complete:
+            scan = registry.RegistryScan(True, files)
+            clean = scan.clean
+            stats = {
+                "root": lease["unc"], "state": "ok" if clean else "partial", "started_at": lease["started_at"],
+                "finished_at": registry.utc_now(), "complete": True, "clean": clean, "files": len(files),
+                "hashed": body.stats.hashed, "hashed_bytes": body.stats.hashed_bytes,
+                "undetermined": sum(1 for f in files if f.status == "undetermined"),
+                "pending": sum(1 for f in files if f.status == "pending"),
+                "elapsed_ms": body.stats.elapsed_ms, "note": "도우미 PC",
+            }
+            kinds = controller._apply(lease["project_id"], lease["name"], scan, stats)
+        ack = {"ok": True, "applied": body.complete, "clean": clean, "kinds": kinds}
+    finally:
+        leases.finish_apply(body.lease_id, body.seq, digest, ack)
+    log_event(_log, "asset_registry_helper_result", project_id=lease["project_id"], complete=body.complete,
+              clean=ack["clean"], files=len(files), **kinds)
+    return ack
