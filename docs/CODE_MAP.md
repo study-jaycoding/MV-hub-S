@@ -765,7 +765,7 @@ updated: 2026-09-30
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `scenes.ts` | 저장+store | 씬(카드·연결·카메라) localStorage 데이터 계층 + 내보내기/가져오기 |
-| `sceneAssetRelink.ts` | api+store | 옛 로컬 에셋 참조를 프로젝트 원본으로 재연결하고 씬 저장 갱신 · 서버 판정 기억(계정별 localStorage — 판정 받은 참조는 다음 실행에 NAS 를 다시 안 훑음) · '레퍼런스 찾기' 단추(이 씬만·render 포함)와 자동 복구를 한 줄로 |
+| `sceneAssetRelink.ts` | api+store | 옛 로컬 에셋 참조를 프로젝트 원본으로 재연결하고 씬 저장 갱신 · 서버 판정 기억(계정별 localStorage — 판정 받은 참조는 다음 실행에 NAS 를 다시 안 훑음) · '레퍼런스 찾기' 단추(이 씬만·render 포함)와 자동 복구를 한 줄로 · 판정 보류의 이유(held)·판정 못 끝냄(세션만)·판정 전 구별(카드 빨간 테두리 표시, ASSET_REGISTRY §5) · 탭 공간이 없으면 선택 워크스페이스로 묻기 |
 | `sceneBackup.ts` | api+store | 씬 localStorage → DB 단방향 미러·복구 |
 | `sceneCardLinks.ts` | api+store | 카드 소속(담긴 생성물) 로컬 DB 기록·서버 병합 |
 | `sceneUndoStore.ts` | store | 씬별 undo/redo 히스토리(언마운트 생존) |
