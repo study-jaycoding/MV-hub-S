@@ -256,9 +256,11 @@ class ControllerTests(unittest.TestCase):
         work.mkdir(parents=True, exist_ok=True)
         (work / "job-dead.json").write_text("{}", encoding="utf-8")
         (work / "out-dead.jsonl").write_text("", encoding="utf-8")
+        (work / "manual-dead.json").write_text("{}", encoding="utf-8")  # 작업 파일이 아니면 두고 본다(Codex)
         with patch.object(svc, "ASSET_REGISTRY_INTERVAL_MIN", 0):
             self.ctl.start()
-        self.assertEqual(sorted(p.name for p in work.glob("*-dead*")), [])
+        self.assertEqual(sorted(p.name for p in work.glob("*-dead*")), ["manual-dead.json"])
+        (work / "manual-dead.json").unlink()
 
     def test_stop_kills_the_running_child(self) -> None:
         self._run()  # 먼저 완주 기록 하나 — 끊긴 훑기가 이것을 덮지 않아야 한다

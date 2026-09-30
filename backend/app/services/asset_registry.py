@@ -189,7 +189,8 @@ class AssetRegistryController:
         """자동 주기를 켠다(간격 > 0 일 때만). 수동 훑기는 request_scan 이 언제든 받는다."""
         self._stopping = False
         # 서버가 강제로 꺼지면 작업 파일(경로 목록)이 남는다 — 기동 때 치운다. 아직 멈추는 중인 옛 자식이 쥔 것은 다음 기동에.
-        for leftover in (DATA_DIR / "asset_registry").glob("*-*.json*"):
+        work = DATA_DIR / "asset_registry"
+        for leftover in [*work.glob("job-*.json"), *work.glob("out-*.jsonl")]:
             with contextlib.suppress(OSError):
                 leftover.unlink()
         if ASSET_REGISTRY_INTERVAL_MIN > 0 and (self._loop_task is None or self._loop_task.done()):
