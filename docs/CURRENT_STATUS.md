@@ -5,14 +5,21 @@ tags:
   - mvhub
   - mvhub/현황
 status: active
-updated: 2026-09-30
+updated: 2026-10-01
 ---
 
 # MV Hub 현재 작업 현황
 
+## 10-01 배포판 2238 점검과 수정
+
+owner: Claude(구현) · reviewer: Codex xhigh·Claude Fable(설계 4회), Codex(코드) · status: 검증 중(dev, 미푸시·미배포)
+
+- 점검(공유 서버도 2238): P0 없음, P1 1 = 워크스페이스를 바꿔도 레퍼런스를 다시 안 물음 → 고침(앱). 함께: 레퍼런스 올리는 중이면
+  업데이트 막기(앱)·서브스페이스 콘솔 빈 쓰기 잠금 제거(서버). 서버 생성 일시정지는 서버 큐만 멈춘다([SERVER.md](SERVER.md)).
+
 ## 09-30 에셋 대장
 
-owner: Claude · Codex(생성 기록 5단계) · reviewer: Codex(설계 4·코드 5회) · status: 완료(dev, 미푸시·미배포)
+owner: Claude · Codex(생성 기록 5단계) · reviewer: Codex(설계 4·코드 5회) · status: 완료(09-30 밤 2238 로 공유 서버·NAS 배포, 서버 대장 켬·로컬 훑기 완료)
 
 - NAS 그림 번호·이름 변경/이동 추적·레퍼런스 찾기 대장 먼저·생성 기록의 쓴 판. 정본·실측 [ASSET_REGISTRY.md](ASSET_REGISTRY.md).
 - **기본 꺼짐**: 서버에 `CONTENT_HUB_ASSET_REGISTRY=1`+드라이브 대응표 → 관리자 창 [지금 훑기](서버 이사 뒤). 서버 먼저, 앱 나중.

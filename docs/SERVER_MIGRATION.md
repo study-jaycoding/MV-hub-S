@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-04
+updated: 2026-10-01
 status: active
 ---
 
@@ -103,7 +103,10 @@ py -3 tools\verify_backup_restore.py --backup-set "E:\MVHub-backups\content_hub_
     ```
 
 11. 새 PC 에 서버 IP 를 설정한다. **옛 IP 를 그대로 쓰면 팀원은 아무것도 바꿀 필요가 없다.**
-12. `MV_server.bat` 으로 한 번 띄우고 `/api/ready` 200 을 확인한다.
+12. 옛 서버에서 에셋 대장을 켜 썼으면 **먼저 기계 환경변수 두 개**를 넣는다(관리자 PowerShell, 새 창에서 13단계부터):
+    `[System.Environment]::SetEnvironmentVariable('CONTENT_HUB_ASSET_REGISTRY','1','Machine')` 와
+    `CONTENT_HUB_ASSET_REGISTRY_DRIVES` 를 같은 방식으로(값은 [ASSET_REGISTRY.md](ASSET_REGISTRY.md) §6). 그다음
+    `MV_server.bat` 으로 한 번 띄우고 `/api/ready` 200 을 확인한다.
 
 ## 3단계 — 마무리
 
@@ -123,6 +126,7 @@ py -3 tools\verify_backup_restore.py --backup-set "E:\MVHub-backups\content_hub_
 | 엉뚱한 DB 를 가져간다 | 예약 작업(SYSTEM)과 콘솔의 `CONTENT_HUB_DATA` 가 다를 수 있다 | export 가 찍는 경로를 확인, 필요하면 `--data-dir` |
 | 옛 PC 경로가 DB 안에 남는다 | `project.render_root_path` 등 | 설치 후 도구가 목록을 찍는다. 새 PC 에서 접근되는지 확인 |
 | NAS 백업 복제가 조용히 멈춘다 | 복제 대상은 머신별 설정이고 SYSTEM 계정 권한이 필요하다 | `register_autostart.bat` 에서 다시 지정하고 1회 실행해 로그 확인 |
+| 에셋 대장이 조용히 꺼진다 | 켜기 변수는 PC 의 기계 환경변수라 도구가 옮기지 않는다(훑는 곳 선택·대장 번호는 DB 라 따라온다) | 12단계의 두 변수를 넣고, 이사 뒤 관리자 창 '에셋 대장' 탭에 표가 보이는지 확인 |
 
 ## 무엇을 가져가고 무엇을 두고 가나
 

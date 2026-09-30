@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-30
+updated: 2026-10-01
 status: active
 ---
 
@@ -371,6 +371,9 @@ Codex 치명 2건(트랜잭션 중첩·`set_planning` 이 안 보낸 칸을 NULL
 1. **1회 옮기기**(서버, 표식 `workspace_console_recurring_copy_v1`, 시드와 같은 '표식 없을 때만 쓰기' 경로): 콘솔 서브마다 `recurring_topup IS NULL` 이고
    `_monthly_budget` 이 값을 내면 그 값을 `recurring_topup` 으로 저장(계획 행이 없으면 만든다·revision+1·감사 `workspace.credit_plan_changed`).
    주기는 기본(자동·월)을 그대로 — 파생은 원래 '매월' 예산만 셌다. 전부 성공 뒤 표식.
+   표식이 있으면 쓰기 트랜잭션을 열지 않는다(콘솔을 열 때마다 쓰기 잠금 줄에 서지 않게, 2026-10-01 점검 R1-6 — 안쪽 재확인은 그대로).
+   **롤백 주의**: 전환 뒤 이 판보다 옛 판(예: `7bde8aba`)으로 되돌리면 기동·조회는 되지만(2026-10-01 실측) 옮겨 적은 `recurring_topup` 을
+   옛 판은 '손 입력'으로 읽는다 — 그 뒤 프로젝트 예산을 바꿔도 정기 크레딧이 따라가지 않는다(표시만, 생성과 무관).
 2. **파생 끄기**: `_monthly_budget` 폴백은 **콘솔 서브가 아닌** 워크스페이스에만 남긴다(메인·미연결). 콘솔 서브의 `monthly_topup` = `recurring_topup` 원본만
    (`monthly_topup_source` 는 manual 또는 none). 서브스페이스 화면·워크스페이스 사용 현황 카드·개요가 한 규칙을 본다.
 3. **예산 쓰기 막기(서버)**: `set_planning` 이 **활성 콘솔 서브 프로젝트의 `budget_credits`/`budget_period` 가 DB 값과 달라지는** 요청을 거절(409 가 아닌
