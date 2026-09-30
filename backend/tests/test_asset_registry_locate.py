@@ -65,13 +65,15 @@ class LocateWithRegistryTests(unittest.TestCase):
             registry.record_scan(conn, PID, root=str(self.proj), state="ok" if complete else "failed",
                                  complete=complete, clean=complete, files=len(files))
 
-    def locate(self, tokens: list[str], **kw) -> dict:
-        dirs = {"PM": self.proj}
+    def locate(self, tokens: list[str], personal: dict[str, Path] | None = None, **kw) -> dict:
+        """personal = 이 PC 의 개인 등록 폴더(이름 → 경로). 대장은 이것을 모른다(PM 만 훑는다)."""
+        dirs = {"PM": self.proj, **(personal or {})}
         mounts = [{"name": "PM", "path": str(self.proj), "owner": "project", "project_id": PID}]
+        mine = [{"name": n, "path": str(d), "owner": "me"} for n, d in (personal or {}).items()]
         with (
             patch.object(assets, "ASSETS_ROOT", self.root),
             patch.object(assets, "_auto_project_mounts", side_effect=lambda _r, _w=None: mounts),
-            patch.object(assets, "_owner_mounts", return_value=[]),
+            patch.object(assets, "_owner_mounts", return_value=mine),
             patch.object(assets, "actor_id", return_value="me"),
             patch.object(assets, "_safe_project_dir", side_effect=lambda name, _req: dirs.get(name)),
         ):
@@ -100,6 +102,17 @@ class LocateWithRegistryTests(unittest.TestCase):
         self.assertEqual([(f["project"], f["path"]) for f in reply["fixed"]], [("PM", "assets/CH/m/b.png")])
         self.assertTrue(reply["fixed"][0]["registry_asset_id"])
         self.assertNotIn("sha256", reply["fixed"][0])
+
+    def test_same_path_file_in_a_personal_folder_keeps_it_on_hold(self) -> None:
+        # 개인 등록 폴더에 같은 경로의 **다른 파일**이 있으면 대장 전 방식처럼 '여럿'으로 보류한다 — 대장은 PM 만 세므로
+        # 대장만 믿으면 PM 쪽으로 이어 버린다(Codex 2026-09-30).
+        self.put("assets/CH/m/b.png", b"PM")
+        self.scan()
+        mine = self.root / "mine"
+        (mine / "CH" / "m").mkdir(parents=True)
+        (mine / "CH" / "m" / "b.png").write_bytes(b"OTHER")
+        reply = self.locate(["asset:PM_RnD|CH/m/b.png"], personal={"MINE": mine})
+        self.assertEqual(reply["fixed"], [])
 
     def test_registry_number_follows_a_move_even_after_an_edit(self) -> None:
         self.put("assets/CH/m/pose.png", b"V1")
