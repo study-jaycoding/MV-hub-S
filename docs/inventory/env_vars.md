@@ -11,7 +11,7 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 127개.
+제품 환경변수 131개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
@@ -21,6 +21,10 @@
 | `CONTENT_HUB_ADMIN_PASSWORD` | — | `backend/app/main.py` | — |
 | `CONTENT_HUB_ALLOW_REMOTE_AUTH_OFF` | `"0"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSETS_DIR` | `str(DATA_DIR / "assets")` | `backend/app/config.py` | — |
+| `CONTENT_HUB_ASSET_REGISTRY` | `"0"` | `backend/app/config.py` | — |
+| `CONTENT_HUB_ASSET_REGISTRY_DRIVES` | `""` | `backend/app/config.py` | — |
+| `CONTENT_HUB_ASSET_REGISTRY_INTERVAL_MIN` | `"0"` | `backend/app/config.py` | — |
+| `CONTENT_HUB_ASSET_REGISTRY_MIBPS` | `"8,5"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSET_TREE_CACHE_TTL` | `"30"` | `backend/app/services/asset_tree.py` | — |
 | `CONTENT_HUB_ASSET_UPLOAD_TOTAL_MAX_BYTES` | `1024 * MIB` | `backend/app/services/upload_limits.py` | — |
 | `CONTENT_HUB_AUTH` | `"0"` | `backend/app/config.py` | `MV_agent.bat` `MV_server.bat` `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |

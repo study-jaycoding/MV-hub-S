@@ -10,6 +10,13 @@ updated: 2026-09-30
 
 # MV Hub 현재 작업 현황
 
+## 09-30 에셋 대장
+
+owner: Claude · Codex(생성 기록 5단계) · reviewer: Codex(설계 4·코드 5회) · status: 완료(dev, 미푸시·미배포)
+
+- NAS 그림 번호·이름 변경/이동 추적·레퍼런스 찾기 대장 먼저·생성 기록의 쓴 판. 정본·실측 [ASSET_REGISTRY.md](ASSET_REGISTRY.md).
+- **기본 꺼짐**: 서버에 `CONTENT_HUB_ASSET_REGISTRY=1`+드라이브 대응표 → 관리자 창 [지금 훑기](서버 이사 뒤). 서버 먼저, 앱 나중.
+
 ## 09-28 PM 후속 작업
 
 owner: Codex · reviewer: Claude Fable (`claude-fable-5-1`, 최종 승인) · status: 완료

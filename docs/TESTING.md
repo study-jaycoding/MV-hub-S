@@ -628,6 +628,31 @@ npm.cmd run lint:architecture
 이 검증은 내부 영속 큐·UI·재시작 계약을 확인한다. 실제 CDN URL 장기 만료, 물리 디스크 50GiB
 도달, 다른 PC·혼합 버전 공유 서버는 운영 배포 전 별도 실측 대상이다.
 
+## 에셋 대장(2026-09-30)
+
+설계·운영 [ASSET_REGISTRY.md](ASSET_REGISTRY.md). 자동 시험:
+
+```powershell
+cd backend
+..\.venv\Scripts\python.exe -m pytest tests/test_asset_registry.py tests/test_asset_registry_scan.py tests/test_asset_registry_locate.py -q -p no:cacheprovider
+cd ..\frontend
+npx vitest run tests/sceneAssetRelink.test.ts tests/assetRegistryTab.test.tsx
+```
+
+- `test_asset_registry.py` — 정체 판정(새로·고침·이동·없어짐·돌아옴·복사본·대소문자·미판정 보류·미완주 폐기·중복 행), 조회의
+  가시 프로젝트 제한, 생성 기록 연결(판 확인·가능 연결), 요청 데이터가 판을 못 박는 것, 백업 복원 연습이 대장 행까지 세는 것.
+- `test_asset_registry_scan.py` — 실제 자식 프로세스로 훑기·이름 변경 추적, 큰 파일 전용 실행, 멈춘 자식 강제 종료·`stop()` 정리,
+  부모가 사라지면 자식이 스스로 멈춤, 파일 하나의 정보 읽기 실패는 그 파일만 미판정, 속도 상한(1 MiB/s 미만 거부), 서버 종료로
+  끊긴 훑기가 완주 기록을 덮지 않음, 강제 종료 잔재를 기동 때 치움.
+- `test_asset_registry_locate.py` — 대장 먼저 찾기: 이름 변경·이동 추적, 번호·지문 참조, 미완주 불신, 경로 그대로인 후보는 지문을
+  안 읽고 번호만(직접 훑기가 잇는다), 개인 폴더에 같은 경로 다른 파일이 있으면 보류, 입력 상한.
+- 실측은 격리 서버 한 대(AUTH on + 일회용 관리자, 루프백)에 PM 프로젝트 루트를 실제 NAS 로 넣고 **읽기만** 한다. 이름 바꾸기·옮기기
+  실험은 이 PC 임시 폴더의 가짜 프로젝트에서만 한다(NAS 에 쓰지 않는다). 결과는 [ASSET_REGISTRY.md](ASSET_REGISTRY.md) §9.
+- 실측 도구 함정 3개: ① 서버를 `CREATE_NO_WINDOW` 로 띄우면 정상 종료 신호(CTRL_BREAK)를 보낼 수 없다 — 숨긴 콘솔
+  (`CREATE_NEW_CONSOLE`+SW_HIDE)로 띄우고 도우미가 그 콘솔에 붙어 보낸다(도우미도 같은 신호를 받으니 처리기를 단다).
+  ② 프로세스를 명령줄 글자로 찾으면 조회하는 powershell 자신이 걸린다 — 이름을 `python*` 로 한정. ③ CDP 도구가 크롬을
+  강제 종료하면 브라우저 저장소(씬)가 디스크에 안 남아 새로고침 뒤 씬이 사라져 보인다 — 앱 결함이 아니다(DB 백업엔 있다).
+
 ## 작업자 PC 오프디스크 백업(RL-23)
 
 현재 작업 트리 기준 검증 명령:

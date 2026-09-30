@@ -50,6 +50,7 @@ updated: 2026-09-30
 | 로그인/가입/계정 승인 | `components/LoginScreen.tsx`(서버 본체 AUTH 로그인), `components/ServerLoginScreen.tsx`(로컬 허브의 팀 서버 로그인 게이트·서버 주소 변경), `lib/useHubAuth.ts` | `routers/auth.py`, `services/auth.py`, `routers/publish.py`(`/api/shared-server/*`), `services/shared_connection.py` | 로컬 허브는 팀 서버 세션이 없으면 라이브러리 대신 게이트를 띄운다 |
 | 창을 Esc/✕ 로 닫는 규칙 | `lib/useEscapeClose.ts`(공용 — 리스너 1회 등록+콜백 ref), `lib/useAppNavigation.ts`(관리자 창·미리보기는 브라우저 history 로 여닫음) | — | 코멘트 패널·Host 콘솔은 Esc 로 안 닫힌다(설계). 회귀 시험 `frontend/tests/escapeCloseNesting.test.tsx` |
 | Assets 파일 탐색기(마운트·트리·업로드) | `components/AssetsView.tsx`, `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/asset_tree.py`, `services/resolve_project_library.py` | `@davinci` 루트는 Resolve 프로젝트 전용 화면 |
+| 에셋 대장(NAS 그림 번호·이름 변경/이동 추적·레퍼런스 찾기 가속·생성 기록의 쓴 판) | `lib/sceneAssetRelink.ts`, `components/admin/AssetRegistryTab.tsx` | `repo/asset_registry.py`(판정), `services/asset_registry.py`(관리자)·`asset_registry_scan.py`(훑기 자식), `routers/asset_registry.py`, `routers/assets.py`(locate '대장 먼저') | 설계·운영 [ASSET_REGISTRY.md](ASSET_REGISTRY.md). 기본 꺼짐(서버에서 켠다) |
 | 프로젝트 CRUD·멤버·역할 | `components/manage/ProjectManagerPanel.tsx` | `routers/projects.py`, `repo/projects.py` | |
 | 작업(Task) 칸반/테이블/캘린더 | `components/manage/WorkBoard.tsx` | `routers/manage.py`, `repo/manage_tasks.py` | 소요시간 표기는 `lib/format.ts` 의 `fmtElapsed` 하나다(`1d2h3m4s`, 초를 버리지 않음, 하루 이상은 `1d1h` — Jay 확정 2026-09-18). PM 창 5곳과 정보 팝업(`InfoPopup`)의 '생성 시간'이 모두 이 함수를 쓴다. 새 뷰도 이 함수를 쓴다 |
 | 크레딧 풀·그룹 한도 설정 | `components/manage/CreditPoolSection.tsx`, `CreditPlanFields.tsx` | `routers/manage.py`(`/api/manage/credit-plan*` — 권한·API 계약), `repo/manage_credit_plan.py` | |
@@ -155,6 +156,7 @@ updated: 2026-09-30
 |---|---|---|---|
 | `assets.py`(1372줄) | `GET /api/assets/{tree\|file\|thumb}`·`/resolve-library/projects`·`POST /resolve-library/{connect-dialog\|open}` 외 (24) | 마운트·폴더 트리·파일/썸네일 서빙·업로드·캡처·zip·탐색기·Resolve 프로젝트 열기 | 0곳 |
 | `assets_metadata.py`(313줄) | `GET /api/assets/meta`·`PUT /tags[/batch]`·`/color[s/batch]`·`POST /comments` (11, `assets.py`에 마운트) | Assets 의 개인 태그·색·코멘트(계정 DB) 와 팀 코멘트(서버 DB) 경계 | 9곳 |
+| `asset_registry.py`(약 140줄) | `POST /api/asset-registry/{lookup\|scan}`·`GET /status`·`/usage/{id}` (4) | 에셋 대장 — **공유 서버 권위**(로컬 전용 경로 아님, 데이터 프록시가 서버로 넘김). 조회는 가시 프로젝트만, 훑기·상태는 관리자. 레퍼런스 찾기가 쓰는 `lookup_for_request`(위임 모드면 서버, 아니면 자기 DB). 설계 [ASSET_REGISTRY.md](ASSET_REGISTRY.md) | 1곳 |
 | `comfy.py`(1654줄) | `POST /api/comfy/{run\|parse\|save-to-library}`·`GET /run_status\|/unresolved-runs` (11) | ComfyUI(로컬·Cloud) 연결·그래프 파싱·비동기 실행·미회수 결과 수거 | 0곳 |
 | `resolve_integration.py`(364줄) | `POST /api/resolve/transfers`·`GET /api/resolve/{status\|script\|locks}` (10) | DaVinci Resolve 스크립트 설치·연결 진단·전송 접수/재시도 | 1곳 |
 | `release_update.py`(131줄) | `GET /api/release-update/status`·`POST /start` (3) | 작업자 PC 앱 업데이트 상태·시작(로컬 요청만) | 0곳 |
@@ -195,6 +197,7 @@ updated: 2026-09-30
 | `facets.py` | 82 | 필터 사이드바 facet(컬러·태그·자동태그·워커) | `repo.get_facets` |
 | `sources.py` | 170 | 스포트라이트 @/# 피커의 소스 검색 | `repo.search_sources` |
 | `assets.py` | 756 | 분리창 파일 메타 + 에셋 코멘트·생성본 코멘트 두 스레드 전체 | `repo.get_asset_meta`·`list_generation_comments`(33개) |
+| `asset_registry.py` | 340 | 에셋 대장 표 읽기·쓰기 · 훑기 결과 반영(정체 판정 — 순수 함수 `plan_changes` → 한 트랜잭션 `apply_plan`) · 조회(가시 프로젝트 밖은 전부 '없음') · 레퍼런스 번호 연결(지문=판 확인, 이름·경로 정확 일치=가능 연결). **파사드 별표 export 안 함** — `from app.repo import asset_registry` | `plan_changes`·`apply_plan`·`lookup_*`·`attach_reference_registry`·`backfill_reference_links` |
 
 **생성 요청 원장·감사**
 
@@ -328,6 +331,8 @@ updated: 2026-09-30
 | `asset_mounts.py` | 계정별 마운트 JSON 저장소(파일 잠금 + 원자 저장) | `routers/assets` |
 | `asset_tree.py`(309줄) | 폴더 트리 재귀 탐색 + TTL 캐시 + 무효화 | `routers/assets` |
 | `asset_watcher.py`(881줄) | watchdog 감시 → 캐시 무효화 + `assets_changed` WS 브로드캐스트 | `main`·`projects` |
+| `asset_registry.py`(약 330줄) | 에셋 대장 관리자(서버, 기본 꺼짐) — 훑기 자식 하나·시간 상한+30초 `taskkill /T /F`·완주 결과만 `BEGIN IMMEDIATE` 한 번에 반영·큰 파일 전용 실행·자동 주기·서버 종료 때 먼저 정리(끊긴 훑기는 기록을 안 덮음). health·ready 와 무관 | `main`(lifespan)·`routers/asset_registry` |
+| `asset_registry_scan.py`(약 250줄) | 에셋 대장 훑기 **자식 프로세스 전용** — NAS 목록·지문만(DB 안 씀), 폴더 초당 20·지문 1 MiB 속도 상한, 파일 단위 미판정, 부모가 사라지면 스스로 멈춤 | `services/asset_registry`(`python -m`, §2.6) |
 | `project_folders.py` | 프로젝트 Render 루트 상태·폴더 트리 TTL 캐시·탐색기 열기 · 같은 렌더 폴더를 쓰는 다른 프로젝트(`projects_sharing_root` — Z:·UNC 를 맞춰 견주고, 드라이브 대응을 모르면 같을 수 있다고 봐 미러 정리를 막는다) | `manage`·`asset_tree` |
 
 **ComfyUI**
@@ -406,6 +411,7 @@ updated: 2026-09-30
 - `resolve_selection_worker.py` — Media Pool 선택 감시 장기 자식(`resolve_selection_monitor.py` 가 기동, JSONL 1줄 IPC)
 - `resolve_bridge.py` — **상대 import 금지**(부모·자식 양쪽에서 로드됨). import 한 줄만 추가해도 자식 실행이 깨진다
 - `server_relocation.py <source>` — 자식 프로세스 스크립트 겸용, 최상단 상대 import 금지
+- `python -m app.services.asset_registry_scan <job.json>` — 에셋 대장 훑기 자식(`services/asset_registry.py` 가 기동). 무거운 앱 모듈을 불러오지 않는다(`media_types` 만) — SMB 에 멈추면 부모가 프로세스째 끝낸다
 - `worker_backup.py` 의 `_main`(별도 프로세스) — 작업자 개인 DB 백업 세트 전달
 - `resources/resolve/MVHub_Clip_Exporter.py`·`MVHub_Importer.py` — Resolve Workspace›Scripts 메뉴에서만 진입(외부 무의존)
 - `read_utf8_sig_first_line.py` — `print()` 가 자식 프로세스 IPC 채널로 쓰이는 모듈 중 하나(§5 참고)
@@ -533,6 +539,7 @@ updated: 2026-09-30
 | `AdminWindow.tsx`(618줄) | 관리자 창(탭 호스트) + 권한 상승 확인 + 서버 이전 공지 | `AdminWindow` |
 | `admin/ApprovalTab.tsx`(143줄) | 계정 승인·숨김·비번 초기화 표 | 〃 |
 | `admin/MemberRolesTab.tsx`(82줄) | 전역 역할 표 | 〃 |
+| `admin/AssetRegistryTab.tsx`(약 150줄) | 에셋 대장 — 프로젝트별 마지막 훑기 상태 표 + [지금 훑기](한 번 더 확인). 영구 관리자(system)만 | 〃 |
 | `admin/RolePickers.tsx`(70줄) | 전역/프로젝트 역할 선택기 + 정렬 랭크 | 〃 |
 | `admin/ProjectRenderTree.tsx`(29줄) | 프로젝트 렌더 폴더 트리 표시 | 〃 |
 | `LoginScreen.tsx`(92줄) / `ServerLoginScreen.tsx`(230줄) | 로컬 AUTH 로그인 / 팀 서버 로그인·가입 | 각 컴포넌트 |
@@ -627,6 +634,7 @@ updated: 2026-09-30
 | `batching.ts` | 순수 | 서버 배치 상한(500) 분할 |
 | `assetUrls.ts` | 순수 | 에셋 트리·파일·썸네일·코멘트 URL 생성 |
 | `assetsApi.ts` | api | 에셋 트리/메타/색·태그/마운트/DB 백업·복원 HTTP |
+| `assetRegistryApi.ts` | api | 에셋 대장 상태·수동 훑기 HTTP(관리자 창) |
 | `authApi.ts` | api | 로그인·계정 관리 HTTP |
 | `comfyApi.ts` | api | Comfy 파싱·실행·저장·미회수 실행 HTTP |
 | `manageApi.ts` | api | PM 대시보드·크레딧 플랜·작업 HTTP(+구서버 폴백) |
@@ -1144,6 +1152,8 @@ updated: 2026-09-30
 - `lib/` 의 이름 규칙이 4가지로 섞여 있다: "이름 + use이름"(`menuPlacement`/`useMenuPlacement`, `sceneDragSession`/`useSceneDragSession`, `gradeStep`/`useGradeStep`), "이름 + 이름Core"(`modelPolicy`/`modelPolicyCore`), "이름 + 이름Cache"(`modelCatalog`/`modelCatalogCache`), "이름Store"(`sceneGenDataStore` 등). 어느 쪽이 순수이고 어느 쪽이 IO 인지 이름만으로 안 갈린다.
 - `SpotlightRefRoleMenu`(spotlight) 의 `startReorder` ↔ `SceneBoard.tsx` 의 `startReorder` — 같은 이름, 다른 파일의 다른 구현.
 - `repo/manage.py`·`repo/manage_tasks.py`·`routers/manage.py`·`manage_db.py`(최상위) — 전부 "manage" 접두인데 계층이 다르다(라우터/repo 파사드/작업 CRUD/PM 전용 DB).
+- **에셋 대장 번호 `registry_asset_id` ≠ 생성 결과물 `asset.id`** — `asset` 표(`schema.sql`)는 생성 결과물이고 `generations.py` 도 그 id 를 `asset_id` 라 부른다. 대장 번호는 NAS 파일의 논리 번호다(Codex P1, 2026-09-30). 같은 파일 이름 `asset_registry.py` 가 repo·services·routers 세 계층에 있다(표·관리자·API).
+- **locate '대장 먼저'가 직접 잇는 것은 이동(옮기기 전 경로)·번호·지문 후보뿐** — 지금 경로가 참조와 같은 후보는 직접 훑기가 잇고 대장은 번호만 붙인다. 이것까지 대장이 지문 대조하면 찾기가 6배 느려지고(실측 335MB), 대장만 믿으면 PM 만 세어 개인 폴더의 같은 경로 다른 파일을 놓친다(Codex, 2026-09-30).
 
 ### (c) "호출자처럼 보이지만 아닌 것"
 

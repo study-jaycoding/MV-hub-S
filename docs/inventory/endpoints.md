@@ -10,7 +10,7 @@
 - `로컬 예외 · 핸들러가 _proxy 호출` 은 핸들러 **본문이 `_proxy` 를 직접 참조**할 때만 붙는다(팀 탭 등에서 핸들러가 골라서 위임). 헬퍼·usecase 를 거쳐 위임하면 안 보이므로, 이 표시가 없다고 위임이 없다는 뜻은 아니다.
 - `Depends` 칸은 라우터·데코레이터·핸들러 인자에 직접 적힌 것만이다. 인증 미들웨어와 핸들러 본문의 권한 검사는 안 나온다.
 
-전체 304개.
+전체 308개.
 
 ## `backend/app/main.py` — 10개
 
@@ -26,6 +26,15 @@
 | `GET` | `/api/ready` | `ready` | 기본 중계 | — |
 | `WEBSOCKET` | `/ws` | `websocket_endpoint` | 해당 없음 | — |
 | `GET` | `/{full_path:path}` | `spa_fallback` | 해당 없음 | — |
+
+## `backend/app/routers/asset_registry.py` — 4개
+
+| 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
+| --- | --- | --- | --- | --- |
+| `POST` | `/api/asset-registry/lookup` | `lookup` | 기본 중계 | — |
+| `POST` | `/api/asset-registry/scan` | `scan` | 기본 중계 | — |
+| `GET` | `/api/asset-registry/status` | `status` | 기본 중계 | — |
+| `GET` | `/api/asset-registry/usage/{registry_asset_id}` | `usage` | 기본 중계 | — |
 
 ## `backend/app/routers/assets.py` — 25개
 
