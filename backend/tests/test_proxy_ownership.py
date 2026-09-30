@@ -83,6 +83,12 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/manage/credit-plan/{workspace_id}/settings",
         # 관리 표(2026-09-21) — 계정·그룹·프로젝트 참여의 진실원천이 팀 서버라 위임한다(쓰기는 칸마다 기존 API).
         "/api/manage/member-table",
+        # 워크스페이스 콘솔(2026-09-29) — 메인·서브 표식과 조율 개요의 진실원천은 팀 서버.
+        "/api/manage/console/allocation-base",
+        "/api/manage/console/main",
+        "/api/manage/console/overview",
+        "/api/manage/console/workspaces",
+        "/api/manage/console/workspaces/{workspace_id}",
         "/api/members",
         "/api/members/{uid}/global-roles",
         "/api/notifications/comments",

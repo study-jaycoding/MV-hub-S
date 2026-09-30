@@ -70,6 +70,9 @@ function creditValues(settings: CreditPlanSettings) {
     note: settings.plan.note || null,
     topup_day: settings.plan.topup_day ?? 1,
     recurring_topup: settings.plan.recurring_topup ?? null,
+    recurring_auto: settings.plan.recurring_auto ?? true,
+    recurring_period: settings.plan.recurring_period ?? "month",
+    recurring_anchor: settings.plan.recurring_anchor ?? null,
     groups: settings.groups.map((g): Group => ({ id: g.id, name: g.name, monthly_limit: g.monthly_limit, limit_period: g.limit_period ?? "month", allowed_models: [...(g.allowed_models ?? [])].sort(), color: g.color ?? null })),
     members: settings.members.map((m): Member => ({ email: m.email.toLowerCase(), group_id: m.group_id, quota: m.quota ?? null })),
     topups: settings.topups.map((t): Topup => ({ id: t.id, day: t.day, credits: t.credits, note: t.note || null })),
@@ -82,6 +85,9 @@ export function mergeCreditPlan(baseline: CreditPlanSettings, body: CreditPlanSa
     note: body.note,
     topup_day: body.topup_day ?? b.topup_day,
     recurring_topup: body.recurring_topup === undefined ? b.recurring_topup : body.recurring_topup,
+    recurring_auto: body.recurring_auto === undefined ? b.recurring_auto : body.recurring_auto,
+    recurring_period: body.recurring_period === undefined ? b.recurring_period : body.recurring_period,
+    recurring_anchor: body.recurring_anchor === undefined ? b.recurring_anchor : body.recurring_anchor,
     groups: body.groups?.map((g): Group => {
       if (!g.id) throw new Error("그룹 ID가 없어 안전하게 병합할 수 없습니다.");
       const old = b.groups.find((row) => row.id === g.id);
@@ -106,6 +112,12 @@ export function mergeCreditPlan(baseline: CreditPlanSettings, body: CreditPlanSa
   const recurring = mergeField("recurring_topup", b.recurring_topup, m.recurring_topup, r.recurring_topup, changes, choices);
   if (body.topup_day !== undefined) value.topup_day = day;
   if (body.recurring_topup !== undefined) value.recurring_topup = recurring;
+  const auto = mergeField("recurring_auto", b.recurring_auto, m.recurring_auto, r.recurring_auto, changes, choices);
+  if (body.recurring_auto !== undefined) value.recurring_auto = auto;
+  const period = mergeField("recurring_period", b.recurring_period, m.recurring_period, r.recurring_period, changes, choices);
+  if (body.recurring_period !== undefined) value.recurring_period = period;
+  const anchor = mergeField("recurring_anchor", b.recurring_anchor, m.recurring_anchor, r.recurring_anchor, changes, choices);
+  if (body.recurring_anchor !== undefined) value.recurring_anchor = anchor;
   const groups = mergeRows("groups", b.groups, m.groups, r.groups, (row) => row.id, changes, choices);
   const members = mergeRows("members", b.members, m.members, r.members, (row) => row.email, changes, choices);
   const topups = mergeRows("topups", b.topups, m.topups, r.topups, (row) => row.id, changes, choices);
@@ -150,17 +162,17 @@ export function mergeCreditPlan(baseline: CreditPlanSettings, body: CreditPlanSa
       change.label = `그룹 / ${group?.name || id}${field.length ? ` / ${editFieldLabel(field.join("."))}` : ""}`;
     } else if (collection === "topups") {
       const topup = r.topups.find((row) => row.id === id) ?? b.topups.find((row) => row.id === id) ?? m.topups.find((row) => row.id === id);
-      change.label = `긴급 충전 / ${topup?.day || id}${field.length ? ` / ${editFieldLabel(field.join("."))}` : ""}`;
+      change.label = `추가 크레딧 / ${topup?.day || id}${field.length ? ` / ${editFieldLabel(field.join("."))}` : ""}`;
     }
   }
   return { value, changes };
 }
 
 const LABELS: Record<string, string> = {
-  groups: "그룹", members: "멤버", topups: "긴급 충전", name: "이름", monthly_limit: "한도", limit_period: "한도 주기",
-  allowed_models: "허용 모델", color: "색상", group_id: "소속 그룹", quota: "개인 몫", note: "메모", topup_day: "충전 기준일",
-  recurring_topup: "정기 충전", day: "날짜", credits: "크레딧", status: "상태", start_date: "시작일", due_date: "마감일",
-  budget_credits: "예산", budget_period: "예산 주기", archive_after_days: "보관 전환 일수", id: "ID", email: "이메일",
+  groups: "그룹", members: "참가자", topups: "추가 크레딧", name: "이름", monthly_limit: "한도", limit_period: "기간",
+  allowed_models: "허용 모델", color: "색상", group_id: "소속 그룹", quota: "할당 크레딧", note: "메모", topup_day: "충전일",
+  recurring_topup: "정기 크레딧", recurring_auto: "자동 충전", recurring_period: "충전 주기", recurring_anchor: "충전일", day: "날짜", credits: "크레딧", status: "상태", start_date: "시작일", due_date: "종료일",
+  budget_credits: "예산", budget_period: "예산 주기", archive_after_days: "작업 자동 보관(일)", id: "ID", email: "이메일",
 };
 export const editFieldLabel = (path: string) => path.split(".").map((part) => LABELS[part] ?? part).join(" / ");
 export function editValueLabel(value: unknown): string {
@@ -168,6 +180,8 @@ export function editValueLabel(value: unknown): string {
   if (value === null || value === "") return "미설정";
   if (Array.isArray(value)) return value.length ? value.join(", ") : "제한 없음";
   if (typeof value === "object") return Object.entries(value).map(([key, item]) => `${LABELS[key] ?? key}: ${editValueLabel(item)}`).join(" · ");
-  const values: Record<string, string> = { active: "진행", hold: "보류", done: "완료", day: "매일", week: "매주", month: "매월" };
+  // 병합 창의 불리언은 recurring_auto(자동 충전) 하나뿐이다.
+  if (typeof value === "boolean") return value ? "자동" : "수동";
+  const values: Record<string, string> = { active: "활성", hold: "비활성", done: "완료", day: "매일", week: "매주", month: "매월" };
   return typeof value === "string" ? values[value] ?? value : String(value);
 }

@@ -13,6 +13,7 @@ from .. import rbac
 from ..emailnorm import norm_email
 from . import identity
 from . import manage_credit_plan as credit_plan
+from . import workspace_console
 from .manage_schema import _ensure_schema
 from ..db import get_connection
 
@@ -41,20 +42,34 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
             "FROM workspace_member" + (" WHERE workspace_id=?" if workspace_id else "") + " GROUP BY account_email",
             (workspace_id,) if workspace_id else (),
         ).fetchall()
+        scope = [workspace_id] if workspace_id else []
+        main_row = conn.execute(
+            "SELECT wr.credits, wr.last_seen_at FROM workspace_console wc LEFT JOIN workspace_registry wr ON wr.id=wc.workspace_id "
+            "WHERE wc.workspace_id=? AND wc.tier='main'", (workspace_id,)
+        ).fetchone() if workspace_id else None
+        if main_row:
+            # 서브스페이스 메인을 고르면 서브스페이스 메인 화면처럼 연결된 서브 프로젝트를 모두 싣는다(내린 서브 제외 — Jay 2026-09-30)
+            scope += [r["workspace_id"] for r in conn.execute(
+                "SELECT workspace_id FROM workspace_console WHERE tier='sub' AND archived=0"
+            ).fetchall()]
         project_rows = conn.execute(
-            "SELECT p.id, p.name, pp.project_id AS planning_id, pp.status, pp.start_date, pp.due_date, "
+            "SELECT p.id, p.name, p.workspace_id, wr.name AS workspace_name, COALESCE(p.archived,0) AS archived, pp.project_id AS planning_id, pp.status, pp.start_date, pp.due_date, "
             "pp.budget_credits, pp.budget_period, pp.archive_after_days, pp.note, "
             "pp.revision, pp.updated_by, pp.updated_at "
-            "FROM project p LEFT JOIN project_planning pp ON pp.project_id=p.id "
-            "WHERE p.kind='team' AND COALESCE(p.archived,0)=0"
-            + (" AND p.workspace_scope='team' AND p.workspace_id=?" if workspace_id else "")
+            "FROM project p LEFT JOIN project_planning pp ON pp.project_id=p.id LEFT JOIN workspace_registry wr ON wr.id=p.workspace_id "
+            # 워크스페이스를 고르면 보관 프로젝트도 싣는다(프로젝트 시트에서 다시 활성으로 — 설계 §16). 역할·멤버 시트는 활성만.
+            "WHERE p.kind='team'"
+            + (f" AND p.workspace_scope='team' AND p.workspace_id IN ({','.join('?' * len(scope))})" if scope else " AND COALESCE(p.archived,0)=0")
             + " ORDER BY p.sort_order IS NULL, p.sort_order, p.name COLLATE NOCASE",
-            (workspace_id,) if workspace_id else (),
+            scope,
         ).fetchall()
         projects = [
             {
                 "id": r["id"],
                 "name": r["name"],
+                "workspace_id": r["workspace_id"],  # 메인을 고르면 여러 서브가 섞인다 — 서브 상태는 줄의 워크스페이스에 적용
+                "archived": bool(r["archived"]),
+                "workspace_name": r["workspace_name"],  # 이름 옆 워크스페이스 배지(서브스페이스 서브 표와 같게) — 미지정이면 None
                 "planning": None if not r["planning_id"] else {
                     "project_id": r["id"],
                     "status": r["status"],
@@ -71,12 +86,22 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
             }
             for r in project_rows
         ]
+        # 서브스페이스 서브 프로젝트의 크레딧 = 서브스페이스 값(설계 §13·§14) — 금액은 풀 정보라 크레딧을 볼 수 있을 때만,
+        # '서브스페이스가 정한다'(console_managed)는 늘 준다(상태·예산 칸 잠금). 전환 전·서브 아님이면 None/False.
+        limits = workspace_console.console_limits(conn, [r["workspace_id"] for r in project_rows] + [workspace_id or ""])
+        if with_credit and workspace_id in limits:  # 고른 워크스페이스는 요약용 상세(잔액·이번 주기 사용·Next — §16)
+            limits[workspace_id] = workspace_console.console_limits(conn, [workspace_id], detail=True)[workspace_id]
+        for project, r in zip(projects, project_rows):
+            project["console_managed"] = r["workspace_id"] in limits
+            project["console_limit"] = limits.get(r["workspace_id"]) if with_credit else None
+        workspace_limit = limits.get(workspace_id) if with_credit and workspace_id else None
         roles_by_uid: dict[str, dict[str, list[str]]] = {}
-        if projects:
-            marks = ",".join("?" * len(projects))
+        active_ids = [p["id"] for p in projects if not p["archived"]]  # 역할은 활성 프로젝트만(멤버 시트는 종전과 같게)
+        if active_ids:
+            marks = ",".join("?" * len(active_ids))
             for r in conn.execute(
                 f"SELECT project_id, creator_uid, project_role FROM project_member WHERE project_id IN ({marks})",
-                [p["id"] for p in projects],
+                active_ids,
             ).fetchall():
                 roles_by_uid.setdefault(r["creator_uid"], {})[r["project_id"]] = rbac.parse_project_roles(r["project_role"])
     seen = {r["email"]: r for r in seen_rows}
@@ -164,6 +189,10 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
         )
     if not settings:
         rows.sort(key=lambda r: (r["name"] or "").lower())
+    console_subs = None
+    if main_row:  # 메인 크레딧 시트 = 서브 관리 표 합본 — 서브 목록·순서는 서브스페이스 왼쪽 목록 그대로(프로젝트 없는 서브도, Codex 설계 검토)
+        order = {w["id"]: w["console_order"] for w in identity.list_workspace_options() if w["console_tier"] == "sub"}
+        console_subs = sorted(order, key=lambda w: order[w])
     return {
         "workspace_id": workspace_id or None,
         "cycle_start": settings["cycle_start"] if settings else None,
@@ -172,8 +201,14 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
         "projects": projects,
         # 그룹 이름·한도·남은 양은 보기만 하는 사람에게도 준다(칸 표시용). 저장에 쓰는 원문은 credit 에만.
         "groups": [
-            {k: g[k] for k in ("id", "name", "monthly_limit", "limit_period", "remaining", "member_count", "color")}
+            {**{k: g[k] for k in ("id", "name", "monthly_limit", "limit_period", "remaining", "member_count", "color")},
+             # 서브스페이스 그룹 탭과 같은 칸(이번 기간 사용·몫 합계 — §16). 구서버 설정엔 없을 수 있다.
+             **{k: g.get(k) for k in ("used_period", "unknown_period", "quota_total")}}
             for g in (settings["groups"] if settings else [])
         ],
         "credit": settings if (settings and with_credit) else None,
+        "console_limit": workspace_limit,  # 고른 워크스페이스가 서브스페이스 서브면 그 크레딧(§14 크레딧 시트·요약)
+        "console_subs": console_subs,  # 메인일 때만(아니면 None) — 프런트가 서브마다 관리 표를 불러 크레딧 시트를 합친다
+        # 크레딧 풀(메인 보고 잔액) — 금액이라 크레딧을 볼 수 있을 때만
+        "main_balance": {"credits": main_row["credits"], "seen_at": main_row["last_seen_at"]} if main_row and with_credit else None,
     }

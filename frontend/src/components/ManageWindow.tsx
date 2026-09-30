@@ -13,6 +13,8 @@ import { WorkBoard } from "./manage/WorkBoard";
 
 type Tab = "dashboard" | "tasks" | "export";
 
+// 서브스페이스 탭은 뺐다 — 대시보드의 '워크스페이스' 단추가 같은 화면을 연다(Jay 2026-09-30).
+// 예전에 서브스페이스 탭을 기억한 창은 아래의 '없어진 탭이면 대시보드' 규칙으로 대시보드에서 열린다.
 const TABS: { v: Tab; label: string }[] = [
   { v: "dashboard", label: "대시보드" },
   { v: "tasks", label: "작업" },

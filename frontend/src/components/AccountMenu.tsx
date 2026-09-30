@@ -319,7 +319,7 @@ export function AccountMenu({
         title={
           `${displayName}${account && roleText ? ` · ${roleText}` : ""}` +
           (activeCredits != null
-            ? `\n워크스페이스 잔액 ${formatCredits(activeCredits)} cr`
+            ? `\n워크스페이스 잔액 ${formatCredits(activeCredits)} 크레딧`
             : "") +
           "\n워크스페이스·계정 관리"
         }
@@ -389,7 +389,7 @@ export function AccountMenu({
                       {isPersonal ? `${t("개인")}·${w.plan_type}` : w.plan_type}
                     </span>
                     <span className="acct-item-credits">
-                      {formatCredits(w.credits)} cr
+                      {formatCredits(w.credits)} 크레딧
                     </span>
                   </span>
                   <span className="acct-item-meta">{w.user_role}</span>
@@ -431,19 +431,19 @@ export function AccountMenu({
                 <span className="acct-credits-label">{unlimitedQuota ? "워크스페이스 잔액" : quotaWorkspaceId ? "내 크레딧" : "Credits"}</span>
                 <span className="acct-credits-left" title={uncertainty || undefined}>
                   {unlimitedQuota
-                    ? activeCredits == null ? "확인 불가" : `${formatCredits(activeCredits)} cr`
+                    ? activeCredits == null ? "확인 불가" : `${formatCredits(activeCredits)} 크레딧`
                     : quotaWorkspaceId
                     ? personalQuota
-                      ? `${uncertainty ? "≈ " : ""}${formatCredits(personalQuota.remaining)} cr`
-                      : quotaState.loading ? "확인 중" : myQuota?.source === "unassigned" ? "미배정"
+                      ? `${uncertainty ? "≈ " : ""}${formatCredits(personalQuota.remaining)}`
+                      : quotaState.loading ? "확인 중" : myQuota?.source === "unassigned" ? "그룹 없음"
                         : myQuota?.source === "unlimited" ? "한도 없음" : "확인 불가"
                     : `${formatCredits(activeCredits ?? 0)} left`}
                 </span>
               </div>
               {personalQuota ? (
-                <div className="acct-quota-summary" title={personalQuota.source === "auto" ? "그룹 인당 한도" : "매니저가 지정한 개인 몫"}>
-                  <span>{personalQuota.limit_period === "day" ? "일" : personalQuota.limit_period === "week" ? "주" : "월"} 한도 {formatCredits(personalQuota.quota)} cr</span>
-                  <span>사용 {uncertainty ? "≈ " : ""}{formatCredits(personalQuota.used)} cr</span>
+                <div className="acct-quota-summary" title={personalQuota.source === "auto" ? "그룹 크레딧" : "매니저가 지정한 할당 크레딧"}>
+                  <span>{personalQuota.limit_period === "day" ? "일" : personalQuota.limit_period === "week" ? "주" : "월"} 한도 {formatCredits(personalQuota.quota)}</span>
+                  <span>사용 {uncertainty ? "≈ " : ""}{formatCredits(personalQuota.used)}</span>
                 </div>
               ) : null}
               {gaugeMax > 0 && creditPct != null ? (
@@ -464,12 +464,12 @@ export function AccountMenu({
               {unlimitedQuota ? (
                 <div className="acct-quota-note">그룹 한도 없음 · 공용 잔액 안에서 씁니다</div>
               ) : quotaWorkspaceId ? (
-                <div className="acct-quota-note">워크스페이스 잔액 {activeCredits == null ? "확인 불가" : `${formatCredits(activeCredits)} cr`}</div>
+                <div className="acct-quota-note">워크스페이스 잔액 {activeCredits == null ? "확인 불가" : `${formatCredits(activeCredits)} 크레딧`}</div>
               ) : null}
             </div>
           )}
           {!liveMode && reported?.reported && (
-            <div className="acct-hint acct-hint-sm">마지막 동기화 기준 · 생성 직전에 에이전트가 선택 공간을 확인</div>
+            <div className="acct-hint acct-hint-sm">에이전트 보고값 기준 · 생성 직전에 에이전트가 선택 공간을 확인</div>
           )}
 
           {/* 'HF 생성물 체크'·'HF 삭제물 체크'는 설정 패널로 이동(중복 제거). */}

@@ -91,9 +91,11 @@ class MemberTableTests(unittest.TestCase):
         out = table_repo.member_table("ws1", with_credit=True)
         rows = {r["email"]: r for r in out["rows"]}
         self.assertEqual(set(rows), {"a@x", "b@x", "c@x", "d@x"})  # 프로젝트 직접 추가 계정은 보강, 숨긴 계정은 제외
-        self.assertEqual([p["id"] for p in out["projects"]], ["p1"])  # 보관·다른 공간 프로젝트는 열에 없다
-        self.assertEqual(out["projects"][0]["planning"]["budget_credits"], 20000)
-        self.assertEqual(out["projects"][0]["planning"]["archive_after_days"], 45)
+        # 다른 공간 프로젝트는 없다. 이 공간의 보관 프로젝트(p2)는 archived 로 싣는다(프로젝트 시트에서 다시 활성으로 — 설계 §16)
+        self.assertEqual({p["id"]: p["archived"] for p in out["projects"]}, {"p1": False, "p2": True})
+        p1 = next(p for p in out["projects"] if p["id"] == "p1")
+        self.assertEqual(p1["planning"]["budget_credits"], 20000)
+        self.assertEqual(p1["planning"]["archive_after_days"], 45)
         b = rows["b@x"]
         self.assertEqual((b["uid"], b["project_editable"], b["group_id"]), ("u_b", True, "a" * 32))
         self.assertEqual(b["projects"], {"p1": ["creator", "supervisor"]})

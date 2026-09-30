@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from ..db import get_connection
+from .console_guard import guard_project_change
 from .event_journal import _edit_conflict_detail, _record_audit_event, safe_identity
 from .identity import resolve_display_names
 from .manage_schema import _SCHEMA_ENSURED, _ensure_schema, unresolved_workspace_sql
@@ -369,10 +370,15 @@ def dashboard_summary(
         shared_by_pid = _shared_counts(conn, None, workspace_id)
         # 설정된 프로젝트(레지스트리) — 미분류(null) 제외, 보관 제외. 생성물이 없어도 0으로 표시.
         reg = conn.execute(
-            f"SELECT id, name FROM project p WHERE archived = 0{project_filter} "
+            f"SELECT id, name, workspace_id FROM project p WHERE archived = 0{project_filter} "
             "ORDER BY COALESCE(sort_order, 1000000), created_at",
             project_params,
         ).fetchall()
+        # 서브스페이스 서브 프로젝트의 크레딧 = 서브스페이스 값(설계 §13). 전환 전·서브 아님이면 비어 종전 프로젝트 예산을 보인다.
+        from . import workspace_console
+
+        console_ws = {row["id"]: row["workspace_id"] for row in reg}
+        console_limits = workspace_console.console_limits(conn, list(console_ws.values()))
         planning = {
             r["project_id"]: dict(r)
             for r in conn.execute("SELECT * FROM project_planning").fetchall()
@@ -478,6 +484,7 @@ def dashboard_summary(
             "budget_models": budget_models.get(pid, []),
             "folders": project_folders.get(pid, []),
             "planning": planning.get(pid),
+            "console_limit": None if rp["moved"] else console_limits.get(console_ws.get(pid)),
             "types": type_by_pid.get(pid, {k: 0 for k in _TYPE_KEYS}),
             "video_seconds": round(dur_by_pid.get(pid, 0.0), 1),
         }
@@ -692,6 +699,14 @@ def set_planning(
                 if existing and existing["budget_period"] in {"day", "week", "month"}
                 else "month"
             )
+        # 서브스페이스 서브 프로젝트는 예산·상태를 서브스페이스가 정한다 — 바뀌는 값만 판정(구버전 관리 창이 읽은 값을 되보내면 통과, 설계 §13).
+        old_period = existing["budget_period"] if existing and existing["budget_period"] in {"day", "week", "month"} else "month"
+        old_budget = (existing["budget_credits"] if existing else None, old_period)
+        guard_project_change(
+            conn, pid,
+            budget=(budget_credits, budget_period) if (budget_credits, budget_period) != old_budget else None,
+            status=status if status != (existing["status"] if existing else None) else None,
+        )
         if archive_after_days is None:
             archive_after_days = (
                 existing["archive_after_days"]

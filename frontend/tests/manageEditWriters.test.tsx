@@ -72,7 +72,7 @@ it("CreditPlanFields preserves group baseline and topup inputs on cancel and adv
     return <CreditPlanFields workspaceId="ws" draft={draft} onChange={setDraft} />;
   }
   await act(async () => { root.render(<Harness />); });
-  await type(host.querySelector<HTMLInputElement>('[aria-label="충전 크레딧"]')!, "200");
+  await type(host.querySelector<HTMLInputElement>('[aria-label="추가 크레딧"]')!, "200");
   await click('.credit-topup-save');
   await click('.manage-conflict .credit-modal-delete');
   expect(current!.baseline!.plan.revision).toBe(1);
@@ -112,11 +112,11 @@ it("ProjectManagerPanel keeps credit drafts on 409 while reporting earlier plann
   mocks.setPlanning.mockResolvedValue({ project_id: "p", revision: 4, note: "old planning", status: "active" });
   mocks.saveCreditPlan.mockRejectedValue(conflict(latest, 2));
   await openPanel();
-  await select('[aria-label="매월 충전 기준일"]', '15');
+  await select('[aria-label="매월 충전일"]', '15');
   await click('.project-dialog-actions .admin-confirm-yes');
   expect(mocks.saveCreditPlan.mock.calls[0][1]).toMatchObject({ revision: 1, topup_day: 15 });
   await click('.manage-conflict .credit-modal-delete');
-  expect(host.querySelector<HTMLSelectElement>('[aria-label="매월 충전 기준일"]')!.value).toBe("15");
+  expect(host.querySelector<HTMLSelectElement>('[aria-label="매월 충전일"]')!.value).toBe("15");
   expect(host.textContent).toContain("일부 저장됨: 프로젝트 이름·워크스페이스, 일정·예산");
   expect(host.textContent).toContain("미저장 입력은 유지");
   await click('.project-dialog-actions .admin-confirm-yes');
@@ -144,7 +144,7 @@ it("a pending credit row locks project/workspace inputs without disabling confli
   const latest = settings(2); latest.topups[0].credits = 300;
   mocks.saveCreditPlan.mockRejectedValue(conflict(latest, 2));
   await openPanel();
-  await type(host.querySelector<HTMLInputElement>('[aria-label="충전 크레딧"]')!, "200");
+  await type(host.querySelector<HTMLInputElement>('[aria-label="추가 크레딧"]')!, "200");
   await click('.credit-topup-save');
   const workspace = host.querySelector<HTMLSelectElement>('.admin-project-dialog .admin-field select')!;
   expect(workspace.matches(":disabled")).toBe(true);
@@ -160,8 +160,8 @@ it("project save after its own topup save rebases a revision-only 409 once witho
   mocks.setPlanning.mockResolvedValue({ project_id: "p", revision: 4, note: "old planning", status: "active" });
   mocks.saveCreditPlan.mockResolvedValueOnce(afterTopup).mockRejectedValueOnce(conflict(afterTopup, 2)).mockResolvedValue(saved);
   await openPanel();
-  await select('[aria-label="매월 충전 기준일"]', '15');
-  await type(host.querySelector<HTMLInputElement>('[aria-label="충전 크레딧"]')!, "200");
+  await select('[aria-label="매월 충전일"]', '15');
+  await type(host.querySelector<HTMLInputElement>('[aria-label="추가 크레딧"]')!, "200");
   await click('.credit-topup-save');
   expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(1);
   await click('.project-dialog-actions .admin-confirm-yes');
@@ -177,11 +177,11 @@ it.each([1, 2, 3])("revision-only 409 retry is bounded (reported revision %s) an
   if (revision > 1) mocks.saveCreditPlan.mockRejectedValueOnce(conflict(settings(2), 2));
   mocks.saveCreditPlan.mockRejectedValue(conflict(settings(revision), revision));
   await openPanel();
-  await select('[aria-label="매월 충전 기준일"]', '15');
+  await select('[aria-label="매월 충전일"]', '15');
   await click('.project-dialog-actions .admin-confirm-yes');
   expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(revision > 1 ? 2 : 1);
   expect(host.querySelector('.manage-conflict')).toBeNull();
-  expect(host.querySelector<HTMLSelectElement>('[aria-label="매월 충전 기준일"]')!.value).toBe("15");
+  expect(host.querySelector<HTMLSelectElement>('[aria-label="매월 충전일"]')!.value).toBe("15");
   expect(host.textContent).toContain("자동 재시도를 중단");
   expect(host.querySelector<HTMLButtonElement>('.project-dialog-actions .admin-confirm-yes')!.disabled).toBe(false);
 });
@@ -191,7 +191,7 @@ it("real changes after a revision-only retry still require explicit conflict cho
   mocks.setPlanning.mockResolvedValue({ project_id: "p", revision: 4, note: "old planning", status: "active" });
   mocks.saveCreditPlan.mockRejectedValueOnce(conflict(settings(2), 2)).mockRejectedValueOnce(conflict(remote, 3)).mockResolvedValue(remote);
   await openPanel();
-  await select('[aria-label="매월 충전 기준일"]', '15');
+  await select('[aria-label="매월 충전일"]', '15');
   await click('.project-dialog-actions .admin-confirm-yes');
   expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(2);
   expect(host.querySelector('.manage-conflict')).not.toBeNull();

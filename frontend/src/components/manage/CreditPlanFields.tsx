@@ -94,7 +94,7 @@ export function GroupEditor({
       return;
     }
     if (!unlimited && !stripThousands(limitInput)) {
-      setError("인당 한도를 입력하거나 '한도 없음'을 켜세요.");
+      setError("그룹 크레딧을 입력하거나 '한도 없음'을 켜세요.");
       return;
     }
     onApply(
@@ -126,7 +126,7 @@ export function GroupEditor({
           </label>
           {!unlimited ? (
             <label className="credit-modal-field">
-              <span>인당 한도</span>
+              <span>그룹 크레딧</span>
               <div className="manage-budget-limit">
                 <input
                   type="text"
@@ -139,7 +139,7 @@ export function GroupEditor({
                 <em>크레딧</em>
                 <select
                   value={limitPeriod}
-                  aria-label="한도 주기"
+                  aria-label="기간"
                   title="한 사람이 이 기간마다 쓸 수 있는 양입니다. 기간이 바뀌면 새로 시작합니다(이월 없음)."
                   onChange={(event) => setLimitPeriod(event.target.value as LimitPeriod)}
                 >
@@ -152,7 +152,7 @@ export function GroupEditor({
           ) : null}
           <div className="credit-modal-field credit-allow">
             <div className="credit-allow-head">
-              <span>사용 모델</span>
+              <span>허용 모델</span>
               <button
                 type="button"
                 className={"credit-pill" + (pickingModels ? " solid" : "")}
@@ -171,10 +171,10 @@ export function GroupEditor({
                     </span>
                   ))}
                 </div>
-                <small className="credit-allow-empty">이 {allowed.length}개만 쓸 수 있습니다 — 나머지는 멤버의 생성 창·캔버스 모델 선택 목록에서 빠집니다.</small>
+                <small className="credit-allow-empty">이 {allowed.length}개만 쓸 수 있습니다 — 나머지는 참가자의 생성 창·캔버스 모델 선택 목록에서 빠집니다.</small>
               </>
             ) : (
-              <small className="credit-allow-empty">제한 없음 — 이 그룹 멤버는 모든 모델을 씁니다. 특정 모델만 쓰게 하려면 아래에서 체크하세요.</small>
+              <small className="credit-allow-empty">제한 없음 — 이 그룹 참가자는 모든 모델을 씁니다. 특정 모델만 쓰게 하려면 아래에서 체크하세요.</small>
             )}
             {pickingModels ? (
               <div className="credit-allow-pick" role="group" aria-label="쓸 수 있는 모델 고르기">
@@ -202,10 +202,10 @@ export function GroupEditor({
         <div className="credit-modal-right">
           {/* 머리줄 = [멤버 N] … [+ 멤버 추가] [×] — 닫기 X 를 줄 안에 넣어 아래 멤버들의 × 와 세로로 맞춘다(Jay). */}
           <div className="credit-modal-members-head">
-            <span>멤버 {assigned.length}</span>
+            <span>참가자 {assigned.length}</span>
             <div className="credit-modal-head-right">
               {!picking && candidates.length ? (
-                <button type="button" className="credit-pill" onClick={() => setPicking(true)}>+ 멤버 추가</button>
+                <button type="button" className="credit-pill" onClick={() => setPicking(true)}>+ 참가자 추가</button>
               ) : null}
               <button type="button" className="credit-modal-close" aria-label="닫기" onClick={onClose} disabled={busy}>×</button>
             </div>
@@ -213,7 +213,7 @@ export function GroupEditor({
           {picking ? (
             <div className="credit-pick">
               <div className="credit-pick-head">
-                <span>추가할 멤버를 고르세요 — 다른 그룹에 있으면 옮겨집니다</span>
+                <span>추가할 참가자를 고르세요 — 다른 그룹에 있으면 옮겨집니다</span>
                 <button type="button" className="credit-pill" onClick={() => setPicking(false)}>완료</button>
               </div>
               {candidates.map((member) => (
@@ -227,11 +227,11 @@ export function GroupEditor({
                   <small>
                     {member.email}
                     {member.group_id && member.group_id !== group.id ? ` · 지금 ${groupName(member.group_id)}` : ""}
-                    {member.is_available ? "" : " · 접근 불가"}
+                    {member.is_available ? "" : " · 확인 전"}
                   </small>
                 </button>
               ))}
-              {!candidates.length ? <div className="admin-empty">추가할 멤버가 없습니다.</div> : null}
+              {!candidates.length ? <div className="admin-empty">추가할 참가자가 없습니다.</div> : null}
             </div>
           ) : assigned.length ? (
             <div className="credit-modal-members">
@@ -239,7 +239,7 @@ export function GroupEditor({
                 <div className={`credit-modal-member${member.is_available ? "" : " off"}`} key={member.email}>
                   <span>
                     <strong>{memberLabel(member)}</strong>
-                    <small>{member.email}{member.is_available ? "" : " · 접근 불가"}</small>
+                    <small>{member.email}{member.is_available ? "" : " · 확인 전"}</small>
                   </span>
                   <button type="button" aria-label="그룹에서 빼기" onClick={() => setEmails((current) => current.filter((email) => email !== member.email))}>×</button>
                 </div>
@@ -248,9 +248,9 @@ export function GroupEditor({
           ) : (
             <div className="credit-modal-empty">
               <div className="credit-modal-empty-icon" aria-hidden="true">👥</div>
-              <strong>아직 멤버가 없습니다</strong>
-              <small>멤버를 추가해 이 그룹에 배정하세요</small>
-              {candidates.length ? <button type="button" className="credit-pill solid" onClick={() => setPicking(true)}>멤버 추가</button> : null}
+              <strong>아직 참가자가 없습니다</strong>
+              <small>참가자를 추가해 이 그룹에 배정하세요</small>
+              {candidates.length ? <button type="button" className="credit-pill solid" onClick={() => setPicking(true)}>참가자 추가</button> : null}
             </div>
           )}
         </div>
@@ -389,12 +389,12 @@ export function CreditPlanFields({
         <>
           {/* 월 충전은 위 '예산 한도(매월)'가 곧 그 값이라 여기선 다시 보여주지 않는다(Jay). 대시보드 풀 카드가 파생값을 보여 준다. */}
           <label className="manage-field">
-            <span>충전 기준일</span>
+            <span>충전일</span>
             <div className="manage-budget-limit credit-topup-day">
               <em>매월</em>
               <select
                 value={draft.topupDay === Number(todayLocal().slice(8, 10)) ? "today" : draft.topupDay}
-                aria-label="매월 충전 기준일"
+                aria-label="매월 충전일"
                 title="힉스필드가 이 워크스페이스에 크레딧을 넣는 날 — 이날부터 다음 충전일 전날까지를 한 기간으로 셉니다. 없는 날짜는 월말을 씁니다."
                 onChange={(event) => update({ topupDay: event.target.value === "today" ? Number(todayLocal().slice(8, 10)) : Number(event.target.value) })}
               >
@@ -407,19 +407,19 @@ export function CreditPlanFields({
           </label>
           <div className="credit-topup-editor">
             <div className="credit-plan-table-head">
-              <span>긴급 충전 {draft.topups.length ? `· ${draft.topups.length}건` : ""}</span>
+              <span>추가 크레딧 {draft.topups.length ? `· ${draft.topups.length}건` : ""}</span>
               <button type="button" className="credit-group-add" onClick={addTopup}>+ 추가</button>
             </div>
             {draft.topups.map((topup) => (
               <div className="credit-topup-row" key={topup.id}>
-                <input type="date" value={topup.day} aria-label="충전 날짜" onChange={(event) => updateTopup(topup.id, { day: event.target.value })} />
+                <input type="date" value={topup.day} aria-label="추가 크레딧 날짜" onChange={(event) => updateTopup(topup.id, { day: event.target.value })} />
                 <input
                   className="settings-input"
                   type="text"
                   inputMode="numeric"
                   value={formatThousands(topup.creditsInput)}
                   placeholder="크레딧"
-                  aria-label="충전 크레딧"
+                  aria-label="추가 크레딧"
                   onChange={(event) => updateTopup(topup.id, { creditsInput: stripThousands(event.target.value) })}
                 />
                 <input className="settings-input" value={topup.note} placeholder="메모 (선택)" aria-label="메모" onChange={(event) => updateTopup(topup.id, { note: event.target.value })} />
@@ -438,7 +438,7 @@ export function CreditPlanFields({
                   disabled={topupBusy === topup.id}
                   title="이 기록을 바로 삭제"
                   onClick={() => {
-                    if (!window.confirm(`${topup.day} 긴급 충전 기록을 삭제할까요?`)) return;
+                    if (!window.confirm(`${topup.day} 추가 크레딧 기록을 삭제할까요?`)) return;
                     void saveTopups(topup.id, draft.topups.filter((item) => item.id !== topup.id));
                   }}
                 >
@@ -449,12 +449,12 @@ export function CreditPlanFields({
             {topupError ? <div className="login-error">{topupError}</div> : null}
           </div>
           <div className="credit-plan-table-head">
-            <span>그룹 {draft.groups.length}{unassigned ? ` · 미배정 ${unassigned}명` : ""}</span>
+            <span>그룹 {draft.groups.length}{unassigned ? ` · 그룹 없음 ${unassigned}명` : ""}</span>
             <button type="button" className="credit-group-add" onClick={startNew}>+ 그룹 추가</button>
           </div>
           {draft.groups.length ? (
             <table className="credit-plan-table">
-              <thead><tr><th>그룹</th><th>인당 한도</th><th>인원</th><th title="몫 합계 − 이번 기간 사용(이월 없음)">지금 남은 양</th><th aria-label="삭제" /></tr></thead>
+              <thead><tr><th>그룹</th><th>그룹 크레딧</th><th>인원</th><th title="할당 크레딧 합계 − 이번 기간 사용(이월 없음)">남음</th><th aria-label="삭제" /></tr></thead>
               <tbody>
                 {draft.groups.map((group) => (
                   <tr key={group.id} onClick={() => setEditing(group)} title="클릭하면 그룹 창이 열립니다">
@@ -505,7 +505,7 @@ export function CreditPlanFields({
                 <p className="admin-confirm-q">
                   <b>{deleting.name}</b> 그룹을 삭제하시겠습니까?
                   <br />
-                  <small>이 그룹에 배정된 멤버 {draftMemberCount(draft, deleting.id)}명의 배정도 함께 풀립니다.</small>
+                  <small>이 그룹에 배정된 참가자 {draftMemberCount(draft, deleting.id)}명의 배정도 함께 풀립니다.</small>
                 </p>
                 <div className="admin-confirm-actions">
                   <button

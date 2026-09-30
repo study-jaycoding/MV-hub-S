@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { WorkspacePicker } from "./WorkspacePicker";
 import { createPortal } from "react-dom";
 import { fmtElapsed } from "../../lib/format";
 import { formatCredits, roundCredits } from "../../lib/formatCredits";
@@ -118,9 +119,9 @@ function ModelTooltip({
           <b>{modelLabel(row.model)}</b>
           <em>
             {metric === "both"
-              ? `${n(row.count)}개 · ${credits(row.credits)} cr`
+              ? `${n(row.count)}개 · ${credits(row.credits)} 크레딧`
               : metric === "credits"
-                ? `${credits(row.credits)} cr`
+                ? `${credits(row.credits)} 크레딧`
                 : metric === "final"
                   ? `${n(row.final_count || 0)}개`
                   : metric === "yield"
@@ -297,17 +298,6 @@ function UsageCreditRing({
   );
 }
 
-function TableIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      <line x1="3" y1="10" x2="21" y2="10" />
-      <line x1="3" y1="15" x2="21" y2="15" />
-      <line x1="9.5" y1="4" x2="9.5" y2="20" />
-    </svg>
-  );
-}
-
 function DownloadIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20">
@@ -338,7 +328,7 @@ function useUsagePagination<T>(items: T[], scope: string) {
   };
 }
 
-function UsagePagination({
+export function UsagePagination({
   label,
   page,
   pageSize,
@@ -408,27 +398,35 @@ export function WorkspaceUsageDashboard({
   reloadSignal = 0,
   canCreateProject = false,
   onCreateProject,
+  createProjectOpen = false,
   workspaceId = "",
   onWorkspaceIdChange,
   scope = "all",
-  tableOpen = false,
-  onToggleTable,
   tableSlot,
+  consoleOpen = false,
+  onToggleConsole,
+  detailOpen = false,
+  onToggleDetail,
 }: {
   reloadSignal?: number;
   canCreateProject?: boolean;
   onCreateProject?: () => void;
+  createProjectOpen?: boolean; // 프로젝트 관리 창이 열려 있음 — 단추를 라임으로
   workspaceId?: string;
   onWorkspaceIdChange?: (workspaceId?: string) => void;
   /** all=매니저(팀 전체) · mine=일반 멤버 — 서버가 본인 기록으로 강제하므로 여기서는 문구·카드만 바꾼다. */
   scope?: "all" | "mine";
-  /** 관리 표(설계: docs/MEMBER_TABLE_DESIGN.md) — onToggleTable 이 있으면 표 아이콘을 그리고, 열려 있으면 머리글 아래에 tableSlot 만 그린다. */
-  tableOpen?: boolean;
-  onToggleTable?: () => void;
+  /** 워크스페이스 — onToggleConsole 이 있으면 머리에 워크스페이스 단추를 그리고, 열려 있으면 머리글 아래에 tableSlot 만 그린다.
+   *  tableSlot = 워크스페이스 판(서브스페이스 ↔ 관리 표 — 관리 표는 워크스페이스 안에서만, Jay 2026-09-30). */
   tableSlot?: ReactNode;
+  consoleOpen?: boolean;
+  onToggleConsole?: () => void;
+  /** 프로젝트 상세 — onToggleDetail 이 있으면 워크스페이스 오른쪽에 '상세' 단추, 열려 있으면 tableSlot(프로젝트 상세)만 그린다. */
+  detailOpen?: boolean;
+  onToggleDetail?: () => void;
 }) {
   const mine = scope === "mine";
-  const showTable = tableOpen && Boolean(tableSlot);
+  const showTable = (consoleOpen || detailOpen) && Boolean(tableSlot);
   // 구서버(read_all 전용)에 새 프론트가 붙으면 멤버는 403 — 빈 결과와 구분해 안내만 한다(코덱스 P2).
   const describeUsageError = (reason: unknown) =>
     mine && isHttpStatus(reason, 403)
@@ -686,7 +684,7 @@ export function WorkspaceUsageDashboard({
   const projectCreateButton = canCreateProject && onCreateProject ? (
     <button
       type="button"
-      className="usage-project-button"
+      className={"usage-ws-button" + (createProjectOpen ? " on" : "")}
       onClick={onCreateProject}
       title="프로젝트 생성·멤버·역할 관리"
     >
@@ -694,16 +692,27 @@ export function WorkspaceUsageDashboard({
     </button>
   ) : null;
 
-  const tableButton = onToggleTable ? (
+  const consoleButton = onToggleConsole ? (
     <button
       type="button"
-      className={"usage-icon-button" + (tableOpen ? " on" : "")}
-      onClick={onToggleTable}
-      title="관리 표 — 멤버·그룹·프로젝트 참여를 표로 보고 고친다"
-      aria-label="관리 표"
-      aria-pressed={tableOpen}
+      className={"usage-ws-button" + (consoleOpen ? " on" : "")}
+      onClick={onToggleConsole}
+      title="워크스페이스 — 메인과 서브스페이스의 크레딧을 조율합니다"
+      aria-pressed={consoleOpen}
     >
-      <TableIcon />
+      워크스페이스
+    </button>
+  ) : null;
+
+  const detailButton = onToggleDetail ? (
+    <button
+      type="button"
+      className={"usage-ws-button" + (detailOpen ? " on" : "")}
+      onClick={onToggleDetail}
+      title="프로젝트 상세 — 프로젝트 표와 에피소드·시퀀스"
+      aria-pressed={detailOpen}
+    >
+      상세
     </button>
   ) : null;
 
@@ -712,7 +721,7 @@ export function WorkspaceUsageDashboard({
       <section className="usage-dashboard usage-empty">
         <header className="usage-head">
           <h2>{mine ? "내 사용 현황" : "워크스페이스 사용 현황"}</h2>
-          <div className="usage-actions">{projectCreateButton}{tableButton}</div>
+          <div className="usage-actions">{projectCreateButton}{consoleButton}{detailButton}</div>
         </header>
         {/* 워크스페이스가 아직 하나도 보고되지 않았어도 관리 표는 전체 계정을 보여 준다 */}
         {showTable ? tableSlot : error ? (
@@ -733,27 +742,18 @@ export function WorkspaceUsageDashboard({
     <section className="usage-dashboard">
       <header className="usage-head">
         <div className="usage-title">
-          <span className="usage-avatar">{(selectedWorkspace?.name || "전체").slice(0, 1).toUpperCase()}</span>
+          <span className={`usage-avatar${selectedWorkspace ? "" : " all"}`}>{(selectedWorkspace?.name || "전체").slice(0, 1).toUpperCase()}</span>
           <div>
-            <select
-              aria-label="워크스페이스 선택"
+            <WorkspacePicker
+              workspaces={workspaces}
+              labels={workspaceLabels}
               value={workspaceId}
-              onChange={(event) => {
-                onWorkspaceIdChange?.(event.target.value || undefined);
+              onChange={(id) => {
+                onWorkspaceIdChange?.(id);
                 setChartModel("");
                 clearDrill();
               }}
-            >
-              <option value="">개인 · 전체 워크스페이스</option>
-              {workspaceId && !workspaces.some((workspace) => workspace.id === workspaceId) ? (
-                <option value={workspaceId}>선택 워크스페이스 ({workspaceId.slice(0, 8)})</option>
-              ) : null}
-              {workspaces.map((workspace) => (
-                <option key={workspace.id} value={workspace.id}>
-                  {workspaceLabels.get(workspace.id) ?? workspace.name}
-                </option>
-              ))}
-            </select>
+            />
             <p>
               {`${mine ? "내 기록" : `${selectedWorkspace?.member_count ?? totals?.workers ?? 0} members`} · ${periodAppliesToAll ? chartRange.label : "전체 기간"}`}
               {selectedWorker ? ` · 인원: ${selectedWorker.creator_name || "이름 없는 멤버"}` : selectedProject ? ` · 프로젝트: ${selectedProject.project_name || "미분류"}` : ""}
@@ -770,7 +770,8 @@ export function WorkspaceUsageDashboard({
         </div>
         <div className="usage-actions">
           {projectCreateButton}
-          {tableButton}
+          {consoleButton}
+          {detailButton}
           <div className="usage-export-wrap">
             <button
               type="button"
@@ -855,17 +856,17 @@ export function WorkspaceUsageDashboard({
                 <span>수집된 거래 기준</span>
               </div>
               <div className="usage-stat-grid">
-                <div><span>사용</span><strong>{credits(overview.ledger.spend)}</strong></div>
+                <div><span>크레딧 사용</span><strong>{credits(overview.ledger.spend)}</strong></div>
                 <div>
-                  <span>환불</span>
+                  <span>크레딧 환불</span>
                   <strong>{overview.ledger.refund ? `−${credits(overview.ledger.refund)}` : "0"}</strong>
                 </div>
-                <div><span>순사용</span><strong>{credits(overview.ledger.net)}</strong></div>
+                <div><span>크레딧 순사용</span><strong>{credits(overview.ledger.net)}</strong></div>
               </div>
               {overview.ledger.unknown_workspace && overview.ledger.unknown_workspace.count > 0 ? (
                 <p className="usage-ledger-note">
                   공간이 확인되지 않아 이 합계에 넣지 않은 거래{" "}
-                  {n(overview.ledger.unknown_workspace.count)}건 · 사용{" "}
+                  {n(overview.ledger.unknown_workspace.count)}건 · 크레딧 사용{" "}
                   {credits(overview.ledger.unknown_workspace.spend)} · 환불{" "}
                   {credits(overview.ledger.unknown_workspace.refund)}
                 </p>
@@ -921,8 +922,8 @@ export function WorkspaceUsageDashboard({
                 {drillPending && <div className="usage-inline-state">선택한 사용량 계산 중…</div>}
                 {drillFailed && <div className="usage-inline-state error">선택한 사용량을 불러오지 못했습니다.</div>}
                 {!drillPending && !drillFailed && modelPage.items.map((row) => (
-                  <div key={row.model} title={`${row.model} · ${n(row.count)}개 · ${credits(row.credits)} cr`}>
-                    <span>{modelDisplayName(row.model)}</span><i><b style={{ width: `${(row.credits / maxModelCredits) * 100}%` }} /></i><em>{credits(row.credits)} cr</em>
+                  <div key={row.model} title={`${row.model} · ${n(row.count)}개 · ${credits(row.credits)} 크레딧`}>
+                    <span>{modelDisplayName(row.model)}</span><i><b style={{ width: `${(row.credits / maxModelCredits) * 100}%` }} /></i><em>{credits(row.credits)}</em>
                   </div>
                 ))}
                 {!drillPending && !drillFailed && !modelPage.items.length && (
@@ -1054,7 +1055,7 @@ export function WorkspaceUsageDashboard({
                 {displayedTrend.map((row, index) => {
                   const value = row[chartMetric] || 0;
                   return (
-                    <div className="usage-chart-col" key={row.bucket} title={`${row.bucket} · ${chartMetric === "credits" ? `${credits(value)} cr` : `${n(value)}개`}`}>
+                    <div className="usage-chart-col" key={row.bucket} title={`${row.bucket} · ${chartMetric === "credits" ? `${credits(value)} 크레딧` : `${n(value)}개`}`}>
                       <span>{value ? (chartMetric === "credits" ? credits(value) : n(value)) : ""}</span>
                       <i style={{ height: `${trendScaleMax ? Math.max(value ? 3 : 0, (value / trendScaleMax) * 100) : 0}%` }} />
                       <em>{showUsageTrendLabel(chartPeriodUnit, index, displayedTrend.length) ? formatUsageTrendBucket(row.bucket, chartPeriodUnit) : ""}</em>

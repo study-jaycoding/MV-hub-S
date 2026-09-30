@@ -4,8 +4,8 @@ import type { Planning } from "./types";
 import { ProjectDateRangePicker } from "./ProjectDateRangePicker";
 
 export const PROJECT_STATUS_OPTIONS: { value: string; label: string }[] = [
-  { value: "active", label: "진행" },
-  { value: "hold", label: "보류" },
+  { value: "active", label: "활성" },
+  { value: "hold", label: "비활성" },
   { value: "done", label: "완료" },
 ];
 
@@ -44,7 +44,7 @@ export function ProjectPlanningFields({
         })}
       />
       <label className="manage-field">
-        <span>보관 기록 전환</span>
+        <span>작업 자동 보관(일)</span>
         <div className="manage-budget-limit">
           <input
             type="number"

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildProjectUsageHierarchy } from "../src/components/manage/projectUsageHierarchy";
+import { buildProjectUsageHierarchy, filterProjectUsage } from "../src/components/manage/projectUsageHierarchy";
 import type { ProjectFolderUsage } from "../src/components/manage/types";
 
 function folder(
@@ -74,5 +74,20 @@ describe("project usage hierarchy", () => {
 
     expect(result[0].episode_name).toBe("ep003");
     expect(result[0].sequences[0].sequence_name).toBe("(직접 생성)");
+  });
+
+  it("검색 — 에피소드 이름이 맞으면 시퀀스 전부, 아니면 이름·멤버가 맞는 시퀀스만, 빈 검색은 그대로", () => {
+    const episodes = buildProjectUsageHierarchy([
+      folder("ep001/c0010", 1, 0, 1, 0, "2026-08-01", "2026-08-01"),
+      folder("ep001/c0015", 1, 0, 1, 0, "2026-08-01", "2026-08-01"),
+      folder("ep002/c0020", 1, 0, 1, 0, "2026-08-01", "2026-08-01"),
+    ]);
+    const names = (query: string) => filterProjectUsage(episodes, query).map((episode) => `${episode.episode_name}:${episode.sequences.map((sequence) => sequence.sequence_name).join(",")}`);
+    expect(names("")).toEqual(["ep001:c0010,c0015", "ep002:c0020"]);
+    expect(names("EP002")).toEqual(["ep002:c0020"]); // 대소문자 무시 · 에피소드가 맞으면 시퀀스 전부
+    expect(names("0015")).toEqual(["ep001:c0015"]); // 시퀀스 이름
+    expect(names("제이")).toEqual(["ep001:c0010"]); // 멤버(fixture: 0010 폴더 = 제이)
+    expect(names("없는말")).toEqual([]);
+    expect(filterProjectUsage(episodes, "0015")[0].count).toBe(2); // 에피소드 줄 합계는 전체 값 그대로
   });
 });

@@ -34,7 +34,7 @@ describe("project planning", () => {
       due_date: "2026-08-07",
     }, "")).toEqual({
       planning: null,
-      error: "마감일은 시작일보다 빠를 수 없습니다.",
+      error: "종료일은 시작일보다 빠를 수 없습니다.",
     });
   });
 

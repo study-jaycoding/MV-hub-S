@@ -103,7 +103,7 @@ export function ProjectDateRangePicker({
         </button>
       </label>
       <label className="manage-field">
-        <span>마감일</span>
+        <span>종료일</span>
         <button
           type="button"
           className={`manage-date-button${open && phase === "end" ? " on" : ""}`}
@@ -113,13 +113,13 @@ export function ProjectDateRangePicker({
         </button>
       </label>
       {open && (
-        <div className="project-range-popover" role="dialog" aria-label="프로젝트 시작일과 마감일 선택">
+        <div className="project-range-popover" role="dialog" aria-label="프로젝트 시작일과 종료일 선택">
           <header>
             <button type="button" aria-label="이전 달" onClick={() => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() - 1, 1))}>‹</button>
             <strong>{viewMonth.getFullYear()}년 {viewMonth.getMonth() + 1}월</strong>
             <button type="button" aria-label="다음 달" onClick={() => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 1))}>›</button>
           </header>
-          <p>{phase === "start" ? "시작일을 선택하세요" : "마감일을 선택하세요"}</p>
+          <p>{phase === "start" ? "시작일을 선택하세요" : "종료일을 선택하세요"}</p>
           <div className="project-range-weekdays">
             {WEEKDAYS.map((weekday) => <span key={weekday}>{weekday}</span>)}
           </div>
@@ -146,8 +146,8 @@ export function ProjectDateRangePicker({
             })}
           </div>
           <footer>
-            <span>{startDate || "시작일"} → {dueDate || "마감일"}</span>
-            <button type="button" onClick={() => { onChange("", ""); setPhase("start"); }}>일정 지우기</button>
+            <span>{startDate || "시작일"} → {dueDate || "종료일"}</span>
+            <button type="button" onClick={() => { onChange("", ""); setPhase("start"); }}>기간 지우기</button>
           </footer>
         </div>
       )}

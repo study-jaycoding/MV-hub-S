@@ -26,7 +26,7 @@ from typing import Literal, NoReturn, Optional
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
-from . import _proxy, manage_quota
+from . import _proxy, manage_quota, workspace_console
 from ..services.async_tools import to_thread_non_abandon
 from .. import active_account, rbac, repo
 from ..config import AUTH_ENABLED, MEDIA_DIR
@@ -48,6 +48,7 @@ from ..repo import manage as repo_manage
 from ..repo import manage_credit_plan as repo_credit
 from ..repo import manage_member_table as repo_member_table
 from ..repo import manage_tasks as repo_manage_tasks
+from ..repo import workspace_console as repo_console
 from ..services import cli_bridge, file_stamp, final_export, media_cache, project_folders
 from ..services.telemetry_drain import drain_isolated_telemetry
 from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
@@ -57,6 +58,7 @@ from ..services.operational_logging import log_event
 
 router = APIRouter(prefix="/api/manage", tags=["manage"])
 router.include_router(manage_quota.router)
+router.include_router(workspace_console.router)
 _manage_log = logging.getLogger("mvhub.manage")
 
 
@@ -806,6 +808,9 @@ class CreditPlanIn(BaseModel):
     topup_day: Optional[int] = Field(default=None, ge=1, le=31)  # 매월 충전 기준일 · 없는 날짜는 월말 · None=그대로
     # 정기 충전 손 입력. 키 없음=그대로 · null=프로젝트 '매월 예산' 합에서 파생으로 되돌림 · 숫자=손 입력(Jay 2026-09-23).
     recurring_topup: Optional[float] = Field(default=None, ge=0)
+    recurring_auto: Optional[bool] = None  # 충전 방식 · 키 없음(또는 null)=그대로 · true=자동 · false=수동
+    recurring_period: Optional[Literal["day", "week", "month"]] = None  # 자동 충전 주기 · 키 없음(또는 null)=그대로
+    recurring_anchor: Optional[str] = Field(default=None, max_length=10)  # 'YYYY-MM-DD' · 키 없음=그대로 · null=지움
     groups: Optional[list[CreditGroupIn]] = None  # None=그룹·배정 그대로(충전 기록만 저장)
     members: Optional[list[CreditMemberIn]] = None
     topups: Optional[list[CreditTopupIn]] = None  # 긴급 충전 기록 전체 교체 · None=그대로
@@ -902,6 +907,9 @@ def put_credit_plan(workspace_id: str, body: CreditPlanIn, request: Request):
             recurring_topup=(
                 body.recurring_topup if "recurring_topup" in body.model_fields_set else repo_credit.KEEP
             ),
+            recurring_auto=repo_credit.KEEP if body.recurring_auto is None else body.recurring_auto,
+            recurring_period=repo_credit.KEEP if body.recurring_period is None else body.recurring_period,
+            recurring_anchor=body.recurring_anchor if "recurring_anchor" in body.model_fields_set else repo_credit.KEEP,
         )
     except repo_credit.CreditPlanConflict as exc:
         require_global_cap(request, "create_project")
@@ -1048,6 +1056,8 @@ def put_planning(pid: str, body: PlanningIn, request: Request):
     _require_project_manage(request, pid)
     try:
         return repo_manage.set_planning(pid, **body.model_dump(), actor_uid=actor_id(request))
+    except repo_console.ConsoleManaged as exc:  # 서브스페이스 서브 프로젝트의 예산·상태(설계 §13)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except repo_manage.PlanningConflict as exc:
         _require_project_manage(request, pid)
         raise HTTPException(

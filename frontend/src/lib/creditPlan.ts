@@ -12,6 +12,10 @@ export interface BalancePoint {
 
 export interface CreditPool {
   monthly_topup: number | null; // 파생값 — 이 워크스페이스 프로젝트들의 예산 한도(매월) 합
+  monthly_topup_source?: "manual" | "derived" | "none"; // 손 입력=manual · 파생=derived · 서브스페이스 서브에 정기 없음=none(§13)
+  recurring_auto?: boolean; // 충전 방식 — true=자동(매월 충전일) · false=수동 · 구서버는 없음(=자동)
+  recurring_period?: LimitPeriod; // 자동 충전 주기 · 구서버는 없음(=month)
+  recurring_anchor?: string | null; // 주=그 요일 · 일=그날부터
   topup_day?: number; // 매월 충전 기준일(1~31, 없는 날짜는 월말) — 달 경계
   note: string | null;
   used_month: number; // 팀 기록 장부(팩트) 이번 달 합
@@ -151,9 +155,12 @@ export interface CreditPlanSettings {
   cycle_end?: string;
   plan: {
     monthly_topup: number | null; // 손 입력이 있으면 그 값, 없으면 프로젝트 '매월 예산' 합에서 파생
-    monthly_topup_source?: "manual" | "derived";
+    monthly_topup_source?: "manual" | "derived" | "none";
     recurring_topup?: number | null; // 손 입력 원본(null = 파생)
     derived_topup?: number | null; // 손 입력을 지우면 돌아갈 값
+    recurring_auto?: boolean; // 충전 방식(true=자동 매월 · false=수동) · 구서버는 없음(=자동)
+    recurring_period?: LimitPeriod; // 자동 충전 주기 · 구서버는 없음(=month)
+    recurring_anchor?: string | null;
     topup_day?: number;
     note: string | null;
     revision: number;
@@ -175,6 +182,9 @@ export interface CreditPlanSaveBody {
   //  group_id 도 같은 규칙이라 '몫만 바꾸기'는 group_id 키 없이 보낸다.
   members?: { email: string; group_id?: string | null; quota?: number | null }[];
   recurring_topup?: number | null; // 정기 충전 손 입력 · 키 없음=그대로 · null=파생으로
+  recurring_auto?: boolean; // 충전 방식 · 키 없음=그대로
+  recurring_period?: LimitPeriod; // 자동 충전 주기 · 키 없음=그대로
+  recurring_anchor?: string | null; // 기준 날짜 · 키 없음=그대로
   topups?: { id?: string; day: string; credits: number; note: string | null }[]; // 전체 교체 · 없으면 그대로
 }
 
@@ -408,8 +418,8 @@ function parseNonNegative(input: string): number | null | undefined {
 
 /** 긴급 충전 한 줄 검사 — 오류 문구 또는 null. */
 export function validateTopup(topup: DraftTopup): string | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(topup.day)) return "긴급 충전 날짜를 골라 주세요.";
-  if (!parseNonNegative(topup.creditsInput)) return `긴급 충전(${topup.day}): 크레딧을 1 이상으로 입력하세요.`;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(topup.day)) return "추가 크레딧 날짜를 골라 주세요.";
+  if (!parseNonNegative(topup.creditsInput)) return `추가 크레딧(${topup.day}): 크레딧을 1 이상으로 입력하세요.`;
   return null;
 }
 

@@ -35,6 +35,7 @@ from typing import Any, Optional
 from ..db import get_connection
 from ..emailnorm import norm_email
 from ._common import _email_localpart
+from .console_guard import managed_sub
 from .event_journal import _edit_conflict_detail, _record_audit_event, account_target, safe_identity
 from .manage_schema import _ensure_schema
 
@@ -299,6 +300,18 @@ def _plan_anchor(plan: Optional[dict]) -> int:
     return _clamp_anchor(plan.get("topup_day") if plan else 1)
 
 
+def _plan_auto(plan: Optional[dict]) -> bool:
+    """정기 충전 방식 — 자동(기본·옛 행)이면 True. 수동이면 매월 반복 충전이 없어 예정표에서 빠진다."""
+    value = plan.get("recurring_auto") if plan else None
+    return True if value is None else bool(value)
+
+
+def _plan_period(plan: Optional[dict]) -> str:
+    """자동 충전 주기 — month(기본·옛 행)/week/day. 깨진 값은 month."""
+    value = str((plan or {}).get("recurring_period") or "month")
+    return value if value in _PERIODS else "month"
+
+
 def _plan_recurring(plan: Optional[dict]) -> Optional[float]:
     """정기 충전 손 입력(없으면 None = 프로젝트 '매월 예산' 합에서 파생). 깨진 값은 파생으로 폴백."""
     if not plan:
@@ -312,7 +325,15 @@ def _plan_recurring(plan: Optional[dict]) -> Optional[float]:
 
 def _monthly_budget(conn, workspace_id: str) -> Optional[int]:
     """월 충전액 = 이 워크스페이스 프로젝트들의 '예산 한도(주기=매월)' 합. 매월 예산이 하나도 없으면 None.
-    (Jay: 예산 한도와 월 충전은 같은 값 — 칸 하나만 두고 파생한다. 하루·한 주 주기는 안 센다.)"""
+    (Jay: 예산 한도와 월 충전은 같은 값 — 칸 하나만 두고 파생한다. 하루·한 주 주기는 안 센다.)
+    ★서브스페이스 전환 뒤 연결된 콘솔 서브는 파생하지 않는다 — 서브스페이스에 적힌 정기 크레딧만 쓴다(설계 §13 합의안)."""
+    if managed_sub(conn, workspace_id):
+        return None
+    return project_budget_sum(conn, workspace_id)
+
+
+def project_budget_sum(conn, workspace_id: str) -> Optional[int]:
+    """프로젝트 '매월 예산' 합(파생 원천) — 서브스페이스 1회 옮기기도 이 값을 쓴다."""
     row = conn.execute(
         "SELECT SUM(pp.budget_credits) AS total, COUNT(pp.budget_credits) AS n FROM project_planning pp "
         "JOIN project p ON p.id=pp.project_id "
@@ -512,9 +533,12 @@ def _get_settings(conn, workspace_id: str) -> dict[str, Any]:
         "plan": {
             # 정기 충전 = 손 입력이 있으면 그 값, 없으면 프로젝트 '예산 한도(매월)' 합에서 파생(Jay 2026-09-23).
             "monthly_topup": recurring if recurring is not None else monthly_topup,
-            "monthly_topup_source": "manual" if recurring is not None else "derived",
+            "monthly_topup_source": "manual" if recurring is not None else ("derived" if monthly_topup is not None else "none"),
             "recurring_topup": recurring,  # 손 입력 원본(null = 파생)
             "derived_topup": monthly_topup,  # 손 입력을 지웠을 때 돌아갈 값
+            "recurring_auto": _plan_auto(plan),  # 충전 방식(True=자동 · False=수동)
+            "recurring_period": _plan_period(plan),  # 자동 충전 주기 month/week/day
+            "recurring_anchor": plan.get("recurring_anchor") if plan else None,  # 주=그 요일 · 일=그날부터
             "topup_day": anchor,
             "note": plan["note"] if plan else None,
             "revision": int(plan["revision"]) if plan else 0,
@@ -571,6 +595,9 @@ def save_settings(
     topup_day: Optional[int] = None,
     recurring_topup: Any = KEEP,
     actor_uid: Optional[str] = None,
+    recurring_auto: Any = KEEP,
+    recurring_period: Any = KEEP,
+    recurring_anchor: Any = KEEP,
 ) -> dict[str, Any]:
     """전체 저장(한 트랜잭션). revision 이 현재와 다르면 CreditPlanConflict(409).
 
@@ -589,10 +616,24 @@ def save_settings(
       배정은 저장 때 통째로 지우고 다시 넣으므로, 키가 없으면 읽어 둔 옛 몫을 그대로 되넣는다 —
       안 그러면 그룹 색 한 칸만 바꿔도 모두의 몫이 사라진다(Codex 2026-09-23 치명 ②).
     recurring_topup(정기 충전): KEEP(키 없음)=그대로 · None=파생으로 되돌림 · 숫자=손 입력.
+    recurring_auto(충전 방식): KEEP=그대로 · True=자동(매월 충전일) · False=수동(반복 없음).
+    recurring_period(자동 충전 주기): KEEP=그대로 · month/week/day. recurring_anchor: KEEP=그대로 · 'YYYY-MM-DD'(주=그 요일·
+    일=그날부터 시작) · None=지움. month 의 충전일은 여전히 topup_day 다.
     topups: [{id?, day, credits, note?}] — 긴급 충전 기록 전체 교체(None 이면 그대로 둔다).
     그룹 이월 폐기(2026-09-29): base_start·base_balance 는 **동결** — 기존 그룹은 쓰지 않고, 새 그룹만 NOT NULL 을
     채우려고 이번 기간 시작·0 을 넣는다. remaining_override 는 받아서 무시한다(구버전 앱 저장 호환)."""
     today = today_local()
+    if recurring_period is not KEEP and recurring_period not in _PERIODS:
+        raise ValueError("충전 주기는 month/week/day 중 하나여야 합니다")
+    if recurring_anchor is not KEEP and recurring_anchor is not None:
+        recurring_anchor = str(recurring_anchor).strip()
+        try:
+            if not _DAY_RE.fullmatch(recurring_anchor):
+                raise ValueError
+            _d(recurring_anchor)
+        except ValueError:
+            raise ValueError("충전 기준 날짜는 YYYY-MM-DD 로 적어 주세요") from None
+    schedule = {"recurring_auto": recurring_auto, "recurring_period": recurring_period, "recurring_anchor": recurring_anchor}
     with get_connection() as conn:
         _ensure_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
@@ -611,7 +652,7 @@ def save_settings(
         )
         if groups is None:  # 충전 기록·note·기준일만 — 그룹·배정은 손대지 않는다
             _write_topups_and_plan(
-                conn, workspace_id, prepared_topups, note, cur_rev, new_anchor, recurring_topup, actor_uid
+                conn, workspace_id, prepared_topups, note, cur_rev, new_anchor, recurring_topup, actor_uid, schedule
             )
             _record_settings_edit(conn, workspace_id, before, revision, actor_uid)
             return _get_settings(conn, workspace_id)
@@ -714,7 +755,7 @@ def save_settings(
         )
         # 5) 긴급 충전 기록 전체 교체(요청에 있을 때만) + 6) 플랜·revision
         _write_topups_and_plan(
-            conn, workspace_id, prepared_topups, note, cur_rev, new_anchor, recurring_topup, actor_uid
+            conn, workspace_id, prepared_topups, note, cur_rev, new_anchor, recurring_topup, actor_uid, schedule
         )
         _record_settings_edit(conn, workspace_id, before, revision, actor_uid)
         return _get_settings(conn, workspace_id)
@@ -725,7 +766,8 @@ def _record_settings_edit(conn, workspace_id, before, expected_revision, actor_u
     fields: set[str] = set()
     old_plan, old_groups, old_members, old_topups, old_quotas = before
     plan, groups, members, topups, quotas = after
-    for key, default in (("note", None), ("topup_day", 1), ("recurring_topup", None)):
+    for key, default in (("note", None), ("topup_day", 1), ("recurring_topup", None), ("recurring_auto", 1),
+                         ("recurring_period", "month"), ("recurring_anchor", None)):
         if (old_plan or {}).get(key, default) != plan[key]:
             fields.add(f"plan.{key}")
     for prefix, old_rows, rows, keys in (
@@ -782,6 +824,7 @@ def _write_topups_and_plan(
     topup_day: int,
     recurring_topup: Any = KEEP,
     actor_uid: Optional[str] = None,
+    schedule: Optional[dict[str, Any]] = None,
 ) -> None:
     """긴급 충전 기록 전체 교체(None 이면 그대로) + 플랜 note·topup_day·정기 충전·revision+1. 호출측 트랜잭션 안에서.
     recurring_topup: KEEP=그대로 · None=파생으로 되돌림 · 숫자=손 입력(0 이상 유한)."""
@@ -793,12 +836,24 @@ def _write_topups_and_plan(
         )
     recurring_sql = "" if recurring_topup is KEEP else ", recurring_topup=excluded.recurring_topup"
     recurring_value = None if recurring_topup is KEEP else _valid_quota(recurring_topup)
+    # 자동 충전 방식·주기·기준 날짜 — KEEP 이면 새 행은 기본값, 있는 행은 그대로(키 없는 저장이 지우지 않게).
+    schedule = schedule or {}
+    auto = schedule.get("recurring_auto", KEEP)
+    period = schedule.get("recurring_period", KEEP)
+    anchor = schedule.get("recurring_anchor", KEEP)
+    extra_sql = "".join(
+        f", {col}=excluded.{col}" for col, value in
+        (("recurring_auto", auto), ("recurring_period", period), ("recurring_anchor", anchor)) if value is not KEEP
+    )
     conn.execute(
-        "INSERT INTO workspace_credit_plan(workspace_id, note, topup_day, recurring_topup, revision, updated_by, updated_at) "
-        "VALUES(?,?,?,?,?,?,datetime('now')) "
+        "INSERT INTO workspace_credit_plan(workspace_id, note, topup_day, recurring_topup, recurring_auto, recurring_period, "
+        "recurring_anchor, revision, updated_by, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,datetime('now')) "
         "ON CONFLICT(workspace_id) DO UPDATE SET note=excluded.note, topup_day=excluded.topup_day"
-        f"{recurring_sql}, revision=workspace_credit_plan.revision+1, updated_by=excluded.updated_by, updated_at=excluded.updated_at",
-        (workspace_id, (note or "").strip() or None, topup_day, recurring_value, cur_rev + 1, safe_identity(actor_uid)),
+        f"{recurring_sql}{extra_sql}, revision=workspace_credit_plan.revision+1, updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+        (workspace_id, (note or "").strip() or None, topup_day, recurring_value,
+         1 if auto is KEEP else int(bool(auto)), "month" if period is KEEP else period,
+         None if anchor is KEEP else anchor, cur_rev + 1, safe_identity(actor_uid)),
     )
 
 
@@ -877,7 +932,10 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
         "pool": {
             # 정기 충전 = 손 입력이 있으면 그 값, 없으면 프로젝트 '예산 한도(매월)' 합에서 파생(Jay 2026-09-23).
             "monthly_topup": recurring if recurring is not None else monthly_topup,
-            "monthly_topup_source": "manual" if recurring is not None else "derived",
+            "monthly_topup_source": "manual" if recurring is not None else ("derived" if monthly_topup is not None else "none"),
+            "recurring_auto": _plan_auto(plan),
+            "recurring_period": _plan_period(plan),
+            "recurring_anchor": plan.get("recurring_anchor") if plan else None,
             "topup_day": anchor,
             "note": plan["note"] if plan else None,
             "used_month": _shown(used_month),

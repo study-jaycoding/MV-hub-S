@@ -17,6 +17,7 @@ from ..task_activity import task_activity_now, task_location_key
 from ..workspace_context import workspace_columns
 from ._common import clean_folder_path as _clean_folder_path, new_id
 from ._visibility import team_generation_visibility_clause
+from .console_guard import guard_project_change
 
 _SELECT = (
     "SELECT p.id, p.name, p.kind, p.created_by, p.created_at, p.archived, p.render_root_path, "
@@ -249,6 +250,8 @@ def update_project_identity(
         final_archived = (
             bool(archived) if archived is not None else bool(current["archived"])
         )
+        if final_archived != bool(current["archived"]):
+            guard_project_change(conn, pid, archived=final_archived)
         if not final_archived and _active_name_owner(conn, final_name, exclude_id=pid):
             raise ProjectNameConflictError("같은 이름의 활성 프로젝트가 이미 있습니다")
         try:

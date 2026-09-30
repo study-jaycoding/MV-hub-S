@@ -166,6 +166,9 @@ _SCHEMA = (
         note TEXT,
         topup_day INTEGER NOT NULL DEFAULT 1,
         recurring_topup REAL,
+        recurring_auto INTEGER NOT NULL DEFAULT 1,
+        recurring_period TEXT NOT NULL DEFAULT 'month',
+        recurring_anchor TEXT,
         revision INTEGER NOT NULL DEFAULT 1,
         updated_by TEXT,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -203,6 +206,18 @@ _SCHEMA = (
     )""",
     "CREATE INDEX IF NOT EXISTS idx_wcg_workspace ON workspace_credit_group(workspace_id, sort_order)",
     "CREATE INDEX IF NOT EXISTS idx_wcgm_group ON workspace_credit_group_member(group_id)",
+    # ── 워크스페이스 콘솔(메인 1 · 서브 N — repo/workspace_console.py, docs/WORKSPACE_CONSOLE_DESIGN.md) ──
+    """CREATE TABLE IF NOT EXISTS workspace_console (
+        workspace_id TEXT PRIMARY KEY,
+        tier TEXT NOT NULL CHECK (tier IN ('main','sub')),
+        archived INTEGER NOT NULL DEFAULT 0,
+        alloc_base REAL,
+        alloc_base_day TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_workspace_console_main ON workspace_console(tier) WHERE tier='main'",
 )
 
 # 계정 DB 전환과 DB 파일 교체를 구분하도록 (경로, 풀 에폭)별로 보장 여부를 기억한다.
@@ -644,6 +659,21 @@ def ensure_manage_schema(conn) -> None:
         conn.execute("ALTER TABLE workspace_credit_plan ADD COLUMN recurring_topup REAL")
     if plan_columns and "updated_by" not in plan_columns:
         conn.execute("ALTER TABLE workspace_credit_plan ADD COLUMN updated_by TEXT")
+    # 정기 충전 방식 — 1=자동(힉스필드가 매월 충전일에 넣음, 예정표에 잡힘) · 0=수동(반복 없음). 콘솔(2026-09-29).
+    if plan_columns and "recurring_auto" not in plan_columns:
+        conn.execute("ALTER TABLE workspace_credit_plan ADD COLUMN recurring_auto INTEGER NOT NULL DEFAULT 1")
+    # 메인의 '할당된 크레딧' 기준값(힉스필드 화면 값을 손으로) — 콘솔 풀 카드(2026-09-29).
+    console_columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_console)")}
+    if console_columns and "alloc_base" not in console_columns:
+        conn.execute("ALTER TABLE workspace_console ADD COLUMN alloc_base REAL")
+        conn.execute("ALTER TABLE workspace_console ADD COLUMN alloc_base_day TEXT")
+    if console_columns and "status" not in console_columns:  # 서브 상태(표시용) active/inactive/done
+        conn.execute("ALTER TABLE workspace_console ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    # 자동 충전 주기(month/week/day)와 기준 날짜(주=그 요일, 일=그날부터). month 는 topup_day 가 충전일이다.
+    if plan_columns and "recurring_period" not in plan_columns:
+        conn.execute("ALTER TABLE workspace_credit_plan ADD COLUMN recurring_period TEXT NOT NULL DEFAULT 'month'")
+    if plan_columns and "recurring_anchor" not in plan_columns:
+        conn.execute("ALTER TABLE workspace_credit_plan ADD COLUMN recurring_anchor TEXT")
 
     task_columns = {row[1] for row in conn.execute("PRAGMA table_info(project_task)")}
     for column in ("sequence", "description", "folder_path", "source_last_seen_at"):

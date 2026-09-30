@@ -10,6 +10,7 @@ from ..db import get_connection
 from ..emailnorm import norm_email
 from ._common import _UID_RE, _email_localpart
 from ._visibility import team_generation_visibility_clause
+from .console_guard import STATUSES
 from .last_admin import last_admin_guard
 
 
@@ -550,6 +551,7 @@ _REMAP_EXEMPT: dict[tuple[str, str], str] = {
     ("audit_event", "actor_uid"): "append-only 감사 actor — 당시 기록을 수정하지 않고 이메일 기반 신원은 비가역 지문화",
     ("project_planning", "updated_by"): "저장 당시 감사 actor 스냅샷 — 이메일 기반 임시 신원은 비가역 지문화",
     ("workspace_credit_plan", "updated_by"): "저장 당시 감사 actor 스냅샷 — 이메일 기반 임시 신원은 비가역 지문화",
+    ("workspace_console", "created_by"): "서브 연결 당시 actor 스냅샷('seed' 포함) — 표시·감사용이며 권한 판정에 쓰지 않는다",
     ("super_admin_session", "subject_uid"): (
         "10분 권한 발급 당시의 서명 토큰 sub 스냅샷 — 신원 remap 시 토큰과 DB를 서로 다르게 "
         "고치지 않고 즉시 fail-closed 무효화"
@@ -940,7 +942,31 @@ def list_workspace_options(member_email: Optional[str] = None) -> list[dict[str,
             "ORDER BY w.name COLLATE NOCASE",
             params,
         ).fetchall()
-    return [dict(row) for row in rows]
+        # 서브스페이스의 메인·서브 구분 — 대시보드 선택기의 칩·묶음용. 내린 서브·미연결은 None.
+        # 콘솔 표가 아직 없는 DB(관리 스키마 전)면 전부 None.
+        # console_order = 서브스페이스 왼쪽 목록과 같은 순서(상태 활성→비활성→완료, 그 안에서 서브 프로젝트 중 가장 앞 sort_order, 이름) — 메인은 0.
+        tiers: dict[str, str] = {}
+        order: dict[str, int] = {}
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workspace_console'").fetchone():
+            names = {row["id"]: str(row["name"] or "") for row in rows}
+            first = {
+                r["workspace_id"]: r["s"]
+                for r in conn.execute(
+                    "SELECT workspace_id, MIN(sort_order) AS s FROM project WHERE workspace_id IS NOT NULL GROUP BY workspace_id"
+                )
+            }
+            consoles = conn.execute(
+                "SELECT workspace_id, tier, COALESCE(status, 'active') AS status FROM workspace_console WHERE tier='main' OR archived=0"
+            ).fetchall()
+            tiers = {r["workspace_id"]: r["tier"] for r in consoles}
+            rank = lambda r: (  # noqa: E731
+                r["tier"] != "main",
+                STATUSES.index(r["status"]) if r["status"] in STATUSES else len(STATUSES),
+                first.get(r["workspace_id"]) if first.get(r["workspace_id"]) is not None else 1 << 30,
+                names.get(r["workspace_id"], "").casefold(),
+            )
+            order = {r["workspace_id"]: i for i, r in enumerate(sorted(consoles, key=rank))}
+    return [{**dict(row), "console_tier": tiers.get(row["id"]), "console_order": order.get(row["id"])} for row in rows]
 
 
 def get_registry_workspace(workspace_id: str) -> Optional[dict[str, Any]]:

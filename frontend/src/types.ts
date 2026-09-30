@@ -343,6 +343,8 @@ export interface WorkspaceOption {
   credits: number | null;
   member_count: number;
   last_seen_at: string | null;
+  console_tier?: "main" | "sub" | null; // 서브스페이스의 메인·서브(내린 서브·미연결 = null, 구서버 = 없음)
+  console_order?: number | null; // 서브스페이스 왼쪽 목록과 같은 순서(메인 0 · 서브는 상태 묶음 → 끌어 정한 순서) — 미연결 = null
 }
 
 export interface WorkspaceMemberCandidate {

@@ -4,9 +4,9 @@ export type BudgetPeriod = NonNullable<Planning["budget_period"]>;
 
 export const DEFAULT_BUDGET_PERIOD: BudgetPeriod = "month";
 export const BUDGET_PERIOD_OPTIONS: { value: BudgetPeriod; label: string; shortLabel: string }[] = [
-  { value: "day", label: "매일", shortLabel: "일" },
-  { value: "week", label: "매주", shortLabel: "주" },
   { value: "month", label: "매월", shortLabel: "월" },
+  { value: "week", label: "매주", shortLabel: "주" },
+  { value: "day", label: "매일", shortLabel: "일" },
 ];
 
 export function planningBudgetPeriod(planning?: Planning | null): BudgetPeriod {
@@ -38,7 +38,7 @@ export function validateProjectPlanning(
   budgetInput: string,
 ): PlanningValidationResult {
   if (form.start_date && form.due_date && form.due_date < form.start_date) {
-    return { planning: null, error: "마감일은 시작일보다 빠를 수 없습니다." };
+    return { planning: null, error: "종료일은 시작일보다 빠를 수 없습니다." };
   }
 
   const budget = budgetInput.trim() ? Number(budgetInput) : null;
@@ -48,7 +48,7 @@ export function validateProjectPlanning(
 
   const archiveAfterDays = Number(form.archive_after_days ?? 30);
   if (!Number.isInteger(archiveAfterDays) || archiveAfterDays < 1 || archiveAfterDays > 3650) {
-    return { planning: null, error: "보관 기록 전환 기간은 1~3650일 사이의 정수로 입력하세요." };
+    return { planning: null, error: "작업 자동 보관 일수는 1~3650일 사이의 정수로 입력하세요." };
   }
 
   return {

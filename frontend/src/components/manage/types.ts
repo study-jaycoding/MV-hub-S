@@ -1,6 +1,7 @@
 // PM 대시보드(매니징먼트) 타입 — 분리형 모듈. 공용 types.ts 와 분리해 제거 용이.
 import { DRAG_TYPES } from "../../lib/dragTypes";
 import { getLang } from "../../lib/i18n";
+import type { ConsoleLimit } from "../../lib/workspaceConsole";
 
 export interface Planning {
   project_id?: string;
@@ -70,6 +71,7 @@ export interface ManageProject {
   credits: number; // COALESCE(실제, 견적)
   workspace_moved?: boolean; // 다른 워크스페이스로 이동한 프로젝트의 과거 기록 행(구서버는 미제공)
   budget_used_credits?: number; // 설정된 일/주/월의 현재 기간 사용량(구서버는 미제공)
+  console_limit?: ConsoleLimit | null; // 서브스페이스 서브 프로젝트의 크레딧(있으면 프로젝트 예산 대신 표시, 설계 §13)
   models?: ProjectModelUsage[]; // 프로젝트 전체 모델별 생성·크레딧·최종 집계
   budget_models?: ProjectModelUsage[]; // 현재 예산 주기의 모델별 사용 집계
   folders?: ProjectFolderUsage[]; // 등록 폴더+실제 생성물을 합친 시퀀스별 집계

@@ -119,3 +119,16 @@ export function buildProjectUsageHierarchy(folders: ProjectFolderUsage[]): Proje
     }))
     .sort((a, b) => a.episode_name.localeCompare(b.episode_name, undefined, { numeric: true }));
 }
+
+/** 에피소드·시퀀스 검색(Jay 2026-09-30) — 에피소드 이름이 맞으면 그 시퀀스 전부, 아니면 이름·멤버가 맞는 시퀀스만 남긴다.
+ *  에피소드 줄의 합계(생성·크레딧 등)는 그 에피소드 전체 값 그대로다(걸러진 시퀀스의 합이 아님). */
+export function filterProjectUsage(episodes: ProjectEpisodeUsage[], query: string): ProjectEpisodeUsage[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return episodes;
+  const hit = (text?: string | null) => Boolean(text && text.toLowerCase().includes(q));
+  return episodes.flatMap((episode) => {
+    if (hit(episode.episode_name)) return [episode];
+    const sequences = episode.sequences.filter((sequence) => hit(sequence.sequence_name) || (sequence.members || []).some((member) => hit(member.name)));
+    return sequences.length ? [{ ...episode, sequences }] : [];
+  });
+}

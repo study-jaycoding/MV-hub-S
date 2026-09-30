@@ -5,6 +5,8 @@ import { isHttpStatus } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
 import { projectApi } from "../../lib/projectApi";
 import { budgetPeriodLabel } from "../../lib/projectPlanning";
+import { consoleLimitView } from "../../lib/workspaceConsole";
+import { loadManageWorkspaceScope } from "../../lib/manageWorkspaceScope";
 import { paginateUsageItems, USAGE_PAGE_SIZES } from "../../lib/usagePagination";
 import {
   reconcileMapState,
@@ -13,9 +15,11 @@ import {
 import type { ManageCaps } from "../../lib/useManageCaps";
 import { PROJECT_ROLE_LABEL, type ProjectMember } from "../../types";
 import { ProjectManagerPanel } from "./ProjectManagerPanel";
+import { WorkspaceConsole } from "./console/WorkspaceConsole";
 import { PROJECT_STATUS_OPTIONS } from "./ProjectPlanningDialog";
 import {
   buildProjectUsageHierarchy,
+  filterProjectUsage,
   type ProjectEpisodeUsage,
   type ProjectSequenceUsage,
 } from "./projectUsageHierarchy";
@@ -103,7 +107,7 @@ function UsageMetricCells({ row }: { row: ProjectFolderUsage }) {
         </span>
       </td>
       <td className="tnum">
-        <HoverMetric value={row.credits} rows={models} metric="credits" title="모델별 크레딧 사용" suffix=" cr" />
+        <HoverMetric value={row.credits} rows={models} metric="credits" title="모델별 크레딧 사용" />
       </td>
       <td className="tnum">{fmtElapsed(row.elapsed_seconds)}</td>
       <td className="tnum dash-generation-period">{generationPeriod(row.created_start, row.created_end)}</td>
@@ -117,7 +121,7 @@ function CreatorCell({ row }: { row: ProjectFolderUsage }) {
   const names = [...new Set(members.map((member) => member.name || "팀원"))];
   const details = members
     .map((member) =>
-      `${member.name || "팀원"} · 생성 ${member.count} · 최종 ${member.final_count} · ${formatCredits(member.credits)} cr`,
+      `${member.name || "팀원"} · 생성 ${member.count} · 최종 ${member.final_count} · ${formatCredits(member.credits)} 크레딧`,
     )
     .join("\n");
   return (
@@ -191,12 +195,18 @@ function ProjectDetail({
   const [sequencePage, setSequencePage] = useState(1);
   const [sequencePageSize, setSequencePageSize] = useState<number>(USAGE_PAGE_SIZES[0]);
   const [collapsedEpisodes, setCollapsedEpisodes] = useState<Set<string>>(() => new Set());
-  const episodes = useMemo(() => buildProjectUsageHierarchy(folders), [folders]);
+  const [query, setQuery] = useState("");
+  const allEpisodes = useMemo(() => buildProjectUsageHierarchy(folders), [folders]);
+  const episodes = useMemo(() => filterProjectUsage(allEpisodes, query), [allEpisodes, query]);
   const sequenceCount = episodes.reduce((total, episode) => total + episode.sequences.length, 0);
   useEffect(() => {
     setSequencePage(1);
     setCollapsedEpisodes(new Set());
+    setQuery("");
   }, [pid]);
+  // 한 번에 접기/펼치기 — 보이는 에피소드가 모두 접혀 있으면 펼치기, 아니면 전부 접기(Jay 2026-09-30)
+  const allCollapsed = episodes.length > 0 && episodes.every((episode) => collapsedEpisodes.has(episode.episode_name));
+  const toggleAll = () => setCollapsedEpisodes(allCollapsed ? new Set() : new Set(allEpisodes.map((episode) => episode.episode_name)));
   const pagedEpisodes = paginateUsageItems(episodes, sequencePage, sequencePageSize);
 
   const toggleEpisode = (episodeName: string) => {
@@ -214,7 +224,7 @@ function ProjectDetail({
 
       {!pid ? (
         <div className="dash-detail-empty">
-          위 요약에서 <b>프로젝트를 클릭</b>하면 폴더별 생성 정보가 표시됩니다.
+          위 표에서 <b>프로젝트를 클릭</b>하면 폴더별 생성 정보가 표시됩니다.
         </div>
       ) : (
         <div className="dash-tree-card dash-detail-card dash-sequence-card">
@@ -222,10 +232,24 @@ function ProjectDetail({
             <div className="dash-detail-title">
               <h2>에피소드 · 시퀀스</h2>
               <span className="dash-scope-chip">프로젝트 · {projName}</span>
-              {/* 프로젝트 요약과 같은 원천 — 팩트(팀 기록 장부)면 공유 안 한 컷도 포함됨을 명시. 구서버는 종전 문구. */}
+              {/* 프로젝트 상세와 같은 원천 — 팩트(팀 기록 장부)면 공유 안 한 컷도 포함됨을 명시. 구서버는 종전 문구. */}
               <span className="work-source-label">{usageSourceLabel(usageSource, usageScope)}</span>
             </div>
-            <span className="meta">에피소드 {episodes.length}개 · 시퀀스 {sequenceCount}개</span>
+            <div className="dash-seq-tools">
+              <span className="meta">{query.trim() ? "찾음 · " : ""}에피소드 {episodes.length}개 · 시퀀스 {sequenceCount}개</span>
+              {folders.length ? (
+                <>
+                  <div className="work-search dash-seq-search">
+                    <span className="work-search-ic">🔍</span>
+                    <input value={query} aria-label="에피소드·시퀀스 검색" placeholder="에피소드·시퀀스·멤버 검색" onChange={(event) => { setQuery(event.target.value); setSequencePage(1); }} />
+                  </div>
+                  <button type="button" className="dash-seq-fold" disabled={!episodes.length || Boolean(query.trim())} onClick={toggleAll}
+                    title={query.trim() ? "검색 중에는 찾은 시퀀스를 모두 펼쳐 보입니다" : undefined}>
+                    {allCollapsed ? "모두 펼치기" : "모두 접기"}
+                  </button>
+                </>
+              ) : null}
+            </div>
           </div>
           {folders.length ? (
             <div className="dash-tbl-scroll">
@@ -243,7 +267,7 @@ function ProjectDetail({
                 </thead>
                 <tbody>
                   {pagedEpisodes.items.map((episode) => {
-                    const collapsed = collapsedEpisodes.has(episode.episode_name);
+                    const collapsed = !query.trim() && collapsedEpisodes.has(episode.episode_name); // 검색 중엔 찾은 것을 다 보인다
                     return (
                       <Fragment key={episode.episode_name}>
                         <EpisodeUsageRow
@@ -259,6 +283,7 @@ function ProjectDetail({
                       </Fragment>
                     );
                   })}
+                  {!episodes.length ? <tr><td className="dash-part-empty" colSpan={7}>검색 결과가 없습니다.</td></tr> : null}
                 </tbody>
               </table>
             </div>
@@ -286,6 +311,17 @@ function ProjectDetail({
   );
 }
 
+function TableIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <line x1="3" y1="10" x2="21" y2="10" />
+      <line x1="3" y1="15" x2="21" y2="15" />
+      <line x1="9.5" y1="4" x2="9.5" y2="20" />
+    </svg>
+  );
+}
+
 export function DashboardView({
   reloadSignal = 0,
   caps,
@@ -305,12 +341,23 @@ export function DashboardView({
   >(null);
   const [members, setMembers] = useState<Map<string, ProjectMember[]>>(new Map());
   const [showPanel, setShowPanel] = useState(false); // 프로젝트 관리 오버레이(＋프로젝트)
-  const [showTable, setShowTable] = useState(false); // 관리 표 — 대시보드 자리에 열린다
+  // 대시보드 자리에 여는 판 — 워크스페이스(서브스페이스 console ↔ 관리 표 table) 또는 프로젝트 상세(detail). 하나만 열린다.
+  const [panel, setPanel] = useState<"table" | "console" | "detail" | null>(null);
   const [summaryPage, setSummaryPage] = useState(1);
   const [summaryPageSize, setSummaryPageSize] = useState<number>(USAGE_PAGE_SIZES[0]);
-  const canManageProjects = caps.createProject || caps.grantRole;
+  // '+ 프로젝트'(프로젝트 관리 창)는 관리자만(Jay 2026-09-30 — 설정은 서브스페이스·관리 표에서). 관리자는 슈퍼유저가 아니라
+  // 생성 권한(PM 역할)도 있어야 서버가 받으므로 둘 다 있을 때만 보인다. 인증 off(로컬 단독)는 system 이 켜져 있다.
+  const canManageProjects = caps.system && (caps.createProject || caps.grantRole);
   // 관리 표는 계정 상세(이메일·가입 상태)가 나가므로 서버가 관리자·PM 에게만 연다 — 아이콘도 같은 조건으로.
   const canOpenTable = caps.authOff || caps.system || caps.grantRole;
+  // 워크스페이스 단추 — 관리자(system)·매니저(create_project·grant_project_role)만(Jay 2026-09-30). read_all 인 디렉터는 뺀다.
+  // 인증 off(로컬 단독)는 전부 켜져 있다.
+  const canOpenConsole = caps.loaded && (caps.authOff || caps.system || caps.createProject || caps.grantRole);
+  // 관리 표는 워크스페이스 안에서만(Jay 2026-09-30) — 머리의 워크스페이스 단추로 들어가 판 안의 관리 표 단추로 오간다.
+  const workspaceShown = canOpenConsole && (panel === "console" || panel === "table");
+  // 프로젝트 상세(프로젝트 표 + 에피소드·시퀀스)는 머리의 '상세' 단추를 눌렀을 때만(Jay 2026-09-30)
+  const detailShown = panel === "detail";
+  const tableShown = workspaceShown && panel === "table" && canOpenTable;
   // 매니저(read_all·인증 off)=팀 전체, 일반 멤버=내 사용량만(서버가 (uid, email) 로 강제 — Jay 2026-09-10).
   // 사용 현황 패널은 둘 다 보이고 범위·문구만 다르다. 전체 요약 API(summary) 는 매니저만.
   const readAll = caps.authOff || caps.readAll;
@@ -324,7 +371,7 @@ export function DashboardView({
   const scopeRef = useRef(workspaceId);
   scopeRef.current = workspaceId;
 
-  // 프로젝트 요약과 멤버를 함께 갱신한다. 작업 롤업 KPI 제거 후 작업 목록은 읽지 않는다.
+  // 프로젝트 상세와 멤버를 함께 갱신한다. 작업 롤업 KPI 제거 후 작업 목록은 읽지 않는다.
   const reload = () => {
     if (reloadPromiseRef.current) {
       pendingReloadRef.current = true;
@@ -412,7 +459,10 @@ export function DashboardView({
   }, [summary, members]);
   const pagedSummaryRows = paginateUsageItems(rows, summaryPage, summaryPageSize);
 
-  const selProj = summary?.projects.find((p) => p.pid === selectedPid);
+  // 상세를 열면 에피소드·시퀀스가 바로 보이게(Jay 2026-09-30) — 고른 프로젝트가 없거나 목록에서 빠졌으면 폴더(생성)가 있는 첫 프로젝트
+  const shownPid = (selectedPid && summary?.projects.some((p) => p.pid === selectedPid) ? selectedPid : null)
+    ?? summary?.projects.find((p) => p.pid && p.folders?.length)?.pid ?? summary?.projects.find((p) => p.pid)?.pid ?? null;
+  const selProj = summary?.projects.find((p) => p.pid === shownPid);
   const selName = selProj?.name || "";
 
   if (loading && !summary) return <div className="manage-empty">불러오는 중…</div>;
@@ -426,7 +476,7 @@ export function DashboardView({
     <div className="dash-tree-card dash-detail-card dash-summary-card">
       <div className="hd">
         <div className="dash-detail-title">
-          <h2>프로젝트 요약</h2>
+          <h2>프로젝트 상세</h2>
           {/* 2026-09-09부터 사용량은 위 워크스페이스 사용 현황과 같은 팩트(팀 기록 장부). 구서버면 종전 라이브러리 집계. */}
           <span className="work-source-label">{usageSourceLabel(summary?.usage_source, summary?.usage_scope)}</span>
         </div>
@@ -449,6 +499,8 @@ export function DashboardView({
           <tbody>
             {pagedSummaryRows.items.map(({ p, memberCount }) => {
               const b = p.planning?.budget_credits ?? null;
+              // 서브스페이스 서브 프로젝트 = 서브스페이스의 이번 주기 계획(정기 + 추가), 아니면 종전 프로젝트 예산(설계 §13)
+              const consoleLimit = p.console_limit ? consoleLimitView(p.console_limit) : null;
               const used = p.credits || 0;
               const projectMembers = p.pid ? members.get(p.pid) || [] : [];
               const memberTitle = projectMembers.length
@@ -463,9 +515,9 @@ export function DashboardView({
                 : "멤버 없음";
               const planningDetails = [
                 p.planning?.start_date ? `시작일 ${p.planning.start_date}` : null,
-                p.planning?.due_date ? `마감일 ${p.planning.due_date}` : null,
+                p.planning?.due_date ? `종료일 ${p.planning.due_date}` : null,
                 p.planning?.note ? `메모 ${p.planning.note}` : null,
-              ].filter(Boolean).join("\n") || "일정 정보 없음";
+              ].filter(Boolean).join("\n") || "기간 정보 없음";
               const models = p.models || [];
               const coverage = creditCoverageText(p); // 실제/견적/미상 — 구서버는 null
               const unknownCount = p.credit_unknown_count || 0;
@@ -475,8 +527,8 @@ export function DashboardView({
               return (
                 <tr
                   key={p.pid ?? "none"}
-                  className={`dash-row${selectedPid === p.pid ? " sel" : ""}${p.pid ? " clickable" : ""}`}
-                  onClick={() => p.pid && setSelectedPid((cur) => (cur === p.pid ? null : p.pid))}
+                  className={`dash-row${shownPid === p.pid ? " sel" : ""}${p.pid ? " clickable" : ""}`}
+                  onClick={() => p.pid && setSelectedPid(p.pid)}
                 >
                   <td className="l" title="클릭하면 아래에서 프로젝트 상세를 확인합니다.">
                     <span className="dash-name">{p.name}</span>
@@ -490,14 +542,21 @@ export function DashboardView({
                     <span className="dash-hover-text tnum" title={memberTitle}>{memberCount || "—"}</span>
                   </td>
                   <td className="tnum">
+                    {consoleLimit ? (
+                      <span className={consoleLimit.total != null ? "dash-hover-text" : "dim"} title={consoleLimit.title}>
+                        {consoleLimit.total != null ? fmtBudgetCr(consoleLimit.total) : "없음"}
+                        {(p.console_limit?.shared_projects ?? 0) > 1 ? <span className="dim"> · 함께 씀</span> : null}
+                      </span>
+                    ) : (
                     <span
                       className={b != null ? "dash-hover-text" : "dim"}
                       title={b != null
-                        ? `${budgetPeriodLabel(p.planning)} 예산 한도 · ${fmtBudgetCr(b)} cr${mine ? " · 팀 전체 한도 (내 사용과 기준이 다름)" : ""}`
+                        ? `${budgetPeriodLabel(p.planning)} 예산 한도 · ${fmtBudgetCr(b)} 크레딧${mine ? " · 팀 전체 한도 (내 사용과 기준이 다름)" : ""}`
                         : "예산 미설정"}
                     >
-                      {b != null ? `${fmtBudgetCr(b)} cr` : "—"}
+                      {b != null ? fmtBudgetCr(b) : "—"}
                     </span>
+                    )}
                   </td>
                   <td className="tnum">
                     <HoverMetric
@@ -505,7 +564,6 @@ export function DashboardView({
                       rows={models}
                       metric="credits"
                       title={coverage ? `${usedTitle} · ${coverage}` : usedTitle}
-                      suffix=" cr"
                     />
                     {unknownCount > 0 && (
                       <span className="dim" title="크레딧을 모르는 생성물 수 — 0원이 아니라 작업자 PC 의 거래 대조가 안 된 건">
@@ -547,7 +605,7 @@ export function DashboardView({
         </span>
       </div>
       <DashboardPagination
-        label="프로젝트 요약"
+        label="프로젝트 상세"
         page={pagedSummaryRows.page}
         pageSize={pagedSummaryRows.pageSize}
         totalPages={pagedSummaryRows.totalPages}
@@ -568,23 +626,46 @@ export function DashboardView({
         reloadSignal={reloadSignal}
         canCreateProject={canManageProjects}
         onCreateProject={() => setShowPanel(true)}
+        createProjectOpen={showPanel}
         workspaceId={workspaceId}
         onWorkspaceIdChange={onWorkspaceIdChange}
         scope={mine ? "mine" : "all"}
-        tableOpen={showTable && canOpenTable}
-        onToggleTable={canOpenTable ? () => setShowTable((open) => !open) : undefined}
-        tableSlot={showTable && canOpenTable ? <MemberTable key={workspaceId || ""} workspaceId={workspaceId} reloadSignal={reloadSignal} /> : null}
+        consoleOpen={workspaceShown}
+        onToggleConsole={canOpenConsole ? () => setPanel((open) => (open === "console" || open === "table" ? null : "console")) : undefined}
+        detailOpen={detailShown}
+        onToggleDetail={() => setPanel((open) => (open === "detail" ? null : "detail"))}
+        tableSlot={workspaceShown ? (
+          <div className="ws-panel">
+            {canOpenTable ? (
+              <div className="usage-actions ws-panel-bar">
+                <button
+                  type="button"
+                  className={"usage-icon-button" + (tableShown ? " on" : "")}
+                  onClick={() => setPanel(tableShown ? "console" : "table")}
+                  title={tableShown ? "서브스페이스로 돌아가기" : "관리 표 — 멤버·그룹·프로젝트·크레딧을 표로 보고 고친다"}
+                  aria-label="관리 표"
+                  aria-pressed={tableShown}
+                >
+                  <TableIcon />
+                </button>
+              </div>
+            ) : null}
+            {tableShown
+              ? <MemberTable key={workspaceId || ""} workspaceId={workspaceId} reloadSignal={reloadSignal} />
+              : <WorkspaceConsole caps={caps} reloadSignal={reloadSignal} selectedId={workspaceId} onSelectedChange={(id) => onWorkspaceIdChange?.(id)}
+                  workingId={loadManageWorkspaceScope().workspaceId} />}
+          </div>
+        ) : detailShown ? (
+          <ProjectDetail
+            summaryCard={summaryCard}
+            pid={shownPid}
+            folders={selProj?.folders || []}
+            projName={selName}
+            usageSource={summary?.usage_source}
+            usageScope={summary?.usage_scope}
+          />
+        ) : null}
       />
-
-      {/* 하나의 외곽 패널 안에서 프로젝트 요약과 선택 프로젝트 시퀀스를 확인한다. 관리 표가 열려 있으면 자리를 내준다. */}
-      {showTable && canOpenTable ? null : <ProjectDetail
-        summaryCard={summaryCard}
-        pid={selectedPid}
-        folders={selProj?.folders || []}
-        projName={selName}
-        usageSource={summary?.usage_source}
-        usageScope={summary?.usage_scope}
-      />}
 
       {/* 프로젝트 관리 오버레이 — 생성·보관·삭제·멤버 역할 */}
       {showPanel && (

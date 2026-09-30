@@ -138,7 +138,7 @@ describe("설정 초안 — 검사와 저장 본문", () => {
     expect(body.groups?.[0].allowed_models).toEqual(["seedance_2_5", "future_model_9"]);
     expect(body.groups?.[1].allowed_models).toEqual([]); // 명시 [] = 제한 없음(키 생략은 '유지'라 설정 창은 항상 보낸다)
   });
-  it("검사: 빈 이름·겹치는 이름·한도 없음·정수 아님·긴급 충전 오류를 잡는다", () => {
+  it("검사: 빈 이름·겹치는 이름·한도 없음·정수 아님·추가 크레딧 오류를 잡는다", () => {
     const draft = draftFromSettings(settings);
     expect(validateDraft({ ...draft, topups: [{ id: "t2", day: "", creditsInput: "100", note: "" }] })).toContain("날짜");
     expect(validateDraft({ ...draft, topups: [{ id: "t2", day: "2026-09-10", creditsInput: "", note: "" }] })).toContain("크레딧");
@@ -168,7 +168,7 @@ describe("설정 초안 — 검사와 저장 본문", () => {
   });
 });
 
-describe("긴급 충전 줄 단위 저장", () => {
+describe("추가 크레딧 줄 단위 저장", () => {
   it("충전 저장 응답은 충전 기준만 갱신하고 미저장 그룹의 revision을 유지한다", () => {
     const draft = draftFromSettings({
       workspace_id: "ws1", month: "2026-09", plan: { monthly_topup: 20000, note: null, revision: 3, updated_at: null },

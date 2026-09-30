@@ -2,6 +2,7 @@
 // 표에는 자기만의 쓰기 API 가 없다 — 칸마다 기존 API 를 부른다.
 import { stripThousands, type CreditPlanSaveBody, type CreditPlanSettings, type DraftGroup, type LimitPeriod } from "./creditPlan";
 import type { Planning } from "../components/manage/types";
+import type { ConsoleLimit } from "./workspaceConsole";
 
 export interface MemberTableRow {
   email: string;
@@ -29,6 +30,9 @@ export interface MemberTableGroup {
   remaining: number | null; // 몫 합계 − 이번 기간 사용(이월 없음)
   member_count: number;
   color?: string | null;
+  used_period?: number | null; // 이번 기간 사용(서브스페이스 그룹 탭과 같은 값, §16) · 구서버는 없음
+  unknown_period?: number | null;
+  quota_total?: number | null; // 몫 합계 · null = ∞ 그룹
 }
 
 export interface MemberTableData {
@@ -36,10 +40,100 @@ export interface MemberTableData {
   cycle_start: string | null;
   cycle_end: string | null;
   rows: MemberTableRow[];
-  projects: { id: string; name: string; planning?: Planning | null }[];
+  // console_managed = 서브스페이스 서브(상태·예산은 서브스페이스에서 — 늘 옴) · console_limit = 그 금액(크레딧을 볼 수 있을 때만)
+  // archived = 보관 프로젝트(워크스페이스를 고르면 함께 옴 — 프로젝트 시트에만, §16) · 구서버는 없음(= 활성)
+  projects: { id: string; name: string; workspace_id?: string | null; workspace_name?: string | null; archived?: boolean; planning?: Planning | null; console_managed?: boolean; console_limit?: ConsoleLimit | null }[];
+  console_limit?: ConsoleLimit | null; // 고른 워크스페이스가 서브스페이스 서브면 그 크레딧(§14 크레딧 시트)
   groups: MemberTableGroup[];
   credit: CreditPlanSettings | null; // 그룹 저장에 쓰는 원문 — create_project 가 없으면 null
   caps: { account: boolean; credit: boolean; project_roles: boolean; planning?: boolean };
+  console_subs?: string[] | null; // 서브스페이스 메인을 골랐을 때만 — 연결된 서브(서브스페이스 왼쪽 목록 순서). 크레딧 시트는 서브 표 합본
+  main_balance?: { credits: number | null; seen_at: string | null } | null; // 크레딧 풀(메인 보고 잔액) · 크레딧 권한일 때만
+}
+
+/** 메인 크레딧 시트 합본의 서브 한 곳 — 그 서브의 관리 표 그대로(실패하면 table=null) */
+export interface SubCreditTable { id: string; table: MemberTableData | null; error: string }
+
+/** 크레딧 시트의 사람별 몫·사용 읽기 — 한 워크스페이스 표 기준(메인 합본은 서브 표마다 부른다, 같은 계산).
+ *  ★서버가 몫 계약을 모르면(구서버) 저장해도 조용히 무시된다 — quotaSupported 로 칸을 잠근다(Codex 코드 리뷰).
+ *  09-23 '÷ 인원' 서버도 quota_source 는 주므로, 인당 규칙 서버의 표식(그룹의 quota_total)까지 있어야 연다
+ *  — 옛 서버의 몫·남은 몫을 인당 값처럼 보여 주지 않는다(Codex 설계 검토 2026-09-29). */
+export function creditAccessors(table: Pick<MemberTableData, "credit">) {
+  const quotaSupported = (table.credit?.members || []).some((member) => member.quota_source !== undefined)
+    && (table.credit?.groups || []).every((group) => group.quota_total !== undefined);
+  // 사람별 몫·남은 몫은 크레딧 설정 원문에 있다(이메일 기준). 구서버면 보이지 않는다(undefined).
+  const creditMembers = new Map((table.credit?.members || []).map((member) => [member.email, member]));
+  const quotaOf = (email: string) => (quotaSupported ? creditMembers.get(email) : undefined);
+  // 그룹에 속했고 적용 할당이 없음(null) = 제한 없음. 구서버(몫 계약 모름)는 모르는 것이라 판정하지 않는다.
+  const unlimitedOf = (row: MemberTableRow) => Boolean(row.group_id) && quotaOf(row.email)?.quota_effective === null;
+  // 사용량 = 그룹에 배정된 사람은 몫과 같은 그룹 기간(서브스페이스 참가자 탭과 같은 값), 미배정은 충전 달(설계 §14)
+  const usageOf = (row: MemberTableRow) => {
+    const member = row.group_id ? creditMembers.get(row.email) : undefined;
+    return member?.used_period != null && row.usage
+      ? { ...row.usage, credits: member.used_period, unknown: member.unknown_period ?? 0 } : row.usage;
+  };
+  return { quotaSupported, quotaOf, unlimitedOf, usageOf };
+}
+
+/** 메인 합본의 한 사람이 속한 서브 한 곳 — 값은 그 서브 표 그대로(creditAccessors) */
+export interface MainPersonEntry {
+  sub: SubCreditTable;
+  row: MemberTableRow;
+  group?: MemberTableGroup;
+  quota: number | null; // 적용 할당(그룹이 있을 때만)
+  remaining: number | null;
+  unlimited: boolean;
+  used: MemberTableRow["usage"];
+}
+export interface MainPerson {
+  email: string;
+  name: string;
+  entries: MainPersonEntry[]; // 그 사람이 속한 서브만(서브 목록 순서)
+  grouped: boolean; // 한 곳이라도 그룹이 있다
+  unlimited: boolean; // 한 곳이라도 제한 없는 그룹 — 할당·잔여 합계도 제한 없음
+  quota: number | null; // 한도 있는 곳의 할당 합
+  remaining: number | null; // 한도 있는 곳의 잔여 합
+  used: MemberTableRow["usage"]; // 사용·금액 미상 합(서브마다 제 기간)
+  available: boolean | null; // 모두 확인이면 true, 한 곳이라도 확인 전이면 false
+}
+
+/** 메인 합본 = 계정 한 줄(Jay 2026-09-30) — 서브 표의 줄을 이메일로 모아 숫자를 더한다. 서브마다 기간이 다를 수 있어
+ *  화면은 칸 툴팁에 서브별 값을 함께 둔다. 못 불러온 서브는 건너뛴다(그 서브는 따로 '불러오지 못함' 줄). */
+export function mainPeople(subs: SubCreditTable[]): MainPerson[] {
+  const people = new Map<string, MainPerson>();
+  for (const sub of subs) {
+    if (!sub.table) continue;
+    const access = creditAccessors(sub.table);
+    const groups = new Map(sub.table.groups.map((group) => [group.id, group]));
+    for (const row of sub.table.rows) {
+      const quota = access.quotaOf(row.email);
+      const person = people.get(row.email) ?? {
+        email: row.email, name: row.name, entries: [], grouped: false, unlimited: false, quota: null, remaining: null, used: null, available: null,
+      };
+      if (person.name === row.email.split("@")[0] && row.name !== person.name) person.name = row.name; // 이메일 앞부분보다 실제 이름
+      person.entries.push({
+        sub, row, group: row.group_id ? groups.get(row.group_id) : undefined,
+        quota: row.group_id ? quota?.quota_effective ?? null : null, remaining: quota?.remaining ?? null,
+        unlimited: access.unlimitedOf(row), used: access.usageOf(row),
+      });
+      people.set(row.email, person);
+    }
+  }
+  const add = (sum: number | null, value: number | null) => (value == null ? sum : (sum ?? 0) + value);
+  return [...people.values()].map((person) => {
+    const { entries } = person;
+    return {
+      ...person,
+      grouped: entries.some((entry) => entry.row.group_id),
+      unlimited: entries.some((entry) => entry.unlimited),
+      quota: entries.reduce<number | null>((sum, entry) => add(sum, entry.quota), null),
+      remaining: entries.reduce<number | null>((sum, entry) => add(sum, entry.remaining), null),
+      used: entries.reduce<MemberTableRow["usage"]>((sum, { used }) => used
+        ? { credits: (sum?.credits ?? 0) + used.credits, count: (sum?.count ?? 0) + used.count, unknown: (sum?.unknown ?? 0) + used.unknown }
+        : sum, null),
+      available: entries.some((entry) => entry.row.is_available == null) ? null : entries.every((entry) => entry.row.is_available),
+    };
+  });
 }
 
 /** 한 사람의 그룹만 바꾸는 저장 본문. 서버는 목록에 없는 그룹을 **지우므로** 마지막에 받은 그룹을 전부 되보낸다.
@@ -184,4 +278,14 @@ export function lastSeenLabel(value: string | null, now = new Date()): string {
   const day = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
   const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
   return day === today ? `오늘 ${pad(at.getHours())}:${pad(at.getMinutes())}` : day;
+}
+
+/** 프로젝트 순서(§16 합의 4) — 전체 활성 목록에서 **이 워크스페이스 프로젝트가 있던 자리에만** 새 순서를 채운다.
+ *  다른 프로젝트 자리는 그대로. 두 목록의 워크스페이스 프로젝트가 서로 다르면(그 사이 바뀜) null. */
+export function fillReorder(fullIds: string[], newOrder: string[]): string[] | null {
+  const mine = new Set(newOrder);
+  const slots = fullIds.filter((id) => mine.has(id));
+  if (slots.length !== newOrder.length) return null;
+  let next = 0;
+  return fullIds.map((id) => (mine.has(id) ? newOrder[next++] : id));
 }

@@ -12,6 +12,7 @@ import type {
 import type { WorkspaceOption } from "../types";
 import type { CreditPlanSaveBody, CreditPlanSettings, CreditPlanView, MyModelPolicy } from "./creditPlan";
 import type { MemberTableData } from "./memberTable";
+import type { ConsoleOverview } from "./workspaceConsole";
 
 // 구서버(배치 라우트 없음) 판별 — 404/405 만 폴백 사유다. 400/401/403/5xx 를 폴백하면
 // 권한·서버 장애가 "구버전"으로 오인돼 조용히 다른 경로로 재시도된다(합의 설계).
@@ -70,6 +71,28 @@ export const manageApi = {
     jsonFetch<CreditPlanSettings>(`/api/manage/credit-plan/${pathPart(workspaceId)}`, {
       method: "PUT",
       body: jsonBody(body),
+    }),
+  // 워크스페이스 콘솔(서브스페이스 — 대시보드의 워크스페이스 판) — 메인·서브 표식과 조율 개요. 구서버는 404.
+  consoleOverview: () => jsonFetch<ConsoleOverview>("/api/manage/console/overview"),
+  consoleLink: (workspaceId: string) =>
+    jsonFetch<{ workspace_id: string; changed: boolean }>("/api/manage/console/workspaces", {
+      method: "POST", body: jsonBody({ workspace_id: workspaceId }),
+    }),
+  consoleArchive: (workspaceId: string, archived: boolean) =>
+    jsonFetch<{ workspace_id: string; changed: boolean }>(`/api/manage/console/workspaces/${pathPart(workspaceId)}`, {
+      method: "PATCH", body: jsonBody({ archived }),
+    }),
+  consoleSetStatus: (workspaceId: string, status: "active" | "inactive" | "done") =>
+    jsonFetch<{ workspace_id: string; changed: boolean }>(`/api/manage/console/workspaces/${pathPart(workspaceId)}`, {
+      method: "PATCH", body: jsonBody({ status }),
+    }),
+  consoleAllocBase: (credits: number | null, day: string | null) =>
+    jsonFetch<{ credits: number | null; day: string | null }>("/api/manage/console/allocation-base", {
+      method: "PUT", body: jsonBody({ credits, day }),
+    }),
+  consoleSetMain: (workspaceId: string) =>
+    jsonFetch<{ workspace_id: string; changed: boolean }>("/api/manage/console/main", {
+      method: "PUT", body: jsonBody({ workspace_id: workspaceId }),
     }),
   // 본인 그룹이 쓸 수 있는 모델(생성 창·캔버스 모델 노드가 모델 목록을 거를 때) — 매니저도 본인 이메일 기준. 구서버는 404.
   // 관리 표 — 계정 한 줄에 등급·그룹·프로젝트 참여·보고된 사실(서버 조인). 구서버는 404.
