@@ -90,6 +90,17 @@ class LocateWithRegistryTests(unittest.TestCase):
         self.assertTrue(got["registry_asset_id"])
         self.assertEqual(reply["missing"], [])
 
+    def test_same_path_candidate_is_linked_without_reading_the_file(self) -> None:
+        # 지금 경로가 참조와 같은 후보는 대장 전 경로 일치와 근거가 같다 — 지문을 읽지 않고(실측 36개 335MB 가 15초),
+        # 판도 적지 않는다(훑은 뒤 고쳐졌을 수 있다). 번호만 알려 준다.
+        self.put("assets/CH/m/b.png", b"B")
+        self.scan()
+        with patch.object(assets, "_sha256_file", side_effect=AssertionError("읽으면 안 된다")):
+            reply = self.locate(["asset:PM_RnD|CH/m/b.png"])
+        self.assertEqual([(f["project"], f["path"]) for f in reply["fixed"]], [("PM", "assets/CH/m/b.png")])
+        self.assertTrue(reply["fixed"][0]["registry_asset_id"])
+        self.assertNotIn("sha256", reply["fixed"][0])
+
     def test_registry_number_follows_a_move_even_after_an_edit(self) -> None:
         self.put("assets/CH/m/pose.png", b"V1")
         self.scan()

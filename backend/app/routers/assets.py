@@ -32,6 +32,7 @@ from starlette.background import BackgroundTask
 from . import _assets_access, assets_metadata
 from . import asset_registry as _asset_registry_api
 from .. import rbac, repo
+from ..repo import asset_registry as _registry_repo
 from ..config import (
     ASSETS_ROOT,
     AUTH_ENABLED,
@@ -1551,7 +1552,7 @@ def locate_legacy_assets(body: LocateIn, request: Request):
 
     # ── 에셋 대장 먼저(2026-09-30, docs/ASSET_REGISTRY.md) ─────────────────────────────────────
     # 대장은 **후보**일 뿐이다(Codex 합의): 후보를 이 PC 의 PM 마운트로 풀어 파일을 열고, 크기와 **지문**이 대장이 훑은
-    # 그 판과 같을 때만 잇는다. 그 프로젝트의 마지막 훑기가 완주가 아니거나, 대장이
+    # 그 판과 같을 때만 잇는다(지금 경로가 참조와 같은 후보는 예외 — 아래 by_path). 그 프로젝트의 마지막 훑기가 완주가 아니거나, 대장이
     # 없으면(옛 서버·꺼짐·실패) 아무것도 하지 않고 아래 직접 훑기가 그대로 맡는다. missing·local·incomplete 판정은
     # 대장이 내지 않는다(훑기 사이 틈). 열리는 참조에는 번호만 알려 준다(open_ids — 같은 물리 파일일 때만).
     registry_fixed: dict[str, dict[str, Any]] = {}
@@ -1628,15 +1629,22 @@ def locate_legacy_assets(body: LocateIn, request: Request):
                 cands = usable((found.get("tails") or {}).get(info["rest"]) or [])
             else:
                 continue  # 지문 없는 사본 — 대장으로도 근거가 없다(이름으로 잇지 않는다)
-            hits: dict[str, tuple[str, dict[str, Any]]] = {}
+            hits: dict[str, tuple[str, dict[str, Any], bool]] = {}
             for r in cands:
                 loc = local_of(r)
-                if loc and same_version(r, loc[1]):
-                    hits.setdefault(_capture_path_key(loc[1]), (loc[0], r))
+                if not loc:
+                    continue
+                # 경로로만 찾은 후보 — 지금 경로의 끝이 참조와 같다. 근거가 대장 전 직접 훑기(경로 일치)와 같아 지문을 읽어도
+                # '참조가 뜻한 파일'에 대한 근거는 늘지 않는다. 그래서 파일이 있는지만 보고 판(sha)은 적지 않는다(2026-09-30
+                # 실측: 36개 335MB 를 매번 읽어 2.6초 → 15~18초). 옮겨진 것(이력·번호)·지문으로 찾은 것은 그대로 지문까지 본다.
+                by_path = not info["id"] and not info["fp"] and _registry_repo.tail_matches(info["rest"], r["path"])
+                if loc[1].is_file() if by_path else same_version(r, loc[1]):
+                    hits.setdefault(_capture_path_key(loc[1]), (loc[0], r, by_path))
             if len(hits) == 1:
-                name, r = next(iter(hits.values()))
-                registry_fixed[token] = {"project": name, "path": r["path"], "sha256": r["sha256"],
-                                         "bytes": r["bytes"], "registry_asset_id": r["registry_asset_id"]}
+                name, r, by_path = next(iter(hits.values()))
+                registry_fixed[token] = {"project": name, "path": r["path"], "registry_asset_id": r["registry_asset_id"]}
+                if not by_path:
+                    registry_fixed[token] |= {"sha256": r["sha256"], "bytes": r["bytes"]}
 
     seen: dict[str, Optional[dict[str, Any]]] = {}  # 같은 토큰이 여러 카드에 있어도 한 번만 계산
     for token in body.tokens[:_LOCATE_MAX_TOKENS]:
