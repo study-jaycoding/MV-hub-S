@@ -54,6 +54,7 @@
 | `backend/app/routers/gen_requests.py` | `_release_claim_on_abort` | create_task | `release_claim(acc["email"], realtime_scope(acc), rid, agent_id)` |
 | `backend/app/services/asset_registry.py` | `AssetRegistryController.request_scan` | create_task | `self._run(project_ids, mode)` |
 | `backend/app/services/asset_registry.py` | `AssetRegistryController.start` | create_task | `self._loop(ASSET_REGISTRY_INTERVAL_MIN * 60) (name=asset-registry-loop)` |
+| `backend/app/services/asset_registry_helper.py` | `HelperController._project_run` | create_task | `self._renew_loop(lease_id)` |
 | `backend/app/services/asset_watcher.py` | `_Watcher._ensure_health_timer_locked` | Timer | `self._health_check` |
 | `backend/app/services/asset_watcher.py` | `_Watcher._flush` | run_coroutine_threadsafe | `manager.broadcast_all( {"type": "assets_changed", "projects": projects…` |
 | `backend/app/services/asset_watcher.py` | `_Watcher._start_timer_locked` | Timer | `self._flush` |

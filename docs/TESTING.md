@@ -646,6 +646,9 @@ npx vitest run tests/sceneAssetRelink.test.ts tests/assetRegistryTab.test.tsx
   끊긴 훑기가 완주 기록을 덮지 않음, 강제 종료 잔재를 기동 때 치움.
 - `test_asset_registry_locate.py` — 대장 먼저 찾기: 이름 변경·이동 추적, 번호·지문 참조, 미완주 불신, 경로 그대로인 후보는 지문을
   안 읽고 번호만(직접 훑기가 잇는다), 개인 폴더에 같은 경로 다른 파일이 있으면 보류, 입력 상한.
+- `test_asset_registry_helper.py` — 도우미 PC 훑기: 서버 자리 배타(서버 훑기 자동·수동과 양방향), 반영 중 만료 없음, 재전송 같은 답·
+  낡은/다른 순번 거부, 결과 엄격 검증, 미완주 무기록, 공유 주소 대조, 로그인 바뀜 전체 중단, 도우미 흐름 전체(같은 앱에 보내고 자식은 진짜로).
+  실측은 격리 서버 둘(서버=NAS 훑기 끔·도우미 받기 켬, 허브=서버에 로그인한 위임 모드) — ASSET_REGISTRY §10.
 - 실측은 격리 서버 한 대(AUTH on + 일회용 관리자, 루프백)에 PM 프로젝트 루트를 실제 NAS 로 넣고 **읽기만** 한다. 이름 바꾸기·옮기기
   실험은 이 PC 임시 폴더의 가짜 프로젝트에서만 한다(NAS 에 쓰지 않는다). 결과는 [ASSET_REGISTRY.md](ASSET_REGISTRY.md) §9.
 - 실측 도구 함정 3개: ① 서버를 `CREATE_NO_WINDOW` 로 띄우면 정상 종료 신호(CTRL_BREAK)를 보낼 수 없다 — 숨긴 콘솔

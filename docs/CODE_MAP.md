@@ -156,9 +156,10 @@ updated: 2026-09-30
 |---|---|---|---|
 | `assets.py`(1372줄) | `GET /api/assets/{tree\|file\|thumb}`·`/resolve-library/projects`·`POST /resolve-library/{connect-dialog\|open}` 외 (24) | 마운트·폴더 트리·파일/썸네일 서빙·업로드·캡처·zip·탐색기·Resolve 프로젝트 열기 | 0곳 |
 | `assets_metadata.py`(313줄) | `GET /api/assets/meta`·`PUT /tags[/batch]`·`/color[s/batch]`·`POST /comments` (11, `assets.py`에 마운트) | Assets 의 개인 태그·색·코멘트(계정 DB) 와 팀 코멘트(서버 DB) 경계 | 9곳 |
-| `asset_registry.py`(약 140줄) | `POST /api/asset-registry/{lookup\|scan}`·`GET /status`·`/usage/{id}` (4) | 에셋 대장 — **공유 서버 권위**(로컬 전용 경로 아님, 데이터 프록시가 서버로 넘김). 조회는 가시 프로젝트만, 훑기·상태는 관리자. 레퍼런스 찾기가 쓰는 `lookup_for_request`(위임 모드면 서버, 아니면 자기 DB). 설계 [ASSET_REGISTRY.md](ASSET_REGISTRY.md) | 1곳 |
+| `asset_registry.py`(약 300줄) | `POST /api/asset-registry/{lookup\|scan}`·`GET /status`·`/usage/{id}` + 도우미 `helper/{projects\|lease\|renew\|release\|result}` (9) | 에셋 대장 — **공유 서버 권위**(로컬 전용 경로 아님, 데이터 프록시가 서버로 넘김). 조회는 가시 프로젝트만, 훑기·상태는 관리자. 레퍼런스 찾기가 쓰는 `lookup_for_request`(위임 모드면 서버, 아니면 자기 DB). 도우미 PC 결과는 엄격 검증 후 기존 `_apply` 로(§10). 설계 [ASSET_REGISTRY.md](ASSET_REGISTRY.md) | 1곳 |
 | `comfy.py`(1654줄) | `POST /api/comfy/{run\|parse\|save-to-library}`·`GET /run_status\|/unresolved-runs` (11) | ComfyUI(로컬·Cloud) 연결·그래프 파싱·비동기 실행·미회수 결과 수거 | 0곳 |
 | `resolve_integration.py`(364줄) | `POST /api/resolve/transfers`·`GET /api/resolve/{status\|script\|locks}` (10) | DaVinci Resolve 스크립트 설치·연결 진단·전송 접수/재시도 | 1곳 |
+| `registry_helper.py`(약 40줄) | `POST /api/registry-helper/scan`·`GET /status` (2) | 에셋 대장 도우미 훑기 — **이 PC 전용**(`_LOCAL_PREFIXES`). 서버가 NAS 를 못 읽을 때 관리자 PC 가 대신 훑는다(ASSET_REGISTRY §10) | 0곳 |
 | `release_update.py`(131줄) | `GET /api/release-update/status`·`POST /start` (3) | 작업자 PC 앱 업데이트 상태·시작(로컬 요청만) | 0곳 |
 | `console.py`(142줄) | `GET /api/console/summary`·`POST /close-app` (2) | cmd 창 정보(버전·CLI·로그 tail)·앱 종료 | 0곳 |
 | `scenes.py`(86줄) | `GET·PUT /api/scenes/{backup\|cards}` (4) | 브라우저 localStorage 씬·카드링크의 DB 미러 동기화 | 0곳 |
@@ -332,6 +333,7 @@ updated: 2026-09-30
 | `asset_tree.py`(309줄) | 폴더 트리 재귀 탐색 + TTL 캐시 + 무효화 | `routers/assets` |
 | `asset_watcher.py`(881줄) | watchdog 감시 → 캐시 무효화 + `assets_changed` WS 브로드캐스트 | `main`·`projects` |
 | `asset_registry.py`(약 330줄) | 에셋 대장 관리자(서버, 기본 꺼짐) — 훑기 자식 하나·시간 상한+30초 `taskkill /T /F`·완주 결과만 `BEGIN IMMEDIATE` 한 번에 반영·큰 파일 전용 실행·자동 주기·서버 종료 때 먼저 정리(끊긴 훑기는 기록을 안 덮음). health·ready 와 무관 | `main`(lifespan)·`routers/asset_registry` |
+| `asset_registry_helper.py`(약 230줄) | 에셋 대장 **도우미 PC 훑기**(로컬 허브) — 관리자 상속, 서버 자리(lease)로 프로젝트 전체를 감싸고 결과를 서버로 올림. 시작 때 토큰 고정·공유 주소(UNC) 대조 | `routers/registry_helper`·`main`(종료) |
 | `asset_registry_scan.py`(약 250줄) | 에셋 대장 훑기 **자식 프로세스 전용** — NAS 목록·지문만(DB 안 씀), 폴더 초당 20·지문 1 MiB 속도 상한, 파일 단위 미판정, 부모가 사라지면 스스로 멈춤 | `services/asset_registry`(`python -m`, §2.6) |
 | `project_folders.py` | 프로젝트 Render 루트 상태·폴더 트리 TTL 캐시·탐색기 열기 · 같은 렌더 폴더를 쓰는 다른 프로젝트(`projects_sharing_root` — Z:·UNC 를 맞춰 견주고, 드라이브 대응을 모르면 같을 수 있다고 봐 미러 정리를 막는다) | `manage`·`asset_tree` |
 
