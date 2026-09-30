@@ -17,11 +17,11 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from .. import rbac, repo
-from ..config import ASSET_REGISTRY_HELPER, AUTH_ENABLED
+from ..config import AUTH_ENABLED
 from ..db import get_connection
 from ..deps import account_global_roles, account_scope_uid, require_global_cap
 from ..repo import asset_registry as registry
-from ..services.asset_registry import LEASE_TTL_S, canonical_unc, controller, leases, pm_projects
+from ..services.asset_registry import LEASE_TTL_S, canonical_unc, controller, leases, pm_projects, registry_mode
 from ..services.asset_registry_scan import hidden_name
 from ..services.media_types import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from ..services.operational_logging import log_event
@@ -41,6 +41,10 @@ _Tail = Annotated[str, Field(max_length=1024)]
 
 class ScanIn(BaseModel):
     project_ids: list[_Id] = Field(default_factory=list, max_length=200)
+
+
+class ModeIn(BaseModel):
+    mode: Literal["server", "local"]
 
 
 class ShaKey(BaseModel):
@@ -125,9 +129,9 @@ def usage(registry_asset_id: str, request: Request) -> dict[str, Any]:
 @router.post("/scan")
 async def scan(body: ScanIn, request: Request) -> dict[str, Any]:
     """관리자 수동 훑기(첫 전체 훑기는 사람 적은 시간에). 이미 돌고 있으면 409."""
-    require_global_cap(request, "system")
-    if not controller.enabled:
-        raise HTTPException(status_code=503, detail="에셋 대장이 꺼져 있습니다(CONTENT_HUB_ASSET_REGISTRY=1)")
+    _require_on(request)
+    if registry_mode() != "server":
+        raise HTTPException(status_code=409, detail="훑는 곳이 '로컬 · 이 PC' 입니다 — 관리자 PC 에서 훑습니다")
     if not controller.request_scan(body.project_ids or None, mode="manual"):
         raise HTTPException(status_code=409, detail="이미 훑는 중입니다")
     return {"started": True}
@@ -137,6 +141,22 @@ async def scan(body: ScanIn, request: Request) -> dict[str, Any]:
 def status(request: Request) -> dict[str, Any]:
     require_global_cap(request, "system")
     return controller.status()
+
+
+@router.post("/mode")
+def set_mode(body: ModeIn, request: Request) -> dict[str, Any]:
+    """훑는 곳(서버 / 로컬 · 이 PC) — 서버 DB 에 두어 관리자 모두 같게 본다(Jay 2026-09-30). 훑는 중에는 409."""
+    _require_on(request)
+    if not controller.set_mode(body.mode):
+        raise HTTPException(status_code=409, detail="훑는 중이거나 DB 를 정리하는 중이라 지금은 바꿀 수 없습니다")
+    log_event(_log, "asset_registry_mode", mode=body.mode, by=account_scope_uid(request) or "local")
+    return {"mode": body.mode}
+
+
+def _require_on(request: Request) -> None:
+    require_global_cap(request, "system")
+    if not controller.enabled:
+        raise HTTPException(status_code=503, detail="에셋 대장이 꺼져 있습니다(CONTENT_HUB_ASSET_REGISTRY=1)")
 
 
 # ── 도우미 PC 훑기(서버가 NAS 를 못 읽을 때, 2026-09-30 Claude 설계·Codex 합의) ─────────────────────────────
@@ -181,10 +201,13 @@ class HelperResultIn(BaseModel):
     stats: HelperStats = Field(default_factory=HelperStats)
 
 
-def _helper_owner(request: Request) -> str:
-    require_global_cap(request, "system")
-    if not ASSET_REGISTRY_HELPER:
-        raise HTTPException(status_code=503, detail="도우미 훑기가 꺼져 있습니다(CONTENT_HUB_ASSET_REGISTRY_HELPER=1)")
+def _helper_owner(request: Request, need_local: bool = False) -> str:
+    """need_local — 새로 훑기를 시작하는 곳(프로젝트 목록·자리)은 훑는 곳이 '로컬'일 때만. 도우미는 503 을 전체 멈춤으로
+    받는다(프로젝트 사이에 '서버'로 바뀌면 거기서 멈춘다, Codex). 자리가 살아 있는 동안은 훑는 곳을 못 바꾸므로
+    연장·반납·결과는 보지 않는다."""
+    _require_on(request)
+    if need_local and registry_mode() != "local":
+        raise HTTPException(status_code=503, detail="훑는 곳이 '서버' 입니다 — 관리자 창에서 '로컬 · 이 PC' 로 바꿉니다")
     return account_scope_uid(request) or "local"
 
 
@@ -221,14 +244,14 @@ def _checked_files(files: list[HelperFile]) -> list[registry.RegistryFile]:
 @router.get("/helper/projects")
 def helper_projects(request: Request) -> dict[str, Any]:
     """도우미가 훑을 PM 프로젝트 — unc 가 없으면(서버 DRIVES 대응표에 없음) 그 프로젝트는 도우미도 못 훑는다."""
-    _helper_owner(request)
+    _helper_owner(request, need_local=True)
     return {"projects": [{"project_id": pid, "name": name, "root": root, "unc": canonical_unc(root)}
                          for pid, name, root in pm_projects()]}
 
 
 @router.post("/helper/lease")
 def helper_lease(body: HelperLeaseIn, request: Request) -> dict[str, Any]:
-    owner = _helper_owner(request)
+    owner = _helper_owner(request, need_local=True)
     found = {pid: (name, root) for pid, name, root in pm_projects()}.get(body.project_id)
     if found is None:
         raise HTTPException(status_code=404, detail="없는 프로젝트입니다")
@@ -236,7 +259,8 @@ def helper_lease(body: HelperLeaseIn, request: Request) -> dict[str, Any]:
     unc = canonical_unc(root)
     if unc is None:
         raise HTTPException(status_code=422, detail="서버가 이 프로젝트 루트의 공유 주소를 모릅니다(CONTENT_HUB_ASSET_REGISTRY_DRIVES)")
-    lease = leases.acquire(body.project_id, name, owner, unc, controller.busy)
+    # 훑는 곳도 같은 잠금 안에서 다시 본다 — 위 확인과 자리 발급 사이에 '서버'로 바뀌는 경쟁(set_mode 와 같은 잠금)
+    lease = leases.acquire(body.project_id, name, owner, unc, lambda: controller.busy() or registry_mode() != "local")
     if lease is None:
         raise HTTPException(status_code=409, detail="이미 다른 곳에서 훑는 중입니다")
     with get_connection() as conn:

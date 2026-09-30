@@ -81,6 +81,9 @@ class HelperController(AssetRegistryController):
     def enabled(self) -> bool:
         return True  # 관리자 창에서 누를 때만 돈다(자동 주기 없음 — 결정 8)
 
+    def _mode_allows(self) -> bool:
+        return True  # 훑는 곳은 서버가 정한다 — 서버가 '로컬'이 아니면 자리(lease)를 주지 않는다(이 PC DB 의 설정과 무관)
+
     def _halted(self) -> bool:
         # 로그인이 바뀌었거나 자리를 잃었으면 도는 자식을 곧바로 끝낸다(결과를 올릴 때까지 기다리지 않는다, Codex P1)
         return self._stopping or bool(self._abort) or self._lease_lost

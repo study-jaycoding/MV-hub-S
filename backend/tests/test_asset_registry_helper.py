@@ -8,6 +8,7 @@ import hashlib
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -34,6 +35,12 @@ def _ok(path: str, data: bytes) -> dict:
     return {"p": path, "b": len(data), "m": 1, "s": _sha(data), "st": "ok"}
 
 
+def _set_mode_raw(value) -> None:
+    """시험 전용 — 훑는 곳을 DB 에 바로 쓰고 캐시를 비운다(DB 복원과 같은 효과). 제품 경로는 controller.set_mode."""
+    svc.repo.set_setting(svc._MODE_KEY, value)
+    svc._mode_cache = None
+
+
 class _ServerCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -46,7 +53,7 @@ class _ServerCase(unittest.TestCase):
         self.pid = f"hp-{time.time_ns()}"
         svc.leases._lease = None
         patches = [
-            patch.object(api, "ASSET_REGISTRY_HELPER", True),
+            patch.object(svc, "ASSET_REGISTRY_ENABLED", True),
             patch.object(api, "pm_projects", return_value=[(self.pid, "뻘뻘뻘", r"Z:\PROJ")]),
             patch.object(api, "canonical_unc", return_value=UNC),
         ]
@@ -54,6 +61,9 @@ class _ServerCase(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.addCleanup(setattr, svc.leases, "_lease", None)
+        # 훑는 곳 = 로컬(관리자 PC) — 서버 DB 에 둔다. 끝나면 지워 기본(서버)으로
+        _set_mode_raw("local")
+        self.addCleanup(_set_mode_raw, None)
 
     def lease(self) -> dict:
         res = self.client.post("/api/asset-registry/helper/lease", json={"project_id": self.pid})
@@ -103,10 +113,13 @@ class HelperServerTests(_ServerCase):
         lease = self.lease()
         self.assertEqual(self.client.post("/api/asset-registry/helper/lease",
                                           json={"project_id": self.pid}).status_code, 409)
-        # 도우미가 훑는 동안 서버 훑기(수동·자동 모두 request_scan 을 지난다)도 막힌다
-        with patch.object(svc, "ASSET_REGISTRY_ENABLED", True):
-            self.assertEqual(self.client.post("/api/asset-registry/scan", json={}).status_code, 409)
-        self.assertFalse(svc.controller.request_scan(mode="auto"))
+        # 도우미가 훑는 동안 서버 훑기(수동·자동 모두 request_scan 을 지난다)도 막힌다 — 훑는 곳과 무관하게 자리가 막는다
+        self.assertEqual(self.client.post("/api/asset-registry/scan", json={}).status_code, 409)
+        with patch.object(svc.controller, "_mode_allows", return_value=True):
+            self.assertFalse(svc.controller.request_scan(mode="auto"))
+        # 자리가 살아 있는 동안은 훑는 곳도 못 바꾼다(연장·결과가 훑는 곳을 다시 보지 않는 근거)
+        self.assertEqual(self.client.post("/api/asset-registry/mode", json={"mode": "server"}).status_code, 409)
+        self.assertEqual(svc.registry_mode(), "local")
         self.client.post("/api/asset-registry/helper/release", json={"lease_id": lease["lease_id"]})
         self.assertFalse(svc.leases.active())
         # 반대로 서버가 훑는 중이면 자리를 주지 않는다
@@ -167,7 +180,7 @@ class HelperServerTests(_ServerCase):
         self.assertEqual(self.scan_row()["state"], "partial")  # 미판정이 있어 이동·없어짐은 보류
 
     def test_off_by_default_and_old_names_unchanged(self) -> None:
-        with patch.object(api, "ASSET_REGISTRY_HELPER", False):
+        with patch.object(svc, "ASSET_REGISTRY_ENABLED", False):
             self.assertEqual(self.client.get("/api/asset-registry/helper/projects").status_code, 503)
             self.assertEqual(self.client.post("/api/asset-registry/helper/lease",
                                               json={"project_id": self.pid}).status_code, 503)
@@ -179,6 +192,103 @@ class HelperServerTests(_ServerCase):
         self.assertIn("/api/asset-registry/helper/result", UPLOAD_REQUEST_LIMITS)  # 본문은 파싱 전에 막는다
         for path in ("/api/registry-helper/scan", "/api/asset-registry/helper/result"):
             self.assertEqual(notification_domains("POST", path, 200), ())
+
+
+class ModeTests(_ServerCase):
+    """훑는 곳(서버 / 로컬 · 이 PC) — 관리자 창에서 고르고 서버 DB 에 둔다(Jay 2026-09-30, Codex 합의)."""
+
+    def test_defaults_to_server_and_is_kept_in_the_server_db(self) -> None:
+        _set_mode_raw(None)
+        self.assertEqual(self.client.get("/api/asset-registry/status").json()["mode"], "server")  # 예전 동작
+        with patch.object(api, "log_event") as logged:
+            self.assertEqual(self.client.post("/api/asset-registry/mode", json={"mode": "local"}).json(), {"mode": "local"})
+        self.assertEqual(logged.call_args.kwargs["mode"], "local")
+        self.assertIn("by", logged.call_args.kwargs)
+        self.assertEqual(svc.repo.get_setting(svc._MODE_KEY), "local")  # 서버 DB 에 — 서버를 다시 켜도 그 값
+        self.assertEqual(self.client.get("/api/asset-registry/status").json()["mode"], "local")
+        # DB 를 복원·교체하면(풀 에폭이 오른다) 캐시를 버리고 다시 읽는다 — 이상한 값은 서버(Codex)
+        svc.repo.set_setting(svc._MODE_KEY, "nonsense")
+        self.assertEqual(svc.registry_mode(), "local")  # 같은 에폭 — DB 를 다시 읽지 않는다(루프가 DB 를 기다리지 않게)
+        with patch.object(svc, "pool_epoch", return_value=svc.pool_epoch() + 1):
+            self.assertEqual(svc.registry_mode(), "server")
+        self.assertEqual(self.client.post("/api/asset-registry/mode", json={"mode": "cloud"}).status_code, 422)
+
+    def test_local_stops_server_scans_and_server_stops_helpers(self) -> None:
+        res = self.client.post("/api/asset-registry/scan", json={})
+        self.assertEqual(res.status_code, 409)
+        self.assertIn("로컬", res.json()["detail"])
+        self.assertFalse(svc.controller.request_scan(mode="auto"))  # 자동 주기도 조용히 건너뛴다
+        self.assertTrue(helper_mod.HelperController()._mode_allows())  # 관리자 PC 는 서버가 자리에서 정한다
+        self.assertEqual(self.client.post("/api/asset-registry/mode", json={"mode": "server"}).status_code, 200)
+        for res in (self.client.get("/api/asset-registry/helper/projects"),
+                    self.client.post("/api/asset-registry/helper/lease", json={"project_id": self.pid})):
+            self.assertEqual(res.status_code, 503)  # 도우미는 503 을 전체 멈춤으로 받는다
+            self.assertIn("서버", res.json()["detail"])
+
+    def test_cannot_change_while_the_server_scans_and_needs_system_and_on(self) -> None:
+        with patch.object(svc.controller, "busy", return_value=True):
+            self.assertEqual(self.client.post("/api/asset-registry/mode", json={"mode": "server"}).status_code, 409)
+        self.assertEqual(svc.registry_mode(), "local")
+        with patch.object(svc, "ASSET_REGISTRY_ENABLED", False):
+            self.assertEqual(self.client.post("/api/asset-registry/mode", json={"mode": "server"}).status_code, 503)
+        with patch.object(api, "require_global_cap", side_effect=api.HTTPException(status_code=403)):
+            self.assertEqual(self.client.post("/api/asset-registry/mode", json={"mode": "server"}).status_code, 403)
+        self.assertEqual(svc.registry_mode(), "local")
+
+    def test_a_late_old_read_does_not_undo_a_switch(self) -> None:
+        # 상태 요청 A 가 캐시를 비운 채 DB 의 옛 값('server')을 읽는 사이 관리자 B 가 '로컬'로 바꿨다 → A 가 늦게 끝나도
+        #  캐시는 '로컬'(Codex P0 — 확인·다시 읽기·대입이 한 잠금 안이라 B 는 A 가 끝날 때까지 기다린다)
+        _set_mode_raw("server")
+        real_get = svc.repo.get_setting
+        outcome: list = []
+
+        def slow_old_read(key, default=None):
+            value = real_get(key, default)
+            switcher = threading.Thread(target=lambda: outcome.append(svc.controller.set_mode("local")))
+            switcher.start()
+            switcher.join(0.3)  # 잠금이 없으면 이 사이에 B 가 끝나 캐시를 '로컬'로 쓴다
+            outcome.append(("switcher_done_early", not switcher.is_alive()))
+            self.addCleanup(switcher.join, 5)
+            return value
+
+        with patch.object(svc.repo, "get_setting", side_effect=slow_old_read):
+            self.assertEqual(svc.registry_mode(), "server")
+        for _ in range(100):
+            if True in outcome:
+                break
+            time.sleep(0.02)
+        self.assertIn(("switcher_done_early", False), outcome)
+        self.assertIn(True, outcome)
+        self.assertEqual(svc.registry_mode(), "local")
+
+    def test_while_the_db_is_being_replaced_nothing_waits_on_it(self) -> None:
+        # DB 복원 게이트가 닫힌 동안 — 훑는 곳을 읽으려 DB 를 기다리지 않고, 서버 훑기·바꾸기는 하지 않는다(Codex P1)
+        _set_mode_raw("server")
+        svc.registry_mode()
+        with patch.object(svc, "maintenance_active", return_value=True), \
+                patch.object(svc, "pool_epoch", return_value=svc.pool_epoch() + 1), \
+                patch.object(svc.repo, "get_setting", side_effect=AssertionError("DB 를 기다리면 안 된다")):
+            self.assertEqual(svc.registry_mode(), "server")  # 마지막 값
+            self.assertFalse(svc.controller.request_scan(mode="auto"))
+            self.assertFalse(svc.controller.set_mode("local"))
+
+    def test_switch_between_the_check_and_the_lease_gives_no_lease(self) -> None:
+        # 라우트가 '로컬'을 확인한 뒤·자리를 주기 전에 '서버'로 바뀌었다 → 자리 발급이 같은 잠금 안에서 다시 봐서 주지 않는다
+        def flip():
+            self.assertTrue(svc.controller.set_mode("server"))  # 다른 관리자가 바꿨다(자리가 아직 없어 바뀐다)
+            return [(self.pid, "뻘뻘뻘", r"Z:\PROJ")]
+
+        with patch.object(api, "pm_projects", side_effect=flip):
+            res = self.client.post("/api/asset-registry/helper/lease", json={"project_id": self.pid})
+        self.assertEqual(res.status_code, 409)
+        self.assertFalse(svc.leases.active())
+
+    def test_this_pc_can_help_only_when_signed_in_to_the_shared_server(self) -> None:
+        from app.routers import registry_helper
+
+        self.assertFalse(self.client.get("/api/registry-helper/status").json()["available"])  # dev·격리 = 자기 자신이 서버
+        with patch.object(registry_helper._proxy, "proxying", return_value=True):
+            self.assertTrue(self.client.get("/api/registry-helper/status").json()["available"])
 
 
 class HelperPieceTests(unittest.TestCase):
@@ -331,6 +441,26 @@ class HelperFlowTests(_ServerCase):
         self.assertEqual(status["abort"], "")
         self.assertEqual(status["results"][0]["state"], "failed")
         self.assertIn("자리", status["results"][0]["note"])
+
+    def test_switch_to_server_between_projects_stops_the_whole_run(self) -> None:
+        # A 를 마치고 자리를 돌려준 뒤 누가 '서버'로 바꿨다 → B 자리가 503 → 전체 멈춤(한 번의 로컬 훑기에 서버 훑기가 섞이지 않게)
+        second = f"{self.pid}-b"
+        switched: list = []
+        inner = self.helper._call.side_effect
+
+        def call(method, path, body=None, timeout=60, pinned_ok=False):
+            out = inner(method, path, body, timeout, pinned_ok)
+            if path.endswith("/helper/release") and not switched:
+                switched.append(self.client.post("/api/asset-registry/mode", json={"mode": "server"}).status_code)
+            return out
+
+        with patch.object(api, "pm_projects", return_value=[(self.pid, "뻘뻘뻘", r"Z:\PROJ"), (second, "RnD", r"Z:\PROJ2")]), \
+                patch.object(self.helper, "_call", side_effect=call):
+            status = self.run_helper()
+        self.assertEqual(switched, [200])  # 자리를 돌려준 뒤라 바꿀 수 있다
+        self.assertEqual([r["state"] for r in status["results"]], ["ok", "aborted"])
+        self.assertIn("서버", status["abort"])
+        self.assertFalse(svc.leases.active())
 
     def test_server_already_scanning_skips_the_project(self) -> None:
         with patch.object(svc.controller, "busy", return_value=True):

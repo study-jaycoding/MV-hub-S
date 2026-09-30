@@ -30,13 +30,12 @@ from .. import repo
 from ..config import (
     ASSET_REGISTRY_DRIVES,
     ASSET_REGISTRY_ENABLED,
-    ASSET_REGISTRY_HELPER,
     ASSET_REGISTRY_INTERVAL_MIN,
     ASSET_REGISTRY_MIBPS,
     BACKEND_DIR,
     DATA_DIR,
 )
-from ..db import get_connection
+from ..db import get_connection, maintenance_active, pool_epoch
 from ..repo import asset_registry as registry
 from . import project_folders
 from .async_tools import to_thread_non_abandon
@@ -54,6 +53,29 @@ LARGE_CAP_S = 45 * 60  # 큰 파일 전용 실행의 최대 시간 — 넘으면
 KILL_GRACE_S = 30
 _STARTUP_DELAY_S = 60
 LEASE_TTL_S = 10 * 60  # 도우미가 1분마다 연장한다 — 도우미가 죽어도 서버 훑기를 오래 막지 않게
+# 누가 훑나 — 서버 자신 / 관리자 PC(도우미). 관리자 창에서 고르고 서버 DB 에 둔다(Jay 2026-09-30, Codex 합의).
+MODES = ("server", "local")
+_MODE_KEY = "asset_registry_mode"
+# (풀 에폭, 값) — 이벤트 루프(자동 주기·/scan)가 DB 를 기다리지 않게. DB 파일을 복원·교체하면 에폭이 올라 다시 읽는다(Codex P1:
+#  캐시가 없으면 복원 게이트가 닫힌 동안 루프가 멈추고, 에폭 없는 캐시는 복원된 값을 무시한다).
+_mode_cache: Optional[tuple[int, str]] = None
+# 캐시 확인·다시 읽기·대입을 한 덩어리로 — 늦게 끝난 옛 읽기가 방금 바꾼 값을 덮지 않게(Codex P0). 잠금 순서는 leases.lock → 이것만.
+_mode_lock = threading.Lock()
+
+
+def registry_mode() -> str:
+    """고른 훑는 곳 — 없거나 이상하면 "server"(예전 동작). DB 를 교체하는 중에는 읽지 않고 마지막 값을 준다
+    (기다리면 이벤트 루프가 멈춘다, Codex P1). 그동안 서버 훑기는 시작하지 않는다(_mode_allows)."""
+    global _mode_cache
+    with _mode_lock:
+        epoch = pool_epoch()
+        if _mode_cache is not None and _mode_cache[0] == epoch:
+            return _mode_cache[1]
+        if maintenance_active():
+            return _mode_cache[1] if _mode_cache else "server"
+        mode = repo.get_setting(_MODE_KEY, "server")
+        _mode_cache = (epoch, mode if mode in MODES else "server")
+        return _mode_cache[1]
 
 
 def _rates() -> tuple[float, float]:
@@ -266,7 +288,7 @@ class AssetRegistryController:
         }
         return {
             "enabled": self.enabled,
-            "helper_enabled": ASSET_REGISTRY_HELPER,
+            "mode": registry_mode(),
             "lease": leases.summary(),
             "interval_min": ASSET_REGISTRY_INTERVAL_MIN,
             "running": self.busy(),
@@ -309,11 +331,31 @@ class AssetRegistryController:
         self._loop_task = None
 
     def request_scan(self, project_ids: Optional[list[str]] = None, mode: str = "manual") -> bool:
-        # 도우미 PC 가 훑는 중(자리가 살아 있음)이면 서버도 안 훑는다 — 자동·수동 모두 여기를 지난다(Codex P0).
+        # 도우미 PC 가 훑는 중(자리가 살아 있음)이거나 훑는 곳이 로컬이면 서버는 안 훑는다 — 자동·수동 모두 여기를 지나고,
+        # 훑는 곳 바꾸기(set_mode)·자리 발급과 같은 잠금이라 서로 끼어들지 못한다(Codex P0).
         with leases.lock:
-            if self._stopping or self.busy() or leases.alive_locked():
+            if self._stopping or self.busy() or leases.alive_locked() or not self._mode_allows():
                 return False
             self._run_task = asyncio.create_task(self._run(project_ids, mode), name=f"asset-registry-{mode}")
+        return True
+
+    def _mode_allows(self) -> bool:
+        """이 관리자가 훑어도 되나 — 서버는 '서버'를 골랐을 때만, DB 를 교체하는 중이 아닐 때만.
+        도우미(관리자 PC)는 서버가 자리를 줄 때 본다(덮어쓴다)."""
+        return not maintenance_active() and registry_mode() == "server"
+
+    def set_mode(self, mode: str) -> bool:
+        """훑는 곳을 바꾼다. 서버 훑기·도우미 자리가 살아 있거나 DB 를 교체하는 중이면 False — DB 를 기다리며
+        leases.lock 을 쥐고 있으면 자동 주기(이벤트 루프)가 그 잠금에서 멈춘다."""
+        global _mode_cache
+        if maintenance_active():
+            return False
+        with leases.lock:
+            if self.busy() or leases.alive_locked():
+                return False
+            with _mode_lock:
+                repo.set_setting(_MODE_KEY, mode)
+                _mode_cache = (pool_epoch(), mode)
         return True
 
     async def _loop(self, interval_s: float) -> None:

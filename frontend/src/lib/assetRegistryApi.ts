@@ -20,10 +20,12 @@ export interface AssetRegistryScanRow {
   note: string | null;
 }
 
+export type RegistryMode = "server" | "local";
+
 export interface AssetRegistryStatus {
   enabled: boolean;
-  // 도우미 PC 훑기(서버가 NAS 를 못 읽을 때) — 옛 서버엔 없다
-  helper_enabled?: boolean;
+  // 훑는 곳 — 서버 자신 / 관리자 PC(도우미). 관리자 창에서 고르고 서버 DB 에 둔다(2026-09-30 — 그 전 dev 서버엔 없다)
+  mode?: RegistryMode;
   lease?: { project_id: string; name: string; started_at: string } | null;
   interval_min: number;
   running: boolean;
@@ -50,10 +52,13 @@ export interface RegistryHelperStatus {
   last: { projects?: number; failed?: number; elapsed_ms?: number; finished_at?: string };
   results: RegistryHelperResult[];
   abort: string;
+  available?: boolean; // 이 PC 가 도우미가 될 수 있나 — 공유 서버에 로그인한 앱만(dev·격리 서버는 자기 자신이 서버)
 }
 
 export const assetRegistryApi = {
   status: () => jsonFetch<AssetRegistryStatus>("/api/asset-registry/status"),
+  setMode: (mode: RegistryMode) =>
+    jsonFetch<{ mode: RegistryMode }>("/api/asset-registry/mode", { method: "POST", body: jsonBody({ mode }) }),
   scan: (projectIds: string[] = []) =>
     jsonFetch<{ started: boolean }>("/api/asset-registry/scan", {
       method: "POST",

@@ -35,4 +35,5 @@ async def scan(body: HelperScanIn) -> dict[str, Any]:
 
 @router.get("/status", dependencies=[Depends(require_local_assets)])
 def status() -> dict[str, Any]:
-    return helper.helper_status()
+    # available — 이 PC 가 도우미가 될 수 있나(공유 서버에 로그인한 앱만. dev·격리 서버는 자기 자신이 서버다)
+    return {**helper.helper_status(), "available": _proxy.proxying()}

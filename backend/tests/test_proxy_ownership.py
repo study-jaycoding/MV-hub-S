@@ -30,6 +30,7 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/asset-registry/helper/renew",
         "/api/asset-registry/helper/result",
         "/api/asset-registry/lookup",
+        "/api/asset-registry/mode",
         "/api/asset-registry/scan",
         "/api/asset-registry/status",
         "/api/asset-registry/usage/{registry_asset_id}",

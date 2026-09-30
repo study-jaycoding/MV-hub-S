@@ -55,6 +55,17 @@
 /* 에셋 대장 표 — 한글 칸이 글자 단위로 꺾이지 않게 한 줄로, 넘치면 표만 옆으로 민다 */
 .admin-registry-wrap { overflow-x: auto; }
 .admin-registry th, .admin-registry td { white-space: nowrap; }
+/* 에셋 대장 '훑는 곳'(Jay 2026-09-30 시안) — 승인 탭 선택 단추 모양, 고른 쪽은 라임 배경 + 검은 글자 */
+.admin-mode-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 2px 0 6px; }
+.admin-mode-seg .acct-seg { font-size: 12.5px; padding: 6px 16px; }
+.admin-mode-seg .acct-seg.on { background: var(--accent); color: #101213; }
+.admin-mode-seg .acct-seg:disabled { opacity: 0.45; cursor: default; }
+.admin-mode-saved { font-size: 11px; color: var(--muted); }
+.admin-registry-warn {
+  font-size: 12px; line-height: 1.5; color: #ff8a7a; margin: 6px 0 8px; padding: 7px 10px;
+  background: rgba(224,70,60,0.10); border: 1px solid rgba(224,70,60,0.35); border-radius: 8px;
+}
+.admin-registry-warn b { color: #ffb3a8; }
 .admin-member { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .admin-dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; flex: none; }
 .admin-dot.mine { background: var(--accent); }
