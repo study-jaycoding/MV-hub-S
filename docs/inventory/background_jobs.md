@@ -17,12 +17,12 @@
 | `cli_bridge.start_model_refreshes` | 호출 | 항상 | `backend/app/services/cli_bridge.py` |
 | `_prewarm (name=thumb-prewarm)` | Thread | not _proxy.is_shared_team_server() | `backend/app/main.py` |
 | `server_relocation.refresh (name=server-relocation-boot)` | Thread | 항상 | `backend/app/services/server_relocation.py` |
-| `periodic_sync` | start() | AUTH_ENABLED | `backend/app/services/syncer.py` |
+| `periodic_sync` | start() | AUTH_ENABLED and not READ_ONLY | `backend/app/services/syncer.py` |
 | `_start_worker_backup_bootstrap` | 호출 | _proxy.is_worker_hub() | `backend/app/main.py` |
 | `periodic_backup` | start() | 항상 | `backend/app/services/backup.py` |
-| `periodic_sweeper` | start() | 항상 | `backend/app/services/temp_sweeper.py` |
-| `periodic_media_preservation` | start() | MEDIA_PRESERVATION_ENABLED | `backend/app/services/media_preservation.py` |
-| `asset_registry_controller` | start() | ASSET_REGISTRY_ENABLED | `backend/app/services/asset_registry.py` |
+| `periodic_sweeper` | start() | not READ_ONLY | `backend/app/services/temp_sweeper.py` |
+| `periodic_media_preservation` | start() | MEDIA_PRESERVATION_ENABLED and not READ_ONLY | `backend/app/services/media_preservation.py` |
+| `asset_registry_controller` | start() | ASSET_REGISTRY_ENABLED and not READ_ONLY | `backend/app/services/asset_registry.py` |
 | `periodic_share_state_reconciler` | start() | 항상 | `backend/app/services/share_state_reconciler.py` |
 | `asset_watcher` | start() | 항상 | `backend/app/services/asset_watcher.py` |
 | `startup_history_audit() (name=history-startup-audit)` | create_task | 항상 | `backend/app/services/history_autofill.py` |

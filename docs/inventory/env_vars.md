@@ -11,7 +11,7 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 131개.
+제품 환경변수 132개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
@@ -87,6 +87,7 @@
 | `CONTENT_HUB_NO_PROXY` | `""` | `backend/app/routers/_proxy.py` `backend/app/services/operational_health.py` `backend/app/services/telemetry_drain.py` `tools/endurance_probe.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
 | `CONTENT_HUB_PORT` | `"0"` `"8000"` `"8010"` | `backend/app/config.py` `run_agent_session.py` `tools/endurance_probe.py` `tools/server_watchdog.py` | `MV_agent.bat` `MV_server.bat` |
 | `CONTENT_HUB_PRESERVED_MEDIA_MAX_BYTES` | `str(50 * 1024 * 1024 * 1024)` | `backend/app/services/media_cache.py` | — |
+| `CONTENT_HUB_READ_ONLY` | `"0"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_REMOTE_THUMB_CONCURRENCY` | `"4"` | `backend/app/services/thumbs.py` | — |
 | `CONTENT_HUB_RESOLVE_CONNECT_ATTEMPTS` | `"3"` | `backend/app/services/resolve_bridge.py` | — |
 | `CONTENT_HUB_RESOLVE_CONNECT_RETRY_DELAY_SECONDS` | `"0.4"` | `backend/app/services/resolve_bridge.py` | — |

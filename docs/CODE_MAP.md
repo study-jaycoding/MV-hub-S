@@ -96,7 +96,7 @@ updated: 2026-10-01
 | `emailnorm.py` | 이메일 정규화 단일 정의 | |
 | `generation_result.py` | CLI 파싱 결과 → 저장 필드 변환 순수 규칙 | |
 | `list_gzip.py` | 생성물 목록 응답만 gzip 압축하는 미들웨어 | |
-| `main.py` | FastAPI 앱 + lifespan(부팅 마이그레이션·주기작업 기동/회수) + 미들웨어 5종 + health/ready/admin 라우트 + `/ws` + SPA fallback | 약 1,340줄 |
+| `main.py` | FastAPI 앱 + lifespan(부팅 마이그레이션·주기작업 기동/회수) + 미들웨어 9종(읽기 전용 가드 포함 — `CONTENT_HUB_READ_ONLY`) + health/ready/admin 라우트 + `/ws` + SPA fallback | 약 1,380줄 |
 | `manage_db.py` | 매니징 전용 DB(`manage_hub.db`) 스키마·팩트 upsert·팀 집계 조회 | 약 1,060줄 |
 | `models.py` | Pydantic 요청/응답 스키마 48종 | 약 512줄 |
 | `mutation_notify.py` | 변경 알림 HTTP 계약(도메인 판정·출처 파싱) | |
@@ -380,7 +380,7 @@ updated: 2026-10-01
 |---|---|---|
 | `backup.py`(522줄) | DB 세트 자동 백업(ATTACH 다중 DB 온라인 스냅샷)·회전·주기 워커 | `main`·`db_transfer`·`operational_health` |
 | `backup_verify.py` | 백업 복원 훈련(별도 파일 복원 후 무결성·FK·행수). `allow_index_drift`+`rebuild_drifted_indexes` — 다른 SQLite 엔진이 만든 **계산식 색인 어긋남만** 쓰기 가능한 사본(복원·설치 staged)에서 다시 만들고 엄격 재검사(2026-10-01, 옛 서버 3.45 → 새 PC 3.49) | `restore_runtime_verify`·tools |
-| `restore_runtime_verify.py` | 복원 사본으로 격리 서버 기동·로그인·행수 검증 | tools 전용(`server_move`·`verify_backup_restore`) |
+| `restore_runtime_verify.py` | 복원 사본으로 격리 서버 기동·로그인·행수 검증(읽기 전용·대장 끔·로그는 사본 안) | tools 전용(`server_move`·`verify_backup_restore`) |
 | `worker_backup.py`(1329줄) | 작업자 개인 DB 백업 세트의 공유 서버 자동 전달(별도 프로세스, §2.6) | `main`·`comfy`·`db_transfer` |
 | `db_scrub.py` | 전송/테스트 스냅샷용 비밀값 정제 프로파일 2종 | `db_transfer`·`test_snapshot`·`worker_backup` |
 | `test_snapshot.py` | 서버형 테스트용 다중 SQLite 스냅샷 ZIP 생성·검증·설치 | `main`·`db_transfer`·tools |
@@ -1060,7 +1060,7 @@ updated: 2026-10-01
 | `server_move_export.bat`(24줄)/`server_move_import.bat`(26줄) | `run_py.bat` 경유 `server_move.py export\|import` 얇은 래퍼 | → `tools/server_move.py` |
 | `server_move_OUT.bat`(29줄)/`server_move_UNDO.bat`(27줄) | 쉬운 이사 옛 서버 쪽 — 관리자 승격, 예약 서버와 같은 파이썬(`.mvhub-runtime\python.txt`)으로 `server_move_easy.py out\|undo-out` | → `tools/server_move_easy.py` |
 | `server_move_IN.bat`(33줄) | 쉬운 이사 새 서버 쪽 — 관리자 승격, register 와 같은 규칙(py -3 → python)으로 파이썬 하나를 골라 `server_move_easy.py in` | → `tools/server_move_easy.py` |
-| `tools/server_move_easy.py`(968줄) | 쉬운 이사 OUT·IN·UNDO — 첫 변경 전 되돌리기 기록·생성 접수 멈춤(DB)·진행 중 0 대기·정지·최종 확인·바탕화면 패키지(+machine_settings.json, manifest 대조) / 점검·설치·bootstrap 삭제·변수 이름 목록 적용·자동시작·ready·BackupCopy 확인 | → `tools/server_move.py`, `tools/deploy_fence_check.py`, `register_autostart.bat` |
+| `tools/server_move_easy.py`(1401줄) | 쉬운 이사 OUT·IN·UNDO — 첫 변경 전 되돌리기 기록·생성 접수 멈춤(DB)·진행 중 0 대기·정지·최종 확인·바탕화면 패키지(+machine_settings.json, manifest 대조) / 점검·설치·bootstrap 삭제·변수 이름 목록 적용·자동시작·ready·BackupCopy 확인. **연습**(purpose=rehearsal): OUT 은 내보낸 뒤 자동 복귀, IN 은 `backend\data-rehearsal` 에만 설치하고 읽기 전용 서버 창(진짜 자리 기준 점검·설치 준비 검사 포함) | → `tools/server_move.py`, `tools/deploy_fence_check.py`, `register_autostart.bat` |
 | `tools/server_move.py`(1167줄) | DB 세트 export/import, 머신전용 상태 제외, `--backup-set` NAS 복구. 설치 staged 사본에서 엔진 차이 색인 재생성 | → backend `services/backup_verify.py`, `tools/account_paths.py` |
 | `tools/account_paths.py`(12줄) | `backend.app.active_account.slug` 를 tools 스크립트에서 쓰기 위한 sys.path 셋업 | |
 
