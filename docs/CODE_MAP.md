@@ -1060,8 +1060,8 @@ updated: 2026-10-01
 | `server_move_export.bat`(24줄)/`server_move_import.bat`(26줄) | `run_py.bat` 경유 `server_move.py export\|import` 얇은 래퍼 | → `tools/server_move.py` |
 | `server_move_OUT.bat`(29줄)/`server_move_UNDO.bat`(27줄) | 쉬운 이사 옛 서버 쪽 — 관리자 승격, 예약 서버와 같은 파이썬(`.mvhub-runtime\python.txt`)으로 `server_move_easy.py out\|undo-out` | → `tools/server_move_easy.py` |
 | `server_move_IN.bat`(33줄) | 쉬운 이사 새 서버 쪽 — 관리자 승격, register 와 같은 규칙(py -3 → python)으로 파이썬 하나를 골라 `server_move_easy.py in` | → `tools/server_move_easy.py` |
-| `tools/server_move_easy.py`(1401줄) | 쉬운 이사 OUT·IN·UNDO — 첫 변경 전 되돌리기 기록·생성 접수 멈춤(DB)·진행 중 0 대기·정지·최종 확인·바탕화면 패키지(+machine_settings.json, manifest 대조) / 점검·설치·bootstrap 삭제·변수 이름 목록 적용·자동시작·ready·BackupCopy 확인. **연습**(purpose=rehearsal): OUT 은 내보낸 뒤 자동 복귀, IN 은 `backend\data-rehearsal` 에만 설치하고 읽기 전용 서버 창(진짜 자리 기준 점검·설치 준비 검사 포함) | → `tools/server_move.py`, `tools/deploy_fence_check.py`, `register_autostart.bat` |
-| `tools/server_move.py`(1167줄) | DB 세트 export/import, 머신전용 상태 제외, `--backup-set` NAS 복구. 설치 staged 사본에서 엔진 차이 색인 재생성 | → backend `services/backup_verify.py`, `tools/account_paths.py` |
+| `tools/server_move_easy.py`(1403줄) | 쉬운 이사 OUT·IN·UNDO — 첫 변경 전 되돌리기 기록·생성 접수 멈춤(DB)·진행 중 0 대기·정지·최종 확인·바탕화면 패키지(+machine_settings.json, manifest 대조) / 점검·설치·bootstrap 삭제·변수 이름 목록 적용·자동시작·ready·BackupCopy 확인. **연습**(purpose=rehearsal): OUT 은 서버를 멈추지 않고 켜진 DB 3종만 찍음, IN 은 `backend\data-rehearsal` 에만 설치하고 읽기 전용 서버 창(진짜 자리 기준 점검·설치 준비 검사 포함) | → `tools/server_move.py`, `tools/deploy_fence_check.py`, `register_autostart.bat` |
+| `tools/server_move.py`(1178줄) | DB 세트 export/import(`live_snapshot` = 연습용 켜진 채 찍기), 머신전용 상태 제외, `--backup-set` NAS 복구. 설치 staged 사본에서 엔진 차이 색인 재생성 | → backend `services/backup_verify.py`, `tools/account_paths.py` |
 | `tools/account_paths.py`(12줄) | `backend.app.active_account.slug` 를 tools 스크립트에서 쓰기 위한 sys.path 셋업 | |
 
 **백업·복원 — 서버 PC, 상시(스케줄러) / 검증 시 수동**
