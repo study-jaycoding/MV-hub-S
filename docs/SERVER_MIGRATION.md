@@ -12,6 +12,41 @@ status: active
 운영 변수는 [SERVER.md](SERVER.md), 어떤 상태를 누가 소유하는지는
 [DATA_OWNERSHIP.md](DATA_OWNERSHIP.md) 를 따른다.
 
+## 쉬운 이사 — bat 두 번 (2026-10-01)
+
+아래 수동 절차를 묶은 것이다. 표준 배치(세 DB 가 `backend\data\db` 한 폴더, `CONTENT_HUB_DATA`·`CONTENT_HUB_DB`·
+TLS 변수 없음)인 서버만 이 길로 옮긴다. 아니면 도구가 시작 전에 멈추고 수동 절차로 보낸다.
+설계·검토(Claude 설계 → Codex 적대 검토 3회): 정지 뒤 최종 확인, 하나의 파이썬 고정, 첫 변경 전 되돌리기, IP 를 넘긴 뒤 되돌리기 금지,
+기계 변수는 이름 목록만 적용.
+
+**미리 한 번**: 새 코드가 양쪽 PC 에 있어야 한다 — 옛 서버는 평소 업데이트 절차(SERVER.md), 새 PC 는 `update_git.bat`.
+
+| 순서 | 어디서 | 무엇 |
+|---|---|---|
+| 1 | 옛 서버 | `server_move_OUT.bat` — **무엇이든 바꾸기 전에** 바탕화면에 `MVHub_server_UNDO.bat` 과 되돌리기 기록(`backend\data\server_move_out_state.json`)을 만든다. 그다음 생성 접수 멈춤(DB 값 직접, 관리자 로그인 불필요) → 진행 중 0 대기(최대 15분, 넘으면 멈춤) → 예약 작업 3개 사용 안 함·끝내기·남은 이 저장소 프로세스 정리(목록 보이고 Y) → **정지 상태에서 최종 확인**(0 이 아니면 내보내지 않음) → 바탕화면 `MVHub_server_move_<시각>` 폴더(DB 3종·작업자 백업·보존 모드면 media·`machine_settings.json`) |
+| 2 | 사람 | 그 폴더를 새 서버 바탕화면으로(USB·NAS) |
+| 3 | 새 서버 | `server_move_IN.bat` — 점검(지난 설치 기록·8010 점유·기존 예약 작업·방화벽 8010·시간대 KST·표준 배치·폴더 충돌, 하나라도 걸리면 **아무것도 안 바꾸고** 멈춤) → 검증(드릴) → 설치(SQLite 엔진 차이 색인 재생성 포함) → 임시 관리자 비밀번호 파일 삭제·생성 접수 원래 값 → 기계 변수(대장·media 보존 이름 목록만)·NAS 복제 경로 → `register_autostart.bat`(설치에 쓴 파이썬을 `MVHUB_SERVER_PYEXE` 로 고정) → ready → BackupCopy 이번 결과 |
+| 4 | 사람 | 옛 서버 PC 를 끄거나 랜선 분리 → 새 PC IP 를 옛 값으로(IN 끝 화면의 표). **같은 정확한 URL** 이어야 팀원 PC 의 남은 보고가 이어진다(에이전트 outbox 는 서버 URL 단위) |
+| 5 | 사람 | 다른 PC 에서 `http://<옛IP>:8010/api/ready`, 팀원 한 명 접속·생성 1건 → 이사 폴더 사본을 모두 지운다(계정·비밀번호 해시 포함) |
+
+- **되돌리기**: 옛 서버 바탕화면 `MVHub_server_UNDO.bat` — 생성 접수 멈춤을 원래 값으로, 원래 켜져 있던 예약 작업만 켜고 원래 돌던
+  서버·워치독만 다시 돌린다(BackupCopy 는 안 돌림). **새 PC 가 옛 IP 를 받은 뒤에는 쓰지 않는다** — 새 서버가 받은 자료가 옛 DB 에 없다.
+- **OUT 이 중간에 멈췄을 때**(진행 중 생성이 15분 안에 안 끝남 등): 먼저 UNDO 로 되돌린 뒤 OUT 을 다시 한다. 끝나지 않은 기록이 있으면
+  OUT 은 처음 상태를 지키려고 덮어쓰지 않고 멈춘다. OUT·IN 둘 다 이 창이나 기계에 `CONTENT_HUB_DATA`·`CONTENT_HUB_DB`·TLS 변수가 있으면 시작 전에 멈춘다.
+- **IN 이 설치 뒤에 멈췄을 때**(작업자 백업 복사·자동시작 등록 실패 등): 원인을 고치고 IN 을 다시 누르면 DB 설치는 건너뛰고 이어서 끝낸다
+  (`backend\data\server_move_in_state.json` — DB 설치 직후 디스크에 기록). **처음 설치에 쓴 파이썬·SQLite 와 같을 때만** 이어진다(색인을 그 엔진으로
+  다시 만들었으므로). 다른 이사 폴더의 미완료 기록이나 깨진 기록(다른 DB 를 가리키는 것 포함)이 있으면 멈춘다. 이어할 때 지난번에 넣은
+  작업자 백업·media 는 내용(파일 목록·크기)이 같으면 건너뛰고, 다르면 합칠지 사람이 정하도록 멈춘다.
+- **검증 범위**: DB 3종과 `machine_settings.json` 은 manifest 의 크기·SHA-256 으로 대조한다. 작업자 백업(`db-backups`)·`media` 는
+  기존 도구와 같이 **최선 노력**이다 — 이름만 기록하고 내용 해시는 대조하지 않는다(이어하기는 파일 목록·크기로만 '지난번 것'을 가린다).
+  작업자 백업은 각 작업자 PC 에도 남아 있어 다시 받을 수 있다.
+- **남은 위험(수동 확인)**: 세 bat 은 관리자 권한을 요청할 때 받은 인자(`--package "…"` 등)를 그대로 넘기지만, 공백·따옴표가 든 인자가
+  UAC 를 거쳐 그대로 오는지는 자동 시험이 없다. 평소처럼 두 번 눌러(인자 없이) 쓰면 해당 없다.
+- 기계 변수는 전부 `machine_settings.json` 에 담기지만 자동 적용은 이름 목록(`CONTENT_HUB_ASSET_REGISTRY*`·`CONTENT_HUB_MEDIA_PRESERVATION*`)만.
+  나머지는 IN 이 이름을 보여 주고 필요하면 수동.
+- 옮기는 txt 는 `tools\backup_replica_target.txt` 하나. 새 PC 의 SYSTEM 계정이 NAS 에 쓸 수 있는지는 IN 끝의 BackupCopy 결과로 본다.
+- 도구: `tools/server_move_easy.py`(out · in · undo-out), 저수준은 아래 `server_move.py` 그대로.
+
 ## 도구
 
 | 명령 | 어디서 | 하는 일 |

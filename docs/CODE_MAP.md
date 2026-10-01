@@ -1005,7 +1005,7 @@ updated: 2026-10-01
 
 | 파일 | 한 줄 책임 | 호출 사슬 |
 |---|---|---|
-| `register_autostart.bat`(198줄) ⚠실행금지 | 최초 1회 관리자승격→NAS경로 질문→예약작업 3개 등록→즉시 기동 | → `task_launch.bat`, `restart_server_task.bat` |
+| `register_autostart.bat`(205줄) ⚠실행금지 | 최초 1회 관리자승격→NAS경로 질문→예약작업 3개 등록→즉시 기동. 쉬운 이사 IN 이 `MVHUB_SERVER_PYEXE`(설치에 쓴 파이썬 고정)·`CONTENT_HUB_NO_PAUSE`(확인 창 생략)로 부른다 | → `task_launch.bat`, `restart_server_task.bat` |
 | `task_launch.bat`(50줄) | 예약작업이 부르는 실행기: 로그회전+`CONTENT_HUB_TASK=1`+SYSTEM PATH 보정 | → `MV_server.bat` 등, `tools/backup_replicate.py`, `run_py.bat` |
 | `restart_server_task.bat`(23줄) ⚠실행금지 | 관리자 승격 후 `.ps1` 호출 | → `restart_server_task.ps1` |
 | `restart_server_task.ps1`(202줄) | 예약작업 정지→고아 프로세스 정리→포트 소유자 검증→재시작→ready 확인 | |
@@ -1058,7 +1058,10 @@ updated: 2026-10-01
 | 파일 | 한 줄 책임 | 호출 사슬 |
 |---|---|---|
 | `server_move_export.bat`(24줄)/`server_move_import.bat`(26줄) | `run_py.bat` 경유 `server_move.py export\|import` 얇은 래퍼 | → `tools/server_move.py` |
-| `tools/server_move.py`(1159줄) | DB 세트 export/import, 머신전용 상태 제외, `--backup-set` NAS 복구. 설치 staged 사본에서 엔진 차이 색인 재생성 | → backend `services/backup_verify.py`, `tools/account_paths.py` |
+| `server_move_OUT.bat`(29줄)/`server_move_UNDO.bat`(27줄) | 쉬운 이사 옛 서버 쪽 — 관리자 승격, 예약 서버와 같은 파이썬(`.mvhub-runtime\python.txt`)으로 `server_move_easy.py out\|undo-out` | → `tools/server_move_easy.py` |
+| `server_move_IN.bat`(33줄) | 쉬운 이사 새 서버 쪽 — 관리자 승격, register 와 같은 규칙(py -3 → python)으로 파이썬 하나를 골라 `server_move_easy.py in` | → `tools/server_move_easy.py` |
+| `tools/server_move_easy.py`(968줄) | 쉬운 이사 OUT·IN·UNDO — 첫 변경 전 되돌리기 기록·생성 접수 멈춤(DB)·진행 중 0 대기·정지·최종 확인·바탕화면 패키지(+machine_settings.json, manifest 대조) / 점검·설치·bootstrap 삭제·변수 이름 목록 적용·자동시작·ready·BackupCopy 확인 | → `tools/server_move.py`, `tools/deploy_fence_check.py`, `register_autostart.bat` |
+| `tools/server_move.py`(1167줄) | DB 세트 export/import, 머신전용 상태 제외, `--backup-set` NAS 복구. 설치 staged 사본에서 엔진 차이 색인 재생성 | → backend `services/backup_verify.py`, `tools/account_paths.py` |
 | `tools/account_paths.py`(12줄) | `backend.app.active_account.slug` 를 tools 스크립트에서 쓰기 위한 sys.path 셋업 | |
 
 **백업·복원 — 서버 PC, 상시(스케줄러) / 검증 시 수동**

@@ -35,7 +35,7 @@
 | `CONTENT_HUB_BACKUP_KEEP` | `"7"` | `backend/app/services/backup.py` | — |
 | `CONTENT_HUB_BACKUP_MIN_INTERVAL` | `"900"` | `backend/app/services/backup.py` | — |
 | `CONTENT_HUB_BACKUP_POLL_INTERVAL` | `"30"` | `backend/app/services/backup.py` | — |
-| `CONTENT_HUB_BACKUP_REPLICA_DIR` | `""` | `backend/app/services/operational_health.py` `tools/backup_replicate.py` | — |
+| `CONTENT_HUB_BACKUP_REPLICA_DIR` | `""` | `backend/app/services/operational_health.py` `tools/backup_replicate.py` `tools/server_move_easy.py` | — |
 | `CONTENT_HUB_COMFY_POLL_ERROR_RETRIES` | `5` | `backend/app/routers/comfy.py` | — |
 | `CONTENT_HUB_COMFY_RUN_JOB_TTL_SEC` | `60 * 60` | `backend/app/routers/comfy.py` | — |
 | `CONTENT_HUB_COMFY_TIMEOUT_SEC` | `60 * 30` | `backend/app/routers/comfy.py` | — |
