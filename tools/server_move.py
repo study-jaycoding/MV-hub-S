@@ -422,7 +422,8 @@ def verify_manifest_files(package_dir: Path, manifest: dict[str, Any]) -> dict[s
 # ---------------------------------------------------------------- export
 
 
-def cmd_export(args: argparse.Namespace) -> int:
+def cmd_export(args: argparse.Namespace, *, next_steps: bool = True) -> int:
+    """next_steps=False: 쉬운 이사(server_move_easy.py OUT)가 자기 안내를 따로 보인다."""
     data_dir = resolve_data_dir(args.data_dir)
     dest = Path(args.dest).expanduser().resolve()
     live = role_live_paths(data_dir, args.content_db)
@@ -514,7 +515,8 @@ def cmd_export(args: argparse.Namespace) -> int:
     _say()
 
     _report_left_behind(data_dir, args)
-    _print_export_next_steps(dest)
+    if next_steps:
+        _print_export_next_steps(dest)
     return 0
 
 
@@ -1019,7 +1021,12 @@ def cmd_import(args: argparse.Namespace) -> int:
     return 0
 
 
-def _install_extras(package_dir: Path, data_dir: Path, from_package: bool) -> list[str]:
+def _install_extras(
+    package_dir: Path,
+    data_dir: Path,
+    from_package: bool,
+    names: tuple[str, ...] = ("db-backups", "media"),
+) -> list[str]:
     """export 가 함께 담은 폴더(db-backups·media)를 운영 위치에 놓는다.
 
     담아 오기만 하고 설치하지 않으면 '가져갔다'는 표시만 남고 새 서버에서는 비어 있다.
@@ -1029,7 +1036,7 @@ def _install_extras(package_dir: Path, data_dir: Path, from_package: bool) -> li
     if not from_package:
         return []
     installed: list[str] = []
-    for name in ("db-backups", "media"):
+    for name in names:
         source = package_dir / name
         if not source.is_dir():
             continue

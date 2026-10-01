@@ -14,6 +14,10 @@ REM  reboots by itself. Watch logs with MV_logs.bat (replaces the old console).
 REM  Do NOT run MV_server.bat manually anymore (port clash).
 REM ============================================================================
 setlocal
+REM A caller (server_move_IN.bat via tools\server_move_easy.py) can skip
+REM every pause below. Keep the caller's value separately: step 3 sets
+REM CONTENT_HUB_NO_PAUSE for the restart helper on every run.
+set "MVHUB_CALLER_NO_PAUSE=%CONTENT_HUB_NO_PAUSE%"
 set "ROOT=%~dp0"
 if "%PORT%"=="" set "PORT=8010"
 
@@ -41,7 +45,10 @@ if not exist "%RUNTIME_CONFIG%" mkdir "%RUNTIME_CONFIG%"
 REM Scheduled tasks run as SYSTEM, which does not inherit the signed-in user's
 REM PATH. Resolve the working Python/Node locations now and persist only their
 REM absolute paths for task_launch.bat.
-set "PYEXE="
+REM server_move_IN.bat pins the exact Python it used to install the
+REM databases (MVHUB_SERVER_PYEXE), so the scheduled server runs on the
+REM same SQLite engine. It is still checked below like a discovered one.
+set "PYEXE=%MVHUB_SERVER_PYEXE%"
 for /f "delims=" %%p in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do if not defined PYEXE set "PYEXE=%%p"
 if not defined PYEXE for /f "delims=" %%p in ('python -c "import sys; print(sys.executable)" 2^>nul') do if not defined PYEXE set "PYEXE=%%p"
 if not defined PYEXE goto :python_missing
@@ -155,7 +162,7 @@ echo  - Live log (old console window): double-click MV_logs.bat
 echo  - From now on do NOT run MV_server.bat manually.
 echo  - Everything auto-recovers: crash, hang, reboot.
 echo.
-pause
+if not defined MVHUB_CALLER_NO_PAUSE pause
 exit /b 0
 
 :tools_missing
@@ -164,7 +171,7 @@ echo [ERROR] Required server tools are missing from this checkout.
 echo         Run update_git.bat once more, then run register_autostart.bat.
 echo         Manual repair: git sparse-checkout add tools
 echo.
-pause
+if not defined MVHUB_CALLER_NO_PAUSE pause
 exit /b 1
 
 :python_missing
@@ -172,7 +179,7 @@ echo.
 echo [ERROR] Python is installed for another account or could not be resolved.
 echo         Run update_git.bat from this Windows account, then retry.
 echo.
-pause
+if not defined MVHUB_CALLER_NO_PAUSE pause
 exit /b 1
 
 :python_deps_missing
@@ -180,7 +187,7 @@ echo.
 echo [ERROR] Python exists, but required MV Hub packages are missing.
 echo         Run update_git.bat and retry auto-start registration.
 echo.
-pause
+if not defined MVHUB_CALLER_NO_PAUSE pause
 exit /b 1
 
 :node_missing
@@ -188,11 +195,11 @@ echo.
 echo [ERROR] Node.js/npm could not be resolved for server auto-start.
 echo         Install Node.js, reopen this window, then retry.
 echo.
-pause
+if not defined MVHUB_CALLER_NO_PAUSE pause
 exit /b 1
 
 :err
 echo.
 echo [ERROR] setup failed - see message above.
-pause
+if not defined MVHUB_CALLER_NO_PAUSE pause
 exit /b 1
