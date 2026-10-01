@@ -7,7 +7,7 @@ r"""쉬운 서버 이사 — 옛 서버 OUT · 새 서버 IN · 옛 서버 UNDO 
 저수준 export·드릴·설치는 server_move.py 를 그대로 쓴다. 이 파일은 그 앞뒤에서 사람이 손으로 하던 일을
 묶는다. 설계와 Codex 검토 조건: docs/SERVER_MIGRATION.md 의 '쉬운 이사'.
 
-연습(리허설): OUT 에서 1(연습)을 고르면 내보낸 뒤 옛 서버를 바로 다시 켜고, 이사 폴더가 그 표시(purpose)를 들고 간다.
+연습(리허설): OUT 에서 1(연습)을 고르면 서버를 멈추지 않고 지금 DB 를 찍어 담고, 이사 폴더가 그 표시(purpose)를 들고 간다.
 IN 은 그 폴더를 진짜 자리(backend\\data)가 아닌 backend\\data-rehearsal 에 풀고 읽기 전용 서버 창만 띄운다.
 """
 
@@ -353,6 +353,9 @@ def cmd_out(args: argparse.Namespace) -> int:
     live = sm.role_live_paths(data_dir)
     if len({path.parent for path in live.values()}) != 1 or not live["content"].is_file():
         raise MoveError(f"표준 배치(세 DB 가 한 폴더)가 아닙니다 — 수동 절차(docs/SERVER_MIGRATION.md)로 하세요: {data_dir}")
+    purpose = args.purpose or _ask_purpose()
+    if purpose == "rehearsal":
+        return _out_rehearsal(args, data_dir, live)
     state_path = _state_path(data_dir)
     if state_path.is_file():
         previous = _read_json(state_path, "이전 OUT 기록")
@@ -362,28 +365,18 @@ def cmd_out(args: argparse.Namespace) -> int:
                 f"끝나지 않은 이전 OUT 기록이 있습니다(단계: {previous.get('phase')}) — 처음 상태를 지키려고 덮어쓰지 않습니다.\n"
                 f"  바탕화면 {UNDO_SHORTCUT} 로 되돌린 뒤 OUT 을 다시 실행하세요."
             )
-    purpose = args.purpose or _ask_purpose()
-    tasks = task_snapshot()
-    if purpose == "rehearsal" and not tasks["MVHub Server"]["running"]:
-        # 연습은 끝나면 이 서버를 자동으로 다시 켠다 — 예약 작업으로 돌던 서버만 다시 켤 수 있다(수동 창 서버는 끈 뒤 못 켬).
-        raise MoveError(
-            "연습은 예약 작업(MVHub Server)으로 도는 서버에서만 할 수 있습니다 — 끝난 뒤 자동으로 다시 켜야 하기 때문입니다"
-        )
     desktop = desktop_dir()
     stamp = sm._now_stamp()[:15]
-    package = desktop / (f"{PACKAGE_PREFIX}{stamp}" + (REHEARSAL_SUFFIX if purpose == "rehearsal" else ""))
+    package = desktop / f"{PACKAGE_PREFIX}{stamp}"
     if package.exists():
         raise MoveError(f"이미 있는 폴더입니다: {package}")
 
     _say("=" * 68)
-    _say("  서버 이사 — 옛 서버에서 내보내기" + (" (연습)" if purpose == "rehearsal" else " (진짜 이사)"))
+    _say("  서버 이사 — 옛 서버에서 내보내기 (진짜 이사)")
     _say("=" * 68)
     _say(f"  데이터 폴더 : {data_dir}")
     _say(f"  이사 폴더   : {package}")
-    if purpose == "rehearsal":
-        _say("  순서: 생성 접수 멈춤 → 진행 중 0 대기 → 서버 정지 → 내보내기 → 이 서버 다시 켜기 (그동안 팀 공유 중단)")
-    else:
-        _say("  순서: 생성 접수 멈춤 → 진행 중 0 대기 → 서버 정지 → 최종 확인 → 내보내기 (팀 공유 약 30분 중단)")
+    _say("  순서: 생성 접수 멈춤 → 진행 중 0 대기 → 서버 정지 → 최종 확인 → 내보내기 (팀 공유 약 30분 중단)")
     _say()
     if not args.yes and not _ask("진행할까요?"):
         return 1
@@ -397,7 +390,7 @@ def cmd_out(args: argparse.Namespace) -> int:
         "content_db": str(live["content"]),
         "package_dir": str(package),
         "port": args.port,
-        "tasks": tasks,
+        "tasks": task_snapshot(),
         # 되돌린 뒤 '다시 응답하는지'를 볼 기준 — 이번에 작업을 켰는지와 무관하게 확인한다.
         "was_ready": wait_ready(args.port, timeout=5),
         "pause_original": read_pause(live["content"]),
@@ -406,46 +399,55 @@ def cmd_out(args: argparse.Namespace) -> int:
     (desktop / UNDO_SHORTCUT).write_text(_undo_launcher_text(), encoding="ascii")
     _say(f"  되돌리기 준비: 바탕화면 {UNDO_SHORTCUT} (새 PC 가 이 서버 IP 를 받기 전까지만 쓰세요)")
 
-    if purpose == "move":
-        _out_steps(args, state, state_path, data_dir, live, package)
-        _print_out_done(package)
-        return 0
-
-    # 연습: 성공이든 실패든 이 서버를 원래대로 되돌린다 — 꺼 둘 이유가 없다.
-    try:
-        _out_steps(args, state, state_path, data_dir, live, package)
-    except BaseException as exc:
-        _say()
-        _say("  [연습] 중간에 멈췄습니다 — 이 서버를 원래대로 되돌립니다")
-        try:
-            undo_out(state)
-        except Exception as undo_exc:  # noqa: BLE001 — 원래 오류와 함께 알린다
-            raise MoveError(
-                f"{exc}\n  자동 되돌리기도 실패했습니다({undo_exc}) — 바탕화면 {UNDO_SHORTCUT} 를 누르세요"
-            ) from exc
-        _save_state(state_path, state, "undone")
-        raise
-    _say("[끝] 연습이라 이 서버를 다시 켭니다")
-    try:
-        undo_out(state)
-    except Exception as exc:  # noqa: BLE001 — 실패 경로와 같은 안내(DB 잠금·schtasks 오류 포함)
-        raise MoveError(
-            f"자동 되돌리기가 실패했습니다({exc}) — 이사 폴더는 그대로 쓸 수 있습니다. 바탕화면 {UNDO_SHORTCUT} 를 누르세요"
-        ) from exc
-    _save_state(state_path, state, "undone")
-    (desktop / UNDO_SHORTCUT).unlink(missing_ok=True)  # 되돌릴 것이 없다 — 남겨 두면 진짜 이사 날 헷갈린다
-    _print_out_rehearsal_done(package)
+    _out_steps(args, state, state_path, data_dir, live, package)
+    _print_out_done(package)
     return 0
 
 
 def _ask_purpose() -> str:
     _say("  이번 내보내기는?")
-    _say("    1 = 연습: 내보낸 뒤 이 서버를 바로 다시 켭니다(새 PC 에서 미리 확인)")
-    _say("    2 = 진짜 이사: 이 서버는 꺼진 채로 둡니다")
+    _say("    1 = 연습: 서버를 멈추지 않고 지금 자료를 찍어 담습니다(새 PC 에서 미리 확인)")
+    _say("    2 = 진짜 이사: 서버를 멈추고 담습니다. 이 서버는 꺼진 채로 둡니다")
     picked = input("  번호: ").strip()
     if picked not in ("1", "2"):
         raise MoveError("1 또는 2 를 고르지 않았습니다 — 아무것도 바꾸지 않았습니다")
     return "rehearsal" if picked == "1" else "move"
+
+
+def _out_rehearsal(args: argparse.Namespace, data_dir: Path, live: dict[str, Path]) -> int:
+    """연습 — 이 서버는 아무것도 바꾸지 않는다(접수 멈춤·정지·OUT 기록·되돌리기 없음). 켜진 DB 를 지금 찍어 DB 3종만 담는다.
+    누른 뒤의 변경은 담기지 않고 세 DB 사이에 시점 차가 있다 — 읽기 전용으로 둘러보는 연습에는 충분하다(진짜 이사는 멈추고 담는다).
+    작업자 백업·media 는 빼고(켜진 서버에서 폴더를 통째로 복사하면 업로드 중 파일이 반쪽이거나 사라진다) 진짜 이사 때 담는다."""
+    desktop = desktop_dir()
+    package = desktop / f"{PACKAGE_PREFIX}{sm._now_stamp()[:15]}{REHEARSAL_SUFFIX}"
+    if package.exists():
+        raise MoveError(f"이미 있는 폴더입니다: {package}")
+    _say("=" * 68)
+    _say("  서버 이사 — 연습용 내보내기 (서버는 멈추지 않음)")
+    _say("=" * 68)
+    _say(f"  데이터 폴더 : {data_dir}")
+    _say(f"  이사 폴더   : {package}")
+    _say("  지금 이 순간의 DB 3종을 켜진 채로 찍습니다(서버 자동 백업과 같은 방식). 팀은 그대로 쓰면 됩니다.")
+    _say("  작업자 백업·media 는 담지 않습니다 — 연습은 로그인·자료(DB) 확인용입니다.")
+    _say()
+    if not args.yes and not _ask("진행할까요?"):
+        return 1
+    sm.cmd_export(
+        argparse.Namespace(
+            dest=str(package),
+            data_dir=str(data_dir),
+            content_db=None,
+            port=args.port,
+            with_worker_backups=False,
+            with_media=False,
+        ),
+        next_steps=False,
+        live_snapshot=True,
+    )
+    _say("[+] 이 PC 설정 담기")
+    write_machine_settings(package, data_dir, args.port, read_pause(live["content"]), "rehearsal")
+    _print_out_rehearsal_done(package)
+    return 0
 
 
 def _out_steps(
@@ -584,7 +586,7 @@ def _print_out_done(package: Path) -> None:
 def _print_out_rehearsal_done(package: Path) -> None:
     _say()
     _say("=" * 68)
-    _say("  연습용 내보내기 완료 — 이 서버는 다시 켜졌습니다")
+    _say("  연습용 내보내기 완료 — 이 서버는 멈추지 않았습니다")
     _say("=" * 68)
     _say(f"  1. 바탕화면의 {package.name} 폴더를 새 서버 바탕화면으로 옮기세요(USB·NAS).")
     _say("  2. 새 서버에서 E:\\MV-hub-S\\server_move_IN.bat 을 실행하세요 — 연습 설치가 됩니다(이 서버는 그대로 운영).")

@@ -644,87 +644,123 @@ def test_register_autostart_keeps_the_pinned_python_and_can_skip_every_pause():
 # ------------------------------------------------------------ 연습(리허설) — Codex 설계 검토 r1~r3 조건
 
 
-class _FakeTasks:
-    """예약 작업 흉내 — OUT 이 사용 안 함·끝내기를 하면 꺼지고, UNDO 가 사용·실행하면 다시 켜진다."""
-
-    def __init__(self, easy):
-        self.easy = easy
-        self.enabled = True
-        self.running = True
-        self.calls: list[tuple[str, ...]] = []
-
-    def snapshot(self):
-        return _tasks(self.easy, enabled=self.enabled, running=self.running)
-
-    def schtasks(self, *args, check=True):
-        self.calls.append(args)
-        if args[0] == "/Change":
-            self.enabled = args[-1] == "/ENABLE"
-        elif args[0] == "/End":
-            self.running = False
-        elif args[0] == "/Run":
-            self.running = True
-        return 0
-
-
-def _rehearsal_out(easy, tmp_path, monkeypatch, export=None):
+def test_out_rehearsal_snapshots_the_running_server_without_touching_it(easy, tmp_path, monkeypatch):
+    """연습은 누른 순간의 사진이면 된다(Jay 10-01) — 접수 멈춤·정지·OUT 기록·되돌리기 없이 켜진 DB(WAL 포함)를 찍어 DB 3종만 담는다."""
     data = tmp_path / "data"
     live = _make_live(easy, data)
-    fake = _FakeTasks(easy)
-    monkeypatch.setattr(easy, "task_snapshot", fake.snapshot)
-    monkeypatch.setattr(easy, "_schtasks", fake.schtasks)
-    monkeypatch.setattr(easy, "wait_ready", lambda port, timeout=180.0: fake.running)
-    monkeypatch.setattr(easy, "inspect_fence", lambda db: _fence(True))
-    monkeypatch.setattr(easy, "our_processes", lambda: [])
-    monkeypatch.setattr(easy, "_confirm_stopped", lambda port: None)
-    monkeypatch.setattr(easy.sm, "ensure_server_stopped", lambda port: {})
+    (data / "db-backups" / "member").mkdir(parents=True)
+    (data / "db-backups" / "member" / "b.db").write_bytes(b"backup")
+    for name in ("write_pause", "_schtasks", "task_snapshot", "our_processes", "_stop_our_processes", "undo_out"):
+        monkeypatch.setattr(easy, name, lambda *a, **k: pytest.fail("연습이 서버를 건드렸다"))
+    for name in ("ensure_server_stopped", "checkpoint_live_dbs"):
+        monkeypatch.setattr(easy.sm, name, lambda *a, **k: pytest.fail("연습이 서버 정지를 요구했다"))
     monkeypatch.setattr(easy, "network_snapshot", lambda: [{"IPv4": "192.168.1.199", "Prefix": 24}])
     monkeypatch.setattr(easy, "time_zone", lambda: KST)
     monkeypatch.setattr(easy, "REPLICA_PATH", tmp_path / "replica.txt")
-    if export is not None:
-        monkeypatch.setattr(easy.sm, "cmd_export", export)
-    return data, live, fake
-
-
-def test_out_rehearsal_exports_then_turns_the_server_back_on(easy, tmp_path, monkeypatch):
-    data, live, fake = _rehearsal_out(easy, tmp_path, monkeypatch)
-
-    assert easy.cmd_out(_out_args(data, "rehearsal")) == 0
+    # 켜진 서버 흉내 — 아직 체크포인트 안 된(WAL 에만 있는) 새 행을 쥔 채로 연결을 열어 둔다
+    server = sqlite3.connect(live["content"])
+    server.execute("PRAGMA journal_mode=WAL")
+    server.execute("PRAGMA wal_autocheckpoint=0")
+    server.execute("INSERT INTO generation(tag) VALUES('in-wal')")
+    server.commit()
+    try:
+        assert easy.cmd_out(_out_args(data, "rehearsal")) == 0
+    finally:
+        server.close()
 
     [package] = list((tmp_path / "Desktop").glob(easy.PACKAGE_PREFIX + "*"))
     assert package.name.endswith(easy.REHEARSAL_SUFFIX)
+    manifest = easy.sm.read_manifest(package)
+    assert manifest["live_snapshot"] is True
+    files = easy.sm.verify_manifest_files(package, manifest)
+    with closing(sqlite3.connect(files["content"])) as copy:
+        assert copy.execute("SELECT COUNT(*) FROM generation WHERE tag='in-wal'").fetchone()[0] == 1
     assert json.loads((package / easy.SETTINGS_NAME).read_text(encoding="utf-8"))["purpose"] == "rehearsal"
-    assert ("/Run", "/TN", "MVHub Server") in fake.calls and fake.enabled and fake.running
-    assert easy.read_pause(live["content"]) is None  # 생성 접수도 원래대로
-    state = json.loads((data / easy.STATE_NAME).read_text(encoding="utf-8"))
-    assert state["phase"] == "undone" and state["was_ready"] is True
-    assert not (tmp_path / "Desktop" / easy.UNDO_SHORTCUT).exists()  # 되돌릴 것이 없다 — 진짜 이사 날 헷갈리지 않게
+    assert not (package / "db-backups").exists()  # 연습은 DB 3종만
+    assert not (data / easy.STATE_NAME).exists()  # 되돌릴 것이 없다
+    assert not (tmp_path / "Desktop" / easy.UNDO_SHORTCUT).exists()
 
 
-def test_out_rehearsal_turns_the_server_back_on_even_when_the_export_fails(easy, tmp_path, monkeypatch):
-    def export_fails(*args, **kwargs):
-        raise OSError("디스크 가득")
-
-    data, live, fake = _rehearsal_out(easy, tmp_path, monkeypatch, export=export_fails)
-
-    with pytest.raises(OSError, match="디스크 가득"):
-        easy.cmd_out(_out_args(data, "rehearsal"))
-
-    assert fake.enabled and fake.running
-    assert easy.read_pause(live["content"]) is None
-    assert json.loads((data / easy.STATE_NAME).read_text(encoding="utf-8"))["phase"] == "undone"
-
-
-def test_out_rehearsal_refuses_a_server_it_could_not_turn_back_on(easy, tmp_path, monkeypatch):
-    """수동 창으로 띄운 서버는 OUT 이 끈 뒤 자동으로 못 켠다 — ready 여부와 무관하게 무엇이든 바꾸기 전에 거부."""
+def test_out_rehearsal_leaves_an_unfinished_real_out_alone(easy, tmp_path, monkeypatch):
+    """진짜 OUT 이 서버를 끈 채(exported) 연습 OUT 을 눌러도 그 기록과 바탕화면 UNDO 는 그대로 — 되돌리기 수단을 잃지 않는다."""
     data = tmp_path / "data"
     _make_live(easy, data)
-    monkeypatch.setattr(easy, "task_snapshot", lambda: _tasks(easy, running=False))
+    record = {"phase": "exported", "content_db": "x"}
+    (data / easy.STATE_NAME).write_text(json.dumps(record), encoding="utf-8")
+    launcher = tmp_path / "Desktop" / easy.UNDO_SHORTCUT
+    launcher.write_text("call undo", encoding="ascii")
+    for name in ("write_pause", "_schtasks", "task_snapshot", "undo_out"):
+        monkeypatch.setattr(easy, name, lambda *a, **k: pytest.fail("연습이 서버를 건드렸다"))
+    monkeypatch.setattr(easy, "network_snapshot", lambda: [])
+    monkeypatch.setattr(easy, "time_zone", lambda: KST)
+    monkeypatch.setattr(easy, "REPLICA_PATH", tmp_path / "replica.txt")
 
-    with pytest.raises(easy.MoveError, match="예약 작업"):
-        easy.cmd_out(_out_args(data, "rehearsal"))
+    assert easy.cmd_out(_out_args(data, "rehearsal")) == 0
 
-    assert not (data / easy.STATE_NAME).exists()
+    assert json.loads((data / easy.STATE_NAME).read_text(encoding="utf-8")) == record
+    assert launcher.read_text(encoding="ascii") == "call undo"
+
+
+def _export_args(data: Path, dest: Path) -> argparse.Namespace:
+    return argparse.Namespace(
+        dest=str(dest), data_dir=str(data), content_db=None, port=8010, with_worker_backups=False, with_media=False
+    )
+
+
+def test_export_takes_all_three_snapshots_before_checking_them(easy, tmp_path, monkeypatch):
+    """켜진 서버에서 찍을 때 DB 사이 시점 차를 줄인다 — 검사·해시는 셋 다 찍은 뒤(Codex r4)."""
+    data = tmp_path / "data"
+    _make_live(easy, data)
+    events: list[str] = []
+    real_snapshot, real_inspect = easy.sm.create_sqlite_snapshot, easy.sm.inspect_sqlite_database
+    monkeypatch.setattr(easy.sm, "create_sqlite_snapshot", lambda src, dst, **k: events.append("snap") or real_snapshot(src, dst, **k))
+    monkeypatch.setattr(easy.sm, "inspect_sqlite_database", lambda path, **k: events.append("check") or real_inspect(path, **k))
+
+    easy.sm.cmd_export(_export_args(data, tmp_path / "pkg"), next_steps=False, live_snapshot=True)
+
+    assert events[:3] == ["snap"] * 3 and "snap" not in events[3:]
+
+
+def test_export_writes_no_manifest_when_a_snapshot_or_check_fails(easy, tmp_path, monkeypatch):
+    """중간에 실패한 폴더에는 manifest 가 없다 — IN 은 그 폴더를 받지 않는다."""
+    data = tmp_path / "data"
+    live = _make_live(easy, data)
+    real_snapshot, real_inspect = easy.sm.create_sqlite_snapshot, easy.sm.inspect_sqlite_database
+
+    def trash_copy_fails(src, dst, **kwargs):
+        if Path(src) == live["trash"]:
+            raise OSError("디스크 가득")
+        return real_snapshot(src, dst, **kwargs)
+
+    monkeypatch.setattr(easy.sm, "create_sqlite_snapshot", trash_copy_fails)
+    with pytest.raises(OSError, match="디스크 가득"):
+        easy.sm.cmd_export(_export_args(data, tmp_path / "pkg1"), next_steps=False, live_snapshot=True)
+    assert not (tmp_path / "pkg1" / easy.sm.MANIFEST_NAME).exists()
+
+    def manage_check_fails(path, **kwargs):
+        if "manage" in Path(path).name:
+            raise ValueError("integrity_check 실패")
+        return real_inspect(path, **kwargs)
+
+    monkeypatch.setattr(easy.sm, "create_sqlite_snapshot", real_snapshot)
+    monkeypatch.setattr(easy.sm, "inspect_sqlite_database", manage_check_fails)
+    with pytest.raises(ValueError, match="integrity_check"):
+        easy.sm.cmd_export(_export_args(data, tmp_path / "pkg2"), next_steps=False, live_snapshot=True)
+    with pytest.raises(easy.MoveError, match="없습니다"):
+        easy.sm.read_manifest(tmp_path / "pkg2")
+
+
+def test_real_export_still_requires_a_stopped_server_and_a_clean_wal(easy, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    _make_live(easy, data)
+    calls: list[str] = []
+    monkeypatch.setattr(easy.sm, "ensure_server_stopped", lambda port: calls.append("stopped") or {})
+    monkeypatch.setattr(easy.sm, "checkpoint_live_dbs", lambda live: calls.append("checkpoint") or {})
+
+    easy.sm.cmd_export(_export_args(data, tmp_path / "pkg"), next_steps=False)
+
+    assert calls == ["stopped", "checkpoint"]
+    assert "live_snapshot" not in easy.sm.read_manifest(tmp_path / "pkg")
 
 
 def test_out_asks_rehearsal_or_move_and_stops_on_anything_else(easy, tmp_path, monkeypatch):
@@ -1005,35 +1041,6 @@ def _with_replace(easy, monkeypatch, replace, function, *args):
     with monkeypatch.context() as patch:
         patch.setattr(easy.os, "replace", replace)
         return function(*args)
-
-
-def test_out_rehearsal_points_to_undo_whatever_breaks_the_restart(easy, tmp_path, monkeypatch):
-    data, _live, _fake = _rehearsal_out(easy, tmp_path, monkeypatch)
-
-    def locked(state):
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(easy, "undo_out", locked)
-    with pytest.raises(easy.MoveError, match=easy.UNDO_SHORTCUT):
-        easy.cmd_out(_out_args(data, "rehearsal"))
-
-    assert json.loads((data / easy.STATE_NAME).read_text(encoding="utf-8"))["phase"] == "exported"
-    assert (tmp_path / "Desktop" / easy.UNDO_SHORTCUT).is_file()  # 사람이 누를 수단이 남는다
-
-
-def test_out_rehearsal_interrupted_twice_keeps_the_record_and_undo_bat(easy, tmp_path, monkeypatch):
-    data, _live, _fake = _rehearsal_out(easy, tmp_path, monkeypatch)
-
-    def interrupted(*args, **kwargs):
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(easy, "_out_steps", interrupted)
-    monkeypatch.setattr(easy, "undo_out", interrupted)
-    with pytest.raises(KeyboardInterrupt):
-        easy.cmd_out(_out_args(data, "rehearsal"))
-
-    assert json.loads((data / easy.STATE_NAME).read_text(encoding="utf-8"))["phase"] == "prepared"
-    assert (tmp_path / "Desktop" / easy.UNDO_SHORTCUT).is_file()
 
 
 def test_in_rehearsal_installs_nothing_when_the_old_copy_cannot_be_deleted(easy, tmp_path, monkeypatch):

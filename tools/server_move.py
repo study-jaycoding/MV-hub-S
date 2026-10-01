@@ -422,8 +422,10 @@ def verify_manifest_files(package_dir: Path, manifest: dict[str, Any]) -> dict[s
 # ---------------------------------------------------------------- export
 
 
-def cmd_export(args: argparse.Namespace, *, next_steps: bool = True) -> int:
-    """next_steps=False: 쉬운 이사(server_move_easy.py OUT)가 자기 안내를 따로 보인다."""
+def cmd_export(args: argparse.Namespace, *, next_steps: bool = True, live_snapshot: bool = False) -> int:
+    """next_steps=False: 쉬운 이사(server_move_easy.py OUT)가 자기 안내를 따로 보인다.
+    live_snapshot=True: 이사 연습 — 서버를 멈추지 않고 켜진 DB 를 온라인 백업으로 찍는다(서버 자동 백업과 같은 원리).
+    누른 뒤의 변경은 담기지 않고 세 DB 사이에 시점 차가 있다 — 진짜 이사에는 쓰지 않는다."""
     data_dir = resolve_data_dir(args.data_dir)
     dest = Path(args.dest).expanduser().resolve()
     live = role_live_paths(data_dir, args.content_db)
@@ -452,24 +454,31 @@ def cmd_export(args: argparse.Namespace, *, next_steps: bool = True) -> int:
     if dest.exists() and any(dest.iterdir()):
         raise MoveError(f"패키지 대상 폴더가 비어 있지 않습니다: {dest}")
 
-    _say("[1/5] 서버가 멈췄는지 확인")
-    ensure_server_stopped(args.port)
-    _say("      OK — 예약 작업 Disabled, 서버 프로세스 없음, 포트 비어 있음")
+    if live_snapshot:
+        _say("[1/5] 서버를 멈추지 않고 찍습니다(연습) — 정지 확인 생략")
+        _say("[2/5] WAL 정리 생략 — 켜진 서버의 온라인 백업")
+    else:
+        _say("[1/5] 서버가 멈췄는지 확인")
+        ensure_server_stopped(args.port)
+        _say("      OK — 예약 작업 Disabled, 서버 프로세스 없음, 포트 비어 있음")
 
-    _say("[2/5] 운영 DB WAL 정리")
-    checkpoint_live_dbs(live)
-    _say("      OK — 세 DB 모두 미반영 WAL 없음, 활성 writer 없음")
+        _say("[2/5] 운영 DB WAL 정리")
+        checkpoint_live_dbs(live)
+        _say("      OK — 세 DB 모두 미반영 WAL 없음, 활성 writer 없음")
 
     stamp = _now_stamp()
     package_db = dest / "db"
     package_db.mkdir(parents=True, exist_ok=True)
 
     _say(f"[3/5] 스냅샷 (stamp {stamp})")
+    # 세 DB 를 먼저 다 찍고 검사·해시는 그 뒤에 — 켜진 서버에서 찍을 때 DB 사이 시점 차를 줄인다.
+    names = {role: f"{BACKUP_SET_MEMBERS[role]['prefix']}{stamp}.db" for role in SET_ROLES}
+    for role in SET_ROLES:
+        create_sqlite_snapshot(live[role], package_db / names[role])
     files: dict[str, Any] = {}
     for role in SET_ROLES:
-        name = f"{BACKUP_SET_MEMBERS[role]['prefix']}{stamp}.db"
+        name = names[role]
         target = package_db / name
-        create_sqlite_snapshot(live[role], target)
         info = inspect_sqlite_database(target, required_tables=_required_tables(role))
         rel = f"db/{name}"
         files[rel] = {
@@ -510,6 +519,8 @@ def cmd_export(args: argparse.Namespace, *, next_steps: bool = True) -> int:
         "files": files,
         "extras": extras,
     }
+    if live_snapshot:
+        manifest["live_snapshot"] = True
     write_manifest(dest, manifest)
     _say(f"      {dest / MANIFEST_NAME}")
     _say()
