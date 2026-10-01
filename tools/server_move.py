@@ -50,6 +50,7 @@ from app.services.backup_verify import (  # noqa: E402
     create_sqlite_snapshot,
     discover_backup_set,
     inspect_sqlite_database,
+    rebuild_drifted_indexes,
     verify_restore_set,
 )
 from app.services.restore_runtime_verify import verify_restored_set_runtime  # noqa: E402
@@ -733,6 +734,7 @@ def _rollback(
     for path in staged.values():
         try:
             path.unlink(missing_ok=True)
+            _drop_sidecars(path)  # 색인 재생성(쓰기)을 거친 사본이면 -wal/-shm 이 남을 수 있다
         except OSError:
             pass
 
@@ -797,17 +799,26 @@ def install_set(
     def _cleanup_staged() -> None:
         for path in staged.values():
             path.unlink(missing_ok=True)
+            _drop_sidecars(path)  # 색인 재생성이 중간에 실패하면 -wal/-shm 이 남을 수 있다
 
     try:
         _say("[1/6] staging 만들기 (기존 DB 는 아직 손대지 않음)")
         _verify_expected_sha(package_files, expected_sha)
         staged_info: dict[str, Any] = {}
         for role in SET_ROLES:
-            create_sqlite_snapshot(package_files[role], staged[role])
-            staged_info[role] = inspect_sqlite_database(
-                staged[role], required_tables=_required_tables(role)
+            create_sqlite_snapshot(package_files[role], staged[role], immutable_source=True)
+            info = inspect_sqlite_database(
+                staged[role], required_tables=_required_tables(role), allow_index_drift=True
             )
-            _say(f"      {staged[role].name}  OK")
+            drifted = info["index_drift"]
+            if drifted:
+                # 옛 서버와 SQLite 엔진이 다르면 계산식 색인 키가 어긋난다 — 이 PC 엔진으로 다시 만든다(자료는 그대로).
+                rebuild_drifted_indexes(staged[role], drifted)
+                info = inspect_sqlite_database(staged[role], required_tables=_required_tables(role))
+                _say(f"      {staged[role].name}  OK — SQLite 엔진 차이로 어긋난 색인을 새로 만듦: {', '.join(drifted)}")
+            else:
+                _say(f"      {staged[role].name}  OK")
+            staged_info[role] = info
         # 읽는 동안 바뀌지 않았는지 한 번 더 — verify_restore_set 과 같은 원리.
         _verify_expected_sha(package_files, expected_sha)
 
@@ -982,6 +993,8 @@ def cmd_import(args: argparse.Namespace) -> int:
         counts = info.get("reconcile_counts") or {}
         head = ", ".join(f"{k}={v:,}" for k, v in sorted(counts.items()))
         _say(f"  {role:<8} {_human(info.get('backup_bytes', 0)):>12}  {head}")
+        if info.get("index_rebuilt"):
+            _say(f"           SQLite 엔진 차이로 어긋난 색인을 새로 만들어 확인: {', '.join(info['index_rebuilt'])}")
     _say()
 
     if not _drill_ok(report):

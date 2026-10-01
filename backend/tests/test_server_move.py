@@ -291,12 +291,12 @@ def test_failed_verification_rolls_back_to_the_original_databases(tmp_path, monk
     real_inspect = sm.inspect_sqlite_database
     calls = {"n": 0}
 
-    def flaky(path, *, required_tables):
+    def flaky(path, *, required_tables, allow_index_drift=False):
         calls["n"] += 1
         # 1~3 = staging 검사(통과), 4번째 = 설치 후 재검증에서 실패시킨다.
         if calls["n"] > len(sm.SET_ROLES):
             raise ValueError("강제 실패")
-        return real_inspect(path, required_tables=required_tables)
+        return real_inspect(path, required_tables=required_tables, allow_index_drift=allow_index_drift)
 
     monkeypatch.setattr(sm, "inspect_sqlite_database", flaky)
 
@@ -313,6 +313,111 @@ def test_failed_verification_rolls_back_to_the_original_databases(tmp_path, monk
     # 흔적을 남기지 않는다.
     assert not (db_dir / sm.JOURNAL_NAME).exists()
     assert not list(db_dir.glob(sm.STAGED_PREFIX + "*"))
+
+
+def _drift_index(path: Path, index: str, sql: str) -> None:
+    """다른 SQLite 엔진이 만든 색인 흉내 — 저장된 키는 두고 정의만 바꾼다(test_backup_restore 와 같은 방법)."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("PRAGMA writable_schema=ON")
+        conn.execute("UPDATE sqlite_master SET sql=? WHERE type='index' AND name=?", (sql, index))
+        conn.commit()
+
+
+def test_install_rebuilds_an_engine_drifted_index_on_the_staged_copy(tmp_path, monkeypatch, capsys):
+    """옛 서버(SQLite 3.45)가 만든 julianday 색인은 새 PC(3.49)에서 어긋나 보인다(2026-10-01 실측) —
+    설치 사본에서 이 PC 엔진으로 다시 만들어 설치하고, 패키지 파일은 손대지 않는다."""
+    sm = _module()
+    data = tmp_path / "data"
+    db_dir = data / "db"
+    _make_live_set(db_dir, tag="old")
+    package = _make_package(tmp_path / "pkg")
+    with closing(sqlite3.connect(package["content"])) as conn:
+        conn.execute("CREATE TABLE credit_txn(id TEXT PRIMARY KEY, created_at TEXT)")
+        conn.execute("CREATE INDEX idx_credit_txn_julian ON credit_txn(julianday(created_at))")
+        conn.executemany(
+            "INSERT INTO credit_txn VALUES(?,?)",
+            [("a", "2026-09-20T05:12:33.999612Z"), ("b", "2026-09-20T05:12:34.500000Z")],
+        )
+        conn.commit()
+    _drift_index(
+        package["content"],
+        "idx_credit_txn_julian",
+        "CREATE INDEX idx_credit_txn_julian ON credit_txn(julianday(created_at,'+1 day'))",
+    )
+    expected = _sha(sm, package)
+    monkeypatch.setattr(sm, "ensure_server_stopped", lambda port: {})
+
+    result = sm.install_set(package, data, 8010, expected)
+
+    installed = Path(result["targets"]["content"])
+    info = sm.inspect_sqlite_database(installed, required_tables=sm._required_tables("content"))
+    assert info["index_drift"] == []
+    assert _sha(sm, package) == expected
+    assert not list(db_dir.glob(sm.STAGED_PREFIX + "*"))
+    assert "idx_credit_txn_julian" in capsys.readouterr().out
+
+
+def test_install_keeps_the_live_databases_when_the_rebuild_collides(tmp_path, monkeypatch):
+    """새 엔진에서 UNIQUE 계산식 키가 겹치면 다시 만들 수 없다 — 기존 DB 는 그대로, 사본·sidecar 흔적도 없다."""
+    sm = _module()
+    data = tmp_path / "data"
+    db_dir = data / "db"
+    live = _make_live_set(db_dir, tag="old")
+    package = _make_package(tmp_path / "pkg")
+    with closing(sqlite3.connect(package["content"])) as conn:
+        conn.execute("CREATE TABLE names(id INTEGER PRIMARY KEY, name TEXT)")
+        conn.execute("CREATE UNIQUE INDEX idx_names_key ON names(LOWER(name))")
+        conn.executemany("INSERT INTO names(name) VALUES(?)", [("Alpha",), ("Bravo",)])
+        conn.commit()
+    _drift_index(package["content"], "idx_names_key", "CREATE UNIQUE INDEX idx_names_key ON names(LENGTH(name))")
+    monkeypatch.setattr(sm, "ensure_server_stopped", lambda port: {})
+
+    with pytest.raises(sqlite3.IntegrityError):
+        sm.install_set(package, data, 8010, _sha(sm, package))
+
+    assert _tag_of(live["content"], "generation") == "old"
+    assert not (db_dir / sm.JOURNAL_NAME).exists()
+    assert not list(db_dir.glob(sm.STAGED_PREFIX + "*"))
+    assert not list(db_dir.glob(sm.ARCHIVE_PREFIX + "*"))
+
+
+def test_rollback_after_a_rebuilt_wal_copy_leaves_no_staged_files(tmp_path, monkeypatch):
+    """WAL 형식 패키지 + 색인 재생성 + 설치 후 재검증 실패 → 기존 DB 로 되돌리고 staged 본·sidecar 흔적이 없다."""
+    sm = _module()
+    data = tmp_path / "data"
+    db_dir = data / "db"
+    live = _make_live_set(db_dir, tag="old")
+    package = _make_package(tmp_path / "pkg")
+    with closing(sqlite3.connect(package["content"])) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE credit_txn(id TEXT PRIMARY KEY, created_at TEXT)")
+        conn.execute("CREATE INDEX idx_credit_txn_julian ON credit_txn(julianday(created_at))")
+        conn.execute("INSERT INTO credit_txn VALUES('a','2026-09-20T05:12:33.999612Z')")
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    _drift_index(
+        package["content"],
+        "idx_credit_txn_julian",
+        "CREATE INDEX idx_credit_txn_julian ON credit_txn(julianday(created_at,'+1 day'))",
+    )
+    for suffix in ("-wal", "-shm"):
+        Path(str(package["content"]) + suffix).unlink(missing_ok=True)
+    monkeypatch.setattr(sm, "ensure_server_stopped", lambda port: {})
+    real_inspect = sm.inspect_sqlite_database
+
+    def fail_after_install(path, *, required_tables, allow_index_drift=False):
+        if Path(path).parent == db_dir and not Path(path).name.startswith(sm.STAGED_PREFIX):
+            raise ValueError("설치 후 재검증 강제 실패")
+        return real_inspect(path, required_tables=required_tables, allow_index_drift=allow_index_drift)
+
+    monkeypatch.setattr(sm, "inspect_sqlite_database", fail_after_install)
+
+    with pytest.raises(ValueError, match="강제 실패"):
+        sm.install_set(package, data, 8010, _sha(sm, package))
+
+    assert _tag_of(live["content"], "generation") == "old"
+    assert not list(db_dir.glob(sm.STAGED_PREFIX + "*"))
+    assert not (db_dir / sm.JOURNAL_NAME).exists()
 
 
 def test_staging_failure_never_touches_the_live_databases(tmp_path, monkeypatch):

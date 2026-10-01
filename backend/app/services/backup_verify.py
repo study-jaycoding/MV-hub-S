@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -107,11 +108,65 @@ def _schema_digest(conn: sqlite3.Connection) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+_DRIFT_PROBLEM = re.compile(r"^row \d+ missing from index (.+)$")
+
+
+def _one_line(text: str, limit: int = 200) -> str:
+    """오류 메시지용 — 외부 DB 의 색인 이름에 줄바꿈·제어문자·아주 긴 글자가 있어도 한 줄로 짧게."""
+    flat = "".join(ch if ch.isprintable() else " " for ch in text)
+    return flat if len(flat) <= limit else flat[:limit] + "…"
+
+
+def _expression_index_drift(conn: sqlite3.Connection, problems: list[str]) -> list[str]:
+    """integrity_check 문제가 모두 '계산식 키 색인에 행이 없다'뿐이면 그 색인 이름들, 아니면 [].
+
+    계산식 색인(julianday(created_at) 등)은 키를 SQLite 함수로 계산한다. 엔진이 바뀌어 같은 글자를 다르게 계산하면
+    — 3.45 는 초 소수 .9995 이상을 다음 초로 올리고 3.49 이상은 .999 에서 멈춘다(2026-10-01 실측) — 다른 엔진이
+    만든 키를 못 찾아 missing 이 된다. 표 자료는 멀쩡하고 그 엔진으로 REINDEX 하면 맞는다. 일반 열 색인의 누락이나
+    다른 종류의 문제가 하나라도 섞이면 진짜 손상일 수 있으니 [] 로 돌려 실패시킨다.
+    """
+    names: set[str] = set()
+    for problem in problems:
+        match = _DRIFT_PROBLEM.match(problem)
+        if not match:
+            return []
+        names.add(match.group(1))
+    for name in names:
+        expression_key = conn.execute(
+            "SELECT 1 FROM pragma_index_xinfo(?) WHERE key=1 AND cid=-2", (name,)
+        ).fetchone()
+        if expression_key is None:
+            return []
+    return sorted(names)
+
+
+def rebuild_drifted_indexes(path: Path, names: list[str]) -> None:
+    """쓰기 가능한 사본에서만 — 어긋난 계산식 색인을 이 엔진으로 다시 만든다(표 자료는 그대로).
+
+    원본 백업·이전 패키지에는 절대 쓰지 않는다. 한 트랜잭션으로 REINDEX 하고 WAL 을 비운 뒤 닫는다.
+    결과는 호출자가 엄격한 inspect_sqlite_database 로 다시 확인한다(그게 실제 보증이다).
+    """
+    with closing(sqlite3.connect(str(path), isolation_level=None)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for name in names:
+                conn.execute('REINDEX "' + name.replace('"', '""') + '"')
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
 def inspect_sqlite_database(
     path: Path,
     *,
     required_tables: set[str] | frozenset[str] = frozenset(_REQUIRED_TABLES),
+    allow_index_drift: bool = False,
 ) -> dict[str, Any]:
+    """allow_index_drift: 다른 SQLite 엔진이 만든 계산식 색인 어긋남'만' 있으면 실패 대신 info["index_drift"] 로 알린다.
+    쓰기 가능한 사본에 rebuild_drifted_indexes 를 하고 엄격하게 다시 검사할 호출자만 켠다."""
     path = path.resolve()
     if not path.is_file():
         raise FileNotFoundError(path)
@@ -135,14 +190,21 @@ def inspect_sqlite_database(
         fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
         if fk_errors:
             raise ValueError(f"외래키 무결성 오류: {len(fk_errors)}건")
-        integrity = conn.execute("PRAGMA integrity_check").fetchone()
-        if not integrity or integrity[0] != "ok":
-            raise ValueError("SQLite integrity_check 실패")
+        problems = [str(row[0]) for row in conn.execute("PRAGMA integrity_check").fetchall()]
+        index_drift: list[str] = []
+        if problems != ["ok"]:
+            index_drift = _expression_index_drift(conn, problems) if allow_index_drift else []
+            if not index_drift:
+                raise ValueError(
+                    f"SQLite integrity_check 실패({len(problems)}건, 앞 3건): "
+                    + " / ".join(_one_line(problem) for problem in problems[:3])
+                )
         return {
             "tables": tables,
             "table_counts": _table_counts(conn, tables),
             "schema_sha256": _schema_digest(conn),
             "user_version": int(conn.execute("PRAGMA user_version").fetchone()[0]),
+            "index_drift": index_drift,
         }
 
 
@@ -150,13 +212,24 @@ def verify_restore_drill(backup_path: Path, restored_path: Path) -> dict[str, An
     """backup_path를 restored_path에 실제 복원하고 원본 백업과 동일한지 검증한다."""
     backup_path = backup_path.resolve()
     restored_path = restored_path.resolve()
-    source_info = inspect_sqlite_database(backup_path)
+    source_info = inspect_sqlite_database(backup_path, allow_index_drift=True)
     create_sqlite_snapshot(backup_path, restored_path, immutable_source=True)
-    restored_info = inspect_sqlite_database(restored_path)
-    if source_info["schema_sha256"] != restored_info["schema_sha256"]:
-        raise ValueError("복원 전후 스키마가 다릅니다")
-    if source_info["table_counts"] != restored_info["table_counts"]:
-        raise ValueError("복원 전후 테이블 행 수가 다릅니다")
+    try:
+        if source_info["index_drift"]:
+            rebuild_drifted_indexes(restored_path, source_info["index_drift"])
+        restored_info = inspect_sqlite_database(restored_path)
+        if source_info["schema_sha256"] != restored_info["schema_sha256"]:
+            raise ValueError("복원 전후 스키마가 다릅니다")
+        if source_info["table_counts"] != restored_info["table_counts"]:
+            raise ValueError("복원 전후 테이블 행 수가 다릅니다")
+    except BaseException:
+        # 이 호출이 만든 사본만 치운다(세트 드릴과 같다) — 남기면 다음 드릴이 '이미 존재'로 막힌다.
+        for leftover in (restored_path, Path(str(restored_path) + "-wal"), Path(str(restored_path) + "-shm")):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
+        raise
     return {
         "ok": True,
         "backup": str(backup_path),
@@ -169,6 +242,7 @@ def verify_restore_drill(backup_path: Path, restored_path: Path) -> dict[str, An
         "user_version": source_info["user_version"],
         "foreign_key_errors": 0,
         "integrity": "ok",
+        "index_rebuilt": source_info["index_drift"],
     }
 
 
@@ -236,7 +310,9 @@ def verify_restore_set(content_backup: Path, restored_data_dir: Path) -> dict[st
     source_hashes: dict[str, str] = {}
     for label, source in backup_paths.items():
         required = set(BACKUP_SET_MEMBERS[label]["required_tables"])
-        source_info[label] = inspect_sqlite_database(source, required_tables=required)
+        source_info[label] = inspect_sqlite_database(
+            source, required_tables=required, allow_index_drift=True
+        )
         source_hashes[label] = _file_sha256(source)
 
     created: list[Path] = []
@@ -252,6 +328,8 @@ def verify_restore_set(content_backup: Path, restored_data_dir: Path) -> dict[st
         files: dict[str, Any] = {}
         for label, restored in restored_paths.items():
             required = set(BACKUP_SET_MEMBERS[label]["required_tables"])
+            if source_info[label]["index_drift"]:
+                rebuild_drifted_indexes(restored, source_info[label]["index_drift"])
             restored_info = inspect_sqlite_database(restored, required_tables=required)
             if source_info[label]["schema_sha256"] != restored_info["schema_sha256"]:
                 raise ValueError(f"{label} DB 복원 전후 스키마가 다릅니다")
@@ -270,6 +348,7 @@ def verify_restore_set(content_backup: Path, restored_data_dir: Path) -> dict[st
                     for table in reconcile_tables
                 },
                 "source_unchanged": True,
+                "index_rebuilt": source_info[label]["index_drift"],
             }
         # 앞선 content 검사가 끝난 뒤 trash/manage를 처리하는 동안 바뀐 경우까지 잡도록 세 파일을
         # 모두 복원·검증한 마지막 시점에 원본 해시를 다시 대조한다.
@@ -278,10 +357,11 @@ def verify_restore_set(content_backup: Path, restored_data_dir: Path) -> dict[st
                 raise RuntimeError(f"{label} 원본 백업 파일이 복원 중 변경되었습니다")
     except BaseException:
         for path in reversed(created):
-            try:
-                path.unlink()
-            except OSError:
-                pass
+            for leftover in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
+                try:
+                    leftover.unlink()
+                except OSError:
+                    pass
         raise
 
     return {
