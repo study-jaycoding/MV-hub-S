@@ -48,6 +48,7 @@ from .config import (
     MANAGE_ENABLED,
     MEDIA_DIR,
     MEDIA_PRESERVATION_ENABLED,
+    READ_ONLY,
     ensure_dirs,
 )
 from .db import init_db, maintenance_active
@@ -470,7 +471,7 @@ async def _application_lifespan(app: FastAPI):
         # 주기 동기화는 서버 직결 로컬 허브(AUTH off)에선 끈다 — 데이터는 서버가 정답이고 적재는
         # 에이전트(push)가 한다. 로컬에서 20초마다 CLI 동기화+broadcast 하면 라이브러리가 계속
         # 새로고침돼(로딩 깜빡임) 불필요. 서버(AUTH on)에서만 동작(거기도 CLI 없으면 무해 no-op).
-        if AUTH_ENABLED:
+        if AUTH_ENABLED and not READ_ONLY:
             periodic_sync.start()
             periodic_sync_started = True
         if _proxy.is_worker_hub():
@@ -484,12 +485,14 @@ async def _application_lifespan(app: FastAPI):
             backup_callback_configured = True
         periodic_backup.start()  # DB 자동 백업(서버 운영) — 시작 1회 + 주기, 회전 보관
         periodic_backup_started = True
-        periodic_sweeper.start()  # 묵은 임시파일(.part/.tmp/comfy 입력/%TEMP%) 청소 + 캐시 eviction
-        periodic_sweeper_started = True
-        if MEDIA_PRESERVATION_ENABLED:
+        # 사본 서버(READ_ONLY)는 청소하지 않는다 — 사본 DB 의 comfy_input_dir 이 운영 Comfy 입력 폴더를 가리킬 수 있다.
+        if not READ_ONLY:
+            periodic_sweeper.start()  # 묵은 임시파일(.part/.tmp/comfy 입력/%TEMP%) 청소 + 캐시 eviction
+            periodic_sweeper_started = True
+        if MEDIA_PRESERVATION_ENABLED and not READ_ONLY:
             periodic_media_preservation.start()  # 명시적 opt-in 설치만 영구 보존
             media_preservation_started = True
-        if ASSET_REGISTRY_ENABLED:
+        if ASSET_REGISTRY_ENABLED and not READ_ONLY:
             # 에셋 대장(서버) — 수동 훑기는 언제든 받고, 자동 주기는 간격을 설정했을 때만 돈다.
             # NAS 를 읽는 자식 프로세스는 health·ready 와 무관하다(NAS 가 멈춰도 워치독 재시작 루프가 없게).
             asset_registry_controller.start()
@@ -915,6 +918,27 @@ app.add_middleware(ListGzipMiddleware)
 # multipart 파싱·로컬→공유서버 프록시가 본문을 읽기 전에 전체 바이트 상한을 강제한다.
 # AUTH off 원격 가드는 이 뒤에 등록되어 더 바깥에서 불필요한 원격 본문을 먼저 거부한다.
 app.add_middleware(UploadBodyLimitMiddleware)
+
+
+# 사본 서버(서버 이사 연습·복원 드릴) — 로그인 외 업무 변경 요청을 막는다. 저장·미러(렌더 폴더 쓰기·이동)·
+# 에이전트 push·설정 변경이 운영 NAS·팀원 PC 에 닿지 않게. 예외는 정확한 (메서드, 경로) 쌍만.
+# data_proxy 보다 바깥(먼저 등록되면 안쪽) — AUTH off 원격 가드 바로 안쪽에 둔다.
+_READ_ONLY_ALLOWED = {
+    ("POST", "/api/auth/access"),  # 프론트 로그인
+    ("POST", "/api/auth/login"),
+    ("POST", "/api/auth/logout"),
+}
+
+
+@app.middleware("http")
+async def read_only_guard(request: Request, call_next):
+    if (
+        READ_ONLY
+        and request.method not in ("GET", "HEAD", "OPTIONS")
+        and (request.method, request.url.path) not in _READ_ONLY_ALLOWED
+    ):
+        return JSONResponse({"detail": "읽기 전용 서버입니다(서버 이사 연습·복원 확인용)"}, status_code=403)
+    return await call_next(request)
 
 
 # ★최외곽 가드(가장 마지막 등록 = 가장 먼저 실행) — AUTH off 인데 LAN 에 노출된 경우, data_proxy

@@ -94,6 +94,11 @@ EXTERNAL_RECOVERY_ENABLED = os.environ.get(
     "CONTENT_HUB_EXTERNAL_RECOVERY", "1"
 ).lower() in ("1", "true", "yes", "on")
 
+# 운영 자료의 사본으로 띄운 서버(서버 이사 연습·복원 드릴) — 업무 변경 요청(GET·HEAD·OPTIONS 와 로그인 외)을 403 으로
+# 막고, 사본 밖을 건드릴 수 있는 백그라운드(임시파일 청소·에셋 대장·media 보존·주기 동기화)를 켜지 않는다.
+# 사본 DB 안의 로그인·캐시 갱신까지 막는 모드는 아니다. 기본 off.
+READ_ONLY = os.environ.get("CONTENT_HUB_READ_ONLY", "0").lower() in ("1", "true", "yes", "on")
+
 # ── 원본 미디어 저장 정책 ────────────────────────────────────────────────
 # MV Hub의 기본 계약은 Higgsfield HTTPS URL을 보관하고 원본 바이트는
 # 서버에 자동 저장하지 않는 것이다. 특수한 운영 이유로 영구 보존이 필요한

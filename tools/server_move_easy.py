@@ -6,6 +6,9 @@ r"""쉬운 서버 이사 — 옛 서버 OUT · 새 서버 IN · 옛 서버 UNDO 
 
 저수준 export·드릴·설치는 server_move.py 를 그대로 쓴다. 이 파일은 그 앞뒤에서 사람이 손으로 하던 일을
 묶는다. 설계와 Codex 검토 조건: docs/SERVER_MIGRATION.md 의 '쉬운 이사'.
+
+연습(리허설): OUT 에서 1(연습)을 고르면 내보낸 뒤 옛 서버를 바로 다시 켜고, 이사 폴더가 그 표시(purpose)를 들고 간다.
+IN 은 그 폴더를 진짜 자리(backend\\data)가 아닌 backend\\data-rehearsal 에 풀고 읽기 전용 서버 창만 띄운다.
 """
 
 from __future__ import annotations
@@ -13,7 +16,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -48,6 +53,12 @@ BOOTSTRAP_FILE = "bootstrap_admin_password.txt"
 KST_ZONE = "Korea Standard Time"
 FENCE_WAIT_SECONDS = 15 * 60
 FENCE_POLL_SECONDS = 15
+PURPOSES = ("rehearsal", "move")  # OUT 이 고르고 이사 폴더(machine_settings.json)가 들고 간다
+REHEARSAL_SUFFIX = "_rehearsal"
+REHEARSAL_DIR = ROOT / "backend" / "data-rehearsal"  # 연습 자료 — 진짜 자리(backend\data)는 건드리지 않는다
+# 지금까지 푼 연습 폴더 중 가장 새 것의 시각 — 연습 폴더를 지워도 남도록 그 밖에 둔다(진짜 IN 이 오래된 폴더를 거부하는 기준).
+REHEARSAL_RECORD = ROOT / ".mvhub-runtime" / "server_move_rehearsal.json"
+REHEARSAL_READY_SECONDS = 240.0
 
 # 새 서버에 자동으로 적용하는 기계 환경변수 — 이름으로만 고른다(나머지는 담아만 두고 화면에 이름을 알린다).
 APPLY_ENV = (
@@ -351,18 +362,28 @@ def cmd_out(args: argparse.Namespace) -> int:
                 f"끝나지 않은 이전 OUT 기록이 있습니다(단계: {previous.get('phase')}) — 처음 상태를 지키려고 덮어쓰지 않습니다.\n"
                 f"  바탕화면 {UNDO_SHORTCUT} 로 되돌린 뒤 OUT 을 다시 실행하세요."
             )
+    purpose = args.purpose or _ask_purpose()
+    tasks = task_snapshot()
+    if purpose == "rehearsal" and not tasks["MVHub Server"]["running"]:
+        # 연습은 끝나면 이 서버를 자동으로 다시 켠다 — 예약 작업으로 돌던 서버만 다시 켤 수 있다(수동 창 서버는 끈 뒤 못 켬).
+        raise MoveError(
+            "연습은 예약 작업(MVHub Server)으로 도는 서버에서만 할 수 있습니다 — 끝난 뒤 자동으로 다시 켜야 하기 때문입니다"
+        )
     desktop = desktop_dir()
     stamp = sm._now_stamp()[:15]
-    package = desktop / f"{PACKAGE_PREFIX}{stamp}"
+    package = desktop / (f"{PACKAGE_PREFIX}{stamp}" + (REHEARSAL_SUFFIX if purpose == "rehearsal" else ""))
     if package.exists():
         raise MoveError(f"이미 있는 폴더입니다: {package}")
 
     _say("=" * 68)
-    _say("  서버 이사 — 옛 서버에서 내보내기")
+    _say("  서버 이사 — 옛 서버에서 내보내기" + (" (연습)" if purpose == "rehearsal" else " (진짜 이사)"))
     _say("=" * 68)
     _say(f"  데이터 폴더 : {data_dir}")
     _say(f"  이사 폴더   : {package}")
-    _say("  순서: 생성 접수 멈춤 → 진행 중 0 대기 → 서버 정지 → 최종 확인 → 내보내기 (팀 공유 약 30분 중단)")
+    if purpose == "rehearsal":
+        _say("  순서: 생성 접수 멈춤 → 진행 중 0 대기 → 서버 정지 → 내보내기 → 이 서버 다시 켜기 (그동안 팀 공유 중단)")
+    else:
+        _say("  순서: 생성 접수 멈춤 → 진행 중 0 대기 → 서버 정지 → 최종 확인 → 내보내기 (팀 공유 약 30분 중단)")
     _say()
     if not args.yes and not _ask("진행할까요?"):
         return 1
@@ -371,17 +392,70 @@ def cmd_out(args: argparse.Namespace) -> int:
     state: dict[str, Any] = {
         "format": 1,
         "created_at": _utc_now(),
+        "purpose": purpose,
         "data_dir": str(data_dir),
         "content_db": str(live["content"]),
         "package_dir": str(package),
         "port": args.port,
-        "tasks": task_snapshot(),
+        "tasks": tasks,
+        # 되돌린 뒤 '다시 응답하는지'를 볼 기준 — 이번에 작업을 켰는지와 무관하게 확인한다.
+        "was_ready": wait_ready(args.port, timeout=5),
         "pause_original": read_pause(live["content"]),
     }
     _save_state(state_path, state, "prepared")
     (desktop / UNDO_SHORTCUT).write_text(_undo_launcher_text(), encoding="ascii")
     _say(f"  되돌리기 준비: 바탕화면 {UNDO_SHORTCUT} (새 PC 가 이 서버 IP 를 받기 전까지만 쓰세요)")
 
+    if purpose == "move":
+        _out_steps(args, state, state_path, data_dir, live, package)
+        _print_out_done(package)
+        return 0
+
+    # 연습: 성공이든 실패든 이 서버를 원래대로 되돌린다 — 꺼 둘 이유가 없다.
+    try:
+        _out_steps(args, state, state_path, data_dir, live, package)
+    except BaseException as exc:
+        _say()
+        _say("  [연습] 중간에 멈췄습니다 — 이 서버를 원래대로 되돌립니다")
+        try:
+            undo_out(state)
+        except Exception as undo_exc:  # noqa: BLE001 — 원래 오류와 함께 알린다
+            raise MoveError(
+                f"{exc}\n  자동 되돌리기도 실패했습니다({undo_exc}) — 바탕화면 {UNDO_SHORTCUT} 를 누르세요"
+            ) from exc
+        _save_state(state_path, state, "undone")
+        raise
+    _say("[끝] 연습이라 이 서버를 다시 켭니다")
+    try:
+        undo_out(state)
+    except Exception as exc:  # noqa: BLE001 — 실패 경로와 같은 안내(DB 잠금·schtasks 오류 포함)
+        raise MoveError(
+            f"자동 되돌리기가 실패했습니다({exc}) — 이사 폴더는 그대로 쓸 수 있습니다. 바탕화면 {UNDO_SHORTCUT} 를 누르세요"
+        ) from exc
+    _save_state(state_path, state, "undone")
+    (desktop / UNDO_SHORTCUT).unlink(missing_ok=True)  # 되돌릴 것이 없다 — 남겨 두면 진짜 이사 날 헷갈린다
+    _print_out_rehearsal_done(package)
+    return 0
+
+
+def _ask_purpose() -> str:
+    _say("  이번 내보내기는?")
+    _say("    1 = 연습: 내보낸 뒤 이 서버를 바로 다시 켭니다(새 PC 에서 미리 확인)")
+    _say("    2 = 진짜 이사: 이 서버는 꺼진 채로 둡니다")
+    picked = input("  번호: ").strip()
+    if picked not in ("1", "2"):
+        raise MoveError("1 또는 2 를 고르지 않았습니다 — 아무것도 바꾸지 않았습니다")
+    return "rehearsal" if picked == "1" else "move"
+
+
+def _out_steps(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    state_path: Path,
+    data_dir: Path,
+    live: dict[str, Path],
+    package: Path,
+) -> None:
     _say("[1/6] 생성 접수 멈춤")
     write_pause(live["content"], "1")
     _save_state(state_path, state, "paused")
@@ -440,10 +514,8 @@ def cmd_out(args: argparse.Namespace) -> int:
     )
 
     _say("[6/6] 이 PC 설정 담기")
-    write_machine_settings(package, data_dir, args.port, state["pause_original"])
+    write_machine_settings(package, data_dir, args.port, state["pause_original"], state["purpose"])
     _save_state(state_path, state, "exported")
-    _print_out_done(package)
-    return 0
 
 
 def _confirm_stopped(port: int) -> None:
@@ -463,13 +535,16 @@ def _confirm_stopped(port: int) -> None:
     raise MoveError(f"서버가 멈췄음을 확인하지 못했습니다:\n{last}")
 
 
-def write_machine_settings(package: Path, data_dir: Path, port: int, pause_original: str | None) -> None:
+def write_machine_settings(
+    package: Path, data_dir: Path, port: int, pause_original: str | None, purpose: str
+) -> None:
     """옛 서버 PC 의 설정을 담고, manifest 에 넣어 새 PC 가 크기·SHA 로 대조하게 한다."""
     networks = network_snapshot()
     replica = REPLICA_PATH
     settings = {
         "format": 1,
         "created_at": _utc_now(),
+        "purpose": purpose,  # IN 은 이것을 따른다 — 연습이면 진짜 자리를 건드리지 않는다
         "machine_env": machine_env(),
         "backup_replica_target": replica.read_text(encoding="utf-8").strip() if replica.is_file() else None,
         "network": networks,
@@ -506,6 +581,18 @@ def _print_out_done(package: Path) -> None:
     _say()
 
 
+def _print_out_rehearsal_done(package: Path) -> None:
+    _say()
+    _say("=" * 68)
+    _say("  연습용 내보내기 완료 — 이 서버는 다시 켜졌습니다")
+    _say("=" * 68)
+    _say(f"  1. 바탕화면의 {package.name} 폴더를 새 서버 바탕화면으로 옮기세요(USB·NAS).")
+    _say("  2. 새 서버에서 E:\\MV-hub-S\\server_move_IN.bat 을 실행하세요 — 연습 설치가 됩니다(이 서버는 그대로 운영).")
+    _say("  3. 진짜 이사 날에는 이 OUT 을 다시 실행해 2(진짜 이사)를 고르세요. 이 연습 폴더로는 진짜 이사가 안 됩니다.")
+    _say("  4. 연습이 끝나면 이 폴더를 지우세요 — 계정·비밀번호 해시가 들어 있습니다.")
+    _say()
+
+
 # ---------------------------------------------------------------- UNDO
 
 
@@ -539,10 +626,12 @@ def _valid_out_state(state: dict[str, Any]) -> bool:
     tasks = state.get("tasks")
     pause = state.get("pause_original")
     port = state.get("port")
+    was_ready = state.get("was_ready")
     return (
         isinstance(state.get("content_db"), str)
         and bool(state["content_db"])
         and (pause is None or isinstance(pause, str))
+        and (was_ready is None or isinstance(was_ready, bool))
         and (port is None or (isinstance(port, int) and not isinstance(port, bool)))
         and isinstance(tasks, dict)
         and all(
@@ -569,8 +658,10 @@ def undo_out(state: dict[str, Any]) -> None:
         if tasks[name]["exists"] and tasks[name]["running"] and not now[name]["running"]:
             _schtasks("/Run", "/TN", name)
             started_server = started_server or name == "MVHub Server"
-    if started_server and not wait_ready(int(state.get("port") or sm.DEFAULT_PORT)):
-        raise MoveError("서버를 다시 켰지만 ready 응답이 없습니다 — logs 폴더를 확인하세요")
+    # OUT 전에 응답하던 서버면, 이번에 작업을 켰는지와 무관하게 지금 응답해야 되돌린 것이다
+    # (작업은 이미 Running 인데 ready 가 아닌 채로 두 번째 UNDO 가 '완료'라고 하지 않게).
+    if (started_server or state.get("was_ready") is True) and not wait_ready(int(state.get("port") or sm.DEFAULT_PORT)):
+        raise MoveError("서버가 다시 응답하지 않습니다 — logs 폴더를 확인하세요")
 
 
 # ---------------------------------------------------------------- IN
@@ -721,6 +812,308 @@ def _resume_extras(package: Path, data_dir: Path) -> None:
         sm._install_extras(package, data_dir, True, tuple(missing))
 
 
+def _parse_created(value: object, what: str) -> datetime:
+    """OUT 이 쓴 UTC ISO 시각. 시간대 없는 값은 받지 않는다(있는 값과 비교하다 최종 날 예외로 멈추지 않게)."""
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError as exc:
+        raise MoveError(f"{what}을 읽지 못했습니다({value!r}) — 수동 확인이 필요합니다") from exc
+    if parsed.tzinfo is None:
+        raise MoveError(f"{what}에 시간대가 없습니다({value!r}) — 수동 확인이 필요합니다")
+    return parsed
+
+
+def _read_rehearsal_max() -> datetime | None:
+    if not REHEARSAL_RECORD.is_file():
+        return None
+    record = _read_json(REHEARSAL_RECORD, "연습 기록")
+    return _parse_created(record.get("max_package_created_at"), "연습 기록의 시각")
+
+
+def _write_rehearsal_record(created: datetime, package: Path, manifest_sha: str) -> None:
+    """연습 자료를 지우기 **전에** 쓴다 — 지우다 끊겨도 '연습에 쓴 가장 새 폴더' 기준은 줄지 않는다(R3 뒤 R1 을 다시 풀어도)."""
+    previous = _read_rehearsal_max()
+    newest = created if previous is None or created > previous else previous
+    _atomic_json(
+        REHEARSAL_RECORD,
+        {
+            "format": 1,
+            "max_package_created_at": newest.isoformat(),
+            "last_package": str(package),
+            "last_manifest_sha": manifest_sha,
+            "python": sys.executable,
+            "sqlite": sqlite3.sqlite_version,
+            "updated_at": _utc_now(),
+        },
+    )
+
+
+def _is_reparse(path: Path) -> bool:
+    """심볼릭 링크·연결 폴더(junction) — resolve 하기 전에 본다(따라간 뒤에는 구분이 사라진다)."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _inside(child: str, parent: str) -> bool:
+    child_key, parent_key = os.path.normcase(child), os.path.normcase(parent).rstrip("\\/")
+    return child_key == parent_key or child_key.startswith(parent_key + os.sep)
+
+
+def _guard_rehearsal_dir(data_dir: Path, package: Path) -> Path:
+    """지울 수 있는 연습 폴더는 코드가 정한 한 곳뿐이고, 진짜 자리·이사 폴더와 겹치면 안 된다."""
+    target = REHEARSAL_DIR
+    if _is_reparse(target):
+        raise MoveError(f"{target} 가 링크(연결 폴더)입니다 — 연습 폴더로 쓰지 않습니다. 직접 확인하세요")
+    real, data_real = os.path.realpath(target), os.path.realpath(data_dir)
+    if _inside(real, data_real) or _inside(data_real, real):
+        raise MoveError(f"연습 폴더({real})와 진짜 데이터 폴더({data_real})가 겹칩니다 — 직접 확인하세요")
+    if _inside(os.path.realpath(package), real):
+        raise MoveError("이사 폴더가 연습 폴더 안에 있습니다 — 바탕화면으로 옮긴 뒤 다시 실행하세요")
+    return target
+
+
+def _delete_rehearsal_dir(data_dir: Path, package: Path) -> None:
+    """지난 연습 자료 지우기 — 다 지워졌는지 확인한다. 남은 폴더 위에 새로 풀면 지난 media 가 섞인다."""
+    target = _guard_rehearsal_dir(data_dir, package)
+    for attempt in range(5):
+        try:
+            shutil.rmtree(target)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            time.sleep(0.5 * (attempt + 1))  # 막 끈 서버가 파일을 아직 놓지 않았을 수 있다
+        if not target.exists():
+            return
+    raise MoveError(f"연습 자료를 다 지우지 못했습니다: {target} — 열린 창·파일을 닫고 다시 실행하세요")
+
+
+def _tree_bytes(root: Path) -> int:
+    if root.is_file():
+        return root.stat().st_size
+    return sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+
+
+def install_readiness(package: Path, space_dir: Path | None, reclaim: int = 0, db_bytes: int = 0) -> list[str]:
+    """register_autostart·MV_server 가 필요로 하는 것과 빈 공간 — 진짜 IN 이 설치 뒤에야 막히지 않게, 연습도 같은 기준.
+    space_dir 가 None 이면 공간은 보지 않는다(이어하기: DB 는 이미 설치됨). SYSTEM 계정의 NAS 쓰기는 여기서 알 수 없다.
+    공간은 install_set 의 기준(DB × 2 + 256MiB)에 작업자 백업·media 복사분을 더한 것."""
+    problems: list[str] = []
+    for name in ("server_supervisor.py", "server_watchdog.py", "backup_replicate.py", "verify_requirements.py"):
+        if not (TOOLS / name).is_file():
+            problems.append(f"tools\\{name} 가 없습니다 — update_git.bat 으로 코드를 받으세요")
+    if not (ROOT / "frontend" / "dist" / "index.html").is_file():
+        problems.append("화면 빌드(frontend\\dist)가 없습니다 — update_git.bat 을 먼저 실행하세요")
+    imports = subprocess.run(
+        [sys.executable, "-c", "import fastapi,uvicorn,pydantic,websockets,multipart,PIL,watchdog"], capture_output=True
+    ).returncode
+    pinned = subprocess.run(
+        [sys.executable, str(TOOLS / "verify_requirements.py"), str(ROOT / "backend" / "requirements.txt")],
+        capture_output=True,
+    ).returncode
+    if imports or pinned:
+        problems.append(f"이 파이썬({sys.executable})에 서버 패키지가 맞지 않습니다 — update_git.bat 을 먼저 실행하세요")
+    # register_autostart.bat 과 같은 검사 — npm.cmd 위치, 옆의 node.exe --version, npm --version
+    npm = shutil.which("npm.cmd")
+    node = Path(npm).parent / "node.exe" if npm else None
+    if (
+        node is None
+        or not node.is_file()
+        or subprocess.run([str(node), "--version"], capture_output=True).returncode
+        or subprocess.run(["cmd", "/c", str(npm), "--version"], capture_output=True).returncode
+    ):
+        problems.append("Node.js(npm) 가 없거나 실행되지 않습니다 — 자동시작 등록에 필요합니다(nodejs.org 의 LTS 설치)")
+    if space_dir is not None:
+        existing = space_dir
+        while not existing.exists() and existing.parent != existing:
+            existing = existing.parent
+        extras = max(0, _tree_bytes(package) - db_bytes)
+        need = db_bytes * 2 + (256 << 20) + int(extras * 1.1)
+        free = shutil.disk_usage(existing).free + reclaim
+        if free < need:
+            problems.append(f"{existing} 드라이브 공간이 모자랍니다(필요 약 {sm._human(need)}, 남음 {sm._human(free)})")
+    return problems
+
+
+def old_server_ready(url: str | None) -> bool:
+    """옛 서버가 지금 응답하는가. 200 만 '켜져 있다'의 증거로 쓴다 — 응답 없음은 꺼졌다는 증거가 아니다."""
+    if not url:
+        return False
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url.rstrip("/") + "/api/ready", timeout=3) as response:
+            return response.status == 200
+    except (OSError, ValueError):
+        return False
+
+
+def _set_aside_backups(data_dir: Path, archive_dir: Path) -> None:
+    """이 PC 의 옛 자동 백업은 방금 보관 폴더로 간 DB 의 것 — 남겨 두면 BackupCopy 가 새 서버 백업과 섞어 NAS 로 복제한다.
+    보관 폴더로 함께 옮긴다(삭제 없음). 못 옮기면 들여오기 기록을 남기기 전에 멈춘다 — 다시 누르면 새 설치로 다시 시도한다."""
+    source = data_dir / "backups"
+    if not source.is_dir():
+        return
+    try:
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        os.replace(source, archive_dir / "backups")
+    except OSError as exc:
+        raise MoveError(
+            f"이 PC 의 옛 자동 백업({source})을 보관 폴더로 옮기지 못했습니다({exc}) — 그 폴더의 파일을 연 창을 닫고 다시 실행하세요"
+        ) from exc
+    _say(f"      이 PC 의 옛 자동 백업 → {archive_dir / 'backups'}")
+
+
+def rehearsal_env(rehearsal_dir: Path, port: int) -> dict[str, str]:
+    """연습 서버 환경 — 부모의 CONTENT_HUB_* 는 하나도 물려주지 않고(MV_server.bat 은 빈 값일 때만 기본값을 넣는다) 전부 명시.
+    자료·로그·백업은 연습 폴더 안, 읽기 전용, 사본 밖을 건드리는 백그라운드는 끔. 파이썬은 색인을 다시 만든 그것."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("CONTENT_HUB_") and key.upper() not in ("PYEXE", "PORT", "HOST")
+    }
+    env.update(
+        {
+            "CONTENT_HUB_DATA": str(rehearsal_dir),
+            "CONTENT_HUB_MEDIA": str(rehearsal_dir / "media"),
+            "CONTENT_HUB_SHARED": str(rehearsal_dir / "shared"),
+            "CONTENT_HUB_ASSETS_DIR": str(rehearsal_dir / "assets"),
+            "CONTENT_HUB_BACKUP_DIR": str(rehearsal_dir / "backups"),
+            "CONTENT_HUB_LOG_DIR": str(rehearsal_dir / "logs"),
+            "CONTENT_HUB_SERVER_ALERT_PATH": str(rehearsal_dir / "logs" / "server_ALERT.txt"),
+            "CONTENT_HUB_READ_ONLY": "1",
+            "CONTENT_HUB_AUTH": "1",
+            "CONTENT_HUB_MANAGE": "1",
+            "CONTENT_HUB_SERVER_SYNC": "0",
+            "CONTENT_HUB_EXTERNAL_RECOVERY": "0",
+            "CONTENT_HUB_ASSET_REGISTRY": "0",
+            "CONTENT_HUB_MEDIA_PRESERVATION": "0",
+            "PYEXE": sys.executable,
+            "PORT": str(port),
+            "HOST": "0.0.0.0",
+        }
+    )
+    return env
+
+
+def start_rehearsal_server(rehearsal_dir: Path, port: int) -> None:
+    """MV_server.bat(감독기 포함 — 최종 실행 경로 확인 겸)을 새 창으로. ready 가 안 오면 그 창을 통째로 끈다."""
+    proc = subprocess.Popen(
+        ["cmd", "/c", str(ROOT / "MV_server.bat")],
+        cwd=str(ROOT),
+        env=rehearsal_env(rehearsal_dir, port),
+        creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+    )
+    try:
+        ready = wait_ready(port, timeout=REHEARSAL_READY_SECONDS)
+    except BaseException:  # 기다리는 중 Ctrl+C 등 — 띄운 창(감독기·서버)을 남기지 않는다
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+        raise
+    if ready:
+        return
+    subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+    try:
+        _confirm_ours_stopped(port)
+    except MoveError as exc:
+        raise MoveError(
+            f"연습 서버가 ready 응답을 하지 않았고 끄지도 못했습니다 — 연습 서버 창을 직접 닫으세요({rehearsal_dir / 'logs'} 확인)"
+        ) from exc
+    raise MoveError(f"연습 서버가 ready 응답을 하지 않아 껐습니다 — {rehearsal_dir / 'logs'} 를 확인하세요")
+
+
+def _confirm_ours_stopped(port: int) -> None:
+    for _ in range(10):
+        pids, ok = sm.port_listener_pids(port)
+        if ok and not pids and not our_processes():
+            return
+        time.sleep(2)
+    raise MoveError("켜져 있던 서버가 꺼지지 않았습니다 — 그 창을 닫고 다시 실행하세요")
+
+
+def _in_rehearsal(
+    args: argparse.Namespace,
+    package: Path,
+    files: dict[str, Path],
+    settings: dict[str, Any],
+    created: datetime,
+    data_dir: Path,
+    manifest_sha: str,
+) -> int:
+    """연습 설치 — backend\\data-rehearsal 에만 풀고 읽기 전용 서버 창을 띄운다. 진짜 자리·예약 작업·기계 변수·NAS 복제는 손대지 않는다."""
+    _guard_rehearsal_dir(data_dir, package)
+    if (data_dir / IN_STATE_NAME).exists():
+        raise MoveError(
+            f"이 PC 는 이미 진짜 서버로 들여왔거나 들여오는 중입니다({data_dir / IN_STATE_NAME}) — 연습 설치를 하지 않습니다"
+        )
+    rehearsal_dir = REHEARSAL_DIR
+    _say("=" * 68)
+    _say("  서버 이사 — 연습 설치(옛 서버는 계속 운영)")
+    _say("=" * 68)
+    _say(f"  이사 폴더   : {package}")
+    _say(f"  옛 서버     : {settings.get('server_url')}  (Python {settings.get('python')} · SQLite {settings.get('sqlite')})")
+    _say(f"  이 PC       : Python {sys.version.split()[0]} · SQLite {sqlite3.sqlite_version}")
+    _say(f"  연습 폴더   : {rehearsal_dir}")
+    # 진짜 자리 기준 점검을 그대로 — 최종 날 막힐 것을 지금 찾는 것이 연습의 목적이다.
+    problems = precheck_in(package, settings, data_dir, args.port)
+    problems += install_readiness(
+        package,
+        rehearsal_dir.parent,
+        _tree_bytes(rehearsal_dir) if rehearsal_dir.is_dir() else 0,  # 지난 연습 자료는 지우고 푼다
+        db_bytes=sum(path.stat().st_size for path in files.values()),
+    )
+    if problems:
+        _say()
+        _say("  아래는 최종 이사 날에도 막히는 것입니다 — 먼저 해결하세요(아무것도 바꾸지 않았습니다):")
+        for problem in problems:
+            _say(f"  - {problem}")
+        return 1
+    question = "진행할까요?" + (" (지난 연습 자료를 지우고 새로 풉니다)" if rehearsal_dir.exists() else "")
+    if not args.yes and not _ask(question):
+        return 1
+
+    _say("[1/5] 켜져 있는 연습·시험 서버 끄기")
+    leftovers = our_processes()
+    if leftovers:
+        _stop_our_processes(leftovers)
+        _confirm_ours_stopped(args.port)
+    _say("[2/5] 검증(격리 복원·로그인)")
+    expected = {role: sm._sha256(path) for role, path in files.items()}
+    sm.check_drill_runtime()
+    report = sm.run_drill(files, args.server_timeout)
+    if not sm._drill_ok(report):
+        raise MoveError("검증(드릴)을 통과하지 못했습니다 — 연습 설치를 하지 않았습니다")
+    _say("[3/5] 연습 기록 → 지난 연습 자료 지우기 → 연습 폴더에 설치")
+    _write_rehearsal_record(created, package, manifest_sha)
+    _delete_rehearsal_dir(data_dir, package)
+    result = sm.install_set(files, rehearsal_dir, args.port, expected)
+    sm._install_extras(package, rehearsal_dir, True)
+    _say("[4/5] 임시 관리자 비밀번호 파일 삭제, 생성 접수 멈춤(읽기 전용과 이중)")
+    (rehearsal_dir / BOOTSTRAP_FILE).unlink(missing_ok=True)
+    write_pause(Path(result["targets"]["content"]), "1")
+    _say("[5/5] 연습 서버 창 띄우기(읽기 전용)")
+    start_rehearsal_server(rehearsal_dir, args.port)
+    _print_rehearsal_in_done(package, args.port)
+    return 0
+
+
+def _print_rehearsal_in_done(package: Path, port: int) -> None:
+    networks = network_snapshot()
+    here = networks[0].get("IPv4") if networks else None
+    _say()
+    _say("=" * 68)
+    _say("  연습 설치 완료 — 연습 서버 창이 따로 떴습니다(읽기 전용)")
+    _say("=" * 68)
+    _say(f"  1. 다른 PC 의 브라우저로 http://{here or '<이 PC IP>'}:{port} 에 들어가 로그인하고 자료를 확인하세요.")
+    _say("     저장·생성·설정 변경은 막혀 있습니다(오류가 나는 것이 정상). 옛 서버와 팀원에게는 영향이 없습니다.")
+    _say("  2. 팀원 앱·내 앱의 '공유 서버' 주소는 바꾸지 마세요.")
+    _say("  3. 다 보면 연습 서버 창에서 Ctrl+C → Y (안 꺼도 최종 IN 이 끕니다).")
+    _say("  4. 최종 이사 날: 옛 서버 server_move_OUT.bat → 2(진짜 이사) → 새 폴더를 이 PC 로 → server_move_IN.bat.")
+    _say(f"     이 연습 폴더({package.name})로는 진짜 이사가 안 됩니다(다시 누르면 연습만 다시 됩니다).")
+    _say(f"  5. 연습 자료({REHEARSAL_DIR})는 최종 IN 끝에 지울지 묻습니다. 이사 폴더처럼 계정 정보가 들어 있습니다.")
+    _say()
+
+
 def cmd_in(args: argparse.Namespace) -> int:
     _require_windows_admin()
     package = _choose_package(args)
@@ -730,8 +1123,21 @@ def cmd_in(args: argparse.Namespace) -> int:
         raise MoveError("이사 폴더가 완전하지 않습니다(설정 파일이 manifest 에 없음) — 옛 서버에서 UNDO 후 OUT 을 다시 하세요")
     files = sm.verify_manifest_files(package, manifest)  # machine_settings.json 도 크기·SHA 대조
     settings = _read_json(package / SETTINGS_NAME, "이사 폴더의 설정 파일")
+    purpose = settings.get("purpose")
+    if purpose not in PURPOSES:
+        raise MoveError("이사 폴더에 연습/진짜 표시가 없습니다 — 옛 서버에서 새 server_move_OUT.bat 으로 다시 내보내세요")
+    created = _parse_created(settings.get("created_at"), "이사 폴더의 만든 시각")
     data_dir = sm.resolve_data_dir(args.data_dir)
     manifest_sha = sm._sha256(package / sm.MANIFEST_NAME)
+    if purpose == "rehearsal":
+        return _in_rehearsal(args, package, files, settings, created, data_dir, manifest_sha)
+    newest = _read_rehearsal_max()
+    if newest is not None and created <= newest:
+        # '최신 보증'은 아니다 — 연습에 쓴(또는 그보다 오래된) 폴더로 진짜 자리를 덮는 실수만 막는다.
+        raise MoveError(
+            f"이 이사 폴더({created.isoformat()})는 연습에 쓴 폴더({newest.isoformat()})보다 새 것이 아닙니다 — 옛 자료로 덮게 됩니다.\n"
+            "  옛 서버에서 server_move_OUT.bat 을 2(진짜 이사)로 새로 실행해 만든 폴더를 쓰세요."
+        )
     previous = _in_state(data_dir, manifest_sha)
     if previous and previous.get("phase") == "done":
         _say(f"  이 이사 폴더는 이미 들여오기를 마쳤습니다: {package}")
@@ -746,14 +1152,30 @@ def cmd_in(args: argparse.Namespace) -> int:
     _say(f"  이 PC       : Python {sys.version.split()[0]} · SQLite {sqlite3.sqlite_version}")
     _say(f"  데이터 폴더 : {data_dir}")
     problems = precheck_in(package, settings, data_dir, args.port, resume=resume)
+    problems += install_readiness(
+        package, None if resume else data_dir, db_bytes=sum(path.stat().st_size for path in files.values())
+    )
     if problems:
         _say()
         _say("  아래를 먼저 해결하세요(아무것도 바꾸지 않았습니다):")
         for problem in problems:
             _say(f"  - {problem}")
         return 1
-    if not args.yes and not _ask("진행할까요?"):
-        return 1
+    if resume:
+        if not args.yes and not _ask("진행할까요?"):
+            return 1
+    else:
+        url = settings.get("server_url")
+        if old_server_ready(url):
+            raise MoveError(
+                f"옛 서버({url})가 아직 켜져 있습니다 — 진짜 이사는 옛 서버를 OUT 2(진짜 이사)로 끈 뒤에만 합니다.\n"
+                "  (OUT 뒤에 UNDO 했다면 OUT 을 다시 하세요)"
+            )
+        # 응답이 없다는 것은 '꺼졌다'는 증거가 아니다(방화벽·주소 차이·잠깐의 장애) — 사람이 확인한다.
+        if not args.yes and not _ask(
+            f"  옛 서버({url or '주소 모름'})가 응답하지 않습니다. 옛 서버가 지금도 꺼져 있고 OUT 뒤에 UNDO 하지 않았습니까?"
+        ):
+            return 1
 
     if resume:
         if (
@@ -779,6 +1201,7 @@ def cmd_in(args: argparse.Namespace) -> int:
         if not sm._drill_ok(report):
             raise MoveError("검증(드릴)을 통과하지 못했습니다 — 설치하지 않았습니다")
         result = sm.install_set(files, data_dir, args.port, expected)
+        _set_aside_backups(data_dir, Path(result["archive_dir"]))
         # DB 설치 직후에 먼저 남긴다 — 뒤의 작업자 백업·media 복사가 실패해도 다시 누르면 이어진다.
         _atomic_json(
             data_dir / IN_STATE_NAME,
@@ -831,6 +1254,15 @@ def cmd_in(args: argparse.Namespace) -> int:
     in_state.update(phase="done", updated_at=_utc_now())
     _atomic_json(data_dir / IN_STATE_NAME, in_state)
     _print_in_done(package, settings, result)
+    # 연습 서버는 설치 전에 껐다 — 여기서는 프로세스를 건드리지 않는다(지금 켜져 있는 것은 진짜 서버).
+    if REHEARSAL_DIR.exists() and (
+        args.yes or _ask(f"  연습 자료 폴더({REHEARSAL_DIR})를 지울까요? 계정 정보가 들어 있습니다")
+    ):
+        try:
+            _delete_rehearsal_dir(data_dir, package)
+            _say("  연습 자료를 지웠습니다.")
+        except MoveError as exc:
+            _say(f"  [주의] {exc}")
     return 0
 
 
@@ -939,6 +1371,7 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument("--data-dir")
     out.add_argument("--port", type=int, default=sm.DEFAULT_PORT)
     out.add_argument("--fence-wait", type=float, default=FENCE_WAIT_SECONDS)
+    out.add_argument("--purpose", choices=PURPOSES, help="연습(rehearsal)·진짜 이사(move) — 없으면 묻는다")
     out.add_argument("--yes", action="store_true", help="확인 질문 건너뛰기(시험용)")
     in_ = sub.add_parser("in", help="새 서버: 바탕화면 이사 폴더를 들여오기")
     in_.add_argument("--package")

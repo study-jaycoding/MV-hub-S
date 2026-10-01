@@ -188,6 +188,11 @@ def verify_restored_set_runtime(
             # 사본 DB의 in-flight 마커·API 키로 라이브 Comfy 잡을 취소하거나 로컬 CLI 를
             # 호출하지 않게 — 드릴의 격리는 파일뿐 아니라 외부 서비스 상태에도 성립해야 한다.
             "CONTENT_HUB_EXTERNAL_RECOVERY": "0",
+            # 사본 DB 의 경로(comfy 입력 폴더 청소·NAS 대장 훑기)와 부모의 로그 위치가 사본 밖에 닿지 않게.
+            # 드릴은 /api/ready 와 로그인(POST /api/auth/login)만 부른다 — 읽기 전용이어도 그대로 된다.
+            "CONTENT_HUB_READ_ONLY": "1",
+            "CONTENT_HUB_ASSET_REGISTRY": "0",
+            "CONTENT_HUB_LOG_DIR": str(restored_data_dir / "logs"),
             # 격리 서버의 stdout 은 파일로 가므로 Python 이 로케일 인코딩(한국어
             # Windows = cp949)을 쓴다. 그 인코딩에 없는 문자(em dash 등)가 든 로그
             # 한 줄이 기동을 죽인다. 실패 꼬리도 이 파일을 UTF-8 로 읽으므로,

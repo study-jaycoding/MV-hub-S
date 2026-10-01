@@ -78,8 +78,8 @@ def _fence(safe: bool) -> dict:
     }
 
 
-def _out_args(data: Path) -> argparse.Namespace:
-    return argparse.Namespace(data_dir=str(data), port=8010, fence_wait=1, yes=True)
+def _out_args(data: Path, purpose: str = "move") -> argparse.Namespace:
+    return argparse.Namespace(data_dir=str(data), port=8010, fence_wait=1, yes=True, purpose=purpose)
 
 
 @pytest.fixture
@@ -93,6 +93,12 @@ def easy(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "desktop_dir", lambda: desktop)
     monkeypatch.setattr(module, "machine_env", lambda: {})
     monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    # 연습 자료·기록은 저장소가 아니라 이 시험 폴더에. 설치 준비 검사·옛 서버 확인·ready 는 시험마다 필요한 것만 켠다.
+    monkeypatch.setattr(module, "REHEARSAL_DIR", tmp_path / "repo" / "backend" / "data-rehearsal")
+    monkeypatch.setattr(module, "REHEARSAL_RECORD", tmp_path / "repo" / ".mvhub-runtime" / "server_move_rehearsal.json")
+    monkeypatch.setattr(module, "install_readiness", lambda *args, **kwargs: [])
+    monkeypatch.setattr(module, "old_server_ready", lambda url: False)
+    monkeypatch.setattr(module, "wait_ready", lambda port, timeout=180.0: False)
     return module
 
 
@@ -182,6 +188,7 @@ def test_out_package_carries_machine_settings_inside_the_manifest(easy, tmp_path
 
 def _make_package(easy, package: Path, settings: dict) -> None:
     sm = easy.sm
+    settings = {"purpose": "move", "created_at": "2026-10-01T03:00:00+00:00", **settings}
     files = {}
     for role, tables in ROLE_TABLES.items():
         rel = f"db/{sm.BACKUP_SET_MEMBERS[role]['prefix']}20261001_120000_000000.db"
@@ -632,3 +639,435 @@ def test_register_autostart_keeps_the_pinned_python_and_can_skip_every_pause():
     assert 'set "MVHUB_CALLER_NO_PAUSE=%CONTENT_HUB_NO_PAUSE%"' in lines
     assert "pause" not in lines
     assert lines.count("if not defined MVHUB_CALLER_NO_PAUSE pause") >= 6
+
+
+# ------------------------------------------------------------ 연습(리허설) — Codex 설계 검토 r1~r3 조건
+
+
+class _FakeTasks:
+    """예약 작업 흉내 — OUT 이 사용 안 함·끝내기를 하면 꺼지고, UNDO 가 사용·실행하면 다시 켜진다."""
+
+    def __init__(self, easy):
+        self.easy = easy
+        self.enabled = True
+        self.running = True
+        self.calls: list[tuple[str, ...]] = []
+
+    def snapshot(self):
+        return _tasks(self.easy, enabled=self.enabled, running=self.running)
+
+    def schtasks(self, *args, check=True):
+        self.calls.append(args)
+        if args[0] == "/Change":
+            self.enabled = args[-1] == "/ENABLE"
+        elif args[0] == "/End":
+            self.running = False
+        elif args[0] == "/Run":
+            self.running = True
+        return 0
+
+
+def _rehearsal_out(easy, tmp_path, monkeypatch, export=None):
+    data = tmp_path / "data"
+    live = _make_live(easy, data)
+    fake = _FakeTasks(easy)
+    monkeypatch.setattr(easy, "task_snapshot", fake.snapshot)
+    monkeypatch.setattr(easy, "_schtasks", fake.schtasks)
+    monkeypatch.setattr(easy, "wait_ready", lambda port, timeout=180.0: fake.running)
+    monkeypatch.setattr(easy, "inspect_fence", lambda db: _fence(True))
+    monkeypatch.setattr(easy, "our_processes", lambda: [])
+    monkeypatch.setattr(easy, "_confirm_stopped", lambda port: None)
+    monkeypatch.setattr(easy.sm, "ensure_server_stopped", lambda port: {})
+    monkeypatch.setattr(easy, "network_snapshot", lambda: [{"IPv4": "192.168.1.199", "Prefix": 24}])
+    monkeypatch.setattr(easy, "time_zone", lambda: KST)
+    monkeypatch.setattr(easy, "REPLICA_PATH", tmp_path / "replica.txt")
+    if export is not None:
+        monkeypatch.setattr(easy.sm, "cmd_export", export)
+    return data, live, fake
+
+
+def test_out_rehearsal_exports_then_turns_the_server_back_on(easy, tmp_path, monkeypatch):
+    data, live, fake = _rehearsal_out(easy, tmp_path, monkeypatch)
+
+    assert easy.cmd_out(_out_args(data, "rehearsal")) == 0
+
+    [package] = list((tmp_path / "Desktop").glob(easy.PACKAGE_PREFIX + "*"))
+    assert package.name.endswith(easy.REHEARSAL_SUFFIX)
+    assert json.loads((package / easy.SETTINGS_NAME).read_text(encoding="utf-8"))["purpose"] == "rehearsal"
+    assert ("/Run", "/TN", "MVHub Server") in fake.calls and fake.enabled and fake.running
+    assert easy.read_pause(live["content"]) is None  # 생성 접수도 원래대로
+    state = json.loads((data / easy.STATE_NAME).read_text(encoding="utf-8"))
+    assert state["phase"] == "undone" and state["was_ready"] is True
+    assert not (tmp_path / "Desktop" / easy.UNDO_SHORTCUT).exists()  # 되돌릴 것이 없다 — 진짜 이사 날 헷갈리지 않게
+
+
+def test_out_rehearsal_turns_the_server_back_on_even_when_the_export_fails(easy, tmp_path, monkeypatch):
+    def export_fails(*args, **kwargs):
+        raise OSError("디스크 가득")
+
+    data, live, fake = _rehearsal_out(easy, tmp_path, monkeypatch, export=export_fails)
+
+    with pytest.raises(OSError, match="디스크 가득"):
+        easy.cmd_out(_out_args(data, "rehearsal"))
+
+    assert fake.enabled and fake.running
+    assert easy.read_pause(live["content"]) is None
+    assert json.loads((data / easy.STATE_NAME).read_text(encoding="utf-8"))["phase"] == "undone"
+
+
+def test_out_rehearsal_refuses_a_server_it_could_not_turn_back_on(easy, tmp_path, monkeypatch):
+    """수동 창으로 띄운 서버는 OUT 이 끈 뒤 자동으로 못 켠다 — ready 여부와 무관하게 무엇이든 바꾸기 전에 거부."""
+    data = tmp_path / "data"
+    _make_live(easy, data)
+    monkeypatch.setattr(easy, "task_snapshot", lambda: _tasks(easy, running=False))
+
+    with pytest.raises(easy.MoveError, match="예약 작업"):
+        easy.cmd_out(_out_args(data, "rehearsal"))
+
+    assert not (data / easy.STATE_NAME).exists()
+
+
+def test_out_asks_rehearsal_or_move_and_stops_on_anything_else(easy, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    _make_live(easy, data)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "3")
+
+    with pytest.raises(easy.MoveError, match="1 또는 2"):
+        easy.cmd_out(_out_args(data, purpose=None))
+
+    assert not (data / easy.STATE_NAME).exists()
+
+
+def test_undo_waits_for_ready_even_when_the_task_is_already_running(easy, tmp_path, monkeypatch):
+    """두 번째 UNDO: 작업은 이미 Running 인데 서버가 응답하지 않으면 '되돌렸다'고 하지 않는다."""
+    data = tmp_path / "data"
+    live = _make_live(easy, data)
+    state = {"content_db": str(live["content"]), "pause_original": None, "port": 8010, "was_ready": True, "tasks": _tasks(easy)}
+    monkeypatch.setattr(easy, "task_snapshot", lambda: _tasks(easy))
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(easy, "_schtasks", lambda *args, **kwargs: calls.append(args) or 0)
+
+    with pytest.raises(easy.MoveError, match="응답하지"):
+        easy.undo_out(state)
+
+    assert not [call for call in calls if call[0] == "/Run"]
+
+
+def test_in_refuses_a_package_without_a_known_purpose_or_timezone(easy, tmp_path):
+    for name, settings, expected in (
+        ("odd", {"purpose": "maybe"}, "연습/진짜"),
+        ("naive", {"created_at": "2026-10-01T03:00:00"}, "시간대"),
+    ):
+        package = tmp_path / name
+        _make_package(easy, package, settings)
+        args = argparse.Namespace(package=str(package), data_dir=str(tmp_path / "data"), port=8010, server_timeout=5, yes=True)
+        with pytest.raises(easy.MoveError, match=expected):
+            easy.cmd_in(args)
+
+
+def _rehearsal_package(easy, tmp_path, name: str, created: str) -> Path:
+    package = tmp_path / "Desktop" / name
+    _make_package(
+        easy,
+        package,
+        {"purpose": "rehearsal", "created_at": created, "machine_env": {}, "pause_original": None, "network": []},
+    )
+    (package / "media").mkdir()
+    (package / "media" / "m.png").write_bytes(name.encode())
+    return package
+
+
+def _in_args(package: Path, data: Path) -> argparse.Namespace:
+    return argparse.Namespace(package=str(package), data_dir=str(data), port=8010, server_timeout=5, yes=True)
+
+
+def test_in_rehearsal_installs_only_into_the_rehearsal_folder(easy, tmp_path, monkeypatch):
+    data, _package, _args = _fake_in(easy, tmp_path, monkeypatch)
+    package = _rehearsal_package(easy, tmp_path, "R1", "2026-10-01T01:00:00+00:00")
+    for name in ("set_machine_env", "register_autostart", "_write_replica_target", "backup_task_run"):
+        monkeypatch.setattr(easy, name, lambda *a, **k: pytest.fail("연습이 진짜 자리 설정을 건드렸다"))
+    monkeypatch.setattr(easy, "network_snapshot", lambda: [])
+    started: list[tuple[Path, int]] = []
+    monkeypatch.setattr(easy, "start_rehearsal_server", lambda folder, port: started.append((folder, port)))
+
+    assert easy.cmd_in(_in_args(package, data)) == 0
+
+    assert not easy.sm.role_live_paths(data)["content"].exists()  # 진짜 자리는 그대로
+    assert not (data / easy.IN_STATE_NAME).exists()
+    rehearsal_db = easy.sm.role_live_paths(easy.REHEARSAL_DIR)["content"]
+    assert easy.read_pause(rehearsal_db) == "1"
+    assert (easy.REHEARSAL_DIR / "media" / "m.png").read_bytes() == b"R1"
+    assert started == [(easy.REHEARSAL_DIR, 8010)]
+    record = json.loads(easy.REHEARSAL_RECORD.read_text(encoding="utf-8"))
+    assert record["max_package_created_at"] == "2026-10-01T01:00:00+00:00"
+
+
+def test_rehearsals_keep_the_newest_time_and_the_real_move_needs_a_newer_package(easy, tmp_path, monkeypatch):
+    data, newest_real, real_args = _fake_in(easy, tmp_path, monkeypatch)  # 진짜 폴더 M4 = 03:00
+    monkeypatch.setattr(easy, "network_snapshot", lambda: [])
+    monkeypatch.setattr(easy, "start_rehearsal_server", lambda folder, port: None)
+    r3 = _rehearsal_package(easy, tmp_path, "R3", "2026-10-01T02:30:00+00:00")
+    r1 = _rehearsal_package(easy, tmp_path, "R1", "2026-10-01T01:00:00+00:00")
+    assert easy.cmd_in(_in_args(r3, data)) == 0
+    assert easy.cmd_in(_in_args(r1, data)) == 0  # 오래된 연습을 다시 풀어도
+
+    assert (easy.REHEARSAL_DIR / "media" / "m.png").read_bytes() == b"R1"  # 지난 연습을 지우고 새로(섞이지 않음)
+    record = json.loads(easy.REHEARSAL_RECORD.read_text(encoding="utf-8"))
+    assert record["max_package_created_at"] == "2026-10-01T02:30:00+00:00"  # 기준은 줄지 않는다
+
+    stale = tmp_path / "M2"
+    _make_package(easy, stale, {"created_at": "2026-10-01T02:00:00+00:00", "machine_env": {}, "pause_original": "0", "network": []})
+    with pytest.raises(easy.MoveError, match="새 것이 아닙니다"):
+        easy.cmd_in(_in_args(stale, data))
+    assert not easy.sm.role_live_paths(data)["content"].exists()
+
+    assert easy.cmd_in(real_args) == 0
+    assert easy.sm.role_live_paths(data)["content"].is_file()
+    assert not easy.REHEARSAL_DIR.exists()  # 끝에 연습 자료를 지운다(--yes)
+
+    with pytest.raises(easy.MoveError, match="이미 진짜"):
+        easy.cmd_in(_in_args(r3, data))
+
+
+def test_rehearsal_folder_guard_refuses_overlaps_packages_inside_and_links(easy, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    package = tmp_path / "Desktop" / "pkg"
+    package.mkdir(parents=True)
+    monkeypatch.setattr(easy, "REHEARSAL_DIR", data / "rehearsal")
+    with pytest.raises(easy.MoveError, match="겹칩니다"):
+        easy._guard_rehearsal_dir(data, package)
+
+    rehearsal = tmp_path / "rehearsal"
+    monkeypatch.setattr(easy, "REHEARSAL_DIR", rehearsal)
+    (rehearsal / "pkg").mkdir(parents=True)
+    with pytest.raises(easy.MoveError, match="안에 있습니다"):
+        easy._guard_rehearsal_dir(data, rehearsal / "pkg")
+
+    if sys.platform == "win32":
+        import _winapi
+
+        # 진짜 데이터 폴더가 연습 폴더를 가리키는 연결 폴더 — 실제 경로로 겹침을 본다
+        linked_data = tmp_path / "linked-data"
+        _winapi.CreateJunction(str(rehearsal), str(linked_data))
+        with pytest.raises(easy.MoveError, match="겹칩니다"):
+            easy._guard_rehearsal_dir(linked_data, package)
+
+        precious = tmp_path / "precious"
+        precious.mkdir()
+        (precious / "keep.db").write_bytes(b"x")
+        link = tmp_path / "linked-rehearsal"
+        _winapi.CreateJunction(str(precious), str(link))
+        monkeypatch.setattr(easy, "REHEARSAL_DIR", link)
+        with pytest.raises(easy.MoveError, match="링크"):
+            easy._delete_rehearsal_dir(data, package)
+        assert (precious / "keep.db").read_bytes() == b"x"
+
+
+def test_rehearsal_delete_stops_when_files_remain(easy, tmp_path, monkeypatch):
+    """지우다 남으면 그 위에 새로 풀지 않는다 — 지난 media 가 새 DB 와 섞인다."""
+    (easy.REHEARSAL_DIR / "media").mkdir(parents=True)
+    (easy.REHEARSAL_DIR / "media" / "locked.png").write_bytes(b"x")
+
+    def locked(path):
+        raise PermissionError("잠김")
+
+    monkeypatch.setattr(easy.shutil, "rmtree", locked)
+    with pytest.raises(easy.MoveError, match="다 지우지 못했습니다"):
+        easy._delete_rehearsal_dir(tmp_path / "data", tmp_path / "Desktop" / "pkg")
+
+
+def test_real_in_refuses_while_the_old_server_still_answers(easy, tmp_path, monkeypatch):
+    data, _package, args = _fake_in(easy, tmp_path, monkeypatch)
+    monkeypatch.setattr(easy, "old_server_ready", lambda url: True)
+
+    with pytest.raises(easy.MoveError, match="아직 켜져"):
+        easy.cmd_in(args)
+
+    assert not easy.sm.role_live_paths(data)["content"].exists()
+
+
+def test_real_in_moves_this_pcs_old_auto_backups_next_to_the_replaced_database(easy, tmp_path, monkeypatch):
+    """남겨 두면 BackupCopy 가 새 서버 백업과 섞어 NAS 로 복제한다(예: 빈 DB 시험 서버의 자동 백업)."""
+    data, _package, args = _fake_in(easy, tmp_path, monkeypatch)
+    (data / "backups").mkdir()
+    (data / "backups" / "content_hub_old.db").write_bytes(b"empty-db-backup")
+
+    assert easy.cmd_in(args) == 0
+
+    assert not (data / "backups").exists()
+    archive = Path(json.loads((data / easy.IN_STATE_NAME).read_text(encoding="utf-8"))["archive_dir"])
+    assert (archive / "backups" / "content_hub_old.db").read_bytes() == b"empty-db-backup"
+
+
+def test_rehearsal_server_env_takes_nothing_from_the_parent(easy, tmp_path, monkeypatch):
+    """MV_server.bat 은 빈 값일 때만 기본값을 넣는다 — 부모의 운영 백업 경로·AUTH=0 이 새면 안 된다."""
+    monkeypatch.setenv("CONTENT_HUB_BACKUP_DIR", "\\\\nas\\prod-backups")
+    monkeypatch.setenv("CONTENT_HUB_AUTH", "0")
+    monkeypatch.setenv("CONTENT_HUB_SOMETHING_ELSE", "x")
+    monkeypatch.setenv("PYEXE", "C:\\other\\python.exe")
+    folder = tmp_path / "rehearsal"
+
+    env = easy.rehearsal_env(folder, 8010)
+
+    assert env["CONTENT_HUB_BACKUP_DIR"] == str(folder / "backups")
+    assert env["CONTENT_HUB_AUTH"] == "1" and env["CONTENT_HUB_READ_ONLY"] == "1"
+    assert env["CONTENT_HUB_EXTERNAL_RECOVERY"] == "0" and env["CONTENT_HUB_ASSET_REGISTRY"] == "0"
+    assert "CONTENT_HUB_SOMETHING_ELSE" not in env and "CONTENT_HUB_NO_PROXY" not in env
+    assert env["PYEXE"] == sys.executable
+    for name in ("CONTENT_HUB_DATA", "CONTENT_HUB_MEDIA", "CONTENT_HUB_LOG_DIR", "CONTENT_HUB_SERVER_ALERT_PATH"):
+        assert env[name].startswith(str(folder)), name
+
+
+def test_rehearsal_server_window_is_closed_when_it_never_gets_ready(easy, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(easy.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(pid=4321))
+    killed: list[list[str]] = []
+    monkeypatch.setattr(easy.subprocess, "run", lambda cmd, **kwargs: killed.append(cmd) or SimpleNamespace(returncode=0))
+    monkeypatch.setattr(easy.sm, "port_listener_pids", lambda port: ([], True))
+    monkeypatch.setattr(easy, "our_processes", lambda: [])
+
+    with pytest.raises(easy.MoveError, match="껐습니다"):
+        easy.start_rehearsal_server(tmp_path / "rehearsal", 8010)
+    assert killed == [["taskkill", "/PID", "4321", "/T", "/F"]]
+
+    # 껐는데도 남아 있으면 '껐다'고 하지 않는다
+    monkeypatch.setattr(easy.sm, "port_listener_pids", lambda port: ([999], True))
+    with pytest.raises(easy.MoveError, match="직접 닫으세요"):
+        easy.start_rehearsal_server(tmp_path / "rehearsal", 8010)
+
+    # 기다리는 중 Ctrl+C — 띄운 창을 남기지 않고 그대로 멈춘다
+    killed.clear()
+
+    def interrupted(port, timeout=180.0):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(easy, "wait_ready", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        easy.start_rehearsal_server(tmp_path / "rehearsal", 8010)
+    assert killed == [["taskkill", "/PID", "4321", "/T", "/F"]]
+
+
+def test_install_readiness_finds_what_would_block_the_last_day(tmp_path, monkeypatch):
+    """Node·npm·공간 문제는 진짜 IN 이 DB 를 설치한 뒤 등록·install_set 에서야 막혔다 — 설치 전에(연습에서도) 찾는다."""
+    from types import SimpleNamespace
+
+    fresh = _module()  # 준비 코드가 바꿔 끼우지 않은 진짜 함수
+    node_dir = tmp_path / "node"
+    node_dir.mkdir()
+    (node_dir / "node.exe").write_bytes(b"")
+    monkeypatch.setattr(fresh.shutil, "which", lambda name: str(node_dir / "npm.cmd"))
+    # 파이썬 패키지·node 는 정상, npm 자체가 망가진 PC(register_autostart 의 npm --version 에서 막히던 경우)
+    monkeypatch.setattr(
+        fresh.subprocess, "run", lambda cmd, **kwargs: SimpleNamespace(returncode=1 if "--version" in cmd and cmd[0] == "cmd" else 0)
+    )
+    # 패키지 1000 바이트 중 DB 600: 필요 = 600×2 + 256MiB + 400×1.1 = 256MiB+1640 > 남음 256MiB+1500 (옛 기준 1000×1.2 는 통과)
+    monkeypatch.setattr(fresh.shutil, "disk_usage", lambda path: SimpleNamespace(free=(256 << 20) + 1500))
+    monkeypatch.setattr(fresh, "_tree_bytes", lambda root: 1000)
+    monkeypatch.setattr(fresh, "TOOLS", ROOT_DIR / "tools")
+    monkeypatch.setattr(fresh, "ROOT", ROOT_DIR)
+
+    problems = "\n".join(fresh.install_readiness(tmp_path, tmp_path, db_bytes=600))
+    assert "Node.js" in problems
+    assert "공간이 모자랍니다" in problems  # DB × 2 + 256MiB(install_set 기준) — 패키지 × 1.2 로는 통과했을 크기
+    assert "공간" not in "\n".join(fresh.install_readiness(tmp_path, None, db_bytes=600))  # 이어하기는 공간을 안 본다
+    assert "공간" not in "\n".join(fresh.install_readiness(tmp_path, tmp_path, db_bytes=0))
+
+
+def test_real_in_stops_before_recording_when_old_backups_cannot_move(easy, tmp_path, monkeypatch):
+    """옛 자동 백업을 못 옮긴 채 기록·등록하면 BackupCopy 가 그것을 NAS 로 복제한다 — 기록 전에 멈추고, 다시 누르면 다시 시도한다."""
+    data, _package, args = _fake_in(easy, tmp_path, monkeypatch)
+    (data / "backups").mkdir()
+    (data / "backups" / "content_hub_old.db").write_bytes(b"old")
+    monkeypatch.setattr(easy, "register_autostart", lambda: pytest.fail("백업을 못 옮겼는데 등록했다"))
+
+    def locked(source, target):
+        raise PermissionError("사용 중")
+
+    real_set_aside = easy._set_aside_backups
+    monkeypatch.setattr(
+        easy, "_set_aside_backups", lambda data_dir, archive: _with_replace(easy, monkeypatch, locked, real_set_aside, data_dir, archive)
+    )
+    with pytest.raises(easy.MoveError, match="옮기지 못했습니다"):
+        easy.cmd_in(args)
+    assert not (data / easy.IN_STATE_NAME).exists()
+    assert (data / "backups" / "content_hub_old.db").read_bytes() == b"old"
+
+    monkeypatch.setattr(easy, "_set_aside_backups", real_set_aside)
+    monkeypatch.setattr(easy, "register_autostart", lambda: None)
+    assert easy.cmd_in(args) == 0
+    assert not (data / "backups").exists()
+
+
+def _with_replace(easy, monkeypatch, replace, function, *args):
+    """함수 하나가 부르는 os.replace 만 바꿔 끼운다(install_set 의 os.replace 는 그대로)."""
+    with monkeypatch.context() as patch:
+        patch.setattr(easy.os, "replace", replace)
+        return function(*args)
+
+
+def test_out_rehearsal_points_to_undo_whatever_breaks_the_restart(easy, tmp_path, monkeypatch):
+    data, _live, _fake = _rehearsal_out(easy, tmp_path, monkeypatch)
+
+    def locked(state):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(easy, "undo_out", locked)
+    with pytest.raises(easy.MoveError, match=easy.UNDO_SHORTCUT):
+        easy.cmd_out(_out_args(data, "rehearsal"))
+
+    assert json.loads((data / easy.STATE_NAME).read_text(encoding="utf-8"))["phase"] == "exported"
+    assert (tmp_path / "Desktop" / easy.UNDO_SHORTCUT).is_file()  # 사람이 누를 수단이 남는다
+
+
+def test_out_rehearsal_interrupted_twice_keeps_the_record_and_undo_bat(easy, tmp_path, monkeypatch):
+    data, _live, _fake = _rehearsal_out(easy, tmp_path, monkeypatch)
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(easy, "_out_steps", interrupted)
+    monkeypatch.setattr(easy, "undo_out", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        easy.cmd_out(_out_args(data, "rehearsal"))
+
+    assert json.loads((data / easy.STATE_NAME).read_text(encoding="utf-8"))["phase"] == "prepared"
+    assert (tmp_path / "Desktop" / easy.UNDO_SHORTCUT).is_file()
+
+
+def test_in_rehearsal_installs_nothing_when_the_old_copy_cannot_be_deleted(easy, tmp_path, monkeypatch):
+    data, _package, _args = _fake_in(easy, tmp_path, monkeypatch)
+    package = _rehearsal_package(easy, tmp_path, "R2", "2026-10-01T02:00:00+00:00")
+    (easy.REHEARSAL_DIR / "media").mkdir(parents=True)
+    (easy.REHEARSAL_DIR / "media" / "old.png").write_bytes(b"old")
+
+    def locked(path):
+        raise PermissionError("잠김")
+
+    monkeypatch.setattr(easy.shutil, "rmtree", locked)
+    for name in ("install_set", "_install_extras"):
+        monkeypatch.setattr(easy.sm, name, lambda *a, **k: pytest.fail("남은 폴더 위에 설치했다"))
+    monkeypatch.setattr(easy, "start_rehearsal_server", lambda *a: pytest.fail("서버를 띄웠다"))
+
+    with pytest.raises(easy.MoveError, match="다 지우지 못했습니다"):
+        easy.cmd_in(_in_args(package, data))
+
+    record = json.loads(easy.REHEARSAL_RECORD.read_text(encoding="utf-8"))  # 기준은 지우기 전에 이미 남았다
+    assert record["max_package_created_at"] == "2026-10-01T02:00:00+00:00"
+
+
+def test_real_in_asks_a_person_when_the_old_server_is_silent_and_not_when_resuming(easy, tmp_path, monkeypatch):
+    data, _package, args = _fake_in(easy, tmp_path, monkeypatch)
+    asked: list[str] = []
+    monkeypatch.setattr(easy, "_ask", lambda question: asked.append(question) or False)
+    args.yes = False
+
+    assert easy.cmd_in(args) == 1
+    assert "UNDO 하지 않았습니까" in asked[-1]
+    assert not easy.sm.role_live_paths(data)["content"].exists()
+
+    args.yes = True
+    _stop_after_install(easy, monkeypatch, args)
+    monkeypatch.setattr(easy, "old_server_ready", lambda url: pytest.fail("이어하기에서 옛 서버를 물었다(IP 를 넘겼으면 자기 자신)"))
+    assert easy.cmd_in(args) == 0
