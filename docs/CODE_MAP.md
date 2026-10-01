@@ -379,7 +379,7 @@ updated: 2026-10-01
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `backup.py`(522줄) | DB 세트 자동 백업(ATTACH 다중 DB 온라인 스냅샷)·회전·주기 워커 | `main`·`db_transfer`·`operational_health` |
-| `backup_verify.py` | 백업 복원 훈련(별도 파일 복원 후 무결성·FK·행수) | `restore_runtime_verify`·tools |
+| `backup_verify.py` | 백업 복원 훈련(별도 파일 복원 후 무결성·FK·행수). `allow_index_drift`+`rebuild_drifted_indexes` — 다른 SQLite 엔진이 만든 **계산식 색인 어긋남만** 쓰기 가능한 사본(복원·설치 staged)에서 다시 만들고 엄격 재검사(2026-10-01, 옛 서버 3.45 → 새 PC 3.49) | `restore_runtime_verify`·tools |
 | `restore_runtime_verify.py` | 복원 사본으로 격리 서버 기동·로그인·행수 검증 | tools 전용(`server_move`·`verify_backup_restore`) |
 | `worker_backup.py`(1329줄) | 작업자 개인 DB 백업 세트의 공유 서버 자동 전달(별도 프로세스, §2.6) | `main`·`comfy`·`db_transfer` |
 | `db_scrub.py` | 전송/테스트 스냅샷용 비밀값 정제 프로파일 2종 | `db_transfer`·`test_snapshot`·`worker_backup` |
@@ -1058,7 +1058,7 @@ updated: 2026-10-01
 | 파일 | 한 줄 책임 | 호출 사슬 |
 |---|---|---|
 | `server_move_export.bat`(24줄)/`server_move_import.bat`(26줄) | `run_py.bat` 경유 `server_move.py export\|import` 얇은 래퍼 | → `tools/server_move.py` |
-| `tools/server_move.py`(1147줄) | DB 세트 export/import, 머신전용 상태 제외, `--backup-set` NAS 복구 | → backend `services/backup_verify.py`, `tools/account_paths.py` |
+| `tools/server_move.py`(1159줄) | DB 세트 export/import, 머신전용 상태 제외, `--backup-set` NAS 복구. 설치 staged 사본에서 엔진 차이 색인 재생성 | → backend `services/backup_verify.py`, `tools/account_paths.py` |
 | `tools/account_paths.py`(12줄) | `backend.app.active_account.slug` 를 tools 스크립트에서 쓰기 위한 sys.path 셋업 | |
 
 **백업·복원 — 서버 PC, 상시(스케줄러) / 검증 시 수동**

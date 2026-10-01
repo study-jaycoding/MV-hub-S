@@ -127,6 +127,7 @@ py -3 tools\verify_backup_restore.py --backup-set "E:\MVHub-backups\content_hub_
 | 옛 PC 경로가 DB 안에 남는다 | `project.render_root_path` 등 | 설치 후 도구가 목록을 찍는다. 새 PC 에서 접근되는지 확인 |
 | NAS 백업 복제가 조용히 멈춘다 | 복제 대상은 머신별 설정이고 SYSTEM 계정 권한이 필요하다 | `register_autostart.bat` 에서 다시 지정하고 1회 실행해 로그 확인 |
 | 에셋 대장이 조용히 꺼진다 | 켜기 변수는 PC 의 기계 환경변수라 도구가 옮기지 않는다(훑는 곳 선택·대장 번호는 DB 라 따라온다) | 12단계의 두 변수를 넣고, 이사 뒤 관리자 창 '에셋 대장' 탭에 표가 보이는지 확인 |
+| 검증이 `missing from index idx_credit_txn_julian` 로 멈춘다(옛 도구) | 새 PC 의 SQLite 가 옛 서버와 다르면 계산식 색인(`julianday(created_at)` 등) 키가 어긋난다 — 3.45 는 초 소수 .9995 이상을 다음 초로 올리고 3.49 이상은 .999 에서 멈춘다(2026-10-01 실측). 자료는 멀쩡하지만 새 엔진에서 그 행을 지우면 `database disk image is malformed` | 지금 도구는 **계산식 색인 어긋남만** 알아보고 복원·설치 사본에서 새 PC 엔진으로 다시 만든 뒤 엄격 재검사한다(화면에 "색인을 새로 만듦"). 원본 백업·패키지는 안 건드림. 다른 종류의 오류가 섞이면 지금처럼 멈춘다. 이사 도구 밖 복구 경로(작업자 백업 복원 등)는 `quick_check` 라 이 어긋남을 못 본다 — 후속 |
 
 ## 무엇을 가져가고 무엇을 두고 가나
 
