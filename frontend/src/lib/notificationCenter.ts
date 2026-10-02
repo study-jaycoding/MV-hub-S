@@ -8,7 +8,8 @@ export type NotificationCategory = "all" | "comment" | "update";
 // ★새 릴리스가 올라온 것만으로는 알림을 만들지 않는다(2026-09-03, Jay). 릴리스를 만들 때마다
 //  전원에게 알림이 가면 업데이트 시점을 일괄로 관리할 수 없다. 알림은 관리자가 '공지'를 누른
 //  것만(announcement) — 자동 감지는 설정 화면의 업데이트 표시·버튼으로 그대로 남는다.
-export type ReleaseNotificationKind = "completed" | "relocation" | "announcement";
+// moved = 공유 서버 주소가 바뀌었다는 정보 알림 — 이미 새 주소를 쓰는 PC(공지를 낸 관리자 PC 포함)에 뜬다(누름=읽음만).
+export type ReleaseNotificationKind = "completed" | "relocation" | "announcement" | "moved";
 
 // 카테고리 드롭다운 표기 — 코멘트(생성물 코멘트)와 시스템(업데이트 등 앱 소식)으로 나눈다.
 export const NOTIFICATION_CATEGORY_LABELS: Record<NotificationCategory, string> = {
@@ -172,6 +173,32 @@ export function serverRelocationNotification(
   };
 }
 
+// 공유 서버 주소가 바뀌었다는 정보 알림 — 이미 그 주소를 쓰는 PC(공지를 낸 관리자 PC·먼저 옮긴 PC)용.
+// 업데이트 공지가 관리자 PC 에도 뜨듯이 보낸 사람도 같은 소식을 본다(Jay 2026-10-02). 옮길 것이 없으니 누르면 읽음만.
+export function serverMovedNotification(
+  info: ServerRelocationInfo | null | undefined,
+  store: NotificationStorage,
+  now = new Date().toISOString(),
+): ReleaseNotification | null {
+  const moved = info?.moved;
+  const url = (moved?.url || "").trim();
+  if (!moved || !url || !(moved.revision > 0)) return null;
+  const serverName = (moved.server_name || "").trim();
+  const id = `moved:${moved.revision}:${url}`;
+  return {
+    id,
+    kind: "moved",
+    version: String(moved.revision),
+    url,
+    serverName,
+    text: serverName
+      ? `'${serverName}' 서버 주소가 바뀌었습니다: ${url}. 이 PC 는 이미 새 주소에 연결돼 있습니다.`
+      : `공유 서버 주소가 바뀌었습니다: ${url}. 이 PC 는 이미 새 주소에 연결돼 있습니다.`,
+    created_at: moved.announced_at || now,
+    unread: safeGet(store, STORAGE_KEYS.notificationRelocationMovedRead) !== id,
+  };
+}
+
 export function markReleaseNotificationRead(
   item: ReleaseNotification,
   storage: NotificationStorage,
@@ -183,6 +210,8 @@ export function markReleaseNotificationRead(
     if (sessionStore) {
       safeSet(sessionStore, STORAGE_KEYS.notificationRelocationDismissed, item.id);
     }
+  } else if (item.kind === "moved") {
+    safeSet(storage, STORAGE_KEYS.notificationRelocationMovedRead, item.id);
   } else {
     const completed = loadCompleted(storage);
     if (completed?.version === item.version) saveCompleted(storage, { ...completed, read: true });

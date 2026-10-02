@@ -3,6 +3,7 @@ import {
   markAllReleaseNotificationsRead,
   markReleaseNotificationRead,
   releaseNotificationAction,
+  serverMovedNotification,
   serverRelocationNotification,
   unreadNotificationCount,
 } from "../src/lib/notificationCenter";
@@ -134,5 +135,29 @@ describe("공유 서버 이사 알림", () => {
       "2026-08-23T12:00:00Z",
     )!;
     expect(item.created_at).toBe("2026-08-23T12:00:00Z");
+  });
+});
+
+describe("이미 새 주소인 PC 의 '주소가 바뀌었다' 정보 알림(moved — Jay 2026-10-02)", () => {
+  const moved = { url: "http://192.168.1.171:8010", revision: 1, server_name: null, announced_at: "2026-10-02T22:43:35+09:00" };
+  const already = (extra: Partial<ServerRelocationInfo> = {}) =>
+    info({ current_url: moved.url, proposed_url: null, revision: 0, reachable: false, moved, ...extra });
+
+  it("공지를 낸 관리자 PC·먼저 옮긴 PC 에도 업데이트 공지처럼 한 번 뜨고, 누르면 읽음만(전환 없음)", () => {
+    const local = new MemoryStorage();
+    const item = serverMovedNotification(already(), local)!;
+    expect(item).toEqual(expect.objectContaining({ kind: "moved", url: moved.url, version: "1", unread: true }));
+    expect(item.text).toBe("공유 서버 주소가 바뀌었습니다: http://192.168.1.171:8010. 이 PC 는 이미 새 주소에 연결돼 있습니다.");
+    expect(releaseNotificationAction("moved", false)).toBe("none");
+    expect(markReleaseNotificationRead(item, local).unread).toBe(false);
+    expect(serverMovedNotification(already(), local)!.unread).toBe(false); // 다시 켜도 읽음 그대로(localStorage)
+    expect(serverMovedNotification(already({ moved: { ...moved, revision: 2 } }), local)!.unread).toBe(true); // 새 공지는 다시
+  });
+
+  it("옛 백엔드(moved 없음)·번호 없음이면 만들지 않는다", () => {
+    const local = new MemoryStorage();
+    expect(serverMovedNotification(already({ moved: undefined }), local)).toBeNull();
+    expect(serverMovedNotification(already({ moved: null }), local)).toBeNull();
+    expect(serverMovedNotification(already({ moved: { ...moved, revision: 0 } }), local)).toBeNull();
   });
 });

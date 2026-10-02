@@ -183,6 +183,10 @@ const EN: Record<string, string> = {
     "The shared server moved to {url}. Click to switch and sign in again.",
   "'{name}' 서버가 새 위치로 이동했습니다. 누르면 전환되고 다시 로그인합니다.":
     "'{name}' moved to a new location. Click to switch and sign in again.",
+  "공유 서버 주소가 바뀌었습니다: {url}. 이 PC 는 이미 새 주소에 연결돼 있습니다.":
+    "The shared server address changed to {url}. This PC is already connected to it.",
+  "'{name}' 서버 주소가 바뀌었습니다: {url}. 이 PC 는 이미 새 주소에 연결돼 있습니다.":
+    "'{name}' moved to {url}. This PC is already connected to it.",
   "공유 서버 주소를 전환하는 중…": "Switching the shared server address…",
   "전환하지 못했습니다 — 옛 주소를 그대로 씁니다":
     "Could not switch — still using the old address",

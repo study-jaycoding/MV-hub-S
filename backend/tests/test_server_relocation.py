@@ -414,6 +414,24 @@ class RelocationRouteTests(unittest.TestCase):
         self.assertEqual(out["revision"], 0)
         self.assertFalse(out["reachable"])
 
+    def test_pc_already_on_the_announced_address_gets_an_info_notice(self):
+        """공지를 낸 관리자 PC·먼저 옮긴 PC — 옮길 것은 없지만 '주소가 바뀌었다'는 안내는 받는다(Jay 2026-10-02:
+        업데이트 공지처럼 보낸 사람에게도). 새 주소를 다시 재 보지 않는다(전환 제안이 아니다)."""
+        server_relocation.remember(_announcement(url="http://192.168.1.199:8010", revision=3, name=""))
+        with mock.patch.object(publish, "_probe_shared_health") as probe:
+            out = publish.shared_server_relocation(_request())
+        probe.assert_not_called()
+        self.assertIsNone(out["proposed_url"])
+        self.assertEqual(out["moved"], {"url": "http://192.168.1.199:8010", "revision": 3,
+                                        "server_name": "옛 팀 서버", "announced_at": "2026-08-23T10:00:00+09:00"})
+
+    def test_no_info_notice_without_an_announcement_or_while_a_move_is_proposed(self):
+        self.assertIsNone(publish.shared_server_relocation(_request())["moved"])
+        server_relocation.remember(_announcement())  # 다른 주소 = 전환 제안 쪽
+        with mock.patch.object(publish, "_probe_shared_health", return_value=publish._probe_result(True, True, None, None)):
+            out = publish.shared_server_relocation(_request())
+        self.assertEqual((out["proposed_url"], out["moved"]), ("http://192.168.1.50:8010", None))
+
     def test_status_reports_the_proposal_and_probes_the_new_address(self):
         server_relocation.remember(_announcement())
         with mock.patch.object(

@@ -11,6 +11,8 @@ export interface ServerRelocationInfo {
   server_name: string | null;
   announced_at: string | null;
   reachable: boolean;
+  // 이미 공지된 주소를 쓰는 PC(공지를 낸 관리자 PC·먼저 옮긴 PC) — 옮길 것은 없고 '바뀌었다'는 안내만(구 백엔드엔 없음)
+  moved?: { url: string; revision: number; server_name: string | null; announced_at: string | null } | null;
 }
 
 export const sharedApi = {

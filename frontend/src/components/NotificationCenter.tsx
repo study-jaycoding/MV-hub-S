@@ -15,6 +15,7 @@ import {
   notificationBadgeText,
   NOTIFICATION_CATEGORY_LABELS,
   releaseNotificationAction,
+  serverMovedNotification,
   serverRelocationNotification,
   syncReleaseNotifications,
   unreadNotificationCount,
@@ -131,7 +132,7 @@ export function NotificationCenter({
       .catch(() => ({ ok: false as const })); // 공유 서버 직결·개발 설치본은 로컬 업데이트 API가 없다 — 직전값 유지
     const relocation = sharedApi
       .sharedServerRelocation()
-      .then((info) => ({ ok: true as const, value: serverRelocationNotification(info, window.sessionStorage) }))
+      .then((info) => ({ ok: true as const, value: info }))
       .catch(() => ({ ok: false as const })); // 구버전 백엔드·비 릴리스 설치본 — 직전값 유지
     const announcements = updateNoticeApi.list()
       .then((items) => ({ ok: true as const, value: items }))
@@ -140,7 +141,7 @@ export function NotificationCenter({
       if (seq !== releaseLoadSeqRef.current) return; // 그사이 읽음 처리·새 조회가 있었다 — 옛 응답
       setReleaseItems((current) => {
         const localItems = localResult.ok ? localResult.value : current.filter(
-          (item) => item.kind !== "relocation" && item.kind !== "announcement",
+          (item) => item.kind !== "relocation" && item.kind !== "moved" && item.kind !== "announcement",
         );
         const serverNotices = noticeResult.ok ? noticeResult.value : current
           .filter((item) => item.kind === "announcement")
@@ -155,9 +156,12 @@ export function NotificationCenter({
             unread: item.unread,
           }));
         const updateItems = mergeReleaseAnnouncementNotifications(localItems, serverNotices);
+        // 알림 모양(읽음 여부 포함)은 **반영하는 지금** 저장된 표식으로 만든다 — 조회가 도는 동안 누른 읽음을 늦은 응답이
+        // '안읽음'으로 덮지 않게(Codex 리뷰 P2, 2026-10-02).
         const moved = moveResult.ok
-          ? moveResult.value
-          : current.find((item) => item.kind === "relocation") || null;
+          ? serverRelocationNotification(moveResult.value, window.sessionStorage)
+            || serverMovedNotification(moveResult.value, window.localStorage)
+          : current.find((item) => item.kind === "relocation" || item.kind === "moved") || null;
         return moved ? [moved, ...updateItems] : updateItems;
       });
     });
@@ -269,6 +273,12 @@ export function NotificationCenter({
             .replace("{name}", item.serverName)
         : t("공유 서버가 새 주소로 이사했습니다: {url}. 누르면 전환되고 다시 로그인합니다.")
             .replace("{url}", item.url || "");
+    }
+    if (item.kind === "moved") {
+      return item.serverName
+        ? t("'{name}' 서버 주소가 바뀌었습니다: {url}. 이 PC 는 이미 새 주소에 연결돼 있습니다.")
+            .replace("{name}", item.serverName).replace("{url}", item.url || "")
+        : t("공유 서버 주소가 바뀌었습니다: {url}. 이 PC 는 이미 새 주소에 연결돼 있습니다.").replace("{url}", item.url || "");
     }
     if (item.kind === "announcement") {
       return t("{v} 업데이트가 등록되었습니다").replace("{v}", `v${item.version}`);
@@ -563,7 +573,7 @@ export function NotificationCenter({
                     onClick={() => openRelease(item)}
                   >
                     <span className="notification-thumb notification-update-icon" aria-hidden="true">
-                      {item.kind === "relocation" ? "⇄" : "↻"}
+                      {item.kind === "relocation" || item.kind === "moved" ? "⇄" : "↻"}
                     </span>
                     <span className="notification-copy">
                       <span className="notification-text">{releaseText(item)}</span>

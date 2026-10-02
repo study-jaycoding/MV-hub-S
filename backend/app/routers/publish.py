@@ -718,6 +718,7 @@ _NO_RELOCATION = {
     "server_name": None,
     "announced_at": None,
     "reachable": False,
+    "moved": None,
 }
 
 
@@ -753,7 +754,7 @@ def shared_server_relocation(request: Request):
     )
     url = _safe_normalized_url(proposal["url"]) if proposal else None
     if not proposal or not url:
-        return {**_NO_RELOCATION, "current_url": current}
+        return {**_NO_RELOCATION, "current_url": current, "moved": _moved_notice(current)}
     return {
         "current_url": current,
         "proposed_url": url,
@@ -762,6 +763,27 @@ def shared_server_relocation(request: Request):
         "server_name": _proposed_server_name(proposal) or None,
         "announced_at": proposal["announced_at"] or None,
         "reachable": _probe_shared_health(url)["ok"],
+        "moved": None,
+    }
+
+
+def _moved_notice(current: str) -> Optional[dict[str, Any]]:
+    """이미 공지된 주소를 쓰는 PC(공지를 낸 관리자 PC·먼저 옮긴 PC)에도 '주소가 바뀌었다'는 안내를 준다 — 옮길 것은
+    없으니 정보만. 업데이트 공지가 관리자 PC 에도 뜨듯이 보낸 사람도 같은 알림을 본다(Jay 2026-10-02)."""
+    announcement = server_relocation.snapshot()
+    if not announcement:
+        return None
+    revision = announcement.get("revision")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision <= 0:
+        return None
+    url = _safe_normalized_url(str(announcement.get("url") or ""))
+    if not url or url != _safe_normalized_url(current):
+        return None
+    return {
+        "url": url,
+        "revision": revision,
+        "server_name": _proposed_server_name(announcement) or None,
+        "announced_at": announcement.get("announced_at") or None,
     }
 
 
