@@ -396,9 +396,6 @@ function DrillLabel({
 
 export function WorkspaceUsageDashboard({
   reloadSignal = 0,
-  canCreateProject = false,
-  onCreateProject,
-  createProjectOpen = false,
   workspaceId = "",
   onWorkspaceIdChange,
   scope = "all",
@@ -409,9 +406,6 @@ export function WorkspaceUsageDashboard({
   onToggleDetail,
 }: {
   reloadSignal?: number;
-  canCreateProject?: boolean;
-  onCreateProject?: () => void;
-  createProjectOpen?: boolean; // 프로젝트 관리 창이 열려 있음 — 단추를 라임으로
   workspaceId?: string;
   onWorkspaceIdChange?: (workspaceId?: string) => void;
   /** all=매니저(팀 전체) · mine=일반 멤버 — 서버가 본인 기록으로 강제하므로 여기서는 문구·카드만 바꾼다. */
@@ -681,17 +675,6 @@ export function WorkspaceUsageDashboard({
     void runExport(kind);
   };
 
-  const projectCreateButton = canCreateProject && onCreateProject ? (
-    <button
-      type="button"
-      className={"usage-ws-button" + (createProjectOpen ? " on" : "")}
-      onClick={onCreateProject}
-      title="프로젝트 생성·멤버·역할 관리"
-    >
-      + 프로젝트
-    </button>
-  ) : null;
-
   const consoleButton = onToggleConsole ? (
     <button
       type="button"
@@ -721,7 +704,7 @@ export function WorkspaceUsageDashboard({
       <section className="usage-dashboard usage-empty">
         <header className="usage-head">
           <h2>{mine ? "내 사용 현황" : "워크스페이스 사용 현황"}</h2>
-          <div className="usage-actions">{projectCreateButton}{consoleButton}{detailButton}</div>
+          <div className="usage-actions">{consoleButton}{detailButton}</div>
         </header>
         {/* 워크스페이스가 아직 하나도 보고되지 않았어도 관리 표는 전체 계정을 보여 준다 */}
         {showTable ? tableSlot : error ? (
@@ -769,7 +752,6 @@ export function WorkspaceUsageDashboard({
           </div>
         </div>
         <div className="usage-actions">
-          {projectCreateButton}
           {consoleButton}
           {detailButton}
           <div className="usage-export-wrap">

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -19,9 +20,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Iterator, Literal
 
 from ..config import AUTH_ENABLED, BACKEND_DIR, PORT
 from .atomic_io import atomic_write_text
@@ -70,6 +72,18 @@ class ReleaseUpdateError(RuntimeError):
 
 class ReleaseUpdateBusyError(ReleaseUpdateError):
     """유료 생성 또는 Comfy 실행이 남아 업데이트를 시작할 수 없음."""
+
+
+class ReleaseFileMissing(ReleaseUpdateError):
+    """릴리스 폴더에 그 파일이 정말 없다(읽기 실패와 구분 — '표지 없음'은 처음 상태일 수 있다)."""
+
+
+class ReleasePromoteError(ReleaseUpdateError):
+    """후보 배포(promote) 거절. status 는 HTTP 코드, 메시지에는 경로·OS 원문을 넣지 않는다."""
+
+    def __init__(self, message: str, status: int = 409) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _utc_now() -> str:
@@ -349,6 +363,10 @@ def _read_release_file(source: str, name: str, *, max_bytes: int) -> bytes:
                 if length > max_bytes:
                     raise ReleaseUpdateError("릴리스 정보 파일이 너무 큽니다")
                 data = response.read(max_bytes + 1)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise ReleaseFileMissing(f"릴리스 서버에 {safe_name} 이(가) 없습니다") from exc
+            raise ReleaseUpdateError(f"릴리스 서버에 연결할 수 없습니다: {exc}") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise ReleaseUpdateError(f"릴리스 서버에 연결할 수 없습니다: {exc}") from exc
         if len(data) > max_bytes:
@@ -362,29 +380,34 @@ def _read_release_file(source: str, name: str, *, max_bytes: int) -> bytes:
         return path.read_bytes()
     except ReleaseUpdateError:
         raise
+    except FileNotFoundError as exc:
+        raise ReleaseFileMissing(f"릴리스 파일이 없습니다: {path}") from exc
     except OSError as exc:
         raise ReleaseUpdateError(f"릴리스 파일을 읽을 수 없습니다: {path}") from exc
 
 
-def fetch_latest(root: Path = APP_ROOT) -> dict[str, Any]:
-    source = install_source(root)
+_MANIFEST_MAX_BYTES = 1024 * 1024
+
+
+def _parse_manifest(raw: bytes, name: str = "latest.json") -> dict[str, Any]:
+    """표지(latest.json)·후보(candidate.json) 공통 형식 검사 — 둘은 필드가 같다(B안)."""
     try:
-        latest = json.loads(_read_release_file(source, "latest.json", max_bytes=1024 * 1024).decode("utf-8-sig"))
+        latest = json.loads(raw.decode("utf-8-sig"))
     except (UnicodeDecodeError, ValueError, TypeError) as exc:
-        raise ReleaseUpdateError("latest.json 형식이 올바르지 않습니다") from exc
+        raise ReleaseUpdateError(f"{name} 형식이 올바르지 않습니다") from exc
     if not isinstance(latest, dict):
-        raise ReleaseUpdateError("latest.json 형식이 올바르지 않습니다")
+        raise ReleaseUpdateError(f"{name} 형식이 올바르지 않습니다")
     version = str(latest.get("version") or "").strip()
     filename = _safe_release_name(latest.get("file"))
     digest = str(latest.get("sha256") or "").strip().lower()
     if not version or not _SHA256_RE.fullmatch(digest):
-        raise ReleaseUpdateError("latest.json에 version, file, sha256이 필요합니다")
+        raise ReleaseUpdateError(f"{name}에 version, file, sha256이 필요합니다")
     try:
         size = int(latest.get("size") or 0)
     except (TypeError, ValueError) as exc:
-        raise ReleaseUpdateError("latest.json의 size가 올바르지 않습니다") from exc
+        raise ReleaseUpdateError(f"{name}의 size가 올바르지 않습니다") from exc
     if size < 0:
-        raise ReleaseUpdateError("latest.json의 size가 올바르지 않습니다")
+        raise ReleaseUpdateError(f"{name}의 size가 올바르지 않습니다")
     return {
         "version": version,
         "file": filename,
@@ -393,8 +416,238 @@ def fetch_latest(root: Path = APP_ROOT) -> dict[str, Any]:
         # 옛 latest.json 호환: 생성 시각이 없으면 안정적인 과거값으로 두고 등록은 허용한다.
         "created_at": str(latest.get("created_at") or "1970-01-01T00:00:00+00:00").strip(),
         "higgsfield_cli_version": str(latest.get("higgsfield_cli_version") or "").strip(),
-        "source": source,
     }
+
+
+def fetch_latest(root: Path = APP_ROOT) -> dict[str, Any]:
+    source = install_source(root)
+    raw = _read_release_file(source, "latest.json", max_bytes=_MANIFEST_MAX_BYTES)
+    return {**_parse_manifest(raw), "source": source}
+
+
+def release_overview(root: Path = APP_ROOT) -> dict[str, Any]:
+    """관리자 업데이트 탭 — 후보·공개 표지를 한 번씩 읽어 상태로 돌려준다(B안 r4 §4).
+
+    보여 줄 5필드는 후보가 정상이면 후보, **후보 파일이 없을 때만** 공개본(후보가 깨졌으면 공개본으로
+    조용히 대체하지 않고 candidate_error 로 알린다). pending(공개 대기)은 두 표지를 모두 확인했을 때만
+    참/거짓이고, 공개 표지를 못 읽었으면 None(확인 불가 — 배포 단추를 막는다).
+    """
+    source = install_source(root)
+
+    def read(name: str) -> tuple[str, dict[str, Any] | None]:
+        try:
+            return "ok", _parse_manifest(_read_release_file(source, name, max_bytes=_MANIFEST_MAX_BYTES), name)
+        except ReleaseFileMissing:
+            return "missing", None
+        except ReleaseUpdateError:
+            return "error", None
+
+    cand_state, cand = read("candidate.json")
+    pub_state, pub = read("latest.json")
+    shown = cand if cand is not None else pub
+    if shown is None:
+        raise ReleaseUpdateError("릴리스 폴더에서 latest.json·candidate.json 을 읽을 수 없습니다")
+    if cand is not None:
+        pending = None if pub_state == "error" else pub is None or pub["sha256"] != cand["sha256"]
+    else:
+        pending = False if cand_state == "missing" else None
+    return {
+        **{key: shown[key] for key in ("version", "file", "sha256", "size", "created_at")},
+        "source": "candidate" if cand is not None else "latest",
+        "candidate_error": "candidate.json 을 읽을 수 없습니다" if cand_state == "error" else None,
+        "published": None if pub is None else {"version": pub["version"], "sha256": pub["sha256"]},
+        "published_state": pub_state,
+        "pending": pending,
+    }
+
+
+# ── 후보 배포(promote) — B안 r4: [공지]한 후보를 NAS 표지(latest.json)로 올린다 ──────────────
+_OPEN_ALWAYS = 4  # _winapi 에 상수가 없다(Win32 CreateFile dwCreationDisposition)
+_RELEASE_LOCK_NAME = "release.lock"
+_RELEASE_LOCK_WAIT_SECONDS = 10.0
+_RELEASE_LOCK_RETRY_SECONDS = 0.25
+
+
+def _safe_os_error(exc: OSError) -> ReleasePromoteError:
+    """OS 원문(UNC 경로 등)은 내보내지 않고 종류별 고정 문구로(로그에는 winerror 만)."""
+    code = getattr(exc, "winerror", None)
+    _log.warning("Release promote: os error winerror=%s", code)
+    if code == 5:
+        return ReleasePromoteError("릴리스 폴더에 쓰기 권한이 없습니다 — 쓰기 권한이 있는 관리자 PC 에서 하세요", 403)
+    if code in _SHARING_VIOLATION:
+        return ReleasePromoteError("다른 PC 나 프로그램이 표지 파일을 쓰는 중입니다 — 잠시 뒤 다시 하세요")
+    if code == 112:
+        return ReleasePromoteError("릴리스 폴더 공간이 부족합니다")
+    return ReleasePromoteError(f"릴리스 폴더를 다루지 못했습니다(오류 {code or '알 수 없음'})", 400)
+
+
+@contextmanager
+def _release_lock(folder: Path) -> Iterator[None]:
+    """릴리스 폴더 잠금 — `release.lock` 을 **배타 공유 모드로 연 동안**이 잠금이다.
+
+    make_release·select_release(PowerShell `[IO.File]::Open(...,'None')`)와 같은 규칙이라 세 쓰기자가
+    서로를 기다린다. 핸들을 닫으면 풀리므로 남은 잠금 파일을 지울 일이 없다(파일은 남겨 둔다).
+    원격 장애 때는 서버가 연결을 정리할 때까지 해제가 늦을 수 있다. 참여하지 않는 쓰기(옛 스크립트·
+    손 복사)는 막지 못한다 — 최종 권한은 NAS 쓰기 권한이다.
+    """
+    if os.name != "nt":
+        raise ReleasePromoteError("배포는 Windows 관리자 PC 에서만 할 수 있습니다", 400)
+    import _winapi
+
+    deadline = time.monotonic() + _RELEASE_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            handle = _winapi.CreateFile(
+                str(folder / _RELEASE_LOCK_NAME),
+                _winapi.GENERIC_READ | _winapi.GENERIC_WRITE,
+                0,  # 공유 없음 = 잠금. 보안 속성 NULL 이라 자식 프로세스에 상속되지 않는다.
+                0,
+                _OPEN_ALWAYS,
+                0,
+                0,
+            )
+            break
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in _SHARING_VIOLATION:
+                raise _safe_os_error(exc) from exc
+            if time.monotonic() >= deadline:
+                raise ReleasePromoteError("다른 관리자가 배포 표지를 바꾸는 중입니다 — 잠시 뒤 다시 하세요") from exc
+            time.sleep(_RELEASE_LOCK_RETRY_SECONDS)
+    try:
+        yield
+    finally:
+        _winapi.CloseHandle(handle)
+
+
+def _read_manifest_bytes(path: Path) -> bytes | None:
+    """표지 원문 바이트. 없으면 None(처음 상태), 못 읽으면 거절 — 없음과 읽기 실패를 섞지 않는다."""
+    try:
+        if path.stat().st_size > _MANIFEST_MAX_BYTES:
+            raise ReleasePromoteError(f"{path.name} 이 너무 큽니다")
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ReleasePromoteError("릴리스 폴더의 표지를 읽을 수 없습니다 — 공개 상태를 확인할 수 없습니다") from exc
+
+
+def _verify_package(path: Path, size: int, sha256: str) -> None:
+    """후보 zip 실물이 공지한 것과 같은지 — 크기와 전체 sha256(수백 MB, 잠금 밖에서)."""
+    try:
+        if path.stat().st_size != size:
+            raise ReleasePromoteError("설치 파일 크기가 후보와 다릅니다 — 다시 만들어 올리세요")
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except FileNotFoundError as exc:
+        raise ReleasePromoteError("후보 설치 파일이 릴리스 폴더에 없습니다") from exc
+    except OSError as exc:
+        raise _safe_os_error(exc) from exc
+    if digest.hexdigest() != sha256:
+        raise ReleasePromoteError("설치 파일 지문이 후보와 다릅니다 — 다시 만들어 올리세요")
+
+
+def _backup_published(folder: Path, raw: bytes) -> None:
+    """교체 전 공개 표지를 latest-backups 에 남긴다(select_release 와 같은 폴더·이름 규칙 + 고유 접미사)."""
+    backups = folder / "latest-backups"
+    try:
+        backups.mkdir(exist_ok=True)
+        if backups.is_symlink() or os.path.isjunction(backups):
+            raise ReleasePromoteError("latest-backups 가 링크입니다 — 백업 없이 바꾸지 않습니다", 400)
+        name = f"latest.previous-{datetime.now():%Y%m%d-%H%M%S}-{os.urandom(3).hex()}.json"
+        with (backups / name).open("xb") as handle:  # 배타 생성(덮어쓰기 없음) — 잠금이 아니라 이름 충돌만 막는다
+            handle.write(raw)
+    except ReleasePromoteError:
+        raise
+    except OSError as exc:
+        raise _safe_os_error(exc) from exc
+
+
+def _replace_published(path: Path, new: bytes, old: bytes | None) -> None:
+    """같은 폴더 임시 파일 → os.replace. 실패하면 결과를 다시 읽어 셋으로 가른다(Codex r4 P1):
+    무변경이면 임시 파일을 지우고 거절, 새 내용이 들어갔으면 성공, 확인할 수 없으면 임시 파일을 남기고 알린다."""
+    try:
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix="." + path.name + ".", suffix=".tmp")
+    except OSError as exc:
+        raise _safe_os_error(exc) from exc
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(new)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise _safe_os_error(exc) from exc
+    try:
+        os.replace(tmp, path)
+        return
+    except OSError as exc:
+        failure = exc
+    try:
+        now: bytes | None = path.read_bytes()
+    except FileNotFoundError:
+        now = None
+    except OSError:
+        _log.error("Release promote: replace failed and result unreadable (temp kept)")
+        raise ReleasePromoteError(
+            "공개 표지를 바꾸다 실패했고 결과를 확인할 수 없습니다 — 업데이트 탭을 다시 열어 확인하세요", 500
+        ) from failure
+    if now == new:
+        _log.warning("Release promote: replace reported an error but the new manifest is in place")
+        return
+    if now == old:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise _safe_os_error(failure) from failure
+    _log.error("Release promote: replace failed with unexpected manifest (temp kept)")
+    raise ReleasePromoteError(
+        "공개 표지가 예상과 다른 상태입니다 — 업데이트 탭을 다시 열어 확인하세요(임시 파일 보존)", 500
+    ) from failure
+
+
+def promote_candidate(expected: dict[str, Any], root: Path = APP_ROOT) -> dict[str, Any]:
+    """[공지]한 후보를 공개 표지로 — 후보 원문 바이트를 그대로 latest.json 에 쓴다(B안 r4).
+
+    expected = 서버가 확인해 준 공지 항목(version·file·size·sha256). 느린 zip 검증은 잠금 밖,
+    잠금 안에서는 두 표지가 처음 읽은 바이트 그대로인지 재확인 → 백업 → 교체만 한다.
+    """
+    source = install_source(root)
+    if source.lower().startswith(("http://", "https://")):
+        raise ReleasePromoteError("HTTP 릴리스 위치에는 배포할 수 없습니다(폴더 경로만 가능합니다)", 400)
+    folder = Path(source)
+    candidate_path, published_path = folder / "candidate.json", folder / "latest.json"
+    cand_raw = _read_manifest_bytes(candidate_path)
+    if cand_raw is None:
+        raise ReleasePromoteError("릴리스 폴더에 후보가 없습니다")
+    try:
+        cand = _parse_manifest(cand_raw, "candidate.json")
+    except ReleasePromoteError:
+        raise
+    except ReleaseUpdateError as exc:
+        raise ReleasePromoteError(str(exc)) from exc
+    want = (str(expected.get("version")), str(expected.get("file")), int(expected.get("size") or 0),
+            str(expected.get("sha256") or "").lower())
+    if (cand["version"], cand["file"], cand["size"], cand["sha256"]) != want:
+        raise ReleasePromoteError("후보가 바뀌었습니다 — 업데이트 탭을 다시 열어 확인하세요")
+    pub_raw = _read_manifest_bytes(published_path)
+    if pub_raw is not None:
+        try:
+            published = _parse_manifest(pub_raw)
+        except ReleaseUpdateError as exc:
+            # 깨진 공개 표지는 화면에서 '확인 불가'로 막는 상태다 — 여기서도 고쳐 쓰지 않고 명시적 도구에 맡긴다(Codex 코드 리뷰)
+            raise ReleasePromoteError("공개 표지(latest.json)가 깨져 있습니다 — select_release 로 먼저 고치세요") from exc
+        if published["sha256"] == cand["sha256"]:
+            return {"promoted": False, "already": True, "version": cand["version"]}
+    _verify_package(folder / cand["file"], cand["size"], cand["sha256"])
+    with _release_lock(folder):
+        if _read_manifest_bytes(candidate_path) != cand_raw or _read_manifest_bytes(published_path) != pub_raw:
+            raise ReleasePromoteError("릴리스 폴더가 그새 바뀌었습니다 — 업데이트 탭을 다시 열어 확인하세요")
+        if pub_raw is not None:
+            _backup_published(folder, pub_raw)
+        _replace_published(published_path, cand_raw, pub_raw)
+    return {"promoted": True, "already": False, "version": cand["version"]}
 
 
 def _base_status(root: Path) -> dict[str, Any]:

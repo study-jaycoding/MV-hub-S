@@ -7,6 +7,8 @@ import { ApprovalTab, type AdminConfirmState } from "./admin/ApprovalTab";
 import { AssetRegistryTab } from "./admin/AssetRegistryTab";
 import { BackupReplicaSection } from "./admin/BackupReplicaSection";
 import { MemberRolesTab } from "./admin/MemberRolesTab";
+import { UpdateNoticesSection } from "./admin/UpdateNoticesSection";
+import { ProjectManagerPanel } from "./manage/ProjectManagerPanel";
 import {
   systemMemberUids,
   viewerGlobalRoles,
@@ -14,13 +16,12 @@ import {
   visibleAdminMembers,
 } from "../lib/accountIdentity";
 import { useEscapeClose } from "../lib/useEscapeClose";
-import { getLatestReleaseMetadata, type LatestReleaseMetadata } from "../lib/releaseUpdate";
-import { updateNoticeApi, type UpdateNotice } from "../lib/updateNotices";
+import { useManageCaps } from "../lib/useManageCaps";
 import { hasGlobalCap } from "../types";
 import type { Account, Member } from "../types";
 import { CloseIcon } from "./common/ViewIcons";
 
-type AdminTab = "approve" | "roles" | "server" | "registry";
+type AdminTab = "approve" | "roles" | "server" | "update" | "projects" | "registry";
 
 export function AdminWindow({
   account,
@@ -157,10 +158,6 @@ export function AdminWindow({
   const [publishOpen, setPublishOpen] = useState(false);
   const [publishBusy, setPublishBusy] = useState(false);
   const [publishMsg, setPublishMsg] = useState("");
-  const [latestRelease, setLatestRelease] = useState<LatestReleaseMetadata | null>(null);
-  const [updateNotices, setUpdateNotices] = useState<UpdateNotice[]>([]);
-  const [updateNoticeBusy, setUpdateNoticeBusy] = useState("");
-  const [updateNoticeMsg, setUpdateNoticeMsg] = useState("");
   const savedUrl = (shared?.url || "").trim();
   const savedName = (shared?.server_name || "").trim();
   const publishDirty = urlDraft.trim() !== savedUrl || nameDraft.trim() !== savedName;
@@ -205,6 +202,12 @@ export function AdminWindow({
   //    그래서 로그인 계정(account)의 email/creator_uid 로 내 멤버 행을 직접 찾는다(없으면 is_mine 폴백).
   const viewerRoles = viewerGlobalRoles(account, members);
   const isPermanentAdmin = hasGlobalCap(viewerRoles, "system");
+  // 프로젝트 탭 — 예전 대시보드 '+ 프로젝트' 단추와 같은 훅·같은 기준(관리자 + PM 역할, Jay 2026-09-30). 관리자는 슈퍼유저가
+  // 아니라 생성 권한도 있어야 서버가 받는다. 안쪽 단추(생성·역할 부여)도 같은 훅으로 가린다(ProjectManagerPanel).
+  const caps = useManageCaps();
+  const canManageProjects = caps.system && (caps.createProject || caps.grantRole);
+  // 프로젝트 대화상자가 열린 동안은 Esc·바깥 클릭에 관리자 창을 닫지 않는다 — 대화상자만 닫히게(입력 보존).
+  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
 
   // 시스템 부트스트랩 계정(admin@millionvolt.com) — 관리 UI 어디에도 노출하지 않는다.
   // (열쇠 임시권한 로그인엔 여전히 admin 으로 인증 가능 — 목록에서만 가린다.)
@@ -218,70 +221,17 @@ export function AdminWindow({
     { key: "roles", label: "멤버 · 전역 역할", visible: hasGlobalCap(viewerRoles, "grant_global") },
     // 공유 서버 주소 — 로그인한 공유 서버 계정이 admin 일 때만(로컬 허브 설정값).
     { key: "server", label: "공유 서버", visible: !!shared?.is_admin },
-    // 에셋 대장(2026-09-30) — 공유 서버 운영(system) 권한만. 훑기는 NAS 를 오래 읽는다.
-    { key: "registry", label: "에셋 대장", visible: isPermanentAdmin },
+    // 업데이트 목록·공지(2026-10-02 공유 서버 탭에서 분리) — 공유 서버 탭과 같은 기준.
+    { key: "update", label: "업데이트", visible: !!shared?.is_admin },
+    // 프로젝트 관리(2026-10-02 대시보드 오버레이에서 옮김) — 위 canManageProjects 기준.
+    { key: "projects", label: "프로젝트", visible: canManageProjects },
+    // 에셋 리스트(옛 이름 '에셋 대장', 2026-09-30) — 공유 서버 운영(system) 권한만. 훑기는 NAS 를 오래 읽는다.
+    { key: "registry", label: "에셋 리스트", visible: isPermanentAdmin },
   ];
   const visibleTabs = tabDefs.filter((t) => t.visible);
   const [tab, setTab] = useState<AdminTab>("approve");
   // 선택 탭이 권한 변화로 사라지면 첫 가용 탭으로 폴백(빈 화면 방지).
   const activeTab = visibleTabs.some((t) => t.key === tab) ? tab : visibleTabs[0]?.key;
-
-  const loadUpdateManagement = async () => {
-    const [items, latest] = await Promise.all([
-      updateNoticeApi.adminList().catch(() => [] as UpdateNotice[]),
-      getLatestReleaseMetadata().catch(() => null),
-    ]);
-    setUpdateNotices(items);
-    setLatestRelease(latest);
-  };
-  useEffect(() => {
-    if (activeTab === "server" && shared?.is_admin) void loadUpdateManagement();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, shared?.is_admin]);
-
-  const registerLatestRelease = async () => {
-    if (!latestRelease) return;
-    setUpdateNoticeBusy("register");
-    setUpdateNoticeMsg("");
-    try {
-      const result = await updateNoticeApi.register(latestRelease);
-      setUpdateNoticeMsg(result.created ? "최신 업데이트를 목록에 등록했습니다." : "이미 등록된 업데이트입니다.");
-      setUpdateNotices(await updateNoticeApi.adminList());
-    } catch (error) {
-      setUpdateNoticeMsg("등록 실패: " + String(error).replace(/^Error:\s*\d+:\s*/, ""));
-    } finally {
-      setUpdateNoticeBusy("");
-    }
-  };
-
-  const toggleUpdatePin = async (item: UpdateNotice) => {
-    setUpdateNoticeBusy(`pin:${item.id}`);
-    setUpdateNoticeMsg("");
-    try {
-      await updateNoticeApi.pin(item.id, !item.pinned);
-      setUpdateNotices(await updateNoticeApi.adminList());
-    } catch (error) {
-      setUpdateNoticeMsg("고정 변경 실패: " + String(error).replace(/^Error:\s*\d+:\s*/, ""));
-    } finally {
-      setUpdateNoticeBusy("");
-    }
-  };
-
-  const announceUpdate = async (item: UpdateNotice) => {
-    setUpdateNoticeBusy(`announce:${item.id}`);
-    setUpdateNoticeMsg("");
-    try {
-      const result = await updateNoticeApi.announce(item.id);
-      setUpdateNoticeMsg(
-        `v${item.version} 업데이트를 공지했습니다 (${result.item.announcement_revision}번째).`,
-      );
-      setUpdateNotices(await updateNoticeApi.adminList());
-    } catch (error) {
-      setUpdateNoticeMsg("공지 실패: " + String(error).replace(/^Error:\s*\d+:\s*/, ""));
-    } finally {
-      setUpdateNoticeBusy("");
-    }
-  };
 
   const loadAccounts = (hidden = showHidden) =>
     api.listAccounts(undefined, hidden).then(setAccounts).catch(() => setAccounts([]));
@@ -338,8 +288,9 @@ export function AdminWindow({
     if (confirm) setConfirm(null);
     else if (elevOpen) setElevOpen(false);
     else if (publishOpen) setPublishOpen(false);
+    else if (projectDialogOpen) return; // 프로젝트 대화상자는 ProjectManagerPanel 이 같은 Esc 로 닫는다
     else onClose();
-  }, [confirm, elevOpen, publishOpen, onClose]);
+  }, [confirm, elevOpen, publishOpen, projectDialogOpen, onClose]);
   useEscapeClose(closeTopmost);
 
   // 저장 중인 멤버 — 칩을 연타하면 낡은 value 로 만든 목록이 뒤에 도착해 먼저 준 역할을
@@ -360,8 +311,9 @@ export function AdminWindow({
 
   return (
     <>
-      <div className="admin-backdrop" onMouseDown={onClose} />
-      <div className="admin-window" role="dialog" aria-label="관리자">
+      <div className="admin-backdrop" onMouseDown={() => { if (!projectDialogOpen) onClose(); }} />
+      {/* 프로젝트 탭은 옛 프로젝트 관리 창 폭(760px)으로 넓힌다 — 👥 멤버 칸이 열리면 CSS 가 더 넓힌다 */}
+      <div className={"admin-window" + (activeTab === "projects" ? " wide" : "")} role="dialog" aria-label="관리자">
         <header className="admin-head">
           <span className="admin-title">⬡ 관리자</span>
           {localOnlyServerControls && isPermanentAdmin && (
@@ -457,6 +409,10 @@ export function AdminWindow({
                 />
               )}
 
+              {activeTab === "update" && <UpdateNoticesSection />}
+
+              {activeTab === "projects" && <ProjectManagerPanel onDialogOpenChange={setProjectDialogOpen} />}
+
               {activeTab === "registry" && <AssetRegistryTab />}
 
               {activeTab === "server" && (
@@ -511,64 +467,6 @@ export function AdminWindow({
               </section>
 
               <BackupReplicaSection />
-
-              <section className="admin-section">
-                <h4>업데이트 관리</h4>
-                <div className="admin-note-sub">
-                  최근 업데이트를 최대 5개 표시합니다. 고정한 항목은 새 업데이트가 생겨도 목록에
-                  남고(최대 4개), 공지를 누르면 팀원의 알림 센터에 표시됩니다.
-                </div>
-                {latestRelease && !updateNotices.some(
-                  (item) => item.sha256 && item.sha256 === latestRelease.sha256,
-                ) && (
-                  <button
-                    className="settings-action"
-                    style={{ width: "auto", marginBottom: 10 }}
-                    onClick={registerLatestRelease}
-                    disabled={!!updateNoticeBusy}
-                  >
-                    {updateNoticeBusy === "register"
-                      ? "등록 중…"
-                      : `최신 업데이트 v${latestRelease.version} 등록`}
-                  </button>
-                )}
-                <div className="admin-update-list">
-                  {updateNotices.length ? updateNotices.map((item) => (
-                    <div className="admin-update-row" key={item.id}>
-                      <label className="admin-update-pin" title="이 업데이트를 최근 5개 목록에 고정">
-                        <input
-                          type="checkbox"
-                          checked={item.pinned}
-                          disabled={!!updateNoticeBusy}
-                          onChange={() => void toggleUpdatePin(item)}
-                        />
-                        고정
-                      </label>
-                      <span className="admin-update-file" title={item.file}>
-                        <b>v{item.version}</b>
-                        <small>{item.file}</small>
-                      </span>
-                      <button
-                        className="settings-action"
-                        style={{ width: "auto" }}
-                        disabled={!!updateNoticeBusy}
-                        onClick={() => void announceUpdate(item)}
-                      >
-                        {updateNoticeBusy === `announce:${item.id}`
-                          ? "공지 중…"
-                          : item.announcement_revision > 0 ? "재공지" : "공지"}
-                      </button>
-                    </div>
-                  )) : (
-                    <div className="admin-note-sub">등록된 업데이트가 없습니다.</div>
-                  )}
-                </div>
-                {updateNoticeMsg && (
-                  <p style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>
-                    {updateNoticeMsg}
-                  </p>
-                )}
-              </section>
 
               {publishOpen && (
                 <div className="admin-confirm-backdrop" onMouseDown={() => setPublishOpen(false)}>

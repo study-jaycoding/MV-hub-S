@@ -233,6 +233,16 @@ def pool_epoch() -> int:
         return _pool_epoch
 
 
+def pool_state_nowait() -> Optional[tuple[int, bool]]:
+    """(에폭, DB 교체 중) 을 기다리지 않고 — 잠금이 바쁘면 None. 이벤트 루프의 자동 시작 경로용(에셋 리스트, Codex r3)."""
+    if not _pool_condition.acquire(blocking=False):
+        return None
+    try:
+        return _pool_epoch, _maintenance_active
+    finally:
+        _pool_condition.release()
+
+
 def flush_pool() -> None:
     """모든 스레드의 풀 커넥션을 무효화 — 다음 사용 때 새 파일로 재오픈한다. DB 파일을 같은 경로에
     교체(import/복원)한 직후 호출: 경로 문자열이 그대로라 _pooled_conn 이 옛 파일(이미 교체됨)을 계속

@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -30,12 +31,11 @@ from .. import repo
 from ..config import (
     ASSET_REGISTRY_DRIVES,
     ASSET_REGISTRY_ENABLED,
-    ASSET_REGISTRY_INTERVAL_MIN,
     ASSET_REGISTRY_MIBPS,
     BACKEND_DIR,
     DATA_DIR,
 )
-from ..db import get_connection, maintenance_active, pool_epoch
+from ..db import get_connection, maintenance_active, pool_epoch, pool_state_nowait
 from ..repo import asset_registry as registry
 from . import project_folders
 from .async_tools import to_thread_non_abandon
@@ -48,7 +48,8 @@ DIR_RATE = 20  # 초당 폴더 목록 읽기 상한(항목 수가 아니다 — 
 MAX_ENTRIES = 300_000
 MAX_RESULT_BYTES = 256 * MIB
 MANUAL_DEADLINE_S = 45 * 60
-AUTO_DEADLINE_S = 5 * 60
+# 정한 시간 자동 훑기도 일반 훑기 1회 45분(속도만 자동 상한). 옛 10분 주기용 5분은 큰 프로젝트 목록도 못 끝냈다(2026-10-02).
+AUTO_DEADLINE_S = 45 * 60
 LARGE_CAP_S = 45 * 60  # 큰 파일 전용 실행의 최대 시간 — 넘으면 '수동 스캔 대기'로 남긴다
 KILL_GRACE_S = 30
 _STARTUP_DELAY_S = 60
@@ -76,6 +77,196 @@ def registry_mode() -> str:
         mode = repo.get_setting(_MODE_KEY, "server")
         _mode_cache = (epoch, mode if mode in MODES else "server")
         return _mode_cache[1]
+
+
+def registry_mode_nowait() -> Optional[str]:
+    """이벤트 루프의 자동 시작용 — 잠금도 DB 도 기다리지 않는다(Codex r3). 지금 에폭의 캐시만 쓰고, 잠금이 바쁘거나
+    DB 를 교체하는 중이거나 캐시가 낡았으면 None(= 이번엔 시작하지 않음)."""
+    state = pool_state_nowait()
+    if state is None or state[1]:
+        return None
+    if not _mode_lock.acquire(blocking=False):
+        return None
+    try:
+        return _mode_cache[1] if _mode_cache is not None and _mode_cache[0] == state[0] else None
+    finally:
+        _mode_lock.release()
+
+
+# ── 자동 훑기 시간(Jay 2026-10-02, docs/ASSET_REGISTRY.md §11 — Claude 설계 r3·Codex 조건부 승인) ─────────────
+# 끔·매월(1~28일)·매주(요일)·매일 + 시. 판정은 **서버 시계 하나**로: 예정 시각부터 SCHEDULE_WINDOW_S 안에 물어 온 곳만
+# 그 회차를 맡는다(서버 틱·관리자 PC 틱 모두 60초라 그 시각에 켜져 있으면 정상 동작에서 창 안에 한 번은 묻는다).
+# 창이 지나면 그 회차는 건너뛴다(따라잡지 않음). 맡김 표식은 회차당 한 곳 — '실행 성공'이 아니라 '시도를 맡김' 기록이다.
+_KST = timezone(timedelta(hours=9))
+_SCHEDULE_KEY = "asset_registry_schedule"
+_MARK_KEY = "asset_registry_schedule_mark"
+SCHEDULE_KINDS = ("off", "month", "week", "day")
+SCHEDULE_WINDOW_S = 120
+SCHEDULE_TICK_S = 60
+
+
+def _iso(value: Any) -> Optional[datetime]:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=_KST)
+
+
+_OFF = {"kind": "off", "day": 1, "weekday": 0, "hour": 3, "saved_at": None}
+
+
+def _in_range(value: Any, low: int, high: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def parse_schedule(raw: Optional[str]) -> dict[str, Any]:
+    """저장값 → {kind, day, weekday, hour, saved_at}. 없거나 **조금이라도 깨졌으면 끔** — 다른 시각으로 고쳐 켜지 않는다(Codex)."""
+    try:
+        value = json.loads(raw) if raw else {}
+    except ValueError:
+        return dict(_OFF)
+    if not isinstance(value, dict) or value.get("kind") not in SCHEDULE_KINDS or value["kind"] == "off":
+        return dict(_OFF)
+    if not (_in_range(value.get("day"), 1, 28) and _in_range(value.get("weekday"), 0, 6)
+            and _in_range(value.get("hour"), 0, 23) and _iso(value.get("saved_at")) is not None):
+        return dict(_OFF)
+    return {key: value[key] for key in ("kind", "day", "weekday", "hour", "saved_at")}
+
+
+def latest_slot(schedule: dict[str, Any], now: datetime) -> Optional[datetime]:
+    """now(KST) 이하의 가장 최근 예정 시각. 끔이면 None."""
+    kind = schedule.get("kind")
+    if kind not in ("month", "week", "day"):
+        return None
+    slot = now.replace(hour=schedule["hour"], minute=0, second=0, microsecond=0)
+    if kind == "day":
+        return slot if slot <= now else slot - timedelta(days=1)
+    if kind == "week":
+        slot -= timedelta(days=(now.weekday() - schedule["weekday"]) % 7)
+        return slot if slot <= now else slot - timedelta(days=7)
+    slot = slot.replace(day=schedule["day"])
+    if slot <= now:
+        return slot
+    previous = slot.replace(day=1) - timedelta(days=1)  # 지난달 마지막 날 — day 는 28 이하라 언제나 있다
+    return previous.replace(day=schedule["day"])
+
+
+def next_slot(schedule: dict[str, Any], now: datetime) -> Optional[datetime]:
+    """now(KST) 다음 예정 시각(화면용). 끔이면 None."""
+    kind = schedule.get("kind")
+    if kind not in ("month", "week", "day"):
+        return None
+    slot = now.replace(hour=schedule["hour"], minute=0, second=0, microsecond=0)
+    if kind == "day":
+        return slot if slot > now else slot + timedelta(days=1)
+    if kind == "week":
+        slot += timedelta(days=(schedule["weekday"] - now.weekday()) % 7)
+        return slot if slot > now else slot + timedelta(days=7)
+    slot = slot.replace(day=schedule["day"])
+    if slot > now:
+        return slot
+    following = slot.replace(day=28) + timedelta(days=4)  # 다음 달 어딘가
+    return following.replace(day=schedule["day"])
+
+
+def _settings(conn: Any, *keys: str) -> dict[str, str]:
+    """받은 conn 으로 바로 읽는다 — repo.get_setting 을 트랜잭션 안에서 부르면 연결이 겹쳐 먼저 커밋될 수 있다(Codex r2)."""
+    marks = ",".join("?" * len(keys))
+    return {row["key"]: row["value"] for row in conn.execute(
+        f"SELECT key, value FROM app_setting WHERE key IN ({marks})", keys).fetchall()}
+
+
+def _put_setting(conn: Any, key: str, value: str) -> None:
+    conn.execute("INSERT INTO app_setting(key, value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                  (key, value))
+
+
+def save_schedule(kind: str, day: int, weekday: int, hour: int) -> dict[str, Any]:
+    """관리자 창 [저장]. saved_at 은 저장 트랜잭션 안의 서버 시각 — 그 전 회차는 돌지 않는다(03:20 에 '매일 3시' → 내일부터)."""
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # 범위는 라우트(ScheduleIn)가 검사한다. 저장 시각은 이 트랜잭션 안의 서버 시각.
+            schedule = {"kind": kind, "day": day, "weekday": weekday, "hour": hour,
+                        "saved_at": datetime.now(_KST).isoformat(timespec="seconds")}
+            _put_setting(conn, _SCHEDULE_KEY, json.dumps(schedule))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    return schedule
+
+
+def consume_slot(runner: str, mode_required: str) -> tuple[bool, str, Optional[str], Optional[str]]:
+    """이번 회차를 runner 에게 맡긴다 — (맡김?, 이유, 예정 시각 ISO, 표식 id). 트랜잭션 하나에서 **지금** 모드·시간표·표식을
+    읽고 정한다(설정 변경·DB 복원과 겹쳐도 새 값 기준). now 는 잠금을 얻은 뒤에 잰다(대기 뒤 낡은 시각 금지, Codex r2)."""
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            now = datetime.now(_KST)
+            values = _settings(conn, _MODE_KEY, _SCHEDULE_KEY, _MARK_KEY)
+            mode = values.get(_MODE_KEY) if values.get(_MODE_KEY) in MODES else "server"
+            schedule = parse_schedule(values.get(_SCHEDULE_KEY))
+            slot = latest_slot(schedule, now)
+            saved_at = _iso(schedule.get("saved_at"))
+            taken = _iso(_mark(values.get(_MARK_KEY)).get("slot"))
+            if mode != mode_required:  # 로컬이면 서버 틱은 표식을 건드리지 않는다 — 관리자 PC 의 회차를 소진하지 않게(Codex r1)
+                reason = "mode"
+            elif slot is None or not 0 <= (now - slot).total_seconds() <= SCHEDULE_WINDOW_S:
+                reason = "not_due"
+            elif saved_at is not None and slot <= saved_at:
+                reason = "before_saved"
+            elif taken is not None and slot <= taken:  # 같은 회차·시계 역행
+                reason = "taken"
+            else:
+                mark_id = uuid.uuid4().hex
+                _put_setting(conn, _MARK_KEY, json.dumps(
+                    {"id": mark_id, "slot": slot.isoformat(), "runner": runner, "state": "started"}))
+                conn.execute("COMMIT")
+                return True, "", slot.isoformat(), mark_id
+            conn.execute("ROLLBACK")
+            return False, reason, None, None
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def mark_outcome(mark_id: str, state: str) -> bool:
+    """맡긴 회차의 뒷소식(예: 시작 못 함). 표식이 **그 id 그대로일 때만** 바꾼다 — 그사이 복원·다른 회차면 덮지 않는다."""
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            mark = _mark(_settings(conn, _MARK_KEY).get(_MARK_KEY))
+            if mark.get("id") != mark_id:
+                conn.execute("ROLLBACK")
+                return False
+            _put_setting(conn, _MARK_KEY, json.dumps({**mark, "state": state}))
+            conn.execute("COMMIT")
+            return True
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def _mark(raw: Optional[str]) -> dict[str, Any]:
+    try:
+        value = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def schedule_status() -> dict[str, Any]:
+    """관리자 창 표시용 — 시간표·다음 예정 시각·마지막 맡김(누가·무엇). 스레드(동기 라우트)에서만 부른다."""
+    schedule = parse_schedule(repo.get_setting(_SCHEDULE_KEY))
+    upcoming = next_slot(schedule, datetime.now(_KST))
+    mark = _mark(repo.get_setting(_MARK_KEY))
+    return {
+        "schedule": {key: schedule[key] for key in ("kind", "day", "weekday", "hour")},
+        "next_run_at": upcoming.isoformat() if upcoming else None,
+        "schedule_mark": {key: mark[key] for key in ("slot", "runner", "state") if key in mark} or None,
+    }
 
 
 def _rates() -> tuple[float, float]:
@@ -290,7 +481,8 @@ class AssetRegistryController:
             "enabled": self.enabled,
             "mode": registry_mode(),
             "lease": leases.summary(),
-            "interval_min": ASSET_REGISTRY_INTERVAL_MIN,
+            "interval_min": 0,  # 옛 간격 주기는 없앴다(2026-10-02) — 옛 화면 형식 호환용으로만 남긴다
+            **schedule_status(),
             "running": self.busy(),
             "current": dict(self._current),
             "last": dict(self._last),
@@ -301,11 +493,11 @@ class AssetRegistryController:
 
     # ── 수명 ────────────────────────────────────────────────────────────────
     def start(self) -> None:
-        """자동 주기를 켠다(간격 > 0 일 때만). 수동 훑기는 request_scan 이 언제든 받는다."""
+        """정한 시간 자동 훑기 루프를 켠다(시간표가 '끔'이면 틱마다 아무것도 안 한다). 수동 훑기는 request_scan 이 언제든 받는다."""
         self._stopping = False
         self._clear_leftovers()
-        if ASSET_REGISTRY_INTERVAL_MIN > 0 and (self._loop_task is None or self._loop_task.done()):
-            self._loop_task = asyncio.create_task(self._loop(ASSET_REGISTRY_INTERVAL_MIN * 60), name="asset-registry-loop")
+        if self._loop_task is None or self._loop_task.done():
+            self._loop_task = asyncio.create_task(self._loop(), name="asset-registry-loop")
 
     @staticmethod
     def _clear_leftovers() -> None:
@@ -330,18 +522,25 @@ class AssetRegistryController:
                 await asyncio.wait_for(self._run_task, timeout=15)
         self._loop_task = None
 
-    def request_scan(self, project_ids: Optional[list[str]] = None, mode: str = "manual") -> bool:
+    def request_scan(self, project_ids: Optional[list[str]] = None, mode: str = "manual", *, wait: bool = True) -> bool:
         # 도우미 PC 가 훑는 중(자리가 살아 있음)이거나 훑는 곳이 로컬이면 서버는 안 훑는다 — 자동·수동 모두 여기를 지나고,
         # 훑는 곳 바꾸기(set_mode)·자리 발급과 같은 잠금이라 서로 끼어들지 못한다(Codex P0).
-        with leases.lock:
-            if self._stopping or self.busy() or leases.alive_locked() or not self._mode_allows():
+        # wait=False(정한 시간 자동 시작): 이벤트 루프가 잠금·DB 를 기다리지 않게 바로 얻지 못하면 시작하지 않는다(Codex r3).
+        if not leases.lock.acquire(blocking=wait):
+            return False
+        try:
+            if self._stopping or self.busy() or leases.alive_locked() or not self._mode_allows(wait):
                 return False
             self._run_task = asyncio.create_task(self._run(project_ids, mode), name=f"asset-registry-{mode}")
+        finally:
+            leases.lock.release()
         return True
 
-    def _mode_allows(self) -> bool:
+    def _mode_allows(self, wait: bool = True) -> bool:
         """이 관리자가 훑어도 되나 — 서버는 '서버'를 골랐을 때만, DB 를 교체하는 중이 아닐 때만.
         도우미(관리자 PC)는 서버가 자리를 줄 때 본다(덮어쓴다)."""
+        if not wait:
+            return registry_mode_nowait() == "server"
         return not maintenance_active() and registry_mode() == "server"
 
     def set_mode(self, mode: str) -> bool:
@@ -358,12 +557,23 @@ class AssetRegistryController:
                 _mode_cache = (pool_epoch(), mode)
         return True
 
-    async def _loop(self, interval_s: float) -> None:
+    async def _loop(self) -> None:
+        """정한 시간 자동 훑기(서버 모드) — 60초마다 '이번 회차를 서버가 맡나'만 묻는다. DB 는 스레드에서만(이벤트 루프는
+        DB·잠금을 기다리지 않는다), 회차 기록은 취소돼도 끝까지 기다리는 스레드로(Codex r2)."""
         await asyncio.sleep(_STARTUP_DELAY_S)
         while not self._stopping:
-            if not self.busy():
-                self.request_scan(mode="auto")
-            await asyncio.sleep(interval_s)
+            try:
+                # 모드 캐시를 먼저 채운다 — 아래 wait=False 시작은 지금 에폭의 캐시만 본다(재시작·복원 직후 빈 캐시, Codex r3)
+                await asyncio.to_thread(registry_mode)
+                ok, _reason, slot, mark_id = await to_thread_non_abandon(consume_slot, "server", "server")
+                if ok:
+                    started = self.request_scan(mode="auto", wait=False)
+                    log_event(_log, "asset_registry_scheduled", slot=slot, runner="server", started=started)
+                    if not started:
+                        await to_thread_non_abandon(mark_outcome, mark_id, "not_started")
+            except Exception:  # noqa: BLE001 — 한 틱의 실패(DB 잠김 등)가 이후 회차를 없애지 않게
+                _log.warning("asset_registry_schedule_tick_failed", exc_info=True)
+            await asyncio.sleep(SCHEDULE_TICK_S)
 
     # ── 훑기 ────────────────────────────────────────────────────────────────
     async def _run(self, project_ids: Optional[list[str]], mode: str) -> None:

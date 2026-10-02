@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-27
+updated: 2026-10-02
 status: active
 ---
 
@@ -72,14 +72,16 @@ status: active
 
 ```text
 \\NAS\releases\MVHub\
-    latest.json                ← 앱 버전 (건드리지 않는다)
+    latest.json                ← 앱 버전 표지 (건드리지 않는다)
+    candidate.json             ← 공지 전 후보 (관리자 창 [공지]가 표지로 올린다)
+    release.lock               ← 표지 쓰기 잠금 (지우지 않는다)
     MVHub_v1.4.2.zip
     MVHub_Install.bat
     server-location.json       ← 이 파일
 ```
 
 > **왜 latest.json에 안 넣나**
-> 릴리스 스크립트(`release/make_release.ps1`, `release/select_release.ps1`)가 latest.json을
+> 릴리스 도구(`release/select_release.ps1`, 관리자 창 [공지])가 latest.json을
 > 정해진 필드 목록으로 **통째로 다시 쓴다**. 거기에 주소를 적어 두면 다음 릴리스를 만드는
 > 순간 지워진다. 또 앱 버전을 롤백하면 주소 공지까지 함께 되감기는데, 서버 주소와 앱 버전은
 > 서로 다른 사건이다. 그래서 파일을 분리한다.

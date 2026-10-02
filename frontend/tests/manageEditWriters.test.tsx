@@ -49,7 +49,7 @@ const select = async (selector: string, value: string) => {
   await act(async () => { const input = host.querySelector<HTMLSelectElement>(selector)!; input.value = value; input.dispatchEvent(new Event("change", { bubbles: true })); });
 };
 const openPanel = async () => {
-  await act(async () => { root.render(<ProjectManagerPanel onClose={vi.fn()} />); }); await settle();
+  await act(async () => { root.render(<ProjectManagerPanel />); }); await settle();
   await click('[title="프로젝트 설정"]');
 };
 
@@ -127,7 +127,7 @@ it("ProjectManagerPanel keeps credit drafts on 409 while reporting earlier plann
 it("new project partial failure stays editable and retry does not create the project twice", async () => {
   mocks.createProject.mockResolvedValue({ id: "new", name: "New", workspace_id: "ws" });
   mocks.setPlanning.mockRejectedValue(new Error("offline"));
-  await act(async () => { root.render(<ProjectManagerPanel onClose={vi.fn()} />); }); await settle();
+  await act(async () => { root.render(<ProjectManagerPanel />); }); await settle();
   const create = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("프로젝트 추가"))
     ?? [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("새 프로젝트"))!;
   await act(async () => { create.click(); }); await settle();

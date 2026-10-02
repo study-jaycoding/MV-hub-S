@@ -19,6 +19,8 @@
 | `server_relocation.refresh (name=server-relocation-boot)` | Thread | 항상 | `backend/app/services/server_relocation.py` |
 | `periodic_sync` | start() | AUTH_ENABLED and not READ_ONLY | `backend/app/services/syncer.py` |
 | `_start_worker_backup_bootstrap` | 호출 | _proxy.is_worker_hub() | `backend/app/main.py` |
+| `registry_helper.schedule_loop() (name=asset-registry-schedule-claim)` | create_task | _proxy.is_worker_hub() and not READ_ONLY | `backend/app/routers/registry_helper.py` |
+| `registry_helper.schedule_loop` | 호출 | _proxy.is_worker_hub() and not READ_ONLY | `backend/app/routers/registry_helper.py` |
 | `periodic_backup` | start() | 항상 | `backend/app/services/backup.py` |
 | `periodic_sweeper` | start() | not READ_ONLY | `backend/app/services/temp_sweeper.py` |
 | `periodic_media_preservation` | start() | MEDIA_PRESERVATION_ENABLED and not READ_ONLY | `backend/app/services/media_preservation.py` |
@@ -53,7 +55,7 @@
 | `backend/app/routers/comfy.py` | `collect_unresolved_run` | Thread | `_collect_run_worker` |
 | `backend/app/routers/gen_requests.py` | `_release_claim_on_abort` | create_task | `release_claim(acc["email"], realtime_scope(acc), rid, agent_id)` |
 | `backend/app/services/asset_registry.py` | `AssetRegistryController.request_scan` | create_task | `self._run(project_ids, mode)` |
-| `backend/app/services/asset_registry.py` | `AssetRegistryController.start` | create_task | `self._loop(ASSET_REGISTRY_INTERVAL_MIN * 60) (name=asset-registry-loop)` |
+| `backend/app/services/asset_registry.py` | `AssetRegistryController.start` | create_task | `self._loop() (name=asset-registry-loop)` |
 | `backend/app/services/asset_registry_helper.py` | `HelperController._project_run` | create_task | `self._renew_loop(lease_id)` |
 | `backend/app/services/asset_watcher.py` | `_Watcher._ensure_health_timer_locked` | Timer | `self._health_check` |
 | `backend/app/services/asset_watcher.py` | `_Watcher._flush` | run_coroutine_threadsafe | `manager.broadcast_all( {"type": "assets_changed", "projects": projects…` |

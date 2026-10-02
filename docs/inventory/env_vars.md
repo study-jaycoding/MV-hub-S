@@ -11,7 +11,7 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 132개.
+제품 환경변수 131개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
@@ -23,7 +23,6 @@
 | `CONTENT_HUB_ASSETS_DIR` | `str(DATA_DIR / "assets")` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSET_REGISTRY` | `"0"` | `backend/app/config.py` | `test_dev.bat` |
 | `CONTENT_HUB_ASSET_REGISTRY_DRIVES` | `""` | `backend/app/config.py` | — |
-| `CONTENT_HUB_ASSET_REGISTRY_INTERVAL_MIN` | `"0"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSET_REGISTRY_MIBPS` | `"8,5"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSET_TREE_CACHE_TTL` | `"30"` | `backend/app/services/asset_tree.py` | — |
 | `CONTENT_HUB_ASSET_UPLOAD_TOTAL_MAX_BYTES` | `1024 * MIB` | `backend/app/services/upload_limits.py` | — |
@@ -45,7 +44,7 @@
 | `CONTENT_HUB_COMFY_URL` | — | `backend/app/routers/comfy.py` | — |
 | `CONTENT_HUB_CORS` | `"http://localhost:5173,http://127.0.0.1:5173"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_COST_TTL` | `7 * 86400` | `backend/app/services/cli_bridge.py` | — |
-| `CONTENT_HUB_DATA` | `BACKEND_DIR / "data"` `Path(__file__).resolve().parent / "data"` `str(REPO_ROOT / "backend" / "data")` | `backend/app/config.py` `backend/cleanup_orphan_creators.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/server_move.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` |
+| `CONTENT_HUB_DATA` | `""` `BACKEND_DIR / "data"` `Path(__file__).resolve().parent / "data"` `str(REPO_ROOT / "backend" / "data")` | `backend/app/config.py` `backend/app/routers/backup_replica.py` `backend/cleanup_orphan_creators.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/server_move.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` |
 | `CONTENT_HUB_DB` | `""` `None` | `backend/app/db_paths.py` `backend/app/routers/db_transfer.py` `backend/cleanup_orphan_creators.py` `tools/credit_round_audit.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/preflight_task_workspace.py` `tools/server_move.py` `tools/verify_generation_submission_recovery.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` `tools/preflight_task_workspace.py` `tools/verify_generation_submission_recovery.py` |
 | `CONTENT_HUB_DB_BACKEND` | `"sqlite"` | `backend/app/db.py` | — |
 | `CONTENT_HUB_DB_POOL` | `"1"` | `backend/app/db.py` | — |
@@ -84,7 +83,7 @@
 | `CONTENT_HUB_MEDIA_PRESERVATION_STARTUP_DELAY_SECONDS` | `"10"` | `backend/app/services/media_preservation.py` | — |
 | `CONTENT_HUB_METRICS_LOG_INTERVAL` | `"60"` | `backend/app/main.py` | — |
 | `CONTENT_HUB_METRICS_SAMPLE_MAX` | `"5000"` | `backend/app/services/runtime_metrics.py` | — |
-| `CONTENT_HUB_NO_PROXY` | `""` | `backend/app/routers/_proxy.py` `backend/app/services/operational_health.py` `backend/app/services/telemetry_drain.py` `tools/endurance_probe.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
+| `CONTENT_HUB_NO_PROXY` | `""` | `backend/app/routers/_proxy.py` `backend/app/routers/backup_replica.py` `backend/app/services/operational_health.py` `backend/app/services/telemetry_drain.py` `tools/endurance_probe.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
 | `CONTENT_HUB_PORT` | `"0"` `"8000"` `"8010"` | `backend/app/config.py` `run_agent_session.py` `tools/endurance_probe.py` `tools/server_watchdog.py` | `MV_agent.bat` `MV_server.bat` |
 | `CONTENT_HUB_PRESERVED_MEDIA_MAX_BYTES` | `str(50 * 1024 * 1024 * 1024)` | `backend/app/services/media_cache.py` | — |
 | `CONTENT_HUB_READ_ONLY` | `"0"` | `backend/app/config.py` | — |
@@ -167,7 +166,7 @@
 | 이름 | 직접 읽는 파일 |
 | --- | --- |
 | `APPDATA` | `backend/app/services/resolve_library_dialog.py` `backend/app/services/resolve_script_installer.py` |
-| `COMPUTERNAME` | `backend/app/services/worker_backup.py` |
+| `COMPUTERNAME` | `backend/app/routers/registry_helper.py` `backend/app/services/worker_backup.py` |
 | `LOCALAPPDATA` | `agent_push.py` `backend/app/services/release_update.py` `run_agent_session.py` |
 | `PROGRAMDATA` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_script_installer.py` |
 | `PROGRAMFILES` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_diagnostics.py` |

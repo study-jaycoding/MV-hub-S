@@ -239,6 +239,7 @@ async def _application_lifespan(app: FastAPI):
     history_audit_task: asyncio.Task | None = None
     thumbnail_repair_task: asyncio.Task | None = None
     worker_backup_bootstrap_task: asyncio.Task | None = None
+    registry_schedule_task: asyncio.Task | None = None
     runtime_loop: asyncio.AbstractEventLoop | None = None
     # 썸네일 사전 생성 데몬 회수용(중단 이벤트 + 스레드 참조). 종료 시 이 스레드가 살아 있으면
     # 원본 rename 이 WinError 32 로 깨지고 종료 뒤에도 JPG 가 기록됐다(실측).
@@ -481,6 +482,11 @@ async def _application_lifespan(app: FastAPI):
             periodic_backup.set_completed_callback(queue_backup_set)
             backup_callback_configured = True
             worker_backup_bootstrap_task = _start_worker_backup_bootstrap()
+            if not READ_ONLY:
+                # 에셋 리스트 정한 시간 훑기(로컬 모드) — 60초마다 서버에 '이 PC 가 맡나'만 묻는다. 관리자 PC 가 아니면 그냥 넘긴다.
+                registry_schedule_task = asyncio.create_task(
+                    registry_helper.schedule_loop(), name="asset-registry-schedule-claim"
+                )
         else:
             periodic_backup.set_completed_callback(None)
             backup_callback_configured = True
@@ -494,7 +500,7 @@ async def _application_lifespan(app: FastAPI):
             periodic_media_preservation.start()  # 명시적 opt-in 설치만 영구 보존
             media_preservation_started = True
         if ASSET_REGISTRY_ENABLED and not READ_ONLY:
-            # 에셋 대장(서버) — 수동 훑기는 언제든 받고, 자동 주기는 간격을 설정했을 때만 돈다.
+            # 에셋 대장(서버) — 수동 훑기는 언제든 받고, 정한 시간 루프는 늘 돈다(시간표가 '끔'이면 아무것도 안 함).
             # NAS 를 읽는 자식 프로세스는 health·ready 와 무관하다(NAS 가 멈춰도 워치독 재시작 루프가 없게).
             asset_registry_controller.start()
             asset_registry_started = True
@@ -582,6 +588,8 @@ async def _application_lifespan(app: FastAPI):
         if asset_registry_started:
             await _attempt_async_cleanup(asset_registry_controller.stop)
         # 도우미 훑기(이 PC 가 관리자 창에서 시작했을 때만 돈다) — 같은 방법으로 끝낸다. 안 돌았으면 할 일이 없다.
+        if registry_schedule_task:  # 새 회차를 맡지 않게 먼저 멈춘 뒤 도는 도우미를 끝낸다
+            await _attempt_async_cleanup(lambda: _cancel_background_task(registry_schedule_task))
         await _attempt_async_cleanup(asset_registry_helper.stop)
         # 백업 위치 확인 자식(관리자 창 [저장] 때만 돈다) — 남아 있으면 끊는다.
         _attempt_sync_cleanup(backup_replica.stop_probe)

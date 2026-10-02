@@ -95,6 +95,32 @@ def list_release_update_notices_admin(limit: int = VISIBLE_LIMIT) -> list[dict[s
     return [_row(row) for row in rows]
 
 
+def get_release_update_notice_by_sha(sha256: str) -> dict[str, Any] | None:
+    """후보 하나를 sha 로 찾는다 — 최근 5개 목록 밖으로 밀린 항목도 배포 확인에 쓸 수 있게(B안 r3)."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM release_update_notice WHERE sha256=?", (sha256,)
+        ).fetchone()
+    return _row(row) if row else None
+
+
+def delete_release_update_notice(notice_id: str) -> dict[str, Any] | None:
+    """[해제] — 행을 지운다(읽음 기록은 FK CASCADE). 없으면 None(같은 해제를 두 번 눌러도 성공)."""
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT * FROM release_update_notice WHERE id=?", (notice_id,)
+            ).fetchone()
+            if row:
+                conn.execute("DELETE FROM release_update_notice WHERE id=?", (notice_id,))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    return _row(row) if row else None
+
+
 def set_release_update_notice_pinned(notice_id: str, pinned: bool) -> dict[str, Any]:
     now = _utc_now()
     with get_connection() as conn:

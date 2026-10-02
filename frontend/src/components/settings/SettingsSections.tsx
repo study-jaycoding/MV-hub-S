@@ -564,6 +564,12 @@ export function ReleaseUpdateSettingsSection({
         summary={
           <>
             {versionText}
+            {status?.candidate_version && (
+              <>
+                <br />
+                새 후보 v{status.candidate_version} — 관리자 창 업데이트 탭에서 공지하면 설치할 수 있습니다.
+              </>
+            )}
             {(msg || releaseUpdateMessage(status)) && (
               <>
                 <br />

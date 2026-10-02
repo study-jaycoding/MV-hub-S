@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-01
+updated: 2026-10-02
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -38,7 +38,7 @@ updated: 2026-10-01
 | ComfyUI 실행(로컬/Cloud) | `lib/useSceneComfyExecution.ts`, `components/scene/cards/ComfyCard.tsx` | `routers/comfy.py`, `services/comfy_client.py` | |
 | DaVinci Resolve 전송 | `lib/useResolveTransferActions.ts` | `routers/resolve_integration.py`, `services/resolve_transfer.py` | |
 | Assets의 DaVinci 프로젝트 목록·열기 | `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/resolve_project_library.py`, `services/resolve_project_open_worker.py` | `@davinci` 내부 DB 폴더는 일반 Assets 트리에 펼치지 않는다 |
-| 앱 자동 업데이트·릴리스 절차 | `lib/releaseUpdate.ts`, `components/UpdateProgressOverlay.tsx`(진행 덮개) | `routers/release_update.py`, `services/release_update.py`, `update_release_worker.bat` | 배포 스크립트는 §4. 강제 업데이트는 **워커까지** 닿아야 재설치가 된다(`MVHUB_UPDATE_FORCE` → `-ForceReinstall`) |
+| 앱 자동 업데이트·릴리스 절차 | `lib/releaseUpdate.ts`, `components/UpdateProgressOverlay.tsx`(진행 덮개), `components/admin/UpdateNoticesSection.tsx`(관리자 창 업데이트 탭 — 후보·[공지]=배포) | `routers/release_update.py`, `services/release_update.py`, `update_release_worker.bat` | **B안(2026-10-02)**: 릴리스는 후보(`candidate.json`)만, 첫 [공지]가 표지(`latest.json`)를 바꾼다 — [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md). 배포 스크립트는 §4. 강제 업데이트는 **워커까지** 닿아야 재설치가 된다(`MVHUB_UPDATE_FORCE` → `-ForceReinstall`) |
 | DB 백업·복원 | — | `routers/db_backup.py`, `routers/db_transfer.py`, `services/backup.py` | |
 | 계정 전환·워크스페이스 전환 | `components/AccountMenu.tsx`, `lib/useHubAuth.ts` | `active_account.py`, `routers/auth.py` | |
 | 실시간 갱신(WebSocket) | `lib/progressSocket.ts` | `ws.py`, `mutation_notify.py` | |
@@ -50,8 +50,8 @@ updated: 2026-10-01
 | 로그인/가입/계정 승인 | `components/LoginScreen.tsx`(서버 본체 AUTH 로그인), `components/ServerLoginScreen.tsx`(로컬 허브의 팀 서버 로그인 게이트·서버 주소 변경), `lib/useHubAuth.ts` | `routers/auth.py`, `services/auth.py`, `routers/publish.py`(`/api/shared-server/*`), `services/shared_connection.py` | 로컬 허브는 팀 서버 세션이 없으면 라이브러리 대신 게이트를 띄운다 |
 | 창을 Esc/✕ 로 닫는 규칙 | `lib/useEscapeClose.ts`(공용 — 리스너 1회 등록+콜백 ref), `lib/useAppNavigation.ts`(관리자 창·미리보기는 브라우저 history 로 여닫음) | — | 코멘트 패널·Host 콘솔은 Esc 로 안 닫힌다(설계). 회귀 시험 `frontend/tests/escapeCloseNesting.test.tsx` |
 | Assets 파일 탐색기(마운트·트리·업로드) | `components/AssetsView.tsx`, `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/asset_tree.py`, `services/resolve_project_library.py` | `@davinci` 루트는 Resolve 프로젝트 전용 화면 |
-| 에셋 대장(NAS 그림 번호·이름 변경/이동 추적·레퍼런스 찾기 가속·생성 기록의 쓴 판) | `lib/sceneAssetRelink.ts`, `components/admin/AssetRegistryTab.tsx` | `repo/asset_registry.py`(판정), `services/asset_registry.py`(관리자)·`asset_registry_scan.py`(훑기 자식), `routers/asset_registry.py`, `routers/assets.py`(locate '대장 먼저') | 설계·운영 [ASSET_REGISTRY.md](ASSET_REGISTRY.md). 기본 꺼짐(서버에서 켠다) |
-| 프로젝트 CRUD·멤버·역할 | `components/manage/ProjectManagerPanel.tsx` | `routers/projects.py`, `repo/projects.py` | |
+| 에셋 대장(화면 이름 '에셋 리스트' — NAS 그림 번호·이름 변경/이동 추적·레퍼런스 찾기 가속·생성 기록의 쓴 판·정한 시간 자동 훑기) | `lib/sceneAssetRelink.ts`, `components/admin/AssetRegistryTab.tsx` | `repo/asset_registry.py`(판정), `services/asset_registry.py`(관리자)·`asset_registry_scan.py`(훑기 자식), `routers/asset_registry.py`, `routers/assets.py`(locate '대장 먼저') | 설계·운영 [ASSET_REGISTRY.md](ASSET_REGISTRY.md). 기본 꺼짐(서버에서 켠다) |
+| 프로젝트 CRUD·멤버·역할 | `components/manage/ProjectManagerPanel.tsx`(관리자 창 '프로젝트' 탭 — 2026-10-02 대시보드 단추·오버레이 없앰) | `routers/projects.py`, `repo/projects.py` | |
 | 작업(Task) 칸반/테이블/캘린더 | `components/manage/WorkBoard.tsx` | `routers/manage.py`, `repo/manage_tasks.py` | 소요시간 표기는 `lib/format.ts` 의 `fmtElapsed` 하나다(`1d2h3m4s`, 초를 버리지 않음, 하루 이상은 `1d1h` — Jay 확정 2026-09-18). PM 창 5곳과 정보 팝업(`InfoPopup`)의 '생성 시간'이 모두 이 함수를 쓴다. 새 뷰도 이 함수를 쓴다 |
 | 크레딧 풀·그룹 한도 설정 | `components/manage/CreditPoolSection.tsx`, `CreditPlanFields.tsx` | `routers/manage.py`(`/api/manage/credit-plan*` — 권한·API 계약), `repo/manage_credit_plan.py` | |
 | 사람별 몫(할당량)·정기 충전 손 입력 | `components/manage/MemberTable.tsx`(크레딧 시트 '몫' 칸), `CreditPoolSection.tsx`(내 몫 카드), `lib/memberTable.ts`(`memberQuotaBody`) | `repo/manage_credit_plan.py`(`_quota_split`·`_member_quota`·`save_settings` 의 몫 보존), `routers/manage.py`(3상태 `exclude_unset`) | 설계 `docs/CREDIT_QUOTA_DESIGN.md` · **본문에 `quota` 키가 없으면 유지**(배정을 통째로 다시 쓰므로 안 그러면 사라진다) |
@@ -150,7 +150,7 @@ updated: 2026-10-01
 | `manage.py`(2311줄) | `POST /telemetry/push`·`GET /team-overview`·`GET /tasks[-batch]`·`POST /save-finals`·`GET /save-finals/progress`·`POST /save-finals/cancel` (47) | PM 대시보드: 텔레메트리 수신·팀 집계·크레딧 플랜·작업 CRUD·골드 저장 | 11곳. 서로 무관한 5개 도메인이 한 파일(§5) |
 | `workspace_console.py`(102줄) | `GET /console/overview`·`POST /console/workspaces`·`PATCH /console/workspaces/{id}`·`PUT /console/allocation-base`·`PUT /console/main` (5) | 워크스페이스 콘솔(서브스페이스) — `manage.py` 가 include(접두 `/api/manage`) | 없음(서버 권위, 미들웨어가 위임) |
 | `manage_quota.py`(33줄) | `GET /api/manage/credit-plan/my-quota` (1) | 내 크레딧 몫·이번 기간 사용·남은 몫 조회 — 공유 서버 위임·본인 워크스페이스 멤버만. **표시 전용**(생성은 이 값을 확인하지 않는다, 2026-09-30) | 0곳 |
-| `update_notices.py`(174줄) | `GET /api/update-notices`·`POST /admin/register` (7) | 릴리스 공지 등록·고정·공표·읽음 | 0곳(쓰기는 서버 Admin 역할 게이트로 제한 — 프록시 위임과는 다른 종류의 서버 제약) |
+| `update_notices.py`(약 205줄) | `GET /api/update-notices`·`POST /admin/register`·`GET /admin/item`·`DELETE /admin/{id}` (9) | 릴리스 공지 등록·고정·공표·읽음·후보 단건 조회(promote 확인용)·[해제](멱등) | 0곳(쓰기는 서버 Admin 역할 게이트로 제한 — 프록시 위임과는 다른 종류의 서버 제약) |
 
 **로컬 PC 기능(이 PC 에서만)**
 
@@ -158,11 +158,12 @@ updated: 2026-10-01
 |---|---|---|---|
 | `assets.py`(1372줄) | `GET /api/assets/{tree\|file\|thumb}`·`/resolve-library/projects`·`POST /resolve-library/{connect-dialog\|open}` 외 (24) | 마운트·폴더 트리·파일/썸네일 서빙·업로드·캡처·zip·탐색기·Resolve 프로젝트 열기 | 0곳 |
 | `assets_metadata.py`(313줄) | `GET /api/assets/meta`·`PUT /tags[/batch]`·`/color[s/batch]`·`POST /comments` (11, `assets.py`에 마운트) | Assets 의 개인 태그·색·코멘트(계정 DB) 와 팀 코멘트(서버 DB) 경계 | 9곳 |
-| `asset_registry.py`(약 300줄) | `POST /api/asset-registry/{lookup\|scan\|mode}`·`GET /status`·`/usage/{id}` + 도우미 `helper/{projects\|lease\|renew\|release\|result}` (10) | 에셋 대장 — **공유 서버 권위**(로컬 전용 경로 아님, 데이터 프록시가 서버로 넘김). 조회는 가시 프로젝트만, 훑기·상태는 관리자. 레퍼런스 찾기가 쓰는 `lookup_for_request`(위임 모드면 서버, 아니면 자기 DB). 도우미 PC 결과는 엄격 검증 후 기존 `_apply` 로(§10). 훑는 곳(서버/로컬)은 `/mode` 로 서버 DB 에(`app_setting`). 설계 [ASSET_REGISTRY.md](ASSET_REGISTRY.md) | 1곳 |
+| `asset_registry.py`(약 340줄) | `POST /api/asset-registry/{lookup\|scan\|mode\|schedule\|schedule/claim}`·`GET /status`·`/usage/{id}` + 도우미 `helper/{projects\|lease\|renew\|release\|result}` (12) | 에셋 대장 — **공유 서버 권위**(로컬 전용 경로 아님, 데이터 프록시가 서버로 넘김). 조회는 가시 프로젝트만, 훑기·상태는 관리자. 레퍼런스 찾기가 쓰는 `lookup_for_request`(위임 모드면 서버, 아니면 자기 DB). 도우미 PC 결과는 엄격 검증 후 기존 `_apply` 로(§10). 훑는 곳(서버/로컬)은 `/mode` 로, 자동 훑기 시간은 `/schedule` 로 서버 DB 에(`app_setting`). 로컬 모드 회차는 관리자 PC 가 `/schedule/claim`(회차당 한 PC, §11). 설계 [ASSET_REGISTRY.md](ASSET_REGISTRY.md) | 1곳 |
+| `backup_replica.py`(약 390줄) | `GET\|PUT /api/admin/backup-replica`·`POST …/run` + 로컬 중계 `/api/shared-server/backup-replica[/run]` (6) | 서버 백업 복사 위치 — 공유 서버가 원천(`tools/backup_replica_target.txt`·예약 작업 `MVHub BackupCopy`). 저장은 매번 비밀번호·자식 프로세스 위치 확인(20초)·의도 감사 먼저, 지금 복사는 `schtasks /Run`. 복사기 코드는 공유 서버 런타임에서만 지연 로드(작업자 릴리스엔 tools 없음) | 0곳(서버 경로 2개는 위임, 로컬 중계는 `/api/shared-server/` 접두라 로컬) |
 | `comfy.py`(1654줄) | `POST /api/comfy/{run\|parse\|save-to-library}`·`GET /run_status\|/unresolved-runs` (11) | ComfyUI(로컬·Cloud) 연결·그래프 파싱·비동기 실행·미회수 결과 수거 | 0곳 |
 | `resolve_integration.py`(364줄) | `POST /api/resolve/transfers`·`GET /api/resolve/{status\|script\|locks}` (10) | DaVinci Resolve 스크립트 설치·연결 진단·전송 접수/재시도 | 1곳 |
-| `registry_helper.py`(약 40줄) | `POST /api/registry-helper/scan`·`GET /status` (2) | 에셋 대장 도우미 훑기 — **이 PC 전용**(`_LOCAL_PREFIXES`). 서버가 NAS 를 못 읽을 때 관리자 PC 가 대신 훑는다(ASSET_REGISTRY §10) | 0곳 |
-| `release_update.py`(131줄) | `GET /api/release-update/status`·`POST /start` (3) | 작업자 PC 앱 업데이트 상태·시작(로컬 요청만) | 0곳 |
+| `registry_helper.py`(약 100줄) | `POST /api/registry-helper/scan`·`GET /status` (2) + `schedule_loop`(main 이 워커 허브에서 띄움) | 에셋 대장 도우미 훑기 — **이 PC 전용**(`_LOCAL_PREFIXES`). 서버가 NAS 를 못 읽을 때 관리자 PC 가 대신 훑는다(ASSET_REGISTRY §10). 정한 시간이면 60초 틱으로 서버에 claim → 맡으면 자동 속도로 시작(§11) | 0곳 |
+| `release_update.py`(약 190줄) | `GET /api/release-update/status`·`/latest-metadata`·`POST /start`·`/promote` (4) | 작업자 PC 앱 업데이트 상태·시작(로컬 요청만). 관리자: 후보·공개 상태(`release_overview`), [공지]한 후보를 표지로(promote — 공유 서버 단건 확인 뒤, 동기 def) | 0곳 |
 | `console.py`(142줄) | `GET /api/console/summary`·`POST /close-app` (2) | cmd 창 정보(버전·CLI·로그 tail)·앱 종료 | 0곳 |
 | `scenes.py`(86줄) | `GET·PUT /api/scenes/{backup\|cards}` (4) | 브라우저 localStorage 씬·카드링크의 DB 미러 동기화 | 0곳 |
 
@@ -234,7 +235,7 @@ updated: 2026-10-01
 | `share.py` | 745 | publish/unpublish·최종(골드)·보류 전이·번들 export/import | `repo.publish`·`export_bundle` |
 | `share_state_intents.py` | 698 | 서버 권위 상태 ↔ 로컬 미러 desired-state 원장(write-ahead) | `repo.prepare_share_state_intents`·`claim_due_share_state_intents` |
 | `media_preservation.py` | 215 | 공유·최종 생성물 원본 보존 작업 상태(claim/finish/재시도) | `repo.request_media_preservation` |
-| `release_update_notices.py` | 203 | 릴리스 공지 upsert·고정·발표·읽음 | `repo.upsert_release_update_notice` |
+| `release_update_notices.py` | 230 | 릴리스 공지 upsert·고정·발표·읽음·sha 단건·삭제 | `repo.upsert_release_update_notice` |
 
 **개인 메타·앵커·캔버스 부속**
 
@@ -336,8 +337,8 @@ updated: 2026-10-01
 | `asset_mounts.py` | 계정별 마운트 JSON 저장소(파일 잠금 + 원자 저장) | `routers/assets` |
 | `asset_tree.py`(309줄) | 폴더 트리 재귀 탐색 + TTL 캐시 + 무효화 | `routers/assets` |
 | `asset_watcher.py`(881줄) | watchdog 감시 → 캐시 무효화 + `assets_changed` WS 브로드캐스트 | `main`·`projects` |
-| `asset_registry.py`(약 330줄) | 에셋 대장 관리자(서버, 기본 꺼짐) — 훑기 자식 하나·시간 상한+30초 `taskkill /T /F`·완주 결과만 `BEGIN IMMEDIATE` 한 번에 반영·큰 파일 전용 실행·자동 주기·서버 종료 때 먼저 정리(끊긴 훑기는 기록을 안 덮음). health·ready 와 무관 | `main`(lifespan)·`routers/asset_registry` |
-| `asset_registry_helper.py`(약 230줄) | 에셋 대장 **도우미 PC 훑기**(로컬 허브) — 관리자 상속, 서버 자리(lease)로 프로젝트 전체를 감싸고 결과를 서버로 올림. 시작 때 토큰 고정·공유 주소(UNC) 대조 | `routers/registry_helper`·`main`(종료) |
+| `asset_registry.py`(약 330줄) | 에셋 대장 관리자(서버, 기본 꺼짐) — 훑기 자식 하나·시간 상한+30초 `taskkill /T /F`·완주 결과만 `BEGIN IMMEDIATE` 한 번에 반영·큰 파일 전용 실행·정한 시간 자동 훑기(서버 시계 2분 창·`consume_slot` 회차 표식·`request_scan(wait=False)`)·서버 종료 때 먼저 정리(끊긴 훑기는 기록을 안 덮음). health·ready 와 무관 | `main`(lifespan)·`routers/asset_registry` |
+| `asset_registry_helper.py`(약 230줄) | 에셋 대장 **도우미 PC 훑기**(로컬 허브) — 관리자 상속, 서버 자리(lease)로 프로젝트 전체를 감싸고 결과를 서버로 올림. 시작 때 토큰·주소 고정(정한 시간 훑기는 claim 문맥 `ctx` 그대로)·공유 주소(UNC) 대조 | `routers/registry_helper`·`main`(종료) |
 | `asset_registry_scan.py`(약 250줄) | 에셋 대장 훑기 **자식 프로세스 전용** — NAS 목록·지문만(DB 안 씀), 폴더 초당 20·지문 1 MiB 속도 상한, 파일 단위 미판정, 부모가 사라지면 스스로 멈춤 | `services/asset_registry`(`python -m`, §2.6) |
 | `project_folders.py` | 프로젝트 Render 루트 상태·폴더 트리 TTL 캐시·탐색기 열기 · 같은 렌더 폴더를 쓰는 다른 프로젝트(`projects_sharing_root` — Z:·UNC 를 맞춰 견주고, 드라이브 대응을 모르면 같을 수 있다고 봐 미러 정리를 막는다) | `manage`·`asset_tree` |
 
@@ -401,7 +402,7 @@ updated: 2026-10-01
 |---|---|---|
 | `operational_health.py` | 운영 진단 집계 + `OperationalAlertTracker`(반복 억제) | `main`·`release_update` |
 | `runtime_metrics.py` | 요청 지연·RSS(ctypes PSAPI)·디스크 TTL 스냅샷 | `main`·`db` |
-| `release_update.py`(699줄) | 작업자 릴리스 설치본 자기 업데이트 상태·게이트·실행기 | `comfy`·`console`·`gen_requests`·`resolve_integration` |
+| `release_update.py`(약 900줄) | 작업자 릴리스 설치본 자기 업데이트 상태·게이트·실행기 + B안 후보 배포(`release_overview`·`promote_candidate` — `release.lock` 공유 모드 잠금·교체 실패 셋 분류) | `comfy`·`console`·`gen_requests`·`resolve_integration` |
 | `upload_limits.py` | 업로드 파일 수/크기/본문 상한 + ASGI 미들웨어 | `main`·`comfy`·`db_backup`·`db_transfer` |
 
 **기타**
@@ -542,10 +543,12 @@ updated: 2026-10-01
 | `settings/ComfyConnectionSection.tsx`(178줄) | Comfy 연결 설정·확인 | 〃 |
 | `settings/ComfyUnresolvedRunsSection.tsx`(51줄) | 미해결 Comfy 실행 목록 + 결과 회수·로컬 재저장·기록 정리 | 〃 |
 | `ShortcutsWindow.tsx`(131줄) | 단축키 재지정 창 | `ShortcutsWindow` |
-| `AdminWindow.tsx`(618줄) | 관리자 창(탭 호스트) + 권한 상승 확인 + 서버 이전 공지 | `AdminWindow` |
+| `AdminWindow.tsx`(약 560줄) | 관리자 창(탭 호스트: 승인·멤버·공유 서버·업데이트·프로젝트·에셋 리스트) + 권한 상승 확인 + 서버 이전 공지 | `AdminWindow` |
 | `admin/ApprovalTab.tsx`(143줄) | 계정 승인·숨김·비번 초기화 표 | 〃 |
 | `admin/MemberRolesTab.tsx`(82줄) | 전역 역할 표 | 〃 |
-| `admin/AssetRegistryTab.tsx`(약 150줄) | 에셋 대장 — 프로젝트별 마지막 훑기 상태 표 + [지금 훑기](한 번 더 확인). 영구 관리자(system)만 | 〃 |
+| `admin/AssetRegistryTab.tsx`(약 330줄) | 에셋 리스트(옛 '에셋 대장') — 훑는 곳·자동 훑기 시간(끔·매월·매주·매일)·프로젝트별 마지막 훑기 상태 표 + [지금 훑기](한 번 더 확인). 영구 관리자(system)만 |
+| `admin/UpdateNoticesSection.tsx`(약 230줄) | 관리자 창 업데이트 탭 — 새 후보 등록·[공지](처음이면 promote 까지)·[재공지](알림만)·[배포 반영]·[해제]·확인 불가 표시 | 〃 | 〃 |
+| `admin/BackupReplicaSection.tsx`(약 280줄) | 서버 백업 복사 위치 — 공유 서버 탭의 결과 상자·NAS 주소·[저장](비밀번호 확인 창)·[지금 복사](끝날 때까지 5초마다 다시 읽음) | 〃 |
 | `admin/RolePickers.tsx`(70줄) | 전역/프로젝트 역할 선택기 + 정렬 랭크 | 〃 |
 | `admin/ProjectRenderTree.tsx`(29줄) | 프로젝트 렌더 폴더 트리 표시 | 〃 |
 | `LoginScreen.tsx`(92줄) / `ServerLoginScreen.tsx`(230줄) | 로컬 AUTH 로그인 / 팀 서버 로그인·가입 | 각 컴포넌트 |
@@ -622,7 +625,7 @@ updated: 2026-10-01
 | `manage/KanbanBoard.tsx`(179줄 — 폴더 자동 작업은 상태가 컷에서 파생되므로 끌 수 없다, 수동 작업만 끌기) · `TableView.tsx`(351줄) · `CalendarView.tsx`(206줄) · `MonthlyTaskCalendar.tsx`(190줄) | 작업 뷰 4종(프레젠테이션 전용, `WorkViewProps` 주입) — 소요시간 포맷터가 뷰마다 다름(§5-b) | 〃 |
 | `manage/CutThumbs.tsx`(105줄) · `ColorTag.tsx`(35줄) | 컷 썸네일 / 색 라벨 | |
 | `manage/ExportView.tsx`(696줄) | 완료 탭 — **공유 저장 · 최종 저장(골드) │ 비교 · 미러 · 업데이트**. 저장이 도는 동안 진행률(`N / M 처리 중`)과 취소. 미러·업데이트는 비교 결과가 있을 때만 켜지고, 저장·프로젝트 변경·새로고침이면 비교를 버린다. 단추 다섯 개 모두 예/아니오 확인 창(미러는 옮길 파일 목록 포함). 위 = 판 하나 · 가운데 = 비교 결과 · 아래 = 저장 대상 표(씬별 묶음 · 거르기 단추 · 창 높이를 따라 늘어남) ∣ 저장 이력. 설계 `docs/EXPORT_SYNC_DESIGN.md` | |
-| `manage/ProjectManagerPanel.tsx`(708줄) | 프로젝트 관리 오버레이(생성·편집·역할·보관·순서) | |
+| `manage/ProjectManagerPanel.tsx`(약 700줄) | 관리자 창 '프로젝트' 탭 내용(생성·편집·역할·보관·순서). 대화상자가 열린 동안 관리자 창 Esc 를 막는다 | |
 | `manage/ProjectMembersPanel.tsx`(236줄) · `ProjectPlanningDialog.tsx`(92줄) | 프로젝트 멤버 / 일정·예산 대화상자 | |
 | `manage/ProjectDateRangePicker.tsx`(156줄) · `UsagePeriodPicker.tsx`(204줄) | 손으로 짠 달력 2종 | |
 | `manage/types.ts`(314줄) | PM 타입 단일 출처(`WorkViewProps`·`Task`·`ManageSummary`…) | |
@@ -643,6 +646,7 @@ updated: 2026-10-01
 | `assetUrls.ts` | 순수 | 에셋 트리·파일·썸네일·코멘트 URL 생성 |
 | `assetsApi.ts` | api | 에셋 트리/메타/색·태그/마운트/DB 백업·복원 HTTP |
 | `assetRegistryApi.ts` | api | 에셋 대장 상태·수동 훑기 HTTP(관리자 창) |
+| `backupReplicaApi.ts` | api | 서버 백업 복사 위치 상태·저장·지금 복사 HTTP + UNC 형식·실행 끝 판정(순수) |
 | `authApi.ts` | api | 로그인·계정 관리 HTTP |
 | `comfyApi.ts` | api | Comfy 파싱·실행·저장·미회수 실행 HTTP |
 | `manageApi.ts` | api | PM 대시보드·크레딧 플랜·작업 HTTP(+구서버 폴백) |
@@ -1034,8 +1038,9 @@ updated: 2026-10-01
 | 파일 | 한 줄 책임 | 호출 사슬 |
 |---|---|---|
 | `release/make_release.bat`(21줄) ⚠배포전용 | `.ps1` 1줄 호출 래퍼. 고정 폴더 `MV-hub-S-release` 제약은 이 배치가 아니라 배포 절차(루트 `CLAUDE.md` 안전선)에 있다 | → `release/make_release.ps1` |
-| `release/make_release.ps1`(694줄) ⚠배포전용 | zip 제작: 런타임 동봉, CLI pin==번들 버전 대조, 금지파일 검사, 압축해제 실행검증, NAS 자동복사 | |
-| `release/select_release.ps1`(129줄) | 과거 zip 을 `latest.json` 으로 재선택(롤백), 백업 남김 | |
+| `release/make_release.ps1`(약 740줄) ⚠배포전용 | zip 제작: 런타임 동봉, CLI pin==번들 버전 대조, 금지파일 검사, 압축해제 실행검증, NAS 에 **후보만** 게시(zip 불변·`.part`→이동, 잠금 안 `candidate.json`, 설치기·표지 안 건드림) | |
+| `release/select_release.ps1`(약 155줄) | 과거 zip 으로 재선택(롤백·첫 B 판 공개) — 잠금 안에서 후보 먼저·표지 마지막, 백업(고유 접미사), 남은 후보 취소 안내 |
+| `release/release_manifest_io.ps1`(약 60줄) | 표지 쓰기 공통(dot-source) — `Open-ReleaseLock`(release.lock 공유 없이 열기)·`Write-ManifestAtomic`(Replace/Move·실패 셋 분류) | |
 | `release/MVHub_Install.bat`(355줄) | 워커 최초설치/업데이트 설치기, 자체 임베드 PS1, 바탕화면 바로가기 호출 | → `run_agent_session.py --ensure-shortcut` |
 | `release/publish_target.txt.example`(1줄) | 배포 폴더 경로 예시 | |
 | `release/README.md` | 릴리스 스크립트 사용법 설명(문서) | |
@@ -1068,7 +1073,7 @@ updated: 2026-10-01
 
 | 파일 | 한 줄 책임 | 호출 사슬 |
 |---|---|---|
-| `tools/backup_replicate.py`(437줄) | 서버 자동백업+팀원 업로드백업을 UNC 경로로 매일 복제(폴더당 30개 보존) | → `tools/rotate_text_log.py` |
+| `tools/backup_replicate.py`(약 600줄) | 서버 자동백업+팀원 업로드백업을 UNC 경로로 매일 복제(폴더당 30개 보존, 우리 이름 규칙만 정리) · 결과에 위치 지문 · `--probe` 는 관리자 창 [저장] 전 위치 확인 | → `tools/rotate_text_log.py` |
 | `tools/rotate_text_log.py`(48줄) | 핸들 열리기 전 텍스트 로그 세대 회전 | 다수 스크립트 공용 |
 | `tools/verify_backup_restore.py`(134줄) | 백업→복원 실측 훈련(운영DB 비접촉) | → backend `backup_verify`·`restore_runtime_verify` |
 | `tools/cleanup_workspace_registry.py`(119줄) | 워크스페이스 등록부 유령행 미리보기/`--apply` 삭제 | |

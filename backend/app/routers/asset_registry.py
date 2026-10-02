@@ -21,7 +21,17 @@ from ..config import AUTH_ENABLED
 from ..db import get_connection
 from ..deps import account_global_roles, account_scope_uid, require_global_cap
 from ..repo import asset_registry as registry
-from ..services.asset_registry import LEASE_TTL_S, canonical_unc, controller, leases, pm_projects, registry_mode
+from ..services.asset_registry import (
+    LEASE_TTL_S,
+    canonical_unc,
+    consume_slot,
+    controller,
+    leases,
+    pm_projects,
+    registry_mode,
+    save_schedule,
+    schedule_status,
+)
 from ..services.asset_registry_scan import hidden_name
 from ..services.media_types import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from ..services.operational_logging import log_event
@@ -151,6 +161,38 @@ def set_mode(body: ModeIn, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="훑는 중이거나 DB 를 정리하는 중이라 지금은 바꿀 수 없습니다")
     log_event(_log, "asset_registry_mode", mode=body.mode, by=account_scope_uid(request) or "local")
     return {"mode": body.mode}
+
+
+class ScheduleIn(BaseModel):
+    kind: Literal["off", "month", "week", "day"]
+    day: int = Field(1, ge=1, le=28)  # 매월 — 29~31일은 없는 달이 있어 받지 않는다
+    weekday: int = Field(0, ge=0, le=6)  # 매주 — 월요일 0
+    hour: int = Field(3, ge=0, le=23)
+
+
+class ClaimIn(BaseModel):
+    runner: str = Field("", max_length=64)
+
+
+@router.post("/schedule")
+def set_schedule(body: ScheduleIn, request: Request) -> dict[str, Any]:
+    """자동 훑기 시간(끔·매월·매주·매일 + 시) — 서버 DB 에 두어 관리자 모두 같게(Jay 2026-10-02). 훑는 중에도 저장된다."""
+    _require_on(request)
+    schedule = save_schedule(body.kind, body.day, body.weekday, body.hour)
+    log_event(_log, "asset_registry_schedule", kind=schedule["kind"], by=account_scope_uid(request) or "local")
+    return schedule_status()
+
+
+@router.post("/schedule/claim")
+def claim_schedule(body: ClaimIn, request: Request) -> dict[str, Any]:
+    """로컬 모드: 관리자 PC 가 60초마다 '이번 회차를 내가 맡나'를 묻는다. 서버 시계로 판정해 회차당 첫 PC 하나만 run.
+    동기 라우트라 클라이언트가 끊어도 판정·기록은 끝까지 간다."""
+    _require_on(request)
+    runner = "".join(ch for ch in body.runner if ch.isprintable())[:40] or "PC"
+    ok, _reason, slot, _mark_id = consume_slot(f"pc:{runner}", "local")
+    if ok:
+        log_event(_log, "asset_registry_scheduled", slot=slot, runner=f"pc:{runner}")
+    return {"run": ok, "slot": slot}
 
 
 def _require_on(request: Request) -> None:

@@ -110,11 +110,9 @@ MEDIA_PRESERVATION_ENABLED = os.environ.get(
 
 # ── 에셋 대장(docs/ASSET_REGISTRY.md) ─────────────────────────────────────
 # 켠 곳(공유 서버)만 PM 프로젝트 루트를 훑어 파일마다 번호를 붙인다. 기본은 꺼짐 — 첫 전체 훑기는 관리자가
-# 사람 적은 시간에 수동으로 하고, 자동 주기는 NAS 부하를 잰 뒤에 켠다. 누가 훑는지(서버 / 관리자 PC)는 관리자 창에서
-# 고르고 서버 DB(app_setting 'asset_registry_mode')에 둔다(Jay 2026-09-30) — 서버는 이때도 DRIVES 대응표가 있어야 한다.
+# 사람 적은 시간에 수동으로 한다. 누가 훑는지(서버 / 관리자 PC)와 자동 훑기 시간(끔·매월·매주·매일)은 관리자 창에서
+# 고르고 서버 DB(app_setting)에 둔다(Jay 2026-09-30·10-02) — 서버는 이때도 DRIVES 대응표가 있어야 한다.
 ASSET_REGISTRY_ENABLED = os.environ.get("CONTENT_HUB_ASSET_REGISTRY", "0").lower() in ("1", "true", "yes", "on")
-# 자동 훑기 간격(분). 0 = 자동 없음(수동만).
-ASSET_REGISTRY_INTERVAL_MIN = float(os.environ.get("CONTENT_HUB_ASSET_REGISTRY_INTERVAL_MIN", "0") or 0)
 # 서버가 볼 드라이브 → 공유 주소. 드라이브 글자는 PC 마다 다르고 서비스 계정엔 안 보일 수 있다.
 # 예: "Z:=\\192.168.1.203\millionvolt;X:=\\192.168.1.51\millionvolt"
 ASSET_REGISTRY_DRIVES = os.environ.get("CONTENT_HUB_ASSET_REGISTRY_DRIVES", "")

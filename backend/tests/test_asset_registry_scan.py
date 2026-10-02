@@ -257,8 +257,11 @@ class ControllerTests(unittest.TestCase):
         (work / "job-dead.json").write_text("{}", encoding="utf-8")
         (work / "out-dead.jsonl").write_text("", encoding="utf-8")
         (work / "manual-dead.json").write_text("{}", encoding="utf-8")  # 작업 파일이 아니면 두고 본다(Codex)
-        with patch.object(svc, "ASSET_REGISTRY_INTERVAL_MIN", 0):
+        async def start_then_stop() -> None:  # start 는 정한 시간 루프를 늘 띄운다 — 바로 멈춘다
             self.ctl.start()
+            await self.ctl.stop()
+
+        asyncio.run(start_then_stop())
         self.assertEqual(sorted(p.name for p in work.glob("*-dead*")), ["manual-dead.json"])
         (work / "manual-dead.json").unlink()
 

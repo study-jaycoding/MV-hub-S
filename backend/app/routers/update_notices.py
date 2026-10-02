@@ -118,6 +118,37 @@ def list_update_notices_admin(request: Request):
     return [_admin_item(item) for item in repo.list_release_update_notices_admin()]
 
 
+@router.get("/admin/item")
+def get_update_notice_admin(sha256: str, request: Request):
+    """후보 sha 로 항목 하나 — 로컬 허브 배포(promote)가 '공지됐나'를 이것으로 확인한다."""
+    require_admin(request)
+    digest = sha256.strip().lower()
+    if not _SHA256_RE.fullmatch(digest):
+        raise HTTPException(status_code=400, detail="업데이트 SHA256 형식이 올바르지 않습니다")
+    item = repo.get_release_update_notice_by_sha(digest)
+    if not item:
+        raise HTTPException(status_code=404, detail="업데이트 항목이 없습니다")
+    return _admin_item(item)
+
+
+@router.delete("/admin/{notice_id}")
+def remove_update_notice(notice_id: str, request: Request):
+    """[해제] — 목록과 팀원 알림에서만 지운다(설치 파일·배포 표지는 로컬·NAS 쪽이라 무관).
+    없는 항목도 성공(removed=false) — 그래야 404 가 '이 라우트가 없는 옛 서버'만 뜻한다."""
+    require_admin(request)
+    item = repo.delete_release_update_notice(notice_id)
+    if item:
+        journal_audit_event(
+            "release_notice_removed",
+            actor_uid=actor_id(request),
+            target_type="release_update_notice",
+            target_id=notice_id,
+            fields=["deleted"],
+            details={"version": item["version"]},
+        )
+    return {"ok": True, "removed": item is not None}
+
+
 @router.post("/admin/register")
 def register_update_notice(body: ReleaseNoticeIn, request: Request):
     require_admin(request)

@@ -6,8 +6,11 @@
   position: fixed; z-index: 201; top: 50%; left: 50%; transform: translate(-50%, -50%);
   width: min(620px, 92vw); max-height: 86vh; display: flex; flex-direction: column;
   background: var(--panel, #1b1b20); border: 1px solid var(--border); border-radius: 14px;
-  box-shadow: 0 24px 70px rgba(0,0,0,0.6);
+  box-shadow: 0 24px 70px rgba(0,0,0,0.6); transition: width .18s ease;
 }
+/* 프로젝트 탭(2026-10-02) — 옛 프로젝트 관리 창 폭. 👥 멤버 칸이 열리면 그 창처럼 더 넓힌다(ProjectManagerPanel) */
+.admin-window.wide { width: min(760px, 92vw); }
+.admin-window.wide:has(.project-admin-layout.members-open) { width: min(1160px, 92vw); }
 .admin-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 13px 16px; border-bottom: 1px solid var(--border);
@@ -61,6 +64,13 @@
 .admin-mode-seg .acct-seg.on { background: var(--accent); color: #101213; }
 .admin-mode-seg .acct-seg:disabled { opacity: 0.45; cursor: default; }
 .admin-mode-saved { font-size: 11px; color: var(--muted); }
+/* 에셋 리스트 자동 훑기 시간(2026-10-02) — 세그먼트 + 날짜/요일·오전오후·시 + 저장 */
+.admin-schedule-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 2px 0 6px; }
+.admin-schedule-select {
+  background: var(--input-bg, #111215); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 5px 9px; font-size: 12.5px; font-weight: 600;
+}
+.admin-schedule-next { color: var(--accent); font-weight: 700; }
 .admin-registry-warn {
   font-size: 12px; line-height: 1.5; color: #ff8a7a; margin: 6px 0 8px; padding: 7px 10px;
   background: rgba(224,70,60,0.10); border: 1px solid rgba(224,70,60,0.35); border-radius: 8px;
@@ -138,6 +148,22 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .admin-update-pin { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
 .admin-update-file { min-width: 0; display: grid; gap: 2px; font-size: 12px; }
 .admin-update-file small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+/* B안 업데이트 탭(2026-10-02) — 줄 꼬리표·단추 묶음·새 후보 상자·경고 */
+.admin-update-actions { display: flex; gap: 6px; }
+.admin-update-actions .settings-action { width: auto; }
+.admin-update-actions .settings-action.ghost { background: transparent; border-color: var(--border); color: var(--muted); }
+.admin-update-tag { margin-left: 8px; padding: 2px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 800; vertical-align: 1px; }
+.admin-update-tag.cand { background: rgba(251, 191, 36, 0.16); color: #fbbf24; }
+.admin-update-tag.live { background: rgba(74, 222, 128, 0.14); color: #4ade80; }
+.admin-update-tag.warn { background: rgba(248, 113, 113, 0.14); color: #f87171; }
+.admin-update-row.warn { border-color: rgba(248, 113, 113, 0.45); }
+.admin-update-file small.admin-update-warnline { color: #f87171; white-space: normal; }
+.admin-update-cand {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 10px; padding: 9px 11px; font-size: 12.5px;
+  border: 1px solid rgba(251, 191, 36, 0.45); border-radius: 8px; background: rgba(251, 191, 36, 0.06);
+}
+.admin-update-cand .settings-action { width: auto; margin-left: auto; flex: none; white-space: nowrap; }
+.admin-update-warn { margin-bottom: 8px; color: #fbbf24; font-size: 12px; line-height: 1.5; }
 .role-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .role-chip {
   padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; cursor: pointer;

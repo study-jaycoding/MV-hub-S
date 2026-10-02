@@ -402,6 +402,29 @@ $PackageName = "MVHub-$Version"
 $StagingRoot = Join-Path $PSScriptRoot "_staging"
 $Stage = Join-Path $StagingRoot $PackageName
 $ReleaseCliVersion = ""
+. (Join-Path $PSScriptRoot "release_manifest_io.ps1")
+
+# 한 번 만든 판(zip)은 바뀌지 않는다(B안 r3) — 같은 이름이 있으면 지우고 다시 만들지 않고 멈춘다.
+$ZipPath = Join-Path $OutputDir "$PackageName.zip"
+if (Test-Path -LiteralPath $ZipPath) {
+    throw "Package already exists: $ZipPath - build with a new -Version (a built zip is never rebuilt in place)."
+}
+# 게시 대상은 빌드 전에 정한다. 출력 폴더가 곧 게시 폴더면 zip·설치기 생성이 공개 폴더를 직접 바꾼다(Codex r4).
+# (드라이브 문자와 UNC 처럼 다른 이름으로 같은 폴더를 가리키는 경우는 가려내지 못한다.)
+$ConfiguredTarget = $PublishDir
+$TargetFile = Join-Path $PSScriptRoot "publish_target.txt"
+if ((-not $ConfiguredTarget) -and (Test-Path -LiteralPath $TargetFile)) {
+    $ConfiguredTarget = (Get-Content -LiteralPath $TargetFile -Raw).Trim()
+}
+# 안전 비교는 -SkipPublish 여도 한다 — 게시 폴더를 -OutputDir 로 주면 설치기·zip 이 공개 폴더에 바로 생긴다(Codex 코드 리뷰)
+$PublishTarget = if ($SkipPublish) { "" } else { $ConfiguredTarget }
+if ($ConfiguredTarget -and $ConfiguredTarget -notmatch "^https?://") {
+    $OutputFull = [System.IO.Path]::GetFullPath($OutputDir).TrimEnd("\", "/")
+    $PublishFull = [System.IO.Path]::GetFullPath($ConfiguredTarget).TrimEnd("\", "/")
+    if ($OutputFull -ieq $PublishFull) {
+        throw "OutputDir must not be the publish folder ($ConfiguredTarget). Build locally; the script uploads the candidate."
+    }
+}
 
 Write-Host "[1/8] Preparing staging folder..."
 Remove-Item -LiteralPath $StagingRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -611,8 +634,6 @@ if ($WorkerText -notmatch [regex]::Escape('[NullString]::Value')) {
 Write-Host "      Updater verified: VERSION commit uses [NullString]::Value."
 
 Write-Host "[7/8] Creating zip..."
-$ZipPath = Join-Path $OutputDir "$PackageName.zip"
-Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $ZipPath -CompressionLevel Optimal
 try {
     Assert-ReleaseArchive -ArchivePath $ZipPath -ExpectedVersion $Version
@@ -637,7 +658,7 @@ catch {
     throw
 }
 
-Write-Host "[8/8] Writing latest.json..."
+Write-Host "[8/8] Writing candidate.json..."
 $Zip = Get-Item -LiteralPath $ZipPath
 $Hash = Get-FileDigestHex -Path $ZipPath -Algorithm SHA256
 $Latest = [ordered]@{
@@ -648,34 +669,33 @@ $Latest = [ordered]@{
     size = $Zip.Length
     created_at = (Get-Date).ToString("s")
 }
-$LatestPath = Join-Path $OutputDir "latest.json"
-$Latest | ConvertTo-Json | Set-Content -LiteralPath $LatestPath -Encoding UTF8
+# B안: 이 스크립트는 '후보'만 만든다. 팀원이 보는 표지(latest.json)는 관리자 창 [공지]만 바꾼다
+# (docs/UPDATE_ANNOUNCEMENTS.md). 후보와 공개 표지는 같은 원문(UTF-8 BOM)을 쓴다 — [공지]가 그대로 옮긴다.
+$ManifestBytes = (New-Object System.Text.UTF8Encoding($true)).GetPreamble() +
+    (New-Object System.Text.UTF8Encoding($false)).GetBytes(($Latest | ConvertTo-Json) + "`r`n")
+$CandidatePath = Join-Path $OutputDir "candidate.json"
+[System.IO.File]::WriteAllBytes($CandidatePath, $ManifestBytes)
 $InstallerPath = Join-Path $OutputDir "MVHub_Install.bat"
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "MVHub_Install.bat") -Destination $InstallerPath -Force
 
 Write-Host ""
 Write-Host "Release ready:"
 Write-Host "  $ZipPath"
-Write-Host "  $LatestPath"
+Write-Host "  $CandidatePath"
 Write-Host "  $InstallerPath"
 Write-Host ""
 
-# ── Auto-publish to the server packages folder (optional) ──────────────────
+# ── Auto-publish the CANDIDATE to the server packages folder (optional) ──────
 # Destination comes from -PublishDir, else from publish_target.txt (machine-local,
-# git-ignored). If set and reachable, copy the zip FIRST and latest.json LAST so a
-# worker never sees a latest.json that points to a not-yet-copied zip.
-$PublishTarget = $PublishDir
-if ((-not $SkipPublish) -and (-not $PublishTarget)) {
-    $TargetFile = Join-Path $PSScriptRoot "publish_target.txt"
-    if (Test-Path -LiteralPath $TargetFile) {
-        $PublishTarget = (Get-Content -LiteralPath $TargetFile -Raw).Trim()
-    }
-}
+# git-ignored), resolved before the build. The zip goes first (to a .part name, then
+# a no-overwrite rename), candidate.json last under release.lock. latest.json and the
+# shared installer are never touched here: an admin's [공지] publishes the candidate.
 if ($SkipPublish) {
     Write-Host "[publish] skipped by -SkipPublish. Package remains local for validation."
 }
 elseif (-not $PublishTarget) {
-    Write-Host "Upload latest.json and the zip file to your company server packages folder."
+    Write-Host "Upload the zip first, then candidate.json, to your company server packages folder."
+    Write-Host "Never upload latest.json by hand - [공지] in the admin window (업데이트 tab) publishes it."
     Write-Host "(To automate: put the server packages path in release\publish_target.txt)"
 }
 elseif ($PublishTarget -match "^https?://") {
@@ -683,12 +703,44 @@ elseif ($PublishTarget -match "^https?://") {
 }
 elseif (-not (Test-Path -LiteralPath $PublishTarget)) {
     Write-Host "[publish] target folder not found: $PublishTarget"
-    Write-Host "          Check the network drive / permissions, or copy the two files manually."
+    Write-Host "          Check the network drive / permissions, or copy the zip and candidate.json manually."
 }
 else {
-    Write-Host "[publish] copying to server: $PublishTarget"
-    Copy-Item -LiteralPath $ZipPath -Destination $PublishTarget -Force
-    Copy-Item -LiteralPath $InstallerPath -Destination $PublishTarget -Force
-    Copy-Item -LiteralPath $LatestPath -Destination $PublishTarget -Force
-    Write-Host "[publish] done - latest.json was published last; installer/update are ready."
+    Write-Host "[publish] uploading the candidate to: $PublishTarget"
+    $PublishedZip = Join-Path $PublishTarget $Zip.Name
+    if (Test-Path -LiteralPath $PublishedZip) {
+        if ((Get-FileDigestHex -Path $PublishedZip -Algorithm SHA256) -ne $Hash) {
+            throw "A different $($Zip.Name) is already in $PublishTarget - a published zip must never change. Build with a new -Version."
+        }
+        Write-Host "[publish] the same zip is already there - not copied again."
+    }
+    else {
+        $PartZip = "$PublishedZip.part-" + [Guid]::NewGuid().ToString("N")
+        try {
+            [System.IO.File]::Copy($ZipPath, $PartZip, $false)
+            # 2인자 File.Move 는 대상이 있으면 실패한다 — 동시에 같은 이름을 올려도 덮어쓰지 않는다.
+            [System.IO.File]::Move($PartZip, $PublishedZip)
+        }
+        finally {
+            if (Test-Path -LiteralPath $PartZip) {
+                Remove-Item -LiteralPath $PartZip -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    $ReleaseLock = Open-ReleaseLock -Directory $PublishTarget -WaitSeconds 10
+    try {
+        Write-ManifestAtomic -Path (Join-Path $PublishTarget "candidate.json") -Bytes $ManifestBytes
+    }
+    finally {
+        $ReleaseLock.Dispose()
+    }
+    # 공용 첫 설치기는 공지 전에 바꾸지 않는다(Codex r2 P1-5) — 다르면 알리기만 한다.
+    $PublishedInstaller = Join-Path $PublishTarget "MVHub_Install.bat"
+    if ((-not (Test-Path -LiteralPath $PublishedInstaller)) -or
+        ((Get-FileDigestHex -Path $PublishedInstaller -Algorithm SHA256) -ne (Get-FileDigestHex -Path $InstallerPath -Algorithm SHA256))) {
+        Write-Host "[publish] NOTE: MVHub_Install.bat differs from the published one. Replace it after the announcement"
+        Write-Host "          (docs/UPDATE_ANNOUNCEMENTS.md - 'Installer'). It was NOT copied."
+    }
+    Write-Host "[publish] done - candidate uploaded. Teammates see nothing until an admin presses [공지]"
+    Write-Host "          in the admin window (업데이트 tab)."
 }

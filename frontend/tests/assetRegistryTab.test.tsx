@@ -10,6 +10,7 @@ const scan = vi.fn();
 const setMode = vi.fn();
 const helperScan = vi.fn();
 const helperStatus = vi.fn();
+const setSchedule = vi.fn();
 vi.mock("../src/lib/assetRegistryApi", () => ({
   assetRegistryApi: {
     status: () => status(),
@@ -17,6 +18,7 @@ vi.mock("../src/lib/assetRegistryApi", () => ({
     setMode: (mode: string) => setMode(mode),
     helperScan: () => helperScan(),
     helperStatus: () => helperStatus(),
+    setSchedule: (value: unknown) => setSchedule(value),
   },
 }));
 const { AssetRegistryTab } = await import("../src/components/admin/AssetRegistryTab");
@@ -58,7 +60,7 @@ beforeEach(() => {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
-  for (const fn of [status, scan, setMode, helperScan, helperStatus]) fn.mockReset();
+  for (const fn of [status, scan, setMode, helperScan, helperStatus, setSchedule]) fn.mockReset();
 });
 
 const idleHelper = { running: false, current: {}, last: {}, results: [], abort: "", available: true };
@@ -93,7 +95,7 @@ it("로컬을 고르면 같은 [지금 훑기]가 이 PC 로 훑는다 — 이 P
   helperScan.mockResolvedValue({ started: true });
   await mount();
   expect(button("로컬 · 이 PC")?.getAttribute("aria-pressed")).toBe("true");
-  expect(host.textContent).toContain("자동 없음(로컬은 수동만)");
+  expect(host.textContent).toContain("자동 없음(수동만)"); // 시간표를 모르는 옛 서버
   await act(async () => button("지금 훑기")!.click());
   await act(async () => button("시작")!.click());
   expect(helperScan).toHaveBeenCalledTimes(1);
@@ -172,4 +174,83 @@ it("서버가 루트를 못 열었으면 로컬로 바꾸라고 알리고, 다�
   helperStatus.mockResolvedValue(idleHelper);
   await remount();
   expect(host.querySelectorAll(".admin-registry-warn")).toHaveLength(0); // 이미 로컬이면 알리지 않는다
+});
+
+const scheduled = (schedule: Partial<NonNullable<AssetRegistryStatus["schedule"]>> = {}): AssetRegistryStatus => ({
+  ...local,
+  schedule: { kind: "off", day: 1, weekday: 0, hour: 3, ...schedule },
+  next_run_at: null,
+  schedule_mark: null,
+});
+const choose = async (label: string, value: string) => {
+  const select = host.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+};
+
+it("자동 훑기는 끔·매월·매주·매일 순서이고, 고른 날·오전오후·시를 저장한다", async () => {
+  status.mockResolvedValue(scheduled());
+  helperStatus.mockResolvedValue(idleHelper);
+  setSchedule.mockResolvedValue({});
+  await mount();
+  expect([...host.querySelectorAll('[aria-label="자동 훑기"] button')].map((b) => b.textContent))
+    .toEqual(["끔", "매월", "매주", "매일"]);
+  expect(button("저장")?.disabled).toBe(true); // 바꾼 게 없으면 저장 잠김
+  await act(async () => button("매주")!.click());
+  await choose("요일", "2");
+  await choose("오전 오후", "pm");
+  await choose("시", "4");
+  await act(async () => button("저장")!.click());
+  expect(setSchedule).toHaveBeenCalledWith({ kind: "week", day: 1, weekday: 2, hour: 16 });
+  expect(host.textContent).toContain("매주 수요일 오후 4:00");
+});
+
+it("다음 예정 시각은 서울 시각으로, 상태 줄에는 시간표를 보인다", async () => {
+  status.mockResolvedValue({
+    ...scheduled({ kind: "day", hour: 3 }),
+    next_run_at: "2026-10-05T18:00:00+00:00", // = 10/6(화) 오전 3:00 KST
+    schedule_mark: { slot: "2026-10-04T18:00:00+00:00", runner: "pc:FX-PC06", state: "started" },
+  });
+  helperStatus.mockResolvedValue(idleHelper);
+  await mount();
+  expect(host.textContent).toContain("다음 자동 훑기 · 10. 6. (화) 오전 3:00");
+  expect(host.textContent).toContain("쉬는 중 · 자동 매일 오전 3:00");
+  expect(host.textContent).toContain("PC FX-PC06");
+  expect(host.textContent).toContain("앱이 켜져 있는 관리자 PC 한 대");
+});
+
+it("시간표를 모르는 옛 서버면 자동 훑기 칸 대신 업데이트 안내", async () => {
+  status.mockResolvedValue(local);
+  helperStatus.mockResolvedValue(idleHelper);
+  await mount();
+  expect(host.querySelector('[aria-label="자동 훑기"]')).toBeNull();
+  expect(host.textContent).toContain("자동 훑기 시간은 공유 서버를 업데이트하면");
+});
+
+it("저장하는 동안 시간 칸을 잠그고, 늦게 온 옛 상태가 저장한 시간표를 되돌리지 않는다", async () => {
+  vi.useFakeTimers();
+  try {
+    helperStatus.mockResolvedValue(idleHelper);
+    status.mockResolvedValueOnce(scheduled()); // 처음 열기 = 끔
+    await mount();
+    let lateOld!: (value: AssetRegistryStatus) => void;
+    status.mockReturnValueOnce(new Promise((resolve) => { lateOld = resolve; })); // 1분 갱신 — 응답이 늦는다(옛 값)
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    let release!: (value: unknown) => void;
+    setSchedule.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    await act(async () => button("매일")!.click());
+    await act(async () => button("저장")!.click());
+    expect(button("매주")?.disabled).toBe(true); // 저장 중에는 못 바꾼다
+    status.mockResolvedValue(scheduled({ kind: "day" })); // 저장 뒤 다시 읽기 = 매일
+    await act(async () => { release({}); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(host.textContent).toContain("쉬는 중 · 자동 매일 오전 3:00");
+    await act(async () => { lateOld(scheduled()); }); // 옛 '끔' 응답이 이제야 도착
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(host.textContent).toContain("쉬는 중 · 자동 매일 오전 3:00");
+  } finally {
+    vi.useRealTimers();
+  }
 });

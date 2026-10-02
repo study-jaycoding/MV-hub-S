@@ -2,14 +2,114 @@
 // 합의안 12절 R7: 루트별 상태·시각·파일 수·처리량·오류 수만 보인다(경로 목록은 보이지 않는다).
 // 훑는 곳(Jay 2026-09-30): [서버] 서버가 직접 · [로컬 · 이 PC] 이 PC(관리자)가 대신 훑어 서버에 올린다(§10). 고른 값은
 // 서버 DB 에 두고(관리자 모두 같게), 단추는 [지금 훑기] 하나 — 고른 곳이 훑는다.
-import { useCallback, useEffect, useState } from "react";
+// 자동 훑기 시간(Jay 2026-10-02, §11): '훑는 곳' 아래 [끔·매월·매주·매일] + 날짜/요일 + 오전·오후 + 시. 서버 시계(KST)로 판정하고
+// 그 시간(2분 안)에 깨어 있는 곳 — 서버 또는 앱이 켜진 관리자 PC 한 대 — 이 훑는다. 놓친 회차는 건너뛴다.
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   assetRegistryApi,
   type AssetRegistryScanRow,
   type AssetRegistryStatus,
   type RegistryHelperStatus,
   type RegistryMode,
+  type RegistrySchedule,
+  type ScheduleKind,
 } from "../../lib/assetRegistryApi";
+
+const KINDS: [ScheduleKind, string][] = [["off", "끔"], ["month", "매월"], ["week", "매주"], ["day", "매일"]];
+const WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]; // 서버와 같이 월=0
+
+function hourText(hour: number): string {
+  return `${hour < 12 ? "오전" : "오후"} ${hour % 12 || 12}:00`;
+}
+
+export function scheduleText(schedule: RegistrySchedule): string {
+  if (schedule.kind === "month") return `매월 ${schedule.day}일 ${hourText(schedule.hour)}`;
+  if (schedule.kind === "week") return `매주 ${WEEKDAYS[schedule.weekday]}요일 ${hourText(schedule.hour)}`;
+  if (schedule.kind === "day") return `매일 ${hourText(schedule.hour)}`;
+  return "없음";
+}
+
+// 예정 시각은 서버 시계(KST) — 브라우저 시간대와 상관없이 서울 시각으로 보인다
+function kstText(iso: string): string {
+  const d = new Date(iso);
+  const fmt = { timeZone: "Asia/Seoul", month: "numeric", day: "numeric", weekday: "short", hour: "numeric", minute: "2-digit" } as const;
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString("ko-KR", fmt);
+}
+
+function ScheduleRow({ status, onSaved }: { status: AssetRegistryStatus; onSaved: (msg: string) => void }) {
+  const saved = status.schedule!;
+  const [draft, setDraft] = useState<RegistrySchedule | null>(null); // 저장 전 초안 — 주기적 다시 읽기가 덮지 않는다
+  const [busy, setBusy] = useState(false);
+  const value = draft ?? saved;
+  const edit = (patch: Partial<RegistrySchedule>) => setDraft({ ...value, ...patch });
+  const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(saved);
+  const pm = value.hour >= 12;
+  const save = async () => {
+    setBusy(true);
+    try {
+      await assetRegistryApi.setSchedule(value);
+      setDraft(null);
+      onSaved(value.kind === "off" ? "자동 훑기를 껐습니다." : `자동 훑기를 ${scheduleText(value)}로 정했습니다.`);
+    } catch (error) {
+      onSaved(`저장하지 못했습니다(${errText(error)}).`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const mark = status.schedule_mark;
+  return (
+    <>
+      <h4>자동 훑기</h4>
+      <div className="admin-schedule-row">
+        <div className="acct-status-seg admin-mode-seg" role="group" aria-label="자동 훑기">
+          {KINDS.map(([kind, label]) => (
+            <button key={kind} className={"acct-seg" + (value.kind === kind ? " on" : "")} aria-pressed={value.kind === kind}
+              disabled={busy} onClick={() => edit({ kind })}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {value.kind === "month" && (
+          <select className="admin-schedule-select" disabled={busy} aria-label="날짜" value={value.day} onChange={(e) => edit({ day: Number(e.target.value) })}>
+            {Array.from({ length: 28 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}일</option>)}
+          </select>
+        )}
+        {value.kind === "week" && (
+          <select className="admin-schedule-select" disabled={busy} aria-label="요일" value={value.weekday} onChange={(e) => edit({ weekday: Number(e.target.value) })}>
+            {WEEKDAYS.map((d, i) => <option key={d} value={i}>{d}요일</option>)}
+          </select>
+        )}
+        {value.kind !== "off" && (
+          <>
+            <select className="admin-schedule-select" disabled={busy} aria-label="오전 오후" value={pm ? "pm" : "am"}
+              onChange={(e) => edit({ hour: (value.hour % 12) + (e.target.value === "pm" ? 12 : 0) })}>
+              <option value="am">오전</option>
+              <option value="pm">오후</option>
+            </select>
+            <select className="admin-schedule-select" disabled={busy} aria-label="시" value={value.hour % 12 || 12}
+              onChange={(e) => edit({ hour: (Number(e.target.value) % 12) + (pm ? 12 : 0) })}>
+              {Array.from({ length: 12 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}시</option>)}
+            </select>
+          </>
+        )}
+        <button className="admin-mini-btn" disabled={!dirty || busy} onClick={() => void save()}>
+          {busy ? "저장 중…" : "저장"}
+        </button>
+      </div>
+      <div className="admin-note-sub">
+        {!dirty && status.next_run_at && <><span className="admin-schedule-next">다음 자동 훑기 · {kstText(status.next_run_at)}</span><br /></>}
+        {status.mode === "local"
+          ? "그 시간(2분 안)에 앱이 켜져 있는 관리자 PC 한 대가 훑습니다. 모두 꺼져 있으면 그 회차는 건너뜁니다(관리자 PC 앱도 새 판이어야 합니다)."
+          : "그 시간에 공유 서버가 훑습니다. 서버가 꺼져 있던 회차는 건너뜁니다."}{" "}
+        자동 훑기는 사람이 쓰는 NAS 를 덜 붙잡게 더 천천히(초당 5MB) 읽습니다.
+        {mark?.slot && (
+          <><br />마지막 자동 훑기 · {kstText(mark.slot)} · {mark.runner === "server" ? "서버" : `PC ${(mark.runner || "").replace(/^pc:/, "")}`}
+            {mark.state === "not_started" ? " · 시작 못 함(다른 훑기 중 등)" : ""}</>
+        )}
+      </div>
+    </>
+  );
+}
 
 const ROOT_UNREADABLE = "루트 폴더를 열 수 없음"; // 훑기 자식이 루트를 못 열 때 남기는 원인(asset_registry_scan)
 
@@ -42,25 +142,31 @@ export function AssetRegistryTab() {
   const [msg, setMsg] = useState("");
   const [confirming, setConfirming] = useState(false);
 
+  // 다시 읽기 순번 — 늦게 온 옛 응답이 방금 저장한 값을 되돌리지 않게 마지막 요청의 응답만 쓴다(Codex)
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    const mine = ++loadSeq.current;
     let next: AssetRegistryStatus | null = null;
     try {
       next = await assetRegistryApi.status();
+      if (mine !== loadSeq.current) return;
       setStatus(next);
     } catch (error) {
+      if (mine !== loadSeq.current) return;
       setMsg(`상태를 읽지 못했습니다(${errText(error)}) — 공유 서버가 옛 버전일 수 있습니다.`);
     }
     // 훑는 곳이 로컬일 때만 이 PC 의 도우미 상태 — 로컬 허브가 아닌 곳(서버 화면을 원격으로 연 경우)에선 없다
-    setHelper(next?.mode === "local" ? await assetRegistryApi.helperStatus().catch(() => null) : null);
+    const nextHelper = next?.mode === "local" ? await assetRegistryApi.helperStatus().catch(() => null) : null;
+    if (mine === loadSeq.current) setHelper(nextHelper);
   }, []);
   useEffect(() => {
     void load();
   }, [load]);
-  // 서버·이 PC·다른 도우미 PC 어느 쪽이든 도는 동안만 5초마다 다시 읽는다.
+  // 서버·이 PC·다른 도우미 PC 어느 쪽이든 도는 동안은 5초, 쉴 때도 1분마다 다시 읽는다 — 정한 시간 훑기·다른 관리자의
+  // 바꾸기가 창을 연 채로도 보이게(시간 초안은 ScheduleRow 가 따로 들고 있어 덮이지 않는다).
   const busy = Boolean(status?.running || status?.lease || helper?.running);
   useEffect(() => {
-    if (!busy) return;
-    const timer = window.setInterval(() => void load(), 5000);
+    const timer = window.setInterval(() => void load(), busy ? 5000 : 60000);
     return () => window.clearInterval(timer);
   }, [busy, load]);
 
@@ -130,7 +236,7 @@ export function AssetRegistryTab() {
     <section className="admin-section">
       <div className="admin-note-sub">
         공유 서버가 PM 프로젝트 폴더의 그림마다 번호를 붙여, 이름을 바꾸거나 옮겨도 캔버스 레퍼런스가 따라가게 합니다.
-        첫 전체 훑기는 NAS 를 천천히(초당 8MB) 읽어 약 30분 걸리니 사람이 적은 시간에 누릅니다.
+        첫 전체 훑기는 NAS 를 천천히(초당 8MB) 읽어 약 30분 걸리고, 그 뒤로는 바뀐 파일만 읽어 보통 1분 안팎입니다.
       </div>
       {!status ? (
         <div className="admin-empty">읽는 중…</div>
@@ -162,9 +268,14 @@ export function AssetRegistryTab() {
           </div>
           <div className="admin-note-sub">
             {mode === "server"
-              ? "공유 서버가 NAS 를 직접 읽습니다. 자동 훑기를 켤 수 있습니다."
+              ? "공유 서버가 NAS 를 직접 읽습니다."
               : "이 PC 가 자기 NAS 연결(Z: · X:)로 읽어 서버에 올립니다. 끝날 때까지 앱을 켜 둡니다(첫 훑기 약 30분). 서버는 스스로 훑지 않습니다."}
           </div>
+          {status.schedule ? (
+            <ScheduleRow status={status} onSaved={(text) => { setMsg(text); void load(); }} />
+          ) : (
+            <div className="admin-note-sub">자동 훑기 시간은 공유 서버를 업데이트하면 정할 수 있습니다.</div>
+          )}
           {rootFail.length > 0 && (
             <div className="admin-registry-warn">
               <b>서버가 NAS 를 열지 못했습니다</b>({names(rootFail, false)} — {ROOT_UNREADABLE}). 서버 계정에 NAS 권한이
@@ -178,13 +289,7 @@ export function AssetRegistryTab() {
               ? `훑는 중: ${status.current.name || status.current.project_id || ""} (${status.current.phase === "large" ? "큰 파일" : "목록·지문"})`
               : status.lease
                 ? `도우미 PC 가 훑는 중: ${status.lease.name || status.lease.project_id}`
-                : `쉬는 중 · 자동 ${
-                    mode === "local"
-                      ? "없음(로컬은 수동만)"
-                      : status.interval_min > 0
-                        ? `${status.interval_min}분마다`
-                        : "없음(수동만)"
-                  }`}
+                : `쉬는 중 · 자동 ${status.schedule ? scheduleText(status.schedule) : "없음(수동만)"}`}
           </div>
           {helper?.running && (
             <div className="admin-note-sub">이 PC 에서 훑는 중: {helper.current.name || helper.current.project_id || "준비 중"}</div>
@@ -230,7 +335,7 @@ export function AssetRegistryTab() {
                 <th>프로젝트</th>
                 <th>상태</th>
                 <th>파일</th>
-                <th>대장</th>
+                <th>리스트</th>
                 <th>이번에 읽음</th>
                 <th>미판정 · 대기</th>
                 <th>걸린 시간</th>

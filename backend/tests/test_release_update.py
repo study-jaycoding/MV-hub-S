@@ -67,32 +67,28 @@ def test_refresh_reports_available_and_same_version(tmp_path: Path):
     assert current["can_update"] is False
 
 
-def test_latest_metadata_exposes_only_safe_release_fields(monkeypatch: pytest.MonkeyPatch):
+def test_latest_metadata_exposes_only_safe_release_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root, source = _release_root(tmp_path)
+    (source / "latest.json").write_text(json.dumps({
+        "version": "1.2.3", "file": "MVHub-1.2.3.zip", "sha256": "a" * 64, "size": 1234,
+        "created_at": "2026-08-24T00:00:00+00:00",
+    }), encoding="utf-8")
     monkeypatch.setattr(release_update_router, "_require_local", lambda _request: None)
     monkeypatch.setattr(release_update_router, "install_mode", lambda _root: "release")
-    monkeypatch.setattr(
-        release_update_router,
-        "fetch_latest",
-        lambda _root: {
-            "version": "1.2.3",
-            "file": "MVHub-1.2.3.zip",
-            "sha256": "a" * 64,
-            "size": 1234,
-            "created_at": "2026-08-24T00:00:00+00:00",
-            "source": Path(r"Z:\private\release"),
-        },
-    )
+    monkeypatch.setattr(release_update_router, "APP_ROOT", root)
 
     result = asyncio.run(release_update_router.release_update_latest_metadata(object()))
 
-    assert result == {
+    assert {key: result[key] for key in ("version", "file", "sha256", "size", "created_at")} == {
         "version": "1.2.3",
         "file": "MVHub-1.2.3.zip",
         "sha256": "a" * 64,
         "size": 1234,
         "created_at": "2026-08-24T00:00:00+00:00",
     }
-    assert "source" not in result
+    # 후보 파일이 없는 옛 릴리스 폴더 — 공개본을 그대로 보이고 공개 대기는 없음
+    assert (result["source"], result["pending"], result["published_state"]) == ("latest", False, "ok")
+    assert str(source) not in json.dumps(result, ensure_ascii=False)  # 설치 원본 경로는 안 내보낸다
 
 
 def test_refresh_rejects_unsafe_release_filename(tmp_path: Path):
@@ -568,10 +564,25 @@ def test_first_installer_delegates_to_the_verified_package_updater():
     assert 'Join-Path $ExtractDir "update_release.bat"' in installer
     assert '$env:MVHUB_UPDATE_TARGET_DIR = $TargetDir' in installer
     assert "latest.json contains an unsafe release filename" in installer
-    assert 'Copy-Item -LiteralPath $InstallerPath -Destination $PublishTarget -Force' in builder
-    assert builder.index(
-        'Copy-Item -LiteralPath $InstallerPath -Destination $PublishTarget -Force'
-    ) < builder.index('Copy-Item -LiteralPath $LatestPath -Destination $PublishTarget -Force')
+
+
+def test_release_builder_publishes_only_an_immutable_candidate():
+    """B안: 빌드는 후보만 올린다 — 공개 표지(latest.json)·공용 설치기는 [공지] 전엔 그대로."""
+    builder = (Path(__file__).resolve().parents[2] / "release" / "make_release.ps1").read_text(encoding="utf-8-sig")
+    # 한 번 만든 zip 은 다시 만들지 않는다(빌드 전에 멈춤), 출력 폴더=게시 폴더 금지
+    assert builder.index("Package already exists") < builder.index('Write-Host "[1/8]')
+    assert "OutputDir must not be the publish folder" in builder
+    assert "$PublishTarget = if ($SkipPublish)" in builder  # 안전 비교는 -SkipPublish 여도 한다
+    # 지우는 곳은 방금 만든 zip 의 검증 실패 정리뿐 — 만들기 전에 옛 zip 을 지우지 않는다
+    assert builder.index("Remove-Item -LiteralPath $ZipPath") > builder.index("Compress-Archive")
+    # 게시: 같은 이름 다른 지문 거부 → .part 복사 → 덮어쓰기 없는 Move → 잠금 안 후보 표지
+    assert "a published zip must never change" in builder
+    move = builder.index("[System.IO.File]::Move($PartZip, $PublishedZip)")
+    candidate = builder.index('Write-ManifestAtomic -Path (Join-Path $PublishTarget "candidate.json")')
+    assert builder.index("Open-ReleaseLock -Directory $PublishTarget") < candidate and move < candidate
+    assert "-Destination $PublishTarget" not in builder  # 설치기·latest.json 을 공개 폴더에 복사하지 않는다
+    assert 'Join-Path $PublishTarget "latest.json"' not in builder
+    assert "Move-Item" not in builder  # PS 5.1 Move-Item -Force 는 '삭제 후 이동'(Codex r3)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows batch bootstrap regression")

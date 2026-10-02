@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-18
+updated: 2026-10-02
 status: snapshot
 ---
 
@@ -56,7 +56,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\predeploy_gate.ps1 -Sk
 
 1. 배포 직전 운영 DB 백업을 만들고 `verify_backup_restore.py --backup <백업경로>`로 복원 검증한다.
 2. `make_release.ps1 -SkipPublish`로 로컬 패키지를 만든다. ZIP의 SHA256과 실행 여부를 확인한 뒤에만
-   공유 `packages` 폴더로 ZIP을 먼저 복사하고 `latest.json`을 마지막에 복사한다.
+   공유 `packages` 폴더로 ZIP을 먼저 복사하고 `candidate.json`을 마지막에 복사한다(B안 — `latest.json`은
+   손으로 올리지 않는다. 관리자 창 업데이트 탭의 [공지]가 바꾼다, `docs/UPDATE_ANNOUNCEMENTS.md`).
 3. 서버를 먼저 업데이트하고 `/api/ready`가 `ready=true`인지 확인한다.
 4. 내부 관리자 5명에게 배포하고 30분 관찰한다.
 5. 이상이 없으면 20명, 50명, 100명 순서로 확대하며 각 단계마다 최소 30분 관찰한다.
@@ -93,11 +94,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File release\select_release.ps1 `
   -PackagePath Z:\mvutil\MV_hub_S\packages\MVHub-<직전정상버전>.zip
 ```
 
-이 도구는 기존 `latest.json`을 같은 폴더 아래 `latest-backups\latest.previous-날짜-시각.json`으로 보관하고, 선택한 ZIP 내부의
-`VERSION.txt`, 크기, SHA256으로 새 `latest.json`을 만든다. 이후 작업자가 `update_release.bat`를
-실행하면 이전 버전으로도 정상 전환된다.
-동명 백업은 덮어쓰지 않고 중단하며 1초 뒤 재실행한다. 백업 저장·해시 확인 실패 시 현재
-`latest.json`은 교체하지 않는다. `make_release.ps1`의 자동 게시에는 이 백업 단계가 없다.
+이 도구는 기존 `latest.json`을 같은 폴더 아래 `latest-backups\latest.previous-날짜-시각-접미사.json`으로 보관하고,
+선택한 ZIP 내부의 `VERSION.txt`, 크기, SHA256으로 같은 내용의 `candidate.json`(먼저)과 `latest.json`(마지막)을
+릴리스 폴더 잠금(`release.lock`) 안에서 쓴다. 공지 전 후보가 있었으면 이 선택이 그 후보를 취소한다고 알린다.
+이후 작업자가 `update_release.bat`를 실행하면 이전 버전으로도 정상 전환된다.
+백업 저장·해시 확인 실패 시 현재 `latest.json`은 교체하지 않는다. 표지 전환만 실패하면 같은 명령을 다시
+실행하고, '확인할 수 없음'이면 `latest.json`을 먼저 확인한다. `make_release.ps1`은 이제 표지를 건드리지 않는다.
 
 ## 아직 필요한 실제 운영 검증
 

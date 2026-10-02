@@ -35,30 +35,13 @@
   display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px;
 }
 .manage-head h1 { font-size: 20px; font-weight: 800; margin: 0; }
-/* 프로젝트 관리 오버레이(패널) */
-.manage-proj-overlay {
-  position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.55);
-  display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow-y: auto;
-}
-.manage-proj-modal {
-  width: 100%; max-width: 760px; background: var(--panel, #141414); border: 1px solid var(--border);
-  border-radius: 14px; box-shadow: 0 16px 48px rgba(0,0,0,.5); padding: 18px 20px;
-  transition: max-width .18s ease;
-}
-.manage-proj-modal.members-open { max-width: 1160px; }
+/* 프로젝트 관리 패널(관리자 창 '프로젝트' 탭) — 👥 멤버 칸이 열리면 오른쪽 열 */
 .project-admin-layout { display: grid; grid-template-columns: minmax(0,1fr); }
 .project-admin-layout.members-open { grid-template-columns: minmax(570px,1fr) 350px; gap: 18px; }
 .project-admin-list { min-width: 0; }
 @media (max-width: 920px) {
-  .manage-proj-modal.members-open { max-width: 760px; }
   .project-admin-layout.members-open { grid-template-columns: 1fr; }
 }
-.manage-proj-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-.manage-proj-head h2 { font-size: 17px; font-weight: 800; margin: 0; }
-.manage-proj-close {
-  border: none; background: transparent; color: var(--text); opacity: .6; cursor: pointer; font-size: 16px;
-}
-.manage-proj-close:hover { opacity: 1; }
 .manage-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .manage-table th, .manage-table td {
   text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--border);

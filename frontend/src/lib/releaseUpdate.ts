@@ -30,6 +30,8 @@ export interface ReleaseUpdateStatus {
   // 실패 시 설치 트리 상태(워커가 기록): not_started(앱 무사)·rolled_back(구버전 복원)·
   // new_committed(신버전 커밋됐지만 재시작 실패)·recovery_required(롤백 미완 — 수동 복구 필요)
   recovery?: string;
+  // 관리자 PC 에만 — NAS 에 공지 전 후보가 있으면 그 버전(B안). 설치·버튼과는 무관한 안내 한 줄.
+  candidate_version?: string;
 }
 
 export interface LatestReleaseMetadata {
@@ -38,6 +40,19 @@ export interface LatestReleaseMetadata {
   sha256: string;
   size: number;
   created_at: string;
+  // B안(2026-10-02) — 옛 로컬 허브는 없음. source=candidate 면 위 5필드는 NAS 의 후보(candidate.json).
+  source?: "candidate" | "latest";
+  candidate_error?: string | null; // 후보 파일이 있는데 못 읽음 — 등록·공지·배포를 막는다
+  published?: { version: string; sha256: string } | null; // 팀원이 지금 받는 판(latest.json)
+  published_state?: "ok" | "missing" | "error";
+  pending?: boolean | null; // 후보가 아직 팀에 배포 안 됨. null = 공개 표지를 못 읽어 확인 불가
+}
+
+export function promoteRelease(noticeId: string, sha256: string) {
+  return jsonFetch<{ promoted: boolean; already: boolean; version: string }>(
+    "/api/release-update/promote",
+    { method: "POST", body: jsonBody({ notice_id: noticeId, sha256 }) },
+  );
 }
 
 // 업데이트 실행기(update_release.bat)는 CP949 인코딩 함정 때문에 상태 message를

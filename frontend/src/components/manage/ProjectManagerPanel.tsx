@@ -1,6 +1,7 @@
-// 프로젝트 관리 패널 — 관리자 창의 '프로젝트' 탭을 이식한 오버레이. 프로젝트 생성/편집·렌더 폴더
+// 프로젝트 관리 패널 — 관리자 창의 '프로젝트' 탭 내용. 프로젝트 생성/편집·렌더 폴더
 // 라벨링·멤버 프로젝트 역할 부여·보관/삭제·순서변경. 권한(create_project/grant_project_role)은
-// 백엔드가 강제하며 여기선 UI 노출만 게이팅한다. 대시보드 상단의 '+ 프로젝트'로 연다.
+// 백엔드가 강제하며 여기선 UI 노출만 게이팅한다. 예전엔 대시보드 '+ 프로젝트'로 여는 오버레이였는데
+// 관리자 창 탭으로 옮겼다(Jay 2026-10-02) — 창 틀·닫기·Esc 로 창 닫기는 관리자 창이 맡는다.
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { manageApi } from "../../lib/manageApi";
@@ -66,7 +67,12 @@ type ProjectDialogState =
       error?: string;
     };
 
-export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
+export function ProjectManagerPanel({
+  onDialogOpenChange,
+}: {
+  // 프로젝트 대화상자가 열렸는지 관리자 창에 알린다 — 열린 동안 관리자 창은 Esc·바깥 클릭에 닫히지 않는다.
+  onDialogOpenChange?: (open: boolean) => void;
+}) {
   const conflict = useManageEditConflict();
   const caps = useManageCaps();
   const [members, setMembers] = useState<Member[]>([]);
@@ -76,14 +82,19 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
   const [workspaceMembers, setWorkspaceMembers] = useState<Record<string, WorkspaceMemberCandidate[]>>({});
   const [projectDialog, setProjectDialog] = useState<ProjectDialogState | null>(null);
   const [creditRowBusy, setCreditRowBusy] = useState(false);
-  // 프로젝트 대화상자가 열려 있으면 Esc 는 그것만 닫는다 — 창 전체를 닫으면 입력하던 이름이 사라진다.
+  // 프로젝트 대화상자가 열려 있으면 Esc 는 그것만 닫는다 — 관리자 창까지 닫히면 입력하던 이름이 사라진다.
+  // (같은 Esc 를 관리자 창도 받으므로 onDialogOpenChange 로 알려 그쪽은 건너뛰게 한다.)
   const projectDialogOpen = projectDialog !== null;
-  const closeTopmost = useCallback(() => {
+  const closeDialog = useCallback(() => {
     if (projectDialog?.busy || creditRowBusy) return;
-    if (projectDialogOpen) setProjectDialog(null);
-    else onClose();
-  }, [projectDialogOpen, projectDialog?.busy, creditRowBusy, onClose]);
-  useEscapeClose(closeTopmost, !conflict.active);
+    setProjectDialog(null);
+  }, [projectDialog?.busy, creditRowBusy]);
+  useEscapeClose(closeDialog, projectDialogOpen && !conflict.active);
+  useEffect(() => {
+    if (!projectDialogOpen) return;
+    onDialogOpenChange?.(true);
+    return () => onDialogOpenChange?.(false);
+  }, [projectDialogOpen, onDialogOpenChange]);
   const [projFolders, setProjFolders] = useState<Record<string, ProjectFolderEntry>>({});
   // 렌더폴더 트리를 펼친 프로젝트 — 열 때마다 접힌 상태로 시작한다(Jay 요청 2026-09-16).
   // 이전에는 펼침 목록을 localStorage 에 기억해 복원했는데, 패널을 열면 트리가 저절로
@@ -412,19 +423,9 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
       : visibleMembers
     : undefined;
 
+  // 👥 멤버 칸이 열리면(members-open) 관리자 창이 CSS(:has)로 더 넓어진다 — admin-auth-compare.css .admin-window.wide
   return (
-    <div className="manage-proj-overlay" onMouseDown={() => { if (!projectDialog?.busy && !creditRowBusy) onClose(); }}>
-      <div
-        className={`manage-proj-modal${activeMembersProject ? " members-open" : ""}`}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <header className="manage-proj-head">
-          <h2>프로젝트 관리</h2>
-          <button className="manage-proj-close" disabled={projectDialog?.busy || creditRowBusy} onClick={onClose} title="닫기">
-            ✕
-          </button>
-        </header>
-
+    <>
         <div className={`project-admin-layout${activeMembersProject ? " members-open" : ""}`}>
           <div className="project-admin-list">
             <section className="admin-section">
@@ -712,7 +713,6 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
           </div>
         )}
         {conflict.dialog}
-      </div>
-    </div>
+    </>
   );
 }

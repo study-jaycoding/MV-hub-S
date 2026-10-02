@@ -22,12 +22,30 @@ export interface AssetRegistryScanRow {
 
 export type RegistryMode = "server" | "local";
 
+// 자동 훑기 시간(2026-10-02) — 끔·매월(1~28일)·매주(월=0)·매일 + 시(0~23, KST). 서버 DB 에 하나.
+export type ScheduleKind = "off" | "month" | "week" | "day";
+export interface RegistrySchedule {
+  kind: ScheduleKind;
+  day: number;
+  weekday: number;
+  hour: number;
+}
+export interface RegistryScheduleState {
+  schedule: RegistrySchedule;
+  next_run_at: string | null;
+  schedule_mark: { slot?: string; runner?: string; state?: string } | null; // 마지막으로 맡긴 회차(누가·시작 못 함)
+}
+
 export interface AssetRegistryStatus {
   enabled: boolean;
   // 훑는 곳 — 서버 자신 / 관리자 PC(도우미). 관리자 창에서 고르고 서버 DB 에 둔다(2026-09-30 — 그 전 dev 서버엔 없다)
   mode?: RegistryMode;
   lease?: { project_id: string; name: string; started_at: string } | null;
-  interval_min: number;
+  interval_min: number; // 옛 간격 주기(없앰 — 새 서버는 0)
+  // 자동 훑기 시간 — 2026-10-02 전 서버엔 없다(그때는 '서버 업데이트 필요')
+  schedule?: RegistrySchedule;
+  next_run_at?: string | null;
+  schedule_mark?: RegistryScheduleState["schedule_mark"];
   running: boolean;
   current: { project_id?: string; name?: string; phase?: string; started_at?: string; files?: number };
   last: { mode?: string; projects?: number; failed?: number; elapsed_ms?: number; finished_at?: string };
@@ -59,6 +77,8 @@ export const assetRegistryApi = {
   status: () => jsonFetch<AssetRegistryStatus>("/api/asset-registry/status"),
   setMode: (mode: RegistryMode) =>
     jsonFetch<{ mode: RegistryMode }>("/api/asset-registry/mode", { method: "POST", body: jsonBody({ mode }) }),
+  setSchedule: (schedule: RegistrySchedule) =>
+    jsonFetch<RegistryScheduleState>("/api/asset-registry/schedule", { method: "POST", body: jsonBody(schedule) }),
   scan: (projectIds: string[] = []) =>
     jsonFetch<{ started: boolean }>("/api/asset-registry/scan", {
       method: "POST",

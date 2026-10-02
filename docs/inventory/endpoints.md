@@ -10,7 +10,7 @@
 - `로컬 예외 · 핸들러가 _proxy 호출` 은 핸들러 **본문이 `_proxy` 를 직접 참조**할 때만 붙는다(팀 탭 등에서 핸들러가 골라서 위임). 헬퍼·usecase 를 거쳐 위임하면 안 보이므로, 이 표시가 없다고 위임이 없다는 뜻은 아니다.
 - `Depends` 칸은 라우터·데코레이터·핸들러 인자에 직접 적힌 것만이다. 인증 미들웨어와 핸들러 본문의 권한 검사는 안 나온다.
 
-전체 321개.
+전체 332개.
 
 ## `backend/app/main.py` — 10개
 
@@ -27,7 +27,7 @@
 | `WEBSOCKET` | `/ws` | `websocket_endpoint` | 해당 없음 | — |
 | `GET` | `/{full_path:path}` | `spa_fallback` | 해당 없음 | — |
 
-## `backend/app/routers/asset_registry.py` — 10개
+## `backend/app/routers/asset_registry.py` — 12개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
@@ -39,6 +39,8 @@
 | `POST` | `/api/asset-registry/lookup` | `lookup` | 기본 중계 | — |
 | `POST` | `/api/asset-registry/mode` | `set_mode` | 기본 중계 | — |
 | `POST` | `/api/asset-registry/scan` | `scan` | 기본 중계 | — |
+| `POST` | `/api/asset-registry/schedule/claim` | `claim_schedule` | 기본 중계 | — |
+| `POST` | `/api/asset-registry/schedule` | `set_schedule` | 기본 중계 | — |
 | `GET` | `/api/asset-registry/status` | `status` | 기본 중계 | — |
 | `GET` | `/api/asset-registry/usage/{registry_asset_id}` | `usage` | 기본 중계 | — |
 
@@ -108,6 +110,17 @@
 | `POST` | `/api/auth/super-admin/elevate` | `elevate_super_admin` | 기본 중계 | — |
 | `POST` | `/api/auth/super-admin/revoke` | `revoke_super_admin` | 기본 중계 | — |
 | `GET` | `/api/auth/super-admin/status` | `super_admin_status` | 기본 중계 | — |
+
+## `backend/app/routers/backup_replica.py` — 6개
+
+| 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
+| --- | --- | --- | --- | --- |
+| `POST` | `/api/admin/backup-replica/run` | `run_backup_replica` | 로컬 예외 | — |
+| `GET` | `/api/admin/backup-replica` | `backup_replica_status` | 로컬 예외 | — |
+| `PUT` | `/api/admin/backup-replica` | `save_backup_replica` | 로컬 예외 | — |
+| `POST` | `/api/shared-server/backup-replica/run` | `relay_run_backup_replica` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
+| `GET` | `/api/shared-server/backup-replica` | `relay_backup_replica_status` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
+| `PUT` | `/api/shared-server/backup-replica` | `relay_save_backup_replica` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 
 ## `backend/app/routers/comfy.py` — 11개
 
@@ -398,11 +411,12 @@
 | `POST` | `/api/registry-helper/scan` | `scan` | 로컬 예외 · 핸들러가 `_proxy` 호출 | `require_local_assets` |
 | `GET` | `/api/registry-helper/status` | `status` | 로컬 예외 · 핸들러가 `_proxy` 호출 | `require_local_assets` |
 
-## `backend/app/routers/release_update.py` — 3개
+## `backend/app/routers/release_update.py` — 4개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
 | `GET` | `/api/release-update/latest-metadata` | `release_update_latest_metadata` | 로컬 예외 | — |
+| `POST` | `/api/release-update/promote` | `release_update_promote` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/release-update/start` | `release_update_start` | 로컬 예외 | — |
 | `GET` | `/api/release-update/status` | `release_update_status` | 로컬 예외 | — |
 
@@ -451,14 +465,16 @@
 | `GET` | `/api/sync-status` | `sync_status` | 로컬 예외 | — |
 | `POST` | `/api/sync` | `sync_from_cli` | 로컬 예외 | — |
 
-## `backend/app/routers/update_notices.py` — 7개
+## `backend/app/routers/update_notices.py` — 9개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
+| `GET` | `/api/update-notices/admin/item` | `get_update_notice_admin` | 기본 중계 | — |
 | `GET` | `/api/update-notices/admin/list` | `list_update_notices_admin` | 기본 중계 | — |
 | `POST` | `/api/update-notices/admin/register` | `register_update_notice` | 기본 중계 | — |
 | `POST` | `/api/update-notices/admin/{notice_id}/announce` | `announce_update_notice` | 기본 중계 | — |
 | `PUT` | `/api/update-notices/admin/{notice_id}/pin` | `pin_update_notice` | 기본 중계 | — |
+| `DELETE` | `/api/update-notices/admin/{notice_id}` | `remove_update_notice` | 기본 중계 | — |
 | `POST` | `/api/update-notices/seen-all` | `seen_all_update_notices` | 기본 중계 | — |
 | `POST` | `/api/update-notices/{notice_id}/seen` | `seen_update_notice` | 기본 중계 | — |
 | `GET` | `/api/update-notices` | `list_update_notices` | 기본 중계 | — |

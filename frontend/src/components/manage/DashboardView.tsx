@@ -14,7 +14,6 @@ import {
 } from "../../lib/stateReconciliation";
 import type { ManageCaps } from "../../lib/useManageCaps";
 import { PROJECT_ROLE_LABEL, type ProjectMember } from "../../types";
-import { ProjectManagerPanel } from "./ProjectManagerPanel";
 import { WorkspaceConsole } from "./console/WorkspaceConsole";
 import { PROJECT_STATUS_OPTIONS } from "./ProjectPlanningDialog";
 import {
@@ -340,13 +339,12 @@ export function DashboardView({
     { projects: ManageProject[]; usage_source?: string; usage_scope?: string } | null
   >(null);
   const [members, setMembers] = useState<Map<string, ProjectMember[]>>(new Map());
-  const [showPanel, setShowPanel] = useState(false); // 프로젝트 관리 오버레이(＋프로젝트)
   // 대시보드 자리에 여는 판 — 워크스페이스(서브스페이스 console ↔ 관리 표 table) 또는 프로젝트 상세(detail). 하나만 열린다.
   const [panel, setPanel] = useState<"table" | "console" | "detail" | null>(null);
   const [summaryPage, setSummaryPage] = useState(1);
   const [summaryPageSize, setSummaryPageSize] = useState<number>(USAGE_PAGE_SIZES[0]);
-  // '+ 프로젝트'(프로젝트 관리 창)는 관리자만(Jay 2026-09-30 — 설정은 서브스페이스·관리 표에서). 관리자는 슈퍼유저가 아니라
-  // 생성 권한(PM 역할)도 있어야 서버가 받으므로 둘 다 있을 때만 보인다. 인증 off(로컬 단독)는 system 이 켜져 있다.
+  // 프로젝트 생성·관리는 관리자 창의 '프로젝트' 탭에서만(Jay 2026-10-02 — 대시보드 '+ 프로젝트' 단추 제거). 그 탭과 같은
+  // 기준(관리자 + PM 역할 — 관리자는 슈퍼유저가 아니라 생성 권한도 있어야 서버가 받는다)으로 빈 목록 안내 문구만 고른다.
   const canManageProjects = caps.system && (caps.createProject || caps.grantRole);
   // 관리 표는 계정 상세(이메일·가입 상태)가 나가므로 서버가 관리자·PM 에게만 연다 — 아이콘도 같은 조건으로.
   const canOpenTable = caps.authOff || caps.system || caps.grantRole;
@@ -589,7 +587,7 @@ export function DashboardView({
               <tr>
                 <td colSpan={8} className="dash-part-empty">
                   {readAll
-                    ? `프로젝트가 없습니다. ${canManageProjects ? "＋ 프로젝트로 만드세요." : "관리자에게 생성을 요청하세요."}`
+                    ? `프로젝트가 없습니다. ${canManageProjects ? "관리자 창의 프로젝트 탭에서 만드세요." : "관리자에게 생성을 요청하세요."}`
                     : "참여 중인 프로젝트가 없습니다."}
                 </td>
               </tr>
@@ -624,9 +622,6 @@ export function DashboardView({
       {/* 사용량을 가장 먼저 표시 — 매니저는 워크스페이스 전체(생성·크레딧·멤버·모델·폴더 효율), 일반 멤버는 내 기록만. */}
       <WorkspaceUsageDashboard
         reloadSignal={reloadSignal}
-        canCreateProject={canManageProjects}
-        onCreateProject={() => setShowPanel(true)}
-        createProjectOpen={showPanel}
         workspaceId={workspaceId}
         onWorkspaceIdChange={onWorkspaceIdChange}
         scope={mine ? "mine" : "all"}
@@ -666,17 +661,6 @@ export function DashboardView({
           />
         ) : null}
       />
-
-      {/* 프로젝트 관리 오버레이 — 생성·보관·삭제·멤버 역할 */}
-      {showPanel && (
-        <ProjectManagerPanel
-          onClose={() => {
-            setShowPanel(false);
-            reload();
-          }}
-        />
-      )}
-
     </div>
   );
 }

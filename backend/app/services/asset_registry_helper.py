@@ -81,7 +81,7 @@ class HelperController(AssetRegistryController):
     def enabled(self) -> bool:
         return True  # 관리자 창에서 누를 때만 돈다(자동 주기 없음 — 결정 8)
 
-    def _mode_allows(self) -> bool:
+    def _mode_allows(self, wait: bool = True) -> bool:
         return True  # 훑는 곳은 서버가 정한다 — 서버가 '로컬'이 아니면 자리(lease)를 주지 않는다(이 PC DB 의 설정과 무관)
 
     def _halted(self) -> bool:
@@ -93,8 +93,8 @@ class HelperController(AssetRegistryController):
         self, method: str, path: str, body: Optional[dict[str, Any]] = None, timeout: float = 60, pinned_ok: bool = False
     ) -> Any:
         # pinned_ok: 로그인이 바뀐 뒤에도 시작 때 토큰으로 보낸다 — 자기 자리 반납만(안 풀면 서버가 10분 동안 막힌다, Codex)
-        if not pinned_ok and shared_connection.token() != self._token:
-            raise _Abort("로그인이 바뀌어 멈췄습니다")
+        if not pinned_ok and (shared_connection.token() != self._token or shared_connection.base_url() != self._base):
+            raise _Abort("로그인이 바뀌어 멈췄습니다")  # 토큰이든 서버 주소든(정한 시간 훑기는 맡은 서버로만, Codex r2)
         data = json.dumps(body).encode("utf-8") if body is not None else None
         req = urllib.request.Request(self._base + path, data=data, method=method)
         req.add_header("Content-Type", "application/json")
@@ -113,17 +113,20 @@ class HelperController(AssetRegistryController):
             raise _Network("공유 서버에 닿지 못했습니다") from exc
 
     # ── 시작·상태 ─────────────────────────────────────────────────────────────
-    def begin(self, project_ids: Optional[list[str]]) -> tuple[bool, str]:
-        """관리자 창의 [이 PC 에서 훑기]. 시작할 때의 서버 주소·토큰을 고정한다."""
-        tok = shared_connection.token()
+    def begin(
+        self, project_ids: Optional[list[str]], mode: str = "manual", ctx: Optional[tuple[str, str]] = None,
+    ) -> tuple[bool, str]:
+        """관리자 창의 [이 PC 에서 훑기], 또는 정한 시간 훑기(mode="auto"). 시작할 때의 서버 주소·토큰을 고정한다.
+        ctx=(주소, 토큰)를 받으면 다시 읽지 않고 그것을 쓴다 — 회차를 맡은 서버·계정 그대로(이벤트 루프에서 DB 를 안 읽는다)."""
+        base, tok = ctx if ctx is not None else (shared_connection.base_url(), shared_connection.token())
         if not tok:
             return False, "공유 서버 로그인이 필요합니다"
         if self.busy():
             return False, "이미 이 PC 에서 훑는 중입니다"
         self._clear_leftovers()
-        self._base, self._token = shared_connection.base_url(), tok
+        self._base, self._token = base, tok
         self._abort, self._results = "", []
-        if not self.request_scan(project_ids, mode="manual"):
+        if not self.request_scan(project_ids, mode=mode):
             return False, "지금은 시작할 수 없습니다(앱 종료 중)"
         return True, ""
 

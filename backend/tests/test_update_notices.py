@@ -112,6 +112,42 @@ class UpdateNoticeTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 403)
         self.assertTrue(allowed["created"])
 
+    def test_item_lookup_finds_entries_pushed_out_of_the_visible_five(self) -> None:
+        items = [self._register(index) for index in range(7)]
+        visible = {row["id"] for row in repo.list_release_update_notices_admin()}
+        self.assertNotIn(items[0]["id"], visible)
+        found = update_notices.get_update_notice_admin(items[0]["sha256"].upper(), _request())
+        self.assertEqual(found["id"], items[0]["id"])
+        self.assertEqual(found["sha256"], items[0]["sha256"])
+        for bad, code in (("zz", 400), (f"{99:064x}", 404)):
+            with self.assertRaises(HTTPException) as caught:
+                update_notices.get_update_notice_admin(bad, _request())
+            self.assertEqual(caught.exception.status_code, code)
+        with patch("app.deps.AUTH_ENABLED", True):
+            with self.assertRaises(HTTPException) as caught:
+                update_notices.get_update_notice_admin(items[0]["sha256"], _request(role="member"))
+        self.assertEqual(caught.exception.status_code, 403)
+
+    def test_remove_deletes_row_and_seen_and_is_idempotent(self) -> None:
+        item = self._register(3)
+        update_notices.announce_update_notice(item["id"], _request())
+        update_notices.seen_update_notice(
+            item["id"], update_notices.SeenIn(revision=1), _request(uid="user-viewer")
+        )
+        with patch.object(update_notices, "journal_audit_event") as audit:
+            first = update_notices.remove_update_notice(item["id"], _request())
+            second = update_notices.remove_update_notice(item["id"], _request())
+        self.assertEqual((first["removed"], second["removed"]), (True, False))
+        self.assertEqual(audit.call_count, 1)  # 실제로 지웠을 때만 감사
+        self.assertEqual(update_notices.list_update_notices(_request(uid="user-viewer")), [])
+        with db.get_connection() as conn:
+            seen = conn.execute("SELECT COUNT(*) FROM release_update_notice_seen").fetchone()[0]
+        self.assertEqual(seen, 0)  # 읽음 기록은 FK CASCADE 로 함께 사라진다
+        with patch("app.deps.AUTH_ENABLED", True):
+            with self.assertRaises(HTTPException) as caught:
+                update_notices.remove_update_notice(item["id"], _request(role="member"))
+        self.assertEqual(caught.exception.status_code, 403)
+
     def test_registration_is_idempotent_by_sha256(self) -> None:
         first = update_notices.register_update_notice(_body(2), _request())
         second = update_notices.register_update_notice(_body(2), _request())
