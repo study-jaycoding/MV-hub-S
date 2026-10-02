@@ -93,7 +93,8 @@ function warnings(status: BackupReplicaStatus): { blockRun: boolean; notes: stri
     else if (!task.ignore_new) { notes.push("예약 작업의 동시 실행 설정이 달라 [지금 복사]를 막았습니다"); blockRun = true; }
   }
   if (status.target && status.target_garbled) notes.push("설정 글자가 깨져 있습니다 — 위치를 다시 입력해 저장하세요");
-  else if (status.target && !status.target_is_unc) notes.push("NAS 주소가 아닙니다 — 서버 예약 작업이 못 볼 수 있으니 NAS 주소로 바꾸세요");
+  // 드라이브 글자 경로 — 서버 PC 의 실제 디스크면 그대로 써도 된다(예약 작업이 본다). 막아야 하는 건 Z: 같은 연결 드라이브뿐(2026-10-02 Jay)
+  else if (status.target && !status.target_is_unc) notes.push("서버 PC 의 드라이브 경로입니다 — 서버 안의 디스크면 그대로 쓰면 됩니다. Z: 같은 네트워크 연결 드라이브라면 예약 작업이 못 보니 NAS 주소로 바꾸세요");
   if (!status.server_account_system) notes.push("서버가 예약 작업(SYSTEM)으로 돌고 있지 않아 [저장] 때 확인이 실제 복사와 다를 수 있습니다");
   return { blockRun, notes };
 }
