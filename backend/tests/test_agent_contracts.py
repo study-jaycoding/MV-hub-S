@@ -807,17 +807,17 @@ def test_server_db_test_launchers_keep_live_and_local_data_isolated():
     assert 'refresh_pm_test_data.py" "%SRC%" "%DST%"' in push
     assert 'set "PORT=8011"' in push
 
-    assert 'set "SERVER=http://192.168.1.199:8011"' in pull
+    assert 'set "SERVER=http://192.168.1.171:8011"' in pull
     assert 'set "DST=%ROOT%backend\\data_test"' in pull
     assert "PM_TEST_ADMIN_EMAIL" not in pull
-    assert "192.168.1.199:8010" not in pull
+    assert "192.168.1.171:8010" not in pull
     # 서버 이사 뒤 덮어쓰기: MVHUB_SNAPSHOT_SERVER > 기본값. 명령줄 인자(%~1)는 일부러 없다 —
     # %~1 은 파싱 시점에 확장돼 delayed-expansion 보호를 받지 못한다. 값은 !SERVER! 로만 쓰고,
     # 형식 검증(http://host:port)은 refresh_pm_test_data.py 가 한다.
     assert "setlocal EnableExtensions EnableDelayedExpansion" in pull
     assert 'if defined MVHUB_SNAPSHOT_SERVER set "SERVER=!MVHUB_SNAPSHOT_SERVER!"' in pull
     assert "%~1" not in pull
-    assert pull.index('set "SERVER=http://192.168.1.199:8011"') < pull.index(
+    assert pull.index('set "SERVER=http://192.168.1.171:8011"') < pull.index(
         'set "SERVER=!MVHUB_SNAPSHOT_SERVER!"'
     )
     assert "%SERVER%" not in pull

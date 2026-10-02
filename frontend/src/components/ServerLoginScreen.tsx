@@ -168,7 +168,7 @@ export function ServerLoginScreen({
             <div className="login-hint">현재 주소: {url || "(기본값)"}</div>
             <input
               type="text"
-              placeholder="http://192.168.1.199:8010"
+              placeholder="http://192.168.1.171:8010"
               value={draftUrl}
               onChange={(e) => {
                 setDraftUrl(e.target.value);

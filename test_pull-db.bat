@@ -4,7 +4,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 REM ============================================================================
 REM  Pull the SHARED SERVER db into this PC's TEST data   (run on YOUR OWN PC)
 REM
-REM    source (server) : test_push-db snapshot on http://192.168.1.199:8011
+REM    source (server) : test_push-db snapshot on http://192.168.1.171:8011
 REM    override        : set MVHUB_SNAPSHOT_SERVER=http://host:port before running this file.
 REM                      (No command-line argument on purpose: batch arguments expand at
 REM                      parse time, before the delayed-expansion guard, and could inject commands.)
@@ -19,7 +19,7 @@ REM  The live server is READ only. The old local test data is archived before re
 REM  Enter the one-time code shown by test_push-db; the real admin password is never used.
 REM ============================================================================
 set "ROOT=%~dp0"
-set "SERVER=http://192.168.1.199:8011"
+set "SERVER=http://192.168.1.171:8011"
 if defined MVHUB_SNAPSHOT_SERVER set "SERVER=!MVHUB_SNAPSHOT_SERVER!"
 set "DST=%ROOT%backend\data_test"
 

@@ -30,7 +30,7 @@ class SharedConnectionContractTests(unittest.TestCase):
     def test_default_url_is_fixed_at_import_time(self):
         if os.environ.get("CONTENT_HUB_SHARED_URL"):
             self.skipTest("env 가 설정된 환경에서는 기본값 리터럴 검증을 건너뛴다")
-        self.assertEqual(shared_connection.DEFAULT_SHARED_URL, "http://192.168.1.199:8010")
+        self.assertEqual(shared_connection.DEFAULT_SHARED_URL, "http://192.168.1.171:8010")  # 2026-10-02 서버 이사
 
     def test_setting_wins_and_trailing_slash_is_stripped(self):
         repo.set_setting(shared_connection.K_URL, "http://share.example.test/")

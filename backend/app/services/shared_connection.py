@@ -46,9 +46,10 @@ K_TOKEN = "shared_server_token"
 K_ELEV_TOKEN = "shared_server_elev_token"
 K_ELEV_EXPIRES = "shared_server_elev_expires"
 
-# 팀이 한 번 정해 배포하는 기본 주소(env 로 덮어쓰기).
+# 팀이 한 번 정해 배포하는 기본 주소(env 로 덮어쓰기). 2026-10-02 서버 이사로 .199 → .171 — 이미 주소를 저장한 PC 는
+# 관리자 창 [팀에 공지](docs/SERVER_RELOCATION.md)로 옮기고, 이 값은 저장값이 없는 PC·새 설치의 첫 주소다.
 DEFAULT_SHARED_URL = (
-    os.environ.get("CONTENT_HUB_SHARED_URL") or "http://192.168.1.199:8010"
+    os.environ.get("CONTENT_HUB_SHARED_URL") or "http://192.168.1.171:8010"
 ).rstrip("/")
 
 

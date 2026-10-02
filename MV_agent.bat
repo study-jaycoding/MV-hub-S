@@ -18,7 +18,7 @@ REM       team-visible; your own work stays private until then.
 REM
 REM  Team shared-server address has a baked-in default (admins can change it in
 REM  the hub's admin window). To override here, uncomment and edit:
-REM  set "CONTENT_HUB_SHARED_URL=http://192.168.1.199:8010"
+REM  set "CONTENT_HUB_SHARED_URL=http://192.168.1.171:8010"
 REM
 REM  Stop: close this one window - the hub and agent stop; the browser stays open.
 REM ============================================================================
