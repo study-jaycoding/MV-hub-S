@@ -30,7 +30,21 @@ beforeEach(() => {
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
-const mount = async () => { await act(async () => { root.render(<BackupReplicaSection />); }); await act(async () => {}); };
+const mount = async (onDialogOpenChange?: (open: boolean) => void) => {
+  await act(async () => { root.render(<BackupReplicaSection onDialogOpenChange={onDialogOpenChange} />); });
+  await act(async () => {});
+};
+const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+const type = async (input: HTMLInputElement, value: string) => {
+  await act(async () => { setter.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); });
+};
+const openConfirm = async () => {
+  await type(host.querySelector<HTMLInputElement>('input[aria-label="백업 복사 위치"]')!, "\\\\NAS2\\b");
+  await act(async () => { button("저장").click(); });
+};
+const pressEscape = async () => {
+  await act(async () => { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+};
 const button = (label: string) => [...host.querySelectorAll("button")].find((b) => b.textContent === label)!;
 
 it("결과 상자: 성공·0건·다른 위치·실패를 구별한다", () => {
@@ -139,4 +153,76 @@ it("[지금 복사] 뒤 새 실행이 끝나면 다시 읽기를 멈춘다", asy
   const calls = mocks.status.mock.calls.length;
   await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
   expect(mocks.status.mock.calls.length).toBe(calls);
+});
+
+it("확인창의 Esc 는 확인창만 닫고 관리자 창에 열림·닫힘을 알린다", async () => {
+  mocks.status.mockResolvedValue(base());
+  const open = vi.fn();
+  await mount(open);
+  await openConfirm();
+  expect(host.querySelector('input[type="password"]')).not.toBeNull();
+  expect(open).toHaveBeenLastCalledWith(true);
+  await pressEscape();
+  expect(host.querySelector('input[type="password"]')).toBeNull();
+  expect(open).toHaveBeenLastCalledWith(false);
+});
+
+it("저장 중에는 Esc 로 확인창이 닫히지 않는다(결과를 놓치지 않게)", async () => {
+  mocks.status.mockResolvedValue(base());
+  mocks.save.mockReturnValue(new Promise(() => {}));
+  const open = vi.fn();
+  await mount(open);
+  await openConfirm();
+  await type(host.querySelector<HTMLInputElement>('input[type="password"]')!, "secret");
+  await act(async () => { button("바꾸기").click(); });
+  await pressEscape();
+  expect(host.querySelector('input[type="password"]')).not.toBeNull();
+  expect(open).toHaveBeenLastCalledWith(true);
+});
+
+it("상태 조회가 5초보다 느려도 응답을 버리지 않고 복사 끝을 알아챈다", async () => {
+  vi.useFakeTimers();
+  mocks.status.mockResolvedValueOnce(base());
+  mocks.run.mockResolvedValue({ requested_at: "2026-10-02T10:00:00Z", baseline_last_run_at: "2026-10-02T03:30:00Z" });
+  await mount();
+  await act(async () => { button("지금 복사").click(); });
+  const done = base({
+    task: { ...base().task!, last_run_at: "2026-10-02T10:00:01Z" },
+    result: { ...base().result!, started_at: "2026-10-02T10:00:02Z", last_attempt_at: "2026-10-02T10:01:00Z", copied: 1 },
+  });
+  mocks.status.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(done), 6000))); // 매번 6초
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000 + 6000); });
+  expect(host.textContent).toContain("마지막 복사 성공");
+  const calls = mocks.status.mock.calls.length;
+  expect(calls).toBe(2); // 첫 화면 1 + 감시 1 — 앞 조회가 끝나기 전에 다음 조회를 겹쳐 보내지 않는다
+  await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+  expect(mocks.status.mock.calls.length).toBe(calls);
+});
+
+it("조회가 응답 없이 멈춰도 30분 뒤엔 끝내고, 그 뒤 늦은 응답은 화면을 바꾸지 않는다", async () => {
+  vi.useFakeTimers();
+  mocks.status.mockResolvedValueOnce(base());
+  mocks.run.mockResolvedValue({ requested_at: "2026-10-02T10:00:00Z", baseline_last_run_at: null });
+  await mount();
+  await act(async () => { button("지금 복사").click(); });
+  let late!: (value: BackupReplicaStatus) => void;
+  mocks.status.mockReturnValue(new Promise((resolve) => { late = resolve; })); // 응답이 오지 않는다
+  await act(async () => { await vi.advanceTimersByTimeAsync(31 * 60 * 1000); });
+  expect(host.textContent).toContain("확인 시간 초과");
+  const calls = mocks.status.mock.calls.length;
+  await act(async () => { late(base({ task: { ...base().task!, running: true } })); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+  expect(host.textContent).not.toContain("복사 중");
+  expect(mocks.status.mock.calls.length).toBe(calls);
+});
+
+it("확인창이 열린 채 탭을 떠나면(언마운트) 관리자 창에 닫힘을 알린다 — 관리자 창이 Esc 를 계속 무시하지 않게", async () => {
+  mocks.status.mockResolvedValue(base());
+  const open = vi.fn();
+  await mount(open);
+  await openConfirm();
+  expect(open).toHaveBeenLastCalledWith(true);
+  act(() => root.unmount());
+  expect(open).toHaveBeenLastCalledWith(false);
+  root = createRoot(host); // afterEach 의 unmount 용
 });

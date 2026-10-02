@@ -1277,6 +1277,16 @@ it("메인 크레딧 시트 = 서브 합본 — 계정 한 줄에 속한 서브�
   expect(assign).toEqual([["a", "a@x", "A/Artist_testB/그룹 없음", "5,000"], ["b", "b@x", "B/그룹 없음", "—"]]);
 });
 
+it("메인 합본도 시스템 부트스트랩 계정을 싣지 않는다(메인 표와 같게 — Codex main 검토 P2-1)", async () => {
+  const subA = subTable("subA", "A", 100, [row("a@x"), row("admin@millionvolt.com")]);
+  mocks.memberTable.mockImplementation(async (id?: string) => (id === "subA" ? subA : { ...mainTable(), console_subs: ["subA"] }));
+  await mount("main");
+  await openSheet("크레딧 관리");
+  await settle();
+  const emails = [...host.querySelectorAll('table[aria-label="서브별 개인 크레딧 사용량"] tbody tr')].map((tr) => tr.querySelectorAll("td")[1].textContent);
+  expect(emails).toEqual(["a@x"]);
+});
+
 it("mainPeople 합산 규칙 — 유한+제한 없음은 제한 없음, 음수 잔여는 그대로 더하고, 구서버(할당 계약 없음) 서브는 할당·잔여를 모름", () => {
   const member = (email: string, group: string, quota: number | null, remaining: number | null, used: number) =>
     ({ email, name: email[0], workspace_role: "member", is_available: true, group_id: group, quota: null, quota_effective: quota, quota_source: "auto" as const, used_period: used, unknown_period: 0, remaining });

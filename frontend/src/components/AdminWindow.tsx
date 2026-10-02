@@ -208,6 +208,7 @@ export function AdminWindow({
   const canManageProjects = caps.system && (caps.createProject || caps.grantRole);
   // 프로젝트 대화상자가 열린 동안은 Esc·바깥 클릭에 관리자 창을 닫지 않는다 — 대화상자만 닫히게(입력 보존).
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [backupDialogOpen, setBackupDialogOpen] = useState(false); // 백업 위치 비밀번호 확인창(공유 서버 탭)
 
   // 시스템 부트스트랩 계정(admin@millionvolt.com) — 관리 UI 어디에도 노출하지 않는다.
   // (열쇠 임시권한 로그인엔 여전히 admin 으로 인증 가능 — 목록에서만 가린다.)
@@ -288,9 +289,9 @@ export function AdminWindow({
     if (confirm) setConfirm(null);
     else if (elevOpen) setElevOpen(false);
     else if (publishOpen) setPublishOpen(false);
-    else if (projectDialogOpen) return; // 프로젝트 대화상자는 ProjectManagerPanel 이 같은 Esc 로 닫는다
+    else if (projectDialogOpen || backupDialogOpen) return; // 안쪽 대화상자는 그 패널이 같은 Esc 로 닫는다
     else onClose();
-  }, [confirm, elevOpen, publishOpen, projectDialogOpen, onClose]);
+  }, [confirm, elevOpen, publishOpen, projectDialogOpen, backupDialogOpen, onClose]);
   useEscapeClose(closeTopmost);
 
   // 저장 중인 멤버 — 칩을 연타하면 낡은 value 로 만든 목록이 뒤에 도착해 먼저 준 역할을
@@ -311,7 +312,7 @@ export function AdminWindow({
 
   return (
     <>
-      <div className="admin-backdrop" onMouseDown={() => { if (!projectDialogOpen) onClose(); }} />
+      <div className="admin-backdrop" onMouseDown={() => { if (!projectDialogOpen && !backupDialogOpen) onClose(); }} />
       {/* 프로젝트 탭은 옛 프로젝트 관리 창 폭(760px)으로 넓힌다 — 👥 멤버 칸이 열리면 CSS 가 더 넓힌다 */}
       <div className={"admin-window" + (activeTab === "projects" ? " wide" : "")} role="dialog" aria-label="관리자">
         <header className="admin-head">
@@ -466,7 +467,7 @@ export function AdminWindow({
                 </div>
               </section>
 
-              <BackupReplicaSection />
+              <BackupReplicaSection onDialogOpenChange={setBackupDialogOpen} />
 
               {publishOpen && (
                 <div className="admin-confirm-backdrop" onMouseDown={() => setPublishOpen(false)}>

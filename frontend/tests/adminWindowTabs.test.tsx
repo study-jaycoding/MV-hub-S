@@ -19,7 +19,15 @@ vi.mock("../src/lib/useManageCaps", () => ({
 vi.mock("../src/lib/updateNotices", () => ({ updateNoticeApi: { adminList: mocks.adminList } }));
 vi.mock("../src/lib/releaseUpdate", () => ({ getLatestReleaseMetadata: mocks.latestRelease }));
 vi.mock("../src/lib/modelPolicy", () => ({ refreshModelPolicy: vi.fn() }));
-vi.mock("../src/components/admin/BackupReplicaSection", () => ({ BackupReplicaSection: () => null }));
+// 백업 위치 확인창은 '열림·닫힘' 신호만 흉내 낸다 — 관리자 창이 그 신호로 Esc·바깥 클릭을 넘기는지 본다
+vi.mock("../src/components/admin/BackupReplicaSection", () => ({
+  BackupReplicaSection: ({ onDialogOpenChange }: { onDialogOpenChange?: (open: boolean) => void }) => (
+    <span>
+      <button className="fake-backup-open" onClick={() => onDialogOpenChange?.(true)}>open</button>
+      <button className="fake-backup-close" onClick={() => onDialogOpenChange?.(false)}>close</button>
+    </span>
+  ),
+}));
 vi.mock("../src/components/admin/AssetRegistryTab", () => ({ AssetRegistryTab: () => null }));
 
 import { AdminWindow } from "../src/components/AdminWindow";
@@ -106,6 +114,18 @@ it("프로젝트 대화상자가 열려 있으면 Esc 는 대화상자만 닫고
   await pressEscape();
   expect(host.querySelector(".admin-project-dialog")).toBeNull();
   expect(onClose).not.toHaveBeenCalled();
+  await pressEscape();
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it("백업 위치 확인창이 열려 있으면 Esc·바깥 클릭이 관리자 창을 닫지 않는다(입력하던 비밀번호 보존)", async () => {
+  const onClose = await mount();
+  await clickTab("공유 서버");
+  await act(async () => { host.querySelector<HTMLButtonElement>(".fake-backup-open")!.click(); });
+  await pressEscape();
+  await act(async () => { host.querySelector(".admin-backdrop")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+  expect(onClose).not.toHaveBeenCalled();
+  await act(async () => { host.querySelector<HTMLButtonElement>(".fake-backup-close")!.click(); });
   await pressEscape();
   expect(onClose).toHaveBeenCalledTimes(1);
 });

@@ -439,7 +439,8 @@ def test_member_table_main_lists_every_visible_account(isolated):
         conn.executemany(
             "INSERT INTO account(email, name, password_hash, status, creator_uid, hidden) VALUES(?,?,'h',?,?,?)",
             [("m@x", "메인", "approved", "u_m", 0), ("s@x", "서브만", "approved", "acct:s@x", 0),
-             ("n@x", "보고전", "pending", None, 0), ("h@x", "숨김", "rejected", None, 1)],
+             ("n@x", "보고전", "pending", None, 0), ("h@x", "숨김", "rejected", None, 1),
+             ("admin@millionvolt.com", "시스템", "approved", None, 0)],
         )
         conn.executemany(
             "INSERT INTO workspace_member(workspace_id, account_email, creator_uid, user_role, is_selected, is_available) "
@@ -447,7 +448,8 @@ def test_member_table_main_lists_every_visible_account(isolated):
             [("mv", "m@x", "u_m"), ("a", "s@x", "acct:s@x")],
         )
     rows = {r["email"]: r for r in manage_member_table.member_table("mv", with_credit=False)["rows"]}
-    assert list(rows) == ["m@x", "n@x", "s@x"]  # 메인 보고자 먼저, 나머지는 이름순 · 숨김 제외
+    # 메인 보고자 먼저, 나머지는 이름순 · 숨김·시스템 계정 제외(필터 없는 옛 앱에도 안 보이게 — Codex main 검토 P2-1)
+    assert list(rows) == ["m@x", "n@x", "s@x"]
     assert (rows["m@x"]["is_available"], rows["s@x"]["is_available"], rows["s@x"]["project_lock"]) == (True, False, "unlinked")
     assert [r["email"] for r in manage_member_table.member_table("a", with_credit=False)["rows"]] == ["s@x"]
 

@@ -82,6 +82,10 @@ const STATUS_LABEL: Record<string, string> = { approved: "승인", pending: "대
 const short = (label: string | undefined, fallback: string) => (label ? label.split(" · ")[0] : fallback);
 // 크레딧 표기는 공용 계약을 따른다(소수 2자리 — 0.12 를 0 으로 찍던 옛 버릇을 막는다). 이름만 짧게 빌린다.
 type TableSheet = "members" | "projects" | "groups" | "credits";
+
+// 시스템 부트스트랩 계정은 관리 화면 어디에도 보이지 않는다(관리자 창과 같게) — 메인 표·서브 합본 모두(Codex main 검토 P2-1)
+const withoutSystemRows = (table: MemberTableData): MemberTableData =>
+  ({ ...table, rows: table.rows.filter((row) => !isSystemAccountEmail(row.email)) });
 const UNASSIGNED = "__unassigned__";
 const GLOBAL_ROLE_ORDER = ["admin", "production_director", "product_manager", "member"] as const;
 const GLOBAL_ROLE_SET = new Set<string>(GLOBAL_ROLE_ORDER);
@@ -374,8 +378,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
     try {
       const raw = await manageApi.memberTable(workspaceId || undefined);
       if (stale()) return;
-      // 시스템 부트스트랩 계정은 관리 화면 어디에도 보이지 않는다(관리자 창과 같게) — 메인·전체가 가입 계정을 모두 싣는다
-      const next = { ...raw, rows: raw.rows.filter((row) => !isSystemAccountEmail(row.email)) };
+      const next = withoutSystemRows(raw);
       const previous = dataRef.current;
       const ownCredit = ownCreditRef.current;
       const acknowledgedCredit = ownCredit && ownCredit.workspace_id === next.credit?.workspace_id && ownCredit.plan.revision === next.credit.plan.revision;
@@ -439,7 +442,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
       if (subRequestRef.current !== requestId) return;
       setSubTables(mainSubs.map((id, index) => {
         const result = settled[index];
-        return result.status === "fulfilled" ? { id, table: result.value, error: "" } : { id, table: null, error: errorText(result.reason) };
+        return result.status === "fulfilled" ? { id, table: withoutSystemRows(result.value), error: "" } : { id, table: null, error: errorText(result.reason) };
       }));
     });
   }, [mainSubs]);

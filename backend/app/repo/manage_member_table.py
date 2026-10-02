@@ -17,6 +17,9 @@ from . import workspace_console
 from .manage_schema import _ensure_schema
 from ..db import get_connection
 
+# 시스템 부트스트랩 계정 — 프론트 lib/accountIdentity.ts SYSTEM_EMAILS 와 같은 값. 관리 화면 어디에도 보이지 않는다.
+_SYSTEM_EMAILS = frozenset({"admin@millionvolt.com"})
+
 
 def _real_uid(uid: Optional[str]) -> Optional[str]:
     return uid if uid and not str(uid).startswith("acct:") else None
@@ -153,7 +156,8 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
                 (
                     {"email": a["email"], "name": a["name"], "workspace_role": None, "is_available": False, "group_id": None}
                     for a in accounts.values()
-                    if not a["hidden"] and a["email"] not in listed
+                    # 시스템 계정은 넣지 않는다 — 필터가 없는 옛 앱 화면에도 안 보이게(Codex main 검토 P2-1)
+                    if not a["hidden"] and a["email"] not in listed and a["email"].lower() not in _SYSTEM_EMAILS
                 ),
                 key=lambda m: (m["name"] or m["email"]).lower(),
             )

@@ -10,6 +10,7 @@ import {
   type BackupReplicaStatus,
 } from "../../lib/backupReplicaApi";
 import { HttpError, isRouteMissing } from "../../lib/http";
+import { useEscapeClose } from "../../lib/useEscapeClose";
 
 const POLL_MS = 5000;
 const POLL_LIMIT_MS = 30 * 60 * 1000;
@@ -97,7 +98,9 @@ function warnings(status: BackupReplicaStatus): { blockRun: boolean; notes: stri
   return { blockRun, notes };
 }
 
-export function BackupReplicaSection() {
+/** onDialogOpenChange — 비밀번호 확인창이 열렸는지 관리자 창에 알린다. 같은 Esc 를 관리자 창도 받으므로 그쪽은 건너뛰고
+ *  이 확인창만 닫는다(프로젝트 탭과 같은 방식, Codex main 검토 P2-2). 저장 중에는 Esc 로 아무것도 닫지 않는다. */
+export function BackupReplicaSection({ onDialogOpenChange }: { onDialogOpenChange?: (open: boolean) => void } = {}) {
   const [status, setStatus] = useState<BackupReplicaStatus | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const [draft, setDraft] = useState("");
@@ -108,12 +111,16 @@ export function BackupReplicaSection() {
   const [confirmMsg, setConfirmMsg] = useState("");
   const [copying, setCopying] = useState(false);
   const pollRef = useRef<number | null>(null);
+  const deadlineRef = useRef<number | null>(null); // 30분 종료 — 조회가 응답 없이 멈춰도 따로 돈다(Codex 설계 r1)
+  const watchRef = useRef<object | null>(null); // 지금 감시의 표 — 끊은 감시의 늦은 응답이 다음 조회를 예약하지 않게
   const aliveRef = useRef(true);
   const seqRef = useRef(0); // 늦게 온 옛 응답이 새 상태를 덮지 않게
 
   const stopPoll = useCallback(() => {
-    if (pollRef.current !== null) window.clearInterval(pollRef.current);
-    pollRef.current = null;
+    if (pollRef.current !== null) window.clearTimeout(pollRef.current);
+    if (deadlineRef.current !== null) window.clearTimeout(deadlineRef.current);
+    pollRef.current = deadlineRef.current = null;
+    watchRef.current = null;
   }, []);
   useEffect(() => {
     aliveRef.current = true;
@@ -128,33 +135,41 @@ export function BackupReplicaSection() {
     setDraft(next.target || "");
   }, []);
 
-  /** 복사가 끝날 때까지 5초마다 다시 읽는다. start 가 있으면 '이번 실행' 끝, 없으면(이미 돌던 복사) 작업이 멈출 때까지.
-   *  30분 제한은 응답 성공과 무관하게 매 주기 검사한다(통신이 계속 실패해도 멈춘다). */
+  /** 복사가 끝날 때까지 다시 읽는다 — 앞 조회가 끝난 뒤 5초 뒤에 다음 조회(한 번에 하나). 조회가 5초보다 느려도 응답을
+   *  버리지 않는다(예전 setInterval 은 매번 새 요청이 앞 응답을 무효로 만들었다, Codex main 검토 P2-3).
+   *  start 가 있으면 '이번 실행' 끝, 없으면(이미 돌던 복사) 작업이 멈출 때까지. 30분 제한은 따로 도는 타이머다 — 조회가
+   *  응답 없이 멈춰도(요청 제한시간 없음) 끝난다. 끝낸 뒤 늦게 온 응답은 화면도 다음 조회도 바꾸지 못한다(감시 표). */
   const watch = useCallback((start: BackupReplicaRunStart | null) => {
     stopPoll();
     setCopying(true);
-    const began = Date.now();
-    pollRef.current = window.setInterval(() => {
-      if (!aliveRef.current) return stopPoll();
-      if (Date.now() - began > POLL_LIMIT_MS) {
-        stopPoll();
-        setCopying(false);
-        setMsg("확인 시간 초과 — 복사는 서버에서 계속될 수 있습니다. 나중에 다시 열어 확인하세요.");
-        return;
-      }
+    const me = {};
+    watchRef.current = me;
+    deadlineRef.current = window.setTimeout(() => {
+      if (!aliveRef.current || watchRef.current !== me) return;
+      stopPoll();
+      setCopying(false);
+      setMsg("확인 시간 초과 — 복사는 서버에서 계속될 수 있습니다. 나중에 다시 열어 확인하세요.");
+    }, POLL_LIMIT_MS);
+    const tick = () => {
+      pollRef.current = null;
+      if (!aliveRef.current || watchRef.current !== me) return;
       const seq = ++seqRef.current;
       backupReplicaApi
         .status()
         .then((next) => {
-          if (!aliveRef.current || seq !== seqRef.current) return;
+          if (!aliveRef.current || seq !== seqRef.current || watchRef.current !== me) return;
           setStatus(next);
           if (start ? runFinished(next, start) : !next.task?.running) {
             stopPoll();
             setCopying(false);
           }
         })
-        .catch(() => undefined); // 한 번 못 읽어도 다음 주기에 다시 본다
-    }, POLL_MS);
+        .catch(() => undefined) // 한 번 못 읽어도 다음 주기에 다시 본다
+        .finally(() => {
+          if (aliveRef.current && watchRef.current === me) pollRef.current = window.setTimeout(tick, POLL_MS);
+        });
+    };
+    pollRef.current = window.setTimeout(tick, POLL_MS);
   }, [stopPoll]);
 
   useEffect(() => {
@@ -172,6 +187,13 @@ export function BackupReplicaSection() {
         else setMsg(`상태를 읽지 못했습니다(${errText(error)})`);
       });
   }, [apply, watch]);
+
+  useEscapeClose(() => setConfirming(false), confirming && !busy);
+  useEffect(() => {
+    if (!confirming) return;
+    onDialogOpenChange?.(true);
+    return () => onDialogOpenChange?.(false);
+  }, [confirming, onDialogOpenChange]);
 
   const save = async () => {
     if (!status) return;
