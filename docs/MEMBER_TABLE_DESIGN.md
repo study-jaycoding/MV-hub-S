@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-29
+updated: 2026-10-02
 status: active
 ---
 
@@ -91,7 +91,7 @@ touched_paths: `backend/app/manage_db.py` · `backend/app/repo/manage_member_tab
 
 - 권한: **`grant_global` 또는 `grant_project_role`** — `/api/members` 가 계정 상세를 주는 조건과 같다. `read_all` 만으로는 안 된다(감독 등급까지 이메일·가입 상태가 넓어진다). AUTH off 단독 모드는 통과.
 - 프록시: `/api/manage/*` 라 로컬 허브가 공유 서버로 그대로 넘긴다(로컬 목록에 넣지 않는다). 구서버는 404 → 화면은 "공유 서버 업데이트 뒤 표시".
-- 줄 = **계정(이메일)**. 워크스페이스를 고르면 그 워크스페이스 멤버(+그룹 배정이 남은 이메일 + 워크스페이스 프로젝트에 직접 추가된 실제 uid 계정), 안 고르면 숨기지 않은 전체 계정.
+- 줄 = **계정(이메일)**. 워크스페이스를 고르면 그 워크스페이스 멤버(+그룹 배정이 남은 이메일 + 워크스페이스 프로젝트에 직접 추가된 실제 uid 계정), 안 고르면 숨기지 않은 전체 계정. 서브스페이스 **메인**을 고르면 메인 멤버 뒤에 나머지 숨기지 않은 가입 계정도 모두(이름순 · `is_available=false`) — 메인 = 전체 보기(Jay 2026-10-02). 시스템 부트스트랩 계정(`admin@millionvolt.com`)은 화면이 뺀다(관리자 창과 같게).
 - 줄마다 `uid`(로그인 계정의 실제 `creator_uid` 우선, 없으면 워크스페이스 보고의 것 · 없거나 합성 `acct:` 이면 `null`), `project_editable`·`project_lock`(`unlinked` · `uid_conflict` = 두 uid 가 서로 다름), `linked_accounts`(같은 uid 에 묶인 계정 수 — 등급·프로젝트 변경은 묶인 계정 전체에 적용된다).
 - `credit`: 그 워크스페이스의 `get_settings` 결과 전체(그룹 저장에 최신 전체 목록과 `revision` 이 필요하다). `create_project` 가 없으면 `null` — 그룹 칸은 보기만.
 - `projects[].planning`: 프로젝트 시트가 별도 N회 조회하지 않도록 기존 `project_planning` 사이드카 값을 함께 준다.

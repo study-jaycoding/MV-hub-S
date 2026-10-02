@@ -429,6 +429,29 @@ def test_member_table_main_lists_every_linked_sub_project(isolated):
     assert manage_member_table.member_table("a", with_credit=True)["console_subs"] is None
 
 
+def test_member_table_main_lists_every_visible_account(isolated):
+    """메인 = 전체 보기(Jay 2026-10-02): 메인 보고자 + 서브에만 있는 사람 + 아직 보고 전인 가입 계정, 숨긴 계정만 뺀다. 서브는 종전대로."""
+    from app.repo import manage_member_table
+
+    _registry([("mv", "MILLIONVOLT", 0), ("a", "A", 0)])
+    console.overview()  # 시드: mv=메인, a=서브
+    with db.get_connection() as conn:
+        conn.executemany(
+            "INSERT INTO account(email, name, password_hash, status, creator_uid, hidden) VALUES(?,?,'h',?,?,?)",
+            [("m@x", "메인", "approved", "u_m", 0), ("s@x", "서브만", "approved", "acct:s@x", 0),
+             ("n@x", "보고전", "pending", None, 0), ("h@x", "숨김", "rejected", None, 1)],
+        )
+        conn.executemany(
+            "INSERT INTO workspace_member(workspace_id, account_email, creator_uid, user_role, is_selected, is_available) "
+            "VALUES(?,?,?,'member',1,1)",
+            [("mv", "m@x", "u_m"), ("a", "s@x", "acct:s@x")],
+        )
+    rows = {r["email"]: r for r in manage_member_table.member_table("mv", with_credit=False)["rows"]}
+    assert list(rows) == ["m@x", "n@x", "s@x"]  # 메인 보고자 먼저, 나머지는 이름순 · 숨김 제외
+    assert (rows["m@x"]["is_available"], rows["s@x"]["is_available"], rows["s@x"]["project_lock"]) == (True, False, "unlinked")
+    assert [r["email"] for r in manage_member_table.member_table("a", with_credit=False)["rows"]] == ["s@x"]
+
+
 def test_workspace_options_carry_console_tier(isolated):
     """대시보드 선택기의 메인·서브 칩 — 메인·연결된 서브만, 내린 서브·미연결은 None."""
     from app.repo import identity

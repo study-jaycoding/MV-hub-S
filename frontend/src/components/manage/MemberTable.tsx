@@ -29,6 +29,7 @@ import {
   type DraftTopup,
   type LimitPeriod,
 } from "../../lib/creditPlan";
+import { isSystemAccountEmail } from "../../lib/accountIdentity";
 import { formatCredits as credits } from "../../lib/formatCredits";
 import { isHttpStatus, isRouteMissing } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
@@ -371,8 +372,10 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
     const epoch = epochRef.current;
     const stale = () => requestRef.current !== requestId || epochRef.current !== epoch;
     try {
-      const next = await manageApi.memberTable(workspaceId || undefined);
+      const raw = await manageApi.memberTable(workspaceId || undefined);
       if (stale()) return;
+      // 시스템 부트스트랩 계정은 관리 화면 어디에도 보이지 않는다(관리자 창과 같게) — 메인·전체가 가입 계정을 모두 싣는다
+      const next = { ...raw, rows: raw.rows.filter((row) => !isSystemAccountEmail(row.email)) };
       const previous = dataRef.current;
       const ownCredit = ownCreditRef.current;
       const acknowledgedCredit = ownCredit && ownCredit.workspace_id === next.credit?.workspace_id && ownCredit.plan.revision === next.credit.plan.revision;

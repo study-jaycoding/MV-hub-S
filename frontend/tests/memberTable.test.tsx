@@ -165,6 +165,14 @@ it("엑셀 시트처럼 멤버·프로젝트·그룹·크레딧 정보가 서로
   expect(host.textContent).toContain("b@x");
 });
 
+it("시스템 부트스트랩 계정은 표·멤버 수에서 빠진다", async () => {
+  mocks.memberTable.mockResolvedValue(table(1, [row("a@x"), row("admin@millionvolt.com")]));
+  await mount();
+
+  expect(host.textContent).not.toContain("admin@millionvolt.com");
+  expect(tab("멤버").textContent).toBe("멤버 1");
+});
+
 it("전역 역할과 프로젝트 역할은 행마다 같은 고정 슬롯 순서로 보인다", async () => {
   mocks.memberTable.mockResolvedValue(table(1, [row("a@x", {
     global_roles: ["member", "product_manager", "admin", "production_director"],

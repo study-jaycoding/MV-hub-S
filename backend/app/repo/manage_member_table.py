@@ -23,7 +23,7 @@ def _real_uid(uid: Optional[str]) -> Optional[str]:
 
 
 def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str, Any]:
-    """workspace_id 가 있으면 그 워크스페이스 멤버(+그룹 배정만 남은 이메일), 없으면 숨기지 않은 전체 계정.
+    """workspace_id 가 있으면 그 워크스페이스 멤버(+그룹 배정만 남은 이메일 · 메인이면 나머지 가입 계정도), 없으면 숨기지 않은 전체 계정.
     with_credit=False 면 그룹 설정 원문(credit)은 주지 않는다(줄의 group_id 는 준다)."""
     settings = credit_plan.get_settings(workspace_id) if workspace_id else None
     with get_connection() as conn:
@@ -146,6 +146,17 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
                 "group_id": None,
             })
             base_uids.add(uid)
+        if main_row:
+            # 메인 = 전체 보기(Jay 2026-10-02) — 메인 보고가 없는 가입 계정(서브에만 있거나 아직 보고 전)도 모두 싣는다
+            listed = {m["email"] for m in base}
+            base += sorted(
+                (
+                    {"email": a["email"], "name": a["name"], "workspace_role": None, "is_available": False, "group_id": None}
+                    for a in accounts.values()
+                    if not a["hidden"] and a["email"] not in listed
+                ),
+                key=lambda m: (m["name"] or m["email"]).lower(),
+            )
     else:
         base = [
             {"email": a["email"], "name": a["name"], "workspace_role": None, "is_available": None, "group_id": None}
