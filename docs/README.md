@@ -6,7 +6,7 @@ tags:
   - mvhub
   - mvhub/문서
 status: active
-updated: 2026-09-30
+updated: 2026-10-03
 ---
 
 # MV Hub 개발 문서 안내
