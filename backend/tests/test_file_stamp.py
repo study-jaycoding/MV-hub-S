@@ -166,14 +166,14 @@ class StampFailureIsHarmlessTests(unittest.TestCase):
             path.write_bytes(original)
             seen_args: list[str] = []
 
-            def fake_run(args, **_kwargs):
+            def fake_popen(args, **_kwargs):
                 seen_args.extend(args)
                 Path(args[-1]).write_bytes(b"stamped-video-container")
-                return SimpleNamespace(returncode=0, stderr=b"")
+                return SimpleNamespace(returncode=0, communicate=lambda timeout=None: (None, b""), poll=lambda: 0)
 
             with (
                 mock.patch.object(file_stamp, "_ffmpeg", return_value="ffmpeg"),
-                mock.patch.object(file_stamp.subprocess, "run", side_effect=fake_run),
+                mock.patch.object(file_stamp.subprocess, "Popen", side_effect=fake_popen),
                 mock.patch.object(
                     file_stamp.os,
                     "replace",
@@ -190,6 +190,79 @@ class StampFailureIsHarmlessTests(unittest.TestCase):
             }
             self.assertEqual(metadata, {f"{key}={value}" for key, value in TAGS.items()})
             self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(list(path.parent.iterdir()), [path])
+
+    def test_video_stamp_stops_ffmpeg_when_cancelled(self):
+        # 09-23 점검: 동기 대기(최대 5분)라 완료본 저장의 [취소]가 파일 하나를 다 기다렸다. 이제 기다리는 사이에 본다.
+        class StuckFfmpeg:
+            returncode = None
+            killed = False
+            reaped = False
+            waits = 0
+
+            def communicate(self, timeout=None):
+                self.waits += 1
+                if self.killed:
+                    self.reaped = True  # 죽인 뒤 회수했다(좀비·파이프를 남기지 않게)
+                if not self.killed and self.waits <= 10:  # 취소를 안 보면 10번 뒤 스스로 끝난다 — 시험이 멈추지 않고 실패하게
+                    raise subprocess.TimeoutExpired("ffmpeg", timeout)
+                self.returncode = self.returncode if self.killed else 0
+                return None, b""
+
+            def kill(self):
+                self.killed = True
+                self.returncode = 1
+
+            def poll(self):
+                return self.returncode
+
+        proc = StuckFfmpeg()
+        asked: list[int] = []
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "clip.mp4"
+            path.write_bytes(b"original-video-container")
+            with (
+                mock.patch.object(file_stamp, "_ffmpeg", return_value="ffmpeg"),
+                mock.patch.object(file_stamp.subprocess, "Popen", return_value=proc),
+            ):
+                self.assertFalse(file_stamp.stamp_file(path, TAGS, should_cancel=lambda: asked.append(1) or len(asked) >= 2))
+
+            self.assertTrue(proc.killed and proc.reaped)
+            self.assertEqual(len(asked), 2)
+            self.assertEqual(path.read_bytes(), b"original-video-container")  # 원본은 그대로 — 저장은 각인 없이 이어진다
+            self.assertEqual(list(path.parent.iterdir()), [path])
+
+    def test_video_stamp_error_while_waiting_still_stops_ffmpeg(self):
+        # Codex 리뷰: 기다리던 중 예외(I/O·콜백)면 False 만 돌려주고 ffmpeg 를 남겼다 — 임시 파일도 쥔 채로.
+        class BrokenPipe:
+            returncode = None
+            killed = False
+            reaped = False
+
+            def communicate(self, timeout=None):
+                if not self.killed:
+                    raise OSError("pipe broke")
+                self.reaped = True
+                return None, b""
+
+            def kill(self):
+                self.killed = True
+                self.returncode = 1
+
+            def poll(self):
+                return self.returncode
+
+        proc = BrokenPipe()
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "clip.mp4"
+            path.write_bytes(b"original-video-container")
+            with (
+                mock.patch.object(file_stamp, "_ffmpeg", return_value="ffmpeg"),
+                mock.patch.object(file_stamp.subprocess, "Popen", return_value=proc),
+            ):
+                self.assertFalse(file_stamp.stamp_file(path, TAGS))
+            self.assertTrue(proc.killed and proc.reaped)
+            self.assertEqual(path.read_bytes(), b"original-video-container")
             self.assertEqual(list(path.parent.iterdir()), [path])
 
 

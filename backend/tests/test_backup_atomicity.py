@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import sqlite3
 import tempfile
 import time
@@ -13,6 +14,9 @@ from unittest import mock
 from app import db, repo
 from app.services import backup
 from app.services.sqlite_db import HubDbValidationError
+
+# 이 모듈이 만든 임시 이름(.<접두>_<시각>.db.tmp-<8hex>)의 곁파일만 — 대소문자를 가린다(남의 대문자 .tmp 파일에 걸리지 않게)
+_TMP_SIDECAR = re.compile(r"\.db\.tmp-[0-9a-f]{8}-(wal|shm)$")
 
 
 class BackupAtomicityTests(unittest.TestCase):
@@ -178,6 +182,19 @@ class BackupAtomicityTests(unittest.TestCase):
         self.assertEqual(
             set(info["files"]), {primary.name, trash_copy.name, manage_copy.name}
         )
+
+    def test_wal_sidecar_dbs_leave_no_temp_named_wal_or_shm(self):
+        # 2026-10-03 L5-1: 휴지통·관리 DB(운영은 WAL)의 임시 사본을 읽기 전용으로 검증하면 SQLite 가 만든 -wal/-shm 을 닫을 때
+        # 못 지워, 백업할 때마다 임시 이름의 곁파일이 4개씩 남았다(실측 116·44·4개).
+        for name, ddl in (("content_hub_trash.db", "CREATE TABLE trashed(id TEXT PRIMARY KEY)"),
+                          ("manage_hub.db", "CREATE TABLE team_generation_fact(id TEXT PRIMARY KEY)")):
+            with closing(sqlite3.connect(self.root / name)) as conn:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute(ddl)
+                conn.commit()
+        backup.backup_now(stamp="20260813_120000_000003")
+        leftovers = [p.name for p in self.backup_dir.iterdir() if _TMP_SIDECAR.search(p.name)]
+        self.assertEqual(leftovers, [])
 
     def test_manage_db_outside_content_folder_is_still_backed_up(self):
         # 계정 로그인 시 콘텐츠 DB는 acct/<slug>/ 아래로 가지만 manage_hub.db 는 고정

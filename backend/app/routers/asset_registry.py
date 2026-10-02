@@ -99,14 +99,15 @@ def lookup_for_request(
 ) -> Optional[dict[str, Any]]:
     """레퍼런스 찾기(assets.locate)가 대장 후보를 묻는다. 실패·옛 서버(404)·대장 없음이면 None — 부르는 쪽은
     지금의 직접 훑기로 넘어간다. 한 번에 _MAX_KEYS 개까지만 묻는다(넘치는 것은 직접 훑기가 맡는다)."""
-    body = LookupIn(
-        ids=list(dict.fromkeys(i for i in ids if i))[:_MAX_KEYS],
-        shas=[ShaKey(sha256=s, bytes=b) for s, b in list(dict.fromkeys(shas))[:_MAX_KEYS]],
-        tails=list(dict.fromkeys(tails))[:_MAX_KEYS],
-    )
-    if not (body.ids or body.shas or body.tails):
-        return None
     try:
+        # 입력 검사도 try 안 — 1024자 넘는 경로 꼬리 하나가 묶음 전체를 500 으로 만들지 않게(2026-10-03 점검 L1-4·CXB-2)
+        body = LookupIn(
+            ids=list(dict.fromkeys(i for i in ids if i))[:_MAX_KEYS],
+            shas=[ShaKey(sha256=s, bytes=b) for s, b in list(dict.fromkeys(shas))[:_MAX_KEYS]],
+            tails=list(dict.fromkeys(tails))[:_MAX_KEYS],
+        )
+        if not (body.ids or body.shas or body.tails):
+            return None
         if _proxy.proxying():
             return _proxy.proxy_json("POST", "/api/asset-registry/lookup", body=body.model_dump(), timeout=10)
         return lookup_local(body, visible_project_ids(request))

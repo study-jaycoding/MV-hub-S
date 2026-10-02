@@ -173,6 +173,15 @@ class LocateWithRegistryTests(unittest.TestCase):
             rid = registry.registry_rows(conn, PID)[0]["registry_asset_id"]
         self.assertEqual(reply["open_ids"], {"asset:PM|assets/CH/m/a.png": rid})
 
+    def test_an_open_reference_is_checked_on_disk_only_once(self) -> None:
+        # 2026-10-03 L1-3: 대장 단계와 본 루프가 같은 참조의 '이 PC 에서 열리나'를 따로 물어 NAS 왕복이 두 배였다.
+        self.put("assets/CH/m/a.png", b"A")
+        self.scan()
+        with patch.object(assets, "_safe_resolve", wraps=assets._safe_resolve) as lookups:
+            reply = self.locate(["asset:PM|assets/CH/m/a.png"])
+        self.assertEqual(reply["open"], ["asset:PM|assets/CH/m/a.png"])
+        self.assertEqual(lookups.call_count, 2)  # 참조 자신 1번 + 대장 후보(local_of) 1번 — 전에는 참조를 한 번 더 물어 3번
+
     def test_incomplete_scan_is_not_trusted(self) -> None:
         self.put("assets/CH/m/face.png", b"FACE")
         self.scan()
@@ -214,6 +223,13 @@ class LocateWithRegistryTests(unittest.TestCase):
         self.assertEqual([(f["project"], f["path"]) for f in reply["fixed"]], [("PM", "assets/CH/m/b.png")])
         self.assertNotIn("registry_asset_id", reply["fixed"][0])
         self.assertEqual(reply["open_ids"], {})
+
+    def test_one_overlong_path_does_not_break_the_whole_batch(self) -> None:
+        # 2026-10-03 점검(L1-4·CXB-2): 대장 조회의 입력 검사(꼬리 1024자)가 try 밖이라 긴 경로 하나가 묶음 전체를 500 으로 만들었다.
+        self.put("assets/CH/m/b.png", b"B")
+        overlong = "asset:PM_RnD|" + "/".join(["x" * 100] * 11) + "/far.png"
+        reply = self.locate(["asset:PM_RnD|CH/m/b.png", overlong])
+        self.assertIn(("PM", "assets/CH/m/b.png"), [(f["project"], f["path"]) for f in reply["fixed"]])
 
 
 class RegistryApiTests(unittest.TestCase):

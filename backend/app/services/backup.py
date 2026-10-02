@@ -236,8 +236,11 @@ def _cleanup_stale_tmp(d: Path) -> None:
 
 
 def _validate_sidecar(path: Path, expected_table: str) -> None:
-    """휴지통/관리 DB의 SQLite 무결성과 핵심 테이블 존재를 확인한다."""
-    with contextlib.closing(sqlite3.connect(read_only_uri(path), uri=True)) as conn:
+    """휴지통/관리 DB의 SQLite 무결성과 핵심 테이블 존재를 확인한다.
+
+    path 는 방금 backup API 로 만들고 연결을 닫은 임시 사본이다(짝 -wal 없음) — immutable 로 연다. 아니면 읽기 전용 연결이
+    만든 -wal/-shm 을 닫을 때 못 지워 백업마다 임시 이름 곁파일이 4개씩 남았다(2026-10-03 L5-1). 실제 DB 를 여는 곳은 그대로."""
+    with contextlib.closing(sqlite3.connect(read_only_uri(path, immutable=True), uri=True)) as conn:
         result = conn.execute("PRAGMA quick_check").fetchone()
         if not result or result[0] != "ok":
             raise sqlite3.DatabaseError(f"quick_check failed: {result}")

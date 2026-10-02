@@ -9,6 +9,7 @@ import sqlite3
 import struct
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -198,6 +199,31 @@ class ProjectThumbnailTests(unittest.TestCase):
 
         self.assertEqual(lib._thumb_cache, {})
 
+    def test_cache_across_libraries_is_capped_and_drops_the_least_recently_used(self):
+        # 09-23 점검: 정리는 지금 연 라이브러리만 훑어서, 라이브러리를 오갈수록 캐시가 끝없이 늘었다.
+        roots = {}
+        for name in ("A", "B", "C"):
+            roots[name] = self.root / name
+            _make_project(roots[name], "Shot", [JPEG + b"x" * 64])
+        _thumbs(roots["A"])
+        one = lib._THUMB_ENTRY_BYTES + sum(len(frame) for frame in next(iter(lib._thumb_cache.values()))[0])
+        with mock.patch.object(lib, "_THUMB_CACHE_MAX_BYTES", one * 2):
+            _thumbs(roots["B"])
+            _thumbs(roots["A"])  # A 를 다시 봤다 — 가장 오래 안 쓴 것은 B
+            _thumbs(roots["C"])
+        cached = {Path(key[0]).parts[-7] for key in lib._thumb_cache}  # <라이브러리>/Resolve Projects/Users/guest/Projects/Shot/Project.db
+        self.assertEqual(cached, {"a", "c"})  # 키 경로는 normcase(소문자)
+
+    def test_projects_without_pictures_still_count_toward_the_cap(self):
+        # Codex 리뷰: 그림 문자열만 세면 그림 없는 항목은 0바이트라 상한이 1바이트여도 끝없이 쌓였다.
+        roots = [self.root / name for name in ("A", "B", "C")]
+        for root in roots:
+            _make_project(root, "Shot", [b"not-a-jpeg"])
+        with mock.patch.object(lib, "_THUMB_CACHE_MAX_BYTES", lib._THUMB_ENTRY_BYTES * 2):
+            for root in roots:
+                lib.project_cards(root)
+        self.assertEqual(len(lib._thumb_cache), 2)
+
 
 class ProjectDetailTests(unittest.TestCase):
     """카드 정보(타임라인 수·해상도·fps) — 그림과 같은 복사본에서 읽는다(2026-09-22)."""
@@ -265,6 +291,33 @@ class ProjectDetailTests(unittest.TestCase):
 
         self.assertEqual(set(reply), {"thumbnails", "details"})
         self.assertEqual(reply["details"]["/Mud_Ai"]["timelines"], 1)
+
+    def test_slow_nas_path_lookup_does_not_stall_the_hub(self):
+        # 2026-10-03 점검(L1-1·CXB-3): NAS 경로 해석이 async 라우트에서 바로 돌아, 느린 SMB 동안 허브의 다른 요청이 다 섰다.
+        block = 0.3
+        _make_project(self.root, "Mud_Ai", [JPEG + b"one"])
+
+        def slow_root(*_args):
+            time.sleep(block)  # 죽은 SMB 의 resolve()/is_dir() 를 흉내 낸다
+            return self.root
+
+        async def run() -> float:
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            lag: list[float] = []
+
+            async def heartbeat():
+                await asyncio.sleep(0.01)
+                lag.append(loop.time() - started)
+
+            beat = asyncio.create_task(heartbeat())
+            await assets.list_resolve_library_thumbnails(mock.Mock(), project="p", dir="@davinci")
+            await beat
+            return lag[0]
+
+        with mock.patch.object(assets, "_resolve_davinci_root", side_effect=slow_root):
+            lag = asyncio.run(run())
+        self.assertLess(lag, block / 2, f"이벤트 루프가 막혔다 — 10ms 타이머가 {lag:.3f}s 에 실행")
 
 
 class LaunchResolveTests(unittest.TestCase):
@@ -360,6 +413,37 @@ class ResolveOpenRouteStatusTests(unittest.TestCase):
                 return asyncio.run(assets.open_resolve_library_project(body, mock.Mock())), open_project
             except HTTPException as exc:
                 return exc, open_project
+
+    def test_slow_nas_path_lookup_does_not_stall_the_hub_on_open(self):
+        # L1-1 — 썸네일뿐 아니라 열기·연결 라우트도 경로 해석을 스레드로(Codex 리뷰: 시험이 썸네일만 지켰다).
+        block = 0.3
+
+        def slow_root(*_args):
+            time.sleep(block)
+            return Path("Z:/x/@davinci")
+
+        async def run() -> float:
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            lag: list[float] = []
+
+            async def heartbeat():
+                await asyncio.sleep(0.01)
+                lag.append(loop.time() - started)
+
+            beat = asyncio.create_task(heartbeat())
+            body = assets.ResolveProjectOpenIn(project="p", dir="@davinci", name="Mud_Ai")
+            await assets.open_resolve_library_project(body, mock.Mock())
+            await beat
+            return lag[0]
+
+        with (
+            mock.patch.object(assets, "require_loopback_browser_request"),
+            mock.patch.object(assets, "_resolve_davinci_root", side_effect=slow_root),
+            mock.patch.object(assets.resolve_project_library, "open_disk_project", return_value={"status": "complete"}),
+        ):
+            lag = asyncio.run(run())
+        self.assertLess(lag, block / 2, f"이벤트 루프가 막혔다 — 10ms 타이머가 {lag:.3f}s 에 실행")
 
     def test_resolve_not_ready_is_503_so_the_screen_starts_it(self):
         # resolve_busy·launching 도 기다리면 풀린다 — 화면이 다시 시도하게 503(Codex P1).

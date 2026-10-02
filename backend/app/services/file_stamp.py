@@ -18,9 +18,10 @@ import os
 import struct
 import subprocess
 import tempfile
+import time
 import zlib
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .video_convert import find_ffmpeg
 
@@ -167,7 +168,9 @@ def stamp_bytes(data: bytes, tags: dict[str, str]) -> bytes:
     return data
 
 
-def stamp_file(path: Path, tags: dict[str, str], suffix: Optional[str] = None) -> bool:
+def stamp_file(
+    path: Path, tags: dict[str, str], suffix: Optional[str] = None, should_cancel: Optional[Callable[[], bool]] = None
+) -> bool:
     """디스크 파일에 각인한다(제자리 교체). 성공하면 True, 못 하면 원본 유지 후 False.
 
     이미지는 바이트를 다시 쓰고, 영상은 ffmpeg 로 컨테이너만 다시 쓴다(-c copy = 재인코딩 없음).
@@ -175,6 +178,7 @@ def stamp_file(path: Path, tags: dict[str, str], suffix: Optional[str] = None) -
 
     suffix: 최종 확장자를 따로 알려준다. 저장 중인 임시 파일(`clip.mp4.<uuid>.part`)은 이름만
     보면 형식을 알 수 없어, 영상인데도 이미지 경로로 새어 각인이 조용히 빠진다.
+    should_cancel: 영상 각인(ffmpeg)을 기다리는 동안 0.25초마다 묻는다 — 참이면 ffmpeg 를 멈추고 각인만 건너뛴다.
     """
     if not tags:
         return False
@@ -183,7 +187,7 @@ def stamp_file(path: Path, tags: dict[str, str], suffix: Optional[str] = None) -
     try:
         suffix = (suffix or path.suffix).lower()
         if suffix in _FFMPEG_EXTS:
-            return _stamp_video_file(path, tags, suffix)
+            return _stamp_video_file(path, tags, suffix, should_cancel)
         data = path.read_bytes()
         stamped = stamp_bytes(data, tags)
         if stamped is data or len(stamped) == len(data):
@@ -205,7 +209,9 @@ def stamp_file(path: Path, tags: dict[str, str], suffix: Optional[str] = None) -
                 pass
 
 
-def _stamp_video_file(path: Path, tags: dict[str, str], suffix: str) -> bool:
+def _stamp_video_file(
+    path: Path, tags: dict[str, str], suffix: str, should_cancel: Optional[Callable[[], bool]] = None
+) -> bool:
     ffmpeg = _ffmpeg()
     if not ffmpeg:
         log.info("각인 생략(영상) — 이 PC 에 ffmpeg 가 없습니다: %s", path.name)
@@ -213,6 +219,7 @@ def _stamp_video_file(path: Path, tags: dict[str, str], suffix: str) -> bool:
     # 출력 확장자로 컨테이너를 정하므로 임시 파일도 진짜 확장자로 끝나야 한다(`.part` 면 ffmpeg 가
     # 형식을 몰라 실패한다).
     tmp: Path | None = None
+    proc: subprocess.Popen | None = None
     replaced = False
     # -map 은 주지 않는다. Resolve 출력처럼 타임코드(tmcd) 트랙이 있는 파일은 그걸 그대로
     # 복사하려다 mp4 재기록에 실패한다(실측 2026-08-18). 기본 매핑이면 영상·음성만 복사된다.
@@ -223,9 +230,20 @@ def _stamp_video_file(path: Path, tags: dict[str, str], suffix: str) -> bool:
     try:
         tmp = _new_stamp_tmp(path, suffix=f".stamp{suffix}")
         args.append(str(tmp))
-        done = subprocess.run(args, capture_output=True, timeout=300)
-        if done.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
-            log.warning("각인 생략(영상) — ffmpeg 실패: %s", done.stderr[-300:].decode("utf-8", "replace"))
+        # 동기로 끝까지 기다리면 한 파일에서 최대 5분 멈추고 [취소]도 그 뒤에야 먹었다(09-23 점검) — 0.25초마다 취소·시간을 본다.
+        proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        deadline = time.monotonic() + 300
+        while True:
+            try:
+                _out, err = proc.communicate(timeout=0.25)
+                break
+            except subprocess.TimeoutExpired:
+                cancelled = bool(should_cancel and should_cancel())
+                if cancelled or time.monotonic() > deadline:
+                    log.warning("각인 생략(영상) — %s: %s", "취소" if cancelled else "시간 초과", path.name)
+                    return False
+        if proc.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+            log.warning("각인 생략(영상) — ffmpeg 실패: %s", (err or b"")[-300:].decode("utf-8", "replace"))
             return False
         os.replace(tmp, path)
         replaced = True
@@ -234,6 +252,13 @@ def _stamp_video_file(path: Path, tags: dict[str, str], suffix: str) -> bool:
         log.warning("각인 생략(영상) — %s", e)
         return False
     finally:
+        # 취소·시간 초과·예외 어느 쪽이든 아직 도는 ffmpeg 는 멈추고 회수한다 — 임시 파일을 쥔 채로는 지울 수도 없다(Codex 리뷰).
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()  # Windows 에선 terminate 와 같다
+                proc.communicate(timeout=10)
+            except Exception:  # noqa: BLE001
+                pass
         # ffmpeg 실패뿐 아니라 교체 실패·취소에도 미교체 출력만 남지 않게 한다.
         if tmp is not None and not replaced:
             try:

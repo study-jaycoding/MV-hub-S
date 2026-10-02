@@ -11,6 +11,7 @@ import struct
 import subprocess
 import tempfile
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -208,8 +209,11 @@ _FORMATS_SQL = (
     "WHERE m.DbPropertyName = 'TimelineHandleVec' LIMIT ?"
 )
 _MAX_INFO_TIMELINES = 500
-# 캐시 값 = (그림 base64 목록, 카드 정보)
-_thumb_cache: dict[tuple[str, int, int], tuple[list[str], dict[str, Any]]] = {}
+# 캐시 값 = (그림 base64 목록, 카드 정보). 라이브러리를 오가도 끝없이 늘지 않게 전체 바이트 상한 + 가장 오래 안 쓴 것부터
+# 버린다(09-23 점검 — 정리는 지금 연 라이브러리만 훑는다). 기한은 두지 않는다 — 다시 오면 NAS 에서 또 복사할 뿐이다.
+_THUMB_CACHE_MAX_BYTES = 64 * 1024 * 1024
+_THUMB_ENTRY_BYTES = 1024  # 항목마다 키·정보 dict 몫 — 그림 없는 항목도 상한에 들게(Codex 리뷰: 빈 항목은 0바이트로 끝없이 쌓였다)
+_thumb_cache: OrderedDict[tuple[str, int, int], tuple[list[str], dict[str, Any]]] = OrderedDict()
 _thumb_lock = threading.Lock()
 
 
@@ -323,12 +327,18 @@ def project_cards(library_root: Path) -> dict[str, dict[str, Any]]:
         seen.add(key)
         with _thumb_lock:
             cached = _thumb_cache.get(key)
+            if cached is not None:
+                _thumb_cache.move_to_end(key)
         if cached is None:
-            cached = _read_project(project_db)
+            cached = _read_project(project_db)  # 복사·인코딩은 잠그지 않는다
             if cached is None:
                 continue
             with _thumb_lock:
                 _thumb_cache[key] = cached
+                size = sum(_THUMB_ENTRY_BYTES + sum(map(len, frames)) for frames, _info in _thumb_cache.values())
+                while size > _THUMB_CACHE_MAX_BYTES and len(_thumb_cache) > 1:
+                    _old, (frames, _info) = _thumb_cache.popitem(last=False)
+                    size -= _THUMB_ENTRY_BYTES + sum(map(len, frames))
         frames, info = cached
         card_key = f"{item['folder_path']}/{item['name']}"
         if frames:

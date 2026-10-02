@@ -1,6 +1,7 @@
 """워크스페이스 콘솔(서브스페이스 탭) — 메인·서브 표식·연결·메인 지정·조율 개요(docs/WORKSPACE_CONSOLE_DESIGN.md)."""
 
 import json
+import sqlite3
 
 import pytest
 from fastapi import FastAPI
@@ -8,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app import db, deps, manage_db
 from app.repo import event_journal, manage_credit_plan as credit, manage_schema
-from app.repo import workspace_console as console
+from app.repo import console_guard, workspace_console as console
 from app.routers import manage as routes
 from app.routers import workspace_console as console_routes
 
@@ -473,3 +474,13 @@ def test_workspace_options_carry_console_tier(isolated):
                          [("pa", "PA", "a", 5), ("pd", "PD", "d", 1), ("pe", "PE", "e", 0)])
     order = {w["id"]: w["console_order"] for w in identity.list_workspace_options() if w["console_order"] is not None}
     assert sorted(order, key=order.get) == ["mv", "d", "a", "e"]
+
+
+def test_guard_passes_on_a_db_without_manage_tables():
+    # 2026-10-03 점검 CXB-1: CONTENT_HUB_MANAGE=0 DB 에는 콘솔 표가 없다 — 프로젝트 보관이 'no such table' 500 이 됐다(기준 커밋은 성공).
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE project (id TEXT PRIMARY KEY, workspace_id TEXT)")
+    conn.execute("INSERT INTO project VALUES ('p1', 'ws-1')")
+    assert console_guard.managed_sub(conn, "ws-1") is None
+    console_guard.guard_project_change(conn, "p1", archived=True)  # 예외 없이 통과

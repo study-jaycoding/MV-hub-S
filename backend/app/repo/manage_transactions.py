@@ -109,8 +109,11 @@ def _find_account_transaction(
         return None
     identity = (transaction.get("created_at"), transaction.get("credits"),
                 transaction.get("action"), transaction.get("display_name"))
+    # 앞의 두 조건은 부분 UNIQUE 색인(idx_credit_txn_stable_identity)의 WHERE 와 같아야 SQLite 가 그 색인(이메일 선두 열)을 쓴다 —
+    # 없으면 거래 1건마다 표 전체를 훑었다(2026-10-03 L2-2, 쓰기 잠금 안). 빈 키는 위에서 이미 걸렀으니 뜻은 같다.
     row = conn.execute(
-        "SELECT id, workspace_id, model, account_email FROM credit_txn WHERE LOWER(TRIM(account_email))=? "
+        "SELECT id, workspace_id, model, account_email FROM credit_txn WHERE account_email IS NOT NULL "
+        "AND TRIM(account_email)<>'' AND LOWER(TRIM(account_email))=? "
         "AND created_at IS ? AND credits IS ? AND action IS ? "
         "AND display_name IS ? LIMIT 1",
         (account_key, *identity),
@@ -462,6 +465,8 @@ def ledger_totals(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     account_email: Optional[str] = None,
+    time_from: Optional[str] = None,
+    time_to: Optional[str] = None,
 ) -> dict[str, Any]:
     """거래 원장 합계 — 사용 · 환불 · 순사용.
 
@@ -490,6 +495,11 @@ def ledger_totals(
         base.append(("julianday(created_at) >= julianday(?, 'utc')", [date_from]))
     if date_to:
         base.append(("julianday(created_at) < julianday(?, '+1 day', 'utc')", [date_to]))
+    # 시각 경계 — 팩트(`manage_db._agg_where`)와 같은 식. 시간 단위 차트의 '전체 적용'에서 장부만 하루 전체가 되던 것(2026-10-03 L2-1).
+    if time_from:
+        base.append(("julianday(created_at) >= julianday(datetime(?), 'utc')", [time_from]))
+    if time_to:
+        base.append(("julianday(created_at) < julianday(datetime(?), '+1 second', 'utc')", [time_to]))
     # ★`None` 만 전체다. 빈 문자열도 제한 조회로 본다 — `if account_email:` 이면 호출자가
     #  빈 이메일을 넘겼을 때 조용히 전체가 열린다(권한이 뚫리는 자리).
     if account_email is not None:

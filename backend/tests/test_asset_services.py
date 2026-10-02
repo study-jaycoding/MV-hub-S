@@ -437,7 +437,7 @@ class AssetIoTests(unittest.TestCase):
                 patch.object(assets, "to_thread_non_abandon", side_effect=non_abandon),
             ):
                 result = asyncio.run(
-                    assets.upload_capture(SimpleNamespace(), project="proj", file=upload)
+                    assets.upload_capture(SimpleNamespace(), file=upload)
                 )
 
             self.assertEqual(result["project"], "captures")

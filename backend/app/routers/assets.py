@@ -1068,12 +1068,12 @@ async def _upload_files_loop(
 
 
 @router.post("/capture", dependencies=[Depends(_require_local_assets)])
-async def upload_capture(request: Request, project: str = Form(""), file: UploadFile = File(...)):
+async def upload_capture(request: Request, file: UploadFile = File(...)):
     """붙여넣은 그림·부분수정 결과를 **이 PC 설치 폴더의 captures** 에 저장 + asset 토큰용 정보 반환.
 
     ★2026-09-29 Jay "옛 방식으로 해야한다": 09-28 에 프로젝트 폴더(NAS)로 옮겼던 것을 되돌렸다.
-    그 PC 에만 있으므로 캔버스가 빨간 테두리·오른쪽 위 마크로 알린다. project 폼 값은 하위호환으로
-    받되 쓰지 않는다."""
+    그 PC 에만 있으므로 캔버스가 빨간 테두리·오른쪽 위 마크로 알린다. 옛 앱이 보내는 project 폼 값은
+    인자로 받지 않는다 — FastAPI 는 모르는 폼 필드를 거부하지 않으므로 하위호환은 그대로다(2026-10-03 L1-7)."""
     _validate_upload_batch([file])
     project = "captures"  # 응답 토큰도 asset:captures|… 로 고정(같은 이름의 등록 폴더로 새지 않게)
     proj_dir = cap_dir = (ASSETS_ROOT / project).resolve()
@@ -1705,9 +1705,13 @@ def locate_legacy_assets(body: LocateIn, request: Request):
 
         # 이미 이 PC 에서 열리는 참조는 손대지 않는다 — 멀쩡한 것을 옮기면 더 나빠진다.
         if not internal:
-            current = project_dir_of(old_project)
-            here = _safe_resolve(current, rest) if current else None
-            if here and here.is_file():
+            if token in pre:
+                here = pre[token]["open"]  # 대장 단계에서 is_file 까지 확인한 값 — NAS 를 두 번 묻지 않는다(2026-10-03 L1-3)
+            else:
+                current = project_dir_of(old_project)
+                here = _safe_resolve(current, rest) if current else None
+                here = here if here and here.is_file() else None
+            if here:
                 unresolved.append(token)
                 note(token, opened)
                 continue
@@ -2110,7 +2114,9 @@ async def list_resolve_library_thumbnails(
 
     표시 전용 — 못 읽은 것은 빠진다. {"thumbnails": {...}, "details": {...}}(details 는 2026-09-22 추가).
     """
-    target = _resolve_davinci_root(project, dir, request)
+    # NAS 경로 해석(죽은 SMB 는 수 초~수십 초·같은 경로 해석 대기 최대 35초)은 스레드로 — async 라우트가 허브 전체를 세우지 않게
+    # (R7 2-G' 의 upload_assets 와 같은 원인, 2026-10-03 점검 L1-1·CXB-3)
+    target = await asyncio.to_thread(_resolve_davinci_root, project, dir, request)
     try:
         return await asyncio.to_thread(resolve_project_library.project_cards, target)
     except resolve_project_library.ResolveProjectLibraryError as exc:
@@ -2149,7 +2155,7 @@ async def open_resolve_library_connect_dialog(body: ResolveLibraryDialogIn, requ
     require_loopback_browser_request(
         request, "Resolve 라이브러리 연결은 로컬 MV Hub에서만 사용할 수 있습니다"
     )
-    target = _resolve_davinci_root(body.project, body.dir, request)
+    target = await asyncio.to_thread(_resolve_davinci_root, body.project, body.dir, request)  # NAS 해석은 스레드로(L1-1)
     try:
         async with resolve_selection_monitor.selection_monitor.suspended():
             return await to_thread_non_abandon(
@@ -2166,7 +2172,7 @@ async def open_resolve_library_project(body: ResolveProjectOpenIn, request: Requ
     require_loopback_browser_request(
         request, "Resolve 프로젝트 열기는 로컬 MV Hub에서만 사용할 수 있습니다"
     )
-    target = _resolve_davinci_root(body.project, body.dir, request)
+    target = await asyncio.to_thread(_resolve_davinci_root, body.project, body.dir, request)  # NAS 해석은 스레드로(L1-1)
     try:
         async with resolve_selection_monitor.selection_monitor.suspended():
             result = await to_thread_non_abandon(

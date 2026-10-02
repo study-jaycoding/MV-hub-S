@@ -545,6 +545,8 @@ def team_overview(
             workspace_id=workspace_id,
             date_from=date_from,
             date_to=date_to,
+            time_from=time_from,
+            time_to=time_to,
             # 일반 멤버는 본인 계정 거래만. viewer 이메일은 서버가 정한 값이고, 계정이 없으면
             # "\x00" 이라 아무것도 안 잡힌다(전체로 폴백하지 않는다).
             account_email=viewer[1] if viewer else None,
@@ -1883,7 +1885,8 @@ async def save_finals_mirror(project_id: str, body: MirrorIn, request: Request):
     _require_project_manage(request, project_id)
     render = await asyncio.to_thread(_render_for_sync, project_id)
     async with _save_finals_lock(project_id):
-        lock, token = await to_thread_non_abandon(_nas_lock_acquire, render.resolve(), project_id)
+        # render.resolve() 는 NAS 왕복 — 인자로 두면 이벤트 루프에서 먼저 돈다(L2-3)
+        lock, token = await to_thread_non_abandon(lambda: _nas_lock_acquire(render.resolve(), project_id))
         try:
             first = await to_thread_non_abandon(_save_finals_scan, project_id, render)  # 공유를 못 읽으면 여기서 실패 — 아무것도 안 건드린다
             if not first["shared_supported"]:
@@ -2222,8 +2225,10 @@ async def _save_finals_locked(
                 if t.get("reason"):
                     errors.append({"gen_id": gen_id, "reason": t["reason"]})
                     continue
-                dest = project_folders.safe_dest(
-                    render, project_folders.export_folder(t.get("folder_path") or "", kind), t.get("filename") or ""
+                # NAS 경로 해석(resolve 3회)도 스레드로 — 대상마다 허브 전체가 잠깐씩 멈췄다(2026-10-03 L2-3)
+                dest = await to_thread_non_abandon(
+                    project_folders.safe_dest,
+                    render, project_folders.export_folder(t.get("folder_path") or "", kind), t.get("filename") or "",
                 )
                 if dest is None:
                     errors.append({"gen_id": gen_id, "reason": "경로 안전성 위반(트래버설)"})
@@ -2248,7 +2253,8 @@ async def _save_finals_locked(
                         tmp,
                     )
                     await to_thread_non_abandon(
-                        file_stamp.stamp_file, tmp, file_stamp.tags_for_generation(gen_id), dest.suffix
+                        file_stamp.stamp_file, tmp, file_stamp.tags_for_generation(gen_id), dest.suffix,
+                        lambda: _cancelled(run),  # [취소]가 영상 각인(ffmpeg) 도중에도 먹게 — 각인만 빠지고 저장은 끝난다
                     )
                     await to_thread_non_abandon(os.replace, tmp, dest)
                 except OSError:
@@ -2289,7 +2295,9 @@ async def _save_finals_locked(
                 errors.append({"gen_id": gen_id, "reason": "원본 파일 없음"})
                 continue
             filename = project_folders.export_filename(folder_path, gen_id, file_path, f.get("media_type"))
-            dest = project_folders.safe_dest(render, project_folders.export_folder(folder_path, kind), filename)
+            dest = await to_thread_non_abandon(  # NAS 경로 해석은 스레드로(L2-3)
+                project_folders.safe_dest, render, project_folders.export_folder(folder_path, kind), filename
+            )
             if dest is None:
                 errors.append({"gen_id": gen_id, "reason": "경로 안전성 위반(트래버설)"})
                 continue
@@ -2329,7 +2337,8 @@ async def _save_finals_locked(
             try:
                 await to_thread_non_abandon(shutil.copy2, src, tmp)
                 await to_thread_non_abandon(
-                    file_stamp.stamp_file, tmp, file_stamp.tags_for_generation(gen_id), dest.suffix
+                    file_stamp.stamp_file, tmp, file_stamp.tags_for_generation(gen_id), dest.suffix,
+                    lambda: _cancelled(run),  # [취소]가 영상 각인(ffmpeg) 도중에도 먹게 — 각인만 빠지고 저장은 끝난다
                 )
                 await to_thread_non_abandon(os.replace, tmp, dest)
             except OSError:

@@ -19,6 +19,12 @@ def managed_sub(conn, workspace_id: Optional[str]) -> Optional[str]:
     (파생 끔) 그 프로젝트의 예산·상태·보관은 서브스페이스를 따라야 한다(설계 §13 합의안). 표식 전에는 전부 종전대로."""
     if not workspace_id:
         return None
+    # 관리 기능을 끈 DB(CONTENT_HUB_MANAGE=0)에는 이 표들이 없다 — 서브스페이스도 없으니 종전대로(2026-10-03 점검 CXB-1, 그전엔 500)
+    tables = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('workspace_console', 'manage_schema_state')"
+    ).fetchone()[0]
+    if tables < 2:
+        return None
     row = conn.execute(
         "SELECT status FROM workspace_console WHERE workspace_id=? AND tier='sub' AND archived=0 "
         "AND EXISTS(SELECT 1 FROM manage_schema_state WHERE key=?)",

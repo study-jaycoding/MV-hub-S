@@ -234,6 +234,17 @@ class DateRangeBoundaryTests(unittest.TestCase):
         self.assertEqual(self._count(prev, prev), 0)
         self.assertEqual(ledger_totals(date_from=nxt, date_to=nxt)["spend"], 0.0)
 
+    def test_the_ledger_follows_the_same_time_window_as_the_facts(self):
+        """2026-10-03 L2-1 — 시간 단위 '전체 적용'에서 팩트는 그 한 시간인데 장부만 하루 전체였다."""
+        record_transactions("u_me", "me@x", [
+            {"created_at": stamp, "credits": -10, "action": "spend", "display_name": "Seedance 2.5", "workspace_id": "ws1"}
+            for stamp in ("2026-09-05T06:30:00Z", "2026-09-05T05:00:00Z", "2026-09-05T08:00:00Z")
+        ])
+        lo = self._local_naive("2026-09-05T06:00:00Z")
+        hi = self._local_naive("2026-09-05T06:59:59Z")
+        self.assertEqual(ledger_totals(time_from=lo, time_to=hi)["spend"], 10.0)
+        self.assertEqual(ledger_totals()["spend"], 30.0)
+
     def test_decimals_and_refunds_survive_the_new_boundary(self):
         """경계를 바꾸느라 소수·환불 계약이 깨지면 안 된다."""
         stamp = "2026-09-05T06:00:00Z"
@@ -371,6 +382,43 @@ class DateRangeBoundaryTests(unittest.TestCase):
             any("idx_credit_txn_julian" in plan for plan in plans),
             "표현식 인덱스를 쓰지 않는다: " + str(plans)[:400],
         )
+
+    def test_team_overview_route_hands_the_time_window_to_the_ledger(self):
+        """L2-1 의 연결부 — 저장소 함수만 고치고 라우트가 시각을 안 넘기면 화면은 그대로 틀린다(Codex 리뷰)."""
+        from unittest.mock import patch
+
+        from app import manage_db as mdb
+        from app.repo import manage_transactions as mt
+        from app.routers import manage as routes
+
+        with (
+            patch.object(routes._proxy, "proxying", return_value=False),
+            patch.object(routes, "_usage_viewer", return_value=None),
+            patch.object(routes, "_usage_emails", return_value=None),
+            patch.object(routes, "_refresh_isolated_telemetry"),
+            patch.object(mdb, "team_overview", return_value={}),
+            patch.object(mt, "ledger_totals", return_value={}) as ledger,
+        ):
+            routes.team_overview(None, time_from="2026-09-05T15:00:00", time_to="2026-09-05T15:59:59")
+        self.assertEqual(ledger.call_args.kwargs["time_from"], "2026-09-05T15:00:00")
+        self.assertEqual(ledger.call_args.kwargs["time_to"], "2026-09-05T15:59:59")
+
+    def test_transaction_identity_lookup_uses_the_partial_index(self):
+        """2026-10-03 L2-2 — 부분 색인 조건이 질의에 없어 거래 1건마다 credit_txn 을 처음부터 끝까지 훑었다(BEGIN IMMEDIATE 안)."""
+        from app.repo import manage_transactions as mt
+        stmts = self._traced(
+            lambda: record_transactions("u_me", "me@x", [{
+                "created_at": "2026-09-05T06:00:00Z", "credits": -1, "action": "spend",
+                "display_name": "M", "workspace_id": "ws1",
+            }]),
+            (mt.get_connection, mt),
+        )
+        lookups = [s for s in stmts if s.lstrip().startswith("SELECT id, workspace_id, model, account_email FROM credit_txn")]
+        self.assertTrue(lookups, "제품이 신원 조회를 하지 않는다: " + str(stmts)[:400])
+        with db.get_connection() as conn:
+            plans = [" ".join(str(r[-1]) for r in conn.execute("EXPLAIN QUERY PLAN " + sql)) for sql in lookups]
+        self.assertFalse(any("SCAN credit_txn" in plan for plan in plans), str(plans)[:400])
+        self.assertTrue(any("idx_credit_txn_stable_identity" in plan for plan in plans), str(plans)[:400])
 
     # ── 손대지 않기로 한 것 ─────────────────────────────────────────────
     def test_budget_period_totals_are_untouched(self):
