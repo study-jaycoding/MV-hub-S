@@ -495,9 +495,6 @@ class CreditPlanTests(unittest.TestCase):
         self.assertEqual(plan_repo.period_end("2026-09-20", "month", 1), "2026-09-30")
         self.assertEqual(plan_repo.period_end("2026-02-28", "month", 31), "2026-03-30")
         self.assertEqual(ps("2026-09-10", "week"), "2026-09-07")  # 목요일 → 월요일
-        self.assertEqual(plan_repo.periods_inclusive("2026-08-15", "2026-10-14", "month", 15), 2)
-        self.assertEqual(plan_repo.periods_inclusive("2026-08-15", "2026-10-15", "month", 15), 3)
-        self.assertEqual(plan_repo.periods_inclusive("2026-09-01", "2026-09-30", "week"), 5)
         with manage_db.get_connection() as conn:  # SQL 쪽 '매월' 판정도 같은 경계 — 15일 기준 9/14 는 8월 달
             cond = manage_db._period_conditions(15)["month"].replace("created_at", "'2026-09-14T03:00:00Z'").replace(
                 "'now'", "'2026-09-20'")

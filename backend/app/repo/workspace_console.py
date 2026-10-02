@@ -13,11 +13,9 @@ from typing import Any, Optional
 from ..db import get_connection
 from . import manage_credit_plan as credit_plan
 from .console_guard import (
-    PLAN_STATUS,
     STATUSES,
     ConsoleManaged,
     _RECURRING_COPY_KEY,
-    guard_project_change,
     managed_sub,
 )
 from .event_journal import _record_audit_event, safe_identity
