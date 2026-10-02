@@ -42,7 +42,7 @@ owner: Claude(백엔드·통합) · Claude 조사원(프론트·도구) · revie
 
 | 기준선 | 값 |
 |---|---|
-| 코드 — `dev` | `020f59f4` — `origin/main` 위 6커밋(10-03 최적화 점검), **미푸시** |
+| 코드 — `dev` | `020f59f4`(코드·검증 기준 — `origin/main` 위 10-03 최적화 점검 커밋)와 그 위 문서 커밋, **미푸시** |
 | 코드 — `main` = `origin/main` = `origin/dev` | `5a88a631`(10-02 밤 — 백업 위치 경고 문구) |
 | 릴리스 제작 기준 | `5a88a631` — 고정 폴더 `MV-hub-S-release` 의 HEAD = `origin/main`·작업 트리 clean |
 | NAS 게시본 | 공개(`latest.json`) = 후보(`candidate.json`) = **`2026.10.02-2348`**(SHA256 `2a87e1de…`). 되돌리기 = `release/select_release.ps1 -PackagePath Z:\mvutil\MV_hub_S\packages\MVHub-2026.10.02-1832.zip` |
