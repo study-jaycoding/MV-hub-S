@@ -94,7 +94,7 @@ beforeEach(async () => {
     throw new Error(`Unexpected request ${url}`);
   }));
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
-});
+}, 30_000); // 첫 회는 SceneBoard 전체를 처음 불러와 전체 시험 부하에서 기본 10초를 넘는다(HEAD 에서도 재현)
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null; host.remove(); await vi.advanceTimersByTimeAsync(0);

@@ -25,6 +25,13 @@ def _module():
     return module
 
 
+def _left(db_dir: Path, prefix: str) -> list[str]:
+    """도구가 만든 이름(소문자 접두)만 대소문자를 구분해 찾는다. `glob` 은 Windows 에서 대소문자를 가리지 않아
+    외부 파일 `.SERVER_MOVE_STAGED-…-CONTENT.DB-JOURNAL.tmp`(제품 이름을 대문자로 바꾸고 `.tmp` 를 덧붙인 꼴, 만든 쪽
+    미확정 — test_db_restore_account_boundary 와 같은 꼴)에 걸렸다(2026-10-02 배포 게이트 전체 실행 1회, 단독 8/8 통과)."""
+    return [p.name for p in db_dir.iterdir() if p.name.startswith(prefix)]
+
+
 ROLE_TABLES = {
     "content": ("generation", "worker", "account", "project", "share"),
     "trash": ("trashed",),
@@ -312,7 +319,7 @@ def test_failed_verification_rolls_back_to_the_original_databases(tmp_path, monk
 
     # 흔적을 남기지 않는다.
     assert not (db_dir / sm.JOURNAL_NAME).exists()
-    assert not list(db_dir.glob(sm.STAGED_PREFIX + "*"))
+    assert not _left(db_dir, sm.STAGED_PREFIX)
 
 
 def _drift_index(path: Path, index: str, sql: str) -> None:
@@ -353,7 +360,7 @@ def test_install_rebuilds_an_engine_drifted_index_on_the_staged_copy(tmp_path, m
     info = sm.inspect_sqlite_database(installed, required_tables=sm._required_tables("content"))
     assert info["index_drift"] == []
     assert _sha(sm, package) == expected
-    assert not list(db_dir.glob(sm.STAGED_PREFIX + "*"))
+    assert not _left(db_dir, sm.STAGED_PREFIX)
     assert "idx_credit_txn_julian" in capsys.readouterr().out
 
 
@@ -377,8 +384,8 @@ def test_install_keeps_the_live_databases_when_the_rebuild_collides(tmp_path, mo
 
     assert _tag_of(live["content"], "generation") == "old"
     assert not (db_dir / sm.JOURNAL_NAME).exists()
-    assert not list(db_dir.glob(sm.STAGED_PREFIX + "*"))
-    assert not list(db_dir.glob(sm.ARCHIVE_PREFIX + "*"))
+    assert not _left(db_dir, sm.STAGED_PREFIX)
+    assert not _left(db_dir, sm.ARCHIVE_PREFIX)
 
 
 def test_rollback_after_a_rebuilt_wal_copy_leaves_no_staged_files(tmp_path, monkeypatch):
@@ -416,7 +423,7 @@ def test_rollback_after_a_rebuilt_wal_copy_leaves_no_staged_files(tmp_path, monk
         sm.install_set(package, data, 8010, _sha(sm, package))
 
     assert _tag_of(live["content"], "generation") == "old"
-    assert not list(db_dir.glob(sm.STAGED_PREFIX + "*"))
+    assert not _left(db_dir, sm.STAGED_PREFIX)
     assert not (db_dir / sm.JOURNAL_NAME).exists()
 
 
@@ -436,8 +443,8 @@ def test_staging_failure_never_touches_the_live_databases(tmp_path, monkeypatch)
 
     assert _tag_of(live["content"], "generation") == "old"
     assert not (db_dir / sm.JOURNAL_NAME).exists()
-    assert not list(db_dir.glob(sm.STAGED_PREFIX + "*"))
-    assert not list(db_dir.glob(sm.ARCHIVE_PREFIX + "*"))
+    assert not _left(db_dir, sm.STAGED_PREFIX)
+    assert not _left(db_dir, sm.ARCHIVE_PREFIX)
 
 
 def test_leftover_journal_blocks_a_second_run(tmp_path, monkeypatch):
