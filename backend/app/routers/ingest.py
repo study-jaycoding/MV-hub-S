@@ -326,7 +326,7 @@ def ingest(body: IngestIn, request: Request):
                 from ..repo import manage as _m
 
                 queued = _m.queue_account_reports(
-                    body.account_status, body.account_transactions, acc.get("email")
+                    body.account_status, body.account_transactions, acc.get("email"), out.linked_uid
                 )
                 report_queued = bool(queued["status"] or queued["transactions"])
                 # 멱등 재보고는 삽입 0 이어도 성공이다 — 건수와 성공 여부를 섞지 않는다.

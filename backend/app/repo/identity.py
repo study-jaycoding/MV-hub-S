@@ -552,6 +552,10 @@ _REMAP_EXEMPT: dict[tuple[str, str], str] = {
     ("project_planning", "updated_by"): "저장 당시 감사 actor 스냅샷 — 이메일 기반 임시 신원은 비가역 지문화",
     ("workspace_credit_plan", "updated_by"): "저장 당시 감사 actor 스냅샷 — 이메일 기반 임시 신원은 비가역 지문화",
     ("workspace_console", "created_by"): "서브 연결 당시 actor 스냅샷('seed' 포함) — 표시·감사용이며 권한 판정에 쓰지 않는다",
+    ("credit_txn_alias_merged", "l_owner_uid"): (
+        "local 별칭 병합 때 지운 거래의 되돌리기 보관 스냅샷 — 병합은 실제 uid(acct: 제외)만 대상이라 "
+        "acct:→user_ 전환과 무관하고, 되돌리기는 당시 값 그대로 다시 넣는다"
+    ),
     ("super_admin_session", "subject_uid"): (
         "10분 권한 발급 당시의 서명 토큰 sub 스냅샷 — 신원 remap 시 토큰과 DB를 서로 다르게 "
         "고치지 않고 즉시 fail-closed 무효화"

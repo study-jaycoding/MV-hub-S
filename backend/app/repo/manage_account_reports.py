@@ -67,6 +67,7 @@ def queue_account_reports(
     account_status: Optional[dict[str, Any]],
     transactions: Optional[list[dict[str, Any]]],
     account_email: Optional[str],
+    owner_uid: Optional[str] = None,
 ) -> dict[str, Any]:
     """최신 계정 상태와 고유 거래를 네트워크 호출 전에 내구성 큐에 기록한다.
 
@@ -89,7 +90,8 @@ def queue_account_reports(
             for transaction in transactions or []:
                 if _transaction_rejection_reason(transaction):
                     continue
-                saved = _find_account_transaction(conn, account_email, transaction)
+                # 적재와 같은 신원 해석(local↔실제 별칭 포함) — 다르면 승계된 거래가 '장부 누락'으로 보인다.
+                saved = _find_account_transaction(conn, account_email, transaction, owner_uid)
                 if saved is None:
                     missing_transactions += 1
                     continue

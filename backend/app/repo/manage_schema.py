@@ -628,6 +628,138 @@ def _ensure_credit_transaction_identity(conn) -> None:
         raise
 
 
+_CREDIT_TXN_ALIAS_MERGE_KEY = "credit_txn_local_alias_merge_v1"
+_CREDIT_TXN_ALIAS_TABLE = """CREATE TABLE IF NOT EXISTS credit_txn_alias_merged (
+    l_id TEXT PRIMARY KEY, l_owner_uid TEXT, l_account_email TEXT, l_display_name TEXT, l_credits REAL,
+    l_action TEXT, l_created_at TEXT, l_matched_gen_id TEXT, l_model TEXT, l_workspace_id TEXT,
+    r_id TEXT NOT NULL,
+    r_before_matched_gen_id TEXT, r_before_model TEXT, r_before_workspace_id TEXT,
+    r_after_matched_gen_id TEXT, r_after_model TEXT, r_after_workspace_id TEXT,
+    merged_at TEXT NOT NULL DEFAULT (datetime('now'))
+)"""
+_TXN_FILL_COLUMNS = ("matched_gen_id", "model", "workspace_id")
+
+
+def _blank(value: Any) -> bool:
+    return value is None or str(value).strip() == ""
+
+
+def _merge_local_alias_transactions(conn) -> None:
+    """로그인 전 'local' 이메일로 적재된 거래와 로그인 뒤 실제 이메일로 다시 적재된 **같은 거래**를 합친다(1회).
+
+    기존 identity 병합은 이메일을 신원에 넣어 이 짝을 못 잡았다(2026-10-02 실측: 7/3~8/24 지출 290쌍).
+    같은 실제 owner·시각·금액·종류·표시명의 실제 이메일 행이 **정확히 하나**이고 연결·모델·공간이 충돌하지
+    않을 때만 실제 행(R)을 남기고 빈 칸을 local 행(L) 값으로 채운 뒤 L 을 지운다. generation_metrics·텔레메트리는
+    건드리지 않는다. 충돌하는 쌍은 그대로 두고 매칭기가 묶음째 뺀다. 지운 L 과 R 의 전후 값은 되돌리기용으로 보관."""
+    if conn.execute(
+        "SELECT 1 FROM manage_schema_state WHERE key=?", (_CREDIT_TXN_ALIAS_MERGE_KEY,)
+    ).fetchone():
+        return
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    else:
+        conn.execute("SAVEPOINT credit_txn_alias_merge")
+    try:
+        if not conn.execute(
+            "SELECT 1 FROM manage_schema_state WHERE key=?", (_CREDIT_TXN_ALIAS_MERGE_KEY,)
+        ).fetchone():
+            conn.execute(_CREDIT_TXN_ALIAS_TABLE)
+            locals_ = conn.execute(
+                "SELECT * FROM credit_txn WHERE LOWER(TRIM(account_email))='local' "
+                "AND TRIM(COALESCE(owner_uid,''))<>'' AND owner_uid NOT LIKE 'acct:%'"
+            ).fetchall()
+            for local in locals_:
+                twins = conn.execute(
+                    "SELECT * FROM credit_txn WHERE owner_uid=? AND id<>? "
+                    "AND TRIM(COALESCE(account_email,''))<>'' AND LOWER(TRIM(account_email))<>'local' "
+                    "AND created_at IS ? AND credits IS ? AND action IS ? AND display_name IS ? LIMIT 2",
+                    (local["owner_uid"], local["id"], local["created_at"], local["credits"],
+                     local["action"], local["display_name"]),
+                ).fetchall()
+                if len(twins) != 1:
+                    continue
+                twin = twins[0]
+                if any(
+                    not _blank(local[c]) and not _blank(twin[c]) and local[c] != twin[c]
+                    for c in _TXN_FILL_COLUMNS
+                ):
+                    continue  # 충돌 — 그대로 두고 매칭기가 묶음째 뺀다
+                before = [twin[c] for c in _TXN_FILL_COLUMNS]
+                after = [twin[c] if not _blank(twin[c]) else local[c] for c in _TXN_FILL_COLUMNS]
+                conn.execute(
+                    "INSERT INTO credit_txn_alias_merged(l_id, l_owner_uid, l_account_email, l_display_name, "
+                    "l_credits, l_action, l_created_at, l_matched_gen_id, l_model, l_workspace_id, r_id, "
+                    "r_before_matched_gen_id, r_before_model, r_before_workspace_id, "
+                    "r_after_matched_gen_id, r_after_model, r_after_workspace_id) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (local["id"], local["owner_uid"], local["account_email"], local["display_name"],
+                     local["credits"], local["action"], local["created_at"], local["matched_gen_id"],
+                     local["model"], local["workspace_id"], twin["id"], *before, *after),
+                )
+                conn.execute("DELETE FROM credit_txn WHERE id=?", (local["id"],))
+                conn.execute(
+                    "UPDATE credit_txn SET matched_gen_id=?, model=?, workspace_id=? WHERE id=?",
+                    (*after, twin["id"]),
+                )
+            conn.execute(
+                "INSERT OR IGNORE INTO manage_schema_state(key,value) VALUES(?,?)",
+                (_CREDIT_TXN_ALIAS_MERGE_KEY, "complete"),
+            )
+        if owns_transaction:
+            conn.execute("COMMIT")
+        else:
+            conn.execute("RELEASE credit_txn_alias_merge")
+    except Exception:
+        if owns_transaction and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        elif conn.in_transaction:
+            conn.execute("ROLLBACK TO credit_txn_alias_merge")
+            conn.execute("RELEASE credit_txn_alias_merge")
+        raise
+
+
+def restore_credit_txn_alias_merge(conn) -> dict[str, int]:
+    """병합 되돌리기(수동 복구용, 호출자가 쓰기 잠금을 가진다). R 의 지금 값이 '병합 직후' 값과 같을 때만
+    R 을 병합 전 값으로 돌리고 L 을 다시 넣는다. 그 뒤 바뀐 행(새 연결·보강)은 건드리지 않고 conflicts 로 센다.
+    완료 표식은 남긴다 — 다음 실행이 다시 합치지 않게(다시 합치려면 표식을 사람이 지운다)."""
+    conn.execute(_CREDIT_TXN_ALIAS_TABLE)
+    restored = conflicts = 0
+    for saved in conn.execute("SELECT * FROM credit_txn_alias_merged ORDER BY merged_at, l_id").fetchall():
+        current = conn.execute(
+            "SELECT matched_gen_id, model, workspace_id FROM credit_txn WHERE id=?", (saved["r_id"],)
+        ).fetchone()
+        after = tuple(saved[f"r_after_{c}"] for c in _TXN_FILL_COLUMNS)
+        if (
+            current is None
+            or tuple(current) != after
+            or conn.execute("SELECT 1 FROM credit_txn WHERE id=?", (saved["l_id"],)).fetchone()
+            # 병합 뒤 같은 local 거래가 다른 id 로 다시 들어왔으면 UNIQUE 신원과 부딪힌다 — 고치기 전에 거른다.
+            or conn.execute(
+                "SELECT 1 FROM credit_txn WHERE LOWER(TRIM(account_email))=LOWER(TRIM(?)) "
+                "AND created_at IS ? AND credits IS ? AND action IS ? AND display_name IS ?",
+                (saved["l_account_email"], saved["l_created_at"], saved["l_credits"],
+                 saved["l_action"], saved["l_display_name"]),
+            ).fetchone()
+        ):
+            conflicts += 1
+            continue
+        conn.execute(
+            "UPDATE credit_txn SET matched_gen_id=?, model=?, workspace_id=? WHERE id=?",
+            (*(saved[f"r_before_{c}"] for c in _TXN_FILL_COLUMNS), saved["r_id"]),
+        )
+        conn.execute(
+            "INSERT INTO credit_txn(id, owner_uid, account_email, display_name, credits, action, created_at, "
+            "matched_gen_id, model, workspace_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (saved["l_id"], saved["l_owner_uid"], saved["l_account_email"], saved["l_display_name"],
+             saved["l_credits"], saved["l_action"], saved["l_created_at"], saved["l_matched_gen_id"],
+             saved["l_model"], saved["l_workspace_id"]),
+        )
+        conn.execute("DELETE FROM credit_txn_alias_merged WHERE l_id=?", (saved["l_id"],))
+        restored += 1
+    return {"restored": restored, "conflicts": conflicts}
+
+
 def ensure_manage_schema(conn) -> None:
     """현재 계정 DB에 사이드카 테이블·인덱스·호환 컬럼을 멱등으로 보장한다."""
     key = (str(get_db_path()), pool_epoch())
@@ -711,6 +843,7 @@ def ensure_manage_schema(conn) -> None:
         #  배포 후 행이 갈려 같은 거래가 두 번 세어진다. 옛 행은 model 처럼 나중에 보강된다.
         conn.execute("ALTER TABLE credit_txn ADD COLUMN workspace_id TEXT")
     _ensure_credit_transaction_identity(conn)
+    _merge_local_alias_transactions(conn)
 
     planning_columns = {row[1] for row in conn.execute("PRAGMA table_info(project_planning)")}
     if "revision" not in planning_columns:

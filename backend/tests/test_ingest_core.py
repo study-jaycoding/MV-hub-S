@@ -94,7 +94,10 @@ class IngestCoreTests(unittest.TestCase):
             result = ingest.ingest(body, SimpleNamespace())
 
         self.assertIs(result, expected)
-        queue.assert_called_once_with(body.account_status, body.account_transactions, "me@example.com")
+        # 큐도 적재와 같은 신원 해석(owner 로 local↔실제 별칭)을 쓰도록 linked uid 를 함께 받는다
+        queue.assert_called_once_with(
+            body.account_status, body.account_transactions, "me@example.com", expected.linked_uid
+        )
         proxy_json.assert_not_called()
         schedule.assert_called_once_with()
 

@@ -167,12 +167,15 @@ def test_ingest_ledger_success_but_queue_lookup_missing_fails_ack(monkeypatch):
         def fetchone(self):
             return None
 
+        def fetchall(self):  # local 별칭 조회도 '없음' 으로 — 오류가 아니라 누락으로 흉내 낸다
+            return []
+
     class Connection:
         def __init__(self, conn):
             self.conn = conn
 
         def execute(self, sql, *args):
-            if sql.startswith("SELECT id, workspace_id, model FROM credit_txn"):
+            if sql.startswith("SELECT id, workspace_id, model, account_email FROM credit_txn"):
                 assert self.conn.in_transaction
                 return MissingCursor()
             return self.conn.execute(sql, *args)
@@ -249,7 +252,7 @@ def test_queue_db_failures_fail_ingest_ack_and_roll_back(monkeypatch, failure):
             self.conn = conn
 
         def execute(self, sql, *args):
-            if ((failure == "lookup" and sql.startswith("SELECT id, workspace_id, model FROM credit_txn"))
+            if ((failure == "lookup" and sql.startswith("SELECT id, workspace_id, model, account_email FROM credit_txn"))
                     or (failure == "write" and sql.startswith("INSERT INTO account_report_outbox")
                         and args[0][1] == "transaction")
                     or (failure == "commit" and sql == "COMMIT")):
@@ -283,7 +286,7 @@ def test_concurrent_enrichment_is_read_after_writer_commits(monkeypatch):
         def execute(self, sql, *args):
             if sql == "BEGIN IMMEDIATE":
                 before_begin.set()
-            if sql.startswith("SELECT id, workspace_id, model FROM credit_txn"):
+            if sql.startswith("SELECT id, workspace_id, model, account_email FROM credit_txn"):
                 assert self.conn.in_transaction, "queue must lock before lookup"
             return self.conn.execute(sql, *args)
 

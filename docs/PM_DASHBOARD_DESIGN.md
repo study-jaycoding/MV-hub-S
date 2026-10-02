@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-27
+updated: 2026-10-02
 status: archived
 ---
 
@@ -100,6 +100,11 @@ push_agent 가 허브 요청을 `generate create --wait` 로 직접 실행한다
 - 계정/모델/기간 **총액 = 거래 합산** → 100% 정확
 - 프로젝트/작업 **귀속 = 매칭** → 가진 생성물 기준 정확, 미귀속분은 별도 표기
 - `action`(spend/refund/grant) 보존 → 순지출 정확
+
+**2026-10-02 보정(설계 r4 · Codex 승인, 실측 근거는 Jay PC 장부):**
+- **'local' 별칭 병합** — 로그인 전(AUTH off) `account_email='local'` 로 적재된 거래가 로그인 뒤 실제 이메일로 다시 들어와 두 행이 됐다(7/3~8/24 지출 290쌍). 같은 실제 owner·시각·금액·종류·표시명의 실제 이메일 행이 정확히 하나이고 연결·모델·공간이 충돌하지 않을 때만 1회 병합(`manage_schema._merge_local_alias_transactions`, 보관 표 `credit_txn_alias_merged`·안전 되돌리기 `restore_credit_txn_alias_merge`). 적재·저장 확인·전송 큐는 같은 신원 해석기(`manage_transactions._find_account_transaction(…, owner_uid)`)를 쓴다. 병합 못 한 같은-신원 묶음은 매칭에서 통째 제외.
+- **옛 shots 오태깅** — 9/12 이전 에이전트가 'Nano Banana Pro' 거래에 `nano_banana_2_shots` 를 박았다. 장부는 고쳐 쓰지 않고, 그 태그+표시명인 거래만 같은 표시명 묶음(`nano_banana_pro`·옛 `nano_banana_2`·`_ai_stylist`·`_relight`·`_skin_enhancer`·`_shots`)과 잇게 했다. 태그 없는 거래·다른 태그는 그대로.
+- 하지 않은 것: 창(±60초) 변경(사본 측정 후 별도 결정 — 보류 ambiguous 14 남음), 환불 귀속 자동화(힉스필드가 원 차감↔환불을 잇는 정보를 주지 않는다).
 
 ---
 

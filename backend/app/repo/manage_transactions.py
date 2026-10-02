@@ -21,6 +21,21 @@ _PENDING_SOURCES = (
     "transaction_pending_incomplete",
     "transaction_pending_limit",
 )
+# 로그인 전(AUTH off) 에이전트 계정 이메일(deps.resolve_agent_account). 같은 거래가 로그인 뒤 실제 이메일로
+# 다시 들어오면 이메일이 신원에 있어 두 행이 됐다(2026-10-02 실측: 7/3~8/24 지출 290쌍).
+_LOCAL_ACCOUNT = "local"
+# 9/12 이전 에이전트가 표시명 'Nano Banana Pro' 거래에 마지막 키(shots)를 박았다(agent_push
+# `_unique_model_by_display_name` 주석). 장부 값은 고쳐 쓰지 않고, 이 오염 태그만 같은 표시명 묶음과 잇게 한다.
+# 묶음 = CLI 모델 목록의 'Nano Banana Pro' 5종 + 7~8월 힉스필드 작업의 옛 키 nano_banana_2(2026-10-02 실측).
+_LEGACY_SHOTS_TAG = ("nano_banana_2_shots", "Nano Banana Pro")
+_NANO_BANANA_PRO_FAMILY = frozenset({
+    "nano_banana_pro",
+    "nano_banana_2",
+    "nano_banana_2_ai_stylist",
+    "nano_banana_2_relight",
+    "nano_banana_2_skin_enhancer",
+    "nano_banana_2_shots",
+})
 
 
 def _spend_amount(credits: Any) -> Optional[float]:
@@ -77,18 +92,40 @@ def _transaction_rejection_reason(transaction: Any) -> Optional[str]:
     return None
 
 
-def _find_account_transaction(conn, account_email: Optional[str], transaction: dict):
-    """보강값·소유자 remap과 무관한 장부 신원으로 조회한다. 호출자가 쓰기 잠금을 소유한다."""
+def _real_owner(owner_uid: Optional[str]) -> Optional[str]:
+    owner = str(owner_uid or "").strip()
+    return owner if owner and not owner.startswith("acct:") else None
+
+
+def _find_account_transaction(
+    conn, account_email: Optional[str], transaction: dict, owner_uid: Optional[str] = None
+):
+    """보강값·소유자 remap과 무관한 장부 신원으로 조회한다. 호출자가 쓰기 잠금을 소유한다.
+
+    정확한 이메일 행이 없고 실제 owner_uid 를 알면, 같은 owner 의 'local'↔실제 이메일 짝을 **정확히 하나일 때만**
+    같은 거래로 본다. 적재 전 조회·저장 확인·전송 큐가 이 함수 하나를 써야 승계 뒤 재입력도 같은 행을 찾는다."""
     account_key = str(account_email or "").strip().lower()
     if not account_key:
         return None
-    return conn.execute(
-        "SELECT id, workspace_id, model FROM credit_txn WHERE LOWER(TRIM(account_email))=? "
+    identity = (transaction.get("created_at"), transaction.get("credits"),
+                transaction.get("action"), transaction.get("display_name"))
+    row = conn.execute(
+        "SELECT id, workspace_id, model, account_email FROM credit_txn WHERE LOWER(TRIM(account_email))=? "
         "AND created_at IS ? AND credits IS ? AND action IS ? "
         "AND display_name IS ? LIMIT 1",
-        (account_key, transaction.get("created_at"), transaction.get("credits"),
-         transaction.get("action"), transaction.get("display_name")),
+        (account_key, *identity),
     ).fetchone()
+    owner = _real_owner(owner_uid)
+    if row is not None or owner is None:
+        return row
+    alias = "= ?" if account_key != _LOCAL_ACCOUNT else "<> ?"
+    rows = conn.execute(
+        "SELECT id, workspace_id, model, account_email FROM credit_txn WHERE owner_uid=? "
+        f"AND TRIM(COALESCE(account_email,''))<>'' AND LOWER(TRIM(account_email)) {alias} "
+        "AND created_at IS ? AND credits IS ? AND action IS ? AND display_name IS ? LIMIT 2",
+        (owner, _LOCAL_ACCOUNT, *identity),
+    ).fetchall()
+    return rows[0] if len(rows) == 1 else None
 
 
 def record_transactions(
@@ -126,9 +163,17 @@ def record_transactions(
                 if account_key:
                     # 배포 전 owner 기반 ID 행도 안정 필드로 찾아 그 PK를 그대로 재사용한다.
                     # 따라서 remap 사이 재전송과 새 ID 산식 전환 모두 별도 행을 만들지 않는다.
-                    existing = _find_account_transaction(conn, account_key, transaction)
+                    existing = _find_account_transaction(conn, account_key, transaction, owner_uid)
                 if existing is not None:
                     transaction_id = existing["id"]
+                    stored_key = str(existing["account_email"] or "").strip().lower()
+                    if stored_key == _LOCAL_ACCOUNT and account_key != _LOCAL_ACCOUNT:
+                        # 로그인 전 'local' 로 들어온 같은 거래를 실제 이메일로 이어받는다(행 id 유지).
+                        # 반대(실제 행에 'local' 입력)는 그대로 재사용만 — 이메일을 바꾸지 않는다.
+                        conn.execute(
+                            "UPDATE credit_txn SET account_email=? WHERE id=?",
+                            (account_key, transaction_id),
+                        )
                 elif account_key:
                     transaction_id = _stable_transaction_id(
                         account_key, created_at, credits, action, display_name
@@ -154,9 +199,12 @@ def record_transactions(
                     ),
                 )
                 inserted += cursor.rowcount
+                # 해석기가 못 찾은 행과 id 만 부딪힌 경우(남의 owner 의 승계된 local 행 등)는 그 행을 고치지 않는다
+                # — 아래 보강이 남의 거래 칸을 채우게 된다. 저장 확인이 실패로 정직하게 센다.
+                collided = bool(account_key) and existing is None and cursor.rowcount == 0
                 # CLI 모델 목록 조회가 늦게 성공하면 같은 거래에 model 정보가 뒤늦게 붙을 수 있다.
                 # 거래 자체는 중복 삽입하지 않고, 비어 있던 모델 키만 안전하게 보강한다.
-                if model:
+                if model and not collided:
                     conn.execute(
                         "UPDATE credit_txn SET model=? WHERE id=? "
                         "AND (model IS NULL OR TRIM(model)='')",
@@ -164,7 +212,7 @@ def record_transactions(
                     )
                 # 공간도 같은 규칙으로 보강한다 — 옛 에이전트가 올린 행(NULL)이 뒤늦게 채워지고,
                 # 이미 채워진 값은 덮지 않는다(다른 공간 값으로 조용히 바뀌면 진단이 어긋난다).
-                if workspace_id:
+                if workspace_id and not collided:
                     conn.execute(
                         "UPDATE credit_txn SET workspace_id=? WHERE id=? "
                         "AND (workspace_id IS NULL OR TRIM(workspace_id)='')",
@@ -173,7 +221,7 @@ def record_transactions(
                 # INSERT OR IGNORE의 0건은 중복일 수도, 설명되지 않은 누락일 수도 있다.
                 # 실제 존재를 확인해 신규·중복 모두 입력 건별로 성공을 센다.
                 if account_key:
-                    saved = _find_account_transaction(conn, account_key, transaction)
+                    saved = _find_account_transaction(conn, account_key, transaction, owner_uid)
                 else:
                     saved = conn.execute(
                         "SELECT id FROM credit_txn WHERE id=?", (transaction_id,)
@@ -282,15 +330,32 @@ def _set_credit_source(conn, generation, source: str) -> bool:
     return True
 
 
+def _model_accepts(transaction, generation_model: Optional[str]) -> bool:
+    """거래 모델 태그가 이 생성물 모델과 이어질 수 있나. 둘 중 하나라도 비면 지금처럼 제한 없음.
+    옛 오태깅(shots + 'Nano Banana Pro')만 같은 표시명 묶음까지 넓힌다 — 태그 없는 거래·다른 태그는 그대로."""
+    transaction_model = transaction["model"]
+    if not transaction_model or not generation_model or transaction_model == generation_model:
+        return True
+    return (
+        (transaction_model, transaction["display_name"]) == _LEGACY_SHOTS_TAG
+        and generation_model in _NANO_BANANA_PRO_FAMILY
+    )
+
+
 def _match_transactions(conn, owner_uid: Optional[str]) -> list[str]:
     """BEGIN IMMEDIATE 안에서 요소 전체를 확정하거나 보류하고 dirty도 함께 저장한다."""
     # 빈 계정 사이클이 전체 사용자 재평가로 확대되면 안 된다. 신원 없는 기존 호출도
     # 거래 적재는 보존하되, 생성물 배정은 소유자를 확인한 호출에서만 수행한다.
     if not owner_uid or not owner_uid.strip():
         return []
+    # 같은 신원(owner·시각·금액·종류·표시명)의 행이 둘 이상인 묶음은 'local'↔실제 별칭이 합쳐지지 못한
+    # 것이다 — 그 묶음의 미연결 행은 전부 뺀다(한 거래가 두 생성물에 붙지 않게, 2026-10-02 Codex P1).
     transactions = conn.execute(
-        "SELECT id, credits, created_at, owner_uid, model FROM credit_txn "
-        "WHERE action='spend' AND matched_gen_id IS NULL AND owner_uid=? ORDER BY id",
+        "SELECT t.id, t.credits, t.created_at, t.owner_uid, t.model, t.display_name FROM credit_txn t "
+        "WHERE t.action='spend' AND t.matched_gen_id IS NULL AND t.owner_uid=? "
+        "AND NOT EXISTS (SELECT 1 FROM credit_txn d WHERE d.owner_uid=t.owner_uid AND d.id<>t.id "
+        "AND d.created_at IS t.created_at AND d.credits IS t.credits AND d.action IS t.action "
+        "AND d.display_name IS t.display_name) ORDER BY t.id",
         (owner_uid,),
     ).fetchall()
     # 모델/시각/생성기 변경으로 후보가 사라진 생성물도 읽어 오래된 보류를 해제한다.
@@ -326,9 +391,7 @@ def _match_transactions(conn, owner_uid: Optional[str]) -> list[str]:
                 and transaction["owner_uid"] != generation["creator_uid"]
             ):
                 continue
-            transaction_model = transaction["model"]
-            generation_model = generation["model"]
-            if transaction_model and generation_model and transaction_model != generation_model:
+            if not _model_accepts(transaction, generation["model"]):
                 continue
             edges.setdefault(generation_index, []).append(transaction_index)
             reverse_edges.setdefault(transaction_index, []).append(generation_index)

@@ -22,7 +22,7 @@ INGEST = "app.routers.ingest"
 MUTATIONS = [
     (
         "DB 조회 제거", QUEUE,
-        "saved = _find_account_transaction(conn, account_email, transaction)",
+        "saved = _find_account_transaction(conn, account_email, transaction, owner_uid)",
         "saved = transaction",
         "test_ingest_queue_uses_preserved_enrichment[A-B-A]",
         "queue must use ledger workspace",
