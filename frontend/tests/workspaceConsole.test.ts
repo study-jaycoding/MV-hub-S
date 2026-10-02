@@ -1,7 +1,7 @@
 import { passesChipFilters } from "../src/components/manage/console/ConsoleFilterBar";
 import { describe, expect, it } from "vitest";
 import type { CreditPlanSettings } from "../src/lib/creditPlan";
-import { consoleLimitView, EMAIL_RE, periodSummary, recurringPlanBody, scheduleLabel, topupAddBody, topupPatchBody } from "../src/lib/workspaceConsole";
+import { consoleLimitView, creditDialogSub, EMAIL_RE, periodSummary, recurringPlanBody, scheduleLabel, topupAddBody, topupPatchBody } from "../src/lib/workspaceConsole";
 
 const settings = {
   workspace_id: "a",
@@ -60,6 +60,13 @@ describe("recurringPlanBody", () => {
     expect(recurringPlanBody(settings, { value: 500, auto: true, period: "week", date: "2026-10-07" })).toEqual({
       revision: 7, note: "메모", recurring_topup: 500, recurring_auto: true, recurring_period: "week", recurring_anchor: "2026-10-07",
     });
+  });
+
+  it("날짜를 빼면(안 건드림) 충전일·기준 날짜를 보내지 않는다 — 서버가 기존 값을 둔다(2026-10-03 점검 CXF-3)", () => {
+    expect(recurringPlanBody(settings, { value: 200, auto: true, period: "month" })).toEqual({
+      revision: 7, note: "메모", recurring_topup: 200, recurring_auto: true, recurring_period: "month",
+    });
+    expect(recurringPlanBody(settings, { value: 200, auto: false, period: "month" })).toEqual({ revision: 7, note: "메모", recurring_topup: 200, recurring_auto: false });
   });
 
   it("keeps another manager's mode change when only the amount was edited", async () => {
@@ -134,5 +141,25 @@ describe("consoleLimitView (설계 §13 — 대시보드·관리 표의 서브�
   it("0 이면 없음(null), 여럿이 쓰면 공유를 밝힌다", () => {
     expect(consoleLimitView({ ...base, credits: null, topups_cycle: 0 }).total).toBeNull();
     expect(consoleLimitView({ ...base, shared_projects: 2 }).title).toContain("프로젝트 2개가 함께 씀");
+  });
+});
+
+describe("creditDialogSub 의 다음 충전일 — 서버 개요(_occurrences)와 같은 규칙(2026-10-03 Codex 3라운드)", () => {
+  const plan = (p: Record<string, unknown>) => ({ ...settings, plan: { ...settings.plan, ...p } }) as unknown as CreditPlanSettings;
+  it("수동은 월 주기·기준 날짜 없이 — 자동만 골라도 오늘이 충전일로 가지 않게", () => {
+    expect(creditDialogSub(plan({ recurring_auto: false, recurring_period: "week", recurring_anchor: "2026-10-01", topup_day: 20 }), "2026-11-03").next_topup_day)
+      .toBe("2026-11-20");
+  });
+  it("기준 날짜 없는 주 충전도 월 주기로 센다", () => {
+    expect(creditDialogSub(plan({ recurring_auto: true, recurring_period: "week", recurring_anchor: null, topup_day: 20 }), "2026-11-03").next_topup_day)
+      .toBe("2026-11-20");
+  });
+  it("먼 미래 기준 날짜도 반복 상한 없이 그날부터(Codex 4라운드 — 240개월 상한에 걸려 2046 을 냈다)", () => {
+    expect(creditDialogSub(plan({ recurring_auto: true, recurring_period: "month", recurring_anchor: "2050-11-20", topup_day: 20 }), "2026-11-03").next_topup_day)
+      .toBe("2050-11-20");
+  });
+  it("자동 월은 그대로", () => {
+    expect(creditDialogSub(plan({ recurring_auto: true, recurring_period: "month", recurring_anchor: null, topup_day: 20 }), "2026-11-03").next_topup_day)
+      .toBe("2026-11-20");
   });
 });

@@ -24,6 +24,7 @@ import {
   subscribeRefServerStatus,
 } from "../src/lib/sceneAssetRelink";
 import { listScenes, saveScenes, type Scene } from "../src/lib/scenes";
+import { loadSceneHistory, sameSnap, saveSceneHistory } from "../src/lib/sceneUndoStore";
 import { STORAGE_KEYS } from "../src/lib/storageKeys";
 
 const locate = vi.fn();
@@ -317,6 +318,28 @@ describe("서버에 묻고 갈아끼우기", () => {
       "asset:P|CH/a.png",
       "asset:P|CH/a.png",
     ]);
+  });
+
+  it("비활성 씬의 실행 취소 기록에도 입힌다 — 돌아가도 Ctrl+Z 가 남고 전이 메타도 그대로(2026-10-03 점검 CXF-5)", async () => {
+    const snap = (s: Scene) => ({ cards: s.cards, edges: s.edges, groups: s.groups || [] });
+    const b = { ...scene([{ file_path: "asset:imports|a.png" }]), id: "cxf5-b" };
+    const c = { ...scene([{ file_path: "asset:imports|a.png" }]), id: "cxf5-c" };
+    saveScenes(null, [b, c]);
+    const removed = [{ cardId: "c2", genIds: ["g1"] }];
+    saveSceneHistory(b.id, { undo: [{ ...snap(b), cards: b.cards.slice(0, 1), removedForward: removed }], redo: [], lastCommit: snap(b) });
+    // c 의 기록은 이미 씬과 어긋나 있다(다른 탭 편집 등) — 원래대로 건드리지 않는다
+    const stale = { undo: [snap(c)], redo: [], lastCommit: { ...snap(c), cards: [] } };
+    saveSceneHistory(c.id, stale);
+    locate.mockResolvedValue(answer({ fixed: [{ token: "asset:imports|a.png", project: "P", path: "CH/a.png" }] }));
+
+    await relinkSceneAssetRefs({ applyToBoard: () => null });
+
+    const after = listScenes(null).find((s) => s.id === b.id)!;
+    const history = loadSceneHistory(b.id)!;
+    expect(sameSnap(history.lastCommit, snap(after))).toBe(true); // 돌아가면 restoreSceneHistory 가 기록을 잇는다
+    expect(history.undo[0].cards[0].refs![0].file_path).toBe("asset:P|CH/a.png");
+    expect(history.undo[0].removedForward).toEqual(removed);
+    expect(loadSceneHistory(c.id)).toBe(stale);
   });
 
   it("캔버스가 안 열렸으면 활성 씬도 저장 직후 통째로 받는다(boardApplied=false)", async () => {

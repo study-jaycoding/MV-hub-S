@@ -1,13 +1,13 @@
 // 워크스페이스 콘솔(서브스페이스 — 대시보드의 워크스페이스 판) — 왼쪽 목록(메인·서브) + 메인=서브별 크레딧 조율 / 서브=그룹·크레딧·참가자.
 // 설계: docs/WORKSPACE_CONSOLE_DESIGN.md. 할당은 계획·기록이다 — 실제 이체는 힉스필드가 충전일에 한다.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fillReorder } from "../../../lib/memberTable";
 import { api } from "../../../api";
 import { isRouteMissing } from "../../../lib/http";
 import { manageApi } from "../../../lib/manageApi";
 import type { ManageCaps } from "../../../lib/useManageCaps";
 import type { CreditPlanSaveBody, CreditPlanSettings } from "../../../lib/creditPlan";
-import { recurringPlanBody, STATUS_LABEL, syncConsoleStatus, topupAddBody, topupPatchBody, type ConsoleOverview, type ConsoleStatus, type ConsoleSub } from "../../../lib/workspaceConsole";
+import { creditDialogSub, recurringPlanBody, STATUS_LABEL, syncConsoleStatus, topupAddBody, topupPatchBody, type ConsoleOverview, type ConsoleStatus, type ConsoleSub } from "../../../lib/workspaceConsole";
 import { ManageEditCancelled, useManageEditConflict } from "../useManageEditConflict";
 import { ConsoleSubView, CreditDialog } from "./ConsoleSubView";
 import { ConsoleFolderDialog } from "./ConsoleFolderDialog";
@@ -32,7 +32,9 @@ export function WorkspaceConsole({ caps, reloadSignal, selectedId, onSelectedCha
   const [missing, setMissing] = useState(false);
   const [selected, setSelectedRaw] = useState<string | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
-  const [recurringFor, setRecurringFor] = useState<ConsoleSub | null>(null);
+  // 편집 창(크레딧 창·달력 정보 창)을 연 순간 읽은 설정 — 창의 처음 값이자 저장 기준(saveSub 의 base). 못 읽으면 저장하지 않는다.
+  const [recurringFor, setRecurringFor] = useState<{ sub: ConsoleSub; base: CreditPlanSettings } | null>(null);
+  const eventBase = useRef<{ event: unknown; base: Promise<CreditPlanSettings | null> } | null>(null);
   const [folderFor, setFolderFor] = useState<ConsoleSub | null>(null);
   const [periodFor, setPeriodFor] = useState<ConsoleSub | null>(null);
   const [notice, setNotice] = useState("");
@@ -74,11 +76,13 @@ export function WorkspaceConsole({ caps, reloadSignal, selectedId, onSelectedCha
   const sub = data.subs.find((s) => s.id === selected);
   const mainSelected = !!main && selected === main.id;
 
-  /** 메인 표의 칸 저장 — 그 서브 설정을 **방금** 읽어 기준으로 삼는다(note·topups 전체를 되보내야 한다, Codex §9). */
-  const saveSub = async (ws: ConsoleSub, label: string, body: (settings: CreditPlanSettings) => CreditPlanSaveBody) => {
+  /** 메인 표의 칸 저장 — 기준은 base(편집 창을 연 순간 읽은 설정). base 가 없는 것은 끌어 옮기기 같은 즉시 동작뿐 — **방금** 읽는다.
+   *  note·topups 전체를 되보내야 한다(Codex §9). 저장 직전에 다시 읽은 revision 에 옛 창 값을 붙이면 그사이 다른 관리자의 변경을
+   *  충돌 없이 덮었다 — 연 순간 기준이면 409 병합 창으로 간다(2026-10-03 점검 CXF-7). */
+  const saveSub = async (ws: ConsoleSub, label: string, body: (settings: CreditPlanSettings) => CreditPlanSaveBody, base?: CreditPlanSettings) => {
     setBusy(true); setNotice("");
     try {
-      const settings = await manageApi.creditPlanSettings(ws.id);
+      const settings = base ?? await manageApi.creditPlanSettings(ws.id);
       await conflict.saveCredit(ws.id, settings, body(settings));
       setNotice(`저장됨 · ${ws.name} ${label}`);
       await load();
@@ -88,6 +92,14 @@ export function WorkspaceConsole({ caps, reloadSignal, selectedId, onSelectedCha
     } finally {
       setBusy(false);
     }
+  };
+  /** 크레딧 창은 설정을 받은 뒤에 연다 — 창의 처음 값과 저장 기준(revision)이 같은 응답이어야 한다. 못 읽으면 열지 않는다
+   *  (저장 때 다시 읽어 대신하면 옛 화면 값이 최신 revision 으로 실렸다 — 2026-10-03 Codex 코드 리뷰 A-1). */
+  const openCredit = async (ws: ConsoleSub) => {
+    setBusy(true); setNotice("");
+    try { setRecurringFor({ sub: ws, base: await manageApi.creditPlanSettings(ws.id) }); }
+    catch (reason) { setNotice(`${ws.name} 크레딧 설정을 읽지 못했습니다 — 다시 눌러 주세요. ${errorText(reason)}`); }
+    finally { setBusy(false); }
   };
   /** 서브 상태를 그 서브 프로젝트에 반영 — 관리 표와 같은 공용 `syncConsoleStatus`(§16). */
   const syncStatus = (sub: ConsoleSub, status: ConsoleStatus) => syncConsoleStatus(sub.id, sub.projects, status, {
@@ -199,7 +211,7 @@ export function WorkspaceConsole({ caps, reloadSignal, selectedId, onSelectedCha
               </div>
             </div>
             <PoolCard data={data} canEdit={canEdit} onChanged={() => void load()} />
-            <SubTable data={data} canEdit={canEdit} busy={busy} onSelect={setSelected} onMove={(from, to) => void moveSub(from, to)} onCredit={setRecurringFor} onFolder={setFolderFor} onPeriod={setPeriodFor}
+            <SubTable data={data} canEdit={canEdit} busy={busy} onSelect={setSelected} onMove={(from, to) => void moveSub(from, to)} onCredit={(s) => void openCredit(s)} onFolder={setFolderFor} onPeriod={setPeriodFor}
               onStatus={(s, status) => void changeStatus(s, status)}
               onAdd={() => setLinkOpen(true)}
               onArchive={(s) => void act(`${s.name} 을(를) 내렸습니다`, () => manageApi.consoleArchive(s.id, true))} />
@@ -210,30 +222,40 @@ export function WorkspaceConsole({ caps, reloadSignal, selectedId, onSelectedCha
                 if (event.kind === "topup" && event.topup_id) {
                   void saveSub(sub, `추가 크레딧 날짜 → ${day}`, (settings) => topupPatchBody(settings, event.topup_id as string, { day })).catch(() => {});
                 } else if (event.kind === "recurring") {
+                  // 방식은 기준 설정의 값 그대로 — 자동으로 못 박으면 그사이 수동으로 바뀐 것을 되돌렸다(Codex 2라운드 A-1)
                   void saveSub(sub, `충전일 → ${day}`, (settings) => recurringPlanBody(settings, {
-                    value: settings.plan.recurring_topup ?? null, auto: true, period: settings.plan.recurring_period ?? "month", date: day,
+                    value: settings.plan.recurring_topup ?? null, auto: settings.plan.recurring_auto ?? true,
+                    period: settings.plan.recurring_period ?? "month", date: day,
                   })).catch(() => {});
                 }
               }}
-              onEdit={(event, patch) => {
+              onEdit={async (event, patch) => {
                 const sub = data.subs.find((x) => x.id === event.sub_id);
-                if (!sub) return Promise.reject(new Error("서브를 찾지 못했습니다. 새로고침 뒤 다시 해 주세요."));
+                if (!sub) throw new Error("서브를 찾지 못했습니다. 새로고침 뒤 다시 해 주세요.");
+                // 정보 창을 연 순간의 설정(CXF-7). 못 읽었으면 저장하지 않는다 — 저장 직전에 다시 읽어 대신하면 옛 화면 값이
+                // 최신 revision 으로 실렸다(Codex 2라운드 A-1).
+                const base = eventBase.current?.event === event ? await eventBase.current.base : null;
+                if (!base) throw new Error("설정을 읽지 못해 저장하지 않았습니다 — 창을 닫았다가 다시 여세요.");
                 if (event.kind === "recurring") {
+                  // 금액만 — 날짜를 빼서 충전일·기준 날짜는 서버 값 그대로(2026-10-03 점검 CXF-3), 방식·주기는 기준 설정의 값 그대로
                   return saveSub(sub, "크레딧 금액", (settings) => recurringPlanBody(settings, {
-                    value: patch?.credits ?? null, auto: true, period: settings.plan.recurring_period ?? "month",
-                    date: sub.next_topup_day ?? data.today,
-                  }));
+                    value: patch?.credits ?? null, auto: settings.plan.recurring_auto ?? true, period: settings.plan.recurring_period ?? "month",
+                  }), base);
                 }
                 return saveSub(sub, patch === null ? "추가 크레딧 삭제" : "추가 크레딧 수정",
-                  (settings) => topupPatchBody(settings, event.topup_id as string, patch));
+                  (settings) => topupPatchBody(settings, event.topup_id as string, patch), base);
               }}
               loadNote={async (event) => {
-                const settings = await manageApi.creditPlanSettings(event.sub_id);
+                // 정보 창을 열 때 한 번 — 이 설정이 메모이자 저장 기준이다(CXF-7)
+                const base = manageApi.creditPlanSettings(event.sub_id).catch(() => null);
+                eventBase.current = { event, base };
+                const settings = await base;
+                if (!settings) throw new Error("설정을 읽지 못했습니다.");
                 return settings.topups.find((t) => t.id === event.topup_id)?.note ?? null;
               }} />
           </div>
         ) : sub ? (
-          <ConsoleSubView key={sub.id} workspaceId={sub.id} name={sub.name} tier="sub" sub={sub} today={data.today} canEdit={canEdit} conflict={conflict} onChanged={() => void load()} />
+          <ConsoleSubView key={sub.id} workspaceId={sub.id} name={sub.name} tier="sub" sub={sub} today={data.today} canEdit={canEdit} conflict={conflict} onChanged={() => void load()} reloadSignal={reloadSignal} />
         ) : (
           <div className="manage-empty">왼쪽에서 워크스페이스를 고르세요.</div>
         )}
@@ -255,9 +277,9 @@ export function WorkspaceConsole({ caps, reloadSignal, selectedId, onSelectedCha
       {periodFor ? <ConsolePeriodDialog sub={periodFor} savePlanning={conflict.savePlanning} onClose={() => setPeriodFor(null)} onSaved={() => void load()} /> : null}
       {folderFor ? <ConsoleFolderDialog workspaceId={folderFor.id} name={folderFor.name} onClose={() => setFolderFor(null)} /> : null}
       {recurringFor ? (
-        <CreditDialog name={recurringFor.name} sub={recurringFor} today={data.today} onClose={() => setRecurringFor(null)}
-          onSave={(plan) => saveSub(recurringFor, "크레딧", (settings) => recurringPlanBody(settings, plan))}
-          onAdd={(t) => saveSub(recurringFor, "추가 크레딧", (settings) => topupAddBody(settings, t))} />
+        <CreditDialog name={recurringFor.sub.name} sub={creditDialogSub(recurringFor.base, data.today)} today={data.today} onClose={() => setRecurringFor(null)}
+          onSave={(plan) => saveSub(recurringFor.sub, "크레딧", (settings) => recurringPlanBody(settings, plan), recurringFor.base)}
+          onAdd={(t) => saveSub(recurringFor.sub, "추가 크레딧", (settings) => topupAddBody(settings, t), recurringFor.base)} />
       ) : null}
     </div>
   );

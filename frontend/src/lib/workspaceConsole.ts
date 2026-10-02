@@ -78,10 +78,12 @@ export function topupAddBody(
 /** 정기 크레딧 창 저장 — 금액(null=파생)·충전 방식·주기·날짜. 그룹·충전 기록은 키를 빼서 그대로 둔다.
  *  날짜의 뜻은 주기마다 다르다: 월 = 매월 그 날(topup_day — 서브의 달 경계도 옮긴다) · 주 = 그 요일 · 일 = 그날부터.
  *  주·일에서는 topup_day 를 보내지 않는다(달 경계를 건드리지 않게). 수동은 주기 없이 달 경계만.
- *  바꾸지 않은 칸은 기준값과 같아 409 병합 때 다른 관리자의 변경을 덮지 않는다(mergeField). */
+ *  바꾸지 않은 칸은 기준값과 같아 409 병합 때 다른 관리자의 변경을 덮지 않는다(mergeField).
+ *  date 를 빼면(날짜를 안 건드림) topup_day·recurring_anchor 를 보내지 않는다 — 서버가 기존 값을 둔다. 다음 충전일에서 다시 계산하면
+ *  매월 31일이 11-30 에서 30일로 바뀌었다(2026-10-03 점검 CXF-3). */
 export function recurringPlanBody(
   credit: CreditPlanSettings,
-  plan: { value: number | null; auto: boolean; period: LimitPeriod; date: string },
+  plan: { value: number | null; auto: boolean; period: LimitPeriod; date?: string },
 ): CreditPlanSaveBody {
   const monthly = !plan.auto || plan.period === "month";
   return {
@@ -89,8 +91,8 @@ export function recurringPlanBody(
     note: credit.plan.note,
     recurring_topup: plan.value,
     recurring_auto: plan.auto,
-    ...(plan.auto ? { recurring_period: plan.period, recurring_anchor: plan.date } : {}),
-    ...(monthly ? { topup_day: Number(plan.date.slice(8, 10)) } : {}),
+    ...(plan.auto ? { recurring_period: plan.period, ...(plan.date ? { recurring_anchor: plan.date } : {}) } : {}),
+    ...(monthly && plan.date ? { topup_day: Number(plan.date.slice(8, 10)) } : {}),
   };
 }
 
@@ -206,9 +208,8 @@ export function nextRecurringDay(plan: RecurringPlan, today: string): string | n
   const period = plan.recurring_period ?? "month";
   const anchor = plan.recurring_anchor;
   if (period === "month") {
-    let day = nextMonthDay(addDays(today, 1), plan.topup_day ?? 1);
-    for (let i = 0; anchor && day < anchor && i < 240; i++) day = nextMonthDay(addDays(day, 1), plan.topup_day ?? 1); // 기준 날짜 전 충전은 없다(서버와 같게)
-    return day;
+    // 기준 날짜 전 충전은 없다(서버와 같게) — 기준이 미래면 그날부터 첫 충전일. 전에는 한 달씩 240번까지만 넘겨 20년 넘는 기준에서 틀렸다(Codex 4라운드).
+    return nextMonthDay(anchor && anchor > today ? anchor : addDays(today, 1), plan.topup_day ?? 1);
   }
   if (period === "day") return anchor && anchor > today ? anchor : addDays(today, 1);
   if (!anchor) return null;
@@ -235,6 +236,29 @@ export function recurringEditBody(
   if (patch.value === undefined && plan.recurring_topup === undefined) delete body.recurring_topup; // 구서버 — 모르는 금액을 비우지 않게
   if (monthly) body.topup_day = day; // 달 끝 보정(31→30)이 충전일을 바꾸지 않게
   return body;
+}
+
+/** 크레딧 창(CreditDialog)의 처음 값 — 저장 기준 settings 와 **같은 응답**에서 만든다. 개요(서브 표) 값으로 열면 그사이 다른 관리자가
+ *  바꾼 방식이 옛 값으로 실려 409 없이 덮였고, 재조회로 바뀐 개요와 비교하면 안 건드린 날짜를 보냈다(2026-10-03 Codex 코드 리뷰 A-1·A-2).
+ *  다음 충전일도 이 설정으로 계산한다(nextRecurringDay — 서버와 같은 규칙). */
+export function creditDialogSub(credit: CreditPlanSettings, today: string): Pick<ConsoleSub,
+  "monthly_topup" | "monthly_topup_source" | "recurring_auto" | "recurring_period" | "recurring_anchor" | "topup_day" | "next_topup_day"> {
+  const plan = credit.plan;
+  // 다음 충전일은 서버 개요(_occurrences)와 같은 규칙 — 수동은 월 주기·기준 날짜 없이, 기준 날짜 없는 주 충전도 월 주기로.
+  // 공용 nextRecurringDay 는 수동이면 null(관리 표 계약)이라, 그대로 쓰면 창이 오늘을 충전일로 보냈다(Codex 3라운드).
+  const auto = plan.recurring_auto ?? true;
+  const anchor = auto ? plan.recurring_anchor ?? null : null;
+  const period = auto ? plan.recurring_period ?? "month" : "month";
+  return {
+    monthly_topup: plan.monthly_topup,
+    monthly_topup_source: plan.monthly_topup_source ?? (plan.recurring_topup != null ? "manual" : "none"),
+    recurring_auto: auto,
+    recurring_period: plan.recurring_period ?? "month",
+    recurring_anchor: plan.recurring_anchor ?? null,
+    topup_day: plan.topup_day ?? 1,
+    next_topup_day: nextRecurringDay({ ...plan, recurring_auto: true, recurring_anchor: anchor,
+      recurring_period: period === "week" && !anchor ? "month" : period }, today),
+  };
 }
 
 /** 관리 표 정기 행의 방식 글자 — 서브스페이스와 같은 `scheduleLabel`(§14). */

@@ -86,7 +86,19 @@ export function UpdateProgressOverlay() {
     let timer = 0;
     let firstFailedAt: number | null = null;
     let idleHits = 0; // 진행 중이 아닌 응답을 연달아 받은 횟수
-    const deadline = Date.now() + DEADLINE_MS;
+    // 제한 시간은 요청과 따로 잰다 — 상태 요청이 끝나지 않으면 await 뒤의 시간 검사에 닿지 못해 5분이 지나도 덮개가
+    // 화면을 막았다(2026-10-03 점검 CXF-6). 만료되면 늦게 오는 응답은 버린다(cancelled).
+    const limit = window.setTimeout(() => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      // 대기 표시를 지운다 — 남겨 두면 다음 새로고침에 덮개가 다시 떠서 앱을 5분 더 가린다
+      // (Codex 지적, 2026-09-28).
+      clearWait();
+      setNote(
+        "자동 확인 시간이 초과됐습니다. 프로그램 창과 업데이트 로그(%LOCALAPPDATA%\\MVHub\\updates\\update.log)를 확인해주세요.",
+      );
+      setDone(true);
+    }, DEADLINE_MS);
 
     const poll = async () => {
       const expected = waitVersion();
@@ -133,22 +145,13 @@ export function UpdateProgressOverlay() {
         setNote(pollFailureMessage(firstFailedAt, Date.now()) ?? "");
       }
       if (cancelled) return;
-      if (Date.now() < deadline) {
-        timer = window.setTimeout(poll, POLL_MS);
-      } else {
-        // 대기 표시를 지운다 — 남겨 두면 다음 새로고침에 덮개가 다시 떠서 앱을 5분 더 가린다
-        // (Codex 지적, 2026-09-28).
-        clearWait();
-        setNote(
-          "자동 확인 시간이 초과됐습니다. 프로그램 창과 업데이트 로그(%LOCALAPPDATA%\\MVHub\\updates\\update.log)를 확인해주세요.",
-        );
-        setDone(true);
-      }
+      timer = window.setTimeout(poll, POLL_MS);
     };
     void poll();
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      window.clearTimeout(limit);
     };
   }, [open, done]);
 

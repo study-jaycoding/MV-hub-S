@@ -350,6 +350,30 @@ it("켜져 있는 보기를 한 번 더 누르면 날짜로 나눠 보여 준다
   expect(localStorage.getItem("ch.resolve.groupByDate")).toBe("0");
 });
 
+it("날짜로 나눈 채 이름순으로 바꿔 같은 날짜 구간이 여러 번 생겨도 카드는 겹치지 않는다(2026-10-03 CXF-4)", async () => {
+  const day = 86_400;
+  const at = (d: number) => 1_757_000_000 + d * 2 * day;
+  mocks.list.mockResolvedValue({
+    library_name: "MVHub - 뻘뻘뻘",
+    library_path: "Z:/PROJECT_MUDX/10_ai/@davinci",
+    projects: ["A", "B", "C", "D", "E"].map((name, i) => ({ name, folder_path: "", mtime: at([0, 1, 0, 2, 1][i]), size: 1 })),
+  });
+  localStorage.setItem("ch.resolve.groupByDate", "1");
+  act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
+  await settle();
+  const cards = () => host.querySelectorAll(".resolve-project-copy strong").length;
+  const menu = (label: string) => [...host.querySelectorAll<HTMLButtonElement>(".asort-item")]
+    .find((el) => (el.textContent ?? "").replace("●", "") === label)!;
+  expect(cards()).toBe(5);
+
+  await act(async () => host.querySelector<HTMLButtonElement>(".asort-btn")!.click());
+  await act(async () => menu("이름").click()); // 이름 내림차순 — 같은 날짜가 떨어져 구간이 다섯
+  expect(host.querySelectorAll(".gen-date-header")).toHaveLength(5);
+  expect(cards()).toBe(5);
+  await act(async () => menu("오름차순").click());
+  expect(cards()).toBe(5);
+});
+
 it("그림을 못 받은 카드는 DaVinci Resolve 아이콘을 자리표시로 쓴다", async () => {
   act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
   await settle();
@@ -572,6 +596,36 @@ it("Resolve 를 켜는 동안 화면을 떠나면 늦게라도 열기를 보내�
 
   expect(mocks.open).toHaveBeenCalledTimes(1); // 첫 시도뿐
   root = createRoot(host); // afterEach 의 unmount 가 두 번 불리지 않게
+});
+
+it("라이브러리 연결 도중 화면을 떠나면 연결이 끝나도 목록·그림을 다시 받지 않는다(2026-10-03 점검 L4-3)", async () => {
+  let connected: ((value: { message: string }) => void) | undefined;
+  mocks.connect.mockReturnValueOnce(new Promise((resolve) => { connected = resolve; }));
+  act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
+  await settle();
+  await act(async () => host.querySelector<HTMLButtonElement>('.rp-relink[aria-label="라이브러리 다시 연결"]')!.click());
+
+  act(() => root.unmount());
+  await act(async () => connected!({ message: "연결했습니다." }));
+  await settle();
+
+  expect(mocks.list).toHaveBeenCalledTimes(1); // 처음 한 번뿐
+  expect(mocks.thumbnails).toHaveBeenCalledTimes(1);
+  root = createRoot(host); // afterEach 의 unmount 가 두 번 불리지 않게
+});
+
+it("첫 목록을 읽는 도중 화면을 떠나면 뒤이은 그림 요청을 보내지 않는다(2026-10-03 점검 L4-3)", async () => {
+  let listed: ((value: Awaited<ReturnType<typeof api.resolveLibraryProjects>>) => void) | undefined;
+  mocks.list.mockReturnValueOnce(new Promise((resolve) => { listed = resolve; }));
+  act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
+  await settle();
+
+  act(() => root.unmount());
+  await act(async () => listed!({ library_name: "L", library_path: "Z:/x", projects: [] }));
+  await settle();
+
+  expect(mocks.thumbnails).not.toHaveBeenCalled();
+  root = createRoot(host);
 });
 
 it("Resolve 를 켰으면 서버가 준 켜기 번호를 붙여 다시 연다 — 켜는 동안엔 그 열기만 Resolve 에 닿는다", async () => {

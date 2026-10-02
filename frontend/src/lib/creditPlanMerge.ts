@@ -163,6 +163,12 @@ export function mergeCreditPlan(baseline: CreditPlanSettings, body: CreditPlanSa
     } else if (collection === "topups") {
       const topup = r.topups.find((row) => row.id === id) ?? b.topups.find((row) => row.id === id) ?? m.topups.find((row) => row.id === id);
       change.label = `추가 크레딧 / ${topup?.day || id}${field.length ? ` / ${editFieldLabel(field.join("."))}` : ""}`;
+    } else if (collection === "members") {
+      // 이메일에 점이 있어 점으로 자르면 '참가자 / lee / jaelyun@gmail / com' 이 됐다 — 끝이 참가자 칸 이름일 때만 칸으로 본다
+      // (행 전체 충돌이면 경로가 이메일로 끝난다, 2026-10-03 점검 L3-6)
+      const rest = change.path.slice("members.".length);
+      const key = (["group_id", "quota"] as const).find((name) => rest.endsWith(`.${name}`));
+      change.label = key ? `참가자 / ${rest.slice(0, -key.length - 1)} / ${editFieldLabel(key)}` : `참가자 / ${rest}`;
     }
   }
   return { value, changes };

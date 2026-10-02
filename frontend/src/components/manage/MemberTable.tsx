@@ -301,7 +301,8 @@ function GroupLimitInput({ label, value, disabled, onCommit, onDirtyChange, fiel
         onChange={(event) => {
           if (!dirtyRef.current) { commitRef.current = onCommit; originalRef.current = value; }
           const nextInput = decimals ? stripDecimal(event.target.value) : stripThousands(event.target.value);
-          if ((nextInput ? Number(nextInput) : null) === originalRef.current) { finish(value); return; }
+          // 글자로 비교한다 — 숫자로 비교하면 Number("100.") === 100 이라 점을 친 순간 편집이 취소돼 100.5 가 1005 로 저장됐다(2026-10-03 L3-2)
+          if (nextInput === (originalRef.current === null ? "" : String(originalRef.current))) { finish(value); return; }
           dirtyRef.current = true;
           onDirtyChange?.(true);
           setInput(nextInput);

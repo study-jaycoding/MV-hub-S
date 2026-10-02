@@ -454,18 +454,21 @@ export function WorkspaceUsageDashboard({
     ? selectedWorker.creator_uid || "__none__"
     : undefined;
   // 표·상단 통계·내보내기가 함께 쓰는 필터. 드릴은 늘 걸리고, 기간·모델은 '전체 적용'일 때만 걸린다.
+  // 의존성도 실제로 걸리는 값만 — 꺼져 있을 때 차트 기간·모델을 바꾸면 같은 필터로 상단 사용량을 다시 읽었다(2026-10-03 점검 L3-3).
+  const appliedRange = periodAppliesToAll ? chartRange : null;
+  const appliedModel = periodAppliesToAll ? chartModel : "";
   const panelFilters = useMemo(() => ({
     workspaceId: workspaceId || undefined,
-    ...(periodAppliesToAll
+    ...(appliedRange
       ? {
-          dateFrom: chartRange.dateFrom,
-          dateTo: chartRange.dateTo,
-          timeFrom: chartRange.timeFrom,
-          timeTo: chartRange.timeTo,
-          model: chartModel || undefined,
+          dateFrom: appliedRange.dateFrom,
+          dateTo: appliedRange.dateTo,
+          timeFrom: appliedRange.timeFrom,
+          timeTo: appliedRange.timeTo,
+          model: appliedModel || undefined,
         }
       : {}),
-  }), [chartModel, chartRange, periodAppliesToAll, workspaceId]);
+  }), [appliedModel, appliedRange, workspaceId]);
   const selectedProjectFilter = selectedProject
     ? selectedProject.project_id || "__none__"
     : undefined;
@@ -504,6 +507,9 @@ export function WorkspaceUsageDashboard({
       overviewScopeRef.current = workspaceId;
       setOverview(null);
     }
+    // 판(워크스페이스·관리 표·상세)에 가려진 동안은 overview·드릴·timeseries 를 읽지 않는다 — 30초 안전망·변경 신호마다 안 보이는
+    // 수치를 읽었다. 판을 닫으면 그때 읽는다. 머리글이 쓰는 workspaces 는 계속 읽는다(2026-10-03 점검 L3-4).
+    if (showTable) return;
     setLoading(true);
     setError("");
     manageApi.teamOverview(panelFilters)
@@ -515,7 +521,7 @@ export function WorkspaceUsageDashboard({
       .finally(() => active && setLoading(false));
     return () => { active = false; };
     // panelFilters: 기간을 '전체 적용'으로 켜거나 범위를 바꾸면 표·통계도 다시 읽는다.
-  }, [panelFilters, reloadSignal, workspaceId]);
+  }, [panelFilters, reloadSignal, workspaceId, showTable]);
 
   useEffect(() => {
     if (!drillTargetKey) {
@@ -523,6 +529,7 @@ export function WorkspaceUsageDashboard({
       setDrillErrorKey("");
       return;
     }
+    if (showTable) return; // 판에 가려진 동안은 읽지 않는다(L3-4)
     let active = true;
     setDrillErrorKey("");
     manageApi.teamOverview({
@@ -539,7 +546,7 @@ export function WorkspaceUsageDashboard({
     return () => { active = false; };
     // reloadSignal: 같은 드릴 대상을 주기 재조회 — 성공 시 같은 표시 키로 교체되므로
     // 재조회 중에도 이전 스냅샷이 계속 표시된다(깜빡임 없음).
-  }, [drillDisplayKey, drillTargetKey, panelFilters, reloadSignal, selectedCreatorFilter, selectedProjectFilter, workspaceId]);
+  }, [drillDisplayKey, drillTargetKey, panelFilters, reloadSignal, selectedCreatorFilter, selectedProjectFilter, workspaceId, showTable]);
 
   // 기간·필터·워크스페이스가 바뀌면 이전 차트가 잘못된 데이터라 비우고 다시 그린다.
   // 반면 reloadSignal(30초 안전망)만 바뀐 재조회는 이전 데이터를 유지한 채 성공 시 교체 —
@@ -550,6 +557,7 @@ export function WorkspaceUsageDashboard({
   ].join("|");
   const trendKeyRef = useRef("");
   useEffect(() => {
+    if (showTable) return; // 판에 가려진 동안은 읽지 않는다 — 닫으면 키를 비교해 비우고 읽는다(L3-4)
     if (trendKeyRef.current !== trendDisplayKey) {
       trendKeyRef.current = trendDisplayKey;
       setTrend([]);
@@ -570,7 +578,7 @@ export function WorkspaceUsageDashboard({
       .catch(() => {});
     return () => { active = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reloadSignal, trendDisplayKey]);
+  }, [reloadSignal, trendDisplayKey, showTable]);
 
   const workerModelIndex = useMemo(
     () => groupModelRows(overview?.worker_models, (row) => row.creator_uid),

@@ -248,11 +248,6 @@ export function memberQuotaBody(
   };
 }
 
-/** 정기 충전 손 입력 저장(null = 프로젝트 월 예산 합에서 파생으로 되돌리기). 그룹·배정은 건드리지 않는다. */
-export function recurringTopupBody(credit: CreditPlanSettings, value: number | null): CreditPlanSaveBody {
-  return { revision: credit.plan.revision, note: credit.plan.note, recurring_topup: value };
-}
-
 /** 낙관 반영 — 프로젝트 역할은 uid 기준이라 같은 uid 의 줄이 함께 바뀐다. roles 가 비면 그 프로젝트에서 빠진다. */
 export function applyProjectRoles(rows: MemberTableRow[], uid: string, pid: string, roles: string[]): MemberTableRow[] {
   return rows.map((row) => {
@@ -267,17 +262,6 @@ export function applyProjectRoles(rows: MemberTableRow[], uid: string, pid: stri
 export function matchesMemberQuery(row: MemberTableRow, query: string): boolean {
   const q = query.trim().toLowerCase();
   return !q || row.name.toLowerCase().includes(q) || row.email.toLowerCase().includes(q);
-}
-
-/** 마지막 보고 — 서버 시각은 UTC('YYYY-MM-DD HH:MM:SS'). 오늘이면 시각, 아니면 날짜만. */
-export function lastSeenLabel(value: string | null, now = new Date()): string {
-  if (!value) return "보고 없음";
-  const at = new Date(value.replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(value) ? "" : "Z"));
-  if (Number.isNaN(at.getTime())) return value;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const day = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
-  const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-  return day === today ? `오늘 ${pad(at.getHours())}:${pad(at.getMinutes())}` : day;
 }
 
 /** 프로젝트 순서(§16 합의 4) — 전체 활성 목록에서 **이 워크스페이스 프로젝트가 있던 자리에만** 새 순서를 채운다.

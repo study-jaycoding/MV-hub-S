@@ -23,7 +23,7 @@ import { groupAssignBody, groupColorBody, groupEditBody, type MemberTableData } 
 import { PROJECT_ROLES } from "../../../types";
 import { WorkSearchBox } from "../WorkFilterBar";
 import { ConsoleFilterBar, emptyChipFilters, passesChipFilters, type ChipFilters, type FilterField } from "./ConsoleFilterBar";
-import { EMAIL_RE, PERIOD_UNIT, recurringPlanBody, scheduleLabel, topupAddBody, type ConsoleSub } from "../../../lib/workspaceConsole";
+import { creditDialogSub, EMAIL_RE, PERIOD_UNIT, recurringPlanBody, scheduleLabel, topupAddBody, type ConsoleSub } from "../../../lib/workspaceConsole";
 import { GroupEditor } from "../CreditPlanFields";
 import { ManageEditCancelled, useManageEditConflict } from "../useManageEditConflict";
 
@@ -142,7 +142,7 @@ export function CreditDialog({ name, sub, today, onClose, onSave, onAdd }: {
     recurring_period: LimitPeriod; recurring_anchor: string | null; topup_day: number; next_topup_day: string | null };
   today: string;
   onClose: () => void;
-  onSave: (plan: { value: number | null; auto: boolean; period: LimitPeriod; date: string }) => Promise<void>;
+  onSave: (plan: { value: number | null; auto: boolean; period: LimitPeriod; date?: string }) => Promise<void>;
   onAdd: (topup: { day: string; credits: number; note: string | null }) => Promise<void>;
 }) {
   const current = sub.monthly_topup_source === "manual" ? sub.monthly_topup : null;
@@ -170,7 +170,10 @@ export function CreditDialog({ name, sub, today, onClose, onSave, onAdd }: {
     ? /^\d{4}-\d{2}-\d{2}$/.test(addDay) && Number.isInteger(addAmount) && addAmount > 0
     : validDate && (value === null || (Number.isFinite(value) && value >= 0));
   const monthly = !auto || period === "month";
-  const dayOfMonth = validDate ? Number(effDate.slice(8, 10)) : sub.topup_day;
+  // 날짜를 안 건드리고 방식·주기도 그대로면 날짜를 보내지 않는다 — 금액만 고쳤는데 매월 31일이 다음 충전일(11-30)의 30일로
+  // 바뀌던 것(2026-10-03 점검 CXF-3). 방식·주기를 바꾸면 종전처럼 다음 충전일부터 시작한다.
+  const sendDate = dateTouched || auto !== sub.recurring_auto || (auto && period !== sub.recurring_period);
+  const dayOfMonth = sendDate && validDate ? Number(effDate.slice(8, 10)) : sub.topup_day;
   const weekday = validDate ? "일월화수목금토"[new Date(`${effDate}T00:00:00`).getDay()] : "";
   const changed = adding || value !== current || auto !== sub.recurring_auto || effDate !== startDate
     || (auto && period !== sub.recurring_period);
@@ -180,7 +183,7 @@ export function CreditDialog({ name, sub, today, onClose, onSave, onAdd }: {
     setBusy(true); setError("");
     try {
       if (adding) await onAdd({ day: addDay, credits: addAmount, note: note.trim() || null });
-      else await onSave({ value, auto, period, date: effDate });
+      else await onSave({ value, auto, period, date: sendDate ? effDate : undefined });
       onClose();
     } catch (reason) { if (!(reason instanceof ManageEditCancelled)) setError(errorText(reason)); }
     finally { setBusy(false); }
@@ -241,7 +244,7 @@ export function CreditDialog({ name, sub, today, onClose, onSave, onAdd }: {
   );
 }
 
-export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, conflict, onChanged }: {
+export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, conflict, onChanged, reloadSignal = 0 }: {
   workspaceId: string;
   name: string;
   tier: "main" | "sub";
@@ -250,6 +253,7 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
   canEdit: boolean;
   conflict: Conflict;
   onChanged: () => void;
+  reloadSignal?: number; // 다른 관리자의 변경·30초 안전망 — 명단·그룹·역할을 다시 읽는다(2026-10-03 점검 L3-5)
 }) {
   const [pane, setPane] = useState<Pane>("people");
   const [view, setView] = useState<CreditPlanView | null>(null);
@@ -257,9 +261,10 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [editor, setEditor] = useState<{ draft: CreditPlanDraft; group: DraftGroup } | null>(null);
-  const [creditOpen, setCreditOpen] = useState(false);
-  const [addOpen, setAddOpen] = useState(false);
+  // 편집 창마다 연 순간의 settings 를 기준(base)으로 쥔다 — 재조회가 settings 를 바꿔도 창의 저장 기준은 그대로(L3-5)
+  const [editor, setEditor] = useState<{ draft: CreditPlanDraft; group: DraftGroup; base: CreditPlanSettings } | null>(null);
+  const [creditOpen, setCreditOpen] = useState<CreditPlanSettings | null>(null);
+  const [addOpen, setAddOpen] = useState<CreditPlanSettings | null>(null);
   const [roleTable, setRoleTable] = useState<MemberTableData | null>(null);
   const [projectId, setProjectId] = useState("");
   const [memberQuery, setMemberQuery] = useState("");
@@ -276,7 +281,7 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
       setError(`불러오지 못했습니다. ${errorText(reason)}`);
     }
   }, [workspaceId, canEdit]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, reloadSignal]);
   const loadRoles = useCallback(async () => {
     try {
       const table = await manageApi.memberTable(workspaceId);
@@ -284,7 +289,7 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
       setProjectId((cur) => (table.projects.some((p) => p.id === cur) ? cur : table.projects[0]?.id ?? ""));
     } catch { setRoleTable(null); }
   }, [workspaceId]);
-  useEffect(() => { if (canEdit) void loadRoles(); }, [canEdit, loadRoles]);
+  useEffect(() => { if (canEdit) void loadRoles(); }, [canEdit, loadRoles, reloadSignal]);
   const roleRowOf = (email: string) => roleTable?.rows.find((r) => r.email.toLowerCase() === email.toLowerCase());
   const saveRoles = async (name: string, uid: string, next: string[]) => {
     const project = roleTable?.projects.find((p) => p.id === projectId);
@@ -302,12 +307,12 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
     }
   };
 
-  /** 저장 한 건 — 방금 읽은 settings 를 기준으로 보내고(409 면 병합 창), 결과로 화면을 갱신한다. */
-  const save = async (label: string, body: (s: CreditPlanSettings) => CreditPlanSaveBody) => {
-    if (!settings) return;
+  /** 저장 한 건 — base(편집 창이면 연 순간의 settings, 즉시 동작이면 지금 settings)를 기준으로 보내고(409 면 병합 창), 결과로 화면을 갱신한다. */
+  const save = async (label: string, body: (s: CreditPlanSettings) => CreditPlanSaveBody, base = settings) => {
+    if (!base) return;
     setBusy(true); setNotice("");
     try {
-      const saved = await conflict.saveCredit(workspaceId, settings, body(settings));
+      const saved = await conflict.saveCredit(workspaceId, base, body(base));
       setSettings(saved);
       setNotice(`저장됨 · ${label}`);
       setView(await manageApi.creditPlan(workspaceId));
@@ -377,7 +382,7 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
           <div className="usage-card-head">
             <div><h3>그룹</h3></div>
             {canEdit && settings ? (
-              <button type="button" className="wc-btn" disabled={busy} onClick={() => setEditor({ draft: draftFromSettings(settings), group: newDraftGroup() })}>＋ 그룹 만들기</button>
+              <button type="button" className="wc-btn" disabled={busy} onClick={() => setEditor({ draft: draftFromSettings(settings), group: newDraftGroup(), base: settings })}>＋ 그룹 만들기</button>
             ) : null}
           </div>
           <table className="usage-table">
@@ -388,7 +393,7 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
                   if (!canEdit || !settings || busy) return;
                   const draft = draftFromSettings(settings);
                   const group = draft.groups.find((d) => d.id === g.id);
-                  if (group) setEditor({ draft, group });
+                  if (group) setEditor({ draft, group, base: settings });
                 }}>
                   <td>
                     {canEdit && settings ? (
@@ -422,7 +427,7 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
         <div className="usage-card">
           <div className="usage-card-head">
             <div><h3>크레딧</h3></div>
-            {canEdit && settings && sub ? <button type="button" className="wc-btn" disabled={busy} onClick={() => setCreditOpen(true)}>＋ 크레딧</button> : null}
+            {canEdit && settings && sub ? <button type="button" className="wc-btn" disabled={busy} onClick={() => setCreditOpen(settings)}>＋ 크레딧</button> : null}
           </div>
           <table className="usage-table wc-kv">
             <tbody>
@@ -466,7 +471,7 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
             <div className="wc-people-head">
               <WorkSearchBox value={memberQuery} onChange={setMemberQuery} />
               <ConsoleFilterBar fields={memberFilterFields} filters={memberFilters} onChange={setMemberFilters} />
-              {canEdit && settings ? <button type="button" className="wc-btn" disabled={busy} onClick={() => setAddOpen(true)}>＋ 참가시키기</button> : null}
+              {canEdit && settings ? <button type="button" className="wc-btn" disabled={busy} onClick={() => setAddOpen(settings)}>＋ 참가시키기</button> : null}
             </div>
           </div>
           {settings ? (
@@ -531,18 +536,19 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
           busy={busy}
           onClose={() => setEditor(null)}
           onApply={(next, emails) => quiet(
-            save(`그룹 ${next.name.trim()}`, (s) => groupEditBody(s, next, emails)).then(() => setEditor(null)),
+            save(`그룹 ${next.name.trim()}`, (s) => groupEditBody(s, next, emails), editor.base).then(() => setEditor(null)),
           )}
         />
       ) : null}
-      {addOpen && settings ? (
-        <AddMemberDialog groups={settings.groups} onClose={() => setAddOpen(false)}
-          onSave={(email, gid) => save(`참가자 ${email}`, (st) => groupAssignBody(st, email, gid))} />
+      {addOpen ? (
+        <AddMemberDialog groups={addOpen.groups} onClose={() => setAddOpen(null)}
+          onSave={(email, gid) => save(`참가자 ${email}`, (st) => groupAssignBody(st, email, gid), addOpen)} />
       ) : null}
       {creditOpen && sub ? (
-        <CreditDialog name={name} sub={sub} today={today} onClose={() => setCreditOpen(false)}
-          onSave={(plan) => save("크레딧", (s) => recurringPlanBody(s, plan))}
-          onAdd={(t) => save("추가 크레딧", (s) => topupAddBody(s, t))} />
+        // 창의 처음 값도 연 순간의 settings 에서 — 재조회로 바뀐 sub 와 비교하면 안 건드린 날짜를 보냈다(Codex 2라운드 A-2)
+        <CreditDialog name={name} sub={creditDialogSub(creditOpen, today)} today={today} onClose={() => setCreditOpen(null)}
+          onSave={(plan) => save("크레딧", (s) => recurringPlanBody(s, plan), creditOpen)}
+          onAdd={(t) => save("추가 크레딧", (s) => topupAddBody(s, t), creditOpen)} />
       ) : null}
     </div>
   );

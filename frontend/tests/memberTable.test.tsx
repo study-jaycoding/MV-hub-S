@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemberTable } from "../src/components/manage/MemberTable";
 import { draftFromSettings, GROUP_COLOR_PALETTE, newDraftGroup, todayLocal, type CreditPlanSettings } from "../src/lib/creditPlan";
 import { HttpError } from "../src/lib/http";
-import { fillReorder, groupAssignBody, groupColorBody, groupEditBody, groupTermsBody, lastSeenLabel, mainPeople, memberQuotaBody, recurringTopupBody, type MemberTableData, type MemberTableRow } from "../src/lib/memberTable";
+import { fillReorder, groupAssignBody, groupColorBody, groupEditBody, groupTermsBody, mainPeople, memberQuotaBody, type MemberTableData, type MemberTableRow } from "../src/lib/memberTable";
 import { recurringEditBody } from "../src/lib/workspaceConsole";
 
 const mocks = vi.hoisted(() => ({ memberTable: vi.fn(), saveCreditPlan: vi.fn(), setPlanning: vi.fn(), members: vi.fn(), setProjectRoles: vi.fn(), removeProjectMember: vi.fn(), models: vi.fn(),
@@ -63,8 +63,6 @@ const chooseMerge = async (value: "mine" | "remote") => {
 it("그룹 저장 본문은 받은 그룹을 전부 되보내고 허용 모델 키는 싣지 않는다", () => {
   const body = groupAssignBody(credit(7), "b@x", "g2");
   expect(body).toEqual({ revision: 7, note: "메모", groups: [{ id: "g1", name: "2nd floor", monthly_limit: 5000, limit_period: "month" }, { id: "g2", name: "3rd floor", monthly_limit: 5000, limit_period: "month" }], members: [{ email: "b@x", group_id: "g2" }] });
-  expect(lastSeenLabel(null)).toBe("보고 없음");
-  expect(lastSeenLabel("2026-09-21 01:42:00", new Date(2026, 8, 21, 12))).toBe("오늘 10:42"); // 서버 시각은 UTC → KST
 
   const settings = credit(7);
   settings.members = [
@@ -778,10 +776,26 @@ it("몫 칸은 소속을 건드리지 않고 사람별 몫만 저장한다", asy
   }));
 });
 
-it("정기 충전은 손으로 적고, 비우면 프로젝트 예산 합계로 돌아간다", async () => {
-  expect(recurringTopupBody(credit(4), 24491.5)).toEqual({ revision: 4, note: "메모", recurring_topup: 24491.5 });
-  expect(recurringTopupBody(credit(4), null)).toEqual({ revision: 4, note: "메모", recurring_topup: null });
+it("소수 칸에서 정수 값 뒤에 '.' 을 쳐도 점이 지워지지 않는다 — 100 → 100.5 가 1005 로 저장되던 것(2026-10-03 L3-2)", async () => {
+  const data = table(3, [row("a@x", { group_id: "g1" })]);
+  data.credit!.members = [
+    { email: "a@x", name: "a", workspace_role: "member", is_available: true, group_id: "g1",
+      quota: 100, quota_effective: 100, quota_source: "manual", used_period: 0, unknown_period: 0, remaining: 100 },
+  ];
+  mocks.memberTable.mockResolvedValue(data);
+  mocks.saveCreditPlan.mockResolvedValue(credit(4));
+  await mount();
+  await openSheet("크레딧 관리");
+  const input = host.querySelector<HTMLInputElement>('[aria-label="a 할당 크레딧"]')!;
+  await typeInput(input, `${input.value}.`); // 사람이 한 글자씩 친다 — 지금 보이는 값 뒤에 붙는다
+  await typeInput(input, `${input.value}5`);
+  expect(input.value).toBe("100.5");
+  await act(async () => { input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); });
+  await settle();
+  expect(mocks.saveCreditPlan).toHaveBeenLastCalledWith("ws1", expect.objectContaining({ members: [{ email: "a@x", quota: 100.5 }] }));
+});
 
+it("정기 충전은 손으로 적고, 비우면 프로젝트 예산 합계로 돌아간다", async () => {
   const data = table(6, [row("a@x", { group_id: "g1" })]);
   data.credit!.plan = { ...data.credit!.plan, monthly_topup: 20000, monthly_topup_source: "derived", derived_topup: 20000, recurring_topup: null };
   mocks.memberTable.mockResolvedValue(data);

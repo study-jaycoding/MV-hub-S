@@ -48,7 +48,7 @@ export function CreditCalendar({ data, canEdit, busy, onMove, onEdit, loadNote }
   const [month, setMonth] = useState(monthOf(data.today));
   const [dragging, setDragging] = useState<CalEvent | null>(null);
   const [overDay, setOverDay] = useState<string | null>(null);
-  const [info, setInfo] = useState<{ event: CalEvent; note: string | null | undefined } | null>(null);
+  const [info, setInfo] = useState<{ event: CalEvent; note: string | null | undefined; noteFailed?: boolean } | null>(null);
   const [show, setShow] = useState({ period: true, credit: true }); // 필터 — 기간(프로젝트 시작~종료) · 크레딧
   // 프로젝트 기간 막대 — 시작·종료가 둘 다 있으면 그 사이 매일, 하나만 있으면 그날 하루. 색은 프로젝트마다 고정.
   const periods = useMemo(() => {
@@ -82,9 +82,12 @@ export function CreditCalendar({ data, canEdit, busy, onMove, onEdit, loadNote }
   };
   const openInfo = (e: CalEvent) => {
     setInfo({ event: e, note: e.kind === "topup" && canEdit ? undefined : null });
+    // 편집할 수 있으면 자동 크레딧도 열 때 한 번 읽는다 — 부모가 이때 읽은 설정을 저장 기준으로 쓴다(2026-10-03 점검 CXF-7). 메모는 추가 기록만.
+    if (e.kind === "recurring" && canEdit) loadNote(e).catch(() => {});
     if (e.kind === "topup" && canEdit) {
       loadNote(e).then((note) => setInfo((cur) => (cur && cur.event === e ? { event: e, note } : cur)))
-        .catch(() => setInfo((cur) => (cur && cur.event === e ? { event: e, note: null } : cur)));
+        // 못 읽은 것을 '메모 없음'(null)으로 확정하면 금액만 고쳐 저장해도 기존 메모가 지워졌다(2026-10-03 CXF-2)
+        .catch(() => setInfo((cur) => (cur && cur.event === e ? { event: e, note: null, noteFailed: true } : cur)));
     }
   };
 
@@ -150,13 +153,14 @@ export function CreditCalendar({ data, canEdit, busy, onMove, onEdit, loadNote }
 }
 
 function EventInfo({ info, sub, canEdit, onEdit, onClose }: {
-  info: { event: CalEvent; note: string | null | undefined };
+  info: { event: CalEvent; note: string | null | undefined; noteFailed?: boolean };
   sub?: ConsoleSub;
   canEdit: boolean;
   onEdit: (patch: EventPatch) => Promise<void>;
   onClose: () => void;
 }) {
   const { event, note } = info;
+  const noteFailed = !!info.noteFailed; // 메모를 못 읽었다 — 금액만 저장하고 메모는 보내지 않는다(서버의 기존 메모 유지)
   const recurring = event.kind === "recurring";
   const [creditsText, setCreditsText] = useState(recurring ? formatDecimal(String(event.credits)) : formatThousands(String(event.credits)));
   const [noteText, setNoteText] = useState(note ?? "");
@@ -168,7 +172,7 @@ function EventInfo({ info, sub, canEdit, onEdit, onClose }: {
   const credits = Number(creditsText.replace(/,/g, ""));
   const validCredits = recurring ? Number.isFinite(credits) && credits >= 0 : Number.isInteger(credits) && credits > 0;
   const noteReady = recurring || note !== undefined;
-  const changed = credits !== event.credits || (!recurring && noteReady && noteText.trim() !== (note ?? ""));
+  const changed = credits !== event.credits || (!recurring && !noteFailed && noteReady && noteText.trim() !== (note ?? ""));
   const repeat = sub && recurring
     ? sub.recurring_period === "month" ? `매월 ${sub.topup_day}일` : sub.recurring_period === "week" ? "매주 같은 요일" : "매일"
     : null;
@@ -180,7 +184,9 @@ function EventInfo({ info, sub, canEdit, onEdit, onClose }: {
   };
   const save = () => {
     if (!validCredits || !changed || busy || !noteReady) return;
-    void run(recurring ? { credits } : { credits, note: noteText.trim() || null });
+    // 추가 기록은 바꾼 금액만 싣는다 — 안 고친 금액을 화면(개요)의 옛 값으로 실으면 연 순간 설정의 금액(다른 관리자가 고친 값)을 덮었다
+    // (2026-10-03 Codex 코드 리뷰 A-1). 메모는 연 순간 설정에서 읽은 값이라 그대로 실어도 같다.
+    void run(recurring || noteFailed ? { credits } : { ...(credits !== event.credits ? { credits } : {}), note: noteText.trim() || null });
   };
   return (
     <div className="credit-modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
@@ -204,7 +210,8 @@ function EventInfo({ info, sub, canEdit, onEdit, onClose }: {
                 onChange={(e) => setCreditsText(recurring ? formatDecimal(e.target.value) : formatThousands(e.target.value))}
                 onKeyDown={(e) => { if (e.key === "Enter") save(); }} /></label>
             {!recurring ? (
-              <label>메모<input id="wc-event-note" value={noteText} disabled={!noteReady} placeholder={noteReady ? "선택" : "불러오는 중..."}
+              <label>메모<input id="wc-event-note" value={noteText} disabled={!noteReady || noteFailed}
+                placeholder={noteFailed ? "메모를 읽지 못했습니다 — 창을 닫았다가 다시 여세요" : noteReady ? "선택" : "불러오는 중..."}
                 onChange={(e) => setNoteText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") save(); }} /></label>
             ) : <p className="wc-hint">반복을 끄거나 주기·날짜를 바꾸려면 서브 표의 ＋ 크레딧 창을 쓰세요. 날짜는 막대를 끌어서 옮깁니다.</p>}
           </>

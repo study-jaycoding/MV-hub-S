@@ -368,6 +368,8 @@ export function DashboardView({
   // 있다. 요청 시점 스코프와 현재 스코프가 다르면 반영하지 않는다(WorkBoard 의 scopeKey 와 동일).
   const scopeRef = useRef(workspaceId);
   scopeRef.current = workspaceId;
+  const detailShownRef = useRef(detailShown); // 끝난 요청이 대기 재조회를 이을 때 지금 상세 판이 열려 있는지 본다(L3-4)
+  detailShownRef.current = detailShown;
 
   // 프로젝트 상세와 멤버를 함께 갱신한다. 작업 롤업 KPI 제거 후 작업 목록은 읽지 않는다.
   const reload = () => {
@@ -411,6 +413,8 @@ export function DashboardView({
         if (inScope()) setErr(summaryError || membersError || "");
       })
       .finally(() => {
+        // 그 사이 상세 판을 닫았으면 예약된 재조회는 버린다 — 숨긴 요약을 읽었다(2026-10-03 Codex 코드 리뷰 A-4). 열 때 다시 읽는다.
+        if (!detailShownRef.current) pendingReloadRef.current = false;
         // 대기 중인 재조회가 있으면 로딩을 넘겨주고 끄지 않는다 — 옛 요청이 스피너를 내리면
         // 이어지는 재조회 한 왕복 동안 "프로젝트 없음" 빈 상태가 스쳐 보인다(로딩 소유권 이전).
         if (!pendingReloadRef.current) setLoading(false);
@@ -436,7 +440,7 @@ export function DashboardView({
     }
     setSelectedPid(null);
     setSummaryPage(1);
-    void reload();
+    if (detailShown) void reload();
   }, [workspaceId]);
   const reloadRef = useRef(reload);
   const seenReloadSignalRef = useRef(reloadSignal);
@@ -444,8 +448,10 @@ export function DashboardView({
   useEffect(() => {
     if (seenReloadSignalRef.current === reloadSignal) return;
     seenReloadSignalRef.current = reloadSignal;
-    reloadRef.current();
+    if (detailShown) reloadRef.current();
   }, [reloadSignal]);
+  // 요약·멤버는 '상세' 판에서만 쓴다 — 닫혀 있는 동안은 30초 안전망·변경 신호에도 읽지 않고, 열 때 읽는다(2026-10-03 점검 L3-4)
+  useEffect(() => { if (detailShown) void reloadRef.current(); }, [detailShown]);
 
   // 요약 행 = summary.projects(빈 프로젝트 포함) 기준 + 멤버(인원) 병합
   const rows = useMemo(() => {
@@ -463,10 +469,12 @@ export function DashboardView({
   const selProj = summary?.projects.find((p) => p.pid === shownPid);
   const selName = selProj?.name || "";
 
-  if (loading && !summary) return <div className="manage-empty">불러오는 중…</div>;
-  // 표시할 데이터가 전혀 없을 때만 전체 오류 화면 — 데이터가 있으면 유지하고 배너로 알린다.
-  if (err && !summary) return <div className="manage-empty">불러오기 실패: {err}</div>;
-  const staleBanner = err ? (
+  // 요약의 로딩·오류는 '상세' 판 안에서만 — 바깥에서 조기 반환하면 워크스페이스를 고를 때마다 사용량·서브스페이스가 통째로
+  // 내려갔다 다시 올라와 깜빡이고 '서브로 연결했지만…' 안내가 사라졌다(2026-10-03 점검 L3-1).
+  // 표시할 데이터가 전혀 없을 때만 오류 화면 — 데이터가 있으면 유지하고 배너로 알린다.
+  const detailState = loading && !summary ? <div className="manage-empty">불러오는 중…</div>
+    : err && !summary ? <div className="manage-empty">불러오기 실패: {err}</div> : null;
+  const staleBanner = detailShown && err && summary ? (
     <div className="dash-stale-banner">갱신 실패: {err} — 마지막으로 성공한 데이터를 표시 중입니다</div>
   ) : null;
 
@@ -650,7 +658,7 @@ export function DashboardView({
               : <WorkspaceConsole caps={caps} reloadSignal={reloadSignal} selectedId={workspaceId} onSelectedChange={(id) => onWorkspaceIdChange?.(id)}
                   workingId={loadManageWorkspaceScope().workspaceId} />}
           </div>
-        ) : detailShown ? (
+        ) : detailShown ? detailState ?? (
           <ProjectDetail
             summaryCard={summaryCard}
             pid={shownPid}

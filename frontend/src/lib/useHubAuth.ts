@@ -203,7 +203,8 @@ export function useHubAuth() {
   }, [account?.email, authConfig?.auth_enabled]);
 
   useEffect(() => {
-    if (authConfig?.auth_enabled && !account) {
+    if (!authConfig) return; // 설정을 받기 전에는 최종 권한을 묻지 않는다(받은 뒤 한 번 — S1)
+    if (authConfig.auth_enabled && !account) {
       setFinalizeProjects(new Set());
       return;
     }
@@ -232,7 +233,10 @@ export function useHubAuth() {
     setAccount(null);
   }, [authConfig?.auth_enabled]);
 
-  const authReady = !authConfig || !authConfig.auth_enabled || !!account;
+  // 설정을 받기 전에는 준비 안 됨 — 전에는 그때도 참이라 목록(3.38MB 급)·통계·패싯·프로젝트를 한 번 먼저 받았다가 계정이 정해지면
+  // 버리고 다시 받았다(2026-10-03 점검 S1, 새로고침마다). AUTH-off 는 화면 게이트와 같은 시점(공유 서버 상태를 받은 뒤 — 실패해도
+  // 폴백 상태가 들어오고, 설정·상태 모두 10초 워치독이 있다).
+  const authReady = !!authConfig && (authConfig.auth_enabled ? !!account : sharedSrv !== null);
   const authPending = !authChecked && (authConfig === null || getAuthToken());
   const hubAccount = useMemo(
     () => account || sharedServerAccount(authConfig, sharedSrv),

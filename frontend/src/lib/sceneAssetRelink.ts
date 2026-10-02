@@ -10,6 +10,7 @@
 import { api } from "../api";
 import { getAccountNamespace } from "./accountScope";
 import { listScenes, saveScenes, type Scene, type SceneCard, type SceneRef } from "./scenes";
+import { loadSceneHistory, sameSnap, saveSceneHistory, type SceneSnap } from "./sceneUndoStore";
 import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 import { loadStoredWorkspaceContext } from "./workspaceContext";
@@ -618,9 +619,23 @@ function applyFound(found: Map<string, RelinkTarget>, hooks: RelinkHooks): { tot
   if (!found.size) return { total: 0, saved: true };
   const onBoard = hooks.applyToBoard?.(found) ?? null;
   let total = onBoard ?? 0;
-  const { scenes: next, changed } = applyRelink(listScenes(null), found);
+  const before = listScenes(null);
+  const { scenes: next, changed } = applyRelink(before, found);
   if (!changed) return { total, saved: true };
   if (!saveScenes(null, next)) return { total, saved: false };
+  // 저장한 씬의 실행 취소 기록에도 입힌다 — 열린 캔버스만 기록을 고쳤고(propagateAssetRelinkToHistory), 나머지 씬은 돌아갈 때
+  //  기록의 마지막 상태가 씬과 달라 Ctrl+Z 가 지워졌다. 기록이 복구 전 씬과 이어질 때만(어긋난 낡은 기록은 종전대로 버려지게),
+  //  전이 메타는 그대로(2026-10-03 점검 CXF-5).
+  before.forEach((scene, i) => {
+    const history = next[i] !== scene ? loadSceneHistory(scene.id) : undefined;
+    if (!history || !sameSnap(history.lastCommit, { cards: scene.cards, edges: scene.edges, groups: scene.groups || [] })) return;
+    const ws = sceneRefWorkspaceId(scene);
+    const patch = (snap: SceneSnap): SceneSnap => {
+      const relinked = relinkCards(snap.cards, ws, found);
+      return relinked.changed ? { ...snap, cards: relinked.cards } : snap;
+    };
+    saveSceneHistory(scene.id, { undo: history.undo.map(patch), redo: history.redo.map(patch), lastCommit: patch(history.lastCommit) });
+  });
   hooks.onSaved?.(next, onBoard !== null);
   total += changed;
   return { total, saved: true };

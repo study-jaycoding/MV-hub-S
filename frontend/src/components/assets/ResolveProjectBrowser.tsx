@@ -322,8 +322,9 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
   const loadProjects = useCallback(async () => {
     const requestTarget = target;
     const requestId = ++listRequestIdRef.current;
+    // 화면을 떠났으면 뒤이은 그림 요청도 보내지 않는다 — 두 ref 는 언마운트 뒤에도 그대로라 참이었다(2026-10-03 점검 L4-3)
     const current = () =>
-      targetRef.current === requestTarget && listRequestIdRef.current === requestId;
+      mountedRef.current && targetRef.current === requestTarget && listRequestIdRef.current === requestId;
     setLoading(true);
     try {
       const result = await api.resolveLibraryProjects(project, dir);
@@ -362,8 +363,9 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
     if (connecting || opening) return;
     const requestTarget = target;
     const operationId = ++operationIdRef.current;
+    // 연결 도중 화면을 떠났으면 끝나도 목록·그림을 다시 받지 않는다(openProject 와 같게, 2026-10-03 점검 L4-3)
     const current = () =>
-      targetRef.current === requestTarget && operationIdRef.current === operationId;
+      mountedRef.current && targetRef.current === requestTarget && operationIdRef.current === operationId;
     setConnecting(true);
     setMessage("");
     try {
@@ -761,8 +763,9 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
           )}
           {/* 라이브러리에 프로젝트는 있는데 점 거르기에 하나도 안 걸린 경우 — 빈 화면만 남지 않게 까닭을 적는다. */}
           {!sorted.length && <div className="resolve-project-state">점으로 걸러서 보이는 프로젝트가 없습니다.</div>}
-          {sections.map((section) => (
-            <Fragment key={section.key}>
+          {sections.map((section, index) => (
+            // 이름순이면 같은 날짜 구간이 여러 번 생긴다 — 날짜만 key 로 쓰면 겹쳐 카드가 중복됐다(2026-10-03 CXF-4)
+            <Fragment key={`${section.key}:${index}`}>
               {groupByDate && <div className="gen-date-header">{section.label}</div>}
               <div className={layout === "list" ? "resolve-project-list" : "resolve-project-grid"}>
                 {section.items.map((item) => {

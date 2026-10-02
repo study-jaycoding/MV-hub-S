@@ -210,6 +210,28 @@ describe("덮개", () => {
     expect(window.sessionStorage.getItem(UPDATE_WAIT_VERSION_KEY)).toBeNull();
   });
 
+  it("상태 요청이 끝나지 않아도 5분이 지나면 멈추고 닫기를 내준다 — 늦은 응답은 버리고 타이머도 남기지 않는다(2026-10-03 점검 CXF-6)", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, "2026.09.28-1438");
+    let answer: (value: ReleaseUpdateStatus) => void = () => {};
+    mocks.jsonFetch.mockReturnValue(new Promise<ReleaseUpdateStatus>((resolve) => { answer = resolve; }));
+    mount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
+    });
+
+    expect(document.querySelector(".upd-close")).not.toBeNull();
+    expect(text()).toContain("자동 확인 시간이 초과");
+    expect(window.sessionStorage.getItem(UPDATE_WAIT_VERSION_KEY)).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => {
+      answer(status({ state: "downloading", percent: 40 }));
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(text()).not.toContain("40%"); // 늦게 온 응답이 화면을 되돌리지 않는다
+    expect(document.querySelector(".upd-close")).not.toBeNull();
+  });
+
   it("업데이트가 앱을 다시 띄워도 대기 표시가 있으면 이어서 뜬다", async () => {
     window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, "2026.09.28-1438");
     mocks.jsonFetch.mockResolvedValue(status({ state: "restarting", percent: 95 }));

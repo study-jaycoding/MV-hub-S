@@ -113,6 +113,19 @@ it("a conflicting member move into a deleted group exposes restoration before an
   expect(keepDeletion.value.members).toEqual([]);
 });
 
+it("참가자 항목 이름은 이메일의 점에서 잘리지 않는다 — 칸 충돌·행 전체 충돌 모두(2026-10-03 점검 L3-6)", () => {
+  const email = "lee.jae@mail.example.com";
+  const base = settings(), latest = settings();
+  base.members[0].email = email; latest.members[0].email = email;
+  latest.plan.revision = 2;
+  latest.members[0].group_id = null; // B 는 그룹에서 뺐다
+  latest.members.push({ ...latest.members[0], email: "new.person@x.com", group_id: "g" }); // B 도 새 사람을 넣었다
+  const mine = { revision: 1, note: null, members: [{ email, quota: 5 as number | null, group_id: "h" as string | null }, { email: "new.person@x.com", group_id: "g" as string | null }] };
+  const labels = Object.fromEntries(mergeCreditPlan(base, mine, latest).changes.map((change) => [change.path, change.label]));
+  expect(labels[`members.${email}.group_id`]).toBe(`참가자 / ${email} / 소속 그룹`);
+  expect(labels["members.new.person@x.com"]).toBe("참가자 / new.person@x.com");
+});
+
 it("planning uses only known fields, preserves dates and includes the latest revision", () => {
   const base = { note: "before", start_date: "2026-09-01", revision: 1 };
   const mine = { ...base, note: "mine" };
