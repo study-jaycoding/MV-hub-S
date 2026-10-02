@@ -30,8 +30,10 @@ import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +52,14 @@ KEEP_PER_DIR = 30
 LOG_MAX_BYTES = 2 * 1024 * 1024
 LOG_KEEP = 3
 _SET_ID_RE = re.compile(r"[0-9a-f]{64}")
+# 우리가 만드는 단일 DB 이름(2026-10-02) — 정리는 이 이름만 지운다(남의 DB 는 세지도 지우지도 않는다).
+#  서버 자동 백업 services/backup.py `{content_hub|content_trash|manage_hub}_YYYYMMDD_HHMMSS(_ffffff).db`,
+#  팀원 업로드 routers/db_backup.py `YYYYMMDD_HHMMSS_<8hex>.db`. 세트(sets/<64hex>/)는 manifest 로 따로 본다.
+_OWNED_SINGLE_DB_RE = re.compile(
+    r"^(?:(?:content_hub|content_trash|manage_hub)_\d{8}_\d{6}(?:_\d{6})?|\d{8}_\d{6}_[0-9a-f]{8})\.db$"
+)
+MARKER_NAME = ".mvhub-backup-replica"  # 관리자 창 [저장] 때 쓰는 설정 이력(소유 증거로 쓰지 않는다)
+MAX_TARGET_LEN = 180  # 감사 기록이 200자에서 자르므로 그 안쪽
 
 
 def _sources() -> list[tuple[str, Path]]:
@@ -87,17 +97,24 @@ def _write_status(
     state: str,
     *,
     error_code: str | None = None,
+    target_id: str | None = None,
+    started_at: str | None = None,
     **counts: int | bool | str | None,
 ) -> bool:
-    """관리 화면이 읽는 안전한 결과. 경로·계정·예외 원문은 기록하지 않는다."""
+    """관리 화면이 읽는 안전한 결과. 경로·계정·예외 원문은 기록하지 않는다.
+    target_id(위치 지문)·started_at 을 함께 남긴다 — 위치를 바꾼 뒤 옛 위치의 성공이 새 위치의 성공처럼 보이지 않게,
+    마지막 성공은 **같은 위치일 때만** 이어받는다(2026-10-02)."""
     previous = _read_status()
+    same_target = target_id is not None and previous.get("target_id") == target_id
     payload = {
         "format": "mvhub-backup-replica-status",
-        "format_version": 1,
+        "format_version": 2,
         "state": state,
         "configured": state != "disabled",
+        "target_id": target_id,
+        "started_at": started_at,
         "last_attempt_at": _utc_now(),
-        "last_success_at": previous.get("last_success_at"),
+        "last_success_at": previous.get("last_success_at") if same_target else None,
         "error_code": error_code,
         **counts,
     }
@@ -121,19 +138,167 @@ def _write_status(
             temp.unlink()
 
 
-def replica_root() -> Path | None:
+def configured_target() -> tuple[str | None, str]:
+    """(대상 문자열, 출처 env|file|none). 환경변수가 txt 보다 우선 — 관리자 창도 같은 판정을 쓴다."""
     env = os.environ.get("CONTENT_HUB_BACKUP_REPLICA_DIR", "").strip()
     if env:
-        return Path(env)
+        return env, "env"
     try:
         if TARGET_FILE.is_file():
             for line in TARGET_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
-                line = line.strip()
+                line = line.strip().lstrip("﻿")
                 if line and not line.startswith("#"):
-                    return Path(line)
+                    return line, "file"
     except OSError:
-        return None
+        return None, "none"
+    return None, "none"
+
+
+def replica_root() -> Path | None:
+    target, _source = configured_target()
+    return Path(target) if target else None
+
+
+def target_id(value: str) -> str:
+    """위치 지문 — 결과가 어느 위치 것인지 가린다. 네트워크를 건드리지 않는 문자열 정규화만."""
+    # Path 를 한 번 거쳐(파일 접근 없음) 관리자 창의 원문과 복사기의 Path 표기(끝 \\·/ 등)가 같은 지문이 되게 한다.
+    normal = str(Path(str(value).strip())).rstrip("\\/").casefold()
+    return hashlib.sha256(normal.encode("utf-8")).hexdigest()[:16]
+
+
+def unc_format_error(value: str) -> int | None:
+    """관리자 창 [저장]이 받는 형식: \\\\서버\\공유\\… (UNC). 형식이 틀리면 10, 맞으면 None. 문자열만 본다."""
+    v = (value or "").strip()
+    if not v or len(v) > MAX_TARGET_LEN or "/" in v:
+        return 10
+    if any(ord(ch) < 32 for ch in v) or any(ch in '"<>|?*' for ch in v):
+        return 10
+    if not v.startswith("\\\\") or v.startswith(("\\\\?\\", "\\\\.\\")):
+        return 10
+    parts = v[2:].split("\\")
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        return 10
+    inner = parts[:-1] if parts[-1] == "" else parts  # 끝의 \ 하나는 허용
+    if any(not p or p.endswith((".", " ")) for p in inner):
+        return 10
     return None
+
+
+def _self_host(server: str) -> bool:
+    """UNC 의 서버 이름이 이 PC 자신인가(같은 디스크로 되돌아오는 복사 방지)."""
+    name = server.strip().lower()
+    if name in {"localhost", "127.0.0.1", "::1", "."}:
+        return True
+    host = socket.gethostname().lower()
+    if name == host or name.split(".")[0] == host.split(".")[0]:
+        return True
+    try:
+        addresses = set(socket.gethostbyname_ex(socket.gethostname())[2])
+    except OSError:
+        addresses = set()
+    return name in addresses
+
+
+def _real(path: Path) -> str:
+    return os.path.normcase(os.path.realpath(str(path)))
+
+
+def target_overlaps(target: Path) -> bool:
+    """최종 복사 폴더(target\\backups·target\\db-backups)가 원본·저장소·데이터 폴더와 같거나 안/밖이면 True.
+    복사본이 다시 원본이 되거나 원본을 정리하는 사고를 막는다 — 모든 설정 경로(txt·env·이사)에 적용."""
+    finals = [_real(target / sub) for sub, _ in _sources()]
+    guarded = [_real(source) for _, source in _sources()] + [_real(ROOT), _real(DATA_DIR)]
+    for final in finals:
+        for guard in guarded:
+            if final == guard or final.startswith(guard + os.sep) or guard.startswith(final + os.sep):
+                return True
+    return False
+
+
+def _accepts_existing(target: Path, entries: list[Path]) -> bool:
+    """[저장] 수용 규칙 — 비어 있거나 우리 구조(backups·db-backups·설정 이력)뿐이고 그 아래 DB 가 전부 우리 이름·세트."""
+    for entry in entries:
+        name = entry.name
+        if name in {"backups", "db-backups", MARKER_NAME} or name.startswith(MARKER_NAME + ".tmp-"):
+            continue
+        return False
+    for sub in ("backups", "db-backups"):
+        root = target / sub
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*.db"):
+            if _OWNED_SINGLE_DB_RE.match(path.name):
+                continue
+            if sub == "db-backups" and _is_our_set_file(root, path):
+                continue
+            return False
+    return True
+
+
+def _is_our_set_file(root: Path, path: Path) -> bool:
+    """세트 파일 구조 검사(해시는 안 함 — [저장] 20초 안에 NAS 를 훑어야 한다): 정확히
+    db-backups/<slug>/sets/<64hex|.setpart-*|.setold-*>/{content|trash}.db 이고, 완성 세트면 manifest 의 형식·ID·역할이 맞는다."""
+    parts = path.relative_to(root).parts
+    if len(parts) != 4 or parts[1] != "sets" or path.name not in ("content.db", "trash.db"):
+        return False
+    folder = parts[2]
+    if folder.startswith((".setpart-", ".setold-")):
+        return True  # 복사 중 끊긴 잔재 — cleanup_parts 가 지운다
+    if not _SET_ID_RE.fullmatch(folder):
+        return False
+    try:
+        manifest = json.loads((path.parent / "manifest.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(manifest, dict):  # [] · null 도 남의 것으로(오류 대신)
+        return False
+    roles = manifest.get("roles")
+    return (
+        manifest.get("format") == "mvhub-worker-backup-set"
+        and manifest.get("backup_set_id") == folder
+        and isinstance(roles, dict)
+        and "content" in roles
+        and set(roles) <= {"content", "trash"}
+        and path.stem in roles
+    )
+
+
+def probe(value: str) -> int:
+    """관리자 창 [저장] 전 위치 확인 — 서버가 자식 프로세스로 부른다(20초 제한). 종료코드만 돌려준다.
+    0 성공 · 10 형식 · 11 자기 PC · 12 남의 파일 · 13 원본과 겹침 · 14 못 씀 · 15 못 엶. 경로·예외 원문은 남기지 않는다."""
+    code = unc_format_error(value)
+    if code is not None:
+        return code
+    text = value.strip()
+    if _self_host(text[2:].split("\\")[0]):
+        return 11
+    target = Path(text)
+    try:
+        if target.exists():
+            if not _accepts_existing(target, list(target.iterdir())):
+                return 12
+    except OSError:
+        return 15
+    try:
+        if target_overlaps(target):
+            return 13
+    except OSError:
+        return 15
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        marker = target / MARKER_NAME
+        temp = target / f"{MARKER_NAME}.tmp-{uuid.uuid4().hex[:8]}"
+        payload = {"format": "mvhub-backup-replica-target", "written_at": _utc_now(), "server": socket.gethostname()}
+        with temp.open("w", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, marker)
+        if json.loads(marker.read_text("utf-8")).get("format") != payload["format"]:
+            return 14
+    except (OSError, ValueError):
+        return 14
+    return 0
 
 
 def _sqlite_valid(path: Path) -> bool:
@@ -256,6 +421,13 @@ def cleanup_parts(target: Path) -> int:
     남의 전송 중 파일(video.zip.part 등)까지 지운다. 우리가 만드는 하위 폴더
     (backups/·db-backups/)의, 우리가 만드는 이름(*.db.part)만 지운다."""
     removed = 0
+    # 관리자 창 위치 확인이 끊기며 남긴 설정 이력 임시 파일(우리 이름만, 1시간 지난 것)
+    with contextlib.suppress(OSError):
+        for leftover in target.glob(MARKER_NAME + ".tmp-*"):
+            with contextlib.suppress(OSError):
+                if time.time() - leftover.stat().st_mtime > 3600:
+                    leftover.unlink()
+                    removed += 1
     for sub, _ in _sources():
         root = target / sub
         if not root.is_dir():
@@ -288,7 +460,8 @@ def prune_dir(d: Path, protected: set[str]) -> int:
     '매일 지웠다 복사' 진동이 생기므로(적대 리뷰 P2) 개수와 무관하게 남긴다."""
     stamped: list[tuple[float, Path]] = []
     try:
-        candidates = list(d.glob("*.db"))
+        # 우리 이름 규칙의 DB 만 세고 지운다 — 같은 폴더의 남의 *.db 는 건드리지 않는다(2026-10-02).
+        candidates = [path for path in d.glob("*.db") if _OWNED_SINGLE_DB_RE.match(path.name)]
     except OSError:
         return 0
     for path in candidates:
@@ -336,19 +509,34 @@ def prune_set_root(root: Path, protected: set[str]) -> int:
 
 
 def main() -> int:
+    started = _utc_now()
     target = replica_root()
+    tid = target_id(str(target)) if target else None
+
+    def _status(state: str, **fields: int | bool | str | None) -> bool:
+        return _write_status(state, target_id=tid, started_at=started, **fields)
+
     if not target:
         log("복제 대상 미설정 — 건너뜀 (CONTENT_HUB_BACKUP_REPLICA_DIR "
             "또는 tools/backup_replica_target.txt 에 UNC 경로를 넣으세요)")
-        return 0 if _write_status("disabled", error_code="target_not_configured") else 1
+        return 0 if _status("disabled", error_code="target_not_configured") else 1
     if not str(target).startswith("\\\\"):
         # 작업 스케줄러(SYSTEM)에선 매핑 드라이브가 안 보인다 — 실패 원인 안내만 하고 시도는 한다.
         log("경고: 대상이 UNC가 아님 — SYSTEM 예약작업에서 접근 실패할 수 있음")
     try:
+        overlaps = target_overlaps(target)
+    except OSError:
+        overlaps = False  # 경로 해석 실패는 아래 mkdir 이 target_unavailable 로 잡는다
+    if overlaps:
+        # 어느 경로로 정해졌든(txt 손편집·env·이사) 원본과 겹치면 복사·정리하지 않는다(2026-10-02).
+        log("복제 실패 — 대상이 원본 백업과 겹침: target_unsafe")
+        _status("failed", error_code="target_unsafe")
+        return 1
+    try:
         target.mkdir(parents=True, exist_ok=True)
     except OSError:
         log("복제 실패 — 대상 접근 불가: target_unavailable")
-        _write_status("failed", error_code="target_unavailable")
+        _status("failed", error_code="target_unavailable")
         return 1
 
     stale = cleanup_parts(target)
@@ -396,11 +584,11 @@ def main() -> int:
                         protected_sets.setdefault(dest_root, set()).add(src_set.name)
     except OSError:
         log("복제 실패 — 원본 목록 접근 불가: source_unavailable")
-        _write_status("failed", error_code="source_unavailable", failed=max(1, failed))
+        _status("failed", error_code="source_unavailable", failed=max(1, failed))
         return 1
     if not seen_any_source:
         log("원본 백업 폴더 없음 — 건너뜀")
-        return 0 if _write_status("no_source", error_code="source_not_ready") else 1
+        return 0 if _status("no_source", error_code="source_not_ready") else 1
     removed = sum(prune_dir(d, protected_by_dir.get(d, set())) for d in dirs if d.is_dir())
     removed += sum(
         prune_set_root(root, protected_sets.get(root, set()))
@@ -411,7 +599,7 @@ def main() -> int:
                f" · 정리 {removed}+part {stale}")
     if failed:
         log("복제 실패 " + summary)
-        _write_status(
+        _status(
             "failed",
             error_code="copy_failed",
             copied=copied,
@@ -422,7 +610,7 @@ def main() -> int:
         )
         return 1
     log("복제 완료 " + summary)
-    status_saved = _write_status(
+    status_saved = _status(
         "success",
         copied=copied,
         skipped=skipped,
@@ -434,4 +622,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--probe":
+        sys.exit(probe(sys.argv[2]))  # 관리자 창 [저장] 전 위치 확인(서버가 자식으로 부른다)
     sys.exit(main())

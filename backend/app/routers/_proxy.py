@@ -477,6 +477,9 @@ _LOCAL_PREFIXES = (
     "/api/stamp/",         # 끌어다 놓은 로컬 파일의 각인 읽기 — 파일이 이 PC 에 있으므로 로컬 처리
     "/api/shared-server/", # 공유 서버 로그인/토큰/주소(이 허브의 로컬 설정)
     "/api/registry-helper/",  # 에셋 대장 도우미 훑기 — 이 PC 가 NAS 를 읽어 서버에 올린다(서버 위임 금지)
+    # 서버 백업 복사 위치 — 로컬 허브에서 직접 경로를 자동 중계하면 저장된 관리자 토큰이 붙어 출처 검사를 건너뛴다(Codex P1).
+    # 로컬은 이 경로를 자기가 받아 '해당 없음/404' 로 끝내고, 중계는 출처·계정 고정을 거치는 /api/shared-server/backup-replica 로만.
+    "/api/admin/backup-replica",
     # ── 로컬 우선: 내 작업 데이터는 로컬 DB가 정답. 핸들러가 tab=team/팀항목일 때만 서버로 위임.
     "/api/generations",    # 목록·상세·히스토리·코멘트·태그·컬러·소스·발행 등(내 것=로컬, 팀=핸들러가 프록시)
     "/api/generation-comments/",  # by-id 코멘트 수정/삭제/seen — 핸들러(_comment_local)가 비공개=로컬·공유=서버로 재분기.

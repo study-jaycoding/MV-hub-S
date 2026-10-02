@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-01
+updated: 2026-10-02
 status: active
 ---
 
@@ -45,6 +45,14 @@ TLS 변수 없음)인 서버만 이 길로 옮긴다. 아니면 도구가 시작
 - 기계 변수는 전부 `machine_settings.json` 에 담기지만 자동 적용은 이름 목록(`CONTENT_HUB_ASSET_REGISTRY*`·`CONTENT_HUB_MEDIA_PRESERVATION*`)만.
   나머지는 IN 이 이름을 보여 주고 필요하면 수동.
 - 옮기는 txt 는 `tools\backup_replica_target.txt` 하나. 새 PC 의 SYSTEM 계정이 NAS 에 쓸 수 있는지는 IN 끝의 BackupCopy 결과로 본다.
+- **백업 복사 위치 — IN 전에 새 PC 에서 확인(2026-10-02, 관리자 창 '서버 백업 복사 위치' 도입 때 합의)**:
+  1. 새 PC 의 `tools\backup_replica_target.txt` 와 기계 환경변수 `CONTENT_HUB_BACKUP_REPLICA_DIR` 를 본다. IN 은 옛 서버에 txt 가
+     없으면 새 PC 의 txt 를 **그대로 둔다**(지우지 않는다) — 옛 서버 값과 다르면 정리한 뒤 IN 한다. 환경변수는 txt 보다 우선한다.
+  2. 옛 서버 값이 NAS 주소(`\\…`)가 아니라 드라이브 글자(`D:\…`)면, 새 PC 에서 그 글자가 같은 용도의 디스크인지 사람이 확인하고
+     아니면 IN 전에 NAS 주소로 바꾼다(옛 서버 관리자 창 [저장] 또는 txt). IN 은 경로를 그대로 쓴다.
+  3. 새 PC 에 남은 `backend\data\backup_replica_status.json` 은 이름 앞에 `ARCHIVED_` 를 붙여 보관한다 — 같은 위치면 옛 결과가 새
+     서버 결과처럼 보인다. 이사의 복제 성공은 **IN 이 돌린 실행**(IN 5단계의 since/baseline 판정)으로만 인정한다.
+  4. 이미 IN 을 마친 같은 이사 폴더(manifest 같음)로 다시 IN 하면 '이미 완료'로 끝난다 — 옛 서버에서 OUT 2 로 **새 폴더**를 만든다.
 - 도구: `tools/server_move_easy.py`(out · in · undo-out), 저수준은 아래 `server_move.py` 그대로.
 
 ### 연습(리허설) — 진짜 이사 전에 새 PC 에서 미리 보기 (2026-10-01)

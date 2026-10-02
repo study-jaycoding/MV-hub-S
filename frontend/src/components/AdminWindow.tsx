@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { ApprovalTab, type AdminConfirmState } from "./admin/ApprovalTab";
 import { AssetRegistryTab } from "./admin/AssetRegistryTab";
+import { BackupReplicaSection } from "./admin/BackupReplicaSection";
 import { MemberRolesTab } from "./admin/MemberRolesTab";
 import {
   systemMemberUids,
@@ -508,6 +509,8 @@ export function AdminWindow({
                   쓰기 권한이 있는 관리자 PC 에서만 됩니다.
                 </div>
               </section>
+
+              <BackupReplicaSection />
 
               <section className="admin-section">
                 <h4>업데이트 관리</h4>

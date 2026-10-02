@@ -68,6 +68,7 @@ from .services.test_snapshot import SNAPSHOT_EXPORT_ENV, SNAPSHOT_EXPORT_PATH
 from .routers import (
     _proxy,
     asset_registry,
+    backup_replica,
     assets,
     auth,
     comfy,
@@ -582,6 +583,8 @@ async def _application_lifespan(app: FastAPI):
             await _attempt_async_cleanup(asset_registry_controller.stop)
         # 도우미 훑기(이 PC 가 관리자 창에서 시작했을 때만 돈다) — 같은 방법으로 끝낸다. 안 돌았으면 할 일이 없다.
         await _attempt_async_cleanup(asset_registry_helper.stop)
+        # 백업 위치 확인 자식(관리자 창 [저장] 때만 돈다) — 남아 있으면 끊는다.
+        _attempt_sync_cleanup(backup_replica.stop_probe)
         if runtime_report_task:
             await _attempt_async_cleanup(
                 lambda: _cancel_background_task(runtime_report_task)
@@ -725,6 +728,7 @@ app.include_router(projects.router)
 app.include_router(members.router)
 app.include_router(notifications.router)
 app.include_router(update_notices.router)
+app.include_router(backup_replica.router)  # 서버 백업 복사 위치(관리자 창 · 공유 서버 탭)
 app.include_router(ingest.router)
 app.include_router(gen_requests.router)
 app.include_router(publish.router)
