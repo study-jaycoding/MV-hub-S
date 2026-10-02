@@ -158,7 +158,7 @@ MV Hub를 종료하고 파일을 교체한 뒤 새 버전의 준비 완료까지
 백엔드 의존성을 실제 실행합니다. Python 버전 DLL이 둘 이상 섞여도 배포 전에 ZIP을 폐기합니다.
 정식 작업자 릴리즈의 Python은 Resolve 20.3.2 실연결까지 검증한 CPython 3.14 x64로 고정합니다.
 빌드 PC에 3.14 x64가 없거나 다른 버전이 선택되면 릴리즈를 만들지 않으며, 업데이트 후에도
-`python314.dll` 하나만 남았는지 검사합니다. 소스 개발 환경의 Python 3.11+ 최소조건과는 별도입니다.
+`python314.dll` 하나만 남았는지 검사합니다. 소스 개발 환경의 Python 3.12+ 최소조건과는 별도입니다(백엔드가 3.12 의 f-string·`os.path.isjunction` 을 쓴다).
 
 저장소 관리자만 사용하는 `backfill_import.py`, `cleanup_orphan_creators.py`, `reset_db.py`도
 작업자 릴리즈에서는 제외합니다. 테스트 BAT·테스트 코드·개발 문서와 도구·프론트 소스맵·로컬

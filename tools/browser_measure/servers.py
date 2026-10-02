@@ -39,7 +39,10 @@ def snapshot(src: Path, dst: Path) -> None:
     """읽기 전용 연결의 backup API 로 복사한다(돌고 있는 세션의 WAL DB 도 안전). 복사본에서 공유 서버 토큰·주소와 프로젝트의 실제 폴더 경로를 지운다."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.unlink(missing_ok=True)
-    with sqlite3.connect(src.absolute().as_uri() + "?mode=ro", uri=True) as a, sqlite3.connect(dst) as b:
+    uri = src.absolute().as_uri()
+    if not uri.startswith("file:///"):  # UNC: file://server/share → file:////server/share (sqlite 는 authority 를 거부한다)
+        uri = "file:////" + uri[len("file://"):]
+    with sqlite3.connect(uri + "?mode=ro", uri=True) as a, sqlite3.connect(dst) as b:
         a.backup(b)
     with sqlite3.connect(dst) as conn:
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_setting'").fetchone():

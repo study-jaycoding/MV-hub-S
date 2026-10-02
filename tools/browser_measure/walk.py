@@ -151,8 +151,14 @@ class Walker:
             state = await self.pg.eval(PROBE)
         except Exception as e:  # noqa: BLE001
             state = {"probe_error": str(e)[:200]}
-        if verdict == "ok" and expect is not None:
-            why = expect(state, note)
+        if "probe_error" in state:  # 화면을 못 읽었으면 expect 도 '대상 없음'도 믿을 수 없다 — 실패로(이미 실패면 그 사유 유지)
+            if verdict != "failed":
+                verdict, reason = "failed", "화면 조사 실패"
+        elif verdict == "ok" and expect is not None:
+            try:
+                why = expect(state, note)
+            except Exception as e:  # noqa: BLE001 — expect 의 예외가 결과 저장을 끊지 않게
+                why = f"expect 예외 {type(e).__name__}"
             if why is not True:
                 verdict, reason, note = "failed", "기대와 다름", f"{why} | {note}"
         shot = None

@@ -136,3 +136,120 @@ def test_clean_path_drops_every_folder_that_holds_the_cli(tmp_path):
     cleaned = servers.clean_path(os.pathsep.join([str(with_cli), str(plain), str(also_cli), ""]))
 
     assert cleaned.split(os.pathsep) == [str(plain)]
+
+
+def _load_tool(name: str):
+    import sys
+
+    sys.path.insert(0, str(ROOT / "tools" / "browser_measure"))
+    try:
+        spec = importlib.util.spec_from_file_location(f"bm_{name}", ROOT / "tools" / "browser_measure" / f"{name}.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.pop(0)
+
+
+class _FakeChrome:
+    def __init__(self):
+        self.terminated = 0
+
+    def terminate(self):
+        self.terminated += 1
+
+    def wait(self, timeout=None):
+        return 0
+
+    def kill(self):
+        pass
+
+
+def test_auto_port_is_read_from_the_profile_and_a_failed_start_closes_its_own_chrome(tmp_path, monkeypatch):
+    """2026-10-03: 고정 포트 9331 이 Windows 예약 범위(9321~9920)에 걸려 크롬이 못 떴고, 실패 때 띄운 크롬을 안 죽여 다음 실행도 막혔다.
+    포트 0 → 크롬이 프로필의 DevToolsActivePort 에 적은 포트로 붙는다. 기동·연결이 실패하면 자기가 띄운 크롬만 끈다."""
+    import asyncio
+
+    cdp = _load_tool("cdp")
+    chrome = _FakeChrome()
+    profile = tmp_path / "profile"
+    (profile).mkdir()
+    (profile / "DevToolsActivePort").write_text("1111\n/old")  # 지난 실행이 남긴 파일 — 시작 전에 지워야 한다
+
+    asked: list[str] = []
+
+    class Resp:
+        def __init__(self, body): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return None
+        def read(self): return self.body
+
+    async def chrome_writes_its_port_a_moment_later(_seconds):
+        (profile / "DevToolsActivePort").write_text("54321\n/devtools/browser/x")
+
+    monkeypatch.setattr(cdp.asyncio, "sleep", chrome_writes_its_port_a_moment_later)
+    monkeypatch.setattr(cdp.subprocess, "Popen", lambda *_a, **_k: chrome)
+    monkeypatch.setattr(cdp.urllib.request, "urlopen",
+                        lambda url, timeout=None: asked.append(url) or Resp(json.dumps([{"type": "page", "webSocketDebuggerUrl": "ws://x"}]).encode()))
+
+    async def refuse(*_a, **_k):
+        raise ConnectionRefusedError("ws")
+
+    monkeypatch.setattr(cdp.websockets, "connect", refuse)
+    monkeypatch.setattr(cdp, "find_browser", lambda: "chrome.exe")
+
+    async def run():
+        async with cdp.Page(0, profile):
+            pass
+
+    try:
+        asyncio.run(run())
+        raise AssertionError("연결 실패가 올라와야 한다")
+    except ConnectionRefusedError:
+        pass
+    assert asked and asked[0].startswith("http://127.0.0.1:54321/")  # 옛 파일(1111)이 아니라 새 포트
+    assert chrome.terminated == 1
+
+
+def test_closing_is_cancel_safe_and_still_stops_chrome(tmp_path):
+    """Codex 리뷰: 닫는 도중 취소되면(Ctrl+C) 크롬 정리를 건너뛰었다."""
+    import asyncio
+
+    cdp = _load_tool("cdp")
+    page = cdp.Page(1, tmp_path)
+    page.proc = _FakeChrome()
+
+    class CancelledClose:
+        async def close(self):
+            raise asyncio.CancelledError()
+
+    page.ws = CancelledClose()
+    try:
+        asyncio.run(page._kill())
+    except asyncio.CancelledError:
+        pass
+    assert page.proc.terminated == 1
+
+
+def test_a_probe_failure_is_a_failure_not_a_stale_scenario(tmp_path):
+    """L5-4·Codex 리뷰: 대상을 못 찾은(stale) 단계에서 화면 조사까지 실패하면 '시나리오 낡음'(종료 코드 2)이 아니라 실패(1)다."""
+    import asyncio
+
+    walk = _load_tool("walk")
+
+    class Page:
+        def drain(self):
+            return {"console": [], "network": [], "mutations": [], "dialogs": []}
+
+        async def eval(self, _js):
+            raise RuntimeError("navigating")
+
+    walker = walk.Walker(Page(), "t", tmp_path)
+
+    async def missing():
+        return False
+
+    record = asyncio.run(walker.step("f", "s", missing, settle=0))
+    assert record["verdict"] == "failed" and record["reason"] == "화면 조사 실패"
+    record = asyncio.run(walker.step("f", "s2", missing, settle=0, expect=lambda s, n: s["cards"] > 0))
+    assert record["verdict"] == "failed"

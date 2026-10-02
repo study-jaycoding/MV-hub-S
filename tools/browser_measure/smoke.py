@@ -154,7 +154,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--work", type=Path, default=Path(tempfile.gettempdir()) / "mvhub-browser-measure", help="servers.py 와 같은 작업 폴더")
     ap.add_argument("--server-port", type=int, default=8232)
-    ap.add_argument("--debug-port", type=int, default=9331, help="브라우저 원격 디버깅 포트")
+    ap.add_argument("--debug-port", type=int, default=0, help="브라우저 원격 디버깅 포트(0=크롬이 빈 포트를 고른다 — 이 PC 는 9321~9920 이 예약돼 있을 수 있다)")
     ap.add_argument("--shots", action="store_true", help="단계마다 스크린샷 저장(실제 계정 이름이 찍힐 수 있다 — 저장소·보고서로 옮기지 않는다)")
     ap.add_argument("--verbose", action="store_true", help="콘솔·대화상자 원문까지 결과에 남긴다(기본은 종류와 경로만 — 원문에는 이름이 섞일 수 있다)")
     args = ap.parse_args()

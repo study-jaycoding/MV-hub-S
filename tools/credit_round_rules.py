@@ -24,7 +24,10 @@ from pathlib import Path
 
 def connect_ro(path: Path) -> sqlite3.Connection:
     """읽기 전용 연결. 경로의 `#`·`%` 때문에 URI 를 손으로 조립하지 않는다(옛 사고)."""
-    conn = sqlite3.connect(Path(path).absolute().as_uri() + "?mode=ro", uri=True)
+    uri = Path(path).absolute().as_uri()
+    if not uri.startswith("file:///"):  # UNC: file://server/share → file:////server/share (sqlite 는 authority 를 거부한다)
+        uri = "file:////" + uri[len("file://"):]
+    conn = sqlite3.connect(uri + "?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA query_only=ON")
     return conn

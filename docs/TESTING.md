@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-02
+updated: 2026-10-03
 status: active
 ---
 
@@ -37,7 +37,7 @@ try { & '..\.venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider }
 finally { Pop-Location }
 ```
 
-`py` 런처가 없거나 `python` 이 Microsoft Store 별칭으로 연결되면, 설치된 Python 3.11+ 의
+`py` 런처가 없거나 `python` 이 Microsoft Store 별칭으로 연결되면, 설치된 Python 3.12+ 의
 정확한 실행 파일 경로로 첫 줄만 실행한다.
 
 프론트엔드는 `frontend` 폴더에서 실행한다.
@@ -825,6 +825,9 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
   세션이 없으면 로그인 게이트에서 멈추므로, 허브의 서버 주소를 **내 격리 AUTH-on 서버**로 바꿔 로그인한다. 일회용 관리자는 생성물이
   0개라 "내 작업"이 비어 있다 — 복사본에서 `account.creator_uid` 를 최다 소유자와 맞바꾸면 재료가 생긴다.
 - **브라우저**: Playwright 없이 헤드리스 Chrome + DevTools 프로토콜(`--remote-debugging-port`, venv 의 `websockets`)로 충분하다.
+  디버깅 포트 기본값은 0(크롬이 빈 포트를 골라 프로필의 `DevToolsActivePort` 에 적는다) — Windows 예약 포트 범위
+  (`netsh interface ipv4 show excludedportrange protocol=tcp`, 이 PC 는 9321~9920 이고 재부팅마다 바뀐다)에 걸린 고정 포트는
+  bind 오류(0x271D)로 못 연다. 기동 실패 시 도구가 띄운 크롬은 스스로 종료한다.
   `Page.javascriptDialogOpening` 을 처리하지 않으면 삭제의 `confirm()` 에서 모든 명령이 멈춘다. 비-GET 요청을 전부 기록해
   `/api/gen-requests` POST 가 0건임을 증거로 남긴다.
 - **누르지 않는 것**: Generate · 도크의 `Alt+Enter` · 카드의 ↻ 재생성 · Comfy 실행 · Resolve로 보내기 · 프로그램 업데이트 · HF 체크 ·

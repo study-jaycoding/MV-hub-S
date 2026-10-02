@@ -53,14 +53,27 @@ class Page:
 
     async def __aenter__(self) -> "Page":
         self.profile.mkdir(parents=True, exist_ok=True)
+        # 포트 0 = 크롬이 빈 포트를 골라 프로필 폴더의 DevToolsActivePort 에 적는다(Windows 예약 포트 범위를 피한다). 옛 파일은 지운다.
+        active = self.profile / "DevToolsActivePort"
+        active.unlink(missing_ok=True)
         self.proc = subprocess.Popen([
             find_browser(), "--headless=new", f"--remote-debugging-port={self.port}", f"--user-data-dir={self.profile}",
             f"--window-size={self.size[0]},{self.size[1]}", "--no-first-run", "--no-default-browser-check",
             "--disable-extensions", "--remote-allow-origins=*", "--disable-background-networking", "about:blank",
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            await self._connect(active)
+        except BaseException:
+            await self._kill()  # 자기가 띄운 크롬만 — 남기면 같은 프로필을 쥐고 다음 실행을 막는다
+            raise
+        return self
+
+    async def _connect(self, active: Path) -> None:
         target = None
         for _ in range(60):
             try:
+                if not self.port:
+                    self.port = int(active.read_text().split()[0])
                 with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json/list", timeout=2) as r:
                     pages = [t for t in json.loads(r.read()) if t.get("type") == "page"]
                 if pages:
@@ -75,21 +88,29 @@ class Page:
         self._reader = asyncio.create_task(self._read())
         for domain in ("Page", "Runtime", "Network", "Log"):
             await self.send(f"{domain}.enable")
-        return self
 
-    async def __aexit__(self, *exc) -> None:
+    async def _kill(self) -> None:
         try:
             if self._reader:
                 self._reader.cancel()
             if self.ws:
                 await self.ws.close()
-        finally:
+        except Exception:  # noqa: BLE001
+            pass
+        finally:  # 닫는 도중 취소(Ctrl+C)돼도 크롬은 정리한다 — 남으면 프로필을 쥐고 다음 실행을 막는다(Codex 리뷰)
             if self.proc:
                 self.proc.terminate()
                 try:
                     self.proc.wait(timeout=10)
                 except Exception:  # noqa: BLE001
                     self.proc.kill()
+                    try:
+                        self.proc.wait(timeout=10)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+    async def __aexit__(self, *exc) -> None:
+        await self._kill()
 
     async def _read(self) -> None:
         async for raw in self.ws:
