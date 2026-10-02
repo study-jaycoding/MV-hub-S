@@ -80,7 +80,9 @@ HTTP 요청
    ├─ cors                 : 개발 모드 교차 오리진 허용
    ├─ auth_enforcement     : 토큰 → request.state.account  (CONTENT_HUB_AUTH=1 일 때 게이트)
    ├─ mutation_notify      : 성공한 쓰기를 library/assets/manage로 분류해 WS 갱신 신호 전파
-   ├─ data_proxy           : 프록시 모드에서 로컬 전용 경로 외 데이터 요청을 공유 서버로 위임
+   ├─ data_proxy           : 프록시 모드에서 로컬 전용 경로 외 데이터 요청을 공유 서버로 위임. 쓰기(GET·HEAD·OPTIONS 외)는
+   │                         저장 토큰을 붙이므로 중계 전에 브라우저 문맥(Host·Sec-Fetch-Site·Origin·Referer)이 이 PC 인지
+   │                         본다 — 다른 사이트 페이지의 단순 POST(CSRF)는 403, Origin 없는 비브라우저는 통과(2026-10-02)
    ├─ list_gzip            : 생성물 목록 응답만 gzip(전역 압축 아님 — `list_gzip.py` 머리말의 실측 근거)
    ├─ upload_body_limit    : 선별된 업로드의 원시 본문을 multipart 파싱 전에 제한
    ├─ auth_off_remote_guard: AUTH off 서버에 원격 주소가 접근하면 차단(보안 경계)

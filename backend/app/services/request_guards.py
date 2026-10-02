@@ -114,28 +114,28 @@ def _require_same_machine_browser_context(
     def deny() -> None:
         raise HTTPException(status_code=403, detail=detail)
 
-    host_values = [v for v in _request_header_values(request, "host") if v.strip()]
-    if len(host_values) > 1:
-        deny()
-    if host_values:
-        hostname = _authority_hostname(host_values[0])
+    def single(name: str) -> str:
+        # 중복은 빈 값을 걸러 내기 **전에** 센다 — 빈 값 + 정상 값 두 줄이 한 줄로 보이지 않게(Codex 2026-10-02)
+        values = _request_header_values(request, name)
+        if len(values) > 1:
+            deny()
+        return values[0].strip() if values else ""
+
+    host = single("host")
+    if host:
+        hostname = _authority_hostname(host)
         if not hostname or not host_ok(hostname):
             deny()
-    for site in _request_header_values(request, "sec-fetch-site"):
-        if site.strip().lower() == "cross-site":
-            deny()
-    origin_values = [v for v in _request_header_values(request, "origin") if v.strip()]
-    if len(origin_values) > 1:
+    if single("sec-fetch-site").lower() == "cross-site":
         deny()
-    if origin_values:
-        hostname = _origin_hostname(origin_values[0])
+    origin = single("origin")
+    if origin:
+        hostname = _origin_hostname(origin)
         if not hostname or not host_ok(hostname):
             deny()
-    referer_values = [v for v in _request_header_values(request, "referer") if v.strip()]
-    if len(referer_values) > 1:
-        deny()
-    if referer_values:
-        hostname = _http_url_hostname(referer_values[0], allow_path=True)
+    referer = single("referer")
+    if referer:
+        hostname = _http_url_hostname(referer, allow_path=True)
         if not hostname or not host_ok(hostname):
             deny()
 
@@ -191,6 +191,15 @@ def local_machine_hosts() -> frozenset[str]:
             if address and address[0]:
                 hosts.add(_normalized_ip(str(address[0])))
     return frozenset(hosts)
+
+
+def require_local_browser_context(request: Request, detail: str) -> None:
+    """브라우저 문맥만 이 PC 인지(Host·Sec-Fetch-Site·Origin·Referer) — 접속 IP 는 보지 않는다.
+
+    로컬 허브 일반 프록시가 쓰기 요청을 저장 토큰으로 중계하기 전에 쓴다(다른 사이트 페이지의 단순 POST = CSRF).
+    Origin 없는 비브라우저 클라이언트(에이전트·Comfy·Resolve·urllib)와 이 PC 의 다른 포트는 그대로 통과한다.
+    """
+    _require_same_machine_browser_context(request, detail, is_local_machine_host)
 
 
 def is_local_machine_host(host: str) -> bool:

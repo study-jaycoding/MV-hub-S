@@ -52,6 +52,7 @@ from ..services.shared_connection import (  # noqa: E402
     token,
 )
 from ..services.path_safety import safe_join
+from ..services.request_guards import require_local_browser_context
 
 # 401의 의미를 브라우저까지 보존한다. `invalid`만 실제 세션 만료이며 `preserved`는
 # 요청 자체가 거부됐을 뿐 저장된 로그인은 유지됐다는 뜻이다.
@@ -755,6 +756,22 @@ async def data_proxy_middleware(request: Request, call_next):
             if not is_local_path(request.url.path):
                 if request.method in ("GET", "HEAD") and request.url.path.startswith(_STREAM_PREFIX):
                     return await _forward_stream(request)
+                if request.method not in ("GET", "HEAD", "OPTIONS"):
+                    # 쓰기는 저장 토큰을 붙여 중계하므로, 다른 사이트 페이지가 보낸 단순 POST(CSRF)를 여기서 막는다
+                    # (2026-10-02 Codex main 검토 P1 — 본문 없는 관리자 POST 가 닿았다). 통과: 같은 출처 앱 화면·
+                    # Origin 없는 비브라우저·같은 호스트에서 포트만 다른 화면(127.0.0.1:8188 → 127.0.0.1). 이름을 섞은
+                    # localhost ↔ 127.0.0.1 은 브라우저가 cross-site 로 붙여 막힌다. 이 PC 이름 확인이 DNS 를 탈 수 있어
+                    # 스레드에서 검사한다. 미들웨어라 HTTPException 대신 응답으로 돌려준다.
+                    try:
+                        await asyncio.to_thread(
+                            require_local_browser_context, request, "다른 사이트에서 온 요청은 공유 서버로 중계하지 않습니다"
+                        )
+                    except HTTPException as exc:
+                        return Response(
+                            content=json.dumps({"detail": exc.detail}).encode(),
+                            status_code=exc.status_code,
+                            media_type="application/json",
+                        )
                 return await _forward(request)
         return await call_next(request)
     finally:

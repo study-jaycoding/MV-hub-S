@@ -351,8 +351,14 @@ async def save_backup_replica(request: Request, payload: Any = Body(None)):
     return await to_thread_non_abandon(_save_locked, target, body.expected_target_id, account_actor_uid(request))
 
 
+class BackupReplicaRunIn(BaseModel):
+    """빈 JSON 객체({})를 요구한다 — 다른 사이트 페이지의 단순 POST(본문 없음·text/plain)는 JSON 으로 읽히지 않아 422.
+    옛 앱의 로컬 허브 일반 프록시는 출처 검사 없이 관리자 토큰을 붙여 중계하므로, 서버가 먼저 업데이트돼도 그 경로로
+    복사가 시작되지 않게 서버에서 막는다(Codex main 검토 P1·설계 r1). 새 앱의 중계는 {} 를 JSON 으로 보낸다."""
+
+
 @router.post("/admin/backup-replica/run")
-def run_backup_replica(request: Request):
+def run_backup_replica(request: Request, _body: BackupReplicaRunIn):
     require_admin(request)
     if not _shared_server_runtime():
         raise HTTPException(status_code=404, detail="공유 서버에서만 쓸 수 있습니다")

@@ -216,7 +216,7 @@ def test_env_locked_target_is_not_editable(env, monkeypatch):
 
 def test_run_checks_task_and_calls_schtasks(env, monkeypatch):
     c = env["client"]
-    assert c.post("/api/admin/backup-replica/run").status_code == 409  # 위치 없음
+    assert c.post("/api/admin/backup-replica/run", json={}).status_code == 409  # 위치 없음
     Path(env["mod"].TARGET_FILE).write_text(NAS + "\n", encoding="utf-8")
     calls = []
 
@@ -226,14 +226,34 @@ def test_run_checks_task_and_calls_schtasks(env, monkeypatch):
     for change, code in (({"exists": False}, 409), ({"enabled": False}, 409), ({"ignore_new": False}, 409),
                          ({"system": False}, 409), ({"running": True}, 409)):
         env["task"] = dict(TASK, **change)
-        assert c.post("/api/admin/backup-replica/run").status_code == code, change
+        assert c.post("/api/admin/backup-replica/run", json={}).status_code == code, change
     env["task"] = None
-    assert c.post("/api/admin/backup-replica/run").status_code == 503  # 상태를 모르면 안 돌린다
+    assert c.post("/api/admin/backup-replica/run", json={}).status_code == 503  # 상태를 모르면 안 돌린다
     env["task"] = dict(TASK)
-    started = c.post("/api/admin/backup-replica/run")
+    started = c.post("/api/admin/backup-replica/run", json={})
     assert started.status_code == 200
     assert started.json()["baseline_last_run_at"] == TASK["last_run_at"]
     assert calls == [["schtasks", "/Run", "/TN", "MVHub BackupCopy"]]
+
+
+def test_run_needs_a_json_body_so_a_foreign_page_cannot_start_it(env, monkeypatch):
+    """옛 앱의 로컬 허브는 다른 사이트 페이지의 단순 POST 를 관리자 토큰으로 중계한다(Codex main 검토 P1) — 그런 요청은
+    본문이 없거나 text/plain 이라 서버가 JSON 으로 읽지 않는다. 예약 작업이 불리지 않아야 한다."""
+    Path(env["mod"].TARGET_FILE).write_text(NAS + "\n", encoding="utf-8")
+    env["task"] = dict(TASK)
+    calls = []
+
+    class Done:
+        returncode = 0
+    monkeypatch.setattr(route.subprocess, "run", lambda args, **kw: calls.append(args) or Done())
+    c = env["client"]
+    assert c.post("/api/admin/backup-replica/run").status_code == 422
+    assert c.post("/api/admin/backup-replica/run", content=b"{}", headers={"Content-Type": "text/plain"}).status_code == 422
+    assert c.post("/api/admin/backup-replica/run", content=b"a=1",
+                  headers={"Content-Type": "application/x-www-form-urlencoded"}).status_code == 422
+    assert calls == []
+    assert c.post("/api/admin/backup-replica/run", json={}).status_code == 200
+    assert len(calls) == 1
 
 
 def test_not_shared_server_runtime(env, monkeypatch):
@@ -263,7 +283,7 @@ def test_bad_body_never_echoes_password(env, monkeypatch):
 def test_run_refused_on_nonstandard_data_path(env, monkeypatch):
     Path(env["mod"].TARGET_FILE).write_text(NAS + "\n", encoding="utf-8")
     monkeypatch.setenv("CONTENT_HUB_DATA", "E:\\elsewhere")
-    assert env["client"].post("/api/admin/backup-replica/run").status_code == 409
+    assert env["client"].post("/api/admin/backup-replica/run", json={}).status_code == 409
 
 
 def test_task_action_must_match_register_autostart_exactly():
@@ -291,3 +311,4 @@ def test_local_relay_is_loopback_only_and_forwards(env, monkeypatch):
     assert [(m, p) for m, p, _ in sent] == [("GET", "/api/admin/backup-replica"), ("PUT", "/api/admin/backup-replica"),
                                             ("POST", "/api/admin/backup-replica/run")]
     assert sent[1][2]["password"] == "x"
+    assert sent[2][2] == {}  # 서버가 JSON 객체 본문을 요구한다 — 새 중계는 {} 를 보낸다
