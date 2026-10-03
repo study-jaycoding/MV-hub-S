@@ -7,6 +7,8 @@
   · 결과는 JSONL 로 흘려 쓴다(메모리에 전부 쌓지 않는다). 마지막 줄 {"t":"end"} 가 없으면 부모는 미완주로 본다.
 
 순서: ① 목록(폴더마다 scandir 한 번, 초당 dir_rate 폴더 이하, 항목별 stat 없음) → ② 지문(1 MiB 단위 token bucket).
+결과물 모드(job["results"], docs/NAS_RESULTS.md): 대장과 같은 목록 규칙이되 render 까지, 지문 대신 파일마다 앞 64KiB sha256 과
+PNG 속 번호(hf-job-id·mvhub.job_id·mvhub.gen_id)만 낸다 — 결과 줄은 {"t":"result",...}.
   · 목록을 끝까지 못 읽으면(폴더 읽기 오류·시간 초과·항목 상한) complete=false — 부모가 결과 전체를 버린다.
   · 파일 하나가 잠김·읽기 실패·0바이트·읽는 중 바뀜이면 그 파일만 undetermined.
   · 예산(시간) 안에 못 낸 지문은 pending — 다음 주기가 이어서 한다. 혼자서 예산을 넘는 큰 파일은 why=large.
@@ -17,9 +19,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat as stat_mod
 import sys
 import time
+import zlib
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -28,6 +32,13 @@ from .media_types import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 _MEDIA = frozenset(IMAGE_EXTENSIONS + VIDEO_EXTENSIONS + AUDIO_EXTENSIONS)
 _CHUNK = 1 << 20  # 1 MiB
 _REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT — 정션·링크 폴더는 따라가지 않는다(에셋 트리와 같게)
+# 결과물 모드 — 앞부분 지문 크기는 결과 파일 부분 지문(docs/RESULT_FINGERPRINT.md)과 같아야 서로 맞춰 볼 수 있다.
+HEAD_BYTES = 65536
+_RESULT_FILE_S = 30.0  # 파일 하나(앞부분 + PNG 걷기)의 시간 상한
+_PNG_SIG = b"\x89PNG\r\n\x1a\n"
+_TEXT_MAX = 4096  # 텍스트 청크 본문은 이보다 크면 읽지 않는다(번호 칸은 수십 바이트)
+_PNG_KEYS = {b"hf-job-id": "hf", b"mvhub.job_id": "mj", b"mvhub.gen_id": "mg"}
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
 def hidden_name(name: str) -> bool:
@@ -175,7 +186,144 @@ def _hash(path: Path, limiter: _Limiter, deadline: float, watch: _ParentWatch) -
     return "ok", digest.hexdigest(), int(after.st_size), int(after.st_mtime_ns)
 
 
+def _text_chunk(ctype: bytes, body: bytes) -> tuple[bytes, Optional[str]]:
+    """PNG 텍스트 청크 → (키, 값). 형식이 어긋나거나 압축된 iTXt 면 값 None(번호로 쓰지 않는다)."""
+    key, sep, rest = body.partition(b"\0")
+    if not sep or not 1 <= len(key) <= 79:
+        return b"", None
+    if ctype == b"tEXt":
+        value = rest.decode("latin-1")
+    else:  # iTXt: 압축 표시(1) · 압축 방식(1) · 언어\0 · 번역 키\0 · 본문(UTF-8)
+        if len(rest) < 2 or rest[0] != 0 or rest[1] != 0:  # 압축됐거나 정의되지 않은 방식이면 번호로 쓰지 않는다
+            return key, None
+        _lang, sep1, rest2 = rest[2:].partition(b"\0")
+        _translated, sep2, text = rest2.partition(b"\0")
+        if not (sep1 and sep2):
+            return key, None
+        try:
+            value = text.decode("utf-8")
+        except UnicodeDecodeError:
+            return key, None
+    return key, value.strip().lower()
+
+
+def _png_ids(handle, size: int, deadline: float, limiter: _Limiter, watch: _ParentWatch) -> dict[str, Optional[str]]:
+    """PNG 를 **시작부터** 청크 머리(길이·타입)를 따라 걷는다 — 큰 청크(IDAT 등)는 seek 로 건너뛰고 텍스트 청크만 읽는다.
+    길이가 파일 끝을 넘거나 타입이 4글자 영문이 아니면 거기서 멈춘다(그때까지 못 본 번호는 미관측). 끝부분을 '찾아 내는'
+    검색은 하지 않는다 — 이미지 데이터 안의 바이트를 번호로 오인하지 않게(Codex r2).
+    번호로 쓰는 텍스트 청크는 CRC 까지 맞아야 한다. 같은 키에 다른 번호가 있으면 고르지 않고 "x" 로 충돌을 알린다
+    (앱 각인은 기존 청크를 두고 더하므로 실제로 겹칠 수 있다 — Codex 리뷰)."""
+    seen: dict[str, set[str]] = {}
+    pos, chunks = len(_PNG_SIG), 0
+    while pos + 12 <= size:
+        if time.monotonic() > deadline:
+            break
+        chunks += 1
+        if chunks % 256 == 0:
+            watch.check()
+        handle.seek(pos)
+        header = handle.read(8)
+        if len(header) < 8:
+            break
+        length, ctype = int.from_bytes(header[:4], "big"), header[4:]
+        if not (ctype.isascii() and ctype.isalpha()) or pos + 12 + length > size:
+            break
+        limiter.take(8)
+        if ctype in (b"tEXt", b"iTXt") and length <= _TEXT_MAX:
+            body = handle.read(length + 4)
+            limiter.take(len(body))
+            if len(body) != length + 4:
+                break
+            body, crc = body[:length], int.from_bytes(body[length:], "big")
+            if zlib.crc32(ctype + body) == crc:  # 깨진 청크의 값은 번호로 쓰지 않는다(걷기는 계속 — 길이는 믿을 만하다)
+                key, value = _text_chunk(ctype, body)
+                slot = _PNG_KEYS.get(key)
+                if slot and value and _UUID_RE.fullmatch(value):
+                    seen.setdefault(slot, set()).add(value)
+        if ctype == b"IEND":
+            break
+        pos += 12 + length
+    found: dict[str, Optional[str]] = {slot: next(iter(values)) for slot, values in seen.items() if len(values) == 1}
+    if any(len(values) > 1 for values in seen.values()):
+        found["x"] = "1"
+    return found
+
+
+def _probe_result(
+    path: Path, limiter: _Limiter, deadline: float, watch: _ParentWatch
+) -> tuple[str, int, int, Optional[str], dict[str, str]]:
+    """(status, bytes, mtime_ns, 앞부분 지문, PNG 번호들). stat → 읽기 → stat 이 어긋나면 undetermined."""
+    try:
+        before = os.stat(path)
+        if before.st_size <= 0:
+            return "undetermined:empty", 0, int(before.st_mtime_ns), None, {}
+        file_deadline = min(deadline, time.monotonic() + _RESULT_FILE_S)
+        with open(path, "rb") as handle:
+            head = handle.read(HEAD_BYTES)
+            limiter.take(len(head))
+            ids = _png_ids(handle, before.st_size, file_deadline, limiter, watch) if head.startswith(_PNG_SIG) else {}
+        after = os.stat(path)
+    except PermissionError:
+        return "undetermined:locked", 0, 0, None, {}
+    except OSError:
+        return "undetermined:error", 0, 0, None, {}
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        return "undetermined:changed", int(after.st_size), int(after.st_mtime_ns), None, {}
+    if len(head) != min(HEAD_BYTES, before.st_size):
+        return "undetermined:short", int(after.st_size), int(after.st_mtime_ns), None, {}
+    return "ok", int(after.st_size), int(after.st_mtime_ns), hashlib.sha256(head).hexdigest(), ids
+
+
+def run_results(job: dict[str, Any]) -> dict[str, Any]:
+    """결과물 모드 — 목록을 끝까지 읽으면 complete. 시간이 모자라 못 읽은 파일은 pending(값 없음)으로 남기고 다음 회차가 채운다."""
+    started = time.monotonic()
+    deadline = started + float(job["deadline_s"])
+    root = Path(job["root"])
+    end: dict[str, Any] = {"t": "end", "complete": False, "files": 0, "read": 0, "undetermined": 0, "pending": 0,
+                           "note": ""}
+    with open(Path(job["out"]), "w", encoding="utf-8", newline="\n") as out:
+
+        def emit(rel: str, size: int, mtime: int, head: Optional[str], ids: dict[str, str], status: str) -> None:
+            state = status.partition(":")[0]
+            line = {"t": "result", "p": rel, "b": size, "m": mtime, "h": head,
+                    "hf": ids.get("hf"), "mj": ids.get("mj"), "mg": ids.get("mg"), "x": 1 if ids.get("x") else 0,
+                    "st": state}
+            out.write(json.dumps(line, ensure_ascii=False) + "\n")
+            end["files"] += 1
+            if state in ("undetermined", "pending"):
+                end[state] += 1
+            else:
+                end["read"] += 1
+
+        watch = _ParentWatch(int(job.get("parent_pid") or 0))
+        limiter = _Limiter(float(job["rate_bytes"]))
+        try:
+            if not root.is_dir():
+                raise _Abort("루트 폴더를 열 수 없음")
+            for rel, size, mtime in _walk(root, _Limiter(float(job["dir_rate"])), deadline,
+                                          int(job["max_entries"]), False, watch):
+                watch.check()
+                if size is None:
+                    emit(rel, 0, 0, None, {}, "undetermined:stat")
+                elif time.monotonic() > deadline - _RESULT_FILE_S:
+                    emit(rel, size, mtime, None, {}, "pending:budget")  # 목록은 계속 — 스냅샷은 완주해야 쓴다
+                else:
+                    status, got_size, got_mtime, head, ids = _probe_result(root / rel, limiter, deadline, watch)
+                    emit(rel, got_size or size, got_mtime or mtime, head, ids, status)
+        except _Abort as exc:
+            end["note"] = str(exc)
+            end["elapsed_ms"] = int((time.monotonic() - started) * 1000)
+            out.write(json.dumps(end, ensure_ascii=False) + "\n")
+            return end
+        end["complete"] = True
+        end["elapsed_ms"] = int((time.monotonic() - started) * 1000)
+        out.write(json.dumps(end, ensure_ascii=False) + "\n")
+    return end
+
+
 def run(job: dict[str, Any]) -> dict[str, Any]:
+    if job.get("results"):
+        return run_results(job)
     started = time.monotonic()
     deadline = started + float(job["deadline_s"])
     root = Path(job["root"])

@@ -282,6 +282,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ):
         if col not in asset_cols:
             conn.execute(f"ALTER TABLE asset ADD COLUMN {col} {decl}")
+    # 결과물 스냅샷의 번호 충돌 칸(2026-10-03 리뷰 반영) — 먼저 만든 표에도 붙인다.
+    nr_cols = {row[1] for row in conn.execute("PRAGMA table_info(nas_result_file)")}
+    if nr_cols and "id_conflict" not in nr_cols:
+        conn.execute("ALTER TABLE nas_result_file ADD COLUMN id_conflict INTEGER NOT NULL DEFAULT 0")
     # 공유 전용 힉스필드 공개 URL(로컬 동작엔 미사용) — 캡쳐 등 로컬 토큰 레퍼런스를 팀에 공유해도
     # 받는 쪽이 원본을 받을 수 있게.
     ref_cols = {row[1] for row in conn.execute("PRAGMA table_info(reference)")}

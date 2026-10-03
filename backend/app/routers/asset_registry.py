@@ -23,12 +23,14 @@ from ..deps import account_global_roles, account_scope_uid, require_global_cap
 from ..repo import asset_registry as registry
 from ..services.asset_registry import (
     LEASE_TTL_S,
+    apply_results_snapshot,
     canonical_unc,
     consume_slot,
     controller,
     leases,
     pm_projects,
     registry_mode,
+    result_row,
     save_schedule,
     schedule_status,
 )
@@ -244,6 +246,28 @@ class HelperResultIn(BaseModel):
     stats: HelperStats = Field(default_factory=HelperStats)
 
 
+class HelperResultFile(BaseModel):
+    """결과물 모드 자식이 내는 한 줄과 같은 모양(docs/NAS_RESULTS.md) — 엄격히 받는다."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+    p: str = Field(min_length=1, max_length=1024)
+    b: int = Field(ge=0, le=1 << 44)
+    m: int = Field(ge=0, le=_INT_MAX)
+    h: Optional[str] = None
+    hf: Optional[str] = None
+    mj: Optional[str] = None
+    mg: Optional[str] = None
+    x: Literal[0, 1] = 0  # PNG 같은 키의 번호 충돌
+    st: Literal["ok", "undetermined", "pending"]
+
+
+class HelperResultsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    lease_id: _Id
+    seq: int = Field(ge=1, le=10_000)
+    files: list[HelperResultFile] = Field(default_factory=list, max_length=HELPER_MAX_FILES)
+
+
 def _helper_owner(request: Request, need_local: bool = False) -> str:
     """need_local — 새로 훑기를 시작하는 곳(프로젝트 목록·자리)은 훑는 곳이 '로컬'일 때만. 도우미는 503 을 전체 멈춤으로
     받는다(프로젝트 사이에 '서버'로 바뀌면 거기서 멈춘다, Codex). 자리가 살아 있는 동안은 훑는 곳을 못 바꾸므로
@@ -281,6 +305,42 @@ def _checked_files(files: list[HelperFile]) -> list[registry.RegistryFile]:
         elif f.s is not None:
             raise _bad_file(i, "미판정 파일에 지문이 있습니다")
         out.append(registry.RegistryFile(f.p, f.b, f.m, f.s, f.st))
+    return out
+
+
+_HEX = frozenset("0123456789abcdef")
+
+
+def _uuid_like(value: Optional[str]) -> bool:
+    return value is None or (len(value) == 36 and all(c in _HEX or c == "-" for c in value)
+                             and [len(part) for part in value.split("-")] == [8, 4, 4, 4, 12])
+
+
+def _checked_results(files: list[HelperResultFile]) -> list[dict[str, Any]]:
+    """결과물 줄을 자식 규칙과 같게 거른다: 상대 경로·숨김 조각 없음·미디어 확장자·중복 없음(render 는 **훑는 자리**),
+    ok 면 크기·64자 지문, 번호는 UUID 꼴, ok 가 아니면 값 없음."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for i, f in enumerate(files):
+        parts = f.p.split("/")
+        if "\\" in f.p or ":" in f.p or any(part in ("", ".", "..") for part in parts):
+            raise _bad_file(i, "상대 경로가 아닙니다")
+        if any(hidden_name(part) for part in parts):
+            raise _bad_file(i, "훑지 않는 자리입니다")
+        if os.path.splitext(parts[-1])[1].lower() not in _MEDIA:
+            raise _bad_file(i, "미디어 파일이 아닙니다")
+        key = f.p.casefold()
+        if key in seen:
+            raise _bad_file(i, "같은 경로가 두 번 있습니다")
+        seen.add(key)
+        if f.st == "ok":
+            if f.b <= 0 or not (f.h and len(f.h) == 64 and all(c in _HEX for c in f.h)):
+                raise _bad_file(i, "지문이 올바르지 않습니다")
+            if not all(_uuid_like(v) for v in (f.hf, f.mj, f.mg)):
+                raise _bad_file(i, "번호가 올바르지 않습니다")
+        elif any(v is not None for v in (f.h, f.hf, f.mj, f.mg)) or f.x:
+            raise _bad_file(i, "미판정 파일에 값이 있습니다")
+        out.append(result_row(f.model_dump()))
     return out
 
 
@@ -365,4 +425,28 @@ def helper_result(body: HelperResultIn, request: Request) -> dict[str, Any]:
         leases.finish_apply(body.lease_id, body.seq, digest, ack)
     log_event(_log, "asset_registry_helper_result", project_id=lease["project_id"], complete=body.complete,
               clean=ack["clean"], files=len(files), **kinds)
+    return ack
+
+
+@router.post("/helper/results")
+def helper_results(body: HelperResultsIn, request: Request) -> dict[str, Any]:
+    """도우미의 결과물 스냅샷(완주한 것만 온다). 루트는 이 자리(lease)의 공유 주소 — 지금 프로젝트 루트와 다르면 버린다.
+    같은 순번·같은 내용의 재전송은 저장한 답을 다시 준다(자리의 순번 규칙을 대장 결과와 함께 쓴다)."""
+    owner = _helper_owner(request)
+    files = _checked_results(body.files)
+    digest = hashlib.sha256(json.dumps(body.model_dump(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    try:
+        state, value = leases.begin_apply(body.lease_id, owner, body.seq, digest)
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if state == "ack":
+        return value
+    lease = value
+    ack: Optional[dict[str, Any]] = None
+    try:
+        ack = {"ok": True, **apply_results_snapshot(lease["project_id"], lease["unc"], "helper", files)}
+    finally:
+        leases.finish_apply(body.lease_id, body.seq, digest, ack)
+    log_event(_log, "nas_results_helper", project_id=lease["project_id"], files=len(files),
+              applied=ack["applied"], why=ack.get("why", ""))
     return ack

@@ -37,6 +37,7 @@ from ..config import (
 )
 from ..db import get_connection, maintenance_active, pool_epoch, pool_state_nowait
 from ..repo import asset_registry as registry
+from ..repo import nas_results as nas_repo
 from . import project_folders
 from .async_tools import to_thread_non_abandon
 from .operational_logging import log_event
@@ -51,6 +52,7 @@ MANUAL_DEADLINE_S = 45 * 60
 # 정한 시간 자동 훑기도 일반 훑기 1회 45분(속도만 자동 상한). 옛 10분 주기용 5분은 큰 프로젝트 목록도 못 끝냈다(2026-10-02).
 AUTO_DEADLINE_S = 45 * 60
 LARGE_CAP_S = 45 * 60  # 큰 파일 전용 실행의 최대 시간 — 넘으면 '수동 스캔 대기'로 남긴다
+RESULTS_DEADLINE_S = 15 * 60  # 결과물 훑기(파일당 앞 64KiB) 한 프로젝트의 최대 시간 — docs/NAS_RESULTS.md
 KILL_GRACE_S = 30
 _STARTUP_DELAY_S = 60
 LEASE_TTL_S = 10 * 60  # 도우미가 1분마다 연장한다 — 도우미가 죽어도 서버 훑기를 오래 막지 않게
@@ -307,6 +309,60 @@ def canonical_unc(root: str) -> Optional[str]:
     도우미 PC 가 '같은 NAS 의 같은 폴더'를 훑는지 이것으로 대조한다(드라이브 글자는 PC 마다 다를 수 있다)."""
     resolved = resolve_root(root).replace("/", "\\").rstrip("\\")
     return resolved if resolved.startswith("\\\\") else None
+
+
+def root_key(root: str) -> str:
+    """루트 비교 열쇠 — 공유 주소(UNC)로 풀리면 그것, 아니면 서버가 읽는 경로. 결과물 스냅샷이 어느 루트에서 만든 것인지
+    이것으로 적고 견준다(서버 훑기는 드라이브 글자, 도우미는 공유 주소를 들고 오므로 한 꼴로 맞춘다)."""
+    raw = (root or "").strip()
+    if not raw:
+        return ""
+    return (canonical_unc(raw) or resolve_root(raw)).replace("/", "\\").rstrip("\\").casefold()
+
+
+def read_results(path: Path) -> tuple[Optional[dict[str, Any]], list[dict[str, Any]], list]:
+    """결과물 모드 JSONL → (end 줄, 파일들, []). end 가 없으면 미완주."""
+    end: Optional[dict[str, Any]] = None
+    files: list[dict[str, Any]] = []
+    if not path.is_file() or path.stat().st_size > MAX_RESULT_BYTES:
+        return None, files, []
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                item = json.loads(line)
+            except ValueError:
+                return None, [], []
+            if item.get("t") == "end":
+                end = item
+            elif item.get("t") == "result":
+                files.append(result_row(item))
+    return end, files, []
+
+
+def result_row(item: dict[str, Any]) -> dict[str, Any]:
+    """자식(또는 도우미)이 낸 한 줄 → nas_result_file 한 행. 값은 ok 일 때만 남긴다."""
+    ok = item.get("st") == "ok"
+    return {
+        "path": item["p"], "bytes": int(item.get("b") or 0), "mtime_ns": int(item.get("m") or 0),
+        "head_sha": item.get("h") if ok else None,
+        "hf_job_id": item.get("hf") if ok else None,
+        "mv_job_id": item.get("mj") if ok else None,
+        "mv_gen_id": item.get("mg") if ok else None,
+        "id_conflict": 1 if ok and item.get("x") else 0,
+        "status": item.get("st") or "undetermined",
+    }
+
+
+def apply_results_snapshot(project_id: str, start_root: str, runner: str, files: list[dict[str, Any]]) -> dict[str, Any]:
+    """완주한 결과물 훑기를 그 프로젝트의 스냅샷으로 바꾼다 — **지금 루트가 훑기 시작 루트와 같을 때만**, 루트 재확인과
+    교체를 한 트랜잭션에서(Codex 승인 조건). 다르면 버린다(훑는 사이 루트가 바뀌었다)."""
+    key = root_key(start_root)
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if not key or root_key(nas_repo.current_root(conn, project_id)) != key:
+            return {"applied": False, "why": "root_changed"}
+        count = nas_repo.replace_snapshot(conn, project_id, uuid.uuid4().hex, key, runner, files, registry.utc_now())
+    return {"applied": True, "files": count}
 
 
 def pm_projects() -> list[tuple[str, str, str]]:
@@ -618,7 +674,30 @@ class AssetRegistryController:
             if await self._hash_large(pid, root, large, rate):
                 # 큰 파일 지문이 캐시에 들어왔다 — 목록을 한 번 더 돌려 이동·새 파일 판정을 온전히 한다.
                 await self._scan_project(pid, name, root, rate, deadline)
+        if result.get("state") != "stopped" and not self._halted():
+            # 결과물 훑기(docs/NAS_RESULTS.md) — 같은 자리(서버 훑기·도우미 자리) 안에서 이어서. 대장 결과와 무관하게 돈다.
+            await self._results_project(pid, name, root, rate)
         return str(result.get("state") or "")
+
+    async def _results_project(self, pid: str, name: str, root_raw: str, rate: float) -> None:
+        """render 까지 훑어 파일마다 앞 64KiB 지문·PNG 속 번호 — 완주만 스냅샷으로. 실패해도 대장에는 영향 없다."""
+        t0 = time.monotonic()
+        self._current = {"project_id": pid, "name": name, "phase": "results", "started_at": registry.utc_now()}
+        job = {"root": resolve_root(root_raw), "results": True, "rate_bytes": rate, "dir_rate": DIR_RATE,
+               "deadline_s": RESULTS_DEADLINE_S, "max_entries": MAX_ENTRIES}
+        end, files, _pending, note = await self._run_child(job, RESULTS_DEADLINE_S, reader=read_results)
+        complete = bool(end and end.get("complete")) and note != "stopping"
+        outcome: dict[str, Any] = {"applied": False}
+        if complete:
+            outcome = await to_thread_non_abandon(self._apply_results, pid, root_raw, files)
+        log_event(_log, "nas_results_scan", project_id=pid, complete=complete, files=len(files),
+                  read=int((end or {}).get("read") or 0), undetermined=int((end or {}).get("undetermined") or 0),
+                  pending=int((end or {}).get("pending") or 0), note=note or (end or {}).get("note") or "",
+                  elapsed_ms=int((time.monotonic() - t0) * 1000), **outcome)
+
+    def _apply_results(self, pid: str, root_raw: str, files: list[dict[str, Any]]) -> dict[str, Any]:
+        """서버 훑기 — 서버 DB 에 스냅샷. 도우미는 이것을 서버로 올리는 것으로 바꾼다(services/asset_registry_helper)."""
+        return apply_results_snapshot(pid, root_raw, "server", files)
 
     def _known(self, pid: str) -> dict[str, list]:
         with get_connection() as conn:
@@ -705,8 +784,9 @@ class AssetRegistryController:
         self._waiting[pid] = len(large) - done
         return done > 0
 
-    async def _run_child(self, job: dict[str, Any], deadline_s: float):
-        """(end, files, pending, note). 자식이 시간 상한 + KILL_GRACE_S 안에 안 끝나면 끝내고 결과를 버린다."""
+    async def _run_child(self, job: dict[str, Any], deadline_s: float, reader=read_result):
+        """(end, files, pending, note). 자식이 시간 상한 + KILL_GRACE_S 안에 안 끝나면 끝내고 결과를 버린다.
+        reader — 결과 파일을 읽는 함수(대장: read_result, 결과물 모드: read_results)."""
         work = DATA_DIR / "asset_registry"
         work.mkdir(parents=True, exist_ok=True)
         tag = uuid.uuid4().hex
@@ -734,7 +814,7 @@ class AssetRegistryController:
                 return None, [], [], "stopping"
             if self._proc.returncode != 0:
                 return None, [], [], f"자식 비정상 종료({self._proc.returncode})"
-            end, files, pending = await asyncio.to_thread(read_result, out_path)
+            end, files, pending = await asyncio.to_thread(reader, out_path)
             return end, files, pending, "" if end else "결과 없음"
         finally:
             self._proc = None

@@ -710,3 +710,29 @@ CREATE TABLE IF NOT EXISTS asset_registry_scan (
     elapsed_ms   INTEGER NOT NULL DEFAULT 0,
     note         TEXT
 );
+
+-- 결과물 훑기(2026-10-03, docs/NAS_RESULTS.md) — 에셋 대장과 따로 두는 **스냅샷**. 대장 훑기 직후 같은 자리에서
+-- render 까지 훑어 파일마다 앞 64KiB 지문·파일 속 번호만 적는다. 완주한 훑기만 프로젝트 스냅샷을 통째로 바꾼다.
+-- root = 훑기 시작 때의 루트(공유 주소 우선) — 지금 루트와 다르면 그 스냅샷은 쓰지 않는다.
+CREATE TABLE IF NOT EXISTS nas_result_scan (
+    project_id   TEXT PRIMARY KEY,
+    scan_id      TEXT NOT NULL,
+    root         TEXT NOT NULL,
+    runner       TEXT NOT NULL,                  -- server | helper
+    files        INTEGER NOT NULL DEFAULT 0,
+    finished_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS nas_result_file (
+    project_id   TEXT NOT NULL,
+    scan_id      TEXT NOT NULL,
+    path         TEXT NOT NULL,                  -- 루트 기준 상대 경로('/' 구분)
+    bytes        INTEGER,
+    mtime_ns     INTEGER,
+    head_sha     TEXT,                           -- 앞 64KiB(작으면 전체) sha256
+    hf_job_id    TEXT,                           -- PNG tEXt hf-job-id(힉스필드가 넣는 작업 번호)
+    mv_job_id    TEXT,                           -- PNG iTXt mvhub.job_id(이 앱 각인)
+    mv_gen_id    TEXT,                           -- PNG iTXt mvhub.gen_id(이 앱 각인)
+    id_conflict  INTEGER NOT NULL DEFAULT 0,     -- 1 = PNG 에 같은 키로 다른 번호가 있었다(고르지 않음 → 판정 충돌)
+    status       TEXT NOT NULL,                  -- ok | undetermined | pending
+    PRIMARY KEY (project_id, path)
+);

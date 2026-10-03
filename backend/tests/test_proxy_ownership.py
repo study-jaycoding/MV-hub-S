@@ -29,6 +29,7 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/asset-registry/helper/release",
         "/api/asset-registry/helper/renew",
         "/api/asset-registry/helper/result",
+        "/api/asset-registry/helper/results",  # 결과물 스냅샷(docs/NAS_RESULTS.md) — 도우미가 서버로 직접
         "/api/asset-registry/lookup",
         "/api/asset-registry/mode",
         "/api/asset-registry/scan",

@@ -35,6 +35,10 @@ class _Abort(Exception):
     """전체를 멈춘다 — 로그인이 바뀜·권한 없음·옛 서버·서버에서 도우미가 꺼짐."""
 
 
+class _OldServer(_Abort):
+    """라우트가 없다(404·405) = 옛 서버. 대장 호출에서는 전체 멈춤(_Abort)과 같고, 결과물 올리기에서는 건너뛴다."""
+
+
 class _ProjectFail(Exception):
     """그 프로젝트만 실패 — 다른 곳에서 훑는 중·공유 주소 불일치·결과 거부 등."""
 
@@ -48,7 +52,7 @@ def _error_for(code: int, detail: str) -> Exception:
     if code in (401, 403):
         return _Abort("관리자(system) 권한이 필요합니다" if code == 403 else "공유 서버 로그인이 필요합니다")
     if code == 405 or (code == 404 and detail in ("", "Not Found")):  # 라우트 자체가 없다 = 옛 서버
-        return _Abort("공유 서버 업데이트가 필요합니다(도우미 훑기를 모르는 서버)")
+        return _OldServer("공유 서버 업데이트가 필요합니다(도우미 훑기를 모르는 서버)")
     if code == 503:
         return _Abort(detail or "공유 서버에서 도우미 훑기가 꺼져 있습니다")
     return _ProjectFail(detail or f"서버가 거부했습니다({code})")
@@ -231,6 +235,30 @@ class HelperController(AssetRegistryController):
         clean = bool(ack.get("clean"))
         self._detail.update(state="ok" if clean else "partial", clean=clean, kinds=kinds)
         return kinds
+
+    def _apply_results(self, pid: str, root_raw: str, files: list[dict[str, Any]]) -> dict[str, Any]:
+        """결과물 스냅샷을 서버로 올린다(docs/NAS_RESULTS.md). 덤으로 하는 일이라 실패해도 대장 결과·다음 프로젝트를 막지 않는다:
+        옛 서버(라우트 없음)·연결 실패는 건너뛴다. 루트·scan_id 는 서버가 이 자리(lease)에서 정한다."""
+        self._lease["seq"] += 1
+        body = {
+            "lease_id": self._lease["id"], "seq": self._lease["seq"],
+            "files": [{"p": f["path"], "b": int(f["bytes"]), "m": int(f["mtime_ns"]), "h": f["head_sha"],
+                       "hf": f["hf_job_id"], "mj": f["mv_job_id"], "mg": f["mv_gen_id"], "x": int(f["id_conflict"]),
+                       "st": f["status"]} for f in files],
+        }
+        for attempt in (1, 2):
+            try:
+                ack = self._call("POST", "/api/asset-registry/helper/results", body, timeout=RESULT_TIMEOUT_S)
+                return {"applied": bool(ack.get("applied")), "why": str(ack.get("why") or "")}
+            except _OldServer:
+                self._lease["seq"] -= 1  # 서버는 이 순번을 보지 못했다
+                return {"applied": False, "why": "old_server"}
+            except _Network:
+                if attempt == 2:
+                    return {"applied": False, "why": "network"}  # 같은 순번으로 한 번 더 했다 — 서버가 반영했다면 다음 회차가 덮는다
+            except _ProjectFail as exc:
+                return {"applied": False, "why": str(exc)[:200]}
+        return {"applied": False, "why": "network"}
 
 
 helper = HelperController()
