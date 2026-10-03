@@ -586,7 +586,8 @@ export function NotificationCenter({
                   {confirmUpdateId === item.id && (
                     <div className="notification-confirm" role="alertdialog" aria-label={t("알림 센터")}>
                       <span>
-                        {t("{v}(으)로 업데이트하시겠습니까?").replace("{v}", `v${item.version}`)}
+                        {/* 실제 호출은 판을 지정하지 않고 그때 공개된 판을 설치한다 — 공지 판이라고 말하지 않는다(Codex 2026-10-03). */}
+                        {t("현재 공개된 판으로 설치합니다. 이 공지의 버전과 다르거나 현재보다 이전 판일 수 있습니다.")}
                       </span>
                       <span className="notification-confirm-actions">
                         <button type="button" className="yes" onClick={() => void runUpdate(item)}>

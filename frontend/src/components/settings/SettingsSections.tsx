@@ -523,9 +523,17 @@ export function ReleaseUpdateSettingsSection({
   const updateAvailable = Boolean(
     status?.latest_version && status.latest_version !== status.current_version,
   );
+  // 설치 대상은 공개본이다 — 공지 전 후보를 쓰던 PC 에서는 지금보다 옛 판일 수 있다(날짜형 판은 문자열 순서 = 시각 순서).
+  const dated = /^\d{4}\.\d{2}\.\d{2}-\d{4}$/;
+  const olderPublic = Boolean(
+    updateAvailable && status && dated.test(status.latest_version || "") && dated.test(status.current_version || "")
+      && (status.latest_version || "") < (status.current_version || ""),
+  );
   const versionText = status
     ? updateAvailable
-      ? `현재 ${status.current_version || "미확인"} → 새 버전 ${status.latest_version}`
+      ? olderPublic
+        ? `현재 ${status.current_version} → 공개본 ${status.latest_version}(지금보다 옛 판)`
+        : `현재 ${status.current_version || "미확인"} → 새 버전 ${status.latest_version}`
       : `현재 버전 ${status.current_version || "미확인"}`
     : "버전을 확인하는 중…";
   const actionText = running

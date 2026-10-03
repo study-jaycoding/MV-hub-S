@@ -35,7 +35,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$raw = Get-Content -Lite
 if errorlevel 1 (
   echo.
   echo [ERROR] Failed to prepare MV Hub updater.
-  if defined MVHUB_UPDATE_STATE_FILE powershell -NoProfile -Command "@{state='failed';message='Update launcher failed to prepare. Replace update_release.bat from the release share and retry.';updated_at=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:MVHUB_UPDATE_STATE_FILE -Encoding UTF8"
+  REM An earlier recovery_required marker is carried over: the tree is still untrusted.
+  if defined MVHUB_UPDATE_STATE_FILE powershell -NoProfile -Command "$f=$env:MVHUB_UPDATE_STATE_FILE; $rec=''; if (Test-Path -LiteralPath $f) { try { if ((Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json).recovery -eq 'recovery_required') { $rec='recovery_required' } } catch {} }; $o=@{state='failed';message='Update launcher failed to prepare. Replace update_release.bat from the release share and retry.';updated_at=[DateTime]::UtcNow.ToString('o')}; if ($rec) { $o.recovery=$rec }; $o | ConvertTo-Json -Compress | Set-Content -LiteralPath $f -Encoding UTF8"
   if not "%MVHUB_NO_PAUSE%"=="1" pause
   exit /b 1
 )
@@ -66,8 +67,9 @@ if not "%UPDATE_EXIT%"=="0" (
   echo.
   echo [ERROR] MV Hub update failed.
   REM Keep the payload's detailed failed state (e.g. SHA mismatch); write this generic
-  REM fallback only when the payload died before recording its own failure.
-  if defined MVHUB_UPDATE_STATE_FILE powershell -NoProfile -Command "$f=$env:MVHUB_UPDATE_STATE_FILE; $keep=$false; if (Test-Path -LiteralPath $f) { try { if ((Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json).state -eq 'failed') { $keep=$true } } catch {} }; if (-not $keep) { @{state='failed';message='Update script failed (exit %UPDATE_EXIT%). Check %%LOCALAPPDATA%%\MVHub\updates\update.log.';updated_at=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress | Set-Content -LiteralPath $f -Encoding UTF8 }"
+  REM fallback only when the payload died before recording its own failure. An earlier
+  REM recovery_required marker is carried over: the tree is still untrusted.
+  if defined MVHUB_UPDATE_STATE_FILE powershell -NoProfile -Command "$f=$env:MVHUB_UPDATE_STATE_FILE; $keep=$false; $rec=''; if (Test-Path -LiteralPath $f) { try { $p=Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json; if ($p.state -eq 'failed') { $keep=$true }; if ($p.recovery -eq 'recovery_required') { $rec='recovery_required' } } catch {} }; if (-not $keep) { $o=@{state='failed';message='Update script failed (exit %UPDATE_EXIT%). Check %%LOCALAPPDATA%%\MVHub\updates\update.log.';updated_at=[DateTime]::UtcNow.ToString('o')}; if ($rec) { $o.recovery=$rec }; $o | ConvertTo-Json -Compress | Set-Content -LiteralPath $f -Encoding UTF8 }"
   if not "%MVHUB_NO_PAUSE%"=="1" pause
   exit /b %UPDATE_EXIT%
 )
@@ -129,6 +131,20 @@ $script:InstalledComponents = $null
 # forced even on matching versions, and a failed reinstall must never be booted
 # or have its quarantined backups deleted.
 $script:HadRecoveryAssets = $false
+# True when the state file already says recovery_required (an earlier run left a half-swapped
+# tree). That marker is cleared only by a successful reinstall: every record before then keeps
+# it, and a matching version still reinstalls - otherwise a retry that fails early (release
+# server, approval check) would erase it and the hub would skip recovery (Codex 2026-10-03).
+$script:InheritedRecovery = $false
+if ($StateFile -and (Test-Path -LiteralPath $StateFile)) {
+    try {
+        if ([string](Get-Content -LiteralPath $StateFile -Raw -Encoding UTF8 | ConvertFrom-Json).recovery -eq "recovery_required") {
+            $script:InheritedRecovery = $true
+            $script:RecoveryState = "recovery_required"
+        }
+    }
+    catch { }
+}
 
 function Write-UpdateState {
     param(
@@ -157,6 +173,9 @@ function Write-UpdateState {
     }
     if ($Percent -ge 0) {
         $Payload["percent"] = [Math]::Min(100, $Percent)
+    }
+    if (-not $Recovery -and $script:RecoveryState -eq "recovery_required") {
+        $Recovery = "recovery_required"
     }
     if ($Recovery) {
         $Payload["recovery"] = $Recovery
@@ -228,10 +247,12 @@ function Write-ResolveTransferBusyState {
         catch { $Previous = $null }
     }
     $BusyLatest = $LatestVersion
-    $BusyRecovery = "not_started"
+    # Start from what this run already knows: a marker inherited at start-up survives even if
+    # this second read fails, and is never replaced by a weaker earlier value.
+    $BusyRecovery = $script:RecoveryState
     if ($Previous) {
         if ($Previous.latest_version) { $BusyLatest = [string]$Previous.latest_version }
-        if ($Previous.recovery) { $BusyRecovery = [string]$Previous.recovery }
+        if ($Previous.recovery -and $BusyRecovery -ne "recovery_required") { $BusyRecovery = [string]$Previous.recovery }
     }
     $BusyState = "available"
     if ($BusyRecovery -eq "recovery_required") { $BusyState = "failed" }
@@ -740,6 +761,7 @@ function Move-LeftoversToQuarantine {
     # current tree cannot be trusted as-is.
     if (@(Get-ChildItem -Path (Join-Path $TargetDir "update-quarantine.*") -Force -ErrorAction SilentlyContinue).Count) {
         $script:HadRecoveryAssets = $true
+        $script:RecoveryState = "recovery_required"
     }
     foreach ($Base in $Bases) {
         if (-not (Test-Path -LiteralPath $Base -PathType Container)) { continue }
@@ -750,18 +772,21 @@ function Move-LeftoversToQuarantine {
                 Remove-Item -LiteralPath $Leftover.FullName -Recurse -Force -ErrorAction SilentlyContinue
                 continue
             }
+            # Mark before moving: a failed move must not leave the tree looking trusted.
+            $script:HadRecoveryAssets = $true
+            $script:RecoveryState = "recovery_required"
             New-Item -ItemType Directory -Force -Path $QuarantineRoot | Out-Null
             $Prefix = ""
             if ($Base -ne $TargetDir) { $Prefix = (Split-Path -Leaf $Base) + "." }
             Write-Host ("[update] preserving leftover backup in quarantine: " + $Leftover.FullName)
             Move-PathWithRetry -Path $Leftover.FullName -Destination (Join-Path $QuarantineRoot ($Prefix + $Leftover.Name)) -Label ($Leftover.Name + " (quarantine)")
-            $script:HadRecoveryAssets = $true
         }
     }
     if (Test-Path -LiteralPath $JournalPath) {
+        $script:HadRecoveryAssets = $true
+        $script:RecoveryState = "recovery_required"
         New-Item -ItemType Directory -Force -Path $QuarantineRoot | Out-Null
         Move-PathWithRetry -Path $JournalPath -Destination (Join-Path $QuarantineRoot "update-journal.json") -Label "update journal (quarantine)"
-        $script:HadRecoveryAssets = $true
     }
 }
 
@@ -1086,7 +1111,14 @@ function Install-Package {
     # From here until the version marker commits, the old tree is either untouched
     # or restorable from .previous - so a failure below reports recovery=rolled_back
     # unless the rollback itself breaks.
-    $script:RecoveryState = "rolled_back"
+    # An untrusted tree (leftovers or an inherited marker) stays recovery_required even when
+    # rolled back to, so it is never auto-booted and every record keeps the marker.
+    if ($script:HadRecoveryAssets -or $script:InheritedRecovery) {
+        $script:RecoveryState = "recovery_required"
+    }
+    else {
+        $script:RecoveryState = "rolled_back"
+    }
     $script:InstalledComponents = $Components
 
     try {
@@ -1116,7 +1148,7 @@ function Install-Package {
             $script:RecoveryState = "recovery_required"
             throw "Install failed and rollback is incomplete [$($Failures -join '; ')]. Backups (*.previous.$SwapToken) and update-journal.json are preserved in $TargetDir. Original error: $InstallError"
         }
-        if ($script:HadRecoveryAssets) {
+        if ($script:HadRecoveryAssets -or $script:InheritedRecovery) {
             # The tree we just rolled back TO was itself left by an interrupted
             # earlier run - it may be half-swapped. Never boot it, and keep the
             # quarantined backups on disk (Codex review).
@@ -1215,9 +1247,12 @@ try {
     # Recovery assets prove the tree may be half-swapped: shallow layout checks
     # cannot certify it, so a matching version never skips the full reinstall.
     $Forced = ($ForceReinstall -eq "1")
-    $NeedsInstall = ($CurrentVersion -ne [string]$Latest.version) -or $script:HadRecoveryAssets -or $Forced
+    $NeedsInstall = ($CurrentVersion -ne [string]$Latest.version) -or $script:HadRecoveryAssets -or $script:InheritedRecovery -or $Forced
     if ($script:HadRecoveryAssets) {
         Write-Host "[2/3] Previous update left recovery backups behind - forcing a full reinstall."
+    }
+    elseif ($script:InheritedRecovery) {
+        Write-Host "[2/3] An earlier update left this install marked for recovery - forcing a full reinstall."
     }
     elseif ($Forced -and $CurrentVersion -eq [string]$Latest.version) {
         Write-Host "[2/3] Force update requested - reinstalling the same version."

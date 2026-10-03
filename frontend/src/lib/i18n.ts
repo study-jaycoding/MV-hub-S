@@ -175,7 +175,8 @@ const EN: Record<string, string> = {
   "최근 알림이 없습니다.": "No recent notifications.",
   "팀원": "Teammate",
   "{v}로 업데이트되었습니다": "Updated to {v}",
-  "{v}(으)로 업데이트하시겠습니까?": "Update to {v} now?",
+  "현재 공개된 판으로 설치합니다. 이 공지의 버전과 다르거나 현재보다 이전 판일 수 있습니다.":
+    "This installs the currently published release. It may differ from this notice's version or be older than yours.",
   "예, 업데이트": "Yes, update",
   "나중에": "Later",
   // 공유 서버 이사 공지(주소 전환) — 확인창 없이 클릭이 곧 전환이라 본문이 결과를 밝힌다

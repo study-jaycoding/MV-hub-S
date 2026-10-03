@@ -39,6 +39,7 @@ UPDATE_STATE_BASE = Path(
 
 _ACTIVE_STATES = frozenset({"starting", "checking", "downloading", "installing", "restarting"})
 _STATE_STALE_SECONDS = 30 * 60
+_STALE_ACTIVE_MESSAGE = "업데이트 상태가 30분 이상 멈췄습니다. 프로그램을 다시 실행한 뒤 재시도하세요."
 # 강제 업데이트의 보조 판정. 주 판정은 워커의 설치 잠금(_updater_lock_held)이고, 이것은 워커가
 # 아직 잠금을 잡기 전 몇 초를 메운다. 죽은 업데이트는 20초면 풀려, 30분을 기다리거나 재설치할
 # 일이 없다.
@@ -247,6 +248,7 @@ def write_state(
     latest_version: str = "",
     current_version: str | None = None,
     candidate: bool = False,
+    recovery: str = "",
 ) -> dict[str, Any]:
     payload = {
         "state": state,
@@ -255,6 +257,9 @@ def write_state(
         "latest_version": latest_version,
         "updated_at": _utc_now(),
     }
+    if recovery:
+        # 반쯤 스왑된 트리 표식 — 복구 설치가 실제로 성공하기 전의 기록(접수·실패·busy)이 지우지 않게 이어 쓴다.
+        payload["recovery"] = recovery
     if candidate:
         # 이 PC 가 공지 전 후보를 쓰는 중(U1) — refresh 없는 응답에도 남도록 상태 파일에 저장한다.
         payload["candidate"] = True
@@ -284,6 +289,11 @@ def _state_age_seconds(value: dict[str, Any]) -> float | None:
         return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds())
     except ValueError:
         return None
+
+
+def _carried_recovery(value: dict[str, Any]) -> str:
+    """이어 쓸 복구 표식 — 표식은 워커의 복구 설치가 성공해야만 풀린다(main 부터 있던 유실, Codex 2026-10-03)."""
+    return "recovery_required" if value.get("recovery") == "recovery_required" else ""
 
 
 def _active_and_fresh(value: dict[str, Any]) -> bool:
@@ -776,7 +786,20 @@ def _commit_status(
         kind, stored = _load_state(root)
         if kind in {"unreadable", "invalid"}:
             return _check_failed(base)
-        if _active_and_fresh(stored) or stored.get("recovery") == "recovery_required":
+        if _active_and_fresh(stored):
+            return {**base, **stored, "install_mode": "release", "can_update": False}
+        if stored.get("recovery") == "recovery_required":
+            # 복구 표식은 어느 콜백에도 넘기지 않는다. 멈춘(30분 지난) 복구 진행만 여기서 직접 failed+표식으로 바꾼다
+            # — 느린 사전 검사 사이에 만료된 경우도 같은 자리에서 처리된다(Codex 코드 리뷰 2026-10-03).
+            if acquired and str(stored.get("state") or "") in _ACTIVE_STATES:
+                try:
+                    stored = write_state(
+                        "failed", _STALE_ACTIVE_MESSAGE, root=root, current_version=base["current_version"],
+                        latest_version=str(stored.get("latest_version") or ""), recovery="recovery_required",
+                    )
+                except OSError:
+                    _log.warning("Update state: write failed")
+                    return _check_failed(base)
             return {**base, **stored, "install_mode": "release", "can_update": False}
         if not acquired:
             # 시작 중인 실행기를 오래 기다리지 않는다. 마지막 상태만 보여주고 쓰기는 하지 않는다.
@@ -808,7 +831,7 @@ def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any
             root, base,
             lambda current_state: write_state(
                 "failed",
-                "업데이트 상태가 30분 이상 멈췄습니다. 프로그램을 다시 실행한 뒤 재시도하세요.",
+                _STALE_ACTIVE_MESSAGE,
                 root=root,
                 current_version=base["current_version"],
                 latest_version=str(current_state.get("latest_version") or ""),
@@ -1014,10 +1037,11 @@ def start_update(
         # 필요하면 전체 재설치한다.
         # 강제는 복구와 같은 취급 — 버전이 같고 얕은 검사를 통과해도 워커를 돌려 다시 설치한다.
         # 사람이 강제를 누르는 상황이 바로 '버전은 맞는데 설치가 망가진' 경우다.
-        needs_recovery = stored.get("recovery") == "recovery_required" or force
+        carry = _carried_recovery(stored)
+        needs_recovery = bool(carry) or force
         reinstall = force  # 워커에 '같은 버전이어도 다시 설치'를 알릴지
         try:
-            write_state("checking", "최신 릴리스를 다시 확인하는 중…", root=root, current_version=current)
+            write_state("checking", "최신 릴리스를 다시 확인하는 중…", root=root, current_version=current, recovery=carry)
         except OSError as exc:
             # 접수 기록 전 실패: 다운로드/실행도, 같은 파일에 failed 재기록도 하지 않는다.
             raise ReleaseUpdateError(_STATE_WRITE_FAILED_MESSAGE) from exc
@@ -1099,6 +1123,7 @@ def start_update(
                     root=root,
                     current_version=current,
                     latest_version=target["version"],
+                    recovery=carry,
                 )
             except OSError as exc:
                 raise ReleaseUpdateError(_STATE_WRITE_FAILED_MESSAGE) from exc
@@ -1112,12 +1137,14 @@ def start_update(
             }
         except ReleaseUpdateBusyError:
             try:
+                # 복구 표식이 있으면 'failed' — get_status 의 보존 분기가 failed+표식만 지킨다(워커 busy 기록과 같은 규칙).
                 write_state(
-                    "available",
+                    "failed" if carry else "available",
                     "생성 작업 완료 후 업데이트할 수 있습니다.",
                     root=root,
                     current_version=current,
                     latest_version=latest_version,
+                    recovery=carry,
                 )
             except OSError:
                 _log.warning("Update state: busy status write failed")
@@ -1133,6 +1160,7 @@ def start_update(
                     root=root,
                     current_version=current,
                     latest_version=latest_version,
+                    recovery=carry,
                 )
             except OSError:
                 _log.warning("Update state: failure status write failed")
