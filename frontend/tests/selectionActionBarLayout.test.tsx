@@ -66,3 +66,15 @@ it.each(["workspace", "shared", "mixed"])("%s: 상단바에 전체 폭을 주고
   act(() => download.click());
   expect(noop).toHaveBeenCalledWith(selected);
 });
+
+it("프롬프트 위(도크 안)에서도 바는 가운데에 선다", () => {
+  host.className = "sl-dock";
+  const noop = vi.fn();
+  act(() => root.render(<LibrarySelectionActionBar
+    selectedCount={1} selectedGenerations={[{ id: "a", deleted: false }] as Generation[]} projects={[]}
+    onShare={noop} onDownload={noop} onResolveTransfer={noop} onResolveRetry={null}
+    resolveRetryProjectName="" resolveTransferBusy={false} resolveTransferPendingCount={0}
+    onCompare={noop} onAssign={noop} onDelete={noop} onRestore={noop} onPurge={noop}
+  />));
+  expect(getComputedStyle(host.querySelector(".select-bar")!).alignSelf).toBe("center");
+});

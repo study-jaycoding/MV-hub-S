@@ -870,9 +870,9 @@
 }
 .lib-clear-failed:hover { background: rgba(255,107,107,0.22); }
 
-/* 멀티 선택 바 — 프롬프트 도크 상단(프롬프트 바로 위)에 뜨는 컴팩트 펄 */
+/* 멀티 선택 바 — 프롬프트 도크 상단(프롬프트 바로 위)에 뜨는 컴팩트 펄. 프롬프트 바 가운데에 맞춘다(Jay 2026-10-03). */
 .select-bar {
-  align-self: flex-start;
+  align-self: center;
   display: flex; align-items: center; gap: 10px;
   padding: 7px 14px; border-radius: 12px;
   background: var(--grad-soft); border: 1px solid var(--accent);

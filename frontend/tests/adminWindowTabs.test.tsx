@@ -76,7 +76,7 @@ const pressEscape = async () => {
 
 it("관리자에게 탭이 정해진 순서로 보인다", async () => {
   await mount();
-  expect(tabLabels()).toEqual(["승인", "멤버 · 전역 역할", "공유 서버", "업데이트", "프로젝트", "에셋 리스트"]);
+  expect(tabLabels()).toEqual(["승인", "멤버 · 전역 역할", "프로젝트", "공유 서버", "에셋 리스트", "업데이트"]);
 });
 
 it("업데이트 관리는 '업데이트' 탭에만 있고, 그 탭을 열 때 읽는다", async () => {

@@ -217,17 +217,18 @@ export function AdminWindow({
   const visibleMembers = visibleAdminMembers(members, systemUids);
   const visibleAccounts = visibleAdminAccounts(accounts);
   // 역량에 따라 보이는 탭이 다르다(로드맵 §1): 승인·전역역할=admin, 프로젝트=product_manager.
+  // 순서는 Jay 2026-10-03 — 승인 · 멤버 · 프로젝트 · 공유 서버 · 에셋 리스트 · 업데이트.
   const tabDefs: { key: AdminTab; label: string; visible: boolean }[] = [
     { key: "approve", label: "승인", visible: hasGlobalCap(viewerRoles, "approve_signup") },
     { key: "roles", label: "멤버 · 전역 역할", visible: hasGlobalCap(viewerRoles, "grant_global") },
-    // 공유 서버 주소 — 로그인한 공유 서버 계정이 admin 일 때만(로컬 허브 설정값).
-    { key: "server", label: "공유 서버", visible: !!shared?.is_admin },
-    // 업데이트 목록·공지(2026-10-02 공유 서버 탭에서 분리) — 공유 서버 탭과 같은 기준.
-    { key: "update", label: "업데이트", visible: !!shared?.is_admin },
     // 프로젝트 관리(2026-10-02 대시보드 오버레이에서 옮김) — 위 canManageProjects 기준.
     { key: "projects", label: "프로젝트", visible: canManageProjects },
+    // 공유 서버 주소 — 로그인한 공유 서버 계정이 admin 일 때만(로컬 허브 설정값).
+    { key: "server", label: "공유 서버", visible: !!shared?.is_admin },
     // 에셋 리스트(옛 이름 '에셋 대장', 2026-09-30) — 공유 서버 운영(system) 권한만. 훑기는 NAS 를 오래 읽는다.
     { key: "registry", label: "에셋 리스트", visible: isPermanentAdmin },
+    // 업데이트 목록·공지(2026-10-02 공유 서버 탭에서 분리) — 공유 서버 탭과 같은 기준.
+    { key: "update", label: "업데이트", visible: !!shared?.is_admin },
   ];
   const visibleTabs = tabDefs.filter((t) => t.visible);
   const [tab, setTab] = useState<AdminTab>("approve");
