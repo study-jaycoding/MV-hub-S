@@ -88,6 +88,8 @@ def _isolated_main(
     # archive, rename, rollback and launch functions are intentionally NOT loaded.
     helpers = "\n".join(_helper(payload, name) for name in (
         "Write-UpdateState", "Get-TransientLockCode", "Write-ResolveTransferBusyState",
+        # 표지 읽기·승인값 대조(2026-10-03 후보 선설치) — 아래 가짜 Get-ReleaseFile 만 부른다(네트워크 없음).
+        "Read-ReleaseManifest",
     ))
     main = payload[payload.index('$TempRoot = Join-Path $env:TEMP ("mvhub-update-') :]
     return f"""
@@ -98,6 +100,9 @@ $env:TEMP = {_quote(temp)}
 $CurrentVersion = ''
 $LatestVersion = ''
 $BaseUrl = 'isolated-stub'
+$ManifestName = 'latest.json'
+$ExpectSha256 = ''
+$ExpectVersion = ''
 $RestartAfterInstall = '0'
 $script:RecoveryState = 'not_started'
 $script:ProcessesStopped = $false

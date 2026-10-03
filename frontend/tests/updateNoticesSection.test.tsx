@@ -10,13 +10,16 @@ import type { UpdateNotice } from "../src/lib/updateNotices";
 
 const mocks = vi.hoisted(() => ({
   adminList: vi.fn(), adminItem: vi.fn(), register: vi.fn(), pin: vi.fn(), announce: vi.fn(), remove: vi.fn(),
-  latest: vi.fn(), promote: vi.fn(),
+  latest: vi.fn(), promote: vi.fn(), status: vi.fn(), startCandidate: vi.fn(),
 }));
 vi.mock("../src/lib/updateNotices", () => ({
   updateNoticeApi: { adminList: mocks.adminList, adminItem: mocks.adminItem, register: mocks.register,
     pin: mocks.pin, announce: mocks.announce, remove: mocks.remove },
 }));
-vi.mock("../src/lib/releaseUpdate", () => ({ getLatestReleaseMetadata: mocks.latest, promoteRelease: mocks.promote }));
+vi.mock("../src/lib/releaseUpdate", () => ({
+  getLatestReleaseMetadata: mocks.latest, promoteRelease: mocks.promote,
+  getReleaseUpdateStatus: mocks.status, startCandidateUpdate: mocks.startCandidate,
+}));
 
 import { UpdateNoticesSection } from "../src/components/admin/UpdateNoticesSection";
 
@@ -38,6 +41,7 @@ beforeEach(() => {
   mocks.adminList.mockResolvedValue([notice(), live]);
   mocks.latest.mockResolvedValue(release());
   mocks.adminItem.mockRejectedValue(new HttpError(404, "404", "업데이트 항목이 없습니다"));
+  mocks.status.mockResolvedValue({ install_mode: "release", current_version: "2026.10.01-0906", state: "up_to_date" });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
@@ -152,4 +156,47 @@ it("목록 밖 후보 조회가 404 가 아닌 오류면 등록 단추 대신 �
   await mount();
   expect(host.textContent).toContain("등록됐는지 확인하지 못했습니다");
   expect(host.querySelector(".admin-update-cand")).toBeNull();
+});
+
+// 관리자 후보 선설치(Jay 2026-10-03) — 등록된 공지 전 후보를 이 PC 에만 먼저 설치. [공지]·팀 배포는 그대로.
+it("등록된 공지 전 후보는 [이 PC에 먼저 설치] — 확인창에서 취소하면 아무것도 안 한다", async () => {
+  mocks.startCandidate.mockResolvedValue({ state: "starting", accepted: true });
+  const confirm = vi.fn(() => false);
+  vi.stubGlobal("confirm", confirm);
+  await mount();
+  const candidateRow = row("2026.10.03-1420");
+  expect(candidateRow.textContent).toContain("이 PC에 먼저 설치");
+  expect([...row("2026.10.01-0906").querySelectorAll("button")].some((b) => b.textContent?.startsWith("이 PC에")))
+    .toBe(false); // 팀 배포 중인 판에는 없다
+  await click(candidateRow, "이 PC에 먼저 설치");
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(String(confirm.mock.calls[0])).toContain("팀원 PC 는 바뀌지 않습니다");
+  expect(mocks.startCandidate).not.toHaveBeenCalled();
+
+  confirm.mockReturnValue(true);
+  await click(row("2026.10.03-1420"), "이 PC에 먼저 설치");
+  expect(mocks.startCandidate).toHaveBeenCalledWith("n-cand", "c".repeat(64));
+  expect(mocks.announce).not.toHaveBeenCalled();
+  expect(mocks.promote).not.toHaveBeenCalled();
+  expect(host.textContent).toContain("이 PC 에 설치하기 시작했습니다");
+});
+
+it("이 PC 가 이미 그 후보면 '이 PC 설치됨' 표시와 [이 PC에 다시 설치](손상 복구)를 준다", async () => {
+  mocks.status.mockResolvedValue({ install_mode: "release", current_version: "2026.10.03-1420", state: "check_failed", candidate: true });
+  await mount();
+  const candidateRow = row("2026.10.03-1420");
+  expect(candidateRow.textContent).toContain("이 PC 설치됨");
+  expect(candidateRow.textContent).toContain("이 PC에 다시 설치");
+});
+
+it.each([
+  ["개발 실행본", { install_mode: "development", current_version: "" }, release()],
+  ["배포 상태 확인 불가", { install_mode: "release", current_version: "2026.10.01-0906" }, release({ pending: null })],
+  ["이미 팀에 배포된 후보", { install_mode: "release", current_version: "2026.10.01-0906" }, release({ pending: false })],
+])("%s 에는 먼저 설치 단추가 없다", async (_label, status, latest) => {
+  mocks.status.mockResolvedValue({ state: "up_to_date", ...status });
+  mocks.latest.mockResolvedValue(latest);
+  await mount();
+  const buttons = [...host.querySelectorAll("button")].map((button) => button.textContent);
+  expect(buttons.some((text) => text?.startsWith("이 PC에"))).toBe(false); // 안내 글이 아니라 단추만 본다
 });

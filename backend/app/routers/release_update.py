@@ -160,6 +160,66 @@ def release_update_promote(body: PromoteIn, request: Request):
     return result
 
 
+class CandidateStartIn(BaseModel):
+    notice_id: str
+    sha256: str
+    confirm: bool
+
+
+@router.post("/start-candidate", status_code=202)
+def release_update_start_candidate(
+    body: CandidateStartIn,
+    request: Request,
+    x_mvhub_update: str | None = Header(default=None),
+):
+    """관리자 PC 에 '목록에 등록한' 후보를 [공지] 전에 먼저 설치한다(U1, Jay 2026-10-03).
+
+    등록 여부와 Admin 권한은 공유 서버 단건 조회가 판정한다(서버가 require_admin). 공지는 요구하지 않고
+    공개 표지·공지 DB 는 건드리지 않는다 — 팀원 PC 는 [공지] 전까지 지금과 같다. 동기 def(스레드풀).
+    """
+    _require_local(request)
+    if not body.confirm or x_mvhub_update != "1":
+        raise HTTPException(status_code=400, detail="업데이트 확인값이 올바르지 않습니다")
+    if install_mode(APP_ROOT) != "release":
+        raise HTTPException(status_code=400, detail="릴리스 설치본(관리자 PC)에서만 후보를 먼저 설치할 수 있습니다")
+    if not _proxy.proxying():
+        raise HTTPException(status_code=400, detail="공유 서버에 연결된 관리자 PC 에서만 후보를 먼저 설치할 수 있습니다")
+    digest = body.sha256.strip().lower()
+    # 계정 고정은 서버 권한 확인에만 — 아래 활동 검사는 고정 없이 지금 이 PC 상태를 본다(Codex U1 D).
+    with active_account.pinned_account_scope():
+        try:
+            item = _proxy.proxy_json(
+                "GET", "/api/update-notices/admin/item", params={"sha256": digest}, timeout=20
+            )
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                detail = (
+                    "공유 서버를 업데이트한 뒤 사용할 수 있습니다"
+                    if exc.detail == "Not Found"
+                    else "목록에 등록한 후보만 이 PC 에 먼저 설치할 수 있습니다"
+                )
+                raise HTTPException(status_code=409, detail=detail) from exc
+            raise
+    if not isinstance(item, dict) or item.get("id") != body.notice_id:
+        raise HTTPException(status_code=409, detail="업데이트 항목이 바뀌었습니다 — 업데이트 탭을 다시 열어 확인하세요")
+    expected = {key: item.get(key) for key in ("version", "file", "size", "sha256")}
+    try:
+        # 활동 검사는 실제 함수(강제 우회 없음). 이 PC 가 이미 그 후보면 start_update 가 '다시 설치'로 처리한다.
+        result = start_update(
+            activity_check=lambda: _activity()["active_total"],
+            ready_url=f"http://127.0.0.1:{PORT}/api/ready",
+            manifest="candidate.json",
+            expected_release=expected,
+        )
+    except ReleaseUpdateBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ReleaseUpdateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log_event(_log, "release_candidate_install_started", version=str(item.get("version") or ""), sha256=digest[:12],
+              accepted=bool(result.get("accepted")))
+    return _with_activity(result)
+
+
 @router.post("/start", status_code=202)
 async def release_update_start(
     body: UpdateStartIn,

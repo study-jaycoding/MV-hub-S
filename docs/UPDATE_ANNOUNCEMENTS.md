@@ -7,7 +7,7 @@ tags:
   - mvhub/운영
   - mvhub/업데이트
 status: active
-updated: 2026-10-02
+updated: 2026-10-03
 ---
 
 # 업데이트 공지 관리 계약
@@ -16,7 +16,8 @@ updated: 2026-10-02
 
 팀원이 보는 업데이트는 **관리자가 [공지]를 누른 판만**이다(Jay 2026-10-02, B안). 릴리스 스크립트는 NAS
 릴리스 폴더에 **후보**만 올리고, 관리자 창 **업데이트 탭**의 [공지]가 공지와 동시에 팀원 PC 가 보는
-**표지**(`latest.json`)를 그 후보로 바꾼다. 관리자 PC 도 공지 뒤에 설치한다(1단계 — 후보 선설치는 나중 설계).
+**표지**(`latest.json`)를 그 후보로 바꾼다. 관리자는 **목록에 등록한 후보를 [공지] 전에 자기 PC 에만 먼저 설치**할 수 있다
+(2단계, Jay 2026-10-03 — 아래 '관리자 후보 선설치').
 일반 사용자는 공지를 발행할 수 없다. 받은 공지를 클릭하면 업데이트 실행 흐름이 열린다 — 새 버전 공지는 그
 자리에서 한 번 더 확인을 묻고, **서버 이사 공지는 확인창 없이 즉시 전환**한다(`components/NotificationCenter.tsx`).
 
@@ -53,6 +54,20 @@ updated: 2026-10-02
 5. **[배포 반영]** — 드물게: 공지는 됐는데 표지 교체만 실패했을 때 그 줄에만 보인다. 알림 없이 promote 만.
 6. **[해제]** — 확인 창 뒤 공유 서버 `DELETE /api/update-notices/admin/{id}` → 목록과 팀원 알림에서만 지운다
    (읽음 기록은 FK CASCADE). 설치 파일·표지·후보는 그대로. 없는 항목도 성공(`removed: false`).
+
+## 관리자 후보 선설치(2단계, 2026-10-03)
+
+- 업데이트 탭에서 **등록된** 후보 줄(아직 팀 표지 아님)에 [이 PC에 먼저 설치] — 이 PC 가 이미 그 후보면 [이 PC에 다시 설치](손상 복구).
+  공지 여부는 보지 않는다. 팀원 PC·공개 표지(`latest.json`)·공지 DB 는 바뀌지 않는다 — 팀 배포는 지금처럼 [공지]·[배포 반영].
+- 로컬 `POST /api/release-update/start-candidate` → 공유 서버 단건 조회로 **등록·Admin** 확인(서버가 판정) → `start_update(manifest="candidate.json",
+  expected_release=서버 항목)` 이 후보를 **한 번** 읽어 version·file·size·sha256 대조, 공개본보다 **새 날짜 판**(`YYYY.MM.DD-HHMM`)만 허용.
+  활동 검사는 우회하지 않는다. 워커에는 `MVHUB_UPDATE_MANIFEST`·`MVHUB_UPDATE_EXPECT_SHA256`·`MVHUB_UPDATE_EXPECT_VERSION` 을 넘기고,
+  워커는 읽자마자 지워(새 앱이 물려받지 않음) 동일 버전 판단·앱 중지 **전에** 다시 대조한다 — 승인 뒤 바뀐 후보는 설치하지 않는다.
+- 후보를 쓰는 PC: 상태 = `up_to_date` + `candidate: true`(손상이면 `check_failed`). 일반 업데이트(알림 클릭 포함)는 **공개본으로 내려가지 않는다**.
+  **강제 업데이트 = 공개본 재설치**(후보보다 옛 판으로 돌아감 — 두 확인창에 안내). 복구 필요(`recovery_required`)는 지금처럼 복구 워커.
+  후보를 못 읽으면 취소로 보지 않고 `check_failed`. 후보가 취소(select_release 로 후보=표지)·교체되면 공개본이 다시 대상(되돌리기 가능).
+- **처음 판**: 이 기능이 들어간 판은 [공지]로 깐다(옛 앱엔 단추·라우트·워커 처리가 없다). 공유 서버 변경은 없다(기존 단건 조회 사용).
+- 설계 기록: Claude 설계 v1·v2 · Codex 적대적 검토 2회(v2 조건 전부 반영).
 
 ## 되돌리기·전환
 
@@ -128,6 +143,7 @@ Copy-Item -LiteralPath .\release\packages\MVHub_Install.bat -Destination "$Dir\M
 ## 검증 기준
 
 - 시험: `backend/tests/test_release_promote.py`(overview·promote·잠금 교차·교체 실패 셋·라우트),
+  `test_release_candidate_install.py`(후보 선설치 — 고정값·승인 뒤 바뀜·후보 사용 중 일반/강제·읽기 오류·실패 보존·손상·라우트·워커 실행),
   `test_select_release_backups.py`(후보=표지·취소 안내·표지 전환만 실패·잠금 대기),
   `test_release_update.py`(make_release 계약), `test_update_notices.py`(단건·해제),
   `frontend/tests/updateNoticesSection.test.tsx`(처음 공지만 배포·재공지 알림만·배포 반영·해제·확인 불가).

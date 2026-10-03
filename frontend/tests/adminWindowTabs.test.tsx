@@ -17,7 +17,11 @@ vi.mock("../src/lib/useManageCaps", () => ({
   useManageCaps: () => ({ loaded: true, authOff: false, system: true, createProject: true, grantRole: true, readAll: true }),
 }));
 vi.mock("../src/lib/updateNotices", () => ({ updateNoticeApi: { adminList: mocks.adminList } }));
-vi.mock("../src/lib/releaseUpdate", () => ({ getLatestReleaseMetadata: mocks.latestRelease }));
+vi.mock("../src/lib/releaseUpdate", () => ({
+  getLatestReleaseMetadata: mocks.latestRelease,
+  // 업데이트 탭이 이 PC 판을 함께 읽는다(후보 먼저 설치 단추, 2026-10-03).
+  getReleaseUpdateStatus: () => Promise.resolve({ install_mode: "release", current_version: "", state: "up_to_date" }),
+}));
 vi.mock("../src/lib/modelPolicy", () => ({ refreshModelPolicy: vi.fn() }));
 // 백업 위치 확인창은 '열림·닫힘' 신호만 흉내 낸다 — 관리자 창이 그 신호로 Esc·바깥 클릭을 넘기는지 본다
 vi.mock("../src/components/admin/BackupReplicaSection", () => ({

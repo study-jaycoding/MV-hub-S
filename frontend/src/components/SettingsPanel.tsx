@@ -49,6 +49,7 @@ import {
   type ResolveScriptStatus,
 } from "../lib/resolveTransfer";
 import {
+  FORCE_UPDATE_INSTALLS_PUBLIC,
   getReleaseUpdateStatus,
   isReleaseUpdateRunning,
   pollFailureMessage,
@@ -286,7 +287,7 @@ export function SettingsPanel({
     const status = releaseUpdateStatus;
     if (!force && (!status?.can_update || !status.latest_version)) return;
     const confirmText = force
-      ? "진행 중 작업 검사를 건너뛰고 강제로 업데이트합니다.\n실제로 생성·Resolve 전송이 돌고 있다면 그 작업은 중단될 수 있습니다.\n프로그램이 자동으로 다시 시작됩니다. 계속할까요?"
+      ? `진행 중 작업 검사를 건너뛰고 강제로 업데이트합니다.\n${FORCE_UPDATE_INSTALLS_PUBLIC}\n실제로 생성·Resolve 전송이 돌고 있다면 그 작업은 중단될 수 있습니다.\n프로그램이 자동으로 다시 시작됩니다. 계속할까요?`
       : `MV Hub를 ${status?.latest_version} 버전으로 업데이트합니다.\n프로그램이 자동으로 다시 시작됩니다.\n계속할까요?`;
     if (!window.confirm(confirmText)) return;
     setReleaseUpdateBusy(true);

@@ -47,6 +47,9 @@ _FORCE_STALE_SECONDS = 20.0
 # ACL 거부(5) 같은 다른 PermissionError 와 반드시 구분한다(update_release_worker.bat 과 같은 기준).
 _SHARING_VIOLATION = frozenset({32, 33})
 _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
+# make_release 기본 버전 = 제작 시각. 문자열 비교가 곧 시각 순이다 — 관리자 후보 선설치(U1)는 이 꼴만 지원한다.
+_DATED_VERSION_RE = re.compile(r"\d{4}\.\d{2}\.\d{2}-\d{4}")
+_RELEASE_MANIFESTS = frozenset({"latest.json", "candidate.json"})
 _START_LOCK = threading.Lock()
 _log = logging.getLogger(__name__)
 _STATE_CHECK_FAILED_MESSAGE = (
@@ -68,6 +71,10 @@ _RUNTIME_PROBE = (
 
 class ReleaseUpdateError(RuntimeError):
     """사용자에게 설명할 수 있는 릴리스 업데이트 오류."""
+
+
+class _StatusRecorded(ReleaseUpdateError):
+    """start_update 가 이미 알맞은 상태를 기록하고 멈춘 경우 — 공통 실패 처리가 'failed' 로 덮지 않는다."""
 
 
 class ReleaseUpdateBusyError(ReleaseUpdateError):
@@ -239,6 +246,7 @@ def write_state(
     root: Path = APP_ROOT,
     latest_version: str = "",
     current_version: str | None = None,
+    candidate: bool = False,
 ) -> dict[str, Any]:
     payload = {
         "state": state,
@@ -247,6 +255,9 @@ def write_state(
         "latest_version": latest_version,
         "updated_at": _utc_now(),
     }
+    if candidate:
+        # 이 PC 가 공지 전 후보를 쓰는 중(U1) — refresh 없는 응답에도 남도록 상태 파일에 저장한다.
+        payload["candidate"] = True
     path = state_path(root)
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     deadline = time.monotonic() + _STATE_WRITE_RETRY_SECONDS
@@ -423,6 +434,65 @@ def fetch_latest(root: Path = APP_ROOT) -> dict[str, Any]:
     source = install_source(root)
     raw = _read_release_file(source, "latest.json", max_bytes=_MANIFEST_MAX_BYTES)
     return {**_parse_manifest(raw), "source": source}
+
+
+def fetch_candidate(root: Path = APP_ROOT) -> dict[str, Any]:
+    source = install_source(root)
+    raw = _read_release_file(source, "candidate.json", max_bytes=_MANIFEST_MAX_BYTES)
+    return {**_parse_manifest(raw, "candidate.json"), "source": source}
+
+
+def _release_key(release: dict[str, Any]) -> tuple[str, str, int, str]:
+    """같은 판인가 — promote(공지)와 후보 선설치가 같은 네 필드로 비교한다."""
+    return (str(release.get("version")), str(release.get("file")), int(release.get("size") or 0),
+            str(release.get("sha256") or "").lower())
+
+
+def _newer_dated(version: str, than: str) -> bool:
+    return (bool(_DATED_VERSION_RE.fullmatch(version or "") and _DATED_VERSION_RE.fullmatch(than or ""))
+            and version > than)
+
+
+def _installed_candidate(root: Path, current: str, latest: dict[str, Any]) -> dict[str, Any] | None:
+    """이 PC 가 공지 전 후보를 쓰는 중이면 그 후보(U1, 2026-10-03). get_status 와 일반 start_update 가 같이 쓴다.
+
+    공개본보다 새 날짜 판일 때만 후보를 읽는다(팀원 PC 는 보통 공개본보다 옛 판이라 NAS 를 더 안 읽는다).
+    후보가 없거나 다른 판이면 None — 취소·교체된 후보는 지금처럼 공개본이 대상이다(되돌리기 가능).
+    후보를 못 읽으면 오류 — 취소로 보고 공개본으로 내려가지 않게.
+    """
+    if not _newer_dated(current, latest["version"]):
+        return None
+    try:
+        cand = fetch_candidate(root)
+    except ReleaseFileMissing:
+        return None
+    except ReleaseUpdateError as exc:
+        raise ReleaseUpdateError("공지 전 후보 상태를 확인할 수 없습니다 — 잠시 뒤 다시 확인하세요") from exc
+    if cand["version"] != current or cand["sha256"] == latest["sha256"]:
+        return None
+    return cand
+
+
+def _candidate_verdict(root: Path, cand: dict[str, Any]) -> tuple[str, str]:
+    """후보를 쓰는 PC 의 판정 — 건강하면 up_to_date, 손상이면 check_failed(성공으로 보이지 않게, Codex).
+    건강 검사는 Python·CLI 를 실행해 수 초 걸린다 — get_status 는 상태 잠금 밖에서 부른다."""
+    healthy, reason = _installation_health(root, cand["higgsfield_cli_version"])
+    if healthy:
+        return "up_to_date", f"공지 전 후보 v{cand['version']} 를 이 PC 에서 쓰는 중입니다 — [공지]하면 팀에 배포됩니다."
+    return "check_failed", (
+        f"공지 전 후보 v{cand['version']} 설치 상태 이상: {reason} — "
+        "관리자 창 업데이트 탭의 [이 PC에 다시 설치]로 고치세요."
+    )
+
+
+def _candidate_status(
+    root: Path, cand: dict[str, Any], current: str, verdict: tuple[str, str] | None = None,
+) -> dict[str, Any]:
+    """후보를 쓰는 PC 의 상태 기록(verdict 를 미리 구했으면 그대로 쓴다)."""
+    state, message = verdict or _candidate_verdict(root, cand)
+    return write_state(
+        state, message, root=root, current_version=current, latest_version=cand["version"], candidate=True,
+    ) | {"install_mode": "release", "can_update": False}
 
 
 def release_overview(root: Path = APP_ROOT) -> dict[str, Any]:
@@ -627,9 +697,7 @@ def promote_candidate(expected: dict[str, Any], root: Path = APP_ROOT) -> dict[s
         raise
     except ReleaseUpdateError as exc:
         raise ReleasePromoteError(str(exc)) from exc
-    want = (str(expected.get("version")), str(expected.get("file")), int(expected.get("size") or 0),
-            str(expected.get("sha256") or "").lower())
-    if (cand["version"], cand["file"], cand["size"], cand["sha256"]) != want:
+    if _release_key(cand) != _release_key(expected):
         raise ReleasePromoteError("후보가 바뀌었습니다 — 업데이트 탭을 다시 열어 확인하세요")
     pub_raw = _read_manifest_bytes(published_path)
     if pub_raw is not None:
@@ -763,7 +831,7 @@ def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any
         }
 
     if not refresh and stored:
-        if stored.get("state") == "up_to_date":
+        if stored.get("state") == "up_to_date" and not stored.get("candidate"):
             healthy, reason = _installation_health(root)
             if not healthy:
                 latest_version = str(stored.get("latest_version") or _read_version(root))
@@ -818,6 +886,28 @@ def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any
             "latest_version": latest["version"],
             "can_update": _stored_can_update(stored),
         }
+    try:
+        cand = _installed_candidate(root, current, latest)
+    except ReleaseUpdateError as exc:
+        return {
+            **base, "state": "check_failed", "message": str(exc), "current_version": current,
+            "latest_version": latest["version"], "updated_at": _utc_now(),
+        }
+    if cand is not None:
+        # 느린 건강 검사는 잠금 밖에서 먼저 — 잠금 안에서는 다시 읽은 최신 상태를 지키고 기록만 한다(Codex 코드 리뷰).
+        verdict = _candidate_verdict(root, cand)
+
+        def _keep_failed_or_candidate(stored_now: dict[str, Any]) -> dict[str, Any]:
+            # 후보·건강을 읽는 사이 다른 설치 시도가 남긴 실패는 덮지 않는다(Codex U1 v2 B). 진행 중·복구 필요는
+            # _commit_status 가 이미 지킨다.
+            if stored_now.get("state") == "failed":
+                return {**base, **stored_now, "install_mode": "release", "current_version": current,
+                        "can_update": _stored_can_update(stored_now)}
+            return _candidate_status(root, cand, current, verdict)
+
+        return _commit_status(
+            root, {**base, "current_version": current, "latest_version": cand["version"]}, _keep_failed_or_candidate,
+        )
     if current == latest["version"]:
         healthy, reason = _installation_health(root, latest["higgsfield_cli_version"])
         if not healthy:
@@ -883,15 +973,25 @@ def start_update(
     ready_url: str | None = None,
     root: Path = APP_ROOT,
     force: bool = False,
+    manifest: str = "latest.json",
+    expected_release: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """업데이트를 단일 실행으로 시작하고 즉시 상태를 반환한다.
 
     유료 작업 경합을 좁히기 위해 활동 확인 → checking 상태 기록 → latest 확인 → 활동 재확인을
     한 프로세스 락 안에서 수행한다. 생성 라우터도 checking 이후 신규 실행을 거부한다.
+
+    manifest="candidate.json" 은 관리자 후보 선설치(U1) — 서버가 확인한 expected_release 와 한 번 읽은 후보가
+    같아야 하고, 워커에는 그 sha·version 을 고정값으로 넘긴다. 공개 표지·공지는 건드리지 않는다.
     """
     with _START_LOCK:
         if install_mode(root) != "release":
             raise ReleaseUpdateError("작업자 릴리스 설치본에서만 자동 업데이트할 수 있습니다")
+        if manifest not in _RELEASE_MANIFESTS:
+            raise ReleaseUpdateError("지원하지 않는 릴리스 표지입니다")
+        candidate_mode = manifest == "candidate.json"
+        if candidate_mode and not expected_release:
+            raise ReleaseUpdateError("서버가 확인한 후보 정보가 필요합니다")
         kind, stored = _load_state(root)
         # 읽을 수 없는 상태 파일은 **강제로도 뚫지 않는다**. 쓰기 도중인 파일일 수 있고,
         # 그 위에 덮어쓰면 살아 있는 워커의 상태를 파괴한다(test_release_update_state_gate 계약).
@@ -915,6 +1015,7 @@ def start_update(
         # 강제는 복구와 같은 취급 — 버전이 같고 얕은 검사를 통과해도 워커를 돌려 다시 설치한다.
         # 사람이 강제를 누르는 상황이 바로 '버전은 맞는데 설치가 망가진' 경우다.
         needs_recovery = stored.get("recovery") == "recovery_required" or force
+        reinstall = force  # 워커에 '같은 버전이어도 다시 설치'를 알릴지
         try:
             write_state("checking", "최신 릴리스를 다시 확인하는 중…", root=root, current_version=current)
         except OSError as exc:
@@ -924,16 +1025,42 @@ def start_update(
         try:
             latest = fetch_latest(root)
             latest_version = latest["version"]
-            if current == latest["version"] and not needs_recovery:
-                healthy, _reason = _installation_health(root, latest["higgsfield_cli_version"])
+            target = latest
+            if candidate_mode:
+                # 이 한 번 읽은 후보로 판정하고 워커 고정값도 정한다(두 번 읽는 사이 경합 없음).
+                target = fetch_candidate(root)
+                if _release_key(target) != _release_key(expected_release or {}):
+                    raise ReleaseUpdateError("후보가 바뀌었습니다 — 업데이트 탭을 다시 열어 확인하세요")
+                if not _newer_dated(target["version"], latest["version"]):
+                    raise ReleaseUpdateError("공개본보다 새 날짜 판인 후보만 이 PC 에 먼저 설치할 수 있습니다")
+                latest_version = target["version"]
+                # 이미 그 후보면 '다시 설치'(손상 복구) — 같은 버전이어도 워커가 다시 깐다(Codex U1 v2 5-라).
+                reinstall = reinstall or current == target["version"]
+                needs_recovery = needs_recovery or reinstall
+            elif not needs_recovery:
+                # 공지 전 후보를 쓰는 PC 의 일반 업데이트는 공개본으로 내려가지 않는다(Codex U1).
+                # 강제·복구 필요는 지금처럼 공개본 설치 — 강제 = 명시적 '공개본으로 되돌리기'.
+                try:
+                    cand = _installed_candidate(root, current, latest)
+                except ReleaseUpdateError as exc:
+                    write_state("check_failed", str(exc), root=root, current_version=current, latest_version=latest_version)
+                    raise _StatusRecorded(str(exc)) from exc
+                if cand is not None:
+                    status = _candidate_status(root, cand, current)
+                    if status["state"] != "up_to_date":  # 손상 후보 — 성공처럼 보이면 안 된다
+                        raise _StatusRecorded(status["message"])
+                    return status
+            if current == target["version"] and not needs_recovery:
+                healthy, _reason = _installation_health(root, target["higgsfield_cli_version"])
                 if healthy:
                     try:
                         return write_state(
                             "up_to_date",
-                            "이미 최신 버전입니다.",
+                            "이 PC 에 이미 이 후보가 설치돼 있습니다." if candidate_mode else "이미 최신 버전입니다.",
                             root=root,
                             current_version=current,
-                            latest_version=latest["version"],
+                            latest_version=target["version"],
+                            candidate=candidate_mode,
                         ) | {"install_mode": "release", "can_update": False}
                     except OSError as exc:
                         raise ReleaseUpdateError(_STATE_WRITE_FAILED_MESSAGE) from exc
@@ -946,6 +1073,13 @@ def start_update(
             # 현재 백엔드는 guarded MV_agent의 내부 세션이라 이 표식이 1이다. 새 런처가
             # 그대로 물려받으면 Job Object 보호를 건너뛰므로, 재실행은 반드시 바깥 진입부터 시작한다.
             env.pop("MVHUB_SESSION_GUARDED", None)
+            # 후보 고정값은 매번 새로 정한다 — 부모 환경에 남은 값이 일반 업데이트로 새지 않게(Codex U1).
+            env.pop("MVHUB_UPDATE_EXPECT_SHA256", None)
+            env.pop("MVHUB_UPDATE_EXPECT_VERSION", None)
+            env["MVHUB_UPDATE_MANIFEST"] = manifest
+            if candidate_mode:
+                env["MVHUB_UPDATE_EXPECT_SHA256"] = target["sha256"]
+                env["MVHUB_UPDATE_EXPECT_VERSION"] = target["version"]
             env.update(
                 {
                     "MVHUB_NO_PAUSE": "1",
@@ -955,7 +1089,7 @@ def start_update(
                     "MVHUB_UPDATE_READY_URL": ready_url or f"http://127.0.0.1:{PORT}/api/ready",
                     # 워커도 강제를 알아야 한다 — 모르면 버전이 같을 때 설치를 건너뛰어
                     # '강제 업데이트'가 아무 일도 하지 않는다(Codex 지적, 2026-09-28).
-                    "MVHUB_UPDATE_FORCE": "1" if force else "0",
+                    "MVHUB_UPDATE_FORCE": "1" if reinstall else "0",
                 }
             )
             try:
@@ -964,7 +1098,7 @@ def start_update(
                     "업데이트 실행기를 준비했습니다. 잠시 후 프로그램이 다시 시작됩니다.",
                     root=root,
                     current_version=current,
-                    latest_version=latest["version"],
+                    latest_version=target["version"],
                 )
             except OSError as exc:
                 raise ReleaseUpdateError(_STATE_WRITE_FAILED_MESSAGE) from exc
@@ -988,6 +1122,8 @@ def start_update(
             except OSError:
                 _log.warning("Update state: busy status write failed")
             raise
+        except _StatusRecorded:
+            raise  # 상태는 이미 기록했다(check_failed 등) — failed 로 덮지 않는다
         except Exception as exc:
             message = str(exc) if isinstance(exc, ReleaseUpdateError) else "업데이트를 시작하지 못했습니다. 잠시 뒤 다시 시도하세요"
             try:

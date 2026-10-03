@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  FORCE_UPDATE_INSTALLS_PUBLIC,
   UPDATE_STAGES,
   UPDATE_WAIT_VERSION_KEY,
   getReleaseUpdateStatus,
@@ -239,7 +240,7 @@ export function UpdateProgressOverlay() {
         {done && confirmForce && (
           <div className="upd-confirm">
             <p className="upd-confirmtext">
-              진행 중인 작업을 확인하지 않고 프로그램을 종료한 뒤 처음부터 다시 설치합니다.
+              진행 중인 작업을 확인하지 않고 프로그램을 종료한 뒤 처음부터 다시 설치합니다. {FORCE_UPDATE_INSTALLS_PUBLIC}
               {blockers && <> 지금 {blockers}이 진행 중입니다.</>}
             </p>
             <div className="upd-actions">

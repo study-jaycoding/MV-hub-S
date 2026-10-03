@@ -95,6 +95,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# One-shot handoff from the hub (admin candidate pre-install, 2026-10-03): which release manifest
+# to read and what it must say. Read once, then removed from this process so the relaunched app
+# (and any later normal update) never inherits them.
+$ManifestName = [string]$env:MVHUB_UPDATE_MANIFEST
+$ExpectSha256 = ([string]$env:MVHUB_UPDATE_EXPECT_SHA256).Trim().ToLowerInvariant()
+$ExpectVersion = ([string]$env:MVHUB_UPDATE_EXPECT_VERSION).Trim()
+Remove-Item Env:MVHUB_UPDATE_MANIFEST, Env:MVHUB_UPDATE_EXPECT_SHA256, Env:MVHUB_UPDATE_EXPECT_VERSION -ErrorAction SilentlyContinue
+if (-not $ManifestName) { $ManifestName = "latest.json" }
+if ($ManifestName -ne "latest.json" -and $ManifestName -ne "candidate.json") {
+    throw "Unsupported release manifest: $ManifestName"
+}
+
 if (-not $TargetDir) {
     throw "TargetDir is required."
 }
@@ -462,6 +474,31 @@ function Get-ReleaseFile {
         }
         Copy-Item -LiteralPath $Src -Destination $Destination -Force
     }
+}
+
+function Read-ReleaseManifest {
+    # Reads $ManifestName (latest.json, or candidate.json for an admin pre-install) once and, when the
+    # hub pinned what it approved, refuses anything else. Runs before the same-version early return and
+    # before the app is stopped, so a candidate replaced after approval is never installed or skipped.
+    $ManifestPath = Join-Path $TempRoot $ManifestName
+    Get-ReleaseFile -Name $ManifestName -Destination $ManifestPath
+    $Manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $Manifest.version -or -not $Manifest.file -or -not $Manifest.sha256) {
+        throw "$ManifestName must contain version, file, and sha256."
+    }
+    $ReleaseFileName = [string]$Manifest.file
+    if ([IO.Path]::GetFileName($ReleaseFileName) -ne $ReleaseFileName -or
+        $ReleaseFileName.Contains("/") -or $ReleaseFileName.Contains("\")) {
+        throw "$ManifestName contains an unsafe release filename."
+    }
+    if (-not ([string]$Manifest.sha256 -match "^[0-9a-fA-F]{64}$")) {
+        throw "$ManifestName contains an invalid SHA256 value."
+    }
+    if (($ExpectSha256 -and ([string]$Manifest.sha256).ToLowerInvariant() -ne $ExpectSha256) -or
+        ($ExpectVersion -and [string]$Manifest.version -ne $ExpectVersion)) {
+        throw "Release candidate changed after approval. Open the admin update tab again."
+    }
+    return $Manifest
 }
 
 function Get-Sha256Hex {
@@ -1158,20 +1195,7 @@ try {
     Write-Host "      Source: $BaseUrl"
     Write-UpdateState -State "checking" -Message "Checking the release server..." -Percent 5
 
-    $LatestPath = Join-Path $TempRoot "latest.json"
-    Get-ReleaseFile -Name "latest.json" -Destination $LatestPath
-    $Latest = Get-Content -LiteralPath $LatestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if (-not $Latest.version -or -not $Latest.file -or -not $Latest.sha256) {
-        throw "latest.json must contain version, file, and sha256."
-    }
-    $ReleaseFileName = [string]$Latest.file
-    if ([IO.Path]::GetFileName($ReleaseFileName) -ne $ReleaseFileName -or
-        $ReleaseFileName.Contains("/") -or $ReleaseFileName.Contains("\")) {
-        throw "latest.json contains an unsafe release filename."
-    }
-    if (-not ([string]$Latest.sha256 -match "^[0-9a-fA-F]{64}$")) {
-        throw "latest.json contains an invalid SHA256 value."
-    }
+    $Latest = Read-ReleaseManifest
     $LatestVersion = [string]$Latest.version
 
     $VersionPath = Join-Path $TargetDir "VERSION.txt"

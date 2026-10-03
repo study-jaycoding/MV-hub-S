@@ -160,6 +160,7 @@ describe("덮개", () => {
     // 첫 누름은 묻기만 한다 — 강제는 진행 중인 작업을 확인하지 않고 앱을 종료한다.
     act(() => forceBtn!.click());
     expect(text()).toContain("처음부터 다시 설치");
+    expect(text()).toContain("현재 공개된 판을 설치합니다"); // 먼저 깐 후보보다 옛 판으로 돌아갈 수 있음(2026-10-03)
     expect(mocks.jsonFetch).not.toHaveBeenCalled();
     await act(async () => {
       (document.querySelector(".upd-force") as HTMLButtonElement).click();

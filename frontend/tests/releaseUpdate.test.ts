@@ -1,7 +1,12 @@
+// @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  UPDATE_WAIT_VERSION_KEY,
   getReleaseUpdateStatus,
   isReleaseUpdateRunning,
+  onReleaseUpdateStarted,
+  releaseUpdateMessage,
+  startCandidateUpdate,
   startReleaseUpdate,
   updateBlockersText,
   type ReleaseUpdateStatus,
@@ -56,6 +61,39 @@ describe("작업자 릴리스 업데이트 API", () => {
         body: JSON.stringify({ confirm: true, force: false }),
       }),
     );
+  });
+
+  it("관리자 후보 선설치는 전용 주소로 보내고, 일반 시작과 같이 대기 버전 저장·시작 알림을 한다(2026-10-03)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers(),
+      json: vi.fn().mockResolvedValue({ ...status, state: "starting", accepted: true, latest_version: "2026.10.03-0958" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const started = vi.fn();
+    const stop = onReleaseUpdateStarted(started);
+    try {
+      sessionStorage.removeItem(UPDATE_WAIT_VERSION_KEY);
+      await startCandidateUpdate("n1", "b".repeat(64));
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/release-update/start-candidate",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({ "X-MVHub-Update": "1" }),
+          body: JSON.stringify({ notice_id: "n1", sha256: "b".repeat(64), confirm: true }),
+        }),
+      );
+      expect(sessionStorage.getItem(UPDATE_WAIT_VERSION_KEY)).toBe("2026.10.03-0958");
+      expect(started).toHaveBeenCalledTimes(1);
+    } finally {
+      stop();
+    }
+  });
+
+  it("후보를 쓰는 PC 의 상태는 '최신 버전입니다' 대신 서버 문구를 그대로 보인다", () => {
+    const message = "공지 전 후보 v2026.10.03-0958 를 이 PC 에서 쓰는 중입니다 — [공지]하면 팀에 배포됩니다.";
+    expect(releaseUpdateMessage({ ...status, state: "up_to_date", candidate: true, message })).toBe(message);
+    expect(releaseUpdateMessage({ ...status, state: "up_to_date", message: "x" })).toBe("최신 버전입니다.");
   });
 
   it("강제 시작은 force=true 를 싣는다 — 진행 중 검사 건너뛰기(오류 잔여 카드 우회)", async () => {

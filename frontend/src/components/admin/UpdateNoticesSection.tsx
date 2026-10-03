@@ -4,7 +4,14 @@
 // 상태와 API 호출은 이 안에만 둔다 — 탭을 열 때마다(마운트) 새로 읽는다.
 import { useEffect, useState } from "react";
 import { HttpError } from "../../lib/http";
-import { getLatestReleaseMetadata, promoteRelease, type LatestReleaseMetadata } from "../../lib/releaseUpdate";
+import {
+  getLatestReleaseMetadata,
+  getReleaseUpdateStatus,
+  promoteRelease,
+  startCandidateUpdate,
+  type LatestReleaseMetadata,
+  type ReleaseUpdateStatus,
+} from "../../lib/releaseUpdate";
 import { updateNoticeApi, type UpdateNotice } from "../../lib/updateNotices";
 
 const errText = (error: unknown) =>
@@ -17,8 +24,10 @@ export function UpdateNoticesSection() {
   const [updateNotices, setUpdateNotices] = useState<UpdateNotice[]>([]);
   const [updateNoticeBusy, setUpdateNoticeBusy] = useState("");
   const [updateNoticeMsg, setUpdateNoticeMsg] = useState("");
+  const [thisPc, setThisPc] = useState<ReleaseUpdateStatus | null>(null); // 이 PC 판 — 후보 먼저 설치 단추용
 
   const loadUpdateManagement = async () => {
+    void getReleaseUpdateStatus().then(setThisPc, () => setThisPc(null));
     const [items, latest] = await Promise.all([
       updateNoticeApi.adminList().catch((error) => {
         setUpdateNoticeMsg("목록을 읽지 못했습니다: " + errText(error));
@@ -105,6 +114,23 @@ export function UpdateNoticesSection() {
       }
     }, "공지 실패: ");
 
+  // 관리자 후보 선설치(2026-10-03) — 등록된 공지 전 후보를 이 PC 에만 먼저 설치. 팀 배포는 [공지]·[배포 반영] 그대로.
+  const thisPcHas = (item: UpdateNotice) => thisPc?.current_version === item.version;
+  const canPreinstall = (item: UpdateNotice) =>
+    isCandidate(item) && latestRelease?.pending === true && !candidateBlocked && thisPc?.install_mode === "release";
+  const preinstall = (item: UpdateNotice) => {
+    const again = thisPcHas(item);
+    if (!window.confirm(
+      `v${item.version} 을(를) 이 PC 에만 ${again ? "다시" : "먼저"} 설치합니다.\n`
+      + "팀 배포는 [공지]·[배포 반영] 절차를 따릅니다(이 설치로 팀원 PC 는 바뀌지 않습니다).\n"
+      + "설치 중 프로그램이 다시 시작됩니다. 계속할까요?",
+    )) return;
+    void run(`preinstall:${item.id}`, async () => {
+      await startCandidateUpdate(item.id, item.sha256 || "");
+      return `v${item.version} 을(를) 이 PC 에 설치하기 시작했습니다 — 프로그램이 다시 시작됩니다.`;
+    }, "이 PC 설치 실패: ");
+  };
+
   const deployUpdate = (item: UpdateNotice) =>
     run(`deploy:${item.id}`, () => promote(item), "배포 반영 실패: ");
 
@@ -130,7 +156,7 @@ export function UpdateNoticesSection() {
       <h4>업데이트 관리</h4>
       <div className="admin-note-sub">
         릴리스 스크립트는 NAS 에 <b>후보</b>로만 올립니다. <b>[공지]</b>를 눌러야 팀원 PC 에 업데이트가 보이고
-        설치됩니다(관리자 PC 포함). <b>[재공지]</b>는 알림만 다시, <b>[해제]</b>는 이 목록과 팀원 알림에서만
+        설치됩니다. 목록에 등록한 후보는 <b>[이 PC에 먼저 설치]</b>로 이 관리자 PC 에서 먼저 확인할 수 있습니다. <b>[재공지]</b>는 알림만 다시, <b>[해제]</b>는 이 목록과 팀원 알림에서만
         지웁니다(설치 파일·배포된 판은 그대로). 고정한 항목은 새 업데이트가 생겨도 남습니다(최대 4개).
       </div>
       {releaseError && <div className="admin-update-warn">릴리스 폴더를 읽지 못했습니다 — {releaseError}</div>}
@@ -187,6 +213,7 @@ export function UpdateNoticesSection() {
                     : waiting ? <span className="admin-update-tag warn">공지됨 · 아직 배포 안 됨</span>
                     : candidate && item.announcement_revision === 0 ? <span className="admin-update-tag cand">후보 · 공지 전</span>
                     : null}
+                  {candidate && !isLive(item) && thisPcHas(item) && <span className="admin-update-tag cand">이 PC 설치됨</span>}
                 </b>
                 <small>{item.file}</small>
                 {waiting && (
@@ -196,6 +223,16 @@ export function UpdateNoticesSection() {
                 )}
               </span>
               <span className="admin-update-actions">
+                {canPreinstall(item) && (
+                  <button
+                    className="settings-action"
+                    disabled={!!updateNoticeBusy}
+                    onClick={() => preinstall(item)}
+                    title="팀원에게 알리기 전에 이 PC 에서 먼저 확인합니다(팀 배포는 바뀌지 않음)"
+                  >
+                    {updateNoticeBusy === `preinstall:${item.id}` ? "설치 시작 중…" : thisPcHas(item) ? "이 PC에 다시 설치" : "이 PC에 먼저 설치"}
+                  </button>
+                )}
                 {waiting ? (
                   <button
                     className="settings-action"

@@ -32,6 +32,8 @@ export interface ReleaseUpdateStatus {
   recovery?: string;
   // 관리자 PC 에만 — NAS 에 공지 전 후보가 있으면 그 버전(B안). 설치·버튼과는 무관한 안내 한 줄.
   candidate_version?: string;
+  // 이 PC 가 공지 전 후보를 쓰는 중(관리자 선설치, 2026-10-03) — 상태 문구는 서버 문구를 그대로 보인다.
+  candidate?: boolean;
 }
 
 export interface LatestReleaseMetadata {
@@ -71,6 +73,7 @@ const STATE_LABEL_KO: Partial<Record<ReleaseUpdateState, string>> = {
 // 상태 문구 — 진행 상태는 한글 라벨(+퍼센트), 실패는 한글 접두 + 원문(영어 디테일 보존).
 export function releaseUpdateMessage(status: ReleaseUpdateStatus | null): string {
   if (!status) return "";
+  if (status.candidate && status.message) return status.message; // 공지 전 후보 사용 중·손상 안내
   const label = STATE_LABEL_KO[status.state];
   if (label) {
     const pct = typeof status.percent === "number" ? ` (${Math.min(100, status.percent)}%)` : "";
@@ -143,19 +146,35 @@ export function startReleaseUpdate(force = false): Promise<ReleaseUpdateStatus> 
     method: "POST",
     headers: { "X-MVHub-Update": "1" },
     body: jsonBody({ confirm: true, force }),
-  }).then((status) => {
-    // 대기 표시 — 업데이트가 앱을 재시작시키므로, 새 화면이 떠도 덮개가 이어지게 남긴다.
-    try {
-      if (status.latest_version) {
-        window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, status.latest_version);
-      }
-    } catch {
-      // 사생활 보호 창 등 — 없어도 같은 화면에서는 시작 신호로 동작한다.
-    }
-    startListeners.forEach((fn) => fn());
-    return status;
-  });
+  }).then(afterUpdateStarted);
 }
+
+/** 관리자 창 업데이트 탭 — '목록에 등록'한 후보를 [공지] 전에 이 PC 에만 먼저 설치한다(2026-10-03).
+ * 등록·Admin 은 공유 서버가 판정하고, 팀원 PC·공개 표지는 바뀌지 않는다. */
+export function startCandidateUpdate(noticeId: string, sha256: string): Promise<ReleaseUpdateStatus> {
+  return jsonFetch<ReleaseUpdateStatus>("/api/release-update/start-candidate", {
+    method: "POST",
+    headers: { "X-MVHub-Update": "1" },
+    body: jsonBody({ notice_id: noticeId, sha256, confirm: true }),
+  }).then(afterUpdateStarted);
+}
+
+function afterUpdateStarted(status: ReleaseUpdateStatus): ReleaseUpdateStatus {
+  // 대기 표시 — 업데이트가 앱을 재시작시키므로, 새 화면이 떠도 덮개가 이어지게 남긴다.
+  try {
+    if (status.latest_version) {
+      window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, status.latest_version);
+    }
+  } catch {
+    // 사생활 보호 창 등 — 없어도 같은 화면에서는 시작 신호로 동작한다.
+  }
+  startListeners.forEach((fn) => fn());
+  return status;
+}
+
+/** 강제 업데이트 확인창에 덧붙이는 안내 — 강제는 공개된 판을 다시 깐다(관리자가 먼저 깐 후보보다 옛 판일 수 있다). */
+export const FORCE_UPDATE_INSTALLS_PUBLIC =
+  "현재 공개된 판을 설치합니다. 이 PC 에 먼저 설치한 후보가 있으면 그보다 이전 버전으로 돌아갈 수 있습니다.";
 
 /** 진행 덮개의 단계 목록 — 실행기가 지나가는 순서 그대로. */
 export const UPDATE_STAGES: { key: ReleaseUpdateState; label: string }[] = [
