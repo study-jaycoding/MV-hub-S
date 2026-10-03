@@ -10,7 +10,7 @@
 - **쓰는 모듈** = 리터럴 안의 `INSERT INTO`·`REPLACE INTO`·`UPDATE`·`DELETE FROM <테이블>`, **읽는 모듈** = `FROM`·`JOIN <테이블>`. 테이블 이름 자체를 `{}` 로 끼워 조립한 SQL 과 `FROM a, b` 의 둘째 이름은 못 잡는다 — **빈칸이 '아무도 안 쓴다'는 뜻은 아니다.** 경로는 `backend/app/` 을 뗀 것이다.
 - 컬럼은 싣지 않는다. 정의 파일의 `CREATE TABLE` 과 그 뒤 `ALTER TABLE … ADD COLUMN` 마이그레이션을 본다.
 
-테이블 75개.
+테이블 77개.
 
 | 테이블 | DB | 정의 파일 | 쓰는 모듈 | 읽는 모듈 |
 | --- | --- | --- | --- | --- |
@@ -53,8 +53,10 @@
 | `manage_schema_state` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/workspace_console.py` | `repo/console_guard.py` `repo/manage_schema.py` `repo/workspace_console.py` |
 | `media_preservation` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/media_preservation.py` `repo/share_state_intents.py` | `repo/generation_rows.py` `repo/media_preservation.py` |
 | `meta` | agent_state.db (작업자 PC) | `agent_push.py` | `agent_push.py` | `agent_push.py` |
-| `project` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/projects.py` | `db_migrations.py` `repo/console_guard.py` `repo/facets.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/identity.py` `repo/manage.py` `repo/manage_analytics.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_tasks.py` `repo/manage_telemetry.py` `repo/project_membership.py` `repo/projects.py` `repo/trash.py` `repo/workspace_assignments.py` `repo/workspace_console.py` |
-| `project_folder_link` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` `routers/assets.py` |
+| `nas_result_file` | content DB | `backend/schema.sql` | `repo/nas_results.py` | `repo/nas_results.py` |
+| `nas_result_scan` | content DB | `backend/schema.sql` | `repo/nas_results.py` | `repo/nas_results.py` |
+| `project` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/projects.py` | `db_migrations.py` `repo/console_guard.py` `repo/facets.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/identity.py` `repo/manage.py` `repo/manage_analytics.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_tasks.py` `repo/manage_telemetry.py` `repo/nas_results.py` `repo/project_membership.py` `repo/projects.py` `repo/trash.py` `repo/workspace_assignments.py` `repo/workspace_console.py` |
+| `project_folder_link` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` `repo/nas_results.py` `routers/assets.py` |
 | `project_member` | content DB | `backend/schema.sql` | `repo/identity.py` `repo/project_membership.py` `repo/projects.py` | `db_migrations.py` `deps.py` `repo/identity.py` `repo/manage_member_table.py` `repo/projects.py` |
 | `project_member_removed` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/project_membership.py` | `repo/identity.py` `repo/project_membership.py` |
 | `project_planning` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_tasks.py` `repo/workspace_console.py` |
@@ -71,7 +73,7 @@
 | `task_assignment` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/manage_tasks.py` | `repo/manage_tasks.py` |
 | `task_generation` | content DB | `repo/manage_schema.py` | `repo/manage.py` `repo/manage_tasks.py` | `repo/manage_schema.py` `repo/manage_task_activity.py` `repo/manage_tasks.py` |
 | `task_planned_creator` | content DB | `repo/manage_schema.py` | — | — |
-| `team_generation_fact` | manage_hub.db | `manage_db.py` | `manage_db.py` | `manage_db.py` `repo/manage_quota.py` |
+| `team_generation_fact` | manage_hub.db | `manage_db.py` | `manage_db.py` | `manage_db.py` `repo/manage_quota.py` `services/nas_results.py` |
 | `telemetry_delivery_state` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/manage_telemetry.py` | `repo/manage_telemetry.py` |
 | `telemetry_outbox` | content DB | `repo/manage_schema.py` | `repo/manage_telemetry.py` | `repo/manage_schema.py` `repo/manage_telemetry.py` |
 | `tracked_job` | agent_state.db (작업자 PC) | `agent_push.py` | `agent_push.py` | `agent_push.py` |

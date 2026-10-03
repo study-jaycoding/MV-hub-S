@@ -50,7 +50,7 @@ updated: 2026-10-02
 | 로그인/가입/계정 승인 | `components/LoginScreen.tsx`(서버 본체 AUTH 로그인), `components/ServerLoginScreen.tsx`(로컬 허브의 팀 서버 로그인 게이트·서버 주소 변경), `lib/useHubAuth.ts` | `routers/auth.py`, `services/auth.py`, `routers/publish.py`(`/api/shared-server/*`), `services/shared_connection.py` | 로컬 허브는 팀 서버 세션이 없으면 라이브러리 대신 게이트를 띄운다 |
 | 창을 Esc/✕ 로 닫는 규칙 | `lib/useEscapeClose.ts`(공용 — 리스너 1회 등록+콜백 ref), `lib/useAppNavigation.ts`(관리자 창·미리보기는 브라우저 history 로 여닫음) | — | 코멘트 패널·Host 콘솔은 Esc 로 안 닫힌다(설계). 회귀 시험 `frontend/tests/escapeCloseNesting.test.tsx` |
 | Assets 파일 탐색기(마운트·트리·업로드) | `components/AssetsView.tsx`, `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/asset_tree.py`, `services/resolve_project_library.py` | `@davinci` 루트는 Resolve 프로젝트 전용 화면 |
-| 에셋 대장(화면 이름 '에셋 리스트' — NAS 그림 번호·이름 변경/이동 추적·레퍼런스 찾기 가속·생성 기록의 쓴 판·정한 시간 자동 훑기) | `lib/sceneAssetRelink.ts`, `components/admin/AssetRegistryTab.tsx` | `repo/asset_registry.py`(판정), `services/asset_registry.py`(관리자)·`asset_registry_scan.py`(훑기 자식), `routers/asset_registry.py`, `routers/assets.py`(locate '대장 먼저') | 설계·운영 [ASSET_REGISTRY.md](ASSET_REGISTRY.md). 기본 꺼짐(서버에서 켠다) |
+| 에셋 대장(화면 이름 '에셋 리스트' — NAS 그림 번호·이름 변경/이동 추적·레퍼런스 찾기 가속·생성 기록의 쓴 판·정한 시간 자동 훑기) | `lib/sceneAssetRelink.ts`, `components/admin/AssetRegistryTab.tsx` | `repo/asset_registry.py`(판정), `services/asset_registry.py`(관리자)·`asset_registry_scan.py`(훑기 자식), `routers/asset_registry.py`, `routers/assets.py`(locate '대장 먼저') · 결과물 훑기 `repo/nas_results.py`·`services/nas_results.py`(판정) | 설계·운영 [ASSET_REGISTRY.md](ASSET_REGISTRY.md) · 결과물 훑기 [NAS_RESULTS.md](NAS_RESULTS.md). 기본 꺼짐(서버에서 켠다) |
 | 프로젝트 CRUD·멤버·역할 | `components/manage/ProjectManagerPanel.tsx`(관리자 창 '프로젝트' 탭 — 2026-10-02 대시보드 단추·오버레이 없앰) | `routers/projects.py`, `repo/projects.py` | |
 | 작업(Task) 칸반/테이블/캘린더 | `components/manage/WorkBoard.tsx` | `routers/manage.py`, `repo/manage_tasks.py` | 소요시간 표기는 `lib/format.ts` 의 `fmtElapsed` 하나다(`1d2h3m4s`, 초를 버리지 않음, 하루 이상은 `1d1h` — Jay 확정 2026-09-18). PM 창 5곳과 정보 팝업(`InfoPopup`)의 '생성 시간'이 모두 이 함수를 쓴다. 새 뷰도 이 함수를 쓴다 |
 | 크레딧 풀·그룹 한도 설정 | `components/manage/CreditPoolSection.tsx`, `CreditPlanFields.tsx` | `routers/manage.py`(`/api/manage/credit-plan*` — 권한·API 계약), `repo/manage_credit_plan.py` | |
@@ -158,7 +158,7 @@ updated: 2026-10-02
 |---|---|---|---|
 | `assets.py`(1372줄) | `GET /api/assets/{tree\|file\|thumb}`·`/resolve-library/projects`·`POST /resolve-library/{connect-dialog\|open}` 외 (24) | 마운트·폴더 트리·파일/썸네일 서빙·업로드·캡처·zip·탐색기·Resolve 프로젝트 열기 | 0곳 |
 | `assets_metadata.py`(313줄) | `GET /api/assets/meta`·`PUT /tags[/batch]`·`/color[s/batch]`·`POST /comments` (11, `assets.py`에 마운트) | Assets 의 개인 태그·색·코멘트(계정 DB) 와 팀 코멘트(서버 DB) 경계 | 9곳 |
-| `asset_registry.py`(약 340줄) | `POST /api/asset-registry/{lookup\|scan\|mode\|schedule\|schedule/claim}`·`GET /status`·`/usage/{id}` + 도우미 `helper/{projects\|lease\|renew\|release\|result}` (12) | 에셋 대장 — **공유 서버 권위**(로컬 전용 경로 아님, 데이터 프록시가 서버로 넘김). 조회는 가시 프로젝트만, 훑기·상태는 관리자. 레퍼런스 찾기가 쓰는 `lookup_for_request`(위임 모드면 서버, 아니면 자기 DB). 도우미 PC 결과는 엄격 검증 후 기존 `_apply` 로(§10). 훑는 곳(서버/로컬)은 `/mode` 로, 자동 훑기 시간은 `/schedule` 로 서버 DB 에(`app_setting`). 로컬 모드 회차는 관리자 PC 가 `/schedule/claim`(회차당 한 PC, §11). 설계 [ASSET_REGISTRY.md](ASSET_REGISTRY.md) | 1곳 |
+| `asset_registry.py`(약 340줄) | `POST /api/asset-registry/{lookup\|scan\|mode\|schedule\|schedule/claim}`·`GET /status`·`/usage/{id}` + 도우미 `helper/{projects\|lease\|renew\|release\|result\|results}` (13 — `results` = 결과물 스냅샷, [NAS_RESULTS.md](NAS_RESULTS.md)) | 에셋 대장 — **공유 서버 권위**(로컬 전용 경로 아님, 데이터 프록시가 서버로 넘김). 조회는 가시 프로젝트만, 훑기·상태는 관리자. 레퍼런스 찾기가 쓰는 `lookup_for_request`(위임 모드면 서버, 아니면 자기 DB). 도우미 PC 결과는 엄격 검증 후 기존 `_apply` 로(§10). 훑는 곳(서버/로컬)은 `/mode` 로, 자동 훑기 시간은 `/schedule` 로 서버 DB 에(`app_setting`). 로컬 모드 회차는 관리자 PC 가 `/schedule/claim`(회차당 한 PC, §11). 설계 [ASSET_REGISTRY.md](ASSET_REGISTRY.md) | 1곳 |
 | `backup_replica.py`(약 390줄) | `GET\|PUT /api/admin/backup-replica`·`POST …/run` + 로컬 중계 `/api/shared-server/backup-replica[/run]` (6) | 서버 백업 복사 위치 — 공유 서버가 원천(`tools/backup_replica_target.txt`·예약 작업 `MVHub BackupCopy`). 저장은 매번 비밀번호·자식 프로세스 위치 확인(20초)·의도 감사 먼저, 지금 복사는 `schtasks /Run`. 복사기 코드는 공유 서버 런타임에서만 지연 로드(작업자 릴리스엔 tools 없음) | 0곳(서버 경로 2개는 위임, 로컬 중계는 `/api/shared-server/` 접두라 로컬) |
 | `comfy.py`(1654줄) | `POST /api/comfy/{run\|parse\|save-to-library}`·`GET /run_status\|/unresolved-runs` (11) | ComfyUI(로컬·Cloud) 연결·그래프 파싱·비동기 실행·미회수 결과 수거 | 0곳 |
 | `resolve_integration.py`(364줄) | `POST /api/resolve/transfers`·`GET /api/resolve/{status\|script\|locks}` (10) | DaVinci Resolve 스크립트 설치·연결 진단·전송 접수/재시도 | 1곳 |
@@ -201,6 +201,7 @@ updated: 2026-10-02
 | `facets.py` | 82 | 필터 사이드바 facet(컬러·태그·자동태그·워커) | `repo.get_facets` |
 | `sources.py` | 170 | 스포트라이트 @/# 피커의 소스 검색 | `repo.search_sources` |
 | `assets.py` | 756 | 분리창 파일 메타 + 에셋 코멘트·생성본 코멘트 두 스레드 전체 | `repo.get_asset_meta`·`list_generation_comments`(33개) |
+| `nas_results.py` | 66 | 결과물 훑기 스냅샷 — 지금 루트 읽기(트랜잭션 안)·통째 교체·지금 루트로 만든 스냅샷만 조회([NAS_RESULTS.md](NAS_RESULTS.md)) | `current_root`·`replace_snapshot`·`snapshot` |
 | `asset_registry.py` | 340 | 에셋 대장 표 읽기·쓰기 · 훑기 결과 반영(정체 판정 — 순수 함수 `plan_changes` → 한 트랜잭션 `apply_plan`) · 조회(가시 프로젝트 밖은 전부 '없음') · 레퍼런스 번호 연결(지문=판 확인, 이름·경로 정확 일치=가능 연결). **파사드 별표 export 안 함** — `from app.repo import asset_registry` | `plan_changes`·`apply_plan`·`lookup_*`·`attach_reference_registry`·`backfill_reference_links` |
 
 **생성 요청 원장·감사**
@@ -340,7 +341,8 @@ updated: 2026-10-02
 | `asset_watcher.py`(881줄) | watchdog 감시 → 캐시 무효화 + `assets_changed` WS 브로드캐스트 | `main`·`projects` |
 | `asset_registry.py`(약 330줄) | 에셋 대장 관리자(서버, 기본 꺼짐) — 훑기 자식 하나·시간 상한+30초 `taskkill /T /F`·완주 결과만 `BEGIN IMMEDIATE` 한 번에 반영·큰 파일 전용 실행·정한 시간 자동 훑기(서버 시계 2분 창·`consume_slot` 회차 표식·`request_scan(wait=False)`)·서버 종료 때 먼저 정리(끊긴 훑기는 기록을 안 덮음). health·ready 와 무관 | `main`(lifespan)·`routers/asset_registry` |
 | `asset_registry_helper.py`(약 230줄) | 에셋 대장 **도우미 PC 훑기**(로컬 허브) — 관리자 상속, 서버 자리(lease)로 프로젝트 전체를 감싸고 결과를 서버로 올림. 시작 때 토큰·주소 고정(정한 시간 훑기는 claim 문맥 `ctx` 그대로)·공유 주소(UNC) 대조 | `routers/registry_helper`·`main`(종료) |
-| `asset_registry_scan.py`(약 250줄) | 에셋 대장 훑기 **자식 프로세스 전용** — NAS 목록·지문만(DB 안 씀), 폴더 초당 20·지문 1 MiB 속도 상한, 파일 단위 미판정, 부모가 사라지면 스스로 멈춤 | `services/asset_registry`(`python -m`, §2.6) |
+| `asset_registry_scan.py`(약 410줄) | 에셋 대장 훑기 **자식 프로세스 전용** — NAS 목록·지문만(DB 안 씀), 폴더 초당 20·지문 1 MiB 속도 상한, 파일 단위 미판정, 부모가 사라지면 스스로 멈춤. 결과물 모드(render 포함·앞 64KiB·PNG 청크 걷기) | `services/asset_registry`(`python -m`, §2.6) |
+| `nas_results.py`(약 140줄) | NAS 결과 파일 ↔ 생성물 판정 — 단서별 후보 집합의 교집합(강 단서 장부 없음이면 보류), 전체 장부로 유일성. 화면·API 없음(토대) | 서버 분석 코드(아직 없음) |
 | `project_folders.py` | 프로젝트 Render 루트 상태·폴더 트리 TTL 캐시·탐색기 열기 · 같은 렌더 폴더를 쓰는 다른 프로젝트(`projects_sharing_root` — Z:·UNC 를 맞춰 견주고, 드라이브 대응을 모르면 같을 수 있다고 봐 미러 정리를 막는다) | `manage`·`asset_tree` |
 
 **ComfyUI**
