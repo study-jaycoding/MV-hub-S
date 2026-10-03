@@ -105,6 +105,7 @@ from .services.worker_backup import (
 )
 from .services.temp_sweeper import periodic_sweeper
 from .services.media_preservation import periodic_media_preservation
+from .services.result_probe import periodic_result_probe
 from .services.asset_registry import controller as asset_registry_controller
 from .services.asset_registry_helper import helper as asset_registry_helper
 from .services.share_state_reconciler import (
@@ -252,6 +253,7 @@ async def _application_lifespan(app: FastAPI):
     periodic_backup_started = False
     periodic_sweeper_started = False
     media_preservation_started = False
+    result_probe_started = False
     asset_registry_started = False
     share_state_reconciler_started = False
     agent_loop_bound = False
@@ -487,6 +489,13 @@ async def _application_lifespan(app: FastAPI):
                 registry_schedule_task = asyncio.create_task(
                     registry_helper.schedule_loop(), name="asset-registry-schedule-claim"
                 )
+            if MANAGE_ENABLED and not READ_ONLY:
+                # 결과 파일 부분 지문 수집(docs/RESULT_FINGERPRINT.md) — 텔레메트리 생산자다. 드레인 예약은
+                # 계층 경계 때문에 여기서 넘긴다(services→routers 금지).
+                from .routers._telemetry import schedule_telemetry_drain
+
+                periodic_result_probe.start(on_dirty=schedule_telemetry_drain)
+                result_probe_started = True
         else:
             periodic_backup.set_completed_callback(None)
             backup_callback_configured = True
@@ -633,6 +642,8 @@ async def _application_lifespan(app: FastAPI):
         # 이들이 끝나면 드레인을 다시 예약하고 루프 연결까지 되살리므로, 텔레메트리 회수 뒤에
         # 멈추면 방금 회수한 것이 되살아난다(코덱스 리뷰). 순서: 동기화 → 그 동기화가 시작시킨
         # 이력 보충 → 그다음이 텔레메트리 회수다.
+        if result_probe_started:
+            await _attempt_async_cleanup(periodic_result_probe.stop)
         if startup_complete or periodic_sync_started:
             await _attempt_async_cleanup(periodic_sync.stop)
         # 부팅 이력 감사도 **새 이력 보충 작업을 만드는 생산자**다. 아래 stop_history_imports 로 기존

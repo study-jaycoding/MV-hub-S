@@ -234,7 +234,8 @@ def _upsert_synced(
             # 성능: 이미 같은 asset 1개가 있으면 재기록 생략(주기 동기화의 '변동 없음' 케이스에서
             # 매번 DELETE+INSERT 하던 쓰기를 제거 → WAL 쓰기·fsync 급감). 다르면(또는 0/복수면) 교체.
             cur_assets = conn.execute(
-                "SELECT id, type, file_path, thumbnail_path, source_url FROM asset WHERE generation_id=?",
+                "SELECT id, type, file_path, thumbnail_path, source_url, result_bytes, result_head_sha, "
+                "result_probe_fail, result_fp_sent_to FROM asset WHERE generation_id=?",
                 (target_id,),
             ).fetchall()
             # 포스터 없이 들어온 재동기화(MCP 이력 보충 등)가 CLI 가 넣어둔 정적 포스터를 지우지 않게 —
@@ -254,11 +255,23 @@ def _upsert_synced(
                 and (cur_assets[0]["source_url"] or None) == (src or None)
             )
             if not same_asset:
+                # 결과 파일 지문(docs/RESULT_FINGERPRINT.md)은 포스터와 같은 '같은 결과물' 판정일 때만
+                # 새 행에 승계한다 — 원본이 다르면 새 행은 비어 있고(다시 수집·다시 전송) 옛 값을 붙이지 않는다.
+                keep_fp = (None, None, 0, None)
+                if len(cur_assets) == 1 and cur_assets[0]["type"] == a["type"] and (
+                    (cur_assets[0]["source_url"] or cur_assets[0]["file_path"]) == (src or fp)
+                ):
+                    old = cur_assets[0]
+                    keep_fp = (
+                        old["result_bytes"], old["result_head_sha"],
+                        old["result_probe_fail"] or 0, old["result_fp_sent_to"],
+                    )
                 conn.execute("DELETE FROM asset WHERE generation_id=?", (target_id,))
                 conn.execute(
-                    "INSERT INTO asset(id, generation_id, type, file_path, thumbnail_path, source_url) "
-                    "VALUES(?,?,?,?,?,?)",
-                    (new_id(), target_id, a["type"], fp, thumb, src),
+                    "INSERT INTO asset(id, generation_id, type, file_path, thumbnail_path, source_url, "
+                    "result_bytes, result_head_sha, result_probe_fail, result_fp_sent_to) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (new_id(), target_id, a["type"], fp, thumb, src, *keep_fp),
                 )
                 if result == "unchanged":
                     result = "updated"  # asset(포스터 포함)만 바뀌어도 변경 신호(WS·changed_job_ids)를 낸다

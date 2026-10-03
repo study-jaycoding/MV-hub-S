@@ -54,6 +54,7 @@ def test_telemetry_push_logs_only_aggregate_activity(monkeypatch):
     assert manage_router.telemetry_push(body, SimpleNamespace()) == {
         "upserted": 1,
         "skipped": [],
+        "result_fingerprint": 1,  # 결과 파일 지문 칸을 저장하는 서버라는 표식(docs/RESULT_FINGERPRINT.md)
     }
     assert captured == {
         "event": "worker_telemetry_received",

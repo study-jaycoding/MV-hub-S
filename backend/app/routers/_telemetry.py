@@ -61,11 +61,16 @@ def _drain_once() -> None:
                     active_account.reset_override(token)
                     raise
             try:
+                # 결과 파일 지문 전달 확인(docs/RESULT_FINGERPRINT.md) — 주소를 한 번 잡아 **그 주소로 보내고**
+                # 그 주소를 기록한다. 응답 때 설정 주소가 달라졌으면 정산하지 않는다.
+                origin = _proxy.base_url()
                 drain_remote_telemetry(
                     lambda items: _proxy.proxy_json(
-                        "POST", "/api/manage/telemetry/push", body={"items": items}
+                        "POST", "/api/manage/telemetry/push", body={"items": items}, base=origin
                     ),
                     my_uid=my_uid,
+                    target_origin=origin,
+                    current_origin=_proxy.base_url,
                 )
                 # 계정 보고 outbox 도 MANAGE 사이드카다 — off 설치본에서 이 드레인이 돌면
                 # list_due_account_reports 의 _ensure_schema 가 "사이드카 테이블을 만들지 않는다"는

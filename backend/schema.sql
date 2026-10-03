@@ -108,7 +108,13 @@ CREATE TABLE IF NOT EXISTS asset (
     type           TEXT NOT NULL,                    -- 'image' | 'video'
     file_path      TEXT NOT NULL,                    -- 로컬 캐시 경로(/media/..) 또는 원격 URL
     thumbnail_path TEXT,
-    source_url     TEXT                              -- 원본 원격 URL 보존(출처 영속, byte-cache 후에도)
+    source_url     TEXT,                             -- 원본 원격 URL 보존(출처 영속, byte-cache 후에도)
+    -- 결과 파일 부분 지문(docs/RESULT_FINGERPRINT.md) — 이름이 바뀐 NAS 파일을 내용으로 잇는 재료.
+    -- result_bytes·result_head_sha 는 한 쌍(전체 크기·앞 64KiB sha256). URL 은 팀 장부로 보내지 않는다.
+    result_bytes      INTEGER,
+    result_head_sha   TEXT,
+    result_probe_fail INTEGER NOT NULL DEFAULT 0,   -- 연속 실패 수(3 이면 다시 안 함)
+    result_fp_sent_to TEXT                          -- 이 쌍을 받았다고 확인해 준 공유 서버 주소
 );
 
 -- 생성에 쓰인 레퍼런스(이미지/영상 + 썸네일)

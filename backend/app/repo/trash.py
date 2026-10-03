@@ -455,6 +455,12 @@ def _telemetry_snapshot(conn, gen_id: str, gen) -> dict[str, Any]:
             snap["creator_name"] = cr["name"] if cr else None
         at = conn.execute("SELECT type FROM asset WHERE generation_id=? LIMIT 1", (gen_id,)).fetchone()
         snap["output_type"] = at["type"] if at else None
+        fp_rows = conn.execute(
+            "SELECT result_bytes, result_head_sha FROM asset WHERE generation_id=?", (gen_id,)
+        ).fetchall()
+        if len(fp_rows) == 1 and fp_rows[0]["result_bytes"] and fp_rows[0]["result_head_sha"]:
+            snap["result_bytes"] = fp_rows[0]["result_bytes"]
+            snap["result_head_sha"] = fp_rows[0]["result_head_sha"]
         m = conn.execute(
             "SELECT real_credits, est_credits, credit_source, elapsed_seconds, started_at, completed_at "
             "FROM generation_metrics WHERE gen_id=?", (gen_id,)

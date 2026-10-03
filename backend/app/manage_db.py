@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import math
+import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -65,6 +66,8 @@ CREATE TABLE IF NOT EXISTS team_generation_fact (
     deleted_at      TEXT,
     last_seen_at    TEXT,                    -- 마지막 push 시각
     updated_at      TEXT,
+    result_bytes    INTEGER,                 -- 결과 파일 부분 지문: 전체 크기(docs/RESULT_FINGERPRINT.md)
+    result_head_sha TEXT,                    -- 결과 파일 부분 지문: 앞 64KiB sha256(크기와 한 쌍)
     UNIQUE(account_email, local_gen_id)      -- 멱등 upsert 대상
 );
 CREATE INDEX IF NOT EXISTS idx_tgf_creator ON team_generation_fact(creator_uid);
@@ -88,6 +91,10 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE team_generation_fact ADD COLUMN workspace_name TEXT")
     if "task_activity_at" not in columns:
         conn.execute("ALTER TABLE team_generation_fact ADD COLUMN task_activity_at TEXT")
+    if "result_bytes" not in columns:
+        conn.execute("ALTER TABLE team_generation_fact ADD COLUMN result_bytes INTEGER")
+    if "result_head_sha" not in columns:
+        conn.execute("ALTER TABLE team_generation_fact ADD COLUMN result_head_sha TEXT")
     conn.execute(
         "UPDATE team_generation_fact "
         "SET workspace_scope='unknown', workspace_id=NULL, workspace_name=NULL "
@@ -208,7 +215,12 @@ _UPSERT_SET = (
     "task_activity_at=excluded.task_activity_at, "
     "started_at=excluded.started_at, completed_at=excluded.completed_at, sort_ts=excluded.sort_ts, "
     "is_final=excluded.is_final, is_shared=excluded.is_shared, is_deleted=excluded.is_deleted, "
-    "deleted_at=excluded.deleted_at, last_seen_at=excluded.last_seen_at, updated_at=excluded.updated_at"
+    "deleted_at=excluded.deleted_at, last_seen_at=excluded.last_seen_at, updated_at=excluded.updated_at, "
+    # 결과 파일 부분 지문 — 완전한 쌍이 오면 쌍째 교체, 비면 기존 쌍 유지(한쪽만 바뀌는 경로 없음).
+    "result_bytes=CASE WHEN excluded.result_bytes IS NOT NULL AND excluded.result_head_sha IS NOT NULL "
+    "THEN excluded.result_bytes ELSE team_generation_fact.result_bytes END, "
+    "result_head_sha=CASE WHEN excluded.result_bytes IS NOT NULL AND excluded.result_head_sha IS NOT NULL "
+    "THEN excluded.result_head_sha ELSE team_generation_fact.result_head_sha END"
 )
 
 _FACT_COLS = (
@@ -218,7 +230,23 @@ _FACT_COLS = (
     "real_credits", "est_credits", "credit_source", "elapsed_seconds",
     "created_at", "task_activity_at", "started_at", "completed_at", "sort_ts",
     "is_final", "is_shared", "is_deleted", "deleted_at", "last_seen_at", "updated_at",
+    "result_bytes", "result_head_sha",
 )
+
+_HEAD_SHA_RE = re.compile(r"[0-9a-f]{64}")
+_SQLITE_INT_MAX = 2**63 - 1
+
+
+def fingerprint_pair(it: dict) -> tuple[Optional[int], Optional[str]]:
+    """결과 파일 부분 지문 쌍을 검증한다 — 크기는 양의 정수, 지문은 64자리 소문자 hex, 둘 다 있어야 한다.
+    어긋나면 둘 다 버린다(배치를 실패시키지 않는다). 계약은 docs/RESULT_FINGERPRINT.md."""
+    size, head = it.get("result_bytes"), it.get("result_head_sha")
+    # SQLite INTEGER 범위 밖이면 바인딩에서 OverflowError — 배치 전체가 실패하지 않게 여기서 버린다.
+    if isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= _SQLITE_INT_MAX:
+        return None, None
+    if not isinstance(head, str) or not _HEAD_SHA_RE.fullmatch(head):
+        return None, None
+    return size, head
 
 
 def _fact_values(account_email: str, cu: Optional[str], gid: str, it: dict, now: str) -> tuple:
@@ -236,6 +264,7 @@ def _fact_values(account_email: str, cu: Optional[str], gid: str, it: dict, now:
         it.get("started_at"), it.get("completed_at"), it.get("sort_ts"),
         1 if it.get("is_final") else 0, 1 if it.get("is_shared") else 0,
         1 if it.get("is_deleted") else 0, it.get("deleted_at"), now, now,
+        *fingerprint_pair(it),
     )
 
 
@@ -302,6 +331,14 @@ def upsert_facts(
             prepared = merge_task_activity_location(existing, {
                 **it, "workspace_scope": scope, "workspace_id": wid, "workspace_name": name,
             })
+            clear_pair = False
+            if fingerprint_pair(prepared) == (None, None):
+                # 지워질 같은 job 의 다른 행이 지문을 갖고 있었으면 잃지 않게. 쌍이 여러 종류면 고르지 않고
+                # 비운다(같은 local id 행의 쌍도 — id 가 남아 있는지로 결과가 달라지지 않게).
+                pairs = {fingerprint_pair(dict(row)) for row in existing_rows} - {(None, None)}
+                if len(pairs) == 1:
+                    prepared["result_bytes"], prepared["result_head_sha"] = next(iter(pairs))
+                clear_pair = len(pairs) > 1
             if jid:
                 conn.execute(
                     "DELETE FROM team_generation_fact WHERE account_email=? AND job_id=? "
@@ -318,9 +355,14 @@ def upsert_facts(
                 )
                 if cur.rowcount == 0:  # 팩트 없음 → 스냅샷으로 전체행 삽입(is_deleted=1 포함)
                     conn.execute(sql, _fact_values(account_email, cu, gid, prepared, now))
-                n += 1
-                continue
-            conn.execute(sql, _fact_values(account_email, cu, gid, prepared, now))
+            else:
+                conn.execute(sql, _fact_values(account_email, cu, gid, prepared, now))
+            if clear_pair:
+                conn.execute(
+                    "UPDATE team_generation_fact SET result_bytes=NULL, result_head_sha=NULL "
+                    "WHERE account_email=? AND local_gen_id=?",
+                    (account_email, gid),
+                )
             n += 1
     return n, skipped
 

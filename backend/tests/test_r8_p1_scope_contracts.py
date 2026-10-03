@@ -186,12 +186,12 @@ def test_drain_once_keeps_account_key_and_uid_paired_across_switch(
     captured: list[dict] = []
     real_remote_drain = telemetry_drain.drain_remote_telemetry
 
-    def switch_then_drain(push, *, my_uid):
+    def switch_then_drain(push, *, my_uid, **_origin):  # target_origin·current_origin(결과 지문 정산)
         assert my_uid == A_UID
         _switch_pointer_without_waiting_for_network(B_EMAIL, B_UID)
         return real_remote_drain(push, my_uid=my_uid)
 
-    def proxy_json(_method, path, *, body):
+    def proxy_json(_method, path, *, body, base=None):  # base = 드레인이 잡은 서버 주소
         assert path == "/api/manage/telemetry/push"
         captured.extend(body["items"])
         return {"upserted": len(body["items"]), "skipped": []}
@@ -229,7 +229,7 @@ def test_drain_once_pins_account_report_to_telemetry_scope_during_switch(
     report_scopes: list[str | None] = []
     report_payloads: list[dict] = []
 
-    def proxy_json(_method, path, *, body):
+    def proxy_json(_method, path, *, body, base=None):  # base = 드레인이 잡은 서버 주소
         if path == "/api/manage/telemetry/push":
             telemetry_scopes.append(active_account.account_key())
             _switch_pointer_without_waiting_for_network(B_EMAIL, B_UID)

@@ -21,7 +21,7 @@ import time
 import uuid
 import weakref
 from pathlib import Path
-from typing import Literal, NoReturn, Optional
+from typing import Any, Literal, NoReturn, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -422,6 +422,10 @@ class TelemetryFactIn(BaseModel):
     is_shared: bool = False
     is_deleted: bool = False
     deleted_at: Optional[str] = None
+    # 결과 파일 부분 지문 쌍(docs/RESULT_FINGERPRINT.md). 타입을 여기서 강제하면 잘못된 값 하나가
+    # 배치 전체를 422 로 떨어뜨린다 — 검증은 manage_db.fingerprint_pair 한 곳에서 하고, 어긋나면 둘 다 버린다.
+    result_bytes: Optional[Any] = None
+    result_head_sha: Optional[Any] = None
 
 
 class TelemetryPushIn(BaseModel):
@@ -471,7 +475,9 @@ def telemetry_push(body: TelemetryPushIn, request: Request):
             **_telemetry_activity_summary(items, n, skipped),
         )
     # skipped = 서버가 반영 안 한 항목(미링크 전체·남의 것). 클라가 이것만 재시도로 남기고 나머지는 정리.
-    return {"upserted": n, "skipped": skipped}
+    # result_fingerprint = 이 서버는 결과 파일 지문 칸을 저장한다 — 로컬은 이 표식이 있는 응답에서만
+    # '지문 전달 완료'로 친다(옛 서버는 필드를 버리고도 성공을 돌려주기 때문).
+    return {"upserted": n, "skipped": skipped, "result_fingerprint": 1}
 
 
 def _usage_emails(

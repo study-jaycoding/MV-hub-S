@@ -306,7 +306,14 @@ def build_telemetry_facts(
         "(CASE WHEN EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) "
         "THEN 1 ELSE 0 END) AS is_shared, "
         "m.real_credits, m.est_credits, m.credit_source, m.elapsed_seconds, "
-        "m.started_at, m.completed_at "
+        "m.started_at, m.completed_at, "
+        # 결과 파일 부분 지문(docs/RESULT_FINGERPRINT.md) — 결과가 정확히 1개일 때만. 확인용 asset id 는
+        # 같은 조회에서 잡되 서버로는 보내지 않는다(드레이너가 '_' 키를 떼고 보낸다).
+        # (결과가 1개면 LIMIT 1 세 조회가 같은 행을 본다 — idx_asset_generation 으로 행마다 찾는다.)
+        "(SELECT COUNT(*) FROM asset a WHERE a.generation_id=g.id) AS _fp_asset_count, "
+        "(SELECT a.id FROM asset a WHERE a.generation_id=g.id LIMIT 1) AS _fp_asset_id, "
+        "(SELECT a.result_bytes FROM asset a WHERE a.generation_id=g.id LIMIT 1) AS result_bytes, "
+        "(SELECT a.result_head_sha FROM asset a WHERE a.generation_id=g.id LIMIT 1) AS result_head_sha "
         "FROM generation g "
         "LEFT JOIN generation_metrics m ON m.gen_id=g.id "
         "LEFT JOIN creator c ON c.uid=g.creator_uid "
@@ -323,6 +330,10 @@ def build_telemetry_facts(
         fact["is_shared"] = bool(fact.get("is_shared"))
         fact["is_deleted"] = False
         fact["deleted_at"] = None
+        if fact.pop("_fp_asset_count", None) != 1 or not (
+            fact.get("result_bytes") and fact.get("result_head_sha")
+        ):
+            fact["result_bytes"] = fact["result_head_sha"] = fact["_fp_asset_id"] = None
         facts.append(fact)
     return facts
 

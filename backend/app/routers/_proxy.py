@@ -368,8 +368,12 @@ def proxy_json(
     raw_query: Optional[str] = None,
     use_super_admin: bool = False,
     required_review_filter: Optional[str] = None,
+    base: Optional[str] = None,
 ) -> Any:
     """공유 서버 {base}{path} 로 위임하고 성공 본문(parsed JSON)을 반환.
+
+    - base: 호출자가 미리 잡은 서버 주소로 보낼 때(텔레메트리 결과 지문 정산 — 기록할 주소와 실제로
+      보낸 주소가 같아야 한다). 없으면 지금 설정된 주소.
 
     - 토큰이 없고 require_token 이면 401(로그인 유도).
     - 서버가 비-2xx 면 그 status·detail 을 그대로 HTTPException 으로 재발생.
@@ -381,7 +385,7 @@ def proxy_json(
         raise HTTPException(status_code=401, detail="공유 서버 로그인이 필요합니다")
 
     qs = ("?" + raw_query) if raw_query else _qs(params)
-    url = base_url() + path + qs
+    url = (base or base_url()) + path + qs
     review_options = (
         {"required_review_filter": required_review_filter}
         if required_review_filter is not None else {}

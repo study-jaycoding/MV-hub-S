@@ -18,6 +18,7 @@ from ..config import MANAGE_ENABLED
 from ..emailnorm import norm_email
 from ..manage_db import init_manage_db, upsert_facts
 from ..repo import manage as repo_manage
+from ..repo import result_fingerprint as repo_fp
 
 _LOCAL_DRAIN_LOCK = threading.Lock()
 _NO_PROXY_TRUE = {"1", "true", "yes", "on"}
@@ -97,11 +98,46 @@ def _settle(batch: dict[str, Any], skipped_ids: set[str], error: str) -> tuple[i
     return len(pushed), len(failed)
 
 
+def _fingerprint_rows(facts: list[dict[str, Any]]) -> list[tuple[str, str, int, str]]:
+    """보낼 팩트 중 결과 파일 지문 쌍을 실은 것 — (local_gen_id, asset_id, 크기, 지문).
+    전송 payload 와 **같은 조회 결과**에서 잡는다(docs/RESULT_FINGERPRINT.md)."""
+    return [
+        (fact["local_gen_id"], fact["_fp_asset_id"], fact["result_bytes"], fact["result_head_sha"])
+        for fact in facts
+        if fact.get("_fp_asset_id") and fact.get("result_bytes") and fact.get("result_head_sha")
+    ]
+
+
+def _settle_fingerprints(
+    fp_rows: list[tuple[str, str, int, str]],
+    skipped_ids: set[str],
+    response: dict[str, Any],
+    target_origin: str | None,
+    current_origin: Callable[[], str] | None,
+) -> None:
+    """push 응답으로 '이 서버가 지문을 받았다'를 정산한다.
+
+    표식(result_fingerprint=1)이 있는 응답에서 전송 성공한 항목만 확인 서버를 적고, 표식이 없으면
+    (옛 서버 — 지문 칸을 버렸을 수 있다) 확인을 지운다. 보내는 사이 서버 주소가 바뀌었으면 아무것도 안 한다.
+    """
+    if not fp_rows or not target_origin or current_origin is None:
+        return
+    if current_origin() != target_origin:
+        return
+    confirmed = target_origin if response.get("result_fingerprint") == 1 else None
+    repo_fp.mark_fp_delivery(
+        [(asset_id, size, head) for gen_id, asset_id, size, head in fp_rows if gen_id not in skipped_ids],
+        confirmed,
+    )
+
+
 def _drain_remote_telemetry(
     push: Callable[[list[dict[str, Any]]], Any],
     *,
     account_key: str | None,
     my_uid: str | None,
+    target_origin: str | None = None,
+    current_origin: Callable[[], str] | None = None,
 ) -> dict[str, Any]:
     """명시된 계정 범위 안에서 prepare·push·settle을 모두 끝낸다."""
     token = active_account.set_override(account_key or "")
@@ -113,8 +149,11 @@ def _drain_remote_telemetry(
         facts = batch["facts"]
         if not facts:
             return {"target": "remote", "upserted": 0, "failed": 0}
+        fp_rows = _fingerprint_rows(facts)
+        # '_' 로 시작하는 키는 로컬 정산용(확인용 asset id 등) — 서버로 보내지 않는다.
+        payload = [{k: v for k, v in fact.items() if not k.startswith("_")} for fact in facts]
         try:
-            response = push(facts)
+            response = push(payload)
             response = response if isinstance(response, dict) else {}
             if "skipped" in response:
                 skipped_ids = set(response.get("skipped") or [])
@@ -131,6 +170,7 @@ def _drain_remote_telemetry(
                 if "skipped" in response
                 else f"server upserted {response.get('upserted', 0)}/{len(facts)}",
             )
+            _settle_fingerprints(fp_rows, skipped_ids, response, target_origin, current_origin)
             return {"target": "remote", "upserted": pushed, "failed": failed}
         except Exception as exc:  # noqa: BLE001 - 오프라인 큐로 남겨 다음 동기화 때 재시도
             rows = list(batch["sent"])
@@ -149,6 +189,8 @@ def drain_remote_telemetry(
     push: Callable[[list[dict[str, Any]]], Any],
     *,
     my_uid: str | None,
+    target_origin: str | None = None,
+    current_origin: Callable[[], str] | None = None,
 ) -> dict[str, Any]:
     """기존 운영 계약대로 현재 로컬 사용자의 팩트를 공유 서버로 전송한다."""
     with active_account.transition_lock:
@@ -160,6 +202,8 @@ def drain_remote_telemetry(
         push,
         account_key=account_key,
         my_uid=captured_uid,
+        target_origin=target_origin,
+        current_origin=current_origin,
     )
 
 

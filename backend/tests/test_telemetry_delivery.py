@@ -141,7 +141,7 @@ def test_concurrent_drain_returns_immediately_and_owner_runs_followup(
     release = threading.Event()
     calls = 0
 
-    def slow_remote(_push, *, my_uid):
+    def slow_remote(_push, *, my_uid, **_origin):  # target_origin·current_origin(결과 지문 정산용)
         nonlocal calls
         assert my_uid == "u_me"
         calls += 1
