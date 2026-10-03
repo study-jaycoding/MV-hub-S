@@ -21,6 +21,7 @@
 | `_start_worker_backup_bootstrap` | 호출 | _proxy.is_worker_hub() | `backend/app/main.py` |
 | `registry_helper.schedule_loop() (name=asset-registry-schedule-claim)` | create_task | _proxy.is_worker_hub() and not READ_ONLY | `backend/app/routers/registry_helper.py` |
 | `registry_helper.schedule_loop` | 호출 | _proxy.is_worker_hub() and not READ_ONLY | `backend/app/routers/registry_helper.py` |
+| `periodic_result_probe` | start() | _proxy.is_worker_hub() and MANAGE_ENABLED and not READ_ONLY | `backend/app/services/result_probe.py` |
 | `periodic_backup` | start() | 항상 | `backend/app/services/backup.py` |
 | `periodic_sweeper` | start() | not READ_ONLY | `backend/app/services/temp_sweeper.py` |
 | `periodic_media_preservation` | start() | MEDIA_PRESERVATION_ENABLED and not READ_ONLY | `backend/app/services/media_preservation.py` |
@@ -73,6 +74,7 @@
 | `backend/app/services/resolve_queue.py` | `run_non_abandon` | create_task | `coro` |
 | `backend/app/services/resolve_selection_monitor.py` | `ResolveSelectionMonitor._start_process` | create_task | `self._read_selections(self._process) (name=resolve-selection-reader)` |
 | `backend/app/services/resolve_selection_monitor.py` | `ResolveSelectionMonitor.start` | create_task | `self._run() (name=resolve-selection-monitor)` |
+| `backend/app/services/result_probe.py` | `PeriodicResultProbe.start` | create_task | `self._run() (name=result-probe)` |
 | `backend/app/services/share_state_reconciler.py` | `PeriodicShareStateReconciler.start` | create_task | `self._run() (name=share-state-reconciler)` |
 | `backend/app/services/syncer.py` | `PeriodicSync.start` | create_task | `self._run() (name=periodic-sync)` |
 | `backend/app/services/temp_sweeper.py` | `PeriodicSweeper.start` | create_task | `self._run() (name=temp-sweeper)` |

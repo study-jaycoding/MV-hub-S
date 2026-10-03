@@ -71,7 +71,7 @@ updated: 2026-10-02
 | DB 스키마·마이그레이션 | — | `backend/schema.sql`, `db_migrations.py`, `db.py` | 새 컬럼·인덱스는 생성 순서가 중요하다(구형 DB 전환 경로). PM 사이드카 테이블은 `repo/manage_schema.py` 가 **같은 콘텐츠 DB 안에** 만들고, 팀 텔레메트리만 `manage_db.py` 가 별도 `manage_hub.db` 에, 휴지통은 `repo/trash.py` 가 ATTACH 한 DB 에 만든다. **테이블별 DB·정의 파일·쓰는/읽는 모듈: [inventory/db_tables.md](inventory/db_tables.md)**(생성 문서) |
 | 환경변수(설정 스위치)가 무엇이 있고 기본값이 뭔가 | `vite.config.ts` | `config.py` 가 중심이지만 40여 파일이 직접 읽는다 | **전체 목록: [inventory/env_vars.md](inventory/env_vars.md)**(생성 문서 — 이름·기본값·직접 읽는 파일·설정하는 스크립트) |
 | 실행 모드·권한·프록시(서버/로컬 허브/격리 테스트) | — | `deps.py`, `routers/_proxy.py`, `rbac.py` | 모드별 차이의 정본은 [DATA_OWNERSHIP.md](DATA_OWNERSHIP.md) §2·[신원과_모드_가이드.md](신원과_모드_가이드.md) §4·[AI_CONTEXT.md](AI_CONTEXT.md) §2. **엔드포인트 전체와 경로별 프록시 분류(로컬 예외/기본 중계): [inventory/endpoints.md](inventory/endpoints.md)**(생성 문서) |
-| 백그라운드 주기 작업·기동/종료 | — | `main.py`(lifespan 이 기동·회수), `services/backup.py`·`syncer.py`·`temp_sweeper.py`·`media_preservation.py`·`share_state_reconciler.py`·`worker_backup.py`·`remote_realtime.py`·`resolve_selection_monitor.py` | 작업별 계약 문서: [TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md)·[WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md). **기동 때 무엇이 어떤 조건(실행 모드)에서 시작되나·응답 뒤 작업·에이전트 상주 루프: [inventory/background_jobs.md](inventory/background_jobs.md)**(생성 문서) |
+| 백그라운드 주기 작업·기동/종료 | — | `main.py`(lifespan 이 기동·회수), `services/backup.py`·`syncer.py`·`temp_sweeper.py`·`media_preservation.py`·`share_state_reconciler.py`·`worker_backup.py`·`remote_realtime.py`·`resolve_selection_monitor.py`·`result_probe.py` | 작업별 계약 문서: [TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md)·[RESULT_FINGERPRINT.md](RESULT_FINGERPRINT.md)·[WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md). **기동 때 무엇이 어떤 조건(실행 모드)에서 시작되나·응답 뒤 작업·에이전트 상주 루프: [inventory/background_jobs.md](inventory/background_jobs.md)**(생성 문서) |
 | 작업자 에이전트 배포·계약 | — | `agent_push.py`, `routers/ingest.py`(`/api/agent/*` 배포·롱폴), `routers/gen_requests.py` | 계약 고정 시험 `backend/tests/test_agent_contracts.py` |
 | DB 복구·복원 훈련 | — | `routers/db_transfer.py`, `services/backup_verify.py`, `services/restore_runtime_verify.py` | 도구 `tools/verify_backup_restore.py` |
 | 이 파일을 고치면 어떤 시험을 돌리나 | `git grep -l <파일이름(확장자 빼고)> -- frontend/tests frontend/src` | `git grep -l <모듈이름> -- backend/tests` | 또는 `powershell -NoProfile -File tools\graft.ps1 callers <심볼>` — 시험 파일도 호출처로 나온다. 시험↔기능 색인 문서는 없다 |
@@ -97,7 +97,7 @@ updated: 2026-10-02
 | `generation_result.py` | CLI 파싱 결과 → 저장 필드 변환 순수 규칙 | |
 | `list_gzip.py` | 생성물 목록 응답만 gzip 압축하는 미들웨어 | |
 | `main.py` | FastAPI 앱 + lifespan(부팅 마이그레이션·주기작업 기동/회수) + 미들웨어 9종(읽기 전용 가드 포함 — `CONTENT_HUB_READ_ONLY`) + health/ready/admin 라우트 + `/ws` + SPA fallback | 약 1,380줄 |
-| `manage_db.py` | 매니징 전용 DB(`manage_hub.db`) 스키마·팩트 upsert·팀 집계 조회 | 약 1,060줄 |
+| `manage_db.py` | 매니징 전용 DB(`manage_hub.db`) 스키마·팩트 upsert(결과 파일 지문 쌍 검증 `fingerprint_pair` 포함)·팀 집계 조회 | 약 1,140줄 |
 | `models.py` | Pydantic 요청/응답 스키마 48종 | 약 512줄 |
 | `mutation_notify.py` | 변경 알림 HTTP 계약(도메인 판정·출처 파싱) | |
 | `rbac.py` | 전역 4역할 + 프로젝트 3역할 매트릭스(순수 상수·매핑) | |
@@ -118,7 +118,7 @@ updated: 2026-10-02
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `_proxy.py`(753줄) | 로컬 허브 → 팀 서버 HTTP 중계·경로 소유권 판정·미디어 스트림 폴백 | `proxying()`·`proxy_json()`·`proxy_get()`·`raw_request()`·`is_local_path()`·`data_proxy_middleware` |
-| `_telemetry.py`(232줄) | PM 텔레메트리 outbox 를 실행 모드에 맞게 drain·스케줄 | `touch_generation_telemetry()`·`schedule_telemetry_drain()` |
+| `_telemetry.py`(237줄) | PM 텔레메트리 outbox 를 실행 모드에 맞게 drain·스케줄 | `touch_generation_telemetry()`·`schedule_telemetry_drain()` |
 | `_assets_access.py`(49줄) | Assets/코멘트 라우트의 로컬·권한 게이트 3종 | `require_mount_manager`·`require_local_assets`·`require_asset_comment_access` |
 
 **생성물(라이브러리·메타·공유)**
@@ -274,7 +274,8 @@ updated: 2026-10-02
 | `console_guard.py` | 43 | 서브스페이스 보호 판정 잎 모듈 — 전환 표식·상태 짝·`managed_sub`·`guard_project_change`·`ConsoleManaged`. 다른 repo 를 import 하지 않아 크레딧 계획·프로젝트·신원 모듈과의 import 순환을 끊는다(`workspace_console` 이 재노출) | `managed_sub`·`guard_project_change` |
 | `manage_quota.py` | 117 | 내 몫 읽기 모델 — 그룹 인당 한도·덮어쓰기·이번 기간 사용(실제+견적). 몫이 없으면(미배정·한도 없음) `pool_total`(이번 달 정기+긴급 충전) | `my_quota` |
 | `manage_transactions.py` | 483 | 계정 크레딧 거래 적재 + 생성물 근접 매칭 | `manage_transactions.record_transactions` |
-| `manage_telemetry.py` | 395 | 로컬 텔레메트리 outbox 저장·조회·전송 정산 | `manage_telemetry.mark_telemetry_dirty*` |
+| `manage_telemetry.py` | 406 | 로컬 텔레메트리 outbox 저장·조회·전송 정산 | `manage_telemetry.mark_telemetry_dirty*` |
+| `result_fingerprint.py` | 112 | 결과 파일 부분 지문 asset 칸 — 수집 대상·재확인 기록·실패·재전송·전달 정산([RESULT_FINGERPRINT.md](RESULT_FINGERPRINT.md)) | `result_fingerprint.probe_targets`·`record_probe_success` |
 | `manage_account_reports.py` | 310 | 계정 상태·거래 보고의 내구성 outbox(재시도·409·dead-letter) | `manage_account_reports.queue_account_reports` |
 | `manage_analytics.py` | 132 | 시계열·작업자/프로젝트 매트릭스 읽기 모델 | `manage_analytics.timeseries`·`matrix`·`breakdown` |
 | `manage_task_activity.py` | 268 | 작업 목록 전용 메타 병합(뷰어 정규화·캐시키·폴더 소스·컷) | `manage_task_activity.load_activity_snapshot` |
@@ -391,7 +392,8 @@ updated: 2026-10-02
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `share_state_reconciler.py`(707줄) | 서버 권위 상태를 로컬 공유/골드 미러에 수렴시키는 워커 | `main`·`publish`·`share` |
-| `telemetry_drain.py` | PM 텔레메트리 outbox → 원격 서버 또는 격리 로컬 DB | `_telemetry`·`generation`·`manage`·`projects` |
+| `telemetry_drain.py` | PM 텔레메트리 outbox → 원격 서버 또는 격리 로컬 DB. 결과 파일 지문 전달 확인 정산 | `_telemetry`·`generation`·`manage`·`projects` |
+| `result_probe.py`(239줄) | 결과 파일 부분 지문 수집기 — 캐시 파일 또는 원본 URL `Range 0-65535` 로 크기·앞 64KiB sha256, 5분 20건·하루 1회 재전송([RESULT_FINGERPRINT.md](RESULT_FINGERPRINT.md)) | `main` |
 | `account_report_delivery.py` | 계정 상태·크레딧 거래 outbox 행별 전송·ACK 정산 | `_telemetry` |
 | `remote_realtime.py` | 공유 서버 WS 신호를 로컬 허브 WS 로 중계(데이터 없는 reload 만) | `main` |
 | `server_relocation.py` | 서버 이사 공지 읽기/발행 — 자식 프로세스 스크립트 겸용(§2.6) | `main`·`publish` |
