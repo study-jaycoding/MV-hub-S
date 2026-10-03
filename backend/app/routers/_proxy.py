@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import http.client
 import io
 import json
 import zlib
 import os
 import shutil
+import socket
 import threading
 import time
 import urllib.error
@@ -53,6 +55,53 @@ from ..services.shared_connection import (  # noqa: E402
 )
 from ..services.path_safety import safe_join
 from ..services.request_guards import require_local_browser_context
+
+# ── 공유 서버 연결: TCP 연결 단계만 짧게 ─────────────────────────────────────
+# 응답 없는 주소(서버 PC 꺼짐)에 붙으면 Windows 는 연결을 21초 붙잡았다(10-02 운영·격리 재현, WinError 10060).
+# 호출마다 준 timeout(5·15·60·120·300초)은 연결 뒤 전송·응답에 그대로 쓰고, **주소 하나에 대한 TCP 연결**만 3초로 끊는다.
+# 이름 해석(DNS)·여러 주소 순회·TLS·프록시 CONNECT 는 기존 timeout 그대로다(Codex 2026-10-03). 전역 소켓 기본값은 안 바꾼다.
+_CONNECT_TIMEOUT_S = 3.0
+
+
+def _fast_connect(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, **kwargs):
+    if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
+        timeout = socket.getdefaulttimeout()  # 기본값 = 프로세스 기본 timeout(None 이면 무제한)
+    connect_timeout = _CONNECT_TIMEOUT_S if timeout is None else min(timeout, _CONNECT_TIMEOUT_S)
+    sock = socket.create_connection(address, connect_timeout, source_address, **kwargs)
+    sock.settimeout(timeout)  # 연결 뒤에는 호출이 준 제한
+    return sock
+
+
+class _FastConnectHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _fast_connect  # super().__init__ 이 기본값을 넣은 뒤에 바꾼다
+
+
+class _FastConnectHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _fast_connect
+
+
+class _FastConnectHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_FastConnectHTTPConnection, req)
+
+
+class _FastConnectHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_FastConnectHTTPSConnection, req, context=self._context)
+
+
+# build_opener 는 기본 HTTP/HTTPS 핸들러만 이 둘로 바꾸고 ProxyHandler 등은 그대로 둔다.
+_SERVER_OPENER = urllib.request.build_opener(_FastConnectHTTPHandler, _FastConnectHTTPSHandler)
+
+
+def _open(req: urllib.request.Request, timeout: float):
+    """공유 서버로 가는 요청의 단일 출구(raw_request·다운로드·중계·스트림). 시험은 이 함수를 바꿔 끼운다."""
+    return _SERVER_OPENER.open(req, timeout=timeout)
+
 
 # 401의 의미를 브라우저까지 보존한다. `invalid`만 실제 세션 만료이며 `preserved`는
 # 요청 자체가 거부됐을 뿐 저장된 로그인은 유지됐다는 뜻이다.
@@ -192,7 +241,7 @@ def raw_request(
         req.add_header(CLIENT_ID_HEADER, mutation_origin[0])
         req.add_header(MUTATION_ID_HEADER, mutation_origin[1])
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _open(req, timeout=timeout) as r:
             if required_review_filter is not None and 200 <= r.status < 300:
                 if r.headers.get(REVIEW_FILTER_HEADER) != required_review_filter:
                     raise HTTPException(
@@ -210,10 +259,16 @@ def raw_request(
                     detail=f"공유 서버 응답이 JSON 이 아닙니다(프록시/포털 간섭 의심): {raw[:120]!r}",
                 ) from exc
     except urllib.error.HTTPError as e:
+        try:
+            raw_detail = e.read()
+        except (TimeoutError, OSError):
+            # 상태 코드는 이미 받았다 — 본문만 못 읽었을 때 원래 코드(401·503 …)를 지킨다. 여기서 새면
+            # 부분 응답·보강 중단이 기대하는 HTTPException 이 아니라 날 예외로 500 이 됐다(Codex 2026-10-03).
+            raw_detail = b""
         # ★오류 본문도 압축돼 올 수 있다 — 같은 해제를 거쳐야 401/403 진단이 깨지지 않는다.
         detail: Any = decode_proxy_body(
-            e.read(), e.headers.get("Content-Encoding") if e.headers else None
-        ).decode("utf-8", "replace")
+            raw_detail, e.headers.get("Content-Encoding") if e.headers else None
+        ).decode("utf-8", "replace") if raw_detail else ""
         try:
             detail = json.loads(detail)
         except (ValueError, TypeError):
@@ -403,7 +458,7 @@ def stream_download(
     dest = os.fspath(dest_tmp)
     total = 0
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _open(req, timeout=timeout) as r:
             expected = None
             try:
                 cl = int(r.headers.get("Content-Length") or 0)
@@ -501,6 +556,7 @@ _LOCAL_EXACT = frozenset(
     {
         "/api/manage/local-task-previews",  # 본인 미공유 컷 — 원격 폴백 금지
         "/api/health",
+        "/api/ready",         # 이 허브의 준비 상태 — 업데이터가 설치 확인에 쓴다(서버 것이 아니다)
         "/api/cli-check",     # 코드핀 vs 서버 버전 게이트 — 로컬 허브가 서버를 대신 조회해 대조(프록시 금지)
         "/api/cost",          # CLI 비용 추정
         "/api/account",       # CLI 계정 상태(워크스페이스/크레딧 원천)
@@ -526,6 +582,9 @@ _LOCAL_EXACT = frozenset(
         "/api/auth/config",
     }
 )
+
+
+_NEVER_PROXY = frozenset({"/api/health", "/api/ready"})  # 위임 판정조차 하지 않는 자기 점검
 
 
 def is_local_path(path: str) -> bool:
@@ -565,7 +624,7 @@ async def _forward(request: Request) -> Response:
         if tok:
             req.add_header("Authorization", f"Bearer {tok}")
         try:
-            with urllib.request.urlopen(req, timeout=120) as r:
+            with _open(req, timeout=120) as r:
                 return r.status, r.read(), (r.headers.get_content_type() or "application/json")
         except urllib.error.HTTPError as e:
             ct = e.headers.get_content_type() if e.headers else "application/json"
@@ -685,7 +744,7 @@ async def _forward_stream(request: Request) -> Response:
         return headers
 
     try:
-        upstream = await asyncio.to_thread(lambda: urllib.request.urlopen(req, timeout=300))
+        upstream = await asyncio.to_thread(lambda: _open(req, timeout=300))
     except urllib.error.HTTPError as e:
         ct = e.headers.get_content_type() if e.headers else "application/json"
         # 오류 본문 e.read() 는 소켓 동기 읽기(timeout 300초) — 헤더 뒤 본문이 늦게 오면 이 허브의
@@ -740,6 +799,11 @@ async def data_proxy_middleware(request: Request, call_next):
         )
     )
     try:
+        # 생존·준비 점검은 이 PC 허브 자신의 상태다 — 위임 판정(DB 토큰 조회)보다 먼저 로컬로 보낸다.
+        # 업데이터가 설치 뒤 /api/ready 를 2초 제한으로 묻는데, 서버로 중계되면 서버가 꺼졌거나 느릴 때
+        # 새 판이 멀쩡히 떠도 '업데이트 실패'가 됐다(2026-10-03). 유지보수 중에도 maintenance 응답에 닿는다.
+        if request.url.path in _NEVER_PROXY:
+            return await call_next(request)
         # ★위임 여부 판정을 **스레드에서** 한다(2026-09-12). `proxying()` 은 설정을 DB 에서
         #  읽는데, 그 경로가 유지보수 게이트(`db.py` 의 `_enter_connection_context`)에 닿는다.
         #  거기 `_pool_condition.wait()` 는 **시한 없는 동기 대기**라, DB 복원·이관 중이면

@@ -863,11 +863,15 @@ def list_generations(
                         body={"gen_ids": chunk},
                         timeout=5,  # 비핵심 보강 — 서버가 느리면 목록을 오래 막지 않는다
                     )
-                except Exception:  # noqa: BLE001 — 이 chunk 만 로컬 값 유지
+                except Exception as exc:  # noqa: BLE001 — 이 chunk 만 로컬 값 유지
                     log.warning(
                         "코멘트 보강 chunk 실패(무시): chunk=%d size=%d",
                         chunk_index, len(chunk),
                     )
+                    # 서버 장애(연결 실패·게이트웨이)면 남은 조각은 묻지 않는다 — 장애 비용을 조각 수만큼 곱하지
+                    # 않게 하는 정책이다(2026-10-03). 그 밖의 오류는 지금처럼 이 조각만 건너뛴다.
+                    if isinstance(exc, HTTPException) and exc.status_code in (502, 503, 504):
+                        break
                     continue
                 if isinstance(part, dict):
                     counts.update(part)
@@ -1061,12 +1065,16 @@ def locate_generation_targets(body: GenerationLocateIn, request: Request):
 
 class GenerationBatchIn(BaseModel):
     gen_ids: list[str]
+    # 새 캔버스 상태 조회만 켠다(2026-10-03) — 공유 서버 장애 때 로컬 결과를 버리지 않고 못 물어본 id 를
+    # unavailable 로 돌려준다. 옛 화면·다른 소비자는 보내지 않으므로 지금처럼 502 를 받는다.
+    allow_partial: bool = False
 
 
 class GenerationBatchOut(BaseModel):
     items: dict[str, GenerationOut]
     materials: dict[str, list[str]]
     missing: list[str]
+    unavailable: list[str] = []  # 서버 장애로 확인 못 한 id — 삭제(missing)가 아니다
 
 
 @router.post("/generations/batch", response_model=GenerationBatchOut)
@@ -1080,7 +1088,7 @@ def get_generations_batch(body: GenerationBatchIn, request: Request):
     if len(ids) > 500:
         raise HTTPException(status_code=413, detail="한 번에 조회 가능한 생성물은 최대 500개입니다")
     if not ids:
-        return {"items": {}, "materials": {}, "missing": []}
+        return {"items": {}, "materials": {}, "missing": [], "unavailable": []}
 
     account_uid = _account_uid(request)
     local_items, local_materials = repo.get_generations_with_materials(ids, account_uid=account_uid)
@@ -1096,13 +1104,20 @@ def get_generations_batch(body: GenerationBatchIn, request: Request):
         visible_materials[gen_id] = local_materials.get(gen_id, [])
 
     unresolved = [gen_id for gen_id in ids if gen_id not in visible_items]
+    unavailable: list[str] = []
     if unresolved and _proxy.proxying():
-        remote = _proxy.proxy_json(
-            "POST",
-            "/api/generations/batch",
-            body={"gen_ids": unresolved},
-            timeout=15,
-        )
+        try:
+            remote = _proxy.proxy_json(
+                "POST",
+                "/api/generations/batch",
+                body={"gen_ids": unresolved},
+                timeout=15,
+            )
+        except HTTPException as exc:
+            # 서버 장애(연결 실패·읽기 시간초과=502, 게이트웨이 503·504)만 부분 응답 — 인증·권한·다른 오류는 그대로.
+            if not (body.allow_partial and exc.status_code in (502, 503, 504)):
+                raise
+            remote, unavailable = None, unresolved
         if isinstance(remote, dict):
             remote_items = remote.get("items") if isinstance(remote.get("items"), dict) else {}
             _overlay_personal_meta(list(remote_items.values()), request)
@@ -1122,7 +1137,8 @@ def get_generations_batch(body: GenerationBatchIn, request: Request):
     return {
         "items": visible_items,
         "materials": visible_materials,
-        "missing": [gen_id for gen_id in ids if gen_id not in visible_items],
+        "missing": [gen_id for gen_id in ids if gen_id not in visible_items and gen_id not in unavailable],
+        "unavailable": unavailable,
     }
 
 

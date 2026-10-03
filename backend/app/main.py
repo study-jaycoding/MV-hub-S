@@ -973,10 +973,14 @@ async def auth_off_remote_guard(request: Request, call_next):
 async def runtime_observation(request: Request, call_next):
     started = runtime_metrics.request_begin()
     status = 500
+    error_kind = None  # 응답 없이 예외·취소로 끝난 요청만 — 중계된 진짜 500 과 구분하는 진단 자료(2026-10-03)
     try:
         response = await call_next(request)
         status = response.status_code
         return response
+    except BaseException as exc:  # 취소(CancelledError)도 BaseException — 이름만 남기고 그대로 올린다
+        error_kind = type(exc).__name__
+        raise
     finally:
         route = request.scope.get("route")
         # 라우팅 전에 인증 거부되거나 존재하지 않는 URL은 raw path 를 통계 key 로 쓰지 않는다.
@@ -1004,6 +1008,7 @@ async def runtime_observation(request: Request, call_next):
                     path=route_path,
                     status=status,
                     elapsed_ms=round(elapsed_ms, 2),
+                    **({"error_kind": error_kind} if error_kind else {}),
                 )
             except Exception:
                 pass  # 로그 I/O 실패가 사용자 응답을 막지 않게

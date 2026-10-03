@@ -107,7 +107,7 @@ def _call(payload: bytes, headers: dict[str, str], status: int = 200):
         sent["headers"] = {k.lower(): v for k, v in req.headers.items()}
         return _Resp(payload, headers, status)
 
-    with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+    with patch.object(_proxy, "_open", side_effect=fake_urlopen):
         result = _proxy.raw_request("GET", "http://server/api/generations", token="t")
     return result, sent
 
@@ -143,7 +143,7 @@ def test_a_compressed_error_body_is_still_readable():
             io.BytesIO(_gz(json.dumps(detail).encode())),
         )
 
-    with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+    with patch.object(_proxy, "_open", side_effect=fake_urlopen):
         status, body = _proxy.raw_request("GET", "http://server/api/x", token="t")
     assert status == 401
     assert body == detail
@@ -156,7 +156,7 @@ def test_a_plain_error_body_still_works():
             io.BytesIO(json.dumps({"detail": "권한 없음"}).encode()),
         )
 
-    with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+    with patch.object(_proxy, "_open", side_effect=fake_urlopen):
         status, body = _proxy.raw_request("GET", "http://server/api/x", token="t")
     assert (status, body) == (403, {"detail": "권한 없음"})
 
@@ -184,7 +184,7 @@ def test_the_write_path_is_not_retried_after_a_decode_failure():
         calls["n"] += 1
         return _Resp(b"broken", {"Content-Encoding": "gzip"})
 
-    with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+    with patch.object(_proxy, "_open", side_effect=fake_urlopen):
         with pytest.raises(HTTPException):
             _proxy.raw_request("POST", "http://server/api/x", token="t", body={"a": 1})
     assert calls["n"] == 1
@@ -205,7 +205,7 @@ def test_the_file_download_path_asks_for_identity(tmp_path):
     with (
         patch.object(_proxy, "token", return_value="t"),
         patch.object(_proxy, "base_url", return_value="http://server"),
-        patch.object(urllib.request, "urlopen", side_effect=fake_urlopen),
+        patch.object(_proxy, "_open", side_effect=fake_urlopen),
     ):
         written = _proxy.stream_download("/api/x", tmp_path / "out.bin")
 
@@ -250,7 +250,7 @@ def test_the_media_stream_never_copies_the_browser_encoding():
     with (
         patch.object(_proxy, "token", return_value="t"),
         patch.object(_proxy, "base_url", return_value="http://server"),
-        patch.object(urllib.request, "urlopen", side_effect=fake_urlopen),
+        patch.object(_proxy, "_open", side_effect=fake_urlopen),
     ):
         asyncio.run(_proxy._forward_stream(Request(scope, receive)))
 

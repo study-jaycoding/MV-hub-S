@@ -62,6 +62,49 @@ it("AUTH-off: 설정·공유 서버 상태를 받기 전에는 준비되지 않�
   expect(seen).toContain("/api/projects/my-finalize-roles"); // 설정을 받은 뒤에야 묻는다
 });
 
+it.each([
+  [502, true],
+  [403, false],
+])("최종 권한 조회가 %s 로 실패하면 30초 뒤 다시 묻는가 = %s (서버가 돌아와도 '권한 없음'으로 굳지 않게, 2026-10-03)", async (status, retries) => {
+  vi.useFakeTimers();
+  try {
+    let calls = 0;
+    const { useHubAuth } = await (async () => {
+      vi.stubGlobal("fetch", vi.fn((url: string) => {
+        if (url === "/api/auth/config") return Promise.resolve(response({ auth_enabled: false, has_accounts: false }));
+        if (url === "/api/shared-server/status") return Promise.resolve(response({ configured: true, has_token: false, url: "http://127.0.0.1:9" }));
+        if (url === "/api/projects/my-finalize-roles") {
+          calls += 1;
+          return Promise.resolve(calls === 1
+            ? new Response(JSON.stringify({ detail: "공유 서버 연결 실패" }), { status })
+            : response({ project_ids: ["p1"] }));
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }));
+      return import("../src/lib/useHubAuth");
+    })();
+    let finalize = new Set<string>();
+    function Host() {
+      finalize = useHubAuth().finalizeProjects;
+      return null;
+    }
+    await act(async () => root!.render(<Host />));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(calls).toBe(1);
+    expect(finalize.size).toBe(0);
+    await act(async () => vi.advanceTimersByTimeAsync(29_999));
+    expect(calls).toBe(1);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(calls).toBe(retries ? 2 : 1);
+    expect([...finalize]).toEqual(retries ? ["p1"] : []);
+    await act(async () => root!.unmount());
+    root = null;
+    expect(vi.getTimerCount()).toBe(0); // 성공·확정 거부 뒤엔 남은 재시도 타이머가 없다
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("AUTH-on: 설정이 오기 전 참이었다가 거짓으로 출렁이지 않는다(로그인 전에는 거짓)", async () => {
   const config = deferred<Response>();
   const { ready } = await mount({ "/api/auth/config": () => config.promise });

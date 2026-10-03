@@ -293,7 +293,27 @@ it.each(["success", "blocked", "http-failure", "reload-failure"])("actual publis
     await act(async () => vi.advanceTimersByTimeAsync(1)); expect(polls).toHaveLength(1 + broadcasts);
     if (broadcasts) {
       const batchCalls = vi.mocked(originalFetch).mock.calls.filter(([url]) => url === "/api/generations/batch");
-      expect(JSON.parse(String(batchCalls[1][1]?.body))).toEqual({ gen_ids: ["a"] });
+      expect(JSON.parse(String(batchCalls[1][1]?.body))).toEqual({ gen_ids: ["a"], allow_partial: true });
     }
   } finally { window.removeEventListener(APP_EVENTS.libraryChanged, changed); }
+});
+it("server-down partial batch keeps the card, never declares deletion, and re-polls the unavailable id", async () => {
+  // 2026-10-03: 공유 서버 장애 때 허브가 로컬 결과 + unavailable 로 답한다 — 캔버스는 그 카드를 지우지도 삭제로 보지도 않고 다시 묻는다.
+  const originalFetch = globalThis.fetch;
+  const bodies: unknown[] = [];
+  vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+    if (url === "/api/generations/batch") bodies.push(JSON.parse(String(init?.body)));
+    return originalFetch(url, init);
+  }));
+  await render(); expect(polls).toHaveLength(1);
+  expect(bodies[0]).toEqual({ gen_ids: ["a"], allow_partial: true });
+  const previous = data.genDataRef.current, cached = cache.hydrateGen(["a"]).a;
+  await act(async () => polls[0].resolve(response({ items: {}, materials: {}, missing: [], unavailable: ["a"] })));
+  expect(data.genDataRef.current).toBe(previous); expect(cache.hydrateGen(["a"]).a).toBe(cached);
+  expect(data.missingIds.has("a")).toBe(false); expect(cache.hydrateMissing(["a"]).has("a")).toBe(false);
+  await act(async () => vi.advanceTimersByTimeAsync(2499)); expect(polls).toHaveLength(1);
+  await act(async () => vi.advanceTimersByTimeAsync(1)); expect(polls).toHaveLength(2);
+  expect(bodies[1]).toEqual({ gen_ids: ["a"], allow_partial: true });
+  await act(async () => polls[1].resolve(response({ items: { a: { ...generation(), color: blue } }, materials: { a: [] }, missing: [] })));
+  expect(data.genDataRef.current.a.color).toBe(blue);
 });

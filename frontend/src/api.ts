@@ -244,6 +244,8 @@ interface GenerationBatchResponse {
   items: Record<string, Generation>;
   materials: Record<string, string[]>;
   missing: string[];
+  // allowPartial 로 물었을 때만 — 공유 서버 장애로 확인 못 한 id(삭제가 아니다). 옛 허브 응답엔 없다.
+  unavailable?: string[];
 }
 
 export interface GenerationWorkspaceBatchResponse {
@@ -259,11 +261,15 @@ export interface GenerationWorkspaceBatchResponse {
 const GENERATION_BATCH_LIMIT = 500; // 백엔드 /api/generations/batch 계약 상한
 const GENERATION_BATCH_CONCURRENCY = 3;
 
-function fetchGenerationBatchPage(genIds: string[], assertCurrent?: () => void): Promise<GenerationBatchResponse> {
+function fetchGenerationBatchPage(
+  genIds: string[],
+  assertCurrent?: () => void,
+  allowPartial = false,
+): Promise<GenerationBatchResponse> {
   assertCurrent?.();
   return jsonFetch<GenerationBatchResponse>("/api/generations/batch", {
     method: "POST",
-    body: jsonBody({ gen_ids: genIds }),
+    body: jsonBody(allowPartial ? { gen_ids: genIds, allow_partial: true } : { gen_ids: genIds }),
   }).then((batch) => ({
     ...batch,
     items: Object.fromEntries(
@@ -275,14 +281,19 @@ function fetchGenerationBatchPage(genIds: string[], assertCurrent?: () => void):
   }));
 }
 
-async function getGenerationsBatch(genIds: string[], assertCurrent?: () => void): Promise<GenerationBatchResponse> {
+// allowPartial: 캔버스 상태 조회만 켠다 — 서버 장애 때 로컬 결과 + unavailable 로 받는다(다른 소비자는 지금처럼 실패를 받는다).
+async function getGenerationsBatch(
+  genIds: string[],
+  assertCurrent?: () => void,
+  { allowPartial = false }: { allowPartial?: boolean } = {},
+): Promise<GenerationBatchResponse> {
   const ids = Array.from(new Set(genIds.map((id) => id.trim()).filter(Boolean)));
   if (!ids.length) return { items: {}, materials: {}, missing: [] };
   const chunks: string[][] = [];
   for (let i = 0; i < ids.length; i += GENERATION_BATCH_LIMIT) {
     chunks.push(ids.slice(i, i + GENERATION_BATCH_LIMIT));
   }
-  if (chunks.length === 1) return fetchGenerationBatchPage(chunks[0], assertCurrent);
+  if (chunks.length === 1) return fetchGenerationBatchPage(chunks[0], assertCurrent, allowPartial);
 
   // 큰 씬도 서버 상한을 넘기지 않되 요청 수만큼 한꺼번에 연결하지 않는다. 한 페이지가 실패하면
   // 나머지 worker가 끝난 뒤 전체를 reject해 호출부가 기존 캐시를 유지하고 다음 tick에 다시 시도한다.
@@ -291,7 +302,7 @@ async function getGenerationsBatch(genIds: string[], assertCurrent?: () => void)
   const worker = async () => {
     while (nextPage < chunks.length) {
       const index = nextPage++;
-      pages[index] = await fetchGenerationBatchPage(chunks[index], assertCurrent);
+      pages[index] = await fetchGenerationBatchPage(chunks[index], assertCurrent, allowPartial);
     }
   };
   const workers = Array.from(
@@ -308,6 +319,8 @@ async function getGenerationsBatch(genIds: string[], assertCurrent?: () => void)
     Object.assign(merged.materials, page.materials);
     merged.missing.push(...page.missing);
   }
+  // 켠 호출만 응답 모양이 바뀐다 — 다른 소비자의 응답은 지금 그대로.
+  if (allowPartial) merged.unavailable = pages.flatMap((page) => page.unavailable ?? []);
   return merged;
 }
 

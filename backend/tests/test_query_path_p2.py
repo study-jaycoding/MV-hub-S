@@ -91,6 +91,42 @@ class QueryPathP2Tests(unittest.TestCase):
         self.assertEqual(result[2]["comment_count"], 3)
         private_counts.assert_called_once_with(["local-1", "local-2"], "me")
 
+    def _enrich_with(self, side_effect):
+        """공유 카드 1,001개(코멘트 보강 3조각) 목록을 서버 응답 side_effect 로 돌린다."""
+        rows = [{"id": f"g{i}", "job_id": None, "shared": True, "comment_count": 0} for i in range(1001)]
+        with (
+            mock.patch.object(library.repo, "list_generations", return_value=rows),
+            mock.patch.object(library._proxy, "proxying", return_value=True),
+            mock.patch.object(library._proxy, "proxy_json", side_effect=side_effect) as proxy_json,
+            mock.patch.object(library.repo, "private_generation_comment_counts", return_value={}),
+        ):
+            result = library.list_generations(
+                _Request(), BackgroundTasks(), tab="my", colors=[], tags=[], auto_tags=[], limit=2000,
+            )
+        return result, proxy_json.call_count
+
+    def test_comment_enrichment_stops_after_server_outage(self):
+        """서버 장애(502·503·504)를 처음 만나면 남은 조각은 묻지 않는다(2026-10-03) — 장애 비용이 조각 수만큼 곱해졌다."""
+        from fastapi import HTTPException
+
+        for code in (502, 503, 504):
+            with self.subTest(code=code):
+                _result, calls = self._enrich_with(HTTPException(code, "down"))
+                self.assertEqual(calls, 1)
+
+    def test_comment_enrichment_keeps_earlier_chunks_and_skips_only_bad_chunk(self):
+        from fastapi import HTTPException
+
+        ok = {"g0": {"comment_count": 4, "has_unread": True}}
+        # 앞 조각 성공 → 뒤 조각 장애: 앞 성공분은 남고 세 번째 조각은 묻지 않는다.
+        result, calls = self._enrich_with([ok, HTTPException(502, "down"), AssertionError("물으면 안 된다")])
+        self.assertEqual(calls, 2)
+        self.assertEqual(result[0]["comment_count"], 4)
+        # 장애가 아닌 오류(422)는 그 조각만 건너뛰고 다음 조각을 계속 묻는다(기존 계약).
+        result, calls = self._enrich_with([HTTPException(422, "bad"), {"g500": {"comment_count": 2}}, {}])
+        self.assertEqual(calls, 3)
+        self.assertEqual(result[500]["comment_count"], 2)
+
     def test_batch_visibility_reuses_one_membership_lookup(self):
         """F12: 4개 카드의 기존 가시성 결과를 1회 멤버십 조회로 만든다."""
         request = _Request(

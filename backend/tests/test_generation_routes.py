@@ -110,6 +110,41 @@ class GenerationReadRouteTests(unittest.TestCase):
         self.assertEqual(r.json()["items"]["srv1"]["id"], "loc1")
         self.assertEqual(r.json()["materials"]["srv1"], ["mat1"])
 
+    def _batch_when_server_fails(self, error, allow_partial: bool):
+        from app.routers import _proxy
+
+        body = {"gen_ids": ["loc1", "team9"], **({"allow_partial": True} if allow_partial else {})}
+        with patch.object(_proxy, "proxying", return_value=True), patch.object(_proxy, "proxy_json", side_effect=error):
+            return self.client.post("/api/generations/batch", json=body)
+
+    def test_generation_batch_partial_keeps_local_cards_when_server_is_down(self):
+        # 2026-10-03: 팀 카드 하나 때문에 서버가 안 되면 내 로컬 카드 결과까지 502 로 버렸다(격리 재현 15초 뒤 502).
+        from fastapi import HTTPException
+
+        for code in (502, 503, 504):
+            with self.subTest(code=code):
+                r = self._batch_when_server_fails(HTTPException(code, "공유 서버 연결 실패"), allow_partial=True)
+                self.assertEqual(r.status_code, 200)
+                data = r.json()
+                self.assertEqual(set(data["items"]), {"loc1"})
+                self.assertEqual(data["unavailable"], ["team9"])
+                self.assertEqual(data["missing"], [])  # 확인 못 한 것은 삭제가 아니다
+
+    def test_generation_batch_without_opt_in_keeps_whole_failure(self):
+        # 옛 화면·다른 소비자는 지금처럼 실패를 받아 자기 재시도·미확인 경로로 간다.
+        from fastapi import HTTPException
+
+        r = self._batch_when_server_fails(HTTPException(502, "x"), allow_partial=False)
+        self.assertEqual(r.status_code, 502)
+
+    def test_generation_batch_partial_does_not_hide_auth_or_server_errors(self):
+        from fastapi import HTTPException
+
+        for code in (401, 403, 500):
+            with self.subTest(code=code):
+                r = self._batch_when_server_fails(HTTPException(code, "x"), allow_partial=True)
+                self.assertEqual(r.status_code, code)
+
     def test_generation_batch_rejects_unbounded_request(self):
         r = self.client.post(
             "/api/generations/batch",

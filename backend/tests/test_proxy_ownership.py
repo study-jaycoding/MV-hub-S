@@ -108,7 +108,7 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/notifications/comments",
         "/api/notifications/comments/seen-all",
         "/api/provider",
-        "/api/ready",
+        # /api/ready 는 2026-10-03 부터 로컬 — 업데이터가 설치 확인에 쓰는 '이 허브'의 준비 상태다.
         "/api/share/publish-bundle",
         # 업데이트 공지 목록·고정·읽음은 팀 공용 상태라 공유 서버 DB가 진실원천이다.
         "/api/update-notices",

@@ -136,7 +136,7 @@ def test_stream_proxy_forwards_range_and_preserves_partial_response_headers():
     with (
         mock.patch.object(_proxy, "base_url", return_value="http://server.test"),
         mock.patch.object(_proxy, "token", return_value="secret-token"),
-        mock.patch.object(_proxy.urllib.request, "urlopen", side_effect=urlopen),
+        mock.patch.object(_proxy, "_open", side_effect=urlopen),
     ):
         response = asyncio.run(_proxy._forward_stream(request))
         body = asyncio.run(_collect_body(response.body_iterator))

@@ -7,6 +7,9 @@ import { STORAGE_KEYS } from "./storageKeys";
 import { setAccountScope } from "./accountScope";
 import { useCustomEvent } from "./useCustomEvent";
 import type { Account, AuthConfig } from "../types";
+import { HttpError } from "./http";
+
+const FINALIZE_ROLES_RETRY_MS = 30_000;
 
 export interface SharedServerState {
   configured: boolean;
@@ -209,16 +212,26 @@ export function useHubAuth() {
       return;
     }
     let ignore = false;
-    api
-      .myFinalizeRoles()
-      .then((r) => {
-        if (!ignore) setFinalizeProjects(new Set(r.project_ids));
-      })
-      .catch(() => {
-        if (!ignore) setFinalizeProjects(new Set());
-      });
+    let retry: number | undefined;
+    const load = () => {
+      api
+        .myFinalizeRoles()
+        .then((r) => {
+          if (!ignore) setFinalizeProjects(new Set(r.project_ids));
+        })
+        .catch((error) => {
+          if (ignore) return;
+          setFinalizeProjects(new Set());
+          // 서버가 잠깐 안 될 때의 실패가 새로고침 전까지 '권한 없음'으로 굳지 않게 30초 뒤 다시 묻는다
+          // (2026-10-03). 확정 거부(401·403)는 다시 묻지 않는다.
+          if (error instanceof HttpError && (error.status === 401 || error.status === 403)) return;
+          retry = window.setTimeout(load, FINALIZE_ROLES_RETRY_MS);
+        });
+    };
+    load();
     return () => {
       ignore = true;
+      if (retry !== undefined) window.clearTimeout(retry);
     };
   }, [account, authConfig?.auth_enabled]);
 

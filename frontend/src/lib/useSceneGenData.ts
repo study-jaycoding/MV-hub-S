@@ -249,7 +249,8 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
       // 생성물 상태와 직접 레퍼런스 부모를 한 번에 조회 — 카드별 generation/history N+1 제거.
       let batch: Awaited<ReturnType<typeof api.getGenerationsBatch>>;
       try {
-        batch = await api.getGenerationsBatch(pollIds, assertCurrent);
+        // 서버 장애 때도 내 로컬 카드 상태는 받는다 — 못 물어본 팀 카드는 unavailable(삭제 아님, 2026-10-03).
+        batch = await api.getGenerationsBatch(pollIds, assertCurrent, { allowPartial: true });
       } catch (error) {
         if (error instanceof ColorScopeChangedError || !current()) return;
         // 일시 오류는 기존 캐시를 유지하고 같은 묶음을 다시 시도한다. 캔버스가 열려 있는 동안은
@@ -314,11 +315,12 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
         }
         return changed ? next : prev;
       });
-      // 재폴은 '아직 진행 중'인 id 만 — 완료 카드를 매 2.5초 다시 조회하던 N+1 폴링 제거.
+      // 재폴은 '아직 진행 중'인 id + 서버 장애로 못 물어본 id — 완료 카드를 매 2.5초 다시 조회하던 N+1 폴링 제거.
+      const unavailable = new Set(batch.unavailable ?? []);
       const stillPending = rs
         .filter((r) =>
           (r.gen && ["pending", "queued", "running", "processing"].includes(String(r.gen.status))) ||
-          (!r.gen && pendingAttemptIds.has(r.id)),
+          (!r.gen && (pendingAttemptIds.has(r.id) || unavailable.has(r.id))),
         )
         .map((r) => r.id);
       if (stillPending.length) timer = window.setTimeout(() => tick(stillPending), 2500);

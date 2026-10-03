@@ -348,7 +348,7 @@ class RemoteResponse(io.BytesIO):
 def test_proxy_rejects_missing_or_wrong_filter_even_empty(monkeypatch, upstream_filter):
     monkeypatch.setattr(_proxy, "token", lambda: "test-only")
     monkeypatch.setattr(_proxy, "base_url", lambda: "http://example.test")
-    monkeypatch.setattr(_proxy.urllib.request, "urlopen", lambda *_a, **_k: RemoteResponse([], upstream_filter))
+    monkeypatch.setattr(_proxy, "_open", lambda *_a, **_k: RemoteResponse([], upstream_filter))
     with pytest.raises(HTTPException) as caught:
         _proxy.proxy_json("GET", "/api/generations", required_review_filter="held")
     assert caught.value.status_code == 409
@@ -357,7 +357,7 @@ def test_proxy_rejects_missing_or_wrong_filter_even_empty(monkeypatch, upstream_
 def test_proxy_rejects_missing_hold_field(monkeypatch):
     monkeypatch.setattr(_proxy, "token", lambda: "test-only")
     monkeypatch.setattr(_proxy, "base_url", lambda: "http://example.test")
-    monkeypatch.setattr(_proxy.urllib.request, "urlopen", lambda *_a, **_k: RemoteResponse([{"id": "old"}], "held"))
+    monkeypatch.setattr(_proxy, "_open", lambda *_a, **_k: RemoteResponse([{"id": "old"}], "held"))
     with pytest.raises(HTTPException) as caught:
         _proxy.proxy_json("GET", "/api/generations", required_review_filter="held")
     assert caught.value.status_code == 409
@@ -372,7 +372,7 @@ def test_proxy_review_filter_verified_for_every_overlay_page(catalog, monkeypatc
         RemoteResponse([{"id": str(i), "sort_ts": i, "is_held": True} for i in range(200)], "held"),
         RemoteResponse([], None),
     ])
-    monkeypatch.setattr(_proxy.urllib.request, "urlopen", lambda *_a, **_k: next(pages))
+    monkeypatch.setattr(_proxy, "_open", lambda *_a, **_k: next(pages))
     with client() as api:
         response = api.get("/api/generations?tab=team&review_filter=held&colors=red")
     assert response.status_code == 409
@@ -383,7 +383,7 @@ def test_proxy_passes_verified_empty_filter_header(catalog, monkeypatch):
     monkeypatch.setattr(_proxy, "token", lambda: "test-only")
     monkeypatch.setattr(_proxy, "base_url", lambda: "http://example.test")
     monkeypatch.setattr(library, "_overlay_personal_meta", lambda data, _request: data)
-    monkeypatch.setattr(_proxy.urllib.request, "urlopen", lambda *_a, **_k: RemoteResponse([], "held"))
+    monkeypatch.setattr(_proxy, "_open", lambda *_a, **_k: RemoteResponse([], "held"))
     with client() as api:
         response = api.get("/api/generations?tab=team&review_filter=held")
     assert response.status_code == 200
