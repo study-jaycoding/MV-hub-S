@@ -690,6 +690,9 @@ class AssetRegistryController:
         outcome: dict[str, Any] = {"applied": False}
         if complete:
             outcome = await to_thread_non_abandon(self._apply_results, pid, root_raw, files)
+        if "files" in outcome:
+            # 저장 결과의 files(저장한 행 수)는 아래 files(훑은 수)와 이름이 겹친다 — 겹치면 TypeError 가 회차 전체를 멈췄다(2026-10-03).
+            outcome["saved"] = outcome.pop("files")
         log_event(_log, "nas_results_scan", project_id=pid, complete=complete, files=len(files),
                   read=int((end or {}).get("read") or 0), undetermined=int((end or {}).get("undetermined") or 0),
                   pending=int((end or {}).get("pending") or 0), note=note or (end or {}).get("note") or "",

@@ -226,6 +226,36 @@ class SnapshotTests(unittest.TestCase):
             conn.execute("UPDATE project SET render_root_path=? WHERE id='p1'", (r"Z:\OTHER",))
         self.assertEqual(self.rows(), [])
 
+    def test_a_full_run_saves_every_project_with_the_real_save_result(self) -> None:
+        """병합 전 검토 P1(2026-10-03) — 실제 저장 반환값 {applied, files} 의 files 가 로그 인자와 겹쳐 TypeError 가 났고,
+        바깥 회차가 잡아 **뒤 프로젝트의 대장 훑기까지** 멈췄다(요약은 0·0). 가짜 {} 로는 안 보여 실제 저장 함수로 두 프로젝트를 돈다."""
+        with get_connection() as conn:
+            conn.execute("INSERT INTO project(id, name, kind, render_root_path) VALUES('p2','Q','team',?)",
+                         (r"Z:\PROJ\20_ai",))
+        ctl = svc.AssetRegistryController()
+        row = svc.result_row({"p": "render/a.mp4", "b": 10, "m": 1, "h": SHA, "hf": None, "mj": None, "mg": None,
+                              "st": "ok"})
+        scanned, logged = [], []
+
+        async def fake_scan(pid, name, root, rate, deadline):
+            scanned.append(pid)
+            return {"state": "ok", "large": []}
+
+        async def fake_child(job, deadline_s, reader=None):
+            return {"t": "end", "complete": True, "read": 1}, [dict(row)], [], ""
+
+        projects = [("p1", "P", r"Z:\PROJ\10_ai"), ("p2", "Q", r"Z:\PROJ\20_ai")]
+        with patch.object(ctl, "_projects", lambda: projects), patch.object(ctl, "_scan_project", fake_scan), \
+                patch.object(ctl, "_run_child", fake_child), \
+                patch.object(svc, "log_event", lambda _log, event, **fields: logged.append((event, fields))):
+            asyncio.run(ctl._run(None, "auto"))
+
+        self.assertEqual(scanned, ["p1", "p2"])
+        self.assertEqual({k: ctl._last[k] for k in ("projects", "failed")}, {"projects": 2, "failed": 0})
+        self.assertNotIn("asset_registry_run_failed", [event for event, _f in logged])
+        self.assertEqual([(f["project_id"], f["files"], f["applied"], f["saved"]) for event, f in logged
+                          if event == "nas_results_scan"], [("p1", 1, True, 1), ("p2", 1, True, 1)])
+
     def test_values_kept_only_for_ok_rows(self) -> None:
         row = svc.result_row({"p": "a.png", "b": 5, "m": 1, "h": SHA, "hf": J1, "mj": None, "mg": None, "st": "pending"})
         self.assertEqual((row["head_sha"], row["hf_job_id"], row["status"]), (None, None, "pending"))
@@ -244,7 +274,8 @@ class ControllerHookTests(unittest.TestCase):
             return {"t": "end", "complete": True, "read": 1}, [{"path": "a.mp4"}], [], ""
 
         with patch.object(ctl, "_scan_project", fake_scan), patch.object(ctl, "_run_child", fake_child), \
-                patch.object(ctl, "_apply_results", lambda pid, root, files: applied.append((pid, root, files)) or {}):
+                patch.object(ctl, "_apply_results",  # 실제 서버 저장과 같은 모양(빈 {} 는 P1 을 숨겼다)
+                             lambda pid, root, files: applied.append((pid, root, files)) or {"applied": True, "files": len(files)}):
             self.state = "ok"
             asyncio.run(ctl._project_run("p1", "P", r"Z:\PROJ", 1.0, 10.0))
             self.state = "stopped"
