@@ -30,8 +30,10 @@ owner: Claude(백엔드·통합) · Claude 조사원(프론트·도구) · revie
   이어서 남은 위험 검토(Codex) — 업데이트 복구 표식 유실(main 부터 있던 P2)·확인창 판 표시(P3)를 고침(dev, 미병합).
 - **병합 전 검토(10-03 저녁, dev 두 세션 묶음)**: Codex 정적 검토가 P1 1건(서버 결과물 훑기 저장 성공 뒤 로그 인자 중복 → 회차 전체 중단)을 찾음 → 고침 `f7dfadf9`·Codex 승인 → **병합 조건부 가능**. 실DB 사본 4곳(서버 사본 포함)·게이트(백업 연습·100명)·옛/새 4조합(옛 서버 `a79957f7`·옛 허브 0958) 통과, 최종본 pytest 4,859. 상세는 기억 노트(병합 검토 10-03)·[NAS_RESULTS.md](NAS_RESULTS.md).
 - 0958 은 10-03 10:04:33 에 이미 공개됐다(NAS `latest.json` 직접 확인). 오후에 '공개=0926·0958 [공지] 대기'로 적은 것은 아침 기록을 다시 확인하지 않은 오류였고, 그 위에서 내린 '0958 건너뛰기'도 효력이 없다.
-- **병합·후보 게시(10-05, Jay 지시)**: dev → main `4c19affd` fast-forward·푸시 → 릴리스 폴더 게이트 통과 → 후보 **`2026.10.05-1252`** NAS 게시(공개는 0958 그대로).
-- 다음(Jay): ①공유 서버 `update_git` → `/api/ready`(새 DB 칸·표: manage `team_generation_fact.result_bytes·result_head_sha`, content `asset` 4칸·`nas_result_scan`·`nas_result_file` — 서버 켤 때 만든다. 옛 서버+새 허브 조합도 실측 통과라 순서가 바뀌어도 깨지지 않지만 서버 먼저 권장) ②관리자 창 업데이트 탭에서 1252 를 **[공지]**(후보 선설치가 들어간 첫 판이라 [공지]로 낸다) ③후보 선설치 실측은 **대기**.
+- **병합·후보 게시(10-05, Jay 지시)**: dev → main `4c19affd` fast-forward·푸시 → 릴리스 폴더 게이트 통과 → 후보 **`2026.10.05-1252`** NAS 게시 → **13:06 Jay [공지]로 공개**(NAS `latest.json` 직접 확인).
+- **업데이트 탭 개편(10-05, dev — 미병합)**: Jay 모의 그림 확인·[해제] A안 → 업데이트 탭 = NAS 의 **모든 판**, 어느 줄이든 **[배포] 한 번**(알림 + 표지, 옛 판이면 되돌리기), [해제]는 알림만(줄 남음), 고정 칸 없앰.
+  Codex 설계 검토 2회(P1 = 후보 요청을 판 선택으로 바꿔 새 후보를 지우는 길 → 요청 분리·화면이 본 sha 확인)·코드 리뷰 승인. 공유 서버 변경 없음 — 이 개편이 든 판은 1252 화면 흐름으로 낸다. 계약 [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md) '판 선택 배포'.
+- 다음(Jay): ①공유 서버 `update_git` → `/api/ready`(새 DB 칸·표: manage `team_generation_fact.result_bytes·result_head_sha`, content `asset` 4칸·`nas_result_scan`·`nas_result_file` — 서버 켤 때 만든다. 옛 서버+새 허브 조합도 실측 통과. **적용 여부 미확인**) ②1252 [공지] — 완료(13:06) ③후보 선설치 실측은 다음 판에서(업데이트 탭 개편 판이 첫 대상).
 - **Jay 결정(10-03)**: 에셋 창에 끌어 놓은 파일은 지금처럼 보고 있는 폴더(NAS 포함)에 넣는다 — 06-23 부터 같은 동작. 프롬프트·캔버스 반입은 이 PC(09-29 결정 그대로).
 
 ## 최근 완료(상세는 링크)
@@ -53,7 +55,7 @@ owner: Claude(백엔드·통합) · Claude 조사원(프론트·도구) · revie
 | 코드 — `dev` | `main` 과 같음(이 표를 고친 문서 커밋은 미푸시일 수 있다) |
 | 코드 — `main` = `origin/main` | `4c19affd`(10-05 병합 — 서버 불통 지연·후보 선설치·복구 표식 + 결과 파일 지문·결과물 훑기. 그 아래 `41a2c155` = 0958) |
 | 릴리스 제작 기준 | `4c19affd` — 고정 폴더 `MV-hub-S-release` 의 HEAD = `origin/main`·작업 트리 clean |
-| NAS 게시본 | 공개(`latest.json`) = **`2026.10.03-0958`**(main `41a2c155`, SHA256 `07dd41a5…`) · 후보(`candidate.json`) = **`2026.10.05-1252`**(main `4c19affd`, SHA256 `3b2c20e4…` = NAS = 로컬, 10-05 12:54 게시 — [공지] 전). 되돌리기 = `release/select_release.ps1 -PackagePath Z:\mvutil\MV_hub_S\packages\MVHub-2026.10.03-0958.zip`(그 이전은 `…2026.10.03-0926.zip`) |
+| NAS 게시본 | 공개(`latest.json`) = 후보(`candidate.json`) = **`2026.10.05-1252`**(main `4c19affd`, SHA256 `3b2c20e4…` = NAS = 로컬, 10-05 12:54 게시·13:06 [공지] — 직전 표지 0958 은 `latest-backups\latest.previous-20261005-130651-*.json`). 되돌리기 = `release/select_release.ps1 -PackagePath Z:\mvutil\MV_hub_S\packages\MVHub-2026.10.03-0958.zip` |
 | 운영 적용본 | 공유 서버 = `192.168.1.171:8010`, 코드 `a79957f7`(10-02 update_git — main `4c19affd` 에는 서버 쪽 변경(새 DB 칸·결과물 훑기)이 있어 `update_git` 필요). 이사 공지 = .171 revision 2(10-02 확인). 작업자 PC 별 적용 판은 **미확인** |
 
 ## 최신 전체 검증 1회분

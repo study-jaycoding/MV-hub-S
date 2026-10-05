@@ -4,21 +4,26 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { HttpError } from "../src/lib/http";
 
 const mocks = vi.hoisted(() => ({
   sharedServerStatus: vi.fn(), members: vi.fn(), listAccounts: vi.fn(),
   projects: vi.fn(), allProjectMembers: vi.fn(), projectFolderLinks: vi.fn(), workspaceOptions: vi.fn(),
   workspaceMembers: vi.fn(), creditPlanSettings: vi.fn(),
-  adminList: vi.fn(), latestRelease: vi.fn(),
+  adminList: vi.fn(), latestRelease: vi.fn(), packages: vi.fn(),
 }));
 vi.mock("../src/api", () => ({ api: mocks }));
 vi.mock("../src/lib/manageApi", () => ({ manageApi: mocks }));
 vi.mock("../src/lib/useManageCaps", () => ({
   useManageCaps: () => ({ loaded: true, authOff: false, system: true, createProject: true, grantRole: true, readAll: true }),
 }));
-vi.mock("../src/lib/updateNotices", () => ({ updateNoticeApi: { adminList: mocks.adminList } }));
+vi.mock("../src/lib/updateNotices", () => ({
+  // 표지·후보의 공지를 단건으로도 찾는다(목록 밖) — 여기서는 "아직 등록 안 됨"(404)
+  updateNoticeApi: { adminList: mocks.adminList, adminItem: () => Promise.reject(new HttpError(404, "404", "업데이트 항목이 없습니다")) },
+}));
 vi.mock("../src/lib/releaseUpdate", () => ({
   getLatestReleaseMetadata: mocks.latestRelease,
+  listReleasePackages: mocks.packages, // 줄 = NAS 의 모든 판(2026-10-05)
   // 업데이트 탭이 이 PC 판을 함께 읽는다(후보 먼저 설치 단추, 2026-10-03).
   getReleaseUpdateStatus: () => Promise.resolve({ install_mode: "release", current_version: "", state: "up_to_date" }),
 }));
@@ -55,7 +60,13 @@ beforeEach(() => {
     { id: "n1", version: "2026.10.01-0906", file: "MVHub-2026.10.01-0906.zip", released_at: "", pinned: false,
       announcement_revision: 1, announced_at: null, unread: false, sha256: "aaa" },
   ]);
-  mocks.latestRelease.mockResolvedValue({ version: "2026.10.03-1420", sha256: "bbb" });
+  mocks.latestRelease.mockResolvedValue({
+    version: "2026.10.03-1420", file: "MVHub-2026.10.03-1420.zip", sha256: "bbb", size: 1, created_at: "", source: "candidate",
+    candidate_error: null, published: { version: "2026.10.01-0906", sha256: "aaa", file: "MVHub-2026.10.01-0906.zip" },
+    published_state: "ok", pending: true,
+  });
+  mocks.packages.mockResolvedValue(["2026.10.03-1420", "2026.10.01-0906"].map((version) =>
+    ({ file: `MVHub-${version}.zip`, version, size: 1, modified: "" })));
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
@@ -92,7 +103,9 @@ it("업데이트 관리는 '업데이트' 탭에만 있고, 그 탭을 열 때 �
   await clickTab("업데이트");
   expect(mocks.adminList).toHaveBeenCalledTimes(1);
   expect(host.textContent).toContain("업데이트 관리");
-  expect(host.textContent).toContain("최신 업데이트 v2026.10.03-1420 등록");
+  expect(mocks.packages).toHaveBeenCalledTimes(1);
+  expect(host.textContent).toContain("v2026.10.03-1420");
+  expect(host.textContent).toContain("새 후보 · 배포 전");
   expect(host.textContent).toContain("v2026.10.01-0906");
   expect(host.textContent).toContain("재공지");
 });

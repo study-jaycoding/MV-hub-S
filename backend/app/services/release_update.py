@@ -535,7 +535,7 @@ def release_overview(root: Path = APP_ROOT) -> dict[str, Any]:
         **{key: shown[key] for key in ("version", "file", "sha256", "size", "created_at")},
         "source": "candidate" if cand is not None else "latest",
         "candidate_error": "candidate.json 을 읽을 수 없습니다" if cand_state == "error" else None,
-        "published": None if pub is None else {"version": pub["version"], "sha256": pub["sha256"]},
+        "published": None if pub is None else {"version": pub["version"], "sha256": pub["sha256"], "file": pub["file"]},
         "published_state": pub_state,
         "pending": pending,
     }
@@ -726,6 +726,186 @@ def promote_candidate(expected: dict[str, Any], root: Path = APP_ROOT) -> dict[s
             _backup_published(folder, pub_raw)
         _replace_published(published_path, cand_raw, pub_raw)
     return {"promoted": True, "already": False, "version": cand["version"]}
+
+
+# ── NAS 판 목록·판 선택 배포(2026-10-05, Jay) — 업데이트 탭이 NAS 의 모든 판을 보이고 어느 판이든 [배포] ──
+# 후보 줄은 위 promote_candidate 그대로(후보가 바뀌면 거절). 그 밖의 판은 deploy_package — select_release 와 같은
+# 규칙(후보 먼저·표지 마지막, 같은 원문)이되, 화면이 본 두 표지가 그새 바뀌었으면 거절한다(Codex 설계 검토 v2).
+_PACKAGE_RE = re.compile(r"MVHub-(\d{4}\.\d{2}\.\d{2}-\d{4})\.zip")
+_ZIP_META_MAX_BYTES = 64 * 1024
+
+
+def _release_folder(root: Path) -> Path:
+    source = install_source(root)
+    if source.lower().startswith(("http://", "https://")):
+        raise ReleasePromoteError("HTTP 릴리스 위치에서는 판 목록·배포를 할 수 없습니다(폴더 경로만 가능합니다)", 400)
+    return Path(source)
+
+
+def _package_version(name: str) -> str | None:
+    """make_release 가 만든 판 이름이면 그 버전(달력에 있는 시각만), 아니면 None — `.part-*`·다른 파일 제외."""
+    match = _PACKAGE_RE.fullmatch(name)
+    if not match:
+        return None
+    try:
+        datetime.strptime(match.group(1), "%Y.%m.%d-%H%M")
+    except ValueError:
+        return None
+    return match.group(1)
+
+
+def list_packages(root: Path = APP_ROOT) -> list[dict[str, Any]]:
+    """릴리스 폴더의 판 zip 목록(새 판 먼저). 지문은 계산하지 않는다(빠르게) — [배포] 때 package_manifest 로."""
+    folder = _release_folder(root)
+    rows: list[dict[str, Any]] = []
+    try:
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                version = _package_version(entry.name)
+                if version is None or not entry.is_file(follow_symlinks=False):
+                    continue
+                info = entry.stat(follow_symlinks=False)
+                rows.append({
+                    "file": entry.name,
+                    "version": version,
+                    "size": info.st_size,
+                    "modified": datetime.fromtimestamp(info.st_mtime, timezone.utc).isoformat(timespec="seconds"),
+                })
+    except OSError as exc:
+        raise _safe_os_error(exc) from exc
+    return sorted(rows, key=lambda row: row["version"], reverse=True)
+
+
+def _zip_text(archive: Any, names: dict[str, Any], name: str) -> str:
+    info = names.get(name)
+    if info is None or info.file_size > _ZIP_META_MAX_BYTES:
+        raise ReleasePromoteError(f"설치 파일 안에 {name} 이(가) 없습니다 — 이 판은 배포할 수 없습니다", 400)
+    return archive.read(info).decode("utf-8-sig").strip()
+
+
+def _package_manifest(folder: Path, file: str) -> tuple[dict[str, Any], bytes]:
+    """판 zip 의 표지 내용과 원문 바이트(select_release 와 같은 검사·형식). 수백 MB 를 읽는다 — 잠금 밖에서.
+
+    created_at 은 실행 시각이 아니라 버전(=제작 시각)에서 만든다 — 같은 판은 언제 만들어도 같은 원문이다.
+    make_release 의 `Get-Date .ToString("s")` 처럼 시간대 없는 현지 시각(서버가 이를 UTC 로 읽는 버릇은 그대로).
+    """
+    import zipfile
+
+    version = _package_version(file)
+    if version is None:
+        raise ReleasePromoteError("판 파일 이름이 올바르지 않습니다", 400)
+    path = folder / file
+    try:
+        size = path.stat().st_size
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        with zipfile.ZipFile(path) as archive:
+            names = {info.filename.replace("\\", "/"): info for info in archive.infolist()}
+            inner_version = _zip_text(archive, names, "VERSION.txt")
+            cli_pin = _zip_text(archive, names, "hf_cli_version.txt")
+            cli_package = json.loads(_zip_text(
+                archive, names, "runtime/higgsfield/node_modules/@higgsfield/cli/package.json"
+            )).get("version")
+    except FileNotFoundError as exc:
+        raise ReleasePromoteError("그 판의 설치 파일이 릴리스 폴더에 없습니다", 400) from exc
+    except ReleasePromoteError:
+        raise
+    except OSError as exc:
+        raise _safe_os_error(exc) from exc
+    except (zipfile.BadZipFile, UnicodeDecodeError, ValueError, AttributeError) as exc:
+        raise ReleasePromoteError("설치 파일이 깨져 있습니다 — 이 판은 배포할 수 없습니다", 400) from exc
+    if inner_version != version:
+        raise ReleasePromoteError("설치 파일 안의 버전이 파일 이름과 다릅니다 — 이 판은 배포할 수 없습니다", 400)
+    if not cli_pin or cli_package != cli_pin:
+        raise ReleasePromoteError("설치 파일 안의 Higgsfield CLI 정보가 맞지 않습니다 — 이 판은 배포할 수 없습니다", 400)
+    created = datetime.strptime(version, "%Y.%m.%d-%H%M").isoformat(timespec="seconds")
+    manifest = {
+        "version": version,
+        "higgsfield_cli_version": cli_pin,
+        "file": file,
+        "sha256": digest.hexdigest(),
+        "size": size,
+        "created_at": created,
+    }
+    raw = b"\xef\xbb\xbf" + (json.dumps(manifest, ensure_ascii=False, indent=4) + "\r\n").encode("utf-8")
+    return manifest, raw
+
+
+def package_manifest(file: str, root: Path = APP_ROOT) -> dict[str, Any]:
+    """[배포] 전 그 판의 지문 등(쓰기 없음) — 화면이 이 sha 로 공지 항목을 찾거나 등록한다."""
+    return _package_manifest(_release_folder(root), file)[0]
+
+
+def _manifest_state(path: Path) -> tuple[bytes | None, dict[str, Any] | None]:
+    """표지 원문과 해석 — 확인된 부재만 (None, None). 읽기·해석 실패는 거절(고쳐 쓰지 않는다)."""
+    raw = _read_manifest_bytes(path)
+    if raw is None:
+        return None, None
+    try:
+        return raw, _parse_manifest(raw, path.name)
+    except ReleaseUpdateError as exc:
+        raise ReleasePromoteError(f"{path.name} 이(가) 깨져 있어 배포할 수 없습니다 — select_release 로 먼저 고치세요") from exc
+
+
+def deploy_package(
+    expected: dict[str, Any], expect_published: str, expect_candidate: str, root: Path = APP_ROOT,
+) -> dict[str, Any]:
+    """[공지]한 판(후보가 아니어도)을 팀에 배포 — 후보와 표지를 그 판으로(select_release 와 같은 순서).
+
+    expected = 서버가 확인해 준 공지 항목. expect_* = 화면이 본 두 표지의 sha(없으면 "") — 그새 다른 관리자가
+    후보를 올렸거나 배포했으면 거절한다(후보 요청을 판 선택으로 바꿔 새 후보를 지우는 일을 막는다, Codex P1).
+    표지가 이미 그 판이면 아무것도 쓰지 않는다(새 후보 보존).
+    """
+    folder = _release_folder(root)
+    candidate_path, published_path = folder / "candidate.json", folder / "latest.json"
+    cand_raw, cand = _manifest_state(candidate_path)
+    pub_raw, published = _manifest_state(published_path)
+    seen = ((published or {}).get("sha256", ""), (cand or {}).get("sha256", ""))
+    if seen != (str(expect_published or "").lower(), str(expect_candidate or "").lower()):
+        raise ReleasePromoteError("릴리스 폴더가 그새 바뀌었습니다 — 업데이트 탭을 다시 열어 확인하세요")
+    target = str(expected.get("sha256") or "").lower()
+    if published is not None and published["sha256"] == target:
+        return {"promoted": False, "already": True, "version": published["version"], "rolled_back": False}
+    if cand is not None and cand["sha256"] == target:
+        # 부분 실패(후보만 바뀜) 뒤 재시도 — 같은 원문을 표지로. 지문만 같고 나머지가 다르면 거절(Codex v2 조건).
+        if _release_key(cand) != _release_key(expected):
+            raise ReleasePromoteError("후보가 바뀌었습니다 — 업데이트 탭을 다시 열어 확인하세요")
+        _verify_package(folder / cand["file"], cand["size"], cand["sha256"])
+        manifest, new_raw = cand, cand_raw
+    else:
+        manifest, new_raw = _package_manifest(folder, str(expected.get("file") or ""))
+        if _release_key(manifest) != _release_key(expected):
+            raise ReleasePromoteError("설치 파일이 공지한 판과 다릅니다 — 업데이트 탭을 다시 열어 확인하세요")
+    with _release_lock(folder):
+        if _read_manifest_bytes(candidate_path) != cand_raw or _read_manifest_bytes(published_path) != pub_raw:
+            raise ReleasePromoteError("릴리스 폴더가 그새 바뀌었습니다 — 업데이트 탭을 다시 열어 확인하세요")
+        if pub_raw is not None:
+            _backup_published(folder, pub_raw)
+        if cand_raw != new_raw:
+            try:
+                _replace_published(candidate_path, new_raw, cand_raw)
+            except ReleasePromoteError as exc:
+                if exc.status >= 500:
+                    raise ReleasePromoteError(
+                        "후보 파일 교체 결과를 확인할 수 없습니다(공개 표지는 그대로) — 업데이트 탭을 다시 열어 확인하세요", 500,
+                    ) from exc
+                raise
+        try:
+            _replace_published(published_path, new_raw, pub_raw)
+        except ReleasePromoteError as exc:
+            if exc.status >= 500:
+                raise ReleasePromoteError(
+                    f"후보 파일은 v{manifest['version']} 이고 공개 표지 결과는 확인할 수 없습니다 — 업데이트 탭을 다시 열어 확인하세요",
+                    500,
+                ) from exc
+            raise ReleasePromoteError(
+                f"후보 파일은 v{manifest['version']} 이지만 공개 표지는 그대로입니다 — [배포]를 다시 누르세요({exc})",
+                exc.status,
+            ) from exc
+    rolled_back = published is not None and _newer_dated(published["version"], manifest["version"])
+    return {"promoted": True, "already": False, "version": manifest["version"], "rolled_back": rolled_back}
 
 
 def _base_status(root: Path) -> dict[str, Any]:

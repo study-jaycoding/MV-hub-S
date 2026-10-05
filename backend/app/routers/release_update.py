@@ -19,8 +19,11 @@ from ..services.release_update import (
     ReleasePromoteError,
     ReleaseUpdateBusyError,
     ReleaseUpdateError,
+    deploy_package,
     get_status,
     install_mode,
+    list_packages,
+    package_manifest,
     promote_candidate,
     release_overview,
     start_update,
@@ -118,38 +121,47 @@ class PromoteIn(BaseModel):
     sha256: str
 
 
-@router.post("/promote")
-def release_update_promote(body: PromoteIn, request: Request):
-    """[공지]한 후보를 팀에 배포 — NAS 표지(latest.json)를 후보로 바꾼다(B안 r4).
-
-    동기 def(스레드풀): 서버 단건 조회·NAS 읽기·zip 검증·잠금이 이벤트 루프를 막지 않게 한 덩어리로 돈다.
-    '공지됐나'는 공유 서버가 판정한다(관리자만 단건 조회 가능). 서버 오류는 그대로 중단 — 로컬 판단으로
-    대신하지 않는다. 최종 쓰기 권한은 NAS 의 릴리스 폴더 권한이다.
-    """
+def _require_admin_release_pc(request: Request) -> None:
     _require_local(request)
     if install_mode(APP_ROOT) != "release":
         raise HTTPException(status_code=400, detail="릴리스 설치본(관리자 PC)에서만 배포할 수 있습니다")
     if not _proxy.proxying():
         raise HTTPException(status_code=400, detail="공유 서버에 연결된 관리자 PC 에서만 배포할 수 있습니다")
+
+
+def _announced_item(notice_id: str, digest: str) -> dict:
+    """'공지됐나'는 공유 서버가 판정한다(관리자만 단건 조회 가능) — 계정 고정 범위 안에서 부른다."""
+    try:
+        item = _proxy.proxy_json(
+            "GET", "/api/update-notices/admin/item", params={"sha256": digest}, timeout=20
+        )
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            detail = (
+                "공유 서버를 업데이트한 뒤 배포할 수 있습니다"
+                if exc.detail == "Not Found"  # 라우트가 없는 옛 서버(새 서버의 '없음'은 한국어 문구)
+                else "목록에 등록·공지된 후보만 배포할 수 있습니다"
+            )
+            raise HTTPException(status_code=409, detail=detail) from exc
+        raise
+    if not isinstance(item, dict) or item.get("id") != notice_id:
+        raise HTTPException(status_code=409, detail="업데이트 항목이 바뀌었습니다 — 업데이트 탭을 다시 열어 확인하세요")
+    if int(item.get("announcement_revision") or 0) < 1:
+        raise HTTPException(status_code=409, detail="공지된 업데이트만 팀에 배포할 수 있습니다")
+    return item
+
+
+@router.post("/promote")
+def release_update_promote(body: PromoteIn, request: Request):
+    """[공지]한 후보를 팀에 배포 — NAS 표지(latest.json)를 후보로 바꾼다(B안 r4).
+
+    동기 def(스레드풀): 서버 단건 조회·NAS 읽기·zip 검증·잠금이 이벤트 루프를 막지 않게 한 덩어리로 돈다.
+    서버 오류는 그대로 중단 — 로컬 판단으로 대신하지 않는다. 최종 쓰기 권한은 NAS 의 릴리스 폴더 권한이다.
+    """
+    _require_admin_release_pc(request)
     digest = body.sha256.strip().lower()
     with active_account.pinned_account_scope():
-        try:
-            item = _proxy.proxy_json(
-                "GET", "/api/update-notices/admin/item", params={"sha256": digest}, timeout=20
-            )
-        except HTTPException as exc:
-            if exc.status_code == 404:
-                detail = (
-                    "공유 서버를 업데이트한 뒤 배포할 수 있습니다"
-                    if exc.detail == "Not Found"  # 라우트가 없는 옛 서버(새 서버의 '없음'은 한국어 문구)
-                    else "목록에 등록·공지된 후보만 배포할 수 있습니다"
-                )
-                raise HTTPException(status_code=409, detail=detail) from exc
-            raise
-        if not isinstance(item, dict) or item.get("id") != body.notice_id:
-            raise HTTPException(status_code=409, detail="업데이트 항목이 바뀌었습니다 — 업데이트 탭을 다시 열어 확인하세요")
-        if int(item.get("announcement_revision") or 0) < 1:
-            raise HTTPException(status_code=409, detail="공지된 업데이트만 팀에 배포할 수 있습니다")
+        item = _announced_item(body.notice_id, digest)
         try:
             result = promote_candidate(item, APP_ROOT)
         except ReleasePromoteError as exc:
@@ -157,6 +169,62 @@ def release_update_promote(body: PromoteIn, request: Request):
         except ReleaseUpdateError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     log_event(_log, "release_promoted", version=result["version"], sha256=digest[:12], already=result["already"])
+    return result
+
+
+@router.get("/packages")
+def release_update_packages(request: Request):
+    """관리자 업데이트 탭 — 릴리스 폴더의 모든 판(2026-10-05). 파일 이름만 내보낸다(폴더 경로 없음)."""
+    _require_local(request)
+    if install_mode(APP_ROOT) != "release":
+        raise HTTPException(status_code=400, detail="릴리스 설치본에서만 판 목록을 볼 수 있습니다")
+    try:
+        return list_packages(APP_ROOT)
+    except ReleasePromoteError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    except ReleaseUpdateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class PackageIn(BaseModel):
+    file: str
+
+
+@router.post("/package-manifest")
+def release_update_package_manifest(body: PackageIn, request: Request):
+    """[배포] 전 그 판의 지문 등 — 쓰기 없음. 수백 MB 를 읽는다(동기 def, 스레드풀)."""
+    _require_admin_release_pc(request)
+    try:
+        return package_manifest(body.file, APP_ROOT)
+    except ReleasePromoteError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    except ReleaseUpdateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class DeployPackageIn(BaseModel):
+    notice_id: str
+    sha256: str
+    # 화면이 본 공개 표지·후보의 sha(없으면 "") — 그새 바뀌었으면 거절한다(Codex 설계 검토 P1)
+    expect_published_sha: str
+    expect_candidate_sha: str
+
+
+@router.post("/deploy-package")
+def release_update_deploy_package(body: DeployPackageIn, request: Request):
+    """[공지]한 판(후보가 아니어도, 옛 판이면 되돌리기)을 팀에 배포 — 후보 먼저·표지 마지막(select_release 와 같은 순서)."""
+    _require_admin_release_pc(request)
+    digest = body.sha256.strip().lower()
+    with active_account.pinned_account_scope():
+        item = _announced_item(body.notice_id, digest)
+        try:
+            result = deploy_package(item, body.expect_published_sha, body.expect_candidate_sha, APP_ROOT)
+        except ReleasePromoteError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        except ReleaseUpdateError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log_event(_log, "release_package_deployed", version=result["version"], sha256=digest[:12],
+              already=result["already"], rolled_back=result["rolled_back"])
     return result
 
 

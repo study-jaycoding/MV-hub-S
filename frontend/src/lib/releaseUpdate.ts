@@ -45,7 +45,7 @@ export interface LatestReleaseMetadata {
   // B안(2026-10-02) — 옛 로컬 허브는 없음. source=candidate 면 위 5필드는 NAS 의 후보(candidate.json).
   source?: "candidate" | "latest";
   candidate_error?: string | null; // 후보 파일이 있는데 못 읽음 — 등록·공지·배포를 막는다
-  published?: { version: string; sha256: string } | null; // 팀원이 지금 받는 판(latest.json)
+  published?: { version: string; sha256: string; file?: string } | null; // 팀원이 지금 받는 판(latest.json)
   published_state?: "ok" | "missing" | "error";
   pending?: boolean | null; // 후보가 아직 팀에 배포 안 됨. null = 공개 표지를 못 읽어 확인 불가
 }
@@ -54,6 +54,49 @@ export function promoteRelease(noticeId: string, sha256: string) {
   return jsonFetch<{ promoted: boolean; already: boolean; version: string }>(
     "/api/release-update/promote",
     { method: "POST", body: jsonBody({ notice_id: noticeId, sha256 }) },
+  );
+}
+
+// 업데이트 탭 개편(2026-10-05) — NAS 의 모든 판·판 선택 배포. 후보 줄은 위 promoteRelease 그대로.
+export interface ReleasePackage {
+  file: string;
+  version: string;
+  size: number;
+  modified: string;
+}
+
+export interface PackageManifest {
+  version: string;
+  file: string;
+  sha256: string;
+  size: number;
+  created_at: string;
+  higgsfield_cli_version: string;
+}
+
+export function listReleasePackages() {
+  return jsonFetch<ReleasePackage[]>("/api/release-update/packages");
+}
+
+/** 그 판의 지문 등(쓰기 없음, 수백 MB 를 읽어 몇 초 걸린다) — 이 sha 로 공지 항목을 찾거나 등록한다. */
+export function getPackageManifest(file: string) {
+  return jsonFetch<PackageManifest>("/api/release-update/package-manifest", {
+    method: "POST",
+    body: jsonBody({ file }),
+  });
+}
+
+/** 공지한 판(후보가 아니어도·옛 판이면 되돌리기)을 팀에 배포. expect* = 화면이 본 표지·후보 sha(없으면 "") —
+ * 그새 바뀌었으면 서버가 거절한다(새 후보를 말없이 지우지 않게). */
+export function deployPackage(noticeId: string, sha256: string, expectPublished: string, expectCandidate: string) {
+  return jsonFetch<{ promoted: boolean; already: boolean; version: string; rolled_back: boolean }>(
+    "/api/release-update/deploy-package",
+    {
+      method: "POST",
+      body: jsonBody({
+        notice_id: noticeId, sha256, expect_published_sha: expectPublished, expect_candidate_sha: expectCandidate,
+      }),
+    },
   );
 }
 
