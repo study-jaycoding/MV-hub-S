@@ -8,8 +8,7 @@ interface UseGenerationSelectionArgs {
 
 export function useGenerationSelection({
   resetKey,
-  // .folder-contents* = 카드 폴더 이름표로 연 창과 그 바깥 막 — 창을 보거나 닫는 클릭이 뒤 목록의 선택을 풀지 않게.
-  preserveSelectors = ".gen-cell, .gen-grid, .select-bar, .proj-assign, .folder-contents, .folder-contents-catcher",
+  preserveSelectors = ".gen-cell, .gen-grid, .select-bar, .proj-assign",
 }: UseGenerationSelectionArgs) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const selectedRef = useRef(selected);

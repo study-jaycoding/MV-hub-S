@@ -29,6 +29,7 @@ let librarySnapshot: { filters: Filters; genQuery: GenQuery; projectWorkspaceId?
 let sidebarSnapshot: ComponentProps<typeof import("../src/components/FilterSidebar").FilterSidebar> | null;
 let refreshProjects: () => void;
 const relinkOnWorkspaceChange = vi.fn();
+const beginList = vi.fn(); // 목록 훅의 beginComposeList — 폴더 창을 열고 닫을 때 목록을 비우는지 본다
 const libraryHighlightedIds = () => [...(gridSnapshot?.resolveHighlightedIds || [])];
 const libraryGeneration = (id: string): Generation => ({
   id, status: "done", prompt: id, assets: [], tags: [], auto_tags: [], references: [],
@@ -430,7 +431,7 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       revealLocated, locatedVisibleIds: new Set(gens.map((item) => item.id)),
       isLocatedView: !!location && isLocatedQuery(args.genQuery, location.tab, location.value),
       stats: { has_unread: false, failed_count: 0, unread_count: 0 }, loading: false, loadingMore: false,
-      hasMore: false, loadError: null, archivedCount: 0, unassignedCount: 0, loadMore: noop, beginComposeList: noop,
+      hasMore: false, loadError: null, archivedCount: 0, unassignedCount: 0, loadMore: noop, beginComposeList: beginList,
       reload: noop, reloadIfStale: noop,
     };
     },
@@ -746,4 +747,160 @@ it("App: 체크 OFF에서 다른 씬의 단일 선택은 현재 창의 빨강만
   expect(selectedIds()).toEqual(["target"]);
   expect(resolveHighlightedIds()).toEqual([]);
   expect(tile("other-target")).toBeNull();
+});
+
+// ── 목록 탭의 '폴더 보기' 창(카드의 폴더 이름표, 2026-10-07) — 캔버스 창과 같은 원리: 목록 조회가 그 폴더로 바뀌고 하나뿐인 격자를 창에 그린다 ──
+const peekWindow = () => document.querySelector<HTMLElement>(".folder-peek");
+const gridOutputs = () => [...document.querySelectorAll('[data-testid="library-highlight"]')];
+const pressEscapeInPeek = () => act(() => {
+  peekWindow()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+});
+
+it.each(["my", "team"])("App %s 탭: 폴더 이름표를 누르면 조회가 그 폴더로 바뀌고 격자를 창에 그린다 — 사이드바 필터·다음 생성 위치는 그대로", async (tab) => {
+  localStorage.setItem("ch.lib.generationScopeV1", JSON.stringify({ project_id: "generation-project", folder_path: "next/clip" }));
+  await mountApp(tab);
+  beginList.mockClear();
+  act(() => sidebarSnapshot!.onChange({ search: "cat", creator_uid: "someone" })); // 창에서는 안 보이는 조건
+  act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
+  await settle();
+  expect(promptSnapshot?.topSlot).toBeTruthy(); // 본 목록에서는 선택 막대가 프롬프트 위에 뜬다
+  const filtersBefore = librarySnapshot!.filters;
+  const scopeBefore = localStorage.getItem("ch.lib.generationScopeV1");
+  expect(gridSnapshot!.onOpenFolder).toBeTypeOf("function");
+  expect(peekWindow()).toBeNull();
+
+  act(() => gridSnapshot!.onOpenFolder!(libraryGeneration("target")));
+  await settle();
+  expect(peekWindow()!.querySelector(".folder-peek-title")!.textContent).toBe("Resolve project / episode/shot");
+  expect(gridOutputs()).toHaveLength(1); // 격자는 하나뿐 — 뒤 목록 자리에는 그리지 않는다
+  expect(peekWindow()!.contains(gridOutputs()[0])).toBe(true);
+  expect(librarySnapshot!.genQuery).toMatchObject({ tab, project_id: "resolve-project", folder_path: "episode/shot" });
+  expect(gridSnapshot!.resetKey).toContain("episode/shot"); // 조회 키도 그 폴더 — 이 키가 바뀌어야 목록을 다시 받는다
+  expect(librarySnapshot!.genQuery.search).toBeUndefined();
+  expect(librarySnapshot!.genQuery.creator_uid).toBeUndefined();
+  expect(librarySnapshot!.filters).toBe(filtersBefore); // 사이드바 필터는 건드리지 않는다(patch 는 다음 생성 위치까지 바꾼다)
+  expect(localStorage.getItem("ch.lib.generationScopeV1")).toBe(scopeBefore);
+  expect(promptSnapshot?.activeProjectId).toBe("generation-project");
+  expect(beginList).toHaveBeenCalledTimes(1); // 본 목록 카드가 창에 비치지 않게 비우고 시작
+  expect(gridSnapshot!.selectedIds.size).toBe(0); // 본 목록의 선택을 창으로 들고 가지 않는다
+  expect(gridSnapshot!.onOpenFolder).toBeUndefined(); // 창 안 격자에는 이름표를 달지 않는다
+  expect(document.activeElement).toBe(peekWindow());
+  expect(document.querySelector(".body")!.hasAttribute("inert")).toBe(true); // 뒤 화면은 키보드로도 닿지 않는다
+
+  // Esc: 선택이 있으면 선택부터 풀고, 없으면 창을 닫는다 — 닫으면 본 목록 조회로 돌아간다.
+  //  선택 막대는 창에만: 창이 떠 있는 동안 프롬프트 위·화면 위쪽의 바깥 막대는 그리지 않는다.
+  act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
+  expect(promptSnapshot?.topSlot).toBeUndefined();
+  pressEscapeInPeek();
+  expect(gridSnapshot!.selectedIds.size).toBe(0);
+  expect(peekWindow()).not.toBeNull();
+  pressEscapeInPeek();
+  await settle();
+  expect(peekWindow()).toBeNull();
+  expect(document.querySelector(".body")!.hasAttribute("inert")).toBe(false);
+  expect(gridOutputs()).toHaveLength(1);
+  expect(librarySnapshot!.genQuery).toMatchObject({ tab, search: "cat", creator_uid: "someone" });
+  expect(librarySnapshot!.genQuery.folder_path).toBeUndefined();
+  expect(beginList).toHaveBeenCalledTimes(2); // 창의 카드가 뒤 목록 자리에 비치지 않게 닫을 때도 비운다
+  expect(gridSnapshot!.onOpenFolder).toBeTypeOf("function");
+});
+
+it("App 작업 공간: 바깥 막·✕ 로 닫히고, 보던 위치가 바뀌거나 부분 수정으로 넘어가도 닫힌다 — 휴지통 보기에는 이름표가 없다", async () => {
+  const send = await mountApp("my");
+  // 창이 없을 때의 부분 수정은 목록을 건드리지 않는다(닫기는 열려 있을 때만 일한다 — 아니면 부분 수정마다 본 목록이 비워진다)
+  beginList.mockClear();
+  act(() => { window.dispatchEvent(new CustomEvent("ch:partial-edit", { detail: { genId: "target" } })); });
+  expect(beginList).not.toHaveBeenCalled();
+  const open = async () => {
+    act(() => gridSnapshot!.onOpenFolder!(libraryGeneration("target")));
+    await settle();
+    expect(peekWindow()).not.toBeNull();
+  };
+  await open();
+  act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
+  act(() => { document.querySelector(".folder-peek-catcher")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+  await settle();
+  expect(peekWindow()).toBeNull();
+  expect(gridSnapshot!.selectedIds.size).toBe(0); // 창의 선택을 본 목록으로 들고 나오지 않는다
+
+  await open();
+  act(() => peekWindow()!.querySelector<HTMLButtonElement>(".folder-peek-x")!.click());
+  await settle();
+  expect(peekWindow()).toBeNull();
+
+  // 초점이 창 밖에 있을 때의 Esc 도 닫는다(전역 훅). 초점이 창 안이면 전역 훅은 손을 떼고 창의 키 처리에 맡긴다 —
+  //  실제 브라우저에서는 창이 선택을 푼 그 자리에서 이 훅이 켜져 같은 Esc 로 창까지 닫혔다(전달 도중 붙는 리스너라 jsdom 에서는
+  //  재현되지 않는다. 현상은 격리 브라우저 실측으로, 여기서는 '초점이 창 안이면 이 훅이 닫지 않는다' 는 장치를 지킨다).
+  await open();
+  act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); });
+  await settle();
+  expect(peekWindow()).not.toBeNull();
+  act(() => (document.activeElement as HTMLElement).blur());
+  act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); });
+  await settle();
+  expect(peekWindow()).toBeNull();
+
+  // 프로젝트 없는 폴더 — 제목은 경로만, 조회는 project_id=none
+  act(() => gridSnapshot!.onOpenFolder!({ ...libraryGeneration("target"), project_id: null, project_name: null }));
+  await settle();
+  expect(peekWindow()!.querySelector(".folder-peek-title")!.textContent).toBe("episode/shot");
+  expect(librarySnapshot!.genQuery).toMatchObject({ project_id: "none", folder_path: "episode/shot" });
+  pressEscapeInPeek();
+  await settle();
+
+  // 보던 위치·탭이 바뀌면 닫힌다(자동 조회·뒤로 가기 등). 원래 위치로 돌아와도 다시 열리지 않는다
+  for (const [change, back] of [
+    [{ folder_path: "somewhere/else" }, { folder_path: undefined }],
+    [{ project_id: "none" }, { project_id: undefined }],
+    [{ tab: "compose" }, { tab: "my" }], // my↔compose 는 공간 열쇠가 같아 탭으로만 구분된다
+    [{ deleted_only: true }, { deleted_only: undefined }], // 휴지통 조회에는 폴더 조건이 없다 — 창에 휴지통 전체가 뜨면 안 된다
+  ] as const) {
+    await open();
+    act(() => sidebarSnapshot!.onChange(change));
+    await settle();
+    expect(peekWindow()).toBeNull();
+    expect(librarySnapshot!.filters).toMatchObject(change);
+    act(() => sidebarSnapshot!.onChange(back));
+    await settle();
+    expect(peekWindow()).toBeNull();
+  }
+
+  // 창이 떠 있는 동안 다빈치 선택 따라가기는 위치를 옮기지 않는다(창의 목록을 다른 폴더 카드로 갈아 끼우지 않는다). 닫은 뒤에는 다시 따라간다
+  await open();
+  const filtersInPeek = librarySnapshot!.filters;
+  act(() => send(["other", "other-target"]));
+  await settle();
+  expect(peekWindow()).not.toBeNull();
+  expect(librarySnapshot!.filters).toBe(filtersInPeek);
+  expect(librarySnapshot!.genQuery).toMatchObject({ project_id: "resolve-project", folder_path: "episode/shot" });
+  pressEscapeInPeek();
+  await settle();
+  act(() => send(["other", "other-target"]));
+  await settle();
+  expect(librarySnapshot!.filters).toMatchObject({ project_id: "other-project", folder_path: "episode/shot" });
+  act(() => sidebarSnapshot!.onChange({ project_id: undefined, folder_path: undefined }));
+  await settle();
+
+  // 프롬프트를 숨기면(Ctrl+K) 선택 막대는 화면 위쪽에 뜬다 — 그 막대도 창이 떠 있는 동안에는 그리지 않는다
+  act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true })); });
+  act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
+  expect(document.querySelector(".selbar-top-float")).not.toBeNull();
+  await open();
+  act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
+  expect(document.querySelector(".selbar-top-float")).toBeNull();
+  act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true })); });
+  act(() => { document.querySelector(".folder-peek-catcher")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+  await settle();
+
+  // 크게 보기의 [부분 수정]으로 넘어가면 닫히고, 창에서 고른 선택을 본 목록으로 들고 나오지 않는다
+  await open();
+  act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
+  act(() => { window.dispatchEvent(new CustomEvent("ch:partial-edit", { detail: { genId: "target" } })); });
+  await settle();
+  expect(peekWindow()).toBeNull();
+  expect(gridSnapshot!.selectedIds.size).toBe(0);
+
+  act(() => sidebarSnapshot!.onChange({ deleted_only: true }));
+  await settle();
+  expect(gridSnapshot!.onOpenFolder).toBeUndefined();
 });

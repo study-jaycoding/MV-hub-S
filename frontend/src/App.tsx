@@ -17,7 +17,6 @@ import {
   type SpotlightPromptHandle,
 } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
-import { FolderContentsWindow, type FolderWindowTarget } from "./components/FolderContentsWindow";
 import { ensureTeamBase } from "./lib/teamSeen";
 import { TopBar } from "./components/TopBar";
 import { SceneBar } from "./components/scene/SceneBar";
@@ -31,7 +30,7 @@ import {
   LibrarySelectionActionBar,
 } from "./components/app/SelectionActionBar";
 import { KEY_COLORS } from "./lib/appConstants";
-import { generationQueryKey } from "./lib/appGenerationQuery";
+import { folderPeekQuery, generationQueryKey } from "./lib/appGenerationQuery";
 import { useResolveLibraryFollow } from "./lib/useResolveLibraryFollow";
 import { generationsByIds, uniqueTagNames } from "./lib/generationTags";
 import { useAppNavigation } from "./lib/useAppNavigation";
@@ -365,10 +364,13 @@ export default function App() {
   const folderPeekRef = useRef<HTMLElement>(null);
   const folderPeekOpenRef = useRef(folderPeek);
   folderPeekOpenRef.current = folderPeek;
-  // 카드의 폴더 이름표로 연 '폴더의 생성물' 창(작업 공간·공유 & 리뷰) — 본 목록은 그대로 두고 창이 자기 목록을 조회한다.
-  const [folderWindow, setFolderWindow] = useState<FolderWindowTarget | null>(null);
-  const folderWindowOpenRef = useRef(false);
-  folderWindowOpenRef.current = folderWindow !== null;
+  // 카드의 폴더 이름표로 연 '폴더 보기' 창(작업 공간·공유 & 리뷰, Jay 2026-10-07) — 캔버스 창과 같은 원리다: 창이 떠 있는
+  //  동안 목록 조회가 그 폴더로 바뀌고(folderPeekQuery), 하나뿐인 격자·툴바·선택 막대를 창에 그린다. 닫으면 본 목록을
+  //  처음부터 다시 받는다. 사이드바 필터(filters)는 건드리지 않는다 — patch() 는 다음 생성 위치까지 바꾼다.
+  //  ctx = 연 시점의 문맥. 탭·보던 위치·휴지통 보기·계정·공간이 바뀌면 그 렌더부터 닫힌 것으로 본다(아래 listPeek).
+  const [folderWindow, setFolderWindow] = useState<{
+    projectId: string | null; path: string; projectName: string; ctx: string;
+  } | null>(null);
   // 회색(비활성) — 카드별 비활성화 표시(d 키, gen id 기준 로컬). grayOn(useLibraryFilters)=ON 이면 목록에서 제외.
   const disabledGen = useDisabledGenerations();
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(그 폴더·하위 생성물 자동 회색)
@@ -412,6 +414,16 @@ export default function App() {
     selectedRef.current = new Set();
     setSelected(new Set());
   }, [workspaceScopeKey, filters.tab]);
+  // 휴지통 보기도 문맥이다 — 목록 훅은 filters.deleted_only 로 휴지통 조회를 고르는데 그 조회에는 폴더 조건이 없다(창에 휴지통 전체가 뜬다).
+  const listPeekCtx = JSON.stringify([
+    filters.tab, filters.project_id ?? null, filters.folder_path ?? null, !!filters.deleted_only, libraryAuthKey, workspaceScopeKey,
+  ]);
+  const listPeekCtxRef = useRef(listPeekCtx);
+  listPeekCtxRef.current = listPeekCtx;
+  const listPeek = folderWindow && folderWindow.ctx === listPeekCtx ? folderWindow : null;
+  const listPeekRef = useRef(listPeek);
+  listPeekRef.current = listPeek;
+  const listGenQuery = useMemo(() => (listPeek ? folderPeekQuery(genQuery, listPeek) : genQuery), [genQuery, listPeek]);
   const {
     archivedCount,
     facets,
@@ -440,7 +452,7 @@ export default function App() {
     authKey: libraryAuthKey,
     filters,
     flash,
-    genQuery,
+    genQuery: listGenQuery,
     workspaceScopeKey,
     projectWorkspaceId,
     composeListEnabled: folderPeek, // 창이 열려 있을 때만 compose 탭에서 목록 조회·추가 로드
@@ -623,7 +635,7 @@ export default function App() {
 
   // 모든 필터(project_id·컬러·태그·타입 포함)가 서버 쿼리에 들어가므로, 무엇이 바뀌든
   // 첫 페이지부터 다시 받는다(무한 스크롤 누적 초기화). 서버가 거르니 누락 없이 정확.
-  const serverFilterKey = useMemo(() => generationQueryKey(genQuery), [genQuery]);
+  const serverFilterKey = useMemo(() => generationQueryKey(listGenQuery), [listGenQuery]);
   // 필터 변경 또는 인증 준비(로그인 완료/차단 off) 시 데이터 로드. 한 effect 로 합쳐 마운트 시
   // 중복 reload(예전엔 이 effect + 별도 authReady effect 가 둘 다 발화 → 2회) 제거. reload 내부가
   // authReadyRef 로 게이트하므로 authReady 가 false 면 no-op, true 로 바뀌면 여기서 다시 발화해 로드.
@@ -738,17 +750,32 @@ export default function App() {
     selectedRef,
     setGens,
     composeGridActiveRef: folderPeekOpenRef, // 캔버스 '폴더 보기' 창이 떠 있으면 compose 에서도 r/g/b/d
-    backgroundBlockedRef: folderWindowOpenRef, // '폴더의 생성물' 창이 떠 있는 동안 뒤 목록 단축키를 받지 않는다
   });
+  // 열고 닫을 때 목록을 먼저 비운다 — 조회가 끝날 때까지 본 목록 카드가 창에(닫을 때는 창의 카드가 뒤 목록 자리에) 비치지
+  //  않게. 선택도 비운다: 창의 목록과 본 목록은 다른 카드라, 남기면 보이지 않는 카드에 일괄 작업이 걸린다.
   const openFolderWindow = useCallback((g: Generation) => {
-    const tab = filtersRef.current.tab;
-    if (tab === "compose" || !g.folder_path) return;
-    setFolderWindow({ tab, projectId: g.project_id, path: g.folder_path, genId: g.id, projectName: g.project_name ?? "" });
-  }, [filtersRef]);
-  // 탭·계정·서버·워크스페이스 범위가 바뀌면 닫는다 — 창의 목록은 열 때의 범위로 조회한 것이다.
-  useEffect(() => {
+    const f = filtersRef.current;
+    if (f.tab === "compose" || !g.folder_path) return;
+    beginComposeList();
+    setSelected(new Set());
+    setFolderWindow({ projectId: g.project_id, path: g.folder_path, projectName: g.project_name ?? "", ctx: listPeekCtxRef.current });
+  }, [filtersRef, beginComposeList, setSelected]);
+  const closeFolderWindow = useCallback(() => {
+    // 한 번만 닫는다 — 같은 Esc 가 창의 키 처리와 전역 Esc 훅에 둘 다 닿을 수 있다. 두 번 비우면 방금 시작한 본 목록 조회의
+    //  응답을 버려 뒤 목록이 빈 채로 남는다.
+    if (!listPeekRef.current) return;
+    listPeekRef.current = null;
+    beginComposeList();
+    setSelected(new Set());
     setFolderWindow(null);
-  }, [filters.tab, libraryAuthKey, workspaceScopeKey]);
+  }, [beginComposeList, setSelected]);
+  // 문맥이 바뀌어 무효가 된 창은 상태도 치운다(그 렌더부터 이미 닫힌 것으로 그렸다 — 목록은 바뀐 문맥의 조회가 채운다.
+  //  선택은 문맥을 바꾼 쪽이 비운다: 필터 조작은 선택 초기화 키로, 공간 전환은 위 useLayoutEffect 로).
+  useEffect(() => {
+    if (folderWindow && !listPeek) setFolderWindow(null);
+  }, [folderWindow, listPeek]);
+  // 크게 보기의 [부분 수정]으로 넘어가면 창을 닫는다 — 부분 수정의 Esc 가 뒤에 남은 창까지 닫지 않게(코덱스 코드 리뷰 10-07).
+  useCustomEvent(APP_EVENTS.partialEdit, closeFolderWindow);
 
   // 정보(ⓘ) 버튼: 복수 선택 상태에서 선택된 카드의 정보를 누르면 비교창, 그 외엔 단일 정보창.
   const handleInfo = (target: InfoTarget) => {
@@ -990,8 +1017,11 @@ export default function App() {
       return localStorage.getItem("ch.resolve-follower-tab") === resolveFollowerTabIdRef.current;
     } catch { return true; }
   }, []);
+  // 폴더 창이 떠 있는 동안은 따라가지 않는다(체크를 끈 것과 같이 창에 보이는 카드만 강조) — 따라가기는 본 목록의 위치를 옮기고
+  //  목록을 그 위치의 카드로 갈아 끼우는데, 위치가 안 바뀌는 경우(보던 폴더 안의 복수 선택)엔 창이 닫히지 않아 제목과 다른 카드가
+  //  창에 남는다(코덱스 코드 리뷰 10-07). enabled 가 바뀌면 진행 중이던 조회 응답도 버려진다(훅의 context).
   const resolveLibrary = useResolveLibraryFollow({
-    filters, enabled: resolveSelectionFollow, authReady: authReady && workspaceQueryReady,
+    filters, enabled: resolveSelectionFollow && !listPeek, authReady: authReady && workspaceQueryReady,
     authKey: libraryAuthKey,
     workspaceFilter: filters.tab === "team" ? genQuery : undefined,
     workspaceScopeKey,
@@ -1629,9 +1659,20 @@ export default function App() {
   }, [folderPeek, serverFilterKey]);
   // Esc(창 밖에 초점이 있을 때) — 창 안 초점은 section onKeyDown 이 직접 처리(stopPropagation 이 window 훅을 막는다).
   useEscapeClose(
-    () => setFolderPeek(false),
-    folderPeek && !preview && info === null && selected.size === 0, // 선택이 있으면 Esc 는 선택 해제(라이브러리와 동일)
+    () => {
+      // 초점이 창 안이면 그 Esc 의 주인은 창의 키 처리(renderFolderPeek)다. 이 훅은 선택이 없을 때만 켜지는데, 창이 선택을 풀면
+      //  그 자리에서 다시 그려지며 이 훅이 켜지고 같은 키가 window 에 닿아 창까지 닫았다(2026-10-07 브라우저 실측: Esc 한 번에
+      //  선택 해제 + 창 닫힘). 전파를 막는 대신 여기서 손을 뗀다 — 같은 Esc 를 기다리는 다른 창(등급 확인 등)은 그대로 받는다.
+      if (folderPeekRef.current?.contains(document.activeElement)) return;
+      if (listPeek) closeFolderWindow();
+      else setFolderPeek(false);
+    },
+    (folderPeek || !!listPeek) && !preview && info === null && selected.size === 0, // 선택이 있으면 Esc 는 선택 해제(라이브러리와 동일)
   );
+  // 목록 탭의 폴더 창도 열릴 때 초점을 창으로 — 조회는 위 serverFilterKey effect 가 맡는다(조회 조건이 그 폴더로 바뀌므로).
+  useEffect(() => {
+    if (listPeek) folderPeekRef.current?.focus();
+  }, [listPeek]);
   // 코멘트 패널 라벨 — 열렸을 때만, gens 가 바뀔 때만 계산(매 렌더 전량 find 방지).
   const commentLabel = useMemo(
     () =>
@@ -1847,8 +1888,9 @@ export default function App() {
       onInfo={handleInfo}
       onPreview={openPreview}
       onShowHistory={onShowHistory}
-      // 폴더 이름표는 목록 탭에서만 — 캔버스의 '폴더 보기' 창 안 격자에는 붙이지 않는다(그 창이 이미 폴더 보기다).
-      onOpenFolder={filters.tab === "compose" ? undefined : openFolderWindow}
+      // 폴더 이름표는 목록 탭의 본 목록에서만 — '폴더 보기' 창 안 격자(캔버스·목록 탭 모두)에는 붙이지 않는다(그 창이 이미
+      //  폴더 보기다). 휴지통 보기도 뺀다: 휴지통 조회에는 폴더 조건이 없다.
+      onOpenFolder={filters.tab === "compose" || filters.deleted_only || listPeek ? undefined : openFolderWindow}
       hasMore={hasMore}
       loadingMore={loadingMore}
       onLoadMore={loadMore}
@@ -1856,6 +1898,57 @@ export default function App() {
       loadError={loadError}
       onRetryLoad={() => void reload()}
     />
+  );
+
+  // '폴더 보기' 창 — 캔버스(사이드바 폴더 클릭)와 목록 탭(카드의 폴더 이름표)이 같은 창을 쓴다. 본문은 하나뿐인 라이브러리
+  //  격자·툴바·선택 막대라, 창에서도 워크스페이스처럼 조작한다. 창 안 키 입력은 캔버스 전역 단축키(c·Delete·y…)로 새지 않는다.
+  const renderFolderPeek = (title: string, tip: string, close: () => void) => (
+    <>
+      <div className="folder-peek-catcher" onMouseDown={close} />
+      <section
+        ref={folderPeekRef}
+        className="folder-peek"
+        role="dialog"
+        aria-label="폴더 보기"
+        tabIndex={-1}
+        onKeyDown={(e) => {
+          // 창 안 키는 라이브러리 단축키(r/g/b/d·격자 키)가 받는다 — 씬 단축키·붙여넣기는 .folder-peek 안 키를
+          //  무시하므로(sceneKeyboard) 막지 않는다. Esc 순서: 팝업(미리보기/정보) → 텍스트 입력(그 입력 몫) →
+          //  선택 해제(슬라이더 같은 비텍스트 입력에 초점이 있어도 — 전역 훅은 INPUT 전부를 무시한다) → 창 닫기.
+          if (e.key !== "Escape") return;
+          if (preview || info !== null) return;
+          const t = e.target as HTMLElement | null;
+          const tag = t?.tagName?.toUpperCase();
+          const typing =
+            (tag === "INPUT" && !["range", "checkbox", "radio", "button"].includes((t as HTMLInputElement).type)) ||
+            tag === "TEXTAREA" ||
+            !!t?.isContentEditable;
+          if (typing) return;
+          e.preventDefault();
+          if (selected.size > 0) {
+            clearSelect();
+            return;
+          }
+          close();
+        }}
+      >
+        <header className="folder-peek-hd">
+          <span className="folder-peek-title" title={tip}>
+            {title}
+          </span>
+          <span className="folder-peek-count">
+            {gridGens.length}
+            {hasMore ? "+" : ""}
+          </span>
+          <button type="button" className="folder-peek-x" onClick={close} title="닫기 (Esc)">
+            ✕
+          </button>
+        </header>
+        {libraryToolbar}
+        {thumbnailGrid}
+        {librarySelectionBar && <div className="folder-peek-selbar">{librarySelectionBar}</div>}
+      </section>
+    </>
   );
 
   return (
@@ -1890,7 +1983,9 @@ export default function App() {
         onOpenNotificationComment={openComment}
         onNotificationsChanged={() => void reload(true, true)}
       />
-      <div className="body">
+      {/* 목록 탭의 폴더 창이 떠 있는 동안 뒤 화면(사이드바·본문)은 inert — 마우스는 바깥 막이 막지만 Tab 으로는 닿는다
+          (React 18 타입에 inert 가 없어 spread 로 넘긴다). */}
+      <div className="body" {...(listPeek ? { inert: "" } : {})}>
         {filters.tab === "compose" ? (
           <>
             {showFilters && (
@@ -2115,60 +2210,12 @@ export default function App() {
             />
             </Suspense>
             )}
-            {folderPeek && activeScene && folderSel && (
-              <>
-                <div className="folder-peek-catcher" onMouseDown={() => setFolderPeek(false)} />
-                {/* 창 안 키 입력은 캔버스 전역 단축키(c·Delete·y…)로 새지 않게 여기서 멈춘다. Esc 는 위 훅. */}
-                <section
-                  ref={folderPeekRef}
-                  className="folder-peek"
-                  role="dialog"
-                  aria-label="폴더 보기"
-                  tabIndex={-1}
-                  onKeyDown={(e) => {
-                    // 창 안 키는 라이브러리 단축키(r/g/b/d·격자 키)가 받는다 — 씬 단축키·붙여넣기는 .folder-peek 안 키를
-                    //  무시하므로(sceneKeyboard) 막지 않는다. Esc 순서: 팝업(미리보기/정보) → 텍스트 입력(그 입력 몫) →
-                    //  선택 해제(슬라이더 같은 비텍스트 입력에 초점이 있어도 — 전역 훅은 INPUT 전부를 무시한다) → 창 닫기.
-                    if (e.key !== "Escape") return;
-                    if (preview || info !== null) return;
-                    const t = e.target as HTMLElement | null;
-                    const tag = t?.tagName?.toUpperCase();
-                    const typing =
-                      (tag === "INPUT" && !["range", "checkbox", "radio", "button"].includes((t as HTMLInputElement).type)) ||
-                      tag === "TEXTAREA" ||
-                      !!t?.isContentEditable;
-                    if (typing) return;
-                    e.preventDefault();
-                    if (selected.size > 0) {
-                      clearSelect();
-                      return;
-                    }
-                    setFolderPeek(false);
-                  }}
-                >
-                  <header className="folder-peek-hd">
-                    <span className="folder-peek-title" title={folderSel.path}>
-                      {projects.find((p) => p.id === folderSel.projectId)?.name ?? ""} / {folderSel.path}
-                    </span>
-                    <span className="folder-peek-count">
-                      {gridGens.length}
-                      {hasMore ? "+" : ""}
-                    </span>
-                    <button
-                      type="button"
-                      className="folder-peek-x"
-                      onClick={() => setFolderPeek(false)}
-                      title="닫기 (Esc)"
-                    >
-                      ✕
-                    </button>
-                  </header>
-                  {libraryToolbar}
-                  {thumbnailGrid}
-                  {librarySelectionBar && <div className="folder-peek-selbar">{librarySelectionBar}</div>}
-                </section>
-              </>
-            )}
+            {folderPeek && activeScene && folderSel &&
+              renderFolderPeek(
+                `${projects.find((p) => p.id === folderSel.projectId)?.name ?? ""} / ${folderSel.path}`,
+                folderSel.path,
+                () => setFolderPeek(false),
+              )}
           </main>
           </>
         ) : (
@@ -2214,8 +2261,9 @@ export default function App() {
               />
             )}
             <main className="main">
-              {libraryToolbar}
-              {!workspaceQueryReady ? (
+              {/* 폴더 창이 떠 있으면 툴바·격자는 창에 그린다(하나뿐인 격자) — 뒤 목록 자리는 닫을 때까지 비워 둔다. */}
+              {!listPeek && libraryToolbar}
+              {listPeek ? null : !workspaceQueryReady ? (
                 <div className="grid-wrap"><div className="empty" role="status">
                   <p>{t("워크스페이스를 확인한 뒤 공유물을 표시합니다.")}</p>
                   <button className="settings-action" onClick={() => workspaceFollow?.onChange("all")}>
@@ -2230,7 +2278,7 @@ export default function App() {
 
       {/* Ctrl+K 로 프롬프트를 숨겨도 멀티선택 액션바는 유지. 캔버스(활성 씬)에선 SceneBoard 가 상단 중앙에
           얹으므로 여기선 제외하고, 그 외(라이브러리 등)에서만 화면 상단 중앙에 띄운다. */}
-      {!promptVisible && selectionBar && !(filters.tab === "compose" && !!activeScene) && (
+      {!promptVisible && selectionBar && !listPeek && !(filters.tab === "compose" && !!activeScene) && (
         <div className="selbar-top-float">{selectionBar}</div>
       )}
       {/* 프롬프트 입력바 — 구성탭에서도 표시. Ctrl/⌘+K 로 표시/숨김 토글(display 토글로 입력 상태 보존).
@@ -2271,7 +2319,8 @@ export default function App() {
               : undefined
           }
           workspace={workspaceContext}
-          topSlot={promptVisible ? selectionBar : undefined}
+          // 목록 탭의 폴더 창이 떠 있으면 선택 막대는 창 바닥에만 그린다(같은 막대가 두 곳에 뜨지 않게)
+          topSlot={promptVisible && !listPeek ? selectionBar : undefined}
           onErrorChange={setPromptError}
           onCreated={onPromptCreated}
         />
@@ -2291,16 +2340,12 @@ export default function App() {
           onCancel={grade.cancel}
         />
       )}
-      {folderWindow && (
-        <FolderContentsWindow
-          target={folderWindow}
-          workspace={genQuery}
-          ready={authReady && workspaceQueryReady}
-          covered={!!preview || info !== null}
-          onPreview={openPreview}
-          onClose={() => setFolderWindow(null)}
-        />
-      )}
+      {listPeek &&
+        renderFolderPeek(
+          listPeek.projectName ? `${listPeek.projectName} / ${listPeek.path}` : listPeek.path,
+          listPeek.path,
+          closeFolderWindow,
+        )}
       <AppOverlays
         account={account}
         adminOpen={adminOpen}

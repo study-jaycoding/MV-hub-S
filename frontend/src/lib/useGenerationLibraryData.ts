@@ -426,7 +426,14 @@ export function useGenerationLibraryData({
   // 캔버스 '폴더 보기' 창이 열릴 때 — 이전 탭(내 작업·팀) 카드가 남아 있으므로 비우되, 먼저 목록 소유 탭을 compose 로
   //  넘긴다. 그냥 setGens([]) 하면 위 캐시 동기화 effect 가 이전 탭 캐시를 빈 목록으로 덮어, 창을 닫고 15초 안에
   //  라이브러리로 돌아오면 '최신' 빈 캐시를 믿고 조회를 건너뛴다(코덱스 2차 P2).
+  //  목록 탭의 폴더 창(카드의 폴더 이름표)도 열고 닫을 때 같은 이유로 이것을 부른다 — 소유 탭 표식 "compose" 는
+  //  '어느 탭 캐시에도 속하지 않는 목록' 이라는 뜻으로 쓰이고, 뒤따르는 조회가 성공하면 실제 탭으로 되돌린다.
+  //  비운 뒤에는 반드시 새로 받아야 한다: 지금 탭의 캐시를 지워 reloadIfStale 이 '신선한 캐시' 를 믿고 조회를 건너뛰지 못하게
+  //  하고(건너뛰면 비운 채로 남는다 — 창을 열자마자 닫거나, 닫자마자 같은 폴더를 다시 열 때), 진행 중이던 조회·추가 로드의
+  //  응답은 버린다(비운 목록에 옛 조건의 카드가 다시 들어오지 않게).
   const beginComposeList = useCallback(() => {
+    reloadSeqRef.current++;
+    delete tabCacheRef.current[filtersRef.current.tab];
     locatedRef.current = null;
     pageCursorRef.current = null;
     trashOffsetRef.current = 0;
