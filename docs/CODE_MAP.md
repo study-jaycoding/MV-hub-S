@@ -515,7 +515,7 @@ updated: 2026-10-07
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `ThumbnailGrid.tsx`(693줄) | 생성물 카드 가상 그리드 · 마퀴/키보드 선택 · 날짜 그룹 · 폴더 창을 연 카드 표시(`openedFromId`) | `ThumbnailGrid` |
-| `GenerationCard.tsx`(771줄) | 카드 1장(그리드/리스트 두 모드) · 호버 영상 · 드래그 · 폴더 이름표(`onOpenFolder` 를 받았을 때만 — 아래 가운데·반투명, 소스·상태 배지와 한 묶음 `.card-bottom`) · 폴더 창 안의 '방금 누른 카드' 표시(`openedHere` — 같은 자리의 라임 알약, 테두리는 안 건드림) | `GenerationCard`(memo) — 캔버스의 `scene/cards/GenerationCard.tsx` 와 이름만 같은 별개 파일(§5-b) |
+| `GenerationCard.tsx`(768줄) | 카드 1장(그리드/리스트 두 모드) · 호버 영상 · 드래그 · 폴더 이름표(`onOpenFolder` 를 받았을 때만 — 카드 아래 변 가운데에 붙인 표·이름만·반투명, 소스·상태 배지는 그 위에 한 묶음 `.card-bottom`) · 폴더 창 안의 '방금 누른 카드' 표시(`openedHere` — 같은 자리·같은 모양에 글자·테두리만 라임, 카드 테두리는 안 건드림) | `GenerationCard`(memo) — 캔버스의 `scene/cards/GenerationCard.tsx` 와 이름만 같은 별개 파일(§5-b) |
 | `MediaThumbnail.tsx`(157줄) | 영상 포스터/이미지/포스터 없는 영상 3분기 통합 표현 | `MediaThumbnail`(10곳 재사용) |
 | `LibraryToolbar.tsx`(296줄) | 타입 필터·검토 필터·크기 슬라이더·리스트/그리드 토글·태그 패널 | `LibraryToolbar` |
 | `FilterSidebar.tsx`(232줄) | 좌측 필터(프로젝트/컬러/자동태그/생성자/공유) 껍데기 | `FilterSidebar` |

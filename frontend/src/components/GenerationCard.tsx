@@ -312,7 +312,7 @@ function GenerationCardImpl({
   const stopActivationKeys = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" || e.key === " ") e.stopPropagation();
   };
-  // 폴더 이름표(그리드 카드 안 아래 가운데, 2026-10-07 Jay) — 누르면 그 폴더의 생성물 창. 이름표의 클릭·더블클릭·휠클릭·끌기는
+  // 폴더 이름표(그리드 카드 아래 변 가운데에 붙인 표, 2026-10-07 Jay) — 누르면 그 폴더의 생성물 창. 이름표의 클릭·더블클릭·휠클릭·끌기는
   // 카드의 선택·크게 보기·정보·끌어 담기로 번지지 않는다. 끌기는 이름표를 끌기 대상으로 만든 뒤 취소한다 —
   // 자식에서 시작한 끌기의 대상은 가장 가까운 draggable 조상(카드)이라, 이름표가 draggable 이어야 가로챌 수 있다.
   const folderLabel = !isList && onOpenFolder ? folderChipLabel(gen.folder_path) : "";
@@ -341,14 +341,11 @@ function GenerationCardImpl({
         e.stopPropagation();
       }}
     >
-      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-        <path d="M1.5 3.2c0-.6.5-1.1 1.1-1.1h3.2c.3 0 .6.1.8.4l.9 1h5.9c.6 0 1.1.5 1.1 1.1v7.7c0 .6-.5 1.1-1.1 1.1H2.6c-.6 0-1.1-.5-1.1-1.1V3.2z" />
-      </svg>
       <span>{folderLabel}</span>
     </button>
   ) : null;
-  // 폴더 창을 연 그 카드 — '방금 누른 카드'(Jay 2026-10-07). 본 목록에서 폴더 이름표가 있던 자리(아래 가운데)에 붙는다. 창 안 격자에는
-  // 폴더 이름표가 없어 둘이 같이 뜨지 않는다. 테두리는 건드리지 않는다 — 테두리는 상태색(공유·보류·최종·선택)의 자리다.
+  // 폴더 창을 연 그 카드 — '방금 누른 카드'(Jay 2026-10-07). 본 목록에서 폴더 이름표가 있던 자리(아래 변 가운데)에 같은 모양으로
+  // 붙는다. 창 안 격자에는 폴더 이름표가 없어 둘이 같이 뜨지 않는다. 테두리는 건드리지 않는다 — 테두리는 상태색(공유·보류·최종·선택)의 자리다.
   const hereMark = !isList && openedHere ? <span className="card-here">방금 누른 카드</span> : null;
   const bottomLead = folderChip ?? hereMark;
 
@@ -528,13 +525,13 @@ function GenerationCardImpl({
       {isVideo && <span className="play-badge">▶</span>}
       {/* 마지막으로 크게 열어본 결과 — .card-thumb(position:relative) 기준 가운데. 오버레이 밖 독립 요소. */}
       {lastViewed && <LastViewedBadge />}
-      {/* 아래 — 이름표('방금 누른 카드' 표시도 같은 자리)가 있으면 다른 배지(소스·상태)와 한 묶음으로 쌓는다(이름표가 맨 위·가운데,
-          배지는 왼쪽). 없으면 종전 그대로. */}
+      {/* 아래 — 이름표('방금 누른 카드' 표시도 같은 자리)가 있으면 다른 배지(소스·상태)와 한 묶음으로 쌓는다: 이름표가 맨 아래
+          (카드 아래 변에 붙는다)·가운데, 배지는 그 위 왼쪽. 없으면 종전 그대로. */}
       {bottomLead ? (
         <div className="card-bottom">
-          {bottomLead}
           {sourceBadge}
           {statusPill}
+          {bottomLead}
         </div>
       ) : (
         statusPill

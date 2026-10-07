@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// 카드의 폴더 이름표(2026-10-07 Jay) — 폴더에 속한 그리드 카드 안 아래 가운데. 누르면 그 폴더의 생성물 창(onOpenFolder).
+// 카드의 폴더 이름표(2026-10-07 Jay) — 폴더에 속한 그리드 카드의 아래 변 가운데에 붙인 표(이름만). 누르면 그 폴더의 생성물 창(onOpenFolder).
 // 이름표의 클릭·더블클릭·휠클릭·끌기가 카드의 선택·크게 보기·정보·끌어 담기로 번지지 않아야 한다.
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -68,6 +68,7 @@ it("a card in a folder shows the chip inside the thumbnail; no folder or no hand
   const s = spies();
   render(s);
   expect(chip()!.textContent).toBe("e035 c0010");
+  expect(chip()!.querySelector("svg")).toBeNull(); // 이름만 — 아이콘 없이
   expect(chip()!.title).toContain("뻘뻘뻘 › e035/c0010");
   expect(chip()!.closest(".card-thumb")).not.toBeNull(); // 카드 그림 안
   expect(chip()!.parentElement!.className).toBe("card-bottom");
@@ -128,12 +129,12 @@ it("keyboard: Enter and Space on the chip stay with the chip — the grid's shor
   }
 });
 
-it("other bottom badges stack under the chip in one group; without a chip the old markup is untouched", () => {
+it("other bottom badges stack above the chip in one group — the chip sits on the card's bottom edge; without a chip the old markup is untouched", () => {
   const s = spies();
   const withBadges = gen({ is_source: true, source_name: "mia", status: "failed" } as Partial<Generation>);
   render(s, { gen: withBadges });
   const group = host.querySelector(".card-bottom")!;
-  expect([...group.children].map((el) => el.className.split(" ")[0])).toEqual(["card-folder", "source-badge", "status-pill"]);
+  expect([...group.children].map((el) => el.className.split(" ")[0])).toEqual(["source-badge", "status-pill", "card-folder"]);
   expect(host.querySelectorAll(".source-badge")).toHaveLength(1); // 묶음 밖에 또 그리지 않는다
   expect(host.querySelectorAll(".status-pill")).toHaveLength(1);
 
@@ -177,9 +178,9 @@ it("in the folder window the card whose chip was pressed carries a mark at the c
   expect(mark.closest(".card-thumb")).not.toBeNull();
   expect(cardClass()).toBe(plain); // 테두리(상태색·선택)는 건드리지 않는다
 
-  // 다른 배지와는 이름표처럼 한 묶음 — 표시가 맨 위, 배지를 묶음 밖에 또 그리지 않는다
+  // 다른 배지와는 이름표처럼 한 묶음 — 표시가 맨 아래(카드 아래 변), 배지를 묶음 밖에 또 그리지 않는다
   render(s, { onOpenFolder: undefined, openedHere: true, gen: gen({ is_source: true, source_name: "mia", status: "failed" } as Partial<Generation>) });
-  expect([...host.querySelector(".card-bottom")!.children].map((el) => el.className.split(" ")[0])).toEqual(["card-here", "source-badge", "status-pill"]);
+  expect([...host.querySelector(".card-bottom")!.children].map((el) => el.className.split(" ")[0])).toEqual(["source-badge", "status-pill", "card-here"]);
   expect(host.querySelectorAll(".source-badge")).toHaveLength(1);
 
   render(s, { onOpenFolder: undefined, openedHere: true, layout: "list" }); // 리스트 레이아웃에는 그리지 않는다
