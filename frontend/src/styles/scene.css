@@ -53,6 +53,10 @@
   cursor: pointer; white-space: nowrap;
 }
 .scene-restore:hover { background: var(--accent); color: var(--accent-ink); }
+/* 저장 실패 표시 — 같은 자리·같은 모양에 경고색. 뒤따르는 '백업에서 가져오기'는 옆에 붙인다. */
+.scene-unsaved { border-color: #ff6b6b; background: rgba(255, 107, 107, 0.12); color: #ff8a8a; }
+.scene-unsaved:hover { background: #ff6b6b; color: #1a0a0c; }
+.scene-unsaved + .scene-restore { margin-left: 8px; }
 .scene-board {
   flex: 1; min-height: 0; position: relative; overflow: hidden; cursor: default; user-select: none; outline: none;
 }

@@ -1,6 +1,7 @@
 // 텍스트 노드 카드 본문 — SceneBoard 렌더 분할(R2). 셸은 부모 소유, Fragment 만 반환(규칙은 OutputCard 참고).
 //  ★포커스·캐럿 주의: 이 컴포넌트는 모듈 최상단 선언(타입 안정) — 편집 중 리렌더에도 textarea 가
 //   리마운트되지 않아 포커스가 유지된다. 캐럿 위치는 부모 소유 caretPosRef(노드별)로 복원.
+import { ownEntry } from "../../../lib/ownEntry";
 import type React from "react";
 import type { MutableRefObject } from "react";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
@@ -52,7 +53,7 @@ export function TextCard({
   };
   const addGenRef = (gc?: SceneCard) => {
     const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
-    const gen = gid ? genData[gid] : undefined;
+    const gen = gid ? ownEntry(genData, gid) : undefined;
     addRef(gen?.assets?.[0]?.type, gen ? thumbOf(gen, 128) || undefined : undefined);
   };
   for (const s of refSrcs) {

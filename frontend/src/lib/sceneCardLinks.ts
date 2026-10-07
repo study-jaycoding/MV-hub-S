@@ -14,7 +14,7 @@
 //  · 팀 서버로 가지 않는다 — 개인 편집물(백엔드 _proxy._LOCAL_PREFIXES '/api/scenes').
 import { getAccountNamespace } from "./accountScope";
 import { jsonFetch } from "./http";
-import { listScenes, subscribeScenesPersisted, variantIds } from "./scenes";
+import { listPersistedScenes, subscribeScenesPersisted, variantIds } from "./scenes";
 
 const API = "/api/scenes/cards";
 const DEBOUNCE_MS = 2000;
@@ -193,7 +193,8 @@ function enterScope(): string {
 /** 지금 브라우저에 있는 씬 전체의 카드 소속. 생성 카드·comfy 카드 모두(결과가 쌓이는 카드). */
 export function localCardLinks(): CardLink[] {
   const out: CardLink[] = [];
-  for (const scene of listScenes(null)) {
+  // ★확정본만 올린다 — 미러는 화면에 보인다는 이유로 바깥 상태를 확정하지 않는다.
+  for (const scene of listPersistedScenes(null)) {
     for (const card of scene.cards || []) {
       for (const gid of variantIds(card)) {
         if (gid) out.push({ scene_id: scene.id, card_id: card.id, generation_id: gid });

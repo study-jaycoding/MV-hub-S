@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -7,6 +8,8 @@ const BACKEND = process.env.BACKEND || "http://127.0.0.1:8000";
 
 export default defineConfig({
   plugins: [react()],
+  // 씬 저장소(IndexedDB)는 모듈 캐시를 들고 있어 시험 사이에 비워 줘야 한다.
+  test: { setupFiles: ["./tests/setupSceneStore.ts"] },
   server: {
     port: 5173,
     proxy: {

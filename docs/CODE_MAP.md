@@ -29,7 +29,7 @@ updated: 2026-10-07
 | 하고 싶은 일 | 프런트 진입 파일 | 백엔드 진입 파일 | 비고 |
 |---|---|---|---|
 | 라이브러리 카드 표시 문구·상태 라벨 바꾸기 | `components/GenerationCard.tsx`, `lib/generationDisplay.ts` | — | 상태 라벨은 순수 프런트 판정 |
-| 카드의 폴더 이름표·목록 탭의 '폴더 보기' 창 | `components/GenerationCard.tsx`(이름표), `App.tsx`(`listPeek`·`renderFolderPeek` — 캔버스 '폴더 보기' 창과 같은 창), `lib/appGenerationQuery.ts`(`folderPeekQuery`), `lib/folderLabel.ts`(표시 규칙) | `routers/library.py`(`GET /api/generations` — 기존 목록 API 그대로) | 캔버스 창과 같은 원리: 창이 떠 있는 동안 **목록 조회가 그 폴더로 바뀌고** 하나뿐인 격자·툴바·선택 막대를 창에 그린다(뒤 목록 자리는 비움). 닫으면 본 목록을 처음부터 다시 받는다 — **그동안의 빈 화면은 '본 목록 첫 쪽 사본'으로 메운다**(2026-10-07): 열 때 본 목록 조회의 키로 첫 쪽을 담고(`beginComposeList({ keep })`), 닫을 때 같은 키면 먼저 그린 뒤(`{ restore }`) 새 첫 쪽이 실제로 적용될 때까지 조작을 막는다(`staleList` → `<main inert>`·격자 `selectLocked`·선택 변경 무시·다빈치 따라가기 끔). 창에서 툴바 필터를 바꿨거나(키 다름)·다빈치가 끼워 넣은 화면·실패 화면이면 사본 없이 '불러오는 중…'. 사이드바 필터(`filters`)는 안 건드린다 — `patch()` 는 다음 생성 위치까지 바꾼다. 열고 닫을 때 `beginComposeList()` 로 목록을 비운다. 이름표는 목록 탭의 본 목록에만(캔버스·휴지통 보기·창 안 격자에는 없음). 창 안에서는 이름표를 누른 그 카드에 '방금 누른 카드' 표시가 붙고, 아래쪽에 있으면 그 카드로 내려가서 연다(다빈치 따라가기의 `resolveScrollRequest` 장치) |
+| 카드의 폴더 이름표·목록 탭의 '폴더 보기' 창 | `components/GenerationCard.tsx`(이름표), `App.tsx`(`listPeek`·`renderFolderPeek` — 캔버스 '폴더 보기' 창과 같은 창), `lib/appGenerationQuery.ts`(`folderPeekQuery`), `lib/folderLabel.ts`(표시 규칙) | `routers/library.py`(`GET /api/generations` — 기존 목록 API 그대로) | 캔버스 창과 같은 원리: 창이 떠 있는 동안 **목록 조회가 그 폴더로 바뀌고** 하나뿐인 격자·툴바·선택 막대를 창에 그린다(뒤 목록 자리는 비움). 닫으면 본 목록을 처음부터 다시 받는다 — **그동안의 빈 화면은 '본 목록 첫 쪽 사본'으로 메운다**(2026-10-07): 열 때 본 목록 조회의 키로 첫 쪽을 담고(`beginComposeList({ keep })`), 닫을 때 같은 키면 먼저 그린 뒤(`{ restore }`) 새 첫 쪽이 실제로 적용될 때까지 조작을 막는다(`staleList` → `<main inert>`·격자 `selectLocked`·선택 변경 무시·다빈치 따라가기 끔). **닫은 뒤 초점은 본 목록 격자로 돌려준다**(`refocusGridRef` — 창이 사라지면 초점이 BODY 로 떨어져 격자의 키가 안 먹는다): 닫는 순간 초점이 창 안(또는 없음)일 때만 뜻을 적고, 본 목록이 조작 가능해진 뒤(잠금 해제·받기 끝) 한 번만 `.gen-grid` 에 준다. 기다리는 사이 문맥이 한 번이라도 달라졌거나 초점이 어디로든 옮겨 갔으면(`focusin`) 그만둔다 — 복원 순간의 상태만 보면, 초점을 받았던 요소가 사라져 다시 BODY 가 된 경우(메뉴에서 설정을 연 직후)에 남의 창 뒤로 초점을 보낸다. 창에서 툴바 필터를 바꿨거나(키 다름)·다빈치가 끼워 넣은 화면·실패 화면이면 사본 없이 '불러오는 중…'. 사이드바 필터(`filters`)는 안 건드린다 — `patch()` 는 다음 생성 위치까지 바꾼다. 열고 닫을 때 `beginComposeList()` 로 목록을 비운다. 이름표는 목록 탭의 본 목록에만(캔버스·휴지통 보기·창 안 격자에는 없음). 창 안에서는 이름표를 누른 그 카드에 '방금 누른 카드' 표시가 붙고, 아래쪽에 있으면 그 카드로 내려가서 연다(다빈치 따라가기의 `resolveScrollRequest` 장치) |
 | 새 API 엔드포인트 추가하기 | `api.ts` | `routers/_proxy.py`(경로 소유권) + 해당 도메인 라우터. **새 라우터 파일이면 `main.py` 의 `include_router()` 등록도** | 로컬 전용 경로는 `_proxy._LOCAL_PREFIXES/_LOCAL_EXACT` 갱신 + `backend/tests/test_proxy_ownership.py` 골든 스냅샷도 같이 고쳐야 함(§5-c) |
 | 캔버스(씬) 단축키 바꾸기 | `lib/useSceneKeyboardShortcuts.ts`, `lib/sceneKeyboard.ts` | — | |
 | 편집 탭(다빈치식 컷 타임라인 — 공유물을 폴더 순서로 이어 보기) | `components/timeline/EditTab.tsx`(조립·편집 키), `lib/editTimeline.ts`(순수 — 배치·보이는 클립·문서 편집), `lib/useEditPlayback.ts`(재생), `lib/useEditDoc.ts`·`lib/editTimelineStore.ts`(문서 저장), `lib/useEditSequence.ts`(조회) | — (백엔드 변경 없음 — 기존 목록·폴더 API) | 계약 [EDIT_TAB.md](EDIT_TAB.md). **`Filters["tab"]` 의 값이 아니다** — `lib/useAppNavigation.ts` 의 `edit` 보기 + `App.tsx` 의 `editOpen`(떠 있는 동안 폴더 창·다빈치 따라가기·라이브러리 단축키가 쉰다). 사이드바는 `ProjectSection` 을 쓰지 않는다(폴더 클릭이 생성 목적지를 저장한다). 편집 문서는 localStorage 뿐(백업 없음). 편집 키는 고정(단축키 설정 창에 없음) |
@@ -66,7 +66,7 @@ updated: 2026-10-07
 | 히스토리 보드(계보 그래프) | `components/HistoryBoard.tsx` | `routers/generation.py`(`/history`·`/history-tree`), `repo/history.py`, `repo/lineage.py` | |
 | 스포트라이트 프롬프트 도크(@/# 피커) | `components/SpotlightPrompt.tsx`, `components/spotlight/SpotlightMentionPicker.tsx` | — | |
 | 씬 캔버스에 카드 종류 추가 | `lib/sceneNodeCatalog.ts`, `components/scene/cards/` | — | |
-| 씬 저장·undo/redo | `lib/scenes.ts`, `lib/useSceneHistory.ts` | `repo/scenes_backup.py`, `routers/scenes.py` | |
+| 씬 저장·undo/redo | `lib/scenes.ts`, `lib/sceneStore.ts`, `lib/useSceneHistory.ts` | `repo/scenes_backup.py`, `routers/scenes.py` | 계약: `docs/CANVAS_SCENE_STORAGE.md` |
 | 공유 서버 주소 이전(서버 이사) | — | `services/server_relocation.py` | 스크립트: `server_move_export.bat`/`server_move_import.bat`/`tools/server_move.py` |
 | 서버 자동시작·워치독·복구 | — | — | `MV_watchdog.bat`, `tools/server_watchdog.py`, `tools/server_supervisor.py`, `restart_server_task.ps1`(⚠ 진입 bat 는 실행금지 — §4) |
 | Higgsfield CLI 버전 핀 교체 | — | — | `hf_cli_version.txt`, `update_cli.bat`, `tools/hf_cli_check_update.py` |
@@ -250,7 +250,7 @@ updated: 2026-10-07
 | `tags.py` | 287 | 태그/자동태그(별도 네임스페이스) 생성·설정·배치·전역삭제 | `repo.set_tags`·`create_auto_tag` |
 | `generation_views.py` | 121 | "마지막으로 크게 본" 개인 표시 | `repo.record_generation_view` |
 | `scene_cards.py` | 140 | 캔버스 카드 ↔ 생성물 소속 사실 | `repo.list_scene_card_links` |
-| `scenes_backup.py` | 130 | 캔버스 씬 localStorage 의 DB 미러 | `repo.list_scene_backups` |
+| `scenes_backup.py` | 130 | 캔버스 씬(브라우저 IndexedDB)의 DB 미러 | `repo.list_scene_backups` |
 
 **프로젝트·워크스페이스(repo 부분)**
 
@@ -549,6 +549,7 @@ updated: 2026-10-07
 | `settings/SettingsDescription.tsx`(29줄) | 설명문 + `<details>` 더보기 | 〃 |
 | `settings/ComfyConnectionSection.tsx`(178줄) | Comfy 연결 설정·확인 | 〃 |
 | `settings/ComfyUnresolvedRunsSection.tsx`(51줄) | 미해결 Comfy 실행 목록 + 결과 회수·로컬 재저장·기록 정리 | 〃 |
+| `settings/CanvasArchiveSection.tsx`(80줄) | 설정 '캔버스 자료' — 캔버스 전체 내보내기·가져오기 단추와 저장 실패 안내 | 〃 |
 | `ShortcutsWindow.tsx`(131줄) | 단축키 재지정 창 | `ShortcutsWindow` |
 | `AdminWindow.tsx`(약 560줄) | 관리자 창(탭 호스트: 승인·멤버·공유 서버·업데이트·프로젝트·에셋 리스트) + 권한 상승 확인 + 서버 이전 공지 | `AdminWindow` |
 | `admin/ApprovalTab.tsx`(143줄) | 계정 승인·숨김·비번 초기화 표 | 〃 |
@@ -730,13 +731,12 @@ updated: 2026-10-07
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
-| `useGenerationLibraryData.ts` | 훅 | 목록 로드·페이징·seq 가드·동기화 판정(§6 계약 지점). `beginComposeList` = 목록을 비우고 다시 받기(캔버스·목록 탭의 '폴더 보기' 창이 열고 닫을 때 — 지금 탭 캐시를 지우고 진행 중 응답을 버린다). 목록 탭 창은 `{ keep }`/`{ restore }` 로 본 목록 첫 쪽 사본을 담았다 먼저 보인다(`backListRef` — 탭 캐시와 별개 칸, 출처는 탭 캐시의 sig 로 확인). `staleList` = 그 사본을 보이는 중 — **지금 문맥의 첫 쪽 응답을 적용한 순간**(성공·실패)에만 꺼진다(버려진 응답·메타 종료로는 안 꺼짐) |
+| `useGenerationLibraryData.ts` | 훅 | 목록 로드·페이징·seq 가드·동기화 판정(§6 계약 지점). `beginComposeList` = 목록을 비우고 다시 받기(캔버스·목록 탭의 '폴더 보기' 창이 열고 닫을 때 — 지금 탭 캐시를 지우고 진행 중 응답을 버린다). 목록 탭 창은 `{ keep }`/`{ restore }` 로 본 목록 첫 쪽 사본을 담았다 먼저 보인다(`backListRef` — 탭 캐시와 별개 칸, 출처는 탭 캐시의 sig 로 확인). `staleList` = 그 사본을 보이는 중 — **지금 문맥의 첫 쪽 응답을 적용한 순간**(성공·실패)에만 꺼진다(버려진 응답·메타 종료로는 안 꺼짐). **다시 받기는 줄이 둘**이다 — 목록 줄(`inflightRef`·대기 병합)은 한 실행의 목록 구간(첫 쪽 + 위치 확인)까지만 잡고, 메타(통계·태그·폴더)는 메타 줄(`sendMeta`/`requestMeta` — 한 번에 한 묶음, 그동안의 요구는 하나로 합쳐 앞 묶음이 끝난 뒤 그때의 문맥으로)이 받아 적용한다. 줄이 비어 있으면 목록과 메타는 같은 순간에 출발한다. 다음 실행의 목록은 앞 실행의 메타를 기다리지 않는다. `reload()` 의 약속은 자기 실행과 맡긴 메타가 **처리**된 뒤에 풀린다(적용 보장은 아니다). 전체 메타 요구는 seq 로 버려져도 다음 묶음이 이어받는다(`metaOwedRef` — 빚만으로 스스로 다시 보내지는 않는다). 시험 `tests/libraryReloadLanes.test.tsx` |
 | `useLibraryFilters.ts` | 훅 | 필터·뷰 상태(localStorage 백업) + 파생 쿼리 |
 | `useLibraryPersistence.ts` | 훅 | 필터 저장 포맷·키·마이그레이션 |
-| `libraryRequestPlan.ts` | 순수 | 목록·메타 조회를 같은 순간에 시작 |
 | `appGenerationQuery.ts` | 순수 | 필터 → 서버 쿼리 객체·캐시 키 · 목록 탭 '폴더 보기' 창의 조회(`folderPeekQuery` — 탭·공간 범위·창 툴바 조건만 따른다) |
 | `useLibraryCreators.ts` | 훅 | 생성자(작성자) 목록 조회 |
-| `useGenerationAutoRefresh.ts` | 훅 | 활성 잡·team 탭 폴링 + 복귀 재조회(5초 가드) |
+| `useGenerationAutoRefresh.ts` | 훅 | 활성 잡·team 탭 폴링 + 복귀 재조회(5초 가드). `paused`(App 이 목록 훅의 `staleList` 를 넘긴다) 동안에는 **여기서 시작하는 조회만** 쉰다 — 폴더 창을 닫고 새 첫 쪽을 기다리는 사이에 끼면 받던 응답이 seq 로 버려져 조작 잠금이 한 왕복 더 간다. 실제 변경 통보(WS 동기화·알림)의 조회는 막지 않는다. 최신 값은 ref 로 읽어 진입만 막는다(paused 로 effect 를 다시 만들면 주기가 재시작되고 진행 중 표시가 지워진다). 풀린 뒤 따로 다시 받지 않는다. 시험 `tests/generationAutoRefresh.test.tsx` |
 | `useGenerationProgress.ts` | 훅 | WS progress 한 건을 카드에 반영 |
 | `resolveLibraryLocation.ts` | 순수 | "이 생성물이 몇 페이지에 있나" 위치 질의·병합 |
 | `mediaTypes.ts` | 순수 | 미디어 필터 옵션 상수 |
@@ -778,13 +778,18 @@ updated: 2026-10-07
 | `bulkGenerationActions.ts` | 순수 | 일괄 실행기(`runGenerationBulk` — 주입받은 비동기 작업을 돌려 실패 수 집계, `runGenerationTrash` — 휴지통 전용: 공유 중 409 를 '건너뜀'으로 따로 센다) + 결과·확인 문구 |
 | `shareMirrorPending.ts` | 순수 | 공유 미러 대기 안내 래핑 |
 
-**9. 씬·캔버스 — 데이터·저장·복구(10)**
+**9. 씬·캔버스 — 데이터·저장·복구(15)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
-| `scenes.ts` | 저장+store | 씬(카드·연결·카메라) localStorage 데이터 계층 + 내보내기/가져오기 |
+| `scenes.ts` | 저장+store | 씬(카드·연결·카메라) 데이터 계층 — 계정 버킷·쓰기 연산·씬 파일 내보내기/가져오기·밖에서 온 씬의 모양 검증(`readStoredScene`) |
+| `sceneStore.ts` | 저장 | 씬의 IndexedDB 저장소 — 화면 값/확정본/밀린 연산, 연산 재생 트랜잭션, **씬별 키**(바뀐 씬만 쓴다)·씬별 읽기 사본, 다른 창 통지, 이관·흡수·충돌 보관·이관 진단 기록(`docs/CANVAS_SCENE_STORAGE.md`) |
+| `ownEntry.ts` | 순수 | id 로 사전(일반 객체)을 조회할 때 자기 속성만 — 씬의 id 가 "toString" 이어도 Object.prototype 의 함수를 받지 않게 |
+| `sceneAbsorb.ts` | 순수 | 옛 저장소(localStorage)의 변경을 새 저장소에 반영할지 3자 비교로 판정 · 씬 내용 지문 |
+| `sceneBoot.ts` | 저장 | 부팅 게이트 — 저장소 열기·옛 저장소 1회 이관·이관 표식(localStorage+쿠키)·옛 저장 칸 진단·옛 창 쓰기 감시 |
+| `sceneArchive.ts` | 저장 | 캔버스 전체 내보내기/가져오기(`mvhub-scenes-full`) — 덮지 않고 합친다 |
 | `sceneAssetRelink.ts` | api+store | 옛 로컬 에셋 참조를 프로젝트 원본으로 재연결하고 씬 저장 갱신 · 서버 판정 기억(계정별 localStorage — 판정 받은 참조는 다음 실행에 NAS 를 다시 안 훑음) · '레퍼런스 찾기' 단추(이 씬만·render 포함)와 자동 복구를 한 줄로 · 판정 보류의 이유(held)·판정 못 끝냄(세션만)·판정 전 구별(카드 빨간 테두리 표시, ASSET_REGISTRY §5) · 탭 공간이 없으면 선택 워크스페이스로 묻기 |
-| `sceneBackup.ts` | api+store | 씬 localStorage → DB 단방향 미러·복구 |
+| `sceneBackup.ts` | api+store | 씬 확정본 → DB 단방향 미러·복구 · 서버 상한(5MiB)을 넘는 씬만 전송에서 제외 |
 | `sceneCardLinks.ts` | api+store | 카드 소속(담긴 생성물) 로컬 DB 기록·서버 병합 |
 | `sceneUndoStore.ts` | store | 씬별 undo/redo 히스토리(언마운트 생존) |
 | `sceneGenDataStore.ts` | store | genId → 생성물 캐시(언마운트 생존) |

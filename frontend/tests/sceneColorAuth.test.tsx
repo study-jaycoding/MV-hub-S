@@ -12,7 +12,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-beforeEach(() => {
+beforeEach(async () => {
   vi.resetModules(); vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("BroadcastChannel", undefined);

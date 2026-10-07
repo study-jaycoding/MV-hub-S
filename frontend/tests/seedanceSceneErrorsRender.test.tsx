@@ -16,6 +16,10 @@ let boundary: ReturnType<typeof installPromptBoundaryMocks>;
 let scene: Scene;
 let style: HTMLStyleElement;
 let sceneRun: Promise<void> | undefined;
+// 씬 저장이 실패하는 상황(저장소 꽉 참)을 흉내 낸다 — App 의 생성 준비 가드가 실제로 막는지 본다.
+let sceneSaveFails = false;
+// 화면 값에는 들어갔는데 저장소 확정이 실패하는 상황(쓰기는 두 박자다 — 화면 먼저, 확정은 뒤따른다).
+let sceneConfirmFails = false;
 const noop = () => {};
 const reload = vi.fn(async () => {});
 
@@ -77,15 +81,22 @@ function installAppBoundaries() {
   vi.doMock("../src/lib/scenes", async () => ({
     ...await vi.importActual<typeof import("../src/lib/scenes")>("../src/lib/scenes"),
     listScenes: () => [scene],
+    // 이 시험의 씬 저장소는 가짜다 — 확정본은 화면 값과 같고, 확정 실패는 sceneConfirmFails 로 만든다.
+    listPersistedScenes: () => (sceneConfirmFails ? [fixtureScene()] : [scene]),
+    confirmSceneWrite: <T,>(run: () => T) => ({ value: run(), confirmed: Promise.resolve(!sceneConfirmFails) }),
   }));
   vi.doMock("../src/lib/useSceneCoordination", () => ({
     useRelinkOnWorkspaceChange: noop,
     useSceneCoordination: () => {
       const [, bump] = useState(0);
       const sceneActionRef = useRef(null);
+      // 반환 = 저장됐나. 실제 구현과 같은 계약이어야 한다 — 호출부(생성 준비)가 이 값을 보고 제출을
+      // 멈추므로, undefined 를 돌려주면 "저장 실패" 로 읽혀 요청이 아예 안 나간다.
       const patchSceneById = useCallback((_id: string, patch: Partial<Scene>) => {
+        if (sceneSaveFails) return false; // 저장소가 거부 — 편집이 남지 않았다
         scene = { ...scene, ...patch };
         bump((value) => value + 1);
+        return true;
       }, []);
       return {
         scenes: [scene], activeSceneId: scene.id, activeScene: scene,
@@ -123,6 +134,8 @@ beforeEach(() => {
   localStorage.setItem("ch.workspaceContext", JSON.stringify({ scope: "personal", id: null, name: null }));
   boundary = installPromptBoundaryMocks();
   scene = fixtureScene();
+  sceneSaveFails = false;
+  sceneConfirmFails = false;
   sceneRun = undefined;
   reload.mockClear();
   installAppBoundaries();
@@ -188,5 +201,38 @@ describe("App: 프롬프트 숨김 상태에서 씬의 부분 성공과 카드�
       expect(card.genIds || []).toHaveLength(0);
       expect(card.pendingGenerationAttempts || []).toHaveLength(0);
     }
+  });
+
+  // 저장소가 꽉 차서 '어느 카드 것인지' 표식을 못 남기면, 생성 요청을 아예 보내지 않아야 한다.
+  // 보내 버리면 응답 전에 창이 닫혔을 때 결과를 카드에 이어 붙일 근거가 없다(적대 리뷰 r2 P1).
+  // ★여기서 실제로 도는 것은 App 의 prepareCanvasGenerationBatch 가드다 — 그 한 줄을 지우면 이 시험이 깨진다.
+  it("씬 저장이 실패하면 생성 요청을 아예 보내지 않는다", { timeout: 20_000 }, async () => {
+    sceneSaveFails = true;
+    const { default: App } = await import("../src/App");
+    act(() => view.root.render(<App />));
+    await settle();
+
+    click(button(view.container, "시험 씬 일괄 생성"));
+    await settle();
+
+    expect(boundary.api.prepareCreate).not.toHaveBeenCalled();
+    // 반쯤 쓰다 만 표식도 남지 않아야 한다 — 남으면 '생성 중'으로 보이는 유령 카드가 된다.
+    for (const card of scene.cards) expect(card.pendingGenerationAttempts || []).toHaveLength(0);
+  });
+
+  // 표식이 화면 값에만 들어가고 저장소 확정에 실패한 경우도 같다 — 보내지 않는다. 그리고 **내 표식은 걷어낸다**:
+  // 남겨 두면 저장소가 나중에 다시 시도해 확정하고, 보내지도 않은 생성의 표식이 유령으로 살아난다.
+  it("표식이 저장소에 확정되지 못하면 생성 요청을 보내지 않고 내 표식만 걷어낸다", { timeout: 20_000 }, async () => {
+    sceneConfirmFails = true;
+    const { default: App } = await import("../src/App");
+    act(() => view.root.render(<App />));
+    await settle();
+
+    click(button(view.container, "시험 씬 일괄 생성"));
+    await settle();
+    await act(async () => { await sceneRun; });
+
+    expect(boundary.api.prepareCreate).not.toHaveBeenCalled();
+    for (const card of scene.cards) expect(card.pendingGenerationAttempts || []).toHaveLength(0);
   });
 });

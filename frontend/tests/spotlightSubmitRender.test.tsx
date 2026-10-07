@@ -222,6 +222,18 @@ describe("실제 프롬프트 제출: 캔버스 연속 생성과 응답 후 편�
     expect(errors).toContain("프롬프트를 입력하세요.");
   });
 
+  // 저장소가 꽉 차면 App 의 prepareCanvasGenerationBatch 가 빈 배열을 돌려준다(저장 실패).
+  // 그 상태로 제출하면 '어느 카드 것인지' 표식이 없는 생성이 서버에 남아, 응답 전에 창이 닫히면
+  // 결과를 영영 못 잇는다. 그래서 링크가 batch 수만큼 안 나오면 요청을 아예 보내지 않는다.
+  it("캔버스 표식을 저장하지 못하면 생성 요청을 보내지 않는다", async () => {
+    await mount({ prepareCanvasGeneration: () => [] });
+    await run();
+    expect(prepareCreate).not.toHaveBeenCalled();
+    expect(errors.filter(Boolean)).toEqual([
+      "Error: 캔버스 생성 위치를 저장하지 못했습니다. 씬을 다시 선택한 뒤 시도하세요.",
+    ]);
+  });
+
   it("모든 요청이 실패하면 캔버스 입력·히스토리를 보존한다", async () => {
     prepareCreate.mockImplementation(() => async () => { throw new Error("fixture failure"); });
     await mount();

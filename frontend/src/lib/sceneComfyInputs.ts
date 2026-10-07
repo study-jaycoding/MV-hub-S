@@ -1,5 +1,6 @@
 // Comfy 노드 실행 입력(미디어·연결텍스트) 수집 — SceneBoard 에서 분리한 순수 로직(React·ref 무관, 인자만으로 계산).
 //  실행부(runComfyRaw)가 cards/edges/genData/refParents 를 넘기면 그대로 계산한다. 테스트 대상.
+import { ownEntry } from "./ownEntry";
 import {
   collectListInputs,
   comfyOutputMedia,
@@ -190,7 +191,7 @@ export function gatherComfyMedia(
   };
   const pushGen = (gc?: SceneCard) => {
     const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
-    const a = gid ? genData[gid]?.assets?.[0] : undefined;
+    const a = gid ? ownEntry(genData, gid)?.assets?.[0] : undefined;
     const url = a?.source_url || a?.file_path;
     if (!url) return;
     const type = a?.type === "video" ? "video" : "image";

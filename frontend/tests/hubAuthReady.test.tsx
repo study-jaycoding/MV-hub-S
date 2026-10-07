@@ -14,7 +14,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 const response = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
-beforeEach(() => {
+beforeEach(async () => {
   vi.resetModules();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear(); sessionStorage.clear();

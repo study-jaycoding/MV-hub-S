@@ -39,6 +39,9 @@ let refreshProjects: () => void;
 const relinkOnWorkspaceChange = vi.fn();
 const beginList = vi.fn(); // 목록 훅의 beginComposeList — 폴더 창을 열고 닫을 때 목록을 비우는지 본다
 let setStaleList: (on: boolean) => void; // 목록 훅의 staleList(닫은 직후 옛 첫 쪽을 보이는 중)를 시험이 켜고 끈다
+let setLoadingList: (on: boolean) => void; // 목록 훅의 loading(받는 중)
+let autoRefreshSnapshot: { paused?: boolean } | null = null; // 자동 새로고침 훅이 받은 인자
+let gridClass = "gen-grid"; // 가짜 격자의 클래스 — 비우면 "격자가 아직 없다"(빈 목록·실패)를 흉내 낸다
 const libraryHighlightedIds = () => [...(gridSnapshot?.resolveHighlightedIds || [])];
 const libraryGeneration = (id: string): Generation => ({
   id, status: "done", prompt: id, assets: [], tags: [], auto_tags: [], references: [],
@@ -407,7 +410,8 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       </div>
     ))}</>;
     gridSnapshot = props;
-    return <output data-testid="library-highlight">{JSON.stringify([...props.resolveHighlightedIds || []])}</output>;
+    // 실제 격자처럼 초점을 받을 수 있는 .gen-grid — 폴더 창을 닫은 뒤의 초점 복원을 본다
+    return <output data-testid="library-highlight" className={gridClass} tabIndex={0}>{JSON.stringify([...props.resolveHighlightedIds || []])}</output>;
   } }));
   vi.doMock("../src/components/SpotlightPrompt", async () => {
     const actual = await vi.importActual<typeof import("../src/components/SpotlightPrompt")>("../src/components/SpotlightPrompt");
@@ -423,9 +427,12 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
     useHubAuth: () => ({ authPending: false, authReady: true, authConfig: { auth_enabled: true },
       account: { email: "fixture@example.invalid" }, hubAccount: null, finalizeProjects: new Set<string>(), sharedSrv: null, logout: noop, setAccount: noop }),
   }));
-  for (const name of ["useGenerationProgress", "useGenerationAutoRefresh", "useCommentBadgePoll", "useSceneCompletionWatcher"]) {
+  for (const name of ["useGenerationProgress", "useCommentBadgePoll", "useSceneCompletionWatcher"]) {
     vi.doMock(`../src/lib/${name}`, () => ({ [name]: noop }));
   }
+  vi.doMock("../src/lib/useGenerationAutoRefresh", () => ({
+    useGenerationAutoRefresh: (args: NonNullable<typeof autoRefreshSnapshot>) => { autoRefreshSnapshot = args; },
+  }));
   vi.doMock("../src/lib/useWorkspaceFilterOptions", () => ({
     useWorkspaceFilterOptions: () => ({ options: [], loading: false, failed: false, reload: noop }),
   }));
@@ -436,7 +443,8 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       const [activeSceneId, setActiveSceneId] = useState(initialSceneId);
       return { scenes: appScenes, activeSceneId, activeScene: appScenes.find((scene) => scene.id === activeSceneId),
       sceneBinding: null, setSceneBinding: noop, sceneSelGens: [], setSceneSelGens: noop,
-      sceneActionRef: useRef(null), flushScenePending: noop, patchSceneById: noop, patchActiveScene: noop,
+      // patchSceneById 의 반환은 '저장됐나' 다 — noop(undefined)이면 호출부가 저장 실패로 읽는다.
+      sceneActionRef: useRef(null), flushScenePending: noop, patchSceneById: () => true, patchActiveScene: noop,
       selectScene: setActiveSceneId, addScene: noop, importSceneSnapshot: noop, renameScene: noop, removeSceneById: noop,
       reorderScenes: noop, setSceneWorkspace: noop, backupOnly: 0, importBackupScenes: noop };
     },
@@ -449,6 +457,8 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       const [projects, setProjects] = useState(initialProjects);
       const [staleList, setStale] = useState(false);
       setStaleList = setStale;
+      const [loading, setLoad] = useState(false);
+      setLoadingList = setLoad;
       refreshProjects = () => setProjects((previous) => [...previous]);
       const revealLocated = useCallback((tab: "my" | "team", value: GenerationLocation) => {
         setLocation({ tab, value }); setGens(value.items);
@@ -460,7 +470,7 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       filtersRef, projectsLoadedRef: useRef(true), projects,
       revealLocated, locatedVisibleIds: new Set(gens.map((item) => item.id)),
       isLocatedView: !!location && isLocatedQuery(args.genQuery, location.tab, location.value),
-      stats: { has_unread: false, failed_count: 0, unread_count: 0 }, loading: false, loadingMore: false,
+      stats: { has_unread: false, failed_count: 0, unread_count: 0 }, loading, loadingMore: false,
       hasMore: false, loadError: null, archivedCount: 0, unassignedCount: 0, loadMore: noop, beginComposeList: beginList,
       reload: noop, reloadIfStale: noop, staleList,
     };
@@ -875,6 +885,7 @@ it("App: 폴더 창을 닫은 직후 옛 첫 쪽을 보이는 동안에는 고�
   expect(main.hasAttribute("inert")).toBe(true); // 카드의 클릭·키
   expect(main.getAttribute("aria-busy")).toBe("true");
   expect(gridSnapshot!.selectLocked).toBe(true); // 바깥(상단바·사이드바 여백)에서 시작하는 끌기 선택
+  expect(autoRefreshSnapshot!.paused).toBe(true); // 자동 새로고침도 쉰다 — 끼어들면 받던 새 첫 쪽이 버려져 잠금이 길어진다
   expect(gridSnapshot!.loading).toBe(false); // 격자가 '받는 중'을 안다(비어 있을 때 "항목이 없습니다" 대신 "불러오는 중…")
   act(() => gridSnapshot!.onSelectedChange(new Set(["target"]))); // 그래도 들어온 선택 결과
   expect(gridSnapshot!.selectedIds.size).toBe(0);
@@ -887,8 +898,91 @@ it("App: 폴더 창을 닫은 직후 옛 첫 쪽을 보이는 동안에는 고�
   expect(main.hasAttribute("inert")).toBe(false);
   expect(main.hasAttribute("aria-busy")).toBe(false);
   expect(gridSnapshot!.selectLocked).toBe(false);
+  expect(autoRefreshSnapshot!.paused).toBe(false);
   act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
   expect(gridSnapshot!.selectedIds).toEqual(new Set(["target"]));
+});
+
+it("App: 폴더 창을 닫으면 본 목록이 조작 가능해진 뒤 초점이 격자로 돌아온다 — 남의 초점은 빼앗지 않는다", async () => {
+  // 창이 사라지면 초점이 BODY 로 떨어져, 격자의 키(Ctrl+A·방향키…)가 격자에 초점을 다시 줄 때까지 먹지 않았다(2026-10-07 실측)
+  await mountApp("my");
+  const grid = () => document.querySelector<HTMLElement>("main.main .gen-grid");
+  const open = async () => {
+    act(() => gridSnapshot!.onOpenFolder!(libraryGeneration("target")));
+    await settle();
+    expect(document.activeElement).toBe(peekWindow());
+  };
+  const elsewhere = document.createElement("input");
+  document.body.appendChild(elsewhere);
+  // 목록 훅처럼: 닫을 때(restore) 옛 첫 쪽을 먼저 보이며 잠근다
+  const lockOnClose = (back?: { restore?: string }) => { if (back?.restore !== undefined) setStaleList(true); };
+  try {
+    // 1) 잠금 중에는 옮기지 않고(main 이 inert), 풀리면 격자로
+    beginList.mockImplementation(lockOnClose);
+    await open();
+    pressEscapeInPeek();
+    await settle();
+    expect(peekWindow()).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+    act(() => setStaleList(false));
+    expect(grid()).not.toBeNull();
+    expect(document.activeElement).toBe(grid());
+
+    // 2) 그사이 초점이 다른 곳으로 갔으면 그만둔다 — 그 요소가 사라져 초점이 다시 비어도 돌려주지 않는다(메뉴에서 설정 창을 연 직후 등)
+    await open();
+    pressEscapeInPeek();
+    await settle();
+    elsewhere.focus();
+    elsewhere.blur();
+    expect(document.activeElement).toBe(document.body);
+    act(() => setStaleList(false));
+    expect(document.activeElement).toBe(document.body);
+
+    // 3) 닫는 순간 초점이 창 밖에 있었으면(크게 보기의 [부분 수정] 등) 돌려주지 않는다 — 나중에 초점이 비어도
+    await open();
+    elsewhere.focus();
+    act(() => { window.dispatchEvent(new CustomEvent("ch:partial-edit", { detail: { genId: "target" } })); });
+    await settle();
+    expect(peekWindow()).toBeNull();
+    elsewhere.blur();
+    act(() => setStaleList(false));
+    expect(document.activeElement).toBe(document.body);
+
+    // 4) 기다리는 사이 문맥이 바뀌었으면(보던 위치) 돌려주지 않는다 — 되돌아와도 살리지 않는다
+    await open();
+    pressEscapeInPeek();
+    await settle();
+    const before = librarySnapshot!.filters.project_id;
+    act(() => sidebarSnapshot!.onChange({ project_id: "other-project" }));
+    act(() => sidebarSnapshot!.onChange({ project_id: before }));
+    act(() => setStaleList(false));
+    expect(document.activeElement).toBe(document.body);
+
+    // 4-2) 한 번만 — 조작 가능해진 순간 격자가 없었으면(빈 목록·실패) 그대로 끝내고, 나중에 격자가 생겨도 옮기지 않는다
+    await open();
+    pressEscapeInPeek();
+    await settle();
+    gridClass = "";
+    act(() => setStaleList(false));
+    gridClass = "gen-grid";
+    act(() => setLoadingList(true));
+    act(() => setLoadingList(false));
+    expect(grid()).not.toBeNull();
+    expect(document.activeElement).toBe(document.body);
+
+    // 5) 사본 없이 빈 채로 받는 경우(잠금 없음)에는 목록이 온 뒤에
+    beginList.mockImplementation((back?: { restore?: string }) => { if (back?.restore !== undefined) setLoadingList(true); });
+    await open();
+    pressEscapeInPeek();
+    await settle();
+    expect(document.activeElement).toBe(document.body);
+    act(() => setLoadingList(false));
+    expect(document.activeElement).toBe(grid());
+  } finally {
+    gridClass = "gen-grid";
+    beginList.mockReset();
+    elsewhere.remove();
+  }
 });
 
 it("App 작업 공간: 바깥 막·✕ 로 닫히고, 보던 위치가 바뀌거나 부분 수정으로 넘어가도 닫힌다 — 휴지통 보기에는 이름표가 없다", async () => {

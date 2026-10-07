@@ -39,6 +39,8 @@ interface Props {
   onHoverChange?: (hover: boolean) => void; // 씬 패널(저장/불러오기) 호버 표시용
   backupOnly?: number; // DB 백업에만 있는 씬 수(0 이면 '가져오기'를 숨긴다)
   onImportBackup?: () => void;
+  saveFailing?: boolean; // 캔버스가 저장소에 확정되지 못하고 있다 — 그동안 '저장 안 됨'을 계속 띄운다
+  onExportAll?: () => void; // 지금 상태 전체를 파일로 내려받는다
 }
 
 interface DragState {
@@ -65,6 +67,8 @@ export function SceneBar({
   onHoverChange,
   backupOnly = 0,
   onImportBackup,
+  saveFailing = false,
+  onExportAll,
 }: Props) {
   const [drag, setDrag] = useState<DragState | null>(null);
   const [menu, setMenu] = useState<SceneMenuTarget | null>(null);
@@ -263,6 +267,16 @@ ${sceneTabTitle(scene, workspaceContext, label, missing)}`}
       <button className="scene-add" onClick={onAdd} title="씬 추가">
         +
       </button>
+      {saveFailing && onExportAll ? (
+        // 알림 한 줄은 다른 알림에 덮인다 — 실패하는 동안 여기 계속 떠 있고, 누르면 그 자리에서 건진다.
+        <button
+          className="scene-restore scene-unsaved"
+          onClick={onExportAll}
+          title="캔버스를 이 PC 저장소에 쓰지 못하고 있습니다. 작업은 화면에 그대로 있고 계속 다시 시도합니다. 눌러서 지금 상태 전체를 파일로 내려받아 두세요."
+        >
+          ⚠ 저장 안 됨 — 눌러서 파일로 내려받기
+        </button>
+      ) : null}
       {backupOnly > 0 && onImportBackup ? (
         // 다른 브라우저(앱 전용 프로필)에서 만든 씬이 이 PC 의 DB 백업에 남아 있을 때만 뜬다.
         <button

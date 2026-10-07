@@ -141,10 +141,12 @@ interface Props {
   count?: number; // 배치 장수(컨트롤드). 없으면 내부 상태 사용.
   onCountChange?: (n: number) => void;
   canvasTarget?: CanvasGenerationTarget | null;
+  // ★비동기다 — 생성 요청보다 '어느 카드 것인지' 표식이 **먼저 저장돼야** 한다. 저장이 IndexedDB 로
+  //  옮겨가며 기다리는 일이 됐으므로, 호출부는 반드시 await 한 뒤 제출한다.
   prepareCanvasGeneration?: (
     target: CanvasGenerationTarget,
     count: number,
-  ) => CanvasGenerationLink[];
+  ) => Promise<CanvasGenerationLink[]>;
   settleCanvasGeneration?: (link: CanvasGenerationLink, generation: Generation) => void;
   discardCanvasGeneration?: (link: CanvasGenerationLink) => void;
   onCanvasBatchCreated?: (created: Generation[]) => void;

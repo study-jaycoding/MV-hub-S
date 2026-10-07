@@ -8,6 +8,7 @@
 //  · watch 가 비고 발견할 것도 없으면 API 호출 없음(가벼움).
 import { useEffect, useRef } from "react";
 import { api } from "../api";
+import { ownEntry } from "./ownEntry";
 import { getWatchIds, isKnownGen, observeStatus } from "./sceneRecentDoneStore";
 
 const POLL_MS = 2500;
@@ -80,7 +81,7 @@ export function useSceneCompletionWatcher(
           if (alive) {
             const missing = new Set(batch.missing || []);
             for (const id of ids) {
-              const g = batch.items[id];
+              const g = ownEntry(batch.items, id);
               if (g) observeStatus(id, g.status);
               else if (missing.has(id)) observeStatus(id, "failed");
             }

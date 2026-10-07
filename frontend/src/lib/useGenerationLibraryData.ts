@@ -3,7 +3,6 @@ import { api, GEN_PAGE, type GenCursor } from "../api";
 import { isLocatedQuery, locatedItems, mergeLocatedGenerations, type GenerationLocation } from "./resolveLibraryLocation";
 import { EMPTY_FACETS } from "./appConstants";
 import { beginLibraryReload, finishLibraryReload } from "./librarySync";
-import { startLibraryRequests } from "./libraryRequestPlan";
 import { reconcileArrayState, reconcileValueState } from "./stateReconciliation";
 import { hasWorkspaceFilter, matchesWorkspaceFilter, workspaceFilterOf } from "./libraryWorkspaceScope";
 import { t } from "./i18n";
@@ -114,9 +113,18 @@ export function useGenerationLibraryData({
   const tabCacheRef = useRef<Record<string, GenerationTabCacheEntry>>({});
   // reload 코얼레싱 — 이미 실행 중이면 새 호출을 큐에 '병합'해 동시 네트워크를 1개로 줄인다.
   // reloadSeqRef 가 정합성(최신 결과만 반영)을 보장하므로, 여기선 중복 요청만 없앤다.
+  // ★줄은 둘이다(2026-10-07): 아래 셋은 **목록 줄** — 한 실행의 목록 구간(첫 쪽 + 위치 확인)이 끝날 때까지만 잡는다.
   const inflightRef = useRef<Promise<void> | null>(null);
   const pendingArgsRef = useRef<{ silent: boolean; light: boolean } | null>(null);
   const pendingResolversRef = useRef<Array<() => void>>([]);
+  // **메타 줄** — 메타 묶음(통계·태그·폴더)은 따로 줄을 선다. 목록 줄이 메타까지 잡고 있으면 다음 실행의 목록이 앞 실행의
+  //  메타가 끝날 때까지 출발하지 못한다(폴더 창을 닫은 뒤 카드가 한참 안 눌리던 원인 — 메타가 느린 순간에만 드러난다).
+  //  한 번에 한 묶음만 떠 있고, 그동안 들어온 요구는 하나로 합쳐 앞 묶음이 끝난 뒤 **그때의 문맥**으로 보낸다.
+  const metaBusyRef = useRef(false);
+  const metaWaitersRef = useRef<Array<(applied: boolean) => void> | null>(null); // 못 보낸 요구 = 그 요구를 맡긴 호출들
+  // 전체 메타(태그·폴더 포함) 요구가 아직 지금 문맥에서 처리되지 않았다 — 못 보냈든, 보낸 뒤 seq 로 버려졌든 다음 묶음이
+  //  전체로 나간다(가벼운 요청이 뒤따라와도 요구를 잃지 않는다). 빚만으로 스스로 다시 보내지는 않는다 — 다음 요청이 올 때 갚는다.
+  const metaOwedRef = useRef(false);
 
   // 같은 공유 탭 안의 공간 전환도 비동기 응답의 문맥 경계다. 효과가 돌기 전부터 차단한다.
   const workspaceScopeRef = useRef(workspaceScopeKey);
@@ -228,7 +236,7 @@ export function useGenerationLibraryData({
     // 정상 페이지가 신선할 때만 추가 전체 재조회를 생략한다(캐시 수명은 연장하지 않는다).
     const reusePage = sameView && !filtersRef.current.deleted_only &&
       lastLoadedTabRef.current === tab && !loadError &&
-      !inflightRef.current && !pendingArgsRef.current && !loadingMoreRef.current &&
+      !inflightRef.current && !pendingArgsRef.current && !metaBusyRef.current && !loadingMoreRef.current &&
       generationTabCacheIsFresh(tabCacheRef.current[tab], sig) &&
       items.length > 0 && items.every((item) => visibleIds.has(item.id));
     locatedRef.current = { tab, location: { ...location, items } };
@@ -246,7 +254,58 @@ export function useGenerationLibraryData({
     if (sameView && !reusePage) setLocatedReload((value) => value + 1);
   }, [loadError]);
 
-  const runReload = useCallback(async (silent: boolean, light: boolean) => {
+  // 메타 묶음 한 번 — 보내는 순간의 문맥(seq·탭·공간·시각)으로 계획을 세우고, 그 seq 가 그대로일 때만 적용한다.
+  //  각 요청은 실패를 스스로 삼킨다(null) — 그리드 표시에는 영향이 없고, 한 요청의 실패가 다른 것을 막지 않는다.
+  //  돌려주는 값 = 태그·폴더 가운데 무엇이든 적용했는가 — 목록이 없는 캔버스 실행이 '내 변경을 반영했다'고 표시할지 정하는
+  //  데만 쓴다(통계만 받은 것은 반영이 아니다 — 기다리는 사이 탭이 바뀌어 목록 탭 계획으로 나간 묶음도 같은 기준).
+  const sendMeta = useCallback(async (): Promise<boolean> => {
+    metaBusyRef.current = true;
+    const seq = reloadSeqRef.current;
+    const full = metaOwedRef.current;
+    const now = Date.now();
+    const tab = filtersRef.current.tab;
+    const scope = tab === "team" ? "team" : "my";
+    // 캔버스(목록 없음)는 좌측 폴더(projects)와 등록 태그 패널(facets)을 직접 쓴다 — 폴더는 light 여도 받고 통계는 받지 않는다.
+    const bare = tab === "compose" && !composeListEnabledRef.current;
+    const workspaceId = projectWorkspaceIdRef.current;
+    const ask = <T,>(wanted: boolean, fetch: () => Promise<T>): Promise<T | null> =>
+      wanted && authReadyRef.current ? fetch().catch(() => null) : Promise.resolve(null);
+    const [st, f, pr] = await Promise.all([
+      ask(!bare && (full || now - lastStatsAtRef.current > 10000), () => api.generationStats()), // stats는 비싸 10초 스로틀
+      ask(full, () => api.facets(scope)),
+      ask(full || bare, () => api.projects(scope, false, workspaceId)),
+    ]);
+    const current = seq === reloadSeqRef.current;
+    if (current) {
+      if (full) metaOwedRef.current = false;
+      if (st) {
+        setStats((prev) => reconcileValueState(prev, st));
+        lastStatsAtRef.current = now;
+      }
+      if (f) setFacets((prev) => reconcileValueState(prev, f));
+      if (pr) {
+        setProjects((prev) => reconcileArrayState(prev, pr.projects));
+        setUnassignedCount(pr.unassigned);
+        setArchivedCount(pr.archived_count ?? 0);
+        projectsLoadedRef.current = true;
+      }
+    }
+    // 그동안 쌓인 요구가 있으면 지금 문맥으로 한 번 더 — 맡긴 호출들은 그 묶음이 처리된 뒤에 풀린다.
+    const waiters = metaWaitersRef.current;
+    metaWaitersRef.current = null;
+    if (waiters) void sendMeta().then((applied) => { for (const done of waiters) done(applied); });
+    else metaBusyRef.current = false;
+    return current && !!(f || pr);
+  }, []);
+
+  const requestMeta = useCallback((light: boolean): Promise<boolean> => {
+    if (!light) metaOwedRef.current = true;
+    if (!metaBusyRef.current) return sendMeta();
+    return new Promise<boolean>((done) => { (metaWaitersRef.current ??= []).push(done); });
+  }, [sendMeta]);
+
+  // listSettled = 목록 구간이 끝났다(적용·실패·폐기 모두) — 부르는 쪽(launch)이 목록 줄을 다음 실행에 넘긴다.
+  const runReload = useCallback(async (silent: boolean, light: boolean, listSettled: () => void) => {
     if (!authReadyRef.current) return;
     const syncToken = beginLibraryReload();
     let syncFinished = false;
@@ -261,23 +320,13 @@ export function useGenerationLibraryData({
       if (tab === "compose" && !composeListEnabledRef.current) {
         setLoading(false);
         // 캔버스는 그리드를 안 그리지만 좌측 폴더(projects)와 등록 태그 패널(facets)을 직접 사용한다.
-        // 둘 다 여기서 채워야 새로고침 직후에도 다른 탭 왕복 없이 폴더·태그가 바로 보인다.
-        const seq = ++reloadSeqRef.current;
-        // 반드시 await해야 reload 코얼레싱이 이 요청이 끝날 때까지 실행 중으로 본다. 각 요청 실패는
-        // 서로 격리해 프로젝트가 잠시 실패해도 태그는 갱신되고, 반대도 동일하게 한다.
-        const [pr, f] = await Promise.all([
-          api.projects("my", false, projectWorkspaceIdRef.current).catch(() => null),
-          light ? Promise.resolve(null) : api.facets("my").catch(() => null),
-        ]);
-        if (seq !== reloadSeqRef.current) return;
-        if (pr) {
-          setProjects((prev) => reconcileArrayState(prev, pr.projects));
-          setUnassignedCount(pr.unassigned);
-          setArchivedCount(pr.archived_count ?? 0);
-          projectsLoadedRef.current = true;
-        }
-        if (f) setFacets((prev) => reconcileValueState(prev, f));
-        if (pr || f) finishSync(true);
+        // 둘 다 여기서 채워야 새로고침 직후에도 다른 탭 왕복 없이 폴더·태그가 바로 보인다(무엇을 받는지는 sendMeta 의 bare).
+        ++reloadSeqRef.current;
+        const metaDone = requestMeta(light);
+        // 목록이 없으니 목록 줄은 바로 넘긴다 — 연달아 온 요청을 하나로 합치는 일은 메타 줄이 한다.
+        listSettled();
+        // 반드시 await — 호출자의 `await reload()` 는 맡긴 메타가 처리된 뒤에 풀려야 한다.
+        if (await metaDone) finishSync(true);
         return;
       }
       if (!silent) {
@@ -287,22 +336,14 @@ export function useGenerationLibraryData({
       const seq = ++reloadSeqRef.current;
       const query = listQuery();
       const trashMode = !!filtersRef.current.deleted_only;
-      const scope = tab === "team" ? "team" : "my";
       const sig = JSON.stringify([trashMode, query]);
       // 탭 전환의 '즉시 표시'는 위 filters.tab effect가 담당 — 여기(비동기 실행 시점)는 최신본 fetch만.
       // 1) 목록과 메타를 **함께 시작**한다(2026-09-12, C-6). 종전에는 목록을 다 받은 **뒤에야**
       //    메타를 시작해, 왼쪽 폴더·태그·배지가 목록 왕복(로컬 47ms·3.38MB)만큼 늦게 왔다.
-      //    그리드 표시는 여전히 목록만 기다린다 — 아래에서 `list` 를 먼저 받아 그린다.
-      const now = Date.now();
-      const wantStats = !light || now - lastStatsAtRef.current > 10000; // stats는 비싸 10초 스로틀
-      // ★요청을 띄우는 시점의 값으로 고정한다 — seq·sig 와 같은 스냅샷 규칙.
-      const workspaceId = projectWorkspaceIdRef.current;
-      const { list, meta } = startLibraryRequests(
-        () => (trashMode ? api.listTrash(query.search, 0) : api.listGenerations(query, null)),
-        wantStats ? () => api.generationStats() : null,
-        light ? null : () => api.facets(scope),
-        light ? null : () => api.projects(scope, false, workspaceId),
-      );
+      //    그리드 표시는 목록만 기다린다. 메타는 메타 줄이 받아 적용한다 — 줄이 비어 있으면 지금 이 자리에서 출발하고,
+      //    앞 묶음이 떠 있으면 그 뒤에 선다(이 실행의 목록은 그것을 기다리지 않는다).
+      const list = trashMode ? api.listTrash(query.search, 0) : api.listGenerations(query, null);
+      const metaDone = requestMeta(light);
       const located = locatedRef.current;
       // 共有解除・削除・移動は毎回の通常更新と一緒に再確認。古い注入カードを復活させない。
       const locationCheck = located && isLocatedQuery(query, located.tab, located.location)
@@ -315,7 +356,13 @@ export function useGenerationLibraryData({
         : Promise.resolve(null);
       try {
         const [page, checked] = await Promise.all([list, locationCheck]);
-        if (seq !== reloadSeqRef.current) return;
+        if (seq !== reloadSeqRef.current) {
+          // 낡은 실행 — 목록은 버린다. 다만 맡긴 메타 요구가 처리될 때까지는 끝나지 않는다(전체 요구는 다음 묶음이 이어받는다).
+          finishSync(false);
+          listSettled();
+          await metaDone;
+          return;
+        }
         const last = page[page.length - 1];
         pageCursorRef.current = last ? { ts: last.sort_ts ?? 0, id: last.id } : null;
         trashOffsetRef.current = trashMode ? page.length : 0;
@@ -357,33 +404,27 @@ export function useGenerationLibraryData({
       } finally {
         if (!silent && seq === reloadSeqRef.current) setLoading(false);
       }
-      // 2) 메타(실패수·안읽음 배지·facets·projects)는 위에서 이미 떠 있다 — 여기서 받기만 한다.
-      //    실패해도 그리드 표시엔 영향 없음(각 요청이 스스로 삼켜 null 로 온다).
-      const [st, f, pr] = await meta;
-      if (seq !== reloadSeqRef.current) return;
-      if (st) {
-        setStats((prev) => reconcileValueState(prev, st));
-        lastStatsAtRef.current = now;
-      }
-      if (f) setFacets((prev) => reconcileValueState(prev, f));
-      if (pr) {
-        setProjects((prev) => reconcileArrayState(prev, pr.projects));
-        setUnassignedCount(pr.unassigned);
-        setArchivedCount(pr.archived_count ?? 0);
-        projectsLoadedRef.current = true;
-      }
+      // 2) 목록 구간 끝 — 목록 줄을 넘긴다. 다음 실행의 목록은 이 실행의 메타(실패수·안읽음 배지·facets·projects)를
+      //    기다리지 않고 출발한다. 이 실행의 약속은 맡긴 메타가 처리된 뒤에 풀린다(`await reload()` 의 뜻은 그대로).
+      listSettled();
+      await metaDone;
     } finally {
       // 실패·탭/필터 전환으로 결과가 폐기된 reload는 변경을 덮었다고 표시하지 않는다.
       finishSync(false);
     }
-  }, [flash, setStaleList]);
+  }, [flash, requestMeta, setStaleList]);
 
-  // 실제 실행 1건을 돌리고, 끝나면 큐에 쌓인(병합된) 다음 실행을 이어서 돌린다.
-  // 병합 실행이 끝나면 그동안 대기하던 호출자들의 promise 를 resolve → awaited 호출도 '자기 요청을
+  // 실제 실행 1건을 돌리고, **목록 구간이 끝나면** 큐에 쌓인(병합된) 다음 실행을 이어서 돌린다.
+  // 병합 실행이 끝나면(메타 처리까지) 그동안 대기하던 호출자들의 promise 를 resolve → awaited 호출도 '자기 요청을
   // 포함한' 실행이 끝난 뒤 신선한 데이터를 본다.
   const launch = useCallback(
     (silent: boolean, light: boolean): Promise<void> => {
-      const p = runReload(silent, light).finally(() => {
+      // 줄 넘기기는 실행마다 한 번 — 목록 구간 끝(runReload 가 부른다)과 실행 종료 중 먼저 온 쪽. 이미 넘긴 옛 실행의
+      //  종료가 그 뒤에 출발한 실행의 줄·스피너를 건드리지 않는다.
+      let handed = false;
+      const handOver = () => {
+        if (handed) return;
+        handed = true;
         inflightRef.current = null;
         const next = pendingArgsRef.current;
         if (next) {
@@ -396,11 +437,13 @@ export function useGenerationLibraryData({
             })
             .catch(() => {}); // 방어: runReload 는 정상 reject 안 하지만 leak 방지
         } else {
-          // 체인 종료 — 무효화된(seq 불일치) non-silent run 이 남긴 스피너를 확실히 내린다.
+          // 체인 종료 — 무효화된(seq 불일치) non-silent run 이 남긴 스피너를 확실히 내린다(silent 실행이 이어받은 것 포함).
           setLoading(false);
         }
-      });
-      inflightRef.current = p;
+      };
+      const p = runReload(silent, light, handOver).finally(handOver);
+      // 목록이 없는 실행(캔버스)은 호출 도중에 이미 줄을 넘겼다 — 넘긴 줄에 자기를 다시 세우면 뒤의 요청이 영영 못 나간다.
+      if (!handed) inflightRef.current = p;
       return p;
     },
     [runReload],
