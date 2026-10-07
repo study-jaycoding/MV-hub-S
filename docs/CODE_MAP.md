@@ -724,10 +724,9 @@ updated: 2026-10-07
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
-| `useGenerationLibraryData.ts` | 훅 | 목록 로드·페이징·seq 가드·동기화 판정(§6 계약 지점). `beginComposeList` = 목록을 비우고 다시 받기(캔버스·목록 탭의 '폴더 보기' 창이 열고 닫을 때 — 지금 탭 캐시를 지우고 진행 중 응답을 버린다). 목록 탭 창은 `{ keep }`/`{ restore }` 로 본 목록 첫 쪽 사본을 담았다 먼저 보인다(`backListRef` — 탭 캐시와 별개 칸, 출처는 탭 캐시의 sig 로 확인). `staleList` = 그 사본을 보이는 중 — **지금 문맥의 첫 쪽 응답을 적용한 순간**(성공·실패)에만 꺼진다(버려진 응답·메타 종료로는 안 꺼짐) |
+| `useGenerationLibraryData.ts` | 훅 | 목록 로드·페이징·seq 가드·동기화 판정(§6 계약 지점). `beginComposeList` = 목록을 비우고 다시 받기(캔버스·목록 탭의 '폴더 보기' 창이 열고 닫을 때 — 지금 탭 캐시를 지우고 진행 중 응답을 버린다). 목록 탭 창은 `{ keep }`/`{ restore }` 로 본 목록 첫 쪽 사본을 담았다 먼저 보인다(`backListRef` — 탭 캐시와 별개 칸, 출처는 탭 캐시의 sig 로 확인). `staleList` = 그 사본을 보이는 중 — **지금 문맥의 첫 쪽 응답을 적용한 순간**(성공·실패)에만 꺼진다(버려진 응답·메타 종료로는 안 꺼짐). **다시 받기는 줄이 둘**이다 — 목록 줄(`inflightRef`·대기 병합)은 한 실행의 목록 구간(첫 쪽 + 위치 확인)까지만 잡고, 메타(통계·태그·폴더)는 메타 줄(`sendMeta`/`requestMeta` — 한 번에 한 묶음, 그동안의 요구는 하나로 합쳐 앞 묶음이 끝난 뒤 그때의 문맥으로)이 받아 적용한다. 줄이 비어 있으면 목록과 메타는 같은 순간에 출발한다. 다음 실행의 목록은 앞 실행의 메타를 기다리지 않는다. `reload()` 의 약속은 자기 실행과 맡긴 메타가 **처리**된 뒤에 풀린다(적용 보장은 아니다). 전체 메타 요구는 seq 로 버려져도 다음 묶음이 이어받는다(`metaOwedRef` — 빚만으로 스스로 다시 보내지는 않는다). 시험 `tests/libraryReloadLanes.test.tsx` |
 | `useLibraryFilters.ts` | 훅 | 필터·뷰 상태(localStorage 백업) + 파생 쿼리 |
 | `useLibraryPersistence.ts` | 훅 | 필터 저장 포맷·키·마이그레이션 |
-| `libraryRequestPlan.ts` | 순수 | 목록·메타 조회를 같은 순간에 시작 |
 | `appGenerationQuery.ts` | 순수 | 필터 → 서버 쿼리 객체·캐시 키 · 목록 탭 '폴더 보기' 창의 조회(`folderPeekQuery` — 탭·공간 범위·창 툴바 조건만 따른다) |
 | `useLibraryCreators.ts` | 훅 | 생성자(작성자) 목록 조회 |
 | `useGenerationAutoRefresh.ts` | 훅 | 활성 잡·team 탭 폴링 + 복귀 재조회(5초 가드) |
