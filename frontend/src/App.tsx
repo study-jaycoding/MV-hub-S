@@ -1,5 +1,5 @@
 // 앱 루트: 탭·필터 상태, 데이터 로딩, WebSocket 진행률, 액션 오케스트레이션.
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { cloneElement, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 // 코드 스플리팅 — 드물게 여는 구성보드는 지연 로드해 초기 번들에서 분리.
 // 씬 카드가 선택되지 않았을 때의 트레이 바인딩 refs — 렌더마다 같은 참조여야 한다(아래 trayBinding 주석).
 const EMPTY_SCENE_REFS: SceneRef[] = [];
@@ -230,8 +230,13 @@ export default function App() {
   useEffect(() => setResolveSceneSelection(null), [resolveSelectionFollow]);
   const resolveSelectionEventRef = useRef("");
   const resolveOpenPopupRef = useRef<ResolveOpenPopup | null>(null);
+  // 캔버스 '생성 결과' 창이 떠 있나 — 창이 라이브러리 툴바·격자를 쓰므로 '폴더 보기' 창과 겹쳐 두지 않고(격자 둘이 같은
+  //  바깥 끌기·키를 받는다), 보드 툴바의 태그 패널도 창 쪽 하나만 띄운다.
+  const [variantOpen, setVariantOpen] = useState(false);
   const onResolvePopupChange = useCallback((popup: ResolveOpenPopup | null) => {
     resolveOpenPopupRef.current = popup;
+    setVariantOpen(!!popup);
+    if (popup) setFolderPeek(false);
   }, []);
   const resolveFollowerTabIdRef = useRef(
     `mvhub-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -732,7 +737,8 @@ export default function App() {
     teamTab: filters.tab === "team",
   });
   // 캔버스(구성탭) 태그 편집기의 #+/#- — 캔버스 선택과 라이브러리 선택은 다른 세계라
-  // 항상 '그 카드 단건'만 적용(빈 선택 ref). 캔버스 카드는 전부 로컬 카드라 teamTab 아님.
+  // 선택 ref 는 늘 비어 있다: 캔버스 노드는 '그 카드 단건', '생성 결과' 창은 고른 대상을 직접 넘긴다(4번째 인자).
+  // 캔버스 카드는 전부 로컬 카드라 teamTab 아님.
   const canvasWsSelectionRef = useRef<Set<string>>(new Set());
   const { onWorkspaceCommand: onCanvasWorkspaceCommand } = useGenerationWorkspaceActions({
     activeWorkspaceIds: filters.workspace_ids,
@@ -2008,6 +2014,7 @@ export default function App() {
                   setArmedFolder(path ? { projectId, path } : null);
                   patch({ project_id: projectId, folder_path: path || undefined });
                   setFolderPeek(!!path && !!activeSceneId);
+                  if (path && activeSceneId) sceneActionRef.current?.closeVariants(); // 두 창을 겹쳐 두지 않는다
                 }}
                 onDropToFolder={(projectId, path, genId) => dropOnFolder(genId, projectId, path)}
                 onDropToUnassigned={(genId) => dropUnassign(genId)}
@@ -2055,7 +2062,7 @@ export default function App() {
               onSelectTag={selectTagFilter}
               onDeleteTag={deleteTagEverywhere}
               onClearTags={clearTagFilter}
-              tagPanelOpen={tagPanelOpen && !folderPeek} // 창이 열려 있으면 창 툴바만 태그 패널을 띄운다(중복 방지)
+              tagPanelOpen={tagPanelOpen && !folderPeek && !variantOpen} // 창이 열려 있으면 창 툴바만 태그 패널을 띄운다(중복 방지)
               onToggleTagPanel={toggleTagPanel}
               zoomValue={boardStats.zoomPct / 100}
               onZoomValue={(v) => boardControl.current?.zoomTo(v)}
@@ -2187,6 +2194,15 @@ export default function App() {
                 autoTagOptions={facets.auto_tags}
                 onWorkspaceCommand={onCanvasWorkspaceCommand}
                 onOpenComments={(g) => openComment(g.id)}
+                // '생성 결과' 창 — 라이브러리와 같은 보기 설정·툴바(건수만 그 창의 것으로). 공간 필터·실패 정리는 목록의 것이라 뺀다.
+                libraryView={{ scale, layout, groupByDate }}
+                renderVariantToolbar={(count) =>
+                  cloneElement(libraryToolbar, {
+                    count, countMore: false, loading: false, workspaceFilter: undefined, failedCount: 0,
+                  })
+                }
+                onVariantGradeStep={(gens, mode) => grade.requestGradeStep(gens, mode)}
+                escBlocked={info !== null}
               />
             ) : (
             <Suspense fallback={null}>

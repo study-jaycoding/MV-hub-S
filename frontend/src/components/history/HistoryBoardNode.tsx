@@ -5,7 +5,8 @@ import { downloadName, downloadOne } from "../../lib/download";
 import { thumbOf } from "../../lib/media";
 import { generationStatusLabelFor, generationStatusTitle } from "../../lib/generationDisplay";
 import { useT } from "../../lib/i18n";
-import { canShowShareAction, matchesReviewFilter, type ReviewFilter } from "../../lib/generationReview";
+import { inBoardFolder, matchesBoardFilters } from "../../lib/boardFilters";
+import { canShowShareAction, type ReviewFilter } from "../../lib/generationReview";
 import type { Generation, InfoTarget, PreviewTarget } from "../../types";
 import { MediaThumbnail } from "../MediaThumbnail";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
@@ -86,20 +87,10 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
   const sfReadonly = (generation.shared || generation.is_final) && !showShareAction;
   const asset = generation.assets[0];
   const thumb = thumbOf(generation);
+  // 판정은 lib/boardFilters — '생성 결과' 창도 같은 기준을 쓴다(창은 필터에 안 맞으면 걸러 내고, 폴더 밖이면 흐리게).
   const dimmed =
-    (typeFilter !== "all" && asset?.type !== typeFilter) ||
-    (!!colorFilter && colorFilter.size > 0 && !(generation.color && colorFilter.has(generation.color))) ||
-    (!!tagFilter && tagFilter.size > 0 && !generation.tags.some((tag) => tagFilter.has(tag))) ||
-    (sharedOnly && !matchesReviewFilter(generation, reviewFilter)) ||
-    (commentOnly && generation.comment_count === 0) ||
-    (finalOnly && !generation.is_final) ||
-    (!!folderSel &&
-      !(
-        generation.project_id === folderSel.projectId &&
-        (folderSel.path === "" ||
-          generation.folder_path === folderSel.path ||
-          (generation.folder_path?.startsWith(folderSel.path + "/") ?? false))
-      ));
+    !matchesBoardFilters(generation, { typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly }) ||
+    !inBoardFolder(generation, folderSel);
 
   return (
     <div

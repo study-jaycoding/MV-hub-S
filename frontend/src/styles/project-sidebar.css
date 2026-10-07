@@ -250,8 +250,7 @@
 /* 이 세 자리는 액션바가 화면 위쪽에 있어 아래로 여는 것이 자연스럽다 — 방향 '선호'만 바꾸고
    실제 위치는 계산에 맡긴다(옛날처럼 top 을 직접 지정하면 인라인 계산과 싸운다). */
 .selbar-top-float .proj-assign-menu,
-.scene-topbar-overlay .proj-assign-menu,
-.scene-varpop-actions .proj-assign-menu { --menu-prefer: down; bottom: auto; top: calc(100% + 6px); }
+.scene-topbar-overlay .proj-assign-menu { --menu-prefer: down; bottom: auto; top: calc(100% + 6px); }
 .proj-assign-menu button {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   width: 100%; text-align: left; padding: 7px 10px; border-radius: 7px;

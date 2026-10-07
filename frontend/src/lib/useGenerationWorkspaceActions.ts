@@ -47,13 +47,17 @@ export function useGenerationWorkspaceActions({
     focus: Generation,
     operation: WorkspaceCommandOperation,
     workspace: WorkspaceCommandTarget,
+    // 대상을 직접 넘기는 호출부용(캔버스 '생성 결과' 창 — 그 창의 선택·카드는 이 목록(gensRef)에 없다). 주면 그대로 쓴다.
+    explicitTargets?: Generation[],
   ): Promise<boolean> => {
     if (runningRef.current) return false;
     // 적용 범위는 태그와 동일 규칙 — 포커스가 선택에 포함된 다중 선택일 때만 선택 전체,
     // 그 외엔 포커스 단건. (선택 안 된 카드에서 입력했는데 보이지 않는 선택 전체가 바뀌는 사고 방지)
     const selected = selectedRef.current;
     const multi = selected.has(focus.id) && selected.size > 1;
-    const targets = multi ? gensRef.current.filter((g) => selected.has(g.id)) : [focus];
+    const targets = explicitTargets?.length
+      ? explicitTargets
+      : multi ? gensRef.current.filter((g) => selected.has(g.id)) : [focus];
     if (!targets.length) return false;
     if (teamTab && targets.some((g) => !g.job_id)) {
       flash("팀 탭에서는 잡 앵커가 없는 카드(Comfy 등)의 워크스페이스를 변경할 수 없습니다");

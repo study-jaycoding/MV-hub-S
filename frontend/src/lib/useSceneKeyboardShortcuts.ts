@@ -1,3 +1,4 @@
+import { isKeyHandled } from "./keyHandled";
 import { useEffect, useRef } from "react";
 import { KEY_COLORS } from "./appConstants";
 import {
@@ -57,6 +58,8 @@ export function useSceneKeyboardShortcuts(actions: SceneKeyboardActions): void {
       if (current.isTextEditing() && event.key !== "Escape") return;
 
       if (event.key === "Escape") {
+        // 안쪽 처리(예: '생성 결과' 창 격자의 선택 해제)가 이미 쓴 Esc 는 다시 처리하지 않는다 — 한 번에 선택 해제 + 창 닫힘 방지.
+        if (isKeyHandled(event)) return;
         current.onEscape();
         return;
       }

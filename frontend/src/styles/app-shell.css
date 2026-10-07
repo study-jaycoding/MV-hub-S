@@ -793,9 +793,10 @@
   font-size: 14px; padding: 4px 6px; border-radius: 6px;
 }
 .folder-peek-x:hover { color: var(--text); background: rgba(255,255,255,0.07); }
-.folder-peek > * { flex: none; }
-.folder-peek > .grid-wrap { flex: 1; min-height: 0; }
-.folder-peek > .lib-toolbar { border-bottom: 1px solid var(--border); }
+/* 캔버스 '생성 결과' 창(.scene-varwin, scene.css)도 같은 뼈대를 쓴다 */
+.folder-peek > *, .scene-varwin > * { flex: none; }
+.folder-peek > .grid-wrap, .scene-varwin > .grid-wrap { flex: 1; min-height: 0; }
+.folder-peek > .lib-toolbar, .scene-varwin > .lib-toolbar { border-bottom: 1px solid var(--border); }
 /* 창 안 선택 액션바 — 라이브러리와 같은 요소를 창 바닥에 */
 .folder-peek-selbar { border-top: 1px solid var(--border); padding: 6px 10px; display: flex; justify-content: center; }
 

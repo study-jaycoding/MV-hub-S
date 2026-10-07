@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createRef, type ComponentProps, type ReactNode } from "react";
+import { act, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GenerationCard } from "../src/components/GenerationCard";
@@ -26,6 +26,13 @@ vi.mock("../src/lib/modelCatalog", () => ({
   useModelDisplayName: () => (model: string | null) => model || "—",
 }));
 vi.mock("../src/lib/modelPolicy", () => ({ modelBlockMessage: () => null }));
+// 캔버스 '생성 결과' 창은 라이브러리 격자를 쓴다 — 가상 스크롤은 전부 그리는 대역으로, 격자의 바깥 IO(마지막으로 본·바깥 끌기)는 끈다.
+vi.mock("virtua", async () => {
+  const { forwardRef } = await import("react");
+  return { Virtualizer: forwardRef((props: { data: unknown[]; children: (row: unknown) => ReactNode }, _ref) => <>{props.data.map(props.children)}</>) };
+});
+vi.mock("../src/lib/useGenerationViewsSynced", () => ({ useGenerationViewsSynced: () => ({ card: {}, asset: {} }) }));
+vi.mock("../src/lib/useOutsideDragSelect", () => ({ useOutsideDragSelect: () => {} }));
 
 const GROUP_LIMIT = "CLI 실패: Error: You've reached your monthly workspace group credit limit. " +
   "Ask your workspace admin to increase the group limit or wait until it resets. " +
@@ -91,20 +98,14 @@ function canvasProps(gen: Generation): ComponentProps<typeof CanvasGenerationCar
 
 function variantProps(gen: Generation): ComponentProps<typeof SceneVariantPopup> {
   return {
-    cardId: "result-card", sceneId: "scene",
-    cards: [{ id: "result-card", kind: "generation", genId: gen.id, x: 0, y: 0 }],
-    genData: { [gen.id]: gen }, disabledIds: new Set(), projects: [], autoTagOptions: [],
+    card: { id: "result-card", kind: "generation", genId: gen.id, x: 0, y: 0 }, total: 1, sceneId: "scene",
+    generations: [gen], dimIds: new Set(), disabledIds: new Set(), projects: [], autoTagOptions: [],
+    view: { scale: 1, layout: "grid", groupByDate: false, fill: true },
     ui: {
-      popupSel: new Set(), setPopupSel: noop, popupAnchorRef: { current: null }, popupMarq: null,
-      gripDragging: false, setGripDragging: noop, tagEditGid: null, setTagEditGid: noop,
-      tagEditorPos: null, varGridRef: createRef<HTMLDivElement>(), varpopWrapRef: createRef<HTMLDivElement>(),
-      onVarGridMouseDown: noop,
+      selectedIds: new Set(), setSelected: noop, resolveHighlightedIds: new Set(), scrollRequest: null,
+      gripDragging: false, setGripDragging: noop,
     },
-    gen: {
-      sConfirm: null, onNodeSClick: noop, onNodeSDouble: noop, onNodeSConfirmYes: noop,
-      onNodeSConfirmNo: noop, tagsEnabled: false, hasAutoTags: false,
-      applyCardTags: noop, applyCardAutoTags: noop,
-    },
+    gen: { onBulkTags: noop, onPublish: noop, onUnpublish: noop, onFinalize: noop, onUnfinalize: noop },
     actions: { setCardMenu: noop, setCardVariant: noop, pruneVariants: noop, latestCard: () => undefined },
   };
 }
@@ -125,6 +126,7 @@ function required<T extends HTMLElement = HTMLElement>(selector: string): T {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} unobserve() {} }); // 결과 창의 격자가 열 수를 잰다
   vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("Unexpected network in isolated UI test"))));
   setLang("ko");
   container = document.createElement("div");
@@ -197,7 +199,7 @@ describe.each(["ko", "en"] as const)("생성 오류 실제 UI — %s", (lang) =>
       expect(required(".scene-card-genbody").textContent).toBe(issue.title);
       expect(required(".scene-card-genbody").title).toContain(issue.action);
       await render(<SceneVariantPopup {...variantProps(g)} />);
-      const result = required(".scene-varpop-item .thumb-placeholder, .scene-varpop-ph");
+      const result = required(".scene-varwin .thumb-placeholder");
       expect(result.textContent).toBe(issue.title);
       expect(result.title).toContain(issue.action);
       await render(<HistoryBoardNode {...historyProps(g)} />);
@@ -350,7 +352,7 @@ it("보류 배지는 히스토리·캔버스·변형 팝업에서 빨강 S로 �
   await render(<CanvasGenerationCard {...canvasProps(g)} showNode />);
   expect(required(".linb-sf.held").textContent).toBe("S");
   await render(<SceneVariantPopup {...variantProps(g)} />);
-  expect(required(".card-sf.held").textContent).toBe("S");
+  expect(required(".scene-varwin .card-sf.held").textContent).toBe("S");
 });
 
 it.each(["nsfw", "failed"] as const)("%s 종료의 phase가 done이어도 원래 사유를 숨기지 않는다", async (status) => {

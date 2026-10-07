@@ -32,6 +32,7 @@ updated: 2026-10-07
 | 카드의 폴더 이름표·목록 탭의 '폴더 보기' 창 | `components/GenerationCard.tsx`(이름표), `App.tsx`(`listPeek`·`renderFolderPeek` — 캔버스 '폴더 보기' 창과 같은 창), `lib/appGenerationQuery.ts`(`folderPeekQuery`), `lib/folderLabel.ts`(표시 규칙) | `routers/library.py`(`GET /api/generations` — 기존 목록 API 그대로) | 캔버스 창과 같은 원리: 창이 떠 있는 동안 **목록 조회가 그 폴더로 바뀌고** 하나뿐인 격자·툴바·선택 막대를 창에 그린다(뒤 목록 자리는 비움). 닫으면 본 목록을 처음부터 다시 받는다. 사이드바 필터(`filters`)는 안 건드린다 — `patch()` 는 다음 생성 위치까지 바꾼다. 열고 닫을 때 `beginComposeList()` 로 목록을 비운다. 이름표는 목록 탭의 본 목록에만(캔버스·휴지통 보기·창 안 격자에는 없음). 창 안에서는 이름표를 누른 그 카드에 '방금 누른 카드' 표시가 붙고, 아래쪽에 있으면 그 카드로 내려가서 연다(다빈치 따라가기의 `resolveScrollRequest` 장치) |
 | 새 API 엔드포인트 추가하기 | `api.ts` | `routers/_proxy.py`(경로 소유권) + 해당 도메인 라우터. **새 라우터 파일이면 `main.py` 의 `include_router()` 등록도** | 로컬 전용 경로는 `_proxy._LOCAL_PREFIXES/_LOCAL_EXACT` 갱신 + `backend/tests/test_proxy_ownership.py` 골든 스냅샷도 같이 고쳐야 함(§5-c) |
 | 캔버스(씬) 단축키 바꾸기 | `lib/useSceneKeyboardShortcuts.ts`, `lib/sceneKeyboard.ts` | — | |
+| 캔버스 카드의 '생성 결과' 창 | `components/scene/SceneVariantPopup.tsx`(창 — 라이브러리 `ThumbnailGrid`·`BoardSelectionActionBar` 조립), `components/scene/SceneBoard.tsx`(`variantView` — 보일 결과·선택·조작 어댑터), `App.tsx`(`renderVariantToolbar`·`variantOpen`), `lib/boardFilters.ts`, `lib/keyHandled.ts` | — (씬의 `genData` 를 그대로 쓴다 — 목록 조회를 빌리지 않는다) | 폴더 창과 같은 모양이지만 **`.folder-peek` 클래스는 달지 않는다**(그 클래스는 '이 안의 키는 라이브러리 몫' 표시라, 달면 씬의 색·비활성 단축키가 창에서 죽는다) — 뼈대 CSS 만 선택자 묶음으로 같이 쓴다(`.scene-varwin`). 툴바 필터에 안 맞는 결과는 **걸러 내고 선택에서도 뺀다**(다빈치가 고른 것은 예외로 보인다). 대표 단추는 격자의 `cellHeader` 칸(카드 위), 폴더 표는 표시만(`showFolder`). Esc = 선택 해제 → 닫기(격자가 쓴 Esc 는 `keyHandled` 표시로 씬이 다시 처리하지 않는다). 창의 아래 끝은 하단 프롬프트 위에서 멈춘다(프롬프트 높이를 재서 `--dock-gap`). '폴더 보기' 창과는 겹쳐 두지 않는다(나중에 연 쪽만). 조작 대상은 **보이는 카드뿐**(`shownIds` — 아직 안 불러온 결과는 선택에 남아도 대상이 아니다). 여러 장을 고른 채 한 카드에서 한 태그·S·워크스페이스 명령은 고른 전체에(`bulkVariantTags`·`onVariantGradeStep`·`variantWorkspace`). 창이 떠 있는 동안 바깥에서 시작한 끌기 선택은 창의 격자만 받는다(캔버스 쪽 `useOutsideDragSelect` 는 끔) |
 | 생성 제출 흐름(프롬프트→요청→CLI) | `components/spotlight/useSpotlightSubmit.ts`, `lib/spotlightSubmit.ts` | `routers/gen_requests.py`, `usecases/gen_requests.py`, `repo/gen_requests.py` | 실제 CLI 제출·추적·완료 판정은 작업자 PC 의 `agent_push.py` 가 한다 — 서버 쪽만 봐서는 흐름이 끝까지 안 보인다 |
 | 팀 공유·검토(공유/최종/보류) | `lib/useGenerationShareActions.ts`, `components/generation/GenerationReviewOverlay.tsx` | `routers/share.py`, `repo/share.py`, `services/share_state_reconciler.py` | |
 | PM 대시보드 숫자·크레딧 표기 | `components/manage/WorkspaceUsageDashboard.tsx`, `lib/formatCredits.ts` | `repo/manage_credit_plan.py`, `routers/manage.py` | 크레딧은 소수 보존(반올림 금지) |
@@ -488,7 +489,7 @@ updated: 2026-10-07
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `scene/SceneVariantPopup.tsx`(564줄) | 결과 모아보기 팝업 — 다중선택·대표지정·액션바·드래그 재사용 | `SceneVariantPopup` |
+| `scene/SceneVariantPopup.tsx`(296줄) | 캔버스 카드의 '생성 결과' 창 — 라이브러리 격자(`ThumbnailGrid`)·툴바·선택 막대를 조립(2026-10-07, 폴더 창과 같은 모양). 대표 표시/지정 단추(`cellHeader`) · 고른 묶음 끌기(`generationList`, 캡처 단계) · 하단 프롬프트 높이 재기(`--dock-gap`). 데이터·선택은 SceneBoard 소유 | `SceneVariantPopup` |
 | `scene/ViewTimeline.tsx`(419줄) | View 연속재생 플레이어 — 클립 이어보기·스크럽·전체화면·병합 다운로드 | `ViewTimeline` |
 | `scene/SceneComfyModal.tsx`(202줄) | Comfy 워크플로 JSON 로드 + 노출 파라미터 체크리스트 | `SceneComfyModal` |
 | `scene/SceneWorkspaceMenu.tsx`(177줄) | 씬 탭 우클릭 메뉴 — 이름 변경 + 워크스페이스 지정 | `SceneWorkspaceMenu` |
@@ -514,8 +515,8 @@ updated: 2026-10-07
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `ThumbnailGrid.tsx`(693줄) | 생성물 카드 가상 그리드 · 마퀴/키보드 선택 · 날짜 그룹 · 폴더 창을 연 카드 표시(`openedFromId`) | `ThumbnailGrid` |
-| `GenerationCard.tsx`(768줄) | 카드 1장(그리드/리스트 두 모드) · 호버 영상 · 드래그 · 폴더 이름표(`onOpenFolder` 를 받았을 때만 — 카드 아래 변 가운데에 붙인 표·이름만·반투명, 소스·상태 배지는 그 위에 한 묶음 `.card-bottom`) · 폴더 창 안의 '방금 누른 카드' 표시(`openedHere` — 같은 자리·같은 모양에 글자·테두리만 라임, 카드 테두리는 안 건드림) | `GenerationCard`(memo) — 캔버스의 `scene/cards/GenerationCard.tsx` 와 이름만 같은 별개 파일(§5-b) |
+| `ThumbnailGrid.tsx`(707줄) | 생성물 카드 가상 그리드 · 마퀴/키보드 선택 · 날짜 그룹 · 폴더 창을 연 카드 표시(`openedFromId`) · 캔버스 '생성 결과' 창용 선택 기능(안 주면 종전 그대로): 카드 위 칸(`cellHeader`)·'마지막으로 본' 지정(`lastViewedId`)·흐림(`dimIds`)·폴더 표 표시만(`showFolder`)·이동과 함께 기준 카드 지정(`resolveScrollRequest.focus`) · 선택을 푼 Esc 는 `keyHandled` 로 표시 | `ThumbnailGrid` |
+| `GenerationCard.tsx`(779줄) | 카드 1장(그리드/리스트 두 모드) · 호버 영상 · 드래그 · 폴더 이름표(`onOpenFolder` 를 받았을 때만 — 카드 아래 변 가운데에 붙인 표·이름만·반투명, 소스·상태 배지는 그 위에 한 묶음 `.card-bottom`. `showFolder` 만 받으면 누를 수 없는 표시 `.card-folder.static`) · 고른 폴더 밖 흐림(`dimmed` → `.folder-dim`) · 폴더 창 안의 '방금 누른 카드' 표시(`openedHere` — 같은 자리·같은 모양에 글자·테두리만 라임, 카드 테두리는 안 건드림) | `GenerationCard`(memo) — 캔버스의 `scene/cards/GenerationCard.tsx` 와 이름만 같은 별개 파일(§5-b) |
 | `MediaThumbnail.tsx`(157줄) | 영상 포스터/이미지/포스터 없는 영상 3분기 통합 표현 | `MediaThumbnail`(10곳 재사용) |
 | `LibraryToolbar.tsx`(296줄) | 타입 필터·검토 필터·크기 슬라이더·리스트/그리드 토글·태그 패널 | `LibraryToolbar` |
 | `FilterSidebar.tsx`(232줄) | 좌측 필터(프로젝트/컬러/자동태그/생성자/공유) 껍데기 | `FilterSidebar` |
@@ -665,7 +666,7 @@ updated: 2026-10-07
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
-| `appEvents.ts` | 브라우저 | 전역 커스텀 이벤트·BroadcastChannel 이름 사전 + 발행 |
+| `appEvents.ts` | 브라우저 | 전역 커스텀 이벤트·BroadcastChannel 이름 사전 + 발행 · `generationTagsSettled` = 태그 저장 묶음이 끝남(성공·실패 모두) — 생성물 사본을 따로 든 캔버스만 듣는다(`libraryChanged` 와 달리 폴더 집계·생성자 목록은 안 깨운다) |
 | `librarySync.ts` | store | 내 변경 id 추적 → WS 동기화 신호의 자기-echo/중복 reload 판정 |
 | `libraryBroadcast.ts` | store | 생성물 변경을 창 간 즉시 통지(탭 id 로 자기창 제외) |
 | `assetBroadcast.ts` | 브라우저 | Assets 창 간 `BroadcastChannel` 메시지 래퍼(WS 아님) |
@@ -706,7 +707,7 @@ updated: 2026-10-07
 | `useManageCaps.ts` | 훅 | 이 사용자의 프로젝트 관리 역량 판정 |
 | `useSyncStatus.ts` | 훅 | 텔레메트리·계정 보고 outbox 의 push 상태를 30초마다 폴링 |
 | `useSpotlightAgentStatus.ts` | 훅 | 허브/에이전트 연결 점 상태 폴링 |
-| `useGenerationWorkspaceActions.ts` | 훅 | 생성물 워크스페이스 이동 액션 |
+| `useGenerationWorkspaceActions.ts` | 훅 | 생성물 워크스페이스 이동 액션 · 대상을 직접 넘길 수 있다(4번째 인자 — 캔버스 '생성 결과' 창의 선택은 이 목록에 없다) |
 
 **5. 모델 카탈로그·정책·비용(6)**
 
@@ -733,6 +734,8 @@ updated: 2026-10-07
 | `useGenerationProgress.ts` | 훅 | WS progress 한 건을 카드에 반영 |
 | `resolveLibraryLocation.ts` | 순수 | "이 생성물이 몇 페이지에 있나" 위치 질의·병합 |
 | `mediaTypes.ts` | 순수 | 미디어 필터 옵션 상수 |
+| `boardFilters.ts` | 순수 | 캔버스 툴바 필터·폴더 선택 판정(`matchesBoardFilters`·`inBoardFolder`) — 캔버스 노드(안 맞으면 흐리게)와 '생성 결과' 창(안 맞으면 걸러 냄)이 같이 쓴다 |
+| `keyHandled.ts` | 순수 | 한 키 입력을 '이미 쓴 것'으로 표시·확인(`markKeyHandled`·`isKeyHandled`) — 안쪽 처리 뒤 window 전역 단축키가 같은 키를 또 처리하지 않게(전파를 막지 않아 다른 리스너는 그대로 받는다) |
 | `appConstants.ts` | 순수 | 빈 facets·단축키 색 매핑 상수 |
 
 **7. 생성 라이브러리 — 표시·판정(순수)(11)**
@@ -756,7 +759,7 @@ updated: 2026-10-07
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `useGenerationCardActions.ts` | 훅 | 카드 재생성·복구 재실행·최종·삭제 등 주 액션 |
-| `useGenerationTagActions.ts` | 훅 | 태그 추가/삭제(변경 큐 경유) |
+| `useGenerationTagActions.ts` | 훅 | 태그 추가/삭제(변경 큐 경유) · 저장 묶음이 끝날 때마다 `generationTagsSettled` 를 알린다(목록 조회 뒤에 — 캔버스의 사본이 서버 값으로 맞는다) |
 | `useGenerationAutoTagActions.ts` | 훅 | 자동 태그 생성·삭제·선택 + `#+` 워크스페이스 칩 등록 |
 | `useGenerationTrashActions.ts` | 훅 | 휴지통 이동·복구·영구삭제 |
 | `useGenerationShareActions.ts` | 훅 | 팀 공유·미러 대기 안내 |
@@ -809,7 +812,7 @@ updated: 2026-10-07
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `useSceneCoordination.ts` | 훅 | 씬 목록·CRUD·백업·소속 병합 배선(App.tsx 추출) |
-| `useSceneGenData.ts` | 훅 | genId→생성물 바인딩·폴링·계보·색 원장 |
+| `useSceneGenData.ts` | 훅 | genId→생성물 바인딩·폴링·계보·색 원장 · `libraryChanged`·`generationTagsSettled` 를 받으면 0.3초 모아 다시 읽는다 |
 | `useSceneViewport.ts` | 훅 | 카메라 상태·휠/드래그 배선·저장 지연 |
 | `useSceneCardMove.ts` | 훅 | 카드 드래그 이동·그룹 재배정·이탈 |
 | `useSceneGroupMove.ts` | 훅 | 그룹 드래그 이동 |
@@ -817,7 +820,7 @@ updated: 2026-10-07
 | `useSceneMarqueeSelection.ts` | 훅 | 캔버스 마퀴 선택(캔버스 사각형은 상태 없이 요소를 직접 옮김 · `previewSelection` 이 있으면 끄는 동안은 선택 표시만, 손 떼거나 blur 때 한 번 확정 · `settle` = 다른 입력 전에 지금 확정, `forget` = 버린 끌기 잊기) |
 | `useSceneDragSession.ts` | 훅 | `createSceneDragSession` 에 window/rAF 주입 · `abort`(마지막 움직임 반영 없이 버림 — 씬 전환용) |
 | `useSceneHistory.ts` | 훅 | 씬 undo/redo 조작 |
-| `useSceneKeyboardShortcuts.ts` | 훅 | 캔버스 단축키 배선 |
+| `useSceneKeyboardShortcuts.ts` | 훅 | 캔버스 단축키 배선 · 안쪽에서 이미 쓴 Esc(`keyHandled`)는 건너뛴다 |
 | `useSceneClipboardDrop.ts` | 훅 | 붙여넣기·파일/에셋 드롭 처리 |
 | `useSceneColorActions.ts` | 훅 | 캔버스 카드 색 변경(범위 티켓) |
 | `useSceneCompletionWatcher.ts` | 훅 | App 레벨 '방금 생성' 완료 상시 감시 |

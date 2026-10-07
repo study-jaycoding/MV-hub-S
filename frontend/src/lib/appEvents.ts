@@ -5,6 +5,9 @@ export const APP_EVENTS = {
   disabledChanged: "ch:disabled-changed",
   flash: "ch:flash",
   focusPrompt: "ch:focus-prompt",
+  // 태그 저장 묶음이 끝났다(성공·실패 모두, 마지막 저장 뒤 한 번) — 생성물 사본을 따로 든 화면(캔버스)이 서버 값으로 다시 읽는다.
+  // libraryChanged 와 따로 둔다: 태그는 폴더 집계·생성자 목록을 바꾸지 않아 그 구독자들까지 깨울 이유가 없다.
+  generationTagsSettled: "ch:generation-tags-settled",
   // 생성물 변경(담기/폴더·최종·공유·삭제·새 생성)의 같은 창(same-window) 알림 — 사이드바 폴더 카운트
   // 즉시 갱신 등. BroadcastChannel(ch-generations)은 창 간 전달용이라, 같은 창 갱신은 이 이벤트로 확실히.
   libraryChanged: "ch:library-changed",

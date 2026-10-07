@@ -1039,127 +1039,37 @@
 /* 보이지 않는 넓은 잡기 영역 — 배지 살짝 옆을 눌러도 팝업이 열리게(코너의 S/정보 버튼과는 안 겹침). */
 .scene-multi-badge::before { content: ""; position: absolute; inset: -6px -12px; }
 .scene-multi-badge:hover { filter: brightness(1.08); }
-/* 다중 결과 팝업 — 보드 위 오버레이(줌/팬 밖) */
+/* '생성 결과' 창 — 보드 위 막(줌/팬 밖) + 창. 창 안은 라이브러리 부품(툴바·격자·선택 막대)이고, 창의 뼈대 규칙은
+   '폴더 보기' 창과 같이 쓴다(app-shell.css 의 .folder-peek 묶음). 막은 보드만 덮는다 — 사이드바(폴더로 끌어 담기)와
+   하단 프롬프트(끌어 재사용)는 열어 둔다. */
 .scene-varpop-backdrop {
   position: absolute; inset: 0; z-index: 30; display: flex; align-items: flex-start; justify-content: center;
-  padding: 7vh 12px 12px; /* 위쪽 고정 — 하단 프롬프트(트레이)와 안 겹치게 */
-  background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(2px);
+  padding: 12px 16px 0;
+  /* backdrop-filter 를 걸지 않는다 — 걸면 창 안 position:fixed 패널(툴바의 태그 패널)이 화면이 아니라 이 막 기준으로 어긋난다. */
+  background: rgba(0, 0, 0, 0.5);
 }
-/* 재사용 그립 드래그 중 — 백드롭을 클릭통과시켜 아래 프롬프트에 드롭되게(팝업은 열린 채 유지) */
+/* 카드를 끄는 중 — 막을 클릭통과시킨다(창은 열린 채 유지). 놓는 곳은 사이드바 폴더·하단 프롬프트 — 캔버스는 생성물 끌기를 받지 않는다 */
 .scene-varpop-backdrop.drag-through { pointer-events: none; }
-/* wrap: 패널 + 액션바(패널 밖이라 프로젝트 담기 드롭다운이 안 잘린다) */
-.scene-varpop-wrap {
-  position: relative; /* 태그 에디터(중앙 오버레이) 기준 */
-  width: min(880px, 92%); max-height: 100%; display: flex; flex-direction: column;
-  align-items: stretch; gap: 10px; min-height: 0;
+.scene-varwin {
+  /* 아래 --dock-gap = 하단 프롬프트 자리 — 창 바닥의 선택 막대가 프롬프트에 가리지 않게. 프롬프트 높이는 바뀌므로 창이 재서
+     넣는다(SceneVariantPopup). 못 쟀을 때의 기본값 128px 은 라이브러리 격자의 .gen-grid-tail 과 같은 여백. */
+  width: min(1500px, 100%); height: calc(100% - var(--dock-gap, 128px)); max-height: 860px; min-height: 0;
+  display: flex; flex-direction: column;
+  background: var(--panel, #14161c); border: 1px solid var(--border2); border-radius: 14px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.65); overflow: hidden; outline: none;
 }
-/* 변형 타일 태그 편집 — 타일이 overflow:hidden 이라 잘리므로 팝업 레벨에 절대배치. left/top 은
-   편집 중인 타일 바로 아래로 인라인 style 에서 지정(SceneBoard 가 rect 측정). translateX 로 타일 중앙 정렬. */
-.scene-varpop-tageditor {
-  position: absolute; transform: translateX(-50%); z-index: 40;
-}
-.scene-varpop {
-  min-height: 0; display: flex; flex-direction: column;
-  background: #0c0d11; border: 1px solid var(--border2); border-radius: 12px; overflow: hidden;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
-}
-/* 선택 액션바 — 패널 '위' 절대배치(Jay): 선택해도 패널이 밀리지 않고, 드롭다운은 패널 위로 펼쳐진다 */
-.scene-varpop-actions {
-  display: flex; justify-content: center;
-  position: absolute; bottom: calc(100% + 10px); left: 0; right: 0; z-index: 45;
-}
-.scene-varpop-hd {
-  display: flex; align-items: center; justify-content: space-between; padding: 9px 12px;
-  font-size: 12.5px; font-weight: 800; color: var(--text); border-bottom: 1px solid var(--border2);
-}
-/* 닫기 × 는 SVG(CloseIcon 16px) — 글자는 1.5px 아래였다(2026-09-22 실측). ★padding:0 과 크기 고정(전역 button 여백이 되살아나면
-   40x28 로 커진다). 폭은 짝수 — 16px 아이콘이 반 픽셀 없이 가운데 놓인다(글자 때 37px). */
-.scene-varpop-x {
-  width: 36px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
-  border: 0; background: transparent; color: var(--muted); cursor: pointer;
-}
-.scene-varpop-x:hover { color: var(--text); }
-.scene-varpop-grid {
-  position: relative; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px;
-  padding: 14px; overflow: auto; max-height: 66vh; user-select: none;
-}
-/* 팝업 마퀴(배경 드래그 복수선택) */
-.scene-varpop-marq {
-  position: absolute; z-index: 5; pointer-events: none;
-  background: rgba(var(--accent-rgb), 0.16); border: 1px solid var(--accent); border-radius: 2px;
-}
-.scene-varpop-item {
-  position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; cursor: pointer;
-  background: #05060a; border: 2px solid transparent;
-}
-.scene-varpop-item:hover { border-color: #8ea0ff; }
-.scene-varpop-item.rep { border-color: #ffd24a; } /* 대표 = 골드 테두리 */
-.scene-varpop-item.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent); } /* 직접 선택 = 라임 링 */
-.scene-varpop-item.on.resolve-selected {
-  border-color: #ff304f;
-  box-shadow:
-    0 0 0 3px #ff304f,
-    0 0 18px 6px rgba(255, 48, 79, 0.72);
-} /* Resolve에서 선택 = 선명한 빨간 링 + 글로우 */
-.scene-varpop-item img,
-.scene-varpop-item video { width: 100%; height: 100%; object-fit: cover; display: block; }
-.scene-varpop-ph { display: grid; place-items: center; width: 100%; height: 100%; color: var(--muted); font-size: 11px; }
-/* 타일 전체면의 실제 드래그 시작점 — 썸네일(z:auto) 위, 배지·버튼(z:2~4) 아래. */
-.scene-varpop-draglayer {
-  position: absolute; inset: 0; z-index: 1; cursor: grab;
-  -webkit-user-drag: element; user-select: none;
-}
-.scene-varpop-draglayer:active { cursor: grabbing; }
-/* 영상 표시 — 타일 중앙 ▶(라이브러리 play-badge 와 같은 개념). 호버 자동재생 중엔 숨김 */
-.scene-varpop-vid {
-  /* 가운데 흰 삼각형만, 상자 없음(생성 탭 .play-badge 와 같은 모양). 마지막 확인 셀에서는 숨긴다(아래). */
-  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2;
-  width: 24px; height: 24px; pointer-events: none;
-  opacity: 0.85;
-  font-size: 0; line-height: 0;
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.65)) drop-shadow(0 0 6px rgba(0, 0, 0, 0.35));
-  transition: opacity 0.15s;
-}
-.scene-varpop-vid::before {
-  content: ""; display: block; width: 100%; height: 100%;
-  background: var(--play-tri) center / contain no-repeat; /* generations.css 의 둥근 흰 삼각형 */
-}
-.scene-varpop-item:hover .scene-varpop-vid { opacity: 0; }
-/* 셀 래퍼 — 대표 라벨/지정 버튼을 카드 '밖' 상단 스트립에 둔다(요청).
-   배지를 스트립 맨 위(top:0)에 두고 padding 으로 배지 아래 공간을 확보.
-   배지 '위' 공간은 그리드 패딩/행 간격(약 10~14px)이 담당 → 아래도 비슷하게 맞춰 대칭. */
-.scene-varpop-cell { position: relative; padding-top: 35px; }
-/* 대표 라벨(대표면) / 지정 버튼(아니면) — 셀 상단(카드 밖) 중앙. */
+.scene-varwin .gen-grid-tail { height: 14px; } /* 프롬프트 여백은 창 밖(--dock-gap)에 있다 */
+/* 대표 표시(대표면) / 지정 단추(아니면) — 카드 '밖' 위 가운데(격자의 .gen-cell-head 칸). */
 .scene-varpop-cur,
 .scene-varpop-rep {
-  position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 6;
-  padding: 2px 12px; border-radius: 999px;
+  padding: 2px 12px; border-radius: 999px; white-space: nowrap;
   font-size: 12px; font-weight: 800; line-height: 1.6;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
-.scene-varpop-cur { background: #ffd24a; color: #1a1c20; pointer-events: none; }
+.scene-varpop-cur { background: #ffd24a; color: #1a1c20; }
 /* 미선택 후보 — 별표 없이 회색 '대표'(아직 선택 안 됨을 명확히). hover 시 노랑=이걸 대표로. */
 .scene-varpop-rep { border: 0; cursor: pointer; background: rgba(255, 255, 255, 0.06); color: var(--muted); }
 .scene-varpop-rep:hover { background: #ffd24a; color: #1a1c20; }
-/* 색바(하단) · 비활성 회색 — 계보 카드와 같은 정보. (공유/최종은 좌상단 S 버튼이 겸함) */
-.scene-varpop-colorbar { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; z-index: 2; }
-.scene-varpop-item.off img,
-.scene-varpop-item.off video { filter: grayscale(1) brightness(0.5); }
-.scene-varpop-item.off { opacity: 0.85; }
-/* 선택 폴더 밖 변형 — 흐리게(그 폴더에 든 변형만 부각). 호버하면 확인용으로 다시 선명. */
-.scene-varpop-item.foldim { opacity: 0.3; }
-.scene-varpop-item.foldim:hover { opacity: 1; }
-/* 변형 타일에서도 생성탭 카드의 좌상단 조작(S/T/C)·그립·호버 오버레이를 노출
-   — 기본 hover 규칙은 .card/.card-thumb/.asset-cell 스코프라 타일엔 안 걸림. */
-.scene-varpop-item:hover .card-sf,
-.scene-varpop-item:hover .card-cm,
-.scene-varpop-item:hover .card-drag-grip { opacity: 1; pointer-events: auto; }
-.scene-varpop-item:hover .thumb-overlay { opacity: 1; }
-/* 하단 액션 버튼 — 타일에서는 하단 '중앙' 정렬(요청). 생성탭 카드(.card 안)는 우측 유지. */
-.scene-varpop-item .ov-bottom { justify-content: center; }
-/* ── 버튼 크기: 생성탭 카드(이미지3) 비율 기준으로 맞춤 ──
-   변형 타일(~205px)은 라이브러리 카드와 폭이 비슷 → 버튼을 26px 로 통일(28/26 혼재 정리). */
-.scene-varpop-item .ov-icon { width: 26px; height: 26px; font-size: 13px; }
 /* 캔버스 카드는 폭이 152px 로 좁아 28px 버튼이 비율상 큼 → 라이브러리 좁은 카드(23px)에 준해 축소.
    .scene-card 스코프라 구성탭 히스토리 보드에는 영향 없음. */
 .scene-card .linb-ov-btn { width: 22px; height: 22px; font-size: 12px; }
@@ -1496,16 +1406,14 @@
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7));
 }
 /* 그림을 보려고 마우스를 올리면 비켜준다(사용자 확정 안). 카드/셀 어느 쪽에 붙어도 동작하게 둘 다. */
-.scene-card:hover .last-viewed-badge,
-.scene-varpop-item:hover .last-viewed-badge { opacity: 0; }
+.scene-card:hover .last-viewed-badge { opacity: 0; }
 /* 생성 탭 카드(.card > .card-thumb) — 같은 배지, 같은 규칙. */
 .card:hover .last-viewed-badge { opacity: 0; }
-/* 영상 ▶(.play-badge / .linb-vid / .scene-varpop-vid)는 가운데다. 마지막 확인 카드에서는 ▶ 를 감추고
+/* 영상 ▶(.play-badge / .linb-vid)는 가운데다. 마지막 확인 카드에서는 ▶ 를 감추고
    'Last viewed' 가 가운데를 차지한다 — 둘이 나란히 서면 지저분하다(사용자 확정). 영상인 건 호버 자동재생으로
    드러나고, 배지는 그때 비켜준다. */
 .card-thumb:has(.last-viewed-badge) .play-badge,
-.scene-card:has(.last-viewed-badge) .linb-vid,
-.scene-varpop-item:has(.last-viewed-badge) .scene-varpop-vid { display: none; }
+.scene-card:has(.last-viewed-badge) .linb-vid { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .last-viewed-badge { transition: none; }
 }

@@ -16,6 +16,7 @@ import {
   type VirtualRow,
 } from "../lib/gridVirtualRows";
 import { useT } from "../lib/i18n";
+import { markKeyHandled } from "../lib/keyHandled";
 import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { useOutsideDragSelect } from "../lib/useOutsideDragSelect";
 import { matchShortcut } from "../lib/shortcuts";
@@ -41,7 +42,8 @@ interface Props {
   groupByDate: boolean; // 그리드에서 힉스필드 날짜별 섹션 구분
   selectedIds: Set<string>;
   resolveHighlightedIds?: ReadonlySet<string>; // 확인 표시 전용 — 일괄 작업 선택/Last viewed와 분리
-  resolveScrollRequest?: { generationId: string; nonce: number } | null;
+  // focus = 이동과 함께 그 카드를 방향키·Shift 범위 선택의 기준으로 삼는다(캔버스 '생성 결과' 창의 다빈치 선택).
+  resolveScrollRequest?: { generationId: string; nonce: number; focus?: boolean } | null;
   onClearResolveHighlight?: () => void;
   onSelectedChange: (next: Set<string>) => void; // 마퀴/클릭 선택 결과(전체 치환)
   onToggleSelect: (id: string) => void; // 리스트 모드 체크박스
@@ -77,6 +79,11 @@ interface Props {
   onShowHistory?: (g: Generation) => void; // 히스토리 뱃지 → 가계 패널
   onOpenFolder?: (g: Generation) => void; // 카드의 폴더 이름표 → 그 폴더의 생성물 창(안 주면 이름표 없음)
   openedFromId?: string | null; // 폴더 창을 연 카드 — 그 카드에 '방금 누른 카드' 표시
+  // ── 캔버스 '생성 결과' 창이 쓰는 선택 기능(안 주면 종전 그대로) ──
+  cellHeader?: (g: Generation) => React.ReactNode; // 카드 위(셀 안)에 그리는 칸 — '대표' 단추
+  lastViewedId?: string | null; // 주면(null 포함) '마지막으로 본' 표시를 이 값으로 — 라이브러리 칸 대신 호출자의 칸
+  dimIds?: ReadonlySet<string>; // 흐리게 보일 카드(캔버스에서 고른 폴더 밖)
+  showFolder?: boolean; // onOpenFolder 없이도 폴더 표를 '표시만' 한다
   // 무한 스크롤 — 로드된 DOM 을 다 보여준 뒤 바닥에 닿으면 서버 다음 페이지 요청.
   hasMore?: boolean; // 서버에 더 받을 페이지가 있나
   loadingMore?: boolean;
@@ -270,7 +277,7 @@ export function ThumbnailGrid(props: Props) {
   const renderGenerationCard = (generation: Generation, cardLayout: "grid" | "list") => (
     <GenerationCard
       gen={generation}
-      lastViewed={genViews.card[""] === generation.id}
+      lastViewed={(props.lastViewedId !== undefined ? props.lastViewedId : genViews.card[""]) === generation.id}
       tab={props.tab}
       fresh={props.tab === "team" && isFreshGen(generation)}
       stateGlow={stateGlowOf(generation) !== null}
@@ -316,6 +323,8 @@ export function ThumbnailGrid(props: Props) {
       onShowHistory={props.onShowHistory ? cb.onShowHistory : undefined}
       onOpenFolder={props.onOpenFolder ? cb.onOpenFolder : undefined}
       openedHere={generation.id === props.openedFromId}
+      showFolder={props.showFolder}
+      dimmed={props.dimIds?.has(generation.id)}
     />
   );
   const dragRef = useRef<{
@@ -354,6 +363,7 @@ export function ThumbnailGrid(props: Props) {
       resolveScrollGuardRef.current = true;
       vRef.current.scrollToIndex(rowIndex, { align: "nearest" });
       handledResolveScrollRef.current = resolveScrollKey;
+      if (target.focus) setFocusedGenerationId(target.generationId);
     });
     return () => cancelAnimationFrame(frame);
   }, [generations, rowModel, resolveScrollKey, props.resolveScrollRequest]);
@@ -501,6 +511,8 @@ export function ThumbnailGrid(props: Props) {
       e.preventDefault();
       onSelectedChange(new Set(generations.map((g) => g.id)));
     } else if (e.key === "Escape") {
+      // 선택을 푼 Esc 는 '쓴 것'으로 표시한다 — 같은 키로 뒤의 창까지 닫히지 않게(씬 단축키가 이 표시를 본다, lib/keyHandled).
+      if (selectedIds.size > 0) markKeyHandled(e.nativeEvent);
       setFocusedGenerationId(null);
       onSelectedChange(new Set());
     }
@@ -629,12 +641,14 @@ export function ThumbnailGrid(props: Props) {
               "gen-cell" +
               (isList ? " list" : "") +
               (g.id === focusGenId ? " focused" : "") +
-              (props.disabledIds?.has(g.id) ? " deactivated" : "")
+              (props.disabledIds?.has(g.id) ? " deactivated" : "") +
+              (props.cellHeader ? " has-head" : "")
             }
             data-id={g.id}
             key={g.id}
             style={isList ? { height: Math.round(300 * scale) } : undefined}
           >
+            {props.cellHeader && <div className="gen-cell-head">{props.cellHeader(g)}</div>}
             {renderGenerationCard(g, isList ? "list" : "grid")}
           </div>
         ))}

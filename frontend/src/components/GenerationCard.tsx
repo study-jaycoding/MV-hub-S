@@ -89,6 +89,8 @@ interface Props {
   // 폴더 이름표를 눌렀을 때 — 그 폴더의 생성물 창을 연다. 안 주면 이름표를 그리지 않는다(리스트는 글자만).
   onOpenFolder?: (g: Generation) => void;
   openedHere?: boolean; // 이 카드의 폴더 이름표로 폴더 창을 열었다 — 창 안에서 '방금 누른 카드' 표시
+  showFolder?: boolean; // onOpenFolder 가 없어도 폴더 표를 '표시만' 한다(캔버스 '생성 결과' 창 — 누르기 없음)
+  dimmed?: boolean; // 흐리게(캔버스에서 고른 폴더 밖). 호버하면 다시 선명
 }
 
 function GenerationCardImpl({
@@ -101,6 +103,8 @@ function GenerationCardImpl({
   stateGlow = false,
   onOpenFolder,
   openedHere = false,
+  showFolder = false,
+  dimmed = false,
   fill = true,
   selected = false,
   resolveHighlighted = false,
@@ -315,8 +319,13 @@ function GenerationCardImpl({
   // 폴더 이름표(그리드 카드 아래 변 가운데에 붙인 표, 2026-10-07 Jay) — 누르면 그 폴더의 생성물 창. 이름표의 클릭·더블클릭·휠클릭·끌기는
   // 카드의 선택·크게 보기·정보·끌어 담기로 번지지 않는다. 끌기는 이름표를 끌기 대상으로 만든 뒤 취소한다 —
   // 자식에서 시작한 끌기의 대상은 가장 가까운 draggable 조상(카드)이라, 이름표가 draggable 이어야 가로챌 수 있다.
-  const folderLabel = !isList && onOpenFolder ? folderChipLabel(gen.folder_path) : "";
-  const folderChip = folderLabel ? (
+  const folderLabel = !isList && (onOpenFolder || showFolder) ? folderChipLabel(gen.folder_path) : "";
+  const folderChip = !folderLabel ? null : !onOpenFolder ? (
+    // 표시만 — 누를 수 없고 클릭은 카드로 통과한다(캔버스 '생성 결과' 창)
+    <span className="card-folder static">
+      <span>{folderLabel}</span>
+    </span>
+  ) : (
     <button
       type="button"
       className="card-folder"
@@ -343,7 +352,7 @@ function GenerationCardImpl({
     >
       <span>{folderLabel}</span>
     </button>
-  ) : null;
+  );
   // 폴더 창을 연 그 카드 — '방금 누른 카드'(Jay 2026-10-07). 본 목록에서 폴더 이름표가 있던 자리(아래 변 가운데)에 같은 모양으로
   // 붙는다. 창 안 격자에는 폴더 이름표가 없어 둘이 같이 뜨지 않는다. 테두리는 건드리지 않는다 — 테두리는 상태색(공유·보류·최종·선택)의 자리다.
   const hereMark = !isList && openedHere ? <span className="card-here">방금 누른 카드</span> : null;
@@ -611,6 +620,7 @@ function GenerationCardImpl({
         className={
           "card list" +
           (fill ? "" : " contain") +
+          (dimmed ? " folder-dim" : "") +
           (selected ? " selected" : "") +
           (resolveHighlighted ? " resolve-highlighted" : "") +
           (gen.is_final ? " final" : "") +
@@ -735,6 +745,7 @@ function GenerationCardImpl({
       className={
         "card card-grid" +
         (fill ? "" : " contain") +
+        (dimmed ? " folder-dim" : "") +
         (selected ? " selected" : "") +
         (resolveHighlighted ? " resolve-highlighted" : "") +
         (gen.is_final ? " final" : "") +

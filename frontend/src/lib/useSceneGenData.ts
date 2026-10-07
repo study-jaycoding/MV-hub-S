@@ -224,6 +224,8 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
   };
   useEffect(() => onLibraryChanged(bumpRefresh), []); // 창 간
   useCustomEvent(APP_EVENTS.libraryChanged, bumpRefresh); // 같은 창(내 담기·생성 즉시)
+  // 태그 저장 묶음이 끝남 — 낙관적으로 고친 사본을 서버 값으로 맞춘다(저장 실패·겹친 편집에서 어긋난 채 남지 않게)
+  useCustomEvent(APP_EVENTS.generationTagsSettled, bumpRefresh);
   useEffect(() => () => { if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current); }, []);
   useEffect(() => {
     const ids = Array.from(new Set(genIdSig.split(",").filter(Boolean)));

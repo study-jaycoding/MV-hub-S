@@ -198,6 +198,8 @@
   cursor: pointer;
 }
 .card-folder > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 표시만 하는 이름표(캔버스 '생성 결과' 창) — 누를 수 없고 클릭·끌기는 카드로 통과한다 */
+.card-bottom > .card-folder.static { pointer-events: none; cursor: default; }
 /* 호버 = '이걸 누른다' 라임(다른 카드 단추와 같은 말) */
 .card-folder:hover, .card-folder:focus-visible {
   color: var(--accent); border-color: rgba(var(--accent-rgb), 0.55); background: rgba(14, 18, 6, 0.86); text-shadow: none;
@@ -373,7 +375,6 @@
   transform: translateX(-100%); /* 평소엔 버튼 왼쪽 밖에 서 있다(overflow 로 안 보임) */
 }
 .card:hover .card-sf.final::after,
-.scene-varpop-cell:hover .card-sf.final::after,
 .card-sf.final:focus-visible::after { animation: goldSheenStar 1.4s linear 1; }
 .card:hover .card-colorbar.final::after { animation: goldSheenBar 1.4s linear 1; }
 /* 이동 거리는 종전 배경 이동과 같은 궤적이다(띠 중심이 요소 폭의 -48% → 148%). 움직이는 속성은 transform 하나뿐이어야 한다 —
@@ -715,8 +716,8 @@
 /* 영상 표시 ▶ — 가운데 **흰 삼각형만**, 상자 없음(힉스필드 방식, 사용자 확정). 폰트 글리프 "▶" 는 글꼴마다
    모양·크기가 달라 ::before 도형(clip-path)으로 그린다. 그림자는 부모에 걸어 도형 실루엣을 따라 떨어지게.
    마지막 확인 카드에서는 숨기고 'Last viewed' 가 가운데를 차지한다(scene.css).
-   캔버스(.linb-vid)·결과 모아보기(.scene-varpop-vid)도 같은 모양. */
-/* 둥근 모서리 흰 삼각형 — stroke-linejoin:round 로 꼭짓점을 둥글린 SVG. 세 곳(.play-badge/.linb-vid/.scene-varpop-vid)이 같이 쓴다. */
+   캔버스(.linb-vid)도 같은 모양. */
+/* 둥근 모서리 흰 삼각형 — stroke-linejoin:round 로 꼭짓점을 둥글린 SVG. 두 곳(.play-badge/.linb-vid)이 같이 쓴다. */
 :root { --play-tri: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M8 5.5 L18.5 12 L8 18.5 Z' fill='%23fff' stroke='%23fff' stroke-width='3' stroke-linejoin='round'/%3E%3C/svg%3E"); }
 .play-badge {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -842,6 +843,16 @@
 }
 
 /* 휴지통(soft delete) — '지운 생성물 보기' 시 흐리게. 호버하면 조금 또렷(복구 액션 보이게). */
+/* 카드 위 칸(캔버스 '생성 결과' 창의 '대표' 단추) — 셀 위쪽에 자리를 내고 그 가운데에 둔다. 칸 자체는 클릭을 받지 않는다. */
+.gen-cell.has-head { padding-top: 35px; }
+.gen-cell-head {
+  position: absolute; top: 0; left: 0; right: 0; height: 35px; z-index: 6;
+  display: flex; justify-content: center; align-items: flex-start; pointer-events: none;
+}
+.gen-cell-head > * { pointer-events: auto; }
+/* 캔버스에서 고른 폴더 밖 — 흐리게(그 폴더에 든 것만 부각). 호버하면 확인용으로 다시 선명. */
+.card.folder-dim { opacity: 0.3; }
+.card.folder-dim:hover { opacity: 1; }
 /* 비활성(회색) — d 키 토글. 히스토리(보드)는 흑백+70%축소지만, 여기(생성/공유)는 크기 유지·색만 회색. */
 .gen-cell.deactivated .card { filter: grayscale(1) brightness(0.55); }
 .gen-cell.deactivated .card:hover { filter: grayscale(0.3) brightness(0.85); }

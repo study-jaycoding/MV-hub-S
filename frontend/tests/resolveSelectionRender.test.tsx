@@ -1,8 +1,6 @@
 // @vitest-environment jsdom
 import { act, forwardRef, StrictMode, useCallback, useRef, useState, type ComponentProps } from "react";
 import { flushSync } from "react-dom";
-import { readFileSync } from "node:fs";
-import { URL as NodeURL } from "node:url";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Scene } from "../src/lib/scenes";
 import type { ResolveSceneSelectionTarget } from "../src/lib/resolveSelection";
@@ -11,6 +9,15 @@ import { isLocatedQuery, type GenerationLocation, type GenerationLocationRequest
 import type { SpotlightPromptHandle } from "../src/components/SpotlightPrompt";
 import type { PromptProps } from "./seedanceRenderHarness";
 import { createRenderRoot, installPromptBoundaryMocks, settle } from "./seedanceRenderHarness";
+
+const variantScroll = vi.hoisted(() => vi.fn());
+vi.mock("virtua", async () => {
+  const { forwardRef, useImperativeHandle } = await import("react");
+  return { Virtualizer: forwardRef((props: { data: unknown[]; children: (row: unknown) => React.ReactNode }, ref) => {
+    useImperativeHandle(ref, () => ({ scrollToIndex: variantScroll }));
+    return <>{props.data.map(props.children)}</>;
+  }) };
+});
 
 const fixture: Scene = {
   id: "resolve-scene", name: "Resolve test", created_at: 1, edges: [],
@@ -22,12 +29,12 @@ const otherScene: Scene = {
 };
 let view: ReturnType<typeof createRenderRoot>;
 let boundary: ReturnType<typeof installPromptBoundaryMocks>;
-let style: HTMLStyleElement;
 let locateGenerations: ReturnType<typeof vi.fn<(request: GenerationLocationRequest) => Promise<GenerationLocation>>>;
 let gridSnapshot: ComponentProps<typeof import("../src/components/ThumbnailGrid").ThumbnailGrid> | null;
 let promptSnapshot: PromptProps | null;
 let librarySnapshot: { filters: Filters; genQuery: GenQuery; projectWorkspaceId?: string } | null;
 let sidebarSnapshot: ComponentProps<typeof import("../src/components/FilterSidebar").FilterSidebar> | null;
+let canvasSidebarSnapshot: ComponentProps<typeof import("../src/components/sidebar/CanvasFolderSidebar").CanvasFolderSidebar> | null;
 let refreshProjects: () => void;
 const relinkOnWorkspaceChange = vi.fn();
 const beginList = vi.fn(); // 목록 훅의 beginComposeList — 폴더 창을 열고 닫을 때 목록을 비우는지 본다
@@ -44,10 +51,20 @@ const request = (generation: string | string[] = "target", openPopup = true, non
   ({ sceneId, generationId: Array.isArray(generation) ? generation[0] ?? "" : generation,
     ...(Array.isArray(generation) ? { generationIds: generation, selectedCount: generation.length } : {}),
     nonce, at: Date.now(), openPopup, ...extra });
-const selectedIds = () => [...view.container.querySelectorAll<HTMLElement>(".scene-varpop-item.on")].map((el) => el.dataset.gid);
-const resolveHighlightedIds = () => [...view.container.querySelectorAll<HTMLElement>(".scene-varpop-item.resolve-selected")].map((el) => el.dataset.gid);
+// 캔버스 '생성 결과' 창은 라이브러리 격자를 쓴다 — 셀(.gen-cell[data-id]) 안 카드(.card)의 selected / resolve-highlighted 를 본다.
+//  (빨강 링·라임 링의 모양은 라이브러리 카드의 것 — tests/resolveLibraryUi.test.tsx 가 본다)
+const cells = () => [...view.container.querySelectorAll<HTMLElement>(".scene-varwin .gen-cell")];
+const selectedIds = () => cells().filter((cell) => cell.querySelector(".card.selected")).map((cell) => cell.dataset.id);
+const resolveHighlightedIds = () => cells().filter((cell) => cell.querySelector(".card.resolve-highlighted")).map((cell) => cell.dataset.id);
 const click = (element: Element, options: MouseEventInit = {}) => act(() => { element.dispatchEvent(new MouseEvent("click", { bubbles: true, ...options })); });
-const tile = (generationId: string) => view.container.querySelector<HTMLElement>(`.scene-varpop-item[data-gid="${generationId}"]`)!;
+const tile = (generationId: string) => view.container.querySelector<HTMLElement>(`.scene-varwin .gen-cell[data-id="${generationId}"]`)!;
+// 격자의 선택 = 누르고(mousedown) 떼기(window mouseup)
+const pick = (cell: Element, options: MouseEventInit = {}) => act(() => {
+  cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, ...options }));
+  window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 }));
+});
+// 격자는 다빈치가 고른 카드로 다음 프레임에 옮기고, 그 카드를 Shift 범위의 기준으로 삼는다
+const nextFrame = () => act(async () => { await new Promise<void>((done) => requestAnimationFrame(() => done())); });
 const openResults = () => {
   const button = [...view.container.querySelectorAll("button")].find((el) => el.textContent === "▤ 2");
   expect(button).toBeTruthy();
@@ -77,7 +94,7 @@ beforeEach(() => {
   localStorage.clear();
   localStorage.setItem("ch.workspaceContext", JSON.stringify({ scope: "team", id: "view-workspace", name: "View workspace" }));
   boundary = installPromptBoundaryMocks();
-  gridSnapshot = null; promptSnapshot = null; librarySnapshot = null; sidebarSnapshot = null;
+  gridSnapshot = null; promptSnapshot = null; librarySnapshot = null; sidebarSnapshot = null; canvasSidebarSnapshot = null;
   refreshProjects = () => {};
   locateGenerations = vi.fn().mockImplementation(async ({ gen_ids, workspace_ids, workspace_scope }: GenerationLocationRequest) => {
     const first = gen_ids[0] ? libraryGeneration(gen_ids[0]) : null;
@@ -95,26 +112,29 @@ beforeEach(() => {
     if (url.startsWith("/api/generation-views?") && !options?.method) {
       return Promise.resolve(new Response(JSON.stringify({ card: { results: "representative" }, last_card_id: "results" }))) as never;
     }
+    // 결과 창의 격자(라이브러리 부품)가 읽는 목록의 '마지막으로 본'(씬 없음) — 창은 씬의 것을 쓰므로 비어 있어도 된다
+    if (url === "/api/generation-views" && !options?.method) {
+      return Promise.resolve(new Response(JSON.stringify({ card: {}, last_card_id: null }))) as never;
+    }
     return Promise.reject(new Error(`예상 밖 HTTP 요청: ${url}`));
   });
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} unobserve() {} });
   vi.stubGlobal("IntersectionObserver", class { observe() {} disconnect() {} unobserve() {} });
   Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
-  style = document.createElement("style");
-  style.textContent = readFileSync(new NodeURL("../src/styles/scene.css", import.meta.url), "utf8");
-  document.head.appendChild(style);
+  Object.defineProperty(Element.prototype, "scrollTo", { configurable: true, value: vi.fn() }); // jsdom 에 없다 — 격자가 목록이 바뀌면 맨 위로 올린다
+  variantScroll.mockClear();
   view = createRenderRoot();
 });
 
 afterEach(() => {
   view?.dispose();
-  style.remove();
   for (const args of boundary.fetch.mock.calls as unknown as [string, RequestInit?][]) {
-    expect(args[0]).toMatch(/^\/api\/generation-views\?/);
+    expect(args[0]).toMatch(/^\/api\/generation-views(\?|$)/); // 씬의 것(?scene_id=) · 결과 창 격자가 읽는 목록의 것(질의 없음)
     expect(args[1]?.method).toBeUndefined();
   }
   vi.restoreAllMocks();
   delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  delete (Element.prototype as { scrollTo?: unknown }).scrollTo;
   vi.unstubAllGlobals();
 });
 
@@ -122,22 +142,25 @@ afterEach(() => {
 // 2026-09-20 실측: 시험 파일이 하나 늘 때마다 넘었고 단독으로는 3/3 통과. 이 시험에만 올린다(전역 제한은 그대로 — 다른 시험의 무한 대기를 가리지 않게).
 it("StrictMode에서 캔버스를 처음 열어도 Resolve 선택 신호 한 번으로 선택 표시한다", { timeout: 20_000 }, async () => {
   const { onChange } = await mountBoard(request());
-  expect(view.container.querySelectorAll(".scene-varpop-item")).toHaveLength(2);
+  expect(cells()).toHaveLength(2);
   expect(selectedIds()).toEqual(["target"]);
   expect(resolveHighlightedIds()).toEqual(["target"]);
-  expect(getComputedStyle(tile("target")).borderColor).toBe("rgb(255, 48, 79)");
-  expect(getComputedStyle(tile("target")).boxShadow).toContain("18px 6px");
-  expect(view.container.querySelector<HTMLElement>(".scene-varpop-item.rep")?.dataset.gid).toBe("representative");
-  expect(view.container.querySelector<HTMLElement>(".scene-varpop-item .last-viewed-badge")?.parentElement?.dataset.gid).toBe("representative");
+  // 대표는 카드 위 '★ 대표', 나머지는 '대표' 지정 단추
+  expect(tile("representative").querySelector(".gen-cell-head .scene-varpop-cur")).toBeTruthy();
+  expect(tile("target").querySelector(".scene-varpop-cur")).toBeNull();
+  expect(view.container.querySelector<HTMLElement>(".scene-varwin .last-viewed-badge")?.closest<HTMLElement>(".gen-cell")?.dataset.id).toBe("representative");
+  // 고른 카드로 격자를 한 번 옮긴다
+  await nextFrame();
+  expect(variantScroll).toHaveBeenCalledTimes(1);
   expect(onChange).not.toHaveBeenCalled();
 });
 
 it("연동 해제 상태에서는 창을 열지 않고, 나중에 수동으로 열어도 과거 신호가 재생되지 않는다", async () => {
   await mountBoard(request("target", false));
-  expect(view.container.querySelector(".scene-varpop-item")).toBeNull();
+  expect(view.container.querySelector(".scene-varwin")).toBeNull();
   openResults();
   await settle();
-  expect(view.container.querySelectorAll(".scene-varpop-item")).toHaveLength(2);
+  expect(cells()).toHaveLength(2);
   expect(selectedIds()).toEqual([]);
   expect(resolveHighlightedIds()).toEqual([]);
 });
@@ -153,7 +176,7 @@ it("연동 해제 상태에서는 열린 창의 일치 항목만 선택하고, �
   await settle();
   expect(selectedIds()).toEqual([]);
   expect(resolveHighlightedIds()).toEqual([]);
-  expect(view.container.querySelectorAll(".scene-varpop-item")).toHaveLength(2);
+  expect(cells()).toHaveLength(2);
   act(() => send(request("representative", false, 3)));
   await settle();
   expect(selectedIds()).toEqual(["representative"]);
@@ -174,42 +197,40 @@ it("체크 OFF에서 다른 묶음의 단일 항목을 고르면 빨강만 지�
   expect(resolveHighlightedIds()).toEqual([]);
   expect(tile("target")).toBeTruthy();
   expect(tile("other")).toBeNull();
-  click(tile("target"));
+  pick(tile("target"));
   act(() => send(request("other-target", false, 4)));
   await settle();
   expect(selectedIds()).toEqual(["target"]);
   expect(resolveHighlightedIds()).toEqual([]);
-  expect(getComputedStyle(tile("target")).boxShadow).toBe("0 0 0 3px var(--accent)");
   expect(onChange).not.toHaveBeenCalled();
 });
 
 it("직접 선택은 라임 링만 쓰고, Resolve 강조 항목을 다시 클릭해도 글로우를 해제한다", async () => {
   const { send, onChange } = await mountBoard();
   openResults();
-  click(tile("target"));
+  pick(tile("target"));
   expect(selectedIds()).toEqual(["target"]);
   expect(resolveHighlightedIds()).toEqual([]);
-  expect(getComputedStyle(tile("target")).boxShadow).toBe("0 0 0 3px var(--accent)");
   act(() => send(request()));
   await settle();
   expect(resolveHighlightedIds()).toEqual(["target"]);
-  click(tile("target"));
+  pick(tile("target"));
   expect(selectedIds()).toEqual(["target"]);
   expect(resolveHighlightedIds()).toEqual([]);
-  expect(getComputedStyle(tile("target")).boxShadow).toBe("0 0 0 3px var(--accent)");
   expect(onChange).not.toHaveBeenCalled();
 });
 
 it.each([{ ctrlKey: true }, { shiftKey: true }])("직접 복수 선택 %j 뒤에는 Resolve 강조가 남지 않는다", async (options) => {
   await mountBoard(request());
-  click(tile("representative"), options);
+  await nextFrame(); // 다빈치가 고른 카드가 Shift 범위의 기준이 된 뒤
+  pick(tile("representative"), options);
   expect(selectedIds().sort()).toEqual(["representative", "target"]);
   expect(resolveHighlightedIds()).toEqual([]);
 });
 
 it("팝업 배경 클릭으로 선택을 지우면 Resolve 강조도 해제한다", async () => {
   await mountBoard(request());
-  const grid = view.container.querySelector(".scene-varpop-grid")!;
+  const grid = view.container.querySelector(".scene-varwin .gen-grid")!;
   act(() => {
     grid.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
     window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 }));
@@ -242,11 +263,11 @@ it("빠른 연속 선택은 마지막 항목만 남기고 닫힌 창을 오래�
   });
   await settle();
   expect(selectedIds()).toEqual(["target"]);
-  const close = view.container.querySelector(".scene-varpop button");
+  const close = view.container.querySelector(".scene-varwin .folder-peek-x");
   expect(close).toBeTruthy();
   click(close!);
   await settle();
-  expect(view.container.querySelector(".scene-varpop-item")).toBeNull();
+  expect(view.container.querySelector(".scene-varwin")).toBeNull();
   openResults();
   await settle();
   expect(selectedIds()).toEqual([]);
@@ -257,12 +278,8 @@ it("같은 묶음의 복수 항목 모두 빨강 링·글로우로 표시하며 
   const { onChange } = await mountBoard(request(["target", "representative"]));
   expect(selectedIds()).toEqual(["representative", "target"]);
   expect(resolveHighlightedIds()).toEqual(selectedIds());
-  for (const id of selectedIds()) {
-    expect(getComputedStyle(tile(id!)).borderColor).toBe("rgb(255, 48, 79)");
-    expect(getComputedStyle(tile(id!)).boxShadow).toContain("18px 6px");
-  }
-  expect(view.container.querySelector<HTMLElement>(".scene-varpop-item.rep")?.dataset.gid).toBe("representative");
-  expect(view.container.querySelector<HTMLElement>(".scene-varpop-item .last-viewed-badge")?.parentElement?.dataset.gid).toBe("representative");
+  expect(tile("representative").querySelector(".gen-cell-head .scene-varpop-cur")).toBeTruthy();
+  expect(view.container.querySelector<HTMLElement>(".scene-varwin .last-viewed-badge")?.closest<HTMLElement>(".gen-cell")?.dataset.id).toBe("representative");
   expect(onChange).not.toHaveBeenCalled();
 });
 
@@ -273,13 +290,13 @@ it("열린 창을 우선하여 다른 묶음과 섞인 복수 선택의 교집�
   expect(selectedIds()).toEqual(["target"]);
   expect(resolveHighlightedIds()).toEqual(["target"]);
   expect(tile("other")).toBeNull();
-  expect(view.container.querySelectorAll(".scene-varpop")).toHaveLength(1);
+  expect(view.container.querySelectorAll(".scene-varwin")).toHaveLength(1);
   act(() => send(request(["other", "other-target"], true, 3)));
   await settle();
   expect(selectedIds()).toEqual([]);
   expect(tile("representative")).toBeTruthy();
   expect(tile("other")).toBeNull();
-  click(tile("target"));
+  pick(tile("target"));
   act(() => send(request(["other", "other-target"], true, 4)));
   await settle();
   expect(selectedIds()).toEqual(["target"]);
@@ -288,7 +305,7 @@ it("열린 창을 우선하여 다른 묶음과 섞인 복수 선택의 교집�
 
 it("서로 다른 묶음 복수 선택도 창이 닫혀 있으면 우선순위에 맞는 한 묶음만 연다", async () => {
   await mountBoard(request(["target", "other"]), { ...fixture, cards: [...fixture.cards, ...otherScene.cards] });
-  expect(view.container.querySelectorAll(".scene-varpop")).toHaveLength(1);
+  expect(view.container.querySelectorAll(".scene-varwin")).toHaveLength(1);
   expect(selectedIds()).toEqual(["other"]);
   expect(resolveHighlightedIds()).toEqual(["other"]);
   expect(tile("target")).toBeNull();
@@ -310,7 +327,7 @@ it("선택 해제는 빨강 선택만 지우며 창과 이후 직접 고른 라�
   expect(selectedIds()).toEqual([]);
   expect(resolveHighlightedIds()).toEqual([]);
   expect(tile("target")).toBeTruthy();
-  click(tile("target"));
+  pick(tile("target"));
   act(() => send(request([], true, 3)));
   await settle();
   expect(selectedIds()).toEqual(["target"]);
@@ -319,7 +336,7 @@ it("선택 해제는 빨강 선택만 지우며 창과 이후 직접 고른 라�
 
 it("복수 빨강 선택 뒤 직접 클릭하면 빨강을 모두 지우고 라임 단일 선택으로 돌아간다", async () => {
   await mountBoard(request(["representative", "target"]));
-  click(tile("target"));
+  pick(tile("target"));
   expect(selectedIds()).toEqual(["target"]);
   expect(resolveHighlightedIds()).toEqual([]);
 });
@@ -365,7 +382,6 @@ it("복수 선택으로 새 씬을 열고 단일 선택으로 바뀌면 마지�
 function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id, initialProjects: Project[] = []) {
   const noop = () => {};
   for (const [path, names] of [
-    ["../src/components/sidebar/CanvasFolderSidebar", ["CanvasFolderSidebar"]],
     ["../src/components/LibraryToolbar", ["LibraryToolbar"]],
     ["../src/components/scene/SceneBar", ["SceneBar"]],
     ["../src/components/app/AppOverlays", ["AppOverlays"]],
@@ -374,11 +390,21 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
   ] as const) {
     vi.doMock(path, () => Object.fromEntries(names.map((name) => [name, () => null])));
   }
+  vi.doMock("../src/components/sidebar/CanvasFolderSidebar", () => ({ CanvasFolderSidebar: (props: NonNullable<typeof canvasSidebarSnapshot>) => {
+    canvasSidebarSnapshot = props;
+    return null;
+  } }));
   vi.doMock("../src/components/FilterSidebar", () => ({ FilterSidebar: (props: NonNullable<typeof sidebarSnapshot>) => {
     sidebarSnapshot = props;
     return <output data-testid="viewed-folder">{JSON.stringify(props.viewedFolder)}</output>;
   } }));
   vi.doMock("../src/components/ThumbnailGrid", () => ({ ThumbnailGrid: (props: NonNullable<typeof gridSnapshot>) => {
+    // 캔버스 '생성 결과' 창도 이 격자를 쓴다('대표' 칸 cellHeader 로 구분) — 그쪽은 셀만 그려 선택·강조를 보이고, 목록 격자만 담는다.
+    if (props.cellHeader) return <>{props.generations.map((g) => (
+      <div className="gen-cell" data-id={g.id} key={g.id} onMouseDown={() => props.onSelectedChange(new Set([g.id]))}>
+        <div className={"card" + (props.selectedIds.has(g.id) ? " selected" : "") + (props.resolveHighlightedIds?.has(g.id) ? " resolve-highlighted" : "")} />
+      </div>
+    ))}</>;
     gridSnapshot = props;
     return <output data-testid="library-highlight">{JSON.stringify([...props.resolveHighlightedIds || []])}</output>;
   } }));
@@ -452,12 +478,12 @@ it.each(["my", "team"])("%s 탭: 체크 시 캔버스 대신 현재 탭의 대�
   act(() => send("off"));
   await settle();
   expect(view.container.querySelector('[data-testid="tab"]')?.textContent).toBe(tab);
-  expect(view.container.querySelector(".scene-varpop-item")).toBeNull();
+  expect(view.container.querySelector(".scene-varwin")).toBeNull();
   act(() => settings.saveResolveSelectionFollow(true));
   act(() => send("on"));
   await settle();
   expect(view.container.querySelector('[data-testid="tab"]')?.textContent).toBe(tab);
-  expect(view.container.querySelector(".scene-varpop-item")).toBeNull();
+  expect(view.container.querySelector(".scene-varwin")).toBeNull();
   expect(libraryHighlightedIds()).toEqual(["target"]);
   expect(librarySnapshot?.filters).toEqual({ tab, project_id: "resolve-project", folder_path: "episode/shot" });
   expect(gridSnapshot?.resolveScrollRequest?.generationId).toBe("target");
@@ -554,7 +580,7 @@ it("App: 열린 창이 없으면 복수 선택의 현재 씬 일치를 첫 ID보
   await settle();
   expect(resolveHighlightedIds()).toEqual(["target"]);
   expect(tile("other")).toBeNull();
-  expect(view.container.querySelectorAll(".scene-varpop")).toHaveLength(1);
+  expect(view.container.querySelectorAll(".scene-varwin")).toHaveLength(1);
 });
 
 it("App 작업 공간: 복수 선택도 캔버스를 열지 않고 해당 폴더에서 모두 강조한다", async () => {
@@ -564,7 +590,7 @@ it("App 작업 공간: 복수 선택도 캔버스를 열지 않고 해당 폴더
   expect(view.container.querySelector('[data-testid="tab"]')?.textContent).toBe("my");
   expect(libraryHighlightedIds()).toEqual(["other", "other-target"]);
   expect(librarySnapshot?.filters).toEqual({ tab: "my", project_id: "other-project", folder_path: "episode/shot" });
-  expect(view.container.querySelectorAll(".scene-varpop")).toHaveLength(0);
+  expect(view.container.querySelectorAll(".scene-varwin")).toHaveLength(0);
 });
 
 it("App 공유·리뷰: 공간 미확인은 안내와 전체 보기 버튼을 표시하고 명시 선택 뒤에만 조회한다", async () => {
@@ -629,7 +655,7 @@ it("App 공유·리뷰: 미공유 응답은 이전 빨강만 지우고 탭·폴�
   expect(gridSnapshot?.selectedIds).toEqual(new Set(["target"]));
   expect(gridSnapshot?.resolveScrollRequest).toBeNull();
   expect(view.container.querySelector('[data-testid="tab"]')?.textContent).toBe("team");
-  expect(view.container.querySelector(".scene-varpop")).toBeNull();
+  expect(view.container.querySelector(".scene-varwin")).toBeNull();
 });
 
 it("App 작업 공간 체크 OFF: 지금 보이는 카드만 강조하고 다른 위치는 열지 않는다", async () => {
@@ -649,7 +675,7 @@ it("App 작업 공간 체크 OFF: 지금 보이는 카드만 강조하고 다른
   expect(libraryHighlightedIds()).toEqual([]);
   expect(librarySnapshot?.filters).toEqual(filters);
   expect(gridSnapshot?.generations.map((item) => item.id)).toEqual(["target"]);
-  expect(view.container.querySelector(".scene-varpop")).toBeNull();
+  expect(view.container.querySelector(".scene-varwin")).toBeNull();
 });
 
 it.each(["my", "team"])("App %s: 빈 배열과 상한 초과 신호는 자동 탭·씬 이동이나 창 열기가 없다", async (tab) => {
@@ -660,7 +686,7 @@ it.each(["my", "team"])("App %s: 빈 배열과 상한 초과 신호는 자동 �
   act(() => send(["other", "other-target"], { truncated: true, selectedCount: 201 }));
   await settle();
   expect(view.container.querySelector('[data-testid="tab"]')?.textContent).toBe(tab);
-  expect(view.container.querySelector(".scene-varpop")).toBeNull();
+  expect(view.container.querySelector(".scene-varwin")).toBeNull();
   act(() => send(["target"]));
   await settle();
   expect(libraryHighlightedIds()).toEqual(["target"]);
@@ -677,7 +703,7 @@ it("App: 상한 초과 신호도 열린 창에서는 교집합을 표시하고 �
   act(() => send([]));
   await settle();
   expect(selectedIds()).toEqual([]);
-  click(tile("target"));
+  pick(tile("target"));
   act(() => send([]));
   await settle();
   expect(selectedIds()).toEqual(["target"]);
@@ -688,7 +714,7 @@ it("App: 복수 신호로 창을 닫은 뒤에는 예전 popup 알림이 다른 
   const send = await mountApp();
   act(() => send(["representative", "target"]));
   await settle();
-  click(view.container.querySelector(".scene-varpop button")!);
+  click(view.container.querySelector(".scene-varwin .folder-peek-x")!);
   await settle();
   act(() => send(["other", "other-target"]));
   await settle();
@@ -704,7 +730,7 @@ it.each([{}, { generationIds: ["target"], truncated: true, selectedCount: 201 }]
       send([], extra);
     });
     await settle();
-    expect(view.container.querySelector(".scene-varpop")).toBeNull();
+    expect(view.container.querySelector(".scene-varwin")).toBeNull();
     expect(view.container.querySelector('[data-testid="tab"]')?.textContent).toBe("my");
     expect(libraryHighlightedIds()).toEqual([]);
     expect(librarySnapshot?.filters.project_id).toBeUndefined();
@@ -718,7 +744,7 @@ it("App: 체크를 바꾸는 같은 렌더에 남은 이전 설정의 신호는 
   const settings = await import("../src/lib/resolveSelectionSettings");
   act(() => settings.saveResolveSelectionFollow(false));
   await settle();
-  click(tile("representative"));
+  pick(tile("representative"));
   act(() => {
     send(["target"]);
     settings.saveResolveSelectionFollow(true);
@@ -742,12 +768,28 @@ it("App: 체크 OFF에서 다른 씬의 단일 선택은 현재 창의 빨강만
   expect(resolveHighlightedIds()).toEqual([]);
   expect(tile("target")).toBeTruthy();
   expect(tile("other")).toBeNull();
-  click(tile("target"));
+  pick(tile("target"));
   act(() => send(["other-target"]));
   await settle();
   expect(selectedIds()).toEqual(["target"]);
   expect(resolveHighlightedIds()).toEqual([]);
   expect(tile("other-target")).toBeNull();
+});
+
+it("App: 캔버스의 '생성 결과' 창과 '폴더 보기' 창은 겹쳐 두지 않는다 — 나중에 연 쪽만 남는다", async () => {
+  // 두 창 모두 라이브러리 격자를 쓴다 — 같이 떠 있으면 격자 둘이 같은 바깥 끌기·키를 받는다
+  const send = await mountApp();
+  act(() => send(["target"]));
+  await settle();
+  expect(view.container.querySelector(".scene-varwin")).toBeTruthy();
+  act(() => canvasSidebarSnapshot!.onArmFolder("resolve-project", "episode/shot")); // 사이드바에서 폴더를 누른다
+  await settle();
+  expect(document.querySelector(".folder-peek")).toBeTruthy();
+  expect(view.container.querySelector(".scene-varwin")).toBeNull();
+  act(() => send(["representative"])); // 다빈치 선택이 결과 창을 다시 연다
+  await settle();
+  expect(view.container.querySelector(".scene-varwin")).toBeTruthy();
+  expect(document.querySelector(".folder-peek")).toBeNull();
 });
 
 // ── 목록 탭의 '폴더 보기' 창(카드의 폴더 이름표, 2026-10-07) — 캔버스 창과 같은 원리: 목록 조회가 그 폴더로 바뀌고 하나뿐인 격자를 창에 그린다 ──

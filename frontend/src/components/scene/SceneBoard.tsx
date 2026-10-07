@@ -15,6 +15,8 @@ import {
 import type { CSSProperties, MutableRefObject, ReactNode } from "react";
 import { api } from "../../api";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../lib/workspaceCommand";
+import { inBoardFolder, matchesBoardFilters } from "../../lib/boardFilters";
+import type { GradeMode } from "../../lib/gradeStep";
 import {
   assetVersionsSnapshot,
   subscribeAssetVersions,
@@ -261,6 +263,7 @@ interface Props {
     applyAssetRelink: (found: Map<string, RelinkTarget>) => number; // 자산 자동 복구 답을 메모리 카드에 입힘
     zoomFit: () => void; // 툴바 '맞춤' — f 키와 동일(선택 있으면 선택 중심, 없으면 전체)
     zoomStep: (dir: 1 | -1) => void; // 툴바 −/+ — 화면 중앙 기준 한 단계 확대/축소
+    closeVariants: () => void; // '생성 결과' 창 닫기 — 캔버스 '폴더 보기' 창을 열 때(두 창을 겹쳐 두지 않는다)
   } | null>;
   // 생성 카드 아래 'Generate' 툴바 — 즉시 생성(하단 프롬프트 submit 재사용). 배치수는 노드별(card.batchCount)로 관리.
   onGenerateCard?: (
@@ -324,8 +327,14 @@ interface Props {
     g: Generation,
     operation: WorkspaceCommandOperation,
     workspace: WorkspaceCommandTarget,
+    targets?: Generation[], // '생성 결과' 창에서 여러 장을 고른 채 내린 명령 — 고른 전체
   ) => Promise<boolean>;
   onOpenComments?: (g: Generation) => void; // C → 공유 코멘트 스레드 패널 열기(생성탭 카드와 동일)
+  // ── '생성 결과' 창(라이브러리와 같은 격자·툴바, Jay 2026-10-07) ──
+  libraryView?: { scale: number; layout: "grid" | "list"; groupByDate: boolean }; // 카드 크기·레이아웃·날짜 구분(라이브러리와 공유하는 보기 설정)
+  renderVariantToolbar?: (count: number) => ReactNode; // 창의 툴바 — 라이브러리 툴바를 이 창의 건수로
+  onVariantGradeStep?: (gens: Generation[], mode: GradeMode) => void; // 여러 장을 고르고 S — 고른 전체에 등급 규칙(App 의 확인 모달)
+  escBlocked?: boolean; // 위에 뜬 창(정보)이 Esc 를 받는 중 — 씬은 그 Esc 를 처리하지 않는다
   // Ctrl+K 로 프롬프트를 숨겼을 때 캔버스 상단 중앙(씬 패널·미니맵과 같은 줄)에 얹을 멀티선택 액션바.
   topCenterOverlay?: ReactNode;
 }
@@ -391,6 +400,10 @@ export function SceneBoard({
   autoTagOptions,
   onWorkspaceCommand,
   onOpenComments,
+  libraryView,
+  renderVariantToolbar,
+  onVariantGradeStep,
+  escBlocked = false,
 }: Props) {
   const t = useT(); // 언어(한/영) — View 노드 헤더 등 라벨 치환. 언어 변경 시 즉시 리렌더.
   // 최초 마운트에도 박제된 running 을 치유해 시작(effect 전 첫 페인트에 '생성중' 잔상 방지).
@@ -500,7 +513,6 @@ export function SceneBoard({
     if (editTextId && !cards.some((c) => c.id === editTextId)) setEditTextId(null);
   }, [cards, editTextId]);
   const caretPosRef = useRef<Map<string, number>>(new Map()); // 텍스트 노드별 마지막 캐럿 위치 — 재편집 시 그곳으로 복원
-  const [tagEditGid, setTagEditGid] = useState<string | null>(null); // 변형 팝업 타일별 태그 편집 대상 gen id
   const [popupSel, setPopupSel] = useState<Set<string>>(new Set()); // 팝업 내 다중선택(gid)
   const [resolveHighlightedIds, setResolveHighlightedIds] = useState<Set<string>>(new Set());
   // 직접 선택(클릭·범위·마퀴)은 기존 라임 표시로 돌아간다. Resolve 신호만 별도 강조한다.
@@ -508,9 +520,9 @@ export function SceneBoard({
     setResolveHighlightedIds(new Set());
     setPopupSel(next);
   }, []);
-  const [gripDragging, setGripDragging] = useState(false); // 팝업 재사용 그립 드래그 중 — 백드롭 클릭통과(프롬프트로 드롭)
-  const [popupMarq, setPopupMarq] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
-  const varGridRef = useRef<HTMLDivElement>(null);
+  const [gripDragging, setGripDragging] = useState(false); // 결과 창의 카드를 끄는 중 — 백드롭 클릭통과(프롬프트로 드롭)
+  // 다빈치가 고른 결과로 창의 격자를 한 번 옮긴다(격자의 이동 장치). focus = 그 카드가 방향키·Shift 범위 선택의 기준이 된다.
+  const [variantScroll, setVariantScroll] = useState<{ generationId: string; nonce: number; focus: true } | null>(null);
   const sceneFileRef = useRef<HTMLInputElement>(null); // 씬 불러오기 파일 인풋(숨김)
   // 씬 패널(저장/불러오기) 표시 — 씬 탭 바 또는 패널 자체에 호버 중일 때만(평소 숨김, 캔버스 작업 방해 금지).
   // 탭 바 → 패널로 마우스가 건너오는 동안 사라지지 않게 0.35초 유예. 숨김은 CSS(opacity)로 —
@@ -529,55 +541,22 @@ export function SceneBoard({
   const [findRun, setFindRun] = useState<{ sceneId: string; count: number; ctrl: AbortController } | null>(null);
   const finding = findRun?.sceneId === scene.id ? findRun : null;
   const ioPanelVisible = !!ioPanelHot || ioPanelLinger || ioPanelHover || !!finding;
-  const varpopWrapRef = useRef<HTMLDivElement>(null);
-  // 변형 팝업 태그 에디터를 '편집 중인 타일 바로 아래'에 띄우기 위한 위치(wrap 기준). 타일은
-  // overflow:hidden 이라 안에 넣으면 잘리므로 wrap 레벨에 절대배치하되, 타일 rect 를 측정해 그 밑에 둔다.
-  const [tagEditorPos, setTagEditorPos] = useState<{ left: number; top: number } | null>(null);
-  useLayoutEffect(() => {
-    if (!tagEditGid) {
-      setTagEditorPos(null);
-      return;
-    }
-    const measure = () => {
-      const wrap = varpopWrapRef.current;
-      const tile = varGridRef.current?.querySelector<HTMLElement>(`[data-gid="${tagEditGid}"]`);
-      if (!wrap || !tile) return;
-      const wr = wrap.getBoundingClientRect();
-      const tr = tile.getBoundingClientRect();
-      setTagEditorPos({ left: tr.left - wr.left + tr.width / 2, top: tr.bottom - wr.top + 6 });
-    };
-    measure();
-    const grid = varGridRef.current;
-    grid?.addEventListener("scroll", measure);
-    window.addEventListener("resize", measure);
-    return () => {
-      grid?.removeEventListener("scroll", measure);
-      window.removeEventListener("resize", measure);
-    };
-  }, [tagEditGid]);
   // 팝업이 '모달 레이어'인지·그 선택을 전역 keydown 에서 읽기 위한 ref(빈-deps 핸들러용).
   const cardMenuRef = useRef(cardMenu);
   cardMenuRef.current = cardMenu;
   const popupSelRef = useRef(popupSel);
   popupSelRef.current = popupSel;
-  const popupAnchorRef = useRef<string | null>(null); // 팝업 Shift 범위선택 기준점(마지막 단일/토글 클릭)
   const handledResolveSelectionRef = useRef<number | null>(null);
   useLayoutEffect(() => {
     onResolvePopupChange?.(cardsSceneId === scene.id && cards.some((card) => card.id === cardMenu)
       ? { sceneId: scene.id, cardId: cardMenu! } : null);
     return () => onResolvePopupChange?.(null);
   }, [cardMenu, cardsSceneId, scene.id, cards, onResolvePopupChange]);
-  const scrollResolveSelectionIntoView = useCallback((generationId: string) => {
-    const tile = Array.from(
-      varGridRef.current?.querySelectorAll<HTMLElement>("[data-gid]") || [],
-    ).find((item) => item.dataset.gid === generationId);
-    tile?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, []);
   useEffect(() => {
     // 창이 바뀌면 먼저 초기화한다. Resolve 신호는 아래에서 열린 창을 확인한 뒤 적용·소비한다.
     setPopupSel(new Set());
     setResolveHighlightedIds(new Set());
-    setTagEditGid(null);
+    setVariantScroll(null);
   }, [cardMenu, scene.id]);
   // 반드시 초기화 effect 뒤에서 실행: 팝업이 열린 커밋에서 초기화 → 선택 순서를 보장한다.
   useEffect(() => {
@@ -598,7 +577,6 @@ export function SceneBoard({
       if (!resolveHighlightedIds.size) return;
       setPopupSel((current) => new Set([...current].filter((id) => !resolveHighlightedIds.has(id))));
       setResolveHighlightedIds(new Set());
-      if (popupAnchorRef.current && resolveHighlightedIds.has(popupAnchorRef.current)) popupAnchorRef.current = null;
     };
     const generationIds = resolveSelectionGenerationIds(resolveSelection.generationIds, resolveSelection.generationId);
     if (!generationIds.length) {
@@ -629,12 +607,59 @@ export function SceneBoard({
     }
     setPopupSel(new Set(matchedIds));
     setResolveHighlightedIds(new Set(matchedIds));
-    popupAnchorRef.current = matchedIds[0];
-    setTagEditGid(null);
+    // 첫 대상으로 창의 격자를 옮기고, 그 카드를 Shift 범위·방향키의 기준으로 삼는다(격자가 대상이 그려진 뒤에 옮긴다).
+    setVariantScroll({ generationId: matchedIds[0], nonce: resolveSelection.nonce, focus: true });
     consume();
-    // 카드가 열린 커밋의 타일은 이미 DOM에 있다. 전달·스크롤 모두 타이머 없이 처리한다.
-    scrollResolveSelectionIntoView(matchedIds[0]);
-  }, [resolveSelection, scene.id, cardsSceneId, cards, cardMenu, resolveHighlightedIds, onResolveSelectionConsumed, scrollResolveSelectionIntoView]);
+  }, [resolveSelection, scene.id, cardsSceneId, cards, cardMenu, resolveHighlightedIds, onResolveSelectionConsumed]);
+  // ── '생성 결과' 창의 표시 목록·선택 ──
+  // 표시: 그 카드의 결과를 최신순으로. 툴바 필터에 안 맞는 것과(회색 숨김이 켜져 있으면) 비활성은 **걸러 낸다** — 단 다빈치가
+  //  고른 것은 필터와 무관하게 보인다(안 보이면 연동이 '아무 일도 안 한 것'이 된다). 데이터가 아직 안 온 결과·지운 결과는 그리지 않는다.
+  // 선택: 조작(선택 막대·색·비활성·끌기·일괄)은 **보이는 것**에만 걸린다 — 필터로 가려진 카드가 선택에 남아 같이 지워지면 안 된다.
+  const variantView = useMemo(() => {
+    const card = cardMenu ? cards.find((c) => c.id === cardMenu) : undefined;
+    if (!card) return null;
+    const ts = (g: Generation) => {
+      if (typeof g.sort_ts === "number") return g.sort_ts;
+      const t = Date.parse(g.created_at);
+      return Number.isNaN(t) ? 0 : t;
+    };
+    const ids = variantIds(card);
+    const filters = { typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly };
+    const shown = ids
+      .map((id) => genData[id])
+      .filter((g): g is Generation => !!g && !g.deleted)
+      .filter((g) => resolveHighlightedIds.has(g.id) || (matchesBoardFilters(g, filters) && !(grayOn && disabledIds.has(g.id))))
+      .sort((a, b) => ts(b) - ts(a));
+    // 선택에 남겨 둘 수 있는 것 = 보이는 것 + 데이터가 아직 안 온 것(곧 보일 것 — 다빈치가 방금 고른 결과를 선택에서 떨구지
+    //  않는다). **조작 대상은 보이는 것(shownIds)뿐이다** — 안 불러온(또는 서버에서 사라진) id 에 비활성·색이 걸리면 안 된다.
+    const shownIds = new Set(shown.map((g) => g.id));
+    const selectable = new Set(shownIds);
+    for (const id of ids) if (!genData[id]) selectable.add(id);
+    const dimIds = new Set(shown.filter((g) => !inBoardFolder(g, folderSel)).map((g) => g.id));
+    return { card, total: ids.length, shown, shownIds, selectable, dimIds };
+  }, [cardMenu, cards, genData, resolveHighlightedIds, disabledIds, grayOn, folderSel,
+    typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly]);
+  const variantViewRef = useRef(variantView);
+  variantViewRef.current = variantView;
+  // 가려진 카드는 선택에서도 뺀다(다시 보이게 됐을 때 '고른 적 없는데 골라져 있는' 일이 없게).
+  useEffect(() => {
+    if (!variantView) return;
+    const kept = [...popupSel].filter((id) => variantView.selectable.has(id));
+    if (kept.length !== popupSel.size) setPopupSel(new Set(kept));
+  }, [variantView, popupSel]);
+  // 창에 보이는 선택(격자·선택 막대가 쓰는 것) — 보이는 카드만. 개수가 화면의 카드 수와 맞아야 한다.
+  const variantSelected = useMemo(
+    () => (variantView ? new Set([...popupSel].filter((id) => variantView.shownIds.has(id))) : popupSel),
+    [popupSel, variantView],
+  );
+  // 전역 단축키(빈 deps 핸들러)가 읽는 '지금 조작 대상' — 렌더된 선택이 아니라 ref 로, 보이는 것만.
+  const variantTargetIds = () => {
+    const view = variantViewRef.current;
+    const ids = [...popupSelRef.current];
+    return view ? ids.filter((id) => view.shownIds.has(id)) : ids;
+  };
+  const escBlockedRef = useRef(escBlocked);
+  escBlockedRef.current = escBlocked;
   // 가위(연결 자르기) — 후디니식: Y 를 누르고 있는 동안만 활성. 좌드래그로 궤적을 그리고 지나간
   // 연결선을 빨갛게 표시(예고)했다가, 마우스를 떼면 그 선들을 실제로 끊는다.
   const [cutHeld, setCutHeld] = useState(false); // Y 키를 누르고 있는 중
@@ -1364,23 +1389,65 @@ export function SceneBoard({
         g: Generation,
         operation: WorkspaceCommandOperation,
         workspace: WorkspaceCommandTarget,
+        targets?: Generation[], // 여러 장에 한 번에(결과 창) — 없으면 그 카드 하나
       ): Promise<boolean> => {
-        const ok = await onWorkspaceCommand(g, operation, workspace);
+        const ok = await onWorkspaceCommand(g, operation, workspace, targets);
         if (ok) {
           setGenData((prev) => {
-            const cur = prev[g.id];
-            if (!cur) return prev;
-            if (operation === "assign") {
-              return { ...prev, [g.id]: { ...cur, workspace_id: workspace.id, workspace_name: workspace.name } };
+            const next = { ...prev };
+            for (const { id } of targets?.length ? targets : [g]) {
+              const cur = prev[id];
+              if (!cur) continue;
+              if (operation === "assign") next[id] = { ...cur, workspace_id: workspace.id, workspace_name: workspace.name };
+              // remove 는 '그 공간 소속이었을 때만' 해제된다 — 다른 공간 소속이면 서버도 무변경
+              else if (cur.workspace_id === workspace.id) next[id] = { ...cur, workspace_id: null, workspace_name: null };
             }
-            // remove 는 '그 공간 소속이었을 때만' 해제된다 — 다른 공간 소속이면 서버도 무변경
-            if (cur.workspace_id !== workspace.id) return prev;
-            return { ...prev, [g.id]: { ...cur, workspace_id: null, workspace_name: null } };
+            return next;
           });
         }
         return ok;
       }
     : undefined;
+  // '생성 결과' 창 — 여러 장을 고른 채 그중 한 카드에서 내린 워크스페이스 명령은 고른 전체에(편집기가 그렇게 안내한다).
+  //  태그와 같은 규칙: 그 카드가 고른 묶음 안일 때만 묶음 전체, 아니면 그 카드 하나.
+  const variantWorkspace = applyCardWorkspace
+    ? (g: Generation, operation: WorkspaceCommandOperation, workspace: WorkspaceCommandTarget) => {
+        const ids = variantTargetIds();
+        const targets = ids.includes(g.id) && ids.length > 1
+          ? ids.map((id) => genDataRef.current[id]).filter((item): item is Generation => !!item)
+          : undefined;
+        return applyCardWorkspace(g, operation, workspace, targets);
+      }
+    : undefined;
+
+  // '생성 결과' 창 — 여러 장을 고른 채 한 카드에서 태그를 더하거나 빼면 고른 나머지에도 같이(라이브러리 카드와 같은 약속).
+  //  그 카드 자신은 편집기가 직접 바꾸므로 여기서는 나머지만. 카드마다 기존 경로(applyCardTags: 씬 사본 + App 저장)로 넣는다.
+  const bulkVariantTags = (focus: Generation, names: string[], field: "tags" | "auto_tags", mode: "add" | "remove") => {
+    for (const id of variantTargetIds()) {
+      if (id === focus.id) continue;
+      const g = genDataRef.current[id];
+      if (!g) continue;
+      const current = (field === "tags" ? g.tags : g.auto_tags) ?? [];
+      const next = mode === "add"
+        ? [...current, ...names.filter((name) => !current.includes(name))]
+        : current.filter((name) => !names.includes(name));
+      if (next.length === current.length) continue; // 더할 것도 뺄 것도 없다
+      if (field === "tags") applyCardTags(g, next);
+      else applyCardAutoTags(g, next);
+    }
+  };
+  // '생성 결과' 창 카드의 공유·최종 — 카드(라이브러리 부품)가 확인을 받은 뒤 부른다. 씬은 자체 사본을 쓰므로 먼저 뒤집어 보이고,
+  //  App 핸들러(서버 쓰기)가 끝난 뒤 서버 값으로 다시 맞춘다(아래 onNodeSConfirmYes 와 같은 순서).
+  const variantShareAct = (g: Generation, patch: Partial<Generation>, act?: (g: Generation) => void) => {
+    setGenData((prev) => (prev[g.id] ? { ...prev, [g.id]: { ...prev[g.id], ...patch } } : prev));
+    refreshGenerationAfter(g.id, Promise.resolve(act?.(g)));
+  };
+  const variantShare = {
+    onPublish: (g: Generation) => variantShareAct(g, { shared: true }, onPublish),
+    onUnpublish: (g: Generation) => variantShareAct(g, { shared: false, is_held: false }, onUnpublish),
+    onFinalize: (g: Generation) => variantShareAct(g, { is_final: true, shared: true, is_held: false }, onFinalize),
+    onUnfinalize: (g: Generation) => variantShareAct(g, { is_final: false, is_held: false }, onUnfinalize),
+  };
 
   // ── 생성 결과 카드의 S(공유/최종) 확인 로직 — 히스토리 보드와 동일(단일클릭=공유, 더블=최종) ──
   const [sConfirm, setSConfirm] = useState<{ id: string; kind: "share" | "final" } | null>(null);
@@ -1718,7 +1785,6 @@ export function SceneBoard({
     setViewTextModal(null);
     setViewTimeline(null);
     setGripDragging(false);
-    setPopupMarq(null);
     setCutStroke(null);
     setReorderLine(null);
     setReorderFrom(null);
@@ -2487,23 +2553,6 @@ export function SceneBoard({
     pruneGenIdsFromHistory(cardId, removed); // 삭제된 변형을 히스토리에서도 제거 — undo 로 되살려 깨진 참조 방지
   };
 
-  const { begin: beginVariantMarquee } = useSceneMarqueeSelection<string>({
-    selected: popupSel,
-    surfaceRef: varGridRef,
-    setSelected: setUserPopupSel,
-    setMarquee: setPopupMarq,
-    beginDrag,
-    cellSelector: ".scene-varpop-item",
-    keyOf: (element) => element.dataset.gid,
-    preventDefault: true,
-  });
-
-  // 팝업 그리드 배경 드래그 = 마퀴 복수선택(썸네일 위에서 시작하면 클릭/더블클릭에 양보).
-  const onVarGridMouseDown = (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest(".scene-varpop-item")) return;
-    beginVariantMarquee(e);
-  };
-
   // ── 그룹(Ctrl+G) — 선택 카드를 하나의 묶음으로. 테두리(rect)는 수동 지정·리사이즈, 멤버십은 드롭 위치로 ──
   // 카드 id 목록의 바운딩박스 → 그룹 테두리 rect(위쪽 헤더 높이 포함). 그룹 생성 시 초기 rect 로 사용.
   const rectFromCards = (ids: string[]) =>
@@ -2681,6 +2730,7 @@ export function SceneBoard({
         applyAssetRelink,
         zoomFit: frameView,
         zoomStep: stepZoom,
+        closeVariants: () => setCardMenu(null),
       };
     return () => {
       if (actionRef) actionRef.current = null;
@@ -2805,6 +2855,7 @@ export function SceneBoard({
     isPickerOpen: () => !!nodePickerRef.current,
     selectionCount: () => selectedRef.current.size,
     onEscape: () => {
+      if (escBlockedRef.current) return; // 위에 뜬 창(정보)의 Esc — 그 창이 닫힌다
       const target = sceneEscapeTarget({
         colorOpen: !!colorPopId,
         pickerOpen: !!nodePickerRef.current,
@@ -2814,29 +2865,26 @@ export function SceneBoard({
       });
       if (target === "color") setColorPopId(null);
       else if (target === "picker") setNodePicker(null);
-      else if (target === "popup") setCardMenu(null);
+      // 결과 창: 고른 것이 있으면 선택부터 풀고, 없을 때 닫는다(폴더 창과 같은 순서). 격자에 초점이 있어 격자가 먼저
+      //  선택을 푼 Esc 는 여기까지 오지 않는다(lib/keyHandled).
+      else if (target === "popup") {
+        if (variantTargetIds().length) setUserPopupSel(new Set());
+        else setCardMenu(null);
+      }
       else if (target === "selection") {
         setSelected(new Set());
         setSelectedGroupIds(new Set());
         setRowSel({ listId: "", cids: new Set() });
       }
     },
-    onPopupColor: (color) => applyColorToGids([...popupSelRef.current], color),
+    onPopupColor: (color) => applyColorToGids(variantTargetIds(), color),
     onPopupDisable: () => {
-      const ids = [...popupSelRef.current];
+      const ids = variantTargetIds();
       if (!ids.length) return false;
       toggleDisabledGen(ids);
       return true;
     },
-    onPopupTag: () => {
-      if (!onSetTagsRef.current) return false;
-      const generationId = [...popupSelRef.current].find(
-        (id) => !!genDataRef.current[id],
-      );
-      if (!generationId) return false;
-      setTagEditGid(generationId);
-      return true;
-    },
+    onPopupTag: () => false, // 태그 키는 창의 격자가 받는다(카드 안 인라인 편집) — 씬은 손대지 않는다
     onCreateNode: createNodeFromPicker,
     onTogglePicker: toggleNodePicker,
     onUndo: undo,
@@ -2998,9 +3046,11 @@ export function SceneBoard({
 
   // 보드 밖(사이드바 여백·상단바)에서 시작한 드래그도 선택으로 — 생성 탭과 같은 규칙.
   //  카드 이동·가위·패닝은 보드 안에서만 의미가 있으므로 바깥에서는 선택만 시작한다.
+  //  '생성 결과' 창이 떠 있는 동안은 끈다 — 창의 격자(라이브러리 부품)가 같은 바깥 끌기를 받는다. 둘 다 켜 두면 상단바
+  //  여백에서 끈 한 번에 창의 선택과 뒤 캔버스의 선택이 같이 시작된다(Codex 코드 리뷰 10-07).
   useOutsideDragSelect(".scene-board", (e) =>
     beginBoardMarquee(e as unknown as React.MouseEvent),
-  );
+  !cardMenu);
 
   const onMouseDown = (e: React.MouseEvent) => {
     // 미들 버튼 화면 이동은 뷰포트 훅이 카메라 갱신·저장·커서 정리를 함께 담당한다.
@@ -4590,48 +4640,44 @@ export function SceneBoard({
 
       {/* 다중 결과 팝업 — 라이브러리 그리드처럼 다중선택→액션바(다운로드/비교/담기/공유/삭제),
           ★대표 지정, 더블클릭 크게보기(방향키). .scene-board 직계(줌/팬 밖). 배경클릭/Esc 닫기. */}
-      {cardMenu && (
+      {cardMenu && variantView && (
         <SceneVariantPopup
-          cardId={cardMenu}
+          card={variantView.card}
+          total={variantView.total}
+          generations={variantView.shown}
+          dimIds={variantView.dimIds}
           sceneId={scene.id}
-          viewedGenId={(cardMenu && genViews.card[cardMenu]) || null}
-          cards={cards}
-          genData={genData}
+          viewedGenId={genViews.card[cardMenu] || null}
           disabledIds={disabledIds}
-          folderSel={folderSel}
           projects={projects || []}
           autoTagOptions={autoTagOptions ?? []}
+          view={{
+            scale: libraryView?.scale ?? 1,
+            layout: libraryView?.layout ?? "grid",
+            groupByDate: libraryView?.groupByDate ?? false,
+            fill,
+          }}
+          toolbar={renderVariantToolbar?.(variantView.shown.length)}
           ui={{
-            popupSel,
-            setPopupSel: setUserPopupSel,
+            selectedIds: variantSelected,
+            setSelected: setUserPopupSel,
             resolveHighlightedIds,
-            popupAnchorRef,
-            popupMarq,
+            scrollRequest: variantScroll,
             gripDragging,
             setGripDragging,
-            tagEditGid,
-            setTagEditGid,
-            tagEditorPos,
-            varGridRef,
-            varpopWrapRef,
-            onVarGridMouseDown,
           }}
           gen={{
-            sConfirm,
             canFinalize,
-            onNodeSClick,
-            onNodeSDouble,
-            onNodeSConfirmYes,
-            onNodeSConfirmNo,
             onInfo,
             onOpenComments,
             onRegenerate,
             onPreview,
-            tagsEnabled: !!onSetTags,
-            hasAutoTags: !!onSetAutoTags,
-            applyCardTags,
-            applyCardAutoTags,
-            applyCardWorkspace,
+            onSetTags: onSetTags ? applyCardTags : undefined,
+            onSetAutoTags: onSetAutoTags ? applyCardAutoTags : undefined,
+            onWorkspaceCommand: variantWorkspace,
+            onBulkTags: bulkVariantTags,
+            onGradeStep: onVariantGradeStep,
+            ...variantShare,
           }}
           actions={{
             setCardMenu,

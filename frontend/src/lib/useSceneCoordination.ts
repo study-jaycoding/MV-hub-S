@@ -175,6 +175,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     applyAssetRelink: (found: Map<string, RelinkTarget>) => number; // 자산 자동 복구 답을 메모리 카드에 입힘
     zoomFit: () => void; // 툴바 '맞춤'(f 키 프레이밍과 동일)
     zoomStep: (dir: 1 | -1) => void; // 툴바 −/+ 한 단계 확대/축소
+    closeVariants: () => void; // '생성 결과' 창 닫기 — '폴더 보기' 창을 열 때
   } | null>(null);
   // 비동기 결과가 현재 씬에 합쳐지기 직전, 아직 SceneBoard 메모리에만 있는 입력을 먼저 저장한다.
   // patchSceneById 안에서 자동 호출하면 flush→onChange→patch 재귀가 되므로 명시 관문으로 분리한다.

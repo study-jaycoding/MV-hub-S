@@ -135,3 +135,23 @@ describe("카드를 옮긴 뒤 목록에서 빼는 판정", () => {
     expect(await moveCard({ scope: "personal", initial, operation: "remove", to: "ws-a" })).toEqual(["a1"]);
   });
 });
+
+it("대상을 직접 넘기면(캔버스 '생성 결과' 창) 이 목록·선택과 무관하게 그 카드들로 요청한다 — 안 넘기면 그 카드 하나", async () => {
+  // 캔버스의 카드는 이 훅의 목록(gensRef)에 없고 선택 ref 도 늘 비어 있다 — 창이 고른 대상을 직접 넘긴다
+  setGenerationWorkspace.mockResolvedValue({ workspace: { id: "ws-b", name: "ws-b" }, changed: [], updates: [] });
+  let rendered: ReturnType<typeof useGenerationWorkspaceActions> | undefined;
+  function Probe() {
+    rendered = useGenerationWorkspaceActions({
+      flash: vi.fn(), gensRef: { current: [] }, reload: vi.fn(), selectedRef: { current: new Set<string>() },
+      setGens: vi.fn(), setSelected: vi.fn(),
+    });
+    return null;
+  }
+  act(() => root.render(<Probe />));
+  const [x, y] = [card("x1", "ws-a"), card("y1", "ws-a")];
+  const target = { id: "ws-b", name: "ws-b" };
+  await act(async () => { await rendered!.onWorkspaceCommand(y, "assign", target, [x, y]); });
+  expect(setGenerationWorkspace.mock.calls[0][0]).toEqual(["x1", "y1"]);
+  await act(async () => { await rendered!.onWorkspaceCommand(y, "assign", target); });
+  expect(setGenerationWorkspace.mock.calls[1][0]).toEqual(["y1"]);
+});
