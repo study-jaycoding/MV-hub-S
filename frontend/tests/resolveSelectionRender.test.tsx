@@ -784,6 +784,8 @@ it.each(["my", "team"])("App %s 탭: 폴더 이름표를 누르면 조회가 그
   expect(beginList).toHaveBeenCalledTimes(1); // 본 목록 카드가 창에 비치지 않게 비우고 시작
   expect(gridSnapshot!.selectedIds.size).toBe(0); // 본 목록의 선택을 창으로 들고 가지 않는다
   expect(gridSnapshot!.onOpenFolder).toBeUndefined(); // 창 안 격자에는 이름표를 달지 않는다
+  expect(gridSnapshot!.openedFromId).toBe("target"); // 이름표를 누른 그 카드를 창 안에서 표시하고('방금 누른 카드')
+  expect(gridSnapshot!.resolveScrollRequest).toEqual({ generationId: "target", nonce: 0 }); // 아래쪽에 있으면 그 카드로 내려간다
   expect(document.activeElement).toBe(peekWindow());
   expect(document.querySelector(".body")!.hasAttribute("inert")).toBe(true); // 뒤 화면은 키보드로도 닿지 않는다
 
@@ -803,6 +805,8 @@ it.each(["my", "team"])("App %s 탭: 폴더 이름표를 누르면 조회가 그
   expect(librarySnapshot!.genQuery.folder_path).toBeUndefined();
   expect(beginList).toHaveBeenCalledTimes(2); // 창의 카드가 뒤 목록 자리에 비치지 않게 닫을 때도 비운다
   expect(gridSnapshot!.onOpenFolder).toBeTypeOf("function");
+  expect(gridSnapshot!.openedFromId).toBeUndefined(); // 본 목록에는 표시도, 자동 이동도 남지 않는다
+  expect(gridSnapshot!.resolveScrollRequest).toBeNull();
 });
 
 it("App 작업 공간: 바깥 막·✕ 로 닫히고, 보던 위치가 바뀌거나 부분 수정으로 넘어가도 닫힌다 — 휴지통 보기에는 이름표가 없다", async () => {

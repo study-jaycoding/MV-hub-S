@@ -88,6 +88,7 @@ interface Props {
   stateGlow?: boolean; // 내가 방금 공유·보류·최종으로 바꾼 카드 — 선택 전까지 상태색 빛(lib/stateGlow)
   // 폴더 이름표를 눌렀을 때 — 그 폴더의 생성물 창을 연다. 안 주면 이름표를 그리지 않는다(리스트는 글자만).
   onOpenFolder?: (g: Generation) => void;
+  openedHere?: boolean; // 이 카드의 폴더 이름표로 폴더 창을 열었다 — 창 안에서 '방금 누른 카드' 표시
 }
 
 function GenerationCardImpl({
@@ -99,6 +100,7 @@ function GenerationCardImpl({
   fresh = false,
   stateGlow = false,
   onOpenFolder,
+  openedHere = false,
   fill = true,
   selected = false,
   resolveHighlighted = false,
@@ -345,6 +347,10 @@ function GenerationCardImpl({
       <span>{folderLabel}</span>
     </button>
   ) : null;
+  // 폴더 창을 연 그 카드 — '방금 누른 카드'(Jay 2026-10-07). 본 목록에서 폴더 이름표가 있던 자리(아래 가운데)에 붙는다. 창 안 격자에는
+  // 폴더 이름표가 없어 둘이 같이 뜨지 않는다. 테두리는 건드리지 않는다 — 테두리는 상태색(공유·보류·최종·선택)의 자리다.
+  const hereMark = !isList && openedHere ? <span className="card-here">방금 누른 카드</span> : null;
+  const bottomLead = folderChip ?? hereMark;
 
   const thumbBox = (
     <div
@@ -411,7 +417,7 @@ function GenerationCardImpl({
         </div>
       )}
 
-      {!folderChip && sourceBadge}
+      {!bottomLead && sourceBadge}
       {gen.invalid_input_result && (
         <span
           className="invalid-input-badge"
@@ -522,10 +528,11 @@ function GenerationCardImpl({
       {isVideo && <span className="play-badge">▶</span>}
       {/* 마지막으로 크게 열어본 결과 — .card-thumb(position:relative) 기준 가운데. 오버레이 밖 독립 요소. */}
       {lastViewed && <LastViewedBadge />}
-      {/* 아래 — 이름표가 있으면 다른 배지(소스·상태)와 한 묶음으로 쌓는다(이름표가 맨 위·가운데, 배지는 왼쪽). 없으면 종전 그대로. */}
-      {folderChip ? (
+      {/* 아래 — 이름표('방금 누른 카드' 표시도 같은 자리)가 있으면 다른 배지(소스·상태)와 한 묶음으로 쌓는다(이름표가 맨 위·가운데,
+          배지는 왼쪽). 없으면 종전 그대로. */}
+      {bottomLead ? (
         <div className="card-bottom">
-          {folderChip}
+          {bottomLead}
           {sourceBadge}
           {statusPill}
         </div>

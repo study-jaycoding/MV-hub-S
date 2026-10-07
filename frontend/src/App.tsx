@@ -368,8 +368,9 @@ export default function App() {
   //  동안 목록 조회가 그 폴더로 바뀌고(folderPeekQuery), 하나뿐인 격자·툴바·선택 막대를 창에 그린다. 닫으면 본 목록을
   //  처음부터 다시 받는다. 사이드바 필터(filters)는 건드리지 않는다 — patch() 는 다음 생성 위치까지 바꾼다.
   //  ctx = 연 시점의 문맥. 탭·보던 위치·휴지통 보기·계정·공간이 바뀌면 그 렌더부터 닫힌 것으로 본다(아래 listPeek).
+  //  genId = 이름표를 누른 그 카드 — 창 안에서 '방금 누른 카드' 로 표시하고, 아래쪽에 있으면 보이게 내려가서 연다.
   const [folderWindow, setFolderWindow] = useState<{
-    projectId: string | null; path: string; projectName: string; ctx: string;
+    projectId: string | null; path: string; projectName: string; genId: string; ctx: string;
   } | null>(null);
   // 회색(비활성) — 카드별 비활성화 표시(d 키, gen id 기준 로컬). grayOn(useLibraryFilters)=ON 이면 목록에서 제외.
   const disabledGen = useDisabledGenerations();
@@ -424,6 +425,8 @@ export default function App() {
   const listPeekRef = useRef(listPeek);
   listPeekRef.current = listPeek;
   const listGenQuery = useMemo(() => (listPeek ? folderPeekQuery(genQuery, listPeek) : genQuery), [genQuery, listPeek]);
+  // 창의 격자는 열 때마다 새로 마운트되므로 nonce 는 고정값이면 된다(한 번 열 때 한 번만 이동).
+  const listPeekScroll = useMemo(() => (listPeek ? { generationId: listPeek.genId, nonce: 0 } : null), [listPeek]);
   const {
     archivedCount,
     facets,
@@ -758,7 +761,9 @@ export default function App() {
     if (f.tab === "compose" || !g.folder_path) return;
     beginComposeList();
     setSelected(new Set());
-    setFolderWindow({ projectId: g.project_id, path: g.folder_path, projectName: g.project_name ?? "", ctx: listPeekCtxRef.current });
+    setFolderWindow({
+      projectId: g.project_id, path: g.folder_path, projectName: g.project_name ?? "", genId: g.id, ctx: listPeekCtxRef.current,
+    });
   }, [filtersRef, beginComposeList, setSelected]);
   const closeFolderWindow = useCallback(() => {
     // 한 번만 닫는다 — 같은 Esc 가 창의 키 처리와 전역 Esc 훅에 둘 다 닿을 수 있다. 두 번 비우면 방금 시작한 본 목록 조회의
@@ -1836,7 +1841,9 @@ export default function App() {
   const thumbnailGrid = (
     <ThumbnailGrid
           resolveHighlightedIds={resolveLibrary.highlightedIds}
-          resolveScrollRequest={resolveLibrary.scrollRequest}
+          // 폴더 창에서는 이름표를 누른 그 카드로 한 번 내려간다(다빈치 따라가기와 같은 장치 — 창이 떠 있는 동안 따라가기는 꺼져 있다)
+          resolveScrollRequest={listPeekScroll ?? resolveLibrary.scrollRequest}
+          openedFromId={listPeek?.genId}
           onClearResolveHighlight={resolveLibrary.clear}
           generations={gridGens}
           disabledIds={effectiveDisabled}

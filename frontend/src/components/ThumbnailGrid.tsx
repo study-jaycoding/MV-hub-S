@@ -76,6 +76,7 @@ interface Props {
   onPreview: (t: PreviewTarget) => void;
   onShowHistory?: (g: Generation) => void; // 히스토리 뱃지 → 가계 패널
   onOpenFolder?: (g: Generation) => void; // 카드의 폴더 이름표 → 그 폴더의 생성물 창(안 주면 이름표 없음)
+  openedFromId?: string | null; // 폴더 창을 연 카드 — 그 카드에 '방금 누른 카드' 표시
   // 무한 스크롤 — 로드된 DOM 을 다 보여준 뒤 바닥에 닿으면 서버 다음 페이지 요청.
   hasMore?: boolean; // 서버에 더 받을 페이지가 있나
   loadingMore?: boolean;
@@ -314,6 +315,7 @@ export function ThumbnailGrid(props: Props) {
       onPreview={cb.onPreview}
       onShowHistory={props.onShowHistory ? cb.onShowHistory : undefined}
       onOpenFolder={props.onOpenFolder ? cb.onOpenFolder : undefined}
+      openedHere={generation.id === props.openedFromId}
     />
   );
   const dragRef = useRef<{

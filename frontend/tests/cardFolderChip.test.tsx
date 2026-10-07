@@ -160,3 +160,28 @@ it("list layout: the folder text becomes a button with the same action; without 
   expect(host.querySelector("button.cd-folder")).toBeNull();
   expect(host.querySelector("span.cd-folder")!.textContent).toContain("뻘뻘뻘");
 });
+
+it("in the folder window the card whose chip was pressed carries a mark at the chip's place; it is not a button and the card's border classes do not change", () => {
+  const s = spies();
+  const cardClass = () => host.querySelector(".card")!.className;
+  render(s, { onOpenFolder: undefined }); // 창 안 격자에는 폴더 이름표가 없다
+  const plain = cardClass();
+  expect(host.querySelector(".card-here")).toBeNull();
+  expect(host.querySelector(".card-bottom")).toBeNull();
+
+  render(s, { onOpenFolder: undefined, openedHere: true });
+  const mark = host.querySelector(".card-here")!;
+  expect(mark.textContent).toBe("방금 누른 카드");
+  expect(mark.tagName).toBe("SPAN"); // 누르는 것이 아니라 표시
+  expect(mark.parentElement!.className).toBe("card-bottom");
+  expect(mark.closest(".card-thumb")).not.toBeNull();
+  expect(cardClass()).toBe(plain); // 테두리(상태색·선택)는 건드리지 않는다
+
+  // 다른 배지와는 이름표처럼 한 묶음 — 표시가 맨 위, 배지를 묶음 밖에 또 그리지 않는다
+  render(s, { onOpenFolder: undefined, openedHere: true, gen: gen({ is_source: true, source_name: "mia", status: "failed" } as Partial<Generation>) });
+  expect([...host.querySelector(".card-bottom")!.children].map((el) => el.className.split(" ")[0])).toEqual(["card-here", "source-badge", "status-pill"]);
+  expect(host.querySelectorAll(".source-badge")).toHaveLength(1);
+
+  render(s, { onOpenFolder: undefined, openedHere: true, layout: "list" }); // 리스트 레이아웃에는 그리지 않는다
+  expect(host.querySelector(".card-here")).toBeNull();
+});

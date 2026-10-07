@@ -149,6 +149,13 @@ it("날짜 헤더를 포함한 가상 행으로 필터 초기화 뒤 1회 이동
   expect(mocks.scroll).toHaveBeenCalledTimes(1);
 });
 
+it("폴더 창을 연 카드에만 '방금 누른 카드' 표시를 붙인다", () => {
+  const marks = [...renderGrid(gridProps({ openedFromId: "g2" })).querySelectorAll(".card-here")];
+  expect(marks).toHaveLength(1);
+  expect(marks[0].closest<HTMLElement>(".gen-cell")!.dataset.id).toBe("g2");
+  expect(renderGrid(gridProps()).querySelector(".card-here")).toBeNull();
+});
+
 it("대상이 나중에 도착하면 이동하고 빠르게 바뀐 이전 요청은 취소한다", () => {
   const props = gridProps({ generations: [], resolveScrollRequest: { generationId: "g2", nonce: 1 } });
   renderGrid(props);

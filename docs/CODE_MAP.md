@@ -29,7 +29,7 @@ updated: 2026-10-07
 | 하고 싶은 일 | 프런트 진입 파일 | 백엔드 진입 파일 | 비고 |
 |---|---|---|---|
 | 라이브러리 카드 표시 문구·상태 라벨 바꾸기 | `components/GenerationCard.tsx`, `lib/generationDisplay.ts` | — | 상태 라벨은 순수 프런트 판정 |
-| 카드의 폴더 이름표·목록 탭의 '폴더 보기' 창 | `components/GenerationCard.tsx`(이름표), `App.tsx`(`listPeek`·`renderFolderPeek` — 캔버스 '폴더 보기' 창과 같은 창), `lib/appGenerationQuery.ts`(`folderPeekQuery`), `lib/folderLabel.ts`(표시 규칙) | `routers/library.py`(`GET /api/generations` — 기존 목록 API 그대로) | 캔버스 창과 같은 원리: 창이 떠 있는 동안 **목록 조회가 그 폴더로 바뀌고** 하나뿐인 격자·툴바·선택 막대를 창에 그린다(뒤 목록 자리는 비움). 닫으면 본 목록을 처음부터 다시 받는다. 사이드바 필터(`filters`)는 안 건드린다 — `patch()` 는 다음 생성 위치까지 바꾼다. 열고 닫을 때 `beginComposeList()` 로 목록을 비운다. 이름표는 목록 탭의 본 목록에만(캔버스·휴지통 보기·창 안 격자에는 없음) |
+| 카드의 폴더 이름표·목록 탭의 '폴더 보기' 창 | `components/GenerationCard.tsx`(이름표), `App.tsx`(`listPeek`·`renderFolderPeek` — 캔버스 '폴더 보기' 창과 같은 창), `lib/appGenerationQuery.ts`(`folderPeekQuery`), `lib/folderLabel.ts`(표시 규칙) | `routers/library.py`(`GET /api/generations` — 기존 목록 API 그대로) | 캔버스 창과 같은 원리: 창이 떠 있는 동안 **목록 조회가 그 폴더로 바뀌고** 하나뿐인 격자·툴바·선택 막대를 창에 그린다(뒤 목록 자리는 비움). 닫으면 본 목록을 처음부터 다시 받는다. 사이드바 필터(`filters`)는 안 건드린다 — `patch()` 는 다음 생성 위치까지 바꾼다. 열고 닫을 때 `beginComposeList()` 로 목록을 비운다. 이름표는 목록 탭의 본 목록에만(캔버스·휴지통 보기·창 안 격자에는 없음). 창 안에서는 이름표를 누른 그 카드에 '방금 누른 카드' 표시가 붙고, 아래쪽에 있으면 그 카드로 내려가서 연다(다빈치 따라가기의 `resolveScrollRequest` 장치) |
 | 새 API 엔드포인트 추가하기 | `api.ts` | `routers/_proxy.py`(경로 소유권) + 해당 도메인 라우터. **새 라우터 파일이면 `main.py` 의 `include_router()` 등록도** | 로컬 전용 경로는 `_proxy._LOCAL_PREFIXES/_LOCAL_EXACT` 갱신 + `backend/tests/test_proxy_ownership.py` 골든 스냅샷도 같이 고쳐야 함(§5-c) |
 | 캔버스(씬) 단축키 바꾸기 | `lib/useSceneKeyboardShortcuts.ts`, `lib/sceneKeyboard.ts` | — | |
 | 생성 제출 흐름(프롬프트→요청→CLI) | `components/spotlight/useSpotlightSubmit.ts`, `lib/spotlightSubmit.ts` | `routers/gen_requests.py`, `usecases/gen_requests.py`, `repo/gen_requests.py` | 실제 CLI 제출·추적·완료 판정은 작업자 PC 의 `agent_push.py` 가 한다 — 서버 쪽만 봐서는 흐름이 끝까지 안 보인다 |
@@ -514,8 +514,8 @@ updated: 2026-10-07
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `ThumbnailGrid.tsx`(691줄) | 생성물 카드 가상 그리드 · 마퀴/키보드 선택 · 날짜 그룹 | `ThumbnailGrid` |
-| `GenerationCard.tsx`(764줄) | 카드 1장(그리드/리스트 두 모드) · 호버 영상 · 드래그 · 폴더 이름표(`onOpenFolder` 를 받았을 때만 — 아래 가운데·반투명, 소스·상태 배지와 한 묶음 `.card-bottom`) | `GenerationCard`(memo) — 캔버스의 `scene/cards/GenerationCard.tsx` 와 이름만 같은 별개 파일(§5-b) |
+| `ThumbnailGrid.tsx`(693줄) | 생성물 카드 가상 그리드 · 마퀴/키보드 선택 · 날짜 그룹 · 폴더 창을 연 카드 표시(`openedFromId`) | `ThumbnailGrid` |
+| `GenerationCard.tsx`(771줄) | 카드 1장(그리드/리스트 두 모드) · 호버 영상 · 드래그 · 폴더 이름표(`onOpenFolder` 를 받았을 때만 — 아래 가운데·반투명, 소스·상태 배지와 한 묶음 `.card-bottom`) · 폴더 창 안의 '방금 누른 카드' 표시(`openedHere` — 같은 자리의 라임 알약, 테두리는 안 건드림) | `GenerationCard`(memo) — 캔버스의 `scene/cards/GenerationCard.tsx` 와 이름만 같은 별개 파일(§5-b) |
 | `MediaThumbnail.tsx`(157줄) | 영상 포스터/이미지/포스터 없는 영상 3분기 통합 표현 | `MediaThumbnail`(10곳 재사용) |
 | `LibraryToolbar.tsx`(296줄) | 타입 필터·검토 필터·크기 슬라이더·리스트/그리드 토글·태그 패널 | `LibraryToolbar` |
 | `FilterSidebar.tsx`(232줄) | 좌측 필터(프로젝트/컬러/자동태그/생성자/공유) 껍데기 | `FilterSidebar` |
