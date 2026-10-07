@@ -729,7 +729,7 @@ updated: 2026-10-07
 | `useLibraryPersistence.ts` | 훅 | 필터 저장 포맷·키·마이그레이션 |
 | `appGenerationQuery.ts` | 순수 | 필터 → 서버 쿼리 객체·캐시 키 · 목록 탭 '폴더 보기' 창의 조회(`folderPeekQuery` — 탭·공간 범위·창 툴바 조건만 따른다) |
 | `useLibraryCreators.ts` | 훅 | 생성자(작성자) 목록 조회 |
-| `useGenerationAutoRefresh.ts` | 훅 | 활성 잡·team 탭 폴링 + 복귀 재조회(5초 가드) |
+| `useGenerationAutoRefresh.ts` | 훅 | 활성 잡·team 탭 폴링 + 복귀 재조회(5초 가드). `paused`(App 이 목록 훅의 `staleList` 를 넘긴다) 동안에는 **여기서 시작하는 조회만** 쉰다 — 폴더 창을 닫고 새 첫 쪽을 기다리는 사이에 끼면 받던 응답이 seq 로 버려져 조작 잠금이 한 왕복 더 간다. 실제 변경 통보(WS 동기화·알림)의 조회는 막지 않는다. 최신 값은 ref 로 읽어 진입만 막는다(paused 로 effect 를 다시 만들면 주기가 재시작되고 진행 중 표시가 지워진다). 풀린 뒤 따로 다시 받지 않는다. 시험 `tests/generationAutoRefresh.test.tsx` |
 | `useGenerationProgress.ts` | 훅 | WS progress 한 건을 카드에 반영 |
 | `resolveLibraryLocation.ts` | 순수 | "이 생성물이 몇 페이지에 있나" 위치 질의·병합 |
 | `mediaTypes.ts` | 순수 | 미디어 필터 옵션 상수 |
