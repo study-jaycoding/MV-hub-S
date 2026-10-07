@@ -117,6 +117,10 @@ function openPeer(): Promise<void> {
     document.body.append(frame);
   });
 }
+function closePeer(): void {
+  peerFrame?.remove();
+  peerFrame = null;
+}
 function peer<T>(command: PeerCommand): Promise<T> {
   const seq = (peerSeq += 1);
   const target = peerFrame!.contentWindow!;
@@ -136,12 +140,14 @@ function peer<T>(command: PeerCommand): Promise<T> {
 // ── 재기 ─────────────────────────────────────────────────────────────────────────
 // 편집 한 번이 화면을 얼마나 멈추나. 저장은 뒤에서 가지만 IndexedDB 에 넘길 때의 복제는 화면 스레드가 한다 —
 // 4ms 간격 타이머가 가장 오래 밀린 시간을 '멈춤'으로 본다.
+// 앞의 몇 번은 버린다(직전 단계가 남긴 쓰레기 수거·첫 읽기의 사본 만들기가 섞인다). 가운데값과 최댓값을 함께 낸다 —
+// 최댓값 하나는 쓰레기 수거 한 번에도 튄다.
 async function measureEdits(label: string, sceneId: string, rounds: number): Promise<void> {
-  let worstSync = 0;
-  let worstConfirm = 0;
-  let worstStall = 0;
-  let sumConfirm = 0;
-  for (let i = 0; i < rounds; i += 1) {
+  const WARMUP = 3;
+  const sync: number[] = [];
+  const confirm: number[] = [];
+  const stalls: number[] = [];
+  for (let i = 0; i < rounds + WARMUP; i += 1) {
     let last = performance.now();
     let stall = 0;
     const ticker = setInterval(() => {
@@ -157,14 +163,16 @@ async function measureEdits(label: string, sceneId: string, rounds: number): Pro
     const t2 = performance.now();
     await sleep(20);
     clearInterval(ticker);
-    worstSync = Math.max(worstSync, t1 - t0);
-    worstConfirm = Math.max(worstConfirm, t2 - t0);
-    worstStall = Math.max(worstStall, stall);
-    sumConfirm += t2 - t0;
+    if (i < WARMUP) continue;
+    sync.push(t1 - t0);
+    confirm.push(t2 - t0);
+    stalls.push(stall);
   }
+  const mid = (list: number[]) => [...list].sort((x, y) => x - y)[Math.floor(list.length / 2)];
+  const top = (list: number[]) => Math.max(...list);
   log(
-    `${label}: 편집 ${rounds}번 — 화면 반영 최대 ${ms(worstSync)} · 저장 확정 평균 ${ms(sumConfirm / rounds)}/최대 ${ms(worstConfirm)}` +
-      ` · 화면 멈춤 최대 ${ms(worstStall)}`,
+    `${label}: 편집 ${rounds}번 — 화면 반영 ${ms(mid(sync))}(최대 ${ms(top(sync))}) · 저장 확정 ${ms(mid(confirm))}(최대 ${ms(top(confirm))})` +
+      ` · 화면 멈춤 ${ms(mid(stalls))}(최대 ${ms(top(stalls))})`,
   );
 }
 
@@ -309,7 +317,7 @@ async function main() {
   // ── 3. 꽉 찼던 그 상태에서 편집이 되나, 얼마나 걸리나 ──
   const added = confirmSceneWrite(() => createScene(null, "꽉 찬 뒤에 만든 씬"));
   log(`[3] 꽉 찼던 PC 에서 새 씬 만들기: 화면 ${added.value ? "됨" : "안 됨"} · 저장 확정 ${await added.confirmed}`);
-  await measureEdits(`    지금 크기(${mb(sizeOf(listScenes(null)))})`, "old0", 10);
+  await measureEdits(`    지금 크기(${mb(sizeOf(listScenes(null)))})`, "old0", 20);
 
   log(`    쓰기 내구성(브라우저가 적용한 값): ${sceneStoreDurability()}`);
 
@@ -335,6 +343,11 @@ async function main() {
     `     다시 받은 뒤 전부 들어갔나: ${["중단된 편집", "중단된 씬", "다시 받은 뒤 편집"].every((name) => afterRetry.includes(name))}`,
   );
 
+  // 다른 창이 떠 있으면, 내 편집마다 그 창이 저장소를 다시 읽는다(버전이 달라졌으므로 전체를). 여기서는 그 창이
+  // 같은 스레드의 iframe 이라 그 비용이 내 '화면 멈춤'으로 잡힌다 — 실제 다른 창이면 그 창이 치르는 비용이다.
+  await measureEdits(`    같은 크기, 다른 창이 떠 있을 때`, "old0", 20);
+  closePeer();
+
   // ── 4. 옛 한도의 여러 배로 키운다 ──
   const grown = listScenes(null);
   for (let i = 0; i < 200; i += 1) grown.push(bigScene(`new${i}`, 150_000));
@@ -342,7 +355,7 @@ async function main() {
   const growWrite = confirmSceneWrite(() => saveScenes(null, grown));
   const growOk = growWrite.value && (await growWrite.confirmed);
   log(`[4] 키우기: 씬 ${grown.length}개 · ${mb(sizeOf(grown))} · 저장 ${growOk ? "됨" : "실패"} · ${ms(performance.now() - tGrow)}`);
-  await measureEdits(`    큰 크기(${mb(sizeOf(listScenes(null)))})`, "old0", 10);
+  await measureEdits(`    큰 크기(${mb(sizeOf(listScenes(null)))})`, "old0", 20);
 
   // ── 5. 두 창 ──
   await openPeer();
@@ -353,6 +366,7 @@ async function main() {
   await sleep(400);
   const seenByPeer = (await peer<string[]>({ cmd: "list" })).includes("주 창이 만든 씬");
   log(`    주 창이 만든 씬이 다른 창에 보이나(새로고침 없이): ${seenByPeer}`);
+  await measureEdits(`    큰 크기, 다른 창이 떠 있을 때`, "old0", 20);
   // 같은 순간에 서로 다른 것을 고친다 — 종전(localStorage)은 늦게 쓴 쪽이 다른 쪽을 지웠다.
   const peerAdd = peer<{ confirmed: boolean }>({ cmd: "add", name: "다른 창이 만든 씬" });
   const myRename = confirmSceneWrite(() => updateScene(null, "old1", { name: "주 창이 바꾼 이름" }));

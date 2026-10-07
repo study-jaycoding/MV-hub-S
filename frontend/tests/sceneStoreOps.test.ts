@@ -63,12 +63,36 @@ describe("씬 저장소 — 화면 값과 확정", () => {
     expect(sceneStoreHasPending()).toBe(false);
   });
 
-  it("읽은 목록을 제자리에서 고쳐도 저장소는 움직이지 않는다", async () => {
-    await writeScenesStore({ acct: [scene("s1")] });
-    readWorkingBucket("acct")[0].name = "밖에서 고침";
-    readConfirmedBucket("acct")[0].name = "밖에서 고침";
-    expect(names(readWorkingBucket("acct"))).toEqual(["s1"]);
-    expect(names(readConfirmedBucket("acct"))).toEqual(["s1"]);
+  // 읽은 씬은 저장소가 씬마다 한 번 만든 사본이다. 읽을 때마다 전부를 다시 복제하면 편집 한 번의 비용이 전체
+  // 양에 비례한다(15MB 에서 약 25ms 실측) — 그래서 안 바뀐 씬은 같은 사본을 다시 준다.
+  it("안 바뀐 씬은 같은 사본을 다시 준다 — 바뀐 씬만 새로 만든다", async () => {
+    await writeScenesStore({ acct: [scene("s1"), scene("s2")] });
+    const before = readWorkingBucket("acct");
+    rename("s2", "고침");
+    const after = readWorkingBucket("acct");
+    expect(after).not.toBe(before); // 목록은 매번 새것
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]).not.toBe(before[1]);
+    expect(names(after)).toEqual(["s1", "고침"]);
+    expect(names(before)).toEqual(["s1", "s2"]); // 먼저 받은 목록은 그때 모습 그대로다
+  });
+
+  // 같은 사본을 다른 독자도 받으므로 받은 씬은 고치지 않는다. 개발·시험 빌드에서는 얼려 두어, 고치려는 코드가
+  // 조용히 다른 독자의 값을 바꾸지 않고 그 자리에서 던진다. 저장소가 든 객체는 어느 쪽이든 밖에 나가지 않는다.
+  it("읽은 씬은 고칠 수 없다(개발·시험 빌드) — 목록 자체는 정렬·거르기를 해도 된다", async () => {
+    await writeScenesStore({ acct: [scene("s1"), scene("s2")] });
+    for (const list of [readWorkingBucket("acct"), readConfirmedBucket("acct")]) {
+      expect(() => {
+        list[0].name = "밖에서 고침";
+      }).toThrow(TypeError);
+      expect(() => {
+        list[0].cards.push({ id: "c", kind: "text", x: 0, y: 0 });
+      }).toThrow(TypeError);
+      list.reverse();
+      list.pop();
+    }
+    expect(names(readWorkingBucket("acct"))).toEqual(["s1", "s2"]);
+    expect(names(readConfirmedBucket("acct"))).toEqual(["s1", "s2"]);
   });
 
   // 종전(쓰기를 Promise 로 기다리던 방식)의 사고: 늦게 끝난 저장의 응답이 그사이의 새 편집을 덮었다.

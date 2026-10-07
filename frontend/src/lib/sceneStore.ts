@@ -629,29 +629,41 @@ export function captureSceneOps<T>(run: () => T): { value: T; confirmed: Promise
 }
 
 // ── 읽기(동기) ───────────────────────────────────────────────────────────────────
-// 호출부가 받은 목록을 제자리에서 고쳐도 저장소가 움직이지 않게 **매번 새 객체**를 준다. 종전
-// localStorage 가 읽을 때마다 JSON.parse 로 새 객체를 주던 것과 같은 비용·같은 정규화다
-// (undefined 필드가 빠진다). 버킷은 갈아 끼울 때만 바뀌므로 JSON 글자는 배열 참조로 기억해 둔다.
-const jsonOfBucket = new WeakMap<Scene[], string>();
-function parsedBucket(source: ScenesByProject, key: string): Scene[] {
-  const bucket = source[key];
-  if (!bucket) return [];
-  let json = jsonOfBucket.get(bucket);
-  if (json === undefined) {
-    json = JSON.stringify(bucket);
-    jsonOfBucket.set(bucket, json);
-  }
-  return JSON.parse(json) as Scene[];
+// 저장소가 든 객체는 밖에 내주지 않는다 — 받은 쪽이 고치면 저장소 값이 바뀐다. 내주는 것은 **씬별 사본**이다.
+// 사본은 씬 객체마다 한 번만 만든다(글자로 바꿨다가 다시 읽는다 — 종전 localStorage 가 주던 것과 같은
+// 정규화: undefined 필드가 빠진다). 안 바뀐 씬은 같은 사본을 다시 주므로, 읽기 비용이 '바뀐 씬의 크기'다.
+// 종전에는 읽을 때마다 버킷 전체를 글자로 바꿨다가 다시 읽어, 편집마다 전체 양에 비례하는 시간이 들었다
+// (15MB 에서 약 25ms, 44MB 에서 약 65ms 실측).
+// ★그래서 **받은 씬은 고치지 않는다** — 같은 사본을 다른 독자도 받는다. 개발·시험 빌드에서는 사본을 얼려 두어
+//  고치려 하면 그 자리에서 던진다. 목록(배열)은 매번 새로 준다 — 정렬·거르기·더하기는 마음대로 해도 된다.
+interface SceneView {
+  text: string;
+  copy: Scene;
 }
+const viewOfScene = new WeakMap<Scene, SceneView>();
+function viewOf(scene: Scene): SceneView {
+  let view = viewOfScene.get(scene);
+  if (!view) {
+    const text = JSON.stringify(scene);
+    const copy = JSON.parse(text) as Scene;
+    if (FREEZE) deepFreeze(copy);
+    view = { text, copy };
+    viewOfScene.set(scene, view);
+  }
+  return view;
+}
+const owns = (all: ScenesByProject, key: string): boolean => Object.prototype.hasOwnProperty.call(all, key);
+const copiesOf = (all: ScenesByProject, key: string): Scene[] =>
+  owns(all, key) ? all[key].map((scene) => viewOf(scene).copy) : [];
 
 /** 앱이 보는 값(확정 + 아직 확정 안 된 내 편집). */
 export const readWorkingBucket = (key: string): Scene[] => {
   ensureMemoryStoreOutsideBrowser();
-  return parsedBucket(working, key);
+  return copiesOf(working, key);
 };
 export const hasWorkingBucket = (key: string): boolean => {
   ensureMemoryStoreOutsideBrowser();
-  return key in working;
+  return owns(working, key);
 };
 /** 화면 값 기준 버킷의 씬 수 — 새 씬 기본 이름("씬 N")을 접수 시점에 정하는 데 쓴다. */
 export const workingBucketLength = (key: string): number => {
@@ -659,8 +671,13 @@ export const workingBucketLength = (key: string): number => {
   return working[key]?.length ?? 0;
 };
 /** 저장소에 확정된 값만. DB 미러·복구 판정은 이것을 본다. */
-export const readConfirmedBucket = (key: string): Scene[] => parsedBucket(confirmed, key);
-export const hasConfirmedBucket = (key: string): boolean => key in confirmed;
+export const readConfirmedBucket = (key: string): Scene[] => copiesOf(confirmed, key);
+export const hasConfirmedBucket = (key: string): boolean => owns(confirmed, key);
+/** 확정본을 씬별 **글자**로 — DB 미러가 올리는 모양 그대로다. 안 바뀐 씬은 다시 글자로 바꾸지 않는다. */
+export const readConfirmedTexts = (key: string): Array<{ id: string; name: string; text: string }> =>
+  owns(confirmed, key)
+    ? confirmed[key].map((scene) => ({ id: scene.id, name: scene.name, text: viewOf(scene).text }))
+    : [];
 
 /** working 전체의 사본 — 시험·실측용. 제품 코드는 버킷 단위 읽기를 쓴다. */
 export function readScenesCache(): ScenesByProject {

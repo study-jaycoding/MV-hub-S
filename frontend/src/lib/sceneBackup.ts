@@ -25,7 +25,7 @@ import { getAccountNamespace } from "./accountScope";
 import {
   confirmSceneWrite,
   hasPersistedSceneBucket,
-  listPersistedScenes,
+  listPersistedSceneTexts,
   listScenes,
   mergeScenesFromBackup,
   subscribeScenesPersisted,
@@ -237,12 +237,13 @@ async function syncNow(): Promise<void> {
     if (ns() !== scope) return;
     // ★미러는 **확정본만** 올린다. 화면 값에는 아직 확정 안 된 편집이 섞여 있어, 그것을 올리면
     //  저장되지도 않은 삭제가 서버 백업에 반영된다(Codex).
-    const local = listPersistedScenes(null);
+    //  씬은 저장소가 기억해 둔 글자를 그대로 받는다 — 확정 때마다 전부를 다시 글자로 바꾸지 않는다.
+    const local = listPersistedSceneTexts(null);
     const upserts: { id: string; name: string; data: string }[] = [];
     const tooBig = new Set<string>();
     const newlyTooBig: string[] = [];
     for (const s of local) {
-      const data = JSON.stringify(s);
+      const data = s.text;
       if (lastPushed.get(s.id) === data) continue; // 이 세션에서 이미 올린(또는 복구한) 그대로
       if (exceedsSceneLimit(data)) {
         // 전송에서 뺀다. ★올린 것으로 적지 않는다(lastPushed) — 작아지면 다시 대상이 된다. 서버에 남은 옛 사본도

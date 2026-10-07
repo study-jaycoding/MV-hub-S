@@ -12,6 +12,7 @@ import {
   hasConfirmedBucket,
   hasWorkingBucket,
   readConfirmedBucket,
+  readConfirmedTexts,
   readWorkingBucket,
   sceneStoreConflicts,
   setSceneFlushListener,
@@ -386,14 +387,22 @@ export function adoptLegacyBucket(projectId: string | null): Promise<boolean> {
   return confirmed.finally(() => adoptionInFlight.delete(key));
 }
 
+// ★돌려받은 **씬은 고치지 않는다**. 씬 객체는 저장소가 씬마다 한 번 만든 사본이고, 같은 사본을 다른 독자도
+//  받는다(안 바뀐 씬을 읽을 때마다 다시 복제하지 않으려는 것 — sceneStore 의 '읽기'). 고칠 때는 새 객체를
+//  만들어 updateScene 등에 넘긴다. 목록(배열) 자체는 매번 새것이라 정렬·거르기·더하기는 해도 된다.
 export function listScenes(projectId: string | null): Scene[] {
   void adoptLegacyBucket(projectId); // 옛 버킷이 남아 있을 때만 일한다(평소엔 키 하나 확인하고 끝)
   return readWorkingBucket(keyOf(projectId));
 }
 
-/** 저장소에 확정된 목록만 — DB 미러가 올릴 내용. 화면에는 listScenes 를 쓴다. */
+/** 저장소에 확정된 목록만. 화면에는 listScenes 를 쓴다. */
 export function listPersistedScenes(projectId: string | null): Scene[] {
   return readConfirmedBucket(keyOf(projectId));
+}
+
+/** 확정된 목록을 씬별 JSON 글자로 — DB 미러가 올리고 견주는 모양(씬을 매번 다시 글자로 바꾸지 않는다). */
+export function listPersistedSceneTexts(projectId: string | null): Array<{ id: string; name: string; text: string }> {
+  return readConfirmedTexts(keyOf(projectId));
 }
 
 // 버킷 목록을 통째로 놓는다. 반환 = 화면 값에 반영됐나.
