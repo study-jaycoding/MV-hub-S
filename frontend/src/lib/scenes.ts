@@ -1,8 +1,11 @@
-// Canvas 씬(빈 캔버스) 데이터 레이어 — 카드·연결·카메라를 localStorage 에 프로젝트별로 보관.
+// Canvas 씬(빈 캔버스) 데이터 레이어 — 카드·연결·카메라를 프로젝트별로 보관.
 // 생성 결과물 자체는 실제 generation(서버)이고, 여기 저장하는 건 "캔버스 편집물"(개인 로컬)뿐이다.
-import { loadJSON, saveJSON, trySaveJSON } from "./storage";
+// ★저장 자리는 IndexedDB(sceneStore)다. 옛 localStorage 는 출처당 약 5MB 라 큰 씬 9개면 찼다.
+//  '마지막 연 씬'(scenesActive)처럼 작은 값은 그대로 localStorage 에 남는다.
+import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 import { getAccountNamespace } from "./accountScope";
+import { mutateScenesStore, normalizeSceneCache, readScenesCache } from "./sceneStore";
 
 export type SceneCardKind =
   | "reference"
@@ -152,7 +155,8 @@ export interface Scene {
   created_at: number;
 }
 
-type ScenesByProject = Record<string, Scene[]>;
+// 계정×프로젝트 버킷 → 그 버킷의 씬 목록. 저장소 계층(sceneStore·sceneAbsorb)이 같은 모양을 쓴다.
+export type ScenesByProject = Record<string, Scene[]>;
 
 // 씬 저장 버킷 키. ★계정별 네임스페이스 — 팀 서버에서 한 브라우저를 여러 계정이 써도 안 섞이게,
 //  계정 전환 시 서로 지워지지 않게. 인증 계정을 탭별 sessionStorage 에 고정해 다른 탭의 로그인으로
@@ -163,8 +167,14 @@ const legacyKeyOf = (projectId: string | null | undefined) => projectId || "_non
 
 // 네임스페이스 도입 전 옛 버킷을 현재 계정 버킷으로 1회 이관(작업 유실 방지). 이관 후 옛 키는 제거해
 //  같은 브라우저의 다른 계정이 다시 가져가지 않게 한다. map 을 제자리에서 바꾸고 이관 여부를 반환.
-function migrateLegacyBucket<T>(map: Record<string, T>, projectId: string | null | undefined): boolean {
-  const k = keyOf(projectId);
+// ★대상 키를 **인자로 받는다**. 안에서 다시 계산하면 저장 큐에서 기다리는 사이에 계정이 바뀌었을 때
+//  그 계정 버킷으로 옛 씬이 귀속된다(Codex 재현) — 키는 접수 시점에 고정해 넘긴다.
+function migrateLegacyBucket<T>(
+  map: Record<string, T>,
+  projectId: string | null | undefined,
+  targetKey?: string,
+): boolean {
+  const k = targetKey ?? keyOf(projectId);
   const legacy = legacyKeyOf(projectId);
   // 현재 계정 버킷에 '내용'이 있으면 이관 안 함. ★빈 버킷([])만 있어도 이관받아야 한다 —
   //  안 그러면 legacy 가 남아 다른 계정이 나중에 가져가(재귀속) 버린다.
@@ -245,8 +255,11 @@ export function sceneRefFingerprint(
 }
 
 
+// 읽기 관문. ★IndexedDB 로 옮긴 뒤에도 **동기**다 — 부팅 게이트가 한 번 읽어 둔 확정 캐시의
+// 복사본을 준다(읽기 호출부 43곳을 비동기로 바꾸지 않기 위해서다). 복사본인 이유: 호출부가 받은
+// 객체를 제자리에서 고쳐 쓰는 곳이 있어, 원본을 주면 **저장에 실패한 변경이 캐시에 남는다**.
 function loadAll(): ScenesByProject {
-  return loadJSON<ScenesByProject>(STORAGE_KEYS.scenes) || {};
+  return readScenesCache();
 }
 
 // DB 미러 훅 — saveAll(단일 쓰기 관문) 뒤 호출된다. sceneBackup.ts(씬 전체)와
@@ -286,17 +299,26 @@ function reportSaveState(failed: boolean): void {
   saveStateSubs.forEach((fn) => fn(failed));
 }
 
-// 씬 저장의 단일 쓰기 관문. 반환 = 실제로 persist 됐는지(localStorage 용량 초과·접근 차단이면 false).
+// 씬 저장의 단일 쓰기 관문. 반환 = 실제로 persist 됐는지.
+// ★IndexedDB 는 '쓰라고 시키고 나중에 끝난다' — 그래서 이 함수만 비동기다. 트랜잭션이 끝난 뒤에만
+//  성공을 보고한다. 낙관적으로 true 를 돌려주면 DB 미러가 '저장됨'으로 믿고, 다음 동기화가 빈 로컬을
+//  기준으로 서버 백업을 지운다(적대 리뷰 P0). 읽기는 캐시라 동기 그대로다.
 // ★실패했으면 DB 미러 구독자를 부르지 않는다 — 저장소 내용이 그대로라 올릴 것도 없고, 미저장 편집을
 //  '저장됨'으로 알리면 안 된다. (구독자는 각자 부팅·주기 트리거가 있어 한 번 건너뛰어도 안전.)
-function saveAll(all: ScenesByProject): boolean {
-  if (!trySaveJSON(STORAGE_KEYS.scenes, all)) {
+// ★변경을 '함수'로 받는다. 저장소 전체 스냅샷을 받아 덮으면, 그 스냅샷을 읽은 뒤 저장이 끝나기
+//  전에 들어온 다른 변경이 사라진다(비동기가 되며 생긴 창). mutate 는 **확정된 최신 내용** 위에서
+//  임계 구역 안에 실행된다.
+async function commit<T>(
+  mutate: (all: ScenesByProject) => { write: boolean; value: T },
+): Promise<{ ok: boolean; value: T }> {
+  const out = await mutateScenesStore(mutate);
+  if (!out.ok) {
     reportSaveState(true);
-    return false;
+    return { ok: false, value: out.value };
   }
   reportSaveState(false);
-  scenesPersistedSubs.forEach((fn) => fn());
-  return true;
+  if (out.wrote) scenesPersistedSubs.forEach((fn) => fn());
+  return { ok: true, value: out.value };
 }
 
 // 이 계정의 씬 버킷 '키'가 존재하는가 — DB 복구 허용 판정(코덱스 P1: 빈 배열 버킷은 정상 삭제의
@@ -307,31 +329,99 @@ export function hasSceneBucket(projectId: string | null): boolean {
 }
 
 export function listScenes(projectId: string | null): Scene[] {
-  const all = loadAll();
-  if (migrateLegacyBucket(all, projectId)) saveAll(all); // 옛 씬을 현재 계정으로 1회 이관
+  const key = keyOf(projectId); // ★읽는 지금의 계정으로 고정 — 뒤따르는 확정이 다른 계정에 귀속되지 않게
+  const all = loadAll(); // 캐시의 복사본 — 아래 이관은 이 복사본에서만 일어난다
+  // 옛 씬을 현재 계정으로 1회 이관. ★읽기는 저장을 **기다리지 않는다** — 반환값은 이미 이관된
+  //  복사본이라 호출부는 바로 맞는 목록을 받고, 확정은 뒤에서 끝난다. 확정 전에 또 읽어도 같은
+  //  이관을 다시 할 뿐이라(멱등) 어긋나지 않는다. 계정이 바뀌면 버킷 키도 바뀌므로 초기화 단계로
+  //  옮기지 않고 여기 둔다.
+  if (migrateLegacyBucket(all, projectId, key)) {
+    normalizeSceneCache(all); // 캐시에 즉시(확정 전에 계정이 바뀌어도 옛 키를 다시 가져가지 않게)
+    // 영속화는 뒤따른다. ★확정 전에 저장이 실패하고 그 뒤 계정이 바뀌면 다른 계정이 다시 가져갈 수
+    //  있다(창은 좁지만 남아 있다 — Codex). 근본 해결은 계정별 초기화에서 이관을 확정하는 것이고,
+    //  그건 계정 전환 훅이 필요해 다음 조각으로 미룬다.
+    void commit((latest) => ({ write: migrateLegacyBucket(latest, projectId, key), value: undefined }));
+  }
   return all[keyOf(projectId)] || [];
 }
 
 // 반환 = 실제로 persist 됐는지. ★DB 미러(복구)는 이 값을 반드시 확인해야 한다 — 저장이 실패했는데
 //  '복구됨'으로 보고하면 다음 sync 가 빈 로컬을 기준으로 서버 백업을 지운다(코덱스 P0).
-export function saveScenes(projectId: string | null, scenes: Scene[]): boolean {
-  const all = loadAll();
-  all[keyOf(projectId)] = scenes;
-  return saveAll(all);
+export async function saveScenes(projectId: string | null, scenes: Scene[]): Promise<boolean> {
+  const key = keyOf(projectId); // ★접수 시점에 고정(큐 대기 중 계정 전환 방지)
+  return (
+    await commit((all) => {
+      all[key] = scenes;
+      return { write: true, value: undefined };
+    })
+  ).ok;
+}
+
+/**
+ * 지금 목록을 받아 새 목록을 만드는 변경.
+ *
+ * ★밖에서 `listScenes()` 로 읽어 계산한 목록을 `saveScenes` 로 통째로 넘기면, 읽은 뒤 저장이 끝나기
+ *  전에 들어온 다른 변경이 그 저장에 덮인다(저장이 비동기가 되며 생긴 창 — 탭 순서 바꾸기·카드 소속
+ *  합치기가 그 모양이었다). 계산을 저장과 **한 임계 구역**에 넣으면 그 틈이 없다.
+ * @param fn null 을 돌려주면 저장하지 않는다(바꿀 것이 없을 때).
+ */
+export async function updateScenesWith(
+  projectId: string | null,
+  fn: (current: Scene[]) => Scene[] | null,
+): Promise<boolean> {
+  const key = keyOf(projectId); // ★접수 시점에 고정(큐 대기 중 계정 전환 방지)
+  return (
+    await commit((all) => {
+      const next = fn(all[key] || []);
+      if (!next) return { write: false, value: undefined };
+      all[key] = next;
+      return { write: true, value: undefined };
+    })
+  ).ok;
+}
+
+/**
+ * DB 백업에서 받은 씬을 합친다 — **같은 id 는 로컬이 이긴다**(로컬이 정답).
+ *
+ * ★합치기를 저장과 한 임계 구역에서 한다. 밖에서 목록을 읽어 concat 한 뒤 통째로 저장하면,
+ *  서버 응답을 기다리는 사이에 만들어진 씬이 그 저장에 덮여 사라진다(저장이 비동기가 되며 생긴 창 —
+ *  시험 "복구 조회 중 만든 씬이 있어도 DB 백업을 합쳐서 가져온다" 가 이것을 잡는다).
+ * @returns added = 실제로 더해진 씬(이미 로컬에 있던 것은 뺀다)
+ */
+export async function mergeScenesFromBackup(
+  projectId: string | null,
+  incoming: Scene[],
+): Promise<{ ok: boolean; added: Scene[] }> {
+  const key = keyOf(projectId); // ★접수 시점에 고정(큐 대기 중 계정 전환 방지)
+  const out = await commit((all) => {
+    const local = all[key] || [];
+    const localIds = new Set(local.map((s) => s.id));
+    const added = incoming.filter((s) => !localIds.has(s.id));
+    if (!added.length) return { write: false, value: added };
+    all[key] = local.concat(added);
+    return { write: true, value: added };
+  });
+  return { ok: out.ok, added: out.value };
 }
 
 // ★저장에 실패하면 null — 종전에는 저장 못 한 씬을 그대로 돌려줘, 호출부가 목록에 없는 씬을
 //  활성 탭으로 골라 빈 화면에 갇혔다(적대 리뷰 r3).
-export function createScene(projectId: string | null, name?: string): Scene | null {
-  const scenes = listScenes(projectId);
-  const scene: Scene = {
-    id: uid(),
-    name: name || `씬 ${scenes.length + 1}`,
-    cards: [],
-    edges: [],
-    created_at: Date.now(),
-  };
-  return saveScenes(projectId, [...scenes, scene]) ? scene : null;
+export async function createScene(projectId: string | null, name?: string): Promise<Scene | null> {
+  const key = keyOf(projectId); // ★접수 시점에 고정(큐 대기 중 계정 전환 방지)
+  const out = await commit((all) => {
+    migrateLegacyBucket(all, projectId, key);
+    const scenes = all[key] || [];
+    const scene: Scene = {
+      id: uid(),
+      name: name || `씬 ${scenes.length + 1}`,
+      cards: [],
+      edges: [],
+      created_at: Date.now(),
+    };
+    all[key] = [...scenes, scene];
+    return { write: true, value: scene };
+  });
+  return out.ok ? out.value : null;
 }
 
 // 씬 쓰기 결과. ★'저장소에 썼다'와 '요청한 대상을 바꿨다'는 다른 실패다(적대 리뷰 r3) —
@@ -347,30 +437,39 @@ export type SceneWriteResult =
 // 씬 편집 1회에 저장소 파싱이 3회로 늘어나므로(loadAll×2 + 재조회) 여기서 한 번만 읽고 넘겨준다.
 // ★반환 목록은 '저장된 내용'이라는 계약이라, 저장 못 한 next 를 넘겨주면 호출부가 그걸 화면에
 //  채택해 사용자는 저장된 줄 알고 새로고침에서 잃는다(적대 리뷰 P1).
-export function updateScene(
+export async function updateScene(
   projectId: string | null,
   sceneId: string,
   patch: Partial<Scene>,
-): SceneWriteResult {
-  const all = loadAll();
-  const migrated = migrateLegacyBucket(all, projectId); // 옛 씬을 현재 계정으로 1회 이관(아래 saveAll 로 확정)
-  const current = all[keyOf(projectId)] || [];
-  const found = current.some((s) => s.id === sceneId);
-  // ★대상도 없고 이관할 것도 없으면 쓰지 않는다 — 쓰면 없던 계정 버킷이 '빈 배열'로 생기고,
-  //  DB 자동복구는 '버킷 키 자체가 없을 때'만 돌므로(hasSceneBucket) 복구 경로가 막힌다(코덱스 리뷰).
-  if (!found && !migrated) return { ok: false, reason: "missing" };
-  const next = current.map((s) => (s.id === sceneId ? { ...s, ...patch } : s));
-  all[keyOf(projectId)] = next;
-  if (!saveAll(all)) return { ok: false, reason: "storage" };
-  return found ? { ok: true, scenes: next } : { ok: false, reason: "missing" };
+): Promise<SceneWriteResult> {
+  const key = keyOf(projectId); // ★접수 시점에 고정(큐 대기 중 계정 전환 방지)
+  const out = await commit((all) => {
+    const migrated = migrateLegacyBucket(all, projectId, key); // 옛 씬을 현재 계정으로 1회 이관
+    const current = all[key] || [];
+    const found = current.some((s) => s.id === sceneId);
+    // ★대상도 없고 이관할 것도 없으면 쓰지 않는다 — 쓰면 없던 계정 버킷이 '빈 배열'로 생기고,
+    //  DB 자동복구는 '버킷 키 자체가 없을 때'만 돌므로(hasSceneBucket) 복구 경로가 막힌다(코덱스 리뷰).
+    if (!found && !migrated) return { write: false, value: { found, next: current } };
+    const next = current.map((s) => (s.id === sceneId ? { ...s, ...patch } : s));
+    all[key] = next;
+    return { write: true, value: { found, next } };
+  });
+  if (!out.value.found) return { ok: false, reason: "missing" };
+  if (!out.ok) return { ok: false, reason: "storage" };
+  return { ok: true, scenes: out.value.next };
 }
 
 // 반환 = 실제로 persist 됐는지. 실패면 씬이 그대로 남아 있다.
-export function deleteScene(projectId: string | null, sceneId: string): boolean {
-  return saveScenes(
-    projectId,
-    listScenes(projectId).filter((s) => s.id !== sceneId),
-  );
+// ★목록을 밖에서 읽어 넘기지 않는다 — 읽은 뒤 저장까지의 틈에 다른 변경이 들어오면 그것을 지운다.
+export async function deleteScene(projectId: string | null, sceneId: string): Promise<boolean> {
+  const key = keyOf(projectId); // ★접수 시점에 고정(큐 대기 중 계정 전환 방지)
+  return (
+    await commit((all) => {
+      const current = all[key] || [];
+      all[key] = current.filter((s) => s.id !== sceneId);
+      return { write: true, value: undefined };
+    })
+  ).ok;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -574,28 +673,34 @@ export function parseSceneImport(text: string): SceneSnapshot {
 }
 
 // 스냅샷을 '새 씬'으로 저장(새 id/created_at). 이름은 그대로(탭에서 구분).
-export function importScene(projectId: string | null, snap: SceneSnapshot): Scene {
-  const scenes = listScenes(projectId);
-  const scene: Scene = {
-    id: uid(),
-    name: snap.name || `씬 ${scenes.length + 1}`,
-    cards: snap.cards,
-    edges: snap.edges,
-    groups: snap.groups,
-    camera: snap.camera,
-    // 파일의 공간은 찾기 힌트로만 — 탭의 과금 공간(workspace)으로 넣지 않는다(2026-09-29).
-    refWorkspaceHint: snap.workspace,
-    created_at: Date.now(),
-  };
+export async function importScene(projectId: string | null, snap: SceneSnapshot): Promise<Scene> {
   // 저장이 실제로 persist 됐는지 확인 — 실패한 채 반환하면 활성씬 id 만 새로 잡히고 목록엔 없어
   // '빈 화면'이 된다. ★판정은 쓰기 관문의 반환값으로 한다(종전엔 저장 뒤 목록을 다시 읽어 대조했다 —
   // 저장소를 한 번 더 파싱할 뿐 아니라, 실패 원인을 '용량'으로 단정했다. 접근 차단도 같은 결과다).
-  if (!saveScenes(projectId, [...scenes, scene])) {
+  const key = keyOf(projectId); // ★접수 시점에 고정(큐 대기 중 계정 전환 방지)
+  const out = await commit((all) => {
+    migrateLegacyBucket(all, projectId, key);
+    const scenes = all[key] || [];
+    const scene: Scene = {
+      id: uid(),
+      name: snap.name || `씬 ${scenes.length + 1}`,
+      cards: snap.cards,
+      edges: snap.edges,
+      groups: snap.groups,
+      camera: snap.camera,
+      // 파일의 공간은 찾기 힌트로만 — 탭의 과금 공간(workspace)으로 넣지 않는다(2026-09-29).
+      refWorkspaceHint: snap.workspace,
+      created_at: Date.now(),
+    };
+    all[key] = [...scenes, scene];
+    return { write: true, value: scene };
+  });
+  if (!out.ok) {
     throw new Error(
       "씬을 저장하지 못했습니다 — 저장 공간이 꽉 찼을 수 있습니다. 안 쓰는 씬을 지우고 다시 시도하세요.",
     );
   }
-  return scene;
+  return out.value;
 }
 
 export function getActiveSceneId(projectId: string | null): string | null {

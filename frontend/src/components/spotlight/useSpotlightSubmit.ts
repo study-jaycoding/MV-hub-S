@@ -44,10 +44,12 @@ interface UseSpotlightSubmitOptions {
   modelBlockedMessage?: string | null;
   onCreated: (created?: Generation[], dragParentId?: string | null) => void;
   canvasTarget?: CanvasGenerationTarget | null;
+  // ★비동기다 — 생성 요청보다 '어느 카드 것인지' 표식이 **먼저 저장돼야** 한다. 저장이 IndexedDB 로
+  //  옮겨가며 기다리는 일이 됐으므로, 호출부는 반드시 await 한 뒤 제출한다.
   prepareCanvasGeneration?: (
     target: CanvasGenerationTarget,
     count: number,
-  ) => CanvasGenerationLink[];
+  ) => Promise<CanvasGenerationLink[]>;
   settleCanvasGeneration?: (link: CanvasGenerationLink, generation: Generation) => void;
   discardCanvasGeneration?: (link: CanvasGenerationLink) => void;
   onCanvasBatchCreated?: (created: Generation[]) => void;
@@ -187,7 +189,7 @@ export function useSpotlightSubmit({
         canvasTargetOverride !== undefined ? canvasTargetOverride : canvasTarget;
       // 요청보다 먼저 generation id와 목적 카드를 저장한다. 이 다음 순간 창이 닫혀도 재시작 복구가 가능하다.
       const canvasLinks = effectiveCanvasTarget && prepareCanvasGeneration
-        ? prepareCanvasGeneration(effectiveCanvasTarget, batch)
+        ? await prepareCanvasGeneration(effectiveCanvasTarget, batch)
         : [];
       if (effectiveCanvasTarget && canvasLinks.length !== batch) {
         throw new Error("캔버스 생성 위치를 저장하지 못했습니다. 씬을 다시 선택한 뒤 시도하세요.");

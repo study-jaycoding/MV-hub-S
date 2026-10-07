@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetRelinkSessionForTest } from "../src/lib/sceneAssetRelink";
 import { saveScenes, type Scene } from "../src/lib/scenes";
+import { failSceneStoreWritesForTest } from "../src/lib/sceneStore";
 import { STORAGE_KEYS } from "../src/lib/storageKeys";
 import { useRelinkOnWorkspaceChange, useSceneCoordination } from "../src/lib/useSceneCoordination";
 
@@ -87,11 +88,8 @@ describe("탭 워크스페이스 지정·해제", () => {
     await settle();
     expect(locate).toHaveBeenCalledTimes(1);
 
-    const realSetItem = Storage.prototype.setItem;
-    const quota = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key: string, value: string) {
-      if (key === STORAGE_KEYS.scenes) throw new Error("quota");
-      return realSetItem.call(this, key, value);
-    });
+    failSceneStoreWritesForTest(true); // 씬 저장만 실패(씬은 IndexedDB 라 localStorage 가로채기로는 못 만든다)
+    const quota = { mockRestore: () => failSceneStoreWritesForTest(false) };
     await act(async () => coordination!.setSceneWorkspace("s1", { id: "W1", name: "W1" })); // 저장 실패 — 옛 값 W0 그대로
     await settle();
     quota.mockRestore();

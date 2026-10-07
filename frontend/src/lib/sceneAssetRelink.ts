@@ -9,7 +9,13 @@
 // 찾는다 — 이름만 같은 것으로는 잇지 않는다(2026-09-29). 여기서는 받은 것만 반영한다 — 묻지 않는다.
 import { api } from "../api";
 import { getAccountNamespace } from "./accountScope";
-import { listScenes, saveScenes, type Scene, type SceneCard, type SceneRef } from "./scenes";
+import {
+  listScenes,
+  updateScenesWith,
+  type Scene,
+  type SceneCard,
+  type SceneRef,
+} from "./scenes";
 import { loadSceneHistory, sameSnap, saveSceneHistory, type SceneSnap } from "./sceneUndoStore";
 import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
@@ -478,7 +484,9 @@ function newScanId(): string {
  *  구간**에서 불린다(그 사이 사용자 입력이 끼지 않는다). */
 export interface RelinkHooks {
   /** 열린 캔버스(활성 씬)의 **메모리 카드**에 답을 바로 입히고 바꾼 참조 수를 준다. 캔버스가 안 열렸으면 null. */
-  applyToBoard?: (found: Map<string, RelinkTarget>) => number | null;
+  // 캔버스가 자기 메모리의 활성 씬에 먼저 입히고 저장한다. ★저장이 비동기가 되면서 이 훅도
+  //  Promise 를 돌려줄 수 있다 — 기다리지 않으면 '저장됐나'를 못 보고 다음 단계로 넘어간다.
+  applyToBoard?: (found: Map<string, RelinkTarget>) => number | null | Promise<number | null>;
   /** 나머지 씬을 저장한 직후 — 화면 목록을 이 값으로 맞춘다. boardApplied 면 활성 씬은 캔버스가 준 값을 지킨다. */
   onSaved?: (next: Scene[], boardApplied: boolean) => void;
 }
@@ -592,19 +600,19 @@ function rememberFixed(
 
 /** 열리는 참조에 서버가 알려 준 대장 번호(open_ids)를 적는다 — 토큰은 그대로, 번호만. 저장한 뒤에만 번호 열쇠로 '열림'을
  *  기억한다(번호가 붙으면 열쇠가 바뀌어 다음 시작에 다시 묻지 않게). 바꾼 수는 '원본으로 이음' 알림에 넣지 않는다. */
-function attachOpenIds(
+async function attachOpenIds(
   ws: string,
   openIds: Record<string, string> | undefined,
   fingerprints: Record<string, RefFingerprint>,
   hooks: RelinkHooks,
-): void {
+): Promise<void> {
   const found = new Map<string, RelinkTarget>();
   for (const [token, id] of Object.entries(openIds ?? {})) {
     const head = token.split("|", 1)[0];
     if (!id || !head.startsWith("asset:")) continue;
     found.set(relinkKey(ws, token), { project: head.slice("asset:".length), path: token.slice(head.length + 1), registry_asset_id: id });
   }
-  if (!found.size || !applyFound(found, hooks).saved) return;
+  if (!found.size || !(await applyFound(found, hooks)).saved) return;
   const store = loadVerdicts();
   const now = Date.now();
   for (const [token, id] of Object.entries(openIds ?? {})) store[verdictKey(ws, token, fingerprints[token], id)] = ["open", now];
@@ -615,14 +623,27 @@ function attachOpenIds(
  *  그 사이 친 글·옮긴 카드가 남게). ② 나머지 씬은 저장 직전에 다시 읽어 고친다(다른 탭 변경을 덮지 않게).
  *  같은 (공간, 토큰)을 쓰는 씬은 모두 받는다 — 판정도 씬이 아니라 (공간, 토큰, 지문)으로 기억하기 때문이다.
  *  바꾼 수와 저장 성공 여부를 준다(저장 실패면 fixed 를 기억하지 않는다). */
-function applyFound(found: Map<string, RelinkTarget>, hooks: RelinkHooks): { total: number; saved: boolean } {
+async function applyFound(
+  found: Map<string, RelinkTarget>,
+  hooks: RelinkHooks,
+): Promise<{ total: number; saved: boolean }> {
   if (!found.size) return { total: 0, saved: true };
-  const onBoard = hooks.applyToBoard?.(found) ?? null;
+  const onBoard = (await hooks.applyToBoard?.(found)) ?? null;
   let total = onBoard ?? 0;
-  const before = listScenes(null);
-  const { scenes: next, changed } = applyRelink(before, found);
-  if (!changed) return { total, saved: true };
-  if (!saveScenes(null, next)) return { total, saved: false };
+  // ★갈아끼우기 계산을 저장과 **한 임계 구역**에서 한다. 밖에서 읽어 통째로 저장하면, 그 사이에
+  //  접수된 씬 생성·편집이 이 저장에 지워진다(Codex 재현).
+  let before: Scene[] = [];
+  let next: Scene[] = [];
+  let changed = 0;
+  const saved = await updateScenesWith(null, (current: Scene[]) => {
+    before = current;
+    const applied = applyRelink(current, found);
+    next = applied.scenes;
+    changed = applied.changed;
+    return applied.changed ? applied.scenes : null;
+  });
+  if (!changed) return { total, saved: true }; // 바꿀 것이 없었다
+  if (!saved) return { total, saved: false };
   // 저장한 씬의 실행 취소 기록에도 입힌다 — 열린 캔버스만 기록을 고쳤고(propagateAssetRelinkToHistory), 나머지 씬은 돌아갈 때
   //  기록의 마지막 상태가 씬과 달라 Ctrl+Z 가 지워졌다. 기록이 복구 전 씬과 이어질 때만(어긋난 낡은 기록은 종전대로 버려지게),
   //  전이 메타는 그대로(2026-10-03 점검 CXF-5).
@@ -675,10 +696,10 @@ async function askGroups(
       if (getAccountNamespace() !== ns) throw new Error("account changed while locating");
       noteReply(ws, askWs, batch, group.fingerprints, group.registryIds, reply, opts.counts);
       const found = new Map(reply.fixed.map((item) => [relinkKey(ws, item.token), item] as const));
-      const applied = applyFound(found, opts.hooks);
+      const applied = await applyFound(found, opts.hooks);
       opts.done.total += applied.total;
       if (applied.saved) rememberFixed(ws, askWs, reply.fixed, group.fingerprints, group.registryIds);
-      attachOpenIds(ws, reply.open_ids, group.fingerprints, opts.hooks);
+      await attachOpenIds(ws, reply.open_ids, group.fingerprints, opts.hooks);
     }
   }
 }

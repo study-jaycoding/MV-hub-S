@@ -477,10 +477,10 @@ export default function App() {
       }),
     [setFacets],
   );
-  const prepareCanvasGenerationBatch = useCallback((
+  const prepareCanvasGenerationBatch = useCallback(async (
     sceneId: string,
     cardIds: string[],
-  ): CanvasGenerationLink[] => {
+  ): Promise<CanvasGenerationLink[]> => {
     const links = cardIds.flatMap((cardId) =>
       createCanvasGenerationLinks({ sceneId, cardId }, 1),
     );
@@ -493,14 +493,14 @@ export default function App() {
     // ★저장이 실패하면(저장소 거부·대상 씬 없음) 링크를 돌려주지 않는다 — 표식이 안 남은 채 생성 요청만
     //  나가면, 그 사이 앱이 닫혔을 때 결과가 어느 카드 것인지 복구할 수 없다(적대 리뷰 r2 P1).
     //  호출부는 links 수가 batch 와 다르면 제출을 멈추고 사용자에게 알린다(useSpotlightSubmit).
-    if (!patchSceneById(sceneId, { cards: prepared.cards })) return [];
+    if (!(await patchSceneById(sceneId, { cards: prepared.cards }))) return [];
     seedPending(links.map((link) => link.generation_id));
     return links;
   }, [flushScenePending, patchSceneById]);
   const prepareCanvasGeneration = useCallback((
     target: CanvasGenerationTarget,
     count: number,
-  ): CanvasGenerationLink[] => prepareCanvasGenerationBatch(
+  ): Promise<CanvasGenerationLink[]> => prepareCanvasGenerationBatch(
     target.sceneId,
     Array.from({ length: Math.max(1, Math.trunc(count) || 1) }, () => target.cardId),
   ), [prepareCanvasGenerationBatch]);
@@ -1313,7 +1313,7 @@ export default function App() {
       flash("재생성 결과를 쌓을 캔버스 카드를 찾지 못했습니다.");
       return;
     }
-    const link = prepareCanvasGenerationBatch(activeScene.id, [target.id])[0];
+    const link = (await prepareCanvasGenerationBatch(activeScene.id, [target.id]))[0];
     if (!link) {
       flash("재생성 위치를 저장하지 못해 제출을 중단했습니다.");
       return;
@@ -1406,7 +1406,7 @@ export default function App() {
       }
     };
 
-    const canvasLinks = prepareCanvasGenerationBatch(
+    const canvasLinks = await prepareCanvasGenerationBatch(
       scene.id,
       jobs.map((job) => job.cardId),
     );

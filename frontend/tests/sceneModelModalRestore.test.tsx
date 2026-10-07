@@ -108,7 +108,7 @@ function click(el: Element) {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   saved = [];
   allowedModels = new Set<string>(); // 빈 목록 = 제한 없음(그룹 정책 계약)
   modelParams.mockReset();

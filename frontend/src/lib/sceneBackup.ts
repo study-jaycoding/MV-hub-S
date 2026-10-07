@@ -22,7 +22,13 @@
 //    이후는 세션 내 lastPushed 문자열 비교로 변경분만.
 import { jsonFetch } from "./http";
 import { getAccountNamespace } from "./accountScope";
-import { hasSceneBucket, listScenes, saveScenes, subscribeScenesPersisted, type Scene } from "./scenes";
+import {
+  hasSceneBucket,
+  listScenes,
+  mergeScenesFromBackup,
+  subscribeScenesPersisted,
+  type Scene,
+} from "./scenes";
 
 const API = "/api/scenes/backup";
 const DEBOUNCE_MS = 2000;
@@ -151,11 +157,10 @@ function ensureInit(scope: string): Promise<InitResult> {
     // 로컬이 이긴다(로컬이 정답). ★종전엔 여기서 복구를 통째로 포기해, 빈 프로필에서 씬 하나만
     //  만들어도 DB 백업을 영영 못 가져왔다(코덱스 P0). 위쪽 '버킷 키 없을 때만' 게이트는 그대로다 —
     //  마지막 씬을 정상 삭제한 빈 배열 버킷은 여전히 복구 대상이 아니다.
-    const local = listScenes(null);
-    const localIds = new Set(local.map((s) => s.id));
-    const added = scenes.filter((s) => !localIds.has(s.id));
+    const merged = await mergeScenesFromBackup(null, scenes);
+    const added = merged.added;
     if (!added.length) return "clean"; // 가져올 게 없다
-    if (!saveScenes(null, local.concat(added))) return "retry"; // 저장 실패 — 복구했다고 보고하면 안 된다
+    if (!merged.ok) return "retry"; // 저장 실패 — 복구했다고 보고하면 안 된다
     for (const s of added) lastPushed.set(s.id, JSON.stringify(s)); // 복구 에코 방지(서버가 이미 아는 것만)
     restoreSubs.forEach((f) => f()); // 백그라운드 복구 포함 — 열린 캔버스가 즉시 목록을 다시 읽게
     return "restored";
@@ -345,13 +350,14 @@ async function runImport(): Promise<number> {
     }
     scenes.push(s);
   }
-  const local = listScenes(null); // ★요청이 오가는 동안 생긴 씬까지 반영해 다시 읽는다
-  const localIds = new Set(local.map((s) => s.id));
-  const added = scenes
-    .filter((s) => !localIds.has(s.id))
-    .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+  // ★요청이 오가는 동안 생긴 씬을 잃지 않게, 합치기를 저장과 한 임계 구역에서 한다.
+  const merged = await mergeScenesFromBackup(
+    null,
+    scenes.slice().sort((a, b) => (a.created_at || 0) - (b.created_at || 0)),
+  );
+  const added = merged.added;
   if (!added.length) return 0;
-  if (!saveScenes(null, local.concat(added))) throw new Error("브라우저에 저장하지 못했습니다");
+  if (!merged.ok) throw new Error("브라우저에 저장하지 못했습니다");
   for (const s of added) lastPushed.set(s.id, JSON.stringify(s)); // 방금 가져온 것 = 서버에 이미 있음
   serverHash = null; // 그사이 다른 프로필이 바꿨을 수 있다 — 메타를 새로 받아 대조
   restoreSubs.forEach((f) => f());
