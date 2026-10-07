@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-17
+updated: 2026-10-07
 status: active
 ---
 
@@ -80,6 +80,9 @@ submitting
 
 - `pending-exists`와 claim 요청 모두에 `submission-stage` 기능과 `agent_id`를 알린다.
 - 레퍼런스와 워크스페이스 준비를 먼저 끝낸다.
+- 조립한 CLI 명령줄이 윈도우 한도(UTF-16 32,766자)를 넘으면 `begin-submission` 전에 일반 실패로 끝낸다.
+  넘긴 채 실행하면 CLI 가 시작도 못 하고 `[WinError 206]` 예외가 나, 과금이 없는데도
+  `recovery_required` 로 묶인다(2026-10-07 — `_WIN_CMDLINE_MAX`).
 - 유료 `generate create` 바로 전에 `begin-submission` 승인을 받는다.
 - 승인 응답이 없으면 CLI를 호출하지 않고 claim을 반환한다.
 - CLI를 호출한 뒤 `job_id`가 없으면 실패·재시도하지 않고 `recovery_required`를 보고한다.
