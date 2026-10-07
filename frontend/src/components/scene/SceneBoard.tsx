@@ -928,22 +928,31 @@ export function SceneBoard({
   //  화면(setCards)·cardsRef 는 즉시 갱신(생성이 최신값을 읽음), 저장(persist)만 디바운스. 밀린 저장은
   //  입력 blur·언마운트·씬 전환(App 이 flushPending 호출) 시 확정 → 유실·스테일 없음.
   const pendingPersistRef = useRef<number | undefined>(undefined);
+  // 아직 저장으로 넘기지 않은 입력이 **처음 생긴 시각**. 계속 치면 400ms 디바운스가 끝없이 밀려 저장이
+  // 한 번도 안 나가는데, 저장이 IndexedDB 로 가면서 창을 닫는 순간의 저장은 끝난다는 보장이 없어졌다
+  // (종전 localStorage 는 그 자리에서 끝났다). 그래서 첫 미저장 입력에서 2초가 지나면 치는 중이어도
+  // 저장을 내보낸다 — 잃을 수 있는 구간을 줄이는 것이지 없애는 것은 아니다.
+  const pendingSinceRef = useRef<number | undefined>(undefined);
   const flushPending = () => {
     if (pendingPersistRef.current !== undefined) {
       clearTimeout(pendingPersistRef.current);
       pendingPersistRef.current = undefined;
     }
+    pendingSinceRef.current = undefined;
     if (!hasUncommittedCardsOrEdges(cardsRef.current, edgesRef.current)) return; // 밀린 편집 없음
     persist(cardsRef.current, edgesRef.current); // 사용자 편집 확정 → undo:true
   };
   const flushPendingRef = useRef(flushPending);
   flushPendingRef.current = flushPending;
   const scheduleInputPersist = () => {
+    const now = Date.now();
+    if (pendingSinceRef.current === undefined) pendingSinceRef.current = now;
     if (pendingPersistRef.current !== undefined) clearTimeout(pendingPersistRef.current);
+    const wait = Math.max(0, Math.min(400, pendingSinceRef.current + 2000 - now));
     pendingPersistRef.current = window.setTimeout(() => {
       pendingPersistRef.current = undefined;
       flushPendingRef.current();
-    }, 400);
+    }, wait);
   };
   // ── 카드 반영 어댑터 — 화면(cardsRef+setCards)은 항상 즉시, 저장은 mode 로 구분. Comfy 실행부가
   //  persist/scheduleInputPersist 를 직접 부르지 않고 이 하나로만 카드를 반영하게 해 결합을 좁힌다(P4 준비).
@@ -1326,9 +1335,16 @@ export function SceneBoard({
   //  + 새로고침/창닫기(pagehide) 에도 확정 — 디바운스 대기 중 편집 유실 방지.
   useEffect(() => {
     const onHide = () => flushPendingRef.current();
+    // 창이 가려질 때(다른 탭·최소화·닫기 시작)도 확정한다. pagehide 는 닫히는 바로 그 순간이라, 저장이
+    // 비동기(IndexedDB)가 된 뒤로는 거기서 시작한 쓰기가 끝난다는 보장이 없다 — 한 박자 먼저 내보낸다.
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flushPendingRef.current();
+    };
     window.addEventListener("pagehide", onHide);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.removeEventListener("pagehide", onHide);
+      document.removeEventListener("visibilitychange", onVisibility);
       flushPendingRef.current(); // 밀린 저장 확정(스택에 반영) 후
       persistSceneHistory(sceneIdRef.current); // 현재 씬 undo 히스토리를 store 에 보관 — 탭 복귀 시 Ctrl+Z 유지
     };

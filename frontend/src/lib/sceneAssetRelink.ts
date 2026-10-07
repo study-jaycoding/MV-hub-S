@@ -10,6 +10,8 @@
 import { api } from "../api";
 import { getAccountNamespace } from "./accountScope";
 import {
+  confirmSceneWrite,
+  listPersistedScenes,
   listScenes,
   updateScenesWith,
   type Scene,
@@ -484,10 +486,9 @@ function newScanId(): string {
  *  구간**에서 불린다(그 사이 사용자 입력이 끼지 않는다). */
 export interface RelinkHooks {
   /** 열린 캔버스(활성 씬)의 **메모리 카드**에 답을 바로 입히고 바꾼 참조 수를 준다. 캔버스가 안 열렸으면 null. */
-  // 캔버스가 자기 메모리의 활성 씬에 먼저 입히고 저장한다. ★저장이 비동기가 되면서 이 훅도
-  //  Promise 를 돌려줄 수 있다 — 기다리지 않으면 '저장됐나'를 못 보고 다음 단계로 넘어간다.
-  applyToBoard?: (found: Map<string, RelinkTarget>) => number | null | Promise<number | null>;
-  /** 나머지 씬을 저장한 직후 — 화면 목록을 이 값으로 맞춘다. boardApplied 면 활성 씬은 캔버스가 준 값을 지킨다. */
+  applyToBoard?: (found: Map<string, RelinkTarget>) => number | null;
+  /** 나머지 씬에 입힌 직후(화면 값에 반영됨 — 저장소 확정은 뒤따른다) — 화면 목록을 이 값으로 맞춘다.
+   *  boardApplied 면 활성 씬은 캔버스가 준 값을 지킨다. */
   onSaved?: (next: Scene[], boardApplied: boolean) => void;
 }
 
@@ -622,44 +623,58 @@ async function attachOpenIds(
 /** 찾은 것을 화면·저장소에 입힌다. ① 열린 캔버스는 자기 메모리 카드에 참조만 바꿔 끼운다(저장본으로 갈아끼우지 않는다 —
  *  그 사이 친 글·옮긴 카드가 남게). ② 나머지 씬은 저장 직전에 다시 읽어 고친다(다른 탭 변경을 덮지 않게).
  *  같은 (공간, 토큰)을 쓰는 씬은 모두 받는다 — 판정도 씬이 아니라 (공간, 토큰, 지문)으로 기억하기 때문이다.
- *  바꾼 수와 저장 성공 여부를 준다(저장 실패면 fixed 를 기억하지 않는다). */
+ *  바꾼 수(화면 값 기준)와 저장소 확정 여부를 준다(확정 실패면 fixed 를 기억하지 않는다). */
 async function applyFound(
   found: Map<string, RelinkTarget>,
   hooks: RelinkHooks,
 ): Promise<{ total: number; saved: boolean }> {
   if (!found.size) return { total: 0, saved: true };
-  const onBoard = (await hooks.applyToBoard?.(found)) ?? null;
-  let total = onBoard ?? 0;
-  // ★갈아끼우기 계산을 저장과 **한 임계 구역**에서 한다. 밖에서 읽어 통째로 저장하면, 그 사이에
-  //  접수된 씬 생성·편집이 이 저장에 지워진다(Codex 재현).
+  // 열린 캔버스가 자기 메모리에 먼저 입히고(동기), 나머지 씬은 저장본에 입힌다. 화면 값에는 그 틱에
+  // 반영되지만, '원본으로 이었다'는 판정은 **저장소에 확정된 뒤에만** 기억해야 한다 — 확정 못 한 채
+  // 기억하면, 확정 전에 창이 닫혔을 때 옛 참조가 남은 채로 다시 묻지 않아 영영 안 이어진다. 그래서
+  // 화면은 바로 맞추고, 반환(saved)만 이 묶음의 확정을 기다린다.
+  let onBoard: number | null = null;
   let before: Scene[] = [];
   let next: Scene[] = [];
   let changed = 0;
-  const saved = await updateScenesWith(null, (current: Scene[]) => {
-    before = current;
-    const applied = applyRelink(current, found);
-    next = applied.scenes;
-    changed = applied.changed;
-    return applied.changed ? applied.scenes : null;
+  const { value: applied, confirmed } = confirmSceneWrite(() => {
+    onBoard = hooks.applyToBoard?.(found) ?? null;
+    before = listScenes(null);
+    const result = applyRelink(before, found);
+    next = result.scenes;
+    changed = result.changed;
+    if (!changed) return true;
+    // 실제 쓰기는 연산으로 넘긴다 — 저장소 내용 위에서 다시 계산되므로 다른 창이 그사이 한 변경을
+    // 덮지 않는다(연산은 순수: 바깥에 적지 않는다. found 는 답을 받은 뒤 바뀌지 않는다).
+    return updateScenesWith(null, (current) => {
+      const again = applyRelink(current, found);
+      return again.changed ? again.scenes : null;
+    });
   });
-  if (!changed) return { total, saved: true }; // 바꿀 것이 없었다
-  if (!saved) return { total, saved: false };
-  // 저장한 씬의 실행 취소 기록에도 입힌다 — 열린 캔버스만 기록을 고쳤고(propagateAssetRelinkToHistory), 나머지 씬은 돌아갈 때
-  //  기록의 마지막 상태가 씬과 달라 Ctrl+Z 가 지워졌다. 기록이 복구 전 씬과 이어질 때만(어긋난 낡은 기록은 종전대로 버려지게),
-  //  전이 메타는 그대로(2026-10-03 점검 CXF-5).
-  before.forEach((scene, i) => {
-    const history = next[i] !== scene ? loadSceneHistory(scene.id) : undefined;
-    if (!history || !sameSnap(history.lastCommit, { cards: scene.cards, edges: scene.edges, groups: scene.groups || [] })) return;
-    const ws = sceneRefWorkspaceId(scene);
-    const patch = (snap: SceneSnap): SceneSnap => {
-      const relinked = relinkCards(snap.cards, ws, found);
-      return relinked.changed ? { ...snap, cards: relinked.cards } : snap;
-    };
-    saveSceneHistory(scene.id, { undo: history.undo.map(patch), redo: history.redo.map(patch), lastCommit: patch(history.lastCommit) });
-  });
-  hooks.onSaved?.(next, onBoard !== null);
-  total += changed;
-  return { total, saved: true };
+  const total = (onBoard ?? 0) + (applied ? changed : 0);
+  if (!applied) return { total, saved: false };
+  if (changed) {
+    // 화면 값은 이미 바뀌었다 — 확정을 기다리지 않고 **같은 동기 구간에서** 실행 취소 기록과 화면 목록을 맞춘다.
+    //  확정 뒤로 미루면 그사이(확정이 실패하면 계속) 화면 목록이 저장소의 화면 값과 어긋난다.
+    // 실행 취소 기록 — 열린 캔버스만 기록을 고쳤고(propagateAssetRelinkToHistory), 나머지 씬은 돌아갈 때 기록의 마지막 상태가
+    //  씬과 달라 Ctrl+Z 가 지워졌다. 기록이 복구 전 씬과 이어질 때만(어긋난 낡은 기록은 종전대로 버려지게),
+    //  전이 메타는 그대로(2026-10-03 점검 CXF-5).
+    before.forEach((scene, i) => {
+      const history = next[i] !== scene ? loadSceneHistory(scene.id) : undefined;
+      if (!history || !sameSnap(history.lastCommit, { cards: scene.cards, edges: scene.edges, groups: scene.groups || [] })) return;
+      const ws = sceneRefWorkspaceId(scene);
+      const patch = (snap: SceneSnap): SceneSnap => {
+        const relinked = relinkCards(snap.cards, ws, found);
+        return relinked.changed ? { ...snap, cards: relinked.cards } : snap;
+      };
+      saveSceneHistory(scene.id, { undo: history.undo.map(patch), redo: history.redo.map(patch), lastCommit: patch(history.lastCommit) });
+    });
+    hooks.onSaved?.(next, onBoard !== null);
+  }
+  // 확정 여부는 **확정본에 실제로 들어갔는지**까지 본다. 이 묶음에 연산이 없었어도(화면 값은 앞선 시도가
+  //  이미 바꿔 놓았다) 그 앞선 연산이 아직 확정 전일 수 있다 — 그때 기억하면 위와 같은 구멍이 열린다.
+  const saved = (await confirmed) && !applyRelink(listPersistedScenes(null), found).changed;
+  return { total, saved };
 }
 
 /** 묶음을 200개씩 물어, 답마다 곧바로 판정을 기억하고 찾은 것을 입힌다 — 중간에 실패·중단해도 이미 받은 답은 남는다

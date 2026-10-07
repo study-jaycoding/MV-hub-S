@@ -54,6 +54,23 @@ function sceneText(scene: Scene): string {
   return stableText(scene);
 }
 
+/** 두 씬의 내용이 같은가 — 키 순서·undefined 필드에 흔들리지 않는다. */
+export const sameSceneContent = (a: Scene, b: Scene): boolean => sceneText(a) === sceneText(b);
+
+/**
+ * 씬 내용의 짧은 지문(FNV-1a) — id·이름·사본 표식은 빼고 본다. '이 사본을 만든 뒤 손댔는가'를 내용 전체를
+ * 한 벌 더 들고 있지 않고 판정하려고 쓴다(scenes.recoverSceneConflicts).
+ */
+export function sceneBodySum(scene: Scene): string {
+  const text = stableText({ ...scene, id: "", name: "", recoveredFrom: undefined });
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${text.length}:${(hash >>> 0).toString(36)}`;
+}
+
 type SceneIndex = Map<string, Map<string, { scene: Scene; text: string }>>;
 
 function indexOf(all: ScenesByProject | null | undefined): SceneIndex {
@@ -151,11 +168,14 @@ export function planAbsorption(
       conflicts.push({ bucket, sceneId: id, mine, theirs: sceneAt(l, bucket, id) });
     }
 
-    // 버킷 자체가 어느 쪽에도 안 남았으면 키를 만들지 않는다 — '빈 배열 버킷'과 '버킷 없음'은
-    // DB 자동복구 판정(hasSceneBucket)에서 뜻이 다르다.
+    // '빈 배열 버킷'과 '버킷 없음'은 DB 자동복구 판정에서 뜻이 다르다 — 버킷 키도 씬과 같은 규칙으로
+    // 다룬다: 새 저장소에 있으면 유지하고, 옛 쪽이 **기준 이후에 새로 만든** 버킷만 따라 만든다.
+    // ★옛 쪽에 예전부터 있던 버킷이라는 이유로 만들면 안 된다. IndexedDB 가 사라져 빈 상태로 연 직후가
+    //  바로 그 모양인데(N 은 비었고 B=L 은 옛 내용), 거기서 빈 버킷이 생기면 '버킷 있음'으로 읽혀
+    //  DB 백업 복구가 막힌다(시험에서 재현).
     const list = order.filter((id) => kept.has(id)).map((id) => kept.get(id)!);
-    const bucketExisted = n.has(bucket) || l.has(bucket);
-    if (list.length || bucketExisted) next[bucket] = list;
+    const keepBucket = n.has(bucket) || (l.has(bucket) && !b.has(bucket));
+    if (list.length || keepBucket) next[bucket] = list;
   }
 
   const changed = adopted > 0 || removed > 0 || JSON.stringify(next) !== JSON.stringify(current);

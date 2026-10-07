@@ -41,7 +41,10 @@ async function boot() {
   vi.resetModules(); // 모듈 상태(scope·lastPushed·타이머 플래그) 초기화
   const scenes = await import("../src/lib/scenes");
   const backup = await import("../src/lib/sceneBackup");
-  return { scenes, backup };
+  // 쓰기는 화면 값에 먼저 반영되고 저장소 확정은 뒤따른다. 복구 판정·미러는 **확정본**을 보므로,
+  // "이미 저장돼 있던 상태"를 만들려면 확정까지 기다린다(settle).
+  const store = await import("../src/lib/sceneStore");
+  return { scenes, backup, settle: store.settleSceneStoreForTest };
 }
 
 function sceneJson(id: string, name = "씬") {
@@ -109,8 +112,9 @@ describe("sceneBackup (DB 미러·복구)", () => {
 
   it("빈 배열 버킷(정상 삭제 결과)은 복구하지 않는다", async () => {
     getFull = () => Promise.resolve({ items: [{ id: "a", data: sceneJson("a") }] });
-    const { scenes, backup } = await boot();
-    await scenes.saveScenes(null, []); // 버킷 키는 존재(내용만 빈 배열)
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, []); // 버킷 키는 존재(내용만 빈 배열)
+    await settle();
     const restored = await backup.initSceneBackup();
     expect(restored).toBe(false);
     expect(scenes.listScenes(null)).toEqual([]);
@@ -221,7 +225,7 @@ describe("sceneBackup (DB 미러·복구)", () => {
         ],
       });
     const { scenes, backup } = await boot();
-    await scenes.saveScenes(null, [{ ...JSON.parse(sceneJson("mine", "내가 지금 쓰는 이름")) }]);
+    scenes.saveScenes(null, [{ ...JSON.parse(sceneJson("mine", "내가 지금 쓰는 이름")) }]);
     expect(await backup.countBackupOnlyScenes()).toBe(1); // 'other' 하나만 가져올 게 있다
     expect(await backup.importFromBackup()).toBe(1);
     const got = scenes.listScenes(null);
@@ -240,14 +244,15 @@ describe("sceneBackup (DB 미러·복구)", () => {
       new Promise((res) => {
         release = () => res({ items: [{ id: "other", data: sceneJson("other") }] });
       });
-    const { scenes, backup } = await boot();
-    await scenes.saveScenes(null, [JSON.parse(sceneJson("mine"))]); // 버킷 있음 → 자동 복구는 'clean'
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("mine"))]); // 버킷 있음 → 자동 복구는 'clean'
+    await settle();
     await backup.initSceneBackup();
     await vi.advanceTimersByTimeAsync(2500); // 'mine' 업로드 — 'other' 는 안 지운다(본 적 없음)
     const before = calls.length;
 
     const job = backup.importFromBackup(); // 응답을 붙잡아 둔다
-    await scenes.saveScenes(null, [JSON.parse(sceneJson("mine", "가져오는 중 편집"))]); // 디바운스 예약
+    scenes.saveScenes(null, [JSON.parse(sceneJson("mine", "가져오는 중 편집"))]); // 디바운스 예약
     await vi.advanceTimersByTimeAsync(5000); // 그 타이머가 발화해도
     expect(calls.length).toBe(before + 1); // ★가져오기 GET 하나뿐 — sync 는 한 번도 못 들어왔다
 

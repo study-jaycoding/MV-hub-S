@@ -34,6 +34,7 @@ import {
   ReleaseUpdateSettingsSection,
   ResolveScriptSettingsSection,
 } from "./settings/SettingsSections";
+import { CanvasArchiveSection } from "./settings/CanvasArchiveSection";
 import { ComfyConnectionSection } from "./settings/ComfyConnectionSection";
 import { ComfyUnresolvedRunsSection } from "./settings/ComfyUnresolvedRunsSection";
 import { SettingsDescription } from "./settings/SettingsDescription";
@@ -577,6 +578,8 @@ export function SettingsPanel({
               </button>
               <SettingsDescription summary={t("현재 단축키를 확인하고 원하는 키로 변경합니다.")} />
             </section>
+
+            <CanvasArchiveSection />
 
             <MetadataContinuitySection
               dbBusy={dbBusy}

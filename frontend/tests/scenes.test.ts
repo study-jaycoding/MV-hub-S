@@ -6,6 +6,7 @@ import {
   sceneRefFingerprint,
   settleComfyRunning,
   cardBatch,
+  adoptLegacyBucket,
   listScenes,
   saveScenes,
   getActiveSceneId,
@@ -17,7 +18,7 @@ import {
   type Scene,
 } from "../src/lib/scenes";
 import { saveJSON, saveString } from "../src/lib/storage";
-import { writeScenesStore } from "../src/lib/sceneStore";
+import { settleSceneStoreForTest, writeScenesStore } from "../src/lib/sceneStore";
 import { STORAGE_KEYS } from "../src/lib/storageKeys";
 import { setAccountScope } from "../src/lib/accountScope";
 
@@ -65,17 +66,24 @@ describe("scenes 계정 네임스페이스", () => {
     await writeScenesStore({ _none: [mkScene("OLD")] }); // 옛 데이터(이관 때 따라온 옛 키)
     saveString(STORAGE_KEYS.activeAccount, "a@x.com");
     setAccountScope("a@x.com");
+    // 귀속은 저장소에 **확정된 뒤에만** 보인다 — 먼저 보여 주면, 다른 계정 창이 그사이 먼저 확정했을 때
+    // 남의 것이 된 씬을 보고 고치게 된다. 목록을 읽는 것이 귀속을 요청한다(부팅은 확정까지 기다린다).
+    expect(listScenes(null)).toEqual([]);
+    expect(await settleSceneStoreForTest()).toBe(true);
     expect(listScenes(null).map((s) => s.id)).toEqual(["OLD"]); // 현재 계정으로 이관돼 보임
 
     // 다른 계정은 이관된 옛 씬을 다시 가져가지 않는다(옛 키 제거됨).
     saveString(STORAGE_KEYS.activeAccount, "b@x.com");
     setAccountScope("b@x.com");
     expect(listScenes(null)).toEqual([]);
+    expect(await settleSceneStoreForTest()).toBe(true);
+    expect(listScenes(null)).toEqual([]);
   });
 
   it("로그인 없음(AUTH off 로컬)은 local 네임스페이스로 유지", async () => {
     await writeScenesStore({ _none: [mkScene("LOCAL")] });
     // activeAccount 없음
+    expect(await adoptLegacyBucket(null)).toBe(true); // 부팅이 하는 일 — 확정까지 기다린다
     expect(listScenes(null).map((s) => s.id)).toEqual(["LOCAL"]); // 로컬도 옛 씬 유지(이관)
     expect(getActiveSceneId(null)).toBeNull();
   });

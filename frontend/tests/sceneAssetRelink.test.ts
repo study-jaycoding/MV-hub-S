@@ -23,9 +23,9 @@ import {
   sceneRefWorkspaceId,
   subscribeRefServerStatus,
 } from "../src/lib/sceneAssetRelink";
-import { listScenes, saveScenes, type Scene } from "../src/lib/scenes";
+import { listPersistedScenes, listScenes, saveScenes, type Scene } from "../src/lib/scenes";
 import { loadSceneHistory, sameSnap, saveSceneHistory } from "../src/lib/sceneUndoStore";
-import { failSceneStoreWritesForTest } from "../src/lib/sceneStore";
+import { failSceneStoreWritesForTest, settleSceneStoreForTest } from "../src/lib/sceneStore";
 import { STORAGE_KEYS } from "../src/lib/storageKeys";
 
 const locate = vi.fn();
@@ -298,17 +298,17 @@ describe("서버에 묻고 갈아끼우기", () => {
       local: [],
     });
     const order: string[] = [];
-    const applyToBoard = vi.fn(async (found: Map<string, unknown>) => {
+    const applyToBoard = vi.fn((found: Map<string, unknown>) => {
       order.push("board");
       expect(found.has(relinkKey("", "asset:imports|a.png"))).toBe(true);
-      // 캔버스는 자기 메모리의 활성 씬을 고쳐 저장한다(여기서는 그것을 흉내 낸다)
+      // 캔버스는 자기 메모리의 활성 씬을 고쳐 저장한다(여기서는 그것을 흉내 낸다) — 동기다
       const saved = listScenes(null).map((s) => (s.id === "active" ? applyRelink([s], found as never).scenes[0] : s));
-      await saveScenes(null, saved);
+      saveScenes(null, saved);
       return 1;
     });
     const onSaved = vi.fn((next: Scene[], boardApplied: boolean) => {
       order.push("saved");
-      // 저장된 값 그대로 — 끝난 뒤 목록을 다시 읽지 않아도 화면이 맞다
+      // 화면 값 그대로 — 끝난 뒤 목록을 다시 읽지 않아도 화면이 맞다
       expect(next).toEqual(listScenes(null));
       expect(boardApplied).toBe(true);
     });
@@ -702,22 +702,37 @@ describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
     expect(locate).toHaveBeenCalledTimes(3); // 다음 시작에 다시 물었다
   });
 
-  it("원본으로 이었다는 판정은 씬 저장이 된 뒤에만 기억한다 — 저장 실패면 다음에 다시 묻는다(Codex)", async () => {
-    await saveScenes(null, [scene([{ file_path: "asset:imports|nospace.png" }])]);
-    failSceneStoreWritesForTest(true); // 씬 저장만 실패(저장소는 IndexedDB — localStorage 가로채기로는 못 만든다)
-    const full = { mockRestore: () => failSceneStoreWritesForTest(false) };
+  // 쓰기는 두 박자다 — 화면 값에는 바로 이어지고, 저장소 확정은 뒤따른다. 판정은 **확정된 뒤에만** 기억한다:
+  //  확정 전에 창이 닫히면 저장소에는 옛 참조가 남는데, 그때 '이었다'고 기억해 두면 다시 묻지 않아 영영 안 이어진다.
+  it("원본으로 이었다는 판정은 저장소에 확정된 뒤에만 기억한다 — 확정 실패면 화면만 잇고 다음에 다시 묻는다(Codex)", async () => {
+    const pathOf = (list: Scene[]) => list[0].cards[0].refs![0].file_path;
+    saveScenes(null, [scene([{ file_path: "asset:imports|nospace.png" }])]);
+    await settleSceneStoreForTest();
+    failSceneStoreWritesForTest(true); // 저장소 확정만 실패(저장소는 IndexedDB — localStorage 가로채기로는 못 만든다)
     locate.mockResolvedValue(answer({ fixed: [{ token: "asset:imports|nospace.png", project: "P", path: "CH/n.png" }] }));
     try {
-      expect(await relinkSceneAssetRefs()).toBe(0);
+      expect(await relinkSceneAssetRefs()).toBe(1); // 화면에는 이었다
     } finally {
-      full.mockRestore();
+      failSceneStoreWritesForTest(false);
     }
-    expect(listScenes(null)[0].cards[0].refs![0].file_path).toBe("asset:imports|nospace.png");
+    expect(pathOf(listScenes(null))).toBe("asset:P|CH/n.png");
+    expect(pathOf(listPersistedScenes(null))).toBe("asset:imports|nospace.png"); // 확정본은 그대로
 
-    resetRelinkSessionForTest();
-    await relinkSceneAssetRefs();
-    expect(locate).toHaveBeenCalledTimes(2); // fixed 를 기억하지 않아 다시 물었다 — 이번엔 저장된다
-    expect(listScenes(null)[0].cards[0].refs![0].file_path).toBe("asset:P|CH/n.png");
+    // 앱을 다시 켠 것처럼(세션 기억 초기화) 돌려, 물었는지를 본다.
+    const asksAfterRestart = async () => {
+      const before = locate.mock.calls.length;
+      resetRelinkSessionForTest();
+      await relinkSceneAssetRefs();
+      return locate.mock.calls.length - before;
+    };
+    // 앞선 연산이 아직 확정 전이면, 다시 돌아도(이번엔 바꿀 것이 없어 실패할 쓰기도 없다) 기억하지 않는다.
+    expect(await asksAfterRestart()).toBeGreaterThan(0); // 판정을 기억하지 않아 다시 물었다
+    expect(await asksAfterRestart()).toBeGreaterThan(0); // 여전히 확정 전 — 또 묻는다
+
+    expect(await settleSceneStoreForTest()).toBe(true); // 저장소가 다시 받으면 그대로 확정된다
+    expect(pathOf(listPersistedScenes(null))).toBe("asset:P|CH/n.png");
+    expect(await asksAfterRestart()).toBeGreaterThan(0); // 확정본에 들어간 것을 보고서야 기억한다
+    expect(await asksAfterRestart()).toBe(0); // 이제 묻지 않는다
   });
 
   it("5,000건을 넘으면 오래 확인한 것부터 버린다", async () => {
@@ -974,22 +989,25 @@ describe("에셋 대장 번호(2026-09-30)", () => {
     expect(locate).toHaveBeenCalledTimes(1); // 번호 열쇠로 '열림'을 기억했다
   });
 
-  it("번호 저장이 실패하면 '열림'도 기억하지 않아 다음에 다시 묻는다(Codex P1)", async () => {
-    await saveScenes(null, [scene([{ file_path: "asset:P|a.png" }])]);
-    failSceneStoreWritesForTest(true); // 씬 저장만 실패(저장소는 IndexedDB — localStorage 가로채기로는 못 만든다)
-    const full = { mockRestore: () => failSceneStoreWritesForTest(false) };
+  it("번호가 저장소에 확정되지 못하면 '열림'도 기억하지 않아 다음에 다시 묻는다(Codex P1)", async () => {
+    const idOf = (list: Scene[]) => list[0].cards[0].refs?.[0].registry_asset_id;
+    saveScenes(null, [scene([{ file_path: "asset:P|a.png" }])]);
+    await settleSceneStoreForTest();
+    failSceneStoreWritesForTest(true); // 저장소 확정만 실패(저장소는 IndexedDB — localStorage 가로채기로는 못 만든다)
     locate.mockResolvedValue(answer({ open: ["asset:P|a.png"], open_ids: { "asset:P|a.png": "r1" } }));
     try {
       await relinkSceneAssetRefs();
     } finally {
-      full.mockRestore();
+      failSceneStoreWritesForTest(false);
     }
-    expect(listScenes(null)[0].cards[0].refs?.[0].registry_asset_id).toBeUndefined();
+    expect(idOf(listScenes(null))).toBe("r1"); // 화면 값에는 번호가 붙었다
+    expect(idOf(listPersistedScenes(null))).toBeUndefined(); // 확정본은 아직
 
     resetRelinkSessionForTest();
     await relinkSceneAssetRefs();
-    expect(locate).toHaveBeenCalledTimes(2); // 다시 물었다 — 이번엔 번호가 저장된다
-    expect(listScenes(null)[0].cards[0].refs?.[0].registry_asset_id).toBe("r1");
+    expect(locate).toHaveBeenCalledTimes(2); // '열림'을 기억하지 않아 다시 물었다
+    expect(await settleSceneStoreForTest()).toBe(true); // 저장소가 다시 받으면 번호가 확정된다
+    expect(idOf(listPersistedScenes(null))).toBe("r1");
   });
 
   it("번호가 붙은 참조는 번호를 함께 보낸다", async () => {

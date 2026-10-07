@@ -23,7 +23,9 @@
 import { jsonFetch } from "./http";
 import { getAccountNamespace } from "./accountScope";
 import {
-  hasSceneBucket,
+  confirmSceneWrite,
+  hasPersistedSceneBucket,
+  listPersistedScenes,
   listScenes,
   mergeScenesFromBackup,
   subscribeScenesPersisted,
@@ -127,7 +129,9 @@ function enterScope(): string {
 function ensureInit(scope: string): Promise<InitResult> {
   if (initPromise) return initPromise;
   const p: Promise<InitResult> = (async () => {
-    if (hasSceneBucket(null)) return "clean";
+    // ★확정본으로 판정한다 — 화면 값의 아직 확정 안 된 버킷 때문에 복구를 건너뛰면, 그 뒤 빈 확정본을
+    //  기준으로 서버 백업을 지우는 길이 열린다(Codex).
+    if (hasPersistedSceneBucket(null)) return "clean";
     let items: { id: string; data: string }[];
     try {
       const r = await jsonFetch<{ items: { id: string; data: string }[] }>(
@@ -157,12 +161,14 @@ function ensureInit(scope: string): Promise<InitResult> {
     // 로컬이 이긴다(로컬이 정답). ★종전엔 여기서 복구를 통째로 포기해, 빈 프로필에서 씬 하나만
     //  만들어도 DB 백업을 영영 못 가져왔다(코덱스 P0). 위쪽 '버킷 키 없을 때만' 게이트는 그대로다 —
     //  마지막 씬을 정상 삭제한 빈 배열 버킷은 여전히 복구 대상이 아니다.
-    const merged = await mergeScenesFromBackup(null, scenes);
+    const { value: merged, confirmed } = confirmSceneWrite(() => mergeScenesFromBackup(null, scenes));
     const added = merged.added;
     if (!added.length) return "clean"; // 가져올 게 없다
-    if (!merged.ok) return "retry"; // 저장 실패 — 복구했다고 보고하면 안 된다
+    restoreSubs.forEach((f) => f()); // 화면 값에는 이미 들어갔다 — 열린 캔버스가 즉시 목록을 다시 읽게
+    // ★저장소에 **확정된 뒤에만** 복구했다고 보고한다 — 확정 못 한 채 '복구됨'이면 다음 sync 가 빈
+    //  확정본을 기준으로 서버 백업을 지운다(코덱스 P0).
+    if (!merged.ok || !(await confirmed)) return "retry";
     for (const s of added) lastPushed.set(s.id, JSON.stringify(s)); // 복구 에코 방지(서버가 이미 아는 것만)
-    restoreSubs.forEach((f) => f()); // 백그라운드 복구 포함 — 열린 캔버스가 즉시 목록을 다시 읽게
     return "restored";
   })();
   initPromise = p;
@@ -211,7 +217,9 @@ async function syncNow(): Promise<void> {
       return;
     }
     if (ns() !== scope) return;
-    const local = listScenes(null);
+    // ★미러는 **확정본만** 올린다. 화면 값에는 아직 확정 안 된 편집이 섞여 있어, 그것을 올리면
+    //  저장되지도 않은 삭제가 서버 백업에 반영된다(Codex).
+    const local = listPersistedScenes(null);
     const upserts: { id: string; name: string; data: string }[] = [];
     for (const s of local) {
       const data = JSON.stringify(s);
@@ -232,7 +240,7 @@ async function syncNow(): Promise<void> {
     //  한 PC 에 프로필이 여럿 생기면서, 프로필을 번갈아 열 때마다 서로의 백업을 지웠다.
     //  · lastPushed = 이 세션에서 올렸거나 복구한 씬. 그게 지금 로컬에 없으면 사용자가 지운 것이다.
     //  · 버킷 키 자체가 없으면(읽기 실패·캐시 소실) 로컬을 '정답'으로 믿을 수 없으므로 삭제하지 않는다.
-    const localTrusted = hasSceneBucket(null);
+    const localTrusted = hasPersistedSceneBucket(null);
     const allDeleted = localTrusted
       ? [...meta.keys()].filter((id) => !localIds.has(id) && lastPushed.has(id))
       : [];
@@ -351,13 +359,18 @@ async function runImport(): Promise<number> {
     scenes.push(s);
   }
   // ★요청이 오가는 동안 생긴 씬을 잃지 않게, 합치기를 저장과 한 임계 구역에서 한다.
-  const merged = await mergeScenesFromBackup(
-    null,
-    scenes.slice().sort((a, b) => (a.created_at || 0) - (b.created_at || 0)),
+  const { value: merged, confirmed } = confirmSceneWrite(() =>
+    mergeScenesFromBackup(
+      null,
+      scenes.slice().sort((a, b) => (a.created_at || 0) - (b.created_at || 0)),
+    ),
   );
   const added = merged.added;
   if (!added.length) return 0;
-  if (!merged.ok) throw new Error("브라우저에 저장하지 못했습니다");
+  if (!merged.ok || !(await confirmed)) {
+    restoreSubs.forEach((f) => f()); // 화면 값에는 들어갔다 — 목록은 맞춰 준다
+    throw new Error("가져온 씬을 저장소에 확정하지 못했습니다 — 잠시 뒤 자동으로 다시 시도합니다");
+  }
   for (const s of added) lastPushed.set(s.id, JSON.stringify(s)); // 방금 가져온 것 = 서버에 이미 있음
   serverHash = null; // 그사이 다른 프로필이 바꿨을 수 있다 — 메타를 새로 받아 대조
   restoreSubs.forEach((f) => f());

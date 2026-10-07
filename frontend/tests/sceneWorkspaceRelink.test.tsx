@@ -78,7 +78,7 @@ describe("탭 워크스페이스 지정·해제", () => {
     expect(locate).toHaveBeenCalledTimes(3); // 다른 씬(s2)은 다시 묻지 않는다
   });
 
-  it("다른 탭이 지운 씬·같은 공간 다시 고름·저장 실패면 묻지 않는다(Codex 코드 리뷰)", async () => {
+  it("다른 탭이 지운 씬·같은 공간 다시 고름이면 묻지 않는다(Codex 코드 리뷰)", async () => {
     saveScenes(null, [{ ...sceneWith("s1", A), workspace: { id: "W0", name: "W0" } } as Scene]);
     await act(async () => root.render(<Coordination />));
     await settle();
@@ -87,13 +87,25 @@ describe("탭 워크스페이스 지정·해제", () => {
     await act(async () => coordination!.setSceneWorkspace("s1", { id: "W0", name: "다시 고름" }));
     await settle();
     expect(locate).toHaveBeenCalledTimes(1);
+  });
 
-    failSceneStoreWritesForTest(true); // 씬 저장만 실패(씬은 IndexedDB 라 localStorage 가로채기로는 못 만든다)
-    const quota = { mockRestore: () => failSceneStoreWritesForTest(false) };
-    await act(async () => coordination!.setSceneWorkspace("s1", { id: "W1", name: "W1" })); // 저장 실패 — 옛 값 W0 그대로
+  // 쓰기는 화면 값에 먼저 반영되고 저장소 확정은 뒤따른다 — 확정이 실패해도 화면은 새 공간(W1)을 보여 주므로
+  // 레퍼런스도 그 공간으로 물어야 한다(안 물으면 화면의 공간과 표시가 어긋난다). 확정은 저장소가 다시 시도한다.
+  it("저장소 확정이 실패해도 화면에 반영된 새 공간으로 묻는다", async () => {
+    saveScenes(null, [{ ...sceneWith("s1", A), workspace: { id: "W0", name: "W0" } } as Scene]);
+    await act(async () => root.render(<Coordination />));
     await settle();
-    quota.mockRestore();
     expect(locate).toHaveBeenCalledTimes(1);
+
+    failSceneStoreWritesForTest(true); // 저장소 확정만 실패(씬은 IndexedDB 라 localStorage 가로채기로는 못 만든다)
+    try {
+      await act(async () => coordination!.setSceneWorkspace("s1", { id: "W1", name: "W1" }));
+      await settle();
+    } finally {
+      failSceneStoreWritesForTest(false);
+    }
+    expect(coordination!.scenes[0].workspace?.id).toBe("W1");
+    expect(locate.mock.calls[1]).toEqual([[A], "W1"]);
   });
 });
 

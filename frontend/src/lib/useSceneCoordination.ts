@@ -8,8 +8,11 @@ import {
   createScene,
   deleteScene,
   getActiveSceneId,
+  hasSceneConflicts,
   importScene,
+  isSceneSaveFailing,
   listScenes,
+  recoverSceneConflicts,
   setActiveSceneId as persistActiveScene,
   subscribeSceneSaveState,
   updateScenesWith,
@@ -98,21 +101,47 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   flashRef.current = flash;
   // '대상 씬 없음'을 알린 씬 id — 같은 씬에 연달아 쓸 때 알림이 폭주하지 않게.
   const missingNotifiedRef = useRef<string | null>(null);
+  // '받지 못한 편집' 알림을 마지막으로 띄운 시각 — 연달아 거절될 때 폭주하지 않게.
+  const refusedNotifiedAtRef = useRef(0);
   // 저장 실패를 사람이 알게 한다. ★종전에는 저장이 실패해도 아무 말 없이 저장본으로 화면을 되돌렸다 —
   //  "편집이 사라지는 것이 실패 신호" 라는 설계였는데, 실제로는 **연결이 안 되는 버그**로 읽혔다
   //  (2026-10-07 신고: 캔버스에서 레퍼런스를 생성 카드에 연결해도 선이 사라짐 = localStorage 꽉 참).
-  //  관문(scenes.saveAll) 한 곳이 상태 변화만 알려주므로 경로를 빠뜨릴 수 없고 알림이 폭주하지도 않는다.
+  //  저장 관문 한 곳이 상태 변화만 알려주므로 경로를 빠뜨릴 수 없고 알림이 폭주하지도 않는다.
+  //  이제는 화면을 되돌리지 않는다 — 편집은 화면에 남고 저장소가 계속 다시 시도한다. 그래서 알림 한 줄로
+  //  끝내지 않고, 실패하는 동안 탭 줄에 '저장 안 됨'을 **계속** 띄운다(알림은 다른 알림에 덮인다).
+  const [sceneSaveFailing, setSceneSaveFailing] = useState(isSceneSaveFailing);
   useEffect(
     () =>
       subscribeSceneSaveState((failed) => {
+        setSceneSaveFailing(failed);
         flashRef.current?.(
           failed
-            ? "씬을 저장하지 못했습니다 — 저장 공간이 꽉 찼을 수 있습니다. 안 쓰는 씬을 지워 보세요."
-            : "씬 저장이 다시 정상입니다.",
+            ? "캔버스를 저장하지 못하고 있습니다 — 작업은 화면에 그대로 있고 계속 다시 시도합니다. 탭 줄의 '저장 안 됨'을 눌러 파일로 내려받아 두세요."
+            : "캔버스 저장이 다시 정상입니다.",
         );
       }),
     [],
   );
+  // 옛 판 창과 엇갈린 씬을 새 탭으로 살린다(scenes.recoverSceneConflicts). 저장소가 충돌을 보관하면
+  // 통지가 오고(아래 applyExternal), 앱을 켤 때 이미 보관돼 있던 것은 첫 effect 가 한다.
+  const recoveringConflictsRef = useRef(false);
+  const recoverConflicts = useCallback(() => {
+    if (recoveringConflictsRef.current || !hasSceneConflicts()) return;
+    recoveringConflictsRef.current = true;
+    void recoverSceneConflicts()
+      .then((out) => {
+        if (!out) return; // 저장소가 막혔다 — 충돌은 그대로 남아 있고, 다음 통지·다음 실행 때 다시 한다
+        // 있던 사본 탭을 최신으로 갈아 끼운 것(refreshed)은 알리지 않는다 — 옛 창이 그 씬을 고칠 때마다 온다.
+        const parts: string[] = [];
+        if (out.copied) parts.push(`옛 창에서 따로 고친 캔버스 ${out.copied}개를 새 탭("[옛 창] …")으로 살려 두었습니다`);
+        if (out.keptMine) parts.push(`옛 창에서 지운 캔버스 ${out.keptMine}개는 이 창에서 고친 내용이 있어 그대로 두었습니다`);
+        if (parts.length) flashRef.current?.(`${parts.join(" · ")}.`);
+      })
+      .finally(() => {
+        recoveringConflictsRef.current = false;
+      });
+  }, []);
+  useEffect(recoverConflicts, [recoverConflicts]);
   // DB 백업 미러 — 저장 관문에 디바운스 푸시 배선 + 초기 reconcile + 로컬 버킷이 통째로 없을 때만
   //  DB 에서 복구(브라우저 캐시 삭제 대비. 로컬이 항상 정답 — 빈 배열 버킷(정상 삭제)은 복구 안 함).
   //  ★구독 방식: 최초 복구뿐 아니라 백그라운드 복구(미로그인 401 → 로그인 후 백오프 재시도 성공)도
@@ -131,9 +160,11 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
       //  막 입력한 텍스트/파라미터가 아직 디바운스 중이면 그걸 지운 옛 상태로 병합·저장해
       //  입력이 유실된다(적대 리뷰 P2). flush 가 저장본을 최신으로 만든 뒤 병합한다.
       sceneActionRef.current?.flushPending();
-      // 합치기를 저장과 한 임계 구역에서 — 밖에서 읽어 통째로 저장하면 그 사이의 편집을 덮는다.
-      void updateScenesWith(null, (current) => mergeCardLinksIntoScenes(current, serverCardLinks()))
-        .then(() => setScenes(listScenes(null)));
+      // 합치기는 연산으로 넘긴다 — 저장소 내용 위에서 다시 계산되므로 다른 창이 그사이 더한 씬을
+      // 덮지 않는다. 소속 목록은 지금 것으로 고정해 넣는다(연산은 바깥 상태를 읽지 않는다).
+      const links = [...serverCardLinks()];
+      if (!updateScenesWith(null, (current) => mergeCardLinksIntoScenes(current, links))) return;
+      setScenes(listScenes(null));
     });
     void initSceneBackup()
       .catch(() => false)
@@ -160,6 +191,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     //  확정될 때마다 보내는 통지(subscribeSceneStoreExternal)를 받아 같은 일을 한다. localStorage
     //  `storage` 이벤트는 **옛 판 창**이 쓴 것을 알아채려고 그대로 둔다(흡수는 sceneBoot 가 한다).
     const applyExternal = () => {
+      recoverConflicts(); // 방금 보관된 충돌이 있으면 새 탭으로 살린다(끝나면 통지가 다시 와 목록에 나타난다)
       const latest = listScenes(null);
       setScenes((prev) => {
         const activeId = activeSceneIdRef.current;
@@ -190,7 +222,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
       unsubscribe();
       window.removeEventListener("storage", onStorage);
     };
-  }, []);
+  }, [recoverConflicts]);
   // 씬 생성 카드 1개 선택 시 그 카드(id+레퍼런스)를 하단 프롬프트에 바인딩. SceneBoard 가 통지.
   const [sceneBinding, setSceneBinding] = useState<{ cardId: string; refs: SceneRef[] } | null>(null);
   // 씬 캔버스에서 선택된 결과 카드들 → 프롬프트 위 선택바. 삭제는 명령형 핸들로.
@@ -250,16 +282,16 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     setActiveSceneId(id);
     persistActiveScene(null, id);
   };
-  const addScene = async () => {
+  const addScene = () => {
     // 저장 실패면 새 탭으로 옮기지 않는다 — 목록에 없는 씬을 활성으로 잡으면 빈 화면에 갇힌다.
     //  (알림은 저장 관문 구독이 이미 띄웠다.)
-    const s = await createScene(null);
+    const s = createScene(null);
     refreshScenes();
     if (s) selectScene(s.id);
   };
   // 파일에서 불러온 스냅샷을 새 씬 탭으로 만들고 그 탭으로 전환(현재 캔버스는 보존).
-  const importSceneSnapshot = async (snap: SceneSnapshot): Promise<Scene> => {
-    const s = await importScene(null, snap);
+  const importSceneSnapshot = (snap: SceneSnapshot): Scene => {
+    const s = importScene(null, snap);
     refreshScenes();
     selectScene(s.id);
     // 남이 준 씬 파일에 '그 사람 PC 안 사본'을 가리키는 그림이 있으면, 내 프로젝트 폴더의
@@ -274,15 +306,15 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   const relinkSceneRefsNow = () => {
     void relinkAssets(false);
   };
-  const renameScene = async (id: string, name: string) => {
+  const renameScene = (id: string, name: string) => {
     // 저장 실패·대상 없음이면 refreshScenes 가 저장본을 다시 읽어 옛 이름으로 되돌린다(알림은 관문 구독).
-    await updateScene(null, id, { name });
+    updateScene(null, id, { name });
     refreshScenes();
   };
-  const removeSceneById = async (id: string) => {
+  const removeSceneById = (id: string) => {
     // ★저장에 실패하면 씬이 그대로 남아 있다 — undo 히스토리를 지우거나 다른 탭으로 옮기지 않는다.
     //  종전에는 실패해도 히스토리를 버리고 화면을 옮겨, 되살아난 씬의 undo 만 사라졌다(적대 리뷰 r1).
-    if (!(await deleteScene(null, id))) {
+    if (!deleteScene(null, id)) {
       refreshScenes();
       return;
     }
@@ -303,9 +335,8 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
       // 가져온 씬에도 '카드에서 뺀 생성물' 표시를 입힌다 — 이미 로드된 소속 목록은 바뀌지 않아
       // 구독 통지가 오지 않으므로, 여기서 한 번 직접 병합한다(코덱스 P2).
       if (added) {
-        await updateScenesWith(null, (current) =>
-          mergeCardLinksIntoScenes(current, serverCardLinks()),
-        );
+        const links = [...serverCardLinks()];
+        updateScenesWith(null, (current) => mergeCardLinksIntoScenes(current, links));
       }
       refreshScenes();
       flashRef.current?.(
@@ -325,20 +356,31 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   };
   // 명시한 씬 patch + 목록 재읽기. 비동기 작업은 완료 시 활성 씬이 바뀔 수 있으므로 반드시 시작할 때
   // 캡처한 sceneId 로 이 관문을 호출한다. 삭제된 씬은 updateScene 이 재생성하지 않는다.
-  // ★반환 = 이 편집이 실제로 저장됐나. 저장에 기대는 호출부(생성 제출 전 복구 표식)가 이 값을 보고
-  //  멈춘다 — 안 보면 '어느 카드 것인지' 를 못 적은 채 생성 요청이 먼저 나간다(적대 리뷰 r2 P1).
-  const patchSceneById = useCallback(async (sceneId: string, patch: Partial<Scene>): Promise<boolean> => {
-    // 성공하면 저장된 목록을 그대로 받는다(재파싱 제거). 실패면 미저장 편집을 화면에 채택하지 않고
-    // 저장본을 다시 읽어 되돌린다. ★되돌림만으로는 사용자가 원인을 모른다 — 저장소가 거부한 경우는
-    // 저장 관문 구독(subscribeSceneSaveState)이 알린다.
-    const result = await updateScene(null, sceneId, patch);
-    // 대상 씬이 사라진 경우는 '저장 성공'이라 관문이 알리지 않는다 — 여기서 따로 알린다. 같은 씬에
+  // ★반환 = 이 편집이 **화면 값에 반영됐나**(대상 씬이 있었나). 저장소 확정은 뒤따른다 — 확정까지
+  //  필요한 호출부(생성 제출 전 복구 표식)는 confirmSceneWrite 로 따로 기다린다.
+  const patchSceneById = useCallback((sceneId: string, patch: Partial<Scene>): boolean => {
+    // 성공하면 갱신된 목록을 그대로 받는다(재파싱 제거). 대상이 없으면 지금 목록으로 화면을 맞춘다.
+    // 저장소 **확정** 실패는 여기서 알 수 없다 — 그건 저장 관문 구독(subscribeSceneSaveState)이 알리고,
+    // 화면은 그대로 둔다(작업을 빼앗지 않는다).
+    const result = updateScene(null, sceneId, patch);
+    // 대상 씬이 사라진 경우는 저장 실패가 아니라 관문이 알리지 않는다 — 여기서 따로 알린다. 같은 씬에
     // 연달아 쓰면 매번 띄우게 되므로 씬이 바뀔 때만(적대 리뷰 P2).
     if (!result.ok && result.reason === "missing" && missingNotifiedRef.current !== sceneId) {
       missingNotifiedRef.current = sceneId;
       flashRef.current?.("이 씬이 더 이상 없습니다 — 다른 창에서 지웠을 수 있습니다.");
     }
     if (result.ok) missingNotifiedRef.current = null;
+    // 저장소가 받지 않았다 — 오래 막혀 밀린 편집이 상한에 닿은 경우다. 이 편집은 남지 않으므로 숨기지 않는다
+    // (여기까지의 작업은 화면 값에 있고, 탭 줄의 '저장 안 됨'으로 내려받을 수 있다).
+    if (!result.ok && result.reason === "storage") {
+      const now = Date.now();
+      if (now - refusedNotifiedAtRef.current > 5000) {
+        refusedNotifiedAtRef.current = now;
+        flashRef.current?.(
+          "저장이 너무 오래 막혀 이 편집은 받지 못했습니다 — 탭 줄의 '저장 안 됨'을 눌러 지금까지의 작업을 파일로 내려받으세요.",
+        );
+      }
+    }
     const latest = result.ok ? result.scenes : listScenes(null);
     setScenes((previous) =>
       mergePatchedSceneList(previous, latest, activeSceneIdRef.current, sceneId),
@@ -346,8 +388,8 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     return result.ok;
   }, []);
   // 동기 UI 편집용 활성 씬 관문.
-  const patchActiveScene = (patch: Partial<Scene>): Promise<boolean> => {
-    if (!activeScene) return Promise.resolve(false);
+  const patchActiveScene = (patch: Partial<Scene>): boolean => {
+    if (!activeScene) return false;
     return patchSceneById(activeScene.id, patch);
   };
 
@@ -355,15 +397,12 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   //  ★목록 스냅샷을 받으면 안 된다: 끌고 있는 동안 다른 창·DB 백업 복구가 추가한 씬이 그 스냅샷에는
   //   없어서, 그대로 저장하면 조용히 사라진다(코덱스 P0). 적용 직전에 최신 목록을 다시 읽고,
   //   ID 집합·씬 내용은 그대로 둔 채 순서만 바꾼다. 대상이 사라졌으면 취소한다.
-  const reorderScenes = async (move: SceneMove): Promise<boolean> => {
+  const reorderScenes = (move: SceneMove): boolean => {
     sceneActionRef.current?.flushPending(); // 밀린 입력을 먼저 확정(저장본을 읽기 때문)
-    // ★순서 계산을 저장과 한 임계 구역에서 한다 — 밖에서 읽어 통째로 저장하면 그 사이에 들어온
-    //  편집을 덮는다(저장이 비동기가 되며 생긴 창).
-    let next: Scene[] | null = null;
-    const ok = await updateScenesWith(null, (current) => {
-      next = applySceneMove(current, move);
-      return next;
-    });
+    // 대상이 지금도 있는지는 화면 값으로 먼저 본다. 실제 순서 바꾸기는 **연산**으로 넘긴다 —
+    // 저장소 내용 위에서 다시 계산되므로, 다른 창이 그사이 더한 씬을 순서 저장이 지우지 않는다.
+    const next = applySceneMove(listScenes(null), move);
+    const ok = next ? updateScenesWith(null, (current) => applySceneMove(current, move)) : false;
     if (!next) {
       // 대상·기준이 사라짐(다른 창에서 삭제) — 최신 목록을 반영하되 활성 씬 화면은 지킨다.
       setScenes((previous) =>
@@ -392,12 +431,10 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   //  되돌리면(해제, W0→W1→W0) '물어봤다' 기억이 막고 옛 판정은 정리돼 '확인 중'에 멈췄다(2026-10-01 점검 R2-2). 실제로 바뀌어
   //  저장됐을 때만 — 판정 열쇠의 공간(탭 공간, 없으면 씬 파일의 공간 힌트)이 그대로거나 저장이 실패했거나(옛 값 그대로) 다른
   //  탭이 씬을 지웠으면 묻지 않는다(Codex 코드 리뷰).
-  // ★저장이 끝난 뒤에 판정한다 — 아래 '정말 바뀌었나' 검사는 저장본을 다시 읽으므로, 기다리지 않으면
-  //  옛 값을 보고 '안 바뀜'으로 판단해 다시 묻기를 건너뛴다.
-  const setSceneWorkspace = async (sceneId: string, workspace: SceneWorkspace | null) => {
+  const setSceneWorkspace = (sceneId: string, workspace: SceneWorkspace | null) => {
     const wanted = workspace?.id ?? "";
     const previous = listScenes(null).find((s) => s.id === sceneId);
-    await patchSceneById(sceneId, { workspace: workspace ?? undefined });
+    patchSceneById(sceneId, { workspace: workspace ?? undefined });
     const scene = listScenes(null).find((s) => s.id === sceneId);
     if (!scene || (scene.workspace?.id ?? "") !== wanted) return;
     if (previous && sceneRefWorkspaceId(previous) === sceneRefWorkspaceId(scene)) return;
@@ -429,5 +466,6 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     setSceneWorkspace,
     backupOnly,
     importBackupScenes,
+    sceneSaveFailing,
   };
 }
