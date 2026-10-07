@@ -310,7 +310,7 @@ function GenerationCardImpl({
   const stopActivationKeys = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" || e.key === " ") e.stopPropagation();
   };
-  // 폴더 이름표(그리드 카드 안 왼쪽 아래, 2026-10-07 Jay) — 누르면 그 폴더의 생성물 창. 이름표의 클릭·더블클릭·휠클릭·끌기는
+  // 폴더 이름표(그리드 카드 안 아래 가운데, 2026-10-07 Jay) — 누르면 그 폴더의 생성물 창. 이름표의 클릭·더블클릭·휠클릭·끌기는
   // 카드의 선택·크게 보기·정보·끌어 담기로 번지지 않는다. 끌기는 이름표를 끌기 대상으로 만든 뒤 취소한다 —
   // 자식에서 시작한 끌기의 대상은 가장 가까운 draggable 조상(카드)이라, 이름표가 draggable 이어야 가로챌 수 있다.
   const folderLabel = !isList && onOpenFolder ? folderChipLabel(gen.folder_path) : "";
@@ -522,9 +522,9 @@ function GenerationCardImpl({
       {isVideo && <span className="play-badge">▶</span>}
       {/* 마지막으로 크게 열어본 결과 — .card-thumb(position:relative) 기준 가운데. 오버레이 밖 독립 요소. */}
       {lastViewed && <LastViewedBadge />}
-      {/* 왼쪽 아래 — 이름표가 있으면 다른 배지(소스·상태)와 한 묶음으로 쌓는다(이름표가 맨 위). 없으면 종전 그대로. */}
+      {/* 아래 — 이름표가 있으면 다른 배지(소스·상태)와 한 묶음으로 쌓는다(이름표가 맨 위·가운데, 배지는 왼쪽). 없으면 종전 그대로. */}
       {folderChip ? (
-        <div className="card-bl">
+        <div className="card-bottom">
           {folderChip}
           {sourceBadge}
           {statusPill}

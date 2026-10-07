@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// 카드의 폴더 이름표(2026-10-07 Jay) — 폴더에 속한 그리드 카드 안 왼쪽 아래. 누르면 그 폴더의 생성물 창(onOpenFolder).
+// 카드의 폴더 이름표(2026-10-07 Jay) — 폴더에 속한 그리드 카드 안 아래 가운데. 누르면 그 폴더의 생성물 창(onOpenFolder).
 // 이름표의 클릭·더블클릭·휠클릭·끌기가 카드의 선택·크게 보기·정보·끌어 담기로 번지지 않아야 한다.
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -70,7 +70,7 @@ it("a card in a folder shows the chip inside the thumbnail; no folder or no hand
   expect(chip()!.textContent).toBe("e035 c0010");
   expect(chip()!.title).toContain("뻘뻘뻘 › e035/c0010");
   expect(chip()!.closest(".card-thumb")).not.toBeNull(); // 카드 그림 안
-  expect(chip()!.parentElement!.className).toBe("card-bl");
+  expect(chip()!.parentElement!.className).toBe("card-bottom");
 
   render(s, { gen: gen({ folder_path: null }) });
   expect(chip()).toBeNull();
@@ -128,17 +128,17 @@ it("keyboard: Enter and Space on the chip stay with the chip — the grid's shor
   }
 });
 
-it("other bottom-left badges stack under the chip in one group; without a chip the old markup is untouched", () => {
+it("other bottom badges stack under the chip in one group; without a chip the old markup is untouched", () => {
   const s = spies();
   const withBadges = gen({ is_source: true, source_name: "mia", status: "failed" } as Partial<Generation>);
   render(s, { gen: withBadges });
-  const group = host.querySelector(".card-bl")!;
+  const group = host.querySelector(".card-bottom")!;
   expect([...group.children].map((el) => el.className.split(" ")[0])).toEqual(["card-folder", "source-badge", "status-pill"]);
   expect(host.querySelectorAll(".source-badge")).toHaveLength(1); // 묶음 밖에 또 그리지 않는다
   expect(host.querySelectorAll(".status-pill")).toHaveLength(1);
 
   render(s, { gen: withBadges, onOpenFolder: undefined });
-  expect(host.querySelector(".card-bl")).toBeNull();
+  expect(host.querySelector(".card-bottom")).toBeNull();
   expect(host.querySelector(".card-thumb > .source-badge")).not.toBeNull();
   expect(host.querySelector(".card-thumb > .status-pill")).not.toBeNull();
 });
