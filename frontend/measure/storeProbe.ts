@@ -19,7 +19,13 @@ import {
   type Scene,
   type ScenesByProject,
 } from "../src/lib/scenes";
-import { sceneStoreHasPending, subscribeSceneStoreExternal } from "../src/lib/sceneStore";
+import {
+  abortSceneStoreWritesForTest,
+  resetSceneStoreForTest,
+  sceneStoreDurability,
+  sceneStoreHasPending,
+  subscribeSceneStoreExternal,
+} from "../src/lib/sceneStore";
 
 const LS_SCENES = "ch.scenes";
 const LS_MARK = "ch.scenes.migration";
@@ -189,14 +195,67 @@ const dropFiller = () => {
   for (const key of Object.keys(localStorage)) if (key.startsWith("probe.fill.")) localStorage.removeItem(key);
 };
 
-async function main() {
-  log("== 씬 저장소 실측 ==");
+async function wipe(): Promise<void> {
+  resetSceneStoreForTest(); // 이 창이 쥔 연결을 놓는다(안 놓으면 지우기가 막힌다)
   localStorage.clear();
   document.cookie.split("; ").forEach((part) => {
     document.cookie = `${part.split("=")[0]}=; path=/; max-age=0`;
   });
-  indexedDB.deleteDatabase("mvhub-scenes");
+  await new Promise<void>((resolve) => {
+    const req = indexedDB.deleteDatabase("mvhub-scenes");
+    req.onsuccess = req.onerror = req.onblocked = () => resolve();
+  });
   await sleep(150);
+}
+
+// 옛 배치(씬 전체가 한 키, DB 버전 1)를 쓰는 판의 창이 떠 있는 채로 새 판을 켠다. 둘이 같이 쓰면 옛 창은
+// 지워진 옛 키를 다시 만들어 '확정'이라 알리고 새 창은 그것을 읽지 않는다 — 그래서 같이 열리면 안 된다.
+async function probeOldLayoutWindow(): Promise<void> {
+  const oldDb = await new Promise<IDBDatabase>((resolve, reject) => {
+    const req = indexedDB.open("mvhub-scenes", 1);
+    req.onupgradeneeded = () => req.result.createObjectStore("kv");
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  await new Promise<void>((resolve, reject) => {
+    const tx = oldDb.transaction("kv", "readwrite");
+    const store = tx.objectStore("kv");
+    store.put({ [BUCKET]: [bigScene("v1-a", 1000), bigScene("v1-b", 1000)], "other::_none": [] }, "scenes");
+    store.put(7, "version");
+    store.put("g-v1", "generation");
+    store.put({}, "absorbBase");
+    store.put([], "conflicts");
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  const blocked = await bootSceneStore();
+  log(
+    `[0] 옛 배치 창이 열려 있을 때 켜기: ${blocked.kind === "failed" ? `막힘(${blocked.error})` : "열림 ← 막혀야 한다"}`,
+  );
+  oldDb.close(); // 옛 창을 닫는다
+  await sleep(400);
+  const opened = await bootSceneStore();
+  const buckets = (JSON.parse(await exportSceneArchiveText()) as { buckets: ScenesByProject }).buckets;
+  log(
+    `    옛 창을 닫고 다시 켜기: ${opened.kind} · 옛 배치의 씬 ${names(listScenes(null)).join(",")}` +
+      ` · 빈 버킷 보존 ${Array.isArray(buckets["other::_none"]) && buckets["other::_none"].length === 0}`,
+  );
+  const oldAgain = await new Promise<string>((resolve) => {
+    const req = indexedDB.open("mvhub-scenes", 1);
+    req.onsuccess = () => {
+      req.result.close();
+      resolve("열림 ← 막혀야 한다");
+    };
+    req.onerror = () => resolve(`못 엶(${req.error?.name})`);
+  });
+  log(`    그 뒤 옛 판이 다시 열려고 하면: ${oldAgain}`);
+}
+
+async function main() {
+  log("== 씬 저장소 실측 ==");
+  await wipe();
+  await probeOldLayoutWindow();
+  await wipe();
 
   // ── 1. 신고된 상태를 만든다: 옛 저장소가 꽉 차서 한 글자도 더 못 쓴다 ──
   const filled = fillLegacyToTheBrim();
@@ -251,6 +310,30 @@ async function main() {
   const added = confirmSceneWrite(() => createScene(null, "꽉 찬 뒤에 만든 씬"));
   log(`[3] 꽉 찼던 PC 에서 새 씬 만들기: 화면 ${added.value ? "됨" : "안 됨"} · 저장 확정 ${await added.confirmed}`);
   await measureEdits(`    지금 크기(${mb(sizeOf(listScenes(null)))})`, "old0", 10);
+
+  log(`    쓰기 내구성(브라우저가 적용한 값): ${sceneStoreDurability()}`);
+
+  // ── 3b. 쓰기를 낸 뒤 중단되면 반쯤 남지 않는가(씬·순서·버전은 한 묶음) ──
+  abortSceneStoreWritesForTest(true);
+  const aborted = confirmSceneWrite(() => {
+    updateScene(null, "old5", { name: "중단된 편집" });
+    return createScene(null, "중단된 씬");
+  });
+  const abortedOk = await aborted.confirmed;
+  await openPeer(); // 새 창이 보는 것 = 디스크에 실제로 든 것
+  await peer({ cmd: "boot" });
+  const onDisk = await peer<string[]>({ cmd: "persisted" });
+  log(
+    `[3b] 쓰기를 낸 뒤 중단: 확정 알림 ${abortedOk} · 저장소에 반쯤 남았나 ${onDisk.includes("중단된 편집") || onDisk.includes("중단된 씬")}` +
+      ` · 확정본은 그대로 ${!names(listPersistedScenes(null)).includes("중단된 씬")} · 화면에는 남음 ${names(listScenes(null)).includes("중단된 씬")}`,
+  );
+  abortSceneStoreWritesForTest(false);
+  await confirmSceneWrite(() => updateScene(null, "old6", { name: "다시 받은 뒤 편집" })).confirmed;
+  await sleep(400);
+  const afterRetry = await peer<string[]>({ cmd: "persisted" });
+  log(
+    `     다시 받은 뒤 전부 들어갔나: ${["중단된 편집", "중단된 씬", "다시 받은 뒤 편집"].every((name) => afterRetry.includes(name))}`,
+  );
 
   // ── 4. 옛 한도의 여러 배로 키운다 ──
   const grown = listScenes(null);

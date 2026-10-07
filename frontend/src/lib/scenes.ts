@@ -467,7 +467,8 @@ export function createScene(projectId: string | null, name?: string): Scene | nu
     all[key] = [...(all[key] || []), scene];
     return { write: true, value: undefined };
   });
-  return out.ok ? scene : null;
+  // 돌려주는 것은 사본이다 — 저장소가 든 객체를 내주면 받은 쪽의 수정이 저장소 값을 바꾼다.
+  return out.ok ? frozen(scene) : null;
 }
 
 // 씬 쓰기 결과. ★'화면 값에 반영 못 함'과 '요청한 대상이 없음'은 다른 실패다(적대 리뷰 r3) —
@@ -926,7 +927,7 @@ export function importScene(projectId: string | null, snap: SceneSnapshot): Scen
     return { write: true, value: undefined };
   });
   if (!out.ok) throw new Error("씬을 저장하지 못했습니다 — 저장소가 아직 열리지 않았습니다. 다시 시도하세요.");
-  return scene;
+  return frozen(scene); // 사본 — 위 createScene 과 같은 까닭
 }
 
 export function getActiveSceneId(projectId: string | null): string | null {
