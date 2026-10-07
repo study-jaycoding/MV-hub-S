@@ -266,7 +266,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
       const missing = new Set(batch.missing || []);
       const rs = pollIds.map((id) => ({
         id,
-        gen: batch.items[id] || null,
+        gen: ownEntry(batch.items, id) || null, // 응답 사전도 자기 속성만 — 상속 함수가 캐시에 들어가지 않게
         gone: missing.has(id),
       }));
       // 새 변경 신호가 와서 전량 요청을 다시 시작했으면 그보다 먼저 출발한 응답은 폐기한다.
@@ -285,7 +285,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
         }
       }
       for (const id of pollIds) {
-        const parents = batch.materials[id];
+        const parents = ownEntry(batch.materials, id);
         if (Array.isArray(parents)) putParents(id, parents);
         else if (missing.has(id)) putParents(id, []);
       }
@@ -293,7 +293,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
         if (!current()) return prev;
         const next = { ...prev };
         for (const id of pollIds) {
-          const parents = batch.materials[id];
+          const parents = ownEntry(batch.materials, id);
           if (Array.isArray(parents)) next[id] = parents;
           else if (missing.has(id)) next[id] = [];
         }

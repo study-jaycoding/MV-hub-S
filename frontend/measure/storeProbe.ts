@@ -418,6 +418,28 @@ async function main() {
     `[8] 전체 내보내기: ${mb(new Blob([text]).size)} · ${ms(exportMs)} · 같은 파일 다시 가져오기 ${JSON.stringify(again)} · ${ms(performance.now() - tImport)}`,
   );
   log(`    끝난 뒤 밀린 저장: ${sceneStoreHasPending() ? "있음" : "없음"}`);
+
+  // ── 9. 이 창이 떠 있는 채로 저장소가 지워지고, 다른 창이 새로 초기화한다(사이트 데이터 삭제 등) ──
+  // 새 저장소의 버전 숫자는 이 창이 기억하는 것과 우연히 같을 수 있다. 옛 기억을 기준으로 쓰면 '순서 없는 씬'만
+  // 남아, 확정됐다고 알린 것이 다른 창에는 없다 — 연결이 끊겼다 이어지면 다시 읽어야 한다.
+  closePeer();
+  await new Promise<void>((resolve) => {
+    const req = indexedDB.deleteDatabase("mvhub-scenes"); // 이 창의 연결은 비켜 준다(onversionchange)
+    req.onsuccess = req.onerror = req.onblocked = () => resolve();
+  });
+  await openPeer();
+  const fresh = await peer<{ kind: string; ms: number; count: number }>({ cmd: "boot" }); // 표식은 committed — 빈 상태로 연다
+  const after = confirmSceneWrite(() => {
+    updateScene(null, "old7", { name: "지워진 뒤에 고침" });
+    return createScene(null, "지워진 뒤에 만든 씬");
+  });
+  const afterOk = await after.confirmed;
+  await sleep(500);
+  const peerSees = await peer<string[]>({ cmd: "persisted" });
+  log(
+    `[9] 저장소가 지워지고 새로 만들어진 뒤(새 창 ${fresh.kind}·씬 ${fresh.count}개) 편집: 확정 알림 ${afterOk}` +
+      ` · 다른 창이 보는 저장소 ${JSON.stringify(peerSees)} · 이 창의 확정본 ${JSON.stringify(names(listPersistedScenes(null)))}`,
+  );
   log("\nDONE");
 }
 

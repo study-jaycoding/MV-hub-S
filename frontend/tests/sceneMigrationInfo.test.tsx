@@ -11,7 +11,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CanvasArchiveSection } from "../src/components/settings/CanvasArchiveSection";
 import { describeSceneMigration, exportSceneArchiveText } from "../src/lib/sceneArchive";
-import { diagnoseLegacyStorage } from "../src/lib/sceneBoot";
+import { bootSceneStore, diagnoseLegacyStorage } from "../src/lib/sceneBoot";
 import {
   initSceneStore,
   readSceneMigrationInfo,
@@ -89,6 +89,18 @@ describe("옛 저장 칸 진단", () => {
       probe: "ok",
     });
     expect(probeKeys()).toEqual([]);
+  });
+
+  // 옮기는 내용(씬 수)과 글자 수가 **같은 읽기**에서 나와야 한다. 진단이 옛 저장소를 다시 읽으면, 그사이 옛 판
+  // 창이 고친 내용의 길이가 적혀 '옮긴 씬 수'와 다른 시점의 값이 된다(Codex 코드 리뷰).
+  it("글자 수는 넘겨받은 원문의 것을 쓴다 — 옛 저장소를 다시 읽지 않는다", async () => {
+    localStorage.setItem("ch.scenes", "x".repeat(500)); // 그사이 옛 창이 바꿔 놓은 내용
+    expect(diagnoseLegacyStorage(123).legacyChars).toBe(123);
+
+    const raw = JSON.stringify({ [BUCKET]: [mk("s1"), mk("s2")] });
+    localStorage.setItem("ch.scenes", raw);
+    expect((await bootSceneStore()).kind).toBe("ready");
+    expect(await readSceneMigrationInfo()).toMatchObject({ legacyChars: raw.length, sceneCount: 2 });
   });
 
   it("할당량 초과로 못 쓰면 quota, 다른 이유면 unknown — 던지지 않는다", () => {

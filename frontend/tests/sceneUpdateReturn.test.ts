@@ -12,6 +12,7 @@ import {
   hasSceneBucket,
   listPersistedScenes,
   listScenes,
+  mergeScenesFromBackup,
   saveScenes,
   subscribeSceneSaveState,
   subscribeScenesPersisted,
@@ -229,6 +230,21 @@ describe("씬 쓰기 계약", () => {
 
     expect(await settleSceneStoreForTest()).toBe(true);
     expect(listPersistedScenes(null).map((s) => s.id)).toEqual([scene!.id]);
+  });
+
+  // 저장소가 든 객체를 내주면, 받은 쪽이 고친 것이 연산을 거치지 않고 저장소 값을 바꾼다(저장에서도 빠진다 —
+  // 저장은 '객체가 같으면 안 바뀐 것'으로 본다). 쓰기 함수가 돌려주는 씬도 사본이어야 한다(Codex 코드 리뷰 P2).
+  it("createScene·mergeScenesFromBackup 이 돌려준 씬은 사본이다 — 고쳐도 저장소 값이 안 바뀐다", () => {
+    const made = createScene(null, "새 씬")!;
+    made.name = "밖에서 고침";
+    made.cards.push({ id: "c", kind: "text", x: 0, y: 0 });
+    const { added } = mergeScenesFromBackup(null, [mkScene("from-db")]);
+    expect(added.map((s) => s.id)).toEqual(["from-db"]);
+    added[0].name = "밖에서 고침";
+    expect(listScenes(null).map((s) => [s.name, s.cards.length])).toEqual([
+      ["새 씬", 0],
+      ["from-db", 0],
+    ]);
   });
 
   // 삭제도 화면에서는 그 자리에서 사라지고, 확정본(=DB 미러가 올리는 내용)에는 확정된 뒤에만 빠진다 —

@@ -38,8 +38,8 @@ export function useSceneColorActions(colors: SceneColorLedger, genDataRef: Mutab
       try {
         const batch = await api.getGenerationsBatch(ids, assertCurrent);
         assertCurrent();
-        const recovered = Object.fromEntries(ids.filter(id => !!batch.items[id])
-          .map(id => [id, batch.items[id].color ?? null]));
+        const recovered = Object.fromEntries(ids.filter(id => !!ownEntry(batch.items, id))
+          .map(id => [id, ownEntry(batch.items, id)!.color ?? null]));
         for (const ticket of tickets) {
           for (const id of ledger.applyRecovered(ticket,
             Object.fromEntries(ticket.ids.filter(id => id in recovered).map(id => [id, recovered[id]])))) applied.add(id);

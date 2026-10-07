@@ -68,6 +68,11 @@ let ready = false;
 
 let confirmed: ScenesByProject = {};
 let confirmedVersion = 0;
+// 메모리의 confirmed 를 저장소 내용으로 믿어도 되는가. 평소 저장은 버전 숫자만 읽고 confirmed 를 기준으로 쓰는데,
+// **연결이 끊겼다 다시 이어지면 믿지 않는다** — 그사이 저장소가 지워지고 다른 창이 새로 만들었을 수 있고, 새 저장소의
+// 버전 숫자는 우연히 같을 수 있다. 그때 옛 confirmed 를 기준으로 쓰면 씬 키만 쓰고 순서 키는 안 써서, 확정됐다고
+// 알린 씬이 다른 창에는 없다(Codex 코드 리뷰 P1). 참이면 다음 트랜잭션이 전체를 다시 읽는다.
+let baselineStale = false;
 let working: ScenesByProject = {};
 let conflictList: SceneAbsorbConflict[] = [];
 
@@ -106,7 +111,10 @@ function openDb(): Promise<IDBDatabase> {
       // 실패하고, 기존 '저장 안 됨' 경로가 알린다(편집은 화면에 남고 파일로 내려받을 수 있다).
       const drop = () => {
         opened.close();
-        if (db === opened) db = null;
+        if (db === opened) {
+          db = null;
+          baselineStale = true;
+        }
       };
       opened.onversionchange = drop;
       opened.onclose = drop; // 브라우저가 연결을 끊었다(저장소 비우기 등) — 다음 저장 때 다시 연다
@@ -123,10 +131,18 @@ async function ensureDb(): Promise<boolean> {
   if (typeof indexedDB === "undefined") return false;
   try {
     db = await openDb();
+    baselineStale = true; // 새 연결 — 이 저장소가 내가 알던 그 저장소인지 다시 읽어 확인한다
     return true;
   } catch {
     return false;
   }
+}
+
+// 이 저장소가 부팅 때 초기화한 그 배치인가. 아니면(지워졌다 새로 생긴 빈 저장소 등) 쓰지 않는다 — 알아보지 못하는
+// 저장소에 씬을 써 넣으면 다음 부팅의 판정(처음 이관인가·사라졌나)이 틀어진다. 저장은 실패로 알려지고('저장 안 됨'),
+// 작업은 화면에 남아 파일로 내려받을 수 있다. 새로 고치면 부팅이 그 저장소를 제대로 연다.
+function assertKnownLayout(meta: StoreValues): void {
+  if (meta[K_LAYOUT] !== 2) throw new Error("scene store was reset");
 }
 
 // ── 씬별 키 ─────────────────────────────────────────────────────────────────────
@@ -395,11 +411,13 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
     try {
       if (!(await ensureDb())) throw new Error("scene store not open");
       await storeTx(
-        [K_VERSION, ...extraReads],
+        [K_VERSION, K_LAYOUT, ...extraReads],
         // 버전이 내가 아는 것과 다르면 다른 창이 썼다 — 그때만 씬 전체를 읽는다. 같으면 메모리의 확정본이 곧
-        // 저장소 내용이라 다시 읽을 필요가 없다(평소 저장이 전체 크기에 매이지 않는 까닭).
-        (meta) => ((meta[K_VERSION] as number | undefined) ?? 0) !== confirmedVersion,
+        // 저장소 내용이라 다시 읽을 필요가 없다(평소 저장이 전체 크기에 매이지 않는 까닭). 연결이 끊겼다 이어진
+        // 뒤에는 버전이 같아 보여도 읽는다(baselineStale).
+        (meta) => baselineStale || ((meta[K_VERSION] as number | undefined) ?? 0) !== confirmedVersion,
         (meta, scenes) => {
+          assertKnownLayout(meta);
           liveVersion = (meta[K_VERSION] as number | undefined) ?? 0;
           external = scenes !== null;
           const base = scenes ?? confirmed;
@@ -442,6 +460,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
     const hadConfirmedOnly = batch.some((op) => op.confirmedOnly);
     confirmed = live;
     confirmedVersion = liveVersion;
+    baselineStale = false;
     pending = pending.filter((op) => !batch.includes(op));
     retryDelayMs = RETRY_MIN_MS;
     if (retryTimer !== undefined) {
@@ -690,7 +709,7 @@ export function readScenesCache(): ScenesByProject {
 // 연다. ★브라우저에서는 indexedDB 가 늘 존재하므로 이 경로로 빠지지 않는다.
 function ensureMemoryStoreOutsideBrowser(): void {
   if (ready || typeof indexedDB !== "undefined") return;
-  memory = memory ?? new Map();
+  memory = memory ?? new Map<string, unknown>([[K_LAYOUT, 2]]);
   ready = true;
 }
 
@@ -988,7 +1007,10 @@ export function dumpSceneStore(): Promise<SceneStoreDump> {
   return enqueueTx(async () => {
     try {
       if (!(await ensureDb())) throw new Error("scene store not open");
-      const { meta, scenes } = await readStore([K_CONFLICTS], () => true);
+      const { meta, scenes } = await readStore([K_CONFLICTS, K_LAYOUT], () => true);
+      // 알아보지 못하는 저장소(지워졌다 새로 생긴 것)의 내용 위에 내 편집을 재생하면 건질 것이 거의 안 남는다 —
+      // 그때는 아래 catch 로 가서 화면 값을 그대로 준다.
+      assertKnownLayout(meta);
       const buckets: ScenesByProject = { ...scenes };
       for (const op of pending) {
         try {
@@ -1103,11 +1125,12 @@ function refreshFromStore(): Promise<boolean> {
     let read: Awaited<ReturnType<typeof readStore>>;
     try {
       read = await readStore(
-        [K_VERSION, K_CONFLICTS],
-        (found) => ((found[K_VERSION] as number | undefined) ?? 0) !== confirmedVersion,
+        [K_VERSION, K_CONFLICTS, K_LAYOUT],
+        (found) => baselineStale || ((found[K_VERSION] as number | undefined) ?? 0) !== confirmedVersion,
       );
+      assertKnownLayout(read.meta);
     } catch {
-      return false; // 못 읽었다 — 지금 값을 그대로 둔다(다음 통지·다음 저장이 따라잡는다)
+      return false; // 못 읽었다(또는 알아보지 못하는 저장소다) — 지금 값을 그대로 둔다
     }
     const { meta, scenes } = read;
     const conflicts = (meta[K_CONFLICTS] as SceneAbsorbConflict[] | undefined) ?? [];
@@ -1119,6 +1142,7 @@ function refreshFromStore(): Promise<boolean> {
     }
     confirmed = scenes;
     confirmedVersion = (meta[K_VERSION] as number | undefined) ?? 0;
+    baselineStale = false;
     rebaseWorking();
     externalSubs.forEach((fn) => fn());
     return true;
@@ -1159,6 +1183,20 @@ export function lastSceneStoreWriteForTest(): { scenes: string[]; orders: string
 /** 시험 전용 — 옛 배치(씬 전체가 한 키)로 저장된 상태를 만든다. 메모리 대체 저장소에서만. */
 export function seedLegacyLayoutForTest(scenes: ScenesByProject, meta: Record<string, unknown> = {}): void {
   memory = new Map<string, unknown>([[K_LEGACY_SCENES, cloneStored(scenes)], [K_VERSION, 1], ...Object.entries(meta)]);
+}
+/**
+ * 시험 전용 — **연결이 끊긴 사이 저장소가 통째로 바뀐** 상황을 만든다(사이트 데이터가 지워진 뒤 다른 창이 새로
+ * 초기화한 저장소 등). scenes 가 null 이면 초기화조차 안 된 빈 저장소다. 메모리 대체 저장소에서만.
+ */
+export function replaceSceneStoreForTest(scenes: ScenesByProject | null, version = 1): void {
+  const next = new Map<string, unknown>();
+  if (scenes) {
+    next.set(K_LAYOUT, 2);
+    next.set(K_VERSION, version);
+    for (const [key, value] of diffScenes({}, scenes).puts) next.set(key, cloneStored(value));
+  }
+  memory = next;
+  baselineStale = true; // 진짜 연결이 끊겼다 다시 이어질 때(openDb 의 drop·ensureDb)와 같게
 }
 /** 시험 전용 — 저장소에 실제로 든 키(메모리 대체). */
 export function sceneStoreKeysForTest(): string[] {
@@ -1211,6 +1249,7 @@ export function resetSceneStoreForTest(): void {
   ready = false;
   confirmed = {};
   confirmedVersion = 0;
+  baselineStale = false;
   working = {};
   pending = [];
   conflictList = [];

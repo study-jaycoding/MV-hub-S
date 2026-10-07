@@ -10,14 +10,17 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   abortSceneStoreWritesForTest,
   applySceneOp,
+  dumpSceneStore,
   failSceneStoreWritesForTest,
   initSceneStore,
   lastSceneStoreWriteForTest,
   readConfirmedBucket,
   readScenesCache,
   readWorkingBucket,
+  replaceSceneStoreForTest,
   resetSceneStoreForTest,
   sceneStoreConflicts,
+  sceneStoreHasPending,
   sceneStoreKeysForTest,
   seedLegacyLayoutForTest,
   settleSceneStoreForTest,
@@ -34,8 +37,10 @@ const edit = (mutate: (all: ScenesByProject) => void) =>
     mutate(all);
     return { write: true, value: null };
   });
+// 없는 씬이면 아무것도 하지 않는다(scenes.updateScene 과 같다 — 재생 때 대상이 사라져 있을 수 있다).
 const rename = (id: string, name: string) =>
   edit((all) => {
+    if (!all.acct?.some((s) => s.id === id)) return;
     all.acct = all.acct.map((s) => (s.id === id ? { ...s, name } : s));
   });
 const committed: LegacyMark = { state: "committed", generation: "g1" };
@@ -209,6 +214,45 @@ describe("옛 배치(씬 전체가 한 키)에서 넘어오기", () => {
     abortSceneStoreWritesForTest(false);
     expect((await initSceneStore(() => ({}), committed, keepMark)).kind).toBe("ready");
     expect(readScenesCache()).toEqual(old);
+  });
+});
+
+// 평소 저장은 버전 숫자만 읽고 메모리의 확정본을 기준으로 쓴다. 그런데 연결이 끊긴 사이(사이트 데이터 삭제 등)
+// 저장소가 지워지고 다른 창이 새로 만들면, 새 저장소의 버전 숫자가 우연히 같을 수 있다 — 그때 옛 확정본을 기준으로
+// 쓰면 씬 키만 쓰고 순서 키는 안 써서, "확정됐다"고 알린 씬이 다른 창에는 없다(Codex 코드 리뷰 P1).
+describe("연결이 끊긴 사이 저장소가 바뀌었다", () => {
+  it("버전 숫자가 같아도 다시 읽는다 — 새 저장소에 없는 씬을 '확정'으로 알리지 않는다", async () => {
+    await writeScenesStore({ acct: [scene("s1"), scene("s2")] }); // 이 창이 아는 저장소: 버전 1
+    replaceSceneStoreForTest({}, 1); // 지워진 뒤 다른 창이 새로 초기화했다 — 비어 있고, 버전 숫자는 같다
+
+    rename("s1", "사라진 씬을 고침");
+    edit((all) => {
+      all.acct = [...(all.acct || []), scene("s3", "새로 만든 씬")];
+    });
+    expect(await settleSceneStoreForTest()).toBe(true);
+
+    // 저장소에는 '순서 없는 씬 키'가 남지 않는다 — 있는 것은 전부 순서에 올라 있다.
+    const keys = sceneStoreKeysForTest();
+    expect(keys).not.toContain(JSON.stringify(["s", "acct", "s1"]));
+    expect(keys).toContain(JSON.stringify(["s", "acct", "s3"]));
+    expect(keys).toContain(JSON.stringify(["o", "acct"]));
+    // 이 창의 확정본·화면 값도 새 저장소를 따른다(없는 씬을 고친 연산은 할 일이 없다).
+    expect(names(readConfirmedBucket("acct"))).toEqual(["새로 만든 씬"]);
+    expect(names(readWorkingBucket("acct"))).toEqual(["새로 만든 씬"]);
+  });
+
+  // 초기화조차 안 된 저장소(지워진 직후)에 씬을 써 넣으면 다음 부팅이 '처음 이관인가·사라졌나'를 그르친다.
+  it("알아보지 못하는 저장소에는 쓰지 않는다 — 저장 실패로 알리고 작업은 화면에 남는다", async () => {
+    await writeScenesStore({ acct: [scene("s1")] });
+    replaceSceneStoreForTest(null); // 통째로 지워졌다
+
+    rename("s1", "지워진 뒤에 고침");
+    expect(await settleSceneStoreForTest()).toBe(false);
+    expect(sceneStoreKeysForTest()).toEqual([]); // 아무것도 쓰지 않았다
+    expect(names(readWorkingBucket("acct"))).toEqual(["지워진 뒤에 고침"]); // 화면에는 그대로
+    expect(sceneStoreHasPending()).toBe(true);
+    // 내보내기는 그 빈 저장소가 아니라 화면 값을 준다 — 건질 것이 여기 있다.
+    expect(names((await dumpSceneStore()).buckets.acct)).toEqual(["지워진 뒤에 고침"]);
   });
 });
 

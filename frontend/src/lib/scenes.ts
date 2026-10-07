@@ -456,7 +456,8 @@ export function mergeScenesFromBackup(
     all[key] = local.concat(added);
     return { write: true, value: added };
   });
-  return { ok: out.ok, added: out.value };
+  // 더해진 씬은 저장소가 든 객체다 — 내주는 것은 사본이다(받은 쪽의 수정이 저장소 값을 바꾸지 않게).
+  return { ok: out.ok, added: frozen(out.value) };
 }
 
 // ★화면 값에 반영하지 못하면 null — 종전에는 저장 못 한 씬을 그대로 돌려줘, 호출부가 목록에 없는
