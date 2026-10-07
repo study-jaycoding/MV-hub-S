@@ -92,9 +92,10 @@ const isQuotaError = (error: unknown): boolean =>
  * 옛 저장소가 지금 어떤 상태인가 — 처음 옮길 때 한 번 재서 기록해 둔다(sceneStore 의 SceneMigrationInfo).
  * 시험 쓰기는 고유한 임시 키에 1KB 를 써 보고 곧바로 지운다. 무엇이 실패해도 던지지 않는다.
  */
-export function diagnoseLegacyStorage(legacyChars?: number): LegacyDiagnosis {
+export function diagnoseLegacyStorage(legacyChars?: number | null): LegacyDiagnosis {
   // legacyChars 는 **옮기는 그 원문**의 길이를 받는다(bootSceneStore). 여기서 다시 읽으면, 원문을 읽은 뒤 옛 창이
   // 고친 내용의 길이가 적혀 '옮긴 씬 수'와 다른 시점의 값이 된다(Codex 코드 리뷰).
+  // null = 원문을 못 읽었다(그대로 '확인 못 함'으로 적는다), undefined = 여기서 잰다.
   const out: LegacyDiagnosis = { legacyChars: legacyChars ?? null, storageChars: null, probe: "unknown" };
   let store: Storage;
   try {
@@ -134,18 +135,26 @@ export function diagnoseLegacyStorage(legacyChars?: number): LegacyDiagnosis {
  */
 export async function bootSceneStore(): Promise<SceneStoreInit> {
   // 옛 저장소의 원문은 **한 번만** 읽는다 — 옮기는 내용과 진단에 적는 글자 수가 같은 원문에서 나오게.
-  const raw = readLegacyScenesRaw();
+  // ★'못 읽었다'(null)와 '비어 있다'("")를 가른다. 읽기 오류를 빈 글자로 바꾸면 진단이 '자료 0글자'라고 적어,
+  //  확인하지 못한 것을 빈 것으로 보고한다(Codex 코드 리뷰).
+  let raw: string | null;
+  try {
+    raw = window.localStorage.getItem(STORAGE_KEYS.scenes) ?? "";
+  } catch {
+    raw = null;
+  }
   let parsed: ScenesByProject | null = null;
   try {
     parsed = raw ? (JSON.parse(raw) as ScenesByProject) : null;
   } catch {
     parsed = null; // 못 읽는 원문 — 옮길 것이 없다(원문은 그대로 남아 있고, 오류 화면에서 내려받을 수 있다)
   }
+  const legacyChars = raw === null ? null : raw.length;
   const result = await initSceneStore(
     () => parsed,
     readLegacyMark(),
     writeLegacyMark,
-    () => diagnoseLegacyStorage(raw.length),
+    () => diagnoseLegacyStorage(legacyChars),
   );
   if (result.kind !== "ready") return result;
   // 계정 네임스페이스 도입 전의 옛 버킷이 남아 있으면, 지금 계정으로의 귀속을 **확정한 뒤에** 화면을

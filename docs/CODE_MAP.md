@@ -773,17 +773,18 @@ updated: 2026-10-07
 | `bulkGenerationActions.ts` | 순수 | 일괄 실행기(`runGenerationBulk` — 주입받은 비동기 작업을 돌려 실패 수 집계, `runGenerationTrash` — 휴지통 전용: 공유 중 409 를 '건너뜀'으로 따로 센다) + 결과·확인 문구 |
 | `shareMirrorPending.ts` | 순수 | 공유 미러 대기 안내 래핑 |
 
-**9. 씬·캔버스 — 데이터·저장·복구(14)**
+**9. 씬·캔버스 — 데이터·저장·복구(15)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `scenes.ts` | 저장+store | 씬(카드·연결·카메라) 데이터 계층 — 계정 버킷·쓰기 연산·씬 파일 내보내기/가져오기·밖에서 온 씬의 모양 검증(`readStoredScene`) |
-| `sceneStore.ts` | 저장 | 씬의 IndexedDB 저장소 — 화면 값/확정본/밀린 연산, 연산 재생 트랜잭션, 다른 창 통지, 이관·흡수·충돌 보관(`docs/CANVAS_SCENE_STORAGE.md`) |
+| `sceneStore.ts` | 저장 | 씬의 IndexedDB 저장소 — 화면 값/확정본/밀린 연산, 연산 재생 트랜잭션, **씬별 키**(바뀐 씬만 쓴다)·씬별 읽기 사본, 다른 창 통지, 이관·흡수·충돌 보관·이관 진단 기록(`docs/CANVAS_SCENE_STORAGE.md`) |
+| `ownEntry.ts` | 순수 | id 로 사전(일반 객체)을 조회할 때 자기 속성만 — 씬의 id 가 "toString" 이어도 Object.prototype 의 함수를 받지 않게 |
 | `sceneAbsorb.ts` | 순수 | 옛 저장소(localStorage)의 변경을 새 저장소에 반영할지 3자 비교로 판정 · 씬 내용 지문 |
-| `sceneBoot.ts` | 저장 | 부팅 게이트 — 저장소 열기·옛 저장소 1회 이관·이관 표식(localStorage+쿠키)·옛 창 쓰기 감시 |
+| `sceneBoot.ts` | 저장 | 부팅 게이트 — 저장소 열기·옛 저장소 1회 이관·이관 표식(localStorage+쿠키)·옛 저장 칸 진단·옛 창 쓰기 감시 |
 | `sceneArchive.ts` | 저장 | 캔버스 전체 내보내기/가져오기(`mvhub-scenes-full`) — 덮지 않고 합친다 |
 | `sceneAssetRelink.ts` | api+store | 옛 로컬 에셋 참조를 프로젝트 원본으로 재연결하고 씬 저장 갱신 · 서버 판정 기억(계정별 localStorage — 판정 받은 참조는 다음 실행에 NAS 를 다시 안 훑음) · '레퍼런스 찾기' 단추(이 씬만·render 포함)와 자동 복구를 한 줄로 · 판정 보류의 이유(held)·판정 못 끝냄(세션만)·판정 전 구별(카드 빨간 테두리 표시, ASSET_REGISTRY §5) · 탭 공간이 없으면 선택 워크스페이스로 묻기 |
-| `sceneBackup.ts` | api+store | 씬 확정본 → DB 단방향 미러·복구 |
+| `sceneBackup.ts` | api+store | 씬 확정본 → DB 단방향 미러·복구 · 서버 상한(5MiB)을 넘는 씬만 전송에서 제외 |
 | `sceneCardLinks.ts` | api+store | 카드 소속(담긴 생성물) 로컬 DB 기록·서버 병합 |
 | `sceneUndoStore.ts` | store | 씬별 undo/redo 히스토리(언마운트 생존) |
 | `sceneGenDataStore.ts` | store | genId → 생성물 캐시(언마운트 생존) |

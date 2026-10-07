@@ -30,6 +30,10 @@ const full: LegacyDiagnosis = { legacyChars: 4_960_000, storageChars: 4_990_000,
 
 beforeEach(() => {
   localStorage.clear();
+  // 이관 표식은 쿠키에도 남는다(꽉 찬 PC 대비) — 지우지 않으면 앞 시험의 표식 때문에 다음 시험이 '이미 옮겼다'로 연다.
+  for (const part of document.cookie.split("; ")) {
+    document.cookie = `${part.split("=")[0]}=; path=/; max-age=0`;
+  }
 });
 
 describe("처음 옮길 때의 기록", () => {
@@ -101,6 +105,19 @@ describe("옛 저장 칸 진단", () => {
     localStorage.setItem("ch.scenes", raw);
     expect((await bootSceneStore()).kind).toBe("ready");
     expect(await readSceneMigrationInfo()).toMatchObject({ legacyChars: raw.length, sceneCount: 2 });
+  });
+
+  // 읽기 오류를 빈 글자로 바꾸면 '확인 못 함'이 '자료 0글자'로 적힌다.
+  it("옛 저장소를 읽지 못했으면 0글자가 아니라 '확인 못 함'으로 적는다 — 그래도 부팅은 된다", async () => {
+    const real = Storage.prototype.getItem;
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key: string) {
+      if (key === "ch.scenes") throw new DOMException("막힘", "SecurityError");
+      return real.call(this, key);
+    });
+    expect((await bootSceneStore()).kind).toBe("ready");
+    const info = await readSceneMigrationInfo();
+    expect(info).toMatchObject({ legacyChars: null, sceneCount: 0 });
+    expect(describeSceneMigration(info)).toContain("캔버스 자료 확인 못 함");
   });
 
   it("할당량 초과로 못 쓰면 quota, 다른 이유면 unknown — 던지지 않는다", () => {
