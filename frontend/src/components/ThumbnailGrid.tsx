@@ -90,6 +90,8 @@ interface Props {
   onLoadMore?: () => void;
   resetKey?: string; // 필터/정렬 변경 신호(genQuery 직렬화) — 바뀌면 점진 렌더(shown)를 초기화
   loadError?: string | null; // 목록 첫 로드 실패 사유 — 빈 상태와 구분해 재시도 UI 를 띄운다
+  loading?: boolean; // 목록을 받는 중 — 비어 있을 때 "항목이 없습니다" 대신 "불러오는 중…"(받는 중인데 없다고 말하지 않는다)
+  selectLocked?: boolean; // 바깥(상단바·사이드바 여백)에서 시작하는 끌기 선택을 끈다 — 낡은 사본을 보이는 동안
   onRetryLoad?: () => void; // 로드 실패 시 "다시 시도"
 }
 
@@ -441,6 +443,14 @@ export function ThumbnailGrid(props: Props) {
       opsRef.current.onSelectedChange(new Set());
     }
   }, [onDragMove]);
+  // 언마운트(폴더 창·결과 창이 닫히며 격자가 사라짐) — 누르고 있던 선택 끌기를 버린다. 안 버리면 window 에 남은 리스너가
+  //  나중의 mouseup 에서 **사라진 격자의 옛 콜백**으로 선택을 만든다. 폴더 창을 닫은 직후의 조작 잠금도 그 옛 콜백은
+  //  모른다 — 카드를 누른 채 Esc 로 닫고 마우스를 떼면 낡은 사본에 선택이 생겼다(Codex 코드 리뷰 2026-10-07).
+  useEffect(() => () => {
+    dragRef.current = null;
+    removeWindowMouseDrag(onDragMove, onDragUp);
+    if (marqueeRafRef.current != null) cancelAnimationFrame(marqueeRafRef.current);
+  }, [onDragMove, onDragUp]);
 
   // 그리드 포커스 시에만 발동(프롬프트 입력 중엔 프롬프트가 ↑↓로 기록 탐색 — 포커스로 분리).
   const onGridKeyDown = (e: React.KeyboardEvent) => {
@@ -550,7 +560,7 @@ export function ThumbnailGrid(props: Props) {
     e.preventDefault(); // 글자 선택·네이티브 드래그 방지
     gridRef.current.focus();
     beginDrag(e, null);
-  });
+  }, !props.selectLocked);
 
   const onGridMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
@@ -598,6 +608,13 @@ export function ThumbnailGrid(props: Props) {
               </button>
             )}
           </div>
+        </div>
+      );
+    }
+    if (props.loading) {
+      return (
+        <div className="grid-wrap">
+          <div className="empty" role="status">{t("불러오는 중…")}</div>
         </div>
       );
     }

@@ -29,7 +29,7 @@ updated: 2026-10-07
 | 하고 싶은 일 | 프런트 진입 파일 | 백엔드 진입 파일 | 비고 |
 |---|---|---|---|
 | 라이브러리 카드 표시 문구·상태 라벨 바꾸기 | `components/GenerationCard.tsx`, `lib/generationDisplay.ts` | — | 상태 라벨은 순수 프런트 판정 |
-| 카드의 폴더 이름표·목록 탭의 '폴더 보기' 창 | `components/GenerationCard.tsx`(이름표), `App.tsx`(`listPeek`·`renderFolderPeek` — 캔버스 '폴더 보기' 창과 같은 창), `lib/appGenerationQuery.ts`(`folderPeekQuery`), `lib/folderLabel.ts`(표시 규칙) | `routers/library.py`(`GET /api/generations` — 기존 목록 API 그대로) | 캔버스 창과 같은 원리: 창이 떠 있는 동안 **목록 조회가 그 폴더로 바뀌고** 하나뿐인 격자·툴바·선택 막대를 창에 그린다(뒤 목록 자리는 비움). 닫으면 본 목록을 처음부터 다시 받는다. 사이드바 필터(`filters`)는 안 건드린다 — `patch()` 는 다음 생성 위치까지 바꾼다. 열고 닫을 때 `beginComposeList()` 로 목록을 비운다. 이름표는 목록 탭의 본 목록에만(캔버스·휴지통 보기·창 안 격자에는 없음). 창 안에서는 이름표를 누른 그 카드에 '방금 누른 카드' 표시가 붙고, 아래쪽에 있으면 그 카드로 내려가서 연다(다빈치 따라가기의 `resolveScrollRequest` 장치) |
+| 카드의 폴더 이름표·목록 탭의 '폴더 보기' 창 | `components/GenerationCard.tsx`(이름표), `App.tsx`(`listPeek`·`renderFolderPeek` — 캔버스 '폴더 보기' 창과 같은 창), `lib/appGenerationQuery.ts`(`folderPeekQuery`), `lib/folderLabel.ts`(표시 규칙) | `routers/library.py`(`GET /api/generations` — 기존 목록 API 그대로) | 캔버스 창과 같은 원리: 창이 떠 있는 동안 **목록 조회가 그 폴더로 바뀌고** 하나뿐인 격자·툴바·선택 막대를 창에 그린다(뒤 목록 자리는 비움). 닫으면 본 목록을 처음부터 다시 받는다 — **그동안의 빈 화면은 '본 목록 첫 쪽 사본'으로 메운다**(2026-10-07): 열 때 본 목록 조회의 키로 첫 쪽을 담고(`beginComposeList({ keep })`), 닫을 때 같은 키면 먼저 그린 뒤(`{ restore }`) 새 첫 쪽이 실제로 적용될 때까지 조작을 막는다(`staleList` → `<main inert>`·격자 `selectLocked`·선택 변경 무시·다빈치 따라가기 끔). 창에서 툴바 필터를 바꿨거나(키 다름)·다빈치가 끼워 넣은 화면·실패 화면이면 사본 없이 '불러오는 중…'. 사이드바 필터(`filters`)는 안 건드린다 — `patch()` 는 다음 생성 위치까지 바꾼다. 열고 닫을 때 `beginComposeList()` 로 목록을 비운다. 이름표는 목록 탭의 본 목록에만(캔버스·휴지통 보기·창 안 격자에는 없음). 창 안에서는 이름표를 누른 그 카드에 '방금 누른 카드' 표시가 붙고, 아래쪽에 있으면 그 카드로 내려가서 연다(다빈치 따라가기의 `resolveScrollRequest` 장치) |
 | 새 API 엔드포인트 추가하기 | `api.ts` | `routers/_proxy.py`(경로 소유권) + 해당 도메인 라우터. **새 라우터 파일이면 `main.py` 의 `include_router()` 등록도** | 로컬 전용 경로는 `_proxy._LOCAL_PREFIXES/_LOCAL_EXACT` 갱신 + `backend/tests/test_proxy_ownership.py` 골든 스냅샷도 같이 고쳐야 함(§5-c) |
 | 캔버스(씬) 단축키 바꾸기 | `lib/useSceneKeyboardShortcuts.ts`, `lib/sceneKeyboard.ts` | — | |
 | 편집 탭(다빈치식 컷 타임라인 — 공유물을 폴더 순서로 이어 보기) | `components/timeline/EditTab.tsx`(조립·편집 키), `lib/editTimeline.ts`(순수 — 배치·보이는 클립·문서 편집), `lib/useEditPlayback.ts`(재생), `lib/useEditDoc.ts`·`lib/editTimelineStore.ts`(문서 저장), `lib/useEditSequence.ts`(조회) | — (백엔드 변경 없음 — 기존 목록·폴더 API) | 계약 [EDIT_TAB.md](EDIT_TAB.md). **`Filters["tab"]` 의 값이 아니다** — `lib/useAppNavigation.ts` 의 `edit` 보기 + `App.tsx` 의 `editOpen`(떠 있는 동안 폴더 창·다빈치 따라가기·라이브러리 단축키가 쉰다). 사이드바는 `ProjectSection` 을 쓰지 않는다(폴더 클릭이 생성 목적지를 저장한다). 편집 문서는 localStorage 뿐(백업 없음). 편집 키는 고정(단축키 설정 창에 없음) |
@@ -516,7 +516,7 @@ updated: 2026-10-07
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `ThumbnailGrid.tsx`(707줄) | 생성물 카드 가상 그리드 · 마퀴/키보드 선택 · 날짜 그룹 · 폴더 창을 연 카드 표시(`openedFromId`) · 캔버스 '생성 결과' 창용 선택 기능(안 주면 종전 그대로): 카드 위 칸(`cellHeader`)·'마지막으로 본' 지정(`lastViewedId`)·흐림(`dimIds`)·폴더 표 표시만(`showFolder`)·이동과 함께 기준 카드 지정(`resolveScrollRequest.focus`) · 선택을 푼 Esc 는 `keyHandled` 로 표시 | `ThumbnailGrid` |
+| `ThumbnailGrid.tsx`(716줄) | 생성물 카드 가상 그리드 · 마퀴/키보드 선택 · 날짜 그룹 · 빈 목록 안내(받는 중이면 '불러오는 중…' — `loading`) · 바깥 끌기 선택 끄기(`selectLocked`) · 폴더 창을 연 카드 표시(`openedFromId`) · 캔버스 '생성 결과' 창용 선택 기능(안 주면 종전 그대로): 카드 위 칸(`cellHeader`)·'마지막으로 본' 지정(`lastViewedId`)·흐림(`dimIds`)·폴더 표 표시만(`showFolder`)·이동과 함께 기준 카드 지정(`resolveScrollRequest.focus`) · 선택을 푼 Esc 는 `keyHandled` 로 표시 | `ThumbnailGrid` |
 | `GenerationCard.tsx`(779줄) | 카드 1장(그리드/리스트 두 모드) · 호버 영상 · 드래그 · 폴더 이름표(`onOpenFolder` 를 받았을 때만 — 카드 아래 변 가운데에 붙인 표·이름만·반투명, 소스·상태 배지는 그 위에 한 묶음 `.card-bottom`. `showFolder` 만 받으면 누를 수 없는 표시 `.card-folder.static`) · 고른 폴더 밖 흐림(`dimmed` → `.folder-dim`) · 폴더 창 안의 '방금 누른 카드' 표시(`openedHere` — 같은 자리·같은 모양에 글자·테두리만 라임, 카드 테두리는 안 건드림) | `GenerationCard`(memo) — 캔버스의 `scene/cards/GenerationCard.tsx` 와 이름만 같은 별개 파일(§5-b) |
 | `MediaThumbnail.tsx`(157줄) | 영상 포스터/이미지/포스터 없는 영상 3분기 통합 표현 | `MediaThumbnail`(10곳 재사용) |
 | `LibraryToolbar.tsx`(296줄) | 타입 필터·검토 필터·크기 슬라이더·리스트/그리드 토글·태그 패널 | `LibraryToolbar` |
@@ -730,7 +730,7 @@ updated: 2026-10-07
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
-| `useGenerationLibraryData.ts` | 훅 | 목록 로드·페이징·seq 가드·동기화 판정(§6 계약 지점). `beginComposeList` = 목록을 비우고 다시 받기(캔버스·목록 탭의 '폴더 보기' 창이 열고 닫을 때 — 지금 탭 캐시를 지우고 진행 중 응답을 버린다) |
+| `useGenerationLibraryData.ts` | 훅 | 목록 로드·페이징·seq 가드·동기화 판정(§6 계약 지점). `beginComposeList` = 목록을 비우고 다시 받기(캔버스·목록 탭의 '폴더 보기' 창이 열고 닫을 때 — 지금 탭 캐시를 지우고 진행 중 응답을 버린다). 목록 탭 창은 `{ keep }`/`{ restore }` 로 본 목록 첫 쪽 사본을 담았다 먼저 보인다(`backListRef` — 탭 캐시와 별개 칸, 출처는 탭 캐시의 sig 로 확인). `staleList` = 그 사본을 보이는 중 — **지금 문맥의 첫 쪽 응답을 적용한 순간**(성공·실패)에만 꺼진다(버려진 응답·메타 종료로는 안 꺼짐) |
 | `useLibraryFilters.ts` | 훅 | 필터·뷰 상태(localStorage 백업) + 파생 쿼리 |
 | `useLibraryPersistence.ts` | 훅 | 필터 저장 포맷·키·마이그레이션 |
 | `libraryRequestPlan.ts` | 순수 | 목록·메타 조회를 같은 순간에 시작 |
