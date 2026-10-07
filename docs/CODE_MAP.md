@@ -32,6 +32,7 @@ updated: 2026-10-07
 | 카드의 폴더 이름표·목록 탭의 '폴더 보기' 창 | `components/GenerationCard.tsx`(이름표), `App.tsx`(`listPeek`·`renderFolderPeek` — 캔버스 '폴더 보기' 창과 같은 창), `lib/appGenerationQuery.ts`(`folderPeekQuery`), `lib/folderLabel.ts`(표시 규칙) | `routers/library.py`(`GET /api/generations` — 기존 목록 API 그대로) | 캔버스 창과 같은 원리: 창이 떠 있는 동안 **목록 조회가 그 폴더로 바뀌고** 하나뿐인 격자·툴바·선택 막대를 창에 그린다(뒤 목록 자리는 비움). 닫으면 본 목록을 처음부터 다시 받는다. 사이드바 필터(`filters`)는 안 건드린다 — `patch()` 는 다음 생성 위치까지 바꾼다. 열고 닫을 때 `beginComposeList()` 로 목록을 비운다. 이름표는 목록 탭의 본 목록에만(캔버스·휴지통 보기·창 안 격자에는 없음). 창 안에서는 이름표를 누른 그 카드에 '방금 누른 카드' 표시가 붙고, 아래쪽에 있으면 그 카드로 내려가서 연다(다빈치 따라가기의 `resolveScrollRequest` 장치) |
 | 새 API 엔드포인트 추가하기 | `api.ts` | `routers/_proxy.py`(경로 소유권) + 해당 도메인 라우터. **새 라우터 파일이면 `main.py` 의 `include_router()` 등록도** | 로컬 전용 경로는 `_proxy._LOCAL_PREFIXES/_LOCAL_EXACT` 갱신 + `backend/tests/test_proxy_ownership.py` 골든 스냅샷도 같이 고쳐야 함(§5-c) |
 | 캔버스(씬) 단축키 바꾸기 | `lib/useSceneKeyboardShortcuts.ts`, `lib/sceneKeyboard.ts` | — | |
+| 편집 탭(다빈치식 컷 타임라인 — 공유물을 폴더 순서로 이어 보기) | `components/timeline/EditTab.tsx`(조립·편집 키), `lib/editTimeline.ts`(순수 — 배치·보이는 클립·문서 편집), `lib/useEditPlayback.ts`(재생), `lib/useEditDoc.ts`·`lib/editTimelineStore.ts`(문서 저장), `lib/useEditSequence.ts`(조회) | — (백엔드 변경 없음 — 기존 목록·폴더 API) | 계약 [EDIT_TAB.md](EDIT_TAB.md). **`Filters["tab"]` 의 값이 아니다** — `lib/useAppNavigation.ts` 의 `edit` 보기 + `App.tsx` 의 `editOpen`(떠 있는 동안 폴더 창·다빈치 따라가기·라이브러리 단축키가 쉰다). 사이드바는 `ProjectSection` 을 쓰지 않는다(폴더 클릭이 생성 목적지를 저장한다). 편집 문서는 localStorage 뿐(백업 없음). 편집 키는 고정(단축키 설정 창에 없음) |
 | 캔버스 카드의 '생성 결과' 창 | `components/scene/SceneVariantPopup.tsx`(창 — 라이브러리 `ThumbnailGrid`·`BoardSelectionActionBar` 조립), `components/scene/SceneBoard.tsx`(`variantView` — 보일 결과·선택·조작 어댑터), `App.tsx`(`renderVariantToolbar`·`variantOpen`), `lib/boardFilters.ts`, `lib/keyHandled.ts` | — (씬의 `genData` 를 그대로 쓴다 — 목록 조회를 빌리지 않는다) | 폴더 창과 같은 모양이지만 **`.folder-peek` 클래스는 달지 않는다**(그 클래스는 '이 안의 키는 라이브러리 몫' 표시라, 달면 씬의 색·비활성 단축키가 창에서 죽는다) — 뼈대 CSS 만 선택자 묶음으로 같이 쓴다(`.scene-varwin`). 툴바 필터에 안 맞는 결과는 **걸러 내고 선택에서도 뺀다**(다빈치가 고른 것은 예외로 보인다). 대표 단추는 격자의 `cellHeader` 칸(카드 위), 폴더 표는 표시만(`showFolder`). Esc = 선택 해제 → 닫기(격자가 쓴 Esc 는 `keyHandled` 표시로 씬이 다시 처리하지 않는다). 창의 아래 끝은 하단 프롬프트 위에서 멈춘다(프롬프트 높이를 재서 `--dock-gap`). '폴더 보기' 창과는 겹쳐 두지 않는다(나중에 연 쪽만). 조작 대상은 **보이는 카드뿐**(`shownIds` — 아직 안 불러온 결과는 선택에 남아도 대상이 아니다). 여러 장을 고른 채 한 카드에서 한 태그·S·워크스페이스 명령은 고른 전체에(`bulkVariantTags`·`onVariantGradeStep`·`variantWorkspace`). 창이 떠 있는 동안 바깥에서 시작한 끌기 선택은 창의 격자만 받는다(캔버스 쪽 `useOutsideDragSelect` 는 끔) |
 | 생성 제출 흐름(프롬프트→요청→CLI) | `components/spotlight/useSpotlightSubmit.ts`, `lib/spotlightSubmit.ts` | `routers/gen_requests.py`, `usecases/gen_requests.py`, `repo/gen_requests.py` | 실제 CLI 제출·추적·완료 판정은 작업자 PC 의 `agent_push.py` 가 한다 — 서버 쪽만 봐서는 흐름이 끝까지 안 보인다 |
 | 팀 공유·검토(공유/최종/보류) | `lib/useGenerationShareActions.ts`, `components/generation/GenerationReviewOverlay.tsx` | `routers/share.py`, `repo/share.py`, `services/share_state_reconciler.py` | |
@@ -453,10 +454,10 @@ updated: 2026-10-07
 | `api.ts` | 타입 안전 API 클라이언트(`/api` 프록시), 100여 메서드 | 약 859줄 |
 | `types.ts` | 백엔드 모델과 1:1 타입 56개 | 약 513줄 |
 | `main.tsx` | 부트스트랩 — `?embed=` 로 App/AssetsWindow/ManageWindow 분기, 테마 선적용 | §3.5 |
-| `styles.css` | `styles/*.css` 12개 @import 목록만 | |
+| `styles.css` | `styles/*.css` 13개 @import 목록만 | |
 | `vite-env.d.ts` | Vite 타입 참조 1줄 | |
 
-### 3.2 components (`frontend/src/components/`, 147파일)
+### 3.2 components (`frontend/src/components/`, 152파일)
 
 #### 씬 캔버스 보드 셸(`scene/` 최상위, 5파일)
 
@@ -587,6 +588,11 @@ updated: 2026-10-07
 | `compare/CompareSourceLightbox.tsx`(29줄) | 비교 모달 위 원본 라이트박스 | 〃 |
 | `edit/PartialEditModal.tsx`(966줄) | 부분 수정 캔버스(펜·도형·마스크·A/B) | `PartialEditModal` |
 | `edit/PartialEditHost.tsx`(47줄) | `partialEdit` 이벤트 → 최신 Generation 조회 → 모달 개방 | `PartialEditHost`(§3.5 숨은 진입점) |
+| `timeline/EditTab.tsx`(약 410줄) | 편집 탭 조립 — 시퀀스 고르기·문서·재생·편집 키([EDIT_TAB.md](EDIT_TAB.md)). `edit/`(부분 수정)와 다른 기능이다 | `EditTab`(App 이 지연 로드) |
+| `timeline/EditTimeline.tsx`(약 280줄) | 눈금자·컷 줄·영상 트랙·소리 줄·재생헤드. 클립은 위아래로만 끈다(컷 자리는 폴더 순서로 고정) | `EditTimeline` |
+| `timeline/EditViewer.tsx`(86줄) | 뷰어(`<video>` 하나)와 재생 단추 — 주소는 재생 훅이 갈아 끼운다 | `EditViewer` |
+| `timeline/EditPool.tsx`(약 110줄) | 재생헤드가 있는 컷의 공유 생성물 — 누르면 넣고 다시 누르면 뺀다 | `EditPool` |
+| `timeline/EditSidebar.tsx`(약 115줄) | 프로젝트·폴더에서 시퀀스 고르기(`FolderTreeView` 만 쓴다 — `ProjectSection` 아님) | `EditSidebar` |
 | `FloatingPrompt.tsx`(104줄) | `window.prompt` 대체 플로팅 입력 | `FloatingPrompt` |
 
 #### Assets(구성) 화면(`assets/` + `sidebar/` + 최상위, 28파일)
@@ -637,7 +643,7 @@ updated: 2026-10-07
 | `manage/types.ts`(314줄) | PM 타입 단일 출처(`WorkViewProps`·`Task`·`ManageSummary`…) | |
 | `manage/manageColors.ts`(37줄) · `personalWork.ts`(78줄) · `taskPreviews.ts`(78줄) · `projectUsageHierarchy.ts`(121줄) · `usageSource.ts`(29줄) | 순수 계산(색 라벨·개인 작업 축소·미리보기 후보·에피소드/시퀀스 계층·출처 표기) | |
 
-### 3.3 lib (`frontend/src/lib/`, 212파일 — 하위 디렉터리 없이 평평함)
+### 3.3 lib (`frontend/src/lib/`, 218파일 — 하위 디렉터리 없이 평평함)
 
 역할 표기: `훅`=React import 있음 · `순수`=인자→값(React·fetch·localStorage·브라우저 전역 없음) · `브라우저`=React 는 안 쓰지만 창·문서·소켓·BroadcastChannel·리스너·타이머를 만진다(부작용 있음) · `store`=모듈 수준
 가변 상태+구독 · `api`=HTTP IO · `저장`=localStorage IO.
@@ -849,6 +855,12 @@ updated: 2026-10-07
 | `assetVersionRefresh.ts` | 브라우저+api | 프로젝트별 1-in-flight 버전 갱신 실행기(API 조회) + 포커스·가시성 복귀 리스너 |
 | `assetVirtualRows.ts` | 순수 | 에셋 그리드 행 모델(인덱스판) |
 | `folderTreeModel.ts` | 순수 | 폴더 경로 정규화 + 개수 트리 구성 |
+| `editTimeline.ts` | 순수 | 편집 탭 계산 — 컷 순서(이름 자연 정렬)·배치·보이는 클립(위 트랙 우선)·위치((컷, 컷 안 시각))·문서 편집·공유 목록과 잇기([EDIT_TAB.md](EDIT_TAB.md)) |
+| `editTimelineStore.ts` | 저장 | 편집 문서 localStorage 읽기/쓰기(읽지 못한 문서는 `.bad` 로 보존)·되돌리기 스택·마지막 시퀀스 |
+| `useEditDoc.ts` | 훅 | 편집 문서 상태 — 바꾸기·저장·되돌리기·다른 창의 변경 받아들이기((키, 문서) 한 쌍·`rev`) |
+| `useEditSequence.ts` | 훅+api | 편집 탭 조회 — 프로젝트·폴더 트리(온전성 표시)와 시퀀스의 공유 생성물 전부(쪽 넘김·문맥 가드·상한 2,000) |
+| `useEditPlayback.ts` | 훅 | 편집 탭 재생 — 시계 주인(영상/rAF)·보이는 소스 전환·훑기·배속. 프레임마다 React 를 건드리지 않는다 |
+| `videoDuration.ts` | 브라우저 | 영상 길이 재기(메타데이터만·주소별 한 번·동시에 4개) |
 | `folderLabel.ts` | 순수 | 카드 폴더 이름표 글자(끝 두 칸)·전체 경로 표기 |
 | `projectFolderTree.ts` | 저장 | 프로젝트 폴더 캐시·펼침 상태 |
 | `folderContextMenu.ts` | 순수 | 폴더 우클릭 메뉴 규칙·위치 클램프 |
@@ -960,7 +972,7 @@ updated: 2026-10-07
 `spotlightPromptConfig.test.ts` · `usageModelIndex.test.ts` · `useGenerationProgress.test.ts` ·
 `workspaceCommand.test.ts`.
 
-### 3.4 styles (`frontend/src/styles/`, 12파일)
+### 3.4 styles (`frontend/src/styles/`, 13파일)
 
 담당 화면은 클래스 접두어와 실제 컴포넌트의 className 대조(S1 조사)로 추정했다. 한 파일이 여러
 화면을 겸하는 경우가 있다(§5-d).
@@ -978,6 +990,7 @@ updated: 2026-10-07
 | `composition-manage.css` | 1098 | 관리(PM)창 구성·대시보드 화면. 옛 합성보드·옛 통계 위젯(도넛·퍼널 등)의 규칙은 2026-09-18 에 걷어냈다. 남은 휴면 규칙은 §5-d |
 | `admin-auth-compare.css` | 682 | 로그인·관리자 창·계정 비교 화면 |
 | `partial-edit.css` | 327 | 부분 수정 캔버스(`edit/PartialEditModal`) |
+| `edit-tab.css` | 186 | 편집 탭(`timeline/`) — 클래스는 전부 `ed-` 로 시작한다(흔한 이름은 다른 화면 규칙에 먹힌다) |
 | `resolve-library.css` | 22 | Resolve 관련 라이브러리 표시(소규모) |
 
 ### 3.5 숨은 진입점
