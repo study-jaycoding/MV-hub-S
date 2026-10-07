@@ -768,6 +768,8 @@ export default function App() {
   //  키가 달라져 사본을 쓰지 않는다.
   const backQueryKeyRef = useRef("");
   backQueryKeyRef.current = generationQueryKey(genQuery);
+  // 창을 닫은 뒤 초점을 본 목록 격자로 돌려줄 뜻(닫는 순간의 문맥 = listPeekCtx). null = 돌려주지 않는다.
+  const refocusGridRef = useRef<string | null>(null);
   const openFolderWindow = useCallback((g: Generation) => {
     const f = filtersRef.current;
     if (f.tab === "compose" || !g.folder_path) return;
@@ -782,6 +784,11 @@ export default function App() {
     //  응답을 버려 뒤 목록이 빈 채로 남는다.
     if (!listPeekRef.current) return;
     listPeekRef.current = null;
+    // 닫는 순간 초점이 창 안(또는 아무 데도 없음)이면, 본 목록이 조작 가능해진 뒤 격자로 돌려줄 뜻을 그 문맥과 함께 적어 둔다.
+    //  초점이 창 밖 다른 곳(크게 보기·프롬프트 등)에 있으면 적지 않는다 — 남의 초점은 건드리지 않는다.
+    const active = document.activeElement;
+    refocusGridRef.current =
+      !active || active === document.body || active.closest(".folder-peek") ? listPeekCtxRef.current : null;
     beginComposeList({ restore: backQueryKeyRef.current });
     setSelected(new Set());
     setFolderWindow(null);
@@ -1691,6 +1698,22 @@ export default function App() {
   useEffect(() => {
     if (listPeek) folderPeekRef.current?.focus();
   }, [listPeek]);
+  // 닫으면 초점을 본 목록 격자로 돌려준다 — 창이 사라지면 초점이 BODY 로 떨어져, 격자의 키(Ctrl+A·방향키…)가 격자에 초점을 다시
+  //  줄 때까지 먹지 않았다(2026-10-07 실측). 본 목록이 조작 가능해진 뒤에 한다(옛 첫 쪽을 보이는 동안 main 은 inert, 받는 중이면
+  //  격자가 아직 없다). 스크롤은 그대로. 기다리는 사이 문맥이 한 번이라도 달라졌거나 초점이 어디로든 옮겨 갔으면 그만둔다 —
+  //  복원하는 순간의 상태만 보면 안 된다: 문맥이 바뀌었다 되돌아온 경우, 초점을 받았던 요소가 사라져 다시 BODY 가 된 경우
+  //  (메뉴에서 설정 창을 연 직후 등)에 남이 시작한 일 뒤의 격자로 초점을 보내게 된다(Codex 코드 리뷰).
+  useEffect(() => {
+    if (refocusGridRef.current !== null && refocusGridRef.current !== listPeekCtx) refocusGridRef.current = null;
+    if (refocusGridRef.current === null || staleList || loading) return;
+    refocusGridRef.current = null; // 한 번만 — 격자가 없으면(빈 목록·실패) 그대로 끝낸다
+    document.querySelector<HTMLElement>("main.main .gen-grid")?.focus({ preventScroll: true });
+  }, [staleList, loading, listPeekCtx]);
+  useEffect(() => {
+    const cancel = () => { refocusGridRef.current = null; };
+    document.addEventListener("focusin", cancel);
+    return () => document.removeEventListener("focusin", cancel);
+  }, []);
   // 코멘트 패널 라벨 — 열렸을 때만, gens 가 바뀔 때만 계산(매 렌더 전량 find 방지).
   const commentLabel = useMemo(
     () =>
