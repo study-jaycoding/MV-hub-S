@@ -1,0 +1,236 @@
+// @vitest-environment jsdom
+// 편집 탭의 재생 훅 — 시계 주인(영상/rAF)과 '보이는 소스 변경'의 순서를 가짜 video 로 본다(docs/EDIT_TAB.md).
+// 실제 탐색·디코딩은 여기서 못 본다 — 그것은 격리 브라우저 실측 몫이다.
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { buildLayout, emptyEditDoc, type EditDoc, type SlotClip } from "../src/lib/editTimeline";
+import { useEditPlayback, type EditSource, type EditVideo } from "../src/lib/useEditPlayback";
+
+class FakeVideo implements EditVideo {
+  src = "";
+  currentTime = 0;
+  playbackRate = 1;
+  paused = true;
+  seeking = false;
+  loads = 0;
+  plays = 0;
+  private listeners = new Map<string, Set<() => void>>();
+  play() { this.paused = false; this.plays++; return Promise.resolve(); }
+  pause() { this.paused = true; }
+  load() { this.loads++; this.currentTime = 0; }
+  removeAttribute(name: string) { if (name === "src") this.src = ""; }
+  addEventListener(type: string, listener: () => void) {
+    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+    this.listeners.get(type)!.add(listener);
+  }
+  removeEventListener(type: string, listener: () => void) { this.listeners.get(type)?.delete(listener); }
+  emit(type: string) { act(() => { this.listeners.get(type)?.forEach((listener) => listener()); }); }
+  count() { return [...this.listeners.values()].reduce((sum, set) => sum + set.size, 0); }
+}
+
+const DOC: EditDoc = {
+  ...emptyEditDoc(),
+  clips: [
+    { cut: "e070/c1", gen: "low", track: 1, dur: 8, kind: "video" },
+    { cut: "e070/c1", gen: "top", track: 2, dur: 3, kind: "video" },
+    { cut: "e070/c3", gen: "pic", track: 1, dur: 5, kind: "image" },
+  ],
+};
+const LAYOUT = buildLayout(["e070/c1", "e070/c2", "e070/c3"], DOC); // c1 0~8 · c2(빈 컷) 8~13 · c3 13~18
+const sourceOf = (clip: SlotClip): EditSource =>
+  ({ state: "ok", url: `/v/${clip.gen}`, type: clip.kind ?? "video", thumb: null });
+
+let host: HTMLDivElement;
+let root: Root;
+let video: FakeVideo;
+let videoRef: { current: FakeVideo }; // 실제 화면의 useRef 처럼 같은 객체를 넘긴다
+let playback: ReturnType<typeof useEditPlayback>;
+let clock = 0;
+let frames: ((stamp: number) => void)[] = [];
+const paint = vi.fn();
+
+function Harness({ scope = "s1", doc = DOC, layout = LAYOUT }: { scope?: string; doc?: EditDoc; layout?: typeof LAYOUT }) {
+  playback = useEditPlayback({ scope, layout, doc, sourceOf, videoRef, paint });
+  return null;
+}
+const render = (props: Parameters<typeof Harness>[0] = {}) => act(() => root.render(<Harness {...props} />));
+// 한 프레임 — 시계를 ms 만큼 보내고 걸려 있던 rAF 를 부른다.
+const frame = (ms: number) => act(() => {
+  clock += ms;
+  const due = frames;
+  frames = [];
+  due.forEach((callback) => callback(clock));
+});
+
+beforeEach(() => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  clock = 1000;
+  frames = [];
+  paint.mockClear();
+  video = new FakeVideo();
+  videoRef = { current: video };
+  vi.spyOn(performance, "now").mockImplementation(() => clock);
+  vi.stubGlobal("requestAnimationFrame", (callback: (stamp: number) => void) => frames.push(callback));
+  vi.stubGlobal("cancelAnimationFrame", () => { frames = []; });
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
+});
+afterEach(() => {
+  act(() => root.unmount());
+  host.remove();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+it("같은 컷에서 위 클립이 끝나면 아래 클립을 같은 시각으로 탐색해 이어 튼다", () => {
+  render();
+  expect(playback.view.clip?.gen).toBe("top"); // 위 트랙이 우선
+  expect(video.src).toBe("/v/top");
+  video.emit("loadedmetadata");
+  act(() => playback.toggle());
+  expect(video.paused).toBe(false);
+  video.currentTime = 2.9;
+  frame(16);
+  expect(playback.now()).toBeCloseTo(2.9); // 영상이 시계
+  video.currentTime = 3.05;
+  frame(16);
+  expect(playback.view.cut).toBe("e070/c1"); // 컷은 그대로인데
+  expect(playback.view.clip?.gen).toBe("low"); // 보이는 소스만 바뀐다
+  expect(video.src).toBe("/v/low");
+  frame(500); // 새 소스를 받는 동안에는 시간이 서 있다(0 으로 되돌아가지도 않는다)
+  expect(playback.now()).toBeCloseTo(3.05);
+  video.emit("loadedmetadata");
+  expect(video.currentTime).toBeCloseTo(3.05); // 0 이 아니라 보던 시각으로
+  const plays = video.plays;
+  video.emit("seeked");
+  expect(video.plays).toBe(plays + 1);
+  video.currentTime = 4;
+  frame(16);
+  expect(playback.now()).toBeCloseTo(4);
+});
+
+it("빈 컷과 이미지는 rAF 시계로 지나가고, 끝에 닿으면 멈춘다", () => {
+  render();
+  act(() => playback.seek(8.5)); // 빈 컷
+  expect(playback.view.clip).toBeNull();
+  expect(video.src).toBe("");
+  act(() => playback.toggle());
+  frame(1000);
+  expect(playback.now()).toBeCloseTo(9.5);
+  frame(4000); // 13.5 — 이미지 컷
+  expect(playback.view.cut).toBe("e070/c3");
+  expect(playback.view.source?.type).toBe("image");
+  frame(5000);
+  expect(playback.view.playing).toBe(false);
+  expect(playback.now()).toBeCloseTo(LAYOUT.total);
+  expect(frames).toHaveLength(0);
+  act(() => playback.toggle()); // 끝에서 다시 누르면 처음부터
+  expect(playback.now()).toBe(0);
+});
+
+it("멈춘 채 훑으면 영상을 그 시각으로 보내고, 탐색 중 목표가 바뀌면 끝난 뒤 한 번 더 간다", () => {
+  render();
+  video.emit("loadedmetadata");
+  act(() => playback.seek(1));
+  expect(video.currentTime).toBe(1);
+  video.seeking = true;
+  act(() => playback.seek(2)); // 탐색 중에는 새 탐색을 겹치지 않는다
+  expect(video.currentTime).toBe(1);
+  video.seeking = false;
+  video.emit("seeked");
+  expect(video.currentTime).toBe(2);
+  expect(video.paused).toBe(true);
+});
+
+it("L 은 배속을 올리고 J 는 역방향(rAF 시계) — 처음에 닿으면 멈춘다", () => {
+  render();
+  video.emit("loadedmetadata");
+  act(() => playback.seek(1));
+  act(() => playback.shuttle(1));
+  act(() => playback.shuttle(1));
+  expect(playback.view.rate).toBe(2);
+  expect(video.playbackRate).toBe(2);
+  act(() => playback.shuttle(-1));
+  expect(playback.view.rate).toBe(-1);
+  expect(video.paused).toBe(true); // 역방향은 영상이 시계가 아니다
+  frame(500);
+  expect(playback.now()).toBeCloseTo(0.5);
+  frame(2000);
+  expect(playback.view.playing).toBe(false);
+  expect(playback.now()).toBe(0);
+});
+
+it("재생하지 못하는 영상은 정지화면으로 두고 rAF 시계로 지나간다", () => {
+  render();
+  act(() => playback.toggle());
+  video.emit("error");
+  expect(playback.view.failed).toBe(true);
+  expect(video.src).toBe("");
+  frame(1000);
+  expect(playback.now()).toBeCloseTo(1);
+});
+
+it("가려지면 멈추고, 떠날 때 영상·rAF·이벤트를 정리한다", () => {
+  render();
+  video.emit("loadedmetadata");
+  act(() => playback.toggle());
+  expect(playback.view.playing).toBe(true);
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+  expect(playback.view.playing).toBe(false);
+  expect(video.paused).toBe(true);
+  visibility.mockRestore();
+  act(() => playback.toggle());
+  act(() => root.render(null));
+  expect(video.src).toBe("");
+  expect(video.paused).toBe(true);
+  expect(video.count()).toBe(0);
+  expect(frames).toHaveLength(0);
+});
+
+it("보던 컷이 짧아지면 재생을 멈추고, 시퀀스가 바뀌면 처음으로 — 돌아오면 보던 자리로", () => {
+  render();
+  act(() => playback.seek(6)); // c1 의 6초(아래 클립)
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  act(() => playback.toggle());
+  video.currentTime = 6.5; // 영상이 시계로 돌고 있다
+  frame(16);
+  expect(playback.now()).toBeCloseTo(6.5);
+  const short: EditDoc = { ...DOC, clips: DOC.clips.filter((clip) => clip.gen !== "low") }; // 긴 클립을 뺐다 → c1 은 3초
+  render({ doc: short, layout: buildLayout(["e070/c1", "e070/c2", "e070/c3"], short) });
+  expect(playback.view.playing).toBe(false);
+  expect(playback.now()).toBeLessThan(3); // 컷 끝 직전 — 영상의 옛 시각(6.5초)으로 되덮지 않는다
+  expect(playback.now()).toBeGreaterThan(2.9);
+  expect(playback.view.clip?.gen).toBe("top"); // 검은 화면이 아니다
+  render({ scope: "s2" });
+  expect(playback.now()).toBe(0);
+  act(() => playback.seek(14));
+  render({ scope: "s1" });
+  render({ scope: "s2" });
+  expect(playback.now()).toBeCloseTo(14);
+});
+
+it("훑는 도중에 재생을 눌러도 옛 탐색 자리가 아니라 마지막에 놓은 자리에서 시작한다", () => {
+  render();
+  video.emit("loadedmetadata");
+  act(() => playback.seek(1));
+  video.seeking = true; // 1초로 가는 중
+  act(() => playback.seek(2));
+  const plays = video.plays;
+  act(() => playback.toggle());
+  expect(video.plays).toBe(plays); // 아직 목표에 못 왔다 — 영상에 시계를 넘기지 않는다
+  frame(300);
+  expect(playback.now()).toBeCloseTo(2); // 기다리는 동안 시간은 서 있다
+  video.seeking = false;
+  video.emit("seeked"); // 1초 도착 → 최신 목표(2초)로 다시 보낸다
+  expect(video.currentTime).toBe(2);
+  expect(video.plays).toBe(plays);
+  video.emit("seeked");
+  expect(video.plays).toBe(plays + 1);
+  video.currentTime = 2.2;
+  frame(16);
+  expect(playback.now()).toBeCloseTo(2.2);
+});

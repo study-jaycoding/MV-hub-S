@@ -18,6 +18,8 @@ interface UseGenerationKeyboardActionsArgs {
   setGens: Dispatch<SetStateAction<Generation[]>>;
   // compose 탭에서도 라이브러리 격자가 떠 있는 동안(캔버스 '폴더 보기' 창)은 색·비활성 단축키를 살린다.
   composeGridActiveRef?: MutableRefObject<boolean>;
+  // 라이브러리 격자가 화면에 없는 동안(편집 탭) — Esc·색·비활성 키를 듣지 않는다(편집 키와 겹친다).
+  inactiveRef?: MutableRefObject<boolean>;
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -40,6 +42,7 @@ export function useGenerationKeyboardActions({
   selectedRef,
   setGens,
   composeGridActiveRef,
+  inactiveRef,
 }: UseGenerationKeyboardActionsArgs) {
   const latestCallbacksRef = useRef({
     flash,
@@ -83,7 +86,7 @@ export function useGenerationKeyboardActions({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (isEditableTarget(e.target)) return;
+      if (inactiveRef?.current || isEditableTarget(e.target)) return;
       const ids = [...selectedRef.current];
       if (e.key === "Escape") {
         clearSelect();
@@ -113,5 +116,5 @@ export function useGenerationKeyboardActions({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [clearSelect, colorSelected, filtersRef, selectedRef, composeGridActiveRef]);
+  }, [clearSelect, colorSelected, filtersRef, selectedRef, composeGridActiveRef, inactiveRef]);
 }

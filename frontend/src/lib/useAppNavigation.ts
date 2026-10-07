@@ -3,7 +3,8 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { Filters, InfoTarget, PreviewTarget } from "../types";
 
 type NavOverlay = "preview" | "comment" | "admin";
-type NavView = { tab: Filters["tab"]; focusId: string | null; ov: NavOverlay | null; key: number };
+// edit = 편집 탭(오버레이가 아니라 '보기'). Filters["tab"] 의 값이 아니다 — 밑의 탭 상태는 그대로 둔 채 본문만 바꾼다.
+type NavView = { tab: Filters["tab"]; focusId: string | null; ov: NavOverlay | null; key: number; edit?: boolean };
 
 export function useAppNavigation({
   currentTab,
@@ -15,6 +16,7 @@ export function useAppNavigation({
   setBoardFocusId,
   setBoardArrange,
   setFilters,
+  setEditOpen,
   previewScopeKey,
 }: {
   currentTab: Filters["tab"];
@@ -26,6 +28,7 @@ export function useAppNavigation({
   setBoardFocusId: Dispatch<SetStateAction<string | null>>;
   setBoardArrange: Dispatch<SetStateAction<number>>;
   setFilters: Dispatch<SetStateAction<Filters>>;
+  setEditOpen?: Dispatch<SetStateAction<boolean>>;
   previewScopeKey?: string;
 }) {
   const navPayloadsRef = useRef(new Map<number, unknown>());
@@ -50,6 +53,7 @@ export function useAppNavigation({
       setPreview(v.ov === "preview" ? ((payload as PreviewTarget) ?? null) : null);
       // 코멘트 패널은 nav 뷰(탭 전환)에 묶지 않는다 — 태그창처럼 X 로 닫을 때까지 유지(독립 상태).
       setAdminOpen(v.ov === "admin");
+      setEditOpen?.(!!v.edit); // 옛 기록(칸 없음)은 편집이 아니다
       setInfo(null);
       if (v.tab === "compose") {
         setBoardFocusId(v.focusId);
@@ -64,6 +68,7 @@ export function useAppNavigation({
       setBoardArrange,
       setBoardFocusId,
       setCommentGenId,
+      setEditOpen,
       setFilters,
       setInfo,
       setPreview,
@@ -95,7 +100,7 @@ export function useAppNavigation({
         }
       }
       const cur = viewRef.current;
-      navigate({ tab: cur.tab, focusId: cur.focusId, ov, key });
+      navigate({ tab: cur.tab, focusId: cur.focusId, ov, key, edit: cur.edit }); // 편집 위에 뜬 창을 닫으면 편집으로 돌아온다
     },
     [navigate],
   );
@@ -120,6 +125,11 @@ export function useAppNavigation({
     [navigate],
   );
 
+  const openEdit = useCallback(() => {
+    const cur = viewRef.current;
+    if (!cur.edit) navigate({ tab: cur.tab, focusId: cur.focusId, ov: null, key: 0, edit: true });
+  }, [navigate]);
+
   const openPreview = useCallback((target: PreviewTarget) => openOverlay("preview", target), [openOverlay]);
   // 코멘트는 nav 오버레이가 아니라 독립 상태 — 열면 그대로 두고(탭 전환에도 유지) X 로만 닫는다.
   const openComment = useCallback((genId: string) => setCommentGenId(genId), [setCommentGenId]);
@@ -140,6 +150,7 @@ export function useAppNavigation({
     closeOverlay,
     navTab,
     enterBoard,
+    openEdit,
     openPreview,
     openComment,
     openAdmin,

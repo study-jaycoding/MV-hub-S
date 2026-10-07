@@ -1,0 +1,186 @@
+/* ── 편집 탭(docs/EDIT_TAB.md) — 위 뷰어·오른쪽 '이 컷의 생성물'·아래 트랙 타임라인 ──
+   클래스는 전부 `ed-` 로 시작한다(.empty·.main 같은 흔한 이름은 앱의 다른 규칙에 먹힌다).
+   단추는 전역 button 규칙(배경·테두리·padding 6px 12px)을 여기서 하나씩 지운다. */
+.ed-root { background: var(--bg2); outline: none; min-height: 0; }
+.ed-top { flex: 1; min-height: 0; display: flex; }
+
+/* 왼쪽 폴더 목록 — 재생헤드가 있는 컷은 라임으로(다빈치 확인 표시의 빨간 테두리는 여기서 쓰지 않는다). */
+.ed-side .project-tree-scroll .viewed-resolve { box-shadow: none; background: rgba(var(--accent-rgb), 0.08); }
+.ed-side .folder-tree.sidebar-folder-tree .folder-tree-row.viewed-resolve .folder-tree-name { color: var(--accent); font-weight: 700; }
+.ed-link {
+  background: none; border: 0; padding: 0; border-radius: 0; font-size: inherit;
+  color: var(--accent); text-decoration: underline; text-underline-offset: 2px;
+}
+
+/* 뷰어 */
+.ed-view { flex: 1; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); }
+.ed-stage { flex: 1; min-height: 0; position: relative; background: #000; overflow: hidden; }
+.ed-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+.ed-media[hidden] { display: none; }
+.ed-notice {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: 80%;
+  padding: 10px 16px; border-radius: 10px; font-size: 13px; line-height: 1.6; text-align: center;
+  background: rgba(8, 9, 12, 0.72); color: #d7dae0;
+}
+.ed-chip {
+  position: absolute; top: 12px; max-width: 46%; padding: 4px 10px; border-radius: 7px;
+  font-size: 12px; font-weight: 700; background: rgba(8, 9, 12, 0.62); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none;
+}
+.ed-chip-l { left: 12px; }
+.ed-chip-r { right: 12px; font-weight: 500; color: #d7dae0; }
+.ed-trans {
+  flex: none; height: 46px; position: relative; display: flex; align-items: center; justify-content: center; gap: 14px;
+  border-top: 1px solid var(--border); background: var(--panel); user-select: none;
+}
+.ed-tbtn {
+  width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent;
+  display: flex; align-items: center; justify-content: center;
+}
+.ed-tbtn svg { display: block; fill: #c9ccd3; }
+.ed-tbtn:hover svg { fill: #fff; }
+.ed-tbtn.ed-play { width: 30px; height: 30px; background: var(--accent); }
+.ed-tbtn.ed-play svg, .ed-tbtn.ed-play:hover svg { fill: var(--accent-ink); }
+.ed-keys { position: absolute; left: 16px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.ed-keys kbd {
+  font: 600 11px ui-monospace, Consolas, monospace; padding: 1px 6px; margin: 0 2px; border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid var(--border2); color: #d7dae0;
+}
+.ed-tcr {
+  position: absolute; right: 16px; display: flex; align-items: center; gap: 8px;
+  font: 500 12px ui-monospace, Consolas, monospace; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.ed-tcr b { color: var(--accent); }
+@media (max-width: 1500px) { .ed-keys { display: none; } }
+
+/* 오른쪽 — 이 컷의 생성물 */
+.ed-pool {
+  flex: none; width: 392px; max-width: 34%; min-height: 0; display: flex; flex-direction: column;
+  background: var(--panel); user-select: none;
+}
+.ed-pool-head { display: flex; align-items: baseline; justify-content: space-between; padding: 14px 16px 4px; }
+.ed-pool-head h3 { margin: 0; font-size: 14px; font-weight: 700; }
+.ed-pool-head .ed-link { font-size: 12px; color: var(--muted); }
+.ed-pool-head .ed-link:hover { color: var(--text); }
+.ed-pool-sub { padding: 0 16px 12px; font-size: 12px; line-height: 1.5; color: var(--muted); border-bottom: 1px solid var(--border); }
+.ed-pool-note { padding: 12px 16px 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.ed-pool-note.ed-bad { color: #ff8a8a; }
+.ed-pgrid {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-content: start; padding: 14px 16px;
+}
+.ed-pcard { display: block; padding: 0; border: 0; border-radius: 0; background: transparent; text-align: left; }
+.ed-pcard:active { transform: none; }
+.ed-pimg {
+  display: block; position: relative; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden;
+  border: 1px solid var(--border); background: #000 center / cover no-repeat;
+}
+.ed-pcard:hover .ed-pimg { border-color: var(--border2); }
+.ed-pcard.ed-picked .ed-pimg { border: 2px solid var(--accent); }
+.ed-badge {
+  position: absolute; top: 6px; left: 6px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 6px;
+  font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center;
+}
+.ed-final { background: #e8b62c; color: #2a1f00; }
+.ed-held { background: #ef7d8c; color: #2a0409; }
+.ed-kind { left: auto; right: 6px; background: rgba(8, 9, 12, 0.66); color: #e6e8ec; font-weight: 600; }
+.ed-in {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 0; text-align: center;
+  font-size: 11px; font-weight: 800; background: var(--accent); color: var(--accent-ink);
+}
+.ed-pmeta { display: flex; justify-content: space-between; gap: 8px; padding: 5px 2px 0; font-size: 11.5px; color: var(--muted); }
+.ed-pmeta span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-hint {
+  flex: none; margin: 10px 16px 14px; padding: 9px 12px; border-radius: 9px; font-size: 12px; line-height: 1.6;
+  color: var(--muted); background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border);
+}
+
+/* 타임라인 위 막대 */
+.ed-bar {
+  flex: none; height: 44px; display: flex; align-items: center; gap: 14px; padding: 0 16px; user-select: none;
+  border-top: 1px solid var(--border2); border-bottom: 1px solid var(--border); background: var(--panel2);
+}
+.ed-tc { flex: none; width: 150px; font: 600 19px ui-monospace, Consolas, monospace; letter-spacing: 0.5px; font-variant-numeric: tabular-nums; }
+.ed-seq { min-width: 0; font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-seq b { color: var(--text); font-weight: 700; }
+.ed-seq i { font-style: normal; color: var(--muted2); margin: 0 7px; }
+.ed-mine, .ed-warn { flex: none; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; border: 1px solid var(--border2); color: var(--muted); }
+.ed-warn { color: #ffb37a; border-color: rgba(255, 150, 80, 0.45); }
+.ed-zoom { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.ed-zoom .ed-link { color: var(--muted); text-decoration: none; }
+.ed-zoom .ed-link:hover { color: var(--text); }
+.ed-zbtn {
+  width: 24px; height: 24px; padding: 0; border-radius: 6px; font-size: 13px; line-height: 1;
+  display: flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.05);
+}
+
+/* 타임라인 — 왼쪽 트랙 머리 + 오른쪽 가로 스크롤. 줄 높이는 머리와 줄이 같아야 한다. */
+.ed-tl { flex: none; max-height: 52%; display: flex; overflow-y: auto; background: #0b0c0e; user-select: none; }
+.ed-heads { flex: none; width: 108px; border-right: 1px solid var(--border); }
+.ed-head {
+  box-sizing: border-box; display: flex; align-items: center; gap: 8px; padding-left: 12px;
+  font-size: 11.5px; color: var(--muted); border-bottom: 1px solid var(--border);
+}
+.ed-head b {
+  min-width: 28px; height: 19px; padding: 0 4px; border-radius: 4px; font-size: 10.5px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.09); color: #e6e8ec; border: 1px solid rgba(255, 255, 255, 0.16);
+}
+.ed-h-ruler, .ed-ruler { height: 28px; }
+.ed-h-cut, .ed-l-cut { height: 26px; }
+.ed-h-v, .ed-l-v { height: 58px; }
+.ed-h-a, .ed-l-a { height: 46px; }
+.ed-hbtn {
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent;
+  display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; color: #aeb3bd;
+}
+.ed-hbtn svg { display: block; fill: #8b909c; stroke: #8b909c; }
+.ed-hbtn:hover { background: rgba(255, 255, 255, 0.08); }
+.ed-hbtn.ed-on { background: rgba(var(--accent-rgb), 0.16); color: var(--accent); }
+.ed-hbtn.ed-on svg { fill: var(--accent); stroke: var(--accent); }
+.ed-hbtn.ed-dim svg { fill: #4b505a; stroke: #4b505a; }
+.ed-hbtn.ed-mute { background: rgba(255, 255, 255, 0.07); }
+.ed-hbtn.ed-mute.ed-on { background: rgba(var(--accent-rgb), 0.16); }
+
+.ed-scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; }
+.ed-lanes { position: relative; min-width: 100%; }
+.ed-ruler {
+  position: relative; box-sizing: border-box; border-bottom: 1px solid var(--border); background: var(--panel);
+  cursor: ew-resize; touch-action: none;
+}
+.ed-tick { position: absolute; bottom: 0; width: 1px; height: 12px; background: rgba(255, 255, 255, 0.34); pointer-events: none; }
+.ed-tick span { position: absolute; left: 5px; bottom: 8px; font: 10.5px ui-monospace, Consolas, monospace; color: var(--muted); white-space: nowrap; }
+.ed-lane { position: relative; box-sizing: border-box; border-bottom: 1px solid var(--border); }
+.ed-lane-off { opacity: 0.45; }
+.ed-cutline { position: absolute; top: 28px; bottom: 0; width: 1px; background: rgba(255, 255, 255, 0.07); pointer-events: none; }
+.ed-cutcell {
+  position: absolute; top: 4px; height: 18px; padding: 0; border: 0; border-radius: 0; background: transparent;
+  font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: clip; white-space: nowrap;
+}
+.ed-cutcell:hover { color: var(--text); }
+.ed-cutcell:active { transform: none; }
+.ed-cutcell.ed-nopick { color: var(--muted2); }
+.ed-cutcell.ed-cur { color: var(--accent); font-weight: 800; }
+
+.ed-clip, .ed-slot { position: absolute; top: 3px; height: 52px; box-sizing: border-box; border-radius: 5px; overflow: hidden; display: flex; }
+.ed-clip { border: 1px solid rgba(255, 255, 255, 0.2); background: #1a1c20; cursor: pointer; touch-action: none; }
+.ed-clip i { flex: 1; min-width: 0; background: center / cover no-repeat; pointer-events: none; }
+.ed-clip i + i { border-left: 1px solid rgba(0, 0, 0, 0.45); }
+.ed-clip b {
+  position: absolute; left: 4px; bottom: 3px; padding: 1px 5px; border-radius: 4px; pointer-events: none;
+  font-size: 10px; font-weight: 600; background: rgba(8, 9, 12, 0.66); color: #e6e8ec;
+}
+.ed-clip.ed-sel { border: 2px solid var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.18); }
+.ed-clip.ed-off { opacity: 0.4; filter: grayscale(1); } /* 끈 클립·끈 트랙만 흐리다 — 쌓인 클립은 흐리게 하지 않는다 */
+.ed-clip.ed-locked { cursor: default; }
+.ed-clip.ed-missing { background: repeating-linear-gradient(135deg, #3a1218 0 8px, #2a0d12 8px 16px); border-color: rgba(255, 90, 100, 0.6); }
+.ed-clip.ed-unknown { background: repeating-linear-gradient(135deg, #24262b 0 8px, #1b1d21 8px 16px); }
+.ed-clip-msg { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #d7dae0; pointer-events: none; }
+.ed-slot {
+  border: 1px dashed rgba(255, 255, 255, 0.22); align-items: center; justify-content: center; pointer-events: none;
+  font-size: 11px; color: var(--muted2);
+  background: repeating-linear-gradient(135deg, transparent 0 7px, rgba(255, 255, 255, 0.025) 7px 14px);
+}
+.ed-aud { position: absolute; top: 5px; height: 36px; box-sizing: border-box; border-radius: 5px; background: #1f5a3a; border: 1px solid #2f7d53; pointer-events: none; }
+.ed-phead { position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; background: #ff4d4f; z-index: 5; pointer-events: none; will-change: transform; }
+.ed-phead::before { content: ""; position: absolute; left: -6px; top: 0; border: 7px solid transparent; border-top: 10px solid #ff4d4f; }

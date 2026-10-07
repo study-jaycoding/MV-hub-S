@@ -1,0 +1,115 @@
+// 편집 탭 왼쪽 — 프로젝트와 폴더 트리에서 시퀀스(컷 폴더들을 담은 폴더)를 고른다.
+// 라이브러리 사이드바(ProjectSection)를 쓰지 않는다: 그쪽은 폴더 클릭이 '생성 목적지'를 서버에 저장한다.
+import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
+import type { Project } from "../../types";
+import { useT } from "../../lib/i18n";
+import type { EditTree } from "../../lib/useEditSequence";
+import { FolderTreeView } from "../common/FolderTreeView";
+import { ResizableSidebar } from "../common/ResizableSidebar";
+
+// 고른 폴더까지 가는 길은 펼쳐 둔다.
+function ancestors(path: string): string[] {
+  const parts = path.split("/");
+  return parts.map((_, i) => parts.slice(0, i + 1).join("/"));
+}
+
+export function EditSidebar({
+  projects,
+  projectsState,
+  openProject,
+  onOpenProject,
+  tree,
+  seq,
+  cut,
+  onPickFolder,
+  onReload,
+  onGrabFocus,
+}: {
+  projects: Project[];
+  projectsState: "loading" | "ok" | "error";
+  openProject: string | null;
+  onOpenProject: (projectId: string | null) => void;
+  tree: EditTree;
+  seq: string; // 열린 프로젝트에서 고른 시퀀스 폴더(없으면 "")
+  cut: string; // 재생헤드가 있는 컷(없으면 "")
+  onPickFolder: (path: string) => void;
+  onReload: () => void;
+  onGrabFocus: () => void; // 여기를 누르면 편집 화면이 키를 받게 초점을 옮긴다
+}) {
+  const t = useT();
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(ancestors(seq)));
+  useEffect(() => {
+    if (seq) setExpanded((prev) => (prev.has(seq) ? prev : new Set([...prev, ...ancestors(seq)])));
+  }, [seq]);
+  // 단추가 초점을 가져가지 않게 한다 — 누른 뒤에도 Space·J·K·L 이 재생으로 간다.
+  const keepFocus = (event: ReactMouseEvent) => event.preventDefault();
+
+  return (
+    <ResizableSidebar>
+      <div className="sidebar-main ed-side" onMouseDownCapture={onGrabFocus} onMouseDown={keepFocus}>
+        <section className="project-section">
+          <div className="project-tree-section">
+            <h4>{t("프로젝트")}</h4>
+            <div className="project-tree-scroll">
+              <div className="proj-list">
+                {projectsState === "loading" && !projects.length && (
+                  <div className="side-folder-note">{t("프로젝트 로딩...")}</div>
+                )}
+                {projectsState === "error" && (
+                  <div className="side-folder-note error">
+                    {t("프로젝트를 불러오지 못했습니다.")}{" "}
+                    <button type="button" className="ed-link" onClick={onReload}>{t("다시 시도")}</button>
+                  </div>
+                )}
+                {projects.map((project) => {
+                  const open = project.id === openProject;
+                  return (
+                    <div key={project.id} className={"proj-tree-wrap" + (open ? " on" : "")}>
+                      <button
+                        type="button"
+                        className={"proj-row" + (open ? " on" : "")}
+                        onClick={() => onOpenProject(open ? null : project.id)}
+                      >
+                        <span className="proj-fold">{open ? "▾" : "▸"}</span>
+                        <span className="proj-drag-handle" />
+                        <span className="proj-name">{project.name}</span>
+                      </button>
+                      {open && tree.state === "loading" && <div className="side-folder-note">{t("폴더 로딩...")}</div>}
+                      {open && tree.note && (
+                        <div className={"side-folder-note" + (tree.state === "error" ? " error" : "")}>
+                          {tree.note}{" "}
+                          <button type="button" className="ed-link" onClick={onReload}>{t("다시 시도")}</button>
+                        </div>
+                      )}
+                      {open && tree.state === "ready" && (
+                        tree.roots.length ? (
+                          <FolderTreeView
+                            nodes={tree.roots}
+                            selectedPath={seq}
+                            viewedPath={cut || undefined}
+                            expanded={expanded}
+                            onToggle={(path) =>
+                              setExpanded((prev) => {
+                                const next = new Set(prev);
+                                if (!next.delete(path)) next.add(path);
+                                return next;
+                              })
+                            }
+                            onSelect={onPickFolder}
+                            className="sidebar-folder-tree"
+                          />
+                        ) : (
+                          <div className="side-folder-note">{t("폴더가 없습니다.")}</div>
+                        )
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </ResizableSidebar>
+  );
+}

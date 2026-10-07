@@ -1,0 +1,128 @@
+// 편집 문서의 저장(localStorage)과 Undo 스택. 계약은 docs/EDIT_TAB.md.
+// ponytail: 캔버스 씬과 달리 로컬 DB 백업이 없다 — 브라우저 프로필에만 남는다. 팀 공유·백업이 필요해지면 DB 로 옮긴다.
+import { getAccountNamespace } from "./accountScope";
+import { emptyEditDoc, parseEditDoc, type EditDoc } from "./editTimeline";
+import { STORAGE_KEYS } from "./storageKeys";
+
+// 서버 주소는 키에 넣지 않는다 — 서버 이사는 DB 를 통째로 옮겨 project_id·생성물 id 가 유지되므로
+// 주소가 바뀌어도 같은 편집 문서가 이어져야 한다(DB 복제본 서버도 같은 문서를 본다 — 의도한 동작).
+export function editDocKey(projectId: string, seq: string): string {
+  return `${STORAGE_KEYS.editTimeline}:${getAccountNamespace()}:${projectId}:${seq}`;
+}
+
+export interface StoredEditDoc {
+  doc: EditDoc;
+  raw: string | null; // 저장돼 있던 원문(없으면 null)
+  bad: boolean; // 원문이 있는데 읽지 못함 — 호출부는 그것을 빈 문서로 덮지 않는다
+}
+
+export function readEditDoc(key: string): StoredEditDoc {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(key);
+  } catch {
+    /* 저장소 접근 불가 = 저장된 것 없음으로 본다 */
+  }
+  if (raw === null) return { doc: emptyEditDoc(), raw, bad: false };
+  let doc: EditDoc | null = null;
+  try {
+    doc = parseEditDoc(JSON.parse(raw));
+  } catch {
+    doc = null;
+  }
+  return doc ? { doc, raw, bad: false } : { doc: emptyEditDoc(), raw, bad: true };
+}
+
+// 저장에 성공하면 쓴 원문, 실패하면 null. keepBad 는 읽지 못한 옛 원문 — `<키>.bad` 로 옮겨 적힌 것을
+// 확인한 뒤에만 원래 키를 덮는다.
+export function writeEditDoc(key: string, doc: EditDoc, keepBad: string | null = null): string | null {
+  const raw = JSON.stringify(doc);
+  try {
+    if (keepBad !== null) {
+      localStorage.setItem(`${key}.bad`, keepBad);
+      if (localStorage.getItem(`${key}.bad`) !== keepBad) return null;
+    }
+    localStorage.setItem(key, raw);
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+// Undo/Redo — 문서(키)별 메모리 스택. 탭을 오가도 남고, 새로고침하면 사라진다.
+const UNDO_LIMIT = 100;
+const stacks = new Map<string, { past: EditDoc[]; future: EditDoc[] }>();
+
+export function undoStack(key: string): { past: EditDoc[]; future: EditDoc[] } {
+  let stack = stacks.get(key);
+  if (!stack) stacks.set(key, (stack = { past: [], future: [] }));
+  return stack;
+}
+
+export function pushUndo(key: string, doc: EditDoc): void {
+  const stack = undoStack(key);
+  stack.past.push(doc);
+  if (stack.past.length > UNDO_LIMIT) stack.past.shift();
+  stack.future.length = 0;
+}
+
+export function clearUndo(key: string): void {
+  stacks.delete(key);
+}
+
+// 이 창이 키마다 마지막으로 읽었거나 쓴 원문 — 자리를 비운 사이(다른 시퀀스·다른 탭) 다른 창이 저장했는지를
+// 다시 열 때 가린다. 달라졌으면 옛 되돌리기 스택은 그 저장을 모르므로 비운다(되돌리기가 남의 저장을 덮지 않게).
+const seenRaw = new Map<string, string | null>();
+
+export function noteEditRaw(key: string, raw: string | null): void {
+  seenRaw.set(key, raw);
+}
+
+export function editRawChanged(key: string, raw: string | null): boolean {
+  return seenRaw.has(key) && seenRaw.get(key) !== raw;
+}
+
+// 저장하지 못한 문서 — 시퀀스나 탭을 옮겨도 버리지 않는다(새로고침하면 사라진다).
+// base = 저장에 처음 실패했을 때 이 창이 저장소에 있다고 알던 원문. 다시 열 때 저장소가 이것과 다르면
+// 그 사이 다른 창이 저장한 것이다(충돌) — 몇 번을 오가도, 두 번 렌더해도 같은 답이 나오게 여기에 묶어 둔다.
+export interface UnsavedEditDoc {
+  doc: EditDoc;
+  base: string | null;
+}
+const unsaved = new Map<string, UnsavedEditDoc>();
+
+export function unsavedEditDoc(key: string): UnsavedEditDoc | undefined {
+  return unsaved.get(key);
+}
+
+export function keepUnsavedEditDoc(key: string, entry: UnsavedEditDoc | null): void {
+  if (entry) unsaved.set(key, entry);
+  else unsaved.delete(key);
+}
+
+// 마지막으로 연 시퀀스(프로젝트·폴더) — 탭을 다시 열 때 그 자리로 돌아간다.
+export interface EditTarget {
+  projectId: string;
+  seq: string;
+}
+
+const lastTargetKey = () => `${STORAGE_KEYS.editTimeline}.last:${getAccountNamespace()}`;
+
+export function loadEditTarget(): EditTarget | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(lastTargetKey()) || "null") as Partial<EditTarget> | null;
+    return value && typeof value.projectId === "string" && typeof value.seq === "string"
+      ? { projectId: value.projectId, seq: value.seq } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveEditTarget(target: EditTarget | null): void {
+  try {
+    if (target) localStorage.setItem(lastTargetKey(), JSON.stringify(target));
+    else localStorage.removeItem(lastTargetKey());
+  } catch {
+    /* 못 적어도 편집에는 지장 없다 */
+  }
+}

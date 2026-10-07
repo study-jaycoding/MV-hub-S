@@ -14,6 +14,8 @@ import { SearchBox } from "./SearchBox";
 interface Props {
   filters: Filters;
   onTab: (tab: "my" | "team" | "compose") => void;
+  editOpen?: boolean; // 편집 탭이 떠 있다 — 밑의 탭(filters.tab)은 그대로지만 단추는 편집만 켠다
+  onOpenEdit?: () => void;
   onSearch: (q?: string) => void;
   onWorkspaceSwitched: (context: WorkspaceContext) => void; // 전환 완료 — 전환된 공간(토스트 표시용)
   workspaceContext: WorkspaceContext;
@@ -35,6 +37,8 @@ interface Props {
 export function TopBar({
   filters,
   onTab,
+  editOpen,
+  onOpenEdit,
   onSearch,
   onWorkspaceSwitched,
   workspaceContext,
@@ -71,24 +75,33 @@ export function TopBar({
 
       <nav className="tabs">
         <button
-          className={filters.tab === "my" ? "on" : ""}
+          className={!editOpen && filters.tab === "my" ? "on" : ""}
           onClick={() => onTab("my")}
         >
           {t("작업 공간")}
         </button>
         <button
-          className={filters.tab === "team" ? "on" : ""}
+          className={!editOpen && filters.tab === "team" ? "on" : ""}
           onClick={() => onTab("team")}
         >
           {t("공유 & 리뷰")}
         </button>
         <button
-          className={filters.tab === "compose" ? "on" : ""}
+          className={!editOpen && filters.tab === "compose" ? "on" : ""}
           onClick={() => onTab("compose")}
           title={t("캔버스 — 씬 캔버스 · 히스토리 뷰")}
         >
           {t("캔버스")}
         </button>
+        {onOpenEdit && (
+          <button
+            className={editOpen ? "on" : ""}
+            onClick={onOpenEdit}
+            title={t("편집 — 공유된 생성물을 컷 순서대로 이어 보기")}
+          >
+            {t("편집")}
+          </button>
+        )}
       </nav>
 
       {/* 좌(로고·탭) ↔ 우(검색·Assets·계정) 분리 */}

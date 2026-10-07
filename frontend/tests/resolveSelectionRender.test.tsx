@@ -956,3 +956,61 @@ it("App 작업 공간: 바깥 막·✕ 로 닫히고, 보던 위치가 바뀌거
   await settle();
   expect(gridSnapshot!.onOpenFolder).toBeUndefined();
 });
+
+it("App 편집 탭: 들어가면 폴더 창이 닫히고 다빈치 선택이 숨은 목록을 옮기지 않는다 — 나와도 창은 되살아나지 않는다", async () => {
+  vi.doMock("../src/components/timeline/EditTab", () => ({ EditTab: () => <div data-testid="edit-tab" /> }));
+  const send = await mountApp("my");
+  const body = () => document.querySelector<HTMLElement>(".body")!;
+  // 편집은 filters.tab 의 값이 아니라 내비 기록의 '보기'다 — 뒤로/앞으로 가기로도 들어오고 나간다.
+  const editView = (edit: boolean) => act(() => {
+    window.dispatchEvent(new PopStateEvent("popstate", { state: { chv: { tab: "my", focusId: null, ov: null, key: 0, edit } } }));
+  });
+  act(() => gridSnapshot!.onOpenFolder!(libraryGeneration("target")));
+  await settle();
+  expect(peekWindow()).not.toBeNull();
+  expect(body().hasAttribute("inert")).toBe(true);
+
+  editView(true);
+  await settle();
+  await settle();
+  expect(document.querySelector('[data-testid="edit-tab"]')).not.toBeNull();
+  expect(peekWindow()).toBeNull();
+  expect(body().hasAttribute("inert")).toBe(false); // 편집 화면이 조작 불가가 되지 않는다
+  expect(document.querySelector('[data-testid="tab"]')!.textContent).toBe("my"); // 밑의 탭은 그대로
+
+  const filtersInEdit = librarySnapshot!.filters;
+  act(() => send(["other", "other-target"])); // 편집 중의 다빈치 선택은 숨은 목록의 위치를 옮기지 않는다
+  await settle();
+  expect(librarySnapshot!.filters).toBe(filtersInEdit);
+
+  editView(false);
+  await settle();
+  expect(document.querySelector('[data-testid="edit-tab"]')).toBeNull();
+  expect(peekWindow()).toBeNull();
+  expect(gridSnapshot!.selectedIds.size).toBe(0);
+  act(() => send(["other", "other-target"])); // 나온 뒤에는 다시 따라간다
+  await settle();
+  expect(librarySnapshot!.filters).toMatchObject({ project_id: "other-project", folder_path: "episode/shot" });
+});
+
+it("App 편집 탭(캔버스에서 들어옴): 편집 중의 다빈치 선택은 씬을 바꾸거나 창을 열지 않는다 — 나온 뒤의 선택은 다시 따른다", async () => {
+  vi.doMock("../src/components/timeline/EditTab", () => ({ EditTab: () => <div data-testid="edit-tab" /> }));
+  const send = await mountApp();
+  const editView = (edit: boolean) => act(() => {
+    window.dispatchEvent(new PopStateEvent("popstate", { state: { chv: { tab: "compose", focusId: null, ov: null, key: 0, edit } } }));
+  });
+  editView(true);
+  await settle();
+  await settle();
+  expect(document.querySelector('[data-testid="edit-tab"]')).not.toBeNull();
+  act(() => send(["other-target"])); // 다른 씬의 결과 — 캔버스였다면 그 씬으로 옮기고 '생성 결과' 창을 연다
+  await settle();
+  editView(false);
+  await settle();
+  expect(view.container.querySelector(".scene-varwin")).toBeNull();
+  expect(tile("other-target")).toBeNull();
+  act(() => send(["other-target"]));
+  await settle();
+  expect(tile("other-target")).toBeTruthy();
+  expect(resolveHighlightedIds()).toEqual(["other-target"]);
+});
