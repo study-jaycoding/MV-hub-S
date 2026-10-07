@@ -3,6 +3,7 @@
 //  · 외부에서 삭제(404/410)된 id 는 missingIds 로 표시, deactivated(회색)는 disabledIds 로.
 //  · 각 생성물의 레퍼런스 부모(materials)는 새 id 만 1회 조회(계보는 생성 시 확정·불변).
 // 미러 ref(genDataRef)는 렌더 중 대입해야 한다(useEffect 로 옮기면 한 렌더 늦음).
+import { ownEntry } from "./ownEntry";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { APP_EVENTS } from "./appEvents";
@@ -155,7 +156,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
       currentIds: () => [...liveIdsRef.current],
       begin(gids, color) {
         if (!authRef.current.mounted || !authRef.current.ready) return null;
-        const ids = [...new Set(gids)].filter(id => liveIdsRef.current.has(id) && !!genDataRef.current[id]);
+        const ids = [...new Set(gids)].filter(id => liveIdsRef.current.has(id) && !!ownEntry(genDataRef.current, id));
         if (!ids.length) return null;
         const gen = ledgerRef.current;
         const ticket: SceneColorTicket = { gen, ids, authEpoch: authRef.current.epoch,
@@ -187,7 +188,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
     // 현재 공유 콜백 호출 직후, 첫 await 양보 전에 동기 포획한다. finally 안에서 새 범위를 읽지 않는다.
     const { stamp: actionScope } = readStamp(ledgerRef.current, authRef.current.epoch, [gid]);
     const current = () => colors.isLive(actionScope, true)
-      && liveIdsRef.current.has(gid) && !!genDataRef.current[gid];
+      && liveIdsRef.current.has(gid) && !!ownEntry(genDataRef.current, gid);
     void Promise.resolve(settled).catch(() => {}).then(async () => {
       if (!current()) return;
       // action 대기 중 완료된 색 저장은 잠그지 않는다. 실제 GET 출발 시점이 읽기 기준이다.
@@ -195,12 +196,14 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
       try {
         const fresh = await api.getGeneration(gid);
         if (!fresh || !current() || !colors.isLive(stamp, true)) return;
-        const record = keepColor(gid) ? { ...fresh, color: genDataRef.current[gid].color } : fresh;
+        const cached = keepColor(gid) ? ownEntry(genDataRef.current, gid) : undefined;
+        const record = cached ? { ...fresh, color: cached.color } : fresh;
         putGen(record, gid);
         genDataRef.current = { ...genDataRef.current, [gid]: record };
         setGenData(prev => {
-          if (!current() || !colors.isLive(stamp, true) || !prev[gid]) return prev;
-          const next = keepColor(gid) ? { ...fresh, color: prev[gid].color } : fresh;
+          const before = ownEntry(prev, gid);
+          if (!current() || !colors.isLive(stamp, true) || !before) return prev;
+          const next = keepColor(gid) ? { ...fresh, color: before.color } : fresh;
           return reconcileRecordState(prev, { ...prev, [gid]: next });
         });
       } catch {
@@ -263,7 +266,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
       const missing = new Set(batch.missing || []);
       const rs = pollIds.map((id) => ({
         id,
-        gen: batch.items[id] || null,
+        gen: ownEntry(batch.items, id) || null, // 응답 사전도 자기 속성만 — 상속 함수가 캐시에 들어가지 않게
         gone: missing.has(id),
       }));
       // 새 변경 신호가 와서 전량 요청을 다시 시작했으면 그보다 먼저 출발한 응답은 폐기한다.
@@ -271,7 +274,8 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
       // 캐시에도 기록 — 탭 왕복·씬 전환 시 재조회 없이 즉시 복원되게(성공=저장/재등장, 삭제=missing 표시).
       for (const r of rs) {
         if (r.gen) {
-          if (keepColor(r.id) && genDataRef.current[r.id]) r.gen = { ...r.gen, color: genDataRef.current[r.id].color };
+          const cached = keepColor(r.id) ? ownEntry(genDataRef.current, r.id) : undefined;
+          if (cached) r.gen = { ...r.gen, color: cached.color };
           putGen(r.gen, r.id);
           markGenMissing(r.id, false);
           observeStatus(r.id, r.gen.status);
@@ -281,7 +285,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
         }
       }
       for (const id of pollIds) {
-        const parents = batch.materials[id];
+        const parents = ownEntry(batch.materials, id);
         if (Array.isArray(parents)) putParents(id, parents);
         else if (missing.has(id)) putParents(id, []);
       }
@@ -289,7 +293,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
         if (!current()) return prev;
         const next = { ...prev };
         for (const id of pollIds) {
-          const parents = batch.materials[id];
+          const parents = ownEntry(batch.materials, id);
           if (Array.isArray(parents)) next[id] = parents;
           else if (missing.has(id)) next[id] = [];
         }

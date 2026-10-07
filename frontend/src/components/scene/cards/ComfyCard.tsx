@@ -2,6 +2,7 @@
 //  ★파라미터 입력 포커스 주의: 모듈 최상단 선언(타입 안정) — 타이핑 중 리렌더에도 input 이 리마운트
 //   되지 않아 포커스 유지. 저장은 setComfyParam(defer)→blur 시 flushPending 확정(기존 동작 그대로).
 //  HistoryBoardNode(memo)는 GenerationCard 와 동일하게 hist 번들의 안정 참조를 개별로 풀어 전달.
+import { ownEntry } from "../../../lib/ownEntry";
 import { useT } from "../../../lib/i18n";
 import { useMemo } from "react";
 import type React from "react";
@@ -254,7 +255,7 @@ export function ComfyCard({
                 (cfg.output?.url ? [{ kind: cfg.output.kind, url: cfg.output.url }] : []);
               const textOuts = outs.filter((o) => o.kind === "text");
               const repId = card.genId || card.genIds?.[card.genIds.length - 1] || null;
-              const repGen = repId ? genData[repId] : undefined;
+              const repGen = repId ? ownEntry(genData, repId) : undefined;
               // 대표 gen 미로드(실행 직후 등)면 현재 실행 미디어를 인라인으로 폴백 표시.
               const mediaFallback = repGen
                 ? []

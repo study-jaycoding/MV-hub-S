@@ -3,6 +3,7 @@
 //   · 카드 좌드래그=이동(선택된 것 함께) · 클릭=단일선택 · Ctrl=토글(누적) · Shift=연결 체인선택 · 배경클릭=해제
 //   · Delete=선택 삭제(생성물 있으면 휴지통, 빈 카드면 그냥 제거)
 // 기능: 에셋 드롭 레퍼런스 카드(S2) · n키 빈 카드+연결선(S3) · 포트 수동 연결/해제(S4).
+import { ownEntry } from "../../lib/ownEntry";
 import {
   useCallback,
   useEffect,
@@ -449,7 +450,7 @@ export function SceneBoard({
       if (c.kind !== "generation") continue;
       // 변형 전체를 반영(useSceneGenData 가 모든 변형을 조회) — 대표가 바뀌거나 비대표가 늦게 완료돼도 커버.
       for (const gid of variantIds(c)) {
-        const st = genData[gid]?.status;
+        const st = ownEntry(genData, gid)?.status;
         if (st) observeStatus(gid, String(st));
       }
     }
@@ -463,7 +464,7 @@ export function SceneBoard({
       if (c.kind !== "generation") continue;
       for (const gid of variantIds(c)) {
         if (typeFilter === "all") n += 1;
-        else if (genData[gid]?.assets?.[0]?.type === typeFilter) n += 1;
+        else if (ownEntry(genData, gid)?.assets?.[0]?.type === typeFilter) n += 1;
       }
     }
     return n;
@@ -626,7 +627,7 @@ export function SceneBoard({
     const ids = variantIds(card);
     const filters = { typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly };
     const shown = ids
-      .map((id) => genData[id])
+      .map((id) => ownEntry(genData, id))
       .filter((g): g is Generation => !!g && !g.deleted)
       .filter((g) => resolveHighlightedIds.has(g.id) || (matchesBoardFilters(g, filters) && !(grayOn && disabledIds.has(g.id))))
       .sort((a, b) => ts(b) - ts(a));
@@ -634,7 +635,7 @@ export function SceneBoard({
     //  않는다). **조작 대상은 보이는 것(shownIds)뿐이다** — 안 불러온(또는 서버에서 사라진) id 에 비활성·색이 걸리면 안 된다.
     const shownIds = new Set(shown.map((g) => g.id));
     const selectable = new Set(shownIds);
-    for (const id of ids) if (!genData[id]) selectable.add(id);
+    for (const id of ids) if (!ownEntry(genData, id)) selectable.add(id);
     const dimIds = new Set(shown.filter((g) => !inBoardFolder(g, folderSel)).map((g) => g.id));
     return { card, total: ids.length, shown, shownIds, selectable, dimIds };
   }, [cardMenu, cards, genData, resolveHighlightedIds, disabledIds, grayOn, folderSel,
@@ -928,22 +929,31 @@ export function SceneBoard({
   //  화면(setCards)·cardsRef 는 즉시 갱신(생성이 최신값을 읽음), 저장(persist)만 디바운스. 밀린 저장은
   //  입력 blur·언마운트·씬 전환(App 이 flushPending 호출) 시 확정 → 유실·스테일 없음.
   const pendingPersistRef = useRef<number | undefined>(undefined);
+  // 아직 저장으로 넘기지 않은 입력이 **처음 생긴 시각**. 계속 치면 400ms 디바운스가 끝없이 밀려 저장이
+  // 한 번도 안 나가는데, 저장이 IndexedDB 로 가면서 창을 닫는 순간의 저장은 끝난다는 보장이 없어졌다
+  // (종전 localStorage 는 그 자리에서 끝났다). 그래서 첫 미저장 입력에서 2초가 지나면 치는 중이어도
+  // 저장을 내보낸다 — 잃을 수 있는 구간을 줄이는 것이지 없애는 것은 아니다.
+  const pendingSinceRef = useRef<number | undefined>(undefined);
   const flushPending = () => {
     if (pendingPersistRef.current !== undefined) {
       clearTimeout(pendingPersistRef.current);
       pendingPersistRef.current = undefined;
     }
+    pendingSinceRef.current = undefined;
     if (!hasUncommittedCardsOrEdges(cardsRef.current, edgesRef.current)) return; // 밀린 편집 없음
     persist(cardsRef.current, edgesRef.current); // 사용자 편집 확정 → undo:true
   };
   const flushPendingRef = useRef(flushPending);
   flushPendingRef.current = flushPending;
   const scheduleInputPersist = () => {
+    const now = Date.now();
+    if (pendingSinceRef.current === undefined) pendingSinceRef.current = now;
     if (pendingPersistRef.current !== undefined) clearTimeout(pendingPersistRef.current);
+    const wait = Math.max(0, Math.min(400, pendingSinceRef.current + 2000 - now));
     pendingPersistRef.current = window.setTimeout(() => {
       pendingPersistRef.current = undefined;
       flushPendingRef.current();
-    }, 400);
+    }, wait);
   };
   // ── 카드 반영 어댑터 — 화면(cardsRef+setCards)은 항상 즉시, 저장은 mode 로 구분. Comfy 실행부가
   //  persist/scheduleInputPersist 를 직접 부르지 않고 이 하나로만 카드를 반영하게 해 결합을 좁힌다(P4 준비).
@@ -1200,7 +1210,7 @@ export function SceneBoard({
       // created_at 은 UTC "YYYY-MM-DD HH:MM:SS" 고정 형식이라 문자열 비교가 곧 시간 비교다.
       // 시각을 모르는 id(genData 미로드)는 빈 키 → 정렬 안정성으로 기존 상대 순서 유지(맨 앞).
       const createdOf = (id: string) =>
-        (id === generation.id ? generation.created_at : genDataRef.current[id]?.created_at) || "";
+        (id === generation.id ? generation.created_at : ownEntry(genDataRef.current, id)?.created_at) || "";
       const nextCards = settled.map((card) => {
         if (card.id !== target.cardId) return card;
         const sortedIds = [...variantIds(card)].sort((a, b) =>
@@ -1326,9 +1336,16 @@ export function SceneBoard({
   //  + 새로고침/창닫기(pagehide) 에도 확정 — 디바운스 대기 중 편집 유실 방지.
   useEffect(() => {
     const onHide = () => flushPendingRef.current();
+    // 창이 가려질 때(다른 탭·최소화·닫기 시작)도 확정한다. pagehide 는 닫히는 바로 그 순간이라, 저장이
+    // 비동기(IndexedDB)가 된 뒤로는 거기서 시작한 쓰기가 끝난다는 보장이 없다 — 한 박자 먼저 내보낸다.
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flushPendingRef.current();
+    };
     window.addEventListener("pagehide", onHide);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.removeEventListener("pagehide", onHide);
+      document.removeEventListener("visibilitychange", onVisibility);
       flushPendingRef.current(); // 밀린 저장 확정(스택에 반영) 후
       persistSceneHistory(sceneIdRef.current); // 현재 씬 undo 히스토리를 store 에 보관 — 탭 복귀 시 Ctrl+Z 유지
     };
@@ -1414,7 +1431,7 @@ export function SceneBoard({
     ? (g: Generation, operation: WorkspaceCommandOperation, workspace: WorkspaceCommandTarget) => {
         const ids = variantTargetIds();
         const targets = ids.includes(g.id) && ids.length > 1
-          ? ids.map((id) => genDataRef.current[id]).filter((item): item is Generation => !!item)
+          ? ids.map((id) => ownEntry(genDataRef.current, id)).filter((item): item is Generation => !!item)
           : undefined;
         return applyCardWorkspace(g, operation, workspace, targets);
       }
@@ -1425,7 +1442,7 @@ export function SceneBoard({
   const bulkVariantTags = (focus: Generation, names: string[], field: "tags" | "auto_tags", mode: "add" | "remove") => {
     for (const id of variantTargetIds()) {
       if (id === focus.id) continue;
-      const g = genDataRef.current[id];
+      const g = ownEntry(genDataRef.current, id);
       if (!g) continue;
       const current = (field === "tags" ? g.tags : g.auto_tags) ?? [];
       const next = mode === "add"
@@ -1536,14 +1553,15 @@ export function SceneBoard({
         const items: PreviewItem[] = [];
         if (card) {
           for (const id of variantIds(card)) {
-            const av = genDataRef.current[id]?.assets?.[0];
-            if (av)
+            const gen = ownEntry(genDataRef.current, id);
+            const av = gen?.assets?.[0];
+            if (gen && av)
               items.push({
                 url: av.file_path,
                 type: av.type,
-                name: genDataRef.current[id]?.prompt?.slice(0, 50) || "결과",
+                name: gen.prompt?.slice(0, 50) || "결과",
                 genId: id,
-                thumb: thumbOf(genDataRef.current[id]), // 노드가 띄우는 것과 같은 URL(HistoryBoardNode)
+                thumb: thumbOf(gen), // 노드가 띄우는 것과 같은 URL(HistoryBoardNode)
                 // '마지막으로 본' 표시를 남길 묶음 — card_id 는 씬 간 유일하지 않아 씬과 짝으로 보낸다.
                 sceneId: sceneIdRef.current,
                 cardId,
@@ -1594,7 +1612,7 @@ export function SceneBoard({
     // 생성물 카드(generation·generation-list·render 안 항목)를 그 asset 으로 SceneRef 화. genData 미로드/comfy 미저장이면 skip.
     const pushGenRef = (gc?: SceneCard) => {
       const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
-      const gen = gid ? genDataRef.current[gid] : undefined;
+      const gen = gid ? ownEntry(genDataRef.current, gid) : undefined;
       const asset = gen?.assets?.[0];
       if (!gid || !asset || seenGid.has(gid)) return;
       seenGid.add(gid);
@@ -2476,7 +2494,7 @@ export function SceneBoard({
       const card = byId.get(cid);
       const gid = card?.genId || (card ? variantIds(card)[0] : undefined);
       if (gid && disabledIds.has(gid)) continue; // 비활성(회색) 결과는 View 재생·미리보기에서 제외
-      const gen = gid ? genDataRef.current[gid] : undefined;
+      const gen = gid ? ownEntry(genDataRef.current, gid) : undefined;
       const a = gen?.assets?.[0];
       if (a && gid)
         clips.push({
@@ -2694,7 +2712,7 @@ export function SceneBoard({
   const selResultCardIds = () =>
     [...selectedRef.current].filter((id) => {
       const c = cardsRef.current.find((cc) => cc.id === id);
-      return !!c && c.kind === "generation" && !!c.genId && !!genDataRef.current[c.genId]?.assets?.[0];
+      return !!c && c.kind === "generation" && !!c.genId && !!ownEntry(genDataRef.current, c.genId)?.assets?.[0];
     });
   const onSelGensRef = useRef(onSelectionGens);
   onSelGensRef.current = onSelectionGens;
@@ -2707,9 +2725,9 @@ export function SceneBoard({
           .map((id) => cards.find((c) => c.id === id))
           .filter(
             (c): c is SceneCard =>
-              !!c && c.kind === "generation" && !!c.genId && !!genData[c.genId]?.assets?.[0],
+              !!c && c.kind === "generation" && !!c.genId && !!ownEntry(genData, c.genId)?.assets?.[0],
           )
-          .map((c) => genData[c.genId!]!);
+          .map((c) => ownEntry(genData, c.genId!)!);
     const sig = gens.map((g) => g.id).join(",");
     if (sig === lastSelSigRef.current) return;
     lastSelSigRef.current = sig;
@@ -2841,7 +2859,7 @@ export function SceneBoard({
           !!card &&
           card.kind === "generation" &&
           !!card.genId &&
-          !!genDataRef.current[card.genId],
+          !!ownEntry(genDataRef.current, card.genId),
       );
     if (!target) return false;
     setTagEditNodeGenId(null);
@@ -3159,7 +3177,7 @@ export function SceneBoard({
     let hasRef = false;
     for (const c of sels) {
       if (c.kind === "generation") {
-        const g = c.genId ? genData[c.genId] : undefined;
+        const g = c.genId ? ownEntry(genData, c.genId) : undefined;
         const a = g?.assets?.[0];
         if (!g || !a) return null; // 아직 결과 없는 생성카드 → 비교 불가
         media.push({ url: a.file_path, name: g.prompt?.slice(0, 40) || "생성", type: a.type === "video" ? "video" : "image", full: a.file_path });
@@ -3897,7 +3915,7 @@ export function SceneBoard({
           const autoH = isAutoCard(card); // 레퍼런스·Input·Output = 내용에 맞춘 자동 높이(고정 height 미지정)
           const autoSize = isAutoSize(card); // head = 폭·높이 모두 자동(글씨에 맞춰 박스가 줄고 늘어남)
           const isGen = card.kind === "generation";
-          const g = isGen && card.genId ? genData[card.genId] : null; // 바인딩된 실제 생성물
+          const g = (isGen && card.genId ? ownEntry(genData, card.genId) : null) ?? null; // 바인딩된 실제 생성물
           const showNode = !!g && String(g.status) === "done"; // 완료 → 히스토리 카드로 표시
           // 빨간 테두리 = 서버 원본과 연결 안 됨 — 서버 어디에도 없음·판정 보류(Jay 2026-09-30: 후보 여럿·사본도 빨강).
           //  '이 PC 에만'(가진 사람)은 오른쪽 위 마크만(Jay 2026-09-29, 09-30 유지), 판정 못 끝냄(incomplete)은 빨강 아님.
@@ -3956,7 +3974,7 @@ export function SceneBoard({
                   card={card}
                   fill={fill}
                   workspaceId={refWorkspaceId}
-                  getGen={(id) => genDataRef.current[id]}
+                  getGen={(id) => ownEntry(genDataRef.current, id)}
                   onInfo={onInfo}
                   onPreview={onPreview}
                   onOutPortDown={onOutPortDown}

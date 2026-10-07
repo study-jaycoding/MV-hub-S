@@ -1,6 +1,7 @@
 // SceneBoard 의 '순수 엣지 기하/그래프 계산'을 컴포넌트에서 추출(렌더마다 인라인으로 돌던 것).
 //  · DOM/이벤트/상태를 건드리지 않는 순수 함수만 모은다 — 높이 측정(heightsRef) 의존인 heightOf/edgePath/edgeEnds 는 컴포넌트에 남긴다.
 //  · 등가성 보존이 목적이라 원본의 반복/큐 순서·판정 로직을 그대로 옮긴다.
+import { ownEntry } from "./ownEntry";
 import {
   variantIds,
   type SceneCard,
@@ -1263,7 +1264,7 @@ function resolveEdgeRoleWithContext(
   if (from?.kind === "generation" && to) {
     const srcGens = variantIds(from);
     const byRefs = (to.refs || []).some((r) => r.source_gen_id && srcGens.includes(r.source_gen_id));
-    const byHistory = variantIds(to).some((b) => (refParents[b] || []).some((p) => srcGens.includes(p)));
+    const byHistory = variantIds(to).some((b) => (ownEntry(refParents, b) || []).some((p) => srcGens.includes(p)));
     return byRefs || byHistory ? "ref" : "lineage";
   }
   return "lineage";
@@ -1373,7 +1374,7 @@ export function classifyEdges(
     const srcGens = variantIds(from);
     if (!srcGens.length) continue;
     const byRefs = (to.refs || []).some((r) => r.source_gen_id && srcGens.includes(r.source_gen_id));
-    const byHistory = variantIds(to).some((b) => (refParents[b] || []).some((p) => srcGens.includes(p)));
+    const byHistory = variantIds(to).some((b) => (ownEntry(refParents, b) || []).some((p) => srcGens.includes(p)));
     if (byRefs || byHistory) genRefEdgeIds.add(e.id);
   }
   return { refCardEdgeIds, genRefEdgeIds };

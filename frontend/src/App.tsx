@@ -35,7 +35,10 @@ import { useResolveLibraryFollow } from "./lib/useResolveLibraryFollow";
 import { generationsByIds, uniqueTagNames } from "./lib/generationTags";
 import { useAppNavigation } from "./lib/useAppNavigation";
 import {
+  confirmSceneWrite,
+  subscribeSceneSaveState,
   exportSceneText,
+  listPersistedScenes,
   listScenes,
   parseSceneImport,
   SCENE_IMPORT_MAX_BYTES,
@@ -70,6 +73,7 @@ import {
   type CanvasGenerationTarget,
 } from "./lib/canvasGenerationRecovery";
 import { downloadText } from "./lib/download";
+import { downloadSceneArchive } from "./lib/sceneArchive";
 import { buildRecipeScene } from "./lib/recipeScene";
 import { useGenerationAutoRefresh } from "./lib/useGenerationAutoRefresh";
 import { useCommentBadgePoll } from "./lib/useCommentBadgePoll";
@@ -219,6 +223,7 @@ export default function App() {
     flushScenePending, selectScene, addScene, importSceneSnapshot, relinkSceneRefsNow, findSceneRefs, renameScene,
     removeSceneById,
     patchSceneById, patchActiveScene, reorderScenes, setSceneWorkspace, backupOnly, importBackupScenes,
+    sceneSaveFailing,
   } = useSceneCoordination(flash);
   // 위에서 고른 워크스페이스가 바뀌면 탭에 공간이 없는 씬의 참조를 새 공간으로 한 번 묻는다(2026-10-01 점검 R2-2).
   //  ★선택 저장 effect(위 190행) 뒤에 둔다 — 묻는 쪽이 저장된 선택을 읽는다(앞에 두면 옛 공간으로 묻는다).
@@ -478,10 +483,20 @@ export default function App() {
       }),
     [setFacets],
   );
-  const prepareCanvasGenerationBatch = useCallback((
+  // 생성 표식이 **저장소 확정본**에 실제로 들어 있는가. 확정 Promise 가 true 여도, 그사이 대상 카드가
+  // 지워졌거나 뒤 연산이 표식을 덮었을 수 있다 — 필요한 표식의 존재를 직접 본다(Codex).
+  const canvasMarksPersisted = (sceneId: string, links: CanvasGenerationLink[]): boolean => {
+    const cards = listPersistedScenes(null).find((scene) => scene.id === sceneId)?.cards || [];
+    return links.every((link) =>
+      (cards.find((card) => card.id === link.card_id)?.pendingGenerationAttempts || []).some(
+        (attempt) => attempt.attemptId === link.attempt_id,
+      ),
+    );
+  };
+  const prepareCanvasGenerationBatch = useCallback(async (
     sceneId: string,
     cardIds: string[],
-  ): CanvasGenerationLink[] => {
+  ): Promise<CanvasGenerationLink[]> => {
     const links = cardIds.flatMap((cardId) =>
       createCanvasGenerationLinks({ sceneId, cardId }, 1),
     );
@@ -490,15 +505,46 @@ export default function App() {
     if (!latest) return [];
     const prepared = prepareCanvasGenerationLinks(latest.cards, links);
     if (!prepared.attachedCount) return [];
-    // updateScene/saveScenes는 동기 저장이라, 아래 HTTP 요청보다 generation id가 먼저 디스크에 남는다.
-    patchSceneById(sceneId, { cards: prepared.cards });
+    // ★표식이 **저장소에 확정된 뒤에만** 링크를 준다. 화면 값에는 그 틱에 들어가지만 저장소 확정은
+    //  뒤따르므로, 그것을 기다리지 않고 생성 요청을 보내면 그 사이 앱이 닫혔을 때 결과가 어느 카드
+    //  것인지 복구할 수 없다(적대 리뷰 r2 P1). 호출부는 links 수가 batch 와 다르면 제출을 멈추고
+    //  사용자에게 알린다(useSpotlightSubmit).
+    const { value: applied, confirmed } = confirmSceneWrite(() =>
+      patchSceneById(sceneId, { cards: prepared.cards }),
+    );
+    if (!applied) return [];
+    const durable = (await confirmed) && canvasMarksPersisted(sceneId, links);
+    if (!durable) {
+      // 확정 못 함 — **내 표식만** 걷어낸다. 남겨 두면 저장소가 나중에 다시 시도해 확정하고, 보내지도
+      // 않은 생성의 표식이 유령으로 살아난다.
+      const dropMarks = (): boolean => {
+        flushScenePending(sceneId);
+        const now = listScenes(null).find((scene) => scene.id === sceneId)?.cards;
+        if (!now) return true;
+        const cleaned = links.reduce(
+          (cards, link) => discardCanvasGenerationAttempt(cards, link.card_id, link.generation_id),
+          now,
+        );
+        return cleaned === now || patchSceneById(sceneId, { cards: cleaned });
+      };
+      if (!dropMarks()) {
+        // 밀린 편집이 상한에 닿아 걷어내기조차 받지 못했다(저장소가 오래 막힘) — 저장이 풀리면 다시 걷어낸다.
+        // 그냥 두면 앞서 접수된 표식만 뒤늦게 확정된다(Codex 코드 리뷰 P2. 2분 뒤 복구가 치우기는 한다).
+        const off = subscribeSceneSaveState((failed) => {
+          if (failed) return;
+          off();
+          dropMarks();
+        });
+      }
+      return [];
+    }
     seedPending(links.map((link) => link.generation_id));
     return links;
   }, [flushScenePending, patchSceneById]);
   const prepareCanvasGeneration = useCallback((
     target: CanvasGenerationTarget,
     count: number,
-  ): CanvasGenerationLink[] => prepareCanvasGenerationBatch(
+  ): Promise<CanvasGenerationLink[]> => prepareCanvasGenerationBatch(
     target.sceneId,
     Array.from({ length: Math.max(1, Math.trunc(count) || 1) }, () => target.cardId),
   ), [prepareCanvasGenerationBatch]);
@@ -1294,6 +1340,15 @@ export default function App() {
       "application/json",
     );
   };
+  // 캔버스 전체를 파일로 — 탭 줄의 '저장 안 됨'이 부른다(설정 창의 [전체 내보내기]와 같은 파일).
+  //  밀린 입력을 먼저 저장으로 넘겨, 방금 친 글까지 파일에 들어가게 한다.
+  const exportAllScenes = () => {
+    if (activeScene) flushScenePending(activeScene.id);
+    void downloadSceneArchive().then(
+      (count) => flash(`캔버스 ${count}개를 파일로 내려받았습니다.`),
+      (error) => flash(error instanceof Error ? error.message : "내려받지 못했습니다."),
+    );
+  };
   // 씬 불러오기 — 파일을 검증해 '새 탭'으로 연다(현재 캔버스 보존). 선택·프롬프트 바인딩은 초기화.
   const handleLoadSceneFile = async (file: File) => {
     if (file.size > SCENE_IMPORT_MAX_BYTES) {
@@ -1326,7 +1381,7 @@ export default function App() {
       flash("재생성 결과를 쌓을 캔버스 카드를 찾지 못했습니다.");
       return;
     }
-    const link = prepareCanvasGenerationBatch(activeScene.id, [target.id])[0];
+    const link = (await prepareCanvasGenerationBatch(activeScene.id, [target.id]))[0];
     if (!link) {
       flash("재생성 위치를 저장하지 못해 제출을 중단했습니다.");
       return;
@@ -1419,7 +1474,7 @@ export default function App() {
       }
     };
 
-    const canvasLinks = prepareCanvasGenerationBatch(
+    const canvasLinks = await prepareCanvasGenerationBatch(
       scene.id,
       jobs.map((job) => job.cardId),
     );
@@ -2133,6 +2188,8 @@ export default function App() {
               onHoverChange={setSceneBarHover}
               backupOnly={backupOnly}
               onImportBackup={importBackupScenes}
+              saveFailing={sceneSaveFailing}
+              onExportAll={exportAllScenes}
             />
             {activeScene ? (
               <SceneBoard

@@ -23,8 +23,9 @@ import {
   sceneRefWorkspaceId,
   subscribeRefServerStatus,
 } from "../src/lib/sceneAssetRelink";
-import { listScenes, saveScenes, type Scene } from "../src/lib/scenes";
+import { listPersistedScenes, listScenes, saveScenes, type Scene } from "../src/lib/scenes";
 import { loadSceneHistory, sameSnap, saveSceneHistory } from "../src/lib/sceneUndoStore";
+import { failSceneStoreWritesForTest, settleSceneStoreForTest } from "../src/lib/sceneStore";
 import { STORAGE_KEYS } from "../src/lib/storageKeys";
 
 const locate = vi.fn();
@@ -67,7 +68,7 @@ const storedKeys = (ns = "local") =>
   Object.keys((JSON.parse(localStorage.getItem(STORAGE_KEYS.sceneRefVerdicts) || "{}") as Record<string, object>)[ns] || {});
 
 describe("물어볼 참조 모으기", () => {
-  it("에셋 참조를 모두 고른다 — 어느 것이 안 열리는지는 폴더를 보는 서버만 안다", () => {
+  it("에셋 참조를 모두 고른다 — 어느 것이 안 열리는지는 폴더를 보는 서버만 안다", async () => {
     const scenes = [
       scene([
         { file_path: "asset:imports|a.png" },
@@ -87,7 +88,7 @@ describe("물어볼 참조 모으기", () => {
     ]);
   });
 
-  it("캔버스 탭의 공간별로 묶는다 — 서버가 그 공간의 프로젝트 폴더부터 찾게", () => {
+  it("캔버스 탭의 공간별로 묶는다 — 서버가 그 공간의 프로젝트 폴더부터 찾게", async () => {
     const a = scene([{ file_path: "asset:P|a.png" }], { id: "ws-1", name: "가" });
     const b = scene([{ file_path: "asset:P|b.png" }], { id: "ws-2", name: "나" });
     const none = scene([{ file_path: "asset:P|c.png" }]); // 공간 지정 없음
@@ -98,7 +99,7 @@ describe("물어볼 참조 모으기", () => {
     ]);
   });
 
-  it("참조가 든 지문을 함께 싣되, 한 토큰의 참조가 모두 같은 지문일 때만 싣는다(2026-09-29, Codex)", () => {
+  it("참조가 든 지문을 함께 싣되, 한 토큰의 참조가 모두 같은 지문일 때만 싣는다(2026-09-29, Codex)", async () => {
     const fp = { content_sha: "a".repeat(64), bytes: 10 };
     const scenes = [
       scene([
@@ -123,7 +124,7 @@ describe("물어볼 참조 모으기", () => {
     expect(group.fingerprints).toEqual({ "asset:imports|same.png": { sha256: "a".repeat(64), bytes: 10 } });
   });
 
-  it("씬 파일로 받은 공간 힌트로도 묶는다 — 탭에 고른 공간이 있으면 그것이 앞선다(2026-09-29)", () => {
+  it("씬 파일로 받은 공간 힌트로도 묶는다 — 탭에 고른 공간이 있으면 그것이 앞선다(2026-09-29)", async () => {
     const hinted = { ...scene([{ file_path: "asset:P|a.png" }]), refWorkspaceHint: { id: "ws-h", name: "힌트" } };
     const both = {
       ...scene([{ file_path: "asset:P|b.png" }], { id: "ws-tab", name: "탭" }),
@@ -140,14 +141,14 @@ describe("물어볼 참조 모으기", () => {
     expect(applyRelink([hinted], found).scenes[0].cards[0].refs![0].file_path).toBe("asset:Q|CH/a.png");
   });
 
-  it("같은 토큰이 여러 카드에 있어도 한 번만 묻는다", () => {
+  it("같은 토큰이 여러 카드에 있어도 한 번만 묻는다", async () => {
     const scenes = [scene([{ file_path: "asset:imports|a.png" }]), scene([{ file_path: "asset:imports|a.png" }])];
     expect(sceneAssetTokens(scenes)).toEqual(["asset:imports|a.png"]);
   });
 });
 
 describe("찾은 것 갈아끼우기", () => {
-  it("찾은 참조만 프로젝트 주소로 바꾸고 옛 썸네일은 버린다", () => {
+  it("찾은 참조만 프로젝트 주소로 바꾸고 옛 썸네일은 버린다", async () => {
     const scenes = [
       scene([
         { file_path: "asset:imports|a.png", thumb: "/api/assets/thumb?project=imports&path=a.png" },
@@ -170,7 +171,7 @@ describe("찾은 것 갈아끼우기", () => {
     expect(refs[1]).toEqual(scenes[0].cards[0].refs![1]); // 못 찾은 것은 그대로
   });
 
-  it("같은 옛 참조라도 **각 씬은 자기 공간의 답만** 받는다", () => {
+  it("같은 옛 참조라도 **각 씬은 자기 공간의 답만** 받는다", async () => {
     // 두 캔버스가 같은 옛 참조를 쓰지만 공간이 다르다 — 각 공간에서 다른 파일로 찾혔다.
     // 참조만 열쇠로 쓰면 나중 공간의 답이 다른 공간 씬까지 덮는다(Codex 2026-09-28).
     const a = { ...scene([{ file_path: "asset:old|hero.png" }], { id: "ws-A", name: "가" }), id: "a" };
@@ -187,7 +188,7 @@ describe("찾은 것 갈아끼우기", () => {
     expect(next[1].cards[0].refs![0].file_path).toBe("asset:B|CH/hero.png");
   });
 
-  it("참조가 든 지문과 다른 답은 적용하지 않는다 — 같은 토큰의 다른 그림·지문 없는 경로 답(2026-09-29, Codex)", () => {
+  it("참조가 든 지문과 다른 답은 적용하지 않는다 — 같은 토큰의 다른 그림·지문 없는 경로 답(2026-09-29, Codex)", async () => {
     const mine = "a".repeat(64);
     const scenes = [
       scene([
@@ -209,14 +210,14 @@ describe("찾은 것 갈아끼우기", () => {
     expect(answer({ sha256: mine, bytes: 11 })).toEqual(["asset:imports|x.png", "asset:P|CH/x.png"]);
   });
 
-  it("찾은 게 없으면 씬 객체를 그대로 돌려준다(저장도 일어나지 않게)", () => {
+  it("찾은 게 없으면 씬 객체를 그대로 돌려준다(저장도 일어나지 않게)", async () => {
     const scenes = [scene([{ file_path: "asset:imports|a.png" }])];
     const { scenes: next, changed } = applyRelink(scenes, new Map());
     expect(changed).toBe(0);
     expect(next).toBe(scenes);
   });
 
-  it("바뀐 카드·씬만 새 객체다 — 안 바뀐 것은 같은 객체라 화면이 다시 그리지 않는다(2026-09-29)", () => {
+  it("바뀐 카드·씬만 새 객체다 — 안 바뀐 것은 같은 객체라 화면이 다시 그리지 않는다(2026-09-29)", async () => {
     const touched = { ...scene([{ file_path: "asset:imports|a.png" }]), id: "t" };
     const untouched = { ...scene([{ file_path: "asset:P|CH/b.png" }]), id: "u" };
     const found = new Map([[relinkKey("", "asset:imports|a.png"), { project: "P", path: "CH/a.png" }]]);
@@ -233,7 +234,7 @@ describe("찾은 것 갈아끼우기", () => {
 });
 
 describe("서버에 묻고 갈아끼우기", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     resetRelinkSessionForTest();
     locate.mockReset();
@@ -241,7 +242,7 @@ describe("서버에 묻고 갈아끼우기", () => {
 
   it("서버 상한(200개)을 넘으면 나눠 보내고, 보낸 것만 '물어봤다'로 친다", async () => {
     const refs = Array.from({ length: 250 }, (_, i) => ({ file_path: `asset:imports|f${i}.png` }));
-    saveScenes(null, [scene(refs)]);
+    await saveScenes(null, [scene(refs)]);
     locate.mockResolvedValue({ fixed: [], unresolved: [] });
 
     await relinkSceneAssetRefs();
@@ -258,7 +259,7 @@ describe("서버에 묻고 갈아끼우기", () => {
   });
 
   it("찾은 것을 씬에 저장하고, 곧바로 다시 부르면 같은 것을 또 묻지 않는다", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:imports|found.png" }], { id: "ws-9", name: "가" })]);
+    await saveScenes(null, [scene([{ file_path: "asset:imports|found.png" }], { id: "ws-9", name: "가" })]);
     locate.mockResolvedValue({
       fixed: [{ token: "asset:imports|found.png", project: "P", path: "BG/a.png", sha256: "s", bytes: 3 }],
       unresolved: [],
@@ -275,7 +276,7 @@ describe("서버에 묻고 갈아끼우기", () => {
 
   it("참조가 든 지문을 그 배치의 토큰만큼 함께 보낸다(2026-09-29)", async () => {
     const fp = { content_sha: "c".repeat(64), bytes: 7 };
-    saveScenes(null, [
+    await saveScenes(null, [
       scene([{ file_path: "asset:imports|with.png", ...fp }, { file_path: "asset:imports|without.png" }]),
     ]);
     locate.mockResolvedValue({ fixed: [], unresolved: [], missing: [], local: [] });
@@ -289,7 +290,7 @@ describe("서버에 묻고 갈아끼우기", () => {
   it("답을 받은 그 자리에서 열린 캔버스에 먼저 입히고, 나머지 씬은 저장 직후 화면에 맞춘다(2026-09-29)", async () => {
     const active = { ...scene([{ file_path: "asset:imports|a.png" }]), id: "active" };
     const other = { ...scene([{ file_path: "asset:imports|a.png" }]), id: "other" };
-    saveScenes(null, [active, other]);
+    await saveScenes(null, [active, other]);
     locate.mockResolvedValue({
       fixed: [{ token: "asset:imports|a.png", project: "P", path: "CH/a.png" }],
       unresolved: [],
@@ -300,14 +301,14 @@ describe("서버에 묻고 갈아끼우기", () => {
     const applyToBoard = vi.fn((found: Map<string, unknown>) => {
       order.push("board");
       expect(found.has(relinkKey("", "asset:imports|a.png"))).toBe(true);
-      // 캔버스는 자기 메모리의 활성 씬을 고쳐 저장한다(여기서는 그것을 흉내 낸다)
+      // 캔버스는 자기 메모리의 활성 씬을 고쳐 저장한다(여기서는 그것을 흉내 낸다) — 동기다
       const saved = listScenes(null).map((s) => (s.id === "active" ? applyRelink([s], found as never).scenes[0] : s));
       saveScenes(null, saved);
       return 1;
     });
     const onSaved = vi.fn((next: Scene[], boardApplied: boolean) => {
       order.push("saved");
-      // 저장된 값 그대로 — 끝난 뒤 목록을 다시 읽지 않아도 화면이 맞다
+      // 화면 값 그대로 — 끝난 뒤 목록을 다시 읽지 않아도 화면이 맞다
       expect(next).toEqual(listScenes(null));
       expect(boardApplied).toBe(true);
     });
@@ -324,7 +325,7 @@ describe("서버에 묻고 갈아끼우기", () => {
     const snap = (s: Scene) => ({ cards: s.cards, edges: s.edges, groups: s.groups || [] });
     const b = { ...scene([{ file_path: "asset:imports|a.png" }]), id: "cxf5-b" };
     const c = { ...scene([{ file_path: "asset:imports|a.png" }]), id: "cxf5-c" };
-    saveScenes(null, [b, c]);
+    await saveScenes(null, [b, c]);
     const removed = [{ cardId: "c2", genIds: ["g1"] }];
     saveSceneHistory(b.id, { undo: [{ ...snap(b), cards: b.cards.slice(0, 1), removedForward: removed }], redo: [], lastCommit: snap(b) });
     // c 의 기록은 이미 씬과 어긋나 있다(다른 탭 편집 등) — 원래대로 건드리지 않는다
@@ -343,7 +344,7 @@ describe("서버에 묻고 갈아끼우기", () => {
   });
 
   it("캔버스가 안 열렸으면 활성 씬도 저장 직후 통째로 받는다(boardApplied=false)", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:imports|b.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:imports|b.png" }])]);
     locate.mockResolvedValue({
       fixed: [{ token: "asset:imports|b.png", project: "P", path: "CH/b.png" }],
       unresolved: [],
@@ -358,10 +359,10 @@ describe("서버에 묻고 갈아끼우기", () => {
 
   it("중간에 실패해도 이미 받은 답은 화면·저장소에 남고, 그만큼을 돌려준다(2026-09-29)", async () => {
     // 첫 배치가 고친 뒤, 도는 동안 새 참조가 생겨 다음 바퀴에서 묻다가 서버가 실패한다
-    saveScenes(null, [scene([{ file_path: "asset:imports|first.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:imports|first.png" }])]);
     locate
       .mockImplementationOnce(async () => {
-        saveScenes(null, [
+        await saveScenes(null, [
           ...listScenes(null),
           { ...scene([{ file_path: "asset:imports|second.png" }]), id: "s2" },
         ]);
@@ -381,14 +382,14 @@ describe("서버에 묻고 갈아끼우기", () => {
   });
 
   it("멈춘 NAS 에 영원히 매달리지 않게 요청마다 시간 한도(AbortSignal)를 건다(2026-09-29)", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:imports|slow.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:imports|slow.png" }])]);
     locate.mockResolvedValue({ fixed: [], unresolved: [], missing: [], local: [] });
     await relinkSceneAssetRefs();
     expect(locate.mock.calls[0][4]).toBeInstanceOf(AbortSignal);
   });
 
   it("서버가 실패하면 삼키고, 다음 기회에 다시 묻는다", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:imports|retry.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:imports|retry.png" }])]);
     locate.mockRejectedValueOnce(new Error("서버 없음"));
 
     expect(await relinkSceneAssetRefs()).toBe(0); // 화면은 지금까지처럼 동작
@@ -402,14 +403,14 @@ describe("서버에 묻고 갈아끼우기", () => {
 });
 
 describe("서버에 없는 참조 기억하기(2026-09-29)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     resetRelinkSessionForTest();
     locate.mockReset();
   });
 
   it("서버 답의 missing·local 을 그 공간의 참조에만 기억하고, 바뀌면 한 번 알린다", async () => {
-    saveScenes(null, [
+    await saveScenes(null, [
       scene(
         [
           { file_path: "asset:Q|gone.png" },
@@ -442,7 +443,7 @@ describe("서버에 없는 참조 기억하기(2026-09-29)", () => {
   });
 
   it("앱을 다시 켜도 저장된 판정은 다시 묻지 않고, '레퍼런스 찾기'가 다시 물어 표시를 고친다", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:Q|later.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:Q|later.png" }])]);
     locate.mockResolvedValue(answer({ unresolved: ["asset:Q|later.png"], missing: ["asset:Q|later.png"] }));
     await relinkSceneAssetRefs();
     expect(status("", "asset:Q|later.png")).toBe("missing");
@@ -462,7 +463,7 @@ describe("서버에 없는 참조 기억하기(2026-09-29)", () => {
 });
 
 describe("방금 이 PC 에 넣은 참조(2026-09-29 옛 방식)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     resetRelinkSessionForTest();
     locate.mockReset();
@@ -475,7 +476,7 @@ describe("방금 이 PC 에 넣은 참조(2026-09-29 옛 방식)", () => {
     expect(status("ws-m", "asset:imports|dropped.png")).toBeUndefined();
     expect(heard).not.toHaveBeenCalled(); // 예전에는 NAS 에 있는 파일도 답이 올 때까지 빨갛게 보였다
 
-    saveScenes(null, [scene([{ file_path: "asset:imports|dropped.png" }], { id: "ws-m", name: "가" })]);
+    await saveScenes(null, [scene([{ file_path: "asset:imports|dropped.png" }], { id: "ws-m", name: "가" })]);
     locate.mockResolvedValue({
       fixed: [],
       unresolved: ["asset:imports|dropped.png"],
@@ -496,12 +497,12 @@ describe("방금 이 PC 에 넣은 참조(2026-09-29 옛 방식)", () => {
       missing: [],
       local: [],
     });
-    saveScenes(null, [scene([{ file_path: token }], { id: "ws-a", name: "가" })]);
+    await saveScenes(null, [scene([{ file_path: token }], { id: "ws-a", name: "가" })]);
     forceRefsAsk("ws-a", [token]);
     expect(await relinkSceneAssetRefs()).toBe(1);
 
     // 곧바로 같은 파일을 다시 끌어다 놓음 — 같은 이 PC 사본 토큰이 다시 생긴다(판정은 fixed 로 기억돼 있다)
-    saveScenes(null, [scene([{ file_path: token }], { id: "ws-a", name: "가" })]);
+    await saveScenes(null, [scene([{ file_path: token }], { id: "ws-a", name: "가" })]);
     forceRefsAsk("ws-a", [token]);
     expect(await relinkSceneAssetRefs()).toBe(1);
     expect(locate).toHaveBeenCalledTimes(2);
@@ -510,13 +511,13 @@ describe("방금 이 PC 에 넣은 참조(2026-09-29 옛 방식)", () => {
   it("도는 중에 또 불리면 끝난 뒤 한 번 더 돈다 — 마지막 바퀴 뒤에 들어온 참조도 놓치지 않는다(Codex)", async () => {
     const tokens = Array.from({ length: 8 }, (_, i) => `asset:Q|drop${i}.png`);
     let shown = 1;
-    saveScenes(null, [scene([{ file_path: tokens[0] }])]);
+    await saveScenes(null, [scene([{ file_path: tokens[0] }])]);
     locate.mockImplementation(async () => {
       await Promise.resolve(); // 실제 요청처럼 한 박자 뒤에 답한다 — 그 사이 '도는 중' 표시가 잡혀 있다
       // 물을 때마다 새 참조가 하나씩 생기고(끌어다 놓기) 그때마다 다시 부른다 — 도는 중이라 합쳐진다
       if (shown < tokens.length) {
         shown += 1;
-        saveScenes(null, [scene(tokens.slice(0, shown).map((file_path) => ({ file_path })))]);
+        await saveScenes(null, [scene(tokens.slice(0, shown).map((file_path) => ({ file_path })))]);
         void relinkSceneAssetRefs();
       }
       return { fixed: [], unresolved: [], missing: [], local: [] };
@@ -530,7 +531,7 @@ describe("방금 이 PC 에 넣은 참조(2026-09-29 옛 방식)", () => {
 });
 
 describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     sessionStorage.clear();
     resetRelinkSessionForTest();
@@ -545,7 +546,7 @@ describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
       "asset:imports|twice.png",
       "asset:imports|found.png",
     ];
-    saveScenes(null, [scene(tokens.map((file_path) => ({ file_path })))]);
+    await saveScenes(null, [scene(tokens.map((file_path) => ({ file_path })))]);
     locate.mockResolvedValueOnce(
       answer({
         fixed: [{ token: "asset:imports|found.png", project: "P", path: "CH/found.png" }],
@@ -563,7 +564,7 @@ describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
 
     resetRelinkSessionForTest(); // 앱을 다시 켬 + 새 참조 하나
     const [saved] = listScenes(null);
-    saveScenes(null, [
+    await saveScenes(null, [
       {
         ...saved,
         cards: [
@@ -580,7 +581,7 @@ describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
   });
 
   it("씬 파일·백업으로 들어온 씬은 저장된 판정과 무관하게 한 번 묻는다", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:Q|known.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:Q|known.png" }])]);
     locate.mockResolvedValue(answer({ unresolved: ["asset:Q|known.png"], missing: ["asset:Q|known.png"] }));
     await relinkSceneAssetRefs();
     resetRelinkSessionForTest();
@@ -597,14 +598,14 @@ describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
   it("계정마다 따로 기억한다 — 다른 계정의 판정으로 건너뛰거나 표시하지 않는다", async () => {
     try {
       setAccountScope("a@team");
-      saveScenes(null, [scene([{ file_path: "asset:Q|acct.png" }])]);
+      await saveScenes(null, [scene([{ file_path: "asset:Q|acct.png" }])]);
       locate.mockResolvedValue(answer({ unresolved: ["asset:Q|acct.png"], missing: ["asset:Q|acct.png"] }));
       await relinkSceneAssetRefs();
       expect(status("", "asset:Q|acct.png")).toBe("missing");
 
       setAccountScope("b@team");
       expect(status("", "asset:Q|acct.png")).toBeUndefined();
-      saveScenes(null, [scene([{ file_path: "asset:Q|acct.png" }])]);
+      await saveScenes(null, [scene([{ file_path: "asset:Q|acct.png" }])]);
       resetRelinkSessionForTest();
       await relinkSceneAssetRefs();
       expect(locate).toHaveBeenCalledTimes(2); // 다른 계정은 자기 판정이 없어 다시 묻는다
@@ -619,7 +620,7 @@ describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
   it("한 토큰의 참조들이 지문이 다르면 지문 없는 열쇠로 기억하고, 각 참조의 지문으로도 찾는다", async () => {
     const a = { content_sha: "a".repeat(64), bytes: 1 };
     const b = { content_sha: "b".repeat(64), bytes: 2 };
-    saveScenes(null, [scene([{ file_path: "asset:imports|x.png", ...a }, { file_path: "asset:imports|x.png", ...b }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:imports|x.png", ...a }, { file_path: "asset:imports|x.png", ...b }])]);
     locate.mockResolvedValue(answer({ unresolved: ["asset:imports|x.png"], local: ["asset:imports|x.png"] }));
     await relinkSceneAssetRefs();
     expect(locate.mock.calls[0][3]).toEqual({}); // 지문이 달라 싣지 않았다
@@ -628,18 +629,18 @@ describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
   });
 
   it("지금 씬들이 쓰지 않는 판정은 다음 복구 때 버린다", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:Q|old.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:Q|old.png" }])]);
     locate.mockResolvedValue(answer({ unresolved: ["asset:Q|old.png"], missing: ["asset:Q|old.png"] }));
     await relinkSceneAssetRefs();
     expect(storedKeys()).toHaveLength(1);
 
-    saveScenes(null, []); // 그 씬을 지웠다
+    await saveScenes(null, []); // 그 씬을 지웠다
     await relinkSceneAssetRefs();
     expect(storedKeys()).toHaveLength(0);
   });
 
   it("다른 탭이 바꾼 판정을 다시 읽고, 이 탭이 저장할 때도 더 나중 판정을 지킨다", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:Q|tab.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:Q|tab.png" }])]);
     locate.mockResolvedValue(answer({ unresolved: ["asset:Q|tab.png"], missing: ["asset:Q|tab.png"] }));
     await relinkSceneAssetRefs();
     expect(status("", "asset:Q|tab.png")).toBe("missing");
@@ -656,7 +657,7 @@ describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
     expect(status("", "asset:Q|tab.png")).toBe("local");
 
     // 이 탭이 다른 참조의 판정을 저장해도(합치기) 더 나중 판정은 남는다
-    saveScenes(null, [scene([{ file_path: "asset:Q|tab.png" }, { file_path: "asset:Q|other.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:Q|tab.png" }, { file_path: "asset:Q|other.png" }])]);
     locate.mockResolvedValue(answer({ unresolved: ["asset:Q|other.png"], missing: ["asset:Q|other.png"] }));
     await relinkSceneAssetRefs();
     expect(status("", "asset:Q|tab.png")).toBe("local");
@@ -667,7 +668,7 @@ describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
     try {
       for (const account of ["b@team", "a@team"]) {
         setAccountScope(account);
-        saveScenes(null, [scene([{ file_path: "asset:imports|acct.png" }])]);
+        await saveScenes(null, [scene([{ file_path: "asset:imports|acct.png" }])]);
       }
       locate.mockImplementation(async () => {
         setAccountScope("b@team"); // 답이 오기 전에 다른 계정으로 바뀌었다
@@ -685,7 +686,7 @@ describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
   });
 
   it("강제로 다시 물었는데 판정을 못 끝내면 옛 판정을 지워 다음 시작에 다시 묻는다(Codex)", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:imports|re.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:imports|re.png" }])]);
     locate.mockResolvedValueOnce(answer({ unresolved: ["asset:imports|re.png"], local: ["asset:imports|re.png"] }));
     await relinkSceneAssetRefs();
     expect(status("", "asset:imports|re.png")).toBe("local");
@@ -701,30 +702,42 @@ describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
     expect(locate).toHaveBeenCalledTimes(3); // 다음 시작에 다시 물었다
   });
 
-  it("원본으로 이었다는 판정은 씬 저장이 된 뒤에만 기억한다 — 저장 실패면 다음에 다시 묻는다(Codex)", async () => {
+  // 쓰기는 두 박자다 — 화면 값에는 바로 이어지고, 저장소 확정은 뒤따른다. 판정은 **확정된 뒤에만** 기억한다:
+  //  확정 전에 창이 닫히면 저장소에는 옛 참조가 남는데, 그때 '이었다'고 기억해 두면 다시 묻지 않아 영영 안 이어진다.
+  it("원본으로 이었다는 판정은 저장소에 확정된 뒤에만 기억한다 — 확정 실패면 화면만 잇고 다음에 다시 묻는다(Codex)", async () => {
+    const pathOf = (list: Scene[]) => list[0].cards[0].refs![0].file_path;
     saveScenes(null, [scene([{ file_path: "asset:imports|nospace.png" }])]);
-    const realSet = Storage.prototype.setItem;
-    const full = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
-      if (key === STORAGE_KEYS.scenes) throw new Error("QuotaExceededError"); // 씬 저장만 실패
-      return realSet.call(this, key, value);
-    });
+    await settleSceneStoreForTest();
+    failSceneStoreWritesForTest(true); // 저장소 확정만 실패(저장소는 IndexedDB — localStorage 가로채기로는 못 만든다)
     locate.mockResolvedValue(answer({ fixed: [{ token: "asset:imports|nospace.png", project: "P", path: "CH/n.png" }] }));
     try {
-      expect(await relinkSceneAssetRefs()).toBe(0);
+      expect(await relinkSceneAssetRefs()).toBe(1); // 화면에는 이었다
     } finally {
-      full.mockRestore();
+      failSceneStoreWritesForTest(false);
     }
-    expect(listScenes(null)[0].cards[0].refs![0].file_path).toBe("asset:imports|nospace.png");
+    expect(pathOf(listScenes(null))).toBe("asset:P|CH/n.png");
+    expect(pathOf(listPersistedScenes(null))).toBe("asset:imports|nospace.png"); // 확정본은 그대로
 
-    resetRelinkSessionForTest();
-    await relinkSceneAssetRefs();
-    expect(locate).toHaveBeenCalledTimes(2); // fixed 를 기억하지 않아 다시 물었다 — 이번엔 저장된다
-    expect(listScenes(null)[0].cards[0].refs![0].file_path).toBe("asset:P|CH/n.png");
+    // 앱을 다시 켠 것처럼(세션 기억 초기화) 돌려, 물었는지를 본다.
+    const asksAfterRestart = async () => {
+      const before = locate.mock.calls.length;
+      resetRelinkSessionForTest();
+      await relinkSceneAssetRefs();
+      return locate.mock.calls.length - before;
+    };
+    // 앞선 연산이 아직 확정 전이면, 다시 돌아도(이번엔 바꿀 것이 없어 실패할 쓰기도 없다) 기억하지 않는다.
+    expect(await asksAfterRestart()).toBeGreaterThan(0); // 판정을 기억하지 않아 다시 물었다
+    expect(await asksAfterRestart()).toBeGreaterThan(0); // 여전히 확정 전 — 또 묻는다
+
+    expect(await settleSceneStoreForTest()).toBe(true); // 저장소가 다시 받으면 그대로 확정된다
+    expect(pathOf(listPersistedScenes(null))).toBe("asset:P|CH/n.png");
+    expect(await asksAfterRestart()).toBeGreaterThan(0); // 확정본에 들어간 것을 보고서야 기억한다
+    expect(await asksAfterRestart()).toBe(0); // 이제 묻지 않는다
   });
 
   it("5,000건을 넘으면 오래 확인한 것부터 버린다", async () => {
     const tokens = Array.from({ length: 5050 }, (_, i) => `asset:Q|many/${i}.png`);
-    saveScenes(null, [scene(tokens.map((file_path) => ({ file_path })))]);
+    await saveScenes(null, [scene(tokens.map((file_path) => ({ file_path })))]);
     locate.mockImplementation(async (batch: string[]) => answer({ unresolved: batch }));
     await relinkSceneAssetRefs();
     expect(locate).toHaveBeenCalledTimes(26);
@@ -733,7 +746,7 @@ describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
 
   it("옛 서버 답(open·incomplete 없음)에도, 망가진 저장값에도 복구는 돈다", async () => {
     localStorage.setItem(STORAGE_KEYS.sceneRefVerdicts, "{망가짐");
-    saveScenes(null, [scene([{ file_path: "asset:P|x.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:P|x.png" }])]);
     locate.mockResolvedValue({ fixed: [], unresolved: ["asset:P|x.png"], missing: [], local: [] });
     await relinkSceneAssetRefs();
     resetRelinkSessionForTest();
@@ -743,7 +756,7 @@ describe("판정 기억(Jay 2026-09-29 '2 새 안')", () => {
 });
 
 describe("레퍼런스 찾기 단추(Jay 2026-09-29)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     resetRelinkSessionForTest();
     locate.mockReset();
@@ -752,7 +765,7 @@ describe("레퍼런스 찾기 단추(Jay 2026-09-29)", () => {
   it("이 씬만, render 까지, 새 작업 id 로, 저장된 판정과 무관하게 묻고 한 줄로 알린다", async () => {
     const s1 = { ...scene([{ file_path: "asset:imports|a.png" }, { file_path: "asset:Q|b.png" }]), id: "s1" };
     const s2 = { ...scene([{ file_path: "asset:Q|other.png" }]), id: "s2" };
-    saveScenes(null, [s1, s2]);
+    await saveScenes(null, [s1, s2]);
     locate.mockResolvedValueOnce(
       answer({
         unresolved: ["asset:imports|a.png", "asset:Q|b.png", "asset:Q|other.png"],
@@ -787,7 +800,7 @@ describe("레퍼런스 찾기 단추(Jay 2026-09-29)", () => {
   });
 
   it("자동 복구가 도는 중에 누르면 끝난 뒤에 돈다 — 늦게 온 답이 새 답을 덮지 않게(Codex)", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:Q|slow.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:Q|slow.png" }])]);
     let release = () => {};
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -814,7 +827,7 @@ describe("레퍼런스 찾기 단추(Jay 2026-09-29)", () => {
   });
 
   it("이미 도는 자동 복구는 끊고 앞선다 — 멈춘 NAS 에 걸린 자동 요청 뒤에 5분 줄 서지 않는다(Codex P1 2026-09-30)", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:Q|stuck.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:Q|stuck.png" }])]);
     locate.mockImplementationOnce(
       (...args: unknown[]) =>
         new Promise((_, reject) => (args[4] as AbortSignal).addEventListener("abort", () => reject(new Error("aborted")))),
@@ -832,7 +845,7 @@ describe("레퍼런스 찾기 단추(Jay 2026-09-29)", () => {
 
   it("끊은 자동 복구가 다음 바퀴로 미뤄 둔 참조는 단추 뒤에 자동 복구가 한 번 더 돌아 묻는다(Codex P1 재검토)", async () => {
     const s1 = { ...scene([{ file_path: "asset:Q|stuck.png" }]), id: "s1" };
-    saveScenes(null, [s1]);
+    await saveScenes(null, [s1]);
     locate.mockImplementation((...args: unknown[]) => {
       const tokens = args[0] as string[];
       if (tokens.includes("asset:Q|new.png")) return Promise.resolve(answer({ open: ["asset:Q|new.png"] }));
@@ -842,7 +855,7 @@ describe("레퍼런스 찾기 단추(Jay 2026-09-29)", () => {
     const auto = relinkSceneAssetRefs();
     await vi.waitFor(() => expect(locate).toHaveBeenCalledTimes(1));
     // 도는 중에 다른 씬에 새 참조가 들어와 자동 복구를 또 부른다 → 다음 바퀴 예약
-    saveScenes(null, [s1, { ...scene([{ file_path: "asset:Q|new.png" }]), id: "s2" }]);
+    await saveScenes(null, [s1, { ...scene([{ file_path: "asset:Q|new.png" }]), id: "s2" }]);
     void relinkSceneAssetRefs();
 
     await findSceneAssetRefs("s1", {});
@@ -851,7 +864,7 @@ describe("레퍼런스 찾기 단추(Jay 2026-09-29)", () => {
   });
 
   it("대기 중단 — 기다리기를 멈추고, 멈춘 배치의 답은 기억하지 않는다", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:Q|stuck.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:Q|stuck.png" }])]);
     locate.mockImplementation(
       (...args: unknown[]) =>
         new Promise((_resolve, reject) => {
@@ -876,17 +889,17 @@ describe("레퍼런스 찾기 단추(Jay 2026-09-29)", () => {
   });
 
   it("찾을 참조가 없으면 묻지 않고, 서버 실패는 던진다(부르는 쪽이 알린다)", async () => {
-    saveScenes(null, [scene([])]);
+    await saveScenes(null, [scene([])]);
     const none = await findSceneAssetRefs("s1", {});
     expect(locate).not.toHaveBeenCalled();
     expect(findSummaryText(none)).toBe("이 씬에는 찾을 레퍼런스가 없습니다.");
 
-    saveScenes(null, [scene([{ file_path: "asset:Q|x.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:Q|x.png" }])]);
     locate.mockRejectedValue(new Error("서버 없음"));
     await expect(findSceneAssetRefs("s1", {})).rejects.toThrow("서버 없음");
   });
 
-  it("모두 열리면 그렇게, 판정 보류는 끝까지 못 훑은 것까지 센다", () => {
+  it("모두 열리면 그렇게, 판정 보류는 끝까지 못 훑은 것까지 센다", async () => {
     const base = { asked: 3, open: 3, fixed: 0, local: 0, missing: 0, unresolved: 0, incomplete: 0, aborted: false };
     expect(findSummaryText(base)).toBe("레퍼런스 3개가 모두 원본과 이어져 있습니다.");
     expect(findSummaryText({ ...base, open: 1, unresolved: 1, incomplete: 1 })).toBe(
@@ -899,13 +912,13 @@ describe("에셋 대장 번호(2026-09-30)", () => {
   const OLD = "a".repeat(64);
   const NEW = "b".repeat(64);
 
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     resetRelinkSessionForTest();
     locate.mockReset();
   });
 
-  it("한 토큰의 참조가 모두 같은 번호일 때만 번호를 싣는다(Codex — 다른 번호끼리 한 답을 나눠 갖지 않게)", () => {
+  it("한 토큰의 참조가 모두 같은 번호일 때만 번호를 싣는다(Codex — 다른 번호끼리 한 답을 나눠 갖지 않게)", async () => {
     const [group] = sceneAssetGroups([
       scene([
         { file_path: "asset:P|a.png", registry_asset_id: "r1" },
@@ -921,7 +934,7 @@ describe("에셋 대장 번호(2026-09-30)", () => {
     expect(group.registryIds).toEqual({ "asset:P|a.png": "r1" });
   });
 
-  it("번호가 같으면 넣을 때 판과 달라도 새 자리로 따라가고, 넣을 때 판은 지킨다", () => {
+  it("번호가 같으면 넣을 때 판과 달라도 새 자리로 따라가고, 넣을 때 판은 지킨다", async () => {
     const cards = scene([{ file_path: "asset:P|CH/x.png", thumb: "t", content_sha: OLD, bytes: 1, registry_asset_id: "r1" }])
       .cards;
     const found = new Map([
@@ -938,7 +951,7 @@ describe("에셋 대장 번호(2026-09-30)", () => {
     });
   });
 
-  it("번호가 있는 참조는 다른 번호·번호 없는 답을 받지 않는다", () => {
+  it("번호가 있는 참조는 다른 번호·번호 없는 답을 받지 않는다", async () => {
     const cards = scene([{ file_path: "asset:P|CH/x.png", registry_asset_id: "r1" }]).cards;
     for (const hit of [
       { project: "P", path: "CH/y.png", registry_asset_id: "r2" },
@@ -949,7 +962,7 @@ describe("에셋 대장 번호(2026-09-30)", () => {
     }
   });
 
-  it("열리는 참조에는 번호만 붙이고 썸네일·주소는 그대로 둔다 — 이미 번호가 있으면 덮지 않는다", () => {
+  it("열리는 참조에는 번호만 붙이고 썸네일·주소는 그대로 둔다 — 이미 번호가 있으면 덮지 않는다", async () => {
     const cards = scene([
       { file_path: "asset:P|a.png", thumb: "keep" },
       { file_path: "asset:P|b.png", thumb: "keep", registry_asset_id: "mine" },
@@ -965,7 +978,7 @@ describe("에셋 대장 번호(2026-09-30)", () => {
   });
 
   it("서버가 알려 준 번호(open_ids)를 씬에 저장하고, 다음 복구는 다시 묻지 않는다 — 원본 연결 수에는 넣지 않는다", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:P|a.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:P|a.png" }])]);
     locate.mockResolvedValue(answer({ open: ["asset:P|a.png"], open_ids: { "asset:P|a.png": "r1" } }));
 
     expect(await relinkSceneAssetRefs()).toBe(0);
@@ -976,29 +989,29 @@ describe("에셋 대장 번호(2026-09-30)", () => {
     expect(locate).toHaveBeenCalledTimes(1); // 번호 열쇠로 '열림'을 기억했다
   });
 
-  it("번호 저장이 실패하면 '열림'도 기억하지 않아 다음에 다시 묻는다(Codex P1)", async () => {
+  it("번호가 저장소에 확정되지 못하면 '열림'도 기억하지 않아 다음에 다시 묻는다(Codex P1)", async () => {
+    const idOf = (list: Scene[]) => list[0].cards[0].refs?.[0].registry_asset_id;
     saveScenes(null, [scene([{ file_path: "asset:P|a.png" }])]);
-    const realSet = Storage.prototype.setItem;
-    const full = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
-      if (key === STORAGE_KEYS.scenes) throw new Error("QuotaExceededError"); // 씬 저장만 실패
-      return realSet.call(this, key, value);
-    });
+    await settleSceneStoreForTest();
+    failSceneStoreWritesForTest(true); // 저장소 확정만 실패(저장소는 IndexedDB — localStorage 가로채기로는 못 만든다)
     locate.mockResolvedValue(answer({ open: ["asset:P|a.png"], open_ids: { "asset:P|a.png": "r1" } }));
     try {
       await relinkSceneAssetRefs();
     } finally {
-      full.mockRestore();
+      failSceneStoreWritesForTest(false);
     }
-    expect(listScenes(null)[0].cards[0].refs?.[0].registry_asset_id).toBeUndefined();
+    expect(idOf(listScenes(null))).toBe("r1"); // 화면 값에는 번호가 붙었다
+    expect(idOf(listPersistedScenes(null))).toBeUndefined(); // 확정본은 아직
 
     resetRelinkSessionForTest();
     await relinkSceneAssetRefs();
-    expect(locate).toHaveBeenCalledTimes(2); // 다시 물었다 — 이번엔 번호가 저장된다
-    expect(listScenes(null)[0].cards[0].refs?.[0].registry_asset_id).toBe("r1");
+    expect(locate).toHaveBeenCalledTimes(2); // '열림'을 기억하지 않아 다시 물었다
+    expect(await settleSceneStoreForTest()).toBe(true); // 저장소가 다시 받으면 번호가 확정된다
+    expect(idOf(listPersistedScenes(null))).toBe("r1");
   });
 
   it("번호가 붙은 참조는 번호를 함께 보낸다", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:P|a.png", registry_asset_id: "r1" }, { file_path: "asset:P|b.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:P|a.png", registry_asset_id: "r1" }, { file_path: "asset:P|b.png" }])]);
     locate.mockResolvedValue(answer({}));
     await relinkSceneAssetRefs();
     expect(locate.mock.calls[0][6]).toEqual({ "asset:P|a.png": "r1" });
@@ -1006,7 +1019,7 @@ describe("에셋 대장 번호(2026-09-30)", () => {
 });
 
 describe("탭에 공간이 없으면 지금 선택된 워크스페이스로 찾는다(Jay 2026-09-30)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     resetRelinkSessionForTest();
     locate.mockReset();
@@ -1014,7 +1027,7 @@ describe("탭에 공간이 없으면 지금 선택된 워크스페이스로 찾�
 
   it("공간 없는 탭은 선택된 팀 공간을 싣고, 판정·연결 열쇠는 그대로 탭 기준이다", async () => {
     localStorage.setItem(STORAGE_KEYS.workspaceContext, JSON.stringify({ scope: "team", id: "ws-mudx", name: "뻘뻘뻘" }));
-    saveScenes(null, [scene([{ file_path: "asset:뻘뻘뻘_RnD|CH/m/a.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:뻘뻘뻘_RnD|CH/m/a.png" }])]);
     locate.mockResolvedValue(
       answer({ fixed: [{ token: "asset:뻘뻘뻘_RnD|CH/m/a.png", project: "뻘뻘뻘", path: "assets/CH/m/a.png" }] }),
     );
@@ -1025,20 +1038,20 @@ describe("탭에 공간이 없으면 지금 선택된 워크스페이스로 찾�
 
   it("탭에 공간이 있으면 그 공간이 먼저다 — 선택이 개인·미정이면 싣지 않는다", async () => {
     localStorage.setItem(STORAGE_KEYS.workspaceContext, JSON.stringify({ scope: "team", id: "ws-other", name: "다른 곳" }));
-    saveScenes(null, [scene([{ file_path: "asset:P|x/a.png" }], { id: "ws-tab", name: "탭" })]);
+    await saveScenes(null, [scene([{ file_path: "asset:P|x/a.png" }], { id: "ws-tab", name: "탭" })]);
     locate.mockResolvedValue(answer({ unresolved: ["asset:P|x/a.png"] }));
     await findSceneAssetRefs("s1", {});
     expect(locate.mock.calls[0][1]).toBe("ws-tab");
 
     localStorage.setItem(STORAGE_KEYS.workspaceContext, JSON.stringify({ scope: "personal" }));
-    saveScenes(null, [scene([{ file_path: "asset:P|x/a.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:P|x/a.png" }])]);
     await findSceneAssetRefs("s1", {});
     expect(locate.mock.calls[1][1]).toBe("");
   });
 });
 
 describe("'보류' 판정은 물을 때 실은 공간과 함께 기억한다(Codex P2 2026-09-30)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     resetRelinkSessionForTest();
     locate.mockReset();
@@ -1049,7 +1062,7 @@ describe("'보류' 판정은 물을 때 실은 공간과 함께 기억한다(Cod
 
   it("선택 공간을 바꾸면 자동 복구가 보류를 다시 묻고, 같은 공간이면 다시 안 묻는다 — 서버에 없음은 공간과 무관하다", async () => {
     pick("ws-B");
-    saveScenes(null, [scene([{ file_path: "asset:뻘뻘뻘_RnD|CH/m/a.png" }, { file_path: "asset:imports|gone.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:뻘뻘뻘_RnD|CH/m/a.png" }, { file_path: "asset:imports|gone.png" }])]);
     locate.mockResolvedValue(
       answer({ unresolved: ["asset:뻘뻘뻘_RnD|CH/m/a.png", "asset:imports|gone.png"], missing: ["asset:imports|gone.png"] }),
     );
@@ -1072,14 +1085,14 @@ describe("'보류' 판정은 물을 때 실은 공간과 함께 기억한다(Cod
 });
 
 describe("연결 안 된 레퍼런스 표시(Jay 2026-09-30 시안 — 보류도 빨강 + 이유)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     resetRelinkSessionForTest();
     locate.mockReset();
   });
 
   it("보류는 이유와 함께 기억하고, 판정 전·판정 못 끝냄은 따로 구별한다", async () => {
-    saveScenes(null, [
+    await saveScenes(null, [
       scene([
         { file_path: "asset:뻘뻘뻘_RnD|CH/m/a.png" },
         { file_path: "asset:imports|copy.png" },
@@ -1114,7 +1127,7 @@ describe("연결 안 된 레퍼런스 표시(Jay 2026-09-30 시안 — 보류도
   });
 
   it("레퍼런스 찾기가 판정을 못 끝내면 옛 '서버에 없음'을 지운다 — NAS 가 끊긴 동안 빨강이 굳지 않게(Codex)", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:Q|gone.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:Q|gone.png" }])]);
     locate.mockResolvedValueOnce(answer({ unresolved: ["asset:Q|gone.png"], missing: ["asset:Q|gone.png"] }));
     await relinkSceneAssetRefs();
     expect(status("", "asset:Q|gone.png")).toBe("missing");
@@ -1129,20 +1142,20 @@ describe("연결 안 된 레퍼런스 표시(Jay 2026-09-30 시안 — 보류도
 });
 
 describe("판정 못 끝냄은 대체 열쇠의 옛 판정까지 지운다(Codex P1 2026-09-30)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     resetRelinkSessionForTest();
     locate.mockReset();
   });
 
   it("지문 없이 '서버에 없음'으로 기억한 참조에 나중에 지문이 붙고, 찾기가 판정을 못 끝내면 회색이 된다", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:Q|gone.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:Q|gone.png" }])]);
     locate.mockResolvedValueOnce(answer({ unresolved: ["asset:Q|gone.png"], missing: ["asset:Q|gone.png"] }));
     await relinkSceneAssetRefs();
     expect(status("", "asset:Q|gone.png")).toBe("missing");
 
     const fp = { content_sha: "a".repeat(64), bytes: 5 };
-    saveScenes(null, [scene([{ file_path: "asset:Q|gone.png", ...fp }])]); // 넣을 때 판이 붙었다
+    await saveScenes(null, [scene([{ file_path: "asset:Q|gone.png", ...fp }])]); // 넣을 때 판이 붙었다
     expect(status("", "asset:Q|gone.png", fp)).toBe("missing"); // 표시는 지문 없는 옛 열쇠를 읽는다
     locate.mockResolvedValueOnce(answer({ unresolved: ["asset:Q|gone.png"], incomplete: ["asset:Q|gone.png"] }));
     await findSceneAssetRefs("s1", {});
@@ -1151,7 +1164,7 @@ describe("판정 못 끝냄은 대체 열쇠의 옛 판정까지 지운다(Codex
 });
 
 describe("판정 못 끝냄은 같은 토큰을 쓰는 모든 참조의 옛 판정을 지운다(Codex P1 재검토)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     resetRelinkSessionForTest();
     locate.mockReset();
@@ -1160,12 +1173,12 @@ describe("판정 못 끝냄은 같은 토큰을 쓰는 모든 참조의 옛 판�
   it("지문 A 로 '서버에 없음' → 같은 토큰에 지문 B 참조가 더해짐 → 찾기가 판정을 못 끝내면 A 도 회색", async () => {
     const a = { content_sha: "a".repeat(64), bytes: 5 };
     const b = { content_sha: "b".repeat(64), bytes: 6 };
-    saveScenes(null, [scene([{ file_path: "asset:imports|x.png", ...a }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:imports|x.png", ...a }])]);
     locate.mockResolvedValueOnce(answer({ unresolved: ["asset:imports|x.png"], missing: ["asset:imports|x.png"] }));
     await relinkSceneAssetRefs();
     expect(status("", "asset:imports|x.png", a)).toBe("missing");
 
-    saveScenes(null, [scene([{ file_path: "asset:imports|x.png", ...a }, { file_path: "asset:imports|x.png", ...b }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:imports|x.png", ...a }, { file_path: "asset:imports|x.png", ...b }])]);
     locate.mockResolvedValueOnce(answer({ unresolved: ["asset:imports|x.png"], incomplete: ["asset:imports|x.png"] }));
     // 화면은 알림이 올 때 다시 그린다 — 그 순간 읽는 값이 맞아야 한다(끝의 가지치기는 알리지 않는다)
     const seenOnNotify: (string | undefined)[] = [];
@@ -1179,14 +1192,14 @@ describe("판정 못 끝냄은 같은 토큰을 쓰는 모든 참조의 옛 판�
 });
 
 describe("판정을 받았는데 그림이 안 뜨면 한 번 다시 묻는다(2026-09-30 실측)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     resetRelinkSessionForTest();
     locate.mockReset();
   });
 
   it("번호를 받은 뒤 NAS 에서 옮겨져 그림이 깨지면 '확인 중'으로 되돌려 한 번 묻고, 번호로 새 자리를 받는다", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:P|CH/p.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:P|CH/p.png" }])]);
     locate.mockResolvedValueOnce(answer({ open: ["asset:P|CH/p.png"], open_ids: { "asset:P|CH/p.png": "r1" } }));
     await relinkSceneAssetRefs();
     const ref = listScenes(null)[0].cards[0].refs![0];
@@ -1212,7 +1225,7 @@ describe("판정을 받았는데 그림이 안 뜨면 한 번 다시 묻는다(2
   });
 
   it("세션마다 한 번만 — 파일이 깨져 늘 안 뜨는 참조가 되풀이해 묻지 않는다. 판정 전·사본 아닌 토큰은 건드리지 않는다", async () => {
-    saveScenes(null, [scene([{ file_path: "asset:P|a.png" }])]);
+    await saveScenes(null, [scene([{ file_path: "asset:P|a.png" }])]);
     expect(recheckBrokenRef("", { file_path: "asset:P|a.png" })).toBe(false); // 판정 전 — 자동 복구가 어차피 묻는다
     expect(recheckBrokenRef("", { file_path: "gen:abc" })).toBe(false);
     locate.mockResolvedValue(answer({ open: ["asset:P|a.png"] }));
@@ -1225,7 +1238,7 @@ describe("판정을 받았는데 그림이 안 뜨면 한 번 다시 묻는다(2
 });
 
 describe("선택 공간을 바꾸면 세션 안에서도 새 공간으로 한 번 묻는다(2026-10-01 점검 R2-2)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     resetRelinkSessionForTest();
     locate.mockReset();
@@ -1240,7 +1253,7 @@ describe("선택 공간을 바꾸면 세션 안에서도 새 공간으로 한 �
 
   it("보류만 새 공간으로 한 번 묻고 열림은 안 묻는다 — 같은 공간이면 다시 안 묻는다", async () => {
     pick("W0");
-    saveScenes(null, [scene([{ file_path: A }, { file_path: B }])]);
+    await saveScenes(null, [scene([{ file_path: A }, { file_path: B }])]);
     locate.mockResolvedValueOnce(answer({ unresolved: [A, B], open: [B] }));
     await relinkSceneAssetRefs();
     await relinkSceneAssetRefs();
@@ -1256,7 +1269,7 @@ describe("선택 공간을 바꾸면 세션 안에서도 새 공간으로 한 �
 
   it("옛 공간의 답이 늦게 와도 새 공간 질문을 막지 않는다", async () => {
     pick("W0");
-    saveScenes(null, [scene([{ file_path: A }])]);
+    await saveScenes(null, [scene([{ file_path: A }])]);
     let finishW0!: (reply: unknown) => void;
     locate.mockImplementationOnce(() => new Promise((resolve) => { finishW0 = resolve; }));
     locate.mockResolvedValue(answer({ unresolved: [A] }));
@@ -1274,7 +1287,7 @@ describe("선택 공간을 바꾸면 세션 안에서도 새 공간으로 한 �
 
   it("옛 공간 질문이 실패해도 그 사이 바꾼 새 공간으로는 묻는다(Codex 코드 리뷰)", async () => {
     pick("W0");
-    saveScenes(null, [scene([{ file_path: A }])]);
+    await saveScenes(null, [scene([{ file_path: A }])]);
     let failW0!: (error: Error) => void;
     locate.mockImplementationOnce(() => new Promise((_resolve, reject) => { failW0 = reject; }));
     locate.mockResolvedValue(answer({ unresolved: [A] }));
@@ -1290,7 +1303,7 @@ describe("선택 공간을 바꾸면 세션 안에서도 새 공간으로 한 �
 
   it("공간을 빨리 오가도 (공간, 토큰)마다 한 번까지 — 판정 못 끝냄도 같은 공간에선 다시 안 묻는다", async () => {
     pick("W0");
-    saveScenes(null, [scene([{ file_path: A }])]);
+    await saveScenes(null, [scene([{ file_path: A }])]);
     locate.mockResolvedValueOnce(answer({ incomplete: [A] }));
     locate.mockResolvedValue(answer({ unresolved: [A] }));
     await relinkSceneAssetRefs();

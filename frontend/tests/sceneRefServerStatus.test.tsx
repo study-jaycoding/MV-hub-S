@@ -72,7 +72,7 @@ it("서버에 없는 참조는 빨간 테두리 + 안내, 이 PC 에만 있는 �
     { id: "ok", refs: [ref("asset:P|ok.png", "ok.png")] },
     { id: "multi", refs: [ref("asset:P|ok.png", "ok.png"), ref("asset:Q|two.png", "two.png")] },
   ]);
-  saveScenes(null, [scene]);
+  await saveScenes(null, [scene]);
   fixture.locate.mockResolvedValue({
     fixed: [],
     unresolved: [],
@@ -113,7 +113,7 @@ it("서버에 없는 참조는 빨간 테두리 + 안내, 이 PC 에만 있는 �
 
 it("로컬 파일을 끌어다 놓으면 프로젝트를 고르지 않아도 이 PC 에 두고 자동 복구를 부른다 — 표시는 서버 답으로만(2026-09-29)", async () => {
   const scene = refScene("dropscene", "ws-drop", []);
-  saveScenes(null, [scene]);
+  await saveScenes(null, [scene]);
   fixture.upload.mockResolvedValue({
     saved: [{ project: "imports", path: "mine-drop.png", name: "mine-drop.png", type: "image", sha256: "s", bytes: 3 }],
     skipped: [],
@@ -335,7 +335,7 @@ it("리스트도 같은 판정 — 첫 장이 서버에 없으면 붉은 빗금 
       { id: "e5", from: "lr-local", to: "L3" },
     ],
   } as unknown as Scene;
-  saveScenes(null, [scene]);
+  await saveScenes(null, [scene]);
   fixture.locate.mockResolvedValue({
     fixed: [],
     unresolved: [],
@@ -370,7 +370,7 @@ it("판정 보류도 빨간 테두리 + 이유(후보 여럿·사본), 판정 �
     { id: "copy", refs: [ref("asset:imports|copy.png", "copy.png")] },
     { id: "slow", refs: [ref("asset:Q|slow.png", "slow.png")] },
   ]);
-  saveScenes(null, [scene]);
+  await saveScenes(null, [scene]);
   fixture.locate.mockResolvedValue({
     fixed: [],
     unresolved: ["asset:뻘뻘뻘_RnD|CH/m/a.png", "asset:imports|copy.png", "asset:Q|slow.png"],
