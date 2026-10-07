@@ -1,3 +1,4 @@
+import { ownEntry } from "./ownEntry";
 import { useRef } from "react";
 import type { MutableRefObject } from "react";
 import { api } from "../api";
@@ -23,7 +24,7 @@ export function useSceneColorActions(colors: SceneColorLedger, genDataRef: Mutab
     const tickets = failures.flatMap(ticket => {
       // 복구 쓰기는 현재 세대만. 같은 계정 옛 씬의 실패 고지는 아래에서 따로 집계한다.
       if (!ledger.isLive(ticket, true)) return [];
-      const ids = ticket.ids.filter(id => liveIds.has(id) && !!genDataRef.current[id]
+      const ids = ticket.ids.filter(id => liveIds.has(id) && !!ownEntry(genDataRef.current, id)
         && ticket.gen.revisions.get(id) === ticket.revisions[id]);
       return ids.length ? [{ ...ticket, ids }] : [];
     });
@@ -61,10 +62,10 @@ export function useSceneColorActions(colors: SceneColorLedger, genDataRef: Mutab
   return {
     applyColorToGids(gids: string[], color: string): void {
       const liveIds = new Set(colors.currentIds());
-      const ids = [...new Set(gids)].filter(id => liveIds.has(id) && !!genDataRef.current[id]);
+      const ids = [...new Set(gids)].filter(id => liveIds.has(id) && !!ownEntry(genDataRef.current, id));
       if (!ids.length) return;
       // 계산용 id만 요청 키로 정규화한다. 실제 Generation.id와 API 저장 키는 바꾸지 않는다.
-      const views = ids.map(id => ({ ...genDataRef.current[id], id }));
+      const views = ids.map(id => ({ ...ownEntry(genDataRef.current, id)!, id })); // 위에서 있는 것만 골랐다
       const next = nextGenerationSelectionColor(views, ids, color);
       const ticket = colors.begin(ids, next);
       if (!ticket) return;

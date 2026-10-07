@@ -33,6 +33,7 @@ import {
   countBackupOnlyScenes,
   importFromBackup,
   initSceneBackup,
+  subscribeSceneBackupSkipped,
   subscribeSceneRestore,
 } from "./sceneBackup";
 import {
@@ -174,9 +175,17 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
       .then(() => relinkAssets(true))
       // 자동 복구가 닿지 못한 씬(다른 브라우저 프로필이 올려 둔 것)이 있으면 개수를 알아 둔다.
       .then(() => countBackupOnlyScenes().then(setBackupOnly, () => setBackupOnly(0)));
+    // 서버 상한을 넘는 씬은 DB 백업에서 빠진다 — 조용히 빠지면 "백업이 있다"고 믿게 되므로 알린다.
+    const unsubscribeSkipped = subscribeSceneBackupSkipped((names) => {
+      flashRef.current?.(
+        `캔버스 ${names.map((name) => `'${name}'`).join(", ")}: 너무 커서(5MB 초과) 이 PC 의 DB 백업에 올리지 못했습니다 — ` +
+          "작업은 이 브라우저에 그대로 저장돼 있습니다. 설정의 [전체 내보내기]로 따로 받아 두세요.",
+      );
+    });
     return () => {
       unsubscribe();
       unsubscribeLinks();
+      unsubscribeSkipped();
     };
   }, []);
   const lastNotifyRef = useRef(0);

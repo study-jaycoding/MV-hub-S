@@ -38,6 +38,14 @@ const RETRY_MS = 30_000; // 실패 백오프 — 다음 변경이 없어도 이 
 const MAX_UPSERTS = 200; // 서버 상한과 동일
 const MAX_UPSERT_BYTES = 8 * 1024 * 1024; // 청크당 대략 바이트 상한(서버 총량 20MB 의 여유 하한)
 const MAX_DELETES = 500; // 서버 상한과 동일
+// 씬 1개의 서버 상한(UTF-8 바이트) — backend/app/repo/scenes_backup.py 의 MAX_SCENE_BYTES 와 같아야 한다.
+// 서버는 이를 넘는 씬이 하나라도 있으면 **그 요청 전체**를 거절한다. 그대로 보내면 같은 청크를 영영 다시
+// 보내고, 같은 청크·뒤 청크의 멀쩡한 씬도 백업되지 않는다(Codex 설계 검토 P1) — 넘는 씬만 빼고 보낸다.
+export const MAX_SCENE_BYTES = 5 * 1024 * 1024;
+const utf8 = new TextEncoder();
+// 글자 수만으로 상한 안쪽임이 확실하면(글자당 최대 3바이트) 바이트를 세지 않는다 — 큰 씬에서만 센다.
+const exceedsSceneLimit = (data: string): boolean =>
+  data.length > MAX_SCENE_BYTES || (data.length * 3 > MAX_SCENE_BYTES && utf8.encode(data).byteLength > MAX_SCENE_BYTES);
 
 const ns = getAccountNamespace;
 
@@ -73,6 +81,15 @@ let syncSettled: (() => void) | null = null;
 // 가져오기가 도는 동안엔 sync 를 아예 들이지 않는다. 겹치면 sync 가 '가져오기 전' 로컬 목록을 들고
 // 삭제를 계산해, 방금 가져온 씬을 서버에서 지운다(코덱스 P1). 가져오기가 끝나며 schedule() 로 이어준다.
 let importing = false;
+
+// 너무 커서 DB 백업에 올리지 못한 씬(id). 새로 생길 때만 알린다 — 작아져 다시 올라가면 빠진다.
+let oversized = new Set<string>();
+const oversizeSubs = new Set<(names: string[]) => void>();
+/** 서버 상한을 넘어 DB 백업에서 빠진 씬이 **새로 생기면** 그 이름들을 알린다(씬은 이 브라우저에 그대로 있다). */
+export function subscribeSceneBackupSkipped(fn: (names: string[]) => void): () => void {
+  oversizeSubs.add(fn);
+  return () => oversizeSubs.delete(fn);
+}
 
 // 복구 알림 — 백그라운드(백오프 재시도) 복구도 현재 탭 UI(씬 목록)에 반영되게 구독을 받는다.
 //  같은 탭엔 storage 이벤트가 안 오므로 이 콜백이 유일한 통지 경로다(코덱스 P1).
@@ -115,6 +132,7 @@ function enterScope(): string {
     initPromise = null;
     serverHash = null;
     lastPushed = new Map();
+    oversized = new Set();
     rerun = false;
     if (timer) clearTimeout(timer);
     timer = null;
@@ -221,9 +239,18 @@ async function syncNow(): Promise<void> {
     //  저장되지도 않은 삭제가 서버 백업에 반영된다(Codex).
     const local = listPersistedScenes(null);
     const upserts: { id: string; name: string; data: string }[] = [];
+    const tooBig = new Set<string>();
+    const newlyTooBig: string[] = [];
     for (const s of local) {
       const data = JSON.stringify(s);
       if (lastPushed.get(s.id) === data) continue; // 이 세션에서 이미 올린(또는 복구한) 그대로
+      if (exceedsSceneLimit(data)) {
+        // 전송에서 뺀다. ★올린 것으로 적지 않는다(lastPushed) — 작아지면 다시 대상이 된다. 서버에 남은 옛 사본도
+        //  지우지 않는다(아래 삭제 계산은 '로컬에서 사라진 것'만 본다 — 이 씬은 로컬에 있다).
+        tooBig.add(s.id);
+        if (!oversized.has(s.id)) newlyTooBig.push(s.name);
+        continue;
+      }
       if (meta.has(s.id)) {
         const h = await sha256hex(data);
         if (h && h === meta.get(s.id)) {
@@ -234,6 +261,8 @@ async function syncNow(): Promise<void> {
       }
       upserts.push({ id: s.id, name: s.name, data });
     }
+    oversized = tooBig;
+    if (newlyTooBig.length) oversizeSubs.forEach((fn) => fn(newlyTooBig));
     const localIds = new Set(local.map((s) => s.id));
     // ★삭제 미러는 '이 세션에서 로컬에 있던 씬이 사라진 것'만 지운다(코덱스 P0).
     //  종전엔 '서버에만 있는 id' 를 전부 지웠다. 앱 전용 브라우저 프로필 도입(2026-09-01) 뒤로

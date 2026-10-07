@@ -1,5 +1,6 @@
 // 리스트(동종 수집기) 카드 본문 — SceneBoard 렌더 분할(R2). 셸은 부모 소유, Fragment 만 반환(규칙은 OutputCard 참고).
 //  순서변경(startReorder)이 쓰는 data-reorder / data-reid 속성은 반드시 보존한다.
+import { ownEntry } from "../../../lib/ownEntry";
 import type React from "react";
 import type { CSSProperties } from "react";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
@@ -118,7 +119,7 @@ export function ListCard({
                   );
                 }
                 const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
-                const gen = gid ? genData[gid] : undefined;
+                const gen = gid ? ownEntry(genData, gid) : undefined;
                 const src = gen ? thumbOf(gen, 128) : null;
                 const n = gc ? variantIds(gc).length : 0; // 이 카드에 생성된 결과 수
                 const off = !!gid && disabledIds.has(gid); // 비활성(회색) 결과

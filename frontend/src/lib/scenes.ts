@@ -651,6 +651,9 @@ const isPlain = (v: unknown): v is Record<string, unknown> => !!v && typeof v ==
 const isPrimitive: Shape = (v) => isStr(v) || isBool(v) || isFiniteNum(v);
 const oneOf = (...allowed: unknown[]): Shape => (v) => allowed.includes(v);
 const orNull = (shape: Shape): Shape => (v) => v === null || shape(v);
+// id 로 쓰이는 글자 — "toString"·"constructor"·"__proto__" 처럼 Object.prototype 에 있는 이름은 받지 않는다.
+// 화면은 id 로 사전을 조회하는데(`ownEntry` 로 막아 두었지만) 이런 id 가 저장소에 들어올 이유 자체가 없다.
+const isSafeId: Shape = (v) => typeof v === "string" && v !== "" && !(v in Object.prototype);
 
 /** 있는데 모양이 다른 필드를 지운다. */
 function keepShaped(target: Record<string, unknown>, shapes: Record<string, Shape>): void {
@@ -666,6 +669,7 @@ function cleanList<T>(raw: unknown[], clean: (item: unknown) => T | null): T[] {
   });
 }
 const strings = (raw: unknown[]): string[] => raw.filter((item): item is string => typeof item === "string");
+const safeIds = (raw: unknown[]): string[] => raw.filter((item): item is string => isSafeId(item));
 const primitives = (raw: Record<string, unknown>) =>
   Object.fromEntries(Object.entries(raw).filter(([, value]) => isPrimitive(value))) as Record<string, string | number | boolean>;
 
@@ -675,7 +679,7 @@ function cleanRef(raw: unknown): SceneRef | null {
   keepShaped(ref, {
     name: isStr,
     thumb: orNull(isStr),
-    source_gen_id: orNull(isStr),
+    source_gen_id: orNull(isSafeId),
     from_card: isBool,
     origin: oneOf("asset", "upload"),
     content_sha: isStr,
@@ -740,7 +744,7 @@ function cleanComfyCfg(raw: Record<string, unknown>): SceneComfyCfg {
     cfg.outputs = cleanList(cfg.outputs, (item) => {
       if (!isPlain(item) || !oneOf("image", "video", "text")(item.kind)) return null;
       const output = { ...item };
-      keepShaped(output, { url: isStr, text: isStr, saved_generation_id: isStr });
+      keepShaped(output, { url: isStr, text: isStr, saved_generation_id: isSafeId });
       return output;
     });
   }
@@ -754,14 +758,14 @@ function sanitizeImportedCard(c: SceneCard): SceneCard {
     w: isFiniteNum,
     h: isFiniteNum,
     refs: Array.isArray,
-    genId: orNull(isStr),
+    genId: orNull(isSafeId),
     genIds: Array.isArray,
     pendingGenerationAttempts: Array.isArray,
     prompt: isStr,
     status: oneOf("empty", "pending", "running", "done", "failed"),
     text: isStr,
     modelCfg: isPlain,
-    channel: isStr,
+    channel: isSafeId,
     color: isStr,
     fontSize: isFiniteNum,
     unchecked: Array.isArray,
@@ -771,12 +775,12 @@ function sanitizeImportedCard(c: SceneCard): SceneCard {
     setCfg: isPlain,
   });
   if (Array.isArray(out.refs)) out.refs = cleanList(out.refs, cleanRef);
-  if (Array.isArray(out.genIds)) out.genIds = strings(out.genIds);
-  if (Array.isArray(out.unchecked)) out.unchecked = strings(out.unchecked);
-  if (Array.isArray(out.listOrder)) out.listOrder = strings(out.listOrder);
+  if (Array.isArray(out.genIds)) out.genIds = safeIds(out.genIds);
+  if (Array.isArray(out.unchecked)) out.unchecked = safeIds(out.unchecked);
+  if (Array.isArray(out.listOrder)) out.listOrder = safeIds(out.listOrder);
   if (Array.isArray(out.pendingGenerationAttempts)) {
     out.pendingGenerationAttempts = cleanList(out.pendingGenerationAttempts, (item): CanvasGenerationAttempt | null =>
-      isPlain(item) && isStr(item.attemptId) && isStr(item.generationId) && isFiniteNum(item.createdAt)
+      isPlain(item) && isSafeId(item.attemptId) && isSafeId(item.generationId) && isFiniteNum(item.createdAt)
         ? { attemptId: item.attemptId as string, generationId: item.generationId as string, createdAt: item.createdAt }
         : null,
     );
@@ -817,7 +821,7 @@ function readSceneBody(raw: unknown, fallbackName: string): SceneSnapshot {
   const seenCardIds = new Set<string>();
   const cards: SceneCard[] = [];
   for (const c of s.cards as SceneCard[]) {
-    if (!isPlain(c) || typeof c.id !== "string" || !SCENE_CARD_KINDS.includes(c.kind)) {
+    if (!isPlain(c) || !isSafeId(c.id) || !SCENE_CARD_KINDS.includes(c.kind)) {
       throw new Error("알 수 없는 카드가 있어 불러올 수 없습니다(버전이 다를 수 있음).");
     }
     if (seenCardIds.has(c.id)) continue; // 중복 id 제거(첫 것 유지) — 렌더/매핑 혼란 방지
@@ -830,7 +834,7 @@ function readSceneBody(raw: unknown, fallbackName: string): SceneSnapshot {
   // id 참조는 렌더가 이미 건너뛰므로(cardById=null) 남겨도 안전.
   const cardIds = new Set(cards.map((c) => c.id));
   const edges = cleanList(s.edges as unknown[], (item): SceneEdge | null => {
-    if (!isPlain(item) || !isStr(item.id) || !isStr(item.from) || !isStr(item.to)) return null;
+    if (!isPlain(item) || !isSafeId(item.id) || !isSafeId(item.from) || !isSafeId(item.to)) return null;
     const edge = { ...item };
     keepShaped(edge, { role: oneOf("model", "ref", "text", "set", "lineage", "list"), order: isFiniteNum });
     return edge as unknown as SceneEdge;
@@ -839,7 +843,7 @@ function readSceneBody(raw: unknown, fallbackName: string): SceneSnapshot {
   const groups = rawGroups
     .filter(
       (g): g is SceneGroup =>
-        !!g && typeof (g as SceneGroup).id === "string" && Array.isArray((g as SceneGroup).cardIds),
+        !!g && isSafeId((g as SceneGroup).id) && Array.isArray((g as SceneGroup).cardIds),
     )
     .map((g) => {
       const group: Record<string, unknown> = {
@@ -878,14 +882,14 @@ function readSceneBody(raw: unknown, fallbackName: string): SceneSnapshot {
  */
 export function readStoredScene(raw: unknown): Scene {
   const r = raw as Record<string, unknown> | null | undefined;
-  if (!r || typeof r !== "object" || Array.isArray(r) || typeof r.id !== "string" || !r.id) {
+  if (!r || typeof r !== "object" || Array.isArray(r) || !isSafeId(r.id)) {
     throw new Error("씬 데이터가 손상됐습니다.");
   }
   const body = readSceneBody(r, "이름 없는 씬");
   const hint = readImportedWorkspace(r.refWorkspaceHint);
   const from = r.recoveredFrom as { id?: unknown; sum?: unknown } | null | undefined;
   return {
-    id: r.id,
+    id: r.id as string,
     name: body.name,
     cards: body.cards,
     edges: body.edges,

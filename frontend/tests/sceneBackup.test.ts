@@ -27,12 +27,18 @@ let getFull: () => Promise<{ items: unknown[] }>; // GET ?project_id=&include_da
 vi.mock("../src/lib/http", () => ({
   jsonFetch: (url: string, init?: RequestInit) => {
     calls.push({ url, init });
-    if (init?.method === "PUT") return Promise.resolve({ ok: true });
+    if (init?.method === "PUT") {
+      // 실제 서버(repo/scenes_backup.py)와 같게: 씬 하나라도 상한을 넘으면 그 요청 전체를 거절한다.
+      const body = JSON.parse(String(init.body)) as { upserts: { data: string }[] };
+      const tooBig = body.upserts.some((u) => new TextEncoder().encode(u.data).byteLength > SERVER_MAX_SCENE_BYTES);
+      return tooBig ? Promise.reject(new Error("400 씬이 너무 큼")) : Promise.resolve({ ok: true });
+    }
     if (url.includes("include_data")) return getFull();
     return getMeta();
   },
 }));
 
+const SERVER_MAX_SCENE_BYTES = 5 * 1024 * 1024;
 const puts = () => calls.filter((c) => c.init?.method === "PUT");
 const putBody = (c: Call) => JSON.parse(String(c.init?.body));
 
@@ -67,6 +73,7 @@ describe("sceneBackup (DB 미러·복구)", () => {
     // 같은 fetch 목으로 중복 PUT 을 만들지 않게 — 모듈 리셋과 별개로 타이머 큐를 비운다.
     vi.clearAllTimers();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("초기 reconcile — 배포 전부터 있던(수정 안 한) 씬도 1회 미러된다", async () => {
@@ -285,5 +292,64 @@ describe("sceneBackup (DB 미러·복구)", () => {
     created = () => scenes.saveScenes(null, [JSON.parse(sceneJson("justmade"))]);
     await backup.initSceneBackup();
     expect(scenes.listScenes(null).map((s) => s.id)).toEqual(["justmade", "fromdb"]);
+  });
+
+  // 서버는 씬 1개가 5MiB(UTF-8)를 넘으면 그 요청 전체를 거절한다. 그대로 보내면 같은 묶음을 영영 다시 보내고,
+  // 같은 묶음·뒤 묶음의 멀쩡한 씬도 백업되지 않는다(Codex 설계 검토 P1). 넘는 씬만 빼고 보내고, 알린다.
+  it("너무 큰 씬 하나가 다른 씬의 백업을 막지 않는다 — 그 씬만 빼고 알리고, 작아지면 다시 올린다", async () => {
+    // 해시 대조(crypto.subtle)는 진짜 비동기라 가짜 타이머로 넘길 수 없다 — http LAN 처럼 해시가 없는 환경으로
+    // 돌린다(그때는 바뀐 씬을 그대로 올린다). 이 시험이 보는 것은 '무엇을 보내는가'다.
+    vi.stubGlobal("crypto", {});
+    // 서버에는 그 씬의 예전(작던 때) 사본이 있다 — 지우면 안 된다.
+    getMeta = () => Promise.resolve({ items: [{ id: "big", data_hash: "old" }] });
+    const { scenes, backup, settle } = await boot();
+    const skipped: string[][] = [];
+    backup.subscribeSceneBackupSkipped((names) => skipped.push(names));
+    const big = {
+      ...JSON.parse(sceneJson("big", "큰 씬")),
+      cards: [{ id: "t", kind: "text", x: 0, y: 0, text: "가".repeat(1_800_000) }], // 약 5.4MB(한글은 글자당 3바이트)
+    };
+    scenes.saveScenes(null, [JSON.parse(sceneJson("a")), big, JSON.parse(sceneJson("b"))]);
+    await settle();
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(1);
+    expect(putBody(puts()[0]).upserts.map((u: { id: string }) => u.id)).toEqual(["a", "b"]);
+    expect(putBody(puts()[0]).deleted_ids).toEqual([]); // 서버의 옛 사본을 지우지 않는다
+    expect(skipped).toEqual([["큰 씬"]]);
+
+    // 다른 씬을 고치면 그것만 올라간다 — 큰 씬 때문에 다시 막히지 않고, 같은 알림을 또 띄우지도 않는다.
+    scenes.updateScene(null, "a", { name: "고침" });
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(2);
+    expect(putBody(puts()[1]).upserts.map((u: { id: string }) => u.id)).toEqual(["a"]);
+    expect(skipped).toHaveLength(1);
+
+    // 줄이면 다시 올라간다(올린 것으로 적어 두지 않았으므로).
+    scenes.updateScene(null, "big", { cards: [] });
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(3);
+    expect(putBody(puts()[2]).upserts.map((u: { id: string }) => u.id)).toEqual(["big"]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(puts().length).toBe(3); // 실패 재시도가 돌고 있지 않다
+  });
+
+  it("상한은 UTF-8 바이트로, 서버와 같은 경계다 — 딱 5MiB 는 올리고 1바이트 넘으면 뺀다", async () => {
+    const { scenes, backup, settle } = await boot();
+    const byteLength = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+    const padded = (id: string, bytes: number) => {
+      const scene = { ...JSON.parse(sceneJson(id)), cards: [{ id: "t", kind: "text", x: 0, y: 0, text: "" }] };
+      scene.cards[0].text = "x".repeat(bytes - byteLength(scene));
+      expect(byteLength(scene)).toBe(bytes);
+      return scene;
+    };
+    scenes.saveScenes(null, [padded("edge", backup.MAX_SCENE_BYTES), padded("over", backup.MAX_SCENE_BYTES + 1)]);
+    await settle();
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(1);
+    expect(putBody(puts()[0]).upserts.map((u: { id: string }) => u.id)).toEqual(["edge"]);
   });
 });
