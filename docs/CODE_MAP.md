@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-02
+updated: 2026-10-07
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -29,6 +29,7 @@ updated: 2026-10-02
 | 하고 싶은 일 | 프런트 진입 파일 | 백엔드 진입 파일 | 비고 |
 |---|---|---|---|
 | 라이브러리 카드 표시 문구·상태 라벨 바꾸기 | `components/GenerationCard.tsx`, `lib/generationDisplay.ts` | — | 상태 라벨은 순수 프런트 판정 |
+| 카드의 폴더 이름표·'폴더의 생성물' 창 | `components/GenerationCard.tsx`(이름표), `components/FolderContentsWindow.tsx`(창), `lib/useFolderContents.ts`(조회), `lib/folderLabel.ts`(표시 규칙) | `routers/library.py`(`GET /api/generations` — 기존 목록 API 그대로) | 창은 **본 목록과 따로** 조회한다(지금 탭·워크스페이스 범위의 그 폴더+하위, 다른 필터는 안 따라감). 창 안은 보기 전용. 이름표는 목록 탭(작업 공간·공유 & 리뷰)에만 — 캔버스는 App 이 콜백을 안 넘긴다 |
 | 새 API 엔드포인트 추가하기 | `api.ts` | `routers/_proxy.py`(경로 소유권) + 해당 도메인 라우터. **새 라우터 파일이면 `main.py` 의 `include_router()` 등록도** | 로컬 전용 경로는 `_proxy._LOCAL_PREFIXES/_LOCAL_EXACT` 갱신 + `backend/tests/test_proxy_ownership.py` 골든 스냅샷도 같이 고쳐야 함(§5-c) |
 | 캔버스(씬) 단축키 바꾸기 | `lib/useSceneKeyboardShortcuts.ts`, `lib/sceneKeyboard.ts` | — | |
 | 생성 제출 흐름(프롬프트→요청→CLI) | `components/spotlight/useSpotlightSubmit.ts`, `lib/spotlightSubmit.ts` | `routers/gen_requests.py`, `usecases/gen_requests.py`, `repo/gen_requests.py` | 실제 CLI 제출·추적·완료 판정은 작업자 PC 의 `agent_push.py` 가 한다 — 서버 쪽만 봐서는 흐름이 끝까지 안 보인다 |
@@ -513,8 +514,9 @@ updated: 2026-10-02
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `ThumbnailGrid.tsx`(681줄) | 생성물 카드 가상 그리드 · 마퀴/키보드 선택 · 날짜 그룹 | `ThumbnailGrid` |
-| `GenerationCard.tsx`(683줄) | 카드 1장(그리드/리스트 두 모드) · 호버 영상 · 드래그 | `GenerationCard`(memo) — 캔버스의 `scene/cards/GenerationCard.tsx` 와 이름만 같은 별개 파일(§5-b) |
+| `ThumbnailGrid.tsx`(691줄) | 생성물 카드 가상 그리드 · 마퀴/키보드 선택 · 날짜 그룹 | `ThumbnailGrid` |
+| `GenerationCard.tsx`(764줄) | 카드 1장(그리드/리스트 두 모드) · 호버 영상 · 드래그 · 폴더 이름표(`onOpenFolder` 를 받았을 때만 — 왼쪽 아래 배지와 한 묶음 `.card-bl`) | `GenerationCard`(memo) — 캔버스의 `scene/cards/GenerationCard.tsx` 와 이름만 같은 별개 파일(§5-b) |
+| `FolderContentsWindow.tsx`(170줄) | 카드의 폴더 이름표로 여는 '폴더의 생성물' 창 — 껍데기는 캔버스 '폴더 보기'(`.folder-peek`), 안은 자기 목록의 보기 전용 타일(더블클릭·키보드 Enter/Space = 크게 보기, 창의 목록으로 좌우 이동). Esc·초점 가두기·위 창(크게 보기·정보)에 양보·[부분 수정]으로 넘어가면 닫힘 | `FolderContentsWindow` |
 | `MediaThumbnail.tsx`(157줄) | 영상 포스터/이미지/포스터 없는 영상 3분기 통합 표현 | `MediaThumbnail`(10곳 재사용) |
 | `LibraryToolbar.tsx`(296줄) | 타입 필터·검토 필터·크기 슬라이더·리스트/그리드 토글·태그 패널 | `LibraryToolbar` |
 | `FilterSidebar.tsx`(232줄) | 좌측 필터(프로젝트/컬러/자동태그/생성자/공유) 껍데기 | `FilterSidebar` |
@@ -761,9 +763,10 @@ updated: 2026-10-02
 | `useGenerationShareActions.ts` | 훅 | 팀 공유·미러 대기 안내 |
 | `useGenerationProjectActions.ts` | 훅 | 프로젝트·폴더 담기 |
 | `useGenerationFilterActions.ts` | 훅 | 색·태그 필터 토글, 태그 전역 삭제 |
-| `useGenerationKeyboardActions.ts` | 훅 | 그리드 단축키(색·비활성 등) |
+| `useGenerationKeyboardActions.ts` | 훅 | 그리드 단축키(색·비활성 등). 본 목록을 가리는 창이 떠 있으면(`backgroundBlockedRef`) 받지 않는다 |
 | `useGenerationUtilityActions.ts` | 훅 | 일괄 다운로드·히스토리·창 열기 |
-| `useGenerationSelection.ts` | 훅 | 그리드 선택 집합·바깥 클릭 해제 |
+| `useGenerationSelection.ts` | 훅 | 그리드 선택 집합·바깥 클릭 해제('폴더의 생성물' 창 안 클릭은 선택을 풀지 않는다) |
+| `useFolderContents.ts` | 훅 | '폴더의 생성물' 창의 목록 — 본 목록과 따로 조회(탭·프로젝트(`none` 포함)·폴더·워크스페이스 범위만), 200개씩 더 보기·늦은 응답 버림. **연 시점의 목록**(변경 알림 `libraryChanged` 는 팀 탭에서 15초마다 나는 신호라 따라가지 않는다 — 다시 열면 새로 받는다) |
 | `usePromptCreatedActions.ts` | 훅 | 프롬프트로 생성 직후 후처리 |
 | `bulkGenerationActions.ts` | 순수 | 일괄 실행기(`runGenerationBulk` — 주입받은 비동기 작업을 돌려 실패 수 집계, `runGenerationTrash` — 휴지통 전용: 공유 중 409 를 '건너뜀'으로 따로 센다) + 결과·확인 문구 |
 | `shareMirrorPending.ts` | 순수 | 공유 미러 대기 안내 래핑 |
@@ -845,6 +848,7 @@ updated: 2026-10-02
 | `assetVersionRefresh.ts` | 브라우저+api | 프로젝트별 1-in-flight 버전 갱신 실행기(API 조회) + 포커스·가시성 복귀 리스너 |
 | `assetVirtualRows.ts` | 순수 | 에셋 그리드 행 모델(인덱스판) |
 | `folderTreeModel.ts` | 순수 | 폴더 경로 정규화 + 개수 트리 구성 |
+| `folderLabel.ts` | 순수 | 카드 폴더 이름표 글자(끝 두 칸)·전체 경로 표기 |
 | `projectFolderTree.ts` | 저장 | 프로젝트 폴더 캐시·펼침 상태 |
 | `folderContextMenu.ts` | 순수 | 폴더 우클릭 메뉴 규칙·위치 클램프 |
 | `teamSeen.ts` | store+저장 | 공유&리뷰 '새로 들어옴' 항목별 확인(ack) 모델 |
@@ -963,8 +967,8 @@ updated: 2026-10-02
 | 파일 | 약 줄 | 담당 화면 |
 |---|---:|---|
 | `base.css` | 104 | 전역 변수(`:root` 24개)·리셋 — 화면 특정 아님 |
-| `app-shell.css` | 796 | 최상위 앱 셸(`TopBar`·상단 메뉴) |
-| `generations.css` | 907 | 라이브러리 그리드·카드(`ThumbnailGrid`·`GenerationCard`). ★**끝없이 도는 CSS 애니메이션은 합성 가능한 속성(transform·opacity)만** — `background-position`·`box-shadow` 를 무한으로 움직이면 요소 하나만 화면에 있어도 브라우저가 매 프레임 다시 그려 가만히 둔 탭이 CPU 를 계속 쓴다(골드 광택 실측: 0장 1% · 1장 24~38% of one core). 팀 탭 새 항목 글로우(`.card.fresh`)도 같은 이유로 **멈춘 빛**이다(box-shadow 무한: 1장 42~49% · 19장 86~124% → 정지 2~3%. opacity 층으로 바꿔도 절반이 남았다 — 끝없이 도는 한 합성 비용은 남는다). ★**부드러운 무한 애니메이션은 opacity·transform 이어도 비싸다**(화면에 하나만 있어도 페이지를 초당 60번 새로 합친다 — '생성 중' 로고 1장 17%). 그래서 장식은 멈추고 '진행 중' 표시만 계단식 `steps(4)`(17% → 3%)로 남긴다. 계약 시험 = `frontend/tests/idleCssAnimations.test.ts`(모든 CSS 의 `infinite` 는 같은 선언에 `steps(` — 예외는 재서 비용이 없던 11px 알림 스피너 선언 하나). 전수 조사 기록 = `docs/status/브라우저실측_2026-09-19.md` "부하 전수 조사" |
+| `app-shell.css` | 906 | 최상위 앱 셸(`TopBar`·상단 메뉴) |
+| `generations.css` | 954 | 라이브러리 그리드·카드(`ThumbnailGrid`·`GenerationCard`). ★**끝없이 도는 CSS 애니메이션은 합성 가능한 속성(transform·opacity)만** — `background-position`·`box-shadow` 를 무한으로 움직이면 요소 하나만 화면에 있어도 브라우저가 매 프레임 다시 그려 가만히 둔 탭이 CPU 를 계속 쓴다(골드 광택 실측: 0장 1% · 1장 24~38% of one core). 팀 탭 새 항목 글로우(`.card.fresh`)도 같은 이유로 **멈춘 빛**이다(box-shadow 무한: 1장 42~49% · 19장 86~124% → 정지 2~3%. opacity 층으로 바꿔도 절반이 남았다 — 끝없이 도는 한 합성 비용은 남는다). ★**부드러운 무한 애니메이션은 opacity·transform 이어도 비싸다**(화면에 하나만 있어도 페이지를 초당 60번 새로 합친다 — '생성 중' 로고 1장 17%). 그래서 장식은 멈추고 '진행 중' 표시만 계단식 `steps(4)`(17% → 3%)로 남긴다. 계약 시험 = `frontend/tests/idleCssAnimations.test.ts`(모든 CSS 의 `infinite` 는 같은 선언에 `steps(` — 예외는 재서 비용이 없던 11px 알림 스피너 선언 하나). 전수 조사 기록 = `docs/status/브라우저실측_2026-09-19.md` "부하 전수 조사" |
 | `scene.css` | 1574 | 씬 캔버스(`scene/`) — 비슷한 이름의 클래스가 많다(§5-b). ★**카드 안에 스크롤 칸을 새로 만들 때 기본 규칙에 `overflow:auto` 를 쓰지 않는다** — 파일 앞쪽 "카드 안 스크롤 칸" 규칙 한 쌍의 목록에 넣는다(평소 hidden, 호버·포커스한 카드만 auto, 막대 숨김). 넘치는 auto 칸은 합성 레이어가 되고 그 위에 겹친 포트·배지까지 레이어가 되어, 큰 씬에서 화면 이동·확대가 끊겼다(기록 = `docs/status/캔버스_버벅임_2026-09-29.md`) |
 | `prompt-dock.css` | 566 | 스포트라이트 프롬프트 도크(`SpotlightPrompt`·`spotlight/`) |
 | `history.css` | 216 | 히스토리 보드(계보 그래프). 최종 노드는 `content-visibility` 가 풀려 있어 화면 밖에서도 그린다 — 여기에 무한 애니메이션을 두지 않는다 |
@@ -1166,7 +1170,7 @@ updated: 2026-10-02
 
 ### (b) 이름이 같은데 동작이 다른 것 / 이름이 헷갈리는 쌍
 
-- `components/GenerationCard.tsx`(라이브러리, 683줄) ↔ `components/scene/cards/GenerationCard.tsx`(캔버스, 336줄) — 완전히 다른 파일. grep 할 때 경로까지 봐야 한다.
+- `components/GenerationCard.tsx`(라이브러리, 764줄) ↔ `components/scene/cards/GenerationCard.tsx`(캔버스, 336줄) — 완전히 다른 파일. grep 할 때 경로까지 봐야 한다.
 - `common/FolderTreeView.tsx`(공용) ↔ `assets/FolderTree.tsx`(에셋 전용) ↔ `admin/ProjectRenderTree.tsx` — 이름이 세 갈래로 비슷하다.
 - `CompareModal.tsx` ↔ `VideoCompareModal.tsx` — 후자는 이름과 달리 이미지도 다룬다.
 - CSS 클래스는 **접두어가 같다고 같은 부품이 아니다.** 2026-09-18 정리 때 `scene-listnode-text`(안 쓰임)와 `scene-listrow-text`(쓰임), `scene-comfynode-run`(안 쓰임)과 `scene-comfynode-status s-running`(쓰임)이 한 글자 차이로 섞여 있었다 — "접두어로 grep 해서 쓰이니까 안심"이 통하지 않는다. 클래스가 쓰이는지는 **전체 이름**으로 확인하고, 규칙을 지울 때는 선택자 전부가 죽었는지(`:not(.x)` 는 x 가 없어도 일치한다) 본다.

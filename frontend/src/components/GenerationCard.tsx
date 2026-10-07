@@ -11,6 +11,7 @@ import { APP_EVENTS, dispatchAppEvent } from "../lib/appEvents";
 import { ackTeamFresh } from "../lib/teamSeen";
 import type { GradeMode } from "../lib/gradeStep";
 import { thumbOf, thumbUrl } from "../lib/media";
+import { folderChipLabel, folderFullLabel } from "../lib/folderLabel";
 import { useClickSeparation } from "../lib/useClickSeparation";
 import { MediaThumbnail } from "./MediaThumbnail";
 import comfyLogo from "../assets/comfy-logo.svg";
@@ -85,6 +86,8 @@ interface Props {
   thumbSize?: number; // 썸네일 요청 폭(px) — 그리드가 카드 표시크기×DPR 로 산출(작게 보이면 256). 없으면 512.
   fresh?: boolean; // 팀 탭 '새로 들어옴' — 라임 글로우(캔버스 방금생성과 같은 시각 언어)
   stateGlow?: boolean; // 내가 방금 공유·보류·최종으로 바꾼 카드 — 선택 전까지 상태색 빛(lib/stateGlow)
+  // 폴더 이름표를 눌렀을 때 — 그 폴더의 생성물 창을 연다. 안 주면 이름표를 그리지 않는다(리스트는 글자만).
+  onOpenFolder?: (g: Generation) => void;
 }
 
 function GenerationCardImpl({
@@ -95,6 +98,7 @@ function GenerationCardImpl({
   thumbSize,
   fresh = false,
   stateGlow = false,
+  onOpenFolder,
   fill = true,
   selected = false,
   resolveHighlighted = false,
@@ -277,6 +281,71 @@ function GenerationCardImpl({
     }
   };
 
+  const sourceBadge = gen.is_source ? (
+    <span className="source-badge" title="소스로 등록됨">
+      @{gen.source_name || "source"}
+    </span>
+  ) : null;
+  // 미디어가 있을 때만 하단 상태 라벨 — 미디어 없으면 placeholder가 이미 표시(중복 방지)
+  const statusPill =
+    gen.status !== "done" && (!!thumb || (isVideo && !!asset)) ? (
+      <span
+        className={`status-pill status-${gen.status}`}
+        title={
+          generationStatusTitle(
+            gen.status,
+            gen.error,
+            gen.execution_phase,
+            gen.provider_status,
+            gen.last_checked_at,
+            gen.next_check_at,
+          )
+        }
+      >
+        {generationStatusLabelFor(gen.status, gen.error, gen.execution_phase)}
+      </span>
+    ) : null;
+  // 이름표에 초점을 두고 누른 Enter·Space 는 격자의 단축키(크게 보기·선택)로 올라가지 않는다 — 격자가 preventDefault 하면
+  // 단추의 기본 누름(=click)이 취소된다(코덱스 코드 리뷰). 그 밖의 키(방향키 등)는 종전대로 격자가 받는다.
+  const stopActivationKeys = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+  };
+  // 폴더 이름표(그리드 카드 안 왼쪽 아래, 2026-10-07 Jay) — 누르면 그 폴더의 생성물 창. 이름표의 클릭·더블클릭·휠클릭·끌기는
+  // 카드의 선택·크게 보기·정보·끌어 담기로 번지지 않는다. 끌기는 이름표를 끌기 대상으로 만든 뒤 취소한다 —
+  // 자식에서 시작한 끌기의 대상은 가장 가까운 draggable 조상(카드)이라, 이름표가 draggable 이어야 가로챌 수 있다.
+  const folderLabel = !isList && onOpenFolder ? folderChipLabel(gen.folder_path) : "";
+  const folderChip = folderLabel ? (
+    <button
+      type="button"
+      className="card-folder"
+      draggable
+      title={`${folderFullLabel(gen.project_name, gen.folder_path)} — 이 폴더의 생성물 보기`}
+      onMouseDown={(e) => {
+        e.stopPropagation();
+        if (e.button === 1) e.preventDefault(); // 휠클릭 자동스크롤 방지
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpenFolder?.(gen);
+      }}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onKeyDown={stopActivationKeys}
+      onAuxClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+      }}
+      onDragStart={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M1.5 3.2c0-.6.5-1.1 1.1-1.1h3.2c.3 0 .6.1.8.4l.9 1h5.9c.6 0 1.1.5 1.1 1.1v7.7c0 .6-.5 1.1-1.1 1.1H2.6c-.6 0-1.1-.5-1.1-1.1V3.2z" />
+      </svg>
+      <span>{folderLabel}</span>
+    </button>
+  ) : null;
+
   const thumbBox = (
     <div
       className="card-thumb"
@@ -342,11 +411,7 @@ function GenerationCardImpl({
         </div>
       )}
 
-      {gen.is_source && (
-        <span className="source-badge" title="소스로 등록됨">
-          @{gen.source_name || "source"}
-        </span>
-      )}
+      {!folderChip && sourceBadge}
       {gen.invalid_input_result && (
         <span
           className="invalid-input-badge"
@@ -457,23 +522,15 @@ function GenerationCardImpl({
       {isVideo && <span className="play-badge">▶</span>}
       {/* 마지막으로 크게 열어본 결과 — .card-thumb(position:relative) 기준 가운데. 오버레이 밖 독립 요소. */}
       {lastViewed && <LastViewedBadge />}
-      {/* 미디어가 있을 때만 하단 상태 라벨 — 미디어 없으면 placeholder가 이미 표시(중복 방지) */}
-      {gen.status !== "done" && (!!thumb || (isVideo && !!asset)) && (
-        <span
-          className={`status-pill status-${gen.status}`}
-          title={
-            generationStatusTitle(
-              gen.status,
-              gen.error,
-              gen.execution_phase,
-              gen.provider_status,
-              gen.last_checked_at,
-              gen.next_check_at,
-            )
-          }
-        >
-          {generationStatusLabelFor(gen.status, gen.error, gen.execution_phase)}
-        </span>
+      {/* 왼쪽 아래 — 이름표가 있으면 다른 배지(소스·상태)와 한 묶음으로 쌓는다(이름표가 맨 위). 없으면 종전 그대로. */}
+      {folderChip ? (
+        <div className="card-bl">
+          {folderChip}
+          {sourceBadge}
+          {statusPill}
+        </div>
+      ) : (
+        statusPill
       )}
 
       <GenerationThumbOverlay
@@ -618,14 +675,30 @@ function GenerationCardImpl({
           </div>
           <div className="cd-foot">
             <span className="cd-date">{formatGenerationDate(gen.created_at)}</span>
-            {(gen.project_name || gen.folder_path) && (
-              <span
-                className="cd-folder"
-                title={[gen.project_name, gen.folder_path].filter(Boolean).join(" › ")}
-              >
-                📁 {[gen.project_name, gen.folder_path].filter(Boolean).join(" › ")}
-              </span>
-            )}
+            {(gen.project_name || gen.folder_path) &&
+              (onOpenFolder && gen.folder_path ? (
+                <button
+                  type="button"
+                  className="cd-folder cd-folder-btn"
+                  title={`${[gen.project_name, gen.folder_path].filter(Boolean).join(" › ")} — 이 폴더의 생성물 보기`}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenFolder(gen);
+                  }}
+                  onDoubleClick={(e) => e.stopPropagation()}
+                  onKeyDown={stopActivationKeys}
+                >
+                  📁 {[gen.project_name, gen.folder_path].filter(Boolean).join(" › ")}
+                </button>
+              ) : (
+                <span
+                  className="cd-folder"
+                  title={[gen.project_name, gen.folder_path].filter(Boolean).join(" › ")}
+                >
+                  📁 {[gen.project_name, gen.folder_path].filter(Boolean).join(" › ")}
+                </span>
+              ))}
           </div>
           {statusBar}
         </div>

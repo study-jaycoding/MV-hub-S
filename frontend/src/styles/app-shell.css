@@ -796,6 +796,37 @@
 .folder-peek > * { flex: none; }
 .folder-peek > .grid-wrap { flex: 1; min-height: 0; }
 .folder-peek > .lib-toolbar { border-bottom: 1px solid var(--border); }
+/* ── 카드의 폴더 이름표로 연 '폴더의 생성물' 창 — 껍데기는 위 .folder-peek, 안은 자기 목록의 보기 전용 타일 ── */
+.folder-contents > .fc-body { flex: 1; min-height: 0; overflow: auto; padding: 14px; }
+.fc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.fc-tile {
+  position: relative; aspect-ratio: 1; padding: 0; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 12px; background: #050608; cursor: pointer;
+}
+.fc-tile > img, .fc-tile > video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.fc-tile:hover { border-color: var(--border2); }
+.fc-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fc-tile.here { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.fc-here {
+  position: absolute; left: 6px; bottom: 6px; padding: 2px 8px; border-radius: 20px;
+  background: var(--accent); color: var(--accent-ink); font-size: 10.5px; font-weight: 700;
+}
+.fc-mark {
+  position: absolute; top: 6px; left: 6px; width: 22px; height: 22px; border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 900; line-height: 1;
+}
+.fc-mark.final { background: #ffcf33; color: #3a2a00; }
+.fc-noimg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted2); font-size: 11.5px; }
+.fc-note { padding: 28px 10px; text-align: center; color: var(--muted); font-size: 13px; }
+.fc-error { color: #ff9a9a; }
+.fc-btn {
+  margin-left: 10px; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--border2);
+  background: rgba(255,255,255,0.05); color: var(--text); font-size: 12px; cursor: pointer;
+}
+.fc-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.fc-more { display: block; margin: 14px auto 2px; }
+.fc-foot { padding: 8px 14px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11.5px; }
 /* 창 안 선택 액션바 — 라이브러리와 같은 요소를 창 바닥에 */
 .folder-peek-selbar { border-top: 1px solid var(--border); padding: 6px 10px; display: flex; justify-content: center; }
 

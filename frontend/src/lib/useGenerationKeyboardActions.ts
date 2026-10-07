@@ -18,6 +18,9 @@ interface UseGenerationKeyboardActionsArgs {
   setGens: Dispatch<SetStateAction<Generation[]>>;
   // compose 탭에서도 라이브러리 격자가 떠 있는 동안(캔버스 '폴더 보기' 창)은 색·비활성 단축키를 살린다.
   composeGridActiveRef?: MutableRefObject<boolean>;
+  // 본 목록을 가리는 창(카드 폴더 이름표로 연 '폴더의 생성물')이 떠 있다 — 그동안 본 목록의 선택 해제·색·비활성
+  // 단축키를 받지 않는다(창 안 키는 창이 막지만, 초점이 창 밖으로 나간 경우까지 막는다).
+  backgroundBlockedRef?: MutableRefObject<boolean>;
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -40,6 +43,7 @@ export function useGenerationKeyboardActions({
   selectedRef,
   setGens,
   composeGridActiveRef,
+  backgroundBlockedRef,
 }: UseGenerationKeyboardActionsArgs) {
   const latestCallbacksRef = useRef({
     flash,
@@ -83,6 +87,7 @@ export function useGenerationKeyboardActions({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (backgroundBlockedRef?.current) return; // Esc(선택 해제)보다 먼저 — 창을 닫는 Esc 가 뒤의 선택까지 풀지 않게
       if (isEditableTarget(e.target)) return;
       const ids = [...selectedRef.current];
       if (e.key === "Escape") {
@@ -113,5 +118,5 @@ export function useGenerationKeyboardActions({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [clearSelect, colorSelected, filtersRef, selectedRef, composeGridActiveRef]);
+  }, [clearSelect, colorSelected, filtersRef, selectedRef, composeGridActiveRef, backgroundBlockedRef]);
 }

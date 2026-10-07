@@ -17,6 +17,7 @@ import {
   type SpotlightPromptHandle,
 } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
+import { FolderContentsWindow, type FolderWindowTarget } from "./components/FolderContentsWindow";
 import { ensureTeamBase } from "./lib/teamSeen";
 import { TopBar } from "./components/TopBar";
 import { SceneBar } from "./components/scene/SceneBar";
@@ -364,6 +365,10 @@ export default function App() {
   const folderPeekRef = useRef<HTMLElement>(null);
   const folderPeekOpenRef = useRef(folderPeek);
   folderPeekOpenRef.current = folderPeek;
+  // 카드의 폴더 이름표로 연 '폴더의 생성물' 창(작업 공간·공유 & 리뷰) — 본 목록은 그대로 두고 창이 자기 목록을 조회한다.
+  const [folderWindow, setFolderWindow] = useState<FolderWindowTarget | null>(null);
+  const folderWindowOpenRef = useRef(false);
+  folderWindowOpenRef.current = folderWindow !== null;
   // 회색(비활성) — 카드별 비활성화 표시(d 키, gen id 기준 로컬). grayOn(useLibraryFilters)=ON 이면 목록에서 제외.
   const disabledGen = useDisabledGenerations();
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(그 폴더·하위 생성물 자동 회색)
@@ -733,7 +738,17 @@ export default function App() {
     selectedRef,
     setGens,
     composeGridActiveRef: folderPeekOpenRef, // 캔버스 '폴더 보기' 창이 떠 있으면 compose 에서도 r/g/b/d
+    backgroundBlockedRef: folderWindowOpenRef, // '폴더의 생성물' 창이 떠 있는 동안 뒤 목록 단축키를 받지 않는다
   });
+  const openFolderWindow = useCallback((g: Generation) => {
+    const tab = filtersRef.current.tab;
+    if (tab === "compose" || !g.folder_path) return;
+    setFolderWindow({ tab, projectId: g.project_id, path: g.folder_path, genId: g.id, projectName: g.project_name ?? "" });
+  }, [filtersRef]);
+  // 탭·계정·서버·워크스페이스 범위가 바뀌면 닫는다 — 창의 목록은 열 때의 범위로 조회한 것이다.
+  useEffect(() => {
+    setFolderWindow(null);
+  }, [filters.tab, libraryAuthKey, workspaceScopeKey]);
 
   // 정보(ⓘ) 버튼: 복수 선택 상태에서 선택된 카드의 정보를 누르면 비교창, 그 외엔 단일 정보창.
   const handleInfo = (target: InfoTarget) => {
@@ -1832,6 +1847,8 @@ export default function App() {
       onInfo={handleInfo}
       onPreview={openPreview}
       onShowHistory={onShowHistory}
+      // 폴더 이름표는 목록 탭에서만 — 캔버스의 '폴더 보기' 창 안 격자에는 붙이지 않는다(그 창이 이미 폴더 보기다).
+      onOpenFolder={filters.tab === "compose" ? undefined : openFolderWindow}
       hasMore={hasMore}
       loadingMore={loadingMore}
       onLoadMore={loadMore}
@@ -2272,6 +2289,16 @@ export default function App() {
           busy={grade.busy}
           onConfirm={grade.confirm}
           onCancel={grade.cancel}
+        />
+      )}
+      {folderWindow && (
+        <FolderContentsWindow
+          target={folderWindow}
+          workspace={genQuery}
+          ready={authReady && workspaceQueryReady}
+          covered={!!preview || info !== null}
+          onPreview={openPreview}
+          onClose={() => setFolderWindow(null)}
         />
       )}
       <AppOverlays
