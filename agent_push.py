@@ -2408,6 +2408,11 @@ def _cleanup(paths: list) -> None:
             pass
 
 
+# 윈도우가 프로그램 실행 명령 한 줄로 받는 최대 길이(UTF-16 글자 수, 실행 파일·모든 인자 포함).
+# 2026-10-07 실측: 32,766 까지 실행되고 32,767 부터 [WinError 206] 으로 시작조차 못 한다.
+_WIN_CMDLINE_MAX = 32766
+
+
 def _submit_one(
     server: str,
     token: str,
@@ -2506,6 +2511,20 @@ def _submit_one(
         return None
     seedance_ref_args = _seedance_ref_args(seedance_media_ids)
     args += seedance_ref_args
+    # ★명령줄이 윈도우 한도를 넘으면 CLI 가 시작도 못 하고 OSError 가 워커 밖으로 새어, 과금이 없는데도
+    #  '제출 여부 불명'(수동 복구)으로 묶였다. 서버 제출 허가·create 전인 여기서 재서 일반 실패로 끝낸다.
+    #  길이는 subprocess 가 실제로 넘기는 문자열 그대로 잰다(sync: _run_cli_json 의 argv 조립).
+    cmdline = subprocess.list2cmdline([*_cli_argv(cli), *args, "--json"])
+    # 이모지는 두 칸이라 len() 은 모자라게 센다. surrogatepass: 깨진 글자가 섞여도 여기서 예외를 내지 않는다.
+    cmdline_len = len(cmdline.encode("utf-16-le", "surrogatepass")) // 2
+    if cmdline_len > _WIN_CMDLINE_MAX:
+        reason = (
+            f"생성 명령이 너무 깁니다(전체 {cmdline_len:,}자 · 프롬프트 {len(prompt):,}자, "
+            f"한도 {_WIN_CMDLINE_MAX:,}자) — 프롬프트를 줄여 다시 생성하세요"
+        )
+        _fail(server, token, rid, reason)
+        print(f"  ✗ {model}: {reason}")
+        return None
     submission_fingerprint = _submission_fingerprint(
         model, prompt, params, allowed_params, refs
     )

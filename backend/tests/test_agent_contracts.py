@@ -1859,6 +1859,41 @@ def test_staged_agent_never_creates_when_begin_ack_is_missing():
     release.assert_called_once_with("http://hub", "token-1", "request-1", "agent-1")
 
 
+@pytest.mark.parametrize("prompt, blocked", [
+    ("a" * 30_000, False),            # 길어도 한도 안이면 그대로 제출한다
+    ("a" * 40_000, True),             # 2026-10-07 실제 증상: [WinError 206] → '제출 여부 불명'
+    ("\U0001F600" * 16_400, True),    # 이모지는 UTF-16 두 칸 — len() 으로는 16,400자라 안 걸린다
+], ids=["within-limit", "over-limit", "emoji-utf16"])
+def test_too_long_command_fails_before_submission_instead_of_recovery(prompt, blocked):
+    """윈도우 명령줄 한도를 넘으면 CLI 가 시작도 못 한다 — 서버 허가·create 전에 일반 실패로 끝낸다."""
+    agent = _load_agent()
+    request = _submission_request()
+    request["prompt"] = prompt
+    job_id = "12345678-1234-1234-1234-123456789abc"
+    with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
+        agent, "_ensure_request_workspace", return_value=("ws-test", None)
+    ), patch.object(agent, "_begin_submission", return_value=True) as begin, patch.object(
+        agent, "_run_cli_json", return_value=([job_id], None)
+    ) as create, patch.object(agent, "_outbox_add"), patch.object(
+        agent, "_anchor_with_retry", return_value=True
+    ), patch.object(agent, "_fail") as fail:
+        result = agent._submit_one(
+            "http://hub", "token-1", "higgsfield", "user@example.com", request,
+            {}, {}, agent.Lock(), agent.Lock(), "agent-1",
+        )
+
+    if not blocked:
+        assert result and result["job_id"] == job_id
+        fail.assert_not_called()
+        return
+    assert result is None
+    begin.assert_not_called()
+    create.assert_not_called()
+    fail.assert_called_once()
+    assert fail.call_args.args[:3] == ("http://hub", "token-1", "request-1")
+    assert "너무 깁니다" in fail.call_args.args[3]
+
+
 @pytest.mark.parametrize("reported", [True, False])
 @pytest.mark.parametrize("cli_error", [
     None, "CLI 타임아웃",
