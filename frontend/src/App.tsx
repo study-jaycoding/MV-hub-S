@@ -688,7 +688,9 @@ export default function App() {
   });
 
   // 진행중 잡·팀 탭 폴링 + 탭 재포커스 새로고침.
-  useGenerationAutoRefresh({ generations: gens, tab: filters.tab, reload });
+  // 폴더 창을 닫은 직후 새 첫 쪽을 기다리는 동안(staleList)에는 자동 조회를 쉰다 — 끼어들면 받던 첫 쪽을 버려 잠금이 길어진다.
+  //  (사본 없이 빈 채로 받는 닫기에는 staleList 가 없어 해당하지 않는다 — 그때는 잠글 카드도 없다.)
+  useGenerationAutoRefresh({ generations: gens, tab: filters.tab, reload, paused: staleList });
 
   // 코멘트 배지 실시간 갱신: 공유 카드의 미확인 여부만 가볍게 주기 조회해 제자리 갱신.
   // 새 미확인이 잡히면 syncTick 을 올려 열린 코멘트 패널도 즉시 새로고침.

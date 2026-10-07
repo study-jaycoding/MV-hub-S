@@ -40,6 +40,7 @@ const relinkOnWorkspaceChange = vi.fn();
 const beginList = vi.fn(); // 목록 훅의 beginComposeList — 폴더 창을 열고 닫을 때 목록을 비우는지 본다
 let setStaleList: (on: boolean) => void; // 목록 훅의 staleList(닫은 직후 옛 첫 쪽을 보이는 중)를 시험이 켜고 끈다
 let setLoadingList: (on: boolean) => void; // 목록 훅의 loading(받는 중)
+let autoRefreshSnapshot: { paused?: boolean } | null = null; // 자동 새로고침 훅이 받은 인자
 let gridClass = "gen-grid"; // 가짜 격자의 클래스 — 비우면 "격자가 아직 없다"(빈 목록·실패)를 흉내 낸다
 const libraryHighlightedIds = () => [...(gridSnapshot?.resolveHighlightedIds || [])];
 const libraryGeneration = (id: string): Generation => ({
@@ -426,9 +427,12 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
     useHubAuth: () => ({ authPending: false, authReady: true, authConfig: { auth_enabled: true },
       account: { email: "fixture@example.invalid" }, hubAccount: null, finalizeProjects: new Set<string>(), sharedSrv: null, logout: noop, setAccount: noop }),
   }));
-  for (const name of ["useGenerationProgress", "useGenerationAutoRefresh", "useCommentBadgePoll", "useSceneCompletionWatcher"]) {
+  for (const name of ["useGenerationProgress", "useCommentBadgePoll", "useSceneCompletionWatcher"]) {
     vi.doMock(`../src/lib/${name}`, () => ({ [name]: noop }));
   }
+  vi.doMock("../src/lib/useGenerationAutoRefresh", () => ({
+    useGenerationAutoRefresh: (args: NonNullable<typeof autoRefreshSnapshot>) => { autoRefreshSnapshot = args; },
+  }));
   vi.doMock("../src/lib/useWorkspaceFilterOptions", () => ({
     useWorkspaceFilterOptions: () => ({ options: [], loading: false, failed: false, reload: noop }),
   }));
@@ -880,6 +884,7 @@ it("App: 폴더 창을 닫은 직후 옛 첫 쪽을 보이는 동안에는 고�
   expect(main.hasAttribute("inert")).toBe(true); // 카드의 클릭·키
   expect(main.getAttribute("aria-busy")).toBe("true");
   expect(gridSnapshot!.selectLocked).toBe(true); // 바깥(상단바·사이드바 여백)에서 시작하는 끌기 선택
+  expect(autoRefreshSnapshot!.paused).toBe(true); // 자동 새로고침도 쉰다 — 끼어들면 받던 새 첫 쪽이 버려져 잠금이 길어진다
   expect(gridSnapshot!.loading).toBe(false); // 격자가 '받는 중'을 안다(비어 있을 때 "항목이 없습니다" 대신 "불러오는 중…")
   act(() => gridSnapshot!.onSelectedChange(new Set(["target"]))); // 그래도 들어온 선택 결과
   expect(gridSnapshot!.selectedIds.size).toBe(0);
@@ -892,6 +897,7 @@ it("App: 폴더 창을 닫은 직후 옛 첫 쪽을 보이는 동안에는 고�
   expect(main.hasAttribute("inert")).toBe(false);
   expect(main.hasAttribute("aria-busy")).toBe(false);
   expect(gridSnapshot!.selectLocked).toBe(false);
+  expect(autoRefreshSnapshot!.paused).toBe(false);
   act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
   expect(gridSnapshot!.selectedIds).toEqual(new Set(["target"]));
 });
