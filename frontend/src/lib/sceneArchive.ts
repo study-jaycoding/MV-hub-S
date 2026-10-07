@@ -8,8 +8,10 @@ import { sameSceneContent, sceneBodySum, type SceneAbsorbConflict } from "./scen
 import {
   dumpSceneStore,
   mergeSceneStoreDump,
+  readSceneMigrationInfo,
   sceneStoreReady,
   type SceneBucketMerge,
+  type SceneMigrationInfo,
   type SceneStoreDump,
 } from "./sceneStore";
 import { readStoredScene, uid, type Scene, type ScenesByProject } from "./scenes";
@@ -25,6 +27,8 @@ export async function exportSceneArchiveText(): Promise<string> {
     format: SCENE_ARCHIVE_FORMAT,
     schemaVersion: SCENE_ARCHIVE_VERSION,
     exportedAt: new Date().toISOString(),
+    // 옛 저장소에서 옮길 때의 진단 기록 — 파일만 받아도 그 PC 의 상태를 볼 수 있게 싣는다(가져올 때는 읽지 않는다).
+    migration: await readSceneMigrationInfo(),
     buckets: dump.buckets,
     conflicts: dump.conflicts,
   });
@@ -37,6 +41,28 @@ export async function downloadSceneArchive(): Promise<number> {
   downloadText(`mvhub-canvas-all-${stamp}.json`, text, "application/json");
   const { buckets } = JSON.parse(text) as { buckets: ScenesByProject };
   return Object.values(buckets).reduce((sum, scenes) => sum + scenes.length, 0);
+}
+
+const chars = (count: number | null): string =>
+  count === null ? "확인 못 함" : count >= 10_000 ? `${Math.round(count / 10_000).toLocaleString("ko-KR")}만 글자` : `${count}글자`;
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/**
+ * 옛 저장 칸에서 옮길 때의 기록을 한 줄로. 기록이 없으면 그렇게 말한다 — 지금 잰 값으로 과거를 채우지 않는다.
+ * 시험 쓰기가 '됨'이어도 "여유가 있었다"고 쓰지 않는다(1KB 가 들어갔다는 뜻일 뿐이다).
+ */
+export function describeSceneMigration(info: SceneMigrationInfo | null): string {
+  if (!info) return "옮긴 기록 없음";
+  const at = new Date(info.at);
+  const when = Number.isNaN(at.getTime())
+    ? "때 모름"
+    : `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  const probe =
+    info.probe === "quota" ? "시험 쓰기 실패(가득 차 있었음)" : info.probe === "ok" ? "시험 쓰기 됨" : "시험 쓰기 확인 못 함";
+  return (
+    `옮길 때(${when}): 캔버스 ${info.sceneCount}개 · 캔버스 자료 ${chars(info.legacyChars)}` +
+    ` · 옛 저장 칸 전체 ${chars(info.storageChars)} · ${probe}`
+  );
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

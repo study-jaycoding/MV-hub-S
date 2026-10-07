@@ -45,6 +45,7 @@ const K_VERSION = "version"; // 씬이 바뀔 때마다 1씩 — 다른 창이 �
 const K_BASE = "absorbBase"; // 마지막으로 처리한 옛 저장소 내용(흡수 판정의 B)
 const K_GENERATION = "generation"; // 이관 세대 — 바깥 표식과 짝을 이룬다
 const K_CONFLICTS = "conflicts"; // 해결 전까지 남겨 두는 흡수 충돌
+const K_MIGRATION = "migrationInfo"; // 옛 저장소에서 처음 옮길 때의 진단 기록(한 번만 쓴다)
 /** 옛 저장소에 두는 바깥 표식의 키. */
 export const LEGACY_GENERATION_KEY = "ch.scenes.migration";
 
@@ -694,6 +695,27 @@ function ensureMemoryStoreOutsideBrowser(): void {
 }
 
 // ── 부팅 ────────────────────────────────────────────────────────────────────
+/** 옛 저장소(localStorage)가 옮기던 순간 어떤 상태였나 — 부팅 쪽(sceneBoot)이 재서 넘긴다. */
+export interface LegacyDiagnosis {
+  /** 옛 저장소에 든 씬 자료의 글자 수. 못 쟀으면 null. */
+  legacyChars: number | null;
+  /** 옛 저장소 전체(모든 키)의 글자 수 — 한도(보통 약 500만 글자)에 견줄 값. 못 쟀으면 null. */
+  storageChars: number | null;
+  /** 작은 시험 쓰기의 결과. quota = 할당량 초과로 실패(가득 차 있었다), ok = 써졌다, unknown = 확인 못 함. */
+  probe: "ok" | "quota" | "unknown";
+}
+/**
+ * 처음 옮길 때 남기는 기록. "그 PC 에서 연결이 안 붙던 것이 정말 저장 칸이 찼기 때문이었나"를 나중에 그 PC 에서
+ * 확인하려고 둔다(2026-10-07 신고 때 그 PC 의 저장량을 받지 못했다). 원인을 가리는 **단서**일 뿐 확증은 아니다 —
+ * 시험 쓰기가 됐다고 씬을 저장할 여유가 있었다는 뜻은 아니다.
+ */
+export interface SceneMigrationInfo extends LegacyDiagnosis {
+  /** 옮긴 시각(ISO). */
+  at: string;
+  /** 옮긴 씬 수(모든 계정). */
+  sceneCount: number;
+}
+
 export type SceneStoreInit =
   | { kind: "ready"; migrated: boolean; absorbed: SceneAbsorbPlan | null }
   /** IDB 를 쓸 수 없다 — 화면은 오류·재시도에 머물러야 한다. 빈 데이터로 진행하면 안 된다. */
@@ -710,11 +732,13 @@ const failed = (error: string): SceneStoreInit => {
  * @param readLegacy 옛 저장소(localStorage)의 씬 묶음. 없거나 못 읽으면 null.
  * @param legacyMark 바깥에 적힌 이관 표식(없으면 null).
  * @param writeLegacyMark 바깥 표식을 적는다. **적혔는지**를 돌려준다(조용한 실패 금지).
+ * @param diagnoseLegacy 옛 저장소의 상태를 잰다 — **처음 옮길 때만** 불리고, 던져도 이관은 진행한다.
  */
 export async function initSceneStore(
   readLegacy: () => ScenesByProject | null,
   legacyMark: LegacyMark | null,
   writeLegacyMark: (mark: LegacyMark) => boolean,
+  diagnoseLegacy?: () => LegacyDiagnosis,
 ): Promise<SceneStoreInit> {
   try {
     if (typeof indexedDB === "undefined") memory = memory ?? new Map();
@@ -764,6 +788,18 @@ export async function initSceneStore(
         const next = legacy ?? {};
         const generation =
           legacyMark?.generation ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        // 진단은 표식을 적기 전에 잰다(표식 한 줄이 시험 쓰기의 결과를 바꾸지 않게). 진단이 던져도 옮기는 일은 한다.
+        let diagnosis: LegacyDiagnosis = { legacyChars: null, storageChars: null, probe: "unknown" };
+        try {
+          diagnosis = diagnoseLegacy?.() ?? diagnosis;
+        } catch {
+          // 재지 못했다 — 기록에는 '확인 못 함'으로 남는다
+        }
+        const info: SceneMigrationInfo = {
+          ...diagnosis,
+          at: new Date().toISOString(),
+          sceneCount: Object.values(next).reduce((sum, scenes) => sum + scenes.length, 0),
+        };
         // ★표식을 먼저, **적혔는지 확인하고** 남긴다. 조용히 실패하면 다음 실행이 (c)로 보고 다시
         //  이관하는데, 그 사이의 작업이 옛 내용으로 덮인다.
         if (!writeLegacyMark({ state: "pending", generation })) {
@@ -780,6 +816,7 @@ export async function initSceneStore(
               [K_BASE, next],
               [K_GENERATION, generation],
               [K_CONFLICTS, []],
+              [K_MIGRATION, info], // 실제로 옮긴 이 트랜잭션에서만 쓴다 — 다른 창이 먼저 옮겼으면 그 창의 기록이 남는다
             ],
             deletes: [],
           };
@@ -848,6 +885,17 @@ async function absorbInTx(legacy: ScenesByProject | null): Promise<SceneAbsorbPl
     },
   );
   return ok ? plan : false;
+}
+
+/** 처음 옮길 때의 진단 기록. 옮긴 적이 없거나(새 설치) 기록을 남기기 전 판에서 옮겼으면 null. */
+export async function readSceneMigrationInfo(): Promise<SceneMigrationInfo | null> {
+  if (!ready || !(await ensureDb())) return null;
+  try {
+    const { meta } = await readStore([K_MIGRATION], () => false);
+    return (meta[K_MIGRATION] as SceneMigrationInfo | undefined) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** 옛 판 창이 옛 저장소에 썼다(storage 이벤트) — 그 변경을 흡수한다. */

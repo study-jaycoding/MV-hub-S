@@ -7,6 +7,7 @@ import {
   absorbLegacyScenes,
   flushSceneStoreNow,
   initSceneStore,
+  type LegacyDiagnosis,
   type LegacyMark,
   type SceneStoreInit,
 } from "./sceneStore";
@@ -83,6 +84,45 @@ function writeLegacyMark(mark: LegacyMark): boolean {
   return inLocal || inCookie;
 }
 
+const isQuotaError = (error: unknown): boolean =>
+  error instanceof DOMException &&
+  (error.name === "QuotaExceededError" || error.name === "NS_ERROR_DOM_QUOTA_REACHED" || error.code === 22);
+
+/**
+ * 옛 저장소가 지금 어떤 상태인가 — 처음 옮길 때 한 번 재서 기록해 둔다(sceneStore 의 SceneMigrationInfo).
+ * 시험 쓰기는 고유한 임시 키에 1KB 를 써 보고 곧바로 지운다. 무엇이 실패해도 던지지 않는다.
+ */
+export function diagnoseLegacyStorage(): LegacyDiagnosis {
+  const out: LegacyDiagnosis = { legacyChars: null, storageChars: null, probe: "unknown" };
+  let store: Storage;
+  try {
+    store = window.localStorage;
+    out.legacyChars = (store.getItem(STORAGE_KEYS.scenes) ?? "").length;
+    let total = 0;
+    for (let i = 0; i < store.length; i += 1) {
+      const key = store.key(i);
+      if (key !== null) total += key.length + (store.getItem(key) ?? "").length;
+    }
+    out.storageChars = total;
+  } catch {
+    return out; // 저장소 접근 자체가 막혔다 — 확인 못 함
+  }
+  const probeKey = `ch.scenes.probe.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    store.setItem(probeKey, "x".repeat(1024));
+    out.probe = "ok";
+  } catch (error) {
+    out.probe = isQuotaError(error) ? "quota" : "unknown";
+  } finally {
+    try {
+      store.removeItem(probeKey);
+    } catch {
+      // 지우지 못해도 1KB 다 — 진단 때문에 부팅을 막지 않는다
+    }
+  }
+  return out;
+}
+
 /**
  * 저장소를 열고(필요하면 옛 저장소에서 1회 이관), 그 뒤 옛 저장소의 변경을 지켜본다.
  *
@@ -91,7 +131,7 @@ function writeLegacyMark(mark: LegacyMark): boolean {
  *  창이 그대로 깨진다. 대신 그 창이 쓴 것을 흡수한다(2026-10-07 Codex 합의).
  */
 export async function bootSceneStore(): Promise<SceneStoreInit> {
-  const result = await initSceneStore(readLegacy, readLegacyMark(), writeLegacyMark);
+  const result = await initSceneStore(readLegacy, readLegacyMark(), writeLegacyMark, diagnoseLegacyStorage);
   if (result.kind !== "ready") return result;
   // 계정 네임스페이스 도입 전의 옛 버킷이 남아 있으면, 지금 계정으로의 귀속을 **확정한 뒤에** 화면을
   // 띄운다(확정 전에는 보이지 않는다 — scenes.adoptLegacyBucket). 확정에 실패해도 앱은 띄운다:

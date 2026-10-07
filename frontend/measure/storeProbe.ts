@@ -5,7 +5,7 @@
 // 한 페이지가 두 역할을 한다. 주 창(main)이 순서를 이끌고, 같은 출처의 iframe(peer)이 **다른 창** 노릇을 한다 —
 // iframe 은 모듈 상태가 따로라(화면 값·확정본을 따로 든다) IndexedDB·BroadcastChannel·storage 이벤트에서 다른
 // 창과 같다. iframe 을 새로 만들면 '앱을 다시 켠 것'이다.
-import { exportSceneArchiveText, importSceneArchiveText } from "../src/lib/sceneArchive";
+import { describeSceneMigration, exportSceneArchiveText, importSceneArchiveText } from "../src/lib/sceneArchive";
 import { bootSceneStore } from "../src/lib/sceneBoot";
 import {
   confirmSceneWrite,
@@ -21,6 +21,7 @@ import {
 } from "../src/lib/scenes";
 import {
   abortSceneStoreWritesForTest,
+  readSceneMigrationInfo,
   resetSceneStoreForTest,
   sceneStoreDurability,
   sceneStoreHasPending,
@@ -313,6 +314,7 @@ async function main() {
       ` · 옛 자료는 그대로 ${localStorage.getItem(LS_SCENES) !== null}`,
   );
   if (boot.kind !== "ready") return log("DONE");
+  log(`    남긴 기록: ${describeSceneMigration(await readSceneMigrationInfo())}`);
 
   // ── 3. 꽉 찼던 그 상태에서 편집이 되나, 얼마나 걸리나 ──
   const added = confirmSceneWrite(() => createScene(null, "꽉 찬 뒤에 만든 씬"));
