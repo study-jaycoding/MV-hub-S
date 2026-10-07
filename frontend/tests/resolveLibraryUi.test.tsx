@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   counts: vi.fn(),
   saveFolder: vi.fn(),
   ack: vi.fn(),
+  outsideEnabled: vi.fn(),
 }));
 vi.mock("virtua", async () => {
   const { forwardRef, useImperativeHandle } = await import("react");
@@ -29,7 +30,9 @@ vi.mock("../src/api", () => ({ api: {
   projectFolderCountsBatch: mocks.counts, setProjectFolderSelection: mocks.saveFolder,
 } }));
 vi.mock("../src/lib/useGenerationViewsSynced", () => ({ useGenerationViewsSynced: () => ({ card: {}, asset: {} }) }));
-vi.mock("../src/lib/useOutsideDragSelect", () => ({ useOutsideDragSelect: () => {} }));
+vi.mock("../src/lib/useOutsideDragSelect", () => ({
+  useOutsideDragSelect: (_selector: string, _start: unknown, enabled = true) => { mocks.outsideEnabled(enabled); },
+}));
 vi.mock("../src/lib/modelCatalog", () => ({ useModelDisplayName: () => (name: string) => name }));
 vi.mock("../src/lib/i18n", () => ({ t: (value: string) => value, useT: () => (value: string) => value }));
 vi.mock("../src/lib/teamSeen", () => ({
@@ -285,4 +288,41 @@ it("다른 생성 워크스페이스의 프로젝트도 등록·전환 없이 �
   expect(fallback.querySelector("button")).toBeNull();
   expect(onFilter).not.toHaveBeenCalled(); expect(onArm).not.toHaveBeenCalled();
   expect(mocks.folder).not.toHaveBeenCalled(); expect(mocks.saveFolder).not.toHaveBeenCalled();
+});
+
+it("받는 중인 빈 목록은 '항목이 없습니다'가 아니라 '불러오는 중…' — 실패 안내가 그보다 먼저다", () => {
+  renderGrid(gridProps({ generations: [], loading: true }));
+  expect(host.textContent).toContain("불러오는 중…");
+  expect(host.textContent).not.toContain("항목이 없습니다");
+  expect(host.querySelector('[role="status"]')).toBeTruthy();
+  renderGrid(gridProps({ generations: [], loading: true, loadError: "down", onRetryLoad: noop }));
+  expect(host.textContent).toContain("목록을 불러오지 못했습니다");
+  renderGrid(gridProps({ generations: [], loading: false }));
+  expect(host.textContent).toContain("항목이 없습니다");
+});
+
+it("selectLocked 면 바깥(상단바·사이드바 여백)에서 시작하는 끌기 선택을 끈다", () => {
+  mocks.outsideEnabled.mockClear();
+  renderGrid(gridProps());
+  expect(mocks.outsideEnabled).toHaveBeenLastCalledWith(true);
+  renderGrid(gridProps({ selectLocked: true }));
+  expect(mocks.outsideEnabled).toHaveBeenLastCalledWith(false);
+});
+
+it("격자가 사라지면(창이 닫힘) 누르고 있던 선택 끌기를 버린다 — 나중에 마우스를 떼도 옛 콜백으로 선택이 생기지 않는다", () => {
+  // 폴더 창의 카드를 누른 채 Esc 로 닫으면 격자는 사라지는데, window 에 건 mouseup 리스너가 남아 있으면 그 옛 콜백이 선택을 만든다
+  //  (닫은 직후의 조작 잠금은 새 격자·새 콜백에만 걸려 있다)
+  const onSelectedChange = vi.fn();
+  const press = (grid: HTMLElement) => act(() => {
+    grid.querySelector('.gen-cell[data-id="g1"]')!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+  });
+  const release = () => act(() => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); });
+  press(renderGrid(gridProps({ onSelectedChange })));
+  act(() => root.render(<div />)); // 격자 언마운트
+  release();
+  expect(onSelectedChange).not.toHaveBeenCalled();
+  // 대조: 격자가 그대로면 떼는 순간 그 카드가 선택된다
+  press(renderGrid(gridProps({ onSelectedChange })));
+  release();
+  expect(onSelectedChange).toHaveBeenCalledExactlyOnceWith(new Set(["g1"]));
 });

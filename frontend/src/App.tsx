@@ -453,6 +453,7 @@ export default function App() {
     setFacets,
     setGens,
     beginComposeList,
+    staleList,
     stats,
     unassignedCount,
   } = useGenerationLibraryData({
@@ -762,10 +763,15 @@ export default function App() {
   });
   // 열고 닫을 때 목록을 먼저 비운다 — 조회가 끝날 때까지 본 목록 카드가 창에(닫을 때는 창의 카드가 뒤 목록 자리에) 비치지
   //  않게. 선택도 비운다: 창의 목록과 본 목록은 다른 카드라, 남기면 보이지 않는 카드에 일괄 작업이 걸린다.
+  //  닫은 직후의 빈 화면은 '본 목록 첫 쪽 사본'으로 메운다(Jay 2026-10-07): 열 때 본 목록 조회의 키로 담고, 닫을 때 같은 키면
+  //  먼저 그린다(목록 훅의 beginComposeList). 본 목록 조회의 키 = 창 조건이 섞이기 전의 genQuery — 창에서 툴바 필터를 바꾸면
+  //  키가 달라져 사본을 쓰지 않는다.
+  const backQueryKeyRef = useRef("");
+  backQueryKeyRef.current = generationQueryKey(genQuery);
   const openFolderWindow = useCallback((g: Generation) => {
     const f = filtersRef.current;
     if (f.tab === "compose" || !g.folder_path) return;
-    beginComposeList();
+    beginComposeList({ keep: backQueryKeyRef.current });
     setSelected(new Set());
     setFolderWindow({
       projectId: g.project_id, path: g.folder_path, projectName: g.project_name ?? "", genId: g.id, ctx: listPeekCtxRef.current,
@@ -776,7 +782,7 @@ export default function App() {
     //  응답을 버려 뒤 목록이 빈 채로 남는다.
     if (!listPeekRef.current) return;
     listPeekRef.current = null;
-    beginComposeList();
+    beginComposeList({ restore: backQueryKeyRef.current });
     setSelected(new Set());
     setFolderWindow(null);
   }, [beginComposeList, setSelected]);
@@ -1031,8 +1037,9 @@ export default function App() {
   // 폴더 창이 떠 있는 동안은 따라가지 않는다(체크를 끈 것과 같이 창에 보이는 카드만 강조) — 따라가기는 본 목록의 위치를 옮기고
   //  목록을 그 위치의 카드로 갈아 끼우는데, 위치가 안 바뀌는 경우(보던 폴더 안의 복수 선택)엔 창이 닫히지 않아 제목과 다른 카드가
   //  창에 남는다(코덱스 코드 리뷰 10-07). enabled 가 바뀌면 진행 중이던 조회 응답도 버려진다(훅의 context).
+  //  창을 닫은 직후 옛 사본을 보이는 동안(staleList)에도 같다 — 따라가기가 사본 위에 목록을 갈아 끼우면 새 첫 쪽과 섞인다.
   const resolveLibrary = useResolveLibraryFollow({
-    filters, enabled: resolveSelectionFollow && !listPeek, authReady: authReady && workspaceQueryReady,
+    filters, enabled: resolveSelectionFollow && !listPeek && !staleList, authReady: authReady && workspaceQueryReady,
     authKey: libraryAuthKey,
     workspaceFilter: filters.tab === "team" ? genQuery : undefined,
     workspaceScopeKey,
@@ -1868,7 +1875,13 @@ export default function App() {
           layout={layout}
           groupByDate={groupByDate}
           selectedIds={selected}
+          // 창을 닫은 직후 옛 사본을 보이는 동안은 고를 수 없다 — 새 목록이 올 때까지(보통 0.5초 미만) 보이기만 한다.
+          //  카드의 클릭·키는 <main inert> 가, 바깥에서 시작하는 끌기 선택과 그 결과는 여기서 막는다. 선택은 닫을 때 비웠고
+          //  새로 생길 길이 이 둘뿐이라, 선택 막대·전역 단축키(선택이 있어야 움직인다)는 따로 막지 않아도 된다.
+          selectLocked={staleList}
+          loading={loading}
           onSelectedChange={(next) => {
+            if (staleList) return;
             // comfy 임시 카드(가짜 id)는 선택에서 제외 — 전체선택/범위선택으로 삭제·배정 API 에 흘러가지 않게.
             const clean = [...next].some((id) => id.startsWith("comfy-pending:"))
               ? new Set([...next].filter((id) => !id.startsWith("comfy-pending:")))
@@ -2283,7 +2296,8 @@ export default function App() {
                 archivedCount={archivedCount}
               />
             )}
-            <main className="main">
+            {/* staleList = 폴더 창을 닫은 직후 옛 첫 쪽을 먼저 보이는 중 — 새 목록이 올 때까지 조작을 막는다(낡은 카드에 삭제·공유가 걸리지 않게) */}
+            <main className="main" aria-busy={staleList || undefined} {...(staleList ? { inert: "" } : {})}>
               {/* 폴더 창이 떠 있으면 툴바·격자는 창에 그린다(하나뿐인 격자) — 뒤 목록 자리는 닫을 때까지 비워 둔다. */}
               {!listPeek && libraryToolbar}
               {listPeek ? null : !workspaceQueryReady ? (

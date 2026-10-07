@@ -94,6 +94,21 @@ export function useGenerationLibraryData({
   const reloadSeqRef = useRef(0);
   const lastStatsAtRef = useRef(0); // stats(전역 집계) 마지막 조회 시각 — light 폴링 스로틀용
   const lastLoadedTabRef = useRef<string | null>(null); // 현재 gens 가 어느 탭 데이터인지
+  const loadErrorRef = useRef(loadError);
+  loadErrorRef.current = loadError;
+  // ── 목록 탭의 '폴더 보기' 창을 닫을 때 먼저 보일 '본 목록 첫 쪽 사본'(Jay 2026-10-07: 닫은 직후의 빈 화면을 없앤다) ──
+  //  창을 열 때 본 목록의 첫 쪽을 따로 담아 두고(backListRef), 닫을 때 그것을 먼저 그린 뒤 반드시 첫 쪽을 다시 받는다.
+  //  탭 캐시(tabCacheRef)는 못 쓴다 — 창의 조회가 같은 탭 칸을 덮는다. 사본은 낡았을 수 있으므로(창에서 지우거나 공유를
+  //  바꾼 카드) staleList 가 켜진 동안 화면은 조작을 막는다. staleList 는 **지금 문맥의 첫 쪽 응답을 실제로 적용한 순간**
+  //  (성공·실패)에만 끈다 — 조회 Promise 의 종료(버려진 응답·메타 대기 포함)에 묶으면 안 된다(Codex 설계 검토).
+  //  사본은 창을 열 때마다 새로 담고 꺼내는 길은 닫기 하나뿐이라, 문맥(탭·계정·공간)이 바뀌어도 낡은 칸이 쓰일 일은 없다.
+  const backListRef = useRef<{ key: string; gens: Generation[] } | null>(null);
+  const [staleList, setStaleListState] = useState(false);
+  const staleListRef = useRef(false);
+  const setStaleList = useCallback((on: boolean) => {
+    staleListRef.current = on;
+    setStaleListState(on);
+  }, []);
   // 탭별 마지막 목록 캐시 — 탭을 오갈 때 이전에 보던 그 탭 화면을 '즉시' 띄우고(딜레이 제거),
   // 뒤에서 fetch 가 최신본으로 조용히 갱신한다. sig(쿼리 직렬화)가 다르면(필터 초기화 등) 캐시를 안 쓴다.
   const tabCacheRef = useRef<Record<string, GenerationTabCacheEntry>>({});
@@ -117,6 +132,7 @@ export function useGenerationLibraryData({
     resetWorkspaceRef.current = false;
     setLocatedVisibleIds(null);
     if (filtersRef.current.tab !== "team") return;
+    setStaleList(false); // 아래에서 목록을 이 공간의 것으로 갈아 끼운다 — 사본 구간 끝(다른 탭은 목록을 안 바꾸므로 새 첫 쪽이 풀 때까지 잠근 채 둔다)
     const sig = JSON.stringify([!!filtersRef.current.deleted_only, genQueryRef.current]);
     const cached = tabCacheRef.current.team;
     const reuse = generationTabCacheIsFresh(cached, sig) ? cached : undefined;
@@ -155,6 +171,7 @@ export function useGenerationLibraryData({
     setHasMore(false);
     setLoadError(null);
     setLocatedVisibleIds(null);
+    setStaleList(false);
   }, [authScope]);
 
   // 목록이 바뀌면(삭제·태그·컬러·추가 로드 등) 현재 탭 캐시도 동기화 —
@@ -174,6 +191,7 @@ export function useGenerationLibraryData({
     if (tab === "compose") return; // 캔버스는 그리드를 안 그림 — 표시 컨텍스트 유지
     if (lastLoadedTabRef.current === null || lastLoadedTabRef.current === tab) return;
     lastLoadedTabRef.current = tab;
+    setStaleList(false); // 아래에서 목록을 이 탭의 것으로 갈아 끼운다 — 사본 구간 끝
     const sig = JSON.stringify([!!filtersRef.current.deleted_only, genQueryRef.current]);
     const cached = tabCacheRef.current[tab];
     if (cached && cached.sig === sig) {
@@ -313,6 +331,7 @@ export function useGenerationLibraryData({
         setGens((prev) => reconcileArrayState(prev, g));
         setHasMore(page.length >= GEN_PAGE);
         setLoadError(null);
+        setStaleList(false); // 새 첫 쪽이 들어왔다 — 사본 구간 끝(내용이 사본과 같아도 푼다)
         lastLoadedTabRef.current = tab;
         tabCacheRef.current[tab] = {
           gens: g,
@@ -329,6 +348,11 @@ export function useGenerationLibraryData({
           flash("로드 실패: " + String(e));
           // 화면에 남는 실패 상태 — 빈 그리드가 "항목 없음"으로 오인되지 않게(재시도 UI 근거).
           setLoadError(String(e).replace(/^Error:\s*/, ""));
+          // 사본을 보이던 중이면 치운다 — 낡은 사본을 최신 목록처럼 남기지 않고 실패·재시도를 보인다
+          if (staleListRef.current) {
+            setGens([]);
+            setStaleList(false);
+          }
         }
       } finally {
         if (!silent && seq === reloadSeqRef.current) setLoading(false);
@@ -352,7 +376,7 @@ export function useGenerationLibraryData({
       // 실패·탭/필터 전환으로 결과가 폐기된 reload는 변경을 덮었다고 표시하지 않는다.
       finishSync(false);
     }
-  }, [flash]);
+  }, [flash, setStaleList]);
 
   // 실제 실행 1건을 돌리고, 끝나면 큐에 쌓인(병합된) 다음 실행을 이어서 돌린다.
   // 병합 실행이 끝나면 그동안 대기하던 호출자들의 promise 를 resolve → awaited 호출도 '자기 요청을
@@ -431,19 +455,39 @@ export function useGenerationLibraryData({
   //  비운 뒤에는 반드시 새로 받아야 한다: 지금 탭의 캐시를 지워 reloadIfStale 이 '신선한 캐시' 를 믿고 조회를 건너뛰지 못하게
   //  하고(건너뛰면 비운 채로 남는다 — 창을 열자마자 닫거나, 닫자마자 같은 폴더를 다시 열 때), 진행 중이던 조회·추가 로드의
   //  응답은 버린다(비운 목록에 옛 조건의 카드가 다시 들어오지 않게).
-  const beginComposeList = useCallback(() => {
+  //  back = 목록 탭의 폴더 창 전용. keep(열 때) = 지금 본 목록 조회의 키 — 화면의 목록이 그 조회의 첫 쪽이 확실할 때만 사본을
+  //  담는다. restore(닫을 때) = 지금 본 목록 조회의 키 — 담을 때와 같으면(창에서 툴바 필터를 안 바꿨다) 사본을 먼저 그린다.
+  //  어느 쪽이든 아래의 무효화(캐시 삭제·seq·커서)는 그대로라 닫은 뒤에는 반드시 첫 쪽을 다시 받는다.
+  const beginComposeList = useCallback((back?: { keep?: string; restore?: string }) => {
+    const tab = filtersRef.current.tab;
+    let restored: Generation[] | null = null;
+    if (back?.keep !== undefined) {
+      // 출처 확인: 탭 캐시의 sig = 마지막으로 **적용된** 목록의 조회. 필터를 막 바꿔 새 응답을 기다리는 중이면 화면의 카드는
+      //  옛 조건의 것이라 sig 가 안 맞는다(그것을 새 키로 담으면 닫을 때 엉뚱한 목록이 뜬다). 비운 직후(사본을 보이는 중 포함)에는
+      //  캐시가 없어 저절로 걸러진다. 다빈치가 끼워 넣은 행이 섞인 화면(그 행은 첫 쪽이 아니다)·실패한 화면도 담지 않는다.
+      const sig = JSON.stringify([!!filtersRef.current.deleted_only, genQueryRef.current]);
+      const trusted = tabCacheRef.current[tab]?.sig === sig && !locatedRef.current && !loadErrorRef.current;
+      backListRef.current = trusted ? { key: back.keep, gens: gensRef.current.slice(0, GEN_PAGE) } : null;
+    } else if (back?.restore !== undefined && backListRef.current?.key === back.restore) {
+      restored = backListRef.current.gens;
+    }
     reloadSeqRef.current++;
-    delete tabCacheRef.current[filtersRef.current.tab];
+    delete tabCacheRef.current[tab];
     locatedRef.current = null;
     pageCursorRef.current = null;
     trashOffsetRef.current = 0;
     lastLoadedTabRef.current = "compose";
-    setGens([]);
-    setHasMore(false);
-  }, []);
+    setGens(restored ?? []);
+    setHasMore(false); // 사본을 보이는 동안에도 — 옛 커서로 다음 쪽을 받지 않는다
+    setStaleList(!!restored);
+    // 비운 그 자리에서 '불러오는 중'으로 — 조회 effect 가 돌기 전의 한 번에 "항목이 없습니다"가 비치지 않게.
+    //  뒤따르는 조회(호출부가 반드시 건다)의 묶음이 끝나면 내려간다.
+    setLoading(true);
+  }, [setStaleList]);
 
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !authReadyRef.current) return;
+    if (staleListRef.current) return; // 사본을 보이는 중 — 커서가 없다(새 첫 쪽이 온 뒤에 이어 받는다)
     if (filtersRef.current.tab === "compose" && !composeListEnabledRef.current) return;
     loadingMoreRef.current = true;
     setLoadingMore(true);
@@ -508,6 +552,7 @@ export function useGenerationLibraryData({
     setFacets,
     setGens,
     beginComposeList,
+    staleList,
     stats,
     unassignedCount,
   };

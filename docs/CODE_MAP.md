@@ -29,7 +29,7 @@ updated: 2026-10-07
 | 하고 싶은 일 | 프런트 진입 파일 | 백엔드 진입 파일 | 비고 |
 |---|---|---|---|
 | 라이브러리 카드 표시 문구·상태 라벨 바꾸기 | `components/GenerationCard.tsx`, `lib/generationDisplay.ts` | — | 상태 라벨은 순수 프런트 판정 |
-| 카드의 폴더 이름표·목록 탭의 '폴더 보기' 창 | `components/GenerationCard.tsx`(이름표), `App.tsx`(`listPeek`·`renderFolderPeek` — 캔버스 '폴더 보기' 창과 같은 창), `lib/appGenerationQuery.ts`(`folderPeekQuery`), `lib/folderLabel.ts`(표시 규칙) | `routers/library.py`(`GET /api/generations` — 기존 목록 API 그대로) | 캔버스 창과 같은 원리: 창이 떠 있는 동안 **목록 조회가 그 폴더로 바뀌고** 하나뿐인 격자·툴바·선택 막대를 창에 그린다(뒤 목록 자리는 비움). 닫으면 본 목록을 처음부터 다시 받는다. 사이드바 필터(`filters`)는 안 건드린다 — `patch()` 는 다음 생성 위치까지 바꾼다. 열고 닫을 때 `beginComposeList()` 로 목록을 비운다. 이름표는 목록 탭의 본 목록에만(캔버스·휴지통 보기·창 안 격자에는 없음). 창 안에서는 이름표를 누른 그 카드에 '방금 누른 카드' 표시가 붙고, 아래쪽에 있으면 그 카드로 내려가서 연다(다빈치 따라가기의 `resolveScrollRequest` 장치) |
+| 카드의 폴더 이름표·목록 탭의 '폴더 보기' 창 | `components/GenerationCard.tsx`(이름표), `App.tsx`(`listPeek`·`renderFolderPeek` — 캔버스 '폴더 보기' 창과 같은 창), `lib/appGenerationQuery.ts`(`folderPeekQuery`), `lib/folderLabel.ts`(표시 규칙) | `routers/library.py`(`GET /api/generations` — 기존 목록 API 그대로) | 캔버스 창과 같은 원리: 창이 떠 있는 동안 **목록 조회가 그 폴더로 바뀌고** 하나뿐인 격자·툴바·선택 막대를 창에 그린다(뒤 목록 자리는 비움). 닫으면 본 목록을 처음부터 다시 받는다 — **그동안의 빈 화면은 '본 목록 첫 쪽 사본'으로 메운다**(2026-10-07): 열 때 본 목록 조회의 키로 첫 쪽을 담고(`beginComposeList({ keep })`), 닫을 때 같은 키면 먼저 그린 뒤(`{ restore }`) 새 첫 쪽이 실제로 적용될 때까지 조작을 막는다(`staleList` → `<main inert>`·격자 `selectLocked`·선택 변경 무시·다빈치 따라가기 끔). 창에서 툴바 필터를 바꿨거나(키 다름)·다빈치가 끼워 넣은 화면·실패 화면이면 사본 없이 '불러오는 중…'. 사이드바 필터(`filters`)는 안 건드린다 — `patch()` 는 다음 생성 위치까지 바꾼다. 열고 닫을 때 `beginComposeList()` 로 목록을 비운다. 이름표는 목록 탭의 본 목록에만(캔버스·휴지통 보기·창 안 격자에는 없음). 창 안에서는 이름표를 누른 그 카드에 '방금 누른 카드' 표시가 붙고, 아래쪽에 있으면 그 카드로 내려가서 연다(다빈치 따라가기의 `resolveScrollRequest` 장치) |
 | 새 API 엔드포인트 추가하기 | `api.ts` | `routers/_proxy.py`(경로 소유권) + 해당 도메인 라우터. **새 라우터 파일이면 `main.py` 의 `include_router()` 등록도** | 로컬 전용 경로는 `_proxy._LOCAL_PREFIXES/_LOCAL_EXACT` 갱신 + `backend/tests/test_proxy_ownership.py` 골든 스냅샷도 같이 고쳐야 함(§5-c) |
 | 캔버스(씬) 단축키 바꾸기 | `lib/useSceneKeyboardShortcuts.ts`, `lib/sceneKeyboard.ts` | — | |
 | 캔버스 카드의 '생성 결과' 창 | `components/scene/SceneVariantPopup.tsx`(창 — 라이브러리 `ThumbnailGrid`·`BoardSelectionActionBar` 조립), `components/scene/SceneBoard.tsx`(`variantView` — 보일 결과·선택·조작 어댑터), `App.tsx`(`renderVariantToolbar`·`variantOpen`), `lib/boardFilters.ts`, `lib/keyHandled.ts` | — (씬의 `genData` 를 그대로 쓴다 — 목록 조회를 빌리지 않는다) | 폴더 창과 같은 모양이지만 **`.folder-peek` 클래스는 달지 않는다**(그 클래스는 '이 안의 키는 라이브러리 몫' 표시라, 달면 씬의 색·비활성 단축키가 창에서 죽는다) — 뼈대 CSS 만 선택자 묶음으로 같이 쓴다(`.scene-varwin`). 툴바 필터에 안 맞는 결과는 **걸러 내고 선택에서도 뺀다**(다빈치가 고른 것은 예외로 보인다). 대표 단추는 격자의 `cellHeader` 칸(카드 위), 폴더 표는 표시만(`showFolder`). Esc = 선택 해제 → 닫기(격자가 쓴 Esc 는 `keyHandled` 표시로 씬이 다시 처리하지 않는다). 창의 아래 끝은 하단 프롬프트 위에서 멈춘다(프롬프트 높이를 재서 `--dock-gap`). '폴더 보기' 창과는 겹쳐 두지 않는다(나중에 연 쪽만). 조작 대상은 **보이는 카드뿐**(`shownIds` — 아직 안 불러온 결과는 선택에 남아도 대상이 아니다). 여러 장을 고른 채 한 카드에서 한 태그·S·워크스페이스 명령은 고른 전체에(`bulkVariantTags`·`onVariantGradeStep`·`variantWorkspace`). 창이 떠 있는 동안 바깥에서 시작한 끌기 선택은 창의 격자만 받는다(캔버스 쪽 `useOutsideDragSelect` 는 끔) |
@@ -515,7 +515,7 @@ updated: 2026-10-07
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `ThumbnailGrid.tsx`(707줄) | 생성물 카드 가상 그리드 · 마퀴/키보드 선택 · 날짜 그룹 · 폴더 창을 연 카드 표시(`openedFromId`) · 캔버스 '생성 결과' 창용 선택 기능(안 주면 종전 그대로): 카드 위 칸(`cellHeader`)·'마지막으로 본' 지정(`lastViewedId`)·흐림(`dimIds`)·폴더 표 표시만(`showFolder`)·이동과 함께 기준 카드 지정(`resolveScrollRequest.focus`) · 선택을 푼 Esc 는 `keyHandled` 로 표시 | `ThumbnailGrid` |
+| `ThumbnailGrid.tsx`(716줄) | 생성물 카드 가상 그리드 · 마퀴/키보드 선택 · 날짜 그룹 · 빈 목록 안내(받는 중이면 '불러오는 중…' — `loading`) · 바깥 끌기 선택 끄기(`selectLocked`) · 폴더 창을 연 카드 표시(`openedFromId`) · 캔버스 '생성 결과' 창용 선택 기능(안 주면 종전 그대로): 카드 위 칸(`cellHeader`)·'마지막으로 본' 지정(`lastViewedId`)·흐림(`dimIds`)·폴더 표 표시만(`showFolder`)·이동과 함께 기준 카드 지정(`resolveScrollRequest.focus`) · 선택을 푼 Esc 는 `keyHandled` 로 표시 | `ThumbnailGrid` |
 | `GenerationCard.tsx`(779줄) | 카드 1장(그리드/리스트 두 모드) · 호버 영상 · 드래그 · 폴더 이름표(`onOpenFolder` 를 받았을 때만 — 카드 아래 변 가운데에 붙인 표·이름만·반투명, 소스·상태 배지는 그 위에 한 묶음 `.card-bottom`. `showFolder` 만 받으면 누를 수 없는 표시 `.card-folder.static`) · 고른 폴더 밖 흐림(`dimmed` → `.folder-dim`) · 폴더 창 안의 '방금 누른 카드' 표시(`openedHere` — 같은 자리·같은 모양에 글자·테두리만 라임, 카드 테두리는 안 건드림) | `GenerationCard`(memo) — 캔버스의 `scene/cards/GenerationCard.tsx` 와 이름만 같은 별개 파일(§5-b) |
 | `MediaThumbnail.tsx`(157줄) | 영상 포스터/이미지/포스터 없는 영상 3분기 통합 표현 | `MediaThumbnail`(10곳 재사용) |
 | `LibraryToolbar.tsx`(296줄) | 타입 필터·검토 필터·크기 슬라이더·리스트/그리드 토글·태그 패널 | `LibraryToolbar` |
@@ -724,7 +724,7 @@ updated: 2026-10-07
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
-| `useGenerationLibraryData.ts` | 훅 | 목록 로드·페이징·seq 가드·동기화 판정(§6 계약 지점). `beginComposeList` = 목록을 비우고 다시 받기(캔버스·목록 탭의 '폴더 보기' 창이 열고 닫을 때 — 지금 탭 캐시를 지우고 진행 중 응답을 버린다) |
+| `useGenerationLibraryData.ts` | 훅 | 목록 로드·페이징·seq 가드·동기화 판정(§6 계약 지점). `beginComposeList` = 목록을 비우고 다시 받기(캔버스·목록 탭의 '폴더 보기' 창이 열고 닫을 때 — 지금 탭 캐시를 지우고 진행 중 응답을 버린다). 목록 탭 창은 `{ keep }`/`{ restore }` 로 본 목록 첫 쪽 사본을 담았다 먼저 보인다(`backListRef` — 탭 캐시와 별개 칸, 출처는 탭 캐시의 sig 로 확인). `staleList` = 그 사본을 보이는 중 — **지금 문맥의 첫 쪽 응답을 적용한 순간**(성공·실패)에만 꺼진다(버려진 응답·메타 종료로는 안 꺼짐) |
 | `useLibraryFilters.ts` | 훅 | 필터·뷰 상태(localStorage 백업) + 파생 쿼리 |
 | `useLibraryPersistence.ts` | 훅 | 필터 저장 포맷·키·마이그레이션 |
 | `libraryRequestPlan.ts` | 순수 | 목록·메타 조회를 같은 순간에 시작 |

@@ -38,6 +38,7 @@ let canvasSidebarSnapshot: ComponentProps<typeof import("../src/components/sideb
 let refreshProjects: () => void;
 const relinkOnWorkspaceChange = vi.fn();
 const beginList = vi.fn(); // 목록 훅의 beginComposeList — 폴더 창을 열고 닫을 때 목록을 비우는지 본다
+let setStaleList: (on: boolean) => void; // 목록 훅의 staleList(닫은 직후 옛 첫 쪽을 보이는 중)를 시험이 켜고 끈다
 const libraryHighlightedIds = () => [...(gridSnapshot?.resolveHighlightedIds || [])];
 const libraryGeneration = (id: string): Generation => ({
   id, status: "done", prompt: id, assets: [], tags: [], auto_tags: [], references: [],
@@ -446,6 +447,8 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       const [gens, setGens] = useState<Generation[]>([]);
       const [location, setLocation] = useState<{ tab: "my" | "team"; value: GenerationLocation } | null>(null);
       const [projects, setProjects] = useState(initialProjects);
+      const [staleList, setStale] = useState(false);
+      setStaleList = setStale;
       refreshProjects = () => setProjects((previous) => [...previous]);
       const revealLocated = useCallback((tab: "my" | "team", value: GenerationLocation) => {
         setLocation({ tab, value }); setGens(value.items);
@@ -459,7 +462,7 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       isLocatedView: !!location && isLocatedQuery(args.genQuery, location.tab, location.value),
       stats: { has_unread: false, failed_count: 0, unread_count: 0 }, loading: false, loadingMore: false,
       hasMore: false, loadError: null, archivedCount: 0, unassignedCount: 0, loadMore: noop, beginComposeList: beginList,
-      reload: noop, reloadIfStale: noop,
+      reload: noop, reloadIfStale: noop, staleList,
     };
     },
   }));
@@ -809,6 +812,7 @@ it.each(["my", "team"])("App %s 탭: 폴더 이름표를 누르면 조회가 그
   expect(promptSnapshot?.topSlot).toBeTruthy(); // 본 목록에서는 선택 막대가 프롬프트 위에 뜬다
   const filtersBefore = librarySnapshot!.filters;
   const scopeBefore = localStorage.getItem("ch.lib.generationScopeV1");
+  const backKey = JSON.stringify(librarySnapshot!.genQuery); // 창 조건이 섞이기 전의 본 목록 조회
   expect(gridSnapshot!.onOpenFolder).toBeTypeOf("function");
   expect(peekWindow()).toBeNull();
 
@@ -825,6 +829,7 @@ it.each(["my", "team"])("App %s 탭: 폴더 이름표를 누르면 조회가 그
   expect(localStorage.getItem("ch.lib.generationScopeV1")).toBe(scopeBefore);
   expect(promptSnapshot?.activeProjectId).toBe("generation-project");
   expect(beginList).toHaveBeenCalledTimes(1); // 본 목록 카드가 창에 비치지 않게 비우고 시작
+  expect(beginList).toHaveBeenLastCalledWith({ keep: backKey }); // 닫을 때 먼저 보일 본 목록 첫 쪽을 그 조회의 키로 담아 둔다
   expect(gridSnapshot!.selectedIds.size).toBe(0); // 본 목록의 선택을 창으로 들고 가지 않는다
   expect(gridSnapshot!.onOpenFolder).toBeUndefined(); // 창 안 격자에는 이름표를 달지 않는다
   expect(gridSnapshot!.openedFromId).toBe("target"); // 이름표를 누른 그 카드를 창 안에서 표시하고('방금 누른 카드')
@@ -853,9 +858,37 @@ it.each(["my", "team"])("App %s 탭: 폴더 이름표를 누르면 조회가 그
   expect(librarySnapshot!.genQuery).toMatchObject({ tab, search: "cat", creator_uid: "someone" });
   expect(librarySnapshot!.genQuery.folder_path).toBeUndefined();
   expect(beginList).toHaveBeenCalledTimes(2); // 창의 카드가 뒤 목록 자리에 비치지 않게 닫을 때도 비운다
+  expect(beginList).toHaveBeenLastCalledWith({ restore: backKey }); // 같은 키 — 담아 둔 첫 쪽을 먼저 그린다(빈 화면 없음)
   expect(gridSnapshot!.onOpenFolder).toBeTypeOf("function");
   expect(gridSnapshot!.openedFromId).toBeUndefined(); // 본 목록에는 표시도, 자동 이동도 남지 않는다
   expect(gridSnapshot!.resolveScrollRequest).toBeNull();
+});
+
+it("App: 폴더 창을 닫은 직후 옛 첫 쪽을 보이는 동안에는 고르지도 따라가지도 못한다 — 새 목록이 오면 풀린다", async () => {
+  // 그 카드들은 낡았을 수 있다(창에서 지우거나 공유를 바꿨을 수 있다) — 보이기만 하고, 삭제·공유가 걸릴 입구를 모두 막는다
+  const send = await mountApp("team");
+  act(() => send(["target"]));
+  await settle();
+  const filtersBefore = librarySnapshot!.filters;
+  act(() => setStaleList(true));
+  const main = document.querySelector("main.main")!;
+  expect(main.hasAttribute("inert")).toBe(true); // 카드의 클릭·키
+  expect(main.getAttribute("aria-busy")).toBe("true");
+  expect(gridSnapshot!.selectLocked).toBe(true); // 바깥(상단바·사이드바 여백)에서 시작하는 끌기 선택
+  expect(gridSnapshot!.loading).toBe(false); // 격자가 '받는 중'을 안다(비어 있을 때 "항목이 없습니다" 대신 "불러오는 중…")
+  act(() => gridSnapshot!.onSelectedChange(new Set(["target"]))); // 그래도 들어온 선택 결과
+  expect(gridSnapshot!.selectedIds.size).toBe(0);
+  expect(promptSnapshot?.topSlot).toBeUndefined(); // 선택이 없으니 선택 막대도 없다
+  act(() => send(["other"])); // 다빈치 신호 — 사본 위에 목록을 갈아 끼우지 않는다
+  await settle();
+  expect(librarySnapshot!.filters).toEqual(filtersBefore);
+
+  act(() => setStaleList(false));
+  expect(main.hasAttribute("inert")).toBe(false);
+  expect(main.hasAttribute("aria-busy")).toBe(false);
+  expect(gridSnapshot!.selectLocked).toBe(false);
+  act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
+  expect(gridSnapshot!.selectedIds).toEqual(new Set(["target"]));
 });
 
 it("App 작업 공간: 바깥 막·✕ 로 닫히고, 보던 위치가 바뀌거나 부분 수정으로 넘어가도 닫힌다 — 휴지통 보기에는 이름표가 없다", async () => {
