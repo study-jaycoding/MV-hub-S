@@ -134,6 +134,17 @@ export function diagnoseLegacyStorage(legacyChars?: number | null): LegacyDiagno
  *  창이 그대로 깨진다. 대신 그 창이 쓴 것을 흡수한다(2026-10-07 Codex 합의).
  */
 export async function bootSceneStore(): Promise<SceneStoreInit> {
+  // ★던지지 않는다 — 실패도 값으로 돌려준다. 여기서 새는 예외(깨진 표식 쿠키의 디코딩 오류 등)는 호출부
+  //  (main.tsx)가 잡지 않아 오류 안내 없이 빈 화면이 된다(Codex 병합 전 검토 2026-10-08). 표식을 못 읽었다고
+  //  '표식 없음'으로 추측해 열지도 않는다 — 끝난 이관을 처음으로 보고 옛 내용으로 덮을 수 있다.
+  try {
+    return await openSceneStore();
+  } catch (error) {
+    return { kind: "failed", error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function openSceneStore(): Promise<SceneStoreInit> {
   // 옛 저장소의 원문은 **한 번만** 읽는다 — 옮기는 내용과 진단에 적는 글자 수가 같은 원문에서 나오게.
   // ★'못 읽었다'(null)와 '비어 있다'("")를 가른다. 읽기 오류를 빈 글자로 바꾸면 진단이 '자료 0글자'라고 적어,
   //  확인하지 못한 것을 빈 것으로 보고한다(Codex 코드 리뷰).
