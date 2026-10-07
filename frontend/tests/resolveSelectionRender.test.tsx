@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, forwardRef, StrictMode, useCallback, useRef, useState, type ComponentProps } from "react";
+import { flushSync } from "react-dom";
 import { readFileSync } from "node:fs";
 import { URL as NodeURL } from "node:url";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -793,7 +794,13 @@ it.each(["my", "team"])("App %s 탭: 폴더 이름표를 누르면 조회가 그
   //  선택 막대는 창에만: 창이 떠 있는 동안 프롬프트 위·화면 위쪽의 바깥 막대는 그리지 않는다.
   act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
   expect(promptSnapshot?.topSlot).toBeUndefined();
+  // 실제 브라우저에서는 창의 키 처리가 끝난 직후, 같은 Esc 가 window 에 닿기 전에 React 가 다시 그리고 effect 까지 돌린다 —
+  //  그 순서를 문서 리스너의 flushSync 로 강제한다(React 루트 → document → window 순으로 올라간다). 선택을 푼 그 자리에서
+  //  전역 Esc 훅(선택이 없을 때만 켜짐)이 켜지므로, 같은 키로 창까지 닫히면 안 된다(2026-10-07 브라우저 실측으로 발견).
+  const flushBetweenListeners = () => flushSync(() => {});
+  document.addEventListener("keydown", flushBetweenListeners);
   pressEscapeInPeek();
+  document.removeEventListener("keydown", flushBetweenListeners);
   expect(gridSnapshot!.selectedIds.size).toBe(0);
   expect(peekWindow()).not.toBeNull();
   pressEscapeInPeek();
@@ -832,9 +839,8 @@ it("App 작업 공간: 바깥 막·✕ 로 닫히고, 보던 위치가 바뀌거
   await settle();
   expect(peekWindow()).toBeNull();
 
-  // 초점이 창 밖에 있을 때의 Esc 도 닫는다(전역 훅). 초점이 창 안이면 전역 훅은 손을 떼고 창의 키 처리에 맡긴다 —
-  //  실제 브라우저에서는 창이 선택을 푼 그 자리에서 이 훅이 켜져 같은 Esc 로 창까지 닫혔다(전달 도중 붙는 리스너라 jsdom 에서는
-  //  재현되지 않는다. 현상은 격리 브라우저 실측으로, 여기서는 '초점이 창 안이면 이 훅이 닫지 않는다' 는 장치를 지킨다).
+  // 초점이 창 밖에 있을 때의 Esc 도 닫는다(전역 훅). 초점이 창 안이면 전역 훅은 손을 떼고 창의 키 처리에 맡긴다
+  //  (그 이유인 '같은 Esc 로 선택 해제 + 창 닫힘' 은 위 "폴더 이름표를 누르면" 시험이 순서를 강제해 재현한다).
   await open();
   act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); });
   await settle();
