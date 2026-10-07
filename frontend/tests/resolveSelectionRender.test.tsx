@@ -435,7 +435,8 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       const [activeSceneId, setActiveSceneId] = useState(initialSceneId);
       return { scenes: appScenes, activeSceneId, activeScene: appScenes.find((scene) => scene.id === activeSceneId),
       sceneBinding: null, setSceneBinding: noop, sceneSelGens: [], setSceneSelGens: noop,
-      sceneActionRef: useRef(null), flushScenePending: noop, patchSceneById: noop, patchActiveScene: noop,
+      // patchSceneById 의 반환은 '저장됐나' 다 — noop(undefined)이면 호출부가 저장 실패로 읽는다.
+      sceneActionRef: useRef(null), flushScenePending: noop, patchSceneById: () => true, patchActiveScene: noop,
       selectScene: setActiveSceneId, addScene: noop, importSceneSnapshot: noop, renameScene: noop, removeSceneById: noop,
       reorderScenes: noop, setSceneWorkspace: noop, backupOnly: 0, importBackupScenes: noop };
     },

@@ -490,7 +490,10 @@ export default function App() {
     const prepared = prepareCanvasGenerationLinks(latest.cards, links);
     if (!prepared.attachedCount) return [];
     // updateScene/saveScenes는 동기 저장이라, 아래 HTTP 요청보다 generation id가 먼저 디스크에 남는다.
-    patchSceneById(sceneId, { cards: prepared.cards });
+    // ★저장이 실패하면(저장소 거부·대상 씬 없음) 링크를 돌려주지 않는다 — 표식이 안 남은 채 생성 요청만
+    //  나가면, 그 사이 앱이 닫혔을 때 결과가 어느 카드 것인지 복구할 수 없다(적대 리뷰 r2 P1).
+    //  호출부는 links 수가 batch 와 다르면 제출을 멈추고 사용자에게 알린다(useSpotlightSubmit).
+    if (!patchSceneById(sceneId, { cards: prepared.cards })) return [];
     seedPending(links.map((link) => link.generation_id));
     return links;
   }, [flushScenePending, patchSceneById]);

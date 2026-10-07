@@ -1,13 +1,19 @@
 // updateScene 반환 계약 — 씬 편집 1회에 저장소를 여러 번 파싱하지 않게 한 변경의 회귀 방지.
 //  (호출부 patchSceneById 는 이 반환값을 그대로 화면 상태로 쓴다 → listScenes 재조회 없음.)
-//  ★반환값은 '저장된 목록'이다: 저장이 실패하면 null 이어야 한다(미저장 편집을 화면에 채택 금지).
+//  ★반환값은 '저장된 목록'이다: 저장이 실패하면 ok:false 여야 한다(미저장 편집을 화면에 채택 금지).
+//  ★실패는 두 가지다 — storage(저장소가 거부: 편집이 아예 안 남음) / missing(대상 씬이 없어 바뀐 게 없음).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  createScene,
+  deleteScene,
+  hasSceneBucket,
   listScenes,
   saveScenes,
+  subscribeSceneSaveState,
   subscribeScenesPersisted,
   updateScene,
   type Scene,
+  type SceneWriteResult,
 } from "../src/lib/scenes";
 import { saveString } from "../src/lib/storage";
 import { STORAGE_KEYS } from "../src/lib/storageKeys";
@@ -39,9 +45,9 @@ function installStorageMocks() {
 const mkScene = (id: string): Scene => ({ id, name: id, cards: [], edges: [], created_at: 1 });
 
 // 저장 성공을 단언하고 목록을 꺼낸다(성공 경로 테스트용).
-function saved(next: Scene[] | null): Scene[] {
-  expect(next).not.toBeNull();
-  return next as Scene[];
+function saved(result: SceneWriteResult): Scene[] {
+  expect(result.ok).toBe(true);
+  return result.ok ? result.scenes : [];
 }
 
 // localStorage 쓰기가 실패하는 상황(용량 초과·접근 차단) 재현.
@@ -98,10 +104,12 @@ describe("updateScene 반환 계약", () => {
     expect(reads).toBe(1);
   });
 
-  it("없는 씬 id 면 아무 씬도 만들지 않는다(기존 동작 유지)", () => {
+  // 저장소에 쓰는 것과 '요청한 대상을 바꾸는 것'은 다른 성공이다. 종전에는 없는 씬에 쓴 편집도
+  // 성공으로 보고해, 호출부가 그 편집을 저장된 것처럼 화면에 남겼다(적대 리뷰 r3).
+  it("없는 씬 id 면 missing — 씬을 만들지도, 성공으로 보고하지도 않는다", () => {
     saveScenes(null, [mkScene("s1")]);
-    const next = saved(updateScene(null, "gone", { name: "x" }));
-    expect(next.map((s) => s.id)).toEqual(["s1"]);
+    const result = updateScene(null, "gone", { name: "x" });
+    expect(result).toEqual({ ok: false, reason: "missing" });
     expect(listScenes(null).map((s) => s.id)).toEqual(["s1"]);
   });
 
@@ -116,12 +124,74 @@ describe("updateScene 반환 계약", () => {
   });
 
   // 저장 실패(용량 초과·접근 차단)를 성공처럼 화면에 반영하면, 사용자는 저장된 줄 알고 새로고침에서
-  // 편집을 잃는다. 반환값은 '저장된 목록'이어야 하므로 실패는 null 로 알린다.
-  it("저장이 실패하면 null 을 반환하고 저장본은 그대로다", () => {
+  // 편집을 잃는다. 반환값은 '저장된 목록'이어야 하므로 실패는 ok:false 로 알린다.
+  it("저장이 실패하면 storage 로 알리고 저장본은 그대로다", () => {
     saveScenes(null, [mkScene("s1")]);
-    const next = withFailingWrites(() => updateScene(null, "s1", { name: "저장 안 된 이름" }));
-    expect(next).toBeNull();
+    const result = withFailingWrites(() => updateScene(null, "s1", { name: "저장 안 된 이름" }));
+    expect(result).toEqual({ ok: false, reason: "storage" });
     expect(listScenes(null).map((s) => s.name)).toEqual(["s1"]); // 저장본 불변 = 화면도 되돌아감
+  });
+
+  // 2026-10-07 신고의 뿌리: 저장이 실패해도 아무도 알려주지 않아, 사라지는 편집이 '연결 안 되는 버그'로
+  // 읽혔다. 알림은 쓰기 관문 하나가 **상태가 바뀔 때만** 내보낸다 — 경로를 빠뜨릴 수 없고, 연속 실패에
+  // 매번 띄워 폭주하지도 않는다.
+  it("저장 실패·복귀를 상태가 바뀔 때만 알린다", () => {
+    saveScenes(null, [mkScene("s1")]);
+    const seen: boolean[] = [];
+    const unsubscribe = subscribeSceneSaveState((failed) => seen.push(failed));
+    try {
+      updateScene(null, "s1", { name: "성공1" });
+      expect(seen).toEqual([]); // 잘 되는 동안은 조용하다
+
+      withFailingWrites(() => {
+        updateScene(null, "s1", { name: "실패1" });
+        updateScene(null, "s1", { name: "실패2" });
+      });
+      expect(seen).toEqual([true]); // 연속 실패에도 한 번만
+
+      updateScene(null, "s1", { name: "성공2" });
+      updateScene(null, "s1", { name: "성공3" });
+      expect(seen).toEqual([true, false]); // 복귀도 한 번만
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  // 부팅 첫 저장(옛 버킷 이관)이 실패하면 화면이 구독하기 전이다. 그때 '상태가 안 바뀌었다'는 이유로
+  // 건너뛰면 그 세션 내내 조용하다 — 사용자는 계속 실패하는 편집만 본다(적대 리뷰 P1).
+  it("이미 실패 중이면 늦게 구독한 화면에도 바로 알린다", () => {
+    saveScenes(null, [mkScene("s1")]);
+    withFailingWrites(() => updateScene(null, "s1", { name: "실패" })); // 구독 전에 실패해 둔다
+    const seen: boolean[] = [];
+    const unsubscribe = subscribeSceneSaveState((failed) => seen.push(failed));
+    try {
+      expect(seen).toEqual([true]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  // 쓰기를 무조건 하면 없던 계정 버킷이 '빈 배열'로 생긴다. DB 자동복구는 '버킷 키가 아예 없을 때'만
+  // 도므로, 그 한 번의 쓰기가 복구 경로를 영구히 막는다(코덱스 코드 리뷰).
+  it("대상도 없고 이관할 것도 없으면 빈 버킷을 만들지 않는다", () => {
+    expect(hasSceneBucket(null)).toBe(false);
+    expect(updateScene(null, "gone", { name: "x" })).toEqual({ ok: false, reason: "missing" });
+    expect(hasSceneBucket(null)).toBe(false); // 복구 판정이 그대로 열려 있어야 한다
+  });
+
+  // 종전에는 저장이 실패해도 새 씬을 그대로 돌려줘, 호출부가 목록에 없는 씬을 활성 탭으로 잡았다.
+  it("createScene 은 저장 실패면 null — 없는 씬을 돌려주지 않는다", () => {
+    expect(withFailingWrites(() => createScene(null, "새 씬"))).toBeNull();
+    expect(listScenes(null)).toEqual([]);
+  });
+
+  // 삭제가 저장되지 않았으면 씬이 그대로 남아 있다 — 호출부가 undo 히스토리를 버리면 안 된다.
+  it("deleteScene 은 저장 실패면 false — 씬이 남아 있다", () => {
+    saveScenes(null, [mkScene("s1")]);
+    expect(withFailingWrites(() => deleteScene(null, "s1"))).toBe(false);
+    expect(listScenes(null).map((s) => s.id)).toEqual(["s1"]);
+    expect(deleteScene(null, "s1")).toBe(true);
+    expect(listScenes(null)).toEqual([]);
   });
 
   it("저장이 실패하면 영속 구독자(DB 미러)를 부르지 않는다", () => {

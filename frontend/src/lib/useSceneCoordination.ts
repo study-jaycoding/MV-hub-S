@@ -12,6 +12,7 @@ import {
   listScenes,
   setActiveSceneId as persistActiveScene,
   saveScenes,
+  subscribeSceneSaveState,
   updateScene,
 } from "./scenes";
 import {
@@ -94,6 +95,23 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   activeSceneIdRef.current = activeSceneId;
   const flashRef = useRef(flash);
   flashRef.current = flash;
+  // '대상 씬 없음'을 알린 씬 id — 같은 씬에 연달아 쓸 때 알림이 폭주하지 않게.
+  const missingNotifiedRef = useRef<string | null>(null);
+  // 저장 실패를 사람이 알게 한다. ★종전에는 저장이 실패해도 아무 말 없이 저장본으로 화면을 되돌렸다 —
+  //  "편집이 사라지는 것이 실패 신호" 라는 설계였는데, 실제로는 **연결이 안 되는 버그**로 읽혔다
+  //  (2026-10-07 신고: 캔버스에서 레퍼런스를 생성 카드에 연결해도 선이 사라짐 = localStorage 꽉 참).
+  //  관문(scenes.saveAll) 한 곳이 상태 변화만 알려주므로 경로를 빠뜨릴 수 없고 알림이 폭주하지도 않는다.
+  useEffect(
+    () =>
+      subscribeSceneSaveState((failed) => {
+        flashRef.current?.(
+          failed
+            ? "씬을 저장하지 못했습니다 — 저장 공간이 꽉 찼을 수 있습니다. 안 쓰는 씬을 지워 보세요."
+            : "씬 저장이 다시 정상입니다.",
+        );
+      }),
+    [],
+  );
   // DB 백업 미러 — 저장 관문에 디바운스 푸시 배선 + 초기 reconcile + 로컬 버킷이 통째로 없을 때만
   //  DB 에서 복구(브라우저 캐시 삭제 대비. 로컬이 항상 정답 — 빈 배열 버킷(정상 삭제)은 복구 안 함).
   //  ★구독 방식: 최초 복구뿐 아니라 백그라운드 복구(미로그인 401 → 로그인 후 백오프 재시도 성공)도
@@ -223,9 +241,11 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     persistActiveScene(null, id);
   };
   const addScene = () => {
+    // 저장 실패면 새 탭으로 옮기지 않는다 — 목록에 없는 씬을 활성으로 잡으면 빈 화면에 갇힌다.
+    //  (알림은 저장 관문 구독이 이미 띄웠다.)
     const s = createScene(null);
     refreshScenes();
-    selectScene(s.id);
+    if (s) selectScene(s.id);
   };
   // 파일에서 불러온 스냅샷을 새 씬 탭으로 만들고 그 탭으로 전환(현재 캔버스는 보존).
   const importSceneSnapshot = (snap: SceneSnapshot): Scene => {
@@ -245,11 +265,17 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     void relinkAssets(false);
   };
   const renameScene = (id: string, name: string) => {
+    // 저장 실패·대상 없음이면 refreshScenes 가 저장본을 다시 읽어 옛 이름으로 되돌린다(알림은 관문 구독).
     updateScene(null, id, { name });
     refreshScenes();
   };
   const removeSceneById = (id: string) => {
-    deleteScene(null, id);
+    // ★저장에 실패하면 씬이 그대로 남아 있다 — undo 히스토리를 지우거나 다른 탭으로 옮기지 않는다.
+    //  종전에는 실패해도 히스토리를 버리고 화면을 옮겨, 되살아난 씬의 undo 만 사라졌다(적대 리뷰 r1).
+    if (!deleteScene(null, id)) {
+      refreshScenes();
+      return;
+    }
     clearSceneHistory(id); // 삭제된 씬의 undo 히스토리(모듈 store)도 정리 — 메모리 누적 방지
     refreshScenes();
     // 활성 씬을 지우면 남은 씬으로 이동 — null(계보 뷰)로 떨어뜨리면 '히스토리' 고정 탭이
@@ -288,19 +314,30 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   };
   // 명시한 씬 patch + 목록 재읽기. 비동기 작업은 완료 시 활성 씬이 바뀔 수 있으므로 반드시 시작할 때
   // 캡처한 sceneId 로 이 관문을 호출한다. 삭제된 씬은 updateScene 이 재생성하지 않는다.
-  const patchSceneById = useCallback((sceneId: string, patch: Partial<Scene>) => {
-    // 성공하면 저장된 목록을 그대로 받는다(재파싱 제거). 저장 실패(용량 초과·접근 차단)면 null 이므로
-    // 미저장 편집을 화면에 채택하지 않고, 저장본을 다시 읽어 화면을 되돌린다 — 편집이 사라지는 것이
-    // 사용자에게 실패 신호가 된다(이 반환 계약 도입 전과 같은 체감).
-    const latest = updateScene(null, sceneId, patch) ?? listScenes(null);
+  // ★반환 = 이 편집이 실제로 저장됐나. 저장에 기대는 호출부(생성 제출 전 복구 표식)가 이 값을 보고
+  //  멈춘다 — 안 보면 '어느 카드 것인지' 를 못 적은 채 생성 요청이 먼저 나간다(적대 리뷰 r2 P1).
+  const patchSceneById = useCallback((sceneId: string, patch: Partial<Scene>): boolean => {
+    // 성공하면 저장된 목록을 그대로 받는다(재파싱 제거). 실패면 미저장 편집을 화면에 채택하지 않고
+    // 저장본을 다시 읽어 되돌린다. ★되돌림만으로는 사용자가 원인을 모른다 — 저장소가 거부한 경우는
+    // 저장 관문 구독(subscribeSceneSaveState)이 알린다.
+    const result = updateScene(null, sceneId, patch);
+    // 대상 씬이 사라진 경우는 '저장 성공'이라 관문이 알리지 않는다 — 여기서 따로 알린다. 같은 씬에
+    // 연달아 쓰면 매번 띄우게 되므로 씬이 바뀔 때만(적대 리뷰 P2).
+    if (!result.ok && result.reason === "missing" && missingNotifiedRef.current !== sceneId) {
+      missingNotifiedRef.current = sceneId;
+      flashRef.current?.("이 씬이 더 이상 없습니다 — 다른 창에서 지웠을 수 있습니다.");
+    }
+    if (result.ok) missingNotifiedRef.current = null;
+    const latest = result.ok ? result.scenes : listScenes(null);
     setScenes((previous) =>
       mergePatchedSceneList(previous, latest, activeSceneIdRef.current, sceneId),
     );
+    return result.ok;
   }, []);
   // 동기 UI 편집용 활성 씬 관문.
-  const patchActiveScene = (patch: Partial<Scene>) => {
-    if (!activeScene) return;
-    patchSceneById(activeScene.id, patch);
+  const patchActiveScene = (patch: Partial<Scene>): boolean => {
+    if (!activeScene) return false;
+    return patchSceneById(activeScene.id, patch);
   };
 
   // 탭 순서 바꾸기 관문 — 드래그 결과를 **'이 씬을 저 씬 앞으로'라는 연산**으로 받는다.

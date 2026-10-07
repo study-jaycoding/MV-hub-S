@@ -258,11 +258,43 @@ export function subscribeScenesPersisted(fn: () => void): () => void {
   return () => scenesPersistedSubs.delete(fn);
 }
 
+// 저장 실패/복귀 훅 — 화면이 사용자에게 알리기 위한 것. ★호출부마다 붙이지 않고 관문 하나에서 내보낸다:
+// 저장 경로는 여럿인데(편집·이름·삭제·정렬·복구·이관) 어느 하나라도 알림을 빠뜨리면 사용자는 편집이
+// 사라지는 것만 보고 '버그'로 읽는다(2026-10-07 실제 신고). 상태가 바뀔 때만 부른다 — 연속 실패에
+// 매번 띄우면 알림이 폭주한다.
+const saveStateSubs = new Set<(failed: boolean) => void>();
+let saveFailing = false;
+let lastNotifiedAt = 0;
+// 이미 실패 중인데 늦게 구독한 화면에도 한 번은 알린다 — 부팅 첫 저장(옛 버킷 이관)이 실패하면
+// 구독보다 먼저라, 안 알리면 그 세션 내내 조용하다(적대 리뷰 P1, 코덱스 재현).
+export function subscribeSceneSaveState(fn: (failed: boolean) => void): () => void {
+  saveStateSubs.add(fn);
+  if (saveFailing) {
+    lastNotifiedAt = Date.now();
+    fn(true);
+  }
+  return () => saveStateSubs.delete(fn);
+}
+// 실패가 계속되는 동안에도 가끔은 다시 알린다 — 화면 알림이 한 칸뿐이라 뒤에 온 다른 알림
+// ("생성 시작" 등)이 경고를 덮으면, 상태가 안 바뀌었다는 이유로 영영 다시 안 뜬다(적대 리뷰 P2).
+const RENOTIFY_MS = 30_000;
+function reportSaveState(failed: boolean): void {
+  const changed = failed !== saveFailing;
+  saveFailing = failed;
+  if (!changed && !(failed && Date.now() - lastNotifiedAt >= RENOTIFY_MS)) return;
+  lastNotifiedAt = Date.now();
+  saveStateSubs.forEach((fn) => fn(failed));
+}
+
 // 씬 저장의 단일 쓰기 관문. 반환 = 실제로 persist 됐는지(localStorage 용량 초과·접근 차단이면 false).
 // ★실패했으면 DB 미러 구독자를 부르지 않는다 — 저장소 내용이 그대로라 올릴 것도 없고, 미저장 편집을
 //  '저장됨'으로 알리면 안 된다. (구독자는 각자 부팅·주기 트리거가 있어 한 번 건너뛰어도 안전.)
 function saveAll(all: ScenesByProject): boolean {
-  if (!trySaveJSON(STORAGE_KEYS.scenes, all)) return false;
+  if (!trySaveJSON(STORAGE_KEYS.scenes, all)) {
+    reportSaveState(true);
+    return false;
+  }
+  reportSaveState(false);
   scenesPersistedSubs.forEach((fn) => fn());
   return true;
 }
@@ -288,7 +320,9 @@ export function saveScenes(projectId: string | null, scenes: Scene[]): boolean {
   return saveAll(all);
 }
 
-export function createScene(projectId: string | null, name?: string): Scene {
+// ★저장에 실패하면 null — 종전에는 저장 못 한 씬을 그대로 돌려줘, 호출부가 목록에 없는 씬을
+//  활성 탭으로 골라 빈 화면에 갇혔다(적대 리뷰 r3).
+export function createScene(projectId: string | null, name?: string): Scene | null {
   const scenes = listScenes(projectId);
   const scene: Scene = {
     id: uid(),
@@ -297,28 +331,43 @@ export function createScene(projectId: string | null, name?: string): Scene {
     edges: [],
     created_at: Date.now(),
   };
-  saveScenes(projectId, [...scenes, scene]);
-  return scene;
+  return saveScenes(projectId, [...scenes, scene]) ? scene : null;
 }
+
+// 씬 쓰기 결과. ★'저장소에 썼다'와 '요청한 대상을 바꿨다'는 다른 실패다(적대 리뷰 r3) —
+//  · storage: localStorage 가 거부(용량 초과·접근 차단). 편집이 아예 남지 않았다 → 화면을 되돌리고 알린다.
+//  · missing: 저장은 됐지만 대상 씬이 없어 바뀐 것이 없다(다른 창이 먼저 지움) → 되돌리되 다른 안내가 맞다.
+//  종전에는 둘 다 '성공'으로 보여, 없는 씬에 쓴 편집이 저장된 것처럼 보였다.
+export type SceneWriteFailure = "storage" | "missing";
+export type SceneWriteResult =
+  | { ok: true; scenes: Scene[] }
+  | { ok: false; reason: SceneWriteFailure };
 
 // 대상 씬을 갱신하고 '갱신된 목록'을 반환한다. 호출부가 결과를 다시 읽으려고 listScenes 를 부르면
 // 씬 편집 1회에 저장소 파싱이 3회로 늘어나므로(loadAll×2 + 재조회) 여기서 한 번만 읽고 넘겨준다.
-// ★저장에 실패하면 null. 반환 목록은 '저장된 내용'이라는 계약이라, 저장 못 한 next 를 넘겨주면
-//  호출부가 그걸 화면에 채택해 사용자는 저장된 줄 알고 새로고침에서 잃는다(적대 리뷰 P1).
+// ★반환 목록은 '저장된 내용'이라는 계약이라, 저장 못 한 next 를 넘겨주면 호출부가 그걸 화면에
+//  채택해 사용자는 저장된 줄 알고 새로고침에서 잃는다(적대 리뷰 P1).
 export function updateScene(
   projectId: string | null,
   sceneId: string,
   patch: Partial<Scene>,
-): Scene[] | null {
+): SceneWriteResult {
   const all = loadAll();
-  migrateLegacyBucket(all, projectId); // 옛 씬을 현재 계정으로 1회 이관(아래 saveAll 로 함께 확정)
-  const next = (all[keyOf(projectId)] || []).map((s) => (s.id === sceneId ? { ...s, ...patch } : s));
+  const migrated = migrateLegacyBucket(all, projectId); // 옛 씬을 현재 계정으로 1회 이관(아래 saveAll 로 확정)
+  const current = all[keyOf(projectId)] || [];
+  const found = current.some((s) => s.id === sceneId);
+  // ★대상도 없고 이관할 것도 없으면 쓰지 않는다 — 쓰면 없던 계정 버킷이 '빈 배열'로 생기고,
+  //  DB 자동복구는 '버킷 키 자체가 없을 때'만 돌므로(hasSceneBucket) 복구 경로가 막힌다(코덱스 리뷰).
+  if (!found && !migrated) return { ok: false, reason: "missing" };
+  const next = current.map((s) => (s.id === sceneId ? { ...s, ...patch } : s));
   all[keyOf(projectId)] = next;
-  return saveAll(all) ? next : null;
+  if (!saveAll(all)) return { ok: false, reason: "storage" };
+  return found ? { ok: true, scenes: next } : { ok: false, reason: "missing" };
 }
 
-export function deleteScene(projectId: string | null, sceneId: string) {
-  saveScenes(
+// 반환 = 실제로 persist 됐는지. 실패면 씬이 그대로 남아 있다.
+export function deleteScene(projectId: string | null, sceneId: string): boolean {
+  return saveScenes(
     projectId,
     listScenes(projectId).filter((s) => s.id !== sceneId),
   );
@@ -538,11 +587,13 @@ export function importScene(projectId: string | null, snap: SceneSnapshot): Scen
     refWorkspaceHint: snap.workspace,
     created_at: Date.now(),
   };
-  saveScenes(projectId, [...scenes, scene]);
-  // 저장이 실제로 persist 됐는지 확인 — localStorage 가 꽉 차면 saveJSON 이 조용히 실패한다. 이때 그냥
-  // 반환하면 활성씬 id 만 새로 잡히고 목록엔 없어 '빈 화면'이 된다. 실패면 throw 해서 호출부가 알린다.
-  if (!listScenes(projectId).some((s) => s.id === scene.id)) {
-    throw new Error("저장 공간이 부족해 씬을 불러오지 못했습니다.");
+  // 저장이 실제로 persist 됐는지 확인 — 실패한 채 반환하면 활성씬 id 만 새로 잡히고 목록엔 없어
+  // '빈 화면'이 된다. ★판정은 쓰기 관문의 반환값으로 한다(종전엔 저장 뒤 목록을 다시 읽어 대조했다 —
+  // 저장소를 한 번 더 파싱할 뿐 아니라, 실패 원인을 '용량'으로 단정했다. 접근 차단도 같은 결과다).
+  if (!saveScenes(projectId, [...scenes, scene])) {
+    throw new Error(
+      "씬을 저장하지 못했습니다 — 저장 공간이 꽉 찼을 수 있습니다. 안 쓰는 씬을 지우고 다시 시도하세요.",
+    );
   }
   return scene;
 }
