@@ -683,7 +683,7 @@ tr.work-row-archived td { opacity: .62; }
 .export-table th { position: sticky; top: 0; z-index: 1; background: #101214; color: var(--muted); font-size: 11.5px; font-weight: 700; }
 .export-table .file { text-align: left; }
 .export-table td.file { width: 99%; max-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.export-table td.dim { color: var(--muted); }
+.export-table td.dim, .export-table td.file .pending { color: var(--muted); }
 .export-table .export-target-reason { display: block; margin-top: 2px; font-size: 11px; }
 .export-table tbody tr:not(.export-group):hover td { background: rgba(127,127,127,.07); }
 .export-group td { padding: 5px 10px; text-align: left; font-size: 11.5px; font-weight: 700; background: #0c0e10; }

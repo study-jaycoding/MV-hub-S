@@ -151,7 +151,7 @@ updated: 2026-10-08
 | `auth.py`(513줄) | `POST /api/auth/{login\|access\|register}`·`PATCH /accounts/{email}/*` (16) | 가입·로그인·세션쿠키·계정 승인/역할/숨김 + 10분 super-admin 승격 | 0곳(로컬·서버 겸용 코드) |
 | `members.py`(65줄) | `GET /api/members`·`PATCH /members/{uid}/global-roles` (2) | 전역 멤버 목록·전역역할 변경 | 0곳 |
 | `projects.py`(622줄) | `GET /api/projects`·`POST /assign`·`GET /{pid}/folder-counts` 등 (17) | 프로젝트 CRUD·배정·멤버 역할·폴더 카운트 | 19곳 |
-| `manage.py`(2311줄) | `POST /telemetry/push`·`GET /team-overview`·`GET /tasks[-batch]`·`POST /save-finals`·`GET /save-finals/progress`·`POST /save-finals/cancel` (47) | PM 대시보드: 텔레메트리 수신·팀 집계·크레딧 플랜·작업 CRUD·골드 저장 | 11곳. 서로 무관한 5개 도메인이 한 파일(§5) |
+| `manage.py`(2508줄) | `POST /telemetry/push`·`GET /team-overview`·`GET /tasks[-batch]`·`POST /save-finals`·`GET /save-finals/progress`·`POST /save-finals/cancel` (47) | PM 대시보드: 텔레메트리 수신·팀 집계·크레딧 플랜·작업 CRUD·골드 저장 | 11곳. 서로 무관한 5개 도메인이 한 파일(§5) |
 | `workspace_console.py`(102줄) | `GET /console/overview`·`POST /console/workspaces`·`PATCH /console/workspaces/{id}`·`PUT /console/allocation-base`·`PUT /console/main` (5) | 워크스페이스 콘솔(서브스페이스) — `manage.py` 가 include(접두 `/api/manage`) | 없음(서버 권위, 미들웨어가 위임) |
 | `manage_quota.py`(33줄) | `GET /api/manage/credit-plan/my-quota` (1) | 내 크레딧 몫·이번 기간 사용·남은 몫 조회 — 공유 서버 위임·본인 워크스페이스 멤버만. **표시 전용**(생성은 이 값을 확인하지 않는다, 2026-09-30) | 0곳 |
 | `update_notices.py`(약 205줄) | `GET /api/update-notices`·`POST /admin/register`·`GET /admin/item`·`DELETE /admin/{id}` (9) | 릴리스 공지 등록·고정·공표·읽음·후보 단건 조회(promote 확인용)·[해제](멱등) | 0곳(쓰기는 서버 Admin 역할 게이트로 제한 — 프록시 위임과는 다른 종류의 서버 제약) |
@@ -362,7 +362,7 @@ updated: 2026-10-08
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `resolve_transfer.py`(784줄) | 생성물 원본을 `Render/<folder>` 로 모으고 manifest 기록 | `resolve_integration`·`release_update`·`selection_monitor` |
+| `resolve_transfer.py`(759줄) | 생성물 원본을 `Render/<folder>` 로 모으고 manifest 기록 — 파일 이름 `<폴더 경로>_davinci_<번호>`(이름 장부 `export_names`), 같은 생성물은 있는 파일을 그대로 쓴다 | `resolve_integration`·`release_update`·`selection_monitor` |
 | `resolve_bridge.py`(1334줄) | Media Pool 조작 계층 — 상대 import 0(자식 프로세스 겸용, §5-a) | `probe`·`import_worker`·`status_runner`·`selection_worker`·`diagnostics` |
 | `resolve_status_runner.py` | fusionscript 상태·가져오기·프로젝트 열기를 자식 프로세스로 격리·인터프리터 폴백. **켜기 창**: 앱이 Resolve 를 켜는 동안(최대 90초) 모든 Resolve API 호출을 `_select_interpreter` 한 곳에서 막고, 켤 때 받은 `launch_id` 를 가진 열기만 통과시킨다 — 새 Resolve 호출 경로도 반드시 여기를 지나야 관문이 적용된다 | `resolve_integration`·`diagnostics`·`selection_monitor`·`project_library`·`routers/assets` |
 | `resolve_probe.py` | 연결 상태 검사 자식 프로세스 진입점(`-m`, §2.6) | `resolve_status_runner` |
@@ -419,6 +419,7 @@ updated: 2026-10-08
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `final_export.py` | 완료 탭 저장 '대상 판정' 순수 정책 단일 출처 — 종류 `final`(최종) · `shared`(공유 중·최종 아님, 보류 포함). 두 집합은 겹치지 않는다 | `manage` |
+| `export_names.py` | 저장 파일의 번호 이름(`<폴더 마디>_<share\|fin\|davinci>_<번호>`)과 렌더 폴더의 이름 장부(`_mvhub_sync/names` — n·g·d 항목, 덮어쓰지 않는 확정). 번호의 권위는 서버가 아니라 이 장부다(`docs/EXPORT_SYNC_DESIGN.md` §6) | `manage`(저장·비교)·`resolve_transfer` |
 
 ### 2.6 숨은 진입점
 

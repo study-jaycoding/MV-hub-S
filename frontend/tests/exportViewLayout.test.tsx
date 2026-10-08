@@ -36,6 +36,16 @@ const texts = (selector: string) => [...host.querySelectorAll(selector)].map((el
 const answer = async (label: "예" | "아니오") => { await act(async () => { [...host.querySelectorAll<HTMLButtonElement>(".export-modal button")].find((item) => item.textContent!.startsWith(label))!.click(); }); };
 const button = (label: string) => [...host.querySelectorAll<HTMLButtonElement>(".export-act button")].find((item) => item.textContent!.startsWith(label))!;
 
+it("아직 저장 전인 대상은 이름 대신 '저장할 때 정해짐'을 보이고 종류는 서버가 준 값으로 채운다", async () => {
+  // 번호 이름(e020_c0010_share_001)은 저장하는 순간에 정해진다 — 그 전에는 filename 이 비어 온다.
+  status = { render_path: "\\\\NAS\\proj\\Render", error: null, shared_supported: true, history: [],
+    targets: [{ ...target("c0010", false, null, "shared", ""), media_type: "video" }, { ...target("c0020", true, null, "final", "ep001_c0020_fin_001.png"), media_type: "image" }] };
+  await mount();
+  expect(texts(".export-table td.file")).toEqual(["저장할 때 정해짐", "ep001_c0020_fin_001.png"]);
+  expect(texts(".export-table td.file .pending")).toEqual(["저장할 때 정해짐"]);
+  expect(texts(".export-table tbody tr:not(.export-group) td:nth-child(4)")).toEqual(["영상", "이미지"]);
+});
+
 it("프로젝트 고르기는 판 안에 있고, 저장 대상은 씬별로 묶인 표에 종류·상태·사유가 붙는다", async () => {
   status = { render_path: "\\\\NAS\\proj\\Render", error: null, shared_supported: true,
     targets: [target("c0030", false, null), { ...target("c0010", true, null), saved_at: "2026-09-18 05:02:00" }, target("c0050", false, "원본 파일 없음", "final", ""), target("c0040", false, null, "shared", "c0040.png"), { ...target("s0010", false, null, "shared"), folder_path: "ep002/sq01/s0010" }],

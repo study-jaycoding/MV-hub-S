@@ -19,6 +19,8 @@ import {
 
 type TargetFilter = "all" | SaveFinalsKind | "new" | "saved" | "bad";
 const MEDIA_LABEL = { image: "이미지", video: "영상", audio: "소리" } as const;
+// 번호 이름(e020_c0010_share_001)은 저장하는 순간에 정해진다 — 그 전에는 이름이 비어 온다.
+const NAME_PENDING = "저장할 때 정해짐";
 
 // 비교 = 마주 도는 두 화살표 · 미러 = 굵은 오른쪽 화살표 · 업데이트 = 꺾쇠(Jay 지정 2026-09-21).
 const ICON = { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
@@ -583,9 +585,9 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                   <div className="export-history-head">{group.title}</div>
                   <ul className="export-history-list export-target-list">
                     {group.items.map((item) => (
-                      <li key={group.key + item.folder_path + item.filename}>
+                      <li key={group.key + item.folder_path + item.filename + item.gen_id}>
                         <span className={"export-sign " + group.key}>{group.sign}</span>
-                        <code className="export-history-path">{item.folder_path} · {item.filename}</code>
+                        <code className="export-history-path">{item.folder_path} · {item.filename || NAME_PENDING}</code>
                         <span className={"export-badge kind-" + item.kind}>{item.kind === "final" ? "최종" : "공유"}</span>
                       </li>
                     ))}
@@ -636,7 +638,8 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                             </td>
                           </tr>
                           {rows.map((t) => {
-                            const media = referenceMediaTypeFromName(t.filename);
+                            const known = t.media_type === "image" || t.media_type === "video" || t.media_type === "audio" ? t.media_type : null;
+                            const media = referenceMediaTypeFromName(t.filename) ?? known;
                             return (
                               <tr key={t.gen_id}>
                                 <td>
@@ -644,7 +647,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                                 </td>
                                 <td>{t.cut || "—"}</td>
                                 <td className="file" title={t.filename || undefined}>
-                                  <code>{t.filename || t.gen_id.slice(0, 8)}</code>
+                                  {t.filename || t.reason ? <code>{t.filename || t.gen_id.slice(0, 8)}</code> : <span className="pending">{NAME_PENDING}</span>}
                                   {t.reason && t.reason !== RENDER_UNLINKED && <span className="export-target-reason">{t.reason}</span>}
                                 </td>
                                 <td className="dim">{media ? MEDIA_LABEL[media] : "—"}</td>
