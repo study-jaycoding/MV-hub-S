@@ -592,8 +592,10 @@ updated: 2026-10-07
 | `timeline/EditTab.tsx`(약 500줄) | 편집 탭 조립 — 시퀀스 고르기·문서·재생·편집 키·컷(폴더) 비활성/숨기기·컷 더블클릭(공유 & 리뷰의 폴더 창을 App 에 열어 달라고 알린다)([EDIT_TAB.md](EDIT_TAB.md)). `edit/`(부분 수정)와 다른 기능이다 | `EditTab`(App 이 지연 로드) |
 | `timeline/EditTimeline.tsx`(약 280줄) | 눈금자·컷 줄·영상 트랙·소리 줄·재생헤드. 클립은 위아래로만 끈다(컷 자리는 폴더 순서로 고정) | `EditTimeline` |
 | `timeline/EditViewer.tsx`(86줄) | 뷰어(`<video>` 하나)와 재생 단추 — 주소는 재생 훅이 갈아 끼운다 | `EditViewer` |
-| `timeline/EditPool.tsx`(약 80줄) | 재생헤드가 있는 컷의 공유 생성물 — 누르면 넣고 다시 누르면 뺀다 | `EditPool` |
-| `timeline/EditCard.tsx`(약 65줄) | 편집 탭 오른쪽 칸의 생성물 카드 — 라이브러리 카드의 CSS 클래스를 그대로 써서 같은 모양으로 '보이기만' 한다. 아래 변의 표 = "V1 - 선택 카드"(폴더 창의 표와 같은 글) | `EditCard`, `PoolItem`, `editMarkLabel` |
+| `timeline/EditPool.tsx`(약 310줄) | 미디어 풀 — 재생헤드가 있는 컷의 공유 생성물을 폴더 목록 옆에 보인다. 보기 방식(썸네일·메타데이터·목록)·크기·검색·정렬. 누르기·Ctrl/Shift·끌어서 상자 = 고르기(마지막 것이 듀얼 뷰어의 소스, 2장 이상이면 비교) · 더블클릭 = 크게 보기 · 우클릭 = 넣을 트랙 고르기. 폭은 `ResizableSidebar` 로 끌어서 바꾼다 | `EditPool`, `arrangePool` |
+| `timeline/EditSourceViewer.tsx`(약 30줄) | 듀얼 뷰어의 소스 뷰어 — 풀에서 고른 생성물. 영상은 브라우저 기본 재생 막대(편집 키는 언제나 타임라인 것) | `EditSourceViewer` |
+| `timeline/EditTrackMenu.tsx`(약 70줄) | 카드 우클릭 메뉴 — 지금 있는 트랙을 보여 주고 고르면 그 트랙에 넣는다(찬 트랙은 교체). 미디어 풀과 편집 탭이 연 폴더 창이 같이 쓴다(body 포털 — 창이 떠 있는 동안 `.body` 는 inert) | `EditTrackMenu`, `TrackRow` |
+| `timeline/EditCard.tsx`(약 65줄) | 편집 탭 미디어 풀(썸네일 보기)의 생성물 카드 — 라이브러리 카드의 CSS 클래스를 그대로 써서 같은 모양으로 '보이기만' 한다. 아래 변의 표 = "V1 - 선택 카드"(폴더 창의 표와 같은 글) | `EditCard`, `PoolItem`, `editMarkLabel` |
 | `timeline/EditSidebar.tsx`(약 115줄) | 프로젝트·폴더에서 시퀀스 고르기(`FolderTreeView` 만 쓴다 — `ProjectSection` 아님) | `EditSidebar` |
 | `FloatingPrompt.tsx`(104줄) | `window.prompt` 대체 플로팅 입력 | `FloatingPrompt` |
 
