@@ -118,7 +118,7 @@ export const sharedApi = {
       "/api/shared-server/url",
       { method: "POST", body: jsonBody({ url, name }) },
     ),
-  // 폴더 우클릭 '팀에 공유' — 로컬 허브가 그 폴더(하위 포함)의 내 완료·미공유 후보를 뽑아 200건씩 순차 발행.
+  // 폴더 우클릭 '팀 공유' — 로컬 허브가 그 폴더(하위 포함)의 내 완료·미공유 후보를 뽑아 200건씩 순차 발행.
   //  total=후보 수(성공 수 아님), attempted=처리 시도 수, accepted=서버 수락 수, error/unprocessed=중간 실패.
   publishFolderToShared: (projectId: string, folderPath: string) =>
     jsonFetch<{

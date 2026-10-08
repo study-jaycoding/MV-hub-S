@@ -46,10 +46,12 @@ async function menu(tab: "my" | "team", canvas = false) {
   return { action, row, menu: document.querySelector<HTMLElement>('[role="menu"]')! };
 }
 
-it("공유 폴더는 골드 저장과 원본 열기를 표시하고 열기에는 확인창이 없다", async () => {
+it("공유 폴더는 공유 저장·최종 저장과 원본 열기를 표시하고 열기에는 확인창이 없다", async () => {
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   const { action, menu: popup } = await menu("team");
-  expect(popup.textContent).toContain("골드만 저장");
+  expect([...popup.querySelectorAll(".folder-ctx-btn")].map((b) => b.textContent)).toEqual(["공유 저장", "최종 저장"]);
+  // 최종 저장만 골드 — 공유 저장은 폴더 색 그대로
+  expect([...popup.querySelectorAll(".folder-ctx-btn")].map((b) => b.classList.contains("tone-final"))).toEqual([false, true]);
   const open = popup.querySelector<HTMLButtonElement>('.folder-ctx-head button[aria-label="원본 위치 열기"]')!;
   expect(open).toBeTruthy();
   act(() => open.click());
@@ -58,17 +60,20 @@ it("공유 폴더는 골드 저장과 원본 열기를 표시하고 열기에는
   expect(document.querySelector('[role="menu"]')).toBeNull();
 });
 
-it("골드 저장은 기존 확인창과 save-finals 동작을 유지한다", async () => {
+it.each([
+  [0, "공유 저장", "save-shared"],
+  [1, "최종 저장", "save-finals"],
+])("팀 탭 %i번째 단추 '%s' 는 확인창을 거쳐 %s 로 실행된다", async (index, label, kind) => {
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   const { action, menu: popup } = await menu("team");
-  act(() => (popup.querySelector(".folder-ctx-btn") as HTMLButtonElement).click());
-  expect(confirm).toHaveBeenCalledWith(expect.stringContaining("골드만 저장"));
-  expect(action).toHaveBeenCalledExactlyOnceWith("save-finals", "menu-team", "제이", "제이");
+  act(() => popup.querySelectorAll<HTMLButtonElement>(".folder-ctx-btn")[index].click());
+  expect(confirm).toHaveBeenCalledWith(expect.stringContaining(label));
+  expect(action).toHaveBeenCalledExactlyOnceWith(kind, "menu-team", "제이", "제이");
 });
 
 it("작업 공간에서도 상단 원본 열기가 동작하고 기존 팀 공유 버튼을 유지한다", async () => {
   const { action, menu: popup } = await menu("my");
-  expect(popup.textContent).toContain("팀에 공유");
+  expect(popup.textContent).toContain("팀 공유");
   act(() => popup.querySelector<HTMLButtonElement>('.folder-ctx-head button[aria-label="원본 위치 열기"]')!.click());
   expect(action).toHaveBeenCalledExactlyOnceWith("open-folder", "menu-my", "제이", "제이");
 });

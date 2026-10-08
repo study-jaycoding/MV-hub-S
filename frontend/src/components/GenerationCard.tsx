@@ -455,8 +455,8 @@ function GenerationCardImpl({
                   : "최종(골드)"
                 : gen.is_mine
                   ? gen.shared
-                    ? "팀에 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정(Supervisor)"
-                    : "팀에 공유 (클릭) · 최종 지정은 공유 후 더블클릭"
+                    ? "팀 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정(Supervisor)"
+                    : "팀 공유 (클릭) · 최종 지정은 공유 후 더블클릭"
                   : gen.shared && mayFinalize
                     ? "클릭=공유 해제 · 더블클릭=최종 지정 (Supervisor)"
                     : "더블클릭=최종 지정(Supervisor)"
