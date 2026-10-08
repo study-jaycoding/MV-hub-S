@@ -11,7 +11,7 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 131개.
+제품 환경변수 132개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
@@ -134,6 +134,7 @@
 | `CONTENT_HUB_WORKER_BACKUP_UPLOAD_TIMEOUT` | `"120"` | `backend/app/services/worker_backup.py` | — |
 | `CONTENT_HUB_WORKER_ID` | `"me"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_WORKER_NAME` | `"나"` | `backend/app/config.py` | — |
+| `DEV` | — | `frontend/src/lib/sceneStore.ts` | — |
 | `MVHUB_APP_BROWSER` | `""` | `run_agent_session.py` | — |
 | `MVHUB_CLI_MAX_IN_FLIGHT` | `64` | `agent_push.py` | — |
 | `MVHUB_CLI_SUBMIT_WORKERS` | `8` | `agent_push.py` | — |

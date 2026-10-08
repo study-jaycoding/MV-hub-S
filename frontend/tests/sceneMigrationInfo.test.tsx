@@ -136,6 +136,14 @@ describe("옛 저장 칸 진단", () => {
   });
 });
 
+// 부팅이 던지면 호출부(main.tsx)는 오류 화면도 못 띄우고 빈 화면에 머문다(Codex 병합 전 검토 2026-10-08).
+describe("부팅은 던지지 않는다", () => {
+  it("이관 표식 쿠키가 깨져 있으면 추측해서 열지 않고, 실패를 값으로 돌려준다", async () => {
+    document.cookie = `mvhub_scene_mig_${location.port || "default"}=%E0%A4%A; path=/`;
+    await expect(bootSceneStore()).resolves.toMatchObject({ kind: "failed" });
+  });
+});
+
 describe("화면에 보이는 한 줄", () => {
   it("기록이 없으면 없다고 말한다 — 지금 잰 값으로 과거를 채우지 않는다", () => {
     expect(describeSceneMigration(null)).toBe("옮긴 기록 없음");
