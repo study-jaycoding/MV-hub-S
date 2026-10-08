@@ -187,7 +187,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
                   ? "최종(골드) · 더블클릭=최종 해제"
                   : generation.shared
                     ? "팀 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정"
-                    : "팀에 공유 (클릭) · 공유 후 더블클릭=최종 지정"
+                    : "팀 공유 (클릭) · 공유 후 더블클릭=최종 지정"
               )}
               onClick={(e) => {
                 e.stopPropagation();

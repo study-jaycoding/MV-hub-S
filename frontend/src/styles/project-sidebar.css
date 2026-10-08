@@ -275,7 +275,7 @@
 .pam-folders { padding: 2px 0 4px 8px; }
 .pam-folders .folder-tree { min-width: 0; }
 
-/* 폴더 우클릭 메뉴(팀에 공유 / 골드만 저장 · 상단 원본 열기) — body 포털·고정 위치. 버튼은 폴더 아이콘 색 그대로
+/* 폴더 우클릭 메뉴(팀 공유 / 공유 저장 · 최종 저장 · 상단 원본 열기) — body 포털·고정 위치. 버튼은 폴더 아이콘 색 그대로
    (.folder-tree-row.root 하늘색 / 하위 라임). 라임·하늘색 위 글자는 검정 고정. */
 .folder-ctx-menu {
   position: fixed; z-index: 1000; min-width: 200px; max-width: 280px;

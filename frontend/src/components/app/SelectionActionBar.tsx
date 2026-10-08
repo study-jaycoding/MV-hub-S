@@ -43,7 +43,7 @@ export function BoardSelectionActionBar({
         {selected.length}
         {t("개 선택")}
       </span>
-      <button onClick={() => onShare(selected)}>{t("↗ 팀에 공유")}</button>
+      <button onClick={() => onShare(selected)}>{t("↗ 팀 공유")}</button>
       <button
         onClick={() => onDownload(selected)}
         title={t("선택한 결과물 일괄 다운로드(레퍼런스 이름으로 저장)")}
@@ -112,7 +112,7 @@ export function LibrarySelectionActionBar({
   selectedCount: number;
   selectedGenerations: Generation[];
   onShare: (selected: Generation[]) => void;
-  // 공유&리뷰 탭 — '팀에 공유' 자리를 ↑/↓ 등급 한 칸 이동 버튼 2개로 교체(넘긴 곳에서만).
+  // 공유&리뷰 탭 — '팀 공유' 자리를 ↑/↓ 등급 한 칸 이동 버튼 2개로 교체(넘긴 곳에서만).
   onGradeStep?: (mode: GradeMode) => void;
   onDownload: (selected: Generation[]) => void;
   onResolveTransfer: (selected: Generation[]) => void;
@@ -138,7 +138,7 @@ export function LibrarySelectionActionBar({
         {t("개 선택")}
       </span>
       {/* 캔버스 선택바와 동일 — 휴지통 항목만 선택했을 땐 숨김(공유 대상 없음).
-          공유&리뷰 탭(onGradeStep)에서는 '팀에 공유' 대신 ↑/↓ 등급 한 칸 이동 버튼 2개. */}
+          공유&리뷰 탭(onGradeStep)에서는 '팀 공유' 대신 ↑/↓ 등급 한 칸 이동 버튼 2개. */}
       {hasActive &&
         (onGradeStep ? (
           <span className="sb-grade">
@@ -156,7 +156,7 @@ export function LibrarySelectionActionBar({
             </button>
           </span>
         ) : (
-          <button onClick={() => onShare(selectedGenerations)}>{t("↗ 팀에 공유")}</button>
+          <button onClick={() => onShare(selectedGenerations)}>{t("↗ 팀 공유")}</button>
         ))}
       <button
         onClick={() => onDownload(selectedGenerations)}

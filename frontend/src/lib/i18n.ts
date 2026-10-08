@@ -77,7 +77,7 @@ const EN: Record<string, string> = {
   "단계 내리기": "Lower grade",
   "단계 올리기 (일반·보류→공유, 공유→최종)": "Raise grade (Unshared/On hold→Shared, Shared→Final)",
   "단계 내리기 (최종→공유, 공유·보류→일반)": "Lower grade (Final→Shared, Shared/On hold→Unshared)",
-  "팀에 공유": "Share to team",
+  "팀 공유": "Share to team",
   "최종 해제": "Remove final status",
   "적용할 항목 없음": "No eligible items",
   "선택한 카드에 지금 바꿀 수 있는 항목이 없습니다.": "None of the selected cards can be changed right now.",
@@ -86,7 +86,7 @@ const EN: Record<string, string> = {
     "Raise {count} selected items by one grade? (Unshared/On hold→Shared, Shared→Final)",
   "선택한 {count}개를 한 단계 내릴까요? (최종→공유, 공유·보류→일반)":
     "Lower {count} selected items by one grade? (Final→Shared, Shared/On hold→Unshared)",
-  "선택한 {count}개를 팀에 공유할까요?": "Share {count} selected items with the team?",
+  "선택한 {count}개를 팀 공유할까요?": "Share {count} selected items with the team?",
   "선택한 {count}개의 공유를 해제할까요? (→일반)": "Remove sharing from {count} selected items? (→Unshared)",
   "선택한 {count}개를 한 단계 올릴까요? (일반→공유, 공유→최종) — 일반은 공유까지만 올라갑니다.":
     "Raise {count} selected items by one grade? (Unshared→Shared, Shared→Final) — Unshared items only become shared.",
@@ -102,30 +102,30 @@ const EN: Record<string, string> = {
   "최종 지정 실패:": "Could not mark as final:",
   "최종 지정을 해제했습니다.": "Removed final status.",
   "최종 해제 실패:": "Could not remove final status:",
-  "{count}개 팀에 공유.": "{count} shared with the team.",
+  "{count}개 팀 공유.": "{count} shared with the team.",
   "공유 실패:": "Could not share:",
   "공유할 항목이 없습니다(내 완료·미공유만).": "No eligible items to share (your completed, unshared results only).",
   "'{name}' 폴더에 공유할 항목이 없습니다(내 완료·미공유만).":
     "No eligible items to share in '{name}' (your completed, unshared results only).",
-  "'{name}' 폴더 {count}개 팀에 공유.": "Shared {count} items from '{name}' with the team.",
+  "'{name}' 폴더 {count}개 팀 공유.": "Shared {count} items from '{name}' with the team.",
   "중단: {error} (미처리 {count}개 — 다시 실행하면 이어서 공유)":
     "Stopped: {error} ({count} remaining — run again to resume sharing)",
   "최종(골드)": "Final (gold)",
   "팀 공유됨": "Shared with the team",
   "최종(골드) — 더블클릭=최종 해제 (공유 잠금)": "Final (gold) — double-click to remove final status (sharing locked)",
-  "팀에 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정(Supervisor)":
+  "팀 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정(Supervisor)":
     "Shared with the team · click to unshare · double-click to mark as final (Supervisor)",
-  "팀에 공유 (클릭) · 최종 지정은 공유 후 더블클릭":
+  "팀 공유 (클릭) · 최종 지정은 공유 후 더블클릭":
     "Click to share with the team · once shared, double-click to mark as final",
   "클릭=공유 해제 · 더블클릭=최종 지정 (Supervisor)": "Click to unshare · double-click to mark as final (Supervisor)",
   "더블클릭=최종 지정(Supervisor)": "Double-click to mark as final (Supervisor)",
   "최종(골드) · 더블클릭=최종 해제": "Final (gold) · double-click to remove final status",
   "팀 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정": "Shared with the team · click to unshare · double-click to mark as final",
-  "팀에 공유 (클릭) · 공유 후 더블클릭=최종 지정":
+  "팀 공유 (클릭) · 공유 후 더블클릭=최종 지정":
     "Click to share with the team · once shared, double-click to mark as final",
   "최종(골드) — 더블클릭=최종 해제": "Final (gold) — double-click to remove final status",
   "팀 공유됨 · 클릭=해제 · 더블클릭=최종": "Shared with the team · click to unshare · double-click to mark as final",
-  "팀에 공유 (클릭) · 최종은 공유 후 더블클릭":
+  "팀 공유 (클릭) · 최종은 공유 후 더블클릭":
     "Click to share with the team · once shared, double-click to mark as final",
   "더블클릭=최종 지정 (Supervisor)": "Double-click to mark as final (Supervisor)",
   "클릭하여 공유 상태 변경": "Click to change review status",
@@ -291,7 +291,7 @@ const EN: Record<string, string> = {
   "로딩…": "Loading…",
   "선택": "selected",
   "개 선택": " selected",
-  "↗ 팀에 공유": "↗ Share to team",
+  "↗ 팀 공유": "↗ Share to team",
   "◆ Resolve로 보내기": "◆ Send to Resolve",
   "◆ Resolve에 추가": "◆ Add to Resolve",
   "Resolve 전송 중…": "Sending to Resolve…",
