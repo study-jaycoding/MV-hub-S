@@ -290,10 +290,10 @@ it("반복: 여러 컷이면 첫 컷으로 돌아가고, 역방향은 반복하�
   expect(playback.now()).toBe(0);
 });
 
-// 구간 반복(Jay 2026-10-08) — 마크 인/아웃이 있고 반복이 켜져 있으면 그 구간을 되풀이한다.
+// 구간 반복(Jay 2026-10-08) — 구간(range)을 주면 그 구간을 되풀이한다. 전체 반복(loop)과는 따로다.
 it("구간 반복: 아웃을 넘으면 인으로 돌아간다 — 한 프레임에 구간을 통째로 지나가도. 아웃 뒤에서는 끝까지 간 뒤 들어온다", () => {
   const range = { from: 9, to: 11 }; // 빈 컷(c2 8~13, rAF 시계) 안
-  render({ scope: "range", loop: true, range });
+  render({ scope: "range", range }); // 전체 반복은 꺼져 있다
   act(() => playback.seek(10.5));
   act(() => playback.toggle());
   frame(400);
@@ -318,10 +318,14 @@ it("구간 반복: 아웃을 넘으면 인으로 돌아간다 — 한 프레임�
   expect(playback.now()).toBe(9);
   expect(playback.view.playing).toBe(true);
 
-  render({ scope: "range", loop: false, range }); // 반복을 끄면 구간은 표시일 뿐이다
+  render({ scope: "range", range: null }); // 구간 반복을 끄면 아웃을 지나 그대로 간다
   frame(3000);
   expect(playback.now()).toBeCloseTo(12);
   expect(playback.view.playing).toBe(true);
+  frame(2000); // c3 로
+  frame(6000); // 전체 반복도 꺼져 있다 — 끝에서 멈춘다
+  expect(playback.view.playing).toBe(false);
+  expect(playback.now()).toBeCloseTo(LAYOUT.total);
 });
 
 it("구간 반복: 영상이 끝나며 위치를 아웃으로 먼저 옮겨도 인으로 돌아간다 — 재생 직후 첫 프레임 전이어도", () => {
@@ -351,5 +355,25 @@ it("구간 반복: 아웃 뒤에서 시작해 전체 끝을 돌아 들어온 뒤
   video.emit("ended"); // 프레임이 돌기 전에 영상이 끝났다 — 위치가 3초(아웃)로 간다
   frame(16);
   expect(playback.now()).toBeCloseTo(2.9); // 다음 컷으로 넘어가지 않고 다시 구간 처음으로
+  expect(playback.view.playing).toBe(true);
+});
+
+// 구간 반복 재생 단추(Jay 2026-10-08) — 켜는 순간 구간을 엔진에 먼저 넣고 그 처음에서 정방향으로 튼다.
+it("구간 반복 재생을 켜는 순간: 구간 처음으로 가서 정방향 1배로 튼다 — 역재생 중이어도, 첫 프레임 전에 영상이 끝나도", () => {
+  const range = { from: 1, to: 3 }; // 아웃 = 위 클립(top, 3초)의 끝
+  render({ scope: "range4" }); // 아직 구간이 없다
+  video.emit("loadedmetadata");
+  act(() => playback.seek(6));
+  act(() => playback.shuttle(-1)); // 역재생 중
+  act(() => playback.playRange(range));
+  expect(playback.now()).toBe(1);
+  expect(playback.view.playing).toBe(true);
+  expect(playback.view.rate).toBe(1);
+  render({ scope: "range4", range }); // 다음 렌더가 같은 구간을 넣는다
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  video.emit("ended"); // 첫 프레임 전에 영상이 끝났다 — 위치가 3초(아웃)로 간다
+  frame(16);
+  expect(playback.now()).toBe(1); // 다음 클립으로 넘어가지 않고 구간 처음으로
   expect(playback.view.playing).toBe(true);
 });

@@ -548,13 +548,44 @@ export function markRange(layout: EditLayout, doc: EditDoc): { from: number; to:
   return range.to - range.from > 1.5 / EDIT_FPS ? range : null;
 }
 
+// 화면에 그릴 인/아웃 — 보이는 시각(안 보이면 null)과 구간.
+export interface EditMarks {
+  in: number | null;
+  out: number | null;
+  band: { from: number; to: number } | null;
+}
+
+export function marksOf(layout: EditLayout, doc: EditDoc): EditMarks {
+  return { in: markTime(layout, doc.markIn), out: markTime(layout, doc.markOut), band: markRange(layout, doc) };
+}
+
+// 북마크 색 — 다빈치의 마커 색 16가지(같은 순서). 첫 번째가 기본색이다. 이름은 화면에서 t() 로 옮긴다.
+export const MARKER_COLORS = [
+  { name: "파랑", color: "#1287ff" }, { name: "청록", color: "#00ced0" }, { name: "초록", color: "#00ad2f" },
+  { name: "노랑", color: "#f09d00" }, { name: "빨강", color: "#e12401" }, { name: "분홍", color: "#ff44c8" },
+  { name: "보라", color: "#9013fe" }, { name: "자홍", color: "#c02e6f" }, { name: "장미", color: "#ffa1b9" },
+  { name: "라벤더", color: "#a193c8" }, { name: "하늘", color: "#92e2fd" }, { name: "민트", color: "#72db00" },
+  { name: "레몬", color: "#dce95a" }, { name: "모래", color: "#c4915e" }, { name: "코코아", color: "#6e5143" },
+  { name: "크림", color: "#f5ebe1" },
+] as const;
+
+export const isHexColor = (value: unknown): value is string => typeof value === "string" && COLOR.test(value);
+
 export const markerKey = (marker: EditPos) => `${marker.cut}\n${Math.round(marker.local * EDIT_FPS)}`;
 
 // 그 프레임에 이미 북마크가 있으면 null(보이지 않는 것이어도 — 길이가 돌아오면 다시 보인다).
-export function addMarker(doc: EditDoc, pos: EditPos): EditDoc | null {
+export function addMarker(doc: EditDoc, pos: EditPos, color?: string): EditDoc | null {
   const key = markerKey(pos);
   if (doc.markers?.some((marker) => markerKey(marker) === key)) return null;
-  return { ...doc, markers: [...(doc.markers ?? []), { cut: pos.cut, local: pos.local }] };
+  return { ...doc, markers: [...(doc.markers ?? []), { cut: pos.cut, local: pos.local, ...(isHexColor(color) ? { color } : {}) }] };
+}
+
+// 북마크를 모두 지운다(안 보이는 것까지). 없으면 null.
+export function clearMarkers(doc: EditDoc): EditDoc | null {
+  if (!doc.markers?.length) return null;
+  const next: EditDoc = { ...doc };
+  delete next.markers;
+  return next;
 }
 
 export function removeMarker(doc: EditDoc, key: string): EditDoc | null {

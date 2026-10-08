@@ -50,13 +50,16 @@
 .ed-chip-l { left: 12px; }
 .ed-chip-r { right: 12px; font-weight: 500; color: #d7dae0; }
 .ed-vbot { flex: none; background: var(--panel); border-top: 1px solid var(--border); user-select: none; }
-/* 타임바 — 누르는 자리는 넉넉하게(높이 22px), 보이는 줄은 4px. 빨강 = 지금 자리, 파랑 = 컷 경계. */
-.ed-scrub { height: 22px; padding: 0 16px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+/* 타임바(다빈치의 재생바) — 누르는 자리는 넉넉하게(높이 28px), 보이는 줄은 4px. 빨강 = 지금 자리, 위의 색 꼬리표 = 북마크,
+   밝은 선과 아래의 회색 꼬리표 = 마크 인/아웃, 얇은 줄 = 소스 테이프의 클립 경계. */
+.ed-scrub { height: 28px; padding: 0 16px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
 .ed-scrub-track { position: relative; flex: 1; height: 4px; border-radius: 2px; background: #2c303b; }
 .ed-scrub-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 2px; background: #555b6b; }
-.ed-scrub-track i { position: absolute; top: -7px; width: 6px; height: 6px; margin-left: -3px; border-radius: 2px 2px 3px 3px; background: #4c8dff; pointer-events: none; }
-.ed-scrub-range { position: absolute; top: -1px; bottom: -1px; border-radius: 2px; background: rgba(255, 255, 255, 0.34); pointer-events: none; } /* 마크 인/아웃 구간 */
-.ed-scrub-mk { position: absolute; top: 7px; width: 6px; height: 6px; margin-left: -3px; border-radius: 1px; transform: rotate(45deg); background: #3b9eff; pointer-events: none; } /* 북마크 */
+.ed-scrub-track i { position: absolute; top: -3px; bottom: -3px; width: 1px; background: rgba(255, 255, 255, 0.4); pointer-events: none; }
+.ed-scrub-range { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: #b9bdc6; pointer-events: none; } /* 마크 인/아웃 구간 */
+.ed-scrub-mk { position: absolute; top: -9px; width: 7px; height: 8px; margin-left: -3.5px; border-radius: 2px 2px 3.5px 3.5px; background: #1287ff; pointer-events: none; } /* 북마크 */
+.ed-scrub-io { position: absolute; top: 7px; width: 7px; height: 8px; margin-left: -3.5px; border-radius: 3.5px 3.5px 2px 2px; background: #9aa0ae; pointer-events: none; } /* 인·아웃 */
+.ed-scrub-io::before { content: ""; position: absolute; left: 3px; top: -7px; width: 1px; height: 7px; background: #9aa0ae; }
 .ed-scrub-head { position: absolute; left: 0; top: -9px; width: 10px; height: 10px; margin-left: -5px; border-radius: 2px 2px 5px 5px; background: #ff4d4f; pointer-events: none; }
 .ed-scrub-head::after { content: ""; position: absolute; left: 4px; top: 9px; width: 2px; height: 8px; background: #ff4d4f; }
 .ed-trans { position: relative; height: 44px; display: flex; align-items: center; justify-content: center; gap: 12px; }
@@ -70,17 +73,22 @@
 .ed-tbtn:hover svg.ed-line { fill: none; stroke: #fff; }
 .ed-tbtn.ed-on { background: rgba(var(--accent-rgb), 0.14); } /* 반복이 켜져 있다 */
 .ed-tbtn.ed-on svg.ed-line, .ed-tbtn.ed-on:hover svg.ed-line { stroke: var(--accent); }
+.ed-tbtn:disabled { opacity: 0.35; } /* 구간 반복 — 인/아웃이 없다 */
+.ed-tbtn.ed-t-range { width: 32px; border-radius: 7px; }
 .ed-tbtn.ed-play { width: 30px; height: 30px; background: var(--accent); }
 .ed-tbtn.ed-play svg, .ed-tbtn.ed-play:hover svg { fill: var(--accent-ink); }
-.ed-tside { position: absolute; right: 12px; display: flex; align-items: center; gap: 2px; }
+.ed-tside { position: absolute; right: 12px; display: flex; align-items: center; gap: 2px; } /* 구간 반복 · 마크 인 · 마크 아웃 */
 .ed-tside svg { fill: #9aa0ae; }
+.ed-tside svg.ed-line { fill: none; stroke: #9aa0ae; }
 .ed-tbtn.ed-dual { margin-left: 2px; border-radius: 6px; width: 30px; height: 24px; }
 .ed-tbtn.ed-dual svg { fill: none; stroke: #c9ccd3; stroke-width: 1.3; }
 .ed-tbtn.ed-dual:hover svg, .ed-tbtn.ed-dual.ed-on svg { stroke: var(--accent); fill: none; }
 .ed-tbtn.ed-dual.ed-on { background: rgba(var(--accent-rgb), 0.1); }
-/* 좁은 판(듀얼) — 폭 기준은 판 자신이다. 앞/뒤 편집점 단추가 가운데 단추와 겹치기 전에 숨긴다(↑·↓ 키는 그대로). */
+/* 좁은 판(듀얼) — 폭 기준은 판 자신이다. 오른쪽 단추들이 가운데 단추와 겹치기 전에 숨긴다: 먼저 마크 인/아웃(I·O 키가
+   있다), 더 좁아지면 구간 반복까지(Alt+/ 가 있다 — 켜 둔 것을 끌 길은 남는다). */
 .ed-vbot { container-type: inline-size; }
-@container (max-width: 420px) { .ed-tside { display: none; } }
+@container (max-width: 470px) { .ed-tside .ed-t-in, .ed-tside .ed-t-out { display: none; } }
+@container (max-width: 350px) { .ed-tside { display: none; } }
 
 /* 미디어 풀 — 왼쪽 폴더 목록 바로 옆(다빈치의 Bins | 클립). 머리줄 = 컷 이름 + 보기 방식·검색·정렬. */
 /* 폭은 끌어서 바꾼다(ResizableSidebar — 프로젝트 칸과 같은 손잡이). */
@@ -209,7 +217,9 @@
 .ed-mbtn.ed-on { background: rgba(var(--accent-rgb), 0.14); }
 .ed-mbtn.ed-on svg { stroke: var(--accent); }
 .ed-mbtn-mk { margin-left: 6px; }
-.ed-mbtn-mk svg { stroke: #3b9eff; fill: rgba(59, 158, 255, 0.25); }
+.ed-mbtn-mk svg, .ed-mbtn-mk:hover svg { stroke: var(--mk, #1287ff); fill: var(--mk, #1287ff); fill-opacity: 0.3; } /* 새 북마크의 색 */
+.ed-mbtn-color { min-width: 16px; padding: 0 4px; }
+.ed-mbtn-color svg.ed-caret, .ed-mbtn-color:hover svg.ed-caret { stroke: none; fill: var(--muted); }
 .ed-mbtn i, .ed-mclear i { font-style: normal; font-variant-numeric: tabular-nums; }
 .ed-mclear {
   height: 24px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted);
@@ -256,6 +266,11 @@
 .ed-swatch.ed-on { outline: 2px solid #fff; outline-offset: 1px; }
 .ed-swatch-none { margin-left: auto; background: rgba(255, 255, 255, 0.08); }
 .ed-swatch-none:disabled { opacity: 0.4; cursor: default; }
+.ed-mmenu .ed-swatches { display: grid; grid-template-columns: repeat(8, 16px); gap: 6px; height: auto; padding: 6px; } /* 16색 = 두 줄 */
+/* 북마크 색 메뉴(막대의 ▾) — 다빈치의 마커 색 메뉴: 이름 왼쪽, 색 꼬리표 오른쪽 */
+.folder-ctx-menu.ed-cmenu { max-height: calc(100vh - 8px); overflow-y: auto; }
+.ed-cmenu .ed-tmenu-item { flex: none; height: 24px; }
+.ed-cmenu-tag { flex: none; width: 9px; height: 11px; border-radius: 2px 2px 4.5px 4.5px; }
 .ed-mmenu-name {
   height: 28px; margin: 0 2px 2px; padding: 0 8px; border-radius: 6px; font-size: 12px; outline: none;
   background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border2); color: var(--text);
@@ -299,16 +314,14 @@
 }
 .ed-tick { position: absolute; bottom: 0; width: 1px; height: 12px; background: rgba(255, 255, 255, 0.34); pointer-events: none; }
 .ed-tick span { position: absolute; left: 5px; bottom: 8px; font: 10.5px ui-monospace, Consolas, monospace; color: var(--muted); white-space: nowrap; }
-/* 마크 인/아웃 — 눈금자 아래쪽의 띠(구간)와 양 끝의 꺾쇠, 줄 전체의 옅은 음영. 표시만 한다. */
-.ed-inout { position: absolute; bottom: 0; height: 4px; background: rgba(255, 255, 255, 0.38); pointer-events: none; }
-.ed-mark { position: absolute; bottom: 0; width: 6px; height: 8px; box-sizing: border-box; border: 2px solid #e6e8ec; pointer-events: none; }
-.ed-mark-in { border-right: 0; }
-.ed-mark-out { margin-left: -6px; border-left: 0; }
+/* 마크 인/아웃(다빈치) — 눈금자 아래쪽의 구간 막대와 양 끝의 둥근 점, 줄 전체의 옅은 음영. 표시만 한다. */
+.ed-inout { position: absolute; bottom: 1px; height: 4px; border-radius: 2px; background: #9aa0ae; pointer-events: none; }
+.ed-mark { position: absolute; bottom: -1px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; background: #cfd3da; pointer-events: none; }
 .ed-inout-shade { position: absolute; top: 28px; bottom: 0; background: rgba(255, 255, 255, 0.045); pointer-events: none; }
 /* 북마크 — 눈금자 위쪽의 색 꼬리표. 누르면 그 자리로, 더블클릭·우클릭하면 이름·색·지우기 */
 .ed-mk {
   position: absolute; top: 1px; width: 11px; height: 13px; margin-left: -5.5px; padding: 0; border: 0; border-radius: 2px 2px 0 0;
-  background: var(--mk, #3b9eff); clip-path: polygon(0 0, 100% 0, 100% 68%, 50% 100%, 0 68%); cursor: pointer; z-index: 2;
+  background: var(--mk, #1287ff); clip-path: polygon(0 0, 100% 0, 100% 68%, 50% 100%, 0 68%); cursor: pointer; z-index: 2;
 }
 .ed-mk:hover { filter: brightness(1.25); }
 .ed-mk:active { transform: none; }

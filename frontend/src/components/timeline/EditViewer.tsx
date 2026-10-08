@@ -1,11 +1,11 @@
 // 편집 탭의 뷰어 한 판(Jay 2026-10-08, 다빈치의 뷰어) — 위 줄(지금 시각 · 무엇을 볼지 · 전체 길이 · 싱글/듀얼), 무대,
-//  아래 줄(타임바 · 처음·역재생·정지·재생·끝·반복 · 앞/뒤 편집점). 타임라인·소스·한 트랙만 보기가 같은 판을 쓴다.
+//  아래 줄(타임바 · 처음·역재생·정지·재생·끝·반복 · 구간 반복·마크 인·마크 아웃). 타임라인·소스·한 트랙만 보기가 같은 판을 쓴다.
 //  판은 '무엇을 그릴지'(shown)와 조작 함수만 받는다 — 시계는 편집 탭이 가진 엔진(타임라인·소스)의 것이다.
 //  `<video>` 는 판마다 하나고 떼지 않는다(떼면 재생 훅이 걸어 둔 이벤트와 주소가 사라진다) — 안 보이는 판은 hidden 으로 둔다.
 //  지금 시각과 타임바 머리는 React 를 거치지 않고, 등록해 둔 그리기 함수가 프레임마다 고친다.
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
-import { timecode } from "../../lib/editTimeline";
-import type { ViewMode } from "../../lib/editTimelineStore";
+import { timecode, type EditMarks } from "../../lib/editTimeline";
+import { isSourceView, type ViewMode } from "../../lib/editTimelineStore";
 import { useT } from "../../lib/i18n";
 import type { EditShown } from "../../lib/useEditFollow";
 import { useEscapeClose } from "../../lib/useEscapeClose";
@@ -21,7 +21,14 @@ export interface ViewerControls {
   stop: () => void;
   shuttle: (dir: 1 | -1) => void;
   seek: (time: number) => void;
-  stepEdit: (dir: 1 | -1) => void;
+}
+// 오른쪽 아래의 단추 셋(다빈치 뷰어) — 구간 반복 재생 · 마크 인 · 마크 아웃. 타임라인의 시계를 쓰는 판만 받는다.
+export interface ViewerMarking {
+  markIn: () => void;
+  markOut: () => void;
+  rangeLoop: boolean; // 구간 반복 재생이 켜져 있다
+  canRangeLoop: boolean; // 되풀이할 구간(인/아웃)이 있다
+  onRangeLoop: () => void;
 }
 export interface ViewerProps {
   order: number; // 보이는 자리(0 = 왼쪽). -1 = 안 보인다(요소는 남는다)
@@ -34,9 +41,10 @@ export interface ViewerProps {
   playing: boolean;
   rate: number; // 음수 = 역방향
   total: number; // 전체 길이(초)
-  marks: readonly number[]; // 타임바의 표시(컷 경계, 초)
-  range?: { from: number; to: number } | null; // 마크 인/아웃 구간 — 타임바에 띠로
-  flags?: readonly { time: number; color?: string }[]; // 북마크 — 타임바 아래의 점
+  marks: readonly number[]; // 타임바의 얇은 줄(소스 테이프의 클립 경계, 초)
+  io?: EditMarks | null; // 마크 인/아웃 — 타임바 위의 구간 선과 아래의 회색 꼬리표
+  flags?: readonly { time: number; color?: string }[]; // 북마크 — 타임바 위의 색 꼬리표
+  marking?: ViewerMarking | null;
   registerPaint: (paint: (time: number) => void) => () => void; // 이 판의 시각·타임바를 그릴 함수를 시계에 건다
   controls: ViewerControls;
   loop: boolean;
@@ -52,7 +60,8 @@ export interface ViewerProps {
 const NO_FLAGS: readonly { time: number; color?: string }[] = [];
 
 export function EditViewer({
-  order, mode, options, onMode, shown, videoRef, muted, playing, rate, total, marks, range = null, flags = NO_FLAGS, registerPaint, controls,
+  order, mode, options, onMode, shown, videoRef, muted, playing, rate, total, marks, io = null, flags = NO_FLAGS, marking = null,
+  registerPaint, controls,
   loop, onLoop, label, detail, empty, active, onActivate, dualButton,
 }: ViewerProps) {
   const t = useT();
@@ -92,7 +101,7 @@ export function EditViewer({
   );
 
   return (
-    <section className={"ed-view" + (mode === "source" ? " ed-src" : "") + (active ? " ed-view-on" : "")}
+    <section className={"ed-view" + (isSourceView(mode) ? " ed-src" : "") + (active ? " ed-view-on" : "")}
       hidden={order < 0} style={{ order: order + 1 }} data-view={String(mode)}
       // 누르면(마우스), 또는 이 판의 단추를 키보드로 실행하면(click) 이 판이 재생 키를 받는다. 초점이 들어온 것만으로는
       //  바꾸지 않는다 — 우클릭 메뉴가 닫히며 초점을 돌려줄 때 재생 대상이 엉뚱하게 바뀐다(Codex 코드 리뷰).
@@ -144,7 +153,8 @@ export function EditViewer({
         {!empty && detail && <span className="ed-chip ed-chip-r">{detail}</span>}
       </div>
       <div className="ed-vbot" onMouseDown={keepFocus}>
-        {/* 타임바 — 누르거나 끌어서 훑는다. 빨강 = 지금 자리, 파랑 = 컷 경계, 밝은 띠 = 인/아웃 구간, 아래 점 = 북마크 */}
+        {/* 타임바 — 누르거나 끌어서 훑는다(다빈치의 재생바). 빨강 = 지금 자리, 위의 색 꼬리표 = 북마크, 밝은 선과 아래의 회색
+            꼬리표 = 마크 인/아웃. 얇은 줄은 소스 테이프의 클립 경계. */}
         <div className="ed-scrub" role="slider" aria-label={t("타임바")} aria-valuemin={0} aria-valuemax={Math.round(total)} aria-valuenow={0}
           onPointerDown={(event) => {
             if (event.button !== 0) return;
@@ -156,12 +166,16 @@ export function EditViewer({
           }}>
           <div className="ed-scrub-track" ref={trackRef}>
             <div className="ed-scrub-fill" ref={fillRef} />
-            {total > 0 && range && (
-              <div className="ed-scrub-range" style={{ left: `${(range.from / total) * 100}%`, width: `${((range.to - range.from) / total) * 100}%` }} />
+            {total > 0 && io?.band && (
+              <div className="ed-scrub-range"
+                style={{ left: `${(io.band.from / total) * 100}%`, width: `${((io.band.to - io.band.from) / total) * 100}%` }} />
             )}
             {total > 0 && marks.map((mark) => <i key={mark} style={{ left: `${(mark / total) * 100}%` }} />)}
             {total > 0 && flags.map((flag) => (
               <span className="ed-scrub-mk" key={flag.time} style={{ left: `${(flag.time / total) * 100}%`, background: flag.color }} />
+            ))}
+            {total > 0 && io && [io.in, io.out].map((time, side) => time !== null && (
+              <span className={"ed-scrub-io" + (side ? " ed-scrub-out" : "")} key={side} style={{ left: `${(time / total) * 100}%` }} />
             ))}
             <div className="ed-scrub-head" ref={headRef} />
           </div>
@@ -184,12 +198,22 @@ export function EditViewer({
             <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="13" y="1" width="2" height="12" /><path d="M1 1v12l10-6z" /></svg>)}
           {button("loop", t("반복 재생"), onLoop,
             <svg className="ed-line" width="18" height="14" viewBox="0 0 18 14" aria-hidden="true"><path d="M5 3h8a4 4 0 0 1 0 8H5a4 4 0 0 1 0-8" /><path d="M8 .6 5 3l3 2.4" /></svg>, loop)}
-          <span className="ed-tside">
-            {button("prev", t("앞 편집점 (↑)"), () => controls.stepEdit(-1),
-              <svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><rect x="1" y="1" width="2" height="10" /><path d="M13 1v10L5 6z" /></svg>)}
-            {button("next", t("뒤 편집점 (↓)"), () => controls.stepEdit(1),
-              <svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><rect x="11" y="1" width="2" height="10" /><path d="M1 1v10l8-5z" /></svg>)}
-          </span>
+          {marking && (
+            <span className="ed-tside">
+              <button type="button" className={"ed-tbtn ed-t-range" + (marking.rangeLoop ? " ed-on" : "")} aria-pressed={marking.rangeLoop}
+                disabled={!marking.canRangeLoop} onClick={marking.onRangeLoop}
+                title={t("구간 반복 재생 (Alt+/) — 마크 인/아웃 사이를 되풀이합니다")}
+                aria-label={t("구간 반복 재생 (Alt+/) — 마크 인/아웃 사이를 되풀이합니다")}>
+                <svg className="ed-line" width="20" height="14" viewBox="0 0 20 14" aria-hidden="true">
+                  <rect x="1" y="1" width="18" height="12" rx="2.5" /><path d="M10 4v6M7.5 4.8 5 7l2.5 2.2M12.5 4.8 15 7l-2.5 2.2" />
+                </svg>
+              </button>
+              {button("in", t("마크 인 (I)"), marking.markIn,
+                <svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><path d="M1 1v10l8-5z" /><rect x="11" y="1" width="2" height="10" /></svg>)}
+              {button("out", t("마크 아웃 (O)"), marking.markOut,
+                <svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><rect x="1" y="1" width="2" height="10" /><path d="M13 1v10L5 6z" /></svg>)}
+            </span>
+          )}
         </div>
       </div>
     </section>

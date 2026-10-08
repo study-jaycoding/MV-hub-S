@@ -3,7 +3,7 @@
 // 뷰어 판(싱글/듀얼·무엇을 볼지·타임바·반복·키 대상) · 풀의 Resolve 보내기 · 그림을 누르면 그 컷으로 · 컷 더블클릭 = 공유 & 리뷰의 폴더 창 열기(무엇을 열지만 App 에 알린다) ·
 // 그 창의 카드 우클릭 = 넣을 트랙 고르기(찬 트랙은 교체) · 빈 폴더 기본 비활성과 숨기기 · D 로 폴더 켜고 끄기 ·
 // 왼쪽 폴더 옆의 새 항목·최종·보류 표시 · 공유 목록과 폴더 옆 숫자 다시 받기 ·
-// 트랙 머리 우클릭(트랙 추가·옮기기·삭제·색) · 마크 인/아웃 · 북마크.
+// 트랙 머리 우클릭(트랙 추가·옮기기·삭제·색) · 마크 인/아웃 · 북마크(색 메뉴·모두 지우기) · 구간 반복 재생 · 소스 테이프.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -357,9 +357,10 @@ it("뷰어 판: 위 줄에서 무엇을 볼지 고른다(타임라인·소스·�
   expect(timeline.querySelector(".ed-chip-l")!.textContent).toBe("e070 / c1 · V2");
   expect(timeline.querySelector<HTMLImageElement>("img.ed-media")!.getAttribute("src")).toBe("/media/b.png");
   expect([...timeline.querySelectorAll(".ed-vbot .ed-tbtn")].map((item) => item.getAttribute("aria-label"))).toEqual([
-    "처음으로 (Home)", "역재생 (J)", "정지 (K)", "재생/정지 (Space)", "끝으로 (End)", "반복 재생", "앞 편집점 (↑)", "뒤 편집점 (↓)",
+    "처음으로 (Home)", "역재생 (J)", "정지 (K)", "재생/정지 (Space)", "끝으로 (End)", "반복 재생",
+    "구간 반복 재생 (Alt+/) — 마크 인/아웃 사이를 되풀이합니다", "마크 인 (I)", "마크 아웃 (O)", // 오른쪽 아래(다빈치의 뷰어)
   ]);
-  expect(timeline.querySelectorAll(".ed-scrub-track > i")).toHaveLength(3); // 타임바의 컷 경계
+  expect(timeline.querySelectorAll(".ed-scrub-track > i")).toHaveLength(0); // 재생바에 컷 경계 점은 없다 — 북마크·인/아웃만 보인다
   const dual = () => document.querySelector<HTMLButtonElement>(".ed-top .ed-view:not([hidden]) .ed-dual")!;
   expect(dual().closest(".ed-view")).toBe(timeline); // 싱글/듀얼 단추는 위 줄(맨 오른쪽 판)에
 
@@ -375,7 +376,7 @@ it("뷰어 판: 위 줄에서 무엇을 볼지 고른다(타임라인·소스·�
   expect(video.getAttribute("src")).toBe("/media/v.mp4");
   expect(video.controls).toBe(false);
   expect(pane("source").querySelector(".ed-chip-r")!.textContent).toBe("리버 · seedance");
-  expect(pane("source").querySelectorAll(".ed-vbot .ed-tbtn")).toHaveLength(8);
+  expect(pane("source").querySelectorAll(".ed-vbot .ed-tbtn")).toHaveLength(6); // 소스 판에는 마크·구간 반복 단추가 없다
   expect(localStorage.getItem(DOC_KEY)).not.toBeNull();
   expect(storedTracks()).toEqual([["a", 1], ["b", 2]]); // 소스로 보는 것은 타임라인을 바꾸지 않는다
   act(() => cutCell("c2").click()); // 다른 컷으로 가도 소스는 그대로다
@@ -847,7 +848,7 @@ it("마크 인/아웃: I·O 로 찍고 Alt 로 지우고 Shift 로 그 자리에
   expect(parseFloat(pane("timeline").querySelector<HTMLElement>(".ed-scrub-range")!.style.left)).toBeCloseTo(100 / 15); // 전체 15초의 1초
   expect(pane("source").querySelector(".ed-scrub-range")).toBeNull(); // 소스 판에는 없다
   expect(document.querySelector(".ed-mclear")!.textContent).toContain("00:00:04:00"); // 구간 길이
-  expect(document.querySelector(".ed-mbtn-in")!.classList.contains("ed-on")).toBe(true);
+  expect(pane("timeline").querySelectorAll(".ed-scrub-io")).toHaveLength(2); // 재생바 아래의 인·아웃 꼬리표
 
   press({ key: "Home", code: "Home" });
   press({ key: "o", code: "KeyO", shiftKey: true }); // 아웃 자리로
@@ -861,7 +862,7 @@ it("마크 인/아웃: I·O 로 찍고 Alt 로 지우고 Shift 로 그 자리에
   expect(stored().markOut).toBeUndefined();
   expect(document.querySelector(".ed-inout")).toBeNull();
   expect(document.querySelector(".ed-mclear")).toBeNull();
-  act(() => document.querySelector<HTMLButtonElement>(".ed-mbtn-in")!.click()); // 단추로도 찍는다
+  act(() => pane("timeline").querySelector<HTMLButtonElement>(".ed-t-in")!.click()); // 뷰어 오른쪽 아래의 단추로도 찍는다
   expect(stored().markIn).toEqual({ cut: "e070/c1", local: 1 });
   press({ key: "i", code: "KeyI", altKey: true });
   expect(stored().markIn).toBeUndefined();
@@ -875,7 +876,9 @@ it("북마크: M 으로 넣고, 누르면 그 자리로 가고, 더블클릭하�
   press({ key: "m", code: "KeyM" });
   act(() => cutCell("c2").click()); // 5초
   act(() => document.querySelector<HTMLButtonElement>(".ed-mbtn-mk")!.click()); // 단추로도 넣는다
-  expect(stored().markers).toEqual([{ cut: "e070/c1", local: 1 }, { cut: "e070/c2", local: 0 }]);
+  expect(stored().markers).toEqual([
+    { cut: "e070/c1", local: 1, color: "#1287ff" }, { cut: "e070/c2", local: 0, color: "#1287ff" }, // 새 북마크의 색(기본 파랑)
+  ]);
   expect(stored().muted).toBeUndefined(); // M 은 이제 소리 끄기가 아니다(소리는 A1 의 M 단추)
   expect(bookmarks().map((item) => item.style.left)).toEqual(["20px", "100px"]);
   expect(pane("timeline").querySelectorAll(".ed-scrub-mk")).toHaveLength(2);
@@ -896,8 +899,9 @@ it("북마크: M 으로 넣고, 누르면 그 자리로 가고, 더블클릭하�
   expect(document.activeElement).toBe(nameInput());
   expect(opened).toHaveLength(0); // 눈금자의 더블클릭은 컷의 폴더 창을 열지 않는다
   act(() => document.querySelectorAll<HTMLButtonElement>(".ed-mmenu .ed-swatch")[3].click()); // 색은 누르는 즉시 바뀐다
-  expect(stored().markers[0].color).toBe("#46a758");
-  expect(bookmarks()[0].style.getPropertyValue("--mk")).toBe("#46a758");
+  expect(document.querySelectorAll(".ed-mmenu .ed-swatch")).toHaveLength(16); // 다빈치의 마커 색 16가지
+  expect(stored().markers[0].color).toBe("#f09d00");
+  expect(bookmarks()[0].style.getPropertyValue("--mk")).toBe("#f09d00");
   typeIn(nameInput(), "여기부터 다시");
   press({ key: "m", code: "KeyM" }, nameInput()); // 입력칸의 글자는 편집 키가 아니다
   expect(stored().markers).toHaveLength(2);
@@ -906,7 +910,7 @@ it("북마크: M 으로 넣고, 누르면 그 자리로 가고, 더블클릭하�
   expect(stored().markers[0].name).toBeUndefined();
   press({ key: "Enter", code: "Enter" }, nameInput()); // Enter = 저장하고 닫는다
   expect(document.querySelector(".ed-mmenu")).toBeNull();
-  expect(stored().markers[0]).toEqual({ cut: "e070/c1", local: 1, color: "#46a758", name: "여기부터 다시" });
+  expect(stored().markers[0]).toEqual({ cut: "e070/c1", local: 1, color: "#f09d00", name: "여기부터 다시" });
   expect(bookmarks()[0].title).toContain("여기부터 다시");
   expect(document.activeElement).toBe(document.querySelector(".ed-root"));
 
@@ -928,4 +932,134 @@ it("북마크: M 으로 넣고, 누르면 그 자리로 가고, 더블클릭하�
   press({ key: "m", code: "KeyM", altKey: true }); // Alt+M = 재생헤드 자리의 북마크 지우기
   expect(stored().markers).toBeUndefined();
   expect(bookmarks()).toHaveLength(0);
+});
+
+// ── 다빈치의 뷰어·재생바에 맞춘 것(Jay 2026-10-08): 북마크 색 메뉴 · 뷰어의 마크 인/아웃·구간 반복 단추 · 소스 테이프 ──
+it("북마크 색 메뉴: 새 북마크의 색을 고르고(이 브라우저에 남는다) 모두 지운다 — 재생바에는 북마크가 그 색으로 보인다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }]);
+  mount();
+  act(() => cutCell("c1").click());
+  const colorButton = () => document.querySelector<HTMLButtonElement>(".ed-mbtn-color")!;
+  act(() => colorButton().click());
+  expect(menuText()).toEqual(["모두 지우기× ×", "파랑", "청록", "초록", "노랑", "빨강", "분홍", "보라", "자홍", "장미", "라벤더", "하늘",
+    "민트", "레몬", "모래", "코코아", "크림"]); // 다빈치의 마커 색 메뉴 — 북마크가 없으면 '모두 지우기'는 흐리다
+  expect(document.activeElement).toBe(menuItem("파랑")); // 지금 색
+  act(() => menuItem("빨강").click());
+  expect(document.querySelector(".ed-cmenu")).toBeNull();
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!).markerColor).toBe("#e12401");
+  expect(document.querySelector<HTMLElement>(".ed-mbtn-mk")!.style.getPropertyValue("--mk")).toBe("#e12401");
+  expect(stored().markers).toBeUndefined(); // 색 고르기는 편집이 아니다
+  expect(document.activeElement).toBe(document.querySelector(".ed-root"));
+
+  press({ key: "m", code: "KeyM" });
+  press({ key: "ArrowRight", code: "ArrowRight", shiftKey: true });
+  press({ key: "m", code: "KeyM" });
+  expect(stored().markers).toEqual([{ cut: "e070/c1", local: 0, color: "#e12401" }, { cut: "e070/c1", local: 1, color: "#e12401" }]);
+  const dots = pane("timeline").querySelectorAll<HTMLElement>(".ed-scrub-mk");
+  expect(dots).toHaveLength(2);
+  expect(dots[0].style.background).toBe("rgb(225, 36, 1)");
+
+  act(() => colorButton().click());
+  expect(menuItem("빨강").getAttribute("aria-checked")).toBe("true");
+  // 메뉴가 떠 있는 사이 다른 창이 이 편집을 바꾸면 닫힌다 — 그 창이 넣은 북마크까지 '모두 지우기'로 지우지 않게
+  localStorage.setItem(DOC_KEY, JSON.stringify({ ...stored(), muted: true }));
+  act(() => { window.dispatchEvent(new StorageEvent("storage", { key: DOC_KEY })); });
+  expect(document.querySelector(".ed-cmenu")).toBeNull();
+  expect(stored().markers).toHaveLength(2);
+  act(() => colorButton().click());
+  act(() => menuItem("모두 지우기").click());
+  expect(stored().markers).toBeUndefined();
+  expect(bookmarks()).toHaveLength(0);
+  press({ key: "z", code: "KeyZ", ctrlKey: true }); // 되돌리기 한 번에 돌아온다
+  expect(stored().markers).toHaveLength(2);
+  expect(flashed).toEqual(["다른 창에서 바꾼 편집을 불러왔습니다."]);
+});
+
+it("뷰어 오른쪽 아래: 마크 인·마크 아웃 단추와 구간 반복 재생 — 켜면 구간 처음에서 틀고, 구간이 사라지면 꺼진다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }]);
+  mount();
+  act(() => cutCell("c1").click());
+  const tl = (name: string) => pane("timeline").querySelector<HTMLButtonElement>(`.ed-t-${name}`)!;
+  expect(tl("range").disabled).toBe(true); // 되풀이할 구간이 없다
+  press({ key: "ArrowRight", code: "ArrowRight", shiftKey: true }); // 1초
+  act(() => tl("in").click());
+  act(() => cutCell("c2").click()); // 5초
+  act(() => tl("out").click());
+  expect(stored()).toMatchObject({ markIn: { cut: "e070/c1", local: 1 }, markOut: { cut: "e070/c2", local: 0 } });
+  expect(tl("range").disabled).toBe(false);
+  expect(document.querySelector(".ed-mbtn-in")).toBeNull(); // 막대에는 마크 단추가 없다(뷰어에 있다)
+
+  act(() => cutCell("c3").click()); // 10초 — 구간 밖
+  act(() => tl("range").click());
+  expect(tl("range").getAttribute("aria-pressed")).toBe("true");
+  expect(timecode()).toBe("00:00:01:00"); // 구간 처음으로 가서
+  expect(playingIn("timeline")).toBe(true); // 튼다
+  expect(tl("loop").getAttribute("aria-pressed")).toBe("false"); // 전체 반복과는 따로다
+  act(() => tl("range").click()); // 끄면 재생은 그대로 두고 구간만 풀린다
+  expect(tl("range").getAttribute("aria-pressed")).toBe("false");
+  expect(playingIn("timeline")).toBe(true);
+  act(() => tl("stop").click());
+
+  press({ key: "/", code: "Slash", altKey: true }); // Alt+/ 도 같은 길 — 좁은 판에서 단추가 숨어도 켜고 끌 수 있다
+  expect(tl("range").getAttribute("aria-pressed")).toBe("true");
+  expect(playingIn("timeline")).toBe(true);
+  press({ key: "/", code: "Slash", altKey: true });
+  expect(tl("range").getAttribute("aria-pressed")).toBe("false");
+  act(() => tl("stop").click());
+
+  act(() => tl("range").click());
+  expect(tl("range").getAttribute("aria-pressed")).toBe("true");
+  press({ key: "x", code: "KeyX", altKey: true }); // 구간을 지우면 같이 꺼진다
+  expect(tl("range").disabled).toBe(true);
+  act(() => tl("stop").click());
+  act(() => cutCell("c1").click());
+  press({ key: "i", code: "KeyI" });
+  act(() => cutCell("c2").click());
+  press({ key: "o", code: "KeyO" });
+  expect(tl("range").disabled).toBe(false);
+  expect(tl("range").getAttribute("aria-pressed")).toBe("false"); // 새로 찍은 구간이 말없이 돌지 않는다
+});
+
+it("소스 테이프: 이 컷의 풀 목록을 이어서 본다 — 풀에서 고르면 그 카드로 가고, 소스 클립과는 같은 판의 두 방식이다", () => {
+  world.gens = [...world.gens, videoGen()]; // c1 = 그림 a · 그림 b · 영상 v
+  localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["source", "timeline"] }));
+  mount();
+  act(() => cutCell("c1").click());
+  pickMode("source", "소스 테이프");
+  expect(paneModes()).toEqual(["tape", "timeline"]);
+  const tape = pane("tape");
+  expect(tape.querySelector(".ed-vpick-btn")!.textContent).toBe("소스 테이프");
+  expect(tape.querySelector(".ed-vtotal")!.textContent).toBe("00:00:15:00"); // 5초씩 셋(영상은 길이를 재기 전이라 기본 5초)
+  expect(tape.querySelector<HTMLImageElement>("img.ed-media")!.getAttribute("src")).toBe("/media/a.png"); // 첫 카드부터
+  expect(tape.querySelector(".ed-chip-l")!.textContent).toBe("e070 / c1 · 1/3");
+  expect(tape.querySelectorAll(".ed-scrub-track > i")).toHaveLength(2); // 재생바의 클립 경계
+  expect(tape.querySelector(".ed-t-in")).toBeNull(); // 소스 판에는 마크 단추가 없다
+
+  act(() => poolCards()[2].click()); // 풀에서 영상 v 를 고르면 테이프가 그 카드의 처음으로 간다
+  expect(tape.querySelector(".ed-vtop > .ed-vtc")!.textContent).toBe("00:00:10:00");
+  expect(tape.querySelector<HTMLVideoElement>("video.ed-media")!.getAttribute("src")).toBe("/media/v.mp4");
+  expect(tape.querySelector(".ed-chip-l")!.textContent).toBe("e070 / c1 · 3/3");
+  expect(tape.querySelector(".ed-chip-r")!.textContent).toBe("리버 · seedance");
+  press({ key: "ArrowUp", code: "ArrowUp" }); // 방금 고른 판이 재생 키를 받는다 — ↑ = 앞 클립 경계
+  expect(tape.querySelector(".ed-vtop > .ed-vtc")!.textContent).toBe("00:00:05:00");
+  expect(tape.querySelector(".ed-chip-l")!.textContent).toBe("e070 / c1 · 2/3");
+  expect(timecode()).toBe("00:00:00:00"); // 타임라인은 그대로다
+  expect(localStorage.getItem(DOC_KEY)).toBeNull(); // 테이프는 편집 문서를 건드리지 않는다
+
+  act(() => cutCell("c2").click()); // 다른 컷으로 가면 그 컷의 목록이 테이프가 된다
+  expect(tape.querySelector(".ed-vtotal")!.textContent).toBe("00:00:10:00");
+  expect(tape.querySelector<HTMLImageElement>("img.ed-media")!.getAttribute("src")).toBe("/media/x.png");
+  act(() => cutCell("c3").click()); // 빈 폴더
+  expect(tape.textContent).toContain("이 컷 폴더에 공유된 생성물이 없습니다.");
+
+  pickMode("timeline", "소스 클립"); // 오른쪽에서 소스 클립을 고른다 — 소스 판은 하나라 왼쪽(테이프)과 자리를 바꾼다
+  expect(paneModes()).toEqual(["timeline", "source"]);
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!).views).toEqual(["timeline", "source"]);
+});
+
+it("저장된 화면: 소스 클립과 소스 테이프를 두 판에 같이 둔 값·색이 아닌 값은 받지 않는다", () => {
+  localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["source", "tape"], markerColor: "red" }));
+  mount();
+  expect(paneModes()).toEqual(["source", "timeline"]); // 기본 화면으로
+  expect(document.querySelector<HTMLElement>(".ed-mbtn-mk")!.style.getPropertyValue("--mk")).toBe("#1287ff");
 });

@@ -1,7 +1,7 @@
 // 편집 문서의 저장(localStorage)과 Undo 스택. 계약은 docs/EDIT_TAB.md.
 // ponytail: 캔버스 씬과 달리 로컬 DB 백업이 없다 — 브라우저 프로필에만 남는다. 팀 공유·백업이 필요해지면 DB 로 옮긴다.
 import { getAccountNamespace } from "./accountScope";
-import { emptyEditDoc, parseEditDoc, type EditDoc } from "./editTimeline";
+import { emptyEditDoc, isHexColor, MARKER_COLORS, parseEditDoc, type EditDoc } from "./editTimeline";
 import { STORAGE_KEYS } from "./storageKeys";
 
 // 서버 주소는 키에 넣지 않는다 — 서버 이사는 DB 를 통째로 옮겨 project_id·생성물 id 가 유지되므로
@@ -131,8 +131,10 @@ export function saveEditTarget(target: EditTarget | null): void {
 //  (계정·시퀀스와 무관하게 하나, 되돌리기 대상 아님). 못 읽으면 기본값.
 export type PoolView = "thumb" | "meta" | "list";
 export type PoolSort = "new" | "old" | "placed";
-// 뷰어 한 판이 보는 것 — 타임라인(위 트랙 우선) · 소스(풀에서 고른 것) · 한 트랙만(트랙 번호)
-export type ViewMode = "timeline" | "source" | number;
+// 뷰어 한 판이 보는 것 — 타임라인(위 트랙 우선) · 소스 클립(풀에서 고른 것) · 소스 테이프(이 컷의 풀 목록을 이어서) ·
+//  한 트랙만(트랙 번호). 소스 클립과 소스 테이프는 같은 판(소스 엔진 하나)의 두 방식이라 두 판에 같이 뜰 수 없다.
+export type ViewMode = "timeline" | "source" | "tape" | number;
+export const isSourceView = (mode: ViewMode | undefined): boolean => mode === "source" || mode === "tape";
 export interface EditUi {
   view: PoolView;
   size: number; // 썸네일 폭(px)
@@ -141,13 +143,16 @@ export interface EditUi {
   views: [ViewMode, ViewMode]; // [왼쪽 판, 오른쪽 판] — 서로 다르다. 싱글이면 오른쪽 것만 보인다
   loop: boolean; // 타임라인 반복 재생
   loopSrc: boolean; // 소스 반복 재생
+  markerColor: string; // 새 북마크의 색(#rrggbb)
 }
 export const POOL_SIZE = { min: 56, max: 240 }; // 최소 = 다빈치 미디어 풀의 작은 썸네일쯤
 const DEFAULT_UI: EditUi = {
   view: "thumb", size: 160, sort: "new", dual: false, views: ["source", "timeline"], loop: false, loopSrc: false,
+  markerColor: MARKER_COLORS[0].color,
 };
 const viewMode = (value: unknown): ViewMode | null =>
-  value === "timeline" || value === "source" ? value : Number.isSafeInteger(value) && (value as number) > 0 ? (value as number) : null;
+  value === "timeline" || value === "source" || value === "tape" ? value
+    : Number.isSafeInteger(value) && (value as number) > 0 ? (value as number) : null;
 const uiKey = `${STORAGE_KEYS.editTimeline}.ui`;
 
 export function loadEditUi(): EditUi {
@@ -155,7 +160,8 @@ export function loadEditUi(): EditUi {
     const raw = JSON.parse(localStorage.getItem(uiKey) || "null") as Partial<EditUi> | null;
     if (!raw || typeof raw !== "object") return DEFAULT_UI;
     const pair = Array.isArray(raw.views) && raw.views.length === 2 ? [viewMode(raw.views[0]), viewMode(raw.views[1])] : [];
-    const views = pair[0] != null && pair[1] != null && pair[0] !== pair[1] ? ([pair[0], pair[1]] as [ViewMode, ViewMode]) : null;
+    const views = pair[0] != null && pair[1] != null && pair[0] !== pair[1] && !(isSourceView(pair[0]) && isSourceView(pair[1]))
+      ? ([pair[0], pair[1]] as [ViewMode, ViewMode]) : null;
     return {
       view: raw.view === "meta" || raw.view === "list" ? raw.view : "thumb",
       size: typeof raw.size === "number" && Number.isFinite(raw.size)
@@ -165,6 +171,7 @@ export function loadEditUi(): EditUi {
       views: views ?? DEFAULT_UI.views,
       loop: raw.loop === true,
       loopSrc: raw.loopSrc === true,
+      markerColor: isHexColor(raw.markerColor) ? raw.markerColor : DEFAULT_UI.markerColor,
     };
   } catch {
     return DEFAULT_UI;

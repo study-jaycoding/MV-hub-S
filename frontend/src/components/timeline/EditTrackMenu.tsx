@@ -128,22 +128,24 @@ export function EditTrackMenu({
   );
 }
 
-// 색 견본 한 줄(트랙 색·북마크 색) — 씬 그룹과 같은 여덟 색. onClear 가 있으면 '색 없음'도 고를 수 있다.
+// 색 견본(트랙 색·북마크 색) — 팔레트를 안 주면 씬 그룹과 같은 여덟 색. onClear 가 있으면 '색 없음'도 고를 수 있다.
 export function EditSwatches({
   label,
   value,
+  colors = GROUP_COLORS,
   onPick,
   onClear,
 }: {
   label: string;
   value: string | null;
+  colors?: readonly string[];
   onPick: (color: string) => void;
   onClear?: () => void;
 }) {
   const t = useT();
   return (
     <div className="ed-swatches" role="group" aria-label={label}>
-      {GROUP_COLORS.map((color) => (
+      {colors.map((color) => (
         <button key={color} type="button" className={"ed-swatch" + (color === value ? " ed-on" : "")} style={{ background: color }}
           aria-label={`${label} ${color}`} aria-pressed={color === value} onClick={() => onPick(color)} />
       ))}

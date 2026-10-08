@@ -75,7 +75,7 @@ export function useEditPlayback({
   videoRef: RefObject<EditVideo | null>;
   paint: (time: number) => void;
   loop?: boolean; // 반복 — 정방향으로 끝에 닿으면 처음부터 이어 튼다(역방향은 처음에서 멈춘다)
-  range?: { from: number; to: number } | null; // 마크 인/아웃 구간(전체 시각) — 반복이 켜져 있으면 이 구간을 되풀이한다
+  range?: { from: number; to: number } | null; // 되풀이할 구간(전체 시각) — 있으면 loop 와 무관하게 이 구간을 돈다(구간 반복 재생)
 }) {
   const [view, setView] = useState<EditView>(STOPPED);
   const live = useRef({ layout, doc, sourceOf, paint, loop, range });
@@ -198,7 +198,7 @@ export function useEditPlayback({
       sync(!adopt);
     };
 
-    // 구간 반복(마크 인/아웃) — 반복이 켜져 있고 구간이 있으면 아웃을 넘는 순간 인으로 돌아간다. '넘는 순간'을 tick 앞뒤 시각의
+    // 구간 반복(마크 인/아웃) — 구간(range)이 있으면 아웃을 넘는 순간 인으로 돌아간다. '넘는 순간'을 tick 앞뒤 시각의
     //  비교로만 보면 영상의 ended 가 위치를 먼저 아웃으로 옮긴 때를 놓친다 → 아웃 앞에 있었는지를 적어 둔다(armed).
     //  아웃 뒤에서 시작했거나 아웃 뒤로 훑었으면 꺼진 채라 끝까지 간 뒤(전체 끝) 구간 처음으로 들어온다(Codex 설계 검토).
     const arm = () => {
@@ -221,7 +221,7 @@ export function useEditPlayback({
       let slot = slotOf(pos.current.cut);
       if (!slot) return stop();
       let local = pos.current.local;
-      const range = live.current.loop && state.rate > 0 ? live.current.range : null;
+      const range = state.rate > 0 ? live.current.range : null;
       if (!range) state.armed = false;
       else if (slot.start + local < range.to) state.armed = true;
       if (state.owner === "video") {
@@ -234,7 +234,7 @@ export function useEditPlayback({
       state.last = stamp;
       if (state.rate > 0 && local >= slot.len) {
         const next = cuts[cuts.indexOf(slot) + 1];
-        if (!next && live.current.loop) return loopBack();
+        if (!next && (live.current.loop || range)) return loopBack();
         if (!next) {
           pos.current = { cut: slot.path, local: slot.len }; // 전체 끝 = 정지점
           live.current.paint(now());
@@ -396,5 +396,12 @@ export function useEditPlayback({
     stepEdit: useCallback((dir: 1 | -1) => {
       seek(stepPoint(editPoints(live.current.layout), now(), dir));
     }, [now, seek]),
+    // 구간 반복 재생을 켠다 — 구간을 먼저 엔진에 넣고(다음 렌더가 같은 값을 다시 넣는다) 그 처음으로 가서 정방향 1배로 튼다.
+    //  상태가 반영되기를 기다렸다 틀면 그 사이(첫 tick 전)에 영상이 끝난 때를 놓치고, 역재생 중이면 역방향이 이어진다(Codex 설계 검토).
+    playRange: useCallback((next: { from: number; to: number }) => {
+      live.current = { ...live.current, range: next };
+      seek(next.from);
+      play(1);
+    }, [play, seek]),
   };
 }

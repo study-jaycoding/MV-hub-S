@@ -3,6 +3,7 @@ import {
   addMarker,
   addTrack,
   buildLayout,
+  clearMarkers,
   clipKey,
   cutIsOff,
   cutOf,
@@ -18,9 +19,11 @@ import {
   insertTrack,
   isUsableGen,
   linkClip,
+  MARKER_COLORS,
   markerAt,
   markerKey,
   markRange,
+  marksOf,
   markTime,
   moveClipToTrack,
   moveTrack,
@@ -449,6 +452,7 @@ describe("마크 인/아웃·북마크", () => {
     next = setMark(next, layout, "markOut", at(10))!;
     expect(next).toMatchObject({ markIn: { cut: "e070/c1", local: 2 }, markOut: { cut: "e070/c2", local: 2 } });
     expect(markRange(layout, next)).toEqual({ from: 2, to: 10 });
+    expect(marksOf(layout, next)).toEqual({ in: 2, out: 10, band: { from: 2, to: 10 } });
     expect(setMark(next, layout, "markOut", at(10))).toBeNull(); // 같은 자리
     const flipped = setMark(next, layout, "markIn", at(12))!; // 인을 아웃 뒤에 — 아웃을 지운다
     expect(flipped.markOut).toBeUndefined();
@@ -497,6 +501,12 @@ describe("마크 인/아웃·북마크", () => {
     expect(shownMarkers(layout, next).map((item) => item.time)).toEqual([2]);
     expect(removeMarker(next, second.key)).toBeNull();
     expect(removeMarker(next, first.key)!.markers).toBeUndefined();
+    // 새 북마크의 색(다빈치의 마커 색 16가지) · 모두 지우기
+    expect(MARKER_COLORS).toHaveLength(16);
+    expect(addMarker(d, at(3), MARKER_COLORS[4].color)!.markers![0]).toEqual({ cut: "e070/c1", local: 3, color: "#e12401" });
+    expect(addMarker(d, at(3), "red")!.markers![0].color).toBeUndefined(); // #rrggbb 가 아니면 색 없이
+    expect(clearMarkers(next)!.markers).toBeUndefined();
+    expect(clearMarkers(d)).toBeNull();
   });
 
   it("재생헤드 자리의 북마크 — 같은 프레임이면 찾고, 컷 경계에서는 앞 컷 끝에 찍은 것도 찾는다", () => {

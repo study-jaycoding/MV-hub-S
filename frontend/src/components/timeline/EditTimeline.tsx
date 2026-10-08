@@ -18,6 +18,7 @@ import {
   visibleSegments,
   type EditDoc,
   type EditLayout,
+  type EditMarks,
   type MediaState,
   type ShownMarker,
   type SlotClip,
@@ -36,12 +37,6 @@ export interface ClipLink {
   gen: Generation | null;
 }
 
-// 마크 인/아웃의 보이는 시각(초) — band 는 띠로 그릴 구간(한쪽만 있으면 전체의 처음/끝까지, 처음 < 끝일 때만)
-export interface EditMarks {
-  in: number | null;
-  out: number | null;
-  band: { from: number; to: number } | null;
-}
 const trackTint = (color: string | undefined) => (color ? ({ "--trk": color } as CSSProperties) : undefined);
 
 export const EditTimeline = memo(function EditTimeline({
@@ -272,7 +267,7 @@ export const EditTimeline = memo(function EditTimeline({
             {ticks.map((time) => (
               <div className="ed-tick" key={time} style={{ left: time * zoom }}><span>{timecode(time)}</span></div>
             ))}
-            {/* 마크 인/아웃 — 띠는 구간, 꺾쇠는 인·아웃 자리. 표시만 한다(누르면 눈금자가 받는다). */}
+            {/* 마크 인/아웃 — 막대는 구간, 양 끝의 둥근 점은 인·아웃 자리(다빈치). 표시만 한다(누르면 눈금자가 받는다). */}
             {marks.band && <div className="ed-inout" style={{ left: marks.band.from * zoom, width: (marks.band.to - marks.band.from) * zoom }} />}
             {marks.in !== null && <div className="ed-mark ed-mark-in" style={{ left: marks.in * zoom }} />}
             {marks.out !== null && <div className="ed-mark ed-mark-out" style={{ left: marks.out * zoom }} />}
