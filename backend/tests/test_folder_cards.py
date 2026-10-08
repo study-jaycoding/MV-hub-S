@@ -1,0 +1,384 @@
+"""폴더 카드(공유 & 리뷰 탭) — 하위 폴더별 건수·표지, 팀 공용 대표, 가시성, 프록시 위임."""
+
+from __future__ import annotations
+
+import sqlite3
+
+import pytest
+from fastapi import HTTPException, Request
+
+from app import db, db_migrations, deps, repo
+from app.routers import folder_cards as cards_router
+
+
+@pytest.fixture
+def catalog(monkeypatch, tmp_path):
+    monkeypatch.setenv("CONTENT_HUB_DATA", str(tmp_path))
+    monkeypatch.setenv("CONTENT_HUB_DB", str(tmp_path / "content.db"))
+    monkeypatch.setenv("CONTENT_HUB_NO_PROXY", "1")
+    monkeypatch.setattr(db, "_POOL_ENABLED", False)
+    monkeypatch.setattr(deps, "AUTH_ENABLED", True)
+    monkeypatch.setattr(cards_router, "AUTH_ENABLED", True)
+    monkeypatch.setattr(cards_router._proxy, "proxying", lambda: False)
+    db.flush_pool()
+    db.init_db()
+    repo.ensure_default_worker()
+    with db.get_connection() as conn:
+        for pid in ("member", "other"):
+            conn.execute("INSERT INTO project(id, name) VALUES(?, ?)", (pid, pid))
+        conn.execute(
+            "INSERT INTO project_member(project_id, creator_uid, project_role) "
+            "VALUES('member', 'viewer', 'creator')"
+        )
+    yield
+    db.flush_pool()
+
+
+_clock = iter(range(1, 10_000))
+
+
+def seed(gen_id, folder, *, project="member", creator="other-user", shared=True,
+         deleted=False, workspace=None, ts=None):
+    """ts 를 안 주면 넣은 순서가 곧 최신 순서다."""
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO generation(id, worker_id, prompt, status, creator_uid, project_id, "
+            "folder_path, deleted_at, workspace_scope, workspace_id, sort_ts) "
+            "VALUES(?, 'me', 'folder card fixture', 'done', ?, ?, ?, ?, ?, ?, ?)",
+            (gen_id, creator, project, folder, "2026-01-01" if deleted else None,
+             "team" if workspace else "unknown", workspace, ts if ts is not None else next(_clock)),
+        )
+        if shared:
+            conn.execute(
+                "INSERT INTO share(id, generation_id, shared_by, visibility) VALUES(?, ?, 'me', 'team')",
+                ("share-" + gen_id, gen_id),
+            )
+
+
+def cards(parent="e035", *, projects=("member",), viewer="viewer", project="member", workspace=None):
+    data = repo.folder_cards(
+        project, parent, team_member_projects=None if projects is None else list(projects),
+        viewer_uid=viewer, workspace_id=workspace,
+    )
+    return data, {f["path"]: f for f in data["folders"]}
+
+
+def choose(folder, gen_id, *, projects=("member",), viewer="viewer", project="member"):
+    return repo.set_folder_cover(
+        project, folder, gen_id, team_member_projects=None if projects is None else list(projects),
+        viewer_uid=viewer, set_by=viewer,
+    )
+
+
+def request(*, uid="viewer", role="", method="GET", path="/api/projects/member/folder-cards", query=""):
+    req = Request({
+        "type": "http", "method": method, "path": path,
+        "headers": [], "query_string": query.encode(), "client": ("127.0.0.1", 51000),
+    })
+    req.state.account = {"email": "viewer@example.test", "creator_uid": uid, "global_role": role}
+    return req
+
+
+def test_groups_by_the_folder_right_below_and_counts_everything_under_it(catalog):
+    seed("a1", "e035/C0010")
+    seed("a2", "e035/C0010/takeB")          # 하위의 하위도 그 컷에 든다
+    seed("b1", "e035/C0040")
+    seed("own", "e035")                      # 고른 폴더에 직접 든 것 — 어느 카드에도 안 든다
+    seed("near", "e0350/C0010")              # 이름이 앞부분만 같은 다른 폴더
+    seed("elsewhere", "e001/C0010")
+    seed("private", "e035/C0040", shared=False)
+    seed("gone", "e035/C0040", deleted=True)
+    seed("foreign", "e035/C0040", project="other")
+
+    data, by_path = cards()
+
+    assert data["parent"] == "e035" and data["own_count"] == 1
+    assert [f["path"] for f in data["folders"]] == ["e035/C0010", "e035/C0040"]
+    assert [f["name"] for f in data["folders"]] == ["C0010", "C0040"]
+    assert by_path["e035/C0010"]["count"] == 2 and by_path["e035/C0040"]["count"] == 1
+    # 표지는 가장 최근 것이고 목록 행과 같은 모양이다
+    assert by_path["e035/C0010"]["cover"]["id"] == "a2" and by_path["e035/C0010"]["rep"] is False
+    assert by_path["e035/C0010"]["cover"]["folder_path"] == "e035/C0010/takeB"
+    assert {"assets", "prompt", "project_id"} <= set(by_path["e035/C0010"]["cover"])
+
+
+def test_an_empty_parent_lists_the_top_folders_and_names_that_only_share_a_prefix_stay_apart(catalog):
+    seed("a", "e001/c0010")
+    seed("b", "e035/C001")
+    seed("c", "e035/C0010")
+    seed("root", None)                       # 폴더가 없는 것은 폴더 카드에 들지 않는다
+
+    top, top_by = cards("")
+    assert [f["path"] for f in top["folders"]] == ["e001", "e035"] and top["own_count"] == 0
+    assert top_by["e035"]["count"] == 2
+
+    _, cuts = cards("e035")
+    assert {path: f["count"] for path, f in cuts.items()} == {"e035/C001": 1, "e035/C0010": 1}
+    assert cards("e035/C001")[0] == {"parent": "e035/C001", "own_count": 1, "folders": []}
+
+
+def test_like_wildcards_in_a_folder_name_are_taken_literally(catalog):
+    seed("real", "a_b/shot")
+    seed("decoy", "aXb/shot")
+    seed("pct", "100%/shot")
+    seed("pct_decoy", "100x/shot")
+
+    def summary(parent):
+        return [(f["path"], f["count"], f["cover"]["id"]) for f in cards(parent)[0]["folders"]]
+
+    assert summary("a_b") == [("a_b/shot", 1, "real")]
+    assert summary("100%") == [("100%/shot", 1, "pct")]
+    # 대표를 정할 때도 같다 — 글자 하나가 다른 폴더의 것은 받지 않는다
+    with pytest.raises(LookupError):
+        choose("a_b", "decoy")
+    with pytest.raises(LookupError):
+        choose("100%", "pct_decoy")
+    assert choose("a_b", "real")
+
+
+def test_a_folder_that_differs_only_in_letter_case_is_a_different_folder(catalog):
+    seed("lower", "e035/C0010")
+    seed("upper", "E035/C0010")          # SQL 의 LIKE 는 영문 대소문자를 가리지 않는다
+    seed("upper-own", "E035")
+
+    data, by_path = cards("e035")
+    assert data["own_count"] == 0
+    assert {path: (f["count"], f["cover"]["id"]) for path, f in by_path.items()} == {"e035/C0010": (1, "lower")}
+    # 대표를 정할 때도 같다 — 글자만 같은 폴더의 것으로는 못 정한다(받으면 조회가 무시해 '대표 미정'으로 돌아간다)
+    with pytest.raises(LookupError):
+        choose("e035/C0010", "upper")
+    with pytest.raises(LookupError):
+        choose("e035", "upper-own")
+    assert choose("e035/C0010", "lower")
+
+
+def test_a_chosen_cover_replaces_the_latest_one_and_stops_counting_once_it_no_longer_belongs(catalog):
+    seed("old", "e035/C0040")
+    seed("new", "e035/C0040")
+    assert cards()[1]["e035/C0040"]["cover"]["id"] == "new"
+
+    assert choose("e035/C0040", "old") == {"folder_path": "e035/C0040", "generation_id": "old"}
+    chosen = cards()[1]["e035/C0040"]
+    assert chosen["cover"]["id"] == "old" and chosen["rep"] is True and chosen["count"] == 2
+
+    def expect_latest():
+        fallback = cards()[1]["e035/C0040"]
+        assert fallback["cover"]["id"] == "new" and fallback["rep"] is False
+
+    def run(sql, *args):
+        with db.get_connection() as conn:
+            conn.execute(sql, args)
+
+    # 지워짐 → 최신으로, 되살리면 대표가 돌아온다(행을 지우지 않았다)
+    run("UPDATE generation SET deleted_at = '2026-01-01' WHERE id = 'old'")
+    expect_latest()
+    run("UPDATE generation SET deleted_at = NULL WHERE id = 'old'")
+    assert cards()[1]["e035/C0040"]["rep"] is True
+    # 공유 해제
+    run("DELETE FROM share WHERE generation_id = 'old'")
+    expect_latest()
+    run("INSERT INTO share(id, generation_id, shared_by, visibility) VALUES('again', 'old', 'me', 'team')")
+    # 다른 폴더로 이동 — 옮겨 간 폴더의 대표가 되지도 않는다
+    run("UPDATE generation SET folder_path = 'e035/C0050' WHERE id = 'old'")
+    expect_latest()
+    assert cards()[1]["e035/C0050"]["rep"] is False
+    run("UPDATE generation SET folder_path = 'e035/C0040' WHERE id = 'old'")
+    # 다른 프로젝트로 이동
+    run("UPDATE generation SET project_id = 'other' WHERE id = 'old'")
+    expect_latest()
+
+
+def test_choosing_again_overwrites_and_a_cover_under_a_subfolder_is_allowed(catalog):
+    seed("a", "e035/C0040")
+    seed("deep", "e035/C0040/takeB")
+    choose("e035/C0040", "a")
+    choose("e035/C0040", "deep")
+    assert cards()[1]["e035/C0040"]["cover"]["id"] == "deep"
+    with db.get_connection() as conn:
+        rows = conn.execute("SELECT generation_id, set_by FROM folder_cover").fetchall()
+    assert [(r["generation_id"], r["set_by"]) for r in rows] == [("deep", "viewer")]
+
+
+@pytest.mark.parametrize("gen_id, folder", [
+    ("foreign", "e035/C0040"),      # 다른 프로젝트의 것
+    ("private", "e035/C0040"),      # 공유 안 된 것
+    ("gone", "e035/C0040"),         # 지운 것
+    ("sibling", "e035/C0040"),      # 옆 폴더의 것
+    ("near", "e035/C004"),          # 이름 앞부분만 같은 폴더
+    ("missing", "e035/C0040"),      # 없는 것
+    ("ok", ""),                     # 폴더 없음
+])
+def test_a_cover_must_be_a_visible_shared_item_inside_that_folder(catalog, gen_id, folder):
+    seed("ok", "e035/C0040")
+    seed("foreign", "e035/C0040", project="other")
+    seed("private", "e035/C0040", shared=False)
+    seed("gone", "e035/C0040", deleted=True)
+    seed("sibling", "e035/C0050")
+    seed("near", "e035/C0040")
+    with pytest.raises(LookupError):
+        choose(folder, gen_id)
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) AS c FROM folder_cover").fetchone()["c"] == 0
+
+
+def test_visibility_matches_the_team_list_for_members_outsiders_and_read_all(catalog):
+    seed("member-item", "e035/C0010")                      # 내가 멤버인 프로젝트의 남의 것
+    seed("mine-elsewhere", "e035/C0010", project="other", creator="viewer")
+    seed("theirs-elsewhere", "e035/C0020", project="other")
+
+    def listed(project, **scope):
+        rows = repo.list_generations(tab="team", project_id=project, folder_path="e035", **scope)
+        return sorted(row["id"] for row in rows)
+
+    member = dict(team_member_projects=["member"], account_uid="viewer")
+    assert listed("member", **member) == ["member-item"]
+    assert {p: f["count"] for p, f in cards()[1].items()} == {"e035/C0010": 1}
+    # 멤버가 아닌 프로젝트 — 내가 만든 것만
+    assert listed("other", **member) == ["mine-elsewhere"]
+    assert {p: f["count"] for p, f in cards(project="other")[1].items()} == {"e035/C0010": 1}
+    with pytest.raises(LookupError):
+        choose("e035/C0020", "theirs-elsewhere", project="other")
+    # 멤버 프로젝트도 uid 도 없는 계정 — 아무것도 안 보인다
+    assert cards(projects=(), viewer="\x00")[0]["folders"] == []
+    # 전체를 보는 계정
+    everything = cards(project="other", projects=None)[1]
+    assert {p: f["count"] for p, f in everything.items()} == {"e035/C0010": 1, "e035/C0020": 1}
+    assert choose("e035/C0020", "theirs-elsewhere", project="other", projects=None)
+
+
+def test_a_cover_only_some_people_can_see_is_neither_shown_nor_deleted_for_the_rest(catalog):
+    seed("hidden-from-outsider", "e035/C0010", project="other")
+    seed("outsiders-own", "e035/C0010", project="other", creator="viewer")
+    choose("e035/C0010", "hidden-from-outsider", project="other", projects=None)
+
+    outsider = cards(project="other")[1]["e035/C0010"]
+    assert outsider["cover"]["id"] == "outsiders-own" and outsider["rep"] is False and outsider["count"] == 1
+    admin = cards(project="other", projects=None)[1]["e035/C0010"]
+    assert admin["cover"]["id"] == "hidden-from-outsider" and admin["rep"] is True
+
+
+def test_the_workspace_filter_narrows_counts_and_covers_like_the_list(catalog):
+    seed("in-ws", "e035/C0010", workspace="ws-1")
+    seed("other-ws", "e035/C0010", workspace="ws-2")
+    seed("only-other", "e035/C0020", workspace="ws-2")
+
+    _, filtered = cards(workspace="ws-1")
+    assert {p: (f["count"], f["cover"]["id"]) for p, f in filtered.items()} == {"e035/C0010": (1, "in-ws")}
+    # 공간 밖의 대표는 그 공간 보기에서 대표로 세지 않는다
+    choose("e035/C0010", "other-ws")
+    assert cards(workspace="ws-1")[1]["e035/C0010"]["rep"] is False
+    assert cards()[1]["e035/C0010"]["cover"]["id"] == "other-ws"
+
+
+def test_covers_of_an_archived_project_are_still_returned(catalog):
+    seed("a", "e035/C0010")
+    with db.get_connection() as conn:
+        conn.execute("UPDATE project SET archived = 1 WHERE id = 'member'")
+    assert cards()[1]["e035/C0010"]["cover"]["id"] == "a"
+
+
+def test_more_folders_than_one_cover_batch(catalog, monkeypatch):
+    monkeypatch.setattr(repo.folder_cover, "_COVER_CHUNK", 2)
+    for index in range(5):
+        seed(f"g{index}", f"e035/C{index:04d}")
+    data, _ = cards()
+    assert [f["cover"]["id"] for f in data["folders"]] == ["g0", "g1", "g2", "g3", "g4"]
+
+
+def test_the_route_scopes_like_the_team_list_and_keeps_the_viewer_even_for_read_all(catalog, monkeypatch):
+    seed("a", "e035/C0010")
+    seen = []
+    real = repo.folder_cards
+
+    def spy(pid, parent, **scope):
+        seen.append((pid, parent, scope))
+        return real(pid, parent, **scope)
+
+    monkeypatch.setattr(repo, "folder_cards", spy)
+
+    member = cards_router.project_folder_cards("member", request(query="parent=e035"), parent="e035")
+    assert [f["path"] for f in member["folders"]] == ["e035/C0010"]
+    assert seen[-1] == ("member", "e035", {
+        "team_member_projects": ["member"], "viewer_uid": "viewer", "workspace_id": None,
+    })
+    # 전체를 보는 계정도 '보는 계정' 은 그대로 넘어간다 — 남의 개인 메타를 가리는 기준이다
+    cards_router.project_folder_cards("member", request(uid="boss", role="admin"), parent="e035", workspace_id=" ws ")
+    assert seen[-1][2] == {"team_member_projects": None, "viewer_uid": "boss", "workspace_id": "ws"}
+    # 멤버가 아닌 계정에게는 폴더 이름도 건수도 나가지 않는다
+    stranger = cards_router.project_folder_cards("member", request(uid="stranger"), parent="e035")
+    assert stranger == {"parent": "e035", "own_count": 0, "folders": []}
+
+
+def test_the_put_route_saves_for_the_actor_and_answers_404_without_saying_why(catalog):
+    seed("a", "e035/C0010")
+    seed("private", "e035/C0010", shared=False)
+    put = request(method="PUT", path="/api/projects/member/folder-cover")
+
+    saved = cards_router.set_project_folder_cover(
+        "member", cards_router.FolderCoverIn(folder_path="e035\\C0010/", generation_id="a"), put,
+    )
+    assert saved == {"folder_path": "e035/C0010", "generation_id": "a"}
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT set_by FROM folder_cover").fetchone()["set_by"] == "viewer"
+
+    for gen_id, uid in (("private", "viewer"), ("a", "stranger")):
+        with pytest.raises(HTTPException) as refused:
+            cards_router.set_project_folder_cover(
+                "member", cards_router.FolderCoverIn(folder_path="e035/C0010", generation_id=gen_id),
+                request(method="PUT", path="/api/projects/member/folder-cover", uid=uid),
+            )
+        assert refused.value.status_code == 404
+    assert cards()[1]["e035/C0010"]["cover"]["id"] == "a"
+
+
+def test_a_local_hub_hands_both_routes_to_the_shared_server_untouched(catalog, monkeypatch):
+    seed("local-only", "e035/C0010")
+    calls = []
+    monkeypatch.setattr(cards_router._proxy, "proxying", lambda: True)
+    monkeypatch.setattr(
+        cards_router._proxy, "proxy_get",
+        lambda path, req: calls.append(("GET", path, req.url.query)) or {"parent": "e035", "own_count": 0, "folders": []},
+    )
+    monkeypatch.setattr(
+        cards_router._proxy, "proxy_json",
+        lambda method, path, **kw: calls.append((method, path, kw)) or {"folder_path": "e035/C0010", "generation_id": "srv"},
+    )
+
+    got = cards_router.project_folder_cards("member", request(query="parent=e035&workspace_id=ws"), parent="e035")
+    put = cards_router.set_project_folder_cover(
+        "member", cards_router.FolderCoverIn(folder_path="e035/C0010", generation_id="srv"),
+        request(method="PUT", path="/api/projects/member/folder-cover"),
+    )
+
+    assert got["folders"] == [] and put["generation_id"] == "srv"
+    assert calls == [
+        ("GET", "/api/projects/member/folder-cards", "parent=e035&workspace_id=ws"),
+        ("PUT", "/api/projects/member/folder-cover", {"body": {"folder_path": "e035/C0010", "generation_id": "srv"}}),
+    ]
+    with db.get_connection() as conn:  # 로컬 DB 에는 쓰지 않는다
+        assert conn.execute("SELECT COUNT(*) AS c FROM folder_cover").fetchone()["c"] == 0
+
+
+def test_an_old_shared_server_answers_route_missing_and_the_hub_passes_it_on(catalog, monkeypatch):
+    def old_server(path, req):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    monkeypatch.setattr(cards_router._proxy, "proxying", lambda: True)
+    monkeypatch.setattr(cards_router._proxy, "proxy_get", old_server)
+    with pytest.raises(HTTPException) as missing:
+        cards_router.project_folder_cards("member", request(), parent="e035")
+    assert (missing.value.status_code, missing.value.detail) == (404, "Not Found")
+
+
+def test_an_existing_database_gets_the_table_and_applying_twice_is_harmless(tmp_path):
+    conn = sqlite3.connect(tmp_path / "old.db")
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.executescript(db.SCHEMA_PATH.read_text(encoding="utf-8"))
+        conn.execute("DROP TABLE folder_cover")
+        db_migrations._migrate(conn)
+        db_migrations._migrate(conn)
+        columns = [row["name"] for row in conn.execute("PRAGMA table_info(folder_cover)")]
+    finally:
+        conn.close()
+    assert columns == ["project_id", "folder_path", "generation_id", "set_by", "set_at"]

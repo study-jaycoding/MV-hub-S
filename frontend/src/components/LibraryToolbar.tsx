@@ -30,6 +30,13 @@ interface Props {
   onToggleFilters: () => void;
   count: number;
   countMore?: boolean; // 로드된 수 뒤에 '+'(다음 페이지 더 있음)
+  // 폴더 묶음 보기(공유 & 리뷰 탭에서 폴더를 골랐고, 묶어 보일 수 있는 조회일 때만 준다) — [컷별 | 전체] 전환.
+  //  summary 는 지금 묶어 보이는 중일 때만: 건수 자리가 '컷 N · M건' 으로 바뀐다(M = 고른 폴더 아래 전부).
+  folderCards?: {
+    on: boolean;
+    onChange: (on: boolean) => void;
+    summary?: { folders: number; items: number };
+  };
   loading: boolean;
   failedCount: number; // 실패 항목 수(>0 이면 '실패 정리' 노출)
   onClearFailed: () => void;
@@ -86,6 +93,7 @@ export function LibraryToolbar({
   onToggleFilters,
   count,
   countMore,
+  folderCards,
   loading,
   failedCount,
   onClearFailed,
@@ -188,8 +196,32 @@ export function LibraryToolbar({
       </div>
 
       <span className="lib-count">
-        {t(typeLabel)} · {count}{countMore ? "+" : ""}{t("건")}{loading && ` · ${t("로딩…")}`}
+        {folderCards?.summary
+          ? `${t("컷")} ${folderCards.summary.folders} · ${folderCards.summary.items}${t("건")}`
+          : <>{t(typeLabel)} · {count}{countMore ? "+" : ""}{t("건")}{loading && ` · ${t("로딩…")}`}</>}
       </span>
+      {folderCards && (
+        <span className="lib-cut-seg" role="group" aria-label={t("폴더 묶음 보기")}>
+          <button
+            type="button"
+            className={folderCards.on ? "on" : ""}
+            aria-pressed={folderCards.on}
+            title={t("바로 아래 폴더(컷)마다 카드 한 장으로 묶어 보기")}
+            onClick={() => folderCards.onChange(true)}
+          >
+            {t("컷별")}
+          </button>
+          <button
+            type="button"
+            className={folderCards.on ? "" : "on"}
+            aria-pressed={!folderCards.on}
+            title={t("이 폴더 아래의 생성물을 한 장씩 모두 보기")}
+            onClick={() => folderCards.onChange(false)}
+          >
+            {t("전체")}
+          </button>
+        </span>
+      )}
       {failedCount > 0 && (
         <button
           className="lib-clear-failed"

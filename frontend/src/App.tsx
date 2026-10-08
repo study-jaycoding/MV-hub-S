@@ -130,6 +130,7 @@ import { GradeStepModal } from "./components/GradeStepModal";
 import { useAskPrompt } from "./lib/prompt";
 import { makeStore } from "./lib/storage";
 import type {
+  FolderCard,
   Generation,
   History,
   InfoTarget,
@@ -138,6 +139,9 @@ import type {
   WorkspaceContext,
 } from "./types";
 import { api } from "./api";
+import { FolderCardGrid } from "./components/FolderCardGrid";
+import { folderCardsScope, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "./lib/folderCards";
+import { useFolderCards } from "./lib/useFolderCards";
 import { buildSpotlightCreateBody } from "./lib/spotlightSubmit";
 import { resolveAutoAspectRatio } from "./lib/aspectAuto";
 import {
@@ -379,8 +383,9 @@ export default function App() {
   //  처음부터 다시 받는다. 사이드바 필터(filters)는 건드리지 않는다 — patch() 는 다음 생성 위치까지 바꾼다.
   //  ctx = 연 시점의 문맥. 탭·보던 위치·휴지통 보기·계정·공간이 바뀌면 그 렌더부터 닫힌 것으로 본다(아래 listPeek).
   //  genId = 이름표를 누른 그 카드 — 창 안에서 '방금 누른 카드' 로 표시하고, 아래쪽에 있으면 보이게 내려가서 연다.
+  //  묶음 보기의 컷 카드로 열면 그런 카드가 없다(null) — 표시도 이동도 없이 맨 위부터 보인다.
   const [folderWindow, setFolderWindow] = useState<{
-    projectId: string | null; path: string; projectName: string; genId: string; ctx: string;
+    projectId: string | null; path: string; projectName: string; genId: string | null; ctx: string;
   } | null>(null);
   // 회색(비활성) — 카드별 비활성화 표시(d 키, gen id 기준 로컬). grayOn(useLibraryFilters)=ON 이면 목록에서 제외.
   const disabledGen = useDisabledGenerations();
@@ -436,7 +441,10 @@ export default function App() {
   listPeekRef.current = listPeek;
   const listGenQuery = useMemo(() => (listPeek ? folderPeekQuery(genQuery, listPeek) : genQuery), [genQuery, listPeek]);
   // 창의 격자는 열 때마다 새로 마운트되므로 nonce 는 고정값이면 된다(한 번 열 때 한 번만 이동).
-  const listPeekScroll = useMemo(() => (listPeek ? { generationId: listPeek.genId, nonce: 0 } : null), [listPeek]);
+  const listPeekScroll = useMemo(
+    () => (listPeek?.genId ? { generationId: listPeek.genId, nonce: 0 } : null),
+    [listPeek],
+  );
   const {
     archivedCount,
     facets,
@@ -444,6 +452,7 @@ export default function App() {
     gens,
     gensRef,
     hasMore,
+    listRevision,
     loadError,
     loadMore,
     loading,
@@ -471,6 +480,46 @@ export default function App() {
     projectWorkspaceId,
     composeListEnabled: folderPeek, // 창이 열려 있을 때만 compose 탭에서 목록 조회·추가 로드
   });
+  // ── 폴더 묶음 보기(공유 & 리뷰 탭, Jay 2026-10-08) ──
+  //  폴더를 고르면 그 바로 아래 폴더(컷)마다 카드 한 장으로 보인다. 컷 카드를 누르면 위의 폴더 창이 열리고, 창 안 카드
+  //  위의 [대표] 로 그 폴더의 대표(팀이 같이 보는 값 — 공유 서버가 권위)를 정한다. 묶어 보일 수 있는 조회인지는
+  //  lib/folderCards 가 정한다(무엇을 찾는 조건이 켜져 있으면 지금처럼 한 장씩).
+  //  ponytail: 묶어 보이는 동안에도 본 목록(한 장씩)은 지금처럼 받는다 — 그 요청까지 줄이려면 목록 훅에 '목록 끄기'가 필요하다.
+  const [cutView, setCutViewState] = useState(() => LS.get("cutView", "1") === "1");
+  const cutScope = useMemo(() => folderCardsScope(genQuery, grayOn), [genQuery, grayOn]);
+  // 창이 떠 있으면 그 폴더의 부모를 받는다 — 그 폴더의 지금 대표를 알려고. 컷 카드로 연 창이면 뒤의 묶음과 같은 요청이다.
+  const cardsScope = useMemo<FolderCardsScope | null>(() => {
+    if (filters.tab !== "team" || !authReady || !workspaceQueryReady) return null;
+    if (!listPeek) return cutView ? cutScope : null;
+    if (!listPeek.projectId) return null;
+    const workspaceId = singleTeamWorkspace(genQuery);
+    return { projectId: listPeek.projectId, parent: parentFolder(listPeek.path), ...(workspaceId ? { workspaceId } : {}) };
+  }, [filters.tab, authReady, workspaceQueryReady, listPeek, cutView, cutScope, genQuery]);
+  const { cards: folderCards, unsupported: folderCardsUnsupported, reload: reloadFolderCards } = useFolderCards({
+    scope: cardsScope, authKey: libraryAuthKey, reloadKey: listRevision,
+  });
+  // 본문에 그릴 묶음 — 받아 온 카드가 '지금 고른 폴더'의 것이고 하위 폴더가 하나라도 있을 때만. 창이 떠 있어도 뒤에 그대로 둔다.
+  const cutCards =
+    cutView && cutScope && cardsScope && folderCards && folderCards.folders.length > 0 &&
+    cardsScope.projectId === cutScope.projectId && cardsScope.parent === cutScope.parent &&
+    cardsScope.workspaceId === cutScope.workspaceId
+      ? folderCards
+      : null;
+  const cutMode = cutCards !== null;
+  // 창이 보여 주는 폴더의 지금 대표 — 표지가 '가장 최근 것' 일 뿐이면 대표가 아니다(null).
+  const peekFolderCard = listPeek ? folderCards?.folders.find((folder) => folder.path === listPeek.path) : undefined;
+  const peekCoverId = peekFolderCard?.rep ? peekFolderCard.cover.id : null;
+  // 한 장씩 → 묶음으로 바뀌는 순간 고른 것을 비운다 — 남기면 보이지 않는 카드에 삭제·공유가 걸린다.
+  //  (묶음 화면에는 격자가 없어 새로 고를 길도 없다. 창이 떠 있으면 고른 것은 창의 카드라 건드리지 않는다.)
+  useLayoutEffect(() => {
+    if (!cutMode || listPeekRef.current) return;
+    selectedRef.current = new Set();
+    setSelected(new Set());
+  }, [cutMode]);
+  const setCutView = useCallback((on: boolean) => {
+    LS.set("cutView", on ? "1" : "0");
+    setCutViewState(on);
+  }, []);
   // 캔버스(compose 탭)에서 태그하면 scheduleTagReload 가 compose·light 라 facets 를 안 불러와
   // '등록된 태그' 패널이 탭을 나갔다 와야 갱신되던 문제 → 새 태그 이름을 facets.tags 에 낙관적 병합해 즉시 반영.
   const mergeFacetTags = useCallback(
@@ -818,15 +867,46 @@ export default function App() {
   backQueryKeyRef.current = generationQueryKey(genQuery);
   // 창을 닫은 뒤 초점을 본 목록 격자로 돌려줄 뜻(닫는 순간의 문맥 = listPeekCtx). null = 돌려주지 않는다.
   const refocusGridRef = useRef<string | null>(null);
-  const openFolderWindow = useCallback((g: Generation) => {
-    const f = filtersRef.current;
-    if (f.tab === "compose" || !g.folder_path) return;
+  const openFolderPath = useCallback((folder: {
+    projectId: string | null; path: string; projectName: string; genId: string | null;
+  }) => {
+    if (filtersRef.current.tab === "compose" || !folder.path) return;
     beginComposeList({ keep: backQueryKeyRef.current });
     setSelected(new Set());
-    setFolderWindow({
-      projectId: g.project_id, path: g.folder_path, projectName: g.project_name ?? "", genId: g.id, ctx: listPeekCtxRef.current,
-    });
+    setFolderWindow({ ...folder, ctx: listPeekCtxRef.current });
   }, [filtersRef, beginComposeList, setSelected]);
+  const openFolderWindow = useCallback((g: Generation) => {
+    if (!g.folder_path) return;
+    openFolderPath({ projectId: g.project_id, path: g.folder_path, projectName: g.project_name ?? "", genId: g.id });
+  }, [openFolderPath]);
+  // 묶음 보기의 컷 카드 → 그 폴더의 창. 누른 생성물 카드가 없으니 '방금 누른 카드'·이동 없이 맨 위부터 연다.
+  const openFolderCard = useCallback((folder: FolderCard) => {
+    openFolderPath({
+      projectId: folder.cover.project_id, path: folder.path, projectName: folder.cover.project_name ?? "", genId: null,
+    });
+  }, [openFolderPath]);
+  // 폴더 창의 [대표] — 그 폴더의 대표를 정한다. 누르자마자 먼저 그리지 않는다: 저장하는 동안 단추를 잠그고, 끝나면(성공·실패
+  //  모두) 서버 값을 다시 읽은 뒤에 푼다 — 먼저 그리면 저장 전에 출발한 조회가 늦게 와서 방금 고른 대표를 지운다(Codex 설계 검토).
+  //  다시 읽기는 '지금' 문맥의 것을 부른다: 저장 중에 창을 닫으면 닫기 전의 것은 옛 폴더를 받아 뒤 묶음의 카드를 밀어낸다.
+  const [savingRep, setSavingRep] = useState(false);
+  const savingRepRef = useRef(false);
+  const reloadFolderCardsRef = useRef(reloadFolderCards);
+  reloadFolderCardsRef.current = reloadFolderCards;
+  const pickFolderCover = useCallback(async (g: Generation) => {
+    const peek = listPeekRef.current;
+    if (!peek?.projectId || savingRepRef.current) return;
+    savingRepRef.current = true;
+    setSavingRep(true);
+    try {
+      await api.setFolderCover(peek.projectId, peek.path, g.id);
+    } catch (error) {
+      flash(`${t("대표를 정하지 못했습니다")} — ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      await reloadFolderCardsRef.current();
+      savingRepRef.current = false;
+      setSavingRep(false);
+    }
+  }, [flash, t]);
   const closeFolderWindow = useCallback(() => {
     // 한 번만 닫는다 — 같은 Esc 가 창의 키 처리와 전역 Esc 훅에 둘 다 닿을 수 있다. 두 번 비우면 방금 시작한 본 목록 조회의
     //  응답을 버려 뒤 목록이 빈 채로 남는다.
@@ -1764,7 +1844,8 @@ export default function App() {
     if (refocusGridRef.current !== null && refocusGridRef.current !== listPeekCtx) refocusGridRef.current = null;
     if (refocusGridRef.current === null || staleList || loading) return;
     refocusGridRef.current = null; // 한 번만 — 격자가 없으면(빈 목록·실패) 그대로 끝낸다
-    document.querySelector<HTMLElement>("main.main .gen-grid")?.focus({ preventScroll: true });
+    // 묶음 보기면 컷 카드 격자가 그 자리다(둘 중 하나만 떠 있다)
+    document.querySelector<HTMLElement>("main.main .gen-grid, main.main .cut-grid")?.focus({ preventScroll: true });
   }, [staleList, loading, listPeekCtx]);
   useEffect(() => {
     const cancel = () => { refocusGridRef.current = null; };
@@ -1903,6 +1984,22 @@ export default function App() {
       onToggleFilters={() => setShowFilters((v) => !v)}
       count={gridGens.length}
       countMore={hasMore}
+      // 전환 단추는 묶어 보일 수 있을 때만(창 안의 툴바에는 없다). 켜 둔 채로는 실제로 묶어 보이는 동안에만 보인다 —
+      //  하위 폴더가 없는 폴더에서는 바꿀 것이 없다.
+      folderCards={
+        !listPeek && cutScope && !folderCardsUnsupported && (cutMode || !cutView)
+          ? {
+              on: cutView,
+              onChange: setCutView,
+              summary: cutCards
+                ? {
+                    folders: cutCards.folders.length,
+                    items: cutCards.folders.reduce((sum, folder) => sum + folder.count, cutCards.own_count),
+                  }
+                : undefined,
+            }
+          : undefined
+      }
       grayOn={grayOn}
       onToggleGray={() => setGrayOn((v) => !v)}
       loading={loading}
@@ -1997,6 +2094,31 @@ export default function App() {
       // 폴더 이름표는 목록 탭의 본 목록에서만 — '폴더 보기' 창 안 격자(캔버스·목록 탭 모두)에는 붙이지 않는다(그 창이 이미
       //  폴더 보기다). 휴지통 보기도 뺀다: 휴지통 조회에는 폴더 조건이 없다.
       onOpenFolder={filters.tab === "compose" || filters.deleted_only || listPeek ? undefined : openFolderWindow}
+      // 폴더 창(공유 & 리뷰 탭) — 카드 위에 그 폴더의 대표 표시/지정. 캔버스 '생성 결과' 창과 같은 자리·같은 모양이다.
+      //  그 폴더의 카드를 받아 온 뒤에만 그린다(옛 공유 서버·받기 전에는 없다).
+      cellHeader={
+        listPeek?.projectId && filters.tab === "team" && folderCards
+          ? (g: Generation) =>
+              g.id === peekCoverId ? (
+                <span className="scene-varpop-cur">{t("★ 대표")}</span>
+              ) : g.assets?.[0] && !g.deleted ? (
+                <button
+                  type="button"
+                  className="scene-varpop-rep"
+                  disabled={savingRep}
+                  title={t("이 결과를 이 폴더의 대표로 지정 (팀이 같이 봅니다)")}
+                  // preventDefault = 단추가 초점을 가져가 격자가 움직이는 것을 막는다. mousedown 에서 바로 정한다(생성 결과 창과 같다).
+                  //  왼쪽 단추만 — 우클릭·휠 클릭으로 팀의 대표가 바뀌면 안 된다(Codex 코드 리뷰).
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    if (e.button === 0) void pickFolderCover(g);
+                  }}
+                >
+                  {t("대표")}
+                </button>
+              ) : null
+          : undefined
+      }
       hasMore={hasMore}
       loadingMore={loadingMore}
       onLoadMore={loadMore}
@@ -2382,7 +2504,13 @@ export default function App() {
             <main className="main" aria-busy={staleList || undefined} {...(staleList ? { inert: "" } : {})}>
               {/* 폴더 창이 떠 있으면 툴바·격자는 창에 그린다(하나뿐인 격자) — 뒤 목록 자리는 닫을 때까지 비워 둔다. */}
               {!listPeek && libraryToolbar}
-              {listPeek ? null : !workspaceQueryReady ? (
+              {/* 묶음 보기 — 격자 자리에 컷 카드. 폴더 창이 떠 있어도 뒤에 그대로 둔다(body 가 inert 라 눌리지 않는다). */}
+              {cutCards ? (
+                <FolderCardGrid
+                  folders={cutCards.folders} scale={scale} fill={fill} onOpen={openFolderCard}
+                  outside={cutCards.own_count} onShowAll={() => setCutView(false)}
+                />
+              ) : listPeek ? null : !workspaceQueryReady ? (
                 <div className="grid-wrap"><div className="empty" role="status">
                   <p>{t("워크스페이스를 확인한 뒤 공유물을 표시합니다.")}</p>
                   <button className="settings-action" onClick={() => workspaceFollow?.onChange("all")}>

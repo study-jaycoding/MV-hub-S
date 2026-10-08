@@ -146,6 +146,21 @@ export interface FolderReviewCounts {
   shared: number;
 }
 
+// 공유 & 리뷰 탭의 폴더 카드 — 고른 폴더 바로 아래 폴더 하나(그 아래 전부를 센다).
+export interface FolderCard {
+  path: string;
+  name: string; // 고른 폴더 아래의 이름(C0040)
+  count: number;
+  rep: boolean; // 표지가 팀이 정한 대표인가(아니면 가장 최근 것)
+  cover: Generation;
+}
+
+export interface FolderCards {
+  parent: string;
+  own_count: number; // 고른 폴더에 직접 든 것 — 어느 카드에도 들지 않는다
+  folders: FolderCard[];
+}
+
 export interface ProjectFolderNode {
   name: string;
   path: string; // Render 폴더 기준 상대 경로. 루트 Render 는 빈 문자열.

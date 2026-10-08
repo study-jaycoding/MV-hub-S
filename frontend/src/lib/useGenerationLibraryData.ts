@@ -108,6 +108,9 @@ export function useGenerationLibraryData({
     staleListRef.current = on;
     setStaleListState(on);
   }, []);
+  // 지금 문맥의 새 첫 쪽을 적용할 때마다 하나씩 오른다 — 목록과 같은 때에 다시 받아야 하는 것(공유 탭의 폴더 카드)의 신호.
+  //  목록 배열은 내용이 같으면 그대로 두므로(reconcileArrayState), 배열이 바뀌었는지로는 '다시 받았다' 를 알 수 없다.
+  const [listRevision, setListRevision] = useState(0);
   // 탭별 마지막 목록 캐시 — 탭을 오갈 때 이전에 보던 그 탭 화면을 '즉시' 띄우고(딜레이 제거),
   // 뒤에서 fetch 가 최신본으로 조용히 갱신한다. sig(쿼리 직렬화)가 다르면(필터 초기화 등) 캐시를 안 쓴다.
   const tabCacheRef = useRef<Record<string, GenerationTabCacheEntry>>({});
@@ -379,6 +382,7 @@ export function useGenerationLibraryData({
         setHasMore(page.length >= GEN_PAGE);
         setLoadError(null);
         setStaleList(false); // 새 첫 쪽이 들어왔다 — 사본 구간 끝(내용이 사본과 같아도 푼다)
+        setListRevision((revision) => revision + 1);
         lastLoadedTabRef.current = tab;
         tabCacheRef.current[tab] = {
           gens: g,
@@ -581,6 +585,7 @@ export function useGenerationLibraryData({
     gens,
     gensRef,
     hasMore,
+    listRevision,
     loadError,
     loadMore,
     loading,

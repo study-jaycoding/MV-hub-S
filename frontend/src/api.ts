@@ -1,6 +1,7 @@
 // 타입 안전 API 클라이언트. 모든 호출은 /api 프록시를 통해 로컬 백엔드로.
 import type {
   Facets,
+  FolderCards,
   GenQuery,
   GenStats,
   Generation,
@@ -351,6 +352,23 @@ export const api = {
     jsonFetch<GenerationLocation>("/api/generations/locate", {
       method: "POST", body: jsonBody(request),
     }).then((location) => ({ ...location, items: normalizeGenerations(location.items) })),
+  // 공유 & 리뷰 탭의 폴더 카드 — parent 바로 아래 폴더마다 건수·표지(팀이 정한 대표, 없으면 가장 최근 것).
+  //  옛 공유 서버에는 이 경로가 없다(404 "Not Found" — isRouteMissing 으로 가려 묶음 보기를 끈다).
+  folderCards: (projectId: string, parent: string, workspaceId?: string) => {
+    const params = new URLSearchParams({ parent });
+    if (workspaceId) params.set("workspace_id", workspaceId);
+    return jsonFetch<FolderCards>(`/api/projects/${pathPart(projectId)}/folder-cards?${params.toString()}`)
+      .then((cards) => ({
+        ...cards,
+        folders: cards.folders.map((folder) => ({ ...folder, cover: normalizeGenerations([folder.cover])[0] })),
+      }));
+  },
+  // 그 폴더의 대표를 정한다(팀이 같이 본다). 서버가 '그 폴더 아래에서 내가 볼 수 있는 공유물' 인지 확인한다.
+  setFolderCover: (projectId: string, folderPath: string, generationId: string) =>
+    jsonFetch<{ folder_path: string; generation_id: string }>(
+      `/api/projects/${pathPart(projectId)}/folder-cover`,
+      { method: "PUT", body: jsonBody({ folder_path: folderPath, generation_id: generationId }) },
+    ),
   // 한 페이지(커서 뒤 limit개)만 받아온다. 무한 스크롤이 호출. cursor=null 이면 첫 페이지.
   // 서버가 모든 필터를 거르므로 반환된 페이지가 곧 화면에 그릴 정확한 결과.
   // `lean_params=1` — 목록 응답에서 `params.prompt` 를 빼 달라는 **명시적 요청**(C-1).
