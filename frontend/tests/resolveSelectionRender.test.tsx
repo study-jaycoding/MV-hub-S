@@ -1145,7 +1145,7 @@ it("App 공유·리뷰: 폴더를 고르면 바로 아래 폴더마다 카드 �
   // 컷 카드 → 그 폴더의 창. 누른 생성물 카드가 없으니 표시·이동 없이 연다. 뒤의 컷 카드는 그대로 있다.
   const backKey = JSON.stringify(librarySnapshot!.genQuery);
   beginList.mockClear();
-  act(() => cutTile("shot").click());
+  act(() => cutTile("shot").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))); // 두 번 클릭 = 창(한 번은 고르기)
   await settle();
   expect(peekWindow()!.querySelector(".folder-peek-title")!.textContent).toBe("Resolve project / episode/shot");
   expect(librarySnapshot!.genQuery).toMatchObject({ tab: "team", project_id: "resolve-project", folder_path: "episode/shot" });
@@ -1204,7 +1204,7 @@ it("App 공유·리뷰: 대표 저장이 실패해도 서버 값을 다시 읽�
   const folderCards = vi.fn().mockResolvedValue(cutCards());
   const setFolderCover = vi.fn().mockRejectedValue(new Error("404: 이 폴더에서 볼 수 있는 공유물이 아닙니다"));
   await mountTeamFolder({ folderCards, setFolderCover });
-  act(() => cutTile("shot").click());
+  act(() => cutTile("shot").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))); // 두 번 클릭 = 창(한 번은 고르기)
   await settle();
   const requests = folderCards.mock.calls.length;
   act(() => pill("target")!.props.onMouseDown!({ preventDefault: () => {}, button: 0 }));
