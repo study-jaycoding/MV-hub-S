@@ -106,11 +106,14 @@ def test_an_empty_parent_lists_the_top_folders_and_names_that_only_share_a_prefi
     seed("a", "e001/c0010")
     seed("b", "e035/C001")
     seed("c", "e035/C0010")
-    seed("root", None)                       # 폴더가 없는 것은 폴더 카드에 들지 않는다
+    seed("root", None)                       # 폴더 없이 프로젝트에 직접 든 것 — 맨 위에서는 '폴더 밖'으로 센다
+    seed("root2", "")
 
     top, top_by = cards("")
-    assert [f["path"] for f in top["folders"]] == ["e001", "e035"] and top["own_count"] == 0
+    assert [f["path"] for f in top["folders"]] == ["e001", "e035"] and top["own_count"] == 2
     assert top_by["e035"]["count"] == 2
+    # 폴더를 고르면 폴더 없는 것은 그 범위 밖이다
+    assert cards("e035")[0]["own_count"] == 0
 
     _, cuts = cards("e035")
     assert {path: f["count"] for path, f in cuts.items()} == {"e035/C001": 1, "e035/C0010": 1}
