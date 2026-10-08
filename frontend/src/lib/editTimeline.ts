@@ -302,6 +302,28 @@ export function insertClip(
   return { ...doc, clips: [...doc.clips, next] };
 }
 
+// 우클릭 메뉴 — 생성물을 지정한 트랙에 둔다. 그 자리에 다른 클립이 있으면 그것을 빼고 들어간다(교체, Jay 2026-10-08).
+//  이미 이 컷에 넣은 생성물이면 새로 넣지 않고 그 클립을 옮긴다(꺼짐·길이는 그대로 — 떠난 트랙은 빈다).
+//  도착 트랙이나 떠나는 트랙이 잠겨 있으면 거부한다. 이미 그 트랙에 있으면 바뀐 것이 없다(null).
+export function placeClip(
+  doc: EditDoc,
+  clip: { cut: string; gen: string; job?: string | null; kind: "video" | "image"; dur: number },
+  track: number,
+): EditDoc | null {
+  if (!positiveInt(track) || isLocked(doc, track)) return null;
+  const own = doc.clips.find((item) => item.cut === clip.cut && item.gen === clip.gen);
+  if (own && (own.track === track || isLocked(doc, own.track))) return null;
+  const next: EditClip = own ? { ...own, track } : {
+    cut: clip.cut, gen: clip.gen, track, kind: clip.kind,
+    dur: validSeconds(clip.dur) ?? DEFAULT_SEC,
+    ...(clip.job ? { job: clip.job } : {}),
+  };
+  return {
+    ...doc,
+    clips: [...doc.clips.filter((item) => item !== own && !(item.cut === clip.cut && item.track === track)), next],
+  };
+}
+
 function pick(doc: EditDoc, keys: Iterable<string>): EditClip[] | null {
   const wanted = new Set(keys);
   const picked = doc.clips.filter((clip) => wanted.has(clipKey(clip)));

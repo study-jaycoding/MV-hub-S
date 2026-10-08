@@ -16,6 +16,7 @@ import {
   linkClip,
   moveClipToTrack,
   parseEditDoc,
+  placeClip,
   posAt,
   removeClips,
   setClipDurs,
@@ -197,6 +198,33 @@ describe("문서 편집", () => {
     expect(tracksOf(moveClipToTrack(d, key("c1", "a"), 2))).toEqual({ a: 2, b: 3, c: 3 });
     expect(moveClipToTrack(d, key("c1", "a"), 1)).toBeNull();
     expect(moveClipToTrack(d, key("c1", "a"), 0)).toBeNull();
+  });
+
+  // 카드 우클릭 메뉴(Jay 2026-10-08) — 찬 트랙을 고르면 교체, 빈 트랙이면 그 자리에 들어간다.
+  it("트랙을 골라 넣기 — 찬 트랙은 교체, 빈 트랙은 그 자리에, 이미 넣은 것은 옮긴다", () => {
+    const d = doc([clip("c1", "a", 1, { off: true, dur: 3 }), clip("c1", "b", 2), clip("c2", "y", 1)]);
+    const fresh = { cut: "e070/c1", gen: "new", job: "j", kind: "video" as const, dur: 8 };
+    const replaced = placeClip(d, fresh, 1)!; // V1 의 a 를 빼고 들어간다 — 다른 컷의 V1(y)은 그대로
+    expect(tracksOf(replaced)).toEqual({ b: 2, y: 1, new: 1 });
+    expect(replaced.clips.find((c) => c.gen === "new")).toEqual({ cut: "e070/c1", gen: "new", track: 1, kind: "video", dur: 8, job: "j" });
+    expect(tracksOf(placeClip(d, fresh, 3))).toEqual({ a: 1, b: 2, y: 1, new: 3 }); // 빈 트랙 — 쌓인다
+    expect(placeClip(d, { ...fresh, dur: NaN }, 3)!.clips[3].dur).toBe(DEFAULT_SEC);
+
+    // 이미 이 컷에 넣은 것 — 새로 넣지 않고 옮긴다(꺼짐·길이는 그대로). 찬 자리는 교체하고 떠난 트랙은 빈다.
+    const moved = placeClip(d, { cut: "e070/c1", gen: "a", kind: "video", dur: 99 }, 2)!;
+    expect(moved.clips).toEqual([clip("c2", "y", 1), clip("c1", "a", 2, { off: true, dur: 3 })]);
+    expect(placeClip(d, { cut: "e070/c1", gen: "a", kind: "video", dur: 99 }, 1)).toBeNull(); // 이미 그 트랙
+    expect(parseEditDoc(JSON.parse(JSON.stringify(replaced)))).toEqual(replaced); // (컷, 트랙)·(컷, 생성물)은 하나뿐
+    expect(parseEditDoc(JSON.parse(JSON.stringify(moved)))).toEqual(moved);
+  });
+
+  it("트랙을 골라 넣기 — 도착 트랙이나 떠나는 트랙이 잠겨 있으면 거부한다", () => {
+    const d = doc([clip("c1", "a", 1), clip("c1", "b", 2)], { tracksLocked: [2] });
+    const fresh = { cut: "e070/c1", gen: "new", kind: "image" as const, dur: 5 };
+    expect(placeClip(d, fresh, 2)).toBeNull(); // 잠긴 트랙의 클립은 교체하지 않는다
+    expect(placeClip(d, { ...fresh, gen: "b" }, 3)).toBeNull(); // 잠긴 트랙에서 떠나지 못한다
+    expect(placeClip(d, fresh, 0)).toBeNull();
+    expect(tracksOf(placeClip(d, fresh, 1))).toEqual({ b: 2, new: 1 });
   });
 
   it("끄기는 하나라도 켜져 있으면 모두 끄고, 모두 꺼져 있으면 모두 켠다", () => {

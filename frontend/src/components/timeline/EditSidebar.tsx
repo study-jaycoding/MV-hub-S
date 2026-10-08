@@ -22,6 +22,7 @@ export function EditSidebar({
   seq,
   cut,
   offCuts,
+  freshByProject,
   onPickFolder,
   onReload,
   onGrabFocus,
@@ -34,6 +35,8 @@ export function EditSidebar({
   seq: string; // 열린 프로젝트에서 고른 시퀀스 폴더(없으면 "")
   cut: string; // 재생헤드가 있는 컷(없으면 "")
   offCuts: ReadonlySet<string>; // 비활성 컷(폴더) — 다른 탭의 사이드바처럼 회색으로
+  // 프로젝트 행의 +N — 공유 & 리뷰 사이드바와 같은 표시다(폴더 행의 +N·★최종·R보류는 트리 노드에 실려 온다).
+  freshByProject: Readonly<Record<string, number>>;
   onPickFolder: (path: string) => void;
   onReload: () => void;
   onGrabFocus: () => void; // 여기를 누르면 편집 화면이 키를 받게 초점을 옮긴다
@@ -75,6 +78,11 @@ export function EditSidebar({
                         <span className="proj-fold">{open ? "▾" : "▸"}</span>
                         <span className="proj-drag-handle" />
                         <span className="proj-name">{project.name}</span>
+                        {(freshByProject[project.id] || 0) > 0 && (
+                          <span className="proj-newcount" title={t("마지막 확인 이후 새로 공유됨")}>
+                            +{freshByProject[project.id]}
+                          </span>
+                        )}
                       </button>
                       {open && tree.state === "loading" && <div className="side-folder-note">{t("폴더 로딩...")}</div>}
                       {open && tree.note && (

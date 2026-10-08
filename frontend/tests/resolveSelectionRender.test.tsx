@@ -1166,6 +1166,20 @@ it.each(["my", "compose"])("App 편집 탭(밑의 탭 %s): 컷을 더블클릭�
   expect(localStorage.getItem("ch.lib.generationScopeV1")).toBe(scopeBefore);
   expect(promptSnapshot?.activeProjectId).toBe("generation-project");
 
+  // 창의 카드를 우클릭하면 편집 탭의 트랙 메뉴로 간다(편집 탭이 ref 에 걸어 둔다). 편집 탭이 표를 다시 알리면 창의 카드 표만
+  //  바뀐다 — 창은 그대로다(열릴 때의 '그 카드로 내려가기'를 다시 하지 않는다).
+  expect(editProps!.peekPath).toBe("e035/C0050");
+  const cardMenu = vi.fn();
+  editProps!.cardMenuRef.current = cardMenu;
+  gridSnapshot!.onCardMenu!({ id: "g1" } as never, 5, 6);
+  expect(cardMenu).toHaveBeenCalledExactlyOnceWith({ id: "g1" }, 5, 6);
+  const scrollAtOpen = gridSnapshot!.resolveScrollRequest;
+  const moved = { g1: { label: "V1 - 선택 카드", lead: true } };
+  act(() => editProps!.onPeekMarks(moved));
+  expect(gridSnapshot!.cardMarks).toEqual(moved);
+  expect(gridSnapshot!.resolveScrollRequest).toBe(scrollAtOpen);
+  expect(beginList).toHaveBeenCalledTimes(1);
+
   // 창에서 크게 보기를 열면 뒤로가기 기록이 하나 쌓인다 — 그 기록의 탭은 저장된 탭이다(임시 '공유 & 리뷰'가 남으면, 창을 닫은
   //  뒤 앞으로 가기로 그 기록에 돌아왔을 때 밑의 탭이 바뀐다).
   act(() => gridSnapshot!.onPreview({ url: "/media/x.png", type: "image", name: "x" }));
@@ -1186,6 +1200,7 @@ it.each(["my", "compose"])("App 편집 탭(밑의 탭 %s): 컷을 더블클릭�
   expect(beginList).toHaveBeenLastCalledWith(); // 창의 카드가 밑의 탭 목록에 남지 않게 비운다
   expect(editProps!.keysActive).toBe(true);
   expect(editProps!.reloadSignal).toBe(1); // 편집 탭은 공유 목록을 다시 받는다(창에서 공유를 풀거나 지웠을 수 있다)
+  expect(editProps!.peekPath).toBeNull();
   expect(storedTab()).toBe(tab);
   expect(localStorage.getItem("ch.lib.generationScopeV1")).toBe(scopeBefore);
 

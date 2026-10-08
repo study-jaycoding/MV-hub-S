@@ -2,14 +2,17 @@
 // 모집단 = '공유 & 리뷰' 탭이 자동 범위(지금 워크스페이스)에서 필터 없이 그 폴더에 보여 주는 것(일반 공유·보류·최종).
 // 그 탭의 '전체 보기'처럼 allWorkspaces 를 켜면 워크스페이스 조건 없이 묻는다(워크스페이스를 못 정한 계정의 출구).
 // 계약은 docs/EDIT_TAB.md.
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { api, GEN_PAGE, type GenCursor } from "../api";
-import type { Generation, GenQuery, Project, WorkspaceContext } from "../types";
+import type { FolderReviewCounts, Generation, GenQuery, Project, WorkspaceContext } from "../types";
 import { isUsableGen } from "./editTimeline";
+import { freshItemsInScope } from "./folderContextMenu";
 import { buildFolderCountTree, type FolderCountTreeNode } from "./folderTreeModel";
 import { t } from "./i18n";
 import { matchesWorkspaceFilter, sharedWorkspaceFilter, workspaceViewKey } from "./libraryWorkspaceScope";
+import type { TeamFreshItem } from "./projectApi";
 import { visibleProjectFolderRoots } from "./projectFolderTree";
+import { getTeamBase, getTeamSeenVersion, isAckedFor, subscribeTeamSeen } from "./teamSeen";
 
 export const EDIT_LIST_CAP = 2000; // ponytail: 시퀀스 하나에 이보다 많으면 '최대 2,000건 표시' — 넘는 팀이 생기면 컷 단위 조회로
 
@@ -118,6 +121,25 @@ export interface EditTree {
 
 const EMPTY_TREE: EditTree = { state: "idle", roots: [], complete: false, note: null };
 
+// 받은 그대로 든다 — 폴더 옆 표시(새 항목 +N)가 바뀔 때 트리를 다시 받지 않고 다시 엮기만 한다.
+//  counts = null 이면 개수 조회에 실패했다(디스크 폴더만 보인다). review = null 이면 서버가 상태별 개수를 주지 않는다.
+interface TreeData {
+  state: EditTree["state"];
+  disk: FolderCountTreeNode[];
+  counts: Record<string, number> | null;
+  review: Record<string, FolderReviewCounts> | null;
+  complete: boolean;
+  note: string | null;
+}
+const EMPTY_DATA: TreeData = { state: "idle", disk: [], counts: null, review: null, complete: false, note: null };
+
+// 공유 & 리뷰 사이드바와 같은 조회 — 폴더별 개수와 상태별(최종·보류) 개수가 한 응답에 온다.
+const fetchFolderCounts = (projectId: string) =>
+  api.projectFolderCountsBatch([projectId], "team").then(
+    (r) => ({ counts: r.counts?.[projectId] ?? {}, review: r.review_counts?.[projectId] ?? null }),
+    () => null,
+  );
+
 export function useEditProjects({
   authKey,
   workspace,
@@ -126,7 +148,15 @@ export function useEditProjects({
   authKey: string;
   workspace: WorkspaceContext;
   projectId: string | null;
-}): { projects: Project[]; projectsState: "loading" | "ok" | "error"; tree: EditTree; reload: () => void } {
+}): {
+  projects: Project[];
+  projectsState: "loading" | "ok" | "error";
+  tree: EditTree;
+  reload: () => void;
+  // 폴더 옆 숫자(개수·최종·보류·새 항목)만 다시 받는다 — 디스크 폴더는 다시 읽지 않고, 받는 동안 트리를 치우지도 않는다.
+  reloadCounts: () => void;
+  freshByProject: Record<string, number>; // 프로젝트 행의 +N(마지막 확인 이후 새로 공유된 것)
+} {
   const [nonce, reload] = useReducer((n: number) => n + 1, 0);
   const workspaceId = workspace.scope === "team" ? workspace.id || undefined : undefined;
   const listCtx = JSON.stringify([authKey, workspaceId ?? null]);
@@ -155,16 +185,18 @@ export function useEditProjects({
   const linksKnown = listed.linked !== null;
   const isLinked = !!projectId && !!listed.linked?.has(projectId);
   const treeCtx = JSON.stringify([listCtx, projectId, isLinked, linksKnown]);
-  const [tree, setTree] = useState<{ ctx: string } & EditTree>({ ctx: "", ...EMPTY_TREE });
+  const [tree, setTree] = useState<{ ctx: string } & TreeData>({ ctx: "", ...EMPTY_DATA });
+  const countRun = useRef(0); // 개수 조회의 순번 — 늦게 온 옛 응답이 새 숫자를 덮지 않게
 
   useEffect(() => {
     if (!projectId || !listOk) return;
     let alive = true;
-    setTree((prev) => (prev.ctx === treeCtx ? { ...prev, state: "loading" } : { ctx: treeCtx, ...EMPTY_TREE, state: "loading" }));
+    countRun.current++; // 먼저 떠난 '숫자만 다시 받기'의 응답은 버린다 — 이 조회가 더 새 숫자를 가져온다
+    setTree((prev) => (prev.ctx === treeCtx ? { ...prev, state: "loading" } : { ctx: treeCtx, ...EMPTY_DATA, state: "loading" }));
     void (async () => {
-      const [folder, counts] = await Promise.all([
+      const [folder, counted] = await Promise.all([
         isLinked ? api.projectFolder(projectId).catch(() => null) : Promise.resolve(undefined),
-        api.projectFolderCountsBatch([projectId], "team").then((r) => r.counts?.[projectId] ?? {}, () => null),
+        fetchFolderCounts(projectId),
       ]);
       if (!alive) return;
       const disk = folder?.tree && !folder.error ? visibleProjectFolderRoots(folder.tree) : [];
@@ -172,14 +204,14 @@ export function useEditProjects({
       const note =
         !linksKnown || folder === null || folder?.error ? t("폴더 정보를 불러오지 못했습니다 — 공유 기록에 있는 폴더만 보입니다.")
           : folder?.truncated ? t("폴더가 많아 일부만 읽었습니다.")
-            : counts === null ? t("공유 기록의 폴더를 확인하지 못했습니다 — 이 PC 에서 보이는 폴더만 보입니다.") : null;
-      if (!disk.length && counts === null) {
-        setTree({ ctx: treeCtx, state: "error", roots: [], complete: false, note: t("폴더 정보를 불러오지 못했습니다.") });
+            : counted === null ? t("공유 기록의 폴더를 확인하지 못했습니다 — 이 PC 에서 보이는 폴더만 보입니다.") : null;
+      if (!disk.length && counted === null) {
+        setTree({ ctx: treeCtx, ...EMPTY_DATA, state: "error", note: t("폴더 정보를 불러오지 못했습니다.") });
         return;
       }
       setTree({
-        ctx: treeCtx, state: "ready", note, complete: diskOk && counts !== null,
-        roots: buildFolderCountTree(disk, counts ?? undefined),
+        ctx: treeCtx, state: "ready", note, complete: diskOk && counted !== null, disk,
+        counts: counted?.counts ?? null, review: counted?.review ?? null,
       });
     })();
     return () => {
@@ -187,16 +219,66 @@ export function useEditProjects({
     };
   }, [treeCtx, projectId, isLinked, linksKnown, listOk, nonce]);
 
+  // 새 항목(+N) — 공유 & 리뷰 사이드바와 같은 원천(기준선 이후 공유된 목록)에서 확인(클릭)한 것을 뺀다. 기준선은 공유 &
+  //  리뷰에 처음 들어갈 때 생긴다 — 없으면 묻지 않는다. 구버전 서버(라우트 없음)·실패는 배지만 숨긴다.
+  const [fresh, setFresh] = useState<{ ctx: string; items: TeamFreshItem[] }>({ ctx: "", items: [] });
+  const live = useRef({ listCtx, treeCtx, projectId, loadFresh: () => {} });
+  const loadFresh = useCallback(() => {
+    const since = getTeamBase();
+    if (!since) return;
+    const put = (items: TeamFreshItem[]) => {
+      if (live.current.listCtx === listCtx) setFresh({ ctx: listCtx, items }); // 계정·공간이 바뀐 뒤에 온 응답은 버린다
+    };
+    api.teamFreshAll(since, listCtx).then(put, () => put([]));
+  }, [listCtx]);
+  useEffect(loadFresh, [loadFresh, nonce]);
+  live.current = { listCtx, treeCtx, projectId, loadFresh };
+  const reloadCounts = useCallback(() => {
+    const { treeCtx: ctx, projectId: pid } = live.current;
+    live.current.loadFresh();
+    if (!pid) return;
+    const run = ++countRun.current;
+    void fetchFolderCounts(pid).then((counted) => {
+      // 실패하면 마지막으로 받은 숫자를 그대로 둔다. 문맥이 바뀌었거나 더 새 조회가 떠났으면 버린다.
+      if (!counted || run !== countRun.current) return;
+      setTree((prev) => (prev.ctx === ctx && prev.state === "ready" ? { ...prev, ...counted } : prev));
+    });
+  }, []);
+
+  // 확인(카드 클릭)할 때마다 스토어가 바뀐다 — 그 자리에서 +N 이 줄어든다.
+  const seenVersion = useSyncExternalStore(subscribeTeamSeen, getTeamSeenVersion);
+  const unseen = useMemo(() => {
+    void seenVersion;
+    const byProject: Record<string, number> = {};
+    const folders: Record<string, number> = {};
+    if (fresh.ctx !== listCtx) return { byProject, folders };
+    for (const item of fresh.items) {
+      if (!item.project_id || isAckedFor(item.ack_key || item.id, item.shared_at)) continue;
+      byProject[item.project_id] = (byProject[item.project_id] || 0) + 1;
+    }
+    for (const item of projectId ? freshItemsInScope(fresh.items, projectId, "", isAckedFor) : []) {
+      if (item.folder_path) folders[item.folder_path] = (folders[item.folder_path] || 0) + 1;
+    }
+    return { byProject, folders };
+  }, [fresh, listCtx, projectId, seenVersion]);
+
   const projects = listed.ctx === listCtx ? listed.projects : [];
-  const shownTree = useMemo<EditTree>(
-    () => (!projectId ? EMPTY_TREE : tree.ctx === treeCtx ? tree : { ...EMPTY_TREE, state: "loading" }),
-    [projectId, tree, treeCtx],
-  );
+  const shownTree = useMemo<EditTree>(() => {
+    if (!projectId) return EMPTY_TREE;
+    if (tree.ctx !== treeCtx) return { ...EMPTY_TREE, state: "loading" };
+    return {
+      state: tree.state, complete: tree.complete, note: tree.note,
+      // 개수를 못 받았으면 디스크 폴더만(상태별 개수도 붙이지 않는다). review 가 null 이면 '전체 N'으로 보인다(구버전 서버).
+      roots: tree.counts ? buildFolderCountTree(tree.disk, tree.counts, unseen.folders, tree.review) : buildFolderCountTree(tree.disk),
+    };
+  }, [projectId, tree, treeCtx, unseen.folders]);
   return {
     projects,
     projectsState: listed.ctx === listCtx ? listed.state : "loading",
     tree: shownTree,
     reload,
+    reloadCounts,
+    freshByProject: unseen.byProject,
   };
 }
 

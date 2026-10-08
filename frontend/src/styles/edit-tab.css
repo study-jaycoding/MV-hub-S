@@ -1,4 +1,4 @@
-/* ── 편집 탭(docs/EDIT_TAB.md) — 위 뷰어·오른쪽 '이 컷의 생성물'·아래 트랙 타임라인 ──
+/* ── 편집 탭(docs/EDIT_TAB.md) — 위 뷰어·아래 트랙 타임라인 ──
    클래스는 전부 `ed-` 로 시작한다(.empty·.main 같은 흔한 이름은 앱의 다른 규칙에 먹힌다).
    단추는 전역 button 규칙(배경·테두리·padding 6px 12px)을 여기서 하나씩 지운다. */
 .ed-root { background: var(--bg2); outline: none; min-height: 0; }
@@ -13,7 +13,7 @@
 }
 
 /* 뷰어 */
-.ed-view { flex: 1; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); }
+.ed-view { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .ed-stage { flex: 1; min-height: 0; position: relative; background: #000; overflow: hidden; }
 .ed-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .ed-media[hidden] { display: none; }
@@ -53,39 +53,6 @@
 .ed-tcr b { color: var(--accent); }
 @media (max-width: 1500px) { .ed-keys { display: none; } }
 
-/* 오른쪽 — 이 컷의 생성물 */
-.ed-pool {
-  flex: none; width: 392px; max-width: 34%; min-height: 0; display: flex; flex-direction: column;
-  background: var(--panel); user-select: none;
-}
-.ed-pool-head { display: flex; align-items: baseline; justify-content: space-between; padding: 14px 16px 4px; }
-.ed-pool-head h3 { margin: 0; font-size: 14px; font-weight: 700; }
-.ed-pool-head .ed-link { font-size: 12px; color: var(--muted); }
-.ed-pool-head .ed-link:hover { color: var(--text); }
-.ed-pool-sub { padding: 0 16px 12px; font-size: 12px; line-height: 1.5; color: var(--muted); border-bottom: 1px solid var(--border); }
-.ed-pool-note { padding: 12px 16px 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
-.ed-pool-note.ed-bad { color: #ff8a8a; }
-.ed-pgrid {
-  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
-  display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-content: start; padding: 14px 16px;
-}
-/* 생성물 카드(EditCard) — 모양은 라이브러리 카드의 클래스(generations.css 의 .card·.card-thumb·.card-sf·.creator-badge·
-   .play-badge·.card-bottom·.card-here)를 그대로 쓴다. 여기에는 단추 껍데기와 편집 탭에서만 다른 점만 둔다.
-   넣은 카드는 .card.selected(굵은 상태색 테두리), 지금 보이는 카드는 아래 변의 라임 표(.card-here). */
-.ed-card {
-  display: block; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 14px;
-  background: transparent; text-align: left; font: inherit; color: inherit;
-}
-.ed-card:active { transform: none; }
-.ed-card .card { height: auto; }
-.ed-card .card-thumb { flex: 0 0 auto; aspect-ratio: 1; } /* 라이브러리 격자와 같은 정사각 */
-.ed-card .card-sf { pointer-events: none; } /* 표시만 — 누르면 카드가 받는다 */
-.ed-card .card-thumb:hover .play-badge { opacity: 0.85; } /* 여기서는 호버 재생이 없다 — ▶ 를 숨기지 않는다 */
-.ed-hint {
-  flex: none; margin: 10px 16px 14px; padding: 9px 12px; border-radius: 9px; font-size: 12px; line-height: 1.6;
-  color: var(--muted); background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border);
-}
-
 /* 타임라인 위 막대 */
 .ed-bar {
   flex: none; height: 44px; display: flex; align-items: center; gap: 14px; padding: 0 16px; user-select: none;
@@ -112,6 +79,20 @@
 .ed-toggle:hover { color: var(--text); }
 .ed-toggle.ed-on { color: var(--accent); border-color: rgba(var(--accent-rgb), 0.55); background: rgba(var(--accent-rgb), 0.1); }
 .ed-toggle i { font-style: normal; font-variant-numeric: tabular-nums; opacity: 0.75; }
+
+/* 카드 우클릭 메뉴 — 넣을 트랙 고르기. 틀(자리·배경·그림자)은 폴더 우클릭 메뉴(.folder-ctx-menu)의 것. */
+.folder-ctx-menu.ed-tmenu { min-width: 0; width: 190px; gap: 2px; }
+.ed-tmenu-head { height: 22px; padding: 0 8px; display: flex; align-items: center; font-size: 11px; color: var(--muted); }
+.ed-tmenu-item {
+  height: 28px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text);
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 12px; text-align: left; cursor: pointer;
+}
+.ed-tmenu-item b { font-weight: 800; }
+.ed-tmenu-item i { font-style: normal; font-size: 11px; color: var(--muted); }
+.ed-tmenu-item:hover:not(:disabled), .ed-tmenu-item:focus-visible { background: rgba(255, 255, 255, 0.08); outline: none; }
+.ed-tmenu-item:disabled { cursor: default; opacity: 0.5; }
+.ed-tmenu-item.ed-here { opacity: 1; }
+.ed-tmenu-item.ed-here i { color: var(--accent); }
 
 /* 타임라인 — 왼쪽 트랙 머리 + 오른쪽 가로 스크롤. 줄 높이는 머리와 줄이 같아야 한다. */
 .ed-tl { flex: none; max-height: 52%; display: flex; overflow-y: auto; background: #0b0c0e; user-select: none; }

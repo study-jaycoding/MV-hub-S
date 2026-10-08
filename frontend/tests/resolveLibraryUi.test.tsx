@@ -175,6 +175,24 @@ it("편집 탭의 표는 그 카드에만 붙는다 — 격자는 아래 변의 
   expect(list.querySelectorAll(".cd-mark")).toHaveLength(2);
 });
 
+// 편집 탭이 연 폴더 창 — 카드를 우클릭하면 넣을 트랙을 고르는 메뉴가 뜬다(메뉴는 편집 탭의 것, 격자는 무엇을 눌렀는지만 알린다).
+it("카드 우클릭은 onCardMenu 를 준 화면에서만 그 카드와 자리를 알리고 브라우저 메뉴를 막는다", () => {
+  const onCardMenu = vi.fn();
+  const rightClick = (target: Element) => {
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 12, clientY: 34 });
+    act(() => { target.dispatchEvent(event); });
+    return event;
+  };
+  const grid = renderGrid(gridProps({ onCardMenu }));
+  expect(rightClick(grid.querySelector('[data-id="g2"] .card')!).defaultPrevented).toBe(true);
+  expect(onCardMenu).toHaveBeenCalledExactlyOnceWith(generations[1], 12, 34);
+  expect(rightClick(grid).defaultPrevented).toBe(false); // 카드가 아닌 곳
+  expect(onCardMenu).toHaveBeenCalledTimes(1);
+
+  const plain = renderGrid(gridProps()); // 다른 화면 — 브라우저 메뉴 그대로
+  expect(rightClick(plain.querySelector('[data-id="g2"] .card')!).defaultPrevented).toBe(false);
+});
+
 it("대상이 나중에 도착하면 이동하고 빠르게 바뀐 이전 요청은 취소한다", () => {
   const props = gridProps({ generations: [], resolveScrollRequest: { generationId: "g2", nonce: 1 } });
   renderGrid(props);

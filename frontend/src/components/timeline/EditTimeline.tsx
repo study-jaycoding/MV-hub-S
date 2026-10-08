@@ -274,6 +274,7 @@ export const EditTimeline = memo(function EditTimeline({
                 // 고르지 않은 컷은 V1 에 빈 자리로만 보인다.
                 return track === 1 && !slot.clips.length ? (
                   <div className={"ed-slot" + (offCuts.has(slot.path) ? " ed-slot-off" : "")} key={slot.path}
+                    title={t("더블클릭하면 이 컷의 생성물 창이 열립니다 — 카드를 우클릭해 넣을 트랙을 고릅니다.")}
                     style={{ left: slot.start * zoom + 1, width: Math.max(6, slot.len * zoom - 2) }}>
                     {slot.len * zoom > 60 ? (offCuts.has(slot.path) ? t("비활성") : t("비어 있음")) : ""}
                   </div>

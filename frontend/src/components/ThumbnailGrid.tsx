@@ -80,6 +80,7 @@ interface Props {
   onOpenFolder?: (g: Generation) => void; // 카드의 폴더 이름표 → 그 폴더의 생성물 창(안 주면 이름표 없음)
   openedFromId?: string | null; // 폴더 창을 연 카드 — 그 카드에 '방금 누른 카드' 표시
   cardMarks?: Readonly<Record<string, CardMark>>; // 편집 탭이 연 폴더 창 — 타임라인에 넣은 카드의 표(같은 자리)
+  onCardMenu?: (g: Generation, x: number, y: number) => void; // 그 창 — 카드 우클릭(넣을 트랙 메뉴). 안 주면 브라우저 메뉴 그대로
   // ── 캔버스 '생성 결과' 창이 쓰는 선택 기능(안 주면 종전 그대로) ──
   cellHeader?: (g: Generation) => React.ReactNode; // 카드 위(셀 안)에 그리는 칸 — '대표' 단추
   lastViewedId?: string | null; // 주면(null 포함) '마지막으로 본' 표시를 이 값으로 — 라이브러리 칸 대신 호출자의 칸
@@ -588,6 +589,16 @@ export function ThumbnailGrid(props: Props) {
     if (g) onPreviewCell(g);
   };
 
+  // 카드 우클릭(onCardMenu 를 준 화면만) — 입력칸 위는 브라우저 메뉴(붙여넣기)를 그대로 둔다.
+  const onGridContextMenu = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest("input, textarea, [contenteditable]")) return;
+    const cellEl = (e.target as HTMLElement).closest(".gen-cell") as HTMLElement | null;
+    const g = cellEl && opsRef.current.generations.find((x) => x.id === cellEl.dataset.id);
+    if (!g) return;
+    e.preventDefault();
+    props.onCardMenu?.(g, e.clientX, e.clientY);
+  };
+
   // 카드 네이티브 드래그(프롬프트 재사용) 시작 → 진행 중이던 마퀴 추적 취소.
   const onGridDragStart = () => {
     dragRef.current = null;
@@ -694,6 +705,7 @@ export function ThumbnailGrid(props: Props) {
         tabIndex={0}
         onMouseDown={onGridMouseDown}
         onDoubleClick={onGridDblClick}
+        onContextMenu={props.onCardMenu ? onGridContextMenu : undefined}
         onDragStart={onGridDragStart}
         onKeyDown={onGridKeyDown}
         onScroll={onGridScroll}

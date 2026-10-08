@@ -1,7 +1,7 @@
 // 편집 탭 — 공유된 생성물을 컷(폴더) 순서대로 이어 보는 다빈치식 화면. 계약·한계는 docs/EDIT_TAB.md.
-//  왼쪽 = 시퀀스 폴더 고르기 · 가운데 = 뷰어 · 오른쪽 = 재생헤드가 있는 컷의 생성물 · 아래 = 트랙 타임라인.
-//  컷 자리는 폴더 순서로 고정이고, 고른 생성물만 들어간다. 편집은 이 브라우저(계정)에만 저장한다.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+//  왼쪽 = 시퀀스 폴더 고르기 · 가운데 = 뷰어 · 아래 = 트랙 타임라인. 생성물은 컷을 더블클릭해 연 폴더 창에서 카드를
+//  우클릭해 트랙에 넣는다. 컷 자리는 폴더 순서로 고정이고, 고른 생성물만 들어간다. 편집은 이 브라우저(계정)에만 저장한다.
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { CardMark, Generation, WorkspaceContext } from "../../types";
 import { APP_EVENTS } from "../../lib/appEvents";
 import { isFolderDisabled } from "../../lib/deactivated";
@@ -14,9 +14,9 @@ import {
   EDIT_FPS,
   genSeconds,
   groupByCut,
-  insertClip,
   linkClip,
   moveClipToTrack,
+  placeClip,
   removeClips,
   setClipDurs,
   shiftClips,
@@ -45,10 +45,9 @@ import {
   useEditProjects,
 } from "../../lib/useEditSequence";
 import { dropQueuedVideoMeasures, knownVideoSeconds, measureVideoSeconds } from "../../lib/videoDuration";
-import { editMarkLabel } from "./EditCard";
-import { EditPool, type PoolItem } from "./EditPool";
 import { EditSidebar } from "./EditSidebar";
 import { EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink } from "./EditTimeline";
+import { EditTrackMenu, type TrackRow } from "./EditTrackMenu";
 import { EditViewer } from "./EditViewer";
 
 interface Props {
@@ -60,7 +59,14 @@ interface Props {
   // 컷을 더블클릭 — 공유 & 리뷰의 '폴더 보기' 창을 그 컷 폴더로 연다(창은 App 의 것, 여기는 무엇을 열지만 알린다).
   onOpenCutFolder: (target: EditCutFolder) => void;
   reloadSignal: number; // 그 창이 닫혔다 — 창에서 공유를 풀거나 지웠을 수 있으니 공유 목록을 다시 받는다
+  // 그 창이 떠 있는 동안(peekPath = 그 컷 폴더): 창의 카드를 우클릭하면 App 이 cardMenuRef 로 넘겨주고(넣을 트랙 메뉴),
+  //  표는 창에서 넣고 바꾸는 대로 다시 알린다(onPeekMarks).
+  peekPath: string | null;
+  onPeekMarks: (marks: Record<string, CardMark>) => void;
+  cardMenuRef: MutableRefObject<EditCardMenu | null>;
 }
+
+export type EditCardMenu = (gen: Pick<Generation, "id">, x: number, y: number) => void;
 
 export interface EditCutFolder {
   projectId: string;
@@ -78,6 +84,9 @@ export function EditTab(props: Props) {
 let allWorkspacesIn = "";
 
 const NO_CUTS: ReadonlySet<string> = new Set();
+// 타임라인에 넣은 카드의 표 글 — 폴더 창의 카드에 붙는다(Jay: "V1 - 선택 카드").
+const editMarkLabel = (track: number, t: (key: string) => string) =>
+  t("V{track} - 선택 카드").replace("{track}", String(track));
 const parentOf = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 const isTyping = (target: EventTarget | null) => {
   const element = target as HTMLElement | null;
@@ -85,7 +94,9 @@ const isTyping = (target: EventTarget | null) => {
     element.tagName === "SELECT" || element.isContentEditable);
 };
 
-function EditTabInner({ authKey, workspace, keysActive, flash, onOpenCutFolder, reloadSignal }: Props) {
+function EditTabInner({
+  authKey, workspace, keysActive, flash, onOpenCutFolder, reloadSignal, peekPath, onPeekMarks, cardMenuRef,
+}: Props) {
   const t = useT();
   const [target, setTarget] = useState<EditTarget | null>(loadEditTarget);
   const [openProject, setOpenProject] = useState<string | null>(() => target?.projectId ?? null);
@@ -98,7 +109,8 @@ function EditTabInner({ authKey, workspace, keysActive, flash, onOpenCutFolder, 
   const barTimeRef = useRef<HTMLSpanElement>(null);
   const viewTimeRef = useRef<HTMLSpanElement>(null);
 
-  const { projects, projectsState, tree, reload: reloadTree } = useEditProjects({ authKey, workspace, projectId: openProject });
+  const { projects, projectsState, tree, reload: reloadTree, reloadCounts, freshByProject } =
+    useEditProjects({ authKey, workspace, projectId: openProject });
   // 워크스페이스를 못 정한 계정의 출구 — 공유 & 리뷰 탭의 '전체 보기'와 같다(이번 공간에서만, 저장하지 않는다).
   const workspaceKey = workspaceViewKey(workspace);
   const [allIn, setAllIn] = useState(() => allWorkspacesIn);
@@ -262,50 +274,90 @@ function EditTabInner({ authKey, workspace, keysActive, flash, onOpenCutFolder, 
   }, [applyEdit, flash, t]);
 
   const cut = view.cut;
-  const poolItems = useMemo<PoolItem[]>(() => {
-    if (!cut) return [];
-    const placed = doc.clips.filter((clip) => clip.cut === cut);
-    return (byCut.get(cut) ?? []).map((gen) => {
-      const clip = placed.find((item) => links.get(clipKey(item))?.gen?.id === gen.id);
-      return { gen, track: clip?.track ?? null, showing: !!clip && view.clip?.gen === clip.gen };
-    });
-  }, [cut, byCut, doc, links, view.clip]);
-  const toggleGen = useCallback((gen: Generation) => {
-    if (!cut) return;
-    const clip = doc.clips.find((item) => item.cut === cut && links.get(clipKey(item))?.gen?.id === gen.id);
-    if (clip) return act((current) => removeClips(current, [clipKey(clip)]));
+  // 카드 우클릭 메뉴(Jay 2026-10-08) — 폴더 창의 카드를 우클릭하면 지금 있는 트랙을 보여 주고, 고르면 그 트랙에 넣는다
+  //  (찬 트랙은 교체). 넣을 컷은 여는 순간에 정한다(그 창의 컷). 편집 탭의 그 컷 공유 목록에 있는 카드만 받는다 — 창에서
+  //  W 를 '전체'로 바꿔 보이는 다른 공간의 카드 등은 넣어도 타임라인이 '미디어 없음'으로 본다.
+  //  그 컷에 '확인 못 한' 클립이 있는 동안은 넣지 않는다: 공유 목록을 다시 받는 동안에는 job 으로 이은 클립이 어느 카드인지
+  //  모른다 — 그때 넣으면 같은 생성물이 두 트랙에 들어가거나, 교체하면서 그 클립의 꺼짐이 사라진다(Codex 코드 리뷰).
+  const unsettled = useCallback((path: string) =>
+    doc.clips.some((clip) => clip.cut === path && links.get(clipKey(clip))?.state === "unknown"), [doc, links]);
+  const [menu, setMenu] = useState<{ gen: Generation; cut: string; x: number; y: number } | null>(null);
+  const menuBackRef = useRef<HTMLElement | null>(null); // 메뉴가 닫히면 초점을 돌려줄 곳(메뉴가 초점을 가져간다)
+  const openMenu = useCallback((card: Pick<Generation, "id">, menuCut: string | null, x: number, y: number) => {
+    const gen = menuCut ? byCut.get(menuCut)?.find((item) => item.id === card.id) : undefined;
+    if (!gen || !menuCut) return flash(t("이 카드는 넣을 수 없습니다 — 편집 탭의 이 컷 공유 목록에 없습니다."));
+    if (unsettled(menuCut)) return flash(t("이 컷에 아직 확인하지 못한 클립이 있습니다 — 공유 목록을 다 받은 뒤에 다시 해 주세요."));
+    menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setMenu({ gen, cut: menuCut, x, y });
+  }, [byCut, unsettled, flash, t]);
+  const closeMenu = useCallback(() => {
+    setMenu(null);
+    const back = menuBackRef.current;
+    menuBackRef.current = null;
+    if (back?.isConnected) back.focus({ preventScroll: true });
+  }, []);
+  useEffect(() => setMenu(null), [peekPath, cut, target?.projectId, target?.seq]); // 보던 컷·창이 바뀌면 닫는다
+  useEffect(() => {
+    cardMenuRef.current = (card, x, y) => openMenu(card, peekPath, x, y);
+    return () => {
+      cardMenuRef.current = null;
+    };
+  }, [cardMenuRef, openMenu, peekPath]);
+  const menuOwn = menu && doc.clips.find((clip) => clip.cut === menu.cut && links.get(clipKey(clip))?.gen?.id === menu.gen.id);
+  const menuRows: TrackRow[] = !menu ? [] : Array.from({ length: layout.tracks }, (_, i) => layout.tracks - i).map((track) => ({
+    track,
+    state: menuOwn?.track === track ? "here"
+      : doc.tracksLocked.includes(track) || (!!menuOwn && doc.tracksLocked.includes(menuOwn.track)) ? "locked"
+        : doc.clips.some((clip) => clip.cut === menu.cut && clip.track === track) ? "taken" : "empty",
+  }));
+  const placeTo = (track: number) => {
+    if (!menu) return;
+    const { gen, cut: menuCut } = menu;
     const asset = gen.assets[0];
-    act((current) => insertClip(current, {
-      cut, gen: gen.id, job: gen.job_id, kind: asset.type, dur: genSeconds(gen, knownVideoSeconds(asset.file_path)),
-    }));
-  }, [cut, doc, links, act]);
+    closeMenu();
+    if (unsettled(menuCut)) return flash(t("이 컷에 아직 확인하지 못한 클립이 있습니다 — 공유 목록을 다 받은 뒤에 다시 해 주세요.")); // 메뉴가 떠 있는 사이 다시 받기가 시작됐다
+    act((current) => placeClip(current, {
+      // job 으로 다시 이은 클립이면 그 클립을 옮긴다(문서에 적힌 옛 id 로 찾는다)
+      cut: menuCut, gen: menuOwn?.gen ?? gen.id, job: gen.job_id, kind: asset.type,
+      dur: genSeconds(gen, knownVideoSeconds(asset.file_path)),
+    }, track));
+  };
 
   // 그림(클립)을 누르면 그 컷으로 간다 — 이미 그 컷이면 보던 자리 그대로.
   const pickCut = useCallback((path: string) => {
     if (view.cut !== path) seekPos({ cut: path, local: 0 });
   }, [view.cut, seekPos]);
-  // 컷을 더블클릭 — 그 컷으로 재생헤드를 옮기고(이미 그 컷이면 그대로) 재생을 멈춘 뒤, 공유 & 리뷰의 '폴더 보기' 창을 그 컷
-  //  폴더로 연다. 창은 App 의 것이라 여기서는 무엇을 열지와, 타임라인에 넣은 카드에 붙일 표만 넘긴다.
-  const openCut = useCallback((path: string) => {
+  // 그 컷에 넣은 카드의 표("V1 - 선택 카드") — 지금 뷰어에 보이는 것(lead)만 라임이고, 창이 열릴 때 그 카드로 내려간다.
+  const cutMarks = useCallback((path: string) => {
     const slot = layout.cuts.find((item) => item.path === path);
-    if (!target || !slot) return;
-    stop();
-    const here = view.cut === path;
-    if (!here) seekPos({ cut: path, local: 0 });
-    const lead = here ? view.clip : visibleClip(doc, slot, 0);
+    const lead = !slot ? null : view.cut === path ? view.clip : visibleClip(doc, slot, 0);
     const marks: Record<string, CardMark> = {};
     let focusId: string | null = null;
-    for (const clip of slot.clips) {
+    for (const clip of slot?.clips ?? []) {
       const id = links.get(clipKey(clip))?.gen?.id ?? clip.gen; // job 으로 다시 이은 클립은 지금의 카드 id
       const isLead = !!lead && lead.gen === clip.gen;
       marks[id] = { label: editMarkLabel(clip.track, t), lead: isLead };
       if (isLead) focusId = id;
     }
+    return { marks, focusId };
+  }, [layout, view.cut, view.clip, doc, links, t]);
+  // 컷을 더블클릭 — 그 컷으로 재생헤드를 옮기고(이미 그 컷이면 그대로) 재생을 멈춘 뒤, 공유 & 리뷰의 '폴더 보기' 창을 그 컷
+  //  폴더로 연다. 창은 App 의 것이라 여기서는 무엇을 열지와, 타임라인에 넣은 카드에 붙일 표만 넘긴다.
+  const openCut = useCallback((path: string) => {
+    if (!target || !layout.cuts.some((item) => item.path === path)) return;
+    stop();
+    if (view.cut !== path) seekPos({ cut: path, local: 0 });
     onOpenCutFolder({
       projectId: target.projectId, projectName: projects.find((item) => item.id === target.projectId)?.name ?? "",
-      path, focusId, marks,
+      path, ...cutMarks(path),
     });
-  }, [layout, target, stop, view.cut, view.clip, seekPos, doc, links, t, onOpenCutFolder, projects]);
+  }, [layout, target, stop, view.cut, seekPos, cutMarks, onOpenCutFolder, projects]);
+  // 창이 떠 있는 동안 표를 살려 둔다 — 창에서 우클릭으로 넣고 바꾸면 그 자리에서 표가 바뀐다. 글로 비교해, 내용이 바뀔
+  //  때만 알린다(알릴 때마다 App 이 다시 그려지므로 객체로 비교하면 끝없이 돈다).
+  const peekMarks = peekPath ? JSON.stringify(cutMarks(peekPath).marks) : null;
+  useEffect(() => {
+    if (peekMarks !== null) onPeekMarks(JSON.parse(peekMarks) as Record<string, CardMark>);
+  }, [peekMarks, onPeekMarks]);
 
   // 창에서(또는 다른 화면에서) 공유를 풀거나 지웠을 수 있다 — 창이 닫히면, 그리고 생성물이 바뀌었다는 알림이 오면 공유 목록을
   //  다시 받는다. 알림은 창을 닫은 뒤에 끝난 요청도 잡는다(닫을 때 한 번만 받으면 그 요청보다 먼저 끝날 수 있다).
@@ -319,6 +371,7 @@ function EditTabInner({ authKey, workspace, keysActive, flash, onOpenCutFolder, 
     reloadTimer.current = window.setTimeout(() => {
       reloadTimer.current = null;
       reloadList();
+      reloadCounts(); // 왼쪽 폴더 옆의 개수·최종·보류·새 항목
     }, 400);
   });
   const seenSignal = useRef(reloadSignal);
@@ -326,7 +379,8 @@ function EditTabInner({ authKey, workspace, keysActive, flash, onOpenCutFolder, 
     if (seenSignal.current === reloadSignal) return;
     seenSignal.current = reloadSignal;
     reloadList();
-  }, [reloadSignal, reloadList]);
+    reloadCounts();
+  }, [reloadSignal, reloadList, reloadCounts]);
 
   // 컷(폴더) 켜고 끄기 — 재생헤드가 있는 컷. 숨기기를 켠 채 끄면 그 컷은 타임라인에서 사라지고 재생헤드는 다음 컷으로 간다.
   const toggleCut = useCallback(() => {
@@ -423,9 +477,7 @@ function EditTabInner({ authKey, workspace, keysActive, flash, onOpenCutFolder, 
   const empty = !target ? t("왼쪽에서 컷 폴더가 들어 있는 폴더를 고르세요.")
     : !layout.cuts.length ? (treePaths === null && list.state === "loading" ? t("불러오는 중...") : t("이 폴더 안에 컷 폴더가 없습니다."))
       : null;
-  const poolNotice = !target ? t("폴더를 고르면 그 컷에 공유된 생성물이 여기에 보입니다.")
-    : !allWorkspaces && !editWorkspaceReady(workspace) ? t("워크스페이스를 확인한 뒤 공유물을 표시합니다.")
-      : !cut ? t("컷이 없습니다.") : null;
+  const needWorkspace = !!target && !allWorkspaces && !editWorkspaceReady(workspace);
   const filled = layout.cuts.filter((item) => item.clips.length).length;
 
   return (
@@ -439,6 +491,7 @@ function EditTabInner({ authKey, workspace, keysActive, flash, onOpenCutFolder, 
         seq={openProject === target?.projectId ? seq : ""}
         cut={openProject === target?.projectId ? cut ?? "" : ""}
         offCuts={openProject === target?.projectId ? offCuts : NO_CUTS}
+        freshByProject={freshByProject}
         onPickFolder={pickFolder}
         onReload={reloadTree}
         onGrabFocus={grabFocus}
@@ -458,20 +511,6 @@ function EditTabInner({ authKey, workspace, keysActive, flash, onOpenCutFolder, 
             onToggle={toggle}
             onStepFrames={stepFrames}
             onStepEdit={stepEdit}
-          />
-          <EditPool
-            title={slot ? slot.path.replace(/\//g, " / ") : ""}
-            items={poolItems}
-            listState={list.state}
-            listError={list.error}
-            notice={poolNotice}
-            noticeAction={target && !allWorkspaces && !editWorkspaceReady(workspace)
-              ? { label: t("전체 보기"), run: () => setAllIn((allWorkspacesIn = workspaceKey)) } : null}
-            onToggle={toggleGen}
-            onReload={() => {
-              list.reload();
-              reloadTree();
-            }}
           />
         </div>
         <div className="ed-bar" onMouseDown={(event) => event.preventDefault()}>
@@ -495,6 +534,24 @@ function EditTabInner({ authKey, workspace, keysActive, flash, onOpenCutFolder, 
             </span>
           )}
           {edit.dirty && <span className="ed-warn" role="status">{t("저장 안 됨")}</span>}
+          {/* 공유 목록의 상태 — 받지 못하면 넣은 카드가 '확인 못 함'·'미디어 없음'으로 보이고, 폴더 창에서 넣을 수도 없다 */}
+          {needWorkspace && (
+            <span className="ed-warn" role="status">
+              {t("워크스페이스를 확인한 뒤 공유물을 표시합니다.")}{" "}
+              <button type="button" className="ed-link ed-ws-all" onClick={() => setAllIn((allWorkspacesIn = workspaceKey))}>
+                {t("모든 워크스페이스 보기")}
+              </button>
+            </span>
+          )}
+          {!needWorkspace && list.state === "error" && (
+            <span className="ed-warn" role="status" title={list.error ?? undefined}>
+              {t("공유 목록을 받지 못했습니다.")}{" "}
+              <button type="button" className="ed-link" onClick={list.reload}>{t("다시 시도")}</button>
+            </span>
+          )}
+          {!needWorkspace && list.state === "capped" && (
+            <span className="ed-warn" role="status">{t("최대 2,000건까지만 표시합니다.")}</span>
+          )}
           <span className="ed-zoom">
             {target && (
               <button type="button" className={"ed-toggle" + (doc.hideOff ? " ed-on" : "")} aria-pressed={!!doc.hideOff}
@@ -532,6 +589,7 @@ function EditTabInner({ authKey, workspace, keysActive, flash, onOpenCutFolder, 
           onToggleMute={toggleMute}
         />
       </main>
+      {menu && <EditTrackMenu x={menu.x} y={menu.y} rows={menuRows} onPick={placeTo} onClose={closeMenu} />}
     </>
   );
 }

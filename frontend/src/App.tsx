@@ -141,7 +141,7 @@ import type {
   PreviewTarget,
   WorkspaceContext,
 } from "./types";
-import type { EditCutFolder } from "./components/timeline/EditTab";
+import type { EditCardMenu, EditCutFolder } from "./components/timeline/EditTab";
 import { api } from "./api";
 import { buildSpotlightCreateBody } from "./lib/spotlightSubmit";
 import { resolveAutoAspectRatio } from "./lib/aspectAuto";
@@ -395,12 +395,17 @@ export default function App() {
   //  처음부터 다시 받는다. 사이드바 필터(filters)는 건드리지 않는다 — patch() 는 다음 생성 위치까지 바꾼다.
   //  ctx = 연 시점의 문맥. 탭·보던 위치·휴지통 보기·계정·공간이 바뀌면 그 렌더부터 닫힌 것으로 본다(아래 listPeek).
   //  genId = 이름표를 누른 그 카드 — 창 안에서 '방금 누른 카드' 로 표시하고, 아래쪽에 있으면 보이게 내려가서 연다.
-  //  edit = 편집 탭이 연 창(위 teamPeek) — marks 는 타임라인에 넣은 카드의 표, genId 는 열릴 때 보이게 할 카드("" = 없음).
+  //  edit = 편집 탭이 연 창(위 teamPeek) — genId 는 열릴 때 보이게 할 카드("" = 없음).
   const [folderWindow, setFolderWindow] = useState<{
-    projectId: string | null; path: string; projectName: string; genId: string; ctx: string;
-    edit?: { marks: Record<string, CardMark> };
+    projectId: string | null; path: string; projectName: string; genId: string; ctx: string; edit?: boolean;
   } | null>(null);
   const [editReloadSignal, setEditReloadSignal] = useState(0); // 편집 탭이 연 창이 닫혔다 — 편집 탭이 공유 목록을 다시 받는다
+  // 그 창의 카드에 붙는 표("V1 - 선택 카드") — 창이 떠 있는 동안 편집 탭이 넣고 바꾸는 대로 다시 알린다(창을 조회·스크롤과
+  //  묶인 folderWindow 에 두지 않는다 — 표가 바뀔 때마다 창의 조회 조건이 새 객체가 된다). 창의 카드를 우클릭하면 편집 탭의
+  //  트랙 메뉴를 연다(편집 탭이 ref 에 걸어 둔다).
+  const [editMarks, setEditMarks] = useState<Record<string, CardMark>>({});
+  const editCardMenuRef = useRef<EditCardMenu | null>(null);
+  const openEditCardMenu = useCallback<EditCardMenu>((g, x, y) => editCardMenuRef.current?.(g, x, y), []);
   // 회색(비활성) — 카드별 비활성화 표시(d 키, gen id 기준 로컬). grayOn(useLibraryFilters)=ON 이면 목록에서 제외.
   const disabledGen = useDisabledGenerations();
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(그 폴더·하위 생성물 자동 회색)
@@ -865,9 +870,10 @@ export default function App() {
     beginComposeList();
     setSelected(new Set());
     setTeamPeek(true);
+    setEditMarks(target.marks);
     setFolderWindow({
       projectId: target.projectId, path: target.path, projectName: target.projectName, genId: target.focusId ?? "",
-      ctx: editPeekCtxRef.current, edit: { marks: target.marks },
+      ctx: editPeekCtxRef.current, edit: true,
     });
   }, [beginComposeList, setSelected]);
   const closeFolderWindow = useCallback(() => {
@@ -2000,7 +2006,8 @@ export default function App() {
           // 폴더 창에서는 이름표를 누른 그 카드로 한 번 내려간다(다빈치 따라가기와 같은 장치 — 창이 떠 있는 동안 따라가기는 꺼져 있다)
           resolveScrollRequest={listPeekScroll ?? resolveLibrary.scrollRequest}
           openedFromId={listPeek && !listPeek.edit ? listPeek.genId : undefined}
-          cardMarks={listPeek?.edit?.marks}
+          cardMarks={listPeek?.edit ? editMarks : undefined}
+          onCardMenu={listPeek?.edit ? openEditCardMenu : undefined}
           onClearResolveHighlight={resolveLibrary.clear}
           generations={gridGens}
           disabledIds={effectiveDisabled}
@@ -2169,6 +2176,9 @@ export default function App() {
               flash={flash}
               onOpenCutFolder={openEditFolderWindow}
               reloadSignal={editReloadSignal}
+              peekPath={listPeek?.edit ? listPeek.path : null}
+              onPeekMarks={setEditMarks}
+              cardMenuRef={editCardMenuRef}
             />
           </Suspense>
         ) : filters.tab === "compose" ? (
