@@ -37,6 +37,9 @@
 .ed-stage { flex: 1; min-height: 0; position: relative; background: #000; overflow: hidden; }
 .ed-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .ed-media[hidden] { display: none; }
+/* 영상 요소 둘 중 뒤의 것 — 다음 영상을 미리 받아 둔다(editVideoPair). 자리는 차지한 채 가리기만 한다: 넘어가는 순간
+   디코딩된 프레임이 바로 나온다(display:none 이면 프레임을 내보내지 않는다). */
+.ed-media[data-spare] { visibility: hidden; }
 .ed-notice {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: 80%;
   padding: 10px 16px; border-radius: 10px; font-size: 13px; line-height: 1.6; text-align: center;
@@ -91,6 +94,12 @@
 .ed-tbtn.ed-on svg.ed-line, .ed-tbtn.ed-on:hover svg.ed-line { stroke: var(--accent); }
 .ed-tbtn:disabled { opacity: 0.35; } /* 구간 반복 — 인/아웃이 없다 */
 .ed-tbtn.ed-t-range { width: 32px; border-radius: 7px; }
+/* 배속 — 글자 단추. 1x 가 아니면 라임(.ed-on) */
+.ed-tbtn.ed-t-speed {
+  width: 40px; border-radius: 7px; font: 600 11.5px ui-monospace, Consolas, monospace; color: #c9ccd3;
+}
+.ed-tbtn.ed-t-speed:hover { color: #fff; }
+.ed-tbtn.ed-t-speed.ed-on, .ed-tbtn.ed-t-speed.ed-on:hover { color: var(--accent); }
 .ed-tbtn.ed-play { width: 30px; height: 30px; background: var(--accent); }
 .ed-tbtn.ed-play svg, .ed-tbtn.ed-play:hover svg { fill: var(--accent-ink); }
 .ed-tside { position: absolute; right: 12px; display: flex; align-items: center; gap: 2px; } /* 구간 반복 · 마크 인 · 마크 아웃 */
@@ -103,8 +112,8 @@
 /* 좁은 판(듀얼) — 폭 기준은 판 자신이다. 오른쪽 단추들이 가운데 단추와 겹치기 전에 숨긴다: 먼저 마크 인/아웃(I·O 키가
    있다), 더 좁아지면 구간 반복까지(Alt+/ 가 있다 — 켜 둔 것을 끌 길은 남는다). */
 .ed-vbot { container-type: inline-size; }
-@container (max-width: 470px) { .ed-tside .ed-t-in, .ed-tside .ed-t-out { display: none; } }
-@container (max-width: 350px) { .ed-tside { display: none; } }
+@container (max-width: 520px) { .ed-tside .ed-t-in, .ed-tside .ed-t-out { display: none; } }
+@container (max-width: 400px) { .ed-tside { display: none; } }
 
 /* 미디어 풀 — 왼쪽 폴더 목록 바로 옆(다빈치의 Bins | 클립). 머리줄 = 컷 이름 + 보기 방식·검색·정렬. */
 /* 폭은 끌어서 바꾼다(ResizableSidebar — 프로젝트 칸과 같은 손잡이). */

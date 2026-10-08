@@ -3,7 +3,8 @@
 //    React 에는 '보이는 것·재생 상태'가 바뀔 때만 알린다.
 //  · 시계 주인은 항상 하나: 보이는 클립이 영상이고 정방향 재생이면 영상(받는 중·버퍼링이면 시간도 선다), 그 밖에는 rAF.
 //  · '보이는 소스가 바뀜'은 컷이 바뀌는 것과 별개 사건 — 같은 컷에서 위 클립이 끝나 아래가 드러날 때도 일어난다.
-// ponytail: 다음 클립을 미리 받지 않는다 — 컷이 넘어갈 때 받는 시간만큼 선다. 거슬리면 영상 둘을 교대로 쓴다.
+//  · 다음에 보일 영상은 미리 받아 둔다(정방향 재생 중) — 영상 요소가 둘이면(editVideoPair) 넘어갈 때 받지 않고 자리만 바꾼다.
+// ponytail: 미리 받는 것은 '바로 다음 하나'뿐이다 — 역방향·훑기와, 다 받기 전에 경계에 닿은 때는 받는 시간만큼 선다.
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import {
   clipKey,
@@ -34,6 +35,11 @@ export interface EditVideo {
   removeAttribute(name: string): void;
   addEventListener(type: string, listener: () => void): void;
   removeEventListener(type: string, listener: () => void): void;
+  // 아래 셋은 영상 요소 둘을 묶은 것(editVideoPair)만 가진다 — 없으면 주소를 갈아 끼우는 옛 길 그대로다.
+  readonly readyState?: number;
+  prepare?(url: string | null, time: number): void; // 다음에 보일 영상을 미리 받아 그 시각에 세워 둔다(null = 비운다)
+  swap?(url: string): boolean; // 미리 받아 둔 그 영상을 앞으로 내놓는다(받지 않는다). 없으면 false
+  roll?(on: boolean): void; // 미리 받아 둔 영상을 소리 없이 미리 굴린다 / 세워 제자리로 돌린다
 }
 
 export interface EditSource {
@@ -64,6 +70,11 @@ interface Around {
 
 const STOPPED: EditView = { cut: null, clip: null, source: null, playing: false, rate: 1, failed: false };
 const SEEK_SLOP = 0.04;
+// 다 받아 둔 영상도 play() 뒤 화면이 움직이기까지 시간이 든다(격리 실측 약 0.05초 — 그동안 첫 프레임에 서 있다). 그래서
+//  넘어가기 ROLL_LEAD 초(실제 시간) 전부터 뒤의 것을 미리 굴려, 넘어가는 순간에는 이미 돌고 있게 한다. 대신 뒤 영상의 첫
+//  한두 프레임을 건너뛸 수 있다 — 컷이 바뀌는 자리라 눈에 띄지 않고, 멈춘 채로는 언제나 정확한 프레임이다.
+const ROLL_LEAD = 0.08;
+const ROLL_SLOP = 0.3; // 미리 굴린 영상이 목표를 이만큼(실제 시간 — 배속을 곱한다)까지 지나 있어도 되감지 않는다
 
 export function useEditPlayback({
   scope,
@@ -74,6 +85,7 @@ export function useEditPlayback({
   paint,
   loop = false,
   range = null,
+  speed = 1,
 }: {
   scope: string; // 시퀀스(문서) — 바뀌면 위치를 처음으로 돌린다(옛 시퀀스의 컷 이름으로 새 자리를 짐작하지 않는다)
   layout: EditLayout;
@@ -83,10 +95,11 @@ export function useEditPlayback({
   paint: (time: number) => void;
   loop?: boolean; // 반복 — 정방향으로 끝에 닿으면 처음부터 이어 튼다(역방향은 처음에서 멈춘다)
   range?: { from: number; to: number } | null; // 되풀이할 구간(전체 시각) — 있으면 loop 와 무관하게 이 구간을 돈다(구간 반복 재생)
+  speed?: number; // 재생 배속(1 이상) — 정방향 재생(재생 단추·Space·L·구간 반복·편집점 앞뒤)이 이 배속으로 시작한다
 }) {
   const [view, setView] = useState<EditView>(STOPPED);
-  const live = useRef({ layout, doc, sourceOf, paint, loop, range });
-  live.current = { layout, doc, sourceOf, paint, loop, range };
+  const live = useRef({ layout, doc, sourceOf, paint, loop, range, speed });
+  live.current = { layout, doc, sourceOf, paint, loop, range, speed };
   const pos = useRef<EditPos | null>(null);
   const run = useRef({
     playing: false,
@@ -119,6 +132,13 @@ export function useEditPlayback({
       const slot = slotOf(pos.current?.cut);
       const clip = slot && pos.current ? visibleClip(live.current.doc, slot, pos.current.local) : null;
       return { slot, clip, source: clip ? live.current.sourceOf(clip) : null };
+    };
+
+    // 올려 둘 소스의 열쇠(클립 열쇠 + 주소) — 재생할 수 있는 영상일 때만. 아니면 빈 문자열(영상 없음).
+    const shownOf = (clip: SlotClip | null, source: EditSource | null) => {
+      const key = clip ? clipKey(clip) : "";
+      return clip && source?.state === "ok" && source.type === "video" && source.url && !state.failed.has(key)
+        ? `${key}\n${source.url}` : "";
     };
 
     const publish = () => {
@@ -156,9 +176,8 @@ export function useEditPlayback({
     const sync = (jump: boolean) => {
       const video = videoRef.current;
       const { clip, source } = visible();
-      const key = clip ? clipKey(clip) : "";
-      const playable = !!clip && source?.state === "ok" && source.type === "video" && !!source.url && !state.failed.has(key);
-      const shown = playable ? `${key}\n${source!.url}` : "";
+      const shown = shownOf(clip, source);
+      const playable = !!shown;
       const owner = playable && state.playing && state.rate > 0 ? "video" : "raf";
       if (owner !== state.owner) {
         state.owner = owner;
@@ -169,9 +188,17 @@ export function useEditPlayback({
         state.token++;
         state.loaded = false;
         video.pause();
-        if (playable) video.src = source!.url!;
-        else video.removeAttribute("src");
-        video.load(); // loadedmetadata → 목표 위치로 탐색 → seeked → (재생 중이면) play
+        if (playable && video.swap?.(source!.url!)) {
+          // 미리 받아 둔 영상을 앞으로 내놓았다 — 다시 받지 않는다. 미리 굴리던 것이면 돌고 있다: 영상에 시계를 맡길 때가
+          //  아니면(멈춤·역방향) 세운다 — 정지를 눌렀는데 넘어온 영상이 계속 돌았다(Codex 코드 리뷰). 메타데이터를 이미
+          //  받았으면 그 이벤트는 지나갔으므로 여기서 잇고, 아직이면 진짜 loadedmetadata 가 온다.
+          if (owner === "raf") video.pause();
+          if ((video.readyState ?? 0) >= 1) onMeta();
+        } else {
+          if (playable) video.src = source!.url!;
+          else video.removeAttribute("src");
+          video.load(); // loadedmetadata → 목표 위치로 탐색 → seeked → (재생 중이면) play
+        }
       } else if (video && playable) {
         const local = pos.current!.local;
         const off = Math.abs(video.currentTime - local) > SEEK_SLOP;
@@ -190,7 +217,43 @@ export function useEditPlayback({
         if (owner === "raf" && !video.paused) video.pause();
       }
       if (video && playable) video.playbackRate = Math.max(1, Math.abs(state.rate));
+      prepare();
       publish();
+    };
+
+    // 지금 보이는 것이 끝난 뒤 보일 자리(at)와 거기까지 남은 길이(left, 타임라인 초) — tick 이 넘기는 순서 그대로다: 구간의
+    //  끝(경계와 같은 자리 포함)·반복하는 전체 끝이면 구간 처음으로 되돌아가고(한 번만 트는 편집점 앞뒤 재생은 거기서 멈추므로
+    //  없다), 아니면 같은 컷의 아래 클립이나 다음 컷.
+    const upcoming = (): { at: EditPos; left: number } | null => {
+      const at = pos.current;
+      const slot = slotOf(at?.cut);
+      if (!at || !slot) return null;
+      const { layout, doc, loop } = live.current;
+      const end = visibleClip(doc, slot, at.local)?.len ?? slot.len;
+      const next = layout.cuts[layout.cuts.indexOf(slot) + 1];
+      const range = rangeNow();
+      const here = slot.start + at.local;
+      const edge = slot.start + end;
+      const turn = range && state.armed && range.to <= edge ? range.to : end >= slot.len && !next && (loop || range) ? edge : null;
+      const to = turn !== null ? (state.around?.once ? null : posAt(layout, range?.from ?? 0))
+        : end < slot.len ? { cut: slot.path, local: end } : next ? { cut: next.path, local: 0 } : null;
+      return to && { at: to, left: (turn ?? edge) - here };
+    };
+    // 다음에 보일 영상을 미리 받아 그 자리에 세워 둔다 — 정방향 재생 중에만(멈춘 채 훑을 때마다 받으면 요청이 두 배가 된다).
+    //  다음이 영상이 아니거나 지금 것과 같으면(한 클립 안의 구간 반복) 비운다. 프레임마다 불려도 같은 것이면 요소는 그대로다.
+    //  넘어가기 직전(ROLL_LEAD)에는 그것을 미리 굴린다 — 멈추거나 자리를 옮겨 그 순간에서 멀어지면 세워 제자리로 돌린다.
+    const prepare = () => {
+      const video = videoRef.current;
+      if (!video?.prepare) return;
+      if (!state.playing || state.rate < 0) return video.roll?.(false); // 받아 둔 것은 그대로 둔다
+      const next = upcoming();
+      const slot = slotOf(next?.at.cut);
+      const clip = slot && next ? visibleClip(live.current.doc, slot, next.at.local) : null;
+      const source = clip ? live.current.sourceOf(clip) : null;
+      const shown = shownOf(clip, source);
+      const url = shown && shown !== state.shown ? source!.url : null;
+      video.prepare(url, next?.at.local ?? 0);
+      video.roll?.(!!url && next!.left / state.rate <= ROLL_LEAD);
     };
 
     // adopt=false — 배치가 바뀌어 위치를 방금 보정했다. 영상의 옛 시각으로 그 보정을 덮지 않는다.
@@ -321,11 +384,17 @@ export function useEditPlayback({
     };
     const onMeta = () => {
       const video = videoRef.current;
-      if (!state.shown || !pos.current || !video) return;
+      // 이미 도착한 소스의 메타데이터는 또 온 것이다(미리 받아 둔 요소를 앞으로 내놓은 직후) — 시계로 도는 영상을 되감지 않는다.
+      if (!state.shown || !pos.current || !video || state.arrived === state.token) return;
       state.loaded = true;
       const target = pos.current.local; // 받는 동안 위치가 또 바뀌었을 수 있다 — 항상 최신 목표로
-      if (target > SEEK_SLOP) video.currentTime = target;
-      else arrive();
+      // 새로 받은 요소는 0 에 서 있다. 미리 그 자리에 세워 둔 요소는 다시 보내지 않는다 — 아직 가는 중이면(seeking) 시각은 이미
+      //  목표를 가리키므로 도착은 seeked 가 알린다(Codex 설계 검토). 미리 굴려 둔 요소는 이미 돌고 있다 — 목표를 조금 지나
+      //  있어도 되감지 않고 그대로 시계를 맡긴다(되감으면 그만큼 선다).
+      const ahead = video.currentTime - target;
+      if (!video.paused && ahead >= 0 && ahead <= ROLL_SLOP * Math.abs(state.rate)) arrive();
+      else if (Math.abs(ahead) > SEEK_SLOP) video.currentTime = target;
+      else if (!video.seeking) arrive();
     };
     const onSeeked = () => {
       const video = videoRef.current;
@@ -404,9 +473,19 @@ export function useEditPlayback({
         video.pause();
         video.removeAttribute("src");
         video.load();
+        video.prepare?.(null, 0); // 미리 받던 것도 내려놓는다
       }
     };
   }, [stop, videoRef]);
+
+  // 재생 중(정방향)에 배속을 바꾸면 바로 따른다 — 걸려 있던 구간·편집점 앞뒤 재생은 그대로 이어진다. 배속이 바뀔 때만 돈다
+  //  (L 로 올려 둔 속도를 다른 렌더가 되돌리지 않는다).
+  useEffect(() => {
+    const state = run.current;
+    if (!state.playing || state.rate < 0 || state.rate === speed) return;
+    state.rate = speed;
+    sync(false);
+  }, [speed, sync]);
 
   return {
     view,
@@ -414,11 +493,11 @@ export function useEditPlayback({
     seek,
     seekPos: useCallback((next: EditPos) => seek(timeOf(live.current.layout, next)), [seek]),
     stop: useCallback(() => stop(), [stop]),
-    toggle: useCallback(() => (run.current.playing ? stop() : play(1)), [play, stop]),
-    // L / J — 같은 방향으로 다시 누르면 2·4·8배, 방향을 바꾸거나 멈춘 상태면 1배.
+    toggle: useCallback(() => (run.current.playing ? stop() : play(live.current.speed)), [play, stop]),
+    // L / J — 같은 방향으로 다시 누르면 지금의 2배(최대 8배), 방향을 바꾸거나 멈춘 상태면 L 은 고른 배속·J 는 1배.
     shuttle: useCallback((dir: 1 | -1) => {
       const { playing, rate } = run.current;
-      play(playing && Math.sign(rate) === dir ? dir * Math.min(8, Math.abs(rate) * 2) : dir);
+      play(playing && Math.sign(rate) === dir ? dir * Math.min(8, Math.abs(rate) * 2) : dir > 0 ? live.current.speed : dir);
     }, [play]),
     stepFrames: useCallback((frames: number) => {
       stop();
@@ -427,19 +506,19 @@ export function useEditPlayback({
     stepEdit: useCallback((dir: 1 | -1) => {
       seek(stepPoint(editPoints(live.current.layout), now(), dir));
     }, [now, seek]),
-    // 구간 반복 재생을 켠다 — 구간을 먼저 엔진에 넣고(다음 렌더가 같은 값을 다시 넣는다) 그 처음으로 가서 정방향 1배로 튼다.
+    // 구간 반복 재생을 켠다 — 구간을 먼저 엔진에 넣고(다음 렌더가 같은 값을 다시 넣는다) 그 처음으로 가서 정방향(고른 배속)으로 튼다.
     //  상태가 반영되기를 기다렸다 틀면 그 사이(첫 tick 전)에 영상이 끝난 때를 놓치고, 역재생 중이면 역방향이 이어진다(Codex 설계 검토).
     playRange: useCallback((next: { from: number; to: number }) => {
       live.current = { ...live.current, range: next };
       seek(next.from);
-      play(1);
+      play(live.current.speed);
     }, [play, seek]),
-    // 편집점 앞뒤 재생(다이나믹 트림 모드) — 그 편집점의 span 초 앞으로 가서 정방향 1배로 span 초 뒤까지 튼다. once 면 끝에서 그
+    // 편집점 앞뒤 재생(다이나믹 트림 모드) — 그 편집점의 span 초 앞으로 가서 정방향(고른 배속)으로 span 초 뒤까지 튼다. once 면 끝에서 그
     //  편집점으로 돌아가 멈추고, 아니면 그 구간을 되풀이한다. 구간은 엔진이 쥔다 — 화면 상태로 두면 그 사이에 켠 구간 반복
     //  재생을 옛 구간이 덮고, 길이 보정으로 배치가 바뀌면 낡는다(Codex 설계 검토).
     playAround: useCallback((at: EditPos, span: number, once: boolean) => {
       seek(timeOf(live.current.layout, at) - span);
-      play(1, { at, span, once });
+      play(live.current.speed, { at, span, once });
     }, [play, seek]),
   };
 }

@@ -50,7 +50,8 @@ import {
   type SlotClip,
 } from "../../lib/editTimeline";
 import {
-  editDocKey, isSourceView, loadEditTarget, loadEditUi, saveEditTarget, saveEditUi, type EditTarget, type EditUi, type ViewMode,
+  EDIT_SPEEDS, editDocKey, isSourceView, loadEditTarget, loadEditUi, saveEditTarget, saveEditUi,
+  type EditTarget, type EditUi, type ViewMode,
 } from "../../lib/editTimelineStore";
 import { generationListMeta } from "../../lib/generationDisplay";
 import { previewTargetFromGenerations } from "../../lib/generationGrid";
@@ -61,6 +62,7 @@ import { useCustomEvent } from "../../lib/useCustomEvent";
 import { useDisabledFolders } from "../../lib/useDisabledFolders";
 import { useEditDoc } from "../../lib/useEditDoc";
 import { useEditPlayback, type EditSource } from "../../lib/useEditPlayback";
+import { useVideoPair } from "../../lib/editVideoPair";
 import { workspaceViewKey } from "../../lib/libraryWorkspaceScope";
 import {
   allFolderPaths,
@@ -161,7 +163,8 @@ function EditTabInner({
   // 구간 반복 재생(뷰어 오른쪽 아래의 단추) — 켜져 있으면 타임라인이 마크 인/아웃 구간을 되풀이한다. 저장하지 않는다.
   const [rangeLoop, setRangeLoop] = useState(false);
   const rootRef = useRef<HTMLElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  // 타임라인 판의 영상 요소 둘(앞 · 다음 것을 미리 받는 뒤)과 그 묶음 — 컷이 넘어갈 때 받느라 서지 않게(editVideoPair)
+  const tlVideo = useVideoPair();
   const scrollRef = useRef<HTMLDivElement>(null);
   const headRef = useRef<HTMLDivElement>(null);
   const barTimeRef = useRef<HTMLSpanElement>(null);
@@ -258,8 +261,9 @@ function EditTabInner({
     }
   }, []);
   const playback = useEditPlayback({
-    scope: target ? `${target.projectId}\n${target.seq}` : "", layout, doc, sourceOf, videoRef, paint, loop: ui.loop,
+    scope: target ? `${target.projectId}\n${target.seq}` : "", layout, doc, sourceOf, videoRef: tlVideo.pair, paint, loop: ui.loop,
     range: rangeLoop ? marks.band : null, // 구간 반복 재생 — 반복(전체)과 따로 켠다
+    speed: ui.speed,
   });
   const { view, now, seek, seekPos, stop, toggle, shuttle, playRange, playAround } = playback;
   playingRef.current = view.playing;
@@ -380,7 +384,7 @@ function EditTabInner({
   const srcOrder = slots.findIndex(isSourceView);
   const srcShown = srcOrder >= 0;
   const tapeOn = slots[srcOrder] === "tape";
-  const srcVideoRef = useRef<HTMLVideoElement>(null);
+  const srcVideo = useVideoPair(); // 소스 테이프도 클립에서 클립으로 넘어간다
   const srcGens = useMemo<Generation[]>(
     () => (tapeOn ? arrangePool(cutItems, "", ui.sort).map((item) => item.gen) : pickedGen ? [pickedGen] : NO_GENS),
     [tapeOn, cutItems, ui.sort, pickedGen],
@@ -429,7 +433,8 @@ function EditTabInner({
   const paintSrc = useCallback((time: number) => srcPainters.current.forEach((draw) => draw(time)), []);
   const srcPlay = useEditPlayback({
     scope: tapeOn ? `tape\n${target?.projectId ?? ""}\n${cut ?? ""}` : pickedGen ? `src\n${pickedGen.id}` : "src",
-    layout: src.layout, doc: src.doc, sourceOf: srcSourceOf, videoRef: srcVideoRef, paint: paintSrc, loop: ui.loopSrc,
+    layout: src.layout, doc: src.doc, sourceOf: srcSourceOf, videoRef: srcVideo.pair, paint: paintSrc, loop: ui.loopSrc,
+    speed: ui.speed,
   });
   const srcNow = srcPlay.now;
   const registerSrcPaint = useCallback((draw: (time: number) => void) => {
@@ -863,7 +868,13 @@ function EditTabInner({
     markIn: () => markHere("markIn"), markOut: () => markHere("markOut"),
     rangeLoop: rangeOn, canRangeLoop: hasBand, onRangeLoop: toggleRangeLoop,
   };
+  // 배속 단추(Jay 2026-10-08) — 누를 때마다 다음 값. 두 뷰어가 같이 쓰고, 이 브라우저에 남는다.
+  const speedPane = {
+    speed: ui.speed,
+    onSpeed: () => patchUi({ speed: EDIT_SPEEDS[(EDIT_SPEEDS.indexOf(ui.speed) + 1) % EDIT_SPEEDS.length] }),
+  };
   const clockPane = { // 타임라인의 시계를 쓰는 판(타임라인·한 트랙만)이 같이 받는 것
+    ...speedPane,
     playing: view.playing, rate: view.rate, total: layout.total, marks: NO_MARKS, io: marks, flags, marking, registerPaint,
     controls: tlControls,
     loop: ui.loop, onLoop: () => patchUi({ loop: !ui.loop }), empty,
@@ -926,7 +937,8 @@ function EditTabInner({
                 failedKey={view.failed && view.clip ? clipKey(view.clip) : ""} />
             )}
             shown={view}
-            videoRef={videoRef}
+            videoRef={tlVideo.front}
+            spareRef={tlVideo.spare}
             muted={!!doc.muted || !tlShown}
             label={cutLabel && view.clip ? `${cutLabel} · V${view.clip.track}` : cutLabel}
             detail={detailOf(view.clip)}
@@ -934,8 +946,10 @@ function EditTabInner({
           {/* 소스 판 — 풀에서 고른 것(소스 클립) 또는 이 컷의 풀 목록을 이은 것(소스 테이프). 마찬가지로 붙어 있다. */}
           <EditViewer
             {...pane(srcOrder, tapeOn ? "tape" : "source")}
+            {...speedPane}
             shown={srcPlay.view}
-            videoRef={srcVideoRef}
+            videoRef={srcVideo.front}
+            spareRef={srcVideo.spare}
             muted={false}
             playing={srcPlaying}
             rate={srcPlay.view.rate}

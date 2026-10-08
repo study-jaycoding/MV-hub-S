@@ -447,6 +447,7 @@ const EN: Record<string, string> = {
   "개 선택": " selected",
   "↗ 팀 공유": "↗ Share to team",
   "◆ Resolve로 보내기": "◆ Send to Resolve",
+  "재생 배속 — 누를 때마다 1x · 1.5x · 2x · 4x": "Playback speed — each click: 1x · 1.5x · 2x · 4x",
   "◆ Resolve에 추가": "◆ Add to Resolve",
   "Resolve 전송 중…": "Sending to Resolve…",
   "항목이 없습니다.": "Nothing here yet.",

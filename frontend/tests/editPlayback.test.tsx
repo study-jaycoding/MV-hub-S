@@ -50,10 +50,11 @@ let clock = 0;
 let frames: ((stamp: number) => void)[] = [];
 const paint = vi.fn();
 
-function Harness({ scope = "s1", doc = DOC, layout = LAYOUT, loop, range }: {
+function Harness({ scope = "s1", doc = DOC, layout = LAYOUT, loop, range, speed }: {
   scope?: string; doc?: EditDoc; layout?: typeof LAYOUT; loop?: boolean; range?: { from: number; to: number } | null;
+  speed?: number;
 }) {
-  playback = useEditPlayback({ scope, layout, doc, sourceOf, videoRef, paint, loop, range });
+  playback = useEditPlayback({ scope, layout, doc, sourceOf, videoRef, paint, loop, range, speed });
   return null;
 }
 const render = (props: Parameters<typeof Harness>[0] = {}) => act(() => root.render(<Harness {...props} />));
@@ -456,4 +457,185 @@ it("멈추면 멈춘 자리를 그린다 — 마지막 프레임 뒤에 영상�
   expect(playback.now()).toBeCloseTo(3.05);
   expect(playback.view.clip?.gen).toBe("low"); // 보이는 클립이 바뀌었다
   expect(paint.mock.lastCall![0]).toBeCloseTo(3.05); // 그 자리를 그렸다(안 그리면 화면은 2.95초에 남는다)
+});
+
+// 영상 요소 둘을 묶은 것(editVideoPair)의 가짜 — 엔진이 청한 '미리 받기'를 적고, 받아 둔 것을 앞으로 내놓으면 받지 않는다(loads 가
+// 늘지 않는다). 실제 요소 둘의 동작은 editVideoPair.test.ts 가 본다.
+class FakePair extends FakeVideo {
+  readyState = 0;
+  prepared: [string | null, number][] = []; // 같은 것을 거듭 청한 것은 한 번만 적는다
+  backSeeking = false; // 뒤의 것이 아직 그 자리로 가는 중이다
+  rolls: boolean[] = []; // 미리 굴리기를 켜고 끈 기록(바뀔 때만)
+  rolling = false;
+  roll(on: boolean) {
+    if (on === this.rolling) return;
+    this.rolling = on;
+    this.rolls.push(on);
+  }
+  prepare(url: string | null, time: number) {
+    const last = this.prepared[this.prepared.length - 1];
+    if (!last || last[0] !== url || last[1] !== time) this.prepared.push([url, time]);
+  }
+  swap(url: string) {
+    const last = this.prepared[this.prepared.length - 1];
+    if (!last || last[0] !== url) return false;
+    this.src = url;
+    this.currentTime = last[1];
+    this.readyState = 4;
+    this.seeking = this.backSeeking;
+    if (this.rolling) { // 미리 굴려 둔 것 — 이미 돌고 있고, 세워 둔 자리를 조금 지나 있다
+      this.currentTime = last[1] + 0.1;
+      this.paused = false;
+    }
+    this.rolling = false;
+    return true;
+  }
+}
+const usePair = () => {
+  const pair = new FakePair();
+  video = pair;
+  videoRef.current = pair;
+  return pair;
+};
+
+it("정방향 재생 중에는 다음에 보일 영상을 미리 받아 두고, 넘어갈 때 받지 않고 바꾼다 — 받느라 서던 시간이 없다", () => {
+  const pair = usePair();
+  render({ scope: "pair" });
+  video.emit("loadedmetadata");
+  expect(pair.prepared).toEqual([]); // 멈춰 있을 때는 받지 않는다(훑을 때마다 받지 않게)
+  act(() => playback.toggle());
+  expect(pair.prepared).toEqual([["/v/low", 3]]); // 위 클립(3초)이 끝나면 같은 컷의 아래 클립이 그 시각부터 보인다
+  const loads = video.loads;
+  video.currentTime = 3.02;
+  frame(16);
+  expect(playback.view.clip?.gen).toBe("low");
+  expect(video.src).toBe("/v/low");
+  expect(video.loads).toBe(loads); // 다시 받지 않았다
+  expect(video.paused).toBe(false); // 메타데이터·탐색을 기다리지 않고 바로 이어 튼다
+  video.currentTime = 3.2;
+  frame(16);
+  expect(playback.now()).toBeCloseTo(3.2); // 시계도 서지 않았다
+  expect(pair.prepared[pair.prepared.length - 1]).toEqual([null, 0]); // 다음은 빈 컷 — 받아 둘 영상이 없다
+});
+
+it("미리 세워 둔 영상이 아직 그 자리로 가는 중이면 seeked 뒤에 시계를 맡긴다 — 시각이 목표를 가리킨다고 도착한 것이 아니다", () => {
+  const pair = usePair();
+  pair.backSeeking = true;
+  render({ scope: "pair-seeking" });
+  video.emit("loadedmetadata");
+  act(() => playback.toggle());
+  video.currentTime = 3.02;
+  frame(16);
+  expect(video.src).toBe("/v/low");
+  expect(video.paused).toBe(true); // 아직 틀지 않는다
+  frame(500);
+  expect(playback.now()).toBeCloseTo(3.02); // 시간도 서 있다
+  video.seeking = false;
+  video.emit("seeked");
+  expect(video.paused).toBe(false);
+  video.currentTime = 3.5;
+  frame(16);
+  video.currentTime = 4.5; // 다음 프레임이 돌기 전에 영상은 한참 갔다(느린 프레임)
+  video.emit("loadedmetadata"); // 늦게 온 메타데이터 — 시계로 도는 영상을 엔진이 아는 자리(3.5초)로 되감지 않는다
+  expect(video.currentTime).toBe(4.5);
+});
+
+it("미리 받기: 구간의 끝이 클립 경계와 같으면 다음 클립이 아니라 되돌아갈 자리의 것을 본다 — 반복이면 끝에서 처음의 영상", () => {
+  const pair = usePair();
+  render({ scope: "pair-range", range: { from: 1, to: 3 } }); // 위 클립(0~3초)의 끝이 구간의 끝이다
+  video.emit("loadedmetadata");
+  act(() => playback.seek(2));
+  video.emit("seeked");
+  act(() => playback.toggle());
+  expect(pair.prepared).toEqual([[null, 1]]); // 구간 처음(1초)은 지금 트는 그 영상이다 — 아래 클립(/v/low)을 받지 않는다
+  act(() => playback.stop());
+
+  render({ scope: "pair-loop", loop: true });
+  act(() => playback.seek(14)); // 마지막 컷(이미지)
+  act(() => playback.toggle());
+  expect(pair.prepared[pair.prepared.length - 1]).toEqual(["/v/top", 0]); // 끝에 닿으면 처음으로 돌아간다
+  const loads = video.loads;
+  frame(4500); // 끝(18초)을 넘어 처음으로
+  expect(playback.now()).toBe(0);
+  expect(video.src).toBe("/v/top");
+  expect(video.loads).toBe(loads);
+  expect(video.paused).toBe(false);
+
+  act(() => playback.stop());
+  render({ scope: "pair-once" });
+  act(() => playback.playAround({ cut: "e070/c2", local: 0 }, 2, true)); // 한 번만 트는 편집점 앞뒤 재생은 끝에서 멈춘다
+  frame(2100); // 편집점(8초)을 넘어 빈 컷으로 — 구간의 끝(10초)이 다음 경계(13초)보다 먼저다
+  expect(pair.prepared[pair.prepared.length - 1][0]).toBeNull(); // 되돌아가지 않으므로 받지 않는다
+});
+
+it("배속: 재생·L 은 고른 배속으로 시작하고, 재생 중에 바꾸면 바로 따른다 — L 로 올린 속도는 다른 렌더가 되돌리지 않는다", () => {
+  render({ scope: "speed", speed: 2 });
+  video.emit("loadedmetadata");
+  act(() => playback.toggle());
+  expect(playback.view.rate).toBe(2);
+  expect(video.playbackRate).toBe(2);
+  render({ scope: "speed", speed: 4 }); // 재생 중에 배속을 바꾼다
+  expect(playback.view.playing).toBe(true);
+  expect(playback.view.rate).toBe(4);
+  expect(video.playbackRate).toBe(4);
+  act(() => playback.shuttle(1)); // L — 지금의 2배
+  expect(playback.view.rate).toBe(8);
+  render({ scope: "speed", speed: 4, loop: true }); // 배속이 아닌 것이 바뀐 렌더
+  expect(playback.view.rate).toBe(8);
+  act(() => playback.shuttle(-1)); // J — 방향을 바꾸면 1배
+  expect(playback.view.rate).toBe(-1);
+  render({ scope: "speed", speed: 1.5, loop: true }); // 역방향에는 배속을 걸지 않는다
+  expect(playback.view.rate).toBe(-1);
+  act(() => playback.shuttle(1)); // 다시 L — 고른 배속으로
+  expect(playback.view.rate).toBe(1.5);
+  act(() => playback.stop());
+  act(() => playback.seek(8.5)); // 빈 컷 — rAF 시계도 배속으로 간다
+  act(() => playback.toggle());
+  frame(1000);
+  expect(playback.now()).toBeCloseTo(10);
+  act(() => playback.playRange({ from: 9, to: 12 })); // 구간 반복 재생·편집점 앞뒤 재생도 고른 배속으로
+  expect(playback.view.rate).toBe(1.5);
+  act(() => playback.playAround({ cut: "e070/c3", local: 0 }, 2, true));
+  expect(playback.view.rate).toBe(1.5);
+});
+
+it("넘어가기 직전에는 받아 둔 영상을 미리 굴리고, 넘어온 뒤에는 되감지 않는다 — 멈추면 굴리던 것을 세운다", () => {
+  const pair = usePair();
+  render({ scope: "pair-roll" });
+  video.emit("loadedmetadata");
+  act(() => playback.toggle());
+  video.currentTime = 2.5;
+  frame(16);
+  expect(pair.rolls).toEqual([]); // 아직 멀다
+  video.currentTime = 2.95; // 경계(3초)까지 0.05초
+  frame(16);
+  expect(pair.rolls).toEqual([true]);
+  act(() => playback.stop());
+  expect(pair.rolls).toEqual([true, false]); // 멈추면 세운다(가려진 채 혼자 돌지 않게)
+  act(() => playback.toggle());
+  expect(pair.rolls).toEqual([true, false, true]);
+  video.currentTime = 3.01;
+  frame(16);
+  expect(video.src).toBe("/v/low");
+  expect(video.currentTime).toBeCloseTo(3.1); // 이미 돌던 영상이다 — 목표(3.01초)로 되감지 않는다
+  expect(video.paused).toBe(false);
+  frame(16);
+  expect(playback.now()).toBeCloseTo(3.1); // 그 영상이 시계다
+});
+
+// 미리 굴리던 영상은 돌고 있다 — 그것을 앞으로 내놓는 길이 '재생 중'만은 아니다(Codex 코드 리뷰).
+it("미리 굴리는 중에 멈추면, 멈춘 자리가 경계를 넘었어도 넘어온 영상은 서 있다", () => {
+  const pair = usePair();
+  render({ scope: "pair-roll-stop" });
+  video.emit("loadedmetadata");
+  act(() => playback.toggle());
+  video.currentTime = 2.95;
+  frame(16);
+  expect(pair.rolling).toBe(true);
+  video.currentTime = 3.01; // 다음 프레임이 돌기 전에 앞 영상은 경계(3초)를 넘었다
+  act(() => playback.stop()); // 멈춘다 — 멈춘 자리에 보이는 것은 아래 클립이다
+  expect(playback.view.playing).toBe(false);
+  expect(video.src).toBe("/v/low");
+  expect(video.paused).toBe(true);
+  expect(video.currentTime).toBeCloseTo(3.01); // 굴러간 자리(3.1초)가 아니라 멈춘 자리로
 });

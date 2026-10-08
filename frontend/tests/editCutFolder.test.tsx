@@ -365,6 +365,7 @@ it("뷰어 판: 위 줄에서 무엇을 볼지 고른다(타임라인·소스·�
   expect(timeline.querySelector<HTMLImageElement>("img.ed-media")!.getAttribute("src")).toBe("/media/b.png");
   expect([...timeline.querySelectorAll(".ed-vbot .ed-tbtn")].map((item) => item.getAttribute("aria-label"))).toEqual([
     "처음으로 (Home)", "역재생 (J)", "정지 (K)", "재생/정지 (Space)", "끝으로 (End)", "반복 재생",
+    "재생 배속 — 누를 때마다 1x · 1.5x · 2x · 4x",
     "구간 반복 재생 (Alt+/) — 마크 인/아웃 사이를 되풀이합니다", "마크 인 (I)", "마크 아웃 (O)", // 오른쪽 아래(다빈치의 뷰어)
   ]);
   expect(timeline.querySelectorAll(".ed-scrub-track > i")).toHaveLength(0); // 재생바에 컷 경계 점은 없다 — 북마크·인/아웃만 보인다
@@ -383,7 +384,7 @@ it("뷰어 판: 위 줄에서 무엇을 볼지 고른다(타임라인·소스·�
   expect(video.getAttribute("src")).toBe("/media/v.mp4");
   expect(video.controls).toBe(false);
   expect(pane("source").querySelector(".ed-chip-r")!.textContent).toBe("리버 · seedance");
-  expect(pane("source").querySelectorAll(".ed-vbot .ed-tbtn")).toHaveLength(6); // 소스 판에는 마크·구간 반복 단추가 없다
+  expect(pane("source").querySelectorAll(".ed-vbot .ed-tbtn")).toHaveLength(7); // 소스 판에는 마크·구간 반복 단추가 없다(재생 여섯 + 배속)
   expect(localStorage.getItem(DOC_KEY)).not.toBeNull();
   expect(storedTracks()).toEqual([["a", 1], ["b", 2]]); // 소스로 보는 것은 타임라인을 바꾸지 않는다
   act(() => cutCell("c2").click()); // 다른 컷으로 가도 소스는 그대로다
@@ -1219,4 +1220,37 @@ it("빈 곳 채우기: 공유 목록을 다시 받는 중·받지 못한 뒤에�
   world.state = "capped"; // 2,000건에서 잘린 목록은 받은 것 안에서 고른다
   mount();
   expect(listItem("빈 곳 채우기").textContent).toBe("빈 곳 채우기2");
+});
+
+it("배속 단추: 누를 때마다 1x → 1.5x → 2x → 4x → 1x — 두 뷰어가 같이 쓰고 이 브라우저에 남는다", () => {
+  world.gens = [...world.gens, videoGen()];
+  localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["source", "timeline"], speed: 3 })); // 목록에 없는 값은 1x
+  seed([{ cut: "c1", gen: "v", track: 1, kind: "video" }]);
+  mount();
+  const speed = (mode: string) => pane(mode).querySelector<HTMLButtonElement>(".ed-t-speed")!;
+  expect([speed("timeline").textContent, speed("source").textContent]).toEqual(["1x", "1x"]);
+  expect(speed("timeline").classList.contains("ed-on")).toBe(false);
+  const seen: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    act(() => speed("timeline").click());
+    seen.push(speed("timeline").textContent!);
+  }
+  expect(seen).toEqual(["1.5x", "2x", "4x", "1x"]);
+  act(() => speed("source").click()); // 소스 판의 단추도 같은 값을 바꾼다
+  expect([speed("timeline").textContent, speed("source").textContent]).toEqual(["1.5x", "1.5x"]);
+  expect(speed("timeline").classList.contains("ed-on")).toBe(true); // 1x 가 아니면 켜진 색
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!).speed).toBe(1.5);
+
+  // 재생이 그 배속으로 간다 — 영상 요소는 둘이고(앞 · 다음 것을 미리 받는 뒤) 뒤의 것에 표가 붙는다
+  const videos = [...pane("timeline").querySelectorAll<HTMLVideoElement>(".ed-stage > video.ed-media")];
+  expect(videos.map((item) => item.dataset.spare)).toEqual([undefined, ""]);
+  act(() => cutCell("c1").click());
+  act(() => { videos[0].dispatchEvent(new Event("loadedmetadata")); });
+  act(() => pane("timeline").querySelector<HTMLButtonElement>(".ed-play")!.click());
+  expect(playingIn("timeline")).toBe(true);
+  expect(videos[0].playbackRate).toBe(1.5);
+  expect(pane("timeline").querySelector(".ed-vspeed")!.textContent).toBe("1.5x");
+  act(() => speed("timeline").click()); // 재생 중에 바꾸면 바로 따른다
+  expect(videos[0].playbackRate).toBe(2);
+  expect(playingIn("timeline")).toBe(true);
 });

@@ -37,6 +37,7 @@ export interface ViewerProps {
   onMode: (next: ViewMode) => void;
   shown: EditShown;
   videoRef: RefObject<HTMLVideoElement>;
+  spareRef?: RefObject<HTMLVideoElement>; // 다음 영상을 미리 받아 둘 두 번째 요소(editVideoPair) — 자기 시계로 이어 트는 판만
   muted: boolean;
   playing: boolean;
   rate: number; // 음수 = 역방향
@@ -50,6 +51,8 @@ export interface ViewerProps {
   controls: ViewerControls;
   loop: boolean;
   onLoop: () => void;
+  speed: number; // 재생 배속 — 누르면 다음 값으로(onSpeed)
+  onSpeed: () => void;
   label: string; // 'e070 / c0050 · V3'
   detail: string; // '만든 사람 · 모델 · 5.0s'
   empty: string | null; // 그릴 것이 없을 때의 안내(있으면 화면 가운데에 그것만)
@@ -61,9 +64,9 @@ export interface ViewerProps {
 const NO_FLAGS: readonly { time: number; color?: string }[] = [];
 
 export function EditViewer({
-  order, mode, options, onMode, shown, videoRef, muted, playing, rate, total, marks, io = null, flags = NO_FLAGS, marking = null, over = null,
-  registerPaint, controls,
-  loop, onLoop, label, detail, empty, active, onActivate, dualButton,
+  order, mode, options, onMode, shown, videoRef, spareRef, muted, playing, rate, total, marks, io = null, flags = NO_FLAGS, marking = null,
+  over = null, registerPaint, controls,
+  loop, onLoop, speed, onSpeed, label, detail, empty, active, onActivate, dualButton,
 }: ViewerProps) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -90,7 +93,8 @@ export function EditViewer({
         : source?.state === "unknown" ? t("확인 못 함 — 공유 목록을 아직 받지 못했습니다.")
           : failed ? t("이 영상을 재생하지 못했습니다.") : null);
   const keepFocus = (event: ReactMouseEvent) => event.preventDefault(); // 단추가 초점을 가져가면 재생 키가 그 단추로 간다
-  const speed = Math.abs(rate) > 1 || rate < 0 ? `${rate < 0 ? "◀ " : ""}${Math.abs(rate)}x` : "";
+  const fast = Math.abs(rate) > 1 || rate < 0 ? `${rate < 0 ? "◀ " : ""}${Math.abs(rate)}x` : "";
+  const speedTitle = t("재생 배속 — 누를 때마다 1x · 1.5x · 2x · 4x");
   const current = options.find((option) => option.value === mode);
   const scrub = (event: ReactPointerEvent) => {
     const box = trackRef.current?.getBoundingClientRect();
@@ -130,7 +134,7 @@ export function EditViewer({
             </div>
           )}
         </div>
-        {speed && <b className="ed-vspeed">{speed}</b>}
+        {fast && <b className="ed-vspeed">{fast}</b>}
         <span className="ed-vtc ed-vtotal">{timecode(total)}</span>
         {dualButton && (
           <button type="button" className={"ed-tbtn ed-dual" + (dualButton.dual ? " ed-on" : "")} aria-pressed={dualButton.dual}
@@ -148,6 +152,11 @@ export function EditViewer({
         {/* 영상 요소는 떼지 않는다 — 떼면 재생 훅이 걸어 둔 이벤트와 주소가 함께 사라진다. */}
         <video ref={videoRef} className="ed-media" muted={muted} playsInline preload="auto" hidden={!isVideo}
           poster={isVideo && source?.thumb ? source.thumb : undefined} />
+        {/* 두 번째 요소 — 다음 영상을 미리 받아 둔다. 어느 쪽이 앞인지는 재생이 정한다(data-spare — 가려진 쪽) */}
+        {spareRef && (
+          <video ref={spareRef} className="ed-media" muted={muted} playsInline preload="auto" hidden={!isVideo}
+            poster={isVideo && source?.thumb ? source.thumb : undefined} />
+        )}
         {still && <img className="ed-media" src={still} alt="" draggable={false} />}
         {notice && <div className="ed-notice" role="status">{notice}</div>}
         {!empty && label && <span className="ed-chip ed-chip-l">{label}</span>}
@@ -200,6 +209,8 @@ export function EditViewer({
             <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="13" y="1" width="2" height="12" /><path d="M1 1v12l10-6z" /></svg>)}
           {button("loop", t("반복 재생"), onLoop,
             <svg className="ed-line" width="18" height="14" viewBox="0 0 18 14" aria-hidden="true"><path d="M5 3h8a4 4 0 0 1 0 8H5a4 4 0 0 1 0-8" /><path d="M8 .6 5 3l3 2.4" /></svg>, loop)}
+          <button type="button" className={"ed-tbtn ed-t-speed" + (speed !== 1 ? " ed-on" : "")} title={speedTitle} aria-label={speedTitle}
+            onClick={onSpeed}>{speed}x</button>
           {marking && (
             <span className="ed-tside">
               <button type="button" className={"ed-tbtn ed-t-range" + (marking.rangeLoop ? " ed-on" : "")} aria-pressed={marking.rangeLoop}
