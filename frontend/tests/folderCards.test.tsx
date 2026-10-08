@@ -23,13 +23,15 @@ const card = (name: string, count: number, rep = false, type: "image" | "video" 
 });
 const cards = (...folders: FolderCard[]): FolderCards => ({ parent: "e035", own_count: 0, folders });
 
-it("묶어 보일 수 있는 조회 — 공유 탭에서 프로젝트의 폴더를 골랐고 무엇도 찾고 있지 않을 때만", () => {
+it("묶어 보일 수 있는 조회 — 공유 탭에서 프로젝트(또는 그 폴더)를 골랐고 무엇도 찾고 있지 않을 때만", () => {
   expect(folderCardsScope(base, false)).toEqual({ projectId: "p1", parent: "e035" });
+  // 프로젝트만 골랐으면 맨 위 폴더(에피소드)마다
+  expect(folderCardsScope({ ...base, folder_path: undefined }, false)).toEqual({ projectId: "p1", parent: "" });
   // 팀 공간 하나로 거르는 것까지는 서버가 같은 식으로 센다
   expect(folderCardsScope({ ...base, workspace_ids: ["ws-1"] }, false)).toEqual({ projectId: "p1", parent: "e035", workspaceId: "ws-1" });
 
   const flat: Partial<GenQuery>[] = [
-    { tab: "my" }, { project_id: undefined }, { project_id: "none" }, { folder_path: undefined },
+    { tab: "my" }, { project_id: undefined }, { project_id: "none" },
     { search: "cat" }, { creator_uid: "u" }, { worker_id: "w" }, { share_dir: "mine" }, { local_only: true },
     { include_deleted: true }, { deleted_only: true }, { color: "r" }, { tag: "x" },
     { media_type: "video" }, { review_filter: "held" }, { shared_only: true }, { comment_only: true }, { final_only: true },

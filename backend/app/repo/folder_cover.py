@@ -32,10 +32,12 @@ def _visible_where(
     team_member_projects: Optional[list[str]],
     viewer_uid: Optional[str],
     workspace_id: Optional[str],
+    *,
+    include_roots: bool = False,
 ) -> tuple[str, list[Any]]:
     where, args = _folder_counts_where(
         [project_id], shared_only=True,
-        team_member_projects=team_member_projects, actor_uid=viewer_uid,
+        team_member_projects=team_member_projects, actor_uid=viewer_uid, include_roots=include_roots,
     )
     if workspace_id:
         # 목록의 공간 필터와 같은 식 — scope 조건이 같은 id 가 남은 비정상 행을 거른다.
@@ -61,7 +63,10 @@ def folder_cards(
     """
     parent_path = clean_folder_path(parent) or ""
     prefix = parent_path + "/" if parent_path else ""
-    where, args = _visible_where(project_id, team_member_projects, viewer_uid, workspace_id)
+    # 프로젝트의 맨 위(parent 없음)에서는 폴더 없이 든 것도 센다(own_count) — 빼면 그 생성물이 어느 카드에도 없이 조용히 사라진다.
+    where, args = _visible_where(
+        project_id, team_member_projects, viewer_uid, workspace_id, include_roots=not parent_path,
+    )
     if parent_path:
         under, under_args = _under(parent_path)
         where += f" AND {under}"
@@ -83,7 +88,7 @@ def folder_cards(
     own_count = 0
     folders: dict[str, dict[str, Any]] = {}
     for row in rows:  # 최신 순 — 폴더마다 처음 만난 것이 가장 최근 것이다
-        folder = row["folder_path"]
+        folder = row["folder_path"] or ""  # 폴더 없음 = 프로젝트 맨 위에 직접 든 것
         if folder != parent_path and not folder.startswith(prefix):
             continue  # SQL 의 LIKE 는 영문 대소문자를 가리지 않는다 — 글자만 같은 다른 폴더(E035/…)를 이 폴더 카드로 합치지 않는다
         rest = folder[len(prefix):]
