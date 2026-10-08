@@ -75,6 +75,7 @@ from .routers import (
     console,
     db_backup,
     db_transfer,
+    folder_cards,
     gen_requests,
     generation,
     generation_views,
@@ -744,6 +745,7 @@ app.include_router(share.router)
 app.include_router(sync.router)
 app.include_router(assets.router)
 app.include_router(projects.router)
+app.include_router(folder_cards.router)  # 공유 & 리뷰 탭의 폴더 카드·대표(고정 하위 경로 — projects 의 /{pid}/… 와 안 겹침)
 app.include_router(members.router)
 app.include_router(notifications.router)
 app.include_router(update_notices.router)

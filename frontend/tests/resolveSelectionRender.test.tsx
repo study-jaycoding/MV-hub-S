@@ -403,8 +403,9 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
     return <output data-testid="viewed-folder">{JSON.stringify(props.viewedFolder)}</output>;
   } }));
   vi.doMock("../src/components/ThumbnailGrid", () => ({ ThumbnailGrid: (props: NonNullable<typeof gridSnapshot>) => {
-    // 캔버스 '생성 결과' 창도 이 격자를 쓴다('대표' 칸 cellHeader 로 구분) — 그쪽은 셀만 그려 선택·강조를 보이고, 목록 격자만 담는다.
-    if (props.cellHeader) return <>{props.generations.map((g) => (
+    // 캔버스 '생성 결과' 창도 이 격자를 쓴다 — 그쪽은 셀만 그려 선택·강조를 보이고, 목록 격자만 담는다.
+    //  구분은 그 창만 주는 lastViewedId 로 한다: '대표' 칸(cellHeader)은 공유 탭의 폴더 창 격자도 쓴다.
+    if (props.cellHeader && props.lastViewedId !== undefined) return <>{props.generations.map((g) => (
       <div className="gen-cell" data-id={g.id} key={g.id} onMouseDown={() => props.onSelectedChange(new Set([g.id]))}>
         <div className={"card" + (props.selectedIds.has(g.id) ? " selected" : "") + (props.resolveHighlightedIds?.has(g.id) ? " resolve-highlighted" : "")} />
       </div>
@@ -1241,4 +1242,172 @@ it("App 편집 탭(캔버스에서 들어옴): 편집 중의 다빈치 선택은
   await settle();
   expect(tile("other-target")).toBeTruthy();
   expect(resolveHighlightedIds()).toEqual(["other-target"]);
+});
+
+// ── 공유 & 리뷰 탭의 폴더 묶음 보기(2026-10-08) ──
+type ToolbarProps = ComponentProps<typeof import("../src/components/LibraryToolbar").LibraryToolbar>;
+let toolbarSnapshot: ToolbarProps | null = null;
+const withAsset = (id: string): Generation => ({
+  ...libraryGeneration(id), assets: [{ type: "image", file_path: `/media/${id}.png`, thumbnail_path: `/media/${id}.png` }],
+} as Generation);
+const cutCards = (rep = false) => ({ parent: "episode", own_count: 2, folders: [
+  { path: "episode/other", name: "other", count: 4, rep: false, cover: withAsset("neighbour") },
+  { path: "episode/shot", name: "shot", count: 3, rep, cover: withAsset("target") },
+] });
+const cutGrid = () => document.querySelector<HTMLElement>("main.main .cut-grid");
+const cutTile = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("main.main .cut-card:not(.cut-out)")]
+  .find((tile) => tile.querySelector(".cut-tab > span")!.textContent === name)!;
+type Pill = { type: string; props: { className: string; disabled?: boolean; onMouseDown?: (event: { preventDefault: () => void; button: number }) => void } };
+const pill = (id: string) => gridSnapshot!.cellHeader!(withAsset(id)) as unknown as Pill | null;
+
+async function mountTeamFolder(api: Record<string, unknown>, more: Partial<Filters> = {}) {
+  installAppBoundaries([fixture, otherScene]);
+  toolbarSnapshot = null;
+  vi.doMock("../src/components/LibraryToolbar", () => ({ LibraryToolbar: (props: ToolbarProps) => {
+    toolbarSnapshot = props;
+    return null;
+  } }));
+  Object.assign(boundary.api, api);
+  localStorage.setItem("ch.lib.filtersV2", JSON.stringify({ tab: "team", __v: "2" }));
+  const { default: App } = await import("../src/App");
+  act(() => view.root.render(<StrictMode><App /></StrictMode>));
+  await settle();
+  act(() => sidebarSnapshot!.onChange({ project_id: "resolve-project", folder_path: "episode", ...more }));
+  await settle();
+}
+
+it("App 공유·리뷰: 폴더를 고르면 바로 아래 폴더마다 카드 한 장 — 고른 것은 비우고, 컷 카드로 연 창에서 대표를 정한다", { timeout: 20_000 }, async () => {
+  const folderCards = vi.fn().mockResolvedValue(cutCards());
+  let saved!: () => void;
+  const setFolderCover = vi.fn(() => new Promise<void>((resolve) => { saved = resolve; }));
+  localStorage.setItem("ch.lib.cutView", "0"); // 한 장씩 보기로 시작
+  await mountTeamFolder({ folderCards, setFolderCover });
+
+  // 한 장씩 보는 동안에는 받지 않는다 — 전환 단추만 보인다
+  expect(folderCards).not.toHaveBeenCalled();
+  expect(toolbarSnapshot!.folderCards).toMatchObject({ on: false, summary: undefined });
+  expect(cutGrid()).toBeNull();
+  act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
+  expect(promptSnapshot?.topSlot).toBeTruthy();
+
+  // [컷별] — 격자 자리에 컷 카드. 고른 것은 비운다(남기면 보이지 않는 카드에 삭제·공유가 걸린다)
+  act(() => toolbarSnapshot!.folderCards!.onChange(true));
+  await settle();
+  expect(localStorage.getItem("ch.lib.cutView")).toBe("1");
+  expect(folderCards).toHaveBeenLastCalledWith("resolve-project", "episode", "view-workspace");
+  expect([...cutGrid()!.querySelectorAll(".cut-tab > span")].map((name) => name.textContent)).toEqual(["other", "shot"]);
+  expect(gridOutputs()).toHaveLength(0);
+  expect(promptSnapshot?.topSlot).toBeUndefined();
+  expect(toolbarSnapshot!.folderCards).toMatchObject({ on: true, summary: { folders: 2, items: 9 } });
+  expect(cutGrid()!.querySelector(".cut-out-count")!.textContent).toBe("컷 밖 2건"); // 폴더에 직접 든 것은 맨 끝 칸으로
+
+  // 컷 카드 → 그 폴더의 창. 누른 생성물 카드가 없으니 표시·이동 없이 연다. 뒤의 컷 카드는 그대로 있다.
+  const backKey = JSON.stringify(librarySnapshot!.genQuery);
+  beginList.mockClear();
+  act(() => cutTile("shot").click());
+  await settle();
+  expect(peekWindow()!.querySelector(".folder-peek-title")!.textContent).toBe("Resolve project / episode/shot");
+  expect(librarySnapshot!.genQuery).toMatchObject({ tab: "team", project_id: "resolve-project", folder_path: "episode/shot" });
+  expect(beginList).toHaveBeenLastCalledWith({ keep: backKey });
+  expect(gridSnapshot!.openedFromId).toBeNull();
+  expect(gridSnapshot!.resolveScrollRequest).toBeNull();
+  expect(peekWindow()!.contains(gridOutputs()[0])).toBe(true);
+  expect(cutGrid()).not.toBeNull();
+  expect(toolbarSnapshot!.folderCards).toBeUndefined(); // 창 안의 툴바에는 전환 단추가 없다
+
+  // 창 안 카드 위의 [대표] — 대표가 아직 없으니 모두 지정 단추. 그림이 없는 것에는 없다.
+  expect(pill("target")).toMatchObject({ type: "button", props: { className: "scene-varpop-rep", disabled: false } });
+  expect(gridSnapshot!.cellHeader!(libraryGeneration("no-asset"))).toBeNull();
+  const preventDefault = vi.fn();
+  const requests = folderCards.mock.calls.length;
+  folderCards.mockResolvedValue(cutCards(true)); // 저장 뒤 서버가 돌려줄 값
+  act(() => pill("target")!.props.onMouseDown!({ preventDefault, button: 2 })); // 우클릭 — 팀의 대표가 바뀌면 안 된다
+  expect(setFolderCover).not.toHaveBeenCalled();
+  act(() => pill("target")!.props.onMouseDown!({ preventDefault, button: 0 }));
+  expect(preventDefault).toHaveBeenCalled(); // 단추가 초점을 가져가지 않게
+  expect(setFolderCover).toHaveBeenCalledWith("resolve-project", "episode/shot", "target");
+  // 저장하는 동안은 잠근다 — 먼저 그리지 않고, 또 눌러도 한 번만 보낸다
+  expect(pill("target")).toMatchObject({ type: "button", props: { disabled: true } });
+  act(() => pill("sibling")!.props.onMouseDown!({ preventDefault, button: 0 }));
+  expect(setFolderCover).toHaveBeenCalledTimes(1);
+  expect(folderCards).toHaveBeenCalledTimes(requests);
+  // 끝나면 서버 값을 다시 읽은 뒤에 푼다
+  await act(async () => { saved(); });
+  await settle();
+  expect(folderCards.mock.calls.length).toBeGreaterThan(requests);
+  expect(pill("target")).toMatchObject({ type: "span", props: { className: "scene-varpop-cur" } });
+  expect(pill("sibling")).toMatchObject({ type: "button", props: { disabled: false } });
+
+  // 닫으면 초점은 컷 카드 격자로 돌아오고, 뒤의 묶음은 새 대표를 안다
+  //  목록 훅처럼: 닫을 때(restore) 옛 첫 쪽을 먼저 보이며 잠근다 — 풀린 뒤에 초점을 돌려준다
+  beginList.mockImplementationOnce((back?: { restore?: string }) => { if (back?.restore !== undefined) setStaleList(true); });
+  pressEscapeInPeek();
+  await settle();
+  expect(peekWindow()).toBeNull();
+  expect(document.querySelector("main.main")!.hasAttribute("inert")).toBe(true); // 잠긴 동안은 컷 카드도 눌리지 않는다
+  act(() => setStaleList(false));
+  expect(document.activeElement).toBe(cutGrid());
+  expect(cutTile("shot").querySelector(".cut-pill")).toBeNull();
+  expect(cutTile("other").querySelector(".cut-pill")!.textContent).toBe("대표 미정");
+  expect(gridOutputs()).toHaveLength(0);
+
+  // '컷 밖' 칸(또는 [전체]) — 다시 한 장씩
+  act(() => cutGrid()!.querySelector<HTMLButtonElement>(".cut-out")!.click());
+  await settle();
+  expect(localStorage.getItem("ch.lib.cutView")).toBe("0");
+  expect(cutGrid()).toBeNull();
+  expect(gridOutputs()).toHaveLength(1);
+});
+
+it("App 공유·리뷰: 대표 저장이 실패해도 서버 값을 다시 읽고 단추를 푼다", { timeout: 20_000 }, async () => {
+  const folderCards = vi.fn().mockResolvedValue(cutCards());
+  const setFolderCover = vi.fn().mockRejectedValue(new Error("404: 이 폴더에서 볼 수 있는 공유물이 아닙니다"));
+  await mountTeamFolder({ folderCards, setFolderCover });
+  act(() => cutTile("shot").click());
+  await settle();
+  const requests = folderCards.mock.calls.length;
+  act(() => pill("target")!.props.onMouseDown!({ preventDefault: () => {}, button: 0 }));
+  await settle();
+  expect(setFolderCover).toHaveBeenCalledTimes(1);
+  expect(folderCards.mock.calls.length).toBeGreaterThan(requests);
+  expect(pill("target")).toMatchObject({ type: "button", props: { disabled: false } });
+});
+
+it("App 공유·리뷰: 묶어 보이지 않는 경우 — 하위 폴더가 없는 폴더, 무엇을 찾는 중", { timeout: 20_000 }, async () => {
+  // 하위 폴더가 없다 — 한 장씩 그대로이고, 바꿀 것이 없으니 전환 단추도 없다
+  const leaf = vi.fn().mockResolvedValue({ parent: "episode", own_count: 5, folders: [] });
+  await mountTeamFolder({ folderCards: leaf, setFolderCover: vi.fn() });
+  expect(leaf).toHaveBeenCalled();
+  expect(cutGrid()).toBeNull();
+  expect(gridOutputs()).toHaveLength(1);
+  expect(toolbarSnapshot!.folderCards).toBeUndefined();
+
+  // 무엇을 찾는 조건이 켜지면 받지도 않는다
+  const calls = leaf.mock.calls.length;
+  act(() => sidebarSnapshot!.onChange({ search: "cat" }));
+  await settle();
+  expect(leaf).toHaveBeenCalledTimes(calls);
+  expect(toolbarSnapshot!.folderCards).toBeUndefined();
+});
+
+it("App 공유·리뷰: 옛 공유 서버(경로 없음)면 한 장씩 보이고 전환 단추·대표 단추가 없다", { timeout: 20_000 }, async () => {
+  const { HttpError } = await import("../src/lib/http");
+  const missing = vi.fn().mockRejectedValue(new HttpError(404, "404: Not Found", "Not Found"));
+  // 한 장씩 보기로 둔 PC — 아직 물어본 적이 없어 전환 단추는 보인다
+  localStorage.setItem("ch.lib.cutView", "0");
+  await mountTeamFolder({ folderCards: missing, setFolderCover: vi.fn() });
+  expect(missing).not.toHaveBeenCalled();
+  expect(toolbarSnapshot!.folderCards).toMatchObject({ on: false });
+  // 폴더 창이 그 폴더의 대표를 물어보다가 옛 서버임을 안다 — 대표 단추가 없다
+  act(() => gridSnapshot!.onOpenFolder!(libraryGeneration("target")));
+  await settle();
+  expect(missing).toHaveBeenCalled();
+  expect(peekWindow()).not.toBeNull();
+  expect(gridSnapshot!.cellHeader).toBeUndefined();
+  // 닫은 뒤에는 전환 단추도 내놓지 않는다(눌러도 묶어 보일 수 없다)
+  pressEscapeInPeek();
+  await settle();
+  expect(cutGrid()).toBeNull();
+  expect(gridOutputs()).toHaveLength(1);
+  expect(toolbarSnapshot!.folderCards).toBeUndefined();
 });

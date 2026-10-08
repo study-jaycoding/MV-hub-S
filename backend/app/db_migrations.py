@@ -661,6 +661,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_generation_view_scene "
         "ON generation_view(owner_uid, scene_id, viewed_seq DESC)"
     )
+    # 폴더(컷)의 대표 생성물 — 팀이 같이 보는 값(공유 서버 DB 가 권위). 신규 DB 는 schema.sql, 기존 DB 는 여기서.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS folder_cover ("
+        "project_id TEXT NOT NULL, folder_path TEXT NOT NULL, generation_id TEXT NOT NULL, "
+        "set_by TEXT, set_at TEXT NOT NULL DEFAULT (datetime('now')), "
+        "PRIMARY KEY (project_id, folder_path))"
+    )
     scene_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(scene_card_generation)")
     }

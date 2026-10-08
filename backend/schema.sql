@@ -643,6 +643,18 @@ CREATE TABLE IF NOT EXISTS generation_view (
 CREATE INDEX IF NOT EXISTS idx_generation_view_scene
     ON generation_view(owner_uid, scene_id, viewed_seq DESC);
 
+-- 폴더(컷)의 대표 생성물 — 공유 & 리뷰 탭 폴더 카드의 표지. 팀이 같이 보는 값이라 공유 서버 DB 가 권위다.
+-- FK 없음 — 휴지통이 generation 행을 실제로 지웠다 되살린다. 읽을 때 '지금 그 폴더 아래에서 보이는 공유물인가'를
+-- 보고, 아니면 최신 것을 표지로 쓴다. 행은 두므로 복원·재공유·제자리 복귀 때 대표가 다시 살아난다.
+CREATE TABLE IF NOT EXISTS folder_cover (
+    project_id    TEXT NOT NULL,
+    folder_path   TEXT NOT NULL,
+    generation_id TEXT NOT NULL,
+    set_by        TEXT,                                   -- 마지막으로 정한 계정(actor_id)
+    set_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (project_id, folder_path)
+);
+
 CREATE INDEX IF NOT EXISTS idx_generation_worker  ON generation(worker_id);
 CREATE INDEX IF NOT EXISTS idx_generation_created ON generation(created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_share_gen   ON share(generation_id);  -- generation 당 공유 1개

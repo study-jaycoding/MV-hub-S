@@ -982,3 +982,65 @@
    각각을 절반 크기(가로 패딩만 축소, 높이·폰트는 다른 버튼과 동일)로. */
 .sb-grade { display: inline-flex; gap: 4px; }
 .sb-grade button { min-width: 40px; padding: 6px 8px; font-weight: 800; }
+
+/* ── 폴더 묶음 보기(공유 & 리뷰 탭) — 고른 폴더 바로 아래 폴더마다 카드 한 장(Jay 2026-10-08).
+   한 장짜리 카드와 구분되게 종이 두 장을 위·오른쪽으로 겹쳐 놓은 모양. 간격·여백은 .gen-grid 와 같다. ── */
+.cut-grid {
+  flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; outline: none; user-select: none;
+  display: grid; gap: 12px; align-content: start; grid-auto-rows: max-content;
+  padding: 14px 16px 124px;
+}
+.cut-card {
+  position: relative; display: block; width: 100%; aspect-ratio: 1; margin-top: 30px; /* 위 = '대표 미정' 자리 */
+  padding: 0; border: 0; border-radius: 12px; background: none; /* base.css 전역 button 모양을 덮는다 */
+}
+.cut-card:active { transform: none; }
+.cut-card::before, .cut-card::after { content: ""; position: absolute; border-radius: 12px; border: 1px solid; }
+.cut-card::before { inset: -8px -8px 8px 8px; background: #141619; border-color: #33383f; }
+.cut-card::after { inset: -4px -4px 4px 4px; background: #1c1f23; border-color: #4a515a; }
+.cut-face {
+  position: absolute; inset: 0; z-index: 1; overflow: hidden; border-radius: 12px; background: #15171a;
+  display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+}
+.cut-face > img, .cut-face > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.cut-face.contain > img, .cut-face.contain > video { object-fit: contain; }
+/* 테두리 = 공유물 카드와 같은 라임. 그림 위에 얹어야 보인다. 호버·초점 = '이걸 누른다' 굵은 라임 */
+.cut-face::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.75);
+}
+.cut-card:hover .cut-face::after, .cut-card:focus-visible .cut-face::after { box-shadow: inset 0 0 0 2px var(--accent); }
+.cut-card:focus-visible { outline: none; }
+/* 아래 변에 붙인 이름표 — 폴더 이름 + 건수(라임) */
+.cut-tab {
+  position: relative; display: inline-flex; align-items: baseline; gap: 7px; max-width: calc(100% - 16px);
+  padding: 3px 11px 4px; border-radius: 9px 9px 0 0; background: rgba(15, 17, 19, 0.9);
+  color: #f1f3f4; font-size: 12.5px; font-weight: 800; line-height: 1.3; white-space: nowrap;
+}
+.cut-tab > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cut-tab > b { font-size: 11.5px; color: var(--accent); }
+.cut-pill {
+  position: absolute; left: 50%; top: -27px; transform: translateX(-50%); z-index: 2;
+  padding: 2px 11px; border-radius: 999px; white-space: nowrap;
+  background: rgba(255, 255, 255, 0.07); color: var(--muted);
+  font-size: 11.5px; font-weight: 800; line-height: 1.6;
+}
+/* 고른 폴더에 직접 든 것('컷 밖') — 어느 카드에도 들지 않아 맨 끝 칸으로 알린다. 종이 겹침 없이 점선 칸. 누르면 한 장씩 보기 */
+.cut-card.cut-out {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  border: 1px dashed rgba(255, 255, 255, 0.2); color: var(--muted);
+}
+.cut-card.cut-out::before, .cut-card.cut-out::after { content: none; }
+.cut-card.cut-out:hover, .cut-card.cut-out:focus-visible { border-color: var(--accent); color: var(--accent); }
+.cut-out-count { font-size: 13px; font-weight: 800; }
+.cut-out-hint { font-size: 11.5px; }
+/* 도구 줄의 [컷별 | 전체] 전환 — 도구 줄이 두 줄로 밀리지 않게 좁게 */
+.lib-cut-seg { display: inline-flex; flex: none; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; }
+.lib-cut-seg > button {
+  padding: 2px 7px; border: 0; border-radius: 0; background: transparent;
+  color: var(--muted); font-size: 11.5px; font-weight: 800; line-height: 1.7;
+}
+.lib-cut-seg > button.on { background: var(--accent); color: var(--accent-ink); } /* 라임 위 어두운 글자 */
+/* 폴더 창의 대표 단추 — 저장하는 동안은 누를 수 없다(서버 값을 다시 읽은 뒤 풀린다) */
+.scene-varpop-rep:disabled { opacity: 0.45; cursor: default; }
+.scene-varpop-rep:disabled:hover { background: rgba(255, 255, 255, 0.06); color: var(--muted); }

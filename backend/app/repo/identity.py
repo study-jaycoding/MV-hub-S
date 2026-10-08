@@ -538,6 +538,8 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     # 작성자는 감사 표시용 단일 값, 읽음은 복합 PK 상태이므로 각각 기존 전략을 재사용한다.
     ("release_update_notice", "announced_by", "plain"),
     ("release_update_notice_seen", "actor_uid", "ignore_del"),
+    # 폴더 대표를 마지막으로 정한 계정 — 키가 아닌 기록용 단일 값이라 plain.
+    ("folder_cover", "set_by", "plain"),
 )
 
 # 신원-의심 컬럼 중 remap 대상이 '아닌' 것 — registry 테스트(test_identity_registry)가 PLAN∪EXEMPT 로
