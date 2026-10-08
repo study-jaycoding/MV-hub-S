@@ -591,9 +591,9 @@ updated: 2026-10-07
 | `edit/PartialEditHost.tsx`(47줄) | `partialEdit` 이벤트 → 최신 Generation 조회 → 모달 개방 | `PartialEditHost`(§3.5 숨은 진입점) |
 | `timeline/EditTab.tsx`(약 500줄) | 편집 탭 조립 — 시퀀스 고르기·문서·재생·편집 키·컷(폴더) 비활성/숨기기·컷 더블클릭(공유 & 리뷰의 폴더 창을 App 에 열어 달라고 알린다)([EDIT_TAB.md](EDIT_TAB.md)). `edit/`(부분 수정)와 다른 기능이다 | `EditTab`(App 이 지연 로드) |
 | `timeline/EditTimeline.tsx`(약 280줄) | 눈금자·컷 줄·영상 트랙·소리 줄·재생헤드. 클립은 위아래로만 끈다(컷 자리는 폴더 순서로 고정) | `EditTimeline` |
-| `timeline/EditViewer.tsx`(86줄) | 뷰어(`<video>` 하나)와 재생 단추 — 주소는 재생 훅이 갈아 끼운다 | `EditViewer` |
+| `timeline/EditViewer.tsx`(약 180줄) | 뷰어 한 판 — 위 줄(지금 시각·무엇을 볼지·전체 길이·싱글/듀얼)·무대(`<video>` 하나)·아래 줄(타임바·버튼·반복). 타임라인·소스·한 트랙만이 같은 판을 쓰고, 시계는 편집 탭이 가진 엔진의 것이다 | `EditViewer`, `ViewerProps` |
 | `timeline/EditPool.tsx`(약 310줄) | 미디어 풀 — 재생헤드가 있는 컷의 공유 생성물을 폴더 목록 옆에 보인다. 보기 방식(썸네일·메타데이터·목록)·크기·검색·정렬. 누르기·Ctrl/Shift·끌어서 상자 = 고르기(마지막 것이 듀얼 뷰어의 소스, 2장 이상이면 비교) · 더블클릭 = 크게 보기 · 우클릭 = 넣을 트랙 고르기. 폭은 `ResizableSidebar` 로 끌어서 바꾼다 | `EditPool`, `arrangePool` |
-| `timeline/EditSourceViewer.tsx`(약 30줄) | 듀얼 뷰어의 소스 뷰어 — 풀에서 고른 생성물. 영상은 브라우저 기본 재생 막대(편집 키는 언제나 타임라인 것) | `EditSourceViewer` |
+| `timeline/EditSoloViewer.tsx`(약 25줄) | 한 트랙만 보는 판 — `useEditFollow` 로 타임라인의 시계를 따라간다 | `EditSoloViewer` |
 | `timeline/EditTrackMenu.tsx`(약 70줄) | 카드 우클릭 메뉴 — 지금 있는 트랙을 보여 주고 고르면 그 트랙에 넣는다(찬 트랙은 교체). 미디어 풀과 편집 탭이 연 폴더 창이 같이 쓴다(body 포털 — 창이 떠 있는 동안 `.body` 는 inert) | `EditTrackMenu`, `TrackRow` |
 | `timeline/EditCard.tsx`(약 65줄) | 편집 탭 미디어 풀(썸네일 보기)의 생성물 카드 — 라이브러리 카드의 CSS 클래스를 그대로 써서 같은 모양으로 '보이기만' 한다. 아래 변의 표 = "V1 - 선택 카드"(폴더 창의 표와 같은 글) | `EditCard`, `PoolItem`, `editMarkLabel` |
 | `timeline/EditSidebar.tsx`(약 115줄) | 프로젝트·폴더에서 시퀀스 고르기(`FolderTreeView` 만 쓴다 — `ProjectSection` 아님) | `EditSidebar` |
@@ -867,7 +867,8 @@ updated: 2026-10-07
 | `editTimelineStore.ts` | 저장 | 편집 문서 localStorage 읽기/쓰기(읽지 못한 문서는 `.bad` 로 보존)·되돌리기 스택·마지막 시퀀스 |
 | `useEditDoc.ts` | 훅 | 편집 문서 상태 — 바꾸기·저장·되돌리기·다른 창의 변경 받아들이기((키, 문서) 한 쌍·`rev`) |
 | `useEditSequence.ts` | 훅+api | 편집 탭 조회 — 프로젝트·폴더 트리(온전성 표시)와 시퀀스의 공유 생성물 전부(쪽 넘김·문맥 가드·상한 2,000) |
-| `useEditPlayback.ts` | 훅 | 편집 탭 재생 — 시계 주인(영상/rAF)·보이는 소스 전환·훑기·배속. 프레임마다 React 를 건드리지 않는다 |
+| `useEditPlayback.ts` | 훅 | 편집 탭 재생 — 시계 주인(영상/rAF)·보이는 소스 전환·훑기·배속·반복. 프레임마다 React 를 건드리지 않는다. 타임라인용·소스용 두 인스턴스 |
+| `useEditFollow.ts` | 훅 | 편집 탭 '한 트랙만 보기' — 타임라인의 시각을 프레임마다 읽어 그 트랙의 클립을 맞춰 보인다(시계에 영향 없음) |
 | `videoDuration.ts` | 브라우저 | 영상 길이 재기(메타데이터만·주소별 한 번·동시에 4개) |
 | `folderLabel.ts` | 순수 | 카드 폴더 이름표 글자(끝 두 칸)·전체 경로 표기 |
 | `projectFolderTree.ts` | 저장 | 프로젝트 폴더 캐시·펼침 상태 |
