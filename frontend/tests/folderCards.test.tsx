@@ -192,7 +192,7 @@ it("저장 뒤의 재조회가 더 나중 조회로 대체되면 그 조회가 �
 });
 
 // ── 컷 카드 격자 ──
-const gridProps = { scale: 1, fill: true, selected: new Set<string>(), onSelect: () => {}, onInfo: () => {}, onShowAll: () => {}, onOpen: () => {} };
+const gridProps = { scale: 1, fill: true, selected: new Set<string>(), onSelect: () => {}, onInfo: () => {}, onShowAll: () => {}, onOpen: () => {}, onEnter: () => {}, top: false };
 const dbl = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
 
 it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 미정', 영상이면 재생 표시. 두 번 누르면 그 폴더를 연다", () => {
@@ -241,6 +241,27 @@ it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 
   act(() => last.click());
   expect(showAll).toHaveBeenCalledTimes(1);
   expect(opened).toEqual(["e035/C0040"]);
+});
+
+it("하위 폴더가 있는 카드(에피소드)는 두 번 클릭에 들어가고, 없는 카드(컷)는 창을 연다. 맨 위에서는 '에피소드 밖'", () => {
+  const entered: string[] = [];
+  const opened: string[] = [];
+  const episode: FolderCard = { ...card("e035", 14), path: "e035", subfolders: 5 };
+  const leaf: FolderCard = { ...card("e036", 2), path: "e036", subfolders: 0 };
+  const old: FolderCard = { ...card("e037", 1), path: "e037" }; // 옛 서버 — subfolders 없음 = 잎
+  act(() => root.render(
+    <FolderCardGrid {...gridProps} folders={[episode, leaf, old]} top onEnter={(f) => entered.push(f.path)} onOpen={(f) => opened.push(f.path)} outside={2} />,
+  ));
+  const tile = (path: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="${path}"]`)!;
+  expect(tile("e035").querySelector(".cut-tab")!.textContent).toBe("e035컷 5 ·14");
+  expect(tile("e036").querySelector(".cut-tab")!.textContent).toBe("e0362");
+  expect(tile("e035").title).toBe("e035 · 컷 5 · 14건");
+  dbl(tile("e035"));
+  dbl(tile("e036"));
+  dbl(tile("e037"));
+  expect(entered).toEqual(["e035"]);
+  expect(opened).toEqual(["e036", "e037"]);
+  expect(host.querySelector(".cut-out-count")!.textContent).toBe("에피소드 밖 2건");
 });
 
 // ── 고르기 — 한 번 클릭·Ctrl·Shift·빈 곳에서 끌기·휠 클릭 ──

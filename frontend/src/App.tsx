@@ -927,6 +927,13 @@ export default function App() {
       projectId: folder.cover.project_id, path: folder.path, projectName: folder.cover.project_name ?? "", genId: null,
     });
   }, [openFolderPath]);
+  // 하위 폴더가 있는 카드(에피소드) → 그 폴더로 들어간다 = 사이드바에서 그 폴더를 누른 것과 같다(생성 위치도 그 폴더, Jay 2026-10-09).
+  const enterFolderCard = useCallback((folder: FolderCard) => {
+    const projectId = folder.cover.project_id;
+    if (!projectId) return;
+    setArmedFolder({ projectId, path: folder.path });
+    patch({ project_id: projectId, folder_path: folder.path });
+  }, [setArmedFolder, patch]);
   // 폴더 창의 [대표] — 그 폴더의 대표를 정한다. 누르자마자 먼저 그리지 않는다: 저장하는 동안 단추를 잠그고, 끝나면(성공·실패
   //  모두) 서버 값을 다시 읽은 뒤에 푼다 — 먼저 그리면 저장 전에 출발한 조회가 늦게 와서 방금 고른 대표를 지운다(Codex 설계 검토).
   //  다시 읽기는 '지금' 문맥의 것을 부른다: 저장 중에 창을 닫으면 닫기 전의 것은 옛 폴더를 받아 뒤 묶음의 카드를 밀어낸다.
@@ -2062,6 +2069,7 @@ export default function App() {
               onChange: setCutView,
               summary: cutCards
                 ? {
+                    top: cutScope.parent === "",
                     folders: cutCards.folders.length,
                     items: cutCards.folders.reduce((sum, folder) => sum + folder.count, cutCards.own_count),
                   }
@@ -2576,8 +2584,8 @@ export default function App() {
               {/* 묶음 보기 — 격자 자리에 컷 카드. 폴더 창이 떠 있어도 뒤에 그대로 둔다(body 가 inert 라 눌리지 않는다). */}
               {cutCards ? (
                 <FolderCardGrid
-                  folders={cutCards.folders} scale={scale} fill={fill} onOpen={openFolderCard}
-                  selected={cutSel} onSelect={setCutSel}
+                  folders={cutCards.folders} scale={scale} fill={fill} onOpen={openFolderCard} onEnter={enterFolderCard}
+                  top={!cutScope?.parent} selected={cutSel} onSelect={setCutSel}
                   onInfo={(folder, x, y) => {
                     if (cutScope) setCutInfo({ projectId: cutScope.projectId, path: folder.path, x, y, ctx: listPeekCtx });
                   }}

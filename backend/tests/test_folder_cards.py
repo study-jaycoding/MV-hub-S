@@ -96,6 +96,8 @@ def test_groups_by_the_folder_right_below_and_counts_everything_under_it(catalog
     assert [f["path"] for f in data["folders"]] == ["e035/C0010", "e035/C0040"]
     assert [f["name"] for f in data["folders"]] == ["C0010", "C0040"]
     assert by_path["e035/C0010"]["count"] == 2 and by_path["e035/C0040"]["count"] == 1
+    # 바로 아래 폴더 수 — takeB 하나. 없으면 0(잎 = 폴더 창을 여는 카드)
+    assert by_path["e035/C0010"]["subfolders"] == 1 and by_path["e035/C0040"]["subfolders"] == 0
     # 표지는 가장 최근 것이고 목록 행과 같은 모양이다
     assert by_path["e035/C0010"]["cover"]["id"] == "a2" and by_path["e035/C0010"]["rep"] is False
     assert by_path["e035/C0010"]["cover"]["folder_path"] == "e035/C0010/takeB"
@@ -106,17 +108,20 @@ def test_an_empty_parent_lists_the_top_folders_and_names_that_only_share_a_prefi
     seed("a", "e001/c0010")
     seed("b", "e035/C001")
     seed("c", "e035/C0010")
+    seed("d", "e035/C0010/takeA")            # 손자 폴더 — 에피소드 카드의 '바로 아래' 수에는 안 든다
     seed("root", None)                       # 폴더 없이 프로젝트에 직접 든 것 — 맨 위에서는 '폴더 밖'으로 센다
     seed("root2", "")
 
     top, top_by = cards("")
     assert [f["path"] for f in top["folders"]] == ["e001", "e035"] and top["own_count"] == 2
-    assert top_by["e035"]["count"] == 2
+    assert top_by["e035"]["count"] == 3
+    # 에피소드 카드의 바로 아래 폴더 수 = 컷 수(C001·C0010 둘 — C0010/takeA 는 C0010 의 것이라 따로 세지 않는다)
+    assert top_by["e035"]["subfolders"] == 2 and top_by["e001"]["subfolders"] == 1
     # 폴더를 고르면 폴더 없는 것은 그 범위 밖이다
     assert cards("e035")[0]["own_count"] == 0
 
     _, cuts = cards("e035")
-    assert {path: f["count"] for path, f in cuts.items()} == {"e035/C001": 1, "e035/C0010": 1}
+    assert {path: (f["count"], f["subfolders"]) for path, f in cuts.items()} == {"e035/C001": (1, 0), "e035/C0010": (2, 1)}
     assert cards("e035/C001")[0] == {"parent": "e035/C001", "own_count": 1, "folders": []}
 
 

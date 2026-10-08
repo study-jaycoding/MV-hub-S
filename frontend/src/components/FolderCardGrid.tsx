@@ -1,7 +1,8 @@
 // 공유 & 리뷰 탭의 폴더 묶음 보기 — 고른 폴더 바로 아래 폴더마다 카드 한 장(표지·이름·건수).
 //  표지는 팀이 정한 대표, 없으면 가장 최근 것(그때는 카드 위에 '대표 미정'). 한 장짜리 카드와 구분되게 종이를 겹친 모양이다.
-//  한 번 클릭 = 고르기(Ctrl·⌘ 토글, Shift 범위, 빈 곳에서 끌면 걸친 카드 모두), 두 번 클릭 = 그 폴더의 창, 휠 클릭 = 컷 정보
-//  (Jay 2026-10-08). 끌기·클릭 판정은 ThumbnailGrid 와 같은 식(5px 안 움직이면 클릭, 마퀴는 lib/marquee).
+//  한 번 클릭 = 고르기(Ctrl·⌘ 토글, Shift 범위, 빈 곳에서 끌면 걸친 카드 모두), 휠 클릭 = 컷 정보(Jay 2026-10-08).
+//  두 번 클릭 = 그 폴더에 하위 폴더가 있으면(에피소드) 그 폴더로 **들어가고**(사이드바에서 그 폴더를 누른 것과 같다), 없으면(컷)
+//  그 폴더의 창(Jay 2026-10-09 '가. 들어가기'). 끌기·클릭 판정은 ThumbnailGrid 와 같은 식(5px 안 움직이면 클릭, 마퀴는 lib/marquee).
 //  S 단추·작성자 표시는 넣지 않는다 — 이 카드는 생성물 한 장이 아니라 묶음이다.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
@@ -17,8 +18,10 @@ interface Props {
   fill: boolean; // 썸네일 꽉 채움 ↔ 비율 유지
   selected: ReadonlySet<string>; // 고른 카드(폴더 경로)
   onSelect: (next: Set<string>) => void;
-  onOpen: (folder: FolderCard) => void; // 두 번 클릭 — 그 폴더의 창
+  onOpen: (folder: FolderCard) => void; // 두 번 클릭(하위 폴더 없음) — 그 폴더의 창
+  onEnter: (folder: FolderCard) => void; // 두 번 클릭(하위 폴더 있음) — 그 폴더로 들어가기
   onInfo: (folder: FolderCard, x: number, y: number) => void; // 휠 클릭 — 컷 정보
+  top: boolean; // 프로젝트 맨 위(에피소드 단계)인가 — '컷 밖' 대신 '에피소드 밖'
   outside: number; // 고른 폴더에 직접 든 수 — 어느 카드에도 들지 않아 맨 끝 칸으로 알린다
   onShowAll: () => void; // 그 칸을 누르면 한 장씩 보기로
 }
@@ -33,7 +36,7 @@ interface Drag {
   moved: boolean;
 }
 
-export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpen, onInfo, outside, onShowAll }: Props) {
+export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpen, onEnter, onInfo, top, outside, onShowAll }: Props) {
   const t = useT();
   const width = Math.round(180 * scale); // ThumbnailGrid 의 카드 최소 폭과 같은 식
   const thumbSize = width * (window.devicePixelRatio || 1) <= 256 ? 256 : 512;
@@ -145,6 +148,7 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
           const asset = folder.cover.assets?.[0];
           const isVideo = asset?.type === "video";
           const isSelected = selected.has(folder.path);
+          const subfolders = folder.subfolders ?? 0;
           return (
             <button
               key={folder.path}
@@ -152,8 +156,8 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
               data-path={folder.path}
               className={"cut-card" + (isSelected ? " sel" : "")}
               aria-pressed={isSelected}
-              title={`${folder.path} · ${folder.count}${t("건")}`}
-              onDoubleClick={() => onOpen(folder)}
+              title={`${folder.path} · ${subfolders ? `${t("컷")} ${subfolders} · ` : ""}${folder.count}${t("건")}`}
+              onDoubleClick={() => (subfolders ? onEnter(folder) : onOpen(folder))}
               onAuxClick={(e) => {
                 if (e.button !== 1) return;
                 e.preventDefault();
@@ -173,6 +177,7 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
                 {isVideo && <span className="play-badge">▶</span>}
                 <span className="cut-tab">
                   <span>{folder.name}</span>
+                  {subfolders > 0 && <em>{t("컷")} {subfolders} ·</em>}
                   <b>{folder.count}</b>
                 </span>
               </span>
@@ -187,7 +192,7 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
             title={t("이 폴더에 직접 든 생성물은 컷 카드에 들지 않습니다 — 누르면 한 장씩 모두 봅니다")}
             onClick={onShowAll}
           >
-            <span className="cut-out-count">{t("컷 밖")} {outside}{t("건")}</span>
+            <span className="cut-out-count">{t(top ? "에피소드 밖" : "컷 밖")} {outside}{t("건")}</span>
             <span className="cut-out-hint">{t("한 장씩 보기")}</span>
           </button>
         )}

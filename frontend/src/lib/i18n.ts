@@ -288,6 +288,8 @@ const EN: Record<string, string> = {
   "오디오": "Audio",
   "건": "", // 영어에선 단위 생략 ("All · 140")
   // 공유 & 리뷰 탭 — 컷 카드 고르기·컷 정보·모아보기(2026-10-08)
+  "에피소드": "Episode",
+  "에피소드 밖": "Outside episodes",
   "컷 정보": "Cut info",
   "폴더 열기": "Open folder",
   "이 폴더의 창을 연다": "Open this folder's window",
