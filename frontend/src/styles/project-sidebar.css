@@ -313,5 +313,11 @@
   background: linear-gradient(#d8ff43, #8cca18);
   box-shadow: 0 0 8px rgba(var(--accent-rgb),0.18);
 }
+/* '최종 저장' — 폴더 색 대신 골드. 완료 탭의 최종 저장 단추(.export-btn-final)와 같은 색(Jay 2026-10-08) */
+.folder-ctx-btn.tone-final {
+  background: linear-gradient(135deg,#ffe7a0 0%,#f5c542 30%,#e0a316 60%,#ffcf33 100%);
+  color: #2a1d00;
+  box-shadow: 0 0 8px rgba(245,197,66,0.24);
+}
 .folder-ctx-btn:hover { filter: brightness(1.08); }
 .folder-ctx-btn:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }

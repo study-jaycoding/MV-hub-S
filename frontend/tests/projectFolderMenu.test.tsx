@@ -50,6 +50,8 @@ it("공유 폴더는 공유 저장·최종 저장과 원본 열기를 표시하�
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   const { action, menu: popup } = await menu("team");
   expect([...popup.querySelectorAll(".folder-ctx-btn")].map((b) => b.textContent)).toEqual(["공유 저장", "최종 저장"]);
+  // 최종 저장만 골드 — 공유 저장은 폴더 색 그대로
+  expect([...popup.querySelectorAll(".folder-ctx-btn")].map((b) => b.classList.contains("tone-final"))).toEqual([false, true]);
   const open = popup.querySelector<HTMLButtonElement>('.folder-ctx-head button[aria-label="원본 위치 열기"]')!;
   expect(open).toBeTruthy();
   act(() => open.click());
