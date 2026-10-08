@@ -114,22 +114,20 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
         # 만료 가능한 CDN 주소·토큰은 편집 패키지 manifest에 남기지 않는다.
         self.assertNotIn("cdn.example", manifest_path.read_text("utf-8"))
 
-    async def test_repeated_transfer_continues_the_numbering(self):
-        """같은 묶음을 다시 보내면 그냥 다음 번호로 이어진다(꼬리 없음)."""
+    async def test_repeated_transfer_reuses_the_files_already_sent(self):
+        """같은 묶음을 다시 보내면 있는 파일을 그대로 쓴다 — 사본도 새 번호도 생기지 않는다(Jay 2026-10-08)."""
         generations = [self._generation(i, "ep001/c0010") for i in range(1, 4)]
         first = await self._transfer(generations, "first")
         second = await self._transfer(generations, "second")
 
-        self.assertEqual(first["downloaded"], 3)
-        self.assertEqual(
-            [item["filename"] for item in first["items"]],
-            ["ep001_c0010_00.mp4", "ep001_c0010_01.mp4", "ep001_c0010_02.mp4"],
-        )
-        self.assertEqual((second["downloaded"], second["error_count"]), (3, 0))
-        self.assertEqual(
-            [item["filename"] for item in second["items"]],
-            ["ep001_c0010_03.mp4", "ep001_c0010_04.mp4", "ep001_c0010_05.mp4"],
-        )
+        names = ["ep001_c0010_davinci_001.mp4", "ep001_c0010_davinci_002.mp4", "ep001_c0010_davinci_003.mp4"]
+        self.assertEqual((first["downloaded"], first["skipped"]), (3, 0))
+        self.assertEqual([item["filename"] for item in first["items"]], names)
+        self.assertEqual((second["downloaded"], second["skipped"], second["error_count"]), (0, 3, 0))
+        self.assertEqual([item["filename"] for item in second["items"]], names)
+        self.assertEqual([item["local_path"] for item in second["items"]], [item["local_path"] for item in first["items"]])
+        self.assertEqual(second["status"], "complete")  # 건너뛴 것도 준비된 파일이다 — 그대로 가져온다
+        self.assertEqual(sorted(p.name for p in (self.render / "ep001" / "c0010").iterdir()), names)
 
     async def test_completed_manifest_can_be_loaded_for_retry(self):
         result = await self._transfer([self._generation(1, "ep001/c0010")], "retry-me")
@@ -418,7 +416,7 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((self.root / "outside").exists())
 
     async def test_import_order_names_files_by_folder_sequence(self):
-        """파일명 = <폴더 경로를 _ 로 이음>_<가져온 순번 2자리>. 순번은 폴더마다 따로 센다."""
+        """파일명 = <폴더 경로를 _ 로 이음>_davinci_<번호 3자리>. 번호는 폴더마다 따로 센다(001 부터)."""
         generations = [
             self._generation(1, "ep001/c0010"),
             self._generation(2, "ep002/c0020"),
@@ -431,82 +429,81 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [item["filename"] for item in result["items"]],
             [
-                "ep001_c0010_00.mp4",
-                "ep002_c0020_00.mp4",
-                "ep001_c0010_01.mp4",
+                "ep001_c0010_davinci_001.mp4",
+                "ep002_c0020_davinci_001.mp4",
+                "ep001_c0010_davinci_002.mp4",
             ],
         )
         for item in result["items"]:
             self.assertTrue(Path(item["local_path"]).is_file())
 
-    async def test_new_generation_takes_the_next_number_without_filling_gaps(self):
-        """새 생성물은 남아 있는 파일의 마지막 번호 다음을 받는다 — 장부가 없어도 디스크에서
-        이어받고, 가운데 빈 번호는 채우지 않는다."""
+    async def test_old_numbered_files_stay_and_numbers_on_disk_are_never_reused(self):
+        """옛 규칙(<폴더>_NN)의 파일은 그대로 둔다. 새 이름은 장부가 정하되, 장부에 없더라도 폴더에
+        이미 있는 davinci 번호는 건너뛴다(장부를 잃어도 있는 파일의 이름을 다른 영상에 주지 않는다)."""
         folder = self.render / "ep001" / "c0010"
         folder.mkdir(parents=True)
-        (folder / "ep001_c0010_00.mp4").write_bytes(b"older-take")
-        (folder / "ep001_c0010_02.mp4").write_bytes(b"another-take")  # 01 은 비어 있다
+        (folder / "ep001_c0010_00.mp4").write_bytes(b"older-take")  # 옛 다빈치 이름
+        (folder / "ep001_c0010_davinci_004.mp4").write_bytes(b"left-without-a-registry")
+        (folder / "ep001_c0010_fin_009.mp4").write_bytes(b"saved-final")  # 저장본의 번호는 따로 센다
 
         result = await self._transfer([self._generation(1, "ep001/c0010")], "gap")
 
-        self.assertEqual(result["items"][0]["filename"], "ep001_c0010_03.mp4")
+        self.assertEqual(result["items"][0]["filename"], "ep001_c0010_davinci_005.mp4")
         self.assertEqual((folder / "ep001_c0010_00.mp4").read_bytes(), b"older-take")
+        self.assertEqual((folder / "ep001_c0010_davinci_004.mp4").read_bytes(), b"left-without-a-registry")
         self.assertEqual(list(folder.glob("*.part")), [])
 
-    async def test_resending_the_same_generation_takes_the_next_number(self):
-        """같은 생성물을 또 가져와도 다음 번호를 받는다 — 사본이 하나씩 늘어난다."""
+    async def test_resending_the_same_generation_keeps_one_file(self):
+        """같은 생성물을 또 보내도 파일은 하나다 — 처음 받은 이름의 그 파일을 그대로 쓴다."""
         generation = self._generation(1, "ep001/c0010")
 
         first = await self._transfer([generation], "resend-first")
         second = await self._transfer([generation], "resend-second")
         third = await self._transfer([generation], "resend-third")
 
-        self.assertEqual(first["items"][0]["filename"], "ep001_c0010_00.mp4")
-        self.assertEqual(second["items"][0]["filename"], "ep001_c0010_01.mp4")
-        self.assertEqual(third["items"][0]["filename"], "ep001_c0010_02.mp4")
+        self.assertEqual([r["items"][0]["status"] for r in (first, second, third)], ["downloaded", "skipped", "skipped"])
+        self.assertEqual({r["items"][0]["filename"] for r in (first, second, third)}, {"ep001_c0010_davinci_001.mp4"})
         self.assertEqual(
             sorted(path.name for path in (self.render / "ep001" / "c0010").iterdir()),
-            [
-                "ep001_c0010_00.mp4",
-                "ep001_c0010_01.mp4",
-                "ep001_c0010_02.mp4",
-            ],
+            ["ep001_c0010_davinci_001.mp4"],
         )
 
-    async def test_emptying_the_folder_restarts_numbering_from_zero(self):
-        """폴더를 다 비우면 00 부터 다시 센다 — 번호의 근거는 폴더뿐이다."""
+    async def test_emptying_the_folder_keeps_each_generations_number(self):
+        """폴더를 다 비워도 번호는 처음부터 다시 세지 않는다 — 생성물은 제 이름으로 돌아오고, 새 생성물은 다음 번호를 받는다."""
         first_gen = self._generation(1, "ep001/c0010")
         await self._transfer([first_gen, self._generation(2, "ep001/c0010")], "wipe-1")
         folder = self.render / "ep001" / "c0010"
         for path in list(folder.iterdir()):
             path.unlink()
 
-        again = await self._transfer([first_gen], "wipe-2")
+        again = await self._transfer([first_gen, self._generation(3, "ep001/c0010")], "wipe-2")
 
-        self.assertEqual(again["items"][0]["filename"], "ep001_c0010_00.mp4")
+        self.assertEqual([item["filename"] for item in again["items"]], ["ep001_c0010_davinci_001.mp4", "ep001_c0010_davinci_003.mp4"])
+        self.assertEqual([item["status"] for item in again["items"]], ["downloaded", "downloaded"])
 
-    async def test_deleted_generation_gets_a_fresh_number_not_a_letter(self):
-        """가운데 파일만 지우면 그 생성물은 '없는 것' 이 돼 다음 번호를 새로 받는다."""
+    async def test_deleted_file_comes_back_under_the_same_name(self):
+        """가운데 파일만 지웠으면 다시 보낼 때 같은 이름으로 다시 놓인다(다빈치가 물고 있던 그 경로가 살아난다)."""
         gone = self._generation(2, "ep001/c0010")
         await self._transfer(
             [self._generation(1, "ep001/c0010"), gone, self._generation(3, "ep001/c0010")],
             "hole-1",
         )
-        (self.render / "ep001" / "c0010" / "ep001_c0010_01.mp4").unlink()
+        (self.render / "ep001" / "c0010" / "ep001_c0010_davinci_002.mp4").unlink()
 
         again = await self._transfer([gone], "hole-2")
 
-        self.assertEqual(again["items"][0]["filename"], "ep001_c0010_03.mp4")
+        self.assertEqual((again["items"][0]["filename"], again["items"][0]["status"]), ("ep001_c0010_davinci_002.mp4", "downloaded"))
 
-    async def test_no_ledger_file_is_written(self):
-        """번호를 적어 두는 파일은 만들지 않는다 — 폴더가 유일한 근거다."""
-        await self._transfer([self._generation(1, "ep001/c0010")], "no-ledger")
+    async def test_names_are_kept_in_the_render_folder_registry(self):
+        """번호는 렌더 폴더의 이름 장부(_mvhub_sync/names)가 기억한다 — @davinci 에는 번호 파일을 두지 않는다."""
+        await self._transfer([self._generation(1, "ep001/c0010")], "registry")
 
-        davinci = self.root / "@davinci"
-        self.assertFalse((davinci / ".mvhub" / "sequence.json").exists())
+        self.assertFalse((self.root / "@davinci" / ".mvhub" / "sequence.json").exists())
+        entries = sorted(p.name.split(".")[0] + "." + p.name.split(".")[1] for p in (self.render / "_mvhub_sync" / "names").rglob("*.davinci.*"))
+        self.assertEqual(entries, ["d.davinci", "g.davinci", "n.davinci"])  # 번호의 주인 · 생성물의 번호 · 확정 표식
 
     async def test_unreadable_folder_fails_instead_of_restarting_at_zero(self):
-        """대상 폴더를 못 읽으면 '비었다' 로 보고 00 부터 세지 않고 실패로 남긴다."""
+        """폴더(장부)를 못 읽으면 '비었다' 로 보고 001 부터 세지 않고 실패로 남긴다."""
         generation = self._generation(1, "ep001/c0010")
 
         def explode(_path):
@@ -516,7 +513,7 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
             result = await self._transfer([generation], "unreadable")
 
         self.assertEqual(result["status"], "failed")
-        self.assertIn("읽을 수 없습니다", result["items"][0]["error"])
+        self.assertIn("읽지 못했습니다", result["items"][0]["error"])
 
     async def test_existing_file_is_never_overwritten(self):
         """이미 그 번호를 쓰고 있는 파일은 크기가 같아도 건드리지 않고 다음 번호로 간다."""
@@ -524,23 +521,72 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
         folder = self.render / "ep001" / "c0010"
         folder.mkdir(parents=True)
         source = self.media / same["assets"][0]["file_path"].removeprefix("/media/")
-        # 크기만 같고 내용이 다른 파일이 00 을 차지하고 있다.
-        (folder / "ep001_c0010_00.mp4").write_bytes(b"x" * source.stat().st_size)
+        # 크기만 같고 내용이 다른 파일이 001 을 차지하고 있다(장부에는 없다).
+        (folder / "ep001_c0010_davinci_001.mp4").write_bytes(b"x" * source.stat().st_size)
 
         result = await self._transfer([same], "bytes")
 
-        self.assertEqual(result["items"][0]["filename"], "ep001_c0010_01.mp4")
+        self.assertEqual(result["items"][0]["filename"], "ep001_c0010_davinci_002.mp4")
+        self.assertEqual((folder / "ep001_c0010_davinci_001.mp4").read_bytes(), b"x" * source.stat().st_size)
+
+    async def test_a_file_at_my_name_without_a_done_mark_is_trusted_only_if_bytes_match(self):
+        """장부는 이 생성물의 이름이라 하는데 확정 표식이 없다(확정 직후 끊긴 전송·남이 놓은 파일) —
+        원본과 바이트가 같을 때만 그 파일을 쓰고, 다르면 덮지 않고 오류로 남긴다."""
+        generation = self._generation(1, "ep001/c0010")
+        first = await self._transfer([generation], "mark-1")
+        dest = Path(first["items"][0]["local_path"])
+        marks = list((self.render / "_mvhub_sync" / "names").rglob("d.davinci.*"))
+        self.assertEqual(len(marks), 1)
+        marks[0].unlink()
+
+        with mock.patch.object(resolve_transfer.time, "sleep"):
+            healed = await self._transfer([generation], "mark-2")
+            self.assertEqual((healed["items"][0]["status"], healed["items"][0]["local_path"]), ("skipped", str(dest)))
+            self.assertEqual(len(list((self.render / "_mvhub_sync" / "names").rglob("d.davinci.*"))), 1)  # 표식을 다시 채웠다
+            list((self.render / "_mvhub_sync" / "names").rglob("d.davinci.*"))[0].unlink()
+            dest.write_bytes(b"someone-elses-file")
+            refused = await self._transfer([generation], "mark-3")
+        self.assertEqual(refused["items"][0]["status"], "error")
+        self.assertIn("확인할 수 없는 파일", refused["items"][0]["error"])
+        self.assertEqual(dest.read_bytes(), b"someone-elses-file")
+
+    async def test_a_file_already_sent_is_reused_even_when_the_original_is_gone(self):
+        """전에 보낸 파일이 그대로 있으면 원본을 찾지 않는다 — 로컬 원본이 정리됐거나 원본 주소가 만료돼도 다시 보낼 수 있다."""
+        generation = self._generation(1, "ep001/c0010")
+        first = await self._transfer([generation], "gone-1")
+        (self.media / generation["assets"][0]["file_path"].removeprefix("/media/")).unlink()
+
+        async def no_source(_asset):
+            raise AssertionError("이미 보낸 파일인데 원본을 찾았다")
+
+        with mock.patch.object(resolve_transfer, "_cached_source", side_effect=no_source):
+            again = await self._transfer([generation], "gone-2")
+
+        self.assertEqual((again["items"][0]["status"], again["items"][0]["local_path"]), ("skipped", first["items"][0]["local_path"]))
+        self.assertEqual(again["status"], "complete")
+
+    async def test_the_creator_and_a_teammate_get_the_same_file_for_one_clip(self):
+        """만든 PC(로컬 id + job_id)와 받은 PC(공유 카드의 id = job_id)가 같은 영상을 같은 이름으로 본다."""
+        mine = self._generation(1, "ep001/c0010")
+        mine["job_id"] = "hf-job-1"
+        theirs = dict(mine, id="hf-job-1", job_id=None)
+
+        first = await self._transfer([mine], "creator")
+        second = await self._transfer([theirs], "teammate")
+
+        self.assertEqual((first["items"][0]["status"], second["items"][0]["status"]), ("downloaded", "skipped"))
+        self.assertEqual(first["items"][0]["local_path"], second["items"][0]["local_path"])
 
     async def test_concurrent_same_destination_copies_serialize_without_overwrite(self):
-        """R5 2-B — 같은 이름을 노린 동시 복사는 목적지 락으로 직렬화된다: 한 이름에
-        대용량 복사는 1회뿐이고 뒤엣것은 다음 이름으로 갈라진다(last-writer 덮어쓰기 없음)."""
+        """R5 2-B — 같은 생성물을 동시에 보내면 같은 이름으로 모이고 목적지 락으로 직렬화된다: 대용량
+        복사는 1회뿐이고 뒤엣것은 그 파일을 그대로 쓴다(last-writer 덮어쓰기 없음)."""
         import threading as threading_module
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "src.mp4"
             source.write_bytes(b"payload-bytes")
-            dest = root / "out" / "final_00.mp4"
+            dest = root / "out" / "out_davinci_001.mp4"
             copy2 = resolve_transfer.shutil.copy2
             copy_calls: list[str] = []
             barrier = threading_module.Barrier(2)
@@ -550,17 +596,17 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
                 time.sleep(0.05)  # 경합 창 확대 — 직렬화 없으면 둘 다 여기 진입한다
                 return copy2(src, dst)
 
-            results: list[str] = []
+            results: list[tuple[str, bool]] = []
             errors: list[Exception] = []
 
             def run():
                 barrier.wait()
                 try:
                     with mock.patch.object(resolve_transfer.shutil, "copy2", slow_copy):
-                        written = resolve_transfer._place_copy(
-                            source, root, "out", "final", ".mp4", {}
+                        written, fresh = resolve_transfer._place_copy(
+                            source, root, "out", "gen-a", ".mp4", resolve_transfer.export_names.Books(root)
                         )
-                        results.append(written.name)
+                        results.append((written.name, fresh))
                 except Exception as exc:  # noqa: BLE001
                     errors.append(exc)
 
@@ -571,11 +617,10 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
                 thread.join()
 
             self.assertEqual(errors, [])
-            self.assertEqual(sorted(results), ["final_00.mp4", "final_01.mp4"])
-            # 이름마다 정확히 한 번씩 — 같은 이름에 두 번 복사되지 않는다.
-            names = [Path(call).name for call in copy_calls]
-            self.assertEqual(len(names), len(set(names)))
+            self.assertEqual(sorted(results), [("out_davinci_001.mp4", False), ("out_davinci_001.mp4", True)])
+            self.assertEqual(len(copy_calls), 1)  # 같은 이름에 두 번 복사되지 않는다
             self.assertEqual(dest.read_bytes(), b"payload-bytes")
+            self.assertEqual([p.name for p in dest.parent.iterdir()], ["out_davinci_001.mp4"])
             self.assertEqual(resolve_transfer._DEST_LOCKS, {})  # 레지스트리 회수 계약
 
     @unittest.skipUnless(os.name == "nt", "Windows extended 경로 잠금 키 검사")
@@ -590,8 +635,8 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resolve_transfer._DEST_LOCKS, {})
         self.assertEqual(keys[0], keys[1])
 
-    async def test_concurrent_different_source_same_name_takes_next_number(self):
-        """같은 번호를 노린 다른 원본 동시 요청 — 둘 다 저장되고 뒤엣것이 다음 번호로 간다."""
+    async def test_concurrent_different_generations_take_different_numbers(self):
+        """다른 생성물을 동시에 보내면 장부가 번호를 갈라 준다 — 둘 다 저장되고 어느 쪽도 덮이지 않는다."""
         import threading as threading_module
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -600,24 +645,23 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
             source_a.write_bytes(b"content-a")
             source_b = root / "b.mp4"
             source_b.write_bytes(b"content-b")
-            dest = root / "out" / "final_00.mp4"
             barrier = threading_module.Barrier(2)
             results: list[str] = []
             errors: list[Exception] = []
 
-            def run(src):
+            def run(src, gen_key):
                 barrier.wait()
                 try:
-                    path = resolve_transfer._place_copy(
-                        src, root, "out", "final", ".mp4", {}
+                    path, _fresh = resolve_transfer._place_copy(
+                        src, root, "out", gen_key, ".mp4", resolve_transfer.export_names.Books(root)
                     )
                     results.append(path.name)
                 except Exception as exc:  # noqa: BLE001
                     errors.append(exc)
 
             threads = [
-                threading_module.Thread(target=run, args=(src,))
-                for src in (source_a, source_b)
+                threading_module.Thread(target=run, args=(src, key))
+                for src, key in ((source_a, "gen-a"), (source_b, "gen-b"))
             ]
             for thread in threads:
                 thread.start()
@@ -625,9 +669,8 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
                 thread.join()
 
             self.assertEqual(errors, [])
-            self.assertEqual(sorted(results), ["final_00.mp4", "final_01.mp4"])
-            # 먼저 잡은 쪽이 _00, 나중 쪽이 _01 — 어느 쪽도 덮이지 않는다.
-            written_paths = [path for path in dest.parent.iterdir() if path.is_file()]
+            self.assertEqual(sorted(results), ["out_davinci_001.mp4", "out_davinci_002.mp4"])
+            written_paths = [path for path in (root / "out").iterdir() if path.is_file()]
             self.assertEqual(len(written_paths), 2)
             written = {path.read_bytes() for path in written_paths}
             self.assertEqual(written, {b"content-a", b"content-b"})

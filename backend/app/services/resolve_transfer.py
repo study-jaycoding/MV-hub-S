@@ -13,6 +13,7 @@ import re
 import shutil
 import stat
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from ..config import MEDIA_DIR
-from . import media_cache, project_folders
+from . import export_names, media_cache, project_folders
 from .atomic_io import atomic_write_text
 from .path_safety import safe_join, path_comparison_key
 from .resolve_transfer_gate import transfer_lease
@@ -72,7 +73,7 @@ _MANIFEST_CHECKPOINT_ITEMS = max(
     1, int(os.environ.get("CONTENT_HUB_RESOLVE_MANIFEST_CHECKPOINT_ITEMS", "10"))
 )
 # 다른 전송이 방금 그 번호를 가져갔을 때 다음 번호로 넘어가 보는 횟수.
-_MAX_NAME_PROBES = 1000
+_DONE_WAIT_TRIES = 4  # 같은 이름을 방금 확정한 다른 PC 의 표식을 기다리는 횟수(0.5초 간격)
 
 
 class ResolveTransferError(RuntimeError):
@@ -434,59 +435,10 @@ def manifest_generation_entries(
     return result
 
 
-def _transfer_name_base(folder_path: str) -> str:
-    """파일명 앞부분 — 폴더 경로 전체를 '_' 로 이어 붙인다('e020/c0020' → 'e020_c0020').
-
-    Media Pool 은 컷 폴더로 나뉘지만, 타임라인에 올라간 클립 이름만 봐도 어느
-    에피소드·컷인지 알 수 있어야 해서 경로를 이름에 담는다.
-    """
-    segs = [s for s in folder_path.replace("\\", "/").split("/") if s]
-    return "_".join(segs) if segs else "cut"
-
-
-def _transfer_name(base: str, seq: int, ext: str) -> str:
-    """``<base>_<번호 2자리><확장자>``. 번호는 그 폴더로 가져온 차례다(00 부터)."""
-    return f"{base}_{seq:02d}{ext}"
-
-
-def _seq_in_name(name: str, base: str) -> int | None:
-    """``<base>_07.mp4`` 에서 7 을 뽑는다. 형식이 다르면 None.
-
-    옛 꼬리(``_07_a``)도 읽는다 — 규칙을 바꾸기 전에 만든 파일이 디스크에 남아 있어,
-    그 번호를 다시 쓰지 않으려면 같이 세야 한다.
-    """
-    stem = name[: name.rfind(".")] if "." in name else name
-    match = re.fullmatch(re.escape(base) + r"_(\d+)(?:_[a-z]+)?", stem)
-    return int(match.group(1)) if match else None
-
-
 def _folder_dir(source_root: Path, folder_path: str) -> Path | None:
     """``source_root/<folder_path>`` 를 안전성 검사를 거쳐 반환한다."""
     probe = project_folders.safe_dest(source_root, folder_path, "_probe")
     return probe.parent if probe is not None else None
-
-
-def _scan_numbered(source_root: Path, folder_path: str, base: str) -> set[int]:
-    """폴더에 있는 ``<base>_NN`` 파일들의 번호.
-
-    번호의 유일한 근거는 이 폴더다 — 따로 기록을 두지 않으므로 어긋날 것이 없다.
-    아직 없는 폴더는 빈 집합, **읽지 못하면 예외**다(못 읽은 걸 "비었다" 로 보면
-    기존 파일 위 번호부터 다시 세게 된다).
-    """
-    folder = _folder_dir(source_root, folder_path)
-    if folder is None:
-        raise ResolveTransferError("경로 안전성 위반")
-    try:
-        entries = list(folder.iterdir())
-    except FileNotFoundError:
-        return set()
-    except OSError as exc:
-        raise ResolveTransferError(f"대상 폴더를 읽을 수 없습니다: {exc}") from exc
-    return {
-        seq
-        for entry in entries
-        if (seq := _seq_in_name(entry.name, base)) is not None
-    }
 
 
 def _refresh_summary(manifest: dict[str, Any], *, finished: bool = False) -> None:
@@ -534,10 +486,10 @@ async def _cached_source(asset: dict[str, Any]) -> Path:
 
 
 # 목적지별 복사 직렬화(R5 2-B) — 같은 이름을 두 요청이 동시에 처리하면 둘 다
-# exists()==False 를 보고 각자 대용량 복사를 한 뒤 마지막 os.replace 가 앞선 결과를
-# 덮어쓴다. 존재 확인→이름 선점→.part→replace 를 목적지 단위 임계구역으로 묶는다
-# (다른 목적지끼리는 병렬 유지). ★프로세스 내부 동시성만 막는다 — 프로세스 밖 경합의
-# 방어선은 O_CREAT|O_EXCL 이름 선점이다. 레지스트리는 refcount 로 마지막 사용자가
+# exists()==False 를 보고 각자 대용량 복사를 한다(같은 생성물을 동시에 보낸 경우 — 헛복사 한 번).
+# 존재 확인→.part 복사→확정을 목적지 단위 임계구역으로 묶는다(다른 목적지끼리는 병렬 유지).
+# ★프로세스 내부 동시성만 막는다 — 프로세스 밖(다른 PC) 경합의 방어선은 이름 장부와
+# 덮어쓰지 않는 확정(export_names.commit_new)이다. 레지스트리는 refcount 로 마지막 사용자가
 # 회수해 경로 수만큼 영구 누적되지 않는다.
 _DEST_LOCKS: dict[str, tuple[threading.Lock, int]] = {}
 _DEST_LOCKS_GUARD = threading.Lock()
@@ -567,39 +519,73 @@ def _place_copy(
     source: Path,
     source_root: Path,
     folder_path: str,
-    base: str,
+    gen_key: str,
     ext: str,
-    scanned: dict[str, set[int]],
-) -> Path:
-    """원본을 폴더의 다음 번호로 놓고 실제로 쓴 경로를 돌려준다.
+    books: export_names.Books,
+) -> tuple[Path, bool]:
+    """원본을 이 생성물의 다빈치 이름(``<폴더 경로>_davinci_<번호 3자리>``)으로 놓는다 — (경로, 새로 썼나).
 
-    번호는 **폴더에 남아 있는 마지막 번호 + 1** 이다. 가운데 빈 번호는 채우지 않고,
-    폴더를 통째로 비웠으면 00 부터 다시 센다. 같은 생성물을 또 보내도 똑같이 다음
-    번호를 받는다(사본이 하나 더 생긴다).
-
-    ``scanned`` 는 전송 한 건 안에서 폴더별 번호를 재사용하는 캐시다(NAS 재스캔 방지).
-    우리가 쓴 번호를 바로 넣으므로 다음 항목이 그 다음 번호를 받는다. 기존 파일은
-    어떤 경우에도 덮지 않는다.
+    이름은 렌더 폴더의 장부가 정한다(``services/export_names.py``): 생성물마다 번호 하나이고 한 번 쓴
+    번호는 다시 쓰지 않는다. 같은 생성물을 또 보내면 **있는 파일을 그대로 쓴다**(사본을 만들지 않는다 —
+    Jay 2026-10-08, 09-02 의 "매번 다음 번호" 를 바꿈). 파일이 지워졌으면 같은 이름으로 다시 놓는다.
+    저장본(``…_share_…`` · ``…_fin_…``)과는 토큰이 달라 이름이 겹치지 않는다 — 서로의 파일을 쓰지도
+    건드리지도 않는다. 기존 파일은 어떤 경우에도 덮지 않는다.
     """
-    seqs = scanned.get(folder_path)
-    if seqs is None:
-        seqs = _scan_numbered(source_root, folder_path, base)
-        scanned[folder_path] = seqs
+    folder = _folder_dir(source_root, folder_path)
+    if folder is None:
+        raise ResolveTransferError("경로 안전성 위반")
+    book = books.get(folder_path, export_names.DAVINCI)
+    name = book.allocate(gen_key, ext, folder)
+    # 다운로드 사이에 정션/경로가 바뀌지 않았는지 복사 직전 재검증한다.
+    dest = project_folders.safe_dest(source_root, folder_path, name)
+    if dest is None:
+        raise ResolveTransferError("복사 직전 경로 안전성 확인에 실패했습니다")
+    with _dest_lock(dest):
+        for _attempt in range(_DONE_WAIT_TRIES):
+            if not dest.exists():
+                if _copy_new(source, dest):
+                    book.mark_done(gen_key)
+                    return dest, True
+                continue  # 그 사이 다른 PC 가 같은 이름을 확정했다 — 아래에서 그 파일을 본다
+            # 이름이 같다는 것만으로 우리 파일로 보지 않는다 — 장부의 확정 표식이 있어야 한다.
+            book.reload()
+            if dest.is_file() and dest.stat().st_size > 0 and book.is_done(gen_key):
+                return dest, False
+            time.sleep(0.5)  # 방금 확정한 다른 PC 의 표식은 곧 따라온다
+        # 표식이 끝내 없다(확정 직후 끊긴 전송 등) — 원본과 바이트가 같을 때만 우리 파일로 인정하고 표식을 채운다.
+        if dest.is_file() and _same_bytes(source, dest):
+            book.mark_done(gen_key)
+            return dest, False
+    raise ResolveTransferError(f"같은 이름의 확인할 수 없는 파일이 있습니다: {name}")
 
-    seq = max(seqs, default=-1) + 1
-    for _probe in range(_MAX_NAME_PROBES):
-        name = _transfer_name(base, seq, ext)
-        # 다운로드 사이에 정션/경로가 바뀌지 않았는지 후보마다 복사 직전 재검증한다.
-        dest = project_folders.safe_dest(source_root, folder_path, name)
-        if dest is None:
-            raise ResolveTransferError("복사 직전 경로 안전성 확인에 실패했습니다")
-        with _dest_lock(dest):
-            written = _copy_if_name_free(source, dest)
-        seqs.add(seq)
-        if written:
-            return dest
-        seq += 1  # 다른 전송이 방금 그 번호를 가져갔다 — 다음 번호로.
-    raise ResolveTransferError("빈 번호를 찾지 못했습니다")
+
+def _same_bytes(first: Path, second: Path) -> bool:
+    """두 파일의 바이트가 같은가. filecmp 는 크기·시각이 같으면 예전 결과를 돌려쓰므로 직접 견준다(코덱스 리뷰)."""
+    if first.stat().st_size != second.stat().st_size:
+        return False
+    with first.open("rb") as one, second.open("rb") as two:
+        while True:
+            left, right = one.read(1 << 20), two.read(1 << 20)
+            if left != right:
+                return False
+            if not left:
+                return True
+
+
+def _sent_copy(source_root: Path, folder_path: str, gen_key: str, books: export_names.Books) -> Path | None:
+    """이 생성물을 전에 보낸 파일이 그대로 있으면 그 경로, 아니면 None — 읽기만 한다(번호를 만들지 않는다).
+
+    장부가 이 생성물의 이름이라 하고 확정 표식도 있으며 파일이 실제로 있을 때만이다. 이때는 원본이 필요 없다 —
+    로컬 원본이 정리됐거나 원본 주소가 만료돼도 이미 보낸 파일은 다시 보낼 수 있어야 한다(코덱스 리뷰 P1).
+    """
+    book = books.get(folder_path, export_names.DAVINCI)
+    name = book.name_of(gen_key)
+    if not name or not book.is_done(gen_key):
+        return None
+    dest = project_folders.safe_dest(source_root, folder_path, name)
+    if dest is None or not dest.is_file() or dest.stat().st_size == 0:
+        return None
+    return dest
 
 
 def _prepare_destination(source: Path, dest: Path) -> int:
@@ -618,42 +604,28 @@ def _prepare_destination(source: Path, dest: Path) -> int:
     return source_size
 
 
-def _copy_if_name_free(source: Path, dest: Path) -> bool:
-    """이름이 비어 있으면 복사하고 True. 이미 누가 쓰고 있으면 손대지 않고 False."""
-    if dest.exists():
-        return False
+def _copy_new(source: Path, dest: Path) -> bool:
+    """복사해서 dest 라는 이름으로 확정하고 True. 그 사이 같은 이름의 파일이 생겼으면 손대지 않고 False.
 
+    임시 파일을 다 만든 뒤 **덮어쓰지 않는 이름 바꾸기**로 확정한다 — 다른 PC 가 같은 이름을 골라도
+    먼저 확정한 쪽만 남고, 목적지 이름에는 완성된 파일만 보인다(빈 선점 파일을 두지 않는다).
+    """
     source_size = _prepare_destination(source, dest)
-    # 이름을 먼저 원자적으로 선점한다(CREATE_NEW — SMB 도 서버에서 보장). 순번 이름은
-    # 해시 이름과 달리 다른 PC 가 같은 이름을 고를 수 있어서, 선점이 없으면 둘 다
-    # "없음" 을 보고 복사한 뒤 마지막 os.replace 가 앞선 클립을 조용히 덮는다.
-    try:
-        os.close(os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-    except FileExistsError:
-        return False
-    claimed = True
     tmp = dest.with_name(dest.name + f".{uuid.uuid4().hex}.part")
     try:
         shutil.copy2(source, tmp)
         if tmp.stat().st_size != source_size:
             raise ResolveTransferError("원본 복사가 불완전합니다(크기 불일치)")
-        os.replace(tmp, dest)  # 우리가 만든 빈 선점 파일을 원자적으로 대체
-        claimed = False
+        try:
+            export_names.commit_new(tmp, dest)
+        except FileExistsError:
+            return False
+        return True
     finally:
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
-        if claimed:
-            # 복사가 실패했으면 빈 파일을 남기지 않는다(이름도 다시 비운다).
-            # 단 0바이트일 때만 — 그사이 다른 프로그램이 같은 이름으로 진짜 파일을
-            # 만들었을 수 있어, 남의 파일을 지우지 않는다(코덱스 리뷰).
-            try:
-                if dest.is_file() and dest.stat().st_size == 0:
-                    dest.unlink(missing_ok=True)
-            except OSError:
-                pass
-    return True
 
 
 async def transfer_generations(
@@ -731,14 +703,13 @@ async def transfer_generations(
         elif media_type not in {"video", "audio", "image"}:
             reason = f"Resolve 전송을 지원하지 않는 형식입니다: {media_type or 'unknown'}"
         else:
-            base = _transfer_name_base(folder_path)
             ext = project_folders.export_ext(source_hint, media_type)
-            # 번호는 복사 직전에 폴더를 보고 정한다. 여기서는 폴더 경로 자체가
-            # 안전한지만 대표 이름 하나로 확인한다(번호는 안전성과 무관).
-            if project_folders.safe_dest(source_root, folder_path, _transfer_name(base, 0, ext)) is None:
+            # 이름(번호)은 복사 직전에 장부에서 정한다. 여기서는 폴더 경로 자체가 안전한지만 확인한다.
+            if _folder_dir(source_root, folder_path) is None:
                 reason = "경로 안전성 위반"
             else:
-                work.append((item, asset, base, ext))
+                # 장부의 열쇠 = job_id 우선(공유할 때 쓰는 앵커와 같은 규칙 — 만든 PC 와 받은 PC 가 같은 영상을 같은 번호로 본다).
+                work.append((item, asset, str(gen.get("job_id") or gen_id), ext))
         if reason:
             item["status"] = "error"
             item["error"] = reason
@@ -746,23 +717,27 @@ async def transfer_generations(
     _refresh_summary(manifest)
     await asyncio.to_thread(_write_manifest, manifest_path, manifest)
 
-    scanned: dict[str, set[int]] = {}
-    for index, (item, asset, base, ext) in enumerate(work, 1):
+    books = export_names.Books(source_root)  # 이름 장부 — 전송 한 건 동안 폴더별로 한 번만 읽는다
+    for index, (item, asset, gen_key, ext) in enumerate(work, 1):
         try:
-            source = await _cached_source(asset)
-            dest = await asyncio.to_thread(
-                _place_copy,
-                source,
-                source_root,
-                item["folder_path"],
-                base,
-                ext,
-                scanned,
-            )
-            # 꼬리가 몇 번째까지 갔을 수 있으므로 실제로 쓴 이름을 되돌려 적는다.
+            # 전에 보낸 파일이 그대로 있으면 원본을 찾지 않고 그 파일을 쓴다.
+            dest = await asyncio.to_thread(_sent_copy, source_root, item["folder_path"], gen_key, books)
+            written = False
+            if dest is None:
+                source = await _cached_source(asset)
+                dest, written = await asyncio.to_thread(
+                    _place_copy,
+                    source,
+                    source_root,
+                    item["folder_path"],
+                    gen_key,
+                    ext,
+                    books,
+                )
             item["filename"] = dest.name
             item["local_path"] = str(dest)
-            item["status"] = "downloaded"
+            # skipped = 전에 보낸 파일이 그대로 있어 다시 복사하지 않았다(그 파일을 그대로 가져온다).
+            item["status"] = "downloaded" if written else "skipped"
         except Exception as exc:  # noqa: BLE001 - 파일 1건 실패를 격리해 나머지는 계속 처리
             item["status"] = "error"
             item["error"] = str(exc)
