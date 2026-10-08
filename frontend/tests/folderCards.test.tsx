@@ -192,12 +192,15 @@ it("저장 뒤의 재조회가 더 나중 조회로 대체되면 그 조회가 �
 });
 
 // ── 컷 카드 격자 ──
-it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 미정', 영상이면 재생 표시. 누르면 그 폴더를 연다", () => {
+const gridProps = { scale: 1, fill: true, selected: new Set<string>(), onSelect: () => {}, onInfo: () => {}, onShowAll: () => {}, onOpen: () => {}, onEnter: () => {}, top: false };
+const dbl = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
+
+it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 미정', 영상이면 재생 표시. 두 번 누르면 그 폴더를 연다", () => {
   const opened: string[] = [];
   const folders = [card("C0010", 8, true), card("C0040", 14, false, "video")];
   const showAll = vi.fn();
   const draw = (outside: number, shown: FolderCard[] = folders) => act(() => root.render(
-    <FolderCardGrid folders={shown} scale={1} fill onOpen={(folder) => opened.push(folder.path)} outside={outside} onShowAll={showAll} />,
+    <FolderCardGrid {...gridProps} folders={shown} onOpen={(folder) => opened.push(folder.path)} outside={outside} onShowAll={showAll} />,
   ));
   draw(0);
 
@@ -226,6 +229,8 @@ it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 
   expect(host.querySelector<HTMLElement>(".cut-grid")!.style.gridTemplateColumns).toBe("repeat(auto-fill, minmax(180px, 1fr))");
 
   act(() => second.click());
+  expect(opened).toEqual([]); // 한 번 클릭은 고르기
+  dbl(second);
   expect(opened).toEqual(["e035/C0040"]);
 
   // 고른 폴더에 직접 든 것 — 어느 카드에도 들지 않아 맨 끝 칸으로 알리고, 누르면 한 장씩 보기로 간다
@@ -236,4 +241,128 @@ it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 
   act(() => last.click());
   expect(showAll).toHaveBeenCalledTimes(1);
   expect(opened).toEqual(["e035/C0040"]);
+});
+
+it("하위 폴더가 있는 카드(에피소드)는 두 번 클릭에 들어가고, 없는 카드(컷)는 창을 연다. 맨 위에서는 '에피소드 밖'", () => {
+  const entered: string[] = [];
+  const opened: string[] = [];
+  const episode: FolderCard = { ...card("e035", 14), path: "e035", subfolders: 5 };
+  const leaf: FolderCard = { ...card("e036", 2), path: "e036", subfolders: 0 };
+  const old: FolderCard = { ...card("e037", 1), path: "e037" }; // 옛 서버 — subfolders 없음 = 잎
+  act(() => root.render(
+    <FolderCardGrid {...gridProps} folders={[episode, leaf, old]} top onEnter={(f) => entered.push(f.path)} onOpen={(f) => opened.push(f.path)} outside={2} />,
+  ));
+  const tile = (path: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="${path}"]`)!;
+  expect(tile("e035").querySelector(".cut-tab")!.textContent).toBe("e035컷 5 ·14");
+  expect(tile("e036").querySelector(".cut-tab")!.textContent).toBe("e0362");
+  expect(tile("e035").title).toBe("e035 · 컷 5 · 14건");
+  dbl(tile("e035"));
+  dbl(tile("e036"));
+  dbl(tile("e037"));
+  expect(entered).toEqual(["e035"]);
+  expect(opened).toEqual(["e036", "e037"]);
+  expect(host.querySelector(".cut-out-count")!.textContent).toBe("에피소드 밖 2건");
+});
+
+// ── 고르기 — 한 번 클릭·Ctrl·Shift·빈 곳에서 끌기·휠 클릭 ──
+const mouse = (type: string, el: EventTarget, init: MouseEventInit = {}) =>
+  act(() => { el.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, ...init })); });
+// jsdom 은 자리를 안 재 준다 — 카드마다 가짜 네모(가로로 한 줄, 200px 간격)
+function placeTiles() {
+  [...host.querySelectorAll<HTMLElement>(".cut-card[data-path]")].forEach((tile, i) => {
+    tile.getBoundingClientRect = () => ({ left: i * 200, right: i * 200 + 180, top: 0, bottom: 180, width: 180, height: 180, x: i * 200, y: 0, toJSON: () => ({}) });
+  });
+  host.querySelector<HTMLElement>(".cut-grid")!.getBoundingClientRect = () => ({ left: 0, right: 1000, top: 0, bottom: 400, width: 1000, height: 400, x: 0, y: 0, toJSON: () => ({}) });
+}
+
+it("한 번 클릭 = 그것만, Ctrl = 토글, Shift = 마지막으로 누른 것부터 범위. 빈 곳 클릭 = 비움", () => {
+  const folders = [card("C0010", 1), card("C0020", 1), card("C0030", 1), card("C0040", 1)];
+  let selected = new Set<string>();
+  const draw = () => act(() => root.render(
+    <FolderCardGrid {...gridProps} folders={folders} selected={selected} onSelect={(next) => { selected = next; draw(); }} outside={1} />,
+  ));
+  draw();
+  const tile = (name: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="e035/${name}"]`)!;
+  const press = (name: string, init: MouseEventInit = {}) => { mouse("mousedown", tile(name), init); mouse("mouseup", window, init); };
+  press("C0020");
+  expect([...selected]).toEqual(["e035/C0020"]);
+  expect(tile("C0020").classList.contains("sel")).toBe(true);
+  expect(tile("C0020").getAttribute("aria-pressed")).toBe("true");
+  press("C0040", { ctrlKey: true });
+  expect([...selected].sort()).toEqual(["e035/C0020", "e035/C0040"]);
+  press("C0020", { ctrlKey: true }); // 토글로 뺀다
+  expect([...selected]).toEqual(["e035/C0040"]);
+  press("C0010", { shiftKey: true }); // 마지막으로 누른 C0020 ~ C0010
+  expect([...selected]).toEqual(["e035/C0010", "e035/C0020"]);
+  press("C0030", { shiftKey: true }); // 시작은 그대로(C0020) — 범위를 고친다
+  expect([...selected]).toEqual(["e035/C0020", "e035/C0030"]);
+  mouse("mousedown", host.querySelector(".cut-out")!); // '컷 밖' 칸은 고르는 대상이 아니다
+  mouse("mouseup", window);
+  expect([...selected]).toEqual(["e035/C0020", "e035/C0030"]);
+  mouse("mousedown", host.querySelector(".cut-grid")!); // 빈 곳
+  mouse("mouseup", window);
+  expect(selected.size).toBe(0);
+});
+
+it("빈 곳에서 끌면 걸친 카드를 모두 고른다 — 창을 떠나면(blur) 버린다. 휠 클릭 = 그 카드를 고르고 컷 정보", () => {
+  const folders = [card("C0010", 1), card("C0020", 1), card("C0030", 1)];
+  let selected = new Set<string>();
+  const info: [string, number, number][] = [];
+  const draw = () => act(() => root.render(
+    <FolderCardGrid
+      {...gridProps} folders={folders} selected={selected} onSelect={(next) => { selected = next; draw(); }}
+      onInfo={(folder, x, y) => info.push([folder.path, x, y])} outside={0}
+    />,
+  ));
+  draw();
+  placeTiles();
+  const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => { cb(0); return 1; });
+  try {
+    const grid = host.querySelector(".cut-grid")!;
+    mouse("mousedown", grid, { clientX: 950, clientY: 300 });
+    mouse("mousemove", window, { clientX: 370, clientY: 100 }); // C0020(200~380)·C0030(400~580)에 걸친다, C0010(0~180)은 아니다
+    expect(host.querySelector(".assets-marquee")).not.toBeNull();
+    expect([...selected].sort()).toEqual(["e035/C0020", "e035/C0030"]);
+    mouse("mouseup", window, { clientX: 370, clientY: 100 });
+    expect(host.querySelector(".assets-marquee")).toBeNull();
+    expect([...selected].sort()).toEqual(["e035/C0020", "e035/C0030"]);
+    // Ctrl 로 끌면 더한다
+    mouse("mousedown", grid, { clientX: 190, clientY: 300, ctrlKey: true });
+    mouse("mousemove", window, { clientX: 10, clientY: 10, ctrlKey: true });
+    mouse("mouseup", window, { clientX: 10, clientY: 10, ctrlKey: true });
+    expect([...selected].sort()).toEqual(["e035/C0010", "e035/C0020", "e035/C0030"]);
+    // 카드 위에서 시작한 끌기는 마퀴가 아니고, 떼면 클릭도 아니다(움직였다)
+    mouse("mousedown", host.querySelector('.cut-card[data-path="e035/C0010"]')!, { clientX: 100, clientY: 100 });
+    mouse("mousemove", window, { clientX: 300, clientY: 100 });
+    expect(host.querySelector(".assets-marquee")).toBeNull();
+    mouse("mouseup", window, { clientX: 300, clientY: 100 });
+    expect(selected.size).toBe(3);
+    // 창을 떠나면 끌기를 버린다 — 돌아온 뒤의 mouseup 이 클릭으로 이어지지 않는다
+    mouse("mousedown", host.querySelector('.cut-card[data-path="e035/C0020"]')!, { clientX: 300, clientY: 100 });
+    act(() => { window.dispatchEvent(new Event("blur")); });
+    mouse("mouseup", window, { clientX: 300, clientY: 100 });
+    expect(selected.size).toBe(3);
+    // 마지막 움직임의 프레임이 돌기 전에 놓아도 그 계산은 버리지 않는다(Codex 코드 리뷰) — 창을 떠난 것은 버린다
+    raf.mockImplementation(() => 7);
+    mouse("mousedown", grid, { clientX: 950, clientY: 300 });
+    mouse("mousemove", window, { clientX: 370, clientY: 100 });
+    expect(selected.size).toBe(3); // 아직 안 돌았다
+    mouse("mouseup", window, { clientX: 370, clientY: 100 });
+    expect([...selected].sort()).toEqual(["e035/C0020", "e035/C0030"]);
+    mouse("mousedown", grid, { clientX: 950, clientY: 300 });
+    mouse("mousemove", window, { clientX: 10, clientY: 10 });
+    act(() => { window.dispatchEvent(new Event("blur")); });
+    expect([...selected].sort()).toEqual(["e035/C0020", "e035/C0030"]);
+  } finally {
+    raf.mockRestore();
+  }
+  // 휠 클릭 — 안 고른 카드면 그것만 고르고 정보를 연다
+  selected = new Set(["e035/C0010"]);
+  draw();
+  act(() => { host.querySelector('.cut-card[data-path="e035/C0030"]')!.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, button: 1, clientX: 450, clientY: 90 })); });
+  expect([...selected]).toEqual(["e035/C0030"]);
+  expect(info).toEqual([["e035/C0030", 450, 90]]);
+  act(() => { host.querySelector('.cut-card[data-path="e035/C0030"]')!.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, button: 1, clientX: 1, clientY: 2 })); });
+  expect([...selected]).toEqual(["e035/C0030"]); // 이미 고른 카드면 선택은 그대로
+  expect(info).toHaveLength(2);
 });

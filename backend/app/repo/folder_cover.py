@@ -95,11 +95,14 @@ def folder_cards(
         if not rest:
             own_count += 1
             continue
-        path = prefix + rest.split("/", 1)[0]
+        head, _, below = rest.partition("/")
+        path = prefix + head
         entry = folders.get(path)
         if entry is None:
-            entry = folders[path] = {"count": 0, "cover_id": row["id"], "rep": False}
+            entry = folders[path] = {"count": 0, "cover_id": row["id"], "rep": False, "subs": set()}
         entry["count"] += 1
+        if below:  # 그 폴더 바로 아래 폴더(컷) — 화면은 이것이 있는 카드를 '들어가는' 묶음으로 본다(Jay 2026-10-09)
+            entry["subs"].add(below.split("/", 1)[0])
         if saved.get(path) == row["id"]:
             entry["cover_id"], entry["rep"] = row["id"], True
 
@@ -122,7 +125,7 @@ def folder_cards(
             continue  # 집계와 표지 조회 사이에 지워졌거나 옮겨졌다 — 다음 조회에 바로잡힌다
         out.append({
             "path": path, "name": path[len(prefix):], "count": entry["count"],
-            "rep": entry["rep"], "cover": cover,
+            "subfolders": len(entry["subs"]), "rep": entry["rep"], "cover": cover,
         })
     return {"parent": parent_path, "own_count": own_count, "folders": out}
 

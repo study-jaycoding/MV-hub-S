@@ -147,6 +147,8 @@ import { api } from "./api";
 import { FolderCardGrid } from "./components/FolderCardGrid";
 import { folderCardsScope, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "./lib/folderCards";
 import { useFolderCards } from "./lib/useFolderCards";
+import { CutInfoPopup } from "./components/CutInfoPopup";
+import { CutReel, type ReelMode } from "./components/CutReel";
 import { buildSpotlightCreateBody } from "./lib/spotlightSubmit";
 import { resolveAutoAspectRatio } from "./lib/aspectAuto";
 import {
@@ -552,6 +554,46 @@ export default function App() {
     LS.set("cutView", on ? "1" : "0");
     setCutViewState(on);
   }, []);
+  // ── 컷 카드 고르기 · 컷 정보(휠 클릭) · 모아보기(Jay 2026-10-08) ──
+  //  고른 것은 폴더 경로의 집합. 그릴 때 지금 카드로 걸러(없어진 폴더는 저절로 빠진다) 격자 순서의 목록을 만든다. 묶음의 범위
+  //  (프로젝트·부모·공간)가 바뀌면 비운다. 두 창(컷 정보·모아보기)은 폴더 창처럼 연 시점의 문맥(listPeekCtx)을 들고 있어
+  //  문맥이 바뀌면 그 렌더부터 닫힌 것으로 본다 — 다른 프로젝트의 같은 이름 폴더에 잘못 붙지 않게(Codex 설계 검토).
+  //  창이 보여 주는 카드는 늘 지금 받아 둔 카드다(대표를 바꾸면 카드가 새로 와서 창도 새 값).
+  const [cutSel, setCutSel] = useState<Set<string>>(() => new Set());
+  const [cutInfo, setCutInfo] = useState<{ projectId: string; path: string; x: number; y: number; ctx: string } | null>(null);
+  const [cutReel, setCutReel] = useState<{ paths: string[]; ctx: string } | null>(null);
+  const [reelMode, setReelModeState] = useState<ReelMode>(() => (LS.get("cutReelMode", "grid") === "linked" ? "linked" : "grid"));
+  const setReelMode = useCallback((mode: ReelMode) => {
+    LS.set("cutReelMode", mode);
+    setReelModeState(mode);
+  }, []);
+  const cutScopeKey = cutCards && cutScope ? JSON.stringify([cutScope.projectId, cutScope.parent, cutScope.workspaceId ?? null]) : null;
+  useLayoutEffect(() => {
+    setCutSel(new Set());
+  }, [cutScopeKey]);
+  const selectedCuts = useMemo(
+    () => (cutCards ? cutCards.folders.filter((folder) => cutSel.has(folder.path)) : []),
+    [cutCards, cutSel],
+  );
+  const cutInfoFolder = cutInfo && cutInfo.ctx === listPeekCtx && cutScope?.projectId === cutInfo.projectId
+    ? cutCards?.folders.find((folder) => folder.path === cutInfo.path) ?? null
+    : null;
+  const cutInfoQuery = useMemo(
+    () => (cutInfo && cutInfoFolder ? folderPeekQuery(genQuery, { projectId: cutInfo.projectId, path: cutInfo.path }) : null),
+    [cutInfo, cutInfoFolder, genQuery],
+  );
+  const cutReelFolders = useMemo(
+    () => (cutReel && cutReel.ctx === listPeekCtx && cutCards ? cutCards.folders.filter((folder) => cutReel.paths.includes(folder.path)) : []),
+    [cutReel, listPeekCtx, cutCards],
+  );
+  const cutReelOpen = cutReelFolders.length > 0;
+  // 문맥이 바뀌어 무효가 된 창은 상태도 치운다(폴더 창과 같다).
+  useEffect(() => {
+    if (cutInfo && !cutInfoFolder) setCutInfo(null);
+  }, [cutInfo, cutInfoFolder]);
+  useEffect(() => {
+    if (cutReel && !cutReelOpen) setCutReel(null);
+  }, [cutReel, cutReelOpen]);
   // 캔버스(compose 탭)에서 태그하면 scheduleTagReload 가 compose·light 라 facets 를 안 불러와
   // '등록된 태그' 패널이 탭을 나갔다 와야 갱신되던 문제 → 새 태그 이름을 facets.tags 에 낙관적 병합해 즉시 반영.
   const mergeFacetTags = useCallback(
@@ -931,6 +973,13 @@ export default function App() {
       projectId: folder.cover.project_id, path: folder.path, projectName: folder.cover.project_name ?? "", genId: null,
     });
   }, [openFolderPath]);
+  // 하위 폴더가 있는 카드(에피소드) → 그 폴더로 들어간다 = 사이드바에서 그 폴더를 누른 것과 같다(생성 위치도 그 폴더, Jay 2026-10-09).
+  const enterFolderCard = useCallback((folder: FolderCard) => {
+    const projectId = folder.cover.project_id;
+    if (!projectId) return;
+    setArmedFolder({ projectId, path: folder.path });
+    patch({ project_id: projectId, folder_path: folder.path });
+  }, [setArmedFolder, patch]);
   // 폴더 창의 [대표] — 그 폴더의 대표를 정한다. 누르자마자 먼저 그리지 않는다: 저장하는 동안 단추를 잠그고, 끝나면(성공·실패
   //  모두) 서버 값을 다시 읽은 뒤에 푼다 — 먼저 그리면 저장 전에 출발한 조회가 늦게 와서 방금 고른 대표를 지운다(Codex 설계 검토).
   //  다시 읽기는 '지금' 문맥의 것을 부른다: 저장 중에 창을 닫으면 닫기 전의 것은 옛 폴더를 받아 뒤 묶음의 카드를 밀어낸다.
@@ -938,13 +987,15 @@ export default function App() {
   const savingRepRef = useRef(false);
   const reloadFolderCardsRef = useRef(reloadFolderCards);
   reloadFolderCardsRef.current = reloadFolderCards;
-  const pickFolderCover = useCallback(async (g: Generation) => {
+  //  컷 정보 창의 ★ 도 같은 저장 — 그쪽은 어느 폴더인지(where)를 같이 준다(폴더 창이 떠 있지 않다).
+  const pickFolderCover = useCallback(async (g: Generation, where?: { projectId: string | null; path: string }) => {
     const peek = listPeekRef.current;
-    if (!peek?.projectId || savingRepRef.current) return;
+    const target = where ?? (peek ? { projectId: peek.projectId, path: peek.path } : null);
+    if (!target?.projectId || savingRepRef.current) return;
     savingRepRef.current = true;
     setSavingRep(true);
     try {
-      await api.setFolderCover(peek.projectId, peek.path, g.id);
+      await api.setFolderCover(target.projectId, target.path, g.id);
     } catch (error) {
       flash(`${t("대표를 정하지 못했습니다")} — ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -1239,8 +1290,10 @@ export default function App() {
   //  목록을 그 위치의 카드로 갈아 끼우는데, 위치가 안 바뀌는 경우(보던 폴더 안의 복수 선택)엔 창이 닫히지 않아 제목과 다른 카드가
   //  창에 남는다(코덱스 코드 리뷰 10-07). enabled 가 바뀌면 진행 중이던 조회 응답도 버려진다(훅의 context).
   //  창을 닫은 직후 옛 사본을 보이는 동안(staleList)에도 같다 — 따라가기가 사본 위에 목록을 갈아 끼우면 새 첫 쪽과 섞인다.
+  //  컷 정보·모아보기 창이 떠 있는 동안도 같다 — 따라가기가 위치를 옮기면 창의 문맥이 깨져 닫힌다.
   const resolveLibrary = useResolveLibraryFollow({
-    filters, enabled: resolveSelectionFollow && !listPeek && !staleList && !editOpen, authReady: authReady && workspaceQueryReady,
+    filters, enabled: resolveSelectionFollow && !listPeek && !staleList && !editOpen && !cutInfoFolder && !cutReelOpen,
+    authReady: authReady && workspaceQueryReady,
     authKey: libraryAuthKey,
     workspaceFilter: filters.tab === "team" ? genQuery : undefined,
     workspaceScopeKey,
@@ -1898,6 +1951,12 @@ export default function App() {
     },
     (folderPeek || !!listPeek) && !preview && info === null && selected.size === 0, // 선택이 있으면 Esc 는 선택 해제(라이브러리와 동일)
   );
+  // 컷 카드를 골랐을 때의 Esc = 고른 것 비우기 — 창(크게 보기·정보·컷 정보·모아보기·폴더 창)이 하나라도 떠 있으면 그 창의 몫
+  //  (useEscapeClose 는 같은 Esc 를 여러 리스너가 받는다 — 창을 닫는 Esc 가 뒤의 선택까지 지우지 않게, Codex 설계 검토).
+  useEscapeClose(
+    () => setCutSel(new Set()),
+    cutMode && cutSel.size > 0 && !listPeek && !preview && info === null && !cutInfoFolder && !cutReelOpen,
+  );
   // 목록 탭의 폴더 창도 열릴 때 초점을 창으로 — 조회는 위 serverFilterKey effect 가 맡는다(조회 조건이 그 폴더로 바뀌므로).
   useEffect(() => {
     if (listPeek) folderPeekRef.current?.focus();
@@ -1960,7 +2019,23 @@ export default function App() {
   // 멀티선택 액션바 — 프롬프트가 보이면 프롬프트 상단(topSlot)에, Ctrl+K 로 프롬프트를 숨기면 화면 상단
   // 중앙에 플로팅으로 유지한다(프롬프트와 함께 사라지지 않게). 아래에서 상태에 따라 한 곳에서만 마운트.
   // 라이브러리 선택 액션바 — 라이브러리 탭 본문과 캔버스 '폴더 보기' 창이 같은 요소를 쓴다.
-  const librarySelectionBar =
+  // 컷 카드를 골랐을 때의 막대 — [모아보기]. 생성물 선택 막대와 같은 자리(프롬프트 위·Ctrl+K 땐 상단 중앙)에 뜬다.
+  //  폴더 창이 떠 있으면 뒤의 고른 컷은 보이지 않으니 막대도 없다.
+  const cutSelectionBar =
+    !listPeek && cutMode && selectedCuts.length > 0 ? (
+      <div className="select-bar">
+        <span className="sb-count">{selectedCuts.length}{t("컷 선택")}</span>
+        <button
+          type="button"
+          title={t("고른 컷의 대표(없으면 최신 것)를 순서대로 모아 본다")}
+          onClick={() => setCutReel({ paths: selectedCuts.map((folder) => folder.path), ctx: listPeekCtx })}
+        >
+          ▦ {t("모아보기")}
+        </button>
+        <button type="button" onClick={() => setCutSel(new Set())}>{t("선택 해제")}</button>
+      </div>
+    ) : undefined;
+  const librarySelectionBar = cutSelectionBar ?? (
     selected.size > 0 ? (
       <LibrarySelectionActionBar
         selectedCount={selected.size}
@@ -1982,7 +2057,7 @@ export default function App() {
         onRestore={bulkRestore}
         onPurge={bulkPurge}
       />
-    ) : undefined;
+    ) : undefined);
 
   const selectionBar =
     filters.tab === "compose" ? (
@@ -2060,6 +2135,7 @@ export default function App() {
               onChange: setCutView,
               summary: cutCards
                 ? {
+                    top: cutScope.parent === "",
                     folders: cutCards.folders.length,
                     items: cutCards.folders.reduce((sum, folder) => sum + folder.count, cutCards.own_count),
                   }
@@ -2598,7 +2674,11 @@ export default function App() {
               {/* 묶음 보기 — 격자 자리에 컷 카드. 폴더 창이 떠 있어도 뒤에 그대로 둔다(body 가 inert 라 눌리지 않는다). */}
               {cutCards ? (
                 <FolderCardGrid
-                  folders={cutCards.folders} scale={scale} fill={fill} onOpen={openFolderCard}
+                  folders={cutCards.folders} scale={scale} fill={fill} onOpen={openFolderCard} onEnter={enterFolderCard}
+                  top={!cutScope?.parent} selected={cutSel} onSelect={setCutSel}
+                  onInfo={(folder, x, y) => {
+                    if (cutScope) setCutInfo({ projectId: cutScope.projectId, path: folder.path, x, y, ctx: listPeekCtx });
+                  }}
                   outside={cutCards.own_count} onShowAll={() => setCutView(false)}
                 />
               ) : listPeek ? null : !workspaceQueryReady ? (
@@ -2718,6 +2798,22 @@ export default function App() {
         onOpenInBoardFromPreview={onOpenInBoardFromPreview}
         onPreview={openPreview}
       />
+      {/* 컷 정보(휠 클릭)·모아보기 — 크게 보기(AppOverlays)보다 아래 층. 크게 보기가 떠 있는 동안은 Esc 를 그쪽에 넘긴다. */}
+      {cutInfo && cutInfoFolder && cutInfoQuery && (
+        <CutInfoPopup
+          folder={cutInfoFolder} x={cutInfo.x} y={cutInfo.y} query={cutInfoQuery} savingRep={savingRep} previewOpen={!!preview}
+          onClose={() => setCutInfo(null)}
+          onOpen={(folder) => { setCutInfo(null); openFolderCard(folder); }}
+          onPreview={openPreview}
+          onPickCover={(folder, g) => void pickFolderCover(g, { projectId: cutInfo.projectId, path: folder.path })}
+        />
+      )}
+      {cutReelOpen && (
+        <CutReel
+          folders={cutReelFolders} mode={reelMode} onModeChange={setReelMode} previewOpen={!!preview}
+          onClose={() => setCutReel(null)} onPreview={openPreview}
+        />
+      )}
       {videoCompare && (
         <Suspense fallback={null}>
           <VideoCompareModal videos={videoCompare} onClose={() => setVideoCompare(null)} />

@@ -151,6 +151,7 @@ export interface FolderCard {
   path: string;
   name: string; // 고른 폴더 아래의 이름(C0040)
   count: number;
+  subfolders?: number; // 바로 아래 폴더 수 — 있으면 두 번 클릭이 그 폴더로 '들어간다'(에피소드 → 컷), 없으면 폴더 창. 옛 서버는 안 준다(= 0)
   rep: boolean; // 표지가 팀이 정한 대표인가(아니면 가장 최근 것)
   cover: Generation;
 }

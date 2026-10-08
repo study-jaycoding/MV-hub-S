@@ -1019,6 +1019,7 @@
 }
 .cut-tab > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cut-tab > b { font-size: 11.5px; color: var(--accent); }
+.cut-tab > em { font-style: normal; font-size: 11px; font-weight: 600; color: var(--muted); } /* 에피소드 카드의 '컷 N ·' */
 .cut-pill {
   position: absolute; left: 50%; top: -27px; transform: translateX(-50%); z-index: 2;
   padding: 2px 11px; border-radius: 999px; white-space: nowrap;
@@ -1043,4 +1044,122 @@
 .lib-cut-seg > button.on { background: var(--accent); color: var(--accent-ink); } /* 라임 위 어두운 글자 */
 /* 폴더 창의 대표 단추 — 저장하는 동안은 누를 수 없다(서버 값을 다시 읽은 뒤 풀린다) */
 .scene-varpop-rep:disabled { opacity: 0.45; cursor: default; }
+/* 고른 컷 카드 — 생성물 카드의 선택과 같은 라임 테두리 + 옅은 빛. 마퀴 사각형(.assets-marquee)은 격자 안 절대 배치 */
+.cut-grid { position: relative; }
+.cut-card.sel .cut-face { box-shadow: 0 0 0 3px var(--accent), 0 0 14px 2px rgba(var(--accent-rgb), 0.45); }
+.cut-card.sel .cut-face::after { box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* ── 컷 정보(휠 클릭) — 정보 창의 틀에 표지 표·'이 컷의 생성물' 줄을 더한다 ── */
+.cutinfo-cover { position: relative; }
+.cutinfo-tag {
+  position: absolute; left: 10px; top: 10px; padding: 3px 10px; border-radius: 999px;
+  background: rgba(15, 17, 19, 0.85); color: #c9cdd2; font-size: 12px; font-weight: 800; pointer-events: none;
+}
+.cutinfo-tag.rep { color: var(--accent); }
+.cutinfo-m { margin-left: 8px; font-size: 12px; color: var(--muted); }
+.cutinfo-shared { color: var(--accent); font-weight: 800; }
+.cutinfo-item { position: relative; }
+.cutinfo-item.cur .info-source { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.cutinfo-rep {
+  position: absolute; right: 3px; top: 3px; width: 22px; height: 22px; padding: 0; border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25); background: rgba(15, 17, 19, 0.8); color: #c9cdd2;
+  font-size: 12px; line-height: 1; opacity: 0; transition: opacity 0.12s;
+}
+.cutinfo-item:hover .cutinfo-rep, .cutinfo-rep.on, .cutinfo-rep:focus-visible { opacity: 1; }
+.cutinfo-rep.on { color: #ffd24a; border-color: rgba(255, 210, 74, 0.6); }
+.cutinfo-rep:disabled:not(.on) { opacity: 0; }
+.cutinfo-rep:not(:disabled):hover { color: #ffd24a; border-color: #ffd24a; }
+
+/* ── 모아보기 — 전체 덮개 + 창. 크게 보기(232)·정보 창(230)보다 아래, 선택 막대·프롬프트보다 위 ── */
+.reel-backdrop {
+  position: fixed; inset: 0; z-index: 228; display: flex; align-items: center; justify-content: center;
+  background: rgba(4, 5, 8, 0.6); backdrop-filter: blur(4px);
+}
+.reel {
+  display: flex; flex-direction: column; width: min(94vw, 1480px); max-height: 92vh; overflow: hidden;
+  background: #121317; border: 1px solid var(--border2); border-radius: 14px; box-shadow: 0 30px 90px rgba(0, 0, 0, 0.75);
+}
+.reel-hd {
+  flex: none; display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 12px 0 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.reel-title { font-size: 16px; font-weight: 800; color: #fff; }
+.reel-sub { font-size: 13.5px; color: var(--muted); }
+.reel-sp { flex: 1; }
+.reel-seg { display: inline-flex; overflow: hidden; border: 1px solid #3c3f45; border-radius: 10px; }
+.reel-seg > button {
+  padding: 6px 14px; border: 0; border-radius: 0; background: #111315; color: var(--muted); font-size: 13.5px; font-weight: 800;
+}
+.reel-seg > button.on { background: var(--accent); color: var(--accent-ink); } /* 라임 위 어두운 글자 */
+/* 개별 — 큰 카드 줄 */
+.reel-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; padding: 24px; overflow: auto;
+}
+.reel-card { border-radius: 12px; background: #1b1d22; border: 1px solid #2a2d33; overflow: hidden; }
+.reel-face {
+  position: relative; display: block; width: 100%; aspect-ratio: 4 / 3; padding: 0; border: 0; border-radius: 0; background: #000;
+}
+.reel-face:active { transform: none; }
+.reel-face > img, .reel-face > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.reel-order {
+  position: absolute; left: 10px; top: 10px; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  background: rgba(15, 17, 19, 0.85); color: var(--accent); font-size: 13px; font-weight: 800;
+}
+.reel-rep {
+  position: absolute; right: 10px; top: 10px; padding: 2px 9px; border-radius: 999px;
+  background: rgba(15, 17, 19, 0.85); color: #c9cdd2; font-size: 11.5px; font-weight: 800;
+}
+.reel-rep.rep { color: #ffd24a; }
+.reel-ttl { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 10px 12px 6px; }
+.reel-ttl > b { font-size: 14px; color: #fff; }
+.reel-ttl > span { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.reel-ttl i { font-style: normal; color: var(--accent); font-weight: 800; }
+.reel-info { display: grid; grid-template-columns: 54px 1fr; column-gap: 8px; row-gap: 5px; padding: 0 12px 12px; font-size: 12.5px; }
+.reel-info .k { color: var(--muted); }
+.reel-info .v { color: #d7dae0; }
+/* 연결 — 편집 탭 뷰어의 아래 판과 같은 값(가는 타임바·빨간 자리·44px 조작 줄) */
+.reel-player { display: flex; flex-direction: column; min-height: 0; }
+.reel-screen { position: relative; flex: none; height: min(62vh, 760px); background: #000; display: flex; align-items: center; justify-content: center; }
+.reel-screen > img, .reel-screen > video { max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; display: block; }
+.reel-empty, .reel-broken { color: var(--muted); font-size: 13px; }
+.reel-chip {
+  position: absolute; top: 10px; padding: 3px 10px; border-radius: 999px; pointer-events: none;
+  background: rgba(8, 9, 12, 0.72); color: #d7dae0; font-size: 12.5px; font-weight: 700;
+}
+.reel-chip.l { left: 12px; }
+.reel-chip.r { right: 12px; }
+.reel-chip.r.rep { color: #ffd24a; }
+.reel-vbot { flex: none; background: #15171b; border-top: 1px solid #2a2d33; user-select: none; }
+.reel-scrub { height: 28px; padding: 0 16px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+.reel-scrub.wait { cursor: progress; opacity: 0.6; }
+.reel-track { position: relative; flex: 1; height: 4px; border-radius: 2px; background: #2c303b; }
+.reel-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: #555b6b; }
+.reel-track > i { position: absolute; top: -3px; bottom: -3px; width: 1px; background: rgba(255, 255, 255, 0.4); pointer-events: none; }
+.reel-head {
+  position: absolute; top: -9px; width: 10px; height: 10px; margin-left: -5px; border-radius: 2px 2px 5px 5px; background: #ff4d4f; pointer-events: none;
+}
+.reel-head::after { content: ""; position: absolute; left: 4px; top: 9px; width: 2px; height: 8px; background: #ff4d4f; }
+.reel-labels { position: relative; height: 18px; margin: 0 16px; }
+.reel-labels > button {
+  position: absolute; top: 0; transform: translateX(-50%); padding: 0 4px; border: 0; border-radius: 4px; background: transparent;
+  color: var(--muted); font-size: 11px; font-weight: 600; line-height: 18px; white-space: nowrap;
+}
+.reel-labels > button:hover { color: #fff; }
+.reel-labels > button.cur { color: var(--accent); font-weight: 800; }
+.reel-trans { position: relative; height: 44px; display: flex; align-items: center; justify-content: center; gap: 12px; }
+.reel-vtc {
+  position: absolute; left: 16px; font: 600 12.5px ui-monospace, Consolas, monospace; letter-spacing: 0.3px;
+  font-variant-numeric: tabular-nums; color: #d7dae0;
+}
+.reel-hint { position: absolute; right: 16px; font-size: 12px; color: var(--muted); }
+.reel-tbtn { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent; display: flex; align-items: center; justify-content: center; }
+.reel-tbtn svg { display: block; fill: #c9ccd3; }
+.reel-tbtn:hover svg { fill: #fff; }
+.reel-tbtn svg.reel-line { fill: none; stroke: #c9ccd3; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.reel-tbtn:hover svg.reel-line { fill: none; stroke: #fff; }
+.reel-tbtn.on { background: rgba(var(--accent-rgb), 0.14); }
+.reel-tbtn.on svg.reel-line, .reel-tbtn.on:hover svg.reel-line { stroke: var(--accent); }
+.reel-tbtn.reel-play { width: 30px; height: 30px; background: var(--accent); }
+.reel-tbtn.reel-play svg, .reel-tbtn.reel-play:hover svg { fill: var(--accent-ink); }
+@media (max-width: 1100px) { .reel-hint { display: none; } }
 .scene-varpop-rep:disabled:hover { background: rgba(255, 255, 255, 0.06); color: var(--muted); }

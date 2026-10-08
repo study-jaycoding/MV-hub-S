@@ -487,7 +487,8 @@ export interface SaveFinalsTarget {
   gen_id: string;
   kind?: SaveFinalsKind; // 구백엔드는 없음(= final)
   folder_path: string | null;
-  filename: string;
+  filename: string; // 실제로 저장된 이름. 아직 저장 전이면 "" — 번호 이름(e020_c0010_share_001)은 저장할 때 정해진다
+  media_type?: string | null; // 이름이 없을 때의 종류 표시용 — 구백엔드는 없음
   saved: boolean; // 이미 렌더폴더에 존재
   saved_at?: string | null; // 저장 대장의 저장 시각(UTC) — 구백엔드는 없음
   reason: string | null; // null=저장 가능, 값 있으면 저장 불가 사유
@@ -497,7 +498,7 @@ export interface SaveFinalsCompareItem {
   gen_id: string;
   kind: SaveFinalsKind;
   folder_path: string; // 렌더 폴더 아래 저장 폴더(공유본은 …/shared)
-  filename: string;
+  filename: string; // 새로 저장할 것은 "" 일 수 있다(번호 이름은 저장할 때 정해진다)
   reason?: string;
 }
 

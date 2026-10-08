@@ -21,6 +21,7 @@ import {
   FILTER_AUTO_TAGS_KEY,
   FILTERS_FORMAT_KEY,
   FILTERS_KEY,
+  FILTERS_VIEW_KEY,
   GENERATION_SCOPE_KEY,
   LEGACY_FILTERS_KEY,
   useLibraryPersistence,
@@ -32,7 +33,13 @@ export interface WorkspaceChip {
   name: string;
 }
 
-type StoredFilters = Filters & { [FILTERS_FORMAT_KEY]?: string };
+type StoredFilters = Filters & { [FILTERS_FORMAT_KEY]?: string; [FILTERS_VIEW_KEY]?: string };
+
+/** 저장된 filters 가 어느 공간의 자동 범위에서 고른 것인지(없거나 전체 보기 중이었으면 ""). 새 키에만 있다. */
+export function restoreViewKey(LS: Store): string {
+  const view = LS.loadJSON<StoredFilters>(FILTERS_KEY)?.[FILTERS_VIEW_KEY];
+  return typeof view === "string" ? view : "";
+}
 
 function generationScopeOf(value: Pick<Filters, "project_id" | "folder_path">): GenerationScope {
   const scope: GenerationScope = {};
@@ -116,7 +123,7 @@ function collectWorkspaceIds(stored: StoredFilters): string[] {
 export function restoreFilters(LS: Store): Filters {
   const fresh = LS.loadJSON<StoredFilters>(FILTERS_KEY);
   const raw: StoredFilters = fresh ?? LS.loadJSON<StoredFilters>(LEGACY_FILTERS_KEY) ?? { tab: "my" };
-  const { [FILTERS_FORMAT_KEY]: format, ...stored } = raw;
+  const { [FILTERS_FORMAT_KEY]: format, [FILTERS_VIEW_KEY]: _view, ...stored } = raw;
   if (!fresh && !format && stored.workspace_id) {
     const chips = LS.loadJSON<WorkspaceChip[]>("workspaceChips") ?? [];
     if (!chips.some((chip) => chip && chip.id === stored.workspace_id)) {
@@ -143,8 +150,10 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
   const [storedFilters, rawSetFilters] = useState<Filters>(() => restoreFilters(LS));
   const workspaceKey = workspace ? workspaceViewKey(workspace) : "";
   // 전체 보기는 이번 공간에서만 유효하다. 영속화하지 않으므로 재실행도 자동 모드다.
+  //  시작 키 = 저장된 선택이 지금 공간의 자동 범위에서 고른 것이면 지금 공간(그대로 되살린다), 아니면 ""(아래에서 공간이 바뀐
+  //  것으로 보고 공유 탭의 프로젝트·폴더를 지운다 — 다른 공간·전체 보기에서 고른 폴더는 지금 범위에선 빈 목록이다).
   const [sharedView, setSharedView] = useState<{ key: string; mode: SharedWorkspaceMode }>(
-    () => ({ key: "", mode: "auto" }),
+    () => ({ key: workspaceKey && restoreViewKey(LS) === workspaceKey ? workspaceKey : "", mode: "auto" }),
   );
   let filters = storedFilters;
   if (sharedView.key !== workspaceKey) {
@@ -393,6 +402,7 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
     store: LS,
     tagFilter,
     typeFilter,
+    viewKey: sharedMode === "auto" ? workspaceKey : "",
   });
 
   return {

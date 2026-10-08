@@ -15,6 +15,10 @@ export const LEGACY_FILTERS_KEY = "filters";
  *  따로 두면 한쪽만 저장에 성공했을 때(Store 는 예외를 삼킨다) 둘이 어긋난다:
  *  청소된 filters 저장 실패 + 표식 저장 성공 → 다음 로드에서 옛 잔재가 되살아난다(코덱스 P2). */
 export const FILTERS_FORMAT_KEY = "__v";
+/** filters 를 저장할 때 **어느 공간의 자동 범위에서** 고른 것인지도 같은 JSON 에 남긴다(`[scope, id]` 문자열, 전체 보기 중이면 빈 값).
+ *  다시 켤 때 같은 공간이면 공유 탭의 프로젝트·폴더 선택을 그대로 되살린다 — 전엔 첫 렌더가 늘 '공간이 바뀐 것' 으로 보고
+ *  지웠다(Jay 2026-10-08 "전에 선택한 폴더를 기억해야 한다"). 다른 공간·전체 보기에서 고른 것은 전처럼 지운다. */
+export const FILTERS_VIEW_KEY = "__view";
 /** 현재 화면 위치와 분리한 다음 생성 목적지. 빈 객체도 유효한 "목적지 없음" 값이다. */
 export const GENERATION_SCOPE_KEY = "generationScopeV1";
 /** 생성물 목록에만 적용하는 전역 태그 필터. 빈 배열도 유효한 저장값이다. */
@@ -46,6 +50,7 @@ interface UseLibraryPersistenceArgs {
   tagFilter: Set<string>;
   typeFilter: MediaFilter;
   scale: number;
+  viewKey?: string; // 공유 탭의 자동 범위 공간 키(FILTERS_VIEW_KEY) — 전체 보기 중이거나 공간이 없으면 ""
 }
 
 export function useLibraryPersistence({
@@ -69,10 +74,13 @@ export function useLibraryPersistence({
   store,
   tagFilter,
   typeFilter,
+  viewKey = "",
 }: UseLibraryPersistenceArgs) {
   useEffect(
-    () => store.setJSON(FILTERS_KEY, { ...filters, [FILTERS_FORMAT_KEY]: FILTERS_FORMAT }),
-    [filters, store],
+    () => store.setJSON(FILTERS_KEY, {
+      ...filters, [FILTERS_FORMAT_KEY]: FILTERS_FORMAT, ...(viewKey ? { [FILTERS_VIEW_KEY]: viewKey } : {}),
+    }),
+    [filters, store, viewKey],
   );
   useEffect(() => store.set("typeFilter", typeFilter), [store, typeFilter]);
   useEffect(() => store.set("scale", String(scale)), [scale, store]);

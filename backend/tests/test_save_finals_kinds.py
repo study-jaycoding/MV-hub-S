@@ -229,7 +229,7 @@ class SaveFinalsKindTests(unittest.TestCase):
                 mock.patch.object(file_stamp, "stamp_file", return_value=True):
             out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
         self.assertEqual((out["saved"], [e["gen_id"] for e in out["errors"]]), (1, ["held00000001"]))
-        self.assertEqual((render / "ep" / "c1" / "shared" / "c1_shared000001.png").read_bytes(), b"from-cdn")
+        self.assertEqual((render / "ep" / "c1" / "shared" / "ep_c1_share_001.png").read_bytes(), b"from-cdn")
 
     def _mirror_fixture(self):
         render = Path(self.tmp.name) / "Render"
@@ -275,7 +275,7 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertTrue(out["quarantine"].startswith("_mvhub_removed/"))
         self.assertEqual((bucket / "ep" / "c1" / "c1_oldfinal0000.png").read_bytes(), b"ours-c1_oldfinal0000.png")  # 지우지 않고 옮긴다
         self.assertTrue((bucket / "ep" / "c1" / "shared" / "c1_gone00000000.png").is_file())
-        for kept in ("c1_unconfirmed0.png", "c1_justsaved000.png", "사람이넣은파일.png", "c1_final0000001.png"):
+        for kept in ("c1_unconfirmed0.png", "c1_justsaved000.png", "사람이넣은파일.png", "ep_c1_fin_001.png"):
             self.assertTrue((cut / kept).is_file(), kept)  # 확인 안 받은 것·방금 쓰인 것·사람 파일·대상 파일은 그대로
         self.assertFalse(list((render / "_mvhub_sync").glob("*.lock")))  # 잠금은 풀렸다
 
@@ -294,7 +294,7 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertIn("지우세요", str(ctx.exception.detail))  # 죽은 잠금은 사람이 지운다 — 어디를 지울지 알려 준다
         self.assertEqual(lock.read_text(encoding="ascii"), "someone-else")
-        self.assertFalse((cut / "c1_final0000001.png").exists())  # 잠금을 못 잡으면 저장도 하지 않는다
+        self.assertFalse((cut / "ep_c1_fin_001.png").exists())  # 잠금을 못 잡으면 저장도 하지 않는다
         # 내 잠금이 중간에 남의 것으로 바뀌었으면(누가 손으로 지우고 다른 PC 가 잡음) 풀 때 건드리지 않는다
         lock.unlink()
         mine, token = manage_router._nas_lock_acquire(render.resolve(), "p1")
@@ -443,9 +443,11 @@ class SaveFinalsKindTests(unittest.TestCase):
             status = manage_router.save_finals_status("p1", mock.Mock())
         self.assertEqual((first["saved"], first["skipped"], first["errors"]), (3, 0, []))
         self.assertEqual((again["saved"], again["skipped"]), (0, 3))
-        self.assertTrue((render / "ep" / "c1" / "c1_final0000001.png").is_file())
-        self.assertTrue((render / "ep" / "c1" / "shared" / "c1_shared000001.png").is_file())
-        self.assertFalse((render / "ep" / "c1" / "c1_shared000001.png").exists())
+        cut = render / "ep" / "c1"
+        # 이름 = <폴더 마디 전부>_<fin|share>_<번호 3자리>. 번호는 폴더·종류마다 따로 센다. 공유본은 shared/ 안.
+        self.assertEqual(sorted(f.name for f in cut.iterdir() if f.is_file()), ["ep_c1_fin_001.png"])
+        self.assertEqual(sorted(f.name for f in (cut / "shared").iterdir()), ["ep_c1_share_001.png", "ep_c1_share_002.png"])
+        self.assertEqual(sorted(t["filename"] for t in status["targets"]), ["ep_c1_fin_001.png", "ep_c1_share_001.png", "ep_c1_share_002.png"])
         self.assertTrue(status["shared_supported"])
         self.assertEqual({(t["kind"], t["saved"]) for t in status["targets"]}, {("final", True), ("shared", True)})
         # 표의 '저장한 때' — 대상마다 대장의 저장 시각을 함께 준다(저장 이력은 최근 20건뿐이라 표를 못 채운다)
@@ -611,6 +613,157 @@ class SaveFinalsKindTests(unittest.TestCase):
         for folder, name in cases:
             self.assertEqual(project_folders.ledger_dest(render, folder, name), project_folders.safe_dest(render, folder, name), (folder, name))
 
+
+    # ── 번호 이름(2026-10-08) ─────────────────────────────────────────────────
+    def _numbered_fixture(self):
+        render = Path(self.tmp.name) / "Render"
+        media = Path(self.tmp.name) / "media"
+        (render / "ep" / "c1" / "shared").mkdir(parents=True)
+        media.mkdir()
+        for gid in ("final0000001", "shared000001", "held00000001"):
+            (media / f"{gid}.png").write_bytes(b"png-" + gid.encode())
+        patches = [mock.patch.object(project_folders, "render_root_state", return_value={"render_path": str(render), "error": None}),
+                   mock.patch.object(manage_router, "MEDIA_DIR", media), mock.patch.object(manage_router, "_require_project_manage"),
+                   mock.patch.object(manage_router, "_require_project_read"), mock.patch.object(file_stamp, "stamp_file", return_value=False)]
+        return render, render / "ep" / "c1", patches
+
+    def _forget_this_pc(self):
+        """다른 PC 인 것처럼 — 이 PC 의 저장 대장을 비운다(렌더 폴더와 장부는 NAS 에 그대로)."""
+        with db.get_connection() as conn:
+            conn.execute("DELETE FROM final_export")
+            conn.execute("DELETE FROM final_export_old")
+
+    def test_old_named_files_stay_as_they_are_and_count_as_saved(self):
+        render, cut, patches = self._numbered_fixture()
+        old = cut / "c1_final0000001.png"
+        old.write_bytes(b"saved-before-the-rename-rule")  # 옛 이름으로 이미 저장된 최종본(각인 없음)
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="all"))
+            status = {t["gen_id"]: (t["saved"], t["filename"]) for t in manage_router.save_finals_status("p1", mock.Mock())["targets"]}
+        self.assertEqual((out["saved"], out["skipped"], out["errors"]), (2, 1, []))  # 옛 파일은 다시 저장하지 않는다
+        self.assertEqual(sorted(f.name for f in cut.iterdir() if f.is_file()), ["c1_final0000001.png"])  # 이름도 바꾸지 않는다
+        self.assertEqual(old.read_bytes(), b"saved-before-the-rename-rule")
+        self.assertEqual(status["final0000001"], (True, "c1_final0000001.png"))  # 표에는 실제 이름
+        self.assertEqual({name for saved, name in status.values() if saved}, {"c1_final0000001.png", "ep_c1_share_001.png", "ep_c1_share_002.png"})
+
+    def test_another_pc_knows_a_numbered_file_by_the_registry_not_by_its_name(self):
+        render, cut, patches = self._numbered_fixture()
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(mock.patch.object(file_stamp, "read_stamp", return_value={}))  # 각인 없음(ffmpeg 없는 PC)
+            asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
+            names = sorted(f.name for f in (cut / "shared").iterdir())
+            self._forget_this_pc()
+            again = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
+            self.assertEqual((again["saved"], again["skipped"], again["errors"]), (0, 2, []))  # 장부가 이 생성물의 이름이라 하고 확정 표식도 있다
+            self.assertEqual(sorted(f.name for f in (cut / "shared").iterdir()), names)
+            # 확정 표식이 없으면(장부만 있고 파일은 남이 갖다 놓은 것일 수 있다) 이름이 같다는 것만으로는 인정하지 않는다
+            self._forget_this_pc()
+            for mark in (render / "_mvhub_sync" / "names").rglob("d.share.*"):
+                mark.unlink()
+            blocked = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
+        self.assertEqual((blocked["saved"], blocked["skipped"], {e["reason"] for e in blocked["errors"]}), (0, 0, {manage_router._DEST_CONFLICT}))
+        self.assertEqual(sorted(f.name for f in (cut / "shared").iterdir()), names)  # 덮어쓰지도, 다른 번호로 또 저장하지도 않는다
+
+    def test_a_number_already_on_disk_is_skipped_and_never_overwritten(self):
+        render, cut, patches = self._numbered_fixture()
+        foreign = cut / "shared" / "ep_c1_share_001.png"
+        foreign.write_bytes(b"someone-put-this-here")  # 장부에 없는 파일이 번호 이름을 차지하고 있다
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
+        self.assertEqual((out["saved"], out["errors"]), (2, []))
+        self.assertEqual(foreign.read_bytes(), b"someone-put-this-here")
+        self.assertEqual(sorted(f.name for f in (cut / "shared").iterdir()), ["ep_c1_share_001.png", "ep_c1_share_002.png", "ep_c1_share_003.png"])
+
+    def test_a_file_that_appears_at_the_reserved_name_is_not_overwritten(self):
+        render, cut, patches = self._numbered_fixture()
+        real = manage_router.export_names.commit_new
+
+        def race(tmp, dest):
+            if not dest.exists() and dest.name.endswith(".png"):
+                dest.write_bytes(b"appeared-in-between")  # 번호를 잡고 받는 사이에 그 이름의 파일이 생겼다
+            return real(tmp, dest)
+
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(mock.patch.object(file_stamp, "read_stamp", return_value={}))
+            stack.enter_context(mock.patch.object(manage_router.export_names, "commit_new", side_effect=race))
+            stack.enter_context(mock.patch.object(manage_router.time, "sleep"))
+            out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="final"))
+        self.assertEqual((out["saved"], [e["reason"] for e in out["errors"]]), (0, [manage_router._DEST_CONFLICT]))
+        self.assertEqual((cut / "ep_c1_fin_001.png").read_bytes(), b"appeared-in-between")
+        self.assertEqual([f.name for f in cut.iterdir() if f.is_file()], ["ep_c1_fin_001.png"])  # 임시 파일도 남기지 않는다
+
+    def test_compare_finds_numbered_leftovers_but_never_a_davinci_file(self):
+        render, cut, patches = self._numbered_fixture()
+        davinci = cut / "ep_c1_davinci_001.png"
+        davinci.write_bytes(b"sent-to-resolve")  # 다빈치 내보내기 파일 — 저장본이 아니다
+        # 각인도 우리 것이고 이 PC 의 대장이 그 자리까지 기억해도(있을 수 없는 최악) 이름의 종류가 davinci 면 '남은 저장본'이 아니다
+        repo_manage.record_export("davinci-gen", str(davinci.resolve()), "p1")
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="all"))
+            left = next(t["filename"] for t in manage_router.save_finals_status("p1", mock.Mock())["targets"] if t["gen_id"] == "held00000001")
+            with db.get_connection() as conn:
+                conn.execute("DELETE FROM share WHERE generation_id='held00000001'")  # 공유가 풀렸다 — 그 파일은 폴더에만 남는다
+
+            def read(path):
+                if path.name == davinci.name:
+                    return {file_stamp.KEY_GEN: "davinci-gen", file_stamp.KEY_HUB: file_stamp.HUB_TAG}
+                return {file_stamp.KEY_GEN: "held00000001", file_stamp.KEY_HUB: file_stamp.HUB_TAG} if path.name == left else {}
+
+            with mock.patch.object(file_stamp, "read_stamp", side_effect=read):
+                out = manage_router.save_finals_compare("p1", mock.Mock())
+        self.assertEqual([(e["gen_id"], e["folder_path"], e["filename"]) for e in out["extra"]], [("held00000001", "ep/c1/shared", left)])
+        self.assertEqual((out["same"], out["to_add"], out["blocked"], out["unknown"]), (2, [], [], 1))  # 다빈치 파일은 '모르는 파일'로만 센다
+
+    def test_losing_the_registry_never_turns_a_current_file_into_a_leftover(self):
+        """장부(_mvhub_sync/names)를 통째로 잃어도, 이 PC 의 대장이 기억하는 지금 대상의 파일은 '새로 저장'도 '폴더에만 남은 것'도 아니다."""
+        import shutil as shutil_module
+
+        render, cut, patches = self._numbered_fixture()
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="all"))
+            names = {t["gen_id"]: t["filename"] for t in manage_router.save_finals_status("p1", mock.Mock())["targets"]}
+            shutil_module.rmtree(render / "_mvhub_sync")
+
+            def read(path):  # 각인도 멀쩡하다 — 대장·각인이 다 맞는 지금 대상의 파일
+                owner = next((gid for gid, name in names.items() if name == path.name), None)
+                return {file_stamp.KEY_GEN: owner, file_stamp.KEY_HUB: file_stamp.HUB_TAG} if owner else {}
+
+            with mock.patch.object(file_stamp, "read_stamp", side_effect=read):
+                out = manage_router.save_finals_compare("p1", mock.Mock())
+                again = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="all"))
+            after = {t["gen_id"]: (t["saved"], t["filename"]) for t in manage_router.save_finals_status("p1", mock.Mock())["targets"]}
+        self.assertEqual((out["same"], out["to_add"], out["extra"], out["blocked"]), (3, [], [], []))
+        self.assertEqual((again["saved"], again["skipped"], again["errors"]), (0, 3, []))  # 다시 저장하지도 않는다
+        self.assertEqual(after, {gid: (True, name) for gid, name in names.items()})  # 대장도 그대로
+
+    def test_an_unreadable_registry_stops_compare_and_saves_nothing(self):
+        render, cut, patches = self._numbered_fixture()
+
+        def broken(self):
+            raise manage_router.export_names.RegistryError("이름 장부를 읽지 못했습니다: NAS")
+
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(mock.patch.object(manage_router.export_names.NameBook, "reload", broken))
+            with self.assertRaises(HTTPException) as ctx:
+                manage_router.save_finals_compare("p1", mock.Mock())
+            out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="all"))
+        self.assertEqual(ctx.exception.status_code, 503)
+        self.assertEqual((out["saved"], out["skipped"], len(out["errors"])), (0, 0, 3))
+        self.assertEqual([f for f in render.rglob("*") if f.is_file()], [])
 
 if __name__ == "__main__":
     unittest.main()
