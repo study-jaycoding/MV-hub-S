@@ -50,8 +50,8 @@ let clock = 0;
 let frames: ((stamp: number) => void)[] = [];
 const paint = vi.fn();
 
-function Harness({ scope = "s1", doc = DOC, layout = LAYOUT }: { scope?: string; doc?: EditDoc; layout?: typeof LAYOUT }) {
-  playback = useEditPlayback({ scope, layout, doc, sourceOf, videoRef, paint });
+function Harness({ scope = "s1", doc = DOC, layout = LAYOUT, loop }: { scope?: string; doc?: EditDoc; layout?: typeof LAYOUT; loop?: boolean }) {
+  playback = useEditPlayback({ scope, layout, doc, sourceOf, videoRef, paint, loop });
   return null;
 }
 const render = (props: Parameters<typeof Harness>[0] = {}) => act(() => root.render(<Harness {...props} />));
@@ -233,4 +233,57 @@ it("훑는 도중에 재생을 눌러도 옛 탐색 자리가 아니라 마지�
   video.currentTime = 2.2;
   frame(16);
   expect(playback.now()).toBeCloseTo(2.2);
+});
+
+// 반복 재생(Jay 2026-10-08) — 뷰어 아래 줄의 반복 단추. 소스 뷰어는 한 클립짜리 시퀀스를 같은 엔진으로 튼다.
+it("반복: 정방향으로 끝에 닿으면 처음부터 이어 튼다 — 같은 영상으로 되돌아와도 그 자리(0)에 닿은 뒤에야 시계를 맡긴다", () => {
+  const one: EditDoc = { ...emptyEditDoc(), clips: [{ cut: "s", gen: "only", track: 1, dur: 4, kind: "video" }] };
+  const layout = buildLayout(["s"], one);
+  render({ scope: "loop", doc: one, layout, loop: true });
+  video.emit("loadedmetadata");
+  act(() => playback.toggle());
+  video.currentTime = 3.9;
+  frame(16);
+  expect(playback.now()).toBeCloseTo(3.9);
+  paint.mockClear();
+  video.currentTime = 4; // 끝에 닿았다
+  frame(16);
+  expect(playback.view.playing).toBe(true);
+  expect(playback.now()).toBe(0);
+  expect(video.currentTime).toBe(0); // 영상을 처음으로 보냈다
+  expect(paint).toHaveBeenLastCalledWith(0);
+  expect(frames).toHaveLength(1); // 다음 프레임은 한 번만 건다
+  video.currentTime = 4; // 탐색이 끝나기 전 — 끝난 영상의 옛 시각을 시계로 읽지 않는다
+  frame(500);
+  expect(playback.now()).toBe(0);
+  video.currentTime = 0;
+  video.emit("seeked");
+  video.currentTime = 1;
+  frame(16);
+  expect(playback.now()).toBeCloseTo(1);
+
+  render({ scope: "loop", doc: one, layout, loop: false }); // 반복을 끄면 끝에서 멈춘다
+  video.currentTime = 4;
+  frame(16);
+  expect(playback.view.playing).toBe(false);
+  expect(playback.now()).toBe(4);
+});
+
+it("반복: 여러 컷이면 첫 컷으로 돌아가고, 역방향은 반복하지 않고 처음에서 멈춘다", () => {
+  render({ scope: "loop2", loop: true });
+  video.emit("loadedmetadata");
+  act(() => playback.seek(17.9)); // c3(그림, rAF 시계)의 끝 직전
+  act(() => playback.toggle());
+  frame(200);
+  expect(playback.view.playing).toBe(true);
+  expect(playback.view.cut).toBe("e070/c1");
+  expect(playback.now()).toBe(0);
+  expect(video.src).toBe("/v/top");
+
+  act(() => playback.stop());
+  act(() => playback.seek(0.05));
+  act(() => playback.shuttle(-1));
+  frame(200);
+  expect(playback.view.playing).toBe(false);
+  expect(playback.now()).toBe(0);
 });

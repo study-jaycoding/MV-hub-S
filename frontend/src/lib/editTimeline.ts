@@ -195,6 +195,12 @@ export function visibleClip(doc: EditDoc, slot: CutSlot, local: number): SlotCli
   return null;
 }
 
+// '한 트랙만 보기'(뷰어) — 그 순간 그 트랙에 있는 클립. 끔(클립·트랙)은 따지지 않는다: 그 트랙을 보겠다고 고른 것이다.
+export function trackClip(slot: CutSlot, track: number, local: number): SlotClip | null {
+  const clip = slot.clips.find((item) => item.track === track);
+  return clip && local < clip.len ? clip : null;
+}
+
 // 컷 안에서 보이는 것이 바뀌는 구간들(컷 기준 시각). A1 줄과 '보이는 소스 변경' 판정에 쓴다.
 export function visibleSegments(
   doc: EditDoc,

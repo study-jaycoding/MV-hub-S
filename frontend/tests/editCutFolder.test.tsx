@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // 편집 탭(Jay 2026-10-08) — 미디어 풀(폴더 목록 옆: 보기 방식·크기·검색·정렬, 고르기·넣기/빼기·우클릭 트랙 메뉴) ·
-// 싱글/듀얼 뷰어 · 그림을 누르면 그 컷으로 · 컷 더블클릭 = 공유 & 리뷰의 폴더 창 열기(무엇을 열지만 App 에 알린다) ·
+// 뷰어 판(싱글/듀얼·무엇을 볼지·타임바·반복·키 대상) · 풀의 Resolve 보내기 · 그림을 누르면 그 컷으로 · 컷 더블클릭 = 공유 & 리뷰의 폴더 창 열기(무엇을 열지만 App 에 알린다) ·
 // 그 창의 카드 우클릭 = 넣을 트랙 고르기(찬 트랙은 교체) · 빈 폴더 기본 비활성과 숨기기 · D 로 폴더 켜고 끄기 ·
 // 왼쪽 폴더 옆의 새 항목·최종·보류 표시 · 공유 목록과 폴더 옆 숫자 다시 받기.
 import { act } from "react";
@@ -60,12 +60,16 @@ const previews: PreviewTarget[] = []; // 풀의 더블클릭이 앱에 열어 �
 const onPreview = (target: PreviewTarget) => { previews.push(target); };
 const compared: Generation[][] = []; // 풀의 [비교]가 앱에 넘긴 생성물들
 const onCompare = (gens: Generation[]) => { compared.push(gens); };
+const sent: Generation[][] = []; // 풀의 [Resolve로 보내기]가 앱에 넘긴 생성물들
+const resolveState = { busy: false, pendingCount: 0 };
+const sendToResolve = (gens: Generation[]) => { sent.push(gens); };
 // peekPath = 폴더 창이 떠 있는 컷(없으면 null). 창은 App 의 것이라 여기서는 떠 있다는 사실만 넘긴다.
 const mount = (reloadSignal = 0, peekPath: string | null = null, ws: typeof workspace | { scope: "unknown"; id: null; name: null } = workspace) =>
   act(() => root.render(
     <EditTab authKey="auth" authReady workspace={ws} keysActive flash={flash}
       onOpenCutFolder={onOpenCutFolder} reloadSignal={reloadSignal}
-      peekPath={peekPath} onPeekMarks={onPeekMarks} cardMenuRef={cardMenuRef} onPreview={onPreview} onCompare={onCompare} />,
+      peekPath={peekPath} onPeekMarks={onPeekMarks} cardMenuRef={cardMenuRef} onPreview={onPreview} onCompare={onCompare}
+      resolve={{ send: sendToResolve, ...resolveState }} />,
   ));
 const DOC_KEY = "ch.editTimeline:local:p1:e070";
 type Seed = { cut: string; gen: string; track: number; job?: string; off?: boolean };
@@ -96,6 +100,18 @@ const rightClick = (target: Element) => {
   return event;
 };
 const UI_KEY = "ch.editTimeline.ui";
+// 뷰어 판 — 보이는 것만, 왼쪽부터(자리는 CSS order, 안 보이는 판은 hidden 으로 붙어 있다)
+const panes = () => [...document.querySelectorAll<HTMLElement>(".ed-top > .ed-view")].filter((item) => !item.hidden)
+  .sort((a, b) => Number(a.style.order) - Number(b.style.order));
+const paneModes = () => panes().map((item) => item.dataset.view);
+const pane = (mode: string) => document.querySelector<HTMLElement>(`.ed-top > .ed-view[data-view="${mode}"]`)!;
+const pickMode = (from: string, label: string) => {
+  act(() => pane(from).querySelector<HTMLButtonElement>(".ed-vpick-btn")!.click());
+  act(() => [...pane(from).querySelectorAll<HTMLButtonElement>(".ed-pop-item")].find((item) => item.textContent!.includes(label))!.click());
+};
+const playingIn = (mode: string) => !!pane(mode).querySelector(".ed-play rect"); // 재생 중이면 단추가 '일시정지' 그림이다
+const videoGen = () => gen("v", "c1", { assets: [{ id: "a-v", generation_id: "v", type: "video", file_path: "/media/v.mp4",
+  thumbnail_path: null, source_url: null, cached: true }] as Generation["assets"], model: "seedance" });
 const hideButton = () => document.querySelector<HTMLButtonElement>(".ed-toggle")!;
 const trackMenu = () => document.querySelector<HTMLElement>(".ed-tmenu");
 const menuItems = () => [...document.querySelectorAll<HTMLButtonElement>(".ed-tmenu-item")];
@@ -115,6 +131,7 @@ beforeEach(() => {
   localStorage.clear();
   localStorage.setItem("ch.editTimeline.last:local", JSON.stringify({ projectId: "p1", seq: "e070" }));
   for (const method of ["load", "pause"] as const) vi.spyOn(HTMLMediaElement.prototype, method).mockImplementation(() => {});
+  vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => Promise.resolve());
   // jsdom 에는 포인터 잡기가 없다 — 클립은 누를 때 포인터를 잡는다.
   Object.assign(Element.prototype, { setPointerCapture() {}, hasPointerCapture: () => false, releasePointerCapture() {} });
   world.gens = [gen("a", "c1"), gen("b", "c1", { is_final: true, is_mine: true }), gen("x", "c2"), gen("y", "c2", { is_held: true })];
@@ -129,6 +146,8 @@ beforeEach(() => {
   peekMarks.length = 0;
   previews.length = 0;
   compared.length = 0;
+  sent.length = 0;
+  Object.assign(resolveState, { busy: false, pendingCount: 0 });
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -144,8 +163,9 @@ afterEach(() => {
 it("미디어 풀은 뷰어 왼쪽에 있다 — 누르면 고르고, 더블클릭하면 크게 보고, 우클릭하면 넣을 트랙을 고른다", () => {
   mount();
   act(() => cutCell("c1").click());
-  expect([...document.querySelector(".ed-top")!.children].map((item) => item.classList[0]))
-    .toEqual(["ed-pool-side", "sidebar-resize-handle", "ed-view"]); // 풀 · 폭 조절 손잡이 · 뷰어
+  expect([...document.querySelector(".ed-top")!.children].slice(0, 2).map((item) => item.classList[0]))
+    .toEqual(["ed-pool-side", "sidebar-resize-handle"]); // 풀 · 폭 조절 손잡이가 뷰어보다 앞(왼쪽)
+  expect(paneModes()).toEqual(["timeline"]);
   expect(document.querySelector(".ed-pool-side > .ed-pool h3")!.textContent).toBe("e070 / c1");
   expect(document.querySelector<HTMLElement>(".ed-pool-side")!.style.getPropertyValue("--sidebar-w")).toBe("392px");
   const handle = document.querySelector<HTMLElement>(".ed-top > .sidebar-resize-handle")!;
@@ -188,12 +208,24 @@ it("미디어 풀: Ctrl·Shift 로 여러 장을 고르면 비교할 수 있다 
   act(() => cutCell("c1").click());
   const bar = () => document.querySelector<HTMLElement>(".ed-pool-sel");
   act(() => poolCards()[0].click());
-  expect(bar()).toBeNull(); // 한 장으로는 비교할 것이 없다
+  const compare = () => bar()!.querySelector<HTMLButtonElement>(".ed-psel-btn:not(.ed-psel-resolve)");
+  expect(bar()!.textContent).toContain("1개 선택");
+  expect(compare()).toBeNull(); // 한 장으로는 비교할 것이 없다
   mouse(poolCards()[1], "click", { ctrlKey: true });
   expect(document.querySelectorAll(".ed-pool .ed-picked")).toHaveLength(2);
   expect(bar()!.textContent).toContain("2개 선택");
-  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-psel-btn")!.click());
+  act(() => compare()!.click());
   expect(compared.map((gens) => gens.map((item) => item.id))).toEqual([["a", "b"]]);
+
+  // Resolve 로 보내기(Jay 2026-10-08) — 고른 것을 앱의 보내기 줄에 넘긴다. 처리 중이면 대기열에 더한다고 알린다.
+  const resolve = () => bar()!.querySelector<HTMLButtonElement>(".ed-psel-resolve")!;
+  expect(resolve().textContent).toBe("◆ Resolve로 보내기");
+  act(() => resolve().click());
+  expect(sent.map((gens) => gens.map((item) => item.id))).toEqual([["a", "b"]]);
+  Object.assign(resolveState, { busy: true, pendingCount: 2 });
+  mount();
+  expect(resolve().textContent).toBe("◆ Resolve에 추가 (2)");
+  expect(resolve().getAttribute("aria-busy")).toBe("true");
 
   mouse(poolCards()[1], "click", { shiftKey: true }); // 다시 누르면 빠진다
   expect(document.querySelectorAll(".ed-pool .ed-picked")).toHaveLength(1);
@@ -289,7 +321,7 @@ it("미디어 풀: 보기 방식(썸네일·메타데이터·목록)과 크기·
   act(() => poolButton("정렬").click());
   act(() => popItem("넣은 것 먼저").click());
   expect(prompts("list")).toEqual(["prompt b", "prompt a"]);
-  expect(JSON.parse(localStorage.getItem(UI_KEY)!)).toEqual({ view: "list", size: 200, sort: "placed", dual: false });
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!)).toMatchObject({ view: "list", size: 200, sort: "placed", dual: false });
 
   act(() => poolButton("검색").click()); // 검색 — 프롬프트·모델·만든 사람
   const search = () => document.querySelector<HTMLInputElement>(".ed-pool-search");
@@ -310,41 +342,158 @@ it("미디어 풀: 보기 방식(썸네일·메타데이터·목록)과 크기·
   expect(prompts("list")).toEqual(["prompt b", "prompt a"]);
 });
 
-// 싱글/듀얼 뷰어(Jay 2026-10-08) — 듀얼이면 왼쪽에 미디어 풀에서 고른 생성물(소스), 오른쪽에 타임라인.
-it("듀얼 뷰어: 미디어 풀에서 고른 생성물이 소스 뷰어에 뜬다 — 컷을 옮겨도 남고, 싱글로 돌리면 사라진다", () => {
-  world.gens = [...world.gens, gen("v", "c1", { assets: [{ id: "a-v", generation_id: "v", type: "video", file_path: "/media/v.mp4",
-    thumbnail_path: null, source_url: null, cached: true }] as Generation["assets"], model: "seedance" })];
+// 뷰어 판(Jay 2026-10-08, 다빈치의 뷰어) — 위 줄(지금 시각 · 무엇을 볼지 · 전체 길이 · 싱글/듀얼), 아래 줄(타임바 · 버튼 · 반복).
+it("뷰어 판: 위 줄에서 무엇을 볼지 고른다(타임라인·소스·한 트랙만) — 두 판은 서로 다른 것을 보고, 같은 것을 고르면 자리를 바꾼다", () => {
+  world.gens = [...world.gens, videoGen()];
+  seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c1", gen: "b", track: 2 }]); // b 가 위(타임라인에서 보이는 것)
   mount();
   act(() => cutCell("c1").click());
-  const dual = () => document.querySelector<HTMLButtonElement>(".ed-dual")!;
-  const source = () => document.querySelector<HTMLElement>(".ed-src");
-  expect(source()).toBeNull(); // 기본 = 싱글
-  expect(dual().getAttribute("aria-pressed")).toBe("false");
+  expect(paneModes()).toEqual(["timeline"]); // 기본 = 싱글 · 타임라인
+  const timeline = pane("timeline");
+  expect(timeline.querySelector(".ed-vtop > .ed-vtc")!.textContent).toBe("00:00:00:00"); // 지금 시각(왼쪽)
+  expect(timeline.querySelector(".ed-vtotal")!.textContent).toBe("00:00:15:00"); // 전체 길이(오른쪽)
+  expect(timeline.querySelector(".ed-vpick-btn")!.textContent).toBe("타임라인");
+  expect(timeline.querySelector(".ed-chip-l")!.textContent).toBe("e070 / c1 · V2");
+  expect(timeline.querySelector<HTMLImageElement>("img.ed-media")!.getAttribute("src")).toBe("/media/b.png");
+  expect([...timeline.querySelectorAll(".ed-vbot .ed-tbtn")].map((item) => item.getAttribute("aria-label"))).toEqual([
+    "처음으로 (Home)", "역재생 (J)", "정지 (K)", "재생/정지 (Space)", "끝으로 (End)", "반복 재생", "앞 편집점 (↑)", "뒤 편집점 (↓)",
+  ]);
+  expect(timeline.querySelectorAll(".ed-scrub-track > i")).toHaveLength(3); // 타임바의 컷 경계
+  const dual = () => document.querySelector<HTMLButtonElement>(".ed-top .ed-view:not([hidden]) .ed-dual")!;
+  expect(dual().closest(".ed-view")).toBe(timeline); // 싱글/듀얼 단추는 위 줄(맨 오른쪽 판)에
 
-  act(() => dual().click());
-  expect([...document.querySelector(".ed-top")!.children].map((item) => item.className))
-    .toEqual(["ed-pool-side", "sidebar-resize-handle", "ed-view ed-src", "ed-view"]);
-  expect(source()!.textContent).toContain("미디어 풀에서 생성물을 고르면 여기에서 봅니다.");
-  act(() => poolCards()[0].click()); // 그림
-  expect(source()!.querySelector<HTMLImageElement>("img.ed-media")!.getAttribute("src")).toBe("/media/a.png");
-  act(() => poolCards()[2].click()); // 영상 — 브라우저 기본 재생 막대
-  const video = source()!.querySelector<HTMLVideoElement>("video.ed-media")!;
+  act(() => dual().click()); // 듀얼 — [소스 | 타임라인]
+  expect(paneModes()).toEqual(["source", "timeline"]);
+  expect(document.querySelectorAll(".ed-top .ed-view:not([hidden]) .ed-dual")).toHaveLength(1);
+  expect(dual().closest(".ed-view")).toBe(pane("timeline"));
+  expect(pane("source").textContent).toContain("미디어 풀에서 생성물을 고르면 여기에서 봅니다.");
+  act(() => poolCards()[0].click()); // 그림 a 를 고른다 — 소스 판에 뜬다
+  expect(pane("source").querySelector<HTMLImageElement>("img.ed-media")!.getAttribute("src")).toBe("/media/a.png");
+  act(() => poolCards()[2].click()); // 영상 v — 같은 판·같은 아래 줄(브라우저 기본 재생 막대가 아니다)
+  const video = pane("source").querySelector<HTMLVideoElement>("video.ed-media")!;
   expect(video.getAttribute("src")).toBe("/media/v.mp4");
-  expect(video.controls).toBe(true);
-  expect(source()!.querySelector(".ed-src-info")!.textContent).toBe("리버 · seedance");
-  mouse(poolCards()[0], "click", { ctrlKey: true }); // 여러 장을 고르면 마지막에 고른 것이 소스다
-  expect(source()!.querySelector<HTMLImageElement>("img.ed-media")!.getAttribute("src")).toBe("/media/a.png");
-  act(() => poolCards()[2].click());
-  expect(localStorage.getItem(DOC_KEY)).toBeNull(); // 소스로 보는 것은 타임라인을 바꾸지 않는다
-
+  expect(video.controls).toBe(false);
+  expect(pane("source").querySelector(".ed-chip-r")!.textContent).toBe("리버 · seedance");
+  expect(pane("source").querySelectorAll(".ed-vbot .ed-tbtn")).toHaveLength(8);
+  expect(localStorage.getItem(DOC_KEY)).not.toBeNull();
+  expect(storedTracks()).toEqual([["a", 1], ["b", 2]]); // 소스로 보는 것은 타임라인을 바꾸지 않는다
   act(() => cutCell("c2").click()); // 다른 컷으로 가도 소스는 그대로다
-  expect(source()!.querySelector("video.ed-media")).not.toBeNull();
-  expect(document.querySelector(".ed-pool .ed-picked")).toBeNull(); // 이 컷의 풀에는 그 카드가 없다
+  expect(pane("source").querySelector<HTMLVideoElement>("video.ed-media")!.getAttribute("src")).toBe("/media/v.mp4");
+  act(() => cutCell("c1").click());
 
-  expect(JSON.parse(localStorage.getItem(UI_KEY)!).dual).toBe(true);
-  act(() => dual().click());
-  expect(source()).toBeNull();
+  pickMode("source", "V1 만 보기"); // 왼쪽 판을 V1 만 보기로 — 타임라인에서는 b(V2)에 가려진 a 가 보인다
+  expect(paneModes()).toEqual(["1", "timeline"]);
+  act(() => { vi.advanceTimersByTime(40); }); // 따라가는 보기는 프레임마다 타임라인의 시각을 읽는다
+  expect(pane("1").querySelector<HTMLImageElement>("img.ed-media")!.getAttribute("src")).toBe("/media/a.png");
+  expect(pane("1").querySelector(".ed-chip-l")!.textContent).toBe("e070 / c1 · V1");
+  expect(pane("1").querySelector(".ed-vpick-btn")!.textContent).toBe("V1 만 보기");
+  expect(pane("source").hidden).toBe(true); // 소스 판은 안 보일 뿐 붙어 있다(영상 요소를 떼지 않는다)
+
+  pickMode("timeline", "V1 만 보기"); // 오른쪽에서 왼쪽 것과 같은 것을 고르면 서로 자리를 바꾼다
+  expect(paneModes()).toEqual(["timeline", "1"]);
+  pickMode("1", "소스");
+  expect(paneModes()).toEqual(["timeline", "source"]);
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!)).toMatchObject({ dual: true, views: ["timeline", "source"] });
+
+  act(() => dual().click()); // 싱글 — 오른쪽 판의 것만 남는다. 싱글이어도 소스를 볼 수 있다
+  expect(paneModes()).toEqual(["source"]);
+  expect(pane("timeline").hidden).toBe(true);
+  expect(pane("timeline").querySelector<HTMLVideoElement>("video")!.muted).toBe(true); // 안 보이는 타임라인은 소리를 끈다
   expect(JSON.parse(localStorage.getItem(UI_KEY)!).dual).toBe(false);
+});
+
+it("뷰어 판: 재생 키는 마지막에 누른 판의 시계로 간다 — 소스를 틀면 타임라인은 멈추고, 반복은 시계마다 따로 켠다", () => {
+  world.gens = [...world.gens, videoGen()];
+  localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["source", "timeline"] }));
+  mount();
+  act(() => cutCell("c1").click());
+  act(() => poolCards()[2].click()); // 소스 = 영상 v
+  expect(pane("timeline").classList.contains("ed-view-on")).toBe(true); // 처음에는 타임라인이 키를 받는다
+  press({ key: " ", code: "Space" });
+  expect(playingIn("timeline")).toBe(true);
+  expect(playingIn("source")).toBe(false);
+
+  mouse(pane("source").querySelector(".ed-stage")!, "mousedown"); // 소스 판을 누른다
+  expect(pane("source").classList.contains("ed-view-on")).toBe(true);
+  expect(pane("timeline").classList.contains("ed-view-on")).toBe(false);
+  press({ key: " ", code: "Space" }); // Space 는 이제 소스 것 — 타임라인은 멈춘다(둘을 같이 틀지 않는다)
+  expect(playingIn("source")).toBe(true);
+  expect(playingIn("timeline")).toBe(false);
+  press({ key: "k", code: "KeyK" });
+  expect(playingIn("source")).toBe(false);
+  press({ key: "m", code: "KeyM" }); // 편집 키는 언제나 타임라인 것이다
+  expect(stored().muted).toBe(true);
+
+  mouse(document.querySelector(".ed-tl")!, "mousedown"); // 아래 타임라인을 누르면 다시 타임라인
+  expect(pane("timeline").classList.contains("ed-view-on")).toBe(true);
+  act(() => pane("source").querySelector<HTMLButtonElement>(".ed-play")!.click()); // 단추는 누른 판의 것
+  expect(playingIn("source")).toBe(true);
+  act(() => pane("timeline").querySelector<HTMLButtonElement>(".ed-play")!.click()); // 타임라인을 틀면 소스가 멈춘다
+  expect(playingIn("timeline")).toBe(true);
+  expect(playingIn("source")).toBe(false);
+  act(() => pane("timeline").querySelector<HTMLButtonElement>(".ed-t-stop")!.click());
+  expect(playingIn("timeline")).toBe(false);
+
+  const loop = (mode: string) => pane(mode).querySelector<HTMLButtonElement>(".ed-t-loop")!;
+  act(() => loop("source").click()); // 반복 — 소스만 켠다
+  expect(loop("source").getAttribute("aria-pressed")).toBe("true");
+  expect(loop("timeline").getAttribute("aria-pressed")).toBe("false");
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!)).toMatchObject({ loop: false, loopSrc: true });
+
+  // 메뉴에서 고른 것이 재생 키를 받는다 — 타임라인이 키를 받던 중에 오른쪽 판을 'V1 만 보기'로 바꾸면(왼쪽과 자리를 바꾼다)…
+  expect(pane("source").classList.contains("ed-view-on")).toBe(true); // 방금 소스 판의 반복 단추를 눌렀다 — 누른 판이 키를 받는다
+  mouse(document.querySelector(".ed-tl")!, "mousedown");
+  act(() => pane("source").querySelector<HTMLButtonElement>(".ed-t-stop")!.focus()); // 초점이 들어온 것만으로는 안 바뀐다
+  expect(pane("timeline").classList.contains("ed-view-on")).toBe(true); // (우클릭 메뉴가 닫히며 초점을 돌려줄 때 대상이 바뀌지 않게)
+  act(() => pane("source").querySelector<HTMLButtonElement>(".ed-t-stop")!.click()); // 그 단추를 키보드로 실행하면(click) 그 판
+  expect(pane("source").classList.contains("ed-view-on")).toBe(true);
+  act(() => document.querySelector<HTMLElement>(".ed-root")!.focus());
+  mouse(document.querySelector(".ed-tl")!, "mousedown");
+  expect(pane("timeline").classList.contains("ed-view-on")).toBe(true);
+  pickMode("timeline", "소스"); // 오른쪽(타임라인)에서 소스를 고른다 — 자리가 바뀌고 소스가 키를 받는다
+  expect(paneModes()).toEqual(["timeline", "source"]);
+  expect(pane("source").classList.contains("ed-view-on")).toBe(true);
+  pickMode("timeline", "V1 만 보기"); // 타임라인류를 고르면 다시 타임라인의 시계
+  expect(paneModes()).toEqual(["1", "source"]);
+  expect(pane("1").classList.contains("ed-view-on")).toBe(true);
+  pickMode("1", "타임라인");
+
+  // 타임바 — 누른 자리로 간다(jsdom 의 줄 폭은 0 이라 맨 앞). 끝으로 단추는 전체 끝으로.
+  act(() => pane("timeline").querySelector<HTMLButtonElement>(".ed-t-last")!.click());
+  expect(timecode()).toBe("00:00:15:00");
+  expect(pane("timeline").querySelector(".ed-vtop > .ed-vtc")!.textContent).toBe("00:00:15:00"); // 위 줄의 지금 시각도 같이 간다
+  mouse(pane("timeline").querySelector(".ed-scrub")!, "pointerdown");
+  expect(timecode()).toBe("00:00:00:00");
+});
+
+// 소스만 보이는 화면(싱글·소스)에서는 재생 키가 소스로 간다 — 판을 따로 누르지 않아도, 저장된 화면으로 다시 들어와도.
+//  안 그러면 Space 가 안 보이는 타임라인을 튼다(Codex 코드 리뷰).
+it("뷰어 판: 소스만 보이면 재생 키는 소스 것이다 — 메뉴로 막 바꿨을 때도, 저장된 화면으로 다시 들어왔을 때도", () => {
+  world.gens = [...world.gens, videoGen()];
+  mount();
+  act(() => cutCell("c1").click());
+  act(() => poolCards()[2].click());
+  pickMode("timeline", "소스"); // 싱글 뷰어를 소스로 — 소스 화면을 따로 누르지 않는다
+  expect(paneModes()).toEqual(["source"]);
+  press({ key: " ", code: "Space" });
+  expect(playingIn("source")).toBe(true);
+  expect(playingIn("timeline")).toBe(false); // 안 보이는 타임라인은 돌지 않는다
+  press({ key: "k", code: "KeyK" });
+  mouse(document.querySelector(".ed-tl")!, "mousedown"); // 아래 타임라인을 눌러도 — 보이는 판이 소스뿐이다
+  press({ key: "l", code: "KeyL" });
+  expect(playingIn("source")).toBe(true);
+  expect(playingIn("timeline")).toBe(false);
+  press({ key: "k", code: "KeyK" });
+
+  act(() => root.unmount()); // 다시 들어온다 — 저장된 화면은 싱글·소스
+  root = createRoot(host);
+  mount();
+  expect(paneModes()).toEqual(["source"]);
+  act(() => cutCell("c1").click());
+  act(() => poolCards()[2].click());
+  press({ key: " ", code: "Space" });
+  expect(playingIn("source")).toBe(true);
+  expect(playingIn("timeline")).toBe(false);
 });
 
 it("타임라인의 그림을 누르면 그 컷으로 간다 — 이미 그 컷이면 보던 자리 그대로", () => {

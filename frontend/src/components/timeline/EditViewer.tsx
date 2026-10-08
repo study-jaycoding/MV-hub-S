@@ -1,52 +1,135 @@
-// 편집 탭의 뷰어 — 재생헤드 자리에서 보이는 클립 하나(위 트랙 우선)와 재생 단추.
-// `<video>` 는 늘 하나만 두고 재생 훅(useEditPlayback)이 주소를 갈아 끼운다. 타임코드는 훅의 paint 가 ref 로 고친다.
-import type { MouseEvent as ReactMouseEvent, RefObject } from "react";
+// 편집 탭의 뷰어 한 판(Jay 2026-10-08, 다빈치의 뷰어) — 위 줄(지금 시각 · 무엇을 볼지 · 전체 길이 · 싱글/듀얼), 무대,
+//  아래 줄(타임바 · 처음·역재생·정지·재생·끝·반복 · 앞/뒤 편집점). 타임라인·소스·한 트랙만 보기가 같은 판을 쓴다.
+//  판은 '무엇을 그릴지'(shown)와 조작 함수만 받는다 — 시계는 편집 탭이 가진 엔진(타임라인·소스)의 것이다.
+//  `<video>` 는 판마다 하나고 떼지 않는다(떼면 재생 훅이 걸어 둔 이벤트와 주소가 사라진다) — 안 보이는 판은 hidden 으로 둔다.
+//  지금 시각과 타임바 머리는 React 를 거치지 않고, 등록해 둔 그리기 함수가 프레임마다 고친다.
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
+import { timecode } from "../../lib/editTimeline";
+import type { ViewMode } from "../../lib/editTimelineStore";
 import { useT } from "../../lib/i18n";
-import type { EditView } from "../../lib/useEditPlayback";
+import type { EditShown } from "../../lib/useEditFollow";
+import { useEscapeClose } from "../../lib/useEscapeClose";
+import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 
-export function EditViewer({
-  view,
-  videoRef,
-  timecodeRef,
-  total,
-  label,
-  detail,
-  muted,
-  empty,
-  dual,
-  onToggleDual,
-  onToggle,
-  onStepFrames,
-  onStepEdit,
-}: {
-  view: EditView;
+export interface ViewOption {
+  value: ViewMode;
+  label: string;
+  hint?: string;
+}
+export interface ViewerControls {
+  toggle: () => void;
+  stop: () => void;
+  shuttle: (dir: 1 | -1) => void;
+  seek: (time: number) => void;
+  stepEdit: (dir: 1 | -1) => void;
+}
+export interface ViewerProps {
+  order: number; // 보이는 자리(0 = 왼쪽). -1 = 안 보인다(요소는 남는다)
+  mode: ViewMode;
+  options: ViewOption[];
+  onMode: (next: ViewMode) => void;
+  shown: EditShown;
   videoRef: RefObject<HTMLVideoElement>;
-  timecodeRef: RefObject<HTMLSpanElement>;
-  total: string; // 전체 길이 타임코드
+  muted: boolean;
+  playing: boolean;
+  rate: number; // 음수 = 역방향
+  total: number; // 전체 길이(초)
+  marks: readonly number[]; // 타임바의 표시(컷 경계, 초)
+  registerPaint: (paint: (time: number) => void) => () => void; // 이 판의 시각·타임바를 그릴 함수를 시계에 건다
+  controls: ViewerControls;
+  loop: boolean;
+  onLoop: () => void;
   label: string; // 'e070 / c0050 · V3'
   detail: string; // '만든 사람 · 모델 · 5.0s'
-  muted: boolean;
-  empty: string | null; // 타임라인이 없을 때의 안내(있으면 화면 가운데에 그것만)
-  dual: boolean; // 듀얼 뷰어 — 왼쪽에 소스 뷰어가 같이 떠 있다
-  onToggleDual: () => void;
-  onToggle: () => void;
-  onStepFrames: (frames: number) => void;
-  onStepEdit: (dir: 1 | -1) => void;
-}) {
+  empty: string | null; // 그릴 것이 없을 때의 안내(있으면 화면 가운데에 그것만)
+  active: boolean; // 재생 키(Space·J·K·L…)가 이 판의 시계로 간다 — 판이 둘일 때만 표시한다
+  onActivate: () => void;
+  dualButton: { dual: boolean; onToggle: () => void } | null; // 싱글/듀얼 단추 — 맨 오른쪽 판에만
+}
+
+export function EditViewer({
+  order, mode, options, onMode, shown, videoRef, muted, playing, rate, total, marks, registerPaint, controls,
+  loop, onLoop, label, detail, empty, active, onActivate, dualButton,
+}: ViewerProps) {
   const t = useT();
-  const source = view.source;
-  const isVideo = !!view.clip && source?.state === "ok" && source.type === "video" && !view.failed;
-  const still = view.clip && source?.state === "ok" && !isVideo ? (source.type === "image" ? source.url : source.thumb) : null;
+  const [open, setOpen] = useState(false);
+  const pickRef = useRef<HTMLDivElement>(null);
+  const timeRef = useRef<HTMLSpanElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const headRef = useRef<HTMLDivElement>(null);
+  const fillRef = useRef<HTMLDivElement>(null);
+  useOutsideMouseDown(pickRef, () => setOpen(false), open);
+  useEscapeClose(() => setOpen(false), open, true, true);
+  useEffect(() => registerPaint((time) => {
+    if (timeRef.current) timeRef.current.textContent = timecode(time);
+    const at = `${total > 0 ? Math.min(100, Math.max(0, (time / total) * 100)) : 0}%`;
+    if (headRef.current) headRef.current.style.left = at;
+    if (fillRef.current) fillRef.current.style.width = at;
+  }), [registerPaint, total]);
+
+  const { clip, source, failed } = shown;
+  const isVideo = !!clip && source?.state === "ok" && source.type === "video" && !failed;
+  const still = clip && source?.state === "ok" && !isVideo ? (source.type === "image" ? source.url : source.thumb) : null;
   const notice = empty
-    ?? (!view.clip ? null
+    ?? (!clip ? null
       : source?.state === "missing" ? t("미디어 없음 — 공유 목록에 없는 생성물입니다.")
         : source?.state === "unknown" ? t("확인 못 함 — 공유 목록을 아직 받지 못했습니다.")
-          : view.failed ? t("이 영상을 재생하지 못했습니다.") : null);
-  const keepFocus = (event: ReactMouseEvent) => event.preventDefault();
-  const speed = Math.abs(view.rate) > 1 || view.rate < 0 ? `${view.rate < 0 ? "◀ " : ""}${Math.abs(view.rate)}x` : "";
+          : failed ? t("이 영상을 재생하지 못했습니다.") : null);
+  const keepFocus = (event: ReactMouseEvent) => event.preventDefault(); // 단추가 초점을 가져가면 재생 키가 그 단추로 간다
+  const speed = Math.abs(rate) > 1 || rate < 0 ? `${rate < 0 ? "◀ " : ""}${Math.abs(rate)}x` : "";
+  const current = options.find((option) => option.value === mode);
+  const scrub = (event: ReactPointerEvent) => {
+    const box = trackRef.current?.getBoundingClientRect();
+    if (box) controls.seek(total * Math.min(1, Math.max(0, (event.clientX - box.left) / Math.max(1, box.width))));
+  };
+  const button = (name: string, title: string, run: () => void, icon: JSX.Element, on = false) => (
+    <button type="button" className={`ed-tbtn ed-t-${name}` + (on ? " ed-on" : "")} title={title} aria-label={title}
+      aria-pressed={name === "loop" ? on : undefined} onClick={run}>{icon}</button>
+  );
 
   return (
-    <section className="ed-view">
+    <section className={"ed-view" + (mode === "source" ? " ed-src" : "") + (active ? " ed-view-on" : "")}
+      hidden={order < 0} style={{ order: order + 1 }} data-view={String(mode)}
+      // 누르면(마우스), 또는 이 판의 단추를 키보드로 실행하면(click) 이 판이 재생 키를 받는다. 초점이 들어온 것만으로는
+      //  바꾸지 않는다 — 우클릭 메뉴가 닫히며 초점을 돌려줄 때 재생 대상이 엉뚱하게 바뀐다(Codex 코드 리뷰).
+      onMouseDownCapture={onActivate} onClickCapture={onActivate}>
+      <div className="ed-vtop" onMouseDown={keepFocus}>
+        <span className="ed-vtc" ref={timeRef}>00:00:00:00</span>
+        <div className="ed-vpick" ref={pickRef}>
+          <button type="button" className={"ed-vpick-btn" + (open ? " ed-on" : "")} aria-haspopup="menu" aria-expanded={open}
+            title={t("이 뷰어에서 무엇을 볼지 고릅니다")} onClick={() => setOpen(!open)}>
+            {current?.label ?? (typeof mode === "number" ? `V${mode}` : mode)}
+            <svg className="ed-caret" viewBox="0 0 8 5" aria-hidden="true"><path d="M0 0h8L4 5z" /></svg>
+          </button>
+          {open && (
+            <div className="ed-pop ed-vpop" role="menu" aria-label={t("이 뷰어에서 무엇을 볼지 고릅니다")}>
+              {options.map((option) => (
+                <button key={String(option.value)} type="button" role="menuitemradio" aria-checked={option.value === mode}
+                  className={"ed-pop-item" + (option.value === mode ? " ed-on" : "")}
+                  onClick={() => {
+                    setOpen(false);
+                    if (option.value !== mode) onMode(option.value);
+                  }}>
+                  <b>{option.value === mode ? "✓" : ""}</b>{option.label}{option.hint && <i>{option.hint}</i>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        {speed && <b className="ed-vspeed">{speed}</b>}
+        <span className="ed-vtc ed-vtotal">{timecode(total)}</span>
+        {dualButton && (
+          <button type="button" className={"ed-tbtn ed-dual" + (dualButton.dual ? " ed-on" : "")} aria-pressed={dualButton.dual}
+            onClick={dualButton.onToggle}
+            title={dualButton.dual ? t("싱글 뷰어로 — 뷰어 하나만 봅니다") : t("듀얼 뷰어로 — 뷰어 두 개를 나란히 봅니다")}
+            aria-label={dualButton.dual ? t("싱글 뷰어로 — 뷰어 하나만 봅니다") : t("듀얼 뷰어로 — 뷰어 두 개를 나란히 봅니다")}>
+            <svg width="18" height="12" viewBox="0 0 18 12" aria-hidden="true">
+              {dualButton.dual ? <><rect x="0.5" y="0.5" width="7.5" height="11" /><rect x="10" y="0.5" width="7.5" height="11" /></>
+                : <rect x="0.5" y="0.5" width="17" height="11" />}
+            </svg>
+          </button>
+        )}
+      </div>
       <div className="ed-stage">
         {/* 영상 요소는 떼지 않는다 — 떼면 재생 훅이 걸어 둔 이벤트와 주소가 함께 사라진다. */}
         <video ref={videoRef} className="ed-media" muted={muted} playsInline preload="auto" hidden={!isVideo}
@@ -56,43 +139,48 @@ export function EditViewer({
         {!empty && label && <span className="ed-chip ed-chip-l">{label}</span>}
         {!empty && detail && <span className="ed-chip ed-chip-r">{detail}</span>}
       </div>
-      <div className="ed-trans" onMouseDown={keepFocus}>
-        <span className="ed-keys">
-          <kbd>Space</kbd> {t("재생")} <kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> <kbd>←</kbd><kbd>→</kbd> {t("한 프레임")}{" "}
-          <kbd>↑</kbd><kbd>↓</kbd> {t("앞·뒤 편집점")}
-        </span>
-        <button type="button" className="ed-tbtn" title={t("앞 편집점 (↑)")} aria-label={t("앞 편집점 (↑)")} onClick={() => onStepEdit(-1)}>
-          <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="1" y="1" width="2" height="12" /><path d="M15 1v12L5 7z" /></svg>
-        </button>
-        <button type="button" className="ed-tbtn" title={t("한 프레임 뒤로 (←)")} aria-label={t("한 프레임 뒤로 (←)")} onClick={() => onStepFrames(-1)}>
-          <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><path d="M11 1v12L1 7z" /></svg>
-        </button>
-        <button type="button" className="ed-tbtn ed-play" title={t("재생/정지 (Space)")} aria-label={t("재생/정지 (Space)")} onClick={onToggle}>
-          {view.playing ? (
-            <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><rect x="1.5" y="1" width="3.2" height="12" /><rect x="7.3" y="1" width="3.2" height="12" /></svg>
-          ) : (
-            <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><path d="M2 1v12l9-6z" /></svg>
-          )}
-        </button>
-        <button type="button" className="ed-tbtn" title={t("한 프레임 앞으로 (→)")} aria-label={t("한 프레임 앞으로 (→)")} onClick={() => onStepFrames(1)}>
-          <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><path d="M1 1v12l10-6z" /></svg>
-        </button>
-        <button type="button" className="ed-tbtn" title={t("뒤 편집점 (↓)")} aria-label={t("뒤 편집점 (↓)")} onClick={() => onStepEdit(1)}>
-          <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="13" y="1" width="2" height="12" /><path d="M1 1v12l10-6z" /></svg>
-        </button>
-        <span className="ed-tcr">
-          {speed && <b>{speed}</b>}
-          <span ref={timecodeRef}>00:00:00:00</span><span className="ed-tcr-total"> / {total}</span>
-          {/* 싱글/듀얼 뷰어(다빈치의 Single Viewer Mode) — 듀얼이면 왼쪽에 미디어 풀에서 고른 생성물(소스)이 나란히 보인다 */}
-          <button type="button" className={"ed-tbtn ed-dual" + (dual ? " ed-on" : "")} aria-pressed={dual} onClick={onToggleDual}
-            title={dual ? t("싱글 뷰어로 — 타임라인만 봅니다") : t("듀얼 뷰어로 — 고른 생성물(소스)과 타임라인을 나란히 봅니다")}
-            aria-label={dual ? t("싱글 뷰어로 — 타임라인만 봅니다") : t("듀얼 뷰어로 — 고른 생성물(소스)과 타임라인을 나란히 봅니다")}>
-            <svg width="18" height="12" viewBox="0 0 18 12" aria-hidden="true">
-              {dual ? <><rect x="0.5" y="0.5" width="7.5" height="11" /><rect x="10" y="0.5" width="7.5" height="11" /></>
-                : <rect x="0.5" y="0.5" width="17" height="11" />}
-            </svg>
+      <div className="ed-vbot" onMouseDown={keepFocus}>
+        {/* 타임바 — 누르거나 끌어서 훑는다. 빨강 = 지금 자리, 파랑 = 컷 경계 */}
+        <div className="ed-scrub" role="slider" aria-label={t("타임바")} aria-valuemin={0} aria-valuemax={Math.round(total)} aria-valuenow={0}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            scrub(event);
+          }}
+          onPointerMove={(event) => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) scrub(event);
+          }}>
+          <div className="ed-scrub-track" ref={trackRef}>
+            <div className="ed-scrub-fill" ref={fillRef} />
+            {total > 0 && marks.map((mark) => <i key={mark} style={{ left: `${(mark / total) * 100}%` }} />)}
+            <div className="ed-scrub-head" ref={headRef} />
+          </div>
+        </div>
+        <div className="ed-trans">
+          {button("first", t("처음으로 (Home)"), () => controls.seek(0),
+            <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="1" y="1" width="2" height="12" /><path d="M15 1v12L5 7z" /></svg>)}
+          {button("rev", t("역재생 (J)"), () => controls.shuttle(-1),
+            <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><path d="M11 1v12L1 7z" /></svg>)}
+          {button("stop", t("정지 (K)"), controls.stop,
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="1" y="1" width="10" height="10" rx="1" /></svg>)}
+          <button type="button" className="ed-tbtn ed-play" title={t("재생/정지 (Space)")} aria-label={t("재생/정지 (Space)")} onClick={controls.toggle}>
+            {playing ? (
+              <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><rect x="1.5" y="1" width="3.2" height="12" /><rect x="7.3" y="1" width="3.2" height="12" /></svg>
+            ) : (
+              <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><path d="M2 1v12l9-6z" /></svg>
+            )}
           </button>
-        </span>
+          {button("last", t("끝으로 (End)"), () => controls.seek(total),
+            <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="13" y="1" width="2" height="12" /><path d="M1 1v12l10-6z" /></svg>)}
+          {button("loop", t("반복 재생"), onLoop,
+            <svg className="ed-line" width="18" height="14" viewBox="0 0 18 14" aria-hidden="true"><path d="M5 3h8a4 4 0 0 1 0 8H5a4 4 0 0 1 0-8" /><path d="M8 .6 5 3l3 2.4" /></svg>, loop)}
+          <span className="ed-tside">
+            {button("prev", t("앞 편집점 (↑)"), () => controls.stepEdit(-1),
+              <svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><rect x="1" y="1" width="2" height="10" /><path d="M13 1v10L5 6z" /></svg>)}
+            {button("next", t("뒤 편집점 (↓)"), () => controls.stepEdit(1),
+              <svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><rect x="11" y="1" width="2" height="10" /><path d="M1 1v10l8-5z" /></svg>)}
+          </span>
+        </div>
       </div>
     </section>
   );

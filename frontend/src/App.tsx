@@ -2181,6 +2181,7 @@ export default function App() {
               cardMenuRef={editCardMenuRef}
               onPreview={openPreview}
               onCompare={setCompareGens}
+              resolve={{ send: resolveTransfer.sendToResolve, busy: resolveTransfer.busy, pendingCount: resolveTransfer.pendingCount }}
             />
           </Suspense>
         ) : filters.tab === "compose" ? (

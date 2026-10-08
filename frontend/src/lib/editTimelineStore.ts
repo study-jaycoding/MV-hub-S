@@ -131,26 +131,40 @@ export function saveEditTarget(target: EditTarget | null): void {
 //  (계정·시퀀스와 무관하게 하나, 되돌리기 대상 아님). 못 읽으면 기본값.
 export type PoolView = "thumb" | "meta" | "list";
 export type PoolSort = "new" | "old" | "placed";
+// 뷰어 한 판이 보는 것 — 타임라인(위 트랙 우선) · 소스(풀에서 고른 것) · 한 트랙만(트랙 번호)
+export type ViewMode = "timeline" | "source" | number;
 export interface EditUi {
   view: PoolView;
   size: number; // 썸네일 폭(px)
   sort: PoolSort;
-  dual: boolean; // 듀얼 뷰어(소스 | 타임라인)
+  dual: boolean; // 듀얼 뷰어(판 두 개)
+  views: [ViewMode, ViewMode]; // [왼쪽 판, 오른쪽 판] — 서로 다르다. 싱글이면 오른쪽 것만 보인다
+  loop: boolean; // 타임라인 반복 재생
+  loopSrc: boolean; // 소스 반복 재생
 }
 export const POOL_SIZE = { min: 56, max: 240 }; // 최소 = 다빈치 미디어 풀의 작은 썸네일쯤
-const DEFAULT_UI: EditUi = { view: "thumb", size: 160, sort: "new", dual: false };
+const DEFAULT_UI: EditUi = {
+  view: "thumb", size: 160, sort: "new", dual: false, views: ["source", "timeline"], loop: false, loopSrc: false,
+};
+const viewMode = (value: unknown): ViewMode | null =>
+  value === "timeline" || value === "source" ? value : Number.isSafeInteger(value) && (value as number) > 0 ? (value as number) : null;
 const uiKey = `${STORAGE_KEYS.editTimeline}.ui`;
 
 export function loadEditUi(): EditUi {
   try {
     const raw = JSON.parse(localStorage.getItem(uiKey) || "null") as Partial<EditUi> | null;
     if (!raw || typeof raw !== "object") return DEFAULT_UI;
+    const pair = Array.isArray(raw.views) && raw.views.length === 2 ? [viewMode(raw.views[0]), viewMode(raw.views[1])] : [];
+    const views = pair[0] != null && pair[1] != null && pair[0] !== pair[1] ? ([pair[0], pair[1]] as [ViewMode, ViewMode]) : null;
     return {
       view: raw.view === "meta" || raw.view === "list" ? raw.view : "thumb",
       size: typeof raw.size === "number" && Number.isFinite(raw.size)
         ? Math.min(POOL_SIZE.max, Math.max(POOL_SIZE.min, raw.size)) : DEFAULT_UI.size,
       sort: raw.sort === "old" || raw.sort === "placed" ? raw.sort : "new",
       dual: raw.dual === true,
+      views: views ?? DEFAULT_UI.views,
+      loop: raw.loop === true,
+      loopSrc: raw.loopSrc === true,
     };
   } catch {
     return DEFAULT_UI;

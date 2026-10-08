@@ -28,6 +28,7 @@ import {
   toggleClipsOff,
   toggleCutOff,
   toggleTrack,
+  trackClip,
   validSeconds,
   visibleClip,
   visibleSegments,
@@ -198,6 +199,17 @@ describe("문서 편집", () => {
     expect(tracksOf(moveClipToTrack(d, key("c1", "a"), 2))).toEqual({ a: 2, b: 3, c: 3 });
     expect(moveClipToTrack(d, key("c1", "a"), 1)).toBeNull();
     expect(moveClipToTrack(d, key("c1", "a"), 0)).toBeNull();
+  });
+
+  // 뷰어의 '한 트랙만 보기'(Jay 2026-10-08) — 위 트랙에 가려져 있어도, 꺼 둔 클립·트랙이어도 그 트랙의 것을 본다.
+  it("한 트랙만 보기 — 그 순간 그 트랙에 있는 클립(끔은 따지지 않는다). 끝났거나 없으면 null", () => {
+    const d = doc([clip("c1", "a", 1, { dur: 8, off: true }), clip("c1", "b", 2, { dur: 3 })], { tracksOff: [1] });
+    const slot = buildLayout(["e070/c1"], d).cuts[0];
+    expect(visibleClip(d, slot, 1)?.gen).toBe("b"); // 타임라인에서는 위 트랙이 보인다
+    expect(trackClip(slot, 1, 1)?.gen).toBe("a");
+    expect(trackClip(slot, 2, 1)?.gen).toBe("b");
+    expect(trackClip(slot, 2, 3)).toBeNull(); // 3초에서 끝났다
+    expect(trackClip(slot, 3, 0)).toBeNull();
   });
 
   // 카드 우클릭 메뉴(Jay 2026-10-08) — 찬 트랙을 고르면 교체, 빈 트랙이면 그 자리에 들어간다.

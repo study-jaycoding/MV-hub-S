@@ -65,6 +65,7 @@ export function useEditPlayback({
   sourceOf,
   videoRef,
   paint,
+  loop = false,
 }: {
   scope: string; // 시퀀스(문서) — 바뀌면 위치를 처음으로 돌린다(옛 시퀀스의 컷 이름으로 새 자리를 짐작하지 않는다)
   layout: EditLayout;
@@ -72,10 +73,11 @@ export function useEditPlayback({
   sourceOf: (clip: SlotClip) => EditSource; // 값이 같으면 같은 함수여야 한다(useCallback)
   videoRef: RefObject<EditVideo | null>;
   paint: (time: number) => void;
+  loop?: boolean; // 반복 — 정방향으로 끝에 닿으면 처음부터 이어 튼다(역방향은 처음에서 멈춘다)
 }) {
   const [view, setView] = useState<EditView>(STOPPED);
-  const live = useRef({ layout, doc, sourceOf, paint });
-  live.current = { layout, doc, sourceOf, paint };
+  const live = useRef({ layout, doc, sourceOf, paint, loop });
+  live.current = { layout, doc, sourceOf, paint, loop };
   const pos = useRef<EditPos | null>(null);
   const run = useRef({
     playing: false,
@@ -209,6 +211,15 @@ export function useEditPlayback({
       state.last = stamp;
       if (state.rate > 0 && local >= slot.len) {
         const next = cuts[cuts.indexOf(slot) + 1];
+        if (!next && live.current.loop) {
+          // 반복 — 처음으로 돌아가 이어 튼다. 위치를 옮긴 것과 같게 다룬다: 영상이 그 자리에 닿을 때까지 시간이 선다
+          //  (같은 영상으로 되돌아오는 한 클립짜리도 같은 길 — 끝난 영상의 옛 시각을 시계로 읽지 않는다).
+          pos.current = { cut: cuts[0].path, local: 0 };
+          sync(true);
+          live.current.paint(now());
+          state.frame = requestAnimationFrame(tick);
+          return;
+        }
         if (!next) {
           pos.current = { cut: slot.path, local: slot.len }; // 전체 끝 = 정지점
           live.current.paint(now());

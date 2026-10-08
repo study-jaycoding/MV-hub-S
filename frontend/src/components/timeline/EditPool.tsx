@@ -55,6 +55,7 @@ export function EditPool({
   onPickMany,
   onOpen,
   onCompare,
+  resolve,
   onClearPicked,
   onMenu,
 }: {
@@ -69,6 +70,8 @@ export function EditPool({
   onPickMany: (ids: string[]) => void; // 끌어서 상자로 고른 것(전체 치환)
   onOpen: (gen: Generation, shown: Generation[]) => void; // 더블클릭 — 크게 보기(앞뒤 넘기기는 지금 보이는 순서로)
   onCompare: (gens: Generation[]) => void;
+  // Resolve 로 보내기(Jay 2026-10-08) — 앱의 보내기 줄 그대로(고른 생성물을 넘기면 된다. 탭·선택 상태에 묶여 있지 않다)
+  resolve: { send: (gens: Generation[]) => void; busy: boolean; pendingCount: number };
   onClearPicked: () => void;
   onMenu: (gen: Generation, x: number, y: number) => void; // 우클릭 — 넣을 트랙 고르기
 }) {
@@ -307,13 +310,21 @@ export function EditPool({
           })}
         </div>
       )}
-      {/* 여러 장을 골랐을 때의 막대 — 비교(앱의 비교 창 그대로). 내려받기·Resolve·프로젝트에 담기·삭제는 컷 더블클릭으로 여는
-          폴더 창의 선택 막대에 있다(그 동작은 탭에 묶여 있어 여기에 그대로 옮기지 못한다 — docs/EDIT_TAB.md). */}
-      {pickedGens.length > 1 && (
+      {/* 고른 것의 막대 — 비교(2장부터, 앱의 비교 창)와 Resolve 로 보내기(앱의 보내기 줄). 내려받기·프로젝트에 담기·삭제는
+          컷 더블클릭으로 여는 폴더 창의 선택 막대에 있다(그 동작은 탭에 묶여 있어 여기에 그대로 옮기지 못한다 — docs/EDIT_TAB.md). */}
+      {pickedGens.length > 0 && (
         <div className="ed-pool-sel">
           <span>{t("{count}개 선택").replace("{count}", String(pickedGens.length))}</span>
-          <button type="button" className="ed-psel-btn" onClick={() => onCompare(pickedGens)}
-            title={t("고른 생성물을 나란히 비교합니다")}>⊞ {t("비교")}</button>
+          {pickedGens.length > 1 && (
+            <button type="button" className="ed-psel-btn" onClick={() => onCompare(pickedGens)}
+              title={t("고른 생성물을 나란히 비교합니다")}>⊞ {t("비교")}</button>
+          )}
+          <button type="button" className="ed-psel-btn ed-psel-resolve" aria-busy={resolve.busy} onClick={() => resolve.send(pickedGens)}
+            title={resolve.busy
+              ? t("Resolve 작업 {count}건 처리 중 · 선택 항목을 대기열에 추가").replace("{count}", String(resolve.pendingCount))
+              : t("선택한 완료본을 프로젝트의 Render 폴더 구조로 저장하고 Resolve로 가져오기")}>
+            {resolve.busy ? `${t("◆ Resolve에 추가")} (${resolve.pendingCount})` : t("◆ Resolve로 보내기")}
+          </button>
           <button type="button" className="ed-link" onClick={onClearPicked}>{t("선택 해제")}</button>
         </div>
       )}
