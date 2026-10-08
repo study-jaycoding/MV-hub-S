@@ -123,7 +123,7 @@ export function describeGradeStep(
   }
   if (r.mode === "single") {
     return r.direction === "up"
-      ? { title: translate("팀에 공유"), body: body("선택한 {count}개를 팀에 공유할까요?") }
+      ? { title: translate("팀 공유"), body: body("선택한 {count}개를 팀 공유할까요?") }
       : { title: translate("공유 해제"), body: body("선택한 {count}개의 공유를 해제할까요? (→일반)") };
   }
   return r.direction === "up"

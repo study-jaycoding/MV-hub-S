@@ -5,7 +5,7 @@ import {
   clampMenuPosition,
   folderConfirmText,
   folderMenuHeight,
-  folderMenuKind,
+  folderMenuKinds,
   folderMenuLabel,
   folderTone,
   FOLDER_MENU_BTN_H,
@@ -40,9 +40,10 @@ describe("folderContextMenu", () => {
     expect(folderMenuHeight(3)).toBe(FOLDER_MENU_H + 2 * FOLDER_MENU_BTN_H);
     expect(folderMenuHeight(0)).toBe(FOLDER_MENU_H);
   });
-  it("내 작업 탭=팀에 공유 · 팀 탭=골드만 저장과 원본 위치 열기", () => {
-    expect(folderMenuLabel(folderMenuKind("my"))).toBe("팀에 공유");
-    expect(folderMenuLabel(folderMenuKind("team"))).toBe("골드만 저장");
+  it("내 작업 탭=팀 공유 · 팀 탭=공유 저장·최종 저장(완료 탭과 같은 순서)과 원본 위치 열기", () => {
+    expect(folderMenuKinds("my").map(folderMenuLabel)).toEqual(["팀 공유"]);
+    expect(folderMenuKinds("team")).toEqual(["save-shared", "save-finals"]);
+    expect(folderMenuKinds("team").map(folderMenuLabel)).toEqual(["공유 저장", "최종 저장"]);
     expect(folderMenuLabel("open-folder")).toBe("원본 위치 열기");
   });
   it("버튼 색조는 폴더 자체의 깊이(최상위=하늘색 root, 하위=라임 child) — 선택 분홍과 무관", () => {
@@ -53,8 +54,10 @@ describe("folderContextMenu", () => {
   it("확인 문구에 폴더 이름과 범위(하위 포함·대상 기준)가 들어간다", () => {
     expect(folderConfirmText("share", "e020")).toContain("'e020' 폴더를 공유하시겠습니까?");
     expect(folderConfirmText("share", "e020")).toContain("하위 폴더까지 포함");
-    expect(folderConfirmText("save-finals", "c0010")).toContain("골드만 저장하시겠습니까?");
+    expect(folderConfirmText("save-finals", "c0010")).toContain("'c0010' 폴더를 최종 저장하시겠습니까?");
     expect(folderConfirmText("save-finals", "c0010")).toContain("저장 대상 최종본만");
+    expect(folderConfirmText("save-shared", "c0010")).toContain("'c0010' 폴더를 공유 저장하시겠습니까?");
+    expect(folderConfirmText("save-shared", "c0010")).toContain("shared 폴더");
   });
   it("화면 가장자리에서 메뉴가 잘리지 않게 좌표를 안쪽으로 민다", () => {
     expect(clampMenuPosition(10, 20, 1000, 800)).toEqual({ left: 10, top: 20 });

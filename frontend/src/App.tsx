@@ -91,7 +91,7 @@ import { useGenerationSelection } from "./lib/useGenerationSelection";
 import { useGenerationShareActions } from "./lib/useGenerationShareActions";
 import { useEscapeClose } from "./lib/useEscapeClose";
 import { manageApi } from "./lib/manageApi";
-import type { FolderMenuKind } from "./lib/folderContextMenu";
+import { folderMenuLabel, type FolderMenuKind } from "./lib/folderContextMenu";
 import { useGenerationTagActions } from "./lib/useGenerationTagActions";
 import { useGenerationWorkspaceActions } from "./lib/useGenerationWorkspaceActions";
 import { useGenerationTrashActions } from "./lib/useGenerationTrashActions";
@@ -1085,7 +1085,7 @@ export default function App() {
     flash,
     reload,
   });
-  // 폴더 우클릭 메뉴 — 팀에 공유 / 골드만 저장 / 원본 위치 열기.
+  // 폴더 우클릭 메뉴 — 팀 공유 / 공유 저장 · 최종 저장 / 원본 위치 열기.
   //  저장은 관리 권한(프로젝트 매니저)이 필요하다 — 없으면 서버의 403 사유를 그대로 보여준다.
   const onFolderAction = async (kind: FolderMenuKind, projectId: string, path: string, name: string) => {
     if (kind === "share") {
@@ -1100,12 +1100,13 @@ export default function App() {
       }
       return;
     }
+    const label = folderMenuLabel(kind); // 공유 저장 / 최종 저장 — 완료 탭의 두 단추와 같은 저장을 이 폴더로만 좁힌다
     try {
-      const r = await manageApi.saveFinals(projectId, path);
+      const r = await manageApi.saveFinals(projectId, path, kind === "save-shared" ? "shared" : undefined);
       const failed = r.errors.length ? ` · 실패 ${r.errors.length}(${r.errors[0].reason})` : "";
-      flash(`'${name}' 골드만 저장 — 저장 ${r.saved} · 건너뜀 ${r.skipped}${failed}`);
+      flash(`'${name}' ${label} — 저장 ${r.saved} · 건너뜀 ${r.skipped}${failed}`);
     } catch (e) {
-      flash("골드만 저장 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+      flash(`${label} 실패: ` + String(e).replace(/^Error:\s*\d+:\s*/, ""));
     }
   };
   const {

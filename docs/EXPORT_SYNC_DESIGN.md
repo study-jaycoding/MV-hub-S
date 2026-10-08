@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-22
+updated: 2026-10-08
 status: active
 ---
 
@@ -38,7 +38,7 @@ PM 창 '완료' 탭의 "완료만 저장하기"를 넓힌다(Jay 2026-09-21).
   대장이 그 경로를 기억하면 saved(싸다) → 아니면 각인을 읽어 **다른 생성물이면 conflict**(건너뛰지도 덮어쓰지도 않고 "같은 이름의 다른 파일"로 알린다) → 각인이 없으면 종전처럼 saved(각인 이전 파일·다른 PC 의 각인 실패본이 전부 충돌로 뒤집히지 않게). **파일을 옮기는 미러는 이 느슨한 판정을 쓰지 않는다**(각인 일치만).
 - **구서버 방어** — `GET /api/manage/save-finals/targets?kind=` 는 응답에 `kind` 를 되돌려 준다. 구서버는 kind 를 모르고 최종 목록을 주므로, 되돌아온 kind 가 다르면 로컬 허브는 공유 기능만 끈다(`shared_supported=false`). 최종 저장은 구서버에서도 그대로 된다.
 - `…/content/{gen_id}`(바이트 중계)는 종류를 가리지 않고 "어느 종류든 저장 대상"이면 통과한다.
-- `POST /api/manage/save-finals?kind=final|shared|all` — 기본 `final`(폴더 우클릭 '최종 경로로 저장'은 그대로). `all` 은 최종 먼저.
+- `POST /api/manage/save-finals?kind=final|shared|all` — 기본 `final`(폴더 우클릭 '최종 저장'은 그대로 — 2026-10-08 부터 폴더 우클릭 '공유 저장'이 `kind=shared` + `folder_path` 로 같은 API 를 쓴다). `all` 은 최종 먼저.
   `all` 에서 한 종류가 통째로 막히면(예: 구서버라 공유 불가) 이미 저장한 쪽의 결과를 잃지 않고 오류 줄로만 남긴다(Codex P1).
 - 상태 조회에서 공유 쪽 조회만 실패하면 최종 목록은 그대로 주고 `shared_supported=false`·`shared_error` 로 알린다 — 새 기능의 장애가 기존 최종 저장을 막지 않는다(Codex P1). 프런트는 `shared_supported === true` 일 때만 공유 저장을 켠다.
 - 각인 읽기(영상은 ffmpeg)는 **비교·저장 때만** 한다 — 대장에 없는 기존 파일에 한해서. 상태 조회는 폴더도 각인도 보지 않는다(3-0).

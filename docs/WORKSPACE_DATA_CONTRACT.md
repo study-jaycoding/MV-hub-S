@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-17
+updated: 2026-10-08
 status: active
 ---
 
@@ -204,7 +204,7 @@ CLI 1.1.23에는 조직 전체 멤버 조회 명령이 없다. 각 인증 계정
 
 ## 공유 조회 API 호환성 (2026-09-17)
 
-- 폴더 우클릭의 `골드만 저장`은 기존 `/api/manage/save-finals`의 최종본 저장 판정을 유지한다.
+- 폴더 우클릭의 `최종 저장`(옛 이름 `골드만 저장`)은 기존 `/api/manage/save-finals`의 최종본 저장 판정을 유지한다. 2026-10-08 부터 그 위에 `공유 저장`(`kind=shared`, 같은 폴더 좁히기)도 있다.
   모든 탭(작업 공간·공유&리뷰·캔버스)의 폴더 메뉴 우상단 `원본 위치 열기` 아이콘은
   `POST /api/manage/project-folders/reveal {project_id, folder_path}`로
   이 PC의 연결된 Render 하위 실제 폴더만 연다. 프로젝트 읽기 권한·로컬 브라우저 출처를 검사하고

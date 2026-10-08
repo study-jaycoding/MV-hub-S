@@ -17,7 +17,7 @@ import {
   clampMenuPosition,
   folderConfirmText,
   folderMenuHeight,
-  folderMenuKind,
+  folderMenuKinds,
   folderMenuLabel,
   folderTone,
   FOLDER_MENU_W,
@@ -188,7 +188,7 @@ export function ProjectSection({
   onDropToUnassigned?: (genId: string) => void;
   // 캔버스에서만 폴더 → Set 드래그를 켠다. 일반 작업공간에서는 기존 클릭 UX 유지.
   enableFolderDrag?: boolean;
-  // 폴더 우클릭 실행 — 공유 / 골드만 저장 / 로컬 원본 위치 열기. 없으면 메뉴 없음.
+  // 폴더 우클릭 실행 — 팀 공유 / 공유 저장 · 최종 저장 / 로컬 원본 위치 열기. 없으면 메뉴 없음.
   onFolderAction?: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
 }) {
   const tr = useT();
@@ -863,7 +863,7 @@ export function ProjectSection({
               window.innerWidth,
               window.innerHeight,
               FOLDER_MENU_W,
-              folderMenuHeight((folderMenu.depth >= 0 ? 1 : 0) + (menuFresh.length ? 1 : 0)),
+              folderMenuHeight((folderMenu.depth >= 0 ? folderMenuKinds(tab).length : 0) + (menuFresh.length ? 1 : 0)),
             )}
             onKeyDown={(e) => e.stopPropagation()}
             onContextMenu={(e) => e.preventDefault()}
@@ -889,22 +889,23 @@ export function ProjectSection({
               )}
             </div>
             {/* 폴더 행(depth>=0)만 탭별 동작 단추. 프로젝트 행(depth -1)은 '모두 확인'만. */}
-            {folderMenu.depth >= 0 && (
-              <button
-                type="button"
-                autoFocus
-                className={"folder-ctx-btn tone-" + folderTone(folderMenu.depth)}
-                onClick={() => {
-                  const m = folderMenu;
-                  const kind = folderMenuKind(tab);
-                  closeFolderMenu(true);
-                  if (!window.confirm(folderConfirmText(kind, m.name))) return;
-                  void onFolderAction(kind, m.projectId, m.path, m.name);
-                }}
-              >
-                {folderMenuLabel(folderMenuKind(tab))}
-              </button>
-            )}
+            {folderMenu.depth >= 0 &&
+              folderMenuKinds(tab).map((kind, i) => (
+                <button
+                  key={kind}
+                  type="button"
+                  autoFocus={i === 0}
+                  className={"folder-ctx-btn tone-" + folderTone(folderMenu.depth)}
+                  onClick={() => {
+                    const m = folderMenu;
+                    closeFolderMenu(true);
+                    if (!window.confirm(folderConfirmText(kind, m.name))) return;
+                    void onFolderAction(kind, m.projectId, m.path, m.name);
+                  }}
+                >
+                  {folderMenuLabel(kind)}
+                </button>
+              ))}
             {menuFresh.length > 0 && (
               <button
                 type="button"

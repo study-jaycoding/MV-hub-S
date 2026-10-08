@@ -46,7 +46,7 @@ interface Props {
   onArmFolder?: (projectId: string, path: string) => void; // 폴더 선택 시 무장(생성 시 folder_path)
   onDropToFolder?: (projectId: string, path: string, genId: string) => void; // 카드 드래그 → 폴더 담기
   onDropToUnassigned?: (genId: string) => void; // 카드 드래그 → 미분류(귀속 해제)
-  // 폴더 우클릭 메뉴 실행(팀에 공유 / 골드만 저장 / 원본 위치 열기) — ProjectSection 으로 통과
+  // 폴더 우클릭 메뉴 실행(팀 공유 / 공유 저장 · 최종 저장 / 원본 위치 열기) — ProjectSection 으로 통과
   onFolderAction?: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
 }
 
