@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-07
+updated: 2026-10-08
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -30,6 +30,7 @@ updated: 2026-10-07
 |---|---|---|---|
 | 라이브러리 카드 표시 문구·상태 라벨 바꾸기 | `components/GenerationCard.tsx`, `lib/generationDisplay.ts` | — | 상태 라벨은 순수 프런트 판정 |
 | 카드의 폴더 이름표·목록 탭의 '폴더 보기' 창 | `components/GenerationCard.tsx`(이름표), `App.tsx`(`listPeek`·`renderFolderPeek` — 캔버스 '폴더 보기' 창과 같은 창), `lib/appGenerationQuery.ts`(`folderPeekQuery`), `lib/folderLabel.ts`(표시 규칙) | `routers/library.py`(`GET /api/generations` — 기존 목록 API 그대로) | 캔버스 창과 같은 원리: 창이 떠 있는 동안 **목록 조회가 그 폴더로 바뀌고** 하나뿐인 격자·툴바·선택 막대를 창에 그린다(뒤 목록 자리는 비움). 닫으면 본 목록을 처음부터 다시 받는다 — **그동안의 빈 화면은 '본 목록 첫 쪽 사본'으로 메운다**(2026-10-07): 열 때 본 목록 조회의 키로 첫 쪽을 담고(`beginComposeList({ keep })`), 닫을 때 같은 키면 먼저 그린 뒤(`{ restore }`) 새 첫 쪽이 실제로 적용될 때까지 조작을 막는다(`staleList` → `<main inert>`·격자 `selectLocked`·선택 변경 무시·다빈치 따라가기 끔). **닫은 뒤 초점은 본 목록 격자로 돌려준다**(`refocusGridRef` — 창이 사라지면 초점이 BODY 로 떨어져 격자의 키가 안 먹는다): 닫는 순간 초점이 창 안(또는 없음)일 때만 뜻을 적고, 본 목록이 조작 가능해진 뒤(잠금 해제·받기 끝) 한 번만 `.gen-grid` 에 준다. 기다리는 사이 문맥이 한 번이라도 달라졌거나 초점이 어디로든 옮겨 갔으면(`focusin`) 그만둔다 — 복원 순간의 상태만 보면, 초점을 받았던 요소가 사라져 다시 BODY 가 된 경우(메뉴에서 설정을 연 직후)에 남의 창 뒤로 초점을 보낸다. 창에서 툴바 필터를 바꿨거나(키 다름)·다빈치가 끼워 넣은 화면·실패 화면이면 사본 없이 '불러오는 중…'. 사이드바 필터(`filters`)는 안 건드린다 — `patch()` 는 다음 생성 위치까지 바꾼다. 열고 닫을 때 `beginComposeList()` 로 목록을 비운다. 이름표는 목록 탭의 본 목록에만(캔버스·휴지통 보기·창 안 격자에는 없음). 창 안에서는 이름표를 누른 그 카드에 '방금 누른 카드' 표시가 붙고, 아래쪽에 있으면 그 카드로 내려가서 연다(다빈치 따라가기의 `resolveScrollRequest` 장치) |
+| 공유 & 리뷰 탭의 폴더 묶음 보기(컷 카드)·폴더 대표 | `components/FolderCardGrid.tsx`(컷 카드 격자), `lib/folderCards.ts`(묶어 보일 수 있는 조회인가 — 순수), `lib/useFolderCards.ts`(받기), `App.tsx`(`cutScope`·`cardsScope`·`cutCards`·`openFolderCard`·`pickFolderCover`), `components/LibraryToolbar.tsx`(`folderCards` — [컷별 \| 전체]) | `routers/folder_cards.py`(`GET /api/projects/{pid}/folder-cards`·`PUT …/folder-cover`), `repo/folder_cover.py`, 테이블 `folder_cover` | 폴더를 고르면 그 **바로 아래 폴더마다 카드 한 장**(2026-10-08) — 표지·이름·건수(건수는 그 폴더와 하위 전부 = 폴더 창이 보여 주는 것). **묶는 조건**(`folderCardsScope`): 팀 탭 · 프로젝트의 폴더를 고름 · 무엇을 찾는 조건(검색·작성자·타입·검토·코멘트·최종·색·태그·전역 태그·회색 숨김·휴지통)이 전부 꺼짐 · 공간 필터는 없음 또는 팀 공간 하나 — 서버가 세는 범위와 화면의 조회가 정확히 같을 때만 묶는다(색·태그·회색 숨김은 이 PC 에만 있어 서버가 못 센다). 하위 폴더가 없으면 지금처럼 한 장씩. 고른 폴더에 직접 든 것은 카드에 들지 않고 격자 맨 끝의 점선 칸 '컷 밖 N건'(누르면 [전체])으로 알린다 — 툴바에 두면 도구 줄이 두 줄로 밀린다. **표지 = 팀이 정한 대표, 없으면 가장 최근 것**(카드 위 '대표 미정'). 컷 카드를 누르면 기존 폴더 창이 열리고(`openFolderPath` — 누른 생성물 카드가 없어 `genId` 가 null: '방금 누른 카드'·이동 없음), 창 안 카드 위의 [대표](`ThumbnailGrid.cellHeader`, 모양은 캔버스 '생성 결과' 창의 `.scene-varpop-cur/-rep` 를 그대로 쓴다)로 그 폴더의 대표를 정한다. 뒤의 컷 카드는 창이 떠 있어도 그대로 둔다(body 가 inert). **대표는 팀이 같이 보는 값 — 공유 서버 DB 가 권위**: 로컬 허브는 두 경로를 서버로 넘기고(계정 고정 `pinned_account_scope`), 서버는 '그 폴더(하위 포함) 아래에서 이 계정이 팀 목록으로 볼 수 있는 공유물' 만 받는다. **저장은 먼저 그리지 않는다**: 단추를 잠그고 → PUT → 성공·실패 모두 서버 값을 다시 읽은 뒤 푼다(먼저 그리면 저장 전에 출발한 조회가 늦게 와 방금 고른 대표를 지운다). 낡은 대표(지움·공유 해제·다른 폴더/프로젝트로 이동·공간 필터 밖)는 **읽을 때 무시**하고 최신 것을 표지로 쓴다 — 행은 지우지 않는다(보는 사람마다 가시성이 달라 남의 정상 대표를 지우게 된다. 복원·재공유·제자리 복귀 때 되살아난다). **다시 받는 때** = 목록 훅의 `listRevision`(새 첫 쪽을 적용할 때마다) — 대표만 바뀌면 목록 내용은 그대로라 목록 배열로는 알 수 없다. 변경 통보(`synced`)는 **바꾼 계정의 창에만** 가므로 다른 팀원 화면은 팀 목록 주기 조회(15초) 때 바뀐다. 옛 공유 서버(경로 없음, 404 `Not Found` — `isRouteMissing`)면 묶음 보기·전환 단추·대표 단추를 감춘다(계정·서버 문맥별로 기억, 업무상 404·502 는 해당 없음). 한 장씩 → 묶음으로 바뀌는 순간 **선택을 비운다**(보이지 않는 카드에 삭제·공유가 걸리지 않게 — 묶음 화면에는 격자가 없어 새로 고를 길도 없다). 묶어 보이는 동안에도 본 목록 조회는 그대로 돈다(요청을 줄이려면 목록 훅에 '목록 끄기'가 필요 — 미룸). 컷 카드에는 S 단추·작성자 표시가 없다(생성물 한 장이 아니라 묶음). 시험 `backend/tests/test_folder_cards.py`, `frontend/tests/folderCards.test.tsx`, `frontend/tests/resolveSelectionRender.test.tsx`(App 공유·리뷰) |
 | 새 API 엔드포인트 추가하기 | `api.ts` | `routers/_proxy.py`(경로 소유권) + 해당 도메인 라우터. **새 라우터 파일이면 `main.py` 의 `include_router()` 등록도** | 로컬 전용 경로는 `_proxy._LOCAL_PREFIXES/_LOCAL_EXACT` 갱신 + `backend/tests/test_proxy_ownership.py` 골든 스냅샷도 같이 고쳐야 함(§5-c) |
 | 캔버스(씬) 단축키 바꾸기 | `lib/useSceneKeyboardShortcuts.ts`, `lib/sceneKeyboard.ts` | — | |
 | 캔버스 카드의 '생성 결과' 창 | `components/scene/SceneVariantPopup.tsx`(창 — 라이브러리 `ThumbnailGrid`·`BoardSelectionActionBar` 조립), `components/scene/SceneBoard.tsx`(`variantView` — 보일 결과·선택·조작 어댑터), `App.tsx`(`renderVariantToolbar`·`variantOpen`), `lib/boardFilters.ts`, `lib/keyHandled.ts` | — (씬의 `genData` 를 그대로 쓴다 — 목록 조회를 빌리지 않는다) | 폴더 창과 같은 모양이지만 **`.folder-peek` 클래스는 달지 않는다**(그 클래스는 '이 안의 키는 라이브러리 몫' 표시라, 달면 씬의 색·비활성 단축키가 창에서 죽는다) — 뼈대 CSS 만 선택자 묶음으로 같이 쓴다(`.scene-varwin`). 툴바 필터에 안 맞는 결과는 **걸러 내고 선택에서도 뺀다**(다빈치가 고른 것은 예외로 보인다). 대표 단추는 격자의 `cellHeader` 칸(카드 위), 폴더 표는 표시만(`showFolder`). Esc = 선택 해제 → 닫기(격자가 쓴 Esc 는 `keyHandled` 표시로 씬이 다시 처리하지 않는다). 창의 아래 끝은 하단 프롬프트 위에서 멈춘다(프롬프트 높이를 재서 `--dock-gap`). '폴더 보기' 창과는 겹쳐 두지 않는다(나중에 연 쪽만). 조작 대상은 **보이는 카드뿐**(`shownIds` — 아직 안 불러온 결과는 선택에 남아도 대상이 아니다). 여러 장을 고른 채 한 카드에서 한 태그·S·워크스페이스 명령은 고른 전체에(`bulkVariantTags`·`onVariantGradeStep`·`variantWorkspace`). 창이 떠 있는 동안 바깥에서 시작한 끌기 선택은 창의 격자만 받는다(캔버스 쪽 `useOutsideDragSelect` 는 끔) |
@@ -130,6 +131,7 @@ updated: 2026-10-07
 | `library.py`(1178줄) | `GET /api/generations`·`/api/trash`·`/api/download`·`/api/media-thumb`·`POST /api/generations/batch`·`/locate` (15) | 목록·단건·배치·휴지통·다운로드·썸네일·머지, 팀 응답에 로컬 개인메타 오버레이 | 10곳 |
 | `generation.py`(1314줄) | `PUT /generations/{id}/tags·color·source·comment`·`PUT /generations/workspace/batch` 등 (40) | 태그·색·소스·코멘트·히스토리·워크스페이스 배치·캐시 | 25곳 |
 | `generation_views.py`(57줄) | `GET·PUT /api/generation-views` (2) | "마지막으로 크게 본" 배지 읽기/쓰기 | 0곳 |
+| `folder_cards.py`(약 75줄) | `GET /api/projects/{pid}/folder-cards`·`PUT /api/projects/{pid}/folder-cover` (2) | 공유 & 리뷰 탭의 폴더 카드(하위 폴더별 건수·표지)와 팀 공용 대표 지정. 가시성은 팀 목록과 같다 — 전체를 보는 계정도 '보는 계정 uid' 는 따로 넘긴다(개인 메타 가림). 표지 행은 목록과 같은 주소 규칙(`library._prefer_remote_source_urls`) | 2곳(둘 다) |
 | `share.py`(1009줄) | `POST /generations/{id}/{publish\|finalize\|final-review\|hold…}` (9) | publish/unpublish/finalize/hold — 원장 intent prepare → 서버 왕복 → 로컬 미러 | 9곳 |
 | `publish.py`(1341줄) | `POST /api/publish-to-shared[/folder]`·`/api/share/publish-bundle`·`/api/shared-server/*` (14) | 로컬 허브 ↔ 공유 서버 세션(로그인·가입·승격·이사) + 서버측 번들 수신 입구 겸용 | 2곳 |
 | `notifications.py`(34줄) | `GET /api/notifications/comments` (2) | 코멘트 알림 목록·전체 읽음 | 0곳 |
@@ -248,6 +250,7 @@ updated: 2026-10-07
 | `personal_meta_transactions.py` | 53 | 개인 메타 로컬행 + 팀 shadow 를 한 트랜잭션으로 쓰는 경계 | `apply_generation_personal_meta_writes` |
 | `tags.py` | 287 | 태그/자동태그(별도 네임스페이스) 생성·설정·배치·전역삭제 | `repo.set_tags`·`create_auto_tag` |
 | `generation_views.py` | 121 | "마지막으로 크게 본" 개인 표시 | `repo.record_generation_view` |
+| `folder_cover.py` | 150 | 폴더 카드 집계(한 번 훑어 하위 폴더별 건수·최신·대표 유효성)와 대표 저장(`folder_cover`). 범위는 `projects._folder_counts_where`(사이드바 숫자와 같은 조건) + 폴더 접두(목록과 같은 LIKE 이스케이프) + 팀 공간 하나 | `repo.folder_cards`·`set_folder_cover` |
 | `scene_cards.py` | 140 | 캔버스 카드 ↔ 생성물 소속 사실 | `repo.list_scene_card_links` |
 | `scenes_backup.py` | 130 | 캔버스 씬(브라우저 IndexedDB)의 DB 미러 | `repo.list_scene_backups` |
 
@@ -518,7 +521,8 @@ updated: 2026-10-07
 | `ThumbnailGrid.tsx`(716줄) | 생성물 카드 가상 그리드 · 마퀴/키보드 선택 · 날짜 그룹 · 빈 목록 안내(받는 중이면 '불러오는 중…' — `loading`) · 바깥 끌기 선택 끄기(`selectLocked`) · 폴더 창을 연 카드 표시(`openedFromId`) · 캔버스 '생성 결과' 창용 선택 기능(안 주면 종전 그대로): 카드 위 칸(`cellHeader`)·'마지막으로 본' 지정(`lastViewedId`)·흐림(`dimIds`)·폴더 표 표시만(`showFolder`)·이동과 함께 기준 카드 지정(`resolveScrollRequest.focus`) · 선택을 푼 Esc 는 `keyHandled` 로 표시 | `ThumbnailGrid` |
 | `GenerationCard.tsx`(779줄) | 카드 1장(그리드/리스트 두 모드) · 호버 영상 · 드래그 · 폴더 이름표(`onOpenFolder` 를 받았을 때만 — 카드 아래 변 가운데에 붙인 표·이름만·반투명, 소스·상태 배지는 그 위에 한 묶음 `.card-bottom`. `showFolder` 만 받으면 누를 수 없는 표시 `.card-folder.static`) · 고른 폴더 밖 흐림(`dimmed` → `.folder-dim`) · 폴더 창 안의 '방금 누른 카드' 표시(`openedHere` — 같은 자리·같은 모양에 글자·테두리만 라임, 카드 테두리는 안 건드림) | `GenerationCard`(memo) — 캔버스의 `scene/cards/GenerationCard.tsx` 와 이름만 같은 별개 파일(§5-b) |
 | `MediaThumbnail.tsx`(157줄) | 영상 포스터/이미지/포스터 없는 영상 3분기 통합 표현 | `MediaThumbnail`(10곳 재사용) |
-| `LibraryToolbar.tsx`(296줄) | 타입 필터·검토 필터·크기 슬라이더·리스트/그리드 토글·태그 패널 | `LibraryToolbar` |
+| `LibraryToolbar.tsx`(약 335줄) | 타입 필터·검토 필터·크기 슬라이더·리스트/그리드 토글·태그 패널 · 폴더 묶음 보기 전환(`folderCards` — [컷별 \| 전체]·'컷 N · M건', 받았을 때만) | `LibraryToolbar` |
+| `FolderCardGrid.tsx`(약 60줄) | 공유 & 리뷰 탭의 폴더 묶음 보기 — 폴더마다 카드 한 장(표지·이름·건수·'대표 미정', 종이를 겹친 모양) + 맨 끝 '컷 밖 N건' 칸. 카드 크기는 `ThumbnailGrid` 와 같은 식(180×배율). `.cut-grid` 는 폴더 창을 닫은 뒤 초점을 돌려받는 자리 | `FolderCardGrid` |
 | `FilterSidebar.tsx`(232줄) | 좌측 필터(프로젝트/컬러/자동태그/생성자/공유) 껍데기 | `FilterSidebar` |
 | `SearchBox.tsx`(58줄) | 디바운스 검색 입력 | `SearchBox` |
 | `TopBar.tsx`(150줄) | 상단바(로고·탭·동기화·검색·Assets·계정) | `TopBar` |
@@ -725,7 +729,7 @@ updated: 2026-10-07
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
-| `useGenerationLibraryData.ts` | 훅 | 목록 로드·페이징·seq 가드·동기화 판정(§6 계약 지점). `beginComposeList` = 목록을 비우고 다시 받기(캔버스·목록 탭의 '폴더 보기' 창이 열고 닫을 때 — 지금 탭 캐시를 지우고 진행 중 응답을 버린다). 목록 탭 창은 `{ keep }`/`{ restore }` 로 본 목록 첫 쪽 사본을 담았다 먼저 보인다(`backListRef` — 탭 캐시와 별개 칸, 출처는 탭 캐시의 sig 로 확인). `staleList` = 그 사본을 보이는 중 — **지금 문맥의 첫 쪽 응답을 적용한 순간**(성공·실패)에만 꺼진다(버려진 응답·메타 종료로는 안 꺼짐). **다시 받기는 줄이 둘**이다 — 목록 줄(`inflightRef`·대기 병합)은 한 실행의 목록 구간(첫 쪽 + 위치 확인)까지만 잡고, 메타(통계·태그·폴더)는 메타 줄(`sendMeta`/`requestMeta` — 한 번에 한 묶음, 그동안의 요구는 하나로 합쳐 앞 묶음이 끝난 뒤 그때의 문맥으로)이 받아 적용한다. 줄이 비어 있으면 목록과 메타는 같은 순간에 출발한다. 다음 실행의 목록은 앞 실행의 메타를 기다리지 않는다. `reload()` 의 약속은 자기 실행과 맡긴 메타가 **처리**된 뒤에 풀린다(적용 보장은 아니다). 전체 메타 요구는 seq 로 버려져도 다음 묶음이 이어받는다(`metaOwedRef` — 빚만으로 스스로 다시 보내지는 않는다). 시험 `tests/libraryReloadLanes.test.tsx` |
+| `useGenerationLibraryData.ts` | 훅 | 목록 로드·페이징·seq 가드·동기화 판정(§6 계약 지점). `beginComposeList` = 목록을 비우고 다시 받기(캔버스·목록 탭의 '폴더 보기' 창이 열고 닫을 때 — 지금 탭 캐시를 지우고 진행 중 응답을 버린다). 목록 탭 창은 `{ keep }`/`{ restore }` 로 본 목록 첫 쪽 사본을 담았다 먼저 보인다(`backListRef` — 탭 캐시와 별개 칸, 출처는 탭 캐시의 sig 로 확인). `staleList` = 그 사본을 보이는 중 — **지금 문맥의 첫 쪽 응답을 적용한 순간**(성공·실패)에만 꺼진다(버려진 응답·메타 종료로는 안 꺼짐). `listRevision` = 새 첫 쪽을 적용할 때마다 오르는 값(목록과 같은 때에 다시 받을 것 — 폴더 카드 — 의 신호. 목록 배열은 내용이 같으면 그대로라 쓸 수 없다). **다시 받기는 줄이 둘**이다 — 목록 줄(`inflightRef`·대기 병합)은 한 실행의 목록 구간(첫 쪽 + 위치 확인)까지만 잡고, 메타(통계·태그·폴더)는 메타 줄(`sendMeta`/`requestMeta` — 한 번에 한 묶음, 그동안의 요구는 하나로 합쳐 앞 묶음이 끝난 뒤 그때의 문맥으로)이 받아 적용한다. 줄이 비어 있으면 목록과 메타는 같은 순간에 출발한다. 다음 실행의 목록은 앞 실행의 메타를 기다리지 않는다. `reload()` 의 약속은 자기 실행과 맡긴 메타가 **처리**된 뒤에 풀린다(적용 보장은 아니다). 전체 메타 요구는 seq 로 버려져도 다음 묶음이 이어받는다(`metaOwedRef` — 빚만으로 스스로 다시 보내지는 않는다). 시험 `tests/libraryReloadLanes.test.tsx` |
 | `useLibraryFilters.ts` | 훅 | 필터·뷰 상태(localStorage 백업) + 파생 쿼리 |
 | `useLibraryPersistence.ts` | 훅 | 필터 저장 포맷·키·마이그레이션 |
 | `appGenerationQuery.ts` | 순수 | 필터 → 서버 쿼리 객체·캐시 키 · 목록 탭 '폴더 보기' 창의 조회(`folderPeekQuery` — 탭·공간 범위·창 툴바 조건만 따른다) |
@@ -855,6 +859,8 @@ updated: 2026-10-07
 | `assetVirtualRows.ts` | 순수 | 에셋 그리드 행 모델(인덱스판) |
 | `folderTreeModel.ts` | 순수 | 폴더 경로 정규화 + 개수 트리 구성 |
 | `folderLabel.ts` | 순수 | 카드 폴더 이름표 글자(끝 두 칸)·전체 경로 표기 |
+| `folderCards.ts` | 순수 | 공유 & 리뷰 탭의 폴더 묶음 보기 규칙 — `folderCardsScope`(묶어 보일 수 있는 조회면 그 범위, 아니면 null)·`parentFolder`·`singleTeamWorkspace` |
+| `useFolderCards.ts` | 훅 | 폴더 카드 받기 — 문맥(계정·서버·프로젝트·폴더·공간)이 바뀌면 받던 응답·받아 둔 카드를 버린다 · `reloadKey`(목록의 `listRevision`)마다 다시 받는다 · 옛 서버는 그 계정·서버에서만 '지원 안 함' · `reload()` 는 끝난 뒤 풀리고 던지지 않는다 |
 | `projectFolderTree.ts` | 저장 | 프로젝트 폴더 캐시·펼침 상태 |
 | `folderContextMenu.ts` | 순수 | 폴더 우클릭 메뉴 규칙·위치 클램프 |
 | `teamSeen.ts` | store+저장 | 공유&리뷰 '새로 들어옴' 항목별 확인(ack) 모델 |
