@@ -3,7 +3,8 @@
 // 뷰어 판(싱글/듀얼·무엇을 볼지·타임바·반복·키 대상) · 풀의 Resolve 보내기 · 그림을 누르면 그 컷으로 · 컷 더블클릭 = 공유 & 리뷰의 폴더 창 열기(무엇을 열지만 App 에 알린다) ·
 // 그 창의 카드 우클릭 = 넣을 트랙 고르기(찬 트랙은 교체) · 빈 폴더 기본 비활성과 숨기기 · D 로 폴더 켜고 끄기 ·
 // 왼쪽 폴더 옆의 새 항목·최종·보류 표시 · 공유 목록과 폴더 옆 숫자 다시 받기 ·
-// 트랙 머리 우클릭(트랙 추가·옮기기·삭제·색) · 마크 인/아웃 · 북마크(색 메뉴·모두 지우기) · 구간 반복 재생 · 소스 테이프.
+// 트랙 머리 우클릭(트랙 추가·옮기기·삭제·색) · 마크 인/아웃 · 북마크(색 메뉴·모두 지우기) · 구간 반복 재생 · 소스 테이프 ·
+// 편집점 보기(편집점의 앞 | 뒤 두 칸).
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -73,7 +74,7 @@ const mount = (reloadSignal = 0, peekPath: string | null = null, ws: typeof work
       resolve={{ send: sendToResolve, ...resolveState }} />,
   ));
 const DOC_KEY = "ch.editTimeline:local:p1:e070";
-type Seed = { cut: string; gen: string; track: number; job?: string; off?: boolean };
+type Seed = { cut: string; gen: string; track: number; job?: string; off?: boolean; kind?: "image" | "video" };
 // 타임라인에 미리 넣어 둔 상태로 시작한다(넣기는 폴더 창의 우클릭 메뉴로만 한다 — 아래 시험이 그 길을 본다).
 const seed = (clips: Seed[], extra: Record<string, unknown> = {}) => localStorage.setItem(DOC_KEY, JSON.stringify({
   v: 1, tracksOff: [], tracksLocked: [], ...extra,
@@ -1062,4 +1063,81 @@ it("저장된 화면: 소스 클립과 소스 테이프를 두 판에 같이 둔
   mount();
   expect(paneModes()).toEqual(["source", "timeline"]); // 기본 화면으로
   expect(document.querySelector<HTMLElement>(".ed-mbtn-mk")!.style.getPropertyValue("--mk")).toBe("#1287ff");
+});
+
+// 편집점 보기(Jay 2026-10-08 — 다빈치 트림의 두 화면, 보기만) — 타임라인 판의 두 번째 방식이다.
+it("편집점 보기: W 로 켜면 타임라인 판이 편집점의 앞 | 뒤 두 칸이 된다 — ↑↓ 로 편집점을 옮기고 Space 는 앞뒤 2초를 튼다", () => {
+  world.gens = [...world.gens, videoGen()];
+  seed([{ cut: "c1", gen: "v", track: 1, kind: "video" }, { cut: "c2", gen: "x", track: 1 }]); // c1 0~5(영상) · c2 5~10(그림) · c3 10~15(빈 폴더)
+  mount();
+  act(() => cutCell("c1").click()); // 0초에서 시작한다(재생헤드 자리는 시퀀스마다 기억된다)
+  const docBefore = localStorage.getItem(DOC_KEY);
+  const editButton = () => document.querySelector<HTMLButtonElement>(".ed-mbtn-edit")!;
+  const split = () => document.querySelector<HTMLElement>(".ed-split");
+  const half = (index: number) => document.querySelectorAll<HTMLElement>(".ed-split .ed-half")[index];
+  const chip = (index: number) => half(index).querySelector(".ed-chip")?.textContent ?? null;
+  expect(split()).toBeNull();
+  expect(editButton().getAttribute("aria-pressed")).toBe("false");
+
+  press({ key: "w", code: "KeyW" });
+  expect(paneModes()).toEqual(["edit"]);
+  expect(editButton().getAttribute("aria-pressed")).toBe("true");
+  expect(pane("edit").querySelector(".ed-vpick-btn")!.textContent).toBe("편집점 보기");
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!).views).toEqual(["source", "edit"]); // 이 브라우저에 남는다
+  expect(half(0).textContent).toBe("타임라인의 처음입니다."); // 0초 — 앞이 없다
+  expect(half(1).querySelector("video")!.getAttribute("src")).toBe("/media/v.mp4");
+  expect(chip(1)).toBe("c1 · V1 · 첫 프레임");
+
+  press({ key: "ArrowDown", code: "ArrowDown" }); // 다음 편집점(5초 — c1 | c2)
+  expect(timecode()).toBe("00:00:05:00");
+  const before = half(0).querySelector("video")!;
+  const sent = vi.spyOn(before, "currentTime", "set");
+  act(() => { before.dispatchEvent(new Event("loadedmetadata")); });
+  expect(sent.mock.calls[0][0]).toBeCloseTo(5 - 0.25 / 24); // 앞 컷의 마지막 프레임으로 보내 세워 둔다(재생하지 않는다)
+  expect(chip(0)).toBe("c1 · V1 · 마지막 프레임");
+  expect(half(1).querySelector("img")!.getAttribute("src")).toBe("/media/x.png");
+  expect(chip(1)).toBe("c2 · V1 · 첫 프레임");
+
+  press({ key: "ArrowLeft", code: "ArrowLeft", shiftKey: true }); // 4초 — 가장 가까운 편집점은 그대로 5초다
+  expect(timecode()).toBe("00:00:04:00");
+  expect(chip(1)).toBe("c2 · V1 · 첫 프레임");
+  press({ key: "ArrowDown", code: "ArrowDown" }); // 보는 편집점(5초)의 다음(10초 — c2 | 빈 c3)으로 간다. 재생헤드 기준이면 5초에 머문다
+  expect(timecode()).toBe("00:00:10:00");
+  expect(chip(0)).toBe("c2 · V1 · 마지막 프레임");
+  expect(half(1).querySelector(".ed-notice")!.textContent).toBe("비어 있음");
+  expect(chip(1)).toBe("c3");
+
+  press({ key: "ArrowUp", code: "ArrowUp" }); // 5초
+  press({ key: " ", code: "Space" });
+  expect(timecode()).toBe("00:00:03:00"); // 편집점의 2초 앞에서 튼다
+  expect(playingIn("edit")).toBe(true);
+  expect(split()!.hidden).toBe(true); // 트는 동안은 밑의 영상이 이어서 보인다
+  press({ key: " ", code: "Space" }); // 다시 누르면 멈춘다
+  expect(playingIn("edit")).toBe(false);
+  expect(split()!.hidden).toBe(false);
+  act(() => pane("edit").querySelector<HTMLButtonElement>(".ed-play")!.click()); // 재생 단추도 같은 길이다
+  expect(playingIn("edit")).toBe(true);
+  act(() => pane("edit").querySelector<HTMLButtonElement>(".ed-t-stop")!.click());
+
+  act(() => editButton().click()); // 단추로 끈다
+  expect(paneModes()).toEqual(["timeline"]);
+  expect(split()).toBeNull();
+  pickMode("timeline", "편집점 보기"); // 판 위 메뉴에도 있다
+  expect(paneModes()).toEqual(["edit"]);
+  act(() => pane("edit").querySelector<HTMLButtonElement>(".ed-dual")!.click()); // 듀얼 — [소스 클립 | 편집점 보기]
+  expect(paneModes()).toEqual(["source", "edit"]);
+  pickMode("source", "타임라인"); // 타임라인과 편집점 보기는 같은 판(엔진 하나)의 두 방식 — 자리를 바꾼다
+  expect(paneModes()).toEqual(["timeline", "source"]);
+  expect(split()).toBeNull();
+  expect(localStorage.getItem(DOC_KEY)).toBe(docBefore); // 보기일 뿐이다 — 편집 문서는 그대로다
+});
+
+it("저장된 화면: 타임라인과 편집점 보기를 두 판에 같이 둔 값은 받지 않는다 — 타임라인 판이 없으면 W 는 맨 오른쪽 판을 바꾼다", () => {
+  localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["timeline", "edit"] }));
+  mount();
+  expect(paneModes()).toEqual(["source", "timeline"]); // 기본 화면으로
+  pickMode("timeline", "V1 만 보기");
+  expect(paneModes()).toEqual(["source", "1"]);
+  press({ key: "w", code: "KeyW" });
+  expect(paneModes()).toEqual(["source", "edit"]);
 });

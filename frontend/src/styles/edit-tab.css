@@ -31,7 +31,7 @@
 }
 .ed-vpick-btn:hover, .ed-vpick-btn.ed-on { background: rgba(255, 255, 255, 0.08); }
 .ed-vpick-btn svg.ed-caret { flex: none; width: 8px; height: 5px; fill: currentColor; opacity: 0.8; }
-.ed-view[data-view="timeline"] .ed-vpick-btn { color: var(--accent); }
+.ed-view[data-view="timeline"] .ed-vpick-btn, .ed-view[data-view="edit"] .ed-vpick-btn { color: var(--accent); }
 .ed-pop.ed-vpop { left: 50%; right: auto; top: 28px; transform: translateX(-50%); min-width: 220px; }
 .ed-pop-item i { margin-left: auto; padding-left: 14px; font-style: normal; font-size: 11px; color: var(--muted); }
 .ed-stage { flex: 1; min-height: 0; position: relative; background: #000; overflow: hidden; }
@@ -49,6 +49,11 @@
 }
 .ed-chip-l { left: 12px; }
 .ed-chip-r { right: 12px; font-weight: 500; color: #d7dae0; }
+/* 편집점 보기 — 무대를 덮는 두 칸(편집점의 앞 | 뒤). 재생 중에는 숨어서 밑의 영상이 이어서 보인다. */
+.ed-split { position: absolute; inset: 0; display: flex; gap: 2px; background: #2c303b; }
+.ed-split[hidden] { display: none; }
+.ed-half { position: relative; flex: 1; min-width: 0; overflow: hidden; background: #000; }
+.ed-half .ed-chip { max-width: calc(100% - 24px); font-weight: 700; color: var(--text); }
 .ed-vbot { flex: none; background: var(--panel); border-top: 1px solid var(--border); user-select: none; }
 /* 타임바(다빈치의 재생바) — 누르는 자리는 넉넉하게(높이 28px), 보이는 줄은 4px. 빨강 = 지금 자리, 위의 색 꼬리표 = 북마크,
    밝은 선과 아래의 회색 꼬리표 = 마크 인/아웃, 얇은 줄 = 소스 테이프의 클립 경계. */
@@ -217,6 +222,7 @@
 .ed-mbtn.ed-on { background: rgba(var(--accent-rgb), 0.14); }
 .ed-mbtn.ed-on svg { stroke: var(--accent); }
 .ed-mbtn-mk { margin-left: 6px; }
+.ed-mbtn-edit { min-width: 32px; } /* 편집점 보기 */
 .ed-mbtn-mk svg, .ed-mbtn-mk:hover svg { stroke: var(--mk, #1287ff); fill: var(--mk, #1287ff); fill-opacity: 0.3; } /* 새 북마크의 색 */
 .ed-mbtn-color { min-width: 16px; padding: 0 4px; }
 .ed-mbtn-color svg.ed-caret, .ed-mbtn-color:hover svg.ed-caret { stroke: none; fill: var(--muted); }

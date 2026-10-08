@@ -55,6 +55,13 @@ export interface EditView {
 // 시퀀스별 마지막 재생헤드 자리 — 다른 탭에 다녀와도 보던 자리로 돌아온다(새로고침하면 사라진다).
 const lastPos = new Map<string, EditPos>();
 
+// 편집점 앞뒤 재생(편집점 보기의 Space) — 그 편집점(컷 좌표라 배치가 바뀌어도 따라간다)·앞뒤 길이(초)·한 번만 틀지.
+interface Around {
+  at: EditPos;
+  span: number;
+  once: boolean;
+}
+
 const STOPPED: EditView = { cut: null, clip: null, source: null, playing: false, rate: 1, failed: false };
 const SEEK_SLOP = 0.04;
 
@@ -91,6 +98,8 @@ export function useEditPlayback({
     shown: "", // 지금 올려 둔 소스의 열쇠(클립 열쇠 + 주소). 빈 문자열 = 영상 없음
     failed: new Set<string>(), // 재생하지 못한 클립 열쇠
     armed: false, // 구간 반복 — 마지막으로 위치를 옮긴 뒤 구간 끝(아웃) 앞에 있었다. 아웃 뒤에서 시작했으면 꺼진 채다
+    // 편집점 앞뒤 재생 — 재생 중에만 있다: 멈추거나 다른 재생 명령(재생·J/L·구간 반복 재생)이 오면 풀린다.
+    around: null as Around | null,
     frame: 0,
     last: 0,
   });
@@ -188,6 +197,7 @@ export function useEditPlayback({
     const stop = (adopt = true) => {
       if (!state.playing) return;
       state.playing = false;
+      state.around = null;
       cancelAnimationFrame(state.frame);
       // 영상이 시계였으면 멈춘 그 프레임을 위치로 삼는다(마지막 tick 과 한 프레임 어긋나 다시 탐색하지 않게).
       const video = videoRef.current;
@@ -198,21 +208,38 @@ export function useEditPlayback({
       sync(!adopt);
     };
 
+    // 지금 지킬 구간 — 편집점 앞뒤 재생이 걸려 있으면 그 편집점의 앞뒤, 아니면 구간 반복(range).
+    const rangeNow = () => {
+      if (state.around && !slotOf(state.around.at.cut)) state.around = null; // 그 컷이 배치에서 사라졌다 — 보통 재생으로
+      const { around } = state;
+      if (!around) return live.current.range;
+      const point = timeOf(live.current.layout, around.at);
+      return { from: Math.max(0, point - around.span), to: Math.min(live.current.layout.total, point + around.span) };
+    };
     // 구간 반복(마크 인/아웃) — 구간(range)이 있으면 아웃을 넘는 순간 인으로 돌아간다. '넘는 순간'을 tick 앞뒤 시각의
     //  비교로만 보면 영상의 ended 가 위치를 먼저 아웃으로 옮긴 때를 놓친다 → 아웃 앞에 있었는지를 적어 둔다(armed).
     //  아웃 뒤에서 시작했거나 아웃 뒤로 훑었으면 꺼진 채라 끝까지 간 뒤(전체 끝) 구간 처음으로 들어온다(Codex 설계 검토).
     const arm = () => {
-      const range = live.current.range;
+      const range = rangeNow();
       state.armed = !!range && now() < range.to;
     };
     // 반복 — 구간 처음(구간이 없으면 맨 처음)으로 돌아가 이어 튼다. 위치를 옮긴 것과 같게 다룬다: 영상이 그 자리에 닿을 때까지
     //  시간이 선다(같은 영상으로 되돌아오는 한 클립짜리도 같은 길 — 끝난 영상의 옛 시각을 시계로 읽지 않는다).
     const loopBack = () => {
-      pos.current = posAt(live.current.layout, live.current.range?.from ?? 0);
+      pos.current = posAt(live.current.layout, rangeNow()?.from ?? 0);
       arm(); // 아웃 뒤에서 시작해 전체 끝을 돌아 들어온 때 — 다음 tick 전에 영상이 끝나도 구간을 지키게(Codex 코드 리뷰)
       sync(true);
       live.current.paint(now());
       state.frame = requestAnimationFrame(tick);
+    };
+
+    // 구간의 끝 — 되풀이면 구간 처음으로, 한 번만(편집점 앞뒤 재생)이면 그 편집점에 가서 멈춘다.
+    const wrap = () => {
+      const { around } = state;
+      if (!around?.once) return loopBack();
+      pos.current = posAt(live.current.layout, timeOf(live.current.layout, around.at));
+      stop(false);
+      live.current.paint(now());
     };
 
     const tick = (stamp: number) => {
@@ -221,7 +248,7 @@ export function useEditPlayback({
       let slot = slotOf(pos.current.cut);
       if (!slot) return stop();
       let local = pos.current.local;
-      const range = state.rate > 0 ? live.current.range : null;
+      const range = state.rate > 0 ? rangeNow() : null;
       if (!range) state.armed = false;
       else if (slot.start + local < range.to) state.armed = true;
       if (state.owner === "video") {
@@ -234,7 +261,7 @@ export function useEditPlayback({
       state.last = stamp;
       if (state.rate > 0 && local >= slot.len) {
         const next = cuts[cuts.indexOf(slot) + 1];
-        if (!next && (live.current.loop || range)) return loopBack();
+        if (!next && (live.current.loop || range)) return wrap();
         if (!next) {
           pos.current = { cut: slot.path, local: slot.len }; // 전체 끝 = 정지점
           live.current.paint(now());
@@ -252,14 +279,14 @@ export function useEditPlayback({
         slot = prev;
         local = Math.max(0, prev.len - 1 / EDIT_FPS);
       }
-      if (range && state.armed && slot.start + local >= range.to) return loopBack();
+      if (range && state.armed && slot.start + local >= range.to) return wrap();
       pos.current = { cut: slot.path, local };
       sync(false);
       live.current.paint(now());
       state.frame = requestAnimationFrame(tick);
     };
 
-    const play = (rate: number) => {
+    const play = (rate: number, around: Around | null = null) => {
       if (!pos.current || !live.current.layout.cuts.length) return;
       wanted.current = null;
       // 끝에서 정방향으로 누르면 처음부터.
@@ -267,6 +294,7 @@ export function useEditPlayback({
       cancelAnimationFrame(state.frame);
       state.playing = true;
       state.rate = rate;
+      state.around = around;
       state.last = performance.now();
       arm();
       sync(true);
@@ -402,6 +430,13 @@ export function useEditPlayback({
       live.current = { ...live.current, range: next };
       seek(next.from);
       play(1);
+    }, [play, seek]),
+    // 편집점 앞뒤 재생(편집점 보기) — 그 편집점의 span 초 앞으로 가서 정방향 1배로 span 초 뒤까지 튼다. once 면 끝에서 그
+    //  편집점으로 돌아가 멈추고, 아니면 그 구간을 되풀이한다. 구간은 엔진이 쥔다 — 화면 상태로 두면 그 사이에 켠 구간 반복
+    //  재생을 옛 구간이 덮고, 길이 보정으로 배치가 바뀌면 낡는다(Codex 설계 검토).
+    playAround: useCallback((at: EditPos, span: number, once: boolean) => {
+      seek(timeOf(live.current.layout, at) - span);
+      play(1, { at, span, once });
     }, [play, seek]),
   };
 }

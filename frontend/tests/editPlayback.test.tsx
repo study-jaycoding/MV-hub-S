@@ -377,3 +377,68 @@ it("구간 반복 재생을 켜는 순간: 구간 처음으로 가서 정방향 
   expect(playback.now()).toBe(1); // 다음 클립으로 넘어가지 않고 구간 처음으로
   expect(playback.view.playing).toBe(true);
 });
+
+// 편집점 앞뒤 재생(Jay 2026-10-08 — 편집점 보기의 Space) — 편집점의 앞 2초에서 뒤 2초까지. 구간은 엔진이 쥔다.
+it("편집점 앞뒤 재생: 앞 2초로 가서 뒤 2초까지 틀고 그 편집점으로 돌아와 멈춘다 — 되풀이면 그 구간을 돌고, 다른 재생 명령이 오면 풀린다", () => {
+  const point = { cut: "e070/c3", local: 0 }; // 13초 — 앞은 빈 컷, 뒤는 그림(둘 다 rAF 시계)
+  render({ scope: "around" });
+  act(() => playback.playAround(point, 2, true));
+  expect(playback.now()).toBe(11);
+  expect(playback.view.playing).toBe(true);
+  expect(playback.view.rate).toBe(1);
+  frame(1000);
+  frame(1500); // 컷을 넘는다(13초)
+  frame(1900);
+  expect(playback.now()).toBeCloseTo(14.9);
+  frame(200); // 뒤 2초(15초)를 넘었다 → 편집점으로 돌아와 멈춘다
+  expect(playback.now()).toBe(13);
+  expect(playback.view.playing).toBe(false);
+  expect(playback.view.cut).toBe("e070/c3");
+  expect(frames).toHaveLength(0);
+
+  act(() => playback.playAround(point, 2, false)); // 되풀이(반복이 켜져 있을 때)
+  frame(1000);
+  frame(1500);
+  frame(2100); // 15초를 넘었다 → 앞 2초(11초)로
+  expect(playback.now()).toBe(11);
+  expect(playback.view.playing).toBe(true);
+  act(() => playback.shuttle(1)); // L — 다른 재생 명령이다(같은 방향이라 2배). 구간이 풀려 보통 재생이 된다
+  frame(1300); // 컷을 넘는다(13초)
+  frame(1500); // 16초 — 15초를 지나 그대로 간다
+  expect(playback.now()).toBeCloseTo(16);
+  expect(playback.view.playing).toBe(true);
+
+  act(() => playback.playAround(point, 2, true));
+  frame(500);
+  act(() => playback.toggle()); // 중간에 멈추면 멈춘 자리에 남고, 구간도 풀린다
+  expect(playback.now()).toBeCloseTo(11.5);
+  act(() => playback.toggle());
+  frame(1600); // 컷을 넘는다
+  frame(2500); // 15.5초 — 멈추지 않는다
+  expect(playback.view.playing).toBe(true);
+
+  const range = { from: 9, to: 10 };
+  act(() => playback.playAround(point, 2, true));
+  act(() => playback.playRange(range)); // 그 사이에 구간 반복 재생을 켰다 — 옛 편집점 구간이 새 구간을 덮지 않는다
+  render({ scope: "around", range });
+  frame(1100); // 10초를 넘었다 → 9초로(13초로 가서 멈추지 않는다)
+  expect(playback.now()).toBe(9);
+  expect(playback.view.playing).toBe(true);
+});
+
+it("편집점 앞뒤 재생: 편집점은 컷 좌표로 쥔다 — 트는 동안 앞 컷의 길이가 바뀌어도 그 편집점의 앞뒤를 지킨다", () => {
+  const point = { cut: "e070/c3", local: 0 };
+  render({ scope: "around2" });
+  act(() => playback.playAround(point, 2, true)); // 11초(c2 의 3초)에서
+  frame(1000); // c2 의 4초
+  const longer: EditDoc = { ...DOC, clips: DOC.clips.map((clip) => (clip.gen === "low" ? { ...clip, dur: 9 } : clip)) };
+  render({ scope: "around2", doc: longer, layout: buildLayout(["e070/c1", "e070/c2", "e070/c3"], longer) }); // c3 가 14초에서 시작한다
+  expect(playback.now()).toBe(13); // 보던 자리(c2 의 4초)는 그대로다
+  expect(playback.view.playing).toBe(true);
+  frame(1500); // c3 로 넘어간다(14초)
+  frame(1900); // 15.9초 — 옛 구간의 끝(15초)을 지났지만 멈추지 않는다
+  expect(playback.view.playing).toBe(true);
+  frame(200); // 새 구간의 끝(16초) → 그 편집점(14초)으로 돌아와 멈춘다
+  expect(playback.now()).toBe(14);
+  expect(playback.view.playing).toBe(false);
+});
