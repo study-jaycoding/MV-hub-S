@@ -62,16 +62,18 @@ const previews: PreviewTarget[] = []; // 풀의 더블클릭이 앱에 열어 �
 const onPreview = (target: PreviewTarget) => { previews.push(target); };
 const compared: Generation[][] = []; // 풀의 [비교]가 앱에 넘긴 생성물들
 const onCompare = (gens: Generation[]) => { compared.push(gens); };
-const sent: Generation[][] = []; // 풀의 [Resolve로 보내기]가 앱에 넘긴 생성물들
+const sent: Generation[][] = []; // [Resolve 보내기](풀의 선택 막대·클립 우클릭)가 앱에 넘긴 생성물들
 const resolveState = { busy: false, pendingCount: 0 };
 const sendToResolve = (gens: Generation[]) => { sent.push(gens); };
+const folderActs: string[][] = []; // 폴더 메뉴가 앱에 청한 것 — [무엇, 프로젝트, 폴더 경로, 폴더 이름]
+const onFolderAction = (...args: string[]) => { folderActs.push(args); };
 // peekPath = 폴더 창이 떠 있는 컷(없으면 null). 창은 App 의 것이라 여기서는 떠 있다는 사실만 넘긴다.
 const mount = (reloadSignal = 0, peekPath: string | null = null, ws: typeof workspace | { scope: "unknown"; id: null; name: null } = workspace) =>
   act(() => root.render(
     <EditTab authKey="auth" authReady workspace={ws} keysActive flash={flash}
       onOpenCutFolder={onOpenCutFolder} reloadSignal={reloadSignal}
       peekPath={peekPath} onPeekMarks={onPeekMarks} cardMenuRef={cardMenuRef} onPreview={onPreview} onCompare={onCompare}
-      resolve={{ send: sendToResolve, ...resolveState }} />,
+      resolve={{ send: sendToResolve, ...resolveState }} onFolderAction={onFolderAction} />,
   ));
 const DOC_KEY = "ch.editTimeline:local:p1:e070";
 type Seed = { cut: string; gen: string; track: number; job?: string; off?: boolean; kind?: "image" | "video" };
@@ -155,6 +157,7 @@ beforeEach(() => {
   previews.length = 0;
   compared.length = 0;
   sent.length = 0;
+  folderActs.length = 0;
   Object.assign(resolveState, { busy: false, pendingCount: 0 });
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -225,9 +228,9 @@ it("미디어 풀: Ctrl·Shift 로 여러 장을 고르면 비교할 수 있다 
   act(() => compare()!.click());
   expect(compared.map((gens) => gens.map((item) => item.id))).toEqual([["a", "b"]]);
 
-  // Resolve 로 보내기(Jay 2026-10-08) — 고른 것을 앱의 보내기 줄에 넘긴다. 처리 중이면 대기열에 더한다고 알린다.
+  // Resolve 보내기(Jay 2026-10-08) — 고른 것을 앱의 보내기 줄에 넘긴다. 처리 중이면 대기열에 더한다고 알린다.
   const resolve = () => bar()!.querySelector<HTMLButtonElement>(".ed-psel-resolve")!;
-  expect(resolve().textContent).toBe("◆ Resolve로 보내기");
+  expect(resolve().textContent).toBe("◆ Resolve 보내기");
   act(() => resolve().click());
   expect(sent.map((gens) => gens.map((item) => item.id))).toEqual([["a", "b"]]);
   Object.assign(resolveState, { busy: true, pendingCount: 2 });
@@ -1253,4 +1256,87 @@ it("배속 단추: 누를 때마다 1x → 1.5x → 2x → 4x → 1x — 두 뷰
   act(() => speed("timeline").click()); // 재생 중에 바꾸면 바로 따른다
   expect(videos[0].playbackRate).toBe(2);
   expect(playingIn("timeline")).toBe(true);
+});
+
+it("클립을 우클릭하면 Resolve 보내기가 뜬다 — 고른 클립 위에서는 고른 것 모두, 아니면 그 클립 하나. 고른 것은 풀리지 않는다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "x", track: 1 }, { cut: "c2", gen: "gone", track: 2 }]);
+  mount();
+  const lane = (track: number) => [...document.querySelectorAll<HTMLElement>(`[data-track="${track}"] .ed-clip`)];
+  const item = () => menuItems()[0];
+  const head = () => trackMenu()!.querySelector(".ed-tmenu-head")!.textContent;
+
+  const event = rightClick(lane(1)[0]); // 고르지 않은 클립(호버) — 그 클립 하나
+  expect(event.defaultPrevented).toBe(true);
+  expect(head()).toBe("c1 · V1");
+  expect(item().textContent).toBe("◆ Resolve 보내기");
+  expect(document.querySelectorAll(".ed-clip.ed-sel")).toHaveLength(0); // 우클릭은 고르지 않는다
+  act(() => item().click());
+  expect(sent.map((gens) => gens.map((gen) => gen.id))).toEqual([["a"]]);
+  expect(trackMenu()).toBeNull();
+
+  mouse(lane(1)[0], "pointerdown");
+  mouse(lane(1)[1], "pointerdown", { ctrlKey: true });
+  expect(document.querySelectorAll(".ed-clip.ed-sel")).toHaveLength(2);
+  mouse(lane(1)[1], "pointerdown", { button: 2 }); // 오른쪽 단추를 누르는 것이 고른 것을 풀지 않는다
+  rightClick(lane(1)[1]);
+  expect(document.querySelectorAll(".ed-clip.ed-sel")).toHaveLength(2);
+  expect(head()).toBe("클립 2개");
+  expect(item().textContent).toBe("◆ Resolve 보내기2");
+  act(() => item().click());
+  expect(sent[1].map((gen) => gen.id)).toEqual(["a", "x"]);
+
+  rightClick(lane(2)[0]); // 고른 것 밖의 클립 — 그 클립 하나. 공유 목록에 없는 생성물은 보낼 것이 없다
+  expect(head()).toBe("c2 · V2");
+  expect(item().disabled).toBe(true);
+  press({ key: "Escape" });
+  expect(trackMenu()).toBeNull();
+  expect(document.querySelectorAll(".ed-clip.ed-sel")).toHaveLength(2);
+
+  Object.assign(resolveState, { busy: true, pendingCount: 2 }); // 앱이 처리 중이면 대기열에 더한다고 알린다(풀의 단추와 같다)
+  mount();
+  rightClick(lane(1)[0]);
+  expect(item().textContent).toBe("◆ Resolve에 추가 (2)2");
+});
+
+it("왼쪽 폴더를 우클릭하면 폴더 메뉴가 뜬다 — 공유 저장 · 최종 저장은 묻고 하고, 원본 위치 열기는 바로 한다", () => {
+  mount();
+  const row = (name: string) =>
+    [...document.querySelectorAll<HTMLButtonElement>(".ed-side .folder-tree-row")].find((item) => item.textContent!.includes(name))!;
+  const menu = () => document.querySelector<HTMLElement>(".folder-ctx-menu.ed-fmenu");
+  const buttons = () => [...menu()!.querySelectorAll<HTMLButtonElement>(".folder-ctx-btn")];
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+  const event = rightClick(row("c1"));
+  expect(event.defaultPrevented).toBe(true);
+  expect(menu()!.querySelector(".folder-ctx-name")!.textContent).toBe("c1");
+  expect(buttons().map((item) => item.textContent)).toEqual(["공유 저장", "최종 저장"]);
+  expect(buttons().map((item) => item.className)).toEqual(["folder-ctx-btn tone-child", "folder-ctx-btn tone-final"]); // 폴더 색 · 골드
+  expect(document.activeElement).toBe(buttons()[0]); // 메뉴가 초점을 받는다 — 떠 있는 동안 편집 키가 뒤로 가지 않게
+  press({ key: "d", code: "KeyD" }, buttons()[0]);
+  expect(offCuts()).toEqual(["c3"]); // D 가 폴더를 끄지 않았다
+  act(() => buttons()[1].click());
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(String(confirm.mock.calls[0][0])).toContain("'c1' 폴더를 최종 저장하시겠습니까?");
+  expect(menu()).toBeNull();
+  expect(folderActs).toEqual([]); // 아니오 — 하지 않는다
+
+  confirm.mockReturnValue(true);
+  rightClick(row("c1"));
+  act(() => buttons()[1].click());
+  expect(folderActs).toEqual([["save-finals", "p1", "e070/c1", "c1"]]);
+  rightClick(row("e070")); // 맨 위 폴더 — 하늘색
+  expect(buttons()[0].className).toBe("folder-ctx-btn tone-root");
+  act(() => buttons()[0].click());
+  expect(folderActs[1]).toEqual(["save-shared", "p1", "e070", "e070"]);
+  expect(confirm).toHaveBeenCalledTimes(3);
+
+  rightClick(row("c2"));
+  act(() => menu()!.querySelector<HTMLButtonElement>(".folder-ctx-open")!.click()); // 원본 위치 열기는 묻지 않는다
+  expect(folderActs[2]).toEqual(["open-folder", "p1", "e070/c2", "c2"]);
+  expect(confirm).toHaveBeenCalledTimes(3);
+
+  rightClick(row("c2"));
+  press({ key: "Escape" });
+  expect(menu()).toBeNull();
+  expect(folderActs).toHaveLength(3);
 });

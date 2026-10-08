@@ -269,6 +269,8 @@
 
 /* 카드 우클릭 메뉴 — 넣을 트랙 고르기. 틀(자리·배경·그림자)은 폴더 우클릭 메뉴(.folder-ctx-menu)의 것. */
 .folder-ctx-menu.ed-tmenu { min-width: 0; width: 190px; gap: 2px; }
+/* 폴더 트리의 폴더 메뉴 — 공유 & 리뷰 탭의 폴더 메뉴와 같은 모양(단추 사이 간격) */
+.folder-ctx-menu.ed-tmenu.ed-fmenu { gap: 6px; }
 .ed-tmenu-head { height: 22px; padding: 0 8px; display: flex; align-items: center; font-size: 11px; color: var(--muted); }
 .ed-tmenu-item {
   height: 28px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text);

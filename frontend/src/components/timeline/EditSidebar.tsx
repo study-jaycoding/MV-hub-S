@@ -2,10 +2,12 @@
 // 라이브러리 사이드바(ProjectSection)를 쓰지 않는다: 그쪽은 폴더 클릭이 '생성 목적지'를 서버에 저장한다.
 import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { Project } from "../../types";
+import { folderConfirmText, type FolderMenuKind } from "../../lib/folderContextMenu";
 import { useT } from "../../lib/i18n";
 import type { EditTree } from "../../lib/useEditSequence";
 import { FolderTreeView } from "../common/FolderTreeView";
 import { ResizableSidebar } from "../common/ResizableSidebar";
+import { EditFolderMenu } from "./EditTrackMenu";
 
 // 고른 폴더까지 가는 길은 펼쳐 둔다.
 function ancestors(path: string): string[] {
@@ -26,6 +28,7 @@ export function EditSidebar({
   onPickFolder,
   onReload,
   onGrabFocus,
+  onFolderAction,
 }: {
   projects: Project[];
   projectsState: "loading" | "ok" | "error";
@@ -40,12 +43,29 @@ export function EditSidebar({
   onPickFolder: (path: string) => void;
   onReload: () => void;
   onGrabFocus: () => void; // 여기를 누르면 편집 화면이 키를 받게 초점을 옮긴다
+  // 폴더 우클릭 메뉴의 실행 — 공유 저장 · 최종 저장 · 원본 위치 열기(앱의 것 그대로: 공유 & 리뷰 탭의 폴더 메뉴와 같은 길)
+  onFolderAction: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
 }) {
   const t = useT();
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(ancestors(seq)));
   useEffect(() => {
     if (seq) setExpanded((prev) => (prev.has(seq) ? prev : new Set([...prev, ...ancestors(seq)])));
   }, [seq]);
+  // 폴더 우클릭 메뉴(Jay 2026-10-08) — 펼쳐 둔 프로젝트의 폴더다. 프로젝트를 바꾸면 닫는다. 닫히면 편집 화면이 다시 키를 받는다.
+  const [folderMenu, setFolderMenu] = useState<{ path: string; name: string; depth: number; x: number; y: number } | null>(null);
+  useEffect(() => setFolderMenu(null), [openProject]);
+  const closeFolderMenu = () => {
+    setFolderMenu(null);
+    onGrabFocus();
+  };
+  const folderAct = (kind: FolderMenuKind) => {
+    const menu = folderMenu;
+    closeFolderMenu();
+    if (!menu || !openProject) return;
+    // 저장은 묻고 한다(공유 & 리뷰 탭과 같은 물음) — 원본 위치 열기는 바로
+    if (kind !== "open-folder" && !window.confirm(folderConfirmText(kind, menu.name))) return;
+    void onFolderAction(kind, openProject, menu.path, menu.name);
+  };
   // 단추가 초점을 가져가지 않게 한다 — 누른 뒤에도 Space·J·K·L 이 재생으로 간다.
   const keepFocus = (event: ReactMouseEvent) => event.preventDefault();
 
@@ -107,6 +127,8 @@ export function EditSidebar({
                             }
                             onSelect={onPickFolder}
                             isDisabled={(path) => offCuts.has(path)}
+                            onContextMenu={(path, name, depth, event) =>
+                              setFolderMenu({ path, name, depth, x: event.clientX, y: event.clientY })}
                             className="sidebar-folder-tree"
                           />
                         ) : (
@@ -121,6 +143,12 @@ export function EditSidebar({
           </div>
         </section>
       </div>
+      {folderMenu && (
+        <EditFolderMenu x={folderMenu.x} y={folderMenu.y} name={folderMenu.name} path={folderMenu.path} depth={folderMenu.depth}
+          // 원격 접속에서 서버 PC 의 탐색기를 열지 않는다(공유 & 리뷰 탭과 같은 기준 — 최종 판정은 백엔드가 한다)
+          canOpen={["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname)}
+          onAct={folderAct} onClose={closeFolderMenu} />
+      )}
     </ResizableSidebar>
   );
 }

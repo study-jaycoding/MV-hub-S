@@ -53,6 +53,7 @@ import {
   EDIT_SPEEDS, editDocKey, isSourceView, loadEditTarget, loadEditUi, saveEditTarget, saveEditUi,
   type EditTarget, type EditUi, type ViewMode,
 } from "../../lib/editTimelineStore";
+import type { FolderMenuKind } from "../../lib/folderContextMenu";
 import { generationListMeta } from "../../lib/generationDisplay";
 import { previewTargetFromGenerations } from "../../lib/generationGrid";
 import { TEAM_SCOPE } from "../../lib/generationViews";
@@ -78,7 +79,7 @@ import { arrangePool, EditPool, type PoolItem } from "./EditPool";
 import { EditSidebar } from "./EditSidebar";
 import { EditSoloViewer } from "./EditSoloViewer";
 import { EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink } from "./EditTimeline";
-import { EditListMenu, EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
+import { EditClipMenu, EditListMenu, EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
 import { EditTrimView } from "./EditTrimView";
 import { EditViewer, type ViewerControls, type ViewerMarking, type ViewOption } from "./EditViewer";
 import { ResizableSidebar } from "../common/ResizableSidebar";
@@ -100,8 +101,10 @@ interface Props {
   // 미디어 풀의 더블클릭·비교 — 앱의 크게 보기 창·비교 창을 그대로 쓴다(둘 다 보기 전용).
   onPreview: (target: PreviewTarget) => void;
   onCompare: (gens: Generation[]) => void;
-  // 풀에서 고른 것을 Resolve 로 보내기 — 앱의 보내기 줄(대기열·연결 확인)을 그대로 쓴다.
+  // 풀에서 고른 것·타임라인의 클립을 Resolve 보내기 — 앱의 보내기 줄(대기열·연결 확인)을 그대로 쓴다.
   resolve: { send: (gens: Generation[]) => void; busy: boolean; pendingCount: number };
+  // 왼쪽 폴더 트리의 폴더 메뉴(공유 저장 · 최종 저장 · 원본 위치 열기) — 앱의 것 그대로(공유 & 리뷰 탭과 같은 길)
+  onFolderAction: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
 }
 
 export type EditCardMenu = (gen: Pick<Generation, "id">, x: number, y: number) => void;
@@ -138,7 +141,7 @@ const isTyping = (target: EventTarget | null) => {
 
 function EditTabInner({
   authKey, workspace, keysActive, flash, onOpenCutFolder, reloadSignal, peekPath, onPeekMarks, cardMenuRef, onPreview, onCompare,
-  resolve,
+  resolve, onFolderAction,
 }: Props) {
   const t = useT();
   const [target, setTarget] = useState<EditTarget | null>(loadEditTarget);
@@ -546,6 +549,13 @@ function EditTabInner({
   const [markerMenu, setMarkerMenu] = useState<{ key: string; x: number; y: number; rev: number } | null>(null);
   const [colorMenu, setColorMenu] = useState<{ x: number; top: number; bottom: number; rev: number } | null>(null); // 막대의 북마크 단추 옆 ▾
   const [listMenu, setListMenu] = useState<{ x: number; top: number; bottom: number } | null>(null); // 막대의 목록 단추
+  // 클립 우클릭 메뉴(Jay 2026-10-08) — Resolve 보내기. 고른 클립 위에서 누르면 고른 것 모두, 아니면 그 클립 하나(고른 것은
+  //  그대로 둔다). 문서가 바뀌면 닫는다 — 그 클립이 이미 없을 수 있다.
+  const [clipMenu, setClipMenu] = useState<{ keys: string[]; x: number; y: number } | null>(null);
+  const openClipMenu = useCallback((key: string, x: number, y: number) => {
+    menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setClipMenu({ keys: selected.has(key) ? [...selected] : [key], x, y });
+  }, [selected]);
   const openTrackMenu = useCallback((track: number, x: number, y: number) => {
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setTrackMenu({ track, x, y, rev });
@@ -559,6 +569,7 @@ function EditTabInner({
     setMarkerMenu(null);
     setColorMenu(null);
     setListMenu(null);
+    setClipMenu(null);
   }, [rev]);
   const closeMenu = useCallback(() => {
     setMenu(null);
@@ -566,6 +577,7 @@ function EditTabInner({
     setMarkerMenu(null);
     setColorMenu(null);
     setListMenu(null);
+    setClipMenu(null);
     const back = menuBackRef.current;
     menuBackRef.current = null;
     if (back?.isConnected) back.focus({ preventScroll: true });
@@ -577,6 +589,16 @@ function EditTabInner({
       cardMenuRef.current = null;
     };
   }, [cardMenuRef, openMenu, peekPath]);
+  // 보낼 것 — 공유 목록에서 찾은 생성물만(같은 생성물이 두 컷에 있으면 한 번)
+  const clipMenuGens = useMemo(() => {
+    const found = new Map<string, Generation>();
+    for (const key of clipMenu?.keys ?? []) {
+      const gen = links.get(key)?.gen;
+      if (gen) found.set(gen.id, gen);
+    }
+    return [...found.values()];
+  }, [clipMenu, links]);
+  const clipMenuOne = clipMenu?.keys.length === 1 ? doc.clips.find((clip) => clipKey(clip) === clipMenu.keys[0]) : undefined;
   const menuOwn = menu && doc.clips.find((clip) => clip.cut === menu.cut && links.get(clipKey(clip))?.gen?.id === menu.gen.id);
   const menuRows: TrackRow[] = !menu ? [] : Array.from({ length: layout.tracks }, (_, i) => layout.tracks - i).map((track) => ({
     track,
@@ -896,6 +918,7 @@ function EditTabInner({
         onPickFolder={pickFolder}
         onReload={reloadTree}
         onGrabFocus={grabFocus}
+        onFolderAction={onFolderAction}
       />
       <main className="main ed-root" ref={rootRef} tabIndex={-1} onMouseDownCapture={(event) => {
         grabFocus();
@@ -1101,9 +1124,26 @@ function EditTabInner({
           onToggleMute={toggleMute}
           onTrackMenu={openTrackMenu}
           onMarkerMenu={openMarkerMenu}
+          onClipMenu={openClipMenu}
         />
       </main>
       {menu && <EditTrackMenu x={menu.x} y={menu.y} rows={menuRows} onPick={placeTo} onClose={closeMenu} />}
+      {clipMenu && (
+        <EditClipMenu
+          x={clipMenu.x}
+          y={clipMenu.y}
+          title={clipMenuOne ? `${clipMenuOne.cut.slice(clipMenuOne.cut.lastIndexOf("/") + 1)} · V${clipMenuOne.track}`
+            : t("클립 {count}개").replace("{count}", String(clipMenu.keys.length))}
+          count={clipMenuGens.length}
+          busy={resolve.busy}
+          pendingCount={resolve.pendingCount}
+          onSend={() => {
+            closeMenu();
+            resolve.send(clipMenuGens);
+          }}
+          onClose={closeMenu}
+        />
+      )}
       {trackMenu && trackMenu.track <= layout.tracks && (
         <EditTrackHeadMenu
           x={trackMenu.x}

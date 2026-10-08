@@ -64,6 +64,7 @@ export const EditTimeline = memo(function EditTimeline({
   onToggleMute,
   onTrackMenu,
   onMarkerMenu,
+  onClipMenu,
 }: {
   layout: EditLayout;
   doc: EditDoc;
@@ -89,6 +90,7 @@ export const EditTimeline = memo(function EditTimeline({
   onToggleMute: () => void;
   onTrackMenu: (track: number, x: number, y: number) => void; // 트랙 머리를 우클릭 — 트랙 추가·삭제·옮기기·색
   onMarkerMenu: (key: string, x: number, y: number) => void; // 북마크를 더블클릭·우클릭 — 이름·색·지우기
+  onClipMenu: (key: string, x: number, y: number) => void; // 클립을 우클릭 — Resolve 보내기
 }) {
   const t = useT();
   const lanesRef = useRef<HTMLDivElement>(null);
@@ -154,8 +156,8 @@ export const EditTimeline = memo(function EditTimeline({
   // 클립 끌기 — 6px 넘게 움직이면 끌기로 보고, 놓은 자리의 트랙으로 옮긴다(찬 자리면 맞바꿈).
   const drag = useRef<{ key: string; track: number; y: number; rev: number; moved: boolean } | null>(null);
   const clipDown = (event: ReactPointerEvent<HTMLElement>, key: string, from: number, locked: boolean, cut: string) => {
+    event.stopPropagation(); // 오른쪽 단추도 — 우클릭(메뉴)이 고른 것을 풀지 않게(빈 자리를 누른 것이 아니다)
     if (event.button !== 0) return;
-    event.stopPropagation();
     onPickCut(cut); // 그림을 누르면 그 컷으로 간다(보는 것은 편집이 아니라 잠긴 트랙도 된다)
     if (locked) return; // 잠긴 트랙의 클립은 고르지도 못한다
     onSelect(key, event.ctrlKey || event.metaKey || event.shiftKey);
@@ -210,6 +212,10 @@ export const EditTimeline = memo(function EditTimeline({
         onPointerMove={clipMove}
         onPointerUp={(event) => clipUp(event)}
         onPointerCancel={(event) => clipUp(event, true)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onClipMenu(key, event.clientX, event.clientY);
+        }}
       >
         {state === "ok" && thumb
           ? Array.from({ length: frames }, (_, i) => <i key={i} style={{ backgroundImage: `url("${thumb}")` }} />)

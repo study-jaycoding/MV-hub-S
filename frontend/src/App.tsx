@@ -2302,6 +2302,7 @@ export default function App() {
               onPreview={openPreview}
               onCompare={setCompareGens}
               resolve={{ send: resolveTransfer.sendToResolve, busy: resolveTransfer.busy, pendingCount: resolveTransfer.pendingCount }}
+              onFolderAction={onFolderAction}
             />
           </Suspense>
         ) : filters.tab === "compose" ? (

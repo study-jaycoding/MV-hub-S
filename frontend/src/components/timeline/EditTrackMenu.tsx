@@ -2,12 +2,16 @@
 //  · EditTrackMenu — 카드 우클릭: 지금 타임라인에 있는 트랙(V3·V2·V1)을 보여 주고, 고르면 그 트랙에 넣는다(찬 트랙은 교체).
 //  · EditTrackHeadMenu — 트랙 머리 우클릭: 트랙 추가·위/아래로·삭제·빈 트랙 삭제·색(다빈치의 트랙 머리 메뉴).
 //  · EditListMenu — 막대의 목록 단추: 비활성 숨기기(켜고 끄기) · 빈 곳 채우기(한 번 실행).
+//  · EditClipMenu — 타임라인의 클립 우클릭: Resolve 보내기.
+//  · EditFolderMenu — 왼쪽 폴더 트리의 폴더 우클릭: 공유 저장 · 최종 저장 · 원본 위치 열기(공유 & 리뷰 탭의 폴더 메뉴와 같다).
 //  · 북마크 편집 창(EditMarkerMenu.tsx)도 이 껍데기를 쓴다.
 //  편집 탭이 연 폴더 창의 카드도 쓴다 — 창이 떠 있는 동안 .body 는 inert 라 body 로 옮겨 그린다. 틀·바깥 누르기는 폴더
 //  우클릭 메뉴(ProjectSection)와 같다.
 import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { clampMenuPosition } from "../../lib/folderContextMenu";
+import {
+  clampMenuPosition, FOLDER_MENU_W, folderMenuHeight, folderMenuKinds, folderMenuLabel, folderTone, type FolderMenuKind,
+} from "../../lib/folderContextMenu";
 import { useT } from "../../lib/i18n";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { GROUP_COLORS } from "../scene/sceneColors";
@@ -240,6 +244,89 @@ export function EditListMenu({
         {t("빈 곳 채우기")}
         <i>{fillCount || ""}</i>
       </button>
+    </EditMenu>
+  );
+}
+
+// 타임라인의 클립 우클릭(Jay 2026-10-08) — Resolve 보내기. 풀의 선택 막대에 있는 단추와 같은 길이다(앱의 보내기 줄).
+//  count = 보낼 수 있는 생성물 수(공유 목록에서 찾은 것) — 없으면 흐리다. 여러 개면 옆에 수를 적는다.
+export function EditClipMenu({
+  x,
+  y,
+  title,
+  count,
+  busy,
+  pendingCount,
+  onSend,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  title: string; // 'C0110 · V2' 또는 '클립 3개'
+  count: number;
+  busy: boolean; // 앱이 Resolve 작업을 처리하는 중 — 누르면 대기열에 더한다
+  pendingCount: number;
+  onSend: () => void;
+  onClose: () => void;
+}) {
+  const t = useT();
+  return (
+    <EditMenu x={x} y={y} width={190} height={HEAD_H + ROW_H} label={t("클립 메뉴")} onClose={onClose}>
+      <div className="ed-tmenu-head">{title}</div>
+      <button type="button" role="menuitem" autoFocus className="ed-tmenu-item" disabled={!count} aria-busy={busy} onClick={onSend}
+        title={busy
+          ? t("Resolve 작업 {count}건 처리 중 · 선택 항목을 대기열에 추가").replace("{count}", String(pendingCount))
+          : t("선택한 완료본을 프로젝트의 Render 폴더 구조로 저장하고 Resolve로 가져오기")}>
+        {busy ? `${t("◆ Resolve에 추가")} (${pendingCount})` : t("◆ Resolve 보내기")}
+        <i>{count > 1 ? count : ""}</i>
+      </button>
+    </EditMenu>
+  );
+}
+
+// 왼쪽 폴더 트리의 폴더 우클릭(Jay 2026-10-08) — 공유 & 리뷰 탭의 폴더 메뉴와 같은 것: 공유 저장 · 최종 저장, 이름 옆의
+//  원본 위치 열기. 모양은 그 메뉴 그대로(folder-ctx-*)고, 껍데기만 편집 탭의 것이다(떠 있는 동안 뒤의 편집 키를 막는다).
+// ponytail: 같은 줄이 ProjectSection 에도 있다 — 그 파일은 dev 에서 계속 바뀌는 중이라 여기서 뽑아내지 않았다(편집 탭이
+//  dev 에 합쳐질 때 하나로). '모두 확인(+N)'은 넣지 않았다 — 편집 탭은 새 항목 확인을 다루지 않는다.
+export function EditFolderMenu({
+  x,
+  y,
+  name,
+  path,
+  depth,
+  canOpen,
+  onAct,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  name: string;
+  path: string;
+  depth: number; // 0 = 맨 위 폴더(하늘색), 그 아래는 라임 — 폴더 아이콘의 색
+  canOpen: boolean; // 원본 위치 열기 — 이 PC 에서 접속했을 때만
+  onAct: (kind: FolderMenuKind) => void;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const kinds = folderMenuKinds("team");
+  return (
+    <EditMenu x={x} y={y} width={FOLDER_MENU_W} height={folderMenuHeight(kinds.length)} label={t("폴더 메뉴")} className="ed-fmenu"
+      onClose={onClose}>
+      <div className="folder-ctx-head">
+        <div className="folder-ctx-name" title={path}>{name}</div>
+        {canOpen && (
+          <button type="button" className="folder-ctx-open" aria-label={t("원본 위치 열기")}
+            title={t("원본 위치 열기 — 연결된 실제 폴더를 탐색기에서 엽니다")} onClick={() => onAct("open-folder")}>
+            <span aria-hidden="true">📂</span>
+          </button>
+        )}
+      </div>
+      {kinds.map((kind, i) => (
+        <button key={kind} type="button" role="menuitem" autoFocus={i === 0}
+          className={"folder-ctx-btn tone-" + (kind === "save-finals" ? "final" : folderTone(depth))} onClick={() => onAct(kind)}>
+          {t(folderMenuLabel(kind))}
+        </button>
+      ))}
     </EditMenu>
   );
 }
