@@ -21,6 +21,7 @@ import {
   EDIT_FPS,
   editPoints,
   emptyEditDoc,
+  fillEmptyCuts,
   genSeconds,
   groupByCut,
   linkClip,
@@ -75,7 +76,7 @@ import { arrangePool, EditPool, type PoolItem } from "./EditPool";
 import { EditSidebar } from "./EditSidebar";
 import { EditSoloViewer } from "./EditSoloViewer";
 import { EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink } from "./EditTimeline";
-import { EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
+import { EditListMenu, EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
 import { EditTrimView } from "./EditTrimView";
 import { EditViewer, type ViewerControls, type ViewerMarking, type ViewOption } from "./EditViewer";
 import { ResizableSidebar } from "../common/ResizableSidebar";
@@ -539,6 +540,7 @@ function EditTabInner({
   const [trackMenu, setTrackMenu] = useState<{ track: number; x: number; y: number; rev: number } | null>(null);
   const [markerMenu, setMarkerMenu] = useState<{ key: string; x: number; y: number; rev: number } | null>(null);
   const [colorMenu, setColorMenu] = useState<{ x: number; top: number; bottom: number; rev: number } | null>(null); // 막대의 북마크 단추 옆 ▾
+  const [listMenu, setListMenu] = useState<{ x: number; top: number; bottom: number } | null>(null); // 막대의 목록 단추
   const openTrackMenu = useCallback((track: number, x: number, y: number) => {
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setTrackMenu({ track, x, y, rev });
@@ -551,12 +553,14 @@ function EditTabInner({
     setTrackMenu(null);
     setMarkerMenu(null);
     setColorMenu(null);
+    setListMenu(null);
   }, [rev]);
   const closeMenu = useCallback(() => {
     setMenu(null);
     setTrackMenu(null);
     setMarkerMenu(null);
     setColorMenu(null);
+    setListMenu(null);
     const back = menuBackRef.current;
     menuBackRef.current = null;
     if (back?.isConnected) back.focus({ preventScroll: true });
@@ -679,6 +683,32 @@ function EditTabInner({
       return next;
     });
   }, [applyEdit]);
+
+  // 빈 곳 채우기(Jay 2026-10-08 — 막대의 목록 단추) — 클립이 하나도 없는 컷마다 생성물 하나를 넣는다: **최종 확인된 것**(검수
+  //  골드)이 있으면 그중 최신, 없으면 그 컷의 **최신**(공유 목록은 최신 먼저 온다 — 풀의 '최신순' 맨 위와 같다). 꺼 둔 컷
+  //  (비활성)은 건드리지 않는다. 넣는 자리는 넣기와 같다(그 컷에서 켜져 있고 안 잠긴 가장 낮은 트랙). 한 번이 되돌리기 한 단계다.
+  //  공유 목록을 다시 받는 중·받지 못한 뒤에는 채우지 않는다 — 그동안 든 목록은 옛 것이라, 방금 공유를 푼 카드를 넣거나
+  //  새로 최종이 된 것을 놓친다(Codex 코드 리뷰). 2,000건에서 잘린 목록은 받은 것 안에서 고른다.
+  const listFresh = list.state === "ok" || list.state === "capped";
+  const fillPicks = useMemo(() => (!listFresh ? [] : cuts.flatMap((path) => {
+    if (offCuts.has(path) || doc.clips.some((clip) => clip.cut === path)) return [];
+    const gens = byCut.get(path) ?? [];
+    const gen = gens.find((item) => item.is_final) ?? gens[0];
+    return gen ? [{ cut: path, gen }] : [];
+  })), [listFresh, cuts, offCuts, doc, byCut]);
+  const fillEmpty = () => {
+    closeMenu();
+    const picks = fillPicks.map(({ cut: path, gen }) => ({
+      cut: path, gen: gen.id, job: gen.job_id, kind: gen.assets[0].type,
+      dur: genSeconds(gen, knownVideoSeconds(gen.assets[0].file_path)),
+    }));
+    // 고른 것은 이 렌더의 문서·비활성 판정으로 만든 것이다 — 그 사이 다른 창이 문서를 바꿨으면(rev) 넣지 않는다: 방금 꺼진
+    //  컷에 들어가고, 채운 수도 틀리게 알린다(Codex 코드 리뷰).
+    if (!applyEdit((current) => fillEmptyCuts(current, picks), { rev })) return flash(t("채울 빈 곳이 없습니다."));
+    const finals = fillPicks.filter(({ gen }) => gen.is_final).length;
+    flash(t("빈 곳 {count}개를 채웠습니다 — 최종 {finals}개 · 최신 {rest}개").replace("{count}", String(picks.length))
+      .replace("{finals}", String(finals)).replace("{rest}", String(picks.length - finals)));
+  };
 
   const fit = useCallback(() => {
     const width = scrollRef.current?.clientWidth ?? 0;
@@ -1013,12 +1043,18 @@ function EditTabInner({
             </span>
           )}
           <span className="ed-zoom">
+            {/* 목록 단추 — 비활성 숨기기 · 빈 곳 채우기. 숨기기가 켜져 있으면 라임이고 옆에 숨긴 폴더 수가 보인다 */}
             {target && (
-              <button type="button" className={"ed-toggle" + (doc.hideOff ? " ed-on" : "")} aria-pressed={!!doc.hideOff}
-                onClick={toggleHideOff}
-                title={t("비활성 폴더(빈 폴더·D 로 끈 폴더)를 타임라인에서 숨깁니다. 컷 이름을 누르고 D 를 누르면 그 폴더를 켜고 끕니다.")}>
-                {t("비활성화 폴더 숨기기")}
-                {offCuts.size > 0 && <i>{offCuts.size}</i>}
+              <button type="button" className={"ed-mbtn ed-listbtn" + (doc.hideOff || listMenu ? " ed-on" : "")}
+                aria-haspopup="menu" aria-expanded={!!listMenu}
+                title={t("타임라인 정리 — 비활성 숨기기 · 빈 곳 채우기")} aria-label={t("타임라인 정리 — 비활성 숨기기 · 빈 곳 채우기")}
+                onClick={(event) => {
+                  const box = event.currentTarget.getBoundingClientRect();
+                  menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+                  setListMenu({ x: box.left, top: box.top, bottom: box.bottom });
+                }}>
+                <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><path d="M5.5 3h9M5.5 7h9M5.5 11h9M1.8 3h.4M1.8 7h.4M1.8 11h.4" /></svg>
+                {doc.hideOff && offCuts.size > 0 && <i>{offCuts.size}</i>}
               </button>
             )}
             <button type="button" className="ed-link" onClick={fit} title={t("전체 보기 (Shift+Z)")}>{t("전체 보기")}</button>
@@ -1081,6 +1117,22 @@ function EditTabInner({
           onName={(name) => applyEdit((current) => patchMarker(current, markerMenu.key, { name }), { rev: markerMenu.rev })}
           onColor={(color) => applyEdit((current) => patchMarker(current, markerMenu.key, { color }), { rev: markerMenu.rev })}
           onRemove={() => applyEdit((current) => removeMarker(current, markerMenu.key), { rev: markerMenu.rev })}
+          onClose={closeMenu}
+        />
+      )}
+      {listMenu && (
+        <EditListMenu
+          x={listMenu.x}
+          top={listMenu.top}
+          bottom={listMenu.bottom}
+          hideOff={!!doc.hideOff}
+          offCount={offCuts.size}
+          fillCount={fillPicks.length}
+          onHide={() => {
+            closeMenu();
+            toggleHideOff();
+          }}
+          onFill={fillEmpty}
           onClose={closeMenu}
         />
       )}

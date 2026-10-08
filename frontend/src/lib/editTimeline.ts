@@ -393,6 +393,16 @@ export function insertClip(
   return { ...doc, clips: [...doc.clips, next] };
 }
 
+// 빈 곳 채우기(Jay 2026-10-08) — 클립이 하나도 없는 컷에만, 컷마다 하나씩 넣는다(무엇을 넣을지는 호출부가 고른다).
+//  그 사이 클립이 생긴 컷은 건너뛴다. 넣은 것이 없으면 null. 한 번이 되돌리기 한 단계다.
+export function fillEmptyCuts(doc: EditDoc, picks: readonly Parameters<typeof insertClip>[1][]): EditDoc | null {
+  let next = doc;
+  for (const pick of picks) {
+    if (!next.clips.some((clip) => clip.cut === pick.cut)) next = insertClip(next, pick) ?? next;
+  }
+  return next === doc ? null : next;
+}
+
 // 우클릭 메뉴 — 생성물을 지정한 트랙에 둔다. 그 자리에 다른 클립이 있으면 그것을 빼고 들어간다(교체, Jay 2026-10-08).
 //  이미 이 컷에 넣은 생성물이면 새로 넣지 않고 그 클립을 옮긴다(꺼짐·길이는 그대로 — 떠난 트랙은 빈다).
 //  도착 트랙이나 떠나는 트랙이 잠겨 있으면 거부한다. 이미 그 트랙에 있으면 바뀐 것이 없다(null).

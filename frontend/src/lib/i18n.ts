@@ -81,7 +81,14 @@ const EN: Record<string, string> = {
   "이 카드는 넣을 수 없습니다 — 편집 탭의 이 컷 공유 목록에 없습니다.": "This card can't be placed — it isn't in this cut's shared list.",
   "비활성": "Off",
   "비활성 폴더": "folder is off",
-  "비활성화 폴더 숨기기": "Hide off folders",
+  "비활성 숨기기": "Hide off folders",
+  "빈 곳 채우기": "Fill empty cuts",
+  "타임라인 정리": "Tidy the timeline",
+  "타임라인 정리 — 비활성 숨기기 · 빈 곳 채우기": "Tidy the timeline — hide off folders · fill empty cuts",
+  "비어 있는 컷마다 생성물 하나를 넣습니다 — 최종 확인된 것이 먼저, 없으면 최신. 되돌리기(Ctrl+Z) 한 번에 돌아옵니다.":
+    "Places one result in each empty cut — a final-approved one first, otherwise the newest. One undo (Ctrl+Z) reverts it.",
+  "채울 빈 곳이 없습니다.": "No empty cuts to fill.",
+  "빈 곳 {count}개를 채웠습니다 — 최종 {finals}개 · 최신 {rest}개": "Filled {count} empty cuts — {finals} final · {rest} newest",
   "비활성 폴더(빈 폴더·D 로 끈 폴더)를 타임라인에서 숨깁니다. 컷 이름을 누르고 D 를 누르면 그 폴더를 켜고 끕니다.":
     "Hides off folders (empty ones and those turned off with D) from the timeline. Click a cut name, then press D to turn that folder on or off.",
   "미디어 없음 — 공유 목록에 없는 생성물입니다.": "Media offline — not in the shared list.",

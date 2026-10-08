@@ -4,7 +4,7 @@
 // 그 창의 카드 우클릭 = 넣을 트랙 고르기(찬 트랙은 교체) · 빈 폴더 기본 비활성과 숨기기 · D 로 폴더 켜고 끄기 ·
 // 왼쪽 폴더 옆의 새 항목·최종·보류 표시 · 공유 목록과 폴더 옆 숫자 다시 받기 ·
 // 트랙 머리 우클릭(트랙 추가·옮기기·삭제·색) · 마크 인/아웃 · 북마크(색 메뉴·모두 지우기) · 구간 반복 재생 · 소스 테이프 ·
-// 다이나믹 트림 모드(나뉜 뷰어가 한 창 — 편집점의 앞 | 뒤).
+// 다이나믹 트림 모드(나뉜 뷰어가 한 창 — 편집점의 앞 | 뒤) · 막대의 목록 단추(비활성 숨기기 · 빈 곳 채우기).
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -114,9 +114,15 @@ const pickMode = (from: string, label: string) => {
 const playingIn = (mode: string) => !!pane(mode).querySelector(".ed-play rect"); // 재생 중이면 단추가 '일시정지' 그림이다
 const videoGen = () => gen("v", "c1", { assets: [{ id: "a-v", generation_id: "v", type: "video", file_path: "/media/v.mp4",
   thumbnail_path: null, source_url: null, cached: true }] as Generation["assets"], model: "seedance" });
-const hideButton = () => document.querySelector<HTMLButtonElement>(".ed-toggle")!;
 const trackMenu = () => document.querySelector<HTMLElement>(".ed-tmenu");
 const menuItems = () => [...document.querySelectorAll<HTMLButtonElement>(".ed-tmenu-item")];
+// 막대의 목록 단추 — 누르면 메뉴(비활성 숨기기 · 빈 곳 채우기)가 뜬다. listItem 은 메뉴를 열고 그 줄을 돌려준다.
+const listButton = () => document.querySelector<HTMLButtonElement>(".ed-listbtn")!;
+const listItem = (label: string) => {
+  act(() => listButton().click());
+  return menuItems().find((item) => item.textContent!.includes(label))!;
+};
+const toggleHide = () => { const item = listItem("비활성 숨기기"); act(() => item.click()); };
 const menuText = () => menuItems().map((item) => `${item.textContent}${item.disabled ? " ×" : ""}`);
 const cardMenu = (id: string) => act(() => cardMenuRef.current!({ id }, 30, 40)); // 창의 카드를 우클릭
 const mouse = (target: Element, type: string, init: MouseEventInit = {}) =>
@@ -650,13 +656,21 @@ it("빈 폴더는 기본으로 비활성이고, 숨기기를 켜면 타임라인
   act(() => cutCell("c1").click());
   expect(cuts()).toEqual(["c1", "c2", "c3"]);
   expect(offCuts()).toEqual(["c3"]); // 공유물도 넣은 것도 없는 폴더
-  expect(hideButton().textContent).toContain("1");
+  const hideItem = listItem("비활성 숨기기"); // 막대의 목록 단추 → 메뉴
+  expect(hideItem.textContent).toBe("비활성 숨기기1"); // 옆 숫자 = 비활성 폴더 수
+  expect(hideItem.getAttribute("aria-checked")).toBe("false");
+  press({ key: "Escape", code: "Escape" });
+  expect(trackMenu()).toBeNull();
   expect([...document.querySelectorAll(".ed-side .folder-tree-row.disabled .folder-tree-name")]
     .map((name) => name.textContent)).toEqual(["c3"]); // 왼쪽 폴더도 회색
 
-  act(() => hideButton().click());
+  toggleHide();
   expect(cuts()).toEqual(["c1", "c2"]);
-  expect(hideButton().getAttribute("aria-pressed")).toBe("true");
+  expect(trackMenu()).toBeNull(); // 고르면 메뉴는 닫힌다
+  expect(listButton().classList.contains("ed-on")).toBe(true); // 숨기는 중 — 단추가 라임이고 옆에 숨긴 폴더 수
+  expect(listButton().textContent).toBe("1");
+  expect(listItem("비활성 숨기기").getAttribute("aria-checked")).toBe("true");
+  press({ key: "Escape", code: "Escape" });
   expect(document.querySelector(".ed-seq")!.textContent).toContain("컷 2");
 
   // 재생헤드가 있는 c1 을 끈다 — 숨기기가 켜져 있어 타임라인에서 사라지고 재생헤드는 다음 컷으로 간다
@@ -668,7 +682,7 @@ it("빈 폴더는 기본으로 비활성이고, 숨기기를 켜면 타임라인
   press({ key: "z", code: "KeyZ", ctrlKey: true }); // 되돌리기로 다시 켜진다
   expect(cuts()).toEqual(["c1", "c2"]);
 
-  act(() => hideButton().click()); // 숨기기를 끄면 다 보이고, 빈 폴더도 D 로 켤 수 있다
+  toggleHide(); // 숨기기를 끄면 다 보이고, 빈 폴더도 D 로 켤 수 있다
   expect(cuts()).toEqual(["c1", "c2", "c3"]);
   act(() => cutCell("c3").click());
   press({ key: "d", code: "KeyD" });
@@ -703,14 +717,14 @@ it("숨긴 컷의 클립은 고르기에서 빠진다 — D·Delete·Ctrl+A 가 
   mouse(clips()[0], "pointerdown"); // 그 컷의 클립을 고른다
   expect(document.querySelectorAll(".ed-clip.ed-sel")).toHaveLength(1);
 
-  act(() => hideButton().click()); // 숨기면 c1 은 타임라인에 없다
+  toggleHide(); // 숨기면 c1 은 타임라인에 없다
   expect(clips()).toHaveLength(0);
   press({ key: "Delete", code: "Delete" }); // 고른 것이 없으니 아무것도 지우지 않는다
   press({ key: "a", code: "KeyA", ctrlKey: true });
   press({ key: "Delete", code: "Delete" });
   expect(stored().clips).toHaveLength(1);
 
-  act(() => hideButton().click());
+  toggleHide();
   expect(clips()).toHaveLength(1); // 클립은 그대로 남아 있다
   expect(document.querySelectorAll(".ed-clip.ed-sel")).toHaveLength(0);
 });
@@ -1161,4 +1175,48 @@ it("다이나믹 트림 모드: 엔진이 재생하지 못한 영상은 그 칸�
   act(() => { pane("timeline").querySelector(".ed-stage > video.ed-media")!.dispatchEvent(new Event("error")); });
   expect(after().querySelector(".ed-notice")!.textContent).toBe("이 영상을 재생하지 못했습니다.");
   expect(after().querySelector("video")).toBeNull(); // 그 칸도 영상을 다시 받지 않는다
+});
+
+// 빈 곳 채우기(Jay 2026-10-08) — 막대의 목록 단추에서 고른다. 최종 확인된 것이 1순위, 그다음은 최신.
+it("빈 곳 채우기: 비어 있는 컷마다 생성물 하나를 넣는다 — 최종 확인된 것이 먼저, 없으면 최신. 넣은 컷·꺼 둔 컷은 건드리지 않는다", () => {
+  mount(); // c1 = a · b(최종) · c2 = x · y(보류) · c3 = 빈 폴더. 공유 목록은 최신 먼저 온다
+  act(() => cutCell("c1").click());
+  const fill = listItem("빈 곳 채우기");
+  expect(fill.textContent).toBe("빈 곳 채우기2"); // 옆 숫자 = 채울 수 있는 빈 컷(c3 은 공유물이 없다)
+  act(() => fill.click());
+  expect(trackMenu()).toBeNull();
+  expect(storedTracks()).toEqual([["b", 1], ["x", 1]]); // c1 = 최종 확인된 b(더 최신인 a 보다 먼저) · c2 = 최신 x
+  expect(flashed[flashed.length - 1]).toBe("빈 곳 2개를 채웠습니다 — 최종 1개 · 최신 1개");
+  expect(listItem("빈 곳 채우기").disabled).toBe(true); // 더 채울 곳이 없다
+  press({ key: "Escape", code: "Escape" });
+
+  press({ key: "z", code: "KeyZ", ctrlKey: true }); // 한 번에 되돌린다
+  expect(stored().clips).toEqual([]);
+
+  act(() => cutCell("c2").click());
+  press({ key: "d", code: "KeyD" }); // c2 를 꺼 둔다 — 꺼 둔 컷은 채우지 않는다
+  expect(offCuts()).toEqual(["c2", "c3"]);
+  expect(listItem("빈 곳 채우기").textContent).toBe("빈 곳 채우기1");
+  act(() => menuItems().find((item) => item.textContent!.includes("빈 곳 채우기"))!.click());
+  expect(storedTracks()).toEqual([["b", 1]]);
+  press({ key: "d", code: "KeyD" }); // c2 를 다시 켠다 — 이미 넣은 c1 은 그대로 두고 c2 만 채운다
+  const again = listItem("빈 곳 채우기");
+  act(() => again.click());
+  expect(storedTracks()).toEqual([["b", 1], ["x", 1]]);
+});
+
+it("빈 곳 채우기: 공유 목록을 다시 받는 중·받지 못한 뒤에는 채우지 않는다 — 그동안 든 목록은 옛 것이다", () => {
+  world.state = "loading"; // 다시 받는 중 — 목록은 마지막으로 받은 것 그대로 들어 있다
+  mount();
+  act(() => cutCell("c1").click());
+  expect(listItem("빈 곳 채우기").disabled).toBe(true);
+  expect(listItem("빈 곳 채우기").textContent).toBe("빈 곳 채우기");
+  press({ key: "Escape", code: "Escape" });
+  world.state = "error";
+  mount();
+  expect(listItem("빈 곳 채우기").disabled).toBe(true);
+  press({ key: "Escape", code: "Escape" });
+  world.state = "capped"; // 2,000건에서 잘린 목록은 받은 것 안에서 고른다
+  mount();
+  expect(listItem("빈 곳 채우기").textContent).toBe("빈 곳 채우기2");
 });

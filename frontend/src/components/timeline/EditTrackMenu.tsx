@@ -1,6 +1,7 @@
 // 편집 탭의 우클릭 메뉴들(Jay 2026-10-08) — 껍데기(EditMenu) 하나를 같이 쓴다. 껍데기는 자리·바깥 누르기·키 차단만 맡는다.
 //  · EditTrackMenu — 카드 우클릭: 지금 타임라인에 있는 트랙(V3·V2·V1)을 보여 주고, 고르면 그 트랙에 넣는다(찬 트랙은 교체).
 //  · EditTrackHeadMenu — 트랙 머리 우클릭: 트랙 추가·위/아래로·삭제·빈 트랙 삭제·색(다빈치의 트랙 머리 메뉴).
+//  · EditListMenu — 막대의 목록 단추: 비활성 숨기기(켜고 끄기) · 빈 곳 채우기(한 번 실행).
 //  · 북마크 편집 창(EditMarkerMenu.tsx)도 이 껍데기를 쓴다.
 //  편집 탭이 연 폴더 창의 카드도 쓴다 — 창이 떠 있는 동안 .body 는 inert 라 body 로 옮겨 그린다. 틀·바깥 누르기는 폴더
 //  우클릭 메뉴(ProjectSection)와 같다.
@@ -197,6 +198,48 @@ export function EditTrackHeadMenu({
       {row("deleteEmpty", t("빈 트랙 모두 삭제"), can.removeEmpty)}
       <div className="ed-tmenu-sep" />
       <EditSwatches label={t("트랙 색")} value={color} onPick={(next) => onAct({ color: next })} onClear={() => onAct({ color: null })} />
+    </EditMenu>
+  );
+}
+
+// 막대의 목록 단추(Jay 2026-10-08) — 비활성 숨기기는 켜고 끄는 것(옆 숫자 = 비활성 폴더 수), 빈 곳 채우기는 한 번 실행하는
+//  것(옆 숫자 = 채울 수 있는 빈 컷 수 — 없으면 흐리다). 아래에 자리가 모자라면 단추 위로 뜬다.
+export function EditListMenu({
+  x,
+  top,
+  bottom,
+  hideOff,
+  offCount,
+  fillCount,
+  onHide,
+  onFill,
+  onClose,
+}: {
+  x: number;
+  top: number;
+  bottom: number;
+  hideOff: boolean;
+  offCount: number;
+  fillCount: number;
+  onHide: () => void;
+  onFill: () => void;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const height = HEAD_H - 22 + 2 * ROW_H; // 제목 줄이 없다
+  const y = bottom + 4 + height > window.innerHeight ? top - 4 - height : bottom + 4;
+  return (
+    <EditMenu x={x} y={y} width={190} height={height} label={t("타임라인 정리")} onClose={onClose}>
+      <button type="button" role="menuitemcheckbox" aria-checked={hideOff} autoFocus className={"ed-tmenu-item" + (hideOff ? " ed-here" : "")}
+        title={t("비활성 폴더(빈 폴더·D 로 끈 폴더)를 타임라인에서 숨깁니다. 컷 이름을 누르고 D 를 누르면 그 폴더를 켜고 끕니다.")} onClick={onHide}>
+        {t("비활성 숨기기")}
+        <i>{hideOff ? "✓ " : ""}{offCount || ""}</i>
+      </button>
+      <button type="button" role="menuitem" className="ed-tmenu-item" disabled={!fillCount}
+        title={t("비어 있는 컷마다 생성물 하나를 넣습니다 — 최종 확인된 것이 먼저, 없으면 최신. 되돌리기(Ctrl+Z) 한 번에 돌아옵니다.")} onClick={onFill}>
+        {t("빈 곳 채우기")}
+        <i>{fillCount || ""}</i>
+      </button>
     </EditMenu>
   );
 }

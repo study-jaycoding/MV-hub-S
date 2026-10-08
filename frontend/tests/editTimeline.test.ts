@@ -13,6 +13,7 @@ import {
   deleteTrack,
   editPoints,
   emptyEditDoc,
+  fillEmptyCuts,
   genSeconds,
   groupByCut,
   insertClip,
@@ -560,5 +561,21 @@ describe("다이나믹 트림 모드 — 편집점의 앞 | 뒤", () => {
     const gens = (point: number) => shotsAt(thinLayout, thin, thinPoints, point).map((shot) => shot!.clip!.gen);
     expect(gens(5)).toEqual(["v3", "v2"]); // 1/4 프레임 뒤면 v1 이지만, 그 사이 0.005초는 v2 다
     expect(gens(5.005)).toEqual(["v2", "v1"]);
+  });
+});
+
+// 빈 곳 채우기(Jay 2026-10-08) — 클립이 하나도 없는 컷에만, 컷마다 하나씩.
+describe("빈 곳 채우기", () => {
+  const pick = (cut: string, gen: string) => ({ cut: `${SEQ}/${cut}`, gen, job: `job-${gen}`, kind: "image" as const, dur: 5 });
+
+  it("빈 컷에만 넣는다 — 넣는 자리는 넣기와 같고(안 잠긴 가장 낮은 트랙), 넣은 것이 없으면 null", () => {
+    const base = doc([clip("c1", "a", 2)], { tracksLocked: [1] });
+    const filled = fillEmptyCuts(base, [pick("c1", "z"), pick("c2", "x"), pick("c3", "y")])!;
+    expect(tracksOf(filled)).toEqual({ a: 2, x: 2, y: 2 }); // c1 은 이미 클립이 있다 · V1 은 잠겨 있어 V2 로
+    expect(filled.clips.find((item) => item.gen === "x")).toEqual({ cut: "e070/c2", gen: "x", track: 2, kind: "image", dur: 5, job: "job-x" });
+    expect(base.clips).toHaveLength(1); // 원본은 그대로
+    expect(fillEmptyCuts(filled, [pick("c2", "x2"), pick("c3", "y2")])).toBeNull(); // 더 채울 곳이 없다
+    expect(fillEmptyCuts(base, [])).toBeNull();
+    expect(tracksOf(fillEmptyCuts(doc([]), [pick("c2", "x"), pick("c2", "x2")]))).toEqual({ x: 1 }); // 한 컷에 하나만
   });
 });
