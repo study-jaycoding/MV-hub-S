@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  addMarker,
+  addTrack,
   buildLayout,
   clipKey,
   cutIsOff,
   cutOf,
   cutPaths,
   DEFAULT_SEC,
+  deleteEmptyTracks,
+  deleteTrack,
   editPoints,
   emptyEditDoc,
   genSeconds,
@@ -14,14 +18,24 @@ import {
   insertTrack,
   isUsableGen,
   linkClip,
+  markerAt,
+  markerKey,
+  markRange,
+  markTime,
   moveClipToTrack,
+  moveTrack,
   parseEditDoc,
+  patchMarker,
   placeClip,
   posAt,
   removeClips,
+  removeMarker,
   setClipDurs,
+  setMark,
   settlePos,
+  setTrackColor,
   shiftClips,
+  shownMarkers,
   stepPoint,
   timecode,
   timeOf,
@@ -29,6 +43,7 @@ import {
   toggleCutOff,
   toggleTrack,
   trackClip,
+  trackCount,
   validSeconds,
   visibleClip,
   visibleSegments,
@@ -356,5 +371,143 @@ describe("공유 목록과 잇기", () => {
     const image = gen("a", "x");
     image.assets[0].type = "image";
     expect(genSeconds(image, 9)).toBe(DEFAULT_SEC);
+  });
+});
+
+// 트랙 머리 우클릭 메뉴(Jay 2026-10-08) — 다빈치의 Add Track · Move Track Up/Down · Delete Track · Delete Empty Tracks · 색.
+describe("트랙 더하기·빼기·옮기기", () => {
+  const base = doc(
+    [clip("c1", "a", 1), clip("c1", "b", 2), clip("c2", "x", 2), clip("c2", "y", 3)],
+    { tracksOff: [2], tracksLocked: [3], trackColors: { 2: "#e5484d" } },
+  );
+
+  it("이 위에 추가하면 그 위의 트랙이 한 줄씩 올라가고 끔·잠금·색이 따라간다", () => {
+    const next = addTrack(base, 1)!;
+    expect(tracksOf(next)).toEqual({ a: 1, b: 3, x: 3, y: 4 });
+    expect(next).toMatchObject({ tracks: 4, tracksOff: [3], tracksLocked: [4], trackColors: { 3: "#e5484d" } });
+    expect(buildLayout([], next).tracks).toBe(4);
+    expect(addTrack(base, 3)).toMatchObject({ tracks: 4, tracksLocked: [3] }); // 맨 위에 추가 — 아무것도 안 밀린다
+    expect(tracksOf(addTrack(base, 3))).toEqual(tracksOf(base));
+    expect(addTrack(base, 4)).toBeNull(); // 없는 트랙
+    expect(trackCount(emptyEditDoc())).toBe(3); // 적어 둔 줄 수가 없으면 기본 3줄
+    expect(trackCount(doc([clip("c1", "a", 5)], { tracks: 2 }))).toBe(5); // 클립이 있는 트랙보다 적게는 안 그린다
+  });
+
+  it("위/아래로 옮기면 옆 트랙과 통째로 자리를 바꾼다 — 잠긴 트랙이 걸리면 거부", () => {
+    const next = moveTrack(base, 1, 1)!;
+    expect(tracksOf(next)).toEqual({ a: 2, b: 1, x: 1, y: 3 });
+    expect(next).toMatchObject({ tracksOff: [1], trackColors: { 1: "#e5484d" } });
+    expect(next.tracks).toBe(3); // 줄 수는 그대로
+    const top = moveTrack(doc([clip("c1", "a", 4)], { trackColors: { 3: "#46a758" } }), 4, -1)!; // 맨 위 줄의 클립을 내린다
+    expect(trackCount(top)).toBe(4); // 빈 줄이 된 맨 위 줄이 사라지지 않는다
+    expect(top.trackColors).toEqual({ 4: "#46a758" });
+    expect(moveTrack(base, 2, 1)).toBeNull(); // V3 가 잠겨 있다
+    expect(moveTrack(base, 3, -1)).toBeNull();
+    expect(moveTrack(base, 1, -1)).toBeNull(); // 맨 아래
+    expect(moveTrack({ ...base, tracksLocked: [] }, 3, 1)).toBeNull(); // 맨 위
+  });
+
+  it("트랙을 지우면 그 트랙의 클립도 빠지고 위가 내려온다 — 잠긴 트랙·마지막 한 줄은 거부", () => {
+    const next = deleteTrack(base, 2)!;
+    expect(tracksOf(next)).toEqual({ a: 1, y: 2 });
+    expect(next).toMatchObject({ tracks: 2, tracksOff: [], tracksLocked: [2] });
+    expect(next.trackColors).toBeUndefined();
+    expect(deleteTrack(base, 3)).toBeNull(); // 잠김
+    expect(deleteTrack(doc([], { tracks: 1 }), 1)).toBeNull(); // 한 줄은 남긴다
+    expect(parseEditDoc(JSON.parse(JSON.stringify(next)))).toEqual(next); // 저장했다 읽어도 같다
+  });
+
+  it("빈 트랙 모두 삭제 — 클립이 있는 트랙만 남기고 번호를 당긴다", () => {
+    const sparse = doc([clip("c1", "a", 2), clip("c1", "b", 5)], { tracksOff: [5], tracksLocked: [1], trackColors: { 5: "#46a758" } });
+    const next = deleteEmptyTracks(sparse)!;
+    expect(tracksOf(next)).toEqual({ a: 1, b: 2 });
+    expect(next).toMatchObject({ tracks: 2, tracksOff: [2], tracksLocked: [], trackColors: { 2: "#46a758" } });
+    expect(deleteEmptyTracks(next)).toBeNull(); // 더 지울 것이 없다
+    expect(deleteEmptyTracks(emptyEditDoc())).toMatchObject({ tracks: 1 }); // 클립이 없어도 한 줄은 남는다
+  });
+
+  it("트랙 색을 정하고 없앤다 — 저장된 값은 #rrggbb 만 받는다", () => {
+    const next = setTrackColor(base, 1, "#3b9eff")!;
+    expect(next.trackColors).toEqual({ 1: "#3b9eff", 2: "#e5484d" });
+    expect(setTrackColor(next, 1, "#3b9eff")).toBeNull();
+    expect(setTrackColor(doc([], { trackColors: { 1: "#3b9eff" } }), 1, null)!.trackColors).toBeUndefined();
+    expect(parseEditDoc(JSON.parse(JSON.stringify(next)))!.trackColors).toEqual(next.trackColors);
+    expect(parseEditDoc({ ...emptyEditDoc(), trackColors: { 1: "red" } })).toBeNull();
+    expect(parseEditDoc({ ...emptyEditDoc(), tracks: 0 })).toBeNull();
+  });
+});
+
+// 마크 인/아웃·북마크(Jay 2026-10-08) — 자리는 재생헤드와 같은 좌표((컷, 컷 안 시각)).
+describe("마크 인/아웃·북마크", () => {
+  const cuts3 = [`${SEQ}/c1`, `${SEQ}/c2`, `${SEQ}/c3`];
+  const d = doc([clip("c1", "a", 1, { dur: 8 }), clip("c3", "p", 1, { dur: 4 })]);
+  const layout = buildLayout(cuts3, d); // c1 0~8 · c2(빈 컷) 8~13 · c3 13~17
+  const at = (time: number) => posAt(layout, time)!;
+
+  it("인/아웃은 (컷, 컷 안 시각)으로 적는다 — 순서가 뒤집히면 반대쪽을 지운다", () => {
+    let next = setMark(d, layout, "markIn", at(2))!;
+    next = setMark(next, layout, "markOut", at(10))!;
+    expect(next).toMatchObject({ markIn: { cut: "e070/c1", local: 2 }, markOut: { cut: "e070/c2", local: 2 } });
+    expect(markRange(layout, next)).toEqual({ from: 2, to: 10 });
+    expect(setMark(next, layout, "markOut", at(10))).toBeNull(); // 같은 자리
+    const flipped = setMark(next, layout, "markIn", at(12))!; // 인을 아웃 뒤에 — 아웃을 지운다
+    expect(flipped.markOut).toBeUndefined();
+    expect(markRange(layout, flipped)).toEqual({ from: 12, to: 17 }); // 한쪽만 있으면 끝까지
+    expect(setMark(next, layout, "markOut", at(1))!.markIn).toBeUndefined(); // 아웃을 인 앞에 — 인을 지운다
+    expect(markRange(layout, setMark(d, layout, "markOut", at(5))!)).toEqual({ from: 0, to: 5 });
+    const cleared = setMark(setMark(next, layout, "markIn", null)!, layout, "markOut", null)!;
+    expect(cleared.markIn ?? cleared.markOut).toBeUndefined();
+    expect(setMark(d, layout, "markIn", null)).toBeNull();
+    expect(markRange(layout, d)).toBeNull();
+    // 두 프레임보다 짧으면 구간으로 치지 않는다(표시는 따로 남는다 — 띠·반복만 없다)
+    const tiny = (frames: number) => markRange(layout, setMark(setMark(d, layout, "markIn", at(2))!, layout, "markOut", at(2 + frames / 24))!);
+    expect(tiny(1)).toBeNull();
+    expect(tiny(2)).toEqual({ from: 2, to: 2 + 2 / 24 });
+  });
+
+  it("그 컷이 숨겨지거나 그 자리보다 짧아지면 문서에는 남고 화면에서만 빠진다", () => {
+    const marked: EditDoc = { ...d, markIn: at(2), markOut: at(10) };
+    const hidden = buildLayout([cuts3[0], cuts3[2]], marked); // c2 를 숨겼다 — c1 0~8 · c3 8~12
+    expect(markTime(hidden, marked.markOut)).toBeNull();
+    expect(markRange(hidden, marked)).toEqual({ from: 2, to: 12 });
+    const short = buildLayout(cuts3, doc([clip("c1", "a", 1, { dur: 1 }), clip("c3", "p", 1, { dur: 4 })]));
+    expect(markTime(short, marked.markIn)).toBeNull(); // 끝으로 자르지 않는다
+    expect(markTime(short, marked.markOut)).toBe(3); // 앞 컷이 짧아진 만큼 당겨진다 — 그 컷 안의 자리는 그대로
+    // 안 보이는 쪽은 순서를 따지지 않는다 — 다시 보이게 되면 그대로 쓰인다
+    expect(setMark(marked, hidden, "markIn", posAt(hidden, 11)!)!.markOut).toEqual(marked.markOut);
+    expect(parseEditDoc(JSON.parse(JSON.stringify(marked)))).toMatchObject({ markIn: marked.markIn, markOut: marked.markOut });
+    expect(parseEditDoc({ ...emptyEditDoc(), markIn: { cut: "e070/c1", local: -1 } })).toBeNull();
+  });
+
+  it("북마크는 (컷, 프레임)에 하나 — 고치고 지울 때는 원래 열쇠로 찾는다", () => {
+    let next = addMarker(d, at(2))!;
+    next = addMarker(next, at(9))!;
+    expect(addMarker(next, { cut: "e070/c1", local: 2.01 })).toBeNull(); // 같은 프레임
+    const [first, second] = shownMarkers(layout, next);
+    expect([first.time, second.time]).toEqual([2, 9]);
+    expect(first.key).toBe(markerKey(at(2)));
+    next = patchMarker(next, first.key, { name: " 여기부터 ", color: "#e5484d" })!;
+    expect(next.markers![0]).toEqual({ cut: "e070/c1", local: 2, color: "#e5484d", name: "여기부터" });
+    expect(patchMarker(next, first.key, { name: "여기부터" })).toBeNull(); // 바뀐 것이 없다
+    expect(patchMarker(next, "없는 열쇠", { name: "x" })).toBeNull();
+    expect(patchMarker(next, first.key, { name: "" })!.markers![0].name).toBeUndefined();
+    expect(parseEditDoc(JSON.parse(JSON.stringify(next)))!.markers).toEqual(next.markers);
+    expect(parseEditDoc({ ...emptyEditDoc(), markers: [at(2), at(2)] })).toBeNull(); // 겹친 열쇠
+    next = removeMarker(next, second.key)!;
+    expect(shownMarkers(layout, next).map((item) => item.time)).toEqual([2]);
+    expect(removeMarker(next, second.key)).toBeNull();
+    expect(removeMarker(next, first.key)!.markers).toBeUndefined();
+  });
+
+  it("재생헤드 자리의 북마크 — 같은 프레임이면 찾고, 컷 경계에서는 앞 컷 끝에 찍은 것도 찾는다", () => {
+    const end = { cut: "e070/c1", local: 8 }; // 앞 컷의 끝(다음 컷의 처음과 같은 시각인데 열쇠가 다르다)
+    const marked: EditDoc = { ...d, markers: [{ cut: "e070/c1", local: 1.022 }, end] };
+    const shown = shownMarkers(layout, marked);
+    expect(markerAt(layout, shown, 1.061)?.marker.local).toBe(1.022); // 반 프레임보다 멀어도 같은 프레임(열쇠)이다
+    expect(markerAt(layout, shown, 1.1)).toBeNull();
+    expect(markerAt(layout, shown, 8)?.marker).toEqual(end);
+    expect(markerAt(layout, shown, 8.5)).toBeNull();
+    const shorter = buildLayout([cuts3[0]], doc([clip("c1", "a", 1, { dur: 4 })]));
+    expect(shownMarkers(shorter, marked).map((item) => item.time)).toEqual([1.022]); // 길이 밖의 것은 숨는다(문서에는 남는다)
   });
 });

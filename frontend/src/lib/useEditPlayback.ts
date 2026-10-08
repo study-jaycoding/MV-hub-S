@@ -66,6 +66,7 @@ export function useEditPlayback({
   videoRef,
   paint,
   loop = false,
+  range = null,
 }: {
   scope: string; // 시퀀스(문서) — 바뀌면 위치를 처음으로 돌린다(옛 시퀀스의 컷 이름으로 새 자리를 짐작하지 않는다)
   layout: EditLayout;
@@ -74,10 +75,11 @@ export function useEditPlayback({
   videoRef: RefObject<EditVideo | null>;
   paint: (time: number) => void;
   loop?: boolean; // 반복 — 정방향으로 끝에 닿으면 처음부터 이어 튼다(역방향은 처음에서 멈춘다)
+  range?: { from: number; to: number } | null; // 마크 인/아웃 구간(전체 시각) — 반복이 켜져 있으면 이 구간을 되풀이한다
 }) {
   const [view, setView] = useState<EditView>(STOPPED);
-  const live = useRef({ layout, doc, sourceOf, paint, loop });
-  live.current = { layout, doc, sourceOf, paint, loop };
+  const live = useRef({ layout, doc, sourceOf, paint, loop, range });
+  live.current = { layout, doc, sourceOf, paint, loop, range };
   const pos = useRef<EditPos | null>(null);
   const run = useRef({
     playing: false,
@@ -88,6 +90,7 @@ export function useEditPlayback({
     loaded: false, // 지금 소스의 메타데이터를 받았다(그 전에는 탐색하지 않는다 — loadedmetadata 가 최신 목표로 보낸다)
     shown: "", // 지금 올려 둔 소스의 열쇠(클립 열쇠 + 주소). 빈 문자열 = 영상 없음
     failed: new Set<string>(), // 재생하지 못한 클립 열쇠
+    armed: false, // 구간 반복 — 마지막으로 위치를 옮긴 뒤 구간 끝(아웃) 앞에 있었다. 아웃 뒤에서 시작했으면 꺼진 채다
     frame: 0,
     last: 0,
   });
@@ -195,12 +198,32 @@ export function useEditPlayback({
       sync(!adopt);
     };
 
+    // 구간 반복(마크 인/아웃) — 반복이 켜져 있고 구간이 있으면 아웃을 넘는 순간 인으로 돌아간다. '넘는 순간'을 tick 앞뒤 시각의
+    //  비교로만 보면 영상의 ended 가 위치를 먼저 아웃으로 옮긴 때를 놓친다 → 아웃 앞에 있었는지를 적어 둔다(armed).
+    //  아웃 뒤에서 시작했거나 아웃 뒤로 훑었으면 꺼진 채라 끝까지 간 뒤(전체 끝) 구간 처음으로 들어온다(Codex 설계 검토).
+    const arm = () => {
+      const range = live.current.range;
+      state.armed = !!range && now() < range.to;
+    };
+    // 반복 — 구간 처음(구간이 없으면 맨 처음)으로 돌아가 이어 튼다. 위치를 옮긴 것과 같게 다룬다: 영상이 그 자리에 닿을 때까지
+    //  시간이 선다(같은 영상으로 되돌아오는 한 클립짜리도 같은 길 — 끝난 영상의 옛 시각을 시계로 읽지 않는다).
+    const loopBack = () => {
+      pos.current = posAt(live.current.layout, live.current.range?.from ?? 0);
+      arm(); // 아웃 뒤에서 시작해 전체 끝을 돌아 들어온 때 — 다음 tick 전에 영상이 끝나도 구간을 지키게(Codex 코드 리뷰)
+      sync(true);
+      live.current.paint(now());
+      state.frame = requestAnimationFrame(tick);
+    };
+
     const tick = (stamp: number) => {
       if (!state.playing || !pos.current) return;
       const { cuts } = live.current.layout;
       let slot = slotOf(pos.current.cut);
       if (!slot) return stop();
       let local = pos.current.local;
+      const range = live.current.loop && state.rate > 0 ? live.current.range : null;
+      if (!range) state.armed = false;
+      else if (slot.start + local < range.to) state.armed = true;
       if (state.owner === "video") {
         // 영상이 시계 — 아직 목표 위치에 못 왔거나 버퍼링 중이면 시간도 선다.
         const video = videoRef.current;
@@ -211,15 +234,7 @@ export function useEditPlayback({
       state.last = stamp;
       if (state.rate > 0 && local >= slot.len) {
         const next = cuts[cuts.indexOf(slot) + 1];
-        if (!next && live.current.loop) {
-          // 반복 — 처음으로 돌아가 이어 튼다. 위치를 옮긴 것과 같게 다룬다: 영상이 그 자리에 닿을 때까지 시간이 선다
-          //  (같은 영상으로 되돌아오는 한 클립짜리도 같은 길 — 끝난 영상의 옛 시각을 시계로 읽지 않는다).
-          pos.current = { cut: cuts[0].path, local: 0 };
-          sync(true);
-          live.current.paint(now());
-          state.frame = requestAnimationFrame(tick);
-          return;
-        }
+        if (!next && live.current.loop) return loopBack();
         if (!next) {
           pos.current = { cut: slot.path, local: slot.len }; // 전체 끝 = 정지점
           live.current.paint(now());
@@ -237,6 +252,7 @@ export function useEditPlayback({
         slot = prev;
         local = Math.max(0, prev.len - 1 / EDIT_FPS);
       }
+      if (range && state.armed && slot.start + local >= range.to) return loopBack();
       pos.current = { cut: slot.path, local };
       sync(false);
       live.current.paint(now());
@@ -252,6 +268,7 @@ export function useEditPlayback({
       state.playing = true;
       state.rate = rate;
       state.last = performance.now();
+      arm();
       sync(true);
       state.frame = requestAnimationFrame(tick);
     };
@@ -259,6 +276,7 @@ export function useEditPlayback({
     const seek = (time: number) => {
       wanted.current = null;
       pos.current = posAt(live.current.layout, time);
+      arm();
       sync(true);
       live.current.paint(now());
     };

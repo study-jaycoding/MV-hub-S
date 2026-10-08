@@ -35,6 +35,8 @@ export interface ViewerProps {
   rate: number; // 음수 = 역방향
   total: number; // 전체 길이(초)
   marks: readonly number[]; // 타임바의 표시(컷 경계, 초)
+  range?: { from: number; to: number } | null; // 마크 인/아웃 구간 — 타임바에 띠로
+  flags?: readonly { time: number; color?: string }[]; // 북마크 — 타임바 아래의 점
   registerPaint: (paint: (time: number) => void) => () => void; // 이 판의 시각·타임바를 그릴 함수를 시계에 건다
   controls: ViewerControls;
   loop: boolean;
@@ -47,8 +49,10 @@ export interface ViewerProps {
   dualButton: { dual: boolean; onToggle: () => void } | null; // 싱글/듀얼 단추 — 맨 오른쪽 판에만
 }
 
+const NO_FLAGS: readonly { time: number; color?: string }[] = [];
+
 export function EditViewer({
-  order, mode, options, onMode, shown, videoRef, muted, playing, rate, total, marks, registerPaint, controls,
+  order, mode, options, onMode, shown, videoRef, muted, playing, rate, total, marks, range = null, flags = NO_FLAGS, registerPaint, controls,
   loop, onLoop, label, detail, empty, active, onActivate, dualButton,
 }: ViewerProps) {
   const t = useT();
@@ -140,7 +144,7 @@ export function EditViewer({
         {!empty && detail && <span className="ed-chip ed-chip-r">{detail}</span>}
       </div>
       <div className="ed-vbot" onMouseDown={keepFocus}>
-        {/* 타임바 — 누르거나 끌어서 훑는다. 빨강 = 지금 자리, 파랑 = 컷 경계 */}
+        {/* 타임바 — 누르거나 끌어서 훑는다. 빨강 = 지금 자리, 파랑 = 컷 경계, 밝은 띠 = 인/아웃 구간, 아래 점 = 북마크 */}
         <div className="ed-scrub" role="slider" aria-label={t("타임바")} aria-valuemin={0} aria-valuemax={Math.round(total)} aria-valuenow={0}
           onPointerDown={(event) => {
             if (event.button !== 0) return;
@@ -152,7 +156,13 @@ export function EditViewer({
           }}>
           <div className="ed-scrub-track" ref={trackRef}>
             <div className="ed-scrub-fill" ref={fillRef} />
+            {total > 0 && range && (
+              <div className="ed-scrub-range" style={{ left: `${(range.from / total) * 100}%`, width: `${((range.to - range.from) / total) * 100}%` }} />
+            )}
             {total > 0 && marks.map((mark) => <i key={mark} style={{ left: `${(mark / total) * 100}%` }} />)}
+            {total > 0 && flags.map((flag) => (
+              <span className="ed-scrub-mk" key={flag.time} style={{ left: `${(flag.time / total) * 100}%`, background: flag.color }} />
+            ))}
             <div className="ed-scrub-head" ref={headRef} />
           </div>
         </div>

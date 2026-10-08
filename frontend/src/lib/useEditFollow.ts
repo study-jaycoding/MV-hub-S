@@ -50,6 +50,7 @@ export function useEditFollow({
       loaded: false,
       failed: new Set<string>(),
       lastTime: Number.NaN,
+      rewound: false,
       movedAt: 0,
       frame: 0,
     };
@@ -89,15 +90,22 @@ export function useEditFollow({
         video.load();
       } else if (video && playable && state.loaded) {
         if (time !== state.lastTime) state.movedAt = stamp;
+        // 시각이 뒤로 갔다(반복·구간 반복으로 되돌아감) — 어긋남 보정이 아니라 자리 옮김이라, 작은 차이여도 한 번 정확히 맞춘다
+        //  (짧은 구간을 되풀이할 때 0.2초 안이라고 그냥 두면 이 판만 구간 밖을 튼다 — Codex 설계 검토).
+        if (time < state.lastTime) state.rewound = true;
         const going = on && speed > 0 && stamp - state.movedAt < STALL_MS;
         const off = Math.abs(video.currentTime - pos!.local);
         if (going) {
           video.playbackRate = Math.max(1, speed);
-          if (off > DRIFT && !video.seeking) video.currentTime = pos!.local;
+          if (!video.seeking) {
+            if (off > (state.rewound ? EXACT : DRIFT)) video.currentTime = pos!.local;
+            state.rewound = false;
+          }
           if (video.paused) void video.play().catch(() => {}); // 소스가 갈리며 끊긴 재생 요청은 실패가 아니다
         } else {
           if (!video.paused) video.pause();
           if (off > EXACT && !video.seeking) video.currentTime = pos!.local;
+          state.rewound = false; // 서 있으면 어차피 정확히 맞춘다
         }
       }
       state.lastTime = time;

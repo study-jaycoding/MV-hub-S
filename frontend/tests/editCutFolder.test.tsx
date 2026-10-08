@@ -2,7 +2,8 @@
 // 편집 탭(Jay 2026-10-08) — 미디어 풀(폴더 목록 옆: 보기 방식·크기·검색·정렬, 고르기·넣기/빼기·우클릭 트랙 메뉴) ·
 // 뷰어 판(싱글/듀얼·무엇을 볼지·타임바·반복·키 대상) · 풀의 Resolve 보내기 · 그림을 누르면 그 컷으로 · 컷 더블클릭 = 공유 & 리뷰의 폴더 창 열기(무엇을 열지만 App 에 알린다) ·
 // 그 창의 카드 우클릭 = 넣을 트랙 고르기(찬 트랙은 교체) · 빈 폴더 기본 비활성과 숨기기 · D 로 폴더 켜고 끄기 ·
-// 왼쪽 폴더 옆의 새 항목·최종·보류 표시 · 공유 목록과 폴더 옆 숫자 다시 받기.
+// 왼쪽 폴더 옆의 새 항목·최종·보류 표시 · 공유 목록과 폴더 옆 숫자 다시 받기 ·
+// 트랙 머리 우클릭(트랙 추가·옮기기·삭제·색) · 마크 인/아웃 · 북마크.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -421,8 +422,8 @@ it("뷰어 판: 재생 키는 마지막에 누른 판의 시계로 간다 — �
   expect(playingIn("timeline")).toBe(false);
   press({ key: "k", code: "KeyK" });
   expect(playingIn("source")).toBe(false);
-  press({ key: "m", code: "KeyM" }); // 편집 키는 언제나 타임라인 것이다
-  expect(stored().muted).toBe(true);
+  press({ key: "m", code: "KeyM" }); // 편집 키(M = 북마크)는 언제나 타임라인 것이다
+  expect(stored().markers).toHaveLength(1);
 
   mouse(document.querySelector(".ed-tl")!, "mousedown"); // 아래 타임라인을 누르면 다시 타임라인
   expect(pane("timeline").classList.contains("ed-view-on")).toBe(true);
@@ -601,16 +602,16 @@ it("트랙 메뉴: Esc 는 메뉴가 먹고, 잠긴 트랙은 고를 수 없고,
   cardMenu("a"); // 잠긴 트랙에 있는 카드는 어디로도 못 옮긴다 — 고를 줄이 하나도 없다
   expect(menuText()).toEqual(["V3잠김 ×", "V2잠김 ×", "V1지금 여기 ×"]);
   expect(document.activeElement).toBe(trackMenu()); // 단추가 없어도 메뉴가 초점을 받는다
-  // 초점이 메뉴 밖에 있어도(Tab 으로 빠져나갔다) 뒤 화면의 편집 키는 실행되지 않는다 — M(소리 끄기)·D(폴더 끄기)
+  // 초점이 메뉴 밖에 있어도(Tab 으로 빠져나갔다) 뒤 화면의 편집 키는 실행되지 않는다 — M(북마크)·D(폴더 끄기)
   act(() => document.querySelector<HTMLElement>(".ed-root")!.focus());
   press({ key: "m", code: "KeyM" }, document.querySelector(".ed-root")!);
   press({ key: "d", code: "KeyD" });
-  expect(stored().muted).toBeUndefined();
+  expect(stored().markers).toBeUndefined();
   expect(offCuts()).toEqual(["c3"]);
   mouse(document.body, "mousedown"); // 바깥 누르기
   expect(trackMenu()).toBeNull();
   press({ key: "m", code: "KeyM" }); // 닫히면 다시 듣는다
-  expect(stored().muted).toBe(true);
+  expect(stored().markers).toHaveLength(1);
 });
 
 // 공유 목록을 끝까지 받기 전에는 job 으로 이은 클립이 어느 카드인지 모른다 — 그때 그 카드를 또 넣으면 같은 생성물이 두 트랙에
@@ -775,4 +776,156 @@ it("공유 목록의 상태는 타임라인 위 막대에 보인다 — 워크�
   world.state = "capped";
   mount();
   expect(bar()).toContain("최대 2,000건까지만 표시합니다.");
+});
+
+// ── 트랙 머리 우클릭 메뉴 · 마크 인/아웃 · 북마크(Jay 2026-10-08, 다빈치의 타임라인) ──
+const heads = () => [...document.querySelectorAll<HTMLElement>(".ed-head.ed-h-v")];
+const headOf = (track: number) => heads().find((head) => head.querySelector("b")!.textContent === `V${track}`)!;
+const menuItem = (label: string) => menuItems().find((item) => item.textContent!.includes(label))!;
+const bookmarks = () => [...document.querySelectorAll<HTMLButtonElement>(".ed-ruler .ed-mk")];
+const nameInput = () => document.querySelector<HTMLInputElement>(".ed-mmenu .ed-mmenu-name")!;
+
+it("트랙 머리 우클릭: 트랙을 더하고 옮기고 지운다 — 클립·잠금이 트랙을 따라가고, 지운 것은 되돌리기로 살린다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c1", gen: "b", track: 2 }], { tracksLocked: [3] });
+  mount();
+  act(() => cutCell("c1").click());
+  expect(heads().map((head) => head.querySelector("b")!.textContent)).toEqual(["V3", "V2", "V1"]);
+  expect(rightClick(headOf(1)).defaultPrevented).toBe(true);
+  expect(menuText()).toEqual(["이 위에 트랙 추가", "트랙 위로 옮기기", "트랙 아래로 옮기기 ×", "트랙 삭제클립 1개", "빈 트랙 모두 삭제"]);
+  act(() => menuItem("이 위에 트랙 추가").click());
+  expect(trackMenu()).toBeNull();
+  expect(heads()).toHaveLength(4);
+  expect(storedTracks()).toEqual([["a", 1], ["b", 3]]);
+  expect(stored()).toMatchObject({ tracks: 4, tracksLocked: [4] }); // 잠금도 그 트랙을 따라 올라간다
+  expect(document.activeElement).toBe(document.querySelector(".ed-root")); // 메뉴가 닫히면 편집 키가 돌아온다
+
+  rightClick(headOf(3));
+  expect(menuItem("트랙 위로 옮기기").disabled).toBe(true); // 위(V4)가 잠겨 있다
+  act(() => menuItem("트랙 아래로 옮기기").click()); // V3(b) ↔ V2(빈 줄)
+  expect(storedTracks()).toEqual([["a", 1], ["b", 2]]);
+
+  rightClick(headOf(4));
+  expect(menuItem("트랙 삭제").disabled).toBe(true); // 잠긴 트랙은 못 지운다
+  act(() => menuItem("빈 트랙 모두 삭제").click()); // V3·V4(잠겼어도 비었다)가 사라진다
+  expect(heads()).toHaveLength(2);
+  expect(stored()).toMatchObject({ tracks: 2, tracksLocked: [] });
+
+  rightClick(headOf(2));
+  act(() => menuItem("트랙 삭제").click()); // 그 트랙의 클립(b)도 빠진다
+  expect(storedTracks()).toEqual([["a", 1]]);
+  expect(heads()).toHaveLength(1);
+  rightClick(headOf(1));
+  expect(menuItem("트랙 삭제").disabled).toBe(true); // 마지막 한 줄
+  press({ key: "Escape", code: "Escape" });
+  expect(trackMenu()).toBeNull();
+  press({ key: "z", code: "KeyZ", ctrlKey: true }); // 되돌리기 — 지운 트랙과 클립이 돌아온다
+  expect(storedTracks()).toEqual([["a", 1], ["b", 2]]);
+  expect(heads()).toHaveLength(2);
+
+  rightClick(headOf(2)); // 트랙 색 — 머리와 그 줄에 색 띠
+  act(() => document.querySelector<HTMLButtonElement>(".ed-hmenu .ed-swatch")!.click());
+  expect(stored().trackColors).toEqual({ 2: "#e5484d" });
+  expect(headOf(2).style.getPropertyValue("--trk")).toBe("#e5484d");
+  expect(document.querySelector<HTMLElement>('.ed-lane[data-track="2"]')!.style.getPropertyValue("--trk")).toBe("#e5484d");
+  expect(flashed).toEqual([]);
+});
+
+it("마크 인/아웃: I·O 로 찍고 Alt 로 지우고 Shift 로 그 자리에 간다 — 눈금자와 뷰어 타임바에 구간이 보인다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }]);
+  mount();
+  act(() => cutCell("c1").click());
+  press({ key: "ArrowRight", code: "ArrowRight", shiftKey: true }); // 1초
+  press({ key: "i", code: "KeyI" });
+  act(() => cutCell("c2").click()); // 5초
+  press({ key: "o", code: "KeyO" });
+  expect(stored()).toMatchObject({ markIn: { cut: "e070/c1", local: 1 }, markOut: { cut: "e070/c2", local: 0 } });
+  const band = document.querySelector<HTMLElement>(".ed-ruler .ed-inout")!;
+  expect([band.style.left, band.style.width]).toEqual(["20px", "80px"]); // 1초~5초(20px/초)
+  expect(document.querySelector(".ed-ruler .ed-mark-in")).not.toBeNull();
+  expect(document.querySelector(".ed-ruler .ed-mark-out")).not.toBeNull();
+  expect(document.querySelector(".ed-inout-shade")).not.toBeNull();
+  expect(parseFloat(pane("timeline").querySelector<HTMLElement>(".ed-scrub-range")!.style.left)).toBeCloseTo(100 / 15); // 전체 15초의 1초
+  expect(pane("source").querySelector(".ed-scrub-range")).toBeNull(); // 소스 판에는 없다
+  expect(document.querySelector(".ed-mclear")!.textContent).toContain("00:00:04:00"); // 구간 길이
+  expect(document.querySelector(".ed-mbtn-in")!.classList.contains("ed-on")).toBe(true);
+
+  press({ key: "Home", code: "Home" });
+  press({ key: "o", code: "KeyO", shiftKey: true }); // 아웃 자리로
+  expect(timecode()).toBe("00:00:05:00");
+  press({ key: "i", code: "KeyI", shiftKey: true }); // 인 자리로
+  expect(timecode()).toBe("00:00:01:00");
+  press({ key: "o", code: "KeyO" }); // 아웃을 인과 같은 자리에 찍으면 인이 지워진다
+  expect(stored().markIn).toBeUndefined();
+  expect(stored().markOut).toEqual({ cut: "e070/c1", local: 1 });
+  press({ key: "x", code: "KeyX", altKey: true }); // 둘 다 지우기
+  expect(stored().markOut).toBeUndefined();
+  expect(document.querySelector(".ed-inout")).toBeNull();
+  expect(document.querySelector(".ed-mclear")).toBeNull();
+  act(() => document.querySelector<HTMLButtonElement>(".ed-mbtn-in")!.click()); // 단추로도 찍는다
+  expect(stored().markIn).toEqual({ cut: "e070/c1", local: 1 });
+  press({ key: "i", code: "KeyI", altKey: true });
+  expect(stored().markIn).toBeUndefined();
+});
+
+it("북마크: M 으로 넣고, 누르면 그 자리로 가고, 더블클릭하면 이름·색을 고치고 지운다 — Shift+↑↓ 로 오간다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }]);
+  mount();
+  act(() => cutCell("c1").click());
+  press({ key: "ArrowRight", code: "ArrowRight", shiftKey: true }); // 1초
+  press({ key: "m", code: "KeyM" });
+  act(() => cutCell("c2").click()); // 5초
+  act(() => document.querySelector<HTMLButtonElement>(".ed-mbtn-mk")!.click()); // 단추로도 넣는다
+  expect(stored().markers).toEqual([{ cut: "e070/c1", local: 1 }, { cut: "e070/c2", local: 0 }]);
+  expect(stored().muted).toBeUndefined(); // M 은 이제 소리 끄기가 아니다(소리는 A1 의 M 단추)
+  expect(bookmarks().map((item) => item.style.left)).toEqual(["20px", "100px"]);
+  expect(pane("timeline").querySelectorAll(".ed-scrub-mk")).toHaveLength(2);
+
+  press({ key: "Home", code: "Home" });
+  press({ key: "ArrowDown", code: "ArrowDown", shiftKey: true }); // 뒤 북마크로
+  expect(timecode()).toBe("00:00:01:00");
+  press({ key: "ArrowDown", code: "ArrowDown", shiftKey: true });
+  expect(timecode()).toBe("00:00:05:00");
+  press({ key: "ArrowDown", code: "ArrowDown", shiftKey: true }); // 더 없으면 그대로
+  expect(timecode()).toBe("00:00:05:00");
+  press({ key: "ArrowUp", code: "ArrowUp", shiftKey: true });
+  expect(timecode()).toBe("00:00:01:00");
+  act(() => bookmarks()[1].click()); // 누르면 그 자리로
+  expect(timecode()).toBe("00:00:05:00");
+
+  mouse(bookmarks()[0], "dblclick"); // 편집 창 — 이름·색·지우기
+  expect(document.activeElement).toBe(nameInput());
+  expect(opened).toHaveLength(0); // 눈금자의 더블클릭은 컷의 폴더 창을 열지 않는다
+  act(() => document.querySelectorAll<HTMLButtonElement>(".ed-mmenu .ed-swatch")[3].click()); // 색은 누르는 즉시 바뀐다
+  expect(stored().markers[0].color).toBe("#46a758");
+  expect(bookmarks()[0].style.getPropertyValue("--mk")).toBe("#46a758");
+  typeIn(nameInput(), "여기부터 다시");
+  press({ key: "m", code: "KeyM" }, nameInput()); // 입력칸의 글자는 편집 키가 아니다
+  expect(stored().markers).toHaveLength(2);
+  press({ key: "Enter", code: "Enter", isComposing: true }, nameInput()); // 한글 조합 중의 Enter 는 글자 확정 — 닫지 않는다
+  expect(document.querySelector(".ed-mmenu")).not.toBeNull();
+  expect(stored().markers[0].name).toBeUndefined();
+  press({ key: "Enter", code: "Enter" }, nameInput()); // Enter = 저장하고 닫는다
+  expect(document.querySelector(".ed-mmenu")).toBeNull();
+  expect(stored().markers[0]).toEqual({ cut: "e070/c1", local: 1, color: "#46a758", name: "여기부터 다시" });
+  expect(bookmarks()[0].title).toContain("여기부터 다시");
+  expect(document.activeElement).toBe(document.querySelector(".ed-root"));
+
+  mouse(bookmarks()[0], "dblclick");
+  typeIn(nameInput(), "버릴 이름");
+  press({ key: "Escape", code: "Escape" }); // Esc = 버린다
+  expect(stored().markers[0].name).toBe("여기부터 다시");
+  rightClick(bookmarks()[0]); // 우클릭으로도 연다
+  typeIn(nameInput(), "바깥을 눌러 저장");
+  mouse(document.body, "mousedown"); // 바깥 누르기 = 저장
+  expect(stored().markers[0].name).toBe("바깥을 눌러 저장");
+
+  press({ key: "m", code: "KeyM" }); // 북마크가 있는 자리(5초)에서 M = 그 북마크의 편집 창
+  expect(document.querySelector(".ed-mmenu .ed-tmenu-head")!.textContent).toContain("00:00:05:00");
+  act(() => menuItem("북마크 지우기").click());
+  expect(stored().markers).toHaveLength(1);
+  act(() => cutCell("c1").click());
+  press({ key: "ArrowRight", code: "ArrowRight", shiftKey: true });
+  press({ key: "m", code: "KeyM", altKey: true }); // Alt+M = 재생헤드 자리의 북마크 지우기
+  expect(stored().markers).toBeUndefined();
+  expect(bookmarks()).toHaveLength(0);
 });

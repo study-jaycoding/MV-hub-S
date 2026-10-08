@@ -1,4 +1,4 @@
-// 편집 탭 아래쪽 — 눈금자·컷 줄·영상 트랙(위가 우선)·소리 줄과 재생헤드.
+// 편집 탭 아래쪽 — 눈금자(북마크·마크 인/아웃)·컷 줄·영상 트랙(위가 우선)·소리 줄과 재생헤드.
 // 재생헤드는 부모가 ref 로 직접 옮긴다(프레임마다 React 렌더 없음). 컷 자리는 폴더 순서로 고정이라
 // 클립은 좌우로 못 옮기고, 위아래로 끌어 트랙만 바꾼다.
 import {
@@ -6,6 +6,7 @@ import {
   useEffect,
   useLayoutEffect,
   useRef,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
@@ -18,6 +19,7 @@ import {
   type EditDoc,
   type EditLayout,
   type MediaState,
+  type ShownMarker,
   type SlotClip,
 } from "../../lib/editTimeline";
 import { useT } from "../../lib/i18n";
@@ -34,6 +36,14 @@ export interface ClipLink {
   gen: Generation | null;
 }
 
+// 마크 인/아웃의 보이는 시각(초) — band 는 띠로 그릴 구간(한쪽만 있으면 전체의 처음/끝까지, 처음 < 끝일 때만)
+export interface EditMarks {
+  in: number | null;
+  out: number | null;
+  band: { from: number; to: number } | null;
+}
+const trackTint = (color: string | undefined) => (color ? ({ "--trk": color } as CSSProperties) : undefined);
+
 export const EditTimeline = memo(function EditTimeline({
   layout,
   doc,
@@ -43,6 +53,8 @@ export const EditTimeline = memo(function EditTimeline({
   selected,
   currentCut,
   offCuts,
+  marks,
+  markers,
   scrollRef,
   headRef,
   getNow,
@@ -55,6 +67,8 @@ export const EditTimeline = memo(function EditTimeline({
   onOpenCut,
   onToggleTrack,
   onToggleMute,
+  onTrackMenu,
+  onMarkerMenu,
 }: {
   layout: EditLayout;
   doc: EditDoc;
@@ -64,6 +78,8 @@ export const EditTimeline = memo(function EditTimeline({
   selected: ReadonlySet<string>;
   currentCut: string | null;
   offCuts: ReadonlySet<string>; // 비활성 컷(폴더) — 흐리게 그린다. 숨기기를 켜면 배치(layout)에 아예 없다
+  marks: EditMarks;
+  markers: readonly ShownMarker[]; // 북마크(보이는 것만, 시간순)
   scrollRef: RefObject<HTMLDivElement>;
   headRef: RefObject<HTMLDivElement>;
   getNow: () => number;
@@ -76,6 +92,8 @@ export const EditTimeline = memo(function EditTimeline({
   onOpenCut: (cut: string) => void; // 컷 자리(클립·빈 자리·컷 이름)를 더블클릭 — 그 컷의 생성물 창
   onToggleTrack: (list: "tracksOff" | "tracksLocked", track: number) => void;
   onToggleMute: () => void;
+  onTrackMenu: (track: number, x: number, y: number) => void; // 트랙 머리를 우클릭 — 트랙 추가·삭제·옮기기·색
+  onMarkerMenu: (key: string, x: number, y: number) => void; // 북마크를 더블클릭·우클릭 — 이름·색·지우기
 }) {
   const t = useT();
   const lanesRef = useRef<HTMLDivElement>(null);
@@ -215,7 +233,12 @@ export const EditTimeline = memo(function EditTimeline({
           const locked = doc.tracksLocked.includes(track);
           const off = doc.tracksOff.includes(track);
           return (
-            <div className="ed-head ed-h-v" key={track}>
+            <div className="ed-head ed-h-v" key={track} style={trackTint(doc.trackColors?.[track])}
+              title={t("우클릭 — 트랙 추가·삭제·옮기기·색")}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                onTrackMenu(track, event.clientX, event.clientY);
+              }}>
               <b>V{track}</b>
               <button type="button" className={"ed-hbtn" + (locked ? " ed-on" : "")} aria-pressed={locked}
                 title={locked ? t("잠금 풀기") : t("트랙 잠그기")} aria-label={locked ? t("잠금 풀기") : t("트랙 잠그기")}
@@ -239,7 +262,7 @@ export const EditTimeline = memo(function EditTimeline({
         <div className="ed-head ed-h-a">
           <b>A1</b>
           <button type="button" className={"ed-hbtn ed-mute" + (doc.muted ? " ed-on" : "")} aria-pressed={!!doc.muted}
-            title={t("소리 끄기 (M)")} aria-label={t("소리 끄기 (M)")} onClick={onToggleMute}>M</button>
+            title={t("소리 끄기")} aria-label={t("소리 끄기")} onClick={onToggleMute}>M</button>
         </div>
       </div>
       <div className="ed-scroll" ref={scrollRef}>
@@ -248,6 +271,24 @@ export const EditTimeline = memo(function EditTimeline({
           <div className="ed-ruler" onPointerDown={scrub} onPointerMove={scrub}>
             {ticks.map((time) => (
               <div className="ed-tick" key={time} style={{ left: time * zoom }}><span>{timecode(time)}</span></div>
+            ))}
+            {/* 마크 인/아웃 — 띠는 구간, 꺾쇠는 인·아웃 자리. 표시만 한다(누르면 눈금자가 받는다). */}
+            {marks.band && <div className="ed-inout" style={{ left: marks.band.from * zoom, width: (marks.band.to - marks.band.from) * zoom }} />}
+            {marks.in !== null && <div className="ed-mark ed-mark-in" style={{ left: marks.in * zoom }} />}
+            {marks.out !== null && <div className="ed-mark ed-mark-out" style={{ left: marks.out * zoom }} />}
+            {/* 북마크 — 누르면 그 자리로, 더블클릭·우클릭하면 편집 창 */}
+            {markers.map((item) => (
+              <button type="button" key={item.key} className="ed-mk"
+                style={{ left: item.time * zoom, ...(item.marker.color ? { "--mk": item.marker.color } : {}) } as CSSProperties}
+                title={`${t("북마크")} ${timecode(item.time)}${item.marker.name ? ` — ${item.marker.name}` : ""}`}
+                aria-label={`${t("북마크")} ${timecode(item.time)}${item.marker.name ? ` — ${item.marker.name}` : ""}`}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => onSeek(item.time)}
+                onDoubleClick={(event) => onMarkerMenu(item.key, event.clientX, event.clientY)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  onMarkerMenu(item.key, event.clientX, event.clientY);
+                }} />
             ))}
           </div>
           <div className="ed-lane ed-l-cut">
@@ -267,7 +308,8 @@ export const EditTimeline = memo(function EditTimeline({
             ))}
           </div>
           {tracks.map((track) => (
-            <div className={"ed-lane ed-l-v" + (doc.tracksOff.includes(track) ? " ed-lane-off" : "")} key={track} data-track={track}>
+            <div className={"ed-lane ed-l-v" + (doc.tracksOff.includes(track) ? " ed-lane-off" : "")} key={track} data-track={track}
+              style={trackTint(doc.trackColors?.[track])}>
               {layout.cuts.map((slot) => {
                 const clip = slot.clips.find((item) => item.track === track);
                 if (clip) return renderClip(clip, slot.start);
@@ -293,6 +335,7 @@ export const EditTimeline = memo(function EditTimeline({
           </div>
           {layout.cuts.map((slot) => <div className="ed-cutline" key={slot.path} style={{ left: slot.start * zoom }} />)}
           <div className="ed-cutline" style={{ left: layout.total * zoom }} />
+          {marks.band && <div className="ed-inout-shade" style={{ left: marks.band.from * zoom, width: (marks.band.to - marks.band.from) * zoom }} />}
           <div className="ed-phead" ref={headRef} />
         </div>
       </div>

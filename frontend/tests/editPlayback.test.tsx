@@ -50,8 +50,10 @@ let clock = 0;
 let frames: ((stamp: number) => void)[] = [];
 const paint = vi.fn();
 
-function Harness({ scope = "s1", doc = DOC, layout = LAYOUT, loop }: { scope?: string; doc?: EditDoc; layout?: typeof LAYOUT; loop?: boolean }) {
-  playback = useEditPlayback({ scope, layout, doc, sourceOf, videoRef, paint, loop });
+function Harness({ scope = "s1", doc = DOC, layout = LAYOUT, loop, range }: {
+  scope?: string; doc?: EditDoc; layout?: typeof LAYOUT; loop?: boolean; range?: { from: number; to: number } | null;
+}) {
+  playback = useEditPlayback({ scope, layout, doc, sourceOf, videoRef, paint, loop, range });
   return null;
 }
 const render = (props: Parameters<typeof Harness>[0] = {}) => act(() => root.render(<Harness {...props} />));
@@ -286,4 +288,68 @@ it("반복: 여러 컷이면 첫 컷으로 돌아가고, 역방향은 반복하�
   frame(200);
   expect(playback.view.playing).toBe(false);
   expect(playback.now()).toBe(0);
+});
+
+// 구간 반복(Jay 2026-10-08) — 마크 인/아웃이 있고 반복이 켜져 있으면 그 구간을 되풀이한다.
+it("구간 반복: 아웃을 넘으면 인으로 돌아간다 — 한 프레임에 구간을 통째로 지나가도. 아웃 뒤에서는 끝까지 간 뒤 들어온다", () => {
+  const range = { from: 9, to: 11 }; // 빈 컷(c2 8~13, rAF 시계) 안
+  render({ scope: "range", loop: true, range });
+  act(() => playback.seek(10.5));
+  act(() => playback.toggle());
+  frame(400);
+  expect(playback.now()).toBeCloseTo(10.9);
+  frame(200); // 아웃(11)을 넘었다 → 인(9)으로
+  expect(playback.now()).toBe(9);
+  expect(playback.view.playing).toBe(true);
+  expect(frames).toHaveLength(1); // 다음 프레임은 한 번만 건다
+  frame(500);
+  expect(playback.now()).toBeCloseTo(9.5);
+
+  act(() => playback.seek(8.9)); // 구간 앞에서 — 한 프레임에 구간 전체(9~11)를 지나가도 잡는다
+  frame(2500);
+  expect(playback.now()).toBe(9);
+
+  act(() => playback.seek(12)); // 아웃 뒤로 훑었다 — 되돌아가지 않고 끝까지 간다
+  frame(500);
+  expect(playback.now()).toBeCloseTo(12.5);
+  frame(1000); // c3 로 넘어간다
+  expect(playback.view.cut).toBe("e070/c3");
+  frame(6000); // 전체 끝 → 구간 처음으로 들어온다(맨 처음이 아니다)
+  expect(playback.now()).toBe(9);
+  expect(playback.view.playing).toBe(true);
+
+  render({ scope: "range", loop: false, range }); // 반복을 끄면 구간은 표시일 뿐이다
+  frame(3000);
+  expect(playback.now()).toBeCloseTo(12);
+  expect(playback.view.playing).toBe(true);
+});
+
+it("구간 반복: 영상이 끝나며 위치를 아웃으로 먼저 옮겨도 인으로 돌아간다 — 재생 직후 첫 프레임 전이어도", () => {
+  const range = { from: 1, to: 3 }; // 아웃 = 위 클립(top, 3초)의 끝. 그 뒤로도 볼 것(low)이 남아 있다
+  render({ scope: "range2", loop: true, range });
+  video.emit("loadedmetadata");
+  act(() => playback.seek(2.9));
+  video.emit("seeked");
+  act(() => playback.toggle());
+  video.emit("ended"); // 첫 프레임이 돌기 전에 영상이 끝났다 — 위치가 3초(아웃)로 간다
+  frame(16);
+  expect(playback.now()).toBe(1);
+  expect(playback.view.playing).toBe(true);
+  expect(video.currentTime).toBe(1); // 영상도 인으로 보냈다
+});
+
+it("구간 반복: 아웃 뒤에서 시작해 전체 끝을 돌아 들어온 뒤에도 구간을 지킨다 — 다음 프레임 전에 영상이 끝나도", () => {
+  const range = { from: 2.9, to: 3 }; // 아웃 = 위 클립(top, 3초)의 끝
+  render({ scope: "range3", loop: true, range });
+  act(() => playback.seek(17.9)); // 아웃 뒤(c3 — 그림, rAF 시계)의 끝 직전
+  act(() => playback.toggle());
+  frame(200); // 전체 끝 → 구간 처음(2.9)으로
+  expect(playback.now()).toBeCloseTo(2.9);
+  expect(video.src).toBe("/v/top");
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  video.emit("ended"); // 프레임이 돌기 전에 영상이 끝났다 — 위치가 3초(아웃)로 간다
+  frame(16);
+  expect(playback.now()).toBeCloseTo(2.9); // 다음 컷으로 넘어가지 않고 다시 구간 처음으로
+  expect(playback.view.playing).toBe(true);
 });

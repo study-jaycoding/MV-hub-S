@@ -1,27 +1,42 @@
 // 편집 탭 — 공유된 생성물을 컷(폴더) 순서대로 이어 보는 다빈치식 화면. 계약·한계는 docs/EDIT_TAB.md.
 //  왼쪽 = 시퀀스 폴더 고르기 · 그 옆 = 미디어 풀(재생헤드가 있는 컷의 생성물) · 오른쪽 = 뷰어 판(싱글/듀얼 — 판마다 타임라인·
-//  소스·한 트랙만 중에서 고른다) · 아래 = 트랙 타임라인. 컷 자리는 폴더 순서로 고정이고, 고른 생성물만 들어간다.
+//  소스·한 트랙만 중에서 고른다) · 아래 = 트랙 타임라인(트랙 추가·삭제·옮기기, 마크 인/아웃, 북마크). 컷 자리는 폴더 순서로
+//  고정이고, 고른 생성물만 들어간다.
 //  편집은 이 브라우저(계정)에만 저장한다.
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { CardMark, Generation, PreviewTarget, WorkspaceContext } from "../../types";
 import { APP_EVENTS } from "../../lib/appEvents";
 import { isFolderDisabled } from "../../lib/deactivated";
 import {
+  addMarker,
+  addTrack,
   buildLayout,
   clipKey,
   cutIsOff,
   cutPaths,
   DEFAULT_SEC,
+  deleteEmptyTracks,
+  deleteTrack,
   EDIT_FPS,
   emptyEditDoc,
   genSeconds,
   groupByCut,
   linkClip,
+  markerAt,
+  markRange,
+  markTime,
   moveClipToTrack,
+  moveTrack,
+  patchMarker,
   placeClip,
+  posAt,
   removeClips,
+  removeMarker,
   setClipDurs,
+  setMark,
+  setTrackColor,
   shiftClips,
+  shownMarkers,
   timecode,
   toggleClipsOff,
   toggleCutOff,
@@ -52,11 +67,12 @@ import {
 } from "../../lib/useEditSequence";
 import { dropQueuedVideoMeasures, knownVideoSeconds, measureVideoSeconds } from "../../lib/videoDuration";
 import { editMarkLabel } from "./EditCard";
+import { EditMarkerMenu } from "./EditMarkerMenu";
 import { EditPool, type PoolItem } from "./EditPool";
 import { EditSidebar } from "./EditSidebar";
 import { EditSoloViewer } from "./EditSoloViewer";
-import { EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink } from "./EditTimeline";
-import { EditTrackMenu, type TrackRow } from "./EditTrackMenu";
+import { EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink, type EditMarks } from "./EditTimeline";
+import { EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
 import { EditViewer, type ViewerControls, type ViewOption } from "./EditViewer";
 import { ResizableSidebar } from "../common/ResizableSidebar";
 
@@ -199,6 +215,14 @@ function EditTabInner({
     }),
     [shownCuts, doc, links],
   );
+  // 마크 인/아웃·북마크(Jay 2026-10-08) — 문서에는 (컷, 컷 안 시각)으로 적혀 있고, 여기서 지금 배치의 시각으로 바꾼다.
+  //  숨긴 컷에 있거나 컷이 그 자리보다 짧아진 것은 빠진다(문서에는 남는다).
+  const marks = useMemo<EditMarks>(
+    () => ({ in: markTime(layout, doc.markIn), out: markTime(layout, doc.markOut), band: markRange(layout, doc) }),
+    [layout, doc],
+  );
+  const bookmarks = useMemo(() => shownMarkers(layout, doc), [layout, doc]);
+  const flags = useMemo(() => bookmarks.map((item) => ({ time: item.time, color: item.marker.color })), [bookmarks]);
   const sourceOf = useCallback((clip: SlotClip): EditSource => {
     const link = links.get(clipKey(clip));
     const asset = link?.gen?.assets[0];
@@ -224,6 +248,7 @@ function EditTabInner({
   }, []);
   const playback = useEditPlayback({
     scope: target ? `${target.projectId}\n${target.seq}` : "", layout, doc, sourceOf, videoRef, paint, loop: ui.loop,
+    range: marks.band, // 반복이 켜져 있으면 인/아웃 구간을 되풀이한다
   });
   const { view, now, seek, seekPos, stop, toggle, shuttle, stepEdit } = playback;
   playingRef.current = view.playing;
@@ -441,8 +466,26 @@ function EditTabInner({
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setMenu({ gen, cut: menuCut, x, y });
   }, [byCut, maybePlaced, flash, t]);
+  // 트랙 머리 우클릭 메뉴·북마크 편집 창 — 여는 순간의 rev 를 잡아 둔다. 떠 있는 사이 다른 창이 이 편집을 바꾸면(rev 가
+  //  갈린다) 닫고, 그 뒤에 고른 것은 저장하지 않는다(옛 화면을 보고 고른 것이 새 문서를 덮지 않게 — Codex 설계 검토).
+  const [trackMenu, setTrackMenu] = useState<{ track: number; x: number; y: number; rev: number } | null>(null);
+  const [markerMenu, setMarkerMenu] = useState<{ key: string; x: number; y: number; rev: number } | null>(null);
+  const openTrackMenu = useCallback((track: number, x: number, y: number) => {
+    menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setTrackMenu({ track, x, y, rev });
+  }, [rev]);
+  const openMarkerMenu = useCallback((key: string, x: number, y: number) => {
+    menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setMarkerMenu({ key, x, y, rev });
+  }, [rev]);
+  useEffect(() => {
+    setTrackMenu(null);
+    setMarkerMenu(null);
+  }, [rev]);
   const closeMenu = useCallback(() => {
     setMenu(null);
+    setTrackMenu(null);
+    setMarkerMenu(null);
     const back = menuBackRef.current;
     menuBackRef.current = null;
     if (back?.isConnected) back.focus({ preventScroll: true });
@@ -473,6 +516,26 @@ function EditTabInner({
       dur: genSeconds(gen, knownVideoSeconds(asset.file_path)),
     }, track));
   };
+
+  const lockedTrack = (track: number) => doc.tracksLocked.includes(track);
+  const trackAct = (action: TrackAct) => {
+    if (!trackMenu) return;
+    const { track, rev: opened } = trackMenu;
+    closeMenu();
+    if (typeof action === "object") {
+      applyEdit((current) => setTrackColor(current, track, action.color), { rev: opened });
+      return;
+    }
+    // 트랙을 지우면 그 트랙의 클립도 빠진다 — 되돌리기(Ctrl+Z)로 살린다
+    act((current) => (action === "add" ? addTrack(current, track) : action === "up" ? moveTrack(current, track, 1)
+      : action === "down" ? moveTrack(current, track, -1) : action === "delete" ? deleteTrack(current, track)
+        : deleteEmptyTracks(current)), { rev: opened });
+  };
+  // 북마크 편집 창이 보는 북마크 — 원래 열쇠로 찾는다. 사라졌으면(지움·되돌리기·컷 숨김) 창도 닫는다.
+  const editing = markerMenu ? bookmarks.find((item) => item.key === markerMenu.key) ?? null : null;
+  useEffect(() => {
+    if (markerMenu && !editing) setMarkerMenu(null);
+  }, [markerMenu, editing]);
 
   // 그림(클립)을 누르면 그 컷으로 간다 — 이미 그 컷이면 보던 자리 그대로.
   const pickCut = useCallback((path: string) => {
@@ -552,6 +615,37 @@ function EditTabInner({
   }, [layout.total]);
   const zoomBy = (factor: number) => setZoom((value) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value * factor)));
 
+  // 마크 인/아웃 — 재생헤드 자리에 찍는다. 편집 키라 언제나 타임라인 것이다(소스 판이 재생 키를 받고 있어도).
+  const markHere = (which: "markIn" | "markOut") => {
+    const pos = posAt(layout, now());
+    if (pos) applyEdit((current) => setMark(current, layout, which, pos));
+  };
+  const clearMarks = (...which: ("markIn" | "markOut")[]) => {
+    applyEdit((current) => which.reduce((next, key) => setMark(next, layout, key, null) ?? next, current));
+  };
+  // 북마크 — 재생헤드 자리에 이미 있으면 그 편집 창을 열고(다빈치: M 을 한 번 더), 없으면 넣는다.
+  const bookmarkHere = () => {
+    const found = markerAt(layout, bookmarks, now());
+    if (found) {
+      const box = headRef.current?.getBoundingClientRect();
+      openMarkerMenu(found.key, box?.left ?? 0, (box?.top ?? 0) + 16);
+      return;
+    }
+    const pos = posAt(layout, now());
+    if (!pos || !applyEdit((current) => addMarker(current, pos))) flash(t("이 자리에 북마크를 넣지 못했습니다."));
+  };
+  const removeBookmarkHere = () => {
+    const found = markerAt(layout, bookmarks, now());
+    if (found) applyEdit((current) => removeMarker(current, found.key));
+  };
+  const stepMarker = (dir: 1 | -1) => {
+    const time = now();
+    const eps = 0.5 / EDIT_FPS;
+    const next = dir > 0 ? bookmarks.find((item) => item.time > time + eps)
+      : [...bookmarks].reverse().find((item) => item.time < time - eps);
+    if (next) seek(next.time);
+  };
+
   // 편집 키 — 글자 키는 물리 키(code)로 본다(한/영 상태와 무관). 실제로 쓴 키만 기본 동작을 막는다.
   const onKey = (event: KeyboardEvent) => {
     if (!keysActive || event.defaultPrevented || isTyping(event.target)) return;
@@ -572,8 +666,17 @@ function EditTabInner({
     else if (mod) used = false;
     else if (event.altKey && key === "ArrowUp" && picked.length) act((current) => shiftClips(current, picked, 1));
     else if (event.altKey && key === "ArrowDown" && picked.length) act((current) => shiftClips(current, picked, -1));
+    // 마크 인/아웃·북마크(다빈치의 키) — I·O = 찍기, Alt = 지우기, Shift = 그 자리로
+    else if (event.altKey && code === "KeyI") clearMarks("markIn");
+    else if (event.altKey && code === "KeyO") clearMarks("markOut");
+    else if (event.altKey && code === "KeyX") clearMarks("markIn", "markOut");
+    else if (event.altKey && code === "KeyM") removeBookmarkHere();
     else if (event.altKey) used = false;
     else if (event.shiftKey && code === "KeyZ") fit();
+    else if (event.shiftKey && code === "KeyI") { if (marks.in !== null) seek(marks.in); }
+    else if (event.shiftKey && code === "KeyO") { if (marks.out !== null) seek(marks.out); }
+    else if (event.shiftKey && key === "ArrowUp") stepMarker(-1);
+    else if (event.shiftKey && key === "ArrowDown") stepMarker(1);
     else if (code === "Space") {
       if (from?.closest("button, a, [role=button]")) used = false; // 초점이 있는 단추의 Space 는 그 단추 것
       else keys.toggle();
@@ -590,7 +693,9 @@ function EditTabInner({
     // D = 비활성(앱 공통) — 고른 클립이 있으면 그 클립, 없으면 재생헤드가 있는 컷(폴더)
     else if (code === "KeyD" && picked.length) act((current) => toggleClipsOff(current, picked));
     else if (code === "KeyD" && cut) toggleCut();
-    else if (code === "KeyM") applyEdit((current) => ({ ...current, muted: !current.muted }));
+    else if (code === "KeyI") markHere("markIn");
+    else if (code === "KeyO") markHere("markOut");
+    else if (code === "KeyM") bookmarkHere();
     else if (key === "Escape" && picked.length) setSelected(new Set());
     else used = false;
     if (used) event.preventDefault();
@@ -643,7 +748,7 @@ function EditTabInner({
     dualButton: order === slots.length - 1 ? { dual: ui.dual, onToggle: () => patchUi({ dual: !ui.dual }) } : null,
   });
   const clockPane = { // 타임라인의 시계를 쓰는 판(타임라인·한 트랙만)이 같이 받는 것
-    playing: view.playing, rate: view.rate, total: layout.total, marks: cutStarts, registerPaint, controls: tlControls,
+    playing: view.playing, rate: view.rate, total: layout.total, marks: cutStarts, range: marks.band, flags, registerPaint, controls: tlControls,
     loop: ui.loop, onLoop: () => patchUi({ loop: !ui.loop }), empty,
     active: mixed && !onSource, onActivate: () => setKeyTarget("timeline"),
   };
@@ -778,6 +883,30 @@ function EditTabInner({
           {!needWorkspace && list.state === "capped" && (
             <span className="ed-warn" role="status">{t("최대 2,000건까지만 표시합니다.")}</span>
           )}
+          {/* 마크 인/아웃·북마크 — 재생헤드 자리에 찍는다 */}
+          {target && (
+            <span className="ed-marks">
+              <button type="button" className={"ed-mbtn ed-mbtn-in" + (marks.in !== null ? " ed-on" : "")} onClick={() => markHere("markIn")}
+                title={t("마크 인 (I) · 지우기 Alt+I · 그 자리로 Shift+I")} aria-label={t("마크 인 (I) · 지우기 Alt+I · 그 자리로 Shift+I")}>
+                <svg width="10" height="14" viewBox="0 0 10 14" aria-hidden="true"><path d="M8 1.5H3v11h5" /></svg>
+              </button>
+              <button type="button" className={"ed-mbtn ed-mbtn-out" + (marks.out !== null ? " ed-on" : "")} onClick={() => markHere("markOut")}
+                title={t("마크 아웃 (O) · 지우기 Alt+O · 그 자리로 Shift+O")} aria-label={t("마크 아웃 (O) · 지우기 Alt+O · 그 자리로 Shift+O")}>
+                <svg width="10" height="14" viewBox="0 0 10 14" aria-hidden="true"><path d="M2 1.5h5v11H2" /></svg>
+              </button>
+              {(doc.markIn || doc.markOut) && (
+                <button type="button" className="ed-mclear" onClick={() => clearMarks("markIn", "markOut")}
+                  title={t("인/아웃 지우기 (Alt+X)")} aria-label={t("인/아웃 지우기 (Alt+X)")}>
+                  {marks.band ? timecode(marks.band.to - marks.band.from) : t("인/아웃")}<i>×</i>
+                </button>
+              )}
+              <button type="button" className="ed-mbtn ed-mbtn-mk" onClick={bookmarkHere}
+                title={t("북마크 (M) · 앞/뒤 북마크로 Shift+↑↓ · 지우기 Alt+M")} aria-label={t("북마크 (M) · 앞/뒤 북마크로 Shift+↑↓ · 지우기 Alt+M")}>
+                <svg width="11" height="14" viewBox="0 0 11 14" aria-hidden="true"><path d="M1.5 1.5h8v11l-4-3.2-4 3.2z" /></svg>
+                {bookmarks.length > 0 && <i>{bookmarks.length}</i>}
+              </button>
+            </span>
+          )}
           <span className="ed-zoom">
             {target && (
               <button type="button" className={"ed-toggle" + (doc.hideOff ? " ed-on" : "")} aria-pressed={!!doc.hideOff}
@@ -801,6 +930,8 @@ function EditTabInner({
           selected={selected}
           currentCut={cut}
           offCuts={offCuts}
+          marks={marks}
+          markers={bookmarks}
           scrollRef={scrollRef}
           headRef={headRef}
           getNow={now}
@@ -813,9 +944,41 @@ function EditTabInner({
           onOpenCut={openCut}
           onToggleTrack={toggleTrackList}
           onToggleMute={toggleMute}
+          onTrackMenu={openTrackMenu}
+          onMarkerMenu={openMarkerMenu}
         />
       </main>
       {menu && <EditTrackMenu x={menu.x} y={menu.y} rows={menuRows} onPick={placeTo} onClose={closeMenu} />}
+      {trackMenu && trackMenu.track <= layout.tracks && (
+        <EditTrackHeadMenu
+          x={trackMenu.x}
+          y={trackMenu.y}
+          track={trackMenu.track}
+          can={{
+            up: trackMenu.track < layout.tracks && !lockedTrack(trackMenu.track) && !lockedTrack(trackMenu.track + 1),
+            down: trackMenu.track > 1 && !lockedTrack(trackMenu.track) && !lockedTrack(trackMenu.track - 1),
+            remove: layout.tracks > 1 && !lockedTrack(trackMenu.track),
+            removeEmpty: deleteEmptyTracks(doc) !== null,
+          }}
+          clips={doc.clips.filter((clip) => clip.track === trackMenu.track).length}
+          color={doc.trackColors?.[trackMenu.track] ?? null}
+          onAct={trackAct}
+          onClose={closeMenu}
+        />
+      )}
+      {markerMenu && editing && (
+        <EditMarkerMenu
+          key={markerMenu.key}
+          x={markerMenu.x}
+          y={markerMenu.y}
+          time={editing.time}
+          marker={editing.marker}
+          onName={(name) => applyEdit((current) => patchMarker(current, markerMenu.key, { name }), { rev: markerMenu.rev })}
+          onColor={(color) => applyEdit((current) => patchMarker(current, markerMenu.key, { color }), { rev: markerMenu.rev })}
+          onRemove={() => applyEdit((current) => removeMarker(current, markerMenu.key), { rev: markerMenu.rev })}
+          onClose={closeMenu}
+        />
+      )}
     </>
   );
 }

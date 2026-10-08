@@ -19,6 +19,14 @@ export interface EditClip {
   kind?: "video" | "image";
 }
 
+// 북마크(다빈치의 마커) — 자리는 (컷, 컷 안 시각). (컷, 프레임)에 하나뿐이다(markerKey).
+export interface EditMarker {
+  cut: string;
+  local: number;
+  color?: string; // "#rrggbb" — 없으면 기본색
+  name?: string;
+}
+
 export interface EditDoc {
   v: 1;
   clips: EditClip[];
@@ -29,6 +37,14 @@ export interface EditDoc {
   cutsOn?: string[];
   cutsOff?: string[];
   hideOff?: boolean; // 비활성 컷을 타임라인에서 숨긴다
+  // 영상 트랙 줄 수 — 트랙을 더하거나 뺀 뒤에만 적는다(없으면 기본 3줄). 그리는 줄 수는 trackCount 가 정한다.
+  tracks?: number;
+  trackColors?: Record<number, string>; // 트랙 번호 → "#rrggbb"
+  // 마크 인/아웃·북마크 — 자리는 재생헤드와 같은 좌표((컷, 컷 안 시각))라 앞 컷의 길이가 바뀌어도 그 컷 안의 자리가 유지된다.
+  //  그 컷이 배치에 없거나(숨김) 그 자리보다 짧아지면 문서에는 남기고 화면에서만 뺀다(markTime).
+  markIn?: EditPos;
+  markOut?: EditPos;
+  markers?: EditMarker[];
 }
 
 export function emptyEditDoc(): EditDoc {
@@ -70,6 +86,12 @@ export function cutPaths(seq: string, folderPaths: Iterable<string>, doc: EditDo
 }
 
 const positiveInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
+const COLOR = /^#[0-9a-f]{6}$/i;
+const validPos = (value: unknown): value is EditPos => {
+  const pos = value as Partial<EditPos> | null;
+  return !!pos && typeof pos === "object" && typeof pos.cut === "string" && !!pos.cut && normalizeFolderPath(pos.cut) === pos.cut &&
+    typeof pos.local === "number" && Number.isFinite(pos.local) && pos.local >= 0;
+};
 
 // 저장된 값을 문서로 읽는다. 버전·모양·불변식이 어긋나면 null — 호출부는 그것을 빈 문서로 덮지 않는다.
 export function parseEditDoc(value: unknown): EditDoc | null {
@@ -90,6 +112,32 @@ export function parseEditDoc(value: unknown): EditDoc | null {
   const cutsOn = paths(raw.cutsOn);
   const cutsOff = paths(raw.cutsOff);
   if (!cutsOn || !cutsOff || cutsOn.some((cut) => cutsOff.includes(cut))) return null; // 켬·끔에 같이 있을 수 없다
+  if (raw.tracks !== undefined && !positiveInt(raw.tracks)) return null;
+  const trackColors: Record<number, string> = {};
+  if (raw.trackColors !== undefined) {
+    if (!raw.trackColors || typeof raw.trackColors !== "object" || Array.isArray(raw.trackColors)) return null;
+    for (const [track, color] of Object.entries(raw.trackColors as Record<string, unknown>)) {
+      if (!positiveInt(Number(track)) || typeof color !== "string" || !COLOR.test(color)) return null;
+      trackColors[Number(track)] = color;
+    }
+  }
+  if ((raw.markIn !== undefined && !validPos(raw.markIn)) || (raw.markOut !== undefined && !validPos(raw.markOut))) return null;
+  const markers: EditMarker[] = [];
+  if (raw.markers !== undefined) {
+    if (!Array.isArray(raw.markers)) return null;
+    const taken = new Set<string>();
+    for (const item of raw.markers as unknown[]) {
+      if (!validPos(item)) return null;
+      const { color, name } = item as { color?: unknown; name?: unknown };
+      if (color !== undefined && (typeof color !== "string" || !COLOR.test(color))) return null;
+      if (name !== undefined && typeof name !== "string") return null;
+      const key = markerKey(item);
+      if (taken.has(key)) return null; // (컷, 프레임)에 하나뿐
+      taken.add(key);
+      markers.push({ cut: item.cut, local: item.local, ...(color ? { color } : {}), ...(name ? { name } : {}) });
+    }
+  }
+  const mark = (pos: unknown) => ({ cut: (pos as EditPos).cut, local: (pos as EditPos).local });
   const clips: EditClip[] = [];
   const seen = new Set<string>();
   for (const item of raw.clips as unknown[]) {
@@ -116,6 +164,10 @@ export function parseEditDoc(value: unknown): EditDoc | null {
   return {
     v: 1, clips, tracksOff, tracksLocked, ...(raw.muted ? { muted: true } : {}),
     ...(cutsOn.length ? { cutsOn } : {}), ...(cutsOff.length ? { cutsOff } : {}), ...(raw.hideOff ? { hideOff: true } : {}),
+    ...(raw.tracks !== undefined ? { tracks: raw.tracks as number } : {}),
+    ...(Object.keys(trackColors).length ? { trackColors } : {}),
+    ...(raw.markIn ? { markIn: mark(raw.markIn) } : {}), ...(raw.markOut ? { markOut: mark(raw.markOut) } : {}),
+    ...(markers.length ? { markers } : {}),
   };
 }
 
@@ -164,6 +216,11 @@ export function clipLen(clip: EditClip, fallback?: unknown): number {
   return validSeconds(clip.dur) ?? validSeconds(fallback) ?? DEFAULT_SEC;
 }
 
+// 그릴 영상 트랙 줄 수 = 적어 둔 줄 수(없으면 기본 3)와 클립이 있는 가장 높은 트랙 중 큰 쪽.
+export function trackCount(doc: EditDoc): number {
+  return Math.max(doc.tracks ?? MIN_TRACKS, ...doc.clips.map((clip) => clip.track));
+}
+
 // 컷 길이 = 그 컷 클립들의 최대 길이(꺼진 것 포함 — 끌 때 길이가 출렁이지 않게). 빈 컷은 기본 길이.
 export function buildLayout(
   cuts: string[],
@@ -181,7 +238,7 @@ export function buildLayout(
     start += len;
     return slot;
   });
-  return { cuts: slots, total: start, tracks: Math.max(MIN_TRACKS, ...doc.clips.map((clip) => clip.track)) };
+  return { cuts: slots, total: start, tracks: trackCount(doc) };
 }
 
 // 그 순간 보이는 클립 = 꺼지지 않은 것(클립 off·트랙 off) 중 아직 안 끝난 가장 높은 트랙.
@@ -390,6 +447,161 @@ export function moveClipToTrack(doc: EditDoc, key: string, to: number): EditDoc 
 export function toggleTrack(doc: EditDoc, list: "tracksOff" | "tracksLocked", track: number): EditDoc {
   const has = doc[list].includes(track);
   return { ...doc, [list]: has ? doc[list].filter((item) => item !== track) : [...doc[list], track] };
+}
+
+// ── 트랙 더하기·빼기·옮기기(트랙 머리 우클릭 메뉴, Jay 2026-10-08) ────────────────────────────────
+// 트랙 번호를 통째로 다시 매긴다 — 클립·끔·잠금·색이 같이 따라간다. to 가 null 을 주면 그 트랙은 사라진다(클립도 빠진다).
+function renumberTracks(doc: EditDoc, to: (track: number) => number | null): EditDoc {
+  const list = (tracks: number[]) => tracks.flatMap((track) => to(track) ?? []);
+  const colors = Object.entries(doc.trackColors ?? {}).flatMap(([track, color]) => {
+    const next = to(Number(track));
+    return next === null ? [] : [[next, color] as const];
+  });
+  const next: EditDoc = {
+    ...doc,
+    clips: doc.clips.flatMap((clip) => {
+      const track = to(clip.track);
+      return track === null ? [] : [track === clip.track ? clip : { ...clip, track }];
+    }),
+    tracksOff: list(doc.tracksOff),
+    tracksLocked: list(doc.tracksLocked),
+  };
+  delete next.trackColors;
+  if (colors.length) next.trackColors = Object.fromEntries(colors);
+  return next;
+}
+
+// 이 트랙 바로 위에 빈 트랙 하나 — 그 위의 트랙들이 한 줄씩 올라간다.
+export function addTrack(doc: EditDoc, above: number): EditDoc | null {
+  const count = trackCount(doc);
+  if (!positiveInt(above) || above > count) return null;
+  return { ...renumberTracks(doc, (track) => (track > above ? track + 1 : track)), tracks: count + 1 };
+}
+
+// 트랙을 통째로 한 줄 위/아래로 — 옆 트랙과 자리를 바꾼다. 둘 중 하나라도 잠겨 있으면 거부한다(클립이 옮겨지는 일이다).
+// 줄 수는 그대로 적어 둔다 — 안 적으면 맨 위 줄의 클립을 내렸을 때 빈 줄이 된 맨 위 줄이 사라진다(Codex 코드 리뷰).
+export function moveTrack(doc: EditDoc, track: number, delta: 1 | -1): EditDoc | null {
+  const other = track + delta;
+  const count = trackCount(doc);
+  if (!positiveInt(track) || track > count || other < 1 || other > count || isLocked(doc, track) || isLocked(doc, other)) return null;
+  return { ...renumberTracks(doc, (item) => (item === track ? other : item === other ? track : item)), tracks: count };
+}
+
+// 트랙을 지운다 — 그 트랙의 클립도 빠지고 위의 트랙들이 한 줄씩 내려온다. 잠긴 트랙과 마지막 한 줄은 거부한다.
+export function deleteTrack(doc: EditDoc, track: number): EditDoc | null {
+  const count = trackCount(doc);
+  if (!positiveInt(track) || track > count || count < 2 || isLocked(doc, track)) return null;
+  return { ...renumberTracks(doc, (item) => (item === track ? null : item > track ? item - 1 : item)), tracks: count - 1 };
+}
+
+// 클립이 하나도 없는 트랙을 모두 지운다(숨긴 컷의 클립도 있는 것으로 센다). 한 줄은 남긴다. 지울 것이 없으면 null.
+export function deleteEmptyTracks(doc: EditDoc): EditDoc | null {
+  const used = [...new Set(doc.clips.map((clip) => clip.track))].sort((a, b) => a - b);
+  const keep = used.length ? used : [1];
+  if (keep.length === trackCount(doc)) return null;
+  return { ...renumberTracks(doc, (track) => (keep.includes(track) ? keep.indexOf(track) + 1 : null)), tracks: keep.length };
+}
+
+// 트랙 색(null = 없앰). 바뀐 것이 없으면 null.
+export function setTrackColor(doc: EditDoc, track: number, color: string | null): EditDoc | null {
+  if (!positiveInt(track) || (doc.trackColors?.[track] ?? null) === color) return null;
+  const colors = { ...doc.trackColors };
+  if (color) colors[track] = color;
+  else delete colors[track];
+  const next: EditDoc = { ...doc };
+  delete next.trackColors;
+  if (Object.keys(colors).length) next.trackColors = colors;
+  return next;
+}
+
+// ── 마크 인/아웃·북마크(Jay 2026-10-08) ─────────────────────────────────────────────────────────
+// 화면에 보일 시각. 그 컷이 배치에 없거나(숨김·사라짐) 그 자리보다 짧아졌으면 null — 문서에는 남고 화면에서만 빠진다.
+//  끝으로 자르지 않는다: 자르면 서로 다른 표시가 한 자리에 겹치고, 길이가 돌아와도 제자리로 못 간다.
+export function markTime(layout: EditLayout, pos: EditPos | null | undefined): number | null {
+  const slot = pos ? layout.cuts.find((cut) => cut.path === pos.cut) : undefined;
+  return slot && pos!.local <= slot.len ? slot.start + pos!.local : null;
+}
+
+// 인(또는 아웃)을 그 자리에 찍는다(pos = null 이면 지운다). 인을 '보이는' 아웃과 같거나 뒤에 찍으면 아웃을 지우고, 아웃을
+// 인과 같거나 앞에 찍으면 인을 지운다(다빈치). 안 보이는 쪽은 건드리지 않는다. 바뀐 것이 없으면 null.
+export function setMark(doc: EditDoc, layout: EditLayout, which: "markIn" | "markOut", pos: EditPos | null): EditDoc | null {
+  const old = doc[which];
+  if (pos ? old?.cut === pos.cut && old.local === pos.local : !old) return null;
+  const next: EditDoc = { ...doc };
+  delete next[which];
+  if (!pos) return next;
+  next[which] = { cut: pos.cut, local: pos.local };
+  const other = which === "markIn" ? "markOut" : "markIn";
+  const at = markTime(layout, pos);
+  const otherAt = markTime(layout, doc[other]);
+  if (at !== null && otherAt !== null && (which === "markIn" ? otherAt <= at : otherAt >= at)) delete next[other];
+  return next;
+}
+
+// 인/아웃 구간(표시의 띠·반복 재생) — 하나라도 보이고 두 프레임 이상일 때만. 한쪽만 있으면 전체의 처음/끝까지다.
+// 그보다 짧으면 구간으로 치지 않는다: 재생 엔진은 0.04초 안의 차이는 영상을 다시 보내지 않아, 되돌아가도 영상은 그대로 간다.
+export function markRange(layout: EditLayout, doc: EditDoc): { from: number; to: number } | null {
+  const from = markTime(layout, doc.markIn);
+  const to = markTime(layout, doc.markOut);
+  if (from === null && to === null) return null;
+  const range = { from: from ?? 0, to: to ?? layout.total };
+  return range.to - range.from > 1.5 / EDIT_FPS ? range : null;
+}
+
+export const markerKey = (marker: EditPos) => `${marker.cut}\n${Math.round(marker.local * EDIT_FPS)}`;
+
+// 그 프레임에 이미 북마크가 있으면 null(보이지 않는 것이어도 — 길이가 돌아오면 다시 보인다).
+export function addMarker(doc: EditDoc, pos: EditPos): EditDoc | null {
+  const key = markerKey(pos);
+  if (doc.markers?.some((marker) => markerKey(marker) === key)) return null;
+  return { ...doc, markers: [...(doc.markers ?? []), { cut: pos.cut, local: pos.local }] };
+}
+
+export function removeMarker(doc: EditDoc, key: string): EditDoc | null {
+  const markers = (doc.markers ?? []).filter((marker) => markerKey(marker) !== key);
+  if (markers.length === (doc.markers?.length ?? 0)) return null;
+  const next: EditDoc = { ...doc };
+  delete next.markers;
+  if (markers.length) next.markers = markers;
+  return next;
+}
+
+// 이름·색 고치기 — 빈 이름·null 색은 그 값을 지운다. 그 북마크가 없거나 바뀐 것이 없으면 null.
+export function patchMarker(doc: EditDoc, key: string, change: { name?: string; color?: string | null }): EditDoc | null {
+  let changed = false;
+  const markers = (doc.markers ?? []).map((marker) => {
+    if (markerKey(marker) !== key) return marker;
+    const name = change.name === undefined ? marker.name : change.name.trim() || undefined;
+    const color = change.color === undefined ? marker.color : change.color ?? undefined;
+    if (name === marker.name && color === marker.color) return marker;
+    changed = true;
+    return { cut: marker.cut, local: marker.local, ...(color ? { color } : {}), ...(name ? { name } : {}) };
+  });
+  return changed ? { ...doc, markers } : null;
+}
+
+// 화면에 보이는 북마크(시간순). key 는 문서의 원래 열쇠 — 고치고 지울 때는 이것만 쓴다.
+export interface ShownMarker {
+  key: string;
+  time: number;
+  marker: EditMarker;
+}
+
+export function shownMarkers(layout: EditLayout, doc: EditDoc): ShownMarker[] {
+  return (doc.markers ?? [])
+    .flatMap((marker) => {
+      const time = markTime(layout, marker);
+      return time === null ? [] : [{ key: markerKey(marker), time, marker }];
+    })
+    .sort((a, b) => a.time - b.time);
+}
+
+// 그 시각의 북마크 — 같은 열쇠(컷·프레임)를 먼저 찾고, 없으면 보이는 시각이 반 프레임 안인 것을 찾는다
+// (컷 경계: 앞 컷의 끝에 찍은 것과 다음 컷의 처음은 같은 시각인데 열쇠가 다르다).
+export function markerAt(layout: EditLayout, shown: readonly ShownMarker[], time: number): ShownMarker | null {
+  const pos = posAt(layout, time);
+  const key = pos ? markerKey(pos) : "";
+  return shown.find((item) => item.key === key) ?? shown.find((item) => Math.abs(item.time - time) <= 0.5 / EDIT_FPS) ?? null;
 }
 
 // 확정된 길이를 문서에 적는다(Undo 단계 아님). 바뀐 것이 없으면 null.

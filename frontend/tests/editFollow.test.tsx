@@ -178,3 +178,24 @@ it("재생하지 못한 영상은 내리고 썸네일 정지화면으로 알린�
   expect(frames).toHaveLength(0);
   root = createRoot(host);
 });
+
+// 구간 반복(Jay 2026-10-08) — 짧은 구간을 되풀이하면 되돌아가는 폭이 재생 중 허용 오차(0.2초)보다 작을 수 있다.
+it("타임라인의 시각이 뒤로 가면(반복) 작은 차이여도 그 자리로 맞춘다 — 그 뒤의 작은 어긋남은 다시 그냥 둔다", () => {
+  time = 1;
+  render({ track: 1, playing: true });
+  frame();
+  video.emit("loadedmetadata");
+  time = 1.016;
+  frame();
+  video.currentTime = 1.1;
+  time = 1.1;
+  frame();
+  time = 1.0; // 구간 끝(1.1)에서 처음(1.0)으로 돌아갔다
+  frame();
+  expect(video.currentTime).toBe(1.0);
+  expect(video.paused).toBe(false);
+  video.currentTime = 1.08;
+  time = 1.03;
+  frame();
+  expect(video.currentTime).toBe(1.08);
+});
