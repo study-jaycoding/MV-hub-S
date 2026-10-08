@@ -378,7 +378,7 @@ it("구간 반복 재생을 켜는 순간: 구간 처음으로 가서 정방향 
   expect(playback.view.playing).toBe(true);
 });
 
-// 편집점 앞뒤 재생(Jay 2026-10-08 — 편집점 보기의 Space) — 편집점의 앞 2초에서 뒤 2초까지. 구간은 엔진이 쥔다.
+// 편집점 앞뒤 재생(Jay 2026-10-08 — 다이나믹 트림 모드의 Space) — 편집점의 앞 2초에서 뒤 2초까지. 구간은 엔진이 쥔다.
 it("편집점 앞뒤 재생: 앞 2초로 가서 뒤 2초까지 틀고 그 편집점으로 돌아와 멈춘다 — 되풀이면 그 구간을 돌고, 다른 재생 명령이 오면 풀린다", () => {
   const point = { cut: "e070/c3", local: 0 }; // 13초 — 앞은 빈 컷, 뒤는 그림(둘 다 rAF 시계)
   render({ scope: "around" });
@@ -441,4 +441,19 @@ it("편집점 앞뒤 재생: 편집점은 컷 좌표로 쥔다 — 트는 동안
   frame(200); // 새 구간의 끝(16초) → 그 편집점(14초)으로 돌아와 멈춘다
   expect(playback.now()).toBe(14);
   expect(playback.view.playing).toBe(false);
+});
+
+// 다이나믹 트림 모드의 두 칸은 시계가 그릴 때만 맞춰진다 — 멈춘 자리도 그려야 한다(Codex 코드 리뷰).
+it("멈추면 멈춘 자리를 그린다 — 마지막 프레임 뒤에 영상이 편집점을 넘었어도", () => {
+  render({ scope: "stop-paint" });
+  video.emit("loadedmetadata");
+  act(() => playback.toggle());
+  video.currentTime = 2.95; // 위 클립(top, 3초)의 끝 직전
+  frame(16);
+  expect(paint).toHaveBeenLastCalledWith(2.95);
+  video.currentTime = 3.05; // 다음 프레임이 돌기 전에 영상은 편집점(3초)을 넘었다
+  act(() => playback.toggle()); // 멈춘다 — 영상의 시각을 위치로 받는다
+  expect(playback.now()).toBeCloseTo(3.05);
+  expect(playback.view.clip?.gen).toBe("low"); // 보이는 클립이 바뀌었다
+  expect(paint.mock.lastCall![0]).toBeCloseTo(3.05); // 그 자리를 그렸다(안 그리면 화면은 2.95초에 남는다)
 });

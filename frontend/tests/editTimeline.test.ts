@@ -524,8 +524,8 @@ describe("마크 인/아웃·북마크", () => {
   });
 });
 
-// 편집점 보기(Jay 2026-10-08 — 다빈치 트림의 두 화면, 보기만)
-describe("편집점 보기", () => {
+// 다이나믹 트림 모드(Jay 2026-10-08 — 다빈치의 Dynamic Trim Mode, 보기만)의 계산
+describe("다이나믹 트림 모드 — 편집점의 앞 | 뒤", () => {
   // c1 0~8(위 top 3초 · 아래 low 8초) · c2(빈 컷) 8~13 · c3 13~19
   const d = doc([clip("c1", "low", 1, { dur: 8 }), clip("c1", "top", 2, { dur: 3 }), clip("c3", "solo", 1, { dur: 6 })]);
   const layout = buildLayout(["e070/c1", "e070/c2", "e070/c3"], d);

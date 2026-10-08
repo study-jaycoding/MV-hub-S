@@ -45,7 +45,7 @@ export interface ViewerProps {
   io?: EditMarks | null; // 마크 인/아웃 — 타임바 위의 구간 선과 아래의 회색 꼬리표
   flags?: readonly { time: number; color?: string }[]; // 북마크 — 타임바 위의 색 꼬리표
   marking?: ViewerMarking | null;
-  over?: ReactNode; // 무대를 덮는 것(편집점 보기의 두 칸) — 밑의 영상 요소는 그대로 둔다
+  over?: ReactNode; // 무대를 덮는 것(다이나믹 트림 모드의 두 칸) — 밑의 영상 요소는 그대로 둔다
   registerPaint: (paint: (time: number) => void) => () => void; // 이 판의 시각·타임바를 그릴 함수를 시계에 건다
   controls: ViewerControls;
   loop: boolean;

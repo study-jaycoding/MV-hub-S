@@ -49,8 +49,7 @@ import {
   type SlotClip,
 } from "../../lib/editTimeline";
 import {
-  editDocKey, isSourceView, loadEditTarget, loadEditUi, saveEditTarget, saveEditUi, viewPane,
-  type EditTarget, type EditUi, type ViewMode,
+  editDocKey, isSourceView, loadEditTarget, loadEditUi, saveEditTarget, saveEditUi, type EditTarget, type EditUi, type ViewMode,
 } from "../../lib/editTimelineStore";
 import { generationListMeta } from "../../lib/generationDisplay";
 import { previewTargetFromGenerations } from "../../lib/generationGrid";
@@ -72,12 +71,12 @@ import {
 import { dropQueuedVideoMeasures, knownVideoSeconds, measureVideoSeconds } from "../../lib/videoDuration";
 import { editMarkLabel } from "./EditCard";
 import { EditMarkerColorMenu, EditMarkerMenu } from "./EditMarkerMenu";
-import { EditPointView } from "./EditPointView";
 import { arrangePool, EditPool, type PoolItem } from "./EditPool";
 import { EditSidebar } from "./EditSidebar";
 import { EditSoloViewer } from "./EditSoloViewer";
 import { EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink } from "./EditTimeline";
 import { EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
+import { EditTrimView } from "./EditTrimView";
 import { EditViewer, type ViewerControls, type ViewerMarking, type ViewOption } from "./EditViewer";
 import { ResizableSidebar } from "../common/ResizableSidebar";
 
@@ -121,7 +120,7 @@ let allWorkspacesIn = "";
 
 const NO_CUTS: ReadonlySet<string> = new Set();
 const NO_MARKS: readonly number[] = [];
-const AROUND_SEC = 2; // 편집점 보기 — 재생이 편집점의 앞뒤로 트는 길이(초)
+const AROUND_SEC = 2; // 다이나믹 트림 모드 — 재생이 편집점의 앞뒤로 트는 길이(초)
 // 소스 뷰어 — 생성물마다 컷 하나·클립 하나짜리 가상 시퀀스(소스 클립 = 고른 것 하나, 소스 테이프 = 이 컷의 풀 목록).
 //  컷 경로는 `@src/<생성물 id>`. 편집 문서와 무관하다.
 const SRC_CUT = "@src";
@@ -373,7 +372,10 @@ function EditTabInner({
   //   · 소스 테이프("tape") — 재생헤드가 있는 컷의 풀 목록 전체를 풀의 정렬 순서대로 이어 붙인 것(검색어는 따지지 않는다).
   //  둘 다 생성물마다 컷 하나·클립 하나짜리 가상 시퀀스를 같은 엔진으로 튼다 — 조작·훑기·반복이 타임라인과 같다. 엔진이
   //  하나라 두 방식을 두 판에 같이 띄울 수는 없다(setMode). 편집 문서에는 아무것도 쓰지 않는다.
-  const slots: ViewMode[] = ui.dual ? ui.views : [ui.views[1]]; // 보이는 판들(왼쪽부터)
+  // 다이나믹 트림 모드(아래 tlToggle) — 켜져 있는 동안 뷰어 자리는 타임라인 판 하나다: 나뉘어 있던 판들이 한 창이 된다.
+  //  화면 설정(views·dual)은 건드리지 않으므로 끄면 보던 대로 돌아온다. 저장하지 않는다.
+  const [trim, setTrim] = useState(false);
+  const slots: ViewMode[] = trim ? ["timeline"] : ui.dual ? ui.views : [ui.views[1]]; // 보이는 판들(왼쪽부터)
   const srcOrder = slots.findIndex(isSourceView);
   const srcShown = srcOrder >= 0;
   const tapeOn = slots[srcOrder] === "tape";
@@ -442,16 +444,13 @@ function EditTabInner({
   //  시계는 둘뿐이다: 타임라인(위의 playback — 판이 무엇을 보든 언제나 '위 트랙 우선'을 튼다)과 소스(srcPlay). 한 트랙만
   //  보는 판은 타임라인의 시계를 따라가는 보기다(EditSoloViewer). 그래서 재생헤드·편집점·풀의 '지금 보이는 것' 표는 판이
   //  무엇을 보든 달라지지 않는다(Codex 설계 검토 — 엔진에 트랙만 거른 배치를 주면 다른 판과 아래 타임라인의 편집점이 바뀐다).
-  // 타임라인 판은 두 방식이다 — 타임라인 · 편집점 보기("edit": 가장 가까운 편집점의 앞 | 뒤를 나란히, EditPointView). 소스 판의
-  //  소스 클립·소스 테이프처럼 엔진 하나의 두 방식이라 두 판에 같이 뜨지 않는다(viewPane).
-  const tlOrder = slots.findIndex((mode) => viewPane(mode) === "timeline");
+  const tlOrder = slots.indexOf("timeline");
   const tlShown = tlOrder >= 0;
-  const editOn = slots[tlOrder] === "edit";
   const setMode = (order: number, next: ViewMode) => {
     const views: [ViewMode, ViewMode] = [ui.views[0], ui.views[1]];
     const slot = ui.dual ? order : 1;
-    // 옆 판이 같은 것을 보고 있으면 자리를 바꾼다. 같은 판의 두 방식(소스 클립·소스 테이프, 타임라인·편집점 보기)은 같은 것으로 친다
-    if (viewPane(views[1 - slot]) === viewPane(next)) views[1 - slot] = views[slot];
+    // 옆 판이 같은 것을 보고 있으면 자리를 바꾼다. 소스 클립·소스 테이프는 같은 판(소스 엔진 하나)의 두 방식이라 같은 것으로 친다
+    if (views[1 - slot] === next || (isSourceView(views[1 - slot]) && isSourceView(next))) views[1 - slot] = views[slot];
     views[slot] = next;
     patchUi({ views });
     setKeyTarget(isSourceView(next) ? "source" : "timeline"); // 방금 고른 것이 재생 키를 받는다
@@ -462,20 +461,25 @@ function EditTabInner({
   const [keyTarget, setKeyTarget] = useState<"timeline" | "source">("timeline");
   const clockShown = slots.some((mode) => !isSourceView(mode)); // 타임라인의 시계를 쓰는 판(타임라인·한 트랙만)이 보인다
   const onSource = srcShown && (!clockShown || keyTarget === "source");
-  // 편집점 보기(Jay 2026-10-08 — 다빈치 트림의 두 화면, 보기만) — 재생(Space·재생 단추)은 보는 편집점의 앞 2초에서 뒤 2초까지를
-  //  튼다: 반복이 꺼져 있으면 한 번 틀고 그 편집점으로 돌아와 멈추고, 켜져 있으면 되풀이한다. ↑·↓ 는 재생헤드가 아니라 **보는
-  //  편집점**에서 앞·뒤로 간다(재생헤드가 편집점 사이에 있으면 둘이 다르다 — 안 그러면 ↓ 를 눌러도 화면이 그대로다, Codex 설계
-  //  검토). J·K·L·프레임 이동·훑기는 그대로다. 막대의 단추와 W 는 타임라인 판의 방식을 바꾼다(안 보이면 맨 오른쪽 판을).
+  // 다이나믹 트림 모드(Jay 2026-10-08 — 다빈치의 Dynamic Trim Mode(W), 보기만) — 막대의 단추·W 로 켜면 나뉘어 있던 뷰어가 한
+  //  창이 되고(위의 slots), 그 창에 가장 가까운 편집점의 앞 컷 | 뒤 컷이 나란히 뜬다(EditTrimView). 재생은 한 번이다 — 재생헤드가
+  //  있는 쪽 칸에서 화면이 간다. 재생(Space·재생 단추)은 보는 편집점의 앞 2초에서 뒤 2초까지를 튼다: 반복이 꺼져 있으면 한 번
+  //  틀고 그 편집점으로 돌아와 멈추고, 켜져 있으면 되풀이한다. ↑·↓ 는 재생헤드가 아니라 **보는 편집점**에서 앞·뒤로 간다
+  //  (재생헤드가 편집점 사이에 있으면 둘이 다르다 — 안 그러면 ↓ 를 눌러도 화면이 그대로다, Codex 설계 검토). J·K·L·프레임
+  //  이동·훑기는 그대로다. 트림(클립 길이 바꾸기)은 없다.
   const focusPoint = () => nearestPoint(editPoints(layout), now());
   const tlToggle = () => {
-    if (!editOn) return toggle();
+    if (!trim) return toggle();
     if (view.playing) return stop();
     const at = posAt(layout, focusPoint());
     if (at) playAround(at, AROUND_SEC, !ui.loop);
   };
   const tlStepEdit = (dir: 1 | -1) =>
-    (editOn ? seek(stepPoint(editPoints(layout), focusPoint(), dir)) : playback.stepEdit(dir));
-  const toggleEditView = () => setMode(tlShown ? tlOrder : slots.length - 1, editOn ? "timeline" : "edit");
+    (trim ? seek(stepPoint(editPoints(layout), focusPoint(), dir)) : playback.stepEdit(dir));
+  const toggleTrim = () => {
+    setTrim(!trim);
+    setKeyTarget("timeline"); // 그 창은 타임라인의 시계다
+  };
   const keys = onSource ? srcPlay : { ...playback, toggle: tlToggle, stepEdit: tlStepEdit };
   // 타임라인과 소스는 같이 틀지 않는다 — 한쪽을 틀면 다른 쪽은 멈춘다(소리가 겹치지 않고, K 가 멈출 것이 하나다).
   //  소스 판을 내리면 소스도 멈춘다. 타임라인 판이 없으면 타임라인의 영상은 소리를 끈다(아래 muted).
@@ -493,7 +497,6 @@ function EditTabInner({
     () => ({ toggle: srcToggle, stop: stopSrc, shuttle: srcShuttle, seek: srcSeek }), [srcToggle, stopSrc, srcShuttle, srcSeek]);
   const viewOptions = useMemo<ViewOption[]>(() => [
     { value: "timeline", label: t("타임라인"), hint: t("위 트랙이 보인다") },
-    { value: "edit", label: t("편집점 보기"), hint: t("앞 컷의 끝 | 뒤 컷의 처음") },
     { value: "source", label: t("소스 클립"), hint: t("풀에서 고른 것") },
     { value: "tape", label: t("소스 테이프"), hint: t("이 컷의 생성물을 이어서") },
     ...Array.from({ length: layout.tracks }, (_, i) => layout.tracks - i)
@@ -773,7 +776,7 @@ function EditTabInner({
     else if (code === "KeyI") markHere("markIn");
     else if (code === "KeyO") markHere("markOut");
     else if (code === "KeyM") bookmarkHere();
-    else if (code === "KeyW") toggleEditView();
+    else if (code === "KeyW") toggleTrim();
     else if (key === "Escape" && picked.length) setSelected(new Set());
     else used = false;
     if (used) event.preventDefault();
@@ -884,10 +887,13 @@ function EditTabInner({
           </ResizableSidebar>
           {/* 타임라인 판 — 안 보일 때도 붙어 있다(엔진의 영상 요소를 떼면 안 된다). 안 보이면 소리를 끈다. */}
           <EditViewer
-            {...pane(tlOrder, editOn ? "edit" : "timeline")}
+            {...pane(tlOrder, "timeline")}
             {...clockPane}
-            over={editOn && (
-              <EditPointView layout={layout} doc={doc} sourceOf={sourceOf} now={now} playing={view.playing} registerPaint={registerPaint} />
+            // 다이나믹 트림 모드 — 이 판이 뷰어 자리 전체다. 판을 고르거나 나눌 것이 없다(끄기는 무대의 ⊗·W·막대의 단추)
+            {...(trim && { options: [{ value: "timeline", label: t("다이나믹 트림 모드") }], dualButton: null })}
+            over={trim && (
+              <EditTrimView layout={layout} doc={doc} sourceOf={sourceOf} now={now} registerPaint={registerPaint} onClose={toggleTrim}
+                failedKey={view.failed && view.clip ? clipKey(view.clip) : ""} />
             )}
             shown={view}
             videoRef={videoRef}
@@ -974,11 +980,13 @@ function EditTabInner({
           {/* 인/아웃 구간의 길이(누르면 지운다)와 북마크 — 마크 인/아웃 단추는 뷰어 오른쪽 아래에 있다(다빈치) */}
           {target && (
             <span className="ed-marks">
-              <button type="button" className={"ed-mbtn ed-mbtn-edit" + (editOn ? " ed-on" : "")} aria-pressed={editOn} onClick={toggleEditView}
-                title={t("편집점 보기 (W) — 편집점의 앞 컷 끝과 뒤 컷 처음을 나란히 봅니다 · ↑↓ 편집점 · Space 앞뒤 2초 재생")}
-                aria-label={t("편집점 보기 (W) — 편집점의 앞 컷 끝과 뒤 컷 처음을 나란히 봅니다 · ↑↓ 편집점 · Space 앞뒤 2초 재생")}>
-                <svg width="20" height="14" viewBox="0 0 20 14" aria-hidden="true">
-                  <rect x="1.5" y="2.5" width="17" height="9" rx="1.5" /><path d="M10 0.5v13" strokeWidth="2.4" />
+              {/* 다빈치의 Dynamic Trim Mode 단추 — [ ‹ | › ] */}
+              <button type="button" className={"ed-mbtn ed-mbtn-trim" + (trim ? " ed-on" : "")} aria-pressed={trim} onClick={toggleTrim}
+                title={t("다이나믹 트림 모드 (W) — 나뉜 뷰어를 한 창으로 합쳐 편집점의 앞 컷 | 뒤 컷을 이어 봅니다 · ↑↓ 편집점 · Space 앞뒤 2초 재생")}
+                aria-label={t("다이나믹 트림 모드 (W) — 나뉜 뷰어를 한 창으로 합쳐 편집점의 앞 컷 | 뒤 컷을 이어 봅니다 · ↑↓ 편집점 · Space 앞뒤 2초 재생")}>
+                <svg width="24" height="14" viewBox="0 0 24 14" aria-hidden="true">
+                  <path d="M4.5 1.5h-3v11h3M19.5 1.5h3v11h-3M9 4.2 6.2 7 9 9.8M15 4.2 17.8 7 15 9.8M12 5v8" />
+                  <circle cx="12" cy="2.8" r="1.4" />
                 </svg>
               </button>
               {(doc.markIn || doc.markOut) && (

@@ -131,13 +131,10 @@ export function saveEditTarget(target: EditTarget | null): void {
 //  (계정·시퀀스와 무관하게 하나, 되돌리기 대상 아님). 못 읽으면 기본값.
 export type PoolView = "thumb" | "meta" | "list";
 export type PoolSort = "new" | "old" | "placed";
-// 뷰어 한 판이 보는 것 — 타임라인(위 트랙 우선) · 편집점 보기(편집점의 앞 | 뒤) · 소스 클립(풀에서 고른 것) · 소스 테이프(이
-//  컷의 풀 목록을 이어서) · 한 트랙만(트랙 번호). 타임라인과 편집점 보기는 타임라인 판(엔진 하나)의 두 방식이고, 소스 클립과
-//  소스 테이프는 소스 판의 두 방식이다 — 같은 판의 두 방식은 두 판에 같이 뜰 수 없다(viewPane).
-export type ViewMode = "timeline" | "edit" | "source" | "tape" | number;
+// 뷰어 한 판이 보는 것 — 타임라인(위 트랙 우선) · 소스 클립(풀에서 고른 것) · 소스 테이프(이 컷의 풀 목록을 이어서) ·
+//  한 트랙만(트랙 번호). 소스 클립과 소스 테이프는 같은 판(소스 엔진 하나)의 두 방식이라 두 판에 같이 뜰 수 없다.
+export type ViewMode = "timeline" | "source" | "tape" | number;
 export const isSourceView = (mode: ViewMode | undefined): boolean => mode === "source" || mode === "tape";
-export const viewPane = (mode: ViewMode): "timeline" | "source" | number =>
-  (typeof mode === "number" ? mode : isSourceView(mode) ? "source" : "timeline");
 export interface EditUi {
   view: PoolView;
   size: number; // 썸네일 폭(px)
@@ -154,7 +151,7 @@ const DEFAULT_UI: EditUi = {
   markerColor: MARKER_COLORS[0].color,
 };
 const viewMode = (value: unknown): ViewMode | null =>
-  value === "timeline" || value === "edit" || value === "source" || value === "tape" ? value
+  value === "timeline" || value === "source" || value === "tape" ? value
     : Number.isSafeInteger(value) && (value as number) > 0 ? (value as number) : null;
 const uiKey = `${STORAGE_KEYS.editTimeline}.ui`;
 
@@ -163,7 +160,7 @@ export function loadEditUi(): EditUi {
     const raw = JSON.parse(localStorage.getItem(uiKey) || "null") as Partial<EditUi> | null;
     if (!raw || typeof raw !== "object") return DEFAULT_UI;
     const pair = Array.isArray(raw.views) && raw.views.length === 2 ? [viewMode(raw.views[0]), viewMode(raw.views[1])] : [];
-    const views = pair[0] != null && pair[1] != null && viewPane(pair[0]) !== viewPane(pair[1])
+    const views = pair[0] != null && pair[1] != null && pair[0] !== pair[1] && !(isSourceView(pair[0]) && isSourceView(pair[1]))
       ? ([pair[0], pair[1]] as [ViewMode, ViewMode]) : null;
     return {
       view: raw.view === "meta" || raw.view === "list" ? raw.view : "thumb",

@@ -59,12 +59,10 @@ const EN: Record<string, string> = {
   "모델": "Model",
   "길이": "Length",
   "트랙": "Track",
-  "편집점 보기": "Edit point view",
-  "앞 컷의 끝 | 뒤 컷의 처음": "outgoing end | incoming start",
-  "편집점 보기 (W) — 편집점의 앞 컷 끝과 뒤 컷 처음을 나란히 봅니다 · ↑↓ 편집점 · Space 앞뒤 2초 재생":
-    "Edit point view (W) — outgoing end and incoming start side by side · ↑↓ edit points · Space plays 2s around",
-  "마지막 프레임": "last frame",
-  "{sec}초 지점": "at {sec}s",
+  "다이나믹 트림 모드": "Dynamic Trim Mode",
+  "다이나믹 트림 모드 (W) — 나뉜 뷰어를 한 창으로 합쳐 편집점의 앞 컷 | 뒤 컷을 이어 봅니다 · ↑↓ 편집점 · Space 앞뒤 2초 재생":
+    "Dynamic Trim Mode (W) — merges the viewers into one window showing outgoing | incoming at the edit · ↑↓ edit points · Space plays 2s around",
+  "다이나믹 트림 모드 끄기 (W)": "Exit Dynamic Trim Mode (W)",
   "타임라인의 처음입니다.": "Start of the timeline.",
   "타임라인의 끝입니다.": "End of the timeline.",
   "소스 클립": "Source clip",

@@ -332,7 +332,7 @@ export function stepPoint(points: number[], time: number, dir: 1 | -1): number {
   return 0;
 }
 
-// ── 편집점 보기(다빈치 트림의 두 화면, 보기만) ──
+// ── 다이나믹 트림 모드(다빈치의 Dynamic Trim Mode, 보기만) — 편집점의 앞 | 뒤 ──
 // 보는 편집점 = 재생헤드에서 가장 가까운 것(↑·↓ 가 쓰는 목록 그대로 — 처음·끝 포함).
 export function nearestPoint(points: readonly number[], time: number): number {
   return points.reduce((best, point) => (Math.abs(point - time) < Math.abs(best - time) ? point : best), points[0] ?? 0);

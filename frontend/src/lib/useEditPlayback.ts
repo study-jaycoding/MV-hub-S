@@ -55,7 +55,7 @@ export interface EditView {
 // 시퀀스별 마지막 재생헤드 자리 — 다른 탭에 다녀와도 보던 자리로 돌아온다(새로고침하면 사라진다).
 const lastPos = new Map<string, EditPos>();
 
-// 편집점 앞뒤 재생(편집점 보기의 Space) — 그 편집점(컷 좌표라 배치가 바뀌어도 따라간다)·앞뒤 길이(초)·한 번만 틀지.
+// 편집점 앞뒤 재생(다이나믹 트림 모드의 Space) — 그 편집점(컷 좌표라 배치가 바뀌어도 따라간다)·앞뒤 길이(초)·한 번만 틀지.
 interface Around {
   at: EditPos;
   span: number;
@@ -206,6 +206,9 @@ export function useEditPlayback({
         if (slot) pos.current = { cut: slot.path, local: Math.min(video.currentTime, slot.len) };
       }
       sync(!adopt);
+      // 멈춘 자리를 그린다 — 영상의 시각을 위치로 받으면 마지막 tick 이 그린 자리와 다르다(그 사이 편집점을 넘었으면 보이는
+      //  클립도 바뀐다). 안 그리면 재생헤드·시각과 다이나믹 트림 모드의 두 칸이 한 박자 낡은 채 선다(Codex 코드 리뷰).
+      live.current.paint(now());
     };
 
     // 지금 지킬 구간 — 편집점 앞뒤 재생이 걸려 있으면 그 편집점의 앞뒤, 아니면 구간 반복(range).
@@ -431,7 +434,7 @@ export function useEditPlayback({
       seek(next.from);
       play(1);
     }, [play, seek]),
-    // 편집점 앞뒤 재생(편집점 보기) — 그 편집점의 span 초 앞으로 가서 정방향 1배로 span 초 뒤까지 튼다. once 면 끝에서 그
+    // 편집점 앞뒤 재생(다이나믹 트림 모드) — 그 편집점의 span 초 앞으로 가서 정방향 1배로 span 초 뒤까지 튼다. once 면 끝에서 그
     //  편집점으로 돌아가 멈추고, 아니면 그 구간을 되풀이한다. 구간은 엔진이 쥔다 — 화면 상태로 두면 그 사이에 켠 구간 반복
     //  재생을 옛 구간이 덮고, 길이 보정으로 배치가 바뀌면 낡는다(Codex 설계 검토).
     playAround: useCallback((at: EditPos, span: number, once: boolean) => {
