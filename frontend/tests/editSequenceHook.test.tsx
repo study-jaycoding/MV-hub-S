@@ -54,8 +54,8 @@ function ListHarness(props: { seq: string | null; workspace?: WorkspaceContext; 
   });
   return null;
 }
-function TreeHarness() {
-  tree = useEditProjects({ authKey: "auth", workspace: TEAM, projectId: "p1" });
+function TreeHarness({ workspace = TEAM }: { workspace?: WorkspaceContext }) {
+  tree = useEditProjects({ authKey: "auth", workspace, projectId: "p1" });
   return null;
 }
 const render = (node: React.ReactNode) => act(() => root.render(node));
@@ -257,6 +257,77 @@ it("폴더 — 숫자만 다시 받을 때는 트리를 치우지도 디스크�
   expect(count().count).toBe(5); // 실패하면 마지막 숫자를 둔다
   expect(mocks.folder).toHaveBeenCalledTimes(1);
   expect(mocks.projects).toHaveBeenCalledTimes(1);
+});
+
+it("폴더 — 트리를 처음 받는 사이에 먼저 도착한 '숫자만 다시 받기'의 숫자를 늦게 끝난 트리 조회가 덮지 않는다", async () => {
+  mocks.projects.mockResolvedValue({ projects: [{ id: "p1", name: "P" }], unassigned: 0 });
+  mocks.links.mockResolvedValue({ links: {} });
+  const first = deferred<unknown>();
+  mocks.counts.mockReturnValueOnce(first.promise); // 트리 조회의 숫자 — 늦게 온다
+  render(<TreeHarness />);
+  await flush();
+  await flush();
+  expect(tree.tree.state).toBe("loading");
+  mocks.counts.mockResolvedValueOnce({ counts: { p1: { "e070/c1": 5, "e070/c9": 1 } } });
+  act(() => tree.reloadCounts()); // 그사이 생성물이 바뀌었다는 알림
+  await flush();
+  first.resolve({ counts: { p1: { "e070/c1": 1 } } });
+  await flush();
+  expect(tree.tree.state).toBe("ready");
+  expect(tree.tree.roots[0].children!.map((node) => [node.name, node.count])).toEqual([["c1", 5], ["c9", 1]]);
+});
+
+it("폴더 — 먼저 떠난 트리 조회가 늦게 실패해도 그사이 받은 숫자와 폴더를 지우지 않는다. 못 받은 트리는 다음 알림 때 처음부터 다시 받는다", async () => {
+  mocks.projects.mockResolvedValue({ projects: [{ id: "p1", name: "P" }], unassigned: 0 });
+  mocks.links.mockResolvedValue({ links: {} });
+  const first = deferred<unknown>();
+  mocks.counts.mockReturnValueOnce(first.promise);
+  render(<TreeHarness />);
+  await flush();
+  await flush();
+  mocks.counts.mockResolvedValueOnce({ counts: { p1: { "e070/c1": 5 } } });
+  act(() => tree.reloadCounts());
+  await flush();
+  first.reject(new Error("HTTP 502")); // 처음 조회가 이제야 실패한다
+  await flush();
+  expect(tree.tree.state).toBe("ready");
+  expect(tree.tree.note).toBeNull();
+  expect(tree.tree.roots[0].children!.map((node) => [node.name, node.count])).toEqual([["c1", 5]]);
+
+  act(() => root.unmount()); // 이번에는 아무것도 못 받은 채로 끝난다
+  root = createRoot(host);
+  mocks.counts.mockRejectedValueOnce(new Error("HTTP 502"));
+  render(<TreeHarness />);
+  await flush();
+  await flush();
+  expect(tree.tree.state).toBe("error");
+  mocks.counts.mockResolvedValue({ counts: { p1: { "e070/c1": 2 } } });
+  act(() => tree.reloadCounts()); // 생성물이 바뀌었다는 알림 — 숫자만으로는 못 살리니 처음부터 다시 받는다
+  await flush();
+  await flush();
+  expect(tree.tree.state).toBe("ready");
+  expect(tree.tree.roots[0].children![0].count).toBe(2);
+});
+
+it("폴더 — 공간을 A→B→A 로 오갈 때 처음 A 의 늦은 답이 새 항목(+N)을 덮지 않는다", async () => {
+  seenBase.value = "2026-10-01 00:00:00";
+  mocks.projects.mockResolvedValue({ projects: [{ id: "p1", name: "P" }], unassigned: 0 });
+  mocks.links.mockResolvedValue({ links: {} });
+  mocks.counts.mockResolvedValue({ counts: { p1: { "e070/c1": 3 } } });
+  const item = (id: string) => ({ id, project_id: "p1", folder_path: "e070/c1", shared_at: "2099-01-01 00:00:00", ack_key: id });
+  const oldA = deferred<unknown[]>();
+  mocks.fresh.mockReturnValueOnce(oldA.promise).mockResolvedValueOnce([]).mockResolvedValueOnce([item("x1"), item("x2")]);
+  render(<TreeHarness />);
+  await flush();
+  render(<TreeHarness workspace={{ scope: "team", id: "w2", name: "B" }} />);
+  await flush();
+  render(<TreeHarness />);
+  await flush();
+  await flush();
+  expect(tree.freshByProject).toEqual({ p1: 2 });
+  oldA.resolve([item("x1")]); // 처음 A 의 답이 이제야 온다
+  await flush();
+  expect(tree.freshByProject).toEqual({ p1: 2 });
 });
 
 it("다시 받는 동안에는 '끝까지 받음'이 아니다 — 그 사이 여기 없는 클립을 '없음'으로 판정하지 않는다", async () => {

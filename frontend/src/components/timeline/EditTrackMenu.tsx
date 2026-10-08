@@ -36,16 +36,26 @@ export function EditTrackMenu({
   onCloseRef.current = onClose;
   useOutsideMouseDown(ref, onClose);
   // 메뉴가 떠 있는 동안의 키 — 캡처 단계에서 먼저 본다(리스너는 한 번만 건다: useEscapeClose 의 주석).
-  //  · Esc 는 메뉴가 먹는다(같은 Esc 가 뒤의 폴더 창까지 닫지 않게).
-  //  · 메뉴 밖에서 난 키는 뒤 화면(편집 키·라이브러리 키)으로 보내지 않는다 — 고를 줄이 없는 메뉴나 Tab 으로 초점이 빠져나간
-  //    메뉴에서 M·R 같은 키가 뒤에서 실행되던 길(Codex 코드 리뷰). 브라우저 기본 동작(새로고침 등)은 막지 않는다.
+  //  · Esc·Tab 은 메뉴가 먹고 닫는다. Esc 는 뒤의 폴더 창까지 닫지 않게, Tab 은 초점이 메뉴 밖으로 나가지 않게 —
+  //    나가면 뒤 단추를 Enter·Space 로 누를 수 있다(전파를 막아도 단추의 기본 동작은 남는다, Codex 코드 리뷰).
+  //  · 줄은 ↑↓ 로 옮긴다(Tab 이 닫기라 다른 길이 없다).
+  //  · 메뉴 밖에서 난 키는 뒤 화면(편집 키·라이브러리 키)으로 보내지 않는다 — 고를 줄이 없어 초점을 단추에 못 준 메뉴에서
+  //    M·R 같은 키가 뒤에서 실행되던 길. 브라우저 기본 동작(새로고침 등)은 막지 않는다.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      const menu = ref.current;
+      if (event.key === "Escape" || event.key === "Tab") {
         event.preventDefault();
         event.stopPropagation();
         onCloseRef.current();
-      } else if (!ref.current?.contains(event.target as Node)) event.stopPropagation();
+      } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopPropagation();
+        const items = [...(menu?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])];
+        const at = items.indexOf(document.activeElement as HTMLButtonElement);
+        const down = event.key === "ArrowDown";
+        items[at < 0 ? (down ? 0 : items.length - 1) : (at + (down ? 1 : -1) + items.length) % items.length]?.focus();
+      } else if (!menu?.contains(event.target as Node)) event.stopPropagation();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);

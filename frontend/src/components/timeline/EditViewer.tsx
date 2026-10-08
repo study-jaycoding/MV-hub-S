@@ -13,6 +13,8 @@ export function EditViewer({
   detail,
   muted,
   empty,
+  dual,
+  onToggleDual,
   onToggle,
   onStepFrames,
   onStepEdit,
@@ -25,6 +27,8 @@ export function EditViewer({
   detail: string; // '만든 사람 · 모델 · 5.0s'
   muted: boolean;
   empty: string | null; // 타임라인이 없을 때의 안내(있으면 화면 가운데에 그것만)
+  dual: boolean; // 듀얼 뷰어 — 왼쪽에 소스 뷰어가 같이 떠 있다
+  onToggleDual: () => void;
   onToggle: () => void;
   onStepFrames: (frames: number) => void;
   onStepEdit: (dir: 1 | -1) => void;
@@ -78,7 +82,16 @@ export function EditViewer({
         </button>
         <span className="ed-tcr">
           {speed && <b>{speed}</b>}
-          <span ref={timecodeRef}>00:00:00:00</span> / {total}
+          <span ref={timecodeRef}>00:00:00:00</span><span className="ed-tcr-total"> / {total}</span>
+          {/* 싱글/듀얼 뷰어(다빈치의 Single Viewer Mode) — 듀얼이면 왼쪽에 미디어 풀에서 고른 생성물(소스)이 나란히 보인다 */}
+          <button type="button" className={"ed-tbtn ed-dual" + (dual ? " ed-on" : "")} aria-pressed={dual} onClick={onToggleDual}
+            title={dual ? t("싱글 뷰어로 — 타임라인만 봅니다") : t("듀얼 뷰어로 — 고른 생성물(소스)과 타임라인을 나란히 봅니다")}
+            aria-label={dual ? t("싱글 뷰어로 — 타임라인만 봅니다") : t("듀얼 뷰어로 — 고른 생성물(소스)과 타임라인을 나란히 봅니다")}>
+            <svg width="18" height="12" viewBox="0 0 18 12" aria-hidden="true">
+              {dual ? <><rect x="0.5" y="0.5" width="7.5" height="11" /><rect x="10" y="0.5" width="7.5" height="11" /></>
+                : <rect x="0.5" y="0.5" width="17" height="11" />}
+            </svg>
+          </button>
         </span>
       </div>
     </section>

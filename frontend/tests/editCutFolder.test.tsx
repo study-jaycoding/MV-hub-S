@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
-// 편집 탭(Jay 2026-10-08) — 그림을 누르면 그 컷으로 · 컷 더블클릭 = 공유 & 리뷰의 폴더 창 열기(무엇을 열지만 App 에 알린다) ·
+// 편집 탭(Jay 2026-10-08) — 미디어 풀(폴더 목록 옆: 보기 방식·크기·검색·정렬, 고르기·넣기/빼기·우클릭 트랙 메뉴) ·
+// 싱글/듀얼 뷰어 · 그림을 누르면 그 컷으로 · 컷 더블클릭 = 공유 & 리뷰의 폴더 창 열기(무엇을 열지만 App 에 알린다) ·
 // 그 창의 카드 우클릭 = 넣을 트랙 고르기(찬 트랙은 교체) · 빈 폴더 기본 비활성과 숨기기 · D 로 폴더 켜고 끄기 ·
-// 왼쪽 폴더 옆의 새 항목·최종·보류 표시 · 공유 목록과 폴더 옆 숫자 다시 받기. 오른쪽 '이 컷의 생성물' 칸은 없다.
+// 왼쪽 폴더 옆의 새 항목·최종·보류 표시 · 공유 목록과 폴더 옆 숫자 다시 받기.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { EditCardMenu, EditCutFolder } from "../src/components/timeline/EditTab";
 import type { EditTree } from "../src/lib/useEditSequence";
-import type { CardMark, Generation } from "../src/types";
+import type { CardMark, Generation, PreviewTarget } from "../src/types";
 
 const gen = (id: string, cut: string, extra: Partial<Generation> = {}) => ({
   id, job_id: `job-${id}`, status: "done", params: {}, prompt: `prompt ${id}`, folder_path: `e070/${cut}`,
@@ -55,12 +56,16 @@ const workspace = { scope: "team" as const, id: "w1", name: "W" };
 const peekMarks: Record<string, CardMark>[] = []; // 폴더 창이 떠 있는 동안 편집 탭이 알린 표
 const onPeekMarks = (marks: Record<string, CardMark>) => { peekMarks.push(marks); };
 const cardMenuRef: { current: EditCardMenu | null } = { current: null };
+const previews: PreviewTarget[] = []; // 풀의 더블클릭이 앱에 열어 달라고 한 크게 보기
+const onPreview = (target: PreviewTarget) => { previews.push(target); };
+const compared: Generation[][] = []; // 풀의 [비교]가 앱에 넘긴 생성물들
+const onCompare = (gens: Generation[]) => { compared.push(gens); };
 // peekPath = 폴더 창이 떠 있는 컷(없으면 null). 창은 App 의 것이라 여기서는 떠 있다는 사실만 넘긴다.
 const mount = (reloadSignal = 0, peekPath: string | null = null, ws: typeof workspace | { scope: "unknown"; id: null; name: null } = workspace) =>
   act(() => root.render(
     <EditTab authKey="auth" authReady workspace={ws} keysActive flash={flash}
       onOpenCutFolder={onOpenCutFolder} reloadSignal={reloadSignal}
-      peekPath={peekPath} onPeekMarks={onPeekMarks} cardMenuRef={cardMenuRef} />,
+      peekPath={peekPath} onPeekMarks={onPeekMarks} cardMenuRef={cardMenuRef} onPreview={onPreview} onCompare={onCompare} />,
   ));
 const DOC_KEY = "ch.editTimeline:local:p1:e070";
 type Seed = { cut: string; gen: string; track: number; job?: string; off?: boolean };
@@ -76,6 +81,21 @@ const cuts = () => [...document.querySelectorAll(".ed-cutcell")].map((cell) => c
 const offCuts = () => [...document.querySelectorAll(".ed-cutcell.ed-cutoff")].map((cell) => cell.textContent);
 const cutCell = (name: string) => [...document.querySelectorAll<HTMLButtonElement>(".ed-cutcell")].find((cell) => cell.textContent === name)!;
 const clips = () => [...document.querySelectorAll<HTMLElement>(".ed-clip")];
+const poolCards = () => [...document.querySelectorAll<HTMLButtonElement>(".ed-pool .ed-card")];
+const poolRows = (kind: string) => [...document.querySelectorAll<HTMLButtonElement>(`.ed-pool button.ed-prow-${kind}`)];
+const poolButton = (label: string) => document.querySelector<HTMLButtonElement>(`.ed-pool .ed-pbtn[aria-label="${label}"]`)!;
+const popItem = (label: string) =>
+  [...document.querySelectorAll<HTMLButtonElement>(".ed-pop-item")].find((item) => item.textContent!.includes(label))!;
+const typeIn = (input: HTMLInputElement, value: string) => act(() => {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+});
+const rightClick = (target: Element) => {
+  const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 30, clientY: 40 });
+  act(() => { target.dispatchEvent(event); });
+  return event;
+};
+const UI_KEY = "ch.editTimeline.ui";
 const hideButton = () => document.querySelector<HTMLButtonElement>(".ed-toggle")!;
 const trackMenu = () => document.querySelector<HTMLElement>(".ed-tmenu");
 const menuItems = () => [...document.querySelectorAll<HTMLButtonElement>(".ed-tmenu-item")];
@@ -107,6 +127,8 @@ beforeEach(() => {
   opened.length = 0;
   flashed.length = 0;
   peekMarks.length = 0;
+  previews.length = 0;
+  compared.length = 0;
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -118,11 +140,211 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("오른쪽 '이 컷의 생성물' 칸은 없다 — 뷰어가 폭을 다 쓰고, 빈 자리는 넣는 방법을 알려 준다", () => {
+// 미디어 풀(Jay 2026-10-08) — 다빈치의 Bins | 클립처럼 왼쪽 폴더 목록 바로 옆에 둔다(뷰어의 왼쪽). 폭은 끌어서 바꾼다.
+it("미디어 풀은 뷰어 왼쪽에 있다 — 누르면 고르고, 더블클릭하면 크게 보고, 우클릭하면 넣을 트랙을 고른다", () => {
   mount();
-  expect(document.querySelector(".ed-pool, .ed-card")).toBeNull();
-  expect(document.querySelector(".ed-top")!.children).toHaveLength(1); // 뷰어 하나
-  expect(document.querySelector<HTMLElement>(".ed-slot")!.title).toContain("우클릭");
+  act(() => cutCell("c1").click());
+  expect([...document.querySelector(".ed-top")!.children].map((item) => item.classList[0]))
+    .toEqual(["ed-pool-side", "sidebar-resize-handle", "ed-view"]); // 풀 · 폭 조절 손잡이 · 뷰어
+  expect(document.querySelector(".ed-pool-side > .ed-pool h3")!.textContent).toBe("e070 / c1");
+  expect(document.querySelector<HTMLElement>(".ed-pool-side")!.style.getPropertyValue("--sidebar-w")).toBe("392px");
+  const handle = document.querySelector<HTMLElement>(".ed-top > .sidebar-resize-handle")!;
+  act(() => handle.focus()); // 끄는 동안 손잡이가 초점을 받는다 — 놓으면 편집 화면으로 돌아온다(←·→ 가 풀 폭이 아니라 프레임을 옮기게)
+  mouse(handle, "pointerup");
+  expect(document.activeElement).toBe(document.querySelector(".ed-root"));
+  const [a, b] = poolCards();
+  expect(a.querySelector(".card.card-grid.st-shared")).not.toBeNull(); // 라이브러리 카드 모양 — 공유 = 라임 테두리
+  expect(b.querySelector(".card.st-final .card-sf.final .card-final-star")).not.toBeNull(); // 최종 = 골드·★
+  expect(a.querySelector(".creator-badge")?.textContent).toContain("리버"); // 남이 만든 것만 작성자 배지
+  expect(b.querySelector(".creator-badge")).toBeNull();
+
+  act(() => a.click()); // 누르기 = 고르기만 — 타임라인은 그대로다
+  expect(poolCards()[0].classList.contains("ed-picked")).toBe(true);
+  expect(document.querySelector<HTMLElement>(".ed-slot")!.title).toContain("우클릭"); // 빈 자리는 넣는 방법을 알려 준다
+
+  mouse(poolCards()[1], "dblclick"); // 더블클릭 = 크게 보기(앱의 크게 보기 창) — 앞뒤 넘기기는 풀에 보이는 순서
+  expect(previews).toHaveLength(1);
+  expect(previews[0]).toMatchObject({ url: "/media/b.png", type: "image", genId: "b", sceneId: "@team", index: 1 });
+  expect(previews[0].items!.map((item) => item.genId)).toEqual(["a", "b"]);
+  expect(localStorage.getItem(DOC_KEY)).toBeNull(); // 고르기·크게 보기는 타임라인을 바꾸지 않는다
+
+  expect(rightClick(poolCards()[0]).defaultPrevented).toBe(true); // 우클릭 = 넣을 트랙(브라우저 메뉴 대신)
+  expect(menuText()).toEqual(["V3비어 있음", "V2비어 있음", "V1비어 있음"]);
+  act(() => menuItems()[2].click());
+  const mark = poolCards()[0].querySelector(".card.selected .card-bottom > .card-here > span")!;
+  expect(mark.textContent).toBe("V1 - 선택 카드");
+  expect(mark.getAttribute("data-short")).toBe("V1"); // 카드가 작으면 이것만 보인다(CSS)
+  rightClick(poolCards()[1]);
+  expect(menuText()).toEqual(["V3비어 있음", "V2비어 있음", "V1교체"]);
+  act(() => menuItems()[1].click()); // V2 에 쌓는다 — 위 트랙이 보인다
+  expect(storedTracks()).toEqual([["a", 1], ["b", 2]]);
+  expect(poolCards()[1].querySelector(".card-here")?.textContent).toBe("V2 - 선택 카드");
+  expect(poolCards()[0].querySelector(".card-bottom > .card-folder.static")?.textContent).toBe("V1 - 선택 카드"); // 깔린 것은 옅게
+  expect(document.querySelector(".ed-pool-sub")!.textContent).toBe("공유된 것 2개 · 넣은 것 2개");
+});
+
+it("미디어 풀: Ctrl·Shift 로 여러 장을 고르면 비교할 수 있다 — 앱의 비교 창에 그 생성물들을 넘긴다", () => {
+  mount();
+  act(() => cutCell("c1").click());
+  const bar = () => document.querySelector<HTMLElement>(".ed-pool-sel");
+  act(() => poolCards()[0].click());
+  expect(bar()).toBeNull(); // 한 장으로는 비교할 것이 없다
+  mouse(poolCards()[1], "click", { ctrlKey: true });
+  expect(document.querySelectorAll(".ed-pool .ed-picked")).toHaveLength(2);
+  expect(bar()!.textContent).toContain("2개 선택");
+  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-psel-btn")!.click());
+  expect(compared.map((gens) => gens.map((item) => item.id))).toEqual([["a", "b"]]);
+
+  mouse(poolCards()[1], "click", { shiftKey: true }); // 다시 누르면 빠진다
+  expect(document.querySelectorAll(".ed-pool .ed-picked")).toHaveLength(1);
+  mouse(poolCards()[1], "click", { ctrlKey: true });
+  act(() => [...bar()!.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === "선택 해제")!.click());
+  expect(document.querySelector(".ed-pool .ed-picked")).toBeNull();
+  expect(localStorage.getItem(DOC_KEY)).toBeNull();
+});
+
+// 끌어서 고르기(Jay 2026-10-08) — 라이브러리 격자처럼 상자에 걸친 카드를 고른다(jsdom 의 카드는 모두 (0,0) 에 있다).
+it("미디어 풀: 끌어서 상자로 여러 장을 고른다 — Ctrl 을 누른 채 끌면 더하고, 끌기 끝의 click 은 누르기가 아니다", () => {
+  mount();
+  act(() => cutCell("c1").click());
+  const body = () => document.querySelector<HTMLElement>(".ed-pbody")!;
+  const move = (type: string, x: number, y: number) =>
+    act(() => { window.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: x, clientY: y, buttons: type === "mousemove" ? 1 : 0 })); });
+  const pickedCount = () => document.querySelectorAll(".ed-pool .ed-picked").length;
+
+  mouse(body(), "mousedown", { clientX: 0, clientY: 0 });
+  move("mousemove", 3, 3); // 5px 이하는 끌기가 아니다
+  expect(document.querySelector(".assets-marquee")).toBeNull();
+  move("mousemove", 30, 30);
+  expect(document.querySelector(".ed-pbody > .assets-marquee")).not.toBeNull(); // 상자가 보인다
+  expect(pickedCount()).toBe(2);
+  move("mouseup", 30, 30);
+  expect(document.querySelector(".assets-marquee")).toBeNull();
+  act(() => poolCards()[0].click()); // 카드 위에서 놓으면 따라오는 click — 고른 것을 한 장으로 되돌리지 않는다
+  expect(pickedCount()).toBe(2);
+  expect(document.querySelector(".ed-pool-sel")!.textContent).toContain("2개 선택");
+  act(() => { vi.advanceTimersByTime(1); });
+  act(() => poolCards()[0].click()); // 그 뒤의 누르기는 한 장 고르기
+  expect(pickedCount()).toBe(1);
+
+  mouse(body(), "mousedown", { clientX: 100, clientY: 100, ctrlKey: true }); // 아무것도 안 걸친 상자 + Ctrl = 그대로
+  move("mousemove", 140, 140);
+  move("mouseup", 140, 140);
+  expect(pickedCount()).toBe(1);
+  // 버튼을 창 밖에서 놓아 mouseup 이 안 왔다 — 버튼이 안 눌린 채 움직이면 거기서 끝난다(상자가 마우스를 계속 따라다니지 않는다)
+  mouse(body(), "mousedown", { clientX: 0, clientY: 0, ctrlKey: true });
+  move("mousemove", 30, 30);
+  expect(pickedCount()).toBe(2);
+  act(() => { window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 200, clientY: 200, buttons: 0 })); });
+  expect(document.querySelector(".assets-marquee")).toBeNull();
+  act(() => { window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 300, clientY: 300, buttons: 1 })); });
+  expect(document.querySelector(".assets-marquee")).toBeNull();
+  expect(pickedCount()).toBe(2);
+  act(() => { vi.advanceTimersByTime(1); });
+  mouse(body(), "mousedown", { clientX: 100, clientY: 100 }); // Ctrl 없이 빈 곳을 끌면 풀린다
+  move("mousemove", 140, 140);
+  move("mouseup", 140, 140);
+  expect(pickedCount()).toBe(0);
+  expect(localStorage.getItem(DOC_KEY)).toBeNull();
+});
+
+it("미디어 풀: 보기 방식(썸네일·메타데이터·목록)과 크기·정렬·검색을 바꾼다 — 보기 설정은 이 브라우저에 남는다", () => {
+  seed([{ cut: "c1", gen: "b", track: 1 }]);
+  mount();
+  act(() => cutCell("c1").click());
+  const grid = () => document.querySelector<HTMLElement>(".ed-pgrid");
+  const prompts = (kind: string) => poolRows(kind).map((row) => row.querySelector(".ed-pprompt")!.textContent);
+  expect(grid()!.style.gridTemplateColumns).toContain("160px"); // 기본 = 썸네일 보기
+
+  act(() => poolButton("보기 방식").click());
+  expect([...document.querySelectorAll(".ed-pop-item")].map((item) => item.textContent)).toEqual(["메타데이터 보기", "✓썸네일 보기", "목록 보기"]);
+  const size = () => document.querySelector<HTMLInputElement>(".ed-pop-size")!;
+  expect(size().min).toBe("56"); // 다빈치의 작은 썸네일쯤까지 줄어든다
+  typeIn(size(), "200"); // 크기 슬라이더
+  expect(grid()!.style.gridTemplateColumns).toContain("200px");
+  act(() => popItem("메타데이터 보기").click());
+  expect(document.querySelector(".ed-pop")).toBeNull(); // 고르면 닫힌다
+  expect(prompts("meta")).toEqual(["prompt a", "prompt b"]);
+  expect(poolRows("meta")[0].querySelector<HTMLElement>(".ed-pthumb")!.style.width).toBe("200px");
+  expect(poolRows("meta")[0].querySelector(".ed-pinfo b")!.textContent).toBe("S리버"); // 상태 · 만든 사람 · 모델
+  expect(poolRows("meta")[1].querySelector(".ed-pstate-final")?.textContent).toBe("★");
+  expect(poolRows("meta")[1].querySelector(".cd-mark.lead")?.textContent).toBe("V1 - 선택 카드"); // 넣은 것의 표
+
+  act(() => poolButton("보기 방식").click());
+  act(() => popItem("목록 보기").click());
+  expect(grid()).toBeNull();
+  expect(prompts("list")).toEqual(["prompt a", "prompt b"]);
+  expect(poolRows("list")[1].lastElementChild!.textContent).toBe("V1");
+  act(() => poolButton("보기 방식").click());
+  expect(size().disabled).toBe(true); // 목록에는 그림이 없다
+  press({ key: "Escape", code: "Escape" }); // Esc 는 펼친 메뉴가 먹는다
+  expect(document.querySelector(".ed-pop")).toBeNull();
+
+  act(() => poolButton("정렬").click());
+  act(() => popItem("오래된순").click());
+  expect(prompts("list")).toEqual(["prompt b", "prompt a"]);
+  act(() => poolButton("정렬").click());
+  act(() => popItem("최신순").click());
+  expect(prompts("list")).toEqual(["prompt a", "prompt b"]);
+  act(() => poolButton("정렬").click());
+  act(() => popItem("넣은 것 먼저").click());
+  expect(prompts("list")).toEqual(["prompt b", "prompt a"]);
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!)).toEqual({ view: "list", size: 200, sort: "placed", dual: false });
+
+  act(() => poolButton("검색").click()); // 검색 — 프롬프트·모델·만든 사람
+  const search = () => document.querySelector<HTMLInputElement>(".ed-pool-search");
+  typeIn(search()!, "PROMPT A");
+  expect(prompts("list")).toEqual(["prompt a"]);
+  expect(document.querySelector(".ed-pool-sub")!.textContent).toContain("찾은 것 1개");
+  typeIn(search()!, "없는 글");
+  expect(document.querySelector(".ed-pool")!.textContent).toContain("검색에 맞는 생성물이 없습니다.");
+  act(() => search()!.focus());
+  expect(press({ key: " ", code: "Space" }, search()!).defaultPrevented).toBe(false); // 글을 치는 동안 편집 키는 쉰다
+  press({ key: "Escape", code: "Escape" }, search()!); // Esc = 검색을 접는다
+  expect(search()).toBeNull();
+  expect(prompts("list")).toEqual(["prompt b", "prompt a"]);
+
+  act(() => root.unmount()); // 다시 열어도 보기 설정이 남는다
+  root = createRoot(host);
+  mount();
+  expect(prompts("list")).toEqual(["prompt b", "prompt a"]);
+});
+
+// 싱글/듀얼 뷰어(Jay 2026-10-08) — 듀얼이면 왼쪽에 미디어 풀에서 고른 생성물(소스), 오른쪽에 타임라인.
+it("듀얼 뷰어: 미디어 풀에서 고른 생성물이 소스 뷰어에 뜬다 — 컷을 옮겨도 남고, 싱글로 돌리면 사라진다", () => {
+  world.gens = [...world.gens, gen("v", "c1", { assets: [{ id: "a-v", generation_id: "v", type: "video", file_path: "/media/v.mp4",
+    thumbnail_path: null, source_url: null, cached: true }] as Generation["assets"], model: "seedance" })];
+  mount();
+  act(() => cutCell("c1").click());
+  const dual = () => document.querySelector<HTMLButtonElement>(".ed-dual")!;
+  const source = () => document.querySelector<HTMLElement>(".ed-src");
+  expect(source()).toBeNull(); // 기본 = 싱글
+  expect(dual().getAttribute("aria-pressed")).toBe("false");
+
+  act(() => dual().click());
+  expect([...document.querySelector(".ed-top")!.children].map((item) => item.className))
+    .toEqual(["ed-pool-side", "sidebar-resize-handle", "ed-view ed-src", "ed-view"]);
+  expect(source()!.textContent).toContain("미디어 풀에서 생성물을 고르면 여기에서 봅니다.");
+  act(() => poolCards()[0].click()); // 그림
+  expect(source()!.querySelector<HTMLImageElement>("img.ed-media")!.getAttribute("src")).toBe("/media/a.png");
+  act(() => poolCards()[2].click()); // 영상 — 브라우저 기본 재생 막대
+  const video = source()!.querySelector<HTMLVideoElement>("video.ed-media")!;
+  expect(video.getAttribute("src")).toBe("/media/v.mp4");
+  expect(video.controls).toBe(true);
+  expect(source()!.querySelector(".ed-src-info")!.textContent).toBe("리버 · seedance");
+  mouse(poolCards()[0], "click", { ctrlKey: true }); // 여러 장을 고르면 마지막에 고른 것이 소스다
+  expect(source()!.querySelector<HTMLImageElement>("img.ed-media")!.getAttribute("src")).toBe("/media/a.png");
+  act(() => poolCards()[2].click());
+  expect(localStorage.getItem(DOC_KEY)).toBeNull(); // 소스로 보는 것은 타임라인을 바꾸지 않는다
+
+  act(() => cutCell("c2").click()); // 다른 컷으로 가도 소스는 그대로다
+  expect(source()!.querySelector("video.ed-media")).not.toBeNull();
+  expect(document.querySelector(".ed-pool .ed-picked")).toBeNull(); // 이 컷의 풀에는 그 카드가 없다
+
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!).dual).toBe(true);
+  act(() => dual().click());
+  expect(source()).toBeNull();
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!).dual).toBe(false);
 });
 
 it("타임라인의 그림을 누르면 그 컷으로 간다 — 이미 그 컷이면 보던 자리 그대로", () => {
@@ -212,6 +434,17 @@ it("트랙 메뉴: Esc 는 메뉴가 먹고, 잠긴 트랙은 고를 수 없고,
   mount(0, "e070/c1");
   cardMenu("b");
   expect(menuText()).toEqual(["V3비어 있음", "V2비어 있음", "V1잠김 ×"]); // 잠긴 트랙의 클립은 교체하지 않는다
+  expect(document.activeElement).toBe(menuItems()[0]);
+  press({ key: "ArrowDown", code: "ArrowDown" }, menuItems()[0]); // 줄은 ↑↓ 로 옮긴다(고를 수 있는 줄만)
+  expect(document.activeElement).toBe(menuItems()[1]);
+  press({ key: "ArrowDown", code: "ArrowDown" }, menuItems()[1]);
+  expect(document.activeElement).toBe(menuItems()[0]);
+  expect(timecode()).toBe("00:00:00:00"); // 방향키가 뒤의 타임라인(편집점 이동)으로 새지 않는다
+  const tab = press({ key: "Tab", code: "Tab" }, menuItems()[0]); // Tab 은 메뉴를 닫는다 — 초점이 메뉴 밖 단추로 나가지 않게
+  expect(trackMenu()).toBeNull();
+  expect(tab.defaultPrevented).toBe(true);
+  expect(document.activeElement).toBe(document.querySelector(".ed-root"));
+  cardMenu("b");
   const escape = press({ key: "Escape", code: "Escape" });
   expect(trackMenu()).toBeNull();
   expect(escape.defaultPrevented).toBe(true);
@@ -231,9 +464,9 @@ it("트랙 메뉴: Esc 는 메뉴가 먹고, 잠긴 트랙은 고를 수 없고,
   expect(stored().muted).toBe(true);
 });
 
-// 공유 목록을 다시 받는 동안에는 job 으로 이은 클립이 어느 카드인지 모른다 — 그때 넣으면 같은 생성물이 두 트랙에 들어가거나
-//  교체하면서 그 클립의 꺼짐이 사라진다(Codex 코드 리뷰).
-it("트랙 메뉴: 그 컷에 확인 못 한 클립이 있는 동안은 넣지 않는다 — job 으로 이은 클립은 받은 뒤에 '지금 여기'로 보인다", () => {
+// 공유 목록을 끝까지 받기 전에는 job 으로 이은 클립이 어느 카드인지 모른다 — 그때 그 카드를 또 넣으면 같은 생성물이 두 트랙에
+//  들어가거나 교체하면서 그 클립의 꺼짐이 사라진다. 그 카드만 막는다: 컷 전체를 막으면 목록이 잘린 시퀀스에서는 영영 안 풀린다.
+it("트랙 메뉴: 이미 넣은 클립일 수 있는 카드만 받지 않는다 — job 으로 이은 클립은 다 받은 뒤에 '지금 여기'로 보인다", () => {
   seed([{ cut: "c1", gen: "old-a", job: "job-a", track: 1, off: true }]); // 옛 id — job 으로 카드 a 에 이어진다
   mount();
   act(() => cutCell("c1").click());
@@ -243,22 +476,21 @@ it("트랙 메뉴: 그 컷에 확인 못 한 클립이 있는 동안은 넣지 �
   act(() => menuItems()[1].click()); // V2 로 옮긴다 — 문서의 그 클립이 옮겨 간다(새 클립이 생기지 않는다)
   expect(stored().clips).toEqual([{ cut: "e070/c1", gen: "old-a", track: 2, kind: "image", dur: 5, job: "job-a", off: true }]);
 
-  cardMenu("b"); // 메뉴가 떠 있는 사이 다시 받기가 시작됐다
+  cardMenu("a"); // 메뉴가 떠 있는 사이 다시 받기가 시작됐다(또는 목록이 잘렸다) — 그 클립이 어느 카드인지 모른다
   world.known = false;
   mount(0, "e070/c1");
   act(() => menuItems()[0].click());
   expect(trackMenu()).toBeNull();
-  expect(flashed[flashed.length - 1]).toContain("확인하지 못한 클립");
+  expect(flashed[flashed.length - 1]).toContain("이미 넣은 클립일 수 있습니다");
   expect(stored().clips).toHaveLength(1);
-
-  cardMenu("a"); // 받는 동안에는 메뉴도 열지 않는다
+  cardMenu("a"); // 그동안에는 그 카드의 메뉴도 열지 않는다
   expect(trackMenu()).toBeNull();
   expect(flashed).toHaveLength(2);
 
-  world.known = true; // 다 받으면 다시 된다
-  mount(0, "e070/c1");
-  cardMenu("b");
+  cardMenu("b"); // 다른 카드는 그대로 넣는다 — 목록이 2,000건에서 잘린 시퀀스에서도 편집이 막히지 않는다
   expect(menuText()).toEqual(["V3비어 있음", "V2교체", "V1비어 있음"]);
+  act(() => menuItems()[2].click());
+  expect(storedTracks()).toEqual([["old-a", 2], ["b", 1]]);
 });
 
 it("빈 폴더는 기본으로 비활성이고, 숨기기를 켜면 타임라인에서 빠진다 — D 로 재생헤드가 있는 폴더를 켜고 끈다", () => {
@@ -380,6 +612,7 @@ it("공유 목록의 상태는 타임라인 위 막대에 보인다 — 워크�
   expect(bar()).toContain("워크스페이스를 확인한 뒤 공유물을 표시합니다.");
   act(() => document.querySelector<HTMLButtonElement>(".ed-ws-all")!.click());
   expect(document.querySelector(".ed-ws-all")).toBeNull(); // 모든 워크스페이스로 본다 — 안내가 사라진다
+  expect(document.querySelector(".ed-pool-sub")!.textContent).not.toContain("워크스페이스");
 
   const reload = vi.fn();
   world.reload = reload;

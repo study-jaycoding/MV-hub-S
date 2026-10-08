@@ -1,4 +1,4 @@
-/* ── 편집 탭(docs/EDIT_TAB.md) — 위 뷰어·아래 트랙 타임라인 ──
+/* ── 편집 탭(docs/EDIT_TAB.md) — 위 미디어 풀·뷰어(싱글/듀얼)·아래 트랙 타임라인 ──
    클래스는 전부 `ed-` 로 시작한다(.empty·.main 같은 흔한 이름은 앱의 다른 규칙에 먹힌다).
    단추는 전역 button 규칙(배경·테두리·padding 6px 12px)을 여기서 하나씩 지운다. */
 .ed-root { background: var(--bg2); outline: none; min-height: 0; }
@@ -13,7 +13,8 @@
 }
 
 /* 뷰어 */
-.ed-view { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* 폭 기준은 뷰어 자신이다(container) — 미디어 풀·듀얼 뷰어로 뷰어 폭이 창 폭과 따로 논다. */
+.ed-view { flex: 1; min-width: 0; display: flex; flex-direction: column; container-type: inline-size; }
 .ed-stage { flex: 1; min-height: 0; position: relative; background: #000; overflow: hidden; }
 .ed-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .ed-media[hidden] { display: none; }
@@ -51,7 +52,117 @@
   font: 500 12px ui-monospace, Consolas, monospace; color: var(--muted); font-variant-numeric: tabular-nums;
 }
 .ed-tcr b { color: var(--accent); }
-@media (max-width: 1500px) { .ed-keys { display: none; } }
+@container (max-width: 940px) { .ed-keys { display: none; } } /* 좁으면 키 안내를, 더 좁으면(듀얼) 전체 길이도 숨긴다 */
+@container (max-width: 660px) { .ed-tcr-total { display: none; } }
+
+/* 미디어 풀 — 왼쪽 폴더 목록 바로 옆(다빈치의 Bins | 클립). 머리줄 = 컷 이름 + 보기 방식·검색·정렬. */
+/* 폭은 끌어서 바꾼다(ResizableSidebar — 프로젝트 칸과 같은 손잡이). */
+.ed-pool-side { flex: 0 0 var(--sidebar-w, 392px); width: var(--sidebar-w, 392px); min-width: 0; min-height: 0; display: flex; }
+.ed-pool {
+  flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column;
+  background: var(--panel); border-right: 1px solid var(--border); user-select: none;
+}
+.ed-pool-head { flex: none; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--border); }
+.ed-pool-head h3 { flex: 1; min-width: 0; margin: 0; font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-pool-tools { flex: none; position: relative; display: flex; align-items: center; gap: 2px; }
+.ed-pbtn {
+  height: 26px; min-width: 28px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent;
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+}
+.ed-pbtn svg { display: block; width: 15px; height: 15px; fill: #b9bdc6; }
+.ed-pbtn svg.ed-caret { width: 7px; height: 5px; fill: var(--muted); }
+.ed-pbtn:hover, .ed-pbtn.ed-on { background: rgba(255, 255, 255, 0.08); }
+.ed-pbtn:hover svg, .ed-pbtn.ed-on svg { fill: #fff; }
+.ed-pop {
+  position: absolute; right: 0; top: 30px; z-index: 30; min-width: 178px; padding: 6px; display: flex; flex-direction: column; gap: 2px;
+  background: var(--panel, #1c1c22); border: 1px solid var(--border2); border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+.ed-pop-item {
+  height: 28px; padding: 0 10px 0 4px; border: 0; border-radius: 6px; background: transparent; color: var(--muted);
+  display: flex; align-items: center; gap: 8px; font-size: 12px; text-align: left; white-space: nowrap;
+}
+.ed-pop-item b { width: 14px; text-align: center; font-weight: 700; color: var(--accent); }
+.ed-pop-item svg { width: 14px; height: 14px; fill: currentColor; }
+.ed-pop-item:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+.ed-pop-item.ed-on { color: var(--text); }
+.ed-pop-sep { height: 1px; margin: 4px 2px; background: var(--border); }
+.ed-pop-size { width: calc(100% - 12px); margin: 4px 6px 6px; accent-color: var(--accent); }
+.ed-pop-size:disabled { opacity: 0.35; }
+.ed-pool-search {
+  flex: none; margin: 8px 12px 0; height: 28px; padding: 0 10px; border-radius: 7px; font-size: 12px;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border2); color: var(--text); outline: none;
+}
+.ed-pool-search:focus { border-color: rgba(var(--accent-rgb), 0.6); }
+.ed-pool-sub { flex: none; padding: 8px 14px; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+.ed-pool-note { padding: 4px 14px 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+/* position: relative = 끌어서 고르는 상자(.assets-marquee)의 기준 칸. */
+.ed-pbody { position: relative; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 12px 12px; }
+.ed-pgrid { display: grid; gap: 10px; align-content: start; }
+/* 생성물 카드(EditCard) — 모양은 라이브러리 카드의 클래스(generations.css 의 .card·.card-thumb·.card-sf·.creator-badge·
+   .play-badge·.card-bottom·.card-here)를 그대로 쓴다. 여기에는 단추 껍데기와 편집 탭에서만 다른 점만 둔다.
+   넣은 카드는 .card.selected(굵은 상태색 테두리), 지금 보이는 카드는 아래 변의 라임 표(.card-here),
+   풀에서 고른 카드(소스)는 바깥의 흰 테두리(.ed-picked). */
+.ed-card {
+  display: block; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 14px;
+  background: transparent; text-align: left; font: inherit; color: inherit; container-type: inline-size;
+}
+/* 작은 썸네일(다빈치의 작은 크기쯤) — 그림만 남긴다: 작성자·▶ 는 숨기고, 표는 "V1" 로 줄인다. */
+@container (max-width: 120px) {
+  .ed-card .creator-badge, .ed-card .play-badge { display: none; }
+  .ed-card .card, .ed-card .card-clip { border-radius: 8px; }
+  .ed-card .card-sf { transform: scale(0.72); transform-origin: top left; }
+  .ed-card .card-bottom span[data-short] { font-size: 0; }
+  .ed-card .card-bottom span[data-short]::after { content: attr(data-short); font-size: 10px; }
+}
+.ed-card:active, .ed-prow:active { transform: none; }
+.ed-card.ed-picked { outline: 2px solid #fff; outline-offset: 2px; }
+.ed-card .card { height: auto; }
+.ed-card .card-thumb { flex: 0 0 auto; aspect-ratio: 1; } /* 라이브러리 격자와 같은 정사각 */
+.ed-card .card-sf { pointer-events: none; } /* 표시만 — 누르면 카드가 받는다 */
+.ed-card .card-thumb:hover .play-badge { opacity: 0.85; } /* 여기서는 호버 재생이 없다 — ▶ 를 숨기지 않는다 */
+/* 메타데이터·목록 보기의 줄 */
+.ed-prow {
+  width: 100%; min-width: 0; border: 0; border-radius: 8px; background: transparent; color: var(--muted);
+  font: inherit; font-size: 12px; text-align: left;
+}
+.ed-prow:hover { background: rgba(255, 255, 255, 0.05); }
+.ed-prow.ed-picked { background: rgba(255, 255, 255, 0.1); color: var(--text); }
+.ed-prow-meta { display: flex; align-items: flex-start; gap: 12px; padding: 6px; margin-bottom: 4px; }
+.ed-pthumb { flex: none; position: relative; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; background: #000; }
+.ed-pthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ed-pthumb i { position: absolute; left: 6px; bottom: 4px; font-style: normal; font-size: 11px; color: #fff; text-shadow: 0 1px 3px #000; }
+.ed-prow.ed-placed .ed-pthumb { box-shadow: 0 0 0 2px var(--accent); }
+.ed-pinfo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding-top: 2px; line-height: 1.45; }
+.ed-pinfo b { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-weight: 700; color: var(--text); }
+.ed-pprompt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-pinfo .ed-pprompt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; }
+.ed-pstate { flex: none; font-size: 11px; font-weight: 800; color: var(--accent); }
+.ed-pstate-held { color: #ef7d8c; }
+.ed-pstate-final { color: #e8b62c; }
+.ed-prow-list {
+  display: grid; grid-template-columns: 14px minmax(0, 3fr) minmax(0, 1.2fr) minmax(0, 1.5fr) 44px 28px;
+  align-items: center; gap: 8px; height: 28px; padding: 0 6px; border-radius: 6px;
+}
+.ed-prow-list > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-prow-list.ed-placed > span:last-child { color: var(--accent); font-weight: 700; }
+.ed-prow-head { position: sticky; top: 0; z-index: 1; height: 26px; font-size: 11px; color: var(--muted2); background: var(--panel); border-bottom: 1px solid var(--border); border-radius: 0; }
+.ed-prow-head:hover { background: var(--panel); }
+
+/* 여러 장을 골랐을 때 — 풀 아래의 막대(비교) */
+.ed-pool-sel {
+  flex: none; display: flex; align-items: center; gap: 10px; margin: 0 12px 12px; padding: 7px 10px; border-radius: 10px;
+  font-size: 12px; color: var(--text); background: rgba(var(--accent-rgb), 0.08); border: 1px solid rgba(var(--accent-rgb), 0.45);
+}
+.ed-pool-sel > span { flex: 1; font-weight: 700; }
+.ed-psel-btn { height: 26px; padding: 0 10px; border-radius: 7px; font-size: 12px; }
+.ed-pool-sel .ed-link { color: var(--muted); font-size: 11.5px; }
+
+/* 듀얼 뷰어 — 왼쪽 소스(미디어 풀에서 고른 것) | 오른쪽 타임라인. 소스는 브라우저 기본 재생 막대로 본다. */
+.ed-src { border-right: 1px solid var(--border); }
+.ed-src-info { justify-content: center; font-size: 12px; color: var(--muted); overflow: hidden; white-space: nowrap; }
+.ed-tbtn.ed-dual { margin-left: 4px; border-radius: 6px; }
+.ed-tbtn.ed-dual svg { fill: none; stroke: #c9ccd3; stroke-width: 1.3; }
+.ed-tbtn.ed-dual:hover svg, .ed-tbtn.ed-dual.ed-on svg { stroke: var(--accent); fill: none; }
 
 /* 타임라인 위 막대 */
 .ed-bar {

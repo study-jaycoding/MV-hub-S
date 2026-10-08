@@ -126,3 +126,41 @@ export function saveEditTarget(target: EditTarget | null): void {
     /* 못 적어도 편집에는 지장 없다 */
   }
 }
+
+// ── 화면 설정 ── 미디어 풀의 보기 방식·썸네일 크기·정렬, 싱글/듀얼 뷰어. 편집 내용이 아니라 이 브라우저의 취향이다
+//  (계정·시퀀스와 무관하게 하나, 되돌리기 대상 아님). 못 읽으면 기본값.
+export type PoolView = "thumb" | "meta" | "list";
+export type PoolSort = "new" | "old" | "placed";
+export interface EditUi {
+  view: PoolView;
+  size: number; // 썸네일 폭(px)
+  sort: PoolSort;
+  dual: boolean; // 듀얼 뷰어(소스 | 타임라인)
+}
+export const POOL_SIZE = { min: 56, max: 240 }; // 최소 = 다빈치 미디어 풀의 작은 썸네일쯤
+const DEFAULT_UI: EditUi = { view: "thumb", size: 160, sort: "new", dual: false };
+const uiKey = `${STORAGE_KEYS.editTimeline}.ui`;
+
+export function loadEditUi(): EditUi {
+  try {
+    const raw = JSON.parse(localStorage.getItem(uiKey) || "null") as Partial<EditUi> | null;
+    if (!raw || typeof raw !== "object") return DEFAULT_UI;
+    return {
+      view: raw.view === "meta" || raw.view === "list" ? raw.view : "thumb",
+      size: typeof raw.size === "number" && Number.isFinite(raw.size)
+        ? Math.min(POOL_SIZE.max, Math.max(POOL_SIZE.min, raw.size)) : DEFAULT_UI.size,
+      sort: raw.sort === "old" || raw.sort === "placed" ? raw.sort : "new",
+      dual: raw.dual === true,
+    };
+  } catch {
+    return DEFAULT_UI;
+  }
+}
+
+export function saveEditUi(ui: EditUi): void {
+  try {
+    localStorage.setItem(uiKey, JSON.stringify(ui));
+  } catch {
+    /* 못 적어도 이번 화면에는 지장 없다 */
+  }
+}

@@ -2179,6 +2179,8 @@ export default function App() {
               peekPath={listPeek?.edit ? listPeek.path : null}
               onPeekMarks={setEditMarks}
               cardMenuRef={editCardMenuRef}
+              onPreview={openPreview}
+              onCompare={setCompareGens}
             />
           </Suspense>
         ) : filters.tab === "compose" ? (

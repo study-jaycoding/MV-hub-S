@@ -128,10 +128,11 @@ interface TreeData {
   disk: FolderCountTreeNode[];
   counts: Record<string, number> | null;
   review: Record<string, FolderReviewCounts> | null;
+  countsRun: number; // 이 숫자를 가져온 조회의 순번 — 더 뒤에 떠난 조회의 것만 덮는다
   complete: boolean;
   note: string | null;
 }
-const EMPTY_DATA: TreeData = { state: "idle", disk: [], counts: null, review: null, complete: false, note: null };
+const EMPTY_DATA: TreeData = { state: "idle", disk: [], counts: null, review: null, countsRun: 0, complete: false, note: null };
 
 // 공유 & 리뷰 사이드바와 같은 조회 — 폴더별 개수와 상태별(최종·보류) 개수가 한 응답에 온다.
 const fetchFolderCounts = (projectId: string) =>
@@ -186,12 +187,14 @@ export function useEditProjects({
   const isLinked = !!projectId && !!listed.linked?.has(projectId);
   const treeCtx = JSON.stringify([listCtx, projectId, isLinked, linksKnown]);
   const [tree, setTree] = useState<{ ctx: string } & TreeData>({ ctx: "", ...EMPTY_DATA });
-  const countRun = useRef(0); // 개수 조회의 순번 — 늦게 온 옛 응답이 새 숫자를 덮지 않게
+  // 개수 조회의 순번 — 트리 조회와 '숫자만 다시 받기'가 같이 쓴다. 숫자는 더 뒤에 떠난 조회의 것만 덮는다: 늦게 온 옛 응답도,
+  //  트리를 처음 받는 사이에 먼저 도착한 '다시 받기'의 숫자를 덮는 트리 조회도 막는다(Codex 코드 리뷰).
+  const countRun = useRef(0);
 
   useEffect(() => {
     if (!projectId || !listOk) return;
     let alive = true;
-    countRun.current++; // 먼저 떠난 '숫자만 다시 받기'의 응답은 버린다 — 이 조회가 더 새 숫자를 가져온다
+    const run = ++countRun.current;
     setTree((prev) => (prev.ctx === treeCtx ? { ...prev, state: "loading" } : { ctx: treeCtx, ...EMPTY_DATA, state: "loading" }));
     void (async () => {
       const [folder, counted] = await Promise.all([
@@ -201,17 +204,20 @@ export function useEditProjects({
       if (!alive) return;
       const disk = folder?.tree && !folder.error ? visibleProjectFolderRoots(folder.tree) : [];
       const diskOk = linksKnown && (folder === undefined || (!!folder && !folder.error && !folder.truncated));
-      const note =
-        !linksKnown || folder === null || folder?.error ? t("폴더 정보를 불러오지 못했습니다 — 공유 기록에 있는 폴더만 보입니다.")
-          : folder?.truncated ? t("폴더가 많아 일부만 읽었습니다.")
-            : counted === null ? t("공유 기록의 폴더를 확인하지 못했습니다 — 이 PC 에서 보이는 폴더만 보입니다.") : null;
-      if (!disk.length && counted === null) {
-        setTree({ ctx: treeCtx, ...EMPTY_DATA, state: "error", note: t("폴더 정보를 불러오지 못했습니다.") });
-        return;
-      }
-      setTree({
-        ctx: treeCtx, state: "ready", note, complete: diskOk && counted !== null, disk,
-        counts: counted?.counts ?? null, review: counted?.review ?? null,
+      setTree((prev) => {
+        // 그사이 '숫자만 다시 받기'가 더 새 숫자를 적어 뒀으면 그것을 쓴다 — 이 조회의 숫자가 늦게 왔든 실패했든(실패 판정도
+        //  그 숫자를 보고 한다: 안 보면 방금 받은 폴더까지 지운다, Codex 코드 리뷰).
+        const newer = prev.ctx === treeCtx && prev.countsRun > run && prev.counts ? prev : null;
+        const counts = newer ? newer.counts : counted?.counts ?? null;
+        if (!disk.length && !counts) return { ctx: treeCtx, ...EMPTY_DATA, state: "error", note: t("폴더 정보를 불러오지 못했습니다.") };
+        const note =
+          !linksKnown || folder === null || folder?.error ? t("폴더 정보를 불러오지 못했습니다 — 공유 기록에 있는 폴더만 보입니다.")
+            : folder?.truncated ? t("폴더가 많아 일부만 읽었습니다.")
+              : !counts ? t("공유 기록의 폴더를 확인하지 못했습니다 — 이 PC 에서 보이는 폴더만 보입니다.") : null;
+        return {
+          ctx: treeCtx, state: "ready", note, complete: diskOk && !!counts, disk, counts,
+          review: newer ? newer.review : counted?.review ?? null, countsRun: newer ? newer.countsRun : run,
+        };
       });
     })();
     return () => {
@@ -222,26 +228,33 @@ export function useEditProjects({
   // 새 항목(+N) — 공유 & 리뷰 사이드바와 같은 원천(기준선 이후 공유된 목록)에서 확인(클릭)한 것을 뺀다. 기준선은 공유 &
   //  리뷰에 처음 들어갈 때 생긴다 — 없으면 묻지 않는다. 구버전 서버(라우트 없음)·실패는 배지만 숨긴다.
   const [fresh, setFresh] = useState<{ ctx: string; items: TeamFreshItem[] }>({ ctx: "", items: [] });
-  const live = useRef({ listCtx, treeCtx, projectId, loadFresh: () => {} });
+  const freshRun = useRef(0);
   const loadFresh = useCallback(() => {
     const since = getTeamBase();
     if (!since) return;
+    const run = ++freshRun.current;
     const put = (items: TeamFreshItem[]) => {
-      if (live.current.listCtx === listCtx) setFresh({ ctx: listCtx, items }); // 계정·공간이 바뀐 뒤에 온 응답은 버린다
+      // 마지막에 떠난 조회의 답만 쓴다 — 문맥 글자만 비교하면 공간을 A→B→A 로 오갈 때 처음 A 의 늦은 답이 새 답을 덮는다
+      if (run === freshRun.current) setFresh({ ctx: listCtx, items });
     };
     api.teamFreshAll(since, listCtx).then(put, () => put([]));
   }, [listCtx]);
   useEffect(loadFresh, [loadFresh, nonce]);
-  live.current = { listCtx, treeCtx, projectId, loadFresh };
+  const live = useRef({ treeCtx, projectId, loadFresh, failed: false });
+  live.current = { treeCtx, projectId, loadFresh, failed: tree.ctx === treeCtx && tree.state === "error" };
   const reloadCounts = useCallback(() => {
     const { treeCtx: ctx, projectId: pid } = live.current;
+    // 트리를 못 받은 상태면 숫자만으로는 못 살린다(디스크 폴더·온전성을 모른다) — 처음부터 다시 받는다.
+    if (live.current.failed) return reload();
     live.current.loadFresh();
     if (!pid) return;
     const run = ++countRun.current;
     void fetchFolderCounts(pid).then((counted) => {
-      // 실패하면 마지막으로 받은 숫자를 그대로 둔다. 문맥이 바뀌었거나 더 새 조회가 떠났으면 버린다.
-      if (!counted || run !== countRun.current) return;
-      setTree((prev) => (prev.ctx === ctx && prev.state === "ready" ? { ...prev, ...counted } : prev));
+      // 실패하면 마지막으로 받은 숫자를 그대로 둔다. 문맥이 바뀌었거나 더 뒤에 떠난 조회의 숫자가 이미 있으면 버린다.
+      //  트리를 받는 중(loading)이어도 적어 둔다 — 그 트리 조회가 끝날 때 이 숫자를 지킨다.
+      if (!counted) return;
+      setTree((prev) => (prev.ctx === ctx && (prev.state === "ready" || prev.state === "loading") && run > prev.countsRun
+        ? { ...prev, ...counted, countsRun: run } : prev));
     });
   }, []);
 

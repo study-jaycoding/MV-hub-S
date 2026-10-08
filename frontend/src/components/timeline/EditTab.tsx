@@ -1,8 +1,8 @@
 // 편집 탭 — 공유된 생성물을 컷(폴더) 순서대로 이어 보는 다빈치식 화면. 계약·한계는 docs/EDIT_TAB.md.
-//  왼쪽 = 시퀀스 폴더 고르기 · 가운데 = 뷰어 · 아래 = 트랙 타임라인. 생성물은 컷을 더블클릭해 연 폴더 창에서 카드를
-//  우클릭해 트랙에 넣는다. 컷 자리는 폴더 순서로 고정이고, 고른 생성물만 들어간다. 편집은 이 브라우저(계정)에만 저장한다.
+//  왼쪽 = 시퀀스 폴더 고르기 · 그 옆 = 미디어 풀(재생헤드가 있는 컷의 생성물) · 오른쪽 = 뷰어(싱글, 또는 소스 | 타임라인의
+//  듀얼) · 아래 = 트랙 타임라인. 컷 자리는 폴더 순서로 고정이고, 고른 생성물만 들어간다. 편집은 이 브라우저(계정)에만 저장한다.
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
-import type { CardMark, Generation, WorkspaceContext } from "../../types";
+import type { CardMark, Generation, PreviewTarget, WorkspaceContext } from "../../types";
 import { APP_EVENTS } from "../../lib/appEvents";
 import { isFolderDisabled } from "../../lib/deactivated";
 import {
@@ -28,8 +28,12 @@ import {
   type EditDoc,
   type SlotClip,
 } from "../../lib/editTimeline";
-import { editDocKey, loadEditTarget, saveEditTarget, type EditTarget } from "../../lib/editTimelineStore";
+import {
+  editDocKey, loadEditTarget, loadEditUi, saveEditTarget, saveEditUi, type EditTarget, type EditUi,
+} from "../../lib/editTimelineStore";
 import { generationListMeta } from "../../lib/generationDisplay";
+import { previewTargetFromGenerations } from "../../lib/generationGrid";
+import { TEAM_SCOPE } from "../../lib/generationViews";
 import { useT } from "../../lib/i18n";
 import { thumbOf } from "../../lib/media";
 import { useCustomEvent } from "../../lib/useCustomEvent";
@@ -45,10 +49,14 @@ import {
   useEditProjects,
 } from "../../lib/useEditSequence";
 import { dropQueuedVideoMeasures, knownVideoSeconds, measureVideoSeconds } from "../../lib/videoDuration";
+import { editMarkLabel } from "./EditCard";
+import { EditPool, type PoolItem } from "./EditPool";
 import { EditSidebar } from "./EditSidebar";
+import { EditSourceViewer } from "./EditSourceViewer";
 import { EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink } from "./EditTimeline";
 import { EditTrackMenu, type TrackRow } from "./EditTrackMenu";
 import { EditViewer } from "./EditViewer";
+import { ResizableSidebar } from "../common/ResizableSidebar";
 
 interface Props {
   authKey: string; // 계정·서버 — 바뀌면 받던 조회를 버린다
@@ -64,6 +72,9 @@ interface Props {
   peekPath: string | null;
   onPeekMarks: (marks: Record<string, CardMark>) => void;
   cardMenuRef: MutableRefObject<EditCardMenu | null>;
+  // 미디어 풀의 더블클릭·비교 — 앱의 크게 보기 창·비교 창을 그대로 쓴다(둘 다 보기 전용).
+  onPreview: (target: PreviewTarget) => void;
+  onCompare: (gens: Generation[]) => void;
 }
 
 export type EditCardMenu = (gen: Pick<Generation, "id">, x: number, y: number) => void;
@@ -84,9 +95,6 @@ export function EditTab(props: Props) {
 let allWorkspacesIn = "";
 
 const NO_CUTS: ReadonlySet<string> = new Set();
-// 타임라인에 넣은 카드의 표 글 — 폴더 창의 카드에 붙는다(Jay: "V1 - 선택 카드").
-const editMarkLabel = (track: number, t: (key: string) => string) =>
-  t("V{track} - 선택 카드").replace("{track}", String(track));
 const parentOf = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 const isTyping = (target: EventTarget | null) => {
   const element = target as HTMLElement | null;
@@ -95,13 +103,28 @@ const isTyping = (target: EventTarget | null) => {
 };
 
 function EditTabInner({
-  authKey, workspace, keysActive, flash, onOpenCutFolder, reloadSignal, peekPath, onPeekMarks, cardMenuRef,
+  authKey, workspace, keysActive, flash, onOpenCutFolder, reloadSignal, peekPath, onPeekMarks, cardMenuRef, onPreview, onCompare,
 }: Props) {
   const t = useT();
   const [target, setTarget] = useState<EditTarget | null>(loadEditTarget);
   const [openProject, setOpenProject] = useState<string | null>(() => target?.projectId ?? null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [zoom, setZoom] = useState(20); // px/초
+  // 화면 설정(미디어 풀의 보기 방식·크기·정렬, 싱글/듀얼 뷰어) — 이 브라우저에 남는다. 편집 내용이 아니다.
+  const [ui, setUi] = useState<EditUi>(loadEditUi);
+  const patchUi = useCallback((change: Partial<EditUi>) => {
+    setUi((prev) => {
+      const next = { ...prev, ...change };
+      saveEditUi(next);
+      return next;
+    });
+  }, []);
+  // 미디어 풀에서 고른 생성물(고른 순서) — 마지막 것이 듀얼 뷰어의 소스, 2장 이상이면 비교할 수 있다.
+  const [pickedIds, setPickedIds] = useState<string[]>([]);
+  const pickGen = useCallback((gen: Generation, additive: boolean) => {
+    setPickedIds((prev) => (!additive ? [gen.id] : prev.includes(gen.id) ? prev.filter((id) => id !== gen.id) : [...prev, gen.id]));
+  }, []);
+  const clearPicked = useCallback(() => setPickedIds([]), []);
   const rootRef = useRef<HTMLElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -274,22 +297,40 @@ function EditTabInner({
   }, [applyEdit, flash, t]);
 
   const cut = view.cut;
-  // 카드 우클릭 메뉴(Jay 2026-10-08) — 폴더 창의 카드를 우클릭하면 지금 있는 트랙을 보여 주고, 고르면 그 트랙에 넣는다
-  //  (찬 트랙은 교체). 넣을 컷은 여는 순간에 정한다(그 창의 컷). 편집 탭의 그 컷 공유 목록에 있는 카드만 받는다 — 창에서
-  //  W 를 '전체'로 바꿔 보이는 다른 공간의 카드 등은 넣어도 타임라인이 '미디어 없음'으로 본다.
-  //  그 컷에 '확인 못 한' 클립이 있는 동안은 넣지 않는다: 공유 목록을 다시 받는 동안에는 job 으로 이은 클립이 어느 카드인지
-  //  모른다 — 그때 넣으면 같은 생성물이 두 트랙에 들어가거나, 교체하면서 그 클립의 꺼짐이 사라진다(Codex 코드 리뷰).
-  const unsettled = useCallback((path: string) =>
-    doc.clips.some((clip) => clip.cut === path && links.get(clipKey(clip))?.state === "unknown"), [doc, links]);
+  const poolItems = useMemo<PoolItem[]>(() => {
+    if (!cut) return [];
+    const placed = doc.clips.filter((clip) => clip.cut === cut);
+    return (byCut.get(cut) ?? []).map((gen) => {
+      const clip = placed.find((item) => links.get(clipKey(item))?.gen?.id === gen.id);
+      return { gen, track: clip?.track ?? null, showing: !!clip && view.clip?.gen === clip.gen };
+    });
+  }, [cut, byCut, doc, links, view.clip]);
+  // 고른 생성물은 컷을 옮겨도 소스 뷰어에 남는다(이 시퀀스의 공유 목록에 있는 동안).
+  const pickedId = pickedIds[pickedIds.length - 1] ?? null;
+  const pickedGen = useMemo(() => (pickedId ? list.gens.find((gen) => gen.id === pickedId) ?? null : null), [pickedId, list.gens]);
+  // 더블클릭 = 크게 보기(재생) — 앱의 크게 보기 창. 앞뒤 넘기기는 풀에 지금 보이는 순서, '마지막으로 본'은 공유 & 리뷰 칸에 남는다.
+  const openGen = useCallback((gen: Generation, shown: Generation[]) => {
+    const target = previewTargetFromGenerations(shown, gen, 512);
+    if (target) onPreview({ ...target, sceneId: TEAM_SCOPE });
+  }, [onPreview]);
+  // 카드 우클릭 메뉴(Jay 2026-10-08) — 미디어 풀의 카드, 폴더 창의 카드를 우클릭하면 지금 있는 트랙을 보여 주고, 고르면 그
+  //  트랙에 넣는다(찬 트랙은 교체). 넣을 컷은 여는 순간에 정한다(풀 = 재생헤드가 있는 컷, 창 = 그 창의 컷). 편집 탭의 그 컷
+  //  공유 목록에 있는 카드만 받는다 — 창에서 W 를 '전체'로 바꿔 보이는 다른 공간의 카드 등은 넣어도 '미디어 없음'으로 본다.
+  //  그 카드가 그 컷의 '확인 못 한' 클립과 같은 것일 수 있으면 넣지 않는다: job 으로 이은 클립은 공유 목록을 끝까지 받기
+  //  전에는 어느 카드인지 모른다 — 그때 넣으면 같은 생성물이 두 트랙에 들어가거나, 교체하면서 그 클립의 꺼짐이 사라진다.
+  //  그 카드만 막는다: 컷 전체를 막으면 목록이 2,000건에서 잘린 시퀀스에서는 영영 풀리지 않는다(Codex 코드 리뷰).
+  const maybePlaced = useCallback((path: string, gen: Generation) =>
+    doc.clips.some((clip) => clip.cut === path && !!clip.job && clip.job === gen.job_id &&
+      links.get(clipKey(clip))?.state === "unknown"), [doc, links]);
   const [menu, setMenu] = useState<{ gen: Generation; cut: string; x: number; y: number } | null>(null);
   const menuBackRef = useRef<HTMLElement | null>(null); // 메뉴가 닫히면 초점을 돌려줄 곳(메뉴가 초점을 가져간다)
   const openMenu = useCallback((card: Pick<Generation, "id">, menuCut: string | null, x: number, y: number) => {
     const gen = menuCut ? byCut.get(menuCut)?.find((item) => item.id === card.id) : undefined;
     if (!gen || !menuCut) return flash(t("이 카드는 넣을 수 없습니다 — 편집 탭의 이 컷 공유 목록에 없습니다."));
-    if (unsettled(menuCut)) return flash(t("이 컷에 아직 확인하지 못한 클립이 있습니다 — 공유 목록을 다 받은 뒤에 다시 해 주세요."));
+    if (maybePlaced(menuCut, gen)) return flash(t("이 카드는 이미 넣은 클립일 수 있습니다 — 공유 목록을 다 받은 뒤에 다시 해 주세요."));
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setMenu({ gen, cut: menuCut, x, y });
-  }, [byCut, unsettled, flash, t]);
+  }, [byCut, maybePlaced, flash, t]);
   const closeMenu = useCallback(() => {
     setMenu(null);
     const back = menuBackRef.current;
@@ -315,7 +356,7 @@ function EditTabInner({
     const { gen, cut: menuCut } = menu;
     const asset = gen.assets[0];
     closeMenu();
-    if (unsettled(menuCut)) return flash(t("이 컷에 아직 확인하지 못한 클립이 있습니다 — 공유 목록을 다 받은 뒤에 다시 해 주세요.")); // 메뉴가 떠 있는 사이 다시 받기가 시작됐다
+    if (maybePlaced(menuCut, gen)) return flash(t("이 카드는 이미 넣은 클립일 수 있습니다 — 공유 목록을 다 받은 뒤에 다시 해 주세요.")); // 메뉴가 떠 있는 사이 다시 받기가 시작됐다
     act((current) => placeClip(current, {
       // job 으로 다시 이은 클립이면 그 클립을 옮긴다(문서에 적힌 옛 id 로 찾는다)
       cut: menuCut, gen: menuOwn?.gen ?? gen.id, job: gen.job_id, kind: asset.type,
@@ -478,6 +519,8 @@ function EditTabInner({
     : !layout.cuts.length ? (treePaths === null && list.state === "loading" ? t("불러오는 중...") : t("이 폴더 안에 컷 폴더가 없습니다."))
       : null;
   const needWorkspace = !!target && !allWorkspaces && !editWorkspaceReady(workspace);
+  const poolNotice = !target ? t("폴더를 고르면 그 컷에 공유된 생성물이 여기에 보입니다.")
+    : needWorkspace ? t("워크스페이스를 확인한 뒤 공유물을 표시합니다.") : !cut ? t("컷이 없습니다.") : null;
   const filled = layout.cuts.filter((item) => item.clips.length).length;
 
   return (
@@ -497,7 +540,30 @@ function EditTabInner({
         onGrabFocus={grabFocus}
       />
       <main className="main ed-root" ref={rootRef} tabIndex={-1} onMouseDownCapture={grabFocus}>
-        <div className="ed-top">
+        {/* 풀의 폭 손잡이는 끌 때 초점을 받는다(방향키로도 폭을 바꾸게) — 놓으면 편집 화면으로 돌려준다. 안 돌려주면
+            ←·→ 가 프레임 이동이 아니라 풀 폭을 바꾼다(2026-10-08 격리 실측). Tab 으로 손잡이에 간 키보드 조절은 그대로다. */}
+        <div className="ed-top" onPointerUp={(event) => {
+          if ((event.target as HTMLElement).classList.contains("sidebar-resize-handle")) rootRef.current?.focus({ preventScroll: true });
+        }}>
+          {/* 폭은 프로젝트 칸처럼 끌어서 바꾼다(같은 손잡이 — 저장 키와 범위만 다르다) */}
+          <ResizableSidebar className="ed-pool-side" widthKey="ch.editTimeline.poolWidth" min={240} max={720} base={392}>
+            <EditPool
+              title={slot ? slot.path.replace(/\//g, " / ") : ""}
+              items={poolItems}
+              picked={pickedIds}
+              ui={ui}
+              onUi={patchUi}
+              listState={list.state}
+              notice={poolNotice}
+              onPick={pickGen}
+              onPickMany={setPickedIds}
+              onOpen={openGen}
+              onCompare={onCompare}
+              onClearPicked={clearPicked}
+              onMenu={(gen, x, y) => openMenu(gen, cut, x, y)}
+            />
+          </ResizableSidebar>
+          {ui.dual && <EditSourceViewer gen={pickedGen} />}
           <EditViewer
             view={view}
             videoRef={videoRef}
@@ -508,6 +574,8 @@ function EditTabInner({
               generationListMeta(shownGen.params ?? {}).duration].filter(Boolean).join(" · ") : ""}
             muted={!!doc.muted}
             empty={empty}
+            dual={ui.dual}
+            onToggleDual={() => patchUi({ dual: !ui.dual })}
             onToggle={toggle}
             onStepFrames={stepFrames}
             onStepEdit={stepEdit}
