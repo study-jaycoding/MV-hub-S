@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-07
+updated: 2026-10-08
 status: active
 ---
 
@@ -14,7 +14,7 @@ status: active
 | reviewer | Codex |
 | status | 완료 |
 | touched_paths | `frontend/src/components/timeline/`, `frontend/src/lib/edit*.ts`·`useEdit*.ts`·`videoDuration.ts`, `frontend/src/styles/edit-tab.css`, `App.tsx`·`TopBar.tsx`·`useAppNavigation.ts`·`usePromptDock.ts`·`useGenerationKeyboardActions.ts` |
-| updated | 2026-10-07 |
+| updated | 2026-10-08(카드 모양·컷 창 추가 — §7) |
 
 ## 1. 무엇인가
 
@@ -49,10 +49,10 @@ status: active
 
 | 무엇 | 어떻게 | 왜 |
 |---|---|---|
-| 폴더 보기 창 두 종류 | `listPeekCtx` 에 `editOpen` · `folderPeek` 닫기 | 창은 `.body` 밖에 그려지고 `.body` 를 inert 로 만든다 |
+| 들어오기 전에 떠 있던 폴더 보기 창 두 종류 | `listPeekCtx` 에 `editOpen` · `folderPeek` 닫기 | 창은 `.body` 밖에 그려지고 `.body` 를 inert 로 만든다. 편집 탭이 스스로 여는 폴더 창은 §7 |
 | 캔버스 완료 감시 | `sceneBoardCoveredIds` 에 `!editOpen` | SceneBoard 가 없으면 그 id 를 App 감시가 맡아야 한다 |
 | 다빈치 선택 따라가기 | 라이브러리 `enabled && !editOpen` · 이벤트 처리부 맨 앞에서 반환 | 숨은 목록의 위치·활성 씬을 바꾸지 않게 |
-| 라이브러리·프롬프트 단축키 | 두 훅의 `inactiveRef` | Esc·D·Ctrl+K 가 편집 키와 겹친다 |
+| 라이브러리·프롬프트 단축키 | 두 훅의 `inactiveRef` — 라이브러리 쪽은 편집 탭이 연 폴더 창이 떠 있을 때만 듣는다 | Esc·D·Ctrl+K 가 편집 키와 겹친다 |
 | 프롬프트 도크·선택 막대 | 숨김(상태줄은 남는다) | 편집 탭에는 생성 입력이 없다 |
 | 밑의 목록 선택 | 들어올 때 비움 | 안 보이는 카드에 일괄 작업이 걸리지 않게 |
 
@@ -99,7 +99,8 @@ status: active
 
 ```ts
 interface EditClip { cut: string; gen: string; job?: string | null; track: number; off?: boolean; dur?: number; kind?: "video" | "image" }
-interface EditDoc { v: 1; clips: EditClip[]; tracksOff: number[]; tracksLocked: number[]; muted?: boolean }
+interface EditDoc { v: 1; clips: EditClip[]; tracksOff: number[]; tracksLocked: number[]; muted?: boolean;
+  cutsOn?: string[]; cutsOff?: string[]; hideOff?: boolean } // 컷(폴더) 비활성 — 기본값과 다르게 정한 것만(§7)
 ```
 
 - `gen` = 팀 카드 id(서버 UUID). `job` = job_id — id 로 못 찾을 때 **그 컷에서 하나만 맞으면** 다시 잇는다.
@@ -168,16 +169,65 @@ interface EditDoc { v: 1; clips: EditClip[]; tracksOff: number[]; tracksLocked: 
 | ↑ ↓ | 앞·뒤 편집점(컷 경계·컷 안에서 끝나는 클립의 끝) |
 | Home · End | 처음 · 끝 |
 | Delete · Backspace | 고른 클립 빼기 |
-| D | 고른 클립 켜기/끄기 |
+| D | 고른 클립 켜기/끄기 · 고른 것이 없으면 재생헤드가 있는 컷(폴더) 켜기/끄기 |
 | Alt+↑ · Alt+↓ | 고른 클립을 위/아래 트랙으로(찬 자리는 맞바꿈) |
 | Ctrl+Z · Ctrl+Shift+Z | 되돌리기 · 다시 하기 |
 | Ctrl+= · Ctrl+- · Shift+Z | 확대 · 축소 · 전체 보기 |
 | Ctrl+A · Esc | 클립 모두 고르기 · 고르기 풀기 |
 | M | 소리 끄기 |
 
-마우스: 눈금자 클릭·끌기 = 재생헤드 · 컷 이름 = 그 컷 처음으로 · 클립 클릭 = 고르기(Ctrl·Shift 여러 개) ·
-클립 위아래 끌기 = 트랙 옮기기 · Alt+휠 = 확대(커서 기준) · Ctrl/Shift+휠 = 좌우 · 트랙 머리의 잠금/켜기.
+마우스: 눈금자 클릭·끌기 = 재생헤드 · 컷 이름 = 그 컷 처음으로(클립 고르기는 풀린다) ·
+클립 클릭 = 고르기(Ctrl·Shift 여러 개) + 재생헤드가 다른 컷에 있으면 그 컷으로 ·
+클립 위아래 끌기 = 트랙 옮기기 · Alt+휠 = 확대(커서 기준) · Ctrl/Shift+휠 = 좌우 · 트랙 머리의 잠금/켜기 ·
+컷 자리(클립·빈 자리·컷 이름) 더블클릭 = 그 컷의 생성물 창(아래).
 오른쪽 '이 컷의 생성물'(재생헤드가 있는 컷)의 카드를 누르면 넣고, 다시 누르면 뺀다.
+
+### 생성물 카드와 표 (2026-10-08, Jay)
+
+오른쪽 칸의 **카드**(`EditCard`)는 라이브러리 카드와 같은 모양이다 — 상태색 테두리(공유 라임·보류 빨강·최종 골드)·S/★ 배지·
+작성자 배지·▶. 값을 베끼지 않고 **라이브러리의 CSS 클래스를 그대로 쓴다**(`card`·`card-thumb`·`card-sf`·`creator-badge`·
+`play-badge`·`card-bottom`·`card-here`). 카드 안 조작(공유·태그·코멘트)은 없다 — 누르면 넣고 빼는 것이 이 카드의 일이다.
+
+- 넣은 카드 = 라이브러리의 '선택'과 같은 굵은 상태색 테두리(`.card.selected`).
+- 아래 변 가운데의 표 = 폴더 창의 '방금 누른 카드'와 같은 자리·같은 모양. 타임라인에 넣은 카드마다 **"V1 - 선택 카드"**처럼
+  트랙과 함께 붙는다. 지금 뷰어에 보이는 것만 라임(`.card-here`), 아래에 깔리거나 꺼진 것은 옅게(`.card-folder.static`).
+
+### 컷 더블클릭 = 공유 & 리뷰의 '폴더 보기' 창 (2026-10-08, Jay)
+
+컷 자리를 더블클릭하면 재생헤드를 그 컷으로 옮기고(이미 그 컷이면 그대로) 재생을 멈춘 뒤, **공유 & 리뷰 탭의 폴더 창과 같은 창**
+(`App.renderFolderPeek` — 툴바·진짜 카드·선택 막대·색·태그·검토·일괄 작업)을 그 컷 폴더로 연다. 편집에서만 다른 점은 표다:
+타임라인에 넣은 카드에 위의 "V1 - 선택 카드"가 붙고(`cardMarks`), 창은 지금 보이는 카드로 내려가서 열린다.
+창 안의 클릭은 라이브러리의 '고르기'다 — 타임라인에 넣고 빼는 것은 오른쪽 칸에서 한다.
+
+그 창은 앱의 하나뿐인 목록 조회를 빌려 그리고 카드·액션의 동작이 `filters.tab` 에 묶여 있다. 그래서 창이 떠 있는 동안
+**목록·카드·액션만 공유 & 리뷰로 본다**(`App` 의 `teamPeek` → `useLibraryFilters` 의 세 번째 인자).
+
+- 밖에 내주는 `filters`·조회·공간 범위만 `tab: "team"` 이 되고(휴지통 보기도 끈다 — 목록 훅이 휴지통 API 를 고르는 열쇠다),
+  **저장된 filters 는 그대로**다. 탭 저장·뒤로가기 기록(`useAppNavigation` 은 `storedTab` 을 쓴다)·다음 생성 위치를 건드리지 않는다.
+  탭을 실제로 바꿨다 되돌리면 기록과 저장에 임시 상태가 샌다(Codex 설계 검토).
+- 창의 문맥 = 계정·워크스페이스뿐이다(`editPeekCtx`). 창 안에서 W(자동/전체)를 바꾸는 것은 문맥 변경이 아니라 창이 유지된다.
+  편집을 떠나면 그 렌더부터 `teamPeek && editOpen` 이 거짓이라 떠난 탭이 한순간도 공유 & 리뷰로 그려지지 않는다.
+- 떠 있는 동안 편집 키는 쉬고(`keysActive`) 라이브러리 키가 듣는다(`libraryKeysOffRef = editOpen && !listPeek`). `.body` 는 inert.
+- 닫으면 밑의 탭 목록을 비우고 원래 조회로 돌아가며, 편집 탭은 공유 목록을 다시 받는다(`reloadSignal`). 닫은 뒤에 끝난 변경
+  (공유 해제·삭제)은 `libraryChanged` 알림으로 한 번 더 받는다(0.4초 몰아서).
+- 문맥이 바뀌어 무효가 된 창은 목록을 비우지 않는다 — 바뀐 문맥의 조회가 이미 떠났고, 비우면 그 응답까지 버린다.
+
+한계: 지금 보이는 카드가 첫 쪽(200장) 밖이거나 툴바 필터에 가려지면 그 카드로 내려가지 않는다. 공유 & 리뷰의 W 가 '전체 보기'면
+창도 전체를 보여, 오른쪽 칸(자동 범위)과 목록이 다를 수 있다. 밑의 탭이 공유 & 리뷰일 때 창에서 W 를 바꾸면 그 탭에서 바꾼 것과
+같아 그 탭의 보던 위치가 풀린다(다른 탭이면 건드리지 않는다). 목록 보기에서는 표가 카드 아래 변이 아니라 모델 이름 옆의 글이다.
+창이 떠 있는 동안 도착한 '방금 만든 생성물'은 목록에 끼워 넣지 않는다(`usePromptCreatedActions` — 로컬 카드가 팀 목록에 섞이면
+로컬 id 로 팀 요청이 나간다).
+
+### 컷(폴더) 비활성과 숨기기 (2026-10-08, Jay)
+
+- **기본값**: 공유물도 넣은 클립도 없는 빈 폴더, 그리고 다른 탭의 사이드바에서 비활성(d)으로 둔 폴더(`deactivated.ts` — 읽기만).
+  '비었다'는 **지금 든 공유 목록이 끝까지 받은 결과일 때만** 믿는다(`list.known` — 다시 받는 동안·실패한 뒤에는 마지막으로
+  끝까지 받은 목록이 그대로 남아 참이고, 2,000행에서 잘린 결과로 바뀌면 거짓이다).
+- **D**: 고른 클립이 있으면 그 클립을, 없으면 재생헤드가 있는 컷(폴더)을 켜고 끈다. 컷 이름을 누르면 클립 고르기가 풀려
+  이어서 누르는 D 가 그 폴더에 걸린다. 편집 탭에서 켜고 끈 것은 **이 편집 문서에만** 적는다(`cutsOn`·`cutsOff` — 기본값과
+  다를 때만. 다른 탭의 폴더 비활성은 바꾸지 않는다). 되돌리기 대상이다.
+- 비활성 컷은 이름에 줄이 그어지고 흐리다(왼쪽 폴더 목록도 회색). **[비활성화 폴더 숨기기]**(`hideOff`)를 켜면 배치에서 아예
+  빠진다 — 타임라인에도 재생에도 없고, 문서의 클립은 그대로 남는다. 숨기기를 켠 채 지금 컷을 끄면 재생헤드는 다음 컷으로 간다.
 
 키가 듣는 조건: 편집 탭이 떠 있고 · 위에 다른 창이 없고(`keysActive`) · 입력칸이 아니고 · 키가 body 나 편집 화면에서 났을 때.
 실제로 쓴 키만 기본 동작을 막는다(Ctrl+=/- 의 페이지 확대 포함). 초점이 있는 단추의 Space 는 그 단추 것이라, 편집 화면의
@@ -195,6 +245,8 @@ interface EditDoc { v: 1; clips: EditClip[]; tracksOff: number[]; tracksLocked: 
 | `lib/videoDuration.ts` | 영상 길이 재기(메타데이터만, 동시에 4개 — 시퀀스를 바꾸거나 화면을 떠나면 줄 서 있던 것은 버린다) |
 | `components/timeline/EditTab.tsx` | 조립·편집 키 |
 | `components/timeline/Edit{Sidebar,Viewer,Pool,Timeline}.tsx` | 왼쪽 폴더·뷰어·이 컷의 생성물·트랙 타임라인 |
+| `components/timeline/EditCard.tsx` | 오른쪽 칸의 생성물 카드(라이브러리 카드 모양)와 표 글(`editMarkLabel`) |
+| `App.tsx`(`teamPeek`·`openEditFolderWindow`) · `lib/useLibraryFilters.ts` | 컷 더블클릭으로 여는 공유 & 리뷰의 폴더 창 — 떠 있는 동안 목록·카드·액션만 공유 & 리뷰로 본다 |
 | `styles/edit-tab.css` | 화면 규칙(`ed-` 접두어) |
 
 ## 9. 시험과 실측
@@ -208,6 +260,9 @@ interface EditDoc { v: 1; clips: EditClip[]; tracksOff: number[]; tracksLocked: 
 | `tests/editPlayback.test.tsx` | 같은 컷의 소스 전환·rAF 시계·훑기(도중에 재생)·배속·실패·가려짐·정리·컷이 짧아짐(가짜 video) |
 | `tests/editTabCuts.test.tsx` | 다른 프로젝트를 펼쳐도 컷 유지·폴더 고르기의 시퀀스 판정·편집 키가 듣는 조건 |
 | `tests/videoDuration.test.ts` | 길이 재기 동시 4개·떠날 때 대기분 버림 |
+| `tests/editCutFolder.test.tsx` | 카드의 라이브러리 모양·표("V1 - 선택 카드") · 그림을 누르면 그 컷으로 · 컷 더블클릭이 알리는 폴더·표(눈금자 제외) · 빈 폴더 기본 비활성·숨기기·D(클립 vs 폴더) · 숨긴 컷의 클립은 고르기에서 빠짐 · 공유 목록 다시 받기 |
+| `tests/resolveSelectionRender.test.tsx`(App 편집 탭 — 밑의 탭 my·compose) | 폴더 창이 뜨면 목록·격자는 공유 & 리뷰·그 컷 폴더, 저장된 탭·다음 생성 위치·뒤로가기 기록의 탭은 그대로 · 닫으면 밑의 탭·필터가 그대로 돌아오고 편집 탭이 목록을 다시 받는다 · 창이 뜬 채 편집을 떠나도 떠난 탭이 공유 & 리뷰로 그려지지 않는다 |
+| `tests/resolveLibraryUi.test.tsx` · `tests/promptCreatedTeamList.test.ts` | 표가 격자(아래 변)·목록(모델 이름 옆)에 그 카드에만 붙는다 · 방금 만든 로컬 카드를 공유 & 리뷰 목록에 끼워 넣지 않는다 |
 | `tests/resolveSelectionRender.test.tsx`(App 편집 탭 2건) | 폴더 창이 떠 있는 채 편집에 들어가면 창이 닫히고 `.body` 가 inert 가 아니다 · 편집 중 다빈치 선택이 숨은 목록·활성 씬을 옮기지 않는다 |
 
 되돌려 확인(2026-10-07): 저장소 밖 사본에서 고친 곳 15곳(코드 리뷰 지적 12 · App 배선 2 · 내비 1)을 하나씩 옛 코드로 돌렸고, 15곳 모두 위 시험이 실패했다.
@@ -217,6 +272,13 @@ interface EditDoc { v: 1; clips: EditClip[]; tracksOff: number[]; tracksLocked: 
 넣기 → 쌓기(V2 가 보임) → Space 재생(영상 시계로 시간이 감) → K → 클립 고르기 → D → Ctrl+Z → ←(두 프레임) → Ctrl+A →
 Ctrl+=(페이지 확대 없음) → Shift+Z → 캔버스 탭 → 뒤로(편집·보던 자리·넣은 클립 그대로) → 관리자 창이 떠 있으면 편집 키 쉼.
 생성 요청 0건.
+
+카드·폴더 창·컷 비활성 실측(2026-10-08, 같은 격리 환경 — 밑의 탭은 '작업 공간'): 오른쪽 칸 카드 169×169·모서리 14px·공유 라임
+테두리 → 두 개 넣기("V2 - 선택 카드" 라임·"V1 - 선택 카드" 옅게) → 다른 컷으로 간 뒤 클립 클릭(그 컷으로 돌아옴) → 클립 더블클릭
+(편집 탭 위에 폴더 창 — 툴바·선택 막대, 위 탭 표시는 '편집' 그대로) → 창의 W 에서 전체 보기(창 유지·18장·표 두 개) → 카드 고르기
+(선택 막대) → Esc(선택 해제) → 더블클릭(크게 보기) → Esc(크게 보기만) → Esc(창) → 저장된 탭 `my` 그대로·편집 키 복귀 →
+[비활성화 폴더 숨기기]·D(그 컷이 빠지고 재생헤드는 다음 컷)·Ctrl+Z. 생성 요청 0건·리소스 실패 외 콘솔 오류 0건.
+(같은 날 먼저 만든 '편집 탭 전용 창'은 Jay 가 실제 화면을 보고 공유 & 리뷰와 같은 창으로 바꾸게 해 없앴다.)
 
 **실측하지 못한 것**: 캔버스에서 생성이 도는 중에 편집 탭으로 넘어갔을 때의 완료 감시(유료 호출 금지 — 코드로만 확인) ·
 클립을 마우스로 끌어 트랙 옮기기(키 Alt+↑/↓ 와 순수 함수 시험만) · 실제 공유 서버(프록시) 경유 · 긴 영상·느린 회선에서의 컷 넘김.

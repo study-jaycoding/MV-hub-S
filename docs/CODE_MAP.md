@@ -589,10 +589,11 @@ updated: 2026-10-07
 | `compare/CompareSourceLightbox.tsx`(29줄) | 비교 모달 위 원본 라이트박스 | 〃 |
 | `edit/PartialEditModal.tsx`(966줄) | 부분 수정 캔버스(펜·도형·마스크·A/B) | `PartialEditModal` |
 | `edit/PartialEditHost.tsx`(47줄) | `partialEdit` 이벤트 → 최신 Generation 조회 → 모달 개방 | `PartialEditHost`(§3.5 숨은 진입점) |
-| `timeline/EditTab.tsx`(약 410줄) | 편집 탭 조립 — 시퀀스 고르기·문서·재생·편집 키([EDIT_TAB.md](EDIT_TAB.md)). `edit/`(부분 수정)와 다른 기능이다 | `EditTab`(App 이 지연 로드) |
+| `timeline/EditTab.tsx`(약 500줄) | 편집 탭 조립 — 시퀀스 고르기·문서·재생·편집 키·컷(폴더) 비활성/숨기기·컷 더블클릭(공유 & 리뷰의 폴더 창을 App 에 열어 달라고 알린다)([EDIT_TAB.md](EDIT_TAB.md)). `edit/`(부분 수정)와 다른 기능이다 | `EditTab`(App 이 지연 로드) |
 | `timeline/EditTimeline.tsx`(약 280줄) | 눈금자·컷 줄·영상 트랙·소리 줄·재생헤드. 클립은 위아래로만 끈다(컷 자리는 폴더 순서로 고정) | `EditTimeline` |
 | `timeline/EditViewer.tsx`(86줄) | 뷰어(`<video>` 하나)와 재생 단추 — 주소는 재생 훅이 갈아 끼운다 | `EditViewer` |
-| `timeline/EditPool.tsx`(약 110줄) | 재생헤드가 있는 컷의 공유 생성물 — 누르면 넣고 다시 누르면 뺀다 | `EditPool` |
+| `timeline/EditPool.tsx`(약 80줄) | 재생헤드가 있는 컷의 공유 생성물 — 누르면 넣고 다시 누르면 뺀다 | `EditPool` |
+| `timeline/EditCard.tsx`(약 65줄) | 편집 탭 오른쪽 칸의 생성물 카드 — 라이브러리 카드의 CSS 클래스를 그대로 써서 같은 모양으로 '보이기만' 한다. 아래 변의 표 = "V1 - 선택 카드"(폴더 창의 표와 같은 글) | `EditCard`, `PoolItem`, `editMarkLabel` |
 | `timeline/EditSidebar.tsx`(약 115줄) | 프로젝트·폴더에서 시퀀스 고르기(`FolderTreeView` 만 쓴다 — `ProjectSection` 아님) | `EditSidebar` |
 | `FloatingPrompt.tsx`(104줄) | `window.prompt` 대체 플로팅 입력 | `FloatingPrompt` |
 
@@ -732,7 +733,7 @@ updated: 2026-10-07
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `useGenerationLibraryData.ts` | 훅 | 목록 로드·페이징·seq 가드·동기화 판정(§6 계약 지점). `beginComposeList` = 목록을 비우고 다시 받기(캔버스·목록 탭의 '폴더 보기' 창이 열고 닫을 때 — 지금 탭 캐시를 지우고 진행 중 응답을 버린다). 목록 탭 창은 `{ keep }`/`{ restore }` 로 본 목록 첫 쪽 사본을 담았다 먼저 보인다(`backListRef` — 탭 캐시와 별개 칸, 출처는 탭 캐시의 sig 로 확인). `staleList` = 그 사본을 보이는 중 — **지금 문맥의 첫 쪽 응답을 적용한 순간**(성공·실패)에만 꺼진다(버려진 응답·메타 종료로는 안 꺼짐). **다시 받기는 줄이 둘**이다 — 목록 줄(`inflightRef`·대기 병합)은 한 실행의 목록 구간(첫 쪽 + 위치 확인)까지만 잡고, 메타(통계·태그·폴더)는 메타 줄(`sendMeta`/`requestMeta` — 한 번에 한 묶음, 그동안의 요구는 하나로 합쳐 앞 묶음이 끝난 뒤 그때의 문맥으로)이 받아 적용한다. 줄이 비어 있으면 목록과 메타는 같은 순간에 출발한다. 다음 실행의 목록은 앞 실행의 메타를 기다리지 않는다. `reload()` 의 약속은 자기 실행과 맡긴 메타가 **처리**된 뒤에 풀린다(적용 보장은 아니다). 전체 메타 요구는 seq 로 버려져도 다음 묶음이 이어받는다(`metaOwedRef` — 빚만으로 스스로 다시 보내지는 않는다). 시험 `tests/libraryReloadLanes.test.tsx` |
-| `useLibraryFilters.ts` | 훅 | 필터·뷰 상태(localStorage 백업) + 파생 쿼리 |
+| `useLibraryFilters.ts` | 훅 | 필터·뷰 상태(localStorage 백업) + 파생 쿼리. 세 번째 인자 `teamPeek`(편집 탭이 연 폴더 창) — 밖에 내주는 `filters`·조회만 공유 & 리뷰로 보이고 저장된 값·`storedTab`(뒤로가기 기록용)은 그대로다([EDIT_TAB.md](EDIT_TAB.md) §7) |
 | `useLibraryPersistence.ts` | 훅 | 필터 저장 포맷·키·마이그레이션 |
 | `appGenerationQuery.ts` | 순수 | 필터 → 서버 쿼리 객체·캐시 키 · 목록 탭 '폴더 보기' 창의 조회(`folderPeekQuery` — 탭·공간 범위·창 툴바 조건만 따른다) |
 | `useLibraryCreators.ts` | 훅 | 생성자(작성자) 목록 조회 |
@@ -774,7 +775,7 @@ updated: 2026-10-07
 | `useGenerationKeyboardActions.ts` | 훅 | 그리드 단축키(색·비활성 등) |
 | `useGenerationUtilityActions.ts` | 훅 | 일괄 다운로드·히스토리·창 열기 |
 | `useGenerationSelection.ts` | 훅 | 그리드 선택 집합·바깥 클릭 해제 |
-| `usePromptCreatedActions.ts` | 훅 | 프롬프트로 생성 직후 후처리 |
+| `usePromptCreatedActions.ts` | 훅 | 프롬프트로 생성 직후 후처리. 목록이 공유 & 리뷰의 것이면 방금 만든 로컬 카드를 끼워 넣지 않는다(다시 받기에 맡긴다) |
 | `bulkGenerationActions.ts` | 순수 | 일괄 실행기(`runGenerationBulk` — 주입받은 비동기 작업을 돌려 실패 수 집계, `runGenerationTrash` — 휴지통 전용: 공유 중 409 를 '건너뜀'으로 따로 센다) + 결과·확인 문구 |
 | `shareMirrorPending.ts` | 순수 | 공유 미러 대기 안내 래핑 |
 
@@ -995,7 +996,7 @@ updated: 2026-10-07
 | `composition-manage.css` | 1098 | 관리(PM)창 구성·대시보드 화면. 옛 합성보드·옛 통계 위젯(도넛·퍼널 등)의 규칙은 2026-09-18 에 걷어냈다. 남은 휴면 규칙은 §5-d |
 | `admin-auth-compare.css` | 682 | 로그인·관리자 창·계정 비교 화면 |
 | `partial-edit.css` | 327 | 부분 수정 캔버스(`edit/PartialEditModal`) |
-| `edit-tab.css` | 186 | 편집 탭(`timeline/`) — 클래스는 전부 `ed-` 로 시작한다(흔한 이름은 다른 화면 규칙에 먹힌다) |
+| `edit-tab.css` | 188 | 편집 탭(`timeline/`) — 클래스는 전부 `ed-` 로 시작한다(흔한 이름은 다른 화면 규칙에 먹힌다). 생성물 카드만 라이브러리 카드의 클래스를 일부러 같이 쓴다(같은 모양) |
 | `resolve-library.css` | 22 | Resolve 관련 라이브러리 표시(소규모) |
 
 ### 3.5 숨은 진입점
