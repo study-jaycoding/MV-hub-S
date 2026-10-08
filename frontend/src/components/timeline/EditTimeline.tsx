@@ -42,6 +42,7 @@ export const EditTimeline = memo(function EditTimeline({
   rev,
   selected,
   currentCut,
+  offCuts,
   scrollRef,
   headRef,
   getNow,
@@ -50,6 +51,8 @@ export const EditTimeline = memo(function EditTimeline({
   onSelect,
   onClearSelection,
   onMoveClip,
+  onPickCut,
+  onOpenCut,
   onToggleTrack,
   onToggleMute,
 }: {
@@ -60,6 +63,7 @@ export const EditTimeline = memo(function EditTimeline({
   rev: number; // 끌기를 시작한 뒤 문서가 갈렸으면 그 끌기는 버린다
   selected: ReadonlySet<string>;
   currentCut: string | null;
+  offCuts: ReadonlySet<string>; // 비활성 컷(폴더) — 흐리게 그린다. 숨기기를 켜면 배치(layout)에 아예 없다
   scrollRef: RefObject<HTMLDivElement>;
   headRef: RefObject<HTMLDivElement>;
   getNow: () => number;
@@ -68,6 +72,8 @@ export const EditTimeline = memo(function EditTimeline({
   onSelect: (key: string, additive: boolean) => void;
   onClearSelection: () => void;
   onMoveClip: (key: string, track: number, rev: number) => void;
+  onPickCut: (cut: string) => void; // 클립(그림)을 눌렀다 — 재생헤드가 다른 컷에 있으면 그 컷으로 옮긴다
+  onOpenCut: (cut: string) => void; // 컷 자리(클립·빈 자리·컷 이름)를 더블클릭 — 그 컷의 생성물 창
   onToggleTrack: (list: "tracksOff" | "tracksLocked", track: number) => void;
   onToggleMute: () => void;
 }) {
@@ -116,6 +122,13 @@ export const EditTimeline = memo(function EditTimeline({
     const rect = lanesRef.current?.getBoundingClientRect();
     return rect ? (clientX - rect.left) / zoom : 0;
   };
+  // 더블클릭한 자리의 컷 — 클립·빈 자리·컷 이름·소리 줄 어디든 그 세로 칸의 컷이다. 눈금자는 재생헤드 몫이라 뺀다.
+  const openCutAt = (event: ReactMouseEvent<HTMLElement>) => {
+    if ((event.target as HTMLElement).closest(".ed-ruler")) return;
+    const time = timeAt(event.clientX);
+    const slot = layout.cuts.find((item) => time >= item.start && time < item.start + item.len);
+    if (slot) onOpenCut(slot.path);
+  };
   const scrub = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.type === "pointerdown") {
       if (event.button !== 0) return;
@@ -127,9 +140,10 @@ export const EditTimeline = memo(function EditTimeline({
 
   // 클립 끌기 — 6px 넘게 움직이면 끌기로 보고, 놓은 자리의 트랙으로 옮긴다(찬 자리면 맞바꿈).
   const drag = useRef<{ key: string; track: number; y: number; rev: number; moved: boolean } | null>(null);
-  const clipDown = (event: ReactPointerEvent<HTMLElement>, key: string, from: number, locked: boolean) => {
+  const clipDown = (event: ReactPointerEvent<HTMLElement>, key: string, from: number, locked: boolean, cut: string) => {
     if (event.button !== 0) return;
     event.stopPropagation();
+    onPickCut(cut); // 그림을 누르면 그 컷으로 간다(보는 것은 편집이 아니라 잠긴 트랙도 된다)
     if (locked) return; // 잠긴 트랙의 클립은 고르지도 못한다
     onSelect(key, event.ctrlKey || event.metaKey || event.shiftKey);
     drag.current = { key, track: from, y: event.clientY, rev, moved: false };
@@ -168,7 +182,7 @@ export const EditTimeline = memo(function EditTimeline({
     const link = links.get(key);
     const state = link?.state ?? "unknown";
     const locked = doc.tracksLocked.includes(clip.track);
-    const off = !!clip.off || doc.tracksOff.includes(clip.track);
+    const off = !!clip.off || doc.tracksOff.includes(clip.track) || offCuts.has(clip.cut);
     const clipWidth = Math.max(6, clip.len * zoom - 2);
     const thumb = link?.gen ? thumbOf(link.gen, 256) : null;
     const frames = Math.min(16, Math.max(1, Math.round(clipWidth / ((LANE_H - 6) * (16 / 9)))));
@@ -179,7 +193,7 @@ export const EditTimeline = memo(function EditTimeline({
           (state !== "ok" ? ` ed-${state}` : "") + (locked ? " ed-locked" : "")}
         style={{ left: start * zoom + 1, width: clipWidth }}
         title={link?.gen?.prompt?.slice(0, 80) || undefined}
-        onPointerDown={(event) => clipDown(event, key, clip.track, locked)}
+        onPointerDown={(event) => clipDown(event, key, clip.track, locked, clip.cut)}
         onPointerMove={clipMove}
         onPointerUp={(event) => clipUp(event)}
         onPointerCancel={(event) => clipUp(event, true)}
@@ -229,7 +243,8 @@ export const EditTimeline = memo(function EditTimeline({
         </div>
       </div>
       <div className="ed-scroll" ref={scrollRef}>
-        <div className="ed-lanes" ref={lanesRef} style={{ width }} onPointerDown={onClearSelection} onMouseDown={keepFocus}>
+        <div className="ed-lanes" ref={lanesRef} style={{ width }} onPointerDown={onClearSelection} onMouseDown={keepFocus}
+          onDoubleClick={openCutAt}>
           <div className="ed-ruler" onPointerDown={scrub} onPointerMove={scrub}>
             {ticks.map((time) => (
               <div className="ed-tick" key={time} style={{ left: time * zoom }}><span>{timecode(time)}</span></div>
@@ -237,9 +252,16 @@ export const EditTimeline = memo(function EditTimeline({
           </div>
           <div className="ed-lane ed-l-cut">
             {layout.cuts.map((slot) => (
+              // 컷 이름 = 폴더. 누르면 그 컷 처음으로 가고 클립 고르기를 푼다 — 이어서 누르는 D 가 이 폴더에 걸린다.
               <button type="button" key={slot.path} style={{ left: slot.start * zoom, width: slot.len * zoom }}
-                className={"ed-cutcell" + (slot.path === currentCut ? " ed-cur" : "") + (slot.clips.length ? "" : " ed-nopick")}
-                title={slot.path} onPointerDown={(event) => event.stopPropagation()} onClick={() => onSeek(slot.start)}>
+                className={"ed-cutcell" + (slot.path === currentCut ? " ed-cur" : "") + (slot.clips.length ? "" : " ed-nopick") +
+                  (offCuts.has(slot.path) ? " ed-cutoff" : "")}
+                title={offCuts.has(slot.path) ? `${slot.path} — ${t("비활성 폴더")}` : slot.path}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => {
+                  onClearSelection();
+                  onSeek(slot.start);
+                }}>
                 {slot.name}
               </button>
             ))}
@@ -251,8 +273,9 @@ export const EditTimeline = memo(function EditTimeline({
                 if (clip) return renderClip(clip, slot.start);
                 // 고르지 않은 컷은 V1 에 빈 자리로만 보인다.
                 return track === 1 && !slot.clips.length ? (
-                  <div className="ed-slot" key={slot.path} style={{ left: slot.start * zoom + 1, width: Math.max(6, slot.len * zoom - 2) }}>
-                    {slot.len * zoom > 60 ? t("비어 있음") : ""}
+                  <div className={"ed-slot" + (offCuts.has(slot.path) ? " ed-slot-off" : "")} key={slot.path}
+                    style={{ left: slot.start * zoom + 1, width: Math.max(6, slot.len * zoom - 2) }}>
+                    {slot.len * zoom > 60 ? (offCuts.has(slot.path) ? t("비활성") : t("비어 있음")) : ""}
                   </div>
                 ) : null;
               })}

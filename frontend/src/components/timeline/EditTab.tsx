@@ -2,10 +2,13 @@
 //  왼쪽 = 시퀀스 폴더 고르기 · 가운데 = 뷰어 · 오른쪽 = 재생헤드가 있는 컷의 생성물 · 아래 = 트랙 타임라인.
 //  컷 자리는 폴더 순서로 고정이고, 고른 생성물만 들어간다. 편집은 이 브라우저(계정)에만 저장한다.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Generation, WorkspaceContext } from "../../types";
+import type { CardMark, Generation, WorkspaceContext } from "../../types";
+import { APP_EVENTS } from "../../lib/appEvents";
+import { isFolderDisabled } from "../../lib/deactivated";
 import {
   buildLayout,
   clipKey,
+  cutIsOff,
   cutPaths,
   DEFAULT_SEC,
   EDIT_FPS,
@@ -19,7 +22,9 @@ import {
   shiftClips,
   timecode,
   toggleClipsOff,
+  toggleCutOff,
   toggleTrack,
+  visibleClip,
   type EditDoc,
   type SlotClip,
 } from "../../lib/editTimeline";
@@ -27,6 +32,8 @@ import { editDocKey, loadEditTarget, saveEditTarget, type EditTarget } from "../
 import { generationListMeta } from "../../lib/generationDisplay";
 import { useT } from "../../lib/i18n";
 import { thumbOf } from "../../lib/media";
+import { useCustomEvent } from "../../lib/useCustomEvent";
+import { useDisabledFolders } from "../../lib/useDisabledFolders";
 import { useEditDoc } from "../../lib/useEditDoc";
 import { useEditPlayback, type EditSource } from "../../lib/useEditPlayback";
 import { workspaceViewKey } from "../../lib/libraryWorkspaceScope";
@@ -38,6 +45,7 @@ import {
   useEditProjects,
 } from "../../lib/useEditSequence";
 import { dropQueuedVideoMeasures, knownVideoSeconds, measureVideoSeconds } from "../../lib/videoDuration";
+import { editMarkLabel } from "./EditCard";
 import { EditPool, type PoolItem } from "./EditPool";
 import { EditSidebar } from "./EditSidebar";
 import { EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink } from "./EditTimeline";
@@ -49,6 +57,17 @@ interface Props {
   workspace: WorkspaceContext;
   keysActive: boolean; // false = 위에 다른 창이 떠 있다(편집 키를 듣지 않는다)
   flash: (message: string) => void;
+  // 컷을 더블클릭 — 공유 & 리뷰의 '폴더 보기' 창을 그 컷 폴더로 연다(창은 App 의 것, 여기는 무엇을 열지만 알린다).
+  onOpenCutFolder: (target: EditCutFolder) => void;
+  reloadSignal: number; // 그 창이 닫혔다 — 창에서 공유를 풀거나 지웠을 수 있으니 공유 목록을 다시 받는다
+}
+
+export interface EditCutFolder {
+  projectId: string;
+  projectName: string;
+  path: string;
+  focusId: string | null; // 창이 열릴 때 보이게 할 카드(지금 뷰어에 보이는 것)
+  marks: Record<string, CardMark>; // 타임라인에 넣은 카드의 표 — "V1 - 선택 카드"
 }
 
 export function EditTab(props: Props) {
@@ -58,6 +77,7 @@ export function EditTab(props: Props) {
 // '전체 보기'를 켠 워크스페이스 — 탭을 오가도 남고 새로고침하면 사라진다(공유 & 리뷰 탭의 전체 보기와 같은 수명).
 let allWorkspacesIn = "";
 
+const NO_CUTS: ReadonlySet<string> = new Set();
 const parentOf = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 const isTyping = (target: EventTarget | null) => {
   const element = target as HTMLElement | null;
@@ -65,7 +85,7 @@ const isTyping = (target: EventTarget | null) => {
     element.tagName === "SELECT" || element.isContentEditable);
 };
 
-function EditTabInner({ authKey, workspace, keysActive, flash }: Props) {
+function EditTabInner({ authKey, workspace, keysActive, flash, onOpenCutFolder, reloadSignal }: Props) {
   const t = useT();
   const [target, setTarget] = useState<EditTarget | null>(loadEditTarget);
   const [openProject, setOpenProject] = useState<string | null>(() => target?.projectId ?? null);
@@ -109,12 +129,29 @@ function EditTabInner({ authKey, workspace, keysActive, flash }: Props) {
     for (const clip of doc.clips) map.set(clipKey(clip), linkClip(clip, byCut.get(clip.cut), list.complete));
     return map;
   }, [doc, byCut, list.complete]);
+  // 컷(폴더) 비활성(Jay 2026-10-08) — 기본값: 공유물도 넣은 것도 없는 빈 폴더, 그리고 다른 탭의 사이드바에서 비활성(d)으로 둔
+  //  폴더. '비었다'는 공유 목록을 한 번이라도 끝까지 받은 뒤에만 믿는다(list.known — 받는 중에 전부 비활성으로 보이지 않게).
+  //  여기서 켜고 끈 것은 이 편집 문서에만 적는다 — 다른 탭의 폴더 비활성(회색·생략)은 읽기만 하고 바꾸지 않는다.
+  const disabledFolders = useDisabledFolders();
+  const autoOff = useCallback((path: string) =>
+    (!!target && isFolderDisabled(disabledFolders, target.projectId, path)) ||
+    (list.known && !byCut.get(path)?.length && !doc.clips.some((clip) => clip.cut === path)),
+  [target, disabledFolders, list.known, byCut, doc]);
+  const offCuts = useMemo(
+    () => new Set(cuts.filter((path) => cutIsOff(doc, path, autoOff(path)))),
+    [cuts, doc, autoOff],
+  );
+  // 숨기기를 켜면 비활성 컷은 배치에 아예 없다 — 타임라인에도 재생에도 없다. 문서의 클립은 그대로 남는다.
+  const shownCuts = useMemo(
+    () => (doc.hideOff ? cuts.filter((path) => !offCuts.has(path)) : cuts),
+    [cuts, doc.hideOff, offCuts],
+  );
   const layout = useMemo(
-    () => buildLayout(cuts, doc, (clip) => {
+    () => buildLayout(shownCuts, doc, (clip) => {
       const gen = links.get(clipKey(clip))?.gen; // 길이가 안 적힌 옛 클립만 여기로 온다
       return gen?.assets[0]?.type === "video" ? gen.params?.duration : undefined;
     }),
-    [cuts, doc, links],
+    [shownCuts, doc, links],
   );
   const sourceOf = useCallback((clip: SlotClip): EditSource => {
     const link = links.get(clipKey(clip));
@@ -207,13 +244,18 @@ function EditTabInner({ authKey, workspace, keysActive, flash }: Props) {
   // 시퀀스를 바꾸거나 떠나면 줄 서 있던 길이 재기는 버린다(새 시퀀스의 것이 그 뒤로 밀리지 않게).
   useEffect(() => dropQueuedVideoMeasures, [target?.projectId, target?.seq]);
 
-  // 고른 클립 중 문서에서 사라진 것은 고르기에서도 뺀다(되돌리기·다른 창의 변경).
+  // 고른 클립 중 타임라인에서 사라진 것은 고르기에서도 뺀다 — 문서에서 빠졌거나(되돌리기·다른 창의 변경) 그 컷이 숨겨졌다.
+  //  안 빼면 D·Delete 가 보이지 않는 클립을 바꾼다(Codex 코드 리뷰).
+  const shownKeys = useMemo(
+    () => new Set(layout.cuts.flatMap((slot) => slot.clips.map(clipKey))),
+    [layout],
+  );
   useEffect(() => {
     setSelected((prev) => {
-      const keep = [...prev].filter((key) => links.has(key));
+      const keep = [...prev].filter((key) => shownKeys.has(key));
       return keep.length === prev.size ? prev : new Set(keep);
     });
-  }, [links]);
+  }, [shownKeys]);
 
   const act = useCallback((change: (current: EditDoc) => EditDoc | null, options?: { rev?: number }) => {
     if (!applyEdit(change, options)) flash(t("바꾸지 못했습니다 — 잠긴 트랙이 있거나 옮길 자리가 없습니다."));
@@ -238,6 +280,67 @@ function EditTabInner({ authKey, workspace, keysActive, flash }: Props) {
     }));
   }, [cut, doc, links, act]);
 
+  // 그림(클립)을 누르면 그 컷으로 간다 — 이미 그 컷이면 보던 자리 그대로.
+  const pickCut = useCallback((path: string) => {
+    if (view.cut !== path) seekPos({ cut: path, local: 0 });
+  }, [view.cut, seekPos]);
+  // 컷을 더블클릭 — 그 컷으로 재생헤드를 옮기고(이미 그 컷이면 그대로) 재생을 멈춘 뒤, 공유 & 리뷰의 '폴더 보기' 창을 그 컷
+  //  폴더로 연다. 창은 App 의 것이라 여기서는 무엇을 열지와, 타임라인에 넣은 카드에 붙일 표만 넘긴다.
+  const openCut = useCallback((path: string) => {
+    const slot = layout.cuts.find((item) => item.path === path);
+    if (!target || !slot) return;
+    stop();
+    const here = view.cut === path;
+    if (!here) seekPos({ cut: path, local: 0 });
+    const lead = here ? view.clip : visibleClip(doc, slot, 0);
+    const marks: Record<string, CardMark> = {};
+    let focusId: string | null = null;
+    for (const clip of slot.clips) {
+      const id = links.get(clipKey(clip))?.gen?.id ?? clip.gen; // job 으로 다시 이은 클립은 지금의 카드 id
+      const isLead = !!lead && lead.gen === clip.gen;
+      marks[id] = { label: editMarkLabel(clip.track, t), lead: isLead };
+      if (isLead) focusId = id;
+    }
+    onOpenCutFolder({
+      projectId: target.projectId, projectName: projects.find((item) => item.id === target.projectId)?.name ?? "",
+      path, focusId, marks,
+    });
+  }, [layout, target, stop, view.cut, view.clip, seekPos, doc, links, t, onOpenCutFolder, projects]);
+
+  // 창에서(또는 다른 화면에서) 공유를 풀거나 지웠을 수 있다 — 창이 닫히면, 그리고 생성물이 바뀌었다는 알림이 오면 공유 목록을
+  //  다시 받는다. 알림은 창을 닫은 뒤에 끝난 요청도 잡는다(닫을 때 한 번만 받으면 그 요청보다 먼저 끝날 수 있다).
+  const reloadList = list.reload;
+  const reloadTimer = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (reloadTimer.current !== null) window.clearTimeout(reloadTimer.current);
+  }, []);
+  useCustomEvent(APP_EVENTS.libraryChanged, () => {
+    if (reloadTimer.current !== null) window.clearTimeout(reloadTimer.current);
+    reloadTimer.current = window.setTimeout(() => {
+      reloadTimer.current = null;
+      reloadList();
+    }, 400);
+  });
+  const seenSignal = useRef(reloadSignal);
+  useEffect(() => {
+    if (seenSignal.current === reloadSignal) return;
+    seenSignal.current = reloadSignal;
+    reloadList();
+  }, [reloadSignal, reloadList]);
+
+  // 컷(폴더) 켜고 끄기 — 재생헤드가 있는 컷. 숨기기를 켠 채 끄면 그 컷은 타임라인에서 사라지고 재생헤드는 다음 컷으로 간다.
+  const toggleCut = useCallback(() => {
+    if (cut) applyEdit((current) => toggleCutOff(current, cut, autoOff(cut)));
+  }, [cut, applyEdit, autoOff]);
+  const toggleHideOff = useCallback(() => {
+    applyEdit((current) => {
+      const next = { ...current };
+      if (current.hideOff) delete next.hideOff;
+      else next.hideOff = true;
+      return next;
+    });
+  }, [applyEdit]);
+
   const fit = useCallback(() => {
     const width = scrollRef.current?.clientWidth ?? 0;
     if (layout.total > 0 && width > 160) setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, (width - 140) / layout.total)));
@@ -256,7 +359,9 @@ function EditTabInner({ authKey, workspace, keysActive, flash }: Props) {
     if (mod && event.altKey) used = false;
     else if (mod && code === "KeyZ") (event.shiftKey ? edit.redo : edit.undo)();
     else if (mod && code === "KeyA") {
-      setSelected(new Set(doc.clips.filter((clip) => !doc.tracksLocked.includes(clip.track)).map(clipKey)));
+      // 보이는 것만 — 숨긴 컷의 클립은 고르지 않는다
+      setSelected(new Set(doc.clips.filter((clip) => !doc.tracksLocked.includes(clip.track)).map(clipKey)
+        .filter((key) => shownKeys.has(key))));
     } else if (mod && (key === "=" || key === "+")) zoomBy(1.25);
     else if (mod && key === "-") zoomBy(0.8);
     else if (mod) used = false;
@@ -277,7 +382,9 @@ function EditTabInner({ authKey, workspace, keysActive, flash }: Props) {
     else if (key === "Home") seek(0);
     else if (key === "End") seek(layout.total);
     else if ((key === "Delete" || key === "Backspace") && picked.length) act((current) => removeClips(current, picked));
+    // D = 비활성(앱 공통) — 고른 클립이 있으면 그 클립, 없으면 재생헤드가 있는 컷(폴더)
     else if (code === "KeyD" && picked.length) act((current) => toggleClipsOff(current, picked));
+    else if (code === "KeyD" && cut) toggleCut();
     else if (code === "KeyM") applyEdit((current) => ({ ...current, muted: !current.muted }));
     else if (key === "Escape" && picked.length) setSelected(new Set());
     else used = false;
@@ -331,6 +438,7 @@ function EditTabInner({ authKey, workspace, keysActive, flash }: Props) {
         tree={tree}
         seq={openProject === target?.projectId ? seq : ""}
         cut={openProject === target?.projectId ? cut ?? "" : ""}
+        offCuts={openProject === target?.projectId ? offCuts : NO_CUTS}
         onPickFolder={pickFolder}
         onReload={reloadTree}
         onGrabFocus={grabFocus}
@@ -388,6 +496,14 @@ function EditTabInner({ authKey, workspace, keysActive, flash }: Props) {
           )}
           {edit.dirty && <span className="ed-warn" role="status">{t("저장 안 됨")}</span>}
           <span className="ed-zoom">
+            {target && (
+              <button type="button" className={"ed-toggle" + (doc.hideOff ? " ed-on" : "")} aria-pressed={!!doc.hideOff}
+                onClick={toggleHideOff}
+                title={t("비활성 폴더(빈 폴더·D 로 끈 폴더)를 타임라인에서 숨깁니다. 컷 이름을 누르고 D 를 누르면 그 폴더를 켜고 끕니다.")}>
+                {t("비활성화 폴더 숨기기")}
+                {offCuts.size > 0 && <i>{offCuts.size}</i>}
+              </button>
+            )}
             <button type="button" className="ed-link" onClick={fit} title={t("전체 보기 (Shift+Z)")}>{t("전체 보기")}</button>
             <button type="button" className="ed-zbtn" onClick={() => zoomBy(0.8)} title={t("축소 (Ctrl+-)")} aria-label={t("축소 (Ctrl+-)")}>－</button>
             <button type="button" className="ed-zbtn" onClick={() => zoomBy(1.25)} title={t("확대 (Ctrl+=)")} aria-label={t("확대 (Ctrl+=)")}>＋</button>
@@ -401,6 +517,7 @@ function EditTabInner({ authKey, workspace, keysActive, flash }: Props) {
           rev={rev}
           selected={selected}
           currentCut={cut}
+          offCuts={offCuts}
           scrollRef={scrollRef}
           headRef={headRef}
           getNow={now}
@@ -409,6 +526,8 @@ function EditTabInner({ authKey, workspace, keysActive, flash }: Props) {
           onSelect={select}
           onClearSelection={clearSelection}
           onMoveClip={moveClip}
+          onPickCut={pickCut}
+          onOpenCut={openCut}
           onToggleTrack={toggleTrackList}
           onToggleMute={toggleMute}
         />

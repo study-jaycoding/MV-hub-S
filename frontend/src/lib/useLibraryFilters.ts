@@ -128,7 +128,10 @@ export function restoreFilters(LS: Store): Filters {
   return { ...stored, ...(workspaceIds.length ? { workspace_ids: workspaceIds } : { workspace_ids: undefined }) };
 }
 
-export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
+// teamPeek = 편집 탭이 연 '폴더 보기' 창이 떠 있다. 그 창은 공유 & 리뷰의 것이라, 떠 있는 동안 **밖에서 읽는 filters·조회·공간
+//  범위만** 공유 & 리뷰로 보인다(아래 shown). 저장된 filters 는 그대로 — 탭 저장·뒤로가기 기록·생성 목적지를 건드리지 않는다
+//  (Codex 설계 검토 2026-10-08: 탭을 실제로 바꿨다 되돌리면 기록·저장에 임시 상태가 샌다).
+export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamPeek = false) {
   const t = useT();
   const [manualRevision, setManualRevision] = useState(0);
   const bumpManualRevision = useCallback(() => setManualRevision((value) => value + 1), []);
@@ -155,10 +158,17 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
     }
   }
   const sharedMode = sharedView.key === workspaceKey ? sharedView.mode : "auto";
-  const workspaceScopeKey = workspace && filters.tab === "team"
+  // 밖에 보이는 filters. 휴지통 보기는 목록 훅이 휴지통 API 를 고르는 열쇠라 창이 떠 있는 동안 같이 끈다.
+  const shown = useMemo<Filters>(
+    () => (teamPeek ? { ...filters, tab: "team", deleted_only: undefined, include_deleted: undefined } : filters),
+    [filters, teamPeek],
+  );
+  const workspaceScopeKey = workspace && shown.tab === "team"
     ? JSON.stringify([workspaceKey, sharedMode]) : "";
-  const workspaceQueryReady = !workspace || filters.tab !== "team" || sharedMode === "all" ||
+  const workspaceQueryReady = !workspace || shown.tab !== "team" || sharedMode === "all" ||
     workspace.scope === "personal" || (workspace.scope === "team" && !!workspace.id);
+  // ★저장된 값이다(shown 아님) — 아래 쓰는 길(setFilters·patch·followLocation)이 이것을 '직전 값'으로 삼는다.
+  //  shown 을 넣으면 창이 떠 있는 동안의 쓰기가 임시 탭(team)을 저장 상태에 굳힌다.
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
   const [generationScope, rawSetGenerationScope] = useState<GenerationScope>(
@@ -255,6 +265,11 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
 
   const setSharedWorkspaceMode = useCallback((mode: SharedWorkspaceMode) => {
     setSharedView({ key: workspaceKey, mode });
+    // 편집 탭이 연 창에서 바꾼 것이면(저장된 탭은 공유 & 리뷰가 아니다) 저장된 위치는 그 탭의 것이라 건드리지 않는다.
+    if (filtersRef.current.tab !== "team") {
+      bumpManualRevision();
+      return;
+    }
     // 다른 공간의 폴더에서 자동 모드로 복귀해 빈 교집합이 되는 것을 막는다.
     const next = { ...filtersRef.current, project_id: undefined, folder_path: undefined,
       deleted_only: undefined, include_deleted: undefined, creator_uid: undefined };
@@ -330,7 +345,7 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
   const genQuery = useMemo<GenQuery>(
     () => {
       const query = buildGenerationQuery({
-        filters,
+        filters: shown,
         typeFilter,
         colorFilter,
         tagFilter,
@@ -340,17 +355,17 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
         commentOnly,
         finalOnly,
       });
-      if (!workspace || filters.tab !== "team") return query;
+      if (!workspace || shown.tab !== "team") return query;
       // 저장된 수동 W 필터는 다른 탭을 위해 보존하고 공유 조회에만 자동 범위를 입힌다.
       return { ...query, workspace_ids: undefined, workspace_id: undefined,
         ...(sharedMode === "auto" ? sharedWorkspaceFilter(workspace) : {}) };
     },
-    [filters, typeFilter, colorFilter, tagFilter, filterAutoTags, sharedOnly, reviewFilter, commentOnly, finalOnly,
+    [shown, typeFilter, colorFilter, tagFilter, filterAutoTags, sharedOnly, reviewFilter, commentOnly, finalOnly,
       workspace, sharedMode],
   );
   // 자동 따라가기는 기존 수동 선택을 보존하고, 수동 필터 조작만 선택/비동기 응답을 무효화한다.
   const selectionResetKey = workspaceScopeKey ? JSON.stringify([manualRevision, workspaceScopeKey]) : String(manualRevision);
-  const workspaceFollow = workspace && filters.tab === "team" ? {
+  const workspaceFollow = workspace && shown.tab === "team" ? {
     mode: sharedMode,
     label: workspace.scope === "personal" ? t("개인") : workspace.name || t("확인 중"),
     pending: !workspaceQueryReady,
@@ -381,7 +396,7 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
   });
 
   return {
-    filters, setFilters, patch,
+    filters: shown, storedTab: filters.tab, setFilters, patch, // storedTab = 저장된 탭 — 뒤로가기 기록(useAppNavigation)이 쓴다
     generationScope, followLocation, manualRevision,
     typeFilter, setTypeFilter,
     scale, setScale,

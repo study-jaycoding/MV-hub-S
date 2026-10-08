@@ -104,6 +104,7 @@ it("실패하면 같은 문맥의 마지막 성공 결과를 남기되 '끝까�
   expect(list.state).toBe("error");
   expect(list.error).toContain("502");
   expect(list.complete).toBe(false); // 여기 없는 클립을 '미디어 없음'으로 판정하면 안 된다
+  expect(list.known).toBe(true); // 한 번 끝까지 받은 문맥 — 남은 결과로 '빈 폴더'는 가려도 된다
   expect(list.gens.map((gen) => gen.id)).toEqual(["a1", "a2"]);
 });
 
@@ -115,6 +116,20 @@ it("2,000행에서 멈추고 '일부만'으로 알린다", async () => {
   expect(mocks.list).toHaveBeenCalledTimes(10);
   expect(list.state).toBe("capped");
   expect(list.complete).toBe(false);
+  expect(list.known).toBe(false); // 뒤가 잘렸다 — 여기 없다고 '빈 폴더'라 하지 않는다
+});
+
+it("끝까지 받았던 문맥도 다음 조회가 잘리면 '빈 폴더' 판정을 멈춘다 — 든 목록이 더는 온전하지 않다", async () => {
+  mocks.list.mockResolvedValueOnce([row("a1")]);
+  render(<ListHarness seq="e070" />);
+  await flush();
+  expect(list.known).toBe(true);
+  mocks.list.mockImplementation(() => Promise.resolve(page("p", true))); // 그사이 공유물이 2,000행을 넘겼다
+  act(() => list.reload());
+  await flush();
+  await flush();
+  expect(list.state).toBe("capped");
+  expect(list.known).toBe(false);
 });
 
 it("워크스페이스를 모르면 묻지 않는다 — '전체 보기'면 워크스페이스 조건 없이 묻는다", async () => {
@@ -181,6 +196,7 @@ it("다시 받는 동안에는 '끝까지 받음'이 아니다 — 그 사이 �
   await flush();
   expect(list.state).toBe("loading");
   expect(list.complete).toBe(false);
+  expect(list.known).toBe(true); // 다시 받는 동안에도 '빈 폴더' 판정은 출렁이지 않는다
   expect(list.gens.map((gen) => gen.id)).toEqual(["a1"]); // 마지막 성공 결과는 그대로 보인다
   slow.resolve([row("a1"), row("a2")]);
   await flush();

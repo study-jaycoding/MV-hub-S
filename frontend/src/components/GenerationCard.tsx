@@ -5,7 +5,7 @@
 // 그리드 모드 = 세로 카드, 리스트 모드 = 좌측 큰 썸네일 + 우측 상세 패널.
 import { memo, useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { Generation, InfoTarget, PreviewTarget } from "../types";
+import type { CardMark, Generation, InfoTarget, PreviewTarget } from "../types";
 import { DRAG_TYPES } from "../lib/dragTypes";
 import { APP_EVENTS, dispatchAppEvent } from "../lib/appEvents";
 import { ackTeamFresh } from "../lib/teamSeen";
@@ -89,6 +89,7 @@ interface Props {
   // 폴더 이름표를 눌렀을 때 — 그 폴더의 생성물 창을 연다. 안 주면 이름표를 그리지 않는다(리스트는 글자만).
   onOpenFolder?: (g: Generation) => void;
   openedHere?: boolean; // 이 카드의 폴더 이름표로 폴더 창을 열었다 — 창 안에서 '방금 누른 카드' 표시
+  mark?: CardMark; // 편집 탭이 연 폴더 창 — 타임라인에 넣은 카드의 표(같은 자리)
   showFolder?: boolean; // onOpenFolder 가 없어도 폴더 표를 '표시만' 한다(캔버스 '생성 결과' 창 — 누르기 없음)
   dimmed?: boolean; // 흐리게(캔버스에서 고른 폴더 밖). 호버하면 다시 선명
 }
@@ -103,6 +104,7 @@ function GenerationCardImpl({
   stateGlow = false,
   onOpenFolder,
   openedHere = false,
+  mark,
   showFolder = false,
   dimmed = false,
   fill = true,
@@ -355,7 +357,11 @@ function GenerationCardImpl({
   );
   // 폴더 창을 연 그 카드 — '방금 누른 카드'(Jay 2026-10-07). 본 목록에서 폴더 이름표가 있던 자리(아래 변 가운데)에 같은 모양으로
   // 붙는다. 창 안 격자에는 폴더 이름표가 없어 둘이 같이 뜨지 않는다. 테두리는 건드리지 않는다 — 테두리는 상태색(공유·보류·최종·선택)의 자리다.
-  const hereMark = !isList && openedHere ? <span className="card-here">방금 누른 카드</span> : null;
+  //  편집 탭이 연 창에서는 같은 자리에 타임라인 표가 온다(mark) — 지금 뷰어에 보이는 것만 라임, 나머지는 이름표의 옅은 모양.
+  const hereMark = isList ? null
+    : openedHere ? <span className="card-here">방금 누른 카드</span>
+      : mark ? <span className={mark.lead ? "card-here" : "card-folder static"}><span>{mark.label}</span></span>
+        : null;
   const bottomLead = folderChip ?? hereMark;
 
   const thumbBox = (
@@ -645,6 +651,8 @@ function GenerationCardImpl({
           <div className="cd-model">
             <ModelIcon />
             {modelName(gen.model)}
+            {/* 목록 보기에는 카드 아래 변의 표가 없다 — 편집 탭의 표(mark)는 모델 이름 옆에 글로 적는다 */}
+            {mark && <span className={"cd-mark" + (mark.lead ? " lead" : "")}>{mark.label}</span>}
           </div>
           {promptHasInlineRefs ? (
             // 프롬프트의 @소스 자리를 실제 레퍼런스 썸네일로 인라인 표시(어떤 이미지가 어디 들어갔는지)

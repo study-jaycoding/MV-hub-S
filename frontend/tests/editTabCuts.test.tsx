@@ -55,7 +55,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 const mount = (keysActive = true) => act(() => root.render(
-  <EditTab authKey="auth" authReady workspace={{ scope: "team", id: "w1", name: "W" }} keysActive={keysActive} flash={() => {}} />,
+  <EditTab authKey="auth" authReady workspace={{ scope: "team", id: "w1", name: "W" }} keysActive={keysActive} flash={() => {}}
+    onOpenCutFolder={() => {}} reloadSignal={0} />,
 ));
 
 it("다른 프로젝트를 펼쳐 둘러봐도 지금 시퀀스의 컷은 그대로다", () => {

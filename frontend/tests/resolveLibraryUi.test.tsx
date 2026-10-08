@@ -159,6 +159,22 @@ it("폴더 창을 연 카드에만 '방금 누른 카드' 표시를 붙인다", 
   expect(renderGrid(gridProps()).querySelector(".card-here")).toBeNull();
 });
 
+// 편집 탭이 연 폴더 창 — 타임라인에 넣은 카드의 표("V1 - 선택 카드"). 같은 자리에, 지금 보이는 것(lead)만 라임으로.
+it("편집 탭의 표는 그 카드에만 붙는다 — 격자는 아래 변의 표, 목록은 모델 이름 옆의 글", () => {
+  const cardMarks = { g1: { label: "V1 - 선택 카드", lead: false }, g2: { label: "V2 - 선택 카드", lead: true } };
+  const grid = renderGrid(gridProps({ cardMarks }));
+  const cell = (id: string) => grid.querySelector<HTMLElement>(`[data-id="${id}"]`)!;
+  expect(cell("g2").querySelector(".card-bottom > .card-here")?.textContent).toBe("V2 - 선택 카드");
+  expect(cell("g1").querySelector(".card-bottom > .card-folder.static")?.textContent).toBe("V1 - 선택 카드");
+  expect(cell("g1").querySelector(".card-here")).toBeNull();
+  expect(grid.querySelectorAll(".card-here, .card-folder.static")).toHaveLength(2); // 다른 카드에는 없다
+
+  const list = renderGrid(gridProps({ cardMarks, layout: "list" }));
+  expect(list.querySelector('[data-id="g2"] .cd-mark.lead')?.textContent).toBe("V2 - 선택 카드");
+  expect(list.querySelector('[data-id="g1"] .cd-mark:not(.lead)')?.textContent).toBe("V1 - 선택 카드");
+  expect(list.querySelectorAll(".cd-mark")).toHaveLength(2);
+});
+
 it("대상이 나중에 도착하면 이동하고 빠르게 바뀐 이전 요청은 취소한다", () => {
   const props = gridProps({ generations: [], resolveScrollRequest: { generationId: "g2", nonce: 1 } });
   renderGrid(props);

@@ -1,15 +1,11 @@
 // 편집 탭 오른쪽 — 재생헤드가 있는 컷 폴더에 공유된 생성물. 누르면 그 컷 자리에 넣고, 다시 누르면 뺀다.
+//  카드는 라이브러리 카드와 같은 모양이다(EditCard). 같은 목록을 크게 펼친 것이 컷 창(EditCutWindow).
 import type { Generation } from "../../types";
-import { generationListMeta } from "../../lib/generationDisplay";
 import { useT } from "../../lib/i18n";
-import { thumbOf } from "../../lib/media";
 import type { EditListState } from "../../lib/useEditSequence";
+import { EditCard, type PoolItem } from "./EditCard";
 
-export interface PoolItem {
-  gen: Generation;
-  track: number | null; // 타임라인에 넣은 트랙(안 넣었으면 null)
-  showing: boolean; // 지금 뷰어에 보이는 것
-}
+export type { PoolItem };
 
 export function EditPool({
   title,
@@ -66,33 +62,10 @@ export function EditPool({
       )}
       {!notice && (
         <div className="ed-pgrid">
-          {items.map(({ gen, track, showing }) => {
-            const asset = gen.assets[0];
-            const thumb = thumbOf(gen, 512);
-            const seconds = asset.type === "video" ? generationListMeta(gen.params ?? {}).duration ?? "" : "";
-            return (
-              <button
-                type="button"
-                key={gen.id}
-                className={"ed-pcard" + (track !== null ? " ed-picked" : "")}
-                onClick={() => onToggle(gen)}
-                title={track !== null ? t("누르면 타임라인에서 뺍니다") : t("누르면 이 컷 자리에 넣습니다")}
-              >
-                <span className="ed-pimg" style={thumb ? { backgroundImage: `url("${thumb}")` } : undefined}>
-                  {gen.is_final && <span className="ed-badge ed-final" title={t("최종")}>★</span>}
-                  {gen.is_held && !gen.is_final && <span className="ed-badge ed-held" title={t("보류")}>H</span>}
-                  {asset.type === "image" && <span className="ed-badge ed-kind">{t("이미지")}</span>}
-                  {track !== null && (
-                    <span className="ed-in">{showing ? t("V{track} · 지금 보이는 것").replace("{track}", String(track)) : `V${track}`}</span>
-                  )}
-                </span>
-                <span className="ed-pmeta">
-                  <span>{gen.creator_name || gen.worker_name || ""}</span>
-                  <span>{seconds}</span>
-                </span>
-              </button>
-            );
-          })}
+          {items.map((item) => (
+            <EditCard key={item.gen.id} item={item} onClick={() => onToggle(item.gen)}
+              title={item.track !== null ? t("누르면 타임라인에서 뺍니다") : t("누르면 이 컷 자리에 넣습니다")} />
+          ))}
         </div>
       )}
       {!notice && listState === "ok" && !items.length && (
@@ -100,7 +73,8 @@ export function EditPool({
       )}
       <div className="ed-hint">
         {t("고르면 이 컷 자리에 들어갑니다.")}<br />
-        {t("여러 개를 고르면 위로 쌓이고, 맨 위에 있는 것이 보입니다.")}
+        {t("여러 개를 고르면 위로 쌓이고, 맨 위에 있는 것이 보입니다.")}<br />
+        {t("타임라인의 컷을 더블클릭하면 크게 펼쳐 봅니다.")}
       </div>
     </section>
   );

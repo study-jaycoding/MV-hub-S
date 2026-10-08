@@ -469,6 +469,13 @@ export type InfoTarget =
   | { kind: "generation"; gen: Generation; x: number; y: number }
   | { kind: "file"; project: string; node: AssetNode; meta?: AssetMeta; x: number; y: number };
 
+// 카드 아래 변 가운데에 붙이는 표(폴더 창의 '방금 누른 카드' 자리) — 편집 탭이 타임라인에 넣은 카드를 알린다("V1 - 선택 카드").
+// lead = 지금 뷰어에 보이는 것(라임). 나머지는 옅게.
+export interface CardMark {
+  label: string;
+  lead: boolean;
+}
+
 // 클릭 시 떠오르는 미디어 미리보기(이미지 표시 / 영상 재생)
 export interface PreviewItem {
   url: string;

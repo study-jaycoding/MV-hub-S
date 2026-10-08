@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildLayout,
   clipKey,
+  cutIsOff,
   cutOf,
   cutPaths,
   DEFAULT_SEC,
@@ -24,6 +25,7 @@ import {
   timecode,
   timeOf,
   toggleClipsOff,
+  toggleCutOff,
   toggleTrack,
   validSeconds,
   visibleClip,
@@ -237,6 +239,40 @@ describe("저장된 문서 읽기", () => {
       { v: 1, clips: [], muted: "yes" },
     ];
     for (const value of bad) expect(parseEditDoc(value)).toBeNull();
+  });
+});
+
+describe("컷(폴더) 비활성", () => {
+  const C1 = `${SEQ}/c1`;
+  it("문서에 적은 켬·끔이 기본값보다 앞서고, 안 적었으면 기본값을 따른다", () => {
+    expect(cutIsOff(doc([]), C1, false)).toBe(false);
+    expect(cutIsOff(doc([]), C1, true)).toBe(true); // 빈 폴더
+    expect(cutIsOff(doc([], { cutsOn: [C1] }), C1, true)).toBe(false);
+    expect(cutIsOff(doc([], { cutsOff: [C1] }), C1, false)).toBe(true);
+  });
+
+  it("뒤집을 때 기본값과 다를 때만 적는다 — 기본값과 같아지면 적어 둔 것을 지운다", () => {
+    const off = toggleCutOff(doc([clip("c1", "g", 1)], { muted: true }), C1, false); // 켜져 있던 폴더를 끈다
+    expect(off).toMatchObject({ cutsOff: [C1], muted: true });
+    expect(off.clips).toHaveLength(1); // 넣은 클립은 그대로 남는다
+    expect(toggleCutOff(off, C1, false).cutsOff).toBeUndefined(); // 다시 켜면 흔적이 없다
+
+    const on = toggleCutOff(doc([]), C1, true); // 빈 폴더를 켠다
+    expect(on.cutsOn).toEqual([C1]);
+    expect(toggleCutOff(on, C1, true).cutsOn).toBeUndefined();
+
+    // 끈 뒤에 그 폴더가 비게 됐다(기본값도 비활성) — 켜려면 '켬'으로 옮겨 적는다
+    expect(toggleCutOff(doc([], { cutsOff: [C1] }), C1, true)).toMatchObject({ cutsOn: [C1] });
+    expect(toggleCutOff(doc([], { cutsOff: [C1] }), C1, true).cutsOff).toBeUndefined();
+  });
+
+  it("저장된 문서에서 읽는다 — 빈 목록은 남기지 않고, 모양이 틀리면 문서 전체를 거부한다", () => {
+    expect(parseEditDoc({ v: 1, clips: [], cutsOn: [C1, C1], cutsOff: [`${SEQ}/c2`], hideOff: true }))
+      .toEqual({ ...emptyEditDoc(), cutsOn: [C1], cutsOff: [`${SEQ}/c2`], hideOff: true });
+    expect(parseEditDoc({ v: 1, clips: [], cutsOn: [], hideOff: false })).toEqual(emptyEditDoc());
+    for (const bad of [{ cutsOn: [C1], cutsOff: [C1] }, { cutsOff: ["/abs"] }, { cutsOn: [1] }, { cutsOff: "x" }, { hideOff: 1 }]) {
+      expect(parseEditDoc({ v: 1, clips: [], ...bad })).toBeNull();
+    }
   });
 });
 

@@ -69,27 +69,18 @@
   flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-content: start; padding: 14px 16px;
 }
-.ed-pcard { display: block; padding: 0; border: 0; border-radius: 0; background: transparent; text-align: left; }
-.ed-pcard:active { transform: none; }
-.ed-pimg {
-  display: block; position: relative; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden;
-  border: 1px solid var(--border); background: #000 center / cover no-repeat;
+/* 생성물 카드(EditCard) — 모양은 라이브러리 카드의 클래스(generations.css 의 .card·.card-thumb·.card-sf·.creator-badge·
+   .play-badge·.card-bottom·.card-here)를 그대로 쓴다. 여기에는 단추 껍데기와 편집 탭에서만 다른 점만 둔다.
+   넣은 카드는 .card.selected(굵은 상태색 테두리), 지금 보이는 카드는 아래 변의 라임 표(.card-here). */
+.ed-card {
+  display: block; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 14px;
+  background: transparent; text-align: left; font: inherit; color: inherit;
 }
-.ed-pcard:hover .ed-pimg { border-color: var(--border2); }
-.ed-pcard.ed-picked .ed-pimg { border: 2px solid var(--accent); }
-.ed-badge {
-  position: absolute; top: 6px; left: 6px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 6px;
-  font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center;
-}
-.ed-final { background: #e8b62c; color: #2a1f00; }
-.ed-held { background: #ef7d8c; color: #2a0409; }
-.ed-kind { left: auto; right: 6px; background: rgba(8, 9, 12, 0.66); color: #e6e8ec; font-weight: 600; }
-.ed-in {
-  position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 0; text-align: center;
-  font-size: 11px; font-weight: 800; background: var(--accent); color: var(--accent-ink);
-}
-.ed-pmeta { display: flex; justify-content: space-between; gap: 8px; padding: 5px 2px 0; font-size: 11.5px; color: var(--muted); }
-.ed-pmeta span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-card:active { transform: none; }
+.ed-card .card { height: auto; }
+.ed-card .card-thumb { flex: 0 0 auto; aspect-ratio: 1; } /* 라이브러리 격자와 같은 정사각 */
+.ed-card .card-sf { pointer-events: none; } /* 표시만 — 누르면 카드가 받는다 */
+.ed-card .card-thumb:hover .play-badge { opacity: 0.85; } /* 여기서는 호버 재생이 없다 — ▶ 를 숨기지 않는다 */
 .ed-hint {
   flex: none; margin: 10px 16px 14px; padding: 9px 12px; border-radius: 9px; font-size: 12px; line-height: 1.6;
   color: var(--muted); background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border);
@@ -113,6 +104,14 @@
   width: 24px; height: 24px; padding: 0; border-radius: 6px; font-size: 13px; line-height: 1;
   display: flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.05);
 }
+/* 비활성화 폴더 숨기기 — 켜면 라임. 옆 숫자는 비활성 폴더 수. */
+.ed-toggle {
+  display: flex; align-items: center; gap: 6px; padding: 3px 10px; margin-right: 6px; border-radius: 999px;
+  font-size: 11.5px; line-height: 1.4; color: var(--muted); background: transparent; border: 1px solid var(--border2);
+}
+.ed-toggle:hover { color: var(--text); }
+.ed-toggle.ed-on { color: var(--accent); border-color: rgba(var(--accent-rgb), 0.55); background: rgba(var(--accent-rgb), 0.1); }
+.ed-toggle i { font-style: normal; font-variant-numeric: tabular-nums; opacity: 0.75; }
 
 /* 타임라인 — 왼쪽 트랙 머리 + 오른쪽 가로 스크롤. 줄 높이는 머리와 줄이 같아야 한다. */
 .ed-tl { flex: none; max-height: 52%; display: flex; overflow-y: auto; background: #0b0c0e; user-select: none; }
@@ -161,6 +160,8 @@
 .ed-cutcell:active { transform: none; }
 .ed-cutcell.ed-nopick { color: var(--muted2); }
 .ed-cutcell.ed-cur { color: var(--accent); font-weight: 800; }
+/* 비활성 컷(폴더) — 이름에 줄을 긋고 흐리게. 재생헤드가 있으면 라임은 남되 줄은 그대로다. */
+.ed-cutcell.ed-cutoff { text-decoration: line-through; opacity: 0.55; }
 
 .ed-clip, .ed-slot { position: absolute; top: 3px; height: 52px; box-sizing: border-box; border-radius: 5px; overflow: hidden; display: flex; }
 .ed-clip { border: 1px solid rgba(255, 255, 255, 0.2); background: #1a1c20; cursor: pointer; touch-action: none; }
@@ -181,6 +182,7 @@
   font-size: 11px; color: var(--muted2);
   background: repeating-linear-gradient(135deg, transparent 0 7px, rgba(255, 255, 255, 0.025) 7px 14px);
 }
+.ed-slot.ed-slot-off { border-style: dotted; opacity: 0.5; }
 .ed-aud { position: absolute; top: 5px; height: 36px; box-sizing: border-box; border-radius: 5px; background: #1f5a3a; border: 1px solid #2f7d53; pointer-events: none; }
 .ed-phead { position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; background: #ff4d4f; z-index: 5; pointer-events: none; will-change: transform; }
 .ed-phead::before { content: ""; position: absolute; left: -6px; top: 0; border: 7px solid transparent; border-top: 10px solid #ff4d4f; }

@@ -21,7 +21,7 @@ import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { useOutsideDragSelect } from "../lib/useOutsideDragSelect";
 import { matchShortcut } from "../lib/shortcuts";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
-import type { Generation, InfoTarget, PreviewTarget } from "../types";
+import type { CardMark, Generation, InfoTarget, PreviewTarget } from "../types";
 import type { GradeMode } from "../lib/gradeStep";
 import type { ReviewAction } from "../lib/generationReview";
 import { GenerationCard } from "./GenerationCard";
@@ -79,6 +79,7 @@ interface Props {
   onShowHistory?: (g: Generation) => void; // 히스토리 뱃지 → 가계 패널
   onOpenFolder?: (g: Generation) => void; // 카드의 폴더 이름표 → 그 폴더의 생성물 창(안 주면 이름표 없음)
   openedFromId?: string | null; // 폴더 창을 연 카드 — 그 카드에 '방금 누른 카드' 표시
+  cardMarks?: Readonly<Record<string, CardMark>>; // 편집 탭이 연 폴더 창 — 타임라인에 넣은 카드의 표(같은 자리)
   // ── 캔버스 '생성 결과' 창이 쓰는 선택 기능(안 주면 종전 그대로) ──
   cellHeader?: (g: Generation) => React.ReactNode; // 카드 위(셀 안)에 그리는 칸 — '대표' 단추
   lastViewedId?: string | null; // 주면(null 포함) '마지막으로 본' 표시를 이 값으로 — 라이브러리 칸 대신 호출자의 칸
@@ -325,6 +326,7 @@ export function ThumbnailGrid(props: Props) {
       onShowHistory={props.onShowHistory ? cb.onShowHistory : undefined}
       onOpenFolder={props.onOpenFolder ? cb.onOpenFolder : undefined}
       openedHere={generation.id === props.openedFromId}
+      mark={props.cardMarks?.[generation.id]}
       showFolder={props.showFolder}
       dimmed={props.dimIds?.has(generation.id)}
     />

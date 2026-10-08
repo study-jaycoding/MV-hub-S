@@ -28,9 +28,13 @@ export interface EditList {
   gens: Generation[]; // 쓸 수 있는 것만(완료 + 영상/이미지)
   error: string | null;
   complete: boolean; // 끝까지 받았다 — 여기 없는 클립은 '없음'으로 판정해도 된다
+  // 지금 든 gens 가 이 문맥을 끝까지 받은 결과다 — gens 로 '빈 폴더'를 가려도 된다. 다시 받는 동안·실패한 뒤에도 남는다
+  // (그동안 gens 는 마지막으로 끝까지 받은 것 그대로다. complete 와 달리 내려가지 않아, 빈 폴더 숨기기가 새로 고칠 때마다
+  //  출렁이지 않는다). 잘린 결과(capped)로 바뀌면 거짓이다.
+  known: boolean;
 }
 
-const EMPTY_LIST: EditList = { state: "idle", gens: [], error: null, complete: false };
+const EMPTY_LIST: EditList = { state: "idle", gens: [], error: null, complete: false, known: false };
 
 export function useEditGenerations({
   authKey,
@@ -83,12 +87,14 @@ export function useEditGenerations({
         }
         cursor = { ts: last.sort_ts ?? 0, id: last.id };
       }
-      setHeld({ ctx, state: capped ? "capped" : "ok", gens, error: null, complete: !capped });
+      // known 은 **지금 든 gens** 가 온전한가다 — 잘린 결과로 바꿔 넣었으면 전에 끝까지 받았더라도 거짓이다
+      //  (뒤로 밀려 빠진 카드만 있는 폴더를 '빈 폴더'로 숨기게 된다 — Codex 코드 리뷰).
+      setHeld({ ctx, state: capped ? "capped" : "ok", gens, error: null, complete: !capped, known: !capped });
     })().catch((error) => {
       if (!alive()) return;
       setHeld((prev) => ({
         ctx, state: "error", error: errorText(error),
-        gens: prev.ctx === ctx ? prev.gens : [], complete: false,
+        gens: prev.ctx === ctx ? prev.gens : [], complete: false, known: prev.ctx === ctx && prev.known,
       }));
     });
     return () => {
@@ -97,7 +103,7 @@ export function useEditGenerations({
   }, [ctx, ready, projectId, seq, allWorkspaces, nonce]);
 
   const list = !ready ? EMPTY_LIST : held.ctx === ctx ? held : { ...EMPTY_LIST, state: "loading" as const };
-  return { state: list.state, gens: list.gens, error: list.error, complete: list.complete, reload };
+  return { state: list.state, gens: list.gens, error: list.error, complete: list.complete, known: list.known, reload };
 }
 
 // ── 프로젝트·폴더 트리 ──────────────────────────────────────────────────────────────────────────

@@ -25,6 +25,10 @@ export interface EditDoc {
   tracksOff: number[];
   tracksLocked: number[];
   muted?: boolean;
+  // 컷(폴더) 비활성 — 기본값(빈 폴더·다른 탭에서 비활성으로 둔 폴더)과 **다르게 정한 것만** 적는다(아래 cutIsOff).
+  cutsOn?: string[];
+  cutsOff?: string[];
+  hideOff?: boolean; // 비활성 컷을 타임라인에서 숨긴다
 }
 
 export function emptyEditDoc(): EditDoc {
@@ -78,6 +82,14 @@ export function parseEditDoc(value: unknown): EditDoc | null {
   const tracksLocked = tracks(raw.tracksLocked);
   if (!tracksOff || !tracksLocked) return null;
   if (raw.muted !== undefined && typeof raw.muted !== "boolean") return null;
+  if (raw.hideOff !== undefined && typeof raw.hideOff !== "boolean") return null;
+  const paths = (list: unknown): string[] | null =>
+    list === undefined ? []
+      : Array.isArray(list) && list.every((item) => typeof item === "string" && !!item && normalizeFolderPath(item) === item)
+        ? [...new Set(list as string[])] : null;
+  const cutsOn = paths(raw.cutsOn);
+  const cutsOff = paths(raw.cutsOff);
+  if (!cutsOn || !cutsOff || cutsOn.some((cut) => cutsOff.includes(cut))) return null; // 켬·끔에 같이 있을 수 없다
   const clips: EditClip[] = [];
   const seen = new Set<string>();
   for (const item of raw.clips as unknown[]) {
@@ -101,7 +113,33 @@ export function parseEditDoc(value: unknown): EditDoc | null {
       ...(c.kind ? { kind: c.kind as "video" | "image" } : {}),
     });
   }
-  return { v: 1, clips, tracksOff, tracksLocked, ...(raw.muted ? { muted: true } : {}) };
+  return {
+    v: 1, clips, tracksOff, tracksLocked, ...(raw.muted ? { muted: true } : {}),
+    ...(cutsOn.length ? { cutsOn } : {}), ...(cutsOff.length ? { cutsOff } : {}), ...(raw.hideOff ? { hideOff: true } : {}),
+  };
+}
+
+// ── 컷(폴더) 비활성 ─────────────────────────────────────────────────────────────────────────────
+// autoOff = 기본값. 호출부가 정한다(빈 폴더·다른 탭에서 비활성으로 둔 폴더). 문서의 켬/끔이 기본값보다 앞선다.
+export function cutIsOff(doc: EditDoc, cut: string, autoOff: boolean): boolean {
+  if (doc.cutsOff?.includes(cut)) return true;
+  if (doc.cutsOn?.includes(cut)) return false;
+  return autoOff;
+}
+
+// 지금 상태를 뒤집는다. 기본값과 같아지면 적어 둔 것을 지운다 — 나중에 기본값이 바뀌면(공유물이 생김) 그것을 따른다.
+export function toggleCutOff(doc: EditDoc, cut: string, autoOff: boolean): EditDoc {
+  const turnOn = cutIsOff(doc, cut, autoOff);
+  const cutsOn = (doc.cutsOn ?? []).filter((item) => item !== cut);
+  const cutsOff = (doc.cutsOff ?? []).filter((item) => item !== cut);
+  if (turnOn && autoOff) cutsOn.push(cut);
+  if (!turnOn && !autoOff) cutsOff.push(cut);
+  const next: EditDoc = { ...doc };
+  delete next.cutsOn;
+  delete next.cutsOff;
+  if (cutsOn.length) next.cutsOn = cutsOn;
+  if (cutsOff.length) next.cutsOff = cutsOff;
+  return next;
 }
 
 // ── 배치 ────────────────────────────────────────────────────────────────────────────────────────

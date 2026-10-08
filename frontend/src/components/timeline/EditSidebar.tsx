@@ -21,6 +21,7 @@ export function EditSidebar({
   tree,
   seq,
   cut,
+  offCuts,
   onPickFolder,
   onReload,
   onGrabFocus,
@@ -32,6 +33,7 @@ export function EditSidebar({
   tree: EditTree;
   seq: string; // 열린 프로젝트에서 고른 시퀀스 폴더(없으면 "")
   cut: string; // 재생헤드가 있는 컷(없으면 "")
+  offCuts: ReadonlySet<string>; // 비활성 컷(폴더) — 다른 탭의 사이드바처럼 회색으로
   onPickFolder: (path: string) => void;
   onReload: () => void;
   onGrabFocus: () => void; // 여기를 누르면 편집 화면이 키를 받게 초점을 옮긴다
@@ -96,6 +98,7 @@ export function EditSidebar({
                               })
                             }
                             onSelect={onPickFolder}
+                            isDisabled={(path) => offCuts.has(path)}
                             className="sidebar-folder-tree"
                           />
                         ) : (

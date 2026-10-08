@@ -133,6 +133,7 @@ import { GradeStepModal } from "./components/GradeStepModal";
 import { useAskPrompt } from "./lib/prompt";
 import { makeStore } from "./lib/storage";
 import type {
+  CardMark,
   Generation,
   History,
   InfoTarget,
@@ -140,6 +141,7 @@ import type {
   PreviewTarget,
   WorkspaceContext,
 } from "./types";
+import type { EditCutFolder } from "./components/timeline/EditTab";
 import { api } from "./api";
 import { buildSpotlightCreateBody } from "./lib/spotlightSubmit";
 import { resolveAutoAspectRatio } from "./lib/aspectAuto";
@@ -155,7 +157,7 @@ import { normalizeSceneWorkspace, sceneMatchesWorkspace, type SceneMove, type Sc
 import { modelAllowed } from "./lib/modelPolicyCore";
 import { STORAGE_KEYS } from "./lib/storageKeys";
 import { useT } from "./lib/i18n";
-import { hasWorkspaceFilter } from "./lib/libraryWorkspaceScope";
+import { hasWorkspaceFilter, workspaceViewKey } from "./lib/libraryWorkspaceScope";
 
 // 마지막으로 보던 라이브러리 상태 영속화(탭·서브탭·필터·크기·레이아웃 등)
 const LS = makeStore("ch.lib.");
@@ -173,9 +175,19 @@ export default function App() {
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>(
     () => loadStoredWorkspaceContext() ?? UNKNOWN_WORKSPACE,
   );
+  // 편집 탭(docs/EDIT_TAB.md) — filters.tab 의 값이 아니라 본문만 바꾸는 별도 '보기'다. 밑의 탭 상태·목록 훅은 그대로 돈다.
+  //  떠 있는 동안: 캔버스 폴더 창 닫힘(folderPeek) · 프롬프트 단축키 쉼 · 다빈치 따라가기 쉼. 라이브러리 단축키는 편집 탭이 연
+  //  폴더 창이 떠 있을 때만 듣는다(아래 teamPeek).
+  const [editOpen, setEditOpen] = useState(false);
+  const editOpenRef = useRef(editOpen);
+  editOpenRef.current = editOpen;
+  // 편집 탭이 연 '폴더 보기' 창(컷 더블클릭, Jay 2026-10-08) — 공유 & 리뷰의 폴더 창을 그대로 쓴다. 그 창은 하나뿐인 목록
+  //  조회를 빌려 그리고 카드 동작이 탭에 묶여 있어, 떠 있는 동안 목록·카드·액션만 공유 & 리뷰로 본다(useLibraryFilters 의
+  //  teamPeek). 편집을 떠나면 그 렌더부터 꺼진 것으로 본다(&& editOpen) — 떠난 탭이 한순간 공유 & 리뷰로 그려지지 않게.
+  const [teamPeek, setTeamPeek] = useState(false);
   // 라이브러리 필터/뷰 상태 + genQuery/selectionResetKey 파생 + LS 저장(useLibraryPersistence)은 useLibraryFilters 훅으로 추출.
   const {
-    filters, setFilters, patch,
+    filters, storedTab, setFilters, patch,
     typeFilter, setTypeFilter, scale, setScale, fill, setFill, layout, setLayout,
     showFilters, setShowFilters, groupByDate, setGroupByDate, colorFilter, setColorFilter,
     sharedOnly, setSharedOnly, reviewFilter, setReviewFilter, tagFilter, setTagFilter, tagPanelOpen, setTagPanelOpen,
@@ -184,7 +196,7 @@ export default function App() {
     generationScope, filterAutoTags, followLocation, toggleAutoTag, manualRevision,
     workspaceChips, setWorkspaceChips,
     genQuery, selectionResetKey, workspaceFollow, workspaceScopeKey, workspaceQueryReady,
-  } = useLibraryFilters(LS, workspaceContext);
+  } = useLibraryFilters(LS, workspaceContext, teamPeek && editOpen);
   // 공간 변경은 **동기**다 — 네트워크를 타지 않으므로 늦게 온 응답이 선택을 덮을 일이 없다.
   //  (예전엔 허브에 `workspace set` 을 보내느라 변경 순번으로 옛 응답을 걸러야 했다. 2026-09-11 에
   //   허브가 CLI 전역을 안 건드리게 되면서 그 장치가 통째로 필요 없어졌다.)
@@ -216,11 +228,6 @@ export default function App() {
   const [videoCompare, setVideoCompare] = useState<CompareMedia[] | null>(null);
   const [sceneCompareMedia, setSceneCompareMedia] = useState<CompareMedia[] | null>(null);
   const { flash, toast } = useAppToast();
-  // 편집 탭(docs/EDIT_TAB.md) — filters.tab 의 값이 아니라 본문만 바꾸는 별도 '보기'다. 밑의 탭 상태·목록 훅은 그대로 돈다.
-  //  떠 있는 동안: 폴더 창 닫힘(listPeekCtx·folderPeek) · 라이브러리/프롬프트 단축키 쉼 · 다빈치 따라가기 쉼.
-  const [editOpen, setEditOpen] = useState(false);
-  const editOpenRef = useRef(editOpen);
-  editOpenRef.current = editOpen;
   // 앱 창 X 닫기는 확인 없이 조용히 닫힌다(Jay 결정 — 크롬 기본 확인창 디자인을 못 바꾸므로 제거).
   // 확인이 필요한 종료는 Host 콘솔의 '앱 종료' 버튼(우리 디자인 확인창) 경로가 담당한다.
   // Canvas 씬(빈 캔버스) 상태·CRUD 는 useSceneCoordination 훅으로 추출. S1: 프로젝트 무관 전역(projectId=null).
@@ -388,9 +395,12 @@ export default function App() {
   //  처음부터 다시 받는다. 사이드바 필터(filters)는 건드리지 않는다 — patch() 는 다음 생성 위치까지 바꾼다.
   //  ctx = 연 시점의 문맥. 탭·보던 위치·휴지통 보기·계정·공간이 바뀌면 그 렌더부터 닫힌 것으로 본다(아래 listPeek).
   //  genId = 이름표를 누른 그 카드 — 창 안에서 '방금 누른 카드' 로 표시하고, 아래쪽에 있으면 보이게 내려가서 연다.
+  //  edit = 편집 탭이 연 창(위 teamPeek) — marks 는 타임라인에 넣은 카드의 표, genId 는 열릴 때 보이게 할 카드("" = 없음).
   const [folderWindow, setFolderWindow] = useState<{
     projectId: string | null; path: string; projectName: string; genId: string; ctx: string;
+    edit?: { marks: Record<string, CardMark> };
   } | null>(null);
+  const [editReloadSignal, setEditReloadSignal] = useState(0); // 편집 탭이 연 창이 닫혔다 — 편집 탭이 공유 목록을 다시 받는다
   // 회색(비활성) — 카드별 비활성화 표시(d 키, gen id 기준 로컬). grayOn(useLibraryFilters)=ON 이면 목록에서 제외.
   const disabledGen = useDisabledGenerations();
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(그 폴더·하위 생성물 자동 회색)
@@ -441,12 +451,22 @@ export default function App() {
   ]);
   const listPeekCtxRef = useRef(listPeekCtx);
   listPeekCtxRef.current = listPeekCtx;
-  const listPeek = folderWindow && folderWindow.ctx === listPeekCtx ? folderWindow : null;
+  // 편집 탭이 연 창의 문맥 = 계정·공간뿐이다. 탭·위치는 창이 스스로 정하고(공유 & 리뷰·그 컷 폴더), 창 안에서 W(자동/전체)를
+  //  바꾸는 것은 문맥 변경이 아니다 — 그것까지 넣으면 W 를 고르는 순간 창이 닫힌다(Codex 설계 검토).
+  const editPeekCtx = JSON.stringify([libraryAuthKey, workspaceViewKey(workspaceContext)]);
+  const editPeekCtxRef = useRef(editPeekCtx);
+  editPeekCtxRef.current = editPeekCtx;
+  const listPeek = folderWindow && (folderWindow.edit
+    ? editOpen && teamPeek && folderWindow.ctx === editPeekCtx
+    : folderWindow.ctx === listPeekCtx) ? folderWindow : null;
   const listPeekRef = useRef(listPeek);
   listPeekRef.current = listPeek;
+  // 라이브러리 단축키(r/g/b/d·격자 키)는 편집 탭에서 쉰다 — 편집 탭이 연 폴더 창이 떠 있을 때만 듣는다(그때 편집 키는 쉰다).
+  const libraryKeysOffRef = useRef(false);
+  libraryKeysOffRef.current = editOpen && !listPeek;
   const listGenQuery = useMemo(() => (listPeek ? folderPeekQuery(genQuery, listPeek) : genQuery), [genQuery, listPeek]);
   // 창의 격자는 열 때마다 새로 마운트되므로 nonce 는 고정값이면 된다(한 번 열 때 한 번만 이동).
-  const listPeekScroll = useMemo(() => (listPeek ? { generationId: listPeek.genId, nonce: 0 } : null), [listPeek]);
+  const listPeekScroll = useMemo(() => (listPeek?.genId ? { generationId: listPeek.genId, nonce: 0 } : null), [listPeek]);
   const {
     archivedCount,
     facets,
@@ -818,7 +838,7 @@ export default function App() {
     selectedRef,
     setGens,
     composeGridActiveRef: folderPeekOpenRef, // 캔버스 '폴더 보기' 창이 떠 있으면 compose 에서도 r/g/b/d
-    inactiveRef: editOpenRef,
+    inactiveRef: libraryKeysOffRef,
   });
   // 열고 닫을 때 목록을 먼저 비운다 — 조회가 끝날 때까지 본 목록 카드가 창에(닫을 때는 창의 카드가 뒤 목록 자리에) 비치지
   //  않게. 선택도 비운다: 창의 목록과 본 목록은 다른 카드라, 남기면 보이지 않는 카드에 일괄 작업이 걸린다.
@@ -838,25 +858,50 @@ export default function App() {
       projectId: g.project_id, path: g.folder_path, projectName: g.project_name ?? "", genId: g.id, ctx: listPeekCtxRef.current,
     });
   }, [filtersRef, beginComposeList, setSelected]);
+  // 편집 탭의 컷 더블클릭 — 같은 창을 그 컷 폴더로 연다(위 teamPeek). 한 핸들러 안에서 같이 바꿔, 다음 렌더가 곧바로
+  //  '공유 & 리뷰 · 그 폴더'의 조회가 된다(사이에 다른 조회가 끼지 않는다). 밑의 탭 목록은 숨어 있어 사본을 담지 않는다.
+  const openEditFolderWindow = useCallback((target: EditCutFolder) => {
+    if (!editOpenRef.current || listPeekRef.current) return;
+    beginComposeList();
+    setSelected(new Set());
+    setTeamPeek(true);
+    setFolderWindow({
+      projectId: target.projectId, path: target.path, projectName: target.projectName, genId: target.focusId ?? "",
+      ctx: editPeekCtxRef.current, edit: { marks: target.marks },
+    });
+  }, [beginComposeList, setSelected]);
   const closeFolderWindow = useCallback(() => {
     // 한 번만 닫는다 — 같은 Esc 가 창의 키 처리와 전역 Esc 훅에 둘 다 닿을 수 있다. 두 번 비우면 방금 시작한 본 목록 조회의
     //  응답을 버려 뒤 목록이 빈 채로 남는다.
     if (!listPeekRef.current) return;
+    const fromEdit = !!listPeekRef.current.edit;
     listPeekRef.current = null;
-    // 닫는 순간 초점이 창 안(또는 아무 데도 없음)이면, 본 목록이 조작 가능해진 뒤 격자로 돌려줄 뜻을 그 문맥과 함께 적어 둔다.
-    //  초점이 창 밖 다른 곳(크게 보기·프롬프트 등)에 있으면 적지 않는다 — 남의 초점은 건드리지 않는다.
-    const active = document.activeElement;
-    refocusGridRef.current =
-      !active || active === document.body || active.closest(".folder-peek") ? listPeekCtxRef.current : null;
-    beginComposeList({ restore: backQueryKeyRef.current });
+    if (fromEdit) {
+      // 편집 탭이 연 창 — 밑의 탭 목록은 숨어 있다: 사본도 격자 초점도 없다. 비우고(창의 카드가 밑의 탭 캐시에 남지 않게)
+      //  원래 조회로 돌아간다. 편집 탭에는 공유 목록을 다시 받으라고 알린다(창에서 공유를 풀거나 지웠을 수 있다).
+      refocusGridRef.current = null;
+      beginComposeList();
+      setTeamPeek(false);
+      setEditReloadSignal((n) => n + 1);
+    } else {
+      // 닫는 순간 초점이 창 안(또는 아무 데도 없음)이면, 본 목록이 조작 가능해진 뒤 격자로 돌려줄 뜻을 그 문맥과 함께 적어 둔다.
+      //  초점이 창 밖 다른 곳(크게 보기·프롬프트 등)에 있으면 적지 않는다 — 남의 초점은 건드리지 않는다.
+      const active = document.activeElement;
+      refocusGridRef.current =
+        !active || active === document.body || active.closest(".folder-peek") ? listPeekCtxRef.current : null;
+      beginComposeList({ restore: backQueryKeyRef.current });
+    }
     setSelected(new Set());
     setFolderWindow(null);
   }, [beginComposeList, setSelected]);
   // 문맥이 바뀌어 무효가 된 창은 상태도 치운다(그 렌더부터 이미 닫힌 것으로 그렸다 — 목록은 바뀐 문맥의 조회가 채운다.
   //  선택은 문맥을 바꾼 쪽이 비운다: 필터 조작은 선택 초기화 키로, 공간 전환은 위 useLayoutEffect 로).
+  //  ★여기서 목록을 비우지 않는다 — 바뀐 문맥의 조회가 이미 떠났고, 비우면 그 응답까지 버려 빈 채로 남는다(Codex 설계 검토).
+  //  편집 탭이 연 창이었으면 teamPeek 도 끈다(편집을 떠났거나 계정·공간이 바뀌었다). 창 없이 teamPeek 만 남는 일도 막는다.
   useEffect(() => {
     if (folderWindow && !listPeek) setFolderWindow(null);
-  }, [folderWindow, listPeek]);
+    if (teamPeek && !(folderWindow?.edit && listPeek)) setTeamPeek(false);
+  }, [folderWindow, listPeek, teamPeek]);
   // 크게 보기의 [부분 수정]으로 넘어가면 창을 닫는다 — 부분 수정의 Esc 가 뒤에 남은 창까지 닫지 않게(코덱스 코드 리뷰 10-07).
   useCustomEvent(APP_EVENTS.partialEdit, closeFolderWindow);
 
@@ -1084,7 +1129,7 @@ export default function App() {
     openComment,
     openAdmin,
   } = useAppNavigation({
-    currentTab: filters.tab,
+    currentTab: storedTab, // 저장된 탭 — 편집 탭이 연 폴더 창의 임시 '공유 & 리뷰'가 뒤로가기 기록에 남지 않게
     previewScopeKey: JSON.stringify([workspaceContext.scope, workspaceContext.id, workspaceFollow?.mode ?? "auto", libraryAuthKey]),
     lastBoardFocusRef,
     setPreview,
@@ -1954,7 +1999,8 @@ export default function App() {
           resolveHighlightedIds={resolveLibrary.highlightedIds}
           // 폴더 창에서는 이름표를 누른 그 카드로 한 번 내려간다(다빈치 따라가기와 같은 장치 — 창이 떠 있는 동안 따라가기는 꺼져 있다)
           resolveScrollRequest={listPeekScroll ?? resolveLibrary.scrollRequest}
-          openedFromId={listPeek?.genId}
+          openedFromId={listPeek && !listPeek.edit ? listPeek.genId : undefined}
+          cardMarks={listPeek?.edit?.marks}
           onClearResolveHighlight={resolveLibrary.clear}
           generations={gridGens}
           disabledIds={effectiveDisabled}
@@ -2118,9 +2164,11 @@ export default function App() {
               authKey={libraryAuthKey}
               authReady={authReady}
               workspace={workspaceContext}
-              // 위에 뜬 창(관리자·미리보기·정보·비교·코멘트·등급 확인)이 있으면 편집 키는 쉰다.
-              keysActive={!adminOpen && !preview && !info && !commentGenId && !compareGens && !videoCompare && !grade.pending}
+              // 위에 뜬 창(관리자·미리보기·정보·비교·코멘트·등급 확인·폴더 창)이 있으면 편집 키는 쉰다.
+              keysActive={!adminOpen && !preview && !info && !commentGenId && !compareGens && !videoCompare && !grade.pending && !listPeek}
               flash={flash}
+              onOpenCutFolder={openEditFolderWindow}
+              reloadSignal={editReloadSignal}
             />
           </Suspense>
         ) : filters.tab === "compose" ? (
