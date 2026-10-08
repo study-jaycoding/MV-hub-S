@@ -5,6 +5,7 @@
 //  · 공유&리뷰(팀) 탭 + 새로 들어온 항목(+N)이 있으면: "모두 확인 (+N)" — 그 범위(프로젝트 행=전체, 폴더=하위 포함)의
 //    신규 항목을 한꺼번에 확인 처리(카드 글로우·+N 배지 해제). 프로젝트 행 우클릭은 이 단추만(Jay 2026-09-10).
 //  · 버튼 색은 폴더 자체의 아이콘 색(최상위=하늘색, 하위=라임). 선택 분홍과 무관(Jay). '모두 확인'은 +N 배지 색(라임).
+//    '최종 저장'만 골드(완료 탭의 최종 저장 단추와 같은 색 — Jay 2026-10-08).
 export type FolderMenuKind = "share" | "save-shared" | "save-finals" | "open-folder";
 export type FolderActionKind = Exclude<FolderMenuKind, "open-folder">;
 export type FolderMenuTab = "my" | "team";

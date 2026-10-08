@@ -895,7 +895,7 @@ export function ProjectSection({
                   key={kind}
                   type="button"
                   autoFocus={i === 0}
-                  className={"folder-ctx-btn tone-" + folderTone(folderMenu.depth)}
+                  className={"folder-ctx-btn tone-" + (kind === "save-finals" ? "final" : folderTone(folderMenu.depth))}
                   onClick={() => {
                     const m = folderMenu;
                     closeFolderMenu(true);
