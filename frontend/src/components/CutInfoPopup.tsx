@@ -41,11 +41,13 @@ function clampStart(x: number, y: number) {
 }
 
 // 폴더 창과 같은 조회를 커서로 끝까지(상한 MAX). 대소문자가 다른 폴더가 섞여 오므로(서버 LIKE) 경로로 다시 거른다.
-async function fetchFolder(query: GenQuery, path: string): Promise<{ gens: Generation[]; truncated: boolean }> {
+//  alive() 가 거짓이면(창을 닫았거나 다른 폴더로) 다음 쪽을 받지 않는다.
+async function fetchFolder(query: GenQuery, path: string, alive: () => boolean): Promise<{ gens: Generation[]; truncated: boolean } | null> {
   const all: Generation[] = [];
   let cursor: GenCursor | null = null;
   for (;;) {
     const page: Generation[] = await api.listGenerations(query, cursor, PAGE);
+    if (!alive()) return null;
     all.push(...page);
     if (page.length < PAGE) return { gens: inFolder(all, path), truncated: false };
     if (all.length >= MAX) return { gens: inFolder(all, path), truncated: true };
@@ -109,18 +111,20 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
     return () => ro.disconnect();
   }, []);
 
-  // 목록 → 집계 → 크레딧. 폴더가 바뀌면 마지막 것의 응답만 받는다(순번).
+  // 목록 → 집계 → 크레딧. 폴더가 바뀌면 마지막 것의 응답만 받는다(순번). 창을 닫으면(언마운트) 순번을 올려 남은 쪽·크레딧 요청을
+  //  보내지 않는다 — 닫은 뒤에도 건마다 요청이 나가던 것(Codex 코드 검토 10-09).
   const seqRef = useRef(0);
   useEffect(() => {
     const my = ++seqRef.current;
+    const alive = () => my === seqRef.current;
     setGens(null);
     setMetrics(null);
     setTruncated(false);
     setError(null);
     (async () => {
       try {
-        const got = await fetchFolder(query, folder.path);
-        if (my !== seqRef.current) return;
+        const got = await fetchFolder(query, folder.path, alive);
+        if (!got || !alive()) return;
         setGens(got.gens);
         setTruncated(got.truncated);
         if (got.gens.length > METRICS_MAX) {
@@ -128,15 +132,16 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
           return;
         }
         const results = await Promise.allSettled(got.gens.map((g) => api.generationMetrics(g.id)));
-        if (my !== seqRef.current) return;
+        if (!alive()) return;
         setMetrics(new Map(got.gens.map((g, i) => {
           const result = results[i];
           return [g.id, result.status === "fulfilled" ? result.value : null];
         })));
       } catch (e) {
-        if (my === seqRef.current) setError(e instanceof Error ? e.message : String(e));
+        if (alive()) setError(e instanceof Error ? e.message : String(e));
       }
     })();
+    return () => { seqRef.current += 1; };
   }, [folder.path, query]);
 
   const cover = folder.cover;

@@ -218,3 +218,65 @@ it("연결 재생기 — 컷 이동(단추·↑↓·이름)·반복·길이를 �
   expect(host.querySelector(".reel-scrub")!.classList.contains("wait")).toBe(false);
   expect(host.querySelectorAll(".reel-track > i")).toHaveLength(1); // 컷 경계 눈금
 });
+
+// ── 10-09 Codex 코드 검토 — 다시 받기·닫은 뒤 요청·미리 읽기 ──
+it("컷 정보 — 조회 조건이 같으면 카드 객체가 바뀌어도 다시 받지 않고, 닫으면 남은 요청(다음 쪽·metrics)을 보내지 않는다", async () => {
+  const gens = [gen("g0"), gen("a"), gen("b")];
+  listGenerations.mockResolvedValue(gens);
+  const folder = card("C0290");
+  const draw = (f: FolderCard) => act(() => root.render(
+    <CutInfoPopup folder={f} x={0} y={0} query={query} savingRep={false} previewOpen={false} onClose={() => {}} onOpen={() => {}} onPreview={() => {}} onPickCover={() => {}} />,
+  ));
+  draw(folder);
+  await settle();
+  await settle();
+  expect(listGenerations).toHaveBeenCalledTimes(1);
+  expect(generationMetrics).toHaveBeenCalledTimes(3);
+  draw({ ...folder, rep: true, cover: gens[1] }); // 카드가 다시 왔다(대표 바뀜) — 조건은 같다
+  await settle();
+  expect(listGenerations).toHaveBeenCalledTimes(1);
+  expect(generationMetrics).toHaveBeenCalledTimes(3);
+
+  // 목록 응답이 오기 전에 닫는다 → 응답이 와도 metrics 를 보내지 않는다
+  let release!: (value: Generation[]) => void;
+  listGenerations.mockImplementationOnce(() => new Promise<Generation[]>((resolve) => { release = resolve; }));
+  generationMetrics.mockClear();
+  draw({ ...card("C0300"), path: "e035/C0300" });
+  await settle();
+  act(() => root.render(null));
+  await act(async () => { release(gens); });
+  await settle();
+  await settle();
+  expect(generationMetrics).not.toHaveBeenCalled();
+});
+
+it("모아보기 연결 — 같은 주소의 영상은 길이를 한 번만 읽고, 내용이 같은 카드 배열이 다시 와도 다시 읽지 않으며, 닫으면 주소를 뗀다", () => {
+  const created: HTMLVideoElement[] = [];
+  const realCreate = document.createElement.bind(document);
+  const createSpy = vi.spyOn(document, "createElement").mockImplementation(((tag: string, options?: ElementCreationOptions) => {
+    const el = realCreate(tag, options);
+    if (tag === "video") created.push(el as HTMLVideoElement);
+    return el;
+  }) as typeof document.createElement);
+  const loadSpy = vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+  try {
+    const dup = card("C0090");
+    dup.cover = gen("cover-C0090", { folder_path: "e035/C0090", assets: [{ type: "video", file_path: "/m/C0080.mp4", thumbnail_path: null }] });
+    const folders = [card("C0080"), dup, card("C0110")];
+    const draw = (list: FolderCard[]) => act(() => root.render(
+      <CutReel folders={list} mode="linked" onModeChange={() => {}} previewOpen={false} onClose={() => {}} onPreview={() => {}} />,
+    ));
+    draw(folders);
+    const probes = created.filter((v) => !v.isConnected); // 화면에 붙지 않은 것 = 미리 읽기
+    expect(probes.map((v) => v.getAttribute("src"))).toEqual(["/m/C0080.mp4", "/m/C0110.mp4"]); // 같은 주소(C0080·C0090)는 하나
+    const before = created.length;
+    draw(folders.map((f) => ({ ...f }))); // 내용이 같은 새 배열 — 다시 읽지 않는다
+    expect(created.length).toBe(before);
+    act(() => root.render(null));
+    expect(probes.every((v) => !v.hasAttribute("src") && v.onloadedmetadata === null)).toBe(true);
+    expect(loadSpy).toHaveBeenCalled();
+  } finally {
+    createSpy.mockRestore();
+    loadSpy.mockRestore();
+  }
+});

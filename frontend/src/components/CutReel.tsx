@@ -19,6 +19,11 @@ import { MediaThumbnail } from "./MediaThumbnail";
 
 export type ReelMode = "grid" | "linked";
 
+// 영상 길이(초)는 주소마다 한 번만 읽는다 — 모아보기를 다시 열 때마다 모든 영상의 메타데이터를 다시 받지 않게(10-09 실측: 열고
+//  닫기 5번에 영상 요청 +334). 깨진 영상은 담지 않는다(다음에 다시 시도).
+const DURATION_CACHE = new Map<string, number>();
+const PRELOAD_AT_ONCE = 2; // 한꺼번에 읽으면 첫 클립의 재생과 대역폭을 다툰다(10-09 실측: 28개 동시 → 첫 재생 6.2초)
+
 interface Props {
   folders: FolderCard[]; // 고른 컷(격자 순서) — 호출하는 쪽이 메모해 둔다
   mode: ReelMode;
@@ -45,7 +50,12 @@ function startPlay(v: HTMLVideoElement, current: () => HTMLVideoElement | null, 
 export function CutReel({ folders, mode, onModeChange, previewOpen, onClose, onPreview }: Props) {
   const t = useT();
   useEscapeClose(onClose, !previewOpen);
-  const clips = useMemo(() => reelClips(folders), [folders]);
+  // 카드가 다시 와서 배열 객체만 바뀐 경우(보이는 내용이 같음)엔 클립도 그대로 — 재생기가 영상 길이를 다시 읽지 않게.
+  //  비교 기준은 클립에 실리는 값 전부(이름·주소·표지·작업자·대표).
+  const clipsNow = reelClips(folders);
+  const clipKey = JSON.stringify(clipsNow);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- clipKey 가 clipsNow 의 내용을 대신한다
+  const clips = useMemo(() => clipsNow, [clipKey]);
   const reps = folders.filter((folder) => folder.rep).length;
   const items: PreviewItem[] = clips.map((clip) => ({ url: clip.url, type: clip.type, name: clip.name, thumb: clip.thumb }));
   const previewAt = (index: number) => onPreview({ ...items[index], items, index });
@@ -127,7 +137,8 @@ interface PlayerState {
 export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: boolean }) {
   const t = useT();
   const n = clips.length;
-  const [durations, setDurations] = useState<number[]>(() => clips.map((clip) => (clip.type === "image" ? REEL_IMAGE_SEC : 0)));
+  const [durations, setDurations] = useState<number[]>(() =>
+    clips.map((clip) => (clip.type === "image" ? REEL_IMAGE_SEC : DURATION_CACHE.get(clip.url) ?? 0)));
   const [failed, setFailed] = useState<ReadonlySet<number>>(() => new Set());
   const [idx, setIdx] = useState(0);
   const [clipTime, setClipTime] = useState(0);
@@ -150,32 +161,65 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
 
   // 영상 길이 — 메타데이터만 미리 읽는다. 못 읽으면 재생도 못 하는 것으로 보고 3초 멈춘 화면.
   //  이미 깨진 것으로 판정한 클립의 늦은 메타데이터는 받지 않는다(3초를 긴 길이로 되돌리지 않게).
+  //  같은 주소의 클립은 한 번만 읽고, 끝나거나 닫히면 요소의 주소를 떼고 불러오기를 멈춘다(요소가 핸들러·주소를 쥔 채 남지 않게 —
+  //  Codex 코드 검토 10-09).
+  //  주소마다 한 번씩 순서대로, 한 번에 둘까지만 읽는다. 이미 아는 길이(DURATION_CACHE)는 읽지 않는다.
   useEffect(() => {
     let cancelled = false;
+    const active = new Set<HTMLVideoElement>();
+    const byUrl = new Map<string, number[]>();
     clips.forEach((clip, i) => {
-      if (clip.type === "image") return;
+      if (clip.type === "image" || DURATION_CACHE.has(clip.url)) return;
+      const same = byUrl.get(clip.url);
+      if (same) same.push(i);
+      else byUrl.set(clip.url, [i]);
+    });
+    const queue = [...byUrl];
+    const release = (v: HTMLVideoElement) => {
+      active.delete(v);
+      v.onloadedmetadata = null;
+      v.onerror = null;
+      v.removeAttribute("src");
+      v.load();
+    };
+    const startNext = () => {
+      if (cancelled) return;
+      const item = queue.shift();
+      if (!item) return;
+      const [url, indexes] = item;
       const v = document.createElement("video");
+      active.add(v);
       v.preload = "metadata";
       v.onloadedmetadata = () => {
-        if (cancelled || st.current.failed.has(i)) return;
+        if (cancelled) return;
+        const seconds = isFinite(v.duration) && v.duration > 0 ? v.duration : REEL_IMAGE_SEC;
+        DURATION_CACHE.set(url, seconds);
         setDurations((d) => {
           const next = [...d];
-          next[i] = isFinite(v.duration) && v.duration > 0 ? v.duration : REEL_IMAGE_SEC;
+          for (const i of indexes) if (!st.current.failed.has(i)) next[i] = seconds;
           return next;
         });
+        release(v);
+        startNext();
       };
       v.onerror = () => {
         if (cancelled) return;
-        setFailed((f) => new Set(f).add(i));
+        setFailed((f) => { const next = new Set(f); for (const i of indexes) next.add(i); return next; });
         setDurations((d) => {
           const next = [...d];
-          if (!next[i]) next[i] = REEL_IMAGE_SEC;
+          for (const i of indexes) if (!next[i]) next[i] = REEL_IMAGE_SEC;
           return next;
         });
+        release(v);
+        startNext();
       };
-      v.src = clip.url;
-    });
-    return () => { cancelled = true; };
+      v.src = url;
+    };
+    for (let k = 0; k < PRELOAD_AT_ONCE; k++) startNext();
+    return () => {
+      cancelled = true;
+      [...active].forEach(release);
+    };
   }, [clips]);
 
   const goTo = useCallback((i: number, offset = 0) => {
@@ -220,6 +264,16 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
   const onLoaded = () => {
     const v = videoRef.current;
     if (!v) return;
+    // 화면의 영상이 먼저 올라왔으면 그 길이를 쓴다(따로 읽을 필요가 없다)
+    if (cur && cur.type === "video" && isFinite(v.duration) && v.duration > 0 && !DURATION_CACHE.has(cur.url)) {
+      DURATION_CACHE.set(cur.url, v.duration);
+      const seconds = v.duration;
+      setDurations((d) => {
+        const next = [...d];
+        clips.forEach((clip, i) => { if (clip.url === cur.url && !next[i]) next[i] = seconds; });
+        return next;
+      });
+    }
     if (seekRef.current != null) {
       try { v.currentTime = seekRef.current; } catch { /* 아직 seek 못 함 — 무시 */ }
       seekRef.current = null;

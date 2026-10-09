@@ -228,8 +228,12 @@ class NameBook:
                     seq = max([seq, *self._owners])
                     continue
                 name = held["name"]  # 같은 생성물이 쥔 번호(응답이 끊겼던 내 재시도 등) — 이어서 쓴다
-            self._publish(f"g.{self.token}.{_gen_file(gen)}", {"gen": gen, "seq": seq, "name": name, "folder": self.key})
-            self.reload()  # 졌으면(다른 PC 가 같은 생성물을 먼저 배정) 이긴 쪽 값이 읽힌다 — 내 번호는 결번
+            item = {"gen": gen, "seq": seq, "name": name}
+            self._owners[seq] = item  # 내가 쥔 번호 — 장부를 다시 읽지 않고 반영한다(저장마다 전체를 다시 읽으면 건수의 제곱, Codex 검토 10-09)
+            if self._publish(f"g.{self.token}.{_gen_file(gen)}", {"gen": gen, "seq": seq, "name": name, "folder": self.key}):
+                self._mine[gen] = item
+                return name
+            self.reload()  # 졌다(다른 PC 가 같은 생성물을 먼저 배정) — 이긴 쪽 값이 읽힌다, 내 번호는 결번
             found = self.name_of(gen)
             if not found:
                 raise RegistryError("파일 이름을 배정하지 못했습니다")
@@ -242,7 +246,7 @@ class NameBook:
         if item is None:
             raise RegistryError("배정되지 않은 생성물입니다")
         self._publish(f"d.{self.token}.{item['seq']:03d}", {"gen": gen, "name": item["name"], "folder": self.key})
-        self.reload()
+        self._done.add(item["seq"])  # 이미 있었어도 같은 뜻 — 다시 읽지 않는다
 
 
 class Books:

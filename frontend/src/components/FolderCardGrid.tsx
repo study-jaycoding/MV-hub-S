@@ -56,18 +56,19 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
     const e = lastMoveRef.current;
     const d = dragRef.current;
     const grid = gridRef.current;
-    if (!e || !d || d.path || !grid) return;
+    if (!e || !d || !grid) return;
     const { rect, b } = computeMarquee(grid, d, e);
     setMarquee(rect);
     const base = d.additive || d.range ? d.base : [];
     opsRef.current.onSelect(marqueeHits<string>(grid, ".cut-card[data-path]", b, base, (el) => el.dataset.path || null));
   }, []);
+  // 카드 위에서 시작한 끌기도 마퀴다 — 카드가 꽉 찬 격자에는 빈 곳이 없어 달리 시작할 데가 없다(10-09 실측: 100장에서 0장 고름).
+  //  생성물 카드와 달리 컷 카드에는 끌어 놓을 데(프롬프트 재사용)가 없어 겹칠 것이 없다. 5px 안이면 클릭.
   const onDragMove = useCallback((e: MouseEvent) => {
     const d = dragRef.current;
     if (!d) return;
     if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 5) return;
     d.moved = true;
-    if (d.path) return; // 카드 위에서 시작한 끌기는 마퀴가 아니다(클릭 판정만)
     lastMoveRef.current = e;
     if (rafRef.current == null) rafRef.current = requestAnimationFrame(flushMarquee);
   }, [flushMarquee]);
@@ -124,7 +125,7 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
     const target = e.target as HTMLElement;
     if (target.closest(".cut-out")) return; // '컷 밖' 칸은 고르는 대상이 아니다(누르면 한 장씩 보기)
     const card = target.closest(".cut-card[data-path]") as HTMLElement | null;
-    if (!card) e.preventDefault(); // 빈 곳에서 끌 때 글자가 긁히지 않게
+    e.preventDefault(); // 끌 때 글자·그림이 긁히지 않게(카드 위에서 시작해도 마퀴)
     gridRef.current?.focus();
     dragRef.current = {
       x: e.clientX, y: e.clientY, path: card?.dataset.path ?? null,

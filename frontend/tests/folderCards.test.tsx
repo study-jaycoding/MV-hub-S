@@ -155,15 +155,22 @@ it("옛 공유 서버(경로 없음)는 그 계정·서버에서만 '지원 안 
   expect(folderCardsApi).toHaveBeenCalledTimes(calls + 1);
 });
 
-it("reload 는 서버 값을 다시 읽고 끝난 뒤에 풀린다 — 그 앞에 출발한 응답이 늦게 와도 덮지 못한다", async () => {
+it("reload 는 서버 값을 다시 읽고 끝난 뒤에 풀린다 — 그 앞에 출발한 조회는 버리고 그 뒤 한 번만 더 보낸다(같은 문맥은 합친다)", async () => {
   const early = hold();
-  show({ scope: e035 }); // 저장 전에 출발한 조회
-  folderCardsApi.mockResolvedValueOnce(cards(card("C0010", 8, true)));
+  show({ scope: e035 }); // 저장 전에 출발한 조회(받는 중)
+  folderCardsApi.mockResolvedValueOnce(cards(card("C0010", 8, true))); // 그 뒤의 조회가 받을 값
   let done = false;
-  await act(async () => { await seen.reload().then(() => { done = true; }); });
+  let waiting!: Promise<void>;
+  act(() => { waiting = seen.reload().then(() => { done = true; }); });
+  await settle();
+  expect(folderCardsApi).toHaveBeenCalledTimes(1); // 받는 중이면 새로 보내지 않는다
+  expect(done).toBe(false);
+  await early.release(cards(card("C0010", 8, false))); // 저장 전 값 — 버린다(끝나자 한 번 더 받아 그 값이 보인다)
+  await settle();
+  expect(seen.cards?.folders[0].rep).not.toBe(false);
+  expect(folderCardsApi).toHaveBeenCalledTimes(2);
+  await act(async () => { await waiting; });
   expect(done).toBe(true);
-  expect(seen.cards?.folders[0].rep).toBe(true);
-  await early.release(cards(card("C0010", 8, false))); // 저장 전 값
   expect(seen.cards?.folders[0].rep).toBe(true);
 
   folderCardsApi.mockRejectedValueOnce(new Error("network"));
@@ -171,7 +178,28 @@ it("reload 는 서버 값을 다시 읽고 끝난 뒤에 풀린다 — 그 앞�
   expect(seen.cards?.folders[0].rep).toBe(true);
 });
 
-it("저장 뒤의 재조회가 더 나중 조회로 대체되면 그 조회가 끝날 때 같이 풀린다 — 버려진 응답이 돌아온 순간에 풀지 않는다", async () => {
+it("같은 문맥의 요구가 받는 중에 여러 번 와도 조회는 그 뒤 한 번뿐 — 내용이 같은 응답은 같은 객체를 돌려준다", async () => {
+  folderCardsApi.mockResolvedValue(cards(card("C0010", 8)));
+  show({ scope: e035 });
+  await settle();
+  const first = seen.cards;
+  const slow = hold();
+  show({ scope: e035, reloadKey: 1 }); // 주기 조회 — 받는 중
+  show({ scope: e035, reloadKey: 2 }); // 그사이 또
+  show({ scope: e035, reloadKey: 3 });
+  expect(folderCardsApi).toHaveBeenCalledTimes(2);
+  await slow.release(cards(card("C0010", 8)));
+  await settle();
+  expect(folderCardsApi).toHaveBeenCalledTimes(3); // 합쳐진 요구는 한 번으로
+  expect(seen.cards).toBe(first); // 내용이 같다 — 같은 객체(아래가 다시 그리지 않는다)
+  folderCardsApi.mockResolvedValue(cards(card("C0010", 8, true)));
+  show({ scope: e035, reloadKey: 4 });
+  await settle();
+  expect(seen.cards).not.toBe(first);
+  expect(seen.cards?.folders[0].rep).toBe(true);
+});
+
+it("저장 뒤의 재조회에 주기 조회가 얹히면 저장 응답은 버리지 않고 적용하고 저장은 바로 풀린다 — 그 뒤 한 번 더 받는다", async () => {
   folderCardsApi.mockResolvedValue(cards(card("C0010", 8)));
   show({ scope: e035 });
   await settle();
@@ -179,16 +207,61 @@ it("저장 뒤의 재조회가 더 나중 조회로 대체되면 그 조회가 �
   let done = false;
   let waiting!: Promise<void>;
   act(() => { waiting = seen.reload().then(() => { done = true; }); });
-  const later = hold(); // 목록이 새로 들어와(reloadKey) 더 나중 조회가 출발 — 앞의 것을 대신한다
+  const later = hold(); // 목록이 새로 들어와(reloadKey) — 받는 중인 저장 조회에 얹힌다(새로 보내지 않는다)
   show({ scope: e035, reloadKey: 1 });
-  await mine.release(cards(card("C0010", 8, true))); // 버려지는 응답
-  await settle();
-  expect(done).toBe(false);
-  expect(seen.cards?.folders[0].rep).toBe(false);
-  await later.release(cards(card("C0010", 8, true)));
+  expect(folderCardsApi).toHaveBeenCalledTimes(2);
+  await mine.release(cards(card("C0010", 8, true))); // 저장 뒤 값 — 적용된다
   await act(async () => { await waiting; });
   expect(done).toBe(true);
   expect(seen.cards?.folders[0].rep).toBe(true);
+  expect(folderCardsApi).toHaveBeenCalledTimes(3); // 얹힌 주기 조회가 한 번 더
+  await later.release(cards(card("C0010", 8, true)));
+  expect(seen.cards?.folders[0].rep).toBe(true);
+});
+
+it("저장 뒤 다른 폴더로 갔다 돌아오면 버려진 저장 조회는 돌아온 폴더의 조회가 끝날 때 풀린다 — 옛 값 표시로 잠금을 풀지 않는다", async () => {
+  folderCardsApi.mockResolvedValue(cards(card("C0010", 8)));
+  show({ scope: e035 });
+  await settle();
+  const mine = hold(); // 저장 뒤의 재조회(A)
+  let done = false;
+  act(() => { void seen.reload().then(() => { done = true; }); });
+  const b = hold();
+  show({ scope: { projectId: "p1", parent: "e036" } }); // B 로
+  const back = hold();
+  show({ scope: e035 }); // 다시 A 로 — 새 조회
+  await mine.release(cards(card("C0010", 8, false))); // 버려지는 저장 전 값
+  await settle();
+  expect(done).toBe(false); // 돌아온 A 의 조회가 끝나기 전에는 풀리지 않는다
+  await b.release({ parent: "e036", own_count: 0, folders: [] });
+  await settle();
+  expect(done).toBe(false);
+  await back.release(cards(card("C0010", 8, true)));
+  await settle();
+  expect(done).toBe(true);
+  expect(seen.cards?.folders[0].rep).toBe(true);
+});
+
+it("옛 문맥의 조회가 끝나며 새 문맥에 얹힌 요구를 가져가지 않는다 — 새 문맥의 조회가 끝날 때 그 뒤 한 번 더 받아 풀린다", async () => {
+  const slowA = hold();
+  show({ scope: e035 }); // A 받는 중
+  const b = hold();
+  show({ scope: { projectId: "p1", parent: "e036" } }); // B 로 전환 — 바로 보낸다
+  expect(folderCardsApi).toHaveBeenCalledTimes(2);
+  const afterSave = hold();
+  let done = false;
+  act(() => { void seen.reload().then(() => { done = true; }); }); // B 에서 저장 뒤 — B 응답은 버리고 얹힌다
+  await slowA.release(cards(card("LATE", 1))); // 옛 문맥 A 가 끝난다 — B 의 얹힌 요구를 가져가면 안 된다
+  await settle();
+  expect(done).toBe(false);
+  expect(folderCardsApi).toHaveBeenCalledTimes(2);
+  await b.release({ parent: "e036", own_count: 0, folders: [card("OLD", 1)] }); // 버려지는 응답
+  await settle();
+  expect(folderCardsApi).toHaveBeenCalledTimes(3); // B 가 끝나자 한 번 더
+  await afterSave.release({ parent: "e036", own_count: 0, folders: [card("NEW", 1, true)] });
+  await settle();
+  expect(done).toBe(true);
+  expect(seen.cards?.folders[0].name).toBe("NEW");
 });
 
 // ── 컷 카드 격자 ──
@@ -331,11 +404,15 @@ it("빈 곳에서 끌면 걸친 카드를 모두 고른다 — 창을 떠나면(
     mouse("mousemove", window, { clientX: 10, clientY: 10, ctrlKey: true });
     mouse("mouseup", window, { clientX: 10, clientY: 10, ctrlKey: true });
     expect([...selected].sort()).toEqual(["e035/C0010", "e035/C0020", "e035/C0030"]);
-    // 카드 위에서 시작한 끌기는 마퀴가 아니고, 떼면 클릭도 아니다(움직였다)
+    // 카드 위에서 시작한 끌기도 마퀴다(꽉 찬 격자에는 빈 곳이 없다) — C0010 에서 C0020 까지 끌면 둘
     mouse("mousedown", host.querySelector('.cut-card[data-path="e035/C0010"]')!, { clientX: 100, clientY: 100 });
     mouse("mousemove", window, { clientX: 300, clientY: 100 });
-    expect(host.querySelector(".assets-marquee")).toBeNull();
+    expect(host.querySelector(".assets-marquee")).not.toBeNull();
     mouse("mouseup", window, { clientX: 300, clientY: 100 });
+    expect([...selected].sort()).toEqual(["e035/C0010", "e035/C0020"]);
+    mouse("mousedown", host.querySelector('.cut-card[data-path="e035/C0010"]')!, { clientX: 100, clientY: 100 });
+    mouse("mousemove", window, { clientX: 590, clientY: 100, ctrlKey: true });
+    mouse("mouseup", window, { clientX: 590, clientY: 100, ctrlKey: true });
     expect(selected.size).toBe(3);
     // 창을 떠나면 끌기를 버린다 — 돌아온 뒤의 mouseup 이 클릭으로 이어지지 않는다
     mouse("mousedown", host.querySelector('.cut-card[data-path="e035/C0020"]')!, { clientX: 300, clientY: 100 });
