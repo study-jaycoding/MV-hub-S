@@ -546,9 +546,10 @@ export default function App() {
   const cutInfoFolder = cutInfo && cutInfo.ctx === listPeekCtx && cutScope?.projectId === cutInfo.projectId
     ? cutCards?.folders.find((folder) => folder.path === cutInfo.path) ?? null
     : null;
+  // 창의 조회 조건은 연 폴더(경로)와 지금 조회로만 — 카드가 다시 와서 folder 객체가 바뀌어도 조건은 같다(같으면 창이 다시 받지 않는다).
   const cutInfoQuery = useMemo(
-    () => (cutInfo && cutInfoFolder ? folderPeekQuery(genQuery, { projectId: cutInfo.projectId, path: cutInfo.path }) : null),
-    [cutInfo, cutInfoFolder, genQuery],
+    () => (cutInfo ? folderPeekQuery(genQuery, { projectId: cutInfo.projectId, path: cutInfo.path }) : null),
+    [cutInfo, genQuery],
   );
   const cutReelFolders = useMemo(
     () => (cutReel && cutReel.ctx === listPeekCtx && cutCards ? cutCards.folders.filter((folder) => cutReel.paths.includes(folder.path)) : []),
