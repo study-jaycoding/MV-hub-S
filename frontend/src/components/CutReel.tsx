@@ -23,6 +23,11 @@ export type ReelMode = "grid" | "linked";
 //  닫기 5번에 영상 요청 +334). 깨진 영상은 담지 않는다(다음에 다시 시도).
 const DURATION_CACHE = new Map<string, number>();
 const PRELOAD_AT_ONCE = 2; // 한꺼번에 읽으면 첫 클립의 재생과 대역폭을 다툰다(10-09 실측: 28개 동시 → 첫 재생 6.2초)
+// 영상 요소 둘(앞·뒤): 뒤의 것에 다음 영상을 미리 받아 두고 컷이 넘어갈 때 자리만 바꾼다 — 요소 하나에 주소만 갈면 받는 시간만큼
+//  화면이 선다(10-09 실측: 컷마다 130~200ms). 넘어가기 ROLL_AHEAD 초 전부터 뒤의 것을 소리 없이 굴려 둔다 — 다 받아 둔 영상도
+//  play() 뒤 첫 그림까지 시간이 든다(편집 탭 editVideoPair 와 같은 원리, Jay "끊김 없이"). 너무 멀리 굴러갔으면(ROLL_MAX) 되돌린다.
+const ROLL_AHEAD = 0.3;
+const ROLL_MAX = 0.4;
 
 interface Props {
   folders: FolderCard[]; // 고른 컷(격자 순서) — 호출하는 쪽이 메모해 둔다
@@ -144,9 +149,18 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
   const [clipTime, setClipTime] = useState(0);
   const [playing, setPlaying] = useState(true);
   const [loop, setLoop] = useState(true);
-  const [cycle, setCycle] = useState(0); // 같은 클립을 처음부터 다시(단일 클립 반복 등) — video key 로 다시 올린다
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const [cycle, setCycle] = useState(0); // 같은 클립을 처음부터 다시(단일 클립 반복 등)
   const seekRef = useRef<number | null>(0); // 클립을 올린 뒤 맞출 위치(초)
+  // 영상 요소 둘 — 어느 쪽이 앞(보이는 쪽)인지는 ref 가 정하고, CSS 를 위해 state 로도 둔다. 요소는 떼지 않는다(받아 둔 것을 잃지 않게).
+  const vaRef = useRef<HTMLVideoElement>(null);
+  const vbRef = useRef<HTMLVideoElement>(null);
+  const frontRef = useRef<0 | 1>(0);
+  const [front, setFront] = useState<0 | 1>(0);
+  const frontEl = useCallback(() => (frontRef.current === 0 ? vaRef.current : vbRef.current), []);
+  const backEl = useCallback(() => (frontRef.current === 0 ? vbRef.current : vaRef.current), []);
+  const frontUrlRef = useRef(""); // 앞의 것에 올린 주소
+  const backUrlRef = useRef(""); // 뒤의 것에 미리 올려 둔 주소
+  const rollingRef = useRef(false); // 뒤의 것을 소리 없이 미리 굴리는 중
 
   const cur = clips[idx];
   const still = !cur || cur.type === "image" || failed.has(idx);
@@ -250,38 +264,46 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
       return;
     }
     setClipTime(offset);
-    const v = videoRef.current;
+    const v = frontEl();
     if (!v || st.current.still) return;
     if (v.readyState >= 1) {
       v.currentTime = offset;
       seekRef.current = null;
     } else seekRef.current = offset; // 아직 안 올라온 영상 — 메타데이터가 오면 맞춘다
-  }, [goTo]);
+  }, [goTo, frontEl]);
   const prevCut = useCallback(() => goTo(Math.max(0, st.current.idx - 1)), [goTo]);
   const nextCut = useCallback(() => goTo(Math.min(n - 1, st.current.idx + 1)), [n, goTo]);
 
-  // 새 클립을 올리면 위치를 맞추고, 재생 중이면 이어서 튼다.
-  const onLoaded = () => {
-    const v = videoRef.current;
-    if (!v) return;
-    // 화면의 영상이 먼저 올라왔으면 그 길이를 쓴다(따로 읽을 필요가 없다)
-    if (cur && cur.type === "video" && isFinite(v.duration) && v.duration > 0 && !DURATION_CACHE.has(cur.url)) {
-      DURATION_CACHE.set(cur.url, v.duration);
-      const seconds = v.duration;
-      setDurations((d) => {
-        const next = [...d];
-        clips.forEach((clip, i) => { if (clip.url === cur.url && !next[i]) next[i] = seconds; });
-        return next;
-      });
-    }
+  // 영상 길이를 알게 되면(어느 요소든) 캐시와 길이 배열에 적는다 — 따로 읽을 필요가 없다.
+  const learnDuration = useCallback((url: string, seconds: number) => {
+    if (!url || !isFinite(seconds) || seconds <= 0 || DURATION_CACHE.has(url)) return;
+    DURATION_CACHE.set(url, seconds);
+    setDurations((d) => {
+      const next = [...d];
+      clips.forEach((clip, i) => { if (clip.url === url && !next[i]) next[i] = seconds; });
+      return next;
+    });
+  }, [clips]);
+  // 앞의 것이 올라오면 위치를 맞추고, 재생 중이면 튼다. 뒤의 것(미리 받는 중)이 내는 이벤트는 길이만 적는다.
+  //  지금 컷이 영상이 아닐 때(이미지·깨진 영상) 앞의 것이 내는 늦은 이벤트도 무시한다 — 숨은 영상을 틀거나 이미지 컷을 '깨진 영상'
+  //  으로 만들지 않게(Codex 코드 검토).
+  const onLoaded = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    const v = e.currentTarget;
+    learnDuration(v === frontEl() ? frontUrlRef.current : backUrlRef.current, v.duration);
+    if (v !== frontEl() || st.current.still) return;
     if (seekRef.current != null) {
       try { v.currentTime = seekRef.current; } catch { /* 아직 seek 못 함 — 무시 */ }
       seekRef.current = null;
     }
-    if (st.current.playing) startPlay(v, () => videoRef.current, () => setPlaying(false));
+    if (st.current.playing) startPlay(v, frontEl, () => setPlaying(false));
+  };
+  const onEnded = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    if (e.currentTarget === frontEl() && !st.current.still) goNext();
   };
   // 재생 중 깨진 영상 — ended 가 오지 않아 멈춰 버린다. 3초 멈춘 화면(안내)으로 바꾸고 이어 간다(길이를 이미 알았어도 3초).
-  const onVideoError = () => {
+  //  뒤의 것이 못 받은 것은 자리 바꾸기에서 걸러진다(error) — 그때 평소 길로 다시 받는다.
+  const onVideoError = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    if (e.currentTarget !== frontEl() || st.current.still) return;
     const i = st.current.idx;
     setFailed((f) => new Set(f).add(i));
     setDurations((d) => {
@@ -291,26 +313,136 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
     });
     setClipTime(0);
   };
-  // 재생/정지를 지금 영상에 반영. 맞출 위치가 남아 있으면 onLoaded 가 튼다(0초부터 잠깐 보이지 않게).
+  // 클립이 바뀌면 — 뒤의 것이 그 주소를 미리 받아 두었으면 자리만 바꾸고(받지 않는다), 아니면 앞의 것에 올린다. 그다음 영상
+  //  (사이에 이미지 컷이 있어도 그 뒤의 영상)을 뒤의 것에 미리 올린다. 같은 클립을 처음부터(cycle)면 자리만 되돌린다.
   useEffect(() => {
-    const v = videoRef.current;
-    if (!v || still) return;
+    const clip = clips[idx];
+    const fr = frontEl();
+    const bk = backEl();
+    if (!fr || !bk) return;
+    const offset = seekRef.current ?? 0;
+    if (clip && clip.type === "video" && !st.current.failed.has(idx)) {
+      if (frontUrlRef.current === clip.url) {
+        // 같은 영상 — 자리만(처음부터 다시 등)
+        if (fr.readyState >= 1) {
+          fr.currentTime = offset;
+          seekRef.current = null;
+        }
+      } else if (backUrlRef.current === clip.url && !bk.error && offset === 0) {
+        // 자리 바꾸기 — 미리 받아 둔 것을 앞으로
+        const other: 0 | 1 = frontRef.current === 0 ? 1 : 0;
+        frontRef.current = other;
+        setFront(other);
+        fr.pause();
+        [frontUrlRef.current, backUrlRef.current] = [clip.url, frontUrlRef.current];
+        bk.volume = 1; // 굴리느라(또는 굴리다 세워) 꺼 둔 소리를 돌려준다 — 굴리는 중이면 그대로 이어 튼다
+        if (!rollingRef.current && bk.readyState >= 1) bk.currentTime = 0;
+        rollingRef.current = false;
+        seekRef.current = null;
+        if (st.current.playing) startPlay(bk, frontEl, () => setPlaying(false));
+      } else {
+        // 평소 길 — 앞의 것에 올린다(올라오면 onLoaded 가 위치를 맞추고 튼다)
+        frontUrlRef.current = clip.url;
+        fr.src = clip.url;
+        fr.load();
+      }
+    } else {
+      fr.pause(); // 이미지·깨진 영상 — 앞의 것은 세워 둔다(주소는 그대로 — 다음에 같은 영상이면 다시 안 받는다)
+      if (rollingRef.current) { // 굴리던 뒤의 것도 세우고 처음으로 — 이미지 컷 동안 혼자 가서 다음 영상의 앞을 건너뛰지 않게
+        bk.pause();
+        bk.currentTime = 0;
+        rollingRef.current = false;
+      }
+    }
+    // 다음 영상을 뒤의 것에 미리 — 이미지 컷은 건너뛰고, 반복이 꺼져 있으면 끝에서 멈춘다
+    let nextUrl = "";
+    for (let k = 1; k <= n; k++) {
+      const j = idx + k;
+      if (j >= n && !st.current.loop) break;
+      const candidate = clips[j % n];
+      if (candidate.type === "video" && !st.current.failed.has(j % n)) {
+        nextUrl = candidate.url;
+        break;
+      }
+    }
+    const spare = backEl();
+    if (spare && nextUrl !== backUrlRef.current) {
+      if (rollingRef.current) spare.pause();
+      rollingRef.current = false;
+      backUrlRef.current = nextUrl;
+      if (nextUrl) spare.src = nextUrl;
+      else spare.removeAttribute("src");
+      spare.load();
+    }
+  }, [idx, cycle, clips, n, frontEl, backEl]);
+  // 재생/정지를 앞의 것에 반영. 맞출 위치가 남아 있으면 onLoaded 가 튼다(0초부터 잠깐 보이지 않게). 세우면(정지·이미지·깨진 영상)
+  //  굴리던 뒤의 것도 세우고 처음으로 돌린다.
+  useEffect(() => {
+    const v = frontEl();
+    const b = backEl();
+    const stopRolling = () => {
+      if (!b || !rollingRef.current) return;
+      b.pause();
+      if (b.readyState >= 1) b.currentTime = 0;
+      rollingRef.current = false;
+    };
+    if (!v) return;
+    if (still) {
+      v.pause();
+      stopRolling();
+      return;
+    }
     if (playing) {
-      if (seekRef.current == null) startPlay(v, () => videoRef.current, () => setPlaying(false));
-    } else v.pause();
-  }, [playing, still, idx, cycle]);
-  // 영상 시간 — 재생 중엔 프레임마다 읽는다(onTimeUpdate 는 4Hz 라 자리가 툭툭 뛴다).
+      if (seekRef.current == null && frontUrlRef.current === cur?.url) startPlay(v, frontEl, () => setPlaying(false));
+    } else {
+      v.pause();
+      stopRolling();
+    }
+  }, [playing, still, idx, cycle, cur, frontEl, backEl]);
+  // 영상 시간 — 재생 중엔 프레임마다 읽는다(onTimeUpdate 는 4Hz 라 자리가 툭툭 뛴다). 끝이 가까우면 뒤의 것을 소리 없이 굴린다.
   useEffect(() => {
     if (still || !playing) return;
     let raf = 0;
     const tick = () => {
-      const v = videoRef.current;
-      if (v) setClipTime(v.currentTime);
+      const v = frontEl();
+      if (v) {
+        setClipTime(v.currentTime);
+        const remain = v.duration - v.currentTime;
+        const b = backEl();
+        if (b && backUrlRef.current && !b.error) {
+          if (!rollingRef.current && isFinite(remain) && remain <= ROLL_AHEAD && b.readyState >= 2) {
+            rollingRef.current = true;
+            b.volume = 0;
+            const pending = b.play() as Promise<void> | undefined;
+            pending?.catch(() => { rollingRef.current = false; }); // 못 굴려도 넘어갈 때 평소 길로 간다
+          } else if (rollingRef.current && b.currentTime > ROLL_MAX) {
+            b.pause(); // 앞의 것이 서 있어 너무 멀리 갔다 — 제자리로
+            b.currentTime = 0;
+            rollingRef.current = false;
+          }
+        }
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [still, playing, idx, cycle]);
+  }, [still, playing, idx, cycle, frontEl, backEl]);
+  // 닫을 때 두 요소의 주소를 떼고 불러오기를 멈춘다. 요소는 효과를 걸 때 잡아 둔다 — 정리 시점엔 ref 가 이미 비어 있다.
+  //  주소 기록도 비운다 — 개발 모드(StrictMode)의 거짓 정리 뒤 효과가 다시 돌 때 '같은 주소' 로 보고 올리지 않던 것(Codex).
+  useEffect(() => {
+    const elements = [vaRef.current, vbRef.current];
+    return () => {
+      for (const v of elements) {
+        if (!v) continue;
+        v.pause();
+        v.removeAttribute("src");
+        v.load();
+      }
+      frontUrlRef.current = "";
+      backUrlRef.current = "";
+      rollingRef.current = false;
+    };
+  }, []);
   // 멈춘 화면(이미지·깨진 영상) — 재생 중이면 시간을 흘리고 길이를 넘기면 다음 컷.
   useEffect(() => {
     if (!still || !playing || !cur) return;
@@ -389,23 +521,16 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
   return (
     <div className="reel-player">
       <div className="reel-screen">
-        {!cur ? (
-          <div className="reel-empty">{t("재생할 생성물이 없습니다")}</div>
-        ) : still ? (
+        {!cur && <div className="reel-empty">{t("재생할 생성물이 없습니다")}</div>}
+        {/* 영상 요소 둘 — 떼지 않는다. 보이는 쪽(앞)은 front 가 정하고 뒤의 것(.spare)은 다음 영상을 미리 받아 둔 채 가려져 있다. */}
+        <video ref={vaRef} className={"reel-media" + (front === 0 ? "" : " spare")} hidden={still} playsInline preload="auto"
+          onLoadedMetadata={onLoaded} onEnded={onEnded} onError={onVideoError} />
+        <video ref={vbRef} className={"reel-media" + (front === 1 ? "" : " spare")} hidden={still} playsInline preload="auto"
+          onLoadedMetadata={onLoaded} onEnded={onEnded} onError={onVideoError} />
+        {cur && still && (
           failed.has(idx)
             ? <div className="reel-broken">{t("재생할 수 없는 영상")}</div>
-            : <img key={`${idx}-${cycle}`} src={cur.url} alt="" draggable={false} />
-        ) : (
-          <video
-            key={`${idx}-${cycle}`}
-            ref={videoRef}
-            src={cur.url}
-            poster={cur.thumb ?? undefined}
-            onLoadedMetadata={onLoaded}
-            onEnded={goNext}
-            onError={onVideoError}
-            playsInline
-          />
+            : <img key={`${idx}-${cycle}`} className="reel-media" src={cur.url} alt="" draggable={false} />
         )}
         {cur && (
           <>

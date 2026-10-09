@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // 컷 정보 창(휠 클릭)과 모아보기(개별·연결) — 목록을 끝까지 받아 세고, 재생기는 컷 이동·반복·길이를 모르는 동안의 잠금.
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { FolderCard, GenQuery, Generation } from "../src/types";
@@ -176,9 +176,9 @@ it("연결 재생기 — 컷 이동(단추·↑↓·이름)·반복·길이를 �
     act(() => host.querySelector<HTMLButtonElement>(".reel-t-next")!.click());
     expect(chip()).toBe("2 / 3 · C0080 · 오지짱");
     expect(host.querySelector(".reel-chip.r")!.textContent).toBe("★ 대표");
-    expect(host.querySelector(".reel-screen video")!.getAttribute("src")).toBe("/m/b.mp4");
+    expect(host.querySelector(".reel-media:not(.spare)")!.getAttribute("src")).toBe("/m/b.mp4"); // 앞의 것
     // 재생 중 깨진 영상 — 3초 멈춘 안내 화면이 되고 길이를 알게 돼 타임바가 풀린다(3 + 3 + 3)
-    act(() => { host.querySelector(".reel-screen video")!.dispatchEvent(new Event("error")); });
+    act(() => { host.querySelector(".reel-media:not(.spare)")!.dispatchEvent(new Event("error")); });
     expect(host.querySelector(".reel-broken")!.textContent).toBe("재생할 수 없는 영상");
     expect(vtc()).toBe("0:03.0 / 0:09.0");
     expect(host.querySelector(".reel-scrub")!.classList.contains("wait")).toBe(false);
@@ -217,6 +217,57 @@ it("연결 재생기 — 컷 이동(단추·↑↓·이름)·반복·길이를 �
   expect(host.querySelector(".reel-vtc")!.textContent).toBe("0:00.0 / 0:06.0");
   expect(host.querySelector(".reel-scrub")!.classList.contains("wait")).toBe(false);
   expect(host.querySelectorAll(".reel-track > i")).toHaveLength(1); // 컷 경계 눈금
+});
+
+it("연결 재생기 — 영상 요소 둘: 뒤의 것이 다음 영상을 미리 받아 두고, 넘어갈 때 자리만 바꾼다(이미지 컷은 건너뛰어 그 뒤 영상을 준비)", () => {
+  const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+  const loadSpy = vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+  const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+  const clips: ReelClip[] = [
+    { path: "e/C1", name: "C1", url: "/m/a.mp4", type: "video", thumb: null, worker: "리버", rep: false },
+    { path: "e/C2", name: "C2", url: "/m/b.mp4", type: "video", thumb: null, worker: "리버", rep: false },
+    { path: "e/C3", name: "C3", url: "/m/c.png", type: "image", thumb: null, worker: "리버", rep: false },
+    { path: "e/C4", name: "C4", url: "/m/a.mp4", type: "video", thumb: null, worker: "리버", rep: false },
+  ];
+  try {
+    act(() => root.render(<ReelPlayer clips={clips} />));
+    const frontEl = () => host.querySelector<HTMLVideoElement>(".reel-media:not(.spare)")!;
+    const spareEl = () => host.querySelector<HTMLVideoElement>(".reel-media.spare")!;
+    expect(host.querySelectorAll("video.reel-media")).toHaveLength(2); // 요소 둘, 떼지 않는다
+    expect([frontEl().getAttribute("src"), spareEl().getAttribute("src")]).toEqual(["/m/a.mp4", "/m/b.mp4"]); // 앞 = 지금, 뒤 = 다음
+    const first = frontEl();
+    act(() => { frontEl().dispatchEvent(new Event("ended")); }); // 1 → 2: 뒤의 것이 b 를 들고 있다 — 자리만 바꾼다
+    expect(frontEl()).not.toBe(first);
+    expect(frontEl().getAttribute("src")).toBe("/m/b.mp4");
+    expect(spareEl()).toBe(first);
+    expect(spareEl().getAttribute("src")).toBe("/m/a.mp4"); // 이미지 C3 를 건너뛴 다음 영상 C4 = a — 이미 들고 있어 다시 안 받는다
+    expect(host.querySelector(".reel-chip.l")!.textContent).toBe("2 / 4 · C2 · 리버");
+    act(() => { spareEl().dispatchEvent(new Event("ended")); }); // 뒤의 것이 내는 ended 는 무시
+    expect(host.querySelector(".reel-chip.l")!.textContent).toBe("2 / 4 · C2 · 리버");
+    act(() => { frontEl().dispatchEvent(new Event("ended")); }); // 2 → 3(이미지): 영상은 숨고 뒤의 것은 그대로 a
+    expect(host.querySelector(".reel-screen img")).not.toBeNull();
+    expect([...host.querySelectorAll<HTMLVideoElement>("video.reel-media")].every((v) => v.hidden)).toBe(true);
+    // 이미지 컷 동안 앞의 것이 내는 늦은 이벤트는 무시 — 이미지가 '깨진 영상' 이 되거나 컷이 넘어가지 않는다
+    act(() => { frontEl().dispatchEvent(new Event("error")); frontEl().dispatchEvent(new Event("ended")); });
+    expect(host.querySelector(".reel-broken")).toBeNull();
+    expect(host.querySelector(".reel-chip.l")!.textContent).toBe("3 / 4 · C3 · 리버");
+    act(() => host.querySelector<HTMLButtonElement>(".reel-t-next")!.click()); // 3 → 4(a): 자리 바꾸기
+    expect(frontEl().getAttribute("src")).toBe("/m/a.mp4");
+    expect(frontEl()).toBe(first);
+    expect(spareEl().getAttribute("src")).toBe("/m/a.mp4"); // 반복 켜짐 → 다음은 처음(C1 = a) — 같은 주소라 그대로
+    // 닫으면 두 요소의 주소를 뗀다(정리 때 ref 가 비어 있어도 — 효과를 걸 때 잡아 둔 요소로)
+    const both = [...host.querySelectorAll<HTMLVideoElement>("video.reel-media")];
+    act(() => root.render(null));
+    expect(both.every((v) => !v.hasAttribute("src"))).toBe(true);
+    // 개발 모드(StrictMode)의 거짓 정리 뒤에도 첫 영상이 올라온다
+    act(() => root.render(<StrictMode><ReelPlayer clips={clips} /></StrictMode>));
+    expect(host.querySelector<HTMLVideoElement>(".reel-media:not(.spare)")!.getAttribute("src")).toBe("/m/a.mp4");
+    expect(host.querySelector<HTMLVideoElement>(".reel-media.spare")!.getAttribute("src")).toBe("/m/b.mp4");
+  } finally {
+    raf.mockRestore();
+    loadSpy.mockRestore();
+    pauseSpy.mockRestore();
+  }
 });
 
 // ── 10-09 Codex 코드 검토 — 다시 받기·닫은 뒤 요청·미리 읽기 ──
