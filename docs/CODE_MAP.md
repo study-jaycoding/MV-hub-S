@@ -420,7 +420,7 @@ updated: 2026-10-08
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `final_export.py` | 완료 탭 저장 '대상 판정' 순수 정책 단일 출처 — 종류 `final`(최종) · `shared`(공유 중·최종 아님, 보류 포함). 두 집합은 겹치지 않는다 | `manage` |
-| `export_names.py` | 저장 파일의 번호 이름(`<폴더 마디>_<share\|fin\|davinci>_<번호>`)과 렌더 폴더의 이름 장부(`_mvhub_sync/names` — n·g·d 항목, 덮어쓰지 않는 확정). 번호의 권위는 서버가 아니라 이 장부다(`docs/EXPORT_SYNC_DESIGN.md` §6) | `manage`(저장·비교)·`resolve_transfer` |
+| `export_names.py` | 저장 파일의 번호 이름(`<폴더 마디>_<share\|fin\|davinci>_<번호>`)과 렌더 폴더의 이름 장부(`_mvhub_sync/names` — n·g·d 항목, 덮어쓰지 않는 확정). 번호의 권위는 서버가 아니라 이 장부다(`docs/EXPORT_SYNC_DESIGN.md` §6). `NameBook.allocate`·`mark_done` 은 이긴 공개를 메모리 장부(`_owners`·`_mine`·`_done`)에 반영하고 **g 공개에 졌을 때만** `reload()` — 저장마다 장부 전체를 다시 읽으면 한 컷 N 건에 3N²+2N 번 읽는다(Codex 검토 10-09) | `manage`(저장·비교)·`resolve_transfer` |
 
 ### 2.6 숨은 진입점
 
@@ -524,9 +524,9 @@ updated: 2026-10-08
 | `GenerationCard.tsx`(779줄) | 카드 1장(그리드/리스트 두 모드) · 호버 영상 · 드래그 · 폴더 이름표(`onOpenFolder` 를 받았을 때만 — 카드 아래 변 가운데에 붙인 표·이름만·반투명, 소스·상태 배지는 그 위에 한 묶음 `.card-bottom`. `showFolder` 만 받으면 누를 수 없는 표시 `.card-folder.static`) · 고른 폴더 밖 흐림(`dimmed` → `.folder-dim`) · 폴더 창 안의 '방금 누른 카드' 표시(`openedHere` — 같은 자리·같은 모양에 글자·테두리만 라임, 카드 테두리는 안 건드림) | `GenerationCard`(memo) — 캔버스의 `scene/cards/GenerationCard.tsx` 와 이름만 같은 별개 파일(§5-b) |
 | `MediaThumbnail.tsx`(157줄) | 영상 포스터/이미지/포스터 없는 영상 3분기 통합 표현 | `MediaThumbnail`(10곳 재사용) |
 | `LibraryToolbar.tsx`(약 335줄) | 타입 필터·검토 필터·크기 슬라이더·리스트/그리드 토글·태그 패널 · 폴더 묶음 보기 전환(`folderCards` — [컷별 \| 전체]·'컷 N · M건', 받았을 때만) | `LibraryToolbar` |
-| `FolderCardGrid.tsx`(약 195줄) | 공유 & 리뷰 탭의 폴더 묶음 보기 — 폴더마다 카드 한 장(표지·이름·건수·'대표 미정', 종이를 겹친 모양) + 맨 끝 '컷 밖(맨 위에선 에피소드 밖) N건' 칸. 한 번 클릭 = 고르기(Ctrl·Shift·빈 곳에서 끌기 = 마퀴, `ThumbnailGrid` 와 같은 5px 판정·rAF 코얼레스·blur 면 버림), 두 번 클릭 = `subfolders` 가 있으면 `onEnter`(들어가기) 아니면 `onOpen`(폴더 창), 휠 클릭 = 컷 정보. 카드 크기는 `ThumbnailGrid` 와 같은 식(180×배율). `.cut-grid` 는 폴더 창을 닫은 뒤 초점을 돌려받는 자리 | `FolderCardGrid` |
-| `CutInfoPopup.tsx`(약 230줄) | 컷 정보(휠 클릭) — 정보 창과 같은 틀(`.info-popup`, 머리 끌기, Esc·바깥 클릭). 표지(대표/최신 것) + 그 폴더의 목록을 커서로 끝까지 받아 센 집계(`lib/cutSummary`) + '이 컷의 생성물' 줄(크게 보기·★ 대표). 폴더가 바뀌면 순번으로 늦은 응답을 버린다. 크게 보기가 위에 있으면 Esc 를 넘긴다 | `CutInfoPopup` |
-| `CutReel.tsx`(약 330줄) | 모아보기 — [개별] 큰 카드(표지·순번·★ 대표/최신 것·작업자·크레딧·생성일·검토) / [연결] `ReelPlayer`: 대표를 이어서 재생(가상 시간, 이미지·깨진 영상 3초, 길이를 다 알기 전 타임바 잠금, 반복 끄면 끝에서 멈춤, ↑↓·Space·Home/End). 클립이 바뀌면 key 로 다시 올린다. `ViewTimeline` 과 원리는 같지만 요구가 달라 따로 둔다 | `CutReel`, `ReelPlayer` |
+| `FolderCardGrid.tsx`(약 195줄) | 공유 & 리뷰 탭의 폴더 묶음 보기 — 폴더마다 카드 한 장(표지·이름·건수·'대표 미정', 종이를 겹친 모양) + 맨 끝 '컷 밖(맨 위에선 에피소드 밖) N건' 칸. 한 번 클릭 = 고르기(Ctrl·Shift·끌기 = 마퀴 — **카드 위에서 시작해도**(꽉 찬 격자엔 빈 곳이 없다, 10-09 실측 100장에서 0장), `ThumbnailGrid` 와 같은 5px 판정·rAF 코얼레스·blur 면 버림), 두 번 클릭 = `subfolders` 가 있으면 `onEnter`(들어가기) 아니면 `onOpen`(폴더 창), 휠 클릭 = 컷 정보. 카드 크기는 `ThumbnailGrid` 와 같은 식(180×배율). `.cut-grid` 는 폴더 창을 닫은 뒤 초점을 돌려받는 자리 | `FolderCardGrid` |
+| `CutInfoPopup.tsx`(약 235줄) | 컷 정보(휠 클릭) — 정보 창과 같은 틀(`.info-popup`, 머리 끌기, Esc·바깥 클릭). 표지(대표/최신 것) + 그 폴더의 목록을 커서로 끝까지 받아 센 집계(`lib/cutSummary`) + '이 컷의 생성물' 줄(크게 보기·★ 대표). 폴더가 바뀌면 순번으로 늦은 응답을 버리고, **닫으면(정리) 남은 쪽·건별 metrics 요청을 보내지 않는다**(`alive()`). 조회 조건(`query`)은 App 이 폴더 경로·조회로만 메모해 카드가 다시 와도 다시 받지 않는다(10-09 실측: 열어 둔 채 32초에 metrics +300 → 0). 크게 보기가 위에 있으면 Esc 를 넘긴다 | `CutInfoPopup` |
+| `CutReel.tsx`(약 370줄) | 모아보기 — [개별] 큰 카드(표지·순번·★ 대표/최신 것·작업자·크레딧·생성일·검토) / [연결] `ReelPlayer`: 대표를 이어서 재생(가상 시간, 이미지·깨진 영상 3초, 길이를 다 알기 전 타임바 잠금, 반복 끄면 끝에서 멈춤, ↑↓·Space·Home/End). 클립은 보이는 값 전부의 JSON 으로 메모(카드가 다시 와도 그대로), 바뀌면 key 로 다시 올린다. 영상 길이는 **주소마다 한 번**(`DURATION_CACHE`, 모듈 수준)·**한 번에 둘씩** 읽고 끝나거나 닫히면 요소의 주소를 뗀다(10-09 실측: 28개 동시 읽기 → 첫 재생 6.2초 → 0.6초, 열고 닫기 5번 영상 요청 +334 → +7). 화면 영상의 loadedmetadata 로도 길이를 채운다. 컷 전환 간격 약 130~200ms(새 video 요소) — 더 줄이려면 편집 탭 뷰어의 영상 쌍 방식. `ViewTimeline` 과 원리는 같지만 요구가 달라 따로 둔다 | `CutReel`, `ReelPlayer` |
 | `FilterSidebar.tsx`(232줄) | 좌측 필터(프로젝트/컬러/자동태그/생성자/공유) 껍데기 | `FilterSidebar` |
 | `SearchBox.tsx`(58줄) | 디바운스 검색 입력 | `SearchBox` |
 | `TopBar.tsx`(150줄) | 상단바(로고·탭·동기화·검색·Assets·계정) | `TopBar` |
@@ -866,7 +866,7 @@ updated: 2026-10-08
 | `folderCards.ts` | 순수 | 공유 & 리뷰 탭의 폴더 묶음 보기 규칙 — `folderCardsScope`(묶어 보일 수 있는 조회면 그 범위, 아니면 null)·`parentFolder`·`singleTeamWorkspace` |
 | `cutSummary.ts` | 순수 | 컷 정보의 집계 — `summarizeCut`(건수·작업자별 수·실제 크레딧 합+미상 건수·생성일 범위·영상 길이 합·모델·검토)·`inFolder`(경로로 다시 거르기 — 대소문자)·`workerLabel`·`durationSec` |
 | `cutReel.ts` | 순수 | 모아보기 재생기 계산 — `reelClips`(컷 카드 → 클립)·`reelStarts`·`reelLocate`(가상 시각 → 클립·오프셋)·`fmtReelTime`(`m:ss.s`)·`REEL_IMAGE_SEC`(3) |
-| `useFolderCards.ts` | 훅 | 폴더 카드 받기 — 문맥(계정·서버·프로젝트·폴더·공간)이 바뀌면 받던 응답·받아 둔 카드를 버린다 · `reloadKey`(목록의 `listRevision`)마다 다시 받는다 · 옛 서버는 그 계정·서버에서만 '지원 안 함' · `reload()` 는 끝난 뒤 풀리고 던지지 않는다 |
+| `useFolderCards.ts` | 훅 | 폴더 카드 받기 — 문맥(계정·서버·프로젝트·폴더·공간)이 바뀌면 받던 응답·받아 둔 카드를 버린다 · `reloadKey`(목록의 `listRevision`)마다 다시 받는다 · 옛 서버는 그 계정·서버에서만 '지원 안 함' · `reload()` 는 끝난 뒤 풀리고 던지지 않는다. **같은 문맥의 조회가 받는 중이면 새로 보내지 않고 그 조회에 얹는다**(`Run.pending` — 끝난 뒤 한 번 더; 주기 조회는 받는 중인 응답을 버리지 않고, 대표 저장 뒤의 `reload()` 만 버린다 — 느린 서버에서 조회가 꼬리를 물어 잠금이 안 풀리거나 어느 응답도 적용되지 못하던 것, 10-09) · 버려진 조회의 약속은 그 자리를 대신한 조회가 끝날 때 풀린다 · 내용이 같은 응답은 같은 객체(15초마다 카드·창이 다시 그리지 않게) |
 | `projectFolderTree.ts` | 저장 | 프로젝트 폴더 캐시·펼침 상태 |
 | `folderContextMenu.ts` | 순수 | 폴더 우클릭 메뉴 규칙·위치 클램프 |
 | `teamSeen.ts` | store+저장 | 공유&리뷰 '새로 들어옴' 항목별 확인(ack) 모델 |
