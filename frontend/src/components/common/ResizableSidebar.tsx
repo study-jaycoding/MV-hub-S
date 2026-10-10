@@ -10,6 +10,7 @@ const clamp = (width: number, max: number) => Math.max(MIN_WIDTH, Math.min(max, 
 
 interface Drag {
   pointerId: number;
+  focusBefore: HTMLElement | null; // 끌기 전에 초점이 있던 자리 — 끝나면 돌려준다
   startX: number;
   startWidth: number;
   preferredWidth: number;
@@ -43,6 +44,13 @@ export function ResizableSidebar({ children }: { children: ReactNode }) {
     showWidth(Math.min(next, maxVisibleWidth()));
     handle.current?.classList.remove("resizing");
     if (handle.current?.hasPointerCapture(current.pointerId)) handle.current.releasePointerCapture(current.pointerId);
+    // 마우스로 끈 뒤에는 초점을 끌기 전 자리로 돌려준다(없으면 내려놓는다) — 손잡이에 남으면 ←·→ 가 화면의 키가 아니라 칸 폭을 바꾸고
+    //  Space 같은 단축키가 죽는다(2026-10-10 격리 실측 3/3). Tab 으로 손잡이에 와서 방향키로 조절하는 길은 끌기가 아니라 그대로다.
+    if (!unmount && document.activeElement === handle.current) {
+      const back = current.focusBefore;
+      if (back && back.isConnected && back !== document.body) back.focus({ preventScroll: true });
+      else handle.current?.blur();
+    }
     if (!unmount) setPreferredWidth(next);
     if (changed) saveJSON(WIDTH_KEY, next);
   }, [showWidth]);
@@ -77,9 +85,10 @@ export function ResizableSidebar({ children }: { children: ReactNode }) {
       onPointerDown={event => {
         if (event.button !== 0 || !event.isPrimary || drag.current) return;
         event.preventDefault(); event.stopPropagation();
+        const focusBefore = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         event.currentTarget.focus({ preventScroll: true });
         event.currentTarget.setPointerCapture(event.pointerId);
-        drag.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: width, preferredWidth, width };
+        drag.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: width, preferredWidth, width, focusBefore };
         event.currentTarget.classList.add("resizing");
       }}
       onPointerMove={event => {

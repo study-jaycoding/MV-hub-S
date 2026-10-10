@@ -2,7 +2,7 @@
 // 떠 있는 것이 키의 주인(lib/keyGate) · Esc 한 번에 한 겹(lib/useEscapeClose).
 // 2026-10-10 실측에서 나온 것들: 크게 보기·정보·재생 창 뒤로 단축키가 먹음(카드 색·Delete), 같은 Esc 에 두 겹이 함께 닫힘
 // (프로젝트 대화상자 + 달력, 설정 + 옆 패널, 폴더 창 + 뒤의 컷 선택).
-import { act, useState } from "react";
+import { act, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -16,6 +16,7 @@ import { useGenerationSelection } from "../src/lib/useGenerationSelection";
 import { markKeyHandled } from "../src/lib/keyHandled";
 import { useBackgroundEscape, useEscapeClose } from "../src/lib/useEscapeClose";
 import { useOutsideDragSelect } from "../src/lib/useOutsideDragSelect";
+import { useOutsideMouseDown } from "../src/lib/useOutsideMouseDown";
 import { useGenerationKeyboardActions } from "../src/lib/useGenerationKeyboardActions";
 import { useSceneKeyboardShortcuts } from "../src/lib/useSceneKeyboardShortcuts";
 
@@ -275,4 +276,19 @@ it("조합 중의 Enter(한글 확정)는 입력칸의 키 처리에 닿지 않�
   expect(onEnter).not.toHaveBeenCalled();
   press("Enter", input);
   expect(onEnter).toHaveBeenCalledTimes(1);
+});
+
+it("메뉴의 바깥 누름은 pointerdown 으로도 닫힌다 — 누름을 pointerdown 에서 막아 mousedown 이 안 오는 곳(폭 손잡이)을 눌러도", () => {
+  const onOutside = vi.fn();
+  function Menu() {
+    const ref = useRef<HTMLDivElement>(null);
+    useOutsideMouseDown(ref, onOutside);
+    return <><div ref={ref} className="probe-menu">메뉴</div><span className="probe-blank">바깥</span></>;
+  }
+  act(() => root.render(<Menu />));
+  const fire = (selector: string, type: string) => act(() => { host.querySelector(selector)!.dispatchEvent(new MouseEvent(type, { bubbles: true })); });
+  fire(".probe-menu", "pointerdown");
+  expect(onOutside).not.toHaveBeenCalled();
+  fire(".probe-blank", "pointerdown"); // mousedown 은 오지 않는다
+  expect(onOutside).toHaveBeenCalledTimes(1);
 });

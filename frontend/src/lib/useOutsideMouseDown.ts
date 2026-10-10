@@ -15,7 +15,13 @@ export function useOutsideMouseDown<T extends HTMLElement, U extends HTMLElement
       if (alsoInside?.current?.contains(target)) return;
       onOutside();
     };
+    // pointerdown 도 듣는다 — 누름을 pointerdown 에서 막는 곳(사이드바 폭 손잡이 등)은 mousedown 이 아예 안 와서, 그곳을 눌러도
+    //  메뉴가 떠 있는 채였다(2026-10-10 격리 실측). 보통의 누름에는 둘 다 오지만 닫기는 두 번 해도 같다.
+    document.addEventListener("pointerdown", onDoc);
     document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    return () => {
+      document.removeEventListener("pointerdown", onDoc);
+      document.removeEventListener("mousedown", onDoc);
+    };
   }, [alsoInside, enabled, onOutside, ref]);
 }
