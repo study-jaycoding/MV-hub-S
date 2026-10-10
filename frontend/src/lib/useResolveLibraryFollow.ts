@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { Filters, Generation } from "../types";
+import type { ColorEditLedger } from "./generationColorState";
 import { locatedItems, locationFilters, type GenerationLocation } from "./resolveLibraryLocation";
 import { hasWorkspaceFilter, workspaceFilterOf, type LibraryWorkspaceFilter } from "./libraryWorkspaceScope";
 
@@ -13,7 +14,9 @@ interface Args {
   gens: Generation[];
   locatedVisibleIds?: ReadonlySet<string> | null;
   followLocation: (location: { project_id?: string; folder_path?: string }) => void;
-  revealLocated: (tab: "my" | "team", location: GenerationLocation) => void;
+  revealLocated: (tab: "my" | "team", location: GenerationLocation, keepPainted?: ReturnType<ColorEditLedger["stamp"]>) => void;
+  // 색 편집 장부(목록 훅의 것) — 위치 조회의 응답이 그사이 칠한 색을 덮지 않게, 조회가 출발할 때 도장을 찍어 revealLocated 에 함께 넘긴다.
+  colorLedger?: ColorEditLedger;
   canFollow: () => boolean;
   workspaceFilter?: LibraryWorkspaceFilter;
   workspaceScopeKey?: string;
@@ -63,6 +66,8 @@ export function useResolveLibraryFollow(args: Args) {
         const tab = before.filters.tab;
         if (!before.authReady || tab === "compose") continue;
         try {
+          // 출발 시점을 찍는다 — 응답의 카드는 '출발할 때의 서버 값'이라, 이 뒤에 칠한 색을 덮으면 다음 색 키가 낡은 값으로 토글한다.
+          const keepPainted = before.colorLedger?.stamp();
           const response = await api.locateGenerations({
             tab, gen_ids: request.ids,
             ...workspaceFilterOf(before.workspaceFilter ?? {}),
@@ -85,7 +90,7 @@ export function useResolveLibraryFollow(args: Args) {
           const location = { ...response, items, focus_ids: items.map((item) => item.id) };
           if (automatic) {
             latest.current.followLocation(locationFilters(location));
-            latest.current.revealLocated(tab, location);
+            latest.current.revealLocated(tab, location, keepPainted);
           }
           const visibleIds = new Set(latest.current.gens.map((item) => item.id));
           setFocus({
