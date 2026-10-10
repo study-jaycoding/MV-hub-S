@@ -20,6 +20,7 @@ import { useT } from "../lib/i18n";
 import { isKeyHandled, markKeyHandled } from "../lib/keyHandled";
 import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { useOutsideDragSelect } from "../lib/useOutsideDragSelect";
+import { onSelectionOutsidePress } from "../lib/useGenerationSelection";
 import { matchShortcut } from "../lib/shortcuts";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
@@ -107,7 +108,13 @@ export function ThumbnailGrid(props: Props) {
     // 목록이 짧으면 wheel을 해도 scroll 이벤트가 없다. underfill 검사도 다시 깨운다.
     setResolveScrollRelease((version) => version + 1);
   };
+  // 앞선 Shift 클릭의 기준 — 그 클릭이 만든 선택이 그대로인 동안은 이어지는 Shift 클릭도 같은 기준을 쓴다(탐색기처럼 Shift 클릭은 기준을
+  //  옮기지 않는다). 전엔 초점 카드가 없으면(마퀴·선택 칸으로만 골랐거나 밖에서 풀린 자리) '고른 것 중 마지막 카드'를 누를 때마다 다시 잡아,
+  //  기준이 방금 만든 범위의 끝으로 옮겨 갔다(조작 점검 7회 R43-b). 격자가 선택을 달리 바꾸면(마퀴·방향키·Ctrl+A·Esc) 바로 아래에서
+  //  잊고, 밖에서 바뀐 선택(선택 칸·밖에서 풀림·부모가 거른 선택)은 선택이 바뀌는 효과에서 잊는다(아래 [selectedIds] 효과).
+  const rangeAnchorRef = useRef<{ anchor: string; ids: ReadonlySet<string> } | null>(null);
   const onSelectedChange = (next: Set<string>) => {
+    rangeAnchorRef.current = null;
     releaseResolveScrollGuard();
     props.onClearResolveHighlight?.();
     props.onSelectedChange(next);
@@ -215,6 +222,11 @@ export function ThumbnailGrid(props: Props) {
   const focusedIdRef = useRef(focusedGenerationId);
   focusedIdRef.current = focusedGenerationId;
   useEffect(() => {
+    // 선택이 앞선 Shift 클릭이 만든 범위와 달라지면 그 기준을 잊는다 — 격자 밖에서 선택이 바뀌는 길(선택 칸·밖에서 풀림·부모가 거른 선택)은
+    //  모두 여기를 지난다. **바뀐 순간에** 잊는다: 쓸 때 견주면 g1 을 켰다 끈 뒤(집합은 다시 같다) 옛 기준이 되살아났다(Codex 코드 리뷰).
+    //  내용으로 견주는 까닭 — 부모가 같은 선택을 새 Set 으로 다시 줄 뿐일 때('생성 결과' 창의 자료 갱신)는 지킨다.
+    const kept = rangeAnchorRef.current;
+    if (kept && (kept.ids.size !== selectedIds.size || [...selectedIds].some((id) => !kept.ids.has(id)))) rangeAnchorRef.current = null;
     const had = hadSelectionRef.current;
     hadSelectionRef.current = selectedIds.size > 0;
     const keep = keepFocusRef.current;
@@ -227,6 +239,14 @@ export function ThumbnailGrid(props: Props) {
       setFocusedGenerationId(null);
     }
   }, [selectedIds]);
+  // 선택이 이미 빈 채로 격자 밖을 눌렀다 — 위 효과는 '있다 → 없다'만 보므로 Space 로 남겨 둔 초점 카드가 그대로 남고, 초점 잃은 키
+  //  (c·#·Enter·Space)가 고른 것도 없는데 그 카드에 실행됐다(조작 점검 7회 R43-a). 밖에서 풀릴 때와 같게 한다: 실행용 초점은 지우고
+  //  자리만 방향키·Shift 클릭의 기준으로 기억한다. '밖'의 판정은 선택 훅이 한다(선택을 지키는 자리 = 초점 카드도 지키는 자리).
+  useEffect(() => onSelectionOutsidePress(() => {
+    if (hadSelectionRef.current || !focusedIdRef.current) return;
+    lastSpotRef.current = focusedIdRef.current;
+    setFocusedGenerationId(null);
+  }), []);
   const editDone = useCallback(() => setEditTarget(null), []);
   // 인라인 편집이 키(Enter·Esc)로 끝나면 입력칸이 사라지며 초점이 BODY 로 떨어진다 — 격자로 돌려받아 방향키·#·c 가 바로 먹게 한다
   //  (캔버스의 결과 창에서는 초점 없는 키가 뒤 보드로 가 Delete 가 노드를 지운다). 다른 곳을 눌러 끝냈으면 그 초점을 둔다.
@@ -467,7 +487,9 @@ export function ThumbnailGrid(props: Props) {
       if (d.range && anchorIdx >= 0 && clickedIdx >= 0) {
         // Shift-클릭 = 앵커~클릭 사이 전부 선택(앵커는 유지 → 연속 Shift-클릭으로 범위 조정).
         const lo = Math.min(anchorIdx, clickedIdx), hi = Math.max(anchorIdx, clickedIdx);
-        opsRef.current.onSelectedChange(new Set(gens.slice(lo, hi + 1).map((g) => g.id)));
+        const range = new Set(gens.slice(lo, hi + 1).map((g) => g.id));
+        opsRef.current.onSelectedChange(range);
+        rangeAnchorRef.current = { anchor: gens[anchorIdx].id, ids: range }; // 위 호출이 지운 뒤에 적는다 — 다음 Shift 클릭의 기준
       } else if (d.additive) {
         setFocusedGenerationId(d.cellId);
         const n = new Set(d.base);
@@ -612,8 +634,12 @@ export function ThumbnailGrid(props: Props) {
     (e: { clientX: number; clientY: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean },
      cellId: string | null) => {
       const { selectedIds: base, focusedGenerationId } = startRef.current;
-      // Shift 범위의 기준 = 초점 카드, 없으면 고른 것 중 목록의 마지막 카드 — 마퀴로 고른 뒤의 Shift 클릭도 범위가 된다.
-      const anchorId = focusedGenerationId ?? lastSelectedId(opsRef.current.generations, base) ?? lastSpotRef.current;
+      // Shift 범위의 기준 = 초점 카드, 없으면 앞선 Shift 클릭의 기준(그 뒤로 선택이 바뀌지 않았고 그 카드가 목록에 있을 때),
+      //  그것도 없으면 고른 것 중 목록의 마지막 카드 — 마퀴로 고른 뒤의 Shift 클릭도 범위가 된다.
+      const gens = opsRef.current.generations;
+      const kept = rangeAnchorRef.current;
+      const keptAnchor = kept && gens.some((g) => g.id === kept.anchor) ? kept.anchor : null;
+      const anchorId = focusedGenerationId ?? keptAnchor ?? lastSelectedId(gens, base) ?? lastSpotRef.current;
       dragRef.current = {
         x: e.clientX,
         y: e.clientY,

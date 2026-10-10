@@ -810,6 +810,11 @@
 .ov-check input:checked { background: var(--accent); border-color: var(--accent); }
 .ov-check input:checked::after { color: var(--accent-ink); }
 .ov-check input:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+/* 고대비(forced-colors) 모드에서는 배경·글자색이 시스템 색으로 바뀌어, 색으로만 가르던 켬(라임 칸)·끔(흐린 ✓)이 같은 ✓ 로 보인다.
+   고른 칸에만 ✓ 를 남겨 모양으로 가른다 — 끈 칸은 빈 칸(조작 점검 7회 R38). */
+@media (forced-colors: active) {
+  .ov-check input:not(:checked)::after { content: none; }
+}
 
 /* ── 테두리의 상태색(2026-09-21, Jay 가 모의 화면 v2 의 (가)안으로 확정) ──
    평소: 공유·보류·최종 카드는 1px 상태색 선(일반은 선 없음). 선택: 3px 테두리가 상태색(일반 = 눈부심 덜한 회색빛 흰색).
