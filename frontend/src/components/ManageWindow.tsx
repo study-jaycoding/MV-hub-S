@@ -2,6 +2,7 @@
 // 대시보드(요약+팀전체 통합) / 작업(칸반) / 완료 탭. AssetsWindow 와 동일한 분리형 모듈 패턴.
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { usePageSelectAllGuard } from "../lib/keyGate";
 import { loadString, saveString } from "../lib/storage";
 import { STORAGE_KEYS } from "../lib/storageKeys";
 import { loadManageWorkspaceScope } from "../lib/manageWorkspaceScope";
@@ -22,6 +23,7 @@ const TABS: { v: Tab; label: string }[] = [
 ];
 
 export function ManageWindow() {
+  usePageSelectAllGuard(); // 분리 창은 App 밖에서 뜬다 — 조합 중 Enter·입력칸 밖 Ctrl+A 지킴이를 이 창에도 건다(lib/keyGate)
   // 마지막 본 탭 기억 — 창을 껐다 켜도 그 화면으로 이어서 작업(없어진 탭이면 대시보드로).
   const [tab, setTab] = useState<Tab>(() => {
     let saved = loadString(STORAGE_KEYS.manageTab, "dashboard");
