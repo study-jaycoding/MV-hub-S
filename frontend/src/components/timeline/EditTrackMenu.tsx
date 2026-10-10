@@ -19,6 +19,12 @@ import { GROUP_COLORS } from "../scene/sceneColors";
 const HEAD_H = 38; // 위아래 여백 + 제목 줄
 const ROW_H = 30; // 줄 28 + 간격 2
 const SEP_H = 11; // 가름줄 1 + 여백 + 간격
+const GAP = 2; // 누른 자리와 메뉴 사이
+const EDGE = 4; // clampMenuPosition 이 화면 가장자리에 두는 여백
+
+// 누른 자리(at)에서 뜨는 메뉴의 한 축 자리 — 그 뒤(아래·오른쪽)에 자리가 있으면 거기, 없으면 앞(위·왼쪽)으로 뒤집는다.
+//  화면 안으로 밀어 넣지 않는다: 밀어 넣으면 메뉴가 누른 자리를 덮는다.
+const beside = (at: number, size: number, room: number) => (at + GAP + size <= room - EDGE ? at + GAP : at - GAP - size);
 
 export function EditMenu({
   x,
@@ -49,6 +55,10 @@ export function EditMenu({
   onCloseRef.current = onClose;
   const closeOutside = useRef(() => onCloseRef.current(false)).current;
   useOutsideMouseDown(ref, closeOutside, true, trigger);
+  // 단추로 여는 메뉴(trigger)는 부르는 쪽이 단추에 맞춰 준 자리 그대로다. 우클릭으로 뜨는 메뉴는 누른 자리를 덮지 않게 놓는다 —
+  //  화면 아래쪽의 트랙 머리에서는 메뉴가 화면 안으로 밀려 올라가 누른 자리를 덮었고, 그래서 그 머리를 다시 눌러도 '메뉴 안'의
+  //  누름이라 닫히지 않았다(2026-10-11 격리 실측). 위아래 어느 쪽에도 안 들어가는 큰 메뉴만 마지막에 화면 안으로 밀린다.
+  const at = trigger ? { x, y } : { x: beside(x, width, window.innerWidth), y: beside(y, height, window.innerHeight) };
   // 메뉴가 떠 있는 동안의 키 — 캡처 단계에서 먼저 본다(리스너는 한 번만 건다: useEscapeClose 의 주석).
   //  · Esc·Tab 은 메뉴가 먹고 닫는다. Esc 는 뒤의 폴더 창까지 닫지 않게, Tab 은 초점이 메뉴 밖으로 나가지 않게 —
   //    나가면 뒤 단추를 Enter·Space 로 누를 수 있다(전파를 막아도 단추의 기본 동작은 남는다, Codex 코드 리뷰).
@@ -85,7 +95,7 @@ export function EditMenu({
       role="menu"
       aria-label={label}
       tabIndex={-1}
-      style={{ ...clampMenuPosition(x, y, window.innerWidth, window.innerHeight, width, height), width }}
+      style={{ ...clampMenuPosition(at.x, at.y, window.innerWidth, window.innerHeight, width, height), width }}
       onKeyDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
     >

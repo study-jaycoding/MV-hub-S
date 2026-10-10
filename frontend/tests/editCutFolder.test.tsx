@@ -1343,6 +1343,37 @@ it("북마크 색 단추·목록 단추: 메뉴가 뜬 채 그 단추를 다시 
   expect(trackMenu()).toBeNull();
 });
 
+// 격리 브라우저 실측(2026-10-11): 트랙 머리를 우클릭해 뜬 메뉴는 그 머리를 다시 눌러도 닫히지 않았다. 머리는 화면 아래쪽에
+//  있어 메뉴가 화면 안으로 밀려 올라가며 누른 자리를 덮었고, 그래서 그 누름이 '메뉴 안'이었다(jsdom 에는 좌표로 맞는 요소를
+//  찾는 일이 없어 그 누름 자체는 못 본다 — 메뉴가 그 자리를 덮지 않는 것을 본다).
+it("우클릭 메뉴는 누른 자리를 덮지 않는다 — 아래·오른쪽에 자리가 없으면 밀어 넣지 않고 위·왼쪽으로 뒤집는다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }]);
+  mount();
+  act(() => cutCell("c1").click());
+  const HEIGHT = 251; // 트랙 머리 메뉴의 높이(제목 + 여섯 줄 + 가름줄 셋)
+  const open = (x: number, y: number) => {
+    act(() => { headOf(1).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: x, clientY: y })); });
+    const { left, top, width } = trackMenu()!.style;
+    press({ key: "Escape" });
+    const box = { left: parseFloat(left), top: parseFloat(top), right: parseFloat(left) + parseFloat(width), bottom: parseFloat(top) + HEIGHT };
+    return { ...box, covers: x >= box.left && x < box.right && y >= box.top && y < box.bottom };
+  };
+  const roomy = open(30, 40); // 자리가 넉넉하면 누른 자리의 오른쪽 아래 — 조금 띄운다
+  expect(roomy.covers).toBe(false);
+  expect([roomy.left > 30, roomy.top > 40]).toEqual([true, true]);
+  const low = open(30, window.innerHeight - 20); // 화면 아래쪽 — 트랙 머리가 있는 곳
+  expect(low.covers).toBe(false);
+  expect(low.bottom).toBeLessThanOrEqual(window.innerHeight - 20); // 누른 자리 위로 뒤집혔다
+  const edge = open(window.innerWidth - 10, 40); // 화면 오른쪽 끝
+  expect(edge.covers).toBe(false);
+  expect(edge.right).toBeLessThanOrEqual(window.innerWidth - 10);
+  expect(edge.left).toBeGreaterThanOrEqual(0); // 화면 안
+
+  act(() => listButton().click()); // 단추로 여는 메뉴는 단추에 맞춰 뜬다 — 띄우지 않는다(jsdom 의 단추는 (0,0) 에 있다)
+  const list = document.querySelector<HTMLElement>('.ed-tmenu[aria-label="타임라인 정리"]')!;
+  expect([list.style.left, list.style.top]).toEqual(["4px", "4px"]);
+});
+
 it("클립을 우클릭하면 Resolve 보내기가 뜬다 — 고른 클립 위에서는 고른 것 모두, 아니면 그 클립 하나. 고른 것은 풀리지 않는다", () => {
   seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "x", track: 1 }, { cut: "c2", gen: "gone", track: 2 }]);
   mount();

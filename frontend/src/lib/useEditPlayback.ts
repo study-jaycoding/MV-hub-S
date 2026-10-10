@@ -15,6 +15,8 @@ import {
   stepPoint,
   timeOf,
   visibleClip,
+  visibleSegments,
+  type CutSlot,
   type EditDoc,
   type EditLayout,
   type EditPos,
@@ -84,6 +86,11 @@ const SEEK_SLOP = 0.04;
 //  한두 프레임을 건너뛸 수 있다 — 컷이 바뀌는 자리라 눈에 띄지 않고, 멈춘 채로는 언제나 정확한 프레임이다.
 const ROLL_LEAD = 0.08;
 const ROLL_SLOP = 0.3; // 미리 굴린 영상이 목표를 이만큼(실제 시간 — 배속을 곱한다)까지 지나 있어도 되감지 않는다
+// 한 프레임(tick)에 넘기는 클립 수의 상한. 브라우저에서는 보통 둘을 넘지 않는다(지금 것 + 미리 받아 둔 다음 것 — 넘긴 뒤에 받기
+//  시작한 영상은 같은 프레임에 준비되지 않는다). 틀 수 없는 것이 길게 이어져도 한 프레임이 끝없이 길어지지 않게 못 박아 둔다.
+const PASS_MAX = 4;
+// '바퀴의 처음에서 시작했다'의 허용 오차 — 시각을 컷 좌표로 바꿨다 되돌리면 끝자리가 달라질 수 있다
+const LAP_SLOP = 1e-9;
 
 export function useEditPlayback({
   scope,
@@ -122,6 +129,13 @@ export function useEditPlayback({
     armed: false, // 구간 반복 — 마지막으로 위치를 옮긴 뒤 구간 끝(아웃) 앞에 있었다. 아웃 뒤에서 시작했으면 꺼진 채다
     // 편집점 앞뒤 재생 — 재생 중에만 있다: 멈추거나 다른 재생 명령(재생·J/L·구간 반복 재생)이 오면 풀린다.
     around: null as Around | null,
+    // 반복의 '빈 바퀴' 판정(되돌아갈 때 — loopBack) — 이 둘뿐이다. 일어난 일마다 깃발을 켜고 끄지 않는다: 바퀴의 범위를
+    //  바꾸는 길과 시간을 흘리는 길을 전부 열거해야 해서 빠진 길이 거듭 나왔다(Codex 재검토).
+    //  · lap — 지금 도는 바퀴를 열 때의 범위(from~to)와, 온전한 바퀴인지(whole: 범위의 처음에서 시작했고 도중에 자리를 옮기지
+    //    않았다). 판정하는 순간에 그때의 범위와 지금의 범위를 견준다 — 범위가 왜 달라졌는지는 묻지 않는다.
+    //  · flowed — 그 바퀴에 흐른 시간(초). 무엇이 그 시간을 흘렸는지로 센다(tick·onEnded) — 0 이면 틀 것이 없던 바퀴다.
+    lap: { from: 0, to: 0, whole: false },
+    flowed: 0,
     frame: 0,
     last: 0,
   });
@@ -148,6 +162,17 @@ export function useEditPlayback({
       const key = clip ? clipKey(clip) : "";
       return clip && source?.state === "ok" && source.type === "video" && source.url && !state.failed.has(key)
         ? `${key}\n${source.url}` : "";
+    };
+    // 그 컷의 [from, to](타임라인 시각)에서 rAF 시계가 흘린 시간 — 그 구간을 보이는 것이 바뀌는 경계로 쪼개, 틀 영상이 보이지
+    //  않는 조각(빈 자리·그림·못 트는 클립)의 길이만 더한다. 틀 영상이 보이는 조각에서 rAF 로 버틴 시간은 흐른 것이 아니다
+    //  (그 영상이 도착하기 전이거나, 실제 끝 뒤라 곧 넘길 자리다). 조각은 그 컷의 클립 수만큼뿐이다.
+    const idleFlow = (slot: CutSlot, from: number, to: number) => {
+      let sum = 0;
+      for (const part of visibleSegments(live.current.doc, slot)) {
+        const length = Math.min(to, slot.start + part.to) - Math.max(from, slot.start + part.from);
+        if (length > 0 && !shownOf(part.clip, part.clip && live.current.sourceOf(part.clip))) sum += length;
+      }
+      return sum;
     };
 
     const publish = () => {
@@ -330,15 +355,37 @@ export function useEditPlayback({
       const range = rangeNow();
       state.armed = !!range && now() < range.to;
     };
+    // 지금 되풀이하는 범위 — 편집점 앞뒤 재생·구간 반복이면 그 구간, 아니면 전체.
+    const span = () => rangeNow() ?? { from: 0, to: live.current.layout.total };
+    // 바퀴를 연다(재생을 누름 · 되돌아감) — 그때의 범위와, 그 처음(또는 그 앞)에서 시작하는지를 적는다. 중간에서 시작한 바퀴는
+    //  온전한 바퀴가 아니다: 지나가지 않은 앞부분에 틀 것이 있는지 모른다.
+    const openLap = () => {
+      const { from, to } = span();
+      state.lap = { from, to, whole: now() <= from + LAP_SLOP };
+      state.flowed = 0;
+    };
     // 반복 — 구간 처음(구간이 없으면 맨 처음)으로 돌아가 이어 튼다. 위치를 옮긴 것과 같게 다룬다: 영상이 그 자리에 닿을 때까지
     //  시간이 선다(같은 영상으로 되돌아오는 한 클립짜리도 같은 길 — 끝난 영상의 옛 시각을 시계로 읽지 않는다).
+    //  빈 바퀴는 돌지 않는다 — 방금 돈 바퀴가 온전한데(처음에서 시작해 자리를 옮기지 않았고, 열 때의 범위가 지금도 그대로다)
+    //  흐른 시간이 없으면, 틀 것이 하나도 없는 바퀴다(적어 둔 길이보다 짧은 영상을 넘기기만 했다 — 컷이 몇이든): 멈춘다.
+    //  그냥 두면 프레임마다 넘기고 돌아오기만 되풀이해 '재생 중'인 채 화면의 시간이 선다. 온전하지 않은 바퀴는 판정하지 않고
+    //  한 바퀴 더 돈다. 멈추는 자리는 돌아간 자리(바퀴의 처음 — 구간 반복이면 인)다: 넘긴 클립의 끝에 서면 재생헤드가 구간 밖에
+    //  남는다(한 번만 트는 편집점 앞뒤 재생이 그 편집점으로 돌아가 멈추는 것과 같게).
     const loopBack = () => {
-      pos.current = posAt(live.current.layout, rangeNow()?.from ?? 0);
+      const { from, to } = span();
+      const { lap } = state;
+      const empty = lap.whole && lap.from === from && lap.to === to && state.flowed === 0;
+      const back = (pos.current = posAt(live.current.layout, from));
+      if (empty) return stop(false);
+      openLap();
       arm(); // 아웃 뒤에서 시작해 전체 끝을 돌아 들어온 때 — 다음 tick 전에 영상이 끝나도 구간을 지키게(Codex 코드 리뷰)
       sync(true);
-      // 돌아간 자리의 영상을 곧바로 넘겨(실제로는 거기까지 없는 영상 — passClip) 이미 바퀴의 끝을 지났다 — 이 바퀴에는 틀 것이
-      //  없다. 멈춘다: 그냥 두면 프레임마다 돌아가 넘기기만 되풀이해, '재생 중'인 채 시간이 그 클립의 끝에 선다.
-      if (now() >= (rangeNow()?.to ?? live.current.layout.total)) return stop();
+      // 돌아간 자리의 영상을 곧바로 넘겨 이미 바퀴의 끝을 지났다 — 방금 연 바퀴가 흐른 시간 없이 끝난 것이다(같은 판정).
+      //  넘긴 자리를 그리지 않고 여기서 멈춘다.
+      if (now() >= to) {
+        pos.current = back;
+        return stop(false);
+      }
       live.current.paint(now());
       state.frame = requestAnimationFrame(tick);
     };
@@ -352,7 +399,8 @@ export function useEditPlayback({
       live.current.paint(now());
     };
 
-    const tick = (stamp: number) => {
+    // passes = 이 프레임에 이미 클립을 넘긴 횟수(아래의 '한 번 더 본다'로 다시 불릴 때마다 하나씩 는다).
+    const tick = (stamp: number, passes = 0) => {
       if (!state.playing || !pos.current) return;
       const { cuts } = live.current.layout;
       let slot = slotOf(pos.current.cut);
@@ -367,6 +415,19 @@ export function useEditPlayback({
         if (video && state.arrived === state.token) local = video.currentTime;
       } else {
         local += (Math.max(0, stamp - state.last) / 1000) * state.rate;
+      }
+      // 이 걸음에 흐른 시간을 바퀴에 더한다(빈 바퀴 판정) — 걸음이 **지난 구간**에서, 무엇이 그 시간을 흘렸는지로 센다.
+      //  · 구간의 끝은 바퀴의 끝에서 자른다: 넘긴 자리가 아웃 뒤일 수 있다 — 거기서 흐른 시간을 세면 구간 안에 틀 것이 없는데도
+      //    계속 돈다(Codex 재리뷰). 아웃을 넘었는지는 아래의 되돌아가기 판정과 같은 식(타임라인 시각 = slot.start + local)으로
+      //    본다 — 컷 안 시각으로 빼면 끝자리 오차만큼 아웃 뒤가 샌다.
+      //  · 영상이 시계면 영상의 시각이 간 만큼이다(도착 전·받는 중이면 0). rAF 시계면 그 구간 가운데 틀 영상이 보이지 않는
+      //    조각만이다(idleFlow) — 걸음이 크면 그 안에서 보이는 것이 바뀐다: 출발 자리만 보면 뒤에 나타난 그림을 놓친다.
+      //  · 컷의 끝을 넘은 몫: rAF 는 조각이 그 컷 안에만 있어 저절로 빠진다. 영상의 시각이 끝을 조금 넘어 읽힌 몫은 남지만,
+      //    영상이 시계였다면 그 걸음은 컷 안에서 출발했다 — 판정(0 인가)은 달라지지 않는다.
+      if (state.rate > 0) {
+        const from = slot.start + pos.current.local;
+        const to = Math.min(slot.start + local, span().to);
+        state.flowed += state.owner === "video" ? Math.max(0, to - from) : idleFlow(slot, from, to);
       }
       state.last = stamp;
       if (state.rate > 0 && local >= slot.len) {
@@ -390,8 +451,14 @@ export function useEditPlayback({
         local = Math.max(0, prev.len - 1 / EDIT_FPS);
       }
       if (range && state.armed && slot.start + local >= range.to) return wrap();
-      pos.current = { cut: slot.path, local };
+      const at = (pos.current = { cut: slot.path, local });
       sync(false);
+      // 이 프레임의 sync 가 그 클립을 넘겼다(passClip — 영상이 실제 끝에 닿은 것을 ended 보다 이 프레임이 먼저 봤다 · 드러난 영상이
+      //  그 시각보다 짧다). 넘긴 자리를 그리지 않고 같은 프레임에 한 번 더 본다(지난 시간 0): 그 자리가 구간의 아웃·반복하는 끝을
+      //  지났으면 곧바로 되돌아간다. 그리고 나서 다음 프레임에 되돌아가면, 재생헤드가 한 프레임 동안 구간 밖(그 클립의 끝)을
+      //  가리키고 판의 영상이 가려졌다(2026-10-11 격리 실측). 넘길 때마다 위치가 앞으로만 가므로 끝이 있고, 한 프레임에 넘기는
+      //  수에도 상한을 둔다(PASS_MAX) — 방금 넘긴 것까지 세어 상한에 닿았으면 넘긴 자리를 그리고 다음 프레임이 잇는다.
+      if (pos.current !== at && passes + 1 < PASS_MAX) return tick(stamp, passes + 1);
       live.current.paint(now());
       state.frame = requestAnimationFrame(tick);
     };
@@ -405,6 +472,7 @@ export function useEditPlayback({
       state.playing = true;
       state.rate = rate;
       state.around = around;
+      openLap();
       state.last = performance.now();
       arm();
       sync(true);
@@ -414,6 +482,7 @@ export function useEditPlayback({
     const seek = (time: number) => {
       wanted.current = null;
       pos.current = posAt(live.current.layout, time);
+      state.lap.whole = false; // 자리를 옮겼다 — 이 바퀴는 처음부터 끝까지 지나간 바퀴가 아니다(빈 바퀴로 판정하지 않는다)
       arm();
       sync(true);
       live.current.paint(now());
@@ -452,8 +521,14 @@ export function useEditPlayback({
       else arrive();
     };
     const onEnded = () => {
-      // 적어 둔 길이보다 영상이 먼저 끝났다 — 그 클립의 끝으로 보내 다음으로 넘어가게 한다.
-      if (state.owner === "video" && state.arrived === state.token) passClip();
+      // 적어 둔 길이보다 영상이 먼저 끝났다 — 그 클립의 끝으로 보내 다음으로 넘어가게 한다. 마지막 프레임(tick) 뒤로 영상이 간
+      //  만큼도 바퀴에 더한다: 한 프레임보다 짧게 돌고 끝나면 tick 은 그 걸음을 한 번도 못 본다. 시계로 돌던 영상이 끝났다는 것은
+      //  끝까지 돌았다는 것이다 — 그 값이 0 으로 읽혀도 0 으로 치지는 않는다(끝에 선 영상은 애초에 시계가 되지 못한다 — over).
+      //  바퀴의 끝(아웃) 뒤에서 돌다 끝난 것은 더하지 않는다 — tick 의 셈과 같은 자름이다(이 바퀴의 시간이 아니다).
+      const video = videoRef.current;
+      if (state.owner !== "video" || state.arrived !== state.token || !video || !pos.current) return;
+      if (now() < span().to) state.flowed += Math.max(Number.EPSILON, video.currentTime - pos.current.local);
+      passClip();
     };
     const events: [string, () => void][] = [
       ["loadedmetadata", onMeta], ["seeked", onSeeked], ["ended", onEnded], ["error", () => fail(state.token)],
