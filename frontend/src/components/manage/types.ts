@@ -221,7 +221,7 @@ export interface DescDraft {
 // 설명 칸들이 같이 보는 보관함(작업 id 별) — TableView 의 DescCell 주석 ④⑤.
 export interface DescDraftStore {
   drafts: Map<string, DescDraft>; // 아직 서버에 없는 글(가장 최근에 친 것)
-  flying: Map<string, number>; // 가는 중인 저장 수
+  flying: Map<string, number>; // 가는 중인 저장 수 — 실패를 먼저 알린 저장은 복구 조회가 끝날 때까지 WorkBoard(onPatch)가 대신 센다
   stale: Set<string>; // 목록 값을 믿을 수 없는 작업 — 저장을 보낸 뒤, 가는 중인 저장이 없는 채로 목록이 새로 올 때까지
   sending: Map<string, number>; // 가는 중인 가장 최근 저장의 편집 번호 — 같은 글을 다른 칸이 또 보내지 않는다
   listeners: Set<(taskId: string) => void>; // drafts 가 바뀌면 그 작업의 칸들에게 알린다(내용이 같은 목록은 다시 그려지지 않는다)

@@ -609,3 +609,40 @@ it("옛 글을 쥔 칸은 다시 보내지 않는다 — 같은 작업의 다른
   expect(sentTexts).toEqual(["A", "B"]); // A 를 B 뒤에 다시 보내 덮지 않는다
   expect(inputs()[1].value).toBe("B"); // 가장 최근 글을 따른다
 });
+
+// 7회차(R30): 저장이 실패한 줄이 읽기 전용이 되면(예: 409 뒤의 복구 조회가 과거 공간 기록으로 가져온다) 입력칸도 [다시 저장]도 잠겨
+// '저장 안 됨'을 걷을 길이 없었다.
+it("잠긴 줄의 '저장 안 됨'은 [버리기]로 걷는다 — 다시 저장도 Esc 도 못 하는 칸에서 친 글과 표시를 지우고 서버 값을 보인다(상세 줄도 같이)", async () => {
+  const drafts = newDescDraftStore();
+  const onPatch = vi.fn(async () => false);
+  const row: Task = { ...task, description: "원래 값" };
+  const draw = (tasks: Task[]) => act(() => root.render(<TableView {...props} onPatch={onPatch} descDrafts={drafts} tasks={tasks} />));
+  draw([row]);
+  act(() => { host.querySelector<HTMLElement>("[aria-controls]")!.click(); }); // 상세 줄을 편다 — 설명 칸이 둘
+  const inputs = () => [...host.querySelectorAll<HTMLInputElement>("input.work-cell-in[placeholder]")];
+  const buttons = () => [...host.querySelectorAll<HTMLButtonElement>(".work-desc-retry")];
+  act(() => inputs()[0].focus());
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(inputs()[0], "못 간 글");
+    inputs()[0].dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => { inputs()[0].blur(); await Promise.resolve(); await Promise.resolve(); });
+  expect(host.querySelectorAll(".work-desc-chip")).toHaveLength(2);
+  expect(buttons().map((button) => button.textContent)).toEqual(["다시 저장", "다시 저장"]); // 잠기지 않은 줄은 전과 같다
+  draw([{ ...row, workspace_historical: true }]); // 복구 조회가 이 줄을 읽기 전용으로 가져왔다
+  expect(inputs().map((input) => input.disabled)).toEqual([true, true]);
+  expect(inputs().map((input) => input.value)).toEqual(["못 간 글", "못 간 글"]);
+  expect(buttons().map((button) => button.textContent)).toEqual(["버리기", "버리기"]);
+  expect(buttons().map((button) => button.disabled)).toEqual([false, false]);
+  act(() => buttons()[0].click()); // 목록을 다시 넣지 않는다 — 다른 칸은 보관함의 알림만으로 풀려야 한다
+  expect(host.querySelectorAll(".work-desc-chip")).toHaveLength(0);
+  expect(buttons()).toHaveLength(0);
+  expect(inputs().map((input) => input.value)).toEqual(["원래 값", "원래 값"]);
+  expect(drafts.drafts.size).toBe(0);
+  expect(onPatch).toHaveBeenCalledTimes(1); // 버리기는 저장을 다시 보내지 않는다
+  // 줄이 화면에서 빠졌다 돌아와도 버린 글은 돌아오지 않는다
+  act(() => root.render(<div />));
+  draw([{ ...row, workspace_historical: true }]);
+  expect(host.querySelector<HTMLInputElement>("input.work-cell-in[placeholder]")!.value).toBe("원래 값");
+  expect(host.querySelector(".work-desc-chip")).toBeNull();
+});

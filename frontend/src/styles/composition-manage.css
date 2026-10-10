@@ -424,8 +424,10 @@ tr.work-row-archived td { opacity: .62; }
 .work-desc { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 3px 6px; min-width: 0; }
 .work-desc .work-cell-in { flex: 1 1 100%; min-width: 0; }
 .work-desc.unsaved .work-cell-in { border-color: #e0a23a; background: rgba(224, 162, 58, 0.08); }
-/* 남은 것: 창 폭 1000px 근처에서는 설명 칸이 평소에도 47px 로 눌려 있어, 표시(62px)가 붙으면 열이 밀려 표의 가로 넘침이 37px 는다.
-   막으면(.work-desc 의 폭을 칸에 묶으면) 표시가 "저.." 로 잘려 읽을 수 없다 — 읽히는 쪽을 택했다(2026-10-10 격리 실측). */
+/* 표시와 단추는 한 줄로 둔다(nowrap). 설명 열은 평소 제목 폭(47px)까지 눌려 있어 표시(62px)가 붙으면 열이 그만큼 밀리고, 좁은 창에서는
+   표의 가로 넘침이 37px 는다(2026-10-10 격리 실측) — 저장이 실패했을 때만이다. 두 가지를 해 보고 둘 다 버렸다: .work-desc 의 폭을 칸에
+   묶으면 표시가 "저.." 로 잘려 읽을 수 없고, 낱말 사이에서 줄을 바꾸게 하면 넘침은 13px 로 줄지만 표시가 "저장 안 / 됨" 두 줄로 깨져
+   보인다(2026-10-11 격리 실측 그림). 읽히는 쪽을 택했다. */
 .work-desc-chip {
   font-size: 10.5px; font-weight: 700; color: #1a1300; background: #e0a23a; border-radius: 999px; padding: 1px 7px; white-space: nowrap;
 }

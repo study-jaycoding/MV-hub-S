@@ -133,3 +133,169 @@ it("보관 기록에 다녀온 뒤의 실패도 오류 화면이다 — 비운 �
   expect(host.textContent).toContain("불러오기 실패");
   expect(banner()).toBeNull();
 });
+
+// 7회차(R29): 저장 결과는 줄(queue)의 끝에서 알렸는데, 줄의 끝은 실패 뒤의 복구 조회까지 기다린다 — '저장 안 됨'이 조회가 끝나야 붙었다.
+it("'저장 안 됨'은 복구 조회가 끝나기를 기다리지 않고 붙는다 — 조회가 매달려도 바로 뜨고, 그사이 누른 [다시 저장]은 복구가 끝난 뒤에 나간다", async () => {
+  render(); await settle();
+  let release: () => void = () => {};
+  vi.mocked(manageApi.updateTask).mockRejectedValueOnce(new Error("500: boom"));
+  vi.mocked(manageApi.taskProjects).mockImplementationOnce(() => new Promise((resolve) => {
+    release = () => resolve({ projects: [{ id: "project", name: "Project" }] }); // 복구 조회가 응답 없이 매달린다
+  }));
+  act(() => input().focus());
+  type("못 간 글");
+  act(() => input().blur());
+  await settle();
+  expect(window.alert).toHaveBeenCalled(); // 복구는 시작됐다(조회는 아직 안 끝났다)
+  expect(manageApi.taskProjects).toHaveBeenCalledTimes(2);
+  expect(host.querySelector(".work-desc-chip")).not.toBeNull();
+  expect(input().value).toBe("못 간 글");
+  // 같은 작업의 저장 줄은 그대로다 — 복구 조회가 끝나기 전에 누른 [다시 저장]은 줄에서 기다린다
+  vi.mocked(manageApi.updateTask).mockResolvedValueOnce({} as never);
+  await act(async () => { host.querySelector<HTMLButtonElement>(".work-desc .work-desc-retry")!.click(); });
+  await settle();
+  expect(manageApi.updateTask).toHaveBeenCalledTimes(1);
+  expect(host.querySelector(".work-desc-chip")).not.toBeNull(); // 기다리는 동안에도 표시는 남는다
+  await act(async () => { release(); });
+  await settle();
+  expect(manageApi.updateTask).toHaveBeenCalledTimes(2);
+  expect(manageApi.updateTask).toHaveBeenLastCalledWith("task-a", { description: "못 간 글" });
+  expect(host.querySelector(".work-desc-chip")).toBeNull();
+  expect(input().value).toBe("못 간 글");
+});
+
+// 7회차 Codex 코드 리뷰(P2): 실패를 일찍 알리면서 '가는 중'(flying)까지 일찍 풀면, 복구 도중 도착한 옛 목록(저장 전에 떠난 조회)이
+// 목록 값에 대한 믿음(DescCell ④)을 되살린다 — 그 값으로 되돌린 글을 안 보내, 저장이 실은 서버에 반영됐으면 마지막에 친 글이 사라진다.
+const cells = () => [...host.querySelectorAll<HTMLInputElement>("input.work-cell-in[placeholder]")];
+const typeIn = (cell: HTMLInputElement, value: string) => act(() => {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(cell, value);
+  cell.dispatchEvent(new Event("input", { bubbles: true }));
+});
+const leave = (cell: HTMLInputElement, value: string) => { act(() => cell.focus()); typeIn(cell, value); act(() => cell.blur()); };
+const sentTexts = () => vi.mocked(manageApi.updateTask).mock.calls.map(([, patch]) => patch.description);
+// 다음 목록 조회를 붙잡아 둔다 — 돌려받은 함수로 원하는 내용을 도착시킨다
+function holdList() {
+  let arrive: (rows: Task[]) => void = () => {};
+  vi.mocked(manageApi.listTasksBatch).mockImplementationOnce(() => new Promise((resolve) => { arrive = (rows) => resolve({ project: rows }); }));
+  return (rows: Task[]) => act(async () => { arrive(rows); });
+}
+
+it.each<[string, () => void]>([
+  ["본 줄에서 되돌린다", () => leave(cells()[0], "원래 설명")],
+  ["상세 줄(같은 작업의 다른 칸)에서 되돌린다", () => leave(cells()[1], "원래 설명")],
+  ["Esc 로 버린 뒤 고쳤다가 되돌린다", () => {
+    act(() => cells()[0].focus());
+    act(() => { cells()[0].dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    act(() => cells()[0].focus());
+    typeIn(cells()[0], "잠깐");
+    typeIn(cells()[0], "원래 설명");
+    act(() => cells()[0].blur());
+  }],
+])("실패한 저장의 복구 도중 옛 목록이 같은 설명·다른 객체로 와도, 원래 값으로 되돌린 글을 보낸다 — %s", async (_name, revert) => {
+  render(); await settle();
+  act(() => { host.querySelector<HTMLElement>("[aria-controls]")!.click(); }); // 상세 줄을 편다 — 설명 칸이 둘
+  const oldList = holdList(); // 저장 전에 떠난 조회 — 늦게 온다
+  const followUp = holdList(); // 그 뒤의 후속 조회
+  render({ reloadSignal: 1 }); await settle();
+  vi.mocked(manageApi.updateTask).mockRejectedValueOnce(new Error("500: boom")); // 서버에는 반영됐는데 응답은 실패로 왔다
+  leave(cells()[0], "A");
+  await settle();
+  await oldList([{ ...task(), comment_count: 3 }]); // 복구 도중 도착: 설명은 저장 전 값 그대로, 줄 객체는 바뀐다
+  await settle();
+  revert(); // 후속 조회가 끝나기 전에 원래 값으로
+  await settle();
+  await followUp([{ ...task(), description: "A", comment_count: 3 }]); // 후속 조회는 서버에 반영된 A 를 가져온다
+  await settle();
+  expect(sentTexts()).toEqual(["A", "원래 설명"]); // 안 보내면 화면·서버가 A 로 남는다(마지막에 친 글이 사라진다)
+  expect(cells().map((cell) => cell.value)).toEqual(["원래 설명", "원래 설명"]);
+  expect(host.querySelector(".work-desc-chip")).toBeNull();
+});
+
+it("복구 조회가 끝나기 전에 원래 값으로 되돌려 벗어나면 그 글을 보낸다 — 복구 목록이 같은 설명을 새 객체로 가져와도", async () => {
+  render(); await settle();
+  const recoveryList = holdList();
+  vi.mocked(manageApi.updateTask).mockRejectedValueOnce(new Error("500: boom"));
+  leave(input(), "A");
+  await settle();
+  leave(input(), "원래 설명"); // 복구 조회가 아직 안 끝났다 — 줄에서 기다린다
+  await settle();
+  expect(sentTexts()).toEqual(["A"]);
+  await recoveryList([{ ...task(), comment_count: 3 }]);
+  await settle();
+  expect(sentTexts()).toEqual(["A", "원래 설명"]);
+  expect(input().value).toBe("원래 설명");
+  expect(host.querySelector(".work-desc-chip")).toBeNull();
+});
+
+it("복구가 끝나 목록이 새로 온 뒤에는 다시 목록 값을 믿는다 — 원래 값으로 되돌린 글은 보내지 않고 표시만 걷는다(보호는 줄의 끝에서 풀린다)", async () => {
+  render(); await settle();
+  vi.mocked(manageApi.updateTask).mockRejectedValueOnce(new Error("500: boom"));
+  vi.mocked(manageApi.listTasksBatch).mockImplementationOnce(async () => ({ project: [{ ...task(), comment_count: 3 }] })); // 복구 목록: 같은 설명, 다른 객체
+  leave(input(), "A");
+  await settle();
+  expect(host.querySelector(".work-desc-chip")).not.toBeNull();
+  leave(input(), "원래 설명");
+  await settle();
+  expect(sentTexts()).toEqual(["A"]); // 고쳤다가 서버 값으로 되돌린 글은 보내지 않는다(남의 변경을 되돌리지 않게 — 전과 같다)
+  expect(host.querySelector(".work-desc-chip")).toBeNull();
+  expect(input().value).toBe("원래 설명");
+});
+
+it("설명이 아닌 칸(마감일)의 실패한 저장은 설명의 '가는 중'으로 세지 않는다 — 그 복구 도중에 새로 온 목록의 설명 값은 전처럼 믿는다", async () => {
+  render(); await settle();
+  // 설명 저장이 실패하고 복구 목록은 그대로 온다(줄 객체가 안 바뀐다) — 목록 값을 못 믿는 채로 남는다
+  vi.mocked(manageApi.updateTask).mockRejectedValueOnce(new Error("500: boom"));
+  leave(input(), "A");
+  await settle();
+  expect(host.querySelector(".work-desc-chip")).not.toBeNull();
+  // 같은 작업의 마감일 저장이 실패하고, 그 복구 조회가 매달린다
+  let release: () => void = () => {};
+  vi.mocked(manageApi.updateTask).mockRejectedValueOnce(new Error("500: boom"));
+  vi.mocked(manageApi.taskProjects).mockImplementationOnce(() => new Promise((resolve) => {
+    release = () => resolve({ projects: [{ id: "project", name: "Project" }] });
+  }));
+  typeIn(host.querySelector<HTMLInputElement>('input.work-cell-in[type="date"]')!, "2026-10-20");
+  await settle();
+  // 그사이 다른 신호로 목록이 새로 온다(같은 설명, 다른 객체) — 설명 저장은 가는 중이 아니니 다시 믿는다
+  vi.mocked(manageApi.listTasksBatch).mockImplementationOnce(async () => ({ project: [{ ...task(), comment_count: 3 }] }));
+  render({ reloadSignal: 1 }); await settle();
+  leave(input(), "원래 설명");
+  await settle();
+  expect(host.querySelector(".work-desc-chip")).toBeNull(); // 목록 값과 같은 글 — 보내지 않고 표시를 걷는다
+  await act(async () => { release(); });
+  await settle();
+  expect(sentTexts()).toEqual(["A", undefined]); // 설명 A, 마감일 — 되돌린 설명은 나가지 않았다
+  expect(input().value).toBe("원래 설명");
+});
+
+it("복구 도중 범위를 바꿔도 '가는 중'은 센 보관함에서 뺀다 — 새 범위에서 보낸 같은 작업의 저장이 보호를 잃지 않는다", async () => {
+  render(); await settle();
+  // 공간 a: 설명 저장이 실패하고 복구 조회가 매달린다
+  let release: () => void = () => {};
+  vi.mocked(manageApi.updateTask).mockRejectedValueOnce(new Error("500: boom"));
+  vi.mocked(manageApi.taskProjects).mockImplementationOnce(() => new Promise((resolve) => {
+    release = () => resolve({ projects: [{ id: "project", name: "Project" }] });
+  }));
+  leave(input(), "A");
+  await settle();
+  // 다른 범위로 간다 — 같은 작업이 그 범위에도 있다(개인 범위가 공간의 작업을 품는 경우)
+  vi.mocked(manageApi.listTasksBatch).mockImplementation(async () => ({ project: [task()] }));
+  render({ workspaceId: "b" }); await settle();
+  expect(input().value).toBe("원래 설명");
+  let answer: () => void = () => {};
+  vi.mocked(manageApi.updateTask).mockImplementationOnce(() => new Promise((resolve) => { answer = () => resolve({} as never); }));
+  leave(input(), "새 글"); // 새 범위에서 보낸 저장 — 앞 범위의 복구 뒤에 줄 서 있다
+  await settle();
+  await act(async () => { release(); }); // 앞 범위의 복구가 끝난다 → '새 글' 이 나가 응답을 기다린다
+  await settle();
+  expect(sentTexts()).toEqual(["A", "새 글"]);
+  // 목록이 새 객체로 온다 — '새 글' 이 가는 중이니 그 값을 믿으면 안 된다
+  vi.mocked(manageApi.listTasksBatch).mockImplementationOnce(async () => ({ project: [{ ...task(), comment_count: 3 }] }));
+  render({ reloadSignal: 1 }); await settle();
+  leave(input(), "원래 설명"); // 마음을 바꿔 원래 값으로
+  await settle();
+  await act(async () => { answer(); });
+  await settle();
+  expect(sentTexts()).toEqual(["A", "새 글", "원래 설명"]); // 안 보내면 서버·화면이 '새 글' 로 남는다
+  expect(input().value).toBe("원래 설명");
+});
