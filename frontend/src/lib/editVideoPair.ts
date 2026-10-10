@@ -7,7 +7,7 @@
 //  · 주소는 넘겨받은 글자 그대로 견준다(DOM 의 src 는 절대 주소로 바뀌어 있다).
 //  · 이벤트는 앞의 것에서 온 것만 엔진에 전한다 — 뒤의 것이 받는 중에 내는 loadedmetadata·seeked·error 는 엔진 몫이 아니다.
 import { useLayoutEffect, useRef } from "react";
-import type { EditVideo } from "./useEditPlayback";
+import { videoEnd, type EditVideo } from "./useEditPlayback";
 
 // 미리 굴리는 길이의 한도(실제 시간, 초). 앞의 것이 받느라 서 있으면 넘어가는 순간이 오지 않는다 — 그동안 뒤의 것이 혼자
 //  멀리 가면 그만큼 건너뛰게 되므로, 이만큼 가면 제자리로 돌려 세운다(엔진의 ROLL_SLOP 보다 짧다).
@@ -38,6 +38,7 @@ export function pairVideo(a: HTMLVideoElement, b: HTMLVideoElement): EditVideo {
     set playbackRate(rate: number) { front.playbackRate = rate; },
     get paused() { return front.paused; },
     get seeking() { return front.seeking; },
+    get duration() { return front.duration; },
     get readyState() { return front.readyState; },
     play: () => front.play(),
     pause: () => front.pause(),
@@ -88,7 +89,9 @@ export function pairVideo(a: HTMLVideoElement, b: HTMLVideoElement): EditVideo {
     // 넘어가기 직전 — 뒤의 것을 소리 없이 미리 굴린다(앞의 것과 같은 배속). 끄면 세우고 세워 둔 자리로 돌린다.
     //  굴리는 동안 프레임마다 다시 불린다 — 너무 멀리 갔으면(ROLL_MAX) 제자리로 돌려 세운다.
     roll(on: boolean) {
-      if (on && !backUrl) return;
+      // 실제 끝에 세워 둔 것은 굴리지 않는다(적어 둔 길이보다 짧은 영상 — 세울 자리가 그 끝으로 잘렸다): 끝난 영상에 play() 를
+      //  걸면 처음부터 다시 돌아, 넘어온 순간 엉뚱한 시각의 영상이 시계를 받는다(Codex 코드 리뷰).
+      if (on && (!backUrl || back.currentTime >= videoEnd(back))) return;
       if (on === rolling) {
         if (on && !back.paused && back.currentTime - backTime > ROLL_MAX * back.playbackRate) {
           back.pause();

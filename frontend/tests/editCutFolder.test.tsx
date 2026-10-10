@@ -118,10 +118,11 @@ const videoGen = () => gen("v", "c1", { assets: [{ id: "a-v", generation_id: "v"
   thumbnail_path: null, source_url: null, cached: true }] as Generation["assets"], model: "seedance" });
 const trackMenu = () => document.querySelector<HTMLElement>(".ed-tmenu");
 const menuItems = () => [...document.querySelectorAll<HTMLButtonElement>(".ed-tmenu-item")];
-// 막대의 목록 단추 — 누르면 메뉴(비활성 숨기기 · 빈 곳 채우기)가 뜬다. listItem 은 메뉴를 열고 그 줄을 돌려준다.
+// 막대의 목록 단추 — 누르면 메뉴(비활성 숨기기 · 빈 곳 채우기)가 뜬다. listItem 은 메뉴를 열고 그 줄을 돌려준다
+//  (이미 떠 있으면 그대로 본다 — 뜬 채 단추를 다시 누르면 닫힌다).
 const listButton = () => document.querySelector<HTMLButtonElement>(".ed-listbtn")!;
 const listItem = (label: string) => {
-  act(() => listButton().click());
+  if (listButton().getAttribute("aria-expanded") !== "true") act(() => listButton().click());
   return menuItems().find((item) => item.textContent!.includes(label))!;
 };
 const toggleHide = () => { const item = listItem("비활성 숨기기"); act(() => item.click()); };
@@ -1256,6 +1257,90 @@ it("배속 단추: 누를 때마다 1x → 1.5x → 2x → 4x → 1x — 두 뷰
   act(() => speed("timeline").click()); // 재생 중에 바꾸면 바로 따른다
   expect(videos[0].playbackRate).toBe(2);
   expect(playingIn("timeline")).toBe(true);
+});
+
+// 조작 점검 7회차 R23 — 위 줄의 배속 글자는 '지금 실제로 도는 속도'다(docs/EDIT_TAB.md §6). 멈추면 도는 것이 없다.
+it("위 줄의 배속 글자는 도는 동안에만 보인다 — 멈추면 사라지고, 고른 배속은 남아 다시 틀면 그 배속으로 간다", () => {
+  world.gens = [...world.gens, videoGen()];
+  localStorage.setItem(UI_KEY, JSON.stringify({ speed: 2 }));
+  seed([{ cut: "c1", gen: "v", track: 1, kind: "video" }]);
+  mount();
+  const shownSpeed = () => pane("timeline").querySelector(".ed-vspeed")?.textContent ?? null;
+  const speedButton = () => pane("timeline").querySelector<HTMLButtonElement>(".ed-t-speed")!;
+  const play = () => pane("timeline").querySelector<HTMLButtonElement>(".ed-play")!;
+  const video = pane("timeline").querySelector<HTMLVideoElement>(".ed-stage > video.ed-media")!;
+  act(() => cutCell("c1").click());
+  act(() => { video.dispatchEvent(new Event("loadedmetadata")); });
+  expect(shownSpeed()).toBeNull(); // 아직 틀지 않았다
+  act(() => play().click());
+  expect(shownSpeed()).toBe("2x");
+  act(() => play().click()); // 정지
+  expect(playingIn("timeline")).toBe(false);
+  expect(shownSpeed()).toBeNull();
+  expect(speedButton().textContent).toBe("2x"); // 단추는 고른 배속(설정)이라 그대로다
+  expect(speedButton().classList.contains("ed-on")).toBe(true);
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!).speed).toBe(2);
+  act(() => play().click()); // 다시 틀면 그 배속으로
+  expect(video.playbackRate).toBe(2);
+  expect(shownSpeed()).toBe("2x");
+  press({ key: "j", code: "KeyJ" }); // 역재생
+  expect(shownSpeed()).toBe("◀ 1x");
+  press({ key: "k", code: "KeyK" }); // 정지 — 역방향 표시도 남지 않는다
+  expect(playingIn("timeline")).toBe(false);
+  expect(shownSpeed()).toBeNull();
+});
+
+// 조작 점검 7회차 R45 — 메뉴를 연 단추를 다시 누르면 닫힌다. 실제 누름은 pointerdown → mousedown → click 순서다: 단추의 누름을
+//  메뉴가 '바깥 누름'으로 먼저 닫아 버리면 뒤따르는 click 이 다시 연다(click 만 보내는 시험은 이 길을 못 본다).
+it("북마크 색 단추·목록 단추: 메뉴가 뜬 채 그 단추를 다시 누르면 닫힌다 — 바깥 누름과 우클릭 메뉴는 그대로다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }]);
+  mount();
+  act(() => cutCell("c1").click());
+  const tap = (target: Element) => {
+    for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) mouse(target, type);
+  };
+  const colorButton = () => document.querySelector<HTMLButtonElement>(".ed-mbtn-color")!;
+  const colorMenu = () => document.querySelector(".ed-cmenu");
+  const listMenu = () => document.querySelector('.ed-tmenu[aria-label="타임라인 정리"]');
+
+  tap(colorButton());
+  expect(colorMenu()).not.toBeNull();
+  expect(colorButton().getAttribute("aria-expanded")).toBe("true");
+  tap(colorButton());
+  expect(colorMenu()).toBeNull();
+  expect(colorButton().getAttribute("aria-expanded")).toBe("false");
+  expect(document.activeElement).toBe(document.querySelector(".ed-root")); // 닫히면 편집 키가 돌아온다
+  tap(colorButton()); // 닫은 뒤에는 다시 열린다
+  expect(colorMenu()).not.toBeNull();
+
+  tap(listButton()); // 다른 단추를 누르면 앞의 메뉴는 닫히고 그 단추의 메뉴가 뜬다
+  expect(colorMenu()).toBeNull();
+  expect(listMenu()).not.toBeNull();
+  tap(listButton());
+  expect(listMenu()).toBeNull();
+  expect(listButton().getAttribute("aria-expanded")).toBe("false");
+  expect(document.activeElement).toBe(document.querySelector(".ed-root"));
+  tap(listButton());
+  expect(listMenu()).not.toBeNull();
+  mouse(document.querySelector(".ed-tl")!, "pointerdown"); // 바깥 누름은 그대로 닫는다
+  expect(listMenu()).toBeNull();
+  tap(colorButton());
+  mouse(document.querySelector(".ed-tl")!, "pointerdown");
+  expect(colorMenu()).toBeNull();
+  // 그 단추를 오른쪽·가운데 단추로 누른 것은 여닫기가 아니다(click 이 오지 않는다) — 다른 곳을 누른 것처럼 닫힌다
+  tap(colorButton());
+  mouse(colorButton(), "pointerdown", { button: 2 });
+  expect(colorMenu()).toBeNull();
+  expect(document.activeElement).toBe(document.querySelector(".ed-root"));
+  tap(listButton());
+  mouse(listButton(), "pointerdown", { button: 1 });
+  expect(listMenu()).toBeNull();
+
+  // 같은 껍데기(EditMenu)를 쓰는 우클릭 메뉴 — 연 자리를 다시 눌러도 바깥 누름이다(닫히고, 다시 열리지 않는다)
+  rightClick(headOf(1));
+  expect(trackMenu()).not.toBeNull();
+  tap(headOf(1));
+  expect(trackMenu()).toBeNull();
 });
 
 it("클립을 우클릭하면 Resolve 보내기가 뜬다 — 고른 클립 위에서는 고른 것 모두, 아니면 그 클립 하나. 고른 것은 풀리지 않는다", () => {

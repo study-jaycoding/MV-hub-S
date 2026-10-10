@@ -551,6 +551,10 @@ function EditTabInner({
   const [markerMenu, setMarkerMenu] = useState<{ key: string; x: number; y: number; rev: number } | null>(null);
   const [colorMenu, setColorMenu] = useState<{ x: number; top: number; bottom: number; rev: number } | null>(null); // 막대의 북마크 단추 옆 ▾
   const [listMenu, setListMenu] = useState<{ x: number; top: number; bottom: number } | null>(null); // 막대의 목록 단추
+  // 그 두 단추 — 메뉴가 뜬 채 다시 누르면 닫는다. 메뉴는 자기를 연 단추의 누름을 바깥 누름으로 치지 않는다(EditMenu 의 trigger):
+  //  치면 누르는 순간 닫히고 뒤따르는 click 이 다시 열어, 다시 눌러도 닫히지 않았다(2026-10-11 조작 점검 R45).
+  const colorBtnRef = useRef<HTMLButtonElement>(null);
+  const listBtnRef = useRef<HTMLButtonElement>(null);
   // 클립 우클릭 메뉴(Jay 2026-10-08) — Resolve 보내기. 고른 클립 위에서 누르면 고른 것 모두, 아니면 그 클립 하나(고른 것은
   //  그대로 둔다). 문서가 바뀌면 닫는다 — 그 클립이 이미 없을 수 있다.
   const [clipMenu, setClipMenu] = useState<{ keys: string[]; x: number; y: number } | null>(null);
@@ -584,6 +588,11 @@ function EditTabInner({
     menuBackRef.current = null;
     if (back?.isConnected) back.focus({ preventScroll: true });
   }, []);
+  // 그 두 단추를 왼쪽이 아닌 단추(오른쪽·가운데)로 누른 것은 여닫기가 아니다(click 이 오지 않는다). 메뉴가 그 단추의 누름을
+  //  바깥 누름에서 뺐으므로 여기서 닫는다 — 안 닫으면 그 누름에만 메뉴가 남는다(전에는 어느 단추로 눌러도 닫혔다).
+  const closeOnAuxPress = (event: { button: number }) => {
+    if (event.button !== 0) closeMenu();
+  };
   useEffect(() => setMenu(null), [peekPath, cut, target?.projectId, target?.seq]); // 보던 컷·창이 바뀌면 닫는다
   useEffect(() => {
     cardMenuRef.current = (card, x, y) => openMenu(card, peekPath, x, y);
@@ -1091,9 +1100,11 @@ function EditTabInner({
                 {bookmarks.length > 0 && <i>{bookmarks.length}</i>}
               </button>
               {/* 새 북마크의 색 · 모두 지우기(다빈치의 마커 색 메뉴) */}
-              <button type="button" className={"ed-mbtn ed-mbtn-color" + (colorMenu ? " ed-on" : "")} aria-haspopup="menu" aria-expanded={!!colorMenu}
+              <button type="button" ref={colorBtnRef} className={"ed-mbtn ed-mbtn-color" + (colorMenu ? " ed-on" : "")} aria-haspopup="menu" aria-expanded={!!colorMenu}
                 title={t("새 북마크의 색 · 모두 지우기")} aria-label={t("새 북마크의 색 · 모두 지우기")}
+                onPointerDown={closeOnAuxPress}
                 onClick={(event) => {
+                  if (colorMenu) return closeMenu();
                   const box = event.currentTarget.getBoundingClientRect();
                   menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
                   setColorMenu({ x: box.left, top: box.top, bottom: box.bottom, rev });
@@ -1105,10 +1116,12 @@ function EditTabInner({
           <span className="ed-zoom">
             {/* 목록 단추 — 비활성 숨기기 · 빈 곳 채우기. 숨기기가 켜져 있으면 라임이고 옆에 숨긴 폴더 수가 보인다 */}
             {target && (
-              <button type="button" className={"ed-mbtn ed-listbtn" + (doc.hideOff || listMenu ? " ed-on" : "")}
+              <button type="button" ref={listBtnRef} className={"ed-mbtn ed-listbtn" + (doc.hideOff || listMenu ? " ed-on" : "")}
                 aria-haspopup="menu" aria-expanded={!!listMenu}
                 title={t("타임라인 정리 — 비활성 숨기기 · 빈 곳 채우기")} aria-label={t("타임라인 정리 — 비활성 숨기기 · 빈 곳 채우기")}
+                onPointerDown={closeOnAuxPress}
                 onClick={(event) => {
+                  if (listMenu) return closeMenu();
                   const box = event.currentTarget.getBoundingClientRect();
                   menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
                   setListMenu({ x: box.left, top: box.top, bottom: box.bottom });
@@ -1205,6 +1218,7 @@ function EditTabInner({
           hideOff={!!doc.hideOff}
           offCount={offCuts.size}
           fillCount={fillPicks.length}
+          trigger={listBtnRef}
           onHide={() => {
             closeMenu();
             toggleHideOff();
@@ -1220,6 +1234,7 @@ function EditTabInner({
           bottom={colorMenu.bottom}
           value={ui.markerColor}
           count={doc.markers?.length ?? 0}
+          trigger={colorBtnRef}
           onPick={(color) => {
             patchUi({ markerColor: color });
             closeMenu();

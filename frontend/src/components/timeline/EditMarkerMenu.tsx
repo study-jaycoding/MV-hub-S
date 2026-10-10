@@ -3,7 +3,7 @@
 //    이름은 Enter·바깥 누르기에 저장하고 Esc·Tab 은 버린다. 색은 누르는 즉시 바뀌고 창은 그대로 있다.
 //  · EditMarkerColorMenu — 막대의 북마크 단추 옆 ▾. 새 북마크의 색을 고르고, 북마크를 모두 지운다(다빈치의 마커 색 메뉴).
 //  껍데기(자리·바깥 누르기·키 차단)는 EditMenu 의 것이고, 저장·버리기는 이 창의 일이다.
-import { useState } from "react";
+import { useState, type RefObject } from "react";
 import { MARKER_COLORS, timecode, type EditMarker } from "../../lib/editTimeline";
 import { useT } from "../../lib/i18n";
 import { EditMenu, EditSwatches } from "./EditTrackMenu";
@@ -66,6 +66,7 @@ export function EditMarkerColorMenu({
   bottom,
   value,
   count,
+  trigger,
   onPick,
   onClearAll,
   onClose,
@@ -75,6 +76,7 @@ export function EditMarkerColorMenu({
   bottom: number;
   value: string; // 새 북마크에 쓸 색
   count: number; // 이 시퀀스의 북마크 수(0 이면 '모두 지우기'가 흐리다)
+  trigger: RefObject<HTMLElement>; // 메뉴를 연 ▾ 단추 — 다시 누르면 그 단추가 닫는다(EditMenu)
   onPick: (color: string) => void;
   onClearAll: () => void;
   onClose: () => void;
@@ -82,7 +84,7 @@ export function EditMarkerColorMenu({
   const t = useT();
   const y = bottom + 4 + COLOR_MENU_H > window.innerHeight ? top - 4 - COLOR_MENU_H : bottom + 4;
   return (
-    <EditMenu x={x} y={y} width={172} height={COLOR_MENU_H} label={t("새 북마크의 색")} className="ed-cmenu" onClose={onClose}>
+    <EditMenu x={x} y={y} width={172} height={COLOR_MENU_H} label={t("새 북마크의 색")} className="ed-cmenu" trigger={trigger} onClose={onClose}>
       <button type="button" role="menuitem" className="ed-tmenu-item" disabled={!count} onClick={onClearAll}>
         {t("모두 지우기")}
         <i>×</i>

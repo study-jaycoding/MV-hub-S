@@ -199,3 +199,46 @@ it("타임라인의 시각이 뒤로 가면(반복) 작은 차이여도 그 자�
   frame();
   expect(video.currentTime).toBe(1.08);
 });
+
+// 숨은 탭(조작 점검 7회차 R20) — 세우는 일이 rAF 안에만 있으면, rAF 가 서는 숨은 탭에서는 따라가던 영상이 혼자 계속 돈다.
+it("탭이 가려지면 따라가던 영상을 바로 세운다 — 프레임을 기다리지 않고, 가려진 동안에는 프레임이 와도 다시 틀지 않는다", () => {
+  time = 1;
+  render({ track: 1, playing: true });
+  frame();
+  video.emit("loadedmetadata");
+  time = 1.016;
+  frame();
+  expect(video.paused).toBe(false);
+  video.currentTime = 1.3; // 가려지는 순간 영상이 가 있던 자리
+  const hide = () => vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  let visibility = hide();
+  act(() => { document.dispatchEvent(new Event("visibilitychange")); }); // 프레임(rAF)은 오지 않는다
+  expect(video.paused).toBe(true);
+  expect(video.currentTime).toBe(1.3); // 세우기만 한다 — 자리는 건드리지 않는다
+  time = 1.4; // 타임라인이 멈췄다는 소식(playing=false)이 닿기 전에 프레임이 하나 왔다
+  frame();
+  expect(video.paused).toBe(true);
+  expect(video.plays).toBe(1);
+
+  // 다시 보여도 스스로 틀지 않는다 — 타임라인이 가려질 때 멈췄고(useEditPlayback), 이 판은 그 시계를 따라갈 뿐이다
+  visibility.mockRestore();
+  render({ track: 1, playing: false });
+  act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+  frame();
+  expect(video.paused).toBe(true);
+  expect(video.plays).toBe(1);
+  expect(video.currentTime).toBe(1.4); // 멈춘 자리에 정확히 맞춰 서 있다
+  render({ track: 1, playing: true }); // 타임라인을 다시 틀면 다시 따라간다
+  time = 1.5;
+  frame();
+  expect(video.paused).toBe(false);
+  expect(video.plays).toBe(2);
+
+  act(() => root.unmount()); // 떠난 뒤에는 가려짐을 듣지 않는다
+  const pause = vi.spyOn(video, "pause");
+  visibility = hide();
+  act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+  expect(pause).not.toHaveBeenCalled();
+  visibility.mockRestore();
+  root = createRoot(host);
+});

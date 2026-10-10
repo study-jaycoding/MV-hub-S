@@ -29,6 +29,7 @@ export interface EditVideo {
   playbackRate: number;
   readonly paused: boolean;
   readonly seeking: boolean;
+  readonly duration?: number; // 영상의 실제 길이(메타데이터를 받기 전에는 NaN) — 없으면(시험의 가짜) 실제 끝을 모르는 옛 길 그대로다
   play(): Promise<void>;
   pause(): void;
   load(): void;
@@ -40,6 +41,14 @@ export interface EditVideo {
   prepare?(url: string | null, time: number): void; // 다음에 보일 영상을 미리 받아 그 시각에 세워 둔다(null = 비운다)
   swap?(url: string): boolean; // 미리 받아 둔 그 영상을 앞으로 내놓는다(받지 않는다). 없으면 false
   roll?(on: boolean): void; // 미리 받아 둔 영상을 소리 없이 미리 굴린다 / 세워 제자리로 돌린다
+}
+
+// 올려 둔 영상의 실제 끝(초). 적어 둔 길이(dur)보다 짧을 수 있다 — 길이를 재기 전이거나 재지 못한 영상. 브라우저는 그 뒤로
+//  보낸 currentTime 을 끝으로 자르므로, 영상을 보낼 자리와 '끝났는지'는 이것으로 본다. 모르는 것은 NaN(메타데이터 전)과
+//  Infinity(스트림)뿐이다 — 그때는 상한이 없다. 0초도 길이다(틀 것이 없는 영상): 모른다고 치면 0초로 잘린 자리를 계속 다시 보낸다.
+export function videoEnd(video: EditVideo | null | undefined): number {
+  const length = video?.duration ?? NaN;
+  return Number.isFinite(length) ? length : Infinity;
 }
 
 export interface EditSource {
@@ -155,9 +164,40 @@ export function useEditPlayback({
       setView(next);
     };
 
+    // 영상을 보낼 자리 — 컷 안 시각 그대로, 다만 실제 끝 뒤로는 보낼 수 없다(브라우저가 끝으로 자른다). 자르지 않은 시각과
+    //  견주면 영영 '어긋남'이라 seeked 마다 같은 자리로 다시 보내고, 도착하지 못해 재생이 그 자리에 선다(2026-10-11 R21).
+    const aim = () => Math.min(pos.current!.local, videoEnd(videoRef.current));
+
+    // 영상이 보낼 자리에 와 있지 않다 — 허용 오차 밖이거나, 영상은 실제 끝에 서 있는데 자리는 그 앞이다. 뒤의 것은 허용 오차
+    //  안이어도 '도착'이 아니다: 끝에 선 영상은 그대로 틀 수 없어 넘기게 되고(over), 그러면 틀 수 있는 마지막 조각을 건너뛴다 —
+    //  그 조각뿐인 구간 반복은 '빈 바퀴'로 멈췄다(Codex 재검토). 그 자리로 되감으면 틀 수 있다.
+    const astray = (video: EditVideo, target: number) => {
+      const end = videoEnd(video);
+      return Math.abs(video.currentTime - target) > SEEK_SLOP || (target < end && video.currentTime >= end);
+    };
+
+    // 이 클립은 여기까지다 — 그 클립의 끝으로 보내 다음(아래 클립·다음 컷)으로 넘어가게 한다. 남은 길은 rAF 시계가 잇는다.
+    const passClip = () => {
+      const { slot, clip } = visible();
+      if (!slot || !clip) return;
+      pos.current = { cut: slot.path, local: clip.len };
+      state.owner = "raf";
+      state.last = performance.now();
+    };
+
+    // 이 영상으로는 더 갈 수 없다 — 재생헤드가 실제 끝 뒤거나(적어 둔 길이보다 짧은 영상), 영상이 그 끝에 서 있다.
+    //  · 재생헤드 쪽: 영상이 끝 바로 앞(허용 오차 안)에 있으면 '도착'이지만, 그 영상에 시계를 맡기면 재생헤드가 영상의 시각으로
+    //    되돌아간다(Codex 코드 리뷰).
+    //  · 영상 쪽: 끝에 선 영상에 play() 를 걸면 브라우저가 처음부터 다시 튼다. 자리가 끝 앞이면 먼저 되감으므로(astray), 끝에 선
+    //    채 여기까지 오는 것은 탐색이 끝난 뒤에도 끝인 때뿐이다(탐색 중에 목표가 끝 바로 앞으로 바뀜 · 되감아도 못 벗어남).
+    const over = (video: EditVideo) => Math.max(pos.current!.local, video.currentTime) >= videoEnd(video);
+
     const startVideo = () => {
+      const video = videoRef.current;
+      // 끝난 영상에 play() 를 걸면 브라우저가 처음부터 다시 튼다 — 걸지 않고, 재생 중에 먼저 끝난 것(ended)과 같게 넘긴다.
+      if (video && over(video)) return passClip();
       const token = state.token;
-      videoRef.current?.play().catch((error: unknown) => {
+      video?.play().catch((error: unknown) => {
         // 그 사이 소스가 갈렸거나 우리가 멈춘 것(AbortError)은 실패가 아니다.
         if (token !== state.token || !state.playing || (error as { name?: string } | null)?.name === "AbortError") return;
         fail(token);
@@ -200,8 +240,8 @@ export function useEditPlayback({
           video.load(); // loadedmetadata → 목표 위치로 탐색 → seeked → (재생 중이면) play
         }
       } else if (video && playable) {
-        const local = pos.current!.local;
-        const off = Math.abs(video.currentTime - local) > SEEK_SLOP;
+        const local = aim();
+        const off = astray(video, local);
         if (jump) {
           // 위치를 옮겼다 — 최신 목표에 닿기 전에는 영상에 시계를 넘기지 않는다. 진행 중이던 옛 탐색의 도착은 믿지 않고,
           // 그것이 끝나면 seeked 처리부가 최신 목표로 다시 보낸 뒤에 도착을 선언한다.
@@ -213,7 +253,8 @@ export function useEditPlayback({
         } else if (owner === "raf" && state.arrived === state.token && !video.seeking && off) {
           video.currentTime = local; // 정지·역방향 — 영상을 위치에 맞춘다
         }
-        if (owner === "video" && state.arrived === state.token && video.paused) startVideo();
+        // 돌고 있는 영상이어도, 재생헤드가 그 실제 끝 뒤로 갔으면 시계를 맡기지 않는다(startVideo 가 넘긴다).
+        if (owner === "video" && state.arrived === state.token && (video.paused || over(video))) startVideo();
         if (owner === "raf" && !video.paused) video.pause();
       }
       if (video && playable) video.playbackRate = Math.max(1, Math.abs(state.rate));
@@ -295,6 +336,9 @@ export function useEditPlayback({
       pos.current = posAt(live.current.layout, rangeNow()?.from ?? 0);
       arm(); // 아웃 뒤에서 시작해 전체 끝을 돌아 들어온 때 — 다음 tick 전에 영상이 끝나도 구간을 지키게(Codex 코드 리뷰)
       sync(true);
+      // 돌아간 자리의 영상을 곧바로 넘겨(실제로는 거기까지 없는 영상 — passClip) 이미 바퀴의 끝을 지났다 — 이 바퀴에는 틀 것이
+      //  없다. 멈춘다: 그냥 두면 프레임마다 돌아가 넘기기만 되풀이해, '재생 중'인 채 시간이 그 클립의 끝에 선다.
+      if (now() >= (rangeNow()?.to ?? live.current.layout.total)) return stop();
       live.current.paint(now());
       state.frame = requestAnimationFrame(tick);
     };
@@ -387,30 +431,29 @@ export function useEditPlayback({
       // 이미 도착한 소스의 메타데이터는 또 온 것이다(미리 받아 둔 요소를 앞으로 내놓은 직후) — 시계로 도는 영상을 되감지 않는다.
       if (!state.shown || !pos.current || !video || state.arrived === state.token) return;
       state.loaded = true;
-      const target = pos.current.local; // 받는 동안 위치가 또 바뀌었을 수 있다 — 항상 최신 목표로
+      const target = aim(); // 받는 동안 위치가 또 바뀌었을 수 있다 — 항상 최신 목표로
       // 새로 받은 요소는 0 에 서 있다. 미리 그 자리에 세워 둔 요소는 다시 보내지 않는다 — 아직 가는 중이면(seeking) 시각은 이미
       //  목표를 가리키므로 도착은 seeked 가 알린다(Codex 설계 검토). 미리 굴려 둔 요소는 이미 돌고 있다 — 목표를 조금 지나
       //  있어도 되감지 않고 그대로 시계를 맡긴다(되감으면 그만큼 선다).
       const ahead = video.currentTime - target;
       if (!video.paused && ahead >= 0 && ahead <= ROLL_SLOP * Math.abs(state.rate)) arrive();
-      else if (Math.abs(ahead) > SEEK_SLOP) video.currentTime = target;
+      else if (astray(video, target)) video.currentTime = target;
       else if (!video.seeking) arrive();
     };
     const onSeeked = () => {
       const video = videoRef.current;
       if (!state.shown || !pos.current || !video) return;
       // 탐색하는 동안 목표가 또 바뀌었으면(끌어서 훑기) 한 번 더 간다. 영상이 시계로 돌고 있을 때는 건드리지 않는다.
+      //  여기서는 허용 오차만 본다(astray 의 '끝에 섰는데 자리는 그 앞'은 보지 않는다) — 탐색이 끝난 뒤에도 끝이면 다시 보내도
+      //  같을 수 있고, seeked 마다 다시 보내면 끝이 없다. 그때는 도착으로 치고 over 가 넘긴다.
       const clock = state.owner === "video" && state.arrived === state.token;
-      if (!clock && Math.abs(video.currentTime - pos.current.local) > SEEK_SLOP) video.currentTime = pos.current.local;
+      const target = aim();
+      if (!clock && Math.abs(video.currentTime - target) > SEEK_SLOP) video.currentTime = target;
       else arrive();
     };
     const onEnded = () => {
       // 적어 둔 길이보다 영상이 먼저 끝났다 — 그 클립의 끝으로 보내 다음으로 넘어가게 한다.
-      const { slot, clip } = visible();
-      if (state.owner !== "video" || state.arrived !== state.token || !slot || !clip) return;
-      pos.current = { cut: slot.path, local: clip.len };
-      state.owner = "raf";
-      state.last = performance.now();
+      if (state.owner === "video" && state.arrived === state.token) passClip();
     };
     const events: [string, () => void][] = [
       ["loadedmetadata", onMeta], ["seeked", onSeeked], ["ended", onEnded], ["error", () => fail(state.token)],

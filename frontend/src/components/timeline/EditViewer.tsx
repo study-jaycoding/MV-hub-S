@@ -98,7 +98,9 @@ export function EditViewer({
         : source?.state === "unknown" ? t("확인 못 함 — 공유 목록을 아직 받지 못했습니다.")
           : failed ? t("이 영상을 재생하지 못했습니다.") : null);
   const keepFocus = (event: ReactMouseEvent) => event.preventDefault(); // 단추가 초점을 가져가면 재생 키가 그 단추로 간다
-  const fast = Math.abs(rate) > 1 || rate < 0 ? `${rate < 0 ? "◀ " : ""}${Math.abs(rate)}x` : "";
+  // 위 줄의 배속 글자는 '지금 실제로 도는 속도'다 — 엔진은 멈춘 뒤에도 마지막 속도(rate)를 쥐고 있어서, 도는 동안에만 낸다
+  //  (안 그러면 멈춘 화면에 2x·◀ 1x 가 남는다). 고른 배속은 아래 줄의 배속 단추가 보인다.
+  const fast = playing && (Math.abs(rate) > 1 || rate < 0) ? `${rate < 0 ? "◀ " : ""}${Math.abs(rate)}x` : "";
   const speedTitle = t("재생 배속 — 누를 때마다 1x · 1.5x · 2x · 4x");
   const current = options.find((option) => option.value === mode);
   const scrub = (event: ReactPointerEvent) => {

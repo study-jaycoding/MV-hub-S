@@ -7,7 +7,7 @@
 //  · 북마크 편집 창(EditMarkerMenu.tsx)도 이 껍데기를 쓴다.
 //  편집 탭이 연 폴더 창의 카드도 쓴다 — 창이 떠 있는 동안 .body 는 inert 라 body 로 옮겨 그린다. 틀·바깥 누르기는 폴더
 //  우클릭 메뉴(ProjectSection)와 같다.
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import {
   clampMenuPosition, FOLDER_MENU_W, folderMenuHeight, folderMenuKinds, folderMenuLabel, folderTone, type FolderMenuKind,
@@ -27,6 +27,7 @@ export function EditMenu({
   height,
   label,
   className = "",
+  trigger,
   onClose,
   children,
 }: {
@@ -36,6 +37,10 @@ export function EditMenu({
   height: number; // 화면 밖으로 안 나가게 자리를 잡는 데만 쓴다
   label: string;
   className?: string;
+  // 이 메뉴를 여닫는 단추(막대의 목록·북마크 색 단추) — 그 단추의 누름은 바깥 누름으로 치지 않는다. 치면 누르는 순간
+  //  (pointerdown) 메뉴가 먼저 닫히고 뒤따르는 click 이 다시 열어, 다시 눌러도 안 닫힌다. 닫는 것은 그 단추의 click 이 한다.
+  //  우클릭으로 뜨는 메뉴에는 그런 단추가 없다(안 준다).
+  trigger?: RefObject<HTMLElement>;
   onClose: (byKey: boolean) => void; // byKey = Esc·Tab 으로 닫았다(바깥을 누른 것이 아니다)
   children: ReactNode;
 }) {
@@ -43,7 +48,7 @@ export function EditMenu({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const closeOutside = useRef(() => onCloseRef.current(false)).current;
-  useOutsideMouseDown(ref, closeOutside);
+  useOutsideMouseDown(ref, closeOutside, true, trigger);
   // 메뉴가 떠 있는 동안의 키 — 캡처 단계에서 먼저 본다(리스너는 한 번만 건다: useEscapeClose 의 주석).
   //  · Esc·Tab 은 메뉴가 먹고 닫는다. Esc 는 뒤의 폴더 창까지 닫지 않게, Tab 은 초점이 메뉴 밖으로 나가지 않게 —
   //    나가면 뒤 단추를 Enter·Space 로 누를 수 있다(전파를 막아도 단추의 기본 동작은 남는다, Codex 코드 리뷰).
@@ -215,6 +220,7 @@ export function EditListMenu({
   hideOff,
   offCount,
   fillCount,
+  trigger,
   onHide,
   onFill,
   onClose,
@@ -225,6 +231,7 @@ export function EditListMenu({
   hideOff: boolean;
   offCount: number;
   fillCount: number;
+  trigger: RefObject<HTMLElement>; // 목록 단추 — 다시 누르면 그 단추가 닫는다(EditMenu)
   onHide: () => void;
   onFill: () => void;
   onClose: () => void;
@@ -233,7 +240,7 @@ export function EditListMenu({
   const height = HEAD_H - 22 + 2 * ROW_H; // 제목 줄이 없다
   const y = bottom + 4 + height > window.innerHeight ? top - 4 - height : bottom + 4;
   return (
-    <EditMenu x={x} y={y} width={190} height={height} label={t("타임라인 정리")} onClose={onClose}>
+    <EditMenu x={x} y={y} width={190} height={height} label={t("타임라인 정리")} trigger={trigger} onClose={onClose}>
       <button type="button" role="menuitemcheckbox" aria-checked={hideOff} autoFocus className={"ed-tmenu-item" + (hideOff ? " ed-here" : "")}
         title={t("비활성 폴더(빈 폴더·D 로 끈 폴더)를 타임라인에서 숨깁니다. 컷 이름을 누르고 D 를 누르면 그 폴더를 켜고 끕니다.")} onClick={onHide}>
         {t("비활성 숨기기")}

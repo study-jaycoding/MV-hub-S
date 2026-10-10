@@ -7,7 +7,7 @@
 // ponytail: rAF 가 판이 떠 있는 내내 돈다(판 하나에 프레임당 배치 조회 한 번) — 트랙만 보는 판이 많아지면 시계 쪽에서 알리게.
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { clipKey, posAt, trackClip, type EditLayout, type SlotClip } from "./editTimeline";
-import type { EditSource, EditVideo } from "./useEditPlayback";
+import { videoEnd, type EditSource, type EditVideo } from "./useEditPlayback";
 
 export interface EditShown {
   clip: SlotClip | null;
@@ -60,8 +60,14 @@ export function useEditFollow({
     const onError = () => {
       if (state.video) state.failed.add(state.clip); // 다음 프레임이 영상을 내리고 썸네일로 바꾼다
     };
+    // 탭이 가려지면 rAF 가 서서 아래 tick 의 정지가 돌지 않는다 — 여기서 바로 세운다(안 세우면 따라가던 영상이 숨은 탭에서
+    //  혼자 계속 돈다). 다시 보여도 스스로 틀지 않는다: 타임라인이 가려질 때 멈췄고(useEditPlayback), 이 판은 그 시계를 따라갈 뿐이다.
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") video?.pause();
+    };
     video?.addEventListener("loadedmetadata", onMeta);
     video?.addEventListener("error", onError);
+    document.addEventListener("visibilitychange", onVisibility);
 
     const tick = (stamp: number) => {
       const { layout: cuts, track: lane, sourceOf: source, now: clock, playing: on, rate: speed } = live.current;
@@ -93,18 +99,24 @@ export function useEditFollow({
         // 시각이 뒤로 갔다(반복·구간 반복으로 되돌아감) — 어긋남 보정이 아니라 자리 옮김이라, 작은 차이여도 한 번 정확히 맞춘다
         //  (짧은 구간을 되풀이할 때 0.2초 안이라고 그냥 두면 이 판만 구간 밖을 튼다 — Codex 설계 검토).
         if (time < state.lastTime) state.rewound = true;
-        const going = on && speed > 0 && stamp - state.movedAt < STALL_MS;
-        const off = Math.abs(video.currentTime - pos!.local);
+        // 가려진 동안에는 틀지 않는다 — 타임라인이 멈췄다는 소식(playing)이 닿기 전에 온 프레임이 방금 세운 영상을 다시 틀지 않게.
+        const going = on && speed > 0 && stamp - state.movedAt < STALL_MS && document.visibilityState === "visible";
+        // 영상을 보낼 자리 — 실제 끝 뒤로는 보낼 수 없다(적어 둔 길이보다 짧은 영상: 브라우저가 끝으로 자른다). 자르지 않은
+        //  시각과 견주면 프레임마다 같은 자리로 다시 보낸다 — 그 뒤에서는 끝 프레임에 세워 둔다(2026-10-11 R21).
+        const end = videoEnd(video);
+        const target = Math.min(pos!.local, end);
+        const off = Math.abs(video.currentTime - target);
         if (going) {
           video.playbackRate = Math.max(1, speed);
           if (!video.seeking) {
-            if (off > (state.rewound ? EXACT : DRIFT)) video.currentTime = pos!.local;
+            if (off > (state.rewound ? EXACT : DRIFT)) video.currentTime = target;
             state.rewound = false;
           }
-          if (video.paused) void video.play().catch(() => {}); // 소스가 갈리며 끊긴 재생 요청은 실패가 아니다
+          // 소스가 갈리며 끊긴 재생 요청은 실패가 아니다. 실제 끝에 선 영상은 틀지 않는다 — 브라우저가 처음부터 다시 튼다.
+          if (video.paused && video.currentTime < end) void video.play().catch(() => {});
         } else {
           if (!video.paused) video.pause();
-          if (off > EXACT && !video.seeking) video.currentTime = pos!.local;
+          if (off > EXACT && !video.seeking) video.currentTime = target;
           state.rewound = false; // 서 있으면 어차피 정확히 맞춘다
         }
       }
@@ -116,6 +128,7 @@ export function useEditFollow({
       cancelAnimationFrame(state.frame);
       video?.removeEventListener("loadedmetadata", onMeta);
       video?.removeEventListener("error", onError);
+      document.removeEventListener("visibilitychange", onVisibility);
       if (video) {
         video.pause();
         video.removeAttribute("src");
