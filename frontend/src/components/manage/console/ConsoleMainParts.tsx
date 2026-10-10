@@ -1,5 +1,6 @@
 // 메인 화면 부품 — 힉스필드 엔터프라이즈 화면과 같은 틀(Jay 2026-09-29): 크레딧 풀 카드 + 서브 워크스페이스 표.
 // 풀: 할당됨(추정) = 사용(우리 기록 전체) + 미사용(서브 잔액 합), 할당 가능 = 메인 잔액. 힉스필드는 과거 할당 총액을 주지 않는다.
+import { useEscapeClose } from "../../../lib/useEscapeClose";
 import { useState } from "react";
 import { formatDecimal } from "../../../lib/creditPlan";
 import { formatCredits } from "../../../lib/formatCredits";
@@ -88,6 +89,7 @@ function createdLabel(day: string | null | undefined): string {
 /** 상태 알약 — 누르면 활성·비활성·완료 메뉴(편집 권한이 있을 때). 표시용이라 계산에는 영향 없다. */
 function StatusPill({ status, editable, onChange }: { status: ConsoleStatus; editable: boolean; onChange: (next: ConsoleStatus) => void }) {
   const [open, setOpen] = useState(false);
+  useEscapeClose(() => setOpen(false), open, true, true); // 메뉴만 닫는다
   if (!editable) return <span className={`wc-status ${status}`}>{STATUS_LABEL[status]}</span>;
   return (
     <span className="wc-status-wrap">
@@ -126,6 +128,7 @@ export function SubTable({ data, canEdit, busy, onSelect, onMove, onCredit, onFo
 }) {
   const [query, setQuery] = useState("");
   const [menu, setMenu] = useState<string | null>(null);
+  useEscapeClose(() => setMenu(null), menu !== null, true, true); // ⋯ 메뉴만 닫는다
   // 프로젝트 관리 창과 같은 끌기 — ⠿ 를 누른 동안만 줄이 끌린다(이름·단추 클릭을 막지 않게)
   const [dragArmed, setDragArmed] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);

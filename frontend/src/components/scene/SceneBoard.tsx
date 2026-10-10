@@ -3,6 +3,8 @@
 //   · 카드 좌드래그=이동(선택된 것 함께) · 클릭=단일선택 · Ctrl=토글(누적) · Shift=연결 체인선택 · 배경클릭=해제
 //   · Delete=선택 삭제(생성물 있으면 휴지통, 빈 카드면 그냥 제거)
 // 기능: 에셋 드롭 레퍼런스 카드(S2) · n키 빈 카드+연결선(S3) · 포트 수동 연결/해제(S4).
+import { pressStartedCovered } from "../../lib/keyGate";
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { ownEntry } from "../../lib/ownEntry";
 import {
   useCallback,
@@ -504,6 +506,11 @@ export function SceneBoard({
   const [modelModalId, setModelModalId] = useState<string | null>(null); // 모델 노드 설정 모달 대상 카드 id
   const [comfyModalId, setComfyModalId] = useState<string | null>(null); // comfy 노드 설정 모달 대상 카드 id
   const [viewTextModal, setViewTextModal] = useState<string[] | null>(null); // View 텍스트 보기 모달 내용
+  // 떠 있는 동안 Esc 는 이 창들이 갖는다(맨 위 겹만 닫힌다) — 뒤 보드의 단축키도 쉰다(lib/keyGate).
+  useEscapeClose(() => setViewTextModal(null), !!viewTextModal);
+  useEscapeClose(() => {
+    if (!canvasRecovery?.claimingId) setCanvasRecovery(null); // 붙이는 중엔 닫지 않는다(바깥 클릭과 같은 규칙)
+  }, !!canvasRecovery);
   const [viewTimeline, setViewTimeline] = useState<TimelineClip[] | null>(null); // View 재생 타임라인(연속 재생) 클립들
   const [editTextId, setEditTextId] = useState<string | null>(null); // 편집 중인 텍스트/제목 노드(그 외엔 @토큰 알약 미리보기)
   const editTextIdRef = useRef<string | null>(null);
@@ -737,6 +744,8 @@ export function SceneBoard({
   const lastMouseRef = useRef<{ x: number; y: number; over: boolean }>({ x: 0, y: 0, over: false });
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
+  const cardsSceneRef = useRef(cardsSceneId); // 손에 든 카드(cardsRef)가 속한 씬 — 씬을 막 바꾼 틈에는 sceneIdRef 와 다르다
+  cardsSceneRef.current = cardsSceneId;
   const edgesRef = useRef(edges);
   edgesRef.current = edges;
   const groupsRef = useRef(groups);
@@ -940,6 +949,10 @@ export function SceneBoard({
       pendingPersistRef.current = undefined;
     }
     pendingSinceRef.current = undefined;
+    // 씬을 막 바꾼 틈(동기화 effect 는 돌았고 새 카드는 아직 안 그려졌다)에는 확정할 것이 없다 — 손에 든 카드는 **떠난 씬**의 것이라,
+    //  여기서 저장하면 방금 연 씬이 앞 씬의 카드로 덮인다(2026-10-10 실측: 씬 탭을 25ms 안에 연달아 누르면 9/9, 새로 고침 뒤에도 남음).
+    //  떠난 씬의 밀린 편집은 전환 직전의 flushPending 이 이미 확정했다.
+    if (cardsSceneRef.current !== sceneIdRef.current) return;
     if (!hasUncommittedCardsOrEdges(cardsRef.current, edgesRef.current)) return; // 밀린 편집 없음
     persist(cardsRef.current, edgesRef.current); // 사용자 편집 확정 → undo:true
   };
@@ -2934,6 +2947,10 @@ export function SceneBoard({
   const onBoardMouseDownCapture = (e: React.MouseEvent) => {
     const t = e.target as HTMLElement;
     if (isSceneTextEntryTarget(t)) return;
+    // 화면에 남은 글자 선택을 걷는다 — 선택이 남은 채 카드를 누르면 브라우저가 '선택한 글자 끌기'로 가로채 mousemove·mouseup 이 끊기고
+    //  보드가 끌기 상태에 갇힌다(2026-10-10 실측: 씬 탭 줄에서 시작한 끌기 뒤 13/13). 글자를 고를 수 있는 본문을 누른 것이면 그 자리에서
+    //  새 선택이 시작되므로 걷어도 된다.
+    window.getSelection()?.removeAllRanges();
     const ae = document.activeElement as HTMLElement | null;
     // 편집 요소 + 프롬프트 dock(레퍼런스 트레이 등) 포커스를 캔버스 클릭 시 해제 — 안 하면 트레이가 계속
     //  포커스로 남아, 캔버스 클릭 후 붙여넣기가 캔버스 카드 대신 트레이로 잘못 가던 문제가 생긴다.
@@ -3066,11 +3083,17 @@ export function SceneBoard({
   //  카드 이동·가위·패닝은 보드 안에서만 의미가 있으므로 바깥에서는 선택만 시작한다.
   //  '생성 결과' 창이 떠 있는 동안은 끈다 — 창의 격자(라이브러리 부품)가 같은 바깥 끌기를 받는다. 둘 다 켜 두면 상단바
   //  여백에서 끈 한 번에 창의 선택과 뒤 캔버스의 선택이 같이 시작된다(Codex 코드 리뷰 10-07).
-  useOutsideDragSelect(".scene-board", (e) =>
-    beginBoardMarquee(e as unknown as React.MouseEvent),
-  !cardMenu);
+  useOutsideDragSelect(".scene-board", (e) => {
+    // 글자 선택·네이티브 드래그 방지(생성 탭·에셋과 같다). 안 막으면 씬 탭 줄에서 끌기 시작할 때 탭 이름이 글자로 선택되고, 그 뒤의
+    //  카드 끌기를 브라우저가 '선택한 글자 끌기'로 가로채 mousemove·mouseup 이 끊긴다(2026-10-10 실측: 이후 카드 끌기·범위 선택이 전부 멈춤).
+    e.preventDefault();
+    beginBoardMarquee(e as unknown as React.MouseEvent);
+  }, !cardMenu);
 
   const onMouseDown = (e: React.MouseEvent) => {
+    // 위에 뜬 창·메뉴의 클릭(바깥을 눌러 닫는 것 포함)은 그것의 몫 — 보드의 선택·범위 선택·화면 이동을 시작하지 않는다
+    //  (2026-10-10 재실측: 재생 창·모델 설정 창의 바깥을 눌러 닫으면 뒤의 선택까지 풀렸다).
+    if (pressStartedCovered()) return;
     // 미들 버튼 화면 이동은 뷰포트 훅이 카메라 갱신·저장·커서 정리를 함께 담당한다.
     if (beginPan(e, beginDrag)) return;
     // 가위(Y 누른 채) → 좌드래그로 궤적을 그리고 지나간 선을 빨갛게 예고, 손 떼면 실제 절단.
@@ -3580,6 +3603,11 @@ export function SceneBoard({
       }}
       onDragOver={onDragOver}
       onDrop={onDrop}
+      // 보드 안에서 시작한 브라우저의 끌기(선택한 글자·그림)는 받지 않는다 — 끌 수 있게 만든 것(draggable: 결과 창의 카드)만 예외.
+      //  받으면 mousemove·mouseup 이 끊겨 카드가 끌기 상태에 갇힌다(위 onBoardMouseDownCapture 주석과 한 쌍).
+      onDragStart={(e) => {
+        if (!(e.target as HTMLElement).closest?.('[draggable="true"]')) e.preventDefault();
+      }}
     >
       <div className="scene-grid" ref={gridRef} />
       <div className="scene-canvas" ref={canvasRef} style={{ transformOrigin: "0 0" }}>

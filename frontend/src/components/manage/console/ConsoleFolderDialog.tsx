@@ -1,5 +1,6 @@
 // 렌더 폴더 창 — 서브 표의 폴더 단추. 렌더 폴더는 **프로젝트마다**, 그리고 **이 PC 에** 저장되는 설정이다
 // (`/api/manage/project-folders` 는 로컬 전용 경로). 프로젝트 관리 창과 같은 API(setProjectFolder)를 쓴다.
+import { useEscapeClose } from "../../../lib/useEscapeClose";
 import { useEffect, useState } from "react";
 import { api } from "../../../api";
 import { manageApi } from "../../../lib/manageApi";
@@ -11,6 +12,7 @@ const errorText = (reason: unknown) => String(reason).replace(/^Error:\s*/, "");
 export function ConsoleFolderDialog({ workspaceId, name, onClose }: { workspaceId: string; name: string; onClose: () => void }) {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState("");
+  useEscapeClose(onClose);
   const patch = (id: string, next: Partial<Row>) => setRows((cur) => cur?.map((r) => (r.id === id ? { ...r, ...next } : r)) ?? cur);
 
   useEffect(() => {

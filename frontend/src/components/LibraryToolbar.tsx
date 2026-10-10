@@ -1,5 +1,6 @@
 // 라이브러리 툴바 (힉스필드식): History(미디어 타입 필터) + 필터 토글 +
 // 썸네일 크기 조절 슬라이더 + List/Grid 레이아웃 토글.
+import { useEscapeClose } from "../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
 import type { ReviewFilter } from "../lib/generationReview";
@@ -128,20 +129,14 @@ export function LibraryToolbar({
   const t = useT();
   const [reviewMenuOpen, setReviewMenuOpen] = useState(false);
   const reviewMenuRef = useRef<HTMLDivElement>(null);
+  useEscapeClose(() => setReviewMenuOpen(false), reviewMenuOpen, true, true); // 메뉴만 닫는다 — 뒤의 선택·폴더 창은 그대로
   useEffect(() => {
     if (!reviewMenuOpen) return;
     const closeOutside = (event: PointerEvent) => {
       if (!reviewMenuRef.current?.contains(event.target as Node)) setReviewMenuOpen(false);
     };
-    const closeEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setReviewMenuOpen(false);
-    };
     document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeEscape);
-    };
+    return () => document.removeEventListener("pointerdown", closeOutside);
   }, [reviewMenuOpen]);
   const reviewLabel = reviewFilter === "held" ? t("보류만 보기") : t("공유만 보기");
   const oppositeFilter = reviewFilter === "held" ? "shared" : "held";

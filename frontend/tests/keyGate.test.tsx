@@ -1,0 +1,259 @@
+// @vitest-environment jsdom
+// 떠 있는 것이 키의 주인(lib/keyGate) · Esc 한 번에 한 겹(lib/useEscapeClose).
+// 2026-10-10 실측에서 나온 것들: 크게 보기·정보·재생 창 뒤로 단축키가 먹음(카드 색·Delete), 같은 Esc 에 두 겹이 함께 닫힘
+// (프로젝트 대화상자 + 달력, 설정 + 옆 패널, 폴더 창 + 뒤의 컷 선택).
+import { act, useState } from "react";
+import { flushSync } from "react-dom";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+
+vi.mock("../src/api", () => ({ api: { setColorsBatch: vi.fn(async () => ({ failed: [] })) } }));
+vi.mock("../src/lib/deactivated", () => ({ toggleDisabledGen: vi.fn() }));
+
+import { toggleDisabledGen } from "../src/lib/deactivated";
+import { backgroundKeysBlocked, isTypingTarget, pressStartedCovered, useKeyOwner, usePageSelectAllGuard } from "../src/lib/keyGate";
+import { useGenerationSelection } from "../src/lib/useGenerationSelection";
+import { markKeyHandled } from "../src/lib/keyHandled";
+import { useBackgroundEscape, useEscapeClose } from "../src/lib/useEscapeClose";
+import { useOutsideDragSelect } from "../src/lib/useOutsideDragSelect";
+import { useGenerationKeyboardActions } from "../src/lib/useGenerationKeyboardActions";
+import { useSceneKeyboardShortcuts } from "../src/lib/useSceneKeyboardShortcuts";
+
+let host: HTMLDivElement;
+let root: Root;
+beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+});
+afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
+
+const press = (key: string, target: EventTarget = document.body, init: KeyboardEventInit = {}) => {
+  const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init });
+  act(() => { target.dispatchEvent(event); });
+  return event;
+};
+
+function Layer({ onClose, enabled = true, capture = false, consume = false }: { onClose: () => void; enabled?: boolean; capture?: boolean; consume?: boolean }) {
+  useEscapeClose(onClose, enabled, capture, consume);
+  return null;
+}
+
+it("둘 다 버블 겹(관리자 창 + 안쪽 대화상자)이어도 Esc 는 안쪽만 닫는다", () => {
+  const onOuter = vi.fn(); const onInner = vi.fn();
+  function Outer() { useEscapeClose(onOuter); return <Layer onClose={onInner} />; } // 같은 렌더에 뜬 부모·자식 — 자식이 위
+  act(() => root.render(<Outer />));
+  press("Escape");
+  expect(onInner).toHaveBeenCalledTimes(1);
+  expect(onOuter).not.toHaveBeenCalled();
+});
+
+it("나중에 연 겹이 위다 — 형제 순서(먼저 그려지는 쪽)와 무관하게 나중에 켜진 것만 닫힌다", () => {
+  const onFirst = vi.fn(); const onSecond = vi.fn();
+  // 트리에서는 second 가 먼저 그려지지만, first 가 나중에 켜졌다.
+  act(() => root.render(<><Layer onClose={onSecond} /><Layer onClose={onFirst} enabled={false} /></>));
+  act(() => root.render(<><Layer onClose={onSecond} /><Layer onClose={onFirst} /></>));
+  press("Escape");
+  expect(onFirst).toHaveBeenCalledTimes(1);
+  expect(onSecond).not.toHaveBeenCalled();
+});
+
+it("위 겹을 닫은 Esc 로 다시 켜진 아래 겹은 그 Esc 를 또 쓰지 않는다(컷 정보 + 크게 보기)", () => {
+  const onParent = vi.fn();
+  function Parent() {
+    const [childOpen, setChildOpen] = useState(true);
+    useEscapeClose(onParent, !childOpen); // 위에 무엇이 떠 있으면 꺼 두는 옛 호출 꼴
+    // 위 겹은 캡처 단계에서 닫힌다 → 다시 켜진 아래 겹의 버블 리스너가 **같은 Esc 의 버블 단계**에 불린다(표시가 없으면 또 닫는다).
+    return childOpen ? <Layer capture onClose={() => flushSync(() => setChildOpen(false))} /> : null;
+  }
+  act(() => root.render(<Parent />));
+  press("Escape");
+  expect(onParent).not.toHaveBeenCalled();
+  press("Escape");
+  expect(onParent).toHaveBeenCalledTimes(1);
+});
+
+it("닫지 않는 겹(적용 중인 확인 창)도 맨 위면 Esc 를 갖는다 — 아래 겹으로 새지 않는다", () => {
+  const onOuter = vi.fn();
+  act(() => root.render(<><Layer onClose={onOuter} /><Layer onClose={() => {}} /></>));
+  press("Escape");
+  expect(onOuter).not.toHaveBeenCalled();
+});
+
+it("겹이 떠 있는 동안 뒤 화면의 키는 막힌다 — 닫히면 풀린다. Esc 없는 덮개는 useKeyOwner 로 올린다", () => {
+  function Owner({ active }: { active: boolean }) { useKeyOwner(active); return null; }
+  expect(backgroundKeysBlocked()).toBe(false);
+  act(() => root.render(<Layer onClose={() => {}} />));
+  expect(backgroundKeysBlocked()).toBe(true);
+  act(() => root.render(<Layer onClose={() => {}} enabled={false} />));
+  expect(backgroundKeysBlocked()).toBe(false);
+  act(() => root.render(<Owner active />));
+  expect(backgroundKeysBlocked()).toBe(true);
+  act(() => root.render(<Owner active={false} />));
+  expect(backgroundKeysBlocked()).toBe(false);
+});
+
+it("뒤 화면의 Esc 는 위에 겹이 있으면 쉬고, 한 Esc 는 뒤 화면에서도 한 번만 쓰인다", () => {
+  const first = vi.fn(); const second = vi.fn(); const onLayer = vi.fn();
+  function Back({ layer, firstUses = true }: { layer?: boolean; firstUses?: boolean }) {
+    useBackgroundEscape(() => { first(); return firstUses ? undefined : false; });
+    useBackgroundEscape(second);
+    return layer ? <Layer onClose={onLayer} capture consume /> : null;
+  }
+  act(() => root.render(<Back layer />));
+  press("Escape");
+  expect(onLayer).toHaveBeenCalledTimes(1);
+  expect(first).not.toHaveBeenCalled();
+
+  act(() => root.render(<Back />));
+  press("Escape");
+  expect(first).toHaveBeenCalledTimes(1);
+  expect(second).not.toHaveBeenCalled(); // 앞의 것이 썼다
+
+  act(() => root.render(<Back firstUses={false} />));
+  press("Escape");
+  expect(second).toHaveBeenCalledTimes(1); // 앞의 것이 '안 썼다'(false)고 하면 다음이 받는다
+});
+
+it("버블 겹이 떠 있을 때도 뒤 화면의 Esc 는 쉰다 — 뒤 리스너가 먼저 등록돼 먼저 돌아도(정보 창 + 선택 해제)", () => {
+  const onBack = vi.fn(); const onLayer = vi.fn();
+  function Back({ layer }: { layer: boolean }) { useBackgroundEscape(onBack); return layer ? <Layer onClose={onLayer} /> : null; }
+  act(() => root.render(<Back layer={false} />)); // 뒤 화면 리스너가 먼저 걸린다
+  act(() => root.render(<Back layer />));
+  press("Escape");
+  expect(onLayer).toHaveBeenCalledTimes(1);
+  expect(onBack).not.toHaveBeenCalled();
+});
+
+it("글자를 치는 자리만 양보 대상이다 — 체크박스·슬라이더는 아니다", () => {
+  const make = (html: string) => { host.innerHTML = html; return host.firstElementChild!; };
+  expect(isTypingTarget(make('<input type="text">'))).toBe(true);
+  expect(isTypingTarget(make("<input>"))).toBe(true);
+  expect(isTypingTarget(make("<textarea></textarea>"))).toBe(true);
+  expect(isTypingTarget(make("<select></select>"))).toBe(true);
+  expect(isTypingTarget(make('<input type="checkbox">'))).toBe(false);
+  expect(isTypingTarget(make('<input type="range">'))).toBe(false);
+  expect(isTypingTarget(make("<button></button>"))).toBe(false);
+  expect(isTypingTarget(null)).toBe(false);
+  host.innerHTML = "";
+});
+
+// ── 뒤 화면의 실제 훅 둘 ──
+function mountLibrary(overlay: boolean) {
+  const clearSelect = vi.fn();
+  const args = {
+    clearSelect,
+    filtersRef: { current: { tab: "my" } },
+    flash: vi.fn(),
+    gensRef: { current: [] },
+    reload: vi.fn(),
+    selectedRef: { current: new Set(["g1"]) },
+    setGens: vi.fn(),
+  } as unknown as Parameters<typeof useGenerationKeyboardActions>[0];
+  function Harness() {
+    useGenerationKeyboardActions(args);
+    return <>{overlay ? <Layer onClose={() => {}} /> : null}<input type="checkbox" className="probe-check" /><input className="probe-text" /></>;
+  }
+  act(() => root.render(<Harness />));
+  return clearSelect;
+}
+
+it("라이브러리: 창이 떠 있으면 d(비활성)·Esc(선택 해제)가 뒤 카드에 먹지 않는다", () => {
+  const clearSelect = mountLibrary(true);
+  press("d");
+  press("Escape");
+  expect(toggleDisabledGen).not.toHaveBeenCalled();
+  expect(clearSelect).not.toHaveBeenCalled();
+});
+
+it("라이브러리: 창이 없으면 먹는다 — 체크박스에 초점이 남아 있어도. 글자 입력칸에서는 양보한다", () => {
+  const clearSelect = mountLibrary(false);
+  press("d", host.querySelector(".probe-text")!);
+  expect(toggleDisabledGen).not.toHaveBeenCalled();
+  press("d", host.querySelector(".probe-check")!);
+  expect(toggleDisabledGen).toHaveBeenCalledTimes(1);
+  const esc = press("Escape", host.querySelector(".probe-check")!);
+  expect(clearSelect).toHaveBeenCalledTimes(1);
+  // 선택을 푼 Esc 는 '쓴 것' — 같은 키로 뒤의 폴더 창·컷 선택까지 건드리지 않는다.
+  const onBack = vi.fn();
+  function Probe() { useBackgroundEscape(onBack); return null; }
+  act(() => root.render(<Probe />));
+  act(() => { window.dispatchEvent(esc); }); // 이미 표시된 같은 이벤트
+  expect(onBack).not.toHaveBeenCalled();
+});
+
+it("라이브러리: 안쪽이 이미 쓴 Esc(격자의 선택 해제)는 다시 쓰지 않는다", () => {
+  const clearSelect = mountLibrary(false);
+  const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+  markKeyHandled(event);
+  act(() => { document.body.dispatchEvent(event); });
+  expect(clearSelect).not.toHaveBeenCalled();
+});
+
+it("캔버스: 창이 떠 있으면 Delete·Ctrl+Z·Ctrl+A 가 뒤 보드에 먹지 않는다", () => {
+  type Actions = Parameters<typeof useSceneKeyboardShortcuts>[0];
+  const onDelete = vi.fn(); const onUndo = vi.fn(); const onSelectAll = vi.fn();
+  const actions = new Proxy(
+    { isTextEditing: () => false, isPopupOpen: () => false, isPickerOpen: () => false, selectionCount: () => 1, onDelete, onUndo, onSelectAll },
+    { get: (target, name) => (name in target ? target[name as keyof typeof target] : () => { throw new Error(`unexpected action: ${String(name)}`); }) },
+  ) as unknown as Actions;
+  function Board({ overlay }: { overlay: boolean }) { useSceneKeyboardShortcuts(actions); return overlay ? <Layer onClose={() => {}} /> : null; }
+  act(() => root.render(<Board overlay />));
+  press("Delete");
+  press("z", document.body, { ctrlKey: true });
+  expect(press("a", document.body, { ctrlKey: true }).defaultPrevented).toBe(false);
+  expect(onDelete).not.toHaveBeenCalled();
+  expect(onUndo).not.toHaveBeenCalled();
+  expect(onSelectAll).not.toHaveBeenCalled();
+
+  act(() => root.render(<Board overlay={false} />));
+  press("Delete");
+  expect(onDelete).toHaveBeenCalledTimes(1);
+});
+
+it("입력칸 밖의 Ctrl+A 는 언제나 막는다 — 위에 창이 떠 뒤 화면이 쉬는 동안에도 화면 글자를 긁지 않는다. 입력칸에서는 그대로", () => {
+  function App() { usePageSelectAllGuard(); return <><Layer onClose={() => {}} /><input className="probe-text" /><input type="checkbox" className="probe-check" /></>; }
+  act(() => root.render(<App />));
+  expect(press("a", document.body, { ctrlKey: true }).defaultPrevented).toBe(true);
+  expect(press("a", document.body, { metaKey: true }).defaultPrevented).toBe(true);
+  expect(press("a", host.querySelector(".probe-check")!, { ctrlKey: true }).defaultPrevented).toBe(true);
+  expect(press("a", host.querySelector(".probe-text")!, { ctrlKey: true }).defaultPrevented).toBe(false); // 입력한 글자의 전체 선택
+  expect(press("a").defaultPrevented).toBe(false); // 그냥 a
+});
+
+it("격자 밖에서 시작하는 끌기 선택은 위에 메뉴·창이 떠 있으면 시작하지 않는다 — 그 클릭은 메뉴를 닫는 클릭이다", () => {
+  const start = vi.fn();
+  function Page({ menu }: { menu: boolean }) {
+    useOutsideDragSelect(".probe-grid", start);
+    return <>{menu ? <Layer onClose={() => {}} /> : null}<div className="probe-grid" /><span className="probe-blank">빈 곳</span></>;
+  }
+  const down = () => act(() => { host.querySelector(".probe-blank")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })); });
+  act(() => root.render(<Page menu />));
+  down();
+  expect(start).not.toHaveBeenCalled();
+  act(() => root.render(<Page menu={false} />));
+  down();
+  expect(start).toHaveBeenCalledTimes(1);
+});
+
+it("누르는 순간 위에 메뉴가 떠 있었으면, 그 누름이 메뉴를 먼저 닫아도 뒤의 선택은 풀리지 않는다 — 다음 누름부터는 풀린다", () => {
+  // 메뉴 몇 개는 mousedown 보다 앞선 pointerdown 에 닫힌다(검토 메뉴·카드의 확인 덮개) — mousedown 에서 보면 이미 떠 있지 않다.
+  let select!: ReturnType<typeof useGenerationSelection>;
+  function Page({ menu }: { menu: boolean }) {
+    select = useGenerationSelection({ resetKey: "k" });
+    return <>{menu ? <Layer onClose={() => {}} /> : null}<span className="probe-blank">빈 곳</span></>;
+  }
+  const blank = () => host.querySelector(".probe-blank")!;
+  const fire = (type: string) => act(() => { blank().dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0 })); });
+  act(() => root.render(<Page menu />));
+  act(() => select.setSelected(new Set(["g1", "g2"])));
+  fire("pointerdown");
+  expect(pressStartedCovered()).toBe(true);
+  act(() => root.render(<Page menu={false} />)); // pointerdown 이 메뉴를 닫았다
+  expect(backgroundKeysBlocked()).toBe(false);
+  fire("mousedown");
+  expect(select.selected.size).toBe(2);
+  fire("pointerup");
+  expect(pressStartedCovered()).toBe(false);
+  fire("pointerdown"); fire("mousedown"); // 메뉴가 없는 다음 누름 = 격자 밖 클릭
+  expect(select.selected.size).toBe(0);
+});

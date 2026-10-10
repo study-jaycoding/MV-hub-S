@@ -2,6 +2,8 @@
 //  · 메이슨리(핀터레스트형) 그리드 + 리스트 토글, 크기 조절 슬라이더
 //  · 영상 호버 자동재생 + 미디어 호버 오버레이(정보·미리보기·다운로드)
 //  · 좌측 폴더 트리는 유지. 셀 휠클릭=정보, 클릭=미리보기.
+import { isKeyHandled } from "../lib/keyHandled";
+import { backgroundKeysBlocked, isTypingTarget } from "../lib/keyGate";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import { api } from "../api";
@@ -487,7 +489,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   };
 
   const onGridKeyDown = (e: React.KeyboardEvent) => {
-    if ((e.target as HTMLElement).tagName === "INPUT") return; // 인라인 입력 중엔 단축키 무시
+    if (isTypingTarget(e.target)) return; // 인라인 입력 중엔 단축키 무시
+    if (backgroundKeysBlocked()) return; // 위에 뜬 창·메뉴의 키(lib/keyGate)
     if (!filesRef.current.length) return;
     if (e.key.startsWith("Arrow")) {
       e.preventDefault();
@@ -508,6 +511,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       const f = filesRef.current[focusIdx];
       if (f) openPreview(f);
     } else if (e.key === "Escape") {
+      if (isKeyHandled(e.nativeEvent)) return; // 위에 떠 있던 창이 이미 쓴 Esc
       setSelected(new Set());
     } else if (e.key === " ") {
       e.preventDefault();

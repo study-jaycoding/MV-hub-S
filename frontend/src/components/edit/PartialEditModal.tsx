@@ -13,6 +13,7 @@
 //  · 제출은 prepareCreate 클로저(재시도에도 idempotency key 유지)
 //  · 폴링 2초 재귀 setTimeout + runToken, 180초 후에도 실패 처리하지 않고 '오래 걸림' 안내만
 //  · 결과 = 전체 이미지 표시(원본 비교 꾹) — 카드는 라이브러리에 그대로 남는다
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type GenerationCreateBody } from "../../api";
 import { fetchBlob } from "../../lib/download";
@@ -639,10 +640,7 @@ export function PartialEditModal({
   const closable = stage !== "wait" && !submitting;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (closable) onClose();
-        return;
-      }
+      if (e.key === "Escape") return; // 아래 useEscapeClose 가 맡는다
       const t = e.target instanceof Element ? e.target : null;
       if (t?.closest("textarea, input, select, [contenteditable]")) return;
       if (stage !== "draw") return;
@@ -674,7 +672,16 @@ export function PartialEditModal({
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
-  }, [closable, stage, onClose]);
+  }, [stage]);
+  // 닫을 수 없는 동안(제출 요청 중·감시 중)에도 Esc 는 이 창이 갖는다 — 뒤 화면으로 새지 않는다.
+  useEscapeClose(
+    () => {
+      if (closable) onClose();
+    },
+    true,
+    true,
+    true,
+  );
 
   const slow = elapsed > SLOW_AFTER_MS;
   // 비율 보존 무대 크기 — 높이 상한(62vh)을 비율로 폭 상한에 옮겨, 어느 축이 클램프돼도

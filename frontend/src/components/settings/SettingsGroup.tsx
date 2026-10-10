@@ -1,3 +1,4 @@
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import {
   useCallback,
   useEffect,
@@ -100,11 +101,18 @@ export function SettingsGroup({
     [],
   );
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key === "Escape") {
+  // Esc 는 옆 패널만 닫는다 — 초점이 패널 밖(설정 창의 다른 칸)에 있어도 설정 창까지 닫히지 않는다(2026-10-10 실측).
+  useEscapeClose(
+    () => {
       closeFlyout();
-      return;
-    }
+      triggerRef.current?.focus();
+    },
+    open,
+    true,
+    true,
+  );
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
       event.preventDefault();
       showFlyout();
@@ -120,12 +128,6 @@ export function SettingsGroup({
           role="dialog"
           aria-label={title}
           style={flyoutStyle}
-          onKeyDown={(event) => {
-            if (event.key !== "Escape") return;
-            event.stopPropagation();
-            closeFlyout();
-            triggerRef.current?.focus();
-          }}
         >
           <header className="settings-group-flyout-head">
             <strong>{title}</strong>

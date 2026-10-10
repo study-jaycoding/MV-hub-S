@@ -134,6 +134,12 @@ export function TextCard({
             onSelect={(e) => caretPosRef.current.set(card.id, e.currentTarget.selectionStart ?? 0)} // 편집 중 캐럿 위치 기억
             onBlur={() => { setEditTextId(null); flushPending(); }} // 편집 끝나면 밀린 저장 확정
             onChange={(e) => setNodeText(card.id, e.target.value)}
+            onKeyDown={(e) => {
+              // Esc = 편집 끝(제목 카드와 같다 — 전엔 다른 곳을 눌러야만 끝났다). 같은 Esc 가 보드의 선택까지 풀지 않게 여기서 멈춘다.
+              if (e.key !== "Escape") return;
+              e.stopPropagation();
+              e.currentTarget.blur();
+            }}
           />
         ) : (
           <div

@@ -7,6 +7,7 @@
 // 창은 로그인해야 열림 → UI 로 복구 불가한 데드락이 된다.
 // 입력한 주소는 draft 다: 저장 버튼이 없고, 로그인·가입으로 세션이 실제로 생긴 주소만
 // 백엔드가 영속한다(가입 후 승인대기는 세션이 없으므로 저장되지 않는다).
+import { useKeyOwner } from "../lib/keyGate";
 import { useState } from "react";
 import { api } from "../api";
 import { isUpstreamUnreachable } from "../lib/http";
@@ -23,6 +24,7 @@ export function ServerLoginScreen({
   urlHistory?: string[];
   onConnected: () => void;
 }) {
+  useKeyOwner(); // 로그인 화면 뒤에서 앱의 단축키가 돌지 않게 한다
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

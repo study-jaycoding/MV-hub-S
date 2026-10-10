@@ -221,7 +221,17 @@ export function NotificationCenter({
   // 패널은 body 로 옮겨 그린다(아래 createPortal) — 상단바 안에 있으면 모달 막에 덮인다.
   //  그래서 바깥클릭 판정에 패널 자신도 함께 넘긴다. 안 그러면 패널 안을 눌러도 닫힌다.
   useOutsideMouseDown(ref, close, open, panelRef);
-  useEscapeClose(close, open, true, true);
+  // Esc 는 안쪽부터 한 겹씩 — 분류 메뉴 → 업데이트 확인 → 패널(2026-10-10 실측: 분류 메뉴를 닫으려던 Esc 에 패널까지 닫혔다).
+  useEscapeClose(
+    () => {
+      if (categoryOpen) setCategoryOpen(false);
+      else if (confirmUpdateId) setConfirmUpdateId(null);
+      else close();
+    },
+    open,
+    true,
+    true,
+  );
   // 벨 자리 기준 위치(옛 CSS 의 top: calc(100% + 9px) / right: 0 과 같은 자리).
   //  상단바는 앱 바깥 틀(.app)의 flex 칸이라 본문만 스크롤되고 제자리에 남는다
   //  (창 자체는 스크롤되지 않는다 — 실측). 그래서 창 크기만 따라가면 된다.

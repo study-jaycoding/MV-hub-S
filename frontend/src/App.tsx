@@ -86,7 +86,9 @@ import { useGenerationProgress } from "./lib/useGenerationProgress";
 import { useGenerationProjectActions } from "./lib/useGenerationProjectActions";
 import { useGenerationSelection } from "./lib/useGenerationSelection";
 import { useGenerationShareActions } from "./lib/useGenerationShareActions";
-import { useEscapeClose } from "./lib/useEscapeClose";
+import { useBackgroundEscape } from "./lib/useEscapeClose";
+import { backgroundKeysBlocked, useKeyOwner, usePageSelectAllGuard } from "./lib/keyGate";
+import { isKeyHandled, markKeyHandled } from "./lib/keyHandled";
 import { manageApi } from "./lib/manageApi";
 import { folderMenuLabel, type FolderMenuKind } from "./lib/folderContextMenu";
 import { useGenerationTagActions } from "./lib/useGenerationTagActions";
@@ -850,6 +852,7 @@ export default function App() {
     promptVisible,
     toggleComposerExpanded,
   } = usePromptDock(LS);
+  usePageSelectAllGuard(); // 입력칸 밖의 Ctrl+A 가 화면 글자를 긁지 않게(lib/keyGate)
 
   const {
     onBulkAddAutoTags,
@@ -1875,23 +1878,22 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [folderPeek, serverFilterKey]);
   // Esc(창 밖에 초점이 있을 때) — 창 안 초점은 section onKeyDown 이 직접 처리(stopPropagation 이 window 훅을 막는다).
-  useEscapeClose(
+  useBackgroundEscape(
     () => {
       // 초점이 창 안이면 그 Esc 의 주인은 창의 키 처리(renderFolderPeek)다. 이 훅은 선택이 없을 때만 켜지는데, 창이 선택을 풀면
       //  그 자리에서 다시 그려지며 이 훅이 켜지고 같은 키가 window 에 닿아 창까지 닫았다(2026-10-07 브라우저 실측: Esc 한 번에
       //  선택 해제 + 창 닫힘). 전파를 막는 대신 여기서 손을 뗀다 — 같은 Esc 를 기다리는 다른 창(등급 확인 등)은 그대로 받는다.
-      if (folderPeekRef.current?.contains(document.activeElement)) return;
+      if (folderPeekRef.current?.contains(document.activeElement)) return false;
       if (listPeek) closeFolderWindow();
       else setFolderPeek(false);
     },
     (folderPeek || !!listPeek) && !preview && info === null && selected.size === 0, // 선택이 있으면 Esc 는 선택 해제(라이브러리와 동일)
   );
-  // 컷 카드를 골랐을 때의 Esc = 고른 것 비우기 — 창(크게 보기·정보·컷 정보·모아보기·폴더 창)이 하나라도 떠 있으면 그 창의 몫
-  //  (useEscapeClose 는 같은 Esc 를 여러 리스너가 받는다 — 창을 닫는 Esc 가 뒤의 선택까지 지우지 않게, Codex 설계 검토).
-  useEscapeClose(
-    () => setCutSel(new Set()),
-    cutMode && cutSel.size > 0 && !listPeek && !preview && info === null && !cutInfoFolder && !cutReelOpen,
-  );
+  // 컷 카드를 골랐을 때의 Esc = 고른 것 비우기 — 뒤 화면의 Esc 라, 그 위에 무엇이든(크게 보기·정보·컷 정보·모아보기·메뉴) 떠 있으면
+  //  쉰다(lib/useEscapeClose). 폴더 창은 겹이 아니라 여기서 따로 본다 — 창을 닫은 Esc 는 '쓴 것'으로 표시돼 여기까지 오지 않는다
+  //  (2026-10-10 실측: 폴더 창을 Esc 로 닫으면 뒤의 컷 선택까지 지워졌다).
+  useBackgroundEscape(() => setCutSel(new Set()), cutMode && cutSel.size > 0 && !listPeek);
+  useKeyOwner(!!videoCompare); // 지연 로딩 비교 창 — 코드가 도착하기 전에도 뒤 화면의 단축키는 쉰다
   // 목록 탭의 폴더 창도 열릴 때 초점을 창으로 — 조회는 위 serverFilterKey effect 가 맡는다(조회 조건이 그 폴더로 바뀌므로).
   useEffect(() => {
     if (listPeek) folderPeekRef.current?.focus();
@@ -2222,7 +2224,8 @@ export default function App() {
           //  무시하므로(sceneKeyboard) 막지 않는다. Esc 순서: 팝업(미리보기/정보) → 텍스트 입력(그 입력 몫) →
           //  선택 해제(슬라이더 같은 비텍스트 입력에 초점이 있어도 — 전역 훅은 INPUT 전부를 무시한다) → 창 닫기.
           if (e.key !== "Escape") return;
-          if (preview || info !== null) return;
+          // 위에 뜬 것(크게 보기·정보·메뉴·확인 창)의 Esc, 또는 안쪽(격자의 선택 해제)이 이미 쓴 Esc 는 건드리지 않는다.
+          if (isKeyHandled(e.nativeEvent) || backgroundKeysBlocked()) return;
           const t = e.target as HTMLElement | null;
           const tag = t?.tagName?.toUpperCase();
           const typing =
@@ -2231,6 +2234,7 @@ export default function App() {
             !!t?.isContentEditable;
           if (typing) return;
           e.preventDefault();
+          markKeyHandled(e.nativeEvent); // 이 Esc 는 여기서 썼다 — 같은 키로 뒤의 컷 선택·씬 선택까지 풀리지 않는다
           if (selected.size > 0) {
             clearSelect();
             return;

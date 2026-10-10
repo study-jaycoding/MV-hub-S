@@ -1,6 +1,7 @@
 // 단순 미디어 비교 — 생성정보(프롬프트·파라미터) 없이 이미지·영상 2개+를 나란히 본다.
 // (생성카드끼리는 CompareModal 로 전체 비교. 여기는 레퍼런스처럼 생성본이 아닌 미디어가 섞였을 때 '보기' 전용.)
 // 영상 동기 로직은 CompareModal 과 공용 — 재생·정지·수동 탐색을 함께, 길이 다르면 가장 긴 것 끝에 되감기.
+import { useEscapeClose } from "../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import { bindSynchronizedVideos } from "../lib/synchronizedVideos";
 import { CloseIcon, FitIcon } from "./common/ViewIcons";
@@ -54,14 +55,13 @@ export function VideoCompareModal({
       //  capture 단계라 먼저 등록된 SceneBoard bubble 리스너보다 앞서 stopPropagation 이 걸린다.
       const t = e.target as HTMLElement | null;
       const formEl = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
-      if (!formEl) e.stopPropagation();
-      if (e.key !== "Escape") return;
-      if (zoom) setZoom(null); // 라이트박스 먼저 닫기
-      else onClose();
+      // Esc 는 막지 않는다 — 아래 useEscapeClose 가 겹 순서대로 맡는다.
+      if (!formEl && e.key !== "Escape") e.stopPropagation();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [onClose, zoom]);
+  }, []);
+  useEscapeClose(() => (zoom ? setZoom(null) : onClose()), true, true, true); // 라이트박스 먼저 닫기. 맨 위일 때 Esc 를 삼킨다
 
   // 동기 재생·탐색 — CompareModal 과 같은 공용 바인더. 영상 요소만 대상.
   useEffect(() => {

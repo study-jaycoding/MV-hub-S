@@ -3,6 +3,7 @@
 //  · 빈 공간 드래그 = 마퀴(러버밴드) 다중 선택
 //  · 더블클릭 = 미리보기. (카드 드래그는 프롬프트 재사용 — 마퀴 대신 네이티브 드래그)
 // 선택 상태는 App 이 Set<string>(id) 로 보유 — 일괄 작업/select-bar 가 의존.
+import { backgroundKeysBlocked, isTypingTarget, useLooseKeys } from "../lib/keyGate";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import {
@@ -16,7 +17,7 @@ import {
   type VirtualRow,
 } from "../lib/gridVirtualRows";
 import { useT } from "../lib/i18n";
-import { markKeyHandled } from "../lib/keyHandled";
+import { isKeyHandled, markKeyHandled } from "../lib/keyHandled";
 import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { useOutsideDragSelect } from "../lib/useOutsideDragSelect";
 import { matchShortcut } from "../lib/shortcuts";
@@ -204,6 +205,14 @@ export function ThumbnailGrid(props: Props) {
     [],
   );
   const editDone = useCallback(() => setEditTarget(null), []);
+  // 인라인 편집이 키(Enter·Esc)로 끝나면 입력칸이 사라지며 초점이 BODY 로 떨어진다 — 격자로 돌려받아 방향키·#·c 가 바로 먹게 한다
+  //  (캔버스의 결과 창에서는 초점 없는 키가 뒤 보드로 가 Delete 가 노드를 지운다). 다른 곳을 눌러 끝냈으면 그 초점을 둔다.
+  const wasEditingRef = useRef(false);
+  useEffect(() => {
+    const lost = !document.activeElement || document.activeElement === document.body;
+    if (wasEditingRef.current && !editTarget && lost) gridRef.current?.focus({ preventScroll: true });
+    wasEditingRef.current = !!editTarget;
+  }, [editTarget]);
   // 다중선택 태그 편집 중: 포커스가 아닌 '선택된' 카드에도 읽기전용 스트립을 보여 '적용 대상'임을 표시.
   // tagGlobalMode = 포커스 에디터가 전역 모드인지(다른 카드 배지를 '전역 적용'으로 전환). 편집 대상이 바뀌면 리셋.
   const [tagGlobalMode, setTagGlobalMode] = useState(false);
@@ -409,16 +418,20 @@ export function ThumbnailGrid(props: Props) {
     [flushMarquee],
   );
 
-  const onDragUp = useCallback(() => {
+  const onDragUp = useCallback((e?: Event) => {
+    const left = e?.type === "blur"; // 창을 떠났다 — 끌기를 버린다(Alt+Tab 뒤 돌아온 움직임·클릭이 선택으로 이어지지 않게)
     if (marqueeRafRef.current != null) {
       cancelAnimationFrame(marqueeRafRef.current);
       marqueeRafRef.current = null;
+      // 놓는 순간까지의 마지막 움직임을 버리지 않는다 — 빠르게 끌고 놓으면 마지막에 걸친 카드가 빠졌다(컷 카드 격자와 같은 처리).
+      if (!left) flushMarquee();
     }
     const d = dragRef.current;
     dragRef.current = null;
     removeWindowMouseDrag(onDragMove, onDragUp);
+    window.removeEventListener("blur", onDragUp);
     setMarquee(null);
-    if (!d || d.moved) return;
+    if (!d || d.moved || left) return;
     // 드래그 없이 클릭만 → 선택 처리(+ 방향키 앵커 갱신)
     if (d.cellId) {
       const gens = opsRef.current.generations;
@@ -442,20 +455,38 @@ export function ThumbnailGrid(props: Props) {
       setFocusedGenerationId(null);
       opsRef.current.onSelectedChange(new Set());
     }
-  }, [onDragMove]);
+  }, [onDragMove, flushMarquee]);
   // 언마운트(폴더 창·결과 창이 닫히며 격자가 사라짐) — 누르고 있던 선택 끌기를 버린다. 안 버리면 window 에 남은 리스너가
   //  나중의 mouseup 에서 **사라진 격자의 옛 콜백**으로 선택을 만든다. 폴더 창을 닫은 직후의 조작 잠금도 그 옛 콜백은
   //  모른다 — 카드를 누른 채 Esc 로 닫고 마우스를 떼면 낡은 사본에 선택이 생겼다(Codex 코드 리뷰 2026-10-07).
   useEffect(() => () => {
     dragRef.current = null;
     removeWindowMouseDrag(onDragMove, onDragUp);
+    window.removeEventListener("blur", onDragUp);
     if (marqueeRafRef.current != null) cancelAnimationFrame(marqueeRafRef.current);
   }, [onDragMove, onDragUp]);
 
   // 그리드 포커스 시에만 발동(프롬프트 입력 중엔 프롬프트가 ↑↓로 기록 탐색 — 포커스로 분리).
-  const onGridKeyDown = (e: React.KeyboardEvent) => {
-    // 카드 인라인 입력 중엔 무시(타이핑이 그리드 네비/단축키로 새지 않게).
-    if ((e.target as HTMLElement).tagName === "INPUT") return;
+  // 고른 것 중 목록의 마지막 카드 — 초점 카드가 없을 때(마퀴·체크박스로만 골랐다) 방향키·Shift 클릭의 기준.
+  const lastSelectedId = (gens: Generation[], ids: ReadonlySet<string>): string | null => {
+    for (let i = gens.length - 1; i >= 0; i--) if (ids.has(gens[i].id)) return gens[i].id;
+    return null;
+  };
+  // 격자의 키 — 격자에 초점이 있을 때(onKeyDown)와 초점 잃은 키(useLooseKeys)가 같이 쓴다. 그래서 React 이벤트가 아니라 원래 이벤트를 받는다.
+  const onGridKey = (e: KeyboardEvent) => {
+    // 카드 인라인 입력 중엔 무시(타이핑이 그리드 네비/단축키로 새지 않게). 체크박스 같은 글자 없는 입력은 격자 키를 그대로 받는다.
+    if (isTypingTarget(e.target)) return;
+    // 위에 창·메뉴가 떠 있으면 키는 그쪽 것이다(lib/keyGate) — 초점이 격자에 남아 있어도 쉰다. 방향키·Space·Page 의 기본 동작(뒤 격자
+    //  스크롤)도 막는다 — 창 위에서 누른 키에 뒤 목록이 밀리지 않게.
+    if (backgroundKeysBlocked()) {
+      if (/^(Arrow|Page|Home|End| )/.test(e.key)) e.preventDefault();
+      return;
+    }
+    // 카드 안 단추·링크·체크박스에 **키보드로**(Tab) 초점을 옮겼으면 Enter/Space 는 그것을 누르는 키다 — 격자가 가로채면 키보드로
+    //  못 누른다. 마우스로 눌러 초점이 남은 단추(:focus-visible 아님)는 종전대로 격자가 받는다 — S 를 누른 뒤의 Space 가 S 를 또
+    //  누르지 않게(Codex 코드 리뷰).
+    const inner = (e.key === "Enter" || e.key === " ") ? (e.target as HTMLElement).closest?.("button, a[href], input, select, [role=button]") : null;
+    if (inner && inner.matches(":focus-visible")) return;
     if (/^(Arrow|Page|Home|End| )/.test(e.key)) releaseResolveScrollGuard();
     if (!generations.length) return;
     // 태그(#)·코멘트(c) — 포커스 카드에서 인라인 편집·코멘트(에셋 파트와 동일). 단축키 레지스트리로
@@ -483,9 +514,13 @@ export function ThumbnailGrid(props: Props) {
     }
     if (e.key.startsWith("Arrow")) {
       e.preventDefault();
-      const cur = focusIdx < 0 ? 0 : focusIdx;
+      // 기준 카드 = 초점 카드, 없으면 고른 것 중 목록의 마지막 카드, 그것도 없을 때만 첫 카드. 2026-10-10 실측: 마퀴로 고른 뒤
+      //  방향키를 누르면 맨 첫 카드로 튀고(스크롤 맨 위) Shift+↓ 는 안 보이는 첫 카드를 더했다.
+      const anchorId = focusIdx >= 0 ? null : lastSelectedId(generations, selectedIds);
+      const base = focusIdx >= 0 ? focusIdx : anchorId ? generations.findIndex((g) => g.id === anchorId) : -1;
+      const cur = base < 0 ? 0 : base;
       // 가상화: DOM 기하 대신 행렬 모델로 이웃 계산(오프스크린 셀도 정확).
-      const nxt = focusIdx < 0 ? 0 : navigateGrid(rowModel, cur, e.key);
+      const nxt = base < 0 ? 0 : navigateGrid(rowModel, cur, e.key);
       if (nxt == null) return;
       const nxtId = generations[nxt]?.id;
       setFocusedGenerationId(nxtId || null);
@@ -521,12 +556,16 @@ export function ThumbnailGrid(props: Props) {
       e.preventDefault();
       onSelectedChange(new Set(generations.map((g) => g.id)));
     } else if (e.key === "Escape") {
+      // 위에 떠 있던 창이 이미 쓴 Esc 면 손대지 않는다 — 그 Esc 로 창이 닫히며 게이트는 이미 풀려 있다(Codex 코드 리뷰: 비교 창을
+      //  닫은 Esc 가 초점이 남은 격자에 닿아 선택까지 지웠다).
+      if (isKeyHandled(e)) return;
       // 선택을 푼 Esc 는 '쓴 것'으로 표시한다 — 같은 키로 뒤의 창까지 닫히지 않게(씬 단축키가 이 표시를 본다, lib/keyHandled).
-      if (selectedIds.size > 0) markKeyHandled(e.nativeEvent);
+      if (selectedIds.size > 0) markKeyHandled(e);
       setFocusedGenerationId(null);
       onSelectedChange(new Set());
     }
   };
+  useLooseKeys(gridRef, onGridKey); // 초점 잃은 키(BODY·막 연 폴더 창·툴바 단추)도 이 격자가 받는다 — lib/keyGate
 
   const onPreviewCell = (g: Generation) => {
     const target = previewTargetFromGenerations(generations, g, thumbSize);
@@ -538,7 +577,9 @@ export function ThumbnailGrid(props: Props) {
   const beginDrag = useCallback(
     (e: { clientX: number; clientY: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean },
      cellId: string | null) => {
-      const { selectedIds: base, focusedGenerationId: anchorId } = startRef.current;
+      const { selectedIds: base, focusedGenerationId } = startRef.current;
+      // Shift 범위의 기준 = 초점 카드, 없으면 고른 것 중 목록의 마지막 카드 — 마퀴로 고른 뒤의 Shift 클릭도 범위가 된다.
+      const anchorId = focusedGenerationId ?? lastSelectedId(opsRef.current.generations, base);
       dragRef.current = {
         x: e.clientX,
         y: e.clientY,
@@ -550,6 +591,7 @@ export function ThumbnailGrid(props: Props) {
         cellId,
       };
       addWindowMouseDrag(onDragMove, onDragUp);
+      window.addEventListener("blur", onDragUp);
     },
     [onDragMove, onDragUp],
   );
@@ -590,6 +632,7 @@ export function ThumbnailGrid(props: Props) {
   const onGridDragStart = () => {
     dragRef.current = null;
     removeWindowMouseDrag(onDragMove, onDragUp);
+    window.removeEventListener("blur", onDragUp);
     setMarquee(null);
   };
 
@@ -693,7 +736,7 @@ export function ThumbnailGrid(props: Props) {
         onMouseDown={onGridMouseDown}
         onDoubleClick={onGridDblClick}
         onDragStart={onGridDragStart}
-        onKeyDown={onGridKeyDown}
+        onKeyDown={(e) => onGridKey(e.nativeEvent)}
         onScroll={onGridScroll}
         onWheelCapture={releaseResolveScrollGuard}
         onTouchStartCapture={releaseResolveScrollGuard}

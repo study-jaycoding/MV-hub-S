@@ -1,6 +1,7 @@
 // 단축키 변경 플로팅 창 — 설정창의 "단축키 변경" 버튼으로 열린다(설정창 위에 뜸).
 // 지정된 단축키를 그룹별로 보여주고, 행의 '변경'으로 다음 키를 캡처해 재지정한다.
 // 캡처는 window keydown 캡처 단계 + stopPropagation 으로 다른 단축키·설정창 Esc 보다 먼저 가로챈다.
+import { useEscapeClose } from "../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
 import {
@@ -34,11 +35,7 @@ export function ShortcutsWindow({ onClose }: { onClose: () => void }) {
       if (cap) {
         e.preventDefault();
         e.stopPropagation();
-        if (e.key === "Escape") {
-          setCapturing(null);
-          setMsg("");
-          return;
-        }
+        if (e.key === "Escape") return; // 취소는 아래 useEscapeClose 가 한다
         const b = eventToBinding(e);
         if (!b) return; // 수식키만 눌림 — 계속 대기
         const clash = conflictOf(b, cap);
@@ -51,16 +48,23 @@ export function ShortcutsWindow({ onClose }: { onClose: () => void }) {
         setCapturing(null);
         setMsg("");
         rerender();
-        return;
-      }
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [onClose]);
+  }, []);
+  // Esc: 캡처 중이면 캡처만 취소, 아니면 이 창만 닫는다 — 설정 창·옆 패널보다 위 겹이다(lib/useEscapeClose).
+  useEscapeClose(
+    () => {
+      if (capRef.current) {
+        setCapturing(null);
+        setMsg("");
+      } else onClose();
+    },
+    true,
+    true,
+    true,
+  );
 
   return (
     <>

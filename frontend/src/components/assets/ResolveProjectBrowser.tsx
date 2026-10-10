@@ -1,3 +1,5 @@
+import { isKeyHandled } from "../../lib/keyHandled";
+import { backgroundKeysBlocked } from "../../lib/keyGate";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import { api } from "../../api";
@@ -246,6 +248,7 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
   // 고른 카드에, 고른 것이 없으면 마우스를 올린(없으면 초점이 있는) 카드에 r·g·b 로 색, d 로 비활성.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (backgroundKeysBlocked()) return; // 위에 뜬 창·메뉴(정렬 메뉴 포함)의 키(lib/keyGate)
       const from = event.target as HTMLElement | null;
       if (from && (from.tagName === "INPUT" || from.tagName === "TEXTAREA" || from.isContentEditable)) return;
       // Ctrl/⌘+A = 지금 보이는 카드 전부 고르기(에셋 격자와 같은 단축키).
@@ -258,6 +261,7 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
       // 정렬 메뉴가 열려 있으면 키는 그 메뉴 것이다 — Escape 는 메뉴가 닫고, r/g/b/d 도 카드에 새지 않는다(Codex).
       if (document.querySelector(".asort-menu")) return;
       if (event.key === "Escape") {
+        if (isKeyHandled(event)) return; // 위에 떠 있던 창·메뉴가 이미 쓴 Esc
         clearPick();
         return;
       }

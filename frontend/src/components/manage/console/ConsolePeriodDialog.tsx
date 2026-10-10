@@ -1,5 +1,6 @@
 // 프로젝트 기간 창 — 서브 표 '기간' 열의 달력 단추. 그 서브의 프로젝트마다 시작일·종료일을 적는다.
 // 저장은 프로젝트 기획(planning)의 기존 API — 읽은 기획을 기준으로 두 칸만 바꿔 보내고, 409 면 기존 병합 창(savePlanning).
+import { useEscapeClose } from "../../../lib/useEscapeClose";
 import { useEffect, useState } from "react";
 import type { Planning } from "../types";
 import { manageApi } from "../../../lib/manageApi";
@@ -24,6 +25,7 @@ export function ConsolePeriodDialog({ sub, savePlanning, onClose, onSaved }: {
     initialStart: p.start_date ?? "", initialDue: p.due_date ?? "", initialDays: "", state: "loading",
   })));
   const patch = (id: string, next: Partial<Row>) => setRows((cur) => cur.map((r) => (r.id === id ? { ...r, ...next } : r)));
+  useEscapeClose(onClose);
   useEffect(() => {
     let alive = true;
     for (const p of sub.projects) {

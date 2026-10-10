@@ -2,6 +2,7 @@
 //  · 별도 영상 파일을 하나로 합치지 않고, <video> 를 클립 순서대로 재생하며 '가상 타임라인'(이전 클립 길이 합
 //    + 현재 위치)으로 재생헤드·스크러버를 계산한다. 이미지 클립은 IMG_DUR 초 동안 정지화면으로 재생.
 //  · 편집(트리밍/클립 이동)은 범위 밖 — 재생·미리보기 중심.
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flashMsg } from "../../lib/flash";
 import { HttpError } from "../../lib/http";
@@ -224,17 +225,17 @@ export function ViewTimeline({
   const togglePlayRef = useRef<() => void>(() => {});
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (document.fullscreenElement) return; // 전체화면 해제만
-        onClose();
-      } else if (e.key === " ") {
-        e.preventDefault();
-        togglePlayRef.current();
-      }
+      if (e.key !== " ") return;
+      e.preventDefault();
+      togglePlayRef.current();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, []);
+  // 맨 위 겹으로 닫는다 — 떠 있는 동안 뒤 보드의 Delete·Ctrl+Z 도 쉰다(2026-10-10 실측: 가려진 카드가 지워지고 Esc 가 두 번 필요했다).
+  useEscapeClose(() => {
+    if (!document.fullscreenElement) onClose(); // 전체화면 중엔 브라우저가 해제만 한다
+  });
 
   // 전체화면 토글 — .vtl 컨테이너를 전체화면으로.
   useEffect(() => {

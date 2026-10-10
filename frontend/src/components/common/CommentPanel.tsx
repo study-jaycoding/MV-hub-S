@@ -1,3 +1,5 @@
+import { backgroundKeysBlocked } from "../../lib/keyGate";
+import { markKeyHandled } from "../../lib/keyHandled";
 import { useMemo, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, Ref } from "react";
 import { buildCommentTree } from "../../lib/commentTree";
@@ -241,6 +243,16 @@ export function CommentPanel<T extends CommentPanelItem>({
     <div
       className="cmt-panel"
       ref={panelRef}
+      // 패널 안에서 난 Esc 는 패널이 쓴다(고치던 것·답글 접기는 그 입력칸이 한다) — '쓴 것'으로 표시해 뒤 화면으로 새지 않게 한다.
+      //  2026-10-10 실측: 코멘트 입력칸의 Esc 에 뒤의 폴더 창만 닫히고 패널이 남았다. 맨 아래 입력칸은 초점을 내려놓는다 —
+      //  다음 Esc 부터는 뒤 화면(선택 해제·폴더 창)의 몫이다.
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") return;
+        if (backgroundKeysBlocked()) return; // 위에 창(정보·크게 보기…)이 떠 있으면 그 Esc 는 그 창의 것 — 패널이 먼저 쓰면 창이 안 닫힌다
+        markKeyHandled(e.nativeEvent);
+        const from = e.target as HTMLElement;
+        if (from.matches?.('.cmt-input input')) from.blur();
+      }}
       style={
         {
           left: (pos || fallbackPos).x,

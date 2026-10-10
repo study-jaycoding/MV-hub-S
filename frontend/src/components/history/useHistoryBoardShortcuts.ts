@@ -1,3 +1,4 @@
+import { backgroundKeysBlocked } from "../../lib/keyGate";
 import { useEffect } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { toggleDisabledGen } from "../../lib/deactivated";
@@ -16,6 +17,7 @@ export function useHistoryBoardShortcuts({
   useEffect(() => {
     if (!focusId) return;
     const onKey = (event: KeyboardEvent) => {
+      if (backgroundKeysBlocked()) return; // 위에 뜬 창·메뉴의 키(lib/keyGate)
       const target = event.target as HTMLElement | null;
       if (
         target &&

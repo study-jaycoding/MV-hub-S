@@ -1,3 +1,4 @@
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getUsagePeriodRange,
@@ -66,16 +67,10 @@ export function UsagePeriodPicker({
     const closeOnOutsideClick = (event: PointerEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
     document.addEventListener("pointerdown", closeOnOutsideClick);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsideClick);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
+    return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
   }, [open]);
+  useEscapeClose(() => setOpen(false), open, true, true); // 달력만 닫는다(겹 순서대로)
 
   return (
     <div className="usage-period-picker" ref={rootRef}>

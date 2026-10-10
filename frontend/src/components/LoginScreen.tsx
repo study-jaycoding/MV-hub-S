@@ -2,6 +2,7 @@
 // 로그인=가입 통합: 힉스필드 이메일 + 비밀번호 하나로. 처음 보는 이메일이면 자동 등록(관리자 승인 대기),
 // 승인되면 같은 이메일·비번으로 입장. 별도 '가입' 단계·'허브 아이디 생성'은 없다(계정=힉스필드 이메일).
 // 첫 계정만 부트스트랩 관리자라 바로 로그인된다. 신원 확정은 에이전트의 CLI 이메일 일치 검증이 한다.
+import { useKeyOwner } from "../lib/keyGate";
 import { useState } from "react";
 import { api, setAuthToken } from "../api";
 import type { Account, AuthConfig } from "../types";
@@ -13,6 +14,7 @@ export function LoginScreen({
   config: AuthConfig;
   onAuthed: (account: Account) => void;
 }) {
+  useKeyOwner(); // 로그인 화면 뒤에서 앱의 단축키(프롬프트 표시/숨김 등)가 돌지 않게 한다
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);

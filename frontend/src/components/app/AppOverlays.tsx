@@ -1,3 +1,4 @@
+import { useKeyOwner } from "../../lib/keyGate";
 import { lazy, Suspense } from "react";
 import type { ReactNode } from "react";
 import { GenCommentPanel } from "../GenCommentPanel";
@@ -67,6 +68,8 @@ export function AppOverlays({
   onOpenInBoardFromPreview: (generationId: string) => void;
   onPreview: (target: PreviewTarget) => void;
 }) {
+  // 지연 로딩 창(관리자·비교)은 코드가 도착하기 전에도 '떠 있는 것'이다 — 그 틈에 뒤 화면의 단축키가 먹지 않게 여기서 올린다.
+  useKeyOwner(adminOpen || !!compareGens);
   return (
     <>
       {commentGenId && (

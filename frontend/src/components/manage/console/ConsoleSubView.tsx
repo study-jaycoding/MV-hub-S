@@ -1,4 +1,5 @@
 // 서브(또는 메인 자체) 워크스페이스 — 그룹 · 크레딧 · 참가자. 쓰기는 모두 기존 PUT credit-plan(409 병합 포함).
+import { useEscapeClose } from "../../../lib/useEscapeClose";
 import { useCallback, useEffect, useState } from "react";
 import { formatCredits } from "../../../lib/formatCredits";
 import { manageApi } from "../../../lib/manageApi";
@@ -74,6 +75,7 @@ function RoleMenuBody({ roles, onSave, close }: { roles: string[]; onSave: (next
 /** 알약을 누르면 뜨는 작은 메뉴(바깥을 누르면 닫힘). */
 function PillMenu({ trigger, disabled, children }: { trigger: React.ReactNode; disabled?: boolean; children: (close: () => void) => React.ReactNode }) {
   const [open, setOpen] = useState(false);
+  useEscapeClose(() => setOpen(false), open, true, true); // 펼침만 닫는다
   return (
     <span className="wc-status-wrap" onClick={(e) => e.stopPropagation()}>
       <button type="button" className="wc-pill-btn" disabled={disabled} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
@@ -98,6 +100,7 @@ export function AddMemberDialog({ groups, onClose, onSave }: {
   const [email, setEmail] = useState("");
   const [gid, setGid] = useState("");
   const [busy, setBusy] = useState(false);
+  useEscapeClose(() => { if (!busy) onClose(); }); // 바깥 클릭과 같은 규칙 — 처리 중엔 닫지 않는다
   const [error, setError] = useState("");
   const addr = email.trim().toLowerCase();
   const valid = EMAIL_RE.test(addr) && !!gid;
@@ -158,6 +161,7 @@ export function CreditDialog({ name, sub, today, onClose, onSave, onAdd }: {
   const [addText, setAddText] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  useEscapeClose(() => { if (!busy) onClose(); }); // 바깥 클릭과 같은 규칙 — 처리 중엔 닫지 않는다
   const [error, setError] = useState("");
   const auto = mode === "auto";
   const adding = mode === "add";
@@ -266,6 +270,8 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
   const [creditOpen, setCreditOpen] = useState<CreditPlanSettings | null>(null);
   const [addOpen, setAddOpen] = useState<CreditPlanSettings | null>(null);
   const [roleTable, setRoleTable] = useState<MemberTableData | null>(null);
+  // 그룹 편집 창의 Esc — 저장 중엔 닫지 않는다. 그 안에서 뜬 펼침·확인은 나중에 켜진 겹이라 먼저 닫힌다(lib/useEscapeClose).
+  useEscapeClose(() => { if (!busy) setEditor(null); }, !!editor);
   const [projectId, setProjectId] = useState("");
   const [memberQuery, setMemberQuery] = useState("");
   const [memberFilters, setMemberFilters] = useState<ChipFilters>(emptyChipFilters);

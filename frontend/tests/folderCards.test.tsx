@@ -443,3 +443,56 @@ it("빈 곳에서 끌면 걸친 카드를 모두 고른다 — 창을 떠나면(
   expect([...selected]).toEqual(["e035/C0030"]); // 이미 고른 카드면 선택은 그대로
   expect(info).toHaveLength(2);
 });
+
+it("키보드 — Ctrl+A 모두 · 방향키 옮기기(Shift = 누른 카드부터 범위) · Enter = 두 번 클릭 · Space = 토글. 초점이 없어도(BODY) 먹고, 위에 창이 떠 있으면 쉰다", async () => {
+  const { useEscapeClose } = await import("../src/lib/useEscapeClose");
+  function Overlay() { useEscapeClose(() => {}); return null; }
+  const folders = [card("C0010", 1), { ...card("E01", 1), subfolders: 2 }, card("C0030", 1), card("C0040", 1)];
+  let selected = new Set<string>();
+  let overlay = false;
+  const opened: string[] = []; const entered: string[] = [];
+  const draw = () => act(() => root.render(<>
+    {overlay ? <Overlay /> : null}
+    <FolderCardGrid {...gridProps} folders={folders} selected={selected} onSelect={(next) => { selected = next; draw(); }}
+      onOpen={(folder) => opened.push(folder.name)} onEnter={(folder) => entered.push(folder.name)} outside={1} />
+  </>));
+  draw();
+  const grid = host.querySelector<HTMLElement>(".cut-grid")!;
+  const tile = (name: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="e035/${name}"]`)!;
+  const key = (name: string, init: KeyboardEventInit = {}, target: EventTarget = grid) => {
+    const event = new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init });
+    act(() => { target.dispatchEvent(event); });
+    return event;
+  };
+  expect(key("a", { ctrlKey: true }).defaultPrevented).toBe(true); // 화면 글자를 긁지 않는다
+  expect(selected.size).toBe(4);
+
+  mouse("mousedown", tile("C0010")); mouse("mouseup", window); // 누른 카드에서 시작
+  key("ArrowRight");
+  expect([...selected]).toEqual(["e035/E01"]);
+  key("Enter"); // 하위 폴더가 있으면 들어가기
+  expect(entered).toEqual(["E01"]);
+  key("ArrowRight", { shiftKey: true }); // 방금 옮긴 카드(E01)부터 범위
+  expect([...selected]).toEqual(["e035/E01", "e035/C0030"]);
+  key("ArrowRight");
+  expect([...selected]).toEqual(["e035/C0040"]);
+  key("Enter"); // 하위 폴더가 없으면 그 폴더의 창
+  expect(opened).toEqual(["C0040"]);
+  key(" ");
+  expect(selected.size).toBe(0);
+  key("ArrowRight"); // 끝에서는 멈춘다
+  expect([...selected]).toEqual(["e035/C0040"]);
+
+  act(() => { (document.activeElement as HTMLElement | null)?.blur?.(); }); // 초점이 어디에도 없을 때
+  key("ArrowLeft", {}, document.body);
+  expect([...selected]).toEqual(["e035/C0030"]);
+  expect(document.activeElement).toBe(grid);
+
+  key("Enter", {}, host.querySelector(".cut-out")!); // '컷 밖' 칸의 Enter 는 그 단추를 누르는 키
+  expect(opened).toEqual(["C0040"]);
+
+  overlay = true; draw(); // 위에 창이 떠 있으면 키는 그 창의 것
+  key("ArrowLeft");
+  key("a", { ctrlKey: true });
+  expect([...selected]).toEqual(["e035/C0030"]);
+});

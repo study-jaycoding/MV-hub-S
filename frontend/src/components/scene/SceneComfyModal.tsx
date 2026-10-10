@@ -1,6 +1,7 @@
 // Comfy 노드 더블클릭 시 뜨는 모달 — ComfyUI API 워크플로우 JSON 을 불러오고(드래그/파일),
 // 조절할 파라미터를 '노출' 체크리스트로 고른다. 저장하면 comfyCfg 스냅샷을 콜백.
 // 실제 파라미터 조절 컨트롤·실행 버튼은 카드 본체(SceneBoard)에 인라인으로 뜬다.
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import { comfyApi, type ComfyParamCandidate } from "../../lib/comfyApi";
 import type { SceneComfyCfg } from "../../lib/scenes";
@@ -23,6 +24,7 @@ export function SceneComfyModal({
   const [loading, setLoading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  useEscapeClose(onClose); // 떠 있는 동안 뒤 보드의 단축키도 쉰다(lib/keyGate)
 
   // 저장된 워크플로우가 있으면 mount 시 다시 파싱해 최신 후보를 채운다.
   useEffect(() => {

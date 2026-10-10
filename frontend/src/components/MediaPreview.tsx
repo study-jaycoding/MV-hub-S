@@ -1,6 +1,7 @@
 // 미디어 미리보기 — 이미지/동영상 클릭 시 떠오르는 플로팅 창(정보 팝업과 같은 구성).
 // 새 브라우저 탭을 열지 않고 이 창에서 보여주고, 영상은 재생한다.
 // 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
+import { useEscapeClose } from "../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import { recordGenerationView } from "../lib/generationViews";
 import { APP_EVENTS } from "../lib/appEvents";
@@ -122,36 +123,38 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
   const videoSize =
     !thumb || readyUrl === cur.url ? undefined : videoBox && videoBox.url === cur.url ? videoBox : waiting;
 
+  // Esc → 자기만 닫는다(맨 위 겹 — lib/useEscapeClose. 떠 있는 동안 뒤 화면의 단축키도 쉰다).
+  useEscapeClose(onClose, true, true, true);
   useEffect(() => {
     // 크게 보기는 정보팝업/그리드 위에 떠 있으므로 키를 캡처 단계에서 먼저 가로챈다.
-    // Esc → 자기만 닫기(stopPropagation). ←/→ → 목록 내 이동(뒤 그리드 포커스 이동과 충돌 방지).
+    // ←/→ → 목록 내 이동(뒤 그리드 포커스 이동과 충돌 방지).
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      } else if (items && items.length > 1 && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      if (items && items.length > 1 && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         e.preventDefault();
         e.stopPropagation();
         setIdx((i) => {
           const n = e.key === "ArrowLeft" ? i - 1 : i + 1;
           return Math.max(0, Math.min(items.length - 1, n));
         });
-      } else if (e.code === "Space" || e.key === " ") {
+      } else if (e.code === "Space" || e.key === " " || e.key === "Enter") {
         // 스페이스바 → 재생/일시정지(네이티브 controls 는 포커스가 있어야만 먹으므로 직접 처리).
-        // 단 버튼·입력 등에 포커스가 있으면 그 요소의 기본 동작(클릭/입력)을 살린다(capture 로 가로채지 않음).
+        // 단 **이 창 안의** 버튼·입력에 포커스가 있으면 그 요소의 기본 동작(클릭/입력)을 살린다(capture 로 가로채지 않음).
+        //  창 밖(뒤 화면)의 단추에 초점이 남아 있을 때는 이 창이 키를 갖는다 — 넘기면 Space·Enter 가 그 단추(이 창을 연 썸네일)를
+        //  다시 눌러 보던 장이 처음 것으로 돌아가고, 기록이 한 겹 더 쌓여 Esc 가 두 번 필요했다(2026-10-10 실측 3/3).
         const t = e.target instanceof Element ? e.target : null;
-        if (t?.closest("button, a, input, textarea, select, [role=button], [contenteditable]")) return;
-        const v = videoRef.current;
-        if (!v) return;
+        if (t?.closest(".media-preview") && t.closest("button, a, input, textarea, select, [role=button], [contenteditable]")) return;
+        if (t?.closest("input, textarea, select, [contenteditable]")) return; // 글자 입력(코멘트 패널 등)은 그대로
         e.preventDefault();
         e.stopPropagation();
+        const v = videoRef.current;
+        if (!v || e.key === "Enter") return;
         if (v.paused) void v.play().catch(() => {});
         else v.pause();
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [onClose, items]);
+  }, [items]);
 
   const onDragStart = (e: React.PointerEvent) => {
     drag.current = { ox: pos.x, oy: pos.y, sx: e.clientX, sy: e.clientY };

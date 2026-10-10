@@ -2,6 +2,7 @@
 // 설계: docs/MEMBER_TABLE_DESIGN.md. 표에는 자기만의 쓰기 API 가 없다 — 칸마다 기존 API 를 부른다(권한·감사 그대로).
 // 저장은 직렬 큐 하나로 줄 세우고, 큐가 비면 성공·실패와 관계없이 표를 다시 읽는다(다른 창·다른 사람의 변경은 큐 밖이다).
 // 재조회는 서버 표시만 갱신한다. 편집 기준과 실패한 저장 의도는 성공할 때까지 보존한다.
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { api } from "../../api";
 import {
@@ -184,19 +185,17 @@ function GroupColorPicker({ label, color, disabled, onCommit, onEditingChange }:
       const target = event.target as Node;
       if (!rootRef.current?.contains(target) && !panelRef.current?.contains(target)) setOpen(false);
     };
-    const closeKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
     const closeScroll = () => setOpen(false);
     document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeKey);
     window.addEventListener("resize", closeScroll);
     window.addEventListener("scroll", closeScroll, true);
     return () => {
       document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeKey);
       window.removeEventListener("resize", closeScroll);
       window.removeEventListener("scroll", closeScroll, true);
     };
   }, [open]);
+  useEscapeClose(() => setOpen(false), open, true, true); // 펼침만 닫는다(겹 순서대로)
   useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
   useEffect(() => { onEditingChange?.(open); }, [open, onEditingChange]);
 

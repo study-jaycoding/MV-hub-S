@@ -1,3 +1,4 @@
+import { backgroundKeysBlocked } from "./keyGate";
 import { useCallback, useEffect, useRef } from "react";
 import type { Dispatch, DragEvent as ReactDragEvent, MutableRefObject, SetStateAction } from "react";
 import { api } from "../api";
@@ -294,6 +295,7 @@ export function useSceneClipboardDrop(
       // ★입력창 판정이 폴백 중복 방지보다 먼저 — 캔버스 폴백 직후 0.5초 안에 입력창에서
       //   Ctrl+V 하면 정상 텍스트 붙여넣기가 preventDefault 로 막히던 문제(합의 C-3b).
       if (isTextEntryTarget(event.target)) return;
+      if (backgroundKeysBlocked()) return; // 위에 뜬 창·메뉴의 붙여넣기 — 가려진 보드에 붙이지 않는다
       // 일부 브라우저가 keydown 뒤 paste 이벤트를 늦게 보내는 경우, 이미 실행한 안전 폴백과
       // 같은 키 입력을 중복 처리하지 않는다.
       if (fallbackPasteAtRef.current && performance.now() - fallbackPasteAtRef.current < 500) {
@@ -390,7 +392,7 @@ export function useSceneClipboardDrop(
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat || isTextEntryTarget(event.target)) return;
+      if (event.repeat || isTextEntryTarget(event.target) || backgroundKeysBlocked()) return;
       if (!scenePasteShortcut(event, clipboardRef.current?.cards.length || 0)) return;
       // 직전 폴백 직후 사용자가 빠르게 Ctrl+V를 한 번 더 누른 것은 새로운 명령이다. 뒤늦게 도착한
       // 이전 paste 이벤트와 구분할 수 있도록 새 keydown에서 중복 방지 표식을 해제한다.
@@ -401,9 +403,13 @@ export function useSceneClipboardDrop(
       if (pasteFallbackTimerRef.current !== null) {
         window.clearTimeout(pasteFallbackTimerRef.current);
       }
+      const sceneAtKey = optionsRef.current.sceneIdRef.current;
+      // 예약한 뒤(0.18초)·클립보드를 읽은 뒤에 창이 떴거나 씬이 바뀌었으면 붙이지 않는다 — 그 키는 이미 지나간 화면의 것이다.
+      const stale = () => backgroundKeysBlocked() || optionsRef.current.sceneIdRef.current !== sceneAtKey;
       pasteFallbackTimerRef.current = window.setTimeout(() => {
         pasteFallbackTimerRef.current = null;
         void (async () => {
+          if (stale()) return;
           // 폴백도 표식을 검사한다(검증 P3) — 노드 복사 후 외부에서 다른 것을 복사했다면
           // 옛 노드 스냅샷을 붙이면 안 된다. readText 미지원/권한 거부면 기존 동작 유지.
           if (sceneClipboardMarker) {
@@ -414,6 +420,7 @@ export function useSceneClipboardDrop(
               /* 권한 없음 — 표식 검사 생략(폴백은 최후 수단) */
             }
           }
+          if (stale()) return;
           if (pasteCopiedNodes()) fallbackPasteAtRef.current = performance.now();
         })();
       }, 180);

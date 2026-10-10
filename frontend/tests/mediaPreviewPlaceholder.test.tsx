@@ -117,3 +117,27 @@ it("격자는 카드가 띄운 것과 같은 썸네일 URL 을 넘긴다(같은 
   expect(target.thumb).not.toBe(thumbOf(gens[1], 512));
   expect(target.items!.map((it) => it.thumb)).toEqual(gens.map((g) => thumbOf(g, 256)));
 });
+
+it("창 뒤의 단추에 초점이 남아 있어도 Space·Enter 는 이 창의 것이다 — 그 단추를 다시 누르지 않는다. 창 안 단추·글자 입력은 그대로", () => {
+  // 2026-10-10 실측: 컷 정보의 썸네일(단추)로 크게 보기를 열면 초점이 그 단추에 남고, Space 가 그 단추를 다시 눌러 보던 장이 처음 것으로
+  //  돌아갔다(기록이 한 겹 더 쌓여 Esc 도 두 번 필요했다).
+  const opener = document.createElement("button");
+  const typing = document.createElement("input");
+  document.body.append(opener, typing);
+  try {
+    show({ url: "/a.png", type: "image", name: "a" });
+    const press = (key: string, target: EventTarget) => {
+      const event = new KeyboardEvent("keydown", { key, code: key === " " ? "Space" : key, bubbles: true, cancelable: true });
+      act(() => { target.dispatchEvent(event); });
+      return event.defaultPrevented;
+    };
+    expect(press(" ", opener)).toBe(true);
+    expect(press("Enter", opener)).toBe(true);
+    expect(press(" ", document.body)).toBe(true);
+    expect(press(" ", host.querySelector(".media-preview button")!)).toBe(false); // 창 안 단추는 그 단추가 받는다
+    expect(press(" ", typing)).toBe(false); // 글자 입력(코멘트 패널 등)
+  } finally {
+    opener.remove();
+    typing.remove();
+  }
+});

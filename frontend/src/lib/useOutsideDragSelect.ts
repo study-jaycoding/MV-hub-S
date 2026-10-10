@@ -6,6 +6,7 @@
 // 문서 캡처 단계에서 잡는다 — 상단바·사이드바에는 팝업 닫기 감시자처럼 이벤트를 중간에서
 // 멈추는(stopPropagation) 핸들러가 있어, 위쪽 컨테이너에 붙이면 애초에 도달하지 않는다.
 import { useEffect, useRef } from "react";
+import { pressStartedCovered } from "./keyGate";
 
 // 여기서는 시작하지 않는다 — 원래 기능이 우선인 자리.
 //  · 조작 요소: 탭 전환·폴더 클릭·툴바 조작·검색 입력이 드래그 선택에 먹히면 안 된다.
@@ -57,6 +58,9 @@ export function useOutsideDragSelect(
     if (!enabled) return;
     const onMouseDown = (event: MouseEvent) => {
       if (event.button !== 0) return;
+      // 위에 메뉴·창이 떠 있을 때의 클릭은 그것을 닫는 클릭이다 — 여기서 끌기 선택을 시작하면 '빈 곳 클릭'으로 끝나 뒤의 선택이 풀린다
+      //  (2026-10-10 재실측: 알림 패널·계정 메뉴가 뜬 채 툴바의 글자나 사이드바 빈 곳을 누르면 패널이 닫히며 선택도 0).
+      if (pressStartedCovered()) return;
       const target = event.target as HTMLElement | null;
       if (!target?.closest) return;
       if (target.closest(insideSelector) || target.closest(DRAG_SELECT_SKIP)) return;

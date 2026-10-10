@@ -1,3 +1,4 @@
+import { backgroundKeysBlocked } from "./keyGate";
 import { useEffect, useState } from "react";
 import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
 import { matchShortcut } from "./shortcuts";
@@ -19,6 +20,8 @@ export function usePromptDock(store: Store): UsePromptDockResult {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // 위에 창·메뉴가 떠 있으면 쉰다 — 설정 창 뒤에서 도크가 켜지며 초점이 창 뒤 프롬프트로 가던 것(2026-10-10 실측).
+      if (backgroundKeysBlocked()) return;
       if (matchShortcut(e, "focusPrompt")) {
         e.preventDefault();
         setPromptVisibleState((v) => !v);

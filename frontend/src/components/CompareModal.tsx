@@ -1,6 +1,7 @@
 // v02 DAM — 버전 비교 + 차이 하이라이트 (로드맵 PART 3 §3-2-2).
 // 벌크 선택한 2개+ 생성본을 나란히 놓고 프롬프트 단어·파라미터 값의 '의미 있는' 차이를 색칠한다.
 // 계보 무관 — 아무거나 골라 비교(로드맵 결정사항). 데이터는 이미 클라이언트에 있어 서버 호출 없음.
+import { useEscapeClose } from "../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import {
   commonPromptElements,
@@ -90,14 +91,14 @@ export function CompareModal({
       //  bubble 리스너보다 앞서 stopPropagation 이 걸린다.
       const t = e.target as HTMLElement | null;
       const formEl = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
-      if (!formEl) e.stopPropagation();
-      if (e.key !== "Escape") return;
-      if (srcPreview) setSrcPreview(null); // 라이트박스 먼저 닫기
-      else onClose();
+      // Esc 는 여기서 막지 않는다 — 아래 useEscapeClose 가 겹 순서대로 맡고, **맨 위일 때만** 삼킨다(여기서 늘 막으면 위에 뜬 확인 창이 못 받는다).
+      if (!formEl && e.key !== "Escape") e.stopPropagation();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [onClose, srcPreview]);
+  }, []);
+  // 라이트박스가 떠 있으면 그것 먼저, 아니면 창. 체크박스에 초점이 있어도 같은 Esc 가 뒤의 폴더 창까지 닫지 않는다(겹이 받는다).
+  useEscapeClose(() => (srcPreview ? setSrcPreview(null) : onClose()), true, true, true);
 
   useEffect(() => {
     const onViewportResize = () => {

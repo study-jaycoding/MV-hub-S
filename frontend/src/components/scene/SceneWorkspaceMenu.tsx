@@ -6,6 +6,7 @@
 // 생김새는 툴바의 워크스페이스 필터 메뉴와 같게 맞췄다(표식 + 은은한 배경 + 라임 글자,
 // Jay 2026-09-14). **글자는 `None` 그대로다** — 여기는 필터가 아니라 '이 캔버스를 어느
 // 공간에 둘지' 를 고르는 자리라 `All`(전부에 속함)로 읽히면 뜻이 어긋난다(Jay 결정).
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cachedWorkspaceOptions, fetchWorkspaceOptions } from "../../lib/workspaceOptionsCache";
 import { WorkspaceMark } from "../common/WorkspaceMark";
@@ -63,24 +64,25 @@ export function SceneWorkspaceMenu({
     };
   }, []);
 
-  // 바깥 클릭·Esc 로 닫기. Esc 는 캡처 단계에서 삼켜 캔버스 전역 Esc(선택 해제)까지 가지 않게 한다.
+  // 바깥 클릭·Esc 로 닫기. Esc 는 맨 위 겹으로 삼켜(lib/useEscapeClose) 캔버스 전역 Esc(선택 해제)까지 가지 않게 한다.
+  //  이름 칸에서의 Esc 는 고치던 이름만 되돌린다(메뉴는 그대로) — 캡처 단계의 닫기가 먼저 돌아 되돌리기에 닿지 못했다.
+  //  고친 것이 없으면 메뉴를 닫는다 — 안 그러면 초점이 이름 칸에 있는 동안 Esc 로 메뉴를 닫을 길이 없다(Codex 코드 리뷰).
   useEffect(() => {
     const onDown = (event: MouseEvent) => {
       if (!ref.current?.contains(event.target as Node)) onClose();
     };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    };
     document.addEventListener("mousedown", onDown, true);
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("mousedown", onDown, true);
-      document.removeEventListener("keydown", onKey, true);
-    };
+    return () => document.removeEventListener("mousedown", onDown, true);
   }, [onClose]);
+  useEscapeClose(
+    () => {
+      if (document.activeElement?.classList.contains("scene-ws-menu-name") && name !== target.sceneName) setName(target.sceneName);
+      else onClose();
+    },
+    true,
+    true,
+    true,
+  );
 
   // 화면 밖으로 나가지 않게 위치 보정 — 가로는 바로, 세로는 **실제 높이를 잰 뒤** 넘치면 위로 연다
   // (여러 줄 탭·작은 창에서 아래쪽을 우클릭하면 목록과 이동 단추에 손이 닿지 않는다 — 코덱스 P2).
@@ -117,12 +119,6 @@ export function SceneWorkspaceMenu({
               commitName();
               onClose();
               return;
-            }
-            if (event.key === "Escape") {
-              // 편집만 되돌리고 메뉴는 유지 — 메뉴의 Esc(닫기)까지 가지 않게 막는다.
-              event.preventDefault();
-              event.stopPropagation();
-              setName(target.sceneName);
             }
           }}
           onBlur={commitName}
