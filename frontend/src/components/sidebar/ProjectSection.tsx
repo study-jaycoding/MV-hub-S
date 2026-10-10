@@ -35,6 +35,7 @@ import { DRAG_TYPES } from "../../lib/dragTypes";
 import { encodeSceneFolderDrag } from "../../lib/sceneSet";
 import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { useCustomEvent } from "../../lib/useCustomEvent";
+import { useDragEndReset } from "../../lib/useDragEndReset";
 import { useT } from "../../lib/i18n";
 import { loadJSON, saveJSON } from "../../lib/storage";
 import { reconcileArrayState, reconcileValueState } from "../../lib/stateReconciliation";
@@ -548,6 +549,7 @@ export function ProjectSection({
   };
 
   const [unassignOver, setUnassignOver] = useState(false); // 카드를 '미분류'로 드래그 중 강조
+  useDragEndReset(unassignOver, () => setUnassignOver(false)); // 이 줄 위에서 끌기를 취소하면 dragleave 가 오지 않는다
 
   const loadArchived = () =>
     api

@@ -15,7 +15,8 @@ import {
   visibleAdminAccounts,
   visibleAdminMembers,
 } from "../lib/accountIdentity";
-import { useEscapeClose } from "../lib/useEscapeClose";
+import { isTypingTarget, useModalFocus } from "../lib/keyGate";
+import { useEscapeClose, useWindowEscape } from "../lib/useEscapeClose";
 import { useManageCaps } from "../lib/useManageCaps";
 import { hasGlobalCap } from "../types";
 import type { Account, Member } from "../types";
@@ -288,12 +289,29 @@ export function AdminWindow({
   // 안쪽 확인창이 열려 있으면 Esc 는 그것만 닫는다 — 창 전체를 닫으면 입력하던 비밀번호가 사라진다.
   const closeTopmost = useCallback(() => {
     if (confirm) setConfirm(null);
-    else if (elevOpen) setElevOpen(false);
     else if (publishOpen) setPublishOpen(false);
     else if (projectDialogOpen || backupDialogOpen) return; // 안쪽 대화상자는 그 패널이 같은 Esc 로 닫는다
-    else onClose();
-  }, [confirm, elevOpen, publishOpen, projectDialogOpen, backupDialogOpen, onClose]);
-  useEscapeClose(closeTopmost);
+    else {
+      // 창 안의 글 칸(멤버 검색·서버 이름/주소 등)에서 난 Esc 는 칸을 벗어나기만 한다 — 창까지 닫으면 적던 글이 사라진다.
+      //  한 번 더 누르면 닫힌다(폴더 창의 글 칸과 같은 순서).
+      const field = document.activeElement as HTMLElement | null;
+      if (field?.closest(".admin-window") && isTypingTarget(field)) field.blur();
+      else onClose();
+    }
+  }, [confirm, publishOpen, projectDialogOpen, backupDialogOpen, onClose]);
+  // 창의 겹 — 앱의 틀(LazyModalShell) 안이면 틀이 연 순간에 쥔 겹을 쓴다(이 코드가 늦게 와도 그 틈에 연 창보다 위가 되지 않는다).
+  useWindowEscape(closeTopmost);
+  // 🔑 확인 창은 따로 겹이다 — 머리의 단추라 프로젝트 탭의 👥 멤버 칸(겹)이 열린 채로도 뜬다. 위 겹 안에서 닫으면 멤버 칸이 더 위라
+  //  Esc 가 뒤의 멤버 칸부터 닫는다. 나중에 켜지는 겹이 위다(lib/useEscapeClose).
+  //  승인·공지 확인 창이 같이 떠 있으면 그것부터 닫는다 — 🔑 창과 같은 층(z-index)이고 문서에서 뒤라 화면에서는 🔑 창 **위에** 보인다.
+  //  이 겹이 🔑 만 닫으면 앞의 확인 창을 두고 뒤의 창이 닫혔다(2026-10-11 Codex 리뷰).
+  useEscapeClose(() => (confirm ? setConfirm(null) : publishOpen ? setPublishOpen(false) : setElevOpen(false)), elevOpen);
+  // 안쪽 확인 창들(막이 있다)도 모달 영역이다(lib/keyGate '모달의 초점') — 떠 있는 동안 Tab 이 그 안에서만 돈다. 전엔 🔑 를 연 채
+  //  Tab 으로 뒤의 단추에 닿아 다른 확인 창을 겹쳐 띄울 수 있었다. 창 자체의 영역은 앱의 틀(LazyModalShell)이 올린다.
+  const windowRef = useRef<HTMLDivElement>(null);
+  const elevRef = useRef<HTMLDivElement>(null);
+  useModalFocus(elevRef, elevOpen);
+  useModalFocus(() => [windowRef.current?.querySelector<HTMLElement>(".admin-confirm:not(.admin-elev)")], !!confirm || publishOpen);
 
   // 저장 중인 멤버 — 칩을 연타하면 낡은 value 로 만든 목록이 뒤에 도착해 먼저 준 역할을
   // 지운다(PUT 이 전체 목록을 덮어쓰는 계약) → 응답이 올 때까지 그 멤버 칩을 잠근다.
@@ -315,7 +333,7 @@ export function AdminWindow({
     <>
       <div className="admin-backdrop" onMouseDown={() => { if (!projectDialogOpen && !backupDialogOpen) onClose(); }} />
       {/* 프로젝트 탭은 옛 프로젝트 관리 창 폭(760px)으로 넓힌다 — 👥 멤버 칸이 열리면 CSS 가 더 넓힌다 */}
-      <div className={"admin-window" + (activeTab === "projects" ? " wide" : "")} role="dialog" aria-label="관리자">
+      <div ref={windowRef} className={"admin-window" + (activeTab === "projects" ? " wide" : "")} role="dialog" aria-label="관리자">
         <header className="admin-head">
           <span className="admin-title">⬡ 관리자</span>
           {localOnlyServerControls && isPermanentAdmin && (
@@ -339,6 +357,7 @@ export function AdminWindow({
         {elevOpen && (
           <div className="admin-confirm-backdrop" onMouseDown={() => setElevOpen(false)}>
             <div
+              ref={elevRef}
               className="admin-confirm admin-elev"
               onMouseDown={(e) => e.stopPropagation()}
             >

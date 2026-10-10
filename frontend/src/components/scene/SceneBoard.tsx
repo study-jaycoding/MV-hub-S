@@ -3,7 +3,7 @@
 //   · 카드 좌드래그=이동(선택된 것 함께) · 클릭=단일선택 · Ctrl=토글(누적) · Shift=연결 체인선택 · 배경클릭=해제
 //   · Delete=선택 삭제(생성물 있으면 휴지통, 빈 카드면 그냥 제거)
 // 기능: 에셋 드롭 레퍼런스 카드(S2) · n키 빈 카드+연결선(S3) · 포트 수동 연결/해제(S4).
-import { pressStartedCovered } from "../../lib/keyGate";
+import { floatHost, pressStartedCovered, useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { ownEntry } from "../../lib/ownEntry";
 import {
@@ -135,7 +135,7 @@ import type { SceneLayerMove } from "../../lib/useSceneCardMove";
 import { useSceneViewport } from "../../lib/useSceneViewport";
 import { useSceneClipboardDrop } from "../../lib/useSceneClipboardDrop";
 import { useSceneCardResize } from "../../lib/useSceneCardResize";
-import { useSceneCardMove } from "../../lib/useSceneCardMove";
+import { releaseSceneDragPointer, useSceneCardMove } from "../../lib/useSceneCardMove";
 import { useSceneGroupMove } from "../../lib/useSceneGroupMove";
 import { useSceneMarqueeSelection } from "../../lib/useSceneMarqueeSelection";
 import { markCardGenerationsRemoved, reviveCardGenerations } from "../../lib/sceneCardLinks";
@@ -190,6 +190,49 @@ const CARD_MIN_H = GRID * 3; // 66
 // 그룹 멤버 카드를 이 속도(화면 px/ms) 이상으로 경계 밖으로 빼면 '속도 이탈' — 프레임이 카드를 놓아주고
 //  그룹에서 빠진다(느리게 빼면 기존처럼 프레임이 늘어나 덮음). 폴더에서 아이콘 확 빼내는 제스처.
 const GROUP_EJECT_SPEED = 3.0;
+// 입력 포트 세로 위치 — 카드별 '레인 목록'을 카드 세로 중앙에 대칭으로 놓는다(Jay 2026-09-09: 세트 레인이 들어오며
+//  -26·0·+26·+52 로 아래로 치우쳤던 것을 생성 카드는 -39·-13·+13·+39 로). 생성 = model·ref·text·set 4레인,
+//  comfy = ref(+텍스트 파라미터가 노출돼 있으면 text) 1~2레인. 카드가 짧으면 간격을 줄여 포트가 카드 안에 들어오게.
+//  포트(카드 컴포넌트)와 선 끝점(edgeEnds)이 같은 함수·같은 카드를 써야 어긋나지 않는다.
+//  ★컴포넌트 밖의 순수 함수로 둔다 — 생성 카드(memo)가 **그릴 때** 이 함수를 불러 포트 자리를 얻는다. 결과가 (lane, card) 만으로
+//   정해져야 카드가 바뀔 때만 다시 그려도 낡지 않는다(보드의 상태·ref 를 읽게 만들지 말 것). 여러 레인을 갖는 카드(생성·comfy)는
+//   높이를 재지 않는 종류라 card.h(없으면 기본 높이)가 곧 높이다.
+const PORT_V_GAP = 26;
+const laneSlots = (card: SceneCard): ScenePortLane[] =>
+  card.kind === "generation"
+    ? ["model", "ref", "text", "set"]
+    : card.kind === "comfy" &&
+        comfyTextDriveKeys(card.comfyCfg?.params, card.comfyCfg?.content).size > 0
+      ? ["ref", "text"]
+      : ["ref"];
+const laneDelta = (lane: ScenePortLane, card: SceneCard) => {
+  const slots = laneSlots(card);
+  const n = slots.length;
+  if (n <= 1) return 0;
+  const gap = Math.min(PORT_V_GAP, Math.max(8, ((card.h ?? CARD_H) - 16) / (n - 1)));
+  const i = slots.indexOf(lane);
+  const idx = i < 0 ? (n - 1) / 2 : i; // 그 카드에 없는 레인은 중앙
+  return (idx - (n - 1) / 2) * gap;
+};
+// 렌더마다 새로 만들어지는 핸들러 묶음을 '정체성이 안 바뀌는' 묶음으로 바꾼다 — 부르면 늘 **마지막 렌더의 것**이 돈다.
+//  memo 카드에 넘기는 함수에 쓴다: 정체성이 그대로라 카드는 다시 그려지지 않고, 마지막 것을 부르므로 낡은 값을 보지 않는다.
+//  ★이벤트에서 부르는 함수에만 쓴다. 카드가 **그릴 때** 불러 값을 얻는 함수에 쓰면, 그 함수가 읽는 값이 바뀌어도 카드가 다시
+//   그려지지 않아 화면이 낡는다(그런 함수는 위 laneDelta 처럼 순수하게 두거나 값을 직접 넘긴다).
+//  키 집합은 호출 자리마다 고정이다. 렌더 중에 ref 에 적는 것은 이 파일의 다른 ref(cardsRef 등)와 같은 방식이다.
+function useStableHandlers<T extends Record<string, ((...args: never[]) => unknown) | undefined>>(latest: T): T {
+  const ref = useRef(latest);
+  ref.current = latest;
+  return useMemo(() => {
+    const stable: Record<string, unknown> = {};
+    for (const key of Object.keys(latest)) {
+      stable[key] = (...args: unknown[]) => (ref.current[key] as ((...a: unknown[]) => unknown) | undefined)?.(...args);
+    }
+    return stable as T;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+}
+// 생성 카드에 넘기는 전역 태그 후보가 없을 때의 빈 목록 — 렌더마다 새 [] 를 만들면 카드(memo)가 매번 다시 그려진다.
+const NO_TAG_OPTIONS: string[] = [];
 // 상태를 바꾸면서 그 상태를 비추는 ref 도 바로 맞춘다 — 다음 렌더 전에 같은 입력 처리가 ref 를 읽을 때(범위 선택 확정).
 const setAndSync =
   <T,>(ref: MutableRefObject<T>, set: (value: T) => void) =>
@@ -512,6 +555,11 @@ export function SceneBoard({
   useEscapeClose(() => {
     if (!canvasRecovery?.claimingId) setCanvasRecovery(null); // 붙이는 중엔 닫지 않는다(바깥 클릭과 같은 규칙)
   }, !!canvasRecovery);
+  // 두 창 모두 막이 있는 모달 — 떠 있는 동안 초점을 창 안에 둔다(lib/keyGate '모달의 초점'). 닫으면 연 자리(보드의 단추)로 돌아간다.
+  const viewTextRef = useRef<HTMLDivElement>(null);
+  useModalFocus(viewTextRef, !!viewTextModal);
+  const recoveryRef = useRef<HTMLDivElement>(null);
+  useModalFocus(recoveryRef, !!canvasRecovery);
   const [viewTimeline, setViewTimeline] = useState<TimelineClip[] | null>(null); // View 재생 타임라인(연속 재생) 클립들
   const [editTextId, setEditTextId] = useState<string | null>(null); // 편집 중인 텍스트/제목 노드(그 외엔 @토큰 알약 미리보기)
   const editTextIdRef = useRef<string | null>(null);
@@ -712,9 +760,13 @@ export function SceneBoard({
       // 들어온 씬의 히스토리를 store 에서 복원(없거나 stale 이면 리셋). 씬마다 자기 Ctrl+Z 를 유지.
       restoreSceneHistory(scene.id, { cards: inCards, edges: inEdges, groups: scene.groups || [] });
     }
-    setCards(inCards);
-    setEdges(inEdges);
-    setGroups(scene.groups || []);
+    // 받은 것이 이미 손에 든 **그 객체**면 다시 넣지 않는다. 보드가 저장한 조각은 부모를 거쳐 같은 배열로 되돌아오는데
+    //  (lib/scenes.updateScene), 그것을 또 넣으면 값이 같아 자식은 안 그려도 보드 함수 전체가 한 번 더 돈다 — 편집·놓기마다였다.
+    //  참조로만 견준다: 내용이 같은 새 배열(밖에서 온 갱신)은 전처럼 넣는다. 견주는 쪽은 ref 다 — 핸들러가 방금 넣은 값까지 본다.
+    if (inCards !== cardsRef.current) setCards(inCards);
+    if (inEdges !== edgesRef.current) setEdges(inEdges);
+    const inGroups = scene.groups || [];
+    if (inGroups !== groupsRef.current) setGroups(inGroups);
     // 표시 중인 상태를 항상 '최근 커밋'으로 맞춘다 — 외부 갱신(생성 완료 등) 후 Ctrl+Z 가
     // 그 갱신까지 되돌리는(스테일 복원) 문제 방지. (내 persist 는 이미 같은 값이라 무해)
     syncCommitBaseline({ cards: inCards, edges: inEdges, groups: scene.groups || [] });
@@ -1569,7 +1621,10 @@ export function SceneBoard({
   //  안 깨서 드래그·선택 중 전 노드 재렌더를 막고, 동시에 '렌더된 그 카드'(card.id)로 정확히 조회한다
   //  → 같은 gen 이 여러 카드에 있어도(중복 gid) 인라인 때처럼 정확한 카드의 변형 묶음을 방향키로 넘긴다.
   const nodePreviewHandlers = useRef(new Map<string, (target: PreviewTarget) => void>());
-  const getNodePreview = (cardId: string) => {
+  // 이 함수 자체도 정체성을 고정한다(useCallback) — 생성 카드(memo)가 **그릴 때** 불러 값을 얻으므로 렌더마다 새 함수면 카드가 매번
+  //  다시 그려진다. 고정해도 낡지 않는다: ref 만 읽고, 한 카드에는 늘 같은 핸들러를 돌려준다(그 핸들러가 누를 때 최신값을 읽는다).
+  //  렌더 중에 불리는 함수라, 여기서 렌더마다 달라지는 값(state·props)을 읽게 되면 그 값을 카드에도 넘겨야 한다.
+  const getNodePreview = useCallback((cardId: string) => {
     const cache = nodePreviewHandlers.current;
     let h = cache.get(cardId);
     if (!h) {
@@ -1604,7 +1659,7 @@ export function SceneBoard({
       cache.set(cardId, h);
     }
     return h;
-  };
+  }, []);
   // 카드 삭제·씬 전환에도 핸들러 캐시가 무한 누적되지 않게 — 현재 카드에 없는 id 는 정리(누수 방지).
   useEffect(() => {
     const cache = nodePreviewHandlers.current;
@@ -1807,6 +1862,7 @@ export function SceneBoard({
     if (uiSceneIdRef.current === scene.id) return;
     uiSceneIdRef.current = scene.id;
     abortDrag();
+    releaseSceneDragPointer(); // 버린 끌기가 보드에 쥐여 둔 포인터도 놓는다 — abort 는 끌기의 끝맺음(콜백)을 부르지 않는다
     layerMoveRef.current?.drop(); // 버린 끌기가 캔버스 층에만 밀어 둔 이동량도 버린다 — 새 씬이 밀려 보이지 않게
     endGesture(); // 버린 끌기의 되돌리기 묶음도 닫는다
     scrollRef.current?.classList.remove("dragging", "panning");
@@ -2987,6 +3043,10 @@ export function SceneBoard({
     // 캔버스 자체를 명시적인 키보드 포커스 대상으로 만든다. 단순 div 배경은 브라우저/확장에 따라
     // body 포커스로 남아 전역 Ctrl+C/V가 간헐적으로 빠질 수 있다. 카드·배경을 누른 뒤에는 항상
     // 이 보드가 키 이벤트의 출발점이 되고, 실제 버튼은 이후 기본 동작으로 자기 포커스를 받는다.
+    // '생성 결과' 창 안의 누름에는 가져오지 않는다 — 창은 보드 안에 그려져 그 안의 누름도 여기를 지난다. 창의 격자는 가운데 단추의 기본
+    //  동작(자동 스크롤)을 막는데 초점 이동도 같이 막혀, 여기서 가져온 초점이 보드에 남았다(카드를 휠로 누른 뒤 — 6회차 기록).
+    //  창의 툴바가 연 태그 패널은 body 에 그려진다 — 그 누름도 창 안의 누름이다(lib/keyGate floatHost).
+    if (floatHost(t).closest?.(".scene-varwin")) return;
     (e.currentTarget as HTMLElement).focus({ preventScroll: true });
   };
 
@@ -3023,6 +3083,13 @@ export function SceneBoard({
     return out;
   };
 
+  // 카드·그룹 끌기의 끝맺음 — 놓기, 창을 떠남, 놓친 mouseup(단추를 다 뗀 채 움직임 — lib/sceneDragSession) 어느 길로 끝나든 두 훅이
+  //  이것을 부른다. 되돌리기 묶음을 닫으면서 '누르고 있는 동안' 표시(moveHeldRef — 아래 holdMove)도 같이 내린다: 그 표시는 mouseup·blur
+  //  로만 내려갔는데, mouseup 을 놓친 끌기는 끝난 뒤에도 Ctrl+Z·묶기·정렬이 다음 mouseup 까지 잠겨 있었다.
+  const endMoveGesture = () => {
+    moveHeldRef.current = false;
+    endGesture();
+  };
   const beginCardMove = useSceneCardMove({
     canvasRef,
     layerMoveRef,
@@ -3047,7 +3114,7 @@ export function SceneBoard({
     reconcileGenerationRefs: withGenRefs,
     persist,
     beginGesture,
-    endGesture,
+    endGesture: endMoveGesture,
     ejectSpeed: GROUP_EJECT_SPEED,
   });
   const beginGroupMove = useSceneGroupMove({
@@ -3067,7 +3134,7 @@ export function SceneBoard({
     reconcileGenerationRefs: withGenRefs,
     persist,
     beginGesture,
-    endGesture,
+    endGesture: endMoveGesture,
   });
   const {
     begin: beginBoardMarquee,
@@ -3128,6 +3195,7 @@ export function SceneBoard({
 
   // 카드·그룹을 누르고 있는 동안 = 끌기 세션. 누른 순간부터 손을 뗄 때(또는 창을 떠날 때)까지다 — 보드의 dragging 클래스는 4px 넘게
   //  움직인 뒤에야 붙고 React 가 className 을 다시 쓰면 지워져(가위 Y 를 누를 때) 기준으로 못 쓴다(Codex 코드 리뷰).
+  //  손을 뗀 것을 놓친(mouseup 이 오지 않은) 끌기는 끌기의 끝맺음이 내린다(위 endMoveGesture).
   const moveHeldRef = useRef(false);
   // 끄는 중에 키가 오면 층에만 밀어 둔 전체 끌기의 이동량을 좌표에 먼저 넣는다 — 붙여넣기·삭제·맞춤·색이 옛 좌표를 보고 저장하지
   //  않게. 잡는 단계로 들어 다른 키 처리보다 먼저 돈다(수식키만 누른 것은 뺀다). 그런 끌기가 없으면 아무 일도 없다.
@@ -3548,27 +3616,34 @@ export function SceneBoard({
   // 겹치지 않는다). 위=모델·중간=ref/계보·아래=텍스트·맨아래=세트(Set 노드 전용 입력, Jay 2026-09-09).
   const laneOf = (role: SceneEdgeRole): ScenePortLane =>
     role === "model" ? "model" : role === "text" ? "text" : role === "set" ? "set" : "ref";
-  // 입력 포트 세로 위치 — 카드별 '레인 목록'을 카드 세로 중앙에 대칭으로 놓는다(Jay 2026-09-09: 세트 레인이 들어오며
-  //  -26·0·+26·+52 로 아래로 치우쳤던 것을 생성 카드는 -39·-13·+13·+39 로). 생성 = model·ref·text·set 4레인,
-  //  comfy = ref(+텍스트 파라미터가 노출돼 있으면 text) 1~2레인. 카드가 짧으면 간격을 줄여 포트가 카드 안에 들어오게.
-  //  포트(카드 컴포넌트)와 선 끝점(edgeEnds)이 같은 함수·같은 카드를 써야 어긋나지 않는다.
-  const PORT_V_GAP = 26;
-  const laneSlots = (card: SceneCard): ScenePortLane[] =>
-    card.kind === "generation"
-      ? ["model", "ref", "text", "set"]
-      : card.kind === "comfy" &&
-          comfyTextDriveKeys(card.comfyCfg?.params, card.comfyCfg?.content).size > 0
-        ? ["ref", "text"]
-        : ["ref"];
-  const laneDelta = (lane: ScenePortLane, card: SceneCard) => {
-    const slots = laneSlots(card);
-    const n = slots.length;
-    if (n <= 1) return 0;
-    const gap = Math.min(PORT_V_GAP, Math.max(8, (heightOf(card) - 16) / (n - 1)));
-    const i = slots.indexOf(lane);
-    const idx = i < 0 ? (n - 1) / 2 : i; // 그 카드에 없는 레인은 중앙
-    return (idx - (n - 1) / 2) * gap;
-  };
+  // 입력 포트 세로 위치(laneDelta)는 컴포넌트 밖에 있다(파일 위쪽) — 카드만으로 정해지는 순수 함수다.
+  // memo 카드(레퍼런스·머리글·모델·Set·생성)에 넘기는 핸들러 — 정체성을 고정한다. 보드는 카드를 끄는 걸음마다 다시 그려지는데,
+  //  아래 함수들은 렌더마다 새로 만들어져 움직이지 않은 카드까지 전부 다시 그리게 했다(2026-10-11 실측: 412장 씬에서 한 장만 끌어도
+  //  컴포넌트 651개). 전부 카드가 **이벤트에서** 부르는 것들이다(누름·입력·오류) — 그릴 때 부르는 것은 여기 넣지 않는다.
+  const cardFns = useStableHandlers({
+    getGen: (id: string) => ownEntry(genDataRef.current, id),
+    // 판정을 받았는데 그림이 안 뜬다 — 한 번 다시 묻는다(onLocalRefsAdded = 자동 복구를 지금 한 번 부르기)
+    onBroken: (r: SceneRef) => {
+      if (recheckBrokenRef(refWorkspaceId, r)) onLocalRefsAdded?.();
+    },
+    closeTagEdit: () => {
+      setTagEditCardId(null);
+      setTagEditNodeGenId(null);
+    },
+    onOutPortDown,
+    flushPending,
+    setNodeText,
+    setNodeFontSize,
+    setNodeColor,
+    setNodeSetFolder,
+    setNodeSetTagsText,
+    setCardBatch,
+    orchestrateGenerate,
+    openCanvasRecovery,
+    applyCardTags,
+    applyCardAutoTags,
+    applyCardWorkspace,
+  });
   // 다입력 카드(생성·comfy)로 들어오는 연결의 fan-in 을 (타깃+물리레인) 단위로 — 같은 레인끼리만 세로로
   //  펼쳐 겹침 방지. comfy 도 ref(중앙)·text(아래) 레인 포트로 그려지므로 레인별 fan 이 포트와 맞아야 한다
   //  (안 그러면 전체 입력 기준 fan 이라 ref 선이 ref 포트에서 어긋남).
@@ -4070,14 +4145,11 @@ export function SceneBoard({
                   card={card}
                   fill={fill}
                   workspaceId={refWorkspaceId}
-                  getGen={(id) => ownEntry(genDataRef.current, id)}
+                  getGen={cardFns.getGen}
                   onInfo={onInfo}
                   onPreview={onPreview}
-                  onOutPortDown={onOutPortDown}
-                  // 판정을 받았는데 그림이 안 뜬다 — 한 번 다시 묻는다(onLocalRefsAdded = 자동 복구를 지금 한 번 부르기)
-                  onBroken={(r) => {
-                    if (recheckBrokenRef(refWorkspaceId, r)) onLocalRefsAdded?.();
-                  }}
+                  onOutPortDown={cardFns.onOutPortDown}
+                  onBroken={cardFns.onBroken}
                 />
               ) : card.kind === "text" ? (
                 <TextCard
@@ -4097,14 +4169,14 @@ export function SceneBoard({
               ) : card.kind === "set" ? (
                 <SetCard
                   card={card}
-                  setFolder={setNodeSetFolder}
-                  setTagsText={setNodeSetTagsText}
-                  flushPending={flushPending}
-                  onOutPortDown={onOutPortDown}
+                  setFolder={cardFns.setNodeSetFolder}
+                  setTagsText={cardFns.setNodeSetTagsText}
+                  flushPending={cardFns.flushPending}
+                  onOutPortDown={cardFns.onOutPortDown}
                   onResizeDown={onResizeDown}
                 />
               ) : card.kind === "model" ? (
-                <ModelCard card={card} onOutPortDown={onOutPortDown} onResizeDown={onResizeDown} />
+                <ModelCard card={card} onOutPortDown={cardFns.onOutPortDown} onResizeDown={onResizeDown} />
               ) : card.kind === "list" ? (
                 <ListCard
                   card={card}
@@ -4243,10 +4315,10 @@ export function SceneBoard({
                   colorPopId={colorPopId}
                   setEditTextId={setEditTextId}
                   setColorPopId={setColorPopId}
-                  setNodeText={setNodeText}
-                  setNodeFontSize={setNodeFontSize}
-                  setNodeColor={setNodeColor}
-                  flushPending={flushPending}
+                  setNodeText={cardFns.setNodeText}
+                  setNodeFontSize={cardFns.setNodeFontSize}
+                  setNodeColor={cardFns.setNodeColor}
+                  flushPending={cardFns.flushPending}
                 />
               ) : (
                 <GenerationCard
@@ -4286,27 +4358,24 @@ export function SceneBoard({
                   }}
                   actions={{
                     setCardMenu,
-                    setCardBatch,
-                    orchestrateGenerate,
+                    setCardBatch: cardFns.setCardBatch,
+                    orchestrateGenerate: cardFns.orchestrateGenerate,
                     showGenerateBar: !!onGenerateCard,
                     onRecover:
                       onCanvasRecoveryCandidates && onCanvasRecoveryClaim
-                        ? openCanvasRecovery
+                        ? cardFns.openCanvasRecovery
                         : undefined,
-                    onOutPortDown,
+                    onOutPortDown: cardFns.onOutPortDown,
                     onResizeDown,
                   }}
                   tagEdit={{
                     active: card.id === tagEditCardId && (!tagEditNodeGenId || tagEditNodeGenId === g?.id) && !!onSetTags,
                     hasAutoTags: !!onSetAutoTags,
-                    autoTagOptions: autoTagOptions ?? [],
-                    applyCardTags,
-                    applyCardAutoTags,
-                    applyCardWorkspace,
-                    close: () => {
-                      setTagEditCardId(null);
-                      setTagEditNodeGenId(null);
-                    },
+                    autoTagOptions: autoTagOptions ?? NO_TAG_OPTIONS,
+                    applyCardTags: cardFns.applyCardTags,
+                    applyCardAutoTags: cardFns.applyCardAutoTags,
+                    applyCardWorkspace: onWorkspaceCommand ? cardFns.applyCardWorkspace : undefined, // 있을 때만 — 카드가 '있나'를 본다
+                    close: cardFns.closeTagEdit,
                   }}
                 />
               )}
@@ -4556,7 +4625,7 @@ export function SceneBoard({
 
       {viewTextModal && (
         <div className="scene-modelmodal-backdrop" onMouseDown={() => setViewTextModal(null)}>
-          <div className="scene-textview" onMouseDown={(e) => e.stopPropagation()}>
+          <div ref={viewTextRef} className="scene-textview" onMouseDown={(e) => e.stopPropagation()}>
             <div className="scene-modelmodal-hd">
               <span>텍스트</span>
               <button
@@ -4593,7 +4662,7 @@ export function SceneBoard({
           className="scene-modelmodal-backdrop"
           onMouseDown={() => !canvasRecovery.claimingId && setCanvasRecovery(null)}
         >
-          <div className="scene-modelmodal scene-recoverymodal" onMouseDown={(event) => event.stopPropagation()}>
+          <div ref={recoveryRef} className="scene-modelmodal scene-recoverymodal" onMouseDown={(event) => event.stopPropagation()}>
             <div className="scene-modelmodal-hd">
               <b>이 카드에 생성물 붙이기</b>
               <button

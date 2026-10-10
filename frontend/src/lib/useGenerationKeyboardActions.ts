@@ -5,7 +5,7 @@ import { KEY_COLORS } from "./appConstants";
 import { toggleDisabledGen } from "./deactivated";
 import { applyGenerationColor, ColorSaveError, nextGenerationSelectionColor, type ColorEditLedger } from "./generationColorState";
 import { createMutationQueue } from "./mutationQueue";
-import { backgroundKeysBlocked, isTypingTarget } from "./keyGate";
+import { backgroundKeysBlocked, floatHost, isTypingTarget } from "./keyGate";
 import { markKeyHandled } from "./keyHandled";
 import { matchShortcut } from "./shortcuts";
 import { backgroundEscapeAllowed } from "./useEscapeClose";
@@ -101,7 +101,8 @@ export function useGenerationKeyboardActions({
       //  살린다. 창이 떠 있는 동안 씬 단축키는 쉰다(useSceneKeyboardShortcuts) — 둘이 같이 받는 일은 없다.
       if (filtersRef.current.tab === "compose") {
         const from = e.target as HTMLElement | null;
-        const inPeek = from === document.body || !!from?.closest?.(".folder-peek");
+        // 창의 툴바가 연 태그 패널은 body 에 그려진다 — 그 안에서 난 키도 창 안의 키다(lib/keyGate floatHost).
+        const inPeek = from === document.body || !!(from && floatHost(from).closest?.(".folder-peek"));
         if (!composeGridActiveRef?.current || !inPeek) return;
       }
       if (matchShortcut(e, "colorRed")) {

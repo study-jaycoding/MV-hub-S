@@ -3,6 +3,7 @@
 //  · 등록된 이름은 프로젝트 드롭다운에 그대로 뜬다(서버 전역, 모든 팀원 공유)
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
+import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import type { AssetMount } from "../../types";
 import { CloseIcon } from "../common/ViewIcons";
@@ -31,6 +32,8 @@ export function MountManager({
     reload();
   }, [workspaceId]);
   useEscapeClose(onClose);
+  const floatRef = useRef<HTMLDivElement>(null);
+  useModalFocus(floatRef); // 막(바깥 클릭 캐처)이 있는 창 — Tab 이 창 안에서 돈다. 처음 초점은 경로 칸(autoFocus) 그대로
 
   const addingRef = useRef(false); // busy 상태는 다음 렌더에야 보인다 — 같은 순간의 연타는 이것으로 막는다
   const add = async () => {
@@ -111,7 +114,7 @@ export function MountManager({
   return (
     <>
       <div className="info-catcher" onMouseDown={onClose} />
-      <div className="manage-float mount-float" role="dialog" aria-label="폴더 등록">
+      <div ref={floatRef} className="manage-float mount-float" role="dialog" aria-label="폴더 등록">
         <header className="admin-head">
           <span className="admin-title">🗂 폴더 등록</span>
           <button className="assets-x" onClick={onClose} title="닫기">

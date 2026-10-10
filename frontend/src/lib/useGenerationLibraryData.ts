@@ -1,10 +1,10 @@
-import { createColorEditLedger } from "./generationColorState";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createColorEditLedger, type ColorEditLedger } from "./generationColorState";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { api, GEN_PAGE, type GenCursor } from "../api";
 import { isLocatedQuery, locatedItems, mergeLocatedGenerations, type GenerationLocation } from "./resolveLibraryLocation";
 import { EMPTY_FACETS } from "./appConstants";
 import { beginLibraryReload, finishLibraryReload } from "./librarySync";
-import { reconcileArrayState, reconcileValueState } from "./stateReconciliation";
+import { isStructurallyEqual, reconcileArrayState, reconcileValueState } from "./stateReconciliation";
 import { hasWorkspaceFilter, matchesWorkspaceFilter, workspaceFilterOf } from "./libraryWorkspaceScope";
 import { t } from "./i18n";
 import type { Facets, Filters, GenQuery, GenStats, Generation, Project } from "../types";
@@ -42,6 +42,38 @@ export function generationTabCacheIsFresh(
   maxAge = GENERATION_TAB_CACHE_FRESH_MS,
 ): boolean {
   return !!entry && entry.sig === sig && now - entry.loadedAt >= 0 && now - entry.loadedAt < maxAge;
+}
+
+// ── 한 탭에서 한 편집과 다른 탭의 캐시 ──
+//  탭마다 목록 캐시가 따로 있고, 15초 안에 돌아온 탭은 다시 받지 않는다(reloadIfStale). 편집은 지금 탭의 캐시만 고쳤다 → 다른 탭으로
+//  가면 옛 값이 보였고, '작업 공간' 탭은 주기 조회도 없어 그대로 남았다(격리 실측 2026-10-11: 공유 & 리뷰에서 칠한 색이 작업 공간
+//  탭에 45초 내내 없었다).
+//  규칙: 편집·내 변경이 있었으면 다른 탭의 캐시는 낡은 것이다 — 다음에 그 탭으로 가면 다시 받고, 값은 서버가 준다.
+//  다른 탭 캐시에 값을 **옮겨 적지 않는다**. 탭을 넘어 '같은 카드'를 프론트가 가려낼 길이 없다: 공유 & 리뷰의 카드 id 는 공유 서버의
+//  것이라 로컬 id 와 다르고, job_id 로 이으면 job_id 가 같은 별개의 카드(실패한 카드와 그 정상 결과)까지 칠한다. 옮겨 적은 색은 색 장부
+//  (키 = 카드 id)의 보호도 받지 못해 늦은 응답이 지우고, 그 사이의 색 키가 틀린 색을 저장했다(Codex 리뷰 2026-10-11). 개인 표시를
+//  두 탭에 맞게 덧입히는 일은 백엔드가 한다. 잃는 것: 편집 뒤 처음 가는 탭의 첫 화면이 응답이 올 때까지 옛 값이다 — 그 순간의 색 키는
+//  화면에 보이는 색을 기준으로 하므로 화면과 저장은 어긋나지 않는다.
+
+// 다른 탭의 캐시를 낡은 것으로 표시한다. 낡은 캐시도 탭을 옮긴 첫 화면에는 쓰인다(탭 전환 effect·공유 탭의 공간 effect) —
+//  신선하다고 믿지 않을 뿐이다. 표시가 '캐시를 비운 것'처럼 굴면 안 된다(편집할 때마다 빈 화면이 번쩍인다).
+function staleOtherTabs(cache: Record<string, GenerationTabCacheEntry>, own: string | null): void {
+  for (const [tab, entry] of Object.entries(cache)) {
+    if (tab !== own) cache[tab] = { ...entry, loadedAt: -Infinity };
+  }
+}
+
+// 이 갱신(previous → next)이 편집인가 — 있던 카드가 바뀌었거나 목록에서 빠졌다. 값이 같은 새 객체·새로 붙인 카드는 편집이 아니다
+//  (짧은 탭 왕복의 '다시 받지 않기'를 깨지 않는다).
+function editsExistingCards(previous: Generation[], next: Generation[]): boolean {
+  const before = new Map(previous.map((generation) => [generation.id, generation]));
+  for (const generation of next) {
+    const was = before.get(generation.id);
+    if (!was) continue;
+    before.delete(generation.id);
+    if (was !== generation && !isStructurallyEqual(was, generation)) return true;
+  }
+  return before.size > 0; // 남은 것 = 목록에서 빠진 카드
 }
 
 export function useGenerationLibraryData({
@@ -117,6 +149,21 @@ export function useGenerationLibraryData({
   // 탭별 마지막 목록 캐시 — 탭을 오갈 때 이전에 보던 그 탭 화면을 '즉시' 띄우고(딜레이 제거),
   // 뒤에서 fetch 가 최신본으로 조용히 갱신한다. sig(쿼리 직렬화)가 다르면(필터 초기화 등) 캐시를 안 쓴다.
   const tabCacheRef = useRef<Record<string, GenerationTabCacheEntry>>({});
+  // 밖에서 들어오는 목록 편집의 통로 — 이 훅이 돌려주는 setGens(색·태그·공간 지정·진행 통지 …). 지금 탭의 캐시는 아래 effect 가
+  //  맞추고, 다른 탭의 캐시는 여기서 낡은 것으로 표시한다(위 '한 탭에서 한 편집과 다른 탭의 캐시'). 이 훅 안의 목록 교체(재조회
+  //  응답·탭 전환)는 편집이 아니라 원래의 setGens 를 쓴다.
+  //  updater 안에서 캐시(ref)를 고친다: 같은 편집이 두 번 계산돼도(StrictMode·버려진 렌더) 결과가 같다.
+  //  아직 믿고 있는 다른 탭 캐시가 없으면 비교도 하지 않는다 — 탭 하나만 쓸 때·이미 낡은 것으로 표시한 뒤의 편집에 비용을 얹지 않는다.
+  const editGens = useCallback<Dispatch<SetStateAction<Generation[]>>>((action) => {
+    setGens((previous) => {
+      const next = typeof action === "function" ? action(previous) : action;
+      const cache = tabCacheRef.current;
+      const own = lastLoadedTabRef.current;
+      const trusted = Object.entries(cache).some(([tab, entry]) => tab !== own && entry.loadedAt !== -Infinity);
+      if (next !== previous && trusted && editsExistingCards(previous, next)) staleOtherTabs(cache, own);
+      return next;
+    });
+  }, []);
   // reload 코얼레싱 — 이미 실행 중이면 새 호출을 큐에 '병합'해 동시 네트워크를 1개로 줄인다.
   // reloadSeqRef 가 정합성(최신 결과만 반영)을 보장하므로, 여기선 중복 요청만 없앤다.
   // ★줄은 둘이다(2026-10-07): 아래 셋은 **목록 줄** — 한 실행의 목록 구간(첫 쪽 + 위치 확인)이 끝날 때까지만 잡는다.
@@ -149,7 +196,11 @@ export function useGenerationLibraryData({
     setStaleList(false); // 아래에서 목록을 이 공간의 것으로 갈아 끼운다 — 사본 구간 끝(다른 탭은 목록을 안 바꾸므로 새 첫 쪽이 풀 때까지 잠근 채 둔다)
     const sig = JSON.stringify([!!filtersRef.current.deleted_only, genQueryRef.current]);
     const cached = tabCacheRef.current.team;
-    const reuse = generationTabCacheIsFresh(cached, sig) ? cached : undefined;
+    // 같은 조회(sig)의 캐시면 낡았어도 첫 화면에 쓴다 — 신선한지는 '다시 받을지'만 정한다(reloadIfStale). 이 effect 는 작업 공간에서
+    //  공유 & 리뷰로 들어올 때마다 돈다(그때 공간 범위 키가 생긴다). 여기서 신선도까지 따지면 15초가 지난 캐시·편집으로 낡은 것이 된
+    //  캐시를 비워, 들어올 때마다 빈 화면이 번쩍인다(격리 실측 2026-10-11: 0장인 구간 65~74ms). 다른 공간·다른 필터에서 받은
+    //  캐시는 sig 가 달라 전처럼 쓰지 않는다.
+    const reuse = cached?.sig === sig ? cached : undefined;
     const next = reuse?.gens ?? [];
     gensRef.current = next;
     setGens(next);
@@ -158,7 +209,12 @@ export function useGenerationLibraryData({
     setHasMore(reuse?.hasMore ?? false);
     setLoadError(null);
     lastLoadedTabRef.current = "team";
-    if (!reuse) delete tabCacheRef.current.team;
+    if (!reuse) {
+      delete tabCacheRef.current.team;
+      // 비운 그 자리에서 '불러오는 중'으로 — 뒤따르는 조회(호출부가 반드시 건다)가 스피너를 올리기 전의 한 번에 "항목이 없습니다"가
+      //  비치지 않게(beginComposeList 와 같은 이유). 조회를 할 수 없는 상태(공간 미확인)면 올리지 않는다 — 내려 줄 조회가 없다.
+      if (authReadyRef.current) setLoading(true);
+    }
   }, [workspaceScopeKey]);
 
   const authScope = JSON.stringify([authKey, authReady]);
@@ -233,7 +289,11 @@ export function useGenerationLibraryData({
     }
   }, [queryKey]);
 
-  const revealLocated = useCallback((tab: "my" | "team", location: GenerationLocation) => {
+  // keepPainted = 위치 조회가 **출발할 때** 찍은 색 장부의 도장(lib/useResolveLibraryFollow). 아래 합치기는 이미 있는 카드를 응답으로
+  //  갈아 끼우므로, 출발 뒤에 칠한 색을 덮지 않게 덧입힌다. 여기서(응답이 온 뒤) 찍으면 안 된다 — 저장이 이미 끝난 색을 놓친다.
+  const revealLocated = useCallback((
+    tab: "my" | "team", location: GenerationLocation, keepPainted?: ReturnType<ColorEditLedger["stamp"]>,
+  ) => {
     const sameView = isLocatedQuery(genQueryRef.current, tab, location);
     const items = locatedItems(location, tab, genQueryRef.current);
     const visibleIds = new Set(gensRef.current.map((item) => item.id));
@@ -255,7 +315,7 @@ export function useGenerationLibraryData({
       trashOffsetRef.current = 0;
       setHasMore(false);
     }
-    setGens((previous) => mergeLocatedGenerations(sameView ? previous : [], items));
+    setGens((previous) => mergeLocatedGenerations(sameView ? previous : [], keepPainted ? keepPainted(items) : items));
     setLoadError(null);
     if (sameView && !reusePage) setLocatedReload((value) => value + 1);
   }, [loadError]);
@@ -323,6 +383,9 @@ export function useGenerationLibraryData({
     try {
       // 시작 시점의 탭/쿼리를 스냅샷 — await 뒤 ref가 다른 탭 값으로 바뀌어 있어도 안전.
       const tab = filtersRef.current.tab;
+      // 아직 어느 목록 조회에도 담기지 않은 내 변경이 있다 — 삭제·공유·이동처럼 끝나면 지금 탭을 다시 받는 동작, 저장을 마친 색·태그.
+      //  다른 탭의 캐시는 그 변경 전의 것이다. 목록 구성이 바뀌는 변경은 캐시를 고쳐서 맞출 수 없으니 다시 받게만 한다.
+      if (syncToken.mutationIds.size) staleOtherTabs(tabCacheRef.current, tab);
       if (tab === "compose" && !composeListEnabledRef.current) {
         setLoading(false);
         // 캔버스는 그리드를 안 그리지만 좌측 폴더(projects)와 등록 태그 패널(facets)을 직접 사용한다.
@@ -605,7 +668,7 @@ export function useGenerationLibraryData({
     locatedVisibleIds,
     isLocatedView: !!locatedRef.current && isLocatedQuery(genQuery, locatedRef.current.tab, locatedRef.current.location),
     setFacets,
-    setGens,
+    setGens: editGens,
     beginComposeList,
     staleList,
     stats,

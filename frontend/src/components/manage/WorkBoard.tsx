@@ -601,12 +601,31 @@ export function WorkBoard({
     if (writeBlocked(tid)) return Promise.resolve(false);
     const requestScope = scopeKey;
     let saved = false; // 서버가 받았나 — 줄(queue)은 실패를 삼키고 복구하므로 여기서 따로 적는다
-    return taskPatchQueueRef.current!.enqueue(tid, async () => {
+    // 결과는 줄의 끝과 따로 알린다. 줄의 끝(enqueue 가 돌려주는 것)은 실패 뒤의 복구 조회까지 기다린다 — 그것으로 알리면 설명 칸의
+    //  '저장 안 됨'이 조회가 끝나야 붙었다(서버가 응답 없이 매달리면 그만큼 늦는다). 실패는 그 자리에서 알리고, 성공은 전처럼 줄의
+    //  끝에서 알린다(목록 값을 고친 뒤여야 칸이 쥔 글을 놓을 때 옛 값이 비치지 않는다). 줄 자체는 그대로다 — 복구가 끝나기 전에
+    //  들어온 같은 작업의 저장은 복구 뒤에 나간다.
+    let settle: (ok: boolean) => void = () => {};
+    const result = new Promise<boolean>((resolve) => {
+      settle = resolve;
+    });
+    // 일찍 알린 실패는 줄의 끝까지 '가는 중'으로 대신 센다(설명 보관함의 flying — DescCell ④). 칸은 결과를 받는 자리에서 flying 을
+    //  줄이는데, 그대로면 복구 도중 도착한 옛 목록(저장 전에 떠난 조회)이 목록 값에 대한 믿음을 되살려, 그 값으로 되돌린 글을
+    //  '목록과 같다'며 안 보낸다 — 실패로 온 저장이 실은 서버에 반영됐으면 마지막에 친 글이 사라진다(2026-10-11 Codex 코드 리뷰가
+    //  재현). 일찍 가는 것은 표시뿐이고, 보호의 수명은 전처럼 줄의 끝(복구 조회가 끝난 뒤)까지다.
+    const drafts = descDraftsRef.current; // 범위가 바뀌면 보관함이 새것이 된다 — 센 곳에서 뺀다
+    let held = false;
+    void taskPatchQueueRef.current!.enqueue(tid, async () => {
       try {
         await manageApi.updateTask(tid, patch);
         saved = true;
         taskDataRevisionRef.current += 1;
       } catch (error) {
+        if (patch.description !== undefined) {
+          drafts.flying.set(tid, (drafts.flying.get(tid) ?? 0) + 1);
+          held = true;
+        }
+        settle(false);
         throw scopedMutationError(requestScope, error);
       }
       // 상태 이동과 컷 활성화 동기화(대칭): 생략→컷 비활성화, 생략에서 빼면→컷 재활성화.
@@ -632,7 +651,15 @@ export function WorkBoard({
       } else {
         await loadAllRef.current();
       }
-    }).then(() => saved);
+    }).then(() => {
+      if (held) {
+        const left = (drafts.flying.get(tid) ?? 1) - 1;
+        if (left > 0) drafts.flying.set(tid, left);
+        else drafts.flying.delete(tid);
+      }
+      settle(saved);
+    });
+    return result;
   };
   const onDelete = (tid: string) => {
     if (writeBlocked(tid)) return;

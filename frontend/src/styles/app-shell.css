@@ -570,9 +570,13 @@
 .metadata-backup-item .settings-action { flex: 0 0 auto; margin: 0; }
 .metadata-backup-empty { margin: 0; color: var(--muted); font-size: 11px; }
 
-/* 단축키 변경 플로팅 창 — 설정창 위에 확실히 띄운다(자기 catcher 위, 클릭 가능). */
-.sc-catcher { z-index: 320; }
-.sc-float { z-index: 330; }
+/* 단축키 변경 플로팅 창 — 설정창 위에 확실히 띄운다(자기 catcher 위, 클릭 가능).
+   이 창을 여는 단추는 설정의 옆 패널(.settings-group-flyout 360)에 있다 — 막과 창 모두 그 위여야 한다. 전엔 창이 330 이라 옆 패널이
+   창의 왼쪽 59px 를 덮었다(2026-10-11 실측). 알림 패널·계정 메뉴·토스트(400)와 업데이트 덮개(500)보다는 아래다.
+   막은 두 클래스로 쓴다 — 같은 요소의 .info-catcher(230)는 이 파일보다 뒤에 읽히는 assets.css 에 있어, .sc-catcher 하나로는
+   무슨 값을 적어도 230 이 이긴다(전의 320 도 그래서 먹지 않았다 — 막이 설정 창 235 아래라 창이 뜬 채 설정이 그대로 눌렸다). */
+.info-catcher.sc-catcher { z-index: 370; }
+.sc-float { z-index: 380; }
 .sc-warn { color: var(--accent); }
 
 /* 단축키 목록 */
@@ -772,8 +776,8 @@
    씬 위(캔버스 상단 패널 z 20)·씬 모달(200)·플로팅 입력창(300) 아래. 격자는 .gen-grid 가 스스로 스크롤·추가 로드. */
 .folder-peek-catcher { position: fixed; inset: 0; z-index: 150; background: rgba(0,0,0,0.35); }
 .folder-peek {
-  /* transform 없이 inset 으로 가운데 — transform 이 있으면 창 안 position:fixed 패널(태그 패널)이 창 기준으로 어긋나고
-     overflow 에 잘린다(코덱스 P2). */
+  /* transform 없이 inset 으로 가운데 — transform 이 있으면 창 안에 position:fixed 로 띄운 것이 창 기준으로 어긋나고 overflow 에
+     잘린다(코덱스 P2 — 그때는 툴바의 태그 패널이 창 안에 있었다. 지금 그 패널은 창의 쌓임 맥락 밖, body 에 그린다 — LibraryToolbar). */
   /* 아래 끝은 하단 프롬프트 위에서 멈춘다 — --peek-dock-gap = 프롬프트가 차지한 높이(App 이 재서 넣는다. 접혔거나 없으면 11vh 그대로). */
   position: fixed; z-index: 151; top: 11vh; bottom: max(11vh, var(--peek-dock-gap, 0px)); left: 6vw; right: 6vw;
   max-width: 1500px; max-height: 860px; margin: auto;

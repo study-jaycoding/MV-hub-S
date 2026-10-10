@@ -1,5 +1,7 @@
 // 등급 S 다중선택 확인 — 브라우저 confirm 대신 인앱 중앙 모달.
+import { useRef } from "react";
 import { describeGradeStep, type GradeStepResult } from "../lib/gradeStep";
+import { useModalFocus } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useT } from "../lib/i18n";
 
@@ -16,11 +18,13 @@ export function GradeStepModal({
 }) {
   const t = useT();
   useEscapeClose(busy ? () => {} : onCancel); // 적용 중엔 ESC/바깥클릭으로 못 닫음(작업 도는데 모달만 닫힘 방지)
+  const modalRef = useRef<HTMLDivElement>(null);
+  useModalFocus(modalRef); // 초점을 창 안에 둔다 — Tab 이 뒤 격자로 나가 Enter 가 뒤 단추를 누르지 않게(lib/keyGate '모달의 초점')
   const { title, body } = describeGradeStep(pending, t);
   return (
     <>
       <div className="gradestep-catcher" onMouseDown={busy ? undefined : onCancel} />
-      <div className="gradestep-modal" role="dialog" aria-modal="true">
+      <div ref={modalRef} className="gradestep-modal" role="dialog" aria-modal="true">
         <div className="gradestep-title">{title}</div>
         <div className="gradestep-body">{body}</div>
         <div className="gradestep-actions">

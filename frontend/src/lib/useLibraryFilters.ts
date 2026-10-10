@@ -215,7 +215,13 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
     () => (LS.get("typeFilter", "all") as MediaFilter) || "all",
     bumpManualRevision,
   ); // 전체/이미지/영상/음성
-  const [scale, setScale] = useState(() => Number(LS.get("scale", "1")) || 1); // 카드 크기 배율
+  // 카드 크기 배율 — 저장값은 툴바 슬라이더의 범위(LibraryToolbar 의 0.7~1.7)로 잘라 읽는다. 범위 밖 값(옛 저장·손상)은 슬라이더로는
+  //  만들 수도 고칠 수도 없는데 그대로 쓰였다: 0.7 미만이면 리스트 보기의 줄(300×배율)이 낮아져 선택 칸이 C 단추에 가릴 수 있다
+  //  (조작 점검 7회 R37). 숫자가 아니거나 0 이하면 기본값. 캔버스 줌(0.3~2.5)은 이 값이 아니다 — 건드리지 않는다.
+  const [scale, setScale] = useState(() => {
+    const saved = Number(LS.get("scale", "1"));
+    return Number.isFinite(saved) && saved > 0 ? Math.min(1.7, Math.max(0.7, saved)) : 1;
+  });
   const [fill, setFill] = useState(() => LS.get("fill", "1") !== "0"); // cover ↔ contain
   const [layout, setLayout] = useState<"grid" | "list">(() =>
     LS.get("layout", "grid") === "list" ? "list" : "grid",

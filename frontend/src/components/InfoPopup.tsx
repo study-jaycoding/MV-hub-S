@@ -16,6 +16,7 @@ import { useModelDisplayName } from "../lib/modelCatalog";
 import { reportSourceLocationError } from "../lib/sourceLocationFeedback";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../lib/media";
 import { refSrc } from "../lib/promptParts";
+import { useModalFocus } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { addWindowPointerDrag, keepHeadReachable, removeWindowPointerDrag } from "../lib/windowDrag";
 import type { Generation, InfoTarget, PreviewTarget, Project, Reference } from "../types";
@@ -108,6 +109,7 @@ export function InfoPopup({
   // 늦게 채워져 열린 뒤에도 커진다. 아래쪽 줄 카드를 열면 단추 절반이 화면 밖이었다(2026-09-20 실측: 1664×905 에서 210px).
   // 크기가 바뀔 때마다 화면 안에 들어오는 자리까지만 올린다. 사용자가 끌어 옮긴 뒤에는 건드리지 않는다.
   const popRef = useRef<HTMLDivElement>(null);
+  useModalFocus(popRef); // 막이 있는 창 — 초점을 창 안에 둔다(lib/keyGate '모달의 초점')
   const movedRef = useRef(false);
   useLayoutEffect(() => {
     const el = popRef.current;

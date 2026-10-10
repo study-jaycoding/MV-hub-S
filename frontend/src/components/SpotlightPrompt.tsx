@@ -140,6 +140,9 @@ interface Props {
   inCompose?: boolean;
   // Ctrl+K 표시 여부. false 면 도크 안쪽(패널·오류)만 감추고 상태줄은 우측 하단에 남긴다.
   visible?: boolean;
+  // 폴더 창이 뜬 동안 켠다 — 상태 줄(Host 콘솔 단추·공간 선택)과 그 줄이 그리는 떠 있는 창이 키보드로도 닿지 않게 된다.
+  //  마우스는 app-shell.css(`body:has(.folder-peek) …`)가 막지만 Tab·Enter 로는 닿아 폴더 창 위로 콘솔이 떴다.
+  statusInert?: boolean;
   // ── 캔버스 카드 아래 Generate 버튼 연동 ── 배치수를 App 이 보유(카드 툴바와 공유).
   count?: number; // 배치 장수(컨트롤드). 없으면 내부 상태 사용.
   onCountChange?: (n: number) => void;
@@ -185,6 +188,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   trayBinding,
   inCompose = false,
   visible = true,
+  statusInert = false,
   onTrayBindingRefsChange,
   onTrayBindingPromptChange,
   onPreview,
@@ -1227,6 +1231,10 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     }
     if (enterAction === "line_break") {
       e.preventDefault();
+      // 빈 프롬프트(안내 글이 보이는 상태)에서는 줄을 넣지 않는다 — 넣으면 글 없이 칸만 한 줄씩 커졌다. 빈 판정은 안내 글과 같은
+      //  함수고, 공백·줄바꿈을 글로 치지 않는 것은 제출 거절("프롬프트를 입력하세요")과 같다. 위의 제출 분기(Alt+Enter)는 그대로다.
+      const ed = editorRef.current;
+      if (ed && !hasContent(ed)) return;
       document.execCommand("insertLineBreak");
       onEditorInput();
     }
@@ -1371,7 +1379,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
 
         {error && <div className="sl-error">{error}</div>}
 
-        <div className="sl-status-row">
+        {/* React 18 타입에 inert 가 없어 spread 로 넘긴다(App 의 <div className="body"> 와 같다) */}
+        <div className="sl-status-row" {...(statusInert ? { inert: "" } : {})}>
           <ServerConsolePanel
             hubOk={hubOk}
             agentOn={agentOn}

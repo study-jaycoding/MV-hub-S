@@ -1,6 +1,7 @@
 // Comfy 노드 더블클릭 시 뜨는 모달 — ComfyUI API 워크플로우 JSON 을 불러오고(드래그/파일),
 // 조절할 파라미터를 '노출' 체크리스트로 고른다. 저장하면 comfyCfg 스냅샷을 콜백.
 // 실제 파라미터 조절 컨트롤·실행 버튼은 카드 본체(SceneBoard)에 인라인으로 뜬다.
+import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import { comfyApi, type ComfyParamCandidate } from "../../lib/comfyApi";
@@ -25,6 +26,8 @@ export function SceneComfyModal({
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   useEscapeClose(onClose); // 떠 있는 동안 뒤 보드의 단축키도 쉰다(lib/keyGate)
+  const modalRef = useRef<HTMLDivElement>(null);
+  useModalFocus(modalRef); // 초점도 창 안에 둔다 — Tab 이 뒤 보드·프롬프트로 나가지 않는다(lib/keyGate '모달의 초점')
 
   // 저장된 워크플로우가 있으면 mount 시 다시 파싱해 최신 후보를 채운다.
   useEffect(() => {
@@ -112,7 +115,7 @@ export function SceneComfyModal({
 
   return (
     <div className="scene-modelmodal-backdrop" onMouseDown={onClose}>
-      <div className="scene-modelmodal scene-comfymodal" onMouseDown={(e) => e.stopPropagation()}>
+      <div ref={modalRef} className="scene-modelmodal scene-comfymodal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="scene-modelmodal-hd">
           <span>Comfy 워크플로우 {name ? `— ${name}` : ""}</span>
           <button className="scene-modelmodal-x" onClick={onClose} title="닫기">

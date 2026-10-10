@@ -2,6 +2,7 @@
 // 지정된 단축키를 그룹별로 보여주고, 행의 '변경'으로 다음 키를 캡처해 재지정한다.
 // 캡처는 window keydown 캡처 단계 + stopPropagation 으로 다른 단축키·설정창 Esc 보다 먼저 가로챈다.
 import { APP_EVENTS } from "../lib/appEvents";
+import { useModalFocus } from "../lib/keyGate";
 import { useCustomEvent } from "../lib/useCustomEvent";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
@@ -14,6 +15,8 @@ import {
   resetBinding,
   resetAll as resetAllShortcuts,
   conflictOf,
+  droppedOnLoad,
+  isImeBinding,
   isReservedBinding,
   eventToBinding,
   prettyBinding,
@@ -27,6 +30,13 @@ export function ShortcutsWindow({ onClose }: { onClose: () => void }) {
   const rerender = () => setTick((x) => x + 1);
   const [capturing, setCapturing] = useState<ShortcutId | null>(null);
   const [msg, setMsg] = useState("");
+  // 저장돼 있던 지정이 읽을 때 다른 항목과 겹쳐 걷힌 것이 있으면 알린다 — 말없이 기본값이면 왜 키가 바뀌었는지 알 수 없다.
+  //  상태로 쥐지 않고 그릴 때마다 등록부에서 읽는다: 처음 열 때 한 번만 읽었더니, 창이 열린 채 다른 탭이 정상 값으로 저장하면
+  //  키 목록은 따라가는데(아래 shortcutsChanged) 경고만 남았다. 캡처 중의 안내(msg)가 있으면 그쪽이 먼저다.
+  const labelOf = (id: ShortcutId) => SHORTCUTS.find((s) => s.id === id)?.label ?? id;
+  const notice = droppedOnLoad()
+    .map((d) => `저장돼 있던 "${labelOf(d.id)}" 의 지정 "${prettyBinding(d.binding)}" 은(는) "${labelOf(d.clash)}"와(과) 겹쳐 기본값으로 돌렸습니다.`)
+    .join(" ");
   const capRef = useRef<ShortcutId | null>(null);
   capRef.current = capturing;
   useCustomEvent(APP_EVENTS.shortcutsChanged, rerender); // 다른 탭·창에서 바꾼 것도 열려 있는 이 창에 바로 보인다
@@ -42,7 +52,7 @@ export function ShortcutsWindow({ onClose }: { onClose: () => void }) {
         if (e.key === "Escape") return; // 취소는 아래 useEscapeClose 가 한다
         const b = eventToBinding(e);
         if (!b) return; // 수식키만 눌림 — 계속 대기
-        if (b === "process") {
+        if (isImeBinding(b)) { // 수식키가 붙어도(Ctrl+Process) 읽지 못한 키다
           setMsg("한글 입력 상태에서는 키를 읽을 수 없습니다 — 영문으로 바꾸고 다시 누르세요.");
           return;
         }
@@ -77,11 +87,14 @@ export function ShortcutsWindow({ onClose }: { onClose: () => void }) {
     true,
     true,
   );
+  // 설정 창 위의 모달 — 떠 있는 동안 Tab 은 이 창 안에서만 돈다(전엔 뒤의 설정 옆 패널로 먼저 갔다). 닫으면 초점은 연 단추로 돌아간다.
+  const floatRef = useRef<HTMLDivElement>(null);
+  useModalFocus(floatRef);
 
   return (
     <>
       <div className="info-catcher sc-catcher" onMouseDown={onClose} />
-      <div className="manage-float sc-float" role="dialog" aria-label={t("단축키")}>
+      <div ref={floatRef} className="manage-float sc-float" role="dialog" aria-label={t("단축키")}>
         <header className="admin-head">
           <span className="admin-title">⌨ {t("단축키")}</span>
           <button className="assets-x" onClick={onClose} title={t("닫기")}>
@@ -138,7 +151,7 @@ export function ShortcutsWindow({ onClose }: { onClose: () => void }) {
               );
             })}
           </div>
-          {msg && <p className="manage-msg sc-warn">{msg}</p>}
+          {(msg || notice) && <p className="manage-msg sc-warn">{msg || notice}</p>}
           <button
             className="settings-action"
             onClick={() => {

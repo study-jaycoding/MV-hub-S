@@ -10,6 +10,7 @@ import { formatCredits } from "../lib/formatCredits";
 import { formatGenerationDateTime } from "../lib/generationDisplay";
 import { useT } from "../lib/i18n";
 import { thumbOf } from "../lib/media";
+import { useModalFocus } from "../lib/keyGate";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { addWindowPointerDrag, keepHeadReachable, removeWindowPointerDrag } from "../lib/windowDrag";
@@ -96,6 +97,7 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
   };
   // 화면 아래로 나가지 않게(InfoPopup 과 같은 보정). 사용자가 옮긴 뒤에는 건드리지 않는다.
   const popRef = useRef<HTMLDivElement>(null);
+  useModalFocus(popRef); // 막이 있는 창 — 초점을 창 안에 둔다(lib/keyGate '모달의 초점'). 위에 크게 보기가 뜨면 그쪽이 맨 위다
   useLayoutEffect(() => {
     const el = popRef.current;
     if (!el) return;

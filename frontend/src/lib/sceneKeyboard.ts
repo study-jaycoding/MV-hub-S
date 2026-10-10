@@ -26,7 +26,6 @@ export type SceneKeyIntent =
   | { type: "select-all" }
   | { type: "group" }
   | { type: "frame" }
-  | { type: "auto-connect" }
   | { type: "arrange" }
   | { type: "connect" }
   | { type: "disable" }
@@ -145,12 +144,12 @@ export function sceneKeyIntent(
   if (matchesShortcut(event, "selectAll")) return { type: "select-all" };
   if (mod && !event.altKey && lower === "g") return { type: "group" };
   if (plain && lower === "f") return { type: "frame" };
-  if (plain && lower === "c" && context.selectionCount >= 2) {
-    return { type: "auto-connect" };
-  }
   if (matchesShortcut(event, "boardArrange") && context.selectionCount >= 2) {
     return { type: "arrange" };
   }
+  // 연결 키(기본 c) — 자동 연결을 먼저 해 보고, 걸리는 규칙이 없으면 왼→오른쪽 연결이다(useSceneKeyboardShortcuts). 전엔 자동 연결이
+  //  글자 c 에 고정돼 재지정 검사보다 먼저 가로챘다: 연결 키를 옮기고 c 를 다른 동작에 줘도 c 는 자동 연결이었고, 옮긴 키는 자동
+  //  연결을 하지 못했다.
   if (matchesShortcut(event, "boardConnect") && context.selectionCount >= 2) {
     return { type: "connect" };
   }

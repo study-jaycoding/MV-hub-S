@@ -13,6 +13,7 @@ import {
 import type { SceneCard, SceneEdge, SceneGroup } from "./scenes";
 import type { BeginSceneDrag } from "./useSceneDragSession";
 import { rewindSceneMove } from "./sceneInteractions";
+import { endSceneDragPointer, holdSceneDragPointer } from "./useSceneCardMove";
 
 interface UseSceneGroupMoveOptions {
   cardsRef: MutableRefObject<SceneCard[]>;
@@ -102,6 +103,7 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
       if (!moved) {
         latest.setDraggingIds(memberIds);
         latest.setSelectedGroupIds(new Set(targetGroupIds));
+        holdSceneDragPointer(latest.scrollRef.current); // 카드 끌기와 같다(useSceneCardMove)
       }
       moved = true;
       latest.scrollRef.current?.classList.add("dragging");
@@ -172,14 +174,15 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
       latest.persist(nextCards, latest.edgesRef.current, nextGroups);
     };
 
-    const cleanupDrag = () => {
+    const cleanupDrag = (dropped: boolean) => {
       const latest = optionsRef.current;
       latest.scrollRef.current?.classList.remove("dragging");
+      endSceneDragPointer(dropped && moved);
       latest.setDraggingIds([]);
     };
 
     const up = () => {
-      cleanupDrag();
+      cleanupDrag(true);
       const latest = optionsRef.current;
       if (relocated) {
         commitMovedGroup();
@@ -195,7 +198,7 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
     // 그룹 선택과 카드 선택은 별개다 — 선택 밖 그룹을 새로 잡을 때만 카드 선택을 해제한다.
     if (!keepCardSelection) current.setSelected(new Set());
     current.beginDrag(move, up, () => {
-      cleanupDrag();
+      cleanupDrag(false);
       if (relocated) commitMovedGroup();
       optionsRef.current.endGesture();
     });

@@ -5,6 +5,7 @@
 // 새로고침 뒤 남는 **대기 표시**(sessionStorage)만 보고 스스로 상태를 묻는다.
 // 평소에는 아무 요청도 하지 않는다.
 import { useKeyOwner } from "../lib/keyGate";
+import { useEscapeClose } from "../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -51,6 +52,9 @@ export function UpdateProgressOverlay() {
   const [confirmForce, setConfirmForce] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
   useKeyOwner(open); // 덮개가 떠 있는 동안 뒤 화면의 단축키는 쉰다(늘 마운트돼 있어 열림 상태를 넘긴다)
+  // 닫지 않는 Esc 겹 — 덮개는 Esc 로 닫히지 않지만 맨 위 겹으로서 Esc 를 갖는다. useKeyOwner 는 뒤 화면의 단축키만 쉬게 해서,
+  //  덮개에 가려진 창(업데이트를 누른 설정 창)이 Esc 에 닫혔다(2026-10-10 점검). 겹의 위아래는 켜진 순서라 나중에 뜬 덮개가 위다.
+  useEscapeClose(() => {}, open, true, true);
 
   // 어느 경로로 시작하든(설정·알림센터) 같은 신호를 받는다.
   useEffect(

@@ -1,7 +1,7 @@
 // v02 DAM — 버전 비교 + 차이 하이라이트 (로드맵 PART 3 §3-2-2).
 // 벌크 선택한 2개+ 생성본을 나란히 놓고 프롬프트 단어·파라미터 값의 '의미 있는' 차이를 색칠한다.
 // 계보 무관 — 아무거나 골라 비교(로드맵 결정사항). 데이터는 이미 클라이언트에 있어 서버 호출 없음.
-import { useEscapeClose } from "../lib/useEscapeClose";
+import { useWindowEscape } from "../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import {
   commonPromptElements,
@@ -26,6 +26,9 @@ import {
 } from "./compare/CompareSourceLightbox";
 import type { Generation } from "../types";
 
+// push 단추를 누르는 키 — 단추의 표준 누름 키 둘.
+const isPushKey = (key: string) => key === " " || key === "Enter";
+
 export function CompareModal({
   gens,
   onClose,
@@ -41,6 +44,7 @@ export function CompareModal({
   const [imageCompare, setImageCompare] = useState(false);
   const [abOn, setAbOn] = useState(false); // A/B 와이프 토글(기본 꺼짐 — 아무것도 안 누른 상태로 시작)
   const [pushHeld, setPushHeld] = useState(false); // push 버튼을 꾹 누르는 동안 2번(B) 표시
+  const pushRef = useRef<HTMLButtonElement>(null);
   const [splitX, setSplitX] = useState(0.5); // 0..1, 와이프 상자 폭 기준
   const wipeSrcs = gens.map((g) => {
     const a = g.assets?.[0];
@@ -91,14 +95,17 @@ export function CompareModal({
       //  bubble 리스너보다 앞서 stopPropagation 이 걸린다.
       const t = e.target as HTMLElement | null;
       const formEl = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
-      // Esc 는 여기서 막지 않는다 — 아래 useEscapeClose 가 겹 순서대로 맡고, **맨 위일 때만** 삼킨다(여기서 늘 막으면 위에 뜬 확인 창이 못 받는다).
+      // push 단추의 누름 키는 지나가게 둔다 — 여기서 멈추면 단추에 닿지 않는다. 그 단추가 받아 거기서 멈춘다(아래 onKeyDown).
+      if (t && t === pushRef.current && isPushKey(e.key)) return;
+      // Esc 는 여기서 막지 않는다 — 아래 useWindowEscape(겹)가 겹 순서대로 맡고, **맨 위일 때만** 삼킨다(여기서 늘 막으면 위에 뜬 확인 창이 못 받는다).
       if (!formEl && e.key !== "Escape") e.stopPropagation();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
   // 라이트박스가 떠 있으면 그것 먼저, 아니면 창. 체크박스에 초점이 있어도 같은 Esc 가 뒤의 폴더 창까지 닫지 않는다(겹이 받는다).
-  useEscapeClose(() => (srcPreview ? setSrcPreview(null) : onClose()), true, true, true);
+  //  겹은 앱의 틀(LazyModalShell)이 연 순간에 쥔 것을 쓴다 — 이 코드가 늦게 와도 그 틈에 연 창보다 위가 되지 않는다.
+  useWindowEscape(() => (srcPreview ? setSrcPreview(null) : onClose()), true, true);
 
   useEffect(() => {
     const onViewportResize = () => {
@@ -332,15 +339,24 @@ export function CompareModal({
                   <div className="cmp-ablabel">A 1번</div>
                 </>
               )}
-              {/* 그림 하단 중앙 — 부분 수정과 동일 동작: push=꾹 누르는 동안만, A/B=토글 */}
+              {/* 그림 하단 중앙 — 부분 수정과 동일 동작: push=꾹 누르는 동안만, A/B=토글.
+                  push 는 키보드로도 누르고 있을 수 있다 — Space·Enter 를 누르는 동안만, 떼거나 초점이 떠나면 끝난다(뗌을 놓쳐 2번에 붙지 않게). */}
               <div className="cmp-abbtns">
                 <button
+                  ref={pushRef}
                   className={pushHeld ? "on" : ""}
                   title="누르고 있는 동안 2번(B) 표시"
                   onPointerDown={() => setPushHeld(true)}
                   onPointerUp={() => setPushHeld(false)}
                   onPointerLeave={() => setPushHeld(false)}
                   onPointerCancel={() => setPushHeld(false)}
+                  onKeyDown={(e) => {
+                    if (!isPushKey(e.key)) return;
+                    e.stopPropagation(); // 창의 키 가로채기가 이 키만 지나가게 뒀다 — 뒤 화면까지는 가지 않게 여기서 멈춘다
+                    setPushHeld(true);
+                  }}
+                  onKeyUp={(e) => { if (isPushKey(e.key)) setPushHeld(false); }}
+                  onBlur={() => setPushHeld(false)}
                 >
                   비교 push
                 </button>

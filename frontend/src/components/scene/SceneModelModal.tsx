@@ -1,8 +1,9 @@
 // 모델 노드 더블클릭 시 뜨는 모달 — 하단 프롬프트의 모델 선택 UI(SpotlightOptionsBar)를 그대로
 // 재사용해, 그 노드에 쓸 모델/옵션을 고른다. useModels 를 이 모달 안에서 독립 인스턴스로 돌려
 // SpotlightPrompt 상태와 섞이지 않게 한다(코덱스 설계 A안). 저장하면 modelCfg 스냅샷을 콜백.
+import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { policyNote, submitBlockMessage } from "../../lib/modelPolicyCore";
 import { useModelPolicy } from "../../lib/modelPolicy";
 import { inferModelType, stripHiddenParams, useModels } from "../../lib/useModels";
@@ -36,6 +37,9 @@ export function SceneModelModal({
   const [open, setOpen] = useState<string | null>(null);
   // Esc: 펼친 목록 먼저, 아니면 창 — 떠 있는 동안 뒤 보드의 단축키도 쉰다(2026-10-10 실측: Delete 가 그 모델 카드를 지웠다).
   useEscapeClose(() => (open ? setOpen(null) : onClose()));
+  // 막이 있는 창 — 초점을 창 안에 둔다(lib/keyGate '모달의 초점'). 보드의 Tab(노드 피커)은 창이 뜬 동안 쉬므로 Tab 은 창 안에서 돈다.
+  const modalRef = useRef<HTMLDivElement>(null);
+  useModalFocus(modalRef);
 
   // 드롭다운 닫기 브리지 — setOpt 선택 후 useModels 가 setOpen(null) 을 호출하게 등록.
   useEffect(() => {
@@ -75,7 +79,7 @@ export function SceneModelModal({
 
   return (
     <div className="scene-modelmodal-backdrop" onMouseDown={onClose}>
-      <div className="scene-modelmodal" onMouseDown={(e) => e.stopPropagation()}>
+      <div ref={modalRef} className="scene-modelmodal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="scene-modelmodal-hd">
           <span>모델 설정</span>
           <button className="scene-modelmodal-x" onClick={onClose} title="닫기">

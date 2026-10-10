@@ -2,6 +2,7 @@
 //  HistoryBoardNode 는 memo 컴포넌트라 그 props 는 원래 값(안정 참조)을 hist 번들로 받아 '개별로' 풀어
 //  전달한다 — 번들 객체 자체는 매 렌더 새로 만들어져도 HBN 이 받는 각 prop 참조는 이전과 동일해 memo 유지.
 import type React from "react";
+import { memo } from "react";
 import type { SceneCard, SceneEdgeRole, ScenePortLane } from "../../../lib/scenes";
 import { cardBatch, variantIds } from "../../../lib/scenes";
 import type { Generation, InfoTarget, PreviewTarget } from "../../../types";
@@ -41,7 +42,21 @@ export type HistPass = {
   onOpenComments?: React.ComponentProps<typeof HistoryBoardNode>["onOpenComments"];
 };
 
-export function GenerationCard({
+// 받은 값이 같은가 — 묶음(hist·actions·tagEdit)은 보드가 그릴 때마다 새 객체로 만들어 넘기므로 정체성이 아니라 **안의 값**을 한 겹
+//  견준다. 그 밖의 값과 묶음 안의 값은 정체성으로 본다: 하나라도 다르면 다시 그린다(함수가 바뀐 것도 — 낡은 함수를 쥐지 않는다).
+const BUNDLES: ReadonlySet<string> = new Set(["hist", "actions", "tagEdit"]);
+function sameValues(a: Record<string, unknown>, b: Record<string, unknown>, bundles?: ReadonlySet<string>): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every(
+    (key) =>
+      Object.is(a[key], b[key]) ||
+      (!!bundles?.has(key) && !!a[key] && !!b[key] && sameValues(a[key] as Record<string, unknown>, b[key] as Record<string, unknown>)),
+  );
+}
+
+// memo — 받은 값이 그대로면 다시 그리지 않는다(보드는 카드를 끄는 걸음마다 통째로 다시 그려진다 — ReferenceCard 의 주석 참고).
+export const GenerationCard = memo(function GenerationCard({
   card,
   sel,
   g,
@@ -334,4 +349,4 @@ export function GenerationCard({
       )}
     </>
   );
-}
+}, (prev, next) => sameValues(prev as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>, BUNDLES));

@@ -322,9 +322,12 @@ export function TableView(props: WorkViewProps) {
 //     벗어날 때 그 글이 저장돼 그사이 남이 바꾼 값을 되돌린다.
 //  ② 고친 글은 그 저장이 성공할 때까지 쥔다 — 응답을 기다리는 동안 목록이 새로 와도 덮지 않는다.
 //  ③ 저장이 실패하면 글을 남기고 '저장 안 됨'과 [다시 저장]을 보인다(Jay 결정 2026-10-10). 다시 벗어나도 한 번 더 보낸다.
+//     그 줄이 잠기면(읽기 전용) [다시 저장] 자리에 [버리기]를 보인다 — 입력칸이 잠겨 Esc 도 못 치므로 표시를 걷을 길이 그것뿐이다.
 //  ④ 목록 값과 같은 글은 보내지 않는다(고쳤다가 되돌린 글이 남의 변경을 되돌리지 않게) — 단, **목록 값을 믿을 수 있을 때만**.
 //     이 작업에 저장을 보낸 뒤에는, 가는 중인 저장이 없는 채로 목록이 새로 올 때까지 믿지 않는다(store.stale). 그 사이의 목록 값은
 //     옛 글이라, 그 글로 되돌린 것을 안 보내면 마지막에 친 글이 앞 저장에 덮인다. 못 믿는 동안은 같아 보여도 보낸다.
+//     실패한 저장은 결과(표시)가 먼저 와도 복구 조회가 끝날 때까지 '가는 중'이다 — 그 틈은 WorkBoard 의 onPatch 가 flying 을 대신 세어
+//     잇는다. 결과를 받는 자리에서 보호까지 풀면, 복구 도중 도착한 옛 목록이 믿음을 되살린다(tests/workBoardStale 에 시험).
 //     '서버에 간 글'을 따로 적어 견주지는 않는다 — 늦게 온 성공 응답이 더 새 목록 값을 덮는 길이 생긴다(한 번 그렇게 했다가 뺐다).
 //  ⑤ 아직 서버에 없는 글은 표 밖의 보관함(store.drafts)에 **가장 최근에 친 글**로 적어 둔다 — 보기 전환·검색으로 이 줄이 화면에서
 //     빠졌다 돌아오면 칸이 새로 만들어지는데, 그때 글과 표시가 사라졌다(격리 실측 3/3). 항목에는 편집 번호(rev)가 있고 저장 응답은
@@ -441,6 +444,14 @@ function DescCell({ task, disabled, onCommit, drafts }: {
       if (sent.current === -1) follow(); // 가는 동안 미뤄 둔 맞추기
     });
   };
+  // 쥔 글을 버린다 — Esc 와 잠긴 줄의 [버리기]가 같이 쓴다. 보관함에서 지우고 같은 작업의 다른 칸에도 알린다(⑥)
+  const discard = () => {
+    edit.current += 1; // 가는 중인 저장의 결과도 이 칸에 적용하지 않는다
+    hold(false);
+    mark(false);
+    store.drafts.delete(taskId);
+    tell();
+  };
   return (
     <span className={"work-desc" + (unsaved ? " unsaved" : "")}>
       <input
@@ -461,11 +472,7 @@ function DescCell({ task, disabled, onCommit, drafts }: {
           if (e.key === "Enter") e.currentTarget.blur();
           else if (e.key === "Escape") {
             e.stopPropagation();
-            edit.current += 1; // 가는 중인 저장의 결과도 이 칸에 적용하지 않는다
-            hold(false);
-            mark(false);
-            store.drafts.delete(taskId);
-            tell();
+            discard();
             e.currentTarget.blur();
           }
         }}
@@ -473,7 +480,8 @@ function DescCell({ task, disabled, onCommit, drafts }: {
       {unsaved && (
         <>
           <span className="work-desc-chip" title="서버에 저장되지 않았습니다 — 새로 고침하면 사라집니다">저장 안 됨</span>
-          <button type="button" className="work-desc-retry" disabled={disabled} onClick={save}>다시 저장</button>
+          {/* 잠긴 줄(읽기 전용)은 다시 저장할 수도, 입력칸에서 Esc 를 칠 수도 없다 — 표시를 걷을 길이 없어 같은 자리에 버리기를 준다 */}
+          <button type="button" className="work-desc-retry" onClick={disabled ? discard : save}>{disabled ? "버리기" : "다시 저장"}</button>
         </>
       )}
     </span>

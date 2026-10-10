@@ -74,9 +74,16 @@ const selectAll = () => act(async () => {
 const grab = (id: string, x: number, y: number, ctrlKey = false) => act(async () => {
   card(id).dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: x, clientY: y, ctrlKey }));
 });
+// 끄는 중의 mousemove 는 실제 브라우저처럼 buttons 를 싣는다(왼쪽 단추 = 1). jsdom 의 기본값 0 은 '단추를 다 뗀 채 움직임'이라
+//  끌기 세션이 놓친 mouseup 으로 읽고 그 자리에서 끝낸다(lib/sceneDragSession — 아래 hoverTo 가 그 길이다).
 const dragTo = (x: number, y: number, ms: number) => act(async () => {
   clock += ms;
-  window.dispatchEvent(new MouseEvent("mousemove", { clientX: x, clientY: y }));
+  window.dispatchEvent(new MouseEvent("mousemove", { clientX: x, clientY: y, buttons: 1 }));
+  frames.splice(0).forEach((cb) => cb(0));
+});
+// 단추를 다 뗀 채 움직인다 — mouseup 은 오지 않았다(창 밖에서 뗌 등)
+const hoverTo = (x: number, y: number) => act(async () => {
+  window.dispatchEvent(new MouseEvent("mousemove", { clientX: x, clientY: y, buttons: 0 }));
   frames.splice(0).forEach((cb) => cb(0));
 });
 const release = (x: number, y: number) => act(async () => {
@@ -382,9 +389,12 @@ it("끄는 중의 정렬(a)은 받지 않는다 — 정렬한 좌표와 끌기�
 });
 
 // 저장소처럼 구는 부모 — 저장한 것은 복제해 쥐고, 카메라만 저장하면 '마지막으로 저장한 카드'(복제본)를 돌려준다(lib/scenes.updateScene 과 같다).
-function StoreParent({ cards, groups = [] }: { cards: object[]; groups?: object[] }) {
-  const [scene, setScene] = useState(() => ({ id: "S", name: "S", created_at: 0, edges: [], groups, cards }) as Record<string, unknown>);
+let rerenderStore: () => void = noop; // 씬 객체는 그대로 두고 보드만 다시 그린다(목록 밖 데이터 — 생성 결과 — 가 도착했을 때처럼)
+function StoreParent({ cards, groups = [], edges = [] }: { cards: object[]; groups?: object[]; edges?: object[] }) {
+  const [scene, setScene] = useState(() => ({ id: "S", name: "S", created_at: 0, edges, groups, cards }) as Record<string, unknown>);
   const saved = useRef(structuredClone(scene));
+  const [, bump] = useState(0);
+  rerenderStore = () => bump((n) => n + 1);
   return (
     <SceneBoard
       scene={scene as never}
@@ -595,4 +605,319 @@ it("그룹 머리를 잡고 끄는 중에 줌이 바뀌어도 잡은 자리가 �
   const want = { x: snap(110 + (540 - now.x) / now.z - grabbedAt.x), y: snap(110 + (160 - now.y) / now.z - grabbedAt.y) };
   expect([parseFloat(card("a1").style.left), parseFloat(card("a1").style.top)]).toEqual([want.x, want.y]);
   expect(card("b1").style.left).toBe("660px"); // 그룹 밖 카드는 그대로
+});
+
+// ── 7회차 ──
+// 손을 뗀 것을 놓친 끌기(R33) — mouseup 이 오지 않으면(창 밖에서 뗌·브라우저가 삼킴) 단추를 뗀 마우스를 카드가 따라오고, '끄는 중' 표시와
+//  되돌리기·묶기·정렬 잠금이 다음 mouseup 까지 남았다. 단추를 다 뗀 채 온 첫 움직임에서 끝낸다(창을 떠날 때와 같은 끝맺음).
+const board = () => host.querySelector<HTMLElement>(".scene-board")!;
+const grabHead = (groupId: string, x: number, y: number) => act(async () => {
+  host.querySelector<HTMLElement>(`.scene-group[data-group-id="${groupId}"] .scene-group-hd`)!
+    .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: x, clientY: y }));
+});
+const redoOnce = () => key({ key: "Z", code: "KeyZ", ctrlKey: true, shiftKey: true });
+
+it("손을 뗀 것을 놓친 카드 끌기는 단추를 뗀 채 움직이는 순간 끝난다 — 카드가 마우스를 따라오지 않고, 끄는 중 표시와 되돌리기 잠금이 풀린다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], []);
+  await grab("a1", 150, 150);
+  await dragTo(370, 150, 2000); // a1 → 330. mouseup 은 오지 않는다
+  expect(board().classList.contains("dragging")).toBe(true);
+  await hoverTo(700, 400);
+  expect([card("a1").style.left, card("a1").style.top]).toEqual(["330px", "110px"]); // 단추를 뗀 마우스를 따라오지 않는다
+  expect(board().classList.contains("dragging")).toBe(false);
+  expect(savedX("a1")).toBe(330); // 놓은 것으로 확정됐다
+  await hoverTo(900, 500);
+  expect(card("a1").style.left).toBe("330px");
+  await undoOnce(); // 잠금(누르고 있는 동안의 되돌리기 막기)이 남아 있으면 먹지 않는다
+  expect(card("a1").style.left).toBe("110px");
+});
+
+it("전부 고르고 끌다 손을 뗀 것을 놓쳐도 같다 — 층에만 밀어 둔 이동이 좌표에 들어가고 층이 제자리로 돌아온다", async () => {
+  await twoGroups();
+  await selectAll();
+  await grab("a1", 150, 150);
+  await dragTo(700, 150, 2000); // +550 — 좌표는 그대로, 캔버스 층만 밀려 있다
+  expect(canvas().style.translate).toBe("550px 0px");
+  await hoverTo(900, 400);
+  expect(canvas().style.translate).toBe("");
+  expect(canvas().hasAttribute("data-layer-move")).toBe(false);
+  expect([card("a1").style.left, card("b1").style.left]).toEqual(["660px", "1210px"]);
+  expect([savedX("a1"), savedX("b1")]).toEqual([660, 1210]);
+  expect([rectX("gA"), rectX("gB")]).toEqual([616, 1166]);
+  await hoverTo(1000, 500);
+  expect(canvas().style.translate).toBe("");
+  await undoOnce();
+  expect([card("a1").style.left, card("b1").style.left]).toEqual(["110px", "660px"]);
+});
+
+it("그룹 머리를 잡고 끌다 손을 뗀 것을 놓쳐도 같다 — 단추를 뗀 채 움직이면 그 자리에서 끝나고 되돌리기가 먹는다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], [{ id: "gA", name: "A", cardIds: ["a1"], rect: { x: 66, y: 44, w: 330, h: 330 } }]);
+  await grabHead("gA", 100, 50);
+  await dragTo(320, 50, 2000); // +220
+  expect(card("a1").style.left).toBe("330px");
+  await hoverTo(700, 400);
+  expect(card("a1").style.left).toBe("330px");
+  expect(board().classList.contains("dragging")).toBe(false);
+  expect([savedX("a1"), rectX("gA")]).toEqual([330, 286]);
+  await undoOnce();
+  expect([card("a1").style.left, rectX("gA")]).toEqual(["110px", 66]);
+});
+
+it("범위 선택·화면 이동도 같은 끝맺음을 쓴다 — 단추를 뗀 채 움직이면 사각형이 걷히고 화면이 더 끌려가지 않는다(가운데 단추로 미는 동안은 끊기지 않는다)", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], []);
+  const marquee = () => host.querySelector<HTMLElement>(".scene-marquee")!;
+  await act(async () => { board().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 10, clientY: 10 })); });
+  await dragTo(500, 400, 2000);
+  expect(marquee().hidden).toBe(false);
+  await hoverTo(600, 500);
+  expect(marquee().hidden).toBe(true);
+  // 가운데 단추로 화면을 미는 동안의 움직임은 buttons 가 4 다 — 왼쪽 단추(1)만 보고 '뗐다'고 하면 화면 이동이 첫 걸음에 끊긴다
+  await act(async () => { board().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 1, clientX: 100, clientY: 100 })); });
+  await act(async () => {
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 150, clientY: 130, buttons: 4 }));
+    frames.splice(0).forEach((cb) => cb(0));
+  });
+  expect(board().classList.contains("panning")).toBe(true);
+  expect(canvas().style.transform).toContain("translate(50px, 30px)");
+  await hoverTo(400, 400); // 가운데 단추를 뗀 것을 놓쳤다
+  expect(board().classList.contains("panning")).toBe(false);
+  expect(canvas().style.transform).toContain("translate(50px, 30px)");
+});
+
+// 끄는 동안의 포인터(7회차 R2-a) — 전엔 `.scene-board.dragging .scene-card { pointer-events: none }` 이 끄는 동안 카드를 마우스에서
+//  떼어 놓았다(겹친 뒤 카드의 hover·포트가 끄는 카드 위로 튀어나오지 않게. 덤으로 놓을 때의 click 도 카드 안으로 가지 않았다).
+//  그 한 줄이 끌기의 시작과 끝마다 6천여 요소의 스타일을 다시 계산했다(2026-10-11 실측 40~55ms). 같은 일을 스타일 없이 한다:
+//  끄는 동안의 포인터를 보드가 쥐고(포인터 캡처 — hover·이벤트가 보드로 간다), 놓은 뒤의 click 은 한 번 삼킨다.
+const pressOn = (target: Element, x: number, y: number, pointerId: number) => act(async () => {
+  target.dispatchEvent(Object.assign(new Event("pointerdown", { bubbles: true }), { pointerId }));
+  target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: x, clientY: y }));
+});
+// jsdom 에는 포인터 캡처가 없다 — 어느 요소가 어느 포인터를 쥐고 놓는지만 적는다
+function recordPointerCapture() {
+  const held: [Element, number][] = [];
+  const let_go: [Element, number][] = [];
+  const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
+  proto.setPointerCapture = function (this: Element, id: number) { held.push([this, id]); };
+  proto.releasePointerCapture = function (this: Element, id: number) { let_go.push([this, id]); };
+  return { held, let_go, restore: () => { delete proto.setPointerCapture; delete proto.releasePointerCapture; } };
+}
+
+it("4px 넘게 끌기 시작하면 그 포인터를 보드가 쥔다 — 누르기만 한 것은 쥐지 않고, 걸음마다 다시 쥐지 않는다(카드·그룹 머리 둘 다)", async () => {
+  const pointer = recordPointerCapture();
+  try {
+    await show([textCard("a1", 110), textCard("b1", 660)], [{ id: "gB", name: "B", cardIds: ["b1"], rect: { x: 616, y: 44, w: 330, h: 330 } }]);
+    await pressOn(card("a1"), 150, 150, 7);
+    await dragTo(152, 151, 10); // 4px 안 — 아직 끌기가 아니다(클릭일 수 있다)
+    expect(pointer.held).toEqual([]);
+    await dragTo(370, 150, 2000);
+    expect(pointer.held).toEqual([[board(), 7]]);
+    await dragTo(590, 150, 2000);
+    expect(pointer.held.length).toBe(1);
+    await release(590, 150);
+    expect(pointer.let_go).toEqual([[board(), 7]]);
+
+    await pressOn(card("a1"), 590, 150, 9); // 누르기만 하고 뗀다 — 쥘 것도 놓을 것도 없다
+    await release(590, 150);
+    expect([pointer.held.length, pointer.let_go.length]).toEqual([1, 1]);
+
+    const head = host.querySelector<HTMLElement>('.scene-group[data-group-id="gB"] .scene-group-hd')!;
+    // 놓는 것과 그 뒤의 click 을 브라우저처럼 한 작업 안에서 보낸다 — 삼켰는지(기본 동작을 막았는지) 돌려준다
+    const releaseOnHead = (x: number) => {
+      const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+      act(() => {
+        window.dispatchEvent(new MouseEvent("mouseup", { button: 0, clientX: x, clientY: 50 }));
+        head.dispatchEvent(click);
+      });
+      return click.defaultPrevented;
+    };
+    await pressOn(head, 700, 50, 11);
+    await dragTo(920, 50, 2000);
+    expect(pointer.held[1]).toEqual([board(), 11]);
+    expect(releaseOnHead(920)).toBe(true); // 끌어 놓은 뒤의 click 은 삼킨다(카드 끌기와 같다)
+    expect(pointer.let_go[1]).toEqual([board(), 11]);
+    await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+    await pressOn(head, 920, 50, 12); // 그룹 머리를 누르기만 했다 — 그 click 은 그대로 간다
+    expect(releaseOnHead(920)).toBe(false);
+    expect(pointer.held.length).toBe(2);
+  } finally {
+    pointer.restore();
+  }
+});
+
+// Codex 1단계 리뷰(P3): 쥔 포인터가 끝난 끌기 뒤에 남는 길이 있었다 — 왼쪽으로 끄는 중에 오른쪽 단추를 눌렀다 놓으면 세션은 그
+//  mouseup 으로 끝나는데 캡처는 왼쪽을 뗄 때까지 남았고, 씬 전환·화면 내려감은 취소 콜백 없이 세션만 버려서 놓지 않았다.
+it("끌기가 어느 길로 끝나든 쥔 포인터를 놓는다 — 다른 단추의 mouseup·창 떠남·놓친 mouseup·다음 끌기·씬 전환·화면이 내려감", async () => {
+  const pointer = recordPointerCapture();
+  try {
+    const open = (id: string) => act(async () => {
+      const scene = { id, name: id, created_at: 0, edges: [], groups: [], cards: [textCard("a1", 110), textCard("b1", 660)] } as never;
+      root.render(<SceneBoard scene={scene} onChange={(patch) => patches.push(patch as Record<string, unknown>)} />);
+    });
+    await open("S");
+    // 포인터 pointerId 로 a1 을 +220 끌어 쥐게 한다(끝내지는 않는다)
+    const dragHolding = async (pointerId: number) => {
+      const x = parseFloat(card("a1").style.left) + 40;
+      await pressOn(card("a1"), x, 150, pointerId);
+      await dragTo(x + 220, 150, 2000);
+      expect(pointer.held.at(-1), `쥠 ${pointerId}`).toEqual([board(), pointerId]);
+      return x + 220;
+    };
+    const lastLetGo = () => pointer.let_go.at(-1);
+
+    // 왼쪽으로 끄는 중에 오른쪽 단추를 눌렀다 놓는다 — 세션은 그 mouseup 으로 끝난다(왼쪽은 아직 눌려 있어 브라우저는 스스로 놓지 않는다)
+    let x = await dragHolding(1);
+    await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { button: 2, buttons: 1, clientX: x, clientY: 150 })); });
+    expect(lastLetGo()).toEqual([board(), 1]);
+
+    x = await dragHolding(2);
+    await act(async () => { window.dispatchEvent(new Event("blur")); }); // 창을 떠났다
+    expect(lastLetGo()).toEqual([board(), 2]);
+
+    await dragHolding(3);
+    await hoverTo(1500, 600); // 손을 뗀 것을 놓쳤다(단추를 다 뗀 채 움직임)
+    expect(lastLetGo()).toEqual([board(), 3]);
+
+    await dragHolding(4);
+    await pressOn(card("b1"), 700, 150, 5); // 끝나지 않은 끌기 위에 다음 누름 — 앞 끌기를 닫는다
+    expect(lastLetGo()).toEqual([board(), 4]);
+    await release(700, 150);
+
+    await dragHolding(6);
+    const before = pointer.let_go.length;
+    await open("T"); // 끄는 중에 씬이 바뀌었다 — 끌기는 취소 콜백 없이 버려진다
+    expect(pointer.let_go.slice(before)).toEqual([[board(), 6]]);
+
+    await dragHolding(7);
+    const boardEl = board();
+    act(() => root.unmount()); // 끄는 중에 화면이 내려갔다
+    expect(lastLetGo()).toEqual([boardEl, 7]);
+    root = createRoot(host); // afterEach 가 내릴 뿌리
+  } finally {
+    pointer.restore();
+  }
+});
+
+it("끌어 놓은 뒤에 따라오는 click 은 카드 안으로 가지 않는다 — 리스트의 행을 잡고 끌어도 행 선택이 바뀌지 않는다(끌지 않은 클릭은 그대로 먹는다)", async () => {
+  const genCard = (id: string, y: number) => ({ id, kind: "generation", x: 110, y });
+  await act(async () => {
+    const scene = {
+      id: "S", name: "S", created_at: 0, groups: [],
+      cards: [genCard("g1", 110), genCard("g2", 330), { id: "L", kind: "list", x: 660, y: 110 }],
+      edges: [{ id: "e1", from: "g1", to: "L" }, { id: "e2", from: "g2", to: "L" }],
+    } as never;
+    root.render(<SceneBoard scene={scene} onChange={(patch) => patches.push(patch as Record<string, unknown>)} />);
+  });
+  const row = () => host.querySelector<HTMLElement>('.scene-listrow[data-reid="g1"]')!;
+  const picked = () => row().classList.contains("selrow");
+  // 브라우저는 누른 요소와 뗀 요소가 같으면 mouseup 에 이어 **같은 작업 안에서** click 을 보낸다 — 끄는 카드는 마우스를 따라와 늘 같은 요소다
+  const releaseOnRow = (x: number, y: number, ctrlKey = false) => {
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey });
+    act(() => {
+      window.dispatchEvent(new MouseEvent("mouseup", { button: 0, clientX: x, clientY: y }));
+      row().dispatchEvent(click);
+    });
+    return click;
+  };
+  const nextTask = () => act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+
+  await pressOn(row(), 700, 150, 1); // 끌지 않은 클릭 — 행이 골라진다
+  expect(releaseOnRow(700, 150).defaultPrevented).toBe(false);
+  expect(picked()).toBe(true);
+  await nextTask();
+
+  await pressOn(row(), 700, 150, 1); // 행을 잡고 리스트 카드를 끌어 놓는다
+  await dragTo(920, 150, 2000);
+  expect(releaseOnRow(920, 150).defaultPrevented).toBe(true); // 삼켰다
+  expect(card("L").style.left).toBe("880px");
+  expect(picked()).toBe(true); // 행 선택이 뒤집히지 않았다
+
+  await nextTask(); // 삼키는 것은 그 놓기에 딸린 click 한 번뿐이다 — 다음 클릭(Ctrl = 골라진 행 빼기)은 다시 먹는다
+  await pressOn(row(), 920, 150, 1);
+  expect(releaseOnRow(920, 150, true).defaultPrevented).toBe(false);
+  expect(picked()).toBe(false);
+
+  await pressOn(row(), 920, 150, 1); // 끌어 놓았는데 click 이 오지 않은 경우(뗀 자리가 다른 요소였다) — 삼킬 것을 다음 작업에서 거둔다
+  await dragTo(1140, 150, 2000);
+  await release(1140, 150);
+  await nextTask();
+  await pressOn(row(), 1140, 150, 1);
+  expect(releaseOnRow(1140, 150).defaultPrevented).toBe(false); // 한참 뒤의 클릭을 삼키지 않는다
+  expect(picked()).toBe(true);
+});
+
+// 접힌 그룹 이동과 실행 취소·다시 실행(R5) — 접힌 그룹의 멤버는 화면에 없다(막대만 보인다). 좌표는 저장된 값으로 본다.
+it("접힌 그룹을 머리로 끌어 옮기고 실행 취소·다시 실행 — 숨은 멤버의 좌표와 수동 그룹의 네모가 함께 오간다(네모 있는 그룹·없는 그룹 둘 다)", async () => {
+  await act(async () => {
+    root.render(<StoreParent
+      cards={[textCard("m1", 110), textCard("m2", 110, 264), textCard("a1", 660), textCard("a2", 660, 264), textCard("f1", 1210)]}
+      groups={[
+        { id: "gM", name: "M", cardIds: ["m1", "m2"], collapsed: true, rect: { x: 66, y: 44, w: 330, h: 400 } },
+        { id: "gA", name: "A", cardIds: ["a1", "a2"], collapsed: true },
+      ]}
+    />);
+  });
+  expect(host.querySelectorAll(".scene-group.collapsed").length).toBe(2);
+  expect(host.querySelector('.scene-card[data-id="m1"]')).toBeNull(); // 접힌 그룹의 멤버는 그리지 않는다
+  const at = (id: string) => { const found = savedCards().find((item) => item.id === id); return found ? [found.x, found.y] : null; };
+  const state = () => ({ m1: at("m1"), m2: at("m2"), a1: at("a1"), a2: at("a2"), f1: at("f1"), gM: [rectX("gM"), rectY("gM")] });
+  const start = { m1: [110, 110], m2: [110, 264], a1: [660, 110], a2: [660, 264], f1: [1210, 110], gM: [66, 44] };
+  const movedM = { ...start, m1: [330, 110], m2: [330, 264], gM: [286, 44] };
+  const movedBoth = { ...movedM, a1: [660, 330], a2: [660, 484] };
+
+  await grabHead("gM", 100, 50);
+  await dragTo(320, 50, 2000); // 네모 있는 그룹을 +220 옆으로
+  await release(320, 50);
+  expect(state()).toEqual(movedM);
+  await grabHead("gA", 700, 100);
+  await dragTo(700, 320, 2000); // 네모 없는 그룹을 +220 아래로
+  await release(700, 320);
+  expect(state()).toEqual(movedBoth);
+  expect(groups().map((group) => [group.id, group.cardIds, !!(group as { collapsed?: boolean }).collapsed]))
+    .toEqual([["gM", ["m1", "m2"], true], ["gA", ["a1", "a2"], true]]);
+
+  await undoOnce();
+  expect(state()).toEqual(movedM);
+  await undoOnce();
+  expect(state()).toEqual(start);
+  await redoOnce();
+  expect(state()).toEqual(movedM);
+  await redoOnce();
+  expect(state()).toEqual(movedBoth);
+  expect(host.querySelectorAll(".scene-group.collapsed").length).toBe(2); // 접힌 채로 오간다
+  expect(groups().find((group) => group.id === "gA")?.rect).toBeUndefined(); // 네모 없는 그룹에 네모가 생기지 않는다
+});
+
+// 카드 끌기의 되감기 배선(R32) — 끄는 중에 낀 파생 저장(되돌리기 단계를 만들지 않는 저장)이 '마지막 저장분'의 좌표를 옮기던 자리로 바꿔 놓는다.
+//  놓을 때 쌓는 되돌리기 단계는 그 좌표를 끌기 전으로 되감아야 한다(useSceneCardMove 가 beginGesture 에 넘기는 rewindSceneMove).
+it("실제 보드에서: 끄는 중에 파생 저장(늦게 온 생성 결과가 연결 레퍼런스를 채움)이 끼어도 Ctrl+Z 는 끌기 전 자리로 간다 — 파생 값은 남는다", async () => {
+  const genCard = (id: string, x: number, extra: object = {}) => ({ id, kind: "generation", x, y: 110, ...extra });
+  await act(async () => {
+    root.render(<StoreParent
+      cards={[genCard("src", 110, { genId: "g1", genIds: ["g1"] }), genCard("dst", 660)]}
+      edges={[{ id: "e1", from: "src", to: "dst" }]}
+    />);
+  });
+  const refsOf = (id: string) => ((savedCards().find((item) => item.id === id) as { refs?: unknown[] } | undefined)?.refs ?? []);
+  const derivedSaves = () => patches.filter((patch) => "cards" in patch).length;
+  expect(derivedSaves()).toBe(0); // 전제: 생성 결과가 아직 없어 채울 레퍼런스가 없다
+  await grab("dst", 700, 150);
+  await dragTo(920, 150, 2000); // dst → 880
+  expect(card("dst").style.left).toBe("880px");
+  // 끄는 중에 src 의 생성 결과가 도착한다 → dst 의 연결 레퍼런스가 채워지고 파생 저장이 난다(좌표는 옮기던 자리)
+  const g1 = {
+    id: "g1", status: "done", prompt: "g1", tags: [], auto_tags: [], references: [], shared: false, deleted: false, is_mine: true,
+    comment_count: 0, has_unread: false, created_at: "2026-10-11 00:00:00", sort_ts: 1,
+    assets: [{ id: "asset-g1", generation_id: "g1", type: "image", file_path: "/g1.png", thumbnail_path: null, source_url: null, cached: true }],
+  };
+  fixture.data = { ...fixture.data, genData: { g1 }, genDataRef: { current: { g1 } } } as unknown as SceneGenDataApi;
+  await act(async () => { rerenderStore(); });
+  expect(derivedSaves()).toBe(1);
+  expect([savedX("dst"), refsOf("dst").length]).toEqual([880, 1]);
+  await dragTo(1030, 150, 2000); // 더 끌어
+  await release(1030, 150); // 놓는다
+  expect(savedX("dst")).toBe(990);
+  await undoOnce();
+  expect(savedX("dst")).toBe(660); // 끌기 전 — 파생 저장이 난 중간 자리(880)가 아니다
+  expect(card("dst").style.left).toBe("660px");
+  expect(refsOf("dst").length).toBe(1); // 파생 저장이 넣은 값은 남는다
 });

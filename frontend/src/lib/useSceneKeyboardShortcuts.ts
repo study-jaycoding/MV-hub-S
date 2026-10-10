@@ -59,7 +59,10 @@ export function useSceneKeyboardShortcuts(actions: SceneKeyboardActions): void {
 
       // 실제 입력 요소에 포커스가 없는 Ctrl+C는 최우선으로 처리한다. 편집 상태나 결과 팝업이
       // 비정상적으로 남더라도 선택 노드 복사가 새로고침 전까지 막히지 않게 한다.
-      if (sceneCopyShortcut(event, current.selectionCount())) {
+      // 단 '생성 결과' 창이 **화면에 떠 있으면** 쉰다(붙여넣기와 같다 — lib/useSceneClipboardDrop): 보드는 창에 가려져 있고 그 Ctrl+C 는
+      //  창 안을 보고 누른 것이다. 전엔 뒤 보드의 고른 노드를 복사해 시스템 클립보드까지 표식으로 덮었다. 상태(isPopupOpen)가 아니라
+      //  화면의 창을 본다 — 창 없이 상태만 남은 경우에는 위 약속대로 복사가 막히지 않는다.
+      if (!document.querySelector(".scene-varwin") && sceneCopyShortcut(event, current.selectionCount())) {
         event.preventDefault();
         current.onCopy();
         return;
@@ -136,22 +139,13 @@ export function useSceneKeyboardShortcuts(actions: SceneKeyboardActions): void {
           event.preventDefault();
           current.onFrame();
           return;
-        case "auto-connect":
-          if (current.onAutoConnect()) {
-            event.preventDefault();
-            return;
-          }
-          if (matchShortcut(event, "boardConnect")) {
-            event.preventDefault();
-            if (!event.repeat) current.onConnect();
-          }
-          return;
         case "arrange":
           if (current.onArrange(event.repeat)) event.preventDefault();
           return;
         case "connect":
+          // 연결 키 — 자동 연결 규칙에 걸리는 쌍이 있으면 그것을 잇고, 없으면 왼→오른쪽으로 잇는다(꾹 눌러 반복된 키는 잇지 않는다)
           event.preventDefault();
-          if (!event.repeat) current.onConnect();
+          if (!current.onAutoConnect() && !event.repeat) current.onConnect();
           return;
         case "disable":
           if (!event.repeat && current.onDisable()) event.preventDefault();

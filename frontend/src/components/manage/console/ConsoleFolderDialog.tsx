@@ -1,7 +1,8 @@
 // 렌더 폴더 창 — 서브 표의 폴더 단추. 렌더 폴더는 **프로젝트마다**, 그리고 **이 PC 에** 저장되는 설정이다
 // (`/api/manage/project-folders` 는 로컬 전용 경로). 프로젝트 관리 창과 같은 API(setProjectFolder)를 쓴다.
+import { useModalFocus } from "../../../lib/keyGate";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../../api";
 import { manageApi } from "../../../lib/manageApi";
 
@@ -13,6 +14,8 @@ export function ConsoleFolderDialog({ workspaceId, name, onClose }: { workspaceI
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState("");
   useEscapeClose(onClose);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef); // 초점도 창 안에 둔다 — Tab 이 뒤 화면으로 나가지 않는다(lib/keyGate '모달의 초점')
   const patch = (id: string, next: Partial<Row>) => setRows((cur) => cur?.map((r) => (r.id === id ? { ...r, ...next } : r)) ?? cur);
 
   useEffect(() => {
@@ -44,7 +47,7 @@ export function ConsoleFolderDialog({ workspaceId, name, onClose }: { workspaceI
 
   return (
     <div className="credit-modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="wc-dialog wc-folder-dialog" role="dialog" aria-label="렌더 폴더">
+      <div ref={dialogRef} className="wc-dialog wc-folder-dialog" role="dialog" aria-label="렌더 폴더">
         <h3>렌더 폴더 · {name}</h3>
         <p>프로젝트마다 렌더 원본 폴더 경로를 적습니다. 이 PC 에 저장되는 설정입니다(다른 PC 는 각자 지정). 비우고 저장하면 연결을 해제합니다.</p>
         {error ? <div className="wc-error">{error}</div> : null}

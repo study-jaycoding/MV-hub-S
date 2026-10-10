@@ -1,6 +1,7 @@
 // 미디어 미리보기 — 이미지/동영상 클릭 시 떠오르는 플로팅 창(정보 팝업과 같은 구성).
 // 새 브라우저 탭을 열지 않고 이 창에서 보여주고, 영상은 재생한다.
 // 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
+import { useModalFocus } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import { recordGenerationView } from "../lib/generationViews";
@@ -125,6 +126,10 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
 
   // Esc → 자기만 닫는다(맨 위 겹 — lib/useEscapeClose. 떠 있는 동안 뒤 화면의 단축키도 쉰다).
   useEscapeClose(onClose, true, true, true);
+  // 막이 있는 창 — 초점을 창(뿌리)에 둔다(lib/keyGate '모달의 초점'). 단추가 아니라 뿌리라 Space·Enter 는 전처럼 아래 리스너가 받는다
+  //  (재생/정지). 뒤 격자의 초점 카드는 격자가 따로 쥐고 있어 그대로고, 닫으면 초점은 연 자리(격자)로 돌아간다.
+  const boxRef = useRef<HTMLDivElement>(null);
+  useModalFocus(boxRef);
   useEffect(() => {
     // 크게 보기는 정보팝업/그리드 위에 떠 있으므로 키를 캡처 단계에서 먼저 가로챈다.
     // ←/→ → 목록 내 이동(뒤 그리드 포커스 이동과 충돌 방지).
@@ -173,6 +178,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
   return (
     <div className="preview-backdrop" onMouseDown={onClose}>
       <div
+        ref={boxRef}
         className="media-preview"
         style={{ transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))` }}
         onMouseDown={(e) => e.stopPropagation()}

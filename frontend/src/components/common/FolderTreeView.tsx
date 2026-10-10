@@ -1,5 +1,6 @@
 // 공통 폴더 트리 뷰 — 생성탭/어셋탭/관리자창이 같은 시각 언어를 공유한다.
 import { useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { useDragEndReset } from "../../lib/useDragEndReset";
 import type { FolderReviewCounts } from "../../types";
 import { FolderReviewCount } from "./FolderReviewCount";
 
@@ -115,6 +116,7 @@ function FolderTreeRow({
       ? ""
       : `\n생성물 ${count}개 · 폴더 파일 ${fileCount}개`;
   const [dropOver, setDropOver] = useState(false);
+  useDragEndReset(dropOver, () => setDropOver(false)); // 이 줄 위에서 끌기를 취소하면 dragleave 가 오지 않는다
   const folderDraggingRef = useRef(false);
   // 하위가 있는 부모 폴더(예 ep001)는 드롭 대상에서 제외 — 말단 폴더(c0010 등)에만 담는다.
   const dropProps = onDropFolder && !hasChildren

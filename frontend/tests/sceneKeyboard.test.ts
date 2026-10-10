@@ -98,8 +98,10 @@ describe("scene keyboard intent", () => {
     expect(sceneKeyIntent(key("y", { altKey: true }), { pickerOpen: false, selectionCount: 0 })).toBeNull();
   });
 
-  it("두 카드 이상의 C는 자동 연결이고 Delete는 선택 삭제다", () => {
-    expect(sceneKeyIntent(key("c"), { pickerOpen: false, selectionCount: 2 })).toEqual({ type: "auto-connect" });
+  it("연결 키(기본 c)는 두 카드 이상에서 연결이고 Delete는 선택 삭제다", () => {
+    const connectIsC = (event: SceneKeyLike, shortcut: string) => shortcut === "boardConnect" && event.key === "c";
+    expect(sceneKeyIntent(key("c"), { pickerOpen: false, selectionCount: 2 }, connectIsC)).toEqual({ type: "connect" });
+    expect(sceneKeyIntent(key("c"), { pickerOpen: false, selectionCount: 1 }, connectIsC)).toBeNull();
     expect(sceneKeyIntent(key("Delete"), { pickerOpen: false, selectionCount: 1 })).toEqual({ type: "delete" });
     expect(sceneKeyIntent(key("Delete"), { pickerOpen: false, selectionCount: 0 })).toBeNull();
   });
@@ -117,11 +119,17 @@ describe("scene keyboard intent", () => {
     expect(sceneKeyIntent(key("a", { ctrlKey: true }), { pickerOpen: false, selectionCount: 0 })).toBeNull(); // 단축키를 다른 키로 바꿨으면 Ctrl+A 는 캔버스 것이 아니다
   });
 
-  it("사용자가 바꾼 연결 키는 주입된 매칭 규칙으로 판정한다", () => {
-    const matches = (_event: SceneKeyLike, shortcut: string) => shortcut === "boardConnect";
-    expect(sceneKeyIntent(key("x"), { pickerOpen: false, selectionCount: 2 }, matches)).toEqual({
-      type: "connect",
-    });
+  // 7회차 R42-c — 전엔 글자 c 가 재지정 검사보다 먼저 '자동 연결'로 고정돼 있었다: 연결 키를 다른 키로 옮기고 c 를 다른 동작에 줘도
+  //  c 는 자동 연결이었고, 옮긴 키는 자동 연결 없이 왼→오른쪽 연결만 했다. 자동 연결을 먼저 해 보는 것은 연결 키의 처리 안이다
+  //  (useSceneKeyboardShortcuts — sceneRound7.test.tsx 가 실제 훅과 등록부로 본다).
+  it("연결은 글자 c 고정이 아니라 연결 키를 따른다 — 연결 키를 바꾸면 c 는 새로 지정한 동작이 된다", () => {
+    // 연결 = x, 비활성 = c 로 바꾼 사용자
+    const rebound = (event: SceneKeyLike, shortcut: string) =>
+      (shortcut === "boardConnect" && event.key === "x") || (shortcut === "boardDisable" && event.key === "c");
+    expect(sceneKeyIntent(key("x"), { pickerOpen: false, selectionCount: 2 }, rebound)).toEqual({ type: "connect" });
+    expect(sceneKeyIntent(key("c"), { pickerOpen: false, selectionCount: 2 }, rebound)).toEqual({ type: "disable" });
+    // 어느 단축키에도 걸리지 않은 c 는 캔버스의 키가 아니다
+    expect(sceneKeyIntent(key("c"), { pickerOpen: false, selectionCount: 2 })).toBeNull();
   });
 });
 

@@ -1,7 +1,9 @@
 // 크레딧 달력 — 메인 화면의 월간 달력. 지난 3개월의 추가 크레딧 기록과 앞으로 약 3개월의 자동 크레딧을 날짜 칸에 보여 주고,
 // 자동 충전이 있는 날(30일 안)에는 그 뒤 예상 메인 잔액을 적는다. 데이터는 GET /console/overview 의 calendar·schedule.
 // 막대를 끌어 다른 날짜에 놓으면 날짜가 바뀐다(추가 = 그 기록의 날짜, 자동 = 충전일 — 오늘 이후만). 누르면 정보 창.
-import { useEffect, useMemo, useState, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useModalFocus } from "../../../lib/keyGate";
+import { useEscapeClose } from "../../../lib/useEscapeClose";
 import { formatDecimal, formatThousands } from "../../../lib/creditPlan";
 import { formatCredits } from "../../../lib/formatCredits";
 import { ManageEditCancelled } from "../useManageEditConflict";
@@ -169,6 +171,15 @@ function EventInfo({ info, sub, canEdit, onEdit, onClose }: {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Esc 겹 — 삭제 재확인이 떠 있으면 그것부터 풀고, 다음 Esc 에 창을 닫는다. 저장 중에는 닫지 않되 겹은 그대로다(Esc 를 삼켜 뒤 화면으로
+  //  새지 않는다). 전엔 겹이 아니어서 Esc 로 닫히지 않았고 떠 있는 동안 뒤 화면의 단축키도 쉬지 않았다.
+  useEscapeClose(() => {
+    if (busy) return;
+    if (confirmDelete) setConfirmDelete(false);
+    else onClose();
+  });
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef); // 초점도 창 안에 둔다 — Tab 이 뒤 화면으로 나가지 않는다(lib/keyGate '모달의 초점')
   const credits = Number(creditsText.replace(/,/g, ""));
   const validCredits = recurring ? Number.isFinite(credits) && credits >= 0 : Number.isInteger(credits) && credits > 0;
   const noteReady = recurring || note !== undefined;
@@ -190,7 +201,7 @@ function EventInfo({ info, sub, canEdit, onEdit, onClose }: {
   };
   return (
     <div className="credit-modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className="wc-dialog wc-event-info" role="dialog" aria-label="크레딧 정보">
+      <div ref={dialogRef} className="wc-dialog wc-event-info" role="dialog" aria-label="크레딧 정보">
         <h3><span className={`wc-cal-chip ${recurring ? "rec" : "top"}`}>{recurring ? "자동 크레딧" : "추가 크레딧"}</span> {event.name}</h3>
         <dl>
           <dt>날짜</dt><dd>{event.day}{recurring ? " (예정)" : " (기록)"}</dd>

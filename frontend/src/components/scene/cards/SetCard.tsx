@@ -1,9 +1,11 @@
-import { useState, type DragEvent, type MouseEvent } from "react";
+import { memo, useState, type DragEvent, type MouseEvent } from "react";
 import { DRAG_TYPES } from "../../../lib/dragTypes";
 import { parseSceneFolderDrag } from "../../../lib/sceneSet";
 import type { SceneCard, SceneSetFolder } from "../../../lib/scenes";
+import { useDragEndReset } from "../../../lib/useDragEndReset";
 
-export function SetCard({
+// memo — 받은 값이 그대로면 다시 그리지 않는다(보드는 카드를 끄는 걸음마다 통째로 다시 그려진다 — ReferenceCard 의 주석 참고).
+export const SetCard = memo(function SetCard({
   card,
   setFolder,
   setTagsText,
@@ -19,6 +21,7 @@ export function SetCard({
   onResizeDown: (e: MouseEvent, cardId: string) => void;
 }) {
   const [dragOver, setDragOver] = useState(false);
+  useDragEndReset(dragOver, () => setDragOver(false)); // 이 칸 위에서 끌기를 취소하면 dragleave 가 오지 않는다
   const folder = card.setCfg?.folder;
   const acceptFolder = (e: DragEvent) => {
     if (!e.dataTransfer.types.includes(DRAG_TYPES.folder)) return;
@@ -97,4 +100,4 @@ export function SetCard({
       />
     </>
   );
-}
+});

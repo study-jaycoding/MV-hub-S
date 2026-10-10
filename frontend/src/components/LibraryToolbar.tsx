@@ -2,7 +2,8 @@
 // 썸네일 크기 조절 슬라이더 + List/Grid 레이아웃 토글.
 import { dropFocusAfterPress } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useT } from "../lib/i18n";
 import type { ReviewFilter } from "../lib/generationReview";
 import type { MediaFilter } from "../lib/mediaTypes";
@@ -152,8 +153,58 @@ export function LibraryToolbar({
     panelRef: tagPanelRef,
     onHeadMouseDown: onTagHeadDown,
   } = useFloatingPanel(LIB_LS, "tagPos", "tagSize", tagPanelOpen);
+  // 태그 패널은 body 에 그린다(아래 createPortal) — 폴더 창(.folder-peek, z 151)·'생성 결과' 창 안에 두면 그 창의 쌓임 맥락에 갇혀,
+  //  창 밖에 뜨는 코멘트 패널 앞으로 올릴 수 없다(조작 점검 7회 R14). 좌표·크기·앞세우기는 그대로다(position: fixed — 어디에 그리든 같다).
+  //  밖으로 나간 패널이 **어느 툴바의 것인가**는 data-float-of ↔ data-float-owner 로 적는다 — '어디 안에 있나'를 DOM 포함으로 묻는
+  //  판정(초점 잃은 키·폴더 창의 색 단축키)이 패널의 단추를 이 툴바(와 이 툴바를 품은 창) 안의 것으로 본다(lib/keyGate floatHost).
+  const floatId = useId();
+  const barRef = useRef<HTMLDivElement>(null);
+  const floatRef = useRef<HTMLDivElement>(null);
+  // 툴바를 감싼 잠금(<main inert> — 폴더 창을 닫은 직후 낡은 목록을 보이는 동안)은 body 로 나간 패널에 닿지 않는다 — 그릴 때마다 따라 건다.
+  useLayoutEffect(() => {
+    floatRef.current?.toggleAttribute("inert", !!barRef.current?.closest("[inert]"));
+  });
+  // 이 툴바를 품은 창(폴더 창·'생성 결과' 창)의 카드를 끄는 동안 패널은 놓기를 가리지 않는다. body 로 나온 패널은 창 밖의 놓을 자리
+  //  (사이드바 폴더·하단 프롬프트)보다 앞에 뜨는데, '생성 결과' 창이 끄는 동안 제 막에 거는 클릭통과(.drag-through)를 더는 물려받지
+  //  못한다 — 패널이 덮은 자리에 놓은 카드가 폴더에 담기지 않았다(Codex 코드 리뷰). 폴더 창에서는 패널이 프롬프트(152) 위로 올라와
+  //  같은 일이 생긴다. 그 창과 같은 박자로 한다(components/scene/SceneVariantPopup): dragstart 가 끝난 **한 박자 뒤**에 걸고(그 안에서
+  //  히트 판정을 바꾸면 브라우저가 끌기를 버린다), 막힌 끌기(preventDefault — dragend 가 오지 않는다)에는 걸지 않고, dragend·drop·
+  //  (dragend 없이 끝난 끌기 뒤의) mouseup 에 푼다. 잡는 단계로 듣는다 — 카드의 그립은 dragstart 전파를 멈춘다.
+  //  패널 안에서 시작한 끌기(태그 순서 바꾸기)는 창 밖이라 걸리지 않는다. 창 밖 툴바의 패널(보통 탭)은 전과 같다.
+  useEffect(() => {
+    if (!tagPanelOpen) return;
+    let timer: number | null = null;
+    const pass = (on: boolean) => {
+      if (floatRef.current) floatRef.current.style.pointerEvents = on ? "none" : "";
+    };
+    const onStart = (e: DragEvent) => {
+      const win = barRef.current?.closest(".folder-peek, .scene-varwin");
+      if (!win || !win.contains(e.target as Node)) return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        if (!e.defaultPrevented) pass(true);
+      }, 0);
+    };
+    const onEnd = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+      pass(false);
+    };
+    document.addEventListener("dragstart", onStart, true);
+    window.addEventListener("dragend", onEnd, true);
+    window.addEventListener("drop", onEnd, true);
+    window.addEventListener("mouseup", onEnd, true);
+    return () => {
+      document.removeEventListener("dragstart", onStart, true);
+      window.removeEventListener("dragend", onEnd, true);
+      window.removeEventListener("drop", onEnd, true);
+      window.removeEventListener("mouseup", onEnd, true);
+      onEnd();
+    };
+  }, [tagPanelOpen]);
   return (
-    <div className="lib-toolbar">
+    <div className="lib-toolbar" ref={barRef} data-float-owner={floatId}>
       {/* 필터 사이드바 토글 — 열림=▢(사각), 닫힘=▷(삼각). 캔버스는 폴더 사이드바가 있어 표시. */}
       {(showFilterToggle ?? !boardMode) && (
         <button
@@ -287,20 +338,23 @@ export function LibraryToolbar({
           >
             C
           </button>
-          {tagPanelOpen && (
-            <TagFilterPanel
-              tags={tags}
-              activeTags={tagFilter}
-              panelRef={tagPanelRef}
-              pos={tagPos}
-              size={tagSize}
-              onHeadMouseDown={onTagHeadDown}
-              onClear={onClearTags}
-              onClose={onToggleTagPanel}
-              onSelectTag={onSelectTag}
-              onDeleteTag={onDeleteTag}
-              orderKey="ch.lib.tagOrder"
-            />
+          {tagPanelOpen && createPortal(
+            <div ref={floatRef} data-float-of={floatId}>
+              <TagFilterPanel
+                tags={tags}
+                activeTags={tagFilter}
+                panelRef={tagPanelRef}
+                pos={tagPos}
+                size={tagSize}
+                onHeadMouseDown={onTagHeadDown}
+                onClear={onClearTags}
+                onClose={onToggleTagPanel}
+                onSelectTag={onSelectTag}
+                onDeleteTag={onDeleteTag}
+                orderKey="ch.lib.tagOrder"
+              />
+            </div>,
+            document.body,
           )}
         </div>
 

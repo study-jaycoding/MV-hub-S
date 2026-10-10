@@ -1,6 +1,6 @@
 // 내 계정 관리 — AccountMenu의 "Manage Account"로 열린다.
 // 계정 정보(이메일·등급·플랜·크레딧) 표시 + 표시이름 변경(여기서 직접 수정).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { APP_EVENTS, dispatchAppEvent } from "../lib/appEvents";
 import {
@@ -9,6 +9,7 @@ import {
   roleLabelList,
   type ProviderIdentity,
 } from "../lib/accountIdentity";
+import { useModalFocus } from "../lib/keyGate";
 import { getReleaseUpdateStatus } from "../lib/releaseUpdate";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import type { Account } from "../types";
@@ -60,6 +61,8 @@ export function ManageAccount({
   }, []);
 
   useEscapeClose(onClose);
+  const floatRef = useRef<HTMLDivElement>(null);
+  useModalFocus(floatRef); // 막(바깥 클릭 캐처)이 있는 창 — 초점을 창 안에 둔다(lib/keyGate '모달의 초점')
 
   const save = async () => {
     const n = name.trim();
@@ -106,7 +109,7 @@ export function ManageAccount({
     <>
       {/* 전체를 가리지 않는 투명 클릭 캐처(바깥 클릭 시 닫힘) — 모달 아닌 플로팅 */}
       <div className="info-catcher" onMouseDown={onClose} />
-      <div className="manage-float" role="dialog" aria-label="내 계정">
+      <div ref={floatRef} className="manage-float" role="dialog" aria-label="내 계정">
         <header className="admin-head">
           <span className="admin-title">⚙ 내 계정</span>
           <button className="assets-x" onClick={onClose} title="닫기">

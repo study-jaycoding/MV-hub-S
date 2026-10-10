@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { createContext, useContext, useEffect, useRef } from "react";
 import { backgroundKeysBlocked, closeLayer, isTopLayer, nextLayerSeq, openLayer } from "./keyGate";
 import { isKeyHandled, markKeyHandled } from "./keyHandled";
 
@@ -46,6 +46,27 @@ export function useEscapeClose(
       window.removeEventListener("keydown", onKey, capture);
     };
   }, [enabled, capture, consume, token]);
+}
+
+// ── 지연 로딩 창의 틀 ──
+//  창의 코드가 늦게 오면 그 창의 겹도 늦게 켜졌다 — 그 틈에 연 다른 창보다 번호가 커서, 화면에서 위에 보이는 창이 아니라 늦게 그려진
+//  창이 Esc 에 먼저 닫혔다(2026-10-11 실측: 관리자·비교 창 4조합 12/12). 그래서 틀(막·빈 창·Esc 겹·모달 영역)은 지연 로딩이 아닌 셸이
+//  **연 순간에** 쥐고(components/app/AppOverlays 의 LazyModalShell), 본문은 도착하면 자기 Esc 처리(안의 것부터 닫기)만 셸에 넘긴다.
+//  값 = 본문이 넘긴 처리를 담는 칸(비어 있으면 셸이 창을 닫는다).
+export const ModalShellContext = createContext<{ current: (() => void) | null } | null>(null);
+
+/** 창 자체의 Esc. 셸 안이면 셸이 이미 쥔 겹에 처리만 넘긴다 — 겹을 또 만들지 않는다(한 Esc 에 한 겹. 잡는 단계·삼킴은 셸이 정한다).
+ *  셸 밖(그 창만 따로 그릴 때)이면 스스로 겹이 된다. */
+export function useWindowEscape(onEscape: () => void, capture = false, consume = false) {
+  const shell = useContext(ModalShellContext);
+  useEscapeClose(onEscape, !shell, capture, consume);
+  useEffect(() => {
+    if (!shell) return;
+    shell.current = onEscape; // 렌더마다 새 처리로 — 안쪽 상태(확인 창·라이트박스)를 닫아 쥔 함수다
+    return () => {
+      shell.current = null;
+    };
+  });
 }
 
 /** 뒤 화면의 Esc 를 써도 되나 — 이미 쓴 Esc 가 아니고, 그 위에 떠 있는 것(겹·덮개)도 없을 때만. */

@@ -70,9 +70,11 @@
 }
 .scene-board.panning { cursor: grabbing; }
 .scene-board.panning * { cursor: grabbing !important; }
-/* 카드를 드래그하는 동안엔 카드의 pointer-events 를 꺼서 hover/포트 노출을 막는다 — 겹친 뒤 카드가
-   마우스 영향을 받아(포트 튀어나옴·강조) 앞 카드 위로 올라오던 문제 방지. 이동은 document 레벨(beginDrag)이라 무관. */
-.scene-board.dragging .scene-card { pointer-events: none; }
+/* 카드를 끄는 동안 다른 카드가 마우스 영향을 받지 않게 하는 일(겹친 뒤 카드의 hover·포트가 끄는 카드 위로 튀어나오던 문제,
+   2026-07-24)은 여기 규칙이 아니라 포인터 캡처가 한다(lib/useSceneCardMove.holdSceneDragPointer). 전엔
+   `.scene-board.dragging .scene-card { pointer-events: none }` 이었는데, pointer-events 는 자식으로 내려가는 속성이라 dragging 이
+   붙고 떼어질 때마다 카드와 그 안의 요소 6천여 개의 스타일을 다시 계산했다(2026-10-11 실측: 끌기의 시작·끝에 각 40~55ms).
+   .scene-board.dragging 에 카드·자손을 고르는 규칙을 다시 달지 않는다(tests/sceneRound7Perf.test.tsx 가 본다). */
 /* 가위 모드('Y') — 좌드래그로 연결선 자르기. 커서를 가위 모양으로. */
 .scene-board.cutting {
   cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27%23c4e84a%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%276%27%20cy%3D%276%27%20r%3D%273%27%2F%3E%3Ccircle%20cx%3D%276%27%20cy%3D%2718%27%20r%3D%273%27%2F%3E%3Cpath%20d%3D%27M20%204%208.12%2015.88M14.47%2014.48%2020%2020M8.12%208.12%2012%2012%27%2F%3E%3C%2Fsvg%3E") 8 12, crosshair;
@@ -1067,10 +1069,12 @@
 .scene-varpop-backdrop {
   position: absolute; inset: 0; z-index: 30; display: flex; align-items: flex-start; justify-content: center;
   padding: 12px 16px 0;
-  /* backdrop-filter 를 걸지 않는다 — 걸면 창 안 position:fixed 패널(툴바의 태그 패널)이 화면이 아니라 이 막 기준으로 어긋난다. */
+  /* backdrop-filter 를 걸지 않는다 — 걸면 창 안에 position:fixed 로 띄운 것이 화면이 아니라 이 막 기준으로 어긋난다(그때는 툴바의
+     태그 패널이 창 안에 있었다. 지금 그 패널은 body 에 그린다 — LibraryToolbar). */
   background: rgba(0, 0, 0, 0.5);
 }
-/* 카드를 끄는 중 — 막을 클릭통과시킨다(창은 열린 채 유지). 놓는 곳은 사이드바 폴더·하단 프롬프트 — 캔버스는 생성물 끌기를 받지 않는다 */
+/* 카드를 끄는 중 — 막을 클릭통과시킨다(창은 열린 채 유지). 놓는 곳은 사이드바 폴더·하단 프롬프트 — 캔버스는 생성물 끌기를 받지 않는다.
+   body 에 그려진 태그 패널은 이 규칙을 물려받지 못한다 — LibraryToolbar 가 같은 박자로 따로 통과시킨다. */
 .scene-varpop-backdrop.drag-through { pointer-events: none; }
 .scene-varwin {
   /* 아래 --dock-gap = 하단 프롬프트 자리 — 창 바닥의 선택 막대가 프롬프트에 가리지 않게. 프롬프트 높이는 바뀌므로 창이 재서

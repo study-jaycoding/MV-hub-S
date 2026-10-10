@@ -3,6 +3,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { api, connectProgress } from "../api";
 import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
 import { postAssetsUpdated } from "./assetBroadcast";
+import type { ColorEditLedger } from "./generationColorState";
 import {
   decideLibrarySync,
   trackBareSyncedForReload,
@@ -39,6 +40,8 @@ interface UseGenerationProgressArgs {
   setSyncTick: Dispatch<SetStateAction<number>>;
   historyBoardVisible: boolean;
   commentsVisible: boolean;
+  // 색 편집 장부(목록 훅의 것) — 완료 뒤 상세 조회의 응답이 그사이 칠한 색을 덮지 않게, 조회가 출발할 때 도장을 찍는다.
+  colorLedger?: ColorEditLedger;
 }
 
 const ACTIVE_PROGRESS_STATUSES = new Set(["pending", "queued", "running", "processing"]);
@@ -86,6 +89,7 @@ export function useGenerationProgress({
   setSyncTick,
   historyBoardVisible,
   commentsVisible,
+  colorLedger,
 }: UseGenerationProgressArgs) {
   const committedRef = useRef({ scopeKey, gens });
   const bookRef = useRef<DetailBook | null>(null);
@@ -215,6 +219,9 @@ export function useGenerationProgress({
           const reloadIfCurrent = () => Promise.resolve()
             .then(() => { if (guarded()) return reload(true, true); })
             .catch(() => {}); // 동기 throw도 한 번만 처리하고 finally까지 연결한다.
+          // 출발 시점을 찍는다 — 아래 병합의 값 비교는 '지웠다 다시 칠해 출발 때의 색으로 돌아온 것'을 편집으로 보지 못한다
+          //  (색은 장부에 편집 번호가 있다 — 출발 뒤에 칠했거나 저장이 대기 중이면 응답의 색 대신 칠한 색을 쓴다).
+          const keepPainted = colorLedger?.stamp();
           api
             .getGeneration(generationId)
             .then((fresh) => {
@@ -228,7 +235,9 @@ export function useGenerationProgress({
                 let changed = false;
                 const next = prev.map((current) => {
                   if (current.id !== generationId || fresh.id !== generationId) return current;
-                  const merged = mergeFreshGeneration(base, current, fresh, expected);
+                  const settled = mergeFreshGeneration(base, current, fresh, expected);
+                  // 장부는 화면에 실제로 들어가는 값에 태운다 — 받아들인 색을 장부가 기억하므로, 병합이 버릴 수도 있는 응답의 색을 보이면 안 된다.
+                  const merged = keepPainted ? keepPainted([settled])[0] : settled;
                   changed ||= merged !== current;
                   return merged;
                 });
@@ -251,5 +260,5 @@ export function useGenerationProgress({
       if (syncedTimer) clearTimeout(syncedTimer);
       off();
     };
-  }, [bumpBoard, enabled, reload, setGens, setSyncTick]);
+  }, [bumpBoard, colorLedger, enabled, reload, setGens, setSyncTick]);
 }

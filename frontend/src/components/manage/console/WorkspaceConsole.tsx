@@ -1,5 +1,6 @@
 // 워크스페이스 콘솔(서브스페이스 — 대시보드의 워크스페이스 판) — 왼쪽 목록(메인·서브) + 메인=서브별 크레딧 조율 / 서브=그룹·크레딧·참가자.
 // 설계: docs/WORKSPACE_CONSOLE_DESIGN.md. 할당은 계획·기록이다 — 실제 이체는 힉스필드가 충전일에 한다.
+import { useModalFocus } from "../../../lib/keyGate";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fillReorder } from "../../../lib/memberTable";
@@ -294,10 +295,12 @@ function LinkDialog({ pending, onClose, onLink }: {
   const [pick, setPick] = useState(pending[0]?.id ?? "");
   const [busy, setBusy] = useState(false);
   useEscapeClose(() => { if (!busy) onClose(); }); // 바깥 클릭과 같은 규칙 — 처리 중엔 닫지 않는다
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef); // 초점도 창 안에 둔다 — Tab 이 뒤 화면으로 나가지 않는다(lib/keyGate '모달의 초점')
   const [error, setError] = useState("");
   return (
     <div className="credit-modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className="wc-dialog" role="dialog" aria-label="워크스페이스 만들기">
+      <div ref={dialogRef} className="wc-dialog" role="dialog" aria-label="워크스페이스 만들기">
         <h3>워크스페이스 만들기</h3>
         <p>힉스필드에서 만든 워크스페이스를 서브로 연결합니다. 목록에 없으면 힉스필드에서 먼저 만들고, 그 워크스페이스 멤버 한 명이 MV Hub 를 켜면 여기에 나타납니다.</p>
         {pending.map((w) => (

@@ -1,7 +1,8 @@
 // 프로젝트 기간 창 — 서브 표 '기간' 열의 달력 단추. 그 서브의 프로젝트마다 시작일·종료일을 적는다.
 // 저장은 프로젝트 기획(planning)의 기존 API — 읽은 기획을 기준으로 두 칸만 바꿔 보내고, 409 면 기존 병합 창(savePlanning).
+import { useModalFocus } from "../../../lib/keyGate";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Planning } from "../types";
 import { manageApi } from "../../../lib/manageApi";
 import type { ConsoleSub } from "../../../lib/workspaceConsole";
@@ -26,6 +27,8 @@ export function ConsolePeriodDialog({ sub, savePlanning, onClose, onSaved }: {
   })));
   const patch = (id: string, next: Partial<Row>) => setRows((cur) => cur.map((r) => (r.id === id ? { ...r, ...next } : r)));
   useEscapeClose(() => { if (!rows.some((row) => row.state === "saving")) onClose(); }); // 저장 중인 줄이 있으면 닫지 않는다(다른 콘솔 대화상자와 같게)
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef); // 초점도 창 안에 둔다 — Tab 이 뒤 화면으로 나가지 않는다(lib/keyGate '모달의 초점')
   useEffect(() => {
     let alive = true;
     for (const p of sub.projects) {
@@ -56,7 +59,7 @@ export function ConsolePeriodDialog({ sub, savePlanning, onClose, onSaved }: {
   };
   return (
     <div className="credit-modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="wc-dialog wc-folder-dialog" role="dialog" aria-label="프로젝트 기간">
+      <div ref={dialogRef} className="wc-dialog wc-folder-dialog" role="dialog" aria-label="프로젝트 기간">
         <h3>프로젝트 기간 · {sub.name}</h3>
         <p>프로젝트마다 시작일·종료일과 작업 자동 보관 일수를 정합니다. 달력의 '기간'에 막대로 나옵니다. 작업 탭의 작업은 새 생성물이 이 일수만큼
           없으면 보관되며, 종료일 전에는 보관하지 않습니다.</p>

@@ -51,8 +51,10 @@ export function SettingsGroup({
     );
 
     const availableHeight = window.innerHeight - VIEWPORT_MARGIN * 2;
+    const flyout = flyoutRef.current;
+    // 패널의 바깥 높이 = 내용 + 테두리. 테두리를 빼면 아래의 높이 한도가 그만큼 모자라, 다 들어가는 패널에도 스크롤바가 생긴다.
     const contentHeight = Math.min(
-      flyoutRef.current?.scrollHeight ?? availableHeight,
+      flyout ? flyout.scrollHeight + flyout.offsetHeight - flyout.clientHeight : availableHeight,
       availableHeight,
     );
     const top = Math.max(
@@ -64,6 +66,9 @@ export function SettingsGroup({
       left,
       top,
       width,
+      // 높이 한도는 이 자리 아래에 남은 높이다 — CSS 의 한도(화면 전체)만으로는, 열린 뒤 내용이 늘면 다음 스크롤·창 크기 변경까지
+      //  아래가 화면 밖으로 잘렸다(2026-10-10 실측: 1100×700 에서 156px). 넘치는 만큼은 패널 안에서 스크롤한다(CSS overflow-y).
+      maxHeight: window.innerHeight - top - VIEWPORT_MARGIN,
     });
   }, []);
 
