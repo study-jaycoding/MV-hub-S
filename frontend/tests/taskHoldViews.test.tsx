@@ -6,7 +6,7 @@ import { BoardView } from "../src/components/manage/KanbanBoard";
 import { TableView } from "../src/components/manage/TableView";
 import { CalendarView } from "../src/components/manage/CalendarView";
 import { CutThumbs } from "../src/components/manage/CutThumbs";
-import { statusColor, statusLabel, workActivityStatusLabel, type Task, type WorkViewProps } from "../src/components/manage/types";
+import { newDescDraftStore, statusColor, statusLabel, workActivityStatusLabel, type Task, type WorkViewProps } from "../src/components/manage/types";
 import { setLang } from "../src/lib/i18n";
 
 vi.mock("../src/components/MediaThumbnail", () => ({
@@ -318,4 +318,294 @@ it("설명 저장의 성공 응답이 더 새 목록보다 늦게 와도, 그 �
   act(() => input().blur());
   expect(onPatch).toHaveBeenCalledTimes(2); // 서버는 "남이 바꾼 값"이다 — 보내야 한다
   expect(onPatch).toHaveBeenLastCalledWith("task", { description: "내 글" });
+});
+
+it("저장에 실패한 설명 글은 표 밖에 적어 둔다 — 그 줄이 화면에서 빠졌다 돌아와도 글과 '저장 안 됨'이 남고, 저장되거나 Esc 로 버리면 지운다", async () => {
+  const drafts = newDescDraftStore();
+  let fail = true;
+  const onPatch = vi.fn(async () => !fail);
+  const draw = () => act(() => root.render(<TableView {...props} onPatch={onPatch} descDrafts={drafts} tasks={[{ ...task, description: "원래 값" }]} />));
+  const input = () => host.querySelector<HTMLInputElement>("input.work-cell-in[placeholder]")!;
+  const type = (value: string) => act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), value);
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const leave = () => act(async () => { input().blur(); await Promise.resolve(); await Promise.resolve(); });
+  draw();
+  act(() => input().focus());
+  type("못 간 글");
+  await leave();
+  expect(host.querySelector(".work-desc-chip")).not.toBeNull();
+  expect(drafts.drafts.get("task")).toMatchObject({ text: "못 간 글", failed: true });
+  // 표가 내려갔다 다시 뜬다(보드로 갔다 오거나 검색으로 줄이 빠졌다 돌아온 것과 같다)
+  act(() => root.render(<div />));
+  draw();
+  expect(input().value).toBe("못 간 글");
+  expect(host.querySelector(".work-desc-chip")).not.toBeNull();
+  // 다시 저장 → 성공하면 표시도, 적어 둔 것도 지운다
+  fail = false;
+  await act(async () => { host.querySelector<HTMLButtonElement>(".work-desc-retry")!.click(); await Promise.resolve(); await Promise.resolve(); });
+  expect(onPatch).toHaveBeenLastCalledWith("task", { description: "못 간 글" });
+  expect(host.querySelector(".work-desc-chip")).toBeNull();
+  expect(drafts.drafts.size).toBe(0);
+  // 실패한 글을 Esc 로 버려도 지운다
+  fail = true;
+  act(() => input().focus());
+  type("버릴 글");
+  await leave();
+  expect(drafts.drafts.get("task")).toMatchObject({ text: "버릴 글", failed: true });
+  act(() => input().focus());
+  act(() => { input().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  expect(drafts.drafts.size).toBe(0);
+  act(() => root.render(<div />));
+  draw();
+  expect(input().value).toBe("원래 값");
+});
+
+it("실패한 글을 고쳐 다시 보내는 사이 줄이 화면에서 빠졌다 돌아와도, 새 칸은 가장 최근 글을 보이고 옛 글로 새 저장을 덮지 않는다", async () => {
+  const drafts = newDescDraftStore();
+  const answers: ((ok: boolean) => void)[] = [];
+  const sentTexts: string[] = [];
+  const onPatch = vi.fn((_id: string, patch: { description?: string }) => {
+    sentTexts.push(patch.description ?? "");
+    return new Promise<boolean>((resolve) => { answers.push(resolve); });
+  });
+  const draw = (description: string) => act(() => root.render(<TableView {...props} onPatch={onPatch as never} descDrafts={drafts} tasks={[{ ...task, description }]} />));
+  const input = () => host.querySelector<HTMLInputElement>("input.work-cell-in[placeholder]")!;
+  const type = (value: string) => act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), value);
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const settle = (index: number, ok: boolean) => act(async () => { answers[index](ok); await Promise.resolve(); await Promise.resolve(); });
+  draw("원래 값");
+  act(() => input().focus());
+  type("A");
+  act(() => input().blur());
+  await settle(0, false); // A 실패
+  expect(host.querySelector(".work-desc-chip")).not.toBeNull();
+  act(() => input().focus());
+  type("B");
+  act(() => input().blur()); // B 가는 중
+  act(() => root.render(<div />)); // 줄이 화면에서 빠졌다
+  draw("원래 값"); // 돌아왔다 — 새 칸
+  expect(input().value).toBe("B"); // 가장 최근 글(옛 A 가 아니다)
+  await settle(1, true); // 떠난 칸의 B 가 성공했다
+  expect(drafts.drafts.size).toBe(0);
+  draw("B"); // 목록이 따라온다
+  act(() => { input().focus(); });
+  await act(async () => { input().blur(); await Promise.resolve(); await Promise.resolve(); });
+  expect(sentTexts).toEqual(["A", "B"]); // A 를 다시 보내 B 를 덮지 않는다
+  expect(host.querySelector(".work-desc-chip")).toBeNull();
+  expect(input().value).toBe("B");
+});
+
+it("같은 작업의 칸 둘(본 줄·상세 줄)은 목록이 새로 올 때 서로 맞춘다 — 한쪽에서 실패한 글과 표시가 다른 쪽에도 뜨고, 저장되면 같이 걷힌다", async () => {
+  const drafts = newDescDraftStore();
+  let fail = true;
+  const onPatch = vi.fn(async () => !fail);
+  const draw = (description: string) => act(() => root.render(<TableView {...props} onPatch={onPatch} descDrafts={drafts} tasks={[{ ...task, description }]} />));
+  draw("원래 값");
+  act(() => { host.querySelector<HTMLElement>("[aria-controls]")!.click(); }); // 상세 줄을 편다 — 설명 칸이 둘이 된다
+  const inputs = () => [...host.querySelectorAll<HTMLInputElement>("input.work-cell-in[placeholder]")];
+  expect(inputs()).toHaveLength(2);
+  const type = (value: string) => act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(inputs()[0], value);
+    inputs()[0].dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  act(() => inputs()[0].focus());
+  type("못 간 글");
+  await act(async () => { inputs()[0].blur(); await Promise.resolve(); await Promise.resolve(); });
+  // 목록이 새로 오기를 기다리지 않는다 — 내용이 같은 목록은 줄 객체가 그대로라 칸이 다시 그려지지 않는다(격리 실측)
+  expect(inputs().map((input) => input.value)).toEqual(["못 간 글", "못 간 글"]);
+  expect(host.querySelectorAll(".work-desc-chip")).toHaveLength(2);
+  fail = false;
+  await act(async () => { host.querySelector<HTMLButtonElement>(".work-desc-retry")!.click(); await Promise.resolve(); await Promise.resolve(); });
+  expect(host.querySelectorAll(".work-desc-chip")).toHaveLength(0); // 표시는 바로 같이 걷힌다
+  draw("못 간 글"); // 저장된 값으로 목록이 온다
+  expect(host.querySelectorAll(".work-desc-chip")).toHaveLength(0);
+  expect(inputs().map((input) => input.value)).toEqual(["못 간 글", "못 간 글"]);
+  expect(onPatch).toHaveBeenCalledTimes(2); // 다른 쪽 칸이 따로 또 보내지 않는다
+});
+
+it("저장이 가는 중에 줄이 화면에서 빠졌다 돌아와도 친 글이 보이고, 옛 글의 늦은 실패가 더 새로 친 글의 보관을 건드리지 않는다", async () => {
+  const drafts = newDescDraftStore();
+  const answers: ((ok: boolean) => void)[] = [];
+  const onPatch = vi.fn(() => new Promise<boolean>((resolve) => { answers.push(resolve); }));
+  const draw = (description: string) => act(() => root.render(<TableView {...props} onPatch={onPatch} descDrafts={drafts} tasks={[{ ...task, description }]} />));
+  const input = () => host.querySelector<HTMLInputElement>("input.work-cell-in[placeholder]")!;
+  const type = (value: string) => act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), value);
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const settle = (index: number, ok: boolean) => act(async () => { answers[index](ok); await Promise.resolve(); await Promise.resolve(); });
+  draw("원래 값");
+  act(() => input().focus());
+  type("A");
+  act(() => input().blur()); // A 가는 중(실패한 적은 없다)
+  act(() => root.render(<div />));
+  draw("원래 값");
+  expect(input().value).toBe("A"); // 가는 중인 글이 새 칸에 보인다
+  expect(host.querySelector(".work-desc-chip")).toBeNull();
+  act(() => input().focus());
+  type("B"); // 새 칸에서 더 고쳤다(아직 벗어나지 않았다)
+  await settle(0, false); // 떠난 칸의 A 가 뒤늦게 실패했다
+  expect(drafts.drafts.get("task")).toMatchObject({ text: "B", failed: false }); // 보관함은 가장 최근 글 그대로
+  draw("원래 값"); // 목록이 새로 와도
+  expect(input().value).toBe("B");
+});
+
+it("가는 중에 새로 만들어진 칸은, 떠난 칸의 저장이 끝나면 그 글을 놓는다 — 그사이 남이 바꾼 값을 옛 글로 덮지 않는다", async () => {
+  const drafts = newDescDraftStore();
+  const answers: ((ok: boolean) => void)[] = [];
+  const sentTexts: string[] = [];
+  const onPatch = vi.fn((_id: string, patch: { description?: string }) => {
+    sentTexts.push(patch.description ?? "");
+    return new Promise<boolean>((resolve) => { answers.push(resolve); });
+  });
+  const draw = (description: string) => act(() => root.render(<TableView {...props} onPatch={onPatch as never} descDrafts={drafts} tasks={[{ ...task, description }]} />));
+  const input = () => host.querySelector<HTMLInputElement>("input.work-cell-in[placeholder]")!;
+  const type = (value: string) => act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), value);
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const settle = (index: number, ok: boolean) => act(async () => { answers[index](ok); await Promise.resolve(); await Promise.resolve(); });
+  draw("원래 값");
+  act(() => input().focus());
+  type("A");
+  act(() => input().blur()); // A 가는 중(실패한 적 없음)
+  act(() => root.render(<div />));
+  draw("원래 값"); // 새 칸 — A 를 쥐고 있다
+  expect(input().value).toBe("A");
+  await settle(0, true); // 떠난 칸의 A 가 저장됐다
+  draw("B"); // 그 뒤 남이 B 로 바꾼 값이 목록으로 온다
+  expect(input().value).toBe("B"); // A 를 놓고 서버 값을 따른다
+  act(() => { input().focus(); });
+  await act(async () => { input().blur(); await Promise.resolve(); await Promise.resolve(); });
+  expect(sentTexts).toEqual(["A"]); // A 를 다시 보내 B 를 덮지 않는다
+});
+
+it("같은 글자의 옛 저장이 뒤늦게 성공해도 새로 친 그 글의 보관을 지우지 않는다 — 응답의 주인은 편집 번호로 가린다", async () => {
+  const drafts = newDescDraftStore();
+  const answers: ((ok: boolean) => void)[] = [];
+  const sentTexts: string[] = [];
+  const onPatch = vi.fn((_id: string, patch: { description?: string }) => {
+    sentTexts.push(patch.description ?? "");
+    return new Promise<boolean>((resolve) => { answers.push(resolve); });
+  });
+  const draw = (description: string) => act(() => root.render(<TableView {...props} onPatch={onPatch as never} descDrafts={drafts} tasks={[{ ...task, description }]} />));
+  const input = () => host.querySelector<HTMLInputElement>("input.work-cell-in[placeholder]")!;
+  const type = (value: string) => act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), value);
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const settle = (index: number, ok: boolean) => act(async () => { answers[index](ok); await Promise.resolve(); await Promise.resolve(); });
+  draw("원래 값");
+  act(() => input().focus());
+  type("A");
+  act(() => input().blur());
+  await settle(0, false); // A 실패
+  await act(async () => { host.querySelector<HTMLButtonElement>(".work-desc-retry")!.click(); }); // A 다시 저장 — 가는 중(1)
+  act(() => input().focus());
+  type("B");
+  act(() => input().blur()); // B 가는 중(2)
+  act(() => input().focus());
+  type("A"); // 다시 A 로 — 아직 벗어나지 않았다
+  await settle(1, true); // 앞의 A 가 성공
+  await settle(2, true); // B 가 성공 — 서버는 B
+  draw("B"); // 목록이 따라온다
+  expect(input().value).toBe("A"); // 새로 친 A 를 쥐고 있다
+  expect(drafts.drafts.get("task")).toMatchObject({ text: "A" });
+  act(() => input().blur()); // 벗어나면 그 A 를 보낸다
+  expect(sentTexts).toEqual(["A", "A", "B", "A"]);
+});
+
+it("가는 중에 새로 만들어진 칸은, 떠난 칸의 저장이 실패하면 다음 목록에서 '저장 안 됨'을 보인다", async () => {
+  const drafts = newDescDraftStore();
+  const answers: ((ok: boolean) => void)[] = [];
+  const onPatch = vi.fn(() => new Promise<boolean>((resolve) => { answers.push(resolve); }));
+  const draw = (description: string) => act(() => root.render(<TableView {...props} onPatch={onPatch} descDrafts={drafts} tasks={[{ ...task, description }]} />));
+  const input = () => host.querySelector<HTMLInputElement>("input.work-cell-in[placeholder]")!;
+  draw("원래 값");
+  act(() => input().focus());
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), "A");
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  act(() => input().blur()); // A 가는 중
+  act(() => root.render(<div />));
+  draw("원래 값");
+  expect(host.querySelector(".work-desc-chip")).toBeNull();
+  await act(async () => { answers[0](false); await Promise.resolve(); await Promise.resolve(); }); // 떠난 칸의 A 실패
+  // 복구 조회가 와도 내용이 같으면 줄 객체가 그대로다 — 목록을 다시 넣지 않고도 표시가 붙어야 한다(격리 실측에서 42초가 지나도 안 붙었다)
+  expect(input().value).toBe("A");
+  expect(host.querySelector(".work-desc-chip")).not.toBeNull();
+});
+
+it("가는 중에 새로 만들어진 칸에서 원래 글로 되돌려 벗어나도 그 글을 보낸다 — 앞 칸이 보낸 저장을 새 칸도 안다", async () => {
+  const drafts = newDescDraftStore();
+  const answers: ((ok: boolean) => void)[] = [];
+  const sentTexts: string[] = [];
+  const onPatch = vi.fn((_id: string, patch: { description?: string }) => {
+    sentTexts.push(patch.description ?? "");
+    return new Promise<boolean>((resolve) => { answers.push(resolve); });
+  });
+  const draw = (description: string) => act(() => root.render(<TableView {...props} onPatch={onPatch as never} descDrafts={drafts} tasks={[{ ...task, description }]} />));
+  const input = () => host.querySelector<HTMLInputElement>("input.work-cell-in[placeholder]")!;
+  const type = (value: string) => act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), value);
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const settle = (index: number, ok: boolean) => act(async () => { answers[index](ok); await Promise.resolve(); await Promise.resolve(); });
+  draw("원래 값");
+  act(() => input().focus());
+  type("A");
+  act(() => input().blur()); // A 가는 중
+  act(() => root.render(<div />));
+  draw("원래 값"); // 새 칸
+  act(() => input().focus());
+  type("원래 값"); // 마음을 바꿔 원래 글로
+  act(() => input().blur());
+  expect(sentTexts).toEqual(["A", "원래 값"]); // 목록 값과 같아도 보낸다 — 안 보내면 A 가 반영돼 되돌린 글이 사라진다
+  await settle(0, true);
+  await settle(1, true);
+  draw("원래 값");
+  expect(input().value).toBe("원래 값");
+  expect(host.querySelector(".work-desc-chip")).toBeNull();
+  expect(drafts.drafts.size).toBe(0);
+  // 다 끝나고 목록이 왔으니 다시 믿는다 — 고쳤다가 되돌린 글은 보내지 않는다
+  act(() => input().focus());
+  type("잠깐");
+  type("원래 값");
+  await act(async () => { input().blur(); await Promise.resolve(); await Promise.resolve(); });
+  expect(sentTexts).toEqual(["A", "원래 값"]);
+});
+
+it("옛 글을 쥔 칸은 다시 보내지 않는다 — 같은 작업의 다른 칸이 그사이 고쳤으면, 목록이 오기 전에 벗어나도 그 글을 따른다", async () => {
+  const drafts = newDescDraftStore();
+  const answers: ((ok: boolean) => void)[] = [];
+  const sentTexts: string[] = [];
+  const onPatch = vi.fn((_id: string, patch: { description?: string }) => {
+    sentTexts.push(patch.description ?? "");
+    return new Promise<boolean>((resolve) => { answers.push(resolve); });
+  });
+  const draw = (description: string) => act(() => root.render(<TableView {...props} onPatch={onPatch as never} descDrafts={drafts} tasks={[{ ...task, description }]} />));
+  draw("원래 값");
+  act(() => { host.querySelector<HTMLElement>("[aria-controls]")!.click(); }); // 상세 줄을 편다 — 설명 칸이 둘
+  const inputs = () => [...host.querySelectorAll<HTMLInputElement>("input.work-cell-in[placeholder]")];
+  const type = (index: number, value: string) => act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(inputs()[index], value);
+    inputs()[index].dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  act(() => inputs()[0].focus());
+  type(0, "A");
+  act(() => inputs()[0].blur());
+  await act(async () => { answers[0](false); await Promise.resolve(); await Promise.resolve(); }); // A 실패 — 두 칸 모두 A 를 쥔다
+  expect(inputs().map((input) => input.value)).toEqual(["A", "A"]);
+  act(() => inputs()[0].focus());
+  type(0, "B");
+  act(() => inputs()[0].blur()); // 본 줄에서 B 로 고쳐 보냈다(가는 중) — 목록은 아직 안 왔다
+  act(() => inputs()[1].focus());
+  await act(async () => { inputs()[1].blur(); await Promise.resolve(); await Promise.resolve(); }); // 상세 줄(옛 A)에 초점을 줬다 벗어남
+  expect(sentTexts).toEqual(["A", "B"]); // A 를 B 뒤에 다시 보내 덮지 않는다
+  expect(inputs()[1].value).toBe("B"); // 가장 최근 글을 따른다
 });

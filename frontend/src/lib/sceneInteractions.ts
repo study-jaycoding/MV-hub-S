@@ -198,6 +198,41 @@ export function shouldRestoreRecipeFromDrop(
   return files.length === 1 && options.hasHandler && !options.shiftKey;
 }
 
+/**
+ * 끌기 전의 좌표로 되감은 스냅샷 — 카드는 origins 의 자리, 그룹은 rects 의 네모로. 달라진 것이 없으면 받은 객체를 그대로 돌려준다.
+ * 되돌리기 묶음(useSceneHistory.beginGesture)의 시작점을 만들 때 쓴다: 끄는 중에 낀 저장이 좌표를 이미 옮겨 놓았어도
+ * 그 밖의 값(생성 결과 등)은 두고 좌표만 끌기 전으로 돌린다.
+ */
+export function rewindSceneMove<
+  Snapshot extends { cards: SceneCard[]; groups: { id: string; rect?: { x: number; y: number; w: number; h: number } }[] },
+>(
+  snapshot: Snapshot,
+  origins: Readonly<Record<string, { x: number; y: number }>>,
+  rects: ReadonlyMap<string, { x: number; y: number; w: number; h: number }>,
+): Snapshot {
+  const cardMoved = snapshot.cards.some((card) => {
+    const origin = origins[card.id];
+    return !!origin && (card.x !== origin.x || card.y !== origin.y);
+  });
+  const rectMoved = snapshot.groups.some((group) => {
+    const origin = rects.get(group.id);
+    return !!origin && !!group.rect && (group.rect.x !== origin.x || group.rect.y !== origin.y);
+  });
+  if (!cardMoved && !rectMoved) return snapshot;
+  return {
+    ...snapshot,
+    cards: cardMoved
+      ? snapshot.cards.map((card) => (origins[card.id] ? { ...card, x: origins[card.id].x, y: origins[card.id].y } : card))
+      : snapshot.cards,
+    groups: rectMoved
+      ? snapshot.groups.map((group) => {
+          const origin = rects.get(group.id);
+          return origin && group.rect ? { ...group, rect: { ...origin } } : group;
+        })
+      : snapshot.groups,
+  };
+}
+
 export function moveCardsFromOrigins(
   cards: SceneCard[],
   origins: Readonly<Record<string, { x: number; y: number }>>,

@@ -112,6 +112,20 @@ export function useSceneHistory({
         }
       : base;
 
+  // 한 번의 끌기(누르고 있는 동안)에 난 저장은 되돌리기 한 단계로 묶는다. 끄는 중에 저장이 끼면(카메라 저장 앞의 확정·삭제) 놓을 때의
+  //  저장과 따로 쌓여, 한 번 끈 것을 되돌리는 데 Ctrl+Z 가 두 번 들었다(2026-10-10 격리 실측 — 첫 번째는 헛돌거나 중간 자리로 갔다).
+  //  묶음의 첫 저장만 되돌리기 엔트리(그 저장 직전의 모습)를 쌓고, 뒤 저장은 그 엔트리에 전이 메타만 보탠다.
+  //  · rewind: 엔트리로 쌓을 '직전의 모습'을 끌기 전 좌표로 되감는 함수 — 끄는 중에 낀 파생 저장(생성 결과 반영, undo:false)이
+  //    lastCommit 을 이미 옮긴 좌표로 바꿔 놓았을 수 있다(안 되감으면 Ctrl+Z 가 끌기 전이 아니라 그 중간 자리로 갔다 — Codex 코드 리뷰).
+  //  · depth: 그 엔트리를 쌓은 직후의 스택 높이. 엔트리 객체로 기억하지 않는다 — 생성 결과 반영(propagate…)이 스택의 객체를 새로 만든다.
+  const gestureRef = useRef<{ depth: number; rewind?: (snapshot: SceneSnap) => SceneSnap } | null>(null);
+  const beginGesture = (rewind?: (snapshot: SceneSnap) => SceneSnap) => {
+    gestureRef.current = { depth: -1, rewind };
+  };
+  const endGesture = () => {
+    gestureRef.current = null;
+  };
+
   const persist = (
     nextCards: SceneCard[],
     nextEdges: SceneEdge[],
@@ -132,8 +146,24 @@ export function useSceneHistory({
       // 이 커밋이 카드 소속을 명시적으로 제거했다면(comfy 워크플로 교체 등) 또는 추가했다면
       // (떨어진 생성물 붙이기), 그 전이 정보를 undo 엔트리에 싣는다 — undo/redo 는 이걸
       // 근거로만 부활·제거한다("스냅샷에 있으니" 추론 금지, 검증 P1).
-      undoStackRef.current.push(carryTransition(lastCommitRef.current, opts));
-      if (undoStackRef.current.length > 200) undoStackRef.current.shift();
+      const gesture = gestureRef.current;
+      const stack = undoStackRef.current;
+      if (gesture && stack.length > 0 && gesture.depth === stack.length) {
+        // 같은 끌기의 뒤 저장 — 새 단계를 쌓지 않는다. 이 저장이 뺀·붙인 소속만 그 엔트리에 보탠다(되돌릴 때 같이 되살린다).
+        if (opts?.removedForward?.length || opts?.addedForward?.length) {
+          const top = stack[stack.length - 1];
+          stack[stack.length - 1] = {
+            ...top,
+            removedForward: [...(top.removedForward ?? []), ...(opts.removedForward ?? [])],
+            addedForward: [...(top.addedForward ?? []), ...(opts.addedForward ?? [])],
+          };
+        }
+      } else {
+        const base = gesture?.rewind ? gesture.rewind(lastCommitRef.current) : lastCommitRef.current;
+        stack.push(carryTransition(base, opts));
+        if (stack.length > 200) stack.shift();
+        if (gesture) gesture.depth = stack.length;
+      }
       redoStackRef.current = [];
     }
     lastCommitRef.current = next;
@@ -275,6 +305,8 @@ export function useSceneHistory({
     restoreSceneHistory,
     commitDerivedState,
     hasUncommittedCardsOrEdges,
+    beginGesture,
+    endGesture,
     propagateGenIdsToHistory,
     propagateAssetRelinkToHistory,
     pruneGenIdsFromHistory,

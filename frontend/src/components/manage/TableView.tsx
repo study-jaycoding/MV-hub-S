@@ -14,6 +14,8 @@ import {
   statusLabel,
   taskIsReadOnly,
   workActivityStatusLabel,
+  newDescDraftStore,
+  type DescDraftStore,
   type Task,
   type WorkViewProps,
 } from "./types";
@@ -42,6 +44,7 @@ export function TableView(props: WorkViewProps) {
     onPatch,
     onLinkGen,
     onUnlinkGen,
+    descDrafts,
   } = props;
   useT(); // 언어 토글 시 상태 라벨 리렌더
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -259,7 +262,7 @@ export function TableView(props: WorkViewProps) {
                   )}
                 </td>
                 <td>
-                  <DescCell task={t} disabled={locked} onCommit={commitText} />
+                  <DescCell task={t} disabled={locked} onCommit={commitText} drafts={descDrafts} />
                 </td>
                 <td>{t.comment_count ? `💬 ${t.comment_count}` : "—"}</td>
               </tr>
@@ -294,7 +297,7 @@ export function TableView(props: WorkViewProps) {
                       </div>
                       <label className="work-mobile-detail-wide">
                         <span className="work-mobile-detail-label">설명</span>
-                        <DescCell task={t} disabled={locked} onCommit={commitText} />
+                        <DescCell task={t} disabled={locked} onCommit={commitText} drafts={descDrafts} />
                       </label>
                       <div>
                         <span className="work-mobile-detail-label">코멘트</span>
@@ -313,60 +316,145 @@ export function TableView(props: WorkViewProps) {
   );
 }
 
-// 설명 칸 — 치는 동안의 글은 이 칸의 초안이다. 칸을 벗어나면 저장하고(Enter), Esc 는 고치던 것을 버린다(같은 Esc 가 관리 창까지
-//  닫지 않게 여기서 멈춘다). 서버에서 그 작업을 다시 받으면(저장 성공·남의 변경) **이 칸에서 고친 것이 없을 때만** 서버 값으로 맞춘다 —
-//  치는 중인 글은 건드리지 않는다(전엔 칸을 통째로 다시 만들어 친 글자가 사라졌다). 기준은 '초점'이 아니라 '고쳤나'다: 초점만 두고
-//  안 고친 칸이 옛 글을 쥐고 있으면, 벗어날 때 그 옛 글이 저장돼 그사이 남이 바꾼 값을 되돌린다(Codex 코드 리뷰).
-//  저장이 실패하면 친 글을 남기고 '저장 안 됨'을 표시한다(Jay 결정 2026-10-10) — 전엔 실패 알림이 사라지면 저장된 글과 구별이 안 됐고
-//  새로 고침하면 사라졌다. 표시가 붙은 칸은 다시 벗어나거나 [다시 저장]을 누르면 한 번 더 저장한다. Esc 는 그 글을 버린다.
-function DescCell({ task, disabled, onCommit }: {
+// 설명 칸 — 치는 동안의 글은 이 칸의 초안이다. 칸을 벗어나면 저장하고(Enter), Esc 는 고치던 것을 버린다(전파를 멈춰 창을 닫지 않는다).
+//  규칙(하나하나 tests/taskHoldViews 에 시험이 있다 — 2026-10-10 조작 점검, Codex 코드 리뷰와 격리 브라우저 실측을 여러 번 거쳤다):
+//  ① 고친 칸만 초안을 쥔다 — 쥐고 있지 않은 칸은 목록의 값을 그대로 보인다. 초점만 두고 안 고친 칸이 옛 글을 쥐고 있으면,
+//     벗어날 때 그 글이 저장돼 그사이 남이 바꾼 값을 되돌린다.
+//  ② 고친 글은 그 저장이 성공할 때까지 쥔다 — 응답을 기다리는 동안 목록이 새로 와도 덮지 않는다.
+//  ③ 저장이 실패하면 글을 남기고 '저장 안 됨'과 [다시 저장]을 보인다(Jay 결정 2026-10-10). 다시 벗어나도 한 번 더 보낸다.
+//  ④ 목록 값과 같은 글은 보내지 않는다(고쳤다가 되돌린 글이 남의 변경을 되돌리지 않게) — 단, **목록 값을 믿을 수 있을 때만**.
+//     이 작업에 저장을 보낸 뒤에는, 가는 중인 저장이 없는 채로 목록이 새로 올 때까지 믿지 않는다(store.stale). 그 사이의 목록 값은
+//     옛 글이라, 그 글로 되돌린 것을 안 보내면 마지막에 친 글이 앞 저장에 덮인다. 못 믿는 동안은 같아 보여도 보낸다.
+//     '서버에 간 글'을 따로 적어 견주지는 않는다 — 늦게 온 성공 응답이 더 새 목록 값을 덮는 길이 생긴다(한 번 그렇게 했다가 뺐다).
+//  ⑤ 아직 서버에 없는 글은 표 밖의 보관함(store.drafts)에 **가장 최근에 친 글**로 적어 둔다 — 보기 전환·검색으로 이 줄이 화면에서
+//     빠졌다 돌아오면 칸이 새로 만들어지는데, 그때 글과 표시가 사라졌다(격리 실측 3/3). 항목에는 편집 번호(rev)가 있고 저장 응답은
+//     자기 번호의 항목만 고친다(글자가 같아도 옛 응답이 새 편집을 건드리지 않게). ④의 '믿을 수 있나'·'가는 중인 저장'도 보관함에
+//     작업별로 둔다 — 새로 만들어진 칸도 앞 칸이 보낸 저장을 안다.
+//  ⑥ 보관함이 바뀌면 그 작업의 칸들에게 바로 알린다(store.listeners) — 쥐고 있던 글이 보관함에 없으면(그 글의 주인이 저장했거나
+//     버렸다) 놓고, 더 새 글이 있으면 따라 보이고, 같은 글의 실패 여부가 바뀌었으면 표시를 맞춘다. 같은 작업의 칸이 둘(본 줄·상세 줄)
+//     이어도, 저장이 가는 중에 새로 만들어진 칸이어도 어긋나지 않는다. 목록이 새로 오기를 기다리면 안 된다 — 내용이 같은 목록은 줄
+//     객체가 그대로라 다시 그려지지 않는다(격리 실측: 실패 표시가 42초가 지나도 안 붙었다).
+//  ⑦ 보내기 직전에도 본다 — 이 칸의 글이 보관함의 가장 최근 글이 아니면(다른 칸이 그사이 고쳤다) 보내지 않고 보관함을 따른다.
+//     안 그러면 옛 글을 쥔 칸이 벗어나면서 그 글을 새 글 뒤에 보내 덮는다.
+let descDraftRev = 0; // 보관함 항목의 편집 번호 — 칸을 가리지 않고 늘 오른다
+function DescCell({ task, disabled, onCommit, drafts }: {
   task: Task;
   disabled: boolean;
   onCommit: (task: Task, value: string) => Promise<boolean> | boolean | void;
+  drafts?: DescDraftStore;
 }) {
-  const [draft, setDraft] = useState(task.description || "");
-  const [unsaved, setUnsaved] = useState(false); // 서버에 없는 글을 보이고 있다(저장 실패)
-  // 이 칸에 서버로 못 간 글이 있나 — 치기 시작한 때부터 그 글의 저장이 **성공할 때까지** 참이다. 저장 응답을 기다리는 동안에도
-  //  참이라, 그사이 목록이 새로 와도 친 글을 덮지 않는다(Codex 코드 리뷰: 대기 중에 서버 값으로 덮인 뒤 실패가 오면 '저장 안 됨'이
-  //  서버 글에 붙었다). 실패한 글도 계속 쥐고 있어 다시 벗어나면 또 저장한다.
-  const dirty = useRef(false);
-  const edit = useRef(0); // 편집 번호 — 글을 치거나 버릴 때마다 오른다. 늦게 온 옛 저장의 결과가 지금 글에 적용되지 않게 가려낸다
-  const sent = useRef(-1); // 응답을 기다리는 저장의 편집 번호(-1 = 없다) — 같은 글을 두 번 보내지 않는다
-  // 목록의 값(task.description)을 '서버에 있는 글'로 믿어도 되나. 이 칸이 저장을 보낸 뒤에는 **가는 중인 저장이 없는 채로 목록이 새로
-  //  올 때까지** 믿지 않는다 — 저장이 가는 중이거나 막 성공한 틈의 목록 값은 옛 글이라, 그 옛 글로 되돌린 것을 '고친 것 없음'으로 보고
-  //  안 보내면 마지막에 친 글이 앞 저장에 덮인다(Codex 코드 리뷰). 못 믿는 동안은 같아 보여도 보낸다(같은 값을 한 번 더 보낼 뿐이다).
-  //  '서버에 간 글'을 따로 적어 두지는 않는다 — 늦게 온 성공 응답이 더 새 목록 값을 덮는 길이 생긴다(한 번 그렇게 했다가 뺐다).
-  const trust = useRef(true);
+  const own = useRef<DescDraftStore | null>(null);
+  const store = drafts ?? (own.current ??= newDescDraftStore()); // 보관함을 안 받은 곳(이 칸 혼자)은 제 것을 쓴다
+  const taskId = task.id;
+  const kept = store.drafts.get(taskId);
+  const [draft, setDraft] = useState(kept?.text ?? "");
+  const [holding, setHolding] = useState(!!kept); // 서버에 없는 글을 쥐고 있나(②) — 아니면 목록의 값을 그대로 보인다(①)
+  const [unsaved, setUnsaved] = useState(!!kept?.failed); // 쥔 글의 저장이 실패했다(③)
+  const dirty = useRef(!!kept); // holding 의 거울 — 콜백이 읽는다
+  const failed = useRef(!!kept?.failed); // unsaved 의 거울
+  const rev = useRef(kept?.rev ?? 0); // 이 칸이 쥔 글의 편집 번호(보관함 항목과 같은 번호)
+  const edit = useRef(0); // 이 칸의 편집 번호 — 글을 치거나 버릴 때마다 오른다. 늦게 온 옛 저장의 결과를 지금 글에 적용하지 않는다
+  const sent = useRef(-1); // 응답을 기다리는 이 칸의 저장의 편집 번호(-1 = 없다) — 그동안은 보관함과 맞추기를 미룬다
+  const hold = (on: boolean) => {
+    dirty.current = on;
+    setHolding(on);
+  };
+  const mark = (on: boolean) => {
+    failed.current = on;
+    setUnsaved(on);
+  };
+  const tell = () => {
+    for (const listener of [...store.listeners]) listener(taskId); // ⑥
+  };
+  // ⑥ 보관함과 맞춘다. 이 칸이 직접 친 글은 늘 보관함에 같은 번호로 있다 — 없거나 번호가 다르면 이 칸의 글은 낡았다.
+  const follow = () => {
+    const entry = store.drafts.get(taskId);
+    if (!entry) {
+      if (dirty.current) {
+        hold(false);
+        mark(false);
+      }
+    } else if (entry.rev !== rev.current) {
+      rev.current = entry.rev;
+      setDraft(entry.text);
+      hold(true);
+      mark(entry.failed);
+    } else if (entry.failed !== failed.current) {
+      mark(entry.failed);
+    }
+  };
+  const followRef = useRef(follow);
+  followRef.current = follow;
   useEffect(() => {
-    if (sent.current === -1) trust.current = true;
-    if (!dirty.current) setDraft(task.description || "");
+    // 이 칸의 저장이 가는 중이면 그 응답이 정리하므로 기다린다
+    const listener = (id: string) => {
+      if (id === taskId && sent.current === -1) followRef.current();
+    };
+    store.listeners.add(listener);
+    return () => {
+      store.listeners.delete(listener);
+    };
+  }, [store, taskId]);
+  useEffect(() => {
+    if (!store.flying.get(taskId)) store.stale.delete(taskId); // 가는 중인 저장이 없는 채로 목록이 새로 왔다 — 다시 믿는다(④)
+    if (sent.current === -1) follow();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task]);
   const save = () => {
-    if (!dirty.current || sent.current === edit.current) return; // 고친 것이 없다 · 같은 글의 저장이 이미 가는 중이다
-    // 목록 값과 같으면 보내지 않는다(고쳤다가 되돌린 글이 그사이 남이 바꾼 값을 되돌리지 않게) — 목록 값을 믿을 수 있을 때만.
-    //  같은 작업의 저장은 줄을 서서 보낸 순서대로 간다(WorkBoard 의 taskPatchQueue).
-    const skip = trust.current && draft === (task.description || "");
-    if (!skip) trust.current = false;
+    if (!dirty.current) return; // 쥔 글이 없다
+    if (store.drafts.get(taskId)?.rev !== rev.current) {
+      follow(); // ⑦ 이 칸의 글은 가장 최근 글이 아니다 — 보내지 않는다
+      return;
+    }
+    if (store.sending.get(taskId) === rev.current) return; // 이 글의 저장이 이미 가는 중이다(이 칸이든 같은 작업의 다른 칸이든)
+    const skip = !store.stale.has(taskId) && draft === (task.description || ""); // ④
     const mine = edit.current;
+    const mineRev = rev.current;
     sent.current = mine;
+    if (!skip) {
+      store.stale.add(taskId);
+      store.flying.set(taskId, (store.flying.get(taskId) ?? 0) + 1);
+      store.sending.set(taskId, mineRev);
+    }
+    // 같은 작업의 저장은 줄을 서서 보낸 순서대로 간다(WorkBoard 의 taskPatchQueue)
     void Promise.resolve(skip ? true : onCommit(task, draft)).then((ok) => {
+      if (!skip) {
+        const left = (store.flying.get(taskId) ?? 1) - 1;
+        if (left > 0) store.flying.set(taskId, left);
+        else store.flying.delete(taskId);
+        if (store.sending.get(taskId) === mineRev) store.sending.delete(taskId);
+      }
       if (sent.current === mine) sent.current = -1;
-      if (mine !== edit.current) return; // 그사이 다시 고쳤거나 Esc 로 버렸다 — 이 결과는 옛 글의 것이다
-      dirty.current = ok === false;
-      setUnsaved(ok === false);
+      // ⑤ 보관함은 이 편집의 항목일 때만 고친다 — 이 칸이 화면에서 내려간 뒤에 온 응답도 여기까지는 온다
+      const entry = store.drafts.get(taskId);
+      const owned = !!entry && entry.rev === mineRev;
+      if (owned) {
+        if (ok === false) store.drafts.set(taskId, { ...entry, failed: true });
+        else store.drafts.delete(taskId);
+      }
+      if (mine === edit.current) {
+        // 이 칸이 그사이 다시 고치지도 Esc 로 버리지도 않았다 — 이 결과가 지금 글의 것이다
+        hold(ok === false);
+        mark(ok === false);
+      }
+      if (owned) tell();
+      if (sent.current === -1) follow(); // 가는 동안 미뤄 둔 맞추기
     });
   };
   return (
     <span className={"work-desc" + (unsaved ? " unsaved" : "")}>
       <input
         className="work-cell-in"
-        value={draft}
+        value={holding ? draft : task.description || ""}
         disabled={disabled}
         placeholder="설명"
         onChange={(e) => {
           edit.current += 1;
-          dirty.current = true;
+          rev.current = ++descDraftRev;
+          hold(true);
           setDraft(e.target.value);
+          store.drafts.set(taskId, { text: e.target.value, failed: failed.current, rev: rev.current });
+          tell();
         }}
         onBlur={save}
         onKeyDown={(e) => {
@@ -374,9 +462,10 @@ function DescCell({ task, disabled, onCommit }: {
           else if (e.key === "Escape") {
             e.stopPropagation();
             edit.current += 1; // 가는 중인 저장의 결과도 이 칸에 적용하지 않는다
-            dirty.current = false;
-            setUnsaved(false);
-            setDraft(task.description || "");
+            hold(false);
+            mark(false);
+            store.drafts.delete(taskId);
+            tell();
             e.currentTarget.blur();
           }
         }}

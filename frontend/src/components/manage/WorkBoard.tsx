@@ -32,6 +32,7 @@ import { WorkFilterBar, WorkSearchBox } from "./WorkFilterBar";
 import { useT } from "../../lib/i18n";
 import {
   emptyWorkFilters,
+  newDescDraftStore,
   type Task,
   taskIsReadOnly,
   type WorkFilters,
@@ -238,6 +239,13 @@ export function WorkBoard({
   );
   const [filters, setFilters] = useState<WorkFilters>(loadFilters);
   const [err, setErr] = useState<string | null>(null);
+  // 이 범위(scopeKey)의 작업 목록을 한 번이라도 받았나 — 받았으면 그 뒤의 재조회 실패에 표를 걷지 않고 띠로 알린다(아래 stale).
+  //  목록을 비우는 자리(공간·계정·보관 기록 전환)에서는 같이 비운다 — 비운 표를 '마지막으로 받은 내용'이라 하면 안 된다(Codex 설계 검토).
+  const [loadedScope, setLoadedScope] = useState<string | null>(null);
+  // 아직 서버에 없는 설명 글 — 표(TableView)의 칸이 쥐고 있으면 그 줄이 화면에서 빠질 때(보드·캘린더로 전환, 검색) 같이 사라졌다
+  //  (2026-10-10 격리 실측 3/3). 표 밖에 두고, 칸이 다시 만들어질 때 여기서 되살린다. 범위가 바뀌면 **새것으로 바꾼다** —
+  //  비우기만 하면 앞 범위의 칸이 늦게 받은 실패 응답으로 다시 채울 수 있다(Codex 코드 리뷰).
+  const descDraftsRef = useRef(newDescDraftStore());
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -372,6 +380,7 @@ export function WorkBoard({
         // 30초 안전망·실시간 신호가 같은 JSON을 돌려줘도 작업표 전체를 다시 그리지 않는다.
         setTasks((previous) => reconcileArrayState(previous, ordered));
         setTaskScope(requestScope);
+        setLoadedScope(requestScope);
         const candidates = taskPreviewCandidates(ordered, viewerUid);
         if (!viewerUid || !candidates.length) return;
         // 일반 생성물 batch는 서버로 폴백하므로 사용하지 않는다. 본인 로컬 전용 조회만 허용.
@@ -515,6 +524,8 @@ export function WorkBoard({
     projectsRef.current = [];
     setProjects([]);
     setTasks([]);
+    setLoadedScope(null);
+    descDraftsRef.current = newDescDraftStore();
     void loadProjectsRef.current();
   }, [workspaceId, contextKey, viewerUid, personalByDefault]);
 
@@ -536,6 +547,8 @@ export function WorkBoard({
     projectsRef.current = [];
     setProjects([]);
     setTasks([]);
+    setLoadedScope(null);
+    descDraftsRef.current = newDescDraftStore();
     void loadProjectsRef.current();
   }, [showHistory]);
 
@@ -627,6 +640,7 @@ export function WorkBoard({
     void (async () => {
       try {
         await manageApi.deleteTask(tid);
+        descDraftsRef.current.drafts.delete(tid);
         taskDataRevisionRef.current += 1;
         if (scopeIsActive(requestScope)) await loadAllRef.current();
       } catch (error) {
@@ -770,6 +784,7 @@ export function WorkBoard({
     const requestScope = scopeKey;
     try {
       await manageApi.deleteTasksBatch(ids);
+      for (const id of ids) descDraftsRef.current.drafts.delete(id);
       taskDataRevisionRef.current += 1;
       if (!scopeIsActive(requestScope)) return;
       clearSel();
@@ -779,7 +794,11 @@ export function WorkBoard({
     }
   };
 
-  if (err)
+  // 받은 표가 있으면 재조회가 실패해도 걷지 않는다 — 표를 걷으면 치던 설명 글과 '저장 안 됨' 표시가 같이 사라졌다(2026-10-10 격리 실측:
+  //  저장 실패 뒤의 복구 조회까지 실패하면 '불러오기 실패' 화면만 남고, 다시 받아도 친 글은 돌아오지 않았다). 띠로 알리고 표는 그대로 둔다.
+  //  받은 적 없는 범위(첫 조회 실패·공간을 바꾼 뒤)는 전처럼 오류 화면이다 — 빈 표를 '작업 없음'으로 오인하지 않게.
+  const stale = !!err && loadedScope === scopeKey && projects.length > 0;
+  if (err && !stale)
     return (
       <div className="manage-empty">
         <div>불러오기 실패: {err}</div>
@@ -805,6 +824,7 @@ export function WorkBoard({
     onDelete,
     onLinkGen,
     onUnlinkGen,
+    descDrafts: descDraftsRef.current,
   };
 
   return (
@@ -865,6 +885,15 @@ export function WorkBoard({
       {showHistory && (
         <div className="work-readonly-notice" role="status">
           과거 워크스페이스 기록 · 조회만 가능하며 수정·정렬·연결·삭제는 할 수 없습니다.
+        </div>
+      )}
+
+      {stale && (
+        <div className="work-readonly-notice work-stale-notice" role="alert" title={err || undefined}>
+          <span>목록을 새로 받지 못했습니다 — 화면은 마지막으로 받은 내용입니다.</span>
+          <button type="button" className="work-stale-retry" onClick={() => void loadProjectsRef.current()}>
+            다시 시도
+          </button>
         </div>
       )}
 

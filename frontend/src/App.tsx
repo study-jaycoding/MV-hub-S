@@ -90,7 +90,7 @@ import { useGenerationProjectActions } from "./lib/useGenerationProjectActions";
 import { useGenerationSelection } from "./lib/useGenerationSelection";
 import { useGenerationShareActions } from "./lib/useGenerationShareActions";
 import { useBackgroundEscape } from "./lib/useEscapeClose";
-import { backgroundKeysBlocked, useKeyOwner, usePageSelectAllGuard } from "./lib/keyGate";
+import { backgroundKeysBlocked, isTypingTarget, useKeyOwner, usePageSelectAllGuard } from "./lib/keyGate";
 import { isKeyHandled, markKeyHandled } from "./lib/keyHandled";
 import { manageApi } from "./lib/manageApi";
 import { folderMenuLabel, type FolderMenuKind } from "./lib/folderContextMenu";
@@ -1952,6 +1952,12 @@ export default function App() {
       //  그 자리에서 다시 그려지며 이 훅이 켜지고 같은 키가 window 에 닿아 창까지 닫았다(2026-10-07 브라우저 실측: Esc 한 번에
       //  선택 해제 + 창 닫힘). 전파를 막는 대신 여기서 손을 뗀다 — 같은 Esc 를 기다리는 다른 창(등급 확인 등)은 그대로 받는다.
       if (folderPeekRef.current?.contains(document.activeElement)) return false;
+      // 창 밖의 글 칸(하단 프롬프트 — 창이 뜬 동안에도 쓸 수 있다)에서 난 Esc 는 창을 닫지 않는다. 그 글 칸을 벗어나 창으로
+      //  돌아오고, 한 번 더 누르면 닫힌다 — 창 안 글 칸·코멘트 입력칸의 Esc 와 같은 순서다(2026-10-10 격리 실측: 전엔 바로 닫혔다).
+      if (isTypingTarget(document.activeElement)) {
+        folderPeekRef.current?.focus();
+        return;
+      }
       if (listPeek) closeFolderWindow();
       else setFolderPeek(false);
     },
@@ -1966,6 +1972,28 @@ export default function App() {
   useEffect(() => {
     if (listPeek) folderPeekRef.current?.focus();
   }, [listPeek]);
+  // 폴더 창의 아래 끝 = 하단 프롬프트 위(app-shell.css 의 --peek-dock-gap). 프롬프트 높이는 바뀌므로(참조 줄·오류 줄·접힘) 창이 뜬 동안 잰다.
+  //  프롬프트가 없는 화면이면 값을 두지 않는다(CSS 의 11vh 그대로).
+  const peekOpen = folderPeek || !!listPeek;
+  useEffect(() => {
+    if (!peekOpen) return;
+    const dock = document.querySelector(".sl-dock");
+    if (!dock || typeof ResizeObserver === "undefined") return;
+    const root = document.documentElement;
+    const measure = () => {
+      const gap = Math.max(0, Math.round(window.innerHeight - dock.getBoundingClientRect().top));
+      root.style.setProperty("--peek-dock-gap", `${gap + 12}px`);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(dock);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+      root.style.removeProperty("--peek-dock-gap");
+    };
+  }, [peekOpen]);
   // 닫으면 초점을 본 목록 격자로 돌려준다 — 창이 사라지면 초점이 BODY 로 떨어져, 격자의 키(Ctrl+A·방향키…)가 격자에 초점을 다시
   //  줄 때까지 먹지 않았다(2026-10-07 실측). 본 목록이 조작 가능해진 뒤에 한다(옛 첫 쪽을 보이는 동안 main 은 inert, 받는 중이면
   //  격자가 아직 없다). 스크롤은 그대로. 기다리는 사이 문맥이 한 번이라도 달라졌거나 초점이 어디로든 옮겨 갔으면 그만둔다 —

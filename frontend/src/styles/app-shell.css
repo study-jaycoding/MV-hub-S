@@ -774,7 +774,8 @@
 .folder-peek {
   /* transform 없이 inset 으로 가운데 — transform 이 있으면 창 안 position:fixed 패널(태그 패널)이 창 기준으로 어긋나고
      overflow 에 잘린다(코덱스 P2). */
-  position: fixed; z-index: 151; top: 11vh; bottom: 11vh; left: 6vw; right: 6vw;
+  /* 아래 끝은 하단 프롬프트 위에서 멈춘다 — --peek-dock-gap = 프롬프트가 차지한 높이(App 이 재서 넣는다. 접혔거나 없으면 11vh 그대로). */
+  position: fixed; z-index: 151; top: 11vh; bottom: max(11vh, var(--peek-dock-gap, 0px)); left: 6vw; right: 6vw;
   max-width: 1500px; max-height: 860px; margin: auto;
   display: flex; flex-direction: column; min-height: 0;
   background: var(--panel, #14161c); border: 1px solid var(--border2); border-radius: 14px;
@@ -783,6 +784,11 @@
      (카드를 누르면 사라진다). 캔버스 '생성 결과' 창(.scene-varwin)과 같게 끈다(Jay 2026-10-08). */
   outline: none;
 }
+/* 폴더 창이 뜬 동안 하단 프롬프트는 막 앞에 온다 — 창을 연 채 프롬프트를 누르고, 창 안 카드를 프롬프트로 끌어 놓을 수 있다
+   ('생성 결과' 창 .scene-varwin 과 같은 원칙. 전엔 막(150)과 창(151)이 프롬프트(60)를 덮어 누를 수도 놓을 수도 없었다).
+   막은 화면 전체 그대로라 프롬프트 양옆·아래를 누르면 창이 닫히고 뒤 화면은 눌리지 않는다. 창에서 여는 것들(코멘트 165·
+   등급 확인 160·정보 230·크게 보기)은 이보다 위다. */
+body:has(.folder-peek) .sl-dockbar { z-index: 152; }
 .folder-peek-hd {
   display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border);
 }
