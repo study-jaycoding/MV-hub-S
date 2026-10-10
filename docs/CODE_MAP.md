@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-08
+updated: 2026-10-10
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -52,7 +52,7 @@ updated: 2026-10-08
 | 태그 편집(색/일반 태그) | `components/TagEditor.tsx`, `lib/generationTags.ts` | `routers/generation.py`(HTTP 경계·권한·프록시, 단건과 배치), `repo/tags.py` | 에셋 쪽 색·태그는 `routers/assets_metadata.py` |
 | 휴지통(삭제·복원) | `lib/useGenerationTrashActions.ts` | `routers/generation.py`(삭제·복원), `routers/library.py`(`/api/trash` 목록·영구 삭제), `repo/trash.py`(별도 DB) | |
 | 로그인/가입/계정 승인 | `components/LoginScreen.tsx`(서버 본체 AUTH 로그인), `components/ServerLoginScreen.tsx`(로컬 허브의 팀 서버 로그인 게이트·서버 주소 변경), `lib/useHubAuth.ts` | `routers/auth.py`, `services/auth.py`, `routers/publish.py`(`/api/shared-server/*`), `services/shared_connection.py` | 로컬 허브는 팀 서버 세션이 없으면 라이브러리 대신 게이트를 띄운다 |
-| 창을 Esc/✕ 로 닫는 규칙 | `lib/useEscapeClose.ts`(공용 — 리스너 1회 등록+콜백 ref), `lib/useAppNavigation.ts`(관리자 창·미리보기는 브라우저 history 로 여닫음) | — | 코멘트 패널·Host 콘솔은 Esc 로 안 닫힌다(설계). 회귀 시험 `frontend/tests/escapeCloseNesting.test.tsx` |
+| 창을 Esc/✕ 로 닫는 규칙 · 떠 있는 것이 키의 주인 | `lib/useEscapeClose.ts`(Esc 는 **맨 위 겹만** — 겹 순서 = 켜지는 렌더의 번호. 뒤 화면의 Esc 는 `useBackgroundEscape`), `lib/keyGate.ts`(겹이 떠 있으면 뒤 화면 단축키가 쉰다 `backgroundKeysBlocked` · 초점 잃은 키 `useLooseKeys` · 누르는 순간 판정 `pressStartedCovered` · 입력칸 밖 Ctrl+A·조합 중 Enter 지킴이), `lib/keyHandled.ts`(쓴 키 표시), `lib/useAppNavigation.ts`(관리자 창·미리보기는 브라우저 history 로 여닫음) | — | 코멘트 패널·Host 콘솔은 Esc 로 안 닫힌다(설계). 폴더 창·캔버스 '생성 결과' 창은 격자를 품은 창이라 겹이 아니다(그 격자의 키가 산다). 늘 마운트된 컴포넌트는 `enabled` 에 열림 상태를 넘길 것 — 켜진 채 남으면 뒤 화면의 키가 전부 막힌다. 회귀 시험 `frontend/tests/keyGate.test.tsx`·`escapeCloseNesting.test.tsx`·`gridLooseKeys.test.tsx`. 경위 [status/조작점검_2026-10-10.md](status/조작점검_2026-10-10.md) |
 | Assets 파일 탐색기(마운트·트리·업로드) | `components/AssetsView.tsx`, `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/asset_tree.py`, `services/resolve_project_library.py` | `@davinci` 루트는 Resolve 프로젝트 전용 화면 |
 | 에셋 대장(화면 이름 '에셋 리스트' — NAS 그림 번호·이름 변경/이동 추적·레퍼런스 찾기 가속·생성 기록의 쓴 판·정한 시간 자동 훑기) | `lib/sceneAssetRelink.ts`, `components/admin/AssetRegistryTab.tsx` | `repo/asset_registry.py`(판정), `services/asset_registry.py`(관리자)·`asset_registry_scan.py`(훑기 자식), `routers/asset_registry.py`, `routers/assets.py`(locate '대장 먼저') · 결과물 훑기 `repo/nas_results.py`·`services/nas_results.py`(판정) | 설계·운영 [ASSET_REGISTRY.md](ASSET_REGISTRY.md) · 결과물 훑기 [NAS_RESULTS.md](NAS_RESULTS.md). 기본 꺼짐(서버에서 켠다) |
 | 프로젝트 CRUD·멤버·역할 | `components/manage/ProjectManagerPanel.tsx`(관리자 창 '프로젝트' 탭 — 2026-10-02 대시보드 단추·오버레이 없앰) | `routers/projects.py`, `repo/projects.py` | |
@@ -697,7 +697,7 @@ updated: 2026-10-08
 | `personalSettings.ts` | 저장 | 계정 전환 시 개인 설정 키 일괄 제거 |
 | `deactivated.ts` | 저장 | 생성물·에셋·폴더 비활성(회색) 로컬 표시 |
 | `theme.ts` | 저장 | 강조색 CSS 변수 파생·적용 + 언어·모션 설정 |
-| `shortcuts.ts` | 저장 | 사용자 지정 단축키 레지스트리·충돌 판정 |
+| `shortcuts.ts` | 저장 | 사용자 지정 단축키 레지스트리 — 충돌은 같이 켜지는 화면끼리만(`scope`), 고정 키는 지정 불가(`isReservedBinding`), Shift 는 Ctrl·Alt 와 함께일 때만 센다, 저장 직전 다시 읽기 + storage 이벤트(다른 탭) |
 | `downloadDir.ts` | 저장 | File System Access 다운로드 폴더 핸들 |
 
 **4. 계정·인증·워크스페이스(13)**
@@ -744,6 +744,7 @@ updated: 2026-10-08
 | `mediaTypes.ts` | 순수 | 미디어 필터 옵션 상수 |
 | `boardFilters.ts` | 순수 | 캔버스 툴바 필터·폴더 선택 판정(`matchesBoardFilters`·`inBoardFolder`) — 캔버스 노드(안 맞으면 흐리게)와 '생성 결과' 창(안 맞으면 걸러 냄)이 같이 쓴다 |
 | `keyHandled.ts` | 순수 | 한 키 입력을 '이미 쓴 것'으로 표시·확인(`markKeyHandled`·`isKeyHandled`) — 안쪽 처리 뒤 window 전역 단축키가 같은 키를 또 처리하지 않게(전파를 막지 않아 다른 리스너는 그대로 받는다) |
+| `keyGate.ts` | 훅·순수 | 떠 있는 것이 키의 주인 — Esc 겹 등록부(`openLayer`·`isTopLayer`)·`useKeyOwner`(Esc 없는 덮개)·`backgroundKeysBlocked`, 글자 입력 대상 판정 `isTypingTarget`, 초점 잃은 키를 보이는 격자로 `useLooseKeys`, 누르는 순간 위에 뭔가 떠 있었나 `pressStartedCovered`(pointerdown 캡처), 앱이 한 번 거는 `usePageSelectAllGuard`(입력칸 밖 Ctrl+A·조합 중 Enter), 지금 초점이 Tab 으로 왔나 `focusCameByTab`(마우스로 눌러 남은 단추 초점과 구분 — `:focus-visible` 은 아무 키에나 켜져 못 쓴다), 마우스로 만진 슬라이더의 초점 내려놓기 `dropFocusAfterPress`(격자를 품은 창 안이면 그 창의 격자로) |
 | `appConstants.ts` | 순수 | 빈 facets·단축키 색 매핑 상수 |
 
 **7. 생성 라이브러리 — 표시·판정(순수)(11)**
@@ -756,7 +757,7 @@ updated: 2026-10-08
 | `generationGrid.ts` | 순수 | 날짜 묶음 선택 토글·미리보기 대상 |
 | `generationTags.ts` | 순수 | 태그 목록 정규화·일괄 추가/제거 계산 |
 | `generationPrompt.ts` | 순수 | 구버전 직렬화 프롬프트 복원(API 경계) |
-| `generationColorState.ts` | 순수 | 컬러 저장 오류 종류·다음 선택 색 |
+| `generationColorState.ts` | 순수 | 컬러 저장 오류 종류·다음 선택 색 · **색 편집 장부**(`createColorEditLedger` — `begin(ids, 색)`·`end`·`stamp()`. stamp 이 돌려주는 함수가 재조회 응답에 '출발 뒤에 칠한 색·저장 대기 중인 색'을 덧입힌다. 덧입힐 값은 장부가 기억한 칠한 색이다 — 화면 목록의 색을 믿지 않는다. 캔버스의 장부와 같은 규칙) |
 | `gridVirtualRows.ts` | 순수 | 생성물 배열 → 가상 스크롤 행 모델 + 방향키 이동 |
 | `dateGroups.ts` | 순수 | UTC 문자열/epoch → 로컬 날짜 그룹 키·라벨 |
 | `gradeStep.ts` | 순수 | 등급 기반 다중선택 상태머신 |
@@ -773,9 +774,9 @@ updated: 2026-10-08
 | `useGenerationShareActions.ts` | 훅 | 팀 공유·미러 대기 안내 |
 | `useGenerationProjectActions.ts` | 훅 | 프로젝트·폴더 담기 |
 | `useGenerationFilterActions.ts` | 훅 | 색·태그 필터 토글, 태그 전역 삭제 |
-| `useGenerationKeyboardActions.ts` | 훅 | 그리드 단축키(색·비활성 등) |
+| `useGenerationKeyboardActions.ts` | 훅 | 그리드 단축키(색·비활성·Esc 선택 해제) — 위에 겹이 떠 있으면 쉰다, 글자 입력칸만 양보, 색을 칠할 때·저장이 끝날 때 색 편집 장부에 알린다 |
 | `useGenerationUtilityActions.ts` | 훅 | 일괄 다운로드·히스토리·창 열기 |
-| `useGenerationSelection.ts` | 훅 | 그리드 선택 집합·바깥 클릭 해제 |
+| `useGenerationSelection.ts` | 훅 | 그리드 선택 집합·바깥 클릭 해제(누르는 순간 위에 창·메뉴가 떠 있었으면 풀지 않는다 — `pressStartedCovered`) |
 | `usePromptCreatedActions.ts` | 훅 | 프롬프트로 생성 직후 후처리 |
 | `bulkGenerationActions.ts` | 순수 | 일괄 실행기(`runGenerationBulk` — 주입받은 비동기 작업을 돌려 실패 수 집계, `runGenerationTrash` — 휴지통 전용: 공유 중 409 를 '건너뜀'으로 따로 센다) + 결과·확인 문구 |
 | `shareMirrorPending.ts` | 순수 | 공유 미러 대기 안내 래핑 |
@@ -942,15 +943,15 @@ updated: 2026-10-08
 | `notificationCenter.ts` | 순수+저장 | 알림 탭·릴리스 공지 병합·읽음·배지 수 |
 | `flash.ts` | 순수 | 전역 토스트 디스패치(lib 하위용) |
 | `useAppToast.ts` | 훅 | 토스트 상태·타이머 |
-| `useAppNavigation.ts` | 훅 | 탭·창 네비게이션 상태 |
+| `useAppNavigation.ts` | 훅 | 탭·창 네비게이션 상태(브라우저 history) — 이미 떠 있는 관리자 창은 또 열지 않는다(기록이 두 겹이면 Esc 한 번에 안 닫힌다) |
 
 **19. UI 공용 훅·소품(11)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
-| `useEscapeClose.ts` | 훅 | Esc 로 닫기(lib 최다 공용 훅). 창 안의 자식 대화상자는 `(onClose, open, true, true)` = capture+consume 으로 먼저 소비해야 바깥 창이 같이 닫히지 않는다 |
+| `useEscapeClose.ts` | 훅 | Esc 로 닫기(lib 최다 공용 훅) — 겹쳐 있으면 **맨 위 겹만** 닫고 그 Esc 를 '쓴 것'으로 표시한다. 켜진 겹은 뒤 화면의 단축키도 쉬게 한다(`lib/keyGate`). 뒤 화면의 Esc(선택 해제·폴더 창 닫기)는 `useBackgroundEscape` |
 | `useOverlayDismiss.ts` | 훅 | 오버레이 바깥 클릭/Esc 통합 해제 |
-| `useOutsideMouseDown.ts` | 훅 | 바깥 mousedown 감지 |
+| `useOutsideMouseDown.ts` | 훅 | 바깥 누름 감지(mousedown + pointerdown — 누름을 pointerdown 에서 막는 곳을 눌러도 닫힌다. pointerdown 은 **잡는 단계**로 듣는다 — 사이드바 폭 손잡이는 전파까지 멈춘다) |
 | `useOutsideDragSelect.ts` | 훅 | 빈 곳 드래그 선택 시작 위임 |
 | `useClickSeparation.ts` | 훅 | 단일/더블 클릭 분리 |
 | `useDebouncedCallback.ts` | 훅 | 디바운스 콜백(run/cancel) |

@@ -5,7 +5,7 @@ tags:
   - mvhub
   - mvhub/현황
 status: active
-updated: 2026-10-08
+updated: 2026-10-10
 ---
 
 # MV Hub 현재 작업 현황
@@ -25,6 +25,10 @@ owner: Claude · reviewer: Codex(병합 가능·수정 승인) · status: 검증
 - **병합 전 검토(Codex, 정적)**: P0/P1 없음. P2 1건(깨진 이관 표식 쿠키 → 부팅이 던져 빈 화면) → `c39205a9` 로 고침·Codex 승인.
 - **다음(Jay)**: 업데이트 탭의 0836 줄 [이 PC에 먼저 설치] → **캔버스가 그대로 보이는지** 확인 → [배포]. 편집 탭(`feature/edit-tab`)·AI 분석(`feature/ai-analysis`)은 이 판에 없다(Jay — 따로 관리).
 - **되돌리기 주의(Codex 정적 검토·실측 안 함)**: 옛 판으로 되돌리면 옛 판은 옮기던 시점의 캔버스를 보여 주고 그것을 이 PC 의 DB 백업에도 덮는다 → 먼저 설정 → 캔버스 자료 → 전체 내보내기.
+
+## 10-10 조작·단축키 전반 점검 — dev(미배포)
+
+owner: Claude · reviewer: Codex · status: 검증 중(main 미병합). 규칙·남은 것·**Jay 확인 7건** → [status/조작점검_2026-10-10.md](status/조작점검_2026-10-10.md).
 
 ## 10-03 최적화 점검 — 0926 → UI 후속 0958 공개(10-03 10:04)
 
