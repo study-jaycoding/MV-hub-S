@@ -3,6 +3,7 @@
 //  · @ → 소스 피커, # → 태그 목록 피커. 태그 선택 시 tagFilter 고정 + @ 피커가 그 태그로 필터되어 열림
 //  · Esc → 피커 닫기 / tagFilter 해제. 제출 시 본문 텍스트 + 칩→references 직렬화.
 import { backgroundKeysBlocked } from "../lib/keyGate";
+import { markKeyHandled } from "../lib/keyHandled";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import {
   forwardRef,
@@ -1103,8 +1104,11 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     // Esc: 멘션 피커 닫기(+토큰 제거) → tagFilter 해제
     if (e.key === "Escape") {
       const ed = editorRef.current;
+      // 여기서 쓴 Esc 는 '쓴 것'으로 표시한다 — 안 하면 같은 키가 window 까지 가 뒤 화면의 Esc(선택 해제·폴더 창 닫기)도 같이 했다
+      //  (폴더 창이 뜬 채 프롬프트를 쓸 수 있게 되면서 피커를 닫는 Esc 가 창까지 닫는 길이 생긴다 — Codex 설계 검토).
       if (mention) {
         e.preventDefault();
+        markKeyHandled(e.nativeEvent);
         if (ed) {
           stripQuery(ed, mention.kind);
           updatePlaceholder();
@@ -1112,6 +1116,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
         setMention(null);
       } else if (tagFilter) {
         e.preventDefault();
+        markKeyHandled(e.nativeEvent);
         clearTagFilter();
       }
       return;

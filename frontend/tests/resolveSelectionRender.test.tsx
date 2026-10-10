@@ -1252,3 +1252,21 @@ it("App 공유·리뷰: 옛 공유 서버(경로 없음)면 한 장씩 보이고
   expect(gridOutputs()).toHaveLength(1);
   expect(toolbarSnapshot!.folderCards).toBeUndefined();
 });
+
+it("App my 탭: 폴더 창이 뜬 채 하단 프롬프트의 글 칸에서 Esc 를 누르면 창을 닫지 않고 초점만 창으로 돌아온다 — 한 번 더 누르면 닫힌다", async () => {
+  await mountApp("my");
+  act(() => gridSnapshot!.onOpenFolder!(libraryGeneration("target")));
+  await settle();
+  expect(peekWindow()).not.toBeNull();
+  const editor = document.querySelector<HTMLElement>('.sl-dockbar [contenteditable="true"]')!;
+  Object.defineProperty(editor, "isContentEditable", { value: true }); // jsdom 에는 이 속성이 없다(브라우저에서는 참)
+  act(() => editor.focus());
+  expect(document.activeElement).toBe(editor);
+  act(() => { editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  await settle();
+  expect(peekWindow()).not.toBeNull();
+  expect(document.activeElement).toBe(peekWindow());
+  pressEscapeInPeek();
+  await settle();
+  expect(peekWindow()).toBeNull();
+});
