@@ -2949,10 +2949,6 @@ export function SceneBoard({
   const onBoardMouseDownCapture = (e: React.MouseEvent) => {
     const t = e.target as HTMLElement;
     if (isSceneTextEntryTarget(t)) return;
-    // 화면에 남은 글자 선택을 걷는다 — 선택이 남은 채 카드를 누르면 브라우저가 '선택한 글자 끌기'로 가로채 mousemove·mouseup 이 끊기고
-    //  보드가 끌기 상태에 갇힌다(2026-10-10 실측: 씬 탭 줄에서 시작한 끌기 뒤 13/13). 글자를 고를 수 있는 본문을 누른 것이면 그 자리에서
-    //  새 선택이 시작되므로 걷어도 된다.
-    window.getSelection()?.removeAllRanges();
     const ae = document.activeElement as HTMLElement | null;
     // 편집 요소 + 프롬프트 dock(레퍼런스 트레이 등) 포커스를 캔버스 클릭 시 해제 — 안 하면 트레이가 계속
     //  포커스로 남아, 캔버스 클릭 후 붙여넣기가 캔버스 카드 대신 트레이로 잘못 가던 문제가 생긴다.
@@ -2962,6 +2958,10 @@ export function SceneBoard({
       isSceneTextEntryTarget(ae)
     )
       ae.blur();
+    // 화면에 남은 글자 선택을 걷는다 — 선택이 남은 채 카드를 누르면 브라우저가 '선택한 글자 끌기'로 가로채 mousemove·mouseup 이 끊기고
+    //  보드가 끌기 상태에 갇힌다(2026-10-10 실측: 씬 탭 줄에서 시작한 끌기 뒤 13/13). 왼쪽 단추만(끌기는 왼쪽 단추가 시작한다 — 우클릭은
+    //  고른 글자를 두고 메뉴를 연다), 입력칸의 초점을 내려놓은 **뒤에**(조합 중인 글·캐럿을 먼저 건드리지 않는다).
+    if (e.button === 0) window.getSelection()?.removeAllRanges();
     // 캔버스 자체를 명시적인 키보드 포커스 대상으로 만든다. 단순 div 배경은 브라우저/확장에 따라
     // body 포커스로 남아 전역 Ctrl+C/V가 간헐적으로 빠질 수 있다. 카드·배경을 누른 뒤에는 항상
     // 이 보드가 키 이벤트의 출발점이 되고, 실제 버튼은 이후 기본 동작으로 자기 포커스를 받는다.
@@ -3089,6 +3089,11 @@ export function SceneBoard({
     // 글자 선택·네이티브 드래그 방지(생성 탭·에셋과 같다). 안 막으면 씬 탭 줄에서 끌기 시작할 때 탭 이름이 글자로 선택되고, 그 뒤의
     //  카드 끌기를 브라우저가 '선택한 글자 끌기'로 가로채 mousemove·mouseup 이 끊긴다(2026-10-10 실측: 이후 카드 끌기·범위 선택이 전부 멈춤).
     e.preventDefault();
+    // preventDefault 는 초점 이동도 막는다 — 입력칸(프롬프트·텍스트 카드)에 초점을 둔 채 보드 밖에서 끌어 카드를 고르면 Delete·c 가
+    //  카드가 아니라 그 입력칸에 들어갔다(Codex 코드 리뷰). 보드 안을 누를 때와 같게: 입력칸을 내려놓고 보드에 초점.
+    const typing = document.activeElement as HTMLElement | null;
+    if (typing && isSceneTextEntryTarget(typing)) typing.blur();
+    scrollRef.current?.focus({ preventScroll: true });
     beginBoardMarquee(e as unknown as React.MouseEvent);
   }, !cardMenu);
 

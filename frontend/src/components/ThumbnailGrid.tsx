@@ -3,7 +3,7 @@
 //  · 빈 공간 드래그 = 마퀴(러버밴드) 다중 선택
 //  · 더블클릭 = 미리보기. (카드 드래그는 프롬프트 재사용 — 마퀴 대신 네이티브 드래그)
 // 선택 상태는 App 이 Set<string>(id) 로 보유 — 일괄 작업/select-bar 가 의존.
-import { backgroundKeysBlocked, isTypingTarget, useLooseKeys } from "../lib/keyGate";
+import { backgroundKeysBlocked, isTypingTarget, pressStartedCovered, useLooseKeys } from "../lib/keyGate";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import {
@@ -478,15 +478,19 @@ export function ThumbnailGrid(props: Props) {
     if (isTypingTarget(e.target)) return;
     // 위에 창·메뉴가 떠 있으면 키는 그쪽 것이다(lib/keyGate) — 초점이 격자에 남아 있어도 쉰다. 방향키·Space·Page 의 기본 동작(뒤 격자
     //  스크롤)도 막는다 — 창 위에서 누른 키에 뒤 목록이 밀리지 않게.
+    // 카드 안 조작 요소에 초점이 있을 때의 Enter/Space 는 그것을 누르는 키다 — 격자가 가로채면 키보드로 못 누른다.
+    //  · 체크박스 같은 입력: 언제나(누른 뒤의 Space 는 그 체크박스를 다시 뒤집는 것이 맞다)
+    //  · 단추·링크: **키보드로**(Tab) 초점을 옮겼을 때만. 마우스로 눌러 초점이 남은 단추(:focus-visible 아님)는 종전대로 격자가
+    //    받는다 — S 를 누른 뒤의 Space 가 S 를 또 누르지 않게(Codex 코드 리뷰).
+    const control = e.key === "Enter" || e.key === " " ? (e.target as HTMLElement).closest?.("button, a[href], input, select, [role=button]") : null;
+    const ownKey = !!control && (control.matches("input, select") || control.matches(":focus-visible"));
     if (backgroundKeysBlocked()) {
-      if (/^(Arrow|Page|Home|End| )/.test(e.key)) e.preventDefault();
+      // 위에 뜬 것(카드의 확인 덮개 포함) 안의 단추를 누르는 키는 막지 않는다.
+      if (!ownKey && /^(Arrow|Page|Home|End| )/.test(e.key)) e.preventDefault();
       return;
     }
-    // 카드 안 단추·링크·체크박스에 **키보드로**(Tab) 초점을 옮겼으면 Enter/Space 는 그것을 누르는 키다 — 격자가 가로채면 키보드로
-    //  못 누른다. 마우스로 눌러 초점이 남은 단추(:focus-visible 아님)는 종전대로 격자가 받는다 — S 를 누른 뒤의 Space 가 S 를 또
-    //  누르지 않게(Codex 코드 리뷰).
-    const inner = (e.key === "Enter" || e.key === " ") ? (e.target as HTMLElement).closest?.("button, a[href], input, select, [role=button]") : null;
-    if (inner && inner.matches(":focus-visible")) return;
+    if (ownKey) return;
+    if (e.altKey && e.key.startsWith("Arrow")) return; // Alt+←/→ 는 브라우저의 뒤로/앞으로
     if (/^(Arrow|Page|Home|End| )/.test(e.key)) releaseResolveScrollGuard();
     if (!generations.length) return;
     // 태그(#)·코멘트(c) — 포커스 카드에서 인라인 편집·코멘트(에셋 파트와 동일). 단축키 레지스트리로
@@ -540,6 +544,7 @@ export function ThumbnailGrid(props: Props) {
       }
     } else if (e.key === "Enter") {
       e.preventDefault();
+      if (e.repeat) return; // 길게 눌린 Enter(확인 창을 Enter 로 닫으며 조금 길게 누른 것 등)에 크게 보기가 열리지 않게
       const g = generations[focusIdx];
       const a = g?.assets?.[0];
       if (g && a) onPreviewCell(g);
@@ -611,6 +616,8 @@ export function ThumbnailGrid(props: Props) {
     }
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest("button, input, label")) return; // 오버레이 컨트롤 제외
+    // 위에 메뉴·확인 덮개가 떠 있을 때의 누름은 그것을 닫는 누름이다 — 격자 안을 눌러 닫아도 선택을 바꾸지 않는다(격자 밖과 같은 규칙).
+    if (pressStartedCovered()) return;
     gridRef.current?.focus(); // 그리드로 포커스 → 방향키 네비 활성(프롬프트와 분리)
     const cellEl = (e.target as HTMLElement).closest(".gen-cell") as HTMLElement | null;
     // 빈 곳에서 시작한 드래그 = 마퀴. 브라우저 기본 글자 선택을 막는다 — 안 막으면 포인터가

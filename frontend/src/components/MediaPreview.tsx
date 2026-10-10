@@ -142,7 +142,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
         //  창 밖(뒤 화면)의 단추에 초점이 남아 있을 때는 이 창이 키를 갖는다 — 넘기면 Space·Enter 가 그 단추(이 창을 연 썸네일)를
         //  다시 눌러 보던 장이 처음 것으로 돌아가고, 기록이 한 겹 더 쌓여 Esc 가 두 번 필요했다(2026-10-10 실측 3/3).
         const t = e.target instanceof Element ? e.target : null;
-        if (t?.closest(".media-preview") && t.closest("button, a, input, textarea, select, [role=button], [contenteditable]")) return;
+        if (t?.closest(".media-preview") && t.closest("button, a, input, textarea, select, audio, [role=button], [contenteditable]")) return;
         if (t?.closest("input, textarea, select, [contenteditable]")) return; // 글자 입력(코멘트 패널 등)은 그대로
         e.preventDefault();
         e.stopPropagation();

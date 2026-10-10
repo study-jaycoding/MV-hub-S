@@ -103,6 +103,15 @@ it("초점이 어디에도 없을 때(BODY)의 키는 격자가 받고, 초점�
   dropFocus();
   expect(key("a", document.body, { ctrlKey: true }).defaultPrevented).toBe(true); // 화면 글자를 긁지 않는다
   expect(selected.size).toBe(5);
+  // 격자가 쓰지 않는 키에는 초점을 데려오지 않는다 — Tab·Shift 만 눌러도 초점이 격자로 튀면 Tab 순서가 격자에서 다시 시작한다
+  dropFocus();
+  expect(key("Tab").defaultPrevented).toBe(false);
+  key("Shift", document.body, { shiftKey: true });
+  key("x");
+  expect(document.activeElement).toBe(document.body);
+  const before = [...selected];
+  expect(key("ArrowLeft", document.body, { altKey: true }).defaultPrevented).toBe(false); // Alt+← 는 브라우저의 뒤로
+  expect([...selected]).toEqual(before);
 });
 
 it("툴바·상단바 단추에 초점이 남아 있어도 받는다 — Enter·Space 는 그 단추의 것. 글자 입력칸·다른 곳의 단추는 건드리지 않는다", () => {
@@ -120,11 +129,14 @@ it("툴바·상단바 단추에 초점이 남아 있어도 받는다 — Enter·
 });
 
 it("위에 창이 떠 있거나, 격자가 가려져 있거나(inert), 캔버스면 초점 잃은 키를 받지 않는다 — 격자를 품은 창에 초점이면 캔버스에서도 받는다", () => {
-  draw({ before: <Overlay /> });
+  draw();
   flushFrames();
   click("g1");
+  draw({ before: <Overlay /> });
   dropFocus();
   key("ArrowRight");
+  expect([...selected]).toEqual(["g1"]);
+  click("g2"); // 위에 뜬 것을 닫는 누름 — 격자 안을 눌러도 선택을 바꾸지 않는다
   expect([...selected]).toEqual(["g1"]);
 
   draw({ wrap: (inner) => <div {...{ inert: "" }}>{inner}</div> });
@@ -209,6 +221,16 @@ it("태그 입력이 키로 끝나면 초점이 격자로 돌아온다 · 체크
   const button = host.querySelector<HTMLButtonElement>('.gen-cell[data-id="g2"] button')!;
   act(() => button.focus());
   expect(key("Enter", button).defaultPrevented).toBe(false);
+  expect(previews).toEqual([]);
+  // 체크박스의 Space 는 언제나 그 체크박스의 것(격자가 다른 카드를 뒤집지 않는다)
+  const again = host.querySelector<HTMLInputElement>('.gen-cell[data-id="g1"] input[type=checkbox]')!;
+  act(() => again.focus());
+  const chosen = [...selected];
+  expect(key(" ", again).defaultPrevented).toBe(false);
+  expect([...selected]).toEqual(chosen);
+  // 길게 눌린 Enter 에는 크게 보기를 열지 않는다
+  act(() => grid().focus());
+  key("Enter", grid(), { repeat: true });
   expect(previews).toEqual([]);
 });
 

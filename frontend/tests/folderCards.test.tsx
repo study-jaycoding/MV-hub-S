@@ -491,8 +491,28 @@ it("키보드 — Ctrl+A 모두 · 방향키 옮기기(Shift = 누른 카드부�
   key("Enter", {}, host.querySelector(".cut-out")!); // '컷 밖' 칸의 Enter 는 그 단추를 누르는 키
   expect(opened).toEqual(["C0040"]);
 
-  overlay = true; draw(); // 위에 창이 떠 있으면 키는 그 창의 것
+  overlay = true; draw(); // 위에 창이 떠 있으면 키는 그 창의 것 — 그것을 닫는 누름도 고른 것을 바꾸지 않는다
   key("ArrowLeft");
   key("a", { ctrlKey: true });
+  mouse("mousedown", tile("C0010")); mouse("mouseup", window);
   expect([...selected]).toEqual(["e035/C0030"]);
+  overlay = false; draw();
+
+  // 마퀴로 고른 뒤(남긴 자리가 고른 것에 없다) 방향키는 고른 것 중 마지막 카드에서 간다
+  selected = new Set(["e035/C0010", "e035/E01"]); draw();
+  key("ArrowRight");
+  expect([...selected]).toEqual(["e035/C0030"]);
+  // 밖에서 선택을 비우면(Esc) 가리키는 카드도 없다 — 보이지 않는 자리에 Enter 가 듣지 않는다
+  selected = new Set(); draw();
+  const openedBefore = [...opened]; const enteredBefore = [...entered];
+  key("Enter");
+  expect(opened).toEqual(openedBefore);
+  expect(entered).toEqual(enteredBefore);
+  // Tab 으로 초점을 옮긴 카드가 있으면 Enter 는 그 카드의 것, 길게 눌린 Enter 는 무시
+  act(() => tile("E01").focus());
+  key("Enter", { repeat: true }, tile("E01"));
+  expect(entered).toEqual(enteredBefore);
+  key("Enter", {}, tile("E01"));
+  expect(entered).toEqual([...enteredBefore, "E01"]);
+  expect(key("ArrowLeft", { altKey: true }).defaultPrevented).toBe(false); // Alt+← 는 브라우저의 뒤로
 });

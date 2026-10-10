@@ -1,3 +1,4 @@
+import { createColorEditLedger, keepLocalColors } from "./generationColorState";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, GEN_PAGE, type GenCursor } from "../api";
 import { isLocatedQuery, locatedItems, mergeLocatedGenerations, type GenerationLocation } from "./resolveLibraryLocation";
@@ -88,6 +89,8 @@ export function useGenerationLibraryData({
   };
   const gensRef = useRef(gens);
   gensRef.current = gens;
+  // 색 편집 장부 — 재조회의 응답이 그사이 칠한 색을 덮지 않게(lib/generationColorState). 색을 칠하는 쪽(색 단축키)이 begin/end 를 부른다.
+  const colorLedger = useRef(createColorEditLedger()).current;
   const loadingMoreRef = useRef(false);
   const projectsLoadedRef = useRef(false);
   const reloadSeqRef = useRef(0);
@@ -345,6 +348,7 @@ export function useGenerationLibraryData({
       //    메타를 시작해, 왼쪽 폴더·태그·배지가 목록 왕복(로컬 47ms·3.38MB)만큼 늦게 왔다.
       //    그리드 표시는 목록만 기다린다. 메타는 메타 줄이 받아 적용한다 — 줄이 비어 있으면 지금 이 자리에서 출발하고,
       //    앞 묶음이 떠 있으면 그 뒤에 선다(이 실행의 목록은 그것을 기다리지 않는다).
+      const keepColor = colorLedger.stamp(); // 출발 시점을 찍는다 — 이 뒤에 칠한 색은 아래 응답이 덮지 못한다
       const list = trashMode ? api.listTrash(query.search, 0) : api.listGenerations(query, null);
       const metaDone = requestMeta(light);
       const located = locatedRef.current;
@@ -378,6 +382,7 @@ export function useGenerationLibraryData({
           g = checked ? mergeLocatedGenerations(g.filter((item) => !oldIds.has(item.id)), valid) : g;
           setLocatedVisibleIds(new Set(valid.map((item) => item.id)));
         }
+        g = keepLocalColors(gensRef.current, g, keepColor); // 화면·탭 캐시 둘 다 같은 값을 쓴다
         setGens((prev) => reconcileArrayState(prev, g));
         setHasMore(page.length >= GEN_PAGE);
         setLoadError(null);
@@ -584,6 +589,7 @@ export function useGenerationLibraryData({
     filtersRef,
     gens,
     gensRef,
+    colorLedger,
     hasMore,
     listRevision,
     loadError,

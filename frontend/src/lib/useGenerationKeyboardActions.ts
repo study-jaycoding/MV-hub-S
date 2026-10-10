@@ -3,7 +3,7 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { api } from "../api";
 import { KEY_COLORS } from "./appConstants";
 import { toggleDisabledGen } from "./deactivated";
-import { applyGenerationColor, ColorSaveError, nextGenerationSelectionColor } from "./generationColorState";
+import { applyGenerationColor, ColorSaveError, nextGenerationSelectionColor, type ColorEditLedger } from "./generationColorState";
 import { createMutationQueue } from "./mutationQueue";
 import { backgroundKeysBlocked, isTypingTarget } from "./keyGate";
 import { markKeyHandled } from "./keyHandled";
@@ -21,6 +21,8 @@ interface UseGenerationKeyboardActionsArgs {
   setGens: Dispatch<SetStateAction<Generation[]>>;
   // compose 탭에서도 라이브러리 격자가 떠 있는 동안(캔버스 '폴더 보기' 창)은 색·비활성 단축키를 살린다.
   composeGridActiveRef?: MutableRefObject<boolean>;
+  // 색 편집 장부(목록 훅의 것) — 재조회의 응답이 그사이 칠한 색을 덮지 않게 칠할 때·저장이 끝날 때 알린다.
+  colorLedger?: ColorEditLedger;
 }
 
 export function useGenerationKeyboardActions({
@@ -32,6 +34,7 @@ export function useGenerationKeyboardActions({
   selectedRef,
   setGens,
   composeGridActiveRef,
+  colorLedger,
 }: UseGenerationKeyboardActionsArgs) {
   const latestCallbacksRef = useRef({
     flash,
@@ -54,6 +57,7 @@ export function useGenerationKeyboardActions({
   const colorSelected = useCallback(
     async (ids: string[], color: string) => {
       const next = nextGenerationSelectionColor(gensRef.current, ids, color);
+      colorLedger?.begin(ids);
       gensRef.current = applyGenerationColor(gensRef.current, ids, next);
       setGens((prev) => {
         const updated = applyGenerationColor(prev, ids, next);
@@ -67,10 +71,12 @@ export function useGenerationKeyboardActions({
         } catch (error) {
           if (error instanceof ColorSaveError) throw error;
           throw new ColorSaveError(ids.length);
+        } finally {
+          colorLedger?.end(ids); // 실패의 복구 재조회(큐가 이 작업 뒤에 부른다)보다 먼저 — 그래야 서버 값으로 돌아간다
         }
       });
     },
-    [gensRef, setGens],
+    [gensRef, setGens, colorLedger],
   );
 
   useEffect(() => {

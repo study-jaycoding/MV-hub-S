@@ -69,7 +69,10 @@ export function backgroundKeysBlocked(): boolean {
 //  · 받는 초점: 없음(BODY) · 격자를 품은 창 자체(막 연 폴더 창) · 상단바/툴바/선택 막대의 단추(Enter·Space 는 그 단추를 누르는 키라 제외)
 //  · 안 받는 경우: 격자가 가려져 있다(inert — 폴더 창 뒤의 본 목록) · 캔버스(초점 없는 키는 보드의 것 — 창 자체에 초점일 때만 받는다)
 //  · Esc 는 받지 않는다 — 선택 해제·창 닫기는 뒤 화면의 Esc 처리(lib/useEscapeClose)가 한 번만 한다.
+//  · Tab(초점 이동)·Alt 조합(브라우저의 뒤로/앞으로)도 받지 않는다. 그 밖의 키는 격자에 보여 주되, 격자가 **쓴 키일 때만**
+//    (기본 동작을 막았다) 초점을 데려온다 — 안 쓰는 키(Shift 만 누름 등)에 초점이 격자로 튀면 Tab 순서가 격자에서 다시 시작한다.
 function takesLooseKey(grid: HTMLElement, e: KeyboardEvent): boolean {
+  if (e.key === "Tab" || e.altKey) return false;
   if (grid.closest("[inert]")) return false;
   const active = document.activeElement as HTMLElement | null;
   if (active && active !== document.body) {
@@ -90,8 +93,10 @@ export function useLooseKeys(gridRef: RefObject<HTMLElement | null>, onKey: (e: 
       const grid = gridRef.current;
       if (!grid || e.key === "Escape" || isKeyHandled(e) || backgroundKeysBlocked() || !takesLooseKey(grid, e)) return;
       markKeyHandled(e); // 격자가 둘이어도 한 번만
-      grid.focus({ preventScroll: true });
+      const active = document.activeElement;
       onKeyRef.current(e);
+      // 격자가 쓴 키일 때만, 그리고 그 키가 초점을 다른 데로 옮기지 않았을 때만(태그 입력을 연 경우 등) 격자로 데려온다.
+      if (e.defaultPrevented && document.activeElement === active) grid.focus({ preventScroll: true });
     };
     window.addEventListener("keydown", onLoose);
     return () => window.removeEventListener("keydown", onLoose);
