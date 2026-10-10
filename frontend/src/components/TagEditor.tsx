@@ -291,7 +291,7 @@ export function TagEditor({
                     className={"te-gchip te-wchip" + (current ? " on" : "") + (workspaceBusy ? " busy" : "")}
                     onMouseDown={(e) => {
                       keepFocus(e);
-                      if (workspaceBusy) return;
+                      if (e.button !== 0 || workspaceBusy) return; // 왼쪽 단추만 — 우클릭·휠 클릭에 귀속이 바뀌지 않게
                       void applyWorkspaceCommand(workspacePicker.operation, workspace);
                     }}
                     aria-disabled={workspaceBusy}

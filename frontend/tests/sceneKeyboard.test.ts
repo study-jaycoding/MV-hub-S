@@ -91,6 +91,13 @@ describe("scene keyboard intent", () => {
     expect(scenePasteShortcut(key("v", { ctrlKey: true, altKey: true }), 1)).toBe(false);
   });
 
+  it("가위는 수식키 없는 Y 만 — Ctrl+Y·Alt+Y 는 가위가 아니다", () => {
+    expect(sceneKeyIntent(key("y"), { pickerOpen: false, selectionCount: 0 })).toEqual({ type: "cut-start" });
+    expect(sceneKeyIntent(key("Y", { shiftKey: true }), { pickerOpen: false, selectionCount: 0 })).toEqual({ type: "cut-start" });
+    expect(sceneKeyIntent(key("y", { ctrlKey: true }), { pickerOpen: false, selectionCount: 0 })).toBeNull();
+    expect(sceneKeyIntent(key("y", { altKey: true }), { pickerOpen: false, selectionCount: 0 })).toBeNull();
+  });
+
   it("두 카드 이상의 C는 자동 연결이고 Delete는 선택 삭제다", () => {
     expect(sceneKeyIntent(key("c"), { pickerOpen: false, selectionCount: 2 })).toEqual({ type: "auto-connect" });
     expect(sceneKeyIntent(key("Delete"), { pickerOpen: false, selectionCount: 1 })).toEqual({ type: "delete" });

@@ -2918,8 +2918,10 @@ export function SceneBoard({
     onPopupTag: () => false, // 태그 키는 창의 격자가 받는다(카드 안 인라인 편집) — 씬은 손대지 않는다
     onCreateNode: createNodeFromPicker,
     onTogglePicker: toggleNodePicker,
-    onUndo: undo,
-    onRedo: redo,
+    // 카드·그룹을 끄는 중(보드에 dragging 표시)에는 받지 않는다 — 끄는 중에 되돌리면 다음 움직임이 그 취소를 덮고 다시 실행 기록도
+    //  지워졌다. 범위 선택 중의 Ctrl+Z 는 그대로다(dragging 은 카드·그룹 이동만 건다).
+    onUndo: () => { if (!scrollRef.current?.classList.contains("dragging")) undo(); },
+    onRedo: () => { if (!scrollRef.current?.classList.contains("dragging")) redo(); },
     onCopy: copySelectedNodes,
     onSelectAll: () => {
       setSelected(new Set(cardsRef.current.map((c) => c.id)));

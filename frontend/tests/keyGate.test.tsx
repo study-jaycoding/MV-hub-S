@@ -257,3 +257,22 @@ it("누르는 순간 위에 메뉴가 떠 있었으면, 그 누름이 메뉴를 
   fire("pointerdown"); fire("mousedown"); // 메뉴가 없는 다음 누름 = 격자 밖 클릭
   expect(select.selected.size).toBe(0);
 });
+
+it("조합 중의 Enter(한글 확정)는 입력칸의 키 처리에 닿지 않는다 — 확정 뒤의 진짜 Enter 는 닿는다", () => {
+  const onEnter = vi.fn();
+  function App() {
+    usePageSelectAllGuard();
+    return <input className="probe-text" onKeyDown={(e) => { if (e.key === "Enter") onEnter(); }} />;
+  }
+  act(() => root.render(<App />));
+  const input = host.querySelector(".probe-text")!;
+  const composing = press("Enter", input, { isComposing: true });
+  expect(onEnter).not.toHaveBeenCalled();
+  expect(composing.defaultPrevented).toBe(false); // 조합 확정(브라우저의 기본 동작)은 그대로
+  const legacy = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+  Object.defineProperty(legacy, "keyCode", { value: 229 }); // isComposing 을 안 주는 환경의 표시
+  act(() => { input.dispatchEvent(legacy); });
+  expect(onEnter).not.toHaveBeenCalled();
+  press("Enter", input);
+  expect(onEnter).toHaveBeenCalledTimes(1);
+});

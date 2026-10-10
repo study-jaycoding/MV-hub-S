@@ -98,12 +98,20 @@ export function useLooseKeys(gridRef: RefObject<HTMLElement | null>, onKey: (e: 
   }, [gridRef]);
 }
 
-/** 글자 입력칸 밖의 Ctrl/⌘+A 는 브라우저가 화면 글자를 통째로 긁는다 — 언제나 막는다(전체 선택은 격자·보드가 직접 한다).
+/** 앱이 한 번 거는 키 지킴이 둘 — ① 조합 중 Enter ② 입력칸 밖 Ctrl/⌘+A.
+ *  글자 입력칸 밖의 Ctrl/⌘+A 는 브라우저가 화면 글자를 통째로 긁는다 — 언제나 막는다(전체 선택은 격자·보드가 직접 한다).
  *  뒤 화면의 키 처리가 쉬는 동안(위에 창이 떠 있을 때)에도 막아야 한다: 긁힌 글자는 창을 닫아도 남고, 그 위에서 시작한 카드 끌기를
  *  브라우저가 '글자 끌기'로 가로채 끌기가 멈춘다(2026-10-10 재실측 3/3). 앱이 한 번 건다. 재지정과 무관하게 브라우저의 키(A)를 본다. */
 export function usePageSelectAllGuard(): void {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // 조합 중의 Enter(한글 등 — 브라우저가 조합을 확정하는 키)는 앱의 키 처리에 보내지 않는다. 그 키를 'Enter' 로 주는 환경에서는
+      //  입력칸의 Enter(저장·확정·제출·칸 벗어나기)가 덜 친 글자로 나간다(입력칸 20여 곳이 e.key === "Enter" 만 본다). 전파만 멈춘다 —
+      //  조합 확정이라는 기본 동작은 그대로다. 확정 뒤에 오는 진짜 Enter 는 조합 중이 아니라 통과한다.
+      if (e.key === "Enter" && (e.isComposing || e.keyCode === 229)) {
+        e.stopPropagation();
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "a" && !isTypingTarget(e.target)) e.preventDefault();
     };
     window.addEventListener("keydown", onKey, true);

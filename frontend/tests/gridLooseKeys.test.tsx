@@ -4,7 +4,8 @@
 //  ② 마퀴로 고른 뒤 방향키를 누르면 맨 첫 카드로 튀었고, Shift 클릭은 범위가 되지 않았다 → 기준 = 고른 것 중 마지막 카드
 //  ③ 마퀴를 놓는 순간의 마지막 움직임이 버려졌고, 창을 떠나도(blur) 끌기가 남았다
 //  ④ 태그 입력이 키로 끝나면 초점을 격자로 돌려준다 · 카드 안 단추에 초점일 때 Enter 는 그 단추의 것
-import { act, type ComponentProps } from "react";
+import { act, useState, type ComponentProps } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ThumbnailGrid } from "../src/components/ThumbnailGrid";
@@ -114,7 +115,7 @@ it("툴바·상단바 단추에 초점이 남아 있어도 받는다 — Enter·
   key("Enter", focus(".bar-button"));
   expect(previews).toEqual([]);
   key("ArrowRight", focus(".bar-input"));
-  key("ArrowRight", focus(".other-button"));
+  key("ArrowLeft", focus(".other-button")); // 받았다면 g1 로 갔을 것
   expect([...selected]).toEqual(["g2"]);
 });
 
@@ -214,8 +215,14 @@ it("태그 입력이 키로 끝나면 초점이 격자로 돌아온다 · 체크
 it("위에 떠 있던 창을 닫은 Esc 는 초점이 남은 격자의 선택까지 지우지 않는다 · 창이 떠 있는 동안 방향키·Space 가 뒤 격자를 밀지 않는다", () => {
   // Codex 코드 리뷰·2026-10-10 재실측: 고른 카드의 ⓘ 로 연 비교 창을 Esc 로 닫으면 선택도 풀렸다(창은 캡처 단계에서 닫히고, 같은 Esc 가
   //  격자에 닿을 때는 게이트가 이미 풀려 있었다). 창이 뜬 채 Space·↓ 를 누르면 뒤 격자가 한 쪽씩 내려갔다.
+  // 캡처·비소비 겹 — Esc 를 받으면 **그 자리에서** 닫힌다(브라우저에서는 리스너 사이의 마이크로태스크에 다시 그려진다 = flushSync).
+  //  그래서 같은 Esc 가 격자에 닿을 때는 게이트가 이미 풀려 있고, '쓴 것' 표시만이 선택을 지킨다.
   let open = true;
-  function Closing() { useEscapeClose(() => { open = false; draw({ before: null }); }, true, true); return null; } // 캡처·비소비 겹
+  function ClosingLayer({ close }: { close: () => void }) { useEscapeClose(close, true, true); return null; }
+  function Closing() {
+    const [shown, setShown] = useState(true);
+    return shown ? <ClosingLayer close={() => { open = false; flushSync(() => setShown(false)); }} /> : null;
+  }
   draw({ before: <Closing /> });
   flushFrames();
   selected = new Set(["g1", "g2"]);

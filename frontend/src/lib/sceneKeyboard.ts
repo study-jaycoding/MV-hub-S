@@ -159,7 +159,7 @@ export function sceneKeyIntent(
   if (matchesShortcut(event, "colorGreen")) return { type: "color", color: "green" };
   if (matchesShortcut(event, "colorBlue")) return { type: "color", color: "blue" };
   if (matchesShortcut(event, "tag")) return { type: "tag" };
-  if (lower === "y") return { type: "cut-start" };
+  if (plain && lower === "y") return { type: "cut-start" };
   if (key === "Delete" && context.selectionCount > 0) return { type: "delete" };
   return null;
 }

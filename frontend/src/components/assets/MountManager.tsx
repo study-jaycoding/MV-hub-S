@@ -1,7 +1,7 @@
 // 외부 폴더 등록(마운트) 관리 — Assets 좌상단 타이틀 클릭으로 열리는 플로팅 창.
 //  · 위 입력: 등록할 폴더 경로 + 이름 → 등록하면 아래 목록에 추가
 //  · 등록된 이름은 프로젝트 드롭다운에 그대로 뜬다(서버 전역, 모든 팀원 공유)
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import type { AssetMount } from "../../types";
@@ -32,13 +32,16 @@ export function MountManager({
   }, [workspaceId]);
   useEscapeClose(onClose);
 
+  const addingRef = useRef(false); // busy 상태는 다음 렌더에야 보인다 — 같은 순간의 연타는 이것으로 막는다
   const add = async () => {
+    if (addingRef.current) return;
     const p = path.trim();
     const n = name.trim();
     if (!p || !n) {
       setErr("폴더 경로와 이름을 모두 입력하세요.");
       return;
     }
+    addingRef.current = true;
     setBusy(true);
     setErr("");
     try {
@@ -50,6 +53,7 @@ export function MountManager({
     } catch (e) {
       setErr(String(e).replace(/^Error:\s*/, ""));
     } finally {
+      addingRef.current = false;
       setBusy(false);
     }
   };

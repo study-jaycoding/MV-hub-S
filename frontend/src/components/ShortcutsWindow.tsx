@@ -12,6 +12,7 @@ import {
   resetBinding,
   resetAll as resetAllShortcuts,
   conflictOf,
+  isReservedBinding,
   eventToBinding,
   prettyBinding,
   type ShortcutId,
@@ -38,6 +39,10 @@ export function ShortcutsWindow({ onClose }: { onClose: () => void }) {
         if (e.key === "Escape") return; // 취소는 아래 useEscapeClose 가 한다
         const b = eventToBinding(e);
         if (!b) return; // 수식키만 눌림 — 계속 대기
+        if (isReservedBinding(b)) {
+          setMsg(`"${prettyBinding(b)}" 은(는) 이미 쓰이는 고정 키라 지정할 수 없습니다.`);
+          return;
+        }
         const clash = conflictOf(b, cap);
         if (clash) {
           const name = SHORTCUTS.find((s) => s.id === clash)?.label ?? clash;
@@ -107,6 +112,14 @@ export function ShortcutsWindow({ onClose }: { onClose: () => void }) {
                       disabled={!custom}
                       title="기본값으로"
                       onClick={() => {
+                        // 기본값을 그사이 다른 단축키가 쓰고 있으면 되돌리지 않는다 — 두 동작이 한 키에 걸린다.
+                        const clash = conflictOf(defaultBinding(s.id), s.id);
+                        if (clash) {
+                          const name = SHORTCUTS.find((x) => x.id === clash)?.label ?? clash;
+                          setMsg(`기본값 "${prettyBinding(defaultBinding(s.id))}" 은(는) 지금 "${name}"에 쓰이고 있습니다 — 그쪽을 먼저 바꾸세요.`);
+                          return;
+                        }
+                        setMsg("");
                         resetBinding(s.id);
                         rerender();
                       }}

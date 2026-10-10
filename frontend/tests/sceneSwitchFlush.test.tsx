@@ -86,9 +86,12 @@ it("보드를 누르면 화면에 남은 글자 선택을 걷고, 보드 안에�
     range.selectNodeContents(label);
     window.getSelection()!.addRange(range);
     expect(String(window.getSelection())).toBe("씬 탭 이름");
+    // jsdom 은 초점을 옮기기만 해도 선택을 빈 캐럿으로 바꾼다 — 결과(남은 글자)만으로는 보드가 걷었는지 알 수 없어, 걷는 호출을 본다.
+    const cleared = vi.spyOn(window.getSelection()!, "removeAllRanges");
     act(() => { card.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 })); });
     act(() => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); });
-    expect(String(window.getSelection())).toBe(""); // 긁힌 글자가 남지 않는다(jsdom 은 초점을 옮기면 빈 캐럿을 하나 둔다 — 글자로 본다)
+    expect(cleared).toHaveBeenCalled();
+    expect(String(window.getSelection())).toBe("");
 
     const plain = new Event("dragstart", { bubbles: true, cancelable: true });
     act(() => { card.dispatchEvent(plain); });

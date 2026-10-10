@@ -25,6 +25,9 @@ export interface ShortcutDef {
   label: string;
   group: string;
   def: string; // 기본 바인딩(정규화 문자열)
+  // 이 단축키가 듣는 화면 — 같이 켜지는 것끼리만 충돌이다. library = 라이브러리 격자(목록·폴더 창·결과 창), board = 캔버스·계보 보드,
+  //  없으면 어디서나. 라이브러리 격자가 키를 받는 동안 보드의 키는 쉬므로 둘은 같은 키를 써도 된다(기본값 c 가 그렇다).
+  scope?: "library" | "board";
 }
 
 export const SHORTCUTS: ShortcutDef[] = [
@@ -33,12 +36,12 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "colorGreen", label: "컬러 — 초록", group: "라이브러리", def: "g" },
   { id: "colorBlue", label: "컬러 — 파랑", group: "라이브러리", def: "b" },
   { id: "tag", label: "태그 입력", group: "라이브러리", def: "#" },
-  { id: "comment", label: "코멘트 열기", group: "라이브러리", def: "c" },
-  { id: "showHistory", label: "히스토리 (어떻게 만들었나 노드로)", group: "라이브러리", def: "h" },
+  { id: "comment", label: "코멘트 열기", group: "라이브러리", def: "c", scope: "library" },
+  { id: "showHistory", label: "히스토리 (어떻게 만들었나 노드로)", group: "라이브러리", def: "h", scope: "library" },
   { id: "selectAll", label: "전체 선택", group: "라이브러리", def: "mod+a" },
   { id: "boardDisable", label: "노드 비활성화(회색) 토글", group: "구성 보드", def: "d" },
-  { id: "boardArrange", label: "선택 노드 자동 정렬", group: "구성 보드", def: "a" },
-  { id: "boardConnect", label: "선택 노드 연결(왼→오른쪽)", group: "구성 보드", def: "c" },
+  { id: "boardArrange", label: "선택 노드 자동 정렬", group: "구성 보드", def: "a", scope: "board" },
+  { id: "boardConnect", label: "선택 노드 연결(왼→오른쪽)", group: "구성 보드", def: "c", scope: "board" },
 ];
 
 const LS_KEY = STORAGE_KEYS.shortcuts;
@@ -67,12 +70,15 @@ export function getBinding(id: ShortcutId): string {
 export function defaultBinding(id: ShortcutId): string {
   return DEFAULTS[id];
 }
+// 저장 직전에 저장소를 다시 읽는다 — 다른 탭·창에서 바꾼 항목을 이 탭의 낡은 사본으로 덮지 않는다(그 항목만 바꾼다).
 export function setBinding(id: ShortcutId, binding: string) {
+  overrides = load();
   if (binding === DEFAULTS[id]) delete overrides[id];
   else overrides[id] = binding;
   persist();
 }
 export function resetBinding(id: ShortcutId) {
+  overrides = load();
   delete overrides[id];
   persist();
 }
@@ -80,20 +86,44 @@ export function resetAll() {
   overrides = {};
   persist();
 }
-// 이 바인딩을 이미 쓰는 다른 단축키 id(충돌). 없으면 null.
+// 다른 탭·창에서 바꾸면 이 탭도 바로 따른다(storage 이벤트는 바꾼 탭이 아닌 탭에만 온다).
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== null && event.key !== LS_KEY) return;
+    overrides = load();
+    dispatchAppEvent(APP_EVENTS.shortcutsChanged);
+  });
+}
+// 이 바인딩을 이미 쓰는 다른 단축키 id(충돌). 없으면 null. 같이 켜지지 않는 화면끼리(library ↔ board)는 충돌이 아니다.
 export function conflictOf(binding: string, except: ShortcutId): ShortcutId | null {
+  const mine = SHORTCUTS.find((s) => s.id === except)?.scope;
   for (const s of SHORTCUTS) {
-    if (s.id !== except && getBinding(s.id) === binding) return s.id;
+    if (s.id === except || getBinding(s.id) !== binding) continue;
+    if (mine && s.scope && mine !== s.scope) continue;
+    return s.id;
   }
   return null;
 }
+// 재지정할 수 없는 키 — 격자·캔버스·브라우저가 이미 쓰는 고정 키(같은 키에 두 동작이 걸리거나 아무 일도 안 일어난다),
+//  그리고 글자가 아닌 입력기 키. 전엔 Enter·방향키도 받아, 프롬프트의 Enter 에 도크가 숨거나 방향키에 색이 칠해졌다.
+const RESERVED = new Set([
+  "escape", "enter", "tab", "space", "backspace", "delete", "insert", "home", "end", "pageup", "pagedown",
+  "arrowup", "arrowdown", "arrowleft", "arrowright", "contextmenu", "capslock", "process", "unidentified", "dead",
+  "f", "y", "s", // 캔버스: 화면 맞춤·가위 / Assets: 소스
+  "mod+z", "mod+shift+z", "mod+c", "mod+v", "mod+x", "mod+g", // 캔버스: 실행 취소·복사·붙여넣기·그룹
+  "mod+w", "mod+t", "mod+n", "mod+r", "mod+l", "mod+shift+t", "mod+shift+n", // 브라우저
+]);
+export function isReservedBinding(binding: string): boolean {
+  return RESERVED.has(binding) || /^(mod\+|alt\+|shift\+)*f\d{1,2}$/.test(binding);
+}
 
 // 키 이벤트가 갖춰야 할 최소 형태 — DOM KeyboardEvent·React.KeyboardEvent 둘 다 구조적으로 만족.
-type KeyLike = { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean };
+type KeyLike = { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey?: boolean };
 
 const MOD_ONLY = new Set(["control", "meta", "shift", "alt", "altgraph", "os"]);
 
-// 키 이벤트 → 정규화 바인딩 문자열. ctrl/meta=mod, alt 포함. shift 는 무시(문자는 e.key 그대로 사용).
+// 키 이벤트 → 정규화 바인딩 문자열. ctrl/meta=mod, alt 포함. Shift 는 Ctrl·Alt 와 함께일 때만 센다 — 혼자일 때는 글자가 이미
+// 달라져 있어(#, R) e.key 그대로 쓴다. 전엔 Shift 를 늘 버려, Ctrl+X 로 정한 것이 Ctrl+Shift+X 에도 발동했다.
 // 수식키 단독(Ctrl 만 등)은 null(아직 키 안 눌림).
 export function eventToBinding(e: KeyLike): string | null {
   let key = e.key;
@@ -102,7 +132,8 @@ export function eventToBinding(e: KeyLike): string | null {
   key = key.toLowerCase();
   const mod = e.ctrlKey || e.metaKey ? "mod+" : "";
   const alt = e.altKey ? "alt+" : "";
-  return mod + alt + key;
+  const shift = e.shiftKey && (mod || alt) ? "shift+" : "";
+  return mod + alt + shift + key;
 }
 
 export function matchShortcut(e: KeyLike, id: ShortcutId): boolean {
@@ -120,6 +151,8 @@ export function prettyBinding(b: string): string {
         ? "Ctrl/⌘"
         : p === "alt"
           ? "Alt"
+          : p === "shift"
+            ? "Shift"
           : p === "space"
             ? "Space"
             : p.length === 1

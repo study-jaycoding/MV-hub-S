@@ -138,10 +138,10 @@ export function useSceneClipboardDrop(
   );
 
   const importExternalFiles = useCallback(
-    async (files: File[], centerX: number, centerY: number) => {
+    async (files: File[], centerX: number, centerY: number, sceneAtDrop?: string) => {
       const accepted = files.filter((file) => referenceDropTypeFromFile(file));
       if (!accepted.length) return;
-      const sceneId = optionsRef.current.sceneIdRef.current;
+      const sceneId = sceneAtDrop ?? optionsRef.current.sceneIdRef.current;
       try {
         // 로컬 파일은 이 PC 설치 폴더(imports)에만 둔다 — 서버에 올리지 않는다(Jay 2026-09-29 옛 방식).
         const response = await api.uploadReferenceFiles(accepted);
@@ -205,8 +205,10 @@ export function useSceneClipboardDrop(
             hasHandler: !!openRecipe,
           }) && openRecipe
         ) {
+          // 놓은 순간의 씬을 잡아 둔다 — 각인 판독(서버 왕복)을 기다리는 사이 씬을 바꾸면 파일이 그 씬에 들어갔다.
+          const sceneAtDrop = current.sceneIdRef.current;
           void openRecipe(mediaFiles[0]).then((handled) => {
-            if (!handled) void importExternalFiles(mediaFiles, point.x, point.y);
+            if (!handled) void importExternalFiles(mediaFiles, point.x, point.y, sceneAtDrop);
           });
           return;
         }
@@ -229,7 +231,9 @@ export function useSceneClipboardDrop(
     void (async () => {
       const marker = `[MV-hub#${uid()}] 노드 복사됨 — 캔버스에서 Ctrl+V 로 붙여넣기`;
       try {
-        await navigator.clipboard?.writeText?.(marker);
+        // 쓰기 함수가 없으면 '썼다'고 적지 않는다 — 표식이 클립보드에 실제로 들어갔을 때만 아래 붙여넣기 판정이 그것을 믿는다.
+        if (typeof navigator.clipboard?.writeText !== "function") throw new Error("clipboard write unsupported");
+        await navigator.clipboard.writeText(marker);
         sceneClipboardMarker = marker;
         lastImageKeyRef.current = null;
         return;
@@ -307,9 +311,11 @@ export function useSceneClipboardDrop(
       const image = clipboardImage(event);
       const imageKey = image ? `${image.size}:${image.type}` : null;
       const clipboard = clipboardRef.current;
+      // 표식을 클립보드에 써 넣은 뒤라면, 지금 클립보드의 그림은 **그 뒤에 밖에서 새로 복사한 것**이다 — 방금 붙인 그림과 같아도 그림이다.
+      //  (전엔 같은 그림을 두 번 붙이면 두 번째에 예전에 복사해 둔 노드가 붙었다.) 표식을 못 쓴 환경만 '방금 붙인 그림과 같은가'로 가린다.
       const intent = scenePasteIntent(
         imageKey,
-        lastImageKeyRef.current,
+        sceneClipboardMarker ? null : lastImageKeyRef.current,
         clipboard?.cards.length || 0,
       );
 
