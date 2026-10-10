@@ -107,3 +107,36 @@ it("편집 키 — 쓴 키만 기본 동작을 막고, 입력칸·다른 창·�
   expect(press({ key: "End", code: "End" }).defaultPrevented).toBe(false);
   expect(timecode()).toBe("00:00:00:00");
 });
+
+it("편집 키 — 위에 Esc 로 닫히는 창·메뉴가 떠 있으면 쉰다(풀·뷰어 메뉴가 뜬 채 Delete·Space 가 뒤에 먹었다). 앱이 늘 막아 두는 Ctrl+A 는 듣는다", async () => {
+  const { useEscapeClose } = await import("../src/lib/useEscapeClose");
+  function Layer() { useEscapeClose(() => {}); return null; }
+  const draw = (layer: boolean) => act(() => root.render(<>
+    {layer ? <Layer /> : null}
+    <EditTab authKey="auth" authReady workspace={{ scope: "team", id: "w1", name: "W" }} keysActive flash={() => {}}
+      onOpenCutFolder={() => {}} reloadSignal={0} peekPath={null} onPeekMarks={() => {}} cardMenuRef={{ current: null }} onPreview={() => {}} onCompare={() => {}}
+      resolve={{ send: () => {}, busy: false, pendingCount: 0 }} />
+  </>));
+  // 시퀀스에 클립 둘을 놓아 둔다(문서는 localStorage — 계정 local · p1 · e070)
+  localStorage.setItem("ch.editTimeline:local:p1:e070", JSON.stringify({ v: 1, tracksOff: [], tracksLocked: [], clips: [
+    { cut: "e070/c1", gen: "g1", track: 1, kind: "video", dur: 5 }, { cut: "e070/c2", gen: "g2", track: 1, kind: "video", dur: 5 },
+  ] }));
+  draw(true);
+  expect(press({ key: "End", code: "End" }).defaultPrevented).toBe(false);
+  expect(press({ key: " ", code: "Space" }).defaultPrevented).toBe(false);
+  expect(timecode()).toBe("00:00:00:00");
+  draw(false);
+  expect(press({ key: "End", code: "End" }).defaultPrevented).toBe(true);
+  expect(timecode()).toBe("00:00:10:00");
+
+  // 앱은 입력칸 밖의 Ctrl+A 를 캡처 단계에서 늘 막아 둔다(화면 글자를 긁지 않게) — 그렇다고 편집 화면이 '남이 쓴 키'로 보고 손을 떼면 안 된다
+  const guard = (event: KeyboardEvent) => { if (event.ctrlKey && event.key === "a") event.preventDefault(); };
+  window.addEventListener("keydown", guard, true);
+  try {
+    press({ key: "a", code: "KeyA", ctrlKey: true });
+    expect(document.querySelectorAll(".ed-clip").length).toBe(2);
+    expect(document.querySelectorAll(".ed-clip.ed-sel").length).toBe(2);
+  } finally {
+    window.removeEventListener("keydown", guard, true);
+  }
+});

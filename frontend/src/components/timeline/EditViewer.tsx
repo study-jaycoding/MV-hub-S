@@ -76,7 +76,12 @@ export function EditViewer({
   const headRef = useRef<HTMLDivElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
   useOutsideMouseDown(pickRef, () => setOpen(false), open);
-  useEscapeClose(() => setOpen(false), open, true, true);
+  // 판이 숨겨지면(order < 0) 메뉴도 닫는다 — 판은 숨겨도 마운트돼 있어, 열림이 남으면 보이지 않는 겹이 뒤 화면의 키를 전부 막는다
+  //  (lib/keyGate: 켜진 Esc 겹 = 키의 주인).
+  useEffect(() => {
+    if (order < 0) setOpen(false);
+  }, [order]);
+  useEscapeClose(() => setOpen(false), open && order >= 0, true, true);
   useEffect(() => registerPaint((time) => {
     if (timeRef.current) timeRef.current.textContent = timecode(time);
     const at = `${total > 0 ? Math.min(100, Math.max(0, (time / total) * 100)) : 0}%`;

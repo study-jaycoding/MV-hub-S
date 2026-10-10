@@ -6,6 +6,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
 import type { CardMark, Generation, PreviewTarget, WorkspaceContext } from "../../types";
 import { APP_EVENTS } from "../../lib/appEvents";
+import { backgroundKeysBlocked } from "../../lib/keyGate";
+import { isKeyHandled, markKeyHandled } from "../../lib/keyHandled";
 import { isFolderDisabled } from "../../lib/deactivated";
 import {
   addMarker,
@@ -784,7 +786,13 @@ function EditTabInner({
 
   // 편집 키 — 글자 키는 물리 키(code)로 본다(한/영 상태와 무관). 실제로 쓴 키만 기본 동작을 막는다.
   const onKey = (event: KeyboardEvent) => {
-    if (!keysActive || event.defaultPrevented || isTyping(event.target)) return;
+    // 위에 창·메뉴가 떠 있으면 키는 그쪽 것이다(lib/keyGate) — 풀의 보기·정렬 메뉴, 뷰어의 '무엇을 볼지' 메뉴가 뜬 채 Delete·Space 가
+    //  뒤의 클립·재생에 먹었다(2026-10-10 점검).
+    if (!keysActive || backgroundKeysBlocked() || isTyping(event.target)) return;
+    // 다른 처리가 이미 쓴 키는 건드리지 않는다. Ctrl+A 만 예외 — 앱이 '입력칸 밖 Ctrl+A 는 화면 글자를 긁지 않게' 늘 막아 두므로
+    //  (lib/keyGate.usePageSelectAllGuard) 그것은 '쓴 키'가 아니다.
+    const selectAll = (event.ctrlKey || event.metaKey) && !event.altKey && event.code === "KeyA";
+    if (event.defaultPrevented && !selectAll) return;
     const from = event.target as HTMLElement | null;
     if (from && from !== document.body && !rootRef.current?.contains(from)) return; // 다른 창 안에서 난 키
     const { code, key } = event;
@@ -834,7 +842,10 @@ function EditTabInner({
     else if (code === "KeyO") markHere("markOut");
     else if (code === "KeyM") bookmarkHere();
     else if (code === "KeyW") toggleTrim();
-    else if (key === "Escape" && picked.length) setSelected(new Set());
+    else if (key === "Escape" && picked.length && !isKeyHandled(event)) {
+      markKeyHandled(event); // 이 Esc 는 여기서 썼다 — 같은 키로 다른 것까지 닫히지 않게(lib/keyHandled)
+      setSelected(new Set());
+    }
     else used = false;
     if (used) event.preventDefault();
   };
@@ -922,6 +933,13 @@ function EditTabInner({
       />
       <main className="main ed-root" ref={rootRef} tabIndex={-1} onMouseDownCapture={(event) => {
         grabFocus();
+        // 입력칸(풀의 검색·크기)에 초점이 남은 채 타임라인·뷰어를 누르면 키를 편집 화면으로 돌려받는다 — 화면 안의 단추들은 초점을
+        //  가져가지 않아(mousedown 을 막는다), 안 돌려받으면 Space·J·K·L 이 계속 그 입력칸으로 갔다(2026-10-10 점검).
+        const typing = document.activeElement as HTMLElement | null;
+        if (typing && typing !== event.target && isTyping(typing) && !isTyping(event.target)) {
+          typing.blur();
+          rootRef.current?.focus({ preventScroll: true });
+        }
         // 아래 타임라인·막대를 누르면 재생 키는 타임라인 것이다(뷰어 판은 판이 스스로 정한다)
         if ((event.target as HTMLElement).closest(".ed-tl, .ed-bar")) setKeyTarget("timeline");
       }}>
