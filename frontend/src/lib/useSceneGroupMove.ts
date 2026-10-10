@@ -12,6 +12,7 @@ import {
 } from "./sceneGroupSelection";
 import type { SceneCard, SceneEdge, SceneGroup } from "./scenes";
 import type { BeginSceneDrag } from "./useSceneDragSession";
+import { rewindSceneMove } from "./sceneInteractions";
 
 interface UseSceneGroupMoveOptions {
   cardsRef: MutableRefObject<SceneCard[]>;
@@ -19,7 +20,8 @@ interface UseSceneGroupMoveOptions {
   groupsRef: MutableRefObject<SceneGroup[]>;
   selectedGroupIdsRef: MutableRefObject<Set<string>>;
   selectedRef: MutableRefObject<Set<string>>;
-  zoomRef: MutableRefObject<number>;
+  /** 화면 좌표 → 캔버스 좌표(지금의 팬·줌으로). 끈 거리는 캔버스 좌표로 잰다 — 카드 끌기(useSceneCardMove)와 같다. */
+  toCanvas: (clientX: number, clientY: number) => { x: number; y: number };
   scrollRef: MutableRefObject<HTMLDivElement | null>;
   setCards: Dispatch<SetStateAction<SceneCard[]>>;
   setGroups: Dispatch<SetStateAction<SceneGroup[]>>;
@@ -29,6 +31,9 @@ interface UseSceneGroupMoveOptions {
   beginDrag: BeginSceneDrag;
   reconcileGenerationRefs: (cards: SceneCard[], edges: SceneEdge[]) => SceneCard[];
   persist: (cards: SceneCard[], edges: SceneEdge[], groups?: SceneGroup[]) => void;
+  /** 끌기 하나의 시작과 끝 — 그 사이의 저장은 되돌리기 한 단계로 묶인다(lib/useSceneHistory). */
+  beginGesture: (rewind?: <Snapshot extends { cards: SceneCard[]; groups: SceneGroup[] }>(snapshot: Snapshot) => Snapshot) => void;
+  endGesture: () => void;
 }
 
 /** 그룹 헤더 클릭 선택과 그룹 멤버·수동 프레임 이동 수명주기를 관리한다. */
@@ -50,6 +55,7 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
     );
     const targetGroupIdSet = new Set(targetGroupIds);
     const start = { x: event.clientX, y: event.clientY };
+    const startCanvas = current.toCanvas(start.x, start.y); // 끄는 중 줌이 바뀌어도 잡은 자리가 마우스를 따라오게(카드 끌기와 같다)
     const cardsById = new Map(
       current.cardsRef.current.map((card) => [card.id, card] as const),
     );
@@ -100,10 +106,9 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
       moved = true;
       latest.scrollRef.current?.classList.add("dragging");
 
-      const zoom = latest.zoomRef.current;
-      const safeZoom = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
-      const dx = (moveEvent.clientX - start.x) / safeZoom;
-      const dy = (moveEvent.clientY - start.y) / safeZoom;
+      const point = latest.toCanvas(moveEvent.clientX, moveEvent.clientY);
+      const dx = point.x - startCanvas.x;
+      const dy = point.y - startCanvas.y;
       const movedCards = anchorId && anchor
         ? moveCardsFromOrigins(
             latest.cardsRef.current,
@@ -178,8 +183,10 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
       const latest = optionsRef.current;
       if (relocated) {
         commitMovedGroup();
+        latest.endGesture();
         return;
       }
+      latest.endGesture();
       latest.setSelectedGroupIds((previous) =>
         sceneGroupClickSelection(previous, groupId, additive),
       );
@@ -190,7 +197,10 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
     current.beginDrag(move, up, () => {
       cleanupDrag();
       if (relocated) commitMovedGroup();
+      optionsRef.current.endGesture();
     });
+    // 앞 끌기가 남아 있었다면 위 beginDrag 가 그것을 먼저 확정하고 닫는다 — 그다음에 이 끌기의 묶음을 연다
+    current.beginGesture((snapshot) => rewindSceneMove(snapshot, origins, originalRects));
     return true;
   }, []);
 }

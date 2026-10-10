@@ -91,6 +91,16 @@
   background: rgba(var(--accent-rgb), 0.16); border: 1px solid var(--accent); border-radius: 2px;
 }
 .scene-canvas { position: absolute; top: 0; left: 0; will-change: transform; }
+/* 보드를 통째로 끄는 동안(lib/useSceneCardMove 의 빠른 길 — 캔버스 층을 translate 로 민다) 값이 0 인 '더하기' 애니메이션을 걸어 둔다.
+   그림은 그대로인데, 이게 걸려 있어야 크롬이 translate 가 바뀔 때마다 전체 합성 갱신(레이어 130여 개, 약 40ms)을 하지 않고 합성기에서만
+   민다 — will-change 로는 그 길을 타지 않았다(2026-10-10 격리 실측, 412장 전부 끌기: 초당 화면 갱신 18번 → 55~59번, 합성 갱신 37번 →
+   2번. 끄는 중 그림·놓는 순간·줌·되돌리기는 같았다). 크롬 안쪽 동작에 기대는 방법이다 — 안 통하게 되면 전의 속도로 돌아갈 뿐이다.
+   animation-composition 을 모르는 브라우저에서는 이 애니메이션이 inline translate 를 덮어 층이 안 움직이므로 @supports 로 감싼다.
+   끝없이 돌리지 않는다(한 번, 한 시간 — 끌기는 그보다 짧다): 끝없는 애니메이션은 쉬는 화면의 CPU 를 먹는다(tests/idleCssAnimations). */
+@supports (animation-composition: add) {
+  @keyframes scene-layer-noop { from { translate: 0px 0px; } to { translate: 0px 0px; } }
+  .scene-canvas[data-layer-move] { animation: scene-layer-noop 3600s linear; animation-composition: add; }
+}
 
 /* Ctrl+K 로 프롬프트 숨김 시 — 멀티선택 액션바를 캔버스 상단 중앙(씬 패널·미니맵과 같은 줄)에 얹는다.
 

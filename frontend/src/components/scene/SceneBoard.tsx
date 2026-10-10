@@ -131,6 +131,7 @@ import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
 import { isSceneTextEntryTarget, sceneEscapeTarget } from "../../lib/sceneKeyboard";
 import { SCENE_NODE_CATALOG } from "../../lib/sceneNodeCatalog";
 import { useSceneDragSession } from "../../lib/useSceneDragSession";
+import type { SceneLayerMove } from "../../lib/useSceneCardMove";
 import { useSceneViewport } from "../../lib/useSceneViewport";
 import { useSceneClipboardDrop } from "../../lib/useSceneClipboardDrop";
 import { useSceneCardResize } from "../../lib/useSceneCardResize";
@@ -736,7 +737,12 @@ export function SceneBoard({
   } = useSceneViewport({
     sceneId: scene.id,
     camera: scene.camera,
-    onCameraChange,
+    // 카메라를 저장하기 전에 밀린 편집을 먼저 확정한다 — 카메라만 저장해도 저장소가 돌려주는 씬의 카드는 '마지막으로 저장한 것'이라,
+    //  아직 저장 안 된 좌표·글이 그 값으로 덮였다(끄는 중 화면 맞춤 F·휠 줌 → 추가 이동 없이 놓으면 옛 자리가 저장됐다 — Codex 코드 리뷰).
+    onCameraChange: onCameraChange && ((camera) => {
+      flushPendingRef.current();
+      onCameraChange(camera);
+    }),
     cullingEnabled: CULL_ENABLED,
     gridSize: GRID,
   });
@@ -912,6 +918,8 @@ export function SceneBoard({
     restoreSceneHistory,
     commitDerivedState,
     hasUncommittedCardsOrEdges,
+    beginGesture,
+    endGesture,
     propagateGenIdsToHistory,
     propagateAssetRelinkToHistory,
     pruneGenIdsFromHistory,
@@ -943,6 +951,9 @@ export function SceneBoard({
   // (종전 localStorage 는 그 자리에서 끝났다). 그래서 첫 미저장 입력에서 2초가 지나면 치는 중이어도
   // 저장을 내보낸다 — 잃을 수 있는 구간을 줄이는 것이지 없애는 것은 아니다.
   const pendingSinceRef = useRef<number | undefined>(undefined);
+  // 보드를 통째로 끄는 동안 캔버스 층에만 밀어 둔 이동량의 손잡이(lib/useSceneCardMove 의 빠른 길). 좌표가 필요한 자리 —
+  //  저장 확정(아래 flushPending)·단축키 직전 — 에서 settle 로 먼저 좌표에 넣고, 씬 전환으로 끌기를 버릴 때 drop 한다.
+  const layerMoveRef = useRef<SceneLayerMove | null>(null);
   const flushPending = () => {
     if (pendingPersistRef.current !== undefined) {
       clearTimeout(pendingPersistRef.current);
@@ -953,6 +964,9 @@ export function SceneBoard({
     //  여기서 저장하면 방금 연 씬이 앞 씬의 카드로 덮인다(2026-10-10 실측: 씬 탭을 25ms 안에 연달아 누르면 9/9, 새로 고침 뒤에도 남음).
     //  떠난 씬의 밀린 편집은 전환 직전의 flushPending 이 이미 확정했다.
     if (cardsSceneRef.current !== sceneIdRef.current) return;
+    // 층에만 있던 전체 끌기의 이동량을 좌표에 넣는다 — 안 넣으면 끄는 중 씬을 바꿀 때 그 이동이 저장에서 빠진다(걸음마다 좌표를
+    //  바꾸는 평소 길은 여기서 저장됐다).
+    layerMoveRef.current?.settle();
     if (!hasUncommittedCardsOrEdges(cardsRef.current, edgesRef.current)) return; // 밀린 편집 없음
     persist(cardsRef.current, edgesRef.current); // 사용자 편집 확정 → undo:true
   };
@@ -1793,6 +1807,8 @@ export function SceneBoard({
     if (uiSceneIdRef.current === scene.id) return;
     uiSceneIdRef.current = scene.id;
     abortDrag();
+    layerMoveRef.current?.drop(); // 버린 끌기가 캔버스 층에만 밀어 둔 이동량도 버린다 — 새 씬이 밀려 보이지 않게
+    endGesture(); // 버린 끌기의 되돌리기 묶음도 닫는다
     scrollRef.current?.classList.remove("dragging", "panning");
     setMarquee(null);
     // 버린 범위 선택은 확정하지 않고(다음 키 입력이 새 씬에서 확정하지 않게) 직접 켜 둔 선택 표시도 지운다 — 새 씬에
@@ -2928,10 +2944,13 @@ export function SceneBoard({
       setSelectedGroupIds(new Set());
       setRowSel({ listId: "", cids: new Set() });
     },
-    onGroup: groupSelected,
+    // 끄는 중의 묶기는 받지 않는다(되돌리기와 같다) — 새 그룹의 네모는 그 순간의 좌표로 만들어지는데 이미 시작한 끌기는 그 그룹을
+    //  모른다. 카드만 더 움직이고 네모는 남아 틀이 늘어진 채 저장됐다(Codex 설계 검토).
+    onGroup: () => { if (!moveHeldRef.current) groupSelected(); },
     onFrame: frameView,
     onAutoConnect: autoConnectSelection,
-    onArrange: arrangeSelection,
+    // 끄는 중의 정렬도 받지 않는다 — 정렬이 바꾼 좌표와 이미 시작한 끌기의 시작 좌표가 엇갈린다
+    onArrange: (repeat) => !moveHeldRef.current && arrangeSelection(repeat),
     onConnect: connectSelected,
     onDisable: disableSelected,
     onColor: (color) =>
@@ -2947,6 +2966,9 @@ export function SceneBoard({
   // capture 단계라 카드의 stopPropagation 과 무관하게 항상 먼저 잡는다. 캔버스 내부 입력요소(태그 편집
   // 등)를 클릭한 경우는 제외(그건 그 입력창을 쓰려는 것).
   const onBoardMouseDownCapture = (e: React.MouseEvent) => {
+    // 손을 뗀 것을 놓친 전체 끌기가 남아 있으면 그 이동량을 좌표에 먼저 넣는다 — 새로 누른 카드·그룹이 시작 좌표를 읽기 전에
+    //  (안 넣으면 새 끌기가 옛 좌표에서 출발해 앞의 이동이 사라진다 — Codex 코드 리뷰).
+    layerMoveRef.current?.settle();
     const t = e.target as HTMLElement;
     if (isSceneTextEntryTarget(t)) return;
     const ae = document.activeElement as HTMLElement | null;
@@ -3002,6 +3024,9 @@ export function SceneBoard({
   };
 
   const beginCardMove = useSceneCardMove({
+    canvasRef,
+    layerMoveRef,
+    toCanvas,
     cardsRef,
     edgesRef,
     groupsRef,
@@ -3021,6 +3046,8 @@ export function SceneBoard({
     reassignGroups,
     reconcileGenerationRefs: withGenRefs,
     persist,
+    beginGesture,
+    endGesture,
     ejectSpeed: GROUP_EJECT_SPEED,
   });
   const beginGroupMove = useSceneGroupMove({
@@ -3029,7 +3056,7 @@ export function SceneBoard({
     groupsRef,
     selectedGroupIdsRef,
     selectedRef,
-    zoomRef,
+    toCanvas,
     scrollRef,
     setCards,
     setGroups,
@@ -3039,6 +3066,8 @@ export function SceneBoard({
     beginDrag,
     reconcileGenerationRefs: withGenRefs,
     persist,
+    beginGesture,
+    endGesture,
   });
   const {
     begin: beginBoardMarquee,
@@ -3100,6 +3129,16 @@ export function SceneBoard({
   // 카드·그룹을 누르고 있는 동안 = 끌기 세션. 누른 순간부터 손을 뗄 때(또는 창을 떠날 때)까지다 — 보드의 dragging 클래스는 4px 넘게
   //  움직인 뒤에야 붙고 React 가 className 을 다시 쓰면 지워져(가위 Y 를 누를 때) 기준으로 못 쓴다(Codex 코드 리뷰).
   const moveHeldRef = useRef(false);
+  // 끄는 중에 키가 오면 층에만 밀어 둔 전체 끌기의 이동량을 좌표에 먼저 넣는다 — 붙여넣기·삭제·맞춤·색이 옛 좌표를 보고 저장하지
+  //  않게. 잡는 단계로 들어 다른 키 처리보다 먼저 돈다(수식키만 누른 것은 뺀다). 그런 끌기가 없으면 아무 일도 없다.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Shift" || event.key === "Control" || event.key === "Alt" || event.key === "Meta") return;
+      layerMoveRef.current?.settle();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
   const holdMove = () => {
     moveHeldRef.current = true;
     const release = () => {
@@ -3339,6 +3378,13 @@ export function SceneBoard({
       b: viewRect.b + CULL_MARGIN,
     };
   }, [viewRect]);
+  // 보드의 카드를 전부 끄는 동안에는 연결선·끝 점을 컬링하지 않는다 — 그때는 좌표를 놓을 때까지 그대로 두고 캔버스 층만 밀어서
+  //  (lib/useSceneCardMove 의 빠른 길) 화면 밖에 있던 선이 끌려 들어와도 다시 계산되지 않는다. 카드는 keepIds 가 이미 다 그린다.
+  //  끄는 중 카드가 새로 생겨도(생성 완료) 그 끌기가 끝날 때까지 쉰다 — 층을 미는 끌기가 살아 있는 동안이 기준이다.
+  const edgeCullRect = useMemo(
+    () => (draggingIds.length > 0 && layerMoveRef.current ? null : cullRect),
+    [cullRect, draggingIds],
+  );
 
   const renderCards = useMemo(() => {
     if (!cullRect) return visibleCards;
@@ -3873,11 +3919,11 @@ export function SceneBoard({
             const { x1, y1, x2, y2 } = edgeEnds(e, a, b);
             // 연결선 컬링 — 양 끝점 bbox 가 확장뷰포트 밖이면 곡선 전체가 밖(제어점이 bbox 내라 보장) → 안 그림.
             if (
-              cullRect &&
-              (Math.max(x1, x2) < cullRect.l ||
-                Math.min(x1, x2) > cullRect.r ||
-                Math.max(y1, y2) < cullRect.t ||
-                Math.min(y1, y2) > cullRect.b)
+              edgeCullRect &&
+              (Math.max(x1, x2) < edgeCullRect.l ||
+                Math.min(x1, x2) > edgeCullRect.r ||
+                Math.max(y1, y2) < edgeCullRect.t ||
+                Math.min(y1, y2) > edgeCullRect.b)
             )
               return null;
             const d = edgePathXY(x1, y1, x2, y2);
@@ -4296,11 +4342,11 @@ export function SceneBoard({
             const { x1, y1, x2, y2 } = edgeEnds(e, a, b);
             // 끝점 점도 같은 기준으로 컬링 — bbox 가 확장뷰포트 밖이면 두 점 다 화면에서 멀어 안 그림.
             if (
-              cullRect &&
-              (Math.max(x1, x2) < cullRect.l ||
-                Math.min(x1, x2) > cullRect.r ||
-                Math.max(y1, y2) < cullRect.t ||
-                Math.min(y1, y2) > cullRect.b)
+              edgeCullRect &&
+              (Math.max(x1, x2) < edgeCullRect.l ||
+                Math.min(x1, x2) > edgeCullRect.r ||
+                Math.max(y1, y2) < edgeCullRect.t ||
+                Math.min(y1, y2) > edgeCullRect.b)
             )
               return null;
             return (
