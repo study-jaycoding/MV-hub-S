@@ -789,6 +789,15 @@
    막은 화면 전체 그대로라 프롬프트 양옆·아래를 누르면 창이 닫히고 뒤 화면은 눌리지 않는다. 창에서 여는 것들(코멘트 165·
    등급 확인 160·정보 230·크게 보기)은 이보다 위다. */
 body:has(.folder-peek) .sl-dockbar { z-index: 152; }
+/* 앞에 오는 것은 프롬프트뿐이다 — 상태 줄(Host 콘솔 단추·공간 선택)과 도크의 빈 틈은 전처럼 막의 몫이다(누르면 창이 닫힌다).
+   도크 전체가 막 앞에 오면 상태 줄이 눌려 창 위로 콘솔이 뜨고(콘솔은 도크 안에 그려져 도크와 같은 높이다), 콘솔은 ✕ 로만 닫히는
+   창이라 그 위에서 누른 Esc 가 아래의 폴더 창을 닫는다(격리 실측). 이미 열려 있던 콘솔·앱 종료 확인 창(상태 줄이 그리는 떠 있는 창 전부)은 전에는 폴더 창에 가려졌다 — 창이 뜬 동안
+   숨긴다(닫지 않는다 — 창을 닫으면 그대로 다시 보인다).
+   상태 줄을 끄는 줄은 프롬프트를 접었을 때 상태 줄을 다시 켜는 규칙(prompt-dock.css `.sl-hidden .sl-status-row`)보다 세야 한다. */
+body:has(.folder-peek) .sl-dockbar .sl-dock { pointer-events: none; }
+body:has(.folder-peek) .sl-dockbar .sl-dock > *:not(.sl-status-row) { pointer-events: auto; }
+body:has(.folder-peek) .sl-dockbar .sl-dock > .sl-status-row { pointer-events: none; }
+body:has(.folder-peek) .sl-dockbar .sl-status-row .manage-float { visibility: hidden; }
 .folder-peek-hd {
   display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border);
 }
