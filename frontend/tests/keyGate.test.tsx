@@ -11,7 +11,7 @@ vi.mock("../src/api", () => ({ api: { setColorsBatch: vi.fn(async () => ({ faile
 vi.mock("../src/lib/deactivated", () => ({ toggleDisabledGen: vi.fn() }));
 
 import { toggleDisabledGen } from "../src/lib/deactivated";
-import { backgroundKeysBlocked, dropFocusAfterPress, isTypingTarget, pressStartedCovered, useKeyOwner, usePageSelectAllGuard } from "../src/lib/keyGate";
+import { backgroundKeysBlocked, dropFocusAfterPress, isTypingTarget, pressStartedCovered, useKeyOwner, useModalFocus, usePageSelectAllGuard } from "../src/lib/keyGate";
 import { useGenerationSelection } from "../src/lib/useGenerationSelection";
 import { markKeyHandled } from "../src/lib/keyHandled";
 import { useBackgroundEscape, useEscapeClose } from "../src/lib/useEscapeClose";
@@ -396,4 +396,26 @@ it("캔버스의 폴더 창: 초점이 없을 때(BODY)의 d 도 창 안 격자�
   act(() => root.render(<Harness active={false} />)); // 폴더 창이 없다 — 캔버스의 d 는 보드의 것
   press("d");
   expect(toggleDisabledGen).toHaveBeenCalledTimes(1);
+});
+
+// ── 모달의 초점(2026-10-11) — 장치 자체는 tests/modalFocus.test.tsx ──
+it("모달 영역(useModalFocus)은 초점만 다룬다 — 뒤 화면의 키를 쉬게 하는 것은 여전히 Esc 겹이다. 위아래는 Esc 겹과 같은 번호 줄에서 받는다", () => {
+  function Region({ id, layer = false }: { id: string; layer?: boolean }) {
+    const ref = useRef<HTMLDivElement>(null);
+    useModalFocus(ref);
+    useEscapeClose(() => {}, layer);
+    return <div id={id} ref={ref}><button id={id + "-button"}>단추</button></div>;
+  }
+  act(() => root.render(<Region id="first" />));
+  expect(document.activeElement?.id).toBe("first"); // 초점은 들인다
+  expect(backgroundKeysBlocked()).toBe(false); // 영역을 올린 것만으로는 뒤 화면의 키가 쉬지 않는다 — 창은 useEscapeClose 도 켠다
+  act(() => root.render(<Region id="first" layer />));
+  expect(backgroundKeysBlocked()).toBe(true);
+  // 메뉴(겹만 있는 것)가 번호를 받아 간 뒤에 연 모달이 맨 위다 — Tab 은 그 안에서 돈다
+  act(() => root.render(<><Region id="first" layer /><Layer onClose={() => {}} /></>));
+  act(() => root.render(<><Region id="first" layer /><Layer onClose={() => {}} /><Region id="second" layer /></>));
+  expect(document.activeElement?.id).toBe("second");
+  act(() => host.querySelector<HTMLElement>("#second-button")!.focus());
+  expect(press("Tab", document.activeElement!).defaultPrevented).toBe(true); // 하나뿐인 자리 — 제자리에서 돈다(첫 창으로 가지 않는다)
+  expect(document.activeElement?.id).toBe("second-button");
 });
