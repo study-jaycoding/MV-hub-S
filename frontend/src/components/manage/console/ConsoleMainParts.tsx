@@ -1,7 +1,8 @@
 // 메인 화면 부품 — 힉스필드 엔터프라이즈 화면과 같은 틀(Jay 2026-09-29): 크레딧 풀 카드 + 서브 워크스페이스 표.
 // 풀: 할당됨(추정) = 사용(우리 기록 전체) + 미사용(서브 잔액 합), 할당 가능 = 메인 잔액. 힉스필드는 과거 할당 총액을 주지 않는다.
+import { useModalFocus } from "../../../lib/keyGate";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { formatDecimal } from "../../../lib/creditPlan";
 import { formatCredits } from "../../../lib/formatCredits";
 import { manageApi } from "../../../lib/manageApi";
@@ -54,6 +55,8 @@ function AllocBaseDialog({ base, today, onClose, onSaved }: { base: number | nul
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEscapeClose(() => { if (!busy) onClose(); }); // 바깥 클릭과 같은 규칙 — 처리 중엔 닫지 않는다
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef); // 초점도 창 안에 둔다 — Tab 이 뒤 화면으로 나가지 않는다(lib/keyGate '모달의 초점')
   const value = Number(text.replace(/,/g, ""));
   const valid = text.trim() !== "" && Number.isFinite(value) && value >= 0 && /^\d{4}-\d{2}-\d{2}$/.test(day);
   const submit = async (credits: number | null) => {
@@ -64,7 +67,7 @@ function AllocBaseDialog({ base, today, onClose, onSaved }: { base: number | nul
   };
   return (
     <div className="credit-modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className="wc-dialog" role="dialog" aria-label="할당된 크레딧 기준값">
+      <div ref={dialogRef} className="wc-dialog" role="dialog" aria-label="할당된 크레딧 기준값">
         <h3>할당된 크레딧 · 힉스필드 값</h3>
         <p>힉스필드 엔터프라이즈 화면의 'Allocated credits' 를 그 날짜와 함께 적습니다. 그 뒤로는 여기 기록한 추가 크레딧과 지나간 자동 정기 크레딧이 더해지고, 사용 = 할당 − 서브 잔액 합으로 계산됩니다.</p>
         <label>기준 날짜<input id="wc-alloc-day" type="date" max={today} value={day} onChange={(e) => setDay(e.target.value)} /></label>

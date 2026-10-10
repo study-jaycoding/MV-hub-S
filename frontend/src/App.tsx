@@ -21,10 +21,7 @@ import { ensureTeamBase } from "./lib/teamSeen";
 import { TopBar } from "./components/TopBar";
 import { SceneBar } from "./components/scene/SceneBar";
 import { SceneBoard } from "./components/scene/SceneBoard";
-import { AppOverlays } from "./components/app/AppOverlays";
-const VideoCompareModal = lazy(() =>
-  import("./components/VideoCompareModal").then((m) => ({ default: m.VideoCompareModal })),
-);
+import { AppOverlays, VideoCompareOverlay } from "./components/app/AppOverlays";
 import {
   BoardSelectionActionBar,
   LibrarySelectionActionBar,
@@ -87,7 +84,7 @@ import { useGenerationProjectActions } from "./lib/useGenerationProjectActions";
 import { useGenerationSelection } from "./lib/useGenerationSelection";
 import { useGenerationShareActions } from "./lib/useGenerationShareActions";
 import { useBackgroundEscape } from "./lib/useEscapeClose";
-import { backgroundKeysBlocked, isTypingTarget, useKeyOwner, usePageSelectAllGuard } from "./lib/keyGate";
+import { backgroundKeysBlocked, floatHost, isTypingTarget, usePageSelectAllGuard } from "./lib/keyGate";
 import { isKeyHandled, markKeyHandled } from "./lib/keyHandled";
 import { manageApi } from "./lib/manageApi";
 import { folderMenuLabel, type FolderMenuKind } from "./lib/folderContextMenu";
@@ -826,6 +823,7 @@ export default function App() {
     setSyncTick,
     historyBoardVisible: filters.tab === "compose" && !activeScene,
     commentsVisible: commentGenId !== null,
+    colorLedger, // 완료 뒤 상세 조회의 응답도 색 장부를 탄다 — 출발 뒤에 칠한 색을 덮지 않게(규칙 6)
   });
 
   // 진행중 잡·팀 탭 폴링 + 탭 재포커스 새로고침.
@@ -971,9 +969,10 @@ export default function App() {
     listPeekRef.current = null;
     // 닫는 순간 초점이 창 안(또는 아무 데도 없음)이면, 본 목록이 조작 가능해진 뒤 격자로 돌려줄 뜻을 그 문맥과 함께 적어 둔다.
     //  초점이 창 밖 다른 곳(크게 보기·프롬프트 등)에 있으면 적지 않는다 — 남의 초점은 건드리지 않는다.
-    const active = document.activeElement;
+    //  창의 툴바가 연 태그 패널은 body 에 그려진다 — 그 안의 초점도 창 안의 초점이다(lib/keyGate floatHost).
+    const active = document.activeElement as HTMLElement | null;
     refocusGridRef.current =
-      !active || active === document.body || active.closest(".folder-peek") ? listPeekCtxRef.current : null;
+      !active || active === document.body || floatHost(active).closest(".folder-peek") ? listPeekCtxRef.current : null;
     beginComposeList({ restore: backQueryKeyRef.current });
     setSelected(new Set());
     setFolderWindow(null);
@@ -1239,7 +1238,7 @@ export default function App() {
     workspaceFilter: filters.tab === "team" ? genQuery : undefined,
     workspaceScopeKey,
     onWorkspaceFilterUnsupported: () => flash(t("워크스페이스별 다빈치 확인에는 공유 서버 업데이트가 필요합니다. 임시로 전체 보기를 사용할 수 있습니다.")),
-    manualRevision, gens: gridGens, locatedVisibleIds, followLocation, revealLocated, canFollow: canFollowResolve,
+    manualRevision, gens: gridGens, locatedVisibleIds, followLocation, revealLocated, colorLedger, canFollow: canFollowResolve,
   });
   useCustomEvent(APP_EVENTS.resolveSelection, (event) => {
     // 같은 계정의 여러 탭이 /ws를 받아도 마지막으로 사용한 MV Hub 탭 하나만 화면을 움직인다.
@@ -1901,7 +1900,6 @@ export default function App() {
   //  쉰다(lib/useEscapeClose). 폴더 창은 겹이 아니라 여기서 따로 본다 — 창을 닫은 Esc 는 '쓴 것'으로 표시돼 여기까지 오지 않는다
   //  (2026-10-10 실측: 폴더 창을 Esc 로 닫으면 뒤의 컷 선택까지 지워졌다).
   useBackgroundEscape(() => setCutSel(new Set()), cutMode && cutSel.size > 0 && !listPeek);
-  useKeyOwner(!!videoCompare); // 지연 로딩 비교 창 — 코드가 도착하기 전에도 뒤 화면의 단축키는 쉰다
   // 목록 탭의 폴더 창도 열릴 때 초점을 창으로 — 조회는 위 serverFilterKey effect 가 맡는다(조회 조건이 그 폴더로 바뀌므로).
   useEffect(() => {
     if (listPeek) folderPeekRef.current?.focus();
@@ -1952,6 +1950,17 @@ export default function App() {
         ? (gens.find((g) => g.id === commentGenId)?.prompt || "").slice(0, 40) || "생성본"
         : "생성본",
     [commentGenId, gens],
+  );
+  // 여러 장을 골랐을 때 리뷰 메뉴에서 켤 항목 — 격자가 이 객체를 모든 카드에 그대로 넘긴다. 렌더마다 새 객체면 선택이 바뀔 때마다
+  //  보이는 카드의 memo 가 전부 깨진다 → 네 값이 같으면 같은 객체를 쓴다(선택 목록에 걸면 선택마다 다시 만들어진다).
+  //  훅이라 아래 조기 return 위에 둔다 — 격자 옆(return 뒤)에 두면 인증 확인이 끝나는 렌더에서 훅 수가 늘어 앱이 멈춘다.
+  const allowUnshared = reviewTargets(selectedGenerations, "unshared", canFinalize).length > 0;
+  const allowShared = reviewTargets(selectedGenerations, "shared", canFinalize).length > 0;
+  const allowHeld = reviewTargets(selectedGenerations, "held", canFinalize).length > 0;
+  const allowFinal = reviewTargets(selectedGenerations, "final", canFinalize).length > 0;
+  const bulkReviewAllowed = useMemo(
+    () => ({ unshared: allowUnshared, shared: allowShared, held: allowHeld, final: allowFinal }),
+    [allowUnshared, allowShared, allowHeld, allowFinal],
   );
 
   // 인증 검증이 끝나기 전(authConfig 로딩 중 또는 토큰 me 검증 중)에는 화면을 보류한다.
@@ -2149,12 +2158,7 @@ export default function App() {
           disabledIds={effectiveDisabled}
           onBulkGradeStep={onBulkGradeStep}
           onBulkReview={(action) => void onReviewSelection(selectedGenerations, action, canFinalize)}
-          bulkReviewAllowed={{
-            unshared: reviewTargets(selectedGenerations, "unshared", canFinalize).length > 0,
-            shared: reviewTargets(selectedGenerations, "shared", canFinalize).length > 0,
-            held: reviewTargets(selectedGenerations, "held", canFinalize).length > 0,
-            final: reviewTargets(selectedGenerations, "final", canFinalize).length > 0,
-          }}
+          bulkReviewAllowed={bulkReviewAllowed}
           tab={filters.tab === "team" ? "team" : "my"} // 캔버스 폴더 보기(compose)는 내 작업 격자
           myCreatorUid={account?.creator_uid ?? null}
           scale={scale}
@@ -2291,6 +2295,13 @@ export default function App() {
     </>
   );
 
+  // 폴더 창이 떠 있는 동안 그 뒤(상단바·사이드바·본문)는 inert 다 — 마우스는 창의 바깥 막이 막지만 Tab 으로는 닿았다(2026-10-11 실측:
+  //  목록 탭의 창은 48번째 Tab 부터 상단바로, 캔버스의 창은 72번째부터 사이드바·상단바로 나갔다. 사이드바의 폴더 줄에 초점이 놓이면
+  //  그 줄의 키 처리가 전파를 막아(common/FolderTreeView) Esc 로 창이 닫히지도 않았다). 그 밖에 남는 것 = 창·하단 프롬프트·창에서 연 것.
+  //  창이 실제로 그려지는 조건과 같은 값으로 건다 — 상태(folderPeek)만 보면 창 없이 화면만 잠길 수 있다.
+  const canvasPeek = filters.tab === "compose" && folderPeek && !!activeScene && !!folderSel;
+  const behindInert = !!listPeek || canvasPeek;
+
   return (
     <div className="app">
       <TopBar
@@ -2322,10 +2333,10 @@ export default function App() {
         notificationUnreadCount={stats.unread_count}
         onOpenNotificationComment={openComment}
         onNotificationsChanged={() => void reload(true, true)}
+        inert={behindInert}
       />
-      {/* 목록 탭의 폴더 창이 떠 있는 동안 뒤 화면(사이드바·본문)은 inert — 마우스는 바깥 막이 막지만 Tab 으로는 닿는다
-          (React 18 타입에 inert 가 없어 spread 로 넘긴다). */}
-      <div className="body" {...(listPeek ? { inert: "" } : {})}>
+      {/* 폴더 창이 떠 있는 동안 뒤 화면(사이드바·본문)은 inert — 위 behindInert(React 18 타입에 inert 가 없어 spread 로 넘긴다). */}
+      <div className="body" {...(behindInert ? { inert: "" } : {})}>
         {filters.tab === "compose" ? (
           <>
             {showFilters && (
@@ -2562,12 +2573,6 @@ export default function App() {
             />
             </Suspense>
             )}
-            {folderPeek && activeScene && folderSel &&
-              renderFolderPeek(
-                `${projects.find((p) => p.id === folderSel.projectId)?.name ?? ""} / ${folderSel.path}`,
-                folderSel.path,
-                () => setFolderPeek(false),
-              )}
           </main>
           </>
         ) : (
@@ -2651,6 +2656,8 @@ export default function App() {
         <SpotlightPrompt
           ref={spotlightPromptRef}
           visible={promptVisible}
+          // 폴더 창(캔버스·목록 탭)이 뜬 동안 상태 줄은 키보드로도 닿지 않는다 — 마우스는 app-shell.css 가 막는다(규칙 16)
+          statusInert={peekOpen}
           expanded={composerExpanded || sceneMode}
           onToggleExpand={toggleComposerExpanded}
           onPreview={openPreview}
@@ -2709,6 +2716,14 @@ export default function App() {
           listPeek.path,
           closeFolderWindow,
         )}
+      {/* 캔버스의 폴더 창 — 목록 탭의 창처럼 본문(.body) 밖에 그린다. 전엔 main 안이라 뒤 화면을 잠글 수 없었다(위 behindInert).
+          창과 막은 fixed 라 화면의 자리·쌓임은 그대로다. */}
+      {canvasPeek && folderSel &&
+        renderFolderPeek(
+          `${projects.find((p) => p.id === folderSel.projectId)?.name ?? ""} / ${folderSel.path}`,
+          folderSel.path,
+          () => setFolderPeek(false),
+        )}
       <AppOverlays
         account={account}
         adminOpen={adminOpen}
@@ -2759,11 +2774,8 @@ export default function App() {
           onClose={() => setCutReel(null)} onPreview={openPreview}
         />
       )}
-      {videoCompare && (
-        <Suspense fallback={null}>
-          <VideoCompareModal videos={videoCompare} onClose={() => setVideoCompare(null)} />
-        </Suspense>
-      )}
+      {/* 지연 로딩 창 — 틀(막·빈 창·Esc 겹)은 연 순간에 서고 본문만 늦게 온다(AppOverlays 의 LazyModalShell). */}
+      {videoCompare && <VideoCompareOverlay videos={videoCompare} onClose={() => setVideoCompare(null)} />}
       {/* 부분 수정(브러시 인페인트) — InfoPopup 의 partialEdit 이벤트로 열림.
           onQueued 는 좁은 목록 merge 만 — handlePromptCreated 를 재사용하면 구성 탭
           선택 상태에 따라 무관한 부모가 derived 로 붙는다(코덱스 설계 검토 반영). */}

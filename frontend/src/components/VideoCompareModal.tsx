@@ -1,7 +1,7 @@
 // 단순 미디어 비교 — 생성정보(프롬프트·파라미터) 없이 이미지·영상 2개+를 나란히 본다.
 // (생성카드끼리는 CompareModal 로 전체 비교. 여기는 레퍼런스처럼 생성본이 아닌 미디어가 섞였을 때 '보기' 전용.)
 // 영상 동기 로직은 CompareModal 과 공용 — 재생·정지·수동 탐색을 함께, 길이 다르면 가장 긴 것 끝에 되감기.
-import { useEscapeClose } from "../lib/useEscapeClose";
+import { useWindowEscape } from "../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import { bindSynchronizedVideos } from "../lib/synchronizedVideos";
 import { CloseIcon, FitIcon } from "./common/ViewIcons";
@@ -18,6 +18,9 @@ export interface CompareVideo {
   full?: string; // 클릭해 크게 볼 때 쓸 원본(고해상도) URL — 없으면 url 사용
 }
 
+// push 단추를 누르는 키 — 단추의 표준 누름 키 둘(CompareModal 과 같다).
+const isPushKey = (key: string) => key === " " || key === "Enter";
+
 export function VideoCompareModal({
   videos,
   onClose,
@@ -31,6 +34,7 @@ export function VideoCompareModal({
   const [imageCompare, setImageCompare] = useState(false);
   const [abOn, setAbOn] = useState(false); // 기본 꺼짐 — 아무것도 안 누른 상태로 시작
   const [pushHeld, setPushHeld] = useState(false);
+  const pushRef = useRef<HTMLButtonElement>(null);
   const [splitX, setSplitX] = useState(0.5);
   const canImageCompare = videos.length === 2 && videos.every((v) => v.type === "image");
   // 이미지 표시 방식 — CompareModal 과 동일 키(cmpFit) 공유: 전체보기(contain, 블랙바) ↔ 꽉 채우기(cover, 크롭).
@@ -55,13 +59,16 @@ export function VideoCompareModal({
       //  capture 단계라 먼저 등록된 SceneBoard bubble 리스너보다 앞서 stopPropagation 이 걸린다.
       const t = e.target as HTMLElement | null;
       const formEl = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
-      // Esc 는 막지 않는다 — 아래 useEscapeClose 가 겹 순서대로 맡는다.
+      // push 단추의 누름 키는 지나가게 둔다 — 여기서 멈추면 단추에 닿지 않는다. 그 단추가 받아 거기서 멈춘다(아래 onKeyDown).
+      if (t && t === pushRef.current && isPushKey(e.key)) return;
+      // Esc 는 막지 않는다 — 아래 useWindowEscape(겹)가 겹 순서대로 맡는다.
       if (!formEl && e.key !== "Escape") e.stopPropagation();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
-  useEscapeClose(() => (zoom ? setZoom(null) : onClose()), true, true, true); // 라이트박스 먼저 닫기. 맨 위일 때 Esc 를 삼킨다
+  // 라이트박스 먼저 닫기. 맨 위일 때 Esc 를 삼킨다. 겹은 앱의 틀(LazyModalShell)이 연 순간에 쥔 것을 쓴다(lib/useEscapeClose).
+  useWindowEscape(() => (zoom ? setZoom(null) : onClose()), true, true);
 
   // 동기 재생·탐색 — CompareModal 과 같은 공용 바인더. 영상 요소만 대상.
   useEffect(() => {
@@ -174,14 +181,23 @@ export function VideoCompareModal({
                   <div className="cmp-ablabel">A 1번</div>
                 </>
               )}
+              {/* push 는 키보드로도 누르고 있을 수 있다 — Space·Enter 를 누르는 동안만, 떼거나 초점이 떠나면 끝난다(뗌을 놓쳐 2번에 붙지 않게). */}
               <div className="cmp-abbtns">
                 <button
+                  ref={pushRef}
                   className={pushHeld ? "on" : ""}
                   title="누르고 있는 동안 2번(B) 표시"
                   onPointerDown={() => setPushHeld(true)}
                   onPointerUp={() => setPushHeld(false)}
                   onPointerLeave={() => setPushHeld(false)}
                   onPointerCancel={() => setPushHeld(false)}
+                  onKeyDown={(e) => {
+                    if (!isPushKey(e.key)) return;
+                    e.stopPropagation(); // 창의 키 가로채기가 이 키만 지나가게 뒀다 — 뒤 화면까지는 가지 않게 여기서 멈춘다
+                    setPushHeld(true);
+                  }}
+                  onKeyUp={(e) => { if (isPushKey(e.key)) setPushHeld(false); }}
+                  onBlur={() => setPushHeld(false)}
                 >
                   비교 push
                 </button>

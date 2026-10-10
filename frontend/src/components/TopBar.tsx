@@ -30,6 +30,7 @@ interface Props {
   notificationUnreadCount?: number;
   onOpenNotificationComment: (genId: string) => void;
   onNotificationsChanged: () => void;
+  inert?: boolean; // 폴더 창이 떠 있는 동안 — 마우스는 창의 막이 막지만 Tab 으로는 닿았다(App 의 behindInert)
 }
 
 export function TopBar({
@@ -51,6 +52,7 @@ export function TopBar({
   notificationUnreadCount,
   onOpenNotificationComment,
   onNotificationsChanged,
+  inert,
 }: Props) {
   const t = useT();
   // 제공자 신원 — CLI account status 이메일에서 잡힌 표시이름(계정 메뉴 표시용).
@@ -60,7 +62,8 @@ export function TopBar({
   }, []);
 
   return (
-    <header className="topbar">
+    // React 18 타입에 inert 가 없어 spread 로 넘긴다. 알림·계정 메뉴의 패널은 body 에 그려져 이 잠금에 들지 않는다.
+    <header className="topbar" {...(inert ? { inert: "" } : {})}>
       <button
         className="brand"
         onClick={onOpenAdmin}

@@ -11,6 +11,7 @@ import { formatCredits } from "../lib/formatCredits";
 import { formatGenerationDateTime, generationListMeta } from "../lib/generationDisplay";
 import { useT } from "../lib/i18n";
 import { thumbOf } from "../lib/media";
+import { useModalFocus } from "../lib/keyGate";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import type { FolderCard, PreviewItem, PreviewTarget } from "../types";
@@ -55,6 +56,8 @@ function startPlay(v: HTMLVideoElement, current: () => HTMLVideoElement | null, 
 export function CutReel({ folders, mode, onModeChange, previewOpen, onClose, onPreview }: Props) {
   const t = useT();
   useEscapeClose(onClose, !previewOpen);
+  const reelRef = useRef<HTMLDivElement>(null);
+  useModalFocus(reelRef); // 막이 있는 창 — 초점을 창 안에 둔다(lib/keyGate '모달의 초점'). 위에 크게 보기가 뜨면 그쪽이 맨 위다
   // 카드가 다시 와서 배열 객체만 바뀐 경우(보이는 내용이 같음)엔 클립도 그대로 — 재생기가 영상 길이를 다시 읽지 않게.
   //  비교 기준은 클립에 실리는 값 전부(이름·주소·표지·작업자·대표).
   const clipsNow = reelClips(folders);
@@ -66,7 +69,7 @@ export function CutReel({ folders, mode, onModeChange, previewOpen, onClose, onP
   const previewAt = (index: number) => onPreview({ ...items[index], items, index });
   return (
     <div className="reel-backdrop" onMouseDown={onClose}>
-      <div className="reel" role="dialog" aria-label={t("모아보기")} onMouseDown={(e) => e.stopPropagation()}>
+      <div ref={reelRef} className="reel" role="dialog" aria-label={t("모아보기")} onMouseDown={(e) => e.stopPropagation()}>
         <div className="reel-hd">
           <span className="reel-title">{t("모아보기")}</span>
           <span className="reel-sub">{folders.length}{t("컷")} · {t("대표")} {reps} · {t("최신")} {folders.length - reps}</span>

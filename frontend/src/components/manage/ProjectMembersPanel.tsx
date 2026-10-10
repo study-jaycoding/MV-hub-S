@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type {
   Member,
   Project,
   ProjectMember,
   WorkspaceMemberCandidate,
 } from "../../types";
+import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { memberRoleRank, ProjectRolePicker } from "../admin/RolePickers";
 
@@ -84,6 +85,10 @@ export function ProjectMembersPanel({
   };
   // 멤버 추가 창의 Esc 는 여기서 먼저 소비한다 — 흘려 보내면 바깥 프로젝트 관리 창이 통째로 닫힌다.
   useEscapeClose(closeAddDialog, addOpen, true, true);
+  const addRef = useRef<HTMLDivElement>(null);
+  useModalFocus(addRef, addOpen); // 초점도 창 안에 둔다 — Tab 이 뒤 화면으로 나가지 않는다(lib/keyGate '모달의 초점')
+  // 멤버 칸도 겹이다 — Esc 는 이 칸만 닫는다(겹이 아니어서 관리자 창이 통째로 닫혔다). 멤버 추가 창은 나중에 켜지는 겹이라 그 위다.
+  useEscapeClose(onClose);
 
   const toggleSelected = (uid: string) => {
     setSelected((current) => {
@@ -168,6 +173,7 @@ export function ProjectMembersPanel({
       {addOpen && (
         <div className="project-member-add-backdrop" onMouseDown={closeAddDialog}>
           <div
+            ref={addRef}
             className="project-member-add-dialog"
             role="dialog"
             aria-modal="true"

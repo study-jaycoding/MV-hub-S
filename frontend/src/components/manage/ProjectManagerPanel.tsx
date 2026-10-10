@@ -20,6 +20,7 @@ import {
   planningBudgetInput,
   validateProjectPlanning,
 } from "../../lib/projectPlanning";
+import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useManageCaps } from "../../lib/useManageCaps";
 import { workspaceCommandLabels } from "../../lib/workspaceCommand";
@@ -90,6 +91,9 @@ export function ProjectManagerPanel({
     setProjectDialog(null);
   }, [projectDialog?.busy, creditRowBusy]);
   useEscapeClose(closeDialog, projectDialogOpen && !conflict.active);
+  // 대화상자가 떠 있는 동안 초점은 그 안에 — Tab 이 뒤의 프로젝트 표·관리자 창 단추로 나가지 않는다(lib/keyGate '모달의 초점').
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef, projectDialogOpen);
   useEffect(() => {
     if (!projectDialogOpen) return;
     onDialogOpenChange?.(true);
@@ -581,7 +585,7 @@ export function ProjectManagerPanel({
         {projectDialog && (
           <div className="admin-confirm-backdrop" onMouseDown={() => { if (!projectDialog.busy && !creditRowBusy) setProjectDialog(null); }}>
             {/* 카드 + 카드 밖 하단 중앙의 저장·닫기(Jay 2026-09-10) — 세로 묶음이라 카드가 길어도 단추는 항상 아래에 */}
-            <div className="project-dialog-stack" onMouseDown={(e) => e.stopPropagation()}>
+            <div ref={dialogRef} className="project-dialog-stack" onMouseDown={(e) => e.stopPropagation()}>
             <div className="admin-confirm admin-project-dialog">
               <fieldset className="manage-edit-fields" disabled={projectDialog.busy || creditRowBusy}>
               <p className="admin-confirm-q">

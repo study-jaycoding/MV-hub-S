@@ -1,5 +1,6 @@
 // 플로팅 입력창 — 네이티브 window.prompt 대체. 화면을 가리지 않는 작은 떠 있는 입력.
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useModalFocus } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { workspaceCommandLabels, type WorkspaceCommandTarget } from "../lib/workspaceCommand";
 import { cachedWorkspaceOptions, fetchWorkspaceOptions } from "../lib/workspaceOptionsCache";
@@ -29,6 +30,9 @@ export function FloatingPrompt({
     ref.current?.select();
   }, []);
   useEscapeClose(onCancel);
+  // 초점은 위에서 입력칸에 줬다 — 여기서는 Tab 이 창 밖으로 나가지 않게 하고, 닫을 때 연 자리로 돌려준다(lib/keyGate '모달의 초점').
+  const panelRef = useRef<HTMLDivElement>(null);
+  useModalFocus(panelRef);
 
   const wsQuery = workspaceSuggest && v.startsWith("#+") ? v.slice(2).trim() : null;
   const wsOpen = wsQuery !== null;
@@ -59,7 +63,7 @@ export function FloatingPrompt({
     <>
       {/* 바깥 클릭 = 취소(화면을 어둡게 가리지 않는 투명 캐처) */}
       <div className="fp-catcher" onMouseDown={onCancel} />
-      <div className="fp-panel" role="dialog">
+      <div ref={panelRef} className="fp-panel" role="dialog">
         <div className="fp-title">{title}</div>
         <input
           ref={ref}

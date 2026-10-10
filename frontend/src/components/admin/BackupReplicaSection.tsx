@@ -10,6 +10,7 @@ import {
   type BackupReplicaStatus,
 } from "../../lib/backupReplicaApi";
 import { HttpError, isRouteMissing } from "../../lib/http";
+import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 
 const POLL_MS = 5000;
@@ -191,6 +192,8 @@ export function BackupReplicaSection({ onDialogOpenChange }: { onDialogOpenChang
   }, [apply, watch]);
 
   useEscapeClose(() => setConfirming(false), confirming && !busy);
+  const confirmRef = useRef<HTMLDivElement>(null);
+  useModalFocus(confirmRef, confirming); // 확인 창이 떠 있는 동안 Tab 은 그 안에서만 — 처음 초점은 비밀번호 칸(autoFocus) 그대로
   useEffect(() => {
     if (!confirming) return;
     onDialogOpenChange?.(true);
@@ -302,7 +305,7 @@ export function BackupReplicaSection({ onDialogOpenChange }: { onDialogOpenChang
 
       {confirming ? (
         <div className="admin-confirm-backdrop" onMouseDown={() => !busy && setConfirming(false)}>
-          <div className="admin-confirm" onMouseDown={(e) => e.stopPropagation()}>
+          <div ref={confirmRef} className="admin-confirm" onMouseDown={(e) => e.stopPropagation()}>
             <p className="admin-confirm-q">
               백업 위치를 <b>{draft.trim()}</b> 로 바꿉니다.
               <br />

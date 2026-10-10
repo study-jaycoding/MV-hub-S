@@ -40,6 +40,8 @@ const relinkOnWorkspaceChange = vi.fn();
 const beginList = vi.fn(); // 목록 훅의 beginComposeList — 폴더 창을 열고 닫을 때 목록을 비우는지 본다
 let setStaleList: (on: boolean) => void; // 목록 훅의 staleList(닫은 직후 옛 첫 쪽을 보이는 중)를 시험이 켜고 끈다
 let setLoadingList: (on: boolean) => void; // 목록 훅의 loading(받는 중)
+let startAuthPending = false; // 인증 훅을 '확인 중'으로 시작한다(새로 고친 직후) — 기본은 처음부터 끝난 상태
+let setAuthPending: (on: boolean) => void; // 인증 확인이 끝났다고 알린다
 let autoRefreshSnapshot: { paused?: boolean } | null = null; // 자동 새로고침 훅이 받은 인자
 let gridClass = "gen-grid"; // 가짜 격자의 클래스 — 비우면 "격자가 아직 없다"(빈 목록·실패)를 흉내 낸다
 const libraryHighlightedIds = () => [...(gridSnapshot?.resolveHighlightedIds || [])];
@@ -99,6 +101,7 @@ beforeEach(() => {
   localStorage.setItem("ch.workspaceContext", JSON.stringify({ scope: "team", id: "view-workspace", name: "View workspace" }));
   boundary = installPromptBoundaryMocks();
   gridSnapshot = null; promptSnapshot = null; librarySnapshot = null; sidebarSnapshot = null; canvasSidebarSnapshot = null;
+  startAuthPending = false;
   refreshProjects = () => {};
   locateGenerations = vi.fn().mockImplementation(async ({ gen_ids, workspace_ids, workspace_scope }: GenerationLocationRequest) => {
     const first = gen_ids[0] ? libraryGeneration(gen_ids[0]) : null;
@@ -422,11 +425,15 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
     }) };
   });
   vi.doMock("../src/components/TopBar", () => ({
-    TopBar: ({ filters }: { filters: { tab: string } }) => <output data-testid="tab">{filters.tab}</output>,
+    TopBar: ({ filters, inert }: { filters: { tab: string }; inert?: boolean }) => <output data-testid="tab" data-inert={inert || undefined}>{filters.tab}</output>,
   }));
   vi.doMock("../src/lib/useHubAuth", () => ({
-    useHubAuth: () => ({ authPending: false, authReady: true, authConfig: { auth_enabled: true },
-      account: { email: "fixture@example.invalid" }, hubAccount: null, finalizeProjects: new Set<string>(), sharedSrv: null, logout: noop, setAccount: noop }),
+    useHubAuth: () => {
+      const [authPending, setPending] = useState(startAuthPending);
+      setAuthPending = setPending;
+      return { authPending, authReady: !authPending, authConfig: { auth_enabled: true },
+        account: { email: "fixture@example.invalid" }, hubAccount: null, finalizeProjects: new Set<string>(), sharedSrv: null, logout: noop, setAccount: noop };
+    },
   }));
   for (const name of ["useGenerationProgress", "useCommentBadgePoll", "useSceneCompletionWatcher"]) {
     vi.doMock(`../src/lib/${name}`, () => ({ [name]: noop }));
@@ -979,10 +986,25 @@ it("App: 폴더 창을 닫으면 본 목록이 조작 가능해진 뒤 초점이
     expect(document.activeElement).toBe(document.body);
     act(() => setLoadingList(false));
     expect(document.activeElement).toBe(grid());
+
+    // 6) 닫는 순간 초점이 창의 툴바가 연 태그 패널에 있었어도 '창 안의 초점'이다 — 패널은 body 에 그려지고, 연 툴바를 표로 가리킨다(R14)
+    await open();
+    const bar = peekWindow()!.appendChild(document.createElement("div"));
+    bar.dataset.floatOwner = "peek-bar";
+    const floating = document.body.appendChild(document.createElement("div"));
+    floating.dataset.floatOf = "peek-bar";
+    floating.appendChild(document.createElement("button")).focus();
+    pressEscapeInPeek();
+    await settle();
+    floating.remove(); // 창(툴바)과 함께 패널도 사라진다 — 초점은 BODY 로 떨어진다
+    expect(document.activeElement).toBe(document.body);
+    act(() => setLoadingList(false));
+    expect(document.activeElement).toBe(grid());
   } finally {
     gridClass = "gen-grid";
     beginList.mockReset();
     elsewhere.remove();
+    document.querySelectorAll("[data-float-of]").forEach((left) => left.remove());
   }
 });
 
@@ -1269,4 +1291,81 @@ it("App my 탭: 폴더 창이 뜬 채 하단 프롬프트의 글 칸에서 Esc �
   pressEscapeInPeek();
   await settle();
   expect(peekWindow()).toBeNull();
+});
+
+// ── 조작 점검 7회차 ──
+it.each(["my", "compose"])("App %s: 폴더 창이 뜬 동안 하단 상태 줄은 inert 다(Tab·Enter 로도 닿지 않는다) — 프롬프트는 그대로 쓰고, 닫으면 풀린다", async (tab) => {
+  // 마우스는 CSS(body:has(.folder-peek) …)가 막는다. 키보드로는 상태 줄의 단추에 닿아 폴더 창 위로 Host 콘솔이 떴다.
+  await mountApp(tab);
+  const statusRow = () => document.querySelector(".sl-dockbar .sl-status-row")!;
+  expect(statusRow().hasAttribute("inert")).toBe(false);
+  act(() => {
+    if (tab === "compose") canvasSidebarSnapshot!.onArmFolder("resolve-project", "episode/shot"); // 캔버스: 사이드바에서 폴더를 누른다
+    else gridSnapshot!.onOpenFolder!(libraryGeneration("target")); // 목록 탭: 카드의 폴더 이름표
+  });
+  await settle();
+  expect(peekWindow()).not.toBeNull();
+  expect(statusRow().hasAttribute("inert")).toBe(true);
+  expect(document.querySelector('.sl-dockbar [contenteditable="true"]')!.closest("[inert]")).toBeNull();
+  act(() => { document.querySelector(".folder-peek-catcher")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+  await settle();
+  expect(peekWindow()).toBeNull();
+  expect(statusRow().hasAttribute("inert")).toBe(false);
+});
+
+it.each(["my", "compose"])("App %s: 폴더 창이 뜬 동안 상단바와 뒤 화면(사이드바·본문)은 inert 다 — 창과 프롬프트는 그 밖이다. 닫으면 풀린다", async (tab) => {
+  // 2026-10-11 실측: Tab 을 오래 누르면 목록 탭의 창은 48번째부터 상단바로, 캔버스의 창은 72번째부터 사이드바·상단바로 나갔다.
+  //  사이드바의 폴더 줄에 초점이 놓이면 Esc 로 창이 닫히지도 않았다(그 줄의 키 처리가 전파를 막는다 — common/FolderTreeView).
+  await mountApp(tab);
+  const topbar = () => document.querySelector<HTMLElement>('[data-testid="tab"]')!;
+  const body = () => document.querySelector<HTMLElement>(".body")!;
+  expect(topbar().dataset.inert).toBeUndefined();
+  expect(body().hasAttribute("inert")).toBe(false);
+  act(() => {
+    if (tab === "compose") canvasSidebarSnapshot!.onArmFolder("resolve-project", "episode/shot");
+    else gridSnapshot!.onOpenFolder!(libraryGeneration("target"));
+  });
+  await settle();
+  expect(peekWindow()).not.toBeNull();
+  expect(topbar().dataset.inert).toBe("true");
+  expect(body().hasAttribute("inert")).toBe(true); // 사이드바·툴바·보드(본문) 전부 — Tab 으로 닿지 않는다
+  expect(peekWindow()!.closest("[inert]")).toBeNull(); // 창은 잠긴 곳 밖에 그린다(캔버스의 창은 전에 main 안이었다)
+  expect(document.querySelector(".folder-peek-catcher")!.closest("[inert]")).toBeNull(); // 막도 — 눌러 닫을 수 있어야 한다
+  expect(document.activeElement).toBe(peekWindow()); // 잠긴 자리에 있던 초점은 창이 가져간다
+  expect(document.querySelector('.sl-dockbar [contenteditable="true"]')!.closest("[inert]")).toBeNull();
+  act(() => { document.querySelector(".folder-peek-catcher")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+  await settle();
+  expect(peekWindow()).toBeNull();
+  expect(topbar().dataset.inert).toBeUndefined();
+  expect(body().hasAttribute("inert")).toBe(false);
+});
+
+it("App: 여러 장 리뷰의 허용 값이 같으면 선택이 바뀌어도 격자에 같은 객체를 넘긴다 — 달라지면 새 값을 넘긴다", async () => {
+  // 격자는 이 객체를 모든 카드에 그대로 넘긴다 — 렌더마다 새 객체면 선택이 바뀔 때마다 보이는 카드의 memo 가 전부 깨진다
+  const send = await mountApp("my");
+  act(() => send(["other", "other-target"])); // 목록에 내 공유 카드 두 장
+  await settle();
+  act(() => gridSnapshot!.onSelectedChange(new Set(["other"])));
+  const allowed = gridSnapshot!.bulkReviewAllowed;
+  expect(allowed).toEqual({ unshared: true, shared: false, held: false, final: false });
+  act(() => gridSnapshot!.onSelectedChange(new Set(["other", "other-target"]))); // 선택만 바뀐다 — 허용 값은 그대로
+  expect(gridSnapshot!.selectedIds.size).toBe(2);
+  expect(gridSnapshot!.bulkReviewAllowed).toBe(allowed);
+  act(() => gridSnapshot!.onSelectedChange(new Set())); // 고른 것이 없으면 전부 꺼진다
+  expect(gridSnapshot!.bulkReviewAllowed).toEqual({ unshared: false, shared: false, held: false, final: false });
+  expect(gridSnapshot!.bulkReviewAllowed).not.toBe(allowed);
+});
+
+it("App: 인증 확인 중으로 한 번 그린 뒤 확인이 끝나도 예외 없이 화면이 뜬다 — 조기 반환 뒤에는 훅이 없다", async () => {
+  // 로그인된 앱을 새로 고치면 인증 확인이 끝날 때까지 App 은 조기 반환(null)에서 끝난다. 그 뒤에 훅이 하나라도 있으면
+  //  확인이 끝난 렌더에서 훅 수가 늘어 React 가 "Rendered more hooks than during the previous render" 로 앱을 멈춘다.
+  startAuthPending = true;
+  await mountApp("my");
+  expect(gridSnapshot).toBeNull(); // 아직 아무것도 그리지 않았다
+  expect(document.querySelector(".sl-dockbar")).toBeNull();
+  act(() => setAuthPending(false)); // 같은 root 에서 확인이 끝난다
+  await settle();
+  expect(document.querySelector('[data-testid="library-highlight"]')).not.toBeNull(); // 격자
+  expect(document.querySelector(".sl-dockbar")).not.toBeNull(); // 하단 프롬프트
+  expect(gridSnapshot!.bulkReviewAllowed).toEqual({ unshared: false, shared: false, held: false, final: false });
 });

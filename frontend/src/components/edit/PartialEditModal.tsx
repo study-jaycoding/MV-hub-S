@@ -13,6 +13,7 @@
 //  · 제출은 prepareCreate 클로저(재시도에도 idempotency key 유지)
 //  · 폴링 2초 재귀 setTimeout + runToken, 180초 후에도 실패 처리하지 않고 '오래 걸림' 안내만
 //  · 결과 = 전체 이미지 표시(원본 비교 꾹) — 카드는 라이브러리에 그대로 남는다
+import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type GenerationCreateBody } from "../../api";
@@ -682,6 +683,9 @@ export function PartialEditModal({
     true,
     true,
   );
+  // 초점을 창(뿌리)에 둔다 — 입력칸이 아니라 뿌리라 그리기 단축키는 전처럼 먹는다(lib/keyGate '모달의 초점').
+  const modalRef = useRef<HTMLDivElement>(null);
+  useModalFocus(modalRef);
 
   const slow = elapsed > SLOW_AFTER_MS;
   // 비율 보존 무대 크기 — 높이 상한(62vh)을 비율로 폭 상한에 옮겨, 어느 축이 클램프돼도
@@ -695,7 +699,7 @@ export function PartialEditModal({
     : undefined;
   return (
     <div className="partial-edit-backdrop">
-      <div className="partial-edit-modal" role="dialog" aria-modal="true" aria-label="부분 수정">
+      <div ref={modalRef} className="partial-edit-modal" role="dialog" aria-modal="true" aria-label="부분 수정">
         <header className="partial-edit-head">
           <span className="partial-edit-title">🖌 부분 수정</span>
           <span className="partial-edit-sub">

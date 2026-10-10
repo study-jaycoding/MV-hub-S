@@ -25,6 +25,7 @@ import {
   type BackupContinuityStatus,
   type ServerBackupVersion,
 } from "../lib/assetsApi";
+import { useModalFocus } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { ShortcutsWindow } from "./ShortcutsWindow";
 import {
@@ -526,6 +527,10 @@ export function SettingsPanel({
   };
 
   useEscapeClose(onClose);
+  // 설정 창과 옆 패널(SettingsGroup — body 에 따로 그려진다)은 한 조작 영역이다: Tab 이 둘 사이를 돌고 뒤 화면으로는 나가지 않는다
+  //  (lib/keyGate '모달의 초점'). 옆 패널은 한 번에 하나만 열린다.
+  const floatRef = useRef<HTMLDivElement>(null);
+  useModalFocus(() => [floatRef.current, document.querySelector<HTMLElement>(".settings-group-flyout")]);
 
   const pickAccent = (hex: string) => {
     setAccent(hex);
@@ -545,7 +550,7 @@ export function SettingsPanel({
   return (
     <>
       <div className="info-catcher" onMouseDown={onClose} />
-      <div className="manage-float settings-float" role="dialog" aria-label={t("설정")}>
+      <div ref={floatRef} className="manage-float settings-float" role="dialog" aria-label={t("설정")}>
         <header className="admin-head">
           <span className="admin-title">⚙ {t("설정")}</span>
           <button className="assets-x" onClick={onClose} title={t("닫기")}>

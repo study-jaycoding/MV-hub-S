@@ -1,6 +1,7 @@
 // 서브(또는 메인 자체) 워크스페이스 — 그룹 · 크레딧 · 참가자. 쓰기는 모두 기존 PUT credit-plan(409 병합 포함).
+import { useModalFocus } from "../../../lib/keyGate";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatCredits } from "../../../lib/formatCredits";
 import { manageApi } from "../../../lib/manageApi";
 import {
@@ -101,6 +102,8 @@ export function AddMemberDialog({ groups, onClose, onSave }: {
   const [gid, setGid] = useState("");
   const [busy, setBusy] = useState(false);
   useEscapeClose(() => { if (!busy) onClose(); }); // 바깥 클릭과 같은 규칙 — 처리 중엔 닫지 않는다
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef); // 초점도 창 안에 둔다 — Tab 이 뒤 화면으로 나가지 않는다(lib/keyGate '모달의 초점')
   const [error, setError] = useState("");
   const addr = email.trim().toLowerCase();
   const valid = EMAIL_RE.test(addr) && !!gid;
@@ -113,7 +116,7 @@ export function AddMemberDialog({ groups, onClose, onSave }: {
   };
   return (
     <div className="credit-modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className="wc-dialog" role="dialog" aria-label="참가시키기">
+      <div ref={dialogRef} className="wc-dialog" role="dialog" aria-label="참가시키기">
         <h3>참가시키기</h3>
         <p>이메일을 그룹에 넣어 할당 크레딧을 줍니다. 그 사람의 앱이 이 워크스페이스를 보고하기 전이면 '확인 전'으로 보입니다.</p>
         <label>이메일<input id="wc-add-email" className="wc-left" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com"
@@ -162,6 +165,8 @@ export function CreditDialog({ name, sub, today, onClose, onSave, onAdd }: {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   useEscapeClose(() => { if (!busy) onClose(); }); // 바깥 클릭과 같은 규칙 — 처리 중엔 닫지 않는다
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef); // 초점도 창 안에 둔다 — Tab 이 뒤 화면으로 나가지 않는다(lib/keyGate '모달의 초점')
   const [error, setError] = useState("");
   const auto = mode === "auto";
   const adding = mode === "add";
@@ -200,7 +205,7 @@ export function CreditDialog({ name, sub, today, onClose, onSave, onAdd }: {
     : "힉스필드에서 이번에 더 넣은 크레딧을 기록합니다. 정기 설정은 바뀌지 않습니다. 이 기록은 실제 이체가 아닙니다.";
   return (
     <div className="credit-modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className="wc-dialog" role="dialog" aria-label="크레딧">
+      <div ref={dialogRef} className="wc-dialog" role="dialog" aria-label="크레딧">
         <h3>크레딧 · {name}</h3>
         <p>이 서브로 나갈 크레딧을 정합니다. 실제 이체는 힉스필드가 합니다.</p>
         <div className="wc-seg" role="radiogroup" aria-label="크레딧 방식">

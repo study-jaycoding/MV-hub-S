@@ -5,6 +5,8 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { fmtWhen } from "../../lib/format";
 import { isHttpStatus } from "../../lib/http";
+import { useModalFocus } from "../../lib/keyGate";
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { referenceMediaTypeFromName } from "../../lib/media";
 import { reconcileArrayState, reconcileValueState } from "../../lib/stateReconciliation";
 import {
@@ -61,6 +63,13 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const [pollTick, setPollTick] = useState(0); // 조회 결과가 '돌고 있음'이면 폴링을 이어간다
   // 확인 창 — 단추 다섯 개 모두 '~하시겠습니까? 예/아니오'를 거친다(Jay 2026-09-21). many = 미러에서 정리가 남는 것보다 많다는 서버의 재확인 요청.
   const [ask, setAsk] = useState<null | { action: SaveFinalsKind | "compare" | "update" | "mirror"; many?: boolean }>(null);
+  // 확인 창(화면을 덮는다)이 떠 있는 동안 초점은 그 안에 — Tab 이 뒤의 저장 단추로 나가 Enter 가 그것을 누르지 않게(lib/keyGate '모달의 초점').
+  //  두 확인 창(예/아니오 · 미러)은 한 번에 하나만 뜬다.
+  const askRef = useRef<HTMLDivElement>(null);
+  const askOpen = !!ask && (ask.action !== "mirror" || !!compare); // 확인 창이 실제로 그려지는 조건(아래 두 창)
+  useModalFocus(askRef, askOpen);
+  // Esc = '아니오'. 겹이라 떠 있는 동안 뒤 화면의 단축키도 쉰다 — 전엔 겹이 아니어서 Esc 로 닫히지 않았다.
+  useEscapeClose(() => setAsk(null), askOpen);
   const compareRequestRef = useRef(0);
   const dropCompare = () => {
     compareRequestRef.current += 1;
@@ -486,7 +495,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
         </div>
 
         {ask && ask.action !== "mirror" && (
-          <div className="export-modal" role="dialog" aria-modal="true" aria-label="확인">
+          <div ref={askRef} className="export-modal" role="dialog" aria-modal="true" aria-label="확인">
             <div className="export-modal-box">
               <h3>
                 {ask.action === "shared"
@@ -530,7 +539,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
         )}
 
         {ask?.action === "mirror" && compare && (
-          <div className="export-modal" role="dialog" aria-modal="true" aria-label="미러 확인">
+          <div ref={askRef} className="export-modal" role="dialog" aria-modal="true" aria-label="미러 확인">
             <div className="export-modal-box">
               <h3>렌더 폴더를 프로그램과 똑같이 맞추시겠습니까?</h3>
               <p>

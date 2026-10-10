@@ -2,11 +2,12 @@
 // 힉스필드 관리 창(User Group)과 같은 흐름: 그룹 표 + "그룹 추가" → 그룹 창(이름·한도 없음 토글·인당 한도 |
 // 멤버 목록·멤버 추가). 저장은 ProjectManagerPanel 이 프로젝트 저장 뒤 별도 PUT 으로(revision 낙관적 잠금 — 409).
 // 초안 상태는 부모(다이얼로그 state)가 들고, 여기서는 초안만 바꾼다. 숫자 칸은 천 단위 구분으로 보여 준다.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { isHttpStatus, isRouteMissing } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
 import { useModelDisplayName } from "../../lib/modelCatalog";
 import { BUDGET_PERIOD_OPTIONS } from "../../lib/projectPlanning";
+import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { ALLOWED } from "../../lib/useModels";
 import { formatCredits } from "../../lib/formatCredits";
@@ -103,9 +104,12 @@ export function GroupEditor({
     );
   };
 
+  // 그룹 창은 프로젝트 설정·멤버 표 위에 뜬다 — 떠 있는 동안 Tab 은 이 창 안에서만 돈다(lib/keyGate '모달의 초점'). 처음 초점은 이름 칸 그대로.
+  const modalRef = useRef<HTMLDivElement>(null);
+  useModalFocus(modalRef);
   return (
     <div className="credit-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div className="credit-modal" role="dialog" aria-label={group.isNew ? "그룹 추가" : "그룹 편집"}>
+      <div ref={modalRef} className="credit-modal" role="dialog" aria-label={group.isNew ? "그룹 추가" : "그룹 편집"}>
         <fieldset className="manage-group-fields" disabled={busy}>
         <div className="credit-modal-left">
           <h4>{group.isNew ? "그룹 추가" : "그룹 편집"}</h4>
@@ -282,6 +286,8 @@ export function CreditPlanFields({
   const [deleting, setDeleting] = useState<DraftGroup | null>(null);
   // 그룹 창·삭제 확인의 Esc 는 여기서 먼저 소비한다 — 흘려 보내면 바깥 프로젝트 대화상자가 닫혀 입력이 사라진다.
   useEscapeClose(() => (deleting ? setDeleting(null) : setEditing(null)), !!(deleting || editing) && !conflict.active, true, true);
+  const deleteRef = useRef<HTMLDivElement>(null);
+  useModalFocus(deleteRef, !!deleting); // 삭제 확인 창 — 초점을 창 안에 둔다(그룹 창은 GroupEditor 가 스스로 올린다)
   const [topupBusy, setTopupBusy] = useState("");
   const [topupError, setTopupError] = useState("");
   const loaded = draft && draft.loadedFor === workspaceId;
@@ -501,7 +507,7 @@ export function CreditPlanFields({
           ) : null}
           {deleting ? (
             <div className="admin-confirm-backdrop" onMouseDown={() => setDeleting(null)}>
-              <div className="admin-confirm" onMouseDown={(event) => event.stopPropagation()}>
+              <div ref={deleteRef} className="admin-confirm" onMouseDown={(event) => event.stopPropagation()}>
                 <p className="admin-confirm-q">
                   <b>{deleting.name}</b> 그룹을 삭제하시겠습니까?
                   <br />
