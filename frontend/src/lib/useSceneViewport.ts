@@ -179,9 +179,17 @@ export function useSceneViewport({
     (rects: readonly SceneWorldRect[], maxZoom: number) => {
       const viewport = scrollRef.current?.getBoundingClientRect();
       if (!viewport) return;
+      // 하단 프롬프트 도크가 보드를 덮은 만큼은 맞춤 영역에서 뺀다 — 안 빼면 보드 한가운데에 맞춘 카드의 아래쪽이 프롬프트 뒤에 놓인다.
+      //  도크의 높이를 그대로 빼지 않고 **보드의 위 끝에서 도크의 위 끝까지**를 쓴다(도크가 보드와 겹치지 않으면 보드 전체, 도크
+      //  아래의 여백은 맞출 수 없는 띠라 같이 빠진다). 영역이 위쪽으로 줄 뿐이라 가운데 맞춤 계산은 그대로다.
+      //  프롬프트를 접었을 때(.sl-hidden)는 줄이지 않는다 — 오른쪽 아래의 상태 줄 하나만 남아 보드 폭의 한 귀퉁이만 가리는데, 그
+      //  높이만큼 전체 폭을 줄이면 잃는 쪽이 더 크다.
+      const dockTop = document.querySelector(".sl-dockbar:not(.sl-hidden) .sl-dock")?.getBoundingClientRect().top;
+      // 0 이하(도크가 그려지지 않아 자리가 0 이거나 보드를 다 덮었다)면 줄일 영역이 없다 — 보드 전체에 맞춘다
+      const clear = dockTop === undefined ? viewport.height : dockTop - viewport.top;
       const next = frameSceneRects(
         rects,
-        { width: viewport.width, height: viewport.height },
+        { width: viewport.width, height: clear > 0 ? Math.min(viewport.height, clear) : viewport.height },
         maxZoom,
       );
       if (!next) return;

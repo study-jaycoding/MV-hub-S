@@ -1,9 +1,18 @@
 // 레퍼런스 카드 본문 — SceneBoard 렌더 분할(R2). 셸은 부모 소유, Fragment 만 반환(규칙은 OutputCard 참고).
 //  genData 는 이벤트 시점 참조라 조회 함수(getGen)로 받는다(ref 역참조 없이 최신값).
 import type React from "react";
+import { memo, useSyncExternalStore } from "react";
+import { assetVersionsSnapshot, subscribeAssetVersions } from "../../../lib/assetVersions";
 import type { SceneCard, SceneRef } from "../../../lib/scenes";
 import type { Generation, InfoTarget, PreviewTarget } from "../../../types";
-import { heldText, refHeldInfo, refJudged, refServerStatus } from "../../../lib/sceneAssetRelink";
+import {
+  getRefServerStatusVersion,
+  heldText,
+  refHeldInfo,
+  refJudged,
+  refServerStatus,
+  subscribeRefServerStatus,
+} from "../../../lib/sceneAssetRelink";
 import { refMediaSrc, refMediaType, refThumbSrc, refTypeLabel } from "../../../lib/sceneMedia";
 import { MediaThumbnail } from "../../MediaThumbnail";
 import { CloudOffIcon, CopyIcon, LinkOffIcon, PendingIcon } from "../../common/ViewIcons";
@@ -12,7 +21,10 @@ import { CloudOffIcon, CopyIcon, LinkOffIcon, PendingIcon } from "../../common/V
 const refFileName = (r: SceneRef): string =>
   r.name || r.file_path.split("|").pop()?.split("/").pop() || r.file_path;
 
-export function ReferenceCard({
+// memo — 받은 값이 그대로면 다시 그리지 않는다. 보드는 카드를 끄는 걸음마다 통째로 다시 그려지는데(2026-10-11 실측: 412장 씬에서
+//  한 장만 끌어도 컴포넌트 651개), 움직이지 않은 카드까지 따라 그릴 까닭이 없다. 넘어오는 함수(getGen·onBroken·onOutPortDown)의
+//  정체성을 안 바꾸는 것은 보드의 몫이다 — 바뀌면 전처럼 다시 그린다(낡은 함수를 쥐지 않는다).
+export const ReferenceCard = memo(function ReferenceCard({
   card,
   fill,
   workspaceId,
@@ -31,6 +43,10 @@ export function ReferenceCard({
   onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
   onBroken?: (r: SceneRef) => void; // 그림이 끝내 안 떴다 — 옮겨졌을 수 있어 한 번 다시 묻는다(recheckBrokenRef)
 }) {
+  // 그릴 때 읽는 두 저장소를 카드가 직접 듣는다 — 서버 판정(refServerStatus·refJudged: 빨간 빗금·'이 PC 에만' 표시)과 어셋 버전
+  //  (refThumbSrc: 썸네일 주소). 전엔 보드가 듣고 통째로 다시 그려 줘서 따라 그려졌다 — memo 가 된 뒤에는 그 길이 끊긴다.
+  useSyncExternalStore(subscribeRefServerStatus, getRefServerStatusVersion, getRefServerStatusVersion);
+  useSyncExternalStore(subscribeAssetVersions, assetVersionsSnapshot, assetVersionsSnapshot);
   const single = (card.refs?.length ?? 0) <= 1;
   return (
     <>
@@ -216,4 +232,4 @@ export function ReferenceCard({
       />
     </>
   );
-}
+});

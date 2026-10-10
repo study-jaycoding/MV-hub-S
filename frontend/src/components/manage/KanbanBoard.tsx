@@ -4,6 +4,7 @@ import { useState } from "react";
 import { fmtElapsed } from "../../lib/format";
 import { formatCredits } from "../../lib/formatCredits";
 import { useT } from "../../lib/i18n";
+import { useDragEndReset } from "../../lib/useDragEndReset";
 import { ColorTag } from "./ColorTag";
 import { CutThumbs } from "./CutThumbs";
 import {
@@ -26,6 +27,7 @@ export function BoardView(props: WorkViewProps) {
   const { tasks, seqOptions, thumb, disabled, colorMap, readOnly, onPatch, onLinkGen, onUnlinkGen } = props;
   useT(); // 언어 변경 시 상태·그룹 라벨 리렌더
   const [dragOver, setDragOver] = useState<string | null>(null);
+  useDragEndReset(dragOver !== null, () => setDragOver(null)); // 열 위에서 끌기를 취소하면 dragleave 가 오지 않는다
 
   const renderColumn = (col: (typeof STATUSES)[number]) => {
     const items = tasks.filter((t) => t.status === col.v);

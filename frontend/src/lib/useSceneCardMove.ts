@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { Dispatch, MouseEvent as ReactMouseEvent, MutableRefObject, SetStateAction } from "react";
 import { moveCardsFromOrigins, rewindSceneMove, snapSceneGrid, updateSceneEjectedCards } from "./sceneInteractions";
 import { ackDone } from "./sceneRecentDoneStore";
@@ -13,6 +13,72 @@ import type { BeginSceneDrag } from "./useSceneDragSession";
 interface GroupFrame {
   id: string;
   frame: { x: number; y: number; w: number; h: number };
+}
+
+// 마지막으로 눌린 포인터의 번호 — 끄는 동안 그 포인터를 보드에 쥐여 줄 때 쓴다. 끌기는 mousedown 으로 시작해 번호를 모른다
+//  (마우스는 늘 같은 번호지만 펜은 누를 때마다 다르다). 눌린 적이 없으면(null) 쥐지 않는다.
+let pressedPointerId: number | null = null;
+if (typeof window !== "undefined") {
+  window.addEventListener("pointerdown", (event) => { pressedPointerId = event.pointerId; }, true);
+}
+
+// 지금 포인터를 쥐고 있는 보드 — 끌기는 한 번에 하나라 하나만 둔다.
+let heldPointer: { board: HTMLElement; pointerId: number } | null = null;
+
+/**
+ * 카드·그룹을 끄는 동안 그 포인터를 보드가 쥔다(포인터 캡처). 끌기가 끝나면 releaseSceneDragPointer 로 놓는다.
+ *
+ * 전엔 `.scene-board.dragging .scene-card { pointer-events: none }` 한 줄이 끄는 동안 카드를 마우스에서 떼어 놓았다 — 겹친 뒤 카드가
+ * hover 를 받아 포트·강조가 끄는 카드 위로 튀어나오지 않게(2026-07-24). 그 줄은 끌기의 시작과 끝마다 카드와 그 안의 요소 6천여
+ * 개의 스타일을 다시 계산했다(pointer-events 는 자식으로 내려간다 — 2026-10-11 격리 실측: 시작·끝에 각 40~55ms).
+ * 쥐고 있는 동안 브라우저는 마우스 밑을 찾지 않고 hover·mouseenter·mouseup 을 전부 쥔 요소(보드)로 보낸다 — 스타일은 하나도 안 바뀐다.
+ */
+export function holdSceneDragPointer(board: HTMLElement | null): void {
+  const pointerId = pressedPointerId;
+  if (!board || pointerId === null) return;
+  heldPointer = { board, pointerId };
+  try {
+    board.setPointerCapture?.(pointerId);
+  } catch {
+    // 그 포인터가 이미 떼어졌다 — 쥐지 않고 간다
+  }
+}
+
+/**
+ * 쥔 포인터를 놓는다 — 끌기가 **어느 길로 끝나든** 부른다: 놓기(어느 단추의 mouseup 이든)·창을 떠남·놓친 mouseup·다음 끌기·
+ * 씬 전환(SceneBoard)·화면이 내려감. 쥔 것이 없으면 아무 일도 없다.
+ * 브라우저가 스스로 놓는 것은 단추를 **전부** 뗐을 때뿐이다 — 왼쪽으로 끄는 중에 오른쪽 단추를 눌렀다 놓으면 끌기는 그 mouseup 으로
+ * 끝나는데 캡처는 왼쪽을 뗄 때까지 남았고, 씬 전환·화면 내려감은 끌기를 콜백 없이 버려서 놓지 않았다(Codex 리뷰 P3).
+ */
+export function releaseSceneDragPointer(): void {
+  if (!heldPointer) return;
+  const { board, pointerId } = heldPointer;
+  heldPointer = null;
+  try {
+    board.releasePointerCapture?.(pointerId);
+  } catch {
+    // 이미 놓였다
+  }
+}
+
+/**
+ * 끌어 놓은 직후의 click 한 번을 삼킨다 — 옛 규칙이 덤으로 하던 일이다. 브라우저는 누른 요소와 뗀 요소가 같으면 click 을 보내는데
+ * 끄는 카드는 마우스를 따라와 늘 같다: 리스트의 행을 잡고 끌면 놓는 순간 그 행의 선택이 뒤집힌다(옛 규칙에서는 뗀 요소가 카드 밑의
+ * 것이라 click 이 카드로 가지 않았다). click 은 mouseup 과 같은 작업 안에서 오므로, 오지 않았으면 다음 작업에서 거둔다.
+ */
+function swallowDropClick(): void {
+  const swallow = (event: Event) => {
+    event.stopPropagation();
+    event.preventDefault();
+  };
+  window.addEventListener("click", swallow, true);
+  window.setTimeout(() => window.removeEventListener("click", swallow, true), 0);
+}
+
+/** 카드·그룹 끌기의 끝에서 부른다 — 쥔 포인터를 놓고, 실제로 끌다가 손을 떼어 끝난 것이면 뒤따르는 click 을 삼킨다. */
+export function endSceneDragPointer(droppedAfterMove: boolean): void {
+  releaseSceneDragPointer();
+  if (droppedAfterMove) swallowDropClick();
 }
 
 /** 보드를 통째로 끄는 동안(아래 '빠른 길') SceneBoard 가 쥐는 손잡이 — 끌기가 끝나면 비운다. */
@@ -68,6 +134,8 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
   useLayoutEffect(() => {
     layerSyncRef.current?.();
   });
+  // 끄는 중에 화면이 내려가면 끌기 세션은 콜백 없이 버려진다 — 쥔 포인터는 여기서 놓는다(그룹 끌기의 것도 같은 하나다)
+  useEffect(() => releaseSceneDragPointer, []);
 
   return useCallback((event: ReactMouseEvent, cardId: string) => {
     const current = optionsRef.current;
@@ -241,7 +309,10 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
         return;
       }
       const latest = optionsRef.current;
-      if (!moved) latest.setDraggingIds(targetIds);
+      if (!moved) {
+        latest.setDraggingIds(targetIds);
+        holdSceneDragPointer(latest.scrollRef.current); // 끌기가 시작된 뒤에만 쥔다(누르기만 한 것은 클릭이다)
+      }
       moved = true;
       latest.scrollRef.current?.classList.add("dragging");
 
@@ -347,9 +418,10 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
       latest.persist(nextCards, latest.edgesRef.current, nextGroups);
     };
 
-    const cleanupDrag = () => {
+    const cleanupDrag = (dropped: boolean) => {
       const latest = optionsRef.current;
       latest.scrollRef.current?.classList.remove("dragging");
+      endSceneDragPointer(dropped && moved);
       latest.setDraggingIds([]);
       if (ejected.size) latest.setEjectedIds(new Set());
       if (wholeBoard) {
@@ -363,7 +435,7 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
     };
 
     const up = () => {
-      cleanupDrag();
+      cleanupDrag(true);
       const latest = optionsRef.current;
       if (relocated) {
         commitMovedCards();
@@ -393,7 +465,7 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
       current.layerMoveRef.current = layerMove;
     }
     current.beginDrag(move, up, () => {
-      cleanupDrag();
+      cleanupDrag(false);
       if (relocated) commitMovedCards();
       closeLayer();
       optionsRef.current.endGesture();

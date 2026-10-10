@@ -65,7 +65,7 @@ const down = (x: number, y: number) =>
 // 끌기 세션은 한 프레임에 한 번 반영한다 — 움직인 뒤 예약된 프레임을 돌린다.
 const dragTo = (x: number, y: number) =>
   act(async () => {
-    window.dispatchEvent(new MouseEvent("mousemove", { clientX: x, clientY: y }));
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: x, clientY: y, buttons: 1 })); // 끄는 중 = 단추가 눌린 채(없으면 '놓친 mouseup')
     frames.splice(0).forEach((cb) => cb(0));
   });
 const release = (x: number, y: number) =>

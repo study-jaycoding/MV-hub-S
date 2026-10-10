@@ -1,9 +1,11 @@
 // Head(제목) 카드 본문 — SceneBoard 렌더 분할(R2). 셸은 부모 소유, Fragment 만 반환(규칙은 OutputCard 참고).
 import type React from "react";
+import { memo } from "react";
 import type { SceneCard } from "../../../lib/scenes";
 import { GROUP_COLORS } from "../sceneColors";
 
-export function HeadCard({
+// memo — 받은 값이 그대로면 다시 그리지 않는다(보드는 카드를 끄는 걸음마다 통째로 다시 그려진다 — ReferenceCard 의 주석 참고).
+export const HeadCard = memo(function HeadCard({
   card,
   sel,
   editing,
@@ -118,4 +120,4 @@ export function HeadCard({
       )}
     </>
   );
-}
+});

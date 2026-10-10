@@ -40,6 +40,15 @@ export function createSceneDragSession<Event>(
       move(event);
     };
     const onMove = (event: Event) => {
+      // 단추를 다 뗀 채 온 움직임 = mouseup 을 놓쳤다(창 밖에서 뗌·브라우저가 삼킴). 그대로 두면 단추를 뗀 마우스를 카드가 따라오고
+      //  끌기 상태가 다음 누름까지 남는다. 창을 떠날 때(blur)와 같은 길로 끝낸다 — 앞의 마지막 움직임까지만 반영하고, 뗀 뒤의 자리인
+      //  이 이벤트는 반영하지 않는다(up 으로 끝내면 연결선·범위 선택이 '돌아온 자리'에 놓인 것으로 처리된다).
+      //  판정은 '눌린 단추가 하나도 없다'다. 왼쪽 단추 비트만 보지 않는다 — 이 세션은 가운데 단추의 화면 이동(buttons 4)도 맡고,
+      //  어느 단추로 시작했는지 모른다(mouseup 도 단추를 가리지 않고 끝낸다). buttons 가 없는 이벤트(마우스가 아닌 환경)는 건드리지 않는다.
+      if ((event as { buttons?: unknown }).buttons === 0) {
+        cancel();
+        return;
+      }
       pendingEvent = event;
       if (frameId === null) frameId = environment.requestFrame(runPending);
     };

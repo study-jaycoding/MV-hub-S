@@ -97,6 +97,16 @@ it("real board publishes the optimistic color to its remount cache immediately",
   await act(async () => { key("b"); });
   expect(hydrateGen([gid])[gid].color).toBe(KEY_COLORS.b);
 });
+// 7회차 — 생성 카드가 memo 가 된 뒤의 회귀 막이: 색(위 시험들)과 비활성은 실제 키 → 저장소 → 카드가 받는 값 → 화면까지 이어져야 한다.
+it("real d key greys the result node through the memoised generation card, and a second press restores it", async () => {
+  await mount();
+  const node = () => host.querySelector<HTMLElement>(".linb-node")!;
+  expect(node().classList.contains("disabled")).toBe(false);
+  await act(async () => { key("d"); });
+  expect(node().classList.contains("disabled")).toBe(true);
+  await act(async () => { key("d"); });
+  expect(node().classList.contains("disabled")).toBe(false);
+});
 it("the old-response-before-click control remains usable", async () => {
   await mount();
   await act(async () => polls[0].resolve(response(batch(row))));

@@ -280,8 +280,13 @@ describe("씬 저장소 — 오래 막혔을 때", () => {
     delaySceneStoreWritesForTest(20);
     patchScene("s1", { name: "첫 편집" });
     await sleep(5); // 첫 편집이 저장으로 떠난 뒤에
+    // 둘째 저장은 넉넉히 늦춘다(늦춤 값은 저장이 시작할 때 읽는다) — 아래의 '둘째는 아직'이 실제 타이머 30ms 에 기대면
+    //  PC 가 바쁠 때 둘째 저장까지 끝나 버려 흔들렸다(전체 시험이 같이 돌 때 8번 중 3번).
+    delaySceneStoreWritesForTest(400);
     patchScene("s1", { name: "둘째 편집" });
-    await sleep(30); // 첫 저장이 끝났다 — 둘째는 아직
+    // 첫 저장이 끝날 때까지 — 시간이 아니라 확정된 값으로 기다린다
+    for (let i = 0; i < 200 && names(readConfirmedBucket("acct"))[0] !== "첫 편집"; i += 1) await sleep(5);
+    expect(names(readConfirmedBucket("acct"))).toEqual(["첫 편집"]); // 첫 저장이 끝났다 — 둘째는 아직
     expect(names(readWorkingBucket("acct"))).toEqual(["둘째 편집"]);
     expect(sceneStoreHasPending()).toBe(true);
     delaySceneStoreWritesForTest(0);

@@ -1,11 +1,14 @@
 // 모델 노드 카드 본문 — SceneBoard 렌더 분할(R2). 셸은 부모 소유, Fragment 만 반환(규칙은 OutputCard 참고).
 import type React from "react";
+import { memo } from "react";
 import { modelAllowed } from "../../../lib/modelPolicyCore";
 import { useModelPolicy } from "../../../lib/modelPolicy";
 import type { SceneCard } from "../../../lib/scenes";
 import { spotlightParamLabel, spotlightValueLabel } from "../../../lib/spotlightPromptConfig";
 
-export function ModelCard({
+// memo — 받은 값이 그대로면 다시 그리지 않는다(보드는 카드를 끄는 걸음마다 통째로 다시 그려진다 — ReferenceCard 의 주석 참고).
+//  그룹 사용 모델(정책)은 아래 useModelPolicy 가 직접 듣는다.
+export const ModelCard = memo(function ModelCard({
   card,
   onOutPortDown,
   onResizeDown,
@@ -70,4 +73,4 @@ export function ModelCard({
       />
     </>
   );
-}
+});
