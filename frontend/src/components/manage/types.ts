@@ -212,6 +212,28 @@ export function emptyWorkFilters(): WorkFilters {
 }
 
 // 보드/테이블 뷰가 공유하는 props(WorkBoard 가 데이터·핸들러 주입)
+export interface DescDraft {
+  text: string;
+  failed: boolean;
+  rev: number; // 이 글을 친 편집의 번호 — 저장 응답은 자기 번호의 항목만 고친다(글자가 같아도 옛 응답이 새 편집을 건드리지 않게)
+}
+
+// 설명 칸들이 같이 보는 보관함(작업 id 별) — TableView 의 DescCell 주석 ④⑤.
+export interface DescDraftStore {
+  drafts: Map<string, DescDraft>; // 아직 서버에 없는 글(가장 최근에 친 것)
+  flying: Map<string, number>; // 가는 중인 저장 수
+  stale: Set<string>; // 목록 값을 믿을 수 없는 작업 — 저장을 보낸 뒤, 가는 중인 저장이 없는 채로 목록이 새로 올 때까지
+  sending: Map<string, number>; // 가는 중인 가장 최근 저장의 편집 번호 — 같은 글을 다른 칸이 또 보내지 않는다
+  listeners: Set<(taskId: string) => void>; // drafts 가 바뀌면 그 작업의 칸들에게 알린다(내용이 같은 목록은 다시 그려지지 않는다)
+}
+export const newDescDraftStore = (): DescDraftStore => ({
+  drafts: new Map(),
+  flying: new Map(),
+  stale: new Set(),
+  sending: new Map(),
+  listeners: new Set(),
+});
+
 export interface WorkViewProps {
   tasks: Task[];
   seqOptions: string[];
@@ -226,6 +248,9 @@ export interface WorkViewProps {
   readOnly?: boolean; // 과거 워크스페이스 기록 화면 — 모든 변경 동작 차단
   // 저장이 끝나면 성공 여부를 알려 준다(알릴 수 없는 곳은 아무것도 돌려주지 않는다) — 설명 칸이 '저장 안 됨'을 표시하는 데 쓴다.
   onPatch: (tid: string, patch: Partial<Task>) => Promise<boolean> | void;
+  // 아직 서버에 없는 설명 글(작업 id → 가장 최근에 친 글, failed = 저장을 시도했다 실패함). 표 밖(WorkBoard)에 둔다 —
+  //  보기 전환·검색으로 그 줄이 화면에서 빠졌다 돌아와도 남게.
+  descDrafts?: DescDraftStore;
   onDelete: (tid: string) => void;
   onLinkGen: (tid: string, genId: string) => void;
   onUnlinkGen: (tid: string, genId: string) => void;

@@ -192,6 +192,8 @@
   margin: 0 0 12px; padding: 9px 12px; border: 1px solid rgba(255, 190, 70, .35);
   border-radius: 9px; background: rgba(255, 190, 70, .08); color: #e9bc62; font-size: 12px;
 }
+/* 재조회 실패 띠 — 받은 표는 그대로 두고 알린다(WorkBoard 의 stale). 단추(.work-stale-retry)는 설명 칸의 [다시 저장]과 같은 모양. */
+.work-stale-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .work-readonly-badge {
   display: inline-flex; align-items: center; margin-left: 5px; padding: 2px 6px;
   border: 1px solid rgba(255, 190, 70, .3); border-radius: 6px;
@@ -427,11 +429,11 @@ tr.work-row-archived td { opacity: .62; }
 .work-desc-chip {
   font-size: 10.5px; font-weight: 700; color: #1a1300; background: #e0a23a; border-radius: 999px; padding: 1px 7px; white-space: nowrap;
 }
-.work-desc-retry {
+.work-desc-retry, .work-stale-retry {
   font-size: 10.5px; line-height: 1.4; color: #e0a23a; background: transparent; border: 1px solid #e0a23a; border-radius: 999px;
   padding: 1px 8px; white-space: nowrap; cursor: pointer;
 }
-.work-desc-retry:hover:not(:disabled) { background: rgba(224, 162, 58, 0.14); }
+.work-desc-retry:hover:not(:disabled), .work-stale-retry:hover { background: rgba(224, 162, 58, 0.14); }
 .work-table .work-cell-in { text-align: center; }
 .work-table td:nth-child(10) .work-cell-in { text-align: right; }
 /* 마감일 아래 생성일 범위(시작~끝) — 자동 파생 기간 표시. */
