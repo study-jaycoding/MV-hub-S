@@ -121,3 +121,18 @@ it("'대표' 단추를 누르면 그 결과가 카드 대표가 되고, 카드 �
   expect(setCardVariant).toHaveBeenCalledExactlyOnceWith("card", "b");
   expect(setSelected).not.toHaveBeenCalled();
 });
+
+it("끄는 중에 창이 닫히면 기다리던 한 박자를 버린다 — 닫힌 뒤에 막의 클릭통과를 걸지 않는다", () => {
+  // 실제 브라우저에서는 끄는 동안 키가 페이지로 오지 않아(Esc 는 끌기를 취소한다) 이 길을 손으로 만들기 어렵다 — 격리 실측에서도
+  // 못 만들었다. 그래도 창은 다른 까닭(씬 전환·카드 삭제)으로 닫힐 수 있으니 시험으로 덮는다.
+  render([]);
+  vi.useFakeTimers();
+  try {
+    dragFrom(card("a"));
+    act(() => root.render(<></>)); // 창이 닫혔다(dragend 는 오지 않았다)
+    act(() => { vi.runAllTimers(); });
+    expect(setGripDragging).not.toHaveBeenCalledWith(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});

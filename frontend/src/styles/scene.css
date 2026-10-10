@@ -935,8 +935,15 @@
 /* 기본(비선택) 연결선 — 회색 실선. 카드를 선택하면 그 카드에 닿은 선만 종류색으로 활성화된다. */
 .scene-edge.idle { stroke: #464b55; stroke-width: 1.8; opacity: 0.5; stroke-dasharray: none; }
 .scene-dot.idle { fill: #464b55; }
-/* 선택 카드에 닿은 연결선 강조(계보처럼) — 굵고 또렷하게 */
-.scene-edge.onsel { stroke-width: 4; opacity: 1; }
+/* 선택 카드에 닿은 연결선 강조(계보처럼) — 굵고 또렷하게.
+   ★opacity 를 **정확히 1 로 두지 않는다**(0.999). 1 이면 고른 카드가 많을 때 끌기가 느려진다: 412장을 전부 고르고 끌 때 프레임 하나의
+   일이 약 300ms → 137ms, 화면 갱신이 초당 약 3번 → 6번(2026-10-10 격리 실측, 크롬·GPU 사용 — 그중 브라우저의 레이어 정리
+   PaintArtifactCompositor::Update 가 206ms → 41ms). 158장 씬과 한 장 끌기는 그대로이고 스크립트 시간도 같다 — 달라지는 것은 합성뿐이다.
+   모양: 100% 줌에서는 구별되지 않는다. 가장 멀리 본 화면(줌 11%)에서는 캔버스 전체가 덜 뭉개지고 또렷하게 그려지는 쪽으로 기운다 —
+   이 차이는 같은 빌드에서도 세션마다 흔들리던 것이다(레이어마다 그려 두는 배율 차이로 보인다 — 추정).
+   까닭은 브라우저 안쪽이라 확인하지 못했다 — 1 미만이면 선마다 따로 합성되고(.idle 의 0.5 가 원래 그렇다) 1 이면 357개가 카드들
+   사이에 한 덩어리로 끼어 겹침 검사가 커지는 것으로 보인다(추정). 경위 docs/status/조작점검_2026-10-10.md. */
+.scene-edge.onsel { stroke-width: 4; opacity: 0.999; }
 .scene-edge.temp { stroke: #7fa9ff; stroke-width: 2.2; stroke-dasharray: 4 4; opacity: 0.9; }
 /* 연결선 클릭 판정(넓은 투명선) — 클릭=해제, 호버 시 다음 실선을 빨갛게(삭제 예고) */
 .scene-edge-hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
