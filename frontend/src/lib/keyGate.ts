@@ -67,7 +67,10 @@ export function backgroundKeysBlocked(): boolean {
 //  방향키·Ctrl+A·#·c 가 죽고 Ctrl+A 는 화면 글자를 긁었다(2026-10-10 실측: 태그 입력 Esc·크게 보기·코멘트·정보 닫기·탭 전환 뒤).
 //  그런 키는 지금 보이는 격자가 받고, 받으면 초점도 격자로 데려온다.
 //  · 받는 초점: 없음(BODY) · 격자를 품은 창 자체(막 연 폴더 창) · 상단바/툴바/선택 막대의 단추(Enter·Space 는 그 단추를 누르는 키라 제외)
-//  · 안 받는 경우: 격자가 가려져 있다(inert — 폴더 창 뒤의 본 목록) · 캔버스(초점 없는 키는 보드의 것 — 창 자체에 초점일 때만 받는다)
+//  · 안 받는 경우: 격자가 가려져 있다(inert — 폴더 창 뒤의 본 목록) · 캔버스의 보드 위(초점 없는 키는 보드의 것)
+//  · 캔버스에서도 **창 안의 격자**(폴더 창·'생성 결과' 창)는 받는다 — 초점이 없거나(BODY) 그 창 안에 있을 때. 창에서 연 크게 보기·정보·
+//    코멘트를 닫으면 초점이 BODY 로 떨어지는데, 창이 떠 있는 동안 보드는 가려져 있어 그 키의 주인은 창이다(보드 쪽은
+//    useSceneKeyboardShortcuts 가 스스로 쉰다).
 //  · Esc 는 받지 않는다 — 선택 해제·창 닫기는 뒤 화면의 Esc 처리(lib/useEscapeClose)가 한 번만 한다.
 //  · Tab(초점 이동)·Alt 조합(브라우저의 뒤로/앞으로)도 받지 않는다. 그 밖의 키는 격자에 보여 주되, 격자가 **쓴 키일 때만**
 //    (기본 동작을 막았다) 초점을 데려온다 — 안 쓰는 키(Shift 만 누름 등)에 초점이 격자로 튀면 Tab 순서가 격자에서 다시 시작한다.
@@ -81,7 +84,9 @@ function takesLooseKey(grid: HTMLElement, e: KeyboardEvent): boolean {
     if (e.key === "Enter" || e.key === " ") return false;
     if (!active.matches("button, a") || !active.closest(".topbar, .lib-toolbar, .select-bar")) return false;
   }
-  return !document.querySelector(".scene-board");
+  if (!document.querySelector(".scene-board")) return true;
+  const win = grid.closest(".folder-peek, .scene-varwin");
+  return !!win && (!active || active === document.body || win.contains(active));
 }
 
 /** 초점 잃은 키를 이 격자의 키 처리로 넘긴다(위 주석). onKey 는 격자의 onKeyDown 과 같은 함수. */
@@ -168,4 +173,28 @@ export function dropFocusAfterPress(el: HTMLElement): void {
   };
   window.addEventListener("pointerup", release, true);
   window.addEventListener("pointercancel", release, true);
+}
+
+// ── 한글 입력 상태의 글자 키 ──
+// 입력기가 켜져 있으면 글자 키의 e.key 가 글자가 아니다 — 윈도는 "Process", 맥·리눅스의 한글 자판은 자모("ㄱ"). 앱의 글자 단축키
+// (r·g·b·d·c·h·f·y·…)는 e.key 를 보므로 그런 키에는 하나도 안 먹는다(격리 실측의 흉내로 확인 — 실제 윈도 크롬이 입력칸 밖에서 어느 쪽을
+// 보내는지는 재지 못했다. 그래서 어느 쪽이 와도 먹게 한다). 그런 키만 물리 키(e.code = "KeyR")의 글자로 읽게, 이벤트의 key 를 그 글자로
+// 덮는다. 손대지 않는 것: 라틴 글자가 온 키(영문 상태·AZERTY 같은 다른 자판 — e.key 가 맞다), 글자 입력칸에서 난 키(조합 중인 글자),
+// 글자 키가 아닌 것(숫자·기호·기능 키). 모듈을 읽을 때 window 의 잡는 단계에 건다 — 앱이 effect 에서 거는 키 리스너보다 먼저 돈다.
+// keydown 만 덮는다. keyup 에서 글자를 보는 곳은 캔버스의 가위(Y) 하나고 그쪽이 e.code 를 같이 본다 — 입력칸으로 초점이 옮겨 간 뒤의
+// keyup 은 여기서 덮이지 않아, 여기에만 기대면 가위가 붙은 채 남는다(Codex 상의).
+// 이 코드가 실제로 필요한지는 실기 확인 전이다: 윈도 크롬이 입력칸 밖에서 입력기를 꺼 주면 한 번도 돌지 않는다(해는 없다).
+const HANGUL_KEY = /^[ㄱ-ㆎ가-힣ᄀ-ᇿ]$/;
+/** 한글 입력 상태로 온 글자 키면 물리 키의 글자(소문자), 아니면 null. */
+export function letterFromPhysicalKey(e: { key: string; code?: string; isComposing?: boolean; target?: EventTarget | null }): string | null {
+  if (e.key !== "Process" && !HANGUL_KEY.test(e.key)) return null;
+  if (e.isComposing || !e.code || !/^Key[A-Z]$/.test(e.code) || isTypingTarget(e.target ?? null)) return null;
+  return e.code.slice(3).toLowerCase();
+}
+if (typeof window !== "undefined") {
+  const readPhysicalLetter = (e: KeyboardEvent) => {
+    const letter = letterFromPhysicalKey(e);
+    if (letter) Object.defineProperty(e, "key", { value: e.shiftKey ? letter.toUpperCase() : letter, configurable: true });
+  };
+  window.addEventListener("keydown", readPhysicalLetter, true);
 }

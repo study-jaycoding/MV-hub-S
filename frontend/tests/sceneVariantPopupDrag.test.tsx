@@ -72,8 +72,20 @@ afterEach(() => {
 it("고른 묶음 안의 카드를 끌면 묶음 전체를, 밖의 카드를 끌면 그 카드만 싣는다 — 그립에서 끌어도 같다", () => {
   render(["a", "c"]);
   // 묶음 안: 카드 자신(generation — 프롬프트 재사용용) + 고른 전체(generationList — 폴더 담기용, 보이는 순서)
+  vi.useFakeTimers();
   expect(dragFrom(card("c"))).toEqual({ [DRAG_TYPES.generation]: "c", [DRAG_TYPES.generationList]: "a,c" });
+  // 막의 클릭통과는 dragstart 가 끝난 뒤에 건다 — 그 안에서 걸면 브라우저가 끌기를 곧바로 취소한다(카드의 그림으로는 끌 수 없었다)
+  expect(setGripDragging).not.toHaveBeenCalled();
+  act(() => { vi.runAllTimers(); });
   expect(setGripDragging).toHaveBeenLastCalledWith(true); // 막을 클릭통과로 — 아래 프롬프트에 놓을 수 있다
+  // 한 박자가 오기 전에 끝난 끌기에는 걸지 않는다(걸리면 창이 클릭통과로 남는다)
+  setGripDragging.mockClear();
+  dragFrom(card("c"));
+  act(() => { card("c").dispatchEvent(new Event("dragend", { bubbles: true })); });
+  act(() => { vi.runAllTimers(); });
+  expect(setGripDragging).toHaveBeenCalledTimes(1);
+  expect(setGripDragging).toHaveBeenLastCalledWith(false);
+  vi.useRealTimers();
   // 묶음 밖: 그 카드만(고른 것이 따라오지 않는다)
   expect(dragFrom(card("b"))).toEqual({ [DRAG_TYPES.generation]: "b", [DRAG_TYPES.generationList]: "b" });
   // 그립은 dragstart 전파를 멈춘다 — 그래도 묶음이 실린다(캡처 단계)

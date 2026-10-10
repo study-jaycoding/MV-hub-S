@@ -18,6 +18,7 @@ import { useBackgroundEscape, useEscapeClose } from "../src/lib/useEscapeClose";
 import { useOutsideDragSelect } from "../src/lib/useOutsideDragSelect";
 import { useOutsideMouseDown } from "../src/lib/useOutsideMouseDown";
 import { useGenerationKeyboardActions } from "../src/lib/useGenerationKeyboardActions";
+import { matchShortcut } from "../src/lib/shortcuts";
 import { useSceneKeyboardShortcuts } from "../src/lib/useSceneKeyboardShortcuts";
 
 let host: HTMLDivElement;
@@ -325,4 +326,74 @@ it("슬라이더는 마우스 조작이 끝나면 초점을 내려놓는다 — 
   const loose = host.querySelector<HTMLElement>(".probe-loose")!;
   act(() => { loose.focus(); window.dispatchEvent(new Event("pointerup")); });
   expect(document.activeElement).toBe(loose);
+});
+
+it("한글 입력 상태의 글자 키는 물리 키의 글자로 읽는다 — 'Process'·자모로 와도 단축키가 먹는다. 입력칸·라틴 글자·글자 아닌 키는 그대로", () => {
+  const seen: string[] = [];
+  const onKey = (event: KeyboardEvent) => seen.push(event.key);
+  window.addEventListener("keydown", onKey);
+  act(() => root.render(<><input type="text" className="probe-text" /><div className="probe-blank" tabIndex={0} /></>));
+  const fire = (target: EventTarget, init: KeyboardEventInit) => {
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+    act(() => { target.dispatchEvent(event); });
+    return event;
+  };
+  try {
+    const blank = host.querySelector(".probe-blank")!;
+    fire(blank, { key: "Process", code: "KeyR" }); // 윈도: 입력기가 켜진 채
+    fire(blank, { key: "ㄱ", code: "KeyR" }); // 맥·리눅스의 한글 자판
+    fire(document.body, { key: "Process", code: "KeyD", shiftKey: true });
+    expect(seen).toEqual(["r", "r", "D"]);
+    expect(matchShortcut(fire(blank, { key: "Process", code: "KeyR" }), "colorRed")).toBe(true);
+    seen.length = 0;
+    fire(blank, { key: "a", code: "KeyQ" }); // AZERTY — 글자가 왔으면 e.key 가 맞다
+    fire(blank, { key: "Process", code: "Digit3" }); // 글자 키가 아니다
+    fire(blank, { key: "Process", code: "KeyR", isComposing: true });
+    fire(host.querySelector(".probe-text")!, { key: "Process", code: "KeyR" }); // 입력칸에서 조합 중인 글자
+    fire(host.querySelector(".probe-text")!, { key: "ㄱ", code: "KeyR" });
+    expect(seen).toEqual(["a", "Process", "Process", "Process", "ㄱ"]);
+  } finally {
+    window.removeEventListener("keydown", onKey);
+  }
+});
+
+it("캔버스: 폴더 창이 떠 있는 동안 보드는 키를 받지 않는다 — 초점이 BODY 든 창 밖 단추든. 가위(Y)는 keyup 의 물리 키로도 풀린다", () => {
+  type Actions = Parameters<typeof useSceneKeyboardShortcuts>[0];
+  const onDelete = vi.fn(); const onCutHeldChange = vi.fn();
+  const actions = new Proxy(
+    { isTextEditing: () => false, isPopupOpen: () => false, isPickerOpen: () => false, selectionCount: () => 1, onDelete, onCutHeldChange },
+    { get: (target, name) => (name in target ? target[name as keyof typeof target] : () => { throw new Error(`unexpected action: ${String(name)}`); }) },
+  ) as unknown as Actions;
+  function Board({ peek }: { peek: boolean }) {
+    useSceneKeyboardShortcuts(actions);
+    return <>{peek ? <section className="folder-peek" /> : null}<button className="probe-outside">패널 단추</button></>;
+  }
+  act(() => root.render(<Board peek />));
+  press("Delete"); // 창에서 연 크게 보기를 ✕ 로 닫은 뒤 — 초점은 BODY
+  press("Delete", host.querySelector(".probe-outside")!); // 코멘트 패널의 단추에 남은 초점
+  expect(onDelete).not.toHaveBeenCalled();
+  act(() => root.render(<Board peek={false} />));
+  press("Delete");
+  expect(onDelete).toHaveBeenCalledTimes(1);
+  act(() => { window.dispatchEvent(new KeyboardEvent("keyup", { key: "Process", code: "KeyY" })); }); // 한글 입력 상태의 keyup
+  expect(onCutHeldChange).toHaveBeenLastCalledWith(false);
+});
+
+it("캔버스의 폴더 창: 초점이 없을 때(BODY)의 d 도 창 안 격자의 것 — 창 밖 단추에서 난 키와, 창이 없을 때는 받지 않는다", () => {
+  const args = (active: boolean) => ({
+    clearSelect: vi.fn(), filtersRef: { current: { tab: "compose" } }, composeGridActiveRef: { current: active },
+    flash: vi.fn(), gensRef: { current: [] }, reload: vi.fn(), selectedRef: { current: new Set(["g1"]) }, setGens: vi.fn(),
+  }) as unknown as Parameters<typeof useGenerationKeyboardActions>[0];
+  function Harness({ active }: { active: boolean }) {
+    useGenerationKeyboardActions(args(active));
+    return <button className="probe-outside">밖</button>;
+  }
+  act(() => root.render(<Harness active />));
+  press("d", host.querySelector(".probe-outside")!);
+  expect(toggleDisabledGen).not.toHaveBeenCalled();
+  press("d");
+  expect(toggleDisabledGen).toHaveBeenCalledTimes(1);
+  act(() => root.render(<Harness active={false} />)); // 폴더 창이 없다 — 캔버스의 d 는 보드의 것
+  press("d");
+  expect(toggleDisabledGen).toHaveBeenCalledTimes(1);
 });

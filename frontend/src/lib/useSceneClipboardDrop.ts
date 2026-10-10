@@ -87,6 +87,10 @@ const clipboardImage = (event: ClipboardEvent): File | null => {
   return null;
 };
 
+// 폴더 창·'생성 결과' 창이 떠 있나 — 그동안 보드는 가려져 있다. 붙여넣기는 초점과 무관하게(Ctrl+V 는 창 안에서 눌러도 여기까지 온다)
+//  가려진 보드에 노드를 붙였다(Codex 상의에서 코드로 확인). 창이 떠 있으면 보드에 붙이지 않는다.
+const gridWindowOpen = (): boolean => !!document.querySelector(".folder-peek, .scene-varwin");
+
 const isTextEntryTarget = (target: EventTarget | null): boolean => {
   const element = target as HTMLElement | null;
   const active = document.activeElement as HTMLElement | null;
@@ -299,7 +303,7 @@ export function useSceneClipboardDrop(
       // ★입력창 판정이 폴백 중복 방지보다 먼저 — 캔버스 폴백 직후 0.5초 안에 입력창에서
       //   Ctrl+V 하면 정상 텍스트 붙여넣기가 preventDefault 로 막히던 문제(합의 C-3b).
       if (isTextEntryTarget(event.target)) return;
-      if (backgroundKeysBlocked()) return; // 위에 뜬 창·메뉴의 붙여넣기 — 가려진 보드에 붙이지 않는다
+      if (backgroundKeysBlocked() || gridWindowOpen()) return; // 위에 뜬 창·메뉴의 붙여넣기 — 가려진 보드에 붙이지 않는다
       // 일부 브라우저가 keydown 뒤 paste 이벤트를 늦게 보내는 경우, 이미 실행한 안전 폴백과
       // 같은 키 입력을 중복 처리하지 않는다.
       if (fallbackPasteAtRef.current && performance.now() - fallbackPasteAtRef.current < 500) {
@@ -398,7 +402,7 @@ export function useSceneClipboardDrop(
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat || isTextEntryTarget(event.target) || backgroundKeysBlocked()) return;
+      if (event.repeat || isTextEntryTarget(event.target) || backgroundKeysBlocked() || gridWindowOpen()) return;
       if (!scenePasteShortcut(event, clipboardRef.current?.cards.length || 0)) return;
       // 직전 폴백 직후 사용자가 빠르게 Ctrl+V를 한 번 더 누른 것은 새로운 명령이다. 뒤늦게 도착한
       // 이전 paste 이벤트와 구분할 수 있도록 새 keydown에서 중복 방지 표식을 해제한다.
@@ -411,7 +415,7 @@ export function useSceneClipboardDrop(
       }
       const sceneAtKey = optionsRef.current.sceneIdRef.current;
       // 예약한 뒤(0.18초)·클립보드를 읽은 뒤에 창이 떴거나 씬이 바뀌었으면 붙이지 않는다 — 그 키는 이미 지나간 화면의 것이다.
-      const stale = () => backgroundKeysBlocked() || optionsRef.current.sceneIdRef.current !== sceneAtKey;
+      const stale = () => backgroundKeysBlocked() || gridWindowOpen() || optionsRef.current.sceneIdRef.current !== sceneAtKey;
       pasteFallbackTimerRef.current = window.setTimeout(() => {
         pasteFallbackTimerRef.current = null;
         void (async () => {

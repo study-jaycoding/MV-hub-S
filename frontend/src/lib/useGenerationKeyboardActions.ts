@@ -94,10 +94,11 @@ export function useGenerationKeyboardActions({
       // 위에 창·메뉴가 떠 있으면 키는 그쪽 것이다(lib/keyGate) — 뒤 카드에 색·비활성이 걸리지 않는다.
       if (ids.length === 0 || backgroundKeysBlocked()) return;
       // 구성(compose=계보/씬)에선 색·비활성을 보드/씬이 자체 처리 — 라이브러리 선택 잔재로 이중 실행 방지.
-      //  단 '폴더 보기' 창이 떠 있고 키가 창 **안**에서 났으면 그 격자가 라이브러리라 살린다(씬 단축키는 창 안 키를
-      //  무시한다). 창 밖(Tab 으로 옮긴 초점 등)에서 난 키는 씬 몫 — 둘 다 받으면 씬 노드와 격자 선택이 함께 바뀐다.
+      //  단 '폴더 보기' 창이 떠 있고 키가 창 **안**에서 났거나 초점이 없으면(BODY — 창에서 연 것을 닫은 직후) 그 격자가 라이브러리라
+      //  살린다. 창이 떠 있는 동안 씬 단축키는 쉰다(useSceneKeyboardShortcuts) — 둘이 같이 받는 일은 없다.
       if (filtersRef.current.tab === "compose") {
-        const inPeek = !!(e.target as HTMLElement | null)?.closest?.(".folder-peek");
+        const from = e.target as HTMLElement | null;
+        const inPeek = from === document.body || !!from?.closest?.(".folder-peek");
         if (!composeGridActiveRef?.current || !inPeek) return;
       }
       if (matchShortcut(e, "colorRed")) {

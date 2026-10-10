@@ -124,3 +124,10 @@ describe("scene keyboard intent", () => {
     });
   });
 });
+
+it("Ctrl+G 는 묶기, Ctrl+Alt+G 는 아니다 — 다른 뜻으로 누른 조합이 카드를 묶지 않는다", () => {
+  const press = (init: Partial<{ ctrlKey: boolean; altKey: boolean }>) =>
+    sceneKeyIntent({ key: "g", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...init }, { pickerOpen: false, selectionCount: 2 });
+  expect(press({ ctrlKey: true })).toEqual({ type: "group" });
+  expect(press({ ctrlKey: true, altKey: true })).toBeNull();
+});

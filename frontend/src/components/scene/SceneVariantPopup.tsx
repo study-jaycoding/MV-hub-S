@@ -128,6 +128,11 @@ export function SceneVariantPopup({
   // 끌기가 dragend 없이 끝나도(브라우저가 취소) 백드롭이 클릭통과로 남지 않게 푼다 — 남으면 창을 누를 수 없다.
   const dragging = ui.gripDragging;
   const setDragging = ui.setGripDragging;
+  const dragLiveRef = useRef(false); // 끌기가 살아 있나 — 아래 '한 박자 뒤'가 이미 끝난 끌기에 클릭통과를 걸지 않게
+  const dragTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (dragTimerRef.current !== null) window.clearTimeout(dragTimerRef.current); // 창이 닫히면 기다리던 한 박자도 버린다
+  }, []);
   useEffect(() => {
     if (!dragging) return;
     const reset = () => setDragging(false);
@@ -206,9 +211,21 @@ export function SceneVariantPopup({
           if (!id) return;
           const ids = ui.selectedIds.has(id) ? selected.map((g) => g.id) : [id];
           e.dataTransfer.setData(DRAG_TYPES.generationList, ids.join(","));
-          setDragging(true); // 백드롭을 클릭통과로 — 창 밑에 깔린 것 위로도 끌고 갈 수 있다(창은 열린 채). 캔버스는 생성물 끌기를 받지 않는다
+          // 백드롭을 클릭통과로 — 창 밑에 깔린 것 위로도 끌고 갈 수 있다(창은 열린 채). 캔버스는 생성물 끌기를 받지 않는다.
+          // **한 박자 뒤에** 건다: dragstart 안에서 바로 걸면 끌던 카드가 누른 자리 아래에서 사라진 셈이 돼 브라우저가 끌기를 곧바로
+          // 취소한다 — 카드의 그림을 잡고는 끌 수 없었다(2026-10-10 캔버스 실측 6/6. ⠿ 손잡이만 됐다 — 그것은 클릭통과에서 빠져 있다).
+          dragLiveRef.current = true;
+          dragTimerRef.current = window.setTimeout(() => {
+            dragTimerRef.current = null;
+            if (dragLiveRef.current) setDragging(true);
+          }, 0);
         }}
-        onDragEndCapture={() => setDragging(false)}
+        onDragEndCapture={() => {
+          dragLiveRef.current = false;
+          if (dragTimerRef.current !== null) window.clearTimeout(dragTimerRef.current);
+          dragTimerRef.current = null;
+          setDragging(false);
+        }}
       >
         <header className="folder-peek-hd">
           <span className="folder-peek-title">생성 결과 {total}개</span>

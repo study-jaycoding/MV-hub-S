@@ -144,16 +144,29 @@ it("위에 창이 떠 있거나, 격자가 가려져 있거나(inert), 캔버스
   key("ArrowRight");
   expect([...selected]).toEqual(["g1"]);
 
-  draw({ before: <div className="scene-board" />, wrap: (inner) => <section className="folder-peek" tabIndex={-1}>{inner}</section> });
+  draw({ before: <div className="scene-board" /> });
   dropFocus();
-  key("ArrowRight"); // 캔버스에서 초점 없는 키는 보드의 것
+  key("ArrowRight"); // 캔버스의 보드 위 — 초점 없는 키는 보드의 것
   expect([...selected]).toEqual(["g1"]);
+  // 캔버스에서도 창(폴더 창·'생성 결과' 창) 안의 격자는 받는다 — 초점이 없을 때(창에서 연 크게 보기를 ✕ 로 닫은 직후 등). 창이 떠
+  //  있는 동안 보드는 가려져 있다. 전엔 그 키가 뒤 보드로 갔다(2026-10-10 캔버스 실측).
+  draw({
+    before: <><div className="scene-board" /><button className="probe-outside">패널 단추</button></>,
+    wrap: (inner) => <section className="folder-peek" tabIndex={-1}>{inner}</section>,
+  });
+  dropFocus();
+  key("ArrowRight");
+  expect([...selected]).toEqual(["g2"]);
+  const outside = host.querySelector<HTMLElement>(".probe-outside")!;
+  act(() => outside.focus()); // 창 밖 단추에 초점 — 그 키는 받지 않는다
+  key("ArrowLeft", outside);
+  expect([...selected]).toEqual(["g2"]);
   const peek = host.querySelector<HTMLElement>(".folder-peek")!;
   act(() => peek.focus()); // 막 연 폴더 창 — 초점이 창 자체에 있다
-  key("ArrowRight", peek);
-  expect([...selected]).toEqual(["g2"]);
+  key("ArrowLeft", peek);
+  expect([...selected]).toEqual(["g1"]);
   key("Escape", peek); // Esc 는 받지 않는다(창의 키 처리 몫)
-  expect([...selected]).toEqual(["g2"]);
+  expect([...selected]).toEqual(["g1"]);
 });
 
 it("마퀴로만 고른 뒤의 방향키·Shift 클릭은 고른 것 중 마지막 카드가 기준이다 — 첫 카드로 튀지 않는다", () => {
