@@ -11,7 +11,7 @@ vi.mock("../src/api", () => ({ api: { setColorsBatch: vi.fn(async () => ({ faile
 vi.mock("../src/lib/deactivated", () => ({ toggleDisabledGen: vi.fn() }));
 
 import { toggleDisabledGen } from "../src/lib/deactivated";
-import { backgroundKeysBlocked, isTypingTarget, pressStartedCovered, useKeyOwner, usePageSelectAllGuard } from "../src/lib/keyGate";
+import { backgroundKeysBlocked, dropFocusAfterPress, isTypingTarget, pressStartedCovered, useKeyOwner, usePageSelectAllGuard } from "../src/lib/keyGate";
 import { useGenerationSelection } from "../src/lib/useGenerationSelection";
 import { markKeyHandled } from "../src/lib/keyHandled";
 import { useBackgroundEscape, useEscapeClose } from "../src/lib/useEscapeClose";
@@ -289,6 +289,40 @@ it("메뉴의 바깥 누름은 pointerdown 으로도 닫힌다 — 누름을 poi
   const fire = (selector: string, type: string) => act(() => { host.querySelector(selector)!.dispatchEvent(new MouseEvent(type, { bubbles: true })); });
   fire(".probe-menu", "pointerdown");
   expect(onOutside).not.toHaveBeenCalled();
+  // 폭 손잡이는 누름의 전파까지 멈춘다(React 의 stopPropagation = 루트에서 멈춤) — document 의 오르는 단계에는 닿지 않는다
+  const stop = (event: Event) => event.stopPropagation();
+  host.addEventListener("pointerdown", stop);
   fire(".probe-blank", "pointerdown"); // mousedown 은 오지 않는다
+  host.removeEventListener("pointerdown", stop);
   expect(onOutside).toHaveBeenCalledTimes(1);
+});
+
+it("슬라이더는 마우스 조작이 끝나면 초점을 내려놓는다 — 격자를 품은 창 안이면 그 창으로(캔버스에서 BODY 로 떨어지면 키가 뒤 보드로 간다)", () => {
+  const drop = (event: { currentTarget: HTMLElement }) => dropFocusAfterPress(event.currentTarget);
+  act(() => root.render(<>
+    <input type="range" className="probe-loose" onPointerDown={drop} />
+    <section className="folder-peek" tabIndex={-1}>
+      <input type="range" className="probe-inside" onPointerDown={drop} />
+      <div className="gen-grid" tabIndex={0} />
+    </section>
+    <section className="scene-varwin" tabIndex={-1}>
+      <input type="range" className="probe-empty" onPointerDown={drop} />
+    </section>
+  </>));
+  const use = (selector: string) => {
+    const el = host.querySelector<HTMLElement>(selector)!;
+    act(() => { el.focus(); el.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })); });
+    expect(document.activeElement).toBe(el); // 끄는 동안은 그대로
+    act(() => { window.dispatchEvent(new Event("pointerup")); }); // 놓는 자리가 요소 밖이어도 듣는다
+  };
+  use(".probe-loose");
+  expect(document.activeElement).toBe(document.body);
+  use(".probe-inside"); // 격자가 아니라 창 — 목록을 다시 받는 동안 격자는 사라질 수 있다
+  expect(document.activeElement).toBe(host.querySelector(".folder-peek"));
+  use(".probe-empty");
+  expect(document.activeElement).toBe(host.querySelector(".scene-varwin"));
+  // Tab 으로 온 초점(누름이 없다)은 건드리지 않는다
+  const loose = host.querySelector<HTMLElement>(".probe-loose")!;
+  act(() => { loose.focus(); window.dispatchEvent(new Event("pointerup")); });
+  expect(document.activeElement).toBe(loose);
 });

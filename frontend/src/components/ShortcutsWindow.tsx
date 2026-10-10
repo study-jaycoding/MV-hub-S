@@ -1,6 +1,8 @@
 // 단축키 변경 플로팅 창 — 설정창의 "단축키 변경" 버튼으로 열린다(설정창 위에 뜸).
 // 지정된 단축키를 그룹별로 보여주고, 행의 '변경'으로 다음 키를 캡처해 재지정한다.
 // 캡처는 window keydown 캡처 단계 + stopPropagation 으로 다른 단축키·설정창 Esc 보다 먼저 가로챈다.
+import { APP_EVENTS } from "../lib/appEvents";
+import { useCustomEvent } from "../lib/useCustomEvent";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
@@ -27,6 +29,7 @@ export function ShortcutsWindow({ onClose }: { onClose: () => void }) {
   const [msg, setMsg] = useState("");
   const capRef = useRef<ShortcutId | null>(null);
   capRef.current = capturing;
+  useCustomEvent(APP_EVENTS.shortcutsChanged, rerender); // 다른 탭·창에서 바꾼 것도 열려 있는 이 창에 바로 보인다
 
   // 단일 캡처 단계 리스너: 캡처 중이면 다음 키를 그 항목에 재지정(Esc=취소), 아니면 Esc=창 닫기.
   // stopPropagation 으로 전역 단축키·설정창 Esc 가 함께 발동하지 않게 한다.
@@ -39,6 +42,10 @@ export function ShortcutsWindow({ onClose }: { onClose: () => void }) {
         if (e.key === "Escape") return; // 취소는 아래 useEscapeClose 가 한다
         const b = eventToBinding(e);
         if (!b) return; // 수식키만 눌림 — 계속 대기
+        if (b === "process") {
+          setMsg("한글 입력 상태에서는 키를 읽을 수 없습니다 — 영문으로 바꾸고 다시 누르세요.");
+          return;
+        }
         if (isReservedBinding(b)) {
           setMsg(`"${prettyBinding(b)}" 은(는) 이미 쓰이는 고정 키라 지정할 수 없습니다.`);
           return;

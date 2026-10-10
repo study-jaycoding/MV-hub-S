@@ -25,7 +25,7 @@ export function ConsolePeriodDialog({ sub, savePlanning, onClose, onSaved }: {
     initialStart: p.start_date ?? "", initialDue: p.due_date ?? "", initialDays: "", state: "loading",
   })));
   const patch = (id: string, next: Partial<Row>) => setRows((cur) => cur.map((r) => (r.id === id ? { ...r, ...next } : r)));
-  useEscapeClose(onClose);
+  useEscapeClose(() => { if (!rows.some((row) => row.state === "saving")) onClose(); }); // 저장 중인 줄이 있으면 닫지 않는다(다른 콘솔 대화상자와 같게)
   useEffect(() => {
     let alive = true;
     for (const p of sub.projects) {

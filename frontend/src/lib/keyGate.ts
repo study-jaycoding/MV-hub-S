@@ -130,8 +130,10 @@ export function usePageSelectAllGuard(): void {
 //  mousedown 처리가 볼 때는 이미 떠 있지 않다(Codex 코드 리뷰·2026-10-10 재실측: 검토 메뉴·카드 확인 덮개·담기 메뉴의 바깥을 누르면
 //  메뉴가 닫히며 선택도 풀렸다). 그래서 누름의 첫 이벤트(pointerdown)의 캡처에서 적어 두고, 뒤 화면의 누름 처리들이 이것을 본다.
 let coveredAtPress = false;
+let focusByTab = false; // 마지막 초점 이동이 Tab 이었나 — 누르면(pointerdown) 꺼진다
 if (typeof document !== "undefined") {
-  document.addEventListener("pointerdown", () => { coveredAtPress = backgroundKeysBlocked(); }, true);
+  document.addEventListener("keydown", (e) => { if (e.key === "Tab") focusByTab = true; }, true);
+  document.addEventListener("pointerdown", () => { coveredAtPress = backgroundKeysBlocked(); focusByTab = false; }, true);
   const release = () => { coveredAtPress = false; }; // 그 누름의 것만 — 다음 누름으로 넘기지 않는다
   document.addEventListener("pointerup", release, true);
   document.addEventListener("pointercancel", release, true);
@@ -140,4 +142,30 @@ if (typeof document !== "undefined") {
 /** 이 누름이 시작될 때(또는 지금) 위에 창·메뉴가 떠 있었나 — 뒤 화면의 mousedown 처리가 첫 줄에서 본다. */
 export function pressStartedCovered(): boolean {
   return coveredAtPress || backgroundKeysBlocked();
+}
+
+/** 지금의 초점이 Tab 으로 옮겨 온 것인가(마우스로 눌러 남은 초점이 아니라). `:focus-visible` 은 못 쓴다 — 마우스로 누른 단추도 그 뒤에
+ *  아무 키(Esc 등)나 누르면 focus-visible 로 바뀐다(2026-10-10 재실측: S 를 마우스로 누르고 Esc 로 닫은 뒤 Space 가 S 를 또 눌렀다). */
+export function focusCameByTab(): boolean {
+  return focusByTab;
+}
+
+/** 마우스로 누른 조작 요소(툴바 슬라이더)가 초점을 쥐고 있지 않게 한다 — `onPointerDown` 에서 부르면 그 누름이 끝날 때 초점을 내려놓는다.
+ *  남으면 → 가 격자가 아니라 그 눈금을 바꾸고 Ctrl+A 도 격자에 안 간다(2026-10-10 최종 재실측).
+ *  격자를 품은 창(폴더 창·'생성 결과' 창) 안이면 BODY 가 아니라 **그 창**으로 옮긴다 — 캔버스에서는 초점이 BODY 로 떨어지면
+ *  r·g·b·d·Ctrl+A·Delete 가 창에 가려진 뒤의 보드로 간다(Codex 코드 리뷰). 창 안의 격자가 아니라 창인 까닭: 타입 눈금을 바꾸면 목록을
+ *  다시 받는 동안 격자가 사라져 초점이 다시 BODY 로 떨어진다(캔버스 재실측 7/7 — Delete 에 뒤 보드의 카드가 지워졌다). 창에 초점이면
+ *  격자 키는 그 창의 격자가 받는다(useLooseKeys).
+ *  놓는 자리가 요소 밖이어도 듣도록 window 에서 본다. Tab 으로 와서 방향키로 조절하는 길은 그대로다(누름이 없다). */
+export function dropFocusAfterPress(el: HTMLElement): void {
+  const release = () => {
+    window.removeEventListener("pointerup", release, true);
+    window.removeEventListener("pointercancel", release, true);
+    if (document.activeElement !== el) return;
+    const win = el.closest<HTMLElement>(".folder-peek, .scene-varwin");
+    if (win) win.focus({ preventScroll: true });
+    else el.blur();
+  };
+  window.addEventListener("pointerup", release, true);
+  window.addEventListener("pointercancel", release, true);
 }

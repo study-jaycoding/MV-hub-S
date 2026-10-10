@@ -43,21 +43,25 @@ export function applyGenerationColor(
 //  출발 뒤에 색을 편집했으면 → 화면의 색을 지키고 나머지 필드는 응답대로 받는다. '대기 중인 것만'으로 줄이면 안 된다 — 덮는 응답은
 //  저장이 끝난 **뒤에** 도착하는 것이 보통이다(출발이 저장보다 앞섰다).
 export interface ColorEditLedger {
-  /** 색을 칠했다(저장 예약). */
-  begin(ids: string[]): void;
+  /** 색을 칠했다(저장 예약) — 칠한 색을 적어 둔다. */
+  begin(ids: string[], color: string | null): void;
   /** 그 저장이 끝났다 — 성공이든 실패든. 실패의 복구 재조회보다 먼저 불려야 서버 값으로 돌아간다. */
   end(ids: string[]): void;
-  /** 조회가 출발할 때 찍는다 → 그 응답을 적용할 때 '이 카드는 화면의 색을 지켜야 하나'. */
-  stamp(): (id: string) => boolean;
+  /** 조회가 출발할 때 찍는다 → 그 응답에 '지켜야 하는 카드'의 칠한 색을 덧입히는 함수. 바꿀 것이 없으면 응답 그대로 돌려준다. */
+  stamp(): (incoming: Generation[]) => Generation[];
 }
 
 export function createColorEditLedger(): ColorEditLedger {
   let revision = 0;
   const edited = new Map<string, number>(); // 카드 → 마지막 편집 번호. 지우지 않는다(지우면 '출발 뒤 편집' 판정에 구멍) — 세션에 칠한 카드 수만큼만 자란다
   const pending = new Map<string, number>(); // 카드 → 저장 대기 수
+  // 카드 → 마지막으로 칠한 색. 덧입힐 값은 여기서 꺼낸다 — 화면 목록을 믿으면 안 된다(폴더 창을 닫을 때 먼저 그리는 본 목록 사본은
+  //  창을 열기 전의 색이라, 그것을 '내 편집'으로 보고 서버 값을 덮는다 — Codex 코드 리뷰).
+  const painted = new Map<string, string | null>();
   return {
-    begin(ids) {
+    begin(ids, color) {
       for (const id of ids) {
+        painted.set(id, color);
         edited.set(id, ++revision);
         pending.set(id, (pending.get(id) ?? 0) + 1);
       }
@@ -72,20 +76,18 @@ export function createColorEditLedger(): ColorEditLedger {
     stamp() {
       const startedAt = revision;
       const pendingAtStart = new Set(pending.keys());
-      return (id) => pendingAtStart.has(id) || pending.has(id) || (edited.get(id) ?? 0) > startedAt;
+      const keep = (id: string) => pendingAtStart.has(id) || pending.has(id) || (edited.get(id) ?? 0) > startedAt;
+      return (incoming) => {
+        let changed = false;
+        const merged = incoming.map((generation) => {
+          if (!keep(generation.id)) return generation;
+          const mine = painted.get(generation.id) ?? null;
+          if ((generation.color ?? null) === mine) return generation;
+          changed = true;
+          return { ...generation, color: mine };
+        });
+        return changed ? merged : incoming;
+      };
     },
   };
-}
-
-/** 응답(incoming)에 화면(local)의 색을 덧입힌다 — keep 이 참인 카드만. 바꿀 것이 없으면 incoming 그대로 돌려준다. */
-export function keepLocalColors(local: Generation[], incoming: Generation[], keep: (id: string) => boolean): Generation[] {
-  const shown = new Map(local.map((generation) => [generation.id, generation] as const));
-  let changed = false;
-  const merged = incoming.map((generation) => {
-    const mine = shown.get(generation.id);
-    if (!mine || !keep(generation.id) || (mine.color ?? null) === (generation.color ?? null)) return generation;
-    changed = true;
-    return { ...generation, color: mine.color ?? null };
-  });
-  return changed ? merged : incoming;
 }

@@ -1,5 +1,6 @@
 // 라이브러리 툴바 (힉스필드식): History(미디어 타입 필터) + 필터 토글 +
 // 썸네일 크기 조절 슬라이더 + List/Grid 레이아웃 토글.
+import { dropFocusAfterPress } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
@@ -186,6 +187,7 @@ export function LibraryToolbar({
             step={1}
             value={typeIndex}
             onChange={(e) => onTypeFilter(MEDIA_FILTER_OPTIONS[Number(e.target.value)].v)}
+            onPointerDown={(e) => dropFocusAfterPress(e.currentTarget)} // 마우스 조작이 끝나면 초점을 내려놓는다(lib/keyGate)
           />
         </div>
       </div>

@@ -1,7 +1,7 @@
 // 테이블 뷰 — Notion 데이터베이스식. 시퀀스·마감·설명만 인라인 편집, 컷 셀은 생성물 드롭 타깃.
 // 행 체크박스로 다중선택(하단 선택바에서 삭제), 드래그 핸들(⠿)로 순서 변경. 격자선으로 표 가독성.
 // 생성자는 실제 생성자(연결 컷 파생)만 — 수동 담당 배정 개념은 폐기됨(2026-08-21).
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { fmtElapsed } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { ColorTag } from "./ColorTag";
@@ -48,16 +48,6 @@ export function TableView(props: WorkViewProps) {
 
   const commitText = (t: Task, value: string) => {
     if ((t.description || "") !== value) onPatch(t.id, { description: value });
-  };
-  // 설명 칸의 키 — Enter = 확정(칸을 벗어난다), Esc = 고치던 것을 버리고 원래 값으로(칸을 벗어나도 저장하지 않는다). Esc 는 여기서
-  //  멈춘다 — 같은 키가 관리 창까지 닫지 않게.
-  const descKeyDown = (t: Task) => (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") e.currentTarget.blur();
-    else if (e.key === "Escape") {
-      e.stopPropagation();
-      e.currentTarget.value = t.description || "";
-      e.currentTarget.blur();
-    }
   };
 
   const allIds = tasks.filter((task) => !taskIsReadOnly(task, readOnly)).map((t) => t.id);
@@ -271,17 +261,7 @@ export function TableView(props: WorkViewProps) {
                   )}
                 </td>
                 <td>
-                  {/* key = 서버 값 — 저장이 실패해 되돌아가거나 밖에서 바뀌면 칸을 다시 그려 그 값을 보인다(defaultValue 는 처음 한 번만
-                      먹어, 저장 안 된 글이 저장된 것처럼 남았다). */}
-                  <input
-                    key={t.description || ""}
-                    className="work-cell-in"
-                    defaultValue={t.description || ""}
-                    disabled={locked}
-                    placeholder="설명"
-                    onBlur={(e) => commitText(t, e.target.value)}
-                    onKeyDown={descKeyDown(t)}
-                  />
+                  <DescCell task={t} disabled={locked} onCommit={commitText} />
                 </td>
                 <td>{t.comment_count ? `💬 ${t.comment_count}` : "—"}</td>
               </tr>
@@ -316,15 +296,7 @@ export function TableView(props: WorkViewProps) {
                       </div>
                       <label className="work-mobile-detail-wide">
                         <span className="work-mobile-detail-label">설명</span>
-                        <input
-                          key={t.description || ""}
-                          className="work-cell-in"
-                          defaultValue={t.description || ""}
-                          disabled={locked}
-                          placeholder="설명"
-                          onBlur={(e) => commitText(t, e.target.value)}
-                          onKeyDown={descKeyDown(t)}
-                        />
+                        <DescCell task={t} disabled={locked} onCommit={commitText} />
                       </label>
                       <div>
                         <span className="work-mobile-detail-label">코멘트</span>
@@ -340,5 +312,44 @@ export function TableView(props: WorkViewProps) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+// 설명 칸 — 치는 동안의 글은 이 칸의 초안이다. 칸을 벗어나면 저장하고(Enter), Esc 는 고치던 것을 버린다(같은 Esc 가 관리 창까지
+//  닫지 않게 여기서 멈춘다). 서버에서 그 작업을 다시 받으면(저장 성공·남의 변경) **이 칸에서 고친 것이 없을 때만** 서버 값으로 맞춘다 —
+//  치는 중인 글은 건드리지 않는다(전엔 칸을 통째로 다시 만들어 친 글자가 사라졌다). 기준은 '초점'이 아니라 '고쳤나'다: 초점만 두고
+//  안 고친 칸이 옛 글을 쥐고 있으면, 벗어날 때 그 옛 글이 저장돼 그사이 남이 바꾼 값을 되돌린다(Codex 코드 리뷰).
+//  남은 것: 저장이 실패하고 서버 값이 그대로면 실패한 글이 칸에 남는다(실패 알림은 뜬다 — 전부터 그랬다).
+function DescCell({ task, disabled, onCommit }: { task: Task; disabled: boolean; onCommit: (task: Task, value: string) => void }) {
+  const [draft, setDraft] = useState(task.description || "");
+  const dirty = useRef(false); // 이 칸에서 글을 고쳤나
+  useEffect(() => {
+    if (!dirty.current) setDraft(task.description || "");
+  }, [task]);
+  return (
+    <input
+      className="work-cell-in"
+      value={draft}
+      disabled={disabled}
+      placeholder="설명"
+      onChange={(e) => {
+        dirty.current = true;
+        setDraft(e.target.value);
+      }}
+      onBlur={() => {
+        if (!dirty.current) return; // 고친 것이 없다 — 저장할 것도 없다
+        dirty.current = false;
+        onCommit(task, draft);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        else if (e.key === "Escape") {
+          e.stopPropagation();
+          dirty.current = false;
+          setDraft(task.description || "");
+          e.currentTarget.blur();
+        }
+      }}
+    />
   );
 }

@@ -53,8 +53,28 @@ const DEFAULTS = SHORTCUTS.reduce(
   {} as Record<ShortcutId, string>,
 );
 
+// 재지정할 수 없는 키 — 격자·캔버스·브라우저가 이미 쓰는 고정 키(같은 키에 두 동작이 걸리거나 아무 일도 안 일어난다),
+//  그리고 글자가 아닌 입력기 키. 전엔 Enter·방향키도 받아, 프롬프트의 Enter 에 도크가 숨거나 방향키에 색이 칠해졌다.
+const RESERVED = new Set([
+  "escape", "enter", "tab", "space", "backspace", "delete", "insert", "home", "end", "pageup", "pagedown",
+  "arrowup", "arrowdown", "arrowleft", "arrowright", "contextmenu", "capslock", "process", "unidentified", "dead",
+  "f", "y", "s", // 캔버스: 화면 맞춤·가위 / Assets: 소스
+  "mod+z", "mod+shift+z", "mod+c", "mod+v", "mod+x", "mod+g", // 캔버스: 실행 취소·복사·붙여넣기·그룹
+  "mod+shift+c", "mod+shift+v", "mod+shift+x", "mod+shift+g", // 캔버스의 복사·붙여넣기·그룹은 Shift 를 가리지 않는다
+  "mod+w", "mod+t", "mod+n", "mod+r", "mod+l", "mod+shift+t", "mod+shift+n", // 브라우저
+]);
+export function isReservedBinding(binding: string): boolean {
+  return RESERVED.has(binding) || /^(mod\+|alt\+|shift\+)*f\d{1,2}$/.test(binding);
+}
+
+// 저장된 값도 거른다 — 고정 키를 막기 전에 저장해 둔 것(Enter·방향키 등)이 계속 듣지 않게. 걸러진 항목은 기본값으로 돌아간다.
 function load(): Partial<Record<ShortcutId, string>> {
-  return loadJSON<Partial<Record<ShortcutId, string>>>(LS_KEY) || {};
+  const stored = loadJSON<Partial<Record<ShortcutId, string>>>(LS_KEY) || {};
+  const kept: Partial<Record<ShortcutId, string>> = {};
+  for (const [id, binding] of Object.entries(stored)) {
+    if (typeof binding === "string" && binding && !isReservedBinding(binding)) kept[id as ShortcutId] = binding;
+  }
+  return kept;
 }
 let overrides = load();
 
@@ -104,19 +124,6 @@ export function conflictOf(binding: string, except: ShortcutId): ShortcutId | nu
   }
   return null;
 }
-// 재지정할 수 없는 키 — 격자·캔버스·브라우저가 이미 쓰는 고정 키(같은 키에 두 동작이 걸리거나 아무 일도 안 일어난다),
-//  그리고 글자가 아닌 입력기 키. 전엔 Enter·방향키도 받아, 프롬프트의 Enter 에 도크가 숨거나 방향키에 색이 칠해졌다.
-const RESERVED = new Set([
-  "escape", "enter", "tab", "space", "backspace", "delete", "insert", "home", "end", "pageup", "pagedown",
-  "arrowup", "arrowdown", "arrowleft", "arrowright", "contextmenu", "capslock", "process", "unidentified", "dead",
-  "f", "y", "s", // 캔버스: 화면 맞춤·가위 / Assets: 소스
-  "mod+z", "mod+shift+z", "mod+c", "mod+v", "mod+x", "mod+g", // 캔버스: 실행 취소·복사·붙여넣기·그룹
-  "mod+w", "mod+t", "mod+n", "mod+r", "mod+l", "mod+shift+t", "mod+shift+n", // 브라우저
-]);
-export function isReservedBinding(binding: string): boolean {
-  return RESERVED.has(binding) || /^(mod\+|alt\+|shift\+)*f\d{1,2}$/.test(binding);
-}
-
 // 키 이벤트가 갖춰야 할 최소 형태 — DOM KeyboardEvent·React.KeyboardEvent 둘 다 구조적으로 만족.
 type KeyLike = { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey?: boolean };
 
@@ -141,7 +148,8 @@ export function matchShortcut(e: KeyLike, id: ShortcutId): boolean {
   return b != null && b === getBinding(id);
 }
 
-// 표시용: "mod+k" → "Ctrl/⌘ + K", "#" → "#", "escape" → "Escape"
+const ARROWS: Record<string, string> = { arrowleft: "←", arrowright: "→", arrowup: "↑", arrowdown: "↓" };
+// 표시용: "mod+k" → "Ctrl/⌘ + K", "#" → "#", "escape" → "Escape", "arrowright" → "→"
 export function prettyBinding(b: string): string {
   if (!b) return "—";
   return b
@@ -157,7 +165,7 @@ export function prettyBinding(b: string): string {
             ? "Space"
             : p.length === 1
               ? p.toUpperCase()
-              : p[0].toUpperCase() + p.slice(1),
+              : ARROWS[p] ?? p[0].toUpperCase() + p.slice(1),
     )
     .join(" + ");
 }

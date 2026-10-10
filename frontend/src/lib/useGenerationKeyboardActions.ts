@@ -57,7 +57,7 @@ export function useGenerationKeyboardActions({
   const colorSelected = useCallback(
     async (ids: string[], color: string) => {
       const next = nextGenerationSelectionColor(gensRef.current, ids, color);
-      colorLedger?.begin(ids);
+      colorLedger?.begin(ids, next);
       gensRef.current = applyGenerationColor(gensRef.current, ids, next);
       setGens((prev) => {
         const updated = applyGenerationColor(prev, ids, next);

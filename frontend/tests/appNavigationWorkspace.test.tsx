@@ -112,3 +112,12 @@ it("새로 고침 전의 기록으로 돌아가면 미리보기는 닫힌 채다
   pop(current);
   expect(preview).toEqual(targetB);
 });
+
+it("이미 떠 있는 관리자 창을 또 열어도 기록은 한 겹 — Esc(뒤로 한 번)에 닫힌다", () => {
+  render();
+  const before = window.history.length;
+  act(() => navigation.openAdmin());
+  act(() => navigation.openAdmin()); // 초점이 로고에 남은 채 Space
+  expect(window.history.length).toBe(before + 1);
+  expect((window.history.state as { chv: { ov: string | null } }).chv.ov).toBe("admin");
+});

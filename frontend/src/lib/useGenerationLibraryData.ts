@@ -1,4 +1,4 @@
-import { createColorEditLedger, keepLocalColors } from "./generationColorState";
+import { createColorEditLedger } from "./generationColorState";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, GEN_PAGE, type GenCursor } from "../api";
 import { isLocatedQuery, locatedItems, mergeLocatedGenerations, type GenerationLocation } from "./resolveLibraryLocation";
@@ -348,7 +348,7 @@ export function useGenerationLibraryData({
       //    메타를 시작해, 왼쪽 폴더·태그·배지가 목록 왕복(로컬 47ms·3.38MB)만큼 늦게 왔다.
       //    그리드 표시는 목록만 기다린다. 메타는 메타 줄이 받아 적용한다 — 줄이 비어 있으면 지금 이 자리에서 출발하고,
       //    앞 묶음이 떠 있으면 그 뒤에 선다(이 실행의 목록은 그것을 기다리지 않는다).
-      const keepColor = colorLedger.stamp(); // 출발 시점을 찍는다 — 이 뒤에 칠한 색은 아래 응답이 덮지 못한다
+      const keepPainted = colorLedger.stamp(); // 출발 시점을 찍는다 — 이 뒤에 칠한 색은 아래 응답이 덮지 못한다
       const list = trashMode ? api.listTrash(query.search, 0) : api.listGenerations(query, null);
       const metaDone = requestMeta(light);
       const located = locatedRef.current;
@@ -382,7 +382,7 @@ export function useGenerationLibraryData({
           g = checked ? mergeLocatedGenerations(g.filter((item) => !oldIds.has(item.id)), valid) : g;
           setLocatedVisibleIds(new Set(valid.map((item) => item.id)));
         }
-        g = keepLocalColors(gensRef.current, g, keepColor); // 화면·탭 캐시 둘 다 같은 값을 쓴다
+        g = keepPainted(g); // 화면·탭 캐시 둘 다 같은 값을 쓴다
         setGens((prev) => reconcileArrayState(prev, g));
         setHasMore(page.length >= GEN_PAGE);
         setLoadError(null);
@@ -546,6 +546,7 @@ export function useGenerationLibraryData({
     const seq = reloadSeqRef.current;
     const trashMode = !!filtersRef.current.deleted_only;
     const query = listQuery();
+    const keepPainted = colorLedger.stamp(); // 아래 합치기(위치 주입분)는 이미 있는 카드를 응답으로 갈아 끼운다 — 그사이 칠한 색을 덮지 않게
     try {
       // 시작 시점 seq 스냅샷 — 응답이 오기 전에 탭/필터가 바뀌었으면(reload 가 seq 를 올림) 폐기.
       // 가드 없이는 '내 작업' 추가 페이지가 팀 탭 목록에 합쳐지고 탭 캐시까지 오염된다(코덱스 P1).
@@ -564,7 +565,7 @@ export function useGenerationLibraryData({
       //  virtua 스크롤 앵커·focusIdx(인덱스 기반)·선택 Set 을 동시에 깨뜨린다. 항목당 메타 수 KB 뿐이고
       //  진짜 메모리(썸네일 비트맵·DOM)는 가상 스크롤이 이미 상한 — 실이득 대비 회귀 위험이 커서 제외.
       setGens((prev) => {
-        if (locatedRef.current && !trashMode) return mergeLocatedGenerations(prev, visibleBatch);
+        if (locatedRef.current && !trashMode) return mergeLocatedGenerations(prev, keepPainted(visibleBatch));
         const seen = new Set(prev.map((x) => x.id));
         return [...prev, ...visibleBatch.filter((x) => !seen.has(x.id))];
       });

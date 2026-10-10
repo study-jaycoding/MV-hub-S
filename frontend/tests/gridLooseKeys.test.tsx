@@ -219,6 +219,7 @@ it("태그 입력이 키로 끝나면 초점이 격자로 돌아온다 · 체크
   expect([...selected]).toEqual(["g2"]);
 
   const button = host.querySelector<HTMLButtonElement>('.gen-cell[data-id="g2"] button')!;
+  key("Tab"); // Tab 으로 옮겨 온 초점
   act(() => button.focus());
   expect(key("Enter", button).defaultPrevented).toBe(false);
   expect(previews).toEqual([]);
@@ -258,4 +259,67 @@ it("위에 떠 있던 창을 닫은 Esc 는 초점이 남은 격자의 선택까
   expect([...selected]).toEqual(["g1", "g2"]);
   key("Escape", grid()); // 창이 없는 다음 Esc = 선택 해제
   expect(selected.size).toBe(0);
+});
+
+it("밖에서 선택이 풀리면 초점 카드도 지운다 — Space·Ctrl+클릭으로 마지막 카드를 뺀 자리만 남는다", () => {
+  draw();
+  flushFrames();
+  click("g2");
+  expect(host.querySelector(".gen-cell.focused")).toBeTruthy();
+  selected = new Set(); draw(); // 격자 밖 단추를 눌러 선택이 풀렸다(계정 메뉴 등) — 전엔 옛 초점 카드에 c·Enter·Space 가 실행됐다
+  expect(host.querySelector(".gen-cell.focused")).toBeNull();
+  key("c", grid());
+  key("Enter", grid());
+  key(" ", grid());
+  expect(comments).toEqual([]);
+  expect(previews).toEqual([]);
+  expect(selected.size).toBe(0);
+  key("ArrowDown", grid()); // 방향키만은 보던 자리(g2)에서 이어 간다 — 툴바 단추를 누른 뒤 목록 맨 위로 튀지 않는다
+  expect([...selected]).toEqual(["g4"]);
+
+  click("g2");
+  selected = new Set(); draw(); // 밖에서 풀림
+  click("g4", { shiftKey: true }); // Shift 클릭의 기준도 보던 자리
+  expect([...selected]).toEqual(["g2", "g3", "g4"]);
+
+  click("g2");
+  key(" ", grid()); // Space 로 뺀 자리는 남는다 — 한 번 더 누르면 다시 고른다
+  expect(selected.size).toBe(0);
+  selected = new Set(); draw(); // 부모가 빈 Set 을 새로 만들어 줘도('생성 결과' 창의 자료 갱신) 남겨 둔 자리는 그대로다
+  expect(host.querySelector(".gen-cell.focused")).toBeTruthy();
+  key(" ", grid());
+  expect([...selected]).toEqual(["g2"]);
+  click("g2", { ctrlKey: true }); // Ctrl+클릭으로 뺀 자리도 — 방향키가 거기서 출발한다(맨 위로 튀지 않는다)
+  expect(selected.size).toBe(0);
+  key("ArrowDown", grid());
+  expect([...selected]).toEqual(["g4"]);
+});
+
+it("카드를 누른 뒤 마퀴로 다른 카드를 고르면 방향키의 기준은 고른 것 중 마지막 카드다 — 먼저 누른 카드가 아니라", () => {
+  draw();
+  flushFrames();
+  const rect = (x: number, y: number, w: number, h: number) => ({ left: x, top: y, right: x + w, bottom: y + h, width: w, height: h, x, y, toJSON: () => ({}) }) as DOMRect;
+  vi.spyOn(grid(), "getBoundingClientRect").mockReturnValue(rect(0, 0, 400, 400));
+  generations.forEach((g, i) => vi.spyOn(host.querySelector<HTMLElement>(`.gen-cell[data-id="${g.id}"]`)!, "getBoundingClientRect").mockReturnValue(rect(i * 70, 10, 60, 60)));
+  click("g1");
+  mouse("mousedown", grid(), { clientX: 150, clientY: 200 }); // 빈 곳에서 시작해 g3·g4 를 걸친다
+  mouse("mousemove", window, { clientX: 250, clientY: 20 });
+  mouse("mouseup", window, { clientX: 250, clientY: 20 });
+  expect([...selected].sort()).toEqual(["g3", "g4"]);
+  expect(host.querySelector(".gen-cell.focused")).toBeNull();
+  key("ArrowLeft", grid()); // g4 의 왼쪽 = g3 (전엔 g1 에서 출발해 제자리)
+  expect([...selected]).toEqual(["g3"]);
+});
+
+it("마우스로 누른 카드 단추에 초점이 남아도 Space 는 격자의 것 — 그 뒤 다른 키를 눌러도. Tab 으로 간 단추만 제 키를 받는다", () => {
+  draw({ patch: { layout: "list" } });
+  flushFrames();
+  click("g1");
+  const button = host.querySelector<HTMLButtonElement>('.gen-cell[data-id="g1"] button')!;
+  act(() => { document.dispatchEvent(new Event("pointerdown")); button.focus(); }); // 마우스로 눌렀다
+  key("Shift", button, { shiftKey: true }); // 아무 키 — 브라우저는 여기서 그 단추를 :focus-visible 로 바꾼다(전엔 이것으로 판정했다)
+  expect(key(" ", button).defaultPrevented).toBe(true); // 격자가 받았다 — 단추가 다시 눌리지 않는다
+  expect(selected.size).toBe(0);
+  key("Tab", button);
+  expect(key(" ", button).defaultPrevented).toBe(false); // Tab 으로 옮겨 온 초점이면 그 단추의 키
 });

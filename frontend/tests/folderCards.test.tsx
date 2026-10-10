@@ -430,6 +430,39 @@ it("빈 곳에서 끌면 걸친 카드를 모두 고른다 — 창을 떠나면(
     mouse("mousemove", window, { clientX: 10, clientY: 10 });
     act(() => { window.dispatchEvent(new Event("blur")); });
     expect([...selected].sort()).toEqual(["e035/C0020", "e035/C0030"]);
+    // 카드를 누른 뒤 마퀴로 다른 카드를 고르면 Shift 클릭의 시작은 고른 것 중 마지막 카드다(생성물 격자와 같다) — 전엔 먼저 누른 카드부터였고,
+    //  누른 카드가 없으면 한 장만 골랐다
+    raf.mockImplementation((cb) => { cb(0); return 1; });
+    const tileOf = (name: string) => host.querySelector(`.cut-card[data-path="e035/${name}"]`)!;
+    mouse("mousedown", tileOf("C0010"), { clientX: 100, clientY: 100 }); mouse("mouseup", window, { clientX: 100, clientY: 100 });
+    expect([...selected]).toEqual(["e035/C0010"]);
+    mouse("mousedown", grid, { clientX: 950, clientY: 300 });
+    mouse("mousemove", window, { clientX: 370, clientY: 100 });
+    mouse("mouseup", window, { clientX: 370, clientY: 100 });
+    expect([...selected].sort()).toEqual(["e035/C0020", "e035/C0030"]);
+    mouse("mousedown", tileOf("C0020"), { clientX: 300, clientY: 100, shiftKey: true });
+    mouse("mouseup", window, { clientX: 300, clientY: 100, shiftKey: true });
+    expect([...selected].sort()).toEqual(["e035/C0020", "e035/C0030"]);
+    // 이어지는 Shift 클릭은 같은 카드에서 잰다(기준이 '고른 것 중 마지막'으로 옮겨 가지 않는다)
+    const marqueeFirst = () => {
+      mouse("mousedown", grid, { clientX: 190, clientY: 300 });
+      mouse("mousemove", window, { clientX: 10, clientY: 10 });
+      mouse("mouseup", window, { clientX: 10, clientY: 10 });
+      expect([...selected]).toEqual(["e035/C0010"]);
+    };
+    const shiftClick = (name: string, x: number) => {
+      mouse("mousedown", tileOf(name), { clientX: x, clientY: 100, shiftKey: true });
+      mouse("mouseup", window, { clientX: x, clientY: 100, shiftKey: true });
+    };
+    marqueeFirst();
+    shiftClick("C0030", 500);
+    expect(selected.size).toBe(3);
+    shiftClick("C0020", 300);
+    expect([...selected].sort()).toEqual(["e035/C0010", "e035/C0020"]);
+    // 마퀴 뒤 Shift+방향키도 범위다(전엔 한 장만 골랐다)
+    marqueeFirst();
+    act(() => { grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", shiftKey: true, bubbles: true, cancelable: true })); });
+    expect([...selected].sort()).toEqual(["e035/C0010", "e035/C0020"]);
   } finally {
     raf.mockRestore();
   }
@@ -480,6 +513,8 @@ it("키보드 — Ctrl+A 모두 · 방향키 옮기기(Shift = 누른 카드부�
   expect(opened).toEqual(["C0040"]);
   key(" ");
   expect(selected.size).toBe(0);
+  key("Enter"); // Space 로 뺀 자리는 화면에 표시가 없다 — Enter 가 그 폴더를 열지 않는다
+  expect(opened).toEqual(["C0040"]);
   key("ArrowRight"); // 끝에서는 멈춘다
   expect([...selected]).toEqual(["e035/C0040"]);
 
@@ -514,5 +549,11 @@ it("키보드 — Ctrl+A 모두 · 방향키 옮기기(Shift = 누른 카드부�
   expect(entered).toEqual(enteredBefore);
   key("Enter", {}, tile("E01"));
   expect(entered).toEqual([...enteredBefore, "E01"]);
+  // 초점이 카드에 놓인 채 방향키를 누르면 초점은 격자로 온다 — 남으면 다음 방향키가 다시 그 카드에서 출발해 한 칸에서 멈춘다
+  act(() => tile("E01").focus());
+  key("ArrowRight", {}, tile("E01"));
+  expect(document.activeElement).toBe(grid);
+  key("ArrowRight");
+  expect([...selected]).toEqual(["e035/C0040"]);
   expect(key("ArrowLeft", { altKey: true }).defaultPrevented).toBe(false); // Alt+← 는 브라우저의 뒤로
 });
