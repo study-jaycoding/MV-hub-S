@@ -115,3 +115,18 @@ it("저장소 차단 시에도 키보드와 드래그로 화면 폭을 바꿀 �
   pointer(handle, "pointerdown", 208); pointer(handle, "pointermove", 360); pointer(handle, "pointerup", 360);
   expect(width()).toBe("360px");
 });
+it("마우스로 끈 뒤에는 초점을 끌기 전 자리로 돌려준다(없으면 내려놓는다) — 손잡이에 남으면 방향키가 폭을 바꾸고 단축키가 죽는다", () => {
+  // 2026-10-10 격리 실측: 폭 손잡이를 끈 뒤 초점이 손잡이에 남아 → 가 칸 폭을 바꾸고 Space·M 이 먹지 않았다.
+  const handle = render();
+  const folder = host.querySelector<HTMLButtonElement>("aside button")!;
+  act(() => folder.focus());
+  pointer(handle, "pointerdown", 200); expect(document.activeElement).toBe(handle);
+  pointer(handle, "pointermove", 300); pointer(handle, "pointerup", 300);
+  expect(document.activeElement).toBe(folder);
+  act(() => folder.blur()); // 끌기 전에 초점이 어디에도 없었다
+  pointer(handle, "pointerdown", 300); pointer(handle, "pointerup", 300);
+  expect(document.activeElement).toBe(document.body);
+  act(() => handle.focus()); keyboard(handle, "ArrowRight"); // Tab 으로 손잡이에 와서 방향키로 조절하는 길은 그대로
+  expect(document.activeElement).toBe(handle);
+  expect(width()).toBe("308px");
+});
