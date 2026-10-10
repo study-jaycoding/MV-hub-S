@@ -87,6 +87,25 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
     const targetIds = selected.has(cardId)
       ? [...new Set([...selected, ...movingMemberIds])]
       : [cardId];
+    // 통째로 옮기는 그룹 — 위의 '고른 rect 그룹'에 더해, 여러 장을 끌 때 살아 있는 멤버가 **전부** 끄는 대상에 든 그룹.
+    //  그런 그룹은 프레임이 카드와 같이 가는 것이 맞다: rect 를 같이 옮기고, 멤버는 '빠른 이탈'과 놓을 때의 재배정에서 뺀다.
+    //  안 그러면 Ctrl+A 로 전부 끌어 놓을 때 ① 카드가 같이 옮겨 온 옆 그룹의 **옛 자리**(시작 때 프레임)에 떨어져 그 그룹으로
+    //  넘어가거나(속도와 무관) ② 빠르게 끌면 전부 이탈해, 비게 된 그룹이 지워졌다(2026-10-10 캔버스 실측: 그룹 32 → 31,
+    //  되풀이하면 20 → 9. Ctrl+Z 로만 돌아왔다). 헤더를 잡고 그룹을 끄는 길(useSceneGroupMove — 재배정 없음)과 같아진다.
+    //  한 장만 끌 때의 편입·이탈은 그대로다.
+    const wholeGroupIds = new Set(movingRects.keys());
+    const liveTargets = new Set(targetIds.filter((id) => cardsById.has(id)));
+    if (liveTargets.size > 1) {
+      for (const group of current.groupsRef.current) {
+        const live = group.cardIds.filter((id) => cardsById.has(id));
+        if (!live.length || !live.every((id) => liveTargets.has(id))) continue;
+        wholeGroupIds.add(group.id);
+        if (group.rect) movingRects.set(group.id, { ...group.rect });
+      }
+    }
+    const wholeMemberIds = new Set(
+      current.groupsRef.current.filter((group) => wholeGroupIds.has(group.id)).flatMap((group) => group.cardIds),
+    );
     const origins: Record<string, { x: number; y: number }> = {};
     for (const targetId of targetIds) {
       const card = cardsById.get(targetId);
@@ -108,7 +127,7 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
     for (const targetId of targetIds) {
       const group = groupByCard.get(targetId);
       // 프레임이 카드와 같이 움직이는 그룹은 이탈 판정에서 뺀다 — 프레임을 벗어날 수가 없다.
-      if (!group || movingRects.has(group.id)) continue;
+      if (!group || wholeMemberIds.has(targetId)) continue;
       const frame = frameByGroup.get(group.id);
       if (frame) memberFrames.set(targetId, frame);
     }
@@ -206,7 +225,11 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
 
     const commitMovedCards = () => {
       const latest = optionsRef.current;
-      const nextGroups = latest.reassignGroups(targetIds, startFrames, ejected);
+      const nextGroups = latest.reassignGroups(
+        targetIds.filter((id) => !wholeMemberIds.has(id)),
+        startFrames.filter((item) => !wholeGroupIds.has(item.id)),
+        ejected,
+      );
       const nextCards = latest.reconcileGenerationRefs(
         latest.cardsRef.current,
         latest.edgesRef.current,

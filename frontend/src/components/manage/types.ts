@@ -224,7 +224,8 @@ export interface WorkViewProps {
   colorMap?: Record<string, string>; // 값 색 라벨 "field::value"->colorKey (프로젝트/시퀀스 등)
   myUid?: string | null; // 현재 로그인 uid — '내 작업' 필터·표시용
   readOnly?: boolean; // 과거 워크스페이스 기록 화면 — 모든 변경 동작 차단
-  onPatch: (tid: string, patch: Partial<Task>) => void;
+  // 저장이 끝나면 성공 여부를 알려 준다(알릴 수 없는 곳은 아무것도 돌려주지 않는다) — 설명 칸이 '저장 안 됨'을 표시하는 데 쓴다.
+  onPatch: (tid: string, patch: Partial<Task>) => Promise<boolean> | void;
   onDelete: (tid: string) => void;
   onLinkGen: (tid: string, genId: string) => void;
   onUnlinkGen: (tid: string, genId: string) => void;

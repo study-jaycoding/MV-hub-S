@@ -46,9 +46,7 @@ export function TableView(props: WorkViewProps) {
   useT(); // 언어 토글 시 상태 라벨 리렌더
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  const commitText = (t: Task, value: string) => {
-    if ((t.description || "") !== value) onPatch(t.id, { description: value });
-  };
+  const commitText = (t: Task, value: string) => onPatch(t.id, { description: value }); // 보낼지 말지는 칸(DescCell)이 정한다
 
   const allIds = tasks.filter((task) => !taskIsReadOnly(task, readOnly)).map((t) => t.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected?.has(id));
@@ -319,37 +317,76 @@ export function TableView(props: WorkViewProps) {
 //  닫지 않게 여기서 멈춘다). 서버에서 그 작업을 다시 받으면(저장 성공·남의 변경) **이 칸에서 고친 것이 없을 때만** 서버 값으로 맞춘다 —
 //  치는 중인 글은 건드리지 않는다(전엔 칸을 통째로 다시 만들어 친 글자가 사라졌다). 기준은 '초점'이 아니라 '고쳤나'다: 초점만 두고
 //  안 고친 칸이 옛 글을 쥐고 있으면, 벗어날 때 그 옛 글이 저장돼 그사이 남이 바꾼 값을 되돌린다(Codex 코드 리뷰).
-//  남은 것: 저장이 실패하고 서버 값이 그대로면 실패한 글이 칸에 남는다(실패 알림은 뜬다 — 전부터 그랬다).
-function DescCell({ task, disabled, onCommit }: { task: Task; disabled: boolean; onCommit: (task: Task, value: string) => void }) {
+//  저장이 실패하면 친 글을 남기고 '저장 안 됨'을 표시한다(Jay 결정 2026-10-10) — 전엔 실패 알림이 사라지면 저장된 글과 구별이 안 됐고
+//  새로 고침하면 사라졌다. 표시가 붙은 칸은 다시 벗어나거나 [다시 저장]을 누르면 한 번 더 저장한다. Esc 는 그 글을 버린다.
+function DescCell({ task, disabled, onCommit }: {
+  task: Task;
+  disabled: boolean;
+  onCommit: (task: Task, value: string) => Promise<boolean> | boolean | void;
+}) {
   const [draft, setDraft] = useState(task.description || "");
-  const dirty = useRef(false); // 이 칸에서 글을 고쳤나
+  const [unsaved, setUnsaved] = useState(false); // 서버에 없는 글을 보이고 있다(저장 실패)
+  // 이 칸에 서버로 못 간 글이 있나 — 치기 시작한 때부터 그 글의 저장이 **성공할 때까지** 참이다. 저장 응답을 기다리는 동안에도
+  //  참이라, 그사이 목록이 새로 와도 친 글을 덮지 않는다(Codex 코드 리뷰: 대기 중에 서버 값으로 덮인 뒤 실패가 오면 '저장 안 됨'이
+  //  서버 글에 붙었다). 실패한 글도 계속 쥐고 있어 다시 벗어나면 또 저장한다.
+  const dirty = useRef(false);
+  const edit = useRef(0); // 편집 번호 — 글을 치거나 버릴 때마다 오른다. 늦게 온 옛 저장의 결과가 지금 글에 적용되지 않게 가려낸다
+  const sent = useRef(-1); // 응답을 기다리는 저장의 편집 번호(-1 = 없다) — 같은 글을 두 번 보내지 않는다
+  // 목록의 값(task.description)을 '서버에 있는 글'로 믿어도 되나. 이 칸이 저장을 보낸 뒤에는 **가는 중인 저장이 없는 채로 목록이 새로
+  //  올 때까지** 믿지 않는다 — 저장이 가는 중이거나 막 성공한 틈의 목록 값은 옛 글이라, 그 옛 글로 되돌린 것을 '고친 것 없음'으로 보고
+  //  안 보내면 마지막에 친 글이 앞 저장에 덮인다(Codex 코드 리뷰). 못 믿는 동안은 같아 보여도 보낸다(같은 값을 한 번 더 보낼 뿐이다).
+  //  '서버에 간 글'을 따로 적어 두지는 않는다 — 늦게 온 성공 응답이 더 새 목록 값을 덮는 길이 생긴다(한 번 그렇게 했다가 뺐다).
+  const trust = useRef(true);
   useEffect(() => {
+    if (sent.current === -1) trust.current = true;
     if (!dirty.current) setDraft(task.description || "");
   }, [task]);
+  const save = () => {
+    if (!dirty.current || sent.current === edit.current) return; // 고친 것이 없다 · 같은 글의 저장이 이미 가는 중이다
+    // 목록 값과 같으면 보내지 않는다(고쳤다가 되돌린 글이 그사이 남이 바꾼 값을 되돌리지 않게) — 목록 값을 믿을 수 있을 때만.
+    //  같은 작업의 저장은 줄을 서서 보낸 순서대로 간다(WorkBoard 의 taskPatchQueue).
+    const skip = trust.current && draft === (task.description || "");
+    if (!skip) trust.current = false;
+    const mine = edit.current;
+    sent.current = mine;
+    void Promise.resolve(skip ? true : onCommit(task, draft)).then((ok) => {
+      if (sent.current === mine) sent.current = -1;
+      if (mine !== edit.current) return; // 그사이 다시 고쳤거나 Esc 로 버렸다 — 이 결과는 옛 글의 것이다
+      dirty.current = ok === false;
+      setUnsaved(ok === false);
+    });
+  };
   return (
-    <input
-      className="work-cell-in"
-      value={draft}
-      disabled={disabled}
-      placeholder="설명"
-      onChange={(e) => {
-        dirty.current = true;
-        setDraft(e.target.value);
-      }}
-      onBlur={() => {
-        if (!dirty.current) return; // 고친 것이 없다 — 저장할 것도 없다
-        dirty.current = false;
-        onCommit(task, draft);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") e.currentTarget.blur();
-        else if (e.key === "Escape") {
-          e.stopPropagation();
-          dirty.current = false;
-          setDraft(task.description || "");
-          e.currentTarget.blur();
-        }
-      }}
-    />
+    <span className={"work-desc" + (unsaved ? " unsaved" : "")}>
+      <input
+        className="work-cell-in"
+        value={draft}
+        disabled={disabled}
+        placeholder="설명"
+        onChange={(e) => {
+          edit.current += 1;
+          dirty.current = true;
+          setDraft(e.target.value);
+        }}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          else if (e.key === "Escape") {
+            e.stopPropagation();
+            edit.current += 1; // 가는 중인 저장의 결과도 이 칸에 적용하지 않는다
+            dirty.current = false;
+            setUnsaved(false);
+            setDraft(task.description || "");
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      {unsaved && (
+        <>
+          <span className="work-desc-chip" title="서버에 저장되지 않았습니다 — 새로 고침하면 사라집니다">저장 안 됨</span>
+          <button type="button" className="work-desc-retry" disabled={disabled} onClick={save}>다시 저장</button>
+        </>
+      )}
+    </span>
   );
 }

@@ -584,12 +584,14 @@ export function WorkBoard({
     });
   }
 
-  const onPatch = (tid: string, patch: Partial<Task>) => {
-    if (writeBlocked(tid)) return;
+  const onPatch = (tid: string, patch: Partial<Task>): Promise<boolean> => {
+    if (writeBlocked(tid)) return Promise.resolve(false);
     const requestScope = scopeKey;
-    void taskPatchQueueRef.current!.enqueue(tid, async () => {
+    let saved = false; // 서버가 받았나 — 줄(queue)은 실패를 삼키고 복구하므로 여기서 따로 적는다
+    return taskPatchQueueRef.current!.enqueue(tid, async () => {
       try {
         await manageApi.updateTask(tid, patch);
+        saved = true;
         taskDataRevisionRef.current += 1;
       } catch (error) {
         throw scopedMutationError(requestScope, error);
@@ -617,7 +619,7 @@ export function WorkBoard({
       } else {
         await loadAllRef.current();
       }
-    });
+    }).then(() => saved);
   };
   const onDelete = (tid: string) => {
     if (writeBlocked(tid)) return;

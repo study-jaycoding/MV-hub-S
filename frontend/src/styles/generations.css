@@ -796,14 +796,20 @@
   .card-sf.on { font-size: 12px; }
   .card-sf.final { font-size: 14px; }
 }
-.ov-check { display: inline-flex; cursor: pointer; }
-/* 리스트 보기의 선택 체크박스 — 좌상단의 S·T·C 묶음(.card-tl, 90px)이 같은 자리를 덮어, 체크하려던 클릭이 S(공유 해제 확인)를 눌렀다
-   (2026-10-10 실측). 묶음 오른쪽으로 비킨다. */
-.gen-grid.as-list .ov-check { margin-left: 96px; }
+/* 리스트 보기의 선택 칸(이 보기에서만 그린다) — S·T·C 와 같은 모양의 칸을 **오른쪽 위, ⓘ 왼쪽**에 둔다. 고르면 S 가 켜진 것과 같은
+   라임 칸이 된다(Jay 결정 2026-10-10 — 변형 네 가지 그림 중 4번). 원래는 왼쪽 위에 있어 S·T·C 묶음(.card-tl)에 덮였고, 체크하려던
+   클릭이 S(공유 해제 확인)를 눌렀다(격리 실측). ⓘ 는 인라인으로 margin-left:auto 라 여기서 간격을 덮어쓴다. */
+.ov-check { display: inline-flex; cursor: pointer; margin-left: auto; margin-top: 1px; }
+.ov-check + .ov-info { margin-left: 8px !important; }
 .ov-check input {
-  width: 19px; height: 19px; accent-color: var(--accent); cursor: pointer;
-  border-radius: 5px;
+  appearance: none; -webkit-appearance: none; width: 26px; height: 26px; margin: 0; border-radius: 8px; cursor: pointer;
+  display: grid; place-items: center; background: rgba(12,13,17,0.82); border: 1px solid rgba(255,255,255,0.14);
 }
+.ov-check input::after { content: "✓"; font-size: 14px; font-weight: 900; line-height: 1; color: rgba(255,255,255,0.28); }
+.ov-check input:hover { border-color: var(--accent); }
+.ov-check input:checked { background: var(--accent); border-color: var(--accent); }
+.ov-check input:checked::after { color: var(--accent-ink); }
+.ov-check input:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
 
 /* ── 테두리의 상태색(2026-09-21, Jay 가 모의 화면 v2 의 (가)안으로 확정) ──
    평소: 공유·보류·최종 카드는 1px 상태색 선(일반은 선 없음). 선택: 3px 테두리가 상태색(일반 = 눈부심 덜한 회색빛 흰색).
