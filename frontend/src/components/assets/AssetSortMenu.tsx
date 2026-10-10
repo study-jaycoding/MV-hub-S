@@ -1,5 +1,6 @@
 // 에셋 정렬 메뉴 — 그리드/리스트 토글 옆의 정렬 버튼(위아래 화살표). 누르면 이름/날짜/유형 + 오름/내림을
 // 고르는 드롭다운(윈도우 탐색기 정렬 메뉴와 같은 구성). 바깥을 누르면 닫힘.
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import type { AssetSortDir, AssetSortField } from "./assetsViewModel";
 
@@ -55,18 +56,19 @@ export function AssetSortMenu<F extends string = AssetSortField>({
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [open]);
+  // Esc 는 메뉴만 닫는다(맨 위 겹) — 떠 있는 동안 뒤 카드의 단축키(r/g/b/d·선택 해제)도 쉰다.
+  useEscapeClose(
+    () => {
       setOpen(false);
       buttonRef.current?.focus();
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
+    },
+    open,
+    true,
+    true,
+  );
 
   const fieldLabel = fields.find((f) => f.key === field)?.label ?? "정렬";
 

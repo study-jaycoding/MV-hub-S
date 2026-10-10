@@ -803,6 +803,9 @@
   .card-sf.final { font-size: 14px; }
 }
 .ov-check { display: inline-flex; cursor: pointer; }
+/* 리스트 보기의 선택 체크박스 — 좌상단의 S·T·C 묶음(.card-tl, 90px)이 같은 자리를 덮어, 체크하려던 클릭이 S(공유 해제 확인)를 눌렀다
+   (2026-10-10 실측). 묶음 오른쪽으로 비킨다. */
+.gen-grid.as-list .ov-check { margin-left: 96px; }
 .ov-check input {
   width: 19px; height: 19px; accent-color: var(--accent); cursor: pointer;
   border-radius: 5px;

@@ -17,7 +17,7 @@ import { reportSourceLocationError } from "../lib/sourceLocationFeedback";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../lib/media";
 import { refSrc } from "../lib/promptParts";
 import { useEscapeClose } from "../lib/useEscapeClose";
-import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
+import { addWindowPointerDrag, keepHeadReachable, removeWindowPointerDrag } from "../lib/windowDrag";
 import type { Generation, InfoTarget, PreviewTarget, Project, Reference } from "../types";
 import { InlinePromptRefs } from "./common/InlinePromptRefs";
 import { MediaThumbnail } from "./MediaThumbnail";
@@ -175,7 +175,7 @@ export function InfoPopup({
     const d = drag.current;
     if (!d) return;
     movedRef.current = true; // 실제로 움직였을 때만 — 머리를 누르기만 한 것은 옮긴 게 아니다
-    setPos({ x: e.clientX - d.dx, y: e.clientY - d.dy });
+    setPos(keepHeadReachable(e.clientX - d.dx, e.clientY - d.dy, POP_W));
   };
   const onDragEnd = () => {
     drag.current = null;

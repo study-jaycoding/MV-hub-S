@@ -4,7 +4,10 @@ import type { Filters, InfoTarget, PreviewTarget } from "../types";
 
 type NavOverlay = "preview" | "comment" | "admin";
 // edit = 편집 탭(오버레이가 아니라 '보기'). Filters["tab"] 의 값이 아니다 — 밑의 탭 상태는 그대로 둔 채 본문만 바꾼다.
-type NavView = { tab: Filters["tab"]; focusId: string | null; ov: NavOverlay | null; key: number; edit?: boolean };
+type NavView = { tab: Filters["tab"]; focusId: string | null; ov: NavOverlay | null; key: number; edit?: boolean; sid?: string };
+// 이 페이지를 연 때의 표식 — payload 번호(key)는 페이지를 열 때마다 1 부터 다시 세므로, 새로 고침 전의 기록(브라우저가 state 를
+//  보존한다)과 번호가 겹친다. 표식이 다른 기록은 payload 가 없는 것으로 본다(미리보기는 닫힌 채로 — 다른 것이 뜨는 것보다 낫다).
+const NAV_SESSION = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 export function useAppNavigation({
   currentTab,
@@ -49,7 +52,7 @@ export function useAppNavigation({
   const applyView = useCallback(
     (v: NavView) => {
       viewRef.current = v;
-      const payload = v.key ? navPayloadsRef.current.get(v.key) : undefined;
+      const payload = v.key && v.sid === NAV_SESSION ? navPayloadsRef.current.get(v.key) : undefined;
       setPreview(v.ov === "preview" ? ((payload as PreviewTarget) ?? null) : null);
       // 코멘트 패널은 nav 뷰(탭 전환)에 묶지 않는다 — 태그창처럼 X 로 닫을 때까지 유지(독립 상태).
       setAdminOpen(v.ov === "admin");
@@ -100,7 +103,7 @@ export function useAppNavigation({
         }
       }
       const cur = viewRef.current;
-      navigate({ tab: cur.tab, focusId: cur.focusId, ov, key, edit: cur.edit }); // 편집 위에 뜬 창을 닫으면 편집으로 돌아온다
+      navigate({ tab: cur.tab, focusId: cur.focusId, ov, key, edit: cur.edit, sid: NAV_SESSION }); // 편집 위에 뜬 창을 닫으면 편집으로 돌아온다
     },
     [navigate],
   );

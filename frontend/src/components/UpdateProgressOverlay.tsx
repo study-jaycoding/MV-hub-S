@@ -4,6 +4,7 @@
 // 언마운트돼 진행을 놓친다. 그래서 이 덮개는 앱에 상주하며 **시작 신호**(startReleaseUpdate)와
 // 새로고침 뒤 남는 **대기 표시**(sessionStorage)만 보고 스스로 상태를 묻는다.
 // 평소에는 아무 요청도 하지 않는다.
+import { useKeyOwner } from "../lib/keyGate";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -49,6 +50,7 @@ export function UpdateProgressOverlay() {
   const [forceError, setForceError] = useState("");
   const [confirmForce, setConfirmForce] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
+  useKeyOwner(open); // 덮개가 떠 있는 동안 뒤 화면의 단축키는 쉰다(늘 마운트돼 있어 열림 상태를 넘긴다)
 
   // 어느 경로로 시작하든(설정·알림센터) 같은 신호를 받는다.
   useEffect(

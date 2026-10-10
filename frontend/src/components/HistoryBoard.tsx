@@ -166,7 +166,9 @@ export function HistoryBoard({
     [graph, disabled, disabledFolders],
   );
 
-  useHistoryBoardShortcuts({ focusId, selectedRef, setManualPos });
+  const nodeIdsRef = useRef<string[]>([]);
+  nodeIdsRef.current = (graph?.nodes || []).map((node) => node.id);
+  useHistoryBoardShortcuts({ focusId, selectedRef, nodeIdsRef, setManualPos });
 
   // 선택 변화를 App에 통지(선택 노드의 Generation[] — 파생 부모 + 프롬프트 위 선택바용).
   useEffect(() => {

@@ -96,3 +96,19 @@ it("범위키가 없는 기존 호출자는 미리보기 뒤로가기 동작을 
   pop(entry);
   expect(preview).toEqual(targetA);
 });
+
+it("새로 고침 전의 기록으로 돌아가면 미리보기는 닫힌 채다 — 번호가 같은 지금 세션의 다른 미리보기가 뜨지 않는다", () => {
+  // payload 번호는 페이지를 열 때마다 1 부터 다시 센다. 브라우저는 새로 고침 뒤에도 옛 기록의 state 를 보존하므로, 표식이 없으면
+  // 옛 기록(번호 1)이 지금 세션의 번호 1(다른 그림)을 꺼냈다.
+  render("team:a:auto");
+  act(() => navigation.openPreview(targetB)); // 지금 세션의 번호 1
+  const current = window.history.state as { chv: { key: number; sid?: string } };
+  expect(current.chv.key).toBe(1);
+  expect(current.chv.sid).toBeTruthy();
+  pop({ chv: { tab: "team", focusId: null, ov: "preview", key: 1, sid: "before-reload" } }); // 새로 고침 전의 기록
+  expect(preview).toBeNull();
+  pop({ chv: { tab: "team", focusId: null, ov: "preview", key: 1 } }); // 표식이 없던 옛 판의 기록
+  expect(preview).toBeNull();
+  pop(current);
+  expect(preview).toEqual(targetB);
+});

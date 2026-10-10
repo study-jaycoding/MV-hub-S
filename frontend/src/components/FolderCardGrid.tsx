@@ -4,10 +4,14 @@
 //  두 번 클릭 = 그 폴더에 하위 폴더가 있으면(에피소드) 그 폴더로 **들어가고**(사이드바에서 그 폴더를 누른 것과 같다), 없으면(컷)
 //  그 폴더의 창(Jay 2026-10-09 '가. 들어가기'). 끌기·클릭 판정은 ThumbnailGrid 와 같은 식(5px 안 움직이면 클릭, 마퀴는 lib/marquee).
 //  S 단추·작성자 표시는 넣지 않는다 — 이 카드는 생성물 한 장이 아니라 묶음이다.
+//  키보드: Ctrl+A 모두 · 방향키 옮기기(Shift = 마지막으로 누른 카드부터 범위) · Enter = 두 번 클릭 · Space = 고르기 토글(2026-10-10 —
+//  전엔 키가 하나도 없어 Ctrl+A 가 화면 글자를 긁었다). 색·비활성 같은 생성물 단축키는 없다(묶음이라 대상이 없다).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
+import { backgroundKeysBlocked, isTypingTarget, pressStartedCovered, useLooseKeys } from "../lib/keyGate";
 import { computeMarquee, marqueeHits, type MarqueeRect } from "../lib/marquee";
 import { thumbOf } from "../lib/media";
+import { matchShortcut } from "../lib/shortcuts";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { FolderCard } from "../types";
 import { MediaThumbnail } from "./MediaThumbnail";
@@ -24,6 +28,17 @@ interface Props {
   top: boolean; // 프로젝트 맨 위(에피소드 단계)인가 — '컷 밖' 대신 '에피소드 밖'
   outside: number; // 고른 폴더에 직접 든 수 — 어느 카드에도 들지 않아 맨 끝 칸으로 알린다
   onShowAll: () => void; // 그 칸을 누르면 한 장씩 보기로
+}
+
+// 한 줄에 놓인 카드 수 — 화면에 놓인 자리로 센다(열 수는 CSS 가 폭에 맞춰 정한다).
+function columnsOf(grid: HTMLElement): number {
+  const cards = grid.querySelectorAll<HTMLElement>(".cut-card[data-path]");
+  let count = 0;
+  for (const card of cards) {
+    if (card.offsetTop !== cards[0].offsetTop) break;
+    count += 1;
+  }
+  return Math.max(1, count);
 }
 
 interface Drag {
@@ -44,6 +59,7 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
   const [marquee, setMarquee] = useState<MarqueeRect | null>(null);
   const dragRef = useRef<Drag | null>(null);
   const anchorRef = useRef<string | null>(null); // Shift 범위의 시작 = 마지막으로 누른 카드
+  const cursorRef = useRef<string | null>(null); // 방향키가 가리키는 카드 — 누른 카드에서 시작한다
   // 최신 props 를 ref 로 — 창 전역 리스너가 낡은 값을 잡지 않게.
   const opsRef = useRef({ folders, selected, onSelect });
   opsRef.current = { folders, selected, onSelect };
@@ -97,9 +113,11 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
         // Shift = 마지막으로 누른 카드~여기(격자 순서). 시작은 그대로 둔다 — 이어서 Shift 로 범위를 고친다.
         const [lo, hi] = from < to ? [from, to] : [to, from];
         select(new Set(list.slice(lo, hi + 1).map((folder) => folder.path)));
+        cursorRef.current = d.path;
         return;
       }
       anchorRef.current = d.path;
+      cursorRef.current = d.path;
       if (d.additive) {
         const next = new Set(d.base);
         if (next.has(d.path)) next.delete(d.path);
@@ -116,6 +134,76 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
   }, [onDragMove, onDragEnd]);
 
+  // 격자의 키 — 격자에 초점이 있을 때(onKeyDown)와 초점 잃은 키(useLooseKeys)가 같이 쓴다.
+  const onGridKey = (e: KeyboardEvent) => {
+    if (backgroundKeysBlocked() || isTypingTarget(e.target)) return; // 위에 뜬 창·메뉴의 키, 글자 입력
+    if ((e.target as HTMLElement | null)?.closest?.(".cut-out")) return; // '컷 밖' 칸의 Enter·Space 는 그 단추를 누르는 키
+    const { folders: list, selected: chosen, onSelect: select } = opsRef.current;
+    if (!list.length) return;
+    if (matchShortcut(e, "selectAll")) {
+      e.preventDefault();
+      select(new Set(list.map((folder) => folder.path)));
+      return;
+    }
+    // 키가 가리키는 카드: ① 초점이 놓인 카드(Tab 으로 옮긴 경우) ② 방향키·클릭이 남긴 자리 — 그 카드가 골라져 있거나 고른 것이
+    //  없을 때(Space 로 막 뺀 자리) ③ 그 밖에는 고른 것 중 목록의 마지막 카드(마퀴로 고른 뒤). 밖에서 선택을 비우면(Esc·빈 곳 클릭)
+    //  남긴 자리도 지운다(아래 effect) — 보이지 않는 자리에 Enter 가 듣지 않게.
+    const focused = (document.activeElement as HTMLElement | null)?.closest?.<HTMLElement>(".cut-card[data-path]")?.dataset.path;
+    const kept = cursorRef.current ?? anchorRef.current;
+    let pointed: string | null = focused ?? null;
+    if (pointed === null) {
+      if (kept !== null && (chosen.has(kept) || chosen.size === 0)) pointed = kept;
+      else for (const folder of list) if (chosen.has(folder.path)) pointed = folder.path;
+    }
+    const at = list.findIndex((folder) => folder.path === pointed);
+    if (e.altKey && e.key.startsWith("Arrow")) return; // Alt+←/→ 는 브라우저의 뒤로/앞으로
+    if (e.key.startsWith("Arrow")) {
+      e.preventDefault();
+      const grid = gridRef.current;
+      const step = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : (e.key === "ArrowUp" ? -1 : 1) * (grid ? columnsOf(grid) : 1);
+      const next = at < 0 ? 0 : at + step < 0 || at + step >= list.length ? at : at + step;
+      const path = list[next].path;
+      cursorRef.current = path;
+      const from = e.shiftKey && anchorRef.current !== null ? list.findIndex((folder) => folder.path === anchorRef.current) : -1;
+      if (from >= 0) {
+        const [lo, hi] = from < next ? [from, next] : [next, from];
+        select(new Set(list.slice(lo, hi + 1).map((folder) => folder.path)));
+      } else {
+        anchorRef.current = path;
+        select(new Set([path]));
+      }
+      const card = [...(grid?.querySelectorAll<HTMLElement>(".cut-card[data-path]") ?? [])].find((el) => el.dataset.path === path);
+      card?.scrollIntoView?.({ block: "nearest" });
+      return;
+    }
+    if (at < 0) return;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (e.repeat) return; // 길게 눌린 Enter 에 폴더가 열리지 않게
+      if (list[at].subfolders) onEnter(list[at]);
+      else onOpen(list[at]);
+    } else if (e.key === " ") {
+      e.preventDefault();
+      const next = new Set(chosen);
+      if (next.has(list[at].path)) next.delete(list[at].path);
+      else next.add(list[at].path);
+      cursorRef.current = list[at].path;
+      keepCursorRef.current = next.size === 0; // Space 로 마지막 카드를 뺐다 — 자리는 그대로(한 번 더 누르면 다시 고른다)
+      select(next);
+    }
+  };
+  useLooseKeys(gridRef, onGridKey);
+  // 선택이 비면 방향키·Shift 의 자리도 지운다 — Space 로 뺀 경우만 예외.
+  const keepCursorRef = useRef(false);
+  useEffect(() => {
+    if (selected.size > 0) return;
+    if (keepCursorRef.current) keepCursorRef.current = false;
+    else {
+      cursorRef.current = null;
+      anchorRef.current = null;
+    }
+  }, [selected]);
+
   const onGridMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
       e.preventDefault(); // 휠 클릭의 자동 스크롤 막기(정보는 카드의 auxclick)
@@ -126,6 +214,7 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
     if (target.closest(".cut-out")) return; // '컷 밖' 칸은 고르는 대상이 아니다(누르면 한 장씩 보기)
     const card = target.closest(".cut-card[data-path]") as HTMLElement | null;
     e.preventDefault(); // 끌 때 글자·그림이 긁히지 않게(카드 위에서 시작해도 마퀴)
+    if (pressStartedCovered()) return; // 위에 뜬 메뉴를 닫는 누름 — 고른 것을 바꾸지 않는다
     gridRef.current?.focus();
     dragRef.current = {
       x: e.clientX, y: e.clientY, path: card?.dataset.path ?? null,
@@ -144,6 +233,7 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
         tabIndex={-1}
         style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${width}px, 1fr))` }}
         onMouseDown={onGridMouseDown}
+        onKeyDown={(e) => onGridKey(e.nativeEvent)}
       >
         {folders.map((folder) => {
           const asset = folder.cover.assets?.[0];

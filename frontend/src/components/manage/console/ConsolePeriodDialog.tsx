@@ -1,5 +1,6 @@
 // 프로젝트 기간 창 — 서브 표 '기간' 열의 달력 단추. 그 서브의 프로젝트마다 시작일·종료일을 적는다.
 // 저장은 프로젝트 기획(planning)의 기존 API — 읽은 기획을 기준으로 두 칸만 바꿔 보내고, 409 면 기존 병합 창(savePlanning).
+import { useEscapeClose } from "../../../lib/useEscapeClose";
 import { useEffect, useState } from "react";
 import type { Planning } from "../types";
 import { manageApi } from "../../../lib/manageApi";
@@ -24,6 +25,7 @@ export function ConsolePeriodDialog({ sub, savePlanning, onClose, onSaved }: {
     initialStart: p.start_date ?? "", initialDue: p.due_date ?? "", initialDays: "", state: "loading",
   })));
   const patch = (id: string, next: Partial<Row>) => setRows((cur) => cur.map((r) => (r.id === id ? { ...r, ...next } : r)));
+  useEscapeClose(onClose);
   useEffect(() => {
     let alive = true;
     for (const p of sub.projects) {
@@ -64,12 +66,13 @@ export function ConsolePeriodDialog({ sub, savePlanning, onClose, onSaved }: {
           return (
             <div key={row.id} className="wc-period-row">
               <div className="wc-folder-name">{row.name}</div>
+              {/* 저장 중인 줄도 못 고친다 — 저장 응답이 그사이 고친 값을 덮었다(2026-10-10 점검). */}
               {/* 기획(baseline)을 받기 전에는 날짜도 못 고친다 — 늦게 온 응답이 입력을 덮었다(2026-10-03 Codex 코드 리뷰 A-3) */}
-              <input id={`wc-start-${row.id}`} type="date" value={row.start} disabled={!row.baseline} aria-label={`${row.name} 시작일`} onChange={(e) => patch(row.id, { start: e.target.value, state: "ready" })} />
+              <input id={`wc-start-${row.id}`} type="date" value={row.start} disabled={!row.baseline || row.state === "saving"} aria-label={`${row.name} 시작일`} onChange={(e) => patch(row.id, { start: e.target.value, state: "ready" })} />
               <span className="wc-hint">~</span>
-              <input id={`wc-due-${row.id}`} type="date" value={row.due} min={row.start || undefined} disabled={!row.baseline} aria-label={`${row.name} 종료일`} onChange={(e) => patch(row.id, { due: e.target.value, state: "ready" })} />
+              <input id={`wc-due-${row.id}`} type="date" value={row.due} min={row.start || undefined} disabled={!row.baseline || row.state === "saving"} aria-label={`${row.name} 종료일`} onChange={(e) => patch(row.id, { due: e.target.value, state: "ready" })} />
               <label className="wc-days" title="작업 자동 보관(일)"><input id={`wc-days-${row.id}`} type="number" min={1} max={3650} value={row.days}
-                disabled={row.state === "loading"} aria-label={`${row.name} 작업 자동 보관 일수`} onChange={(e) => patch(row.id, { days: e.target.value, state: "ready" })} />일</label>
+                disabled={row.state === "loading" || row.state === "saving"} aria-label={`${row.name} 작업 자동 보관 일수`} onChange={(e) => patch(row.id, { days: e.target.value, state: "ready" })} />일</label>
               <button type="button" className="wc-btn" disabled={!changed || !row.baseline || row.state === "saving" || row.state === "loading"} onClick={() => void save(row)}>{row.state === "saving" ? "저장 중" : "저장"}</button>
               {row.state === "saved" ? <span className="wc-chip ok">저장됨</span> : null}
               {row.state === "error" || (!row.baseline && row.state !== "loading") ? <span className="wc-error">{row.error}</span> : null}

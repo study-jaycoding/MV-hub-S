@@ -2,6 +2,8 @@
 //  · contentEditable 프롬프트 + 선택 소스를 인라인 이미지 칩으로 삽입
 //  · @ → 소스 피커, # → 태그 목록 피커. 태그 선택 시 tagFilter 고정 + @ 피커가 그 태그로 필터되어 열림
 //  · Esc → 피커 닫기 / tagFilter 해제. 제출 시 본문 텍스트 + 칩→references 직렬화.
+import { backgroundKeysBlocked } from "../lib/keyGate";
+import { useEscapeClose } from "../lib/useEscapeClose";
 import {
   forwardRef,
   useCallback,
@@ -675,6 +677,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   useEffect(() => {
     const onDocPaste = (e: ClipboardEvent) => {
       if (e.defaultPrevented) return; // 에디터 등 다른 핸들러가 이미 처리
+      if (backgroundKeysBlocked()) return; // 위에 뜬 창(크게 보기 등)의 붙여넣기 — 뒤 트레이에 붙이지 않는다
       const active = document.activeElement as HTMLElement | null;
       if (!active?.closest(".sl-dockbar")) return; // 프롬프트 dock 밖(캔버스 등)은 무시 — 그쪽이 처리
       if (active.isContentEditable) return; // 에디터는 자체 onPaste 가 처리(중복 방지)
@@ -1066,14 +1069,13 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   }, [type, model, paramsLoading, paramsModel, typeModels, optionValues]);
   useImperativeHandle(ref, () => ({ submit, currentModel, reportError: setError }), [submit, currentModel]);
 
-  // 드롭다운(model/ratio) Esc 닫기 — 도크 자체는 항상 떠 있음.
+  // 드롭다운(model/ratio) Esc 닫기 — 맨 위 겹으로(lib/useEscapeClose): 같은 Esc 가 뒤 화면의 선택까지 풀지 않고, 떠 있는 동안 뒤 단축키도
+  //  쉰다. 도크는 숨겨도 마운트돼 있으므로 **숨기면 닫는다** — 열림이 남으면 보이지 않는 겹이 키를 다 막고 다른 곳의 첫 Esc 를 삼킨다
+  //  (Codex 코드 리뷰).
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && open) setOpen(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
+    if (!visible) setOpen(null);
+  }, [visible]);
+  useEscapeClose(() => setOpen(null), !!open && visible, true, true);
 
   const onEditorKeyDown = (e: React.KeyboardEvent) => {
     // Shift+Backspace(프롬프트 포커스): 프롬프트 텍스트·인라인 칩만 비운다(트레이 레퍼런스는 유지 —

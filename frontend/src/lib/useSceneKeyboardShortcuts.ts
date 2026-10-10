@@ -1,3 +1,4 @@
+import { backgroundKeysBlocked } from "./keyGate";
 import { isKeyHandled } from "./keyHandled";
 import { useEffect, useRef } from "react";
 import { KEY_COLORS } from "./appConstants";
@@ -46,6 +47,9 @@ export function useSceneKeyboardShortcuts(actions: SceneKeyboardActions): void {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const current = actionsRef.current;
+      // 위에 창·메뉴가 떠 있으면 키는 그쪽 것이다(lib/keyGate) — 가려진 보드에서 Delete·Ctrl+Z·복사가 실행되지 않는다
+      //  (2026-10-10 실측: 재생 창·모델 설정 창이 뜬 채 Delete 가 뒤 카드를 지웠다).
+      if (backgroundKeysBlocked()) return;
       if (isSceneTextEntryTarget(event.target as HTMLElement | null)) return;
 
       // 실제 입력 요소에 포커스가 없는 Ctrl+C는 최우선으로 처리한다. 편집 상태나 결과 팝업이

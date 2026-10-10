@@ -1,3 +1,4 @@
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import { HttpError } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
@@ -40,7 +41,7 @@ function ConflictDialog({ prompt }: { prompt: Prompt }) {
   useEffect(() => {
     const previous = document.activeElement;
     cancelRef.current?.focus();
-    // Stop same-target listeners too, so Escape cannot close the editor underneath.
+    // Tab 은 창 안에서 돈다. Esc 는 아래 useEscapeClose — 나중에 뜬 겹이라 맨 위다(밑의 편집 창·달력은 닫히지 않는다).
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Tab") {
         const controls = [...(dialogRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled), select:not(:disabled)") ?? [])];
@@ -48,12 +49,11 @@ function ConflictDialog({ prompt }: { prompt: Prompt }) {
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
       }
-      if (event.key !== "Escape") return;
-      event.preventDefault(); event.stopImmediatePropagation(); prompt.resolve(null);
     };
     window.addEventListener("keydown", escape, true);
     return () => { window.removeEventListener("keydown", escape, true); if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); };
   }, [prompt]);
+  useEscapeClose(() => prompt.resolve(null), true, true, true);
   const overlaps = prompt.changes.filter((change) => change.conflict);
   return <div className="credit-modal-backdrop manage-conflict-backdrop" onMouseDown={(event) => { event.stopPropagation(); if (event.target === event.currentTarget) prompt.resolve(null); }}>
     <div ref={dialogRef} className="credit-modal manage-conflict" role="dialog" aria-modal="true" aria-label="동시 수정 확인">

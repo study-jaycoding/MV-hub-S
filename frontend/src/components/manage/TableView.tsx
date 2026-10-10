@@ -49,6 +49,16 @@ export function TableView(props: WorkViewProps) {
   const commitText = (t: Task, value: string) => {
     if ((t.description || "") !== value) onPatch(t.id, { description: value });
   };
+  // 설명 칸의 키 — Enter = 확정(칸을 벗어난다), Esc = 고치던 것을 버리고 원래 값으로(칸을 벗어나도 저장하지 않는다). Esc 는 여기서
+  //  멈춘다 — 같은 키가 관리 창까지 닫지 않게.
+  const descKeyDown = (t: Task) => (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") e.currentTarget.blur();
+    else if (e.key === "Escape") {
+      e.stopPropagation();
+      e.currentTarget.value = t.description || "";
+      e.currentTarget.blur();
+    }
+  };
 
   const allIds = tasks.filter((task) => !taskIsReadOnly(task, readOnly)).map((t) => t.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected?.has(id));
@@ -261,15 +271,16 @@ export function TableView(props: WorkViewProps) {
                   )}
                 </td>
                 <td>
+                  {/* key = 서버 값 — 저장이 실패해 되돌아가거나 밖에서 바뀌면 칸을 다시 그려 그 값을 보인다(defaultValue 는 처음 한 번만
+                      먹어, 저장 안 된 글이 저장된 것처럼 남았다). */}
                   <input
+                    key={t.description || ""}
                     className="work-cell-in"
                     defaultValue={t.description || ""}
                     disabled={locked}
                     placeholder="설명"
                     onBlur={(e) => commitText(t, e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                    }}
+                    onKeyDown={descKeyDown(t)}
                   />
                 </td>
                 <td>{t.comment_count ? `💬 ${t.comment_count}` : "—"}</td>
@@ -306,14 +317,13 @@ export function TableView(props: WorkViewProps) {
                       <label className="work-mobile-detail-wide">
                         <span className="work-mobile-detail-label">설명</span>
                         <input
+                          key={t.description || ""}
                           className="work-cell-in"
                           defaultValue={t.description || ""}
                           disabled={locked}
                           placeholder="설명"
                           onBlur={(e) => commitText(t, e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                          }}
+                          onKeyDown={descKeyDown(t)}
                         />
                       </label>
                       <div>

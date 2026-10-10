@@ -12,7 +12,7 @@ import { useT } from "../lib/i18n";
 import { thumbOf } from "../lib/media";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import { useEscapeClose } from "../lib/useEscapeClose";
-import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
+import { addWindowPointerDrag, keepHeadReachable, removeWindowPointerDrag } from "../lib/windowDrag";
 import type { FolderCard, GenQuery, Generation, PreviewItem, PreviewTarget } from "../types";
 import { CloseIcon } from "./common/ViewIcons";
 import { MediaThumbnail } from "./MediaThumbnail";
@@ -83,7 +83,7 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
     const d = drag.current;
     if (!d) return;
     movedRef.current = true;
-    setPos({ x: e.clientX - d.dx, y: e.clientY - d.dy });
+    setPos(keepHeadReachable(e.clientX - d.dx, e.clientY - d.dy, popRef.current?.offsetWidth ?? 0));
   }).current;
   const onDragEnd = useRef(() => {
     drag.current = null;

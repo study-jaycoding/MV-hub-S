@@ -1,3 +1,4 @@
+import { backgroundKeysBlocked } from "./keyGate";
 import { useCallback, useEffect, useRef } from "react";
 import type { Dispatch, DragEvent as ReactDragEvent, MutableRefObject, SetStateAction } from "react";
 import { api } from "../api";
@@ -137,10 +138,10 @@ export function useSceneClipboardDrop(
   );
 
   const importExternalFiles = useCallback(
-    async (files: File[], centerX: number, centerY: number) => {
+    async (files: File[], centerX: number, centerY: number, sceneAtDrop?: string) => {
       const accepted = files.filter((file) => referenceDropTypeFromFile(file));
       if (!accepted.length) return;
-      const sceneId = optionsRef.current.sceneIdRef.current;
+      const sceneId = sceneAtDrop ?? optionsRef.current.sceneIdRef.current;
       try {
         // 로컬 파일은 이 PC 설치 폴더(imports)에만 둔다 — 서버에 올리지 않는다(Jay 2026-09-29 옛 방식).
         const response = await api.uploadReferenceFiles(accepted);
@@ -204,8 +205,10 @@ export function useSceneClipboardDrop(
             hasHandler: !!openRecipe,
           }) && openRecipe
         ) {
+          // 놓은 순간의 씬을 잡아 둔다 — 각인 판독(서버 왕복)을 기다리는 사이 씬을 바꾸면 파일이 그 씬에 들어갔다.
+          const sceneAtDrop = current.sceneIdRef.current;
           void openRecipe(mediaFiles[0]).then((handled) => {
-            if (!handled) void importExternalFiles(mediaFiles, point.x, point.y);
+            if (!handled) void importExternalFiles(mediaFiles, point.x, point.y, sceneAtDrop);
           });
           return;
         }
@@ -228,7 +231,9 @@ export function useSceneClipboardDrop(
     void (async () => {
       const marker = `[MV-hub#${uid()}] 노드 복사됨 — 캔버스에서 Ctrl+V 로 붙여넣기`;
       try {
-        await navigator.clipboard?.writeText?.(marker);
+        // 쓰기 함수가 없으면 '썼다'고 적지 않는다 — 표식이 클립보드에 실제로 들어갔을 때만 아래 붙여넣기 판정이 그것을 믿는다.
+        if (typeof navigator.clipboard?.writeText !== "function") throw new Error("clipboard write unsupported");
+        await navigator.clipboard.writeText(marker);
         sceneClipboardMarker = marker;
         lastImageKeyRef.current = null;
         return;
@@ -294,6 +299,7 @@ export function useSceneClipboardDrop(
       // ★입력창 판정이 폴백 중복 방지보다 먼저 — 캔버스 폴백 직후 0.5초 안에 입력창에서
       //   Ctrl+V 하면 정상 텍스트 붙여넣기가 preventDefault 로 막히던 문제(합의 C-3b).
       if (isTextEntryTarget(event.target)) return;
+      if (backgroundKeysBlocked()) return; // 위에 뜬 창·메뉴의 붙여넣기 — 가려진 보드에 붙이지 않는다
       // 일부 브라우저가 keydown 뒤 paste 이벤트를 늦게 보내는 경우, 이미 실행한 안전 폴백과
       // 같은 키 입력을 중복 처리하지 않는다.
       if (fallbackPasteAtRef.current && performance.now() - fallbackPasteAtRef.current < 500) {
@@ -305,9 +311,11 @@ export function useSceneClipboardDrop(
       const image = clipboardImage(event);
       const imageKey = image ? `${image.size}:${image.type}` : null;
       const clipboard = clipboardRef.current;
+      // 표식을 클립보드에 써 넣은 뒤라면, 지금 클립보드의 그림은 **그 뒤에 밖에서 새로 복사한 것**이다 — 방금 붙인 그림과 같아도 그림이다.
+      //  (전엔 같은 그림을 두 번 붙이면 두 번째에 예전에 복사해 둔 노드가 붙었다.) 표식을 못 쓴 환경만 '방금 붙인 그림과 같은가'로 가린다.
       const intent = scenePasteIntent(
         imageKey,
-        lastImageKeyRef.current,
+        sceneClipboardMarker ? null : lastImageKeyRef.current,
         clipboard?.cards.length || 0,
       );
 
@@ -390,7 +398,7 @@ export function useSceneClipboardDrop(
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat || isTextEntryTarget(event.target)) return;
+      if (event.repeat || isTextEntryTarget(event.target) || backgroundKeysBlocked()) return;
       if (!scenePasteShortcut(event, clipboardRef.current?.cards.length || 0)) return;
       // 직전 폴백 직후 사용자가 빠르게 Ctrl+V를 한 번 더 누른 것은 새로운 명령이다. 뒤늦게 도착한
       // 이전 paste 이벤트와 구분할 수 있도록 새 keydown에서 중복 방지 표식을 해제한다.
@@ -401,9 +409,13 @@ export function useSceneClipboardDrop(
       if (pasteFallbackTimerRef.current !== null) {
         window.clearTimeout(pasteFallbackTimerRef.current);
       }
+      const sceneAtKey = optionsRef.current.sceneIdRef.current;
+      // 예약한 뒤(0.18초)·클립보드를 읽은 뒤에 창이 떴거나 씬이 바뀌었으면 붙이지 않는다 — 그 키는 이미 지나간 화면의 것이다.
+      const stale = () => backgroundKeysBlocked() || optionsRef.current.sceneIdRef.current !== sceneAtKey;
       pasteFallbackTimerRef.current = window.setTimeout(() => {
         pasteFallbackTimerRef.current = null;
         void (async () => {
+          if (stale()) return;
           // 폴백도 표식을 검사한다(검증 P3) — 노드 복사 후 외부에서 다른 것을 복사했다면
           // 옛 노드 스냅샷을 붙이면 안 된다. readText 미지원/권한 거부면 기존 동작 유지.
           if (sceneClipboardMarker) {
@@ -414,6 +426,7 @@ export function useSceneClipboardDrop(
               /* 권한 없음 — 표식 검사 생략(폴백은 최후 수단) */
             }
           }
+          if (stale()) return;
           if (pasteCopiedNodes()) fallbackPasteAtRef.current = performance.now();
         })();
       }, 180);

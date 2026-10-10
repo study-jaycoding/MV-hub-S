@@ -110,7 +110,9 @@ export function TopBar({
       {/* 동기화 버튼 제거 — 자동 주기 동기화 + 계정 메뉴 '설정 → 전체 가져오기'로 대체 */}
 
       {/* 프롬프트·태그 검색 — 우측(구 '공유' 버튼 자리)으로 이동 */}
+      {/* key = 탭 — 탭을 바꾸면 검색칸을 다시 올린다. 예약해 둔(0.3초 뒤) 검색이 새 탭에 걸리지 않게(언마운트가 예약을 버린다). */}
       <SearchBox
+        key={filters.tab}
         className="topbar-search"
         placeholder="Search · Tag"
         value={filters.search}

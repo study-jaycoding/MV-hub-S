@@ -236,7 +236,12 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
     };
   }, [clips]);
 
+  // 옮길 때마다 +1 — 그 전에 예약된 시간 틱(옛 컷의 시각)이 새 자리를 덮지 않게 한다. 타임바를 **끌어서** 컷을 넘기면(mousemove 는
+  //  React 가 바로 다시 그리지 않는다) 옛 영상의 틱이 한 번 더 돌아 그 시각(3초 초과)을 써 넣었고, 이미지 컷은 곧바로 '끝'으로 보고
+  //  다음 컷으로 넘어갔다(2026-10-10 실측 5/5 — 클릭으로 옮기면 정상).
+  const jumpRef = useRef(0);
   const goTo = useCallback((i: number, offset = 0) => {
+    jumpRef.current += 1;
     seekRef.current = offset;
     setClipTime(offset);
     setCycle((c) => c + 1);
@@ -403,7 +408,9 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
   useEffect(() => {
     if (still || !playing) return;
     let raf = 0;
+    const jump = jumpRef.current;
     const tick = () => {
+      if (jumpRef.current !== jump) return; // 자리를 옮겼다 — 새 컷의 틱이 이어받는다
       const v = frontEl();
       if (v) {
         setClipTime(v.currentTime);
@@ -449,7 +456,9 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
     const dur = st.current.durations[idx] || REEL_IMAGE_SEC;
     let raf = 0;
     let last = performance.now();
+    const jump = jumpRef.current;
     const tick = (now: number) => {
+      if (jumpRef.current !== jump) return; // 자리를 옮겼다 — 새 컷의 틱이 이어받는다
       const nt = st.current.clipTime + (now - last) / 1000;
       last = now;
       if (nt >= dur) {

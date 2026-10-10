@@ -1,3 +1,4 @@
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
@@ -55,16 +56,11 @@ export function ProjectDateRangePicker({
     const closeOutside = (event: PointerEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
-    const closeEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
     document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeEscape);
-    };
+    return () => document.removeEventListener("pointerdown", closeOutside);
   }, [open]);
+  // 달력만 닫는다 — 같은 Esc 가 프로젝트 대화상자까지 닫아 쓰던 입력이 사라지던 것(2026-10-10 실측).
+  useEscapeClose(() => setOpen(false), open, true, true);
 
   const openCalendar = (nextPhase: "start" | "end") => {
     const focusDate = parseDate(nextPhase === "end" ? dueDate : startDate)

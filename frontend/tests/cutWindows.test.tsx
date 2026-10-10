@@ -331,3 +331,27 @@ it("모아보기 연결 — 같은 주소의 영상은 길이를 한 번만 읽�
     loadSpy.mockRestore();
   }
 });
+
+it("연결 재생기 — 타임바로 컷을 넘긴 뒤 늦게 도는 옛 컷의 시간 틱은 새 자리를 덮지 않는다(이미지 컷을 건너뛰지 않는다)", () => {
+  // 2026-10-10 실측: 재생 중 타임바를 끌어 다른 컷으로 가면(mousemove 는 React 가 바로 다시 그리지 않는다) 옛 컷의 틱이 한 번 더 돌아
+  //  그 시각을 써 넣었고, 이미지 컷은 곧바로 '끝'으로 보고 다음 컷으로 넘어갔다. 여기서는 옛 틱을 잡아 두었다가 옮긴 뒤에 돌린다.
+  const ticks: FrameRequestCallback[] = [];
+  const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => ticks.push(callback));
+  const still = (name: string): ReelClip => ({ path: `e035/${name}`, name, url: `/m/${name}.png`, type: "image", thumb: null, worker: "리버", rep: false });
+  try {
+    act(() => root.render(<ReelPlayer clips={[still("C0010"), still("C0020"), still("C0030")]} />)); // 3초 × 3, 재생 중
+    const chip = () => host.querySelector(".reel-chip.l")!.textContent;
+    expect(chip()).toBe("1 / 3 · C0010 · 리버");
+    const oldTick = ticks[ticks.length - 1];
+    expect(oldTick, "첫 컷의 시간 틱").toBeTruthy();
+    const track = host.querySelector<HTMLElement>(".reel-track")!;
+    vi.spyOn(track, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, right: 900, bottom: 10, width: 900, height: 10, x: 0, y: 0, toJSON: () => ({}) } as DOMRect);
+    act(() => { track.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 450 })); }); // 4.5초 = 두 번째 컷의 1.5초
+    act(() => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); });
+    expect(chip()).toBe("2 / 3 · C0020 · 리버");
+    act(() => { oldTick(performance.now() + 5000); }); // 늦게 도는 옛 틱 — 5초가 흘렀다고 본다
+    expect(chip()).toBe("2 / 3 · C0020 · 리버");
+  } finally {
+    raf.mockRestore();
+  }
+});

@@ -3,9 +3,12 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { api } from "../api";
 import { KEY_COLORS } from "./appConstants";
 import { toggleDisabledGen } from "./deactivated";
-import { applyGenerationColor, ColorSaveError, nextGenerationSelectionColor } from "./generationColorState";
+import { applyGenerationColor, ColorSaveError, nextGenerationSelectionColor, type ColorEditLedger } from "./generationColorState";
 import { createMutationQueue } from "./mutationQueue";
+import { backgroundKeysBlocked, isTypingTarget } from "./keyGate";
+import { markKeyHandled } from "./keyHandled";
 import { matchShortcut } from "./shortcuts";
+import { backgroundEscapeAllowed } from "./useEscapeClose";
 import type { Filters, Generation } from "../types";
 
 interface UseGenerationKeyboardActionsArgs {
@@ -20,17 +23,8 @@ interface UseGenerationKeyboardActionsArgs {
   composeGridActiveRef?: MutableRefObject<boolean>;
   // 라이브러리 격자가 화면에 없는 동안(편집 탭) — Esc·색·비활성 키를 듣지 않는다(편집 키와 겹친다).
   inactiveRef?: MutableRefObject<boolean>;
-}
-
-function isEditableTarget(target: EventTarget | null): boolean {
-  const element = target as HTMLElement | null;
-  return !!(
-    element &&
-    (element.tagName === "INPUT" ||
-      element.tagName === "TEXTAREA" ||
-      element.tagName === "SELECT" ||
-      element.isContentEditable)
-  );
+  // 색 편집 장부(목록 훅의 것) — 재조회의 응답이 그사이 칠한 색을 덮지 않게 칠할 때·저장이 끝날 때 알린다.
+  colorLedger?: ColorEditLedger;
 }
 
 export function useGenerationKeyboardActions({
@@ -43,6 +37,7 @@ export function useGenerationKeyboardActions({
   setGens,
   composeGridActiveRef,
   inactiveRef,
+  colorLedger,
 }: UseGenerationKeyboardActionsArgs) {
   const latestCallbacksRef = useRef({
     flash,
@@ -65,6 +60,7 @@ export function useGenerationKeyboardActions({
   const colorSelected = useCallback(
     async (ids: string[], color: string) => {
       const next = nextGenerationSelectionColor(gensRef.current, ids, color);
+      colorLedger?.begin(ids);
       gensRef.current = applyGenerationColor(gensRef.current, ids, next);
       setGens((prev) => {
         const updated = applyGenerationColor(prev, ids, next);
@@ -78,21 +74,28 @@ export function useGenerationKeyboardActions({
         } catch (error) {
           if (error instanceof ColorSaveError) throw error;
           throw new ColorSaveError(ids.length);
+        } finally {
+          colorLedger?.end(ids); // 실패의 복구 재조회(큐가 이 작업 뒤에 부른다)보다 먼저 — 그래야 서버 값으로 돌아간다
         }
       });
     },
-    [gensRef, setGens],
+    [gensRef, setGens, colorLedger],
   );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (inactiveRef?.current || isEditableTarget(e.target)) return;
+      // 글자를 치는 자리만 양보한다 — 체크박스·슬라이더에 초점이 남아 있어도 색·비활성·Esc 는 먹는다(2026-10-10 실측).
+      if (inactiveRef?.current || isTypingTarget(e.target)) return;
       const ids = [...selectedRef.current];
       if (e.key === "Escape") {
+        // 뒤 화면의 Esc — 위에 창·메뉴가 떠 있거나 안쪽이 이미 쓴 Esc 면 손대지 않는다. 선택을 푼 Esc 는 '쓴 것'으로 표시한다.
+        if (!backgroundEscapeAllowed(e)) return;
+        if (ids.length) markKeyHandled(e);
         clearSelect();
         return;
       }
-      if (ids.length === 0) return;
+      // 위에 창·메뉴가 떠 있으면 키는 그쪽 것이다(lib/keyGate) — 뒤 카드에 색·비활성이 걸리지 않는다.
+      if (ids.length === 0 || backgroundKeysBlocked()) return;
       // 구성(compose=계보/씬)에선 색·비활성을 보드/씬이 자체 처리 — 라이브러리 선택 잔재로 이중 실행 방지.
       //  단 '폴더 보기' 창이 떠 있고 키가 창 **안**에서 났으면 그 격자가 라이브러리라 살린다(씬 단축키는 창 안 키를
       //  무시한다). 창 밖(Tab 으로 옮긴 초점 등)에서 난 키는 씬 몫 — 둘 다 받으면 씬 노드와 격자 선택이 함께 바뀐다.

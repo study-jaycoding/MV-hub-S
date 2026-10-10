@@ -2,6 +2,7 @@
 .scene-bar {
   display: flex; align-items: center; gap: 6px; padding: 6px 12px;
   border-bottom: 1px solid var(--border2); flex-wrap: wrap;
+  user-select: none; /* 탭 이름이 글자로 긁히면 그 뒤의 카드 끌기를 브라우저가 '글자 끌기'로 가로챈다(2026-10-10 실측) */
 }
 .scene-tab {
   font-size: 12px; font-weight: 700; padding: 4px 11px; border-radius: 8px;

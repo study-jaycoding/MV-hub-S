@@ -1,3 +1,4 @@
+import { matchShortcut } from "../../lib/shortcuts";
 import {
   useEffect,
   useMemo,
@@ -807,7 +808,7 @@ export function ProjectSection({
                     isDisabled={(path) => isFolderDisabled(disabledFolders, project.id, path)}
                     onRowKeyDown={(path, e) => {
                       // d = 이 폴더(및 하위) 비활성(생략) 토글. 그 폴더 생성물이 회색·관리창 생략 연동.
-                      if (e.key === "d" || e.key === "D") {
+                      if (matchShortcut(e, "boardDisable")) {
                         e.preventDefault();
                         toggleDisabledFolder(project.id, path);
                       }
