@@ -88,6 +88,9 @@ export function useAppNavigation({
 
   const openOverlay = useCallback(
     (ov: NavOverlay, payload?: unknown) => {
+      // 이미 떠 있는 관리자 창을 또 열지 않는다 — 기록이 한 겹 더 쌓이면 Esc(뒤로 한 번)에 창이 안 닫힌다. 로고를 눌러 연 뒤 초점이
+      //  로고에 남은 채 Space 를 누르면 그랬다(2026-10-10 편집 탭 재실측 3/3: 두 번째 Esc 에야 닫힘).
+      if (ov === "admin" && viewRef.current.ov === "admin") return;
       const key = ov === "admin" ? 0 : (navSeqRef.current += 1);
       if (key) {
         const m = navPayloadsRef.current;

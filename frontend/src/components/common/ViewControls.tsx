@@ -1,3 +1,4 @@
+import { dropFocusAfterPress } from "../../lib/keyGate";
 import { useSceneZoomPct } from "../../lib/sceneZoomStore";
 import { FitIcon, GridIcon, ListIcon, StepIcon } from "./ViewIcons";
 
@@ -86,6 +87,7 @@ export function ViewControls({
             step={0.05}
             value={scale}
             onChange={(e) => onScale(Number(e.target.value))}
+            onPointerDown={(e) => dropFocusAfterPress(e.currentTarget)} // 마우스 조작이 끝나면 초점을 내려놓는다(lib/keyGate)
           />
         </div>
       )}

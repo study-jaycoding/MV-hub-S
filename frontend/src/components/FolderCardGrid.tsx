@@ -103,11 +103,20 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
     removeWindowMouseDrag(onDragMove, onDragEnd);
     window.removeEventListener("blur", onDragEnd);
     setMarquee(null);
+    // 마퀴로 고른 뒤에는 누른 자리를 비운다 — 남으면 Shift 클릭·방향키가 (마퀴와 무관한) 먼저 누른 카드에서 출발한다. 비우면 기준은
+    //  '고른 것 중 마지막 카드'다(ThumbnailGrid 와 같은 규칙).
+    if (d?.moved && e?.type !== "blur") {
+      anchorRef.current = null;
+      cursorRef.current = null;
+    }
     if (!d || d.moved || e?.type === "blur") return;
     const { folders: list, onSelect: select } = opsRef.current;
     if (d.path) {
       const anchor = anchorRef.current;
-      const from = anchor === null ? -1 : list.findIndex((folder) => folder.path === anchor);
+      let from = anchor === null ? -1 : list.findIndex((folder) => folder.path === anchor);
+      // 누른 카드가 없으면(마퀴로만 고른 뒤) 고른 것 중 목록의 마지막 카드부터 — 전엔 Shift 클릭이 한 장만 골랐다(2026-10-10 재실측).
+      if (from < 0 && d.range) for (let i = list.length - 1; i >= 0 && from < 0; i--) if (d.base.has(list[i].path)) from = i;
+      if (anchor === null && from >= 0) anchorRef.current = list[from].path; // 이어지는 Shift 클릭도 같은 카드에서 잰다
       const to = list.findIndex((folder) => folder.path === d.path);
       if (d.range && from >= 0 && to >= 0) {
         // Shift = 마지막으로 누른 카드~여기(격자 순서). 시작은 그대로 둔다 — 이어서 Shift 로 범위를 고친다.
@@ -164,6 +173,8 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
       const next = at < 0 ? 0 : at + step < 0 || at + step >= list.length ? at : at + step;
       const path = list[next].path;
       cursorRef.current = path;
+      // 누른 카드가 없으면(마퀴로만 고른 뒤) 지금 가리키는 카드(고른 것 중 마지막)가 Shift 범위의 시작이다
+      if (e.shiftKey && anchorRef.current === null && at >= 0) anchorRef.current = list[at].path;
       const from = e.shiftKey && anchorRef.current !== null ? list.findIndex((folder) => folder.path === anchorRef.current) : -1;
       if (from >= 0) {
         const [lo, hi] = from < next ? [from, next] : [next, from];
@@ -174,12 +185,18 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
       }
       const card = [...(grid?.querySelectorAll<HTMLElement>(".cut-card[data-path]") ?? [])].find((el) => el.dataset.path === path);
       card?.scrollIntoView?.({ block: "nearest" });
+      // 초점이 카드에 놓여 있었으면(Tab·우클릭) 격자로 옮긴다 — 남겨 두면 '초점 카드 먼저' 규칙 때문에 다음 방향키가 다시 그 카드에서
+      //  출발해 한 칸에서 멈추고, Enter 가 옮겨 간 카드가 아니라 초점 카드를 연다(Codex 코드 리뷰).
+      if (grid && document.activeElement !== grid && grid.contains(document.activeElement)) grid.focus({ preventScroll: true });
       return;
     }
     if (at < 0) return;
     if (e.key === "Enter") {
       e.preventDefault();
       if (e.repeat) return; // 길게 눌린 Enter 에 폴더가 열리지 않게
+      // 여는 것은 **보이는** 카드만 — 골라져 있거나 초점이 놓인 카드. Space 로 뺀 자리(다시 고르기·방향키용으로만 남긴 것)는 화면에
+      //  아무 표시가 없다: 그 자리에 Enter 가 폴더 창을 열었다(2026-10-10 최종 재실측 — Space 로 빼고 Esc 뒤 Enter).
+      if (focused == null && !chosen.has(list[at].path)) return;
       if (list[at].subfolders) onEnter(list[at]);
       else onOpen(list[at]);
     } else if (e.key === " ") {

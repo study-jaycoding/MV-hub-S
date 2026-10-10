@@ -3,7 +3,7 @@
 //  · 빈 공간 드래그 = 마퀴(러버밴드) 다중 선택
 //  · 더블클릭 = 미리보기. (카드 드래그는 프롬프트 재사용 — 마퀴 대신 네이티브 드래그)
 // 선택 상태는 App 이 Set<string>(id) 로 보유 — 일괄 작업/select-bar 가 의존.
-import { backgroundKeysBlocked, isTypingTarget, pressStartedCovered, useLooseKeys } from "../lib/keyGate";
+import { backgroundKeysBlocked, focusCameByTab, isTypingTarget, pressStartedCovered, useLooseKeys } from "../lib/keyGate";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import {
@@ -206,6 +206,29 @@ export function ThumbnailGrid(props: Props) {
     (g: Generation, field: "source" | "tag") => setEditTarget({ id: g.id, field }),
     [],
   );
+  // 밖에서 선택이 비면(격자 밖 단추를 눌러 풀림 등) 초점 카드도 지운다 — 남겨 두면 초점 잃은 키(c·#·h·Enter·Space)가 **고른 것도 없는데**
+  //  옛 초점 카드에 실행된다(2026-10-10 최종 재실측: 계정 메뉴를 닫은 뒤 c 에 코멘트 패널이 뜨고 h 에 캔버스로 넘어갔다). 격자의 Space 로
+  //  마지막 카드를 뺀 경우(Ctrl+클릭도)만 예외 — 그 자리에서 다시 고르고 방향키도 거기서 출발하게. 격자 자신의 Esc·빈 곳 클릭은 원래 지운다.
+  const keepFocusRef = useRef(false);
+  const hadSelectionRef = useRef(selectedIds.size > 0);
+  // 밖에서 풀리며 지운 초점 자리 — **방향키·Shift 클릭의 기준으로만** 쓴다(c·#·Enter·Space 는 보지 않는다). 없으면 툴바 단추·슬라이더를 누른
+  //  뒤의 방향키가 보던 자리가 아니라 목록 맨 위로 튄다(Codex 코드 리뷰). 다시 고르면 잊는다.
+  const lastSpotRef = useRef<string | null>(null);
+  const focusedIdRef = useRef(focusedGenerationId);
+  focusedIdRef.current = focusedGenerationId;
+  useEffect(() => {
+    const had = hadSelectionRef.current;
+    hadSelectionRef.current = selectedIds.size > 0;
+    const keep = keepFocusRef.current;
+    keepFocusRef.current = false; // 한 번의 선택 변경에만 유효
+    if (selectedIds.size > 0) lastSpotRef.current = null;
+    // '고른 것이 있다 → 없다'로 바뀔 때만 — 부모가 빈 Set 을 새로 만들어 줄 때마다(캔버스 '생성 결과' 창은 자료가 갱신될 때마다 그런다)
+    //  Space 로 남겨 둔 초점까지 지우지 않게(Codex 코드 리뷰).
+    else if (had && !keep) {
+      lastSpotRef.current = focusedIdRef.current;
+      setFocusedGenerationId(null);
+    }
+  }, [selectedIds]);
   const editDone = useCallback(() => setEditTarget(null), []);
   // 인라인 편집이 키(Enter·Esc)로 끝나면 입력칸이 사라지며 초점이 BODY 로 떨어진다 — 격자로 돌려받아 방향키·#·c 가 바로 먹게 한다
   //  (캔버스의 결과 창에서는 초점 없는 키가 뒤 보드로 가 Delete 가 노드를 지운다). 다른 곳을 눌러 끝냈으면 그 초점을 둔다.
@@ -360,6 +383,7 @@ export function ThumbnailGrid(props: Props) {
       return;
     }
     setFocusedGenerationId(null);
+    lastSpotRef.current = null;
     gridRef.current?.scrollTo({ top: 0 });
   }, [props.resetKey]);
 
@@ -434,6 +458,9 @@ export function ThumbnailGrid(props: Props) {
     removeWindowMouseDrag(onDragMove, onDragUp);
     window.removeEventListener("blur", onDragUp);
     setMarquee(null);
+    // 마퀴로 고른 뒤에는 초점 카드를 비운다 — 먼저 누른 카드가 남아 있으면 방향키·Shift 클릭이 (고르지도 않은) 그 카드에서 출발했다
+    //  (최종 재실측). 비우면 '고른 것 중 마지막 카드'가 기준이 된다.
+    if (d && d.moved && !d.cellId && !left) setFocusedGenerationId(null);
     if (!d || d.moved || left) return;
     // 드래그 없이 클릭만 → 선택 처리(+ 방향키 앵커 갱신)
     if (d.cellId) {
@@ -449,6 +476,7 @@ export function ThumbnailGrid(props: Props) {
         const n = new Set(d.base);
         if (n.has(d.cellId)) n.delete(d.cellId);
         else n.add(d.cellId);
+        keepFocusRef.current = n.size === 0;
         opsRef.current.onSelectedChange(n);
       } else {
         setFocusedGenerationId(d.cellId);
@@ -483,10 +511,10 @@ export function ThumbnailGrid(props: Props) {
     //  스크롤)도 막는다 — 창 위에서 누른 키에 뒤 목록이 밀리지 않게.
     // 카드 안 조작 요소에 초점이 있을 때의 Enter/Space 는 그것을 누르는 키다 — 격자가 가로채면 키보드로 못 누른다.
     //  · 체크박스 같은 입력: 언제나(누른 뒤의 Space 는 그 체크박스를 다시 뒤집는 것이 맞다)
-    //  · 단추·링크: **키보드로**(Tab) 초점을 옮겼을 때만. 마우스로 눌러 초점이 남은 단추(:focus-visible 아님)는 종전대로 격자가
-    //    받는다 — S 를 누른 뒤의 Space 가 S 를 또 누르지 않게(Codex 코드 리뷰).
+    //  · 단추·링크: **키보드로**(Tab) 초점을 옮겼을 때만. 마우스로 눌러 초점이 남은 단추는 종전대로 격자가 받는다 — S 를 누른 뒤의
+    //    Space 가 S 를 또 누르지 않게(Codex 코드 리뷰). 판정은 lib/keyGate 의 focusCameByTab(:focus-visible 은 못 쓴다 — 그 주석).
     const control = e.key === "Enter" || e.key === " " ? (e.target as HTMLElement).closest?.("button, a[href], input, select, [role=button]") : null;
-    const ownKey = !!control && (control.matches("input, select") || control.matches(":focus-visible"));
+    const ownKey = !!control && (control.matches("input, select") || focusCameByTab());
     if (backgroundKeysBlocked()) {
       // 위에 뜬 것(카드의 확인 덮개 포함) 안의 단추를 누르는 키는 막지 않는다.
       if (!ownKey && /^(Arrow|Page|Home|End| )/.test(e.key)) e.preventDefault();
@@ -523,7 +551,7 @@ export function ThumbnailGrid(props: Props) {
       e.preventDefault();
       // 기준 카드 = 초점 카드, 없으면 고른 것 중 목록의 마지막 카드, 그것도 없을 때만 첫 카드. 2026-10-10 실측: 마퀴로 고른 뒤
       //  방향키를 누르면 맨 첫 카드로 튀고(스크롤 맨 위) Shift+↓ 는 안 보이는 첫 카드를 더했다.
-      const anchorId = focusIdx >= 0 ? null : lastSelectedId(generations, selectedIds);
+      const anchorId = focusIdx >= 0 ? null : lastSelectedId(generations, selectedIds) ?? lastSpotRef.current;
       const base = focusIdx >= 0 ? focusIdx : anchorId ? generations.findIndex((g) => g.id === anchorId) : -1;
       const cur = base < 0 ? 0 : base;
       // 가상화: DOM 기하 대신 행렬 모델로 이웃 계산(오프스크린 셀도 정확).
@@ -558,6 +586,7 @@ export function ThumbnailGrid(props: Props) {
         const n = new Set(selectedIds);
         if (n.has(id)) n.delete(id);
         else n.add(id);
+        keepFocusRef.current = n.size === 0; // Space 로 마지막 카드를 뺐다 — 초점 카드는 그대로(한 번 더 누르면 다시 고른다)
         onSelectedChange(n);
       }
     } else if (matchShortcut(e, "selectAll")) {
@@ -587,7 +616,7 @@ export function ThumbnailGrid(props: Props) {
      cellId: string | null) => {
       const { selectedIds: base, focusedGenerationId } = startRef.current;
       // Shift 범위의 기준 = 초점 카드, 없으면 고른 것 중 목록의 마지막 카드 — 마퀴로 고른 뒤의 Shift 클릭도 범위가 된다.
-      const anchorId = focusedGenerationId ?? lastSelectedId(opsRef.current.generations, base);
+      const anchorId = focusedGenerationId ?? lastSelectedId(opsRef.current.generations, base) ?? lastSpotRef.current;
       dragRef.current = {
         x: e.clientX,
         y: e.clientY,

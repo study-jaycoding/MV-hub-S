@@ -53,6 +53,7 @@ function AllocBaseDialog({ base, today, onClose, onSaved }: { base: number | nul
   const [day, setDay] = useState(today);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  useEscapeClose(() => { if (!busy) onClose(); }); // 바깥 클릭과 같은 규칙 — 처리 중엔 닫지 않는다
   const value = Number(text.replace(/,/g, ""));
   const valid = text.trim() !== "" && Number.isFinite(value) && value >= 0 && /^\d{4}-\d{2}-\d{2}$/.test(day);
   const submit = async (credits: number | null) => {

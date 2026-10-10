@@ -30,14 +30,16 @@ it("Shift 는 Ctrl·Alt 와 함께일 때만 바인딩에 든다 — 글자만 �
   expect(matchShortcut(key("A", { ctrlKey: true, shiftKey: true }), "selectAll")).toBe(false);
   expect(matchShortcut(key("R", { shiftKey: true }), "colorRed")).toBe(true);
   expect(prettyBinding("mod+shift+x")).toBe("Ctrl/⌘ + Shift + X");
+  expect(prettyBinding("arrowright")).toBe("→"); // 거절 안내에 "Arrowright" 로 나왔다
+  expect(prettyBinding("mod+arrowup")).toBe("Ctrl/⌘ + ↑");
 });
 
 it("고정 키는 지정할 수 없다 — 격자·캔버스·브라우저가 쓰는 키와 입력기 키", () => {
   const { isReservedBinding, SHORTCUTS } = shortcuts;
-  for (const fixed of ["enter", "escape", "tab", "space", "arrowleft", "delete", "backspace", "process", "f", "y", "s", "mod+z", "mod+shift+z", "mod+c", "mod+v", "mod+g", "mod+w", "f5", "mod+f5"]) {
+  for (const fixed of ["enter", "escape", "tab", "space", "arrowleft", "delete", "backspace", "process", "f", "y", "s", "mod+z", "mod+shift+z", "mod+c", "mod+v", "mod+g", "mod+shift+c", "mod+shift+x", "mod+w", "f5", "mod+f5"]) {
     expect(isReservedBinding(fixed), fixed).toBe(true);
   }
-  for (const free of ["1", "q", "mod+k", "alt+r", "mod+shift+x", "#"]) expect(isReservedBinding(free), free).toBe(false);
+  for (const free of ["1", "q", "mod+k", "alt+r", "mod+shift+k", "#"]) expect(isReservedBinding(free), free).toBe(false);
   for (const def of SHORTCUTS) expect(isReservedBinding(def.def), def.id).toBe(false); // 기본값은 전부 지정 가능한 키
 });
 
@@ -69,4 +71,14 @@ it("다른 탭에서 바꾼 항목을 덮지 않는다 — 저장 직전에 다�
   window.dispatchEvent(new StorageEvent("storage", { key: "ch.shortcuts" }));
   expect(getBinding("colorGreen")).toBe("9");
   expect(getBinding("colorBlue")).toBe("b");
+});
+
+it("저장돼 있던 고정 키·깨진 값은 읽을 때 걸러 기본값으로 돌아간다 — 막기 전에 저장한 Enter 가 계속 듣지 않게", async () => {
+  localStorage.setItem("ch.shortcuts", JSON.stringify({ comment: "enter", colorRed: "1", colorGreen: 5, tag: "mod+shift+c" }));
+  vi.resetModules();
+  const fresh = await import("../src/lib/shortcuts");
+  expect(fresh.getBinding("comment")).toBe("c");
+  expect(fresh.getBinding("colorRed")).toBe("1");
+  expect(fresh.getBinding("colorGreen")).toBe("g");
+  expect(fresh.getBinding("tag")).toBe("#");
 });

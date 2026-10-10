@@ -74,3 +74,22 @@ it("열 때 기획을 못 읽은 줄은 저장할 수 없다 — 자동 보관 �
   expect(host.textContent).toContain("기획을 읽지 못했습니다");
   expect(savePlanning).not.toHaveBeenCalled();
 });
+
+it("저장 중인 줄이 있으면 Esc 로 닫지 않는다 — 끝난 뒤에는 닫힌다", async () => {
+  const opened: Planning = { revision: 1, start_date: "2026-10-01", due_date: "2026-10-31", archive_after_days: 60 };
+  getPlanning.mockResolvedValue(opened);
+  let finish: () => void = () => {};
+  const savePlanning = vi.fn((_pid: string, _baseline: Planning, body: Planning) => new Promise<Planning>((resolve) => { finish = () => resolve(body); }));
+  const onClose = vi.fn();
+  await act(async () => { root.render(<ConsolePeriodDialog sub={SUB} savePlanning={savePlanning} onClose={onClose} onSaved={() => {}} />); });
+  await settle();
+  await typeDate(host.querySelector<HTMLInputElement>("#wc-start-p1")!, "2026-10-05");
+  await act(async () => { saveButton().click(); });
+  const escape = () => act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  escape();
+  expect(onClose).not.toHaveBeenCalled();
+  await act(async () => { finish(); });
+  await settle();
+  escape();
+  expect(onClose).toHaveBeenCalledTimes(1);
+});

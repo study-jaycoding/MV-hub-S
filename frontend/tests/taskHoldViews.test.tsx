@@ -103,3 +103,35 @@ it("board ignores status drags for folder-derived tasks but keeps them for manua
   drop("manual");
   expect(onPatch).toHaveBeenCalledExactlyOnceWith("manual", { status: "publish" });
 });
+
+it("설명 칸 — 치는 중에 목록이 새로 와도 친 글자를 지우지 않고, Esc 는 저장하지 않고 되돌린다", () => {
+  const onPatch = vi.fn();
+  const draw = (description: string) => act(() => root.render(<TableView {...props} onPatch={onPatch} tasks={[{ ...task, description }]} />));
+  draw("처음");
+  const input = () => host.querySelector<HTMLInputElement>("input.work-cell-in[placeholder]")!;
+  const type = (value: string) => act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), value);
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const press = (name: string) => act(() => { input().dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true })); });
+  act(() => input().focus());
+  type("치는 중");
+  draw("서버 값"); // 주기 조회가 새 목록을 가져왔다 — 전엔 칸을 통째로 다시 만들어 친 글자가 사라졌다
+  expect(input().value).toBe("치는 중");
+  expect(document.activeElement).toBe(input());
+  press("Escape"); // 취소 — 저장하지 않고 서버 값으로
+  expect(onPatch).not.toHaveBeenCalled();
+  expect(input().value).toBe("서버 값");
+  act(() => input().focus());
+  type("새 설명");
+  press("Enter");
+  expect(onPatch).toHaveBeenCalledExactlyOnceWith("task", { description: "새 설명" });
+  // 초점만 두고 고치지 않은 칸은 남의 변경을 따라가고, 벗어날 때 옛 글을 저장하지 않는다(옛 초안이 남의 변경을 되돌렸다)
+  onPatch.mockClear();
+  draw("새 설명");
+  act(() => input().focus());
+  draw("남이 바꾼 값");
+  expect(input().value).toBe("남이 바꾼 값");
+  act(() => input().blur());
+  expect(onPatch).not.toHaveBeenCalled();
+});

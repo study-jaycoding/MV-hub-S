@@ -2918,10 +2918,10 @@ export function SceneBoard({
     onPopupTag: () => false, // 태그 키는 창의 격자가 받는다(카드 안 인라인 편집) — 씬은 손대지 않는다
     onCreateNode: createNodeFromPicker,
     onTogglePicker: toggleNodePicker,
-    // 카드·그룹을 끄는 중(보드에 dragging 표시)에는 받지 않는다 — 끄는 중에 되돌리면 다음 움직임이 그 취소를 덮고 다시 실행 기록도
-    //  지워졌다. 범위 선택 중의 Ctrl+Z 는 그대로다(dragging 은 카드·그룹 이동만 건다).
-    onUndo: () => { if (!scrollRef.current?.classList.contains("dragging")) undo(); },
-    onRedo: () => { if (!scrollRef.current?.classList.contains("dragging")) redo(); },
+    // 카드·그룹을 누르고 있는 동안(끌기 세션)에는 받지 않는다 — 끄는 중에 되돌리면 다음 움직임이 그 취소를 덮고 다시 실행 기록도
+    //  지워졌다. 범위 선택 중의 Ctrl+Z 는 그대로다(세션은 카드·그룹 이동만 건다 — 아래 holdMove).
+    onUndo: () => { if (!moveHeldRef.current) undo(); },
+    onRedo: () => { if (!moveHeldRef.current) redo(); },
     onCopy: copySelectedNodes,
     onSelectAll: () => {
       setSelected(new Set(cardsRef.current.map((c) => c.id)));
@@ -3097,6 +3097,19 @@ export function SceneBoard({
     beginBoardMarquee(e as unknown as React.MouseEvent);
   }, !cardMenu);
 
+  // 카드·그룹을 누르고 있는 동안 = 끌기 세션. 누른 순간부터 손을 뗄 때(또는 창을 떠날 때)까지다 — 보드의 dragging 클래스는 4px 넘게
+  //  움직인 뒤에야 붙고 React 가 className 을 다시 쓰면 지워져(가위 Y 를 누를 때) 기준으로 못 쓴다(Codex 코드 리뷰).
+  const moveHeldRef = useRef(false);
+  const holdMove = () => {
+    moveHeldRef.current = true;
+    const release = () => {
+      moveHeldRef.current = false;
+      window.removeEventListener("mouseup", release, true);
+      window.removeEventListener("blur", release);
+    };
+    window.addEventListener("mouseup", release, true);
+    window.addEventListener("blur", release);
+  };
   const onMouseDown = (e: React.MouseEvent) => {
     // 위에 뜬 창·메뉴의 클릭(바깥을 눌러 닫는 것 포함)은 그것의 몫 — 보드의 선택·범위 선택·화면 이동을 시작하지 않는다
     //  (2026-10-10 재실측: 재생 창·모델 설정 창의 바깥을 눌러 닫으면 뒤의 선택까지 풀렸다).
@@ -3147,6 +3160,7 @@ export function SceneBoard({
     // 그룹 헤더/테두리 잡기 → 선택된 그룹 전체 이동 · 제자리 클릭 = 그룹 자체 선택(Shift/Ctrl=토글)
     const grabEl = (e.target as HTMLElement).closest(".scene-group-grab") as HTMLElement | null;
     if (grabEl?.dataset.groupId && beginGroupMove(e, grabEl.dataset.groupId)) {
+      holdMove();
       return;
     }
     const cardEl = (e.target as HTMLElement).closest(".scene-card") as HTMLElement | null;
@@ -3157,6 +3171,7 @@ export function SceneBoard({
       //  선택 밖 카드를 새로 누른 것이면 종전대로 그룹 선택을 해제한다.
       if (!selectedRef.current.has(cardEl.dataset.id)) setSelectedGroupIds(new Set());
       beginCardMove(e, cardEl.dataset.id);
+      holdMove();
       return;
     }
 
