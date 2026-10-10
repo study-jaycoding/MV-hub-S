@@ -158,6 +158,9 @@ export function useSpotlightTray({
     }
   };
   const onTrayDrop = (e: React.DragEvent) => {
+    // 생성물 카드 = 프롬프트 재사용 — 패널의 놓기 처리에 맡긴다. 전엔 여기서 삼켜져 아무 일도 없었다('놓을 수 있음' 커서는 떴다 —
+    //  2026-10-10 캔버스 실측 4/4). 캔버스에서 카드가 프롬프트에 묶여 있으면 이 칸은 늘 펼쳐져 있어 놓기 쉬운 자리다.
+    if (e.dataTransfer.types.includes(DRAG_TYPES.generation)) return;
     e.preventDefault();
     e.stopPropagation();
     if (e.dataTransfer.types.includes(DRAG_TYPES.asset)) {

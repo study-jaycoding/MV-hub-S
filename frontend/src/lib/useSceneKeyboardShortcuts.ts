@@ -50,6 +50,11 @@ export function useSceneKeyboardShortcuts(actions: SceneKeyboardActions): void {
       // 위에 창·메뉴가 떠 있으면 키는 그쪽 것이다(lib/keyGate) — 가려진 보드에서 Delete·Ctrl+Z·복사가 실행되지 않는다
       //  (2026-10-10 실측: 재생 창·모델 설정 창이 뜬 채 Delete 가 뒤 카드를 지웠다).
       if (backgroundKeysBlocked()) return;
+      // 폴더 창이 떠 있는 동안에는 보드를 누를 수도 없다(창의 막이 화면 전체를 덮고, 막을 누르면 창이 닫힌다) — 그동안의 키는 초점이
+      //  어디에 있든 보드의 것이 아니다. 전엔 창 **안**에서 난 키만 걸렀다: 창에서 연 크게 보기·정보 창을 ✕·바깥 누름으로 닫거나 코멘트
+      //  패널을 닫으면 초점이 BODY 로 떨어져(패널의 단추에 남아도 같다) r·d·Ctrl+A·Delete 가 가려진 보드 카드에 먹었다
+      //  (2026-10-10 캔버스 실측 7가지 길, 각 6/6). 그 키는 창 안 격자가 받는다(lib/keyGate.useLooseKeys).
+      if (document.querySelector(".folder-peek")) return;
       if (isSceneTextEntryTarget(event.target as HTMLElement | null)) return;
 
       // 실제 입력 요소에 포커스가 없는 Ctrl+C는 최우선으로 처리한다. 편집 상태나 결과 팝업이
@@ -171,7 +176,8 @@ export function useSceneKeyboardShortcuts(actions: SceneKeyboardActions): void {
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
-      if (event.key === "y" || event.key === "Y") actionsRef.current.onCutHeldChange(false);
+      // 물리 키도 본다 — 한글 입력 상태에서는 keyup 의 key 가 글자가 아닐 수 있다(keydown 만 lib/keyGate 가 글자로 읽어 준다).
+      if (event.key === "y" || event.key === "Y" || event.code === "KeyY") actionsRef.current.onCutHeldChange(false);
     };
     const onBlur = () => actionsRef.current.onCutHeldChange(false);
 

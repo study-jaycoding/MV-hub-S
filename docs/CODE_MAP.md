@@ -755,7 +755,7 @@ updated: 2026-10-10
 | `mediaTypes.ts` | 순수 | 미디어 필터 옵션 상수 |
 | `boardFilters.ts` | 순수 | 캔버스 툴바 필터·폴더 선택 판정(`matchesBoardFilters`·`inBoardFolder`) — 캔버스 노드(안 맞으면 흐리게)와 '생성 결과' 창(안 맞으면 걸러 냄)이 같이 쓴다 |
 | `keyHandled.ts` | 순수 | 한 키 입력을 '이미 쓴 것'으로 표시·확인(`markKeyHandled`·`isKeyHandled`) — 안쪽 처리 뒤 window 전역 단축키가 같은 키를 또 처리하지 않게(전파를 막지 않아 다른 리스너는 그대로 받는다) |
-| `keyGate.ts` | 훅·순수 | 떠 있는 것이 키의 주인 — Esc 겹 등록부(`openLayer`·`isTopLayer`)·`useKeyOwner`(Esc 없는 덮개)·`backgroundKeysBlocked`, 글자 입력 대상 판정 `isTypingTarget`, 초점 잃은 키를 보이는 격자로 `useLooseKeys`, 누르는 순간 위에 뭔가 떠 있었나 `pressStartedCovered`(pointerdown 캡처), 앱이 한 번 거는 `usePageSelectAllGuard`(입력칸 밖 Ctrl+A·조합 중 Enter), 지금 초점이 Tab 으로 왔나 `focusCameByTab`(마우스로 눌러 남은 단추 초점과 구분 — `:focus-visible` 은 아무 키에나 켜져 못 쓴다), 마우스로 만진 슬라이더의 초점 내려놓기 `dropFocusAfterPress`(격자를 품은 창 안이면 그 창의 격자로) |
+| `keyGate.ts` | 훅·순수 | 떠 있는 것이 키의 주인 — Esc 겹 등록부(`openLayer`·`isTopLayer`)·`useKeyOwner`(Esc 없는 덮개)·`backgroundKeysBlocked`, 글자 입력 대상 판정 `isTypingTarget`, 초점 잃은 키를 보이는 격자로 `useLooseKeys`, 누르는 순간 위에 뭔가 떠 있었나 `pressStartedCovered`(pointerdown 캡처), 앱이 한 번 거는 `usePageSelectAllGuard`(입력칸 밖 Ctrl+A·조합 중 Enter), 지금 초점이 Tab 으로 왔나 `focusCameByTab`(마우스로 눌러 남은 단추 초점과 구분 — `:focus-visible` 은 아무 키에나 켜져 못 쓴다), 마우스로 만진 슬라이더의 초점 내려놓기 `dropFocusAfterPress`(격자를 품은 창 안이면 그 창으로), 한글 입력 상태의 글자 키를 물리 키로 읽기 `letterFromPhysicalKey`(key 가 Process·자모일 때만, 입력칸 밖에서만) |
 | `appConstants.ts` | 순수 | 빈 facets·단축키 색 매핑 상수 |
 
 **7. 생성 라이브러리 — 표시·판정(순수)(11)**
