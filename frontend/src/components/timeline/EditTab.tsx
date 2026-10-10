@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
 import type { CardMark, Generation, PreviewTarget, WorkspaceContext } from "../../types";
 import { APP_EVENTS } from "../../lib/appEvents";
-import { backgroundKeysBlocked } from "../../lib/keyGate";
+import { backgroundKeysBlocked, focusCameByTab } from "../../lib/keyGate";
 import { isKeyHandled, markKeyHandled } from "../../lib/keyHandled";
 import { isFolderDisabled } from "../../lib/deactivated";
 import {
@@ -794,7 +794,10 @@ function EditTabInner({
     const selectAll = (event.ctrlKey || event.metaKey) && !event.altKey && event.code === "KeyA";
     if (event.defaultPrevented && !selectAll) return;
     const from = event.target as HTMLElement | null;
-    if (from && from !== document.body && !rootRef.current?.contains(from)) return; // 다른 창 안에서 난 키
+    // 상단바 단추에 남은 초점은 '다른 창'이 아니다 — 관리자 창·알림·계정 메뉴를 Esc 로 닫으면 초점이 그 단추에 남아 ←·→·L 이 안 먹었다
+    //  (2026-10-10 재실측 3/3). 라이브러리 격자의 '초점 잃은 키'(lib/keyGate.useLooseKeys)와 같은 규칙이다.
+    const onTopbar = !!from?.matches?.("button, a") && !!from.closest(".topbar");
+    if (from && from !== document.body && !rootRef.current?.contains(from) && !onTopbar) return; // 다른 창 안에서 난 키
     const { code, key } = event;
     const mod = event.ctrlKey || event.metaKey;
     const picked = [...selected];
@@ -823,7 +826,9 @@ function EditTabInner({
     else if (event.shiftKey && key === "ArrowUp") stepMarker(-1);
     else if (event.shiftKey && key === "ArrowDown") stepMarker(1);
     else if (code === "Space") {
-      if (from?.closest("button, a, [role=button]")) used = false; // 초점이 있는 단추의 Space 는 그 단추 것
+      // 초점이 있는 단추의 Space 는 그 단추 것. 마우스로 눌러 초점만 남은 상단바 단추는 예외 — 그 Space 가 방금 Esc 로 닫은 창을
+      //  다시 열었다. Tab 으로 옮겨 간 단추는 그대로 그 단추의 것(lib/keyGate.focusCameByTab).
+      if (from?.closest("button, a, [role=button]") && !(onTopbar && !focusCameByTab())) used = false;
       else keys.toggle();
     } else if (code === "KeyL") keys.shuttle(1);
     else if (code === "KeyJ") keys.shuttle(-1);

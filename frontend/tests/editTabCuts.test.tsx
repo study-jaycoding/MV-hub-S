@@ -102,6 +102,19 @@ it("편집 키 — 쓴 키만 기본 동작을 막고, 입력칸·다른 창·�
   expect(press({ key: "End", code: "End" }, elsewhere).defaultPrevented).toBe(false);
   elsewhere.remove();
   expect(timecode()).toBe("00:00:00:00");
+  // 상단바 단추에 남은 초점(창을 Esc 로 닫은 뒤의 로고·알림·계정)은 다른 창이 아니다 — 편집 키가 먹고, Space 는 그 단추를 또 누르지 않는다
+  const bar = document.createElement("div"); bar.className = "topbar";
+  const bell = document.createElement("button"); bar.appendChild(bell); document.body.appendChild(bar);
+  document.dispatchEvent(new Event("pointerdown")); // 마우스로 눌렀다
+  expect(press({ key: "End", code: "End" }, bell).defaultPrevented).toBe(true);
+  expect(timecode()).toBe("00:00:10:00");
+  expect(press({ key: " ", code: "Space" }, bell).defaultPrevented).toBe(true); // 재생 — 단추는 다시 눌리지 않는다
+  press({ key: " ", code: "Space" }, bell); // 다시 멈춤
+  press({ key: "Tab", code: "Tab" }, bell); // Tab 으로 옮겨 온 초점이면 Space 는 그 단추의 것
+  expect(press({ key: " ", code: "Space" }, bell).defaultPrevented).toBe(false);
+  expect(press({ key: "Home", code: "Home" }, bell).defaultPrevented).toBe(true);
+  bar.remove();
+  expect(timecode()).toBe("00:00:00:00");
 
   mount(false); // 위에 관리자 창 등이 떠 있다
   expect(press({ key: "End", code: "End" }).defaultPrevented).toBe(false);
