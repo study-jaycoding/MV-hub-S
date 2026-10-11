@@ -948,6 +948,47 @@ it("끌어 놓은 뒤에 따라오는 click 은 카드 안으로 가지 않는�
   expect(picked()).toBe(true);
 });
 
+// 2026-10-12 격리 실측(두 빌드 20/20·19/20): 카드를 끌어 놓자마자 누른 씬 탭 세 번이 전부 안 먹었다 — 삼키는 리스너가 타이머가 돌 때까지
+//  남아 그 사이의 click 을 전부 삼켰다(입력은 타이머보다 먼저 처리된다 — 놓은 직후 화면을 다시 그리느라 바쁜 큰 씬에서는 손으로도 닿는다).
+it("끌어 놓은 직후(다음 작업이 돌기 전) 이어서 누른 것은 삼키지 않는다 — 삼키는 것은 그 놓기에 딸린 click 한 번이고, 새 누름이 시작되면 끝난다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], []);
+  const outside = document.createElement("button");
+  document.body.append(outside);
+  let got = 0;
+  outside.addEventListener("click", () => { got += 1; });
+  const clickOutside = () => {
+    outside.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    window.dispatchEvent(new MouseEvent("mouseup", { button: 0 }));
+    outside.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  };
+  try {
+    await grab("a1", 150, 150);
+    await dragTo(370, 150, 2000);
+    const own = new MouseEvent("click", { bubbles: true, cancelable: true });
+    act(() => { // 놓기 + 딸린 click + 키보드로 누른 단추(누름 없이 click 만) + 마우스로 두 번 — 전부 한 작업 안에서(타이머는 아직 안 돌았다)
+      window.dispatchEvent(new MouseEvent("mouseup", { button: 0, clientX: 370, clientY: 150 }));
+      board().dispatchEvent(own);
+      outside.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      clickOutside();
+      clickOutside();
+    });
+    expect([own.defaultPrevented, got]).toEqual([true, 3]);
+    await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+
+    // 놓기에 click 이 딸려 오지 않았을 때(뗀 자리가 다른 요소였다) — 타이머가 돌기 전의 새 누름과 그 click 도 삼키지 않는다
+    got = 0;
+    await grab("a1", 370, 150);
+    await dragTo(590, 150, 2000);
+    act(() => {
+      window.dispatchEvent(new MouseEvent("mouseup", { button: 0, clientX: 590, clientY: 150 }));
+      clickOutside();
+    });
+    expect([got, card("a1").style.left]).toEqual([1, "550px"]);
+  } finally {
+    outside.remove();
+  }
+});
+
 // 접힌 그룹 이동과 실행 취소·다시 실행(R5) — 접힌 그룹의 멤버는 화면에 없다(막대만 보인다). 좌표는 저장된 값으로 본다.
 it("접힌 그룹을 머리로 끌어 옮기고 실행 취소·다시 실행 — 숨은 멤버의 좌표와 수동 그룹의 네모가 함께 오간다(네모 있는 그룹·없는 그룹 둘 다)", async () => {
   await act(async () => {
@@ -1449,4 +1490,230 @@ it("화면 맞춤 전환이 도는 중(보이는 배율 9%·목표 43%)에 시�
   expect([canvas().style.transition !== "", Math.round(zoom() * 100), marked().length]).toEqual([true, 43, 40]);
   await release(500 + 220 * zoom(), 300);
   expect(marked()).toEqual([]);
+});
+
+// ── 9회차 ──
+// 끄는 중에 밖에서 씬이 갱신된다(생성 결과 도착·다른 창의 편집) — 받은 값에는 저장 전인 끌기의 좌표·크기·네모가 없다. 전엔 끌던 것이
+//  끌기 전 자리로 돌아가 보였고(다음 움직임에 다시 옴 — 2026-10-11 캔버스 실측 3/3), **더 움직이지 않고 놓으면 그 값이 저장**됐다:
+//  카드 끌기·크기 조절은 한 일이 사라지고, 그룹 머리 끌기는 네모만 가고 멤버는 남았다. 끌기가 쥔 값은 받은 값 위에 다시 얹는다
+//  (lib/sceneDragSession rebase). 밖 갱신 = 같은 씬 id 의 새 배열 — show 를 다시 부른다.
+const savedCard = (id: string) => savedCards().find((item) => item.id === id) as Record<string, unknown> | undefined;
+const groupEl = (id: string) => host.querySelector<HTMLElement>(`.scene-group[data-group-id="${id}"]`)!;
+const pressHandle = (el: HTMLElement, x: number, y: number) => act(async () => {
+  el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: x, clientY: y }));
+});
+const rectGroup = (id: string, cardIds: string[], x: number) => ({ id, name: id, cardIds, rect: { x, y: 44, w: 330, h: 330 } });
+
+it("끄는 중에 밖에서 씬이 갱신돼도 끌던 카드는 끈 자리에 있다 — 더 움직이지 않고 놓으면 끈 자리가 저장되고, 밖에서 온 내용은 남는다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], []);
+  await grab("a1", 150, 150);
+  await dragTo(370, 150, 2000); // a1 +220
+  expect(card("a1").style.left).toBe("330px");
+  await show([textCard("a1", 110), { ...textCard("b1", 660), text: "밖에서 고친 글" }], []); // 저장분(끌기 전 좌표) + b1 의 새 글
+  expect(card("a1").style.left).toBe("330px"); // 끌기 전 자리로 돌아가 보이지 않는다
+  expect(board().classList.contains("dragging")).toBe(true); // 끌기는 이어진다
+  await release(370, 150);
+  expect([savedX("a1"), card("a1").style.left]).toEqual([330, "330px"]);
+  expect(savedCard("b1")?.text).toBe("밖에서 고친 글");
+  await undoOnce(); // 되돌리기는 끌기만 — 밖에서 온 글은 남는다(끄는 중에 저장이 끼지 않은 보통 끌기)
+  expect([savedX("a1"), savedCard("b1")?.text]).toEqual([110, "밖에서 고친 글"]);
+});
+
+it("밖 갱신 뒤의 다음 걸음은 끌기 전 자리에서 다시 잰다 — 다시 얹은 좌표에 한 번 더 더하지 않는다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], []);
+  await grab("a1", 150, 150);
+  await dragTo(370, 150, 2000);
+  await show([textCard("a1", 110), textCard("b1", 660)], []);
+  await dragTo(480, 150, 2000); // 누른 자리에서 +330
+  await release(480, 150);
+  expect([savedX("a1"), savedX("b1")]).toEqual([440, 660]);
+});
+
+it("여러 장을 끄는 중의 밖 갱신이 일부만 되돌려도 전부 다시 놓는다 — 기준 카드가 제자리라고 건너뛰지 않는다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660), textCard("c1", 1100)], []);
+  await grab("a1", 150, 150);
+  await release(150, 150); // a1 선택
+  await grab("b1", 700, 150, true);
+  await release(700, 150); // Ctrl+클릭으로 b1 추가
+  await grab("a1", 150, 150);
+  await dragTo(370, 150, 2000); // 둘 다 +220
+  expect([card("a1").style.left, card("b1").style.left]).toEqual(["330px", "880px"]);
+  // 밖 갱신: 기준 카드(a1)는 끈 자리 그대로, b1 만 끌기 전 자리
+  await show([textCard("a1", 330), textCard("b1", 660), textCard("c1", 1100)], []);
+  expect([card("a1").style.left, card("b1").style.left]).toEqual(["330px", "880px"]);
+  await release(370, 150);
+  expect([savedX("a1"), savedX("b1"), savedX("c1")]).toEqual([330, 880, 1100]);
+});
+
+it("그룹 머리를 끄는 중의 밖 갱신 — 더 움직이지 않고 놓아도 네모와 멤버가 같은 만큼 간 채 저장된다(전엔 네모만 갔다)", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], [rectGroup("gA", ["a1"], 66)]);
+  await grabHead("gA", 100, 50);
+  await dragTo(320, 50, 2000); // +220
+  const shown = [card("a1").style.left, groupEl("gA").style.left];
+  expect(shown[0]).toBe("330px");
+  await show([textCard("a1", 110), textCard("b1", 660)], [rectGroup("gA", ["a1"], 66)]);
+  expect([card("a1").style.left, groupEl("gA").style.left]).toEqual(shown); // 카드도 틀도 되돌아가 보이지 않는다
+  await release(320, 50);
+  expect([savedX("a1"), rectX("gA")]).toEqual([330, 286]);
+});
+
+it("전부 끄는 중(판 밀기) 좌표에 넣어 둔 이동이 밖 갱신으로 갈려도, 놓으면 끈 자리가 저장된다 — 같이 간 네모도", async () => {
+  const cards = () => [textCard("a1", 110), textCard("b1", 660)];
+  const groupsNow = () => [rectGroup("gA", ["a1"], 66), rectGroup("gB", ["b1"], 616)];
+  await show(cards(), groupsNow());
+  await selectAll();
+  await grab("a1", 150, 150);
+  await dragTo(700, 150, 2000); // +550 — 층에만
+  await key({ key: "g", code: "KeyG", ctrlKey: true }); // 끄는 중의 키 — 층의 이동을 좌표에 넣는다(저장은 하지 않는다)
+  expect([card("a1").style.left, canvas().style.translate]).toEqual(["660px", ""]);
+  await show(cards(), groupsNow()); // 밖 갱신 — 저장분은 끌기 전 좌표다
+  expect([card("a1").style.left, card("b1").style.left, canvas().style.translate]).toEqual(["660px", "1210px", ""]);
+  await release(700, 150);
+  expect([savedX("a1"), savedX("b1")]).toEqual([660, 1210]);
+  expect([rectX("gA"), rectX("gB")]).toEqual([616, 1166]);
+  expect(canvas().style.translate).toBe("");
+});
+
+it("전부 끄는 중 좌표에 넣은 적이 없으면 밖 갱신이 와도 층만 밀려 있다 — 놓으면 끈 자리가 저장된다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], []);
+  await selectAll();
+  await grab("a1", 150, 150);
+  await dragTo(700, 150, 2000);
+  await show([textCard("a1", 110), { ...textCard("b1", 660), text: "새 글" }], []);
+  expect([card("a1").style.left, canvas().style.translate]).toEqual(["110px", "550px 0px"]);
+  await release(700, 150);
+  expect([savedX("a1"), savedX("b1"), savedCard("b1")?.text]).toEqual([660, 1210, "새 글"]);
+});
+
+it("카드 크기를 늘리는 중의 밖 갱신 — 더 움직이지 않고 놓아도 늘린 크기가 저장된다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], []);
+  await pressHandle(card("a1").querySelector<HTMLElement>(".scene-resize")!, 262, 200);
+  await dragTo(262 + 220, 200 + 110, 2000);
+  const grown = [card("a1").style.width, card("a1").style.height];
+  await show([textCard("a1", 110), textCard("b1", 660)], []); // 저장분에는 크기가 없다
+  expect([card("a1").style.width, card("a1").style.height]).toEqual(grown);
+  await release(482, 310);
+  expect([`${savedCard("a1")?.w}px`, `${savedCard("a1")?.h}px`]).toEqual(grown);
+  expect(Number(savedCard("a1")?.w)).toBeGreaterThan(300); // 실제로 늘었다(기본 폭 + 220)
+});
+
+it("누르기만 하고 끌지 않았으면 밖 갱신이 그대로 들어온다 — 쥔 것이 없는 끌기는 좌표·크기를 다시 얹지 않는다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], []);
+  await grab("a1", 150, 150); // 누르기만
+  await show([textCard("a1", 220), textCard("b1", 660)], []); // 밖에서 a1 을 옮겼다
+  expect(card("a1").style.left).toBe("220px");
+  await release(150, 150);
+  // 크기 손잡이도 같다 — 누르기만 한 뒤 밖 갱신이 와도 카드에 크기를 새로 적지 않는다(뒤따르는 저장에 기본 크기가 박히지 않는다)
+  await pressHandle(card("a1").querySelector<HTMLElement>(".scene-resize")!, 262, 200);
+  await show([textCard("a1", 220), textCard("b1", 660)], []);
+  await release(262, 200);
+  await grab("b1", 700, 150);
+  await dragTo(920, 150, 2000);
+  await release(920, 150); // 다른 카드를 옮겨 저장을 일으킨다
+  expect([savedX("b1"), savedCard("a1")?.w, savedCard("a1")?.h]).toEqual([880, undefined, undefined]);
+});
+
+it("그룹 머리를 누르기만 했을 때의 밖 갱신도 그대로 들어온다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], [rectGroup("gA", ["a1"], 66)]);
+  await grabHead("gA", 100, 50);
+  await show([textCard("a1", 132), textCard("b1", 660)], [rectGroup("gA", ["a1"], 66)]);
+  expect(card("a1").style.left).toBe("132px");
+  await release(100, 50);
+});
+
+it("그룹 크기를 늘리는 중의 밖 갱신 — 늘리던 테두리가 되돌아가 보이지 않고, 놓으면 그 테두리가 저장된다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 1100)], [rectGroup("gA", ["a1"], 66)]);
+  await pressHandle(groupEl("gA").querySelector<HTMLElement>(".scene-group-resize")!, 396, 374);
+  await dragTo(396 + 220, 374, 2000);
+  const width = groupEl("gA").style.width;
+  await show([textCard("a1", 110), textCard("b1", 1100)], [rectGroup("gA", ["a1"], 66)]);
+  expect(groupEl("gA").style.width).toBe(width);
+  await release(616, 374);
+  expect(groups().find((group) => group.id === "gA")?.rect?.w).toBe(550);
+});
+
+it("그룹 크기 손잡이를 누르기만 했을 때의 밖 갱신은 그대로 보인다 — 누른 순간의 테두리로 덮지 않는다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 1100)], [rectGroup("gA", ["a1"], 66)]);
+  await pressHandle(groupEl("gA").querySelector<HTMLElement>(".scene-group-resize")!, 396, 374);
+  const wider = { id: "gA", name: "gA", cardIds: ["a1"], rect: { x: 66, y: 44, w: 550, h: 330 } };
+  await show([textCard("a1", 110), textCard("b1", 1100)], [wider]); // 밖에서 폭을 늘렸다
+  expect(groupEl("gA").style.width).toBe("550px");
+  await release(396, 374); // 끌지 않고 놓는다 — 저장되는 것도 밖에서 온 테두리다(누른 순간의 330 이 아니다)
+  expect([groupEl("gA").style.width, groups().find((group) => group.id === "gA")?.rect?.w]).toEqual(["550px", 550]);
+  // 밖 갱신 뒤에 끌기 시작하면 밖에서 온 테두리에서 늘어난다
+  await pressHandle(groupEl("gA").querySelector<HTMLElement>(".scene-group-resize")!, 616, 374);
+  await show([textCard("a1", 110), textCard("b1", 1100)], [{ ...wider, rect: { ...wider.rect, w: 660 } }]);
+  await dragTo(616 + 110, 374, 2000);
+  await release(726, 374);
+  expect(groups().find((group) => group.id === "gA")?.rect?.w).toBe(770);
+});
+
+it("카드 크기 손잡이를 누르기만 한 뒤 밖에서 그 카드가 커지면, 그 뒤의 끌기는 받은 크기에서 늘어난다 — 누른 순간의 크기로 줄지 않는다", async () => {
+  const sized = (w: number) => [{ ...textCard("a1", 110), w, h: 154 }, textCard("b1", 660)];
+  await show(sized(220), []);
+  await pressHandle(card("a1").querySelector<HTMLElement>(".scene-resize")!, 330, 264);
+  await show(sized(440), []); // 밖에서 폭 220 → 440
+  expect(card("a1").style.width).toBe("440px");
+  await dragTo(330 + 22, 264, 2000);
+  await release(352, 264);
+  expect([savedCard("a1")?.w, savedCard("a1")?.h]).toEqual([462, 154]);
+});
+
+it("그룹째 끄는 중(일부 끌기)에 기준 카드가 밖에서 지워져도 네모는 남은 카드와 같이 간다 — 엇갈린 채 저장되지 않는다", async () => {
+  const cards = () => [textCard("a1", 110), textCard("a2", 110, 264), textCard("c1", 1100)];
+  const group = (cardIds: string[]) => [{ id: "gA", name: "A", cardIds, rect: { x: 66, y: 44, w: 330, h: 400 } }];
+  await show(cards(), group(["a1", "a2"]));
+  await grab("a1", 150, 150);
+  await release(150, 150); // a1 선택
+  await grab("a2", 150, 300, true);
+  await release(150, 300); // Ctrl+클릭으로 a2 추가 — 그룹의 멤버 전부(c1 은 안 골랐다 — 판 밀기가 아니다)
+  await grab("a1", 150, 150);
+  await dragTo(370, 150, 2000); // +220
+  await show(cards().filter((item) => item.id !== "a1"), group(["a2"])); // 밖에서 기준 카드 a1 이 지워졌다
+  await dragTo(590, 150, 2000); // 누른 자리에서 +440
+  await release(590, 150);
+  expect([savedX("a2"), rectX("gA")]).toEqual([550, 506]); // 카드도 네모도 +440
+});
+
+it("전부 끄는 중에 기준 카드(잡은 카드)가 밖에서 지워져도 남은 카드는 끈 자리에 보인다 — 층이 풀리지 않고, 놓으면 끈 자리가 저장된다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], []);
+  await selectAll();
+  await grab("a1", 150, 150);
+  await dragTo(700, 150, 2000); // +550 — 층에만
+  expect(canvas().style.translate).toBe("550px 0px");
+  await show([textCard("b1", 660)], []); // 밖에서 a1 이 지워졌다
+  expect([card("b1").style.left, canvas().style.translate]).toEqual(["660px", "550px 0px"]);
+  await release(700, 150);
+  expect([savedX("b1"), card("b1").style.left, canvas().style.translate]).toEqual([1210, "1210px", ""]);
+});
+
+it("카드 크기를 늘린 뒤 마우스를 멈춘 채 줌이 바뀌고 밖 갱신이 와도 늘린 크기 그대로다 — 다시 계산하지 않고 마지막 결과를 얹는다", async () => {
+  const actionRef = { current: null as { zoomStep: (dir: 1 | -1) => void } | null };
+  const render = () => act(async () => {
+    const scene = { id: "S", name: "S", created_at: 0, edges: [], groups: [], cards: [textCard("a1", 110), textCard("b1", 660)] } as never;
+    root.render(<SceneBoard scene={scene} actionRef={actionRef as never} onChange={(patch) => patches.push(patch as Record<string, unknown>)} />);
+  });
+  await render();
+  await pressHandle(card("a1").querySelector<HTMLElement>(".scene-resize")!, 262, 200);
+  await dragTo(262 + 220, 200 + 110, 2000);
+  const grown = [card("a1").style.width, card("a1").style.height];
+  const scaleNow = () => /scale[(]([-0-9.]+)[)]/.exec(canvas().style.transform)?.[1];
+  const before = scaleNow();
+  await act(async () => { actionRef.current!.zoomStep(1); frames.splice(0).forEach((cb) => cb(0)); });
+  expect(scaleNow()).not.toBe(before); // 줌이 바뀌었다(마우스는 그대로)
+  await render(); // 밖 갱신
+  expect([card("a1").style.width, card("a1").style.height]).toEqual(grown);
+  await release(482, 310);
+  expect([`${savedCard("a1")?.w}px`, `${savedCard("a1")?.h}px`]).toEqual(grown);
+});
+
+it("그룹 크기를 조절하는 중에 그 그룹이 밖에서 지워지면 놓아도 아무것도 저장하지 않는다 — 테두리 안의 카드를 다른 그룹에서 빼지 않는다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], [rectGroup("gA", ["a1"], 66), rectGroup("gB", ["b1"], 616)]);
+  await pressHandle(groupEl("gA").querySelector<HTMLElement>(".scene-group-resize")!, 396, 374);
+  await dragTo(396 + 440, 374, 2000); // gA 의 테두리가 b1 의 가운데(736)를 덮는다
+  await show([textCard("a1", 110), textCard("b1", 660)], [rectGroup("gB", ["b1"], 616)]); // 밖에서 gA 가 지워졌다
+  patches = [];
+  await release(836, 374);
+  expect(patches).toEqual([]);
+  expect([...host.querySelectorAll<HTMLElement>(".scene-group")].map((el) => el.dataset.groupId)).toEqual(["gB"]);
 });

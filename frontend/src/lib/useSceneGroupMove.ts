@@ -208,6 +208,25 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
       cleanupDrag(false);
       if (relocated) commitMovedGroup();
       optionsRef.current.endGesture();
+    }, () => {
+      // 끄는 중에 밖에서 씬이 갱신됐다 — 받은 값에는 이 끌기의 좌표가 없다. 놓을 때 네모는 lastRects 로 저장되는데 카드는 손에 든 값이라,
+      //  더 움직이지 않고 놓으면 네모만 가고 멤버는 끌기 전 자리에 남은 채 저장됐다. 마지막 걸음을 받은 값 위에 다시 얹는다
+      //  (카드 끌기의 같은 자리 — lib/useSceneCardMove). 모든 멤버를 놓는다: 기준 카드만 보고 건너뛰지 않는다.
+      if (Number.isNaN(lastOffset.x)) return; // 아직 한 걸음도 넣지 않았다
+      const latest = optionsRef.current;
+      const nextCards = latest.cardsRef.current.map((card) => {
+        const origin = origins[card.id];
+        return origin ? { ...card, x: origin.x + lastOffset.x, y: origin.y + lastOffset.y } : card;
+      });
+      latest.cardsRef.current = nextCards;
+      latest.setCards(nextCards);
+      if (!originalRects.size) return;
+      const nextGroups = latest.groupsRef.current.map((item) => {
+        const rect = lastRects.get(item.id);
+        return rect ? { ...item, rect } : item;
+      });
+      latest.groupsRef.current = nextGroups;
+      latest.setGroups(nextGroups);
     });
     // 앞 끌기가 남아 있었다면 위 beginDrag 가 그것을 먼저 확정하고 닫는다 — 그다음에 이 끌기의 묶음을 연다
     current.beginGesture((snapshot) => rewindSceneMove(snapshot, origins, originalRects));

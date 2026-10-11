@@ -144,6 +144,36 @@ describe("createSceneDragSession", () => {
     expect(order).toEqual(["up"]);
   });
 
+  it("rebase 는 도는 끌기의 onRebase 만 부른다 — 밀린 걸음은 건드리지 않고(이벤트를 다시 넣지 않는다), 끝난 끌기·onRebase 없는 끌기에는 아무 일도 없다", () => {
+    const h = harness();
+    const order: string[] = [];
+    h.session.rebase(); // 끌기가 없다
+    h.session.begin(
+      (event) => order.push(`move:${event.id}`),
+      () => order.push("up"),
+      () => order.push("cancel"),
+      () => order.push("rebase"),
+    );
+    h.emit("mousemove", { id: "pending" });
+    h.session.rebase();
+    expect(order).toEqual(["rebase"]); // 밀린 걸음은 그대로 프레임을 기다린다
+    expect(h.frameCount()).toBe(1);
+    h.flushFrames();
+    h.emit("mouseup");
+    expect(order).toEqual(["rebase", "move:pending", "up"]);
+    h.session.rebase(); // 끝난 뒤
+    expect(order).toEqual(["rebase", "move:pending", "up"]);
+
+    // 새 끌기는 앞 끌기의 onRebase 를 물려받지 않는다 — 버린(dispose) 끌기의 것도 남지 않는다
+    h.session.begin(() => undefined, () => undefined, undefined, () => order.push("old-rebase"));
+    h.session.dispose();
+    h.session.rebase();
+    h.session.begin(() => undefined, () => undefined, undefined, () => order.push("first-rebase"));
+    h.session.begin(() => undefined, () => order.push("second-up"));
+    h.session.rebase();
+    expect(order).toEqual(["rebase", "move:pending", "up"]);
+  });
+
   it("dispose는 이동·취소 콜백 없이 예약 프레임과 리스너만 제거한다", () => {
     const h = harness();
     const order: string[] = [];

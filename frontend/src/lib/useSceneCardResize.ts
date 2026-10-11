@@ -27,12 +27,14 @@ export function useSceneCardResize(options: UseSceneCardResizeOptions) {
     const card = current.cardsRef.current.find((item) => item.id === cardId);
     if (!card) return;
 
-    const startSize = {
-      w: card.w ?? current.defaultSize.w,
-      h: card.h ?? current.defaultSize.h,
-    };
+    const sizeOf = (item: SceneCard) => ({
+      w: item.w ?? optionsRef.current.defaultSize.w,
+      h: item.h ?? optionsRef.current.defaultSize.h,
+    });
+    let startSize = sizeOf(card);
     const start = { x: event.clientX, y: event.clientY };
     let resized = false;
+    let lastSize = startSize; // 마지막으로 넣은 크기 — 줌이 그사이 바뀌어도 그대로 다시 넣을 수 있게 계산 결과를 둔다
 
     const move = (moveEvent: MouseEvent) => {
       const latest = optionsRef.current;
@@ -49,6 +51,7 @@ export function useSceneCardResize(options: UseSceneCardResizeOptions) {
       });
       if (!result.changed) return;
       resized = true;
+      lastSize = result.size;
       latest.cardsRef.current = result.cards;
       latest.setCards(result.cards);
     };
@@ -59,6 +62,22 @@ export function useSceneCardResize(options: UseSceneCardResizeOptions) {
       latest.persist(latest.cardsRef.current, latest.edgesRef.current);
     };
 
-    current.beginDrag(move, commit, commit);
+    current.beginDrag(move, commit, commit, () => {
+      // 끄는 중에 밖에서 씬이 갱신됐다 — 받은 카드에는 저장 전인 이 크기가 없다(더 움직이지 않고 놓으면 늘린 크기가 사라졌다).
+      //  마지막으로 넣은 크기를 받은 카드에 다시 입힌다. 다시 계산하지 않는다 — 그사이 줌이 바뀌었으면 다른 값이 나온다(Codex 설계 검토).
+      const latest = optionsRef.current;
+      if (!resized) {
+        // 누르기만 했다 — 쥔 것이 없으니 받은 크기를 새 출발점으로 삼는다. 누른 순간의 크기를 쥐고 있으면, 밖에서 커진 카드가
+        //  첫 걸음에 옛 크기 + 이동량으로 줄어 저장된다(Codex 코드 리뷰). 카드에 크기를 적지는 않는다.
+        const fresh = latest.cardsRef.current.find((item) => item.id === cardId);
+        if (fresh) lastSize = startSize = sizeOf(fresh);
+        return;
+      }
+      const nextCards = latest.cardsRef.current.map((item) =>
+        item.id === cardId ? { ...item, w: lastSize.w, h: lastSize.h } : item,
+      );
+      latest.cardsRef.current = nextCards;
+      latest.setCards(nextCards);
+    });
   }, []);
 }

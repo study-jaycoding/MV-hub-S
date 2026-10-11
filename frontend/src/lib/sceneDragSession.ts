@@ -13,10 +13,15 @@ export interface SceneDragSession<Event> {
     move: SceneDragListener<Event>,
     up: SceneDragListener<Event>,
     onCancel?: () => void,
+    onRebase?: () => void,
   ) => void;
   /** 남아 있는 끌기(mouseup 을 놓친 것)를 지금 끝낸다 — 밀린 걸음을 반영하고 취소의 길로(blur 와 같다). 없으면 아무 일도 없다.
    *  begin 도 같은 일을 하지만 그때는 새 조작이 시작 좌표를 이미 읽은 뒤다 — 새 누름의 첫머리에서 먼저 부른다(SceneBoard). */
   settle: () => void;
+  /** 끄는 중에 밖에서 값이 갈렸다(SceneBoard 의 씬 동기화) — 도는 끌기의 onRebase 를 부른다: 끌기가 쥔 값(옮긴 자리·늘린 크기)을
+   *  새 값 위에 다시 얹는다. 이벤트를 다시 넣지 않는다 — move 는 속도 표본·마우스 밑 찾기까지 하므로 '한 번 더'가 같은 일이 아니다
+   *  (Codex 설계 검토). 밀린 걸음은 건드리지 않는다(다음 프레임에 평소대로 들어간다). onRebase 가 없는 끌기·끌기가 없으면 아무 일도 없다. */
+  rebase: () => void;
   dispose: () => void;
 }
 
@@ -26,8 +31,9 @@ export function createSceneDragSession<Event>(
 ): SceneDragSession<Event> {
   let cleanupActive: (() => void) | null = null;
   let cancelActive: (() => void) | null = null;
+  let rebaseActive: (() => void) | null = null;
 
-  const begin: SceneDragSession<Event>["begin"] = (move, up, onCancel) => {
+  const begin: SceneDragSession<Event>["begin"] = (move, up, onCancel, onRebase) => {
     // mouseup을 놓친 이전 세션이 있으면 마지막 이동을 반영하고 취소한 뒤 새 세션을 연다.
     cancelActive?.();
 
@@ -78,6 +84,7 @@ export function createSceneDragSession<Event>(
       environment.removeListener("blur", cancel);
       if (cleanupActive === teardown) cleanupActive = null;
       if (cancelActive === cancel) cancelActive = null;
+      if (rebaseActive === rebase) rebaseActive = null;
       return true;
     };
     const onUp = (event: Event) => {
@@ -89,8 +96,11 @@ export function createSceneDragSession<Event>(
       if (teardown()) onCancel?.();
     };
 
+    const rebase = () => onRebase?.();
+
     cleanupActive = teardown;
     cancelActive = cancel;
+    rebaseActive = rebase;
     environment.addListener("mousemove", onMove);
     environment.addListener("mouseup", onUp);
     environment.addListener("blur", cancel);
@@ -99,6 +109,7 @@ export function createSceneDragSession<Event>(
   return {
     begin,
     settle: () => cancelActive?.(),
+    rebase: () => rebaseActive?.(),
     // 언마운트는 화면 상태를 다시 쓰지 않도록 pending 이동과 onCancel을 실행하지 않고 정리만 한다.
     dispose: () => cleanupActive?.(),
   };

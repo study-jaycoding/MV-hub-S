@@ -884,7 +884,7 @@ export function SceneBoard({
     });
   };
   // 씬 전환 = 선택 해제. 같은 씬이라도 외부(생성 결과 바인딩·프롬프트 순서변경)에서 cards/edges 가
-  // 바뀌면 반영하되 선택은 유지 — 카드 드래그 중엔 persist 안 하므로 prop 이 안 바뀌어 방해받지 않는다.
+  // 바뀌면 반영하되 선택은 유지 — 끄는 중에 밖에서 바뀌면 끌기가 쥔 값을 받은 값 위에 다시 얹는다(아래 replaced).
   // '마지막으로 본' 표시 — 모듈 store 라 구성 탭을 벗어나 언마운트돼도 값이 남는다.
   // 생성물 변경(휴지통 이동·복원 등) 때 다시 읽는 것까지 훅이 맡는다 — 생성 탭과 같은 훅.
   const genViews = useGenerationViewsSynced(scene.id);
@@ -915,10 +915,23 @@ export function SceneBoard({
     //  카드의 주인 씬(cardsSceneId)도 **같은 자리에서** 넣는다 — 카드와 한 갱신으로 바뀌어야 이름과 내용이 어긋나지 않는다.
     //  여기서는 …Now 설정자로 넣는다 — 편집용 설정자는 틈(지금이 그 틈이다)에는 넣지 않는다.
     if (switched) setCardsSceneId(scene.id);
+    const inGroups = scene.groups || [];
+    // 같은 씬인데 밖에서 값이 갈렸는가(생성 결과 도착 등) — 아래에서 끄는 중인 끌기에 알린다
+    const replaced = !switched && (inCards !== cardsRef.current || inEdges !== edgesRef.current || inGroups !== groupsRef.current);
     if (switched || inCards !== cardsRef.current) setCardsNow(inCards);
     if (switched || inEdges !== edgesRef.current) setEdgesNow(inEdges);
-    const inGroups = scene.groups || [];
     if (switched || inGroups !== groupsRef.current) setGroupsNow(inGroups);
+    if (replaced) {
+      // ★끄는 중의 좌표·크기·네모는 저장 전이라 받은 값에 없다. 갈아 끼우기만 하면 끌던 카드가 끌기 전 자리로 돌아가 보이고, 더 움직이지
+      //  않고 놓으면 그 값이 저장됐다 — 카드 끌기·크기 조절은 한 일이 사라지고, 그룹 머리 끌기는 네모만 가고 멤버는 남았다
+      //  (2026-10-11 캔버스 실측 3/3 · Codex 설계 검토). ref 를 받은 값으로 먼저 맞추고(끌기가 **받은 값 위에** 얹도록 — 밖에서 온 내용은 살린다)
+      //  도는 끌기에 다시 얹게 한다(lib/sceneDragSession rebase — 값을 끄는 중에 바꾸는 끌기만 응한다). 끌기의 갱신은 위의 갈아 끼우기
+      //  뒤에 줄을 서 한 번에 그려진다. 끌기가 없으면 ref 만 한 렌더 일찍 맞는다(다음 렌더가 같은 값을 넣는다).
+      cardsRef.current = inCards;
+      edgesRef.current = inEdges;
+      groupsRef.current = inGroups;
+      rebaseDrag();
+    }
     // 표시 중인 상태를 항상 '최근 커밋'으로 맞춘다 — 외부 갱신(생성 완료 등) 후 Ctrl+Z 가
     // 그 갱신까지 되돌리는(스테일 복원) 문제 방지. (내 persist 는 이미 같은 값이라 무해)
     syncCommitBaseline({ cards: inCards, edges: inEdges, groups: scene.groups || [] });
@@ -2013,7 +2026,7 @@ export function SceneBoard({
   //  새 조작을 시작하지 않는 누름(끄는 중의 오른쪽 단추)에도 끝난다 — 전에도 그 단추를 떼는 순간 끝났다(mouseup 은 단추를 가리지 않는다).
   //  알고 두는 것: 보드가 포인터를 쥔 뒤(4px 넘게 끈 뒤)에 놓친 끌기라면 새 누름은 카드가 아니라 보드로 온다(포인터 캡처) — 그 누름은
   //  범위 선택이 된다(실측 15/15). 마우스가 한 번이라도 움직이면 규칙 21 이 먼저 끝내므로 손으로는 닿기 어렵다.
-  const { begin: beginDrag, abort: abortDrag, settle: settleDrag } = useSceneDragSession();
+  const { begin: beginDrag, abort: abortDrag, settle: settleDrag, rebase: rebaseDrag } = useSceneDragSession();
   // 씬을 바꾸면 옛 씬의 카드·그룹·좌표에 묶인 창·조작 상태를 비운다(2026-09-29, Codex 전수 표). 안 그러면 안 보이는 결과
   //  팝업이 단축키를 막고(Esc 전까지 Ctrl+A 가 안 먹음), 노드 선택기가 새 씬에 떠서 옛 좌표에 카드를 만든다. 진행 중 끌기는
   //  마지막 움직임을 반영하지 않고 버리고(abort — blur 취소처럼 반영하면 옛 끌기를 새 씬에 한 번 더 쓴다), 끌기가 붙인 보드
@@ -4125,20 +4138,27 @@ export function SceneBoard({
                     // 자동 그룹이면 현재 프레임을 초기 rect 로 고정. 네모·틀은 ref 에서 읽는다 — 이 누름이 방금 끝낸 앞 끌기의 마지막 값(다음 렌더 전).
                     //  렌더가 잡은 g.rect·frame 을 쓰면 옛 틀이 수동 네모로 저장된다(Codex 코드 리뷰). 그룹이 그사이 사라졌으면(앞 끌기의
                     //  확정이 마지막 멤버를 빼 그룹을 지웠다) 시작하지 않고 고르지도 않는다 — 없는 그룹이 선택에 남지 않게.
-                    const rect0 = groupsRef.current.find((x) => x.id === g.id)?.rect ?? currentGroupFrames().find((x) => x.id === g.id)?.frame;
-                    if (!rect0) return;
+                    const rectNow = () => groupsRef.current.find((x) => x.id === g.id)?.rect ?? currentGroupFrames().find((x) => x.id === g.id)?.frame;
+                    const pressed = rectNow();
+                    if (!pressed) return;
                     activateGroupControl(g.id);
                     const sx = e.clientX;
                     const sy = e.clientY;
+                    let rect0 = pressed; // 늘리기의 출발 테두리
                     let last = rect0; // 최종 rect — up 에서 명시적으로 persist(groupsRef 최신성 레이스 방지)
+                    let stretched = false; // 한 걸음이라도 넣었는가
                     const mv = (ev: MouseEvent) => {
                       const z = zoomRef.current;
                       const w = Math.max(140, rect0.w + (ev.clientX - sx) / z);
                       const h = Math.max(GROUP_HEADER_HEIGHT + 48, rect0.h + (ev.clientY - sy) / z);
                       last = { x: rect0.x, y: rect0.y, w, h };
+                      stretched = true;
                       setGroups((prev) => prev.map((x) => (x.id === g.id ? { ...x, rect: last } : x)));
                     };
                     const upr = () => {
+                      // 끄는 사이에 이 그룹이 밖에서 지워졌으면 아무것도 하지 않는다 — 아래는 대상이 없어도 마지막 테두리 안의 카드를 다른
+                      //  그룹에서 빼고 비게 된 그룹을 지워 저장했다(Codex 설계 검토)
+                      if (!groupsRef.current.some((x) => x.id === g.id)) return;
                       const rect = last;
                       // 늘린 rect 안에 중심이 든 카드를 이 그룹에 포함(다른 그룹에 있던 카드는 옮겨옴=한 카드 한 그룹).
                       // 기존 멤버는 rect 밖이어도 유지 — '줄여서 제외'는 안 함(제외는 노드를 밖으로 드래그).
@@ -4164,7 +4184,20 @@ export function SceneBoard({
                       setGroups(ng);
                       persist(cardsRef.current, edgesRef.current, ng);
                     };
-                    beginDrag(mv, upr, upr); // blur: 현재 테두리로 멤버십 커밋(좌표·클릭 모호함 없어 upr 재사용 안전)
+                    // blur: 현재 테두리로 멤버십 커밋(좌표·클릭 모호함 없어 upr 재사용 안전).
+                    // 끄는 중 밖에서 씬이 갱신되면(위 씬 동기화) 늘리던 테두리를 받은 그룹에 다시 넣는다 — 저장은 last 로 하니 값은 맞지만 화면이
+                    //  되돌아가 보였다. 누르기만 했으면 쥔 것이 없다 — 밖에서 온 테두리를 **새 출발점**으로 삼는다(넣지 않는다). 누른 순간의 값을
+                    //  쥐고 있으면 화면은 새 테두리인데 놓을 때 옛 테두리가 저장된다(Codex 코드 리뷰).
+                    beginDrag(mv, upr, upr, () => {
+                      if (!stretched) {
+                        rect0 = rectNow() ?? rect0;
+                        last = rect0;
+                        return;
+                      }
+                      const ng = groupsRef.current.map((x) => (x.id === g.id ? { ...x, rect: last } : x));
+                      groupsRef.current = ng;
+                      setGroups(ng);
+                    });
                   }}
                 />
               )}
