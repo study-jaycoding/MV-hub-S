@@ -81,6 +81,11 @@ export function EditPool({
   const [query, setQuery] = useState("");
   const toolsRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  // 검색칸이 그려지는 그 커밋에서 초점을 준다. 타이머로 미루면 그사이의 누름(풀의 카드)보다 늦게 와 초점을 가져가고,
+  //  그 뒤의 Space·J·K·L 이 편집 조작이 아니라 검색칸에 들어갔다(Codex 검토 — 입력은 타이머보다 먼저 처리된다).
+  useEffect(() => {
+    if (searching) searchRef.current?.focus();
+  }, [searching]);
   useOutsideMouseDown(toolsRef, () => setOpen(null), open !== null);
   useEscapeClose(() => setOpen(null), open !== null, true, true);
   const shown = useMemo(() => arrangePool(items, searching ? query : "", ui.sort), [items, searching, query, ui.sort]);
@@ -189,10 +194,7 @@ export function EditPool({
           </button>
           <button type="button" className={"ed-pbtn" + (searching ? " ed-on" : "")} aria-pressed={searching}
             title={t("검색")} aria-label={t("검색")}
-            onClick={() => {
-              setSearching(!searching);
-              if (!searching) window.setTimeout(() => searchRef.current?.focus(), 0);
-            }}>
+            onClick={() => setSearching(!searching)}>
             {ICONS.search}
           </button>
           <button type="button" className={"ed-pbtn" + (open === "sort" ? " ed-on" : "")} aria-haspopup="menu" aria-expanded={open === "sort"}

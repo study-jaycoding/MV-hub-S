@@ -366,6 +366,8 @@ it("미디어 풀: 보기 방식(썸네일·메타데이터·목록)과 크기·
 
   act(() => poolButton("검색").click()); // 검색 — 프롬프트·모델·만든 사람
   const search = () => document.querySelector<HTMLInputElement>(".ed-pool-search");
+  // 초점은 검색칸이 그려지는 그 커밋에서 온다(타이머를 돌리지 않았다) — 미루면 그사이 누른 카드보다 늦게 와 초점을 가져간다(10회차)
+  expect(document.activeElement).toBe(search());
   typeIn(search()!, "PROMPT A");
   expect(prompts("list")).toEqual(["prompt a"]);
   expect(document.querySelector(".ed-pool-sub")!.textContent).toContain("찾은 것 1개");
