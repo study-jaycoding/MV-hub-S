@@ -37,8 +37,10 @@ const sceneWith = (id: string, token: string): Scene =>
 let root: Root;
 let host: HTMLDivElement;
 let coordination: ReturnType<typeof useSceneCoordination> | null = null;
+let renders: string[] = []; // 렌더마다의 '활성 씬:프롬프트에 묶인 카드'
 function Coordination() {
   coordination = useSceneCoordination();
+  renders.push(`${coordination.activeSceneId}:${coordination.sceneBinding?.cardId ?? "-"}`);
   return null;
 }
 const settle = () =>
@@ -60,6 +62,33 @@ afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
   coordination = null;
+});
+
+// 2026-10-11 Codex 코드 리뷰: 씬을 바꾼 직후(보드가 선택 해제를 그리기 전)의 도크는 '새 씬 + 떠난 씬의 카드 id' 로 묶여 있었다 —
+//  두 씬에 같은 id 의 카드가 있으면(가져온 씬) 그 틈의 프롬프트 입력·생성이 새 씬의 카드로 갔다.
+describe("씬 전환과 프롬프트에 묶인 카드", () => {
+  it("묶임은 그 카드의 씬이 활성일 때만 있다 — '새 씬 + 떠난 씬의 카드'로 묶인 렌더가 없고, 곧바로 돌아오면 묶임이 그대로다", async () => {
+    saveScenes(null, [sceneWith("s1", A), sceneWith("s2", B)]);
+    await act(async () => root.render(<Coordination />));
+    await settle();
+    await act(async () => coordination!.selectScene("s1"));
+    await act(async () => coordination!.setSceneBinding({ sceneId: "s1", cardId: "c-s1", refs: [] })); // 보드가 알린 묶임(생성 카드 한 장 선택)
+    expect(coordination!.sceneBinding?.cardId).toBe("c-s1");
+    await act(async () => coordination!.selectScene("s1")); // 같은 탭을 다시 누름
+    expect(coordination!.sceneBinding?.cardId).toBe("c-s1");
+
+    renders = [];
+    await act(async () => coordination!.selectScene("s2"));
+    expect(renders).not.toContain("s2:c-s1"); // 보드가 선택 해제를 알리기 전에도
+    expect(renders.at(-1)).toBe("s2:-");
+
+    // 곧바로 돌아온다 — 보드의 선택은 그대로다(보드는 같은 카드를 다시 알리지 않는다). 묶임도 그대로여야 한다
+    await act(async () => coordination!.selectScene("s1"));
+    expect(coordination!.sceneBinding?.cardId).toBe("c-s1");
+    // 한 갱신 안의 왕복(탭 연타가 한 번에 그려질 때)
+    await act(async () => { coordination!.selectScene("s2"); coordination!.selectScene("s1"); });
+    expect(coordination!.sceneBinding?.cardId).toBe("c-s1");
+  });
 });
 
 describe("탭 워크스페이스 지정·해제", () => {

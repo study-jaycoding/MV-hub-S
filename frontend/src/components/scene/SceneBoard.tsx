@@ -15,7 +15,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import type { CSSProperties, MutableRefObject, ReactNode } from "react";
+import type { CSSProperties, Dispatch, MutableRefObject, ReactNode, SetStateAction } from "react";
 import { api } from "../../api";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../lib/workspaceCommand";
 import { inBoardFolder, matchesBoardFilters } from "../../lib/boardFilters";
@@ -232,6 +232,12 @@ function useStableHandlers<T extends Record<string, ((...args: never[]) => unkno
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 }
+// 편집용 설정자 — 씬을 바꾸는 틈(SceneBoard 의 switchingRef)에는 넣지 않는다. 정체성은 바뀌지 않는다.
+function useUnlessSwitching<T>(set: Dispatch<SetStateAction<T>>, switching: MutableRefObject<boolean>): Dispatch<SetStateAction<T>> {
+  return useCallback((next) => {
+    if (!switching.current) set(next);
+  }, [set, switching]);
+}
 // 생성 카드에 넘기는 전역 태그 후보가 없을 때의 빈 목록 — 렌더마다 새 [] 를 만들면 카드(memo)가 매번 다시 그려진다.
 const NO_TAG_OPTIONS: string[] = [];
 // 여러 장을 고른 끌기의 그리기 상태 — 끌기 하나에 하나(첫 걸음에 조건이 맞으면 만들고, 조건을 잃거나 끝나거나 씬이 바뀌면 버린다).
@@ -356,7 +362,8 @@ interface Props {
   // 씬 탭 바 호버 여부 — true 면 좌상단 씬 패널(저장/불러오기)을 보인다(평소엔 숨김).
   ioPanelHot?: boolean;
   // 씬의 생성 카드 1개만 선택되면 그 카드(id+연결된 레퍼런스)를 하단 프롬프트에 바인딩하도록 App 에 알림.
-  onBindingChange?: (binding: { cardId: string; refs: SceneRef[] } | null) => void;
+  //  sceneId = 그 카드가 속한 씬(이 보드가 지금 **그리고 있는** 씬 — 씬을 바꾸는 틈에는 prop 의 씬과 다르다). 받는 쪽이 활성 씬과 견준다.
+  onBindingChange?: (binding: { sceneId: string; cardId: string; refs: SceneRef[] } | null) => void;
   // 마지막으로 본 화면(확대/이동)을 기억 — 팬/줌을 멈출 때 저장. 재렌더 없이 localStorage 에만 조용히.
   onCameraChange?: (camera: { z: number; x: number; y: number }) => void;
   // Resolve Media Pool에서 고른 생성물 — 기존 변형 팝업만 열고 대표/Last viewed는 바꾸지 않는다.
@@ -541,12 +548,29 @@ export function SceneBoard({
 }: Props) {
   const t = useT(); // 언어(한/영) — View 노드 헤더 등 라벨 치환. 언어 변경 시 즉시 리렌더.
   // 최초 마운트에도 박제된 running 을 치유해 시작(effect 전 첫 페인트에 '생성중' 잔상 방지).
-  const [cards, setCards] = useState<SceneCard[]>(() => settleComfyRunning(scene.cards, isComfyRunning));
+  const [cards, setCardsNow] = useState<SceneCard[]>(() => settleComfyRunning(scene.cards, isComfyRunning));
   const sceneIdRef = useRef(scene.id);
-  const cardsSceneId = sceneIdRef.current; // 이 렌더에서 cards가 속한 씬(동기화 effect 전의 값)
+  // 이 렌더의 cards 가 속한 씬. **카드와 같은 갱신으로** 바뀐다(씬 동기화 effect 가 카드와 함께 넣는다) — sceneIdRef 로 읽지 않는다.
+  //  effect 는 돌았고(sceneIdRef·저장 기준이 새 씬) 카드 갱신은 아직 밀려 있는 사이에 다른 동기 렌더(Ctrl+K 등)가 끼면, ref 로 읽은
+  //  이름은 새 씬인데 카드는 옛 씬의 것이다 — flushPending 의 방어를 지나 옛 씬의 카드가 새 씬에 저장된다(2026-10-11 Codex 코드 리뷰 P1.
+  //  React 18 은 동기 렌더의 effect 가 넣은 갱신을 낮은 우선순위로 민다).
+  const [cardsSceneId, setCardsSceneId] = useState(scene.id);
+  // ── 씬을 바꾸는 틈 ──
+  //  새 씬(scene prop)은 왔는데 그 카드는 아직 안 그려진 사이 — 화면과 cardsRef 는 **떠난 씬**의 것이다. 짧지만(다음 렌더까지) 밀려 있던
+  //  키·클릭은 이 사이에 들어온다(탭을 누르고 곧바로 누른 키, 탭 연타). 그동안은 **편집도 저장도 되돌리기도 받지 않는다**:
+  //   · 저장(persist·파생 저장·flushPending)은 부모의 '지금 활성 씬'(= 새 씬)에 쓰인다 → 떠난 씬의 카드가 새 씬을 덮는다.
+  //   · 편집의 setCards 는 밀려 있는 '새 씬의 카드로 바꾸기' 뒤에 줄을 서 **다시 적용**된다(React 는 건너뛴 갱신 뒤의 갱신을 순서대로
+  //     다시 돌린다) → 떠난 씬의 편집본이 새 씬의 이름으로 남아 다음 저장에 실린다(Codex 코드 리뷰 P1).
+  //  막는 자리: 아래 편집용 설정자(setCards·setEdges·setGroups) · lib/useSceneHistory 의 frozenRef · flushPending.
+  //  씬 동기화 effect 만 …Now 설정자로 바로 넣는다. 틈에 한 조작은 버려진다 — 그 화면은 곧 새 씬의 것으로 바뀐다.
+  const switchingRef = useRef(false);
+  switchingRef.current = cardsSceneId !== scene.id;
   // 레거시 수집기 순서 고정(order 없는 list·render 연결에 옛 표시 순서를 박음 — 변경 없으면 같은 참조). 저장은 다음 변경 때.
-  const [edges, setEdges] = useState<SceneEdge[]>(() => freezeLegacyCollectorOrder(scene.cards, scene.edges));
-  const [groups, setGroups] = useState<SceneGroup[]>(scene.groups || []);
+  const [edges, setEdgesNow] = useState<SceneEdge[]>(() => freezeLegacyCollectorOrder(scene.cards, scene.edges));
+  const [groups, setGroupsNow] = useState<SceneGroup[]>(scene.groups || []);
+  const setCards = useUnlessSwitching(setCardsNow, switchingRef);
+  const setEdges = useUnlessSwitching(setEdgesNow, switchingRef);
+  const setGroups = useUnlessSwitching(setGroupsNow, switchingRef);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null); // 이름 편집 중인 그룹
   const [colorPopId, setColorPopId] = useState<string | null>(null); // 색 팔레트 팝오버가 열린 그룹
   const [ejectedIds, setEjectedIds] = useState<Set<string>>(new Set()); // 드래그 중 속도로 그룹에서 튕겨낸 카드 — 이탈해도 박스 크기 유지
@@ -869,7 +893,8 @@ export function SceneBoard({
     //  done/idle 로 정규화해 '영원히 생성중' 표시를 없앤다(persist 쪽 settleComfyRunning 과 짝).
     const inCards = settleComfyRunning(scene.cards, isComfyRunning);
     const inEdges = freezeLegacyCollectorOrder(inCards, scene.edges); // 레거시 수집기 순서 고정(변경 없으면 같은 참조)
-    if (sceneIdRef.current !== scene.id) {
+    const switched = sceneIdRef.current !== scene.id;
+    if (switched) {
       const prevId = sceneIdRef.current;
       persistSceneHistory(prevId); // 떠나는 씬의 undo 히스토리 보관(돌아오면 이어서)
       sceneIdRef.current = scene.id;
@@ -882,10 +907,18 @@ export function SceneBoard({
     // 받은 것이 이미 손에 든 **그 객체**면 다시 넣지 않는다. 보드가 저장한 조각은 부모를 거쳐 같은 배열로 되돌아오는데
     //  (lib/scenes.updateScene), 그것을 또 넣으면 값이 같아 자식은 안 그려도 보드 함수 전체가 한 번 더 돈다 — 편집·놓기마다였다.
     //  참조로만 견준다: 내용이 같은 새 배열(밖에서 온 갱신)은 전처럼 넣는다. 견주는 쪽은 ref 다 — 핸들러가 방금 넣은 값까지 본다.
-    if (inCards !== cardsRef.current) setCards(inCards);
-    if (inEdges !== edgesRef.current) setEdges(inEdges);
+    // ★씬이 바뀐 때에는 견주지 않고 **늘 넣는다**. ref 는 '지금 그려진 값'일 뿐, 앞 전환이 넣어 둔 갱신이 아직 밀려 있을 수 있다 —
+    //  탭 누름은 동기 렌더고 이 effect 가 넣는 갱신은 그 뒤의 낮은 우선순위 렌더다. X 로 갔다가 그것이 그려지기 전에 Y 로 돌아오면
+    //  ref 는 아직 Y 의 카드라 "같다"고 건너뛰었고, 밀려 있던 X 의 카드가 뒤늦게 Y 화면에 그려졌다. 기준(sceneIdRef·마지막 저장)은
+    //  Y 라 다음 탭 누름의 저장 확정이 그것을 Y 에 썼다(2026-10-11 격리 실측: 탭 연타에 Y 가 X 의 카드로 덮임 — 부하가 걸리면 절반).
+    //  늘 넣으면 밀린 갱신 뒤에 줄을 서 마지막 값이 이긴다(밀린 것이 없고 값이 같으면 React 가 그 자리에서 버린다).
+    //  카드의 주인 씬(cardsSceneId)도 **같은 자리에서** 넣는다 — 카드와 한 갱신으로 바뀌어야 이름과 내용이 어긋나지 않는다.
+    //  여기서는 …Now 설정자로 넣는다 — 편집용 설정자는 틈(지금이 그 틈이다)에는 넣지 않는다.
+    if (switched) setCardsSceneId(scene.id);
+    if (switched || inCards !== cardsRef.current) setCardsNow(inCards);
+    if (switched || inEdges !== edgesRef.current) setEdgesNow(inEdges);
     const inGroups = scene.groups || [];
-    if (inGroups !== groupsRef.current) setGroups(inGroups);
+    if (switched || inGroups !== groupsRef.current) setGroupsNow(inGroups);
     // 표시 중인 상태를 항상 '최근 커밋'으로 맞춘다 — 외부 갱신(생성 완료 등) 후 Ctrl+Z 가
     // 그 갱신까지 되돌리는(스테일 복원) 문제 방지. (내 persist 는 이미 같은 값이라 무해)
     syncCommitBaseline({ cards: inCards, edges: inEdges, groups: scene.groups || [] });
@@ -911,6 +944,8 @@ export function SceneBoard({
     // 카메라를 저장하기 전에 밀린 편집을 먼저 확정한다 — 카메라만 저장해도 저장소가 돌려주는 씬의 카드는 '마지막으로 저장한 것'이라,
     //  아직 저장 안 된 좌표·글이 그 값으로 덮였다(끄는 중 화면 맞춤 F·휠 줌 → 추가 이동 없이 놓으면 옛 자리가 저장됐다 — Codex 코드 리뷰).
     onCameraChange: onCameraChange && ((camera) => {
+      // 씬을 바꾸는 틈의 카메라는 저장하지 않는다 — 부모는 '지금 활성 씬'(새 씬)에 쓰는데, 틈의 화면 맞춤은 떠난 씬의 카드로 잰 것이다
+      if (switchingRef.current) return;
       flushPendingRef.current();
       onCameraChange(camera);
     }),
@@ -921,15 +956,10 @@ export function SceneBoard({
   const lastMouseRef = useRef<{ x: number; y: number; over: boolean }>({ x: 0, y: 0, over: false });
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
-  const cardsSceneRef = useRef(cardsSceneId); // 손에 든 카드(cardsRef)가 속한 씬 — 씬을 막 바꾼 틈에는 sceneIdRef 와 다르다
-  cardsSceneRef.current = cardsSceneId;
   const edgesRef = useRef(edges);
   edgesRef.current = edges;
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
-  const groupFramesRef = useRef<
-    Array<{ id: string; frame: { x: number; y: number; w: number; h: number } }>
-  >([]);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const selectedGroupIdsRef = useRef(selectedGroupIds);
@@ -1112,6 +1142,7 @@ export function SceneBoard({
     setGroups,
     clearSelection: () => setSelected(new Set()),
     onChange,
+    frozenRef: switchingRef,
   });
   // ── C3: 텍스트·comfy 파라미터 입력은 키 입력마다 persist 하면 대형 씬 localStorage 직렬화가 잦아 버벅인다.
   //  화면(setCards)·cardsRef 는 즉시 갱신(생성이 최신값을 읽음), 저장(persist)만 디바운스. 밀린 저장은
@@ -1131,10 +1162,10 @@ export function SceneBoard({
       pendingPersistRef.current = undefined;
     }
     pendingSinceRef.current = undefined;
-    // 씬을 막 바꾼 틈(동기화 effect 는 돌았고 새 카드는 아직 안 그려졌다)에는 확정할 것이 없다 — 손에 든 카드는 **떠난 씬**의 것이라,
+    // 씬을 바꾸는 틈(새 씬은 왔고 그 카드는 아직 안 그려졌다 — 위 switchingRef)에는 확정할 것이 없다 — 손에 든 카드는 **떠난 씬**의 것이라,
     //  여기서 저장하면 방금 연 씬이 앞 씬의 카드로 덮인다(2026-10-10 실측: 씬 탭을 25ms 안에 연달아 누르면 9/9, 새로 고침 뒤에도 남음).
     //  떠난 씬의 밀린 편집은 전환 직전의 flushPending 이 이미 확정했다.
-    if (cardsSceneRef.current !== sceneIdRef.current) return;
+    if (switchingRef.current) return;
     // 층에만 있던 전체 끌기의 이동량을 좌표에 넣는다 — 안 넣으면 끄는 중 씬을 바꿀 때 그 이동이 저장에서 빠진다(걸음마다 좌표를
     //  바꾸는 평소 길은 여기서 저장됐다).
     layerMoveRef.current?.settle();
@@ -1562,7 +1593,7 @@ export function SceneBoard({
   const lastEmitRef = useRef<string>("");
   useEffect(() => {
     const ids = [...selected];
-    let payload: { cardId: string; refs: SceneRef[] } | null = null;
+    let payload: { sceneId: string; cardId: string; refs: SceneRef[] } | null = null;
     if (ids.length === 1) {
       const c = cards.find((cc) => cc.id === ids[0]);
       if (c && c.kind === "generation") {
@@ -1577,10 +1608,11 @@ export function SceneBoard({
           setCards(nextCards);
           persist(nextCards, edgesRef.current);
         }
-        payload = { cardId: c.id, refs: normRefs };
+        payload = { sceneId: cardsSceneId, cardId: c.id, refs: normRefs };
       }
     }
-    const sig = payload ? payload.cardId + "|" + sceneRefFingerprint(payload.refs) : "";
+    // 지문에 씬도 넣는다 — 두 씬에 같은 id 의 카드가 있으면(가져온 씬) 씬만 바뀐 것도 다시 알려야 한다
+    const sig = payload ? payload.sceneId + "|" + payload.cardId + "|" + sceneRefFingerprint(payload.refs) : "";
     if (sig === lastEmitRef.current) return;
     lastEmitRef.current = sig;
     onBindingRef.current?.(payload);
@@ -1859,6 +1891,7 @@ export function SceneBoard({
 
   // 노드 복사, 캡처 붙여넣기, 에셋/파일 드롭은 전용 훅이 브라우저 이벤트와 업로드 수명주기를 맡는다.
   const { copySelectedNodes, onDragOver, onDrop } = useSceneClipboardDrop({
+    frozenRef: switchingRef,
     sceneIdRef,
     cardsRef,
     edgesRef,
@@ -1970,7 +2003,17 @@ export function SceneBoard({
   };
 
   // 전역 mousemove/mouseup/blur 생명주기와 프레임당 이동 합치기는 전용 훅이 담당한다.
-  const { begin: beginDrag, abort: abortDrag } = useSceneDragSession();
+  // settleDrag — 보드 위의 새 누름은 남아 있는 끌기를 **먼저** 끝낸다. 새 조작이 시작 좌표·표시를 읽고 만들기 전에(그 뒤 새 조작은 평소대로
+  //  시작한다. 다시 잡아 끄는 것은 이어진다). 남은 끌기 = mouseup 을 놓친 것, 또는 다른 단추로 하던 것(가운데로 판을 밀다 왼쪽으로 카드를
+  //  잡음 — 세션은 보드에 하나라 어차피 beginDrag 가 끝낸다).
+  //  안 하면 그 끝은 beginDrag 에서야 나서 ① 앞 끌기의 밀린 걸음이 새 끌기가 읽은 시작 좌표 **뒤에** 반영된다 — 같이 고른 카드나 같은
+  //  카드를 다시 잡으면 앞 끌기의 이동이 통째로 사라졌고(2026-10-11 격리 실측 5/5), 판을 밀다 카드를 잡으면 밀린 화면 이동이 카드 이동량에
+  //  섞인다 ② 앞 끌기의 취소 뒤처리가 방금 켠 새 표시(임시 연결선·순서 선·panning)를 지운다(Codex 통합 검토 — 카드·그룹·크기·판·
+  //  마퀴·연결선·순서·가위 9곳이 같은 순서다).
+  //  새 조작을 시작하지 않는 누름(끄는 중의 오른쪽 단추)에도 끝난다 — 전에도 그 단추를 떼는 순간 끝났다(mouseup 은 단추를 가리지 않는다).
+  //  알고 두는 것: 보드가 포인터를 쥔 뒤(4px 넘게 끈 뒤)에 놓친 끌기라면 새 누름은 카드가 아니라 보드로 온다(포인터 캡처) — 그 누름은
+  //  범위 선택이 된다(실측 15/15). 마우스가 한 번이라도 움직이면 규칙 21 이 먼저 끝내므로 손으로는 닿기 어렵다.
+  const { begin: beginDrag, abort: abortDrag, settle: settleDrag } = useSceneDragSession();
   // 씬을 바꾸면 옛 씬의 카드·그룹·좌표에 묶인 창·조작 상태를 비운다(2026-09-29, Codex 전수 표). 안 그러면 안 보이는 결과
   //  팝업이 단축키를 막고(Esc 전까지 Ctrl+A 가 안 먹음), 노드 선택기가 새 씬에 떠서 옛 좌표에 카드를 만든다. 진행 중 끌기는
   //  마지막 움직임을 반영하지 않고 버리고(abort — blur 취소처럼 반영하면 옛 끌기를 새 씬에 한 번 더 쓴다), 끌기가 붙인 보드
@@ -2880,6 +2923,7 @@ export function SceneBoard({
     }
     if (!changed) return groupsRef.current;
     const pruned = next.filter((g) => g.cardIds.length > 0); // 비게 된 그룹 정리
+    groupsRef.current = pruned; // ref 도 바로 — 남은 끌기를 끝낸 그 누름의 새 조작이 다음 렌더 전에 읽는다(lib/useSceneGroupMove 의 같은 주석)
     setGroups(pruned);
     return pruned;
   };
@@ -2953,8 +2997,9 @@ export function SceneBoard({
         setCardRefs,
         flushPending,
         applyAssetRelink,
-        zoomFit: frameView,
-        zoomStep: stepZoom,
+        // 툴바의 화면 조작도 씬을 바꾸는 틈에는 받지 않는다 — 떠난 씬의 카드로 잰 화면이 새 씬에 남는다
+        zoomFit: () => { if (!switchingRef.current) frameView(); },
+        zoomStep: (dir) => { if (!switchingRef.current) stepZoom(dir); },
         closeVariants: () => setCardMenu(null),
       };
     return () => {
@@ -3075,6 +3120,7 @@ export function SceneBoard({
   };
 
   useSceneKeyboardShortcuts({
+    isFrozen: () => switchingRef.current, // 씬을 바꾸는 틈 — 아직 보이는 것은 떠난 씬의 카드다(위 switchingRef)
     isTextEditing: () => !!editTextIdRef.current,
     isPopupOpen: () => !!cardMenuRef.current,
     isPickerOpen: () => !!nodePickerRef.current,
@@ -3144,6 +3190,7 @@ export function SceneBoard({
   // capture 단계라 카드의 stopPropagation 과 무관하게 항상 먼저 잡는다. 캔버스 내부 입력요소(태그 편집
   // 등)를 클릭한 경우는 제외(그건 그 입력창을 쓰려는 것).
   const onBoardMouseDownCapture = (e: React.MouseEvent) => {
+    settleDrag(); // 남은 앞 끌기를 먼저 끝낸다 — 아래의 누름 처리들이 시작 좌표를 읽기 전에
     // 손을 뗀 것을 놓친 전체 끌기가 남아 있으면 그 이동량을 좌표에 먼저 넣는다 — 새로 누른 카드·그룹이 시작 좌표를 읽기 전에
     //  (안 넣으면 새 끌기가 옛 좌표에서 출발해 앞의 이동이 사라진다 — Codex 코드 리뷰).
     layerMoveRef.current?.settle();
@@ -3231,6 +3278,15 @@ export function SceneBoard({
     if (!moveLayerScreenOk(shownZoomPct(canvasRef.current) ?? getSceneZoomPct(), getDevicePixelRatio())) return;
     setMoveDraw({ at: origins, inner: new Map(cardsRef.current.filter((card) => origins[card.id]).map((card) => [card.id, card] as const)) });
   };
+  // 지금의 그룹 틀 — 새 조작(카드 끌기의 재배정 기준·자동 그룹의 크기 조절)이 **누르는 순간**에 부른다. 렌더가 계산한 틀(groupViews)은
+  //  남은 끌기를 끝낸 바로 그 누름(settleDrag)에서는 한 박자 낡다 — 방금 확정된 카드·그룹은 ref 에만 있고 아직 안 그려졌다.
+  //  이탈 미리보기(ejectedIds)는 넣지 않는다: 앞 끌기와 함께 끝났고, 그 초기화도 아직 안 그려졌다.
+  const currentGroupFrames = () =>
+    deriveGroupViews(
+      groupsRef.current,
+      new Map(cardsRef.current.map((card) => [card.id, card] as const)),
+      (card) => ({ w: widthOf(card), h: heightOf(card) }),
+    ).map(({ g, frame }) => ({ id: g.id, frame }));
   const beginCardMove = useSceneCardMove({
     canvasRef,
     layerMoveRef,
@@ -3241,7 +3297,7 @@ export function SceneBoard({
     groupsRef,
     selectedRef,
     selectedGroupIdsRef,
-    groupFramesRef,
+    groupFrames: currentGroupFrames,
     zoomRef,
     scrollRef,
     setCards,
@@ -3324,9 +3380,12 @@ export function SceneBoard({
   //  '생성 결과' 창이 떠 있는 동안은 끈다 — 창의 격자(라이브러리 부품)가 같은 바깥 끌기를 받는다. 둘 다 켜 두면 상단바
   //  여백에서 끈 한 번에 창의 선택과 뒤 캔버스의 선택이 같이 시작된다(Codex 코드 리뷰 10-07).
   useOutsideDragSelect(".scene-board", (e) => {
+    // 씬을 바꾸는 틈에는 시작하지 않는다 — 그때의 보드는 inert 라 보드 위를 눌러도 '보드 밖 누름'으로 여기에 온다(떠난 씬의 카드를 고르게 된다)
+    if (switchingRef.current) return;
     // 글자 선택·네이티브 드래그 방지(생성 탭·에셋과 같다). 안 막으면 씬 탭 줄에서 끌기 시작할 때 탭 이름이 글자로 선택되고, 그 뒤의
     //  카드 끌기를 브라우저가 '선택한 글자 끌기'로 가로채 mousemove·mouseup 이 끊긴다(2026-10-10 실측: 이후 카드 끌기·범위 선택이 전부 멈춤).
     e.preventDefault();
+    settleDrag(); // 보드 밖의 누름은 보드의 잡는 단계를 지나지 않는다 — 남은 앞 끌기를 여기서 먼저 끝낸다
     // preventDefault 는 초점 이동도 막는다 — 입력칸(프롬프트·텍스트 카드)에 초점을 둔 채 보드 밖에서 끌어 카드를 고르면 Delete·c 가
     //  카드가 아니라 그 입력칸에 들어갔다(Codex 코드 리뷰). 보드 안을 누를 때와 같게: 입력칸을 내려놓고 보드에 초점.
     const typing = document.activeElement as HTMLElement | null;
@@ -3638,7 +3697,6 @@ export function SceneBoard({
       ),
     [groups, cards, ejectedIds, heightTick],
   );
-  groupFramesRef.current = groupViews.map(({ g, frame }) => ({ id: g.id, frame }));
   const collapsedBarById = useMemo(
     () => new Map(groupViews.filter((v) => v.g.collapsed).map((v) => [v.g.id, v.bar] as const)),
     [groupViews],
@@ -3878,6 +3936,10 @@ export function SceneBoard({
       className={"scene-board" + (cutHeld ? " cutting" : "") + (tempWire ? " wiring" : "")}
       ref={scrollRef}
       tabIndex={-1}
+      // 씬을 바꾸는 틈(switchingRef)에는 보드를 누를 수 없다 — 아직 보이는 것은 떠난 씬의 카드다. 틈에 시작한 끌기·크기 조절이 틈이 끝난
+      //  뒤에 놓이면 옛 시작값이 새 씬의 카드·그룹에 섞이고, Comfy 실행 단추는 옛 카드로 실행을 건다(Codex 코드 리뷰 — React 18
+      //  타입에 inert 가 없어 spread 로 넘긴다). 키는 아래 useSceneKeyboardShortcuts 의 isFrozen 이 막는다.
+      {...(cardsSceneId !== scene.id ? { inert: "" } : {})}
       onMouseDownCapture={onBoardMouseDownCapture}
       onMouseDown={onMouseDown}
       onMouseMove={(e) => {
@@ -4060,8 +4122,12 @@ export function SceneBoard({
                   onMouseDown={(e) => {
                     e.stopPropagation();
                     e.preventDefault();
+                    // 자동 그룹이면 현재 프레임을 초기 rect 로 고정. 네모·틀은 ref 에서 읽는다 — 이 누름이 방금 끝낸 앞 끌기의 마지막 값(다음 렌더 전).
+                    //  렌더가 잡은 g.rect·frame 을 쓰면 옛 틀이 수동 네모로 저장된다(Codex 코드 리뷰). 그룹이 그사이 사라졌으면(앞 끌기의
+                    //  확정이 마지막 멤버를 빼 그룹을 지웠다) 시작하지 않고 고르지도 않는다 — 없는 그룹이 선택에 남지 않게.
+                    const rect0 = groupsRef.current.find((x) => x.id === g.id)?.rect ?? currentGroupFrames().find((x) => x.id === g.id)?.frame;
+                    if (!rect0) return;
                     activateGroupControl(g.id);
-                    const rect0 = g.rect ?? frame; // 자동 그룹이면 현재 프레임을 초기 rect 로 고정
                     const sx = e.clientX;
                     const sy = e.clientY;
                     let last = rect0; // 최종 rect — up 에서 명시적으로 persist(groupsRef 최신성 레이스 방지)
@@ -4094,6 +4160,7 @@ export function SceneBoard({
                           return { ...x, cardIds: x.cardIds.filter((id) => !contained.has(id)) };
                         })
                         .filter((x) => x.id === g.id || x.cardIds.length > 0); // 비게 된 다른 그룹만 정리
+                      groupsRef.current = ng; // ref 도 바로(위 reassignGroups 와 같은 까닭)
                       setGroups(ng);
                       persist(cardsRef.current, edgesRef.current, ng);
                     };

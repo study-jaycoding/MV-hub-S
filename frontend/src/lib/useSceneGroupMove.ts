@@ -166,7 +166,12 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
             return rect ? { ...item, rect } : item;
           })
         : latest.groupsRef.current;
-      if (originalRects.size) latest.setGroups(nextGroups);
+      if (originalRects.size) {
+        // ref 도 바로 맞춘다(카드의 cardsRef 와 같다) — 남은 끌기를 새 누름이 끝낼 때(SceneBoard settleDrag) 같은 누름의 새 조작이
+        //  다음 렌더 전에 이 네모를 읽는다. 안 맞추면 새 끌기가 한 걸음 전의 네모에서 출발해 카드와 어긋난 채 저장된다(Codex 코드 리뷰).
+        latest.groupsRef.current = nextGroups;
+        latest.setGroups(nextGroups);
+      }
       const nextCards = latest.reconcileGenerationRefs(
         latest.cardsRef.current,
         latest.edgesRef.current,

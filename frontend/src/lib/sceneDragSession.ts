@@ -14,6 +14,9 @@ export interface SceneDragSession<Event> {
     up: SceneDragListener<Event>,
     onCancel?: () => void,
   ) => void;
+  /** 남아 있는 끌기(mouseup 을 놓친 것)를 지금 끝낸다 — 밀린 걸음을 반영하고 취소의 길로(blur 와 같다). 없으면 아무 일도 없다.
+   *  begin 도 같은 일을 하지만 그때는 새 조작이 시작 좌표를 이미 읽은 뒤다 — 새 누름의 첫머리에서 먼저 부른다(SceneBoard). */
+  settle: () => void;
   dispose: () => void;
 }
 
@@ -95,6 +98,7 @@ export function createSceneDragSession<Event>(
 
   return {
     begin,
+    settle: () => cancelActive?.(),
     // 언마운트는 화면 상태를 다시 쓰지 않도록 pending 이동과 onCancel을 실행하지 않고 정리만 한다.
     dispose: () => cleanupActive?.(),
   };

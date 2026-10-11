@@ -233,7 +233,12 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     };
   }, [recoverConflicts]);
   // 씬 생성 카드 1개 선택 시 그 카드(id+레퍼런스)를 하단 프롬프트에 바인딩. SceneBoard 가 통지.
-  const [sceneBinding, setSceneBinding] = useState<{ cardId: string; refs: SceneRef[] } | null>(null);
+  //  묶임은 **그 카드의 씬**과 함께 든다(sceneId) — 활성 씬과 다르면 없는 것으로 본다(아래 sceneBinding). 씬을 바꾼 직후(보드가 선택
+  //  해제를 그리기 전)의 도크는 '새 씬 + 떠난 씬의 카드 id' 로 묶여 있었다: 두 씬에 같은 id 의 카드가 있으면(가져온 씬은 카드 id 를
+  //  보존한다) 그 틈의 프롬프트 입력·생성이 새 씬의 카드로 갔다(2026-10-11 Codex 코드 리뷰). 씬을 바꿀 때 값을 비우지는 않는다 —
+  //  곧바로 돌아오면(X → Y → X) 보드의 선택은 그대로인데 묶임만 사라진다(보드는 같은 카드를 다시 알리지 않는다).
+  const [boundCard, setSceneBinding] = useState<{ sceneId: string; cardId: string; refs: SceneRef[] } | null>(null);
+  const sceneBinding = boundCard && boundCard.sceneId === activeSceneId ? boundCard : null;
   // 씬 캔버스에서 선택된 결과 카드들 → 프롬프트 위 선택바. 삭제는 명령형 핸들로.
   const [sceneSelGens, setSceneSelGens] = useState<Generation[]>([]);
   const sceneActionRef = useRef<{

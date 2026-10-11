@@ -113,6 +113,37 @@ describe("createSceneDragSession", () => {
     expect(order).toEqual(["first-move:pending", "first-cancel", "second-up"]);
   });
 
+  it("settle 은 남은 끌기를 blur 처럼 끝낸다 — 밀린 걸음을 반영하고 취소 콜백. 그 뒤의 begin 은 앞 끌기를 다시 건드리지 않는다", () => {
+    const h = harness();
+    const order: string[] = [];
+    h.session.begin(
+      (event) => order.push(`first-move:${event.id}`),
+      () => order.push("first-up"),
+      () => order.push("first-cancel"),
+    );
+    h.emit("mousemove", { id: "pending" });
+
+    h.session.settle(); // 새 누름의 첫머리 — 새 조작이 시작 좌표를 읽기 전
+    expect(order).toEqual(["first-move:pending", "first-cancel"]);
+    expect(h.listenerCount()).toBe(0);
+    expect(h.frameCount()).toBe(0);
+
+    order.push("read-start"); // 새 조작이 시작 좌표를 읽는다
+    h.session.begin(() => order.push("second-move"), () => order.push("second-up"));
+    h.emit("mouseup");
+    expect(order).toEqual(["first-move:pending", "first-cancel", "read-start", "second-up"]);
+  });
+
+  it("settle 은 남은 끌기가 없으면 아무 일도 하지 않는다 — 정상으로 끝난 뒤·시작 전", () => {
+    const h = harness();
+    const order: string[] = [];
+    h.session.settle();
+    h.session.begin(() => order.push("move"), () => order.push("up"), () => order.push("cancel"));
+    h.emit("mouseup");
+    h.session.settle();
+    expect(order).toEqual(["up"]);
+  });
+
   it("dispose는 이동·취소 콜백 없이 예약 프레임과 리스너만 제거한다", () => {
     const h = harness();
     const order: string[] = [];

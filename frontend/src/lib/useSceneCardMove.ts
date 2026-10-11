@@ -97,7 +97,9 @@ interface UseSceneCardMoveOptions {
   groupsRef: MutableRefObject<SceneGroup[]>;
   selectedRef: MutableRefObject<Set<string>>;
   selectedGroupIdsRef: MutableRefObject<Set<string>>;
-  groupFramesRef: MutableRefObject<GroupFrame[]>;
+  /** **지금**의 그룹 틀(카드·그룹 ref 에서 계산) — 렌더가 잡아 둔 값이 아니다. 남은 끌기를 끝낸 바로 그 누름(SceneBoard settleDrag)에서는
+   *  방금 확정된 카드·그룹이 아직 안 그려져, 렌더의 틀로 재배정하면 옮겨 간 그룹의 옛 자리에 놓은 카드가 그 그룹에 들어간다(Codex 코드 리뷰). */
+  groupFrames: () => GroupFrame[];
   zoomRef: MutableRefObject<number>;
   /** 화면 좌표 → 캔버스 좌표(지금의 팬·줌으로). 끈 거리는 캔버스 좌표로 잰다. */
   toCanvas: (clientX: number, clientY: number) => { x: number; y: number };
@@ -281,7 +283,7 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
       },
     };
 
-    const startFrames = current.groupFramesRef.current.map((item) => ({
+    const startFrames = current.groupFrames().map((item) => ({
       id: item.id,
       frame: { ...item.frame },
     }));

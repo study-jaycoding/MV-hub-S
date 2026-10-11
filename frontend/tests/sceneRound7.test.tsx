@@ -118,7 +118,7 @@ it("창 없이 '결과 창 열림' 상태만 남은 경우에는 Ctrl+C 가 막�
   const { useSceneKeyboardShortcuts } = await import("../src/lib/useSceneKeyboardShortcuts");
   type Actions = Parameters<typeof useSceneKeyboardShortcuts>[0];
   const onCopy = vi.fn();
-  const actions = new Proxy({ isTextEditing: () => false, isPopupOpen: () => true, isPickerOpen: () => false, selectionCount: () => 2, onCopy },
+  const actions = new Proxy({ isFrozen: () => false, isTextEditing: () => false, isPopupOpen: () => true, isPickerOpen: () => false, selectionCount: () => 2, onCopy },
     { get: (target, name) => (name in target ? target[name as keyof typeof target] : () => { throw new Error(`unexpected action: ${String(name)}`); }) }) as unknown as Actions;
   function Harness() { useSceneKeyboardShortcuts(actions); return null; }
   act(() => view.root.render(<Harness />));
@@ -228,7 +228,7 @@ it("연결 키를 다른 키로 바꾸면 글자 c 는 더는 자동 연결이 �
   let autoConnects = true; // 자동 연결 규칙에 걸리는 쌍이 있나
   // 이 시험이 보는 액션만 둔다 — 나머지는 불리면 실패한다
   const actions = new Proxy({
-    isTextEditing: () => false, isPopupOpen: () => false, isPickerOpen: () => false, selectionCount: () => 2,
+    isFrozen: () => false, isTextEditing: () => false, isPopupOpen: () => false, isPickerOpen: () => false, selectionCount: () => 2,
     onAutoConnect: () => { calls.push("auto"); return autoConnects; },
     onConnect: () => { calls.push("connect"); },
     onDisable: () => { calls.push("disable"); return true; },
