@@ -212,6 +212,9 @@ export const EditTimeline = memo(function EditTimeline({
         onPointerMove={clipMove}
         onPointerUp={(event) => clipUp(event)}
         onPointerCancel={(event) => clipUp(event, true)}
+        // 놓는 이벤트를 놓쳤다(창 밖에서 뗌 등) — 브라우저가 쥐기를 거두며 이것만 보낸다. 안 들으면 클립이 끌던 만큼 어긋난 채 남았다
+        //  (2026-10-12 격리 실측 3/3 — 그 클립을 다시 눌러야 풀렸다). 끝점이 없으니 옮기지 않는다. 보통의 놓기 뒤에도 오지만 그때는 할 일이 없다.
+        onLostPointerCapture={(event) => clipUp(event, true)}
         onContextMenu={(event) => {
           event.preventDefault();
           onClipMenu(key, event.clientX, event.clientY);

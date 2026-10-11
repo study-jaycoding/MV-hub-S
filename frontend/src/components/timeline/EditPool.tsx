@@ -128,6 +128,9 @@ export function EditPool({
   }, [drag]);
   const startDrag = (event: ReactMouseEvent) => {
     if (event.button !== 0 || dragRef.current) return;
+    // 새 누름이다 — 앞 끌기에 딸린 click 은 이미 지나갔다. 안 풀면 끌어서 고른 바로 뒤(타이머가 돌기 전)에 누른 카드가 전부 안 골라진다
+    //  (입력은 타이머보다 먼저 처리된다 — 캔버스의 swallowDropClick 과 같은 약속. Codex 코드 리뷰)
+    draggedRef.current = false;
     dragRef.current = {
       x: event.clientX, y: event.clientY, moved: false,
       base: event.ctrlKey || event.metaKey || event.shiftKey ? picked : [],
@@ -147,7 +150,11 @@ export function EditPool({
     "data-id": item.gen.id, // 끌어서 고르기가 이 값으로 카드를 찾는다
     title: t("더블클릭 = 크게 보기 · 우클릭 = 넣을 트랙 고르기 · Ctrl+클릭 = 여러 장 고르기"),
     onClick: (event) => {
-      if (!draggedRef.current) onPick(item.gen, event.ctrlKey || event.metaKey || event.shiftKey);
+      if (draggedRef.current) {
+        draggedRef.current = false; // 건너뛰는 것은 그 끌기에 딸린 한 번뿐이다
+        return;
+      }
+      onPick(item.gen, event.ctrlKey || event.metaKey || event.shiftKey);
     },
     onDoubleClick: () => onOpen(item.gen, shown.map((entry) => entry.gen)),
     onContextMenu: (event) => {

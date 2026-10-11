@@ -153,3 +153,47 @@ it("편집 키 — 위에 Esc 로 닫히는 창·메뉴가 떠 있으면 쉰다(
     window.removeEventListener("keydown", guard, true);
   }
 });
+
+// 2026-10-12 격리 실측(두 빌드 3/3): 클립을 끌다 놓는 이벤트를 놓치면 클립이 translateY 를 단 채 남았다 — 그 클립을 다시 눌러야 풀렸다.
+it("클립을 끌다 놓는 이벤트를 놓치면(포인터 쥐기를 잃음) 끌던 만큼 어긋난 채 남지 않는다 — 옮기지도 않는다", () => {
+  const docKey = "ch.editTimeline:local:p1:e070";
+  localStorage.setItem(docKey, JSON.stringify({ v: 1, tracksOff: [], tracksLocked: [], clips: [
+    { cut: "e070/c1", gen: "g1", track: 1, kind: "video", dur: 5 }, { cut: "e070/c2", gen: "g2", track: 1, kind: "video", dur: 5 },
+  ] }));
+  // jsdom 에는 포인터 쥐기가 없다 — 쥔 요소를 기억하는 흉내
+  let held: Element | null = null;
+  const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
+  const saved = { set: proto.setPointerCapture, has: proto.hasPointerCapture };
+  proto.setPointerCapture = function (this: Element) { held = this; };
+  proto.hasPointerCapture = function (this: Element) { return held === this; };
+  const pointDoc = document as unknown as { elementsFromPoint?: unknown };
+  const savedPoint = pointDoc.elementsFromPoint;
+  try {
+    mount();
+    const clip = document.querySelector<HTMLElement>(".ed-clip")!;
+    const laneOf = () => document.querySelector<HTMLElement>(".ed-clip")!.closest<HTMLElement>("[data-track]")!.dataset.track;
+    // 마우스 밑은 다른 트랙이다 — 놓친 끌기를 '놓은 것'으로 확정하면 클립이 그 트랙으로 간다
+    const other = [...document.querySelectorAll<HTMLElement>("[data-track]")].find((lane) => lane.dataset.track !== laneOf())!;
+    expect(other).toBeTruthy();
+    pointDoc.elementsFromPoint = () => [other];
+    const home = laneOf();
+    const pointer = (type: string, clientY: number, buttons: number) => act(() => {
+      clip.dispatchEvent(Object.assign(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons, clientX: 10, clientY }), { pointerId: 1 }));
+    });
+    pointer("pointerdown", 100, 1);
+    pointer("pointermove", 42, 1); // 58px 위로 — 끌기가 시작됐다
+    expect(clip.style.transform).toBe("translateY(-58px)");
+    const before = localStorage.getItem(docKey);
+    held = null; // 놓는 이벤트 없이 쥐기를 잃었다(창 밖에서 뗌) — 브라우저는 lostpointercapture 만 보낸다
+    pointer("lostpointercapture", 42, 0);
+    expect([clip.style.transform, clip.style.zIndex]).toEqual(["", ""]);
+    pointer("pointermove", 10, 0); // 뗀 마우스를 따라오지 않는다
+    pointer("pointerup", 10, 0); // 뒤늦게 온 놓기도 옮기지 않는다
+    expect(clip.style.transform).toBe("");
+    expect([laneOf(), localStorage.getItem(docKey)]).toEqual([home, before]);
+  } finally {
+    proto.setPointerCapture = saved.set;
+    proto.hasPointerCapture = saved.has;
+    pointDoc.elementsFromPoint = savedPoint;
+  }
+});

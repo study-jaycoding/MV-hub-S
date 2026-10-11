@@ -292,6 +292,35 @@ it("미디어 풀: 끌어서 상자로 여러 장을 고른다 — Ctrl 을 누�
   expect(localStorage.getItem(DOC_KEY)).toBeNull();
 });
 
+// 9회차: '끌기 끝의 click 은 누르기가 아니다'가 타이머에만 기대, 타이머가 돌기 전에 누른 카드가 전부 안 골라졌다(입력은 타이머보다 먼저
+//  처리된다 — 캔버스에서 같은 결함을 쟀다: 놓자마자 누른 씬 탭 세 번이 전부 안 먹음. Codex 코드 리뷰).
+it("미디어 풀: 끌어서 고른 바로 뒤(타이머가 돌기 전)에 누른 카드는 고르기다 — 건너뛰는 것은 그 끌기에 딸린 click 한 번이고, 새 누름이 오면 끝난다", () => {
+  mount();
+  act(() => cutCell("c1").click());
+  const body = () => document.querySelector<HTMLElement>(".ed-pbody")!;
+  const move = (type: string, x: number, y: number) =>
+    act(() => { window.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: x, clientY: y, buttons: type === "mousemove" ? 1 : 0 })); });
+  const pickedCount = () => document.querySelectorAll(".ed-pool .ed-picked").length;
+  const boxPick = () => {
+    mouse(body(), "mousedown", { clientX: 0, clientY: 0 });
+    move("mousemove", 30, 30);
+    move("mouseup", 30, 30);
+    expect(pickedCount()).toBe(2);
+  };
+
+  boxPick();
+  act(() => poolCards()[0].click()); // 딸린 click — 건너뛴다
+  expect(pickedCount()).toBe(2);
+  act(() => poolCards()[0].click()); // 곧바로 한 번 더(키보드로 누른 카드 — 누름 없이 click 만). 타이머는 돌지 않았다
+  expect(pickedCount()).toBe(1);
+
+  boxPick(); // 이번에는 click 이 딸려 오지 않았다(빈 곳에서 놓음)
+  mouse(poolCards()[0], "mousedown", { clientX: 1, clientY: 1 }); // 곧바로 카드를 누른다
+  move("mouseup", 1, 1);
+  act(() => poolCards()[0].click());
+  expect(pickedCount()).toBe(1);
+});
+
 it("미디어 풀: 보기 방식(썸네일·메타데이터·목록)과 크기·정렬·검색을 바꾼다 — 보기 설정은 이 브라우저에 남는다", () => {
   seed([{ cut: "c1", gen: "b", track: 1 }]);
   mount();
