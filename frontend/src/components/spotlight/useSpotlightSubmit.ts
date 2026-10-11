@@ -255,8 +255,13 @@ export function useSpotlightSubmit({
         updatePlaceholder();
         notifyPromptChanged();
         clearMention();
+        // 다음 입력을 바로 칠 수 있게 프롬프트에 초점을 — 단 응답을 기다리는 사이 **다른 곳으로 옮긴 초점은 빼앗지 않는다**(검색칸에 치던
+        //  글자가 프롬프트로 들어갔다 — Codex 검토). 줄 때: 갈 곳을 잃었거나(BODY) · 아직 프롬프트 입력칸이거나 · 마우스로 누른 생성 단추에
+        //  남아 있을 때뿐. 패널 안이라도 옵션의 입력칸(길이·시드 등)으로 옮긴 초점은 두어야 한다.
         if (!inCompose) requestAnimationFrame(() => {
-          if (editorRef.current === editor && promptContextRef.current === submittedContext &&
+          const active = document.activeElement;
+          const free = !active || active === document.body || editor.contains(active) || active.matches("button.sl-gen");
+          if (free && editorRef.current === editor && promptContextRef.current === submittedContext &&
               serializeParts(editor).length === 0) editor.focus();
         });
       }

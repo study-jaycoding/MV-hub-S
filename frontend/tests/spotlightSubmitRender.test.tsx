@@ -285,6 +285,47 @@ describe("실제 프롬프트 제출: 캔버스 연속 생성과 응답 후 편�
     expect(notifyPromptChanged).not.toHaveBeenCalled();
   });
 
+  // 2026-10-12(조작 점검 10회차, Codex 검토): 응답을 기다리는 사이 검색칸으로 옮긴 초점을 성공 처리가 프롬프트로 가져가, 치던 글자가 프롬프트에 들어갔다.
+  it("응답을 기다리며 다른 입력칸으로 옮긴 초점은 가져오지 않는다 — 갈 곳을 잃었을 때만 프롬프트로 돌려준다", async () => {
+    const response = deferred<Generation>();
+    prepareCreate.mockImplementation(() => () => response.promise);
+    await mount({ inCompose: false, canvasTarget: null, preservePromptAfterSubmit: false, promptContextKey: null });
+    const search = document.createElement("input");
+    // 실제 화면처럼: 프롬프트 패널 안에 입력칸·옵션 입력(길이·시드 등)·생성 단추가 같이 있다
+    const panel = document.createElement("div");
+    panel.className = "sl-panel";
+    const option = document.createElement("input");
+    const generate = document.createElement("button");
+    generate.className = "sl-gen";
+    document.body.append(search, panel);
+    panel.append(editor, option, generate);
+    editor.tabIndex = 0; // jsdom 에서도 초점을 받게
+    try {
+      editor.focus();
+      const { pending } = await beginPending();
+      search.focus(); // 응답 전에 검색칸으로 갔다
+      await act(async () => { response.resolve(generation()); await pending; });
+      expect(editor.innerHTML).toBe(""); // 제출한 프롬프트는 비워졌다
+      expect(document.activeElement).toBe(search); // 초점은 그대로
+
+      prepareCreate.mockImplementation(() => async () => generation());
+      const submitWithFocusOn = async (focused: HTMLElement | null) => {
+        restoreParts(editor, [{ t: "text", v: "다음 프롬프트" }]);
+        if (focused) focused.focus();
+        else (document.activeElement as HTMLElement | null)?.blur();
+        await run();
+        return document.activeElement;
+      };
+      expect(await submitWithFocusOn(option)).toBe(option); // 패널 안이라도 옵션 입력으로 옮긴 초점은 둔다
+      expect(await submitWithFocusOn(null)).toBe(editor); // 초점이 갈 곳을 잃었으면(BODY) 전처럼 프롬프트로
+      expect(await submitWithFocusOn(generate)).toBe(editor); // 마우스로 누른 생성 단추에 남은 초점도 프롬프트로
+    } finally {
+      document.body.append(editor); // 뒷정리(afterEach)가 떼는 자리로
+      search.remove();
+      panel.remove();
+    }
+  });
+
   it("응답을 기다리며 다른 카드로 바뀌면 그 카드의 같은 내용도 지우지 않는다", async () => {
     const response = deferred<Generation>();
     prepareCreate.mockImplementation(() => () => response.promise);

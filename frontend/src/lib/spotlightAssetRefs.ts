@@ -51,7 +51,9 @@ export function parseSpotlightAssetItems(raw: string): SpotlightAssetDragItem[] 
 }
 
 // 에셋 드래그 페이로드 — 에셋창이 dragstart 에 localStorage 로 넘긴 '전체 선택'을 우선 읽는다.
-// 없으면 dataTransfer 폴백. 한 건 드래그가 라이브 다중선택 안에 있으면 선택 전체로 복구한다.
+// 없으면 dataTransfer 폴백. **폴백일 때만** 한 건 드래그가 라이브 다중선택 안에 있으면 선택 전체로 복구한다(창 사이 드래그에서
+//  커스텀 배열이 한 건만 넘어오는 브라우저가 있다). localStorage 로 온 것은 dragstart 가 그 순간의 선택으로 만든 완전한 값이다 —
+//  그것을 저장된 선택(0.15초 늦게 적힌다)으로 다시 넓히면, 방금 고르기에서 뺀 파일이 같이 붙는다(Codex 검토).
 export function readSpotlightAssetPayload(dataTransfer: DataTransfer): string {
   let drag = "";
   try {
@@ -59,11 +61,12 @@ export function readSpotlightAssetPayload(dataTransfer: DataTransfer): string {
   } catch {
     /* ignore */
   }
+  const fromStore = !!drag;
   if (!drag) drag = dataTransfer.getData(DRAG_TYPES.asset);
   try {
     const parsed = drag ? JSON.parse(drag) : [];
     const list = Array.isArray(parsed) ? parsed : [parsed];
-    if (list.length <= 1) {
+    if (!fromStore && list.length <= 1) {
       const selection = loadJSON<SpotlightAssetDragItem[]>(STORAGE_KEYS.assetsSelection) || [];
       const dragged = list[0]?.path;
       if (
