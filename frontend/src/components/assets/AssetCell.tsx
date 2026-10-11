@@ -112,16 +112,36 @@ export const AssetCell = memo(function AssetCell({
     ? { width: "100%", height: "100%", objectFit: fit }
     : { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: fit };
 
-  const onEnter = () => {
-    if (videoRef.current) videoRef.current.muted = true; // 영상 호버는 무음(React muted 반영 버그 방어). 오디오는 그대로
-    (videoRef.current || audioRef.current)?.play().catch(() => {});
-  };
-  const onLeave = () => {
+  const stopHoverPlay = () => {
     const m = videoRef.current || audioRef.current;
     if (m) {
       m.pause();
       m.currentTime = 0;
     }
+  };
+  // 마우스를 올린 채 창을 떠나면(Alt+Tab·탭 전환) mouseleave 가 오지 않는다 — 소리가 있는 오디오가 다른 화면에서도 계속 났다.
+  //  올려 둔 동안만 창의 blur·숨김을 듣는다(셀마다 늘 듣지 않는다). 건 것을 그대로 떼려고 함수를 ref 에 둔다.
+  const unhookAway = useRef<(() => void) | null>(null);
+  const hookAway = () => {
+    if (unhookAway.current) return;
+    const onHidden = () => { if (document.hidden) stopHoverPlay(); };
+    window.addEventListener("blur", stopHoverPlay);
+    document.addEventListener("visibilitychange", onHidden);
+    unhookAway.current = () => {
+      window.removeEventListener("blur", stopHoverPlay);
+      document.removeEventListener("visibilitychange", onHidden);
+      unhookAway.current = null;
+    };
+  };
+  useEffect(() => () => unhookAway.current?.(), []); // 올려 둔 채 셀이 사라져도(스크롤) 남기지 않는다
+  const onEnter = () => {
+    if (videoRef.current) videoRef.current.muted = true; // 영상 호버는 무음(React muted 반영 버그 방어). 오디오는 그대로
+    (videoRef.current || audioRef.current)?.play().catch(() => {});
+    hookAway();
+  };
+  const onLeave = () => {
+    unhookAway.current?.();
+    stopHoverPlay();
     // 셀을 벗어나면 드래그용 원본 data:URL 을 해제해 메모리(풀해상도 base64) 반납 → 썸네일로 복귀.
     // (드래그 페이로드는 dragstart 시점에 이미 확정되므로, 드래그 도중 벗어나 복귀돼도 진행 중 드래그엔 영향 없음)
     if (dragReadyUrl) setDragReadyUrl(null);

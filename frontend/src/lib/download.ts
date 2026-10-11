@@ -64,13 +64,27 @@ export async function fetchBlob(
   return null;
 }
 
+// 받는 중인 파일(주소·이름) — 받는 동안 같은 파일을 다시 청하면(단추 연타, 일괄이 도는 중의 단건) 받던 것을 같이 기다린다.
+// 따로 받으면 브라우저가 같은 파일의 사본('이름 (1)')을 하나씩 더 만든다(조작 규칙 39). 다 받은 뒤의 다시 누름은 전처럼 새로 받는다.
+type DownloadResult = { ok: boolean; savedToDir: boolean };
+const inFlight = new Map<string, Promise<DownloadResult>>();
+const fileKey = (url: string, name: string) => JSON.stringify([url, name]);
+function _download(url: string, name: string, genId?: string): Promise<DownloadResult> {
+  const key = fileKey(url, name);
+  const running = inFlight.get(key);
+  if (running) return running;
+  const task = _downloadNow(url, name, genId).finally(() => inFlight.delete(key));
+  inFlight.set(key, task);
+  return task;
+}
+
 // 다운로드 실행 + '지정 다운로드 폴더에 직접 저장했는지'(savedToDir)까지 반환. savedToDir 는
 // Assets 실시간 갱신 판단에 쓴다 — 그 폴더가 Assets 마운트와 같은 로컬 폴더면 새 파일이 곧 뜬다.
-async function _download(
+async function _downloadNow(
   url: string,
   name: string,
   genId?: string,
-): Promise<{ ok: boolean; savedToDir: boolean }> {
+): Promise<DownloadResult> {
   const blob = await fetchBlob(url, name, genId);
   if (blob) {
     // 지정 다운로드 폴더가 있으면 프롬프트 없이 그곳에 직접 저장. 없거나 실패하면 일반 다운로드.
@@ -111,9 +125,10 @@ export async function download(url: string, name: string, genId?: string): Promi
 // genId 를 주면 허브가 파일에 각인해서 내려준다(나중에 캔버스에 끌어다 놓으면 복원). 폴더에서
 // 고른 외부 파일처럼 생성물이 아닌 것은 genId 없이 부르면 된다.
 export async function downloadOne(url: string, name: string, genId?: string): Promise<boolean> {
-  flashMsg("1개 다운로드 시작…");
+  const joined = inFlight.has(fileKey(url, name)); // 받는 중에 다시 누른 것 — 새로 받지 않는다
+  flashMsg(joined ? "이미 받는 중입니다…" : "1개 다운로드 시작…");
   const { ok, savedToDir } = await _download(url, name, genId);
-  if (savedToDir) notifyAssetsMaybeChanged();
+  if (savedToDir && !joined) notifyAssetsMaybeChanged();
   return ok;
 }
 

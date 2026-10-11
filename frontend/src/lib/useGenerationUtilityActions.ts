@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { api } from "../api";
 import type { Generation, History } from "../types";
 import { downloadItemsForGenerations, downloadMany } from "./download";
@@ -13,15 +14,28 @@ export function useGenerationUtilityActions({
   flash,
   openRecipe,
 }: UseGenerationUtilityActionsArgs) {
+  // 처리 중인 일은 다시 받지 않는다(조작 규칙 39) — 일괄 다운로드가 도는 동안 다시 누르면 두 묶음이 번갈아 돌며 같은 파일의 사본을 만들고,
+  //  히스토리 조회가 끝나기 전에 다시 누르면 응답마다 가계 씬 탭이 하나씩 새로 생긴다.
+  const bulkBusyRef = useRef(false);
+  const historyInFlightRef = useRef(new Set<string>());
   const bulkDownload = async (list: Generation[]) => {
     const items = downloadItemsForGenerations(list);
     if (!items.length) {
       flash("다운로드할 미디어가 없습니다(생성중/실패 제외).");
       return;
     }
-    flash(`${items.length}개 다운로드 시작…`);
-    const { ok, failed } = await downloadMany(items);
-    if (failed) flash(`다운로드 완료 ${ok}개 · 직접 저장 실패 ${failed}개(새 탭)`);
+    if (bulkBusyRef.current) {
+      flash("다운로드가 진행 중입니다 — 끝난 뒤에 다시 누르세요.");
+      return;
+    }
+    bulkBusyRef.current = true;
+    try {
+      flash(`${items.length}개 다운로드 시작…`);
+      const { ok, failed } = await downloadMany(items);
+      if (failed) flash(`다운로드 완료 ${ok}개 · 직접 저장 실패 ${failed}개(새 탭)`);
+    } finally {
+      bulkBusyRef.current = false;
+    }
   };
 
   const openAssetsWindow = () => {
@@ -33,6 +47,8 @@ export function useGenerationUtilityActions({
   };
 
   const onShowHistory = async (g: Generation) => {
+    if (historyInFlightRef.current.has(g.id)) return; // 조회 중 — 응답이 온 뒤의 다시 누름은 전처럼 새 탭이다
+    historyInFlightRef.current.add(g.id);
     try {
       const history = await api.history(g.id);
       // ★레시피 옵션은 **히스토리 응답의 온전한 params** 로 만든다(2026-09-12, C-1).
@@ -43,6 +59,8 @@ export function useGenerationUtilityActions({
       openRecipe({ ...g, params: history.target.params }, history);
     } catch (e) {
       flash("히스토리 조회 실패: " + String(e));
+    } finally {
+      historyInFlightRef.current.delete(g.id);
     }
   };
 
