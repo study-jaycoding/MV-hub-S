@@ -12,15 +12,17 @@ import type { WorkspaceContext } from "../src/types";
 const scene = (id: string): Scene => ({ id, name: id, cards: [], edges: [], created_at: 0 });
 const personal: WorkspaceContext = { scope: "personal", id: null, name: null };
 const onReorder = vi.fn();
+const onSelect = vi.fn();
 let host: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   onReorder.mockClear();
+  onSelect.mockClear();
   host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host);
   act(() => root.render(
-    <SceneBar scenes={[scene("s1"), scene("s2"), scene("s3")]} activeId="s1" workspaceContext={personal} onSelect={vi.fn()} onAdd={vi.fn()}
+    <SceneBar scenes={[scene("s1"), scene("s2"), scene("s3")]} activeId="s1" workspaceContext={personal} onSelect={onSelect} onAdd={vi.fn()}
       onRename={vi.fn()} onDelete={vi.fn()} onReorder={onReorder} onAssignWorkspace={vi.fn()} />,
   ));
   // jsdom 은 자리를 재 주지 않는다 — 탭 셋을 가로 한 줄(폭 100)로 둔다
@@ -75,4 +77,40 @@ it("끝난 끌기는 다시 그리기 전에 온 움직임에도 다시 켜지�
   expect(line()).toBeNull();
   pointer("pointerup", tab(2), { clientX: 20, clientY: 15 });
   expect(onReorder).not.toHaveBeenCalled();
+});
+
+// 9회차: 끈 뒤의 click 삼키기가 타이머에만 기대면, click 이 오지 않은 끌기 바로 뒤의 누름이 타이머가 돌기 전이라 삼켜진다(입력은 타이머보다 먼저 처리된다).
+it("끈 뒤에 삼키는 click 은 그 끌기에 딸린 한 번이다 — 딸린 click 은 씬을 열지 않고, 새로 누른 탭은 타이머가 돌기 전이어도 열린다", () => {
+  pointer("pointerdown", tab(2), { clientX: 250, clientY: 15 });
+  pointer("pointermove", tab(2), { clientX: 20, clientY: 15, buttons: 1 });
+  pointer("pointerup", tab(2), { clientX: 20, clientY: 15 });
+  act(() => { tab(2).click(); }); // 놓기에 딸린 click — 끌어 놓은 탭의 씬은 열리지 않는다
+  expect(onSelect).not.toHaveBeenCalled();
+  act(() => { tab(0).click(); }); // 삼킨 것은 한 번뿐이다(키보드로 누른 탭 — 누름 없이 click 만)
+  expect(onSelect).toHaveBeenCalledExactlyOnceWith("s1");
+
+  onSelect.mockClear();
+  pointer("pointerdown", tab(2), { clientX: 250, clientY: 15 });
+  pointer("pointermove", tab(2), { clientX: 20, clientY: 15, buttons: 1 });
+  pointer("pointerup", tab(2), { clientX: 20, clientY: 15 }); // 이번에는 click 이 딸려 오지 않았다(뗀 자리가 탭 밖)
+  pointer("pointerdown", tab(1), { clientX: 150, clientY: 15 }); // 곧바로 다른 탭을 누른다 — 타이머는 아직 안 돌았다
+  pointer("pointerup", tab(1), { clientX: 150, clientY: 15 });
+  act(() => { tab(1).click(); });
+  expect(onSelect).toHaveBeenCalledExactlyOnceWith("s2");
+});
+
+it("앞 끌기가 예약해 둔 억제 해제가 다음 끌기의 억제를 풀지 않는다 — 곧바로 다시 끌다 Esc 로 취소하고 놓아도 씬이 열리지 않는다", async () => {
+  pointer("pointerdown", tab(2), { clientX: 250, clientY: 15 }); // 끌기 A
+  pointer("pointermove", tab(2), { clientX: 20, clientY: 15, buttons: 1 });
+  pointer("pointerup", tab(2), { clientX: 20, clientY: 15 }); // 억제 해제가 예약됐다(아직 안 돌았다)
+  pointer("pointerdown", tab(1), { clientX: 150, clientY: 15 }); // 끌기 B — 그 타이머가 돌기 전에 시작한다
+  pointer("pointermove", tab(1), { clientX: 20, clientY: 15, buttons: 1 });
+  expect(line()).not.toBeNull();
+  act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); }); // 취소 — 단추는 누른 채
+  expect(line()).toBeNull();
+  await act(async () => { await new Promise((done) => setTimeout(done, 0)); }); // A 의 타이머가 돌 시간이 지났다
+  pointer("pointerup", tab(1), { clientX: 20, clientY: 15 });
+  act(() => { tab(1).click(); }); // 놓을 때 딸려 오는 click — 취소한 끌기가 씬을 열면 안 된다
+  expect(onSelect).not.toHaveBeenCalled();
+  expect(onReorder).toHaveBeenCalledTimes(1); // A 만 순서를 바꿨다
 });

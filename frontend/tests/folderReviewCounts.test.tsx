@@ -57,6 +57,47 @@ it("상세 부재는 Total로 명시하고 기존 용도의 숫자 배지는 그
   expect(host.querySelector("strong")).toBeNull();
 });
 
+// 2026-10-12(조작 점검 9회차): 끌어 놓은 뒤의 click 막기가 타이머에만 기대면, 타이머가 돌기 전에 그 폴더를 누른 것이 전부 무시된다
+//  (입력은 타이머보다 먼저 처리된다 — 캔버스에서 같은 결함을 쟀다: 놓자마자 누른 씬 탭 세 번이 전부 안 먹음. Codex 코드 리뷰).
+it("폴더 줄: 끌어 놓은 바로 뒤(타이머가 돌기 전)에 다시 누르면 골라진다 — 막는 것은 그 끌기에 딸린 click 한 번이고, 새 누름이 오면 끝난다", () => {
+  const onSelect = vi.fn();
+  act(() => root.render(<FolderTreeView nodes={[{ name: "shot", path: "shot", count: 1 }]} onSelect={onSelect} onDragFolder={noop} />));
+  const row = host.querySelector<HTMLElement>(".folder-tree-row")!;
+  const fire = (type: string) => act(() => { row.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 })); });
+  const drag = () => {
+    fire("mousedown");
+    act(() => {
+      row.dispatchEvent(new Event("dragstart", { bubbles: true, cancelable: true }));
+      row.dispatchEvent(new Event("dragend", { bubbles: true }));
+    });
+  };
+  drag();
+  fire("click"); // 끌기에 딸려 온 click(일부 브라우저) — 고르지 않는다
+  expect(onSelect).not.toHaveBeenCalled();
+  fire("click"); // 막는 것은 한 번뿐이다(키보드로 누른 줄 — 누름 없이 click 만). 타이머는 돌지 않았다
+  expect(onSelect).toHaveBeenCalledTimes(1);
+
+  drag(); // 이번에는 click 이 딸려 오지 않았다
+  fire("mousedown"); // 곧바로 그 폴더를 누른다
+  fire("click");
+  expect(onSelect).toHaveBeenCalledTimes(2);
+});
+
+it("폴더 줄: 앞 끌기가 예약해 둔 해제가 곧바로 시작한 다음 끌기의 깃발을 내리지 않는다 — 그 끌기에 딸린 click 도 고르지 않는다", async () => {
+  const onSelect = vi.fn();
+  act(() => root.render(<FolderTreeView nodes={[{ name: "shot", path: "shot", count: 1 }]} onSelect={onSelect} onDragFolder={noop} />));
+  const row = host.querySelector<HTMLElement>(".folder-tree-row")!;
+  const fire = (type: string, mouse = false) => act(() => {
+    row.dispatchEvent(mouse ? new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 }) : new Event(type, { bubbles: true, cancelable: true }));
+  });
+  fire("mousedown", true); fire("dragstart"); fire("dragend"); // 끌기 A — 해제가 예약됐다(아직 안 돌았다)
+  fire("mousedown", true); fire("dragstart"); // 끌기 B 를 곧바로 시작한다
+  await act(async () => { await new Promise((done) => setTimeout(done, 0)); }); // A 의 타이머가 돌 시간이 지났다
+  fire("dragend");
+  fire("click", true); // B 에 딸려 온 click
+  expect(onSelect).not.toHaveBeenCalled();
+});
+
 function fixture() {
   const id = `review-count-${++serial}`;
   const state = { project_id: id, root_path: "fixture", selected_path: "", tree: {
