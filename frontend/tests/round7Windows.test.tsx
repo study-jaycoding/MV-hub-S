@@ -128,6 +128,24 @@ describe("R7 계보 보드의 Esc", () => {
     act(() => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); }); // 돌아와서 뗀 것도
     expect(picked()).toEqual(["a"]);
   });
+
+  // 9회차: 화면을 미는 중에 보드가 내려가면(탭 이동 등) 창에 건 리스너가 남아, 내려간 뒤에 민 만큼이 단추를 뗄 때 이 카드의 카메라로 저장됐다.
+  it("가운데 단추로 화면을 미는 중에 보드가 내려가면, 그 뒤의 움직임·뗌은 저장된 카메라를 바꾸지 않는다", () => {
+    mount();
+    const stored = () => JSON.stringify(Object.keys(localStorage).sort().map((key) => [key, localStorage.getItem(key)]));
+    act(() => {
+      host.querySelector<HTMLElement>(".linb-scroll")!
+        .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 1, buttons: 4, clientX: 100, clientY: 100 }));
+    });
+    act(() => { window.dispatchEvent(new MouseEvent("mousemove", { clientX: 160, clientY: 130, buttons: 4 })); });
+    act(() => root.unmount());
+    const atUnmount = stored();
+    expect(atUnmount).toContain('\\"x\\":60'); // 내려가는 순간의 카메라(60, 30)는 저장됐다
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 400, clientY: 400, buttons: 4 }));
+    window.dispatchEvent(new MouseEvent("mouseup", { button: 1 }));
+    expect(stored()).toBe(atUnmount);
+    root = createRoot(host); // afterEach 가 내릴 뿌리
+  });
 });
 
 describe("R9 설정 옆 패널의 높이", () => {
