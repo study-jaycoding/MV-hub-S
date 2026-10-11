@@ -160,22 +160,28 @@ if (typeof document !== "undefined") {
   //  영상·오디오의 기본 조작부(재생·시간 줄·음량…) 안에 초점이 있으면 크롬은 키 이벤트를 페이지로 보내지 않는다 — 잡는 단계에도 안 온다
   //  (2026-10-11 실측: 조작부 6칸 × 8키 48/48 이 0건. 그동안 activeElement 는 그 매체다). 마우스로 조작부를 눌러도 초점이 그 칸으로 가서,
   //  재생 단추를 누른 뒤에는 Esc·방향키가 죽었다(전부터). 조작부의 누름도 페이지에 오지 않아 '조작부를 썼다'는 것은 매체 이벤트로만 안다 →
-  //  재생·일시정지가 났고 초점이 그 매체면 초점을 매체 **자체**로 옮긴다(같은 요소에 focus() — 안쪽 초점이 요소로 돌아와 키가 다시 온다).
-  //   · 시간 줄·음량·속도(seeked·volumechange·ratechange)에는 하지 않는다 — 마우스로 누른 뒤 방향키로 조금씩 옮기는 브라우저 기본이 남는다.
-  //     그 대신 그 뒤의 Esc 는 듣지 않는다(영상을 한 번 누르거나 Tab 으로 조작부를 벗어나면 듣는다 — 브라우저의 한계).
+  //  조작부를 쓴 흔적(재생·일시정지·탐색·음량)이 났고 초점이 그 매체면 초점을 매체 **자체**로 옮긴다(같은 요소에 focus() — 안쪽 초점이
+  //  요소로 돌아와 키가 다시 온다). 시간 줄·음량을 끄는 도중에 불려도 끌기는 끊기지 않는다(실측: 걸음마다의 값이 같다).
+  //   · 시간 줄·음량을 만진 뒤의 방향키는 브라우저의 미세 이동이 아니라 **창의 키**가 된다(크게 보기의 ←/→ = 앞·뒤 장, Space = 재생,
+  //     Esc = 닫기 — 창이 약속한 키가 조작부를 만진 뒤에 죽는 것이 결함이다). 속도(ratechange)에는 걸지 않는다 — 더보기 메뉴에서
+  //     고른 뒤에는 초점이 스스로 풀린다.
+  //   · 반복 재생이 **도는 중에** 처음으로 돌아가는 탐색은 사용자의 조작이 아니다 — 그때 옮기면 조작부에서 연 메뉴(더보기)가 닫힌다.
+  //     멈춘 영상의 처음 언저리 탐색은 조작이다(크게 보기의 영상은 늘 loop 라, 멈춤을 안 보면 그 탐색 뒤의 Esc 가 다시 죽는다).
+  //     시간값만으로 둘을 완전히 가를 수는 없다 — 도는 중에 사용자가 0.25초 안으로 옮긴 탐색은 놓친다(크롬은 끄는 동안 영상을 멈추므로 드물다).
   //   · 키보드로 조작부를 쓰는 중(마지막으로 본 초점 이동이 Tab)이면 둔다 — 초점을 빼면 다음 키가 엉뚱한 곳으로 간다.
   //     남는 구멍: Tab 을 누른 뒤 마우스로 조작부를 누르면 옮기지 못한다(조작부 위의 누름이 페이지에 오지 않아 Tab 기록이 안 꺼진다).
   //     매체 위의 마우스 움직임으로 가르지 않는다 — 움직임은 누를 뜻이 아니고, 키보드로 쓰는 중에 스친 마우스가 보호를 풀게 된다(Codex 리뷰).
   //   · 전체화면·PIP 중에는 건드리지 않는다.
+  const LOOP_WRAP_SECONDS = 0.25; // 반복 재생의 되감기는 0초 언저리에 내린다 — 이보다 앞의 탐색은 되감기로 본다
   const focusMediaItself = (e: Event) => {
     const media = e.target;
     if (!(media instanceof HTMLMediaElement) || !media.controls || document.activeElement !== media) return;
     if (focusByTab) return;
     if (document.fullscreenElement || document.pictureInPictureElement) return;
+    if (e.type === "seeked" && media.loop && !media.paused && media.currentTime < LOOP_WRAP_SECONDS) return;
     media.focus({ preventScroll: true });
   };
-  document.addEventListener("play", focusMediaItself, true);
-  document.addEventListener("pause", focusMediaItself, true);
+  for (const type of ["play", "pause", "seeked", "volumechange"]) document.addEventListener(type, focusMediaItself, true);
 }
 
 /** 이 누름이 시작될 때(또는 지금) 위에 창·메뉴가 떠 있었나 — 뒤 화면의 mousedown 처리가 첫 줄에서 본다. */
