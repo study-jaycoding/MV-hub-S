@@ -230,6 +230,7 @@ export function ViewTimeline({
       // Tab 으로 찾아간 단추(닫기·반복…)의 Space 는 그 단추를 누르는 키(lib/keyGate). 음량 막대에 초점이 남아 있을 때는 여전히 재생/정지
       if (e.key !== " " || activationKeyOwned(e)) return;
       e.preventDefault();
+      if (e.repeat) return; // 길게 눌린 Space 는 막기만 — 재생/정지가 반복마다 뒤집힌다(조작 규칙 38)
       togglePlayRef.current();
     };
     window.addEventListener("keydown", onKey);

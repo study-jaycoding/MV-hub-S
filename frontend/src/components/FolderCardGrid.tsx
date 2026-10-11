@@ -201,6 +201,7 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
       else onOpen(list[at]);
     } else if (e.key === " ") {
       e.preventDefault();
+      if (e.repeat) return; // 길게 눌린 Space — 고르기는 토글이라 반복마다 뒤집힌다(조작 규칙 38)
       const next = new Set(chosen);
       if (next.has(list[at].path)) next.delete(list[at].path);
       else next.add(list[at].path);

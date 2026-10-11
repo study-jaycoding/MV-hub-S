@@ -826,6 +826,13 @@ it("고른 카드 여러 장에 키로 색·비활성 — 빈 자리를 누르�
   await press("d");
   expect(host.querySelectorAll(".resolve-project-card.deactivated")).toHaveLength(2);
 
+  // 길게 눌린 r·d(반복 keydown)는 다시 하지 않는다 — 색·비활성이 반복마다 뒤집히지 않는다(조작 규칙 38)
+  await act(async () => {
+    for (const held of ["r", "d", "r", "d", "r", "d"]) window.dispatchEvent(new KeyboardEvent("keydown", { key: held, bubbles: true, repeat: true })); // 셋씩 — 뒤집힌다면 꺼진 채로 끝난다
+  });
+  expect(host.querySelectorAll<HTMLElement>(".rp-colorbar")).toHaveLength(2);
+  expect(host.querySelectorAll(".resolve-project-card.deactivated")).toHaveLength(2);
+
   // 빈 자리를 눌렀다 놓으면 풀린다(끌면 상자 고르기 — 그래서 놓을 때 판정한다)
   await act(async () => {
     host

@@ -27,7 +27,7 @@ export function usePromptDock(store: Store): UsePromptDockResult {
       if (!binding.startsWith("mod+") && !binding.startsWith("alt+") && isTypingTarget(e.target)) return;
       if (matchShortcut(e, "focusPrompt")) {
         e.preventDefault();
-        setPromptVisibleState((v) => !v);
+        if (!e.repeat) setPromptVisibleState((v) => !v); // 길게 눌러 반복된 키는 막기만 — 도크가 반복마다 열렸다 닫힌다(조작 규칙 38)
       }
     };
     window.addEventListener("keydown", onKey);

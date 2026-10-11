@@ -102,18 +102,21 @@ export function useGenerationKeyboardActions({
         const inPeek = from === document.body || !!(from && floatHost(from).closest?.(".folder-peek"));
         if (!composeGridActiveRef?.current || !inPeek) return;
       }
+      // 색·비활성은 토글이다 — 길게 눌러 반복된 keydown 은 막기만 하고 다시 하지 않는다. 반복마다 뒤집히면 키를 놓는 순간에 따라
+      //  결과가 달라지고(조금 길게 누르면 '안 먹은' 것처럼 보인다) 색은 반복마다 저장 큐에 들어간다(조작 규칙 38).
+      const once = !e.repeat;
       if (matchShortcut(e, "colorRed")) {
         e.preventDefault();
-        void colorSelected(ids, KEY_COLORS.r);
+        if (once) void colorSelected(ids, KEY_COLORS.r);
       } else if (matchShortcut(e, "colorGreen")) {
         e.preventDefault();
-        void colorSelected(ids, KEY_COLORS.g);
+        if (once) void colorSelected(ids, KEY_COLORS.g);
       } else if (matchShortcut(e, "colorBlue")) {
         e.preventDefault();
-        void colorSelected(ids, KEY_COLORS.b);
+        if (once) void colorSelected(ids, KEY_COLORS.b);
       } else if (matchShortcut(e, "boardDisable")) {
         e.preventDefault();
-        toggleDisabledGen(ids);
+        if (once) toggleDisabledGen(ids);
       }
     };
     window.addEventListener("keydown", onKey);

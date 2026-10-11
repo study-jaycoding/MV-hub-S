@@ -66,7 +66,7 @@ export function ManageAccount({
 
   const save = async () => {
     const n = name.trim();
-    if (!n || n === (account?.name || "")) return;
+    if (saving || !n || n === (account?.name || "")) return; // 처리 중에는 다시 받지 않는다(길게 눌린 Enter 가 같은 저장을 또 보냈다)
     setSaving(true);
     setMsg("");
     try {
@@ -81,6 +81,7 @@ export function ManageAccount({
   };
 
   const changePw = async () => {
+    if (pwSaving) return; // 처리 중에는 다시 받지 않는다
     if (!curPw) {
       setPwMsg("현재 비밀번호를 입력하세요.");
       return;
@@ -126,7 +127,7 @@ export function ManageAccount({
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="표시이름"
-                onKeyDown={(e) => e.key === "Enter" && save()}
+                onKeyDown={(e) => e.key === "Enter" && !e.repeat && save()}
               />
               <button
                 className="manage-save"
@@ -169,7 +170,8 @@ export function ManageAccount({
                 value={pw}
                 onChange={(e) => setPw(e.target.value)}
                 placeholder="새 비밀번호 (6자 이상)"
-                onKeyDown={(e) => e.key === "Enter" && changePw()}
+                // 길게 눌린 Enter 는 받지 않는다 — 성공해 칸이 비워진 뒤의 반복이 "현재 비밀번호를 입력하세요"로 성공 안내를 덮었다(조작 규칙 38)
+                onKeyDown={(e) => e.key === "Enter" && !e.repeat && changePw()}
               />
               <button
                 className="manage-save"

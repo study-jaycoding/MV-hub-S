@@ -527,6 +527,8 @@ it("키보드 — Ctrl+A 모두 · 방향키 옮기기(Shift = 누른 카드부�
   expect(opened).toEqual(["C0040"]);
   key(" ");
   expect(selected.size).toBe(0);
+  // 길게 눌린 Space(반복 keydown)는 막기만 한다 — 고르기가 반복마다 뒤집히지 않는다(조작 규칙 38)
+  expect([key(" ", { repeat: true }).defaultPrevented, selected.size]).toEqual([true, 0]);
   key("Enter"); // Space 로 뺀 자리는 화면에 표시가 없다 — Enter 가 그 폴더를 열지 않는다
   expect(opened).toEqual(["C0040"]);
   key("ArrowRight"); // 끝에서는 멈춘다

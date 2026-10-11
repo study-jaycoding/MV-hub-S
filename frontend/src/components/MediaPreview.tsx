@@ -152,7 +152,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
         e.preventDefault();
         e.stopPropagation();
         const v = videoRef.current;
-        if (!v || e.key === "Enter") return;
+        if (!v || e.key === "Enter" || e.repeat) return; // 길게 눌린 Space 는 막기만 — 재생/정지가 반복마다 뒤집힌다(조작 규칙 38)
         if (v.paused) void v.play().catch(() => {});
         else v.pause();
       }

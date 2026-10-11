@@ -483,7 +483,7 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
     const onKey = (e: KeyboardEvent) => {
       if (isEditable(e.target)) return;
       if (activationKeyOwned(e)) return; // Tab 으로 찾아간 단추(닫기·반복·음소거…)의 Space 는 그 단추를 누르는 키(lib/keyGate)
-      if (e.key === " ") togglePlay();
+      if (e.key === " ") { if (!e.repeat) togglePlay(); } // 길게 눌린 Space 는 막기만 — 재생/정지가 반복마다 뒤집힌다(조작 규칙 38)
       else if (e.key === "ArrowUp") prevCut();
       else if (e.key === "ArrowDown") nextCut();
       else if (e.key === "Home") goTo(0);

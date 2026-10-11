@@ -320,10 +320,24 @@ it("밖에서 선택이 풀리면 초점 카드도 지운다 — Space·Ctrl+클
   expect(host.querySelector(".gen-cell.focused")).toBeTruthy();
   key(" ", grid());
   expect([...selected]).toEqual(["g2"]);
+  // 길게 눌린 Space(반복 keydown)는 막기만 한다 — 고르기가 반복마다 뒤집히지 않는다(조작 규칙 38)
+  expect([key(" ", grid(), { repeat: true }).defaultPrevented, [...selected]]).toEqual([true, ["g2"]]);
   click("g2", { ctrlKey: true }); // Ctrl+클릭으로 뺀 자리도 — 방향키가 거기서 출발한다(맨 위로 튀지 않는다)
   expect(selected.size).toBe(0);
   key("ArrowDown", grid());
   expect([...selected]).toEqual(["g4"]);
+});
+
+// 11회차(조작 규칙 38, Codex 코드 리뷰): 히스토리 키를 길게 누르면 응답이 늦는 동안 반복마다 요청이 나가고, 응답마다 가계 씬 탭이 하나씩 새로 생겼다.
+it("히스토리 키(h)는 길게 눌러도 한 번만 연다 — 반복은 기본 동작만 막는다", () => {
+  const opened: string[] = [];
+  draw({ patch: { onShowHistory: (g) => opened.push(g.id) } });
+  flushFrames();
+  click("g2");
+  const first = key("h", grid());
+  const repeats = [1, 2, 3].map(() => key("h", grid(), { repeat: true }));
+  expect(opened).toEqual(["g2"]);
+  expect([first, ...repeats].map((event) => event.defaultPrevented)).toEqual([true, true, true, true]);
 });
 
 it("카드를 누른 뒤 마퀴로 다른 카드를 고르면 방향키의 기준은 고른 것 중 마지막 카드다 — 먼저 누른 카드가 아니라", () => {

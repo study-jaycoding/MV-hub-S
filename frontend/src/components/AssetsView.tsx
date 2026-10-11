@@ -494,6 +494,12 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     if (backgroundKeysBlocked()) return; // 위에 뜬 창·메뉴의 키(lib/keyGate)
     if (activationKeyOwned(e.nativeEvent)) return; // Tab 으로 찾아간 카드 단추(S·T·C)의 Enter·Space 는 그 단추를 누르는 키
     if (!filesRef.current.length) return;
+    // 길게 눌러 반복된 keydown — 반복이 뜻인 것은 방향키(이동)뿐이다. 나머지(Space 선택·s·r/g/b·d·Enter·#·c)는 토글·열기라 반복마다
+    //  뒤집힌다: 기본 동작(Space 의 스크롤)만 막고 다시 하지 않는다(조작 규칙 38).
+    if (e.repeat && !e.key.startsWith("Arrow")) {
+      if (e.key === " ") e.preventDefault();
+      return;
+    }
     if (e.key.startsWith("Arrow")) {
       e.preventDefault();
       const cur = focusIdx < 0 ? 0 : focusIdx;

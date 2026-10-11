@@ -376,6 +376,10 @@ it("연결 재생기 — Tab 으로 찾아간 단추의 Space 는 그 단추를 
     act(() => { loop.dispatchEvent(new Event("pointerdown", { bubbles: true })); }); // 마우스로 눌러 남은 초점
     expect(space(loop)).toBe(true);
     expect(playing()).toBe(false);
+    // 길게 눌린 Space(반복 keydown)는 막기만 한다 — 재생/정지가 반복마다 뒤집히지 않는다(조작 규칙 38)
+    const held = new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true, repeat: true });
+    act(() => { loop.dispatchEvent(held); });
+    expect([held.defaultPrevented, playing()]).toEqual([true, false]);
   } finally {
     raf.mockRestore();
   }

@@ -558,7 +558,9 @@ export function ThumbnailGrid(props: Props) {
     }
     if (fgen && matchShortcut(e, "showHistory")) {
       e.preventDefault();
-      props.onShowHistory?.(fgen); // 그 카드의 히스토리(가계) 패널 열기
+      // 그 카드의 히스토리(가계) 패널 열기. 길게 눌린 반복은 받지 않는다 — 응답이 늦는 동안 요청이 반복마다 나가고,
+      //  응답마다 가계 씬 탭이 하나씩 새로 생겼다(조작 규칙 38).
+      if (!e.repeat) props.onShowHistory?.(fgen);
       return;
     }
     if (e.key.startsWith("Arrow")) {
@@ -595,6 +597,7 @@ export function ThumbnailGrid(props: Props) {
       if (g && a) onPreviewCell(g);
     } else if (e.key === " ") {
       e.preventDefault();
+      if (e.repeat) return; // 길게 눌린 Space — 고르기는 토글이라 반복마다 뒤집힌다(조작 규칙 38)
       const id = focusIdx >= 0 ? generations[focusIdx]?.id : undefined;
       if (id) {
         const n = new Set(selectedIds);
