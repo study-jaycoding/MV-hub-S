@@ -100,6 +100,11 @@ export function InfoPopup({
   // Comfy 생성물은 Cloud 가 건별 크레딧을 API 로 안 준다(정액 구독제) → 견적 대신 구독 정보를 보여준다.
   const [comfySub, setComfySub] = useState<{ target: "cloud" | "local"; tier: string | null } | null>(null);
   const [recoveryBusy, setRecoveryBusy] = useState(false);
+  // 지금 이 창이 보이는 생성물(내려가면 null) — 늦게 끝난 '다시 실행'이 그사이 열린 **다른 카드의 창**을 닫지 않게 한다(아래 단추).
+  //  창은 App 에 하나뿐이라, 닫고 다른 카드를 열어도 옛 요청의 onClose 는 지금 떠 있는 창을 닫는다(Codex 검토).
+  const shownGenRef = useRef<string | null>(null);
+  shownGenRef.current = target.kind === "generation" ? target.gen.id : null;
+  useEffect(() => () => { shownGenRef.current = null; }, []);
   const modelName = useModelDisplayName();
   const drag = useRef<{ dx: number; dy: number } | null>(null);
 
@@ -253,7 +258,7 @@ export function InfoPopup({
                 onClick={async () => {
                   setRecoveryBusy(true);
                   try {
-                    if (await onRecoveryRequeue(g)) onClose();
+                    if ((await onRecoveryRequeue(g)) && shownGenRef.current === g.id) onClose();
                   } finally {
                     setRecoveryBusy(false);
                   }
