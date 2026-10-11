@@ -41,13 +41,19 @@ export function SceneWorkspaceMenu({
   const ref = useRef<HTMLDivElement>(null);
   // 씬 이름 — 입력칸에서 바로 고친다. 확정은 Enter·포커스 이탈, Esc 는 되돌리기(메뉴는 안 닫는다).
   const [name, setName] = useState(target.sceneName);
+  // 마지막으로 확정한 이름(조작 규칙 43). `target.sceneName` 은 메뉴를 열 때의 이름이라, 초점 이탈로 한 번 저장한 뒤에는 낡는다 —
+  //  그것을 기준으로 삼으면 벗어날 때마다 같은 이름을 다시 보내고, Esc 가 저장 전의 이름으로 돌아가고, 그 이름으로 되돌린 것은
+  //  '안 바뀌었다'며 보내지 않았다. 다른 탭의 메뉴로 바뀌면 SceneBar 가 이 메뉴를 새로 만든다(key).
+  const savedRef = useRef(target.sceneName);
   const commitName = () => {
     const trimmed = name.trim();
     if (!trimmed) {
-      setName(target.sceneName); // 빈 이름은 받지 않는다
+      setName(savedRef.current); // 빈 이름은 받지 않는다
       return;
     }
-    if (trimmed !== target.sceneName) onRename(target.sceneId, trimmed);
+    if (trimmed === savedRef.current) return;
+    savedRef.current = trimmed;
+    onRename(target.sceneId, trimmed);
   };
 
   useEffect(() => {
@@ -76,7 +82,7 @@ export function SceneWorkspaceMenu({
   }, [onClose]);
   useEscapeClose(
     () => {
-      if (document.activeElement?.classList.contains("scene-ws-menu-name") && name !== target.sceneName) setName(target.sceneName);
+      if (document.activeElement?.classList.contains("scene-ws-menu-name") && name !== savedRef.current) setName(savedRef.current);
       else onClose();
     },
     true,

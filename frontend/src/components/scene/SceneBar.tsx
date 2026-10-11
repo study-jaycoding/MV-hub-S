@@ -306,6 +306,9 @@ ${sceneTabTitle(scene, workspaceContext, label, missing)}`}
       ) : null}
       {menu ? (
         <SceneWorkspaceMenu
+          // 다른 탭의 메뉴로 바뀌면 새로 만든다 — 메뉴는 바깥을 '눌러야' 닫히므로, 키보드(Shift+F10)로 다른 탭의 메뉴를 열면 떠 있는 채
+          //  대상만 바뀐다. 그때 이름칸에 앞 탭의 이름이 남아 Enter 가 그 이름을 새 탭에 저장했다(조작 규칙 43).
+          key={menu.sceneId}
           target={menu}
           onAssign={onAssignWorkspace}
           onRename={onRename}
