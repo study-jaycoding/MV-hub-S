@@ -154,6 +154,40 @@ it("편집 키 — 위에 Esc 로 닫히는 창·메뉴가 떠 있으면 쉰다(
   }
 });
 
+// 11회차(조작 규칙 38): 편집 키의 토글·찍기(Space·D·I·O·M·W·L·J)가 길게 누르면 반복 keydown 마다 다시 실행됐다 — 비활성이 뒤집히고,
+//  재생 중의 I·O·M 은 지나가는 프레임마다 찍혔다.
+it("편집 키 — 길게 눌러도 토글은 한 번만 한다(D). 기본 동작은 반복에도 막고, 반복이 뜻인 이동 키는 그대로다", () => {
+  localStorage.setItem("ch.editTimeline:local:p1:e070", JSON.stringify({ v: 1, tracksOff: [], tracksLocked: [], clips: [
+    { cut: "e070/c1", gen: "g1", track: 1, kind: "video", dur: 5 }, { cut: "e070/c2", gen: "g2", track: 1, kind: "video", dur: 5 },
+  ] }));
+  mount();
+  const off = () => document.querySelectorAll(".ed-clip.ed-off").length;
+  press({ key: "a", code: "KeyA", ctrlKey: true }); // 클립 둘을 고른다
+  press({ key: "d", code: "KeyD" });
+  expect(off()).toBe(2);
+  const held = [1, 2, 3].map(() => press({ key: "d", code: "KeyD", repeat: true })); // 길게 눌러 반복된 keydown 셋
+  expect([held.every((event) => event.defaultPrevented), off()]).toEqual([true, 2]); // 뒤집힌다면 꺼진 것이 0 이다
+
+  press({ key: "d", code: "KeyD" }); // 다시 켠다(꺼진 클립뿐이면 재생헤드가 갈 곳이 없다)
+  press({ key: "Home", code: "Home" });
+  press({ key: "ArrowRight", code: "ArrowRight" });
+  const first = timecode();
+  press({ key: "ArrowRight", code: "ArrowRight", repeat: true }); // 프레임 이동은 반복이 뜻이다
+  expect([first, timecode()]).toEqual(["00:00:00:01", "00:00:00:02"]);
+
+  // Alt+M(재생헤드 자리의 북마크 지우기)도 한 번뿐이다 — 재생 중에 길게 누르면 지나가는 북마크가 줄줄이 지워졌다(Codex 코드 리뷰).
+  const marks = () => document.querySelectorAll(".ed-ruler .ed-mk").length;
+  press({ key: "m", code: "KeyM" }); // 2프레임 자리에 북마크
+  press({ key: "ArrowRight", code: "ArrowRight" });
+  press({ key: "m", code: "KeyM" }); // 3프레임 자리에 하나 더
+  expect(marks()).toBe(2);
+  press({ key: "m", code: "KeyM", altKey: true }); // 누른 자리(3프레임)의 것을 지운다
+  expect(marks()).toBe(1);
+  press({ key: "ArrowLeft", code: "ArrowLeft" }); // 누르고 있는 사이에 재생헤드가 다른 북마크 위로 왔다
+  expect(press({ key: "m", code: "KeyM", altKey: true, repeat: true }).defaultPrevented).toBe(true);
+  expect(marks()).toBe(1);
+});
+
 // 2026-10-12 격리 실측(두 빌드 3/3): 클립을 끌다 놓는 이벤트를 놓치면 클립이 translateY 를 단 채 남았다 — 그 클립을 다시 눌러야 풀렸다.
 it("클립을 끌다 놓는 이벤트를 놓치면(포인터 쥐기를 잃음) 끌던 만큼 어긋난 채 남지 않는다 — 옮기지도 않는다", () => {
   const docKey = "ch.editTimeline:local:p1:e070";

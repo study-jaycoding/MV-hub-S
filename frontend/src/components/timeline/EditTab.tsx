@@ -810,6 +810,10 @@ function EditTabInner({
     const { code, key } = event;
     const mod = event.ctrlKey || event.metaKey;
     const picked = [...selected];
+    // 길게 눌러 반복된 keydown — 토글·찍기·셔틀은 첫 누름에만 한다(기본 동작은 막는다). 반복마다 다시 하면 재생/정지·비활성·트림 모드가
+    //  뒤집히고, 재생 중의 I·O·M 은 지나가는 프레임마다 찍히며, L·J 는 배속이 순식간에 끝까지 오른다(조작 규칙 38).
+    //  반복이 뜻인 것(프레임·편집점 이동, 되돌리기, 확대·축소, 트랙 옮기기)은 그대로 둔다.
+    const once = !event.repeat;
     let used = true;
     if (mod && event.altKey) used = false;
     else if (mod && code === "KeyZ") (event.shiftKey ? edit.redo : edit.undo)();
@@ -826,8 +830,8 @@ function EditTabInner({
     else if (event.altKey && code === "KeyI") clearMarks("markIn");
     else if (event.altKey && code === "KeyO") clearMarks("markOut");
     else if (event.altKey && code === "KeyX") clearMarks("markIn", "markOut");
-    else if (event.altKey && code === "KeyM") removeBookmarkHere();
-    else if (event.altKey && code === "Slash") toggleRangeLoop();
+    else if (event.altKey && code === "KeyM") { if (once) removeBookmarkHere(); } // 재생 중에 길게 누르면 지나가는 북마크가 줄줄이 지워졌다
+    else if (event.altKey && code === "Slash") { if (once) toggleRangeLoop(); }
     else if (event.altKey) used = false;
     else if (event.shiftKey && code === "KeyZ") fit();
     else if (event.shiftKey && code === "KeyI") { if (marks.in !== null) seek(marks.in); }
@@ -838,9 +842,9 @@ function EditTabInner({
       // 초점이 있는 단추의 Space 는 그 단추 것. 마우스로 눌러 초점만 남은 상단바 단추는 예외 — 그 Space 가 방금 Esc 로 닫은 창을
       //  다시 열었다. Tab 으로 옮겨 간 단추는 그대로 그 단추의 것(lib/keyGate.focusCameByTab).
       if (from?.closest("button, a, [role=button]") && !(onTopbar && !focusCameByTab())) used = false;
-      else keys.toggle();
-    } else if (code === "KeyL") keys.shuttle(1);
-    else if (code === "KeyJ") keys.shuttle(-1);
+      else if (once) keys.toggle();
+    } else if (code === "KeyL") { if (once) keys.shuttle(1); }
+    else if (code === "KeyJ") { if (once) keys.shuttle(-1); }
     else if (code === "KeyK") keys.stop();
     else if (key === "ArrowLeft") keys.stepFrames(event.shiftKey ? -EDIT_FPS : -1);
     else if (key === "ArrowRight") keys.stepFrames(event.shiftKey ? EDIT_FPS : 1);
@@ -850,12 +854,12 @@ function EditTabInner({
     else if (key === "End") keys.seek(onSource ? src.layout.total : layout.total);
     else if ((key === "Delete" || key === "Backspace") && picked.length) act((current) => removeClips(current, picked));
     // D = 비활성(앱 공통) — 고른 클립이 있으면 그 클립, 없으면 재생헤드가 있는 컷(폴더)
-    else if (code === "KeyD" && picked.length) act((current) => toggleClipsOff(current, picked));
-    else if (code === "KeyD" && cut) toggleCut();
-    else if (code === "KeyI") markHere("markIn");
-    else if (code === "KeyO") markHere("markOut");
-    else if (code === "KeyM") bookmarkHere();
-    else if (code === "KeyW") toggleTrim();
+    else if (code === "KeyD" && picked.length) { if (once) act((current) => toggleClipsOff(current, picked)); }
+    else if (code === "KeyD" && cut) { if (once) toggleCut(); }
+    else if (code === "KeyI") { if (once) markHere("markIn"); }
+    else if (code === "KeyO") { if (once) markHere("markOut"); }
+    else if (code === "KeyM") { if (once) bookmarkHere(); }
+    else if (code === "KeyW") { if (once) toggleTrim(); }
     else if (key === "Escape" && picked.length && !isKeyHandled(event)) {
       markKeyHandled(event); // 이 Esc 는 여기서 썼다 — 같은 키로 다른 것까지 닫히지 않게(lib/keyHandled)
       setSelected(new Set());
