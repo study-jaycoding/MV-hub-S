@@ -28,7 +28,7 @@ owner: Claude · reviewer: Codex(병합 가능·수정 승인) · status: 검증
 
 ## 10-10 조작·단축키 전반 점검 — dev(미배포)
 
-owner: Claude · reviewer: Codex · status: 검증 중(main 미병합). 규칙·남은 것·**Jay 확인: 지어 둔 셋**(싫으면 커밋별 되돌림) → [status/조작점검_2026-10-10.md](status/조작점검_2026-10-10.md).
+owner: Claude · reviewer: Codex · status: 검증 중(main 미병합). 규칙 29·남은 것·**Jay 확인: 지어 둔 셋·7회차 변화·질문 넷** → [status/조작점검_2026-10-10.md](status/조작점검_2026-10-10.md).
 
 ## 10-03 최적화 점검 — 0926 → UI 후속 0958 공개(10-03 10:04)
 

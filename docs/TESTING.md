@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-03
+updated: 2026-10-11
 status: active
 ---
 
@@ -794,6 +794,14 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
 페이지 안에서 `new DataTransfer()` 와 합성 `DragEvent`(dragstart → dragover → drop)로 앱의 드롭 처리를 검증한다(브라우저의 끌기 개시는 범위 밖)
 ③ **화면 위치·크기를 다루는 수정은 창 있는 크롬으로도 한 번 본다** — 헤드리스는 열리는 애니메이션 도중의 측정 오차를 가려 준 적이 있다(`--headless=new` 만 빼고
 전용 프로필로 띄우면 된다, Jay 의 Chrome 과 별개 프로세스) ④ Codex 와 동시에 재려면 `--work <다른 폴더> --hub-port 8241 --server-port 8242`.
+
+자동화 요령(2026-10-11, 기록: [status/조작점검_2026-10-10.md](status/조작점검_2026-10-10.md)):
+- ⑨ **끌기를 흉내 낼 때는 `buttons` 를 넣는다** — CDP `Input.dispatchMouseEvent` 의 `mouseMoved` 와 jsdom 의 `MouseEvent` 는 기본값이 0 이다.
+  캔버스는 `buttons === 0` 인 이동을 '단추를 놓친 끌기'로 보고 그 자리에서 끝낸다(`lib/sceneDragSession.ts`). 왼쪽 끌기는 1, 가운데 단추의 화면 이동은 4.
+- ⑩ **Enter·Space 를 보내기 전에 `document.activeElement` 가 기대한 요소인지 확인한다.** 초점이 뒤 화면으로 샌 상태(특히 옛 빌드와의 대조)에서 누르면
+  뒤의 단추가 눌린다 — 한 번은 다운로드 단추가 눌려 파일이 실제 다운로드 폴더에 저장됐다. `/api/download` 는 `Fetch.enable` 로 막아 두고 시작한다.
+- ⑪ 시험 자료의 자리를 바꾸려면 `servers.py start --source <content_hub.db 가 든 폴더>`(읽기만 한다). 원본과 작업 폴더가 겹치면 거절하고, 작업 폴더에는
+  표식 파일(`.mvhub-browser-measure`)을 남겨 `stop` 이 자기가 만든 폴더만 지운다.
 
 캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
 - ⑤ 복사본은 프로젝트 폴더 경로를 비워, 씬 그림(`asset:` 썸네일)이 **전부 404** 다. 그림이 뜬 상태로 재려면 다음처럼 한다.
