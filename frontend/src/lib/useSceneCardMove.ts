@@ -106,6 +106,10 @@ interface UseSceneCardMoveOptions {
   setGroups: Dispatch<SetStateAction<SceneGroup[]>>;
   setSelected: Dispatch<SetStateAction<Set<string>>>;
   setDraggingIds: Dispatch<SetStateAction<readonly string[]>>;
+  /** 일부만 끄는 동안 보드가 끄는 카드의 바깥 틀을 translate 로 그릴 수 있게 한다(SceneBoard 의 moveOrigins) — 첫 걸음에 끌기 전
+   *  자리 표를 올리고, 끝나면 null. 실제로 그렇게 그릴지는 보드가 정한다(고른 카드 40장 이상·화면 배율 등 — 조건이 안 맞으면 전처럼
+   *  left/top 으로 그린다). 좌표는 어느 쪽이든 걸음마다 넣는다. 보드를 통째로 끄는 빠른 길에서는 올리지 않는다(캔버스 층 하나를 민다). */
+  setMoveOrigins: (origins: Readonly<Record<string, { x: number; y: number }>> | null) => void;
   setEjectedIds: Dispatch<SetStateAction<Set<string>>>;
   beginDrag: BeginSceneDrag;
   cardSize: (card: SceneCard) => { w: number; h: number };
@@ -311,6 +315,8 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
       const latest = optionsRef.current;
       if (!moved) {
         latest.setDraggingIds(targetIds);
+        // 좌표를 넣기 **전에** 올린다 — 보드가 이 순간 손에 든 카드(카드 속이 쥐고 있는 객체)를 기억해 둔다
+        if (!wholeBoard) latest.setMoveOrigins(origins);
         holdSceneDragPointer(latest.scrollRef.current); // 끌기가 시작된 뒤에만 쥔다(누르기만 한 것은 클릭이다)
       }
       moved = true;
@@ -423,6 +429,7 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
       latest.scrollRef.current?.classList.remove("dragging");
       endSceneDragPointer(dropped && moved);
       latest.setDraggingIds([]);
+      latest.setMoveOrigins(null); // 놓을 때의 좌표 확정과 같은 커밋에서 바깥 틀이 left/top 으로 돌아온다
       if (ejected.size) latest.setEjectedIds(new Set());
       if (wholeBoard) {
         closing = true;

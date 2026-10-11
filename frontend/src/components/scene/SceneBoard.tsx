@@ -133,6 +133,7 @@ import { SCENE_NODE_CATALOG } from "../../lib/sceneNodeCatalog";
 import { useSceneDragSession } from "../../lib/useSceneDragSession";
 import type { SceneLayerMove } from "../../lib/useSceneCardMove";
 import { useSceneViewport } from "../../lib/useSceneViewport";
+import { getSceneZoomPct, subscribeSceneZoomPct } from "../../lib/sceneZoomStore";
 import { useSceneClipboardDrop } from "../../lib/useSceneClipboardDrop";
 import { useSceneCardResize } from "../../lib/useSceneCardResize";
 import { releaseSceneDragPointer, useSceneCardMove } from "../../lib/useSceneCardMove";
@@ -233,6 +234,92 @@ function useStableHandlers<T extends Record<string, ((...args: never[]) => unkno
 }
 // 생성 카드에 넘기는 전역 태그 후보가 없을 때의 빈 목록 — 렌더마다 새 [] 를 만들면 카드(memo)가 매번 다시 그려진다.
 const NO_TAG_OPTIONS: string[] = [];
+// 여러 장을 고른 끌기의 그리기 상태 — 끌기 하나에 하나(첫 걸음에 조건이 맞으면 만들고, 조건을 잃거나 끝나거나 씬이 바뀌면 버린다).
+//  SceneBoard 의 moveOrigins 주석 참고.
+interface SceneMoveDraw {
+  /** 끄는 카드의 끌기 전 자리 */
+  at: Readonly<Record<string, { x: number; y: number }>>;
+  /** 끄는 카드의 속(memo 컴포넌트)에 마지막으로 넘긴 카드 */
+  inner: Map<string, SceneCard>;
+}
+// 자리(x·y)만 다른 같은 카드인가 — x·y 를 뺀 **모든** 필드를 얕게 견준다(필드가 생기거나 없어진 것도 다른 것이다).
+//  필드를 골라 견주지 않는다: 카드에 새 필드가 생겼을 때 '내용이 바뀌었는데 같다'고 하는 일이 없게.
+function sameCardButPlace(a: SceneCard, b: SceneCard): boolean {
+  const before = a as unknown as Record<string, unknown>;
+  const after = b as unknown as Record<string, unknown>;
+  const has = (card: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(card, key);
+  for (const key of Object.keys(before)) {
+    if (key !== "x" && key !== "y" && !(has(after, key) && Object.is(before[key], after[key]))) return false;
+  }
+  for (const key of Object.keys(after)) {
+    if (key !== "x" && key !== "y" && !has(before, key)) return false;
+  }
+  return true;
+}
+// 끄는 카드의 속에 넘길 카드 — 마지막으로 넘긴 것과 자리만 다르면 그것을 그대로 넘긴다(속이 다시 그려지지 않는다).
+//  내용이 바뀌었으면 새 카드를 넘기고 **그것으로 바꿔 쥔다** — 그 뒤의 걸음은 새 내용과 견준다(옛 내용으로 돌아가지 않는다).
+function moveInnerCard(draw: SceneMoveDraw, card: SceneCard): SceneCard {
+  const held = draw.inner.get(card.id);
+  if (held && sameCardButPlace(held, card)) return held;
+  draw.inner.set(card.id, card);
+  return card;
+}
+// ── 그 그리기를 켜는 조건(2026-10-11 격리 실측에서 나온 문턱 — SceneBoard 의 moveOrigins 주석) ──
+// 끄는 카드가 이만큼은 돼야 한다: 20장은 이득이 없고(1.0배) 레이어만 는다. 40장 약 1.2배 · 80장 1.3~1.4배 · 158장 1.5배.
+const MOVE_LAYER_MIN_CARDS = 40;
+// 화면 배율이 이 %(툴바에 보이는 반올림 값) 이상이어야 한다: 배율 25% 아래(0.232 와 0.255 사이가 경계)에서는 끄는 동안 카드가
+//  흐려진다(끄는 카드 안의 픽셀 21~70% 가 달라짐). 0.255 이상에서는 그림이 같았다 — 여유를 두어 30 으로 한다.
+//  반올림한 % 로 재는 까닭: 줌이 바뀐 것을 알리는 저장소(lib/sceneZoomStore)가 이 값이 바뀔 때만 알린다 — 같은 단위로 재야 문턱을
+//  넘는 순간을 놓치지 않는다(툴바에 30% 로 보이는 배율 — 약 0.295 부터 — 은 켠다).
+//  화면 맞춤(F)의 250ms 전환 동안에는 저장소가 **목표** 배율을 알린다 — 눈에 보이는 중간 배율과 잠시 다를 수 있다.
+const MOVE_LAYER_MIN_ZOOM_PCT = 30;
+// 모니터 배율(devicePixelRatio)이 1 일 때만 켠다. 실측(2026-10-11, 크롬을 `--force-device-scale-factor` 로 띄움 — CDP 의 배율 흉내는
+//  그리는 방식이 달라 믿을 수 없었다): 흐려짐의 문턱(줌 0.233 과 0.257 사이)은 배율 1·1.25·1.5·1.75 에서 같다. 다만 1.25·1.75 는 문턱
+//  위에서도 끄는 동안 반 픽셀 어긋남이 남는다(격자 22px × 배율이 정수가 아니다 — 끄는 카드 안의 픽셀 1.5~12%, 놓으면 0). 1.5 는 줌 0.28
+//  이상에서 그림이 같았다(고른 158장만 쟀다).
+// ponytail: 배율 1 만 허용한다(실측이 가장 두텁다). 1.5 를 넣으려면 이 줄에 더한다 — 배율이 바뀐 것을 듣는 쪽은 그대로 쓰인다.
+const moveLayerDprOk = (dpr: number) => dpr === 1;
+/** 화면 조건(배율·모니터 배율) — 켤 때와 끄는 동안 같은 함수로 본다. */
+function moveLayerScreenOk(zoomPct: number, dpr: number): boolean {
+  return zoomPct >= MOVE_LAYER_MIN_ZOOM_PCT && moveLayerDprOk(dpr);
+}
+/** 캔버스 층이 **지금 실제로 그려지는** 배율(반올림 %). 화면 맞춤(F)은 캔버스를 250ms 에 걸쳐 미끄러뜨리는데
+ *  (useSceneViewport.frameRects) 줌 저장소는 누른 순간 이미 목표 배율을 알린다 — 계산된 transform 은 미끄러지는 중의 값을 준다
+ *  (브라우저는 늘 matrix(…) 로 돌려준다. 첫 값이 가로 배율이다). 읽을 수 없으면 null — 부르는 쪽이 목표 배율로 본다. */
+function shownZoomPct(canvas: HTMLElement | null): number | null {
+  const scale = canvas && /^matrix(?:3d)?\(\s*(-?[\d.]+(?:e-?\d+)?)/.exec(getComputedStyle(canvas).transform)?.[1];
+  return scale ? Math.round(Number(scale) * 100) : null;
+}
+const getDevicePixelRatio = () => window.devicePixelRatio;
+// 모니터 배율이 바뀐 것을 듣는다(창을 배율이 다른 모니터로 옮김·OS 의 배율 변경) — `(resolution: <지금 배율>dppx)` 질의가 어긋나는 순간이
+//  곧 바뀐 순간이다. 질의는 값 하나에 묶여 있어, 알림이 올 때마다 지금 배율로 다시 건다(허용하는 배율이 늘어도 이어서 듣는다).
+function subscribeDevicePixelRatio(listener: () => void): () => void {
+  let query: MediaQueryList | undefined;
+  function onChange() {
+    watch();
+    listener();
+  }
+  function watch() {
+    query?.removeEventListener("change", onChange);
+    query = window.matchMedia?.(`(resolution: ${window.devicePixelRatio}dppx)`);
+    query?.addEventListener("change", onChange);
+  }
+  watch();
+  return () => query?.removeEventListener("change", onChange);
+}
+/** 지금 살아 있는 끄는 카드의 수 — 그중 하나라도 선택 밖이면 -1(고르지 않은 채 끌리는 카드는 쌓임 맥락이 새로 생겨 배지·포트가
+ *  이웃 카드 아래로 내려간다. 고른 카드는 원래 z-index 5 라 달라지는 것이 없다). 켤 때와 끄는 동안 같은 함수로 본다.
+ *  숨긴(회색)·접힌 그룹의 카드도 센다 — 좌표는 같이 옮겨지지만 그려지지는 않으므로, 그런 카드가 많으면 장수 문턱만큼의 이득은 안 난다. */
+function moveLayerTargets(at: SceneMoveDraw["at"], cards: readonly SceneCard[], selected: ReadonlySet<string>): number {
+  let count = 0;
+  for (const card of cards) {
+    if (!at[card.id]) continue;
+    if (!selected.has(card.id)) return -1;
+    count += 1;
+  }
+  return count;
+}
+const subscribeNothing = () => () => {};
 // 상태를 바꾸면서 그 상태를 비추는 ref 도 바로 맞춘다 — 다음 렌더 전에 같은 입력 처리가 ref 를 읽을 때(범위 선택 확정).
 const setAndSync =
   <T,>(ref: MutableRefObject<T>, set: (value: T) => void) =>
@@ -470,6 +557,38 @@ export function SceneBoard({
   useSyncExternalStore(subscribeRecentDone, getRecentDoneVersion, getRecentDoneVersion);
   // 드래그 중인 카드 id — 컬링(keepIds)이 이동 중 카드를 마진 밖으로 나가도 언마운트하지 않게 유지한다.
   const [draggingIds, setDraggingIds] = useState<readonly string[]>([]);
+  // 고른 카드 여러 장을 끄는 동안(조건은 아래 — 전부 고른 끌기는 캔버스 층을 밀어 이것을 쓰지 않는다) 끄는 카드의 **그리는 방법**만 바꾼다.
+  //  좌표는 지금처럼 걸음마다 상태·ref 에 넣는다(저장·단축키·줌·되돌리기가 늘 지금 좌표를 본다 — 넣을 때를 기다리는 것이 없다).
+  //  ① 바깥 틀: left/top 을 끌기 전 자리(at)에 두고 translate(= 지금 좌표 − 끌기 전 자리)로 옮긴다. left/top 을 걸음마다 쓰면
+  //     레이아웃·다시 칠하기·레이어 정리가 매번 돈다(2026-10-11 격리 실측: 412장 씬에서 158장을 끌 때 걸음 80ms, 초당 12~13번).
+  //     translate 에 값 0 애니메이션이 걸려 있으면(표식 data-layer-move — styles/scene.css) 브라우저가 합성기만으로 민다.
+  //     left/top 과 translate 를 **같은 렌더의 같은 style 객체**에서 낸다 — 둘을 더한 값이 늘 지금 좌표라 어긋난 채 그려질 수 없다.
+  //  ② 속(memo 다섯 종류): 좌표가 걸음마다 들어가 카드 객체가 걸음마다 새것이다. 그대로 넘기면 끄는 카드의 속이 걸음마다 다시 그려진다
+  //     (레퍼런스 158장이면 썸네일까지 316개). 속은 자리를 읽지 않으므로, 자리만 다른 카드가 오면 앞서 넘긴 것(inner)을 그대로 넘긴다.
+  //     끄는 중에도 내용은 바뀐다(늦게 온 생성 결과·색·태그·다른 창의 편집·키 입력) — 내용이 바뀐 카드는 바로 넘기고 바꿔 쥔다.
+  //     끌기가 끝나면 진짜 카드를 넘긴다(속이 한 번 다시 그려져 핸들러가 새 좌표의 카드를 쥔다).
+  //  끌기 하나에 하나다 — 끝날 때(끌기 훅의 cleanupDrag)와 씬 전환(아래 effect — 버린 끌기는 끝맺음을 부르지 않고, 새 씬에 같은
+  //  id 의 카드가 있을 수 있다)에 버린다.
+  //  **시작할 때만 켤 수 있고, 조건을 잃으면 그 끌기가 끝날 때까지 끈다**(실측 근거는 파일 위쪽 MOVE_LAYER_* 주석):
+  //  · 켜기 — 카드를 잡은 끌기의 첫 걸음에 한 번 본다(아래 setMoveOrigins): 살아 있는 끄는 카드가 40장 이상이고 전부 골라져 있다 ·
+  //    화면 배율 30% 이상 · 모니터 배율 1. 한 장·그룹 머리 끌기·판 밀기는 전의 길이다.
+  //  · 끄기 — 그릴 때마다 같은 함수로 다시 본다. 끄는 중에 선택이 풀리거나(Esc — 포인터를 쥐고 있어도 키는 온다) 배율이 문턱 아래로
+  //    가면 **그 렌더에서** 원래 그리기로 돌아간다: 바깥 틀의 left/top 이 지금 좌표가 되고 translate·표식이 빠지며 속은 실제 카드를
+  //    받는다. 좌표는 걸음마다 들어가 있으므로 넣을 것도 맞출 것도 없다 — 끌기는 그대로 이어진다.
+  //    선택은 상태라 풀리는 그 렌더가 곧 판정이다. 배율은 상태가 아니다(useSceneViewport 가 캔버스에 직접 쓴다) — 그래서 켜져 있는
+  //    동안에만 줌 저장소를 듣는다: 휠·툴바·화면 맞춤 어느 길이든 배율을 쓰는 그 호출에서 알림이 오고, 보드가 같은 작업 안에서
+  //    다시 그려져 꺼진다(다음 mousemove 를 기다리지 않는다). 평소에는 듣지 않는다(줌마다 보드가 다시 그려지지 않게).
+  //    다시 그리기는 알림을 받은 호출 안이 아니라 그 작업 끝의 마이크로태스크에서 돈다(React) — 브라우저가 칠하기 전이라 같은
+  //    프레임이라고 보지만, 실제로 한 프레임 안에 끝나는지는 격리 실측으로 본다.
+  //    모니터 배율도 같다 — 켜져 있는 동안에만 바뀌는 것을 듣는다(창을 배율이 다른 모니터로 옮기면 가만히 있어도 꺼진다. 전엔 다음
+  //    걸음에서야 봤고, 같은 격자 칸 안에서만 움직이면 다시 그리지 않아 표식이 남았다 — Codex 리뷰 P3).
+  //  · 한 번 끄면 상태를 비운다 — 다시 확대하거나 다시 골라도 그 끌기에서는 켜지 않는다(경계에서 레이어를 만들었다 부쉈다 하지 않게).
+  const [moveOrigins, setMoveDraw] = useState<SceneMoveDraw | null>(null);
+  const moveZoomPct = useSyncExternalStore(moveOrigins ? subscribeSceneZoomPct : subscribeNothing, getSceneZoomPct);
+  const moveDpr = useSyncExternalStore(moveOrigins ? subscribeDevicePixelRatio : subscribeNothing, getDevicePixelRatio);
+  const moveDraw =
+    moveOrigins && moveLayerScreenOk(moveZoomPct, moveDpr) && moveLayerTargets(moveOrigins.at, cards, selected) >= 0 ? moveOrigins : null;
+  if (moveOrigins && !moveDraw) setMoveDraw(null); // 이 렌더를 버리고 비운 상태로 곧바로 다시 그린다(같은 커밋)
   // 범위 선택 사각형 — 상태가 아니라 늘 있는 요소를 직접 옮긴다(2026-09-29). 상태로 그리면 끄는 한 걸음마다 캔버스
   //  전체(카드 수백 장)를 다시 맞춰, 12% 에서 한 프레임이 0.05초까지 멈췄다(40걸음에 다시 그리기 42번 실측).
   const marqueeElRef = useRef<HTMLDivElement>(null);
@@ -1872,6 +1991,9 @@ export function SceneBoard({
     forgetBoardMarquee();
     paintMarqueePreview();
     setDraggingIds((ids) => (ids.length ? [] : ids));
+    // 버린 끌기의 그리기 상태 — 새 씬에 id 가 같은 카드가 있으면 옛 자리·옛 카드가 그 카드에 쓰인다. 씬 전환은 선택도 비우므로
+    //  (씬 동기화 effect) 끄는 조건이 같은 렌더에서 이미 끈다 — 선택 해제에 기대지 않게 여기서도 버린다(두 겹).
+    setMoveDraw(null);
     setEjectedIds((ids) => (ids.size ? new Set() : ids));
     setEdgesToCut((ids) => (ids.size ? new Set() : ids));
     setCardMenu(null);
@@ -3090,9 +3212,29 @@ export function SceneBoard({
     moveHeldRef.current = false;
     endGesture();
   };
+  // 카드 끌기 훅이 (판 밀기가 아닌) 끌기의 첫 걸음에 끌기 전 자리 표를 올리고, 끝나면 null 로 비운다(위 moveOrigins).
+  //  켜는 조건은 여기서 한 번 본다 — 안 맞으면 올리지 않고, 그 끌기는 끝까지 전의 길이다(끄는 조건은 그릴 때마다 위 moveDraw 가 본다).
+  //  대상은 **지금 살아 있는** 끌기 전 자리 표의 카드다(고른 수로 세지 않는다 — 고른 그룹의 안 고른 멤버도 같이 끌린다).
+  //  속에 넘길 카드는 **지금 손에 든 카드**로 시작한다 — 훅이 첫 걸음의 좌표를 넣기 전에 부르므로 카드 속이 쥐고 있는 바로 그 객체다
+  //  (그래야 첫 걸음에도 속이 다시 그려지지 않는다).
+  const setMoveOrigins = (origins: SceneMoveDraw["at"] | null) => {
+    if (!origins) {
+      setMoveDraw(null);
+      return;
+    }
+    if (!moveLayerScreenOk(getSceneZoomPct(), getDevicePixelRatio())) return;
+    if (moveLayerTargets(origins, cardsRef.current, selectedRef.current) < MOVE_LAYER_MIN_CARDS) return;
+    // 줌 저장소의 배율은 **목표**다 — 화면 맞춤(F)이 낮은 배율에서 30% 이상으로 미끄러지는 중에 끌기를 시작하면, 보이는 배율이 아직
+    //  문턱 아래인 프레임에 켜졌다(2026-10-11 격리 실측 6/6 — 8% → 43% 에서 두세 프레임). 켜는 이 순간 캔버스가 실제로 그려지는
+    //  배율도 같은 함수로 본다. 여기서 한 번만 읽는다(걸음마다 읽지 않는다 — 계산된 스타일을 읽으면 스타일 계산이 그 자리에서 돈다).
+    //  켜진 뒤에는 보지 않는다: 문턱 위에서 문턱 위로 가는 화면 맞춤은 켜진 채 두고, 문턱 아래로 가는 것은 목표 배율이 끈다.
+    if (!moveLayerScreenOk(shownZoomPct(canvasRef.current) ?? getSceneZoomPct(), getDevicePixelRatio())) return;
+    setMoveDraw({ at: origins, inner: new Map(cardsRef.current.filter((card) => origins[card.id]).map((card) => [card.id, card] as const)) });
+  };
   const beginCardMove = useSceneCardMove({
     canvasRef,
     layerMoveRef,
+    setMoveOrigins,
     toCanvas,
     cardsRef,
     edgesRef,
@@ -4111,6 +4253,10 @@ export function SceneBoard({
                   )
                     ? " off-server"
                     : ""); // text/model/list
+          // 빠른 그리기가 켜져 있고(위 moveDraw) 이 카드가 끌리고 있으면 그 끌기 전 자리 — 바깥 틀은 translate 로 그리고,
+          //  속(memo 다섯 종류)에는 자리만 다른 카드를 다시 넘기지 않는다. 속에 넘기는 다른 값(선택·결과·크기…)은 그대로 넘긴다.
+          const origin = moveDraw?.at[card.id];
+          const inner = moveDraw && origin ? moveInnerCard(moveDraw, card) : card;
           return (
             <div
               key={card.id}
@@ -4126,9 +4272,13 @@ export function SceneBoard({
                 (showNode ? " has-node" : "") // 완료 결과가 있으면 히스토리 노드가 카드 뼈대를 대체
               }
               data-id={card.id}
+              data-layer-move={origin ? "" : undefined} // 끄는 동안만 — 값 0 애니메이션을 거는 표식(styles/scene.css)
               style={{
-                left: card.x,
-                top: card.y,
+                // 끄는 중: left/top 은 끌기 전 자리에 두고 translate 로 지금 좌표까지 옮긴다. 이동량은 캔버스 좌표 그대로다
+                //  (줌은 캔버스 층의 scale 이 곱한다 — 여기서 곱하지 않는다). 둘을 이 한 객체에서 낸다: 더한 값이 늘 지금 좌표다.
+                left: origin ? origin.x : card.x,
+                top: origin ? origin.y : card.y,
+                ...(origin ? { translate: `${card.x - origin.x}px ${card.y - origin.y}px` } : null),
                 ...(autoSize ? {} : { width: widthOf(card), ...(autoH ? {} : { height: heightOf(card) }) }),
               }}
               // View=재생, 모델=모달. 레퍼런스는 각 썸네일 더블클릭으로 큰화면(아래). 생성 카드는 각자 처리.
@@ -4142,7 +4292,7 @@ export function SceneBoard({
             >
               {isRef ? (
                 <ReferenceCard
-                  card={card}
+                  card={inner}
                   fill={fill}
                   workspaceId={refWorkspaceId}
                   getGen={cardFns.getGen}
@@ -4168,7 +4318,7 @@ export function SceneBoard({
                 />
               ) : card.kind === "set" ? (
                 <SetCard
-                  card={card}
+                  card={inner}
                   setFolder={cardFns.setNodeSetFolder}
                   setTagsText={cardFns.setNodeSetTagsText}
                   flushPending={cardFns.flushPending}
@@ -4176,7 +4326,7 @@ export function SceneBoard({
                   onResizeDown={onResizeDown}
                 />
               ) : card.kind === "model" ? (
-                <ModelCard card={card} onOutPortDown={cardFns.onOutPortDown} onResizeDown={onResizeDown} />
+                <ModelCard card={inner} onOutPortDown={cardFns.onOutPortDown} onResizeDown={onResizeDown} />
               ) : card.kind === "list" ? (
                 <ListCard
                   card={card}
@@ -4309,7 +4459,7 @@ export function SceneBoard({
                 />
               ) : card.kind === "head" ? (
                 <HeadCard
-                  card={card}
+                  card={inner}
                   sel={sel}
                   editing={editTextId === card.id}
                   colorPopId={colorPopId}
@@ -4322,7 +4472,7 @@ export function SceneBoard({
                 />
               ) : (
                 <GenerationCard
-                  card={card}
+                  card={inner}
                   sel={sel}
                   g={g}
                   showNode={showNode}

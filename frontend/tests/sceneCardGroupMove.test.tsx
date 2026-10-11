@@ -20,6 +20,11 @@ let frames: FrameRequestCallback[] = [];
 let clock = 1000;
 let patches: Record<string, unknown>[] = [];
 type Group = { id: string; cardIds: string[]; rect?: { x: number; y: number; w: number; h: number } };
+/** 요소의 translate("Xpx Ypx") — 끄는 동안 카드의 바깥 틀은 left/top 을 끌기 전 자리에 두고 이것으로 옮긴다(아래 '일부만 끄는 길'). */
+const shift = (el: HTMLElement) => {
+  const [x, y] = (el.style.translate || "").split(" ").map((part) => parseFloat(part) || 0);
+  return { x: x || 0, y: y || 0 };
+};
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -31,11 +36,12 @@ beforeEach(() => {
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
   vi.stubGlobal("cancelAnimationFrame", (id: number) => { frames[id - 1] = noop; });
   vi.spyOn(performance, "now").mockImplementation(() => clock); // 끄는 속도(화면 px / ms)를 시험이 정한다 — 이탈 문턱은 3
-  // 카드·그룹은 style 의 캔버스 좌표를 화면 위치로 쓴다(확대 100%·이동 0 인 첫 화면과 같다).
+  // 카드·그룹은 style 의 캔버스 좌표를 화면 위치로 쓴다(확대 100%·이동 0 인 첫 화면과 같다). 보이는 자리 = left/top + translate.
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     const on = this.matches(".scene-card, .scene-group");
     const n = (v: string) => (on ? parseFloat(v) || 0 : 0);
-    const [x, y, w, h] = [n(this.style.left), n(this.style.top), n(this.style.width), n(this.style.height)];
+    const moved = on ? shift(this) : { x: 0, y: 0 };
+    const [x, y, w, h] = [n(this.style.left) + moved.x, n(this.style.top) + moved.y, n(this.style.width), n(this.style.height)];
     return { x, y, left: x, top: y, width: w, height: h, right: x + w, bottom: y + h, toJSON: noop } as DOMRect;
   });
   localStorage.clear();
@@ -68,7 +74,9 @@ const twoGroups = () => show(
   ],
 );
 const card = (id: string) => host.querySelector<HTMLElement>(`.scene-card[data-id="${id}"]`)!;
-const selectAll = () => act(async () => {
+/** 카드가 보이는 자리(캔버스 좌표) — 끄는 도중에는 이것으로 본다(끄는 동안의 left/top 은 끌기 전 자리다). */
+const shownAt = (id: string) => [parseFloat(card(id).style.left) + shift(card(id)).x, parseFloat(card(id).style.top) + shift(card(id)).y];
+const selectAll =() => act(async () => {
   document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "a", code: "KeyA", ctrlKey: true, bubbles: true, cancelable: true }));
 });
 const grab = (id: string, x: number, y: number, ctrlKey = false) => act(async () => {
@@ -243,7 +251,7 @@ it("보드의 일부만 끌 때는 층을 밀지 않는다 — 통째로 고른 
   await dragTo(150, 370, 40);
   await dragTo(150, 590, 40);
   expect(canvas().style.translate || "").toBe("");
-  expect(card("a1").style.top).toBe("550px");
+  expect(shownAt("a1")).toEqual([110, 550]);
   expect(frameTop() - before).toBe(440); // 이탈로 치면 틀이 제자리에 남거나 사라진다
   await release(150, 590);
   expect(members()).toEqual({ gA: ["a1", "a2"] });
@@ -568,7 +576,7 @@ it("그룹 머리를 잡고 끄는 것도 한 번의 끌기다 — 끄는 중 �
   const head = () => host.querySelector<HTMLElement>('.scene-group[data-group-id="gA"] .scene-group-grab')!;
   await act(async () => { head().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 100, clientY: 50 })); });
   await dragTo(320, 50, 2000); // +220
-  expect(card("a1").style.left).toBe("330px");
+  expect(shownAt("a1")).toEqual([330, 110]);
   await key({ key: "f", code: "KeyF" });
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   await dragTo(430, 160, 2000);
@@ -654,7 +662,7 @@ it("그룹 머리를 잡고 끌다 손을 뗀 것을 놓쳐도 같다 — 단추
   await show([textCard("a1", 110), textCard("b1", 660)], [{ id: "gA", name: "A", cardIds: ["a1"], rect: { x: 66, y: 44, w: 330, h: 330 } }]);
   await grabHead("gA", 100, 50);
   await dragTo(320, 50, 2000); // +220
-  expect(card("a1").style.left).toBe("330px");
+  expect(shownAt("a1")).toEqual([330, 110]);
   await hoverTo(700, 400);
   expect(card("a1").style.left).toBe("330px");
   expect(board().classList.contains("dragging")).toBe(false);
@@ -902,7 +910,7 @@ it("실제 보드에서: 끄는 중에 파생 저장(늦게 온 생성 결과가
   expect(derivedSaves()).toBe(0); // 전제: 생성 결과가 아직 없어 채울 레퍼런스가 없다
   await grab("dst", 700, 150);
   await dragTo(920, 150, 2000); // dst → 880
-  expect(card("dst").style.left).toBe("880px");
+  expect(shownAt("dst")).toEqual([880, 110]);
   // 끄는 중에 src 의 생성 결과가 도착한다 → dst 의 연결 레퍼런스가 채워지고 파생 저장이 난다(좌표는 옮기던 자리)
   const g1 = {
     id: "g1", status: "done", prompt: "g1", tags: [], auto_tags: [], references: [], shared: false, deleted: false, is_mine: true,
@@ -920,4 +928,430 @@ it("실제 보드에서: 끄는 중에 파생 저장(늦게 온 생성 결과가
   expect(savedX("dst")).toBe(660); // 끌기 전 — 파생 저장이 난 중간 자리(880)가 아니다
   expect(card("dst").style.left).toBe("660px");
   expect(refsOf("dst").length).toBe(1); // 파생 저장이 넣은 값은 남는다
+});
+
+// ── 여러 장을 고른 끌기의 빠른 그리기(7회차 3·4단계) — 좌표는 지금처럼 걸음마다 넣는다. 그리는 방법만 바꾼다 ──
+// 2026-10-11 격리 실측: 412장 씬에서 158장을 끌면 화면 갱신이 초당 12~13번이었다(걸음 80ms = 레이어 정리 32 + React 18~20 + 다시 칠하기 22).
+//  카드의 left/top 을 걸음마다 써서 레이아웃·다시 칠하기·레이어 정리가 매번 돌았다. 끄는 동안 카드의 **바깥 틀**은 left/top 을 끌기 전
+//  자리에 두고 translate(= 지금 좌표 − 끌기 전 자리, 캔버스 좌표 그대로)로 옮긴다. 표식(data-layer-move)이 붙은 요소에는 값 0 의 덧셈
+//  애니메이션이 걸려(styles/scene.css) 브라우저가 합성기만으로 민다. 좌표·저장·되돌리기·이탈·재배정은 전과 같다 — 위의 시험들이 지킨다.
+// 켜는 조건(첫 걸음에 한 번): 끄는 카드가 40장 이상이고 **전부 골라져 있다** · 화면 배율 30% 이상 · 모니터 배율 1 · 카드를 잡은 끌기
+//  (그룹 머리 끌기·한 장·판 밀기는 전의 길). 근거는 같은 실측 — 40장 아래는 이득 없이 레이어만 늘고, 배율 25% 아래에서는 끄는 카드가
+//  흐려지고, 고르지 않은 채 끄는 카드는 배지·포트의 위아래가 달라진다.
+// 끄는 조건: 끄는 중에 선택이 풀리거나 배율·모니터 배율이 조건을 벗어나면 **그 갱신에서** 원래 그리기로 돌아가고, 그 끌기에서는 다시
+//  켜지 않는다. 좌표는 걸음마다 들어가 있으므로 끌기는 그대로 이어진다.
+/** 바깥 틀이 쥔 값 그대로: [left, top, translate, 표식]. */
+const outer = (id: string) => [card(id).style.left, card(id).style.top, card(id).style.translate || "", card(id).hasAttribute("data-layer-move")];
+/** 끄는 표시(표식·translate)가 남아 있는 카드. */
+const marked = () => [...host.querySelectorAll<HTMLElement>(".scene-card")]
+  .filter((el) => el.hasAttribute("data-layer-move") || !!el.style.translate).map((el) => el.dataset.id);
+/** 고를 카드 n 장(p0 … — 가로로 10장씩, 220 간격)과 고르지 않을 한 장(z). p0 = (110,110). */
+const manyCards = (n: number) => [
+  ...Array.from({ length: n }, (_, i) => textCard(`p${i}`, 110 + (i % 10) * 220, 110 + Math.floor(i / 10) * 220)),
+  textCard("z", 110, 2420),
+];
+const ctrlClick = async (id: string) => {
+  await grab(id, 5, 5, true);
+  await release(5, 5);
+};
+/** 보드의 카드를 전부 고른 뒤 z 만 뺀다 — p 들만 골라진다(전부 고르면 판 밀기라 이 길이 아니다). */
+const pickAllButZ = async () => {
+  await selectAll();
+  await ctrlClick("z");
+};
+/** 범위 선택으로 카드와 (통째로 감싼) 그룹을 함께 고른다 — Ctrl+A 는 그룹 선택을 푼다. */
+const marqueeAll = async () => {
+  await act(async () => { board().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 1, clientY: 1 })); });
+  await dragTo(9000, 9000, 2000);
+  await release(9000, 9000);
+};
+const groupPicked = (id: string) => host.querySelector(`.scene-group[data-group-id="${id}"]`)?.classList.contains("selected");
+
+it("고른 카드 40장을 끄는 동안 카드의 바깥 틀은 끌기 전 자리에 두고 translate 로 옮긴다 — 표식이 붙고, 놓으면 새 좌표가 되며 둘 다 빠진다", async () => {
+  await show(manyCards(40), []);
+  await pickAllButZ();
+  await grab("p0", 150, 150);
+  await dragTo(152, 151, 10); // 4px 안 — 아직 끌기가 아니다
+  expect(marked()).toEqual([]);
+  await dragTo(370, 150, 2000); // +220
+  expect(marked().length).toBe(40);
+  expect([outer("p0"), outer("p39")]).toEqual([["110px", "110px", "220px 0px", true], ["2090px", "770px", "220px 0px", true]]);
+  expect(outer("z")).toEqual(["110px", "2420px", "", false]); // 안 끄는 카드에는 아무것도 없다
+  await dragTo(590, 260, 2000); // +440, +110 — left/top 은 그대로, translate 만 바뀐다
+  expect([outer("p0"), outer("p39")]).toEqual([["110px", "110px", "440px 110px", true], ["2090px", "770px", "440px 110px", true]]);
+  await dragTo(150, 150, 2000); // 시작 자리로 — 이동량이 0 이어도 끄는 동안에는 표식을 둔다(레이어를 걸음마다 만들고 없애지 않게)
+  expect(outer("p0")).toEqual(["110px", "110px", "0px 0px", true]);
+  await dragTo(370, 150, 2000);
+  await release(370, 150);
+  expect(marked()).toEqual([]);
+  expect([outer("p0"), outer("p39"), outer("z")]).toEqual([["330px", "110px", "", false], ["2310px", "770px", "", false], ["110px", "2420px", "", false]]);
+  expect([savedX("p0"), savedX("p39")]).toEqual([330, 2310]);
+});
+
+it("고른 카드가 40장이 안 되면 전의 길이다 — 39장은 걸음마다 left/top 으로 옮긴다", async () => {
+  await show(manyCards(39), []);
+  await pickAllButZ();
+  await grab("p0", 150, 150);
+  await dragTo(370, 150, 2000);
+  expect(marked()).toEqual([]);
+  expect([outer("p0"), outer("p38")]).toEqual([["330px", "110px", "", false], ["2090px", "770px", "", false]]);
+  await release(370, 150);
+  expect([savedX("p0"), savedX("p38")]).toEqual([330, 2090]);
+});
+
+it("고르지 않은 카드가 하나라도 같이 끌리면 켜지 않는다 — 고른 그룹의 안 고른 멤버", async () => {
+  await show(manyCards(41), [{ id: "gA", name: "A", cardIds: ["p0", "p1"], rect: { x: 66, y: 44, w: 520, h: 330 } }]);
+  await marqueeAll();
+  await ctrlClick("p1"); // 그룹 멤버 p1 을 선택에서 뺀다 — 그룹은 고른 채다
+  await ctrlClick("z");
+  expect([groupPicked("gA"), card("p0").classList.contains("sel"), card("p1").classList.contains("sel")]).toEqual([true, true, false]);
+  await grab("p0", 150, 150);
+  await dragTo(370, 150, 2000);
+  expect(shownAt("p1")).toEqual([550, 110]); // 고르지 않은 p1 도 고른 그룹과 같이 끌린다(끄는 카드 41장 중 40장만 골라져 있다)
+  expect(marked()).toEqual([]);
+  expect(outer("p0")).toEqual(["330px", "110px", "", false]);
+  await release(370, 150);
+  expect(savedX("p1")).toBe(550);
+});
+
+it("한 장을 잡아 끌 때는 켜지 않는다 — 고르지 않은 카드든 혼자 고른 카드든", async () => {
+  await show(manyCards(40), []);
+  await grab("z", 150, 2460); // 고르지 않은 카드를 바로 잡아 끈다
+  await dragTo(370, 2460, 2000);
+  expect([marked(), outer("z")]).toEqual([[], ["330px", "2420px", "", false]]);
+  await release(370, 2460);
+  await grab("z", 370, 2460);
+  await release(370, 2460); // z 를 고른다
+  expect(card("z").classList.contains("sel")).toBe(true);
+  await grab("z", 370, 2460);
+  await dragTo(590, 2460, 2000);
+  expect([marked(), outer("z")]).toEqual([[], ["550px", "2420px", "", false]]);
+  await release(590, 2460);
+});
+
+it("그룹 머리를 잡고 끌 때는 켜지 않는다 — 멤버가 40장을 넘고 전부 골라져 있어도", async () => {
+  const cards = manyCards(41);
+  await show(cards, [{ id: "gA", name: "A", cardIds: cards.slice(0, 41).map((item) => item.id), rect: { x: 66, y: 44, w: 2400, h: 1300 } }]);
+  await marqueeAll();
+  await ctrlClick("z");
+  expect([groupPicked("gA"), host.querySelectorAll(".scene-card.sel").length]).toEqual([true, 41]);
+  await grabHead("gA", 100, 50);
+  await dragTo(320, 50, 2000); // +220 — 고른 카드 41장이 그룹과 같이 간다
+  expect([shownAt("p0"), shownAt("p40")]).toEqual([[330, 110], [330, 990]]);
+  expect(marked()).toEqual([]);
+  await release(320, 50);
+  expect([savedX("p0"), rectX("gA")]).toEqual([330, 286]);
+});
+
+it("보드의 카드를 전부 끌 때(판 밀기)는 카드에 표식도 translate 도 달지 않는다 — 캔버스 층 하나만 민다", async () => {
+  await show(manyCards(40), []);
+  await selectAll(); // 41장 전부
+  await grab("p0", 150, 150);
+  await dragTo(700, 150, 2000);
+  expect(canvas().style.translate).toBe("550px 0px");
+  expect(marked()).toEqual([]);
+  await release(700, 150);
+  expect(marked()).toEqual([]);
+});
+
+it("화면 배율이 30% 아래면 켜지 않는다 — 29% 는 전의 길, 30% 는 켠다(translate 는 캔버스 이동량 그대로 — 배율을 곱하지 않는다)", async () => {
+  const at = (zoom: number) => act(async () => {
+    const scene = { id: "S", name: "S", created_at: 0, edges: [], groups: [], cards: manyCards(40), camera: { z: zoom, x: 0, y: 0 } } as never;
+    root.render(<SceneBoard scene={scene} onChange={(patch) => patches.push(patch as Record<string, unknown>)} />);
+  });
+  await at(0.29);
+  await pickAllButZ();
+  await grab("p0", 40, 40);
+  await dragTo(40 + 220 * 0.29, 40, 2000); // 화면에서 63.8px = 캔버스에서 220
+  expect([marked(), outer("p0")]).toEqual([[], ["330px", "110px", "", false]]);
+  await release(40 + 220 * 0.29, 40);
+
+  act(() => root.unmount());
+  root = createRoot(host);
+  await at(0.3);
+  await pickAllButZ();
+  await grab("p0", 40, 40);
+  await dragTo(40 + 220 * 0.3, 40, 2000); // 화면에서 66px = 캔버스에서 220
+  expect(marked().length).toBe(40);
+  expect(outer("p0")).toEqual(["110px", "110px", "220px 0px", true]); // 66px 이 아니다
+  await release(40 + 220 * 0.3, 40);
+  expect(outer("p0")).toEqual(["330px", "110px", "", false]);
+});
+
+it("모니터 배율(devicePixelRatio)이 1 이 아니면 켜지 않는다 — 끄는 중에 바뀌어도 다음 걸음에서 꺼진다", async () => {
+  await show(manyCards(40), []);
+  await pickAllButZ();
+  vi.stubGlobal("devicePixelRatio", 1.25);
+  await grab("p0", 150, 150);
+  await dragTo(370, 150, 2000);
+  expect([marked(), outer("p0")]).toEqual([[], ["330px", "110px", "", false]]);
+  await release(370, 150);
+
+  vi.stubGlobal("devicePixelRatio", 1);
+  await grab("p0", 370, 150);
+  await dragTo(590, 150, 2000);
+  expect(marked().length).toBe(40);
+  vi.stubGlobal("devicePixelRatio", 1.5); // 창을 다른 모니터로 옮겼다 — 따로 지켜보지 않는다. 다음에 그릴 때 본다
+  await dragTo(810, 150, 2000);
+  expect([marked(), outer("p0")]).toEqual([[], ["770px", "110px", "", false]]);
+  vi.stubGlobal("devicePixelRatio", 1); // 돌아와도 그 끌기에서는 다시 켜지 않는다
+  await dragTo(1030, 150, 2000);
+  expect([marked(), outer("p0")]).toEqual([[], ["990px", "110px", "", false]]);
+  await release(1030, 150);
+});
+
+it("끌기가 어느 길로 끝나든 표식과 translate 가 남지 않는다 — 놓기·다른 단추의 mouseup·창 떠남·놓친 mouseup·다음 끌기·씬 전환·화면이 내려감", async () => {
+  const open = (id: string, cards: object[]) => act(async () => {
+    const scene = { id, name: id, created_at: 0, edges: [], groups: [], cards } as never;
+    root.render(<SceneBoard scene={scene} onChange={(patch) => patches.push(patch as Record<string, unknown>)} />);
+  });
+  await open("S", manyCards(40));
+  await pickAllButZ();
+  // 고른 40장을 p0 을 잡고 +220 끌어 둔다(끝내지는 않는다)
+  const dragging = async () => {
+    const x = parseFloat(card("p0").style.left) + 40;
+    await grab("p0", x, 150);
+    await dragTo(x + 220, 150, 2000);
+    expect(marked().length).toBe(40);
+    return x + 220;
+  };
+  const settledAt = (left: number) => expect([marked(), outer("p0")]).toEqual([[], [`${left}px`, "110px", "", false]]);
+
+  let x = await dragging();
+  await release(x, 150);
+  settledAt(330);
+
+  x = await dragging(); // 왼쪽으로 끄는 중에 오른쪽 단추를 눌렀다 놓는다 — 끌기는 그 mouseup 으로 끝난다
+  await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { button: 2, buttons: 1, clientX: x, clientY: 150 })); });
+  settledAt(550);
+
+  await dragging();
+  await act(async () => { window.dispatchEvent(new Event("blur")); }); // 창을 떠났다
+  settledAt(770);
+
+  await dragging();
+  await hoverTo(1500, 600); // 손을 뗀 것을 놓쳤다(단추를 다 뗀 채 움직임)
+  settledAt(990);
+
+  await dragging();
+  await grab("z", 150, 2460); // 끝나지 않은 끌기 위에 다음 누름 — 앞 끌기를 닫는다
+  settledAt(1210);
+  await release(150, 2460); // 누르기만 한 z 가 혼자 골라졌다
+  await pickAllButZ(); // 다시 p 들을 고른다
+
+  await dragging();
+  await open("T", manyCards(40)); // 끄는 중에 씬이 바뀌었다 — id 가 같은 카드들이 있어도 옛 끌기의 표시가 넘어가지 않는다
+  settledAt(110);
+
+  await pickAllButZ();
+  await dragging();
+  act(() => root.unmount()); // 끄는 중에 화면이 내려갔다 — 남을 요소가 없다
+  expect(host.querySelectorAll(".scene-card").length).toBe(0);
+  root = createRoot(host); // afterEach 가 내릴 뿌리
+});
+
+it("끄는 중에 지워도 표시가 남지 않는다 — 끌던 카드들이 사라지고, 되돌리면 표시 없이 끌기 전 자리로 돌아온다", async () => {
+  await show(manyCards(40), []);
+  await pickAllButZ();
+  await grab("p0", 150, 150);
+  await dragTo(370, 150, 2000);
+  expect(marked().length).toBe(40);
+  await key({ key: "Delete", code: "Delete" });
+  expect([...host.querySelectorAll<HTMLElement>(".scene-card")].map((el) => el.dataset.id)).toEqual(["z"]);
+  await dragTo(590, 150, 2000);
+  await release(590, 150);
+  expect([marked(), outer("z")]).toEqual([[], ["110px", "2420px", "", false]]);
+  await undoOnce(); // 한 번에 끌기 전으로 — 되살아난 카드에도 표시가 없다
+  expect(host.querySelectorAll(".scene-card").length).toBe(41);
+  expect([marked(), outer("p0"), outer("p39")]).toEqual([[], ["110px", "110px", "", false], ["2090px", "770px", "", false]]);
+});
+
+// ── 끄는 조건 — 시작할 때만 켤 수 있고, 조건을 잃으면 그 끌기가 끝날 때까지 끈다 ──
+it("끄는 중에 선택이 풀리면(Esc) 그 자리에서 원래 그리기로 돌아간다 — 끌기는 이어지고, 다시 골라도 그 끌기에서는 다시 켜지 않으며, 놓으면 되돌리기 한 단계다", async () => {
+  await act(async () => { root.render(<StoreParent cards={manyCards(40)} />); });
+  await pickAllButZ();
+  await grab("p0", 150, 150);
+  await dragTo(370, 150, 2000); // +220
+  expect(marked().length).toBe(40);
+  await key({ key: "Escape", code: "Escape" }); // 끄는 중의 Esc 는 선택을 푼다 — 포인터를 쥐고 있어도 키는 온다
+  expect(host.querySelectorAll(".scene-card.sel").length).toBe(0);
+  expect(marked()).toEqual([]);
+  expect([outer("p0"), outer("p39")]).toEqual([["330px", "110px", "", false], ["2310px", "770px", "", false]]); // left/top 이 지금 좌표다
+  await dragTo(590, 150, 2000); // 끌기는 이어진다 — 걸음마다 left/top 으로
+  expect([marked(), outer("p0")]).toEqual([[], ["550px", "110px", "", false]]);
+  await selectAll(); // 다시 골라도
+  expect(host.querySelectorAll(".scene-card.sel").length).toBe(41);
+  await dragTo(810, 150, 2000);
+  expect([marked(), outer("p0")]).toEqual([[], ["770px", "110px", "", false]]); // 그 끌기에서는 다시 켜지 않는다
+  await release(810, 150);
+  expect([savedX("p0"), savedX("p39"), savedX("z")]).toEqual([770, 2750, 110]);
+  await undoOnce();
+  expect([savedX("p0"), savedX("p39")]).toEqual([110, 2090]);
+  expect(outer("p0")).toEqual(["110px", "110px", "", false]);
+});
+
+it("끄는 중에 화면 배율이 30% 아래로 내려가면 그 갱신에서 바로 꺼진다(다음 움직임을 기다리지 않는다) — 다시 확대해도 그 끌기에서는 다시 켜지 않는다", async () => {
+  const actionRef = { current: null as { zoomStep: (dir: 1 | -1) => void } | null };
+  await act(async () => {
+    const scene = { id: "S", name: "S", created_at: 0, edges: [], groups: [], cards: manyCards(40), camera: { z: 0.3, x: 0, y: 0 } } as never;
+    root.render(<SceneBoard scene={scene} actionRef={actionRef as never} onChange={(patch) => patches.push(patch as Record<string, unknown>)} />);
+  });
+  const zoom = () => +(/scale[(]([-0-9.]+)[)]/.exec(canvas().style.transform)?.[1] ?? 1);
+  // 지금 배율에서 p0 을 잡고 캔버스 거리 +220 만큼 끈다(누른 자리의 화면 좌표를 돌려준다)
+  const dragByCanvas = async (canvasDx: number) => {
+    await grab("p0", 500, 300);
+    await dragTo(500 + canvasDx * zoom(), 300, 2000);
+  };
+  await pickAllButZ();
+
+  // ① 툴바의 축소(화면 가운데 기준 한 단계)
+  await dragByCanvas(220);
+  expect(marked().length).toBe(40);
+  await act(async () => { actionRef.current!.zoomStep(-1); }); // 30% → 27% — 마우스는 움직이지 않았다
+  expect(zoom()).toBeLessThan(0.295);
+  expect([marked(), outer("p0")]).toEqual([[], ["330px", "110px", "", false]]);
+  await act(async () => { actionRef.current!.zoomStep(1); }); // 다시 30%
+  expect(Math.round(zoom() * 100)).toBe(30);
+  expect(marked()).toEqual([]);
+  await act(async () => { window.dispatchEvent(new MouseEvent("mousemove", { clientX: 505, clientY: 300, buttons: 1 })); frames.splice(0).forEach((cb) => cb(0)); });
+  expect(marked()).toEqual([]); // 걸음이 이어져도 다시 켜지 않는다
+  await release(505, 300);
+  expect(marked()).toEqual([]);
+
+  // ② 휠 축소 — 다음 끌기는 다시 켜지고(배율이 30% 다), 끄는 중의 휠 한 칸에 꺼진다
+  await dragByCanvas(220);
+  expect(marked().length).toBe(40);
+  await act(async () => { board().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 100, clientX: 500, clientY: 300 })); });
+  expect(zoom()).toBeLessThan(0.295);
+  expect(marked()).toEqual([]);
+  await release(500, 300);
+
+  // ③ 화면 맞춤(F) — 고른 카드에 맞추면서 배율이 바뀐다
+  await act(async () => { actionRef.current!.zoomStep(1); }); // 다시 30%
+  await dragByCanvas(220);
+  expect(marked().length).toBe(40);
+  await key({ key: "f", code: "KeyF" });
+  expect(zoom()).toBeLessThan(0.295); // (시험 환경의 보드는 크기가 0 이라 가장 작은 배율로 맞춰진다)
+  expect(marked()).toEqual([]);
+  await release(500, 300);
+});
+
+// 가짜 matchMedia — 질의마다 change 를 듣는 쪽을 적는다(jsdom 에는 matchMedia 가 없다). 모니터 배율이 바뀐 것은
+//  `(resolution: <지금 배율>dppx)` 질의가 어긋나는 것으로 안다.
+function fakeMatchMedia() {
+  const queries: { text: string; listeners: Set<() => void> }[] = [];
+  vi.stubGlobal("matchMedia", (text: string) => {
+    const query = { text, listeners: new Set<() => void>() };
+    queries.push(query);
+    return {
+      media: text,
+      matches: true,
+      addEventListener: (_type: string, listener: () => void) => { query.listeners.add(listener); },
+      removeEventListener: (_type: string, listener: () => void) => { query.listeners.delete(listener); },
+    };
+  });
+  return {
+    queries,
+    /** 지금 듣는 쪽이 붙어 있는 질의들 */
+    listening: () => queries.filter((query) => query.listeners.size > 0).map((query) => query.text),
+    /** 그 질의가 어긋났다고 알린다(듣는 쪽이 붙어 있는 것에만) */
+    change: (text: string) => act(async () => {
+      for (const query of [...queries]) if (query.text === text) [...query.listeners].forEach((listener) => listener());
+    }),
+  };
+}
+
+it("끄는 중에 모니터 배율이 바뀌면 더 움직이지 않아도 꺼진다 — 켜져 있는 동안에만 듣고, 알림이 올 때마다 지금 배율로 다시 듣는다", async () => {
+  const media = fakeMatchMedia();
+  await show(manyCards(40), []);
+  await pickAllButZ();
+  expect(media.listening()).toEqual([]); // 평소에는 듣지 않는다
+  await grab("p0", 150, 150);
+  await dragTo(370, 150, 2000);
+  expect(marked().length).toBe(40);
+  expect(media.listening()).toEqual(["(resolution: 1dppx)"]);
+  // 알림이 왔는데 배율은 그대로다 — 켜진 채 둔다. 질의는 값 하나에 묶여 있으므로 지금 배율로 다시 건다(앞의 것은 거둔다)
+  await media.change("(resolution: 1dppx)");
+  expect([marked().length, media.queries.length, media.listening()]).toEqual([40, 2, ["(resolution: 1dppx)"]]);
+  vi.stubGlobal("devicePixelRatio", 1.5); // 창을 배율이 다른 모니터로 옮겼다 — 마우스는 움직이지 않는다
+  await media.change("(resolution: 1dppx)");
+  expect([marked(), outer("p0")]).toEqual([[], ["330px", "110px", "", false]]);
+  expect(media.listening()).toEqual([]); // 꺼지면 듣기를 거둔다
+  await release(370, 150);
+  expect(savedX("p0")).toBe(330);
+
+  vi.stubGlobal("devicePixelRatio", 1); // 다음 끌기 — 다시 켜지고, 놓으면 듣기를 거둔다
+  await grab("p0", 370, 150);
+  await dragTo(590, 150, 2000);
+  expect([marked().length, media.listening()]).toEqual([40, ["(resolution: 1dppx)"]]);
+  await release(590, 150);
+  expect([marked(), media.listening()]).toEqual([[], []]);
+});
+
+it("화면 배율의 경계는 툴바에 보이는 % 다 — 29% 로 보이는 0.294 는 전의 길, 30% 로 보이는 0.295 는 켠다", async () => {
+  const dragAt = async (zoom: number) => {
+    await act(async () => {
+      const scene = { id: "S", name: "S", created_at: 0, edges: [], groups: [], cards: manyCards(40), camera: { z: zoom, x: 0, y: 0 } } as never;
+      root.render(<SceneBoard scene={scene} onChange={(patch) => patches.push(patch as Record<string, unknown>)} />);
+    });
+    await pickAllButZ();
+    await grab("p0", 40, 40);
+    await dragTo(40 + 220 * zoom, 40, 2000); // 캔버스에서 +220
+    const seen = [marked().length, shownAt("p0")];
+    await release(40 + 220 * zoom, 40);
+    act(() => root.unmount());
+    root = createRoot(host);
+    return seen;
+  };
+  expect(await dragAt(0.294)).toEqual([0, [330, 110]]);
+  expect(await dragAt(0.295)).toEqual([40, [330, 110]]);
+});
+
+// 화면 맞춤(F)은 캔버스를 250ms 에 걸쳐 미끄러뜨리는데(useSceneViewport.frameRects), 줌 저장소는 누른 순간 이미 **목표** 배율을 알린다.
+//  낮은 배율에서 30% 이상인 목표로 가는 중에 끌기를 시작하면 보이는 배율이 아직 문턱 아래인 프레임에 켜졌다(2026-10-11 격리 실측 6/6 —
+//  8% → 43% 에서 두세 프레임). 켜는 순간에는 캔버스가 **지금 실제로 그려지는** 배율(계산된 transform)도 문턱을 넘어야 한다.
+it("화면 맞춤 전환이 도는 중(보이는 배율 9%·목표 43%)에 시작한 끌기는 켜지 않는다 — 전환이 끝난 뒤의 다음 끌기는 켠다", async () => {
+  // 보드에 크기를 준다(1118×900) — 화면 맞춤이 고른 40장(폭 2132)을 43% 로 맞춘다
+  const rectOf = vi.mocked(HTMLElement.prototype.getBoundingClientRect).getMockImplementation()!;
+  vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (this: HTMLElement) {
+    if (this.matches(".scene-board")) return { x: 0, y: 0, left: 0, top: 0, width: 1118, height: 900, right: 1118, bottom: 900, toJSON: noop } as DOMRect;
+    return rectOf.call(this);
+  });
+  const zoom = () => +(/scale[(]([-0-9.]+)[)]/.exec(canvas().style.transform)?.[1] ?? 1); // 목표 배율(캔버스에 써 둔 값)
+  // 브라우저처럼: 전환이 도는 동안 캔버스의 계산된 transform 은 아직 출발 배율(9%)이고, 끝나면 써 둔 값(목표)이다
+  const computed = window.getComputedStyle.bind(window);
+  vi.spyOn(window, "getComputedStyle").mockImplementation((element: Element, pseudo?: string | null) => {
+    if (element !== canvas()) return computed(element, pseudo);
+    const scale = canvas().style.transition ? 0.09 : zoom();
+    return { transform: `matrix(${scale}, 0, 0, ${scale}, 0, 0)` } as CSSStyleDeclaration;
+  });
+  await act(async () => {
+    const scene = { id: "S", name: "S", created_at: 0, edges: [], groups: [], cards: manyCards(40), camera: { z: 0.09, x: 0, y: 0 } } as never;
+    root.render(<SceneBoard scene={scene} onChange={(patch) => patches.push(patch as Record<string, unknown>)} />);
+  });
+  await pickAllButZ();
+  expect(Math.round(zoom() * 100)).toBe(9);
+  // p0 을 잡고 캔버스 거리만큼 끈다(지금의 목표 배율로 화면 거리를 잰다)
+  const dragByCanvas = async (canvasDx: number) => {
+    await grab("p0", 500, 300);
+    await dragTo(500 + canvasDx * zoom(), 300, 2000);
+  };
+
+  await key({ key: "f", code: "KeyF" }); // 화면 맞춤 — 줌 저장소는 곧바로 목표(43%)를 알린다
+  expect([Math.round(zoom() * 100), canvas().style.transition !== ""]).toEqual([43, true]);
+  await dragByCanvas(220); // 전환이 도는 중에 끌기를 시작했다 — 보이는 배율은 아직 9% 다
+  expect([marked(), shownAt("p0")]).toEqual([[], [330, 110]]);
+  await act(async () => { await new Promise((done) => setTimeout(done, 320)); }); // 전환이 끝났다(보이는 배율 43%)
+  expect(canvas().style.transition).toBe("");
+  await dragTo(500 + 440 * zoom(), 300, 2000);
+  expect([marked(), shownAt("p0")]).toEqual([[], [550, 110]]); // 그 끌기에서는 다시 켜지 않는다
+  await release(500 + 440 * zoom(), 300);
+
+  await dragByCanvas(220); // 다음 끌기 — 보이는 배율도 43% 다
+  expect(marked().length).toBe(40);
+  // 켜진 뒤의 화면 맞춤(목표가 30% 이상)은 켜진 채 둔다 — 보이는 배율은 켜는 순간에만 본다(걸음마다 읽지 않는다)
+  await key({ key: "f", code: "KeyF" });
+  expect([canvas().style.transition !== "", Math.round(zoom() * 100), marked().length]).toEqual([true, 43, 40]);
+  await release(500 + 220 * zoom(), 300);
+  expect(marked()).toEqual([]);
 });

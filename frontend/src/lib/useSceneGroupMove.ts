@@ -101,6 +101,8 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
       }
       const latest = optionsRef.current;
       if (!moved) {
+        // 카드 끌기의 '빠른 그리기'(SceneBoard 의 moveOrigins)는 여기서 켜지 않는다 — 그룹 머리로 끄는 멤버는 고르지 않은 카드가
+        //  섞이는 길이고(그 그리기는 고른 카드에만 쓴다), 따로 잰 이득도 없다. 걸음마다 left/top 으로 옮긴다.
         latest.setDraggingIds(memberIds);
         latest.setSelectedGroupIds(new Set(targetGroupIds));
         holdSceneDragPointer(latest.scrollRef.current); // 카드 끌기와 같다(useSceneCardMove)

@@ -283,7 +283,8 @@ it("보드에서 한 장을 한 걸음 끌면 움직인 카드와, 다른 카드
   await grab("r1", 30, 30);
   await renderedDuring(() => dragTo(74, 30)); // 첫 걸음(끌기 시작 — 끄는 중 상태가 켜진다)
   const step = await renderedDuring(() => dragTo(118, 52)); // 걸음 하나: r1 만 움직인다
-  expect(boardCard("r1").style.left).toBe("88px");
+  // 한 장 끌기는 전의 길이다 — 걸음마다 left/top 을 쓴다(translate 로 그리는 길은 고른 카드 40장부터 — 파일 끝의 묶음).
+  expect([boardCard("r1").style.left, boardCard("r1").style.translate || ""]).toEqual(["88px", ""]);
   // 움직인 r1 과 그 안의 썸네일, 그리고 다른 카드의 자리로 순서를 정하는 카드(텍스트·리스트)만.
   //  전엔 전부였다(레퍼런스 3·머리글 2·생성 2·모델 1·Set 1 — 412장 씬 실측 651개): SceneBoard 가 걸음마다 새 함수·객체를 넘겼다.
   expect({
@@ -611,4 +612,198 @@ it("그룹 접기·펴기와 끌어 넣기 — 접으면 멤버 카드가 사라
   clock += 2000;
   await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { button: 0, clientX: 260, clientY: 240 })); });
   expect(count()).toBe("3");
+});
+
+// ── 3·4단계 — 여러 장을 고른 끌기에서 끄는 카드의 속을 다시 그리지 않는다 ──
+// 좌표는 걸음마다 상태에 들어가 카드 객체가 걸음마다 새것이 된다. 그대로 넘기면 움직이는 카드의 속(레퍼런스 158장이면 썸네일까지 316개)이
+//  걸음마다 다시 그려진다. 속은 자리(x·y)를 읽지 않으므로, 끄는 동안 '자리만 다른 같은 카드'가 오면 앞서 넘긴 객체를 그대로 넘긴다.
+//  위험은 '자리만 다른 것으로 잘못 보아 낡은 내용을 쥐는' 경우다 — 값이 바뀜·필드가 생김·필드가 없어짐을 길마다 본다.
+//  이 그리기는 고른 카드 40장 이상을 끌 때만 켜진다(조건과 바깥 틀·끝내는 길은 sceneCardGroupMove.test.tsx).
+const INNER = ["ReferenceCard", "HeadCard", "GenerationCard", "ModelCard", "SetCard"] as const;
+/** 다시 그려진 memo 카드(이름 → 횟수) — 안 그려진 종류는 빠진다. */
+const innerRenders = (step: Record<string, number>) => Object.fromEntries(INNER.filter((name) => step[name]).map((name) => [name, step[name]]));
+const dropAt = (x: number, y: number) => { window.dispatchEvent(new MouseEvent("mouseup", { button: 0, clientX: x, clientY: y })); };
+/** 같이 고를 글 카드 n 장(f0 …)과 고르지 않을 한 장(zz) — 보려는 카드와 합쳐 고른 카드가 40장이 되게 채운다. */
+const fillers = (n: number) => [
+  ...Array.from({ length: n }, (_, i) => ({ id: `f${i}`, kind: "text", x: 2200 + (i % 10) * 220, y: Math.floor(i / 10) * 220, text: `글${i}` })),
+  { id: "zz", kind: "text", x: 0, y: 4400, text: "남는 카드" },
+];
+/** 보드의 카드를 전부 고른 뒤 zz 만 뺀다(전부 고르면 판 밀기라 이 길이 아니다). */
+const pickAllButZz = async () => {
+  await press({ key: "a", code: "KeyA", ctrlKey: true });
+  await click(boardCard("zz"), { ctrlKey: true });
+};
+const outerOf = (id: string) => [boardCard(id).style.left, boardCard(id).style.translate || "", boardCard(id).hasAttribute("data-layer-move")];
+
+it("고른 카드 40장을 끄는 동안 카드의 속은 다시 그려지지 않는다(첫 걸음부터) — 놓을 때 한 번, 새 좌표의 카드를 받아 다시 그린다", async () => {
+  setGens({ gen1: gen("gen1") });
+  const scene = {
+    id: "S", name: "S", created_at: 0, edges: [], groups: [],
+    cards: [
+      ref("r1", 0), ref("r2", 220), { id: "h1", kind: "head", x: 0, y: 330, text: "제목" },
+      { id: "g1", kind: "generation", x: 220, y: 330, genId: "gen1", genIds: ["gen1"] },
+      { id: "m1", kind: "model", x: 0, y: 660 }, { id: "s1", kind: "set", x: 220, y: 660 },
+      ...fillers(34),
+    ],
+  };
+  await act(async () => { root.render(<SceneBoard scene={scene as never} onChange={noop} />); });
+  await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
+  await pickAllButZz();
+  expect(host.querySelectorAll(".scene-card.sel").length).toBe(40);
+  await grab("r1", 30, 30);
+  const first = await renderedDuring(() => dragTo(74, 30)); // 첫 걸음 — 끄는 중 상태가 켜진다
+  const step = await renderedDuring(() => dragTo(118, 52));
+  expect([innerRenders(first), innerRenders(step)]).toEqual([{}, {}]);
+  expect([outerOf("r1"), outerOf("g1")]).toEqual([["0px", "88px 22px", true], ["220px", "88px 22px", true]]);
+  const drop = await renderedDuring(() => dropAt(118, 52));
+  expect(innerRenders(drop)).toEqual({ ReferenceCard: 2, HeadCard: 1, GenerationCard: 1, ModelCard: 1, SetCard: 1 });
+  expect(outerOf("r1")).toEqual(["88px", "", false]);
+});
+
+it("끄는 중에 카드의 내용이 바뀌면 그 카드 속을 바로 다시 그리고, 그 뒤의 걸음에서도 새 내용을 쥔다 — 필드가 생기거나 없어진 것도 내용이 바뀐 것이다", async () => {
+  const head = (patch: Record<string, unknown> = {}) => ({ id: "h1", kind: "head", x: 0, y: 0, text: "가", fontSize: 48, ...patch });
+  const others = fillers(39);
+  let scene: Record<string, unknown> = { id: "S", name: "S", created_at: 0, edges: [], groups: [], cards: [head(), ...others] };
+  let setScene: (next: Record<string, unknown>) => void = noop;
+  function Outside() {
+    const [current, set] = useState(scene);
+    setScene = set;
+    return <SceneBoard scene={current as never} onChange={noop} />;
+  }
+  await act(async () => { root.render(<Outside />); });
+  await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
+  await pickAllButZz();
+  // 다른 창의 편집·늦게 온 결과처럼, 부모가 내용이 다른 카드를 내려 준다(자리는 저장된 옛 자리 그대로다)
+  const arrive = (card: Record<string, unknown>) => renderedDuring(() => { scene = { ...scene, cards: [card, ...others] }; setScene(scene); });
+  const step = (x: number) => renderedDuring(() => dragTo(x, 30));
+  const text = () => inCard("h1", ".scene-headnode-text")!;
+  const look = () => [text().textContent, text().style.fontSize, text().style.color];
+  const plain = look()[2]; // 색을 안 준 머리글의 기본 색
+
+  await grab("h1", 30, 30);
+  expect((await step(74)).HeadCard).toBeUndefined();
+  expect(outerOf("h1")).toEqual(["0px", "44px 0px", true]);
+  expect(look()).toEqual(["가", "48px", plain]);
+
+  expect((await arrive(head({ text: "나" }))).HeadCard).toBe(1); // 값이 바뀌었다
+  expect(look()).toEqual(["나", "48px", plain]);
+  expect((await step(118)).HeadCard).toBeUndefined(); // 그 뒤의 걸음 — 다시 그리지 않고
+  expect(look()).toEqual(["나", "48px", plain]); // 새 내용을 그대로 쥔다
+  expect(outerOf("h1")).toEqual(["0px", "88px 0px", true]);
+
+  expect((await arrive(head({ text: "나", color: "#ff0000" }))).HeadCard).toBe(1); // 필드가 생겼다
+  expect(look()).toEqual(["나", "48px", "rgb(255, 0, 0)"]);
+  expect((await step(162)).HeadCard).toBeUndefined();
+  expect(look()).toEqual(["나", "48px", "rgb(255, 0, 0)"]);
+
+  const noSize: Record<string, unknown> = head({ text: "나", color: "#ff0000" });
+  delete noSize.fontSize;
+  expect((await arrive(noSize)).HeadCard).toBe(1); // 필드가 없어졌다(값이 undefined 가 된 것이 아니라 키가 없다)
+  expect(look()).toEqual(["나", "32px", "rgb(255, 0, 0)"]);
+  expect((await step(206)).HeadCard).toBeUndefined();
+  expect(look()).toEqual(["나", "32px", "rgb(255, 0, 0)"]);
+
+  await act(async () => { dropAt(206, 30); });
+  expect(look()).toEqual(["나", "32px", "rgb(255, 0, 0)"]);
+  expect(outerOf("h1")).toEqual(["176px", "", false]);
+});
+
+it("끄는 중에 id 가 같은 카드가 있는 씬으로 바꾸면 옛 끌기의 것이 넘어가지 않는다 — 표식·translate 가 없고, 카드 속은 새 씬의 카드를 받는다", async () => {
+  const open = (id: string, x: number) => renderedDuring(() => {
+    const scene = { id, name: id, created_at: 0, edges: [], groups: [], cards: [{ id: "h1", kind: "head", x, y: 0, text: "가" }, ...fillers(39)] };
+    root.render(<SceneBoard scene={scene as never} onChange={noop} />);
+  });
+  await open("S", 0);
+  await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
+  await pickAllButZz();
+  await grab("h1", 30, 30);
+  await act(async () => { dragTo(74, 30); });
+  expect(outerOf("h1")).toEqual(["0px", "44px 0px", true]);
+  const switched = await open("T", 440); // 내용은 같고 자리만 다른, id 가 같은 카드들
+  expect(outerOf("h1")).toEqual(["440px", "", false]);
+  expect(host.querySelectorAll(".scene-card[data-layer-move]").length).toBe(0);
+  expect(switched.HeadCard).toBe(1); // 옛 씬에서 쥐고 있던 카드가 아니라 새 씬의 카드를 받았다
+});
+
+it("여러 장을 끌어 놓는 순간의 커밋도 한 번뿐이다 — 새 좌표가 들어가는 그 커밋에서 translate 와 표식이 같이 빠진다", async () => {
+  await act(async () => {
+    root.render(<AppLike first={{ id: "S", name: "S", created_at: 0, edges: [], groups: [], cards: fillers(40) }} />);
+  });
+  await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
+  await pickAllButZz();
+  const commitsDuring = async (fn: () => void) => {
+    rc.commits.length = 0;
+    await act(async () => { fn(); });
+    return rc.commits.length;
+  };
+  await grab("f0", 2230, 30);
+  expect(await commitsDuring(() => dragTo(2274, 30))).toBe(1);
+  expect(await commitsDuring(() => dragTo(2318, 30))).toBe(1); // 걸음마다 커밋 한 번 — 좌표가 들어가고 바깥 틀의 translate 가 같이 바뀐다
+  expect(outerOf("f0")).toEqual(["2200px", "88px 0px", true]);
+  expect(await commitsDuring(() => dropAt(2318, 30))).toBe(1);
+  expect(outerOf("f0")).toEqual(["2288px", "", false]);
+});
+
+// 끄는 동안 속에 다시 안 넘기는 것은 '자리만 다른 카드' 하나뿐이다 — 카드 밖에서 오는 값(생성물 자료·비활성 목록…)은 끄는 중에도 그대로 넘어간다.
+it("끄는 중에 카드 밖의 값이 바뀌면 끌리는 카드의 속도 따라온다 — 결과가 도착하면 노드가 뜨고, 색·비활성이 바뀌면 따라 칠해진다", async () => {
+  const gen1 = gen("gen1");
+  setGens({}); // g1 의 결과가 아직 없다
+  const first = { id: "S", name: "S", created_at: 0, edges: [], groups: [], cards: [{ id: "g1", kind: "generation", x: 0, y: 0, genId: "gen1", genIds: ["gen1"] }, ...fillers(39)] };
+  await act(async () => { root.render(<AppLike first={first} />); });
+  await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
+  await pickAllButZz();
+  await grab("g1", 30, 30);
+  await act(async () => { dragTo(74, 30); });
+  expect([outerOf("g1"), inCard("g1", ".linb-node")]).toEqual([["0px", "44px 0px", true], null]);
+  setGens({ gen1 });
+  await act(async () => { rerenderBoard(); });
+  expect(inCard("g1", '.linb-node[data-id="gen1"]')).not.toBeNull(); // 끌리는 카드에 결과가 떴다
+  setGens({ gen1: { ...gen1, color: "#ff5722" } });
+  await act(async () => { rerenderBoard(); });
+  expect(inCard("g1", ".linb-colorbar")!.style.background).toBe("rgb(255, 87, 34)");
+  fixture.data = { ...fixture.data, disabledIds: new Set(["gen1"]) } as unknown as SceneGenDataApi;
+  await act(async () => { rerenderBoard(); });
+  expect(inCard("g1", ".linb-node")!.classList.contains("disabled")).toBe(true);
+  await act(async () => { dragTo(118, 30); }); // 끌기는 이어진다
+  expect(outerOf("g1")).toEqual(["0px", "88px 0px", true]);
+  await act(async () => { dropAt(118, 30); });
+  expect(outerOf("g1")).toEqual(["88px", "", false]);
+  expect(inCard("g1", ".linb-node")!.classList.contains("disabled")).toBe(true);
+});
+
+it("끄는 중에 선택이 풀리면(Esc) 같은 커밋에서 원래 그리기로 돌아간다 — 그 뒤로는 카드 속이 실제 카드를 받는다(걸음마다 다시 그려진다)", async () => {
+  await act(async () => {
+    root.render(<AppLike first={{ id: "S", name: "S", created_at: 0, edges: [], groups: [], cards: [{ id: "h1", kind: "head", x: 0, y: 0, text: "가" }, ...fillers(39)] }} />);
+  });
+  await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
+  await pickAllButZz();
+  await grab("h1", 30, 30);
+  await act(async () => { dragTo(74, 30); });
+  expect((await renderedDuring(() => dragTo(118, 30))).HeadCard).toBeUndefined(); // 켜져 있는 동안 — 속은 그대로
+  expect(outerOf("h1")).toEqual(["0px", "88px 0px", true]);
+  rc.commits.length = 0;
+  await press({ key: "Escape", code: "Escape" }); // 끄는 중의 Esc — 선택이 풀린다
+  expect(rc.commits.length).toBe(1); // 선택이 풀리는 그 커밋 하나에서
+  expect(host.querySelectorAll(".scene-card.sel").length).toBe(0);
+  expect([outerOf("h1"), host.querySelectorAll(".scene-card[data-layer-move]").length]).toEqual([["88px", "", false], 0]); // left 가 지금 좌표다
+  const after = await renderedDuring(() => dragTo(162, 30)); // 끌기는 이어진다 — 전의 길(걸음마다 새 카드를 넘긴다)
+  expect([after.HeadCard, outerOf("h1")]).toEqual([1, ["132px", "", false]]);
+  await act(async () => { dropAt(162, 30); });
+  expect(outerOf("h1")).toEqual(["132px", "", false]);
+});
+
+it("끄는 카드의 표식(data-layer-move)에는 캔버스 층과 같은 값 0 애니메이션이 걸린다 — 끝없이 돌지 않고, 그 기능을 모르는 브라우저에서는 걸지 않는다", () => {
+  const css = readFileSync(fileURLToPath(new NodeURL("../src/styles/scene.css", import.meta.url)), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((match) => match[1].includes("[data-layer-move]"));
+  expect(rules.length).toBe(1); // 표식을 고르는 규칙은 하나뿐이다 — 카드의 자손을 고르는 규칙을 따로 달지 않는다
+  const [, selector, body] = rules[0];
+  expect(selector.split(",").map((part) => part.trim()).sort()).toEqual([".scene-canvas[data-layer-move]", ".scene-card[data-layer-move]"]);
+  expect(body).toMatch(/animation:\s*scene-layer-noop\s/);
+  expect(body).toMatch(/animation-composition:\s*add/);
+  expect(body).not.toMatch(/infinite/);
+  // @supports (animation-composition: add) 블록 바로 안에 있다 — 모르는 브라우저에서 이 애니메이션은 inline translate 를 덮어 카드가 안 움직인다
+  const opened = css.lastIndexOf("@supports (animation-composition: add)", rules[0].index);
+  expect(opened).toBeGreaterThanOrEqual(0);
+  const between = css.slice(css.indexOf("{", opened) + 1, rules[0].index);
+  expect((between.match(/\{/g) ?? []).length - (between.match(/\}/g) ?? []).length).toBe(0);
 });
