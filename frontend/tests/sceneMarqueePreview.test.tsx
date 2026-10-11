@@ -15,6 +15,7 @@ const noop = () => {};
 let host: HTMLDivElement;
 let root: Root;
 let frames: FrameRequestCallback[] = [];
+let cameraShift = 0; // 화면이 가로로 밀린 만큼 — 끄는 중의 휠(줌·이동)처럼 카드만 화면에서 움직이고 사각형은 그대로다
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -22,14 +23,14 @@ beforeEach(() => {
   vi.stubGlobal("BroadcastChannel", undefined);
   vi.stubGlobal("WebSocket", class { constructor() { throw new Error("Unexpected socket in isolated UI test"); } });
   vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("Unexpected network in isolated UI test"))));
-  frames = [];
+  frames = []; cameraShift = 0;
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
   vi.stubGlobal("cancelAnimationFrame", (id: number) => { frames[id - 1] = noop; });
   // 카드·그룹은 style 의 캔버스 좌표를 화면 위치로 쓴다(확대 100%·이동 0 인 첫 화면과 같다).
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     const on = this.matches(".scene-card, .scene-group");
     const n = (v: string) => (on ? parseFloat(v) || 0 : 0);
-    const [x, y, w, h] = [n(this.style.left), n(this.style.top), n(this.style.width), n(this.style.height)];
+    const [x, y, w, h] = [n(this.style.left) + (on ? cameraShift : 0), n(this.style.top), n(this.style.width), n(this.style.height)];
     return { x, y, left: x, top: y, width: w, height: h, right: x + w, bottom: y + h, toJSON: noop } as DOMRect;
   });
   localStorage.clear();
@@ -227,4 +228,18 @@ it("손 뗌을 놓친 채 카드를 끌어도 범위로 고른 카드가 함께 
   expect(left("a1")).toBeGreaterThan(100);
   expect(left("b1")).toBeGreaterThan(400);
   expect(left("c1")).toBe(1000);
+});
+
+// 2026-10-12 조작 점검 18회차(Codex 전수 검토, 조작 규칙 45): 사각형은 화면에 고정이고 카드는 화면이 움직이면 같이 움직인다. 끄는 중에 휠로
+//  줌·이동을 하고 포인터를 더 움직이지 않은 채 놓으면, 마지막 움직임 때 잰 카드가 확정됐다 — 지금 사각형 안의 카드가 아니다.
+it.each([["손을 뗄 때", "mouseup"], ["창을 벗어나 끌기가 끝날 때", "blur"]])("끄는 중에 화면이 움직였으면 %s 지금 사각형 안의 카드를 확정한다 — 마지막 움직임 때 잰 카드가 아니다", async (_label, ending) => {
+  await show(sceneOf("A", [textCard("a1", 100), textCard("b1", 1000)]));
+  await down(20, 20);
+  await dragTo(600, 600); // a1 만 걸친다
+  expect([shown("a1"), shown("b1")]).toEqual([true, false]);
+  cameraShift = -900; // 누른 채 화면을 밀었다 — a1 은 사각형 밖으로, b1 이 안으로 온다
+  if (ending === "mouseup") await release(600, 600); // 포인터는 더 움직이지 않았다
+  else await act(async () => { window.dispatchEvent(new Event("blur")); });
+  expect([shown("a1"), shown("b1")]).toEqual([false, true]);
+  expect(committed()).toBe(1);
 });
