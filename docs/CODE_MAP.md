@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-10
+updated: 2026-10-11
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -532,7 +532,7 @@ updated: 2026-10-10
 | `SearchBox.tsx`(58줄) | 디바운스 검색 입력 | `SearchBox` |
 | `TopBar.tsx`(150줄) | 상단바(로고·탭·동기화·검색·Assets·계정) | `TopBar` |
 | `app/SelectionActionBar.tsx`(216줄) | 선택바 2종(`BoardSelectionActionBar`·`LibrarySelectionActionBar`) | 위 2개 |
-| `app/AppOverlays.tsx`(113줄) | App 이 띄우는 오버레이 모음(미리보기·정보·비교…) 배선 | `AppOverlays` |
+| `app/AppOverlays.tsx`(172줄) | App 이 띄우는 오버레이 모음(미리보기·정보·비교…) 배선. 코드를 늦게 받는 창의 **틀** `LazyModalShell`(막·겹 번호·Esc 를 여는 순간 쥐고 본문만 늦게 온다) | `AppOverlays`, `VideoCompareOverlay` |
 | `generation/GenerationCardStatusBar.tsx`(154줄) | 카드 하단 S/T/C 상태줄 + 태그 에디터 호스팅 | 〃 |
 | `generation/GenerationCardIcons.tsx`(57줄) | 카드용 SVG 4종 | `ModelIcon` 외 |
 | `generation/GenerationThumbOverlay.tsx`(122줄) | 썸네일 호버 오버레이(정보·미리보기·다운로드) | 〃 |
@@ -755,7 +755,7 @@ updated: 2026-10-10
 | `mediaTypes.ts` | 순수 | 미디어 필터 옵션 상수 |
 | `boardFilters.ts` | 순수 | 캔버스 툴바 필터·폴더 선택 판정(`matchesBoardFilters`·`inBoardFolder`) — 캔버스 노드(안 맞으면 흐리게)와 '생성 결과' 창(안 맞으면 걸러 냄)이 같이 쓴다 |
 | `keyHandled.ts` | 순수 | 한 키 입력을 '이미 쓴 것'으로 표시·확인(`markKeyHandled`·`isKeyHandled`) — 안쪽 처리 뒤 window 전역 단축키가 같은 키를 또 처리하지 않게(전파를 막지 않아 다른 리스너는 그대로 받는다) |
-| `keyGate.ts` | 훅·순수 | 떠 있는 것이 키의 주인 — Esc 겹 등록부(`openLayer`·`isTopLayer`)·`useKeyOwner`(Esc 없는 덮개)·`backgroundKeysBlocked`, 글자 입력 대상 판정 `isTypingTarget`, 초점 잃은 키를 보이는 격자로 `useLooseKeys`, 누르는 순간 위에 뭔가 떠 있었나 `pressStartedCovered`(pointerdown 캡처), 앱이 한 번 거는 `usePageSelectAllGuard`(입력칸 밖 Ctrl+A·조합 중 Enter), 지금 초점이 Tab 으로 왔나 `focusCameByTab`(마우스로 눌러 남은 단추 초점과 구분 — `:focus-visible` 은 아무 키에나 켜져 못 쓴다), 마우스로 만진 슬라이더의 초점 내려놓기 `dropFocusAfterPress`(격자를 품은 창 안이면 그 창으로), 한글 입력 상태의 글자 키를 물리 키로 읽기 `letterFromPhysicalKey`(key 가 Process·자모일 때만, 입력칸 밖에서만) |
+| `keyGate.ts` | 훅·순수 | 떠 있는 것이 키의 주인 — Esc 겹 등록부(`openLayer`·`isTopLayer`)·`useKeyOwner`(Esc 없는 덮개)·`backgroundKeysBlocked`, 글자 입력 대상 판정 `isTypingTarget`, 초점 잃은 키를 보이는 격자로 `useLooseKeys`, 누르는 순간 위에 뭔가 떠 있었나 `pressStartedCovered`(pointerdown 캡처), 앱이 한 번 거는 `usePageSelectAllGuard`(입력칸 밖 Ctrl+A·조합 중 Enter), 지금 초점이 Tab 으로 왔나 `focusCameByTab`(마우스로 눌러 남은 단추 초점과 구분 — `:focus-visible` 은 아무 키에나 켜져 못 쓴다), 마우스로 만진 슬라이더의 초점 내려놓기 `dropFocusAfterPress`(격자를 품은 창 안이면 그 창으로), 한글 입력 상태의 글자 키를 물리 키로 읽기 `letterFromPhysicalKey`(key 가 Process·자모일 때만, 입력칸 밖에서만), **모달의 초점** `useModalFocus`(막이 있는 창 — 열릴 때 뿌리로·Tab 은 안에서 돈다·닫히면 연 자리로. 새 모달은 이 훅을 건다), body 로 띄운 패널의 주인 찾기 `floatHost` |
 | `appConstants.ts` | 순수 | 빈 facets·단축키 색 매핑 상수 |
 
 **7. 생성 라이브러리 — 표시·판정(순수)(11)**
@@ -828,7 +828,7 @@ updated: 2026-10-10
 | `sceneMedia.ts` | 순수 | 씬 레퍼런스 썸네일·미디어 종류 |
 | `sceneSet.ts` | 순수 | Set 노드 태그 파싱·폴더 드래그 페이로드 |
 | `sceneGroupSelection.ts` | 순수 | 그룹 클릭/드래그 대상 계산 |
-| `sceneDragSession.ts` | 순수 | 전역 드래그 리스너 + rAF 합치기(환경 주입) |
+| `sceneDragSession.ts` | 순수 | 전역 드래그 리스너 + rAF 합치기(환경 주입). 이동 이벤트의 `buttons` 가 0 이면 놓친 mouseup 으로 보고 취소의 길로 끝낸다 — 끌기를 흉내 내는 시험은 `buttons: 1` |
 | `marquee.ts` | 순수 | 러버밴드 사각형·적중 판정(생성·에셋 공용) |
 | `recipeScene.ts` | 순수 | 생성물 → "어떻게 만들었나" 씬 변환 |
 
@@ -839,7 +839,7 @@ updated: 2026-10-10
 | `useSceneCoordination.ts` | 훅 | 씬 목록·CRUD·백업·소속 병합 배선(App.tsx 추출) |
 | `useSceneGenData.ts` | 훅 | genId→생성물 바인딩·폴링·계보·색 원장 · `libraryChanged`·`generationTagsSettled` 를 받으면 0.3초 모아 다시 읽는다 |
 | `useSceneViewport.ts` | 훅 | 카메라 상태·휠/드래그 배선·저장 지연 |
-| `useSceneCardMove.ts` | 훅 | 카드 드래그 이동·그룹 재배정·이탈 |
+| `useSceneCardMove.ts` | 훅 | 카드 드래그 이동·그룹 재배정·이탈. 끄는 동안 보드가 포인터를 쥔다(`holdSceneDragPointer`·`endSceneDragPointer` — 그룹 끌기도 같이 쓴다) |
 | `useSceneGroupMove.ts` | 훅 | 그룹 드래그 이동 |
 | `useSceneCardResize.ts` | 훅 | 카드 리사이즈 드래그 |
 | `useSceneMarqueeSelection.ts` | 훅 | 캔버스 마퀴 선택(캔버스 사각형은 상태 없이 요소를 직접 옮김 · `previewSelection` 이 있으면 끄는 동안은 선택 표시만, 손 떼거나 blur 때 한 번 확정 · `settle` = 다른 입력 전에 지금 확정, `forget` = 버린 끌기 잊기) |
@@ -968,7 +968,8 @@ updated: 2026-10-10
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
-| `useEscapeClose.ts` | 훅 | Esc 로 닫기(lib 최다 공용 훅) — 겹쳐 있으면 **맨 위 겹만** 닫고 그 Esc 를 '쓴 것'으로 표시한다. 켜진 겹은 뒤 화면의 단축키도 쉬게 한다(`lib/keyGate`). 뒤 화면의 Esc(선택 해제·폴더 창 닫기)는 `useBackgroundEscape` |
+| `useEscapeClose.ts` | 훅 | Esc 로 닫기(lib 최다 공용 훅) — 겹쳐 있으면 **맨 위 겹만** 닫고 그 Esc 를 '쓴 것'으로 표시한다. 켜진 겹은 뒤 화면의 단축키도 쉬게 한다(`lib/keyGate`). 뒤 화면의 Esc(선택 해제·폴더 창 닫기)는 `useBackgroundEscape`. 코드를 늦게 받는 창은 `useWindowEscape`(틀 `LazyModalShell` 이 있으면 Esc 를 틀에 넘긴다) |
+| `useDragEndReset.ts` | 훅 | 놓기 대상의 강조를 끌기가 어디서 끝나든 끈다 — 강조가 켜진 동안만 window 의 `dragend` 를 듣는다(대상 위에서 취소하면 dragleave 가 오지 않는다) |
 | `useOverlayDismiss.ts` | 훅 | 오버레이 바깥 클릭/Esc 통합 해제 |
 | `useOutsideMouseDown.ts` | 훅 | 바깥 누름 감지(mousedown + pointerdown — 누름을 pointerdown 에서 막는 곳을 눌러도 닫힌다. pointerdown 은 **잡는 단계**로 듣는다 — 사이드바 폭 손잡이는 전파까지 멈춘다) |
 | `useOutsideDragSelect.ts` | 훅 | 빈 곳 드래그 선택 시작 위임 |
@@ -1165,7 +1166,7 @@ updated: 2026-10-10
 | `tools/graft.ps1`(72줄) | graft CLI 래퍼(`callers`/`grep`/`blast`/`skeleton`) — 항상 이 래퍼로만 호출 |
 | `tools/lint_docs.ps1`(272줄) | 문서 규칙 검사(`npm run lint:docs` 가 호출) |
 | `tools/check_code_map.py` | 이 문서와 저장소의 양방향 대조(없는 파일 이름·빠진 파일) — 수동 실행, 게이트 미연결(§6) |
-| `tools/browser_measure/servers.py` | **격리 브라우저 실측용 서버 두 대**(H=AUTH off 허브·S=AUTH on+일회용 관리자) 기동·종료. 시험 DB 를 읽기 전용 backup 으로 복사 → 공유 서버 토큰·주소와 프로젝트의 실제 폴더 경로(`project_folder_link`·`render_root_path`) 제거 → 부모 셸의 `CONTENT_HUB_*` 를 전부 버린 환경(`server_env`) + CLI 를 뺀 PATH → 기동 뒤 격리를 **확인 못 하면 스스로 내림**. `stop` 은 자기가 띄운 것만 종료하고 복사본을 지운다. 안전 장치 시험 `backend/tests/test_browser_measure_isolation.py`. 절차 = [TESTING.md](TESTING.md) "격리 브라우저 실측". ⚠ 도구가 없애는 것은 Assets **자동 마운트**뿐이다 — 손으로 폴더를 등록하면 실제 폴더에 쓴다(운영 규칙으로 금지) |
+| `tools/browser_measure/servers.py` | **격리 브라우저 실측용 서버 두 대**(H=AUTH off 허브·S=AUTH on+일회용 관리자) 기동·종료. 시험 DB 를 읽기 전용 backup 으로 복사 → 공유 서버 토큰·주소와 프로젝트의 실제 폴더 경로(`project_folder_link`·`render_root_path`) 제거 → 부모 셸의 `CONTENT_HUB_*` 를 전부 버린 환경(`server_env`) + CLI 를 뺀 PATH → 기동 뒤 격리를 **확인 못 하면 스스로 내림**. `stop` 은 자기가 띄운 것만 종료하고 복사본을 지운다(작업 폴더의 표식 파일로 자기 폴더를 알아본다). `--source` 로 원본 자료의 자리를 바꾼다 — 원본과 작업 폴더가 겹치면 거절. 안전 장치 시험 `backend/tests/test_browser_measure_isolation.py`·`test_round7_startup.py`. 절차 = [TESTING.md](TESTING.md) "격리 브라우저 실측". ⚠ 도구가 없애는 것은 Assets **자동 마운트**뿐이다 — 손으로 폴더를 등록하면 실제 폴더에 쓴다(운영 규칙으로 금지) |
 | `tools/browser_measure/cdp.py` | 헤드리스 Chrome/Edge 를 DevTools 프로토콜로 모는 드라이버(venv 의 `websockets` 만). 콘솔·실패 응답·**모든 비-GET 요청**·네이티브 대화상자를 모은다(`confirm()` 을 처리하지 않으면 모든 명령이 멈춘다) |
 | `tools/browser_measure/walk.py` | 실측 단계 러너(동작→상태 조사→이벤트 회수, 단계별 JSON) + 로그인·선택자 도우미. 판정은 `ok`/`stale`(대상 없음 = 시나리오가 낡음)/`failed`(제품 확인). **기본 모드의 결과에는 자유 문장을 남기지 않는다**(수치·클래스·이벤트 종류와 **라우트 틀**·고정 어휘 `reason`만 — 실제 경로의 동적 조각에는 이름이 실리므로 `docs/inventory/endpoints.md` 의 틀로 바꾸고 틀에 없으면 `/api/{…}` 로 줄인다. 원문은 verbose, 이메일은 `%40` 꼴까지 가림). 생성 요청 수(`gen_requests`)는 가리기 전 원문에서 센다. → `cdp.py`, `docs/inventory/endpoints.md` |
 | `tools/browser_measure/smoke.py` | 핵심 화면 41단계 시나리오(보기·검색·카드 단축키·미리보기·다중 선택·탭·도크·**처음 연 창의 Esc 1회**·분리 창). 종료 코드 0 통과 · 1 제품 확인 필요(실패·`/api/gen-requests` 요청 발생) · 2 시나리오만 낡음. `--shots`·`--verbose` 는 선택. 유료·외부 실행 단추는 누르지 않는다. → `walk.py` |
