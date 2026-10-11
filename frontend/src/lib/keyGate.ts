@@ -168,6 +168,7 @@ if (typeof document !== "undefined") {
   //   · 반복 재생이 **도는 중에** 처음으로 돌아가는 탐색은 사용자의 조작이 아니다 — 그때 옮기면 조작부에서 연 메뉴(더보기)가 닫힌다.
   //     멈춘 영상의 처음 언저리 탐색은 조작이다(크게 보기의 영상은 늘 loop 라, 멈춤을 안 보면 그 탐색 뒤의 Esc 가 다시 죽는다).
   //     시간값만으로 둘을 완전히 가를 수는 없다 — 도는 중에 사용자가 0.25초 안으로 옮긴 탐색은 놓친다(크롬은 끄는 동안 영상을 멈추므로 드물다).
+  //   · 남는 틈: 매체 이벤트가 하나도 안 나는 누름(0초에 멈춘 영상의 시간 줄 맨 앞을 누름 — 값이 안 바뀐다)은 알 길이 없다.
   //   · 키보드로 조작부를 쓰는 중(마지막으로 본 초점 이동이 Tab)이면 둔다 — 초점을 빼면 다음 키가 엉뚱한 곳으로 간다.
   //     남는 구멍: Tab 을 누른 뒤 마우스로 조작부를 누르면 옮기지 못한다(조작부 위의 누름이 페이지에 오지 않아 Tab 기록이 안 꺼진다).
   //     매체 위의 마우스 움직임으로 가르지 않는다 — 움직임은 누를 뜻이 아니고, 키보드로 쓰는 중에 스친 마우스가 보호를 풀게 된다(Codex 리뷰).
@@ -178,10 +179,12 @@ if (typeof document !== "undefined") {
     if (!(media instanceof HTMLMediaElement) || !media.controls || document.activeElement !== media) return;
     if (focusByTab) return;
     if (document.fullscreenElement || document.pictureInPictureElement) return;
-    if (e.type === "seeked" && media.loop && !media.paused && media.currentTime < LOOP_WRAP_SECONDS) return;
+    const seek = e.type === "seeking" || e.type === "seeked";
+    if (seek && media.loop && !media.paused && media.currentTime < LOOP_WRAP_SECONDS) return;
     media.focus({ preventScroll: true });
   };
-  for (const type of ["play", "pause", "seeked", "volumechange"]) document.addEventListener(type, focusMediaItself, true);
+  // seeking 도 건다 — 영상을 덜 받은 채 시간 줄을 누르면 seeked 가 수십 초 뒤에 온다(실측 20.8초). 그동안에도 Esc 가 들어야 한다.
+  for (const type of ["play", "pause", "seeking", "seeked", "volumechange"]) document.addEventListener(type, focusMediaItself, true);
 }
 
 /** 이 누름이 시작될 때(또는 지금) 위에 창·메뉴가 떠 있었나 — 뒤 화면의 mousedown 처리가 첫 줄에서 본다. */
