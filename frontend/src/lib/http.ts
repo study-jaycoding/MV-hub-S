@@ -52,6 +52,18 @@ export class HttpError extends Error {
     this.status = status;
     this.detail = detail;
   }
+
+  // 글로 바꾸면 여느 Error 와 같은 모양이다("Error: 500: …"). 안내를 만드는 곳들이 `String(e)` 의 "Error: " 앞머리만 떼는데, 이름이
+  //  "HttpError" 라 그 치환을 지나 "HttpError: 500: …" 이 화면에 그대로 보였다(조작 점검 14회 격리 실측 — 단위 시험은 `new Error("…")` 로
+  //  흉내 내어 못 봤다). 이름(`name`)은 그대로 둔다.
+  toString(): string {
+    return `Error: ${this.message}`;
+  }
+}
+
+/** 안내에 붙일 실패 까닭 — 앞머리("Error: "·상태코드 "500: ")를 뗀, 서버가 준 글만. */
+export function errorDetail(error: unknown): string {
+  return String(error).replace(/^\w*Error:\s*(\d{3}:\s*)?/, "");
 }
 
 export function isHttpStatus(error: unknown, ...codes: number[]): boolean {

@@ -20,6 +20,7 @@ import {
   planningBudgetInput,
   validateProjectPlanning,
 } from "../../lib/projectPlanning";
+import { errorDetail } from "../../lib/http";
 import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useHandleRelease } from "../../lib/useDragEndReset";
@@ -161,7 +162,7 @@ export function ProjectManagerPanel({
       })
       .catch((reason) => {
         // 받아 둔 목록은 두고 알린다(조작 규칙 41) — 전엔 목록을 비워, 다시 읽기에 한 번 실패하면 프로젝트가 전부 '없음'으로 보였다.
-        if (isLatest()) setActMsg(`프로젝트 목록을 불러오지 못했습니다. ${String(reason).replace(/^Error:\s*/, "")}`);
+        if (isLatest()) setActMsg(`프로젝트 목록을 불러오지 못했습니다. ${errorDetail(reason)}`);
       });
   };
   useEffect(() => {
@@ -443,7 +444,7 @@ export function ProjectManagerPanel({
     }
   };
   // 실패하면 알린다(조작 규칙 41) — 전엔 받는 곳이 없어 단추를 눌러도 아무 일도 안 일어난 것처럼 보였다(보관·삭제·순서).
-  const failed = (what: string, reason: unknown) => setActMsg(`${what} ${String(reason).replace(/^Error:\s*/, "")}`);
+  const failed = (what: string, reason: unknown) => setActMsg(`${what} ${errorDetail(reason)}`);
   const toggleArchive = async (p: Project) => {
     try {
       await api.updateProject(p.id, { archived: !p.archived });

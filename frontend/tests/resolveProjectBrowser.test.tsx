@@ -249,7 +249,7 @@ it("연결이 끝나면 '다시 확인' 없이 바로 목록이 나온다", asyn
 
 it("연결이 실패하면 목록을 다시 읽지 않고 이유를 가운데 보여 준다", async () => {
   emptyLibrary();
-  // 실제 jsonFetch 와 같은 모양(src/lib/http.ts) — 문자열로 바꾸면 "HttpError: 400: …".
+  // 실제 jsonFetch 와 같은 모양(src/lib/http.ts) — 문자열로 바꾸면 "Error: 400: …".
   const detail = "DaVinci Resolve가 실행 중이지 않습니다. 먼저 Resolve를 켜세요.";
   mocks.connect.mockRejectedValueOnce(new HttpError(400, `400: ${detail}`, detail));
   act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));

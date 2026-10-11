@@ -281,7 +281,7 @@ it("취소 요청이 실패하면 알리고 단추를 되돌린다 — 다시 �
   await act(async () => {});
   const cancel = () => host.querySelector<HTMLButtonElement>(".export-cancel")!;
   await act(async () => { cancel().click(); });
-  expect(texts(".export-err").join(" ")).toContain("저장을 멈추지 못했습니다 — 저장은 계속 돌고 있습니다. 다시 눌러 주세요. 502: 서버에 닿지 않습니다");
+  expect(texts(".export-err").join(" ")).toContain("저장을 멈추지 못했습니다 — 저장은 계속 돌고 있습니다. 다시 눌러 주세요. 서버에 닿지 않습니다");
   expect([cancel().disabled, cancel().textContent]).toEqual([false, "취소"]);
   await act(async () => { cancel().click(); });
   expect(saveFinalsCancel).toHaveBeenCalledTimes(2);
