@@ -45,9 +45,9 @@ export function useAssetCommentActions({
       .then((c) => {
         if (openTargetRef.current === target) setComments(c);
       })
-      .catch(() => {
-        if (openTargetRef.current === target) setComments([]);
-      });
+      // 실패해도 비우지 않는다(조작 규칙 41) — 열 때 이미 비웠다. 여기서 또 비우면, 닫았다 같은 파일을 다시 열어 받은 코멘트를
+      //  앞서 연 조회의 늦은 실패가 지운다(대상이 같아 위의 가드를 지난다 — Codex 코드 리뷰).
+      .catch(() => {});
     api
       .markCommentsRead(project, path)
       .then(reconcile)
@@ -65,20 +65,36 @@ export function useAssetCommentActions({
     });
   };
 
-  const sendComment = (text: string, parentId: string | null | undefined, isPrivate: boolean) => {
+  // 저장됐는지를 돌려준다(조작 규칙 41) — 패널은 저장된 뒤에야 입력을 비운다. 저장은 됐는데 그 뒤의 다시 읽기가 실패한 것은
+  // '저장 실패'가 아니다.
+  const sendComment = (text: string, parentId: string | null | undefined, isPrivate: boolean): Promise<boolean> => {
     const trimmed = text.trim();
-    if (!commentPath || !trimmed) return;
-    api
-      .addAssetComment(project, commentPath, trimmed, parentId, isPrivate)
-      .then(refreshComments)
-      .then(reconcile)
-      .catch(() => flashMsg("코멘트 전송 실패 — 다시 시도하세요"));
+    if (!commentPath || !trimmed) return Promise.resolve(false);
+    return api.addAssetComment(project, commentPath, trimmed, parentId, isPrivate).then(
+      () => {
+        void refreshComments().then(reconcile).catch(() => {});
+        return true;
+      },
+      () => {
+        flashMsg("코멘트 전송 실패 — 다시 시도하세요");
+        return false;
+      },
+    );
   };
 
-  const editComment = (id: string, text: string) => {
+  const editComment = (id: string, text: string): Promise<boolean> => {
     const trimmed = text.trim();
-    if (!trimmed) return;
-    api.editAssetComment(id, trimmed).then(refreshComments).catch((error) => alert(String(error)));
+    if (!trimmed) return Promise.resolve(false);
+    return api.editAssetComment(id, trimmed).then(
+      () => {
+        void refreshComments().catch(() => {});
+        return true;
+      },
+      (error) => {
+        alert(String(error));
+        return false;
+      },
+    );
   };
 
   const delComment = (id: string) => {

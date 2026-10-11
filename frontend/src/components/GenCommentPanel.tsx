@@ -53,12 +53,15 @@ export function GenCommentPanel({
       .then((c) => {
         if (my === seqRef.current) setComments(c);
       })
-      .catch(() => {
-        if (!cached && my === seqRef.current) setComments([]);
-      });
+      // 실패하면 보이던 것을 둔다(조작 규칙 41) — 전엔 비워서, 코멘트를 저장한 뒤의 다시 읽기가 실패하면 "아직 코멘트가 없습니다"가 됐다.
+      //  앞 카드의 코멘트가 남을 일은 없다: 카드가 바뀌는 순간 아래에서 걷는다.
+      .catch(() => {});
   }, [genId]);
 
   useEffect(() => {
+    // 카드가 바뀌면 앞 카드의 코멘트를 바로 걷는다(캐시가 있으면 refresh 가 그것을 넣는다) — 전엔 응답이 올 때까지 새 제목 아래 앞 카드의
+    //  코멘트가 보였고, 거기에 단 답글은 새 카드에 앞 카드의 부모 id 로 나갔다.
+    setComments([]);
     refresh();
     // 패널을 열어도 자동 전체 읽음 처리하지 않는다. 새 코멘트는 클릭 확인 때 seen 처리한다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -80,20 +83,36 @@ export function GenCommentPanel({
       );
   };
 
-  const sendComment = (text: string, parentId: string | null | undefined, isPrivate: boolean) => {
+  // 저장됐는지를 돌려준다(조작 규칙 41) — 패널은 저장된 뒤에야 입력을 비운다. 전엔 보내자마자 비워, 실패하면 쓴 글이 사라졌다.
+  //  저장은 됐는데 그 뒤의 다시 읽기가 실패한 것은 '저장 실패'가 아니다(글은 올라갔다 — 목록은 다음 조회에 맞는다).
+  const sendComment = (text: string, parentId: string | null | undefined, isPrivate: boolean): Promise<boolean> => {
     const t = text.trim();
-    if (!t) return;
-    api
-      .addGenComment(genId, t, parentId, isPrivate)
-      .then(refresh)
-      .then(onChanged)
-      .catch(() => flashMsg("코멘트 전송 실패 — 다시 시도하세요"));
+    if (!t) return Promise.resolve(false);
+    return api.addGenComment(genId, t, parentId, isPrivate).then(
+      () => {
+        void refresh().then(onChanged);
+        return true;
+      },
+      () => {
+        flashMsg("코멘트 전송 실패 — 다시 시도하세요");
+        return false;
+      },
+    );
   };
 
-  const editComment = (id: string, text: string) => {
+  const editComment = (id: string, text: string): Promise<boolean> => {
     const t = text.trim();
-    if (!t) return;
-    api.editGenComment(id, t).then(refresh).catch((e) => alert(String(e)));
+    if (!t) return Promise.resolve(false);
+    return api.editGenComment(id, t).then(
+      () => {
+        void refresh();
+        return true;
+      },
+      (e) => {
+        alert(String(e));
+        return false;
+      },
+    );
   };
 
   const delComment = (id: string) => {
@@ -118,6 +137,7 @@ export function GenCommentPanel({
       onEdit={editComment}
       onDelete={delComment}
       onSeen={confirmSeen}
+      targetKey={genId}
     />
   );
 }

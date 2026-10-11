@@ -1,6 +1,6 @@
 import { backgroundKeysBlocked } from "../../lib/keyGate";
 import { markKeyHandled } from "../../lib/keyHandled";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, Ref } from "react";
 import { buildCommentTree } from "../../lib/commentTree";
 import { fmtWhen } from "../../lib/format";
@@ -62,6 +62,7 @@ export function CommentPanel<T extends CommentPanelItem>({
   onEdit,
   onDelete,
   onSeen,
+  targetKey,
 }: {
   comments: T[];
   label: string;
@@ -72,10 +73,13 @@ export function CommentPanel<T extends CommentPanelItem>({
   fallbackPos?: { x: number; y: number };
   onHeadMouseDown: (e: ReactMouseEvent, fallback?: { x: number; y: number }) => void;
   onClose: () => void;
-  onSend: (text: string, parentId: string | null | undefined, isPrivate: boolean) => void;
-  onEdit: (id: string, text: string) => void;
+  // 둘 다 '저장됐는가'를 돌려준다 — 저장된 뒤에야 입력을 비우고 칸을 닫는다(실패하면 쓴 글이 남는다)
+  onSend: (text: string, parentId: string | null | undefined, isPrivate: boolean) => Promise<boolean>;
+  onEdit: (id: string, text: string) => Promise<boolean>;
   onDelete: (id: string) => void;
   onSeen?: (comment: T) => void;
+  // 패널이 보고 있는 대상 — 패널을 다시 만들지 않고 대상만 바꾸는 쪽(생성물 패널은 고른 카드를 따라간다)이 준다
+  targetKey?: string;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [replyingId, setReplyingId] = useState<string | null>(null);
@@ -108,17 +112,35 @@ export function CommentPanel<T extends CommentPanelItem>({
   // 공유 부모는 서버에서 지워지는데 비공개 답글은 로컬에 남아 부모 없는 고아가 된다(적대 리뷰 P2).
   const fullTree = useMemo(() => buildCommentTree(comments), [comments]);
 
-  const submitComment = (text: string, parentId?: string | null) => {
-    setReplyingId(null);
+  // 쓴 글은 **저장된 뒤에** 비운다(조작 규칙 41). 전엔 보내자마자 입력을 비우고 답글·수정 칸을 닫아, 서버가 실패하면 "전송 실패"만 뜨고
+  //  쓴 글이 사라졌다 — 다시 시도하려면 다시 써야 했다. 보내는 동안은 그 칸을 읽기 전용으로 두고 다시 보내지 않는다(전엔 바로 비우는 것이
+  //  Enter 연타를 막았다). 성공하면 비우고 done(답글·수정 칸 닫기), 실패하면 글과 칸을 그대로 둔다.
+  const sendingRef = useRef(new WeakSet<HTMLInputElement>());
+  const targetRef = useRef(targetKey);
+  targetRef.current = targetKey;
+  const submitFrom = async (input: HTMLInputElement, send: (text: string) => Promise<boolean>, done?: () => void) => {
+    const text = input.value;
+    if (!text.trim() || sendingRef.current.has(input)) return;
+    const sentFor = targetRef.current;
+    sendingRef.current.add(input);
+    input.readOnly = true;
+    const saved = await send(text).catch(() => false);
+    sendingRef.current.delete(input);
+    input.readOnly = false;
+    // 실패한 글과 칸은 남긴다. 다만 기다리는 사이 패널이 다른 대상으로 넘어갔으면 치운다 — 남겨 두면 다시 보낼 때 새 대상에 달린다.
+    if (!saved && targetRef.current === sentFor) return;
+    input.value = "";
+    // 칸을 닫는 것은 보낸 그 칸이 아직 떠 있을 때만 — 기다리는 사이 닫았다 다시 열었거나 다른 글의 칸을 열었으면 지금 칸은 새 칸이다.
+    if (input.isConnected) done?.();
+  };
+  const submitComment = (input: HTMLInputElement, parentId?: string | null) => {
     // 비공개 코멘트에 단 답글은 무조건 비공개 — 공유로 나가면 팀에겐 부모 없는 답글이 된다.
     const parentPrivate = !!(parentId && byId[parentId]?.private);
-    onSend(text, parentId, parentPrivate || writePrivate);
+    return submitFrom(input, (text) => onSend(text, parentId, parentPrivate || writePrivate), parentId ? () => setReplyingId(null) : undefined);
   };
 
-  const submitEdit = (id: string, text: string) => {
-    setEditingId(null);
-    onEdit(id, text);
-  };
+  const submitEdit = (id: string, input: HTMLInputElement) =>
+    submitFrom(input, (text) => onEdit(id, text), () => setEditingId(null));
 
   const renderRow = (c: T, isReply: boolean, replyToName: string | null) => {
     const mine = c.author === myId;
@@ -188,8 +210,7 @@ export function CommentPanel<T extends CommentPanelItem>({
             className="cmt-mini"
             onSubmit={(e) => {
               e.preventDefault();
-              const el = e.currentTarget.elements.namedItem("e") as HTMLInputElement;
-              submitEdit(c.id, el.value);
+              void submitEdit(c.id, e.currentTarget.elements.namedItem("e") as HTMLInputElement);
             }}
           >
             <input
@@ -209,9 +230,7 @@ export function CommentPanel<T extends CommentPanelItem>({
             className="cmt-mini"
             onSubmit={(e) => {
               e.preventDefault();
-              const el = e.currentTarget.elements.namedItem("r") as HTMLInputElement;
-              submitComment(el.value, c.id);
-              el.value = "";
+              void submitComment(e.currentTarget.elements.namedItem("r") as HTMLInputElement, c.id);
             }}
           >
             <input
@@ -290,9 +309,7 @@ export function CommentPanel<T extends CommentPanelItem>({
         className="cmt-input"
         onSubmit={(e) => {
           e.preventDefault();
-          const el = e.currentTarget.elements.namedItem("c") as HTMLInputElement;
-          submitComment(el.value);
-          el.value = "";
+          void submitComment(e.currentTarget.elements.namedItem("c") as HTMLInputElement);
         }}
       >
         <input
