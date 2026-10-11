@@ -36,12 +36,18 @@ export function useGenerationFilterActions({
   };
 
   const deleteTagEverywhere = async (tag: string) => {
-    const affected = gensRef.current.filter((g) => g.tags.includes(tag)).length;
-    if (!window.confirm(`태그 "#${tag}" 를 ${affected}건에서 삭제할까요?`)) return;
+    // 확인창의 수는 지금 목록에서 센 것일 뿐이다(조작 규칙 42) — 삭제는 태그 이름으로 나가, 다른 폴더·아직 불러오지 않은 쪽의 카드에서도
+    //  지운다. 전엔 "N건에서 삭제할까요?"라고만 물어 보이는 N건만 지우는 줄 알았다. 끝나면 서버가 실제로 지운 수를 알린다.
+    const shown = gensRef.current.filter((g) => g.tags.includes(tag)).length;
+    if (!window.confirm(
+      `태그 "#${tag}" 를 모든 카드에서 삭제할까요?\n` +
+        `지금 목록에 보이는 것은 ${shown}건이지만, 다른 폴더·아직 불러오지 않은 카드에 붙은 것도 함께 지워집니다.`,
+    )) return;
     try {
-      await api.deleteTag(tag);
+      const { removed } = await api.deleteTag(tag);
       setTagFilter((prev) => withoutSetValue(prev, tag));
       await reload();
+      flash(`태그 "#${tag}" 를 ${removed}건에서 삭제했습니다.`);
     } catch (e) {
       flash("태그 삭제 실패: " + String(e));
     }

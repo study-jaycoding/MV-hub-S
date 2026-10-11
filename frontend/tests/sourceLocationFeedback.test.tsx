@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AssetCell } from "../src/components/assets/AssetCell";
+import { copyAssetFiles } from "../src/components/assets/assetsViewModel";
 import { InfoPopup } from "../src/components/InfoPopup";
 import { api } from "../src/api";
 import { flashMsg } from "../src/lib/flash";
@@ -140,3 +141,47 @@ for (const route of ["grid", "list", "info"]) {
     });
   }
 }
+
+// 15회차(조작 규칙 42): 여러 장을 고르고 📋 를 누르면 서버가 OS 클립보드에 파일들을 올린다 — 한 번에 올리는 수에 상한이 있고(20개)
+//  미디어가 아닌 파일은 건너뛴다. 전엔 서버가 돌려준 수를 버려, 21개를 고르면 20개만 올라가는데 타일은 '21개 복사됨'이라고 했다.
+it("Assets 타일의 여러 장 복사 — 실제로 올라간 수로 알리고, 고른 수보다 적으면 따로 알린다", async () => {
+  const copy = vi.fn<(path: string) => Promise<{ asked: number; copied: number }>>();
+  act(() => root.render(<AssetCell project="fixture" node={node} idx={0} layout="grid" scale={1} fit="contain" selected focused={false} meta={meta} editingTag={false}
+    selectedCount={21} onCopyFiles={copy}
+    onS={noop} onT={noop} onC={noop} onTagsReplace={noop} onBulkTagAdd={noop} onBulkTagRemove={noop} onTagCancel={noop} onInfo={noop} onExportDrag={noop} />));
+  const button = () => [...host.querySelectorAll<HTMLButtonElement>("button.ov-icon")].find((item) => item.title.includes("복사"))!;
+  expect(button().title).toBe("선택한 21개 복사 → 대화창에서 Ctrl+V");
+  copy.mockResolvedValueOnce({ asked: 21, copied: 20 });
+  await act(async () => { button().click(); });
+  expect(copy).toHaveBeenCalledExactlyOnceWith("folder/fixture.png");
+  expect(button().title).toBe("20개 복사됨! 대화창에서 Ctrl+V"); // 전엔 21개
+  expect(flashMsg).toHaveBeenCalledExactlyOnceWith("21개 중 20개만 복사했습니다 — 한 번에 올릴 수 있는 수를 넘었거나, 올릴 수 없는 파일이 섞였습니다.");
+  copy.mockResolvedValueOnce({ asked: 21, copied: 21 }); // 다 올라갔으면 따로 알리지 않는다
+  await act(async () => { button().click(); });
+  expect(button().title).toBe("21개 복사됨! 대화창에서 Ctrl+V");
+  expect(flashMsg).toHaveBeenCalledTimes(1);
+});
+
+it("Assets 여러 장 복사 — 올리려던 수와 서버가 실제로 올린 수를 같이 돌려준다(화면의 수는 서버의 count 다)", async () => {
+  const files = ["a.png", "b.png", "c.png"].map((name) => ({ name, path: name, type: "image" }) as AssetNode);
+  const copy = vi.fn(async () => ({ ok: true, count: 2, skipped: 1 }));
+  await expect(copyAssetFiles({ project: "P", files, selected: new Set([0, 1, 2]), path: "b.png" }, copy)).resolves.toEqual({ asked: 3, copied: 2 });
+  expect(copy).toHaveBeenCalledExactlyOnceWith("P", ["a.png", "b.png", "c.png"]);
+  // 고른 묶음 밖의 파일에서 누르면 그 파일 하나다
+  await expect(copyAssetFiles({ project: "P", files, selected: new Set([0, 1]), path: "c.png" }, copy)).resolves.toEqual({ asked: 1, copied: 2 });
+  expect(copy).toHaveBeenLastCalledWith("P", ["c.png"]);
+});
+
+// Codex 코드 리뷰(P3): 한 장 복사(브라우저 클립보드)의 끝난 표시가 남아 있는 동안 선택이 늘면, 여러 장 문구가 '0개 복사됨'이 됐다.
+it("Assets 한 장 복사 뒤 선택이 늘어도 끝난 표시는 복사한 수(1개)를 말한다", async () => {
+  vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+  const cell = (selectedCount?: number) => <AssetCell project="fixture" node={node} idx={0} layout="grid" scale={1} fit="contain" selected focused={false} meta={meta} editingTag={false}
+    selectedCount={selectedCount}
+    onS={noop} onT={noop} onC={noop} onTagsReplace={noop} onBulkTagAdd={noop} onBulkTagRemove={noop} onTagCancel={noop} onInfo={noop} onExportDrag={noop} />;
+  act(() => root.render(cell()));
+  const button = () => [...host.querySelectorAll<HTMLButtonElement>("button.ov-icon")].find((item) => ["📋", "…", "✓", "⚠"].includes(item.textContent?.trim() || ""))!;
+  await act(async () => { button().click(); }); // jsdom 에는 클립보드가 없다 — 드래그 준비만 하고 '끝남'이 된다
+  expect(button().textContent?.trim()).toBe("✓");
+  act(() => root.render(cell(2))); // 끝난 표시가 남은 채 다른 파일을 Ctrl+클릭
+  expect(button().title).toBe("1개 복사됨! 대화창에서 Ctrl+V");
+});

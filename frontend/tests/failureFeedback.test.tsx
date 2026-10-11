@@ -19,7 +19,12 @@ const mocks = vi.hoisted(() => ({
   setAssetColorsBatch: vi.fn(), uploadReferenceFiles: vi.fn(), uploadCapture: vi.fn(),
   assetProjects: vi.fn(), assetTree: vi.fn(), assetMeta: vi.fn(),
 }));
-vi.mock("../src/api", () => ({ api: mocks }));
+vi.mock("../src/api", () => ({ api: {
+  ...mocks,
+  // 놓은 파일을 레퍼런스 카드로 만들 때 쓰는 주소 — 시험마다 비우지 않게 mocks 밖에 둔다
+  assetThumbUrl: (project: string, path: string) => `/thumbs/${project}/${path}`,
+  assetFileUrl: (project: string, path: string) => `/files/${project}/${path}`,
+} }));
 
 import { CommentPanel, type CommentPanelItem } from "../src/components/common/CommentPanel";
 import { GenCommentPanel } from "../src/components/GenCommentPanel";
@@ -376,10 +381,12 @@ it("에셋 메타 다시 받기(reloadMeta)는 '받았는가'를 돌려준다 �
 // ── 캔버스에 놓은 파일·붙여 넣은 그림 ──
 function mountBoardDrop() {
   let handlers!: ReturnType<typeof useSceneClipboardDrop>;
+  let sceneIdRef!: { current: string };
   const setCards = vi.fn();
   function Host() {
+    sceneIdRef = useRef("s");
     handlers = useSceneClipboardDrop({
-      frozenRef: useRef(false), sceneIdRef: useRef("s"), cardsRef: useRef<SceneCard[]>([]), edgesRef: useRef<SceneEdge[]>([]),
+      frozenRef: useRef(false), sceneIdRef, cardsRef: useRef<SceneCard[]>([]), edgesRef: useRef<SceneEdge[]>([]),
       selectedRef: useRef(new Set<string>()), lastMouseRef: useRef({ x: 10, y: 10, over: true }), scrollRef: useRef<HTMLDivElement | null>(null),
       setCards, setEdges: () => {}, setSelected: () => {}, toCanvas: (x, y) => ({ x, y }), reconcileGenerationRefs: (cards) => cards,
       persist: () => {}, cardWidth: 100, cardHeight: 100,
@@ -387,7 +394,7 @@ function mountBoardDrop() {
     return null;
   }
   act(() => root.render(<Host />));
-  return { handlers: () => handlers, setCards };
+  return { handlers: () => handlers, setCards, sceneIdRef: () => sceneIdRef };
 }
 const png = () => new File(["x"], "shot.png", { type: "image/png" });
 
@@ -406,6 +413,51 @@ it("캔버스에 놓은 파일 — 들이지 못했으면 알린다(전엔 콘�
   drop();
   await settle();
   expect(flashes).toHaveLength(1); // 들어간 것은 알리지 않는다
+});
+
+// 15회차(조작 규칙 42): 여러 파일을 놓았을 때 일부만 들어가도, 하나도 안 들어가도 아무 말이 없었다.
+it("캔버스에 놓은 여러 파일 — 들어가지 않은 파일은 수와 이름으로 알린다(미디어가 아닌 것·서버가 건너뛴 것) · 그사이 씬이 바뀌었으면 그것도", async () => {
+  const board = mountBoardDrop();
+  const drop = (files: File[]) => act(() => {
+    board.handlers().onDrop({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 10, shiftKey: false,
+      dataTransfer: { types: ["Files"], files, items: [] } } as never);
+  });
+  const note = new File(["x"], "note.txt", { type: "text/plain" });
+  const saved = (name: string) => ({ project: "imports", path: name, name, type: "image" });
+  // 미디어가 아닌 파일만 놓았다 — 올리지도 않는다. 전엔 아무 반응이 없었다
+  drop([note]);
+  await settle();
+  expect(mocks.uploadReferenceFiles).not.toHaveBeenCalled();
+  expect(flashes).toEqual(["1개 파일은 캔버스에 넣지 못했습니다(이미지·영상·오디오가 아니거나, 비었거나, 너무 큽니다) — note.txt"]);
+  // 셋을 놓았는데 하나는 미디어가 아니고 하나는 서버가 건너뛰었다(빈 파일)
+  mocks.uploadReferenceFiles.mockResolvedValueOnce({ saved: [saved("shot.png")], skipped: ["empty.png"] });
+  drop([png(), new File([], "empty.png", { type: "image/png" }), note]);
+  await settle();
+  expect((mocks.uploadReferenceFiles.mock.calls[0][0] as File[]).map((file) => file.name)).toEqual(["shot.png", "empty.png"]);
+  expect(board.setCards).toHaveBeenCalledTimes(1); // 들어간 것은 들어갔다
+  expect(flashes[1]).toBe("2개 파일은 캔버스에 넣지 못했습니다(이미지·영상·오디오가 아니거나, 비었거나, 너무 큽니다) — note.txt, empty.png");
+  // 전부 들어갔으면 알리지 않는다
+  mocks.uploadReferenceFiles.mockResolvedValueOnce({ saved: [saved("shot.png")], skipped: [] });
+  drop([png()]);
+  await settle();
+  expect(flashes).toHaveLength(2);
+  // 이름은 셋까지만 적는다
+  drop(["a", "b", "c", "d"].map((name) => new File(["x"], `${name}.txt`, { type: "text/plain" })));
+  await settle();
+  expect(flashes.pop()).toBe("4개 파일은 캔버스에 넣지 못했습니다(이미지·영상·오디오가 아니거나, 비었거나, 너무 큽니다) — a.txt, b.txt, c.txt …");
+  // 올리는 사이 씬을 바꿨다 — 파일은 가져왔지만 캔버스에는 넣지 않는다. 전엔 말없이 사라졌다.
+  //  건너뛴 파일도 있으면 **한 번에** 알린다 — 토스트는 마지막 문구만 남겨, 둘로 내면 앞의 것이 곧바로 덮인다(Codex 코드 리뷰).
+  const upload = held<{ saved: ReturnType<typeof saved>[]; skipped: string[] }>();
+  mocks.uploadReferenceFiles.mockImplementationOnce(() => upload.next());
+  drop([png(), new File([], "empty.png", { type: "image/png" })]);
+  board.sceneIdRef().current = "other-scene";
+  upload.waiting[0].resolve({ saved: [saved("shot.png")], skipped: ["empty.png"] });
+  await settle();
+  expect(board.setCards).toHaveBeenCalledTimes(2); // 더 넣지 않았다
+  expect(flashes.slice(2)).toEqual([
+    "1개 파일을 가져왔지만, 그사이 씬이 바뀌어 캔버스에는 넣지 않았습니다 — Assets 에서 끌어 넣으세요." +
+      " · 1개 파일은 캔버스에 넣지 못했습니다(이미지·영상·오디오가 아니거나, 비었거나, 너무 큽니다) — empty.png",
+  ]);
 });
 
 it("캔버스에 붙여 넣은 그림 — 들이지 못했으면 알린다", async () => {
