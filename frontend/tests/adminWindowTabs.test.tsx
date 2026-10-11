@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   workspaceMembers: vi.fn(), creditPlanSettings: vi.fn(),
   adminList: vi.fn(), latestRelease: vi.fn(), packages: vi.fn(),
   setMemberGlobalRoles: vi.fn(), setSharedServerUrl: vi.fn(), projectMembers: vi.fn(), setProjectRoles: vi.fn(),
+  getPlanning: vi.fn(), projectFolder: vi.fn(), setAccountStatus: vi.fn(),
 }));
 vi.mock("../src/api", () => ({ api: mocks }));
 vi.mock("../src/lib/manageApi", () => ({ manageApi: mocks }));
@@ -362,6 +363,93 @@ it("프로젝트 멤버 — 지금 값을 읽는 사이·여럿을 넣는 사이
   } finally {
     localStorage.removeItem(STORAGE_KEYS.activeAccount);
   }
+});
+
+// ── 13회차(조작 규칙 40): 늦게 온 조회 응답은 지금 대상의 것일 때만 화면에 넣는다 ──
+it("프로젝트 설정 창 — 늦게 온 앞 프로젝트의 조회가 그사이 연 다른 창(다른 프로젝트의 설정·새 프로젝트)을 갈아 끼우지 않는다", async () => {
+  mocks.projects.mockResolvedValue({ projects: [
+    { id: "p", name: "첫째", workspace_id: "ws", workspace_name: "WS", kind: "team" },
+    { id: "q", name: "둘째", workspace_id: "ws", workspace_name: "WS", kind: "team" },
+  ] });
+  mocks.projectFolder.mockResolvedValue({ project_id: "x", root_path: "", selected_path: "", tree: null });
+  const waiting: Record<string, (value: unknown) => void> = {};
+  const failing: Record<string, (reason: Error) => void> = {};
+  mocks.getPlanning.mockImplementation((pid: string) => new Promise((resolve, reject) => { waiting[pid] = resolve; failing[pid] = reject; }));
+  await mount();
+  await clickTab("프로젝트");
+  const settings = () => [...host.querySelectorAll<HTMLButtonElement>('.admin-pactions button[title="프로젝트 설정"]')];
+  const dialogName = () => host.querySelector<HTMLInputElement>('.admin-project-dialog input[placeholder="프로젝트 이름"]')?.value;
+  await act(async () => { settings()[0].click(); }); // 첫째의 ✎ — 조회가 안 끝난다
+  await act(async () => { settings()[1].click(); }); // 그사이 둘째의 ✎
+  await settle();
+  await act(async () => { waiting.q({}); });
+  await settle();
+  expect(dialogName()).toBe("둘째");
+  await act(async () => { waiting.p({}); }); // 첫째의 조회가 이제 끝났다
+  await settle();
+  expect(dialogName()).toBe("둘째"); // 전엔 창이 첫째로 바뀌고 적던 글이 사라졌다(저장하면 첫째에 저장된다)
+  await pressEscape();
+  expect(dialogName()).toBeUndefined();
+  // ✎ 를 누르고 응답 전에 '+ 새 프로젝트'
+  await act(async () => { settings()[0].click(); });
+  await act(async () => { host.querySelector<HTMLButtonElement>(".admin-add")!.click(); });
+  await settle();
+  expect(dialogName()).toBe("");
+  await act(async () => { waiting.p({}); });
+  await settle();
+  expect(dialogName()).toBe(""); // 새 프로젝트 창 그대로다
+  await pressEscape();
+  // 늦게 온 앞 조회의 실패도 그 위에 알리지 않는다
+  await act(async () => { settings()[0].click(); });
+  await act(async () => { settings()[1].click(); });
+  await settle();
+  await act(async () => { waiting.q({}); });
+  await settle();
+  await act(async () => { failing.p(new Error("offline")); });
+  await settle();
+  expect(dialogName()).toBe("둘째");
+  expect(host.textContent).not.toContain("프로젝트 설정을 불러오지 못했습니다");
+});
+
+it("승인 탭의 '숨긴 계정 보기' — 켰다 바로 꺼도 목록은 지금의 체크를 따른다(늦게 온 앞 조회가 덮지 않는다)", async () => {
+  const visible = [{ email: "shown@mv.com", name: "보임", status: "approved" }];
+  const withHidden = [...visible, { email: "hidden@mv.com", name: "숨김", status: "approved", hidden: true }];
+  const pending: Array<{ hidden: boolean; resolve: (value: unknown) => void }> = [];
+  mocks.listAccounts.mockResolvedValueOnce(visible)
+    .mockImplementation((_status: unknown, hidden: boolean) => new Promise((resolve) => { pending.push({ hidden, resolve }); }));
+  await mount();
+  const toggle = () => host.querySelector<HTMLInputElement>(".admin-hidden-toggle input")!;
+  const names = () => [...host.querySelectorAll(".admin-table .admin-mname")].map((item) => item.textContent);
+  expect(names()).toEqual(["보임"]);
+  await act(async () => { toggle().click(); }); // 켠다 — pending[0](hidden=true)
+  await act(async () => { toggle().click(); }); // 바로 끈다 — pending[1](hidden=false)
+  expect(pending.map((item) => item.hidden)).toEqual([true, false]);
+  await act(async () => { pending[1].resolve(visible); });
+  await settle();
+  await act(async () => { pending[0].resolve(withHidden); }); // 켰을 때의 조회가 늦게 왔다
+  await settle();
+  expect(toggle().checked).toBe(false);
+  expect(names()).toEqual(["보임"]); // 전엔 체크는 꺼졌는데 숨긴 계정이 보였다
+  // 늦게 온 앞 조회의 실패도 지금 목록을 비우지 않는다
+  mocks.listAccounts.mockImplementation((_status: unknown, hidden: boolean) =>
+    new Promise((resolve, reject) => { pending.push({ hidden, resolve: (value) => (value instanceof Error ? reject(value) : resolve(value)) }); }));
+  await act(async () => { toggle().click(); }); // pending[2](true)
+  await act(async () => { toggle().click(); }); // pending[3](false)
+  await act(async () => { pending[3].resolve(visible); });
+  await settle();
+  await act(async () => { pending[2].resolve(new Error("offline")); });
+  await settle();
+  expect(names()).toEqual(["보임"]);
+  // 승인 상태를 바꾸는 사이에 체크를 켰다 — 끝난 뒤의 재조회는 **지금의** 체크로 묻는다(누른 순간의 체크가 아니라)
+  let finishStatus!: (value: unknown) => void;
+  mocks.setAccountStatus.mockReturnValue(new Promise((resolve) => { finishStatus = resolve; }));
+  await act(async () => { host.querySelector<HTMLButtonElement>(".acct-seg-pending")!.click(); });
+  await act(async () => { toggle().click(); }); // pending[4](true)
+  await act(async () => { pending[4].resolve(withHidden); });
+  await settle();
+  await act(async () => { finishStatus({}); });
+  await settle();
+  expect(pending[5].hidden).toBe(true); // 전엔 누른 순간의 체크(꺼짐)로 물어, 체크는 켜졌는데 숨긴 계정이 사라졌다
 });
 
 it("프로젝트 표의 순서 손잡이 — 손잡이 밖에서 떼면 줄이 끌리는 채로 남지 않는다(lib/useDragEndReset.useHandleRelease)", async () => {

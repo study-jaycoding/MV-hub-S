@@ -267,7 +267,11 @@ export function ProjectManagerPanel({
   });
   const projRoleCounts = (pid: string) => projectRoleCounts(projMembersMap[pid] || [], systemUids);
 
+  // 설정 창을 여는 조회의 순번 — 늦게 온 앞 조회가 그사이 연 다른 창(다른 프로젝트의 설정·새 프로젝트)을 갈아 끼우지 않게 한다(조작 규칙 40).
+  //  전엔 A 의 ✎ 를 누르고 응답 전에 B 의 ✎(또는 '+ 새 프로젝트')를 누르면, 늦게 온 A 가 B 의 창과 적던 글을 A 로 바꿨다.
+  const settingsOpenSeqRef = useRef(0);
   const createProject = () => {
+    settingsOpenSeqRef.current += 1;
     const workspaceId = workspaceOptions[0]?.id || "";
     setProjectDialog({
       mode: "create",
@@ -281,6 +285,7 @@ export function ProjectManagerPanel({
     if (workspaceId) void loadWorkspaceMembers(workspaceId);
   };
   const renameProject = async (p: Project) => {
+    const seq = ++settingsOpenSeqRef.current;
     try {
       const [loadedFolder, planning] = await Promise.all([
         projFolders[p.id]
@@ -288,6 +293,7 @@ export function ProjectManagerPanel({
           : loadProjectFolderTree(p.id),
         manageApi.getPlanning(p.id),
       ]);
+      if (seq !== settingsOpenSeqRef.current) return;
       const folder: ProjectFolderEntry | ProjectFolderState | null = loadedFolder;
       const workspaceId = p.workspace_id || workspaceOptions[0]?.id || "";
       setProjectDialog({
@@ -302,6 +308,7 @@ export function ProjectManagerPanel({
       });
       if (workspaceId) void loadWorkspaceMembers(workspaceId);
     } catch (reason) {
+      if (seq !== settingsOpenSeqRef.current) return; // 그사이 다른 창을 열었다 — 앞 조회의 실패를 그 위에 알리지 않는다
       setActMsg(`프로젝트 설정을 불러오지 못했습니다. ${String(reason).replace(/^Error:\s*/, "")}`);
     }
   };

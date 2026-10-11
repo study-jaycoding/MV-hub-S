@@ -46,22 +46,30 @@ export function useGenerationUtilityActions({
     openEmbedWindow(EMBED_MODES.manage);
   };
 
-  const onShowHistory = async (g: Generation) => {
-    if (historyInFlightRef.current.has(g.id)) return; // 조회 중 — 응답이 온 뒤의 다시 누름은 전처럼 새 탭이다
+  // 여러 카드의 히스토리를 잇달아 열면 **누른 순서대로** 연다(조작 규칙 40). 조회를 한꺼번에 보내면 응답이 뒤바뀌었을 때 먼저 누른 카드의
+  //  씬이 나중에 열려, 마지막으로 누른 카드의 씬에서 화면을 가져갔다. 앞의 조회가 끝난 뒤에 다음 조회를 보낸다 — 둘 다 열리고,
+  //  마지막에 누른 것이 마지막에 열린다.
+  const historyChainRef = useRef<Promise<void>>(Promise.resolve());
+  const onShowHistory = (g: Generation): Promise<void> => {
+    if (historyInFlightRef.current.has(g.id)) return Promise.resolve(); // 조회 중 — 응답이 온 뒤의 다시 누름은 전처럼 새 탭이다
     historyInFlightRef.current.add(g.id);
-    try {
-      const history = await api.history(g.id);
-      // ★레시피 옵션은 **히스토리 응답의 온전한 params** 로 만든다(2026-09-12, C-1).
-      //  목록 행의 `params` 는 프롬프트가 빠진 축약본일 수 있다 — 목록은 같은 값을 `prompt`
-      //  필드로 이미 싣고 있어 서버가 중복분을 뺀다(실측 목록의 26.3%·896KB).
-      //  히스토리는 이미 받고 있으므로 **추가 요청이 없다**. `?? g.params` 같은 대체는 넣지 않는다 —
-      //  `null` 도 유효한 원본 값이라 대체하면 없던 값을 만들어 낸다(코덱스 조건).
-      openRecipe({ ...g, params: history.target.params }, history);
-    } catch (e) {
-      flash("히스토리 조회 실패: " + String(e));
-    } finally {
-      historyInFlightRef.current.delete(g.id);
-    }
+    const open = async () => {
+      try {
+        const history = await api.history(g.id);
+        // ★레시피 옵션은 **히스토리 응답의 온전한 params** 로 만든다(2026-09-12, C-1).
+        //  목록 행의 `params` 는 프롬프트가 빠진 축약본일 수 있다 — 목록은 같은 값을 `prompt`
+        //  필드로 이미 싣고 있어 서버가 중복분을 뺀다(실측 목록의 26.3%·896KB).
+        //  히스토리는 이미 받고 있으므로 **추가 요청이 없다**. `?? g.params` 같은 대체는 넣지 않는다 —
+        //  `null` 도 유효한 원본 값이라 대체하면 없던 값을 만들어 낸다(코덱스 조건).
+        openRecipe({ ...g, params: history.target.params }, history);
+      } catch (e) {
+        flash("히스토리 조회 실패: " + String(e));
+      } finally {
+        historyInFlightRef.current.delete(g.id);
+      }
+    };
+    historyChainRef.current = historyChainRef.current.then(open);
+    return historyChainRef.current;
   };
 
   return { bulkDownload, onShowHistory, openAssetsWindow, openManageWindow };

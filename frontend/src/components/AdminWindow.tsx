@@ -244,8 +244,17 @@ export function AdminWindow({
   // 선택 탭이 권한 변화로 사라지면 첫 가용 탭으로 폴백(빈 화면 방지).
   const activeTab = visibleTabs.some((t) => t.key === tab) ? tab : visibleTabs[0]?.key;
 
-  const loadAccounts = (hidden = showHidden) =>
-    api.listAccounts(undefined, hidden).then(setAccounts).catch(() => setAccounts([]));
+  // 가장 나중에 보낸 조회의 응답만 받는다(조작 규칙 40) — '숨긴 계정 보기'를 켰다 바로 끄면 두 조회가 나가고, 늦게 온 쪽이 이겨
+  //  체크는 꺼졌는데 숨긴 계정이 보였다(반대도). 승인·숨김을 바꾼 뒤의 재조회는 **지금의** 체크로 묻는다(요청을 보낼 때의 체크가 아니라).
+  const showHiddenRef = useRef(showHidden);
+  showHiddenRef.current = showHidden;
+  const accountsSeqRef = useRef(0);
+  const loadAccounts = (hidden = showHiddenRef.current) => {
+    const seq = ++accountsSeqRef.current;
+    return api.listAccounts(undefined, hidden)
+      .then((list) => { if (seq === accountsSeqRef.current) setAccounts(list); })
+      .catch(() => { if (seq === accountsSeqRef.current) setAccounts([]); });
+  };
 
   useEffect(() => {
     Promise.all([
@@ -278,7 +287,7 @@ export function AdminWindow({
       } else {
         await api.adminSetHidden(email, kind === "hide");
         setActMsg(kind === "hide" ? `${email} 계정을 숨겼습니다.` : `${email} 숨김을 해제했습니다.`);
-        loadAccounts(showHidden);
+        loadAccounts();
       }
     } catch (e) {
       setActMsg("실패: " + String(e));

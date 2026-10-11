@@ -170,6 +170,12 @@ export const AssetCell = memo(function AssetCell({
   // 📋 클릭 후 '드래그로도' 첨부되게 하는 원본 data:URL. img.src 에 심어두면 드래그 시 파일로 실린다.
   //  (로컬서버 URL 을 그대로 드래그하면 외부 사이트 드롭에서 사설망 차단(PNA)으로 첨부가 비어서, 바이트 내장이 필요)
   const [dragReadyUrl, setDragReadyUrl] = useState<string | null>(null);
+  // 이 셀이 지금 보이는 파일 — 셀의 key 는 상대경로라, 프로젝트를 바꿨을 때 경로가 같은 다른 파일에 그대로 다시 쓰인다.
+  //  원본을 받아 오는 사이(또는 받은 뒤)에 파일이 바뀌면 그 data:URL 은 버린다(조작 규칙 40) — 전엔 새 파일의 이름 아래 앞 파일의 그림이
+  //  보이고, 끌면 앞 파일이 실려 나갔다.
+  const urlRef = useRef(url);
+  urlRef.current = url;
+  useEffect(() => setDragReadyUrl(null), [url]);
   const resetCopySoon = () => {
     if (copyTimer.current != null) clearTimeout(copyTimer.current);
     copyTimer.current = window.setTimeout(() => setCopyState("idle"), 1500);
@@ -215,7 +221,9 @@ export const AssetCell = memo(function AssetCell({
             fr.readAsDataURL(blob);
           }),
       )
-      .then(setDragReadyUrl)
+      .then((dataUrl) => {
+        if (urlRef.current === url) setDragReadyUrl(dataUrl);
+      })
       .catch(() => {
         /* 드래그 준비 실패해도 클립보드(Ctrl+V)는 별개로 동작 */
       });
