@@ -25,8 +25,22 @@ export function MountManager({
   const [relinking, setRelinking] = useState(false);
   const [err, setErr] = useState("");
 
-  const reload = () =>
-    api.assetMounts(workspaceId).then((r) => setMounts(r.mounts)).catch(() => {});
+  // 가장 나중에 보낸 조회의 응답만 받는다 — 팀을 잇달아 바꾸면 늦게 온 앞 팀의 목록이 지금 팀의 목록을 덮었다(조작 규칙 40)
+  const reloadSeqRef = useRef(0);
+  const reload = () => {
+    const seq = ++reloadSeqRef.current;
+    return api.assetMounts(workspaceId).then((r) => { if (seq === reloadSeqRef.current) setMounts(r.mounts); }).catch(() => {});
+  };
+
+  // 등록·해제가 끝나면 받은 목록을 그대로 넣지 않고 **지금의 팀으로 다시 묻는다** — 등록·해제의 응답은 팀으로 좁히지 않은 전체라,
+  //  그대로 넣으면 다른 팀의 프로젝트 폴더(자동)까지 이 팀의 목록에 나타났다(Codex 코드 리뷰 — 백엔드 `add_mount`·`del_mount`).
+  //  끝난 뒤에 부르는 것은 '지금의' reload·onChanged 다: 기다리는 사이 팀이 바뀌었으면 옛 팀의 조회를 새로 시작하지 않는다.
+  const latestRef = useRef({ reload, onChanged });
+  latestRef.current = { reload, onChanged };
+  const afterChange = () => {
+    void latestRef.current.reload();
+    latestRef.current.onChanged();
+  };
 
   useEffect(() => {
     reload();
@@ -48,11 +62,10 @@ export function MountManager({
     setBusy(true);
     setErr("");
     try {
-      const r = await api.addAssetMount(n, p);
-      setMounts(r.mounts);
+      await api.addAssetMount(n, p);
       setPath("");
       setName("");
-      onChanged();
+      afterChange();
     } catch (e) {
       setErr(String(e).replace(/^Error:\s*/, ""));
     } finally {
@@ -66,7 +79,7 @@ export function MountManager({
     setErr("");
     try {
       const r = await api.relinkBrokenSources();
-      onChanged();
+      latestRef.current.onChanged();
       window.alert(
         r.relinked > 0
           ? `다시 연결 완료: 깨진 소스 ${r.relinked}개를 찾아 이었습니다.`
@@ -90,7 +103,7 @@ export function MountManager({
     setErr("");
     try {
       const r = await api.pruneBrokenSources();
-      onChanged();
+      latestRef.current.onChanged();
       const relinkedMsg = r.relinked > 0 ? ` (재연결 ${r.relinked}개는 유지)` : "";
       window.alert(`정리 완료: 깨진 소스 ${r.pruned}개의 지정을 해제했습니다.${relinkedMsg}`);
     } catch (e) {
@@ -103,9 +116,8 @@ export function MountManager({
   const remove = async (mn: string) => {
     if (!window.confirm(`"${mn}" 등록을 해제할까요? (원본 폴더는 그대로입니다)`)) return;
     try {
-      const r = await api.delAssetMount(mn);
-      setMounts(r.mounts);
-      onChanged();
+      await api.delAssetMount(mn);
+      afterChange();
     } catch (e) {
       setErr(String(e));
     }

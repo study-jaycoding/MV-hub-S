@@ -11,7 +11,7 @@ import { getLang, setLang } from "../src/lib/i18n";
 import type { AssetMeta, AssetNode } from "../src/types";
 
 vi.mock("../src/api", () => ({ api: {
-  assetFileUrl: () => "/fixture.png", assetThumbUrl: () => "/fixture-thumb.png",
+  assetFileUrl: (project: string, path: string) => `/files/${project}/${path}`, assetThumbUrl: (project: string, path: string) => `/thumbs/${project}/${path}`,
   revealAsset: vi.fn(),
 } }));
 vi.mock("../src/lib/flash", () => ({ flashMsg: vi.fn() }));
@@ -81,6 +81,34 @@ it("Assets 타일의 호버 재생 — 올린 채 창을 떠나거나 탭이 숨
   } finally {
     play.mockRestore(); pause.mockRestore(); hidden.mockRestore();
   }
+});
+
+// 13회차(조작 규칙 40): 📋 는 원본을 받아 드래그용 data:URL 로 타일의 그림에 심는다. 셀의 key 는 상대경로라 프로젝트를 바꾸면 경로가 같은
+//  다른 파일에 셀이 그대로 다시 쓰인다 — 받아 오는 사이(또는 받은 뒤)에 파일이 바뀌면 새 파일의 이름 아래 앞 파일의 그림이 보였다.
+it("Assets 타일의 복사용 그림 — 받아 오는 사이나 받은 뒤에 셀의 파일이 바뀌면 앞 파일의 그림을 새 파일에 보이지 않는다", async () => {
+  let finishFetch!: (value: unknown) => void;
+  vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { finishFetch = resolve; })));
+  const cell = (project: string) => <AssetCell project={project} node={node} idx={0} layout="grid" scale={1} fit="contain" selected={false} focused={false} meta={meta} editingTag={false}
+    onS={noop} onT={noop} onC={noop} onTagsReplace={noop} onBulkTagAdd={noop} onBulkTagRemove={noop} onTagCancel={noop} onInfo={noop} onExportDrag={noop} />;
+  const image = () => host.querySelector<HTMLImageElement>(".asset-media img")!;
+  const copy = () => [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => ["📋", "…", "✓", "⚠"].includes(button.textContent?.trim() || ""))!;
+  const settle = () => act(async () => { for (let i = 0; i < 12; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+  const blob = { ok: true, blob: async () => new Blob(["A"], { type: "image/png" }) };
+  act(() => root.render(cell("A")));
+  expect(image().getAttribute("src")).toBe("/thumbs/A/folder/fixture.png");
+  await act(async () => { copy().click(); });
+  act(() => root.render(cell("B"))); // 받아 오는 사이에 프로젝트를 바꿨다 — 같은 경로의 다른 파일
+  await act(async () => { finishFetch(blob); });
+  await settle();
+  expect(image().getAttribute("src")).toBe("/thumbs/B/folder/fixture.png"); // B 의 썸네일 그대로 — 전엔 A 의 원본(data:)이 B 의 이름 아래 보였다
+  // 받은 뒤에 바뀌는 경우: 지금 파일에서 복사해 심은 다음 파일이 바뀌면 걷는다
+  await act(async () => { copy().click(); });
+  await act(async () => { finishFetch(blob); });
+  await settle();
+  expect(image().getAttribute("src")!.startsWith("data:")).toBe(true);
+  act(() => root.render(cell("A")));
+  await settle();
+  expect(image().getAttribute("src")!.startsWith("data:")).toBe(false);
 });
 
 const failures = [

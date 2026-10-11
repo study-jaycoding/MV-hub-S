@@ -91,10 +91,15 @@ export function useAssetProjectData({
   const treeProjectRef = useRef("");
   const metaProjectRef = useRef("");
 
+  // 목록 조회의 순번 — 팀을 잇달아 바꾸면(B → C) 늦게 온 B 의 목록이 C 의 화면을 덮고, 그 기본 폴더로 선택까지 옮겼다(조작 규칙 40).
+  //  가장 나중에 보낸 조회의 응답만 받는다(성공·실패 모두).
+  const projectsSeqRef = useRef(0);
   const reloadProjects = useCallback((keepCurrent = false) => {
+    const seq = ++projectsSeqRef.current;
     api
       .assetProjects(workspaceId)
       .then((info) => {
+        if (seq !== projectsSeqRef.current) return;
         setProjects((prev) => reconcileArrayState(prev, info.projects));
         setLinkedProjects(new Set(info.linked || []));
         setProject((current) => {
@@ -105,7 +110,9 @@ export function useAssetProjectData({
           return saved && info.projects.includes(saved) ? saved : info.default;
         });
       })
-      .catch((err) => setError(String(err)));
+      .catch((err) => {
+        if (seq === projectsSeqRef.current) setError(String(err));
+      });
   }, [workspaceId]);
 
   // 화면의 tree/meta 가 바뀔 때마다(reload·드롭임포트·메타편집 등 어떤 경로든) 현재 프로젝트 캐시에 미러링
@@ -200,7 +207,18 @@ export function useAssetProjectData({
   }, [project]);
 
   useEffect(() => {
-    if (!project) return;
+    if (!project) {
+      // 폴더가 하나도 없는 팀으로 옮겼다 — 앞 팀 폴더의 화면을 비운다. 그냥 돌아가면 앞 폴더의 조회는 '지금 것이 아니어서' 로딩을 끄지 않고,
+      //  사이드바의 '로딩…'과 앞 팀의 파일 목록이 그대로 남았다(조작 규칙 40). 화면의 소속 표시(ref)를 먼저 비운다 — 안 그러면 아래의
+      //  빈 값이 미러 이펙트를 타고 앞 폴더의 캐시에 적힌다.
+      treeProjectRef.current = "";
+      metaProjectRef.current = "";
+      setTree((prev) => (prev.length ? [] : prev));
+      setMeta((prev) => (Object.keys(prev).length ? {} : prev));
+      setError(null);
+      setLoading(false);
+      return;
+    }
     void refreshProjectData(project);
   }, [project, refreshProjectData]);
 
