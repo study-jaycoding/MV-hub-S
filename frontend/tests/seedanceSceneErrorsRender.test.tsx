@@ -20,6 +20,10 @@ let sceneRun: Promise<void> | undefined;
 let sceneSaveFails = false;
 // 화면 값에는 들어갔는데 저장소 확정이 실패하는 상황(쓰기는 두 박자다 — 화면 먼저, 확정은 뒤따른다).
 let sceneConfirmFails = false;
+// 캔버스 재생성(12회차) — 가짜 보드의 단추가 App 이 준 onRegenerate 를 이 생성물로 부른다. 씬에 쓴 횟수로 pending 연결을 만들었는지 본다.
+let regenRuns: Promise<unknown>[] = [];
+let sceneWrites = 0;
+const regenTarget = { id: "made-gen", prompt: "만든 것", model: "seedance_2_5", status: "done", assets: [], tags: [] } as unknown as Generation;
 const noop = () => {};
 const reload = vi.fn(async () => {});
 
@@ -31,6 +35,7 @@ function fixtureScene(): Scene {
       card("edit", { prompt: "고칠 영상 누락" }),
       card("extension", { prompt: "이어붙일 영상 누락" }),
       card("valid", { prompt: "정상 텍스트 영상" }),
+      card("made", { genId: "made-gen", genIds: ["made-gen"] }), // 이미 결과가 있는 카드 — 재생성 시험용(일괄 생성에는 넣지 않는다)
       ...["video_edit", "video_extension", "t2v"].map((mode, index) => card(`model-${index}`, {
         kind: "model", modelCfg: { model: "seedance_2_5", type: "video", params: { mode, duration: 5, aspect_ratio: "auto" } },
       })),
@@ -55,13 +60,21 @@ function installAppBoundaries() {
     vi.doMock(path, () => Object.fromEntries(names.map((name) => [name, () => null])));
   }
   vi.doMock("../src/components/scene/SceneBoard", () => ({
-    SceneBoard: ({ onRenderCards }: Pick<ComponentProps<typeof SceneBoard>, "onRenderCards">) => (
-      <button onClick={() => {
-        if (!onRenderCards) throw new Error("App이 일괄 생성 콜백을 연결하지 않았습니다.");
-        sceneRun = Promise.resolve(onRenderCards(["edit", "extension", "valid"], 2));
-      }}>
-        시험 씬 일괄 생성
-      </button>
+    SceneBoard: ({ onRenderCards, onRegenerate }: Pick<ComponentProps<typeof SceneBoard>, "onRenderCards" | "onRegenerate">) => (
+      <>
+        <button onClick={() => {
+          if (!onRenderCards) throw new Error("App이 일괄 생성 콜백을 연결하지 않았습니다.");
+          sceneRun = Promise.resolve(onRenderCards(["edit", "extension", "valid"], 2));
+        }}>
+          시험 씬 일괄 생성
+        </button>
+        <button onClick={() => {
+          if (!onRegenerate) throw new Error("App이 재생성 콜백을 연결하지 않았습니다.");
+          regenRuns.push(Promise.resolve(onRegenerate(regenTarget)));
+        }}>
+          시험 씬 재생성
+        </button>
+      </>
     ),
   }));
   vi.doMock("../src/lib/useHubAuth", () => ({
@@ -94,6 +107,7 @@ function installAppBoundaries() {
       // 멈추므로, undefined 를 돌려주면 "저장 실패" 로 읽혀 요청이 아예 안 나간다.
       const patchSceneById = useCallback((_id: string, patch: Partial<Scene>) => {
         if (sceneSaveFails) return false; // 저장소가 거부 — 편집이 남지 않았다
+        sceneWrites += 1;
         scene = { ...scene, ...patch };
         bump((value) => value + 1);
         return true;
@@ -137,6 +151,8 @@ beforeEach(() => {
   sceneSaveFails = false;
   sceneConfirmFails = false;
   sceneRun = undefined;
+  regenRuns = [];
+  sceneWrites = 0;
   reload.mockClear();
   installAppBoundaries();
   style = installPromptStyles();
@@ -234,5 +250,41 @@ describe("App: 프롬프트 숨김 상태에서 씬의 부분 성공과 카드�
 
     expect(boundary.api.prepareCreate).not.toHaveBeenCalled();
     for (const card of scene.cards) expect(card.pendingGenerationAttempts || []).toHaveLength(0);
+  });
+
+  // 12회차(조작 규칙 39): 캔버스의 ↻ 를 응답 전에 한 번 더 누르면 누름마다 pending 연결과 유료 요청이 하나씩 나갔다.
+  //  App 의 가드는 연결을 만들기 **전에** 막는다 — 훅의 가드(lib/useGenerationCardActions)만으로는 연결을 만들었다 버리는 쓰기가 남고,
+  //  연결 준비가 느리면 앞 요청의 응답 뒤에 닿아 그대로 통과한다.
+  it("캔버스 재생성 — 응답 전의 다시 누름은 pending 연결도 요청도 더 만들지 않는다. 끝난 뒤에는 다시 받는다", { timeout: 20_000 }, async () => {
+    const submitted = deferred<void>();
+    const prepareRegenerate = vi.fn((_id: string, _body: unknown, _workspace: unknown, link?: { generation_id: string }) => async () => {
+      await submitted.promise;
+      return { ...regenTarget, id: link!.generation_id, status: "pending" } as Generation;
+    });
+    (boundary.api as unknown as Record<string, unknown>).prepareRegenerate = prepareRegenerate;
+    const { default: App } = await import("../src/App");
+    act(() => view.root.render(<App />));
+    await settle();
+    const made = () => scene.cards.find((card) => card.id === "made")!;
+
+    click(button(view.container, "시험 씬 재생성"));
+    await settle();
+    expect(prepareRegenerate).toHaveBeenCalledTimes(1);
+    expect(made().pendingGenerationAttempts || []).toHaveLength(1);
+    const writes = sceneWrites;
+    click(button(view.container, "시험 씬 재생성")); // 응답 전의 둘째 누름
+    await settle();
+    expect(prepareRegenerate).toHaveBeenCalledTimes(1);
+    expect(sceneWrites).toBe(writes); // 연결을 만들었다 버리지도 않는다 — 씬에 아무것도 쓰지 않았다
+    expect(made().pendingGenerationAttempts || []).toHaveLength(1);
+
+    await act(async () => { submitted.resolve(); await Promise.all(regenRuns); });
+    await settle();
+    expect(made().pendingGenerationAttempts || []).toHaveLength(0);
+    expect(made().genIds).toHaveLength(2); // 새 결과가 그 카드에 변형으로 쌓였다
+    click(button(view.container, "시험 씬 재생성")); // 끝난 뒤의 다시 누름 = 새 요청
+    await settle();
+    expect(prepareRegenerate).toHaveBeenCalledTimes(2);
+    await act(async () => { await Promise.all(regenRuns); });
   });
 });
