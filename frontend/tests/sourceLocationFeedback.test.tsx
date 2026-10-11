@@ -40,6 +40,49 @@ function renderRoute(route: string) {
   return route === "list" ? host.querySelector<HTMLButtonElement>(".cd-path")!
     : [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "📂")!;
 }
+// 12회차(조작 규칙 39 — '뗀 것을 놓치면 남는 상태'): 타일에 마우스를 올리면 재생하고 mouseleave 에 멈춘다. 올린 채 창을 떠나면
+//  mouseleave 가 오지 않아, 소리가 있는 오디오가 다른 창에서도 계속 났다. (이 파일의 AssetCell 틀을 빌려 쓴다.)
+it("Assets 타일의 호버 재생 — 올린 채 창을 떠나거나 탭이 숨으면 멈추고, 벗어난 뒤에는 창의 blur 를 듣지 않는다", () => {
+  const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+  const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+  const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+  try {
+    act(() => root.render(<AssetCell project="fixture" node={{ name: "voice.mp3", path: "folder/voice.mp3", type: "audio" }} idx={0} layout="grid" scale={1} fit="contain" selected={false} focused={false} meta={meta} editingTag={false}
+      onS={noop} onT={noop} onC={noop} onTagsReplace={noop} onBulkTagAdd={noop} onBulkTagRemove={noop} onTagCancel={noop} onInfo={noop} onExportDrag={noop} />));
+    const tile = host.querySelector<HTMLElement>(".asset-media")!;
+    const audio = host.querySelector("audio")!;
+    const over = () => act(() => { tile.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
+    const out = () => act(() => { tile.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })); });
+    over();
+    expect(play).toHaveBeenCalledTimes(1);
+    audio.currentTime = 3;
+    act(() => { window.dispatchEvent(new Event("blur")); }); // 올린 채 다른 창으로
+    expect(pause).toHaveBeenCalledTimes(1);
+    expect(audio.currentTime).toBe(0);
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); }); // 보이는 채의 통지는 아니다
+    expect(pause).toHaveBeenCalledTimes(1);
+    hidden.mockReturnValue(true);
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); }); // 탭이 숨었다
+    expect(pause).toHaveBeenCalledTimes(2);
+    out(); // 벗어나면 멈추고(전부터) 리스너를 뗀다
+    expect(pause).toHaveBeenCalledTimes(3);
+    act(() => { window.dispatchEvent(new Event("blur")); document.dispatchEvent(new Event("visibilitychange")); });
+    expect(pause).toHaveBeenCalledTimes(3);
+    // 다시 올린 채 셀이 사라져도(스크롤) 리스너를 남기지 않는다 — 벗어남 없이 들어온 것으로 두 번 와도 한 번만 건다
+    const added = vi.spyOn(window, "addEventListener");
+    const removed = vi.spyOn(window, "removeEventListener");
+    const blurs = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.filter((call) => call[0] === "blur").length;
+    over();
+    over();
+    act(() => root.unmount());
+    expect([blurs(added), blurs(removed)]).toEqual([1, 1]);
+    added.mockRestore(); removed.mockRestore();
+    root = createRoot(host);
+  } finally {
+    play.mockRestore(); pause.mockRestore(); hidden.mockRestore();
+  }
+});
+
 const failures = [
   [new HttpError(404, "raw", "private/file"), "원본 파일이나 프로젝트를 찾을 수 없습니다.", "The source file or project could not be found."],
   [new HttpError(403, "raw", "private/auth"), "원본 위치를 열 권한이 없습니다.", "You do not have permission to open the source location."],

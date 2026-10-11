@@ -131,6 +131,24 @@ it("프로젝트 줄의 Enter·Space 는 길게 눌러도 한 번만 고르고, 
   expect(onFilter).toHaveBeenCalledTimes(2);
 });
 
+// 12회차(조작 규칙 39): ⠿ 를 누르는 동안만 줄이 draggable 이다. 누른 채 손잡이 밖에서 떼거나 창을 떠나면 그 표식이 남아,
+//  그 뒤로는 줄의 이름을 끌어도 순서가 바뀌어 저장됐다(관리자 창의 프로젝트 표·서브스페이스 표도 같은 훅을 쓴다 — tests/reentryGuards).
+it("프로젝트 순서 손잡이 — 손잡이 밖에서 떼거나 누른 채 창을 떠나면 줄이 끌리는 채로 남지 않는다", async () => {
+  mocks.links.mockResolvedValue({ links: {} });
+  await act(async () => root.render(<ProjectSection projects={[{ id: "held", name: "Held Project", count: 1 } as Project]}
+    unassignedCount={0} archivedCount={0} deletedOnly={false} tab="my" activeId={undefined}
+    onFilter={vi.fn()} onViewDeleted={vi.fn()} />));
+  const row = host.querySelector<HTMLElement>('.proj-row[title="Held Project"]')!;
+  const press = () => act(() => { row.querySelector(".proj-drag-handle")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+  press();
+  expect(row.draggable).toBe(true);
+  act(() => { document.body.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); }); // 손잡이 밖에서 뗌
+  expect(row.draggable).toBe(false);
+  press();
+  act(() => { window.dispatchEvent(new Event("blur")); }); // 누른 채 다른 창으로(Alt+Tab)
+  expect(row.draggable).toBe(false);
+});
+
 it("열기 API에는 프로젝트 ID와 상대 폴더만 전송한다", async () => {
   const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
   vi.stubGlobal("fetch", fetch);

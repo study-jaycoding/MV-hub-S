@@ -45,9 +45,11 @@ export function GlobalRolePicker({
 export function ProjectRolePicker({
   value,
   onChange,
+  disabled = false,
 }: {
   value: string[];
   onChange: (roles: string[]) => void;
+  disabled?: boolean; // 저장 중 잠금 — 위 GlobalRolePicker 와 같은 까닭
 }) {
   const has = (role: string) => value.includes(role);
   const toggle = (role: string) =>
@@ -60,6 +62,7 @@ export function ProjectRolePicker({
           type="button"
           className={"role-chip role-" + role + (has(role) ? " on" : "")}
           title={PROJECT_ROLE_LABEL[role]}
+          disabled={disabled}
           onClick={() => toggle(role)}
         >
           {PROJECT_ROLE_LABEL[role].split(" · ")[0]}

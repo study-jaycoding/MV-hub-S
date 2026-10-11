@@ -7,15 +7,15 @@ export function MemberRolesTab({
   setMemberQuery,
   shortUid,
   onChangeRoles,
-  busyUid,
+  busy,
 }: {
   members: Member[];
   memberQuery: string;
   setMemberQuery: (query: string) => void;
   shortUid: (uid: string) => string;
   onChangeRoles: (uid: string, roles: string[]) => void;
-  // 역할 저장 중인 멤버 uid — 그 줄의 칩만 잠근다(연타 시 낡은 값 덮어쓰기 방지).
-  busyUid: string;
+  // 역할 저장이 도는 중 — 누구의 것이든 모든 줄의 칩을 잠근다(저장은 한 줄로 선다 — AdminWindow 의 주석).
+  busy: boolean;
 }) {
   const query = memberQuery.trim().toLowerCase();
   const filtered = members.filter((member) => {
@@ -70,7 +70,7 @@ export function MemberRolesTab({
                 <GlobalRolePicker
                   value={member.global_roles}
                   onChange={(roles) => onChangeRoles(member.uid, roles)}
-                  disabled={busyUid === member.uid}
+                  disabled={busy}
                 />
               </td>
             </tr>

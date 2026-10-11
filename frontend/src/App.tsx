@@ -1572,6 +1572,8 @@ export default function App() {
   };
   // 캔버스에서 '재생성' → 새 결과를 그 생성물이 속한 카드에 변형으로 쌓는다(라이브러리처럼 별도 카드가
   // 아니라 같은 카드에 누적). 배치 생성(onPromptCreated)과 동일한 append 규칙 — 새 것을 대표로.
+  // 같은 생성물의 재생성이 도는 동안의 다시 누름은 pending 연결을 만들기 **전에** 막는다(조작 규칙 39 — 누름마다 유료 요청이 하나씩 나갔다).
+  const sceneRegenInFlightRef = useRef(new Set<string>());
   const onSceneRegenerate = async (g: Generation) => {
     if (!activeScene) return;
     const blocked = modelBlockMessage(g.model); // 못 쓰는 모델은 pending 링크를 만들기 전에 거절
@@ -1579,20 +1581,29 @@ export default function App() {
       flash(blocked);
       return;
     }
-    flushScenePending(activeScene.id);
-    const latest = listScenes(null).find((scene) => scene.id === activeScene.id) || activeScene;
-    const target = latest.cards.find((card) => variantIds(card).includes(g.id));
-    if (!target) {
-      flash("재생성 결과를 쌓을 캔버스 카드를 찾지 못했습니다.");
+    if (sceneRegenInFlightRef.current.has(g.id)) {
+      flash("재생성 처리 중입니다 — 완료 후 다시 누르세요.");
       return;
     }
-    const link = (await prepareCanvasGenerationBatch(activeScene.id, [target.id]))[0];
-    if (!link) {
-      flash("재생성 위치를 저장하지 못해 제출을 중단했습니다.");
-      return;
+    sceneRegenInFlightRef.current.add(g.id);
+    try {
+      flushScenePending(activeScene.id);
+      const latest = listScenes(null).find((scene) => scene.id === activeScene.id) || activeScene;
+      const target = latest.cards.find((card) => variantIds(card).includes(g.id));
+      if (!target) {
+        flash("재생성 결과를 쌓을 캔버스 카드를 찾지 못했습니다.");
+        return;
+      }
+      const link = (await prepareCanvasGenerationBatch(activeScene.id, [target.id]))[0];
+      if (!link) {
+        flash("재생성 위치를 저장하지 못해 제출을 중단했습니다.");
+        return;
+      }
+      const ng = await onRegenerate(g, link, () => discardCanvasGeneration(link));
+      if (ng) settleCanvasGeneration(link, ng);
+    } finally {
+      sceneRegenInFlightRef.current.delete(g.id);
     }
-    const ng = await onRegenerate(g, link, () => discardCanvasGeneration(link));
-    if (ng) settleCanvasGeneration(link, ng);
   };
   // ── 렌더(배치) 노드 ── 연결된 생성카드들을 각자 자기 모델·refs·텍스트로 한 번에 생성한다.
   //  · 각 카드의 연결 모델(collectGenModel)·연결 텍스트(collectGenText)·카드 refs 로 body 를 조립(하단 프롬프트 재사용).

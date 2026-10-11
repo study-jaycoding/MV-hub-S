@@ -816,6 +816,12 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
   (`tests/sceneCardGroupMove.test.tsx` '끌어 놓은 직후…', `sceneBarDrag.test.tsx`, `folderReviewCounts.test.tsx`). 앞 끌기의 타이머가 다음 끌기에 끼어드는 길은 두 끌기 사이에 0ms 를 기다려 만든다.
 - ⑰ **길게 누른 키**는 첫 keydown 뒤에 `repeat: true` 인 keydown 을 더 보내 만든다(`tests/heldKeyRepeat.test.tsx` 의 `hold()`). 반복은 **홀수 번** 보낸다 — 토글은
   짝수 번 뒤집히면 처음과 같아, 거르는 줄을 빼도 시험이 통과한다. 볼 것은 둘: 일이 한 번만 일어났는가, 반복 keydown 도 `defaultPrevented` 인가(Space 스크롤·Tab 초점 이동).
+- ⑱ **응답 전의 다시 누름**(재생성·다운로드·업로드·역할 저장 — 격리 실측에서는 누르면 안 되는 것들)은 응답을 시험이 쥐고 본다(`tests/reentryGuards.test.tsx` 의 `held()`):
+  부를 때마다 약속을 쌓아 두고, 시험이 골라서 끝낸다. 볼 것은 셋 — 응답 전의 둘째 누름이 요청을 더 만들지 않는가 · **응답 뒤에는 다시 받는가**(잠금이 안 풀리는
+  변이를 잡는다) · 실패로 끝나도 풀리는가. 잠금을 어디까지 잡는지는 그 뒤의 일(목록 갱신)을 끝나지 않는 약속으로 두어 본다.
+  `disabled` 로 잠근 단추는 화면의 `disabled` 를 본다 — React 는 disabled 단추의 click 을 부르지 않으므로 핸들러 안의 가드는 시험이 닿지 못한다(그런 줄은 넣지 않는다).
+  화면의 값으로 만든 저장은 **보낸 본문을 직접** 본다 — 조회 응답을 '그사이 바뀐 값'으로 바꿔 두고, 누른 뒤 나간 배열에 그 값이 남아 있는지(`tests/adminWindowTabs.test.tsx`).
+  잇달아 넣은 것의 순서(Comfy)는 **끝나는 순서를 바꿔** 본다: 나중 것이 먼저 · 순서대로 · 읽기가 늦게 · 나중 것이 실패(`tests/comfyLoadOrder.test.tsx`).
 
 캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
 - ⑤ 복사본은 프로젝트 폴더 경로를 비워, 씬 그림(`asset:` 썸네일)이 **전부 404** 다. 그림이 뜬 상태로 재려면 다음처럼 한다.

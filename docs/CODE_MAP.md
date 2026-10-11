@@ -964,12 +964,13 @@ updated: 2026-10-12
 | `useAppToast.ts` | 훅 | 토스트 상태·타이머 |
 | `useAppNavigation.ts` | 훅 | 탭·창 네비게이션 상태(브라우저 history) — 이미 떠 있는 관리자 창은 또 열지 않는다(기록이 두 겹이면 Esc 한 번에 안 닫힌다) |
 
-**19. UI 공용 훅·소품(11)**
+**19. UI 공용 훅·소품(12)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `useEscapeClose.ts` | 훅 | Esc 로 닫기(lib 최다 공용 훅) — 겹쳐 있으면 **맨 위 겹만** 닫고 그 Esc 를 '쓴 것'으로 표시한다. 켜진 겹은 뒤 화면의 단축키도 쉬게 한다(`lib/keyGate`). 뒤 화면의 Esc(선택 해제·폴더 창 닫기)는 `useBackgroundEscape`. 코드를 늦게 받는 창은 `useWindowEscape`(틀 `LazyModalShell` 이 있으면 Esc 를 틀에 넘긴다) |
-| `useDragEndReset.ts` | 훅 | 놓기 대상의 강조를 끌기가 어디서 끝나든 끈다 — 강조가 켜진 동안만 window 의 `dragend` 를 듣는다(대상 위에서 취소하면 dragleave 가 오지 않는다) |
+| `useDragEndReset.ts` | 훅 | 놓기 대상의 강조를 끌기가 어디서 끝나든 끈다 — 강조가 켜진 동안만 window 의 `dragend` 를 듣는다(대상 위에서 취소하면 dragleave 가 오지 않는다). `useHandleRelease` = 순서 손잡이(⠿)의 '누르고 있다' 표식을 손잡이 밖에서 떼거나 창을 떠나도 내린다(조작 규칙 39) |
+| `saveQueue.ts` | 줄 | 한 줄로 서는 저장 — 목록 전체를 덮어쓰는 저장(역할 PATCH)을 앞의 것이 끝난 뒤에 보낸다(줄은 모듈 값). `rebaseRoles` = 화면에서 바꾼 것만 서버의 지금 값에 얹는다 · `accountAtRequest` = 쓰기 직전에 계정이 그대로인지(조작 규칙 39) |
 | `useOverlayDismiss.ts` | 훅 | 오버레이 바깥 클릭/Esc 통합 해제 |
 | `useOutsideMouseDown.ts` | 훅 | 바깥 누름 감지(mousedown + pointerdown — 누름을 pointerdown 에서 막는 곳을 눌러도 닫힌다. pointerdown 은 **잡는 단계**로 듣는다 — 사이드바 폭 손잡이는 전파까지 멈춘다) |
 | `useOutsideDragSelect.ts` | 훅 | 빈 곳 드래그 선택 시작 위임 |

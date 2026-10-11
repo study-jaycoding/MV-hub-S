@@ -1,8 +1,9 @@
 // 관리자 창 — 로드맵 §4-5. 좌측 상단 "Content Hub" 클릭으로 열림.
 // 멤버 전역 역할(복수) 관리 + 프로젝트 역할 관리. ⚠️ enforcement off 면 '식별·표시'까지만 —
 // 실제 접근 차단은 CONTENT_HUB_AUTH=1 일 때. 지금은 누구나 열 수 있다(2겹 차단은 나중).
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "../api";
+import { accountAtRequest, globalRoleSaves, rebaseRoles, sameRoles } from "../lib/saveQueue";
 import { ApprovalTab, type AdminConfirmState } from "./admin/ApprovalTab";
 import { AssetRegistryTab } from "./admin/AssetRegistryTab";
 import { BackupReplicaSection } from "./admin/BackupReplicaSection";
@@ -178,7 +179,12 @@ export function AdminWindow({
       setPublishBusy(false);
     }
   };
+  // 저장 중에는 다시 받지 않고 두 칸도 잠근다(조작 규칙 39) — 응답이 이름 칸을 덮어쓰므로, 저장 중에 고쳐 다시 저장하면
+  //  늦게 온 앞 응답이 화면을 옛 값으로 되돌렸다.
+  const [urlBusy, setUrlBusy] = useState(false);
   const saveUrl = async () => {
+    if (urlBusy) return;
+    setUrlBusy(true);
     setUrlMsg("");
     setPublishMsg(""); // 주소가 바뀌었으면 직전 공지 결과 문구는 더 이상 지금 상태가 아니다
     try {
@@ -195,6 +201,8 @@ export function AdminWindow({
       setUrlMsg("저장됐습니다. 다음 로그인부터 이 주소를 씁니다.");
     } catch (e) {
       setUrlMsg("저장 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+    } finally {
+      setUrlBusy(false);
     }
   };
 
@@ -313,18 +321,29 @@ export function AdminWindow({
   useModalFocus(elevRef, elevOpen);
   useModalFocus(() => [windowRef.current?.querySelector<HTMLElement>(".admin-confirm:not(.admin-elev)")], !!confirm || publishOpen);
 
-  // 저장 중인 멤버 — 칩을 연타하면 낡은 value 로 만든 목록이 뒤에 도착해 먼저 준 역할을
-  // 지운다(PUT 이 전체 목록을 덮어쓰는 계약) → 응답이 올 때까지 그 멤버 칩을 잠근다.
-  const [roleBusyUid, setRoleBusyUid] = useState("");
-  const changeMemberGlobalRoles = async (uid: string, roles: string[]) => {
-    setRoleBusyUid(uid);
-    try {
-      setMembers(await api.setMemberGlobalRoles(uid, roles));
-    } catch (e) {
-      alert("전역 역할 변경 실패: " + String(e));
-    } finally {
-      setRoleBusyUid("");
-    }
+  // 전역 역할 저장은 역할 목록 전체를 덮어쓴다 — 칩을 연타하면 낡은 value 로 만든 목록이 뒤에 도착해 먼저 준 역할을 지웠다.
+  // 그래서 한 줄로 세우고(lib/saveQueue — 줄은 모듈 값이라 이 창을 닫았다 열어도 이어진다), 차례가 왔을 때 서버의 지금 값을 읽어
+  // 화면에서 **바꾼 것만** 얹는다(조작 규칙 39). 줄이 도는 동안 **모든 멤버의** 칩을 잠그는 것은 그 위의 안내다 — 전에는 저장 중인 멤버만
+  // 잠가서, 다른 멤버를 누르는 순간 잠금이 그쪽으로 옮겨 가 앞 멤버가 풀렸다.
+  const roleBusy = useSyncExternalStore(globalRoleSaves.subscribe, globalRoleSaves.busy);
+  const changeMemberGlobalRoles = (uid: string, roles: string[]) => {
+    const shown = members.find((member) => member.uid === uid)?.global_roles ?? []; // 누른 순간 화면에 보이던 역할 — 무엇을 바꿨는지의 기준
+    const sameAccount = accountAtRequest(); // 줄을 서 있거나 지금 값을 읽는 사이에 계정이 바뀌었으면 보내지 않는다
+    return globalRoleSaves.run(async () => {
+      try {
+        const fresh = await api.members();
+        if (!sameAccount()) return; // 읽기는 해롭지 않다 — 쓰기 직전에 본다
+        const current = fresh.find((member) => member.uid === uid);
+        if (!current) {
+          setMembers(fresh); // 그사이 목록에서 사라진 멤버 — 화면만 맞춘다
+          return;
+        }
+        const next = rebaseRoles(current.global_roles, shown, roles);
+        setMembers(sameRoles(next, current.global_roles) ? fresh : await api.setMemberGlobalRoles(uid, next));
+      } catch (e) {
+        alert("전역 역할 변경 실패: " + String(e));
+      }
+    });
   };
 
   const shortUid = (uid: string) => uid.replace("user_", "").slice(0, 10);
@@ -450,6 +469,7 @@ export function AdminWindow({
                   placeholder="서버 이름 (예: MV 팀 서버)"
                   value={nameDraft}
                   onChange={(e) => setNameDraft(e.target.value)}
+                  readOnly={urlBusy}
                   maxLength={64}
                   style={{ maxWidth: 420 }}
                 />
@@ -458,11 +478,12 @@ export function AdminWindow({
                   placeholder="예: http://192.168.0.10:8010"
                   value={urlDraft}
                   onChange={(e) => setUrlDraft(e.target.value)}
+                  readOnly={urlBusy}
                   style={{ maxWidth: 420, marginTop: 8 }}
                 />
                 <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
                   <button className="settings-action" style={{ width: "auto" }} onClick={saveUrl}>
-                    저장
+                    {urlBusy ? "저장 중…" : "저장"}
                   </button>
                   <button
                     className="settings-action"
@@ -533,7 +554,7 @@ export function AdminWindow({
                   setMemberQuery={setMemberQuery}
                   shortUid={shortUid}
                   onChangeRoles={changeMemberGlobalRoles}
-                  busyUid={roleBusyUid}
+                  busy={roleBusy}
                 />
               )}
             </>

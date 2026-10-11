@@ -2,6 +2,7 @@
 // 풀: 할당됨(추정) = 사용(우리 기록 전체) + 미사용(서브 잔액 합), 할당 가능 = 메인 잔액. 힉스필드는 과거 할당 총액을 주지 않는다.
 import { useModalFocus } from "../../../lib/keyGate";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
+import { useHandleRelease } from "../../../lib/useDragEndReset";
 import { useRef, useState } from "react";
 import { formatDecimal } from "../../../lib/creditPlan";
 import { formatCredits } from "../../../lib/formatCredits";
@@ -135,6 +136,7 @@ export function SubTable({ data, canEdit, busy, onSelect, onMove, onCredit, onFo
   useEscapeClose(() => setMenu(null), menu !== null, true, true); // ⋯ 메뉴만 닫는다
   // 프로젝트 관리 창과 같은 끌기 — ⠿ 를 누른 동안만 줄이 끌린다(이름·단추 클릭을 막지 않게)
   const [dragArmed, setDragArmed] = useState(false);
+  useHandleRelease(dragArmed, () => setDragArmed(false)); // 손잡이 밖에서 떼거나 누른 채 창을 떠나도 내린다
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
   const canMove = canEdit && !busy;

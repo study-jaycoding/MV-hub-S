@@ -2,7 +2,7 @@
 // 라벨링·멤버 프로젝트 역할 부여·보관/삭제·순서변경. 권한(create_project/grant_project_role)은
 // 백엔드가 강제하며 여기선 UI 노출만 게이팅한다. 예전엔 대시보드 '+ 프로젝트'로 여는 오버레이였는데
 // 관리자 창 탭으로 옮겼다(Jay 2026-10-02) — 창 틀·닫기·Esc 로 창 닫기는 관리자 창이 맡는다.
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "../../api";
 import { manageApi } from "../../lib/manageApi";
 import { refreshModelPolicy } from "../../lib/modelPolicy";
@@ -22,6 +22,8 @@ import {
 } from "../../lib/projectPlanning";
 import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
+import { useHandleRelease } from "../../lib/useDragEndReset";
+import { accountAtRequest, projectMemberSaves, rebaseRoles, sameRoles } from "../../lib/saveQueue";
 import { useManageCaps } from "../../lib/useManageCaps";
 import { workspaceCommandLabels } from "../../lib/workspaceCommand";
 import { ProjectRenderTree } from "../admin/ProjectRenderTree";
@@ -198,29 +200,71 @@ export function ProjectManagerPanel({
       setPM(pid, []);
     }
   };
-  const changeProjRoles = async (pid: string, uid: string, roles: string[]) => {
-    try {
-      setPM(pid, await api.setProjectRoles(pid, uid, roles));
-    } catch (e) {
-      alert("프로젝트 역할 변경 실패: " + String(e));
-    }
+  // 프로젝트 멤버를 바꾸는 일(역할·제거·추가)은 한 줄로 선다(lib/saveQueue — 줄은 모듈 값이라 이 패널이 사라졌다 다시 떠도 이어진다).
+  //  역할 저장은 역할 목록 전체를 덮어쓰므로, 차례가 왔을 때 서버의 지금 값을 읽어 화면에서 **바꾼 것만** 얹는다 — 화면의 목록이 낡았어도
+  //  (응답 전에 누른 것 · 탭을 다녀와 새로 읽은 반영 전의 목록 · 열 때 먼저 보이는 캐시) 그사이 저장된 역할을 지우지 않는다.
+  //  줄이 도는 동안 바꾸는 단추(역할 칩·✕·+ 추가)를 잠그는 것은 그 위의 안내다.
+  const memberBusy = useSyncExternalStore(projectMemberSaves.subscribe, projectMemberSaves.busy);
+  const whileMemberBusy = projectMemberSaves.run;
+  // 올라올 때 이미 저장 중이었으면(탭을 다녀오기 전의 패널이 보낸 것) 그 응답은 사라진 패널이 받는다 — 끝나면 열려 있는 멤버 칸을 새로 읽어
+  //  화면을 맞춘다(안 읽어도 저장은 지금 값에서 계산되지만, 방금 저장된 역할이 화면에 안 보인다).
+  const inheritedSaveRef = useRef(memberBusy);
+  useEffect(() => {
+    if (memberBusy || !inheritedSaveRef.current) return;
+    inheritedSaveRef.current = false;
+    if (!activeMembersProjectId) return;
+    void api.projectMembers(activeMembersProjectId).then((list) => setPM(activeMembersProjectId, list)).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memberBusy]);
+  //  줄을 서 있거나 지금 값을 읽는 사이에 계정이 바뀌었으면 보내지 않는다(`accountAtRequest` — 새 계정의 이름으로 나간다).
+  const changeProjRoles = (pid: string, uid: string, roles: string[]) => {
+    const shown = projMembersMap[pid]?.find((member) => member.uid === uid)?.roles ?? []; // 누른 순간 화면에 보이던 역할 — 무엇을 바꿨는지의 기준
+    const sameAccount = accountAtRequest();
+    return whileMemberBusy(async () => {
+      try {
+        const fresh = await api.projectMembers(pid);
+        if (!sameAccount()) return; // 읽기는 해롭지 않다 — 쓰기 직전에 본다
+        const current = fresh.find((member) => member.uid === uid);
+        if (!current) {
+          // 그사이 프로젝트에서 빠진 멤버다 — '역할 없는 멤버'로 보고 저장하면 다시 들어오고 제외 기록까지 풀린다. 목록만 맞춘다.
+          setPM(pid, fresh);
+          alert("이미 프로젝트에서 빠진 멤버입니다. 다시 넣으려면 '+ 추가'를 쓰세요.");
+          return;
+        }
+        const next = rebaseRoles(current.roles, shown, roles);
+        setPM(pid, sameRoles(next, current.roles) ? fresh : await api.setProjectRoles(pid, uid, next));
+      } catch (e) {
+        alert("프로젝트 역할 변경 실패: " + String(e));
+      }
+    });
   };
-  const addProjectMembers = async (pid: string, uids: string[]) => {
-    for (const uid of uids) {
-      const globalRoles =
-        members.find((member) => member.uid === uid)?.global_roles ||
-        Object.values(workspaceMembers).flat().find((member) => member.uid === uid)?.global_roles;
-      const roles = defaultProjectRoles(globalRoles);
-      setPM(pid, await api.setProjectRoles(pid, uid, roles.length ? roles : ["creator"]));
-    }
+  const addProjectMembers = (pid: string, uids: string[]) => {
+    const sameAccount = accountAtRequest();
+    return whileMemberBusy(async () => {
+      // 추가 후보는 창을 열 때의 목록으로 걸렀다 — 그사이 다른 곳에서 먼저 넣고 역할을 고친 멤버는 건너뛴다(기본 역할로 덮지 않는다).
+      const fresh = await api.projectMembers(pid);
+      const present = new Set(fresh.map((member) => member.uid));
+      if (uids.every((uid) => present.has(uid))) setPM(pid, fresh); // 전부 이미 있었다 — 화면만 맞춘다
+      for (const uid of uids) {
+        if (present.has(uid)) continue;
+        if (!sameAccount()) return; // 요청마다 보내기 직전에 본다(여럿을 넣는 사이에도 바뀔 수 있다)
+        const globalRoles =
+          members.find((member) => member.uid === uid)?.global_roles ||
+          Object.values(workspaceMembers).flat().find((member) => member.uid === uid)?.global_roles;
+        const roles = defaultProjectRoles(globalRoles);
+        setPM(pid, await api.setProjectRoles(pid, uid, roles.length ? roles : ["creator"]));
+      }
+    });
   };
-  const removeProjMember = async (pid: string, uid: string) => {
+  // 제거는 목록에 기대지 않고 요청도 하나다 — 줄만 선다. 계정 확인은 두지 않았다: 줄이 도는 동안 화면이 ✕ 를 잠가(busy) 앞 작업을
+  //  기다리는 길이 지금은 없다(줄 자체의 보장은 아니다 — 잠금 없이 부르는 입구가 생기면 여기에도 `accountAtRequest` 를 둘 것).
+  const removeProjMember = (pid: string, uid: string) => whileMemberBusy(async () => {
     try {
       setPM(pid, await api.removeProjectMember(pid, uid));
     } catch (e) {
       alert("멤버 제거 실패: " + String(e));
     }
-  };
+  });
   const projRoleCounts = (pid: string) => projectRoleCounts(projMembersMap[pid] || [], systemUids);
 
   const createProject = () => {
@@ -395,6 +439,7 @@ export function ProjectManagerPanel({
     loadProjects();
   };
   const [dragArmed, setDragArmed] = useState(false);
+  useHandleRelease(dragArmed, () => setDragArmed(false)); // 손잡이 밖에서 떼거나 누른 채 창을 떠나도 내린다
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
   const dropProjectAt = async (toIdx: number) => {
@@ -575,6 +620,7 @@ export function ProjectManagerPanel({
               candidates={activeMemberCandidates}
               systemUids={systemUids}
               onClose={() => setActiveMembersProjectId("")}
+              busy={memberBusy}
               onRolesChange={(uid, roles) => changeProjRoles(activeMembersProject.id, uid, roles)}
               onRemove={(uid) => removeProjMember(activeMembersProject.id, uid)}
               onAddMembers={(uids) => addProjectMembers(activeMembersProject.id, uids)}

@@ -31,6 +31,9 @@ export function useGenerationCardActions({
   workspace,
 }: UseGenerationCardActionsArgs) {
   const reviewInFlightRef = useRef(new Set<string>());
+  // 재생성 요청이 나가 있는 생성물 — 응답 전의 다시 누름(더블클릭)은 받지 않는다. 누름마다 요청 키가 새로 만들어져 서버의 중복 제거로도
+  //  합쳐지지 않고 유료 생성이 둘이 된다(조작 규칙 39). 응답이 오면 바로 푼다 — '큐에 등록' 안내를 보고 일부러 한 번 더 누르는 것은 새 요청이다.
+  const regenInFlightRef = useRef(new Set<string>());
   // 새로 만든 재생성 placeholder 를 반환한다(캔버스에서 그 카드에 변형으로 append 하려고). 실패 시 null.
   const onRegenerate = async (
     g: Generation,
@@ -53,19 +56,30 @@ export function useGenerationCardActions({
       flash(blocked);
       return null;
     }
+    if (regenInFlightRef.current.has(g.id)) {
+      onDefinitiveReject?.(); // 나가지 않은 것이 확실하다 — 캔버스가 이 누름에 만든 pending 연결을 버린다
+      flash("재생성 처리 중입니다 — 완료 후 다시 누르세요.");
+      return null;
+    }
+    regenInFlightRef.current.add(g.id);
     try {
-      // API 경계에서 구버전 PromptPart[] 문자열은 읽을 수 있는 prompt로 복원돼 있다. prompt를 명시해
-      // 보내야 백엔드가 DB에 남은 옛 JSON 원문으로 다시 생성하지 않는다(정상 생성은 같은 값이라 무해).
-      const submit = api.prepareRegenerate(
-        g.id,
-        {
-          prompt: g.prompt,
-          auto_tags: [...armedAutoTags],
-        },
-        workspace,
-        canvasLink,
-      );
-      const ng = await submit();
+      let ng: Generation;
+      try {
+        // API 경계에서 구버전 PromptPart[] 문자열은 읽을 수 있는 prompt로 복원돼 있다. prompt를 명시해
+        // 보내야 백엔드가 DB에 남은 옛 JSON 원문으로 다시 생성하지 않는다(정상 생성은 같은 값이라 무해).
+        const submit = api.prepareRegenerate(
+          g.id,
+          {
+            prompt: g.prompt,
+            auto_tags: [...armedAutoTags],
+          },
+          workspace,
+          canvasLink,
+        );
+        ng = await submit();
+      } finally {
+        regenInFlightRef.current.delete(g.id); // 목록 갱신(reload)까지 잡고 있지 않는다
+      }
       flash("재생성 잡을 큐에 등록했습니다.");
       await reload();
       bumpBoard();
