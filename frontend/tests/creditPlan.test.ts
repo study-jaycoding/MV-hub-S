@@ -19,6 +19,8 @@ import {
   remainingTone,
   usagePercentLabel,
   stripThousands,
+  acceptDecimal,
+  acceptThousands,
   topupSteps,
   topupsOnlyBody,
   usagePercent,
@@ -225,4 +227,17 @@ it("자동 몫은 나누어떨어지지 않으면 근사 표시를 붙인다", (
   expect(autoShareLabel(300)).toBe("300");        // 딱 나눠지면 그대로
   expect(autoShareLabel(100 / 3)).toBe("≈33.33"); // 33.333… 은 근사
   expect(autoShareLabel(null)).toBe("—");
+});
+
+// 16회차(조작 규칙 43): 숫자 칸의 거르개가 숫자 아닌 글자를 '지워서' 받았다 — 붙여 넣은 "1.5" 가 15 로, "-100" 이 100 으로,
+//  "1,500.50" 이 150050 으로 저장됐다(지우면 다른 수가 된다). 받을 수 없는 입력은 받지 않는다(null — 칸이 그대로다).
+it("숫자 칸은 받을 수 없는 입력을 받지 않는다 — 지워서 다른 수로 만들지 않는다", () => {
+  expect(acceptThousands("20,000")).toBe("20000");
+  expect(acceptThousands(" 5 000 ")).toBe("5000");
+  expect(acceptThousands("")).toBe(""); // 비우는 것은 받는다
+  for (const text of ["1.5", "-100", "1,500.50", "12abc", "ㅁ"]) expect(acceptThousands(text)).toBeNull();
+  expect(acceptDecimal("24,491.5")).toBe("24491.5");
+  expect(acceptDecimal("12.")).toBe("12."); // 치는 중인 끝점
+  expect(acceptDecimal(".5")).toBe(".5");
+  for (const text of ["-1.5", "33.33.33", "1.5cr"]) expect(acceptDecimal(text)).toBeNull();
 });

@@ -17,6 +17,7 @@ import {
   draftMemberCount,
   formatThousands,
   mergeTopupsFromServer,
+  acceptThousands,
   newDraftGroup,
   newGroupId,
   periodSuffix,
@@ -138,7 +139,7 @@ export function GroupEditor({
                   value={formatThousands(limitInput)}
                   placeholder="예: 5,000"
                   maxLength={11}
-                  onChange={(event) => { setLimitInput(stripThousands(event.target.value)); setError(""); }}
+                  onChange={(event) => { const next = acceptThousands(event.target.value); if (next !== null) { setLimitInput(next); setError(""); } }}
                 />
                 <em>크레딧</em>
                 <select
@@ -426,7 +427,7 @@ export function CreditPlanFields({
                   value={formatThousands(topup.creditsInput)}
                   placeholder="크레딧"
                   aria-label="추가 크레딧"
-                  onChange={(event) => updateTopup(topup.id, { creditsInput: stripThousands(event.target.value) })}
+                  onChange={(event) => { const next = acceptThousands(event.target.value); if (next !== null) updateTopup(topup.id, { creditsInput: next }); }}
                 />
                 <input className="settings-input" value={topup.note} placeholder="메모 (선택)" aria-label="메모" onChange={(event) => updateTopup(topup.id, { note: event.target.value })} />
                 <button

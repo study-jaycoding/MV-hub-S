@@ -1,5 +1,5 @@
 import { BUDGET_PERIOD_OPTIONS, planningBudgetPeriod } from "../../lib/projectPlanning";
-import { formatThousands, stripThousands } from "../../lib/creditPlan";
+import { acceptThousands, formatThousands } from "../../lib/creditPlan";
 import type { Planning } from "./types";
 import { ProjectDateRangePicker } from "./ProjectDateRangePicker";
 
@@ -50,9 +50,12 @@ export function ProjectPlanningFields({
             type="number"
             min={1}
             max={3650}
-            value={form.archive_after_days ?? 30}
+            // 비운 채로 둘 수 있다(비우면 기본 30일 — 자리 글자가 알려 준다). 전엔 `Number(값) || 30` 이라 지우거나 0 을 치는 순간 30 으로
+            //  바뀌어, 지우고 7 을 치면 307 이 됐다. 범위(1~3650)는 저장할 때 본다(lib/projectPlanning — 0 은 거절한다).
+            value={form.archive_after_days ?? ""}
+            placeholder="30"
             aria-label="자동 작업 보관 기준 일수"
-            onChange={(event) => update("archive_after_days", Number(event.target.value) || 30)}
+            onChange={(event) => update("archive_after_days", event.target.value === "" ? null : Number(event.target.value))}
           />
           <em>일 동안 새 생성 없음</em>
         </div>
@@ -66,7 +69,7 @@ export function ProjectPlanningFields({
             value={formatThousands(budgetInput)}
             placeholder="제한 없음"
             aria-label="예산 크레딧"
-            onChange={(event) => onBudgetInputChange(stripThousands(event.target.value))}
+            onChange={(event) => { const next = acceptThousands(event.target.value); if (next !== null) onBudgetInputChange(next); }}
           />
           <em>크레딧</em>
           <select

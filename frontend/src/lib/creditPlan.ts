@@ -293,6 +293,20 @@ export function stripThousands(text: string): string {
   return text.replace(/[^\d]/g, "");
 }
 
+/** 정수 칸에 **들어온 입력**을 받을지 — 숫자(와 천 단위 쉼표·빈칸)뿐이면 숫자만 돌려주고, 아니면 null: 그 입력을 받지 않는다(칸이
+ *  그대로다 — 조작 규칙 43). 전엔 `stripThousands` 로 숫자 아닌 글자를 지워서, 붙여 넣은 "1.5" 가 15 로·"-100" 이 100 으로·"1,500.50" 이
+ *  150050 으로 저장됐다 — 지우면 **다른 수**가 된다. (`stripThousands` 는 이미 받아 둔 초안을 다듬는 데만 쓴다.) */
+export function acceptThousands(text: string): string | null {
+  const bare = text.replace(/[,\s]/g, "");
+  return /^\d*$/.test(bare) ? bare : null;
+}
+
+/** 소수 칸에 들어온 입력 — 숫자와 점 하나까지 받는다(부호·둘째 점·글자가 섞이면 null). 위와 같은 까닭. */
+export function acceptDecimal(text: string): string | null {
+  const bare = text.replace(/[,\s]/g, "");
+  return /^\d*\.?\d*$/.test(bare) ? bare : null;
+}
+
 /** 숫자 문자열을 천 단위 구분으로("20000" → "20,000"). 빈 값은 빈 문자열. */
 export function formatThousands(digits: string): string {
   const clean = stripThousands(digits);

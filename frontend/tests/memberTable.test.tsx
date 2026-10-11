@@ -400,6 +400,22 @@ it("그룹 한도 주기와 한도를 행에서 저장하고 한도에는 cr만 
   expect(host.querySelector<HTMLInputElement>('[aria-label="2nd floor 크레딧 한도"]')!.value).toBe("4,000");
 });
 
+// 16회차(조작 규칙 43): 거르개가 숫자 아닌 글자를 지워서 받아, 붙여 넣은 "1.5" 가 15 로·"-100" 이 100 으로 저장됐다(지우면 다른 수가 된다).
+it("그룹 한도 칸은 받을 수 없는 입력(소수점·부호·글자)을 받지 않는다 — 지워서 다른 수로 저장하지 않는다", async () => {
+  mocks.memberTable.mockResolvedValue(table(3, [row("a@x")]));
+  await mount();
+  await openSheet("그룹");
+  const limit = () => host.querySelector<HTMLInputElement>('[aria-label="2nd floor 크레딧 한도"]')!;
+  await act(async () => { limit().focus(); });
+  for (const pasted of ["1.5", "-100", "1,500.50", "12abc"]) {
+    await typeInput(limit(), pasted);
+    expect(limit().value).toBe("5,000"); // 칸이 그대로다 — 받지 않았다
+  }
+  await act(async () => { limit().dispatchEvent(new FocusEvent("focusout", { bubbles: true })); });
+  await settle();
+  expect(mocks.saveCreditPlan).not.toHaveBeenCalled(); // 전엔 15·100·150050·12 로 저장됐다
+});
+
 it("크레딧 추가는 필터와 표시 범위에 상관없이 전 기간 충전 기록을 보존한다", async () => {
   const data = table(3, [row("a@x")]);
   data.credit = {

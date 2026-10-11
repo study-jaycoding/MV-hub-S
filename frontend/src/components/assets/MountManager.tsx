@@ -142,6 +142,8 @@ export function MountManager({
                 className="mount-input"
                 placeholder="폴더 경로 (예: D:\작업\내폴더)"
                 value={path}
+                // 등록 중에는 칸을 잠근다(조작 규칙 43) — 끝나면 두 칸을 비우는데, 그사이 다음 폴더를 치고 있었으면 그 글까지 지워졌다
+                readOnly={busy}
                 onChange={(e) => setPath(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && add()}
                 autoFocus
@@ -151,6 +153,7 @@ export function MountManager({
                   className="mount-input mount-name"
                   placeholder="표시 이름"
                   value={name}
+                  readOnly={busy}
                   onChange={(e) => setName(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && add()}
                 />

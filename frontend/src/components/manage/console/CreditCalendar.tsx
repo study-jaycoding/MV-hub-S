@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { useModalFocus } from "../../../lib/keyGate";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
-import { formatDecimal, formatThousands } from "../../../lib/creditPlan";
+import { acceptDecimal, acceptThousands, formatDecimal, formatThousands } from "../../../lib/creditPlan";
 import { formatCredits } from "../../../lib/formatCredits";
 import { ManageEditCancelled } from "../useManageEditConflict";
 import type { ConsoleOverview, ConsoleSub } from "../../../lib/workspaceConsole";
@@ -217,11 +217,14 @@ function EventInfo({ info, sub, canEdit, onEdit, onClose }: {
         {canEdit ? (
           <>
             <label>크레딧{recurring && sub ? ` / ${PERIOD_UNIT[sub.recurring_period]} (정기 금액이 바뀝니다)` : ""}
-              <input id="wc-event-credits" inputMode={recurring ? "decimal" : "numeric"} value={creditsText}
-                onChange={(e) => setCreditsText(recurring ? formatDecimal(e.target.value) : formatThousands(e.target.value))}
+              <input id="wc-event-credits" inputMode={recurring ? "decimal" : "numeric"} value={creditsText} readOnly={busy}
+                onChange={(e) => {
+                  const next = recurring ? acceptDecimal(e.target.value) : acceptThousands(e.target.value);
+                  if (next !== null) setCreditsText(recurring ? formatDecimal(next) : formatThousands(next));
+                }}
                 onKeyDown={(e) => { if (e.key === "Enter") save(); }} /></label>
             {!recurring ? (
-              <label>메모<input id="wc-event-note" value={noteText} disabled={!noteReady || noteFailed}
+              <label>메모<input id="wc-event-note" value={noteText} readOnly={busy} disabled={!noteReady || noteFailed}
                 placeholder={noteFailed ? "메모를 읽지 못했습니다 — 창을 닫았다가 다시 여세요" : noteReady ? "선택" : "불러오는 중..."}
                 onChange={(e) => setNoteText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") save(); }} /></label>
             ) : <p className="wc-hint">반복을 끄거나 주기·날짜를 바꾸려면 서브 표의 ＋ 크레딧 창을 쓰세요. 날짜는 막대를 끌어서 옮깁니다.</p>}
