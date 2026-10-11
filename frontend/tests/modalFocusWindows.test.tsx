@@ -321,6 +321,91 @@ describe("상단바", () => {
     act(() => root.render(bar(false)));
     expect(header.hasAttribute("inert")).toBe(false);
   });
+
+  // 2026-10-12(조작 점검 10회차, Codex 검토): 검색어를 치고 0.3초 안에 **지금 켜진 탭**을 다시 누르면(필터 초기화) 예약해 둔 검색이
+  //  초기화 뒤에 다시 걸렸다 — 탭이 안 바뀌어 검색칸이 그대로 남았다.
+  it("검색어를 친 직후 켜진 탭을 다시 누르면 예약된 검색이 버려진다 — 초기화한 화면에 검색이 되살아나지 않는다", async () => {
+    const onSearch = vi.fn();
+    function Bar() {
+      // 확정된 검색어가 없는 상태 — 초기화해도 검색 값(undefined)은 그대로라, 검색칸은 값의 변화로는 초기화를 알 수 없다(탭 누름으로 안다)
+      const [filters, setFilters] = useState<{ tab: string; search?: string }>({ tab: "my" });
+      return (
+        <TopBar filters={filters as never} onTab={(tab) => setFilters({ tab })} onWorkspaceSwitched={noop}
+          onSearch={(q) => { onSearch(q); setFilters((f) => ({ ...f, search: q })); }}
+          workspaceContext={{ scope: "personal", id: null, name: null } as never} onWorkspaceContextChange={noop} onImported={noop}
+          onOpenAssets={noop} onOpenAdmin={noop} hasUnreadComments={false} onOpenNotificationComment={noop} onNotificationsChanged={noop} />
+      );
+    }
+    act(() => root.render(<Bar />));
+    const input = () => host.querySelector<HTMLInputElement>(".topbar-search input")!;
+    expect(input().value).toBe("");
+    act(() => { // React 가 듣는 방식으로 입력칸의 값을 바꾼다
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), "bar");
+      input().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(input().value).toBe("bar");
+    act(() => { host.querySelector<HTMLButtonElement>(".tabs button.on")!.click(); }); // 켜진 탭을 다시 누른다 — 0.3초가 지나기 전
+    expect(input().value).toBe("");
+    await act(async () => { await new Promise((done) => setTimeout(done, 350)); });
+    expect(onSearch).not.toHaveBeenCalled();
+    expect(input().value).toBe("");
+  });
+
+  // 탭 누름이 아닌 바깥 초기화(Resolve 자동 따라가기가 필터를 갈아 끼움 등)도 같다 — 검색칸은 그대로 떠 있고 값만 밖에서 바뀐다.
+  //  내 검색의 메아리(친 글이 0.3초 뒤 부모를 돌아옴)에는 손대지 않는다: 그사이 더 친 글자가 남는다.
+  it("밖에서 검색어가 비워지면 예약된 검색을 버린다 — 내가 보낸 검색이 돌아온 것이면 그사이 더 친 글자를 덮지 않는다", async () => {
+    const onSearch = vi.fn();
+    let reset: () => void = noop;
+    let follow: () => void = noop;
+    function Bar() {
+      const [filters, setFilters] = useState<{ tab: string; search?: string }>({ tab: "my", search: "foo" });
+      const [followed, setFollowed] = useState(0);
+      reset = () => setFilters({ tab: "my" });
+      follow = () => { setFilters({ tab: "my" }); setFollowed((n) => n + 1); }; // 자동 따라가기: 필터를 갈아 끼우고 횟수를 올린다(useLibraryFilters.followLocation)
+      return (
+        <TopBar filters={filters as never} onTab={noop} onWorkspaceSwitched={noop} searchResetKey={followed}
+          onSearch={(q) => { onSearch(q); setFilters((f) => ({ ...f, search: q })); }}
+          workspaceContext={{ scope: "personal", id: null, name: null } as never} onWorkspaceContextChange={noop} onImported={noop}
+          onOpenAssets={noop} onOpenAdmin={noop} hasUnreadComments={false} onOpenNotificationComment={noop} onNotificationsChanged={noop} />
+      );
+    }
+    act(() => root.render(<Bar />));
+    const input = () => host.querySelector<HTMLInputElement>(".topbar-search input")!;
+    const type = (text: string) => act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), text);
+      input().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const wait = (ms: number) => act(async () => { await new Promise((done) => setTimeout(done, ms)); });
+
+    type("bar");
+    act(() => reset()); // 0.3초가 지나기 전에 밖에서 초기화됐다(탭은 누르지 않았다)
+    expect(input().value).toBe("");
+    await wait(350);
+    expect(onSearch).not.toHaveBeenCalled();
+
+    // 메아리: "ab " 를 치고 0.3초 뒤 부모가 "ab" 로 돌려줘도 끝의 빈칸이 남는다(이어 칠 수 있다)
+    type("ab ");
+    await wait(350);
+    expect(onSearch).toHaveBeenLastCalledWith("ab");
+    expect(input().value).toBe("ab ");
+
+    // 확정된 검색어가 없는 채 첫 검색어를 치는 중에 자동 따라가기가 왔다 — 검색 값은 undefined → undefined 라 값으로는 알 수 없다.
+    //  따라가기 횟수(searchResetKey)를 신호로 받아 예약을 버리고 입력을 비운다. 입력칸은 그대로다 — 따라가기는 사용자가 아무것도
+    //  안 해도 오므로, 검색칸을 다시 올리면 치던 사람의 초점이 사라진다(Codex 코드 리뷰).
+    act(() => reset());
+    await wait(350);
+    onSearch.mockClear();
+    const box = input();
+    box.focus();
+    type("zz");
+    act(() => follow());
+    expect([input() === box, document.activeElement === box, input().value]).toEqual([true, true, ""]);
+    await wait(350);
+    expect(onSearch).not.toHaveBeenCalled();
+    type("다시"); // 이어서 친 검색어는 평소대로 간다
+    await wait(350);
+    expect(onSearch).toHaveBeenLastCalledWith("다시");
+  });
 });
 
 describe("StrictMode(개발 화면)", () => {

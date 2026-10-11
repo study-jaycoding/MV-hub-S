@@ -183,7 +183,7 @@ export default function App() {
     sharedOnly, setSharedOnly, reviewFilter, setReviewFilter, tagFilter, setTagFilter, tagPanelOpen, setTagPanelOpen,
     commentOnly, setCommentOnly, finalOnly, setFinalOnly, grayOn, setGrayOn,
     armedAutoTags, setArmedAutoTags, armedFolder, setArmedFolder,
-    generationScope, filterAutoTags, followLocation, toggleAutoTag, manualRevision,
+    generationScope, filterAutoTags, followLocation, toggleAutoTag, manualRevision, followRevision,
     workspaceChips, setWorkspaceChips,
     genQuery, selectionResetKey, workspaceFollow, workspaceScopeKey, workspaceQueryReady,
   } = useLibraryFilters(LS, workspaceContext);
@@ -2306,6 +2306,7 @@ export default function App() {
     <div className="app">
       <TopBar
         filters={filters}
+        searchResetKey={followRevision}
         onTab={(tab) => {
           navTab(tab); // 브라우저 히스토리 엔트리 추가(뒤로/앞으로 연동)
           // 직접 탭 클릭은 다른 필터를 초기화하되 무장된 워크스페이스 침 필터는 유지

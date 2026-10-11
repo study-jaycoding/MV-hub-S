@@ -139,6 +139,9 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
   const t = useT();
   const [manualRevision, setManualRevision] = useState(0);
   const bumpManualRevision = useCallback(() => setManualRevision((value) => value + 1), []);
+  // 자동 따라가기가 필터를 갈아 끼운 횟수 — 상단바가 검색칸을 다시 올리는 신호로 쓴다(아래 followLocation). 검색어가 확정되기 전이면
+  //  검색 값은 undefined → undefined 라 검색칸이 값으로는 초기화를 알 수 없고, 예약해 둔 검색(0.3초 뒤)이 찾아간 자리에 다시 걸렸다.
+  const [followRevision, setFollowRevision] = useState(0);
 
   // 워크스페이스 침(옵트인 필터) 등록 목록 — 전역태그 블록에 표시, 클릭하면 workspace_id 필터 무장.
   const [workspaceChips, setWorkspaceChips] = useState<WorkspaceChip[]>(
@@ -320,6 +323,7 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
       ...(workspace && previous.tab === "team" ? { workspace_ids: previous.workspace_ids } : {}) };
     filtersRef.current = nextFilters;
     rawSetFilters(nextFilters);
+    setFollowRevision((value) => value + 1);
     setTypeFilterAutomatic("all");
     setColorFilterAutomatic(new Set());
     setTagFilterAutomatic(new Set());
@@ -398,7 +402,7 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
 
   return {
     filters, setFilters, patch,
-    generationScope, followLocation, manualRevision,
+    generationScope, followLocation, manualRevision, followRevision,
     typeFilter, setTypeFilter,
     scale, setScale,
     fill, setFill,

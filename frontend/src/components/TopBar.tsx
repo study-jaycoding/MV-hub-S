@@ -31,6 +31,7 @@ interface Props {
   onOpenNotificationComment: (genId: string) => void;
   onNotificationsChanged: () => void;
   inert?: boolean; // 폴더 창이 떠 있는 동안 — 마우스는 창의 막이 막지만 Tab 으로는 닿았다(App 의 behindInert)
+  searchResetKey?: number; // 탭 누름 말고 필터가 통째로 갈린 횟수(Resolve 자동 따라가기) — 바뀌면 검색칸을 다시 올린다
 }
 
 export function TopBar({
@@ -53,6 +54,7 @@ export function TopBar({
   onOpenNotificationComment,
   onNotificationsChanged,
   inert,
+  searchResetKey = 0,
 }: Props) {
   const t = useT();
   // 제공자 신원 — CLI account status 이메일에서 잡힌 표시이름(계정 메뉴 표시용).
@@ -60,6 +62,13 @@ export function TopBar({
   useEffect(() => {
     api.provider().then(setProvider).catch(() => {});
   }, []);
+  // 탭을 누른 횟수 — 검색칸의 key 에 넣는다(아래). 탭 누름은 필터를 초기화하는데, **지금 켜진 탭**을 다시 누르면 탭이 안 바뀌어
+  //  검색칸이 그대로 남고, 예약해 둔 검색(0.3초 뒤)이 초기화 뒤에 다시 걸렸다(Codex 검토).
+  const [tabPicks, setTabPicks] = useState(0);
+  const pickTab = (tab: "my" | "team" | "compose") => {
+    setTabPicks((n) => n + 1);
+    onTab(tab);
+  };
 
   return (
     // React 18 타입에 inert 가 없어 spread 로 넘긴다. 알림·계정 메뉴의 패널은 body 에 그려져 이 잠금에 들지 않는다.
@@ -75,19 +84,19 @@ export function TopBar({
       <nav className="tabs">
         <button
           className={filters.tab === "my" ? "on" : ""}
-          onClick={() => onTab("my")}
+          onClick={() => pickTab("my")}
         >
           {t("작업 공간")}
         </button>
         <button
           className={filters.tab === "team" ? "on" : ""}
-          onClick={() => onTab("team")}
+          onClick={() => pickTab("team")}
         >
           {t("공유 & 리뷰")}
         </button>
         <button
           className={filters.tab === "compose" ? "on" : ""}
-          onClick={() => onTab("compose")}
+          onClick={() => pickTab("compose")}
           title={t("캔버스 — 씬 캔버스 · 히스토리 뷰")}
         >
           {t("캔버스")}
@@ -100,9 +109,12 @@ export function TopBar({
       {/* 동기화 버튼 제거 — 자동 주기 동기화 + 계정 메뉴 '설정 → 전체 가져오기'로 대체 */}
 
       {/* 프롬프트·태그 검색 — 우측(구 '공유' 버튼 자리)으로 이동 */}
-      {/* key = 탭 — 탭을 바꾸면 검색칸을 다시 올린다. 예약해 둔(0.3초 뒤) 검색이 새 탭에 걸리지 않게(언마운트가 예약을 버린다). */}
+      {/* key = 탭 + 탭을 누른 횟수 — 탭을 누르면(같은 탭이어도) 검색칸을 다시 올린다. 예약해 둔(0.3초 뒤) 검색이 초기화된 화면에 걸리지
+          않게(언마운트가 예약을 버린다). 자동 따라가기(searchResetKey)는 key 가 아니라 신호로 내린다 — 사용자가 아무것도 안 해도 오므로
+          검색칸을 다시 올리면 치던 사람의 초점이 사라진다. 값이 바뀌는 초기화는 SearchBox 가 스스로 안다. */}
       <SearchBox
-        key={filters.tab}
+        key={`${filters.tab}:${tabPicks}`}
+        resetKey={searchResetKey}
         className="topbar-search"
         placeholder="Search · Tag"
         value={filters.search}
