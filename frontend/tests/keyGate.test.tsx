@@ -419,3 +419,40 @@ it("모달 영역(useModalFocus)은 초점만 다룬다 — 뒤 화면의 키를
   expect(press("Tab", document.activeElement!).defaultPrevented).toBe(true); // 하나뿐인 자리 — 제자리에서 돈다(첫 창으로 가지 않는다)
   expect(document.activeElement?.id).toBe("second-button");
 });
+
+it("기본 조작부를 마우스로 쓴 뒤에는 초점을 매체 자체로 돌린다 — 조작부 안의 초점은 키를 페이지로 안 보낸다. 키보드로 쓰는 중이면 두고, 시간 줄·음량에는 손대지 않는다", () => {
+  const video = document.createElement("video");
+  video.controls = true;
+  video.tabIndex = 0;
+  const other = document.createElement("button");
+  host.append(video, other);
+  const focus = vi.spyOn(video, "focus");
+  const fire = (type: string) => video.dispatchEvent(new Event(type)); // 매체 이벤트는 버블하지 않는다 — 문서의 잡는 단계에서 듣는다
+  document.dispatchEvent(new Event("pointerdown")); // 마우스로 쓰는 중(Tab 기록이 꺼진다)
+  other.focus();
+  fire("play"); // 초점이 그 매체가 아니다(자동 재생·다른 자리의 초점) — 빼앗지 않는다
+  expect(focus).not.toHaveBeenCalled();
+  video.focus();
+  focus.mockClear();
+  fire("play");
+  expect(focus).toHaveBeenCalledTimes(1);
+  fire("pause");
+  expect(focus).toHaveBeenCalledTimes(2);
+  // 시간 줄·음량·속도는 둔다 — 마우스로 누른 뒤 방향키로 조금씩 옮기는 길(브라우저 기본)이 남는다
+  for (const type of ["seeked", "volumechange", "ratechange"]) fire(type);
+  expect(focus).toHaveBeenCalledTimes(2);
+  video.controls = false; // 조작부가 없는 매체(썸네일 미리보기)는 대상이 아니다
+  fire("play");
+  expect(focus).toHaveBeenCalledTimes(2);
+  video.controls = true;
+  press("Tab"); // Tab 으로 들어와 키보드로 조작부를 쓰는 중 — 초점을 빼면 다음 키가 엉뚱한 곳으로 간다
+  fire("pause");
+  expect(focus).toHaveBeenCalledTimes(2);
+  // 매체 위에서 마우스가 움직인 것만으로는 풀지 않는다 — 키보드로 쓰는 중에 스친 마우스다(누름은 조작부 밖에서만 보인다)
+  video.dispatchEvent(new Event("pointermove", { bubbles: true }));
+  fire("play");
+  expect(focus).toHaveBeenCalledTimes(2);
+  document.dispatchEvent(new Event("pointerdown")); // 페이지가 본 누름 — 다시 마우스로 쓰는 중이다(뒤 시험에도 Tab 기록을 남기지 않는다)
+  fire("pause");
+  expect(focus).toHaveBeenCalledTimes(3);
+});

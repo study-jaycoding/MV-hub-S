@@ -155,6 +155,27 @@ if (typeof document !== "undefined") {
   const release = () => { coveredAtPress = false; }; // 그 누름의 것만 — 다음 누름으로 넘기지 않는다
   document.addEventListener("pointerup", release, true);
   document.addEventListener("pointercancel", release, true);
+
+  // ── 기본 조작부를 쓴 뒤의 키 ──
+  //  영상·오디오의 기본 조작부(재생·시간 줄·음량…) 안에 초점이 있으면 크롬은 키 이벤트를 페이지로 보내지 않는다 — 잡는 단계에도 안 온다
+  //  (2026-10-11 실측: 조작부 6칸 × 8키 48/48 이 0건. 그동안 activeElement 는 그 매체다). 마우스로 조작부를 눌러도 초점이 그 칸으로 가서,
+  //  재생 단추를 누른 뒤에는 Esc·방향키가 죽었다(전부터). 조작부의 누름도 페이지에 오지 않아 '조작부를 썼다'는 것은 매체 이벤트로만 안다 →
+  //  재생·일시정지가 났고 초점이 그 매체면 초점을 매체 **자체**로 옮긴다(같은 요소에 focus() — 안쪽 초점이 요소로 돌아와 키가 다시 온다).
+  //   · 시간 줄·음량·속도(seeked·volumechange·ratechange)에는 하지 않는다 — 마우스로 누른 뒤 방향키로 조금씩 옮기는 브라우저 기본이 남는다.
+  //     그 대신 그 뒤의 Esc 는 듣지 않는다(영상을 한 번 누르거나 Tab 으로 조작부를 벗어나면 듣는다 — 브라우저의 한계).
+  //   · 키보드로 조작부를 쓰는 중(마지막으로 본 초점 이동이 Tab)이면 둔다 — 초점을 빼면 다음 키가 엉뚱한 곳으로 간다.
+  //     남는 구멍: Tab 을 누른 뒤 마우스로 조작부를 누르면 옮기지 못한다(조작부 위의 누름이 페이지에 오지 않아 Tab 기록이 안 꺼진다).
+  //     매체 위의 마우스 움직임으로 가르지 않는다 — 움직임은 누를 뜻이 아니고, 키보드로 쓰는 중에 스친 마우스가 보호를 풀게 된다(Codex 리뷰).
+  //   · 전체화면·PIP 중에는 건드리지 않는다.
+  const focusMediaItself = (e: Event) => {
+    const media = e.target;
+    if (!(media instanceof HTMLMediaElement) || !media.controls || document.activeElement !== media) return;
+    if (focusByTab) return;
+    if (document.fullscreenElement || document.pictureInPictureElement) return;
+    media.focus({ preventScroll: true });
+  };
+  document.addEventListener("play", focusMediaItself, true);
+  document.addEventListener("pause", focusMediaItself, true);
 }
 
 /** 이 누름이 시작될 때(또는 지금) 위에 창·메뉴가 떠 있었나 — 뒤 화면의 mousedown 처리가 첫 줄에서 본다. */
