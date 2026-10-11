@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { ingestAssetTreeVersions } from "../../lib/assetVersions";
 import { reconcileArrayState, reconcileRecordState } from "../../lib/stateReconciliation";
@@ -35,6 +35,9 @@ export function useAssetProjectData({
   const [project, setProject] = useState("");
   const [tree, setTree] = useState<AssetNode[]>([]);
   const [meta, setMeta] = useState<Record<string, AssetMeta>>({});
+  // 화면의 meta 를 **받아 온** 폴더(캐시든 서버든) — 지금 폴더와 다르면 아직 이 폴더의 메타를 모른다. 빈 메타 {} 와 '아직 못 받음'을 가른다:
+  //  못 받은 채로 태그를 고치면 기존 태그를 모르는 목록이 통째로 저장돼 지워진다(조작 규칙 45 — 아래 metaReady).
+  const [metaFor, setMetaFor] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -133,6 +136,12 @@ export function useAssetProjectData({
     if (cached && projectRef.current === targetProject) {
       metaProjectRef.current = targetProject; // 화면에 올리는 meta 의 소속을 함께 기록(미러 이펙트 짝)
       setMeta((prev) => reconcileRecordState(prev, cached));
+      setMetaFor(targetProject);
+    } else if (projectRef.current === targetProject && metaProjectRef.current !== targetProject) {
+      // 처음 여는 폴더 — 화면에 남은 것은 **앞 폴더의** 메타다. 응답을 기다리는 동안 그대로 두면 앞 폴더의 태그·색이 이 폴더의 것처럼
+      //  보이고 고쳐진다(아래 reloadTree 의 같은 자리). 소속 표시를 먼저 비운다 — 빈 값이 미러 이펙트를 타고 앞 폴더의 캐시에 적히지 않게.
+      metaProjectRef.current = "";
+      setMeta((prev) => (Object.keys(prev).length ? {} : prev));
     }
     try {
       const fresh = await api.assetMeta(targetProject);
@@ -142,6 +151,7 @@ export function useAssetProjectData({
         // API가 매번 새 객체를 반환해도 내용이 같으면 526개 파일 화면을 다시 계산·렌더하지 않는다.
         metaProjectRef.current = targetProject;
         setMeta((prev) => reconcileRecordState(prev, fresh));
+        setMetaFor(targetProject);
       }
       return true;
     } catch {
@@ -167,7 +177,15 @@ export function useAssetProjectData({
         onTreeLoaded?.(cached);
         setLoading(false);
       } else {
-        setLoading(true); // 처음 여는 프로젝트만 로딩 표시(tree 는 안 비운다 — 비우면 mirror effect 가 빈 캐시를 남길 수 있음)
+        // 처음 여는 폴더 — 앞 폴더의 파일을 걷는다(조작 규칙 45). 그대로 두면 응답이 올 때까지(큰 폴더는 몇 초) 앞 폴더의 파일이 이 폴더의
+        //  것처럼 남아 눌리고 고쳐진다: 화면의 셀·저장은 이미 이 폴더로 나가므로, 두 폴더에 같은 경로가 있으면 **앞 폴더의 태그에 새 태그를
+        //  더한 목록이 이 폴더에 저장돼** 이 폴더의 태그를 덮었다(Codex 코드 리뷰). 소속 표시를 먼저 비운다 — 빈 값이 미러 이펙트를 타고
+        //  앞 폴더의 캐시에 적히지 않게(같은 폴더를 받는 중에 다시 불린 것이면 건드리지 않는다).
+        if (treeProjectRef.current !== targetProject) {
+          treeProjectRef.current = "";
+          setTree((prev) => (prev.length ? [] : prev));
+        }
+        setLoading(true);
       }
     }
     try {
@@ -209,7 +227,9 @@ export function useAssetProjectData({
     if (project) STORE.set("project", project);
   }, [project]);
 
-  useEffect(() => {
+  // 폴더가 바뀌면 **그리기 전에** 화면을 그 폴더의 것으로 맞춘다(useLayoutEffect — 받아 둔 것이 있으면 그것으로, 없으면 비운다). 그린 뒤에
+  //  맞추면 새 폴더 이름 아래 앞 폴더의 파일·메타가 한 박자 그려지고, 그때의 조작이 새 폴더로 나간다(조작 규칙 45).
+  useLayoutEffect(() => {
     if (!project) {
       // 폴더가 하나도 없는 팀으로 옮겼다 — 앞 팀 폴더의 화면을 비운다. 그냥 돌아가면 앞 폴더의 조회는 '지금 것이 아니어서' 로딩을 끄지 않고,
       //  사이드바의 '로딩…'과 앞 팀의 파일 목록이 그대로 남았다(조작 규칙 40). 화면의 소속 표시(ref)를 먼저 비운다 — 안 그러면 아래의
@@ -229,6 +249,8 @@ export function useAssetProjectData({
     error,
     loading,
     meta,
+    /** 이 폴더의 메타(태그·색·소스)를 받았는가 — 받기 전에는 메타를 고치는 조작을 받지 않는다. */
+    metaReady: !!project && metaFor === project,
     project,
     projects,
     linkedProjects,

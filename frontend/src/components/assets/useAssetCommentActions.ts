@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { api } from "../../api";
 import { flashMsg } from "../../lib/flash";
@@ -27,8 +27,10 @@ export function useAssetCommentActions({
   const targetOf = (path: string) => JSON.stringify([project, path]);
   // 프로젝트를 바꾸면 열려 있던 코멘트 패널을 닫는다 — 열어 둔 채면 앞 프로젝트 파일의 코멘트가 보이는 채로 남고,
   // 거기에 쓴 새 코멘트는 새 프로젝트의 같은 경로에 달렸다(경로는 그대로고 프로젝트만 바뀐 요청이 나간다).
+  // 그리기 전에 닫는다(useLayoutEffect — 조작 규칙 45): 그린 뒤에 닫으면 새 프로젝트는 그려졌는데 패널은 아직 앞 프로젝트의 파일을 쥔
+  // 한 박자가 생기고, 그때의 전송이 새 프로젝트의 같은 경로로 나갔다(Codex 코드 리뷰).
   const shownProjectRef = useRef(project);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (shownProjectRef.current === project) return;
     shownProjectRef.current = project;
     openTargetRef.current = null;

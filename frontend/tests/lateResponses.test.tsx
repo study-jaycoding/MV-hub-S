@@ -5,13 +5,14 @@
 //  같은 규칙의 다른 자리: 관리자 창(tests/adminWindowTabs — 프로젝트 설정 창·'숨긴 계정 보기') · 히스토리 열기(tests/reentryGuards) ·
 //  Assets 타일의 복사용 그림(tests/sourceLocationFeedback).
 import { act, useState } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AssetComment, AssetNode } from "../src/types";
 
 const mocks = vi.hoisted(() => ({
   assetComments: vi.fn(), markCommentsRead: vi.fn(), assetProjects: vi.fn(), assetTree: vi.fn(), assetMeta: vi.fn(), assetMounts: vi.fn(),
-  addAssetMount: vi.fn(), delAssetMount: vi.fn(),
+  addAssetMount: vi.fn(), delAssetMount: vi.fn(), addAssetComment: vi.fn(),
 }));
 vi.mock("../src/api", () => ({ api: mocks }));
 
@@ -69,6 +70,31 @@ it("Assets 코멘트 — 대상은 프로젝트와 경로다: 프로젝트를 �
   lookups.waiting[2].reject(new Error("offline"));
   await settle();
   expect(panel.comments.map((item) => item.id)).toEqual(["b1"]);
+});
+
+// 2026-10-12 조작 점검 18회차(Codex 코드 리뷰): 패널을 닫는 일이 '그린 뒤'에 돌면, 새 프로젝트는 그려졌는데 패널은 아직 앞 프로젝트의 파일을
+//  쥔 한 박자가 생긴다 — 그때의 전송이 새 프로젝트의 같은 경로로 나갔다. 닫는 일은 그리기 전에 끝낸다(useLayoutEffect).
+it("Assets 코멘트 — 프로젝트를 바꾼 바로 그 순간의 전송도 새 프로젝트의 같은 경로로 나가지 않는다", async () => {
+  mocks.assetComments.mockResolvedValue([]);
+  mocks.addAssetComment.mockResolvedValue(undefined);
+  let panel!: { path: string | null } & ReturnType<typeof useAssetCommentActions>;
+  function Host({ project }: { project: string }) {
+    const [path, setPath] = useState<string | null>(null);
+    const [, setComments] = useState<AssetComment[]>([]);
+    panel = { path, ...useAssetCommentActions({ project, commentPath: path, setCommentPath: setPath, setComments, reconcile: async () => {} }) };
+    return null;
+  }
+  act(() => root.render(<Host project="A" />));
+  act(() => panel.openComments("shots/cut01.png"));
+  await settle();
+  let sent!: Promise<boolean>;
+  act(() => {
+    flushSync(() => root.render(<Host project="B" />)); // 프로젝트가 바뀌어 그려졌다
+    sent = panel.sendComment("쓰던 글", null, false); // 간격 0 — 지금 그려진 패널의 전송
+  });
+  expect(await sent).toBe(false);
+  expect(mocks.addAssetComment).not.toHaveBeenCalled(); // 전엔 ("B", "shots/cut01.png") 로 나갔다
+  expect(panel.path).toBeNull();
 });
 
 const projectList = (projects: string[]) => ({ projects, linked: [], default: projects[0] ?? "" });
@@ -143,6 +169,46 @@ it("Assets — 폴더가 하나도 없는 팀으로 옮기면 앞 팀의 화면�
   expect(view.data().error).toBeNull();
 });
 
+// 2026-10-12 조작 점검 18회차(Codex 코드 리뷰, 조작 규칙 45): 폴더를 바꾸면 화면의 셀·저장은 곧바로 새 폴더로 나가는데, 파일·메타는 새
+//  폴더의 응답이 올 때까지(받아 둔 것이 없으면 몇 초) 앞 폴더의 것이 남아 있었다 — 두 폴더에 같은 경로가 있으면 앞 폴더의 태그에 새 태그를
+//  더한 목록이 새 폴더에 저장돼 그 폴더의 태그를 덮는다. 받아 둔 것이 있어도 '그린 뒤'에 갈아 끼워 한 박자 섞여 보였다.
+it("Assets — 폴더를 바꾸는 순간 화면은 그 폴더의 것이다: 처음 여는 폴더면 앞 폴더의 파일·메타를 걷고, 받아 둔 폴더면 그것을 바로 보인다", async () => {
+  const trees = held<ReturnType<typeof treeOf>>();
+  const metas = held<Record<string, unknown>>();
+  mocks.assetProjects.mockResolvedValue(projectList(["a-folder", "b-folder"]));
+  mocks.assetTree.mockImplementation(() => trees.next());
+  mocks.assetMeta.mockImplementation(() => metas.next());
+  const view = mountProjectData();
+  view.show("team");
+  await settle(); // a-folder — 조회 [0]
+  trees.waiting[0].resolve(treeOf("shot.png"));
+  metas.waiting[0].resolve({ "shot.png": { tags: ["a-tag"] } });
+  await settle();
+  const seen = () => [view.data().project, view.data().tree.map((node) => node.name), view.data().meta];
+  expect(seen()).toEqual(["a-folder", ["shot.png"], { "shot.png": { tags: ["a-tag"] } }]);
+  expect(view.data().metaReady).toBe(true);
+
+  act(() => {
+    flushSync(() => view.data().setProject("b-folder")); // 처음 여는 폴더 — 조회 [1]은 아직 안 온다
+    // 지금 그려진 화면 — 전엔 앞 폴더의 shot.png 와 그 태그(a-tag)가 b-folder 의 것처럼 남아 있었다
+    expect(seen()).toEqual(["b-folder", [], {}]);
+    expect([view.data().loading, view.data().metaReady]).toEqual([true, false]);
+  });
+  trees.waiting[1].resolve(treeOf("shot.png")); // 같은 경로의 파일이 b-folder 에도 있다 — 파일 목록이 메타보다 먼저 왔다
+  await settle();
+  // 파일은 보이지만 이 폴더의 메타는 아직 모른다 — 빈 메타와 '못 받음'을 가른다(이때 태그를 고치면 기존 태그가 지워진다)
+  expect([seen(), view.data().metaReady]).toEqual([["b-folder", ["shot.png"], {}], false]);
+  metas.waiting[1].resolve({ "shot.png": { tags: ["b-tag"] } });
+  await settle();
+  expect([seen(), view.data().metaReady]).toEqual([["b-folder", ["shot.png"], { "shot.png": { tags: ["b-tag"] } }], true]);
+
+  act(() => {
+    flushSync(() => view.data().setProject("a-folder")); // 받아 둔 폴더 — 다시 받는 조회 [2]는 안 끝난다
+    // 걷은 빈 값이 앞 폴더의 캐시에 적히지 않았다(받아 둔 것이 그대로 보인다) · 그리기 전에 갈아 끼운다(b-tag 가 한 박자도 안 보인다)
+    expect(seen()).toEqual(["a-folder", ["shot.png"], { "shot.png": { tags: ["a-tag"] } }]);
+    expect([view.data().loading, view.data().metaReady]).toEqual([false, true]); // 받아 둔 메타로도 고칠 수 있다
+  });
+});
 it("폴더 등록 창 — 팀을 잇달아 바꾸면 가장 나중에 물은 팀의 등록 목록만 받는다", async () => {
   const lists = held<{ mounts: Array<{ name: string; path: string; exists: boolean; auto: boolean }> }>();
   mocks.assetMounts.mockImplementation(() => lists.next());

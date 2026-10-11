@@ -14,7 +14,12 @@ interface Params {
   setMeta: Dispatch<SetStateAction<Record<string, AssetMeta>>>;
   setActiveTags: Dispatch<SetStateAction<Set<string>>>;
   reloadMeta: (targetProject?: string) => Promise<boolean>; // 서버 상태 재조회(가드·캐시 있는 경로) — 돌려주는 값 = 받았는가
+  /** 이 폴더의 메타를 받았는가(useAssetProjectData.metaReady). 안 주면 받은 것으로 본다. */
+  ready?: boolean;
 }
+
+/** 메타를 받기 전에 고치려 할 때의 안내 — 태그 편집을 여는 자리(AssetsView)도 같은 글을 쓴다. */
+export const ASSET_META_NOT_READY = "이 폴더의 태그·색을 아직 받지 못했습니다 — 받은 뒤에 고칠 수 있습니다.";
 
 export function useAssetMetaActions({
   project,
@@ -25,6 +30,7 @@ export function useAssetMetaActions({
   setMeta,
   setActiveTags,
   reloadMeta,
+  ready = true,
 }: Params) {
   const currentProjectRef = useRef(project);
   currentProjectRef.current = project;
@@ -204,17 +210,24 @@ export function useAssetMetaActions({
       });
   };
 
+  // 이 폴더의 메타를 받기 전에는 고치지 않는다(조작 규칙 45). 아래 조작은 모두 **지금 화면의 메타**에서 다음 값을 만든다 — 태그는 목록을
+  //  통째로 저장하므로, 메타가 아직 비어 있을 때(폴더를 처음 열어 파일 목록만 먼저 온 사이) 태그를 더하면 기존 태그가 지워진 목록이 나간다.
+  const whenReady = <Args extends unknown[]>(run: (...args: Args) => void) => (...args: Args) => {
+    if (ready) run(...args);
+    else flashMsg(ASSET_META_NOT_READY);
+  };
+
   return {
     selPaths,
     reconcile,
-    colorAssets,
-    sourceAssets,
-    toggleSource,
-    removeAssetTag,
-    setAssetTagsReplace,
-    bulkTagAdd,
-    bulkTagRemove,
-    deleteTag,
+    colorAssets: whenReady(colorAssets),
+    sourceAssets: whenReady(sourceAssets),
+    toggleSource: whenReady(toggleSource),
+    removeAssetTag: whenReady(removeAssetTag),
+    setAssetTagsReplace: whenReady(setAssetTagsReplace),
+    bulkTagAdd: whenReady(bulkTagAdd),
+    bulkTagRemove: whenReady(bulkTagRemove),
+    deleteTag: whenReady(deleteTag),
     restoreEpoch,
   };
 }
