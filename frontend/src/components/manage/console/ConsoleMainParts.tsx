@@ -4,7 +4,7 @@ import { useModalFocus } from "../../../lib/keyGate";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
 import { useHandleRelease } from "../../../lib/useDragEndReset";
 import { useRef, useState } from "react";
-import { formatDecimal } from "../../../lib/creditPlan";
+import { acceptDecimal, formatDecimal } from "../../../lib/creditPlan";
 import { formatCredits } from "../../../lib/formatCredits";
 import { manageApi } from "../../../lib/manageApi";
 import { paginateUsageItems, USAGE_PAGE_SIZES } from "../../../lib/usagePagination";
@@ -71,8 +71,8 @@ function AllocBaseDialog({ base, today, onClose, onSaved }: { base: number | nul
       <div ref={dialogRef} className="wc-dialog" role="dialog" aria-label="할당된 크레딧 기준값">
         <h3>할당된 크레딧 · 힉스필드 값</h3>
         <p>힉스필드 엔터프라이즈 화면의 'Allocated credits' 를 그 날짜와 함께 적습니다. 그 뒤로는 여기 기록한 추가 크레딧과 지나간 자동 정기 크레딧이 더해지고, 사용 = 할당 − 서브 잔액 합으로 계산됩니다.</p>
-        <label>기준 날짜<input id="wc-alloc-day" type="date" max={today} value={day} onChange={(e) => setDay(e.target.value)} /></label>
-        <label>할당된 크레딧<input id="wc-alloc" inputMode="decimal" value={text} onChange={(e) => setText(formatDecimal(e.target.value))} placeholder="예: 189,424"
+        <label>기준 날짜<input id="wc-alloc-day" type="date" max={today} value={day} readOnly={busy} onChange={(e) => setDay(e.target.value)} /></label>
+        <label>할당된 크레딧<input id="wc-alloc" inputMode="decimal" value={text} readOnly={busy} onChange={(e) => { const next = acceptDecimal(e.target.value); if (next !== null) setText(formatDecimal(next)); }} placeholder="예: 189,424"
           onKeyDown={(e) => { if (e.key === "Enter" && valid && !busy) void submit(value); }} /></label>
         {error ? <div className="wc-error">{error}</div> : null}
         <footer>

@@ -495,7 +495,7 @@ it("프로젝트 표의 순서 — 저장에 실패하면 끌기 전 순서로 �
   await act(async () => { fail(new Error("502: 서버에 닿지 않습니다")); });
   await settle();
   expect(projectNames()).toEqual(["첫째", "둘째"]); // 전엔 실패하면 목록을 다시 읽었고, 그것도 실패하면 목록이 비었다
-  expect(host.textContent).toContain("순서를 저장하지 못했습니다 — 원래 순서로 되돌렸습니다. 502: 서버에 닿지 않습니다");
+  expect(host.textContent).toContain("순서를 저장하지 못했습니다 — 원래 순서로 되돌렸습니다. 서버에 닿지 않습니다"); // 앞머리(Error·상태코드)는 뗀다
   // 저장되면 그대로다
   mocks.reorderProjects.mockResolvedValueOnce({ ok: true });
   await dragProject("둘째", "첫째");
@@ -518,16 +518,18 @@ it("프로젝트 보관·삭제 — 실패하면 알리고 목록은 다시 읽�
   await mount();
   await clickTab("프로젝트");
   const lists = mocks.projects.mock.calls.length;
-  mocks.updateProject.mockRejectedValueOnce(new Error("403: 권한이 없습니다"));
+  // 실제 요청 실패와 같은 모양(lib/http 의 HttpError) — 글로 바꾸면 앞에 상태코드가 붙는다("…403: 권한이 없습니다"). 안내에는 서버가 준 글만 붙인다
+  //  (격리 실측이 짚었다: 줄 끝에 "HttpError: 500: …" 이 그대로 보였다 — `new Error("…")` 로 흉내 낸 시험은 못 봤다).
+  mocks.updateProject.mockRejectedValueOnce(new HttpError(403, "403: 권한이 없습니다", "권한이 없습니다"));
   await act(async () => { host.querySelector<HTMLButtonElement>(".admin-pact-archive")!.click(); });
   await settle();
   expect(mocks.updateProject).toHaveBeenCalledExactlyOnceWith("p", { archived: true });
-  expect(host.textContent).toContain("보관하지 못했습니다. 403: 권한이 없습니다");
+  expect(host.querySelectorAll(".admin-note-sub")[1].textContent).toBe("보관하지 못했습니다. 권한이 없습니다");
   vi.stubGlobal("confirm", vi.fn(() => true));
   mocks.deleteProject.mockRejectedValueOnce(new Error("500: boom"));
   await act(async () => { host.querySelector<HTMLButtonElement>('.admin-pactions button[title="삭제"]')!.click(); });
   await settle();
-  expect(host.textContent).toContain("'뻘뻘뻘' 을(를) 삭제하지 못했습니다. 500: boom");
+  expect(host.textContent).toContain("'뻘뻘뻘' 을(를) 삭제하지 못했습니다. boom");
   expect(projectNames()).toEqual(["뻘뻘뻘"]);
   expect(mocks.projects.mock.calls.length).toBe(lists);
 });
@@ -541,7 +543,7 @@ it("프로젝트 목록 다시 읽기에 실패해도 받아 둔 목록은 그�
   await settle();
   expect(projectNames()).toEqual(["뻘뻘뻘"]);
   expect(host.querySelector(".admin-empty")).toBeNull();
-  expect(host.textContent).toContain("프로젝트 목록을 불러오지 못했습니다. 502: 서버에 닿지 않습니다");
+  expect(host.textContent).toContain("프로젝트 목록을 불러오지 못했습니다. 서버에 닿지 않습니다");
 });
 
 it("슈퍼 관리자 해제(🔑) — 해제를 확인하지 못했으면 열쇠를 켜진 채 두고 알린다(상태를 다시 읽다 실패해 '해제됨'으로 그리지 않는다)", async () => {

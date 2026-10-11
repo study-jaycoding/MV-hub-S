@@ -557,6 +557,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     bulkTagAdd,
     bulkTagRemove,
     deleteTag,
+    restoreEpoch,
   } = useAssetMetaActions({
     project,
     filesRef,
@@ -658,6 +659,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
         tagEditing={tagEditingMulti}
         meta={meta[f.path] || EMPTY_ASSET_META}
         editingTag={tagEditPath === f.path}
+        tagResetSignal={tagEditPath === f.path ? restoreEpoch : undefined} // 편집 중인 칸에만 — 다른 칸은 다시 그리지 않는다
         onS={cellOnS}
         onT={cellOnT}
         onC={cellOnC}

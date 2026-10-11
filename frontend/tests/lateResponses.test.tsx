@@ -195,11 +195,15 @@ it("폴더 등록 창 — 등록·해제 뒤에도 지금 팀의 목록만 보�
   type(".mount-input:not(.mount-name)", "C:/later");
   type(".mount-input.mount-name", "later");
   await act(async () => { document.querySelector<HTMLButtonElement>(".mount-form .settings-action")!.click(); });
+  // 16회차(조작 규칙 43): 등록 중에는 두 칸이 잠긴다 — 끝나면 칸을 비우는데, 그사이 다음 폴더를 치고 있었으면 그 글까지 지워졌다
+  const fields = () => [...document.querySelectorAll<HTMLInputElement>(".mount-input")].map((field) => field.readOnly);
+  expect(fields()).toEqual([true, true]);
   const onChangedNow = vi.fn();
   act(() => root.render(<MountManager onClose={() => {}} onChanged={onChangedNow} workspaceId="team-c" />));
   await settle();
   await act(async () => { finishAdd(everything); });
   await settle();
+  expect(fields()).toEqual([false, false]);
   expect(mocks.assetMounts).toHaveBeenLastCalledWith("team-c");
   expect([onChanged.mock.calls.length, onChangedNow.mock.calls.length]).toEqual([2, 1]);
   expect(names()).toEqual([]); // team-c 의 목록(비어 있다)

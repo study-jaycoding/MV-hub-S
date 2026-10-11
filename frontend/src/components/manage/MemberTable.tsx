@@ -6,6 +6,8 @@ import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { api } from "../../api";
 import {
+  acceptDecimal,
+  acceptThousands,
   draftFromSettings,
   autoShareLabel,
   formatDecimal,
@@ -16,8 +18,6 @@ import {
   newGroupId,
   periodSuffix,
   remainingTone,
-  stripDecimal,
-  stripThousands,
   TOPUP_DAY_OPTIONS,
   todayLocal,
   topupsOnlyBody,
@@ -299,7 +299,9 @@ function GroupLimitInput({ label, value, disabled, onCommit, onDirtyChange, fiel
         onFocus={() => { if (!dirtyRef.current) { commitRef.current = onCommit; originalRef.current = value; } }}
         onChange={(event) => {
           if (!dirtyRef.current) { commitRef.current = onCommit; originalRef.current = value; }
-          const nextInput = decimals ? stripDecimal(event.target.value) : stripThousands(event.target.value);
+          // 받을 수 없는 입력(정수 칸의 소수점·부호·글자)은 받지 않는다 — 지워서 받으면 다른 수가 된다("1.5" → 15, 조작 규칙 43)
+          const nextInput = decimals ? acceptDecimal(event.target.value) : acceptThousands(event.target.value);
+          if (nextInput === null) return;
           // 글자로 비교한다 — 숫자로 비교하면 Number("100.") === 100 이라 점을 친 순간 편집이 취소돼 100.5 가 1005 로 저장됐다(2026-10-03 L3-2)
           if (nextInput === (originalRef.current === null ? "" : String(originalRef.current))) { finish(value); return; }
           dirtyRef.current = true;
@@ -1157,7 +1159,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
           disabled={creditBusy}
           value={formatThousands(draft.creditsInput)}
           placeholder="크레딧"
-          onChange={(event) => setTopup({ ...draft, creditsInput: stripThousands(event.target.value) })}
+          onChange={(event) => { const next = acceptThousands(event.target.value); if (next !== null) setTopup({ ...draft, creditsInput: next }); }}
         />
       </td>
       <td><input aria-label="추가 크레딧 메모" disabled={creditBusy} value={draft.note} placeholder="메모 (선택)" onChange={(event) => setTopup({ ...draft, note: event.target.value })} /></td>
@@ -1496,7 +1498,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                           </>}</td>
                         </> : <>
                         <td><select aria-label={`${project.name} 예산 주기`} value={planningBudgetPeriod(draft.form)} disabled={!canPlan || busy} onChange={(event) => commitPlanning(project, { budget_period: event.target.value as Planning["budget_period"] })}>{BUDGET_PERIOD_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></td>
-                        <td><div className="mtable-project-budget"><input className="num" type="text" inputMode="numeric" aria-label={`${project.name} 예산 크레딧`} placeholder="제한 없음" value={formatThousands(draft.budgetInput)} disabled={!canPlan || busy} onChange={(event) => editPlanning(project, {}, stripThousands(event.target.value))} onBlur={() => queuePlanningSave(project.id)} onKeyDown={blurOnEnter} /></div></td>
+                        <td><div className="mtable-project-budget"><input className="num" type="text" inputMode="numeric" aria-label={`${project.name} 예산 크레딧`} placeholder="제한 없음" value={formatThousands(draft.budgetInput)} disabled={!canPlan || busy} onChange={(event) => { const next = acceptThousands(event.target.value); if (next !== null) editPlanning(project, {}, next); }} onBlur={() => queuePlanningSave(project.id)} onKeyDown={blurOnEnter} /></div></td>
                         </>}
                         <td><input className="num" type="number" min={1} max={3650} aria-label={`${project.name} 작업 자동 보관 일수`} value={draft.form.archive_after_days ?? ""} disabled={!canPlan || busy} onChange={(event) => editPlanning(project, { archive_after_days: event.target.value ? Number(event.target.value) : null })} onBlur={() => queuePlanningSave(project.id)} onKeyDown={blurOnEnter} /></td>
                         <td><input type="text" aria-label={`${project.name} 메모`} value={draft.form.note || ""} disabled={!canPlan || busy} onChange={(event) => editPlanning(project, { note: event.target.value })} onBlur={() => queuePlanningSave(project.id)} onKeyDown={blurOnEnter} /></td>

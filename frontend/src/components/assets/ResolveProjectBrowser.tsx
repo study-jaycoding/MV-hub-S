@@ -63,7 +63,7 @@ const OPEN_RETRY_MS = 3_000;
 // 이름 전체가 'Untitled Project'(+ 번호)일 때만).
 const UNTITLED_NAME = /^Untitled Project(?: \d+)?$/;
 
-// 빈 화면 한가운데 놓이는 글이라 "HttpError: 400:" 같은 앞머리를 뗀다 — 사용자에게 뜻이 없다.
+// 빈 화면 한가운데 놓이는 글이라 "Error: 400:" 같은 앞머리를 뗀다 — 사용자에게 뜻이 없다.
 const failureText = (error: unknown) => String(error).replace(/^\w*Error:\s*(\d{3}:\s*)?/, "");
 const projectKey = (item: ResolveLibraryProject) => `${item.folder_path}/${item.name}`;
 // 503 = Resolve 가 꺼져 있거나 아직 준비 전(backend routers/assets._RESOLVE_NOT_READY_CODES).

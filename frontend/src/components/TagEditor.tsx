@@ -7,7 +7,7 @@
 // 일괄 추가/부여가 낙관 반영되면 즉시 같이 갱신된다('모두 같이 보이게').
 // 칩·전역칩 버튼은 onMouseDown preventDefault 로 포커스 입력의 blur(닫힘)를 막아, 다른 카드의 칩을
 // 눌러도 편집 세션이 끊기지 않는다.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   parseWorkspacePickerCommand,
   type WorkspaceCommandOperation,
@@ -42,7 +42,11 @@ export function TagEditor({
   forcedGlobalMode,
   onClose,
   placeholder,
+  resetSignal,
 }: {
+  // 바뀌면 칩을 부모 값으로 다시 맞춘다 — 저장에 실패해 부모가 서버 값으로 되돌렸을 때 부모가 올린다(입력 중인 글은 둔다).
+  //  칩은 편집기의 사본이라(아래 chips) 부모 값이 되돌아가도 모른다: 실패한 태그의 칩이 남고, 다음 Enter 가 그것까지 다시 저장했다.
+  resetSignal?: number;
   tags: string[];
   onChange: (next: string[]) => void; // 이 카드의 일반 태그 교체
   onBulkAdd?: (names: string[]) => void; // 다중선택 시 추가를 다른 선택 카드에도(이 카드 제외)
@@ -63,6 +67,12 @@ export function TagEditor({
 }) {
   const [chips, setChips] = useState<string[]>(tags);
   const [assignedLocal, setAssignedLocal] = useState<string[]>(global?.assigned ?? []);
+  const parentRef = useRef({ tags, assigned: global?.assigned ?? [] });
+  parentRef.current = { tags, assigned: global?.assigned ?? [] };
+  useEffect(() => {
+    setChips(parentRef.current.tags);
+    setAssignedLocal(parentRef.current.assigned);
+  }, [resetSignal]);
   const [draft, setDraft] = useState("");
   const [internalGlobalMode, setInternalGlobalMode] = useState(false);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);

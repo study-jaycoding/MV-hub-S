@@ -4,7 +4,7 @@
 //  HistoryBoardNode(memo)는 GenerationCard 와 동일하게 hist 번들의 안정 참조를 개별로 풀어 전달.
 import { ownEntry } from "../../../lib/ownEntry";
 import { useT } from "../../../lib/i18n";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type React from "react";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
 import { LastViewedBadge } from "../LastViewedBadge";
@@ -29,6 +29,29 @@ import type { HistPass } from "./GenerationCard";
 
 // 안정 참조 no-op — HistoryBoardNode(memo) 무효화 방지(코덱스 P2). GenerationCard 와 동일 원칙.
 const NOOP = () => {};
+
+/** 숫자 파라미터 칸 — 치는 동안은 친 글자를 그대로 든다(조작 규칙 43). 전엔 바뀔 때마다 `Number()` 로 바꿔 넘겨, 칸을 지우면 곧바로
+ *  0 이 저장되고(빈 글 → 0) 그 0 이 칸에 되써져 '-' 로 시작하는 수를 칠 수 없었다. 수로 읽히는 동안만 값을 넘기고, 수가 아닌 채로
+ *  벗어나면 앞의 값으로 돌아간다. 모듈 최상단 선언이라 치는 중에 다시 올라가지 않는다(초점 유지 — 위 머리 주석). */
+export function ComfyNumberInput({ value, onChange, onBlur }: { value: number | null; onChange: (next: number) => void; onBlur: () => void }) {
+  const [draft, setDraft] = useState<string | null>(null); // null = 치는 중이 아니다 — 저장된 값을 보인다
+  return (
+    <input
+      type="number"
+      value={draft ?? (value == null ? "" : String(value))}
+      onMouseDown={(e) => e.stopPropagation()}
+      onChange={(e) => {
+        const text = e.target.value;
+        setDraft(text);
+        if (text.trim() !== "" && Number.isFinite(Number(text))) onChange(Number(text));
+      }}
+      onBlur={() => {
+        setDraft(null);
+        onBlur();
+      }}
+    />
+  );
+}
 
 export function ComfyCard({
   card,
@@ -398,11 +421,9 @@ export function ComfyCard({
                           ))}
                         </select>
                       ) : p.type === "number" ? (
-                        <input
-                          type="number"
-                          value={v == null ? "" : (v as number)}
-                          onMouseDown={stop}
-                          onChange={(e) => actions.setComfyParam(card.id, p.key, Number(e.target.value))}
+                        <ComfyNumberInput
+                          value={v == null ? null : (v as number)}
+                          onChange={(next) => actions.setComfyParam(card.id, p.key, next)}
                           onBlur={() => actions.flushPending()}
                         />
                       ) : p.type === "text" && drivenKeys.has(p.key) ? (

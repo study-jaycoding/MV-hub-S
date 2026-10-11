@@ -11,6 +11,8 @@ import {
   formatThousands,
   groupColor,
   newDraftGroup,
+  acceptDecimal,
+  acceptThousands,
   periodSuffix,
   remainingTone,
   type CreditPlanDraft,
@@ -100,6 +102,8 @@ export function AddMemberDialog({ groups, onClose, onSave }: {
 }) {
   const [email, setEmail] = useState("");
   const [gid, setGid] = useState("");
+  // 저장 중에는 단추뿐 아니라 칸도 잠근다(조작 규칙 43) — 칸이 열려 있으면 그사이 고친 글은 보낸 것에 없는데, 앞 요청의 성공이
+  //  창을 닫으며 말없이 버린다. 아래 크레딧 창·할당 기준값 창·크레딧 정보 창도 같다.
   const [busy, setBusy] = useState(false);
   useEscapeClose(() => { if (!busy) onClose(); }); // 바깥 클릭과 같은 규칙 — 처리 중엔 닫지 않는다
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -119,12 +123,12 @@ export function AddMemberDialog({ groups, onClose, onSave }: {
       <div ref={dialogRef} className="wc-dialog" role="dialog" aria-label="참가시키기">
         <h3>참가시키기</h3>
         <p>이메일을 그룹에 넣어 할당 크레딧을 줍니다. 그 사람의 앱이 이 워크스페이스를 보고하기 전이면 '확인 전'으로 보입니다.</p>
-        <label>이메일<input id="wc-add-email" className="wc-left" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com"
+        <label>이메일<input id="wc-add-email" className="wc-left" value={email} readOnly={busy} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com"
           onKeyDown={(e) => { if (e.key === "Enter") void submit(); }} /></label>
         <div className="wc-hint">그룹</div>
         <div className="wc-pill-pick" role="radiogroup" aria-label="그룹">
           {groups.map((g) => (
-            <button key={g.id} type="button" role="radio" aria-checked={gid === g.id} className={gid === g.id ? "on" : ""} onClick={() => setGid(g.id)}>
+            <button key={g.id} type="button" role="radio" aria-checked={gid === g.id} className={gid === g.id ? "on" : ""} disabled={busy} onClick={() => setGid(g.id)}>
               <GroupPill name={g.name} color={g.color} />
             </button>
           ))}
@@ -210,16 +214,16 @@ export function CreditDialog({ name, sub, today, onClose, onSave, onAdd }: {
         <p>이 서브로 나갈 크레딧을 정합니다. 실제 이체는 힉스필드가 합니다.</p>
         <div className="wc-seg" role="radiogroup" aria-label="크레딧 방식">
           {([["auto", "자동"], ["manual", "수동"], ["add", "추가"]] as const).map(([v, label]) => (
-            <button key={v} type="button" role="radio" aria-checked={mode === v} className={mode === v ? "on" : ""} onClick={() => setMode(v)}>{label}</button>
+            <button key={v} type="button" role="radio" aria-checked={mode === v} className={mode === v ? "on" : ""} disabled={busy} onClick={() => setMode(v)}>{label}</button>
           ))}
         </div>
         <p className="wc-hint">{hint}</p>
         {adding ? (
           <>
-            <label>날짜<input id="wc-add-day" type="date" value={addDay} onChange={(e) => setAddDay(e.target.value)} /></label>
-            <label>크레딧<input id="wc-add-credits" inputMode="numeric" value={addText} onChange={(e) => setAddText(formatThousands(e.target.value))} placeholder="예: 8,000"
+            <label>날짜<input id="wc-add-day" type="date" value={addDay} readOnly={busy} onChange={(e) => setAddDay(e.target.value)} /></label>
+            <label>크레딧<input id="wc-add-credits" inputMode="numeric" value={addText} readOnly={busy} onChange={(e) => { const next = acceptThousands(e.target.value); if (next !== null) setAddText(formatThousands(next)); }} placeholder="예: 8,000"
               onKeyDown={(e) => { if (e.key === "Enter") void save(); }} /></label>
-            <label>메모<input id="wc-add-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="선택" /></label>
+            <label>메모<input id="wc-add-note" value={note} readOnly={busy} onChange={(e) => setNote(e.target.value)} placeholder="선택" /></label>
           </>
         ) : (
           <>
@@ -228,15 +232,15 @@ export function CreditDialog({ name, sub, today, onClose, onSave, onAdd }: {
                 {auto ? (
                   <span className="wc-seg" role="radiogroup" aria-label="충전 주기">
                     {(["month", "week", "day"] as LimitPeriod[]).map((p) => (
-                      <button key={p} type="button" role="radio" aria-checked={period === p} className={period === p ? "on" : ""}
+                      <button key={p} type="button" role="radio" aria-checked={period === p} className={period === p ? "on" : ""} disabled={busy}
                         onClick={() => setPeriod(p)}>{PERIOD_UNIT[p]}</button>
                     ))}
                   </span>
                 ) : null}
-                <input id="wc-recurring-day" type="date" min={today} value={date} onChange={(e) => { setDate(e.target.value); setDateTouched(true); }} />
+                <input id="wc-recurring-day" type="date" min={today} value={date} readOnly={busy} onChange={(e) => { setDate(e.target.value); setDateTouched(true); }} />
               </span>
             </label>
-            <label>크레딧 / {unit}<input id="wc-recurring" inputMode="decimal" value={text} onChange={(e) => setText(formatDecimal(e.target.value))}
+            <label>크레딧 / {unit}<input id="wc-recurring" inputMode="decimal" value={text} readOnly={busy} onChange={(e) => { const next = acceptDecimal(e.target.value); if (next !== null) setText(formatDecimal(next)); }}
               placeholder={sub.monthly_topup_source === "derived" && sub.monthly_topup ? `비우면 프로젝트 월 예산 합 ${formatCredits(sub.monthly_topup)}` : "예: 60,000"}
               onKeyDown={(e) => { if (e.key === "Enter") void save(); }} /></label>
             {auto && validDate ? <div className="wc-hint"><span className="wc-next">Next</span>{effDate} · {repeat}{dateTouched ? "" : " (지금 충전일 유지 — 날짜를 고르면 바뀝니다)"}</div> : null}

@@ -162,6 +162,53 @@ describe("따로 뜨는 콘솔 대화상자", () => {
   });
 });
 
+// 16회차(조작 규칙 43): 저장 단추만 잠그고 칸은 열어 두면, 응답을 기다리는 사이 고친 글은 보낸 것에 없는데 앞 요청의 성공이 창을 닫으며
+//  말없이 버린다. 칸도 같이 잠근다(달력의 크레딧 정보 창은 아래 'Esc 겹이다' 시험에 붙였다).
+const locked = (...selectors: string[]) => selectors.map((selector) => {
+  const field = q(selector) as HTMLInputElement | HTMLButtonElement;
+  return field instanceof HTMLButtonElement ? field.disabled : field.readOnly;
+});
+describe("저장 중에는 칸도 잠근다", () => {
+  it("참가시키기: 이메일 칸과 그룹 고르기가 잠기고, 실패하면 다시 풀린다", async () => {
+    let fail!: (reason: Error) => void;
+    const onSave = vi.fn(() => new Promise<void>((_, reject) => { fail = reject; }));
+    await mount(page(<AddMemberDialog groups={[{ id: "g", name: "그룹", color: "#3b82f6" }] as never} onClose={noop} onSave={onSave} />));
+    await type(q("#wc-add-email") as HTMLInputElement, "new@mv.com");
+    await press(q('.wc-pill-pick [role="radio"]')!);
+    expect(locked("#wc-add-email", '.wc-pill-pick [role="radio"]')).toEqual([false, false]);
+    await press(byText(".wc-dialog footer button", "참가시키기"));
+    expect(onSave).toHaveBeenCalledExactlyOnceWith("new@mv.com", "g");
+    expect(locked("#wc-add-email", '.wc-pill-pick [role="radio"]')).toEqual([true, true]);
+    await act(async () => { fail(new Error("500: boom")); });
+    await settle();
+    expect(locked("#wc-add-email", '.wc-pill-pick [role="radio"]')).toEqual([false, false]); // 고쳐서 다시 보낼 수 있다
+  });
+
+  it("크레딧: 방식·주기·날짜·금액 칸이 잠긴다(정기 설정과 추가 기록 모두)", async () => {
+    const pending = () => new Promise<void>(() => {});
+    await mount(page(<CreditDialog name="서브" sub={creditSub} today="2026-10-11" onClose={noop} onSave={pending} onAdd={pending} />));
+    await type(q("#wc-recurring") as HTMLInputElement, "250");
+    await press(byText(".wc-dialog footer button", "저장"));
+    expect(locked("#wc-recurring", "#wc-recurring-day", '[aria-label="크레딧 방식"] [role="radio"]', '[aria-label="충전 주기"] [role="radio"]')).toEqual([true, true, true, true]);
+    // 추가 기록
+    await mount(page(null));
+    await mount(page(<CreditDialog name="서브" sub={creditSub} today="2026-10-11" onClose={noop} onSave={pending} onAdd={pending} />));
+    await press(byText('[aria-label="크레딧 방식"] [role="radio"]', "추가"));
+    await type(q("#wc-add-credits") as HTMLInputElement, "8000");
+    await press(byText(".wc-dialog footer button", "기록"));
+    expect(locked("#wc-add-day", "#wc-add-credits", "#wc-add-note")).toEqual([true, true, true]);
+  });
+
+  it("할당 기준값: 날짜·금액 칸이 잠긴다", async () => {
+    await mount(page(<PoolCard data={overview as never} canEdit onChanged={noop} />));
+    await press(q(".wc-pool-edit")!);
+    await type(q("#wc-alloc") as HTMLInputElement, "189424");
+    expect(locked("#wc-alloc-day", "#wc-alloc")).toEqual([false, false]);
+    await press(byText('.wc-dialog[aria-label="할당된 크레딧 기준값"] footer button', "저장")); // 서버 호출은 '아직 안 옴'(위 boundary)
+    expect(locked("#wc-alloc-day", "#wc-alloc")).toEqual([true, true]);
+  });
+});
+
 describe("화면에서 여는 대화상자", () => {
   it("할당 기준값(풀 카드): 초점이 창 안에 있고 Tab 이 창 안에서 돈다 — 닫으면 연 단추로", async () => {
     await mount(page(<PoolCard data={overview as never} canEdit onChanged={noop} />));
@@ -208,6 +255,7 @@ describe("화면에서 여는 대화상자", () => {
     await type(q("#wc-event-credits") as HTMLInputElement, "200");
     await press(byText(".wc-event-info footer button", "저장"));
     expect(onEdit).toHaveBeenCalledTimes(1);
+    expect(locked("#wc-event-credits", "#wc-event-note")).toEqual([true, true]); // 저장 중에는 칸도 잠근다(아래 '저장 중에는 칸도 잠근다')
     await escape();
     expect(q(".wc-event-info")).not.toBeNull();
     expect(backgroundKeysBlocked()).toBe(true);

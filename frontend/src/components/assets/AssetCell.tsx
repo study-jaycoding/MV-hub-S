@@ -24,6 +24,7 @@ export const AssetCell = memo(function AssetCell({
   meta,
   editingTag,
   tagEditing,
+  tagResetSignal,
   onS,
   onT,
   onC,
@@ -47,6 +48,7 @@ export const AssetCell = memo(function AssetCell({
   selectedCount?: number; // 이 카드가 다중선택에 포함될 때 N(에디터에 '선택 N개에 적용' 표시)
   meta: AssetMeta;
   editingTag: boolean;
+  tagResetSignal?: number; // 저장 실패 뒤 메타를 서버 값으로 되돌릴 때마다 오른다 — 열려 있는 태그 편집기의 칩도 되돌린다
   tagEditing?: boolean; // 다중선택 태그 편집 활성 — 선택된 비포커스 카드에 읽기전용 스트립 표시
   onS: (path: string) => void;
   onT: (path: string) => void; // 태그 인라인 편집 시작(생성카드 T 버튼과 동일 · 키보드 #와 같은 경로)
@@ -332,6 +334,7 @@ export const AssetCell = memo(function AssetCell({
         onBulkRemove={(names) => onBulkTagRemove(node.path, names)}
         selectedCount={selectedCount}
         onClose={onTagCancel}
+        resetSignal={tagResetSignal}
       />
     </div>
   ) : tagEditing && selected ? (
