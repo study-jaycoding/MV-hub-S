@@ -1723,7 +1723,7 @@ export function SceneBoard({
     cbRef.current.sClick.onClick(() => {
       if (g.is_final) return; // 최종은 공유 잠금 — 해제는 더블클릭으로만
       setSConfirm({ id: g.id, kind: "share" });
-    });
+    }, g.id);
   }, []);
   const onNodeSDouble = useCallback((g: Generation) => {
     const { sClick, canFinalize, onPublish } = cbRef.current;

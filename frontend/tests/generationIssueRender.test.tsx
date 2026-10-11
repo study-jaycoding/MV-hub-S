@@ -209,6 +209,33 @@ describe.each(["ko", "en"] as const)("생성 오류 실제 UI — %s", (lang) =>
   });
 });
 
+// 2026-10-12(조작 점검 10회차, Codex 검토): 늦게 끝난 '다시 실행'이 그사이 열린 다른 카드의 정보 창을 닫았다 — 창은 App 에 하나뿐이라
+//  옛 요청의 onClose 도 지금 떠 있는 창을 닫는다.
+it("늦게 끝난 다시 실행은 그사이 다른 카드를 보이는 정보 창을 닫지 않는다 — 같은 카드를 보이고 있을 때만 닫는다", async () => {
+  const finish: Array<(ok: boolean) => void> = [];
+  const requeue = vi.fn(() => new Promise<boolean>((done) => { finish.push(done); }));
+  const onClose = vi.fn();
+  const popup = (g: Generation) => (
+    <InfoPopup target={{ kind: "generation", gen: g, x: 0, y: 0 }} onClose={onClose} onPreview={noop} onRecoveryRequeue={requeue} />
+  );
+  await render(popup(generation()));
+  await act(async () => { required<HTMLButtonElement>(".info-recovery-btn").click(); });
+  await render(popup(generation({ id: "other-card" }))); // 대상만 갈아 끼웠다(창은 떠 있다)
+  await act(async () => { finish[0](true); });
+  expect(onClose).not.toHaveBeenCalled();
+
+  await act(async () => { required<HTMLButtonElement>(".info-recovery-btn").click(); }); // 이번에는 그 카드를 그대로 보고 있다
+  await act(async () => { finish[1](true); });
+  expect(onClose).toHaveBeenCalledTimes(1);
+
+  // 창을 닫았다가 다른 카드로 새로 연 경우(옛 창은 내려갔다)도 같다
+  await act(async () => { required<HTMLButtonElement>(".info-recovery-btn").click(); });
+  await render(null);
+  await render(popup(generation({ id: "third-card" })));
+  await act(async () => { finish[2](true); });
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
 it("실패와 recovery_required가 겹쳐도 같은 원인을 두 번 표시하지 않는다", async () => {
   const g = generation({ status: "failed" });
   await render(<InfoPopup target={{ kind: "generation", gen: g, x: 0, y: 0 }} onClose={noop} onPreview={noop} />);

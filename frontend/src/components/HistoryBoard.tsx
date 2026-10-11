@@ -122,7 +122,7 @@ export function HistoryBoard({
     cbRef.current.sClick.onClick(() => {
       if (g.is_final) return; // 최종(골드)은 공유 잠금 — 해제는 더블클릭으로만
       setSConfirm({ id: g.id, kind: "share" });
-    });
+    }, g.id);
   }, []);
   const onNodeSDouble = useCallback((g: Generation) => {
     const { sClick, canFinalize, onPublish } = cbRef.current;
@@ -205,8 +205,7 @@ export function HistoryBoard({
   // 카드별 카메라 저장 — 현재 focusId 의 zoom/pan 을 localStorage 에. focusIdRef 로 stable.
   const focusIdRef = useRef(focusId);
   focusIdRef.current = focusId;
-  const saveView = useCallback(() => {
-    const fid = focusIdRef.current;
+  const saveViewFor = useCallback((fid: string | null | undefined) => {
     if (!fid) return;
     try {
       const all = loadViews();
@@ -216,6 +215,7 @@ export function HistoryBoard({
       /* localStorage 불가 무시 */
     }
   }, []);
+  const saveView = useCallback(() => saveViewFor(focusIdRef.current), [saveViewFor]);
   const { run: scheduleSaveView } = useDebouncedCallback(saveView, 250);
 
   const applyTransform = useCallback(() => {
@@ -259,14 +259,19 @@ export function HistoryBoard({
 
   // ★카드별 카메라 복원 — 같은 카드의 히스토리로 재진입(언마운트 후 재마운트·focusId 전환)하면
   // 이전에 보던 zoom/pan 을 그대로 되살린다. 저장 없는 카드는 기본(zoom 1·pan 0).
+  //  떠나는 카드의 카메라는 여기서 먼저 적는다 — 휠 줌의 저장은 0.25초 뒤로 예약돼 있어, 그 전에 다른 계보로 넘어가면 예약된 저장이
+  //  **새 카드의 값**을 적고 떠난 카드의 마지막 줌은 사라졌다(Codex 검토).
+  const shownFocusRef = useRef<string | null>(null);
   useLayoutEffect(() => {
+    if (shownFocusRef.current !== focusId) saveViewFor(shownFocusRef.current);
+    shownFocusRef.current = focusId ?? null;
     if (!focusId) return;
     const v = loadViews()[focusId];
     zoomRef.current = v ? v.z : 1;
     panPosRef.current = v ? { x: v.x, y: v.y } : { x: 0, y: 0 };
     applyTransform();
     reportView();
-  }, [focusId, applyTransform, reportView]);
+  }, [focusId, applyTransform, reportView, saveViewFor]);
 
   // 언마운트(탭 이동 등) 시 현재 카메라를 마지막으로 저장 — 디바운스 저장이 아직 안 떴어도 보존.
   useEffect(() => {

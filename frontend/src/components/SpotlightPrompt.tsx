@@ -416,6 +416,15 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   const bindingKey = trayBinding?.key ?? null;
   const bindingPrompt = trayBinding?.prompt ?? ""; // JSON(PromptPart[]) 또는 "" (없음)
   const bindingPromptKey = trayBinding?.promptKey ?? null; // 연결 텍스트 변경 감지(같은 카드에서 파생 반영)
+  // 지금의 묶임 — 응답을 기다린 뒤에 레퍼런스·프롬프트를 넣는 길(외부 파일 가져오기·'레퍼런스로 사용'·프롬프트 재사용)이 본다.
+  //  기다리는 사이 고른 카드가 바뀌었으면 넣지 않는다: 트레이·입력칸은 이미 새 카드의 것이라, 넣으면 **새 카드에 저장**된다(Codex 검토).
+  //  레퍼런스를 **더하는** 길은 묶임이 같은지만 본다(A → B → A 로 돌아왔으면 A 에 넣는 것이 맞다). 입력칸을 **갈아 치우는** 프롬프트
+  //  재사용은 묶임이 한 번이라도 바뀌었으면(bindingTurnRef) 버린다 — 돌아온 A 에서 새로 친 글을 옛 응답이 덮지 않게.
+  const bindingKeyRef = useRef(bindingKey);
+  const bindingTurnRef = useRef(0);
+  if (bindingKeyRef.current !== bindingKey) bindingTurnRef.current += 1;
+  bindingKeyRef.current = bindingKey;
+  const reuseSeqRef = useRef(0); // 프롬프트 재사용 요청의 순번 — 나중에 누른 것이 이긴다(응답이 뒤바뀌어 와도)
   const roleMenu = useSeedanceRoleMenu({
     scope: JSON.stringify([bindingKey, bindingPromptKey, model]),
     model, mode: optionValues.mode,
@@ -804,8 +813,12 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   const reusePromptFromGen = async (id: string) => {
     // 재사용은 명시적 사용자 행동(카드 재사용 버튼·끌어내림) → 캔버스에서도 프롬프트 포커스 허용.
     allowFocusRef.current = true;
+    const startedTurn = bindingTurnRef.current;
+    const mine = ++reuseSeqRef.current;
     try {
       const g = await api.getGeneration(id);
+      // 기다리는 사이 고른 카드가 바뀌었거나(다녀온 것 포함) 더 나중의 재사용이 눌렸다 — 입력칸을 갈아 치우지 않는다
+      if (bindingTurnRef.current !== startedTurn || reuseSeqRef.current !== mine) return;
       // 재사용 원본 → 다음 생성의 자동 히스토리 부모(원본→파생).
       dragParentRef.current = id;
       // 모드 판정 — 출력 자산 타입이 우선(성공작). 단 실패 생성은 자산이 없어 무조건 image 로
@@ -914,8 +927,10 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     }
   };
   const addRefFromGen = async (id: string) => {
+    const startedFor = bindingKeyRef.current;
     try {
       const g = await api.getGeneration(id);
+      if (bindingKeyRef.current !== startedFor) return; // 기다리는 사이 고른 카드가 바뀌었다 — 그 카드의 레퍼런스에 넣지 않는다
       const a = g.assets[0];
       const ed = editorRef.current;
       if (!ed) return;
@@ -959,11 +974,19 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       return;
     }
     setError(null);
+    const startedFor = bindingKeyRef.current;
     try {
       // 로컬 파일은 이 PC 설치 폴더(imports)에 저장한다(Jay 2026-09-29 옛 방식).
       const res = await api.uploadReferenceFiles(accepted);
       const items: SpotlightAssetDragItem[] = res.saved || [];
       const skipped = res.skipped || [];
+      if (items.length && bindingKeyRef.current !== startedFor) {
+        // 올리는 사이 고른 카드가 바뀌었다 — 파일은 가져왔지만(Assets 에 있다) 지금 카드의 레퍼런스에는 넣지 않는다.
+        //  넣으면 A 에 놓은 파일이 B 의 레퍼런스로 저장된다(큰 영상은 올리는 데 몇 초 걸린다).
+        notifySpotlightAssetsChanged(items);
+        setError(`${items.length}개 파일을 가져왔지만, 그사이 고른 카드가 바뀌어 레퍼런스에는 넣지 않았습니다 — Assets 에서 끌어 넣으세요.`);
+        return;
+      }
       if (items.length) {
         addAssetRefs(JSON.stringify(items));
         const reused = (res.saved || []).filter((item) => item.reused).length;
@@ -1101,7 +1124,10 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
         bumpPromptTick(); // 수동 비우기(Shift+Backspace)도 바인딩 카드 초안에 반영
         setMention(null);
         histIdxRef.current = -1;
-        requestAnimationFrame(() => ed.focus());
+        // 위의 blur 로 내려놓은 초점을 다음 프레임에 돌려받는다 — 그사이 다른 곳(검색칸 등)을 눌렀으면 그 초점을 둔다
+        requestAnimationFrame(() => {
+          if (!document.activeElement || document.activeElement === document.body) ed.focus();
+        });
       }
       return;
     }

@@ -23,6 +23,7 @@ import { SettingsGroup } from "../src/components/settings/SettingsGroup";
 import { UpdateProgressOverlay } from "../src/components/UpdateProgressOverlay";
 import { isKeyHandled, markKeyHandled } from "../src/lib/keyHandled";
 import { startReleaseUpdate, type ReleaseUpdateStatus } from "../src/lib/releaseUpdate";
+import { STORAGE_KEYS } from "../src/lib/storageKeys";
 import { useEscapeClose } from "../src/lib/useEscapeClose";
 import type { Generation } from "../src/types";
 
@@ -145,6 +146,40 @@ describe("R7 계보 보드의 Esc", () => {
     window.dispatchEvent(new MouseEvent("mouseup", { button: 1 }));
     expect(stored()).toBe(atUnmount);
     root = createRoot(host); // afterEach 가 내릴 뿌리
+  });
+
+  // 10회차(Codex 검토): 휠 줌의 저장은 0.25초 뒤로 예약된다 — 그 전에 다른 계보로 넘어가면 예약된 저장이 새 카드의 값을 적고
+  //  떠난 카드의 마지막 줌은 사라졌다.
+  it("휠로 줌한 직후(저장이 예약된 0.25초 안)에 다른 계보로 넘어가도 떠난 카드의 줌이 남는다", () => {
+    fixture.graph = graph;
+    const board = (focusId: string) => (
+      <HistoryBoard focusId={focusId} onPreview={noop} onInfo={noop} onRegenerate={noop} onPublish={noop} onUnpublish={noop}
+        onFinalize={noop} onUnfinalize={noop} />
+    );
+    const views = () => JSON.parse(localStorage.getItem(STORAGE_KEYS.historyView) ?? "{}") as Record<string, { z: number }>;
+    act(() => root.render(board("a")));
+    act(() => {
+      host.querySelector<HTMLElement>(".linb-scroll")!
+        .dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -100, clientX: 10, clientY: 10 }));
+    });
+    expect(views().a).toBeUndefined(); // 저장은 아직 예약만 됐다
+    act(() => root.render(board("b"))); // 0.25초가 지나기 전에 다른 계보로
+    expect(views().a?.z).toBeCloseTo(1.1);
+    act(() => root.render(board("a"))); // 돌아오면 그 줌이다
+    expect(host.querySelector<HTMLElement>(".linb-canvas")?.style.transform ?? "").toContain("scale(1.1");
+  });
+
+  // 10회차(Codex 검토): 보드는 S 의 단일/더블 가르기(220ms)를 모든 카드가 같이 쓴다 — 앞 카드의 대기 중에 누른 다른 카드의 S 가
+  //  버려지고 앞 카드의 확인만 뒤늦게 떴다.
+  it("한 카드의 S 를 누르고 곧바로(220ms 안) 다른 카드의 S 를 누르면 나중 카드의 확인이 뜬다", async () => {
+    mount();
+    const sOf = (id: string) => [...node(id).querySelectorAll<HTMLButtonElement>(".linb-ov-btn")].find((button) => button.textContent === "S")!;
+    const confirmOn = () => [...host.querySelectorAll<HTMLElement>(".linb-node")].filter((el) => el.querySelector(".sconfirm")).map((el) => el.dataset.id);
+    act(() => { sOf("a").click(); });
+    act(() => { sOf("b").click(); });
+    expect(confirmOn()).toEqual([]); // 아직 더블클릭을 기다리는 중
+    await act(async () => { await new Promise((done) => setTimeout(done, 260)); });
+    expect(confirmOn()).toEqual(["b"]);
   });
 });
 

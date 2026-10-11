@@ -76,9 +76,12 @@ describe("Resolve 라이브러리 따라가기", () => {
     mount(fakeStore(data));
     const revision = latest.manualRevision;
     const resetKey = latest.selectionResetKey;
+    const followed = latest.followRevision;
 
     act(() => latest.followLocation({ project_id: "resolved", folder_path: "shots" }));
 
+    // 따라간 횟수가 오른다 — 상단바가 검색칸을 다시 올려, 치던 검색어의 예약(0.3초 뒤)이 찾아간 자리에 걸리지 않게 한다(10회차)
+    expect(latest.followRevision).toBe(followed + 1);
     expect(latest.filters).toEqual({ tab: "team", project_id: "resolved", folder_path: "shots" });
     expect(latest.typeFilter).toBe("all");
     expect([...latest.colorFilter]).toEqual([]);

@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-11
+updated: 2026-10-12
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -828,7 +828,7 @@ updated: 2026-10-11
 | `sceneMedia.ts` | 순수 | 씬 레퍼런스 썸네일·미디어 종류 |
 | `sceneSet.ts` | 순수 | Set 노드 태그 파싱·폴더 드래그 페이로드 |
 | `sceneGroupSelection.ts` | 순수 | 그룹 클릭/드래그 대상 계산 |
-| `sceneDragSession.ts` | 순수 | 전역 드래그 리스너 + rAF 합치기(환경 주입). 이동 이벤트의 `buttons` 가 0 이면 놓친 mouseup 으로 보고 취소의 길로 끝낸다 — 끌기를 흉내 내는 시험은 `buttons: 1` |
+| `sceneDragSession.ts` | 순수 | 전역 드래그 리스너 + rAF 합치기(환경 주입). 이동 이벤트의 `buttons` 가 0 이면 놓친 mouseup 으로 보고 취소의 길로 끝낸다 — 끌기를 흉내 내는 시험은 `buttons: 1`. `settle()` = 남은 끌기를 지금 끝낸다(보드 위의 새 누름이 첫머리에서 부른다). `rebase()` = 도는 끌기의 `onRebase` 를 부른다 — 끄는 중에 밖에서 씬이 갱신돼 값이 갈렸을 때 끌기가 쥔 좌표·크기를 받은 값 위에 다시 얹는다(값을 끄는 중에 바꾸는 끌기만 건다) |
 | `marquee.ts` | 순수 | 러버밴드 사각형·적중 판정(생성·에셋 공용) |
 | `recipeScene.ts` | 순수 | 생성물 → "어떻게 만들었나" 씬 변환 |
 
@@ -905,7 +905,7 @@ updated: 2026-10-11
 | `spotlightPromptConfig.ts` | 순수 | 옵션 표시·정렬·변형(variant) 규칙 |
 | `spotlightPromptKeyboard.ts` | 순수 | Enter 동작 판정 |
 | `spotlightSubmit.ts` | 순수 | 제출 본문 조립·배치 정규화 |
-| `useSpotlightTray.ts` | 훅 | 레퍼런스 트레이 + 캔버스 카드 양방향 바인딩 |
+| `useSpotlightTray.ts` | 훅 | 레퍼런스 트레이 + 캔버스 카드 양방향 바인딩. `trayReady` = 트레이가 지금의 묶임에 맞춰졌는가(아니면 앞 카드의 레퍼런스다 — 제출이 본다) |
 | `useSpotlightTokenWrap.ts` | 훅 | 미디어 토큰 → 색 알약 정규화 |
 | `useSpotlightMentionSources.ts` | 훅 | `@` 멘션 소스 목록 |
 | `usePromptDock.ts` | 훅 | 프롬프트 도킹 위치·단축키 |
@@ -978,7 +978,7 @@ updated: 2026-10-11
 | `useFloatingPanel.ts` | 훅 | 떠 있는 패널 위치·드래그·클램프 |
 | `useMenuPlacement.ts` | 훅 | 메뉴 배치 계산을 DOM 에 부착·재측정 |
 | `menuPlacement.ts` | 순수 | 잘리는 조상 안에서 메뉴 방향·높이 계산 |
-| `windowDrag.ts` | 브라우저 | window mouse/pointer 드래그 리스너 add/remove 4벌 |
+| `windowDrag.ts` | 브라우저 | window mouse/pointer 드래그 리스너 add/remove 4벌 — 캔버스 밖 끌기의 공용부. 단추 없는 움직임·blur·pointercancel 에 `onUp` 을 그 이벤트로 부른다(놓친 mouseup). 받는 쪽은 `dragLost(e)` 로 가른다 |
 | `useDisabledGenerations.ts` / `useDisabledFolders.ts` | 훅(2파일) | 비활성 집합 구독 |
 
 **20. 소품·i18n(3)**
