@@ -181,7 +181,9 @@ export function EditPool({
   );
   const rowClass = (item: PoolItem, kind: string) =>
     `ed-prow ed-prow-${kind}` + (picked.includes(item.gen.id) ? " ed-picked" : "") + (item.track !== null ? " ed-placed" : "");
-  const pickedGens = picked.map((id) => items.find((item) => item.gen.id === id)?.gen).filter((gen): gen is Generation => !!gen);
+  // 막대의 대상은 **지금 보이는 것** 가운데 고른 것이다(조작 규칙 42). 전엔 검색 전의 목록(items)에서 구해, 검색으로 가려진 카드가
+  //  '2개 선택'에 남아 Resolve 로 같이 나갔다. 고른 것 자체(picked — 마지막 것이 뷰어의 소스)는 건드리지 않는다: 검색을 지우면 다시 보인다.
+  const pickedGens = picked.map((id) => shown.find((item) => item.gen.id === id)?.gen).filter((gen): gen is Generation => !!gen);
 
   return (
     <section className="ed-pool" onMouseDown={keepFocus}>

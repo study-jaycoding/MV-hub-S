@@ -247,6 +247,33 @@ it("미디어 풀: Ctrl·Shift 로 여러 장을 고르면 비교할 수 있다 
   expect(localStorage.getItem(DOC_KEY)).toBeNull();
 });
 
+// 15회차(조작 규칙 42): 고른 것의 막대는 검색 전의 목록에서 대상을 구했다 — 검색으로 가려진 카드가 '2개 선택'에 남아 Resolve 로 같이
+//  나갔다(찾은 것이 0개여도 보낼 수 있었다). 고른 것 자체(뷰어의 소스)는 그대로 둔다 — 검색을 지우면 다시 보인다.
+it("미디어 풀: 검색으로 가려진 카드는 고른 것의 막대에서 빠진다 — Resolve 보내기·비교는 보이는 것만 넘긴다", () => {
+  mount();
+  act(() => cutCell("c1").click());
+  const bar = () => document.querySelector<HTMLElement>(".ed-pool-sel");
+  act(() => poolCards()[0].click());
+  mouse(poolCards()[1], "click", { ctrlKey: true });
+  expect(bar()!.textContent).toContain("2개 선택");
+  const search = (text: string) => act(() => {
+    const input = document.querySelector<HTMLInputElement>(".ed-pool-search")!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, text);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  act(() => document.querySelector<HTMLButtonElement>(".ed-pool-tools .ed-pbtn[aria-pressed]")!.click()); // 🔍
+  search("prompt b");
+  expect(poolCards()).toHaveLength(1);
+  expect(bar()!.textContent).toContain("1개 선택"); // 전엔 2개 그대로였다
+  expect(bar()!.querySelector(".ed-psel-btn:not(.ed-psel-resolve)")).toBeNull(); // 한 장 — 비교할 것이 없다
+  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-psel-resolve")!.click());
+  expect(sent.map((gens) => gens.map((item) => item.id))).toEqual([["b"]]); // 전엔 보이지 않는 a 도 나갔다
+  search("없는 글"); // 찾은 것이 없다 — 보낼 것도 없다
+  expect(bar()).toBeNull();
+  search(""); // 검색을 지우면 고른 둘이 그대로다
+  expect(bar()!.textContent).toContain("2개 선택");
+});
+
 // 끌어서 고르기(Jay 2026-10-08) — 라이브러리 격자처럼 상자에 걸친 카드를 고른다(jsdom 의 카드는 모두 (0,0) 에 있다).
 it("미디어 풀: 끌어서 상자로 여러 장을 고른다 — Ctrl 을 누른 채 끌면 더하고, 끌기 끝의 click 은 누르기가 아니다", () => {
   mount();
