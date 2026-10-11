@@ -127,7 +127,10 @@ export function AdminWindow({
     try {
       await api.sharedServerDeElevate();
     } catch {
-      /* ignore */
+      // 해제를 확인하지 못했으면 열쇠를 켜진 채 두고 알린다(조작 규칙 41). 전엔 실패를 삼키고 상태를 다시 읽었는데, 그 조회도 실패하면
+      //  '해제됨'으로 그려졌다 — 요청은 닿지 않았는데 화면만 꺼진다.
+      alert("슈퍼 관리자 해제를 확인하지 못했습니다 — 다시 눌러 주세요.");
+      return;
     }
     await refreshShared();
   };

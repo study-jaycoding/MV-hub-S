@@ -7,9 +7,9 @@ import { CanvasFolderSidebar } from "../src/components/sidebar/CanvasFolderSideb
 import { projectApi } from "../src/lib/projectApi";
 import type { Project, ProjectFolderState } from "../src/types";
 
-const mocks = vi.hoisted(() => ({ links: vi.fn(), folder: vi.fn(), counts: vi.fn() }));
+const mocks = vi.hoisted(() => ({ links: vi.fn(), folder: vi.fn(), counts: vi.fn(), reorder: vi.fn() }));
 vi.mock("../src/api", () => ({ api: {
-  projectFolderLinks: mocks.links, projectFolder: mocks.folder, projectFolderCountsBatch: mocks.counts,
+  projectFolderLinks: mocks.links, projectFolder: mocks.folder, projectFolderCountsBatch: mocks.counts, reorderProjects: mocks.reorder,
 } }));
 vi.mock("../src/lib/i18n", () => ({ useT: () => (text: string) => text }));
 vi.mock("../src/lib/teamSeen", () => ({ subscribeTeamSeen: () => () => {}, getTeamSeenVersion: () => 0,
@@ -147,6 +147,54 @@ it("프로젝트 순서 손잡이 — 손잡이 밖에서 떼거나 누른 채 �
   press();
   act(() => { window.dispatchEvent(new Event("blur")); }); // 누른 채 다른 창으로(Alt+Tab)
   expect(row.draggable).toBe(false);
+});
+
+// 14회차(조작 규칙 41): 순서 저장의 실패를 삼켜, 새로 고칠 때까지 저장 안 된 순서가 보였다.
+it("프로젝트 순서 — 저장에 실패하면 끌기 전 순서로 되돌리고 알린다. 그사이 목록이 다시 그려졌으면 그것을 둔다", async () => {
+  mocks.links.mockResolvedValue({ links: {} });
+  const flashes: string[] = [];
+  const onFlash = (event: Event) => { flashes.push((event as CustomEvent<string>).detail); };
+  window.addEventListener("ch:flash", onFlash);
+  try {
+    const project = (id: string) => ({ id, name: id, count: 1 }) as Project;
+    const show = (projects: Project[]) => act(async () => root.render(<ProjectSection projects={projects}
+      unassignedCount={0} archivedCount={0} deletedOnly={false} tab="my" activeId={undefined} onFilter={vi.fn()} onViewDeleted={vi.fn()} />));
+    const names = () => [...host.querySelectorAll<HTMLElement>(".proj-row")].map((row) => row.title).filter((title) => /^[ABC]$/.test(title));
+    const row = (name: string) => host.querySelector<HTMLElement>(`.proj-row[title="${name}"]`)!;
+    const drag = async (from: string, to: string) => {
+      await act(async () => { row(from).querySelector(".proj-drag-handle")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+      await act(async () => { row(from).dispatchEvent(Object.assign(new Event("dragstart", { bubbles: true }), { dataTransfer: {} })); });
+      await act(async () => { row(to).dispatchEvent(Object.assign(new Event("drop", { bubbles: true, cancelable: true }), { dataTransfer: {} })); });
+    };
+    let fail!: (reason: Error) => void;
+    const heldSave = () => new Promise((_, reject) => { fail = reject; });
+    await show([project("A"), project("B")]);
+    mocks.reorder.mockReturnValueOnce(heldSave());
+    await drag("B", "A");
+    expect(names()).toEqual(["B", "A"]); // 화면은 먼저 바뀐다
+    expect(mocks.reorder).toHaveBeenCalledExactlyOnceWith(["B", "A"]);
+    // 저장이 도는 동안의 다음 끌기는 받지 않는다 — 겹친 두 저장이 다 실패하면 둘째는 '저장 안 된 첫째의 순서'로 되돌린다(Codex 코드 리뷰)
+    await drag("A", "B");
+    expect(names()).toEqual(["B", "A"]);
+    expect(mocks.reorder).toHaveBeenCalledTimes(1);
+    await act(async () => { fail(new Error("offline")); });
+    expect(names()).toEqual(["A", "B"]); // 전엔 저장 안 된 순서가 그대로 보였다
+    expect(flashes).toEqual(["프로젝트 순서를 저장하지 못했습니다 — 원래 순서로 되돌렸습니다."]);
+    // 저장되면 그대로다
+    mocks.reorder.mockResolvedValueOnce({ ok: true });
+    await drag("B", "A");
+    expect(names()).toEqual(["B", "A"]);
+    expect(flashes).toHaveLength(1);
+    // 저장을 기다리는 사이에 목록이 다시 그려졌다(프로젝트가 생겼다) — 실패해도 옛 순서로 덮지 않는다
+    mocks.reorder.mockReturnValueOnce(heldSave());
+    await drag("A", "B");
+    await show([project("A"), project("B"), project("C")]);
+    expect(names()).toEqual(["A", "B", "C"]);
+    await act(async () => { fail(new Error("offline")); });
+    expect(names()).toEqual(["A", "B", "C"]); // 끌기 전 순서([B, A])로 되돌리면 C 가 사라진다
+  } finally {
+    window.removeEventListener("ch:flash", onFlash);
+  }
 });
 
 it("열기 API에는 프로젝트 ID와 상대 폴더만 전송한다", async () => {
