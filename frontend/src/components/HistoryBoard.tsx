@@ -403,6 +403,10 @@ export function HistoryBoard({
     saveView(); // 패닝 끝 — 카메라 저장(재진입 시 복원)
   }, [onPanMove, reportView, saveView]);
   onPanUpRef.current = onPanUp; // onPanMove 안전장치가 부를 최신 cleanup
+  // 화면을 미는 중에 보드가 내려가면 창에 건 리스너를 뗀다. 남겨 두면 내려간 보드의 카메라를 계속 바꾸다가, 단추를 뗄 때 그 값을
+  //  이 카드의 카메라로 저장했다(다시 열면 엉뚱한 자리 — Codex 통합 검토). 내려가는 순간의 카메라는 위의 언마운트 저장이 맡는다.
+  //  노드 끌기·범위 선택의 리스너는 state 만 건드려 내려간 뒤에는 아무 일도 하지 않는다(다음 뗌에 스스로 떼어진다) — 그대로 둔다.
+  useEffect(() => () => removeWindowMouseDrag(onPanMove), [onPanMove]);
 
   // 보드 밖(사이드바 여백·상단바)에서 시작한 드래그도 선택으로 — 생성 탭과 같은 규칙.
   useOutsideDragSelect(".linb-scroll", (e) =>

@@ -65,14 +65,23 @@ export function releaseSceneDragPointer(): void {
  * 끌어 놓은 직후의 click 한 번을 삼킨다 — 옛 규칙이 덤으로 하던 일이다. 브라우저는 누른 요소와 뗀 요소가 같으면 click 을 보내는데
  * 끄는 카드는 마우스를 따라와 늘 같다: 리스트의 행을 잡고 끌면 놓는 순간 그 행의 선택이 뒤집힌다(옛 규칙에서는 뗀 요소가 카드 밑의
  * 것이라 click 이 카드로 가지 않았다). click 은 mouseup 과 같은 작업 안에서 오므로, 오지 않았으면 다음 작업에서 거둔다.
+ * **삼키는 것은 그 놓기에 딸린 한 번이다** — 삼켰으면 바로 거두고, 새 누름(mousedown)이 시작돼도 거둔다(그 뒤의 click 은 놓기의 것이
+ * 아니다). 타이머만 믿으면 그것이 돌기 전에 온 클릭이 전부 삼켜진다: 입력은 타이머보다 먼저 처리돼, 놓은 직후 화면을 다시 그리느라
+ * 바쁜 사이(카드가 많은 씬)에 누른 것이 통째로 사라졌다(2026-10-12 격리 실측: 놓자마자 누른 씬 탭 세 번이 전부 안 먹음 20/20).
  */
 function swallowDropClick(): void {
+  const stop = () => {
+    window.removeEventListener("click", swallow, true);
+    window.removeEventListener("mousedown", stop, true);
+  };
   const swallow = (event: Event) => {
     event.stopPropagation();
     event.preventDefault();
+    stop();
   };
   window.addEventListener("click", swallow, true);
-  window.setTimeout(() => window.removeEventListener("click", swallow, true), 0);
+  window.addEventListener("mousedown", stop, true);
+  window.setTimeout(stop, 0);
 }
 
 /** 카드·그룹 끌기의 끝에서 부른다 — 쥔 포인터를 놓고, 실제로 끌다가 손을 떼어 끝난 것이면 뒤따르는 click 을 삼킨다. */
@@ -242,9 +251,12 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
       canvas.style.translate = lagX || lagY ? `${lagX * scale}px ${lagY * scale}px` : "";
     };
     const syncLayer = () => {
-      const shownAnchor = optionsRef.current.cardsRef.current.find((card) => card.id === cardId);
-      // 기준 카드가 사라졌으면(끄는 중 삭제) 맞은 것으로 본다 — 층을 밀린 채로 남기지 않는다
-      shown = shownAnchor ? { x: shownAnchor.x - anchor.x, y: shownAnchor.y - anchor.y } : want;
+      // 쥔 카드 하나로 잰다(전부 같은 만큼 간다) — 기준 카드가 사라졌으면(밖에서 지워짐) 남은 카드로. 전엔 기준 카드만 봐서, 그것만
+      //  사라지면 남은 카드가 놓을 때까지 끌기 전 자리로 돌아가 보였다(Codex 코드 리뷰).
+      const cards = optionsRef.current.cardsRef.current;
+      const held = cards.find((card) => card.id === cardId) ?? cards.find((card) => !!origins[card.id]);
+      // 쥔 카드가 하나도 안 남았으면(끄는 중 전부 삭제) 맞은 것으로 본다 — 층을 밀린 채로 남기지 않는다
+      shown = held ? { x: held.x - origins[held.id].x, y: held.y - origins[held.id].y } : want;
       if (closing) endLayer(); // 놓은 뒤의 첫 커밋 — 좌표가 들어왔다
       else paintLayer();
     };
@@ -309,6 +321,27 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
       speed: 0,
     };
     let relocated = false;
+    let applied = { x: 0, y: 0 }; // (일부만 끌 때) 좌표에 마지막으로 넣은 이동량 — 격자에 맞춘 값
+
+    // 끌기가 쥔 카드·네모를 '끌기 전 자리 + (dx, dy)'에 다시 놓는다 — 끄는 중에 밖에서 카드·그룹이 갈렸을 때만(아래 beginDrag 의 onRebase).
+    //  받은 값(생성 결과·글)은 그대로 두고 좌표만 얹는다. 기준 카드만 보고 건너뛰지 않는다 — 밖 갱신이 일부만 되돌렸을 수 있다(Codex 설계 검토).
+    //  속도 표본·이탈 판정은 건드리지 않는다(실제 마우스 움직임이 아니다).
+    const place = (dx: number, dy: number) => {
+      const latest = optionsRef.current;
+      const nextCards = latest.cardsRef.current.map((card) => {
+        const origin = origins[card.id];
+        return origin ? { ...card, x: origin.x + dx, y: origin.y + dy } : card;
+      });
+      latest.cardsRef.current = nextCards;
+      latest.setCards(nextCards);
+      if (!movingRects.size) return;
+      const nextGroups = latest.groupsRef.current.map((group) => {
+        const origin = movingRects.get(group.id);
+        return origin ? { ...group, rect: { ...origin, x: origin.x + dx, y: origin.y + dy } } : group;
+      });
+      latest.groupsRef.current = nextGroups;
+      latest.setGroups(nextGroups);
+    };
 
     const move = (moveEvent: MouseEvent) => {
       if (!moved && Math.hypot(moveEvent.clientX - start.x, moveEvent.clientY - start.y) < 4) {
@@ -364,25 +397,22 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
       if (!result.changed) return;
 
       relocated = true;
+      applied = { x: result.dx, y: result.dy };
       latest.cardsRef.current = result.cards;
       latest.setCards(result.cards);
 
-      // 선택된 그룹의 rect 를 카드와 같은 만큼 옮긴다. 원본 dx/dy 가 아니라 '기준 카드가 실제로
-      // 간 거리'를 쓴다 — 격자 스냅이 걸리면 둘이 어긋나 프레임만 반 칸 밀린다.
+      // 선택된 그룹의 rect 를 카드와 같은 만큼 옮긴다. 마우스의 원본 이동량이 아니라 **격자에 맞춘 이동량**(result.dx/dy —
+      // 기준 카드가 실제로 간 거리)을 쓴다 — 격자 스냅이 걸리면 둘이 어긋나 프레임만 반 칸 밀린다. 옮겨진 기준 카드를 찾아
+      // 재지 않는다: 끄는 사이 기준 카드가 밖에서 지워지면 네모만 멈춰, 엇갈린 채 저장됐다(Codex 코드 리뷰).
       if (movingRects.size) {
-        const movedAnchor = result.cards.find((card) => card.id === cardId);
-        if (movedAnchor) {
-          const appliedX = movedAnchor.x - anchor.x;
-          const appliedY = movedAnchor.y - anchor.y;
-          const nextGroups = latest.groupsRef.current.map((group) => {
-            const origin = movingRects.get(group.id);
-            return origin
-              ? { ...group, rect: { ...origin, x: origin.x + appliedX, y: origin.y + appliedY } }
-              : group;
-          });
-          latest.groupsRef.current = nextGroups;
-          latest.setGroups(nextGroups);
-        }
+        const nextGroups = latest.groupsRef.current.map((group) => {
+          const origin = movingRects.get(group.id);
+          return origin
+            ? { ...group, rect: { ...origin, x: origin.x + result.dx, y: origin.y + result.dy } }
+            : group;
+        });
+        latest.groupsRef.current = nextGroups;
+        latest.setGroups(nextGroups);
       }
 
       if (memberFrames.size) {
@@ -478,6 +508,14 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
       if (relocated) commitMovedCards();
       closeLayer();
       optionsRef.current.endGesture();
+    }, () => {
+      // 끄는 중에 밖에서 씬이 갱신됐다(생성 결과 도착 등) — 받은 카드에는 저장 전인 이 끌기의 좌표가 없다. 그대로 두면 끌던 카드가
+      //  끌기 전 자리로 돌아가 보이고, 더 움직이지 않고 놓으면 그 자리가 저장됐다(2026-10-11 캔버스 실측 3/3). 좌표에 넣어 둔 만큼을
+      //  다시 얹는다: 일부만 끌 때는 마지막 걸음, 판을 밀 때는 좌표에 확정해 둔 만큼(0 이어도 — 층이 나머지를 보여 준다).
+      //  놓을 때의 '이미 넣었으면 다시 계산하지 않는다'(settleLayerMove)는 그대로다 — 좌표를 끌기가 쥐는 것은 밖에서 갈렸을 때뿐이다.
+      if (!moved) return;
+      if (wholeBoard) place(settled.x, settled.y);
+      else place(applied.x, applied.y);
     });
     // 묶음은 여기서 연다 — 손을 뗀 것을 놓친 앞 끌기가 남아 있었다면 위 beginDrag 가 그것을 먼저 확정하고 닫는다(앞 끌기의 묶음으로).
     //  되돌리기의 시작점은 이 끌기가 옮기는 카드·네모의 끌기 전 자리다.

@@ -74,6 +74,7 @@ export function SceneBar({
   const [menu, setMenu] = useState<SceneMenuTarget | null>(null);
   const tabRefs = useRef(new Map<string, HTMLElement>());
   const suppressClickRef = useRef(false); // 드래그 직후의 합성 클릭 한 번을 삼킨다
+  const suppressTimerRef = useRef<number | undefined>(undefined); // 그 억제를 푸는 예약(releaseSuppression) — 새 누름이 거둔다
   const dragRef = useRef<DragState | null>(null);
   dragRef.current = drag;
   // 끄는 동안 탭 위치는 안 바뀐다(움직이는 건 삽입선뿐). 포인터가 움직일 때마다 모든 탭을
@@ -106,6 +107,12 @@ export function SceneBar({
 
   const onPointerDown = (event: React.PointerEvent, sceneId: string) => {
     if (event.button !== 0 || !event.isPrimary) return; // 좌클릭·주 포인터만
+    // 새 누름이다 — 앞 끌기에 딸린 click 은 이미 지나갔다. 안 풀면, click 이 오지 않은 끌기(탭 밖에서 놓음) 바로 뒤의 탭 누름이
+    //  타이머(releaseSuppression)가 돌기 전에 삼켜진다(입력은 타이머보다 먼저 처리된다 — lib/useSceneCardMove 의 swallowDropClick 과 같은 약속)
+    //  앞 끌기가 예약해 둔 해제도 거둔다 — 남겨 두면 이 누름으로 시작한 끌기를 Esc 로 취소한 뒤(억제가 선다) 그 타이머가 억제를 풀어,
+    //  단추를 놓을 때의 click 이 씬을 연다(Codex 코드 리뷰).
+    suppressClickRef.current = false;
+    window.clearTimeout(suppressTimerRef.current);
     (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
     setDrag({
       sceneId,
@@ -147,7 +154,8 @@ export function SceneBar({
   // 포인터를 놓은 뒤(합성 click 이 지나간 뒤) 억제를 푼다. click 은 pointerup 과 같은 태스크에서 오므로
   // 이 타이머보다 먼저 도착한다.
   const releaseSuppression = () => {
-    window.setTimeout(() => {
+    window.clearTimeout(suppressTimerRef.current);
+    suppressTimerRef.current = window.setTimeout(() => {
       suppressClickRef.current = false;
     }, 0);
   };

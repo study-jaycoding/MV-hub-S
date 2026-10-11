@@ -118,6 +118,7 @@ function FolderTreeRow({
   const [dropOver, setDropOver] = useState(false);
   useDragEndReset(dropOver, () => setDropOver(false)); // 이 줄 위에서 끌기를 취소하면 dragleave 가 오지 않는다
   const folderDraggingRef = useRef(false);
+  const dragReleaseRef = useRef<number | undefined>(undefined); // 그 깃발을 내리는 예약(onDragEnd) — 새 누름이 거둔다
   // 하위가 있는 부모 폴더(예 ep001)는 드롭 대상에서 제외 — 말단 폴더(c0010 등)에만 담는다.
   const dropProps = onDropFolder && !hasChildren
     ? {
@@ -160,10 +161,18 @@ function FolderTreeRow({
           // 일부 브라우저는 HTML5 drag 종료 뒤 click까지 발화한다. Set으로 끌었는데
           // 폴더 필터 선택까지 되어 캔버스가 닫히는 일을 막는다.
           if (folderDraggingRef.current) {
+            folderDraggingRef.current = false; // 삼키는 것은 그 끌기에 딸린 한 번이다
             e.preventDefault();
             return;
           }
           onSelect(node.path);
+        }}
+        // 새 누름이다 — 앞 끌기에 딸린 click 은 이미 지나갔다. 깃발을 타이머(아래 onDragEnd)로만 내리면, 끌어 놓은 직후 타이머가 돌기 전에
+        //  누른 이 폴더가 안 골라진다(입력은 타이머보다 먼저 처리된다 — Codex 코드 리뷰). 끌기는 이 누름 뒤의 dragstart 가 다시 세운다.
+        //  앞 끌기가 예약해 둔 해제도 거둔다 — 남겨 두면 곧바로 시작한 다음 끌기 도중에 그 타이머가 깃발을 내려, 끌기에 딸린 click 이 폴더를 고른다.
+        onMouseDown={() => {
+          folderDraggingRef.current = false;
+          window.clearTimeout(dragReleaseRef.current);
         }}
         draggable={!!onDragFolder}
         onDragStart={
@@ -178,7 +187,8 @@ function FolderTreeRow({
         onDragEnd={
           onDragFolder
             ? () => {
-                window.setTimeout(() => {
+                window.clearTimeout(dragReleaseRef.current);
+                dragReleaseRef.current = window.setTimeout(() => {
                   folderDraggingRef.current = false;
                 }, 0);
               }
