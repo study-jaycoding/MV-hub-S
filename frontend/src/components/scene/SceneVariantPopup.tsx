@@ -3,7 +3,7 @@
 //  조립만 한다. 창 껍데기는 '폴더 보기' 창의 모양을 쓰되 .folder-peek 클래스는 달지 않는다 — 그 클래스는 "이 안의 키는
 //  라이브러리 몫"이라는 표시라(sceneKeyboard·useGenerationKeyboardActions), 달면 씬의 색·비활성 단축키가 이 창에서 죽는다.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, Dispatch, ReactNode, SetStateAction } from "react";
 import type { SceneCard } from "../../lib/scenes";
 import { variantIds } from "../../lib/scenes";
 import type { Generation, InfoTarget, PreviewTarget, Project } from "../../types";
@@ -82,7 +82,7 @@ export function SceneVariantPopup({
     onUnfinalize: (g: Generation) => void;
   };
   actions: {
-    setCardMenu: (id: string | null) => void;
+    setCardMenu: Dispatch<SetStateAction<string | null>>;
     setCardVariant: (cardId: string, gid: string) => void;
     pruneVariants: (cardId: string, removed: Set<string>) => void;
     latestCard: (id: string) => SceneCard | undefined; // cardsRef 기준 최신(삭제 대기 중 append 대비)
@@ -155,7 +155,11 @@ export function SceneVariantPopup({
       ui.setSelected((prev) => new Set([...prev].filter((id) => !removed.has(id))));
       // 남은 결과 판정은 최신 카드 기준(삭제 대기 중 뒤에서 append 됐을 수 있어 렌더 스냅샷 대신).
       const latest = actions.latestCard(card.id) || card;
-      if (variantIds(latest).filter((id) => !removed.has(id)).length === 0) close();
+      // 닫는 것은 지우기를 시작한 **이 카드의 창**이 아직 열려 있을 때만 — 응답을 기다리는 사이 이 창을 닫고 다른 카드의 창을 열었으면
+      //  지금 열린 것은 그 창이다(전엔 앞 창의 지우기가 끝나는 순간 새로 연 창이 닫혔다).
+      if (variantIds(latest).filter((id) => !removed.has(id)).length === 0) {
+        actions.setCardMenu((open) => (open === card.id ? null : open));
+      }
     }
   };
   // 대표 표시/지정 — 카드 '밖' 위(Jay). 대표면 표시, 아니면 지정 단추.

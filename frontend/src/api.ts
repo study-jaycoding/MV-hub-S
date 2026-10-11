@@ -667,11 +667,21 @@ export const api = {
     // 서버 배치 상한(500) 초과 선택은 조각으로 나눠 순차 저장 — 예전 단건 fan-out처럼
     // 개수 무관하게 동작하되, 부분 실패는 succeeded/failed 로 합산해 그대로 알린다.
     const out = { succeeded: [] as string[], failed: [] as string[] };
-    for (const chunk of chunked(items)) {
-      const res = await jsonFetch<{ succeeded: string[]; failed: string[] }>(
-        "/api/generations/tags/batch",
-        { method: "PUT", body: jsonBody({ items: chunk, auto }) },
-      );
+    const chunks = chunked(items);
+    for (let index = 0; index < chunks.length; index += 1) {
+      let res: { succeeded: string[]; failed: string[] };
+      try {
+        res = await jsonFetch<{ succeeded: string[]; failed: string[] }>(
+          "/api/generations/tags/batch",
+          { method: "PUT", body: jsonBody({ items: chunks[index], auto }) },
+        );
+      } catch (error) {
+        // 뒤 묶음의 요청이 실패해도 앞 묶음의 성공은 버리지 않는다(조작 규칙 42) — 전엔 통째로 던져, 500건이 저장됐는데 호출부가
+        //  "600건 실패"라고 했다. 실패한 묶음과 아직 안 보낸 나머지를 실패로 돌려준다. 첫 묶음부터 실패하면 저장된 것이 없으니 그대로 던진다.
+        if (index === 0) throw error;
+        out.failed.push(...chunks.slice(index).flat().map((item) => item.id));
+        break;
+      }
       out.succeeded.push(...res.succeeded);
       out.failed.push(...res.failed);
     }
@@ -763,12 +773,21 @@ export const api = {
 
   setColorsBatch: async (ids: string[], color: string | null, assertCurrent?: () => void) => {
     const out = { succeeded: [] as string[], failed: [] as string[] };
-    for (const chunk of chunked(ids)) {
-      assertCurrent?.();
-      const res = await jsonFetch<{ succeeded: string[]; failed: string[] }>(
-        "/api/generations/colors/batch",
-        { method: "PUT", body: jsonBody({ items: chunk.map((id) => ({ id, color })) }) },
-      );
+    const chunks = chunked(ids);
+    for (let index = 0; index < chunks.length; index += 1) {
+      assertCurrent?.(); // 계정이 바뀌었으면 여기서 던진다 — 저장 실패와 따로 다룬다(호출부가 구별한다)
+      let res: { succeeded: string[]; failed: string[] };
+      try {
+        res = await jsonFetch<{ succeeded: string[]; failed: string[] }>(
+          "/api/generations/colors/batch",
+          { method: "PUT", body: jsonBody({ items: chunks[index].map((id) => ({ id, color })) }) },
+        );
+      } catch (error) {
+        // 뒤 묶음의 요청이 실패해도 앞 묶음의 성공은 버리지 않는다(위 setTagsBatch 와 같다 — 조작 규칙 42)
+        if (index === 0) throw error;
+        out.failed.push(...chunks.slice(index).flat());
+        break;
+      }
       out.succeeded.push(...res.succeeded);
       out.failed.push(...res.failed);
     }

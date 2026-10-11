@@ -148,20 +148,38 @@ export function useSceneClipboardDrop(
   const importExternalFiles = useCallback(
     async (files: File[], centerX: number, centerY: number, sceneAtDrop?: string) => {
       const accepted = files.filter((file) => referenceDropTypeFromFile(file));
-      if (!accepted.length) return;
+      // 놓은 것 가운데 들어가지 않은 파일은 알린다(조작 규칙 42) — 전엔 일부만 들어가도, 하나도 안 들어가도 아무 말이 없었다
+      //  (미디어가 아닌 파일은 여기서, 빈 파일·너무 큰 파일은 서버가 건너뛴다 — backend reference-import 의 skipped).
+      const left = files.filter((file) => !accepted.includes(file)).map((file) => file.name);
+      // 안내는 **한 번에** 낸다 — 토스트는 마지막 문구만 남긴다(lib/useAppToast). 둘로 내면 앞의 것이 곧바로 덮인다(Codex 코드 리뷰).
+      const tell = (first = "") => {
+        const names = left.slice(0, 3).join(", ") + (left.length > 3 ? " …" : "");
+        const leftNote = left.length
+          ? `${left.length}개 파일은 캔버스에 넣지 못했습니다(이미지·영상·오디오가 아니거나, 비었거나, 너무 큽니다) — ${names}`
+          : "";
+        const text = [first, leftNote].filter(Boolean).join(" · ");
+        if (text) flashMsg(text);
+      };
+      if (!accepted.length) return tell();
       const sceneId = sceneAtDrop ?? optionsRef.current.sceneIdRef.current;
       try {
         // 로컬 파일은 이 PC 설치 폴더(imports)에만 둔다 — 서버에 올리지 않는다(Jay 2026-09-29 옛 방식).
         const response = await api.uploadReferenceFiles(accepted);
         const items = response.saved || [];
+        left.push(...(response.skipped || []));
+        let switched = "";
         if (items.length) {
           if (optionsRef.current.sceneIdRef.current === sceneId) {
             const refs = items.map((item) => ({ ...assetItemToRef(item), origin: "upload" as const }));
             addReferenceCards(refs, centerX, centerY);
             optionsRef.current.onLocalRefsAdded?.(refs.map((ref) => ref.file_path));
+          } else {
+            // 올리는 사이 씬을 바꿨다 — 파일은 가져왔지만 떠난 씬에도 지금 씬에도 넣지 않는다. 그 사실을 알린다.
+            switched = `${items.length}개 파일을 가져왔지만, 그사이 씬이 바뀌어 캔버스에는 넣지 않았습니다 — Assets 에서 끌어 넣으세요.`;
           }
           notifySpotlightAssetsChanged(items);
         }
+        tell(switched);
       } catch (error) {
         console.warn("[scene] 외부 파일 레퍼런스 추가 실패", error);
         // 알린다(조작 규칙 41) — 전엔 콘솔에만 남아, 놓은 파일이 들어오는 중인지·못 쓰는 파일인지·실패했는지 화면으로는 알 수 없었다

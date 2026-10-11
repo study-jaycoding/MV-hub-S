@@ -222,6 +222,18 @@ export function assetDragItemsForPath({
   return { items, multi };
 }
 
+/** 고른 원본 파일들을 OS 클립보드에 올린다(올리는 일은 copy — 로컬 백엔드가 한다). 돌려주는 값 = 올리려던 수와 **서버가 실제로 올린 수**:
+ *  서버는 한 번에 올리는 수에 상한이 있고 미디어가 아닌 파일은 건너뛴다 — 타일은 이 수로 알린다(고른 수가 아니다, 조작 규칙 42). */
+export async function copyAssetFiles(
+  target: Parameters<typeof assetDragItemsForPath>[0],
+  copy: (project: string, paths: string[]) => Promise<{ count: number }>,
+): Promise<{ asked: number; copied: number }> {
+  const paths = assetDragItemsForPath(target).items.map((item) => item.path); // 미디어 최종 판별은 백엔드(허용 확장자)에서
+  if (paths.length === 0) throw new Error("복사할 파일이 없습니다");
+  const result = await copy(target.project, paths);
+  return { asked: paths.length, copied: result.count };
+}
+
 export function assetPreviewTarget(
   project: string,
   files: AssetNode[],

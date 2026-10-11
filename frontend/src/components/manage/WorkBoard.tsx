@@ -1,6 +1,6 @@
 // 작업 탭 컨테이너 — 전체 프로젝트의 작업을 병합해 보여주고, 노션식 칩 필터(프로젝트/에피소드/
 // 시퀀스/상태/생성자)+검색으로 좁힌다. 보드/테이블/캘린더에 데이터·핸들러를 주입한다.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
 import {
   addDisabledGen,
@@ -742,6 +742,17 @@ export function WorkBoard({
     () => visibleScope.filter((task) => matchTask(task, filters)),
     [filters, visibleScope],
   );
+  // 표에서 사라진 줄은 선택에서도 뺀다(조작 규칙 42). 선택은 id 집합이고 보기·공간이 바뀔 때만 비웠다 — 고른 뒤 검색·필터로 가려진 작업이
+  //  남아 보이는 것만 지우려던 [삭제]에 같이 지워졌고, 다시 읽어 없어진 작업이 남으면 삭제 자체가 "목록이 변경되었습니다"로 막혔다
+  //  (500개씩 나가는 삭제의 앞 묶음만 성공했을 때도). 그리기 전에 맞춘다 — 낡은 선택으로 [삭제]가 눌릴 틈이 없게.
+  useLayoutEffect(() => {
+    setSelected((current) => {
+      if (!current.size) return current;
+      const shown = new Set(filtered.map((task) => task.id));
+      const kept = [...current].filter((id) => shown.has(id));
+      return kept.length === current.size ? current : new Set(kept);
+    });
+  }, [filtered]);
 
   // 필터·검색·내 작업 보기 중에는 드래그 정렬을 막는다 — 숨겨진 작업과의 상대 순서를 알 수 없어
   // 부분 목록 재정렬이 전역 순서를 임의로 바꾸게 된다(합의 설계: 전체 스냅샷일 때만 저장).

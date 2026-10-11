@@ -437,6 +437,58 @@ it("생성 진행과 결과 도착 — 진행 표시가 상태를 따라 바뀌�
   expect(inCard("g2", ".linb-node")!.classList.contains("disabled")).toBe(false);
 });
 
+// 15회차(조작 규칙 42): '비활성 숨기기'는 그리기에서만 뺀다 — d 로 숨긴 카드가 선택에 남아, 다음에 고른 카드의 삭제·색·복사·끌기에 같이 걸렸다.
+const hideGray = async (on: boolean) => { await act(async () => { setBoardProps({ grayOn: on }); }); };
+const disable = async (...genIds: string[]) => {
+  fixture.data = { ...fixture.data, disabledIds: new Set(genIds) } as unknown as SceneGenDataApi; // d — 비활성 목록이 새 Set 으로 온다
+  await act(async () => { rerenderBoard(); });
+};
+it("비활성 숨기기 — d 로 가려진 카드는 선택에서 빠진다(다음에 고른 카드의 삭제에 같이 지워지지 않는다)", async () => {
+  await mountBoard({ grayOn: true }, { gen1: gen("gen1"), gen2: gen("gen2") });
+  await click(boardCard("g1"));
+  await disable("gen1"); // 숨기기가 켜져 있어 g1 은 그려지지 않는다
+  expect(boardCard("g1")).toBeNull();
+  await click(boardCard("g2"), { ctrlKey: true });
+  await press({ key: "Delete" });
+  expect(boardCard("g2")).toBeNull();
+  await hideGray(false);
+  expect(boardCard("g1")).not.toBeNull(); // 전엔 보이지 않는 g1 도 같이 지워졌다
+});
+
+it("비활성 숨기기 — 이미 숨어 있던 카드를 Ctrl+A 로 고른 것은, 다른 카드가 새로 가려져도 선택에 남는다(전체 선택은 숨은 카드까지다)", async () => {
+  await mountBoard({ grayOn: true }, { gen1: gen("gen1"), gen2: gen("gen2") });
+  await disable("gen1");
+  await press({ key: "a", ctrlKey: true }); // 숨은 g1 까지 전부
+  await disable("gen1", "gen2"); // g2 가 새로 가려졌다 — g2 만 선택에서 빠진다
+  await press({ key: "Delete" });
+  await hideGray(false);
+  expect(boardCard("g1")).toBeNull(); // Ctrl+A 로 고른 숨은 카드는 지워진다(전부터의 약속)
+  expect(boardCard("g2")).not.toBeNull(); // 방금 가려진 것은 지워지지 않는다
+  expect(boardCard("r1")).toBeNull(); // 보이던 나머지는 고른 대로 지워졌다
+});
+
+// 15회차(조작 규칙 42): 보드는 고른 결과 카드의 생성물을 App 의 선택바로 올리는데, 다시 올릴지를 id 로만 견줬다 — 고른 채로 공유를 풀거나
+//  등급을 바꿔도 선택바는 옛 객체를 쥐고 있어, [팀 공유]가 "공유할 항목이 없습니다"처럼 옛 상태로 대상을 가렸다.
+it("고른 카드의 자료가 바뀌면 선택바에 올린 생성물도 새것으로 바뀐다 — id 가 같아도. 자료가 그대로면 다시 올리지 않는다", async () => {
+  const onSelectionGens = vi.fn();
+  const shared = gen("gen1", { shared: true });
+  await mountBoard({ onSelectionGens }, { gen1: shared });
+  await click(boardCard("g1"));
+  expect(onSelectionGens).toHaveBeenLastCalledWith([shared]);
+  const calls = onSelectionGens.mock.calls.length;
+  // 다른 카드의 자료만 바뀌었다(자료 묶음은 새 객체, 고른 카드의 자료는 그대로) — App 을 다시 깨우지 않는다.
+  //  안 거르면 카드를 끄는 걸음·남의 생성 진행마다 선택바가 다시 그려진다.
+  const other = gen("gen2");
+  setGens({ gen1: shared, gen2: other });
+  await act(async () => { rerenderBoard(); });
+  expect(onSelectionGens).toHaveBeenCalledTimes(calls);
+  const unshared = { ...shared, shared: false }; // 카드의 S 로 공유를 풀었다 — 그 생성물의 자료가 새 객체로 온다
+  setGens({ gen1: unshared, gen2: other });
+  await act(async () => { rerenderBoard(); });
+  expect(onSelectionGens).toHaveBeenCalledTimes(calls + 1);
+  expect(onSelectionGens.mock.calls.at(-1)![0][0]).toBe(unshared); // 전엔 옛 객체(shared: true)가 남았다
+});
+
 it("서버 판정 도착 — 레퍼런스 카드에 '이 PC 에만' 표시가 달리고, 서버에 없으면 빨간 테두리가 된다", async () => {
   await mountBoard();
   expect(inCard("r1", ".scene-ref-offmark")).toBeNull();

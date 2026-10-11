@@ -3,6 +3,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { downloadOne } from "../../lib/download";
+import { flashMsg } from "../../lib/flash";
 import { useT } from "../../lib/i18n";
 import { reportSourceLocationError } from "../../lib/sourceLocationFeedback";
 import { TagEditor } from "../TagEditor";
@@ -58,7 +59,8 @@ export const AssetCell = memo(function AssetCell({
   // 네이티브 파일 드래그 시작 → 부모가 선택 상태를 보고 단일/다중(zip) DownloadURL 설정 + 마퀴 취소
   onExportDrag: (path: string, dt: DataTransfer) => void;
   // 다중 선택 복사 → 선택한 원본 이미지들을 OS 클립보드(파일 목록)에 올림(부모가 선택 전체를 앎)
-  onCopyFiles?: (path: string) => Promise<void>;
+  //  돌려주는 값 = 올리려던 수와 실제로 올라간 수(서버가 상한·미디어 아님으로 덜 올릴 수 있다)
+  onCopyFiles?: (path: string) => Promise<{ asked: number; copied: number }>;
 }) {
   const t = useT();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -165,6 +167,7 @@ export const AssetCell = memo(function AssetCell({
   //    → 제스처를 잃지 않으면서 fetch·변환을 비동기로 처리(권장 패턴).
   //  · 클립보드 이미지 쓰기는 image/png 만 안전 → png 아니면 canvas 로 변환.
   const [copyState, setCopyState] = useState<"idle" | "busy" | "ok" | "err">("idle");
+  const [copiedCount, setCopiedCount] = useState(0); // 방금 OS 클립보드에 실제로 올라간 파일 수(서버가 알려 준 값)
   const copyTimer = useRef<number | null>(null);
   useEffect(() => () => { if (copyTimer.current != null) clearTimeout(copyTimer.current); }, []);
   // 📋 클릭 후 '드래그로도' 첨부되게 하는 원본 data:URL. img.src 에 심어두면 드래그 시 파일로 실린다.
@@ -194,7 +197,15 @@ export const AssetCell = memo(function AssetCell({
       }
       setCopyState("busy");
       onCopyFiles(node.path)
-        .then(() => setCopyState("ok"))
+        .then((result) => {
+          setCopiedCount(result.copied);
+          setCopyState("ok");
+          // 고른 수보다 적게 올라갔으면 알린다(조작 규칙 42) — 서버는 한 번에 올리는 수에 상한이 있고(20개) 미디어가 아닌 파일은 건너뛴다.
+          //  전엔 그 수를 버리고 '고른 수만큼 복사됨'이라고 했다(21개를 고르면 20개만 올라가고 21개 복사됨).
+          if (result.copied < result.asked) {
+            flashMsg(`${result.asked}개 중 ${result.copied}개만 복사했습니다 — 한 번에 올릴 수 있는 수를 넘었거나, 올릴 수 없는 파일이 섞였습니다.`);
+          }
+        })
         .catch((err) => {
           setCopyState("err");
           // 실패 이유를 그대로 노출(서버 미재시작=엔드포인트 없음, 미디어 아님, PowerShell 오류 등 구분).
@@ -204,6 +215,7 @@ export const AssetCell = memo(function AssetCell({
       return;
     }
     setCopyState("busy");
+    setCopiedCount(1); // 한 장이다 — 끝난 표시가 남아 있는 동안 선택이 늘어도 '0개 복사됨'이 되지 않게(Codex 코드 리뷰)
     // 단일 이미지: 브라우저 클립보드(이미지 바이트) + 드래그용 data:URL.
     // 원본 1회 fetch → 두 소비자가 공유(클립보드용 PNG + 드래그용 data:URL). url=원본(같은 오리진이라 차단 없음)
     const blobP = fetch(url).then((r) => {
@@ -404,7 +416,7 @@ export const AssetCell = memo(function AssetCell({
               title={
                 selectedCount && selectedCount > 1
                   ? copyState === "ok"
-                    ? `${selectedCount}개 복사됨! 대화창에서 Ctrl+V`
+                    ? `${copiedCount}개 복사됨! 대화창에서 Ctrl+V`
                     : copyState === "err"
                       ? "복사 실패"
                       : `선택한 ${selectedCount}개 복사 → 대화창에서 Ctrl+V`

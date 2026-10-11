@@ -3002,7 +3002,7 @@ export function SceneBoard({
     });
   const onSelGensRef = useRef(onSelectionGens);
   onSelGensRef.current = onSelectionGens;
-  const lastSelSigRef = useRef<string>("");
+  const lastSelGensRef = useRef<Generation[]>([]);
   useEffect(() => {
     // 변형 팝업이 열려 있으면(그 자체 액션바가 있으니) 캔버스 선택바는 숨긴다 — 선택 자체는 유지.
     const gens = cardMenu
@@ -3014,9 +3014,12 @@ export function SceneBoard({
               !!c && c.kind === "generation" && !!c.genId && !!ownEntry(genData, c.genId)?.assets?.[0],
           )
           .map((c) => ownEntry(genData, c.genId!)!);
-    const sig = gens.map((g) => g.id).join(",");
-    if (sig === lastSelSigRef.current) return;
-    lastSelSigRef.current = sig;
+    // 같은 카드라도 자료가 바뀌었으면 다시 올린다(조작 규칙 42). 전엔 id 만 견줘, 고른 채로 공유를 풀거나 등급을 바꾼 카드가 App 의
+    //  선택바에 옛 객체로 남았다 — [팀 공유]가 "공유할 항목이 없습니다"처럼 옛 상태로 대상을 가렸다. 자료는 내용이 같으면 같은 객체라
+    //  (useSceneGenData 의 reconcileRecordState) 바뀌지 않은 동안에는 App 을 다시 깨우지 않는다.
+    const last = lastSelGensRef.current;
+    if (gens.length === last.length && gens.every((g, index) => g === last[index])) return;
+    lastSelGensRef.current = gens;
     onSelGensRef.current?.(gens);
   }, [selected, cards, genData, cardMenu]);
   useEffect(() => () => onSelGensRef.current?.([]), []); // 언마운트 → 선택바 비우기
@@ -3642,6 +3645,16 @@ export function SceneBoard({
       ),
     [grayOn, cards, disabledIds],
   );
+  // 방금 가려진 카드는 선택에서 뺀다(조작 규칙 42). 숨김은 그리기에서만 빼므로, d 로 숨긴 카드가 선택에 남아 다음에 고른 카드의
+  //  삭제·색·복사·끌기에 같이 걸렸다. **이미 숨어 있던** 카드를 Ctrl+A 로 고른 것은 건드리지 않는다(전체 선택은 숨은 카드까지다).
+  //  접힌 그룹의 멤버는 대상이 아니다 — 그 선택은 그룹 막대가 대신 보여 준다. 그리기 전에 맞춘다(낡은 선택으로 키가 나갈 틈이 없게).
+  const grayHiddenBeforeRef = useRef(grayHidden);
+  useLayoutEffect(() => {
+    const before = grayHiddenBeforeRef.current;
+    grayHiddenBeforeRef.current = grayHidden;
+    const kept = [...selectedRef.current].filter((id) => !grayHidden.has(id) || before.has(id));
+    if (kept.length !== selectedRef.current.size) setSelected(new Set(kept));
+  }, [grayHidden]);
   // 접힌 그룹의 멤버 카드 → 그 그룹. 접히면 멤버를 숨기고 연결은 그룹 막대로 브릿지한다.
   const collapsedMemberOf = useMemo(() => {
     const m = new Map<string, SceneGroup>();

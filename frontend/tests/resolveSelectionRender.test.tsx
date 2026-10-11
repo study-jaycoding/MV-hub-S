@@ -40,6 +40,7 @@ const relinkOnWorkspaceChange = vi.fn();
 const beginList = vi.fn(); // 목록 훅의 beginComposeList — 폴더 창을 열고 닫을 때 목록을 비우는지 본다
 let setStaleList: (on: boolean) => void; // 목록 훅의 staleList(닫은 직후 옛 첫 쪽을 보이는 중)를 시험이 켜고 끈다
 let setLoadingList: (on: boolean) => void; // 목록 훅의 loading(받는 중)
+let setLibraryGens: (next: Generation[]) => void; // 목록 훅의 gens — 다시 받아 목록이 바뀐 것을 시험이 만든다
 let startAuthPending = false; // 인증 훅을 '확인 중'으로 시작한다(새로 고친 직후) — 기본은 처음부터 끝난 상태
 let setAuthPending: (on: boolean) => void; // 인증 확인이 끝났다고 알린다
 let autoRefreshSnapshot: { paused?: boolean } | null = null; // 자동 새로고침 훅이 받은 인자
@@ -461,6 +462,7 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
     useGenerationLibraryData: (args: NonNullable<typeof librarySnapshot>) => {
       librarySnapshot = args;
       const [gens, setGens] = useState<Generation[]>([]);
+      setLibraryGens = setGens;
       const [location, setLocation] = useState<{ tab: "my" | "team"; value: GenerationLocation } | null>(null);
       const [projects, setProjects] = useState(initialProjects);
       const [staleList, setStale] = useState(false);
@@ -823,6 +825,7 @@ const pressEscapeInPeek = () => act(() => {
 it.each(["my", "team"])("App %s 탭: 폴더 이름표를 누르면 조회가 그 폴더로 바뀌고 격자를 창에 그린다 — 사이드바 필터·다음 생성 위치는 그대로", async (tab) => {
   localStorage.setItem("ch.lib.generationScopeV1", JSON.stringify({ project_id: "generation-project", folder_path: "next/clip" }));
   await mountApp(tab);
+  act(() => setLibraryGens([libraryGeneration("target")])); // 고를 카드는 목록에 있다(목록에 없는 id 는 선택에서 빠진다)
   beginList.mockClear();
   act(() => sidebarSnapshot!.onChange({ search: "cat", creator_uid: "someone" })); // 창에서는 안 보이는 조건
   act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
@@ -909,6 +912,22 @@ it("App: 폴더 창을 닫은 직후 옛 첫 쪽을 보이는 동안에는 고�
   expect(autoRefreshSnapshot!.paused).toBe(false);
   act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
   expect(gridSnapshot!.selectedIds).toEqual(new Set(["target"]));
+});
+
+// 15회차(조작 규칙 42): 선택은 id 집합이라, 목록에서 빠진 카드(다른 폴더로 담음·다른 창의 삭제·자동 새로고침)가 선택에 남았다 —
+//  남은 카드를 Ctrl+클릭해 삭제하면 보이지 않는 그 카드까지 지워졌다(삭제·복원·담기·색·d 는 선택 id 를 그대로 쓴다).
+it("App: 목록에서 사라진 카드는 선택에서도 빠진다 — 남은 카드에 건 다음 조작에 섞이지 않는다", async () => {
+  await mountApp("my");
+  act(() => setLibraryGens([libraryGeneration("a"), libraryGeneration("b"), libraryGeneration("c")]));
+  act(() => gridSnapshot!.onSelectedChange(new Set(["a", "c"])));
+  expect(gridSnapshot!.selectedIds).toEqual(new Set(["a", "c"]));
+  act(() => setLibraryGens([libraryGeneration("b"), libraryGeneration("c")])); // a 가 목록에서 빠졌다
+  expect(gridSnapshot!.selectedIds).toEqual(new Set(["c"])); // 전엔 a 가 남아 '2개 선택'이었다
+  act(() => gridSnapshot!.onSelectedChange(new Set([...gridSnapshot!.selectedIds, "b"]))); // 남은 카드를 Ctrl+클릭
+  expect(gridSnapshot!.selectedIds).toEqual(new Set(["b", "c"]));
+  // 같은 카드가 새 객체로 다시 와도(다시 받기) 선택은 그대로다 · 목록이 늘어도(더 보기) 그대로다
+  act(() => setLibraryGens([libraryGeneration("b"), libraryGeneration("c"), libraryGeneration("d")]));
+  expect(gridSnapshot!.selectedIds).toEqual(new Set(["b", "c"]));
 });
 
 it("App: 폴더 창을 닫으면 본 목록이 조작 가능해진 뒤 초점이 격자로 돌아온다 — 남의 초점은 빼앗지 않는다", async () => {
@@ -1010,6 +1029,7 @@ it("App: 폴더 창을 닫으면 본 목록이 조작 가능해진 뒤 초점이
 
 it("App 작업 공간: 바깥 막·✕ 로 닫히고, 보던 위치가 바뀌거나 부분 수정으로 넘어가도 닫힌다 — 휴지통 보기에는 이름표가 없다", async () => {
   const send = await mountApp("my");
+  act(() => setLibraryGens([libraryGeneration("target")])); // 고를 카드는 목록에 있다
   // 창이 없을 때의 부분 수정은 목록을 건드리지 않는다(닫기는 열려 있을 때만 일한다 — 아니면 부분 수정마다 본 목록이 비워진다)
   beginList.mockClear();
   act(() => { window.dispatchEvent(new CustomEvent("ch:partial-edit", { detail: { genId: "target" } })); });
@@ -1084,6 +1104,7 @@ it("App 작업 공간: 바깥 막·✕ 로 닫히고, 보던 위치가 바뀌거
   await settle();
 
   // 프롬프트를 숨기면(Ctrl+K) 선택 막대는 화면 위쪽에 뜬다 — 그 막대도 창이 떠 있는 동안에는 그리지 않는다
+  act(() => setLibraryGens([libraryGeneration("target")])); // 위의 따라가기가 목록을 other 들로 갈아 끼웠다 — 고를 카드를 다시 둔다
   act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true })); });
   act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
   expect(document.querySelector(".selbar-top-float")).not.toBeNull();
@@ -1304,6 +1325,7 @@ it("App 공유·리뷰: 폴더를 고르면 바로 아래 폴더마다 카드 �
   const setFolderCover = vi.fn(() => new Promise<void>((resolve) => { saved = resolve; }));
   localStorage.setItem("ch.lib.cutView", "0"); // 한 장씩 보기로 시작
   await mountTeamFolder({ folderCards, setFolderCover });
+  act(() => setLibraryGens([libraryGeneration("target")])); // 고를 카드는 목록에 있다
 
   // 한 장씩 보는 동안에는 받지 않는다 — 전환 단추만 보인다
   expect(folderCards).not.toHaveBeenCalled();

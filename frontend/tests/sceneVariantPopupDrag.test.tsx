@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // 캔버스 '생성 결과' 창의 끌기 — 창은 라이브러리 카드를 쓰는데, 카드는 자기 id 하나만 싣는다. 사이드바 폴더에 '고른 묶음'을
 // 한 번에 담으려면 창이 묶음 전체(generationList)를 실어야 한다. 카드의 그립은 dragstart 전파를 멈추므로 캡처 단계에서 싣는다.
-import { act, type ComponentProps } from "react";
+import { act, type ComponentProps, type SetStateAction } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SceneVariantPopup } from "../src/components/scene/SceneVariantPopup";
@@ -135,4 +135,25 @@ it("끄는 중에 창이 닫히면 기다리던 한 박자를 버린다 — 닫�
   } finally {
     vi.useRealTimers();
   }
+});
+
+// 15회차(Codex 전수 검토): 전부 지우면 창을 닫는데, 닫기가 '지금 열린 창'을 닫았다 — 지우는 응답을 기다리는 사이 이 창을 닫고 다른 카드의
+//  결과 창을 열었으면, 앞 창의 지우기가 끝나는 순간 새로 연 창이 닫혔다.
+it("전부 지운 창은 닫힌다 — 기다리는 사이 다른 카드의 창을 열었으면 그 창은 닫지 않는다", async () => {
+  let open: string | null = "card"; // SceneBoard 의 cardMenu(결과 창이 열린 카드)
+  const setCardMenu = (next: SetStateAction<string | null>) => { open = typeof next === "function" ? next(open) : next; };
+  let finish!: (ids: string[]) => void;
+  const onVariantDelete = vi.fn(() => new Promise<string[]>((resolve) => { finish = resolve; }));
+  const base = props(["a", "b", "c"]);
+  act(() => root.render(<SceneVariantPopup {...base} actions={{ ...base.actions, setCardMenu, onVariantDelete }} />));
+  const pressDelete = () => act(() => host.querySelector<HTMLButtonElement>(".scene-varwin .sb-del")!.click());
+  pressDelete();
+  expect(onVariantDelete).toHaveBeenCalledTimes(1);
+  open = "other-card"; // 응답 전에 이 창을 닫고 다른 카드의 창을 열었다
+  await act(async () => { finish(["a", "b", "c"]); });
+  expect(open).toBe("other-card"); // 전엔 null — 새로 연 창이 닫혔다
+  open = "card"; // 그대로 떠 있었으면 닫힌다
+  pressDelete();
+  await act(async () => { finish(["a", "b", "c"]); });
+  expect(open).toBeNull();
 });
