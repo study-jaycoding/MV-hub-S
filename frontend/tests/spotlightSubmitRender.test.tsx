@@ -91,6 +91,7 @@ function Harness({ options }: { options: Props }) {
     paramsLoading: false,
     paramsModel: "seedance_2_5",
     trayRefs: tenReferences(),
+    trayReady: true,
     tunable: [],
     workspace: { scope: "personal", id: null, name: null },
     setBusy,
@@ -168,6 +169,20 @@ describe("실제 프롬프트 제출: 캔버스 연속 생성과 응답 후 편�
     expect(history.current).toHaveLength(1);
     expect(history.current[0].text).toBe(sourceText);
     expect(errors.filter(Boolean)).toEqual([]);
+  });
+
+  // 2026-10-11 Codex 코드 리뷰: 묶인 카드(씬)가 막 바뀐 한 박자에는 트레이가 아직 앞 카드의 레퍼런스다 — 그때의 제출은 앞 카드의
+  //  레퍼런스로 나갔다(씬을 바꾼 직후에는 대상 카드가 없어 캔버스 연결 없는 일반 생성으로). 글 없이 레퍼런스만 있는 요청도 정상 요청이라
+  //  '빈 입력' 검사가 막지 못한다.
+  it("트레이가 지금의 묶임에 맞춰지기 전(trayReady 거짓)의 제출은 나가지 않는다 — 글이 없고 앞 카드의 레퍼런스만 남은 경우도", async () => {
+    await mount({ trayReady: false, canvasTarget: null }, "");
+    await run();
+    expect(prepareCreate).not.toHaveBeenCalled();
+    expect(errors).toEqual([]); // 오류 문구도 띄우지 않는다 — 그 키는 지나간 화면의 것이다
+
+    await rerender({ trayReady: true }); // 트레이가 맞춰진 뒤(여기서는 같은 레퍼런스로)에는 평소대로
+    await run();
+    expect(prepareCreate).toHaveBeenCalledTimes(1);
   });
 
   it("라이브러리는 정상 성공하면 기존대로 입력창을 비운다", async () => {
