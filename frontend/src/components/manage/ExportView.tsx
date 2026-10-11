@@ -220,8 +220,10 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
     try {
       const r = await manageApi.saveFinalsCancel(pid, progress.run);
       if (!r.ok) setCancelling(false); // 이미 끝났거나 다른 저장이다 — 단추를 '멈추는 중'으로 붙잡아 두지 않는다
-    } catch {
+    } catch (reason) {
       setCancelling(false); // 실패하면 다시 누를 수 있게(저장은 계속 돈다)
+      // 알린다(조작 규칙 41) — 전엔 단추만 돌아와, 멈춘 것인지 못 멈춘 것인지 알 수 없었다
+      setErr(`저장을 멈추지 못했습니다 — 저장은 계속 돌고 있습니다. 다시 눌러 주세요. ${String(reason).replace(/^Error:\s*/, "")}`);
     }
   };
 

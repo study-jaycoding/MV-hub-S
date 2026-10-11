@@ -38,6 +38,7 @@ import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { useCustomEvent } from "../../lib/useCustomEvent";
 import { useDragEndReset, useHandleRelease } from "../../lib/useDragEndReset";
 import { useT } from "../../lib/i18n";
+import { flashMsg } from "../../lib/flash";
 import { loadJSON, saveJSON } from "../../lib/storage";
 import { reconcileArrayState, reconcileValueState } from "../../lib/stateReconciliation";
 import {
@@ -235,17 +236,26 @@ export function ProjectSection({
   useHandleRelease(dragArmed, () => setDragArmed(false)); // 손잡이 밖에서 떼거나 누른 채 창을 떠나도 내린다
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
+  // 순서 저장이 도는 동안에는 다음 끌기를 받지 않는다(조작 규칙 39) — 겹친 두 저장이 다 실패하면 둘째는 '저장 안 된 첫째의 순서'로 되돌린다.
+  const orderSavingRef = useRef(false);
   const dropAt = (toIdx: number) => {
     const from = dragIdx;
     setDragArmed(false);
     setDragIdx(null);
     setOverIdx(null);
-    if (from === null || from === toIdx) return;
+    if (from === null || from === toIdx || orderSavingRef.current) return;
     const next = order.slice();
     const [moved] = next.splice(from, 1);
     next.splice(toIdx, 0, moved);
+    const previous = order;
     setOrder(next);
-    api.reorderProjects(next.map((project) => project.id)).catch(() => {});
+    orderSavingRef.current = true;
+    // 저장에 실패하면 끌기 전 순서로 되돌리고 알린다(조작 규칙 41) — 전엔 실패를 삼켜, 새로 고칠 때까지 저장 안 된 순서가 보였다.
+    //  그사이 목록이 다시 그려졌으면(프로젝트가 생기거나 지워짐) 그것을 둔다.
+    api.reorderProjects(next.map((project) => project.id)).catch(() => {
+      setOrder((current) => (current === next ? previous : current));
+      flashMsg(tr("프로젝트 순서를 저장하지 못했습니다 — 원래 순서로 되돌렸습니다."));
+    }).finally(() => { orderSavingRef.current = false; });
   };
   // 프로젝트 접기(▾/▸) — 상시 폴더 트리를 프로젝트 단위로 접었다 펼 수 있게. 영속.
   const [collapsed, setCollapsed] = useState<Set<string>>(

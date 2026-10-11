@@ -159,8 +159,9 @@ export function ProjectManagerPanel({
           })
           .catch(() => {});
       })
-      .catch(() => {
-        if (isLatest()) setProjects([]);
+      .catch((reason) => {
+        // 받아 둔 목록은 두고 알린다(조작 규칙 41) — 전엔 목록을 비워, 다시 읽기에 한 번 실패하면 프로젝트가 전부 '없음'으로 보였다.
+        if (isLatest()) setActMsg(`프로젝트 목록을 불러오지 못했습니다. ${String(reason).replace(/^Error:\s*/, "")}`);
       });
   };
   useEffect(() => {
@@ -441,11 +442,19 @@ export function ProjectManagerPanel({
       loadProjectFolderTree(pid);
     }
   };
+  // 실패하면 알린다(조작 규칙 41) — 전엔 받는 곳이 없어 단추를 눌러도 아무 일도 안 일어난 것처럼 보였다(보관·삭제·순서).
+  const failed = (what: string, reason: unknown) => setActMsg(`${what} ${String(reason).replace(/^Error:\s*/, "")}`);
   const toggleArchive = async (p: Project) => {
-    await api.updateProject(p.id, { archived: !p.archived });
+    try {
+      await api.updateProject(p.id, { archived: !p.archived });
+    } catch (reason) {
+      failed(p.archived ? "보관을 해제하지 못했습니다." : "보관하지 못했습니다.", reason);
+      return;
+    }
     loadProjects();
   };
   const [dragArmed, setDragArmed] = useState(false);
+  const orderSavingRef = useRef(false);
   useHandleRelease(dragArmed, () => setDragArmed(false)); // 손잡이 밖에서 떼거나 누른 채 창을 떠나도 내린다
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
@@ -454,20 +463,32 @@ export function ProjectManagerPanel({
     setDragArmed(false);
     setDragIdx(null);
     setOverIdx(null);
-    if (from === null || from === toIdx) return;
+    // 순서 저장이 도는 동안에는 다음 끌기를 받지 않는다(조작 규칙 39) — 겹친 두 저장이 다 실패하면 둘째는 '저장 안 된 첫째의 순서'로 되돌린다
+    if (from === null || from === toIdx || orderSavingRef.current) return;
+    const previous = projects;
     const next = projects.slice();
     const [moved] = next.splice(from, 1);
     next.splice(toIdx, 0, moved);
     setProjects(next);
+    orderSavingRef.current = true;
     try {
       await api.reorderProjects(next.map((x) => x.id));
-    } catch {
-      loadProjects();
+    } catch (reason) {
+      // 끌기 전 순서로 되돌리고 알린다 — 그사이 목록이 다시 그려졌으면(다른 변경) 그것을 둔다
+      setProjects((current) => (current === next ? previous : current));
+      failed("순서를 저장하지 못했습니다 — 원래 순서로 되돌렸습니다.", reason);
+    } finally {
+      orderSavingRef.current = false;
     }
   };
   const deleteProject = async (p: Project) => {
     if (!window.confirm(`프로젝트 '${p.name}' 삭제? 결과물은 미분류로 돌아갑니다.`)) return;
-    await api.deleteProject(p.id);
+    try {
+      await api.deleteProject(p.id);
+    } catch (reason) {
+      failed(`'${p.name}' 을(를) 삭제하지 못했습니다.`, reason);
+      return;
+    }
     if (activeMembersProjectId === p.id) setActiveMembersProjectId("");
     loadProjects();
   };

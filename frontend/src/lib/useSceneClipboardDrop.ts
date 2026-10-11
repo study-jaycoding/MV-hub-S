@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from "react";
 import type { Dispatch, DragEvent as ReactDragEvent, MutableRefObject, SetStateAction } from "react";
 import { api } from "../api";
 import { DRAG_TYPES } from "./dragTypes";
+import { flashMsg } from "./flash";
 import { dataTransferHasFiles, filesFromDataTransfer } from "./media";
 import {
   appendSceneReferenceCards,
@@ -163,6 +164,8 @@ export function useSceneClipboardDrop(
         }
       } catch (error) {
         console.warn("[scene] 외부 파일 레퍼런스 추가 실패", error);
+        // 알린다(조작 규칙 41) — 전엔 콘솔에만 남아, 놓은 파일이 들어오는 중인지·못 쓰는 파일인지·실패했는지 화면으로는 알 수 없었다
+        flashMsg("파일을 캔버스에 넣지 못했습니다 — 다시 놓아 주세요.");
       }
     },
     [addReferenceCards],
@@ -390,7 +393,10 @@ export function useSceneClipboardDrop(
               },
             ]);
           })
-          .catch((error) => console.warn("[scene] 캡쳐 붙여넣기 실패", error));
+          .catch((error) => {
+            console.warn("[scene] 캡쳐 붙여넣기 실패", error);
+            flashMsg("붙여 넣은 그림을 캔버스에 넣지 못했습니다 — 다시 붙여 넣어 주세요.");
+          });
         return;
       }
 

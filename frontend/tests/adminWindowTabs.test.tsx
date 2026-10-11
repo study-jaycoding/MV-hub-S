@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   adminList: vi.fn(), latestRelease: vi.fn(), packages: vi.fn(),
   setMemberGlobalRoles: vi.fn(), setSharedServerUrl: vi.fn(), projectMembers: vi.fn(), setProjectRoles: vi.fn(),
   getPlanning: vi.fn(), projectFolder: vi.fn(), setAccountStatus: vi.fn(),
+  reorderProjects: vi.fn(), updateProject: vi.fn(), deleteProject: vi.fn(), sharedServerDeElevate: vi.fn(),
 }));
 vi.mock("../src/api", () => ({ api: mocks }));
 vi.mock("../src/lib/manageApi", () => ({ manageApi: mocks }));
@@ -461,6 +462,114 @@ it("프로젝트 표의 순서 손잡이 — 손잡이 밖에서 떼면 줄이 �
   expect(row.draggable).toBe(true);
   await act(async () => { document.body.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); });
   expect(row.draggable).toBe(false);
+});
+
+// ── 14회차(조작 규칙 41): 조작이 실패했으면 화면이 성공한 것처럼 남지 않는다 ──
+const twoProjects = () => [
+  { id: "p", name: "첫째", workspace_id: "ws", workspace_name: "WS", kind: "team" },
+  { id: "q", name: "둘째", workspace_id: "ws", workspace_name: "WS", kind: "team" },
+];
+const projectNames = () => [...host.querySelectorAll(".admin-table .admin-pname-text")].map((node) => node.textContent);
+const projectRow = (name: string) =>
+  [...host.querySelectorAll<HTMLTableRowElement>(".admin-table tr")].find((tr) => tr.querySelector(".admin-pname-text")?.textContent === name)!;
+const dragProject = async (from: string, to: string) => {
+  await act(async () => { projectRow(from).querySelector(".proj-drag-handle")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+  await act(async () => { projectRow(from).dispatchEvent(Object.assign(new Event("dragstart", { bubbles: true }), { dataTransfer: {} })); });
+  await act(async () => { projectRow(to).dispatchEvent(Object.assign(new Event("drop", { bubbles: true, cancelable: true }), { dataTransfer: {} })); });
+};
+
+it("프로젝트 표의 순서 — 저장에 실패하면 끌기 전 순서로 되돌리고 알린다. 그사이 목록을 다시 읽었으면 그것을 둔다", async () => {
+  mocks.projects.mockResolvedValue({ projects: twoProjects() });
+  let fail!: (reason: Error) => void;
+  const heldSave = () => new Promise((_, reject) => { fail = reject; });
+  mocks.reorderProjects.mockReturnValueOnce(heldSave());
+  await mount();
+  await clickTab("프로젝트");
+  await dragProject("둘째", "첫째");
+  expect(projectNames()).toEqual(["둘째", "첫째"]); // 화면은 먼저 바뀐다
+  expect(mocks.reorderProjects).toHaveBeenCalledExactlyOnceWith(["q", "p"]);
+  // 저장이 도는 동안의 다음 끌기는 받지 않는다 — 겹친 두 저장이 다 실패하면 둘째는 '저장 안 된 첫째의 순서'로 되돌린다(Codex 코드 리뷰)
+  await dragProject("첫째", "둘째");
+  expect(projectNames()).toEqual(["둘째", "첫째"]);
+  expect(mocks.reorderProjects).toHaveBeenCalledTimes(1);
+  await act(async () => { fail(new Error("502: 서버에 닿지 않습니다")); });
+  await settle();
+  expect(projectNames()).toEqual(["첫째", "둘째"]); // 전엔 실패하면 목록을 다시 읽었고, 그것도 실패하면 목록이 비었다
+  expect(host.textContent).toContain("순서를 저장하지 못했습니다 — 원래 순서로 되돌렸습니다. 502: 서버에 닿지 않습니다");
+  // 저장되면 그대로다
+  mocks.reorderProjects.mockResolvedValueOnce({ ok: true });
+  await dragProject("둘째", "첫째");
+  await settle();
+  expect(projectNames()).toEqual(["둘째", "첫째"]);
+  // 저장을 기다리는 사이에 목록을 다시 읽었다(보관) — 실패해도 옛 순서로 덮지 않는다
+  mocks.reorderProjects.mockReturnValueOnce(heldSave());
+  await dragProject("첫째", "둘째");
+  mocks.updateProject.mockResolvedValueOnce({});
+  mocks.projects.mockResolvedValue({ projects: [...twoProjects(), { id: "r", name: "셋째", workspace_id: "ws", workspace_name: "WS", kind: "team" }] });
+  await act(async () => { projectRow("둘째").querySelector<HTMLButtonElement>(".admin-pact-archive")!.click(); });
+  await settle();
+  expect(projectNames()).toEqual(["첫째", "둘째", "셋째"]);
+  await act(async () => { fail(new Error("offline")); });
+  await settle();
+  expect(projectNames()).toEqual(["첫째", "둘째", "셋째"]);
+});
+
+it("프로젝트 보관·삭제 — 실패하면 알리고 목록은 다시 읽지 않는다(전엔 받는 곳이 없어 눌러도 아무 일도 없는 것처럼 보였다)", async () => {
+  await mount();
+  await clickTab("프로젝트");
+  const lists = mocks.projects.mock.calls.length;
+  mocks.updateProject.mockRejectedValueOnce(new Error("403: 권한이 없습니다"));
+  await act(async () => { host.querySelector<HTMLButtonElement>(".admin-pact-archive")!.click(); });
+  await settle();
+  expect(mocks.updateProject).toHaveBeenCalledExactlyOnceWith("p", { archived: true });
+  expect(host.textContent).toContain("보관하지 못했습니다. 403: 권한이 없습니다");
+  vi.stubGlobal("confirm", vi.fn(() => true));
+  mocks.deleteProject.mockRejectedValueOnce(new Error("500: boom"));
+  await act(async () => { host.querySelector<HTMLButtonElement>('.admin-pactions button[title="삭제"]')!.click(); });
+  await settle();
+  expect(host.textContent).toContain("'뻘뻘뻘' 을(를) 삭제하지 못했습니다. 500: boom");
+  expect(projectNames()).toEqual(["뻘뻘뻘"]);
+  expect(mocks.projects.mock.calls.length).toBe(lists);
+});
+
+it("프로젝트 목록 다시 읽기에 실패해도 받아 둔 목록은 그대로 두고 알린다(전엔 프로젝트가 전부 '없음'으로 보였다)", async () => {
+  await mount();
+  await clickTab("프로젝트");
+  mocks.updateProject.mockResolvedValueOnce({});
+  mocks.projects.mockRejectedValueOnce(new Error("502: 서버에 닿지 않습니다"));
+  await act(async () => { host.querySelector<HTMLButtonElement>(".admin-pact-archive")!.click(); }); // 보관은 됐고, 그 뒤의 다시 읽기가 실패한다
+  await settle();
+  expect(projectNames()).toEqual(["뻘뻘뻘"]);
+  expect(host.querySelector(".admin-empty")).toBeNull();
+  expect(host.textContent).toContain("프로젝트 목록을 불러오지 못했습니다. 502: 서버에 닿지 않습니다");
+});
+
+it("슈퍼 관리자 해제(🔑) — 해제를 확인하지 못했으면 열쇠를 켜진 채 두고 알린다(상태를 다시 읽다 실패해 '해제됨'으로 그리지 않는다)", async () => {
+  const status = (elevated: boolean) => ({
+    url: "http://server:8010", server_name: "MV", is_admin: true, elevated, elevated_as: elevated ? "jay@mv.com" : null,
+    super_admin_expires_at: elevated ? Math.floor(Date.now() / 1000) + 600 : null,
+  });
+  mocks.sharedServerStatus.mockResolvedValue(status(true));
+  const alerts = vi.fn();
+  vi.stubGlobal("alert", alerts);
+  await mount();
+  const key = () => host.querySelector<HTMLButtonElement>(".admin-key")!;
+  expect(key().classList.contains("on")).toBe(true);
+  const lookups = mocks.sharedServerStatus.mock.calls.length;
+  mocks.sharedServerStatus.mockRejectedValue(new Error("502")); // 서버에 닿지 않는다 — 상태 조회도 실패한다
+  mocks.sharedServerDeElevate.mockRejectedValueOnce(new Error("502"));
+  await act(async () => { key().click(); });
+  await settle();
+  expect(alerts).toHaveBeenCalledExactlyOnceWith("슈퍼 관리자 해제를 확인하지 못했습니다 — 다시 눌러 주세요.");
+  expect(key().classList.contains("on")).toBe(true); // 전엔 여기서 꺼졌다 — 요청은 닿지 않았는데 화면만 꺼진다
+  expect(mocks.sharedServerStatus.mock.calls.length).toBe(lookups);
+  // 해제되면 상태를 다시 읽어 끈다
+  mocks.sharedServerDeElevate.mockResolvedValueOnce({});
+  mocks.sharedServerStatus.mockResolvedValue(status(false));
+  await act(async () => { key().click(); });
+  await settle();
+  expect(key().classList.contains("on")).toBe(false);
+  expect(alerts).toHaveBeenCalledTimes(1);
 });
 
 it("공유 서버 이름·주소 저장 — 저장 중에는 다시 보내지 않고 두 칸을 잠근다(늦은 응답이 고쳐 친 이름을 덮지 않게)", async () => {

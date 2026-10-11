@@ -124,8 +124,9 @@ export function useAssetProjectData({
     if (metaProjectRef.current) metaCacheRef.current[metaProjectRef.current] = meta;
   }, [meta]);
 
-  const reloadMeta = useCallback(async (targetProject = project) => {
-    if (!targetProject) return;
+  /** 메타를 서버에서 다시 받는다. 돌려주는 값 = 받았는가 — 저장 실패 뒤 '서버 값으로 되돌렸다'고 알리는 쪽이 정말 되돌렸는지 본다(조작 규칙 41). */
+  const reloadMeta = useCallback(async (targetProject = project): Promise<boolean> => {
+    if (!targetProject) return false;
     seedProject(targetProject);
     const cached = metaCacheRef.current[targetProject];
     // 캐시 즉시 표시는 '지금 보고 있는' 프로젝트일 때만 — 아니면 미러 이펙트가 현재 프로젝트 캐시를 오염시킨다.
@@ -142,11 +143,13 @@ export function useAssetProjectData({
         metaProjectRef.current = targetProject;
         setMeta((prev) => reconcileRecordState(prev, fresh));
       }
+      return true;
     } catch {
       if (!cached && projectRef.current === targetProject) {
         metaProjectRef.current = targetProject;
         setMeta((prev) => reconcileRecordState(prev, {}));
       }
+      return false;
     }
   }, [project]);
 

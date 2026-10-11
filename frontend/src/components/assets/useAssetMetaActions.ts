@@ -13,7 +13,7 @@ interface Params {
   activeTags: Set<string>;
   setMeta: Dispatch<SetStateAction<Record<string, AssetMeta>>>;
   setActiveTags: Dispatch<SetStateAction<Set<string>>>;
-  reloadMeta: (targetProject?: string) => Promise<void>; // 서버 상태 재조회(가드·캐시 있는 경로)
+  reloadMeta: (targetProject?: string) => Promise<boolean>; // 서버 상태 재조회(가드·캐시 있는 경로) — 돌려주는 값 = 받았는가
 }
 
 export function useAssetMetaActions({
@@ -53,29 +53,38 @@ export function useAssetMetaActions({
     });
 
   // 서버 상태로 되돌림 — 가드된 reloadMeta 로 위임(전환 중이면 딴 프로젝트 화면/캐시를 안 덮는다).
-  const reconcile = () => reloadMeta(project);
+  const reconcile = (): Promise<void> => reloadMeta(project).then(() => undefined);
   const mutationQueuesRef = useRef(new Map<string, ReturnType<typeof createMutationQueue>>());
   const enqueueSave = (operation: () => Promise<unknown>) => {
     let queue = mutationQueuesRef.current.get(project);
     if (!queue) {
       const targetProject = project;
-      queue = createMutationQueue(async () => {
+      // 실패한 저장이 있으면 화면을 서버 값으로 되돌려야 한다 — 그 빚(owed). 저장 묶음이 끝날 때마다(성공·실패 모두) 갚을 것이 있나 본다.
+      let owed = false;
+      const settle = async (failed: boolean) => {
+        if (failed) owed = true;
+        if (!owed) return;
         const revisionBeforeReload = mutationRevisionRef.current.get(targetProject) || 0;
-        await reloadMeta(targetProject);
-        // 재조회가 진행되는 동안 새 편집이 들어오면 그 낙관적 화면을 다시 복원한다.
-        // 새 저장 요청은 같은 큐에서 재조회 뒤 실행되므로 서버도 곧 같은 순서로 따라온다.
-        if (
-          currentProjectRef.current === targetProject &&
-          (mutationRevisionRef.current.get(targetProject) || 0) !== revisionBeforeReload
-        ) {
+        const restored = await reloadMeta(targetProject);
+        if ((mutationRevisionRef.current.get(targetProject) || 0) !== revisionBeforeReload) {
+          // 다시 읽는 사이에 새 편집이 들어왔다 — 그 낙관적 화면을 지킨다(그 저장은 같은 큐에서 이 뒤에 나간다). 다만 그 사본에는
+          //  **실패한 값도 들어 있어** 아직 되돌린 것이 아니다: 빚을 남겨 두고, 그 저장이 끝난 뒤(여기가 다시 불린다) 다시 읽어 갚는다.
+          //  전엔 여기서 "서버 상태로 되돌렸습니다"라고 했고, 뒤의 저장이 성공하면 다시 읽지 않아 실패한 값이 화면에 남았다
+          //  (조작 규칙 41 — Codex 코드 리뷰).
           const optimistic = optimisticMetaRef.current.get(targetProject);
-          if (optimistic) {
+          if (optimistic && currentProjectRef.current === targetProject) {
             metaRef.current = optimistic;
             setMeta(optimistic);
           }
+          return;
         }
-        flashMsg("변경 적용 실패 — 서버 상태로 되돌렸습니다");
-      });
+        owed = false;
+        // 되돌리려던 조회까지 실패했으면(서버에 닿지 않는다) '되돌렸다'고 하지 않는다 — 화면에는 저장 안 된 값이 남아 있다.
+        flashMsg(restored
+          ? "변경 적용 실패 — 서버 상태로 되돌렸습니다"
+          : "변경 적용 실패 — 서버에 닿지 않아 되돌리지도 못했습니다. 화면의 값은 저장되지 않았습니다(다시 열면 서버 값이 보입니다).");
+      };
+      queue = createMutationQueue(() => settle(true), () => settle(false));
       mutationQueuesRef.current.set(targetProject, queue);
     }
     void queue.enqueue(operation);

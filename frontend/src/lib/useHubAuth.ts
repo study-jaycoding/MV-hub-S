@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, getAuthToken, setAuthToken } from "../api";
 import { APP_EVENTS } from "./appEvents";
+import { flashMsg } from "./flash";
 import { clearPersonalSettings } from "./personalSettings";
 import { loadString, saveString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
@@ -235,15 +236,24 @@ export function useHubAuth() {
     };
   }, [account, authConfig?.auth_enabled]);
 
-  const logout = useCallback(async () => {
+  /** 로그아웃한다. 돌려주는 값 = 로그아웃됐는가(부르는 쪽이 먼저 비운 화면을 실패 때 되살린다). */
+  const logout = useCallback(async (): Promise<boolean> => {
     if (!authConfig?.auth_enabled) {
-      await api.sharedServerLogout().catch(() => {});
+      try {
+        await api.sharedServerLogout();
+      } catch {
+        // 실패했으면 새로 고치지 않고 알린다(조작 규칙 41) — 전엔 실패를 삼키고 새로 고쳐, 허브에 세션이 남아 있어 로그인 화면 없이
+        //  같은 계정으로 말없이 돌아왔다(로그아웃된 줄 안다).
+        flashMsg("로그아웃하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
+        return false;
+      }
       window.location.reload();
-      return;
+      return true;
     }
     api.logout().catch(() => {});
     setAuthToken(null);
     setAccount(null);
+    return true;
   }, [authConfig?.auth_enabled]);
 
   // 설정을 받기 전에는 준비 안 됨 — 전에는 그때도 참이라 목록(3.38MB 급)·통계·패싯·프로젝트를 한 번 먼저 받았다가 계정이 정해지면
