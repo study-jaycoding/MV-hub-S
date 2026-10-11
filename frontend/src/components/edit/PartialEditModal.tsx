@@ -653,7 +653,8 @@ export function PartialEditModal({
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
         e.stopPropagation();
-        setItems((p) => p.slice(0, -1));
+        // 다시 하기(Ctrl+Shift+Z)는 이 창에 없다 — 받지 않는다. Shift 를 가리지 않아, 다시 하려던 키가 획을 하나 더 지웠다(조작 규칙 44).
+        if (!e.shiftKey && !e.altKey) setItems((p) => p.slice(0, -1));
       } else if (e.key === "[") {
         e.stopPropagation();
         setBrushSize((s) => Math.max(4, s - 8));

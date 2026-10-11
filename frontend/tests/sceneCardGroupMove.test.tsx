@@ -1656,8 +1656,9 @@ it("그룹 크기 손잡이를 누르기만 했을 때의 밖 갱신은 그대�
   const wider = { id: "gA", name: "gA", cardIds: ["a1"], rect: { x: 66, y: 44, w: 550, h: 330 } };
   await show([textCard("a1", 110), textCard("b1", 1100)], [wider]); // 밖에서 폭을 늘렸다
   expect(groupEl("gA").style.width).toBe("550px");
-  await release(396, 374); // 끌지 않고 놓는다 — 저장되는 것도 밖에서 온 테두리다(누른 순간의 330 이 아니다)
-  expect([groupEl("gA").style.width, groups().find((group) => group.id === "gA")?.rect?.w]).toEqual(["550px", 550]);
+  await release(396, 374); // 끌지 않고 놓는다 — 누른 순간의 330 으로 덮지 않는다
+  // 받은 네모·멤버 그대로라 저장할 것도 없다(2026-10-12 조작 규칙 44 — 전엔 받은 네모 550 을 다시 저장해 빈 되돌리기 단계가 쌓였다)
+  expect([groupEl("gA").style.width, groups()]).toEqual(["550px", []]);
   // 밖 갱신 뒤에 끌기 시작하면 밖에서 온 테두리에서 늘어난다
   await pressHandle(groupEl("gA").querySelector<HTMLElement>(".scene-group-resize")!, 616, 374);
   await show([textCard("a1", 110), textCard("b1", 1100)], [{ ...wider, rect: { ...wider.rect, w: 660 } }]);

@@ -309,3 +309,22 @@ it("'태그 저장 끝' 알림을 받으면 씬의 사본을 서버 값으로 �
   await settle();
   expect(cell("a").querySelector(".card-cm.on")).toBeNull();
 });
+
+// ── 조작 규칙 44(2026-10-12 조작 점검 17회차, Codex 전수 검토) ──
+it("창에서 결과를 지운 것은 되돌리기 단계가 아니다 — 지운 뒤의 Ctrl+Z 가 '지금과 같은 단계'로 헛돌지 않는다", async () => {
+  const saved: Partial<Scene>[] = [];
+  const onVariantDelete = vi.fn(async (selected: Generation[]) => selected.map((item) => item.id));
+  await openWindow([gen("a", 0), gen("b", 1), gen("c", 2)], { onChange: (patch) => saved.push(patch), onVariantDelete });
+  pick("b");
+  act(() => windowEl()!.querySelector<HTMLButtonElement>(".folder-peek-selbar .sb-del")!.click());
+  await settle();
+  expect(onVariantDelete).toHaveBeenCalledTimes(1);
+  expect(saved[saved.length - 1].cards![0].genIds).toEqual(["a", "c"]); // 카드에서 걷혔다
+  key(document.body, { key: "Escape" }); // 창을 닫는다(고른 것은 지워졌다)
+  expect(windowEl()).toBeNull();
+  const before = saved.length;
+  key(document.body, { key: "z", code: "KeyZ", ctrlKey: true });
+  // 전엔 '걷은 저장'이 사용자 단계로 쌓였다가 곧바로 그 단계의 결과도 걷혀(지운 결과를 되살리지 않으려고), 지금과 똑같은 단계가 남았다 —
+  //  첫 Ctrl+Z 가 헛돌고 두 번째에야 그 앞의 편집이 되돌려졌다.
+  expect(saved.length).toBe(before);
+});

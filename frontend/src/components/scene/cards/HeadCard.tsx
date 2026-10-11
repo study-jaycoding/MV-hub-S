@@ -49,14 +49,17 @@ export const HeadCard = memo(function HeadCard({
           onChange={(e) => setNodeText(card.id, e.target.value)}
           onKeyDown={(e) => {
             e.stopPropagation();
+            // 끝내기는 초점을 내려놓는 것으로 한다(글 카드와 같다) — 위 onBlur 가 밀린 저장을 확정한다. 편집 상태만 끄면 입력칸이
+            //  사라질 뿐 blur 가 오지 않아, 쓴 글이 400ms 뒤에야 저장됐다: 그 안의 Ctrl+Z 가 방금 쓴 글을 건너뛰어 그 앞의 편집을
+            //  되돌렸다(조작 규칙 44).
             if (e.key === "Escape") {
-              setEditTextId(null);
+              e.currentTarget.blur();
               return;
             }
             // Enter=편집 완료, Shift+Enter=줄바꿈(기본 동작 허용).
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              setEditTextId(null);
+              e.currentTarget.blur();
             }
           }}
         />
