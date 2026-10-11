@@ -105,6 +105,32 @@ it("폴더 줄의 d(비활성)는 길게 눌러도 한 번만 뒤집고, 폴더 
   expect(off()).toBe(false);
 });
 
+// 11회차(조작 규칙 38): 프로젝트 줄의 고르기는 토글이다 — 길게 누르면 반복마다 지정·해제가 뒤집혔다.
+it("프로젝트 줄의 Enter·Space 는 길게 눌러도 한 번만 고르고, 기본 동작(목록 스크롤)은 반복까지 막는다", async () => {
+  const state = { project_id: "held", root_path: "fixture", selected_path: "", tree: { path: "", name: "Render", children: [] } } as unknown as ProjectFolderState;
+  mocks.links.mockResolvedValue({ links: { held: state } }); mocks.folder.mockResolvedValue(state);
+  const onFilter = vi.fn();
+  await act(async () => root.render(<ProjectSection projects={[{ id: "held", name: "Held Project", count: 1 } as Project]}
+    unassignedCount={0} archivedCount={0} deletedOnly={false} tab="my" activeId={undefined}
+    onFilter={onFilter} onViewDeleted={vi.fn()} />));
+  const row = host.querySelector<HTMLElement>('.proj-row[title="Held Project"]')!;
+  const press = (key: string, repeat = false, target: HTMLElement = row) => {
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, repeat });
+    act(() => { target.dispatchEvent(event); });
+    return event.defaultPrevented;
+  };
+  expect(press("Enter")).toBe(true); press("Enter", true); press("Enter", true);
+  expect(onFilter).toHaveBeenCalledExactlyOnceWith("held");
+  expect(press(" ")).toBe(true);
+  expect(press(" ", true)).toBe(true); // 길게 눌린 Space — 고르지는 않아도 목록이 스크롤되면 안 된다
+  expect(onFilter).toHaveBeenCalledTimes(2);
+  // 줄 안의 접기 단추에서 올라온 키는 그 단추의 것이다 — 줄이 막으면 단추가 안 눌리고, 받으면 접으면서 프로젝트까지 골라진다
+  const fold = row.querySelector<HTMLElement>("button.proj-fold")!;
+  expect(press("Enter", false, fold)).toBe(false);
+  expect(press(" ", false, fold)).toBe(false);
+  expect(onFilter).toHaveBeenCalledTimes(2);
+});
+
 it("열기 API에는 프로젝트 ID와 상대 폴더만 전송한다", async () => {
   const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
   vi.stubGlobal("fetch", fetch);

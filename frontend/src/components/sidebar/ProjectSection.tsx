@@ -684,7 +684,11 @@ export function ProjectSection({
                   }
                   onClick={() => onFilter(activeId === project.id ? undefined : project.id)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") onFilter(activeId === project.id ? undefined : project.id);
+                    // 줄 안의 단추(접기·끌기 손잡이)에서 올라온 키는 그 단추의 것이다
+                    if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+                    e.preventDefault(); // Space 의 기본 동작(목록 스크롤)을 막는다 — 길게 눌린 반복도 같다
+                    // 길게 눌린 Enter·Space 는 받지 않는다 — 고르기가 토글이라 반복마다 지정·해제가 뒤집혔다(조작 규칙 38)
+                    if (!e.repeat) onFilter(activeId === project.id ? undefined : project.id);
                   }}
                   title={project.name}
                   onContextMenu={
