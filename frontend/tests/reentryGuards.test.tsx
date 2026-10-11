@@ -37,27 +37,36 @@ function held<T>() {
 }
 const settle = async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); };
 
-it("히스토리 열기 — 조회가 끝나기 전의 다시 누름은 씬 탭을 더 만들지 않는다. 끝난 뒤(실패 뒤에도)에는 다시 받는다", async () => {
+it("히스토리 열기 — 조회 중에 같은 카드를 다시 눌러도 씬 탭을 더 만들지 않고, 다른 카드는 누른 순서대로 연다. 끝난 뒤(실패 뒤에도)에는 다시 받는다", async () => {
   const lookups = held<{ target: { params: unknown } }>();
   mocks.history.mockImplementation(() => lookups.next());
   const openRecipe = vi.fn();
   let actions!: ReturnType<typeof useGenerationUtilityActions>;
   function Host() { actions = useGenerationUtilityActions({ flash: () => {}, openRecipe }); return null; }
   act(() => root.render(<Host />));
+  const asked = () => mocks.history.mock.calls.map((call) => call[0]);
+  const opened = () => openRecipe.mock.calls.map((call) => (call[0] as Generation).id);
   const g = generation("g1");
   const first = actions.onShowHistory(g);
-  await actions.onShowHistory(g); // 조회 중에 한 번 더(h 를 두 번, 단추 연타)
-  void actions.onShowHistory(generation("g2")); // 다른 생성물은 따로다
-  expect(mocks.history).toHaveBeenCalledTimes(2);
+  void actions.onShowHistory(g); // 조회 중에 한 번 더(h 를 두 번, 단추 연타) — 받지 않는다
+  const second = actions.onShowHistory(generation("g2")); // 다른 카드 — 앞의 것이 끝난 뒤에 묻는다(13회차, 조작 규칙 40)
+  await settle();
+  expect(asked()).toEqual(["g1"]); // 한꺼번에 물으면 응답이 뒤바뀌었을 때 g1 의 씬이 나중에 열려 g2 에서 화면을 가져간다
   lookups.waiting[0].resolve({ target: { params: {} } });
   await first;
-  expect(openRecipe).toHaveBeenCalledTimes(1);
+  await settle();
+  expect([opened(), asked()]).toEqual([["g1"], ["g1", "g2"]]);
+  lookups.waiting[1].resolve({ target: { params: {} } });
+  await second;
+  expect(opened()).toEqual(["g1", "g2"]); // 누른 순서대로 — 마지막에 누른 것이 마지막에 열린다
   const failing = actions.onShowHistory(g); // 끝난 뒤의 누름 = 전처럼 새 탭
-  expect(mocks.history).toHaveBeenCalledTimes(3);
-  lookups.waiting[2].reject(new Error("offline"));
+  await settle();
+  expect(asked()).toHaveLength(3);
+  lookups.waiting[2].reject(new Error("offline")); // 실패해도 풀리고, 줄도 이어진다
   await failing;
   void actions.onShowHistory(g);
-  expect(mocks.history).toHaveBeenCalledTimes(4);
+  await settle();
+  expect(asked()).toHaveLength(4);
 });
 
 it("다운로드 — 받는 중인 파일을 다시 누르면 받던 것을 같이 기다린다(사본을 만들지 않는다). 일괄이 도는 중의 단건도 같다", async () => {
