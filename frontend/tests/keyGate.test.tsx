@@ -420,7 +420,7 @@ it("모달 영역(useModalFocus)은 초점만 다룬다 — 뒤 화면의 키를
   expect(document.activeElement?.id).toBe("second-button");
 });
 
-it("기본 조작부를 마우스로 쓴 뒤에는 초점을 매체 자체로 돌린다 — 조작부 안의 초점은 키를 페이지로 안 보낸다. 키보드로 쓰는 중이면 두고, 시간 줄·음량에는 손대지 않는다", () => {
+it("기본 조작부를 마우스로 쓴 뒤에는 초점을 매체 자체로 돌린다 — 조작부 안의 초점은 키를 페이지로 안 보낸다. 키보드로 쓰는 중이면 두고, 반복 재생의 되감기에는 옮기지 않는다", () => {
   const video = document.createElement("video");
   video.controls = true;
   video.tabIndex = 0;
@@ -438,21 +438,57 @@ it("기본 조작부를 마우스로 쓴 뒤에는 초점을 매체 자체로 �
   expect(focus).toHaveBeenCalledTimes(1);
   fire("pause");
   expect(focus).toHaveBeenCalledTimes(2);
-  // 시간 줄·음량·속도는 둔다 — 마우스로 누른 뒤 방향키로 조금씩 옮기는 길(브라우저 기본)이 남는다
-  for (const type of ["seeked", "volumechange", "ratechange"]) fire(type);
-  expect(focus).toHaveBeenCalledTimes(2);
+  // 시간 줄·음량도 같다 — 만진 뒤의 Esc·방향키·Space 는 창의 것이다(크게 보기의 ←/→ = 앞·뒤 장, Space = 재생)
+  fire("seeked");
+  expect(focus).toHaveBeenCalledTimes(3);
+  fire("volumechange");
+  expect(focus).toHaveBeenCalledTimes(4);
+  // 속도는 걸지 않는다(더보기 메뉴에서 고른 뒤에는 초점이 스스로 풀린다 — 실측)
+  fire("ratechange");
+  expect(focus).toHaveBeenCalledTimes(4);
+  // 반복 재생이 **도는 중에** 처음으로 돌아가는 탐색은 사용자의 조작이 아니다 — 그때 옮기면 조작부에서 연 메뉴(더보기)가 닫힌다
+  const state = (paused: boolean, at: number) => {
+    Object.defineProperty(video, "paused", { configurable: true, value: paused });
+    Object.defineProperty(video, "currentTime", { configurable: true, value: at });
+  };
+  video.loop = true;
+  state(false, 0.02);
+  fire("seeked");
+  expect(focus).toHaveBeenCalledTimes(4);
+  fire("volumechange"); // 되감기 예외는 탐색에만 건다 — 같은 순간의 음량 조작은 조작이다
+  expect(focus).toHaveBeenCalledTimes(5);
+  state(false, 3.4); // 도는 중이어도 가운데로 옮긴 것은 조작이다
+  fire("seeked");
+  expect(focus).toHaveBeenCalledTimes(6);
+  state(true, 0.1); // 멈춘 영상의 처음 언저리로 옮긴 것은 조작이다(되감기는 도는 중에만 난다 — 크게 보기의 영상은 늘 loop 다)
+  fire("seeked");
+  expect(focus).toHaveBeenCalledTimes(7);
+  video.loop = false;
+  state(false, 0.02); // 반복이 아니면 처음으로 옮긴 것도 조작이다
+  fire("seeked");
+  expect(focus).toHaveBeenCalledTimes(8);
+  state(true, 0);
+  // 탐색이 **시작될 때**도 옮긴다 — 영상을 덜 받은 채 시간 줄을 누르면 탐색 완료가 수십 초 뒤에 온다(실측 20.8초 — 그동안 Esc 가 죽었다)
+  fire("seeking");
+  expect(focus).toHaveBeenCalledTimes(9);
+  video.loop = true;
+  state(false, 0.02); // 도는 중의 되감기는 시작도 조작이 아니다
+  fire("seeking");
+  expect(focus).toHaveBeenCalledTimes(9);
+  video.loop = false;
+  state(true, 0);
   video.controls = false; // 조작부가 없는 매체(썸네일 미리보기)는 대상이 아니다
   fire("play");
-  expect(focus).toHaveBeenCalledTimes(2);
+  expect(focus).toHaveBeenCalledTimes(9);
   video.controls = true;
-  press("Tab"); // Tab 으로 들어와 키보드로 조작부를 쓰는 중 — 초점을 빼면 다음 키가 엉뚱한 곳으로 간다
-  fire("pause");
-  expect(focus).toHaveBeenCalledTimes(2);
+  press("Tab"); // Tab 으로 들어와 키보드로 조작부를 쓰는 중 — 초점을 빼면 다음 키가 엉뚱한 곳으로 간다(음량 칸의 → 다음에 → 가 다음 장이 된다)
+  for (const type of ["pause", "seeking", "seeked", "volumechange"]) fire(type);
+  expect(focus).toHaveBeenCalledTimes(9);
   // 매체 위에서 마우스가 움직인 것만으로는 풀지 않는다 — 키보드로 쓰는 중에 스친 마우스다(누름은 조작부 밖에서만 보인다)
   video.dispatchEvent(new Event("pointermove", { bubbles: true }));
   fire("play");
-  expect(focus).toHaveBeenCalledTimes(2);
+  expect(focus).toHaveBeenCalledTimes(9);
   document.dispatchEvent(new Event("pointerdown")); // 페이지가 본 누름 — 다시 마우스로 쓰는 중이다(뒤 시험에도 Tab 기록을 남기지 않는다)
   fire("pause");
-  expect(focus).toHaveBeenCalledTimes(3);
+  expect(focus).toHaveBeenCalledTimes(10);
 });
