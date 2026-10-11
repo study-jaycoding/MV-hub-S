@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-11
+updated: 2026-10-12
 status: active
 ---
 
@@ -802,6 +802,18 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
   뒤의 단추가 눌린다 — 한 번은 다운로드 단추가 눌려 파일이 실제 다운로드 폴더에 저장됐다. `/api/download` 는 `Fetch.enable` 로 막아 두고 시작한다.
 - ⑪ 시험 자료의 자리를 바꾸려면 `servers.py start --source <content_hub.db 가 든 폴더>`(읽기만 한다). 원본과 작업 폴더가 겹치면 거절하고, 작업 폴더에는
   표식 파일(`.mvhub-browser-measure`)을 남겨 `stop` 이 자기가 만든 폴더만 지운다.
+- ⑫ **'놓친 mouseup'은 두 가지로 만든다** — (가) `mousePressed` → `mouseMoved`(buttons 1) 몇 걸음 → `mouseReleased` 없이 `mouseMoved`(buttons 0)
+  (나) 끄는 중 페이지에서 `window.dispatchEvent(new Event("blur"))` 뒤 단추 없는 움직임. 본 뒤에는 진짜 `mouseReleased` 를 한 번 보내 뒤처리한다.
+  캔버스 밖의 끌기도 `buttons === 0` 인 이동에 끝난다(`lib/windowDrag.ts`) — jsdom 시험의 `mousemove`·`pointermove` 에도 `buttons: 1` 을 넣는다.
+- ⑬ **타이밍에 기대는 결함은 같은 인스턴스에서 여러 번 돌린다.** 씬 탭 연타에 씬이 섞이던 것은 고치기 전 빌드에서도 8회에 3~4회만 났고(다른 측정이 같이 돌아
+  부하가 걸리면 더 잘 났다), 한 번 돌린 직접 확인은 여러 판에서 그냥 지나갔다. 실패가 한 번 나오면 **고치기 전 빌드로도 같은 횟수를** 돌려 '내 수정 탓인가'부터 가른다.
+- ⑭ React 의 갱신 순서에 기대는 결함은 시험에서 `flushSync` 로 만든다 — 탭 누름 같은 동기 렌더는 `flushSync(() => setState(…))`, 그 effect 가 넣은 갱신은
+  `act` 가 끝날 때 그려진다(둘 사이가 '틈'이다 — `tests/sceneSwitchFlush.test.tsx`).
+- ⑮ **끄는 중의 밖 갱신**(생성 결과 도착 등)은 시험에서 같은 씬 id 의 **새 배열**로 보드를 다시 그려 만든다(`tests/sceneCardGroupMove.test.tsx` 의 `show()` 를 끄는 중에
+  다시 부른다 — 저장분이라 끌기 전 좌표다). 볼 것은 둘: 그 직후의 화면 자리, 그리고 **더 움직이지 않고 놓았을 때 저장된 값**(다음 움직임이 오면 어느 빌드든 돌아온다).
+- ⑯ **`setTimeout(0)` 으로 푸는 억제는 '타이머가 돌기 전'을 따로 본다** — 입력은 타이머보다 먼저 처리된다. 실측은 놓기와 다음 누름을 **기다리지 않고 잇달아** 보내고
+  (끌어 놓자마자 누른 씬 탭 세 번이 전부 안 먹던 것이 이렇게 나왔다 — 한 번씩 기다리며 보내면 안 보인다), 시험은 놓기·딸린 click·다음 누름을 **`act` 한 번 안에서** 쏜다
+  (`tests/sceneCardGroupMove.test.tsx` '끌어 놓은 직후…', `sceneBarDrag.test.tsx`, `folderReviewCounts.test.tsx`). 앞 끌기의 타이머가 다음 끌기에 끼어드는 길은 두 끌기 사이에 0ms 를 기다려 만든다.
 
 캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
 - ⑤ 복사본은 프로젝트 폴더 경로를 비워, 씬 그림(`asset:` 썸네일)이 **전부 404** 다. 그림이 뜬 상태로 재려면 다음처럼 한다.
