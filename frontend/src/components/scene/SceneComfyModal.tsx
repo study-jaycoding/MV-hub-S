@@ -35,31 +35,65 @@ export function SceneComfyModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function parseContent(text: string, wfName: string, exposedList: string[]) {
+  // 불러오기의 순서 — 늦게 끝난 앞 불러오기가 나중에 넣은 워크플로를 덮지 않는다(조작 규칙 39). 파싱은 드롭다운 후보를 채우느라
+  //  Comfy 서버를 조회해(캐시가 없으면 최대 30초) 먼저 넣은 것이 나중에 끝날 수 있다. 불러오는 중에도 새 파일은 받는다.
+  //  · 순번(next)은 일의 맨 앞에서 잡는다 — 파일을 읽기 전에.
+  //  · **이미 반영된 것(applied)보다 앞선 것만 버린다.** '가장 나중에 시작한 것만 받는다'로 하면, 나중 것이 읽기·파싱에 실패했을 때
+  //    아직 돌던 앞의 것까지 버려져 아무것도 안 들어온다.
+  //  · '불러오는 중'은 돌고 있는 수(pending)로 든다 — 버려진 것도, 실패한 것도 끝나면 센다(표시가 남지 않는다).
+  const loads = useRef({ next: 0, applied: 0, pending: 0 }).current;
+  const beginLoad = () => {
+    loads.pending += 1;
     setLoading(true);
-    setError(null);
+    setError(null); // 새로 시작하면 앞의 오류 글은 지운다
+    return ++loads.next;
+  };
+  const endLoad = () => {
+    loads.pending -= 1;
+    if (loads.pending === 0) setLoading(false);
+  };
+  async function parseContent(text: string, wfName: string, exposedList: string[], seq = beginLoad()) {
     try {
       const res = await comfyApi.parse(text, exposedList);
+      if (seq < loads.applied) return;
+      loads.applied = seq;
+      if (seq === loads.next) setError(null); // 더 나중에 시작한 것이 실패해 띄운 오류는 두고, 앞선 것의 오류만 지운다
+      // 내용·후보·노출 선택은 받아들이는 이 자리에서 **같이** 바꾼다 — 실패하면 앞의 묶음이 그대로 남는다. 전엔 파싱 전에 노출 선택을 비우고
+      //  실패 때 후보를 비워, 잘못된 파일을 한 번 놓았다가 저장하면 앞 워크플로의 파라미터 설정이 지워진 채 저장됐다(Codex 코드 리뷰).
+      //  노출 선택은 이 불러오기가 들고 온 것(exposedList — 다른 워크플로면 빈 것, 같은 워크플로면 그때의 선택)으로 둔다:
+      //  A → B → A 가 겹쳐 B 가 선택을 비운 뒤에 A 가 돌아와도 A 의 선택이 돌아온다.
       setContent(text);
       setName(wfName);
       setNodeCount(res.node_count);
       setCandidates(res.candidates);
+      setExposed(new Set(exposedList));
     } catch (e) {
+      if (seq < loads.applied) return;
       setError(e instanceof Error ? e.message : "파싱 실패");
-      setCandidates([]);
     } finally {
-      setLoading(false);
+      endLoad();
     }
   }
 
   async function loadFile(file: File) {
-    const text = await file.text();
+    const seq = beginLoad();
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      endLoad();
+      if (seq > loads.applied) setError("파일을 읽지 못했습니다.");
+      return;
+    }
+    if (seq < loads.applied) {
+      endLoad();
+      return;
+    }
     const base = file.name.replace(/\.json$/i, "");
     // 다른 워크플로우를 새로 불러오면 노출 선택을 초기화한다. ComfyUI 워크플로는 노드 id("1","2"…)가
     // 겹치기 쉬워, 옛 선택(node|field)을 그대로 두면 엉뚱한 노드에 매핑돼 옛 값이 남는다.
     const changed = text.trim() !== (content || "").trim();
-    if (changed) setExposed(new Set());
-    await parseContent(text, base, changed ? [] : [...exposed]);
+    await parseContent(text, base, changed ? [] : [...exposed], seq);
   }
 
   function toggle(key: string) {
@@ -134,6 +168,7 @@ export function SceneComfyModal({
             onDragLeave={() => setDragOver(false)}
             onDrop={(e) => {
               e.preventDefault();
+              e.stopPropagation(); // 창에 놓은 것은 창의 것 — 올려 보내면 뒤 보드가 .json 을 씬 파일로 읽으려다 실패 안내를 띄운다(카드 안의 자리와 같다)
               setDragOver(false);
               const f = e.dataTransfer.files?.[0];
               if (f) void loadFile(f);

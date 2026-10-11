@@ -76,7 +76,7 @@ export function ComfyCard({
     close: () => void;
   };
   actions: {
-    applyComfyApi: (cardId: string, name: string, content: string) => Promise<boolean>;
+    applyComfyApi: (cardId: string, file: File) => Promise<boolean>; // 파일째 넘긴다 — 순번을 읽기 전에 잡는다(SceneBoard)
     pickComfyFile: (cardId: string) => void;
     setComfyModalId: (cardId: string | null) => void;
     refreshComfy: (cardId: string) => Promise<void>;
@@ -155,7 +155,7 @@ export function ComfyCard({
               if (!f || !/\.json$/i.test(f.name)) return;
               e.preventDefault();
               e.stopPropagation();
-              await actions.applyComfyApi(card.id, f.name.replace(/\.json$/i, ""), await f.text());
+              await actions.applyComfyApi(card.id, f);
             }}
           >
             <span>API를 넣어주세요</span>
@@ -185,7 +185,7 @@ export function ComfyCard({
               if (!f || !/\.json$/i.test(f.name)) return;
               e.preventDefault();
               e.stopPropagation();
-              await actions.applyComfyApi(card.id, f.name.replace(/\.json$/i, ""), await f.text());
+              await actions.applyComfyApi(card.id, f);
             }}
           >
             <div className="scene-comfynode-name" title={cfg.name || ""}>

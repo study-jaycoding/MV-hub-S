@@ -2336,11 +2336,26 @@ export function SceneBoard({
   };
   // comfy 노드에 새 API(워크플로우 JSON)를 넣는다 — 빈 노드 최초 로드·기존 노드 교체 공용.
   //  파싱 성공해야 반영한다(실패 시 기존 유지). 다른 워크플로우로 바뀌므로 노출 파라미터·값·결과는 초기화한다.
-  const applyComfyApi = async (cardId: string, name: string, content: string): Promise<boolean> => {
+  //  같은 카드에 잇달아 넣으면 나중 것이 이긴다(조작 규칙 39) — 파싱은 Comfy 서버를 조회해 수십 초가 걸릴 수 있고, 늦게 끝난 앞 파싱이
+  //  나중에 넣은 워크플로를 덮어 그대로 저장됐다. 순번으로 가린다:
+  //  · 순번(next)은 **파일을 읽기 전에** 잡는다(느린 드라이브의 앞 파일이 늦게 읽혀 더 큰 순번을 받지 않게) — 그래서 파일째 받는다.
+  //  · 그 카드에 **이미 반영된 것(applied)보다 앞선 것만** 버린다 — 나중 것이 읽기·파싱에 실패하면 아직 돌던 앞의 것은 그대로 들어온다.
+  //  · 워크플로 창에서 저장한 것도 '반영된 것'이다(아래 onSave) — 그 전에 카드에 놓아 아직 파싱 중인 불러오기가 그것을 덮지 않는다.
+  //  · 반영된 순번은 **씬과 카드**로 적는다 — 같은 씬 파일을 두 번 가져오면 카드 id 가 같다(다른 씬의 반영이 이 씬의 불러오기를 버리지 않게).
+  const comfyLoads = useRef({ next: 0, applied: new Map<string, number>() }).current;
+  const comfyLoadKey = (sceneId: string, cardId: string) => `${sceneId}\n${cardId}`;
+  const applyComfyApi = async (cardId: string, file: File): Promise<boolean> => {
     const sid = sceneIdRef.current; // 파싱 대기 중 씬 전환되면 다른 씬에 반영 안 함
+    const seq = ++comfyLoads.next;
+    const key = comfyLoadKey(sid, cardId);
+    const stale = () => sceneIdRef.current !== sid || (comfyLoads.applied.get(key) ?? 0) > seq;
     try {
+      const content = await file.text();
+      if (stale()) return false;
       const res = await comfyApi.parse(content, []);
-      if (sceneIdRef.current !== sid) return false;
+      if (stale()) return false;
+      comfyLoads.applied.set(key, seq);
+      const name = file.name.replace(/\.json$/i, "");
       // 다른 워크플로우로 교체 → 노출·값·결과뿐 아니라 카드에 쌓인 생성물(대표 genId·목록 genIds)도 초기화한다.
       // (안 지우면 옛 워크플로 결과가 대표·▤배지·렌더 입력으로 남아 새 워크플로에 잘못 딸려간다.)
       // 사용자가 실제로 비운 것이므로 DB 소속에도 '뺐음'을 남긴다 — 안 남기면 다른 브라우저가 되살린다.
@@ -2370,7 +2385,7 @@ export function SceneBoard({
       applyCards(nextCards, "persistUser", { removedForward });
       return true;
     } catch {
-      return false; // 파싱 실패 — 기존 워크플로우 그대로 둔다(교체 취소)
+      return false; // 읽기·파싱 실패 — 기존 워크플로우 그대로 둔다(교체 취소)
     }
   };
   // comfy 노드: 파일 선택으로 API 교체(.json). 버튼에서 호출 — 숨은 input 을 즉석 생성.
@@ -2381,8 +2396,7 @@ export function SceneBoard({
     input.onchange = async () => {
       const f = input.files?.[0];
       if (!f) return;
-      const text = await f.text();
-      await applyComfyApi(cardId, f.name.replace(/\.json$/i, ""), text);
+      await applyComfyApi(cardId, f);
     };
     input.click();
   };
@@ -2394,6 +2408,8 @@ export function SceneBoard({
     try {
       const res = await comfyApi.parse(content, []);
       if (sceneIdRef.current !== sid) return;
+      // 다시 읽는 사이에 다른 워크플로로 바뀌었으면 버린다 — 옛 워크플로의 노드 수를 새것에 적고 그 상태를 지웠다(조작 규칙 39)
+      if (cardsRef.current.find((c) => c.id === cardId)?.comfyCfg?.content !== content) return;
       patchComfyCfg(cardId, { nodeCount: res.node_count, status: "idle", error: null }, { undo: false }); // 재파싱=파생, undo 제외
     } catch {
       /* 파싱 실패 — 상태만 두고 무시 */
@@ -4826,6 +4842,7 @@ export function SceneBoard({
               initial={c.comfyCfg}
               onClose={() => setComfyModalId(null)}
               onSave={(cfg) => {
+                comfyLoads.applied.set(comfyLoadKey(scene.id, comfyModalId), ++comfyLoads.next); // 창에서 확정한 것이 최신이다 — 아직 파싱 중인 앞선 불러오기가 이것을 덮지 않는다
                 // 워크플로우(content)가 바뀌면 이전 실행 결과를 비운다 — 안 그러면 하류 생성카드가
                 // 예전 워크플로 출력을 참조한다(재실행 전까지 stale). content 그대로면 결과 보존.
                 const prev = cardsRef.current.find((x) => x.id === comfyModalId)?.comfyCfg;
