@@ -1034,3 +1034,81 @@ it("마우스를 올린 카드에 r·d — 색 띠와 비활성이 그 카드에
   await remount("다른쇼"); // 저장은 라이브러리별 — 같은 이름이라도 번지지 않는다
   expect(host.querySelector(".resolve-project-card.deactivated")).toBeNull();
 });
+
+// 2026-10-12 조작 점검 18회차(Codex 가 후보로 짚음, 조작 규칙 42·45): 사라지는 요소에는 mouseleave 가 오지 않는다 — '마우스를 올린 카드'가
+//  숨은 뒤에도 남아, 마우스를 움직이지 않고 누른 다음 키가 보이지 않는 카드에 걸렸다.
+it("비활성 숨기기를 켠 채 d 로 숨긴 카드는 마우스를 올린 카드로 남지 않는다 — 이어서 누른 r·d 가 숨은 카드에 걸리지 않는다", async () => {
+  act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
+  await settle();
+  const dots = () => [...host.querySelectorAll<HTMLButtonElement>(".rp-marks .af-dot")];
+  const names = () => [...host.querySelectorAll(".resolve-project-card strong")].map((el) => el.textContent);
+  const cardOf = (name: string) =>
+    [...host.querySelectorAll<HTMLButtonElement>(".resolve-project-card")].find((button) => button.textContent?.includes(name))!;
+  const press = (key: string) => act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true })); });
+
+  await act(async () => dots()[0].click()); // 회색 = 비활성 숨기기
+  await act(async () => { cardOf("Episode 1").dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: document.body })); });
+  await press("d"); // 올린 카드를 비활성으로 — 곧바로 화면에서 사라진다(mouseleave 는 오지 않는다)
+  expect(names()).toEqual(["Mud_Ai"]);
+  await press("r"); // 마우스는 그대로다
+  await press("d"); // 전엔 숨은 카드의 비활성을 도로 풀어, 카드가 다시 나타났다
+  expect(names()).toEqual(["Mud_Ai"]);
+  // 숨은 '올린 카드'가 보이는 초점 카드의 키를 막지도 않는다 — Tab 으로 다른 카드에 초점을 옮기고 누른 키는 그 카드의 것이다(Codex 코드 리뷰)
+  act(() => cardOf("Mud_Ai").focus());
+  await press("g");
+  expect(cardOf("Mud_Ai").querySelector(".rp-colorbar")).not.toBeNull();
+  await press("g"); // 다시 끈다
+  await act(async () => dots()[0].click()); // 숨기기를 끈다
+  expect(cardOf("Episode 1").className).toContain("deactivated");
+  expect(host.querySelectorAll(".rp-colorbar")).toHaveLength(0); // 전엔 숨은 카드에 빨강이 들어가 있었다
+});
+
+// Codex 코드 리뷰(조작 규칙 45): 상자로 고른 뒤에도 Shift 의 기준이 그 전에 누른 카드에 남아 있었다.
+it.each([["놓으면", "mouseup"], ["창을 떠나도", "blur"]])("상자로 고른 뒤 %s Shift 의 기준은 고른 것 중 화면 차례의 마지막 카드다 — 그 전에 누른 카드가 아니다", async (_label, ending) => {
+  mocks.list.mockResolvedValue({
+    library_name: "MVHub - 뻘뻘뻘", library_path: "Z:/PROJECT_MUDX/10_ai/@davinci",
+    projects: ["A", "B", "C", "D"].map((name, index) => ({ name, folder_path: "", mtime: 1_700_000_000 - index, size: 1 })), // 날짜 내림차순 = A·B·C·D
+  });
+  act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
+  await settle();
+  const cards = () => [...host.querySelectorAll<HTMLButtonElement>(".resolve-project-card")];
+  const nameOf = (button: Element) => button.querySelector("strong")!.textContent;
+  expect(cards().map(nameOf)).toEqual(["A", "B", "C", "D"]);
+  // 카드는 가로로 100px 마다 한 장(폭 80)
+  cards().forEach((button, index) => { button.getBoundingClientRect = () => ({ left: index * 100, right: index * 100 + 80, top: 0, bottom: 80, width: 80, height: 80, x: index * 100, y: 0, toJSON: () => ({}) }); });
+  const pickedNames = () => cards().filter((button) => button.classList.contains("picked")).map(nameOf);
+  await act(async () => cards()[0].click()); // A — Shift 의 기준
+  await act(async () => {
+    host.querySelector(".resolve-project-body")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 95, clientY: 90, button: 0 }));
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 285, clientY: 10, buttons: 1 })); // B·C 만 걸친다
+    window.dispatchEvent(ending === "mouseup" ? new MouseEvent("mouseup", { clientX: 285, clientY: 10 }) : new Event("blur"));
+  });
+  expect(pickedNames()).toEqual(["B", "C"]);
+  await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); }); // 끈 뒤의 클릭 억제가 풀린다
+  await act(async () => cards()[3].dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true })));
+  expect(pickedNames()).toEqual(["C", "D"]); // 전엔 A~D 전부
+});
+
+// Codex 코드 리뷰: 고른 카드가 숨은 직후 — 선택을 줄이는 일이 반영되기 전의 한 박자에도 키는 숨은 카드에 걸리지 않는다.
+it("비활성 숨기기를 켠 채 고른 카드를 d 로 숨긴 바로 그 순간의 r·d 도 숨은 카드에 걸리지 않는다", async () => {
+  const { flushSync } = await import("react-dom");
+  act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
+  await settle();
+  const dots = () => [...host.querySelectorAll<HTMLButtonElement>(".rp-marks .af-dot")];
+  const names = () => [...host.querySelectorAll(".resolve-project-card strong")].map((el) => el.textContent);
+  const cardOf = (name: string) =>
+    [...host.querySelectorAll<HTMLButtonElement>(".resolve-project-card")].find((button) => button.textContent?.includes(name))!;
+  const keydown = (key: string) => window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+
+  await act(async () => dots()[0].click()); // 회색 = 비활성 숨기기
+  await act(async () => cardOf("Episode 1").click()); // 고른다
+  await act(async () => {
+    flushSync(() => { keydown("d"); }); // 숨겨진 화면이 그려졌다 — 선택을 줄이는 일은 아직이다
+    keydown("r"); // 간격 0
+    keydown("d");
+  });
+  expect(names()).toEqual(["Mud_Ai"]); // 전엔 뒤의 d 가 숨은 카드를 되살렸다
+  await act(async () => dots()[0].click()); // 숨기기를 끈다
+  expect(cardOf("Episode 1").className).toContain("deactivated");
+  expect(host.querySelectorAll(".rp-colorbar")).toHaveLength(0); // 전엔 숨은 카드에 빨강이 들어갔다
+});

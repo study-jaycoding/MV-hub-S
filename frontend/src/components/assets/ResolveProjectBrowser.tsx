@@ -206,10 +206,12 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
     base: string[];
     additive: boolean;
     fromCard: boolean; // 카드 위에서 시작한 끌기 — 상자는 안 그리고 '클릭 아님'만 기억한다
+    hits?: Set<string>; // 상자로 고른 마지막 결과 — 끝낼 때 Shift 의 기준을 여기에 맞춘다
   } | null>(null);
   const suppressClickRef = useRef(false); // 끌고 난 뒤의 클릭은 고르기로 치지 않는다(Codex)
   const [marquee, setMarquee] = useState<MarqueeRect | null>(null);
   const visibleKeysRef = useRef<string[]>([]); // Ctrl+A 가 쓸 '지금 보이는 카드'
+  const orderRef = useRef<string[]>([]); // 화면에 놓인 차례(정렬된 것) — 상자로 고른 뒤 Shift 의 기준을 정할 때 쓴다
 
   useEffect(() => LS.setJSON(`colors.${project}`, colorMarks), [colorMarks, project]);
   useEffect(() => LS.setSet(`disabled.${project}`, offKeys), [offKeys, project]);
@@ -265,12 +267,17 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
         clearPick();
         return;
       }
+      // 키의 대상은 **지금 보이는** 카드만이다(조작 규칙 42·45). 비활성 숨기기를 켠 채 d 로 숨기면 그 카드는 화면에서 사라지는데 —
+      //  · 마우스를 올린 카드: 사라지는 요소에는 mouseleave 가 오지 않아 '올린 카드'로 남는다 → 보이지 않으면 초점 카드로 넘어간다
+      //  · 고른 카드: 선택을 줄이는 일(아래 effect)이 반영되기 전의 한 박자가 있다 → 쓰는 자리에서 한 번 더 거른다
+      //  마우스를 움직이지 않고 누른 다음 키(r·d)가 그 숨은 카드에 걸렸다.
+      const shown = new Set(visibleKeysRef.current);
       const one =
-        hoverRef.current ||
-        (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(".resolve-project-card")?.dataset
-          .rpKey ||
-        "";
-      const keys = pickedRef.current.size ? [...pickedRef.current] : one ? [one] : [];
+        [
+          hoverRef.current,
+          (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(".resolve-project-card")?.dataset.rpKey,
+        ].find((key) => key && shown.has(key)) || "";
+      const keys = (pickedRef.current.size ? [...pickedRef.current] : one ? [one] : []).filter((key) => shown.has(key));
       if (!keys.length) return;
       const lower = event.key.toLowerCase();
       const hex = ASSET_COLOR_BY_KEY[lower];
@@ -516,6 +523,8 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
     });
   }, [details, sortDir, sortField, visible]);
 
+  orderRef.current = sorted.map(projectKey);
+
   // 날짜로 나누기 — 정렬된 차례를 그대로 두고 날짜가 바뀌는 곳에서만 끊는다(에셋 탭 buildAssetRows 와 같은 규칙).
   const sections = useMemo(() => {
     if (!groupByDate) return [{ key: "all", label: "", items: sorted }];
@@ -581,23 +590,27 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
     if (drag.fromCard) return; // 카드에서 시작한 끌기는 상자를 만들지 않는다(카드 옮기기 기능 없음)
     const { rect, b } = computeMarquee(grid, drag, event);
     setMarquee(rect);
-    setPicked(
-      marqueeHits<string>(
-        grid,
-        ".resolve-project-card",
-        b,
-        drag.additive ? drag.base : [],
-        (el) => el.dataset.rpKey,
-      ),
+    const hits = marqueeHits<string>(
+      grid,
+      ".resolve-project-card",
+      b,
+      drag.additive ? drag.base : [],
+      (el) => el.dataset.rpKey,
     );
+    drag.hits = hits;
+    setPicked(hits);
   }, []);
   const onDragUp = useCallback((event?: Event) => {
     const drag = dragRef.current;
     dragRef.current = null;
     removeWindowMouseDrag(onDragMove, onDragUp);
     setMarquee(null);
+    if (!drag) return;
+    // 상자로 고른 뒤의 Shift 기준은 고른 것 중 화면 차례의 마지막 카드다(에셋·컷 격자와 같은 규칙 — 조작 규칙 45). 그대로 두면 기준이
+    //  끌기 전에 누른 카드에 남아, Shift 클릭이 방금 고른 것과 무관한 그 카드에서 범위를 잡았다. 놓친 끌기에서도 맞춘다(고른 것은 이미 바뀌었다).
+    if (drag.hits) anchorRef.current = [...orderRef.current].reverse().find((key) => drag.hits!.has(key)) ?? "";
     // 놓친 끌기는 정리만 한다 — 빈 자리를 누른 채 창을 떠난 것이 '풀기'로 확정되지 않게(뒤따르는 click 도 없다)
-    if (!drag || dragLost(event)) return;
+    if (dragLost(event)) return;
     // 끌고 난 뒤에 오는 클릭은 고르기가 아니다 — 안 그러면 여러 장 고른 것이 한 장으로 줄어든다(Codex).
     suppressClickRef.current = drag.moved;
     if (drag.moved) {
