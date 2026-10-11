@@ -1153,7 +1153,12 @@ export function SceneBoard({
     setCards,
     setEdges,
     setGroups,
-    clearSelection: () => setSelected(new Set()),
+    // 되돌린 화면에는 고른 카드·그룹이 없다 — 카드만 비우면 되돌려 사라진 그룹이 선택에 남아, 그 뒤의 색 키가 없는 그룹에 저장을 냈다
+    //  (조작 규칙 44)
+    clearSelection: () => {
+      setSelected(new Set());
+      setSelectedGroupIds(new Set());
+    },
     onChange,
     frozenRef: switchingRef,
   });
@@ -1187,6 +1192,13 @@ export function SceneBoard({
   };
   const flushPendingRef = useRef(flushPending);
   flushPendingRef.current = flushPending;
+  // 파생 저장(실행 상태·생성 결과 반영·연결 레퍼런스 맞춤) 앞에서 부른다 — 치던 글이 있으면 그것부터 한 단계로 확정한다(조작 규칙 44).
+  //  파생 저장은 손에 든 카드 전체를 '저장된 것'으로 삼는데 거기에 아직 저장 전인 글도 들어 있어, 뒤의 입력 확정이 '바뀐 것 없음'으로
+  //  끝났다 — 그 글의 단계가 없어 Ctrl+Z 가 그 앞의 편집까지 되감았다. 밀린 입력이 있을 때만 한다: 늘 하면 순차 실행 중 화면에만 올려 둔
+  //  값(applyCards 의 live)이 사용자 단계로 쌓인다.
+  const confirmPendingInput = () => {
+    if (pendingSinceRef.current !== undefined) flushPending();
+  };
   const scheduleInputPersist = () => {
     const now = Date.now();
     if (pendingSinceRef.current === undefined) pendingSinceRef.current = now;
@@ -1212,6 +1224,7 @@ export function SceneBoard({
       addedForward?: { cardId: string; genIds: string[] }[];
     },
   ) => {
+    if (mode === "persistDerived") confirmPendingInput(); // 손에 든 카드가 아직 '파생 변경 전'일 때
     cardsRef.current = nextCards;
     setCards(nextCards);
     if (mode === "live") return;
@@ -1946,7 +1959,7 @@ export function SceneBoard({
     () => edges.map((e) => `${e.from}>${e.to}:${e.order ?? ""}:${e.role ?? ""}`).join("|"),
     [edges],
   );
-  useEffect(() => {
+  const syncGenRefs = () => {
     const cur = cardsRef.current;
     const nextCards = withGenRefs(cur, edgesRef.current);
     const changed = cur.some(
@@ -1955,12 +1968,23 @@ export function SceneBoard({
         sceneRefFingerprint(c.refs || []) !== sceneRefFingerprint(nextCards[i].refs || []),
     );
     if (!changed) return;
+    confirmPendingInput(); // 치던 글이 있으면 먼저 한 단계로 — 아래 파생 저장에 섞여 되돌리기에서 빠지지 않게
     cardsRef.current = nextCards;
     setCards(nextCards);
     // 파생 동기화 — undo 스택은 늘리지 않고(구조 변경 아님) lastCommit·부모만 최신화.
     commitDerivedState({ cards: nextCards, edges: edgesRef.current, groups: groupsRef.current });
+  };
+  useEffect(() => {
+    syncGenRefs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [genRefSourceSig, refTopologySig, genData]);
+  // 되돌리기·다시 하기 뒤에도 맞춘다(조작 규칙 44) — 되살린 스냅샷이 '생성 결과가 오기 전'의 것이면 그 안의 연결 레퍼런스는 그때의
+  //  것(비어 있다)인데, 위 effect 의 재료(카드의 결과 id·연결·생성물)는 그대로라 다시 돌지 않는다. 그대로 두면 그 카드를 고르는 순간
+  //  선택 쪽의 정규화가 그것을 '사용자 저장'으로 고쳐, 고르기만 했는데 다시 하기가 지워졌다.
+  const undoThenSync = (step: () => void) => {
+    step();
+    syncGenRefs();
+  };
 
   // 하단 프롬프트 트레이 편집(직접ref 삭제·순서변경)을 카드에 저장한다. App 이 sceneActionRef 로 호출.
   //  · 연결 상태로 정규화(reconcileRefs+gatherTarget) → 연결된 레퍼런스는 트레이에서 지워도 다시 병합(연결=레퍼런스).
@@ -2079,6 +2103,10 @@ export function SceneBoard({
     setCards,
     persist,
     beginDrag,
+    beginGesture,
+    // 아래에서 정의된다(끌기 훅들과 같이 쓴다) — 누를 때 불리므로 그때는 이미 있다
+    endGesture: () => endMoveGesture(),
+    hold: () => holdMove(),
     defaultSize: { w: CARD_W, h: CARD_H },
     minSize: { w: CARD_MIN_W, h: CARD_MIN_H },
   });
@@ -2547,9 +2575,7 @@ export function SceneBoard({
           comfyCfg: { ...(c.comfyCfg || {}), outputs: linkedOutputs },
         };
       });
-      cardsRef.current = next;
-      setCards(next);
-      persist(next, edgesRef.current, groupsRef.current, { undo: false }); // 저장된 gid 반영=파생, undo 제외
+      applyCards(next, "persistDerived"); // 저장된 gid 반영=파생, undo 제외(치던 글이 있으면 그것부터 확정한다)
       const savedCard = next.find((c) => c.id === cardId);
       if (savedCard) propagateGenIdsToHistory(cardId, savedCard); // 누적된 결과를 undo/redo 히스토리에도 반영(#3)
       // 방금 만든 결과를 canvas glow 로 강조(#1b) — comfy 결과는 저장 즉시 done 이라 active baseline 을
@@ -2850,9 +2876,9 @@ export function SceneBoard({
       const genId = c.genId && !removed.has(c.genId) ? c.genId : genIds[0] ?? null;
       return { ...c, genIds, genId, status: genIds.length ? c.status : ("empty" as const) };
     });
-    cardsRef.current = nc; // restoreState 가 현재 대표를 cardsRef 에서 읽으므로, 삭제로 대표가 바뀌는 경로도 ref 를 즉시 맞춘다
-    setCards(nc);
-    persist(nc, edgesRef.current);
+    // 지운 결과를 카드에서 걷는 것은 파생 저장이다(대표 고르기와 같다) — 사용자 단계로 쌓으면 바로 아래에서 그 단계의 결과도 걷혀
+    //  '지금과 같은 단계'가 남는다(Ctrl+Z 가 한 번 헛돌았다 — 조작 규칙 44). cardsRef 도 바로 맞는다(restoreState 가 현재 대표를 거기서 읽는다).
+    applyCards(nc, "persistDerived");
     pruneGenIdsFromHistory(cardId, removed); // 삭제된 변형을 히스토리에서도 제거 — undo 로 되살려 깨진 참조 방지
   };
 
@@ -3198,8 +3224,8 @@ export function SceneBoard({
     onTogglePicker: toggleNodePicker,
     // 카드·그룹을 누르고 있는 동안(끌기 세션)에는 받지 않는다 — 끄는 중에 되돌리면 다음 움직임이 그 취소를 덮고 다시 실행 기록도
     //  지워졌다. 범위 선택 중의 Ctrl+Z 는 그대로다(세션은 카드·그룹 이동만 건다 — 아래 holdMove).
-    onUndo: () => { if (!moveHeldRef.current) undo(); },
-    onRedo: () => { if (!moveHeldRef.current) redo(); },
+    onUndo: () => { if (!moveHeldRef.current) undoThenSync(undo); },
+    onRedo: () => { if (!moveHeldRef.current) undoThenSync(redo); },
     onCopy: copySelectedNodes,
     onSelectAll: () => {
       setSelected(new Set(cardsRef.current.map((c) => c.id)));
@@ -4182,6 +4208,7 @@ export function SceneBoard({
                     let rect0 = pressed; // 늘리기의 출발 테두리
                     let last = rect0; // 최종 rect — up 에서 명시적으로 persist(groupsRef 최신성 레이스 방지)
                     let stretched = false; // 한 걸음이라도 넣었는가
+                    let written = groupsRef.current.find((x) => x.id === g.id)?.rect; // 끌기 전에 적혀 있던 네모(자동 그룹이면 없다) — 되돌리기의 시작점
                     const mv = (ev: MouseEvent) => {
                       const z = zoomRef.current;
                       const w = Math.max(140, rect0.w + (ev.clientX - sx) / z);
@@ -4215,6 +4242,14 @@ export function SceneBoard({
                           return { ...x, cardIds: x.cardIds.filter((id) => !contained.has(id)) };
                         })
                         .filter((x) => x.id === g.id || x.cardIds.length > 0); // 비게 된 다른 그룹만 정리
+                      // 누르기만 했고 네모·멤버가 그대로면 저장할 것이 없다 — 저장하면 빈 되돌리기 단계가 쌓이고 다시 하기가 지워진다(조작 규칙 44,
+                      //  Codex 코드 리뷰. 끌기 묶음 안이라 저장 입구의 '안 바뀜' 검사는 돌지 않는다). 네모 없는 자동 그룹은 여기서 처음 네모가
+                      //  생기므로 그대로가 아니다(전처럼 저장한다).
+                      const was = groupsRef.current;
+                      const sameRect = (a: SceneGroup["rect"], b: SceneGroup["rect"]) =>
+                        a === b || (!!a && !!b && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h);
+                      const sameIds = (a: string[], b: string[]) => a.length === b.length && a.every((id, at) => id === b[at]);
+                      if (!stretched && ng.length === was.length && ng.every((x, at) => sameRect(x.rect, was[at].rect) && sameIds(x.cardIds, was[at].cardIds))) return;
                       groupsRef.current = ng; // ref 도 바로(위 reassignGroups 와 같은 까닭)
                       setGroups(ng);
                       persist(cardsRef.current, edgesRef.current, ng);
@@ -4223,16 +4258,28 @@ export function SceneBoard({
                     // 끄는 중 밖에서 씬이 갱신되면(위 씬 동기화) 늘리던 테두리를 받은 그룹에 다시 넣는다 — 저장은 last 로 하니 값은 맞지만 화면이
                     //  되돌아가 보였다. 누르기만 했으면 쥔 것이 없다 — 밖에서 온 테두리를 **새 출발점**으로 삼는다(넣지 않는다). 누른 순간의 값을
                     //  쥐고 있으면 화면은 새 테두리인데 놓을 때 옛 테두리가 저장된다(Codex 코드 리뷰).
-                    beginDrag(mv, upr, upr, () => {
+                    const end = () => {
+                      upr();
+                      endMoveGesture();
+                    };
+                    beginDrag(mv, end, end, () => {
                       if (!stretched) {
                         rect0 = rectNow() ?? rect0;
                         last = rect0;
+                        written = groupsRef.current.find((x) => x.id === g.id)?.rect;
                         return;
                       }
                       const ng = groupsRef.current.map((x) => (x.id === g.id ? { ...x, rect: last } : x));
                       groupsRef.current = ng;
                       setGroups(ng);
                     });
+                    // 크기 조절도 끌기다(조작 규칙 44 — 카드 크기 손잡이 lib/useSceneCardResize 와 같다): 누르고 있는 동안의 Ctrl+Z 는 받지
+                    //  않고, 끄는 중에 낀 파생 저장이 중간 네모를 굳혀도 되돌리기는 끌기 전 네모로 간다.
+                    beginGesture((snapshot) => ({
+                      ...snapshot,
+                      groups: snapshot.groups.map((x) => (x.id === g.id ? { ...x, rect: written } : x)),
+                    }));
+                    holdMove();
                   }}
                 />
               )}

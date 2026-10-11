@@ -42,6 +42,17 @@ interface UseSceneHistoryOptions {
   frozenRef: MutableRefObject<boolean>;
 }
 
+// 값이 같은가(한 겹만) — `{ ...card, fontSize: 같은 값 }` 처럼 새로 만들었지만 달라진 것이 없는 객체를 가린다. 없는 키와 undefined 는 같다.
+const sameShallow = (a: object, b: object) => {
+  if (a === b) return true;
+  const x = a as Record<string, unknown>;
+  const y = b as Record<string, unknown>;
+  for (const key of new Set([...Object.keys(x), ...Object.keys(y)])) if (x[key] !== y[key]) return false;
+  return true;
+};
+const sameItems = (a: object[], b: object[]) =>
+  a === b || (a.length === b.length && a.every((item, index) => sameShallow(item, b[index])));
+
 // SceneBoard의 화면 상태는 건드리지 않고, 저장 커밋과 undo/redo 스택만 소유한다.
 export function useSceneHistory({
   sceneId,
@@ -147,6 +158,16 @@ export function useSceneHistory({
       edges: nextEdges,
       groups: nextGroups,
     };
+    // 바뀐 것이 없는 사용자 저장은 받지 않는다(조작 규칙 44) — 같은 이름으로 끝낸 그룹 이름·최솟값에서 한 번 더 누른 글씨 크기·같은 색
+    //  다시 고르기·대상이 없는 그룹 색이 빈 단계를 쌓고(Ctrl+Z 가 헛돈다) 다시 하기를 지웠다. 부르는 곳마다 막지 않고 여기 한 곳에서 본다.
+    //  · 소속을 빼거나 붙인 저장은 카드가 같아 보여도 쌓는다(전이 정보가 그 엔트리에 실려야 한다).
+    //  · 끌기 묶음 안에서는 보지 않는다 — 끄는 중의 파생 저장이 마지막 자리를 이미 적어 놓았으면 놓을 때의 저장이 '안 바뀜'으로 보이는데,
+    //    그 끌기의 엔트리(끌기 전 자리)는 쌓아야 한다.
+    if (
+      opts?.undo !== false && !gestureRef.current && !opts?.removedForward?.length && !opts?.addedForward?.length &&
+      sameItems(next.cards, lastCommitRef.current.cards) && sameItems(next.edges, lastCommitRef.current.edges) &&
+      sameItems(next.groups, lastCommitRef.current.groups)
+    ) return;
     if (opts?.undo !== false) {
       // 이 커밋이 카드 소속을 명시적으로 제거했다면(comfy 워크플로 교체 등) 또는 추가했다면
       // (떨어진 생성물 붙이기), 그 전이 정보를 undo 엔트리에 싣는다 — undo/redo 는 이걸
