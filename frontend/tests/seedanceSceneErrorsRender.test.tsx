@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, useCallback, useRef, useState, type ComponentProps } from "react";
+import { act, useCallback, useRef, useState, type ComponentProps, type SetStateAction } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Scene, SceneCard } from "../src/lib/scenes";
 import type { Generation } from "../src/types";
@@ -24,6 +24,11 @@ let sceneConfirmFails = false;
 let regenRuns: Promise<unknown>[] = [];
 let sceneWrites = 0;
 const regenTarget = { id: "made-gen", prompt: "만든 것", model: "seedance_2_5", status: "done", assets: [], tags: [] } as unknown as Generation;
+// 로그아웃(14회차) — 가짜 머리줄의 단추가 App 이 준 onLogout 을 부른다. 가짜 로그인 훅의 logout 이 logoutResult 를 돌려주고,
+//  목록에 쓴 값(setGens)을 모아 '비웠는가'를 본다.
+let logoutResult = true;
+let logoutRun: Promise<unknown> | undefined;
+let gensWrites: unknown[] = [];
 const noop = () => {};
 const reload = vi.fn(async () => {});
 
@@ -47,7 +52,6 @@ function fixtureScene(): Scene {
 function installAppBoundaries() {
   // 주변 화면은 렌더 비용/관계없는 API만 제거. 아래 SceneBoard 버튼은 App이 전달한 실제 콜백을 호출한다.
   for (const [path, names] of [
-    ["../src/components/TopBar", ["TopBar"]],
     ["../src/components/FilterSidebar", ["FilterSidebar"]],
     ["../src/components/sidebar/CanvasFolderSidebar", ["CanvasFolderSidebar"]],
     ["../src/components/LibraryToolbar", ["LibraryToolbar"]],
@@ -77,11 +81,16 @@ function installAppBoundaries() {
       </>
     ),
   }));
+  vi.doMock("../src/components/TopBar", () => ({
+    TopBar: ({ onLogout }: { onLogout?: () => void }) => (
+      <button onClick={() => { logoutRun = Promise.resolve(onLogout?.()); }}>시험 로그아웃</button>
+    ),
+  }));
   vi.doMock("../src/lib/useHubAuth", () => ({
     useHubAuth: () => ({
       authPending: false, authReady: true, authConfig: { auth_enabled: true },
       account: { email: "fixture@example.invalid" }, hubAccount: null,
-      finalizeProjects: new Set<string>(), sharedSrv: null, logout: noop, setAccount: noop,
+      finalizeProjects: new Set<string>(), sharedSrv: null, logout: async () => logoutResult, setAccount: noop,
     }),
   }));
   // WebSocket/백그라운드 폴링은 이 시험 대상이 아니다.
@@ -124,7 +133,8 @@ function installAppBoundaries() {
   }));
   vi.doMock("../src/lib/useGenerationLibraryData", () => ({
     useGenerationLibraryData: () => {
-      const [gens, setGens] = useState<Generation[]>([]);
+      const [gens, writeGens] = useState<Generation[]>([]);
+      const setGens = useCallback((next: SetStateAction<Generation[]>) => { gensWrites.push(next); writeGens(next); }, []);
       const [facets, setFacets] = useState({ tags: [], auto_tags: [], models: [] });
       const gensRef = useRef(gens);
       gensRef.current = gens;
@@ -153,6 +163,9 @@ beforeEach(() => {
   sceneRun = undefined;
   regenRuns = [];
   sceneWrites = 0;
+  logoutResult = true;
+  logoutRun = undefined;
+  gensWrites = [];
   reload.mockClear();
   installAppBoundaries();
   style = installPromptStyles();
@@ -286,5 +299,22 @@ describe("App: 프롬프트 숨김 상태에서 씬의 부분 성공과 카드�
     await settle();
     expect(prepareRegenerate).toHaveBeenCalledTimes(2);
     await act(async () => { await Promise.all(regenRuns); });
+  });
+
+  // 14회차(조작 규칙 41): 전엔 목록을 먼저 비우고 로그아웃을 불렀다 — 로그아웃하지 못하면(허브가 실패를 답했다) 그 계정인 채로 빈 목록만 남았다.
+  it("로그아웃 — 로그아웃하지 못했으면 목록을 비우지 않는다. 된 뒤에 비운다", { timeout: 20_000 }, async () => {
+    const { default: App } = await import("../src/App");
+    act(() => view.root.render(<App />));
+    await settle();
+    const cleared = () => gensWrites.filter((next) => Array.isArray(next) && next.length === 0).length;
+    const before = cleared();
+    logoutResult = false;
+    click(button(view.container, "시험 로그아웃"));
+    await act(async () => { await logoutRun; });
+    expect(cleared()).toBe(before);
+    logoutResult = true;
+    click(button(view.container, "시험 로그아웃"));
+    await act(async () => { await logoutRun; });
+    expect(cleared()).toBe(before + 1);
   });
 });

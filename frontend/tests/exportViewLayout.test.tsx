@@ -268,6 +268,27 @@ it("저장이 도는 동안 진행률과 취소 단추가 보이고, 취소는 �
   expect(host.querySelector(".export-cancel")).toBeNull(); // 끝나면 사라진다
 });
 
+// 14회차(조작 규칙 41): 전엔 취소 요청이 실패하면 단추만 돌아왔다 — 멈춘 것인지 못 멈춘 것인지 알 수 없었다.
+it("취소 요청이 실패하면 알리고 단추를 되돌린다 — 다시 누르면 다시 보낸다", async () => {
+  status = { render_path: "R:/render", error: null, shared_supported: true, targets: [target("c0030", false, null, "shared")], history: [] };
+  let finish!: (value: { saved: number; skipped: number; errors: never[] }) => void;
+  saveFinals.mockReset().mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  saveFinalsProgress.mockResolvedValue({ progress: { run: 7, kind: "shared", total: 406, done: 12, saved: 12, skipped: 0, failed: 0, running: true, cancelled: false, started_at: 0, ended_at: null } });
+  saveFinalsCancel.mockRejectedValueOnce(new Error("502: 서버에 닿지 않습니다"));
+  await mount();
+  await act(async () => { button("공유 저장").click(); });
+  await answer("예");
+  await act(async () => {});
+  const cancel = () => host.querySelector<HTMLButtonElement>(".export-cancel")!;
+  await act(async () => { cancel().click(); });
+  expect(texts(".export-err").join(" ")).toContain("저장을 멈추지 못했습니다 — 저장은 계속 돌고 있습니다. 다시 눌러 주세요. 502: 서버에 닿지 않습니다");
+  expect([cancel().disabled, cancel().textContent]).toEqual([false, "취소"]);
+  await act(async () => { cancel().click(); });
+  expect(saveFinalsCancel).toHaveBeenCalledTimes(2);
+  expect(cancel().textContent).toBe("멈추는 중…");
+  await act(async () => { finish({ saved: 12, skipped: 0, errors: [] }); });
+});
+
 it("진행률을 못 읽어도(구서버·권한 없음) 저장은 그대로 되고 화면만 종전처럼 보인다", async () => {
   status = { render_path: "R:/render", error: null, shared_supported: true, targets: [target("c0030", false, null, "shared")], history: [] };
   let finish!: (value: { saved: number; skipped: number; errors: never[] }) => void;

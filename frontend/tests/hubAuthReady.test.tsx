@@ -105,6 +105,49 @@ it.each([
   }
 });
 
+// 14회차(조작 규칙 41): AUTH-off 의 로그아웃은 허브에 세션 정리를 시키고 새로 고친다. 전엔 그 요청의 실패를 삼키고 새로 고쳐,
+//  허브에 세션이 남은 채 로그인 화면 없이 같은 계정으로 말없이 돌아왔다(로그아웃된 줄 안다).
+it("AUTH-off 로그아웃 — 허브가 실패를 답하면 새로 고치지 않고 알리며 '로그아웃 안 됨'을 돌려준다", async () => {
+  const reloadPage = vi.fn();
+  vi.stubGlobal("location", { href: "http://localhost:3000/", origin: "http://localhost:3000", protocol: "http:", host: "localhost:3000",
+    hostname: "localhost", port: "3000", pathname: "/", search: "", hash: "", reload: reloadPage });
+  let hubAnswers = false;
+  vi.stubGlobal("fetch", vi.fn((url: string) => {
+    if (url === "/api/auth/config") return Promise.resolve(response({ auth_enabled: false, has_accounts: false }));
+    if (url === "/api/shared-server/status") return Promise.resolve(response({ configured: true, has_token: false, url: "http://127.0.0.1:9" }));
+    if (url === "/api/projects/my-finalize-roles") return Promise.resolve(response({ project_ids: [] }));
+    if (url === "/api/shared-server/logout") {
+      return Promise.resolve(hubAnswers ? response({ ok: true, has_token: false }) : new Response(JSON.stringify({ detail: "boom" }), { status: 500 }));
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  }));
+  const flashes: string[] = [];
+  const onFlash = (event: Event) => { flashes.push((event as CustomEvent<string>).detail); };
+  window.addEventListener("ch:flash", onFlash);
+  try {
+    const { useHubAuth } = await import("../src/lib/useHubAuth");
+    let logout!: () => Promise<boolean>;
+    function Host() {
+      logout = useHubAuth().logout;
+      return null;
+    }
+    await act(async () => root!.render(<Host />));
+    await act(async () => {});
+    let loggedOut: boolean | undefined;
+    await act(async () => { loggedOut = await logout(); });
+    expect(loggedOut).toBe(false);
+    expect(reloadPage).not.toHaveBeenCalled();
+    expect(flashes).toEqual(["로그아웃하지 못했습니다 — 잠시 뒤 다시 시도하세요."]);
+    hubAnswers = true;
+    await act(async () => { loggedOut = await logout(); });
+    expect(loggedOut).toBe(true);
+    expect(reloadPage).toHaveBeenCalledTimes(1);
+    expect(flashes).toHaveLength(1);
+  } finally {
+    window.removeEventListener("ch:flash", onFlash);
+  }
+});
+
 it("AUTH-on: 설정이 오기 전 참이었다가 거짓으로 출렁이지 않는다(로그인 전에는 거짓)", async () => {
   const config = deferred<Response>();
   const { ready } = await mount({ "/api/auth/config": () => config.promise });

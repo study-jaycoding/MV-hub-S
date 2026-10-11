@@ -1859,8 +1859,9 @@ export default function App() {
   };
 
   const onLogout = async () => {
-    setGens([]); // 로그아웃 즉시 데이터 비우기
-    await logout();
+    // 로그아웃된 뒤에 데이터를 비운다(조작 규칙 41). 전엔 먼저 비웠는데, 로그아웃하지 못하면(허브가 실패를 답했다 — 안내는 logout 이
+    //  띄운다) 아직 그 계정인 채로 빈 목록만 남는다.
+    if (await logout()) setGens([]);
   };
 
   // ★훅은 조기 return 위에서 무조건 호출돼야 한다(아래 authPending/로그인 게이트보다 위). memo 파생값.
