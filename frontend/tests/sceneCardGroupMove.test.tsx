@@ -1492,6 +1492,24 @@ it("화면 맞춤 전환이 도는 중(보이는 배율 9%·목표 43%)에 시�
   expect(marked()).toEqual([]);
 });
 
+// 11회차(조작 규칙 38): 브라우저는 Ctrl+V 를 누르고 있으면 반복 keydown 마다 paste 를 또 보낸다 — 카드가 반복 횟수만큼 붙었다.
+it("길게 눌린 Ctrl+V 는 보드에서 반복 붙여넣기가 되지 않는다 — 반복 keydown 의 기본 동작(paste)을 막는다. 입력칸에서는 그대로다", async () => {
+  await show([textCard("a1", 110)], []);
+  const pressPaste = (target: EventTarget, repeat: boolean) => {
+    const event = new KeyboardEvent("keydown", { key: "v", code: "KeyV", ctrlKey: true, bubbles: true, cancelable: true, repeat });
+    act(() => { target.dispatchEvent(event); });
+    return event.defaultPrevented;
+  };
+  expect([pressPaste(document.body, false), pressPaste(document.body, true)]).toEqual([false, true]); // 첫 누름의 paste 는 그대로 온다
+  const input = document.createElement("input");
+  document.body.append(input);
+  try {
+    expect(pressPaste(input, true)).toBe(false); // 글자를 치는 자리의 붙여넣기는 브라우저 몫이다
+  } finally {
+    input.remove();
+  }
+});
+
 // ── 9회차 ──
 // 끄는 중에 밖에서 씬이 갱신된다(생성 결과 도착·다른 창의 편집) — 받은 값에는 저장 전인 끌기의 좌표·크기·네모가 없다. 전엔 끌던 것이
 //  끌기 전 자리로 돌아가 보였고(다음 움직임에 다시 옴 — 2026-10-11 캔버스 실측 3/3), **더 움직이지 않고 놓으면 그 값이 저장**됐다:

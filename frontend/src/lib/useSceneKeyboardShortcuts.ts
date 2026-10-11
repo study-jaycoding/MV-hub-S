@@ -47,7 +47,12 @@ export function useSceneKeyboardShortcuts(actions: SceneKeyboardActions): void {
   actionsRef.current = actions;
 
   useEffect(() => {
+    let pickerTabHeld = false; // 지금 눌려 있는 Tab 의 첫 keydown 을 캔버스가 썼는가(노드 선택기 여닫기) — 반복 keydown 이 본다
     const onKeyDown = (event: KeyboardEvent) => {
+      // 새로 누른 Tab 이면 앞선 Tab 은 끝난 것이다. 아래의 양보(창·입력 칸)보다 먼저 지운다 — 선택기를 Tab 으로 열고 Esc 로 닫은 뒤 입력 칸에서
+      //  Tab 을 길게 누르면, 첫 keydown 은 양보하며 돌아가 표식이 남고 초점이 단추로 옮겨 간 뒤의 반복이 막혀 초점 이동이 멎었다.
+      //  다른 키(Tab 을 누른 채의 Shift 등)에는 지우지 않는다 — 같은 Tab 누름의 남은 반복이 초점을 옮기기 시작한다.
+      if (event.key === "Tab" && !event.repeat) pickerTabHeld = false;
       const current = actionsRef.current;
       // 위에 창·메뉴가 떠 있으면 키는 그쪽 것이다(lib/keyGate) — 가려진 보드에서 Delete·Ctrl+Z·복사가 실행되지 않는다
       //  (2026-10-10 실측: 재생 창·모델 설정 창이 뜬 채 Delete 가 뒤 카드를 지웠다).
@@ -112,7 +117,13 @@ export function useSceneKeyboardShortcuts(actions: SceneKeyboardActions): void {
 
       switch (intent.type) {
         case "toggle-picker":
-          if (current.onTogglePicker()) event.preventDefault();
+          // 길게 눌린 Tab — 선택기가 반복마다 열렸다 닫힌다. 첫 누름이 캔버스의 것이었으면 반복은 막기만 한다(초점이 Tab 으로 흘러가지 않게).
+          if (event.repeat) {
+            if (pickerTabHeld) event.preventDefault();
+            return;
+          }
+          pickerTabHeld = current.onTogglePicker();
+          if (pickerTabHeld) event.preventDefault();
           return;
         case "create-node":
           event.preventDefault();
@@ -175,8 +186,12 @@ export function useSceneKeyboardShortcuts(actions: SceneKeyboardActions): void {
     const onKeyUp = (event: KeyboardEvent) => {
       // 물리 키도 본다 — 한글 입력 상태에서는 keyup 의 key 가 글자가 아닐 수 있다(keydown 만 lib/keyGate 가 글자로 읽어 준다).
       if (event.key === "y" || event.key === "Y" || event.code === "KeyY") actionsRef.current.onCutHeldChange(false);
+      if (event.key === "Tab") pickerTabHeld = false;
     };
-    const onBlur = () => actionsRef.current.onCutHeldChange(false);
+    const onBlur = () => {
+      pickerTabHeld = false; // 창을 떠난 사이에 뗀 키는 keyup 이 오지 않는다
+      actionsRef.current.onCutHeldChange(false);
+    };
 
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);

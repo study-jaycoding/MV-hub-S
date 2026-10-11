@@ -240,6 +240,11 @@ describe("크게 보기 — 격자에서 열고 닫기", () => {
     play.mockClear();
     expect(key(" ").defaultPrevented).toBe(true);
     expect(play).toHaveBeenCalledTimes(1); // Space = 재생/정지(창 안 단추를 누르지 않는다)
+    // 길게 눌린 Space(반복 keydown)는 막기만 한다 — 재생/정지가 반복마다 뒤집히지 않는다(조작 규칙 38)
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    pause.mockClear();
+    expect(key(" ", document.activeElement ?? document.body, { repeat: true }).defaultPrevented).toBe(true);
+    expect([play.mock.calls.length, pause.mock.calls.length]).toEqual([1, 0]);
     expect(key("Enter").defaultPrevented).toBe(true);
     expect(opened).toHaveLength(1); // Enter 가 뒤 격자에서 크게 보기를 또 열지 않는다
     expect(host.querySelector(".preview-count")?.textContent?.trim()).toBe("2/5");

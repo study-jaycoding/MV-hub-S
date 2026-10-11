@@ -406,7 +406,13 @@ export function useSceneClipboardDrop(
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat || isTextEntryTarget(event.target) || backgroundKeysBlocked() || gridWindowOpen()) return;
+      if (isTextEntryTarget(event.target) || backgroundKeysBlocked() || gridWindowOpen()) return;
+      if (event.repeat) {
+        // 길게 눌린 Ctrl+V — 브라우저는 반복 keydown 마다 paste 를 또 보낸다(카드가 반복 횟수만큼 붙고, 그림이면 그만큼 올라간다).
+        //  보드가 받을 붙여넣기면 반복의 기본 동작(paste)을 막는다. 입력칸·위에 뜬 창의 붙여넣기는 위에서 이미 양보했다(조작 규칙 38).
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "v") event.preventDefault();
+        return;
+      }
       if (optionsRef.current.frozenRef.current) return; // 씬을 바꾸는 틈 — 예약(0.18초 뒤의 폴백)도 걸지 않는다
       if (!scenePasteShortcut(event, clipboardRef.current?.cards.length || 0)) return;
       // 직전 폴백 직후 사용자가 빠르게 Ctrl+V를 한 번 더 누른 것은 새로운 명령이다. 뒤늦게 도착한

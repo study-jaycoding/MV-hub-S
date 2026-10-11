@@ -274,12 +274,13 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
       if (!keys.length) return;
       const lower = event.key.toLowerCase();
       const hex = ASSET_COLOR_BY_KEY[lower];
+      // 색·비활성은 토글이다 — 길게 눌러 반복된 keydown 은 막기만 하고 다시 하지 않는다(조작 규칙 38)
       if (hex) {
         event.preventDefault();
-        applyColor(keys, hex);
+        if (!event.repeat) applyColor(keys, hex);
       } else if (lower === "d") {
         event.preventDefault();
-        applyOff(keys);
+        if (!event.repeat) applyOff(keys);
       }
     };
     window.addEventListener("keydown", onKey);
