@@ -198,6 +198,17 @@ export function focusCameByTab(): boolean {
   return focusByTab;
 }
 
+/** Enter·Space 가 초점 놓인 조작 요소 자신의 키인가 — 화면의 키 처리(격자·재생 창)가 가로채면 키보드로 그 단추를 못 누른다.
+ *  · 체크박스 같은 입력: 언제나(누른 뒤의 Space 는 그 체크박스를 다시 뒤집는 것이 맞다). 막대(range)는 뺀다 — Enter·Space 로 하는
+ *    일이 없다(음량 막대를 만진 뒤의 Space 는 여전히 재생/정지다).
+ *  · 단추·링크: **키보드로**(Tab) 초점을 옮겼을 때만. 마우스로 눌러 초점이 남은 단추는 화면이 받는다 — S 를 누른 뒤의 Space 가 S 를
+ *    또 누르지 않게, 반복 단추를 누른 뒤의 Space 가 여전히 재생/정지이게. */
+export function activationKeyOwned(e: KeyboardEvent): boolean {
+  if (e.key !== "Enter" && e.key !== " ") return false;
+  const control = (e.target as HTMLElement | null)?.closest?.("button, a[href], input:not([type=range]), select, [role=button]");
+  return !!control && (control.matches("input, select") || focusByTab);
+}
+
 // ── 모달의 초점 ──
 //  막이 있는 창(모달)이 떠 있어도 Tab 은 뒤 화면으로 나갔고, 그 자리의 Enter·Space 가 뒤 단추를 눌렀다(2026-10-11 실측: 정보·비교·관리자·
 //  설정·단축키 창. 정보·비교·관리자 창은 연 직후의 초점부터 뒤에 있었다). 모달이 자기 영역(뿌리 요소)을 여기에 올리면(useModalFocus)

@@ -61,10 +61,29 @@ it("사용자가 끌어 옮긴 뒤에는 자동으로 올리지 않는다", () =
   const popup = open(100);
   const head = popup.querySelector<HTMLElement>(".info-head")!;
   act(() => { head.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 500, clientY: 120 })); });
-  act(() => { window.dispatchEvent(new MouseEvent("pointermove", { clientX: 500, clientY: 720 })); }); // 아래로 600px
+  act(() => { window.dispatchEvent(new MouseEvent("pointermove", { clientX: 500, clientY: 720, buttons: 1 })); }); // 아래로 600px
   act(() => { window.dispatchEvent(new MouseEvent("pointerup", {})); });
   const dragged = popup.style.top;
   expect(parseFloat(dragged)).toBeGreaterThan(600);
   act(() => resized?.());
   expect(popup.style.top).toBe(dragged);
+});
+
+// 2026-10-11 실측(태그·코멘트 패널 3/3 — 같은 도우미): mouseup 을 놓친 창이 단추를 뗀 마우스를 계속 따라오고 그 자리가 저장됐다.
+it.each([
+  ["단추를 뗀 채 온 움직임", () => window.dispatchEvent(new MouseEvent("pointermove", { clientX: 900, clientY: 500, buttons: 0 }))],
+  ["창을 떠남(blur)", () => window.dispatchEvent(new Event("blur"))],
+  ["pointercancel", () => window.dispatchEvent(new Event("pointercancel"))],
+])("머리를 끄는 중 mouseup 을 놓치면 창이 뗀 마우스를 따라오지 않는다 — %s", (_name, lose) => {
+  const popup = open(100);
+  const head = popup.querySelector<HTMLElement>(".info-head")!;
+  act(() => { head.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 500, clientY: 120 })); });
+  act(() => { window.dispatchEvent(new MouseEvent("pointermove", { clientX: 520, clientY: 220, buttons: 1 })); });
+  const kept = [popup.style.left, popup.style.top];
+  expect(parseFloat(kept[1])).toBeGreaterThan(150); // 끌린 자리
+  act(() => { lose(); });
+  expect([popup.style.left, popup.style.top]).toEqual(kept); // 놓친 그 이벤트의 자리로 가지 않는다
+  act(() => { window.dispatchEvent(new MouseEvent("pointermove", { clientX: 700, clientY: 600, buttons: 0 })); });
+  act(() => { window.dispatchEvent(new MouseEvent("pointermove", { clientX: 760, clientY: 640, buttons: 1 })); }); // 다른 것을 누른 채의 움직임도
+  expect([popup.style.left, popup.style.top]).toEqual(kept);
 });

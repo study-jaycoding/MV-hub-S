@@ -11,9 +11,10 @@ import { formatCredits } from "../lib/formatCredits";
 import { formatGenerationDateTime, generationListMeta } from "../lib/generationDisplay";
 import { useT } from "../lib/i18n";
 import { thumbOf } from "../lib/media";
-import { useModalFocus } from "../lib/keyGate";
+import { activationKeyOwned, useModalFocus } from "../lib/keyGate";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import { useEscapeClose } from "../lib/useEscapeClose";
+import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { FolderCard, PreviewItem, PreviewTarget } from "../types";
 import { CloseIcon } from "./common/ViewIcons";
 import { MediaThumbnail } from "./MediaThumbnail";
@@ -481,6 +482,7 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
     if (!keys) return;
     const onKey = (e: KeyboardEvent) => {
       if (isEditable(e.target)) return;
+      if (activationKeyOwned(e)) return; // Tab 으로 찾아간 단추(닫기·반복·음소거…)의 Space 는 그 단추를 누르는 키(lib/keyGate)
       if (e.key === " ") togglePlay();
       else if (e.key === "ArrowUp") prevCut();
       else if (e.key === "ArrowDown") nextCut();
@@ -510,15 +512,11 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
     seekAt(e.clientX);
     const move = (ev: MouseEvent) => seekAt(ev.clientX);
     const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-      window.removeEventListener("blur", up);
+      removeWindowMouseDrag(move, up);
       dragEndRef.current = null;
     };
     dragEndRef.current = up;
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-    window.addEventListener("blur", up);
+    addWindowMouseDrag(move, up); // 창을 떠남·단추를 뗀 채 온 움직임에도 끝난다(lib/windowDrag)
   };
 
   const pct = ready && total > 0 ? (virtual / total) * 100 : 0;

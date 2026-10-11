@@ -84,6 +84,27 @@ it("캔버스의 동일한 폴더 메뉴에서도 상단 원본 열기가 동작
   expect(action).toHaveBeenCalledExactlyOnceWith("open-folder", "menu-my-canvas", "제이", "제이");
 });
 
+// 8회차(2026-10-11 격리 실측 dist_b46): 폴더 줄에서 d 를 길게 누르면 반복마다 뒤집혔고(키다운 11번 = 토글 11번, 6/6),
+//  폴더 메뉴가 열린 채 Tab 으로 닿은 뒤의 폴더 줄에서도 d 가 먹었다(3/3).
+it("폴더 줄의 d(비활성)는 길게 눌러도 한 번만 뒤집고, 폴더 메뉴가 떠 있는 동안은 쉰다", async () => {
+  const { row } = await menu("my");
+  const d = (init: KeyboardEventInit = {}) =>
+    act(() => { row.dispatchEvent(new KeyboardEvent("keydown", { key: "d", bubbles: true, cancelable: true, ...init })); });
+  const off = () => row.classList.contains("disabled");
+  d();
+  expect(off()).toBe(false); // 메뉴가 떠 있다 — 뒤의 폴더 줄은 쉰다
+  act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  expect(document.querySelector('[role="menu"]')).toBeNull();
+  d();
+  expect(off()).toBe(true);
+  for (let i = 0; i < 10; i += 1) {
+    d({ repeat: true }); // 누르고 있는 동안의 자동 반복 — 걸음마다 그대로다
+    expect(off()).toBe(true);
+  }
+  d();
+  expect(off()).toBe(false);
+});
+
 it("열기 API에는 프로젝트 ID와 상대 폴더만 전송한다", async () => {
   const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
   vi.stubGlobal("fetch", fetch);

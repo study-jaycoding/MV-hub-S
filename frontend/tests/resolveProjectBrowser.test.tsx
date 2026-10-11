@@ -900,6 +900,44 @@ it("여러 장 고르기 — 빈 자리에서 끌면 상자로, Ctrl+A 는 보�
   expect(host.querySelector(".assets-marquee")).toBeNull();
   await act(async () => window.dispatchEvent(new MouseEvent("mousemove", { clientX: 10, clientY: 10 })));
   expect(host.querySelector(".assets-marquee")).toBeNull(); // 단추를 안 눌러도 선택이 계속 바뀌지 않는다
+
+  // 빈 자리를 누른 채 창을 떠나거나(blur) mouseup 을 놓친 것은 '풀기'로 확정하지 않는다 — 놓친 끌기는 정리만 한다(lib/windowDrag)
+  const before = pickedCount();
+  expect(before).toBeGreaterThan(0);
+  await act(async () => {
+    body().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 5, clientY: 5, button: 0 }));
+    window.dispatchEvent(new Event("blur"));
+  });
+  expect(pickedCount()).toBe(before);
+  await act(async () => {
+    body().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 5, clientY: 5, button: 0 }));
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 6, clientY: 6, buttons: 0 }));
+  });
+  expect(pickedCount()).toBe(before);
+});
+
+// 2026-10-11 격리 실측(dist_b46) 3/3: 크기 막대를 마우스로 끈 뒤 초점이 막대에 남아 r·g·b·d·Ctrl+A·Esc 가 전부 안 먹었다.
+it("카드 크기 막대에 초점이 남아 있어도 격자의 키는 듣는다(글자 입력이 아니다)", async () => {
+  act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
+  await settle();
+  const slider = host.querySelector<HTMLInputElement>(".size-slider input")!;
+  const pickedCount = () => host.querySelectorAll(".resolve-project-card.picked").length;
+  const press = (key: string, init: KeyboardEventInit = {}) =>
+    act(async () => {
+      slider.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
+    });
+  await act(async () => host.querySelector<HTMLButtonElement>(".resolve-project-card")!.click());
+  act(() => slider.focus());
+  expect(document.activeElement).toBe(slider);
+
+  await press("d");
+  expect(host.querySelectorAll(".resolve-project-card.deactivated")).toHaveLength(1);
+  await press("r");
+  expect(host.querySelectorAll(".rp-colorbar")).toHaveLength(1);
+  await press("a", { ctrlKey: true });
+  expect(pickedCount()).toBe(2);
+  await press("Escape");
+  expect(pickedCount()).toBe(0);
 });
 
 it("머리글 d·r·g·b 는 에셋 탭과 같은 거르기 — 그 색만 보이고, 회색은 비활성을 숨긴다", async () => {

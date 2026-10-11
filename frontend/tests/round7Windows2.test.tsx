@@ -122,3 +122,74 @@ function Upper({ onClose }: { onClose: () => void }) {
   useEscapeClose(onClose);
   return null;
 }
+
+// 8회차(2026-10-11 격리 실측 dist_b46): 버전 비교 창의 이동·크기 조절이 mouseup 을 놓치면 단추를 뗀 마우스를 계속 따라왔다(각 3/3, blur 뒤에도).
+describe("버전 비교 창의 이동·크기 조절 — 놓친 mouseup", () => {
+  const box = () => {
+    const style = host.querySelector<HTMLElement>(".cmp-window")!.style;
+    return [style.left, style.top, style.width, style.height];
+  };
+  const pointer = (type: string, target: EventTarget, init: MouseEventInit) =>
+    act(() => { target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init })); });
+  function open() {
+    Object.assign(window, { innerWidth: 1600, innerHeight: 900 });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+      { left: 200, top: 100, right: 1000, bottom: 600, width: 800, height: 500, x: 200, y: 100, toJSON: () => ({}) } as DOMRect);
+    act(() => root.render(<CompareModal gens={[image("a"), image("b")]} onClose={() => {}} />));
+  }
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    ["단추를 뗀 채 온 움직임", () => window.dispatchEvent(new MouseEvent("pointermove", { clientX: 700, clientY: 500, buttons: 0 }))],
+    ["창을 떠남(blur)", () => window.dispatchEvent(new Event("blur"))],
+  ])("머리를 끌다 놓치면 그 자리에 멈춘다 — %s", (_name, lose) => {
+    open();
+    pointer("pointerdown", host.querySelector(".cmp-window .admin-head")!, { clientX: 300, clientY: 120 });
+    pointer("pointermove", window, { clientX: 350, clientY: 150, buttons: 1 });
+    const kept = box();
+    expect(kept.slice(0, 2)).toEqual(["250px", "130px"]);
+    act(() => { lose(); });
+    pointer("pointermove", window, { clientX: 520, clientY: 320, buttons: 1 }); // 곧바로 다른 것을 누른 채 움직여도(끝나 있다)
+    expect(box()).toEqual(kept);
+    pointer("pointermove", window, { clientX: 500, clientY: 300, buttons: 0 });
+    expect(box()).toEqual(kept);
+  });
+
+  it("다른 포인터의 up·cancel·단추 없는 움직임은 이 끌기를 끝내지 않는다 — 잡은 포인터가 끝나거나 창을 떠나면 끝난다", () => {
+    open();
+    // jsdom 의 MouseEvent 에는 pointerId 가 없다 — 붙여서 쏜다
+    const withId = (type: string, pointerId: number, init: MouseEventInit) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init });
+      Object.defineProperty(event, "pointerId", { value: pointerId });
+      return event;
+    };
+    const fire = (target: EventTarget, event: Event) => act(() => { target.dispatchEvent(event); });
+    fire(host.querySelector(".cmp-window .admin-head")!, withId("pointerdown", 1, { clientX: 300, clientY: 120 }));
+    fire(window, withId("pointermove", 1, { clientX: 350, clientY: 150, buttons: 1 }));
+    expect(box().slice(0, 2)).toEqual(["250px", "130px"]);
+    fire(window, withId("pointerup", 2, {}));
+    fire(window, withId("pointercancel", 2, {}));
+    fire(window, withId("pointermove", 1, { clientX: 400, clientY: 180, buttons: 1 }));
+    expect(box().slice(0, 2)).toEqual(["300px", "160px"]); // 여전히 끌린다
+    fire(window, withId("pointerup", 1, {}));
+    fire(window, withId("pointermove", 1, { clientX: 600, clientY: 400, buttons: 1 }));
+    expect(box().slice(0, 2)).toEqual(["300px", "160px"]);
+  });
+
+  it("크기 손잡이를 끌다 놓쳐도 뗀 마우스를 따라 커지지 않는다 · 정상으로 놓으면 그 크기", () => {
+    open();
+    const handle = host.querySelector<HTMLElement>(".cmp-window-resize")!;
+    pointer("pointerdown", handle, { clientX: 1000, clientY: 600 });
+    pointer("pointermove", window, { clientX: 950, clientY: 570, buttons: 1 });
+    const kept = box();
+    expect(kept.slice(2)).toEqual(["750px", "470px"]);
+    pointer("pointermove", window, { clientX: 800, clientY: 400, buttons: 0 }); // mouseup 을 놓쳤다
+    pointer("pointermove", window, { clientX: 700, clientY: 300, buttons: 0 });
+    expect(box()).toEqual(kept);
+    pointer("pointerdown", handle, { clientX: 1000, clientY: 600 }); // 다시 잡아 정상으로 놓는다
+    pointer("pointermove", window, { clientX: 1100, clientY: 650, buttons: 1 });
+    pointer("pointerup", window, { clientX: 1100, clientY: 650 });
+    pointer("pointermove", window, { clientX: 1300, clientY: 800, buttons: 1 });
+    expect(box().slice(2)).toEqual(["900px", "550px"]);
+  });
+});

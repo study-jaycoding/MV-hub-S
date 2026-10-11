@@ -19,7 +19,7 @@ function mount(state: { popup?: boolean; picker?: boolean }) {
   const onSelectAll = vi.fn();
   // 이 시험이 보는 것은 세 상태 판정과 onSelectAll 뿐 — 나머지 액션은 불리면 안 되므로 부르면 실패하는 가짜로 채운다.
   const actions = new Proxy(
-    { isTextEditing: () => false, isPopupOpen: () => !!state.popup, isPickerOpen: () => !!state.picker, selectionCount: () => 0, onSelectAll },
+    { isFrozen: () => false, isTextEditing: () => false, isPopupOpen: () => !!state.popup, isPickerOpen: () => !!state.picker, selectionCount: () => 0, onSelectAll },
     { get: (target, name) => (name in target ? target[name as keyof typeof target] : () => { throw new Error(`unexpected action: ${String(name)}`); }) },
   ) as unknown as Actions;
   function Harness() { useSceneKeyboardShortcuts(actions); return <input className="probe-input" />; }

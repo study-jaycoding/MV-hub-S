@@ -57,6 +57,8 @@ interface UseSpotlightSubmitOptions {
   paramsLoading: boolean;
   paramsModel: string;
   trayRefs: SpotlightTrayRef[];
+  /** 트레이가 지금의 묶임(카드·씬)에 맞춰졌는가(lib/useSpotlightTray). 아니면 trayRefs 는 **앞 카드의 것**이다 — 제출하지 않는다. */
+  trayReady: boolean;
   tunable: ModelParam[];
   workspace: WorkspaceContext;
   setBusy: (busy: boolean) => void;
@@ -92,6 +94,7 @@ export function useSpotlightSubmit({
   paramsLoading,
   paramsModel,
   trayRefs,
+  trayReady,
   tunable,
   workspace,
   setBusy,
@@ -116,6 +119,9 @@ export function useSpotlightSubmit({
     canvasTargetOverride?: CanvasGenerationTarget | null,
   ) => {
     if (busy) return;
+    // 묶인 카드(씬)가 막 바뀌어 트레이가 아직 앞 카드의 레퍼런스를 들고 있는 한 박자 — 그대로 내면 앞 카드의 레퍼런스로 생성이 나간다
+    //  (씬을 바꾼 직후에는 대상 카드도 없어 일반 생성으로. 2026-10-11 Codex 코드 리뷰). 그 사이에 밀려 들어온 제출 키는 받지 않는다.
+    if (!trayReady) return;
     setError(null);
     if (!isGenerationWorkspaceReady(workspace)) {
       setError("워크스페이스를 확인하는 중입니다. 계정 메뉴에서 공간을 선택해 주세요.");
@@ -288,6 +294,7 @@ export function useSpotlightSubmit({
     setBusy,
     setError,
     trayRefs,
+    trayReady,
     tunable,
     updatePlaceholder,
     workspace,

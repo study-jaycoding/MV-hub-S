@@ -11,6 +11,7 @@ import {
 } from "../lib/compareDiff";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import { bindSynchronizedVideos } from "../lib/synchronizedVideos";
+import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
 import { CloseIcon, FitIcon, MaximizeIcon } from "./common/ViewIcons";
 import {
   compareImageSource,
@@ -153,20 +154,17 @@ export function CompareModal({
           : resizeCompareWindow(start, deltaX, deltaY, window.innerWidth, window.innerHeight),
       );
     };
-    const stop = (nextEvent: PointerEvent) => {
-      if (nextEvent.pointerId !== pointerId) return;
+    // 끝 — 놓은 것(pointerup)·취소, 그리고 놓친 것(창을 떠남·단추를 뗀 채 온 움직임 — lib/windowDrag). 다른 포인터의 up·cancel 은 무시한다.
+    const stop = (nextEvent: Event) => {
+      if ("pointerId" in nextEvent && nextEvent.pointerId !== pointerId) return;
       cleanup();
     };
     const cleanup = () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", stop);
-      window.removeEventListener("pointercancel", stop);
+      removeWindowPointerDrag(onPointerMove, stop);
       interactionCleanupRef.current = null;
     };
     interactionCleanupRef.current = cleanup;
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", stop);
-    window.addEventListener("pointercancel", stop);
+    addWindowPointerDrag(onPointerMove, stop);
   };
 
   const toggleMaximized = () => {

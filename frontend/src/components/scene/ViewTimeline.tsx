@@ -2,8 +2,9 @@
 //  · 별도 영상 파일을 하나로 합치지 않고, <video> 를 클립 순서대로 재생하며 '가상 타임라인'(이전 클립 길이 합
 //    + 현재 위치)으로 재생헤드·스크러버를 계산한다. 이미지 클립은 IMG_DUR 초 동안 정지화면으로 재생.
 //  · 편집(트리밍/클립 이동)은 범위 밖 — 재생·미리보기 중심.
-import { useModalFocus } from "../../lib/keyGate";
+import { activationKeyOwned, useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
+import { addWindowMouseDrag, removeWindowMouseDrag } from "../../lib/windowDrag";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flashMsg } from "../../lib/flash";
 import { HttpError } from "../../lib/http";
@@ -226,7 +227,8 @@ export function ViewTimeline({
   const togglePlayRef = useRef<() => void>(() => {});
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== " ") return;
+      // Tab 으로 찾아간 단추(닫기·반복…)의 Space 는 그 단추를 누르는 키(lib/keyGate). 음량 막대에 초점이 남아 있을 때는 여전히 재생/정지
+      if (e.key !== " " || activationKeyOwned(e)) return;
       e.preventDefault();
       togglePlayRef.current();
     };
@@ -270,15 +272,11 @@ export function ViewTimeline({
     seekAtClientX(e.clientX);
     const move = (ev: MouseEvent) => seekAtClientX(ev.clientX);
     const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-      window.removeEventListener("blur", up);
+      removeWindowMouseDrag(move, up);
       dragCleanupRef.current = null;
     };
     dragCleanupRef.current = up;
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-    window.addEventListener("blur", up); // Alt-Tab 으로 창을 떠나면 mouseup 을 못 받는다 — 리스너가 남지 않게
+    addWindowMouseDrag(move, up); // 창을 떠남(Alt-Tab)·단추를 뗀 채 온 움직임에도 끝난다(lib/windowDrag) — 리스너가 남지 않게
   };
 
   const togglePlay = () => setPlaying((p) => !p);

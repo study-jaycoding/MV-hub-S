@@ -6,6 +6,7 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { MutableRefObject, RefObject } from "react";
 import { minimapViewBox } from "../../lib/sceneViewport";
+import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../../lib/windowDrag";
 
 export interface MinimapBox {
   id: string;
@@ -139,22 +140,18 @@ export function SceneMinimap({
     const teardown = () => {
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-      window.removeEventListener("blur", onBlur);
+      removeWindowMouseDrag(move, up);
       dragCleanupRef.current = null;
     };
-    const up = (ev: MouseEvent) => {
-      const p = at(ev.clientX, ev.clientY);
+    // mouseup 을 놓친 끌기(창 blur·단추를 뗀 채 온 움직임 — lib/windowDrag)는 정리만 한다 — 뗀 자리를 모른다. 리스너가 남지 않게.
+    const up = (ev: Event) => {
       teardown();
+      if (dragLost(ev)) return;
+      const p = at((ev as MouseEvent).clientX, (ev as MouseEvent).clientY);
       onNavigate(p.wx, p.wy, true);
     };
-    // 드래그 중 창 blur(Alt-Tab 등)로 mouseup 을 놓쳐도 리스너가 남지 않게 정리.
-    const onBlur = () => teardown();
     dragCleanupRef.current = teardown;
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-    window.addEventListener("blur", onBlur);
+    addWindowMouseDrag(move, up);
   };
 
   return (

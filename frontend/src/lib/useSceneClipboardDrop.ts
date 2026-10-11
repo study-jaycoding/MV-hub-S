@@ -25,6 +25,9 @@ import {
 import { uid, type SceneCard, type SceneEdge, type SceneRef } from "./scenes";
 
 interface UseSceneClipboardDropOptions {
+  // 씬을 바꾸는 틈(SceneBoard 의 switchingRef) — 그때 시작한 붙여넣기는 받지 않는다. 끝날 때의 검사(씬이 그대로인가)로는 못 거른다:
+  //  틈에는 sceneIdRef 가 이미 새 씬이라, 0.18초 뒤의 폴백·업로드 응답이 틈이 끝난 뒤 새 씬에 붙는다(Codex 코드 리뷰).
+  frozenRef: MutableRefObject<boolean>;
   sceneIdRef: MutableRefObject<string>;
   cardsRef: MutableRefObject<SceneCard[]>;
   edgesRef: MutableRefObject<SceneEdge[]>;
@@ -304,6 +307,7 @@ export function useSceneClipboardDrop(
       //   Ctrl+V 하면 정상 텍스트 붙여넣기가 preventDefault 로 막히던 문제(합의 C-3b).
       if (isTextEntryTarget(event.target)) return;
       if (backgroundKeysBlocked() || gridWindowOpen()) return; // 위에 뜬 창·메뉴의 붙여넣기 — 가려진 보드에 붙이지 않는다
+      if (optionsRef.current.frozenRef.current) return; // 씬을 바꾸는 틈 — 화면은 아직 떠난 씬이다
       // 일부 브라우저가 keydown 뒤 paste 이벤트를 늦게 보내는 경우, 이미 실행한 안전 폴백과
       // 같은 키 입력을 중복 처리하지 않는다.
       if (fallbackPasteAtRef.current && performance.now() - fallbackPasteAtRef.current < 500) {
@@ -403,6 +407,7 @@ export function useSceneClipboardDrop(
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.repeat || isTextEntryTarget(event.target) || backgroundKeysBlocked() || gridWindowOpen()) return;
+      if (optionsRef.current.frozenRef.current) return; // 씬을 바꾸는 틈 — 예약(0.18초 뒤의 폴백)도 걸지 않는다
       if (!scenePasteShortcut(event, clipboardRef.current?.cards.length || 0)) return;
       // 직전 폴백 직후 사용자가 빠르게 Ctrl+V를 한 번 더 누른 것은 새로운 명령이다. 뒤늦게 도착한
       // 이전 paste 이벤트와 구분할 수 있도록 새 keydown에서 중복 방지 표식을 해제한다.

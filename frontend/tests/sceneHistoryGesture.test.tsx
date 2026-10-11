@@ -39,9 +39,11 @@ function Harness() {
     setGroups: (next) => { state = { ...state, groups: typeof next === "function" ? next(state.groups) : next }; },
     clearSelection: () => {},
     onChange: (patch) => { saved.push(patch as never); },
+    frozenRef: frozen,
   });
   return null;
 }
+const frozen = { current: false }; // 씬을 바꾸는 틈(SceneBoard 의 switchingRef)
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear(); sessionStorage.clear(); links.revive.mockClear(); links.remove.mockClear();
@@ -90,6 +92,29 @@ it("묶음은 스택의 높이로 제 엔트리를 안다 — 생성 결과 반�
   history.undo();
   expect(xs()).toEqual([110, 660]);
   history.undo(); // 한 단계뿐이었다
+  expect(xs()).toEqual([110, 660]);
+});
+
+// 2026-10-11 Codex 코드 리뷰: 씬을 바꾸는 틈에는 손에 든 카드가 떠난 씬의 것이고 기록은 이미 새 씬의 것이다 — 그동안 들어온 저장·
+//  되돌리기·'과거 스냅샷 고치기'(생성 결과 반영)를 받으면 떠난 씬의 값이 새 씬의 저장과 되돌리기 기록에 들어간다.
+it("틈(frozen)에는 저장·되돌리기·과거 스냅샷 고치기를 받지 않는다 — 풀린 뒤의 되돌리기에 틈의 값이 섞여 나오지 않는다", () => {
+  history.persist(moved(220), []); // 틈 전의 편집 한 단계
+  const before = saved.length;
+  frozen.current = true;
+  try {
+    history.persist([card("z", 0)], []); // 떠난 씬의 카드
+    history.commitDerivedState({ cards: [card("z", 0)], edges: [], groups: [] });
+    history.propagateGenIdsToHistory("a", card("a", 330, { genIds: ["g-other"], genId: "g-other" })); // 떠난 씬의 결과 목록
+    history.undo();
+    history.redo();
+    expect(saved.length).toBe(before); // 아무것도 부모에 쓰지 않았다
+  } finally {
+    frozen.current = false;
+  }
+  history.undo(); // 풀린 뒤 — 틈 전의 한 단계가 그대로 되돌려진다
+  expect(xs()).toEqual([110, 660]);
+  expect(saved[saved.length - 1].cards!.map((item) => item.genIds)).toEqual([undefined, undefined]); // 틈의 결과 목록이 기록에 들어가지 않았다
+  history.undo(); // 더 되돌릴 것이 없다(틈의 저장이 단계를 쌓지 않았다)
   expect(xs()).toEqual([110, 660]);
 });
 

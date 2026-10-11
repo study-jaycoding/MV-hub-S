@@ -12,6 +12,7 @@ import {
 import { createPortal } from "react-dom";
 import { api } from "../../api";
 import { isHttpStatus } from "../../lib/http";
+import { backgroundKeysBlocked } from "../../lib/keyGate";
 import type { TeamFreshItem } from "../../lib/projectApi";
 import {
   ackAllLabel,
@@ -810,7 +811,8 @@ export function ProjectSection({
                     isDisabled={(path) => isFolderDisabled(disabledFolders, project.id, path)}
                     onRowKeyDown={(path, e) => {
                       // d = 이 폴더(및 하위) 비활성(생략) 토글. 그 폴더 생성물이 회색·관리창 생략 연동.
-                      if (matchShortcut(e, "boardDisable")) {
+                      //  길게 눌린 d 는 한 번만(켰다 껐다 하지 않게), 위에 창·메뉴가 떠 있으면 쉰다(lib/keyGate).
+                      if (matchShortcut(e, "boardDisable") && !e.repeat && !backgroundKeysBlocked()) {
                         e.preventDefault();
                         toggleDisabledFolder(project.id, path);
                       }

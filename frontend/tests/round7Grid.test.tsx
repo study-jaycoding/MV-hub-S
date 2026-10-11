@@ -101,8 +101,9 @@ const key = (name: string, target: EventTarget = document.body, init: KeyboardEv
   act(() => { target.dispatchEvent(event); });
   return event;
 };
+// 끄는 중의 움직임은 단추가 눌려 있다(buttons 1) — 단추 없는 움직임은 끌기의 끝이다(lib/windowDrag)
 const mouse = (type: string, target: EventTarget, init: MouseEventInit = {}) =>
-  act(() => { target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init })); });
+  act(() => { target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: type === "mousemove" ? 1 : 0, ...init })); });
 const click = (id: string, init: MouseEventInit = {}) => { mouse("mousedown", cell(id), init); mouse("mouseup", window, init); };
 // 격자 밖의 누름 — 브라우저의 순서대로(pointerdown 이 '누르는 순간 위에 뭔가 떠 있었나'를 적는다, lib/keyGate).
 const press = (target: Element) => {

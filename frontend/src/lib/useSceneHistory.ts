@@ -37,6 +37,9 @@ interface UseSceneHistoryOptions {
   setGroups: Dispatch<SetStateAction<SceneGroup[]>>;
   clearSelection: () => void;
   onChange: (patch: Partial<Scene>) => void;
+  // 씬을 바꾸는 틈(SceneBoard 의 switchingRef) — 손에 든 카드가 떠난 씬의 것인 동안은 저장도 되돌리기도 받지 않는다.
+  //  받으면 떠난 씬의 카드가 부모의 '지금 활성 씬'(새 씬)에 쓰이고, 새 씬의 되돌리기 기록에 떠난 씬의 모습이 쌓인다.
+  frozenRef: MutableRefObject<boolean>;
 }
 
 // SceneBoard의 화면 상태는 건드리지 않고, 저장 커밋과 undo/redo 스택만 소유한다.
@@ -52,6 +55,7 @@ export function useSceneHistory({
   setGroups,
   clearSelection,
   onChange,
+  frozenRef,
 }: UseSceneHistoryOptions) {
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -136,6 +140,7 @@ export function useSceneHistory({
       addedForward?: SceneCardRemoval[];
     },
   ) => {
+    if (frozenRef.current) return; // 씬을 바꾸는 틈 — 이 카드는 떠난 씬의 것이다(위 frozenRef)
     // 실행 중 표시는 화면 전용이다. 저장·undo 스냅샷에는 완료/대기 상태만 남긴다.
     const next = {
       cards: settleComfyRunning(nextCards),
@@ -172,6 +177,7 @@ export function useSceneHistory({
   };
 
   const commitDerivedState = (snapshot: SceneSnap) => {
+    if (frozenRef.current) return;
     const settled = { ...snapshot, cards: settleComfyRunning(snapshot.cards) };
     lastCommitRef.current = settled;
     onChangeRef.current(settled);
@@ -226,7 +232,10 @@ export function useSceneHistory({
   };
 
   // 자동으로 누적된 생성 결과를 과거 스냅샷에도 반영해 undo 시 결과가 사라지지 않게 한다.
+  // 아래 셋(과거 스냅샷 고치기)도 틈에는 받지 않는다 — 넘어온 카드·값은 떠난 씬의 것이고 기록은 이미 새 씬의 것이다
+  //  (틈에 끝난 Comfy 저장이 떠난 씬의 결과 목록을 새 씬의 되돌리기 기록에 넣었다 — Codex 코드 리뷰).
   const propagateGenIdsToHistory = (cardId: string, latest: SceneCard) => {
+    if (frozenRef.current) return;
     const latestIds = variantIds(latest);
     const patchCard = (card: SceneCard): SceneCard => {
       if (card.id !== cardId || card.kind !== latest.kind) return card;
@@ -253,6 +262,7 @@ export function useSceneHistory({
 
   // 자산 자동 복구(옛 참조 → 원본 경로)를 과거 스냅샷에도 입혀, undo/redo 가 옛 참조를 되살리지 않게 한다.
   const propagateAssetRelinkToHistory = (workspaceId: string, found: Map<string, RelinkTarget>) => {
+    if (frozenRef.current) return;
     const patchSnapshot = (snapshot: SceneSnap): SceneSnap => {
       const { cards, changed } = relinkCards(snapshot.cards, workspaceId, found);
       return changed ? { ...snapshot, cards } : snapshot;
@@ -263,6 +273,7 @@ export function useSceneHistory({
   };
 
   const pruneGenIdsFromHistory = (cardId: string, removed: Set<string>) => {
+    if (frozenRef.current) return;
     const patchCard = (card: SceneCard): SceneCard => {
       if (card.id !== cardId) return card;
       const genIds = variantIds(card).filter((id) => !removed.has(id));
@@ -279,6 +290,7 @@ export function useSceneHistory({
   };
 
   const undo = () => {
+    if (frozenRef.current) return;
     const previous = undoStackRef.current.pop();
     if (!previous) return;
     // 전이 메타는 그 전이의 양쪽 끝을 오갈 때 계속 쓰이므로 redo 엔트리에 그대로 옮겨 싣는다.
@@ -291,6 +303,7 @@ export function useSceneHistory({
   };
 
   const redo = () => {
+    if (frozenRef.current) return;
     const next = redoStackRef.current.pop();
     if (!next) return;
     undoStackRef.current.push(carryTransition(lastCommitRef.current, next));

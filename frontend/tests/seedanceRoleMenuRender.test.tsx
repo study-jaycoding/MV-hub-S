@@ -75,6 +75,28 @@ describe("Seedance 2.5 트레이 우클릭 역할 편집", () => {
     context(0); expect(document.querySelector(".sl-ref-role-menu")).toBeNull();
   });
 
+  // 2026-10-11 격리 실측(dist_b46) 5/5: 메뉴가 뜬 채 Ctrl+K → 메뉴 뒤에서 도크가 숨고 메뉴가 사라졌다(같은 도크의 모델 목록은 쉬었다).
+  it("메뉴가 떠 있는 동안 뒤 화면의 키는 쉰다 — Ctrl+K(도크 숨김)가 보는 값·트레이의 Shift+Backspace. Esc 한 번에 메뉴만 닫힌다", async () => {
+    view = await mountPrompt({ trayBinding: binding() });
+    const { backgroundKeysBlocked } = await import("../src/lib/keyGate");
+    const tray = required<HTMLElement>(view.container, ".sl-reftray");
+    const clearAll = () => act(() => {
+      tray.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", shiftKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(backgroundKeysBlocked()).toBe(false);
+    context(0);
+    expect(backgroundKeysBlocked()).toBe(true); // lib/usePromptDock 의 Ctrl+K 와 뒤 격자의 키가 첫 줄에서 보는 값
+    clearAll(); await settle();
+    expect(items()).toHaveLength(4); // 메뉴 뒤에서 레퍼런스가 지워지지 않는다
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    act(() => { document.dispatchEvent(escape); });
+    expect(document.querySelector(".sl-ref-role-menu")).toBeNull();
+    expect(escape.defaultPrevented).toBe(true); // 삼킨다 — 같은 Esc 가 뒤 화면(선택 해제)까지 가지 않는다
+    expect(backgroundKeysBlocked()).toBe(false);
+    clearAll(); await settle();
+    expect(items()).toHaveLength(0); // 메뉴가 닫히면 다시 듣는다
+  });
+
   it("기존 토큰을 모두 바꾸고 이전 첫 담당을 모두 옴니로 풀며 한 번의 Undo로 함께 복구한다", async () => {
     const original = "@simage1 <<<simage_1>>> @image2 <<<image_2>>> @vedio_1";
     view = await mountPrompt({ trayBinding: binding(original) });
@@ -232,7 +254,30 @@ function dragSecondToFirst() {
   }
   act(() => {
     items()[1].dispatchEvent(new MouseEvent("mousedown", { button: 0, clientX: 140, clientY: 30, bubbles: true }));
-    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 5, clientY: 30 }));
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 5, clientY: 30, buttons: 1 }));
     window.dispatchEvent(new MouseEvent("mouseup", { button: 0, clientX: 5, clientY: 30 }));
   });
 }
+
+describe("트레이 순서 끌기 — 놓친 mouseup", () => {
+  // 2026-10-11 격리 실측(dist_b46) 3/3: 삽입 선이 단추를 뗀 마우스를 따라왔고, 나중에 무관한 곳을 한 번 누르자 순서가 바뀌었다.
+  it("단추를 뗀 채 온 움직임에 끌기가 끝난다 — 순서는 그대로이고 나중의 무관한 mouseup 이 순서를 바꾸지 않는다", async () => {
+    view = await mountPrompt({ trayBinding: binding("@image1 @image2") });
+    const names = () => items().map((item) => required(item, ".sl-reftray-name").textContent);
+    const before = names();
+    for (const [index, item] of items().entries()) {
+      vi.spyOn(item, "getBoundingClientRect").mockReturnValue({ x: index * 100, y: 0, left: index * 100,
+        right: index * 100 + 80, top: 0, bottom: 60, width: 80, height: 60, toJSON: () => ({}) });
+    }
+    act(() => {
+      items()[1].dispatchEvent(new MouseEvent("mousedown", { button: 0, clientX: 140, clientY: 30, bubbles: true }));
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 5, clientY: 30, buttons: 1 })); // 맨 앞으로 끄는 중
+    });
+    expect(view.container.querySelector(".sl-reftray-item.reordering")).not.toBeNull();
+    act(() => { window.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 30, buttons: 0 })); }); // mouseup 을 놓쳤다
+    expect(view.container.querySelector(".sl-reftray-item.reordering")).toBeNull();
+    act(() => { window.dispatchEvent(new MouseEvent("mouseup", { button: 0, clientX: 300, clientY: 400 })); }); // 무관한 곳의 mouseup
+    await settle();
+    expect(names()).toEqual(before);
+  });
+});

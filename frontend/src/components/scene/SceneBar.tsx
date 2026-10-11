@@ -89,6 +89,9 @@ export function SceneBar({
 
   const endDrag = (commit: boolean) => {
     const current = dragRef.current;
+    // 바로 비운다 — 안 비우면 다시 그리기 전에 온 움직임이 옛 값을 읽어 끝난 끌기를 다시 켠다(포인터를 놓친 뒤 삽입선이 뗀 마우스를
+    //  따라왔고, 나중의 pointerup 이 그 자리로 순서를 확정했다 — 2026-10-11 격리 실측 2/2).
+    dragRef.current = null;
     setDrag(null);
     dragRectsRef.current = null;
     if (!current?.active) return;
@@ -117,6 +120,12 @@ export function SceneBar({
   const onPointerMove = (event: React.PointerEvent) => {
     const current = dragRef.current;
     if (!current || current.pointerId !== event.pointerId) return;
+    // 단추를 뗀 채 온 움직임 = pointerup 을 놓쳤다(창 밖에서 뗌 등) — 순서를 바꾸지 않고 끝낸다(창을 떠날 때와 같은 길, 조작 규칙 21)
+    if (event.buttons === 0) {
+      endDrag(false);
+      releaseSuppression();
+      return;
+    }
     const dx = event.clientX - current.startX;
     const dy = event.clientY - current.startY;
     if (!current.active && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;

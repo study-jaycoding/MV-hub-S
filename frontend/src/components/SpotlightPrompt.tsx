@@ -261,7 +261,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   //  외부 파일 임포트(importExternalFilesAsRefs)는 카드/에셋 도메인이라 컴포넌트에 남기고 콜백으로 주입.
   //  화살표로 감싸는 이유: importExternalFilesAsRefs 는 아래(선언 순서상 뒤)에 있어 호출 시점(드롭=마운트 후)에만 참조 → TDZ 회피.
   const {
-    trayRefs, setTrayRefs, sceneMode, withFreshTrayUids,
+    trayRefs, setTrayRefs, trayReady, sceneMode, withFreshTrayUids,
     addAssetToTray, removeTrayRef, onTrayKeyDown, onTrayDragOver, onTrayDrop,
     reorderTray,
   } = useSpotlightTray({
@@ -1050,6 +1050,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     paramsLoading,
     paramsModel,
     trayRefs,
+    trayReady,
     tunable,
     workspace,
     setBusy,

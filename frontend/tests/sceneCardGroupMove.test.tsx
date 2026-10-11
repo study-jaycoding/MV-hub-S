@@ -640,6 +640,101 @@ it("손을 뗀 것을 놓친 카드 끌기는 단추를 뗀 채 움직이는 순
   expect(card("a1").style.left).toBe("110px");
 });
 
+// 2026-10-11 격리 실측(dist_b46) 5/5: 첫 이동이 프레임을 기다리는 사이 같은 카드(나 같이 고른 카드)를 다시 누르면, 새 끌기가 시작 좌표를
+//  읽은 뒤에야 앞 끌기의 걸음이 반영돼 — 둘째 끌기가 움직이는 순간 앞 끌기의 이동이 통째로 사라졌다(끝 (198,132), 기대 (462,308)).
+it("손을 뗀 것을 놓친 끌기의 밀린 걸음이 남은 채 같은 카드를 다시 잡아도 앞의 이동이 사라지지 않는다 — 새 누름이 앞 끌기를 먼저 끝낸다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], []);
+  await grab("a1", 150, 150);
+  await act(async () => { // +220 — 프레임이 돌기 전(밀린 걸음). mouseup 은 오지 않는다
+    clock += 2000;
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 370, clientY: 150, buttons: 1 }));
+  });
+  expect(card("a1").style.left).toBe("110px"); // 아직 반영 전
+  await act(async () => { // 다시 잡는다 — 눌린 단추는 이것 하나뿐(buttons 1)
+    card("a1").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, buttons: 1, clientX: 370, clientY: 150 }));
+  });
+  expect(card("a1").style.left).toBe("330px"); // 누름의 첫머리에서 앞 끌기가 끝났다 — 새 끌기는 이 자리에서 출발한다
+  await dragTo(480, 150, 2000); // +110
+  await release(480, 150);
+  expect([card("a1").style.left, savedX("a1")]).toEqual(["440px", 440]);
+  await undoOnce(); // 두 끌기는 따로 되돌려진다
+  expect(card("a1").style.left).toBe("330px");
+  await undoOnce();
+  expect(card("a1").style.left).toBe("110px");
+});
+
+it("그룹 머리를 끌다 놓친 채(밀린 걸음) 같은 머리를 다시 잡아도 같다 — 네모도 카드와 같은 자리에서 출발한다(네모의 ref 가 바로 맞는다)", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], [{ id: "gA", name: "A", cardIds: ["a1"], rect: { x: 66, y: 44, w: 330, h: 330 } }]);
+  const head = () => host.querySelector<HTMLElement>('.scene-group[data-group-id="gA"] .scene-group-hd')!;
+  await grabHead("gA", 100, 50);
+  await act(async () => { // +220 — 프레임이 돌기 전(밀린 걸음). mouseup 은 오지 않는다
+    clock += 2000;
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 320, clientY: 50, buttons: 1 }));
+  });
+  await act(async () => { // 같은 머리를 다시 잡는다
+    head().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, buttons: 1, clientX: 320, clientY: 50 }));
+  });
+  await dragTo(430, 50, 2000); // +110
+  await release(430, 50);
+  expect([card("a1").style.left, savedX("a1")]).toEqual(["440px", 440]);
+  expect(rectX("gA")).toBe(396); // 66 + 220 + 110 — 한 걸음 전의 네모(66)에서 출발하면 176 이 된다
+});
+
+it("그룹을 끌다 놓친 채(밀린 걸음) 다른 카드를 잡아 그 그룹의 **옛 자리**에 놓아도 편입되지 않는다 — 재배정의 기준 틀을 누르는 순간에 다시 잰다", async () => {
+  // gA 틀 x 66..396 → +440 옮겨 506..836. 그룹 밖 카드 c1 을 옛 자리(가운데 231)에 놓는다 — 렌더가 잡아 둔 옛 틀로 보면 gA 에 들어간다.
+  await show(
+    [textCard("a1", 110), textCard("c1", 1100)],
+    [{ id: "gA", name: "A", cardIds: ["a1"], rect: { x: 66, y: 44, w: 330, h: 330 } }],
+  );
+  await grabHead("gA", 100, 50);
+  await act(async () => { // +440 — 프레임이 돌기 전(밀린 걸음). mouseup 은 오지 않는다
+    clock += 2000;
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 540, clientY: 50, buttons: 1 }));
+  });
+  await act(async () => { // 그룹 밖 카드를 잡는다
+    card("c1").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, buttons: 1, clientX: 1150, clientY: 150 }));
+  });
+  await dragTo(204, 150, 2000); // c1 → x 154(가운데 230) = gA 의 옛 자리 안
+  await release(204, 150);
+  expect(card("a1").style.left).toBe("550px"); // 앞의 그룹 끌기는 확정됐다
+  expect(card("c1").style.left).toBe("154px");
+  expect(members()).toEqual({ gA: ["a1"] }); // 옛 자리에 놓은 카드는 편입되지 않는다
+});
+
+it("네모 없는 자동 그룹을 끌다 놓친 채(밀린 걸음) 그 그룹의 크기 손잡이를 잡았다 놓아도, 옛 틀이 아니라 옮겨 간 틀이 네모로 저장된다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], [{ id: "gB", name: "B", cardIds: ["b1"] }]);
+  const groupEl = () => host.querySelector<HTMLElement>('.scene-group[data-group-id="gB"]')!;
+  const frameX0 = parseFloat(groupEl().style.left); // 끌기 전 틀(멤버에서 계산)
+  await grabHead("gB", 700, 60);
+  await act(async () => { // +220 — 프레임이 돌기 전(밀린 걸음). mouseup 은 오지 않는다
+    clock += 2000;
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 920, clientY: 60, buttons: 1 }));
+  });
+  await act(async () => { // 크기 손잡이를 누른다 — 이 누름이 앞 끌기를 끝낸다
+    groupEl().querySelector<HTMLElement>(".scene-group-resize")!
+      .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: 1200, clientY: 400 }));
+  });
+  await release(1200, 400); // 끌지 않고 놓는다 — 지금의 틀이 수동 네모가 된다
+  expect(card("b1").style.left).toBe("880px");
+  expect(rectX("gB")).toBe(frameX0 + 220);
+});
+
+it("가운데 단추로 판을 밀다(밀린 걸음) 왼쪽으로 카드를 잡아도 밀린 화면 이동이 카드 이동량에 섞이지 않는다 — 누름의 첫머리에서 판 밀기가 먼저 끝난다", async () => {
+  await show([textCard("a1", 110), textCard("b1", 660)], []);
+  await act(async () => { // 가운데 단추로 판을 민다
+    board().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 1, buttons: 4, clientX: 500, clientY: 400 }));
+  });
+  await act(async () => { // +200 — 프레임이 돌기 전(밀린 걸음)
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 700, clientY: 400, buttons: 4 }));
+  });
+  await act(async () => { // 가운데를 누른 채 왼쪽으로 카드를 잡는다(buttons 5)
+    card("a1").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, buttons: 5, clientX: 150, clientY: 150 }));
+  });
+  await dragTo(260, 150, 2000); // 화면에서 +110
+  await release(260, 150);
+  expect(card("a1").style.left).toBe("220px"); // 110 + 110 — 밀린 판 이동(+200)이 섞이면 다른 값이 된다
+});
+
 it("전부 고르고 끌다 손을 뗀 것을 놓쳐도 같다 — 층에만 밀어 둔 이동이 좌표에 들어가고 층이 제자리로 돌아온다", async () => {
   await twoGroups();
   await selectAll();
