@@ -1,4 +1,4 @@
-import { useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { api } from "../../api";
 import { flashMsg } from "../../lib/flash";
 import { createMutationQueue } from "../../lib/mutationQueue";
@@ -28,6 +28,9 @@ export function useAssetMetaActions({
 }: Params) {
   const currentProjectRef = useRef(project);
   currentProjectRef.current = project;
+  // 저장 실패 뒤 메타를 서버 값으로 되돌릴 때마다 오른다 — 열려 있는 태그 편집기는 칩을 사본으로 들고 있어, 이것을 보고 다시 맞춘다
+  //  (안 맞추면 "되돌렸습니다" 뒤에도 실패한 태그의 칩이 남고 다음 Enter 가 그것까지 저장한다 — 조작 규칙 43).
+  const [restoreEpoch, setRestoreEpoch] = useState(0);
   const mutationRevisionRef = useRef(new Map<string, number>());
   const optimisticMetaRef = useRef(new Map<string, Record<string, AssetMeta>>());
   const selPaths = () =>
@@ -79,6 +82,7 @@ export function useAssetMetaActions({
           return;
         }
         owed = false;
+        if (restored) setRestoreEpoch((epoch) => epoch + 1);
         // 되돌리려던 조회까지 실패했으면(서버에 닿지 않는다) '되돌렸다'고 하지 않는다 — 화면에는 저장 안 된 값이 남아 있다.
         flashMsg(restored
           ? "변경 적용 실패 — 서버 상태로 되돌렸습니다"
@@ -211,5 +215,6 @@ export function useAssetMetaActions({
     bulkTagAdd,
     bulkTagRemove,
     deleteTag,
+    restoreEpoch,
   };
 }

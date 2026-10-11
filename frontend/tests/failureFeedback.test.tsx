@@ -317,12 +317,14 @@ it("에셋 색·태그 — 저장에 실패해 서버 값을 다시 읽었는데
   act(() => meta.colorAssets(["a.png"], "#ff0000"));
   await settle();
   expect(flashes).toEqual(["변경 적용 실패 — 서버 상태로 되돌렸습니다"]);
+  expect(meta.restoreEpoch).toBe(1); // 되돌렸다고 알린다 — 열려 있는 태그 편집기가 칩을 다시 맞춘다(tests/inlineEditCommit)
   reloadMeta.mockResolvedValueOnce(false); // 되돌리려던 조회도 실패했다
   act(() => meta.colorAssets(["a.png"], "#00ff00"));
   await settle();
   expect(flashes).toHaveLength(2);
   expect(flashes[1]).toContain("되돌리지도 못했습니다");
   expect(flashes[1]).not.toContain("되돌렸습니다");
+  expect(meta.restoreEpoch).toBe(1); // 못 되돌렸으면 올리지 않는다
 });
 
 // Codex 코드 리뷰: 되돌리려 다시 읽는 사이에 새 편집이 끼면 그 화면을 지키려고 낙관적 사본을 통째로 다시 올린다 — 거기엔 실패한 값도
