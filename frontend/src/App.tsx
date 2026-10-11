@@ -766,6 +766,13 @@ export default function App() {
     };
   }, [authReady, canvasAttemptSig, flushScenePending, patchSceneById, setGens]);
   const selectedGenerations = useMemo(() => generationsByIds(gens, selected), [gens, selected]);
+  // 목록에서 사라진 카드는 선택에서도 뺀다(조작 규칙 42). 선택은 id 집합이라, 다른 폴더로 담거나 다른 창에서 지우거나 자동 새로고침으로
+  //  목록에서 빠진 카드가 그대로 남았다 — 남은 카드를 더 골라 지우면 보이지 않는 그 카드까지 지워졌다(삭제·복원·담기·색·d 는 선택 id 를
+  //  그대로 쓴다). 숨김 필터로 가린 카드(Ctrl+A 가 고른 것)는 목록에 있으므로 남는다. 그리기 전에 맞춘다 — 낡은 선택으로 조작이 나갈 틈이 없게.
+  useLayoutEffect(() => {
+    if (selectedGenerations.length === selected.size) return;
+    setSelected(new Set(selectedGenerations.map((generation) => generation.id)));
+  }, [selectedGenerations, selected, setSelected]);
 
   const {
     assignSelectedToProject,
