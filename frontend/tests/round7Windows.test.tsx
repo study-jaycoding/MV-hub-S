@@ -114,6 +114,20 @@ describe("R7 계보 보드의 Esc", () => {
     press("Escape");
     expect(picked()).toEqual([]);
   });
+
+  // 8회차: 끌기 도우미(lib/windowDrag)가 창을 떠날 때도 끌기를 끝낸다 — 그 끝이 클릭으로 확정되면 안 된다(Codex 설계 검토).
+  it.each([
+    ["창을 떠남(blur)", () => window.dispatchEvent(new Event("blur"))],
+    ["단추를 뗀 채 온 움직임", () => window.dispatchEvent(new MouseEvent("mousemove", { clientX: 1, clientY: 1, buttons: 0 }))],
+  ])("노드를 누른 채 mouseup 을 놓친 것은 클릭이 아니다 — 고른 것이 바뀌지 않는다: %s", (_name, lose) => {
+    mount();
+    pick("a");
+    expect(picked()).toEqual(["a"]);
+    act(() => { node("b").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 })); });
+    act(() => { lose(); });
+    act(() => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); }); // 돌아와서 뗀 것도
+    expect(picked()).toEqual(["a"]);
+  });
 });
 
 describe("R9 설정 옆 패널의 높이", () => {

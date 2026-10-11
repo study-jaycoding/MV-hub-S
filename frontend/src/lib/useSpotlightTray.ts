@@ -6,6 +6,7 @@
 // 동작 보존이 목적이므로 핸들러는 (기존과 동일하게) 렌더마다 생성되는 평범한 함수로 둔다 — 메모이제이션 없음.
 import { useEffect, useRef, useState } from "react";
 import { DRAG_TYPES } from "./dragTypes";
+import { backgroundKeysBlocked } from "./keyGate";
 import { dataTransferHasFiles, filesFromDataTransfer } from "./media";
 import {
   parseSpotlightAssetItems,
@@ -28,6 +29,8 @@ interface Params {
 export interface SpotlightTrayApi {
   trayRefs: SpotlightTrayRef[];
   setTrayRefs: React.Dispatch<React.SetStateAction<SpotlightTrayRef[]>>;
+  /** 트레이가 지금의 묶임에 맞춰졌는가 — 아니면 trayRefs 는 앞 카드의 것이다(제출하지 않는다). */
+  trayReady: boolean;
   sceneMode: boolean;
   // refs 배열에 새 트레이 고유키(uid)를 부여한다(순수 — role 등 다른 필드는 호출부 책임). trayUidRef 내부 은닉용.
   withFreshTrayUids: (refs: ChipRef[]) => SpotlightTrayRef[];
@@ -62,8 +65,13 @@ export function useSpotlightTray({
   const bindingKey = trayBinding?.key ?? null;
   const bindingRefs = trayBinding?.refs ?? null;
   const lastSyncFpRef = useRef<string>("");
+  // 트레이가 **지금의 묶임**에 맞춰졌는가. 묶임이 바뀐 렌더와 아래 (A)가 넣은 갱신이 그려지는 렌더 사이에는 아니다 — 그 사이의 trayRefs 는
+  //  앞 카드(앞 씬)의 것이다. 그때 제출하면 앞 카드의 레퍼런스로 생성이 나간다(씬을 바꾼 직후에는 대상 카드도 없어 일반 생성으로 —
+  //  2026-10-11 Codex 코드 리뷰). (A)와 같은 자리에서 넣어 트레이 갱신과 한 렌더에 바뀐다. 제출이 본다(useSpotlightSubmit 의 trayReady).
+  const [syncedKey, setSyncedKey] = useState(bindingKey);
   // (A) 씬 카드 선택/그 카드의 레퍼런스가 외부에서 바뀌면 → 트레이에 로드. 내 편집의 에코면 무시.
   useEffect(() => {
+    setSyncedKey(bindingKey);
     if (!bindingKey || !bindingRefs) return;
     const fp = sceneRefFingerprint(bindingRefs);
     if (fp === lastSyncFpRef.current) return;
@@ -140,6 +148,7 @@ export function useSpotlightTray({
     setTrayRefs((prev) => (prev[i]?.from_card ? prev : prev.filter((_, j) => j !== i)));
   // 트레이에 포커스를 둔 채 Shift+Backspace = 레퍼런스만 전체 삭제(프롬프트는 그대로).
   const onTrayKeyDown = (e: React.KeyboardEvent) => {
+    if (backgroundKeysBlocked()) return; // 위에 메뉴(레퍼런스 역할 메뉴 등)·창이 떠 있으면 쉰다 — 메뉴 뒤에서 레퍼런스가 전부 지워지지 않게
     const isBackspace =
       e.key === "Backspace" || e.code === "Backspace" || (e.nativeEvent as KeyboardEvent).keyCode === 8;
     if (isBackspace && e.shiftKey) {
@@ -190,6 +199,7 @@ export function useSpotlightTray({
   return {
     trayRefs,
     setTrayRefs,
+    trayReady: syncedKey === bindingKey,
     sceneMode,
     withFreshTrayUids,
     addAssetToTray,

@@ -287,7 +287,7 @@ it("결과 창이 떠 있으면 바깥에서 시작한 끌기 선택은 창의 �
   try {
     act(() => {
       outside.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 10, clientY: 10 }));
-      window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 120, clientY: 140 }));
+      window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 120, clientY: 140, buttons: 1 }));
     });
     await act(async () => { await new Promise<void>((done) => requestAnimationFrame(() => done())); });
     expect(windowEl()!.querySelector(".assets-marquee")).toBeTruthy(); // 창의 격자가 받았다

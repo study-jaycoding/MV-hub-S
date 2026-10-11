@@ -338,8 +338,9 @@ it("하위 폴더가 있는 카드(에피소드)는 두 번 클릭에 들어가�
 });
 
 // ── 고르기 — 한 번 클릭·Ctrl·Shift·빈 곳에서 끌기·휠 클릭 ──
+// 끄는 중의 움직임은 단추가 눌려 있다(buttons 1) — 단추 없는 움직임은 끌기의 끝이다(lib/windowDrag)
 const mouse = (type: string, el: EventTarget, init: MouseEventInit = {}) =>
-  act(() => { el.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, ...init })); });
+  act(() => { el.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, buttons: type === "mousemove" ? 1 : 0, ...init })); });
 // jsdom 은 자리를 안 재 준다 — 카드마다 가짜 네모(가로로 한 줄, 200px 간격)
 function placeTiles() {
   [...host.querySelectorAll<HTMLElement>(".cut-card[data-path]")].forEach((tile, i) => {
@@ -429,6 +430,19 @@ it("빈 곳에서 끌면 걸친 카드를 모두 고른다 — 창을 떠나면(
     mouse("mousedown", grid, { clientX: 950, clientY: 300 });
     mouse("mousemove", window, { clientX: 10, clientY: 10 });
     act(() => { window.dispatchEvent(new Event("blur")); });
+    expect([...selected].sort()).toEqual(["e035/C0020", "e035/C0030"]);
+    // 단추를 뗀 채 온 움직임(mouseup 을 놓쳤다)도 끌기의 끝이다 — 그 뒤의 움직임이 선택을 바꾸지 않고(2026-10-11 실측: 걸음마다 바뀌었다),
+    //  카드를 누른 채 놓친 것은 클릭이 되지 않는다
+    raf.mockImplementation((cb) => { cb(0); return 1; });
+    mouse("mousedown", grid, { clientX: 950, clientY: 300 });
+    mouse("mousemove", window, { clientX: 370, clientY: 100 });
+    mouse("mousemove", window, { clientX: 10, clientY: 10, buttons: 0 });
+    mouse("mousemove", window, { clientX: 590, clientY: 10, buttons: 0 });
+    expect(host.querySelector(".assets-marquee")).toBeNull();
+    expect([...selected].sort()).toEqual(["e035/C0020", "e035/C0030"]);
+    mouse("mousedown", host.querySelector('.cut-card[data-path="e035/C0010"]')!, { clientX: 100, clientY: 100 });
+    mouse("mousemove", window, { clientX: 101, clientY: 100, buttons: 0 });
+    mouse("mouseup", window, { clientX: 101, clientY: 100 });
     expect([...selected].sort()).toEqual(["e035/C0020", "e035/C0030"]);
     // 카드를 누른 뒤 마퀴로 다른 카드를 고르면 Shift 클릭의 시작은 고른 것 중 마지막 카드다(생성물 격자와 같다) — 전엔 먼저 누른 카드부터였고,
     //  누른 카드가 없으면 한 장만 골랐다

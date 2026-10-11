@@ -1,5 +1,5 @@
 import { isKeyHandled } from "../../lib/keyHandled";
-import { backgroundKeysBlocked } from "../../lib/keyGate";
+import { backgroundKeysBlocked, isTypingTarget } from "../../lib/keyGate";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import { api } from "../../api";
@@ -14,7 +14,7 @@ import {
 import { computeMarquee, marqueeHits, type MarqueeRect } from "../../lib/marquee";
 import { toggleSetValue } from "../../lib/setUtils";
 import { makeStore } from "../../lib/storage";
-import { addWindowMouseDrag, removeWindowMouseDrag } from "../../lib/windowDrag";
+import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../../lib/windowDrag";
 import { ASSET_COLOR_BY_KEY, ASSET_COLOR_DOTS, ColorFilterDots } from "../common/ColorFilterDots";
 import { GridIcon, ListIcon } from "../common/ViewIcons";
 import { AssetSortMenu } from "./AssetSortMenu";
@@ -249,8 +249,8 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (backgroundKeysBlocked()) return; // 위에 뜬 창·메뉴(정렬 메뉴 포함)의 키(lib/keyGate)
-      const from = event.target as HTMLElement | null;
-      if (from && (from.tagName === "INPUT" || from.tagName === "TEXTAREA" || from.isContentEditable)) return;
+      // 글자 입력 중에만 쉰다 — 카드 크기 막대(range)·체크박스에 초점이 남아 있어도 격자의 키는 듣는다(다른 격자와 같은 규칙)
+      if (isTypingTarget(event.target)) return;
       // Ctrl/⌘+A = 지금 보이는 카드 전부 고르기(에셋 격자와 같은 단축키).
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "a") {
         event.preventDefault();
@@ -570,16 +570,11 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
     setPicked(new Set([key]));
   };
   // 빈 자리에서 끌면 상자로 여러 장 고른다(에셋 격자와 같은 방식). 끌지 않고 놓으면 고른 것을 푼다.
-  const dragUpRef = useRef<() => void>(() => {});
+  //  창 밖에서 단추를 놓으면 mouseup 이 안 온다 — 돌아왔을 때 눌린 단추가 없거나 창을 떠나면 lib/windowDrag 가 끝낸다(onDragUp 이 그 이벤트로 불린다).
   const onDragMove = useCallback((event: MouseEvent) => {
     const drag = dragRef.current;
     const grid = bodyRef.current;
     if (!drag || !grid) return;
-    // 창 밖에서 단추를 놓으면 mouseup 이 안 온다 — 돌아왔을 때 눌린 단추가 없으면 끝난 것으로 본다(Codex).
-    if (event.buttons === 0) {
-      dragUpRef.current();
-      return;
-    }
     if (!drag.moved && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 5) return;
     drag.moved = true;
     if (drag.fromCard) return; // 카드에서 시작한 끌기는 상자를 만들지 않는다(카드 옮기기 기능 없음)
@@ -595,12 +590,13 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
       ),
     );
   }, []);
-  const onDragUp = useCallback(() => {
+  const onDragUp = useCallback((event?: Event) => {
     const drag = dragRef.current;
     dragRef.current = null;
     removeWindowMouseDrag(onDragMove, onDragUp);
     setMarquee(null);
-    if (!drag) return;
+    // 놓친 끌기는 정리만 한다 — 빈 자리를 누른 채 창을 떠난 것이 '풀기'로 확정되지 않게(뒤따르는 click 도 없다)
+    if (!drag || dragLost(event)) return;
     // 끌고 난 뒤에 오는 클릭은 고르기가 아니다 — 안 그러면 여러 장 고른 것이 한 장으로 줄어든다(Codex).
     suppressClickRef.current = drag.moved;
     if (drag.moved) {
@@ -612,7 +608,6 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
     }
     if (!drag.moved && !drag.additive && !drag.fromCard) clearPick(); // 빈 자리를 그냥 눌렀다 = 풀기
   }, [clearPick, onDragMove]);
-  dragUpRef.current = onDragUp;
   useEffect(() => () => removeWindowMouseDrag(onDragMove, onDragUp), [onDragMove, onDragUp]);
 
   const onBodyMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {

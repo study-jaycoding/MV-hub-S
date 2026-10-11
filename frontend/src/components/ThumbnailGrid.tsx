@@ -3,7 +3,7 @@
 //  · 빈 공간 드래그 = 마퀴(러버밴드) 다중 선택
 //  · 더블클릭 = 미리보기. (카드 드래그는 프롬프트 재사용 — 마퀴 대신 네이티브 드래그)
 // 선택 상태는 App 이 Set<string>(id) 로 보유 — 일괄 작업/select-bar 가 의존.
-import { backgroundKeysBlocked, focusCameByTab, isTypingTarget, pressStartedCovered, useLooseKeys } from "../lib/keyGate";
+import { activationKeyOwned, backgroundKeysBlocked, isTypingTarget, pressStartedCovered, useLooseKeys } from "../lib/keyGate";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import {
@@ -22,7 +22,7 @@ import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { useOutsideDragSelect } from "../lib/useOutsideDragSelect";
 import { onSelectionOutsidePress } from "../lib/useGenerationSelection";
 import { matchShortcut } from "../lib/shortcuts";
-import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
+import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import type { GradeMode } from "../lib/gradeStep";
 import type { ReviewAction } from "../lib/generationReview";
@@ -463,7 +463,8 @@ export function ThumbnailGrid(props: Props) {
   );
 
   const onDragUp = useCallback((e?: Event) => {
-    const left = e?.type === "blur"; // 창을 떠났다 — 끌기를 버린다(Alt+Tab 뒤 돌아온 움직임·클릭이 선택으로 이어지지 않게)
+    // 놓친 끌기(창을 떠남·단추를 뗀 채 온 움직임 — lib/windowDrag) — 버린다(Alt+Tab 뒤 돌아온 움직임·클릭이 선택으로 이어지지 않게)
+    const left = dragLost(e);
     if (marqueeRafRef.current != null) {
       cancelAnimationFrame(marqueeRafRef.current);
       marqueeRafRef.current = null;
@@ -473,7 +474,6 @@ export function ThumbnailGrid(props: Props) {
     const d = dragRef.current;
     dragRef.current = null;
     removeWindowMouseDrag(onDragMove, onDragUp);
-    window.removeEventListener("blur", onDragUp);
     setMarquee(null);
     // 마퀴로 고른 뒤에는 초점 카드를 비운다 — 먼저 누른 카드가 남아 있으면 방향키·Shift 클릭이 (고르지도 않은) 그 카드에서 출발했다
     //  (최종 재실측). 비우면 '고른 것 중 마지막 카드'가 기준이 된다.
@@ -512,7 +512,6 @@ export function ThumbnailGrid(props: Props) {
   useEffect(() => () => {
     dragRef.current = null;
     removeWindowMouseDrag(onDragMove, onDragUp);
-    window.removeEventListener("blur", onDragUp);
     if (marqueeRafRef.current != null) cancelAnimationFrame(marqueeRafRef.current);
   }, [onDragMove, onDragUp]);
 
@@ -528,12 +527,8 @@ export function ThumbnailGrid(props: Props) {
     if (isTypingTarget(e.target)) return;
     // 위에 창·메뉴가 떠 있으면 키는 그쪽 것이다(lib/keyGate) — 초점이 격자에 남아 있어도 쉰다. 방향키·Space·Page 의 기본 동작(뒤 격자
     //  스크롤)도 막는다 — 창 위에서 누른 키에 뒤 목록이 밀리지 않게.
-    // 카드 안 조작 요소에 초점이 있을 때의 Enter/Space 는 그것을 누르는 키다 — 격자가 가로채면 키보드로 못 누른다.
-    //  · 체크박스 같은 입력: 언제나(누른 뒤의 Space 는 그 체크박스를 다시 뒤집는 것이 맞다)
-    //  · 단추·링크: **키보드로**(Tab) 초점을 옮겼을 때만. 마우스로 눌러 초점이 남은 단추는 종전대로 격자가 받는다 — S 를 누른 뒤의
-    //    Space 가 S 를 또 누르지 않게(Codex 코드 리뷰). 판정은 lib/keyGate 의 focusCameByTab(:focus-visible 은 못 쓴다 — 그 주석).
-    const control = e.key === "Enter" || e.key === " " ? (e.target as HTMLElement).closest?.("button, a[href], input, select, [role=button]") : null;
-    const ownKey = !!control && (control.matches("input, select") || focusCameByTab());
+    // 카드 안 조작 요소에 초점이 있을 때의 Enter/Space 는 그것을 누르는 키다(lib/keyGate activationKeyOwned — 입력은 언제나, 단추는 Tab 으로 온 초점만).
+    const ownKey = activationKeyOwned(e);
     if (backgroundKeysBlocked()) {
       // 위에 뜬 것(카드의 확인 덮개 포함) 안의 단추를 누르는 키는 막지 않는다.
       if (!ownKey && /^(Arrow|Page|Home|End| )/.test(e.key)) e.preventDefault();
@@ -651,7 +646,6 @@ export function ThumbnailGrid(props: Props) {
         cellId,
       };
       addWindowMouseDrag(onDragMove, onDragUp);
-      window.addEventListener("blur", onDragUp);
     },
     [onDragMove, onDragUp],
   );
@@ -694,7 +688,6 @@ export function ThumbnailGrid(props: Props) {
   const onGridDragStart = () => {
     dragRef.current = null;
     removeWindowMouseDrag(onDragMove, onDragUp);
-    window.removeEventListener("blur", onDragUp);
     setMarquee(null);
   };
 

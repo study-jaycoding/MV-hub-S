@@ -11,7 +11,7 @@ vi.mock("../src/api", () => ({ api: { setColorsBatch: vi.fn(async () => ({ faile
 vi.mock("../src/lib/deactivated", () => ({ toggleDisabledGen: vi.fn() }));
 
 import { toggleDisabledGen } from "../src/lib/deactivated";
-import { backgroundKeysBlocked, dropFocusAfterPress, isTypingTarget, pressStartedCovered, useKeyOwner, useModalFocus, usePageSelectAllGuard } from "../src/lib/keyGate";
+import { activationKeyOwned, backgroundKeysBlocked, dropFocusAfterPress, isTypingTarget, pressStartedCovered, useKeyOwner, useModalFocus, usePageSelectAllGuard } from "../src/lib/keyGate";
 import { useGenerationSelection } from "../src/lib/useGenerationSelection";
 import { markKeyHandled } from "../src/lib/keyHandled";
 import { useBackgroundEscape, useEscapeClose } from "../src/lib/useEscapeClose";
@@ -159,6 +159,23 @@ function mountLibrary(overlay: boolean) {
   return clearSelect;
 }
 
+it("Enter·Space 가 초점 놓인 조작 요소의 키인가 — 체크박스는 언제나, 단추·링크는 Tab 으로 옮겨 온 초점일 때만, 막대(range)·그 밖의 키는 아니다", () => {
+  act(() => root.render(<><button id="b">반복</button><a id="l" href="#x">링크</a><input id="c" type="checkbox" /><input id="r" type="range" /><div id="d" tabIndex={0} /></>));
+  const owned = (key: string, id: string) => {
+    let result = false;
+    const read = (e: KeyboardEvent) => { result = activationKeyOwned(e); };
+    window.addEventListener("keydown", read, { once: true });
+    press(key, host.querySelector(`#${id}`)!);
+    return result;
+  };
+  act(() => { document.dispatchEvent(new Event("pointerdown", { bubbles: true })); }); // 마우스로 눌러 남은 초점
+  expect([owned(" ", "b"), owned("Enter", "b"), owned(" ", "l")]).toEqual([false, false, false]);
+  expect([owned(" ", "c"), owned("Enter", "c")]).toEqual([true, true]);
+  press("Tab"); // Tab 으로 옮겨 온 초점
+  expect([owned(" ", "b"), owned("Enter", "b"), owned("Enter", "l")]).toEqual([true, true, true]);
+  expect([owned(" ", "r"), owned(" ", "d"), owned("ArrowDown", "b"), owned("d", "b")]).toEqual([false, false, false, false]);
+});
+
 it("라이브러리: 창이 떠 있으면 d(비활성)·Esc(선택 해제)가 뒤 카드에 먹지 않는다", () => {
   const clearSelect = mountLibrary(true);
   press("d");
@@ -195,7 +212,7 @@ it("캔버스: 창이 떠 있으면 Delete·Ctrl+Z·Ctrl+A 가 뒤 보드에 먹
   type Actions = Parameters<typeof useSceneKeyboardShortcuts>[0];
   const onDelete = vi.fn(); const onUndo = vi.fn(); const onSelectAll = vi.fn();
   const actions = new Proxy(
-    { isTextEditing: () => false, isPopupOpen: () => false, isPickerOpen: () => false, selectionCount: () => 1, onDelete, onUndo, onSelectAll },
+    { isFrozen: () => false, isTextEditing: () => false, isPopupOpen: () => false, isPickerOpen: () => false, selectionCount: () => 1, onDelete, onUndo, onSelectAll },
     { get: (target, name) => (name in target ? target[name as keyof typeof target] : () => { throw new Error(`unexpected action: ${String(name)}`); }) },
   ) as unknown as Actions;
   function Board({ overlay }: { overlay: boolean }) { useSceneKeyboardShortcuts(actions); return overlay ? <Layer onClose={() => {}} /> : null; }
@@ -361,7 +378,7 @@ it("캔버스: 폴더 창이 떠 있는 동안 보드는 키를 받지 않는다
   type Actions = Parameters<typeof useSceneKeyboardShortcuts>[0];
   const onDelete = vi.fn(); const onCutHeldChange = vi.fn();
   const actions = new Proxy(
-    { isTextEditing: () => false, isPopupOpen: () => false, isPickerOpen: () => false, selectionCount: () => 1, onDelete, onCutHeldChange },
+    { isFrozen: () => false, isTextEditing: () => false, isPopupOpen: () => false, isPickerOpen: () => false, selectionCount: () => 1, onDelete, onCutHeldChange },
     { get: (target, name) => (name in target ? target[name as keyof typeof target] : () => { throw new Error(`unexpected action: ${String(name)}`); }) },
   ) as unknown as Actions;
   function Board({ peek }: { peek: boolean }) {

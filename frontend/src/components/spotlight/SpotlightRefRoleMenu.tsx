@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useT } from "../../lib/i18n";
 import type { SeedanceImageTokenKind } from "../../lib/seedancePrompt";
+import { useEscapeClose } from "../../lib/useEscapeClose";
 
 interface Props {
   x: number;
@@ -14,19 +15,17 @@ interface Props {
 export function SpotlightRefRoleMenu({ x, y, enabled, onChoose, onClose }: Props) {
   const t = useT();
   const menuRef = useRef<HTMLDivElement>(null);
+  // Esc 는 맨 위 겹으로 닫는다(lib/useEscapeClose) — 겹이어야 떠 있는 동안 뒤 화면의 키가 쉰다. 전엔 document 에 직접 걸어, 메뉴가 뜬 채
+  //  Ctrl+K 를 누르면 메뉴 뒤에서 프롬프트가 숨었다(2026-10-11 Codex 통합 검토).
+  useEscapeClose(onClose, true, true, true);
   useEffect(() => {
     const down = (event: PointerEvent) => {
       if (!menuRef.current?.contains(event.target as Node)) onClose();
     };
-    const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onClose(); }
-    };
     document.addEventListener("pointerdown", down, true);
-    document.addEventListener("keydown", key, true);
     window.addEventListener("resize", onClose);
     return () => {
       document.removeEventListener("pointerdown", down, true);
-      document.removeEventListener("keydown", key, true);
       window.removeEventListener("resize", onClose);
     };
   }, [onClose]);

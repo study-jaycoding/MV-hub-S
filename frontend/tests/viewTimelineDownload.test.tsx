@@ -40,3 +40,49 @@ it("성공은 순서 유지, 중복 요청 금지, 실패 안내 없음", async 
   expect(button.disabled).toBe(false);
   expect(flashMsg).not.toHaveBeenCalled();
 });
+
+// 8회차(2026-10-11 Codex 통합 검토): 창의 Space 처리가 무조건 재생/정지로 가져가, Tab 으로 찾아간 닫기·음소거 단추를 키보드로 못 눌렀다.
+it("Tab 으로 찾아간 단추의 Space 는 그 단추의 키다 — 마우스로 누른 단추·음량 막대에 초점이 남아 있을 때는 여전히 재생/정지", () => {
+  const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+  const clips = [{ url: "/media/1.png", type: "image" as const }, { url: "/media/2.png", type: "image" as const }];
+  act(() => root.render(<ViewTimeline clips={clips} onClose={() => {}} />));
+  const shown = () => host.querySelector(".vtl-play")!.textContent;
+  const space = (target: EventTarget) => {
+    const event = new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true });
+    act(() => { target.dispatchEvent(event); });
+    return event.defaultPrevented;
+  };
+  const mute = host.querySelector<HTMLButtonElement>(".vtl-mute")!;
+  const before = shown();
+  act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true })); mute.focus(); }); // Tab 으로 옮겨 온 초점
+  expect(space(mute)).toBe(false); // 가져가지 않는다 — 브라우저가 그 단추를 누른다
+  expect(shown()).toBe(before);
+  act(() => { mute.dispatchEvent(new Event("pointerdown", { bubbles: true })); }); // 마우스로 눌러 남은 초점
+  expect(space(mute)).toBe(true);
+  expect(shown()).not.toBe(before);
+  const volume = host.querySelector<HTMLInputElement>('input[type="range"]')!;
+  const paused = shown();
+  act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true })); volume.focus(); });
+  expect(space(volume)).toBe(true); // 막대는 Space 로 하는 일이 없다 — 재생/정지
+  expect(shown()).not.toBe(paused);
+  raf.mockRestore();
+});
+
+it("mouseup 을 놓친 타임라인 끌기는 단추를 뗀 마우스를 따라오지 않는다", () => {
+  const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+  const clips = [{ url: "/media/1.png", type: "image" as const }, { url: "/media/2.png", type: "image" as const }];
+  act(() => root.render(<ViewTimeline clips={clips} onClose={() => {}} />));
+  const track = host.querySelector<HTMLElement>(".vtl-track")!;
+  vi.spyOn(track, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, right: 1000, bottom: 40, width: 1000, height: 40, x: 0, y: 0, toJSON: () => ({}) } as DOMRect);
+  const at = () => host.querySelector<HTMLElement>(".vtl-playhead")!.style.left;
+  const move = (clientX: number, buttons: number) => act(() => { window.dispatchEvent(new MouseEvent("mousemove", { clientX, buttons })); });
+  act(() => { track.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 100 })); });
+  move(300, 1);
+  const kept = at();
+  expect(kept).toBe("30%");
+  move(800, 0); // mouseup 을 놓쳤다
+  move(900, 0);
+  move(700, 1); // 다른 것을 누른 채의 움직임도
+  expect(at()).toBe(kept);
+  raf.mockRestore();
+});

@@ -66,8 +66,9 @@ const key = (name: string, target: EventTarget = document.body, init: KeyboardEv
   act(() => { target.dispatchEvent(event); });
   return event;
 };
+// 끄는 중의 움직임은 단추가 눌려 있다(buttons 1) — 단추 없는 움직임은 끌기의 끝이다(lib/windowDrag)
 const mouse = (type: string, target: EventTarget, init: MouseEventInit = {}) =>
-  act(() => { target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init })); });
+  act(() => { target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: type === "mousemove" ? 1 : 0, ...init })); });
 const click = (id: string, init: MouseEventInit = {}) => { mouse("mousedown", cell(id), init); mouse("mouseup", window, init); };
 const flushFrames = () => act(() => { const pending = [...frames.values()]; frames.clear(); pending.forEach((callback) => callback(0)); });
 const dropFocus = () => act(() => { (document.activeElement as HTMLElement | null)?.blur?.(); });
@@ -210,6 +211,23 @@ it("마퀴를 놓는 순간의 마지막 움직임을 버리지 않고, 창을 �
   selected = new Set(); draw();
   mouse("mousedown", cell("g4"));
   act(() => { window.dispatchEvent(new Event("blur")); });
+  mouse("mouseup", window);
+  expect(selected.size).toBe(0);
+
+  // 단추를 뗀 채 온 움직임(mouseup 을 놓쳤다)도 끌기의 끝이다 — 2026-10-11 실측: 단추 없는 움직임마다 선택이 1 → 7 → 11 → 18 → 6 → 0장으로 바뀌었다
+  mouse("mousedown", grid(), { clientX: 5, clientY: 200 });
+  mouse("mousemove", window, { clientX: 100, clientY: 20 });
+  flushFrames();
+  expect([...selected].sort()).toEqual(["g1", "g2"]);
+  mouse("mousemove", window, { clientX: 390, clientY: 20, buttons: 0 });
+  mouse("mousemove", window, { clientX: 5, clientY: 390, buttons: 0 });
+  flushFrames();
+  expect([...selected].sort()).toEqual(["g1", "g2"]);
+  expect(host.querySelector(".assets-marquee")).toBeNull();
+  // 카드를 누른 채 놓친 것도 클릭으로 치지 않는다
+  selected = new Set(); draw();
+  mouse("mousedown", cell("g4"));
+  mouse("mousemove", window, { clientX: 1, clientY: 1, buttons: 0 });
   mouse("mouseup", window);
   expect(selected.size).toBe(0);
 });

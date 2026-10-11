@@ -13,6 +13,7 @@ import {
   usesSeedanceMediaRefs,
   type SeedanceTokenRoles,
 } from "../../lib/seedancePrompt";
+import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../../lib/windowDrag";
 import { MediaThumbnail } from "../MediaThumbnail";
 
 // from_card: 이 참조가 씬의 연결된 레퍼런스 카드/리스트에서 온 것인지(SceneRef 와 왕복 시 보존해야
@@ -100,24 +101,20 @@ export function SpotlightRefTray({
       recompute(ev.clientX, ev.clientY);
     };
     const finish = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      window.removeEventListener("blur", finish);
+      removeWindowMouseDrag(onMove, onUp);
       cleanupRef.current = null;
       setLine(null);
       setFromIdx(null);
     };
-    const onUp = () => {
-      const wasDragging = dragging;
+    // mouseup 을 놓친 끌기(Alt-Tab 으로 창을 떠남·단추를 뗀 채 온 움직임 — lib/windowDrag)는 순서를 바꾸지 않고 정리만 한다.
+    const onUp = (ev: Event) => {
+      const wasDragging = dragging && !dragLost(ev);
       const ii = insertIndex;
       finish();
       if (wasDragging && ii >= 0) onReorder(index, ii);
     };
     cleanupRef.current = finish;
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    // Alt-Tab 으로 창을 떠나면 mouseup 을 못 받는다. 순서는 바꾸지 않고(onUp 아님) 정리만 한다.
-    window.addEventListener("blur", finish);
+    addWindowMouseDrag(onMove, onUp);
   };
 
   return (

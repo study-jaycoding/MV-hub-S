@@ -3,7 +3,7 @@
 //  · 영상 호버 자동재생 + 미디어 호버 오버레이(정보·미리보기·다운로드)
 //  · 좌측 폴더 트리는 유지. 셀 휠클릭=정보, 클릭=미리보기.
 import { isKeyHandled } from "../lib/keyHandled";
-import { backgroundKeysBlocked, isTypingTarget } from "../lib/keyGate";
+import { activationKeyOwned, backgroundKeysBlocked, isTypingTarget } from "../lib/keyGate";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import { api } from "../api";
@@ -16,7 +16,7 @@ import { makeStore, saveString } from "../lib/storage";
 import { loadManageWorkspaceScope } from "../lib/manageWorkspaceScope";
 import { STORAGE_KEYS } from "../lib/storageKeys";
 import { useFloatingPanel } from "../lib/useFloatingPanel";
-import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
+import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { AssetComment, AssetNode, InfoTarget, PreviewTarget } from "../types";
 import { AssetCell } from "./assets/AssetCell";
 import { FolderIcon } from "./FolderIcon";
@@ -326,12 +326,13 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     setSelected(marqueeHits<number>(grid, ".asset-cell", b, base, (el) => Number(el.dataset.idx)));
   }, []);
 
-  const onDragUp = useCallback(() => {
+  const onDragUp = useCallback((e?: Event) => {
     const d = dragRef.current;
     dragRef.current = null;
     removeWindowMouseDrag(onDragMove, onDragUp);
     setMarquee(null);
-    if (!d) return;
+    // 놓친 끌기(창을 떠남·단추를 뗀 채 온 움직임 — lib/windowDrag)는 정리만 한다 — 누른 채 Alt+Tab 한 것이 클릭으로 확정되지 않게
+    if (!d || dragLost(e)) return;
     if (!d.moved) {
       // 드래그 없이 클릭만 → 선택 처리
       if (d.cellIdx >= 0) {
@@ -491,6 +492,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const onGridKeyDown = (e: React.KeyboardEvent) => {
     if (isTypingTarget(e.target)) return; // 인라인 입력 중엔 단축키 무시
     if (backgroundKeysBlocked()) return; // 위에 뜬 창·메뉴의 키(lib/keyGate)
+    if (activationKeyOwned(e.nativeEvent)) return; // Tab 으로 찾아간 카드 단추(S·T·C)의 Enter·Space 는 그 단추를 누르는 키
     if (!filesRef.current.length) return;
     if (e.key.startsWith("Arrow")) {
       e.preventDefault();

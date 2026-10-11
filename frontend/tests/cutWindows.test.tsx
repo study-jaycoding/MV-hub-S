@@ -355,3 +355,50 @@ it("연결 재생기 — 타임바로 컷을 넘긴 뒤 늦게 도는 옛 컷의
     raf.mockRestore();
   }
 });
+
+it("연결 재생기 — Tab 으로 찾아간 단추의 Space 는 그 단추를 누르는 키다. 마우스로 눌러 초점이 남은 단추에서는 여전히 재생/정지", () => {
+  // 2026-10-11 격리 실측(dist_b46): Tab 으로 간 [반복]·[다음 컷]·[닫기]에서 Space 18/18 이 재생/정지로 갔고 단추는 0/18 눌렸다.
+  const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+  const still = (name: string): ReelClip => ({ path: `e035/${name}`, name, url: `/m/${name}.png`, type: "image", thumb: null, worker: "리버", rep: false });
+  try {
+    act(() => root.render(<ReelPlayer clips={[still("C0010"), still("C0020")]} />));
+    const playing = () => host.querySelectorAll(".reel-play rect").length === 2; // 정지 그림(막대 둘) = 재생 중
+    const loop = host.querySelector<HTMLButtonElement>(".reel-t-loop")!;
+    const space = (target: EventTarget) => {
+      const event = new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true });
+      act(() => { target.dispatchEvent(event); });
+      return event.defaultPrevented;
+    };
+    expect(playing()).toBe(true);
+    act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true })); loop.focus(); }); // Tab 으로 옮겨 온 초점
+    expect(space(loop)).toBe(false); // 가져가지 않는다 — 브라우저가 그 단추를 누른다
+    expect(playing()).toBe(true);
+    act(() => { loop.dispatchEvent(new Event("pointerdown", { bubbles: true })); }); // 마우스로 눌러 남은 초점
+    expect(space(loop)).toBe(true);
+    expect(playing()).toBe(false);
+  } finally {
+    raf.mockRestore();
+  }
+});
+
+it("연결 재생기 — mouseup 을 놓친 타임바 끌기는 단추를 뗀 마우스를 따라오지 않는다", () => {
+  // 2026-10-11 격리 실측(dist_b46) 3/3: 끌기 끝 50% 뒤 단추 없는 움직임에 60·70·80·20·10% 로 따라왔다(세로로 300px 벗어나도).
+  const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+  const still = (name: string): ReelClip => ({ path: `e035/${name}`, name, url: `/m/${name}.png`, type: "image", thumb: null, worker: "리버", rep: false });
+  try {
+    act(() => root.render(<ReelPlayer clips={[still("C0010"), still("C0020"), still("C0030")]} />)); // 3초 × 3
+    const chip = () => host.querySelector(".reel-chip.l")!.textContent;
+    const track = host.querySelector<HTMLElement>(".reel-track")!;
+    vi.spyOn(track, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, right: 900, bottom: 10, width: 900, height: 10, x: 0, y: 0, toJSON: () => ({}) } as DOMRect);
+    const move = (clientX: number, buttons: number) => act(() => { window.dispatchEvent(new MouseEvent("mousemove", { clientX, buttons })); });
+    act(() => { track.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 100 })); });
+    move(450, 1); // 두 번째 컷
+    expect(chip()).toBe("2 / 3 · C0020 · 리버");
+    move(800, 0); // mouseup 을 놓쳤다 — 세 번째 컷 자리지만 따라가지 않는다
+    move(850, 0);
+    move(820, 1); // 다른 것을 누른 채의 움직임도
+    expect(chip()).toBe("2 / 3 · C0020 · 리버");
+  } finally {
+    raf.mockRestore();
+  }
+});

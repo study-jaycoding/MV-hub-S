@@ -12,7 +12,7 @@ import { backgroundKeysBlocked, isTypingTarget, pressStartedCovered, useLooseKey
 import { computeMarquee, marqueeHits, type MarqueeRect } from "../lib/marquee";
 import { thumbOf } from "../lib/media";
 import { matchShortcut } from "../lib/shortcuts";
-import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
+import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { FolderCard } from "../types";
 import { MediaThumbnail } from "./MediaThumbnail";
 
@@ -88,28 +88,29 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
     lastMoveRef.current = e;
     if (rafRef.current == null) rafRef.current = requestAnimationFrame(flushMarquee);
   }, [flushMarquee]);
-  // 끝 — mouseup 이면 클릭 판정, 창을 떠나서(blur) 끝났으면 버린다(Alt+Tab 뒤 돌아온 움직임이 고르기로 이어지지 않게).
+  // 끝 — mouseup 이면 클릭 판정, 놓쳐서(창을 떠남·단추를 뗀 채 온 움직임 — lib/windowDrag) 끝났으면 버린다(Alt+Tab 뒤 돌아온 움직임이
+  //  고르기로 이어지지 않게).
   const endDragRef = useRef<(e?: Event) => void>(() => {});
   const onDragEnd = useCallback((e?: Event) => endDragRef.current(e), []);
   endDragRef.current = (e?: Event) => {
+    const left = dragLost(e);
     if (rafRef.current != null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
-      // 마지막 움직임의 계산이 아직 안 돌았으면 지금 돌린다 — 놓는 순간의 선택이 버려지지 않게(Codex 코드 리뷰). 창을 떠난 것은 버린다.
-      if (e?.type !== "blur") flushMarquee();
+      // 마지막 움직임의 계산이 아직 안 돌았으면 지금 돌린다 — 놓는 순간의 선택이 버려지지 않게(Codex 코드 리뷰). 놓친 것은 버린다.
+      if (!left) flushMarquee();
     }
     const d = dragRef.current;
     dragRef.current = null;
     removeWindowMouseDrag(onDragMove, onDragEnd);
-    window.removeEventListener("blur", onDragEnd);
     setMarquee(null);
     // 마퀴로 고른 뒤에는 누른 자리를 비운다 — 남으면 Shift 클릭·방향키가 (마퀴와 무관한) 먼저 누른 카드에서 출발한다. 비우면 기준은
     //  '고른 것 중 마지막 카드'다(ThumbnailGrid 와 같은 규칙).
-    if (d?.moved && e?.type !== "blur") {
+    if (d?.moved && !left) {
       anchorRef.current = null;
       cursorRef.current = null;
     }
-    if (!d || d.moved || e?.type === "blur") return;
+    if (!d || d.moved || left) return;
     const { folders: list, onSelect: select } = opsRef.current;
     if (d.path) {
       const anchor = anchorRef.current;
@@ -139,7 +140,6 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
   useEffect(() => () => {
     dragRef.current = null;
     removeWindowMouseDrag(onDragMove, onDragEnd);
-    window.removeEventListener("blur", onDragEnd);
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
   }, [onDragMove, onDragEnd]);
 
@@ -238,7 +238,6 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
       additive: e.ctrlKey || e.metaKey, range: e.shiftKey, base: new Set(opsRef.current.selected), moved: false,
     };
     addWindowMouseDrag(onDragMove, onDragEnd);
-    window.addEventListener("blur", onDragEnd);
   };
 
   return (

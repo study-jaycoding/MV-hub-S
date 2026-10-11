@@ -8,7 +8,7 @@ import { STORAGE_KEYS } from "../lib/storageKeys";
 import { useClickSeparation } from "../lib/useClickSeparation";
 import { useCustomEvent } from "../lib/useCustomEvent";
 import { useDebouncedCallback } from "../lib/useDebouncedCallback";
-import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
+import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/windowDrag";
 import { loadDisabledGen, loadDisabledFolders, DISABLED_EVENT } from "../lib/deactivated";
 import { expandDisabledGenerationIds } from "../lib/generationDisplay";
 import {
@@ -319,18 +319,10 @@ export function HistoryBoard({
     nodeId: string | null; origins: Record<string, XY>; // 이동 대상(들)의 시작 위치
   } | null>(null);
 
-  // 드래그 종료(cleanup) 핸들러를 ref 로 노출 — onDragMove 의 안전장치(버튼 뗌 감지)에서 호출.
-  const dragEndRef = useRef<() => void>(() => {});
-
+  // 버튼을 이미 뗐는데 mouseup 을 놓친 끌기(네이티브 드래그 가로챔·창을 떠남)는 lib/windowDrag 가 끝낸다 — onDragUp 이 그 이벤트로 불린다.
   const onDragMove = useCallback((e: MouseEvent) => {
     const d = dragRef.current;
     if (!d) return;
-    // 안전장치: 버튼을 이미 뗐는데 mouseup 을 놓쳤다면(네이티브 드래그 가로챔 등) 여기서 종료.
-    // — 이게 없으면 버튼 안 눌렀는데도 카드가 커서를 계속 따라다님(드래그 멈춤 안 됨).
-    if (e.buttons === 0) {
-      dragEndRef.current();
-      return;
-    }
     if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 5) return;
     d.moved = true;
     const z = zoomRef.current * scaleRef.current; // 총배율(휠 zoom × 툴바 scale)로 환산
@@ -365,13 +357,14 @@ export function HistoryBoard({
     setSelected(hit);
   }, []);
 
-  const onDragUp = useCallback(() => {
+  const onDragUp = useCallback((e?: Event) => {
     const d = dragRef.current;
     dragRef.current = null;
     removeWindowMouseDrag(onDragMove, onDragUp);
     setMarquee(null);
     setDragging(false);
-    if (!d || d.moved) return; // 드래그로 마퀴 적용됨 → 끝
+    // 드래그로 마퀴 적용됨 → 끝. 놓친 끌기(누른 채 창을 떠남 등)도 정리만 — 클릭으로 확정하지 않는다.
+    if (!d || d.moved || dragLost(e)) return;
     // 드래그 없이 클릭만 →
     if (d.nodeId) {
       if (d.additive) {
@@ -385,7 +378,6 @@ export function HistoryBoard({
       setSelected(new Set()); // 빈 배경 클릭 → 해제
     }
   }, [onDragMove]);
-  dragEndRef.current = onDragUp; // onDragMove 안전장치가 부를 최신 cleanup
 
   // 휠클릭(미들 버튼) 드래그 = 화면 이동(패닝, translate). 사방 무한 이동. 손모양 커서.
   const panRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
