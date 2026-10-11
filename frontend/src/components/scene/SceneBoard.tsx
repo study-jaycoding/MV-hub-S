@@ -2384,8 +2384,11 @@ export function SceneBoard({
       );
       applyCards(nextCards, "persistUser", { removedForward });
       return true;
-    } catch {
-      return false; // 읽기·파싱 실패 — 기존 워크플로우 그대로 둔다(교체 취소)
+    } catch (reason) {
+      // 읽기·파싱 실패 — 기존 워크플로우 그대로 둔다(교체 취소). 그 사실을 알린다(조작 규칙 41): 전엔 아무 반응이 없어, 새 파일이
+      //  들어간 줄 알고 옛 워크플로를 실행할 수 있었다. 낡은 불러오기(그사이 다른 것이 반영됐거나 씬을 떠났다)의 실패는 알리지 않는다.
+      if (!stale()) flashMsg(`워크플로를 불러오지 못했습니다 — 카드는 그대로입니다. ${reason instanceof Error ? reason.message : ""}`.trim());
+      return false;
     }
   };
   // comfy 노드: 파일 선택으로 API 교체(.json). 버튼에서 호출 — 숨은 input 을 즉석 생성.
@@ -2411,8 +2414,11 @@ export function SceneBoard({
       // 다시 읽는 사이에 다른 워크플로로 바뀌었으면 버린다 — 옛 워크플로의 노드 수를 새것에 적고 그 상태를 지웠다(조작 규칙 39)
       if (cardsRef.current.find((c) => c.id === cardId)?.comfyCfg?.content !== content) return;
       patchComfyCfg(cardId, { nodeCount: res.node_count, status: "idle", error: null }, { undo: false }); // 재파싱=파생, undo 제외
-    } catch {
-      /* 파싱 실패 — 상태만 두고 무시 */
+    } catch (reason) {
+      // 파싱 실패 — 카드는 그대로 둔다. 눌렀는데 아무 일도 없는 것처럼 보이지 않게 알린다(이 씬·이 워크플로를 아직 보고 있을 때만)
+      if (sceneIdRef.current === sid && cardsRef.current.find((c) => c.id === cardId)?.comfyCfg?.content === content) {
+        flashMsg(`워크플로를 다시 읽지 못했습니다. ${reason instanceof Error ? reason.message : ""}`.trim());
+      }
     }
   };
   // comfy 노드 입력 수집 — 연결된 레퍼런스/생성물/리스트를 공간 순서(위→아래,왼→오)대로,

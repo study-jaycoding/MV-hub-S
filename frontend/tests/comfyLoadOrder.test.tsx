@@ -281,6 +281,52 @@ it("Comfy 워크플로 창에 놓은 .json 은 창의 것이다 — 뒤 보드�
   expect(loadScene).not.toHaveBeenCalled();
 });
 
+// 14회차(조작 규칙 41): 읽기·파싱에 실패하면 카드는 그대로 두되 그 사실을 알린다 — 전엔 아무 반응이 없어, 새 파일이 들어간 줄 알고
+//  옛 워크플로를 실행할 수 있었다. 낡은 불러오기(그사이 다른 것이 반영됐다)의 실패는 지금 카드와 무관하니 알리지 않는다.
+it("캔버스의 Comfy 카드 — 불러오기·다시 읽기에 실패하면 알린다. 낡은 것의 실패는 알리지 않는다", async () => {
+  const flashes: string[] = [];
+  const onFlash = (event: Event) => { flashes.push((event as CustomEvent<string>).detail); };
+  window.addEventListener("ch:flash", onFlash);
+  const failParse = async (index: number, why: string) => { await act(async () => { parses[index].reject(new Error(why)); }); await settle(); };
+  try {
+    const card = await board();
+    await dropFile(card.zone(), "broken"); // parses[0]
+    await failParse(0, "워크플로 JSON 이 아닙니다");
+    expect(flashes).toEqual(["워크플로를 불러오지 못했습니다 — 카드는 그대로입니다. 워크플로 JSON 이 아닙니다"]);
+    await dropFile(card.zone(), "slow"); // parses[1] — 도는 중
+    await dropFile(card.zone(), "base"); // parses[2]
+    await finish(2, 1);
+    await failParse(1, "늦은 실패"); // base 가 이미 들어왔다
+    expect(flashes).toHaveLength(1);
+    expect(card.label()).toContain("base · 1노드");
+    // 다시 읽기(↻)
+    await act(async () => { cardButton("현재 워크플로우 다시 읽기").click(); }); // parses[3]
+    await settle();
+    await failParse(3, "Comfy 서버에 닿지 않습니다");
+    expect(flashes.slice(1)).toEqual(["워크플로를 다시 읽지 못했습니다. Comfy 서버에 닿지 않습니다"]);
+    await act(async () => { cardButton("현재 워크플로우 다시 읽기").click(); }); // parses[4]
+    await settle();
+    await dropFile(card.zone(), "next"); // parses[5] — 다시 읽는 사이에 다른 워크플로로 바뀌었다
+    await finish(5, 3);
+    await failParse(4, "늦은 실패");
+    expect(flashes).toHaveLength(2);
+    // 씬을 떠난 뒤에 온 실패도 알리지 않는다 — 같은 씬 파일을 두 번 가져오면 두 씬의 카드 id·워크플로가 같다
+    const loaded = (id: string) => ({ id, name: id, created_at: 0, edges: [],
+      cards: [{ id: "comfy", kind: "comfy", x: 0, y: 0, comfyCfg: { name: "same", content: '{"same":1}', nodeCount: 1 } }] }) as unknown as Scene;
+    const showScene = async (id: string) => { await act(async () => { root.render(<SceneBoard scene={loaded(id)} onChange={() => {}} />); }); await settle(); };
+    await showScene("x");
+    const at = parses.length;
+    await act(async () => { cardButton("현재 워크플로우 다시 읽기").click(); });
+    await settle();
+    expect(parses.length).toBe(at + 1);
+    await showScene("y");
+    await failParse(at, "늦은 실패");
+    expect(flashes).toHaveLength(2);
+  } finally {
+    window.removeEventListener("ch:flash", onFlash);
+  }
+});
+
 it("캔버스의 Comfy 카드 — 다시 읽기(↻)가 도는 사이에 다른 워크플로로 바뀌면 옛 것의 노드 수를 새것에 적지 않는다", async () => {
   const card = await board();
   await dropFile(card.zone(), "base");
