@@ -814,6 +814,8 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
 - ⑯ **`setTimeout(0)` 으로 푸는 억제는 '타이머가 돌기 전'을 따로 본다** — 입력은 타이머보다 먼저 처리된다. 실측은 놓기와 다음 누름을 **기다리지 않고 잇달아** 보내고
   (끌어 놓자마자 누른 씬 탭 세 번이 전부 안 먹던 것이 이렇게 나왔다 — 한 번씩 기다리며 보내면 안 보인다), 시험은 놓기·딸린 click·다음 누름을 **`act` 한 번 안에서** 쏜다
   (`tests/sceneCardGroupMove.test.tsx` '끌어 놓은 직후…', `sceneBarDrag.test.tsx`, `folderReviewCounts.test.tsx`). 앞 끌기의 타이머가 다음 끌기에 끼어드는 길은 두 끌기 사이에 0ms 를 기다려 만든다.
+- ⑰ **길게 누른 키**는 첫 keydown 뒤에 `repeat: true` 인 keydown 을 더 보내 만든다(`tests/heldKeyRepeat.test.tsx` 의 `hold()`). 반복은 **홀수 번** 보낸다 — 토글은
+  짝수 번 뒤집히면 처음과 같아, 거르는 줄을 빼도 시험이 통과한다. 볼 것은 둘: 일이 한 번만 일어났는가, 반복 keydown 도 `defaultPrevented` 인가(Space 스크롤·Tab 초점 이동).
 
 캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
 - ⑤ 복사본은 프로젝트 폴더 경로를 비워, 씬 그림(`asset:` 썸네일)이 **전부 404** 다. 그림이 뜬 상태로 재려면 다음처럼 한다.
