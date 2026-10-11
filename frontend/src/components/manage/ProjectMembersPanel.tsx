@@ -27,6 +27,7 @@ export function ProjectMembersPanel({
   candidates,
   systemUids,
   onClose,
+  busy = false,
   onRolesChange,
   onRemove,
   onAddMembers,
@@ -36,6 +37,8 @@ export function ProjectMembersPanel({
   candidates: MemberCandidate[] | undefined;
   systemUids: Set<string>;
   onClose: () => void;
+  // 멤버를 바꾸는 요청(역할·제거·추가)이 나가 있다 — 응답이 올 때까지 바꾸는 단추를 잠근다(ProjectManagerPanel 의 주석)
+  busy?: boolean;
   onRolesChange: (uid: string, roles: string[]) => Promise<void>;
   onRemove: (uid: string) => Promise<void>;
   onAddMembers: (uids: string[]) => Promise<void>;
@@ -131,6 +134,7 @@ export function ProjectMembersPanel({
         type="button"
         className="project-member-add-button"
         onClick={() => setAddOpen(true)}
+        disabled={busy}
       >
         + 추가
       </button>
@@ -157,6 +161,7 @@ export function ProjectMembersPanel({
                   title="프로젝트에서 제거"
                   aria-label={`${name} 제거`}
                   onClick={() => void onRemove(member.uid)}
+                  disabled={busy}
                 >
                   ✕
                 </button>
@@ -164,6 +169,7 @@ export function ProjectMembersPanel({
               <ProjectRolePicker
                 value={member.roles}
                 onChange={(roles) => void onRolesChange(member.uid, roles)}
+                disabled={busy}
               />
             </article>
           );

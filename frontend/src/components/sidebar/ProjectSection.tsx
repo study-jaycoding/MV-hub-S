@@ -36,7 +36,7 @@ import { DRAG_TYPES } from "../../lib/dragTypes";
 import { encodeSceneFolderDrag } from "../../lib/sceneSet";
 import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { useCustomEvent } from "../../lib/useCustomEvent";
-import { useDragEndReset } from "../../lib/useDragEndReset";
+import { useDragEndReset, useHandleRelease } from "../../lib/useDragEndReset";
 import { useT } from "../../lib/i18n";
 import { loadJSON, saveJSON } from "../../lib/storage";
 import { reconcileArrayState, reconcileValueState } from "../../lib/stateReconciliation";
@@ -232,6 +232,7 @@ export function ProjectSection({
   );
   // 프로젝트 순서 드래그(⠿) — 손잡이를 잡았을 때만 행이 draggable(행 클릭·카드 드롭과 충돌 방지).
   const [dragArmed, setDragArmed] = useState(false);
+  useHandleRelease(dragArmed, () => setDragArmed(false)); // 손잡이 밖에서 떼거나 누른 채 창을 떠나도 내린다
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
   const dropAt = (toIdx: number) => {
