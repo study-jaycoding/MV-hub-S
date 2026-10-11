@@ -366,6 +366,39 @@ it("에셋 색 — 되돌리려 다시 읽는 사이에 다른 파일을 칠하�
   expect(flashes).toEqual(["변경 적용 실패 — 서버 상태로 되돌렸습니다"]);
 });
 
+// 2026-10-12 조작 점검 18회차(Codex 코드 리뷰, 조작 규칙 45): 아래 조작은 모두 지금 화면의 메타에서 다음 값을 만든다 — 메타를 받기 전이면
+//  (폴더를 처음 열어 파일 목록만 먼저 온 사이) 기존 태그를 모르는 목록이 통째로 저장돼 지워진다.
+it("에셋 메타 — 이 폴더의 메타를 받기 전(ready=false)에는 고치는 조작을 하나도 받지 않는다(화면도 저장도 그대로, 안내만)", () => {
+  const initial: Record<string, AssetMeta> = { "a.png": { ...EMPTY_ASSET_META, tags: ["old"], color: "#ff0000", is_source: true, source_name: "a" } };
+  let view!: { meta: Record<string, AssetMeta> } & ReturnType<typeof useAssetMetaActions>;
+  function Host() {
+    const filesRef = useRef([{ name: "a.png", path: "a.png", type: "image" } as AssetNode]);
+    const [meta, setMeta] = useState(initial);
+    const metaRef = useRef(meta);
+    metaRef.current = meta;
+    const [, setActiveTags] = useState(new Set<string>());
+    view = { meta, ...useAssetMetaActions({ project: "P", filesRef, metaRef, selected: new Set([0]), activeTags: new Set(), setMeta, setActiveTags, reloadMeta: async () => true, ready: false }) };
+    return null;
+  }
+  act(() => root.render(<Host />));
+  const tries: Array<[string, () => void]> = [
+    ["colorAssets", () => view.colorAssets(["a.png"], "#00ff00")],
+    ["sourceAssets", () => view.sourceAssets(["a.png"])],
+    ["toggleSource", () => view.toggleSource("a.png")],
+    ["removeAssetTag", () => view.removeAssetTag("a.png", "old")],
+    ["setAssetTagsReplace", () => view.setAssetTagsReplace("a.png", ["new"])],
+    ["bulkTagAdd", () => view.bulkTagAdd("a.png", ["new"])],
+    ["bulkTagRemove", () => view.bulkTagRemove("a.png", ["old"])],
+    ["deleteTag", () => view.deleteTag("old")],
+  ];
+  for (const [name, run] of tries) {
+    flashes.length = 0;
+    act(run);
+    expect([name, view.meta === initial, flashes]).toEqual([name, true, ["이 폴더의 태그·색을 아직 받지 못했습니다 — 받은 뒤에 고칠 수 있습니다."]]);
+  }
+  expect(mocks.setAssetColorsBatch).not.toHaveBeenCalled();
+});
+
 it("에셋 메타 다시 받기(reloadMeta)는 '받았는가'를 돌려준다 — 위 안내가 이것을 본다", async () => {
   mocks.assetProjects.mockResolvedValue({ projects: ["P"], linked: [], default: "P" });
   mocks.assetTree.mockResolvedValue({ children: [] });

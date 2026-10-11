@@ -378,6 +378,51 @@ it("한 번 클릭 = 그것만, Ctrl = 토글, Shift = 마지막으로 누른 �
   expect(selected.size).toBe(0);
 });
 
+// 2026-10-12 조작 점검 18회차(Codex 전수 검토, 조작 규칙 45): 기준 카드가 그사이 목록에서 사라지면(다른 창이 그 폴더를 지우거나 이름을 바꿨다)
+//  '고른 것 중 마지막 카드'를 대신 쓰는데, 그 대신 잡은 기준을 기억하지 않았다 — 다음 Shift 클릭이 또 '고른 것 중 마지막'에서 재서 범위가 잘렸다.
+it.each(["클릭", "방향키"] as const)("Shift 의 기준 카드가 목록에서 사라지면 대신 잡은 기준을 기억한다 — 이어지는 Shift %s 가 범위를 잃지 않는다", (way) => {
+  let folders = [card("C0010", 1), card("C0020", 1), card("C0030", 1), card("C0040", 1), card("C0050", 1)];
+  let selected = new Set<string>();
+  const draw = () => act(() => root.render(
+    <FolderCardGrid {...gridProps} folders={folders} selected={selected} onSelect={(next) => { selected = next; draw(); }} />,
+  ));
+  draw();
+  const tile = (name: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="e035/${name}"]`)!;
+  const press = (name: string, init: MouseEventInit = {}) => { mouse("mousedown", tile(name), init); mouse("mouseup", window, init); };
+  const extendTo = (name: string) => {
+    if (way === "클릭") press(name, { shiftKey: true });
+    else act(() => { host.querySelector(".cut-grid")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", shiftKey: true, bubbles: true, cancelable: true })); });
+  };
+  press("C0010");
+  press("C0020", { shiftKey: true });
+  expect([...selected]).toEqual(["e035/C0010", "e035/C0020"]);
+  folders = folders.slice(1); // 기준(C0010)이 목록에서 빠졌다
+  selected = new Set(["e035/C0020"]);
+  draw();
+  extendTo("C0030");
+  expect([...selected]).toEqual(["e035/C0020", "e035/C0030"]); // 방향키는 전엔 여기서 C0030 한 장만 남았다
+  extendTo("C0040");
+  expect([...selected]).toEqual(["e035/C0020", "e035/C0030", "e035/C0040"]); // 클릭은 전엔 C0030·C0040 — C0020 이 빠졌다
+});
+
+// Codex 코드 리뷰: 마지막으로 누른 카드(기준이자 방향키의 출발 자리)가 사라졌는데 '고른 것'에는 남아 있을 수 있다 — 부모는 고른 것을
+//  목록과의 교집합으로 쓰기 때문에 목록이 새로 와도 지우지 않는다. 그 자리를 그대로 가리키면 방향키가 맨 앞 카드로 튀었다.
+it("방향키의 출발 자리가 목록에서 사라졌으면 고른 것 중 남아 있는 마지막 카드에서 출발한다 — 맨 앞 카드로 튀지 않는다", () => {
+  let folders = ["C0010", "C0020", "C0030", "C0040", "C0050"].map((name) => card(name, 1));
+  let selected = new Set<string>();
+  const draw = () => act(() => root.render(
+    <FolderCardGrid {...gridProps} folders={folders} selected={selected} onSelect={(next) => { selected = next; draw(); }} />,
+  ));
+  draw();
+  const tile = (name: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="e035/${name}"]`)!;
+  const press = (name: string, init: MouseEventInit = {}) => { mouse("mousedown", tile(name), init); mouse("mouseup", window, init); };
+  press("C0030");
+  press("C0050", { ctrlKey: true }); // 마지막으로 누른 카드 = C0050
+  folders = folders.slice(0, 4); // 다른 창이 C0050 을 지웠다 — 고른 것(selected)에는 그대로 남아 있다
+  draw();
+  act(() => { host.querySelector(".cut-grid")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", shiftKey: true, bubbles: true, cancelable: true })); });
+  expect([...selected]).toEqual(["e035/C0020", "e035/C0030"]); // 전엔 맨 앞의 C0010 한 장
+});
 it("빈 곳에서 끌면 걸친 카드를 모두 고른다 — 창을 떠나면(blur) 버린다. 휠 클릭 = 그 카드를 고르고 컷 정보", () => {
   const folders = [card("C0010", 1), card("C0020", 1), card("C0030", 1)];
   let selected = new Set<string>();

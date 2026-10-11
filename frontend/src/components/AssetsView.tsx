@@ -15,6 +15,7 @@ import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { makeStore, saveString } from "../lib/storage";
 import { loadManageWorkspaceScope } from "../lib/manageWorkspaceScope";
 import { STORAGE_KEYS } from "../lib/storageKeys";
+import { flashMsg } from "../lib/flash";
 import { useFloatingPanel } from "../lib/useFloatingPanel";
 import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { AssetComment, AssetNode, InfoTarget, PreviewTarget } from "../types";
@@ -42,7 +43,7 @@ import { useAssetBroadcastSync } from "./assets/useAssetBroadcastSync";
 import { useAssetCommentActions } from "./assets/useAssetCommentActions";
 import { useAssetDropImport } from "./assets/useAssetDropImport";
 import { useAssetFilterActions } from "./assets/useAssetFilterActions";
-import { useAssetMetaActions } from "./assets/useAssetMetaActions";
+import { ASSET_META_NOT_READY, useAssetMetaActions } from "./assets/useAssetMetaActions";
 import { useAssetProjectData } from "./assets/useAssetProjectData";
 import { useAssetSelectionPersistence } from "./assets/useAssetSelectionPersistence";
 import { useAssetViewData } from "./assets/useAssetViewData";
@@ -97,6 +98,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     error,
     loading,
     meta,
+    metaReady,
     project,
     projects,
     linkedProjects,
@@ -146,6 +148,19 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const metaRef = useRef(meta);
   metaRef.current = meta;
   const [tagEditPath, setTagEditPath] = useState<string | null>(null); // 인라인 태그 입력 중인 파일
+  // 폴더가 바뀌면 열려 있던 태그 입력을 닫는다(그리기 전에 — 조작 규칙 45). 경로만 들고 있어, 새 폴더에 같은 경로의 파일이 있으면 그
+  //  파일에 입력이 저절로 열린다(코멘트 패널을 닫는 것과 같은 까닭 — useAssetCommentActions).
+  useLayoutEffect(() => {
+    setTagEditPath(null);
+  }, [project]);
+  // 태그 입력은 이 폴더의 메타를 받은 뒤에만 연다 — 편집기는 열 때의 태그를 사본으로 쥐므로, 메타가 오기 전에 열면 빈 칩으로 시작해
+  //  다음 Enter 가 기존 태그를 지운 목록을 저장한다(Codex 코드 리뷰).
+  const metaReadyRef = useRef(metaReady);
+  metaReadyRef.current = metaReady;
+  const startTagEdit = useCallback((path: string) => {
+    if (metaReadyRef.current) setTagEditPath(path);
+    else flashMsg(ASSET_META_NOT_READY);
+  }, []);
   // 아래 검색/필터들도 마지막 상태로 복원 → 다음에 열 때 보던 화면 그대로
   const [query, setQuery] = useState(() => LS.get("query", "")); // 검색어 (#로 시작하면 태그 검색)
   // 좌측 필터: 컬러(다중)·소스만·태그
@@ -265,9 +280,12 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [focusIdx, setFocusIdx] = useState(-1);
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
+  // 누른 순간의 선택·기준·누른 칸은 번호가 아니라 **파일 경로**로 든다(조작 규칙 45): 누르고 있는 사이 목록이 바뀌면(누른 채 d 로 숨김·
+  //  자동 새로 고침) 번호는 다른 파일을 가리킨다. 쓸 때마다 지금 목록의 번호로 바꾼다(indexOfPath).
   const dragRef = useRef<{
-    x: number; y: number; base: Set<number>; additive: boolean; range: boolean;
-    anchor: number; moved: boolean; cellIdx: number;
+    x: number; y: number; basePaths: Set<string>; additive: boolean; range: boolean;
+    anchorPath: string | null; moved: boolean; cellPath: string | null; onCell: boolean;
+    hitPaths?: string[]; // 끌어 고른(마퀴) 마지막 결과 — 끝낼 때 초점을 여기에 맞춘다
   } | null>(null);
   const filesRef = useRef(files);
   filesRef.current = files;
@@ -317,14 +335,17 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 5) return;
     d.moved = true;
     // 카드 위에서 시작한 드래그는 마퀴를 만들지 않고 현재 선택을 그대로 유지(이동 기능 없음).
-    // → 빈 공간에서 시작한 드래그(cellIdx<0)만 러버밴드 선택. moved=true 라 mouseup 시 클릭선택도 안 함.
-    if (d.cellIdx >= 0) return;
+    // → 빈 공간에서 시작한 드래그만 러버밴드 선택. moved=true 라 mouseup 시 클릭선택도 안 함.
+    if (d.onCell) return;
     const grid = gridRef.current;
     if (!grid) return;
     const { rect, b } = computeMarquee(grid, d, e);
     setMarquee(rect);
-    const base = d.additive || d.range ? d.base : [];
-    setSelected(marqueeHits<number>(grid, ".asset-cell", b, base, (el) => Number(el.dataset.idx)));
+    const live = filesRef.current;
+    const base = d.additive || d.range ? live.flatMap((file, idx) => (d.basePaths.has(file.path) ? [idx] : [])) : [];
+    const hits = marqueeHits<number>(grid, ".asset-cell", b, base, (el) => Number(el.dataset.idx));
+    d.hitPaths = [...hits].map((idx) => live[idx]?.path).filter((path): path is string => !!path);
+    setSelected(hits);
   }, []);
 
   const onDragUp = useCallback((e?: Event) => {
@@ -333,27 +354,38 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     removeWindowMouseDrag(onDragMove, onDragUp);
     setMarquee(null);
     // 놓친 끌기(창을 떠남·단추를 뗀 채 온 움직임 — lib/windowDrag)는 정리만 한다 — 누른 채 Alt+Tab 한 것이 클릭으로 확정되지 않게
-    if (!d || dragLost(e)) return;
+    if (!d) return;
+    // 끌어 고른 뒤의 초점은 고른 것 중 목록의 마지막 파일이다(컷 카드·라이브러리 격자와 같은 규칙 — 조작 규칙 45). 그대로 두면 초점이
+    //  끌기 전에 누른 파일에 남아, Enter 가 고르지 않은 그 파일을 열고 Shift 클릭이 거기서 범위를 잡았다. 아무것도 안 걸렸으면 초점도 없다.
+    //  놓친 끌기(창을 떠남)에서도 맞춘다 — 선택은 끄는 동안 이미 바뀌어 있다. 번호는 **지금 목록**에서 다시 찾는다.
+    if (d.hitPaths) {
+      const picked = new Set(d.hitPaths);
+      setFocusIdx(filesRef.current.reduce((last, file, idx) => (picked.has(file.path) ? idx : last), -1));
+    }
+    if (dragLost(e)) return;
     if (!d.moved) {
       // 드래그 없이 클릭만 → 선택 처리
-      if (d.cellIdx >= 0) {
-        if (d.range && d.anchor >= 0) {
+      if (d.onCell) {
+        const cellIdx = indexOfPath(filesRef.current, d.cellPath);
+        const anchor = indexOfPath(filesRef.current, d.anchorPath);
+        if (cellIdx < 0) return; // 누른 파일이 그사이 목록에서 사라졌다 — 그 자리에 온 다른 파일을 고르지 않는다
+        if (d.range && anchor >= 0) {
           // Shift-클릭 = 앵커~클릭 사이 전부 선택(앵커 유지 → 연속 Shift-클릭으로 범위 조정).
-          const lo = Math.min(d.anchor, d.cellIdx), hi = Math.max(d.anchor, d.cellIdx);
+          const lo = Math.min(anchor, cellIdx), hi = Math.max(anchor, cellIdx);
           const r = new Set<number>();
           for (let i = lo; i <= hi; i++) r.add(i);
           setSelected(r);
         } else if (d.additive) {
-          setFocusIdx(d.cellIdx);
+          setFocusIdx(cellIdx);
           setSelected((prev) => {
             const n = new Set(prev);
-            if (n.has(d.cellIdx)) n.delete(d.cellIdx);
-            else n.add(d.cellIdx);
+            if (n.has(cellIdx)) n.delete(cellIdx);
+            else n.add(cellIdx);
             return n;
           });
         } else {
-          setFocusIdx(d.cellIdx);
-          setSelected(new Set([d.cellIdx]));
+          setFocusIdx(cellIdx);
+          setSelected(new Set([cellIdx]));
         }
       } else if (!d.additive && !d.range) {
         // 빈 공간 클릭 → 선택 + 포커스 링 모두 해제(생성탭과 동일)
@@ -447,15 +479,17 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     gridRef.current?.focus();
     const cellEl = (e.target as HTMLElement).closest(".asset-cell") as HTMLElement | null;
     const cellIdx = cellEl ? Number(cellEl.dataset.idx) : -1;
+    const pathAt = (idx: number) => filesRef.current[idx]?.path ?? null;
     dragRef.current = {
       x: e.clientX,
       y: e.clientY,
-      base: new Set(selected),
+      basePaths: new Set([...selected].map(pathAt).filter((path): path is string => path !== null)),
       additive: e.ctrlKey || e.metaKey, // Ctrl/Cmd = 개별 토글
       range: e.shiftKey, // Shift = 앵커~클릭 범위 선택
-      anchor: focusIdx, // mousedown 시점 앵커 캡처(stale 클로저 회피)
+      anchorPath: pathAt(focusIdx), // mousedown 시점 앵커 캡처(stale 클로저 회피)
       moved: false,
-      cellIdx,
+      cellPath: pathAt(cellIdx),
+      onCell: cellIdx >= 0,
     };
     addWindowMouseDrag(onDragMove, onDragUp);
   };
@@ -537,7 +571,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       if (k === "s") { e.preventDefault(); sourceAssets(paths); }
       else if (e.key === "#") {
         e.preventDefault();
-        setTagEditPath(filesRef.current[focusIdx]?.path || paths[0]); // 포커스 카드에서 인라인 입력
+        startTagEdit(filesRef.current[focusIdx]?.path || paths[0]); // 포커스 카드에서 인라인 입력
       }
       else if (k === "c") { e.preventDefault(); openComments(filesRef.current[focusIdx]?.path || paths[0]); }
       else if (ASSET_COLOR_BY_KEY[k]) { e.preventDefault(); colorAssets(paths, ASSET_COLOR_BY_KEY[k]); }
@@ -567,6 +601,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     setMeta,
     setActiveTags,
     reloadMeta,
+    ready: metaReady,
   });
 
   const { selectActiveTag, toggleColor, toggleTagPanel } = useAssetFilterActions({
@@ -610,7 +645,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const cellOpsRef = useRef({ toggleSource, openComments, setAssetTagsReplace, bulkTagAdd, bulkTagRemove, removeAssetTag });
   cellOpsRef.current = { toggleSource, openComments, setAssetTagsReplace, bulkTagAdd, bulkTagRemove, removeAssetTag };
   const cellOnS = useCallback((p: string) => cellOpsRef.current.toggleSource(p), []);
-  const cellOnT = useCallback((p: string) => setTagEditPath(p), []); // 카드 T 클릭 = 인라인 태그 편집(키보드 #와 동일)
+  const cellOnT = startTagEdit; // 카드 T 클릭 = 인라인 태그 편집(키보드 #와 동일)
   const cellOnC = useCallback((p: string) => cellOpsRef.current.openComments(p), []);
   const cellOnTagsReplace = useCallback(
     (p: string, tags: string[]) => cellOpsRef.current.setAssetTagsReplace(p, tags),
@@ -951,6 +986,10 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     </div>
   );
 }
+
+/** 그 경로의 파일이 지금 목록의 몇 번째인가(없으면 -1). */
+const indexOfPath = (files: AssetNode[], path: string | null) =>
+  path === null ? -1 : files.findIndex((file) => file.path === path);
 
 // 마지막으로 보던 Assets 상태 영속화(프로젝트·폴더·크기·레이아웃)
 const LS = makeStore("ch.assets.");

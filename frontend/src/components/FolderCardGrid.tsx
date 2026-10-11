@@ -115,9 +115,13 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
     if (d.path) {
       const anchor = anchorRef.current;
       let from = anchor === null ? -1 : list.findIndex((folder) => folder.path === anchor);
-      // 누른 카드가 없으면(마퀴로만 고른 뒤) 고른 것 중 목록의 마지막 카드부터 — 전엔 Shift 클릭이 한 장만 골랐다(2026-10-10 재실측).
-      if (from < 0 && d.range) for (let i = list.length - 1; i >= 0 && from < 0; i--) if (d.base.has(list[i].path)) from = i;
-      if (anchor === null && from >= 0) anchorRef.current = list[from].path; // 이어지는 Shift 클릭도 같은 카드에서 잰다
+      // 누른 카드가 없거나(마퀴로만 고른 뒤) 그사이 목록에서 사라졌으면(다른 창이 그 폴더를 지우거나 이름을 바꿨다) 고른 것 중 목록의
+      //  마지막 카드부터 — 전엔 Shift 클릭이 한 장만 골랐다(2026-10-10 재실측).
+      const lost = from < 0;
+      if (lost && d.range) for (let i = list.length - 1; i >= 0 && from < 0; i--) if (d.base.has(list[i].path)) from = i;
+      // 이어지는 Shift 클릭도 같은 카드에서 잰다. 사라진 기준을 그대로 두면 매번 '고른 것 중 마지막'을 다시 찾아, 범위의 앞쪽이 잘려 나갔다
+      //  (조작 규칙 45)
+      if (lost && from >= 0) anchorRef.current = list[from].path;
       const to = list.findIndex((folder) => folder.path === d.path);
       if (d.range && from >= 0 && to >= 0) {
         // Shift = 마지막으로 누른 카드~여기(격자 순서). 시작은 그대로 둔다 — 이어서 Shift 로 범위를 고친다.
@@ -161,7 +165,9 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
     const kept = cursorRef.current ?? anchorRef.current;
     let pointed: string | null = focused ?? null;
     if (pointed === null) {
-      if (kept !== null && (chosen.has(kept) || chosen.size === 0)) pointed = kept;
+      // 남긴 자리가 그사이 목록에서 사라졌으면(다른 창이 그 폴더를 지웠다) 쓰지 않는다 — 고른 것에는 남아 있을 수 있어(부모는 목록과의
+      //  교집합으로 쓴다), 그대로 가리키면 방향키가 맨 앞 카드로 튀었다(조작 규칙 45)
+      if (kept !== null && list.some((folder) => folder.path === kept) && (chosen.has(kept) || chosen.size === 0)) pointed = kept;
       else for (const folder of list) if (chosen.has(folder.path)) pointed = folder.path;
     }
     const at = list.findIndex((folder) => folder.path === pointed);
@@ -173,8 +179,9 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
       const next = at < 0 ? 0 : at + step < 0 || at + step >= list.length ? at : at + step;
       const path = list[next].path;
       cursorRef.current = path;
-      // 누른 카드가 없으면(마퀴로만 고른 뒤) 지금 가리키는 카드(고른 것 중 마지막)가 Shift 범위의 시작이다
-      if (e.shiftKey && anchorRef.current === null && at >= 0) anchorRef.current = list[at].path;
+      // 누른 카드가 없거나(마퀴로만 고른 뒤) 목록에서 사라졌으면 지금 가리키는 카드(고른 것 중 마지막)가 Shift 범위의 시작이다 —
+      //  사라진 기준을 그대로 두면 Shift+방향키가 범위를 버리고 한 장만 골랐다(조작 규칙 45)
+      if (e.shiftKey && at >= 0 && !list.some((folder) => folder.path === anchorRef.current)) anchorRef.current = list[at].path;
       const from = e.shiftKey && anchorRef.current !== null ? list.findIndex((folder) => folder.path === anchorRef.current) : -1;
       if (from >= 0) {
         const [lo, hi] = from < next ? [from, next] : [next, from];

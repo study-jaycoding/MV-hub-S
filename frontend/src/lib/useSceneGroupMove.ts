@@ -82,9 +82,17 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
 
     const anchorId = memberIds[0];
     const anchor = anchorId ? origins[anchorId] : undefined;
+    // 네모를 같이 옮길 그룹 — 잡은(고른) 그룹에 더해, 살아 있는 멤버가 **전부** 같이 가는 그룹(카드 끌기의 '통째로 옮기는 그룹'과 같은
+    //  규칙 — lib/useSceneCardMove). 범위 선택으로 두 그룹을 고른 뒤 한 그룹의 머리를 누르면 그룹 선택은 그 하나로 줄지만 카드 선택은 둘 다
+    //  남는다: 그 머리를 끌면 다른 그룹은 카드만 떠나고 네모가 옛 자리에 남은 채 저장됐다(조작 규칙 45).
+    const moving = new Set(memberIds);
+    const goesWhole = (item: SceneGroup) => {
+      const live = item.cardIds.filter((cardId) => cardsById.has(cardId));
+      return live.length > 0 && live.every((cardId) => moving.has(cardId));
+    };
     const originalRects = new Map(
       current.groupsRef.current
-        .filter((item) => targetGroupIdSet.has(item.id) && item.rect)
+        .filter((item) => item.rect && (targetGroupIdSet.has(item.id) || goesWhole(item)))
         .map((item) => [item.id, { ...item.rect! }] as const),
     );
     let lastRects = new Map(originalRects);

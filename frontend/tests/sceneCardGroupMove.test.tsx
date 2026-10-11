@@ -1736,3 +1736,45 @@ it("그룹 크기를 조절하는 중에 그 그룹이 밖에서 지워지면 �
   expect(patches).toEqual([]);
   expect([...host.querySelectorAll<HTMLElement>(".scene-group")].map((el) => el.dataset.groupId)).toEqual(["gB"]);
 });
+
+// 2026-10-12 조작 점검 18회차(Codex 전수 검토, 조작 규칙 45): 범위 선택으로 두 그룹을 통째로 고른 뒤 한 그룹의 머리를 한 번 누르면 그룹 선택은
+//  그 그룹 하나로 줄지만 카드 선택은 두 그룹의 것이 그대로다. 그 머리를 끌면 고른 카드가 전부 같이 가는데, 네모는 잡은 그룹 것만 갔다 —
+//  다른 그룹은 카드만 떠나고 네모가 옛 자리에 남은 채 저장됐다(틀 = 네모 ∪ 멤버라 화면에서는 길게 늘어난다).
+it("그룹 머리를 끌 때 같이 가는 카드가 멤버 전부인 그룹은 네모도 같이 간다 — 잡지 않은 그룹의 네모가 옛 자리에 남지 않는다", async () => {
+  await twoGroups();
+  await marqueeAll();
+  expect([groupPicked("gA"), groupPicked("gB"), host.querySelectorAll(".scene-card.sel").length]).toEqual([true, true, 2]);
+  await grabHead("gA", 100, 50);
+  await release(100, 50); // 움직이지 않고 한 번 누른다 — 그룹 선택은 gA 하나로, 카드 선택은 그대로
+  expect([groupPicked("gA"), groupPicked("gB"), host.querySelectorAll(".scene-card.sel").length]).toEqual([true, false, 2]);
+  await grabHead("gA", 100, 50);
+  await dragTo(320, 50, 2000); // +220 — 고른 카드 둘(a1·b1)이 같이 간다
+  await release(320, 50);
+  expect([savedX("a1"), savedX("b1")]).toEqual([330, 880]);
+  expect([rectX("gA"), rectX("gB")]).toEqual([286, 836]); // 전엔 gB 의 네모가 616 에 남았다
+  await undoOnce(); // 한 단계로 — 네모도 같이 돌아온다
+  expect([savedX("a1"), savedX("b1"), rectX("gA"), rectX("gB")]).toEqual([110, 660, 66, 616]);
+});
+
+it("그룹 머리를 끌 때 멤버의 일부만 같이 가는 그룹의 네모는 그대로다 — 남는 멤버가 있으면 그 그룹은 통째가 아니다", async () => {
+  await show(
+    [textCard("a1", 110), textCard("b1", 660), textCard("b2", 880)],
+    [
+      { id: "gA", name: "A", cardIds: ["a1"], rect: { x: 66, y: 44, w: 330, h: 330 } },
+      { id: "gB", name: "B", cardIds: ["b1", "b2"], rect: { x: 616, y: 44, w: 550, h: 330 } },
+      { id: "gC", name: "C", cardIds: [], rect: { x: 1606, y: 44, w: 330, h: 330 } }, // 멤버 없는 빈 틀
+    ],
+  );
+  await marqueeAll();
+  await ctrlClick("b2"); // gB 의 멤버 하나를 선택에서 뺀다
+  await act(async () => { host.querySelector<HTMLElement>('.scene-group[data-group-id="gC"] .scene-group-hd')!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, ctrlKey: true, clientX: 1650, clientY: 50 })); });
+  await release(1650, 50); // 빈 틀은 Ctrl 로 그룹 선택에서 뺀다 — 같이 갈 카드가 없는 그룹이다
+  await grabHead("gA", 100, 50);
+  await release(100, 50);
+  await grabHead("gA", 100, 50);
+  await dragTo(320, 50, 2000);
+  await release(320, 50);
+  expect([savedX("a1"), savedX("b1"), savedX("b2")]).toEqual([330, 880, 880]);
+  expect([rectX("gA"), rectX("gB")]).toEqual([286, 616]); // gB 는 b2 가 남았다 — 네모를 옮기지 않는다(전과 같다)
+  expect(rectX("gC")).toBe(1606); // 멤버가 없는 틀은 '멤버 전부가 같이 간다'에 들지 않는다
+});

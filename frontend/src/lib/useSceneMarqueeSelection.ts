@@ -111,6 +111,8 @@ export function useSceneMarqueeSelection<Key, Secondary = never>(
       if (settleRef.current === commit) settleRef.current = null;
     };
 
+    // 마지막으로 잰 포인터 자리 — 끝낼 때 **그때의 화면**으로 한 번 더 잰다(아래 remeasure).
+    let lastPoint: { clientX: number; clientY: number } | null = null;
     const move = (moveEvent: MouseEvent) => {
       if (
         !moved &&
@@ -119,8 +121,12 @@ export function useSceneMarqueeSelection<Key, Secondary = never>(
         return;
       }
       moved = true;
+      lastPoint = { clientX: moveEvent.clientX, clientY: moveEvent.clientY };
+      measure(lastPoint);
+    };
+    const measure = (point: { clientX: number; clientY: number }) => {
       const latest = optionsRef.current;
-      const { rect, b } = computeMarquee(surface, start, moveEvent);
+      const { rect, b } = computeMarquee(surface, start, point);
       latest.setMarquee(rect);
       const boxed = marqueeHits<Key>(
         hitRoot,
@@ -163,8 +169,15 @@ export function useSceneMarqueeSelection<Key, Secondary = never>(
       else commit();
     };
 
+    // 사각형은 화면에 고정이고 대상(카드)은 화면이 움직이면 같이 움직인다. 끄는 중에 휠로 줌·이동을 하고 포인터를 더 움직이지 않은 채
+    //  끝내면, 마지막 움직임 때 잰 결과는 지금 사각형 안과 다르다 — 사각형 안의 카드 대신 밖으로 나간 카드가 확정됐다(조작 규칙 45).
+    //  끝낼 때 지금 자리로 다시 잰다. 그 사이 다른 입력이 이미 확정해 간 것(settle — 키·새 누름)은 건드리지 않는다.
+    const remeasure = () => {
+      if (lastPoint && pending) measure(lastPoint);
+    };
     const up = () => {
       const latest = optionsRef.current;
+      remeasure();
       latest.setMarquee(null);
       commit();
       done();
@@ -176,6 +189,7 @@ export function useSceneMarqueeSelection<Key, Secondary = never>(
 
     // blur 취소도 마지막 움직임까지 반영한다(종전과 같음) — 미리보기였다면 여기서 확정한다.
     current.beginDrag(move, up, () => {
+      remeasure();
       optionsRef.current.setMarquee(null);
       commit();
       done();
