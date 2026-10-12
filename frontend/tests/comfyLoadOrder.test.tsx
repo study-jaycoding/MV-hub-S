@@ -73,6 +73,30 @@ it("Comfy 워크플로 창 — 불러오는 중에 다른 파일을 넣으면 �
   expect(saveButton().disabled).toBe(false);
 });
 
+// 19회차(조작 규칙 46): 창을 열 때의 다시 읽기(파싱)가 실패하면 후보가 빈 채였다 — 그대로 [저장]하면 카드의 조절 칸 목록(params)이 빈 것으로
+//  덮였다(Comfy 서버가 꺼져 있을 때 창을 열고 저장만 눌러도). 못 읽은 것을 '조절할 것이 없다'로 보이지도 않는다.
+it("Comfy 워크플로 창 — 저장된 워크플로를 다시 읽지 못했으면 저장할 수 없다(빈 후보로 카드의 조절 칸을 지우지 않는다). 다시 넣어 읽히면 저장된다", async () => {
+  const onSave = vi.fn();
+  const initial = { name: "wf", content: '{"wf":1}', nodeCount: 3, paramExposed: ["1|seed"], paramValues: { "1|seed": 7 },
+    params: [{ key: "1|seed", label: "seed", type: "int" }], output: null, status: "idle" } as never;
+  act(() => root.render(<SceneComfyModal initial={initial} onSave={onSave} onClose={() => {}} />));
+  parses[0].reject(new Error("Comfy 서버에 연결하지 못했습니다"));
+  await settle();
+  expect(host.textContent).toContain("Comfy 서버에 연결하지 못했습니다");
+  expect(host.textContent).not.toContain("조절 가능한 파라미터가 없습니다");
+  expect(saveButton().disabled).toBe(true);
+  act(() => saveButton().click());
+  expect(onSave).not.toHaveBeenCalled();
+
+  await dropFile(host.querySelector(".scene-comfy-drop")!, "wf", async () => '{"wf":1}'); // 같은 파일을 다시 넣는다 — 노출 선택은 그대로다
+  parses[1].resolve({ node_count: 3, candidates: [{ node_id: "1", field: "seed", label: "seed", type: "int", value: 1, title: "KSampler", curated: true }] as never });
+  await settle();
+  expect(saveButton().disabled).toBe(false);
+  act(() => saveButton().click());
+  expect(onSave).toHaveBeenCalledTimes(1);
+  expect(onSave.mock.calls[0][0]).toMatchObject({ paramExposed: ["1|seed"], paramValues: { "1|seed": 7 }, params: [{ key: "1|seed", label: "seed", type: "int" }] });
+});
+
 it("Comfy 워크플로 창 — 순서대로 끝나면 차례로 보이고, 다 끝날 때까지 '불러오는 중'이다", async () => {
   act(() => root.render(modal()));
   const zone = host.querySelector(".scene-comfy-drop")!;

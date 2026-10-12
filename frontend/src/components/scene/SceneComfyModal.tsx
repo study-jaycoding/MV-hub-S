@@ -20,6 +20,9 @@ export function SceneComfyModal({
   const [content, setContent] = useState(initial?.content || "");
   const [nodeCount, setNodeCount] = useState(initial?.nodeCount || 0);
   const [candidates, setCandidates] = useState<ComfyParamCandidate[]>([]);
+  // 지금의 내용(content)을 읽어 후보를 받았는가 — 저장된 워크플로는 창을 열 때 다시 읽는데, 그것이 실패하면(Comfy 서버가 꺼져 있다)
+  //  내용은 있고 후보는 빈 채다. 그대로 저장하면 카드의 조절 칸 목록(params)이 빈 것으로 덮인다 → 읽히기 전에는 저장하지 않는다(조작 규칙 46).
+  const [parsed, setParsed] = useState(false);
   const [exposed, setExposed] = useState<Set<string>>(new Set(initial?.paramExposed || []));
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -67,6 +70,7 @@ export function SceneComfyModal({
       setNodeCount(res.node_count);
       setCandidates(res.candidates);
       setExposed(new Set(exposedList));
+      setParsed(true);
     } catch (e) {
       if (seq < loads.applied) return;
       setError(e instanceof Error ? e.message : "파싱 실패");
@@ -203,7 +207,7 @@ export function SceneComfyModal({
           {error && <div className="scene-comfy-msg err">{error}</div>}
 
           {/* 파라미터 노출 체크리스트 */}
-          {content && !loading && (
+          {parsed && !loading && (
             <div className="scene-comfy-catalog">
               <div className="scene-comfy-catalog-hd">조절할 파라미터 선택 (체크한 것만 카드에 노출)</div>
               {candidates.length === 0 ? (
@@ -232,7 +236,7 @@ export function SceneComfyModal({
 
         <div className="scene-modelmodal-ft">
           <button onClick={onClose}>취소</button>
-          <button className="primary" onClick={save} disabled={!content || loading}>
+          <button className="primary" onClick={save} disabled={!parsed || loading}>
             저장
           </button>
         </div>
