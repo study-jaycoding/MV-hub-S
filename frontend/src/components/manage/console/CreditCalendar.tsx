@@ -1,7 +1,7 @@
 // 크레딧 달력 — 메인 화면의 월간 달력. 지난 3개월의 추가 크레딧 기록과 앞으로 약 3개월의 자동 크레딧을 날짜 칸에 보여 주고,
 // 자동 충전이 있는 날(30일 안)에는 그 뒤 예상 메인 잔액을 적는다. 데이터는 GET /console/overview 의 calendar·schedule.
 // 막대를 끌어 다른 날짜에 놓으면 날짜가 바뀐다(추가 = 그 기록의 날짜, 자동 = 충전일 — 오늘 이후만). 누르면 정보 창.
-import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useMemo, useRef, useState, type DragEvent } from "react";
 import { useModalFocus } from "../../../lib/keyGate";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
 import { acceptDecimal, acceptThousands, formatDecimal, formatThousands } from "../../../lib/creditPlan";
@@ -165,9 +165,11 @@ function EventInfo({ info, sub, canEdit, onEdit, onClose }: {
   const noteFailed = !!info.noteFailed; // 메모를 못 읽었다 — 금액만 저장하고 메모는 보내지 않는다(서버의 기존 메모 유지)
   const recurring = event.kind === "recurring";
   const [creditsText, setCreditsText] = useState(recurring ? formatDecimal(String(event.credits)) : formatThousands(String(event.credits)));
-  const [noteText, setNoteText] = useState(note ?? "");
-  // 메모는 창을 연 뒤 늦게 도착한다 — 창을 다시 만들면 '정말 삭제' 확인·입력이 초기화되므로 칸만 채운다.
-  useEffect(() => { if (note !== undefined) setNoteText(note ?? ""); }, [note]);
+  // 메모는 창을 연 뒤 늦게 도착한다 — 창을 다시 만들면 '정말 삭제' 확인·입력이 초기화되므로 칸만 채운다. 손대기 전의 칸은 받은 메모
+  //  그대로다(null = 손대지 않음): 받은 뒤에 칸으로 옮겨 적으면 그 사이 한 박자 동안 '메모를 지웠다'로 읽혀 [저장]이 켜지고, 금액 칸의
+  //  Enter 가 note:null 을 보내 기존 메모를 지웠다(조작 규칙 46).
+  const [noteDraft, setNoteDraft] = useState<string | null>(null);
+  const noteText = noteDraft ?? note ?? "";
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -226,7 +228,7 @@ function EventInfo({ info, sub, canEdit, onEdit, onClose }: {
             {!recurring ? (
               <label>메모<input id="wc-event-note" value={noteText} readOnly={busy} disabled={!noteReady || noteFailed}
                 placeholder={noteFailed ? "메모를 읽지 못했습니다 — 창을 닫았다가 다시 여세요" : noteReady ? "선택" : "불러오는 중..."}
-                onChange={(e) => setNoteText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") save(); }} /></label>
+                onChange={(e) => setNoteDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") save(); }} /></label>
             ) : <p className="wc-hint">반복을 끄거나 주기·날짜를 바꾸려면 서브 표의 ＋ 크레딧 창을 쓰세요. 날짜는 막대를 끌어서 옮깁니다.</p>}
           </>
         ) : null}
