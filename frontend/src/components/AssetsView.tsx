@@ -256,9 +256,18 @@ export function AssetsView({ onInfo, onPreview }: Props) {
 
   // 콘텐츠가 렌더된 뒤 보던 스크롤 위치 복원(같은 폴더/레이아웃/검색일 때만). 고정 높이라 이미지 로드 무관.
   // files.length 에만 의존 → 태그/소스/컬러 등 메타 편집(개수 불변)으로는 스크롤이 튀지 않음.
+  //  **화면이 바뀌었을 때(scrollKey)와 그 화면의 파일이 처음 도착했을 때만** 맞춘다 — 같은 화면에서 파일 수만 바뀐 것(비활성 숨기기·자동 새로
+  //  고침)에 저장된 자리로 되돌리면, 방금 스크롤한 것(저장은 150ms 뒤다)이 옛 자리로 튄다.
+  //  격자가 내려갔다 다시 그려지면(빈 폴더를 거쳐 돌아옴) 새 격자는 맨 위다 — 그때는 다시 맞춘다.
+  const scrollRestored = useRef({ key: "", filled: false });
   useEffect(() => {
     const el = gridRef.current;
-    if (!el) return;
+    if (!el) {
+      scrollRestored.current = { key: "", filled: false };
+      return;
+    }
+    if (scrollRestored.current.key === scrollKey && scrollRestored.current.filled) return;
+    scrollRestored.current = { key: scrollKey, filled: files.length > 0 };
     const s = LS.loadJSON<{ key: string; top: number }>("scroll");
     el.scrollTop = s && s.key === scrollKey ? s.top || 0 : 0;
     // eslint-disable-next-line react-hooks/exhaustive-deps
