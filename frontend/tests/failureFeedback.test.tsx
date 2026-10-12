@@ -7,6 +7,7 @@
 //  같은 규칙의 다른 자리: 태그(tests/tagSaveFailureSync) · 프로젝트 순서·보관·삭제·열쇠(tests/projectFolderMenu·adminWindowTabs) ·
 //  Comfy 카드(tests/comfyLoadOrder) · 로그아웃(tests/hubAuthReady·seedanceSceneErrorsRender) · 저장 취소(tests/exportViewLayout).
 import { act, useCallback, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { APP_EVENTS } from "../src/lib/appEvents";
@@ -198,6 +199,26 @@ it("생성물 코멘트 — 전송 중에 다른 카드로 넘어갔으면 실�
   // 같은 카드에 머물렀으면 글이 남는다(위 시험) — 넘어간 뒤에 B 에 새로 쓴 글은 B 로 간다
   submit(input, "B 에 쓴 글");
   expect(mocks.addGenComment).toHaveBeenLastCalledWith("B", "B 에 쓴 글", undefined, false);
+});
+
+// 19회차(조작 규칙 46): 앞 카드의 코멘트를 걷는 일이 '그린 뒤'로 밀려, 새 카드의 제목 아래 앞 카드의 줄이 한 박자 그려졌다 —
+//  그 줄의 답글·수정·삭제 단추는 새 카드의 패널에서 앞 카드의 코멘트 id 로 나간다.
+it("생성물 코멘트 — 다른 카드를 고른 그 박자에 앞 카드의 코멘트가 걷혀 있다", async () => {
+  mocks.genCommentsCached.mockReturnValue(null);
+  const lookups = held<CommentPanelItem[]>();
+  mocks.genComments.mockImplementation(() => lookups.next());
+  const panel = (genId: string) => <GenCommentPanel genId={genId} label={genId} myId="me" syncTick={0} onClose={() => {}} onChanged={() => {}} />;
+  const shown = () => [...host.querySelectorAll(".cmt-author")].map((node) => node.textContent);
+  await act(async () => { root.render(panel("A")); });
+  lookups.waiting[0].resolve([item("a1")]);
+  await settle();
+  expect(shown()).toEqual(["a1"]);
+  let painted: (string | null)[] = ["?"];
+  act(() => {
+    flushSync(() => root.render(panel("B")));
+    painted = shown(); // 이 박자에 화면에 있는 줄 — 다음 누름이 보는 것
+  });
+  expect(painted).toEqual([]);
 });
 
 it("생성물 코멘트 수정 — 서버가 거절하면 고치던 칸과 글이 남고, 저장되면 닫힌다", async () => {

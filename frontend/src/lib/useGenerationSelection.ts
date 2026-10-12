@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { pressStartedCovered } from "./keyGate";
 import { toggleSetValue } from "./setUtils";
 
@@ -57,7 +57,8 @@ export function useGenerationSelection({
     };
   }, [preserveSelectors]);
 
-  useEffect(() => {
+  // 그리기 전에 비운다 — 그린 뒤로 밀리면 새 목록이 옛 선택과 함께 한 박자 그려지고, 그 박자의 색 키·삭제가 사라진 카드에 걸린다(조작 규칙 46)
+  useLayoutEffect(() => {
     setSelected(new Set());
   }, [resetKey]);
 
