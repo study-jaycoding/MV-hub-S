@@ -77,6 +77,54 @@ export async function downloadDirName(): Promise<string | null> {
   }
 }
 
+// 두 파일의 내용이 같은가 — 조각으로 견준다(큰 영상을 통째로 한 벌 더 메모리에 올리지 않는다).
+async function sameBytes(a: Blob, b: Blob): Promise<boolean> {
+  if (a.size !== b.size) return false;
+  const STEP = 4 * 1024 * 1024;
+  for (let at = 0; at < a.size; at += STEP) {
+    const [x, y] = await Promise.all([a.slice(at, at + STEP).arrayBuffer(), b.slice(at, at + STEP).arrayBuffer()]);
+    const p = new Uint8Array(x);
+    const q = new Uint8Array(y);
+    for (let i = 0; i < p.length; i += 1) if (p[i] !== q[i]) return false;
+  }
+  return true;
+}
+
+const claimed = new Set<string>(); // 지금 쓰는 중인 이름 — 잇달아 시작한 저장 둘이 같은 빈 이름을 같이 잡지 않게
+
+/** 그 폴더(dir = 폴더 핸들)에 name 으로 저장한다. **같은 이름의 파일이 이미 있으면 덮지 않는다**(조작 규칙 49): 내용이 같으면(같은 것을 다시
+ *  받았다) 그대로 두고, 다르면 번호를 붙인 이름("shot (1).png" — 브라우저의 기본 다운로드와 같다)으로 쓴다. 전엔 말없이 덮어, 소스 이름이
+ *  같은 다른 그림을 받으면 먼저 받은 파일이 사라졌다(서로 다른 이름 `a:b`·`a?b` 도 금지 문자를 바꾸면 같은 `a_b` 다). */
+export async function writeIntoDir(dir: any, name: string, blob: Blob): Promise<boolean> {
+  const dot = name.lastIndexOf(".");
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  for (let n = 0; n < 1000; n += 1) {
+    const candidate = n ? `${stem} (${n})${ext}` : name;
+    const claim = candidate.toLowerCase(); // Windows 폴더는 대소문자만 다른 이름을 같은 파일로 본다(Shot.png · shot.png)
+    if (claimed.has(claim)) continue;
+    claimed.add(claim); // 첫 await 전에 잡는다
+    try {
+      let existing: any = null;
+      try {
+        existing = await dir.getFileHandle(candidate);
+      } catch (error) {
+        if ((error as { name?: string } | null)?.name !== "NotFoundError") throw error;
+      }
+      if (existing) {
+        if (await sameBytes(await existing.getFile(), blob)) return true; // 같은 파일이 이미 있다 — 다시 쓰지 않는다
+        continue; // 다른 파일이다 — 다음 번호로
+      }
+      const writable = await (await dir.getFileHandle(candidate, { create: true })).createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return true;
+    } finally {
+      claimed.delete(claim);
+    }
+  }
+  return false;
+}
+
 // 지정 폴더에 직접 저장(프롬프트 없음). 성공 true. 핸들/권한 없거나 실패하면 false(호출측이 일반
 // 다운로드로 폴백). 권한이 풀렸으면 requestPermission 으로 1회 재허용 시도(다운로드 클릭=제스처).
 export async function saveToDownloadDir(name: string, blob: Blob): Promise<boolean> {
@@ -86,11 +134,7 @@ export async function saveToDownloadDir(name: string, blob: Blob): Promise<boole
     let perm = await h.queryPermission({ mode: "readwrite" });
     if (perm !== "granted") perm = await h.requestPermission({ mode: "readwrite" });
     if (perm !== "granted") return false;
-    const fileHandle = await h.getFileHandle(name, { create: true });
-    const writable = await fileHandle.createWritable();
-    await writable.write(blob);
-    await writable.close();
-    return true;
+    return await writeIntoDir(h, name, blob);
   } catch {
     return false; // 권한 거부·핸들 무효 등 → 일반 다운로드 폴백
   }
