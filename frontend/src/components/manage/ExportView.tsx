@@ -48,7 +48,9 @@ const UpdateIcon = () => (
 export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const [projects, setProjects] = useState<{ pid: string; name: string }[]>([]);
   const [pid, setPid] = useState("");
-  const [status, setStatus] = useState<SaveFinalsStatus | null>(null);
+  // 상태는 **어느 프로젝트의 것인지**와 함께 든다 — 프로젝트를 바꾸면 새 상태가 올 때까지 앞 프로젝트의 렌더 폴더·대상·건수가 남아,
+  //  확인 창은 앞 프로젝트의 건수로 묻고 저장은 새 프로젝트로 나갔다(조작 규칙 46). 지금 프로젝트의 것이 아니면 없는 것으로 본다.
+  const [loaded, setLoaded] = useState<{ pid: string; status: SaveFinalsStatus } | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<SaveFinalsResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -101,14 +103,18 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const loadStatus = (p: string) => {
     const requestId = ++statusRequestRef.current;
     if (!p) {
-      setStatus(null);
+      setLoaded(null);
       return;
     }
     manageApi
       .saveFinalsStatus(p)
       .then((next) => {
         if (statusRequestRef.current === requestId && pidRef.current === p) {
-          setStatus((previous) => reconcileValueState(previous, next));
+          setLoaded((previous) => {
+            if (previous?.pid !== p) return { pid: p, status: next };
+            const status = reconcileValueState(previous.status, next);
+            return status === previous.status ? previous : { pid: p, status }; // 같은 값이면 다시 그리지 않는다
+          });
         }
       })
       .catch((e) => {
@@ -135,6 +141,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadSignal]);
 
+  const status = loaded?.pid === pid ? loaded.status : null;
   const renderPath = status?.render_path || "";
   const targets = status?.targets ?? [];
   const serverOutdated = !!status?.server_outdated; // 구서버 — 대상 판정 불가(0건과 구별)
@@ -327,6 +334,9 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                 <span className="export-target-err">⚠ {status.error}</span>
               ) : renderPath ? (
                 <code className="export-target-path">{renderPath}</code>
+              ) : pid && !status && !err ? (
+                // 아직 받지 못한 것은 '연결되지 않았다'가 아니다 — 프로젝트를 바꿀 때마다 아래 안내가 번쩍이지 않게(조작 규칙 46)
+                <span className="export-target-label">불러오는 중…</span>
               ) : (
                 <span className="export-target-err">
                   렌더 폴더가 연결되지 않았습니다. 관리자 창에서 프로젝트 폴더를 먼저 연결하세요.

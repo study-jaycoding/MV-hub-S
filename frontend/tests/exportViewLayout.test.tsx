@@ -15,13 +15,15 @@ const saveFinalsMirror = vi.hoisted(() => vi.fn());
 const saveFinalsProgress = vi.hoisted(() => vi.fn());
 const saveFinalsCancel = vi.hoisted(() => vi.fn());
 vi.mock("../src/api", () => ({ api: { projects: async () => ({ projects: projectList }) } }));
-vi.mock("../src/lib/manageApi", () => ({ manageApi: { saveFinalsStatus: async () => status, saveFinals, saveFinalsCompare, saveFinalsMirror, saveFinalsProgress, saveFinalsCancel } }));
+const statusOf = vi.hoisted(() => ({ fn: null as null | ((pid: string) => Promise<unknown>) })); // 프로젝트마다 다른 상태(늦게 오는 응답)를 줄 때만
+vi.mock("../src/lib/manageApi", () => ({ manageApi: { saveFinalsStatus: async (pid: string) => (statusOf.fn ? statusOf.fn(pid) : status), saveFinals, saveFinalsCompare, saveFinalsMirror, saveFinalsProgress, saveFinalsCancel } }));
 const target = (gen_id: string, saved: boolean, reason: string | null, kind: SaveFinalsKind = "final", filename = gen_id + ".mp4") => ({ gen_id, kind, folder_path: "ep001/" + gen_id, filename, saved, reason });
 let root: Root, host: HTMLDivElement;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   projectList = [{ id: "p1", name: "fixture" }];
+  statusOf.fn = null;
   saveFinals.mockReset().mockResolvedValue({ saved: 1, skipped: 0, errors: [] });
   saveFinalsCompare.mockReset();
   saveFinalsMirror.mockReset();
@@ -69,6 +71,35 @@ it("프로젝트 고르기는 판 안에 있고, 저장 대상은 씬별로 묶�
   // 이력은 렌더 폴더 아래 부분만 — 윈도우 경로(역슬래시)에서도 앞의 구분자가 남지 않는다. 렌더 폴더 밖이면 전체 경로 그대로.
   expect(texts(".export-side .export-history-list:not(.export-target-list) code")).toEqual(["ep001\\c0010\\c0010.mp4", "Z:/other/x.mp4"]);
   expect(host.querySelector(".export-history-list:not(.export-target-list) code")!.getAttribute("title")).toBe("\\\\NAS\\proj\\Render\\ep001\\c0010\\c0010.mp4");
+});
+
+// 19회차(조작 규칙 46): 프로젝트를 바꾸면 새 프로젝트의 상태가 올 때까지 앞 프로젝트의 렌더 폴더·대상·건수가 남아 있었다 — 저장 단추가 켜진 채라
+//  확인 창은 앞 프로젝트의 건수로 묻고, 저장은 새 프로젝트로 나갔다.
+it("프로젝트를 바꾸면 새 프로젝트의 상태가 올 때까지 앞 프로젝트의 것이 남지 않는다 — 그 건수로 저장을 묻지 않는다", async () => {
+  projectList = [{ id: "p1", name: "one" }, { id: "p2", name: "two" }];
+  const first: SaveFinalsStatus = { render_path: "R:/one", error: null, shared_supported: true, targets: [target("c0030", false, null), target("c0031", false, null)], history: [] };
+  let arrive!: (value: SaveFinalsStatus) => void;
+  statusOf.fn = (pid) => (pid === "p1" ? Promise.resolve(first) : new Promise((resolve) => { arrive = resolve; }));
+  await mount();
+  expect([button("최종 저장").textContent, button("최종 저장").disabled]).toEqual(["최종 저장 (2)", false]);
+  const cutsShown = () => texts(".export-table tbody tr:not(.export-group) td:nth-child(2)");
+  expect(cutsShown()).toEqual(["c0030", "c0031"]);
+
+  const select = host.querySelector<HTMLSelectElement>("select.manage-proj-select")!;
+  await act(async () => { select.value = "p2"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(select.value).toBe("p2");
+  expect(cutsShown()).toEqual([]);
+  expect(host.textContent).not.toContain("R:/one");
+  expect(texts(".export-fields .export-target:last-child > :last-child")).toEqual(["불러오는 중…"]); // 아직 못 받은 것을 '연결되지 않았습니다'로 보이지 않는다
+  expect(button("최종 저장").disabled).toBe(true);
+  await act(async () => { button("최종 저장").click(); });
+  expect(host.querySelector(".export-modal")).toBeNull();
+
+  await act(async () => { arrive({ render_path: "R:/two", error: null, shared_supported: true, targets: [target("c0090", false, null)], history: [] }); });
+  expect([button("최종 저장").textContent, button("최종 저장").disabled, cutsShown()]).toEqual(["최종 저장 (1)", false, ["c0090"]]);
+  await act(async () => { button("최종 저장").click(); });
+  await answer("예");
+  expect(saveFinals).toHaveBeenLastCalledWith("p2", undefined, "final");
 });
 
 it("공유 저장과 최종 저장은 각자의 종류로만 저장을 부른다", async () => {
