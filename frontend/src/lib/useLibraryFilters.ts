@@ -135,10 +135,22 @@ export function restoreFilters(LS: Store): Filters {
   return { ...stored, ...(workspaceIds.length ? { workspace_ids: workspaceIds } : { workspace_ids: undefined }) };
 }
 
+/** 검색어 키만 든 부분 갱신인가 — 그 변경은 선택을 비우지 않는다(아래 patch). */
+const isSearchOnlyPatch = (p: Partial<Filters>): boolean => {
+  const keys = Object.keys(p);
+  return keys.length === 1 && keys[0] === "search";
+};
+
 export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
   const t = useT();
   const [manualRevision, setManualRevision] = useState(0);
-  const bumpManualRevision = useCallback(() => setManualRevision((value) => value + 1), []);
+  // 선택을 비우는 수동 변경의 횟수 — manualRevision 과 따로 센다(28회차 ⑤-2): 검색어만의 변경은 선택을 비우지 않지만(아래 patch), Resolve 따라가기의
+  //  늦은 응답을 무효로 하는 '수동 변경'에는 든다(useResolveLibraryFollow 의 문맥 키 — 검색 중에 온 옛 위치 응답이 새 검색을 덮으면 안 된다).
+  const [selectionRevision, setSelectionRevision] = useState(0);
+  const bumpManualRevision = useCallback((resetSelection = true) => {
+    setManualRevision((value) => value + 1);
+    if (resetSelection) setSelectionRevision((value) => value + 1);
+  }, []);
   // 자동 따라가기가 필터를 갈아 끼운 횟수 — 상단바가 검색칸을 다시 올리는 신호로 쓴다(아래 followLocation). 검색어가 확정되기 전이면
   //  검색 값은 undefined → undefined 라 검색칸이 값으로는 초기화를 알 수 없고, 예약해 둔 검색(0.3초 뒤)이 찾아간 자리에 다시 걸렸다.
   const [followRevision, setFollowRevision] = useState(0);
@@ -268,7 +280,11 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
     }
     filtersRef.current = next;
     rawSetFilters(next);
-    bumpManualRevision();
+    // 검색어만 바뀐 것은 선택을 비우지 않는다(28회차 ⑤-2, Jay 결정 '나' — 27회차 실측 M01 관측): 전엔 다른 수동 필터와 같이 통째로 비웠다.
+    //  응답 전엔 옛 목록이 그대로이고(useGenerationLibraryData 는 응답이 와야 목록을 바꾼다), 결과가 오면 App 의 '목록에서 사라진 카드는
+    //  선택에서 뺀다'(규칙 42 레이아웃 효과)가 결과에 없는 카드만 걷는다 — 남은 카드는 고른 채로. 다른 필터(종류·색·태그·폴더…)는 전처럼 비운다.
+    //  수동 변경 횟수(manualRevision)는 그대로 올린다 — 늦은 따라가기 응답은 여전히 버려야 한다.
+    bumpManualRevision(!isSearchOnlyPatch(p));
   }, [bumpManualRevision, commitGenerationScope]);
 
   const setSharedWorkspaceMode = useCallback((mode: SharedWorkspaceMode) => {
@@ -368,7 +384,7 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
       workspace, sharedMode],
   );
   // 자동 따라가기는 기존 수동 선택을 보존하고, 수동 필터 조작만 선택/비동기 응답을 무효화한다.
-  const selectionResetKey = workspaceScopeKey ? JSON.stringify([manualRevision, workspaceScopeKey]) : String(manualRevision);
+  const selectionResetKey = workspaceScopeKey ? JSON.stringify([selectionRevision, workspaceScopeKey]) : String(selectionRevision);
   const workspaceFollow = workspace && filters.tab === "team" ? {
     mode: sharedMode,
     label: workspace.scope === "personal" ? t("개인") : workspace.name || t("확인 중"),

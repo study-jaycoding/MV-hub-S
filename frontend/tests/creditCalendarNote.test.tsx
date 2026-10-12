@@ -47,6 +47,35 @@ it("메모를 못 읽은 채 금액만 고쳐 저장하면 메모는 보내지 �
   expect("note" in patch).toBe(false);
 });
 
+// 28회차 ⑤-1(Jay 결정 '다'): 자동(정기) 크레딧 칩의 금액 칸을 비우면 Number("") = 0 이라 정기 금액이 말없이 0 으로 저장됐다.
+it("자동 크레딧 칩 — 금액 칸을 비우면 [저장]이 잠기고 이유를 보인다(Enter 도 안 나간다). 0 을 쳐 넣은 것은 그대로 저장된다", async () => {
+  const onEdit = vi.fn(async () => {});
+  const data = { ...DATA, calendar: { ...DATA.calendar, events: [{ kind: "recurring", sub_id: "s1", name: "서브", day: "2026-10-05", credits: 1000 }] } } as never;
+  await act(async () => {
+    root.render(<CreditCalendar data={data} canEdit busy={false} onMove={() => {}} onEdit={onEdit} loadNote={() => Promise.resolve(null)} />);
+  });
+  await act(async () => { host.querySelector<HTMLElement>(".wc-cal-chip.rec")!.click(); });
+  await settle();
+  const credits = host.querySelector<HTMLInputElement>("#wc-event-credits")!;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  const type = (value: string) => act(async () => { setter?.call(credits, value); credits.dispatchEvent(new Event("input", { bubbles: true })); });
+  const save = () => host.querySelector<HTMLButtonElement>(".wc-event-info button.pri")!;
+  const reason = () => host.querySelector(".wc-event-info .wc-error")?.textContent ?? null;
+  await type("");
+  expect(save().disabled).toBe(true);
+  expect(reason()).toContain("정기 금액을 넣어 주세요");
+  await act(async () => { credits.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+  await settle();
+  expect(onEdit).not.toHaveBeenCalled(); // 전엔 { credits: 0 } 이 나갔다
+  await type("0");
+  expect(reason()).toBeNull();
+  expect(save().disabled).toBe(false);
+  await act(async () => { save().click(); });
+  await settle();
+  expect(onEdit).toHaveBeenCalledTimes(1);
+  expect(onEdit.mock.calls[0][1]).toEqual({ credits: 0 });
+});
+
 // 19회차(조작 규칙 46): 메모는 창을 연 뒤에 도착한다. 도착한 렌더에는 '받았다'만 참이고 칸에는 아직 빈 글이 있어(칸 채우기가 그린 뒤로 밀렸다)
 //  그 한 박자 동안 [저장]이 켜졌다 — 금액 칸의 Enter 는 note:null 을 보내 기존 메모를 지웠다.
 it("메모가 늦게 도착해도 [저장]은 켜지지 않는다 — 손대지 않은 메모를 '지웠다'로 보지 않는다", async () => {

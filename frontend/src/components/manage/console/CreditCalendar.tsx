@@ -184,7 +184,10 @@ function EventInfo({ info, sub, canEdit, onEdit, onClose }: {
   const dialogRef = useRef<HTMLDivElement>(null);
   useModalFocus(dialogRef); // 초점도 창 안에 둔다 — Tab 이 뒤 화면으로 나가지 않는다(lib/keyGate '모달의 초점')
   const credits = Number(creditsText.replace(/,/g, ""));
-  const validCredits = recurring ? Number.isFinite(credits) && credits >= 0 : Number.isInteger(credits) && credits > 0;
+  // 칸을 비우면 Number("") = 0 이라 정기 금액이 말없이 0 으로 저장됐다(28회차 ⑤-1, Jay 결정 '다'): 비운 채로는 저장하지 않고 이유를 보인다.
+  //  0 을 쳐 넣은 것은 그대로 0 이다. 반복을 끄는 길은 서브 표의 ＋ 크레딧 창('수동') — 그 창의 '비우면 월 예산 합'과는 다른 칸이다.
+  const emptyCredits = creditsText.replace(/,/g, "").trim() === "";
+  const validCredits = !emptyCredits && (recurring ? Number.isFinite(credits) && credits >= 0 : Number.isInteger(credits) && credits > 0);
   const noteReady = recurring || note !== undefined;
   const changed = credits !== event.credits || (!recurring && !noteFailed && noteReady && noteText.trim() !== (note ?? ""));
   const repeat = sub && recurring
@@ -226,6 +229,13 @@ function EventInfo({ info, sub, canEdit, onEdit, onClose }: {
                   if (next !== null) setCreditsText(recurring ? formatDecimal(next) : formatThousands(next));
                 }}
                 onKeyDown={(e) => { if (e.key === "Enter") save(); }} /></label>
+            {emptyCredits ? (
+              <div className="wc-error" role="alert">
+                {recurring
+                  ? "정기 금액을 넣어 주세요 — 비워 두면 저장하지 않습니다. 반복을 끄려면 서브 표의 ＋ 크레딧 창에서 '수동'을 고르세요."
+                  : "크레딧을 넣어 주세요 — 비워 두면 저장하지 않습니다."}
+              </div>
+            ) : null}
             {!recurring ? (
               <label>메모<input id="wc-event-note" value={noteText} readOnly={busy} disabled={!noteReady || noteFailed}
                 placeholder={noteFailed ? "메모를 읽지 못했습니다 — 창을 닫았다가 다시 여세요" : noteReady ? "선택" : "불러오는 중..."}

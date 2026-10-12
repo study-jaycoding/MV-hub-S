@@ -193,4 +193,20 @@ describe("Resolve 라이브러리 따라가기", () => {
     expect(latest.manualRevision).toBe(2);
     expect(latest.selectionResetKey).toBe(key);
   });
+
+  // 28회차 ⑤-2(Jay 결정 '나'): 검색어만 바꾸면 선택을 비우지 않는다 — 결과에 남은 카드는 고른 채로(사라진 카드는 App 의 규칙 42 효과가 뺀다).
+  it("검색어만 바뀐 patch 는 선택 초기화 키를 올리지 않는다 — 검색어와 다른 키가 같이 오거나 다른 필터가 바뀌면 전처럼 올린다", () => {
+    mount(fakeStore({ [FILTERS_KEY]: JSON.stringify({ tab: "my", [FILTERS_FORMAT_KEY]: "2" }) }));
+    const key = latest.selectionResetKey;
+    act(() => latest.patch({ search: "cat" }));
+    expect(latest.filters.search).toBe("cat");
+    expect(latest.selectionResetKey).toBe(key);
+    act(() => latest.patch({ search: undefined })); // 검색어를 지우는 것도 검색어 변경이다
+    expect(latest.selectionResetKey).toBe(key);
+    act(() => latest.patch({ search: "dog", folder_path: "ep01" }));
+    expect(latest.selectionResetKey).not.toBe(key);
+    const next = latest.selectionResetKey;
+    act(() => latest.setTypeFilter("video"));
+    expect(latest.selectionResetKey).not.toBe(next);
+  });
 });
