@@ -268,7 +268,10 @@ export function useAssetProjectData({
     //  이라 셀이 앞 폴더의 파일 이름으로 새 폴더에 썸네일을 물었다(레이아웃 효과가 캐시를 넣는 것은 그 뒤). 열쇠는 state(treeFor·metaFor) — 받은 뒤 바뀌므로
     //  가린 렌더 다음에 반드시 다시 그린다. 받기 전에 실패한 폴더는 열쇠가 앞 폴더에 남지만 그때 state 는 이미 비워져 있어 보이는 것은 같다(빈 화면).
     //  미러 effect·setTree/setMeta 는 가리지 않은 state 그대로(가린 빈 값이 캐시에 적히면 안 된다).
-    meta: metaFor === project ? meta : EMPTY_META,
+    //  가리는 동안 **받아 둔 캐시가 있으면 그것을** 내보낸다(없으면 빈 값): 빈 값으로 가리면 받아 둔 폴더로 돌아갈 때 빈 격자가 한 프레임 그려졌다
+    //  (28회차 p6 격리 실측 — 가상 목록이 0→6 을 다음 프레임에 다시 잰다). 캐시는 그 폴더의 것이라 앞 폴더 이름이 섞일 길이 없고, 레이아웃 효과가
+    //  같은 내용을 state 로 올리면 열쇠가 맞아 그대로 이어진다.
+    meta: metaFor === project ? meta : (metaCacheRef.current[project] ?? EMPTY_META),
     /** 이 폴더의 메타(태그·색·소스)를 받았는가 — 받기 전에는 메타를 고치는 조작을 받지 않는다. */
     metaReady: !!project && metaFor === project,
     project,
@@ -281,6 +284,6 @@ export function useAssetProjectData({
     setMeta,
     setProject,
     setTree,
-    tree: treeFor === project ? tree : EMPTY_TREE,
+    tree: treeFor === project ? tree : (treeCacheRef.current[project] ?? EMPTY_TREE),
   };
 }

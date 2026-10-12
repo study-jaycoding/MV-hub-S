@@ -60,13 +60,13 @@ const pick = async (project: string) => {
   await settle();
 };
 
-it("폴더 자료 훅: AP1 → AP2 → AP1 → AP2 로 오가도 갱신이 무한히 돌지 않고 화면은 그 폴더의 것이다 — 어느 렌더에서도 앞 폴더의 메타가 새 폴더 이름 아래 나오지 않는다", async () => {
+it("폴더 자료 훅: AP1 → AP2 → AP1 → AP2 로 오가도 갱신이 무한히 돌지 않고 화면은 그 폴더의 것이다 — 어느 렌더에서도 앞 폴더의 메타가 새 폴더 이름 아래 나오지 않고, 받아 둔 폴더로 돌아가는 첫 렌더부터 그 폴더의 것이다", async () => {
   let data!: ReturnType<typeof useAssetProjectData>;
   let renders = 0;
-  const seen: string[] = []; // 렌더마다 '폴더:메타' — 가림(규칙 45 의 남은 한 박자)은 렌더 단위라 settle 뒤의 값만 보면 못 잡는다
+  const seen: string[] = []; // 렌더마다 '폴더:메타:파일 수' — 가림(규칙 45 의 남은 한 박자)은 렌더 단위라 settle 뒤의 값만 보면 못 잡는다
   function Host() {
     renders++; data = useAssetProjectData({ workspaceId: "w" });
-    seen.push(`${data.project}:${data.meta["same.png"]?.tags?.join() ?? "-"}`);
+    seen.push(`${data.project}:${data.meta["same.png"]?.tags?.join() ?? "-"}:${data.tree.length}`);
     return null;
   }
   await act(async () => root.render(<Host />));
@@ -79,8 +79,12 @@ it("폴더 자료 훅: AP1 → AP2 → AP1 → AP2 로 오가도 갱신이 무�
     expect(renders - before).toBeLessThan(20);
     expect([data.project, data.meta["same.png"]?.tags ?? null, data.metaReady]).toEqual([next, next === "AP1" ? ["old-AP1"] : null, true]);
   }
-  expect(seen).toContain("AP1:old-AP1");
-  expect(seen.filter((pair) => pair.startsWith("AP2:") && pair !== "AP2:-")).toEqual([]);
+  expect(seen).toContain("AP1:old-AP1:1");
+  expect(seen.filter((pair) => pair.startsWith("AP2:") && !pair.startsWith("AP2:-:"))).toEqual([]); // AP2 의 메타는 늘 비어 있다
+  // 받아 둔 폴더로 돌아가는 첫 렌더부터 그 폴더의 캐시다 — 빈 렌더(메타 없음·파일 0)가 없다(빈 값으로 가리면 빈 격자가 한 프레임 그려졌다, p6 실측)
+  const loaded = seen.indexOf("AP1:old-AP1:1");
+  expect(seen.slice(loaded).filter((pair) => pair.startsWith("AP1:") && pair !== "AP1:old-AP1:1")).toEqual([]);
+  expect(seen.slice(seen.indexOf("AP2:-:1")).filter((pair) => pair.startsWith("AP2:") && pair !== "AP2:-:1")).toEqual([]);
 });
 
 it("실제 Assets 창: AP1 → AP2 → AP1 → AP2 로 오가도(메타가 있는 채) 창이 깨지지 않고 그 폴더의 파일이 보인다", async () => {
