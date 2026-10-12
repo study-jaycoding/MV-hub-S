@@ -140,6 +140,51 @@ it("new project partial failure stays editable and retry does not create the pro
   expect(mocks.setPlanning.mock.calls[1][0]).toBe("new");
 });
 
+// 22회차(조작 규칙 49, Codex 전수 검토): 같은 이름으로 '새 프로젝트'를 만들면 서버는 새로 만들지 않고 기존 프로젝트를 돌려준다(멱등 생성).
+//  그것을 새 프로젝트로 알고 뒤의 저장을 이어 가서, 빈칸으로 둔 렌더 폴더가 **기존 프로젝트의 폴더 연결을 지웠다**.
+it("new project with a name that already exists is refused — the existing project's settings are not touched", async () => {
+  const openCreate = async () => {
+    const create = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("새 프로젝트"))!;
+    await act(async () => { create.click(); }); await settle();
+  };
+  await act(async () => { root.render(<ProjectManagerPanel />); }); await settle();
+  const existing = host.querySelector(".admin-pname-text")!.textContent!; // 목록에 이미 있는 프로젝트의 이름
+  await openCreate();
+  await type(host.querySelector<HTMLInputElement>('[placeholder="프로젝트 이름"]')!, `  ${existing.toUpperCase()} `); // 대소문자·앞뒤 공백만 다르다
+  await click('.project-dialog-actions .admin-confirm-yes');
+  expect(host.textContent).toContain("같은 이름의 프로젝트가 이미 있습니다");
+  expect([mocks.createProject.mock.calls.length, mocks.setPlanning.mock.calls.length, mocks.updateProject.mock.calls.length]).toEqual([0, 0, 0]);
+
+  // 이 창이 뜬 뒤에 다른 관리자가 만든 것(목록에 아직 없다) — 서버가 돌려준 것이 이미 아는 프로젝트면 거기서 멈춘다
+  const knownId = mocks.projects.mock.results[0] ? (await mocks.projects.mock.results[0].value).projects[0].id : "";
+  mocks.createProject.mockResolvedValue({ id: knownId, name: "다른 이름처럼 보이는 것", workspace_id: "ws" });
+  await type(host.querySelector<HTMLInputElement>('[placeholder="프로젝트 이름"]')!, "서버만 같은 이름으로 보는 것");
+  await click('.project-dialog-actions .admin-confirm-yes');
+  expect(host.textContent).toContain("같은 이름의 프로젝트가 이미 있습니다");
+  expect([mocks.createProject.mock.calls.length, mocks.setPlanning.mock.calls.length]).toEqual([1, 0]); // 전엔 기존 프로젝트의 일정·폴더 저장으로 이어졌다
+  expect(host.querySelector<HTMLInputElement>('[placeholder="프로젝트 이름"]')!.value).toBe("서버만 같은 이름으로 보는 것"); // 입력은 남는다
+});
+
+// Codex 코드 리뷰: 이름 비교는 서버와 같게 — 영문 대소문자만 접는다. 서버(SQLite LOWER)는 Ä 와 ä 를 다른 이름으로 본다: 프론트만 넓게 막으면
+//  서버가 받아 줄 이름을 만들 수 없다.
+it("new project whose name differs from an existing one only by a non-ASCII letter case is allowed (same rule as the server)", async () => {
+  mocks.projects.mockResolvedValue({ projects: [
+    { id: "u", name: "Ärger", workspace_id: "ws", workspace_name: "Workspace", kind: "team" },
+    { id: "s", name: "  Spaced ", workspace_id: "ws", workspace_name: "Workspace", kind: "team" }, // 저장된 이름에 공백이 남아 있다 — 서버는 TRIM 해서 견준다
+  ] });
+  mocks.createProject.mockResolvedValue({ id: "fresh", name: "ärger", workspace_id: "ws" });
+  mocks.setPlanning.mockResolvedValue({ project_id: "fresh", revision: 1 });
+  await act(async () => { root.render(<ProjectManagerPanel />); }); await settle();
+  const create = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("새 프로젝트"))!;
+  await act(async () => { create.click(); }); await settle();
+  await type(host.querySelector<HTMLInputElement>('[placeholder="프로젝트 이름"]')!, "spaced"); // 목록의 이름 쪽 공백도 떼고 견준다(서버와 같게)
+  await click('.project-dialog-actions .admin-confirm-yes');
+  expect([mocks.createProject.mock.calls.length, host.textContent!.includes("같은 이름의 프로젝트가 이미 있습니다")]).toEqual([0, true]);
+  await type(host.querySelector<HTMLInputElement>('[placeholder="프로젝트 이름"]')!, "ärger");
+  await click('.project-dialog-actions .admin-confirm-yes');
+  expect(mocks.createProject).toHaveBeenCalledTimes(1);
+  expect(host.textContent).not.toContain("같은 이름의 프로젝트가 이미 있습니다");
+});
 it("a pending credit row locks project/workspace inputs without disabling conflict choices", async () => {
   const latest = settings(2); latest.topups[0].credits = 300;
   mocks.saveCreditPlan.mockRejectedValue(conflict(latest, 2));
