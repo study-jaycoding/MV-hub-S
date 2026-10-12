@@ -1296,11 +1296,6 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   const onPromptChipDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
     if (!editorRef.current?.contains(e.relatedTarget as Node)) hideChipDropBar();
   };
-  const onClearTagMouseDown = (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault();
-    clearTagFilter();
-  };
-
   return (
     <div
       className={
@@ -1362,7 +1357,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             tagFilter={tagFilter}
             editorRef={editorRef}
             onToggleExpand={onToggleExpand}
-            onClearTagFilter={onClearTagMouseDown}
+            onClearTagFilter={clearTagFilter}
             onInput={onEditorInput}
             onCaretMove={onCaretMove}
             onKeyDown={onEditorKeyDown}

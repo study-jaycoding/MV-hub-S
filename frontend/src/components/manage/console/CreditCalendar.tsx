@@ -136,7 +136,8 @@ export function CreditCalendar({ data, canEdit, busy, onMove, onEdit, loadNote }
                   role="button" tabIndex={0} draggable={canEdit && !busy}
                   onDragStart={(ev) => { ev.dataTransfer.setData(DRAG_TYPE, e.sub_id); ev.dataTransfer.effectAllowed = "move"; setDragging(e); }}
                   onDragEnd={() => { setDragging(null); setOverDay(null); }}
-                  onClick={() => openInfo(e)} onKeyDown={(ev) => { if (ev.key === "Enter") openInfo(e); }}
+                  // role=button 이라 Enter 와 Space 둘 다 연다(Space 의 기본 동작 = 달력 스크롤은 막는다 — 조작 규칙 51)
+                  onClick={() => openInfo(e)} onKeyDown={(ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openInfo(e); } }}
                   title={`${e.kind === "recurring" ? "자동 크레딧" : "추가 크레딧"} · ${e.name} · ${formatCredits(e.credits)}`}>
                   <span>{e.name}</span><b>+{formatCredits(e.credits)}</b>
                 </div>

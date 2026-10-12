@@ -245,7 +245,8 @@
   backdrop-filter: blur(6px);
 }
 .card:hover .card-sf, .card:hover .card-cm,
-.asset-cell:hover .card-sf, .asset-cell:hover .card-cm { opacity: 1; pointer-events: auto; }
+.asset-cell:hover .card-sf, .asset-cell:hover .card-cm,
+.card-sf:focus, .card-cm:focus { opacity: 1; pointer-events: auto; } /* Tab 으로 닿은 단추는 보여야 한다 — 안 보이는 채 Enter 가 먹었다(조작 규칙 51) */
 .card-sf:hover, .card-cm:hover { color: #fff; border-color: var(--border2); transform: scale(1.08); }
 /* S 공유(라임)/최종(골드) — 항상 표시 */
 .card-sf.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); opacity: 1; pointer-events: auto; font-size: 13px; }
@@ -753,7 +754,8 @@
     transparent 62%, rgba(0,0,0,0.5) 100%
   );
 }
-.card-thumb:hover .thumb-overlay, .card.selected .thumb-overlay { opacity: 1; }
+.card-thumb:hover .thumb-overlay, .card.selected .thumb-overlay,
+.thumb-overlay:focus-within { opacity: 1; } /* Tab 으로 안의 단추(↻ 등)에 닿으면 보인다 — 안 보이는 채 Enter 로 재생성이 나갔다(조작 규칙 51) */
 .ov-top { display: flex; align-items: flex-start; justify-content: space-between; }
 /* 작은 카드에서도 버튼이 안 잘리게: 줄바꿈 허용(넘치면 윗줄로) + 우측 정렬 유지 */
 .ov-bottom { display: flex; align-items: center; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }

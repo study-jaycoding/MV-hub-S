@@ -1,5 +1,5 @@
 import { useEscapeClose } from "../../lib/useEscapeClose";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 
@@ -46,8 +46,23 @@ export function ProjectDateRangePicker({
   onChange: (startDate: string, dueDate: string) => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const [down, setDown] = useState(false); // 위에 자리가 모자라 아래로 펼친다(설정 창 — CSS 는 위로 펼친다)
   const [phase, setPhase] = useState<"start" | "end">("start");
+  // 위로 펼치는 자리(설정 창)에서 위에 자리가 모자라면 아래로 — 900×600 에서 달력 윗부분 88px 이 화면 밖이라 월 이동 ‹ › 와 제목에 닿지 못했다
+  //  (23회차 격리 실측, 조작 규칙 50 — 실제로 남은 화면으로 잰다). 창을 줄여도 다시 잰다. 아래로 펼치는 자리에서는 같은 값이라 달라지지 않는다.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const fit = () => {
+      const root = rootRef.current;
+      const pop = popRef.current;
+      if (root && pop) setDown(pop.offsetHeight + 8 > root.getBoundingClientRect().top - 7);
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [open]);
   const [viewMonth, setViewMonth] = useState(() => monthStart(parseDate(startDate) || new Date()));
   const days = useMemo(() => calendarDays(viewMonth), [viewMonth]);
 
@@ -109,7 +124,7 @@ export function ProjectDateRangePicker({
         </button>
       </label>
       {open && (
-        <div className="project-range-popover" role="dialog" aria-label="프로젝트 시작일과 종료일 선택">
+        <div className={"project-range-popover" + (down ? " range-down" : "")} ref={popRef} role="dialog" aria-label="프로젝트 시작일과 종료일 선택">
           <header>
             <button type="button" aria-label="이전 달" onClick={() => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() - 1, 1))}>‹</button>
             <strong>{viewMonth.getFullYear()}년 {viewMonth.getMonth() + 1}월</strong>

@@ -163,7 +163,7 @@
   padding: 5px; opacity: 0; transition: opacity 0.12s; pointer-events: none;
   background: linear-gradient(rgba(0,0,0,0.35), transparent 30%, transparent 60%, rgba(0,0,0,0.55));
 }
-.linb-node:hover .linb-ov { opacity: 1; }
+.linb-node:hover .linb-ov, .linb-ov:focus-within { opacity: 1; } /* Tab 으로 안의 단추에 닿으면 보인다(조작 규칙 51 — 그리드 .thumb-overlay 와 같이) */
 .linb-ov-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 5px; }
 .linb-ov-bot { display: flex; gap: 4px; justify-content: center; flex-wrap: wrap; }
 .linb-ov-drag { cursor: grab; }
@@ -179,7 +179,7 @@
   display: flex; align-items: center; justify-content: center; pointer-events: none;
 }
 /* 호버 때만 버튼 클릭 가능 — 비호버 시 노드 선택/더블클릭을 가로채지 않게 */
-.linb-node:hover .linb-ov-btn { pointer-events: auto; }
+.linb-node:hover .linb-ov-btn, .linb-ov:focus-within .linb-ov-btn { pointer-events: auto; }
 .linb-ov-btn:hover { background: var(--grad); color: var(--accent-ink); border-color: var(--accent); }
 .linb-ov-btn.on { background: var(--accent); color: var(--accent-ink); font-weight: 900; font-size: 17px; }
 /* C 미확인 코멘트(호박색) — 확인 전까지 강조(그리드 .card-cm.alert 톤). */
