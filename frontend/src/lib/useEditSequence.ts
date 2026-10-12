@@ -162,18 +162,23 @@ export function useEditProjects({
   const workspaceId = workspace.scope === "team" ? workspace.id || undefined : undefined;
   const listCtx = JSON.stringify([authKey, workspaceId ?? null]);
   // linked = 폴더가 연결된 프로젝트. null = 연결 조회에 실패해 모른다(연결 없음으로 치지 않는다).
-  const [listed, setListed] = useState<{ ctx: string; state: "loading" | "ok" | "error"; projects: Project[]; linked: Set<string> | null }>(
+  // received = 이 문맥의 목록을 한 번은 받았다 — 트리 조회는 이것에 기댄다(마지막 조회의 성공·실패·진행 중이 아니라). 재조회가 돌거나 실패해도 받아 둔
+  //  목록과 돌고 있는 트리 조회는 그대로다(Codex 코드 리뷰 — state 에 기대면 재조회 중 트리 조회가 끊기고, 프로젝트 실패가 폴더 응답보다 먼저 오면
+  //  폴더가 '로딩…'에 남는다).
+  const [listed, setListed] = useState<{ ctx: string; state: "loading" | "ok" | "error"; projects: Project[]; linked: Set<string> | null; received?: boolean }>(
     { ctx: "", state: "loading", projects: [], linked: null },
   );
 
   // 프로젝트 목록이 성공한 뒤에 폴더 연결을 읽는다 — 로컬 허브는 목록 조회 때 서버의 프로젝트 정의를 받아 둔다.
   useEffect(() => {
     let alive = true;
-    setListed((prev) => (prev.ctx === listCtx ? prev : { ctx: listCtx, state: "loading", projects: [], linked: null }));
+    // 같은 문맥의 다시 조회('다시 시도'·reload)도 곧바로 '조회 중'이다 — 전엔 실패 표시가 그대로 남아 시작됐는지 알 수 없었고, 계속 누르면 새 조회가
+    //  앞 응답을 버렸다(조작 규칙 52). 이미 받은 목록(과 received)은 둔다 — 사이드바가 비지 않게, 트리 조회가 끊기지 않게.
+    setListed((prev) => (prev.ctx === listCtx ? (prev.state === "loading" ? prev : { ...prev, state: "loading" }) : { ctx: listCtx, state: "loading", projects: [], linked: null }));
     void (async () => {
       const { projects } = await api.projects("team", false, workspaceId);
       const links = await api.projectFolderLinks().then((r) => r.links, () => null);
-      if (alive) setListed({ ctx: listCtx, state: "ok", projects, linked: links ? new Set(Object.keys(links)) : null });
+      if (alive) setListed({ ctx: listCtx, state: "ok", projects, linked: links ? new Set(Object.keys(links)) : null, received: true });
     })().catch(() => {
       if (alive) setListed((prev) => ({ ...prev, ctx: listCtx, state: "error" }));
     });
@@ -182,7 +187,7 @@ export function useEditProjects({
     };
   }, [listCtx, workspaceId, nonce]);
 
-  const listOk = listed.ctx === listCtx && listed.state === "ok";
+  const listOk = listed.ctx === listCtx && !!listed.received;
   const linksKnown = listed.linked !== null;
   const isLinked = !!projectId && !!listed.linked?.has(projectId);
   const treeCtx = JSON.stringify([listCtx, projectId, isLinked, linksKnown]);

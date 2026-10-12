@@ -154,6 +154,46 @@ it("워크스페이스를 모르면 묻지 않는다 — '전체 보기'면 워�
   expect(list.gens).toHaveLength(1);
 });
 
+// 25회차(조작 규칙 52, Codex 전수 검토): 같은 문맥의 재조회는 상태를 바꾸지 않아, '다시 시도'를 눌러도 실패 표시와 단추가 그대로였다 —
+//  시작됐는지 알 수 없고 계속 누르면 새 조회가 앞 응답을 버렸다.
+it("프로젝트 조회에 실패한 뒤 '다시 시도'하면 곧바로 조회 중이 된다 — 받은 목록·폴더는 둔 채, 재조회가 실패해도 폴더가 '로딩…'에 남지 않는다", async () => {
+  mocks.projects.mockRejectedValueOnce(new Error("HTTP 502"));
+  mocks.links.mockResolvedValue({ links: {} });
+  mocks.counts.mockResolvedValue({ counts: { p1: { "e070/c1": 1 } } });
+  render(<TreeHarness />);
+  await flush();
+  expect(tree.projectsState).toBe("error");
+  const slow = deferred<{ projects: { id: string; name: string }[]; unassigned: number }>();
+  mocks.projects.mockReturnValueOnce(slow.promise);
+  act(() => tree.reload());
+  await flush();
+  expect(tree.projectsState).toBe("loading"); // 전엔 "error" 그대로
+  slow.resolve({ projects: [{ id: "p1", name: "P" }], unassigned: 0 });
+  await flush();
+  await flush();
+  expect([tree.projectsState, tree.projects.map((project) => project.id), tree.tree.state]).toEqual(["ok", ["p1"], "ready"]);
+  const roots = tree.tree.roots.map((node) => node.path);
+  expect(roots).toEqual(["e070"]);
+
+  // 받은 목록·폴더가 있는 채 다시(폴더 주의문구의 '다시 시도') — 조회 중으로 보이되 목록·폴더는 그대로고 폴더 조회가 끊기지 않는다
+  const again = deferred<{ projects: { id: string; name: string }[]; unassigned: number }>();
+  const slowCounts = deferred<{ counts: Record<string, Record<string, number>> }>();
+  mocks.projects.mockReturnValueOnce(again.promise);
+  mocks.counts.mockReturnValueOnce(slowCounts.promise); // 폴더 건수도 늦는다
+  act(() => tree.reload());
+  await flush();
+  expect([tree.projectsState, tree.projects.map((project) => project.id)]).toEqual(["loading", ["p1"]]);
+  expect(tree.tree.roots.map((node) => node.path)).toEqual(roots); // 받아 둔 폴더는 그대로 보인다
+  again.reject(new Error("HTTP 502")); // 프로젝트 재조회가 **먼저** 실패하고
+  await flush();
+  expect(tree.projectsState).toBe("error");
+  slowCounts.resolve({ counts: { p1: { "e070/c1": 1 } } }); // 폴더 건수는 뒤에 온다
+  await flush();
+  await flush();
+  // Codex 코드 리뷰: 실패가 listOk 를 꺼 폴더 조회를 취소하면 뒤에 온 답이 버려져 '폴더 로딩…'에 남았다 — 목록을 받았다는 사실은 실패로 사라지지 않는다
+  expect([tree.tree.state, tree.tree.roots.map((node) => node.path)]).toEqual(["ready", roots]);
+});
+
 it("폴더 — 디스크 트리를 못 읽으면 공유 기록의 폴더만 보이고 '온전하지 않음'으로 둔다", async () => {
   mocks.projects.mockResolvedValue({ projects: [{ id: "p1", name: "P" }], unassigned: 0 });
   mocks.links.mockResolvedValue({ links: { p1: {} } });
