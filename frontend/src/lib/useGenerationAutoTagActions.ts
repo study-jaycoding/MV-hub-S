@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import { api } from "../api";
 import { t } from "./i18n";
+import { urlSegmentProblem } from "./nameGuard";
 import { cachedWorkspaceOptions, fetchWorkspaceOptions } from "./workspaceOptionsCache";
 import { toggleSetValue, withoutSetValue } from "./setUtils";
 import type { WorkspaceChip } from "./useLibraryFilters";
@@ -97,6 +98,12 @@ export function useGenerationAutoTagActions({
         return;
       }
       await addWorkspaceChip(name.slice(2).trim());
+      return;
+    }
+    const problem = urlSegmentProblem(name);
+    if (problem) {
+      // 만들기는 JSON 으로 가 받아들여지지만, 삭제는 이름을 주소 한 칸에 넣어 서버 라우트와 안 맞아 지울 수 없다(조작 규칙 53 — lib/nameGuard)
+      flash(`전역 태그 ${problem} — 그 태그는 나중에 지울 수 없습니다.`);
       return;
     }
     try {

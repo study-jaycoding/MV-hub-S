@@ -1,3 +1,4 @@
+import { tagsProblem } from "./nameGuard";
 import type { ChipRef, PromptPart } from "./promptEditor";
 import {
   SEEDANCE_TOKEN_SRC,
@@ -104,6 +105,9 @@ export function buildSpotlightCreateBody({
   activeProjectId,
   folderPath,
 }: Params): { body: SpotlightCreateBody | null; error: string | null } {
+  // Set 카드의 태그는 검사 없이 여기로 온다 — 주소 한 칸에 못 들어가는 이름(/ · . ..)은 생성 전에 막는다(조작 규칙 53 — lib/nameGuard). 조용히 빼지 않는다.
+  const tagProblem = tagsProblem(tags ?? []);
+  if (tagProblem) return { body: null, error: `${tagProblem} — Set 카드의 태그를 고친 뒤 생성하세요.` };
   const seedanceMode = usesSeedanceMediaRefs(model);
   const tokenRoles = seedanceMode ? seedanceTokenRoles(text) : emptySeedanceTokenRoles();
 

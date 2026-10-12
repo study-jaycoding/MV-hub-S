@@ -216,3 +216,18 @@ describe("normalizeSpotlightBatch — 배치 요청 안전 범위", () => {
     expect(normalizeSpotlightBatch(undefined, Number.NaN, 4)).toBe(1);
   });
 });
+
+// 26회차(조작 규칙 53, Codex 코드 리뷰): Set 카드의 태그는 태그 편집기의 검사를 거치지 않고 여기로 온다 — / 나 점만의 이름은 만들 수는 있어도 지울 수 없다.
+describe("buildSpotlightCreateBody — 태그 이름", () => {
+  const plain = { ...base, model: "nano_banana_flash", text: "장면", inlineRefs: [], trayRefs: [] };
+  it("Set 카드의 태그에 / 나 점만의 이름이 있으면 요청을 만들지 않는다 — 조용히 빼지 않는다", () => {
+    for (const bad of ["look/dev", ".", ".."]) {
+      const { body, error } = buildSpotlightCreateBody({ ...plain, tags: ["hero", bad] });
+      expect(body).toBeNull();
+      expect(error).toContain("Set 카드의 태그");
+    }
+    const { body, error } = buildSpotlightCreateBody({ ...plain, tags: ["hero", "v.2"] }); // 점이 섞인 이름은 괜찮다
+    expect(error).toBeNull();
+    expect(body?.tags).toEqual(["hero", "v.2"]);
+  });
+});

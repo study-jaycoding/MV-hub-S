@@ -86,14 +86,15 @@ export function ManageAccount({
       setPwMsg("현재 비밀번호를 입력하세요.");
       return;
     }
-    if (pw.trim().length < 6) {
+    // 친 그대로 보낸다 — 앞뒤 공백을 지워 저장하면 로그인 창(지우지 않음)·서버(그대로 비교)와 어긋나, 변경은 성공인데 친 비밀번호로는 못 들어갔다(조작 규칙 53)
+    if (pw.length < 6) {
       setPwMsg("새 비밀번호는 6자 이상이어야 합니다.");
       return;
     }
     setPwSaving(true);
     setPwMsg("");
     try {
-      await api.setMyPassword(curPw, pw.trim());
+      await api.setMyPassword(curPw, pw);
       setCurPw("");
       setPw("");
       setPwMsg("비밀번호가 변경되었습니다.");
@@ -176,7 +177,7 @@ export function ManageAccount({
               <button
                 className="manage-save"
                 onClick={changePw}
-                disabled={pwSaving || !curPw || pw.trim().length < 6}
+                disabled={pwSaving || !curPw || pw.length < 6}
               >
                 {pwSaving ? "변경 중…" : "변경"}
               </button>
