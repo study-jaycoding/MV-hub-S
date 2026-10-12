@@ -46,3 +46,34 @@ it("메모를 못 읽은 채 금액만 고쳐 저장하면 메모는 보내지 �
   expect(patch).toEqual({ credits: 200 });
   expect("note" in patch).toBe(false);
 });
+
+// 19회차(조작 규칙 46): 메모는 창을 연 뒤에 도착한다. 도착한 렌더에는 '받았다'만 참이고 칸에는 아직 빈 글이 있어(칸 채우기가 그린 뒤로 밀렸다)
+//  그 한 박자 동안 [저장]이 켜졌다 — 금액 칸의 Enter 는 note:null 을 보내 기존 메모를 지웠다.
+it("메모가 늦게 도착해도 [저장]은 켜지지 않는다 — 손대지 않은 메모를 '지웠다'로 보지 않는다", async () => {
+  const onEdit = vi.fn(async () => {});
+  let arrive!: (note: string) => void;
+  await act(async () => {
+    root.render(<CreditCalendar data={DATA} canEdit busy={false} onMove={() => {}} onEdit={onEdit}
+      loadNote={() => new Promise<string | null>((resolve) => { arrive = resolve; })} />);
+  });
+  await act(async () => { host.querySelector<HTMLElement>(".wc-cal-chip")!.click(); });
+  const save = host.querySelector<HTMLButtonElement>(".wc-event-info button.pri")!;
+  expect(save.disabled).toBe(true);
+  let flips = 0; // [저장]의 disabled 가 바뀐 횟수 — 켜졌다 꺼졌으면 0 이 아니다(끝난 뒤의 모습만 봐서는 그 한 박자를 못 본다)
+  const watch = new MutationObserver((records) => { flips += records.length; });
+  watch.observe(save, { attributes: true, attributeFilter: ["disabled"] });
+  await act(async () => { arrive("기존 메모"); });
+  await settle();
+  flips += watch.takeRecords().length;
+  watch.disconnect();
+  expect(host.querySelector<HTMLInputElement>("#wc-event-note")!.value).toBe("기존 메모");
+  expect([save.disabled, flips]).toEqual([true, 0]);
+
+  // 메모를 고치면 켜지고, 고친 글이 나간다
+  const note = host.querySelector<HTMLInputElement>("#wc-event-note")!;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  await act(async () => { setter?.call(note, "고친 메모"); note.dispatchEvent(new Event("input", { bubbles: true })); });
+  await act(async () => { save.click(); });
+  await settle();
+  expect(onEdit.mock.calls.map((call) => call[1])).toEqual([{ note: "고친 메모" }]);
+});

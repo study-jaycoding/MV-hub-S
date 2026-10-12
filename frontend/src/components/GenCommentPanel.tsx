@@ -1,6 +1,6 @@
 // 생성본 코멘트 스레드 패널.
 // 저장/수정/삭제 API 는 생성본 전용으로 유지하고, 패널 UI 는 에셋 코멘트와 공통 컴포넌트를 사용한다.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { flashMsg } from "../lib/flash";
 import { makeStore } from "../lib/storage";
@@ -58,9 +58,9 @@ export function GenCommentPanel({
       .catch(() => {});
   }, [genId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     // 카드가 바뀌면 앞 카드의 코멘트를 바로 걷는다(캐시가 있으면 refresh 가 그것을 넣는다) — 전엔 응답이 올 때까지 새 제목 아래 앞 카드의
-    //  코멘트가 보였고, 거기에 단 답글은 새 카드에 앞 카드의 부모 id 로 나갔다.
+    //  코멘트가 보였고, 거기에 단 답글은 새 카드에 앞 카드의 부모 id 로 나갔다. 그리기 전에 걷는다 — 그린 뒤로 밀리면 그 한 박자가 남는다(조작 규칙 46).
     setComments([]);
     refresh();
     // 패널을 열어도 자동 전체 읽음 처리하지 않는다. 새 코멘트는 클릭 확인 때 seen 처리한다.

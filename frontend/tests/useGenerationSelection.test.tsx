@@ -3,6 +3,7 @@
 // Esc 마다 App 전체가 다시 그려지면, 같은 Esc 를 기다리던 다른 keydown 리스너가 전달 도중 재구독되며 첫 입력을 놓친다
 // (2026-09-19 브라우저 실측: 처음 연 관리자 창·설정 창이 Esc 한 번에 안 닫힘 — useEscapeClose 와 한 쌍의 원인).
 import { act, useEffect } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useGenerationSelection } from "../src/lib/useGenerationSelection";
@@ -35,4 +36,24 @@ it("빈 선택에서 clearSelect 는 커밋(효과 재실행)을 일으키지 �
   expect(api.selected.has("a")).toBe(true);
   act(() => api.clearSelect());
   expect(api.selected.size).toBe(0);
+});
+
+// 19회차(조작 규칙 46): 필터·폴더가 바뀌면(resetKey) 선택을 비우는 일이 '그린 뒤'로 밀려, 새 목록이 옛 선택과 함께 한 박자 그려졌다 —
+//  그 박자의 색 키·삭제는 화면에서 사라진 카드들에 걸린다.
+it("resetKey 가 바뀐 그 박자에 선택이 비어 있다 — 새 목록이 옛 선택과 함께 그려지지 않는다", () => {
+  let api!: ReturnType<typeof useGenerationSelection>;
+  function Probe({ resetKey }: { resetKey: string }) {
+    api = useGenerationSelection({ resetKey });
+    return <i data-picked={[...api.selected].join(",")} />;
+  }
+  const picked = () => host.querySelector("i")!.dataset.picked;
+  act(() => root.render(<Probe resetKey="a" />));
+  act(() => api.toggleSelect("g1"));
+  expect(picked()).toBe("g1");
+  let painted: string | undefined = "?";
+  act(() => {
+    flushSync(() => root.render(<Probe resetKey="b" />));
+    painted = picked(); // 이 박자에 화면에 있는 것 — 다음 키가 보는 것
+  });
+  expect(painted).toBe("");
 });

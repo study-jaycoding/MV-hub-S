@@ -44,6 +44,27 @@ it("묶임이 바뀐 렌더에는 준비 안 됨(앞 카드의 레퍼런스가 �
   expect(renders.at(-1)).toBe("s2:c9:true:0");
 });
 
+// 19회차(조작 규칙 46): 위의 '준비 안 됨' 렌더가 **그려지면** 안 된다 — 그려진 트레이의 ×·순서 바꾸기·Shift+Backspace 는 제출처럼 막혀 있지 않아,
+//  앞 카드의 트레이를 보고 누른 것이 새 카드의 레퍼런스에 적용됐다(같은 자리의 다른 레퍼런스가 빠진다).
+it("묶임이 바뀐 그 박자에 그려진 트레이는 이미 새 묶임의 것이다 — 따라간 것을 카드에 되적지도 않는다", () => {
+  function Painted({ binding }: { binding: Binding }) {
+    const tray = useSpotlightTray({ trayBinding: binding, onTrayBindingRefsChange: accepted, onImportFiles: () => {} });
+    return <i data-refs={tray.trayRefs.map((item) => item.name).join(",")} />;
+  }
+  const shown = () => host.querySelector("i")!.dataset.refs;
+  act(() => root.render(<Painted binding={null} />)); // 앱에서 프롬프트는 묶임 없이 먼저 뜬다
+  act(() => root.render(<Painted binding={{ key: "s1:c1", refs: [ref("a"), ref("b")] }} />));
+  expect(shown()).toBe("a,b");
+  expect(accepted).not.toHaveBeenCalled();
+  let painted: string | undefined = "?";
+  act(() => {
+    flushSync(() => root.render(<Painted binding={{ key: "s1:c2", refs: [ref("x"), ref("y")] }} />));
+    painted = shown(); // 이 박자에 화면에 있는 트레이 — 다음 누름이 보는 것
+  });
+  expect(painted).toBe("x,y");
+  expect(accepted).not.toHaveBeenCalled();
+});
+
 it("묶임이 없는 화면(라이브러리)과 같은 묶임이 유지되는 동안은 늘 준비됨", () => {
   act(() => root.render(<Probe binding={null} />));
   expect(renders.every((line) => line.startsWith("-:true"))).toBe(true);

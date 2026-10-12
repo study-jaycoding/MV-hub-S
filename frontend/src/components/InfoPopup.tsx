@@ -138,8 +138,9 @@ export function InfoPopup({
   // 소요시간(elapsed_seconds)도 metrics 에서 함께 받는다.
   // 팝업은 카드가 바뀌어도 열린 채 대상만 갈아끼우므로, 이전 카드의 늦은 응답이 지금 카드
   // 값으로 박힐 수 있다 → 마지막 대상의 응답만 반영한다(세 요청 모두 같은 순번 가드).
+  // 앞 카드의 값은 그리기 전에 걷는다 — 그린 뒤로 밀리면 새 카드의 정보 아래 앞 카드의 크레딧·생성 시간이 한 박자 그려진다(조작 규칙 46).
   const infoSeqRef = useRef(0);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (target.kind !== "generation") return;
     const my = ++infoSeqRef.current;
     const isLatest = () => my === infoSeqRef.current;

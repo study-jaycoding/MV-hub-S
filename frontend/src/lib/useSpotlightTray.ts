@@ -4,7 +4,7 @@
 //  · 트레이 드래그/드롭/재정렬 핸들러 포함. 외부 파일(이미지·영상·오디오) 임포트는 컴포넌트에서
 //    onImportFiles 콜백으로 주입받는다(파일→레퍼런스 변환은 카드/에셋 도메인이라 여기 두지 않는다).
 // 동작 보존이 목적이므로 핸들러는 (기존과 동일하게) 렌더마다 생성되는 평범한 함수로 둔다 — 메모이제이션 없음.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { DRAG_TYPES } from "./dragTypes";
 import { backgroundKeysBlocked } from "./keyGate";
 import { dataTransferHasFiles, filesFromDataTransfer } from "./media";
@@ -70,7 +70,9 @@ export function useSpotlightTray({
   //  2026-10-11 Codex 코드 리뷰). (A)와 같은 자리에서 넣어 트레이 갱신과 한 렌더에 바뀐다. 제출이 본다(useSpotlightSubmit 의 trayReady).
   const [syncedKey, setSyncedKey] = useState(bindingKey);
   // (A) 씬 카드 선택/그 카드의 레퍼런스가 외부에서 바뀌면 → 트레이에 로드. 내 편집의 에코면 무시.
-  useEffect(() => {
+  //  그리기 전에 맞춘다 — 그린 뒤로 밀리면 앞 카드의 트레이가 한 박자 그려지고, 그 트레이의 ×·순서 바꾸기·Shift+Backspace 는(제출과 달리
+  //  막혀 있지 않다) 새 카드의 레퍼런스에 적용된다(조작 규칙 46). trayReady 는 그려지지 않는 그 렌더의 제출을 여전히 막는다.
+  useLayoutEffect(() => {
     setSyncedKey(bindingKey);
     if (!bindingKey || !bindingRefs) return;
     const fp = sceneRefFingerprint(bindingRefs);

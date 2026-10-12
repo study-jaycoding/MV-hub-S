@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, type ComponentProps, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GenerationCard } from "../src/components/GenerationCard";
@@ -356,6 +357,24 @@ it("자동 조사 no_match 뒤에도 원인 해결과 수동 제출 확인 안�
   expect(panel.textContent).toContain("자동 재실행 안 함 · 제출 확인 필요");
   expect(required(".info-recovery-btn").textContent).toBe("다시 실행");
   expect(requeue).not.toHaveBeenCalled();
+});
+
+// 19회차(조작 규칙 46): 정보 창은 다른 카드를 열어도 그대로 떠서 대상만 바뀐다. 앞 카드의 크레딧·생성 시간을 걷는 일이 '그린 뒤'로 밀려,
+//  새 카드의 정보 아래 앞 카드의 값이 한 박자 그려졌다.
+it("정보 창 — 다른 생성물로 바뀐 그 박자에 앞 생성물의 크레딧·생성 시간이 남아 있지 않다", async () => {
+  vi.mocked(api.generationMetrics).mockResolvedValueOnce({ est_credits: null, real_credits: 12, credit_source: null, elapsed_seconds: 95 } as never)
+    .mockReturnValueOnce(new Promise(() => {}) as never); // 둘째 생성물의 값은 아직 오지 않았다
+  const popup = (id: string) => <InfoPopup target={{ kind: "generation", gen: generation({ id, status: "done", execution_phase: "done", error: null }), x: 0, y: 0 }} onClose={noop} onPreview={noop} />;
+  const rows = () => [...container.querySelectorAll(".info-row")].map((row) => row.textContent).filter((text) => /크레딧\(실제\)|생성 시간/.test(text ?? ""));
+  await render(popup("first"));
+  await act(async () => {});
+  expect(rows()).toHaveLength(2);
+  let painted: (string | null)[] = ["?"];
+  act(() => {
+    flushSync(() => root.render(popup("second")));
+    painted = rows(); // 이 박자에 화면에 있는 것
+  });
+  expect(painted).toEqual([]);
 });
 
 it("취소된 생성물은 예전 오류를 실패 사유로 다시 보여주지 않는다", async () => {
