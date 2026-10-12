@@ -19,6 +19,11 @@ type OptionValue = string | number | boolean;
 type OptionValues = Record<string, OptionValue>;
 type ConstraintMap = Record<string, { allow: Set<string>; note: string }>;
 
+// 정확히 담을 수 없는 큰 정수(2^53 이상)인가 — `Number()` 가 다른 수로 바꾼다(9007199254740993 → …992). 받지 않는다: 받으면 친 것과
+//  다른 값(seed)이 제출된다(조작 규칙 49). 칸은 그대로 남는다(그 글자가 들어가지 않는다 — 규칙 43 의 '받을 수 없으면 받지 않는다').
+const inexactInteger = (value: OptionValue): boolean =>
+  typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value);
+
 interface Props {
   type: MediaType;
   setType: (value: MediaType) => void;
@@ -271,12 +276,11 @@ export function SpotlightOptionsBar({
             <input
               type="number"
               value={String(optionValues[p.name] ?? p.default ?? "")}
-              onChange={(e) =>
-                setOptionValues((prev) => ({
-                  ...prev,
-                  [p.name]: e.target.value === "" ? "" : Number(e.target.value),
-                }))
-              }
+              onChange={(e) => {
+                const next = e.target.value === "" ? "" : Number(e.target.value);
+                if (inexactInteger(next)) return;
+                setOptionValues((prev) => ({ ...prev, [p.name]: next }));
+              }}
             />
           </label>
         ) : null;
@@ -404,15 +408,9 @@ export function SpotlightOptionsBar({
                             value={String(optionValues[p.name] ?? p.default ?? "")}
                             onChange={(e) => {
                               const raw = e.target.value;
-                              setOptionValues((prev) => ({
-                                ...prev,
-                                [p.name]:
-                                  raw === ""
-                                    ? ""
-                                    : rg
-                                      ? Math.min(rg.max, Math.max(rg.min, Number(raw)))
-                                      : Number(raw),
-                              }));
+                              const next = raw === "" ? "" : rg ? Math.min(rg.max, Math.max(rg.min, Number(raw))) : Number(raw);
+                              if (inexactInteger(next)) return; // seed 같은 큰 정수 — 다른 수로 바뀐 값을 제출하지 않는다(아래 inexactInteger)
+                              setOptionValues((prev) => ({ ...prev, [p.name]: next }));
                             }}
                           />
                         );

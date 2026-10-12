@@ -100,6 +100,10 @@ export function SceneComfyModal({
     await parseContent(text, base, changed ? [] : [...exposed], seq);
   }
 
+  // 정확히 담을 수 없는 큰 정수(2^53 이상)는 조절 칸으로 내지 않는다 — 브라우저가 받은 값은 이미 다른 수로 바뀌어 있어(…993 → …992),
+  //  노출하면 그 바뀐 값이 파라미터로 저장돼 워크플로에 적힌 것과 다른 값으로 실행된다(조작 규칙 49). 노출하지 않으면 워크플로의 값 그대로다.
+  const inexact = (c: ComfyParamCandidate) => typeof c.value === "number" && Number.isInteger(c.value) && !Number.isSafeInteger(c.value);
+
   function toggle(key: string) {
     setExposed((prev) => {
       const next = new Set(prev);
@@ -113,10 +117,10 @@ export function SceneComfyModal({
     // 노출 선택 순서를 유지. 값의 출처:
     //  · 같은 워크플로우(내용 동일)면 카드에서 사용자가 바꾼 값(initial.paramValues)을 우선한다.
     //  · 다른 워크플로우를 새로 불러왔으면 그 워크플로우의 기본값(candidates)에서 새로 채운다(옛 값 잔존 금지).
-    const paramExposed = [...exposed];
     const byKey = new Map<string, ComfyParamCandidate>(
       candidates.map((c) => [`${c.node_id}|${c.field}`, c]),
     );
+    const paramExposed = [...exposed].filter((key) => { const c = byKey.get(key); return !c || !inexact(c); }); // 전에 노출해 둔 것도 뺀다
     const sameWorkflow = content === (initial?.content || "");
     const values: Record<string, string | number | boolean> = {};
     for (const key of paramExposed) {
@@ -218,12 +222,13 @@ export function SceneComfyModal({
                     <div className="scene-comfy-grp-title">{g.title}</div>
                     {g.items.map((c) => {
                       const key = `${c.node_id}|${c.field}`;
+                      const tooBig = inexact(c);
                       return (
-                        <label key={key} className="scene-comfy-item">
-                          <input type="checkbox" checked={exposed.has(key)} onChange={() => toggle(key)} />
+                        <label key={key} className="scene-comfy-item" title={tooBig ? "너무 큰 정수라 조절 칸으로 낼 수 없습니다 — 워크플로에 적힌 값 그대로 실행됩니다" : undefined}>
+                          <input type="checkbox" checked={!tooBig && exposed.has(key)} disabled={tooBig} onChange={() => toggle(key)} />
                           <span className="scene-comfy-item-label">{c.label}</span>
                           {c.curated && <span className="scene-comfy-badge">추천</span>}
-                          <span className="scene-comfy-item-val">= {String(c.value)}</span>
+                          <span className="scene-comfy-item-val">{tooBig ? "너무 큰 정수 — 워크플로의 값 그대로" : `= ${String(c.value)}`}</span>
                         </label>
                       );
                     })}
