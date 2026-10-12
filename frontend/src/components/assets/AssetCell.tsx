@@ -187,6 +187,9 @@ export const AssetCell = memo(function AssetCell({
   };
   const copyMedia = () => {
     if (copyState === "busy") return;
+    // 앞 복사의 '완료 표시 끄기' 타이머가 남아 있으면 거둔다 — 이 복사가 그 타이머보다 오래 걸리면 아직 복사 중인데 표시가 사라지고 busy 도
+    //  풀려 세 번째 요청을 받았다(조작 규칙 52). 끝나면 resetCopySoon 이 새로 건다.
+    if (copyTimer.current != null) clearTimeout(copyTimer.current);
     // OS 파일 클립보드를 쓰는 경우: 영상·오디오(브라우저 바이트 복사 불가) 또는 이미지 다중선택(2장 이상).
     //  → 로컬 백엔드가 선택 파일들을 CF_HDROP(파일 목록)으로 올려, 대화창 Ctrl+V 로 한 번에 첨부.
     //  단일 이미지만 아래 브라우저 바이트 복사(+data:URL 드래그)로 간다.

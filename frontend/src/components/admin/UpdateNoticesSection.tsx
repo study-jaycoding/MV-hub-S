@@ -36,6 +36,7 @@ export function UpdateNoticesSection() {
   const [overview, setOverview] = useState<LatestReleaseMetadata | null>(null);
   const [overviewError, setOverviewError] = useState("");
   const [packages, setPackages] = useState<ReleasePackage[]>([]);
+  const [packagesLoaded, setPackagesLoaded] = useState(false); // 첫 조회가 끝났는가 — 전엔 조회 중인 빈 목록을 '판이 없습니다'로 보였다(조작 규칙 52)
   const [packagesError, setPackagesError] = useState("");
   const [notices, setNotices] = useState<UpdateNotice[]>([]);
   const [noticeError, setNoticeError] = useState("");
@@ -80,6 +81,7 @@ export function UpdateNoticesSection() {
     setNotices([...items, ...found.filter((item): item is UpdateNotice => item !== null)]);
     setOverview(view);
     setPackages(rows);
+    setPackagesLoaded(true);
   };
   useEffect(() => {
     void load();
@@ -357,7 +359,7 @@ export function UpdateNoticesSection() {
             </div>
           );
         }) : (
-          <div className="admin-note-sub">릴리스 폴더에 판이 없습니다.</div>
+          <div className="admin-note-sub">{packagesLoaded ? "릴리스 폴더에 판이 없습니다." : "판 목록을 불러오는 중…"}</div>
         )}
         {hidden > 0 && (
           <button className="admin-update-more" onClick={() => setShowAll(true)}>

@@ -254,3 +254,27 @@ it("저장하는 동안 시간 칸을 잠그고, 늦게 온 옛 상태가 저장
     vi.useRealTimers();
   }
 });
+
+// 25회차(조작 규칙 52, Codex 전수 검토): 도는 동안 5초마다 새 조회가 순번을 올렸다 — 응답이 5초보다 느린 연결에서는 모든 응답이 '옛 것'으로 버려져,
+//  서버는 끝났는데 '훑는 중'과 잠금이 남았다. 다음 조회는 앞 조회가 끝난 뒤에 예약한다.
+it("상태 응답이 갱신 주기보다 느려도 완료를 버리지 않는다 — 조회는 겹치지 않는다", async () => {
+  vi.useFakeTimers();
+  try {
+    helperStatus.mockResolvedValue(idleHelper);
+    const running = { ...local, running: true, current: { project_id: "p1", name: "뻘뻘뻘", phase: "hash" } };
+    status.mockResolvedValueOnce(running);
+    await mount();
+    expect(host.textContent).toContain("훑는 중");
+    status.mockImplementation(() => new Promise<AssetRegistryStatus>((resolve) => { setTimeout(() => resolve(running), 6000); })); // 응답은 6초
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000 + 6000); });
+    expect(status).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000 + 6000); });
+    expect(status).toHaveBeenCalledTimes(3); // 같은 상태가 이어져도 계속 묻는다(앞 조회가 끝난 5초 뒤)
+    status.mockImplementation(() => new Promise<AssetRegistryStatus>((resolve) => { setTimeout(() => resolve(local), 6000); })); // 끝났다
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000 + 6000); });
+    expect(host.textContent).toContain("쉬는 중"); // 전엔 5초마다의 새 조회가 순번을 올려 6초 뒤의 응답이 전부 버려졌다 — 계속 '훑는 중'
+    expect(status).toHaveBeenCalledTimes(4);
+  } finally {
+    vi.useRealTimers();
+  }
+});

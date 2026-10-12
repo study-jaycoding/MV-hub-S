@@ -165,9 +165,20 @@ export function AssetRegistryTab() {
   // 서버·이 PC·다른 도우미 PC 어느 쪽이든 도는 동안은 5초, 쉴 때도 1분마다 다시 읽는다 — 정한 시간 훑기·다른 관리자의
   // 바꾸기가 창을 연 채로도 보이게(시간 초안은 ScheduleRow 가 따로 들고 있어 덮이지 않는다).
   const busy = Boolean(status?.running || status?.lease || helper?.running);
+  // 한 조회가 끝난 뒤에 다음을 예약한다 — 고정 간격(setInterval)이면 응답이 간격보다 느린 연결에서 새 조회가 순번을 올려 모든 응답이 '옛 것'으로
+  //  버려져, 서버는 끝났는데 '훑는 중'과 잠금이 남았다(조작 규칙 52). 손으로 부른 load 는 그대로 순번을 올린다.
   useEffect(() => {
-    const timer = window.setInterval(() => void load(), busy ? 5000 : 60000);
-    return () => window.clearInterval(timer);
+    let alive = true;
+    let timer = 0;
+    const tick = async () => {
+      await load();
+      if (alive) timer = window.setTimeout(() => void tick(), busy ? 5000 : 60000);
+    };
+    timer = window.setTimeout(() => void tick(), busy ? 5000 : 60000);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
   }, [busy, load]);
 
   const start = async (mode: RegistryMode) => {
