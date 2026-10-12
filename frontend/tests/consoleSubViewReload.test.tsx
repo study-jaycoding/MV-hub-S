@@ -67,3 +67,24 @@ it("다시 읽어도 열린 크레딧 창의 기준은 연 순간의 설정 그�
   expect("topup_day" in body).toBe(false); // 금액만 고쳤다 — 충전일·기준 날짜는 보내지 않는다(CXF-3)
   expect("recurring_anchor" in body).toBe(false);
 });
+
+// 23회차(조작 규칙 50, Codex 전수 검토): 저장과 뒤의 다시 읽기를 한 try 로 묶어, 저장은 됐는데 다시 읽기만 실패해도 "저장하지 못했습니다"가
+//  뜨고 창이 열린 채 남았다 — 거기서 다시 저장하면 추가 크레딧이 새 id 로 한 번 더 기록된다(병합 창이 둘 다 살린다).
+it("추가 크레딧 — 저장은 됐는데 화면 다시 읽기가 실패해도 창은 닫히고 '저장됨'으로 알린다(다시 저장해 두 번 기록되지 않는다)", async () => {
+  await render(0);
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((b) => b.textContent === "크레딧")!.click(); });
+  await act(async () => { [...host.querySelectorAll<HTMLButtonElement>("button.wc-btn")].find((b) => b.textContent?.includes("크레딧"))!.click(); });
+  await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('.wc-dialog [role="radio"]')].find((b) => b.textContent === "추가")!.click(); });
+  const credits = host.querySelector<HTMLInputElement>("#wc-add-credits")!;
+  await act(async () => { setter?.call(credits, "100"); credits.dispatchEvent(new Event("input", { bubbles: true })); });
+  mocks.creditPlan.mockRejectedValueOnce(new Error("offline")); // 저장 바로 뒤의 다시 읽기만 실패한다
+  await act(async () => { host.querySelector<HTMLButtonElement>(".wc-dialog button.pri")!.click(); });
+  await settle();
+  expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(1);
+  expect((mocks.saveCreditPlan.mock.calls[0][1] as { topups: { credits: number }[] }).topups.map((item) => item.credits)).toEqual([100]);
+  expect(host.querySelector(".wc-dialog")).toBeNull(); // 전엔 열린 채 남았다 — 다시 누르면 한 번 더 기록된다
+  expect(host.textContent).toContain("저장됨 · 추가 크레딧");
+  expect(host.textContent).toContain("화면을 다시 읽지 못했습니다");
+  expect(host.textContent).not.toContain("저장하지 못했습니다");
+});
