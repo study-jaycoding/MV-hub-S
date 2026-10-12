@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { useModalFocus } from "../../lib/keyGate";
+import { urlSegmentProblem } from "../../lib/nameGuard";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import type { AssetMount } from "../../types";
 import { CloseIcon } from "../common/ViewIcons";
@@ -56,6 +57,12 @@ export function MountManager({
     const n = name.trim();
     if (!p || !n) {
       setErr("폴더 경로와 이름을 모두 입력하세요.");
+      return;
+    }
+    // 해제는 이름을 주소 한 칸에 넣어 서버 라우트와 안 맞고(/ · . ..), 레퍼런스 `asset:이름|경로` 는 첫 | 에서 갈라 읽는다(조작 규칙 53 — lib/nameGuard)
+    const problem = urlSegmentProblem(n) ?? (/[\\|]/.test(n) ? "이름에 \\ | 는 쓸 수 없습니다" : null);
+    if (problem) {
+      setErr(`표시 ${problem} — 해제 주소·레퍼런스 표기와 충돌합니다.`);
       return;
     }
     addingRef.current = true;

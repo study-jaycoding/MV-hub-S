@@ -17,6 +17,7 @@ import {
 
 // #+ 워크스페이스 목록 프리페치+세션 캐시는 lib/workspaceOptionsCache 로 공용화
 // (전역태그 모달의 #+ 등록 피커와 공유). ## 전역 모드 진입 시 미리 받아 '+' 입력 전에 준비.
+import { tagsProblem } from "../lib/nameGuard";
 import { cachedWorkspaceOptions, fetchWorkspaceOptions } from "../lib/workspaceOptionsCache";
 
 export interface TagEditorGlobal {
@@ -170,6 +171,12 @@ export function TagEditor({
       return;
     }
     const add = draft.split(",").map((s) => s.trim()).filter(Boolean);
+    // 만들기는 JSON 으로 가 받아들여지지만, 전체 삭제는 이름을 주소 한 칸에 넣어 서버 라우트와 안 맞아 지울 수 없다(조작 규칙 53 — lib/nameGuard).
+    const problem = tagsProblem(add);
+    if (problem) {
+      setWorkspaceError(`${problem} — 그 태그는 나중에 지울 수 없습니다.`);
+      return;
+    }
     const fresh = add.filter((t) => !baseTags.includes(t));
     if (fresh.length) applyTags([...baseTags, ...fresh]); // 이 카드
     // 나머지 선택 카드 — 이 카드에 이미 있는 태그도 넘긴다. fresh 만 넘기면 기준 카드가 가진 태그를 선택 전체에 붙이려 할 때
