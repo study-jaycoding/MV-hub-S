@@ -905,6 +905,12 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
   `MV-hub-S-dev\frontend\node_modules` 로 가는 정션으로 둔다. git 의 강제 삭제가 정션을 따라 들어가 **원본**의 `.bin`·`.package-lock.json` 을 지웠다(잠긴 esbuild 에서
   멈춰 그 둘만 잃었다). 지우기 전에 정션을 먼저 푼다(`cmd /c rmdir frontend\node_modules` — 정션만 없어진다) 또는 `git worktree remove`(강제 없이, 깨끗한 트리만).
   복구는 `npm --prefix <dev\frontend> install`(빠진 링크만 다시 만든다 — 그 뒤 npm 이 바꾼 `package-lock.json` 은 되돌린다).
+- ㉟ **jsdom 의 합성 `click` 은 `detail` 이 0 이다 — 마우스 클릭을 흉내 내려면 `detail: 1` 을 싣는다**(29회차): 브라우저는 마우스 click 에 몇 번째
+  클릭인지(1·2…)를, 키보드로 누른 단추의 click(Enter·Space)에는 0 을 싣는다. 코드가 그 차이로 키보드 click 을 가려내기 시작하자(`lib/useSceneCardMove`
+  의 click 삼킴) `new MouseEvent("click", {bubbles…})` 로만 보내던 옛 시험 셋이 '키보드 click' 으로 읽혀 깨졌다. 터치·펜의 실제 `detail` 은 미실측.
+  같은 회차의 함정 둘: **F(화면 맞춤) 뒤에는 카메라가 바뀌어 같은 화면 좌표가 다른 캔버스 좌표다** — 제자리로 되돌리려면 `canvas().style.transform`
+  (`translate(x, y) scale(z)`)을 읽어 화면 좌표를 다시 계산한다(`tests/sceneDragEscape` 의 `clientAt`) · **누른 채 씬을 바꾼 뒤의 Ctrl+Z 는 mouseup 을 보내기
+  전엔 막혀 있다**(`moveHeldRef` 는 mouseup·blur 로만 풀린다 — 시험이 손을 떼지 않으면 '되돌리기가 안 된다'로 오판한다).
 
 캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
 - ⑤ 복사본은 프로젝트 폴더 경로를 비워, 씬 그림(`asset:` 썸네일)이 **전부 404** 다. 그림이 뜬 상태로 재려면 다음처럼 한다.
