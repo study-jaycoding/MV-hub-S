@@ -234,16 +234,18 @@ export function ProjectSection({
   // 프로젝트 순서 드래그(⠿) — 손잡이를 잡았을 때만 행이 draggable(행 클릭·카드 드롭과 충돌 방지).
   const [dragArmed, setDragArmed] = useState(false);
   useHandleRelease(dragArmed, () => setDragArmed(false)); // 손잡이 밖에서 떼거나 누른 채 창을 떠나도 내린다
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  // 끄는 프로젝트는 번호가 아니라 id 로 든다 — 끄는 사이에도 목록은 바뀐다(다른 창이 순서를 바꿈·프로젝트가 생김). 번호로 들면 놓는 순간
+  //  그 번호 자리에 온 다른 프로젝트가 옮겨져 저장된다(조작 규칙 45).
+  const [dragId, setDragId] = useState<string | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
   // 순서 저장이 도는 동안에는 다음 끌기를 받지 않는다(조작 규칙 39) — 겹친 두 저장이 다 실패하면 둘째는 '저장 안 된 첫째의 순서'로 되돌린다.
   const orderSavingRef = useRef(false);
   const dropAt = (toIdx: number) => {
-    const from = dragIdx;
+    const from = order.findIndex((project) => project.id === dragId); // 끄는 사이 사라졌으면 -1 — 아무것도 옮기지 않는다
     setDragArmed(false);
-    setDragIdx(null);
+    setDragId(null);
     setOverIdx(null);
-    if (from === null || from === toIdx || orderSavingRef.current) return;
+    if (from < 0 || from === toIdx || orderSavingRef.current) return;
     const next = order.slice();
     const [moved] = next.splice(from, 1);
     next.splice(toIdx, 0, moved);
@@ -690,8 +692,8 @@ export function ProjectSection({
                     // 이 프로젝트가 활성이면서 그 안의 폴더를 무장하지 않았을 때만 프로젝트 행이 빨강
                     // (=프로젝트 루트가 목적지). 폴더 무장 중이면 빨강은 그 폴더에만.
                     (projectActive && armedFolder?.projectId !== project.id ? " sel-target" : "") +
-                    (dragIdx === index ? " row-dragging" : "") +
-                    (overIdx === index && dragIdx !== index ? " row-dragover" : "")
+                    (dragId === project.id ? " row-dragging" : "") +
+                    (overIdx === index && dragId !== project.id ? " row-dragover" : "")
                   }
                   onClick={() => onFilter(activeId === project.id ? undefined : project.id)}
                   onKeyDown={(e) => {
@@ -723,22 +725,22 @@ export function ProjectSection({
                   }
                   draggable={dragArmed}
                   onDragStart={(e) => {
-                    setDragIdx(index);
+                    setDragId(project.id);
                     e.dataTransfer.effectAllowed = "move";
                   }}
                   onDragOver={(e) => {
-                    if (dragIdx === null) return;
+                    if (dragId === null) return;
                     e.preventDefault();
                     if (overIdx !== index) setOverIdx(index);
                   }}
                   onDrop={(e) => {
-                    if (dragIdx === null) return;
+                    if (dragId === null) return;
                     e.preventDefault();
                     dropAt(index);
                   }}
                   onDragEnd={() => {
                     setDragArmed(false);
-                    setDragIdx(null);
+                    setDragId(null);
                     setOverIdx(null);
                   }}
                 >

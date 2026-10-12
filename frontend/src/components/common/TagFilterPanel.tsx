@@ -71,13 +71,14 @@ export function TagFilterPanel({
     return orderKey ? applyOrder(uniqueTags, order) : uniqueTags;
   }, [tags, order, orderKey]);
 
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  // 끄는 태그는 번호가 아니라 이름으로 든다 — 끄는 사이 태그가 생기거나 사라지면 번호는 다른 태그다(조작 규칙 45)
+  const [dragTag, setDragTag] = useState<string | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
   const dropAt = (toIdx: number) => {
-    const from = dragIdx;
-    setDragIdx(null);
+    const from = dragTag === null ? -1 : orderedTags.indexOf(dragTag);
+    setDragTag(null);
     setOverIdx(null);
-    if (from === null || from === toIdx) return;
+    if (from < 0 || from === toIdx) return;
     const next = orderedTags.slice();
     const [moved] = next.splice(from, 1);
     next.splice(toIdx, 0, moved);
@@ -148,14 +149,14 @@ export function TagFilterPanel({
               "tag-pill" +
               (activeTags.has(tag) ? " on" : "") +
               (draggable ? " draggable" : "") +
-              (dragIdx === index ? " dragging" : "") +
-              (overIdx === index && dragIdx !== null && dragIdx !== index ? " drop-over" : "")
+              (dragTag === tag ? " dragging" : "") +
+              (overIdx === index && dragTag !== null && dragTag !== tag ? " drop-over" : "")
             }
             draggable={draggable}
             onDragStart={
               draggable
                 ? (e: ReactDragEvent) => {
-                    setDragIdx(index);
+                    setDragTag(tag);
                     e.dataTransfer.effectAllowed = "move";
                   }
                 : undefined
@@ -163,7 +164,7 @@ export function TagFilterPanel({
             onDragOver={
               draggable
                 ? (e: ReactDragEvent) => {
-                    if (dragIdx === null) return;
+                    if (dragTag === null) return;
                     e.preventDefault();
                     if (overIdx !== index) setOverIdx(index);
                   }
@@ -180,7 +181,7 @@ export function TagFilterPanel({
             onDragEnd={
               draggable
                 ? () => {
-                    setDragIdx(null);
+                    setDragTag(null);
                     setOverIdx(null);
                   }
                 : undefined
