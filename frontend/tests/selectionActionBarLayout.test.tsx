@@ -15,9 +15,13 @@ let root: Root;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  // 29회차: 프롬프트를 숨겼을 때의 막대는 화면 아래 묶음 `.dock-float`(left/right 0·클릭 통과) 안의 `.selbar-bottom-float` 에 뜬다 — 전엔 `.selbar-top-float`
+  const dock = document.createElement("div");
+  dock.className = "dock-float";
   host = document.createElement("div");
-  host.className = "selbar-top-float";
-  document.body.appendChild(host);
+  host.className = "selbar-bottom-float";
+  dock.appendChild(host);
+  document.body.appendChild(dock);
   style = document.createElement("style");
   style.textContent = readFileSync(new NodeURL("../src/styles/generations.css", import.meta.url), "utf8");
   document.head.appendChild(style);
@@ -26,7 +30,7 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount());
-  host.remove();
+  host.parentElement?.remove();
   style.remove();
   vi.unstubAllGlobals();
 });
@@ -46,11 +50,15 @@ it.each(["workspace", "shared", "mixed"])("%s: 상단바에 전체 폭을 주고
     onCompare={noop} onAssign={noop} onDelete={noop} onRestore={noop} onPurge={noop}
   />));
 
-  const overlayStyle = getComputedStyle(host);
-  expect(overlayStyle.left).toBe("0px");
-  expect(overlayStyle.right).toBe("0px");
-  expect(overlayStyle.transform).not.toContain("translateX");
+  const dockStyle = getComputedStyle(host.parentElement!);
+  expect(dockStyle.left).toBe("0px");
+  expect(dockStyle.right).toBe("0px");
+  expect(dockStyle.bottom).toBe("54px"); // 화면 아래(프롬프트가 있던 자리) — 상태 줄(bottom 18px·약 28px) 위, 오류 문구와 같은 묶음(세로)
+  expect(dockStyle.flexDirection).toBe("column");
+  expect(dockStyle.transform).not.toContain("translateX");
   // 폭을 늘린 투명 영역은 아래 카드 클릭을 가로막지 않는다.
+  expect(dockStyle.pointerEvents).toBe("none");
+  const overlayStyle = getComputedStyle(host);
   expect(overlayStyle.pointerEvents).toBe("none");
   const bar = host.querySelector(".select-bar")!;
   const barStyle = getComputedStyle(bar);

@@ -1,6 +1,8 @@
 // 공유 & 리뷰 탭의 폴더 묶음 보기 — 고른 폴더 바로 아래 폴더마다 카드 한 장(표지·이름·건수).
 //  표지는 팀이 정한 대표, 없으면 가장 최근 것(그때는 카드 위에 '대표 미정'). 한 장짜리 카드와 구분되게 종이를 겹친 모양이다.
-//  한 번 클릭 = 고르기(Ctrl·⌘ 토글, Shift 범위, 빈 곳에서 끌면 걸친 카드 모두), 휠 클릭 = 컷 정보(Jay 2026-10-08).
+//  한 번 클릭 = 고르기(Ctrl·⌘ 토글, Shift 범위, 빈 곳에서 끌면 걸친 카드 모두), 휠 클릭 = 컷 정보(Jay 2026-10-08), **우클릭 = 모아보기**(Jay 2026-10-13 —
+//  고른 카드 위면 고른 컷 전부, 아니면 그 컷만 골라서. 메뉴 없이 바로 연다). 우클릭 누름이 위에 뜬 메뉴를 닫는 누름이었으면 열지 않는다 — 가림은
+//  누름의 시작(mousedown)에 적어 두고 contextmenu(윈도는 단추를 뗀 뒤 온다)에서 본다. 키보드의 메뉴 키는 그 순간의 가림을 본다.
 //  두 번 클릭 = 그 폴더에 하위 폴더가 있으면(에피소드) 그 폴더로 **들어가고**(사이드바에서 그 폴더를 누른 것과 같다), 없으면(컷)
 //  그 폴더의 창(Jay 2026-10-09 '가. 들어가기'). 끌기·클릭 판정은 ThumbnailGrid 와 같은 식(5px 안 움직이면 클릭, 마퀴는 lib/marquee).
 //  S 단추·작성자 표시는 넣지 않는다 — 이 카드는 생성물 한 장이 아니라 묶음이다.
@@ -25,6 +27,7 @@ interface Props {
   onOpen: (folder: FolderCard) => void; // 두 번 클릭(하위 폴더 없음) — 그 폴더의 창
   onEnter: (folder: FolderCard) => void; // 두 번 클릭(하위 폴더 있음) — 그 폴더로 들어가기
   onInfo: (folder: FolderCard, x: number, y: number) => void; // 휠 클릭 — 컷 정보
+  onReel: (paths: string[]) => void; // 우클릭 — 모아보기(고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만)
   top: boolean; // 프로젝트 맨 위(에피소드 단계)인가 — '컷 밖' 대신 '에피소드 밖'
   outside: number; // 고른 폴더에 직접 든 수 — 어느 카드에도 들지 않아 맨 끝 칸으로 알린다
   onShowAll: () => void; // 그 칸을 누르면 한 장씩 보기로
@@ -51,7 +54,7 @@ interface Drag {
   moved: boolean;
 }
 
-export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpen, onEnter, onInfo, top, outside, onShowAll }: Props) {
+export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpen, onEnter, onInfo, onReel, top, outside, onShowAll }: Props) {
   const t = useT();
   const width = Math.round(180 * scale); // ThumbnailGrid 의 카드 최소 폭과 같은 식
   const thumbSize = width * (window.devicePixelRatio || 1) <= 256 ? 256 : 512;
@@ -229,10 +232,19 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
     }
   }, [selected]);
 
+  // 우클릭 누름이 시작될 때 위에 메뉴가 떠 있었나 — contextmenu 는 단추를 뗀 뒤 오므로(윈도) 그때는 lib/keyGate 의 '누름 중 가림'이 이미 지워져 있다.
+  //  우클릭 누름마다 새로 적는다. 쓰는 곳은 **마우스의 contextmenu(button 2)뿐** — 키보드의 메뉴 키(button 0)는 기록을 보지 않고 그 순간의 가림을 본다.
+  //  그래서 소비되지 않은 기록(빈 곳의 우클릭·카드 밖에서 떼어 contextmenu 가 다른 곳에서 났거나 전파가 막힌 경우)이 남아도, 다음 마우스 우클릭은
+  //  누름에서 다시 적고 메뉴 키는 안 보니 낡은 기록이 쓰일 길이 없다(Codex 코드 리뷰 2회).
+  const rightPressCoveredRef = useRef<boolean | null>(null);
   const onGridMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
       e.preventDefault(); // 휠 클릭의 자동 스크롤 막기(정보는 카드의 auxclick)
       return;
+    }
+    if (e.button === 2) {
+      rightPressCoveredRef.current = pressStartedCovered();
+      return; // 고르기는 바꾸지 않는다 — 초점은 누른 카드로 간다(모아보기를 닫으면 거기로 돌아온다)
     }
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
@@ -278,6 +290,18 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
                 e.preventDefault();
                 if (!isSelected) onSelect(new Set([folder.path]));
                 onInfo(folder, e.clientX, e.clientY);
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault(); // 컷 카드 위에서만 브라우저 메뉴를 막는다
+                // 마우스(button 2)는 누름 시작의 가림, 키보드의 메뉴 키(button 0)는 지금의 가림
+                const covered = e.button === 2 ? (rightPressCoveredRef.current ?? backgroundKeysBlocked()) : backgroundKeysBlocked();
+                rightPressCoveredRef.current = null;
+                if (covered) return; // 위에 뜬 메뉴를 닫는 우클릭 — 뒤의 조작을 실행하지 않는다
+                const { folders: list, selected: chosen, onSelect: select } = opsRef.current;
+                // 열 경로를 먼저 정한다 — 고르기를 바꾼 뒤의 낡은 선택을 읽지 않게
+                const paths = chosen.has(folder.path) ? list.filter((item) => chosen.has(item.path)).map((item) => item.path) : [folder.path];
+                if (!chosen.has(folder.path)) select(new Set([folder.path]));
+                onReel(paths);
               }}
             >
               <span className={"cut-face" + (fill ? "" : " contain")}>

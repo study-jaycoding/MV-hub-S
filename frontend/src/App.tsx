@@ -2657,6 +2657,7 @@ export default function App() {
                   onInfo={(folder, x, y) => {
                     if (cutScope) setCutInfo({ projectId: cutScope.projectId, path: folder.path, x, y, ctx: listPeekCtx });
                   }}
+                  onReel={(paths) => setCutReel({ paths, ctx: listPeekCtx })} // 우클릭 = 모아보기(Jay 2026-10-13) — 막대의 단추와 같은 창
                   outside={cutCards.own_count} onShowAll={() => setCutView(false)}
                 />
               ) : listPeek ? null : !workspaceQueryReady ? (
@@ -2672,10 +2673,21 @@ export default function App() {
         )}
       </div>
 
-      {/* Ctrl+K 로 프롬프트를 숨겨도 멀티선택 액션바는 유지. 캔버스(활성 씬)에선 SceneBoard 가 상단 중앙에
-          얹으므로 여기선 제외하고, 그 외(라이브러리 등)에서만 화면 상단 중앙에 띄운다. */}
-      {!promptVisible && selectionBar && !listPeek && !(filters.tab === "compose" && !!activeScene) && (
-        <div className="selbar-top-float">{selectionBar}</div>
+      {/* Ctrl+K 로 프롬프트를 숨겨도 멀티선택 액션바는 유지. 캔버스(활성 씬)에선 SceneBoard 가 상단 중앙에 얹으므로 여기선 제외하고,
+          그 외(라이브러리 등)에서는 **화면 아래 가운데**(프롬프트가 있던 자리 — Jay 2026-10-13 "밑으로", 전엔 상단바 아래)에 띄운다.
+          프롬프트를 숨기면 그 안의 오류 문구도 같이 숨으므로(왜 생성이 안 되는지 알 수 없게 된다 — 레퍼런스 번호 오류 등) 같은 묶음의
+          위 칸에 대신 띄운다 — 둘을 한 세로 묶음에 두어 서로 겹치지 않는다(Codex 설계 검토). 오류가 풀리면 저절로 사라진다. */}
+      {!promptVisible && (promptError || (selectionBar && !listPeek && !(filters.tab === "compose" && !!activeScene))) && (
+        <div className="dock-float">
+          {promptError && (
+            <div className="sl-error-float" role="status">
+              {promptError}
+            </div>
+          )}
+          {selectionBar && !listPeek && !(filters.tab === "compose" && !!activeScene) && (
+            <div className="selbar-bottom-float">{selectionBar}</div>
+          )}
+        </div>
       )}
       {/* 프롬프트 입력바 — 구성탭에서도 표시. Ctrl/⌘+K 로 표시/숨김 토글(display 토글로 입력 상태 보존).
           숨김은 SpotlightPrompt 안에서 처리한다 — 여기서 도크를 통째로 감추면 상태줄(● Host/연결됨)까지
@@ -2723,13 +2735,6 @@ export default function App() {
           onCreated={onPromptCreated}
         />
       </div>
-      {/* Ctrl+K 로 프롬프트를 숨기면 그 안의 오류 문구도 같이 숨는다 — 왜 생성이 안 되는지 알 수 없게
-          되므로 화면 하단 중앙에 대신 띄운다(레퍼런스 번호 오류 등). 오류가 풀리면 저절로 사라진다. */}
-      {!promptVisible && promptError && (
-        <div className="sl-error-float" role="status">
-          {promptError}
-        </div>
-      )}
       {grade.pending && (
         <GradeStepModal
           pending={grade.pending}

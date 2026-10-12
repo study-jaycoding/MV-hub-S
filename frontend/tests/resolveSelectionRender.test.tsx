@@ -1103,14 +1103,14 @@ it("App 작업 공간: 바깥 막·✕ 로 닫히고, 보던 위치가 바뀌거
   act(() => sidebarSnapshot!.onChange({ project_id: undefined, folder_path: undefined }));
   await settle();
 
-  // 프롬프트를 숨기면(Ctrl+K) 선택 막대는 화면 위쪽에 뜬다 — 그 막대도 창이 떠 있는 동안에는 그리지 않는다
+  // 프롬프트를 숨기면(Ctrl+K) 선택 막대는 화면 아래 묶음(.dock-float)에 뜬다(29회차 — 전엔 위쪽) — 그 막대도 창이 떠 있는 동안에는 그리지 않는다
   act(() => setLibraryGens([libraryGeneration("target")])); // 위의 따라가기가 목록을 other 들로 갈아 끼웠다 — 고를 카드를 다시 둔다
   act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true })); });
   act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
-  expect(document.querySelector(".selbar-top-float")).not.toBeNull();
+  expect(document.querySelector(".dock-float .selbar-bottom-float")).not.toBeNull();
   await open();
   act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
-  expect(document.querySelector(".selbar-top-float")).toBeNull();
+  expect(document.querySelector(".selbar-bottom-float")).toBeNull();
   act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true })); });
   act(() => { document.querySelector(".folder-peek-catcher")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
   await settle();
