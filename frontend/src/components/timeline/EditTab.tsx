@@ -968,6 +968,10 @@ function EditTabInner({
         }
         // 아래 타임라인·막대를 누르면 재생 키는 타임라인 것이다(뷰어 판은 판이 스스로 정한다)
         if ((event.target as HTMLElement).closest(".ed-tl, .ed-bar")) setKeyTarget("timeline");
+      }} onClickCapture={(event) => {
+        // 키보드로 실행한 click 도 같다(Tab 으로 닿은 컷 이름·막대 단추의 Enter) — mousedown 에만 걸려 있어 컷은 옮겨 가는데 이어 누른
+        //  L·→ 는 앞서 고른 소스를 움직였다(조작 규칙 51). 뷰어 판은 이미 click 에서도 받는다.
+        if ((event.target as HTMLElement).closest(".ed-tl, .ed-bar")) setKeyTarget("timeline");
       }}>
         {/* 풀의 폭 손잡이는 끌 때 초점을 받는다(방향키로도 폭을 바꾸게) — 놓으면 편집 화면으로 돌려준다. 안 돌려주면
             ←·→ 가 프레임 이동이 아니라 풀 폭을 바꾼다(2026-10-08 격리 실측). Tab 으로 손잡이에 간 키보드 조절은 그대로다. */}

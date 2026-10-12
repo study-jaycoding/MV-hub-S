@@ -32,7 +32,8 @@
 .ed-vpick-btn:hover, .ed-vpick-btn.ed-on { background: rgba(255, 255, 255, 0.08); }
 .ed-vpick-btn svg.ed-caret { flex: none; width: 8px; height: 5px; fill: currentColor; opacity: 0.8; }
 .ed-view[data-view="timeline"] .ed-vpick-btn { color: var(--accent); }
-.ed-pop.ed-vpop { left: 50%; right: auto; top: 28px; transform: translateX(-50%); min-width: 220px; }
+.ed-pop.ed-vpop { left: 50%; right: auto; top: 28px; transform: translateX(-50%); min-width: 220px; overflow-y: auto; } /* 상한은 EditViewer 가 남은 높이로 잰다 */
+.ed-vpop > * { flex: none; } /* 스크롤될 때 항목이 눌리지 않게 */
 .ed-pop-item i { margin-left: auto; padding-left: 14px; font-style: normal; font-size: 11px; color: var(--muted); }
 .ed-stage { flex: 1; min-height: 0; position: relative; background: #000; overflow: hidden; }
 .ed-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }

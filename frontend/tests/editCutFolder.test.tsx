@@ -5,11 +5,14 @@
 // 왼쪽 폴더 옆의 새 항목·최종·보류 표시 · 공유 목록과 폴더 옆 숫자 다시 받기 ·
 // 트랙 머리 우클릭(트랙 추가·옮기기·삭제·색) · 마크 인/아웃 · 북마크(색 메뉴·모두 지우기) · 구간 반복 재생 · 소스 테이프 ·
 // 다이나믹 트림 모드(나뉜 뷰어가 한 창 — 편집점의 앞 | 뒤) · 막대의 목록 단추(비활성 숨기기 · 빈 곳 채우기).
+import { readFileSync } from "node:fs";
+import { URL as NodeURL } from "node:url";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { EditCardMenu, EditCutFolder } from "../src/components/timeline/EditTab";
 import type { EditTree } from "../src/lib/useEditSequence";
+import { backgroundKeysBlocked } from "../src/lib/keyGate";
 import type { CardMark, Generation, PreviewTarget } from "../src/types";
 
 const gen = (id: string, cut: string, extra: Partial<Generation> = {}) => ({
@@ -1530,4 +1533,70 @@ it("왼쪽 폴더를 우클릭하면 폴더 메뉴가 뜬다 — 공유 저장 �
   press({ key: "Escape" });
   expect(menu()).toBeNull();
   expect(folderActs).toHaveLength(3);
+});
+
+// 24회차(조작 규칙 51 — 키보드로 닿은 단추는 그 단추가 실행된다, Codex 전수 검토): 타임라인의 재생 대상 전환은 mousedown 에만 걸려 있어
+//  Tab 으로 컷 이름에 가서 Enter 를 누르면(브라우저는 click 만 낸다) 컷은 옮겨 가는데 이어 누른 →·L 은 앞서 고른 소스를 움직였다.
+it("컷 이름을 키보드로 눌러도(click) 재생 키는 타임라인의 것이다 — 앞서 고른 소스를 움직이지 않는다", () => {
+  localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["source", "timeline"] }));
+  mount();
+  act(() => cutCell("c1").click());
+  act(() => poolCards()[0].click()); // 소스 = 그림 a
+  mouse(pane("source").querySelector(".ed-stage")!, "mousedown"); // 소스 판을 눌러 재생 키를 소스로
+  expect(pane("source").classList.contains("ed-view-on")).toBe(true);
+  act(() => cutCell("c2").click()); // Tab 으로 컷 이름에 가서 Enter — mousedown 없이 click 만
+  expect(timecode()).toBe("00:00:05:00");
+  expect(pane("timeline").classList.contains("ed-view-on")).toBe(true); // 전엔 소스에 남았다
+  press({ key: "ArrowRight", code: "ArrowRight" });
+  expect(timecode()).toBe("00:00:05:01");
+  expect(pane("source").querySelector(".ed-vtop > .ed-vtc")!.textContent).toBe("00:00:00:00"); // 소스는 그대로
+});
+
+it("뷰어의 '무엇을 볼지' 메뉴·풀의 보기 메뉴: Tab 으로 메뉴 밖으로 나가면 닫혀 재생 키가 돌아온다 — 안에서 옮기거나 창 밖으로 나간 것은 닫지 않는다", () => {
+  mount();
+  const leave = (from: Element, to: Element | null) => act(() => { from.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: to })); });
+  const pick = pane("timeline").querySelector<HTMLElement>(".ed-vpick")!;
+  act(() => pick.querySelector<HTMLButtonElement>(".ed-vpick-btn")!.click());
+  const items = [...pick.querySelectorAll<HTMLElement>(".ed-pop-item")];
+  expect(items.length).toBeGreaterThan(1);
+  expect(backgroundKeysBlocked()).toBe(true); // 열린 메뉴는 뒤 화면의 키를 막는다
+  leave(items[0], items[1]); // 안에서 옮긴다
+  expect(pick.querySelector(".ed-vpop")).not.toBeNull();
+  leave(items[1], null); // 브라우저 창을 떠났다
+  expect(pick.querySelector(".ed-vpop")).not.toBeNull();
+  leave(items[1], pane("timeline").querySelector(".ed-play")!); // Tab 으로 재생 단추에
+  expect(pick.querySelector(".ed-vpop")).toBeNull(); // 전엔 열린 채 남아 K 가 막혔다
+  expect(backgroundKeysBlocked()).toBe(false);
+
+  act(() => poolButton("보기 방식").click());
+  const tools = document.querySelector<HTMLElement>(".ed-pool-tools")!;
+  expect(tools.querySelector(".ed-pop")).not.toBeNull();
+  leave(popItem("목록 보기"), poolButton("검색")); // 도구 줄 안
+  expect(tools.querySelector(".ed-pop")).not.toBeNull();
+  leave(poolButton("검색"), cutCell("c1"));
+  expect(tools.querySelector(".ed-pop")).toBeNull();
+});
+
+// 24회차 격리 실측(900×600 · 트랙 20개 = 23항목): 메뉴 아래 7항목이 화면 밖이었고 안쪽 스크롤이 없었다. 페이지가 늘어나 스크롤되면 상태 알약이 마지막 항목을 덮는다.
+it("뷰어의 '무엇을 볼지' 메뉴는 화면 아래까지만 — 트랙이 많아 길어지면 안에서 스크롤한다", () => {
+  seed([], { tracks: 20 });
+  mount();
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const top = this.classList.contains("ed-vpop") ? 98 : 0; // 메뉴는 뷰어 머리 아래 98px 에서 시작한다(실측값)
+    return { x: 0, y: top, top, bottom: top, left: 0, right: 0, width: 0, height: 0, toJSON: () => ({}) } as DOMRect;
+  });
+  window.innerHeight = 600;
+  act(() => pane("timeline").querySelector<HTMLButtonElement>(".ed-vpick-btn")!.click());
+  const pop = pane("timeline").querySelector<HTMLElement>(".ed-vpop")!;
+  expect(pop.querySelectorAll(".ed-pop-item")).toHaveLength(23);
+  expect(pop.style.maxHeight).toBe("494px"); // 600 − 98 − 8 — 전엔 상한이 없어 702px 로 화면 밖까지
+  window.innerHeight = 900;
+  act(() => { window.dispatchEvent(new Event("resize")); });
+  expect(pop.style.maxHeight).toBe("794px");
+  // 상한에 걸리면 안에서 스크롤한다(CSS) — 진짜 CSS 를 올려 계산값으로 본다
+  const style = document.createElement("style");
+  style.textContent = readFileSync(new NodeURL("../src/styles/edit-tab.css", import.meta.url), "utf8");
+  document.head.append(style);
+  expect(getComputedStyle(pop).overflowY).toBe("auto");
+  style.remove();
 });

@@ -189,7 +189,11 @@ export function EditPool({
     <section className="ed-pool" onMouseDown={keepFocus}>
       <div className="ed-pool-head">
         <h3 title={title}>{title || t("이 컷의 생성물")}</h3>
-        <div className="ed-pool-tools" ref={toolsRef}>
+        <div className="ed-pool-tools" ref={toolsRef} onBlur={(event) => {
+          // Tab 으로 메뉴 밖으로 나가면 닫는다(뷰어의 메뉴와 같다 — 조작 규칙 51). 안에서 옮기는 것(항목·크기 슬라이더)은 그대로다.
+          const to = event.relatedTarget as Node | null;
+          if (to && !event.currentTarget.contains(to)) setOpen(null);
+        }}>
           <button type="button" className={"ed-pbtn" + (open === "view" ? " ed-on" : "")} aria-haspopup="menu" aria-expanded={open === "view"}
             title={t("보기 방식")} aria-label={t("보기 방식")} onClick={() => setOpen(open === "view" ? null : "view")}>
             {ICONS[ui.view]}<svg className="ed-caret" viewBox="0 0 8 5" aria-hidden="true"><path d="M0 0h8L4 5z" /></svg>

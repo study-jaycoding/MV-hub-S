@@ -3,7 +3,7 @@
 //  판은 '무엇을 그릴지'(shown)와 조작 함수만 받는다 — 시계는 편집 탭이 가진 엔진(타임라인·소스)의 것이다.
 //  `<video>` 는 판마다 하나고 떼지 않는다(떼면 재생 훅이 걸어 둔 이벤트와 주소가 사라진다) — 안 보이는 판은 hidden 으로 둔다.
 //  지금 시각과 타임바 머리는 React 를 거치지 않고, 등록해 둔 그리기 함수가 프레임마다 고친다.
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { timecode, type EditMarks } from "../../lib/editTimeline";
 import { isSourceView, type ViewMode } from "../../lib/editTimelineStore";
 import { useT } from "../../lib/i18n";
@@ -71,6 +71,7 @@ export function EditViewer({
   const t = useT();
   const [open, setOpen] = useState(false);
   const pickRef = useRef<HTMLDivElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
   const timeRef = useRef<HTMLSpanElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   const headRef = useRef<HTMLDivElement>(null);
@@ -82,6 +83,18 @@ export function EditViewer({
     if (order < 0) setOpen(false);
   }, [order]);
   useEscapeClose(() => setOpen(false), open && order >= 0, true, true);
+  // 메뉴는 화면 아래까지만 — 트랙이 많으면(20개 = 23항목) 낮은 창(900×600)에서 아래 7항목이 화면 밖이었고 안쪽 스크롤도 없었다. 페이지가
+  //  늘어나 스크롤되면 상태 알약이 마지막 항목을 덮는다(24회차 격리 실측). 뜬 자리에서 남은 높이로 상한을 잰다(조작 규칙 50 — 고정값 아님).
+  useLayoutEffect(() => {
+    if (!open) return;
+    const fit = () => {
+      const pop = popRef.current;
+      if (pop) pop.style.maxHeight = `${Math.max(0, Math.floor(window.innerHeight - pop.getBoundingClientRect().top - 8))}px`;
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [open]);
   useEffect(() => registerPaint((time) => {
     if (timeRef.current) timeRef.current.textContent = timecode(time);
     const at = `${total > 0 ? Math.min(100, Math.max(0, (time / total) * 100)) : 0}%`;
@@ -120,14 +133,19 @@ export function EditViewer({
       onMouseDownCapture={onActivate} onClickCapture={onActivate}>
       <div className="ed-vtop" onMouseDown={keepFocus}>
         <span className="ed-vtc" ref={timeRef}>00:00:00:00</span>
-        <div className="ed-vpick" ref={pickRef}>
+        <div className="ed-vpick" ref={pickRef} onBlur={(event) => {
+          // Tab 으로 메뉴 밖으로 나가면 닫는다 — 열린 채 남으면 뒤 화면의 재생 키를 계속 막는다(Esc 겹 = 키의 주인). 마우스는 바깥 누름이
+          //  닫고(useOutsideMouseDown), 창 밖으로 초점이 나간 것(relatedTarget 없음)은 닫지 않는다(조작 규칙 51).
+          const to = event.relatedTarget as Node | null;
+          if (to && !event.currentTarget.contains(to)) setOpen(false);
+        }}>
           <button type="button" className={"ed-vpick-btn" + (open ? " ed-on" : "")} aria-haspopup="menu" aria-expanded={open}
             title={t("이 뷰어에서 무엇을 볼지 고릅니다")} onClick={() => setOpen(!open)}>
             {current?.label ?? (typeof mode === "number" ? `V${mode}` : mode)}
             <svg className="ed-caret" viewBox="0 0 8 5" aria-hidden="true"><path d="M0 0h8L4 5z" /></svg>
           </button>
           {open && (
-            <div className="ed-pop ed-vpop" role="menu" aria-label={t("이 뷰어에서 무엇을 볼지 고릅니다")}>
+            <div className="ed-pop ed-vpop" role="menu" ref={popRef} aria-label={t("이 뷰어에서 무엇을 볼지 고릅니다")}>
               {options.map((option) => (
                 <button key={String(option.value)} type="button" role="menuitemradio" aria-checked={option.value === mode}
                   className={"ed-pop-item" + (option.value === mode ? " ed-on" : "")}
