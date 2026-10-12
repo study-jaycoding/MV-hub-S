@@ -873,7 +873,13 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
   `vi.resetModules()` 뒤 `await import(...)` 로 새로 읽는다. 저장 열쇠 이름은 추측하지 말고 한 번 써서 찾는다. '지운다'를 보는 시험은 **지워질 것이 저장소에
   있어야** 한다(없으면 지우든 말든 같다 — 변이가 잡아냈다). '떠난 화면'은 응답을 시험이 쥔 채 `root.unmount()`(뒤에 `root = createRoot(host)` 로 다시 만든다 —
   afterEach 가 내린다)하고 응답을 끝낸 뒤 **저장·넣기 호출 수를 직접 센다**(가짜 저장 함수가 빈 함수면 저장이 일어나도 안 보인다). 클립보드는
-  `vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText, readText } })` 로 바꾸고 `readText` 를 쥔다.캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
+  `vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText, readText } })` 로 바꾸고 `readText` 를 쥔다.
+- ㉘ **브라우저에만 있는 것**(22회차 — 규칙 49): File System Access API(다운로드 폴더)처럼 jsdom 에 없는 것은 **그것을 쓰는 부분만 떼어**(`writeIntoDir(폴더
+  핸들, 이름, 내용)` — `tests/downloadDirOverwrite.test.ts`) 가짜 핸들로 본다: 없는 파일에는 진짜처럼 `NotFoundError` 를 던지고, 쓰기를 문(약속) 뒤에서
+  기다리게 해 '둘 다 없음을 본 뒤에 쓴다'를 만들고, **대소문자를 구별하지 않는 폴더**(Windows)도 만든다. 내용을 읽는 비교는 `node:buffer` 의 Blob 으로
+  (jsdom 의 Blob 은 `arrayBuffer`·`text` 가 없을 수 있다). 큰 정수는 `9007199254740993`(…992 로 바뀐다)과 `9007199254740991`(담기는 가장 큰 수) 둘 다 넣는다.
+
+캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
 - ⑤ 복사본은 프로젝트 폴더 경로를 비워, 씬 그림(`asset:` 썸네일)이 **전부 404** 다. 그림이 뜬 상태로 재려면 다음처럼 한다.
   - 합성 그림을 `%TEMP%\mvhub-browser-measure\S\assets\imports` 에 둔다. `S\data\assets` 가 아니다.
   - 씬 사본의 `asset:` 토큰을 `asset:imports|<파일>` 로 바꿔 불러온다.
