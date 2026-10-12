@@ -69,7 +69,7 @@ it("재조회(프로젝트·작업 어느 쪽이든)가 실패해도 받은 표�
   expect(input().value).toBe("치던 글"); // 고친 글은 새 목록이 와도 지키고 있다
 });
 
-it("설명 저장이 실패하고 복구 조회까지 실패해도 친 글과 '저장 안 됨'이 남는다 — 서버가 돌아오면 [다시 저장]으로 저장된다", async () => {
+it("설명 저장이 실패하고 복구 조회까지 실패해도 친 글과 '저장 안 됨'이 남는다 — 서버가 돌아오면 [다시 저장]으로 저장되고, 목록도 다시 받아 띠가 걷힌다", async () => {
   render(); await settle();
   vi.mocked(manageApi.updateTask).mockRejectedValueOnce(new Error("500: boom"));
   vi.mocked(manageApi.taskProjects).mockRejectedValueOnce(new Error("Failed to fetch")); // 복구 조회
@@ -82,12 +82,18 @@ it("설명 저장이 실패하고 복구 조회까지 실패해도 친 글과 '�
   expect(input().value).toBe("저장할 글");
   expect(host.querySelector(".work-desc-chip")).not.toBeNull();
   vi.mocked(manageApi.updateTask).mockResolvedValueOnce({} as never);
+  // 서버는 저장된 글을 돌려준다 — 저장 뒤의 재조회가 옛 글을 돌려주는 일은 없다(그러면 칸이 옛 글로 돌아간다: 아래 재조회 단언의 전제)
+  vi.mocked(manageApi.listTasksBatch).mockImplementation(async (_ids, workspace) => ({ project: [{ ...task(workspace), description: "저장할 글" }] }));
+  const loads = vi.mocked(manageApi.taskProjects).mock.calls.length;
   await act(async () => { host.querySelector<HTMLButtonElement>(".work-desc .work-desc-retry")!.click(); });
   await settle();
   expect(manageApi.updateTask).toHaveBeenCalledTimes(2);
   expect(manageApi.updateTask).toHaveBeenLastCalledWith("task-a", { description: "저장할 글" });
   expect(host.querySelector(".work-desc .work-desc-chip")).toBeNull();
   expect(input().value).toBe("저장할 글");
+  // 저장이 통했으면 서버는 돌아온 것 — 목록을 다시 받아(띠만 지운 것이 아니다) "목록을 새로 받지 못했습니다" 띠를 걷는다(28회차).
+  expect(manageApi.taskProjects).toHaveBeenCalledTimes(loads + 1);
+  expect(banner()).toBeNull();
 });
 
 it("받은 적 없는 범위의 조회 실패는 전처럼 오류 화면이다 — 첫 조회 실패, 그리고 다른 범위에 다녀온 뒤의 실패(빈 표를 받은 내용이라 하지 않는다)", async () => {

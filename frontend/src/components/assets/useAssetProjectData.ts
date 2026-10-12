@@ -41,6 +41,9 @@ export function useAssetProjectData({
   // 화면의 meta 를 **받아 온** 폴더(캐시든 서버든) — 지금 폴더와 다르면 아직 이 폴더의 메타를 모른다. 빈 메타 {} 와 '아직 못 받음'을 가른다:
   //  못 받은 채로 태그를 고치면 기존 태그를 모르는 목록이 통째로 저장돼 지워진다(조작 규칙 45 — 아래 metaReady).
   const [metaFor, setMetaFor] = useState("");
+  // 화면의 tree 를 받아 온 폴더(캐시든 서버든) — 아래 return 에서 '지금 폴더의 것일 때만' 내보내는 가림의 열쇠. ref(treeProjectRef)가 아니라 state 인 까닭:
+  //  받아 둔 폴더로 돌아갈 때 setTree 는 같은 내용이면 건너뛰므로(bail-out) ref 만 바뀌면 가린 빈 화면이 그대로 남을 수 있다 — state 는 바뀌면 반드시 다시 그린다.
+  const [treeFor, setTreeFor] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -184,6 +187,7 @@ export function useAssetProjectData({
     if (isCurrent()) {
       if (cached) {
         treeProjectRef.current = targetProject; // 화면에 올리는 tree 의 소속을 함께 기록(미러 이펙트 짝)
+        setTreeFor(targetProject);
         setTree(reconcileArrayState(treeStateRef.current, cached)); // 캐시 있으면 즉시 표시(로딩 화면 없음)
         onTreeLoaded?.(cached);
         setLoading(false);
@@ -207,6 +211,7 @@ export function useAssetProjectData({
       if (isCurrent()) {
         // 새 트리 객체라도 파일·버전·계층이 같으면 현재 화면 참조를 유지한다.
         treeProjectRef.current = targetProject;
+        setTreeFor(targetProject);
         setTree(reconcileArrayState(treeStateRef.current, nextTree.children));
         onTreeLoaded?.(nextTree.children);
         setError(null);
@@ -259,7 +264,11 @@ export function useAssetProjectData({
   return {
     error,
     loading,
-    meta,
+    // 화면에 내보내는 tree/meta 는 **지금 폴더의 것일 때만**(규칙 45 의 남은 한 박자 — 27회차 실측): 폴더를 바꾼 첫 렌더는 '새 폴더 이름 + 앞 폴더 목록'
+    //  이라 셀이 앞 폴더의 파일 이름으로 새 폴더에 썸네일을 물었다(레이아웃 효과가 캐시를 넣는 것은 그 뒤). 열쇠는 state(treeFor·metaFor) — 받은 뒤 바뀌므로
+    //  가린 렌더 다음에 반드시 다시 그린다. 받기 전에 실패한 폴더는 열쇠가 앞 폴더에 남지만 그때 state 는 이미 비워져 있어 보이는 것은 같다(빈 화면).
+    //  미러 effect·setTree/setMeta 는 가리지 않은 state 그대로(가린 빈 값이 캐시에 적히면 안 된다).
+    meta: metaFor === project ? meta : EMPTY_META,
     /** 이 폴더의 메타(태그·색·소스)를 받았는가 — 받기 전에는 메타를 고치는 조작을 받지 않는다. */
     metaReady: !!project && metaFor === project,
     project,
@@ -272,6 +281,6 @@ export function useAssetProjectData({
     setMeta,
     setProject,
     setTree,
-    tree,
+    tree: treeFor === project ? tree : EMPTY_TREE,
   };
 }

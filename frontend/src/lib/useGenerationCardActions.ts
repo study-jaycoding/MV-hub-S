@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { t } from "./i18n";
 import { api } from "../api";
+import { errorDetail } from "./http";
 import { postLibraryChanged } from "./libraryBroadcast";
 import { modelBlockMessage } from "./modelPolicy";
 import { isGenerationWorkspaceReady } from "./workspaceContext";
@@ -163,7 +164,7 @@ export function useGenerationCardActions({
       const summary = t("{success}개 적용 · {failed}개 실패 · {kept}개 유지")
         .replace("{success}", String(succeeded)).replace("{failed}", String(failed)).replace("{kept}", String(kept));
       flash(withMirrorPendingNotice(summary, { mirror_pending: mirrorPending }, t) +
-        (firstError ? `\n${String(firstError)}` : ""));
+        (firstError ? `\n${errorDetail(firstError)}` : "")); // 까닭만 — "TypeError: Failed to fetch"·"Error: 500: …" 앞머리는 뗀다(16회차의 통일에서 빠진 자리)
       if (succeeded) {
         postLibraryChanged();
         bumpBoard();

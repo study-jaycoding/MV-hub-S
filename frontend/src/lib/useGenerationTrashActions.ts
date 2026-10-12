@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import { api } from "../api";
+import { errorDetail } from "./http";
 import { postLibraryChanged } from "./libraryBroadcast";
 import type { Generation } from "../types";
 import {
@@ -44,7 +45,7 @@ export function useGenerationTrashActions({
       flash(`${r.removed}건을 휴지통으로 보냈습니다.`);
       await reload();
     } catch (e) {
-      flash("정리 오류: " + String(e));
+      flash("정리 오류: " + errorDetail(e));
     }
   };
 
@@ -60,7 +61,7 @@ export function useGenerationTrashActions({
       postLibraryChanged();
       flash(trashResultText(ids.length, shared, failed));
     } catch (e) {
-      flash("삭제 실패: " + String(e));
+      flash("삭제 실패: " + errorDetail(e));
     }
   };
 
@@ -120,7 +121,7 @@ export function useGenerationTrashActions({
       postLibraryChanged();
       flash("복구했습니다.");
     } catch (e) {
-      flash("복구 실패: " + String(e));
+      flash("복구 실패: " + errorDetail(e));
     }
   };
 

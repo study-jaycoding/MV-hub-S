@@ -1,5 +1,6 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { api } from "../api";
+import { errorDetail } from "./http";
 import type { Generation } from "../types";
 import { singleOrClearSet, toggleSetValue, withoutSetValue } from "./setUtils";
 
@@ -49,7 +50,7 @@ export function useGenerationFilterActions({
       await reload();
       flash(`태그 "#${tag}" 를 ${removed}건에서 삭제했습니다.`);
     } catch (e) {
-      flash("태그 삭제 실패: " + String(e));
+      flash("태그 삭제 실패: " + errorDetail(e));
     }
   };
 

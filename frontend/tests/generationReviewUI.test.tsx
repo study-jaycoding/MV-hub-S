@@ -301,6 +301,10 @@ it("bulk review rechecks eligible targets and reports partial failure without to
   expect(vi.mocked(api.setReviewState).mock.calls.map(([g, state]) => [g.id, state])).toEqual([["ok", "held"], ["failed", "held"]]);
   expect(flash).toHaveBeenCalledWith(expect.stringContaining("1개 적용 · 1개 실패 · 3개 유지"));
   expect(flash).toHaveBeenCalledWith(expect.stringContaining("자동 동기화"));
+  // 실패의 까닭은 날것("Error: denied")이 아니라 까닭만("denied") — lib/http 의 errorDetail 한 곳(28회차).
+  const bulk = vi.mocked(flash).mock.calls.map(([message]) => String(message)).find((message) => message.includes("1개 실패"))!;
+  expect(bulk).toContain("\ndenied");
+  expect(bulk).not.toContain("Error:");
   expect(reload).toHaveBeenCalledTimes(1); expect(bumpBoard).toHaveBeenCalledTimes(1);
 });
 

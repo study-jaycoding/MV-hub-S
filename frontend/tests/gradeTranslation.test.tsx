@@ -146,9 +146,14 @@ it("normal sharing translates success, failure and empty selections without chan
   expect(api.publishToShared).toHaveBeenLastCalledWith(["translation-fixture"]);
   await act(async () => actions.onPublish(gen({ shared: false })));
   expect(flash).toHaveBeenLastCalledWith("Could not share: 서버 거절");
+  // 공유는 됐는데 뒤의 다시 읽기가 실패 — 까닭만 보인다("TypeError:" 앞머리는 뗀다, 28회차 errorDetail 통일)
+  vi.mocked(api.publishToShared).mockResolvedValueOnce({ ok: true, published: 1, blocked: 0, mirror_pending: false, message: "" });
+  reload.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+  await act(async () => actions.onPublish(gen({ shared: false })));
+  expect(flash).toHaveBeenLastCalledWith("Could not share: Failed to fetch");
   await act(async () => actions.boardShare([gen(), gen({ is_mine: false, shared: false })]));
   expect(flash).toHaveBeenLastCalledWith("No eligible items to share (your completed, unshared results only).");
-  expect(api.publishToShared).toHaveBeenCalledTimes(2);
+  expect(api.publishToShared).toHaveBeenCalledTimes(3);
 });
 
 it("folder sharing translates UI while preserving folder names and raw server details", async () => {
