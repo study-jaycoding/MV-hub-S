@@ -10,7 +10,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AssetNode, PreviewTarget } from "../src/types";
 
 const fixture = vi.hoisted(() => ({
-  tree: [] as unknown[], meta: {} as Record<string, unknown>, project: "P", metaReady: true, noop: () => {},
+  tree: [] as unknown[], meta: {} as Record<string, unknown>, project: "P", metaReady: true, loading: false, noop: () => {},
   setTags: vi.fn(async () => {}), setColors: vi.fn(async () => ({ updated: 0, failed: [] })),
 }));
 vi.mock("../src/api", () => {
@@ -23,7 +23,7 @@ vi.mock("../src/api", () => {
 });
 vi.mock("../src/components/assets/useAssetProjectData", () => ({
   useAssetProjectData: () => ({
-    error: "", loading: false, meta: fixture.meta, metaReady: fixture.metaReady, project: fixture.project, projects: ["P", "Q"], linkedProjects: new Set<string>(), tree: fixture.tree,
+    error: "", loading: fixture.loading, meta: fixture.meta, metaReady: fixture.metaReady, project: fixture.project, projects: ["P", "Q"], linkedProjects: new Set<string>(), tree: fixture.tree,
     refreshProjectData: fixture.noop, reloadMeta: async () => true, reloadProjects: fixture.noop, reloadTree: fixture.noop, setMeta: fixture.noop, setProject: fixture.noop,
   }),
 }));
@@ -58,7 +58,7 @@ beforeEach(() => {
     return { x, y: 0, left: x, top: 0, width: w, height: h, right: x + w, bottom: h, toJSON: () => ({}) } as DOMRect;
   });
   fixture.tree = ["a.png", "b.png", "c.png", "d.png"].map(file);
-  fixture.meta = {}; fixture.project = "P"; fixture.metaReady = true;
+  fixture.meta = {}; fixture.project = "P"; fixture.metaReady = true; fixture.loading = false;
   fixture.setTags.mockClear(); fixture.setColors.mockClear();
   previews = [];
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
@@ -104,6 +104,38 @@ it("목록이 바뀌면 초점도 그 파일을 따라간다 — 앞의 파일�
   expect(previews).toEqual(["b.png"]);
   await key({ key: "ArrowDown" }); // 방향키도 그 파일에서 출발한다(시험의 격자는 한 줄에 한 장이다)
   expect(picked()).toEqual(["c.png"]); // 전엔 c 에서 출발해 d.png
+});
+
+// 20회차(Codex 전수 검토): 보던 자리(스크롤)는 스크롤이 멈추고 150ms 뒤에 저장된다. 파일 수가 바뀔 때마다 **저장된 자리로 되돌려서**,
+//  방금 스크롤한 직후에 목록이 바뀌면(비활성 숨기기·자동 새로 고침) 화면이 옛 자리로 튀었다.
+it("같은 화면에서 파일 수만 바뀌면 보던 스크롤 자리를 둔다 — 저장해 둔 옛 자리로 되돌리지 않는다. 화면을 다시 열면 저장된 자리로 간다", async () => {
+  await mount();
+  grid().scrollTop = 30;
+  grid().dispatchEvent(new Event("scroll"));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); }); // 멈춘 지 150ms — 자리 30 이 저장됐다
+  grid().scrollTop = 240; // 다시 여기까지 내렸다(저장은 150ms 뒤다 — 아직이다)
+  await setFiles(["b.png", "c.png", "d.png"]); // 그 직후 목록이 바뀌었다(비활성 숨기기·자동 새로 고침)
+  expect(grid().scrollTop).toBe(240); // 전엔 저장된 30 으로 튀었다
+
+  // 격자가 내려갔다 다시 그려지면(빈 폴더를 거쳐 돌아옴 — 빈 폴더에는 격자 대신 안내가 그려진다) 새 격자는 저장된 자리로 간다(Codex 코드 리뷰)
+  await setFiles([]);
+  expect(host.querySelector(".assets-virtual")).toBeNull();
+  await setFiles(["b.png", "c.png", "d.png"]);
+  expect(grid().scrollTop).toBe(30);
+
+  act(() => root.unmount()); // 화면을 닫았다 다시 연다 — 저장된 자리(30)에서 시작한다
+  root = createRoot(host);
+  await mount();
+  expect(grid().scrollTop).toBe(30);
+
+  // 받는 중에는 빈 격자가 먼저 그려진다 — 파일이 도착했을 때 저장된 자리로 간다(빈 격자에서 한 번 맞춘 것으로 끝내지 않는다)
+  act(() => root.unmount());
+  root = createRoot(host);
+  fixture.tree = []; fixture.loading = true;
+  await mount();
+  grid().scrollTop = 0; // 빈 격자는 내려갈 곳이 없다(브라우저가 0 으로 자른다 — jsdom 은 자르지 않아 흉내 낸다)
+  await act(async () => { fixture.loading = false; fixture.tree = ["b.png", "c.png", "d.png"].map(file); rerender(); });
+  expect(grid().scrollTop).toBe(30);
 });
 
 it("초점이 놓인 파일이 목록에서 사라지면 초점을 내려놓는다 — 그 자리에 온 파일로 넘어가지 않는다", async () => {

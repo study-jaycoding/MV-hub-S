@@ -457,15 +457,15 @@ export function ProjectManagerPanel({
   const [dragArmed, setDragArmed] = useState(false);
   const orderSavingRef = useRef(false);
   useHandleRelease(dragArmed, () => setDragArmed(false)); // 손잡이 밖에서 떼거나 누른 채 창을 떠나도 내린다
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dragId, setDragId] = useState<string | null>(null); // 번호가 아니라 id 로 — 끄는 사이 목록을 다시 읽으면 번호는 다른 프로젝트다(조작 규칙 45)
   const [overIdx, setOverIdx] = useState<number | null>(null);
   const dropProjectAt = async (toIdx: number) => {
-    const from = dragIdx;
+    const from = projects.findIndex((project) => project.id === dragId); // 끄는 사이 사라졌으면 -1 — 아무것도 옮기지 않는다
     setDragArmed(false);
-    setDragIdx(null);
+    setDragId(null);
     setOverIdx(null);
     // 순서 저장이 도는 동안에는 다음 끌기를 받지 않는다(조작 규칙 39) — 겹친 두 저장이 다 실패하면 둘째는 '저장 안 된 첫째의 순서'로 되돌린다
-    if (from === null || from === toIdx || orderSavingRef.current) return;
+    if (from < 0 || from === toIdx || orderSavingRef.current) return;
     const previous = projects;
     const next = projects.slice();
     const [moved] = next.splice(from, 1);
@@ -527,16 +527,16 @@ export function ProjectManagerPanel({
                   <tr
                     className={
                       (p.archived ? "archived" : "") +
-                      (dragIdx === idx ? " row-dragging" : "") +
-                      (overIdx === idx && dragIdx !== idx ? " row-dragover" : "")
+                      (dragId === p.id ? " row-dragging" : "") +
+                      (overIdx === idx && dragId !== p.id ? " row-dragover" : "")
                     }
                     draggable={dragArmed}
                     onDragStart={(e) => {
-                      setDragIdx(idx);
+                      setDragId(p.id);
                       e.dataTransfer.effectAllowed = "move";
                     }}
                     onDragOver={(e) => {
-                      if (dragIdx === null) return;
+                      if (dragId === null) return;
                       e.preventDefault();
                       if (overIdx !== idx) setOverIdx(idx);
                     }}
@@ -546,7 +546,7 @@ export function ProjectManagerPanel({
                     }}
                     onDragEnd={() => {
                       setDragArmed(false);
-                      setDragIdx(null);
+                      setDragId(null);
                       setOverIdx(null);
                     }}
                   >

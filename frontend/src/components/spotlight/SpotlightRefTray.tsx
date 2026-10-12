@@ -50,13 +50,16 @@ export function SpotlightRefTray({
   const containerRef = useRef<HTMLDivElement>(null);
   // 순서변경 드래그 — 삽입 위치 세로 흰 선(화면좌표·fixed) + 잡고 있는 항목(흐리게)
   const [line, setLine] = useState<{ x: number; y: number; h: number } | null>(null);
-  const [fromIdx, setFromIdx] = useState<number | null>(null);
+  // 잡은 항목은 번호가 아니라 uid 로 든다 — 끄는 사이 트레이가 갈리면(키로 다른 카드를 골라 묶임이 바뀜) 번호는 다른 레퍼런스다(조작 규칙 45)
+  const [fromUid, setFromUid] = useState<string | null>(null);
+  const refsRef = useRef(trayRefs);
+  refsRef.current = trayRefs;
   const cleanupRef = useRef<(() => void) | null>(null);
   useEffect(() => () => cleanupRef.current?.(), []); // 드래그 중 언마운트 시 리스너 정리
 
   // 항목을 마우스로 잡아 순서 변경 — HTML5 네이티브 드래그 대신(빠르게 움직여도 안정적).
   // 4px 이상 움직여야 시작(단일/더블 클릭은 그대로 미리보기·선택). 삽입 위치를 흰 세로선으로 표시.
-  const startReorder = (e: MouseEvent<HTMLDivElement>, index: number) => {
+  const startReorder = (e: MouseEvent<HTMLDivElement>, uid: string) => {
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest("button")) return; // × 등 버튼은 제외
     const container = containerRef.current;
@@ -96,7 +99,7 @@ export function SpotlightRefTray({
       if (!dragging) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
         dragging = true;
-        setFromIdx(index);
+        setFromUid(uid);
       }
       recompute(ev.clientX, ev.clientY);
     };
@@ -104,14 +107,15 @@ export function SpotlightRefTray({
       removeWindowMouseDrag(onMove, onUp);
       cleanupRef.current = null;
       setLine(null);
-      setFromIdx(null);
+      setFromUid(null);
     };
     // mouseup 을 놓친 끌기(Alt-Tab 으로 창을 떠남·단추를 뗀 채 온 움직임 — lib/windowDrag)는 순서를 바꾸지 않고 정리만 한다.
     const onUp = (ev: Event) => {
       const wasDragging = dragging && !dragLost(ev);
       const ii = insertIndex;
       finish();
-      if (wasDragging && ii >= 0) onReorder(index, ii);
+      const from = refsRef.current.findIndex((ref) => ref.uid === uid); // 끄는 사이 그 항목이 사라졌으면 -1 — 옮기지 않는다
+      if (wasDragging && ii >= 0 && from >= 0) onReorder(from, ii);
     };
     cleanupRef.current = finish;
     addWindowMouseDrag(onMove, onUp);
@@ -148,10 +152,10 @@ export function SpotlightRefTray({
           return (
             <div
               key={ref.uid}
-              className={"sl-reftray-item" + (fromIdx === index ? " reordering" : "")}
+              className={"sl-reftray-item" + (fromUid === ref.uid ? " reordering" : "")}
               data-tidx={index}
               onContextMenu={(e) => { if (ref.type === "image") onRoleContextMenu?.(e, ref.uid); }}
-              onMouseDown={(e) => startReorder(e, index)}
+              onMouseDown={(e) => startReorder(e, ref.uid)}
               onDoubleClick={() =>
                 onPreview?.({
                   url: refSrc(ref.file_path) || ref.thumb,

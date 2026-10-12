@@ -76,6 +76,22 @@ export function dataTransferHasFiles(dataTransfer: DataTransfer): boolean {
   return Array.from(dataTransfer.items || []).some((item) => item.kind === "file");
 }
 
+/** 받는 곳이 없는 자리에 놓인 파일을 브라우저가 열지 않게 한다 — 놓을 자리를 조금 벗어나면 그 파일이 새 탭으로 열렸다(main.tsx 가 한 번 건다).
+ *  받는 곳은 자기 dragover 에서 preventDefault 를 한다(그것이 '받는다'는 표시다). 아무도 받지 않은 파일 끌기만 '놓을 수 없음'으로 돌린다 —
+ *  그래서 **받지 못하는 것에는 preventDefault 를 하지 않는다**(하면 '놓을 수 있음' 커서가 뜨고, 놓아도 아무 일이 없다).
+ *  파일 입력칸(`<input type="file">`)에 놓는 것은 브라우저의 것이라 둔다. */
+export function installFileDropGuard(target: Pick<Window, "addEventListener"> = window): void {
+  const guard = (event: DragEvent) => {
+    const data = event.dataTransfer;
+    if (event.defaultPrevented || !data || !dataTransferHasFiles(data)) return;
+    if ((event.target as Element | null)?.closest?.('input[type="file"]')) return;
+    event.preventDefault();
+    if (event.type === "dragover") data.dropEffect = "none";
+  };
+  target.addEventListener("dragover", guard);
+  target.addEventListener("drop", guard);
+}
+
 export function filesFromDataTransfer(dataTransfer: DataTransfer): File[] {
   // drop 시점의 files 가 표준 경로다. 일부 Chromium/Windows 드래그 소스에서는 이 목록이
   // 비고 items 에만 File이 남으므로 getAsFile 폴백으로 실제 파일을 복원한다.

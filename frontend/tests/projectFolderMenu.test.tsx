@@ -197,6 +197,37 @@ it("프로젝트 순서 — 저장에 실패하면 끌기 전 순서로 되돌�
   }
 });
 
+// 20회차(조작 규칙 45 의 남은 자리): 끄는 프로젝트를 목록의 '몇 번째'로 들고 있어, 끄는 사이 목록이 바뀌면(다른 창이 순서를 바꿈 → 새로 고침)
+//  놓는 순간 그 번호 자리에 온 **다른 프로젝트**가 옮겨져 저장됐다.
+it("프로젝트 순서 — 끄는 사이 목록의 순서가 바뀌어도 잡은 프로젝트가 옮겨진다. 그사이 사라졌으면 아무것도 옮기지 않는다", async () => {
+  mocks.links.mockResolvedValue({ links: {} });
+  mocks.reorder.mockReset().mockResolvedValue({ ok: true });
+  const project = (id: string) => ({ id, name: id, count: 1 }) as Project;
+  const show = (projects: Project[]) => act(async () => root.render(<ProjectSection projects={projects}
+    unassignedCount={0} archivedCount={0} deletedOnly={false} tab="my" activeId={undefined} onFilter={vi.fn()} onViewDeleted={vi.fn()} />));
+  const names = () => [...host.querySelectorAll<HTMLElement>(".proj-row")].map((row) => row.title).filter((title) => /^[ABC]$/.test(title));
+  const row = (name: string) => host.querySelector<HTMLElement>(`.proj-row[title="${name}"]`)!;
+  const grab = async (name: string) => {
+    await act(async () => { row(name).querySelector(".proj-drag-handle")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+    await act(async () => { row(name).dispatchEvent(Object.assign(new Event("dragstart", { bubbles: true }), { dataTransfer: {} })); });
+  };
+  const dropOn = (name: string) => act(async () => { row(name).dispatchEvent(Object.assign(new Event("drop", { bubbles: true, cancelable: true }), { dataTransfer: {} })); });
+  const dragging = () => [...host.querySelectorAll<HTMLElement>(".proj-row.row-dragging")].map((item) => item.title);
+  await show([project("A"), project("B"), project("C")]);
+  await grab("B");
+  await show([project("C"), project("A"), project("B")]); // 끄는 사이 다른 창이 바꾼 순서가 도착했다
+  expect(dragging()).toEqual(["B"]); // 전엔 번호 1 자리에 온 A 가 끌리는 줄로 보였다
+  await dropOn("C");
+  expect(names()).toEqual(["B", "C", "A"]); // 전엔 A 가 옮겨져 [A, C, B]
+  expect(mocks.reorder).toHaveBeenCalledExactlyOnceWith(["B", "C", "A"]);
+
+  await grab("C");
+  await show([project("B"), project("A")]); // 끄는 사이 그 프로젝트가 사라졌다(다른 창이 지움)
+  await dropOn("B");
+  expect(names()).toEqual(["B", "A"]);
+  expect(mocks.reorder).toHaveBeenCalledTimes(1);
+});
+
 it("열기 API에는 프로젝트 ID와 상대 폴더만 전송한다", async () => {
   const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
   vi.stubGlobal("fetch", fetch);

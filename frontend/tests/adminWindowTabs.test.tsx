@@ -514,6 +514,28 @@ it("프로젝트 표의 순서 — 저장에 실패하면 끌기 전 순서로 �
   expect(projectNames()).toEqual(["첫째", "둘째", "셋째"]);
 });
 
+// 20회차(조작 규칙 45 의 남은 자리): 끄는 줄을 '몇 번째'로 들고 있어, 끄는 사이 목록을 다시 읽으면 그 번호 자리에 온 다른 프로젝트가 옮겨졌다.
+it("프로젝트 표의 순서 — 끄는 사이 목록을 다시 읽어 순서가 달라져도 잡은 프로젝트가 옮겨진다", async () => {
+  const third = { id: "r", name: "셋째", workspace_id: "ws", workspace_name: "WS", kind: "team" };
+  mocks.projects.mockResolvedValue({ projects: [...twoProjects(), third] });
+  mocks.reorderProjects.mockResolvedValue({ ok: true });
+  mocks.updateProject.mockResolvedValue({});
+  await mount();
+  await clickTab("프로젝트");
+  expect(projectNames()).toEqual(["첫째", "둘째", "셋째"]);
+  await act(async () => { projectRow("둘째").querySelector(".proj-drag-handle")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+  await act(async () => { projectRow("둘째").dispatchEvent(Object.assign(new Event("dragstart", { bubbles: true }), { dataTransfer: {} })); });
+  // 끄는 사이 목록을 다시 읽었다 — 다른 관리자가 순서를 바꿔 놓았다(다시 읽기는 보관 단추의 뒤처리로 일으킨다)
+  mocks.projects.mockResolvedValue({ projects: [third, ...twoProjects()] });
+  await act(async () => { projectRow("셋째").querySelector<HTMLButtonElement>(".admin-pact-archive")!.click(); });
+  await settle();
+  expect(projectNames()).toEqual(["셋째", "첫째", "둘째"]);
+  expect(projectRow("둘째").classList.contains("row-dragging")).toBe(true); // 전엔 번호 1 자리에 온 '첫째'가 끌리는 줄이었다
+  await act(async () => { projectRow("셋째").dispatchEvent(Object.assign(new Event("drop", { bubbles: true, cancelable: true }), { dataTransfer: {} })); });
+  await settle();
+  expect(mocks.reorderProjects).toHaveBeenCalledExactlyOnceWith(["q", "r", "p"]); // 전엔 '첫째'가 옮겨져 ["p", "r", "q"]
+});
+
 it("프로젝트 보관·삭제 — 실패하면 알리고 목록은 다시 읽지 않는다(전엔 받는 곳이 없어 눌러도 아무 일도 없는 것처럼 보였다)", async () => {
   await mount();
   await clickTab("프로젝트");

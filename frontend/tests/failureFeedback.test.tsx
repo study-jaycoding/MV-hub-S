@@ -7,7 +7,7 @@
 //  같은 규칙의 다른 자리: 태그(tests/tagSaveFailureSync) · 프로젝트 순서·보관·삭제·열쇠(tests/projectFolderMenu·adminWindowTabs) ·
 //  Comfy 카드(tests/comfyLoadOrder) · 로그아웃(tests/hubAuthReady·seedanceSceneErrorsRender) · 저장 취소(tests/exportViewLayout).
 import { act, useCallback, useRef, useState } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { APP_EVENTS } from "../src/lib/appEvents";
@@ -469,6 +469,64 @@ it("캔버스에 놓은 파일 — 들이지 못했으면 알린다(전엔 콘�
   drop();
   await settle();
   expect(flashes).toHaveLength(1); // 들어간 것은 알리지 않는다
+});
+
+// 20회차(Codex 전수 검토): 캔버스 안에 뜬 창(모델·Comfy 설정·글·복구 / 생성 결과 / 타임라인 재생)은 보드의 자식이라, 창에 놓은 파일이 보드까지
+//  올라가 **창 뒤의 씬에 레퍼런스 카드가 생기고 저장됐다**(Comfy 설정 창의 파일 칸을 조금 벗어나 놓아도). 창 위의 끌기는 보드가 받지 않는다.
+it.each([".scene-modelmodal-backdrop", ".scene-varpop-backdrop", ".vtl-backdrop"])("캔버스 안에 뜬 창(%s)에 놓은 파일은 뒤 보드에 들어가지 않는다 — 보드에 놓은 것은 들어간다", async (selector) => {
+  const board = mountBoardDrop();
+  const win = document.createElement("div");
+  win.className = selector.slice(1);
+  const inside = win.appendChild(document.createElement("p"));
+  host.append(win);
+  const send = (kind: "onDragOver" | "onDrop", target: Element) => {
+    const event = { preventDefault: vi.fn(), stopPropagation: vi.fn(), clientX: 10, clientY: 10, shiftKey: false, target, currentTarget: host,
+      dataTransfer: { types: ["Files"], files: [png()], items: [], dropEffect: "none" } };
+    act(() => { board.handlers()[kind](event as never); });
+    return [event.preventDefault.mock.calls.length > 0, event.dataTransfer.dropEffect];
+  };
+  expect(send("onDragOver", inside)).toEqual([false, "none"]); // 받지 않는다 — 전역 지킴이가 '놓을 수 없음'으로 둔다
+  expect(send("onDrop", inside)[0]).toBe(false);
+  await settle();
+  expect(mocks.uploadReferenceFiles).not.toHaveBeenCalled(); // 전엔 올리고, 창 뒤의 씬에 카드를 넣었다
+  mocks.uploadReferenceFiles.mockResolvedValueOnce({ saved: [] });
+  expect(send("onDragOver", host)).toEqual([true, "copy"]);
+  send("onDrop", host);
+  await settle();
+  expect(mocks.uploadReferenceFiles).toHaveBeenCalledTimes(1);
+});
+
+// Codex 코드 리뷰: 창이 body 로 띄운 패널(포털 — '생성 결과' 창의 태그 패널)은 화면에서는 보드 밖인데, React 의 이벤트는 부모인 보드까지
+//  올라온다. DOM 의 조상만 봐서는 못 거른다 — 진짜 포털과 보드의 처리기를 같이 올려 본다.
+it("캔버스 안의 창이 body 로 띄운 패널(포털)에 놓은 파일도 뒤 보드에 들어가지 않는다", async () => {
+  function Board() {
+    const handlers = useSceneClipboardDrop({
+      frozenRef: useRef(false), sceneIdRef: useRef("s"), cardsRef: useRef<SceneCard[]>([]), edgesRef: useRef<SceneEdge[]>([]),
+      selectedRef: useRef(new Set<string>()), lastMouseRef: useRef({ x: 10, y: 10, over: true }), scrollRef: useRef<HTMLDivElement | null>(null),
+      setCards: () => {}, setEdges: () => {}, setSelected: () => {}, toCanvas: (x, y) => ({ x, y }), reconcileGenerationRefs: (cards) => cards,
+      persist: () => {}, cardWidth: 100, cardHeight: 100,
+    });
+    return (
+      <div className="board" onDragOver={handlers.onDragOver} onDrop={handlers.onDrop}>
+        <p className="on-board" />
+        {createPortal(<p className="portaled" />, document.body)}
+      </div>
+    );
+  }
+  act(() => root.render(<Board />));
+  const dropOn = (selector: string) => {
+    const event = Object.assign(new Event("drop", { bubbles: true, cancelable: true }), { clientX: 10, clientY: 10, shiftKey: false,
+      dataTransfer: { types: ["Files"], files: [png()], items: [] } });
+    act(() => { document.querySelector(selector)!.dispatchEvent(event); });
+    return event.defaultPrevented;
+  };
+  expect(dropOn(".portaled")).toBe(false); // 보드가 받지 않았다 — 전엔 받아서(preventDefault) 올렸다
+  await settle();
+  expect(mocks.uploadReferenceFiles).not.toHaveBeenCalled();
+  mocks.uploadReferenceFiles.mockResolvedValueOnce({ saved: [] });
+  expect(dropOn(".on-board")).toBe(true);
+  await settle();
+  expect(mocks.uploadReferenceFiles).toHaveBeenCalledTimes(1);
 });
 
 // 15회차(조작 규칙 42): 여러 파일을 놓았을 때 일부만 들어가도, 하나도 안 들어가도 아무 말이 없었다.

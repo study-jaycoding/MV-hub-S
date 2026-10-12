@@ -1,8 +1,12 @@
 // 공통 폴더 트리 뷰 — 생성탭/어셋탭/관리자창이 같은 시각 언어를 공유한다.
 import { useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { DRAG_TYPES } from "../../lib/dragTypes";
 import { useDragEndReset } from "../../lib/useDragEndReset";
 import type { FolderReviewCounts } from "../../types";
 import { FolderReviewCount } from "./FolderReviewCount";
+
+// 폴더 줄이 받는 끌기 — 생성물 카드(여럿·하나). 놓는 쪽(onDropFolder)이 읽는 것과 같다.
+const GENERATION_DRAG_TYPES: string[] = [DRAG_TYPES.generationList, DRAG_TYPES.generation];
 
 export interface FolderTreeItem {
   name: string;
@@ -120,9 +124,11 @@ function FolderTreeRow({
   const folderDraggingRef = useRef(false);
   const dragReleaseRef = useRef<number | undefined>(undefined); // 그 깃발을 내리는 예약(onDragEnd) — 새 누름이 거둔다
   // 하위가 있는 부모 폴더(예 ep001)는 드롭 대상에서 제외 — 말단 폴더(c0010 등)에만 담는다.
+  //  받는 것은 생성물 카드뿐이다 — 그 밖의 끌기(탐색기의 파일 등)에는 '놓을 수 있음'을 보이지 않는다(놓아도 아무 일이 없었다).
   const dropProps = onDropFolder && !hasChildren
     ? {
         onDragOver: (e: DragEvent) => {
+          if (!GENERATION_DRAG_TYPES.some((type) => e.dataTransfer.types.includes(type))) return;
           e.preventDefault();
           e.dataTransfer.dropEffect = "copy";
           if (!dropOver) setDropOver(true);

@@ -5,6 +5,7 @@ import { api } from "../api";
 import { DRAG_TYPES } from "./dragTypes";
 import { flashMsg } from "./flash";
 import { dataTransferHasFiles, filesFromDataTransfer } from "./media";
+import { SCENE_WINDOW_SELECTOR } from "./useSceneViewport";
 import {
   appendSceneReferenceCards,
   copySceneSelection,
@@ -94,6 +95,16 @@ const clipboardImage = (event: ClipboardEvent): File | null => {
 // 폴더 창·'생성 결과' 창이 떠 있나 — 그동안 보드는 가려져 있다. 붙여넣기는 초점과 무관하게(Ctrl+V 는 창 안에서 눌러도 여기까지 온다)
 //  가려진 보드에 노드를 붙였다(Codex 상의에서 코드로 확인). 창이 떠 있으면 보드에 붙이지 않는다.
 const gridWindowOpen = (): boolean => !!document.querySelector(".folder-peek, .scene-varwin");
+// 보드 안에 뜬 창(모델·Comfy 설정·생성 결과·타임라인 재생·글·복구) 위의 끌기는 보드의 것이 아니다 — 창은 보드의 자식이라 놓기가 보드까지
+//  올라오고, 받으면 창 뒤의 씬에 카드가 생겨 저장된다. 받지 않으면 전역 지킴이(lib/media installFileDropGuard)가 '놓을 수 없음'으로 돌린다.
+//  창 안에서 따로 받는 자리(Comfy 설정 창의 파일 칸)는 거기서 전파를 멈춘다.
+//  창이 body 로 띄운 것(포털 — '생성 결과' 창의 태그 패널)도 같다: 화면에서는 보드 밖인데 React 의 이벤트는 부모인 보드까지 올라온다.
+//  그래서 '보드의 DOM 안에서 난 것인가'도 같이 본다(Codex 코드 리뷰).
+const overSceneWindow = (event: ReactDragEvent): boolean => {
+  const target = event.target as Element | null;
+  const board = event.currentTarget as Element | null;
+  return !!target?.closest && (!!target.closest(SCENE_WINDOW_SELECTOR) || (!!board?.contains && !board.contains(target)));
+};
 
 const isTextEntryTarget = (target: EventTarget | null): boolean => {
   const element = target as HTMLElement | null;
@@ -190,6 +201,7 @@ export function useSceneClipboardDrop(
   );
 
   const onDragOver = useCallback((event: ReactDragEvent) => {
+    if (overSceneWindow(event)) return;
     event.preventDefault();
     event.stopPropagation();
     if (hasAssetDrag(event.dataTransfer) || dataTransferHasFiles(event.dataTransfer)) {
@@ -199,6 +211,7 @@ export function useSceneClipboardDrop(
 
   const onDrop = useCallback(
     (event: ReactDragEvent) => {
+      if (overSceneWindow(event)) return;
       event.preventDefault();
       event.stopPropagation();
       const current = optionsRef.current;
