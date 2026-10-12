@@ -1538,6 +1538,8 @@ export function SceneBoard({
         tabIndex={busy ? -1 : 0}
         onClick={() => !busy && void pick(generation)}
         onKeyDown={(event) => {
+          // 항목 안의 참조칩(단추)에서 올라온 키는 그 단추의 것 — 크게 보려는 Enter 로 그 후보가 카드에 붙었다(조작 규칙 51)
+          if (event.target !== event.currentTarget) return;
           if (!busy && (event.key === "Enter" || event.key === " ")) {
             event.preventDefault();
             void pick(generation);
@@ -4856,22 +4858,34 @@ export function SceneBoard({
         <>
           <div className="scene-nodepick-backdrop" onMouseDown={() => setNodePicker(null)} />
           <div className="scene-nodepick" style={{ left: nodePicker.sx, top: nodePicker.sy }}>
-            {SCENE_NODE_CATALOG.map(({ label, key, kind }) => (
+            {SCENE_NODE_CATALOG.map(({ label, key, kind }) => {
+              const run = () => {
+                const at = { x: nodePicker.cx, y: nodePicker.cy };
+                setNodePicker(null);
+                if (kind === "generation") createGenerationConnected(at);
+                else createNode(kind, at);
+              };
+              return (
               <button
                 key={kind}
                 className="scene-nodepick-item"
                 onMouseDown={(e) => {
                   e.stopPropagation();
-                  const at = { x: nodePicker.cx, y: nodePicker.cy };
-                  setNodePicker(null);
-                  if (kind === "generation") createGenerationConnected(at);
-                  else createNode(kind, at);
+                  run();
+                }}
+                // Tab 으로 닿은 항목은 Enter·Space 로도 만든다 — mousedown 에만 걸려 있어 키보드로는 아무 일도 없었다(조작 규칙 51)
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" && e.key !== " ") return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  run();
                 }}
               >
                 <span className="scene-nodepick-name">{label}</span>
                 <span className="scene-nodepick-key">{key}</span>
               </button>
-            ))}
+              );
+            })}
           </div>
         </>
       )}
