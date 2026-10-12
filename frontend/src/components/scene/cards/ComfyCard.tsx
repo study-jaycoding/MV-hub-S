@@ -19,6 +19,7 @@ import {
 } from "../../../lib/sceneEdges";
 import { gatherComfyMedia, hasTextConnection } from "../../../lib/sceneComfyInputs";
 import { isComfyRunning } from "../../../lib/sceneComfyRunningStore";
+import { flashMsg } from "../../../lib/flash";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../../../lib/media";
 import { HistoryBoardNode } from "../../history/HistoryBoardNode";
 import { StepIcon } from "../../common/ViewIcons";
@@ -29,6 +30,13 @@ import type { HistPass } from "./GenerationCard";
 
 // 안정 참조 no-op — HistoryBoardNode(memo) 무효화 방지(코덱스 P2). GenerationCard 와 동일 원칙.
 const NOOP = () => {};
+
+/** 친 글이 '정확히 담을 수 없는 정수'인가 — 2^53 을 넘는 정수는 `Number()` 가 **다른 수로 바꾼다**(9007199254740993 → …992). 그대로 넘기면
+ *  친 것과 다른 seed 가 저장돼 그 값으로 실행된다(조작 규칙 49). 소수는 원래 근사라 보지 않는다. */
+const inexactInteger = (text: string): boolean => {
+  const n = Number(text);
+  return text.trim() !== "" && Number.isInteger(n) && !Number.isSafeInteger(n);
+};
 
 /** 숫자 파라미터 칸 — 치는 동안은 친 글자를 그대로 든다(조작 규칙 43). 전엔 바뀔 때마다 `Number()` 로 바꿔 넘겨, 칸을 지우면 곧바로
  *  0 이 저장되고(빈 글 → 0) 그 0 이 칸에 되써져 '-' 로 시작하는 수를 칠 수 없었다. 수로 읽히는 동안만 값을 넘기고, 수가 아닌 채로
@@ -43,9 +51,11 @@ export function ComfyNumberInput({ value, onChange, onBlur }: { value: number | 
       onChange={(e) => {
         const text = e.target.value;
         setDraft(text);
-        if (text.trim() !== "" && Number.isFinite(Number(text))) onChange(Number(text));
+        if (text.trim() !== "" && Number.isFinite(Number(text)) && !inexactInteger(text)) onChange(Number(text));
       }}
       onBlur={() => {
+        // 정확히 담을 수 없는 큰 정수는 받지 않았다(위) — 말없이 앞 값으로 돌아가면 넣은 줄 안다
+        if (draft !== null && inexactInteger(draft)) flashMsg(`이 칸은 ${Number.MAX_SAFE_INTEGER} 까지의 정수만 정확히 다룹니다 — 값을 바꾸지 않았습니다.`);
         setDraft(null);
         onBlur();
       }}

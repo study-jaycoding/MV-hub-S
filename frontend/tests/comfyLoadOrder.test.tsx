@@ -97,6 +97,24 @@ it("Comfy 워크플로 창 — 저장된 워크플로를 다시 읽지 못했으
   expect(onSave.mock.calls[0][0]).toMatchObject({ paramExposed: ["1|seed"], paramValues: { "1|seed": 7 }, params: [{ key: "1|seed", label: "seed", type: "int" }] });
 });
 
+// 22회차(조작 규칙 49, Codex 코드 리뷰): 워크플로에 적힌 2^53 이상의 정수(seed)는 브라우저가 받는 순간 다른 수로 바뀐다(…993 → …992).
+//  그것을 조절 칸으로 내면 바뀐 값이 파라미터로 저장돼 그 값으로 실행된다 — 내지 않으면 워크플로에 적힌 값 그대로 실행된다.
+it("Comfy 워크플로 창 — 정확히 담을 수 없는 큰 정수는 조절 칸으로 낼 수 없다(전에 내 둔 것도 저장할 때 뺀다)", async () => {
+  const onSave = vi.fn();
+  const initial = { name: "wf", content: '{"wf":1}', nodeCount: 3, paramExposed: ["1|seed", "1|steps"], paramValues: { "1|seed": 9007199254740992, "1|steps": 20 },
+    params: [], output: null, status: "idle" } as never;
+  act(() => root.render(<SceneComfyModal initial={initial} onSave={onSave} onClose={() => {}} />));
+  const candidate = (field: string, value: number) => ({ node_id: "1", field, label: field, type: "number", value, title: "KSampler", curated: true });
+  parses[0].resolve({ node_count: 3, candidates: [candidate("seed", 9007199254740992), candidate("steps", 20)] as never });
+  await settle();
+  const boxes = [...host.querySelectorAll<HTMLInputElement>(".scene-comfy-item input[type=checkbox]")];
+  expect(boxes.map((box) => [box.checked, box.disabled])).toEqual([[false, true], [true, false]]); // seed 는 꺼진 채 잠겨 있다
+  expect(host.querySelector(".scene-comfy-item")!.textContent).toContain("너무 큰 정수");
+  act(() => saveButton().click());
+  expect(onSave.mock.calls[0][0]).toMatchObject({ paramExposed: ["1|steps"], paramValues: { "1|steps": 20 }, params: [{ key: "1|steps" }] }); // 전엔 seed 가 …992 로 같이 저장됐다
+  expect(Object.keys(onSave.mock.calls[0][0].paramValues)).toEqual(["1|steps"]);
+});
+
 it("Comfy 워크플로 창 — 순서대로 끝나면 차례로 보이고, 다 끝날 때까지 '불러오는 중'이다", async () => {
   act(() => root.render(modal()));
   const zone = host.querySelector(".scene-comfy-drop")!;

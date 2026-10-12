@@ -152,6 +152,34 @@ it("Comfy 숫자 칸 — 지워도 0 이 저장되지 않고 '-' 부터 칠 수 
   expect(onBlur).toHaveBeenCalledTimes(1); // 미뤄 둔 저장을 확정하는 것은 그대로다
 });
 
+// 22회차(조작 규칙 49, Codex 전수 검토): 2^53 을 넘는 정수는 `Number()` 가 다른 수로 바꾼다 — 친 것과 다른 seed 가 저장돼 그 값으로 실행됐다.
+it("Comfy 숫자 칸 — 정확히 담을 수 없는 큰 정수는 받지 않고 알린다(다른 수로 바꿔 저장하지 않는다)", () => {
+  const onChange = vi.fn();
+  const flashes: string[] = [];
+  const onFlash = (event: Event) => { flashes.push((event as CustomEvent<string>).detail); };
+  window.addEventListener("ch:flash", onFlash);
+  try {
+    function Field() {
+      const [value, setValue] = useState<number | null>(7);
+      return <ComfyNumberInput value={value} onChange={(next) => { onChange(next); setValue(next); }} onBlur={() => {}} />;
+    }
+    act(() => root.render(<Field />));
+    const input = () => host.querySelector<HTMLInputElement>("input")!;
+    type(input(), "9007199254740993"); // 붙여 넣었다 — Number() 로는 …992 가 된다
+    expect(onChange).not.toHaveBeenCalled(); // 전엔 9007199254740992 가 저장됐다
+    expect(input().value).toBe("9007199254740993"); // 치는 동안은 친 글 그대로
+    blur(input());
+    expect([input().value, flashes]).toEqual(["7", ["이 칸은 9007199254740991 까지의 정수만 정확히 다룹니다 — 값을 바꾸지 않았습니다."]]);
+    type(input(), "9007199254740991"); // 정확히 담기는 가장 큰 정수는 받는다
+    expect(onChange).toHaveBeenLastCalledWith(9007199254740991);
+    type(input(), "0.30000000000000004"); // 소수는 원래 근사다 — 종전대로 받는다
+    expect(onChange).toHaveBeenLastCalledWith(0.30000000000000004);
+    blur(input());
+    expect(flashes).toHaveLength(1);
+  } finally {
+    window.removeEventListener("ch:flash", onFlash);
+  }
+});
 it("프로젝트 설정의 자동 보관 일수 — 지우거나 0 을 쳐도 30 으로 바뀌지 않는다(지우고 7 을 치면 307 이 됐다). 범위는 저장할 때 본다", () => {
   const onFormChange = vi.fn();
   function Fields() {

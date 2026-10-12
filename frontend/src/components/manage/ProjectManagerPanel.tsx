@@ -382,7 +382,16 @@ export function ProjectManagerPanel({
     let folderSaveFailed = false;
     try {
       if (projectDialog.mode === "create") {
+        // 같은 이름의 프로젝트가 이미 있으면 서버는 새로 만들지 않고 **그 프로젝트를 돌려준다**(멱등 생성 — 대소문자·앞뒤 공백만 달라도).
+        //  그것을 새 프로젝트로 알고 아래 저장을 이어 가면, 빈칸으로 둔 렌더 폴더가 기존 프로젝트의 폴더 연결을 지운다(조작 규칙 49).
+        //  이 창이 뜬 뒤에 만들어진 것까지 잡도록 돌려받은 id 로도 한 번 더 본다.
+        const taken = "같은 이름의 프로젝트가 이미 있습니다 — 그 프로젝트의 설정(✎)에서 고치거나 다른 이름을 쓰세요.";
+        //  비교는 서버와 같게 — 앞뒤 공백을 떼고 **영문 대소문자만** 접는다(서버의 SQLite LOWER 는 Ä·ä 를 다른 글자로 본다).
+        const fold = (text: string) => text.trim().replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+        const sameName = (item: Project) => !item.archived && fold(item.name) === fold(name);
+        if (projects.some(sameName)) throw new Error(taken);
         const created = await api.createProject(name, "team", workspaceContext);
+        if (projects.some((item) => item.id === created.id)) throw new Error(taken);
         pending = { ...projectDialog, mode: "rename", project: created };
         savedParts.push("프로젝트 생성");
       } else {
