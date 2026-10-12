@@ -60,6 +60,21 @@ function load(): AccountSeen {
   return acc;
 }
 
+// 쓰기 직전에는 저장소에서 다시 읽는다 — 메모리 사본에 더해 통째로 쓰면, 다른 창이 그사이 확인한 카드의 기록이 지워져 그 카드가 다시
+//  '새것'이 된다(조작 규칙 48). 읽기(렌더 중)는 종전대로 사본을 쓴다.
+function fresh(): AccountSeen {
+  cache = null;
+  return load();
+}
+// 다른 창이 확인한 것도 이 창에 곧 보이게 — storage 이벤트는 다른 창의 저장에만 온다.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== STORAGE_KEYS.teamSeen) return;
+    cache = null;
+    bump();
+  });
+}
+
 function persist(acc: AccountSeen): void {
   const map = loadJSON<Record<string, unknown>>(STORAGE_KEYS.teamSeen) || {};
   map[ns()] = acc;
@@ -84,7 +99,8 @@ export const getTeamSeenVersion = (): number => version;
 
 // 기준선 보장 — 팀 탭 최초 진입 시 App 이 호출. 이미 있으면 그대로.
 export function ensureTeamBase(): void {
-  const acc = load();
+  if (load().base) return;
+  const acc = fresh();
   if (acc.base) return;
   persist({ ...acc, base: utcNowSql() });
 }
@@ -124,8 +140,11 @@ export function ackTeamFresh(g: {
   shared_at?: string | null;
 }): void {
   if (!isFreshGen(g)) return;
-  const acc = load();
-  persist({ ...acc, seen: { ...acc.seen, [keyOf(g)]: { at: g.shared_at as string } } });
+  const acc = fresh();
+  const at = g.shared_at as string;
+  // 다른 창이 그사이 더 새 공유 시점을 확인해 두었으면 낮추지 않는다(이 창이 든 카드는 재공유 전의 것이다 — 낮추면 확인한 재공유가 다시 새것이 된다)
+  if ((acc.seen[keyOf(g)]?.at ?? "") >= at) return bump();
+  persist({ ...acc, seen: { ...acc.seen, [keyOf(g)]: { at } } });
 }
 
 // '그 공유 시점'을 이미 확인했나 — 사이드바 +N 이 서버 신규 목록에서 확인분을 제외할 때 쓴다.
@@ -149,7 +168,7 @@ export function isAckedFor(ackKey: string, sharedAt: string | null | undefined):
 export function ackTeamFreshKeys(
   entries: { ackKey: string; sharedAt: string | null | undefined }[],
 ): number {
-  const acc = load();
+  const acc = fresh();
   const seen = { ...acc.seen };
   let changed = 0;
   for (const entry of entries) {

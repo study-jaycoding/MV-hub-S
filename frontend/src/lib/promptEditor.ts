@@ -529,6 +529,14 @@ export function loadHistory(): HistEntry[] {
 export function saveHistory(h: HistEntry[]) {
   saveJSON(HIST_KEY, h.slice(-HIST_MAX));
 }
+/** 기록 한 건을 더해 저장하고 그 결과를 돌려준다. **저장소의 최신 기록**에 더한다 — 이 창이 처음 읽은 사본에 더해 통째로 쓰면, 다른 창이
+ *  그사이 제출한 프롬프트의 기록(과 그 레퍼런스 묶음)이 지워진다(조작 규칙 48). 저장소를 못 읽으면(막힘·비어 있음) 이 창의 기록(memory)에 더한다. */
+export function appendHistory(entry: HistEntry, memory: HistEntry[]): HistEntry[] {
+  const stored = loadHistory();
+  const next = [...(stored.length ? stored : memory).filter((item) => item.text !== entry.text), entry].slice(-HIST_MAX);
+  saveHistory(next);
+  return next;
+}
 // 에디터 → 순서 보존 파트 목록(텍스트/칩) — 복원 시 칩 위치까지 그대로.
 export function serializeParts(editor: HTMLElement): PromptPart[] {
   const parts: PromptPart[] = [];

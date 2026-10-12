@@ -38,6 +38,22 @@ function load(): Marks {
   return cache;
 }
 
+// 쓰기 직전에는 저장소에서 다시 읽는다 — 메모리 사본을 고쳐 통째로 쓰면 다른 창이 그사이 더하거나 지운 기록이 지워진다(조작 규칙 48 —
+//  다른 창에서 확인해 끈 빛이 되살아났다). 읽기(렌더 중)는 종전대로 사본을 쓴다.
+function fresh(): Marks {
+  cache = null;
+  return load();
+}
+// 다른 창의 변화도 이 창에 곧 보이게 — storage 이벤트는 다른 창의 저장에만 온다.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== STORAGE_KEYS.stateGlow) return;
+    cache = null;
+    version++;
+    subs.forEach((fn) => fn());
+  });
+}
+
 function persist(marks: Marks): void {
   const all = loadJSON<Record<string, Marks>>(STORAGE_KEYS.stateGlow) || {};
   all[getAccountNamespace()] = marks;
@@ -68,7 +84,7 @@ export function observeReviewStates(generations: Anchored[], scope = ""): void {
     const before = lastState.get(scope + ":" + key);
     lastState.set(scope + ":" + key, state);
     if (before === undefined || before === state) continue;
-    const marks: Marks = next ?? load();
+    const marks: Marks = next ?? fresh();
     if (state !== "unshared" && (armed.get(generation.id) ?? 0) > now) next = { ...marks, [key]: { state, at: now } };
     else if (marks[key] && marks[key].state !== state) { next = { ...marks }; delete next[key]; } // 기록과 같은 상태로 '따라온' 다른 탭의 행은 기록을 지우지 않는다
   }
@@ -83,7 +99,8 @@ export function stateGlowOf(generation: Anchored): GlowState | null {
 
 /** 선택 = 확인. 빛나던 카드만 기록을 지운다(한 번에 저장 — 범위 선택으로 수십 장이 들어와도 렌더 1회). */
 export function ackStateGlow(generations: Pick<Generation, "id" | "job_id">[]): void {
-  const marks = load();
+  if (!generations.some((generation) => load()[keyOf(generation)])) return; // 흔한 경우(빛나는 카드가 없다)에는 저장소를 읽지 않는다
+  const marks = fresh();
   const keys = generations.map(keyOf).filter((key) => marks[key]);
   if (!keys.length) return;
   const next = { ...marks };
