@@ -868,7 +868,12 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
   본다 — 진짜 `createPortal` 과 부모 div 의 처리기를 같이 올리고 native 이벤트를 보낸다(React 의 이벤트는 컴포넌트의 부모를 따라 올라온다).
   선택자·종류의 목록은 **상수에서 뽑지 말고 시험에 따로 적는다**(뽑으면 상수에서 한 줄을 빼는 변이를 시험도 같이 잊는다). jsdom 은 `scrollTop` 을 자르지
   않는다 — 빈 격자의 0 은 시험이 넣어 준다. 전역 지킴이(`installFileDropGuard`)는 가짜 대상에 걸어 리스너를 직접 부른다.
-캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
+- ㉗ **두 창·떠난 화면**(21회차 — 규칙 48, `tests/twoWindowsStorage.test.tsx`): '다른 창'은 **저장소(localStorage)를 직접 고쳐서** 흉내 낸다 — 이 창의 메모리
+  사본·state 는 그대로 낡아 있다(알림이 오기 전의 틈). 알림은 `window.dispatchEvent(new StorageEvent("storage", { key }))`. 메모리 사본을 가진 모듈은 시험마다
+  `vi.resetModules()` 뒤 `await import(...)` 로 새로 읽는다. 저장 열쇠 이름은 추측하지 말고 한 번 써서 찾는다. '지운다'를 보는 시험은 **지워질 것이 저장소에
+  있어야** 한다(없으면 지우든 말든 같다 — 변이가 잡아냈다). '떠난 화면'은 응답을 시험이 쥔 채 `root.unmount()`(뒤에 `root = createRoot(host)` 로 다시 만든다 —
+  afterEach 가 내린다)하고 응답을 끝낸 뒤 **저장·넣기 호출 수를 직접 센다**(가짜 저장 함수가 빈 함수면 저장이 일어나도 안 보인다). 클립보드는
+  `vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText, readText } })` 로 바꾸고 `readText` 를 쥔다.캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
 - ⑤ 복사본은 프로젝트 폴더 경로를 비워, 씬 그림(`asset:` 썸네일)이 **전부 404** 다. 그림이 뜬 상태로 재려면 다음처럼 한다.
   - 합성 그림을 `%TEMP%\mvhub-browser-measure\S\assets\imports` 에 둔다. `S\data\assets` 가 아니다.
   - 씬 사본의 `asset:` 토큰을 `asset:imports|<파일>` 로 바꿔 불러온다.
