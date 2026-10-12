@@ -116,3 +116,11 @@ export function toggleDisabledFolder(projectId: string, path: string): void {
   f[projectId] = next;
   saveDisabledFolders(f);
 }
+
+// 다른 창이 바꾼 비활성도 같은 신호로 알린다 — 전엔 같은 창의 신호만 들어, 다른 창에서 끈 카드·폴더가 이 창에서는 새로 고칠 때까지 그대로였다.
+//  storage 이벤트는 다른 창의 저장에만 온다(이 창의 저장은 위에서 직접 알린다).
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === GEN_KEY || event.key === ASSET_KEY || event.key === FOLDER_KEY) dispatchAppEvent(DISABLED_EVENT);
+  });
+}

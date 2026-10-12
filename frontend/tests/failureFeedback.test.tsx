@@ -588,3 +588,85 @@ it("캔버스에 붙여 넣은 그림 — 들이지 못했으면 알린다", asy
   expect(mocks.uploadCapture).toHaveBeenCalledExactlyOnceWith(image);
   expect(flashes).toEqual(["붙여 넣은 그림을 캔버스에 넣지 못했습니다 — 다시 붙여 넣어 주세요."]);
 });
+
+// 21회차(조작 규칙 48, Codex 전수 검토): 올리는 사이 캔버스를 떠나면(다른 탭으로) 보드는 내려간다. 늦게 끝난 올리기가 **내려간 보드의 카드
+//  목록**에 카드를 더해 씬을 통째로 저장해서, 그사이 돌아와 한 편집(새 보드의 것)이 그 낡은 목록에 덮였다. 씬 id 는 같아서 그것으로는 못 거른다.
+it("캔버스에 놓은 파일 — 올리는 사이 캔버스를 떠났으면(보드가 내려감) 늦게 끝난 올리기가 카드를 넣지도 씬을 저장하지도 않는다", async () => {
+  const board = mountBoardDrop();
+  const upload = held<{ saved: unknown[]; skipped: string[] }>();
+  mocks.uploadReferenceFiles.mockImplementationOnce(() => upload.next());
+  act(() => {
+    board.handlers().onDrop({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 10, shiftKey: false,
+      dataTransfer: { types: ["Files"], files: [png()], items: [] } } as never);
+  });
+  await settle();
+  act(() => root.unmount()); // 다른 탭으로 갔다 — 보드가 내려간다(돌아오면 새 보드가 뜬다)
+  root = createRoot(host);
+  upload.waiting[0].resolve({ saved: [{ project: "imports", path: "shot.png", name: "shot.png", type: "image" }], skipped: [] });
+  await settle();
+  expect(board.setCards).not.toHaveBeenCalled(); // 전엔 내려간 보드의 목록에 카드를 더해 저장했다
+  expect(flashes).toEqual(["1개 파일을 가져왔지만, 그사이 캔버스를 떠나 넣지 않았습니다 — Assets 에서 끌어 넣으세요."]);
+});
+
+// Codex 코드 리뷰: 노드 붙여넣기의 폴백(paste 이벤트가 빠졌을 때 0.18초 뒤에 직접 붙인다)은 클립보드의 표식을 읽고 나서 붙인다 —
+//  그 읽기가 끝나기 전에 캔버스를 떠나면, 내려간 보드의 카드 목록에 붙여 씬을 통째로 저장했다(타이머는 지워도 시작한 읽기는 끝까지 간다).
+it("캔버스의 노드 붙여넣기 폴백 — 클립보드를 읽는 사이 캔버스를 떠났으면 붙이지도 저장하지도 않는다", async () => {
+  const persist = vi.fn();
+  const setCards = vi.fn();
+  let handlers!: ReturnType<typeof useSceneClipboardDrop>;
+  function Host() {
+    handlers = useSceneClipboardDrop({
+      frozenRef: useRef(false), sceneIdRef: useRef("s"), edgesRef: useRef<SceneEdge[]>([]),
+      cardsRef: useRef<SceneCard[]>([{ id: "c1", kind: "reference", x: 0, y: 0 } as SceneCard]),
+      selectedRef: useRef(new Set<string>(["c1"])), lastMouseRef: useRef({ x: 10, y: 10, over: false }), scrollRef: useRef<HTMLDivElement | null>(null),
+      setCards, setEdges: () => {}, setSelected: () => {}, toCanvas: (x, y) => ({ x, y }), reconcileGenerationRefs: (cards) => cards,
+      persist, cardWidth: 100, cardHeight: 100,
+    });
+    return null;
+  }
+  const reads = held<string>();
+  const written: string[] = [];
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: async (text: string) => { written.push(text); }, readText: () => reads.next() } });
+  const wait = (ms: number) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
+  const pasteKey = () => act(() => { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "v", ctrlKey: true, bubbles: true, cancelable: true })); });
+
+  act(() => root.render(<Host />));
+  act(() => handlers.copySelectedNodes());
+  await settle();
+  expect(written).toHaveLength(1); // 표식이 클립보드에 들어갔다
+  pasteKey(); // paste 이벤트는 오지 않는다 — 0.18초 뒤 폴백이 표식을 읽기 시작한다
+  await wait(220);
+  expect(reads.waiting).toHaveLength(1);
+  act(() => root.unmount()); // 읽는 사이 캔버스를 떠났다
+  root = createRoot(host);
+  reads.waiting[0].resolve(written[0]);
+  await settle();
+  expect([persist.mock.calls.length, setCards.mock.calls.length]).toEqual([0, 0]); // 전엔 내려간 보드의 목록에 붙여 저장했다
+
+  // 떠나지 않았으면 전처럼 붙는다
+  act(() => root.render(<Host />));
+  pasteKey();
+  await wait(220);
+  reads.waiting[1].resolve(written[0]);
+  await settle();
+  expect(persist).toHaveBeenCalledTimes(1);
+});
+it("캔버스에 붙여 넣은 그림 — 올리는 사이 캔버스를 떠났으면 늦게 끝난 올리기가 카드를 넣지 않는다", async () => {
+  const board = mountBoardDrop();
+  const upload = held<{ project: string; path: string; name: string; type: string }>();
+  mocks.uploadCapture.mockImplementationOnce(() => upload.next());
+  const image = png();
+  act(() => {
+    document.body.dispatchEvent(Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
+      clipboardData: { items: [{ type: "image/png", getAsFile: () => image }], getData: () => "" },
+    }));
+  });
+  await settle();
+  expect(mocks.uploadCapture).toHaveBeenCalledTimes(1);
+  act(() => root.unmount());
+  root = createRoot(host);
+  upload.waiting[0].resolve({ project: "captures", path: "shot.png", name: "shot.png", type: "image" });
+  await settle();
+  expect(board.setCards).not.toHaveBeenCalled();
+  expect(flashes).toEqual(["붙여 넣은 그림을 가져왔지만, 그사이 캔버스를 떠나 넣지 않았습니다 — Assets 에서 끌어 넣으세요."]);
+});

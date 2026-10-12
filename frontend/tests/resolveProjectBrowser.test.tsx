@@ -1063,6 +1063,27 @@ it("비활성 숨기기를 켠 채 d 로 숨긴 카드는 마우스를 올린 �
   expect(host.querySelectorAll(".rp-colorbar")).toHaveLength(0); // 전엔 숨은 카드에 빨강이 들어가 있었다
 });
 
+// 21회차(조작 규칙 48, Codex 전수 검토): 색·비활성 표를 통째로 들고 있다가 통째로 저장해서, 같은 라이브러리를 연 다른 창이 그사이 입힌 색·
+//  비활성이 이 창의 저장에 지워졌다. 저장소의 최신 표에 이 창이 바꾼 카드만 반영한다('다른 창'은 저장소를 직접 고쳐 흉내 낸다).
+it("다른 창이 그사이 입힌 색·비활성을 이 창의 저장이 지우지 않는다", async () => {
+  act(() => root.render(<ResolveProjectBrowser project="뻘뻘뻘" dir="@davinci" />));
+  await settle();
+  const cardOf = (name: string) =>
+    [...host.querySelectorAll<HTMLButtonElement>(".resolve-project-card")].find((button) => button.textContent?.includes(name))!;
+  const press = (key: string) => act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true })); });
+  const colors = () => JSON.parse(localStorage.getItem("ch.resolve.colors.뻘뻘뻘") ?? "{}") as Record<string, string>;
+  const off = () => JSON.parse(localStorage.getItem("ch.resolve.disabled.뻘뻘뻘") ?? "[]") as string[];
+  act(() => cardOf("Mud_Ai").focus());
+  await press("g"); // 이 창이 Mud_Ai 에 색을 입혔다 — 저장소의 열쇠 모양(카드의 열쇠)을 여기서 배운다
+  const mine = Object.keys(colors());
+  expect(mine).toHaveLength(1);
+  localStorage.setItem("ch.resolve.colors.뻘뻘뻘", JSON.stringify({ ...colors(), "다른 창이 칠한 카드": "#ff0000" }));
+  localStorage.setItem("ch.resolve.disabled.뻘뻘뻘", JSON.stringify(["다른 창이 끈 카드"]));
+  await press("g"); // 이 창이 Mud_Ai 의 색을 끈다
+  expect(colors()).toEqual({ "다른 창이 칠한 카드": "#ff0000" }); // 전엔 {} — 다른 창의 색이 지워졌다
+  await press("d"); // 이 창이 Mud_Ai 를 비활성으로
+  expect(off().sort()).toEqual([...mine, "다른 창이 끈 카드"].sort()); // 전엔 다른 창이 끈 카드가 빠졌다
+});
 // Codex 코드 리뷰(조작 규칙 45): 상자로 고른 뒤에도 Shift 의 기준이 그 전에 누른 카드에 남아 있었다.
 it.each([["놓으면", "mouseup"], ["창을 떠나도", "blur"]])("상자로 고른 뒤 %s Shift 의 기준은 고른 것 중 화면 차례의 마지막 카드다 — 그 전에 누른 카드가 아니다", async (_label, ending) => {
   mocks.list.mockResolvedValue({

@@ -236,3 +236,25 @@ it("열기 API에는 프로젝트 ID와 상대 폴더만 전송한다", async ()
   expect(fetch.mock.calls[0][1].method).toBe("POST");
   expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ project_id: "p1", folder_path: "제이/shot 01" });
 });
+
+// 21회차(조작 규칙 48, Codex 코드 리뷰): 접어 둔 프로젝트의 집합을 통째로 저장해서, 다른 창이 그사이 접은 프로젝트가 이 창의 접기에 지워졌다.
+it("접어 둔 프로젝트 — 다른 창이 그사이 접은 프로젝트를 이 창의 접기가 펴지 않는다", async () => {
+  const linked = (pid: string) => ({ project_id: pid, root_path: "fixture", selected_path: "", tree: { path: "", name: "Render", children: [] } }) as unknown as ProjectFolderState;
+  mocks.links.mockResolvedValue({ links: { A: linked("A"), B: linked("B") } }); // 폴더가 이어진 프로젝트만 접기 단추가 있다
+  mocks.folder.mockReturnValue(new Promise(() => {}));
+  mocks.counts.mockReturnValue(new Promise(() => {}));
+  localStorage.removeItem("ch.collapsedProjects");
+  const project = (id: string) => ({ id, name: id, count: 1 }) as Project;
+  await act(async () => root.render(<ProjectSection projects={[project("A"), project("B")]}
+    unassignedCount={0} archivedCount={0} deletedOnly={false} tab="my" activeId={undefined} onFilter={vi.fn()} onViewDeleted={vi.fn()} />));
+  await act(async () => {});
+  const stored = () => (JSON.parse(localStorage.getItem("ch.collapsedProjects") ?? "[]") as string[]).sort();
+  const fold = (name: string) => act(async () => { host.querySelector<HTMLElement>(`.proj-row[title="${name}"] button.proj-fold`)!.click(); });
+  await fold("A");
+  expect(stored()).toEqual(["A"]);
+  localStorage.setItem("ch.collapsedProjects", JSON.stringify(["A", "다른 창이 접은 프로젝트"]));
+  await fold("B");
+  expect(stored()).toEqual(["A", "B", "다른 창이 접은 프로젝트"].sort()); // 전엔 다른 창의 것이 빠졌다
+  await fold("A"); // 이 창이 편 것은 편다
+  expect(stored()).toEqual(["B", "다른 창이 접은 프로젝트"].sort());
+});

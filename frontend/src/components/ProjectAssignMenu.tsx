@@ -8,7 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { buildFolderCountTree, type FolderCountTreeNode } from "../lib/folderTreeModel";
 import { visibleProjectFolderRoots } from "../lib/projectFolderTree";
-import { loadJSON, saveJSON } from "../lib/storage";
+import { loadJSON, mergeOwnSetChanges, saveJSON } from "../lib/storage";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useMenuPlacement } from "../lib/useMenuPlacement";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
@@ -131,7 +131,9 @@ export function ProjectAssignMenu({
       if (cur.has(path)) cur.delete(path);
       else cur.add(path);
       const next = { ...prev, [pid]: [...cur] };
-      saveJSON(LS_EXP, next);
+      // 저장은 저장소의 최신 표에 **이 폴더만** 반영한다 — 통째로 쓰면 다른 창이 그사이 펼친 폴더가 지워진다(조작 규칙 48)
+      const stored = loadJSON<Record<string, string[]>>(LS_EXP) || {};
+      saveJSON(LS_EXP, { ...stored, [pid]: [...mergeOwnSetChanges(new Set(stored[pid] || []), new Set(prev[pid] || []), cur)] });
       return next;
     });
   };

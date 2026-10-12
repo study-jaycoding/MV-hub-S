@@ -4,9 +4,8 @@ import { api } from "../../api";
 import { resolveAutoAspectRatio } from "../../lib/aspectAuto";
 import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import {
-  HIST_MAX,
+  appendHistory,
   partsDisplay,
-  saveHistory,
   serialize,
   serializeParts,
 } from "../../lib/promptEditor";
@@ -235,15 +234,12 @@ export function useSpotlightSubmit({
       else onCreated(created, dragParent);
 
       if (displayPrompt) {
-        const filtered = historyRef.current.filter((entry) => entry.text !== displayPrompt);
         const historyTray: ChipRef[] = trayRefs.map(({ uid: _uid, ...ref }) => ref);
-        filtered.push({
-          parts,
-          text: displayPrompt,
-          trayRefs: historyTray.length ? historyTray : undefined,
-        });
-        historyRef.current = filtered.slice(-HIST_MAX);
-        saveHistory(historyRef.current);
+        // 저장소의 최신 기록에 더한다(다른 창이 그사이 제출한 것을 지우지 않는다) — 이 창의 ↑↓ 탐색도 그 결과를 본다
+        historyRef.current = appendHistory(
+          { parts, text: displayPrompt, trayRefs: historyTray.length ? historyTray : undefined },
+          historyRef.current,
+        );
         onHistorySaved?.();
       }
       // 파생 Text는 같은 카드/원문이면 복원 effect가 다시 돌지 않으므로 비우지 않는다.

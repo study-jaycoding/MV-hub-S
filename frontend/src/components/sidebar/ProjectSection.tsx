@@ -39,7 +39,7 @@ import { useCustomEvent } from "../../lib/useCustomEvent";
 import { useDragEndReset, useHandleRelease } from "../../lib/useDragEndReset";
 import { useT } from "../../lib/i18n";
 import { flashMsg } from "../../lib/flash";
-import { loadJSON, saveJSON } from "../../lib/storage";
+import { loadJSON, mergeOwnSetChanges, saveJSON } from "../../lib/storage";
 import { reconcileArrayState, reconcileValueState } from "../../lib/stateReconciliation";
 import {
   ackTeamFreshKeys,
@@ -268,7 +268,8 @@ export function ProjectSection({
       const next = new Set(prev);
       if (next.has(pid)) next.delete(pid);
       else next.add(pid);
-      saveJSON("ch.collapsedProjects", [...next]);
+      // 저장은 저장소의 최신 집합에 **이 프로젝트만** 반영한다 — 통째로 쓰면 다른 창이 그사이 접은 프로젝트가 지워진다(조작 규칙 48)
+      saveJSON("ch.collapsedProjects", [...mergeOwnSetChanges(new Set(loadJSON<string[]>("ch.collapsedProjects") || []), prev, next)]);
       return next;
     });
   };

@@ -124,6 +124,16 @@ export function useSceneClipboardDrop(
   const lastImageKeyRef = useRef<string | null>(null);
   const pasteFallbackTimerRef = useRef<number | null>(null);
   const fallbackPasteAtRef = useRef(0);
+  // 이 보드가 아직 떠 있는가 — 올리는 사이 캔버스를 떠나면(다른 탭) 보드는 내려가는데, 늦게 끝난 올리기가 **내려간 보드의 카드 목록**에
+  //  카드를 더해 씬을 통째로 저장했다. 그사이 돌아와 한 편집(새 보드)이 그 낡은 목록에 덮였다(조작 규칙 48). 씬 id 만 봐서는 못 거른다 —
+  //  같은 씬으로 돌아와 있다. 내려간 보드의 올리기는 파일만 가져오고(Assets 에 있다) 캔버스에는 넣지 않는다.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
   const addReferenceCards = useCallback(
     (refs: SceneRef[], centerX: number, centerY: number, connectToGenerationIds?: string[]) => {
@@ -180,7 +190,9 @@ export function useSceneClipboardDrop(
         left.push(...(response.skipped || []));
         let switched = "";
         if (items.length) {
-          if (optionsRef.current.sceneIdRef.current === sceneId) {
+          if (!aliveRef.current) {
+            switched = `${items.length}개 파일을 가져왔지만, 그사이 캔버스를 떠나 넣지 않았습니다 — Assets 에서 끌어 넣으세요.`;
+          } else if (optionsRef.current.sceneIdRef.current === sceneId) {
             const refs = items.map((item) => ({ ...assetItemToRef(item), origin: "upload" as const }));
             addReferenceCards(refs, centerX, centerY);
             optionsRef.current.onLocalRefsAdded?.(refs.map((ref) => ref.file_path));
@@ -400,7 +412,9 @@ export function useSceneClipboardDrop(
         void api
           .uploadCapture(image)
           .then((result) => {
-            if (optionsRef.current.sceneIdRef.current === sceneId) {
+            if (!aliveRef.current) {
+              flashMsg("붙여 넣은 그림을 가져왔지만, 그사이 캔버스를 떠나 넣지 않았습니다 — Assets 에서 끌어 넣으세요.");
+            } else if (optionsRef.current.sceneIdRef.current === sceneId) {
               const ref = {
                 ...assetItemToRef({
                   project: result.project,
@@ -463,7 +477,8 @@ export function useSceneClipboardDrop(
       }
       const sceneAtKey = optionsRef.current.sceneIdRef.current;
       // 예약한 뒤(0.18초)·클립보드를 읽은 뒤에 창이 떴거나 씬이 바뀌었으면 붙이지 않는다 — 그 키는 이미 지나간 화면의 것이다.
-      const stale = () => backgroundKeysBlocked() || gridWindowOpen() || optionsRef.current.sceneIdRef.current !== sceneAtKey;
+      //  보드가 내려갔어도(캔버스를 떠남) 같다 — 이미 시작한 클립보드 읽기는 타이머를 지워도 끝까지 간다(Codex 코드 리뷰).
+      const stale = () => !aliveRef.current || backgroundKeysBlocked() || gridWindowOpen() || optionsRef.current.sceneIdRef.current !== sceneAtKey;
       pasteFallbackTimerRef.current = window.setTimeout(() => {
         pasteFallbackTimerRef.current = null;
         void (async () => {

@@ -13,7 +13,7 @@ import {
 } from "../../lib/resolveTransfer";
 import { computeMarquee, marqueeHits, type MarqueeRect } from "../../lib/marquee";
 import { toggleSetValue } from "../../lib/setUtils";
-import { makeStore } from "../../lib/storage";
+import { makeStore, mergeOwnChanges, mergeOwnSetChanges } from "../../lib/storage";
 import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../../lib/windowDrag";
 import { ASSET_COLOR_BY_KEY, ASSET_COLOR_DOTS, ColorFilterDots } from "../common/ColorFilterDots";
 import { GridIcon, ListIcon } from "../common/ViewIcons";
@@ -213,8 +213,20 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
   const visibleKeysRef = useRef<string[]>([]); // Ctrl+A 가 쓸 '지금 보이는 카드'
   const orderRef = useRef<string[]>([]); // 화면에 놓인 차례(정렬된 것) — 상자로 고른 뒤 Shift 의 기준을 정할 때 쓴다
 
-  useEffect(() => LS.setJSON(`colors.${project}`, colorMarks), [colorMarks, project]);
-  useEffect(() => LS.setSet(`disabled.${project}`, offKeys), [offKeys, project]);
+  // 저장 — 저장소의 최신 표에 **이 창이 바꾼 카드만** 반영한다(lib/storage). 통째로 쓰면 같은 라이브러리를 연 다른 창이 그사이 입힌 색·비활성이
+  //  이 창의 낡은 사본에 지워졌다(조작 규칙 48). 이 컴포넌트는 project 가 바뀌면 다시 붙는다 — ref 는 그 라이브러리의 것이다.
+  const savedMarksRef = useRef(colorMarks);
+  useEffect(() => {
+    if (savedMarksRef.current === colorMarks) return;
+    LS.setJSON(`colors.${project}`, mergeOwnChanges(LS.loadJSON<Record<string, string>>(`colors.${project}`) ?? {}, savedMarksRef.current, colorMarks));
+    savedMarksRef.current = colorMarks;
+  }, [colorMarks, project]);
+  const savedOffRef = useRef(offKeys);
+  useEffect(() => {
+    if (savedOffRef.current === offKeys) return;
+    LS.setSet(`disabled.${project}`, mergeOwnSetChanges(LS.loadSet(`disabled.${project}`), savedOffRef.current, offKeys));
+    savedOffRef.current = offKeys;
+  }, [offKeys, project]);
   useEffect(() => LS.setSet("filterColors", activeColors), [activeColors]);
   useEffect(() => LS.set("grayOn", grayOn ? "1" : "0"), [grayOn]);
 
