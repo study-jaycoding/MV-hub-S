@@ -87,3 +87,21 @@ it.each([
   act(() => { window.dispatchEvent(new MouseEvent("pointermove", { clientX: 760, clientY: 640, buttons: 1 })); }); // 다른 것을 누른 채의 움직임도
   expect([popup.style.left, popup.style.top]).toEqual(kept);
 });
+
+// 23회차(조작 규칙 50, Codex 전수 검토): 가로 자리는 열 때만 화면 안으로 들였다 — 정보 창을 연 채 브라우저 창을 좁히면 창 전체(닫기 단추까지)가
+//  오른쪽 화면 밖에 남았다.
+it("정보 창을 연 채 브라우저 창을 줄이면 가로·세로 모두 화면 안으로 들어온다 — 끌어 옮긴 뒤에도. 늘릴 때는 그대로다", () => {
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains("info-popup") ? 380 : 0;
+  });
+  act(() => root.render(<InfoPopup target={{ kind: "file", project: "fixture", node, meta, x: 1100, y: 100 }} onClose={() => {}} onPreview={() => {}} />));
+  const popup = host.querySelector<HTMLDivElement>(".info-popup")!;
+  expect([popup.style.left, popup.style.top]).toEqual(["1108px", "108px"]);
+  const resize = (width: number, height: number) => act(() => { Object.assign(window, { innerWidth: width, innerHeight: height }); window.dispatchEvent(new Event("resize")); });
+  resize(900, 900);
+  expect([popup.style.left, popup.style.top]).toEqual(["512px", "108px"]); // 900 − 8 − 380 — 전엔 1108px 그대로(화면 밖)
+  resize(900, 500); // 높이도 줄었다(창 높이 600)
+  expect(popup.style.top).toBe("8px");
+  resize(1600, 900); // 다시 늘려도 따라가지 않는다
+  expect([popup.style.left, popup.style.top]).toEqual(["512px", "8px"]);
+});

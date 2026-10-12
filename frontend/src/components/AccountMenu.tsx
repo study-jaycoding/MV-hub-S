@@ -335,7 +335,9 @@ export function AccountMenu({
       </button>
 
       {open && popPos && createPortal(
-        <div className="acct-pop" ref={popRef} style={{ top: popPos.top, right: popPos.right }}>
+        // 높이는 아바타 아래에 남은 화면까지만 — 워크스페이스가 많으면 메뉴가 화면보다 길어져, 아래의 설정·계정 관리·로그아웃에 닿을 수
+        //  없었다(화면에 고정된 메뉴라 페이지 스크롤로도 안 내려간다 — 조작 규칙 50). 넘치면 메뉴 안에서 스크롤한다(app-shell.css).
+        <div className="acct-pop" ref={popRef} style={{ top: popPos.top, right: popPos.right, maxHeight: `calc(100vh - ${popPos.top + 8}px)` }}>
           <div className="acct-head">
             <span className={"acct-ring acct-ring-lg" + ringOn} style={ringStyle}>
               <span className="acct-av-lg">{initial}</span>

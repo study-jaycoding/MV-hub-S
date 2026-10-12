@@ -223,6 +223,7 @@
 .acct-pop {
   position: fixed; z-index: 400;
   width: 264px; padding: 8px; border-radius: 12px;
+  overflow-y: auto; /* 높이 상한은 AccountMenu 가 아바타 아래에 남은 화면으로 준다(인라인 max-height) */
   background: var(--panel, #1c1c22); border: 1px solid var(--border);
   box-shadow: 0 16px 44px rgba(0,0,0,0.55);
 }

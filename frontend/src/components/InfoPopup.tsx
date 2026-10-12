@@ -128,10 +128,20 @@ export function InfoPopup({
       setPos((p) => (p.y > maxY ? { x: p.x, y: maxY } : p));
     };
     fit();
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(fit);
-    ro.observe(el);
-    return () => ro.disconnect();
+    // 브라우저 창이 줄면 가로·세로 둘 다 화면 안으로 들인다 — 끌어 옮긴 뒤에도. 전엔 열 때의 자리가 그대로 남아, 창을 좁히면 정보 창 전체
+    //  (닫기 단추까지)가 오른쪽 화면 밖에 남았다(조작 규칙 50). 늘어날 때는 건드리지 않는다.
+    const intoView = () => {
+      const maxX = Math.max(8, window.innerWidth - 8 - el.offsetWidth);
+      const maxY = Math.max(8, window.innerHeight - 8 - el.offsetHeight);
+      setPos((p) => (p.x > maxX || p.y > maxY ? { x: Math.min(p.x, maxX), y: Math.min(p.y, maxY) } : p));
+    };
+    window.addEventListener("resize", intoView);
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
+    ro?.observe(el);
+    return () => {
+      window.removeEventListener("resize", intoView);
+      ro?.disconnect();
+    };
   }, []);
 
   // 크레딧 — 실제 사용값(generation_metrics.real_credits) 우선, 없으면 모델+옵션 견적(/api/cost) 폴백.
