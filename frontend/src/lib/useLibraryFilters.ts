@@ -135,22 +135,28 @@ export function restoreFilters(LS: Store): Filters {
   return { ...stored, ...(workspaceIds.length ? { workspace_ids: workspaceIds } : { workspace_ids: undefined }) };
 }
 
-/** 검색어 키만 든 부분 갱신인가 — 그 변경은 선택을 비우지 않는다(아래 patch). */
-const isSearchOnlyPatch = (p: Partial<Filters>): boolean => {
-  const keys = Object.keys(p);
-  return keys.length === 1 && keys[0] === "search";
-};
+/** 보는 **자리**를 바꾸는 키 — 탭·프로젝트·폴더·휴지통. 이 키가 든 변경만 선택을 통째로 비운다(아래 patch·selectionResetKey).
+ *  그 밖의 키(검색어·W 침·생성자·공유 방향…)는 같은 자리를 다르게 거르는 '보기 필터'다 — 보이는 카드는 고른 채로 둔다. */
+const LOCATION_KEYS = new Set<keyof Filters>(["tab", "project_id", "folder_path", "deleted_only", "include_deleted"]);
+const isLocationPatch = (p: Partial<Filters>): boolean =>
+  Object.keys(p).some((key) => LOCATION_KEYS.has(key as keyof Filters));
 
 export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
   const t = useT();
   const [manualRevision, setManualRevision] = useState(0);
-  // 선택을 비우는 수동 변경의 횟수 — manualRevision 과 따로 센다(28회차 ⑤-2): 검색어만의 변경은 선택을 비우지 않지만(아래 patch), Resolve 따라가기의
-  //  늦은 응답을 무효로 하는 '수동 변경'에는 든다(useResolveLibraryFollow 의 문맥 키 — 검색 중에 온 옛 위치 응답이 새 검색을 덮으면 안 된다).
+  // 선택을 비우는 수동 변경의 횟수 — manualRevision 과 따로 센다(28회차 ⑤-2 → 29회차 Jay "검색과 같게"): **보는 자리**(탭·프로젝트·폴더·휴지통)가
+  //  바뀔 때만 오른다. 보기 필터(검색어·종류·색·태그·공유·검수·코멘트·최종·회색·자동태그·W 침)는 올리지 않는다 — 응답 전엔 옛 목록이 그대로이고
+  //  (useGenerationLibraryData 는 응답이 와야 목록을 바꾼다), 결과가 오면 App 의 '목록에서 사라진 카드는 선택에서 뺀다'(규칙 42 레이아웃 효과)가
+  //  결과에 없는 카드만 걷는다 — 남은 카드는 고른 채로. 전엔 보기 필터도 전부 비웠다(27회차 실측 M01 관측 — 다시 골라야 했다).
+  //  manualRevision 은 어느 수동 변경이든 올린다 — Resolve 따라가기의 늦은 응답을 무효로 하는 '수동 변경'에는 보기 필터도 든다
+  //  (useResolveLibraryFollow 의 문맥 키 — 검색 중에 온 옛 위치 응답이 새 검색을 덮으면 안 된다).
   const [selectionRevision, setSelectionRevision] = useState(0);
   const bumpManualRevision = useCallback((resetSelection = true) => {
     setManualRevision((value) => value + 1);
     if (resetSelection) setSelectionRevision((value) => value + 1);
   }, []);
+  /** 보기 필터의 수동 변경 — 수동 횟수만 올리고 선택은 그대로(위). */
+  const bumpViewFilter = useCallback(() => bumpManualRevision(false), [bumpManualRevision]);
   // 자동 따라가기가 필터를 갈아 끼운 횟수 — 상단바가 검색칸을 다시 올리는 신호로 쓴다(아래 followLocation). 검색어가 확정되기 전이면
   //  검색 값은 undefined → undefined 라 검색칸이 값으로는 초기화를 알 수 없고, 예약해 둔 검색(0.3초 뒤)이 찾아간 자리에 다시 걸렸다.
   const [followRevision, setFollowRevision] = useState(0);
@@ -213,12 +219,14 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
     }
     filtersRef.current = next;
     rawSetFilters(next);
-    bumpManualRevision();
+    // 자리 키가 바뀐 setFilters(탭 전환·폴더 이동 — useAppNavigation)만 선택을 비운다. W 침 토글(App 의 toggleWorkspaceChip)처럼 보기 필터만 바꾸는
+    //  setFilters 는 patch 와 같이 고른 카드를 둔다(Codex 2차 리뷰 P2).
+    bumpManualRevision([...LOCATION_KEYS].some((key) => previous[key] !== next[key]));
   }, [bumpManualRevision, commitGenerationScope]);
 
   const [typeFilter, setTypeFilter, setTypeFilterAutomatic] = useManualState<MediaFilter>(
     () => (LS.get("typeFilter", "all") as MediaFilter) || "all",
-    bumpManualRevision,
+    bumpViewFilter,
   ); // 전체/이미지/영상/음성
   // 카드 크기 배율 — 저장값은 툴바 슬라이더의 범위(LibraryToolbar 의 0.7~1.7)로 잘라 읽는다. 범위 밖 값(옛 저장·손상)은 슬라이더로는
   //  만들 수도 고칠 수도 없는데 그대로 쓰였다: 0.7 미만이면 리스트 보기의 줄(300×배율)이 낮아져 선택 칸이 C 단추에 가릴 수 있다
@@ -234,26 +242,26 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
   const [showFilters, setShowFilters] = useState(() => LS.get("showFilters", "1") !== "0");
   const [groupByDate, setGroupByDate] = useState(() => LS.get("groupByDate", "0") === "1");
   const [colorFilter, setColorFilter, setColorFilterAutomatic] = useManualState<Set<string>>(
-    () => LS.loadSet("colorFilter"), bumpManualRevision,
+    () => LS.loadSet("colorFilter"), bumpViewFilter,
   );
   const [sharedOnly, setSharedOnly, setSharedOnlyAutomatic] = useManualState(
-    () => LS.get("sharedOnly", "0") === "1", bumpManualRevision,
+    () => LS.get("sharedOnly", "0") === "1", bumpViewFilter,
   );
   const [reviewFilter, setReviewFilter] = useManualState<"shared" | "held">(
-    () => LS.get("reviewFilter", "shared") === "held" ? "held" : "shared", bumpManualRevision,
+    () => LS.get("reviewFilter", "shared") === "held" ? "held" : "shared", bumpViewFilter,
   );
   const [tagFilter, setTagFilter, setTagFilterAutomatic] = useManualState<Set<string>>(
-    () => LS.loadSet("tagFilter"), bumpManualRevision,
+    () => LS.loadSet("tagFilter"), bumpViewFilter,
   );
   const [tagPanelOpen, setTagPanelOpen] = useState(false);
   const [commentOnly, setCommentOnly, setCommentOnlyAutomatic] = useManualState(
-    () => LS.get("commentOnly", "0") === "1", bumpManualRevision,
+    () => LS.get("commentOnly", "0") === "1", bumpViewFilter,
   ); // 미확인 코멘트만
   const [finalOnly, setFinalOnly, setFinalOnlyAutomatic] = useManualState(
-    () => LS.get("finalOnly", "0") === "1", bumpManualRevision,
+    () => LS.get("finalOnly", "0") === "1", bumpViewFilter,
   ); // 최종(골드)만
   const [grayOn, setGrayOn, setGrayOnAutomatic] = useManualState(
-    () => LS.get("grayOn", "0") === "1", bumpManualRevision,
+    () => LS.get("grayOn", "0") === "1", bumpViewFilter,
   ); // 비활성(회색) 숨김
   const [armedAutoTags, rawSetArmedAutoTags] = useState<Set<string>>(
     () => LS.loadSet("armedAutoTags"),
@@ -280,11 +288,8 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
     }
     filtersRef.current = next;
     rawSetFilters(next);
-    // 검색어만 바뀐 것은 선택을 비우지 않는다(28회차 ⑤-2, Jay 결정 '나' — 27회차 실측 M01 관측): 전엔 다른 수동 필터와 같이 통째로 비웠다.
-    //  응답 전엔 옛 목록이 그대로이고(useGenerationLibraryData 는 응답이 와야 목록을 바꾼다), 결과가 오면 App 의 '목록에서 사라진 카드는
-    //  선택에서 뺀다'(규칙 42 레이아웃 효과)가 결과에 없는 카드만 걷는다 — 남은 카드는 고른 채로. 다른 필터(종류·색·태그·폴더…)는 전처럼 비운다.
-    //  수동 변경 횟수(manualRevision)는 그대로 올린다 — 늦은 따라가기 응답은 여전히 버려야 한다.
-    bumpManualRevision(!isSearchOnlyPatch(p));
+    // 자리를 바꾸는 변경만 선택을 비운다(위 selectionRevision 주석) — 검색어·W 침 같은 보기 필터는 보이는 카드를 고른 채로 둔다.
+    bumpManualRevision(isLocationPatch(p));
   }, [bumpManualRevision, commitGenerationScope]);
 
   const setSharedWorkspaceMode = useCallback((mode: SharedWorkspaceMode) => {
@@ -304,15 +309,15 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
     const nextArmed = typeof action === "function" ? action(previousArmed) : new Set(action);
     const nextFilter = typeof action === "function" ? action(previousFilter) : new Set(action);
     if (Object.is(previousArmed, nextArmed) && Object.is(previousFilter, nextFilter)) {
-      bumpManualRevision();
+      bumpViewFilter();
       return;
     }
     armedAutoTagsRef.current = nextArmed;
     filterAutoTagsRef.current = nextFilter;
     rawSetArmedAutoTags(nextArmed);
     rawSetFilterAutoTags(nextFilter);
-    bumpManualRevision();
-  }, [bumpManualRevision]);
+    bumpViewFilter();
+  }, [bumpViewFilter]);
 
   const toggleAutoTag = useCallback((tag: string) => {
     if (!tag) return;
@@ -330,8 +335,8 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
     armedAutoTagsRef.current = nextArmed;
     rawSetFilterAutoTags(nextFilter);
     rawSetArmedAutoTags(nextArmed);
-    bumpManualRevision();
-  }, [bumpManualRevision]);
+    bumpViewFilter();
+  }, [bumpViewFilter]);
 
   const followLocation = useCallback((location: GenerationScope) => {
     const previous = filtersRef.current;

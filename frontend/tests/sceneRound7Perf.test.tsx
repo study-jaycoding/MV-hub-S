@@ -823,7 +823,9 @@ it("끄는 중에 카드 밖의 값이 바뀌면 끌리는 카드의 속도 따�
   expect(inCard("g1", ".linb-node")!.classList.contains("disabled")).toBe(true);
 });
 
-it("끄는 중에 선택이 풀리면(Esc) 같은 커밋에서 원래 그리기로 돌아간다 — 그 뒤로는 카드 속이 실제 카드를 받는다(걸음마다 다시 그려진다)", async () => {
+// 29회차: 끄는 중의 Esc 는 선택을 푸는 대신 **끌기를 버린다**(Jay 안 A — tests/sceneDragEscape.test). 빠른 그리기는 버리는 그 커밋에서 걷히고 카드는 끌기 전
+//  자리로 돌아간다. 선택은 그대로. 버린 끌기는 더 움직여도 따라오지 않는다('선택이 풀려 전의 길로 이어진다'던 옛 시험을 새 의미로 바꿈).
+it("끄는 중에 Esc 를 누르면 끌기를 버린다 — 빠른 그리기가 그 커밋에서 걷히고 카드는 끌기 전 자리로, 선택은 그대로, 더 움직여도 따라오지 않는다", async () => {
   await act(async () => {
     root.render(<AppLike first={{ id: "S", name: "S", created_at: 0, edges: [], groups: [], cards: [{ id: "h1", kind: "head", x: 0, y: 0, text: "가" }, ...fillers(39)] }} />);
   });
@@ -834,14 +836,14 @@ it("끄는 중에 선택이 풀리면(Esc) 같은 커밋에서 원래 그리기�
   expect((await renderedDuring(() => dragTo(118, 30))).HeadCard).toBeUndefined(); // 켜져 있는 동안 — 속은 그대로
   expect(outerOf("h1")).toEqual(["0px", "88px 0px", true]);
   rc.commits.length = 0;
-  await press({ key: "Escape", code: "Escape" }); // 끄는 중의 Esc — 선택이 풀린다
-  expect(rc.commits.length).toBe(1); // 선택이 풀리는 그 커밋 하나에서
-  expect(host.querySelectorAll(".scene-card.sel").length).toBe(0);
-  expect([outerOf("h1"), host.querySelectorAll(".scene-card[data-layer-move]").length]).toEqual([["88px", "", false], 0]); // left 가 지금 좌표다
-  const after = await renderedDuring(() => dragTo(162, 30)); // 끌기는 이어진다 — 전의 길(걸음마다 새 카드를 넘긴다)
-  expect([after.HeadCard, outerOf("h1")]).toEqual([1, ["132px", "", false]]);
+  await press({ key: "Escape", code: "Escape" }); // 끄는 중의 Esc — 끌기를 버린다
+  expect(rc.commits.length).toBe(1); // 버리는 그 커밋 하나에서
+  expect(host.querySelectorAll(".scene-card.sel").length).toBe(40); // 선택은 그대로
+  expect([outerOf("h1"), host.querySelectorAll(".scene-card[data-layer-move]").length]).toEqual([["0px", "", false], 0]); // 끌기 전 자리, 표식 없음
+  const after = await renderedDuring(() => dragTo(162, 30)); // 버린 끌기 — 따라오지 않는다
+  expect([after.HeadCard, outerOf("h1")]).toEqual([undefined, ["0px", "", false]]);
   await act(async () => { dropAt(162, 30); });
-  expect(outerOf("h1")).toEqual(["132px", "", false]);
+  expect(outerOf("h1")).toEqual(["0px", "", false]);
 });
 
 it("끄는 카드의 표식(data-layer-move)에는 캔버스 층과 같은 값 0 애니메이션이 걸린다 — 끝없이 돌지 않고, 그 기능을 모르는 브라우저에서는 걸지 않는다", () => {

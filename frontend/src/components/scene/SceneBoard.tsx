@@ -897,6 +897,9 @@ export function SceneBoard({
     const switched = sceneIdRef.current !== scene.id;
     if (switched) {
       const prevId = sceneIdRef.current;
+      // 떠나는 씬에서 누른 채 끌던 묶음을 **그 씬의 기록에 대해** 먼저 닫는다 — 단계를 쌓은 묶음이면 그 씬의 다시 하기를 비우고 상한을 정리한다
+      //  (lib/useSceneHistory endGesture). 아래 복원 뒤에 닫으면 들어온 씬의 기록을 건드린다(Codex 3차 리뷰 P2). 끌기 자체는 아래 uiSceneId 효과가 버린다.
+      endGesture();
       persistSceneHistory(prevId); // 떠나는 씬의 undo 히스토리 보관(돌아오면 이어서)
       sceneIdRef.current = scene.id;
       setSelected(new Set());
@@ -1607,6 +1610,7 @@ export function SceneBoard({
       window.removeEventListener("pagehide", onHide);
       document.removeEventListener("visibilitychange", onVisibility);
       flushPendingRef.current(); // 밀린 저장 확정(스택에 반영) 후
+      endGesture(); // 누른 채 탭을 떠난 끌기의 묶음을 닫는다 — 단계를 쌓았으면 다시 하기를 비운 뒤 보관한다(Codex 3차 리뷰 P2. 끌기 세션은 dispose 로 버려져 끝맺음이 없다)
       persistSceneHistory(sceneIdRef.current); // 현재 씬 undo 히스토리를 store 에 보관 — 탭 복귀 시 Ctrl+Z 유지
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2055,7 +2059,7 @@ export function SceneBoard({
   //  새 조작을 시작하지 않는 누름(끄는 중의 오른쪽 단추)에도 끝난다 — 전에도 그 단추를 떼는 순간 끝났다(mouseup 은 단추를 가리지 않는다).
   //  알고 두는 것: 보드가 포인터를 쥔 뒤(4px 넘게 끈 뒤)에 놓친 끌기라면 새 누름은 카드가 아니라 보드로 온다(포인터 캡처) — 그 누름은
   //  범위 선택이 된다(실측 15/15). 마우스가 한 번이라도 움직이면 규칙 21 이 먼저 끝내므로 손으로는 닿기 어렵다.
-  const { begin: beginDrag, abort: abortDrag, settle: settleDrag, rebase: rebaseDrag } = useSceneDragSession();
+  const { begin: beginDrag, abort: abortDrag, settle: settleDrag, rebase: rebaseDrag, discard: discardDrag } = useSceneDragSession();
   // 씬을 바꾸면 옛 씬의 카드·그룹·좌표에 묶인 창·조작 상태를 비운다(2026-09-29, Codex 전수 표). 안 그러면 안 보이는 결과
   //  팝업이 단축키를 막고(Esc 전까지 Ctrl+A 가 안 먹음), 노드 선택기가 새 씬에 떠서 옛 좌표에 카드를 만든다. 진행 중 끌기는
   //  마지막 움직임을 반영하지 않고 버리고(abort — blur 취소처럼 반영하면 옛 끌기를 새 씬에 한 번 더 쓴다), 끌기가 붙인 보드
@@ -3242,6 +3246,10 @@ export function SceneBoard({
         if (variantTargetIds().length) setUserPopupSel(new Set());
         else setCardMenu(null);
       }
+      // 끄는 중의 Esc = 끌기 취소(29회차, Jay 안 A — 이동·크기만 버린다: lib/useSceneCardMove·useSceneGroupMove·useSceneCardResize·그룹 크기
+      //  손잡이의 onDiscard). 위에 뜬 색 창·노드 선택기(끄는 중에도 Tab 으로 열린다)·결과 창이 먼저 닫히고, 그다음이 끌기, 선택 해제는 마지막이다
+      //  (Codex 코드 리뷰 P2). 선택은 그대로다 — 끌기를 버린 Esc 가 선택까지 풀지 않는다. 버릴 끌기가 없으면(범위 선택·판 밀기·가위) 평소대로.
+      else if (discardDrag()) return;
       else if (target === "selection") {
         setSelected(new Set());
         setSelectedGroupIds(new Set());
@@ -3503,6 +3511,7 @@ export function SceneBoard({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Shift" || event.key === "Control" || event.key === "Alt" || event.key === "Meta") return;
+      if (event.key === "Escape") return; // 끌기 취소(위 onEscape 의 discardDrag)는 좌표가 필요 없다 — 넣었다가 되돌리지 않는다
       layerMoveRef.current?.settle();
     };
     window.addEventListener("keydown", onKey, true);
@@ -4340,6 +4349,17 @@ export function SceneBoard({
                       const ng = groupsRef.current.map((x) => (x.id === g.id ? { ...x, rect: last } : x));
                       groupsRef.current = ng;
                       setGroups(ng);
+                    }, () => {
+                      // Esc — 늘린 네모를 버린다(29회차, Jay 안 A — 카드 크기 손잡이 lib/useSceneCardResize 와 같다): 끌기 전 네모(written — 자동
+                      //  그룹이면 없다)로 되돌리고 '버리는 저장'(lib/useSceneHistory 의 discard). 멤버 재배정(upr)은 하지 않는다 — 끌기 전 소속
+                      //  그대로다. 그룹이 그사이 밖에서 지워졌으면 아무것도 하지 않는다(Codex 코드 리뷰 P2).
+                      if (stretched && groupsRef.current.some((x) => x.id === g.id)) {
+                        const ng = groupsRef.current.map((x) => (x.id === g.id ? { ...x, rect: written } : x));
+                        groupsRef.current = ng;
+                        setGroups(ng);
+                        persist(cardsRef.current, edgesRef.current, ng, { discard: true });
+                      }
+                      endMoveGesture();
                     });
                     // 크기 조절도 끌기다(조작 규칙 44 — 카드 크기 손잡이 lib/useSceneCardResize 와 같다): 누르고 있는 동안의 Ctrl+Z 는 받지
                     //  않고, 끄는 중에 낀 파생 저장이 중간 네모를 굳혀도 되돌리기는 끌기 전 네모로 간다.

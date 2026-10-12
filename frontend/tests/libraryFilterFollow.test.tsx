@@ -194,19 +194,50 @@ describe("Resolve 라이브러리 따라가기", () => {
     expect(latest.selectionResetKey).toBe(key);
   });
 
-  // 28회차 ⑤-2(Jay 결정 '나'): 검색어만 바꾸면 선택을 비우지 않는다 — 결과에 남은 카드는 고른 채로(사라진 카드는 App 의 규칙 42 효과가 뺀다).
-  it("검색어만 바뀐 patch 는 선택 초기화 키를 올리지 않는다 — 검색어와 다른 키가 같이 오거나 다른 필터가 바뀌면 전처럼 올린다", () => {
+  // 28회차 ⑤-2(Jay 결정 '나') → 29회차(Jay "검색과 같게"): 보기 필터를 바꾸면 선택을 비우지 않는다 — 결과에 남은 카드는 고른 채로(사라진 카드는
+  //  App 의 규칙 42 효과가 뺀다). 보는 자리(탭·프로젝트·폴더·휴지통)가 바뀌면 전처럼 비운다.
+  it("보기 필터(검색어·종류·색·태그·공유·검수·코멘트·최종·회색·자동태그·W 침)는 선택 초기화 키를 올리지 않고 수동 횟수만 올린다", () => {
     mount(fakeStore({ [FILTERS_KEY]: JSON.stringify({ tab: "my", [FILTERS_FORMAT_KEY]: "2" }) }));
     const key = latest.selectionResetKey;
-    act(() => latest.patch({ search: "cat" }));
-    expect(latest.filters.search).toBe("cat");
-    expect(latest.selectionResetKey).toBe(key);
-    act(() => latest.patch({ search: undefined })); // 검색어를 지우는 것도 검색어 변경이다
-    expect(latest.selectionResetKey).toBe(key);
-    act(() => latest.patch({ search: "dog", folder_path: "ep01" }));
-    expect(latest.selectionResetKey).not.toBe(key);
-    const next = latest.selectionResetKey;
-    act(() => latest.setTypeFilter("video"));
-    expect(latest.selectionResetKey).not.toBe(next);
+    const steps: Array<[string, () => void]> = [
+      ["search", () => latest.patch({ search: "cat" })],
+      ["search-clear", () => latest.patch({ search: undefined })], // 검색어를 지우는 것도 검색어 변경이다
+      ["workspace-chip", () => latest.patch({ workspace_ids: ["w1"] })],
+      ["workspace-chip-toggle", () => latest.setFilters((current) => ({ ...current, workspace_ids: ["w1", "w2"] }))], // App 의 toggleWorkspaceChip 이 쓰는 길
+      ["creator", () => latest.patch({ creator_uid: "u1", share_dir: "received" })],
+      ["type", () => latest.setTypeFilter("video")],
+      ["type-same", () => latest.setTypeFilter("video")],
+      ["color", () => latest.setColorFilter(new Set(["r"]))],
+      ["tag", () => latest.setTagFilter(new Set(["t"]))],
+      ["shared", () => latest.setSharedOnly(true)],
+      ["review", () => latest.setReviewFilter("held")],
+      ["comment", () => latest.setCommentOnly(true)],
+      ["final", () => latest.setFinalOnly(true)],
+      ["gray", () => latest.setGrayOn(true)],
+      ["auto-tag", () => latest.toggleAutoTag("ep")],
+      ["auto-tag-setter", () => latest.setArmedAutoTags((tags) => new Set([...tags, "x"]))],
+    ];
+    let revision = latest.manualRevision;
+    for (const [name, step] of steps) {
+      act(step);
+      expect([name, latest.selectionResetKey]).toEqual([name, key]);
+      expect([name, latest.manualRevision]).toEqual([name, revision + 1]); // 늦은 따라가기 응답은 여전히 버려야 한다
+      revision = latest.manualRevision;
+    }
+  });
+
+  it("보는 자리가 바뀌면 선택 초기화 키가 오른다 — 폴더·프로젝트·휴지통 patch, 탭을 바꾸는 setFilters, 검색어와 폴더가 같이 온 patch", () => {
+    mount(fakeStore({ [FILTERS_KEY]: JSON.stringify({ tab: "my", [FILTERS_FORMAT_KEY]: "2" }) }));
+    const keys = [latest.selectionResetKey];
+    const bump = (step: () => void) => {
+      act(step);
+      expect(keys).not.toContain(latest.selectionResetKey);
+      keys.push(latest.selectionResetKey);
+    };
+    bump(() => latest.patch({ search: "dog", folder_path: "ep01" }));
+    bump(() => latest.patch({ project_id: "p2" }));
+    bump(() => latest.patch({ deleted_only: true }));
+    bump(() => latest.patch({ include_deleted: true, deleted_only: undefined }));
+    bump(() => latest.setFilters((current) => ({ ...current, tab: "team" })));
   });
 });

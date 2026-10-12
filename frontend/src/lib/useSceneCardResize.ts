@@ -1,7 +1,7 @@
 import { useCallback, useRef } from "react";
 import type { Dispatch, MouseEvent as ReactMouseEvent, MutableRefObject, SetStateAction } from "react";
 import { resizeSceneCard } from "./sceneInteractions";
-import type { SceneCard, SceneEdge } from "./scenes";
+import type { SceneCard, SceneEdge, SceneGroup } from "./scenes";
 import type { BeginSceneDrag } from "./useSceneDragSession";
 
 interface UseSceneCardResizeOptions {
@@ -9,7 +9,7 @@ interface UseSceneCardResizeOptions {
   edgesRef: MutableRefObject<SceneEdge[]>;
   zoomRef: MutableRefObject<number>;
   setCards: Dispatch<SetStateAction<SceneCard[]>>;
-  persist: (cards: SceneCard[], edges: SceneEdge[]) => void;
+  persist: (cards: SceneCard[], edges: SceneEdge[], groups?: SceneGroup[], opts?: { discard?: boolean }) => void;
   beginDrag: BeginSceneDrag;
   /** 끌기 하나의 시작과 끝 — 그 사이의 저장은 되돌리기 한 단계로 묶인다(lib/useSceneHistory). rewind = 끌기 전 크기로 되감기. */
   beginGesture: (rewind?: <Snapshot extends { cards: SceneCard[] }>(snapshot: Snapshot) => Snapshot) => void;
@@ -87,6 +87,19 @@ export function useSceneCardResize(options: UseSceneCardResizeOptions) {
       );
       latest.cardsRef.current = nextCards;
       latest.setCards(nextCards);
+    }, () => {
+      // Esc — 늘린 크기를 버린다(29회차, Jay 안 A — 카드 끌기와 같다: lib/useSceneCardMove). 끌기 전에 적혀 있던 크기(written — 되돌리기의
+      //  시작점과 같은 값)로 되돌리고 '버리는 저장'(되돌리기 단계를 쌓지 않는다). 누르기만 했으면 아무것도 적지 않는다.
+      const latest = optionsRef.current;
+      if (resized) {
+        const nextCards = latest.cardsRef.current.map((item) =>
+          item.id === cardId ? { ...item, w: written.w, h: written.h } : item,
+        );
+        latest.cardsRef.current = nextCards;
+        latest.setCards(nextCards);
+        latest.persist(nextCards, latest.edgesRef.current, undefined, { discard: true });
+      }
+      latest.endGesture();
     });
     // 묶음은 여기서 연다(앞 끌기가 남아 있었다면 위 beginDrag 가 그것을 먼저 확정하고 닫는다). 크기 조절도 끌기다(조작 규칙 44):
     //  · 누르고 있는 동안의 Ctrl+Z 는 받지 않는다 — 받으면 되돌린 화면 위에 다음 걸음이 쥐고 있던 시작 크기로 다시 크기를 넣고, 놓을 때의

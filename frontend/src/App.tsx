@@ -81,7 +81,7 @@ import { useGenerationKeyboardActions } from "./lib/useGenerationKeyboardActions
 import { useGenerationLibraryData } from "./lib/useGenerationLibraryData";
 import { useGenerationProgress } from "./lib/useGenerationProgress";
 import { useGenerationProjectActions } from "./lib/useGenerationProjectActions";
-import { useGenerationSelection } from "./lib/useGenerationSelection";
+import { useGenerationSelection, withoutHidden } from "./lib/useGenerationSelection";
 import { useGenerationShareActions } from "./lib/useGenerationShareActions";
 import { useBackgroundEscape } from "./lib/useEscapeClose";
 import { backgroundKeysBlocked, floatHost, isTypingTarget, usePageSelectAllGuard } from "./lib/keyGate";
@@ -1124,6 +1124,14 @@ export default function App() {
     () => [...comfyPlaceholders, ...filterDisabledGenerations(visibleGens, effectiveDisabled, grayOn)],
     [comfyPlaceholders, visibleGens, effectiveDisabled, grayOn],
   );
+  // 회색 숨김을 켜면 가려지는 카드는 선택에서 뺀다(29회차 Jay "검색과 같게" — 보이는 것만 남긴다). 숨김은 gridGens 만 줄이고 gens 는 그대로라
+  //  위 규칙 42 효과가 걷지 못한다(Codex 코드 리뷰 P2 — 전엔 숨김 전환이 선택을 통째로 비웠다). 숨긴 채 Ctrl+A 로 고른 가려진 카드는 전처럼
+  //  남는다(재제안 금지 — Ctrl+A 는 숨긴 카드까지 고른다).
+  const toggleGray = () => {
+    const next = !grayOn;
+    setGrayOn(next);
+    if (next && selected.size) setSelected((prev) => withoutHidden(prev, effectiveDisabled));
+  };
   // 회색/휴지통 공간 필터가 페이지를 전부 가리면(빈 그리드) ThumbnailGrid 가 센티넬을 못 그려
   // onLoadMore 가 영영 안 불린다 → 뒤 페이지의 활성 항목이 사라진 것처럼 보임. hasMore 인 한
   // 활성 항목이 나오거나 끝날 때까지 다음 페이지를 자동으로 당긴다(필터·페이지네이션 분리).
@@ -2139,7 +2147,7 @@ export default function App() {
           : undefined
       }
       grayOn={grayOn}
-      onToggleGray={() => setGrayOn((v) => !v)}
+      onToggleGray={toggleGray}
       loading={loading}
       failedCount={failedCount}
       onClearFailed={clearFailed}
@@ -2399,7 +2407,7 @@ export default function App() {
               // SceneBoard 가 생성카드 안 생성물(변형 전부) 중 타입 필터 통과 수를 보고한다.
               count={activeScene ? sceneTypeCount : boardStats.count}
               grayOn={grayOn}
-              onToggleGray={() => setGrayOn((v) => !v)}
+              onToggleGray={toggleGray}
               loading={loading}
               failedCount={failedCount}
               onClearFailed={clearFailed}
@@ -2611,7 +2619,7 @@ export default function App() {
                 finalOnly={finalOnly}
                 onToggleFinal={() => setFinalOnly((v) => !v)}
                 grayOn={grayOn}
-                onToggleGray={() => setGrayOn((v) => !v)}
+                onToggleGray={toggleGray}
                 armedAutoTags={filterAutoTags}
                 onToggleAutoTag={toggleAutoTag}
                 viewedFolder={resolveLibrary.viewedFolder}

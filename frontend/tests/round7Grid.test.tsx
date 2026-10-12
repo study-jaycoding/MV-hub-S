@@ -233,7 +233,7 @@ it("R43-b Shift 클릭을 이어서 해도 기준 카드는 첫 Shift 클릭 때
 
   // 밖에서 풀린 뒤 기억해 둔 자리(규칙 9)가 기준일 때도 같다
   click("g2");
-  press(one(".bar-button")); // 선택이 풀린다 — 자리는 g2
+  press(document.body); // 격자 밖의 빈 곳 — 선택이 풀린다, 자리는 g2 (29회차: 툴바 단추는 이제 선택을 풀지 않는다 — 보기 필터가 고른 것을 남긴다)
   expect(chosen()).toEqual([]);
   click("g4", { shiftKey: true });
   expect(chosen()).toEqual(["g2", "g3", "g4"]);
@@ -286,9 +286,30 @@ it("R43-b 기억한 기준은 그 Shift 클릭이 만든 선택이 그대로일 
   mount();
   act(() => select.setSelected(new Set(["g2", "g3"])));
   click("g5", { shiftKey: true }); // 기준 g3 → g3·g4·g5
-  press(one(".bar-button")); // 선택이 풀린다(초점 카드가 없었으니 기억해 둘 자리도 없다)
+  press(document.body); // 격자 밖의 빈 곳 — 선택이 풀린다(초점 카드가 없었으니 기억해 둘 자리도 없다)
   click("g1", { shiftKey: true });
   expect(chosen()).toEqual(["g1"]);
+});
+
+// 29회차(Jay "검색과 같게"): 툴바(보기 필터)·상단바·태그 패널 안의 누름은 선택을 풀지 않는다 — 고른 채로 필터를 바꾼다. 초점 카드는 전처럼(R43-a) 지운다.
+it("툴바 단추를 눌러도 선택은 남고, Space 로 남긴 초점 카드만 지워진다 — 격자 밖의 빈 곳은 전처럼 선택도 푼다", () => {
+  mount();
+  flushFrames();
+  click("g2");
+  click("g3", { shiftKey: true });
+  expect(chosen()).toEqual(["g2", "g3"]);
+  press(one(".bar-button"));
+  expect(chosen()).toEqual(["g2", "g3"]); // 선택은 그대로
+  key(" ", grid()); // Space — 초점 카드(처음 누른 g2 — Shift 클릭은 기준을 옮기지 않는다)를 뺀다
+  expect(chosen()).toEqual(["g3"]);
+  expect(focusedCard()).toBe("g2");
+  press(one(".bar-button"));
+  expect([chosen(), focusedCard()]).toEqual([["g3"], "g2"]); // 고른 것이 남아 있으면 초점 카드도 둔다(R43-a — 키는 고른 것에 간다)
+  key(" ", grid()); // g2 를 다시 고른 뒤
+  key(" ", grid()); // 다시 뺀다 — 초점은 g2 에 남는다
+  expect([chosen(), focusedCard()]).toEqual([["g3"], "g2"]);
+  press(document.body);
+  expect(chosen()).toEqual([]); // 빈 곳은 선택도 푼다
 });
 
 it("R37 저장된 카드 크기 배율이 슬라이더 범위(0.7~1.7) 밖이면 범위로 자르고, 숫자가 아니면 기본값 1 이다", () => {
