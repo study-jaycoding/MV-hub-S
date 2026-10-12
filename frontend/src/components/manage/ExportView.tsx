@@ -60,7 +60,9 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const [filter, setFilter] = useState<TargetFilter>("all"); // 저장 대상 표의 거르기 단추
   // 저장 진행률 — 공유본이 수백 건이라 끝날 때까지 아무것도 안 보이면 멈춘 것과 구별되지 않는다.
   const [progress, setProgress] = useState<SaveFinalsProgress | null>(null);
-  const [cancelling, setCancelling] = useState(false);
+  // 취소를 보낸 실행(run) — '멈추는 중'은 **그 실행이 도는 동안만**이다. 참/거짓으로 두면 한 번 취소한 뒤로 풀리지 않아, 다음 저장의 취소
+  //  단추가 처음부터 '멈추는 중…'으로 잠겨 있었다(조작 규칙 50, Codex 코드 리뷰).
+  const [cancelRun, setCancelRun] = useState<number | null>(null);
   const progressRunningRef = useRef(false);
   const [pollTick, setPollTick] = useState(0); // 조회 결과가 '돌고 있음'이면 폴링을 이어간다
   // 확인 창 — 단추 다섯 개 모두 '~하시겠습니까? 예/아니오'를 거친다(Jay 2026-09-21). many = 미러에서 정리가 남는 것보다 많다는 서버의 재확인 요청.
@@ -79,6 +81,8 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
     setComparing(false);
     setAsk(null);
   };
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
   const pidRef = useRef(pid);
   const seenReloadSignalRef = useRef(reloadSignal);
   const statusRequestRef = useRef(0);
@@ -161,7 +165,12 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
     const root = renderPath.replace(/[\\/]+$/, "");
     return root && path.toLowerCase().startsWith(root.toLowerCase()) ? path.slice(root.length).replace(/^[\\/]+/, "") || path : path;
   };
-  const canSave = !!pid && !!renderPath && !status?.error && !serverOutdated && !busy;
+  // 저장이 돌고 있다 — 이 화면이 시작한 것(busy)만이 아니라 **서버가 지금 돌리고 있는 것**(progress.running)도 친다. 저장을 시작하고 다른 관리
+  //  탭에 다녀오면 이 화면은 새로 올라와 busy 가 꺼져 있다: 진행률·취소 단추가 사라지고 저장 단추가 켜져, 같은 저장을 한 번 더 줄 세울 수 있었다
+  //  (조작 규칙 50). 다른 창에서 시작한 저장도 같다.
+  const working = busy || !!progress?.running;
+  const cancelling = cancelRun !== null && !!progress?.running && progress.run === cancelRun;
+  const canSave = !!pid && !!renderPath && !status?.error && !serverOutdated && !working;
 
   // 저장 대상 표 — 거르기 단추 하나만 켜지고, 줄은 씬(폴더의 앞부분)별로 묶는다. 컷 = 폴더의 마지막 마디.
   const stateOf = (t: SaveFinalsTarget) => (t.reason ? "bad" : t.saved ? "saved" : "new");
@@ -189,7 +198,6 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   useEffect(() => {
     if (!pid) {
       setProgress(null);
-      setCancelling(false);
       return;
     }
     let alive = true;
@@ -201,8 +209,11 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
           setProgress(r.progress);
           const running = !!r.progress && r.progress.running;
           if (running !== progressRunningRef.current) {
+            const finished = progressRunningRef.current && !running;
             progressRunningRef.current = running;
             setPollTick((n) => n + 1); // 폴링을 켜고 끈다
+            // 이 화면이 시작하지 않은 저장(떠났다 돌아온 화면·다른 창)이 끝났다 — 대상·이력을 다시 읽는다. 이 화면이 시작한 것은 onSave 가 읽는다.
+            if (finished && !busyRef.current) loadStatus(pid);
           }
         })
         .catch(() => {
@@ -223,12 +234,12 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
 
   const onCancel = async () => {
     if (!progress || !progress.running || cancelling) return;
-    setCancelling(true);
+    setCancelRun(progress.run);
     try {
       const r = await manageApi.saveFinalsCancel(pid, progress.run);
-      if (!r.ok) setCancelling(false); // 이미 끝났거나 다른 저장이다 — 단추를 '멈추는 중'으로 붙잡아 두지 않는다
+      if (!r.ok) setCancelRun(null); // 이미 끝났거나 다른 저장이다 — 단추를 '멈추는 중'으로 붙잡아 두지 않는다
     } catch (reason) {
-      setCancelling(false); // 실패하면 다시 누를 수 있게(저장은 계속 돈다)
+      setCancelRun(null); // 실패하면 다시 누를 수 있게(저장은 계속 돈다)
       // 알린다(조작 규칙 41) — 전엔 단추만 돌아와, 멈춘 것인지 못 멈춘 것인지 알 수 없었다
       setErr(`저장을 멈추지 못했습니다 — 저장은 계속 돌고 있습니다. 다시 눌러 주세요. ${errorDetail(reason)}`);
     }
@@ -442,7 +453,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
             </span>
           </div>
           <span className="export-hint export-progress">
-            {busy && progress && progress.total > 0 ? (
+            {working && progress && progress.total > 0 ? (
               <>
                 <b>
                   {progress.done} / {progress.total}
@@ -454,7 +465,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
                   </button>
                 )}
               </>
-            ) : busy ? (
+            ) : working ? (
               "저장 중…"
             ) : progress && !progress.running && progress.done > 0 ? (
               `지난 저장: ${progress.done}건 처리${progress.cancelled ? "하고 멈춤" : " 완료"}`
