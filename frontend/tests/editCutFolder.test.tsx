@@ -602,6 +602,23 @@ it("컷을 더블클릭하면 그 컷으로 가고, 열 폴더와 타임라인�
   expect(opened[1]).toEqual({ projectId: "p1", projectName: "P1", path: "e070/c1", focusId: null, marks: {} });
 });
 
+// 20회차(Codex 전수 검토): 트랙 메뉴는 연 순간의 카드를 들고 있었다 — 떠 있는 사이 그 카드가 공유 목록에서 빠지면(다른 창의 공유 해제 →
+//  자동 다시 받기) 그 사본으로 넣어, 잘 있던 클립이 '미디어 없음' 클립으로 갈렸다. 고르는 순간 지금의 목록에서 다시 찾는다.
+it("트랙 메뉴가 떠 있는 사이 그 카드가 공유 목록에서 사라졌으면 넣지 않는다 — 잘 있던 클립을 갈아 끼우지 않는다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }]);
+  mount();
+  act(() => cutCell("c1").click());
+  mount(0, "e070/c1"); // 폴더 창이 떴다
+  cardMenu("b");
+  expect(menuText()).toEqual(["V3비어 있음", "V2비어 있음", "V1교체"]);
+  world.gens = [gen("a", "c1"), gen("x", "c2"), gen("y", "c2", { is_held: true })]; // b 가 공유 목록에서 빠졌다
+  mount(0, "e070/c1"); // 다시 받은 목록으로 다시 그려졌다 — 메뉴는 떠 있다
+  expect(trackMenu()).not.toBeNull();
+  act(() => menuItems()[2].click()); // V1(교체)
+  expect(trackMenu()).toBeNull();
+  expect(storedTracks()).toEqual([["a", 1]]); // 전엔 a 를 빼고 b 가 들어갔다(b 는 '미디어 없음')
+  expect(flashed[flashed.length - 1]).toContain("넣을 수 없습니다");
+});
 // 카드 우클릭(Jay 2026-10-08) — 지금 있는 트랙이 뜨고, 고르면 그 트랙에 들어간다. 찬 트랙은 교체, 빈 트랙은 그 자리에 쌓인다.
 it("폴더 창의 카드를 우클릭하면 트랙 메뉴가 뜬다 — 찬 트랙을 고르면 교체, 빈 트랙이면 그 자리에 들어간다", () => {
   seed([{ cut: "c1", gen: "a", track: 1 }]);

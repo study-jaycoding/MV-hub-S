@@ -619,9 +619,13 @@ function EditTabInner({
   }));
   const placeTo = (track: number) => {
     if (!menu) return;
-    const { gen, cut: menuCut } = menu;
-    const asset = gen.assets[0];
+    const menuCut = menu.cut;
+    // 카드는 **지금의 공유 목록**에서 다시 찾는다 — 메뉴가 떠 있는 사이 그 카드가 목록에서 빠졌으면(다른 창의 공유 해제 → 다시 받기)
+    //  연 순간의 사본으로 넣지 않는다: 잘 있던 클립이 '미디어 없음' 클립으로 갈린다.
+    const gen = byCut.get(menuCut)?.find((item) => item.id === menu.gen.id);
     closeMenu();
+    if (!gen) return flash(t("이 카드는 넣을 수 없습니다 — 편집 탭의 이 컷 공유 목록에 없습니다."));
+    const asset = gen.assets[0];
     if (maybePlaced(menuCut, gen)) return flash(t("이 카드는 이미 넣은 클립일 수 있습니다 — 공유 목록을 다 받은 뒤에 다시 해 주세요.")); // 메뉴가 떠 있는 사이 다시 받기가 시작됐다
     act((current) => placeClip(current, {
       // job 으로 다시 이은 클립이면 그 클립을 옮긴다(문서에 적힌 옛 id 로 찾는다)
