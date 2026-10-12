@@ -657,10 +657,14 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     if (!blob) return false; // 이미지 없음 → 기본 동작(텍스트 붙여넣기)
     e.preventDefault();
     // 붙여넣은 그림은 이 PC 설치 폴더(captures)에 저장한다(Jay 2026-09-29 옛 방식).
+    const startedFor = bindingKeyRef.current;
     api
       .uploadCapture(blob)
       .then((r) => {
-        addAssetRefs(JSON.stringify([{ project: r.project, path: r.path, name: r.name, type: "image" }]));
+        // 올리는 사이 고른 카드가 바뀌었으면 지금 카드의 레퍼런스에는 넣지 않는다(아래 importExternalFilesAsRefs 와 같다) — 넣으면 A 에서
+        //  붙여 넣은 그림이 B 의 레퍼런스로 저장된다(조작 규칙 48). 그림은 가져왔다(Assets 에 있다).
+        if (bindingKeyRef.current !== startedFor) setError("붙여 넣은 그림을 가져왔지만, 그사이 고른 카드가 바뀌어 레퍼런스에는 넣지 않았습니다 — Assets 에서 끌어 넣으세요.");
+        else addAssetRefs(JSON.stringify([{ project: r.project, path: r.path, name: r.name, type: "image" }]));
         // 임포트와 동일하게 에셋창에 변경 신호 — 캡쳐도 실시간 반영되도록.
         notifySpotlightAssetsChanged([{ project: r.project, path: r.path, name: r.name, type: r.type || "image" }]);
       })

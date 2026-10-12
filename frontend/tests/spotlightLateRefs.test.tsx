@@ -29,6 +29,7 @@ function binding(card: string, refs: number): NonNullable<PromptProps["trayBindi
   } as NonNullable<PromptProps["trayBinding"]>;
 }
 const trayCount = () => view!.container.querySelectorAll(".sl-reftray-item").length;
+const editor = () => required(view!.container, '[contenteditable="true"]');
 const dropFile = () => {
   const file = new File(["x"], "outside.png", { type: "image/png" });
   const event = Object.assign(new Event("drop", { bubbles: true, cancelable: true }), {
@@ -84,10 +85,40 @@ it("외부 파일을 올리는 사이 고른 카드가 바뀌면 지금 카드�
   expect(onChange).toHaveBeenCalledTimes(1);
 });
 
+// 21회차(조작 규칙 48, Codex 전수 검토): 놓은 파일은 10회차에 막았는데, **붙여 넣은 그림**(Ctrl+V 캡처)의 완료부에는 그 검사가 없었다.
+it("붙여 넣은 그림도 같다 — 올리는 사이 고른 카드가 바뀌면 지금 카드의 레퍼런스에 넣지 않는다", async () => {
+  type Capture = { project: string; path: string; name: string; type: string };
+  const upload = deferred<Capture>();
+  const uploadCapture = vi.fn(() => upload.promise);
+  Object.assign(boundary.api, { uploadCapture });
+  const onChange = vi.fn((refs: unknown[]) => refs);
+  const capture = (): Capture => ({ project: "captures", path: "shot.png", name: "shot.png", type: "image" });
+  const paste = () => act(() => {
+    const image = new File(["x"], "shot.png", { type: "image/png" });
+    editor().dispatchEvent(Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
+      clipboardData: { items: [{ type: "image/png", getAsFile: () => image }], getData: () => "" },
+    }));
+  });
+  view = await mountPrompt({ trayBinding: binding("a", 1), onTrayBindingRefsChange: onChange as never });
+  paste(); // A 를 고른 채 붙여 넣었다 — 올리는 중
+  await settle();
+  expect(uploadCapture).toHaveBeenCalledTimes(1);
+  await view.render({ trayBinding: binding("b", 2) }); // 그사이 B 를 골랐다
+  onChange.mockClear();
+  await act(async () => { upload.resolve(capture()); });
+  await settle();
+  expect([trayCount(), onChange.mock.calls.length]).toEqual([2, 0]); // 전엔 B 의 트레이에 붙고 B 에 저장됐다
+  expect(view.container.textContent).toContain("고른 카드가 바뀌어");
+
+  uploadCapture.mockImplementation(() => Promise.resolve(capture())); // 카드가 그대로면 전처럼 넣는다
+  paste();
+  await settle();
+  expect(trayCount()).toBe(3);
+});
+
 const promptGen = (id: string, prompt: string) => ({
   id, prompt, display_prompt: null, model: "nano_banana_flash", params: {}, references: [], assets: [], tags: [],
 });
-const editor = () => required(view!.container, '[contenteditable="true"]');
 const reuse = (id: string) => act(() => { window.dispatchEvent(new CustomEvent("ch:reuse-prompt", { detail: id })); });
 const typeNew = (text: string) => act(() => {
   editor().textContent = text;
