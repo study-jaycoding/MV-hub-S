@@ -901,6 +901,10 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
   자리의 한 줄(`setTreeFor`)을 빼도 settle 뒤에 보는 시험은 통과했다 — 뒤따르는 서버 조회가 같은 값을 맞춰 주어서. 렌더 단위의 가림(폴더를 바꾼 첫 렌더)도
   settle 뒤의 값으로는 안 보인다 — 하네스 컴포넌트가 **렌더마다** '폴더:메타'를 기록하거나, 렌더 중에 불리는 함수(썸네일 URL)의 호출 짝을 기록해 잡는다
   (`tests/assetFolderRevisitLoop.test.tsx`).
+- ㉞ **`node_modules` 정션이 든 워크트리는 `git worktree remove --force` 로 지우지 말 것**(28회차 사고): 이 저장소의 워크트리들은 `frontend/node_modules` 를
+  `MV-hub-S-dev\frontend\node_modules` 로 가는 정션으로 둔다. git 의 강제 삭제가 정션을 따라 들어가 **원본**의 `.bin`·`.package-lock.json` 을 지웠다(잠긴 esbuild 에서
+  멈춰 그 둘만 잃었다). 지우기 전에 정션을 먼저 푼다(`cmd /c rmdir frontend\node_modules` — 정션만 없어진다) 또는 `git worktree remove`(강제 없이, 깨끗한 트리만).
+  복구는 `npm --prefix <dev\frontend> install`(빠진 링크만 다시 만든다 — 그 뒤 npm 이 바꾼 `package-lock.json` 은 되돌린다).
 
 캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
 - ⑤ 복사본은 프로젝트 폴더 경로를 비워, 씬 그림(`asset:` 썸네일)이 **전부 404** 다. 그림이 뜬 상태로 재려면 다음처럼 한다.
