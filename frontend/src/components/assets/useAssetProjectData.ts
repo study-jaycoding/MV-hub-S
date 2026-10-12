@@ -9,6 +9,9 @@ const STORE = makeStore("ch.assets.");
 const TREE_CACHE_KEY = "treecache";
 const META_CACHE_KEY = "metacache";
 const CACHE_MAX_BYTES = 3_000_000; // localStorage 안전 상한(대략) — 넘으면 저장 생략(다음 세션은 다시 fetch)
+// 비울 때 넣는 고정 빈 값 — 매번 새 {}·[] 를 만들면 아래의 '다시 계산되는 갱신'과 같은 되먹임에 끼어든다(조작 규칙 54).
+const EMPTY_TREE: AssetNode[] = [];
+const EMPTY_META: Record<string, AssetMeta> = {};
 
 // 캐시 맵을 localStorage 에 저장(용량 초과·직렬화 실패는 조용히 무시).
 function persistCache(key: string, obj: unknown) {
@@ -89,6 +92,14 @@ export function useAssetProjectData({
   };
   const projectRef = useRef(project); // 최신 선택 프로젝트 — 느린 응답이 돌아와도 딴 프로젝트를 덮지 않게
   projectRef.current = project;
+  // 화면의 tree/meta 를 **함수형 갱신(prev => …) 없이** 바꾼다(조작 규칙 54 — 27회차 실측 M02, Assets 창이 React #185 로 깨짐): 같은 값이라
+  //  버려진(밀린) 갱신이 큐에 남아 있으면 React 는 뒤의 함수형 갱신을 **렌더마다 그 위에서 다시 계산**한다 — reconcile 은 내용이 다르면 매번
+  //  새 객체를 돌려주니 meta 참조가 커밋마다 바뀌고 → files 새 배열 → 선택 정리 레이아웃 효과 → 동기 재렌더 → 반복. 지금 상태(ref)로 한 번만
+  //  계산한 고정 객체를 넣는다(다시 계산돼도 같은 객체). 두 폴더 메타가 모두 비어 있을 때만 안 깨진 것이 그 증거(같은 참조라 끊긴다).
+  const treeStateRef = useRef(tree);
+  treeStateRef.current = tree;
+  const metaStateRef = useRef(meta);
+  metaStateRef.current = meta;
   // 지금 화면의 tree/meta 가 '어느 프로젝트' 것인지 — 미러 이펙트의 캐시 키. projectRef(=지금 렌더의
   //  프로젝트)로 미러하면, A 를 그리는 중 선택이 B 로 바뀐 렌더에서 이펙트가 돌 때 A 트리가 B 키에 박힌다.
   const treeProjectRef = useRef("");
@@ -135,13 +146,13 @@ export function useAssetProjectData({
     // 캐시 즉시 표시는 '지금 보고 있는' 프로젝트일 때만 — 아니면 미러 이펙트가 현재 프로젝트 캐시를 오염시킨다.
     if (cached && projectRef.current === targetProject) {
       metaProjectRef.current = targetProject; // 화면에 올리는 meta 의 소속을 함께 기록(미러 이펙트 짝)
-      setMeta((prev) => reconcileRecordState(prev, cached));
+      setMeta(reconcileRecordState(metaStateRef.current, cached));
       setMetaFor(targetProject);
     } else if (projectRef.current === targetProject && metaProjectRef.current !== targetProject) {
       // 처음 여는 폴더 — 화면에 남은 것은 **앞 폴더의** 메타다. 응답을 기다리는 동안 그대로 두면 앞 폴더의 태그·색이 이 폴더의 것처럼
       //  보이고 고쳐진다(아래 reloadTree 의 같은 자리). 소속 표시를 먼저 비운다 — 빈 값이 미러 이펙트를 타고 앞 폴더의 캐시에 적히지 않게.
       metaProjectRef.current = "";
-      setMeta((prev) => (Object.keys(prev).length ? {} : prev));
+      if (Object.keys(metaStateRef.current).length) setMeta(EMPTY_META);
     }
     try {
       const fresh = await api.assetMeta(targetProject);
@@ -150,14 +161,14 @@ export function useAssetProjectData({
       if (projectRef.current === targetProject) {
         // API가 매번 새 객체를 반환해도 내용이 같으면 526개 파일 화면을 다시 계산·렌더하지 않는다.
         metaProjectRef.current = targetProject;
-        setMeta((prev) => reconcileRecordState(prev, fresh));
+        setMeta(reconcileRecordState(metaStateRef.current, fresh));
         setMetaFor(targetProject);
       }
       return true;
     } catch {
       if (!cached && projectRef.current === targetProject) {
         metaProjectRef.current = targetProject;
-        setMeta((prev) => reconcileRecordState(prev, {}));
+        if (Object.keys(metaStateRef.current).length) setMeta(EMPTY_META);
       }
       return false;
     }
@@ -173,7 +184,7 @@ export function useAssetProjectData({
     if (isCurrent()) {
       if (cached) {
         treeProjectRef.current = targetProject; // 화면에 올리는 tree 의 소속을 함께 기록(미러 이펙트 짝)
-        setTree((prev) => reconcileArrayState(prev, cached)); // 캐시 있으면 즉시 표시(로딩 화면 없음)
+        setTree(reconcileArrayState(treeStateRef.current, cached)); // 캐시 있으면 즉시 표시(로딩 화면 없음)
         onTreeLoaded?.(cached);
         setLoading(false);
       } else {
@@ -183,7 +194,7 @@ export function useAssetProjectData({
         //  앞 폴더의 캐시에 적히지 않게(같은 폴더를 받는 중에 다시 불린 것이면 건드리지 않는다).
         if (treeProjectRef.current !== targetProject) {
           treeProjectRef.current = "";
-          setTree((prev) => (prev.length ? [] : prev));
+          if (treeStateRef.current.length) setTree(EMPTY_TREE);
         }
         setLoading(true);
       }
@@ -196,7 +207,7 @@ export function useAssetProjectData({
       if (isCurrent()) {
         // 새 트리 객체라도 파일·버전·계층이 같으면 현재 화면 참조를 유지한다.
         treeProjectRef.current = targetProject;
-        setTree((prev) => reconcileArrayState(prev, nextTree.children));
+        setTree(reconcileArrayState(treeStateRef.current, nextTree.children));
         onTreeLoaded?.(nextTree.children);
         setError(null);
         setLoading(false);
@@ -236,8 +247,8 @@ export function useAssetProjectData({
       //  빈 값이 미러 이펙트를 타고 앞 폴더의 캐시에 적힌다.
       treeProjectRef.current = "";
       metaProjectRef.current = "";
-      setTree((prev) => (prev.length ? [] : prev));
-      setMeta((prev) => (Object.keys(prev).length ? {} : prev));
+      if (treeStateRef.current.length) setTree(EMPTY_TREE);
+      if (Object.keys(metaStateRef.current).length) setMeta(EMPTY_META);
       setError(null);
       setLoading(false);
       return;

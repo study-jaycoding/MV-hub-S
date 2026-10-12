@@ -890,6 +890,13 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
 - ㉛ **폴링 시험은 상태가 안 바뀌는 구간에서 다음 조회를 본다**(25회차 — 규칙 52): `busy` 같은 의존값이 바뀌면 효과가 다시 걸려 새 타이머가 생기므로,
   '앞 조회가 끝난 뒤 다음을 예약하는 줄'을 지워도 상태 전환마다 한 번은 조회가 나간다 — 같은 응답이 이어지는 동안 **세 번째** 조회가 나가는지로 잡는다
   (`tests/assetRegistryTab.test.tsx`). 가짜 응답은 `setTimeout` 으로 늦춰 `advanceTimersByTimeAsync(간격 + 지연)` 로 한 바퀴씩 돌린다.
+- ㉜ **React 의 갱신 큐 재처리는 jsdom 시험으로 못 만든다 — 브라우저 실측 + 축약 안 한 빌드로 스택을 잡는다**(27회차 — 규칙 54): Assets 창이 React #185 로
+  깨진 M02 는 훅만 붙인 하네스도, 실제 AssetsView(가짜 api·virtua 가짜)도 재현하지 못했다(`tests/assetFolderRevisitLoop.test.tsx` — 흐름만 지킨다).
+  이런 결함은 `npx vite build --minify false --sourcemap --outDir <스냅샷>` 으로 만든 빌드를 격리 브라우저에 올리고, 앱을 열기 **전에** `Error.stackTraceLimit`·
+  `error`/`unhandledrejection`·`console.error` 가로채기와 CDP `Runtime.exceptionThrown`(callFrames 의 functionName) 을 심어 잡는다 — 앱 코드 프레임은
+  한 줄뿐일 수 있다(#185 는 51번째 갱신 자리에서 던지므로 '되먹임을 돌리는 쪽'이 아니라 '한계를 넘긴 갱신'이 보인다). 네트워크 요청 순서도 같이 남겨
+  '되풀이되는 요청이 없다 = 레이아웃 효과 사슬 안의 동기 반복'을 가른다. 실측 fixture 의 메타가 `{}` 면 같은 참조가 유지돼 이런 되먹임이 가려진다 —
+  **비어 있지 않은 메타**로도 돌릴 것.
 
 캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
 - ⑤ 복사본은 프로젝트 폴더 경로를 비워, 씬 그림(`asset:` 썸네일)이 **전부 404** 다. 그림이 뜬 상태로 재려면 다음처럼 한다.
