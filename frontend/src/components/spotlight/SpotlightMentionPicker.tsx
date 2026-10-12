@@ -1,8 +1,10 @@
-import type { RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../../lib/media";
 import type { Generation } from "../../types";
 
 type Mention = { kind: "@" | "#"; query: string };
+const MENTION_TOP_GAP = 8; // 화면 위 끝과 피커 사이
+const MENTION_MAX_LIST = 760; // 자리가 넉넉하면 15개쯤(항목 ≈ 50px) — prompt-dock.css 의 상한과 같다
 
 // @ 피커에 얹는 '트레이 항목' — 고르면 token(@image1 등) 텍스트가 프롬프트에 들어간다.
 export interface TrayMentionItem {
@@ -44,8 +46,29 @@ export function SpotlightMentionPicker({
   trayList,
   onSelectTrayRef,
 }: Props) {
+  // 목록의 높이는 **패널 위에 실제로 남은 자리**까지만이다 — 피커는 패널 위로 뜨는데(CSS bottom: 100%), CSS 의 상한(화면 높이 − 150px)은 패널이
+  //  낮을 때만 맞는다. 레퍼런스 트레이를 펼치면 패널이 230px 넘게 커져, 낮은 창(높이 600 안팎)에서는 피커의 윗부분이 화면 밖으로 나가 첫
+  //  항목들을 볼 수도 누를 수도 없었다(조작 규칙 50). 그릴 때마다(패널 높이는 글을 치면 달라진다)와 창 크기가 바뀔 때 잰다.
+  const boxRef = useRef<HTMLDivElement>(null);
+  const fitRef = useRef(() => {});
+  fitRef.current = () => {
+    const box = boxRef.current;
+    const list = listRef.current;
+    if (!box || !list) return;
+    const around = box.offsetHeight - list.offsetHeight; // 머리글·테두리
+    const room = box.getBoundingClientRect().bottom - MENTION_TOP_GAP - around; // 피커의 아래 끝은 패널에 묶여 있다 — 그 위로 쓸 수 있는 높이
+    // 남은 자리보다 크게 잡지 않는다 — 최소 높이를 두면 아주 낮은 창에서는 그만큼 다시 화면 밖으로 나간다(Codex 코드 리뷰). 자리가 한 줄뿐이면
+    //  한 줄만 보이고 안에서 스크롤한다.
+    list.style.maxHeight = `${Math.max(0, Math.min(MENTION_MAX_LIST, Math.floor(room)))}px`;
+  };
+  useLayoutEffect(() => { fitRef.current(); });
+  useEffect(() => {
+    const onResize = () => fitRef.current();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   return (
-    <div className="sl-mention">
+    <div className="sl-mention" ref={boxRef}>
       <div className="sl-mention-head">
         {mention.kind === "@"
           ? trayList.length

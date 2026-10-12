@@ -330,8 +330,14 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
       const saved = await conflict.saveCredit(workspaceId, base, body(base));
       setSettings(saved);
       setNotice(`저장됨 · ${label}`);
-      setView(await manageApi.creditPlan(workspaceId));
       onChanged();
+      // 저장은 끝났다 — 뒤의 다시 읽기가 실패한 것은 저장 실패가 아니다(조작 규칙 41·50). 같이 묶어 '저장하지 못했습니다'로 알리면 창이 열린
+      //  채 남고, 거기서 다시 저장한 추가 크레딧이 새 id 로 한 번 더 기록된다(병합 창이 둘 다 살린다).
+      try {
+        setView(await manageApi.creditPlan(workspaceId));
+      } catch (reason) {
+        setNotice(`저장됨 · ${label} — 화면을 다시 읽지 못했습니다(새로 고치면 맞습니다). ${errorText(reason)}`);
+      }
     } catch (reason) {
       if (!(reason instanceof ManageEditCancelled)) setNotice(`저장하지 못했습니다. ${errorText(reason)}`);
       await load();

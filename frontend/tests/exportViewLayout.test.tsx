@@ -283,9 +283,9 @@ it("저장이 도는 동안 진행률과 취소 단추가 보이고, 취소는 �
   let finish!: (value: { saved: number; skipped: number; errors: never[] }) => void;
   saveFinals.mockReset().mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   const run = { run: 7, kind: "shared", total: 406, done: 12, saved: 12, skipped: 0, failed: 0, running: true, cancelled: false, started_at: 0, ended_at: null };
-  saveFinalsProgress.mockResolvedValue({ progress: run });
-  await mount();
+  await mount(); // 아직 도는 저장이 없다(서버의 진행률 = 없음)
   expect(host.querySelector(".export-progress")!.textContent).toContain("이미 저장된 파일은 건너뜁니다");
+  saveFinalsProgress.mockResolvedValue({ progress: run }); // 저장을 시작하면 서버가 진행률을 낸다
   await act(async () => { button("공유 저장").click(); });
   await answer("예");
   await act(async () => {}); // 첫 조회가 도착한다
@@ -295,7 +295,9 @@ it("저장이 도는 동안 진행률과 취소 단추가 보이고, 취소는 �
   const cancel = () => host.querySelector<HTMLButtonElement>(".export-cancel")!;
   await act(async () => { cancel().click(); });
   expect(saveFinalsCancel).toHaveBeenCalledWith("p1", 7); // 실행 세대를 같이 보낸다
+  saveFinalsProgress.mockResolvedValue({ progress: { ...run, running: false, cancelled: true, ended_at: 1 } }); // 서버도 끝났다고 한다
   await act(async () => { finish({ saved: 12, skipped: 0, errors: [] }); });
+  await act(async () => {});
   expect(host.querySelector(".export-cancel")).toBeNull(); // 끝나면 사라진다
 });
 
@@ -304,9 +306,9 @@ it("취소 요청이 실패하면 알리고 단추를 되돌린다 — 다시 �
   status = { render_path: "R:/render", error: null, shared_supported: true, targets: [target("c0030", false, null, "shared")], history: [] };
   let finish!: (value: { saved: number; skipped: number; errors: never[] }) => void;
   saveFinals.mockReset().mockReturnValue(new Promise((resolve) => { finish = resolve; }));
-  saveFinalsProgress.mockResolvedValue({ progress: { run: 7, kind: "shared", total: 406, done: 12, saved: 12, skipped: 0, failed: 0, running: true, cancelled: false, started_at: 0, ended_at: null } });
   saveFinalsCancel.mockRejectedValueOnce(new Error("502: 서버에 닿지 않습니다"));
   await mount();
+  saveFinalsProgress.mockResolvedValue({ progress: { run: 7, kind: "shared", total: 406, done: 12, saved: 12, skipped: 0, failed: 0, running: true, cancelled: false, started_at: 0, ended_at: null } });
   await act(async () => { button("공유 저장").click(); });
   await answer("예");
   await act(async () => {});
@@ -318,6 +320,43 @@ it("취소 요청이 실패하면 알리고 단추를 되돌린다 — 다시 �
   expect(saveFinalsCancel).toHaveBeenCalledTimes(2);
   expect(cancel().textContent).toBe("멈추는 중…");
   await act(async () => { finish({ saved: 12, skipped: 0, errors: [] }); });
+});
+
+// 23회차(조작 규칙 50, Codex 전수 검토): 저장을 시작하고 다른 관리 탭에 다녀오면 이 화면은 새로 올라온다 — '저장 중'을 이 화면이 시작한
+//  것으로만 알아서, 서버에서 저장이 돌고 있는데도 진행률·취소가 안 보이고 저장 단추가 켜졌다(같은 저장을 한 번 더 줄 세울 수 있었다).
+it("서버에서 이미 저장이 돌고 있으면(떠났다 돌아온 화면·다른 창) 진행률과 취소가 보이고 새 저장은 막힌다 — 끝나면 대상을 다시 읽는다", async () => {
+  status = { render_path: "R:/render", error: null, shared_supported: true, targets: [target("c0030", false, null)], history: [] };
+  const run = { run: 7, kind: "final", total: 40, done: 12, saved: 12, skipped: 0, failed: 0, running: true, cancelled: false, started_at: 0, ended_at: null };
+  saveFinalsProgress.mockResolvedValue({ progress: run });
+  await mount(); // 이 화면은 저장을 시작한 적이 없다
+  expect(host.querySelector(".export-progress")!.textContent).toContain("12 / 40");
+  expect(host.querySelector(".export-cancel")).not.toBeNull();
+  expect(button("최종 저장").disabled).toBe(true);
+  await act(async () => { button("최종 저장").click(); });
+  expect(host.querySelector(".export-modal")).toBeNull();
+  await act(async () => { host.querySelector<HTMLButtonElement>(".export-cancel")!.click(); });
+  expect(saveFinalsCancel).toHaveBeenCalledWith("p1", 7);
+
+  // 그 저장이 끝났다 — 단추가 풀리고, 이 화면이 시작한 것이 아니어도 대상을 다시 읽는다(방금 저장된 것이 '이미 저장'으로 보인다)
+  status = { ...status, targets: [target("c0030", true, null), target("c0031", false, null)] };
+  saveFinalsProgress.mockResolvedValue({ progress: { ...run, done: 40, running: false, cancelled: true, ended_at: 1 } });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1100)); }); // 도는 동안은 1초마다 묻는다
+  await act(async () => {});
+  expect(host.querySelector(".export-cancel")).toBeNull();
+  expect(texts(".export-table .export-badge:not([class*=kind-])")).toEqual(["이미 저장", "새로 저장"]);
+  expect(host.querySelector(".export-progress")!.textContent).toContain("지난 저장: 40건 처리하고 멈춤");
+
+  // Codex 코드 리뷰: 한 번 취소한 뒤 '멈추는 중'이 풀리지 않아 **다음 저장의 취소 단추가 처음부터 잠겨 있었다** — 취소는 그 실행(run)의 것이다.
+  saveFinals.mockReset().mockReturnValue(new Promise(() => {})); // 남은 것을 이 화면에서 다시 저장한다(끝나지 않은 채 둔다)
+  saveFinalsProgress.mockResolvedValue({ progress: { ...run, run: 8, done: 1, total: 5 } }); // 새 실행
+  await act(async () => { button("최종 저장").click(); });
+  await answer("예");
+  await act(async () => {});
+  const cancel = () => host.querySelector<HTMLButtonElement>(".export-cancel")!;
+  expect([cancel().disabled, cancel().textContent]).toEqual([false, "취소"]); // 전엔 [true, "멈추는 중…"]
+  await act(async () => { cancel().click(); });
+  expect(saveFinalsCancel).toHaveBeenLastCalledWith("p1", 8);
+  expect(cancel().textContent).toBe("멈추는 중…");
 });
 
 it("진행률을 못 읽어도(구서버·권한 없음) 저장은 그대로 되고 화면만 종전처럼 보인다", async () => {
