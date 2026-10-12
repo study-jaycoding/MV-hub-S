@@ -135,6 +135,11 @@ export function TagEditor({
 
   const stop = (e: React.SyntheticEvent) => e.stopPropagation();
   const keepFocus = (e: React.MouseEvent) => e.preventDefault(); // 포커스 입력 blur(닫힘) 방지
+  // 초점이 편집기 **밖으로** 나갈 때만 닫는다 — 입력칸의 blur 에 닫으면 Tab 으로 안의 단추(전역 태그·워크스페이스)에 가는 순간 사라졌다
+  //  (조작 규칙 51). 마우스는 keepFocus 가 blur 자체를 막아 전과 같다. 처리 중(워크스페이스 적용)에는 닫지 않는다.
+  const leave = (e: React.FocusEvent<HTMLDivElement>) => {
+    if (!workspaceBusy && !e.currentTarget.contains(e.relatedTarget as Node | null)) onClose?.();
+  };
 
   const applyTags = (next: string[]) => {
     if (showInput) setChips(next);
@@ -201,6 +206,7 @@ export function TagEditor({
       onClick={stop}
       onMouseDown={stop}
       onDoubleClick={stop}
+      onBlur={showInput ? leave : undefined}
     >
       {multi && (
         <div className="te-multi" title="추가는 선택한 카드 전체에, ×(해제)는 이 카드만">
@@ -259,9 +265,6 @@ export function TagEditor({
               setMode(true);
             }
           }}
-          onBlur={() => {
-            if (!workspaceBusy) onClose?.();
-          }}
         />
       )}
       {showInput && workspaceError && (
@@ -302,6 +305,12 @@ export function TagEditor({
                     onMouseDown={(e) => {
                       keepFocus(e);
                       if (e.button !== 0 || workspaceBusy) return; // 왼쪽 단추만 — 우클릭·휠 클릭에 귀속이 바뀌지 않게
+                      void applyWorkspaceCommand(workspacePicker.operation, workspace);
+                    }}
+                    // Tab 으로 닿았으면 Enter·Space 로 적용한다 — mousedown 에만 걸려 있어 키보드로는 아무 일도 없었다(조작 규칙 51)
+                    onKeyDown={(e) => {
+                      if ((e.key !== "Enter" && e.key !== " ") || workspaceBusy) return;
+                      e.preventDefault();
                       void applyWorkspaceCommand(workspacePicker.operation, workspace);
                     }}
                     aria-disabled={workspaceBusy}

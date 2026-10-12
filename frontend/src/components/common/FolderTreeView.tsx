@@ -200,14 +200,19 @@ function FolderTreeRow({
               }
             : undefined
         }
-        onKeyDown={
-          onRowKeyDown
-            ? (e) => {
-                e.stopPropagation(); // 전역 카드선택 단축키(d 등)와 충돌 방지
-                onRowKeyDown(node.path, e);
-              }
-            : undefined
-        }
+        onKeyDown={(e) => {
+          // 키보드만으로도 펼치고 접는다 — 펼침표(▸)는 글자라 Tab 이 닿지 않아, 접힌 폴더의 하위에는 갈 길이 없었다(조작 규칙 51).
+          //  트리의 관례대로 → 펼치기 · ← 접기(WAI-ARIA tree). 고르기(Enter·Space)는 그대로 단추의 것이다.
+          if (canToggle && ((e.key === "ArrowRight" && !open) || (e.key === "ArrowLeft" && open))) {
+            e.preventDefault();
+            e.stopPropagation();
+            onToggle?.(node.path);
+            return;
+          }
+          if (!onRowKeyDown) return;
+          e.stopPropagation(); // 전역 카드선택 단축키(d 등)와 충돌 방지
+          onRowKeyDown(node.path, e);
+        }}
         onContextMenu={
           onContextMenu
             ? (e) => {
