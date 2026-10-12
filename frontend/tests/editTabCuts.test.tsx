@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // 편집 탭 조립 — 컷 목록이 '시퀀스가 있는 프로젝트'의 폴더에서 나오는지, 폴더 고르기의 시퀀스 판정, 편집 키.
 import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { EditTree } from "../src/lib/useEditSequence";
@@ -8,8 +9,10 @@ import type { EditTree } from "../src/lib/useEditSequence";
 const trees = vi.hoisted(() => ({
   p1: { state: "ready", complete: true, note: null, roots: [{ name: "e070", path: "e070", children: [
     { name: "c1", path: "e070/c1" }, { name: "c2", path: "e070/c2" },
+  ] }, { name: "e080", path: "e080", children: [{ name: "k9", path: "e080/k9" }] }] },
+  p2: { state: "ready", complete: true, note: null, roots: [{ name: "other", path: "other" }, { name: "e070", path: "e070", children: [
+    { name: "c1", path: "e070/c1" }, { name: "c2", path: "e070/c2" },
   ] }] },
-  p2: { state: "ready", complete: true, note: null, roots: [{ name: "other", path: "other" }] },
   none: { state: "idle", complete: false, note: null, roots: [] },
 }));
 vi.mock("../src/lib/useEditSequence", async () => {
@@ -79,6 +82,36 @@ it("하위 폴더가 없는 폴더를 고르면 부모가 시퀀스고 그 컷�
   expect(current()).toBe("c2");
   expect(timecode()).toBe("00:00:05:00");
   expect(JSON.parse(localStorage.getItem("ch.editTimeline.last:local")!)).toEqual({ projectId: "p1", seq: "e070" });
+});
+
+// 19회차(조작 규칙 46): D(컷 켜고 끄기)는 화면 상태의 컷(view.cut)을 썼는데, 그것은 재생 위치보다 한 박자 늦다. 시퀀스를 바꾼 그 박자에
+//  재생헤드는 이미 새 시퀀스의 자리에 그려졌고 편집 문서도 새것인데, D 는 앞 시퀀스에서 보던 컷을 새 문서에 '끈 컷'으로 적었다.
+const stale = (click: () => void) => act(() => {
+  flushSync(click); // 시퀀스를 바꿨다 — 그리고 그 박자에
+  document.body.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "d", code: "KeyD" }));
+});
+const cutsOffIn = (key: string) => (JSON.parse(localStorage.getItem(key) ?? "{}") as { cutsOff?: string[] }).cutsOff ?? [];
+
+it("시퀀스를 바꾼 그 박자의 D 는 재생헤드가 옮겨 간 새 시퀀스의 컷에 걸린다 — 앞 시퀀스의 컷을 새 문서에 적지 않는다", () => {
+  mount();
+  expect(current()).toMatch(/^c[12]$/); // 재생헤드는 e070 의 컷에 있다(앞 시험이 남긴 자리일 수 있다)
+  stale(() => folderRow("e080").click());
+  expect(cuts()).toEqual(["k9"]);
+  expect(cutsOffIn("ch.editTimeline:local:p1:e080")).toEqual(["e080/k9"]); // 전엔 ["e070/c1"] 같은, 이 시퀀스에 없는 컷이 적혔다
+});
+
+// Codex 코드 리뷰: '지금 배치에 있는 컷인가'만 봐서는 모자란다 — 다른 프로젝트에 같은 이름의 컷이 있으면 그 검사를 통과해, 재생헤드가 없는 컷이 꺼진다.
+it("다른 프로젝트의 같은 이름 시퀀스로 바꾼 그 박자의 D 도 재생헤드의 컷에 걸린다(앞 프로젝트에서 보던 컷과 이름이 같은 컷이 아니다)", () => {
+  localStorage.setItem("ch.editTimeline:local:p2:e070", JSON.stringify({ v: 1, tracksOff: [], tracksLocked: [], clips: [
+    { cut: "e070/c1", gen: "g1", track: 1, kind: "video", dur: 5 }, { cut: "e070/c2", gen: "g2", track: 1, kind: "video", dur: 5 },
+  ] }));
+  mount();
+  act(() => folderRow("c2").click()); // P1 의 e070/c2 에 재생헤드
+  expect(current()).toBe("c2");
+  act(() => projectRow(1).click()); // P2 를 펼친다 — 같은 이름의 시퀀스 e070 이 있다
+  stale(() => folderRow("e070").click());
+  expect(current()).toBe("c1"); // 새 시퀀스에서 재생헤드는 처음 컷에 있다
+  expect(cutsOffIn("ch.editTimeline:local:p2:e070")).toEqual(["e070/c1"]); // 전엔 ["e070/c2"]
 });
 
 it("편집 키 — 쓴 키만 기본 동작을 막고, 입력칸·다른 창·위에 뜬 창이 있을 때는 듣지 않는다", () => {

@@ -710,9 +710,13 @@ function EditTabInner({
   }, [reloadSignal, reloadList, reloadCounts]);
 
   // 컷(폴더) 켜고 끄기 — 재생헤드가 있는 컷. 숨기기를 켠 채 끄면 그 컷은 타임라인에서 사라지고 재생헤드는 다음 컷으로 간다.
+  //  컷은 **누르는 순간의 재생헤드 자리**에서 구한다(I·O·M 과 같다) — 화면 상태의 컷(view.cut)은 한 박자 늦다: 시퀀스를 바꾼 그 박자에는
+  //  앞 시퀀스의 컷이 남아 있는데 문서는 이미 새것이라, 거기 없는 컷이 새 문서에 '끈 컷'으로 적혔고, 다른 프로젝트에 같은 이름의 컷이
+  //  있으면 재생헤드가 없는 그 컷이 꺼졌다(조작 규칙 46, Codex 코드 리뷰).
   const toggleCut = useCallback(() => {
-    if (cut) applyEdit((current) => toggleCutOff(current, cut, autoOff(cut)));
-  }, [cut, applyEdit, autoOff]);
+    const here = posAt(layout, now())?.cut;
+    if (here) applyEdit((current) => toggleCutOff(current, here, autoOff(here)));
+  }, [layout, now, applyEdit, autoOff]);
   const toggleHideOff = useCallback(() => {
     applyEdit((current) => {
       const next = { ...current };
