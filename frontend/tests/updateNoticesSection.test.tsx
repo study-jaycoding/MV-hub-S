@@ -294,3 +294,16 @@ it.each([
   const labels = [...host.querySelectorAll("button")].map((b) => b.textContent);
   expect(labels.some((text) => text?.startsWith("이 PC에"))).toBe(false); // 안내 글이 아니라 단추만 본다
 });
+
+// 25회차(조작 규칙 52, Codex 전수 검토): 조회가 끝나기 전의 빈 목록을 '판이 없습니다'로 보였다 — NAS 가 느리면 몇 초 동안 틀린 말이다.
+it("판 목록을 아직 못 받았으면 '판이 없습니다'가 아니라 '불러오는 중'이다", async () => {
+  let finish!: (rows: ReleasePackage[]) => void;
+  mocks.packages.mockReturnValue(new Promise<ReleasePackage[]>((resolve) => { finish = resolve; }));
+  await mount();
+  expect(host.textContent).toContain("판 목록을 불러오는 중");
+  expect(host.textContent).not.toContain("릴리스 폴더에 판이 없습니다");
+  await act(async () => { finish([]); });
+  await settle();
+  expect(host.textContent).toContain("릴리스 폴더에 판이 없습니다");
+  expect(host.textContent).not.toContain("불러오는 중");
+});

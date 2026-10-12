@@ -887,6 +887,9 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
   간 것으로는 안 비워져, `:focus`·`:focus-within` 규칙을 보려면 읽기 전에 속성 하나를 건드린다(`tests/hoverButtonsFocusVisible.test.tsx`). 선택자 자체는
   맞춘다(`matches(":focus-within")` 참, `document.hasFocus()` 참). cascade 는 특이도가 아니라 **순서**다 — 뒤의 규칙이 이긴다. 그리고 틀의 가짜 응답은
   **서버 모양 그대로** 준다(`getGenerationsBatch` 의 `materials`) — 빠지면 시험은 통과하고 시험 밖(폴링)에서 던져 vitest 가 1 로 끝난다.
+- ㉛ **폴링 시험은 상태가 안 바뀌는 구간에서 다음 조회를 본다**(25회차 — 규칙 52): `busy` 같은 의존값이 바뀌면 효과가 다시 걸려 새 타이머가 생기므로,
+  '앞 조회가 끝난 뒤 다음을 예약하는 줄'을 지워도 상태 전환마다 한 번은 조회가 나간다 — 같은 응답이 이어지는 동안 **세 번째** 조회가 나가는지로 잡는다
+  (`tests/assetRegistryTab.test.tsx`). 가짜 응답은 `setTimeout` 으로 늦춰 `advanceTimersByTimeAsync(간격 + 지연)` 로 한 바퀴씩 돌린다.
 
 캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
 - ⑤ 복사본은 프로젝트 폴더 경로를 비워, 씬 그림(`asset:` 썸네일)이 **전부 404** 다. 그림이 뜬 상태로 재려면 다음처럼 한다.

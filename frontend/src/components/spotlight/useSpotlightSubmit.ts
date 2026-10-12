@@ -58,6 +58,8 @@ interface UseSpotlightSubmitOptions {
   trayRefs: SpotlightTrayRef[];
   /** 트레이가 지금의 묶임(카드·씬)에 맞춰졌는가(lib/useSpotlightTray). 아니면 trayRefs 는 **앞 카드의 것**이다 — 제출하지 않는다. */
   trayReady: boolean;
+  /** 지금 올리는 중인 레퍼런스(놓은 파일·붙여 넣은 그림)의 수 — 0 이 될 때까지 제출하지 않는다(아래). */
+  importingRefs?: number;
   tunable: ModelParam[];
   workspace: WorkspaceContext;
   setBusy: (busy: boolean) => void;
@@ -94,6 +96,7 @@ export function useSpotlightSubmit({
   paramsModel,
   trayRefs,
   trayReady,
+  importingRefs = 0,
   tunable,
   workspace,
   setBusy,
@@ -121,6 +124,12 @@ export function useSpotlightSubmit({
     // 묶인 카드(씬)가 막 바뀌어 트레이가 아직 앞 카드의 레퍼런스를 들고 있는 한 박자 — 그대로 내면 앞 카드의 레퍼런스로 생성이 나간다
     //  (씬을 바꾼 직후에는 대상 카드도 없어 일반 생성으로. 2026-10-11 Codex 코드 리뷰). 그 사이에 밀려 들어온 제출 키는 받지 않는다.
     if (!trayReady) return;
+    // 놓은 파일·붙여 넣은 그림은 올린 뒤에야 트레이에 들어온다 — 그 사이의 생성은 그 파일이 빠진 요청으로 나가고 레퍼런스는 뒤늦게 나타났다
+    //  (조작 규칙 52, Codex 전수 검토). 끝날 때까지 막고 이유를 보인다.
+    if (importingRefs > 0) {
+      setError("레퍼런스 파일을 가져오는 중입니다 — 끝난 뒤 다시 생성하세요.");
+      return;
+    }
     setError(null);
     if (!isGenerationWorkspaceReady(workspace)) {
       setError("워크스페이스를 확인하는 중입니다. 계정 메뉴에서 공간을 선택해 주세요.");
