@@ -621,7 +621,7 @@
 .cmt-author { font-size: 12px; font-weight: 700; color: var(--text); }
 .cmt-when { font-size: 10.5px; color: var(--muted2); }
 .cmt-acts { margin-left: auto; display: flex; align-items: center; gap: 6px; opacity: 0; transition: opacity 0.12s; }
-.cmt-item:hover > .cmt-meta > .cmt-acts { opacity: 1; }
+.cmt-item:hover > .cmt-meta > .cmt-acts, .cmt-acts:focus-within { opacity: 1; } /* Tab 으로 닿은 답글·수정·삭제도 보인다(조작 규칙 51) */
 .cmt-acts button { background: transparent; border: none; color: var(--muted2); font-size: 11px; padding: 0; cursor: pointer; }
 .cmt-acts button:hover { color: var(--text); }
 .cmt-lock { font-size: 11px; opacity: 0.7; }
