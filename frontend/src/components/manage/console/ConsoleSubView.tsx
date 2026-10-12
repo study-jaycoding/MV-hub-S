@@ -297,12 +297,23 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
     }
   }, [workspaceId, canEdit]);
   useEffect(() => { void load(); }, [load, reloadSignal]);
+  // 마지막에 떠난 조회의 답만 쓴다 — 자동 재조회(reloadSignal)가 저장보다 먼저 떠나 뒤에 도착하면 방금 저장한 역할을 옛 명단으로 덮었다
+  //  (조작 규칙 52, Codex 코드 리뷰). 실패도 그 조회가 마지막일 때만 반영한다.
+  const rolesSeq = useRef(0);
+  // 화면의 역할이 낡았을 수 있는 동안(마지막에 떠난 조회가 아직 안 옴) 역할 알약을 잠근다 — 저장 뒤의 조회가 뒤에 떠난 자동 조회에 밀려 버려지면
+  //  저장의 잠금만으로는 옛 배열로 다음 저장이 나갔다(Codex 코드 리뷰). 마지막 조회의 답(성공·실패)만 이 깃발을 내린다.
+  const [rolesStale, setRolesStale] = useState(false);
   const loadRoles = useCallback(async () => {
+    const mine = ++rolesSeq.current;
+    setRolesStale(true);
     try {
       const table = await manageApi.memberTable(workspaceId);
+      if (mine !== rolesSeq.current) return;
       setRoleTable(table.caps.project_roles ? table : null);
       setProjectId((cur) => (table.projects.some((p) => p.id === cur) ? cur : table.projects[0]?.id ?? ""));
-    } catch { setRoleTable(null); }
+    } catch { if (mine === rolesSeq.current) setRoleTable(null); } finally {
+      if (mine === rolesSeq.current) setRolesStale(false);
+    }
   }, [workspaceId]);
   useEffect(() => { if (canEdit) void loadRoles(); }, [canEdit, loadRoles, reloadSignal]);
   const roleRowOf = (email: string) => roleTable?.rows.find((r) => r.email.toLowerCase() === email.toLowerCase());
@@ -318,7 +329,7 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
       setNotice(`역할을 저장하지 못했습니다. ${errorText(reason)}`);
     } finally {
       setBusy(false);
-      await loadRoles();
+      await loadRoles(); // 다시 읽는 동안 역할 알약은 rolesStale 이 잠근다(조작 규칙 52) — 옛 배열로 다음 저장이 나가지 않게
     }
   };
 
@@ -510,7 +521,7 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
                       return (
                         <td>
                           {locked ? <span title={why}><RolePills roles={roles} /></span> : (
-                            <PillMenu disabled={busy} trigger={<RolePills roles={roles} />}>
+                            <PillMenu disabled={busy || rolesStale} trigger={<RolePills roles={roles} />}>
                               {(close) => <RoleMenuBody roles={roles} close={close} onSave={(next) => void saveRoles(m.name, row!.uid as string, next)} />}
                             </PillMenu>
                           )}

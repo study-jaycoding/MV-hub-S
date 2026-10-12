@@ -222,6 +222,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   const [open, setOpen] = useState<string | null>(null); // 열린 드롭다운 키(파라미터명 또는 'model')
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [importingRefs, setImportingRefs] = useState(0); // 올리는 중인 레퍼런스(놓은 파일·붙여 넣은 그림) — 끝날 때까지 제출하지 않는다(규칙 52)
   // 오류를 밖(App)에도 알린다 — 프롬프트가 숨겨져 있으면 여기 .sl-error 는 안 보이기 때문이다.
   //  콜백은 ref 로 잡아 두어 부모가 익명 함수를 넘겨도 매 렌더마다 다시 돌지 않게 한다.
   const errorChangeRef = useRef(onErrorChange);
@@ -658,6 +659,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     e.preventDefault();
     // 붙여넣은 그림은 이 PC 설치 폴더(captures)에 저장한다(Jay 2026-09-29 옛 방식).
     const startedFor = bindingKeyRef.current;
+    setImportingRefs((n) => n + 1);
     api
       .uploadCapture(blob)
       .then((r) => {
@@ -668,7 +670,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
         // 임포트와 동일하게 에셋창에 변경 신호 — 캡쳐도 실시간 반영되도록.
         notifySpotlightAssetsChanged([{ project: r.project, path: r.path, name: r.name, type: r.type || "image" }]);
       })
-      .catch((err) => flashMsg("캡쳐 추가 실패: " + String(err)));
+      .catch((err) => flashMsg("캡쳐 추가 실패: " + String(err)))
+      .finally(() => setImportingRefs((n) => n - 1));
     return true;
   };
   const onEditorPaste = (e: React.ClipboardEvent) => {
@@ -932,6 +935,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   };
   const addRefFromGen = async (id: string) => {
     const startedFor = bindingKeyRef.current;
+    setImportingRefs((n) => n + 1); // 받아 오는 동안은 제출하지 않는다(놓은 파일과 같다 — 규칙 52, Codex 코드 리뷰)
     try {
       const g = await api.getGeneration(id);
       if (bindingKeyRef.current !== startedFor) return; // 기다리는 사이 고른 카드가 바뀌었다 — 그 카드의 레퍼런스에 넣지 않는다
@@ -967,6 +971,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       }
     } catch (err) {
       setError(String(err));
+    } finally {
+      setImportingRefs((n) => n - 1);
     }
   };
 
@@ -979,6 +985,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     }
     setError(null);
     const startedFor = bindingKeyRef.current;
+    setImportingRefs((n) => n + 1);
     try {
       // 로컬 파일은 이 PC 설치 폴더(imports)에 저장한다(Jay 2026-09-29 옛 방식).
       const res = await api.uploadReferenceFiles(accepted);
@@ -1009,6 +1016,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       }
     } catch (err) {
       setError("외부 파일 가져오기 실패: " + String(err));
+    } finally {
+      setImportingRefs((n) => n - 1);
     }
   };
 
@@ -1078,6 +1087,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     paramsModel,
     trayRefs,
     trayReady,
+    importingRefs,
     tunable,
     workspace,
     setBusy,
