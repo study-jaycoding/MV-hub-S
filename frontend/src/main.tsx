@@ -1,6 +1,7 @@
 import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { PromptProvider } from "./lib/prompt";
+import { installFileDropGuard } from "./lib/media";
 import { EMBED_MODES } from "./lib/popupWindows";
 import { applyAccent, applyReduceMotion, loadAccent, loadLang, loadReduceMotion } from "./lib/theme";
 import { bootSceneStore, readLegacyScenesRaw } from "./lib/sceneBoot";
@@ -21,6 +22,7 @@ const ManageWindow = lazy(() =>
 applyAccent(loadAccent());
 document.documentElement.setAttribute("lang", loadLang());
 applyReduceMotion(loadReduceMotion());
+installFileDropGuard(); // 받는 곳이 없는 자리에 놓인 파일을 브라우저가 새 탭으로 열지 않게(분리 창도 같다)
 
 // `/?embed=assets` 로 열면 Assets 만 독립 창으로 렌더(분리된 브라우저 창).
 const embed = new URLSearchParams(window.location.search).get("embed");

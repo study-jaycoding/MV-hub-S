@@ -24,7 +24,9 @@ export function useAssetDropImport({
 
   // 외부 파일 가져오기 대상만 감지한다. 내부 에셋 드래그는 원본을 '진짜 File' 로 실어(대화창 첨부용)
   //  dataTransfer 에 "Files" 가 잡히지만, 같은 폴더로 되-업로드(중복 생성)하면 안 되므로 제외한다.
+  //  들일 폴더가 없으면(등록한 폴더가 없는 팀) 받지 않는다 — '현재 폴더로 가져오기'를 띄워 놓고 놓으면 아무 일도 없었다.
   const hasFiles = (event: DragEvent) =>
+    !!project &&
     !event.dataTransfer.types.includes(DRAG_TYPES.asset) &&
     dataTransferHasFiles(event.dataTransfer);
 

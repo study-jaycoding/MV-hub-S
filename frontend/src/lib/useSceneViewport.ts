@@ -19,8 +19,10 @@ import { setSceneZoomPct } from "./sceneZoomStore";
 const CAMERA_SAVE_DELAY_MS = 400;
 const FRAME_TRANSITION_MS = 250;
 const FRAME_TRANSITION_CLEAR_MS = 300;
-const WHEEL_OVERLAY_SELECTOR =
-  ".scene-varpop-backdrop, .scene-modelmodal-backdrop, .sl-dropdown, .sl-dockbar";
+/** 보드 안에 뜨는 창의 바탕 — 모델·Comfy 설정·글·복구(`.scene-modelmodal-backdrop`) · 생성 결과(`.scene-varpop-backdrop`) · 타임라인 재생(`.vtl-backdrop`).
+ *  창 위의 휠·끌어 놓기는 창의 것이다 — 뒤 보드가 받지 않는다(휠은 여기, 놓기는 useSceneClipboardDrop). 창이 늘면 여기에 더한다. */
+export const SCENE_WINDOW_SELECTOR = ".scene-varpop-backdrop, .scene-modelmodal-backdrop, .vtl-backdrop";
+const WHEEL_OVERLAY_SELECTOR = `${SCENE_WINDOW_SELECTOR}, .sl-dropdown, .sl-dockbar`;
 
 interface ScenePanStartEvent {
   button: number;
