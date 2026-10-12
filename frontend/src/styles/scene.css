@@ -324,6 +324,20 @@
   position: absolute; border-radius: 12px; display: flex; flex-direction: column;
   background: #0c0d11; box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4); cursor: grab;
 }
+/* 가져오는 중인 파일의 자리 표시(28회차, Jay 결정) — 놓은(붙인) 자리의 점선 상자. 올라가면 그 자리가 진짜 카드가 된다. 보드의 끌기·범위
+   선택을 가로채지 않는다(pointer-events:none, 실패 뒤의 ✕ 만 받는다). lib/useSceneClipboardDrop 의 pendingImports. */
+.scene-import-ghost {
+  position: absolute; z-index: 5; pointer-events: none; box-sizing: border-box;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 8px 10px;
+  border: 1.5px dashed var(--accent); border-radius: 12px; background: rgba(198, 255, 61, 0.06);
+  color: var(--text); font-size: 12px; text-align: center;
+}
+.scene-import-ghost small { color: var(--muted); font-size: 10.5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scene-import-ghost.err { border-color: #e5484d; background: rgba(229, 72, 77, 0.08); }
+.scene-import-ghost-x {
+  pointer-events: auto; position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 6px;
+  border: 1px solid #3a2b2d; background: #1a1215; color: #f0a0a4; font: inherit; font-size: 12px; line-height: 1; cursor: pointer;
+}
 /* 카드 내용만 둥근모서리로 클리핑 — 포트(연결 원)는 이 밖이라 잡기 영역이 안 잘린다 */
 .scene-card-inner {
   flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border-radius: 10px;
@@ -763,7 +777,7 @@
 /* ── Comfy 노드 ── */
 .scene-card-hd.comfy { color: #4dd6c4; background: rgba(60, 210, 190, 0.12); }
 .scene-card-comfy { border-color: rgba(77, 214, 196, 0.5); }
-.scene-comfynode { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.scene-comfynode { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; } /* relative — 아래 .scene-comfynode-busy 덮개의 기준 */
 .scene-comfynode-empty {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 4px; text-align: center; color: var(--muted); font-size: 12px;
@@ -774,6 +788,14 @@
   flex: 1 1 0; min-height: 0; padding: 6px 8px;
   display: flex; flex-direction: column; gap: 6px;
 }
+/* 워크플로를 읽는 중(28회차, Jay 결정) — JSON 을 놓거나 ↻ 를 누른 뒤 응답(최대 30초)까지 카드 본문 위의 반투명 덮개. 클릭은 먹지 않는다
+   (pointer-events:none — 파라미터 칸·API 놓기는 그대로, 잠그는 것은 ↻·실행 단추뿐: 불러오는 중에도 새 파일은 받는다, 규칙 39). */
+.scene-comfynode-busy {
+  position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 0 12px; text-align: center;
+  background: rgba(12, 13, 17, 0.84); color: var(--text); font-size: 12px;
+}
+.scene-comfynode-busy small { color: var(--muted); font-size: 10.5px; }
 .scene-comfynode-name {
   display: flex; align-items: center; gap: 6px;
   font-size: 11px; color: var(--muted); font-weight: 600;
@@ -1315,6 +1337,7 @@
   font: inherit; font-size: 11.5px; font-weight: 700; cursor: pointer;
 }
 .scene-recovery-more:hover { border-color: var(--accent); color: var(--accent); }
+.scene-recovery-more .busy-ring { margin-right: 6px; } /* '불러오는 중… (n / m)' 앞의 고리(28회차) */
 /* 어디에 있었나 — 가까울수록 또렷하게. 라임 채움=이 카드, 라임 테두리=이 캔버스, 회색=다른 캔버스 */
 .scene-recovery-from {
   display: inline-flex; align-items: center; gap: 5px;

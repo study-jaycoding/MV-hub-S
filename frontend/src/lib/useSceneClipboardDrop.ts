@@ -1,5 +1,5 @@
 import { backgroundKeysBlocked } from "./keyGate";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, DragEvent as ReactDragEvent, MutableRefObject, SetStateAction } from "react";
 import { api } from "../api";
 import { DRAG_TYPES } from "./dragTypes";
@@ -53,10 +53,24 @@ interface UseSceneClipboardDropOptions {
   cardHeight: number;
 }
 
+/** 올리는 중인 파일(놓기·붙여넣기)의 자리 표시 — 보드가 놓은 자리에 점선 카드로 그린다(28회차, Jay 결정). 응답이 오면 사라지고(성공·씬 바뀜·
+ *  보드 떠남 모두 — 표시는 올리기의 것이다), 실패하면 `error` 글을 든 채 남아 ✕ 로 치운다. */
+export interface PendingSceneImport {
+  id: string;
+  sceneId: string; // 놓은 순간의 씬 — 보드는 지금 씬의 것만 그린다
+  x: number; // 놓은(붙인) 자리의 가운데(캔버스 좌표)
+  y: number;
+  count: number; // 올리는 파일 수(한 요청 — 파일별 진행은 모른다)
+  names: string[];
+  error: string | null;
+}
+
 interface SceneClipboardDropHandlers {
   copySelectedNodes: () => void;
   onDragOver: (event: ReactDragEvent) => void;
   onDrop: (event: ReactDragEvent) => void;
+  pendingImports: PendingSceneImport[];
+  dismissPendingImport: (id: string) => void;
 }
 
 // 캔버스가 탭 전환 등으로 다시 마운트돼도 방금 복사한 노드는 유지한다. 시스템 클립보드에는
@@ -66,6 +80,9 @@ let sceneClipboardSnapshot: SceneClipboard | null = null;
 // 사용자가 그 사이 외부에서 다른 것을 복사한 것이므로 옛 노드 스냅샷을 붙이지 않는다.
 // null = 표식 기록 실패(클립보드 권한 등) — 그땐 기존 이미지 지문 휴리스틱만 쓴다.
 let sceneClipboardMarker: string | null = null;
+
+// 올리기에 실패한 자리 표시의 글 — 카드 자리에 남는다(토스트는 곧 사라진다).
+const IMPORT_FAILED = "넣지 못했습니다 — 다시 놓아 주세요";
 
 const hasAssetDrag = (dataTransfer: DataTransfer) =>
   Array.from(dataTransfer.types).includes(DRAG_TYPES.asset);
@@ -134,6 +151,26 @@ export function useSceneClipboardDrop(
       aliveRef.current = false;
     };
   }, []);
+  // 올리는 중인 파일의 자리 표시 — 함수형 갱신 없이 ref 사본으로 새 배열을 만든다(규칙 54). 내려간 보드에는 쓰지 않는다. 조작은 ref 에 담아
+  //  둔 고정 함수들(아래 콜백들의 deps 에 들지 않게 — 셋 다 ref 와 setState 만 쓴다).
+  const pendingRef = useRef<PendingSceneImport[]>([]);
+  const [pendingImports, setPendingImports] = useState<PendingSceneImport[]>(pendingRef.current);
+  const pendingOpsRef = useRef<{
+    add: (entry: PendingSceneImport) => void;
+    patch: (id: string, patch: Partial<PendingSceneImport>) => void;
+    dismiss: (id: string) => void;
+  } | null>(null);
+  if (!pendingOpsRef.current) {
+    const set = (next: PendingSceneImport[]) => {
+      pendingRef.current = next;
+      if (aliveRef.current) setPendingImports(next);
+    };
+    pendingOpsRef.current = {
+      add: (entry) => set([...pendingRef.current, entry]),
+      patch: (id, patch) => set(pendingRef.current.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry))),
+      dismiss: (id) => set(pendingRef.current.filter((entry) => entry.id !== id)),
+    };
+  }
 
   const addReferenceCards = useCallback(
     (refs: SceneRef[], centerX: number, centerY: number, connectToGenerationIds?: string[]) => {
@@ -183,9 +220,12 @@ export function useSceneClipboardDrop(
       };
       if (!accepted.length) return tell();
       const sceneId = sceneAtDrop ?? optionsRef.current.sceneIdRef.current;
+      const pendingId = uid();
+      pendingOpsRef.current!.add({ id: pendingId, sceneId, x: centerX, y: centerY, count: accepted.length, names: accepted.map((file) => file.name), error: null });
       try {
         // 로컬 파일은 이 PC 설치 폴더(imports)에만 둔다 — 서버에 올리지 않는다(Jay 2026-09-29 옛 방식).
         const response = await api.uploadReferenceFiles(accepted);
+        pendingOpsRef.current!.dismiss(pendingId); // 카드를 넣는 것과 같은 묶음(React 가 한 번에 그린다) — 자리 표시가 카드로 바뀐다
         const items = response.saved || [];
         left.push(...(response.skipped || []));
         let switched = "";
@@ -206,6 +246,7 @@ export function useSceneClipboardDrop(
       } catch (error) {
         console.warn("[scene] 외부 파일 레퍼런스 추가 실패", error);
         // 알린다(조작 규칙 41) — 전엔 콘솔에만 남아, 놓은 파일이 들어오는 중인지·못 쓰는 파일인지·실패했는지 화면으로는 알 수 없었다
+        pendingOpsRef.current!.patch(pendingId, { error: IMPORT_FAILED }); // 자리 표시가 빨갛게 남는다(✕ 로 치움) — 토스트는 곧 사라지므로
         flashMsg("파일을 캔버스에 넣지 못했습니다 — 다시 놓아 주세요.");
       }
     },
@@ -408,10 +449,13 @@ export function useSceneClipboardDrop(
         }
 
         const sceneId = current.sceneIdRef.current;
+        const pendingId = uid();
+        pendingOpsRef.current!.add({ id: pendingId, sceneId, x: centerX, y: centerY, count: 1, names: ["붙여 넣은 그림"], error: null });
         // 붙여넣은 그림은 이 PC 설치 폴더(captures)에만 둔다(Jay 2026-09-29 옛 방식).
         void api
           .uploadCapture(image)
           .then((result) => {
+            pendingOpsRef.current!.dismiss(pendingId);
             if (!aliveRef.current) {
               flashMsg("붙여 넣은 그림을 가져왔지만, 그사이 캔버스를 떠나 넣지 않았습니다 — Assets 에서 끌어 넣으세요.");
             } else if (optionsRef.current.sceneIdRef.current === sceneId) {
@@ -440,6 +484,7 @@ export function useSceneClipboardDrop(
           })
           .catch((error) => {
             console.warn("[scene] 캡쳐 붙여넣기 실패", error);
+            pendingOpsRef.current!.patch(pendingId, { error: IMPORT_FAILED });
             flashMsg("붙여 넣은 그림을 캔버스에 넣지 못했습니다 — 다시 붙여 넣어 주세요.");
           });
         return;
@@ -511,5 +556,5 @@ export function useSceneClipboardDrop(
     };
   }, [addReferenceCards, pasteCopiedNodes]);
 
-  return { copySelectedNodes, onDragOver, onDrop };
+  return { copySelectedNodes, onDragOver, onDrop, pendingImports, dismissPendingImport: pendingOpsRef.current.dismiss };
 }

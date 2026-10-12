@@ -366,6 +366,64 @@ it("프로젝트 멤버 — 지금 값을 읽는 사이·여럿을 넣는 사이
   }
 });
 
+// ── 28회차(Jay 결정 — "…중" 표시): ✎ 를 누른 뒤 응답(기획·폴더 조회)까지 아무 표시가 없어 또 눌렀다 ──
+it("프로젝트 설정 창 — ✎ 의 조회가 도는 동안 그 줄의 ✎ 만 고리로 바뀌고 잠긴다(다른 줄은 그대로), 응답이 오면 창이 열리고 표시가 걷힌다 · 실패해도 걷힌다", async () => {
+  mocks.projects.mockResolvedValue({ projects: [
+    { id: "p", name: "첫째", workspace_id: "ws", workspace_name: "WS", kind: "team" },
+    { id: "q", name: "둘째", workspace_id: "ws", workspace_name: "WS", kind: "team" },
+  ] });
+  mocks.projectFolder.mockResolvedValue({ project_id: "x", root_path: "", selected_path: "", tree: null });
+  const waiting: Record<string, (value: unknown) => void> = {};
+  const failing: Record<string, (reason: Error) => void> = {};
+  mocks.getPlanning.mockImplementation((pid: string) => new Promise((resolve, reject) => { waiting[pid] = resolve; failing[pid] = reject; }));
+  await mount();
+  await clickTab("프로젝트");
+  const settings = () => [...host.querySelectorAll<HTMLButtonElement>('.admin-pactions button[title="프로젝트 설정"]')];
+  const hint = () => host.querySelector(".admin-pact-hint")?.textContent ?? null;
+  await act(async () => { settings()[0].click(); });
+  expect(settings()[0].disabled).toBe(true);
+  expect(settings()[0].querySelector(".busy-ring")).not.toBeNull();
+  expect(hint()).toBe("설정 불러오는 중…");
+  expect(settings()[1].disabled).toBe(false); // 다른 줄은 그대로
+  await act(async () => { settings()[0].click(); }); // 잠긴 단추 — 조회가 또 나가지 않는다
+  expect(mocks.getPlanning).toHaveBeenCalledTimes(1);
+  await act(async () => { failing.p(new Error("500: 서버 오류")); }); // 실패 — 표시는 걷히고 ✎ 가 돌아온다
+  await settle();
+  expect(hint()).toBeNull();
+  expect(settings()[0].disabled).toBe(false);
+  expect(settings()[0].textContent).toBe("✎");
+  await act(async () => { settings()[0].click(); });
+  expect(hint()).toBe("설정 불러오는 중…");
+  await act(async () => { waiting.p({}); });
+  await settle();
+  expect(host.querySelector('.admin-project-dialog input[placeholder="프로젝트 이름"]')).not.toBeNull();
+  expect(hint()).toBeNull();
+  expect(settings()[0].disabled).toBe(false);
+  // ✎ 를 누르고 응답 전에 '+ 새 프로젝트' — 순번이 넘어가므로 돌던 조회의 표시는 그 자리에서 걷힌다(그 조회의 finally 는 순번이 달라 안 걷는다)
+  await pressEscape();
+  await act(async () => { settings()[0].click(); });
+  expect(hint()).toBe("설정 불러오는 중…");
+  await act(async () => { host.querySelector<HTMLButtonElement>(".admin-add")!.click(); });
+  expect(hint()).toBeNull();
+  expect(settings()[0].disabled).toBe(false);
+  await act(async () => { waiting.p({}); }); // 늦게 온 앞 조회 — 표시를 되살리지 않는다
+  await settle();
+  expect(hint()).toBeNull();
+  // 첫째의 ✎ → 둘째의 ✎ → 첫째의 조회가 **먼저** 끝남: 표시는 둘째의 것이라 그대로다(순번이 다른 조회의 끝은 표시를 걷지 않는다)
+  await pressEscape();
+  await act(async () => { settings()[0].click(); });
+  await act(async () => { settings()[1].click(); });
+  expect(settings()[1].disabled).toBe(true);
+  await act(async () => { failing.p(new Error("500: 서버 오류")); });
+  await settle();
+  expect(hint()).toBe("설정 불러오는 중…");
+  expect(settings()[1].disabled).toBe(true);
+  await act(async () => { waiting.q({}); });
+  await settle();
+  expect(host.querySelector<HTMLInputElement>('.admin-project-dialog input[placeholder="프로젝트 이름"]')?.value).toBe("둘째");
+  expect(hint()).toBeNull();
+});
+
 // ── 13회차(조작 규칙 40): 늦게 온 조회 응답은 지금 대상의 것일 때만 화면에 넣는다 ──
 it("프로젝트 설정 창 — 늦게 온 앞 프로젝트의 조회가 그사이 연 다른 창(다른 프로젝트의 설정·새 프로젝트)을 갈아 끼우지 않는다", async () => {
   mocks.projects.mockResolvedValue({ projects: [

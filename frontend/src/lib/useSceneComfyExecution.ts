@@ -41,6 +41,9 @@ import {
   type SceneModelCfg,
 } from "./scenes";
 
+// 워크플로를 읽는 중의 실행을 막을 때의 안내(카드 단추는 잠겨 있고, 본문 결과물의 재생성·연결된 렌더에서 오는 실행이 여기 닿는다).
+export const WORKFLOW_LOADING_MESSAGE = "워크플로를 읽는 중입니다 — 끝난 뒤 실행하세요.";
+
 export interface SaveComfyOptions {
   silent?: boolean;
   elapsedSeconds?: number;
@@ -133,6 +136,9 @@ interface UseSceneComfyExecutionOptions {
   // 제출까지 그대로 전달한다(실행 중 하단 모델을 바꿔도 유료 요청에 섞이지 않게).
   getGenerationFallbackModel?: () => SceneModelCfg | null;
   onComfyRunningChange?: (items: { id: string; name: string }[]) => void;
+  // 그 카드가 워크플로를 읽는 중인가(JSON 놓기·↻ — SceneBoard 의 comfyBusy). 읽는 중의 실행은 교체 전 워크플로로 나간다 — 입구마다(카드의 실행 단추·
+  //  본문 결과물의 재생성·연결된 렌더 카드) 막지 않고 여기 한 곳에서 막는다(28회차 ③, Codex 코드 리뷰 P2).
+  isWorkflowLoading?: (cardId: string) => boolean;
 }
 
 // SceneBoard의 Comfy 실행 수명주기 전용 훅.
@@ -152,6 +158,7 @@ export function useSceneComfyExecution({
   onRenderCardRuns,
   getGenerationFallbackModel,
   onComfyRunningChange,
+  isWorkflowLoading,
 }: UseSceneComfyExecutionOptions) {
   const orchestratingRef = useRef(false);
   const [comfyWaitingIds, setComfyWaitingIds] = useState<Set<string>>(new Set());
@@ -288,6 +295,10 @@ export function useSceneComfyExecution({
     flushPending();
     const card = cardsRef.current.find((candidate) => candidate.id === cardId);
     if (!card?.comfyCfg?.content) return false;
+    if (isWorkflowLoading?.(cardId)) {
+      flashMsg(WORKFLOW_LOADING_MESSAGE); // 교체 전 워크플로로 나가는 실행 — 시작하지 않는다(28회차 ③)
+      return false;
+    }
     const batch = cardBatch(card);
     const sceneId = sceneIdRef.current;
     const configSnapshot: SceneComfyConfigSnapshot = {
@@ -435,6 +446,10 @@ export function useSceneComfyExecution({
     isPlanCurrent: () => boolean,
   ): Promise<{ runs: SceneGenerationRun[]; aborted: boolean }> => {
     flushPending();
+    if (plan.comfyIds.some((id) => isWorkflowLoading?.(id))) {
+      flashMsg(WORKFLOW_LOADING_MESSAGE); // 배치도 시작하지 않는다 — 옛 설정을 잡아 돌리게 된다(28회차 ③)
+      return { runs: [], aborted: true };
+    }
     const executionStillCurrent = () =>
       sceneIdRef.current === sceneId && isPlanCurrent();
     const configSnapshots = new Map<string, SceneComfyConfigSnapshot>();

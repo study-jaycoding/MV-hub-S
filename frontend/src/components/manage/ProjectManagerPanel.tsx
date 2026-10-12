@@ -272,8 +272,12 @@ export function ProjectManagerPanel({
   // 설정 창을 여는 조회의 순번 — 늦게 온 앞 조회가 그사이 연 다른 창(다른 프로젝트의 설정·새 프로젝트)을 갈아 끼우지 않게 한다(조작 규칙 40).
   //  전엔 A 의 ✎ 를 누르고 응답 전에 B 의 ✎(또는 '+ 새 프로젝트')를 누르면, 늦게 온 A 가 B 의 창과 적던 글을 A 로 바꿨다.
   const settingsOpenSeqRef = useRef(0);
+  // 설정 조회가 도는 줄(프로젝트 id) — ✎ 를 누른 뒤 응답까지 아무 표시가 없어 또 눌렀다(25회차 미룸 → 28회차 Jay 결정). 그 줄의 ✎ 만 고리로 바뀌고
+  //  잠긴다, 다른 줄은 그대로(누르면 순번이 넘어가 표시가 그 줄로 옮겨 간다).
+  const [settingsLoadingId, setSettingsLoadingId] = useState<string | null>(null);
   const createProject = () => {
     settingsOpenSeqRef.current += 1;
+    setSettingsLoadingId(null); // 순번이 넘어갔다 — 돌던 ✎ 조회의 표시는 여기서 걷는다(그 조회의 finally 는 순번이 달라 안 걷는다)
     const workspaceId = workspaceOptions[0]?.id || "";
     setProjectDialog({
       mode: "create",
@@ -288,6 +292,7 @@ export function ProjectManagerPanel({
   };
   const renameProject = async (p: Project) => {
     const seq = ++settingsOpenSeqRef.current;
+    setSettingsLoadingId(p.id);
     try {
       const [loadedFolder, planning] = await Promise.all([
         projFolders[p.id]
@@ -312,6 +317,8 @@ export function ProjectManagerPanel({
     } catch (reason) {
       if (seq !== settingsOpenSeqRef.current) return; // 그사이 다른 창을 열었다 — 앞 조회의 실패를 그 위에 알리지 않는다
       setActMsg(`프로젝트 설정을 불러오지 못했습니다. ${String(reason).replace(/^Error:\s*/, "")}`);
+    } finally {
+      if (seq === settingsOpenSeqRef.current) setSettingsLoadingId(null); // 뒤에 다른 조회가 시작됐으면 표시는 그쪽 것이다
     }
   };
   const saveProjectFolderLink = async (pid: string, rootPath: string, selectedPath: string) => {
@@ -616,9 +623,18 @@ export function ProjectManagerPanel({
                       </button>
                       {caps.createProject && (
                         <>
-                          <button onClick={() => renameProject(p)} title="프로젝트 설정">
-                            ✎
+                          <button
+                            onClick={() => renameProject(p)}
+                            title="프로젝트 설정"
+                            disabled={settingsLoadingId === p.id}
+                            aria-busy={settingsLoadingId === p.id || undefined}
+                            className={settingsLoadingId === p.id ? "on" : ""}
+                          >
+                            {settingsLoadingId === p.id ? <i className="busy-ring" aria-hidden="true" /> : "✎"}
                           </button>
+                          {settingsLoadingId === p.id && (
+                            <span className="admin-pact-hint" role="status">설정 불러오는 중…</span>
+                          )}
                           <button
                             className="admin-pact-archive"
                             onClick={() => toggleArchive(p)}

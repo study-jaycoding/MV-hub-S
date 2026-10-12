@@ -51,7 +51,7 @@ function generationProps(g: Generation, h: HistPass): ComponentProps<typeof Canv
 }
 function comfyProps(g: Generation, h: HistPass): ComponentProps<typeof ComfyCard> {
   const c = card("comfy", g);
-  return { card: c, sel: false, fill: true, width: 180, runningLocal: false,
+  return { card: c, sel: false, fill: true, width: 180, runningLocal: false, loadingWorkflow: false,
     laneDelta: () => 0, getNodePreview: () => noop, hist: h,
     graph: { cards: [c], cardsById: new Map([[c.id, c]]), edges: [], refParents: {}, genData: { [g.id]: g } },
     tagEdit: { cardId: null, nodeGenId: null, enabled: false, hasAutoTags: false,

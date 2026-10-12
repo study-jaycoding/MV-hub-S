@@ -680,6 +680,7 @@ export function SceneBoard({
     detachedNext: { scope: "scene" | "other"; cursor: CardHistoryCursor } | null;
     detachedShown: number; // 위 칸에 지금 보여주는 개수('더 보기'로 늘어난다)
     detachedTotal: number; // 이미 받아 둔 재료로 판정된 전체 후보 수(표시분 + 남은 것)
+    detachedExpanding: boolean; // '더 보기'로 받아 둔 재료의 본문을 더 받는 중 — 단추가 그대로라 또 눌렸다(28회차, Jay 결정): 잠그고 글을 바꾼다
     claimingId: string | null;
     error: string | null;
     query: string; // 아래 칸 검색어
@@ -1333,20 +1334,6 @@ export function SceneBoard({
     if (!target || !onCanvasCardHistory) return;
     const { cardId } = target;
     const shown = target.detachedShown + DETACHED_SHOWN;
-    // ① 이미 받아 둔 재료에 아직 안 보여준 후보가 남아 있으면 그것부터 편다(조회 없음).
-    if (target.detachedTotal > target.detachedShown) {
-      const mySeq = recoverySeqRef.current;
-      const part = await buildDetached(cardId, target.detachedLinks, shown);
-      setCanvasRecovery((current) =>
-        current?.cardId === cardId && mySeq === recoverySeqRef.current
-          ? { ...current, ...part, detachedShown: shown }
-          : current,
-      );
-      return;
-    }
-    // ② 다 폈으면 더 읽어 온다 — 멈춘 자리부터, 없으면 다른 캔버스로 범위를 넓힌다.
-    const resume = target.detachedNext;
-    const scope = resume ? resume.scope : "other";
     const mySeq = recoverySeqRef.current;
     const patch = (next: Partial<NonNullable<typeof canvasRecovery>>) =>
       setCanvasRecovery((current) =>
@@ -1354,6 +1341,21 @@ export function SceneBoard({
           ? { ...current, ...next }
           : current,
       );
+    // ① 이미 받아 둔 재료에 아직 안 보여준 후보가 남아 있으면 그것부터 편다(목록 조회는 없지만 본문(onLoadGenerations)은 받아 온다 —
+    //  그동안 단추를 잠그고 '불러오는 중'으로 보인다. 전엔 단추가 그대로라 또 눌려 같은 본문을 두 번 받았다).
+    if (target.detachedTotal > target.detachedShown) {
+      patch({ detachedExpanding: true }); // 응답 전의 다시 누름은 단추의 disabled 가 막는다(핸들러 가드는 두지 않는다 — 12회차)
+      try {
+        const part = await buildDetached(cardId, target.detachedLinks, shown);
+        patch({ ...part, detachedShown: shown, detachedExpanding: false });
+      } catch {
+        patch({ detachedExpanding: false });
+      }
+      return;
+    }
+    // ② 다 폈으면 더 읽어 온다 — 멈춘 자리부터, 없으면 다른 캔버스로 범위를 넓힌다.
+    const resume = target.detachedNext;
+    const scope = resume ? resume.scope : "other";
     patch({ otherScenes: "loading" });
     try {
       const page = await fetchDetachedLinks(
@@ -1395,6 +1397,7 @@ export function SceneBoard({
       detachedNext: null,
       detachedShown: DETACHED_SHOWN,
       detachedTotal: 0,
+      detachedExpanding: false,
       claimingId: null,
       error: null,
       query: "",
@@ -1918,7 +1921,7 @@ export function SceneBoard({
     );
 
   // 노드 복사, 캡처 붙여넣기, 에셋/파일 드롭은 전용 훅이 브라우저 이벤트와 업로드 수명주기를 맡는다.
-  const { copySelectedNodes, onDragOver, onDrop } = useSceneClipboardDrop({
+  const { copySelectedNodes, onDragOver, onDrop, pendingImports, dismissPendingImport } = useSceneClipboardDrop({
     frozenRef: switchingRef,
     sceneIdRef,
     cardsRef,
@@ -2374,11 +2377,34 @@ export function SceneBoard({
   //  · 반영된 순번은 **씬과 카드**로 적는다 — 같은 씬 파일을 두 번 가져오면 카드 id 가 같다(다른 씬의 반영이 이 씬의 불러오기를 버리지 않게).
   const comfyLoads = useRef({ next: 0, applied: new Map<string, number>() }).current;
   const comfyLoadKey = (sceneId: string, cardId: string) => `${sceneId}\n${cardId}`;
+  // 워크플로를 읽는 중인 카드(키 = comfyLoadKey) — JSON 을 놓거나 ↻ 를 누른 뒤 응답(Comfy 서버 조회, 최대 30초)까지 카드가 그대로라 또
+  //  눌렀다(28회차, Jay 결정). 카드는 덮개를 보이고 ↻·실행을 잠근다(새 파일은 계속 받는다 — 규칙 39). 돌고 있는 수는 ref 로 세고 0↔1 에서만
+  //  state 를 바꾼다. 함수형 갱신 없이 ref 사본으로 새 Set 을 만든다(규칙 54).
+  const comfyBusyCountRef = useRef(new Map<string, number>());
+  const comfyBusyRef = useRef(new Set<string>());
+  const [comfyBusy, setComfyBusy] = useState<Set<string>>(comfyBusyRef.current);
+  const beginComfyBusy = (key: string) => {
+    const next = (comfyBusyCountRef.current.get(key) ?? 0) + 1;
+    comfyBusyCountRef.current.set(key, next);
+    if (next !== 1) return;
+    comfyBusyRef.current = new Set(comfyBusyRef.current).add(key);
+    setComfyBusy(comfyBusyRef.current);
+  };
+  const endComfyBusy = (key: string) => {
+    const next = (comfyBusyCountRef.current.get(key) ?? 1) - 1;
+    if (next > 0) return void comfyBusyCountRef.current.set(key, next);
+    comfyBusyCountRef.current.delete(key);
+    const set = new Set(comfyBusyRef.current);
+    set.delete(key);
+    comfyBusyRef.current = set;
+    setComfyBusy(set);
+  };
   const applyComfyApi = async (cardId: string, file: File): Promise<boolean> => {
     const sid = sceneIdRef.current; // 파싱 대기 중 씬 전환되면 다른 씬에 반영 안 함
     const seq = ++comfyLoads.next;
     const key = comfyLoadKey(sid, cardId);
     const stale = () => sceneIdRef.current !== sid || (comfyLoads.applied.get(key) ?? 0) > seq;
+    beginComfyBusy(key);
     try {
       const content = await file.text();
       if (stale()) return false;
@@ -2419,6 +2445,8 @@ export function SceneBoard({
       //  들어간 줄 알고 옛 워크플로를 실행할 수 있었다. 낡은 불러오기(그사이 다른 것이 반영됐거나 씬을 떠났다)의 실패는 알리지 않는다.
       if (!stale()) flashMsg(`워크플로를 불러오지 못했습니다 — 카드는 그대로입니다. ${reason instanceof Error ? reason.message : ""}`.trim());
       return false;
+    } finally {
+      endComfyBusy(key);
     }
   };
   // comfy 노드: 파일 선택으로 API 교체(.json). 버튼에서 호출 — 숨은 input 을 즉석 생성.
@@ -2438,6 +2466,8 @@ export function SceneBoard({
     const content = cardsRef.current.find((c) => c.id === cardId)?.comfyCfg?.content;
     if (!content) return;
     const sid = sceneIdRef.current;
+    const key = comfyLoadKey(sid, cardId);
+    beginComfyBusy(key);
     try {
       const res = await comfyApi.parse(content, []);
       if (sceneIdRef.current !== sid) return;
@@ -2449,6 +2479,8 @@ export function SceneBoard({
       if (sceneIdRef.current === sid && cardsRef.current.find((c) => c.id === cardId)?.comfyCfg?.content === content) {
         flashMsg(`워크플로를 다시 읽지 못했습니다. ${reason instanceof Error ? reason.message : ""}`.trim());
       }
+    } finally {
+      endComfyBusy(key);
     }
   };
   // comfy 노드 입력 수집 — 연결된 레퍼런스/생성물/리스트를 공간 순서(위→아래,왼→오)대로,
@@ -2620,6 +2652,8 @@ export function SceneBoard({
     onRenderCardRuns,
     getGenerationFallbackModel,
     onComfyRunningChange,
+    // 워크플로를 읽는 중인 카드의 실행은 입구(훅)에서 막는다 — 카드의 실행 단추 말고도 본문 결과물의 재생성·연결된 렌더가 실행을 부른다(28회차 ③).
+    isWorkflowLoading: (cardId) => comfyBusyRef.current.has(comfyLoadKey(sceneIdRef.current, cardId)),
   });
   // render 노드: 특정 생성카드의 체크 토글(체크된 카드만 Render 대상). unchecked 목록에 넣고 뺀다.
   const toggleRenderCheck = (renderId: string, genCardId: string) => {
@@ -4034,6 +4068,38 @@ export function SceneBoard({
     >
       <div className="scene-grid" ref={gridRef} />
       <div className="scene-canvas" ref={canvasRef} style={{ transformOrigin: "0 0" }}>
+        {/* 가져오는 중인 파일의 자리 표시(28회차, Jay 결정) — 놓은(붙인) 자리에 점선 카드. 올라가면 그 자리가 진짜 카드가 된다(레퍼런스 카드가
+            놓이는 자리와 같은 식: 가운데에서 N 장 폭의 절반). 실패하면 빨간 테두리와 까닭이 남고 ✕ 로 치운다. 지금 씬의 것만 그린다. */}
+        {pendingImports.filter((p) => p.sceneId === scene.id).map((p) => {
+          const width = CARD_W + (p.count - 1) * (CARD_W + 20);
+          return (
+            <div
+              key={p.id}
+              className={"scene-import-ghost" + (p.error ? " err" : "")}
+              role="status"
+              style={{ left: p.x - width / 2, top: p.y - CARD_H / 2, width, height: CARD_H }}
+            >
+              {!p.error && <i className="busy-ring lg" aria-hidden="true" />}
+              <b>{p.error ? p.error : p.count > 1 ? `가져오는 중… ${p.count}개` : "가져오는 중…"}</b>
+              <small>{p.names[0]}{p.names.length > 1 ? ` 외 ${p.names.length - 1}` : ""}</small>
+              {p.error && (
+                <button
+                  type="button"
+                  className="scene-import-ghost-x"
+                  title="치우기"
+                  aria-label="치우기"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    dismissPendingImport(p.id);
+                  }}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          );
+        })}
         {/* 그룹 프레임(펼침)·막대(접힘) — 카드 뒤(맨 앞 렌더). 헤더만 잡기/이름변경/접기 가능 */}
         {groupViews.map(({ g, frame, bar }) => {
           const collapsed = !!g.collapsed;
@@ -4588,6 +4654,7 @@ export function SceneBoard({
                   fill={fill}
                   width={widthOf(card)}
                   runningLocal={runningComfyIds.has(card.id)}
+                  loadingWorkflow={comfyBusy.has(comfyLoadKey(scene.id, card.id))}
                   laneDelta={laneDelta}
                   getNodePreview={getNodePreview}
                   lastViewed={genViews.lastCardId === card.id}
@@ -5084,13 +5151,19 @@ export function SceneBoard({
                         <button
                           type="button"
                           className="scene-recovery-more"
-                          disabled={canvasRecovery.otherScenes === "loading"}
+                          disabled={canvasRecovery.otherScenes === "loading" || canvasRecovery.detachedExpanding}
+                          aria-busy={canvasRecovery.otherScenes === "loading" || canvasRecovery.detachedExpanding || undefined}
                           onClick={() => void loadMoreDetached()}
                         >
+                          {(canvasRecovery.otherScenes === "loading" || canvasRecovery.detachedExpanding) && (
+                            <i className="busy-ring" aria-hidden="true" />
+                          )}
                           {canvasRecovery.otherScenes === "loading"
                             ? "찾는 중…"
+                            : canvasRecovery.detachedExpanding
+                              ? `불러오는 중… (${canvasRecovery.detachedShown} / ${canvasRecovery.detachedTotal})`
                             : canvasRecovery.detachedTotal > canvasRecovery.detachedShown
-                              ? `더 보기 (${canvasRecovery.detachedTotal - canvasRecovery.detachedShown})`
+                              ? `더 보기 (${canvasRecovery.detachedTotal - canvasRecovery.detachedShown}개 남음)`
                               : canvasRecovery.detachedNext
                                 ? "더 찾기 (여기까지만 확인했습니다)"
                                 : "다른 캔버스에서도 찾기"}
