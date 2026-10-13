@@ -578,6 +578,20 @@ async def _process_claimed_intent(
     ]
     async with repo.async_share_state_action_locks(lock_keys):
         try:
+            # 사이클의 lease 갱신은 잠금 전이다 — 잠금을 기다리는 사이 같은 원장에 새 요청(새 seq)이 서버·로컬 반영까지 끝냈을
+            # 수 있다. 쥔 채로 다시 확인하고, 졌으면 재관측·원격 정리(합성의 unpublish)·로컬 적용을 모두 하지 않는다. 로컬
+            # 적용은 자체 CAS 가 막지만 이미 보낸 원격 정리는 되돌릴 수 없다(Codex 4차 검토 P2).
+            still_claimed = await asyncio.to_thread(
+                functools.partial(
+                    repo.renew_share_state_intent_lease,
+                    intent["intent_id"],
+                    intent["intent_seq"],
+                    claim_token,
+                    lease_seconds=_LEASE_SECONDS,
+                )
+            )
+            if not still_claimed:
+                return repo.SHARE_STATE_APPLY_CAS_LOST
             if len(held) > 1:
                 # 묶음 관측은 원장의 키만 쥔 채 한 것이다. 이름이 둘 이상이면 모두 쥔 지금 다시 본 값만 판정과 적용에 쓴다.
                 # 이름이 하나뿐인 생성물은 그 키의 조작이 곧 이 원장의 새 seq 라, 전처럼 CAS 가 낡은 관측을 막는다.

@@ -540,6 +540,65 @@ def test_lost_lease_renewal_blocks_stale_remote_cleanup(
     assert repo.get_generation(gen_id)["shared"] is True  # 로컬 상태도 불변
 
 
+def test_new_request_finished_while_waiting_for_the_lock_blocks_stale_remote_cleanup(
+    isolated_content_db, monkeypatch
+):
+    """Codex 4차 검토 — 사이클의 lease 갱신은 잠금 **전**이다. 갱신에 성공한 뒤 잠금을 기다리는 사이 같은 원장의 새 요청
+    (보류)이 서버·로컬 반영까지 끝내면, 옛 작업은 잠금을 얻고도 원격 unpublish 를 보내면 안 된다(로컬 CAS 로는 못 되돌린다)."""
+    gen_id = _seed_generation("local-stale", "job-stale", shared=True)
+    _pending_composite(gen_id, "job-stale", base_shared=False)
+    held_now = {"id": "job-stale", "job_id": "job-stale", "shared": True, "is_final": False, "is_held": True}
+    _patch_observer(monkeypatch, lambda *_args: dict(held_now))
+    cleanup = mock.Mock()
+    monkeypatch.setattr(reconciler, "_unpublish_remote", cleanup)
+    real_renew = repo.renew_share_state_intent_lease
+    renewed: list[bool] = []
+
+    def renew(intent_id, intent_seq, claim_token, **kwargs):
+        ok = real_renew(intent_id, intent_seq, claim_token, **kwargs)
+        renewed.append(ok)
+        if len(renewed) == 1:
+            # 첫 갱신(사이클 쪽) 직후 — 사용자가 같은 생성물을 보류했고 서버·로컬 반영까지 끝났다(같은 원장 · 새 seq)
+            hold = repo.prepare_share_state_intent(
+                "http://share.example.test",
+                job_anchor="job-stale",
+                local_id=gen_id,
+                operation_kind="hold",
+                desired_shared=True,
+                desired_final=False,
+                desired_held=True,
+                base_shared=True,
+                base_final=False,
+                base_held=False,
+            )
+            assert (
+                repo.apply_share_state_intent_local(
+                    hold["intent_id"],
+                    hold["intent_seq"],
+                    hold["claim_token"],
+                    local_id=gen_id,
+                    shared=True,
+                    is_final=False,
+                    is_held=True,
+                    observed_state={"shared": True, "is_final": False, "is_held": True},
+                )
+                == repo.SHARE_STATE_APPLY_APPLIED
+            )
+        return ok
+
+    monkeypatch.setattr(reconciler.repo, "renew_share_state_intent_lease", renew)
+
+    counts = asyncio.run(
+        reconciler.run_share_state_reconciliation_cycle("stale-after-renew")
+    )
+
+    assert renewed == [True, False]  # 잠금 안에서 한 번 더 확인하고 진 것을 안다
+    assert counts.get("cas_lost") == 1
+    cleanup.assert_not_called()
+    local = repo.get_generation(gen_id)
+    assert (local["shared"], local["is_held"]) == (True, True)  # 방금 한 보류가 남는다
+
+
 def test_auth_required_row_resumes_after_relogin_kick(
     isolated_content_db, monkeypatch
 ):
