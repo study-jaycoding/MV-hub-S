@@ -546,9 +546,12 @@ export default function App() {
     && (cutFiltered || fillable);
   //  신호 = 첫 쪽의 내용 서명(객체가 아니라 내용 — 폴더 창을 닫으며 목록 훅이 만드는 사본 배열에 다시 받지 않게) + 서버 카드 객체.
   const listSig = useMemo(() => gens.map((g) => `${g.id}${g.is_final ? "f" : ""}${g.is_held ? "h" : ""}`).join(","), [gens]);
+  const listOurs = !listPeek && !staleList && !listBehind && !isLocatedView; // 본 목록이 지금 조회의 것인가
   const local = useLocalFolderCards({
     place: localWanted ? cutScope : null, query: genQuery, authKey: libraryAuthKey,
-    listSig: !listPeek && !staleList && !listBehind && !isLocatedView ? listSig : null, base: baseHere,
+    listSig: listOurs ? listSig : null, base: baseHere,
+    // 옛 서버 채우기는 본 목록의 첫 쪽이 온 뒤에 출발한다 — 자리를 옮긴 직후 화면을 세우는 응답과 큰 요청이 겹치지 않게(걸러 보기는 바로)
+    ready: cutFiltered || listOurs,
   });
   // 회색 숨김·비활성은 받은 것 위에서 다시 거른다(다시 받지 않는다 — 낱장 격자의 gridGens 와 같은 식).
   const localVisible = useMemo(

@@ -22,6 +22,9 @@ interface Options {
   authKey: string;
   listSig: string | null; // 본 목록 첫 쪽의 내용 서명 — 그 목록이 **지금 조회의 것**일 때만, 아니면 null(창·사본·옛 조회)
   base: object | null; // 그 자리의 서버 카드(내용이 같으면 같은 객체) — 없으면 null
+  // 거짓이면 새로 받기를 **미룬다**(쥔 결과는 그대로 내놓는다). 옛 서버 채우기는 본 목록의 첫 쪽이 온 뒤에 출발시킨다 — 자리를 옮긴 직후
+  //  화면을 세우는 응답(본 목록 첫 쪽)과 큰 요청이 겹치지 않게. 걸러 보기는 본 내용이라 바로 받는다(늘 참).
+  ready?: boolean;
 }
 
 interface Result {
@@ -31,7 +34,7 @@ interface Result {
   truncated: boolean;
 }
 
-export function useLocalFolderCards({ place, query, authKey, listSig, base }: Options) {
+export function useLocalFolderCards({ place, query, authKey, listSig, base, ready = true }: Options) {
   const placeKey = place ? JSON.stringify([authKey, place.projectId, place.parent, place.workspaceId ?? null]) : null;
   const queryKey = placeKey === null ? null : JSON.stringify([placeKey, query]);
   const [result, setResult] = useState<Result | null>(null);
@@ -59,8 +62,16 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base }: Op
   }, [queryKey, listSig, base]);
 
   const laneRef = useRef<Promise<unknown>>(Promise.resolve()); // 한 번에 하나 — 앞 요청이 끝난 뒤에 출발한다
+  const doneRef = useRef<string | null>(null); // 끝까지 받은 '조회 + 신호' — ready 만 들락날락할 때 다시 받지 않는다
+  // 조회를 떠나면 지운다 — 건너뛰기는 **같은 조회에 머문 채** ready 만 바뀔 때의 것이다. 남기면 A → B → A 로 돌아왔을 때 다시 받지 않아
+  //  옛 집계가 지금 것처럼 남는다(Codex 코드 리뷰).
+  useEffect(() => () => {
+    doneRef.current = null;
+  }, [queryKey]);
   useEffect(() => {
-    if (placeKey === null || queryKey === null) return;
+    if (placeKey === null || queryKey === null || !ready) return;
+    const runKey = `${changed}#${queryKey}`;
+    if (doneRef.current === runKey) return;
     let alive = true;
     const run = laneRef.current.then(() => {
       if (!alive) return null; // 기다리는 사이 조회가 또 바뀌었다 — 보내지 않는다
@@ -70,6 +81,7 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base }: Op
     laneRef.current = run.catch(() => null);
     run.then((done) => {
       if (!alive || !done) return;
+      doneRef.current = runKey;
       setResult({
         placeKey, queryKey, gens: done.got.gens.filter((g) => matchesWorkspaceFilter(g, done.asked)), truncated: done.got.truncated,
       });
@@ -80,7 +92,7 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base }: Op
     return () => {
       alive = false;
     };
-  }, [placeKey, queryKey, changed]);
+  }, [placeKey, queryKey, changed, ready]);
 
   const held = result !== null && result.placeKey === placeKey ? result : null;
   const fresh = held !== null && held.queryKey === queryKey;

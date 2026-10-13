@@ -142,6 +142,30 @@ it("한 번에 하나만 받는다 — 받는 중에 조회가 연달아 바뀌�
   expect([ids(), latest.fresh]).toEqual([["image-1"], true]);
 });
 
+it("ready 가 거짓이면 받기를 미룬다 — 참이 되면 받고, 그 뒤 들락날락해도 쥔 결과를 내놓은 채 다시 받지 않는다", async () => {
+  listGenerations.mockResolvedValue([gen("one")]);
+  draw({ ready: false });
+  await settle();
+  expect([listGenerations.mock.calls.length, latest.gens, latest.loading]).toEqual([0, null, true]);
+  draw({ ready: true });
+  await settle();
+  expect([listGenerations.mock.calls.length, ids(), latest.fresh]).toEqual([1, ["one"], true]);
+  draw({ ready: false }); // 폴더 창이 떴다(본 목록이 창의 것) — 쥔 것은 그대로
+  await settle();
+  expect([ids(), latest.fresh]).toEqual([["one"], true]);
+  draw({ ready: true });
+  await settle();
+  expect(listGenerations).toHaveBeenCalledTimes(1);
+  // 다른 조회로 갔다 돌아오면 다시 받는다 — 건너뛰기는 같은 조회에 머문 채 ready 만 바뀔 때의 것이다(Codex 코드 리뷰: A → B → A)
+  listGenerations.mockRejectedValueOnce(new Error("502"));
+  draw({ query: query({ media_type: "video" }) });
+  await settle();
+  listGenerations.mockResolvedValue([gen("two"), gen("one")]);
+  draw({});
+  await settle();
+  expect([listGenerations.mock.calls.length, ids(), latest.fresh]).toEqual([3, ["two", "one"], true]);
+});
+
 it("상한(2000건)에서 잘리면 truncated, 실패하면 앞 결과를 쥔 채 loading 만 내린다", async () => {
   const page = (start: number) => Array.from({ length: 500 }, (_, index) => gen(`g${start + index}`, { sort_ts: 5000 - start - index }));
   let calls = 0;
