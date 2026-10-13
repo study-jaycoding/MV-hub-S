@@ -31,9 +31,9 @@ let host: HTMLDivElement;
 let root: Root;
 let latest: LibraryState;
 
-function mount(store: Store) {
+function mount(store: Store, workspace?: Parameters<typeof useLibraryFilters>[1]) {
   function Probe() {
-    latest = useLibraryFilters(store);
+    latest = useLibraryFilters(store, workspace);
     return null;
   }
   act(() => root.render(<Probe />));
@@ -192,5 +192,100 @@ describe("Resolve 라이브러리 따라가기", () => {
     act(() => latest.followLocation({ project_id: "auto" }));
     expect(latest.manualRevision).toBe(2);
     expect(latest.selectionResetKey).toBe(key);
+  });
+
+  // 28회차 ⑤-2(Jay 결정 '나') → 29회차(Jay "검색과 같게"): 보기 필터를 바꾸면 선택을 비우지 않는다 — 결과에 남은 카드는 고른 채로(사라진 카드는
+  //  App 의 규칙 42 효과가 뺀다). 보는 자리(탭·프로젝트·폴더·휴지통)가 바뀌면 전처럼 비운다.
+  it("보기 필터(검색어·종류·색·태그·공유·검수·코멘트·최종·회색·자동태그·W 침)는 선택 초기화 키를 올리지 않고 수동 횟수만 올린다", () => {
+    mount(fakeStore({ [FILTERS_KEY]: JSON.stringify({ tab: "my", [FILTERS_FORMAT_KEY]: "2" }) }));
+    const key = latest.selectionResetKey;
+    const steps: Array<[string, () => void]> = [
+      ["search", () => latest.patch({ search: "cat" })],
+      ["search-clear", () => latest.patch({ search: undefined })], // 검색어를 지우는 것도 검색어 변경이다
+      ["workspace-chip", () => latest.patch({ workspace_ids: ["w1"] })],
+      ["workspace-chip-toggle", () => latest.setFilters((current) => ({ ...current, workspace_ids: ["w1", "w2"] }))], // App 의 toggleWorkspaceChip 이 쓰는 길
+      ["creator", () => latest.patch({ creator_uid: "u1", share_dir: "received" })],
+      ["type", () => latest.setTypeFilter("video")],
+      ["type-same", () => latest.setTypeFilter("video")],
+      ["color", () => latest.setColorFilter(new Set(["r"]))],
+      ["tag", () => latest.setTagFilter(new Set(["t"]))],
+      ["shared", () => latest.setSharedOnly(true)],
+      ["review", () => latest.setReviewFilter("held")],
+      ["comment", () => latest.setCommentOnly(true)],
+      ["final", () => latest.setFinalOnly(true)],
+      ["gray", () => latest.setGrayOn(true)],
+      ["auto-tag", () => latest.toggleAutoTag("ep")],
+      ["auto-tag-setter", () => latest.setArmedAutoTags((tags) => new Set([...tags, "x"]))],
+    ];
+    let revision = latest.manualRevision;
+    for (const [name, step] of steps) {
+      act(step);
+      expect([name, latest.selectionResetKey]).toEqual([name, key]);
+      expect([name, latest.manualRevision]).toEqual([name, revision + 1]); // 늦은 따라가기 응답은 여전히 버려야 한다
+      revision = latest.manualRevision;
+    }
+  });
+
+  // 2026-10-13 ①②: 뒤로 가기·공유 탭의 마지막 자리 기억은 보는 자리만 되살린다 — 생성 위치·무장 폴더는 그대로, 선택은 비우고 수동 횟수는 올린다
+  it("restoreLocation 은 보는 자리만 되살린다 — 생성 위치·무장 폴더 보존, 선택 비움·수동 횟수 +1, 같은 자리면 아무 일도 없다", () => {
+    mount(fakeStore({
+      [FILTERS_KEY]: JSON.stringify({ tab: "team", project_id: "p1", folder_path: "e001", [FILTERS_FORMAT_KEY]: "2" }),
+      [GENERATION_SCOPE_KEY]: JSON.stringify({ project_id: "create", folder_path: "dest" }),
+      armedFolder: JSON.stringify({ projectId: "create", path: "dest" }),
+    }));
+    const key = latest.selectionResetKey;
+    const revision = latest.manualRevision;
+    act(() => latest.restoreLocation({ project_id: "p1", folder_path: "e035/C0010" }));
+    expect(latest.filters).toMatchObject({ tab: "team", project_id: "p1", folder_path: "e035/C0010" });
+    expect(latest.generationScope).toEqual({ project_id: "create", folder_path: "dest" });
+    expect(latest.armedFolder).toEqual({ projectId: "create", path: "dest" });
+    expect(latest.selectionResetKey).not.toBe(key);
+    expect(latest.manualRevision).toBe(revision + 1);
+    const key2 = latest.selectionResetKey;
+    act(() => latest.restoreLocation({ project_id: "p1", folder_path: "e035/C0010" })); // 같은 자리
+    expect([latest.selectionResetKey, latest.manualRevision]).toEqual([key2, revision + 1]);
+    act(() => latest.restoreLocation({ project_id: undefined, folder_path: undefined })); // 프로젝트 맨 위(명시적)
+    expect([latest.filters.project_id, latest.filters.folder_path]).toEqual([undefined, undefined]);
+    expect(latest.generationScope).toEqual({ project_id: "create", folder_path: "dest" });
+    // 휴지통 보기도 자리다 — 실리면 켜고, 없으면 끈다(기록에서 일반 목록으로 돌아온다)
+    act(() => latest.restoreLocation({ project_id: "p1", deleted_only: true }));
+    expect([latest.filters.project_id, latest.filters.deleted_only]).toEqual(["p1", true]);
+    const key3 = latest.selectionResetKey;
+    act(() => latest.restoreLocation({ project_id: "p1" }));
+    expect([latest.filters.deleted_only, latest.filters.include_deleted, latest.selectionResetKey === key3]).toEqual([undefined, undefined, false]);
+    // 되살린 자리 표식 — App 의 '낡은 프로젝트' 효과가 건너뛴다. 눌러 고르면(patch 의 생성 위치 채택) 내린다
+    expect(latest.restoredLocationRef.current).toBe(true);
+    act(() => latest.patch({ project_id: "p1" }));
+    expect(latest.restoredLocationRef.current).toBe(false);
+  });
+
+  it("teamScopeKey·teamAutoReady — 지금 탭과 무관하게 공유 탭에 들어가면 갖게 될 공간 범위와 '확정된 자동 공간인가'를 센다", () => {
+    mount(fakeStore({ [FILTERS_KEY]: JSON.stringify({ tab: "my", [FILTERS_FORMAT_KEY]: "2" }) }), { scope: "team", id: "ws-1", name: "팀" } as never);
+    expect(latest.teamScopeKey).toBe(JSON.stringify([JSON.stringify(["team", "ws-1"]), "auto"]));
+    expect(latest.teamAutoReady).toBe(true);
+    expect(latest.workspaceScopeKey).toBe(""); // 공유 탭이 아니면 비어 있다 — 그래서 따로 둔다
+    act(() => latest.workspaceFollow?.onChange("all")); // 공유 탭이 아니라 workspaceFollow 가 없다 — 아래에서 공유 탭으로 다시 띄워 본다
+    mount(fakeStore({ [FILTERS_KEY]: JSON.stringify({ tab: "team", [FILTERS_FORMAT_KEY]: "2" }) }), { scope: "team", id: "ws-1", name: "팀" } as never);
+    act(() => latest.workspaceFollow!.onChange("all")); // 전체 보기 — 확정된 자동 공간이 아니다
+    expect([latest.teamAutoReady, latest.teamScopeKey]).toEqual([false, JSON.stringify([JSON.stringify(["team", "ws-1"]), "all"])]);
+    mount(fakeStore({ [FILTERS_KEY]: JSON.stringify({ tab: "my", [FILTERS_FORMAT_KEY]: "2" }) }), { scope: "team", id: "", name: "" } as never);
+    expect(latest.teamAutoReady).toBe(false); // 공간 미확정
+    mount(fakeStore({ [FILTERS_KEY]: JSON.stringify({ tab: "my", [FILTERS_FORMAT_KEY]: "2" }) }));
+    expect(latest.teamAutoReady).toBe(false); // 공간 문맥 없음
+  });
+
+  it("보는 자리가 바뀌면 선택 초기화 키가 오른다 — 폴더·프로젝트·휴지통 patch, 탭을 바꾸는 setFilters, 검색어와 폴더가 같이 온 patch", () => {
+    mount(fakeStore({ [FILTERS_KEY]: JSON.stringify({ tab: "my", [FILTERS_FORMAT_KEY]: "2" }) }));
+    const keys = [latest.selectionResetKey];
+    const bump = (step: () => void) => {
+      act(step);
+      expect(keys).not.toContain(latest.selectionResetKey);
+      keys.push(latest.selectionResetKey);
+    };
+    bump(() => latest.patch({ search: "dog", folder_path: "ep01" }));
+    bump(() => latest.patch({ project_id: "p2" }));
+    bump(() => latest.patch({ deleted_only: true }));
+    bump(() => latest.patch({ include_deleted: true, deleted_only: undefined }));
+    bump(() => latest.setFilters((current) => ({ ...current, tab: "team" })));
   });
 });

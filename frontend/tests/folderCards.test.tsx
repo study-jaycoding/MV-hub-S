@@ -265,7 +265,7 @@ it("옛 문맥의 조회가 끝나며 새 문맥에 얹힌 요구를 가져가�
 });
 
 // ── 컷 카드 격자 ──
-const gridProps = { scale: 1, fill: true, selected: new Set<string>(), onSelect: () => {}, onInfo: () => {}, onShowAll: () => {}, onOpen: () => {}, onEnter: () => {}, top: false };
+const gridProps = { scale: 1, fill: true, selected: new Set<string>(), onSelect: () => {}, onInfo: () => {}, onReel: () => {}, onShowAll: () => {}, onOpen: () => {}, onEnter: () => {}, top: false };
 const dbl = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
 
 it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 미정', 영상이면 재생 표시. 두 번 누르면 그 폴더를 연다", () => {
@@ -534,6 +534,82 @@ it("빈 곳에서 끌면 걸친 카드를 모두 고른다 — 창을 떠나면(
   act(() => { host.querySelector('.cut-card[data-path="e035/C0030"]')!.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, button: 1, clientX: 1, clientY: 2 })); });
   expect([...selected]).toEqual(["e035/C0030"]); // 이미 고른 카드면 선택은 그대로
   expect(info).toHaveLength(2);
+});
+
+// 29회차(Jay 2026-10-13 "우클릭이 모아보기가 나오게"): 컷 카드 우클릭 = 모아보기. 고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만 골라서.
+//  위에 뜬 메뉴를 닫는 우클릭(누름 시작에 가려져 있었다)은 열지 않는다 — contextmenu 는 단추를 뗀 뒤 오므로 가림을 누름 시작에 적어 둔다.
+it("우클릭 = 모아보기 — 고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만 골라서. 메뉴를 닫는 우클릭은 열지 않고, 메뉴 키는 그 순간의 가림을 본다", async () => {
+  const folders = [card("C0010", 1), card("C0020", 1), card("C0030", 1)];
+  let selected = new Set<string>(["e035/C0030", "e035/C0010"]);
+  const reels: string[][] = [];
+  const draw = () => act(() => root.render(
+    <FolderCardGrid
+      {...gridProps} folders={folders} selected={selected} onSelect={(next) => { selected = next; draw(); }}
+      onReel={(paths) => reels.push(paths)} outside={0}
+    />,
+  ));
+  draw();
+  const tile = (name: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="e035/${name}"]`)!;
+  // jsdom 에는 PointerEvent 가 없다 — lib/keyGate 가 보는 것은 이벤트 이름뿐이라 Event 로 보낸다(round7Grid 의 press 와 같다)
+  const rightClick = (el: HTMLElement) => {
+    act(() => { el.dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+    mouse("mousedown", el, { button: 2, buttons: 2 });
+    act(() => { el.dispatchEvent(new Event("pointerup", { bubbles: true })); });
+    mouse("mouseup", el, { button: 2 });
+    const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+    act(() => { el.dispatchEvent(menu); });
+    return menu.defaultPrevented;
+  };
+  // 고른 카드 위 — 고른 컷 전부, 격자 순서(고른 순서가 아니다). 고르기는 그대로
+  expect(rightClick(tile("C0010"))).toBe(true); // 브라우저 메뉴는 막는다
+  expect(reels).toEqual([["e035/C0010", "e035/C0030"]]);
+  expect([...selected].sort()).toEqual(["e035/C0010", "e035/C0030"]);
+  // 고르지 않은 카드 — 그것만 골라서 연다
+  rightClick(tile("C0020"));
+  expect(reels).toEqual([["e035/C0010", "e035/C0030"], ["e035/C0020"]]);
+  expect([...selected]).toEqual(["e035/C0020"]);
+  // 위에 메뉴가 떠 있는 채 시작한 우클릭(메뉴를 닫는 누름) — 메뉴는 누름의 앞쪽(pointerdown)에 닫혀 contextmenu 때는 이미 없다. 열지 않는다
+  const { useKeyOwner } = await import("../src/lib/keyGate");
+  function Owner({ on }: { on: boolean }) { useKeyOwner(on); return null; }
+  const owner = createRoot(document.body.appendChild(document.createElement("div")));
+  act(() => owner.render(<Owner on />));
+  act(() => { tile("C0030").dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+  act(() => owner.render(<Owner on={false} />)); // 메뉴가 닫혔다
+  mouse("mousedown", tile("C0030"), { button: 2, buttons: 2 });
+  act(() => { tile("C0030").dispatchEvent(new Event("pointerup", { bubbles: true })); });
+  act(() => { tile("C0030").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })); });
+  expect(reels).toHaveLength(2);
+  expect([...selected]).toEqual(["e035/C0020"]);
+  // 키보드의 메뉴 키(누름 없이 contextmenu 만) — 위에 창이 떠 있으면 쉬고, 없으면 연다
+  act(() => owner.render(<Owner on />));
+  act(() => { tile("C0020").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
+  expect(reels).toHaveLength(2);
+  act(() => owner.render(<Owner on={false} />));
+  act(() => { tile("C0020").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
+  expect(reels).toHaveLength(3);
+  expect(reels[2]).toEqual(["e035/C0020"]);
+  // 격자의 빈 곳에서 메뉴를 닫는 우클릭(가려진 채 시작) → 그 기록이 남아 다음 메뉴 키를 삼키면 안 된다(Codex 코드 리뷰)
+  const grid = host.querySelector<HTMLElement>(".cut-grid")!;
+  act(() => owner.render(<Owner on />));
+  act(() => { grid.dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+  act(() => owner.render(<Owner on={false} />));
+  mouse("mousedown", grid, { button: 2, buttons: 2 });
+  act(() => { grid.dispatchEvent(new Event("pointerup", { bubbles: true })); });
+  act(() => { grid.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })); });
+  expect(reels).toHaveLength(3); // 빈 곳 — 아무것도 안 연다
+  act(() => { tile("C0020").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); }); // 메뉴 키 — 가림 없음
+  expect(reels).toHaveLength(4);
+  // 카드 위에서 우클릭을 시작해 카드 밖(격자 빈 곳)에서 떼어도 기록은 지워진다 — 다음 메뉴 키가 삼켜지지 않는다
+  act(() => owner.render(<Owner on />));
+  act(() => { tile("C0020").dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+  act(() => owner.render(<Owner on={false} />));
+  mouse("mousedown", tile("C0020"), { button: 2, buttons: 2 });
+  act(() => { grid.dispatchEvent(new Event("pointerup", { bubbles: true })); });
+  act(() => { grid.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })); });
+  expect(reels).toHaveLength(4);
+  act(() => { tile("C0020").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
+  expect(reels).toHaveLength(5);
+  act(() => owner.unmount());
 });
 
 it("키보드 — Ctrl+A 모두 · 방향키 옮기기(Shift = 누른 카드부터 범위) · Enter = 두 번 클릭 · Space = 토글. 초점이 없어도(BODY) 먹고, 위에 창이 떠 있으면 쉰다", async () => {

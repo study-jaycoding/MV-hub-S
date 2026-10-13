@@ -21,6 +21,15 @@ export const FILTERS_FORMAT_KEY = "__v";
 export const FILTERS_VIEW_KEY = "__view";
 /** 현재 화면 위치와 분리한 다음 생성 목적지. 빈 객체도 유효한 "목적지 없음" 값이다. */
 export const GENERATION_SCOPE_KEY = "generationScopeV1";
+/** 공유 탭에서 **마지막으로 본 자리**(프로젝트·폴더) — 탭을 떠났다 공유 탭을 **직접 눌러** 돌아올 때 되살린다(Jay 2026-10-13 ①: 처음엔 프로젝트
+ *  맨 위, 그 뒤로는 마지막 본 곳). 어느 문맥(계정·서버·확정된 자동 공간)에서 본 것인지 `ctx` 와 함께 둔다 — 다른 문맥의 자리는 되살리지 않는다
+ *  (전체 보기·공간 미확정 중에는 저장도 복원도 안 한다). 뒤로·앞으로 가기는 이것이 아니라 브라우저 기록의 자리를 쓴다(lib/useAppNavigation). */
+export const TEAM_LOCATION_KEY = "teamLocationV1";
+export interface TeamLocationMemory {
+  ctx: string;
+  project_id?: string;
+  folder_path?: string;
+}
 /** 생성물 목록에만 적용하는 전역 태그 필터. 빈 배열도 유효한 저장값이다. */
 export const FILTER_AUTO_TAGS_KEY = "filterAutoTagsV1";
 

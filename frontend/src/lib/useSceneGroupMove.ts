@@ -31,7 +31,7 @@ interface UseSceneGroupMoveOptions {
   setDraggingIds: Dispatch<SetStateAction<readonly string[]>>;
   beginDrag: BeginSceneDrag;
   reconcileGenerationRefs: (cards: SceneCard[], edges: SceneEdge[]) => SceneCard[];
-  persist: (cards: SceneCard[], edges: SceneEdge[], groups?: SceneGroup[]) => void;
+  persist: (cards: SceneCard[], edges: SceneEdge[], groups?: SceneGroup[], opts?: { discard?: boolean }) => void;
   /** 끌기 하나의 시작과 끝 — 그 사이의 저장은 되돌리기 한 단계로 묶인다(lib/useSceneHistory). */
   beginGesture: (rewind?: <Snapshot extends { cards: SceneCard[]; groups: SceneGroup[] }>(snapshot: Snapshot) => Snapshot) => void;
   endGesture: () => void;
@@ -94,6 +94,11 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
       current.groupsRef.current
         .filter((item) => item.rect && (targetGroupIdSet.has(item.id) || goesWhole(item)))
         .map((item) => [item.id, { ...item.rect! }] as const),
+    );
+    // 끌기 전 네모 **그 객체** — Esc 로 되돌릴 때 그대로 돌려놓는다(아래 onDiscard). 복사본을 넣으면 값이 같아도 다른 객체라 '바뀐 저장'이 된다
+    //  (lib/useSceneHistory 의 얕은 비교).
+    const originalRectRefs = new Map(
+      current.groupsRef.current.filter((item) => originalRects.has(item.id)).map((item) => [item.id, item.rect!] as const),
     );
     let lastRects = new Map(originalRects);
     let lastOffset = { x: Number.NaN, y: Number.NaN };
@@ -189,10 +194,10 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
       latest.persist(nextCards, latest.edgesRef.current, nextGroups);
     };
 
-    const cleanupDrag = (dropped: boolean) => {
+    const cleanupDrag = (dropped: boolean, discarded = false) => {
       const latest = optionsRef.current;
       latest.scrollRef.current?.classList.remove("dragging");
-      endSceneDragPointer(dropped && moved);
+      endSceneDragPointer((dropped || discarded) && moved, discarded);
       latest.setDraggingIds([]);
     };
 
@@ -235,6 +240,33 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
       });
       latest.groupsRef.current = nextGroups;
       latest.setGroups(nextGroups);
+    }, () => {
+      // Esc — 이동만 버린다(29회차, Jay 안 A — 카드 끌기와 같다: lib/useSceneCardMove). 멤버는 끌기 전 자리로, 네모는 끌기 전 네모로.
+      //  저장은 '버리는 저장'(되돌리기 단계를 쌓지 않는다). 머리를 누르기만 했으면(relocated 아님) 그룹 선택도 바꾸지 않는다(up 의 클릭 선택은
+      //  놓기의 것이다).
+      cleanupDrag(false, true);
+      const latest = optionsRef.current;
+      if (!relocated) {
+        latest.endGesture();
+        return;
+      }
+      const nextCards = latest.cardsRef.current.map((card) => {
+        const origin = origins[card.id];
+        return origin ? { ...card, x: origin.x, y: origin.y } : card;
+      });
+      latest.cardsRef.current = nextCards;
+      latest.setCards(nextCards);
+      let nextGroups = latest.groupsRef.current;
+      if (originalRects.size) {
+        nextGroups = nextGroups.map((item) => {
+          const rect = originalRectRefs.get(item.id);
+          return rect && item.rect !== rect ? { ...item, rect } : item;
+        });
+        latest.groupsRef.current = nextGroups;
+        latest.setGroups(nextGroups);
+      }
+      latest.persist(nextCards, latest.edgesRef.current, nextGroups, { discard: true });
+      latest.endGesture();
     });
     // 앞 끌기가 남아 있었다면 위 beginDrag 가 그것을 먼저 확정하고 닫는다 — 그다음에 이 끌기의 묶음을 연다
     current.beginGesture((snapshot) => rewindSceneMove(snapshot, origins, originalRects));

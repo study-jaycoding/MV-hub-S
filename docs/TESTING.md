@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-12
+updated: 2026-10-13
 status: active
 ---
 
@@ -897,6 +897,29 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
   한 줄뿐일 수 있다(#185 는 51번째 갱신 자리에서 던지므로 '되먹임을 돌리는 쪽'이 아니라 '한계를 넘긴 갱신'이 보인다). 네트워크 요청 순서도 같이 남겨
   '되풀이되는 요청이 없다 = 레이아웃 효과 사슬 안의 동기 반복'을 가른다. 실측 fixture 의 메타가 `{}` 면 같은 참조가 유지돼 이런 되먹임이 가려진다 —
   **비어 있지 않은 메타**로도 돌릴 것.
+- ㉝ **'즉시 보인다'는 응답을 기다린 뒤의 값으로는 못 잰다 — 응답이 안 오는 가짜(`new Promise(() => {})`)로 잰다**(28회차): 받아 둔 폴더로 돌아갈 때 캐시 적용
+  자리의 한 줄(`setTreeFor`)을 빼도 settle 뒤에 보는 시험은 통과했다 — 뒤따르는 서버 조회가 같은 값을 맞춰 주어서. 렌더 단위의 가림(폴더를 바꾼 첫 렌더)도
+  settle 뒤의 값으로는 안 보인다 — 하네스 컴포넌트가 **렌더마다** '폴더:메타'를 기록하거나, 렌더 중에 불리는 함수(썸네일 URL)의 호출 짝을 기록해 잡는다
+  (`tests/assetFolderRevisitLoop.test.tsx`).
+- ㉞ **`node_modules` 정션이 든 워크트리는 `git worktree remove --force` 로 지우지 말 것**(28회차 사고): 이 저장소의 워크트리들은 `frontend/node_modules` 를
+  `MV-hub-S-dev\frontend\node_modules` 로 가는 정션으로 둔다. git 의 강제 삭제가 정션을 따라 들어가 **원본**의 `.bin`·`.package-lock.json` 을 지웠다(잠긴 esbuild 에서
+  멈춰 그 둘만 잃었다). 지우기 전에 정션을 먼저 푼다(`cmd /c rmdir frontend\node_modules` — 정션만 없어진다) 또는 `git worktree remove`(강제 없이, 깨끗한 트리만).
+  복구는 `npm --prefix <dev\frontend> install`(빠진 링크만 다시 만든다 — 그 뒤 npm 이 바꾼 `package-lock.json` 은 되돌린다).
+- ㉟ **jsdom 의 합성 `click` 은 `detail` 이 0 이다 — 마우스 클릭을 흉내 내려면 `detail: 1` 을 싣는다**(29회차): 브라우저는 마우스 click 에 몇 번째
+  클릭인지(1·2…)를, 키보드로 누른 단추의 click(Enter·Space)에는 0 을 싣는다. 코드가 그 차이로 키보드 click 을 가려내기 시작하자(`lib/useSceneCardMove`
+  의 click 삼킴) `new MouseEvent("click", {bubbles…})` 로만 보내던 옛 시험 셋이 '키보드 click' 으로 읽혀 깨졌다. 터치·펜의 실제 `detail` 은 미실측.
+  같은 회차의 함정 둘: **F(화면 맞춤) 뒤에는 카메라가 바뀌어 같은 화면 좌표가 다른 캔버스 좌표다** — 제자리로 되돌리려면 `canvas().style.transform`
+  (`translate(x, y) scale(z)`)을 읽어 화면 좌표를 다시 계산한다(`tests/sceneDragEscape` 의 `clientAt`) · **누른 채 씬을 바꾼 뒤의 Ctrl+Z 는 mouseup 을 보내기
+  전엔 막혀 있다**(`moveHeldRef` 는 mouseup·blur 로만 풀린다 — 시험이 손을 떼지 않으면 '되돌리기가 안 된다'로 오판한다).
+- ㊱ **격리 사본에는 사이드바 폴더 트리가 없다 — 재려면 작업 폴더 안의 임시 폴더를 연결한다**(컷 카드 ① 실측, 2026-10-13): 도구가 복사본의
+  `project_folder_link`·`render_root_path` 를 비우므로(위 "데이터") 프로젝트 줄 옆 접기 단추도 안 그려진다(`hasTree` 가 거짓). 트리를 띄우려면 복사본
+  `S\db\content_hub.db` 의 `project_folder_link` 에 `root_path = <작업 폴더>\S\linkroot` 를 넣고 **그 아래 `Render\e035\C0010…` 폴더**를 만든다 —
+  백엔드는 루트 바로 아래가 아니라 `Render` 를 훑는다(없으면 응답 `error: "Render 폴더가 없습니다"`, 트리 null). 실제 폴더가 아니라 Assets 자동 마운트가
+  돼도 임시 폴더다. 사이드바 줄을 누르면 `PATCH /api/manage/project-folders/<id>/selection`(무장 폴더 저장)이 나가는데 guard 가 막는다(정상 — 화면은 바뀐다).
+  트리 없이 폴더에 들어가려면 에피소드 컷 카드 두 번 클릭(사이드바와 같은 `enterFolderCard`). 진짜 두 번 클릭은 `clickCount` 1 의 누름·뗌 뒤
+  `clickCount` 2 의 누름·뗌(크롬이 dblclick 을 만든다). 우클릭은 `button: "right"` 의 누름·뗌이면 contextmenu 가 뗄 때 온다. 늦은 응답은 guard 의
+  `arm(…, "hold")` 로 쥐었다가 조작 뒤 `release(rule, "continue")` 로 서버에 보내면 된다(읽기 전용 POST 만 — `/api/generations/locate` 는 `READ_POSTS` 에 없어
+  대조 실험 땐 더해 준다).
 
 캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
 - ⑤ 복사본은 프로젝트 폴더 경로를 비워, 씬 그림(`asset:` 썸네일)이 **전부 404** 다. 그림이 뜬 상태로 재려면 다음처럼 한다.

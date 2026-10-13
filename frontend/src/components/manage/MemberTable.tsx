@@ -32,7 +32,7 @@ import {
 } from "../../lib/creditPlan";
 import { isSystemAccountEmail } from "../../lib/accountIdentity";
 import { formatCredits as credits } from "../../lib/formatCredits";
-import { isHttpStatus, isRouteMissing } from "../../lib/http";
+import { errorDetail, isHttpStatus, isRouteMissing } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
 import {
   applyProjectRoles,
@@ -480,7 +480,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
             tone: "bad",
             text: conflict
               ? "다른 사람이 먼저 바꿨습니다. 최신 값을 다시 읽었습니다."
-              : `저장하지 못했습니다. ${String(errors[0])}`,
+              : `저장하지 못했습니다. ${errorDetail(errors[0])}`,
           });
           await loadRef.current();
         },

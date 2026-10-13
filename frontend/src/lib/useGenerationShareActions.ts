@@ -1,4 +1,5 @@
 import { api } from "../api";
+import { errorDetail } from "./http";
 import { postLibraryChanged } from "./libraryBroadcast";
 import type { Generation } from "../types";
 import { shareableGenerations } from "./generationDisplay";
@@ -35,7 +36,7 @@ export function useGenerationShareActions({
       if (succeeded) postLibraryChanged(); // 관리탭 즉시 재조회(공유→게시 상태 반영)
       return succeeded;
     } catch (e) {
-      flash(t("공유 실패:") + " " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+      flash(t("공유 실패:") + " " + errorDetail(e)); // "TypeError: Failed to fetch" 같은 앞머리도 뗀다(lib/http 한 곳)
       return 0;
     }
   };
@@ -46,7 +47,7 @@ export function useGenerationShareActions({
       await reload();
       bumpBoard();
     } catch (e) {
-      flash(t("공유 실패:") + " " + String(e));
+      flash(t("공유 실패:") + " " + errorDetail(e));
     }
   };
 
@@ -61,7 +62,7 @@ export function useGenerationShareActions({
       await reload();
       bumpBoard();
     } catch (e) {
-      flash(t("공유 실패:") + " " + String(e));
+      flash(t("공유 실패:") + " " + errorDetail(e));
     }
   };
 
@@ -84,7 +85,7 @@ export function useGenerationShareActions({
       await reload();
       bumpBoard();
     } catch (e) {
-      flash(t("공유 실패:") + " " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+      flash(t("공유 실패:") + " " + errorDetail(e)); // "TypeError: Failed to fetch" 같은 앞머리도 뗀다(lib/http 한 곳)
     }
   };
 

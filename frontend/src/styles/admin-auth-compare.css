@@ -105,6 +105,8 @@
 .admin-pactions button:hover { color: var(--text); background: rgba(255,255,255,0.1); }
 .admin-pactions button.on { color: var(--accent-ink); background: var(--accent); }
 .admin-pactions button.admin-pact-archive { font-size: 16px; padding: 3px 7px; }
+/* ✎ 의 설정 조회 중(28회차) — 단추 안의 고리(.busy-ring, app-shell.css) 옆에 글 */
+.admin-pactions .admin-pact-hint { margin-left: 6px; font-size: 11px; color: var(--accent); white-space: nowrap; }
 .admin-pactions button:disabled { opacity: 0.25; cursor: default; background: transparent; color: var(--muted); }
 /* 프로젝트 순서 드래그 — 폴더 앞 그립(⠿)을 잡고 끌어 옮긴다. */
 .proj-drag-handle {

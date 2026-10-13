@@ -69,6 +69,7 @@ export function ComfyCard({
   fill,
   width,
   runningLocal,
+  loadingWorkflow,
   laneDelta,
   getNodePreview,
   lastViewed,
@@ -82,6 +83,7 @@ export function ComfyCard({
   fill: boolean;
   width: number; // widthOf(card)
   runningLocal: boolean; // 부모 메모리 실행 집합(runningComfyIds)에 있는지
+  loadingWorkflow: boolean; // 워크플로를 읽는 중(JSON 놓기·↻ — SceneBoard 의 comfyBusy): 본문 위에 덮개, ↻·실행 잠금
   laneDelta: (lane: "model" | "ref" | "text", card: SceneCard) => number; // 카드별 레인 목록·높이로 대칭 배치(SceneBoard 소유)
   getNodePreview: (cardId: string) => (p: PreviewTarget) => void;
   lastViewed?: boolean; // 이 씬에서 마지막으로 크게 열어본 카드인가(생성 카드와 같은 판정)
@@ -250,7 +252,8 @@ export function ComfyCard({
                 </button>
                 <button
                   className="scene-comfynode-act"
-                  title="현재 워크플로우 다시 읽기(노드수 갱신·상태 리셋)"
+                  title={loadingWorkflow ? "워크플로 읽는 중…" : "현재 워크플로우 다시 읽기(노드수 갱신·상태 리셋)"}
+                  disabled={loadingWorkflow} // 응답 전의 다시 누름(28회차) — 같은 내용을 두 번 읽는다
                   onMouseDown={stop}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -499,6 +502,14 @@ export function ComfyCard({
             )}
           </div>
         )}
+        {loadingWorkflow && (
+          // 워크플로를 읽는 중(28회차, Jay 결정) — 본문 위의 반투명 덮개. 클릭은 먹지 않는다(styles/scene.css pointer-events:none) — 잠그는 것은 ↻·실행뿐.
+          <div className="scene-comfynode-busy" role="status" aria-live="polite">
+            <i className="busy-ring lg" aria-hidden="true" />
+            <b>워크플로 읽는 중…</b>
+            <small>노드 정보를 확인합니다 · 최대 30초</small>
+          </div>
+        )}
       </div>
       {/* 결과 배지 — 이 노드가 만든 생성물이 있으면 카드 위에 떠서 표시. 클릭=변형 팝업으로 모아보기. */}
       {variantIds(card).length > 0 && (
@@ -542,7 +553,7 @@ export function ComfyCard({
           </button>
           <button
             className="scene-cardgen-go"
-            disabled={isRunning}
+            disabled={isRunning || loadingWorkflow} // 읽는 중의 실행은 옛 워크플로로 나간다(28회차)
             onClick={(e) => {
               e.stopPropagation();
               void actions.runComfy(card.id);

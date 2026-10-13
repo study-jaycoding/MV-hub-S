@@ -68,26 +68,38 @@ export function releaseSceneDragPointer(): void {
  * **삼키는 것은 그 놓기에 딸린 한 번이다** — 삼켰으면 바로 거두고, 새 누름(mousedown)이 시작돼도 거둔다(그 뒤의 click 은 놓기의 것이
  * 아니다). 타이머만 믿으면 그것이 돌기 전에 온 클릭이 전부 삼켜진다: 입력은 타이머보다 먼저 처리돼, 놓은 직후 화면을 다시 그리느라
  * 바쁜 사이(카드가 많은 씬)에 누른 것이 통째로 사라졌다(2026-10-12 격리 실측: 놓자마자 누른 씬 탭 세 번이 전부 안 먹음 20/20).
+ * Esc 로 끌기를 버렸을 때(discarded)는 손이 아직 눌려 있다 — 그 놓기의 click 은 뒤에 온다: 손을 떼는 mouseup 부터 평소처럼 한 작업만 기다린다.
+ * 창을 떠나면(blur) 거둔다 — 밖에서 떼어 click 이 안 오면 억제가 남아 뒤의 클릭을 먹는다. 키보드로 누른 단추의 click(detail 0 — Enter·Space)은
+ * 놓기의 것이 아니니 삼키지 않는다(Codex 코드 리뷰 P3).
  */
-function swallowDropClick(): void {
+function swallowDropClick(discarded = false): void {
   const stop = () => {
     window.removeEventListener("click", swallow, true);
     window.removeEventListener("mousedown", stop, true);
+    window.removeEventListener("mouseup", arm, true);
+    window.removeEventListener("blur", stop);
   };
   const swallow = (event: Event) => {
+    if ((event as MouseEvent).detail === 0) return;
     event.stopPropagation();
     event.preventDefault();
     stop();
   };
+  const arm = () => window.setTimeout(stop, 0);
   window.addEventListener("click", swallow, true);
   window.addEventListener("mousedown", stop, true);
-  window.setTimeout(stop, 0);
+  if (discarded) {
+    window.addEventListener("mouseup", arm, true);
+    window.addEventListener("blur", stop);
+  } else {
+    arm();
+  }
 }
 
-/** 카드·그룹 끌기의 끝에서 부른다 — 쥔 포인터를 놓고, 실제로 끌다가 손을 떼어 끝난 것이면 뒤따르는 click 을 삼킨다. */
-export function endSceneDragPointer(droppedAfterMove: boolean): void {
+/** 카드·그룹 끌기의 끝에서 부른다 — 쥔 포인터를 놓고, 실제로 끌다가 손을 떼어 끝난 것이면 뒤따르는 click 을 삼킨다(Esc 로 버린 끌기도). */
+export function endSceneDragPointer(droppedAfterMove: boolean, discarded = false): void {
   releaseSceneDragPointer();
-  if (droppedAfterMove) swallowDropClick();
+  if (droppedAfterMove) swallowDropClick(discarded);
 }
 
 /** 보드를 통째로 끄는 동안(아래 '빠른 길') SceneBoard 가 쥐는 손잡이 — 끌기가 끝나면 비운다. */
@@ -131,7 +143,7 @@ interface UseSceneCardMoveOptions {
     ejected: Set<string>,
   ) => SceneGroup[];
   reconcileGenerationRefs: (cards: SceneCard[], edges: SceneEdge[]) => SceneCard[];
-  persist: (cards: SceneCard[], edges: SceneEdge[], groups?: SceneGroup[]) => void;
+  persist: (cards: SceneCard[], edges: SceneEdge[], groups?: SceneGroup[], opts?: { discard?: boolean }) => void;
   /** 끌기 하나의 시작과 끝 — 그 사이의 저장은 되돌리기 한 단계로 묶인다(lib/useSceneHistory). rewind = 끌기 전 좌표로 되감기. */
   beginGesture: (rewind?: <Snapshot extends { cards: SceneCard[]; groups: SceneGroup[] }>(snapshot: Snapshot) => Snapshot) => void;
   endGesture: () => void;
@@ -178,10 +190,14 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
     // 함께 끌 그룹 — 선택된 그룹 중 '수동 rect'를 가진 것만이다. 자동 그룹은 프레임을 멤버
     // 카드에서 계산하므로 카드가 움직이면 알아서 따라온다(여기서 건드리면 이중으로 움직인다).
     const movingRects = new Map<string, { x: number; y: number; w: number; h: number }>();
+    // 끌기 전 네모 **그 객체** — Esc 로 되돌릴 때(아래 place(0, 0)) 그대로 돌려놓는다. 복사본을 넣으면 값이 같아도 다른 객체라 '바뀐 저장'이
+    //  된다(lib/useSceneHistory 의 얕은 비교).
+    const movingRectRefs = new Map<string, { x: number; y: number; w: number; h: number }>();
     if (selected.has(cardId)) {
       for (const group of current.groupsRef.current) {
         if (group.rect && current.selectedGroupIdsRef.current.has(group.id)) {
           movingRects.set(group.id, { ...group.rect });
+          movingRectRefs.set(group.id, group.rect);
         }
       }
     }
@@ -208,7 +224,10 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
         const live = group.cardIds.filter((id) => cardsById.has(id));
         if (!live.length || !live.every((id) => liveTargets.has(id))) continue;
         wholeGroupIds.add(group.id);
-        if (group.rect) movingRects.set(group.id, { ...group.rect });
+        if (group.rect) {
+          movingRects.set(group.id, { ...group.rect });
+          movingRectRefs.set(group.id, group.rect);
+        }
       }
     }
     const wholeMemberIds = new Set(
@@ -337,7 +356,12 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
       if (!movingRects.size) return;
       const nextGroups = latest.groupsRef.current.map((group) => {
         const origin = movingRects.get(group.id);
-        return origin ? { ...group, rect: { ...origin, x: origin.x + dx, y: origin.y + dy } } : group;
+        if (!origin) return group;
+        if (dx === 0 && dy === 0) {
+          const rect = movingRectRefs.get(group.id)!; // 끌기 전 네모 그 객체로(Esc)
+          return group.rect === rect ? group : { ...group, rect };
+        }
+        return { ...group, rect: { ...origin, x: origin.x + dx, y: origin.y + dy } };
       });
       latest.groupsRef.current = nextGroups;
       latest.setGroups(nextGroups);
@@ -456,10 +480,10 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
       latest.persist(nextCards, latest.edgesRef.current, nextGroups);
     };
 
-    const cleanupDrag = (dropped: boolean) => {
+    const cleanupDrag = (dropped: boolean, discarded = false) => {
       const latest = optionsRef.current;
       latest.scrollRef.current?.classList.remove("dragging");
-      endSceneDragPointer(dropped && moved);
+      endSceneDragPointer((dropped || discarded) && moved, discarded);
       latest.setDraggingIds([]);
       latest.setMoveOrigins(null); // 놓을 때의 좌표 확정과 같은 커밋에서 바깥 틀이 left/top 으로 돌아온다
       if (ejected.size) latest.setEjectedIds(new Set());
@@ -516,6 +540,22 @@ export function useSceneCardMove(options: UseSceneCardMoveOptions) {
       if (!moved) return;
       if (wholeBoard) place(settled.x, settled.y);
       else place(applied.x, applied.y);
+    }, () => {
+      // Esc — 이동만 버린다(29회차 제안, Jay 안 A): 카드·네모는 끌기 전 자리로 돌아가고, 끄는 중에 한 다른 일(색·삭제·붙여넣기)은 남는다.
+      //  좌표에 넣은 적이 있을 때만 되돌려 저장한다 — 일부만 끌 때는 첫 걸음부터 좌표에 들어가고(relocated), 판을 밀 때는 키 앞의 확정
+      //  (SceneBoard)·밖 갱신이 넣은 만큼이다(settled — 없으면 층만 되돌린다). 저장은 '버리는 저장'(lib/useSceneHistory 의 discard) —
+      //  되돌리기 단계를 새로 쌓지 않는다. 놓기가 아니므로 재배정·이탈 확정(commitMovedCards)은 하지 않는다 — 끌기 전 소속 그대로다.
+      //  손은 아직 눌려 있다 — 뒤따르는 click 은 삼킨다(cleanupDrag 의 discarded). 선택은 건드리지 않는다.
+      cleanupDrag(false, true);
+      const latest = optionsRef.current;
+      if (relocated) {
+        // 좌표는 넣은 적이 있을 때만 되돌린다. 버리는 저장은 움직였으면 늘 낸다 — 판을 밀다 제자리로 돌아와 F 로 저장한 뒤의 Esc 도 그 묶음의 단계를
+        //  걷어야 한다(좌표에 넣은 양이 0 이어도. Codex 2차 리뷰 P2). 저장할 것이 없으면 저장 입구가 받지 않는다.
+        if (!wholeBoard || settled.x !== 0 || settled.y !== 0) place(0, 0);
+        latest.persist(latest.cardsRef.current, latest.edgesRef.current, latest.groupsRef.current, { discard: true });
+      }
+      if (wholeBoard) endLayer();
+      latest.endGesture();
     });
     // 묶음은 여기서 연다 — 손을 뗀 것을 놓친 앞 끌기가 남아 있었다면 위 beginDrag 가 그것을 먼저 확정하고 닫는다(앞 끌기의 묶음으로).
     //  되돌리기의 시작점은 이 끌기가 옮기는 카드·네모의 끌기 전 자리다.

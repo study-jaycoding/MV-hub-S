@@ -848,6 +848,17 @@ body:has(.folder-peek) .sl-dockbar .sl-status-row .manage-float { visibility: hi
 @media (prefers-reduced-motion: reduce) {
   .upd-ring { animation: none; transform: rotate(38deg); }
 }
+/* 작은 '…중' 고리(28회차 — 프로젝트 ✎ · Comfy 카드 워크플로 읽기 · 캔버스 가져오기 · 복구 창 더 보기). upd-ring 과 같은 계단식 회전 —
+   떠 있는 동안만 그려지는 요소라 쉬는 화면에는 없다(끝없는 애니메이션의 CPU 규칙은 tests/idleCssAnimations). */
+.busy-ring {
+  display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: -2px; flex: none;
+  border: 2px solid rgba(255, 255, 255, 0.18); border-top-color: var(--accent);
+  animation: upd-spin 0.96s steps(12) infinite;
+}
+.busy-ring.lg { width: 18px; height: 18px; border-width: 2.5px; }
+@media (prefers-reduced-motion: reduce) {
+  .busy-ring { animation: none; transform: rotate(38deg); }
+}
 .upd-bang {
   width: 46px; height: 46px; border-radius: 50%; margin: 0 auto 16px;
   border: 2px solid rgba(245, 166, 35, 0.55); color: #f5a623;

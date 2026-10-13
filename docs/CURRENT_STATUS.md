@@ -28,7 +28,7 @@ owner: Claude · reviewer: Codex(병합 가능·수정 승인) · status: 검증
 
 ## 10-10 조작·단축키 전반 점검 — dev(미배포)
 
-owner: Claude · reviewer: Codex · status: 검증 중(main 미병합). 규칙 54·**씬 섞임 수정 `075edeee`**·**Jay 확인: 지어 둔 셋·7~27회차 변화** → [status/조작점검_2026-10-10.md](status/조작점검_2026-10-10.md).
+owner: Claude · reviewer: Codex · status: 검증 중(main 미병합). 규칙 54·**씬 섞임 수정 `075edeee`**·**Jay 확인: 지어 둔 셋·7~29회차 변화** → [status/조작점검_2026-10-10.md](status/조작점검_2026-10-10.md). 29회차(10-13): 규칙 55·56 · 서버 셋 설계안 [status/서버셋_설계_2026-10-13.md](status/서버셋_설계_2026-10-13.md)(Jay 답 대기).
 
 ## 10-03 최적화 점검 — 0926 → UI 후속 0958 공개(10-03 10:04)
 

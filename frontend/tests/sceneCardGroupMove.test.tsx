@@ -826,7 +826,7 @@ it("4px 넘게 끌기 시작하면 그 포인터를 보드가 쥔다 — 누르�
     const head = host.querySelector<HTMLElement>('.scene-group[data-group-id="gB"] .scene-group-hd')!;
     // 놓는 것과 그 뒤의 click 을 브라우저처럼 한 작업 안에서 보낸다 — 삼켰는지(기본 동작을 막았는지) 돌려준다
     const releaseOnHead = (x: number) => {
-      const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+      const click = new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }); // detail 1 = 마우스 클릭(키보드 click 은 0 — 삼키지 않는다)
       act(() => {
         window.dispatchEvent(new MouseEvent("mouseup", { button: 0, clientX: x, clientY: 50 }));
         head.dispatchEvent(click);
@@ -914,7 +914,7 @@ it("끌어 놓은 뒤에 따라오는 click 은 카드 안으로 가지 않는�
   const picked = () => row().classList.contains("selrow");
   // 브라우저는 누른 요소와 뗀 요소가 같으면 mouseup 에 이어 **같은 작업 안에서** click 을 보낸다 — 끄는 카드는 마우스를 따라와 늘 같은 요소다
   const releaseOnRow = (x: number, y: number, ctrlKey = false) => {
-    const click = new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey });
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey, detail: 1 }); // detail 1 = 마우스 클릭
     act(() => {
       window.dispatchEvent(new MouseEvent("mouseup", { button: 0, clientX: x, clientY: y }));
       row().dispatchEvent(click);
@@ -959,13 +959,13 @@ it("끌어 놓은 직후(다음 작업이 돌기 전) 이어서 누른 것은 �
   const clickOutside = () => {
     outside.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
     window.dispatchEvent(new MouseEvent("mouseup", { button: 0 }));
-    outside.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    outside.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
   };
   try {
     await grab("a1", 150, 150);
     await dragTo(370, 150, 2000);
-    const own = new MouseEvent("click", { bubbles: true, cancelable: true });
-    act(() => { // 놓기 + 딸린 click + 키보드로 누른 단추(누름 없이 click 만) + 마우스로 두 번 — 전부 한 작업 안에서(타이머는 아직 안 돌았다)
+    const own = new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }); // 마우스 클릭(detail 1) — 키보드 click(0)은 애초에 삼키지 않는다
+    act(() => { // 놓기 + 딸린 click + 키보드로 누른 단추(누름 없이 click 만, detail 0) + 마우스로 두 번 — 전부 한 작업 안에서(타이머는 아직 안 돌았다)
       window.dispatchEvent(new MouseEvent("mouseup", { button: 0, clientX: 370, clientY: 150 }));
       board().dispatchEvent(own);
       outside.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -1302,23 +1302,26 @@ it("끄는 중에 지워도 표시가 남지 않는다 — 끌던 카드들이 �
   expect([marked(), outer("p0"), outer("p39")]).toEqual([[], ["110px", "110px", "", false], ["2090px", "770px", "", false]]);
 });
 
-// ── 끄는 조건 — 시작할 때만 켤 수 있고, 조건을 잃으면 그 끌기가 끝날 때까지 끈다 ──
-it("끄는 중에 선택이 풀리면(Esc) 그 자리에서 원래 그리기로 돌아간다 — 끌기는 이어지고, 다시 골라도 그 끌기에서는 다시 켜지 않으며, 놓으면 되돌리기 한 단계다", async () => {
+// ── 끄는 조건 — 시작할 때만 켤 수 있고, 조건을 잃으면 그 끌기가 끝날 때까지 끈다(아래 '화면 배율' 시험이 그 길이다) ──
+// 29회차: 끄는 중의 Esc 는 선택을 푸는 대신 **끌기를 버린다**(Jay 안 A — tests/sceneDragEscape.test). 빠른 그리기의 표식도 그 자리에서 걷히고
+//  카드는 끌기 전 자리로 돌아가며 선택은 그대로다. 다음 끌기는 평소대로 다시 켜진다(버린 끌기가 다음 끌기를 막지 않는다).
+it("끄는 중에 Esc 를 누르면 끌기가 버려진다 — 빠른 그리기 표식이 걷히고 카드는 끌기 전 자리로, 선택은 그대로. 다시 잡아 끌면 다시 켜지고 놓으면 되돌리기 한 단계다", async () => {
   await act(async () => { root.render(<StoreParent cards={manyCards(40)} />); });
   await pickAllButZ();
   await grab("p0", 150, 150);
   await dragTo(370, 150, 2000); // +220
   expect(marked().length).toBe(40);
-  await key({ key: "Escape", code: "Escape" }); // 끄는 중의 Esc 는 선택을 푼다 — 포인터를 쥐고 있어도 키는 온다
-  expect(host.querySelectorAll(".scene-card.sel").length).toBe(0);
+  await key({ key: "Escape", code: "Escape" }); // 포인터를 쥐고 있어도 키는 온다
+  expect(host.querySelectorAll(".scene-card.sel").length).toBe(40); // 선택은 그대로
   expect(marked()).toEqual([]);
-  expect([outer("p0"), outer("p39")]).toEqual([["330px", "110px", "", false], ["2310px", "770px", "", false]]); // left/top 이 지금 좌표다
-  await dragTo(590, 150, 2000); // 끌기는 이어진다 — 걸음마다 left/top 으로
-  expect([marked(), outer("p0")]).toEqual([[], ["550px", "110px", "", false]]);
-  await selectAll(); // 다시 골라도
-  expect(host.querySelectorAll(".scene-card.sel").length).toBe(41);
+  expect([outer("p0"), outer("p39")]).toEqual([["110px", "110px", "", false], ["2090px", "770px", "", false]]); // 끌기 전 자리
+  await dragTo(590, 150, 2000); // 손을 뗄 때까지 더 움직여도 따라오지 않는다
+  expect([marked(), outer("p0"), patches.length]).toEqual([[], ["110px", "110px", "", false], 0]);
+  await release(590, 150);
+  expect(patches).toHaveLength(0);
+  await grab("p0", 150, 150); // 다시 잡아 끌면 평소대로 — 빠른 그리기도 다시 켜진다
   await dragTo(810, 150, 2000);
-  expect([marked(), outer("p0")]).toEqual([[], ["770px", "110px", "", false]]); // 그 끌기에서는 다시 켜지 않는다
+  expect([marked().length, outer("p0")]).toEqual([40, ["110px", "110px", "660px 0px", true]]);
   await release(810, 150);
   expect([savedX("p0"), savedX("p39"), savedX("z")]).toEqual([770, 2750, 110]);
   await undoOnce();

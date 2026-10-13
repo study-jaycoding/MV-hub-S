@@ -239,6 +239,8 @@ export function WorkBoard({
   );
   const [filters, setFilters] = useState<WorkFilters>(loadFilters);
   const [err, setErr] = useState<string | null>(null);
+  const errRef = useRef(err); // 저장 줄(queue) 안에서 최신 값을 본다 — 닫힌 값은 줄에 선 동안 낡는다
+  errRef.current = err;
   // 이 범위(scopeKey)의 작업 목록을 한 번이라도 받았나 — 받았으면 그 뒤의 재조회 실패에 표를 걷지 않고 띠로 알린다(아래 stale).
   //  목록을 비우는 자리(공간·계정·보관 기록 전환)에서는 같이 비운다 — 비운 표를 '마지막으로 받은 내용'이라 하면 안 된다(Codex 설계 검토).
   const [loadedScope, setLoadedScope] = useState<string | null>(null);
@@ -648,6 +650,10 @@ export function WorkBoard({
       if (!scopeIsActive(requestScope)) return;
       if (simpleOnly) {
         setTasks((prev) => prev.map((t) => (t.id === tid ? { ...t, ...patch } : t)));
+        // '저장 안 됨' 뒤의 [다시 저장]이 통해도 목록 조회 실패의 띠("목록을 새로 받지 못했습니다")는 남았다(28회차) — 저장이 통했으면 서버는 돌아온
+        //  것이니 목록을 다시 받아 띠를 걷는다. 띠만 지우면 받지 못한 목록을 최신이라 하게 된다(Codex 설계 검토). 기다리지 않는다 — 칸에 주는 결과(settle)는
+        //  전처럼 줄의 끝에서, 조회의 늦고 빠름은 reqRef·taskDataRevision 이 가린다.
+        if (errRef.current) void loadProjectsRef.current();
       } else {
         await loadAllRef.current();
       }

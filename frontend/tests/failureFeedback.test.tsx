@@ -574,9 +574,41 @@ it("캔버스에 놓은 여러 파일 — 들어가지 않은 파일은 수와 �
   ]);
 });
 
-it("캔버스에 붙여 넣은 그림 — 들이지 못했으면 알린다", async () => {
+// 28회차(Jay 결정 — "…중" 표시): 큰 파일을 놓은 뒤 올라가는 동안 빈자리라 "안 됐나?" 싶어 또 놓았다 → 놓은 자리의 자리 표시(보드가 그린다 —
+//  tests/busyIndicators). 여기서는 훅의 상태: 시작에 생기고, 응답(성공·씬 바뀜)에 사라지고, 실패엔 까닭을 든 채 남아 ✕ 로 치운다.
+it("캔버스에 놓은 파일 — 올라가는 동안 놓은 자리의 자리 표시가 있고, 끝나면(성공·씬 바뀜) 사라지며, 실패하면 까닭을 든 채 남아 ✕ 로 치운다", async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
-  mountBoardDrop();
+  const board = mountBoardDrop();
+  const saved = (name: string) => ({ project: "imports", path: name, name, type: "image" });
+  const upload = held<{ saved: ReturnType<typeof saved>[]; skipped: string[] }>();
+  mocks.uploadReferenceFiles.mockImplementation(() => upload.next());
+  const drop = (files: File[]) => act(() => {
+    board.handlers().onDrop({ preventDefault() {}, stopPropagation() {}, clientX: 30, clientY: 40, shiftKey: false,
+      dataTransfer: { types: ["Files"], files, items: [] } } as never);
+  });
+  const pending = () => board.handlers().pendingImports;
+  drop([png(), new File(["y"], "two.png", { type: "image/png" }), new File(["z"], "note.txt", { type: "text/plain" })]);
+  expect(pending()).toEqual([expect.objectContaining({ sceneId: "s", x: 30, y: 40, count: 2, names: ["shot.png", "two.png"], error: null })]); // 못 넣는 파일은 수에 안 든다
+  await act(async () => { upload.waiting[0].resolve({ saved: [saved("shot.png"), saved("two.png")], skipped: [] }); });
+  await settle();
+  expect(pending()).toEqual([]);
+  drop([png()]); // 올리는 사이 씬이 바뀌어 카드를 안 넣어도 자리 표시는 걷는다(표시는 올리기의 것)
+  board.sceneIdRef().current = "other-scene";
+  await act(async () => { upload.waiting[1].resolve({ saved: [saved("shot.png")], skipped: [] }); });
+  await settle();
+  expect(pending()).toEqual([]);
+  board.sceneIdRef().current = "s";
+  drop([png()]); // 실패 — 남는다
+  await act(async () => { upload.waiting[2].reject(new Error("offline")); });
+  await settle();
+  expect(pending()).toEqual([expect.objectContaining({ names: ["shot.png"], error: "넣지 못했습니다 — 다시 놓아 주세요" })]);
+  act(() => board.handlers().dismissPendingImport(pending()[0].id));
+  expect(pending()).toEqual([]);
+});
+
+it("캔버스에 붙여 넣은 그림 — 들이지 못했으면 알린다, 자리 표시도 까닭을 든 채 남는다", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const board = mountBoardDrop();
   mocks.uploadCapture.mockRejectedValueOnce(new Error("offline"));
   const image = png();
   act(() => {
@@ -587,6 +619,7 @@ it("캔버스에 붙여 넣은 그림 — 들이지 못했으면 알린다", asy
   await settle();
   expect(mocks.uploadCapture).toHaveBeenCalledExactlyOnceWith(image);
   expect(flashes).toEqual(["붙여 넣은 그림을 캔버스에 넣지 못했습니다 — 다시 붙여 넣어 주세요."]);
+  expect(board.handlers().pendingImports).toEqual([expect.objectContaining({ sceneId: "s", count: 1, names: ["붙여 넣은 그림"], error: "넣지 못했습니다 — 다시 놓아 주세요" })]);
 });
 
 // 21회차(조작 규칙 48, Codex 전수 검토): 올리는 사이 캔버스를 떠나면(다른 탭으로) 보드는 내려간다. 늦게 끝난 올리기가 **내려간 보드의 카드

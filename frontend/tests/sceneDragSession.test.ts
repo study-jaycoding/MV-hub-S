@@ -174,6 +174,49 @@ describe("createSceneDragSession", () => {
     expect(order).toEqual(["rebase", "move:pending", "up"]);
   });
 
+  it("discard(Esc) 는 도는 끌기를 밀린 걸음 없이 버리고 onDiscard 만 부른다 — up·취소는 안 부르고, 그 뒤의 mouseup·blur 는 아무 일도 없다", () => {
+    const h = harness();
+    const order: string[] = [];
+    h.session.begin(
+      (event) => order.push(`move:${event.id}`),
+      () => order.push("up"),
+      () => order.push("cancel"),
+      () => order.push("rebase"),
+      () => order.push("discard"),
+    );
+    h.emit("mousemove", { id: "pending" }); // 밀린 걸음 — 버린다
+    expect(h.session.discard()).toBe(true);
+    expect(order).toEqual(["discard"]);
+    expect(h.listenerCount()).toBe(0);
+    expect(h.frameCount()).toBe(0);
+    h.flushFrames();
+    h.emit("mouseup", { id: "late" });
+    h.emit("blur");
+    h.session.settle();
+    h.session.rebase();
+    expect(h.session.discard()).toBe(false); // 이미 끝났다
+    expect(order).toEqual(["discard"]);
+
+    // 버린 뒤에도 같은 세션으로 새 끌기를 시작할 수 있다
+    h.session.begin((event) => order.push(`new-move:${event.id}`), () => order.push("new-up"));
+    h.emit("mousemove", { id: "next" });
+    h.flushFrames();
+    h.emit("mouseup");
+    expect(order).toEqual(["discard", "new-move:next", "new-up"]);
+  });
+
+  it("onDiscard 가 없는 끌기(범위 선택·판 밀기)와 끌기가 없을 때의 discard 는 false 고 끌기는 그대로 돈다", () => {
+    const h = harness();
+    const order: string[] = [];
+    expect(h.session.discard()).toBe(false);
+    h.session.begin((event) => order.push(`move:${event.id}`), () => order.push("up"), () => order.push("cancel"));
+    h.emit("mousemove", { id: "pending" });
+    expect(h.session.discard()).toBe(false);
+    expect(h.listenerCount()).toBe(3); // 끌기는 계속된다
+    h.emit("mouseup");
+    expect(order).toEqual(["move:pending", "up"]);
+  });
+
   it("dispose는 이동·취소 콜백 없이 예약 프레임과 리스너만 제거한다", () => {
     const h = harness();
     const order: string[] = [];

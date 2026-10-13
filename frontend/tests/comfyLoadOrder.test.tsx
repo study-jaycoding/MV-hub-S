@@ -245,6 +245,35 @@ it("캔버스의 Comfy 카드 — 같은 카드에 잇달아 넣은 워크플로
   expect(card.label()).toContain("second · 2노드");
 });
 
+// 28회차(Jay 결정 — "…중" 표시): JSON 을 놓거나 ↻ 를 누른 뒤 응답(Comfy 서버 조회, 최대 30초)까지 카드가 그대로라 또 눌렀다.
+it("캔버스의 Comfy 카드 — 워크플로를 읽는 동안 본문 위에 '워크플로 읽는 중…' 덮개가 있고 ↻ 가 잠긴다(새 파일은 계속 받는다), 끝나면(성공·실패) 걷힌다", async () => {
+  const card = await board();
+  const busy = () => host.querySelector(".scene-comfynode-busy");
+  await dropFile(card.zone(), "first"); // parses[0] — 빈 카드에도 덮개
+  expect(busy()?.textContent).toContain("워크플로 읽는 중…");
+  await finish(0, 2);
+  expect(busy()).toBeNull();
+  expect(cardButton("현재 워크플로우 다시 읽기").disabled).toBe(false);
+  await act(async () => { cardButton("현재 워크플로우 다시 읽기").click(); }); // ↻ — parses[1]
+  await settle();
+  expect(busy()).not.toBeNull();
+  expect(cardButton("워크플로 읽는 중").disabled).toBe(true); // ↻ 는 잠긴다(title 도 그 글)
+  act(() => { // 카드를 골라 실행 단추를 띄운다 — 읽는 중의 실행은 옛 워크플로로 나가므로 잠긴다
+    host.querySelector('.scene-card[data-id="comfy"]')!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 10, clientY: 10 }));
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0, clientX: 10, clientY: 10 }));
+  });
+  expect(host.querySelector<HTMLButtonElement>(".scene-cardgen-go")!.disabled).toBe(true);
+  await dropFile(card.zone(), "second"); // 읽는 중에도 새 파일은 받는다(규칙 39 — 나중 것이 이긴다) — parses[2]
+  expect(mocks.parse).toHaveBeenCalledTimes(3);
+  await act(async () => { parses[1].reject(new Error("Comfy 서버에 연결하지 못했습니다")); });
+  await settle();
+  expect(busy()).not.toBeNull(); // second 가 아직 돈다 — 먼저 끝난(실패한) ↻ 가 덮개를 걷지 않는다(돌고 있는 수로 센다)
+  await finish(2, 5);
+  expect(busy()).toBeNull();
+  expect(card.label()).toContain("second · 5노드");
+  expect(host.querySelector<HTMLButtonElement>(".scene-cardgen-go")!.disabled).toBe(false);
+});
+
 it("캔버스의 Comfy 카드 — 순번은 파일을 읽기 전에 잡는다(느린 드라이브의 앞 파일이 늦게 읽혀 나중 것을 덮지 않는다). 나중 것이 실패하면 앞의 것이 들어온다", async () => {
   const card = await board();
   const slow = heldRead();

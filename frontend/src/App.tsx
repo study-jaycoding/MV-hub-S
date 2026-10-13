@@ -84,7 +84,7 @@ import { useGenerationKeyboardActions } from "./lib/useGenerationKeyboardActions
 import { useGenerationLibraryData } from "./lib/useGenerationLibraryData";
 import { useGenerationProgress } from "./lib/useGenerationProgress";
 import { useGenerationProjectActions } from "./lib/useGenerationProjectActions";
-import { useGenerationSelection } from "./lib/useGenerationSelection";
+import { useGenerationSelection, withoutHidden } from "./lib/useGenerationSelection";
 import { useGenerationShareActions } from "./lib/useGenerationShareActions";
 import { useBackgroundEscape } from "./lib/useEscapeClose";
 import { backgroundKeysBlocked, floatHost, isTypingTarget, usePageSelectAllGuard } from "./lib/keyGate";
@@ -131,6 +131,7 @@ import { reviewTargets } from "./lib/generationReview";
 import { GradeStepModal } from "./components/GradeStepModal";
 import { useAskPrompt } from "./lib/prompt";
 import { makeStore } from "./lib/storage";
+import { TEAM_LOCATION_KEY, type TeamLocationMemory } from "./lib/useLibraryPersistence";
 import type {
   CardMark,
   FolderCard,
@@ -192,7 +193,7 @@ export default function App() {
   const [teamPeek, setTeamPeek] = useState(false);
   // 라이브러리 필터/뷰 상태 + genQuery/selectionResetKey 파생 + LS 저장(useLibraryPersistence)은 useLibraryFilters 훅으로 추출.
   const {
-    filters, storedTab, setFilters, patch,
+    filters, storedTab, setFilters, patch, restoreLocation, restoredLocationRef, teamScopeKey, teamAutoReady,
     typeFilter, setTypeFilter, scale, setScale, fill, setFill, layout, setLayout,
     showFilters, setShowFilters, groupByDate, setGroupByDate, colorFilter, setColorFilter,
     sharedOnly, setSharedOnly, reviewFilter, setReviewFilter, tagFilter, setTagFilter, tagPanelOpen, setTagPanelOpen,
@@ -442,6 +443,23 @@ export default function App() {
     resetKey: selectionResetKey,
   });
   const libraryAuthKey = JSON.stringify([hubAccount?.email, account?.email, account?.creator_uid, sharedSrv?.url]);
+  // 보는 자리의 문맥(계정·서버·공간 범위) — 브라우저 기록(lib/useAppNavigation)과 공유 탭의 마지막 자리 기억이 같은 문맥의 자리만 되살린다.
+  //  탭마다 센다 — 기록의 자리는 **그 기록의 탭**이 지금 갖게 될 문맥과 견준다(공유 탭의 폴더 → 작업 공간 탭 → 뒤로 가기).
+  const locationCtxFor = useCallback(
+    (tab: "my" | "team" | "compose") => JSON.stringify([libraryAuthKey, tab === "team" ? teamScopeKey : ""]),
+    [libraryAuthKey, teamScopeKey],
+  );
+  const locationCtx = locationCtxFor(filters.tab);
+  const currentLocation = useMemo(
+    () => ({
+      project_id: filters.project_id, folder_path: filters.folder_path,
+      deleted_only: filters.deleted_only || undefined, include_deleted: filters.include_deleted || undefined, ctx: locationCtx,
+    }),
+    [filters.project_id, filters.folder_path, filters.deleted_only, filters.include_deleted, locationCtx],
+  );
+  // 공유 탭의 마지막 자리를 기억하는 문맥 — 확정된 자동 공간일 때만(전체 보기·공간 미확정은 저장도 복원도 안 한다, Codex 설계 검토)
+  const teamMemoryCtx = teamAutoReady ? JSON.stringify([libraryAuthKey, teamScopeKey]) : "";
+  const pushLocationRef = useRef(false); // 다음 자리 변경이 명시적 이동(컷 카드·사이드바를 눌러 들어감)인가 — 기록을 한 칸 쌓는다
   const previousWorkspaceView = useRef(workspaceScopeKey);
   useLayoutEffect(() => {
     if (previousWorkspaceView.current === workspaceScopeKey) return;
@@ -988,6 +1006,7 @@ export default function App() {
   const enterFolderCard = useCallback((folder: FolderCard) => {
     const projectId = folder.cover.project_id;
     if (!projectId) return;
+    pushLocationRef.current = true; // 명시적 이동 — 브라우저 기록을 한 칸 쌓는다(뒤로 가기가 이 목록으로 돌아온다, 2026-10-13 ②)
     setArmedFolder({ projectId, path: folder.path });
     patch({ project_id: projectId, folder_path: folder.path });
   }, [setArmedFolder, patch]);
@@ -1068,7 +1087,9 @@ export default function App() {
   useEffect(() => {
     if (!projectsLoadedRef.current) return; // 첫 로드 전엔 판단 보류
     // 자동 조회 위치는 재시작 후에도 생성 목적지와 다를 수 있다. 공간 제한 목록만으로 지우지 않는다.
-    if (isLocatedView || filters.project_id !== generationScope.project_id) return;
+    //  뒤로 가기·공유 탭 기억으로 **되살린** 자리(restoredLocationRef)도 지우지 않는다 — 보관·공간 제한 목록은 삭제의 증거가 아니고, 생성 목적지와
+    //  우연히 같을 수 있다(작업 공간 탭에서 골랐다가 뒤로 가 맨 위 → 공유 탭. 2026-10-13 ① Codex 3차 P2).
+    if (isLocatedView || restoredLocationRef.current || filters.project_id !== generationScope.project_id) return;
     const pid = filters.project_id;
     if (pid && pid !== "none" && !projects.some((p) => p.id === pid)) {
       patch({ project_id: undefined });
@@ -1183,6 +1204,14 @@ export default function App() {
     () => [...comfyPlaceholders, ...filterDisabledGenerations(visibleGens, effectiveDisabled, grayOn)],
     [comfyPlaceholders, visibleGens, effectiveDisabled, grayOn],
   );
+  // 회색 숨김을 켜면 가려지는 카드는 선택에서 뺀다(29회차 Jay "검색과 같게" — 보이는 것만 남긴다). 숨김은 gridGens 만 줄이고 gens 는 그대로라
+  //  위 규칙 42 효과가 걷지 못한다(Codex 코드 리뷰 P2 — 전엔 숨김 전환이 선택을 통째로 비웠다). 숨긴 채 Ctrl+A 로 고른 가려진 카드는 전처럼
+  //  남는다(재제안 금지 — Ctrl+A 는 숨긴 카드까지 고른다).
+  const toggleGray = () => {
+    const next = !grayOn;
+    setGrayOn(next);
+    if (next && selected.size) setSelected((prev) => withoutHidden(prev, effectiveDisabled));
+  };
   // 회색/휴지통 공간 필터가 페이지를 전부 가리면(빈 그리드) ThumbnailGrid 가 센티넬을 못 그려
   // onLoadMore 가 영영 안 불린다 → 뒤 페이지의 활성 항목이 사라진 것처럼 보임. hasMore 인 한
   // 활성 항목이 나오거나 끝날 때까지 다음 페이지를 자동으로 당긴다(필터·페이지네이션 분리).
@@ -1275,6 +1304,7 @@ export default function App() {
     openPreview,
     openComment,
     openAdmin,
+    syncLocation,
   } = useAppNavigation({
     currentTab: storedTab, // 저장된 탭 — 편집 탭이 연 폴더 창의 임시 '공유 & 리뷰'가 뒤로가기 기록에 남지 않게
     previewScopeKey: JSON.stringify([workspaceContext.scope, workspaceContext.id, workspaceFollow?.mode ?? "auto", libraryAuthKey]),
@@ -1286,12 +1316,31 @@ export default function App() {
     setBoardFocusId,
     setBoardArrange,
     setFilters,
+    currentLocation,
+    restoreLocation,
+    locationCtxFor,
     setEditOpen,
   });
   // 편집 탭에 들어오는 모든 길(단추·뒤로/앞으로)에서 밑의 목록 선택을 비운다 — 안 보이는 카드에 단축키·일괄 작업이 걸리지 않게.
   useEffect(() => {
     if (editOpen) setSelected((prev) => (prev.size ? new Set() : prev));
   }, [editOpen, setSelected]);
+  // 보는 자리를 브라우저 기록에 맞춘다(렌더마다 — 같은 자리면 아무 일도 없다): 명시적 이동이면 한 칸 쌓고, 그 밖은 지금 기록을 고쳐 적는다.
+  //  표식은 렌더마다 내린다 — 같은 폴더를 다시 눌러 자리가 안 바뀌어도 다음 자동 변경(따라가기)이 '명시적'으로 쌓이지 않게.
+  //  편집 탭이 떠 있는 동안은 쉰다 — 그 안의 '폴더 보기' 창은 filters 를 임시로 공유 탭으로 보인다(useLibraryFilters 의 shown) — 그 임시 자리를
+  //  기록에 적지 않는다(편집 탭 병합 10-13).
+  useEffect(() => {
+    const push = pushLocationRef.current;
+    pushLocationRef.current = false;
+    if (editOpen) return;
+    syncLocation(currentLocation, push);
+  });
+  // 공유 탭의 마지막 자리 기억(2026-10-13 ①) — 확정된 자동 공간에서 **일반 목록**을 보는 동안 자리마다 적는다(휴지통 보기는 자리가 아니다 — 휴지통에
+  //  들어가면 프로젝트가 지워져 마지막 일반 자리를 '맨 위'로 덮었다, Codex 코드 리뷰). 되살리는 곳은 상단바의 탭 누름(onTab). 편집 탭 동안은 같은 이유로 쉰다.
+  useEffect(() => {
+    if (editOpen || filters.tab !== "team" || !teamMemoryCtx || filters.deleted_only) return;
+    LS.setJSON(TEAM_LOCATION_KEY, { ctx: teamMemoryCtx, project_id: filters.project_id, folder_path: filters.folder_path } satisfies TeamLocationMemory);
+  }, [editOpen, filters.tab, filters.project_id, filters.folder_path, filters.deleted_only, teamMemoryCtx]);
   const canFollowResolve = useCallback(() => {
     if (document.visibilityState !== "visible") return false;
     try {
@@ -2205,7 +2254,7 @@ export default function App() {
           : undefined
       }
       grayOn={grayOn}
-      onToggleGray={() => setGrayOn((v) => !v)}
+      onToggleGray={toggleGray}
       loading={loading}
       failedCount={failedCount}
       onClearFailed={clearFailed}
@@ -2399,6 +2448,16 @@ export default function App() {
           navTab(tab); // 브라우저 히스토리 엔트리 추가(뒤로/앞으로 연동)
           // 직접 탭 클릭은 다른 필터를 초기화하되 무장된 워크스페이스 침 필터는 유지
           setFilters((previous) => ({ tab, workspace_ids: previous.workspace_ids }));
+          // 공유 탭을 **직접 눌러** 들어오면 같은 문맥의 마지막 자리로(2026-10-13 ① — 처음이거나 다른 문맥이면 프로젝트 맨 위). 보는 자리만 되살린다 —
+          //  다음 생성 위치·무장 폴더는 그대로. 뒤로·앞으로 가기는 여기를 거치지 않고 기록의 자리를 쓴다(lib/useAppNavigation).
+          if (tab === "team" && teamMemoryCtx) {
+            const remembered = LS.loadJSON<TeamLocationMemory>(TEAM_LOCATION_KEY);
+            if (remembered && remembered.ctx === teamMemoryCtx && (remembered.project_id || remembered.folder_path)) {
+              // 그사이 지워졌는지는 판정하지 않는다 — 사이드바의 프로젝트 목록은 보관·공간 제한이라 없다고 지워진 것이 아니고, 폴더는 알 길이 없다
+              //  (컷 카드 0장은 공유 해제·필터로도 난다). 정말 사라졌으면 빈 목록이 보이고, 사이드바에서 다시 고르면 기억이 덮인다(Codex 코드 리뷰 2회).
+              restoreLocation({ project_id: remembered.project_id, folder_path: remembered.folder_path });
+            }
+          }
           clearSelect();
         }}
         editOpen={editOpen}
@@ -2490,7 +2549,7 @@ export default function App() {
               // SceneBoard 가 생성카드 안 생성물(변형 전부) 중 타입 필터 통과 수를 보고한다.
               count={activeScene ? sceneTypeCount : boardStats.count}
               grayOn={grayOn}
-              onToggleGray={() => setGrayOn((v) => !v)}
+              onToggleGray={toggleGray}
               loading={loading}
               failedCount={failedCount}
               onClearFailed={clearFailed}
@@ -2692,7 +2751,10 @@ export default function App() {
               <FilterSidebar
                 facets={facets}
                 filters={filters}
-                onChange={patch}
+                onChange={(p) => {
+                  pushLocationRef.current = true; // 사이드바를 눌러 자리를 바꾸는 것은 명시적 이동 — 기록 한 칸(폴더 줄의 onFilter→onArmFolder 둘이 와도 한 칸)
+                  patch(p);
+                }}
                 creatorWorkspaceFilter={genQuery}
                 creatorQueryReady={authReady && workspaceQueryReady}
                 creatorContextKey={libraryAuthKey}
@@ -2702,7 +2764,7 @@ export default function App() {
                 finalOnly={finalOnly}
                 onToggleFinal={() => setFinalOnly((v) => !v)}
                 grayOn={grayOn}
-                onToggleGray={() => setGrayOn((v) => !v)}
+                onToggleGray={toggleGray}
                 armedAutoTags={filterAutoTags}
                 onToggleAutoTag={toggleAutoTag}
                 viewedFolder={resolveLibrary.viewedFolder}
@@ -2713,7 +2775,8 @@ export default function App() {
                 onRemoveWorkspaceChip={removeWorkspaceChip}
                 armedFolder={armedFolder}
                 onArmFolder={(projectId, path) => {
-                  // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 라이브러리 필터
+                  // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 라이브러리 필터 — 명시적 이동(기록 한 칸)
+                  pushLocationRef.current = true;
                   setArmedFolder(path ? { projectId, path } : null);
                   patch({ project_id: projectId, folder_path: path || undefined });
                 }}
@@ -2740,6 +2803,7 @@ export default function App() {
                   onInfo={(folder, x, y) => {
                     if (cutScope) setCutInfo({ projectId: cutScope.projectId, path: folder.path, x, y, ctx: listPeekCtx });
                   }}
+                  onReel={(paths) => setCutReel({ paths, ctx: listPeekCtx })} // 우클릭 = 모아보기(Jay 2026-10-13) — 막대의 단추와 같은 창
                   outside={cutCards.own_count} onShowAll={() => setCutView(false)}
                 />
               ) : listPeek ? null : !workspaceQueryReady ? (
@@ -2755,10 +2819,22 @@ export default function App() {
         )}
       </div>
 
-      {/* Ctrl+K 로 프롬프트를 숨겨도 멀티선택 액션바는 유지. 캔버스(활성 씬)에선 SceneBoard 가 상단 중앙에
-          얹으므로 여기선 제외하고, 그 외(라이브러리 등)에서만 화면 상단 중앙에 띄운다. */}
-      {!promptVisible && selectionBar && !listPeek && !editOpen && !(filters.tab === "compose" && !!activeScene) && (
-        <div className="selbar-top-float">{selectionBar}</div>
+      {/* Ctrl+K 로 프롬프트를 숨겨도 멀티선택 액션바는 유지. 캔버스(활성 씬)에선 SceneBoard 가 상단 중앙에 얹으므로 여기선 제외하고,
+          그 외(라이브러리 등)에서는 **화면 아래 가운데**(프롬프트가 있던 자리 — Jay 2026-10-13 "밑으로", 전엔 상단바 아래)에 띄운다.
+          프롬프트를 숨기면 그 안의 오류 문구도 같이 숨으므로(왜 생성이 안 되는지 알 수 없게 된다 — 레퍼런스 번호 오류 등) 같은 묶음의
+          위 칸에 대신 띄운다 — 둘을 한 세로 묶음에 두어 서로 겹치지 않는다(Codex 설계 검토). 오류가 풀리면 저절로 사라진다.
+          편집 탭에는 프롬프트도 선택 막대도 없다(편집 탭 병합). */}
+      {!promptVisible && !editOpen && (promptError || (selectionBar && !listPeek && !(filters.tab === "compose" && !!activeScene))) && (
+        <div className="dock-float">
+          {promptError && (
+            <div className="sl-error-float" role="status">
+              {promptError}
+            </div>
+          )}
+          {selectionBar && !listPeek && !(filters.tab === "compose" && !!activeScene) && (
+            <div className="selbar-bottom-float">{selectionBar}</div>
+          )}
+        </div>
       )}
       {/* 프롬프트 입력바 — 구성탭에서도 표시. Ctrl/⌘+K 로 표시/숨김 토글(display 토글로 입력 상태 보존).
           숨김은 SpotlightPrompt 안에서 처리한다 — 여기서 도크를 통째로 감추면 상태줄(● Host/연결됨)까지
@@ -2806,13 +2882,6 @@ export default function App() {
           onCreated={onPromptCreated}
         />
       </div>
-      {/* Ctrl+K 로 프롬프트를 숨기면 그 안의 오류 문구도 같이 숨는다 — 왜 생성이 안 되는지 알 수 없게
-          되므로 화면 하단 중앙에 대신 띄운다(레퍼런스 번호 오류 등). 오류가 풀리면 저절로 사라진다. */}
-      {!promptVisible && !editOpen && promptError && (
-        <div className="sl-error-float" role="status">
-          {promptError}
-        </div>
-      )}
       {grade.pending && (
         <GradeStepModal
           pending={grade.pending}

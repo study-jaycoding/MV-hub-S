@@ -964,22 +964,26 @@
      변형 팝업 카드 배지(z:6)에 뚫리던 원인. 바 전체를 배지·태그에디터(z:40) 위로 올린다. */
   position: relative; z-index: 45;
 }
-/* Ctrl+K 로 프롬프트를 숨겼을 때 — 멀티선택 액션바를 화면 상단 중앙에 띄운다(상단바 아래). */
-.selbar-top-float {
+/* Ctrl+K 로 프롬프트를 숨겼을 때 — 멀티선택 액션바와 프롬프트의 오류 문구를 **화면 아래 가운데**(프롬프트가 있던 자리)에 한 세로 묶음으로
+   띄운다(29회차, Jay "밑으로" — 전엔 막대가 상단바 아래에 떴다). 오류가 위, 막대가 아래 — 둘 다 고정 bottom 이면 겹친다(Codex 설계 검토).
+   묶음은 클릭을 막지 않고(캔버스·격자 조작 방해 금지) 막대의 단추만 받는다. 상태 줄(● Host — 도크 오른쪽 아래, bottom 18px·한 줄 약 28px)과 같은
+   높이에 두면 좁은 창에서 겹쳐 상태 줄이 위에 그려진다(z 가 같고 DOM 이 뒤 — Codex 코드 리뷰) → 상태 줄 **위**(54px)에 둔다. */
+.dock-float {
   /* 가운데부터 자동 폭을 재면 화면의 절반으로 줄어든다. 캔버스처럼 좌우 가용 폭을 쓴다. */
-  position: fixed; top: 64px; left: 0; right: 0; padding: 0 12px;
-  z-index: 60; display: flex; justify-content: center;
+  position: fixed; bottom: 54px; left: 0; right: 0; padding: 0 12px;
+  z-index: 60; display: flex; flex-direction: column; align-items: center; gap: 8px;
   pointer-events: none;
 }
-.selbar-top-float .select-bar {
+.selbar-bottom-float { display: flex; justify-content: center; max-width: 100%; min-width: 0; pointer-events: none; }
+.selbar-bottom-float .select-bar {
   align-self: center; flex-wrap: wrap; justify-content: center; max-width: 100%; min-width: 0;
   pointer-events: auto;
 }
 /* 좁은 창에서는 글자가 아니라 버튼 단위로 접는다. 담기 메뉴 내부의 배치는 건드리지 않는다. */
-.selbar-top-float .select-bar > * { flex-shrink: 0; }
-.selbar-top-float .sb-count,
-.selbar-top-float .select-bar > button,
-.selbar-top-float .proj-assign > button {
+.selbar-bottom-float .select-bar > * { flex-shrink: 0; }
+.selbar-bottom-float .sb-count,
+.selbar-bottom-float .select-bar > button,
+.selbar-bottom-float .proj-assign > button {
   white-space: nowrap;
 }
 
