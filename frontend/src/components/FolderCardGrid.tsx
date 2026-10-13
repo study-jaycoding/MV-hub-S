@@ -24,8 +24,9 @@ interface Props {
   fill: boolean; // 썸네일 꽉 채움 ↔ 비율 유지
   selected: ReadonlySet<string>; // 고른 카드(폴더 경로)
   onSelect: (next: Set<string>) => void;
-  onOpen: (folder: FolderCard) => void; // 두 번 클릭(하위 폴더 없음) — 그 폴더의 창
-  onEnter: (folder: FolderCard) => void; // 두 번 클릭(하위 폴더 있음) — 그 폴더로 들어가기
+  // 두 번 클릭·Enter — 그 폴더로 들어가기(에피소드·컷 모두. 컷은 낱장 목록이 되고 그 카드 위에 [대표]가 뜬다 — Jay 2026-10-13 ②,
+  //  전엔 컷이 폴더 창을 열었다). 크롬 뒤로 가기가 이 묶음으로 돌아온다(App 의 enterFolderCard 가 기록을 한 칸 쌓는다).
+  onEnter: (folder: FolderCard) => void;
   onInfo: (folder: FolderCard, x: number, y: number) => void; // 휠 클릭 — 컷 정보
   onReel: (paths: string[]) => void; // 우클릭 — 모아보기(고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만)
   top: boolean; // 프로젝트 맨 위(에피소드 단계)인가 — '컷 밖' 대신 '에피소드 밖'
@@ -54,7 +55,7 @@ interface Drag {
   moved: boolean;
 }
 
-export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpen, onEnter, onInfo, onReel, top, outside, onShowAll }: Props) {
+export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onEnter, onInfo, onReel, top, outside, onShowAll }: Props) {
   const t = useT();
   const width = Math.round(180 * scale); // ThumbnailGrid 의 카드 최소 폭과 같은 식
   const thumbSize = width * (window.devicePixelRatio || 1) <= 256 ? 256 : 512;
@@ -207,8 +208,7 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
       // 여는 것은 **보이는** 카드만 — 골라져 있거나 초점이 놓인 카드. Space 로 뺀 자리(다시 고르기·방향키용으로만 남긴 것)는 화면에
       //  아무 표시가 없다: 그 자리에 Enter 가 폴더 창을 열었다(2026-10-10 최종 재실측 — Space 로 빼고 Esc 뒤 Enter).
       if (focused == null && !chosen.has(list[at].path)) return;
-      if (list[at].subfolders) onEnter(list[at]);
-      else onOpen(list[at]);
+      onEnter(list[at]);
     } else if (e.key === " ") {
       e.preventDefault();
       if (e.repeat) return; // 길게 눌린 Space — 고르기는 토글이라 반복마다 뒤집힌다(조작 규칙 38)
@@ -284,7 +284,7 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onOpe
               className={"cut-card" + (isSelected ? " sel" : "")}
               aria-pressed={isSelected}
               title={`${folder.path} · ${subfolders ? `${t("컷")} ${subfolders} · ` : ""}${folder.count}${t("건")}`}
-              onDoubleClick={() => (subfolders ? onEnter(folder) : onOpen(folder))}
+              onDoubleClick={() => onEnter(folder)}
               onAuxClick={(e) => {
                 if (e.button !== 1) return;
                 e.preventDefault();

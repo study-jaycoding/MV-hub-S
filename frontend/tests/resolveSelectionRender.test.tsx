@@ -1380,6 +1380,10 @@ const cutCards = (rep = false) => ({ parent: "episode", own_count: 2, folders: [
   { path: "episode/other", name: "other", count: 4, rep: false, cover: withAsset("neighbour") },
   { path: "episode/shot", name: "shot", count: 3, rep, cover: withAsset("target") },
 ] });
+// 부모 경로별 답 — 들어간 폴더의 [대표]는 부모 범위를 따로 받으므로(2026-10-13 ②) 어느 부모를 묻는지에 따라 답이 다르다. rep() = 'shot' 의 대표가 정해졌나.
+const topCards = { parent: "", own_count: 0, folders: [{ path: "episode", name: "episode", count: 9, rep: false, cover: withAsset("ep") }] };
+const byParent = (rep: () => boolean) => vi.fn((_pid: string, parent: string) =>
+  Promise.resolve(parent === "episode" ? cutCards(rep()) : parent === "" ? topCards : { parent, own_count: 3, folders: [] }));
 const cutGrid = () => document.querySelector<HTMLElement>("main.main .cut-grid");
 const cutTile = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("main.main .cut-card:not(.cut-out)")]
   .find((tile) => tile.querySelector(".cut-tab > span")!.textContent === name)!;
@@ -1402,16 +1406,17 @@ async function mountTeamFolder(api: Record<string, unknown>, more: Partial<Filte
   await settle();
 }
 
-it("App 공유·리뷰: 폴더를 고르면 바로 아래 폴더마다 카드 한 장 — 고른 것은 비우고, 컷 카드로 연 창에서 대표를 정한다", { timeout: 20_000 }, async () => {
-  const folderCards = vi.fn().mockResolvedValue(cutCards());
+it("App 공유·리뷰: 폴더를 고르면 바로 아래 폴더마다 카드 한 장 — 고른 것은 비우고, 폴더 창(카드의 폴더 이름표)에서 대표를 정한다", { timeout: 20_000 }, async () => {
+  let repOn = false;
+  const folderCards = byParent(() => repOn);
   let saved!: () => void;
   const setFolderCover = vi.fn(() => new Promise<void>((resolve) => { saved = resolve; }));
   localStorage.setItem("ch.lib.cutView", "0"); // 한 장씩 보기로 시작
   await mountTeamFolder({ folderCards, setFolderCover });
   act(() => setLibraryGens([libraryGeneration("target")])); // 고를 카드는 목록에 있다
 
-  // 한 장씩 보는 동안에는 받지 않는다 — 전환 단추만 보인다
-  expect(folderCards).not.toHaveBeenCalled();
+  // 한 장씩 보는 동안 하위 묶음은 받지 않는다 — 들어가 있는 폴더(episode)의 대표를 알려고 부모("")만 받는다(2026-10-13 ②). 전환 단추는 보인다
+  expect(folderCards.mock.calls.map((call) => call[1])).toEqual([""]);
   expect(toolbarSnapshot!.folderCards).toMatchObject({ on: false, summary: undefined });
   expect(cutGrid()).toBeNull();
   act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
@@ -1428,26 +1433,28 @@ it("App 공유·리뷰: 폴더를 고르면 바로 아래 폴더마다 카드 �
   expect(toolbarSnapshot!.folderCards).toMatchObject({ on: true, summary: { folders: 2, items: 9 } });
   expect(cutGrid()!.querySelector(".cut-out-count")!.textContent).toBe("컷 밖 2건"); // 폴더에 직접 든 것은 맨 끝 칸으로
 
-  // 컷 카드 → 그 폴더의 창. 누른 생성물 카드가 없으니 표시·이동 없이 연다. 뒤의 컷 카드는 그대로 있다.
+  // '컷 밖' 칸(또는 [전체]) — 다시 한 장씩
+  act(() => cutGrid()!.querySelector<HTMLButtonElement>(".cut-out")!.click());
+  await settle();
+  expect(localStorage.getItem("ch.lib.cutView")).toBe("0");
+  expect(cutGrid()).toBeNull();
+  expect(gridOutputs()).toHaveLength(1);
+
+  // 카드의 폴더 이름표 → 그 폴더의 창(컷 카드 두 번 클릭은 창이 아니라 이동 — 아래 시험). 창 안 카드 위의 [대표] — 대표가 아직 없으니 모두 지정 단추. 그림이 없는 것에는 없다.
   const backKey = JSON.stringify(librarySnapshot!.genQuery);
   beginList.mockClear();
-  act(() => cutTile("shot").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))); // 두 번 클릭 = 창(한 번은 고르기)
+  act(() => gridSnapshot!.onOpenFolder!(libraryGeneration("target")));
   await settle();
   expect(peekWindow()!.querySelector(".folder-peek-title")!.textContent).toBe("Resolve project / episode/shot");
   expect(librarySnapshot!.genQuery).toMatchObject({ tab: "team", project_id: "resolve-project", folder_path: "episode/shot" });
   expect(beginList).toHaveBeenLastCalledWith({ keep: backKey });
-  expect(gridSnapshot!.openedFromId).toBeNull();
-  expect(gridSnapshot!.resolveScrollRequest).toBeNull();
   expect(peekWindow()!.contains(gridOutputs()[0])).toBe(true);
-  expect(cutGrid()).not.toBeNull();
   expect(toolbarSnapshot!.folderCards).toBeUndefined(); // 창 안의 툴바에는 전환 단추가 없다
-
-  // 창 안 카드 위의 [대표] — 대표가 아직 없으니 모두 지정 단추. 그림이 없는 것에는 없다.
   expect(pill("target")).toMatchObject({ type: "button", props: { className: "scene-varpop-rep", disabled: false } });
   expect(gridSnapshot!.cellHeader!(libraryGeneration("no-asset"))).toBeNull();
   const preventDefault = vi.fn();
   const requests = folderCards.mock.calls.length;
-  folderCards.mockResolvedValue(cutCards(true)); // 저장 뒤 서버가 돌려줄 값
+  repOn = true; // 저장 뒤 서버가 돌려줄 값
   act(() => pill("target")!.props.onMouseDown!({ preventDefault, button: 2 })); // 우클릭 — 팀의 대표가 바뀌면 안 된다
   expect(setFolderCover).not.toHaveBeenCalled();
   act(() => pill("target")!.props.onMouseDown!({ preventDefault, button: 0 }));
@@ -1465,39 +1472,74 @@ it("App 공유·리뷰: 폴더를 고르면 바로 아래 폴더마다 카드 �
   expect(pill("target")).toMatchObject({ type: "span", props: { className: "scene-varpop-cur" } });
   expect(pill("sibling")).toMatchObject({ type: "button", props: { disabled: false } });
 
-  // 닫으면 초점은 컷 카드 격자로 돌아오고, 뒤의 묶음은 새 대표를 안다
-  //  목록 훅처럼: 닫을 때(restore) 옛 첫 쪽을 먼저 보이며 잠근다 — 풀린 뒤에 초점을 돌려준다
+  // 닫으면 뒤 목록이 조작 가능해질 때까지 잠근다(목록 훅처럼: 닫을 때(restore) 옛 첫 쪽을 먼저 보인다). 다시 [컷별]로 보면 새 대표를 안다
   beginList.mockImplementationOnce((back?: { restore?: string }) => { if (back?.restore !== undefined) setStaleList(true); });
   pressEscapeInPeek();
   await settle();
   expect(peekWindow()).toBeNull();
-  expect(document.querySelector("main.main")!.hasAttribute("inert")).toBe(true); // 잠긴 동안은 컷 카드도 눌리지 않는다
+  expect(document.querySelector("main.main")!.hasAttribute("inert")).toBe(true); // 잠긴 동안은 눌리지 않는다
   act(() => setStaleList(false));
-  expect(document.activeElement).toBe(cutGrid());
+  act(() => toolbarSnapshot!.folderCards!.onChange(true));
+  await settle();
   expect(cutTile("shot").querySelector(".cut-pill")).toBeNull();
   expect(cutTile("other").querySelector(".cut-pill")!.textContent).toBe("대표 미정");
   expect(gridOutputs()).toHaveLength(0);
-
-  // '컷 밖' 칸(또는 [전체]) — 다시 한 장씩
-  act(() => cutGrid()!.querySelector<HTMLButtonElement>(".cut-out")!.click());
-  await settle();
-  expect(localStorage.getItem("ch.lib.cutView")).toBe("0");
-  expect(cutGrid()).toBeNull();
-  expect(gridOutputs()).toHaveLength(1);
 });
 
-it("App 공유·리뷰: 대표 저장이 실패해도 서버 값을 다시 읽고 단추를 푼다", { timeout: 20_000 }, async () => {
-  const folderCards = vi.fn().mockResolvedValue(cutCards());
+it("App 공유·리뷰: 대표 저장이 실패해도 서버 값을 다시 읽고 단추를 푼다 — 들어간 폴더의 카드 위에서", { timeout: 20_000 }, async () => {
+  const folderCards = byParent(() => false);
   const setFolderCover = vi.fn().mockRejectedValue(new Error("404: 이 폴더에서 볼 수 있는 공유물이 아닙니다"));
   await mountTeamFolder({ folderCards, setFolderCover });
-  act(() => cutTile("shot").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))); // 두 번 클릭 = 창(한 번은 고르기)
+  act(() => cutTile("shot").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))); // 두 번 클릭 = 그 폴더로(한 번은 고르기)
   await settle();
+  expect(peekWindow()).toBeNull();
   const requests = folderCards.mock.calls.length;
   act(() => pill("target")!.props.onMouseDown!({ preventDefault: () => {}, button: 0 }));
   await settle();
-  expect(setFolderCover).toHaveBeenCalledTimes(1);
+  expect(setFolderCover).toHaveBeenCalledWith("resolve-project", "episode/shot", "target");
   expect(folderCards.mock.calls.length).toBeGreaterThan(requests);
   expect(pill("target")).toMatchObject({ type: "button", props: { disabled: false } });
+});
+
+// 2026-10-13 Jay ②(A안): 컷 카드 두 번 클릭 = 그 폴더로 들어감(폴더 창이 아니다) → 낱장 목록의 카드 위에 **그 폴더의** [대표]. 그 폴더의 지금 대표는
+//  부모의 컷 카드 목록에서 읽는다(부모 범위를 따로 받는다). 저장 뒤엔 부모·하위 둘 다 다시 읽는다. 프로젝트 맨 위(폴더 없음)에는 [대표]가 없다.
+it("App 공유·리뷰: 컷 카드 두 번 클릭 = 그 폴더로 들어가고, 들어간 낱장 목록의 카드 위에 그 폴더의 [대표]가 뜬다 — 창은 열리지 않는다", { timeout: 20_000 }, async () => {
+  let repOn = false; // 처음엔 'shot' 의 표지가 최신 것일 뿐 대표가 아니다 → 저장 뒤 대표
+  const folderCards = byParent(() => repOn);
+  let saved!: () => void;
+  const setFolderCover = vi.fn(() => new Promise<void>((resolve) => { saved = resolve; }));
+  localStorage.setItem("ch.lib.cutView", "1");
+  await mountTeamFolder({ folderCards, setFolderCover });
+  expect(cutGrid()).not.toBeNull(); // episode 의 컷 카드 둘
+  expect(gridSnapshot!.cellHeader).toBeUndefined(); // 묶음 보기 중에는 카드 위 [대표]가 없다(격자에 생성물이 없다)
+  const before = window.history.length;
+  const episodeEntry = window.history.state; // 들어가기 전의 기록(뒤로 가기가 돌아올 자리)
+  act(() => { cutTile("shot").dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
+  await settle();
+  expect(peekWindow()).toBeNull(); // 창이 아니라 이동
+  expect([librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path, window.history.length - before]).toEqual(["resolve-project", "episode/shot", 1]);
+  expect(cutGrid()).toBeNull(); // 잎 — 낱장 목록
+  // 그 폴더(episode/shot)의 대표는 부모(episode)의 컷 카드에서 읽는다 — 표지('target')가 최신 것일 뿐이면 대표가 아니다 → 모두 지정 단추
+  expect(folderCards.mock.calls.map((call) => call[1])).toContain("episode");
+  expect(pill("target")).toMatchObject({ type: "button", props: { className: "scene-varpop-rep", disabled: false } });
+  expect(pill("neighbour")).toMatchObject({ type: "button", props: { className: "scene-varpop-rep", disabled: false } });
+  const requests = folderCards.mock.calls.length;
+  repOn = true; // 저장 뒤 서버가 돌려줄 값
+  act(() => pill("target")!.props.onMouseDown!({ preventDefault: () => {}, button: 0 }));
+  expect(setFolderCover).toHaveBeenCalledWith("resolve-project", "episode/shot", "target");
+  expect(pill("target")).toMatchObject({ type: "button", props: { disabled: true } }); // 저장 중 잠금 — 먼저 그리지 않는다
+  act(() => saved());
+  await settle();
+  // 저장 뒤 부모(episode)와 하위(episode/shot) 둘 다 다시 읽는다 — 그제야 ★
+  const after = folderCards.mock.calls.slice(requests).map((call) => call[1]);
+  expect(after).toContain("episode");
+  expect(after).toContain("episode/shot");
+  expect(pill("target")).toMatchObject({ type: "span", props: { className: "scene-varpop-cur" } });
+  expect(pill("neighbour")).toMatchObject({ type: "button", props: { disabled: false } });
+  // 뒤로 가기 — 에피소드의 컷 카드로 돌아온다(기록 한 칸). jsdom 의 history.back() 은 popstate 를 바로 내지 않아 그 기록으로 직접 낸다
+  act(() => { window.dispatchEvent(new PopStateEvent("popstate", { state: episodeEntry })); });
+  await settle();
+  expect([librarySnapshot!.filters.folder_path, cutGrid() !== null]).toEqual(["episode", true]);
 });
 
 it("App 공유·리뷰: 묶어 보이지 않는 경우 — 하위 폴더가 없는 폴더, 무엇을 찾는 중", { timeout: 20_000 }, async () => {
@@ -1520,10 +1562,11 @@ it("App 공유·리뷰: 묶어 보이지 않는 경우 — 하위 폴더가 없�
 it("App 공유·리뷰: 옛 공유 서버(경로 없음)면 한 장씩 보이고 전환 단추·대표 단추가 없다", { timeout: 20_000 }, async () => {
   const { HttpError } = await import("../src/lib/http");
   const missing = vi.fn().mockRejectedValue(new HttpError(404, "404: Not Found", "Not Found"));
-  // 한 장씩 보기로 둔 PC — 아직 물어본 적이 없어 전환 단추는 보인다
+  // 한 장씩 보기로 둔 PC — 들어가 있는 폴더의 대표를 묻는 조회(2026-10-13 ②)만 가고(404), 묶음 조회는 아직 안 물어봐 전환 단추는 보인다
   localStorage.setItem("ch.lib.cutView", "0");
   await mountTeamFolder({ folderCards: missing, setFolderCover: vi.fn() });
-  expect(missing).not.toHaveBeenCalled();
+  expect(missing.mock.calls.map((call) => call[1])).toEqual([""]);
+  expect(gridSnapshot!.cellHeader).toBeUndefined(); // 옛 서버 — 카드 위 [대표] 없음
   expect(toolbarSnapshot!.folderCards).toMatchObject({ on: false });
   // 폴더 창이 그 폴더의 대표를 물어보다가 옛 서버임을 안다 — 대표 단추가 없다
   act(() => gridSnapshot!.onOpenFolder!(libraryGeneration("target")));
