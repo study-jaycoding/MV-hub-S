@@ -936,8 +936,13 @@ function EditTabInner({
     return {
       checked,
       count: checked ? lower.length : raise.length,
+      // 공유 목록을 다시 받는 중·받지 못한 뒤에는 누르지 못한다('모두 확정'·빈 곳 채우기와 같은 문지기 listFresh) — 그동안 든 목록은
+      //  옛 것이다. 그사이 다른 창에서 공유를 푼 생성물을 최종으로 올리면 서버가 **다시 공유한다**(최종 = 공유 동반 — Codex 코드
+      //  리뷰 6회째). 목록이 지금 것이어도 받은 뒤에 바뀐 것까지는 알 수 없다 — 그것은 공유 & 리뷰의 카드와 같은 틈이다.
+      stale: !listFresh,
       onToggle: () => {
         closeMenu();
+        if (!listFresh) return;
         // 해제는 최종인 것만 넘긴다 — 고른 것 전부를 '공유로' 넘기면 보류(R)해 둔 것까지 풀린다
         void review.apply(checked ? lower : clipMenuGens, checked ? "shared" : "final");
       },
