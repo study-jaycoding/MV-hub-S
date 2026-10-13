@@ -502,8 +502,10 @@ export default function App() {
   libraryKeysOffRef.current = editOpen && !listPeek;
   // 모양(리스트/그리드 · 리스트 한 번 더)은 **보는 폴더**마다 기억한다(Jay 2026-10-13 저녁 — lib/usePlaceView). 폴더 창이 떠 있으면 그 창의 폴더가
   //  보는 폴더다: 창 안에서 바꾼 모양은 그 폴더 것으로 적히고, 닫으면 뒤 화면은 제 모양 그대로다(뒤 폴더에 적히지 않는다 — Codex 코드 리뷰).
+  //  창이 없을 때의 자리는 **저장된 탭**의 것이다 — 편집 탭이 연 창이 무효가 된 렌더(창은 닫혔는데 teamPeek 는 아직 참)에서는 filters.tab 이
+  //  공유 & 리뷰라, 보지도 않은 공유 탭 자리에 모양이 적혔다(Codex 코드 리뷰).
   const { layout, setLayout, groupByDate, setGroupByDate } = usePlaceView(LS, placeViewKey(
-    listPeek ? { tab: filters.tab, project_id: listPeek.projectId ?? undefined, folder_path: listPeek.path } : filters,
+    listPeek ? { tab: filters.tab, project_id: listPeek.projectId ?? undefined, folder_path: listPeek.path } : { ...filters, tab: storedTab },
   ));
   const listGenQuery = useMemo(() => (listPeek ? folderPeekQuery(genQuery, listPeek) : genQuery), [genQuery, listPeek]);
   // 창의 격자는 열 때마다 새로 마운트되므로 nonce 는 고정값이면 된다(한 번 열 때 한 번만 이동).
