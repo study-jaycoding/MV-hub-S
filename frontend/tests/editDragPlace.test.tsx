@@ -584,3 +584,24 @@ it("길이 조절 창: 영상 정보가 오기 전에 재생을 눌러도 처음
   go(); // 멈추면 그 길이의 마지막 프레임(120프레임 = 119/24초)으로 돌아간다
   expect(sets[sets.length - 1]).toBeCloseTo(119 / 24);
 });
+
+// 2026-10-13 격리 실측: 영상을 못 받으면 검은 상자만 있고 ▶ 를 눌러도 아무 일이 없었다 — 까닭을 적고 ▶ 를 끈다. 길이는 그대로 조절된다.
+it("길이 조절 창: 영상을 못 받으면 까닭을 적고 재생 단추를 끈다 — 길이는 조절된다", () => {
+  world.gens = [gen("a", "c1"), gen("b", "c1", { assets: [{ id: "a-b", generation_id: "b", type: "video", file_path: "/media/b.mp4",
+    thumbnail_path: null, source_url: null, cached: true }] } as unknown as Partial<Generation>), gen("x", "c2")];
+  seed([{ cut: "c1", gen: "b", track: 2, ...{ kind: "video" } }]); // 문서에도 영상으로 적는다(이 파일의 기본은 그림 — 그림은 줄일 수 없다)
+  mountOn("c1");
+  fire(lane(2).querySelector<HTMLElement>(".ed-clip")!, "auxclick", { button: 1, buttons: 0 });
+  const pop = document.querySelector<HTMLElement>(".ed-trim")!;
+  const go = pop.querySelector<HTMLElement>(".ed-trim-go")!;
+  expect([pop.querySelector(".ed-trim-play em"), go.getAttribute("aria-disabled")]).toEqual([null, "false"]);
+  act(() => { pop.querySelector("video")!.dispatchEvent(new Event("error")); });
+  expect([pop.querySelector(".ed-trim-play em")?.textContent, go.getAttribute("aria-disabled")])
+    .toEqual(["영상을 불러오지 못했습니다 — 길이는 조절할 수 있습니다", "true"]);
+  const play = vi.mocked(HTMLMediaElement.prototype.play);
+  play.mockClear();
+  act(() => go.click());
+  expect([play.mock.calls.length, go.textContent]).toEqual([0, "▶ 재생"]);
+  act(() => [...pop.querySelectorAll("button")].find((item) => item.textContent === "−1f")!.click());
+  expect((stored().clips as { trim?: number }[])[0].trim).toBeCloseTo(119 / 24);
+});

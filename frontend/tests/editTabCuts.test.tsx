@@ -584,3 +584,19 @@ it("길이 조절 창 안에서 난 키는 창 밖(window)의 단축키에 닿�
     window.removeEventListener("keydown", listen);
   }
 });
+
+// 2026-10-13 격리 실측: 숫자 칸에 치다가 Esc 를 누르면 친 값이 **적용된 채** 닫혔다 — 닫히며 초점이 편집 화면으로 옮겨질 때 칸이 blur 되고,
+//  그 blur 가 적용을 불렀다. Esc 는 취소다.
+it("길이 조절 창: 숫자 칸에 치다가 Esc 를 누르면 그 값은 버리고 닫는다", () => {
+  const docKey = "mvhub.editDoc:local:p1:e070";
+  openTrimOn(docKey);
+  const trim = () => (JSON.parse(localStorage.getItem(docKey)!) as { clips: { trim?: number }[] }).clips[0].trim;
+  const seconds = document.querySelector<HTMLInputElement>(".ed-trim .ed-trim-num")!;
+  act(() => {
+    seconds.focus();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(seconds, "2");
+    seconds.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  press({ key: "Escape", code: "Escape" }, seconds);
+  expect([document.querySelector(".ed-trim"), trim()]).toEqual([null, undefined]);
+});

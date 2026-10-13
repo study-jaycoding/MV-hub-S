@@ -633,16 +633,16 @@ function EditTabInner({
   //  그대로 쓴다. 떠 있는 채 다른 클립을 휠 클릭하면 창이 그 클립으로 바뀐다(새 group). 닫는 것: ✕ · 창 안의 Esc · 아래의 셋.
   //  문서가 갈리면(rev) 닫는다 — 아래 효과. **저장 충돌을 알게 됐을 때도 닫는다**(edit.conflict): 슬라이더를 끄는 도중이면 같은 끌기의
   //  다음 걸음이 '알고 이어 가는 편집'으로 저장돼, 알림을 읽기도 전에 다른 창의 저장을 덮는다(Codex 코드 리뷰 2회째 P1).
-  const [trimPop, setTrimPop] = useState<{ key: string; x: number; y: number; group: string; rev: number } | null>(null);
+  const [trimPop, setTrimPop] = useState<{ key: string; group: string; rev: number } | null>(null);
   const trimSerial = useRef(0);
-  const openTrim = useCallback((key: string, x: number, y: number) => {
+  const openTrim = useCallback((key: string) => {
     const clip = doc.clips.find((item) => clipKey(item) === key);
     if (!clip) return;
     if (doc.tracksLocked.includes(clip.track)) return flash(t("잠긴 트랙의 클립은 길이를 바꿀 수 없습니다."));
     // 그림인지는 이어진 생성물로 먼저 본다 — kind 가 안 적힌 옛 클립은 문서만으로는 영상으로 보인다
     if ((links.get(key)?.gen?.assets[0]?.type ?? clip.kind) === "image") return flash(t("그림은 길이를 줄일 수 없습니다 — 영상 클립만 됩니다."));
     stopBoth(); // 창을 열면 초점(키)이 창으로 간다 — Space 는 창 안의 재생이 되므로 뒤에서 도는 재생은 멈춰 둔다
-    setTrimPop({ key, x, y, group: `trim:${key}:${++trimSerial.current}`, rev });
+    setTrimPop({ key, group: `trim:${key}:${++trimSerial.current}`, rev });
   }, [doc, links, flash, t, stopBoth, rev]);
   const editConflict = edit.conflict;
   useEffect(() => {
@@ -1505,8 +1505,6 @@ function EditTabInner({
       {menu && <EditTrackMenu x={menu.x} y={menu.y} rows={menuRows} onPick={placeTo} onClose={closeMenu} />}
       {trimPop && trimClip && (
         <EditTrimPop
-          x={trimPop.x}
-          y={trimPop.y}
           openId={trimPop.group}
           title={`${trimClip.cut.slice(trimClip.cut.lastIndexOf("/") + 1)} · V${trimClip.track}`}
           full={trimClip.full}
@@ -1540,9 +1538,8 @@ function EditTabInner({
           }}
           // 길이 조절 — 휠 클릭과 같은 창을 메뉴에서도 연다(휠 단추가 없는 마우스·트랙패드). 클립 하나를 눌렀을 때만.
           onTrim={clipMenuOne ? () => {
-            const { x, y } = clipMenu;
             closeMenu();
-            openTrim(clipKey(clipMenuOne), x, y);
+            openTrim(clipKey(clipMenuOne));
           } : undefined}
           onClose={closeMenu}
         />
