@@ -159,6 +159,60 @@ it("폴더 창을 연 카드에만 '방금 누른 카드' 표시를 붙인다", 
   expect(renderGrid(gridProps()).querySelector(".card-here")).toBeNull();
 });
 
+// 편집 탭이 연 폴더 창 — 타임라인에 넣은 카드의 표("V1 - 선택 카드"). 같은 자리에, 지금 보이는 것(lead)만 라임으로.
+it("편집 탭의 표는 그 카드에만 붙는다 — 격자는 아래 변의 표, 목록은 모델 이름 옆의 글", () => {
+  const cardMarks = { g1: { label: "V1 - 선택 카드", lead: false }, g2: { label: "V2 - 선택 카드", lead: true } };
+  const grid = renderGrid(gridProps({ cardMarks }));
+  const cell = (id: string) => grid.querySelector<HTMLElement>(`[data-id="${id}"]`)!;
+  expect(cell("g2").querySelector(".card-bottom > .card-here")?.textContent).toBe("V2 - 선택 카드");
+  expect(cell("g1").querySelector(".card-bottom > .card-folder.static")?.textContent).toBe("V1 - 선택 카드");
+  expect(cell("g1").querySelector(".card-here")).toBeNull();
+  expect(grid.querySelectorAll(".card-here, .card-folder.static")).toHaveLength(2); // 다른 카드에는 없다
+
+  const list = renderGrid(gridProps({ cardMarks, layout: "list" }));
+  expect(list.querySelector('[data-id="g2"] .cd-mark.lead')?.textContent).toBe("V2 - 선택 카드");
+  expect(list.querySelector('[data-id="g1"] .cd-mark:not(.lead)')?.textContent).toBe("V1 - 선택 카드");
+  expect(list.querySelectorAll(".cd-mark")).toHaveLength(2);
+});
+
+// 편집 탭이 연 폴더 창 — 카드를 **휠 클릭**하면 넣을 트랙을 고르는 메뉴가 뜬다(메뉴는 편집 탭의 것, 격자는 무엇을 눌렀는지만 알린다).
+//  2026-10-13(Jay): 그 전에는 우클릭이었다. 다른 화면의 휠 클릭은 그대로 정보 창이고, 이 창에서는 정보 창이 같이 뜨지 않는다.
+it("카드 휠 클릭은 onCardMenu 를 준 화면에서만 그 카드와 자리를 알린다 — 정보 창 대신, 우클릭은 건드리지 않는다", () => {
+  const onCardMenu = vi.fn();
+  const onInfo = vi.fn();
+  const press = (target: Element, type: "auxclick" | "contextmenu", button: number) => {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, button, clientX: 12, clientY: 34 });
+    act(() => { target.dispatchEvent(event); });
+    return event;
+  };
+  const thumb = (grid: HTMLElement) => grid.querySelector('[data-id="g2"] .card-thumb')!;
+  const grid = renderGrid(gridProps({ onCardMenu, onInfo }));
+  expect(thumb(grid).getAttribute("title")).toContain("휠클릭 = 넣을 트랙"); // 도움말도 이 창의 조작을 말한다
+  expect(press(thumb(grid), "auxclick", 1).defaultPrevented).toBe(true);
+  expect(onCardMenu).toHaveBeenCalledExactlyOnceWith(generations[1], 12, 34);
+  expect(onInfo).not.toHaveBeenCalled(); // 카드의 휠 클릭(정보 창)까지 내려가지 않는다
+  press(grid, "auxclick", 1); // 카드가 아닌 곳
+  press(thumb(grid), "auxclick", 2); // 오른쪽 단추의 auxclick(우클릭에도 따라온다) — 휠 클릭이 아니다
+  expect(press(thumb(grid), "contextmenu", 2).defaultPrevented).toBe(false); // 우클릭은 브라우저 메뉴 그대로
+  expect(onCardMenu).toHaveBeenCalledTimes(1);
+  // 키보드의 메뉴 키(누름 없이 오는 contextmenu — 크롬은 button −1) = 전처럼 그 카드의 메뉴. 휠 클릭은 키보드로 할 수 없다.
+  expect(press(thumb(grid), "contextmenu", -1).defaultPrevented).toBe(true);
+  expect(onCardMenu).toHaveBeenCalledTimes(2);
+
+  // 목록 보기의 선택 칸(체크박스) 위에서도 같은 메뉴다 — 글자를 넣는 칸만 건드리지 않는다(Codex 코드 리뷰: 정보 창으로 빠졌다)
+  const list = renderGrid(gridProps({ onCardMenu, onInfo, layout: "list" }));
+  const box = list.querySelector<HTMLInputElement>('[data-id="g1"] input[type="checkbox"]')!;
+  expect(press(box, "auxclick", 1).defaultPrevented).toBe(true);
+  expect(onCardMenu).toHaveBeenLastCalledWith(generations[0], 12, 34);
+  expect(onInfo).not.toHaveBeenCalled();
+
+  const plain = renderGrid(gridProps({ onInfo })); // 다른 화면 — 휠 클릭 = 정보 창 그대로
+  expect(thumb(plain).getAttribute("title")).toContain("휠클릭 = 정보");
+  press(thumb(plain), "auxclick", 1);
+  expect(onInfo).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: "generation", gen: generations[1], x: 12, y: 34 }));
+  expect(press(thumb(plain), "contextmenu", -1).defaultPrevented).toBe(false); // 메뉴 키도 다른 화면에서는 그대로
+});
+
 it("대상이 나중에 도착하면 이동하고 빠르게 바뀐 이전 요청은 취소한다", () => {
   const props = gridProps({ generations: [], resolveScrollRequest: { generationId: "g2", nonce: 1 } });
   renderGrid(props);

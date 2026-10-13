@@ -217,6 +217,12 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .card-bottom > .card-here { pointer-events: none; }
+/* 목록 보기에는 카드 아래 변의 표가 없다 — 편집 탭의 표("V1 - 선택 카드")는 모델 이름 옆의 글로 적는다(lead 만 라임). */
+.cd-mark {
+  margin-left: 8px; padding: 1px 7px; border-radius: 6px; font-size: 10.5px; font-weight: 700; white-space: nowrap;
+  color: rgba(255, 255, 255, 0.85); border: 1px solid rgba(255, 255, 255, 0.18);
+}
+.cd-mark.lead { color: var(--accent); border-color: rgba(var(--accent-rgb), 0.6); }
 /* 호버·선택 때 뜨는 아래 작업 단추 줄(.ov-bottom)은 아래 묶음의 줄 수만큼 위로 올린다 — 이름표가 단추에 가려지거나
    단추를 가리지 않게. 이름표는 움직이지 않는다(누르려고 다가갈 때 달아나지 않게). */
 .card-thumb:has(> .card-bottom) .ov-bottom { margin-bottom: 18px; }

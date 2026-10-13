@@ -26,6 +26,8 @@ from .resolve_library_list_worker import RESULT_PREFIX as LIBRARY_LIST_RESULT_PR
 from .resolve_project_open_worker import RESULT_PREFIX as PROJECT_OPEN_RESULT_PREFIX
 from .resolve_probe import RESULT_PREFIX
 from .resolve_python_registry import parse_python_version, registry_python_installations
+from .resolve_timeline import new_result as new_timeline_result
+from .resolve_timeline_worker import RESULT_PREFIX as TIMELINE_RESULT_PREFIX
 
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -375,46 +377,84 @@ def run_resolve_import_isolated(manifest: dict[str, Any]) -> dict[str, Any]:
     프로젝트 구조가 중간 상태로 남을 수 있기 때문이다. 이는 기존 in-process
     실행과 같은 동작이다. 인터프리터 선택 검사만 8초 제한을 갖는다.
     """
+    result = _run_import_child(
+        "app.services.resolve_import_worker", IMPORT_RESULT_PREFIX, manifest, "가져오기"
+    )
+    if isinstance(result, tuple):
+        return _import_unavailable(result[0], error_code=result[1])
+    # 자식 결과는 브리지가 항상 error_code 를 실어 보낸다. 여기서 키를 덧붙이지 않는다
+    # (부모가 결과를 그대로 전달한다는 기존 계약 유지).
+    return result
+
+
+def _run_import_child(
+    module: str, prefix: str, payload: dict[str, Any], label: str
+) -> dict[str, Any] | tuple[str, str]:
+    """가져오기 계열 자식(제한 시간 없음)을 호환 인터프리터로 돌린다. 자식의 결과, 또는 (설명, error_code)."""
     if _resolve_is_closed():
-        return _import_unavailable(NOT_RUNNING_MESSAGE, error_code="not_running")
+        return NOT_RUNNING_MESSAGE, "not_running"
     with resolve_mutation_slot():
         try:
             interpreter, _status, failure = _select_interpreter()
         except subprocess.TimeoutExpired:
-            return _import_unavailable(_timeout_message(), error_code="api_unavailable")
+            return _timeout_message(), "api_unavailable"
         except ResolveLaunching:
-            return _import_unavailable(LAUNCHING_MESSAGE, error_code="launching")
+            return LAUNCHING_MESSAGE, "launching"
         if interpreter is None:
-            return _import_unavailable(
-                _no_interpreter_message(failure), error_code="python_incompatible"
-            )
+            return _no_interpreter_message(failure), "python_incompatible"
         try:
             completed = _run_child(
                 interpreter,
-                "app.services.resolve_import_worker",
+                module,
                 timeout=None,
-                input_text=json.dumps(manifest, ensure_ascii=True),
+                input_text=json.dumps(payload, ensure_ascii=True),
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            return _import_unavailable(
-                f"Resolve 가져오기 프로세스를 실행할 수 없습니다: {exc}",
-                error_code="spawn_failed",
-            )
-        result = _parse_result(completed.stdout, IMPORT_RESULT_PREFIX)
+            return f"Resolve {label} 프로세스를 실행할 수 없습니다: {exc}", "spawn_failed"
+        result = _parse_result(completed.stdout, prefix)
         if result is None:
             detail = (
                 _tail_text(completed.stderr)
-                or f"가져오기 프로세스 종료 코드 {completed.returncode}"
+                or f"{label} 프로세스 종료 코드 {completed.returncode}"
             )
             # 자식이 결과 없이 죽었으면 부수효과 발생 여부를 알 수 없다 — 상위가
             # 자동 재실행하지 않도록 child_crashed 로 구분한다.
-            return _import_unavailable(
-                f"Resolve 가져오기 결과를 읽을 수 없습니다: {detail}",
-                error_code="child_crashed" if completed.returncode else "invalid_child_result",
+            return (
+                f"Resolve {label} 결과를 읽을 수 없습니다: {detail}",
+                "child_crashed" if completed.returncode else "invalid_child_result",
             )
-        # 자식 결과는 브리지가 항상 error_code 를 실어 보낸다. 여기서 키를 덧붙이지 않는다
-        # (부모가 결과를 그대로 전달한다는 기존 계약 유지).
         return result
+
+
+def run_resolve_timeline_isolated(
+    manifest: dict[str, Any], plan: dict[str, Any]
+) -> dict[str, Any]:
+    """원본 가져오기에 이어 새 타임라인을 짓는다(타임라인 Resolve 보내기) — ``{"import": …, "timeline": …}``.
+
+    가져오기와 같은 길이다(자식 프로세스·제한 시간 없음·Resolve 를 바꾸는 작업은 한 번에 하나). 자식에 닿지 못했으면
+    두 결과 모두 unavailable 이고, 자식이 결과 없이 죽었으면 어디까지 했는지 모른다 — 다시 보내기 전에 Resolve 를 확인해야 한다.
+    """
+    result = _run_import_child(
+        "app.services.resolve_timeline_worker",
+        TIMELINE_RESULT_PREFIX,
+        {"manifest": manifest, "timeline": plan},
+        "타임라인 보내기",
+    )
+    if isinstance(result, tuple):
+        message, code = result
+        return {
+            "import": _import_unavailable(message, error_code=code),
+            "timeline": new_timeline_result(status="unavailable", error=message, error_code=code),
+        }
+    imported = result.get("import")
+    timeline = result.get("timeline")
+    if not isinstance(imported, dict) or not isinstance(timeline, dict):
+        message = "Resolve 타임라인 보내기 결과를 읽을 수 없습니다"
+        return {
+            "import": _import_unavailable(message, error_code="invalid_child_result"),
+            "timeline": new_timeline_result(status="unavailable", error=message, error_code="invalid_child_result"),
+        }
+    return {"import": imported, "timeline": timeline}
 
 
 def run_resolve_project_open_isolated(

@@ -13,10 +13,14 @@ export function clearPersonalSettings() {
     STORAGE_KEYS.scenesActive,
     STORAGE_KEYS.teamSeen, // 계정별 네임스페이스(씬과 동일) — 전환 때 지우면 상대 계정 기준선이 유실
   ]);
+  // 편집 탭의 문서(`ch.editTimeline:<계정>:…` — 못 읽은 원문의 보관본 `.bad` 포함)와 '마지막으로 연 시퀀스'(`.last:<계정>`)도 계정별
+  //  네임스페이스다. 지우면 그 계정의 편집본이 통째로 사라진다 — 브라우저에만 있고 백업이 없다(lib/editTimelineStore). 다른 계정으로
+  //  잠깐 로그인했다 돌아오기만 해도 지워졌다(2026-10-10 점검). 화면 설정(`.ui`)은 개인 설정이라 다른 것들처럼 지운다.
+  const keepPrefixes = [`${STORAGE_KEYS.editTimeline}:`, `${STORAGE_KEYS.editTimeline}.last:`];
   const remove: string[] = [];
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
-    if (k && k.startsWith("ch.") && !KEEP.has(k)) remove.push(k);
+    if (k && k.startsWith("ch.") && !KEEP.has(k) && !keepPrefixes.some((prefix) => k.startsWith(prefix))) remove.push(k);
   }
   remove.forEach(removeStorage);
   // 분리된 Assets 팝업은 별도 창이라 옛 계정의 프로젝트·선택·드래그를 메모리에 들고 있다.

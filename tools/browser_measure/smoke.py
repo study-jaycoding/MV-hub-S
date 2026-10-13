@@ -5,7 +5,7 @@
      종료 코드: 0 = 전부 통과 · 1 = 제품 쪽 확인 필요(기대와 다름·예외·생성 요청 발생) · 2 = 시나리오만 낡음(대상을 찾지 못함 — UI 가 바뀌었다)
   3) <venv python> tools/browser_measure/servers.py stop
 
-★누르지 않는다: Generate · 도크의 Alt+Enter · 카드의 ↻ 재생성 · Comfy 실행 · Resolve로 보내기 · 프로그램 업데이트 · HF 체크 · Assets 파일 조작.
+★누르지 않는다: Generate · 도크의 Alt+Enter · 카드의 ↻ 재생성 · Comfy 실행 · Resolve 보내기 · 프로그램 업데이트 · HF 체크 · Assets 파일 조작.
   끝에서 비-GET 요청 가운데 `/api/gen-requests` 가 0건인지 확인하고, 아니면 실패로 끝난다.
 새 단계를 더할 때: 선택자를 추측하지 말고 `Walker.appeared()` 로 무엇이 열렸는지 먼저 본다. 단축키를 재기 전에 선택이 살아 있는지 확인한다
 (Esc 는 선택을 푼다). 창을 닫는 Esc 는 **새 페이지에서 처음 연 창**으로 잰다 — 두 번째부터는 증상이 안 보이는 결함이 있었다.

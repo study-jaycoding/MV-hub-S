@@ -63,7 +63,7 @@ export function BoardSelectionActionBar({
         >
           {resolveTransferBusy
             ? `${t("◆ Resolve에 추가")} (${resolveTransferPendingCount ?? 0})`
-            : t("◆ Resolve로 보내기")}
+            : t("◆ Resolve 보내기")}
         </button>
       )}
       {onResolveRetry && (
@@ -176,7 +176,7 @@ export function LibrarySelectionActionBar({
       >
         {resolveTransferBusy
           ? `${t("◆ Resolve에 추가")} (${resolveTransferPendingCount})`
-          : t("◆ Resolve로 보내기")}
+          : t("◆ Resolve 보내기")}
       </button>
       {onResolveRetry && (
         <button

@@ -1230,6 +1230,165 @@ it("App 작업 공간: 바깥 막·✕ 로 닫히고, 보던 위치가 바뀌거
   expect(gridSnapshot!.onOpenFolder).toBeUndefined();
 });
 
+it("App 편집 탭: 들어가면 폴더 창이 닫히고 다빈치 선택이 숨은 목록을 옮기지 않는다 — 나와도 창은 되살아나지 않는다", async () => {
+  vi.doMock("../src/components/timeline/EditTab", () => ({ EditTab: () => <div data-testid="edit-tab" /> }));
+  const send = await mountApp("my");
+  const body = () => document.querySelector<HTMLElement>(".body")!;
+  // 편집은 filters.tab 의 값이 아니라 내비 기록의 '보기'다 — 뒤로/앞으로 가기로도 들어오고 나간다.
+  const editView = (edit: boolean) => act(() => {
+    window.dispatchEvent(new PopStateEvent("popstate", { state: { chv: { tab: "my", focusId: null, ov: null, key: 0, edit } } }));
+  });
+  act(() => gridSnapshot!.onOpenFolder!(libraryGeneration("target")));
+  await settle();
+  expect(peekWindow()).not.toBeNull();
+  expect(body().hasAttribute("inert")).toBe(true);
+
+  editView(true);
+  await settle();
+  await settle();
+  expect(document.querySelector('[data-testid="edit-tab"]')).not.toBeNull();
+  expect(peekWindow()).toBeNull();
+  expect(body().hasAttribute("inert")).toBe(false); // 편집 화면이 조작 불가가 되지 않는다
+  expect(document.querySelector('[data-testid="tab"]')!.textContent).toBe("my"); // 밑의 탭은 그대로
+
+  const filtersInEdit = librarySnapshot!.filters;
+  act(() => send(["other", "other-target"])); // 편집 중의 다빈치 선택은 숨은 목록의 위치를 옮기지 않는다
+  await settle();
+  expect(librarySnapshot!.filters).toBe(filtersInEdit);
+
+  editView(false);
+  await settle();
+  expect(document.querySelector('[data-testid="edit-tab"]')).toBeNull();
+  expect(peekWindow()).toBeNull();
+  expect(gridSnapshot!.selectedIds.size).toBe(0);
+  act(() => send(["other", "other-target"])); // 나온 뒤에는 다시 따라간다
+  await settle();
+  expect(librarySnapshot!.filters).toMatchObject({ project_id: "other-project", folder_path: "episode/shot" });
+});
+
+// 편집 탭의 컷 더블클릭(Jay 2026-10-08) — 공유 & 리뷰의 폴더 창을 그대로 쓴다. 창이 떠 있는 동안 목록·카드·액션만 공유 & 리뷰로
+//  보고, 저장된 탭·다음 생성 위치·뒤로가기 기록은 건드리지 않는다(탭을 실제로 바꿨다 되돌리면 기록·저장에 임시 상태가 샌다).
+it.each(["my", "compose"])("App 편집 탭(밑의 탭 %s): 컷을 더블클릭하면 공유 & 리뷰의 폴더 창이 그 컷 폴더로 뜬다 — 닫으면 밑의 탭은 그대로다", async (tab) => {
+  type EditProps = ComponentProps<typeof import("../src/components/timeline/EditTab").EditTab>;
+  let editProps: EditProps | null = null;
+  vi.doMock("../src/components/timeline/EditTab", () => ({
+    EditTab: (props: EditProps) => { editProps = props; return <div data-testid="edit-tab" />; },
+  }));
+  localStorage.setItem("ch.lib.generationScopeV1", JSON.stringify({ project_id: "generation-project", folder_path: "next/clip" }));
+  await mountApp(tab);
+  const body = () => document.querySelector<HTMLElement>(".body")!;
+  const editView = (edit: boolean) => act(() => {
+    window.dispatchEvent(new PopStateEvent("popstate", { state: { chv: { tab, focusId: null, ov: null, key: 0, edit } } }));
+  });
+  const storedTab = () => JSON.parse(localStorage.getItem("ch.lib.filtersV2")!).tab;
+  const marks = { g1: { label: "V1 - 선택 카드", lead: false }, g2: { label: "V2 - 선택 카드", lead: true } };
+  const openCut = () => act(() => editProps!.onOpenCutFolder({
+    projectId: "edit-project", projectName: "Edit project", path: "e035/C0050", focusId: "g2", marks,
+  }));
+  editView(true);
+  await settle();
+  await settle();
+  beginList.mockClear();
+  const filtersInEdit = librarySnapshot!.filters;
+  const scopeBefore = localStorage.getItem("ch.lib.generationScopeV1");
+  expect(editProps!.keysActive).toBe(true);
+  expect(editProps!.reloadSignal).toBe(0);
+
+  openCut();
+  await settle();
+  expect(peekWindow()!.querySelector(".folder-peek-title")!.textContent).toBe("Edit project / e035/C0050");
+  expect(librarySnapshot!.filters.tab).toBe("team"); // 목록 훅·액션은 공유 & 리뷰로 본다
+  expect(librarySnapshot!.genQuery).toMatchObject({ tab: "team", project_id: "edit-project", folder_path: "e035/C0050" });
+  expect(gridSnapshot!.tab).toBe("team");
+  expect(gridSnapshot!.cardMarks).toEqual(marks); // 타임라인에 넣은 카드의 표
+  expect(gridSnapshot!.openedFromId).toBeUndefined(); // '방금 누른 카드'가 아니다
+  expect(gridSnapshot!.resolveScrollRequest).toEqual({ generationId: "g2", nonce: 0 }); // 지금 보이는 카드로 내려간다
+  expect(gridSnapshot!.onOpenFolder).toBeUndefined();
+  expect(body().hasAttribute("inert")).toBe(true);
+  expect(editProps!.keysActive).toBe(false); // 편집 키는 쉬고, 창 안에서는 라이브러리 키가 듣는다
+  expect(beginList).toHaveBeenCalledTimes(1);
+  expect(beginList).toHaveBeenLastCalledWith(); // 밑의 탭 목록은 숨어 있다 — 사본을 담지 않는다
+  expect(storedTab()).toBe(tab); // 저장된 탭은 그대로
+  expect(localStorage.getItem("ch.lib.generationScopeV1")).toBe(scopeBefore);
+  expect(promptSnapshot?.activeProjectId).toBe("generation-project");
+
+  // 창의 카드를 휠 클릭하면 편집 탭의 트랙 메뉴로 간다(편집 탭이 ref 에 걸어 둔다). 편집 탭이 표를 다시 알리면 창의 카드 표만
+  //  바뀐다 — 창은 그대로다(열릴 때의 '그 카드로 내려가기'를 다시 하지 않는다).
+  expect(editProps!.peekPath).toBe("e035/C0050");
+  const cardMenu = vi.fn();
+  editProps!.cardMenuRef.current = cardMenu;
+  gridSnapshot!.onCardMenu!({ id: "g1" } as never, 5, 6);
+  expect(cardMenu).toHaveBeenCalledExactlyOnceWith({ id: "g1" }, 5, 6);
+  const scrollAtOpen = gridSnapshot!.resolveScrollRequest;
+  const moved = { g1: { label: "V1 - 선택 카드", lead: true } };
+  act(() => editProps!.onPeekMarks(moved));
+  expect(gridSnapshot!.cardMarks).toEqual(moved);
+  expect(gridSnapshot!.resolveScrollRequest).toBe(scrollAtOpen);
+  expect(beginList).toHaveBeenCalledTimes(1);
+
+  // 창에서 크게 보기를 열면 뒤로가기 기록이 하나 쌓인다 — 그 기록의 탭은 저장된 탭이다(임시 '공유 & 리뷰'가 남으면, 창을 닫은
+  //  뒤 앞으로 가기로 그 기록에 돌아왔을 때 밑의 탭이 바뀐다).
+  act(() => gridSnapshot!.onPreview({ url: "/media/x.png", type: "image", name: "x" }));
+  expect(window.history.state.chv).toMatchObject({ tab, edit: true, ov: "preview" });
+  // 크게 보기를 닫고 편집 기록으로 돌아와도(뒤로가기) 창은 그대로다 — 기록의 탭이 창을 깨지 않는다.
+  editView(true);
+  await settle();
+  expect(peekWindow()).not.toBeNull();
+  expect(librarySnapshot!.filters.tab).toBe("team");
+
+  pressEscapeInPeek();
+  await settle();
+  expect(peekWindow()).toBeNull();
+  expect(body().hasAttribute("inert")).toBe(false);
+  expect(librarySnapshot!.filters).toBe(filtersInEdit); // 밑의 탭·필터가 그대로 돌아온다
+  expect(document.querySelector('[data-testid="tab"]')!.textContent).toBe(tab);
+  expect(beginList).toHaveBeenCalledTimes(2);
+  expect(beginList).toHaveBeenLastCalledWith(); // 창의 카드가 밑의 탭 목록에 남지 않게 비운다
+  expect(editProps!.keysActive).toBe(true);
+  expect(editProps!.reloadSignal).toBe(1); // 편집 탭은 공유 목록을 다시 받는다(창에서 공유를 풀거나 지웠을 수 있다)
+  expect(editProps!.peekPath).toBeNull();
+  expect(storedTab()).toBe(tab);
+  expect(localStorage.getItem("ch.lib.generationScopeV1")).toBe(scopeBefore);
+
+  // 창이 뜬 채 편집을 떠나면(뒤로가기) 창은 닫히고, 떠난 탭이 공유 & 리뷰로 그려지지 않는다.
+  openCut();
+  await settle();
+  expect(peekWindow()).not.toBeNull();
+  editView(false);
+  expect(document.querySelector('[data-testid="tab"]')!.textContent).toBe(tab); // 그 렌더부터
+  await settle();
+  expect(peekWindow()).toBeNull();
+  expect(librarySnapshot!.filters.tab).toBe(tab);
+  expect(beginList).toHaveBeenCalledTimes(3); // 문맥이 바뀌어 닫힌 창은 목록을 비우지 않는다 — 바뀐 문맥의 조회가 채운다
+  editView(true); // 다시 들어와도 창이 되살아나지 않는다
+  await settle();
+  await settle();
+  expect(peekWindow()).toBeNull();
+  expect(librarySnapshot!.filters.tab).toBe(tab);
+});
+
+it("App 편집 탭(캔버스에서 들어옴): 편집 중의 다빈치 선택은 씬을 바꾸거나 창을 열지 않는다 — 나온 뒤의 선택은 다시 따른다", async () => {
+  vi.doMock("../src/components/timeline/EditTab", () => ({ EditTab: () => <div data-testid="edit-tab" /> }));
+  const send = await mountApp();
+  const editView = (edit: boolean) => act(() => {
+    window.dispatchEvent(new PopStateEvent("popstate", { state: { chv: { tab: "compose", focusId: null, ov: null, key: 0, edit } } }));
+  });
+  editView(true);
+  await settle();
+  await settle();
+  expect(document.querySelector('[data-testid="edit-tab"]')).not.toBeNull();
+  act(() => send(["other-target"])); // 다른 씬의 결과 — 캔버스였다면 그 씬으로 옮기고 '생성 결과' 창을 연다
+  await settle();
+  editView(false);
+  await settle();
+  expect(view.container.querySelector(".scene-varwin")).toBeNull();
+  expect(tile("other-target")).toBeNull();
+  act(() => send(["other-target"]));
+  await settle();
+  expect(tile("other-target")).toBeTruthy();
+  expect(resolveHighlightedIds()).toEqual(["other-target"]);
+});
+
 // ── 공유 & 리뷰 탭의 폴더 묶음 보기(2026-10-08) ──
 type ToolbarProps = ComponentProps<typeof import("../src/components/LibraryToolbar").LibraryToolbar>;
 let toolbarSnapshot: ToolbarProps | null = null;

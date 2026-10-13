@@ -34,13 +34,14 @@ updated: 2026-10-13
 | 공유 & 리뷰 탭의 프로젝트·폴더 선택을 다시 켤 때 되살리기 | `lib/useLibraryFilters.ts`(`sharedView` 시작 키·`restoreViewKey`), `lib/useLibraryPersistence.ts`(`FILTERS_VIEW_KEY`) | — | 저장한 filters JSON 에 **어느 공간의 자동 범위에서 고른 것인지**(`__view` = `[scope, id]`)를 같이 남기고, 다시 켤 때 지금 공간과 같으면 첫 렌더가 지우지 않는다(2026-10-08 — 전엔 `sharedView` 가 `""` 로 시작해 첫 렌더를 늘 '공간이 바뀐 것'으로 보고 공유 탭의 프로젝트·폴더를 지웠다). 다른 공간·전체 보기(키 없음)·옛 저장(키 없음)은 전처럼 지운다. 시험 `frontend/tests/libraryFilterRemember.test.tsx` |
 | 새 API 엔드포인트 추가하기 | `api.ts` | `routers/_proxy.py`(경로 소유권) + 해당 도메인 라우터. **새 라우터 파일이면 `main.py` 의 `include_router()` 등록도** | 로컬 전용 경로는 `_proxy._LOCAL_PREFIXES/_LOCAL_EXACT` 갱신 + `backend/tests/test_proxy_ownership.py` 골든 스냅샷도 같이 고쳐야 함(§5-c) |
 | 캔버스(씬) 단축키 바꾸기 | `lib/useSceneKeyboardShortcuts.ts`, `lib/sceneKeyboard.ts` | — | |
+| 편집 탭(다빈치식 컷 타임라인 — 공유물을 폴더 순서로 이어 보기) | `components/timeline/EditTab.tsx`(조립·편집 키), `lib/editTimeline.ts`(순수 — 배치·보이는 클립·문서 편집), `lib/useEditPlayback.ts`(재생)·`lib/editVideoPair.ts`(영상 요소 둘 — 넘어갈 때 서지 않게), `lib/useEditDoc.ts`·`lib/editTimelineStore.ts`(문서 저장), `lib/useEditSequence.ts`(조회) · 타임라인 Resolve 보내기: `lib/editResolveExport.ts`(순수 — 계획)·`components/timeline/EditExportConfirm.tsx`(확인 창) | 보기·편집은 없음(기존 목록·폴더 API) · 타임라인 Resolve 보내기만 `routers/resolve_integration.py`(`POST /api/resolve/timelines`)·`services/resolve_timeline.py`·`services/resolve_timeline_worker.py` | 계약 [EDIT_TAB.md](EDIT_TAB.md). **`Filters["tab"]` 의 값이 아니다** — `lib/useAppNavigation.ts` 의 `edit` 보기 + `App.tsx` 의 `editOpen`(떠 있는 동안 폴더 창·다빈치 따라가기·라이브러리 단축키가 쉰다). 사이드바는 `ProjectSection` 을 쓰지 않는다(폴더 클릭이 생성 목적지를 저장한다). 편집 문서는 localStorage 뿐(백업 없음). 편집 키는 고정(단축키 설정 창에 없음) |
 | 캔버스 카드의 '생성 결과' 창 | `components/scene/SceneVariantPopup.tsx`(창 — 라이브러리 `ThumbnailGrid`·`BoardSelectionActionBar` 조립), `components/scene/SceneBoard.tsx`(`variantView` — 보일 결과·선택·조작 어댑터), `App.tsx`(`renderVariantToolbar`·`variantOpen`), `lib/boardFilters.ts`, `lib/keyHandled.ts` | — (씬의 `genData` 를 그대로 쓴다 — 목록 조회를 빌리지 않는다) | 폴더 창과 같은 모양이지만 **`.folder-peek` 클래스는 달지 않는다**(그 클래스는 '이 안의 키는 라이브러리 몫' 표시라, 달면 씬의 색·비활성 단축키가 창에서 죽는다) — 뼈대 CSS 만 선택자 묶음으로 같이 쓴다(`.scene-varwin`). 툴바 필터에 안 맞는 결과는 **걸러 내고 선택에서도 뺀다**(다빈치가 고른 것은 예외로 보인다). 대표 단추는 격자의 `cellHeader` 칸(카드 위), 폴더 표는 표시만(`showFolder`). Esc = 선택 해제 → 닫기(격자가 쓴 Esc 는 `keyHandled` 표시로 씬이 다시 처리하지 않는다). 창의 아래 끝은 하단 프롬프트 위에서 멈춘다(프롬프트 높이를 재서 `--dock-gap`). '폴더 보기' 창과는 겹쳐 두지 않는다(나중에 연 쪽만). 조작 대상은 **보이는 카드뿐**(`shownIds` — 아직 안 불러온 결과는 선택에 남아도 대상이 아니다). 여러 장을 고른 채 한 카드에서 한 태그·S·워크스페이스 명령은 고른 전체에(`bulkVariantTags`·`onVariantGradeStep`·`variantWorkspace`). 창이 떠 있는 동안 바깥에서 시작한 끌기 선택은 창의 격자만 받는다(캔버스 쪽 `useOutsideDragSelect` 는 끔) |
 | 생성 제출 흐름(프롬프트→요청→CLI) | `components/spotlight/useSpotlightSubmit.ts`, `lib/spotlightSubmit.ts` | `routers/gen_requests.py`, `usecases/gen_requests.py`, `repo/gen_requests.py` | 실제 CLI 제출·추적·완료 판정은 작업자 PC 의 `agent_push.py` 가 한다 — 서버 쪽만 봐서는 흐름이 끝까지 안 보인다 |
 | 팀 공유·검토(공유/최종/보류) | `lib/useGenerationShareActions.ts`, `components/generation/GenerationReviewOverlay.tsx` | `routers/share.py`, `repo/share.py`, `services/share_state_reconciler.py` | |
 | PM 대시보드 숫자·크레딧 표기 | `components/manage/WorkspaceUsageDashboard.tsx`, `lib/formatCredits.ts` | `repo/manage_credit_plan.py`, `routers/manage.py` | 크레딧은 소수 보존(반올림 금지) |
 | 어셋/생성물 썸네일 | `components/MediaThumbnail.tsx` | `services/thumbs.py`, `routers/library.py`(media-thumb) | |
 | ComfyUI 실행(로컬/Cloud) | `lib/useSceneComfyExecution.ts`, `components/scene/cards/ComfyCard.tsx` | `routers/comfy.py`, `services/comfy_client.py` | |
-| DaVinci Resolve 전송 | `lib/useResolveTransferActions.ts` | `routers/resolve_integration.py`, `services/resolve_transfer.py` | |
+| DaVinci Resolve 전송 | `lib/useResolveTransferActions.ts` | `routers/resolve_integration.py`, `services/resolve_transfer.py` | 편집 탭의 타임라인 보내기도 같은 줄·같은 관문을 지난다(위 '편집 탭' 줄) |
 | Assets의 DaVinci 프로젝트 목록·열기 | `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/resolve_project_library.py`, `services/resolve_project_open_worker.py` | `@davinci` 내부 DB 폴더는 일반 Assets 트리에 펼치지 않는다 |
 | 앱 자동 업데이트·릴리스 절차 | `lib/releaseUpdate.ts`, `components/UpdateProgressOverlay.tsx`(진행 덮개), `components/admin/UpdateNoticesSection.tsx`(관리자 창 업데이트 탭 — 후보·[공지]=배포) | `routers/release_update.py`, `services/release_update.py`, `update_release_worker.bat` | **B안(2026-10-02)**: 릴리스는 후보(`candidate.json`)만, 첫 [공지]가 표지(`latest.json`)를 바꾼다 — [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md). 배포 스크립트는 §4. 강제 업데이트는 **워커까지** 닿아야 재설치가 된다(`MVHUB_UPDATE_FORCE` → `-ForceReinstall`) |
 | DB 백업·복원 | — | `routers/db_backup.py`, `routers/db_transfer.py`, `services/backup.py` | |
@@ -373,6 +374,8 @@ updated: 2026-10-13
 | `resolve_queue.py`(33줄) | 큐 v3 잔재 중 남은 `run_non_abandon` 하나뿐 | `resolve_integration`·`selection_monitor` |
 | `resolve_lock.py` | 기기 락 파일 경로·host_id·프로세스 생성시각 | `resolve_integration` |
 | `resolve_transfer_gate.py` | 릴리스 업데이트 ↔ 전송 프로세스 간 상호 배제(핸들 락) | `resolve_integration`·`import_worker`·`resolve_transfer` |
+| `resolve_timeline.py` | 편집 탭의 타임라인을 현재 Resolve 프로젝트에 **새 타임라인**으로 짓는다. `validate_plan`(순수 — 프런트 계획을 믿지 않는다: 형식·범위·트랙별 겹침·요청의 생성물인지) + `build_timeline`(가져온 클립 찾기 → 짧은 원본이면 안 만듦 → 만들기·24fps·트랙·영상·소리·끔·북마크·인/아웃·잠금·저장, 넣을 때마다 되읽어 대조, 바꾸기 직전마다 프로젝트·현재 타임라인 확인, 실패해도 지우지 않음). **표준 라이브러리와 `resolve_bridge` 만 쓴다**(자식 프로세스에서 돈다). Resolve API 규칙은 모듈 머리의 실측 목록([EDIT_TAB.md](EDIT_TAB.md)) | `resolve_integration`·`resolve_timeline_worker`·`resolve_status_runner` |
+| `resolve_timeline_worker.py` | 그 자식 프로세스 진입점(§2.6) — 가져오기와 타임라인 짓기를 한 프로세스·한 전송 보호(`transfer_lease`) 안에서 잇는다. 가져오기가 `complete` 가 아니면 짓지 않는다 | `resolve_status_runner` |
 | `resolve_diagnostics.py` | 설치·Python·API·연결을 분리해 읽기 전용 진단 | `resolve_integration` |
 | `resolve_library_dialog.py` | Assets `@davinci` 경로를 Project Library 로 연결(Connect 까지). 이미 등록됐는지는 Resolve 의 `dblist.conf` 를 **경로로** 대조(드라이브↔UNC 맞춤), Connect 뒤 성공은 Resolve API 목록으로 판정 | `routers/assets`, `services/resolve_project_library` |
 | `resolve_library_list_worker.py` | 호환 Python 자식에서 Resolve 에 올라온 Disk 라이브러리 이름만 읽는다(읽기 전용) | `services/resolve_status_runner` |
@@ -426,6 +429,7 @@ updated: 2026-10-13
 
 - `python -m app.services.resolve_probe` — Resolve 연결 상태 검사 자식 프로세스(`resolve_status_runner.py` 가 기동)
 - `python -m app.services.resolve_import_worker` — Resolve 가져오기 자식 프로세스
+- `python -m app.services.resolve_timeline_worker` — 가져오기에 이어 새 타임라인을 짓는 자식 프로세스(편집 탭의 타임라인 Resolve 보내기)
 - `resolve_selection_worker.py` — Media Pool 선택 감시 장기 자식(`resolve_selection_monitor.py` 가 기동, JSONL 1줄 IPC)
 - `resolve_bridge.py` — **상대 import 금지**(부모·자식 양쪽에서 로드됨). import 한 줄만 추가해도 자식 실행이 깨진다
 - `server_relocation.py <source>` — 자식 프로세스 스크립트 겸용, 최상단 상대 import 금지
@@ -458,10 +462,10 @@ updated: 2026-10-13
 | `api.ts` | 타입 안전 API 클라이언트(`/api` 프록시), 100여 메서드 | 약 859줄 |
 | `types.ts` | 백엔드 모델과 1:1 타입 56개 | 약 513줄 |
 | `main.tsx` | 부트스트랩 — `?embed=` 로 App/AssetsWindow/ManageWindow 분기, 테마 선적용 | §3.5 |
-| `styles.css` | `styles/*.css` 12개 @import 목록만 | |
+| `styles.css` | `styles/*.css` 13개 @import 목록만 | |
 | `vite-env.d.ts` | Vite 타입 참조 1줄 | |
 
-### 3.2 components (`frontend/src/components/`, 147파일)
+### 3.2 components (`frontend/src/components/`, 152파일)
 
 #### 씬 캔버스 보드 셸(`scene/` 최상위, 5파일)
 
@@ -598,6 +602,17 @@ updated: 2026-10-13
 | `compare/CompareSourceLightbox.tsx`(29줄) | 비교 모달 위 원본 라이트박스 | 〃 |
 | `edit/PartialEditModal.tsx`(966줄) | 부분 수정 캔버스(펜·도형·마스크·A/B) | `PartialEditModal` |
 | `edit/PartialEditHost.tsx`(47줄) | `partialEdit` 이벤트 → 최신 Generation 조회 → 모달 개방 | `PartialEditHost`(§3.5 숨은 진입점) |
+| `timeline/EditTab.tsx`(약 1,100줄) | 편집 탭 조립 — 시퀀스 고르기·문서·재생·편집 키·컷(폴더) 비활성/숨기기·빈 곳 채우기(최종 확인된 것 먼저, 없으면 최신)·컷 더블클릭(공유 & 리뷰의 폴더 창을 App 에 열어 달라고 알린다)([EDIT_TAB.md](EDIT_TAB.md)). `edit/`(부분 수정)와 다른 기능이다 | `EditTab`(App 이 지연 로드) |
+| `timeline/EditTimeline.tsx`(약 345줄) | 눈금자(마크 인/아웃의 띠·북마크 꼬리표)·컷 줄·영상 트랙(트랙 색)·소리 줄·재생헤드. 클립은 위아래로만 끈다(컷 자리는 폴더 순서로 고정). 트랙 머리 우클릭·북마크 더블클릭은 무엇을 열지만 알린다 | `EditTimeline`, `EditMarks` |
+| `timeline/EditViewer.tsx`(약 230줄) | 뷰어 한 판 — 위 줄(지금 시각·무엇을 볼지·전체 길이·싱글/듀얼)·무대(`<video>` — 자기 시계로 이어 트는 판은 둘: 앞 · 다음 것을 미리 받는 뒤 `spareRef`)·아래 줄(타임바: 북마크·마크 인/아웃 · 버튼·반복·배속 · 오른쪽의 구간 반복·마크 인·마크 아웃). 타임라인·소스(클립·테이프)·한 트랙만이 같은 판을 쓰고, 시계는 편집 탭이 가진 엔진의 것이다. 무대는 덮을 수 있다(`over` — 다이나믹 트림 모드) | `EditViewer`, `ViewerProps`, `ViewerMarking` |
+| `timeline/EditTrimView.tsx`(약 90줄) | 다이나믹 트림 모드(다빈치의 Dynamic Trim Mode, 보기만) — 켜면 나뉜 뷰어가 타임라인 판 하나가 되고(`EditTab` 의 `trim`), 그 무대를 덮는 두 칸에 재생헤드에서 가장 가까운 편집점의 바로 앞 \| 바로 뒤가 뜬다. 재생헤드 쪽 칸에는 엔진의 화면이 올라와(CSS `data-side`) 한 번의 재생이 앞 칸에서 뒤 칸으로 이어지고, 반대쪽은 그 편집점의 프레임으로 서 있다 | `EditTrimView` |
+| `timeline/EditPool.tsx`(약 310줄) | 미디어 풀 — 재생헤드가 있는 컷의 공유 생성물을 폴더 목록 옆에 보인다. 보기 방식(썸네일·메타데이터·목록)·크기·검색·정렬. 누르기·Ctrl/Shift·끌어서 상자 = 고르기(마지막 것이 듀얼 뷰어의 소스, 2장 이상이면 비교) · 더블클릭 = 크게 보기 · 휠 클릭 = 넣을 트랙 고르기 · 우클릭 = 이 컷의 폴더 창. 폭은 `ResizableSidebar` 로 끌어서 바꾼다 | `EditPool`, `arrangePool` |
+| `timeline/EditSoloViewer.tsx`(약 25줄) | 한 트랙만 보는 판 — `useEditFollow` 로 타임라인의 시계를 따라간다 | `EditSoloViewer` |
+| `timeline/EditTrackMenu.tsx`(약 320줄) | 편집 탭의 메뉴들 — 껍데기 `EditMenu`(body 포털·자리·바깥 누르기·Esc/Tab·↑↓·뒤 화면 키 차단) 위에 카드 휠 클릭 메뉴(지금 있는 트랙을 보여 주고 고르면 그 트랙에 넣는다 — 미디어 풀과 편집 탭이 연 폴더 창 공용)와 트랙 머리 메뉴(트랙 추가·위/아래로·삭제·빈 트랙 삭제·색), 막대의 목록 메뉴(비활성 숨기기·빈 곳 채우기), 클립 우클릭 메뉴(Resolve 보내기), 왼쪽 폴더 트리의 폴더 메뉴(공유 저장·최종 저장·원본 위치 열기 — 공유 & 리뷰 탭의 폴더 메뉴와 같은 규칙·모양) | `EditMenu`, `EditTrackMenu`, `EditTrackHeadMenu`, `EditListMenu`, `EditClipMenu`, `EditFolderMenu`, `EditSwatches`, `TrackRow`, `TrackAct` |
+| `timeline/EditExportConfirm.tsx`(약 105줄) | 편집 탭 막대의 [타임라인 Resolve 보내기] 확인 창 — 이름·트랙별 클립 수·길이·받는 곳을 보여 주고, Resolve 연결을 열릴 때 묻는다([다시 확인]). 못 이은 클립·빈 타임라인·원본 전송 조건에 걸리면 [보내기]가 안 눌린다. 틀은 `GradeStepModal` 의 것(`gradestep-*`) | `EditExportConfirm` |
+| `timeline/EditMarkerMenu.tsx`(약 100줄) | 북마크의 메뉴 둘 — 편집 창(이름: Enter·바깥 = 저장, Esc = 버림 · 색 16개 · 지우기)과 막대의 색 메뉴(새 북마크의 색·모두 지우기 — 다빈치의 마커 색 메뉴). 껍데기는 `EditMenu` | `EditMarkerMenu`, `EditMarkerColorMenu` |
+| `timeline/EditCard.tsx`(약 65줄) | 편집 탭 미디어 풀(썸네일 보기)의 생성물 카드 — 라이브러리 카드의 CSS 클래스를 그대로 써서 같은 모양으로 '보이기만' 한다. 아래 변의 표 = "V1 - 선택 카드"(폴더 창의 표와 같은 글) | `EditCard`, `PoolItem`, `editMarkLabel` |
+| `timeline/EditSidebar.tsx`(약 150줄) | 프로젝트·폴더에서 시퀀스 고르기(`FolderTreeView` 만 쓴다 — `ProjectSection` 아님). 폴더 우클릭 = 폴더 메뉴(`EditFolderMenu` — 실행은 App 의 `onFolderAction`) | `EditSidebar` |
 | `FloatingPrompt.tsx`(104줄) | `window.prompt` 대체 플로팅 입력 | `FloatingPrompt` |
 
 #### Assets(구성) 화면(`assets/` + `sidebar/` + 최상위, 28파일)
@@ -648,7 +663,7 @@ updated: 2026-10-13
 | `manage/types.ts`(314줄) | PM 타입 단일 출처(`WorkViewProps`·`Task`·`ManageSummary`…) | |
 | `manage/manageColors.ts`(37줄) · `personalWork.ts`(78줄) · `taskPreviews.ts`(78줄) · `projectUsageHierarchy.ts`(121줄) · `usageSource.ts`(29줄) | 순수 계산(색 라벨·개인 작업 축소·미리보기 후보·에피소드/시퀀스 계층·출처 표기) | |
 
-### 3.3 lib (`frontend/src/lib/`, 212파일 — 하위 디렉터리 없이 평평함)
+### 3.3 lib (`frontend/src/lib/`, 218파일 — 하위 디렉터리 없이 평평함)
 
 역할 표기: `훅`=React import 있음 · `순수`=인자→값(React·fetch·localStorage·브라우저 전역 없음) · `브라우저`=React 는 안 쓰지만 창·문서·소켓·BroadcastChannel·리스너·타이머를 만진다(부작용 있음) · `store`=모듈 수준
 가변 상태+구독 · `api`=HTTP IO · `저장`=localStorage IO.
@@ -671,7 +686,7 @@ updated: 2026-10-13
 | `sharedApi.ts` | api | 공유 서버 로그인·발행·주소 이사 HTTP |
 | `updateNotices.ts` | api | 업데이트 공지 목록·확인·관리자 등록 HTTP |
 | `releaseUpdate.ts` | api+store | 릴리스 업데이트 실행·폴링 문구·차단 사유 |
-| `resolveTransfer.ts` | api | DaVinci Resolve 전송·진단·스크립트 설치 HTTP |
+| `resolveTransfer.ts` | api | DaVinci Resolve 전송·진단·스크립트 설치 HTTP · 편집 탭의 타임라인 보내기(`createResolveTimeline`)와 그 결과 한 줄(`resolveTimelineSummary`) |
 
 **2. 실시간·변경 전파·응답 정합(11)**
 
@@ -736,7 +751,7 @@ updated: 2026-10-13
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `useGenerationLibraryData.ts` | 훅 | 목록 로드·페이징·seq 가드·동기화 판정(§6 계약 지점). `beginComposeList` = 목록을 비우고 다시 받기(캔버스·목록 탭의 '폴더 보기' 창이 열고 닫을 때 — 지금 탭 캐시를 지우고 진행 중 응답을 버린다). 목록 탭 창은 `{ keep }`/`{ restore }` 로 본 목록 첫 쪽 사본을 담았다 먼저 보인다(`backListRef` — 탭 캐시와 별개 칸, 출처는 탭 캐시의 sig 로 확인). `staleList` = 그 사본을 보이는 중 — **지금 문맥의 첫 쪽 응답을 적용한 순간**(성공·실패)에만 꺼진다(버려진 응답·메타 종료로는 안 꺼짐). `listRevision` = 새 첫 쪽을 적용할 때마다 오르는 값(목록과 같은 때에 다시 받을 것 — 폴더 카드 — 의 신호. 목록 배열은 내용이 같으면 그대로라 쓸 수 없다). **다시 받기는 줄이 둘**이다 — 목록 줄(`inflightRef`·대기 병합)은 한 실행의 목록 구간(첫 쪽 + 위치 확인)까지만 잡고, 메타(통계·태그·폴더)는 메타 줄(`sendMeta`/`requestMeta` — 한 번에 한 묶음, 그동안의 요구는 하나로 합쳐 앞 묶음이 끝난 뒤 그때의 문맥으로)이 받아 적용한다. 줄이 비어 있으면 목록과 메타는 같은 순간에 출발한다. 다음 실행의 목록은 앞 실행의 메타를 기다리지 않는다. `reload()` 의 약속은 자기 실행과 맡긴 메타가 **처리**된 뒤에 풀린다(적용 보장은 아니다). 전체 메타 요구는 seq 로 버려져도 다음 묶음이 이어받는다(`metaOwedRef` — 빚만으로 스스로 다시 보내지는 않는다). 시험 `tests/libraryReloadLanes.test.tsx` |
-| `useLibraryFilters.ts` | 훅 | 필터·뷰 상태(localStorage 백업) + 파생 쿼리. `sharedView` 의 시작 키 = 저장된 `__view` 가 지금 공간이면 지금 공간(공유 탭의 프로젝트·폴더를 되살린다), 아니면 `""`(지운다) — `restoreViewKey`. 모양(`layout`·`groupByDate`)은 여기 없다 — `usePlaceView` |
+| `useLibraryFilters.ts` | 훅 | 필터·뷰 상태(localStorage 백업) + 파생 쿼리. 세 번째 인자 `teamPeek`(편집 탭이 연 폴더 창) — 밖에 내주는 `filters`·조회만 공유 & 리뷰로 보이고 저장된 값·`storedTab`(뒤로가기 기록용)은 그대로다([EDIT_TAB.md](EDIT_TAB.md) §7). `sharedView` 의 시작 키 = 저장된 `__view` 가 지금 공간이면 지금 공간(공유 탭의 프로젝트·폴더를 되살린다), 아니면 `""`(지운다) — `restoreViewKey`. 모양(`layout`·`groupByDate`)은 여기 없다 — `usePlaceView` |
 | `usePlaceView.ts` | 훅 | 모양(리스트/그리드 · 리스트 한 번 더)을 **보는 폴더마다** 기억한다 — App 이 보는 폴더의 열쇠를 준다(폴더 창이 떠 있으면 그 창의 폴더). 렌더에서 '그 자리에 적힌 것 ?? 방금 보던 것'으로 정하고, 적을 때는 저장된 것을 다시 읽어 이 자리만 고친다(다른 창의 기억을 덮지 않게). 규칙은 `placeViews.ts` |
 | `placeViews.ts` | 순수 | 자리(탭·프로젝트·폴더)마다 마지막으로 본 모양(리스트/그리드 · 리스트 한 번 더) — 열쇠 `placeViewKey` · 저장 읽기 `parsePlaceViews` · 적기 `withPlaceView`(같은 값이면 같은 객체 · 400 자리 상한). 본 자리는 본 모양으로 적히고, 처음 들어간 자리는 방금 보던 모양을 물려받는다(Jay 2026-10-13) |
 | `useLibraryPersistence.ts` | 훅 | 필터 저장 포맷·키·마이그레이션. `FILTERS_VIEW_KEY`(`__view`) = 자동 범위 공간 키(전체 보기 중이면 안 남김) |
@@ -781,7 +796,7 @@ updated: 2026-10-13
 | `useGenerationKeyboardActions.ts` | 훅 | 그리드 단축키(색·비활성·Esc 선택 해제) — 위에 겹이 떠 있으면 쉰다, 글자 입력칸만 양보, 색을 칠할 때·저장이 끝날 때 색 편집 장부에 알린다 |
 | `useGenerationUtilityActions.ts` | 훅 | 일괄 다운로드·히스토리·창 열기 |
 | `useGenerationSelection.ts` | 훅 | 그리드 선택 집합·바깥 클릭 해제(누르는 순간 위에 창·메뉴가 떠 있었으면 풀지 않는다 — `pressStartedCovered`) |
-| `usePromptCreatedActions.ts` | 훅 | 프롬프트로 생성 직후 후처리 |
+| `usePromptCreatedActions.ts` | 훅 | 프롬프트로 생성 직후 후처리. 목록이 공유 & 리뷰의 것이면 방금 만든 로컬 카드를 끼워 넣지 않는다(다시 받기에 맡긴다) |
 | `bulkGenerationActions.ts` | 순수 | 일괄 실행기(`runGenerationBulk` — 주입받은 비동기 작업을 돌려 실패 수 집계, `runGenerationTrash` — 휴지통 전용: 공유 중 409 를 '건너뜀'으로 따로 센다) + 결과·확인 문구 |
 | `shareMirrorPending.ts` | 순수 | 공유 미러 대기 안내 래핑 |
 
@@ -867,6 +882,15 @@ updated: 2026-10-13
 | `assetVersionRefresh.ts` | 브라우저+api | 프로젝트별 1-in-flight 버전 갱신 실행기(API 조회) + 포커스·가시성 복귀 리스너 |
 | `assetVirtualRows.ts` | 순수 | 에셋 그리드 행 모델(인덱스판) |
 | `folderTreeModel.ts` | 순수 | 폴더 경로 정규화 + 개수 트리 구성 |
+| `editTimeline.ts` | 순수 | 편집 탭 계산 — 컷 순서(이름 자연 정렬)·배치·보이는 클립(위 트랙 우선)·위치((컷, 컷 안 시각))·문서 편집(클립·트랙 더하기/빼기/옮기기/색·마크 인/아웃·북마크·빈 컷 채우기 `fillEmptyCuts`)·다이나믹 트림 모드의 계산(`nearestPoint`·`shotsAt`)·공유 목록과 잇기([EDIT_TAB.md](EDIT_TAB.md)) |
+| `editResolveExport.ts` | 순수 | 편집 탭의 타임라인 Resolve 보내기 — 지금 배치를 프레임 단위 계획(`mvhub.edit-timeline` v1: 클립·소리·북마크·인/아웃, 절대 시각을 한 번씩 반올림)으로 옮긴다 · 타임라인 이름. 받는 쪽은 `services/resolve_timeline.py` 의 `validate_plan` — 계획의 칸을 바꾸면 두 곳을 같이 |
+| `editTimelineStore.ts` | 저장 | 편집 문서 localStorage 읽기/쓰기(읽지 못한 문서는 `.bad` 로 보존)·되돌리기 스택·마지막 시퀀스·화면 설정(`EditUi` — 판이 보는 것 `ViewMode`(타임라인·소스 클립·소스 테이프·한 트랙)·새 북마크의 색) |
+| `useEditDoc.ts` | 훅 | 편집 문서 상태 — 바꾸기·저장·되돌리기·다른 창의 변경 받아들이기((키, 문서) 한 쌍·`rev`) |
+| `useEditSequence.ts` | 훅+api | 편집 탭 조회 — 프로젝트·폴더 트리(온전성 표시)와 시퀀스의 공유 생성물 전부(쪽 넘김·문맥 가드·상한 2,000) |
+| `useEditPlayback.ts` | 훅 | 편집 탭 재생 — 시계 주인(영상/rAF)·보이는 소스 전환·훑기·배속·반복·구간 반복(`range` — 전체 반복과 따로, 켜는 순간은 `playRange`)·편집점 앞뒤 재생(`playAround` — 구간은 엔진이 쥔다)·다음 영상 미리 받기와 미리 굴리기(`upcoming`·`prepare` — 영상 요소가 둘일 때)·고른 배속(`speed`). 멈추면 멈춘 자리를 그린다. 프레임마다 React 를 건드리지 않는다. 타임라인용·소스용(클립·테이프) 두 인스턴스 |
+| `editVideoPair.ts` | 순수 + 훅 | 편집 탭의 영상 요소 둘을 하나처럼(`pairVideo`) — 앞의 것이 보이고 뒤의 것은 다음 영상을 미리 받아 세워 둔다. 넘어갈 때 받지 않고 앞뒤만 바꾸고(`swap`), 직전에는 소리 없이 미리 굴린다(`roll`). `useVideoPair` = 판 하나의 요소 둘과 묶음 |
+| `useEditFollow.ts` | 훅 | 편집 탭 '한 트랙만 보기' — 타임라인의 시각을 프레임마다 읽어 그 트랙의 클립을 맞춰 보인다(시계에 영향 없음) |
+| `videoDuration.ts` | 브라우저 | 영상 길이 재기(메타데이터만·주소별 한 번·동시에 4개) |
 | `folderLabel.ts` | 순수 | 카드 폴더 이름표 글자(끝 두 칸)·전체 경로 표기 |
 | `coverCredits.ts` | 훅 | 폴더 카드의 크레딧(그 그림 한 장의 실제 크레딧 — `api.generationMetrics`) — 한 번 받은 것은 모듈에 기억하고(다시 묻지 않는다) 한꺼번에 넷만 묻는다(`useCoverCredits` · 시험용 `forgetCoverCredits`) |
 | `folderCards.ts` | 순수 | 공유 & 리뷰 탭의 폴더 묶음 보기 규칙 — `folderCardsPlace`(묶어 보일 **자리**: 공유 탭 + 프로젝트 + 휴지통 아님 + 서버가 거를 수 있는 공간 조건)·`hasFindFilters`(찾는 조건이 켜져 있나 — 켜져 있어도 자리는 자리다, 10-13 저녁)·`folderCardsScope`(자리 && 찾는 조건 없음 — 서버 카드만으로 묶을 수 있는 조회)·`parentFolder`·`singleTeamWorkspace` |
@@ -924,7 +948,7 @@ updated: 2026-10-13
 |---|---|---|
 | `resolveSelection.ts` | 순수 | Resolve 선택 → 씬·카드 역추적 |
 | `resolveSelectionSettings.ts` | 저장+훅 | '선택 따라가기' 설정 구독 |
-| `useResolveTransferActions.ts` | 훅 | 전송 실행·재시도 액션(직렬 큐) |
+| `useResolveTransferActions.ts` | 훅 | 전송 실행·재시도 액션(직렬 큐) · 편집 탭의 타임라인 보내기도 같은 줄에 선다(`sendTimelineToResolve` — 끝나면 결과로 풀리는 약속, `timelineBusy`) |
 | `useResolveLibraryFollow.ts` | 훅 | Resolve 선택에 라이브러리 페이지 따라가기 |
 | `sourceLocationFeedback.ts` | api | 원본 위치 열기 실패 보고 |
 
@@ -990,7 +1014,7 @@ updated: 2026-10-13
 `spotlightPromptConfig.test.ts` · `usageModelIndex.test.ts` · `useGenerationProgress.test.ts` ·
 `workspaceCommand.test.ts`.
 
-### 3.4 styles (`frontend/src/styles/`, 12파일)
+### 3.4 styles (`frontend/src/styles/`, 13파일)
 
 담당 화면은 클래스 접두어와 실제 컴포넌트의 className 대조(S1 조사)로 추정했다. 한 파일이 여러
 화면을 겸하는 경우가 있다(§5-d).
@@ -1009,6 +1033,7 @@ updated: 2026-10-13
 | `composition-manage.css` | 1098 | 관리(PM)창 구성·대시보드 화면. 옛 합성보드·옛 통계 위젯(도넛·퍼널 등)의 규칙은 2026-09-18 에 걷어냈다. 남은 휴면 규칙은 §5-d |
 | `admin-auth-compare.css` | 682 | 로그인·관리자 창·계정 비교 화면 |
 | `partial-edit.css` | 327 | 부분 수정 캔버스(`edit/PartialEditModal`) |
+| `edit-tab.css` | 188 | 편집 탭(`timeline/`) — 클래스는 전부 `ed-` 로 시작한다(흔한 이름은 다른 화면 규칙에 먹힌다). 생성물 카드만 라이브러리 카드의 클래스를 일부러 같이 쓴다(같은 모양) |
 | `resolve-library.css` | 22 | Resolve 관련 라이브러리 표시(소규모) |
 
 ### 3.5 숨은 진입점

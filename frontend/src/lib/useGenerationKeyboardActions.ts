@@ -21,6 +21,8 @@ interface UseGenerationKeyboardActionsArgs {
   setGens: Dispatch<SetStateAction<Generation[]>>;
   // compose 탭에서도 라이브러리 격자가 떠 있는 동안(캔버스 '폴더 보기' 창)은 색·비활성 단축키를 살린다.
   composeGridActiveRef?: MutableRefObject<boolean>;
+  // 라이브러리 격자가 화면에 없는 동안(편집 탭) — Esc·색·비활성 키를 듣지 않는다(편집 키와 겹친다).
+  inactiveRef?: MutableRefObject<boolean>;
   // 색 편집 장부(목록 훅의 것) — 재조회의 응답이 그사이 칠한 색을 덮지 않게 칠할 때·저장이 끝날 때 알린다.
   colorLedger?: ColorEditLedger;
 }
@@ -34,6 +36,7 @@ export function useGenerationKeyboardActions({
   selectedRef,
   setGens,
   composeGridActiveRef,
+  inactiveRef,
   colorLedger,
 }: UseGenerationKeyboardActionsArgs) {
   const latestCallbacksRef = useRef({
@@ -82,7 +85,7 @@ export function useGenerationKeyboardActions({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // 글자를 치는 자리만 양보한다 — 체크박스·슬라이더에 초점이 남아 있어도 색·비활성·Esc 는 먹는다(2026-10-10 실측).
-      if (isTypingTarget(e.target)) return;
+      if (inactiveRef?.current || isTypingTarget(e.target)) return;
       const ids = [...selectedRef.current];
       if (e.key === "Escape") {
         // 뒤 화면의 Esc — 위에 창·메뉴가 떠 있거나 안쪽이 이미 쓴 Esc 면 손대지 않는다. 선택을 푼 Esc 는 '쓴 것'으로 표시한다.
@@ -121,5 +124,5 @@ export function useGenerationKeyboardActions({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [clearSelect, colorSelected, filtersRef, selectedRef, composeGridActiveRef]);
+  }, [clearSelect, colorSelected, filtersRef, selectedRef, composeGridActiveRef, inactiveRef]);
 }

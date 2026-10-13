@@ -10,6 +10,7 @@ export const STORAGE_KEYS = {
   historyDisabled: "ch.history.disabled",
   historyDisabledLegacy: "ch.lineage.disabled",
   disabledFolders: "ch.lib.disabledFolders", // 폴더 단위 비활성화(생략) — projectId→폴더경로[]
+  editTimeline: "ch.editTimeline", // 편집 탭 문서 — `:<계정>:<project_id>:<폴더>` 를 붙여 시퀀스마다 하나(docs/EDIT_TAB.md)
 
   historyPos: "ch.history.pos",
   historyPosLegacy: "ch.lineage.pos",
