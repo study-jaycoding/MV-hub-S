@@ -521,8 +521,9 @@ it("길이 조절 창은 떠 있는 창이다 — 키는 초점을 따르고, �
   // 창 안의 Ctrl+Z — 창을 연 뒤의 걸음들이 되돌리기 한 단계다
   press({ key: "z", code: "KeyZ", ctrlKey: true }, pop()!);
   expect(trim()).toBeUndefined();
-  // 창 안의 Esc 로 닫는다 — 초점은 편집 화면으로 돌아가 키가 바로 타임라인의 것이다
-  press({ key: "Escape", code: "Escape" }, pop()!);
+  // 창 안의 Esc 로 닫는다 — 초점은 편집 화면으로 돌아가 키가 바로 타임라인의 것이다(창과 함께 사라져 body 로 떨어지지 않는다)
+  button("−1f").focus();
+  press({ key: "Escape", code: "Escape" }, button("−1f"));
   expect([pop(), document.activeElement]).toEqual([null, document.querySelector(".ed-root")]);
 });
 

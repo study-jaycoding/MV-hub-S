@@ -339,7 +339,7 @@
 /* 클립 길이 조절 창 — 떠 있는 창(머리를 끌어 옮긴다 · body 에 그린다). 큰 화면 · 재생 · 띠(슬라이더) · 프레임 단추 · 숫자 칸.
    쌓임은 떠 있는 창의 띠(lib/useFloatingPanel 이 152~159 를 인라인으로 준다) — 우클릭 메뉴(1000)·끌기 유령(900)보다 아래다. */
 .ed-trim {
-  position: fixed; z-index: 153; width: 560px; max-width: calc(100vw - 16px); display: flex; flex-direction: column;
+  position: fixed; z-index: 153; width: 560px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); display: flex; flex-direction: column;
   background: #14151a; border: 1px solid var(--border2); border-radius: 12px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
   color: var(--text); outline: none;
 }
@@ -354,8 +354,10 @@
   font-size: 13px; line-height: 1; cursor: pointer;
 }
 .ed-trim-head button:hover, .ed-trim-head button:focus-visible { background: rgba(255, 255, 255, 0.08); color: var(--text); outline: none; }
-.ed-trim-body { display: flex; flex-direction: column; gap: 8px; padding: 12px; }
-.ed-trim-view { width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; background: #000; object-fit: contain; }
+/* 낮은 창에서는 큰 화면이 줄어든다(나머지 줄 약 230px 을 남기고) — 아래 단추 줄이 화면 밖으로 잘리지 않게. 그래도 모자라면 창 안에서 스크롤 */
+.ed-trim-body { display: flex; flex-direction: column; gap: 8px; padding: 12px; min-height: 0; overflow-y: auto; }
+.ed-trim-body > * { flex: none; }
+.ed-trim-view { width: 100%; aspect-ratio: 16 / 9; max-height: max(90px, calc(100vh - 246px)); border-radius: 8px; background: #000; object-fit: contain; }
 .ed-trim-play { display: flex; align-items: center; gap: 8px; min-height: 26px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .ed-trim-play span { flex: 1; text-align: right; }
 .ed-trim-range { width: 100%; height: 22px; margin: 0; accent-color: var(--accent); cursor: ew-resize; }
