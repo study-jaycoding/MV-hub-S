@@ -233,6 +233,79 @@ export function createResolveTransfer(
   });
 }
 
+// ── 타임라인 Resolve 보내기(편집 탭) ── 원본 전송에 이어 새 타임라인을 짓는다. 계획은 lib/editResolveExport 가 만든다.
+export interface ResolveTimelineBuild {
+  // complete = 계획대로 · partial = 타임라인은 생겼지만 계획과 다르다(또는 만들다 멈췄다) · failed·unavailable = 만들지 않았다
+  status: "complete" | "partial" | "failed" | "unavailable";
+  timeline_name: string;
+  timeline_id: string;
+  step: string;
+  video: number;
+  audio: number;
+  markers_added: number;
+  markers_skipped: number;
+  mark: boolean;
+  saved: boolean;
+  // 되읽어 보니 계획과 다른 자리. short = 자리는 맞고 원본이 짧아 끝만 비었다(한 프레임 이내)
+  mismatches: Array<{ track: string; gen_id: string; start: number; expected: number | null; actual: number | null; short: boolean }>;
+  short_sources: Array<{ gen_id: string; track: number; start: number; planned: number; actual: number }>;
+  warnings: string[];
+  error: string | null;
+  error_code: string | null;
+}
+
+export interface ResolveTimelineResult {
+  transfer: ResolveTransferResult;
+  timeline: ResolveTimelineBuild;
+}
+
+export function createResolveTimeline(
+  genIds: string[],
+  target: ResolveProjectTarget,
+  timeline: unknown,
+): Promise<ResolveTimelineResult> {
+  return jsonFetch<ResolveTimelineResult>("/api/resolve/timelines", {
+    method: "POST",
+    body: jsonBody({
+      gen_ids: genIds,
+      resolve_project_id: target.project_id || "",
+      resolve_project_name: target.project_name || "",
+      timeline,
+    }),
+  });
+}
+
+// 자식 프로세스가 결과 없이 끝났다 — 타임라인을 만들었는지 알 수 없다(만든 뒤에 죽었을 수 있다)
+const TIMELINE_OUTCOME_UNKNOWN = new Set(["child_crashed", "invalid_child_result"]);
+
+/** 한 줄 결과 — '만들었다'고만 말하면 계획과 다르게 놓인 것이 조용히 묻힌다. 다른 점·못 한 것을 모두 같이 적는다. */
+export function resolveTimelineSummary(result: ResolveTimelineResult): string {
+  const built = result.timeline;
+  const name = built.timeline_name;
+  if (built.status === "complete") {
+    const markers = built.markers_added ? ` · 북마크 ${built.markers_added}` : "";
+    return `Resolve 에 타임라인 '${name}' 을 만들었습니다 · 클립 ${built.video}${markers}`;
+  }
+  if (name) {
+    const short = built.mismatches.filter((item) => item.short).length;
+    const moved = built.mismatches.length - short;
+    const reasons = [
+      moved ? `자리가 다른 클립 ${moved}개` : "",
+      short ? `원본이 짧아 끝이 비는 클립 ${short}개` : "",
+      built.error || "",
+      ...built.warnings,
+    ].filter(Boolean);
+    return `Resolve 에 타임라인 '${name}' 을 만들었지만 확인이 필요합니다 · ${reasons.join(" · ") || "일부를 적용하지 못했습니다"}`;
+  }
+  if (TIMELINE_OUTCOME_UNKNOWN.has(built.error_code || "")) {
+    return `타임라인을 만들었는지 확인하지 못했습니다 — 다시 보내기 전에 Resolve 를 확인하세요 · ${built.error || "결과를 받지 못했습니다"}`;
+  }
+  const prepareFailed = result.transfer.error_count
+    ? ` · 원본 준비 실패 ${result.transfer.error_count}개`
+    : "";
+  return `타임라인을 만들지 못했습니다 · ${built.error || "Resolve 연결 실패"}${prepareFailed}`;
+}
+
 export function getResolveConnectionStatus(): Promise<ResolveConnectionStatus> {
   return jsonFetch<ResolveConnectionStatus>("/api/resolve/status", { cache: "no-store" });
 }

@@ -2601,7 +2601,10 @@ export default function App() {
               cardMenuRef={editCardMenuRef}
               onPreview={openPreview}
               onCompare={setCompareGens}
-              resolve={{ send: resolveTransfer.sendToResolve, busy: resolveTransfer.busy, pendingCount: resolveTransfer.pendingCount }}
+              resolve={{
+                send: resolveTransfer.sendToResolve, busy: resolveTransfer.busy, pendingCount: resolveTransfer.pendingCount,
+                sendTimeline: resolveTransfer.sendTimelineToResolve, timelineBusy: resolveTransfer.timelineBusy,
+              }}
               onFolderAction={onFolderAction}
             />
           </Suspense>

@@ -1,12 +1,16 @@
 import { useCallback, useRef, useState } from "react";
 import type { Generation } from "../types";
+import { HttpError } from "./http";
 import {
   checkResolveSelection,
+  createResolveTimeline,
   createResolveTransfer,
   getResolveConnectionStatus,
   retryResolveTransfer,
+  resolveTimelineSummary,
   resolveTransferSummary,
   type ResolveProjectTarget,
+  type ResolveTimelineResult,
   type ResolveTransferResult,
 } from "./resolveTransfer";
 import { SerialTaskQueue, type SerialTaskQueueState } from "./serialTaskQueue";
@@ -22,7 +26,9 @@ function readableError(error: unknown): string {
 
 type ResolveQueueTask =
   | { kind: "transfer"; genIds: string[]; target: ResolveProjectTarget }
-  | { kind: "retry"; projectId: string; transferId: string; target: ResolveProjectTarget };
+  | { kind: "retry"; projectId: string; transferId: string; target: ResolveProjectTarget }
+  // 편집 탭의 타임라인 보내기 — 같은 줄에 선다(Resolve API 를 동시에 부르지 않는다). done 은 끝났을 때(실패는 null) 한 번.
+  | { kind: "timeline"; genIds: string[]; target: ResolveProjectTarget; plan: unknown; done: (result: ResolveTimelineResult | null) => void };
 
 export interface RetryableResolveTransfer {
   projectId: string;
@@ -61,6 +67,25 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
   if (!queueRef.current) {
     queueRef.current = new SerialTaskQueue(
       async (task) => {
+        if (task.kind === "timeline") {
+          flashRef.current(`Resolve 로 타임라인 보내는 중 · ${task.target.project_name}`);
+          let result: ResolveTimelineResult | null = null;
+          try {
+            result = await createResolveTimeline(task.genIds, task.target, task.plan);
+            flashRef.current(resolveTimelineSummary(result));
+          } catch (error) {
+            // 4xx = 서버가 시작하기 전에 거절했다(만든 것이 없다). 그 밖(끊김·5xx)은 서버가 끝까지 돌았을 수 있다 — 요청이 끊겨도
+            //  서버는 작업을 버리지 않는다(run_non_abandon). 만들어졌는지 모르는 채 '실패'라고만 하면 다시 눌러 둘이 된다.
+            const refused = error instanceof HttpError && error.status >= 400 && error.status < 500;
+            flashRef.current(
+              `타임라인 보내기 실패: ${readableError(error)}`
+              + (refused ? "" : " — 만들어졌을 수 있습니다. 다시 보내기 전에 Resolve 를 확인하세요"),
+            );
+          } finally {
+            task.done(result); // 실패해도 알린다 — 단추가 '보내는 중'에 남지 않게
+          }
+          return;
+        }
         flashRef.current(
           task.kind === "transfer"
             ? `Resolve 원본 ${task.genIds.length}개 처리 중 · ${task.target.project_name}`
@@ -158,11 +183,32 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
       .finally(() => setConnectionChecks((count) => Math.max(0, count - 1)));
   }, [flash, retryable]);
 
+  // 편집 탭의 [타임라인 Resolve 보내기] — 연결 확인은 확인 창이 이미 했다(target = 그때 열려 있던 Resolve 프로젝트. 그사이
+  //  바뀌면 받는 쪽이 project_changed 로 멈춘다). 클립 보내기와 같은 줄에 세우고, 끝나면 결과(실패는 null)로 풀린다.
+  //  timelineBusy 는 여기(앱)에 둔다 — 편집 탭을 떠났다 돌아와도 단추가 '보내는 중'으로 남아 같은 타임라인을 두 번 줄 세우지 않게.
+  const [timelinePending, setTimelinePending] = useState(0);
+  const sendTimelineToResolve = useCallback(
+    (plan: unknown, gens: Generation[], target: ResolveProjectTarget): Promise<ResolveTimelineResult | null> => {
+      const checked = checkResolveSelection(gens);
+      if (!checked.ok) {
+        flash(checked.message);
+        return Promise.resolve(null);
+      }
+      setTimelinePending((count) => count + 1);
+      return new Promise<ResolveTimelineResult | null>((done) => {
+        queueRef.current!.enqueue({ kind: "timeline", genIds: checked.genIds, target, plan, done });
+      }).finally(() => setTimelinePending((count) => Math.max(0, count - 1)));
+    },
+    [flash],
+  );
+
   return {
     busy: queueState.total > 0 || connectionChecks > 0,
     pendingCount: queueState.total + connectionChecks,
     retryable,
     retryPreparedTransfer,
     sendToResolve,
+    sendTimelineToResolve,
+    timelineBusy: timelinePending > 0,
   };
 }

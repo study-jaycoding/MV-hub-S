@@ -152,6 +152,28 @@ const EN: Record<string, string> = {
   "빈 컷 {count}": "{count} empty",
   "이 편집은 이 브라우저(계정)에만 저장됩니다. 팀에 공유되지 않습니다.": "This edit is saved only in this browser (account). It is not shared with the team.",
   "나만 보는 편집": "Private edit",
+  // 타임라인 Resolve 보내기(막대의 단추 · 확인 창)
+  "타임라인 Resolve 보내기": "Send timeline to Resolve",
+  "보내는 중…": "Sending…",
+  "✓ Resolve 에 보냄": "✓ Sent to Resolve",
+  "지금 타임라인을 DaVinci Resolve 의 새 타임라인으로 보냅니다 — 누르면 확인 창이 뜹니다":
+    "Send this timeline to DaVinci Resolve as a new timeline — opens a confirmation first",
+  "Resolve 에 새 타임라인을 지금 보이는 그대로 만듭니다.": "Creates a new timeline in Resolve exactly as shown now.",
+  "내용": "Contents",
+  "받는 곳": "Destination",
+  "끈 클립 {count}": "{count} disabled",
+  "북마크 {count}": "{count} bookmarks",
+  "Resolve 연결을 확인하는 중…": "Checking the Resolve connection…",
+  "다시 확인": "Check again",
+  "공유 목록에서 찾지 못한 클립이 {count}개 있습니다 — 목록을 다 받았는지 확인하고, 없어진 클립은 빼거나 바꿔 주세요.":
+    "{count} clips were not found in the shared list — make sure the list finished loading, and remove or replace clips that are gone.",
+  "타임라인에 넣은 클립이 없습니다.": "There are no clips on the timeline.",
+  "같은 프레임에 겹친 북마크 {count}개는 빠집니다.": "{count} bookmarks sharing a frame are left out.",
+  "끝의 빈 컷({time})은 Resolve 타임라인에 남지 않습니다 — Resolve 의 타임라인은 마지막 클립에서 끝납니다.":
+    "The empty cuts at the end ({time}) are not kept in Resolve — a Resolve timeline ends at its last clip.",
+  "누를 때마다 새 타임라인을 만듭니다 — 앞서 만든 타임라인은 바꾸지 않습니다. 소리는 맨 위에 보이는 영상의 것만 가고, 트랙 색과 위쪽 컷 이름 줄은 넘어가지 않습니다.":
+    "Each send creates a new timeline — earlier ones are left untouched. Only the audio of the topmost visible video is sent; track colors and the cut-name row are not.",
+  "보내기": "Send",
   "편집을 시작하면 옛 내용은 따로 보관한 뒤 새로 저장합니다.": "When you start editing, the old content is kept aside before saving.",
   "저장된 편집을 읽지 못했습니다": "Saved edit could not be read",
   "저장 안 됨": "Not saved",

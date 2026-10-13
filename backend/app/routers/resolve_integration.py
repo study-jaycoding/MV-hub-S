@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from datetime import datetime, timezone
-from typing import AsyncIterator, Literal
+from typing import Any, AsyncIterator, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -23,7 +23,9 @@ from ..services.resolve_status_runner import (
     launch_window_active,
     resolve_connection_status_bounded,
     run_resolve_import_isolated,
+    run_resolve_timeline_isolated,
 )
+from ..services.resolve_timeline import TimelinePlanError, validate_plan
 from ..services.resolve_selection_monitor import selection_monitor as resolve_selection_monitor
 from ..services.resolve_diagnostics import resolve_environment_diagnostics
 from ..services.resolve_python_installer import (
@@ -56,6 +58,11 @@ class ResolveTransferIn(BaseModel):
     gen_ids: list[str] = Field(min_length=1, max_length=500)
     resolve_project_id: str = Field(default="", max_length=200)
     resolve_project_name: str = Field(default="", max_length=500)
+
+
+class ResolveTimelineIn(ResolveTransferIn):
+    # 편집 탭이 만든 타임라인 계획(format mvhub.edit-timeline) — 모양과 값은 services/resolve_timeline.validate_plan 이 본다.
+    timeline: dict[str, Any]
 
 
 class ResolveRetryIn(BaseModel):
@@ -197,10 +204,15 @@ async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
             return await _create_resolve_transfer_pinned(body, request)
 
 
-async def _create_resolve_transfer_pinned(body: ResolveTransferIn, request: Request):
-    ids = list(dict.fromkeys(gen_id.strip() for gen_id in body.gen_ids if gen_id.strip()))
+def _clean_gen_ids(gen_ids: list[str]) -> list[str]:
+    ids = list(dict.fromkeys(gen_id.strip() for gen_id in gen_ids if gen_id.strip()))
     if not ids:
         raise HTTPException(status_code=400, detail="전송할 생성물을 선택하세요")
+    return ids
+
+
+async def _authorized_generations(ids: list[str], request: Request) -> tuple[str, list[dict]]:
+    """보낼 생성물을 권한과 함께 읽어 (프로젝트 id, 입력 순서의 생성물)로 돌려준다 — 원본 전송과 타임라인 보내기가 같이 쓴다."""
     # 최대 500건 판정 배치화(R7 2-D) — 종전엔 ID 마다 로컬 단건 DB 조회(이벤트 루프 위)
     # 와 원격 단건 GET 을 순차 반복했다. 로컬 1회+멤버십 1회+원격 batch 1회로 줄이고
     # 입력 순서대로 재조립한다. ★로컬에 존재하지만 열람 불가(숨김)인 ID 는 원격 폴백
@@ -254,8 +266,14 @@ async def _create_resolve_transfer_pinned(body: ResolveTransferIn, request: Requ
         raise HTTPException(status_code=400, detail="프로젝트에 배정된 생성물만 전송할 수 있습니다")
     if len(project_ids) != 1:
         raise HTTPException(status_code=400, detail="한 번에 하나의 프로젝트만 전송할 수 있습니다")
+    return next(iter(project_ids)), generations
+
+
+async def _create_resolve_transfer_pinned(body: ResolveTransferIn, request: Request):
+    project_id, generations = await _authorized_generations(_clean_gen_ids(body.gen_ids), request)
+
     async def _transfer_and_import() -> dict:
-        manifest = await transfer_generations(next(iter(project_ids)), generations)
+        manifest = await transfer_generations(project_id, generations)
         if body.resolve_project_id or body.resolve_project_name:
             manifest["resolve_target"] = {
                 "project_id": body.resolve_project_id.strip(),
@@ -274,6 +292,49 @@ async def _create_resolve_transfer_pinned(body: ResolveTransferIn, request: Requ
         return await resolve_queue.run_non_abandon(_transfer_and_import())
     except ResolveTransferError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/timelines")
+async def create_resolve_timeline(body: ResolveTimelineIn, request: Request):
+    """편집 탭의 타임라인을 현재 열린 Resolve 프로젝트에 **새 타임라인**으로 보낸다(타임라인 Resolve 보내기).
+
+    원본 전송(`/transfers`)과 같은 관문·같은 권한·같은 파일 준비를 지나고, 가져오기에 이어 같은 자식 프로세스가
+    타임라인을 짓는다. 계획은 **파일을 준비하기 전에** 검사한다(잘못된 계획이 복사·Media Pool 정렬부터 일으키지 않게).
+    계획은 전송 manifest 에 넣지 않는다 — manifest 는 보통의 원본 전송으로 남고(메뉴 스크립트 Importer·다시 가져오기가
+    그대로 다룬다), 타임라인 결과는 이 응답으로만 돌려준다. 실패해도 만들던 타임라인을 지우거나 스스로 다시 만들지 않는다.
+    """
+    _require_local_resolve(request)
+    _reject_while_launching()
+    ids = _clean_gen_ids(body.gen_ids)
+    try:
+        plan = validate_plan(body.timeline, set(ids))
+    except TimelinePlanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    async with _tracked_resolve_transfer():
+        await asyncio.to_thread(_reject_if_update_in_progress)
+        async with _pinned_account_scope():
+            project_id, generations = await _authorized_generations(ids, request)
+
+            async def _transfer_and_build() -> dict:
+                # ★준비·가져오기·타임라인·결과 저장은 한 단위다(run_non_abandon) — 요청이 끊겨도 선택 감시 멈춤과 전송 보호가
+                #  작업보다 먼저 풀리지 않는다(Codex 설계 검토).
+                manifest = await transfer_generations(project_id, generations)
+                if body.resolve_project_id or body.resolve_project_name:
+                    manifest["resolve_target"] = {
+                        "project_id": body.resolve_project_id.strip(),
+                        "project_name": body.resolve_project_name.strip(),
+                    }
+                    await save_manifest(manifest)
+                async with resolve_selection_monitor.suspended():
+                    result = await asyncio.to_thread(run_resolve_timeline_isolated, manifest, plan)
+                manifest["resolve_import"] = result["import"]
+                await save_manifest(manifest)
+                return {"transfer": manifest, "timeline": result["timeline"]}
+
+            try:
+                return await resolve_queue.run_non_abandon(_transfer_and_build())
+            except ResolveTransferError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/transfers/retry")

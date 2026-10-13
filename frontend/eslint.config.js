@@ -6,6 +6,7 @@ import reactHooksPlugin from "eslint-plugin-react-hooks";
 const pureDomainFiles = [
   "src/lib/commentTree.ts",
   "src/lib/editTimeline.ts",
+  "src/lib/editResolveExport.ts",
   "src/lib/comfyRunState.ts",
   "src/lib/generationDisplay.ts",
   "src/lib/gradeStep.ts",

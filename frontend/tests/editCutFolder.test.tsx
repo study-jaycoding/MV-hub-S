@@ -26,6 +26,11 @@ const gen = (id: string, cut: string, extra: Partial<Generation> = {}) => ({
 const world = vi.hoisted(() => ({
   gens: [] as unknown[], known: true, state: "ok", error: null as string | null,
   reload: (() => {}) as () => void, reloadCounts: (() => {}) as () => void, fresh: {} as Record<string, number>,
+  resolveStatus: (() => Promise.reject(new Error("안 물었다"))) as () => Promise<unknown>, // [타임라인 Resolve 보내기] 확인 창이 묻는 연결 상태
+}));
+vi.mock("../src/lib/resolveTransfer", async () => ({
+  ...(await vi.importActual<typeof import("../src/lib/resolveTransfer")>("../src/lib/resolveTransfer")),
+  getResolveConnectionStatus: () => world.resolveStatus(),
 }));
 vi.mock("../src/lib/useEditSequence", async () => {
   const actual = await vi.importActual<typeof import("../src/lib/useEditSequence")>("../src/lib/useEditSequence");
@@ -66,8 +71,15 @@ const onPreview = (target: PreviewTarget) => { previews.push(target); };
 const compared: Generation[][] = []; // 풀의 [비교]가 앱에 넘긴 생성물들
 const onCompare = (gens: Generation[]) => { compared.push(gens); };
 const sent: Generation[][] = []; // [Resolve 보내기](풀의 선택 막대·클립 우클릭)가 앱에 넘긴 생성물들
-const resolveState = { busy: false, pendingCount: 0 };
+const resolveState = { busy: false, pendingCount: 0, timelineBusy: false };
 const sendToResolve = (gens: Generation[]) => { sent.push(gens); };
+// 막대의 [타임라인 Resolve 보내기]가 앱에 넘긴 것 — 앱은 끝나면 결과로 풀어 준다(finishTimeline)
+const timelineSent: { plan: Record<string, unknown>; gens: Generation[]; target: unknown }[] = [];
+let finishTimeline: (result: unknown) => void = () => {};
+const sendTimeline = (plan: unknown, gens: Generation[], target: unknown) => {
+  timelineSent.push({ plan: plan as Record<string, unknown>, gens, target });
+  return new Promise<never>((resolve) => { finishTimeline = resolve as (result: unknown) => void; });
+};
 const folderActs: string[][] = []; // 폴더 메뉴가 앱에 청한 것 — [무엇, 프로젝트, 폴더 경로, 폴더 이름]
 const onFolderAction = (...args: string[]) => { folderActs.push(args); };
 // peekPath = 폴더 창이 떠 있는 컷(없으면 null). 창은 App 의 것이라 여기서는 떠 있다는 사실만 넘긴다.
@@ -76,7 +88,7 @@ const mount = (reloadSignal = 0, peekPath: string | null = null, ws: typeof work
     <EditTab authKey="auth" authReady workspace={ws} keysActive flash={flash}
       onOpenCutFolder={onOpenCutFolder} reloadSignal={reloadSignal}
       peekPath={peekPath} onPeekMarks={onPeekMarks} cardMenuRef={cardMenuRef} onPreview={onPreview} onCompare={onCompare}
-      resolve={{ send: sendToResolve, ...resolveState }} onFolderAction={onFolderAction} />,
+      resolve={{ send: sendToResolve, sendTimeline, ...resolveState }} onFolderAction={onFolderAction} />,
   ));
 const DOC_KEY = "ch.editTimeline:local:p1:e070";
 type Seed = { cut: string; gen: string; track: number; job?: string; off?: boolean; kind?: "image" | "video" };
@@ -162,7 +174,9 @@ beforeEach(() => {
   compared.length = 0;
   sent.length = 0;
   folderActs.length = 0;
-  Object.assign(resolveState, { busy: false, pendingCount: 0 });
+  timelineSent.length = 0;
+  Object.assign(resolveState, { busy: false, pendingCount: 0, timelineBusy: false });
+  world.resolveStatus = () => Promise.reject(new Error("안 물었다"));
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -1490,6 +1504,96 @@ it("클립을 우클릭하면 Resolve 보내기가 뜬다 — 고른 클립 위�
   mount();
   rightClick(lane(1)[0]);
   expect(item().textContent).toBe("◆ Resolve에 추가 (2)2");
+});
+
+// 타임라인 Resolve 보내기(Jay 2026-10-13) — 막대 오른쪽 도구들의 맨 앞. 누르면 바로 보내지 않고 확인 창이 뜬다: 무엇이 어디로
+//  가는지, Resolve 가 켜져 있는지(편집 탭은 늘 알고 있지 않아 그때 묻는다). [보내기]는 준비됐을 때만 눌린다.
+it("막대의 [타임라인 Resolve 보내기] — 확인 창이 무엇이 어디로 가는지 보여 주고, Resolve 가 준비됐을 때만 보낸다", async () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c1", gen: "b", track: 2, off: true }, { cut: "c2", gen: "x", track: 1 }]);
+  world.gens = ["a", "b"].map((id) => gen(id, "c1", { project_id: "p1" })).concat(gen("x", "c2", { project_id: "p1" }));
+  world.resolveStatus = () => Promise.resolve({ status: "not_running", message: "DaVinci Resolve가 실행 중이지 않습니다" });
+  mount();
+  const button = () => document.querySelector<HTMLButtonElement>(".ed-export-btn")!;
+  const modal = () => document.querySelector<HTMLElement>(".ed-export");
+  const to = () => modal()!.querySelector<HTMLElement>(".ed-export-to")!;
+  const confirm = () => modal()!.querySelector<HTMLButtonElement>(".gradestep-btn.confirm")!;
+  expect(document.querySelector(".ed-marks")!.firstElementChild).toBe(button()); // 도구들의 맨 앞
+  expect(button().textContent).toBe("타임라인 Resolve 보내기");
+
+  act(() => button().click());
+  expect(timelineSent).toEqual([]); // 누르는 것만으로는 가지 않는다
+  expect(modal()!.querySelector(".ed-export-name")!.textContent).toBe("P1_e070");
+  expect(modal()!.querySelector(".ed-export-rows")!.textContent).toContain("V1 2 · V2 1 · 00:00:10:00"); // 길이 = 마지막 클립의 끝까지
+  expect(modal()!.querySelector(".ed-export-rows")!.textContent).toContain("끈 클립 1");
+  expect(modal()!.querySelector(".ed-export-tail")!.textContent).toContain("끝의 빈 컷(00:00:05:00)"); // 빈 컷 c3 — Resolve 에 남지 않는다고 미리 말한다
+  expect(backgroundKeysBlocked()).toBe(true); // 떠 있는 동안 편집 키는 쉰다
+  expect(to().textContent).toBe("Resolve 연결을 확인하는 중…");
+  expect(confirm().disabled).toBe(true);
+  await act(async () => {});
+  expect(to().textContent).toContain("DaVinci Resolve가 실행 중이지 않습니다"); // 꺼져 있다 — 까닭을 보여 주고 보내지 않는다
+  expect(confirm().disabled).toBe(true);
+
+  world.resolveStatus = () => Promise.resolve({ status: "ready", project_id: "rp", project_name: "편집 프로젝트", message: "" });
+  await act(async () => { to().querySelector<HTMLButtonElement>(".ed-link")!.click(); }); // Resolve 를 켠 뒤 [다시 확인]
+  expect(to().textContent).toBe("편집 프로젝트");
+  expect(modal()!.querySelector("[role=alert]")).toBeNull();
+  act(() => confirm().click());
+  expect(modal()).toBeNull();
+  expect(backgroundKeysBlocked()).toBe(false);
+  expect(timelineSent).toHaveLength(1);
+  expect(timelineSent[0].target).toEqual({ project_id: "rp", project_name: "편집 프로젝트" });
+  expect(timelineSent[0].gens.map((item) => item.id)).toEqual(["a", "b", "x"]);
+  expect(timelineSent[0].plan).toMatchObject({
+    format: "mvhub.edit-timeline", name: "P1_e070", fps: 24,
+    clips: [
+      { gen_id: "a", track: 1, start: 0, end: 120, enabled: true, kind: "image" },
+      { gen_id: "b", track: 2, start: 0, end: 120, enabled: false, kind: "image" },
+      { gen_id: "x", track: 1, start: 120, end: 240, enabled: true, kind: "image" },
+    ],
+  });
+
+  Object.assign(resolveState, { busy: true, pendingCount: 1, timelineBusy: true }); // 앱의 줄에 섰다 — 다시 누를 수 없다
+  mount();
+  expect(button().textContent).toBe("보내는 중…");
+  expect(button().disabled).toBe(true);
+  Object.assign(resolveState, { busy: false, pendingCount: 0, timelineBusy: false });
+  await act(async () => { finishTimeline({ timeline: { status: "complete" } }); });
+  mount();
+  expect(button().textContent).toBe("✓ Resolve 에 보냄"); // 계획대로 끝났다 — 잠깐 보이고 평소로
+  expect(button().disabled).toBe(false);
+  act(() => { vi.advanceTimersByTime(3000); });
+  expect(button().textContent).toBe("타임라인 Resolve 보내기");
+});
+
+it("타임라인 Resolve 보내기: 공유 목록에서 찾지 못한 클립이 있으면 보내지 않는다 — 빼고 보내면 '그대로'가 아니다", async () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "gone", track: 1 }]);
+  world.resolveStatus = () => Promise.resolve({ status: "ready", project_id: "rp", project_name: "편집 프로젝트", message: "" });
+  mount();
+  const modal = () => document.querySelector<HTMLElement>(".ed-export");
+  await act(async () => { document.querySelector<HTMLButtonElement>(".ed-export-btn")!.click(); });
+  expect(modal()!.querySelector(".ed-export-to")!.textContent).toBe("편집 프로젝트");
+  expect(modal()!.querySelector("[role=alert]")!.textContent).toContain("공유 목록에서 찾지 못한 클립이 1개 있습니다");
+  expect(modal()!.querySelector<HTMLButtonElement>(".gradestep-btn.confirm")!.disabled).toBe(true);
+  press({ key: "Escape" }); // Esc 는 창만 닫는다 — 고른 것·재생헤드는 그대로
+  expect(modal()).toBeNull();
+  expect(timelineSent).toEqual([]);
+
+  seed([]); // 넣은 것이 없는 타임라인 — 보낼 것이 없다
+  act(() => root.unmount());
+  root = createRoot(host);
+  mount();
+  await act(async () => { document.querySelector<HTMLButtonElement>(".ed-export-btn")!.click(); });
+  expect(modal()!.querySelector("[role=alert]")!.textContent).toBe("타임라인에 넣은 클립이 없습니다.");
+  expect(modal()!.querySelector<HTMLButtonElement>(".gradestep-btn.confirm")!.disabled).toBe(true);
+  press({ key: "Escape" });
+
+  seed([{ cut: "c1", gen: "a", track: 1 }]); // 원본 전송의 조건도 본다 — 프로젝트에 배정되지 않은 생성물(시험 기본값)은 보낼 수 없다
+  act(() => root.unmount());
+  root = createRoot(host);
+  mount();
+  await act(async () => { document.querySelector<HTMLButtonElement>(".ed-export-btn")!.click(); });
+  expect(modal()!.querySelector("[role=alert]")!.textContent).toBe("먼저 선택한 결과물을 프로젝트에 배정하세요.");
+  expect(modal()!.querySelector<HTMLButtonElement>(".gradestep-btn.confirm")!.disabled).toBe(true);
 });
 
 it("왼쪽 폴더를 우클릭하면 폴더 메뉴가 뜬다 — 공유 저장 · 최종 저장은 묻고 하고, 원본 위치 열기는 바로 한다", () => {
