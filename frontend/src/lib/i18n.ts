@@ -97,6 +97,8 @@ const EN: Record<string, string> = {
   "최종 선택": "Final",
   "최종 확정을 해제합니다(공유 상태로 돌아갑니다).": "Removes the final mark (back to shared).",
   "이 생성물을 최종으로 확정합니다 — 공유 & 리뷰의 최종(★)과 같은 것입니다.": "Marks this as final — the same final (★) as in Share & Review.",
+  "공유 목록을 다시 받는 중이거나 받지 못했습니다 — 받은 뒤에 다시 눌러 주세요.":
+    "The shared list is reloading or failed to load — try again once it has loaded.",
   "최종으로 확정할 것이 없습니다.": "Nothing to mark as final.",
   "타임라인의 생성물 {count}개를 최종으로 확정할까요?": "Mark {count} item(s) on the timeline as final?",
   "· 보이는 컷의 켜진 클립 {clips}개 기준 — 이미 최종인 {finals}개는 그대로 둡니다":

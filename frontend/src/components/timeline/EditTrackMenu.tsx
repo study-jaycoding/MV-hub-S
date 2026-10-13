@@ -305,8 +305,9 @@ export function EditClipMenu({
   // 길이 조절 창을 연다(클립 하나를 눌렀을 때만 준다) — 휠 클릭과 같은 창. 휠 단추가 없는 마우스·트랙패드의 길이다.
   onTrim?: () => void;
   // 최종 선택(Jay 2026-10-13) — 이 클립들의 생성물에 최종을 줄 수 있을 때만 준다(안 주면 줄이 없다). checked = 줄 수 있는 것이
-  //  전부 최종이다(누르면 해제) · count = 누르면 바뀌는 생성물 수(여러 개일 때만 적는다)
-  final?: { checked: boolean; count: number; onToggle: () => void };
+  //  전부 최종이다(누르면 해제) · count = 누르면 바뀌는 생성물 수(여러 개일 때만 적는다) · stale = 공유 목록을 다시 받는 중이거나
+  //  받지 못했다(든 목록이 옛 것이라 흐리다 — 그 상태로 올리면 그사이 공유가 풀린 생성물을 다시 공유하게 된다)
+  final?: { checked: boolean; count: number; stale: boolean; onToggle: () => void };
   onClose: () => void;
 }) {
   const t = useT();
@@ -328,9 +329,10 @@ export function EditClipMenu({
       )}
       {final && (
         <button type="button" role="menuitemcheckbox" aria-checked={final.checked} className={"ed-tmenu-item" + (final.checked ? " ed-here" : "")}
-          title={final.checked
-            ? t("최종 확정을 해제합니다(공유 상태로 돌아갑니다).")
-            : t("이 생성물을 최종으로 확정합니다 — 공유 & 리뷰의 최종(★)과 같은 것입니다.")}
+          disabled={final.stale}
+          title={final.stale ? t("공유 목록을 다시 받는 중이거나 받지 못했습니다 — 받은 뒤에 다시 눌러 주세요.")
+            : final.checked ? t("최종 확정을 해제합니다(공유 상태로 돌아갑니다).")
+              : t("이 생성물을 최종으로 확정합니다 — 공유 & 리뷰의 최종(★)과 같은 것입니다.")}
           onClick={final.onToggle}>
           {t("최종 선택")}
           <i>{final.checked ? "✓ " : ""}{final.count > 1 ? final.count : ""}</i>

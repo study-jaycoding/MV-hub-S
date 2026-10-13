@@ -171,6 +171,33 @@ it("여러 클립을 고른 채면 고른 것 전부에 — 해제는 최종인 
   expect(applied[1]).toEqual({ ids: ["f"], action: "shared" }); // a·r 을 '공유로' 넘기면 r 의 보류가 풀린다
 });
 
+// 최종은 공유를 동반한다(서버가 공유가 없으면 같이 발행한다). 그사이 다른 창에서 공유를 푼 생성물이 옛 목록에 남아 있으면, 그것을
+//  최종으로 올리는 것은 **다시 공유하는 것**이다 — 든 목록이 옛 것임을 아는 동안은 누르지 못한다(Codex 코드 리뷰 6회째).
+it("공유 목록을 다시 받는 중·받지 못한 뒤에는 '최종 선택'을 누르지 못한다 — 옛 목록으로 넘기지 않는다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "f", track: 1 }]);
+  for (const state of ["loading", "error"]) { // 둘 다 앞서 받은 목록을 그대로 들고 있다
+    world.state = state;
+    mount();
+    openClipMenu("a");
+    expect(row("최종 선택")!.disabled).toBe(true);
+    expect(row("최종 선택")!.title).toContain("공유 목록을 다시 받는 중이거나 받지 못했습니다");
+    act(() => row("최종 선택")!.click());
+    closeMenus();
+    openClipMenu("f"); // 해제도 같다
+    expect([row("최종 선택")!.disabled, row("최종 선택")!.getAttribute("aria-checked")]).toEqual([true, "true"]);
+    act(() => row("최종 선택")!.click());
+    closeMenus();
+  }
+  expect(applied).toEqual([]);
+
+  world.state = "capped"; // 2,000건에서 잘린 목록은 받은 것이다(빈 곳 채우기와 같은 기준)
+  mount();
+  openClipMenu("a");
+  expect(row("최종 선택")!.disabled).toBe(false);
+  act(() => row("최종 선택")!.click());
+  expect(applied).toEqual([{ ids: ["a"], action: "final" }]);
+});
+
 it("'모두 최종으로 확정' — 보이는 컷의 켜진 클립만 센다. 확인 창에 숫자를 보이고, 아니오면 아무것도 넘기지 않는다", async () => {
   world.gens = [gen("a", "c1"), gen("b", "c1"), gen("n", "c1"), gen("t", "c1"), gen("f", "c2", { is_final: true }), gen("x", "c2"), gen("h", "c3")];
   denied = new Set(["n"]);
