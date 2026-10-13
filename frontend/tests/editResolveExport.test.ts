@@ -97,6 +97,34 @@ describe("buildTimelineExport", () => {
     expect(out.plan.total).toBe(288);
   });
 
+  // Jay 2026-10-14 — 길이 조절에서 앞도 자른다: 계획에 소스의 시작(head)이 실리고, 소리는 제 영상 클립의 트랙을 가리킨다.
+  it("앞을 자른 클립이 있으면 version 2 — 클립마다 head(프레임), 소리마다 track 과 시작점을 더한 offset. 없으면 version 1 그대로다", () => {
+    const clips = (head?: number) => [
+      clip("C0010", "low", 1, 8), clip("C0010", "top", 2, 5, { kind: "video", trim: 2, ...(head ? { head } : {}) }), // 위: 원본 1~3초를 쓴다
+      clip("C0020", "pic", 1, 5, { kind: "image", ...(head ? { head: 2 } : {}) }), // 그림의 head 는 뜻이 없다
+    ];
+    const doc: EditDoc = { ...emptyEditDoc(), clips: clips(1) };
+    const out = build(doc, ["C0010", "C0020"], linksOf(doc, { pic: "image" }));
+    expect(out.plan.version).toBe(2);
+    expect(out.plan.clips).toEqual([
+      { gen_id: "low", track: 1, start: 0, end: 192, enabled: true, kind: "video", head: 0 },
+      { gen_id: "top", track: 2, start: 0, end: 48, enabled: true, kind: "video", head: 24 },
+      { gen_id: "pic", track: 1, start: 192, end: 312, enabled: true, kind: "image", head: 0 },
+    ]);
+    expect(out.plan.audio).toEqual([
+      { gen_id: "top", start: 0, end: 48, offset: 1, track: 2 }, // 위 클립의 소리는 원본 1초부터
+      { gen_id: "low", start: 48, end: 192, offset: 2, track: 1 }, // 드러난 아래 클립은 컷 안 2초 = 원본 2초(앞을 안 잘랐다)
+    ]);
+    // 앞을 자른 클립이 없는 계획은 전과 한 글자도 다르지 않다 — head·track 을 싣지 않는다(옛 허브도 받는다)
+    const plain: EditDoc = { ...emptyEditDoc(), clips: clips() };
+    const before = build(plain, ["C0010", "C0020"], linksOf(plain, { pic: "image" })).plan;
+    expect(before.version).toBe(1);
+    expect(before.clips).toEqual(out.plan.clips.map((item) => ({ gen_id: item.gen_id, track: item.track, start: item.start, end: item.end, enabled: item.enabled, kind: item.kind })));
+    expect(before.audio).toEqual([{ gen_id: "top", start: 0, end: 48, offset: 0 }, { gen_id: "low", start: 48, end: 192, offset: 2 }]);
+    // 못 이은 클립만 앞을 잘랐으면(보내지 않는 클립) 2 판이 아니다
+    expect(build(doc, ["C0010", "C0020"], linksOf(doc, { pic: "image" }, ["top"])).plan.version).toBe(1);
+  });
+
   // Codex 코드 리뷰 2026-10-13: 켜진 클립이 반 프레임도 안 되는 컷(깨진 영상의 실측 길이 등)은 0프레임이다 — 그 컷의 클립은 최소 한
   //  프레임이라 다음 컷의 같은 트랙과 겹치고, 그런 계획은 받는 쪽이 거부한다. 보내기 전에 세어 막는다.
   it("한 프레임도 안 되는 컷은 따로 센다(0 이 아니면 보내지 않는다) — 보통 컷의 아주 짧은 클립은 한 프레임으로 싣는다", () => {
