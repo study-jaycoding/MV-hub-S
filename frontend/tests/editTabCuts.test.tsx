@@ -560,3 +560,26 @@ it("길이 조절 창이 떠 있는 채 다른 클립을 휠 클릭하면 창이
   press({ key: "z", code: "KeyZ", ctrlKey: true }, document.querySelector<HTMLElement>(".ed-trim")!); // 둘째 클립의 걸음만 되돌린다
   expect(trims()).toEqual([119 / 24, undefined]);
 });
+
+// Codex 코드 리뷰 6회째: 창 안에서 난 키가 창 밖으로 나가면, 편집 탭이 연 폴더 창이 떠 있을 때 라이브러리 단축키(window 의 버블 단계 —
+//  lib/useGenerationKeyboardActions)가 받아 뒤 폴더 창의 고른 카드에 색(R)·비활성(D)이 걸렸다. 그쪽은 키가 어디서 났는지 보지 않는다.
+it("길이 조절 창 안에서 난 키는 창 밖(window)의 단축키에 닿지 않는다 — 창 밖에서 난 키는 그대로 간다", () => {
+  openTrimOn("mvhub.editDoc:local:p1:e070");
+  const pop = document.querySelector<HTMLElement>(".ed-trim")!;
+  const heard: string[] = [];
+  const listen = (event: KeyboardEvent) => { heard.push(event.key); };
+  window.addEventListener("keydown", listen);
+  try {
+    const button = [...pop.querySelectorAll("button")].find((item) => item.textContent === "−1f")!;
+    press({ key: "r", code: "KeyR" }, button);
+    press({ key: "d", code: "KeyD" }, button);
+    press({ key: "Delete", code: "Delete" }, pop);
+    press({ key: "ArrowLeft", code: "ArrowLeft" }, button);
+    press({ key: "2", code: "Digit2" }, pop.querySelector(".ed-trim-num")!); // 숫자 칸에 치는 글자도 밖으로는 안 나간다
+    expect(heard).toEqual([]);
+    press({ key: "r", code: "KeyR" });
+    expect(heard).toEqual(["r"]);
+  } finally {
+    window.removeEventListener("keydown", listen);
+  }
+});

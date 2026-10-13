@@ -563,3 +563,24 @@ it("길이 조절 창이 떠 있는 동안 그 클립을 지우면 창이 닫힌
   press({ key: "z", code: "KeyZ", ctrlKey: true });
   expect([storedTracks(), document.querySelector(".ed-trim")]).toEqual([[["b", 2]], null]);
 });
+
+// Codex 코드 리뷰 6회째: 영상 정보(loadedmetadata)가 오기 전에 ▶ 를 누르면, 창을 열 때 걸어 둔 '마지막 프레임으로'가 뒤늦게 돌아 재생
+//  자리를 끝으로 옮겼다(처음부터 트는 대신 끝에서 바로 멈춤).
+it("길이 조절 창: 영상 정보가 오기 전에 재생을 눌러도 처음부터 튼다 — 뒤늦은 '마지막 프레임으로'가 끼어들지 않는다", () => {
+  world.gens = [gen("a", "c1"), gen("b", "c1", { assets: [{ id: "a-b", generation_id: "b", type: "video", file_path: "/media/b.mp4",
+    thumbnail_path: null, source_url: null, cached: true }] } as unknown as Partial<Generation>), gen("x", "c2")];
+  seed([{ cut: "c1", gen: "b", track: 2 }]);
+  mountOn("c1");
+  fire(lane(2).querySelector<HTMLElement>(".ed-clip")!, "auxclick", { button: 1, buttons: 0 });
+  const video = document.querySelector<HTMLVideoElement>(".ed-trim video")!;
+  const go = () => act(() => document.querySelector<HTMLElement>(".ed-trim .ed-trim-go")!.click());
+  // jsdom 의 video 는 정보를 받지 않는다(readyState 0 — 열 때의 '마지막 프레임으로'는 loadedmetadata 를 기다린다). 적는 값을 기록한다
+  const sets: number[] = [];
+  Object.defineProperty(video, "currentTime", { configurable: true, get: () => sets[sets.length - 1] ?? 0, set: (value: number) => { sets.push(value); } });
+  go();
+  expect(sets).toEqual([0]); // 처음부터
+  act(() => { video.dispatchEvent(new Event("loadedmetadata")); });
+  expect(sets).toEqual([0]); // 뒤늦게 온 정보가 재생 자리를 끝으로 옮기지 않는다
+  go(); // 멈추면 그 길이의 마지막 프레임(120프레임 = 119/24초)으로 돌아간다
+  expect(sets[sets.length - 1]).toBeCloseTo(119 / 24);
+});

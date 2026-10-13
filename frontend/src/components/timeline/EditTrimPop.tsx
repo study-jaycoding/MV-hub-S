@@ -81,7 +81,14 @@ export function EditTrimPop({
 
   // 큰 화면 — 재생 중이 아니면 그 길이의 마지막 프레임에 선다. 길이·클립이 바뀌면 재생을 멈춘다.
   const video = useRef<HTMLVideoElement>(null);
-  const [playing, setPlaying] = useState(false);
+  const [playing, setPlayingState] = useState(false);
+  // 재생 중인가를 ref 로도 든다 — 영상 정보(loadedmetadata)가 오기 전에 ▶ 를 누르면, 열 때 걸어 둔 '마지막 프레임으로'가 뒤늦게
+  //  돌아 재생 자리를 끝으로 옮겼다(Codex 코드 리뷰 6회째). 그 콜백이 도는 순간의 뜻을 본다.
+  const playRef = useRef(false);
+  const setPlaying = (on: boolean) => {
+    playRef.current = on;
+    setPlayingState(on);
+  };
   const last = (frames - 1) / EDIT_FPS;
   useEffect(() => {
     const element = video.current;
@@ -89,7 +96,7 @@ export function EditTrimPop({
     if (!element) return;
     element.pause();
     const seek = () => {
-      element.currentTime = last;
+      if (!playRef.current) element.currentTime = last;
     };
     if (element.readyState >= 1) seek();
     else element.addEventListener("loadedmetadata", seek, { once: true });
@@ -156,10 +163,13 @@ export function EditTrimPop({
       }} />
   );
 
+  // 창 안에서 난 키는 창 밖으로 내보내지 않는다 — 편집 키는 편집 화면 밖의 키를 안 듣지만, 편집 탭이 연 폴더 창이 떠 있으면 라이브러리
+  //  단축키(lib/useGenerationKeyboardActions — window 의 버블 단계)가 살아 있고 그쪽은 키가 어디서 났는지 보지 않는다: 창 안에서 R·D 를
+  //  누르면 뒤 폴더 창의 고른 카드에 색·비활성이 걸렸다(Codex 코드 리뷰 6회째). 전파만 막는다 — 글자 치기·Tab 같은 기본 동작은 그대로다.
   const onKeyDown = (event: ReactKeyboardEvent) => {
+    event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
-      event.stopPropagation();
       markKeyHandled(event.nativeEvent); // 뒤 화면의 Esc(선택 해제)가 같은 키를 또 쓰지 않게
       onClose();
       return;
