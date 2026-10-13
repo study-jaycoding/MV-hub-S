@@ -444,6 +444,17 @@ const EN: Record<string, string> = {
   // 공유 & 리뷰 탭 — 컷 카드 고르기·컷 정보·모아보기(2026-10-08)
   "에피소드": "Episode",
   "에피소드 밖": "Outside episodes",
+  // 에피소드 화면(리스트 줄 · 그리드 카드, 2026-10-13)
+  "열기": "Open",
+  "마지막 공유": "Last shared",
+  "대표 정한 컷": "Cuts with a cover",
+  "대표 미정": "No cover yet",
+  "이 에피소드의 컷을 모두 봅니다": "See all cuts of this episode",
+  "방금": "just now",
+  "어제": "yesterday",
+  "분 전": "m ago",
+  "시간 전": "h ago",
+  "일 전": "d ago",
   "컷 정보": "Cut info",
   "폴더 열기": "Open folder",
   "이 폴더의 창을 연다": "Open this folder's window",

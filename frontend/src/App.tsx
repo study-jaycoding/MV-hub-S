@@ -2333,6 +2333,22 @@ export default function App() {
     ) : librarySelectionBar;
 
   // 라이브러리 툴바 — 라이브러리 탭 본문과 캔버스 '폴더 보기' 창이 같은 요소를 쓴다(창에서도 워크스페이스처럼 조작).
+  // 도구 줄의 [컷별 | 전체] 전환 — 묶어 보일 수 있을 때만. 켜 둔 채로는 실제로 묶어 보이는 동안(응답을 기다리는 동안 포함 — 사라졌다 다시
+  //  나타나지 않게, ③)에만 보인다 — 하위 폴더가 없는 폴더에서는 바꿀 것이 없다.
+  const cutToggle =
+    cutScope && !folderCardsUnsupported && (cutMode || !cutView || cutPending)
+      ? {
+          on: cutView,
+          onChange: setCutView,
+          summary: cutCards
+            ? {
+                top: cutScope.parent === "",
+                folders: cutCards.folders.length,
+                items: cutCards.folders.reduce((sum, folder) => sum + folder.count, cutCards.own_count),
+              }
+            : undefined,
+        }
+      : undefined;
   const libraryToolbar = (
     <LibraryToolbar
       workspaceFilter={workspaceFilter}
@@ -2350,23 +2366,7 @@ export default function App() {
       onToggleFilters={() => setShowFilters((v) => !v)}
       count={gridGens.length}
       countMore={hasMore && !behindAfterMove}
-      // 전환 단추는 묶어 보일 수 있을 때만(창 안의 툴바에는 없다). 켜 둔 채로는 실제로 묶어 보이는 동안(응답을 기다리는 동안 포함 —
-      //  사라졌다 다시 나타나지 않게, ③)에만 보인다 — 하위 폴더가 없는 폴더에서는 바꿀 것이 없다.
-      folderCards={
-        !listPeek && cutScope && !folderCardsUnsupported && (cutMode || !cutView || cutPending)
-          ? {
-              on: cutView,
-              onChange: setCutView,
-              summary: cutCards
-                ? {
-                    top: cutScope.parent === "",
-                    folders: cutCards.folders.length,
-                    items: cutCards.folders.reduce((sum, folder) => sum + folder.count, cutCards.own_count),
-                  }
-                : undefined,
-            }
-          : undefined
-      }
+      folderCards={listPeek ? undefined : cutToggle} // 창 안의 툴바에는 전환 단추가 없다
       grayOn={grayOn}
       onToggleGray={toggleGray}
       loading={loading}
@@ -2891,12 +2891,21 @@ export default function App() {
             )}
             {/* staleList = 폴더 창을 닫은 직후 옛 첫 쪽을 먼저 보이는 중 — 새 목록이 올 때까지 조작을 막는다(낡은 카드에 삭제·공유가 걸리지 않게) */}
             <main className="main" aria-busy={listLocked || undefined} {...(listLocked ? { inert: "" } : {})}>
-              {/* 폴더 창이 떠 있으면 툴바·격자는 창에 그린다(하나뿐인 격자) — 뒤 목록 자리는 닫을 때까지 비워 둔다. */}
-              {!listPeek && libraryToolbar}
+              {/* 폴더 창이 떠 있으면 툴바·격자는 창에 그린다(하나뿐인 격자) — 뒤 목록 자리는 닫을 때까지 비워 둔다.
+                  도구 줄 자리에는 **눌리지 않는 사본**을 남긴다 — 창을 열 때 도구 줄이 사라져 뒤 화면이 위로 당겨지지 않고, 모아보기처럼
+                  뒤가 그대로 흐려 보이게(Jay 2026-10-13). 뒤 화면은 통째로 inert 다(behindInert) — 사본은 그림일 뿐이다: 창 밖에 뜨는
+                  태그 패널은 창의 툴바만 그린다. 사본을 먼저 그리므로 창의 툴바가 뒤에 온다(둘은 같은 값을 받는다 — 전환 단추만 사본에). */}
+              {listPeek ? (
+                <div className="lib-toolbar-behind" aria-hidden="true">
+                  {cloneElement(libraryToolbar, { folderCards: cutToggle, tagPanelOpen: false })}
+                </div>
+              ) : (
+                libraryToolbar
+              )}
               {/* 묶음 보기 — 격자 자리에 컷 카드. 폴더 창이 떠 있어도 뒤에 그대로 둔다(body 가 inert 라 눌리지 않는다). */}
               {cutCards ? (
                 <FolderCardGrid
-                  folders={cutCards.folders} scale={scale} fill={fill} onEnter={enterFolderCard} onOpen={openFolderCard}
+                  folders={cutCards.folders} scale={scale} fill={fill} layout={layout} onEnter={enterFolderCard} onOpen={openFolderCard}
                   top={!cutScope?.parent} selected={cutSel} onSelect={setCutSel}
                   onInfo={(folder, x, y) => {
                     if (cutScope) setCutInfo({ projectId: cutScope.projectId, path: folder.path, x, y, ctx: listPeekCtx });

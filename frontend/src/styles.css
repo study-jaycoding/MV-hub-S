@@ -1,6 +1,7 @@
 ﻿@import "./styles/base.css";
 @import "./styles/app-shell.css";
 @import "./styles/generations.css";
+@import "./styles/episode-board.css";
 @import "./styles/resolve-library.css";
 @import "./styles/project-sidebar.css";
 @import "./styles/admin-auth-compare.css";
