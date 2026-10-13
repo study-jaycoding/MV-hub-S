@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-12
+updated: 2026-10-13
 status: active
 ---
 
@@ -911,6 +911,10 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
   같은 회차의 함정 둘: **F(화면 맞춤) 뒤에는 카메라가 바뀌어 같은 화면 좌표가 다른 캔버스 좌표다** — 제자리로 되돌리려면 `canvas().style.transform`
   (`translate(x, y) scale(z)`)을 읽어 화면 좌표를 다시 계산한다(`tests/sceneDragEscape` 의 `clientAt`) · **누른 채 씬을 바꾼 뒤의 Ctrl+Z 는 mouseup 을 보내기
   전엔 막혀 있다**(`moveHeldRef` 는 mouseup·blur 로만 풀린다 — 시험이 손을 떼지 않으면 '되돌리기가 안 된다'로 오판한다).
+- ㊱ **격리 사본에는 사이드바 폴더 트리가 없다 — 폴더에 들어가려면 에피소드 컷 카드를 두 번 클릭한다**(컷 카드 ① 실측, 2026-10-13): 도구가 복사본의
+  `project_folder_link`·`render_root_path` 를 비우므로(위 "데이터") 프로젝트 줄 옆 접기 단추도 안 그려진다(`hasTree` 가 거짓). 공유 탭의 하위 폴더가 있는
+  컷 카드의 두 번 클릭은 사이드바 폴더 클릭과 같은 `enterFolderCard` 라 자리·기록·생성 위치가 같이 바뀐다. 진짜 두 번 클릭은 `clickCount` 1 의 누름·뗌 뒤
+  `clickCount` 2 의 누름·뗌(크롬이 dblclick 을 만든다). 우클릭은 `button: "right"` 의 누름·뗌이면 contextmenu 가 뗄 때 온다.
 
 캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
 - ⑤ 복사본은 프로젝트 폴더 경로를 비워, 씬 그림(`asset:` 썸네일)이 **전부 404** 다. 그림이 뜬 상태로 재려면 다음처럼 한다.
