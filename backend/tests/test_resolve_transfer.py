@@ -529,6 +529,37 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["items"][0]["filename"], "ep001_c0010_davinci_002.mp4")
         self.assertEqual((folder / "ep001_c0010_davinci_001.mp4").read_bytes(), b"x" * source.stat().st_size)
 
+    async def test_a_file_dropped_in_after_the_folder_was_listed_is_refused_not_overwritten(self):
+        """대상 폴더는 전송 한 건에 한 번만 훑는다(파일마다 훑지 않는다). 그 뒤 장부 없이 다음 번호 이름으로 놓인 파일은
+        건너뛰지 못한다 — 덮지 않고 그 건만 오류로 남기며, 나머지는 다음 번호로 간다."""
+        folder = self.render / "ep001" / "c0010"
+        folder.mkdir(parents=True)
+        dropped = folder / "ep001_c0010_davinci_002.mp4"
+        real = resolve_transfer.export_names.disk_numbers
+        listed = []
+
+        def listed_then_dropped(target, base, token):
+            found = real(target, base, token)
+            listed.append(target)
+            dropped.write_bytes(b"dropped-in-mid-transfer")
+            return found
+
+        generations = [self._generation(index, "ep001/c0010") for index in (1, 2, 3)]
+        with (
+            mock.patch.object(resolve_transfer.export_names, "disk_numbers", side_effect=listed_then_dropped),
+            mock.patch.object(resolve_transfer.time, "sleep"),
+        ):
+            result = await self._transfer(generations, "dropped")
+
+        self.assertEqual(len(listed), 1)  # 세 건을 보내도 폴더 열거는 한 번
+        self.assertEqual([item["status"] for item in result["items"]], ["downloaded", "error", "downloaded"])
+        self.assertIn("확인할 수 없는 파일", result["items"][1]["error"])
+        self.assertEqual(dropped.read_bytes(), b"dropped-in-mid-transfer")
+        self.assertEqual(
+            [result["items"][0]["filename"], result["items"][2]["filename"]],
+            ["ep001_c0010_davinci_001.mp4", "ep001_c0010_davinci_003.mp4"],
+        )
+
     async def test_a_file_at_my_name_without_a_done_mark_is_trusted_only_if_bytes_match(self):
         """장부는 이 생성물의 이름이라 하는데 확정 표식이 없다(확정 직후 끊긴 전송·남이 놓은 파일) —
         원본과 바이트가 같을 때만 그 파일을 쓰고, 다르면 덮지 않고 오류로 남긴다."""
