@@ -20,6 +20,7 @@ import { useT } from "../lib/i18n";
 import { isKeyHandled, markKeyHandled } from "../lib/keyHandled";
 import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { useOutsideDragSelect } from "../lib/useOutsideDragSelect";
+import { useStaleMultiClick } from "../lib/useStaleMultiClick";
 import { onSelectionOutsidePress } from "../lib/useGenerationSelection";
 import { matchShortcut } from "../lib/shortcuts";
 import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/windowDrag";
@@ -96,6 +97,7 @@ interface Props {
   loadError?: string | null; // 목록 첫 로드 실패 사유 — 빈 상태와 구분해 재시도 UI 를 띄운다
   loading?: boolean; // 목록을 받는 중 — 비어 있을 때 "항목이 없습니다" 대신 "불러오는 중…"(받는 중인데 없다고 말하지 않는다)
   selectLocked?: boolean; // 바깥(상단바·사이드바 여백)에서 시작하는 끌기 선택을 끈다 — 낡은 사본을 보이는 동안
+  placeKey?: string; // 지금 보여 주는 자리의 열쇠 — 바뀌면 다른 화면이다(두 번 누름의 둘째가 새 화면에 닿는 것을 버리는 근거, lib/useStaleMultiClick)
   onRetryLoad?: () => void; // 로드 실패 시 "다시 시도"
 }
 
@@ -664,6 +666,11 @@ export function ThumbnailGrid(props: Props) {
     beginDrag(e, null);
   }, !props.selectLocked);
 
+  // 컷 줄의 [폴더로]·컷 띠를 두 번 누르면 둘째 누름이 들어온 이 목록의 같은 자리 카드에 닿는다(카드가 골라지고 크게 보기가 열리거나, 그 자리의
+  //  S·T·C 단추가 눌린다) — 첫 누름 뒤로 자리가 바뀐 둘째 누름은 버린다(조작 규칙 61, lib/useStaleMultiClick). 자리의 열쇠가 없는 격자(캔버스의
+  //  '생성 결과' 창)는 '이 격자가 첫 누름을 보지 못했다'만 본다. 뿌리의 잡는 단계에서 누름부터 삼킨다 — 카드의 '새 항목 확인'(누름의 잡는
+  //  단계에서 저장한다)과 카드 끌기(프롬프트 재사용)가 그 누름으로 일어나지 않게.
+  const multiClick = useStaleMultiClick(props.placeKey ?? "");
   const onGridMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
       e.preventDefault(); // 미들클릭 자동스크롤 방지(정보는 카드 auxclick 에서)
@@ -804,6 +811,7 @@ export function ThumbnailGrid(props: Props) {
           (isList ? " as-list" : "")
         }
         tabIndex={0}
+        {...multiClick}
         onMouseDown={onGridMouseDown}
         onDoubleClick={onGridDblClick}
         onContextMenu={props.onCardMenu ? onGridContextMenu : undefined}

@@ -1616,6 +1616,106 @@ it("App 공유·리뷰: 모아보기 카드의 [폴더로] = 창을 닫고 그 �
     .toEqual(["episode", true, { projectId: "resolve-project", path: "episode" }]);
 });
 
+// 2026-10-13 저녁(Jay): 컷 카드로 묶인 상태에서 종류·작성자·태그를 누르면 묶음이 풀려 낱장이 됐다 → 찾는 조건이 켜져도 묶음은 그대로,
+//  걸러진 목록을 **따로 끝까지** 받아 화면이 묶는다. 받는 동안 낱장이 서지 않고(앞 카드 그대로 + '거르는 중…') 고른 것이 남으며, 답이 오면
+//  화면에 없는 폴더만 고른 것에서 뺀다. 회색 숨김은 다시 받지 않고 다시 묶는다. 폴더 창을 여닫아도 뒤 카드는 그대로다.
+it("App 공유·리뷰: 찾는 조건을 켜도 묶음이 풀리지 않는다 — 걸러진 목록을 끝까지 받아 묶고, 받는 동안 낱장이 서지 않으며 고른 것이 남는다", { timeout: 20_000 }, async () => {
+  const at = (id: string, folder: string, extra: Partial<Generation> = {}): Generation => ({ ...withAsset(id), folder_path: folder, sort_ts: 1, ...extra } as Generation);
+  const waiting: Array<(rows: Generation[]) => void> = [];
+  // 안 거른 조회(옛 서버의 빈 칸을 채우려고 받는다)는 바로, 종류를 건 조회는 붙잡아 둔다
+  const listGenerations = vi.fn((query: GenQuery) => (query.media_type
+    ? new Promise<Generation[]>((resolve) => { waiting.push(resolve); })
+    : Promise.resolve([at("o1", "episode/other"), at("s1", "episode/shot", { is_final: true }), at("s2", "episode/shot")])));
+  localStorage.setItem("ch.lib.cutView", "1");
+  await mountTeamFolder({ folderCards: byParent(() => false), setFolderCover: vi.fn(), listGenerations });
+  const names = () => [...(cutGrid()?.querySelectorAll(".cut-tab > span") ?? [])].map((name) => name.textContent);
+  const picked = () => [...document.querySelectorAll('main.main .cut-card[aria-pressed="true"]')].map((tile) => tile.querySelector(".cut-tab > span")!.textContent);
+  const pick = (name: string, init: MouseEventInit = {}) => {
+    act(() => { cutTile(name).dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, ...init })); });
+    act(() => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); });
+  };
+  expect([names(), toolbarSnapshot!.folderCards!.summary]).toEqual([["other", "shot"], { top: false, folders: 2, items: 9, note: undefined }]);
+  // 옛 공유 서버(카드에 새 집계 칸이 없다) — 그 자리의 목록을 따로 끝까지 받아 없는 칸을 채운다. 건수·표지는 서버 것 그대로
+  expect(listGenerations.mock.calls.map((call) => [call[0].folder_path, call[0].media_type ?? null, call[2]])).toEqual([["episode", null, 500]]);
+  pick("other");
+  pick("shot", { ctrlKey: true });
+  expect(picked()).toEqual(["other", "shot"]);
+
+  // 종류 = 영상 — 받는 동안: 묶음 그대로(안 거른 카드), 낱장 격자는 서지 않는다, 도구 줄이 '거르는 중…', 고른 것도 남는다
+  act(() => toolbarSnapshot!.onTypeFilter("video"));
+  await settle();
+  expect([names(), gridOutputs().length, toolbarSnapshot!.folderCards!.summary!.note, picked(), waiting.length])
+    .toEqual([["other", "shot"], 0, "거르는 중…", ["other", "shot"], 1]);
+  // 답 — shot 에만 둘. 걸러진 것으로 묶이고, 화면에 없는 폴더(other)만 고른 것에서 빠진다
+  await act(async () => { waiting[0]([at("v1", "episode/shot"), at("v2", "episode/shot"), at("mine", "episode")]); });
+  await settle();
+  expect([names(), gridOutputs().length, toolbarSnapshot!.folderCards!.summary, picked()])
+    .toEqual([["shot"], 0, { top: false, folders: 1, items: 3, note: undefined }, ["shot"]]);
+  expect(cutGrid()!.querySelector(".cut-tab > b")!.textContent).toBe("2"); // 건수는 걸러진 수
+  expect(cutGrid()!.querySelector(".cut-out-count")!.textContent).toBe("컷 밖 1건");
+  // 전환 단추는 걸러 보는 중에도 그대로다(전엔 사라졌다)
+  expect(toolbarSnapshot!.folderCards!.on).toBe(true);
+
+  // 회색 숨김 — 이 PC 에만 있는 조건: 다시 받지 않고 받은 것 위에서 다시 묶는다
+  const calls = listGenerations.mock.calls.length;
+  act(() => toolbarSnapshot!.onToggleGray!());
+  await settle();
+  expect([names(), listGenerations.mock.calls.length - calls]).toEqual([["shot"], 0]);
+  act(() => toolbarSnapshot!.onToggleGray!());
+  await settle();
+
+  // 폴더 창을 열고 닫아도 뒤의 걸러진 카드는 그대로다(목록 훅의 목록은 창이 빌려 가지만, 묶음의 자료는 따로 받는다)
+  act(() => { cutTile("shot").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
+  await settle();
+  expect([peekWindow() !== null, names()]).toEqual([true, ["shot"]]);
+  pressEscapeInPeek();
+  await settle();
+  expect([peekWindow(), names()]).toEqual([null, ["shot"]]);
+
+  // 조건을 풀면 서버 카드로 돌아온다(걸러진 건수가 남지 않는다)
+  act(() => toolbarSnapshot!.onTypeFilter("all"));
+  await settle();
+  expect([names(), toolbarSnapshot!.folderCards!.summary]).toEqual([["other", "shot"], { top: false, folders: 2, items: 9, note: undefined }]);
+});
+
+// 걸러 보는 중의 경계(Codex 코드 리뷰) — 받지 못하면 그렇다고 알린다(앞 카드가 완료처럼 보이지 않게) · 상한에서 잘리면 '최근 2000건 기준'.
+it("App 공유·리뷰: 걸러 받지 못하면 '걸러 보기 실패', 상한에서 잘리면 '최근 2000건 기준' — 어느 때도 낱장이 서지 않는다", { timeout: 20_000 }, async () => {
+  let serial = 0;
+  const many = () => Array.from({ length: 500 }, () => {
+    serial += 1;
+    return { ...withAsset("m" + serial), folder_path: "episode/shot", sort_ts: 100_000 - serial } as Generation;
+  });
+  const listGenerations = vi.fn(async (query: GenQuery) => {
+    if (query.media_type === "video") throw new Error("502: 공유 서버 연결 실패");
+    return query.media_type === "image" ? many() : [];
+  });
+  localStorage.setItem("ch.lib.cutView", "1");
+  await mountTeamFolder({ folderCards: byParent(() => false), setFolderCover: vi.fn(), listGenerations });
+  const names = () => [...(cutGrid()?.querySelectorAll(".cut-tab > span") ?? [])].map((name) => name.textContent);
+  act(() => toolbarSnapshot!.onTypeFilter("video"));
+  await settle();
+  await settle();
+  expect([names(), gridOutputs().length, toolbarSnapshot!.folderCards!.summary!.note]).toEqual([["other", "shot"], 0, "걸러 보기 실패"]);
+  // 다른 조건 — 2000건(4쪽)에서 잘린다
+  act(() => toolbarSnapshot!.onTypeFilter("image"));
+  for (let round = 0; round < 6; round++) await settle();
+  expect(listGenerations.mock.calls.filter((call) => call[0].media_type === "image")).toHaveLength(4);
+  expect([names(), gridOutputs().length, toolbarSnapshot!.folderCards!.summary]).toEqual([["shot"], 0, { top: false, folders: 1, items: 2000, note: "최근 2000건 기준" }]);
+});
+
+// 옛 공유 서버(폴더 카드 경로 자체가 없다)는 걸러 보는 중에도 전처럼 한 장씩이다 — 목록에서 묶는 것은 서버 카드(구조·대표)를 알 때만 한다.
+it("App 공유·리뷰: 폴더 카드 경로가 없는 옛 서버는 찾는 조건을 켜도 낱장 그대로 — 걸러 받기를 보내지 않는다", { timeout: 20_000 }, async () => {
+  const { HttpError } = await import("../src/lib/http");
+  const missing = vi.fn().mockRejectedValue(new HttpError(404, "404: Not Found", "Not Found"));
+  const listGenerations = vi.fn(async () => []);
+  localStorage.setItem("ch.lib.cutView", "1");
+  await mountTeamFolder({ folderCards: missing, setFolderCover: vi.fn(), listGenerations });
+  await settle();
+  act(() => toolbarSnapshot!.onTypeFilter("video"));
+  await settle();
+  expect([cutGrid(), gridOutputs().length, toolbarSnapshot!.folderCards, listGenerations.mock.calls.length]).toEqual([null, 1, undefined, 0]);
+});
+
 // 2026-10-13 ③(Jay): 사이드바로 폴더를 옮기면 묶음 응답이 오기 전에 낱장 격자(옛 폴더의 카드)가 한 번 보였다가 컷 카드로 바뀌었다 → 응답 전엔 격자 자리를
 //  비운다(전환 단추는 그동안 남는다). 조회가 실패하면 낱장으로 돌아간다(영영 빈 화면이 아니다).
 it("App 공유·리뷰: 폴더를 옮기면 묶음 응답 전엔 낱장 격자를 그리지 않는다 — 오면 컷 카드(잎이면 낱장), 실패하면 낱장", { timeout: 20_000 }, async () => {
@@ -1733,12 +1833,13 @@ it("App 공유·리뷰: 자리를 옮긴 뒤 새 목록 전에는 옛 자리의 
   act(() => { setLibraryGens([at("a", "episode/shot")]); setListBehind(false); }); // A 의 목록이 왔다
   await settle();
   expect([busy(), shown(), main().hasAttribute("inert")]).toEqual([null, ["a"], false]);
-  // ② 다른 폴더로 옮기고 기다리는 사이 검색어를 쳤다 — 묶어 보이지 않게 돼 옛 목록이 그려지지만, 새 목록이 올 때까지 잠겨 있다
+  // ② 다른 폴더로 옮기고 기다리는 사이 검색어를 쳤다 — 찾는 조건이 켜져도 묶음 보기의 자리다(2026-10-13 저녁: 걸러도 묶음이 풀리지 않는다).
+  //  새 목록이 올 때까지 옛 자리의 카드를 그리지도 누르게 두지도 않는다(전엔 묶음 조건이 풀려 옛 목록이 잠긴 채 그려졌다)
   act(() => { sidebarSnapshot!.onChange({ folder_path: "episode/other" }); setListBehind(true); });
   await settle();
   act(() => { sidebarSnapshot!.onChange({ search: "cat" }); });
   await settle();
-  expect([shown(), main().hasAttribute("inert"), gridSnapshot!.selectLocked, gridSnapshot!.hasMore]).toEqual([["a"], true, true, false]);
+  expect([busy() !== null, gridOutputs().length, main().hasAttribute("inert")]).toEqual([true, 0, true]);
   act(() => { setLibraryGens([at("found", "episode/other")]); setListBehind(false); });
   await settle();
   expect([shown(), main().hasAttribute("inert"), gridSnapshot!.selectLocked]).toEqual([["found"], false, false]);

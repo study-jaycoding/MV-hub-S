@@ -9,7 +9,7 @@ const folderCardsApi = vi.hoisted(() => vi.fn());
 vi.mock("../src/api", () => ({ api: { folderCards: folderCardsApi, thumbOrRaw: (path: string) => path } }));
 
 import { FolderCardGrid } from "../src/components/FolderCardGrid";
-import { folderCardsScope, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "../src/lib/folderCards";
+import { folderCardsPlace, folderCardsScope, hasFindFilters, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "../src/lib/folderCards";
 import { HttpError } from "../src/lib/http";
 import { forgetFolderCards, useFolderCards } from "../src/lib/useFolderCards";
 
@@ -40,6 +40,27 @@ it("묶어 보일 수 있는 조회 — 공유 탭에서 프로젝트(또는 그
   ];
   for (const change of flat) expect([change, folderCardsScope({ ...base, ...change }, false)]).toEqual([change, null]);
   expect(folderCardsScope(base, true)).toBeNull(); // 회색 숨김은 이 PC 에만 있는 조건이라 서버가 못 센다
+});
+
+// 2026-10-13 저녁(Jay): 묶인 상태에서 태그·작성자·종류를 눌러도 묶음이 풀리지 않게 — '자리'와 '찾는 조건'을 가른다.
+//  찾는 조건이 켜져 있어도 자리는 자리다(그때는 걸러진 목록을 화면이 직접 묶는다). 공간 조건·휴지통만 자리를 없앤다.
+it("묶어 보일 자리 — 찾는 조건이 켜져 있어도 자리는 그대로, 자리가 아닌 것은 공유 탭 밖·프로젝트 없음·휴지통·서버가 못 거르는 공간 조건", () => {
+  const finds: Partial<GenQuery>[] = [
+    { search: "cat" }, { creator_uid: "u" }, { worker_id: "w" }, { share_dir: "mine" }, { local_only: true }, { color: "r" }, { tag: "x" },
+    { media_type: "video" }, { review_filter: "held" }, { shared_only: true }, { comment_only: true }, { final_only: true },
+    { colors: ["r"] }, { tags: ["x"] }, { auto_tags: ["y"] },
+  ];
+  for (const change of finds) {
+    const query = { ...base, ...change };
+    expect([change, folderCardsPlace(query), hasFindFilters(query, false)]).toEqual([change, { projectId: "p1", parent: "e035" }, true]);
+  }
+  expect([hasFindFilters(base, false), hasFindFilters(base, true)]).toEqual([false, true]); // 회색 숨김도 찾는 조건
+  expect(hasFindFilters({ ...base, workspace_ids: ["ws-1"] }, false)).toBe(false); // 팀 공간 하나는 자리의 일부(서버가 같은 식으로 거른다)
+  const noPlace: Partial<GenQuery>[] = [
+    { tab: "my" }, { project_id: undefined }, { project_id: "none" }, { include_deleted: true }, { deleted_only: true },
+    { workspace_ids: ["ws-1", "ws-2"] }, { workspace_scope: "personal" },
+  ];
+  for (const change of noPlace) expect([change, folderCardsPlace({ ...base, ...change })]).toEqual([change, null]);
 });
 
 it("부모 폴더와 팀 공간 하나", () => {
@@ -522,6 +543,50 @@ it("에피소드 화면: 위에 뜬 메뉴를 닫는 누름은 카드 안 단추
   act(() => enter.click());
   expect(entered).toEqual(["e035/C0010", "e035"]);
   act(() => owner.unmount());
+});
+
+// 조작 규칙 61(33회차): 브라우저는 연속 누름 수를 시간·거리로만 센다 — 줄 안의 [열기]를 습관대로 두 번 누르면 둘째 누름(detail 2)이 들어간
+//  화면의 **같은 자리**에 mousedown·click·dblclick 으로 닿는다(헤드리스 크롬 실측). 리스트에서는 그 자리가 컷 줄의 [폴더로]라 두 단계를
+//  들어갔고, 줄의 몸통이면 그 컷이 골라지고 모아보기가 열렸다. 첫 누름 뒤로 자리가 바뀐 둘째 누름은 버린다.
+it("두 번 누름: 첫 누름([열기])이 자리를 옮기면 둘째 누름은 들어간 화면에서 아무 일도 하지 않는다 — 같은 자리의 두 번 클릭은 그대로", () => {
+  const entered: string[] = [];
+  const reels: string[][] = [];
+  let selected = new Set<string>();
+  const episode: FolderCard = { ...card("e035", 14), path: "e035", subfolders: 2, children: [] };
+  const cuts: FolderCard[] = [{ ...card("C0010", 3), subfolders: 0 }, { ...card("C0020", 5), subfolders: 0 }];
+  let screen: { place: string; folders: FolderCard[]; top: boolean } = { place: "p1", folders: [episode], top: true };
+  const draw = () => act(() => root.render(
+    <FolderCardGrid {...gridProps} layout="list" folders={screen.folders} top={screen.top} placeKey={screen.place} selected={selected}
+      onSelect={(next) => { selected = next; draw(); }} onEnter={(folder) => entered.push(folder.path)} onReel={(paths) => reels.push(paths)} outside={0} />,
+  ));
+  draw();
+  const enter = () => host.querySelector<HTMLButtonElement>(".ep-enter")!; // 맨 위 줄의 단추 — 에피소드 줄은 [열기], 컷 줄은 [폴더로]
+  const body = () => host.querySelector<HTMLElement>('.cut-card[data-path="e035/C0010"] .ep-name')!;
+  // 브라우저의 순서 그대로: mousedown → mouseup → click, 둘째 누름이면 dblclick 까지
+  const press = (el: HTMLElement, detail: number) => {
+    mouse("mousedown", el, { detail });
+    mouse("mouseup", window, { detail });
+    mouse("click", el, { detail });
+    if (detail === 2) mouse("dblclick", el, { detail });
+  };
+
+  press(enter(), 1); // 첫 누름 — 에피소드로 들어간다
+  expect(entered).toEqual(["e035"]);
+  screen = { place: "p1/e035", folders: cuts, top: false }; // 들어간 화면 — 같은 자리에 컷 줄이 서 있다
+  draw();
+  expect(enter().textContent).toContain("폴더로");
+  press(enter(), 2); // 둘째 누름이 그 자리의 [폴더로]에 닿는다
+  expect(entered).toEqual(["e035"]); // 두 단계를 들어가지 않는다
+  press(body(), 2); // 줄의 몸통에 닿은 경우 — 고르지도, 모아보기를 열지도 않는다
+  expect([[...selected], reels]).toEqual([[], []]);
+
+  // 이 화면에서 새로 시작한 누름은 전과 같다: 한 번 = 고르기 · 같은 줄을 두 번 = 모아보기 · [폴더로] = 들어가기
+  press(body(), 1);
+  expect([...selected]).toEqual(["e035/C0010"]);
+  press(body(), 2);
+  expect(reels).toEqual([["e035/C0010"]]);
+  press(enter(), 1);
+  expect(entered).toEqual(["e035", "e035/C0010"]);
 });
 
 // 2026-10-13 오후(Jay): 컷 화면도 리스트를 누르면 다르게 — 한 번 = 프로젝트 화면과 같은 줄(띠에는 그 컷의 생성물), 한 번 더(table) = 표.

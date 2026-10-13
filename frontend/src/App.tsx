@@ -145,7 +145,10 @@ import type {
 import type { EditCardMenu, EditCutFolder } from "./components/timeline/EditTab";
 import { api } from "./api";
 import { FolderCardGrid } from "./components/FolderCardGrid";
-import { folderCardsScope, folderUnder, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "./lib/folderCards";
+import { folderCardsPlace, folderUnder, hasFindFilters, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "./lib/folderCards";
+import { fillFolderCards, groupGenerations, lacksCounts } from "./lib/folderCardsLocal";
+import { FETCH_ALL_MAX } from "./lib/fetchAllGenerations";
+import { useLocalFolderCards } from "./lib/useLocalFolderCards";
 import { useFolderCards } from "./lib/useFolderCards";
 import { CutInfoPopup } from "./components/CutInfoPopup";
 import { CutReel, type ReelMode } from "./components/CutReel";
@@ -541,8 +544,12 @@ export default function App() {
   //  대표(팀이 같이 보는 값 — 공유 서버가 권위)를 정한다. 묶어 보일 수 있는 조회인지는 lib/folderCards 가 정한다(무엇을 찾는 조건이 켜져
   //  있으면 지금처럼 한 장씩).
   //  ponytail: 묶어 보이는 동안에도 본 목록(한 장씩)은 지금처럼 받는다 — 그 요청까지 줄이려면 목록 훅에 '목록 끄기'가 필요하다.
+  //  **찾는 조건(종류·작성자·태그·색·검색·회색 숨김…)이 켜져 있어도 묶음은 풀리지 않는다**(Jay 2026-10-13 저녁 — 전엔 조건이 하나라도 켜지면
+  //  낱장이 됐다). 그때는 서버 카드(그 폴더의 전부를 센다) 대신 걸러진 목록을 따로 끝까지 받아 화면이 직접 묶는다(lib/useLocalFolderCards ·
+  //  lib/folderCardsLocal). cutScope 는 '자리'(프로젝트·폴더·공간)다 — 찾는 조건과 무관하다.
   const [cutView, setCutViewState] = useState(() => LS.get("cutView", "1") === "1");
-  const cutScope = useMemo(() => folderCardsScope(genQuery, grayOn), [genQuery, grayOn]);
+  const cutScope = useMemo(() => folderCardsPlace(genQuery), [genQuery]);
+  const cutFiltered = cutScope !== null && hasFindFilters(genQuery, grayOn);
   // 창이 떠 있으면 그 폴더의 부모를 받는다 — 그 폴더의 지금 대표를 알려고. 컷 카드로 연 창이면 뒤의 묶음과 같은 요청이다.
   const cardsScope = useMemo<FolderCardsScope | null>(() => {
     if (filters.tab !== "team" || !authReady || !workspaceQueryReady) return null;
@@ -554,13 +561,54 @@ export default function App() {
   const { cards: folderCards, unsupported: folderCardsUnsupported, loading: folderCardsLoading, reload: reloadFolderCards } = useFolderCards({
     scope: cardsScope, authKey: libraryAuthKey, reloadKey: listRevision,
   });
-  // 본문에 그릴 묶음 — 받아 온 카드가 '지금 고른 폴더'의 것이고 하위 폴더가 하나라도 있을 때만. 창이 떠 있어도 뒤에 그대로 둔다.
-  const cutCards =
-    cutView && cutScope && cardsScope && folderCards && folderCards.folders.length > 0 &&
+  // 지금 고른 자리의 서버 카드(안 거른 것) — 어느 폴더가 묶음인지·팀이 정한 대표가 무엇인지의 근거다.
+  const baseHere =
+    cutView && cutScope && cardsScope && folderCards &&
     cardsScope.projectId === cutScope.projectId && cardsScope.parent === cutScope.parent &&
     cardsScope.workspaceId === cutScope.workspaceId
       ? folderCards
       : null;
+  // 목록에서 직접 묶을 때 — ① 걸러 보는 중(서버는 걸러진 범위를 못 센다) ② 옛 공유 서버(새 집계 칸이 없다 — 그 칸만 목록에서 세어 채운다).
+  //  자료는 본 목록 훅의 것이 아니라 따로 끝까지 받는다(그 목록은 첫 쪽으로 줄고 폴더 창에 빌려 준다). 본 목록은 '바뀜 신호'로만 쓴다 —
+  //  지금 조회의 것일 때만(창·사본·옛 조회·위치 주입의 목록은 신호가 아니다). 옛 서버(경로 없음)는 전처럼 묶지 않는다.
+  //  옛 서버 채우기는 그 자리의 전부를 받을 수 있을 때만(상한 안) — 잘린 목록으로 센 값은 서버 건수와 어긋난다.
+  const fillable = baseHere !== null && lacksCounts(baseHere)
+    && baseHere.folders.reduce((sum, folder) => sum + folder.count, baseHere.own_count) <= FETCH_ALL_MAX;
+  const localWanted = cutView && cutScope !== null && filters.tab === "team" && authReady && workspaceQueryReady && !folderCardsUnsupported
+    && (cutFiltered || fillable);
+  //  신호 = 첫 쪽의 내용 서명(객체가 아니라 내용 — 폴더 창을 닫으며 목록 훅이 만드는 사본 배열에 다시 받지 않게) + 서버 카드 객체.
+  const listSig = useMemo(() => gens.map((g) => `${g.id}${g.is_final ? "f" : ""}${g.is_held ? "h" : ""}`).join(","), [gens]);
+  const local = useLocalFolderCards({
+    place: localWanted ? cutScope : null, query: genQuery, authKey: libraryAuthKey,
+    listSig: !listPeek && !staleList && !listBehind && !isLocatedView ? listSig : null, base: baseHere,
+  });
+  // 회색 숨김·비활성은 받은 것 위에서 다시 거른다(다시 받지 않는다 — 낱장 격자의 gridGens 와 같은 식).
+  const localVisible = useMemo(
+    () => local.gens && filterDisabledGenerations(local.gens, expandDisabledGenerationIds(local.gens, disabledGen, disabledFolders), grayOn),
+    [local.gens, disabledGen, disabledFolders, grayOn],
+  );
+  //  서버 카드를 알기 전에는 묶지 않는다 — 하위 폴더 수(구조)를 모른 채 묶으면 에피소드가 잠깐 '컷'으로 보여 두 번 클릭이 들어가기 대신
+  //  모아보기를 연다(Codex 코드 리뷰). 그동안은 서버 카드를 기다리는 빈 자리(cutLoading)다.
+  const localCards = useMemo(
+    () => (localVisible && cutScope && baseHere ? groupGenerations(localVisible, cutScope.projectId, cutScope.parent, baseHere) : null),
+    [localVisible, cutScope, baseHere],
+  );
+  // 본문에 그릴 묶음 — 하위 폴더가 하나라도 있을 때만. 창이 떠 있어도 뒤에 그대로 둔다.
+  //  · 걸러 보는 중: 걸러진 목록을 묶은 것. 지금 조회의 답이 아직이면 같은 자리의 앞 결과(local 이 쥐고 있다)를, 그것도 없으면(막 켰다) 안 거른
+  //    서버 카드를 그대로 둔다 — **같은 자리에서 조건만 바뀌는 동안 묶음이 null 이 되면 안 된다**: 낱장이 번쩍이고 고른 것이 지워진다(규칙 55).
+  //    도구 줄이 '거르는 중…'을 알린다(cutFiltering).
+  //  · 옛 서버: 서버 카드 그대로 두고, 목록을 끝까지 받았으면(잘리지 않았을 때만) 없는 칸을 채운다.
+  const cutFiltering = cutFiltered && localWanted && !local.fresh && local.loading; // 지금 조회로 거른 답을 아직 모른다
+  const shownCards = useMemo(() => {
+    if (cutFiltered) {
+      if (local.fresh) return localCards; // 지금 조회의 답 — 묶을 폴더가 없으면 낱장
+      // 받는 중·받지 못함 — 같은 자리의 앞 결과를, 그것이 없거나 묶을 것이 없었으면 안 거른 서버 카드를 그대로 둔다
+      return localCards && localCards.folders.length > 0 ? localCards : baseHere;
+    }
+    if (baseHere && fillable && localCards && local.fresh && !local.truncated) return fillFolderCards(baseHere, localCards);
+    return baseHere;
+  }, [cutFiltered, localCards, baseHere, fillable, local.fresh, local.truncated]);
+  const cutCards = shownCards && shownCards.folders.length > 0 ? shownCards : null;
   const cutMode = cutCards !== null;
   // ── 폴더를 옮기는 동안(Jay 2026-10-13 ③ 깜빡임 → "아직 딜레이") ──
   //  묶음 보기에서 자리(프로젝트·폴더)를 옮기면 서버 답 둘(묶음·목록)이 오기 전의 화면이 문제다. 낱장 격자는 옛 자리의 목록을 들고 있어
@@ -661,6 +709,15 @@ export default function App() {
     () => (cutCards ? cutCards.folders.filter((folder) => cutSel.has(folder.path)) : []),
     [cutCards, cutSel],
   );
+  // 걸러 본 답이 끝까지 온 순간, 화면에 없는 폴더는 고른 것에서 뺀다(검색으로 가려진 카드를 선택에서 빼는 규칙과 같게) — 안 빼면 조건을 풀 때
+  //  안 보이던 선택이 되살아난다. 받는 중(앞 결과·안 거른 카드를 보이는 동안)에는 빼지 않는다.
+  useEffect(() => {
+    if (!cutFiltered || !local.fresh || !cutCards) return;
+    setCutSel((previous) => {
+      const kept = [...previous].filter((path) => cutCards.folders.some((folder) => folder.path === path));
+      return kept.length === previous.size ? previous : new Set(kept);
+    });
+  }, [cutFiltered, local.fresh, cutCards]);
   const cutInfoFolder = cutInfo && cutInfo.ctx === listPeekCtx && cutScope?.projectId === cutInfo.projectId
     ? cutCards?.folders.find((folder) => folder.path === cutInfo.path) ?? null
     : null;
@@ -1240,7 +1297,10 @@ export default function App() {
   //  컷 → 형제 컷 동안 에피소드의 것이 남아, 형제 컷으로 옮길 때도 거기서 고른다. 문맥(계정·서버·공간·프로젝트)이 다르면 쓰지 않는다.
   //  ponytail: 하나뿐이라 새로 고친 뒤 컷에서 형제 컷으로 바로 가면 고를 것이 없다(목록 응답을 기다린다) — 에피소드를 한 번 보면 채워진다.
   const widePoolRef = useRef<{ ctx: string; folder: string; gens: Generation[] } | null>(null);
-  const poolCtx = cutScope ? JSON.stringify([libraryAuthKey, cutScope.workspaceId ?? null, cutScope.projectId]) : null;
+  //  찾는 조건도 문맥이다 — 조건이 켜진 채 받은 첫 쪽(걸러진 것)을 조건을 끈 뒤의 자리에 먼저 그리지 않는다(반대도). 자리(프로젝트·폴더)만 뺀 조회 전체.
+  const poolCtx = cutScope
+    ? JSON.stringify([libraryAuthKey, cutScope.workspaceId ?? null, cutScope.projectId, { ...genQuery, project_id: undefined, folder_path: undefined }, grayOn])
+    : null;
   useEffect(() => {
     if (!cutMode || !cutScope || poolCtx === null || listPeek || listBehind || staleList || isLocatedView || loadError) return;
     widePoolRef.current = { ctx: poolCtx, folder: cutScope.parent, gens };
@@ -2345,6 +2405,11 @@ export default function App() {
                 top: cutScope.parent === "",
                 folders: cutCards.folders.length,
                 items: cutCards.folders.reduce((sum, folder) => sum + folder.count, cutCards.own_count),
+                // 걸러 보는 중 — 답을 받는 동안(앞 결과·안 거른 카드를 보이는 중) '거르는 중…', 상한에서 잘렸으면 '최근 N건 기준'
+                //  받지 못했으면 그렇다고 알린다 — 화면의 카드는 앞 조건의 것이거나 안 거른 것이다(완료처럼 보이면 안 된다, Codex 코드 리뷰)
+                note: cutFiltering ? t("거르는 중…")
+                  : cutFiltered && local.failed ? t("걸러 보기 실패")
+                  : cutFiltered && local.fresh && local.truncated ? `${t("최근")} ${FETCH_ALL_MAX}${t("건 기준")}` : undefined,
               }
             : undefined,
         }
@@ -2420,6 +2485,8 @@ export default function App() {
           //  카드의 클릭·키는 <main inert> 가, 바깥에서 시작하는 끌기 선택과 그 결과는 여기서 막는다. 선택은 닫을 때 비웠고
           //  새로 생길 길이 이 둘뿐이라, 선택 막대·전역 단축키(선택이 있어야 움직인다)는 따로 막지 않아도 된다.
           selectLocked={listLocked}
+          // 두 번 누름의 둘째가 '첫 누름으로 바뀐 화면'의 카드에 닿는 것을 버린다(조작 규칙 61) — 자리, 또는 그 위에 뜬 폴더 창이 화면이다
+          placeKey={listPeek ? `peek:${listPeek.projectId ?? ""}:${listPeek.path}` : hereKey}
           loading={loading}
           onSelectedChange={(next) => {
             if (listLocked) return;
@@ -2910,6 +2977,7 @@ export default function App() {
                 <FolderCardGrid
                   folders={cutCards.folders} scale={scale} fill={fill} layout={layout} onEnter={enterFolderCard} onOpen={openFolderCard}
                   table={groupByDate} onPreview={openPreview} // 리스트 단추 한 번 더(낱장 목록의 '날짜별 구분' 자리) = 표 · 컷 줄의 생성물 띠 = 크게 보기
+                  placeKey={hereKey} // 두 번 누름의 둘째가 들어간 화면에 닿는 것을 버린다(조작 규칙 61)
                   top={!cutScope?.parent} selected={cutSel} onSelect={setCutSel}
                   onInfo={(folder, x, y) => {
                     if (cutScope) setCutInfo({ projectId: cutScope.projectId, path: folder.path, x, y, ctx: listPeekCtx });
