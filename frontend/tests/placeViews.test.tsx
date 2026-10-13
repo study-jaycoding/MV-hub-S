@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 // 자리(탭·프로젝트·폴더)마다 마지막으로 본 모양 — 리스트/그리드와 '리스트 한 번 더'(Jay 2026-10-13 저녁: "각 폴더별로 내가 봤던 게 리스트인지
-// 그리드인지도 기억하게 한다"). 순수 계산(lib/placeViews)과 훅의 배선(lib/useLibraryFilters).
+// 그리드인지도 기억하게 한다"). 순수 계산(lib/placeViews)과 훅(lib/usePlaceView). App 의 배선(폴더 창이 떠 있으면 그 창의 폴더가 보는 폴더)은
+// tests/resolveSelectionRender.test.tsx 가 본다.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { PLACE_VIEWS_KEY, parsePlaceViews, placeViewKey, withPlaceView, type PlaceViews } from "../src/lib/placeViews";
 import type { Store } from "../src/lib/storage";
-import { useLibraryFilters } from "../src/lib/useLibraryFilters";
-import { FILTERS_FORMAT_KEY, FILTERS_KEY } from "../src/lib/useLibraryPersistence";
+import { usePlaceView } from "../src/lib/usePlaceView";
 
 describe("lib/placeViews — 순수", () => {
   it("자리의 열쇠는 탭·프로젝트·폴더다 — 휴지통·찾는 조건은 같은 자리의 다른 보기", () => {
@@ -46,107 +46,114 @@ function fakeStore(data: Record<string, string>): Store {
   };
 }
 
-let host: HTMLDivElement;
-let root: Root;
-let latest: ReturnType<typeof useLibraryFilters>;
-let store: Store;
-let data: Record<string, string>;
-const seen: string[] = []; // 렌더마다의 [폴더, 모양] — 자리를 옮긴 첫 렌더가 옛 모양으로 그려지지 않는지 본다
-function Probe() {
-  latest = useLibraryFilters(store);
-  seen.push(`${latest.filters.folder_path ?? "-"}:${latest.layout}${latest.groupByDate ? "+" : ""}`);
-  return null;
+// 창 하나 = 훅 하나. 같은 저장소(data)를 두 창이 같이 쓸 수 있다.
+interface Win {
+  host: HTMLDivElement; root: Root; place: string; latest: ReturnType<typeof usePlaceView>; seen: string[]; draw: () => void;
 }
-const render = () => act(() => root.render(<Probe />));
-const go = (folder: string | undefined) => act(() => latest.patch({ folder_path: folder }));
-const view = () => `${latest.layout}${latest.groupByDate ? "+" : ""}`;
-const mount = () => {
-  host = document.createElement("div");
+let data: Record<string, string>;
+const wins: Win[] = [];
+function open(place: string): Win {
+  const store = fakeStore(data);
+  const host = document.createElement("div");
   document.body.appendChild(host);
-  root = createRoot(host);
-  render();
-};
-const unmount = () => {
-  act(() => root.unmount());
-  host.remove();
-};
+  const win = { host, root: createRoot(host), place, seen: [] as string[] } as Win;
+  function Probe() {
+    win.latest = usePlaceView(store, win.place);
+    win.seen.push(`${win.place}:${win.latest.layout}${win.latest.groupByDate ? "+" : ""}`); // 렌더마다 — 자리를 옮긴 첫 렌더를 본다
+    return null;
+  }
+  win.draw = () => act(() => win.root.render(<Probe />));
+  win.draw();
+  wins.push(win);
+  return win;
+}
+const go = (win: Win, place: string) => { win.place = place; win.draw(); };
+const view = (win: Win) => `${win.latest.layout}${win.latest.groupByDate ? "+" : ""}`;
+const close = (win: Win) => { act(() => win.root.unmount()); win.host.remove(); wins.splice(wins.indexOf(win), 1); };
 
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  data = { [FILTERS_KEY]: JSON.stringify({ tab: "my", project_id: "p1", folder_path: "e035", [FILTERS_FORMAT_KEY]: "2" }) };
-  store = fakeStore(data);
-  seen.length = 0;
-  mount();
+  data = {};
 });
-afterEach(unmount);
+afterEach(() => { for (const win of [...wins]) close(win); });
 
-describe("자리마다 본 모양(useLibraryFilters)", () => {
+describe("자리마다 본 모양(usePlaceView)", () => {
   it("폴더마다 따로 기억한다 — 처음 들어간 폴더는 방금 보던 모양을 물려받고, 본 폴더는 그때 본 모양 그대로", () => {
-    expect(view()).toBe("grid");
-    act(() => latest.setLayout("list")); // e035 = 리스트
-    expect(view()).toBe("list");
-    go("e040"); // 처음 들어간 폴더 — 방금 보던 리스트를 물려받는다
-    expect(view()).toBe("list");
-    act(() => latest.setLayout("grid")); // e040 만 그리드로
-    go("e035");
-    expect(view()).toBe("list"); // e035 는 본 그대로
-    go("e040");
-    expect(view()).toBe("grid");
-    go("e050"); // 처음 — 방금 보던 것(e040 의 그리드)
-    expect(view()).toBe("grid");
-    go("e035");
-    go("e060"); // 처음 — 방금 보던 것(e035 의 리스트). 마지막으로 **누른** 모양(그리드)이 아니다
-    expect(view()).toBe("list");
+    const win = open("e035");
+    expect(view(win)).toBe("grid");
+    act(() => win.latest.setLayout("list")); // e035 = 리스트
+    expect(view(win)).toBe("list");
+    go(win, "e040"); // 처음 들어간 폴더 — 방금 보던 리스트를 물려받는다
+    expect(view(win)).toBe("list");
+    act(() => win.latest.setLayout("grid")); // e040 만 그리드로
+    go(win, "e035");
+    expect(view(win)).toBe("list"); // e035 는 본 그대로
+    go(win, "e040");
+    expect(view(win)).toBe("grid");
+    go(win, "e050"); // 처음 — 방금 보던 것(e040 의 그리드)
+    expect(view(win)).toBe("grid");
+    go(win, "e035");
+    go(win, "e060"); // 처음 — 방금 보던 것(e035 의 리스트). 마지막으로 **누른** 모양(그리드)이 아니다
+    expect(view(win)).toBe("list");
     // 본 폴더는 그 뒤 다른 폴더에서 모양을 바꿔도 그대로다(e050 은 그리드로 본 폴더)
-    act(() => latest.setLayout("grid")); // e060 을 그리드로
-    go("e050");
-    expect(view()).toBe("grid");
-    go("e060");
-    act(() => latest.setLayout("list"));
-    go("e050");
-    expect(view()).toBe("grid");
+    go(win, "e050");
+    expect(view(win)).toBe("grid");
+    go(win, "e060");
+    act(() => win.latest.setLayout("grid"));
+    act(() => win.latest.setLayout("list"));
+    go(win, "e050");
+    expect(view(win)).toBe("grid");
   });
 
   it("'리스트 한 번 더'(날짜별 구분·표)도 자리마다다", () => {
-    act(() => latest.setLayout("list"));
-    act(() => latest.setGroupByDate((on) => !on)); // e035 = 리스트 + 한 번 더
-    expect(view()).toBe("list+");
-    go("e040");
-    act(() => latest.setGroupByDate(false)); // e040 은 끈다
-    expect(view()).toBe("list");
-    go("e035");
-    expect(view()).toBe("list+");
+    const win = open("e035");
+    act(() => win.latest.setLayout("list"));
+    act(() => win.latest.setGroupByDate((on) => !on)); // e035 = 리스트 + 한 번 더
+    expect(view(win)).toBe("list+");
+    go(win, "e040");
+    act(() => win.latest.setGroupByDate(false)); // e040 은 끈다
+    expect(view(win)).toBe("list");
+    go(win, "e035");
+    expect(view(win)).toBe("list+");
   });
 
   it("자리를 옮긴 첫 렌더부터 그 자리의 모양이다 — 옛 자리의 모양으로 한 번 그려지지 않는다", () => {
-    act(() => latest.setLayout("list"));
-    go("e040");
-    act(() => latest.setLayout("grid"));
-    seen.length = 0;
-    go("e035");
-    expect(seen.filter((line) => line.startsWith("e035:"))).toEqual(expect.arrayContaining(["e035:list"]));
-    expect(seen).not.toContain("e035:grid");
-    seen.length = 0;
-    go("e040");
-    expect(seen).not.toContain("e040:list");
+    const win = open("e035");
+    act(() => win.latest.setLayout("list"));
+    go(win, "e040");
+    act(() => win.latest.setLayout("grid"));
+    win.seen.length = 0;
+    go(win, "e035");
+    expect(win.seen).toContain("e035:list");
+    expect(win.seen).not.toContain("e035:grid");
+    win.seen.length = 0;
+    go(win, "e040");
+    expect(win.seen).not.toContain("e040:list");
   });
 
-  it("이 브라우저에 남는다 — 다시 켜도 폴더마다 그대로, 탭이 다르면 다른 자리다", () => {
-    act(() => latest.setLayout("list"));
-    go("e040");
-    act(() => latest.setLayout("grid"));
-    expect(parsePlaceViews(JSON.parse(data[PLACE_VIEWS_KEY]))).toMatchObject({
-      '["my","p1","e035"]': { layout: "list", group: false }, '["my","p1","e040"]': { layout: "grid", group: false },
-    });
-    unmount();
-    store = fakeStore(data); // 새로 켠 앱 — 저장된 것만 남아 있다
-    mount();
-    expect([latest.filters.folder_path, view()]).toEqual(["e040", "grid"]);
-    go("e035");
-    expect(view()).toBe("list");
-    act(() => latest.patch({ tab: "team" })); // 같은 폴더의 공유 탭 — 처음 보는 자리(방금 보던 리스트를 물려받아 적힌다)
-    act(() => latest.setLayout("grid"));
-    act(() => latest.patch({ tab: "my" }));
-    expect(view()).toBe("list");
+  it("이 브라우저에 남는다 — 다시 켜도 폴더마다 그대로, 방금 보던 모양은 전과 같은 저장 키에", () => {
+    const win = open("e035");
+    act(() => win.latest.setLayout("list"));
+    go(win, "e040");
+    act(() => win.latest.setLayout("grid"));
+    act(() => win.latest.setGroupByDate(true));
+    expect(parsePlaceViews(JSON.parse(data[PLACE_VIEWS_KEY]))).toEqual({ e035: { layout: "list", group: false }, e040: { layout: "grid", group: true } });
+    expect([data.layout, data.groupByDate]).toEqual(["grid", "1"]); // 처음 들어가는 자리가 물려받을 '방금 보던 모양'
+    close(win);
+    const again = open("e040"); // 새로 켠 앱 — 저장된 것만 남아 있다
+    expect(view(again)).toBe("grid+");
+    go(again, "e035");
+    expect(view(again)).toBe("list");
+  });
+
+  // Codex 코드 리뷰: 창마다 자기 사본을 통째로 저장해, 다른 창이 그사이 적은 **다른 폴더**의 기억을 지웠다.
+  it("두 창이 같은 저장소를 쓴다 — 한 창이 적어도 다른 창이 적은 다른 폴더의 기억을 덮지 않는다", () => {
+    const a = open("e035");
+    const b = open("e040"); // 둘 다 켜진 뒤(둘 다 e035·e040 을 그리드로 알고 있다)
+    act(() => a.latest.setLayout("list")); // 창 A: e035 = 리스트
+    act(() => b.latest.setGroupByDate(true)); // 창 B: e040 = 한 번 더 — B 의 사본에는 A 의 변경이 없다
+    expect(parsePlaceViews(JSON.parse(data[PLACE_VIEWS_KEY]))).toEqual({ e035: { layout: "list", group: false }, e040: { layout: "grid", group: true } });
+    go(b, "e035"); // B 도 그 폴더에 가면 A 가 적은 모양을 본다(적을 때 최신 저장을 읽어 왔다)
+    expect(view(b)).toBe("list");
   });
 });

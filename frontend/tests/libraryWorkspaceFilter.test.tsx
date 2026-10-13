@@ -109,8 +109,6 @@ function persistenceProbe(store: Store, filters: { tab: "my"; workspace_ids?: st
       filters,
       finalOnly: false,
       grayOn: false,
-      groupByDate: false,
-      layout: "grid",
       sharedOnly: false,
       showFilters: true,
       store,

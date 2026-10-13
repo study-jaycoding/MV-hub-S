@@ -144,6 +144,8 @@ import { folderCardsPlace, folderUnder, hasFindFilters, parentFolder, singleTeam
 import { fillFolderCards, groupGenerations, lacksCounts } from "./lib/folderCardsLocal";
 import { FETCH_ALL_MAX } from "./lib/fetchAllGenerations";
 import { useLocalFolderCards } from "./lib/useLocalFolderCards";
+import { placeViewKey } from "./lib/placeViews";
+import { usePlaceView } from "./lib/usePlaceView";
 import { useFolderCards } from "./lib/useFolderCards";
 import { CutInfoPopup } from "./components/CutInfoPopup";
 import { CutReel, type ReelMode } from "./components/CutReel";
@@ -184,8 +186,8 @@ export default function App() {
   // 라이브러리 필터/뷰 상태 + genQuery/selectionResetKey 파생 + LS 저장(useLibraryPersistence)은 useLibraryFilters 훅으로 추출.
   const {
     filters, setFilters, patch, restoreLocation, restoredLocationRef, teamScopeKey, teamAutoReady,
-    typeFilter, setTypeFilter, scale, setScale, fill, setFill, layout, setLayout,
-    showFilters, setShowFilters, groupByDate, setGroupByDate, colorFilter, setColorFilter,
+    typeFilter, setTypeFilter, scale, setScale, fill, setFill,
+    showFilters, setShowFilters, colorFilter, setColorFilter,
     sharedOnly, setSharedOnly, reviewFilter, setReviewFilter, tagFilter, setTagFilter, tagPanelOpen, setTagPanelOpen,
     commentOnly, setCommentOnly, finalOnly, setFinalOnly, grayOn, setGrayOn,
     armedAutoTags, setArmedAutoTags, armedFolder, setArmedFolder,
@@ -463,6 +465,11 @@ export default function App() {
   const listPeek = folderWindow && folderWindow.ctx === listPeekCtx ? folderWindow : null;
   const listPeekRef = useRef(listPeek);
   listPeekRef.current = listPeek;
+  // 모양(리스트/그리드 · 리스트 한 번 더)은 **보는 폴더**마다 기억한다(Jay 2026-10-13 저녁 — lib/usePlaceView). 폴더 창이 떠 있으면 그 창의 폴더가
+  //  보는 폴더다: 창 안에서 바꾼 모양은 그 폴더 것으로 적히고, 닫으면 뒤 화면은 제 모양 그대로다(뒤 폴더에 적히지 않는다 — Codex 코드 리뷰).
+  const { layout, setLayout, groupByDate, setGroupByDate } = usePlaceView(LS, placeViewKey(
+    listPeek ? { tab: filters.tab, project_id: listPeek.projectId ?? undefined, folder_path: listPeek.path } : filters,
+  ));
   const listGenQuery = useMemo(() => (listPeek ? folderPeekQuery(genQuery, listPeek) : genQuery), [genQuery, listPeek]);
   // 창의 격자는 열 때마다 새로 마운트되므로 nonce 는 고정값이면 된다(한 번 열 때 한 번만 이동).
   const listPeekScroll = useMemo(

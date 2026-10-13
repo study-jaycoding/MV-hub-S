@@ -1519,6 +1519,44 @@ it("App 공유·리뷰: 찾는 조건을 켜도 묶음이 풀리지 않는다 �
   expect([names(), toolbarSnapshot!.folderCards!.summary]).toEqual([["other", "shot"], { top: false, folders: 2, items: 9, note: undefined }]);
 });
 
+// 2026-10-13 저녁(Jay): "각 폴더별로 내가 봤던 게 리스트인지 그리드인지도 기억하게 한다." 모양은 **보는 폴더**의 것이다 — 폴더 창이 떠 있으면 그 창의
+//  폴더. 처음엔 창 안에서 바꾼 모양이 뒤 화면의 폴더에 적혀, 창을 닫으면 뒤 화면까지 바뀌었다(Codex 코드 리뷰).
+it("App 공유·리뷰: 모양은 보는 폴더마다 기억한다 — 폴더 창 안에서 바꾼 모양은 그 폴더 것이고, 닫으면 뒤 화면은 제 모양 그대로다", { timeout: 20_000 }, async () => {
+  localStorage.setItem("ch.lib.cutView", "1");
+  await mountTeamFolder({ folderCards: byParent(() => false), setFolderCover: vi.fn() });
+  const openWindow = async (name: string) => {
+    act(() => { cutTile(name).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
+    await settle();
+  };
+  const closeWindow = async () => { pressEscapeInPeek(); await settle(); };
+  const stored = () => JSON.parse(localStorage.getItem("ch.lib.placeViews") ?? "{}") as Record<string, { layout: string; group: boolean }>;
+  const key = (folder: string) => JSON.stringify(["team", "resolve-project", folder]);
+  expect(toolbarSnapshot!.layout).toBe("grid");
+
+  await openWindow("shot"); // 처음 보는 폴더 — 방금 보던 그리드를 물려받는다
+  expect([peekWindow() !== null, toolbarSnapshot!.layout, gridSnapshot!.layout]).toEqual([true, "grid", "grid"]);
+  act(() => toolbarSnapshot!.onLayout("list")); // 창 안에서 리스트로
+  await settle();
+  expect([toolbarSnapshot!.layout, gridSnapshot!.layout]).toEqual(["list", "list"]);
+  await closeWindow();
+  expect([peekWindow(), toolbarSnapshot!.layout]).toEqual([null, "grid"]); // 뒤 화면(episode)은 그대로다
+  expect([stored()[key("episode")], stored()[key("episode/shot")]]).toEqual([{ layout: "grid", group: false }, { layout: "list", group: false }]);
+
+  await openWindow("other"); // 다른 폴더의 창 — 방금 보던 것(뒤 화면의 그리드)을 물려받는다
+  expect(gridSnapshot!.layout).toBe("grid");
+  await closeWindow();
+  await openWindow("shot"); // 다시 연 그 폴더는 본 모양 그대로
+  expect([toolbarSnapshot!.layout, gridSnapshot!.layout]).toEqual(["list", "list"]);
+  await closeWindow();
+  // 그 폴더로 들어가도(창이 아니라 자리로) 같은 폴더다 — 리스트
+  act(() => sidebarSnapshot!.onChange({ folder_path: "episode/shot" }));
+  await settle();
+  expect(toolbarSnapshot!.layout).toBe("list");
+  act(() => sidebarSnapshot!.onChange({ folder_path: "episode" }));
+  await settle();
+  expect(toolbarSnapshot!.layout).toBe("grid");
+});
+
 // 걸러 보는 중의 경계(Codex 코드 리뷰) — 받지 못하면 그렇다고 알린다(앞 카드가 완료처럼 보이지 않게) · 상한에서 잘리면 '최근 2000건 기준'.
 it("App 공유·리뷰: 걸러 받지 못하면 '걸러 보기 실패', 상한에서 잘리면 '최근 2000건 기준' — 어느 때도 낱장이 서지 않는다", { timeout: 20_000 }, async () => {
   let serial = 0;
