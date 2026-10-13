@@ -1,0 +1,797 @@
+"""타임라인 Resolve 보내기 — 계획 검증(순수)과 새 타임라인 짓기(가짜 Resolve).
+
+가짜는 2026-10-09 실측(Resolve Studio 21.1.1)에서 잰 규칙대로 군다: endFrame 끝 미포함 · recordFrame 절대 좌표 ·
+소스 fps → 타임라인 길이 환산 · 겹치면 잘라 넣고도 참 · 스틸은 5초 · 잠근 트랙엔 못 넣음 · 마커는 프레임마다 하나 ·
+CreateEmptyTimeline 이 현재 타임라인을 바꾼다 · 타임라인 fps 를 바꾸면 시작 프레임도 바뀐다.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import copy
+import io
+import json
+import subprocess
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from fastapi import HTTPException, Request
+
+from app.routers import resolve_integration
+from app.services import resolve_status_runner, resolve_timeline, resolve_timeline_worker
+from app.services.resolve_bridge import _normal_path
+from app.services.resolve_timeline import TimelinePlanError, build_timeline, validate_plan
+
+FPS = 24
+COLORS = set(resolve_timeline.MARKER_COLORS)
+
+
+class FakeClip:
+    def __init__(self, path: str, *, fps: float = 24.0, frames: int = 240, audio: int = 2, still: bool = False):
+        self.path = path
+        self.fps, self.frames, self.audio, self.still = fps, (1 if still else frames), (0 if still else audio), still
+
+    def GetClipProperty(self, key=None):
+        props = {
+            "File Path": self.path, "FPS": self.fps, "Frames": str(self.frames), "Audio Ch": str(self.audio),
+            "Type": "Still" if self.still else ("Video + Audio" if self.audio else "Video"),
+        }
+        return props.get(key, "") if key else props
+
+
+class FakeFolder:
+    def __init__(self, name: str):
+        self.name, self.children, self.clips = name, [], []
+
+    def GetName(self):
+        return self.name
+
+    def GetUniqueId(self):
+        return f"folder-{id(self)}"
+
+    def GetSubFolderList(self):
+        return self.children
+
+    def GetClipList(self):
+        return self.clips
+
+    def child(self, name: str) -> "FakeFolder":
+        found = next((item for item in self.children if item.name == name), None)
+        if found is None:
+            found = FakeFolder(name)
+            self.children.append(found)
+        return found
+
+
+class FakeItem:
+    def __init__(self, clip: FakeClip, start: int, duration: int, left: int):
+        self.clip, self.start, self.duration, self.left, self.enabled = clip, start, duration, left, True
+        self.enable_result = True
+
+    def GetStart(self, _sub=False):
+        return float(self.start)
+
+    def GetDuration(self, _sub=False):
+        return float(self.duration)
+
+    def GetLeftOffset(self, _sub=False):
+        return float(self.left)
+
+    def SetClipEnabled(self, enabled):
+        if self.enable_result:
+            self.enabled = enabled
+        return self.enable_result
+
+
+class FakeTimeline:
+    def __init__(self, name: str, fps: float):
+        self.name, self.unique_id = name, f"timeline-{name}"
+        self.settings = {"timelineFrameRate": fps, "useCustomSettings": "0"}
+        self.video: list[list[FakeItem]] = [[]]
+        self.audio: list[list[FakeItem]] = [[]]
+        self.video_off: set[int] = set()
+        self.audio_off: set[int] = set()
+        self.locked: set[int] = set()
+        self.markers: dict[int, dict] = {}
+        self.mark = None
+        self.fps_settable = True
+        self.lock_result = True
+
+    def GetName(self):
+        return self.name
+
+    def GetUniqueId(self):
+        return self.unique_id
+
+    def GetSetting(self, key):
+        return self.settings.get(key, "")
+
+    def SetSetting(self, key, value):
+        if key == "timelineFrameRate":
+            if self.settings["useCustomSettings"] != "1" or not self.fps_settable:
+                return False
+            self.settings[key] = float(value)
+            return True
+        self.settings[key] = value
+        return True
+
+    def GetStartFrame(self):
+        return int(round(3600 * self.settings["timelineFrameRate"]))  # 01:00:00:00
+
+    def GetTrackCount(self, kind):
+        return len(self.video if kind == "video" else self.audio)
+
+    def AddTrack(self, kind, _sub=None):
+        (self.video if kind == "video" else self.audio).append([])
+        return True
+
+    def GetItemListInTrack(self, kind, index):
+        return sorted((self.video if kind == "video" else self.audio)[index - 1], key=lambda item: item.start)
+
+    def SetTrackEnable(self, kind, index, enabled):
+        target = self.video_off if kind == "video" else self.audio_off
+        (target.discard if enabled else target.add)(index)
+        return True
+
+    def SetTrackLock(self, kind, index, locked):
+        if not self.lock_result:
+            return False
+        (self.locked.add if locked else self.locked.discard)(index)
+        return True
+
+    def AddMarker(self, frame, color, name, note, duration, custom=None):
+        if frame in self.markers or color not in COLORS:
+            return False
+        self.markers[frame] = {"color": color, "name": name, "duration": duration}
+        return True
+
+    def SetMarkInOut(self, mark_in, mark_out, kind=None):
+        self.mark = (mark_in, mark_out, kind)
+        return True
+
+
+class FakeMediaPool:
+    def __init__(self, project: "FakeProject"):
+        self.project = project
+        self.root = FakeFolder("Master")
+        self.current = self.root
+        self.timeline_folders: dict[str, FakeFolder] = {}
+        self.append_calls: list[list[dict]] = []
+        self.before_append = None  # 넣기 직전에 끼어드는 사용자 조작 흉내
+
+    def GetRootFolder(self):
+        return self.root
+
+    def GetCurrentFolder(self):
+        return self.current
+
+    def SetCurrentFolder(self, folder):
+        self.current = folder
+        return True
+
+    def RefreshFolders(self):
+        return True
+
+    def CreateEmptyTimeline(self, name):
+        if any(timeline.name == name for timeline in self.project.timelines):
+            return None
+        timeline = FakeTimeline(name, self.project.fps)
+        timeline.fps_settable = self.project.timeline_fps_settable
+        self.project.timelines.append(timeline)
+        self.project.current_timeline = timeline  # 스스로 현재 타임라인을 바꾼다(실측)
+        self.timeline_folders[name] = self.current
+        return timeline
+
+    def AppendToTimeline(self, infos):
+        self.append_calls.append(list(infos))
+        timeline = self.project.current_timeline  # 늘 '현재' 타임라인에 넣는다
+        placed = []
+        for info in infos:
+            clip: FakeClip = info["mediaPoolItem"]
+            track = info.get("trackIndex", 1)
+            first = int(info.get("startFrame", 0))
+            if clip.still:
+                duration = 5 * round(timeline.settings["timelineFrameRate"])  # 준 길이를 무시한다
+            else:
+                frames = int(info.get("endFrame", clip.frames)) - first  # 끝 미포함
+                if frames <= 0:
+                    continue
+                duration = round(frames / clip.fps * timeline.settings["timelineFrameRate"])
+            start, end = int(info["recordFrame"]), int(info["recordFrame"]) + duration
+            kinds = {1: ["video"], 2: ["audio"]}.get(info.get("mediaType"), ["video", "audio"])
+            ok = False
+            for kind in kinds:
+                index = track if kind == "video" else 1
+                if kind == "video" and index in timeline.locked:
+                    continue
+                lane = (timeline.video if kind == "video" else timeline.audio)[index - 1]
+                # 겹치면 빈 자리만큼만 잘라 넣는다 — 그래도 참을 돌려준다
+                free_start, free_end = start, end
+                for other in sorted(lane, key=lambda item: item.start):
+                    if other.start <= free_start < other.start + other.duration:
+                        free_start = other.start + other.duration
+                    elif free_start < other.start < free_end:
+                        free_end = other.start
+                if free_end > free_start:
+                    lane.append(FakeItem(clip, free_start, free_end - free_start, first + (free_start - start)))
+                    ok = True
+            if ok:
+                placed.append(True)
+        return placed
+
+
+class FakeProject:
+    def __init__(self, name: str = "임시 테스트", unique_id: str = "resolve-project-1", fps: float = 24.0):
+        self.name, self.unique_id, self.fps = name, unique_id, fps
+        self.timelines: list[FakeTimeline] = []
+        self.current_timeline = None
+        self.timeline_fps_settable = True
+        self.media_pool = FakeMediaPool(self)
+
+    def GetName(self):
+        return self.name
+
+    def GetUniqueId(self):
+        return self.unique_id
+
+    def GetMediaPool(self):
+        return self.media_pool
+
+    def GetTimelineCount(self):
+        return len(self.timelines)
+
+    def GetTimelineByIndex(self, index):
+        return self.timelines[index - 1] if 1 <= index <= len(self.timelines) else None
+
+    def GetCurrentTimeline(self):
+        return self.current_timeline
+
+    def SetCurrentTimeline(self, timeline):
+        self.current_timeline = timeline
+        return True
+
+
+class FakeProjectManager:
+    def __init__(self, project: FakeProject):
+        self.project, self.saved, self.save_result = project, 0, True
+
+    def GetCurrentProject(self):
+        return self.project
+
+    def SaveProject(self):
+        self.saved += 1
+        return self.save_result
+
+
+class FakeResolve:
+    def __init__(self, manager: FakeProjectManager):
+        self.manager = manager
+
+    def GetProjectManager(self):
+        return self.manager
+
+
+def clip(gen_id, track, start, end, *, enabled=True, kind="video"):
+    return {"gen_id": gen_id, "track": track, "start": start, "end": end, "enabled": enabled, "kind": kind}
+
+
+def plan(clips, *, audio=(), markers=(), mark=None, tracks=3, off=(), locked=(), muted=False, name="뻘뻘뻘_e035"):
+    return {
+        "format": "mvhub.edit-timeline", "version": 1, "name": name, "fps": 24, "video_tracks": tracks,
+        "tracks_off": list(off), "tracks_locked": list(locked), "muted": muted,
+        "clips": list(clips), "audio": list(audio), "markers": list(markers), "mark": mark,
+        "total": max((item["end"] for item in clips), default=0),
+    }
+
+
+class ValidatePlanTests(unittest.TestCase):
+    IDS = {"a", "b"}
+
+    def ok(self, **changes):
+        base = plan([clip("a", 1, 0, 120), clip("b", 2, 0, 96)], audio=[{"gen_id": "b", "start": 0, "end": 96, "offset": 0}])
+        base.update(changes)
+        return validate_plan(base, self.IDS)
+
+    def bad(self, **changes):
+        with self.assertRaises(TimelinePlanError):
+            self.ok(**changes)
+
+    def test_normalizes_a_valid_plan(self):
+        out = self.ok(
+            tracks_off=[3, 3], tracks_locked=[2], name="A/B:C  이름",
+            markers=[{"frame": 12, "color": "Red", "name": "하나"}, {"frame": 12, "color": "Blue", "name": "같은 프레임"}],
+            mark={"in": 0, "out": 48},
+        )
+        self.assertEqual(out["name"], "A B C  이름")
+        self.assertEqual((out["tracks_off"], out["tracks_locked"]), ([3], [2]))
+        self.assertEqual(out["markers"], [{"frame": 12, "color": "Red", "name": "하나"}])  # 프레임마다 하나 — 먼저 온 것
+        self.assertEqual(out["mark"], {"in": 0, "out": 48})
+        self.assertEqual(resolve_timeline.plan_generation_ids(out), ["a", "b"])
+
+    def test_rejects_wrong_shape_before_anything_is_prepared(self):
+        self.bad(format="mvhub.resolve-transfer")
+        self.bad(version=2)
+        self.bad(fps=25)
+        self.bad(fps=True)
+        self.bad(name="  ")
+        self.bad(video_tracks=0)
+        self.bad(video_tracks=999)
+        self.bad(clips=[])
+        self.bad(clips="nope")
+        self.bad(muted=1)
+        self.bad(tracks_off=[9])
+        self.bad(total=-1)
+
+    def test_rejects_untrusted_clip_values(self):
+        self.bad(clips=[clip("stranger", 1, 0, 10)])  # 이 요청이 보내는 생성물이 아니다
+        self.bad(clips=[clip("a", 4, 0, 10)])  # 없는 트랙
+        self.bad(clips=[clip("a", 1, 10, 10)])  # 길이 0
+        self.bad(clips=[clip("a", 1, -1, 10)])
+        self.bad(clips=[clip("a", 1, 0, 10**9)])  # 거대한 프레임
+        self.bad(clips=[clip("a", 1, True, 10)])  # bool 은 프레임이 아니다
+        self.bad(clips=[clip("a", 1, 0.5, 10)])
+        self.bad(clips=[clip("a", 1, 0, 10, enabled="yes")])
+        self.bad(clips=[clip("a", 1, 0, 10, kind="audio")])
+        self.bad(clips=[clip("a", 1, 0, 100), clip("b", 1, 99, 200)])  # 같은 트랙의 겹침
+        self.ok(clips=[clip("a", 1, 0, 100), clip("b", 1, 100, 200)])  # 맞닿는 것은 겹침이 아니다
+        self.ok(clips=[clip("a", 1, 0, 100), clip("b", 2, 50, 200)])  # 다른 트랙
+
+    def test_rejects_untrusted_audio_markers_and_marks(self):
+        self.bad(audio=[{"gen_id": "a", "start": 0, "end": 10, "offset": float("nan")}])
+        self.bad(audio=[{"gen_id": "a", "start": 0, "end": 10, "offset": -1}])
+        self.bad(audio=[{"gen_id": "a", "start": 0, "end": 10, "offset": True}])
+        self.bad(audio=[{"gen_id": "a", "start": 0, "end": 50, "offset": 0}, {"gen_id": "b", "start": 49, "end": 90, "offset": 0}])
+        self.bad(audio=[{"gen_id": "nope", "start": 0, "end": 10, "offset": 0}])
+        self.bad(markers=[{"frame": 1, "color": "Orange", "name": ""}])
+        self.bad(markers=[{"frame": -1, "color": "Red", "name": ""}])
+        self.bad(markers=[{"frame": 1, "color": "Red", "name": 5}])
+        self.bad(mark={"in": 10, "out": 10})
+        self.bad(mark="all")
+
+
+class BuildTimelineTests(unittest.TestCase):
+    def setUp(self):
+        self.project = FakeProject()
+        self.pool = self.project.media_pool
+        self.manager = FakeProjectManager(self.project)
+        self.resolve = FakeResolve(self.manager)
+        self.user_folder = self.pool.root.child("사용자 폴더")
+        self.pool.current = self.user_folder
+        self.items: list[dict] = []
+        self.managed = self.pool.root.child("MV Hub").child("프로젝트_테스트")
+
+    def add(self, gen_id: str, folder: str = "e035/C0010", **clip_kwargs) -> FakeClip:
+        """가져오기가 끝난 상태 — manifest 항목과 그 Bin 의 클립."""
+        path = str(Path("D:/render") / folder / f"{gen_id}.mp4")
+        target = self.managed
+        for part in folder.split("/"):
+            target = target.child(part)
+        made = FakeClip(path, **clip_kwargs)
+        target.clips.append(made)
+        self.items.append({"generation_id": gen_id, "folder_path": folder, "local_path": path, "filename": f"{gen_id}.mp4", "status": "skipped"})
+        return made
+
+    def manifest(self, **more):
+        return {"project_id": "p1", "project_name": "프로젝트/테스트", "items": self.items,
+                "resolve_target": {"project_id": "resolve-project-1", "project_name": "임시 테스트"}, **more}
+
+    def build(self, raw_plan, **more):
+        checked = validate_plan(copy.deepcopy(raw_plan), {item["generation_id"] for item in self.items})
+        return build_timeline(self.manifest(**more), checked, resolve=self.resolve)
+
+    def lane(self, timeline, kind, index):
+        base = timeline.GetStartFrame()
+        return [(item.clip.path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1], item.start - base, item.duration, item.left)
+                for item in timeline.GetItemListInTrack(kind, index)]
+
+    def test_builds_the_layout_frame_for_frame(self):
+        self.add("low", frames=144)
+        self.add("top", frames=96)
+        self.add("third", "e035/C0030", frames=240)
+        self.add("pal", "e035/C0040", fps=25.0, frames=125)  # 25fps 5초 → 타임라인 120프레임
+        self.add("still", "e035/C0050", still=True)
+        self.add("mute", "e035/C0060", frames=120, audio=0)
+        result = self.build(plan(
+            [clip("low", 1, 0, 144), clip("top", 2, 0, 96), clip("third", 1, 264, 504),  # 144~264 는 빈 컷
+             clip("pal", 1, 504, 624), clip("still", 1, 624, 744, kind="image"), clip("mute", 3, 744, 864, enabled=False)],
+            audio=[{"gen_id": "top", "start": 0, "end": 96, "offset": 0}, {"gen_id": "low", "start": 96, "end": 144, "offset": 4},
+                   {"gen_id": "third", "start": 264, "end": 504, "offset": 0}, {"gen_id": "pal", "start": 504, "end": 624, "offset": 0},
+                   {"gen_id": "mute", "start": 744, "end": 864, "offset": 0}],
+            markers=[{"frame": 12, "color": "Blue", "name": "첫 표시"}, {"frame": 264, "color": "Red", "name": ""}],
+            mark={"in": 264, "out": 504}, off=[3], locked=[2], muted=True,
+        ))
+        self.assertEqual((result["status"], result["error"], result["mismatches"], result["warnings"]), ("complete", None, [], []))
+        timeline = self.project.timelines[0]
+        self.assertEqual((result["timeline_name"], result["timeline_id"]), ("뻘뻘뻘_e035", timeline.unique_id))
+        self.assertEqual(self.lane(timeline, "video", 1), [
+            ("low.mp4", 0, 144, 0), ("third.mp4", 264, 240, 0), ("pal.mp4", 504, 120, 0), ("still.mp4", 624, 120, 0),
+        ])
+        self.assertEqual(self.lane(timeline, "video", 2), [("top.mp4", 0, 96, 0)])
+        self.assertEqual(self.lane(timeline, "video", 3), [("mute.mp4", 744, 120, 0)])
+        # 소리 = 보이는 영상 하나의 것. 아래 클립은 소스의 4초(96프레임)부터, 소리 없는 영상은 넣지 않는다
+        self.assertEqual(self.lane(timeline, "audio", 1), [
+            ("top.mp4", 0, 96, 0), ("low.mp4", 96, 48, 96), ("third.mp4", 264, 240, 0), ("pal.mp4", 504, 120, 0),
+        ])
+        self.assertEqual((result["video"], result["audio"]), (6, 4))
+        # recordFrame 은 절대 좌표, endFrame 은 소스 프레임(끝 미포함)
+        first = self.pool.append_calls[0][0]
+        self.assertEqual((first["recordFrame"], first["startFrame"], first["endFrame"], first["mediaType"], first["trackIndex"]), (86400, 0, 144, 1, 1))
+        pal = next(info for call in self.pool.append_calls for info in call if info["mediaPoolItem"].path.endswith("pal.mp4") and info["mediaType"] == 1)
+        self.assertEqual(pal["endFrame"], 125)
+        # 끈 클립·끈 트랙·소리 끔·잠금(맨 끝)·북마크·인/아웃(out 은 포함 프레임)
+        self.assertFalse(timeline.GetItemListInTrack("video", 3)[0].enabled)
+        self.assertEqual((timeline.video_off, timeline.audio_off, timeline.locked), ({3}, {1}, {2}))
+        self.assertEqual(timeline.markers, {12: {"color": "Blue", "name": "첫 표시", "duration": 1}, 264: {"color": "Red", "name": "", "duration": 1}})
+        self.assertEqual(timeline.mark, (264, 503, "all"))
+        self.assertEqual((result["markers_added"], result["markers_skipped"], result["mark"], result["saved"]), (2, 0, True, True))
+        # 타임라인은 MV Hub/<프로젝트> Bin 에, 현재 Bin 은 원래대로, 새 타임라인은 현재 타임라인으로 남는다
+        self.assertIs(self.pool.timeline_folders["뻘뻘뻘_e035"], self.managed)
+        self.assertIs(self.pool.current, self.user_folder)
+        self.assertIs(self.project.current_timeline, timeline)
+        self.assertEqual(self.manager.saved, 1)
+
+    def test_a_second_send_makes_another_timeline(self):
+        self.add("a", frames=120)
+        raw = plan([clip("a", 1, 0, 120)], tracks=1)
+        self.assertEqual(self.build(raw)["timeline_name"], "뻘뻘뻘_e035")
+        self.assertEqual(self.build(raw)["timeline_name"], "뻘뻘뻘_e035_2")
+        self.assertEqual(self.build(raw)["timeline_name"], "뻘뻘뻘_e035_3")
+        self.assertEqual([len(timeline.video[0]) for timeline in self.project.timelines], [1, 1, 1])  # 앞의 것은 그대로
+
+    def test_matches_fps_before_reading_the_start_frame(self):
+        self.project.fps = 25.0  # 프로젝트가 25fps — 새 타임라인만 24fps 로
+        self.add("a", frames=120)
+        result = self.build(plan([clip("a", 1, 48, 168)], tracks=1))
+        timeline = self.project.timelines[0]
+        self.assertEqual((result["status"], timeline.settings["timelineFrameRate"], timeline.settings["useCustomSettings"]), ("complete", 24.0, "1"))
+        self.assertEqual(self.pool.append_calls[0][0]["recordFrame"], 86400 + 48)  # 25fps 의 시작(90000)이 아니다
+        self.assertEqual(self.project.fps, 25.0)  # 프로젝트 fps 는 건드리지 않는다
+
+    def test_stops_before_placing_when_fps_cannot_be_set(self):
+        self.project.fps = 30.0
+        self.project.timeline_fps_settable = False
+        self.add("a", frames=120)
+        result = self.build(plan([clip("a", 1, 0, 120)], tracks=1))
+        self.assertEqual((result["status"], result["error_code"], result["step"]), ("partial", "timeline_fps", "fps"))
+        self.assertEqual(result["timeline_name"], "뻘뻘뻘_e035")  # 만든 타임라인은 지우지 않는다 — 이름을 알려 준다
+        self.assertEqual((self.pool.append_calls, self.manager.saved), ([], 0))
+
+    def test_nothing_is_created_when_a_clip_is_not_in_the_media_pool(self):
+        self.add("a", frames=120)
+        self.items.append({"generation_id": "ghost", "folder_path": "e035/C0090", "local_path": "D:/render/e035/C0090/ghost.mp4", "status": "downloaded"})
+        result = self.build(plan([clip("a", 1, 0, 120), clip("ghost", 1, 120, 240)], tracks=1))
+        self.assertEqual((result["status"], result["error_code"], result["step"], result["timeline_name"]), ("failed", "clip_missing", "locate", ""))
+        self.assertEqual((self.project.timelines, self.manager.saved), ([], 0))
+        self.assertIs(self.pool.current, self.user_folder)
+
+    def test_refuses_when_the_real_video_is_shorter_than_planned(self):
+        # 적힌 길이 10초, 실제 6초 — 편집 탭은 실제 끝에서 건너뛰지만 Resolve 는 그 사이 아래 트랙을 보인다
+        self.add("short", frames=144)
+        self.add("under", frames=288)
+        result = self.build(plan([clip("under", 1, 0, 288), clip("short", 2, 0, 240)]))
+        self.assertEqual((result["status"], result["error_code"], result["step"]), ("failed", "source_shorter", "measure"))
+        self.assertEqual(result["short_sources"], [{"gen_id": "short", "track": 2, "start": 0, "planned": 240, "actual": 144}])
+        self.assertEqual(self.project.timelines, [])
+        # 한 프레임 이내의 차이는 그냥 넣는다(반올림)
+        self.items.clear()
+        self.add("near", "e035/C0020", frames=239)
+        self.assertEqual(self.build(plan([clip("near", 1, 0, 240)], tracks=1))["status"], "complete")
+
+    def test_audio_source_range_uses_the_clip_fps(self):
+        self.add("ntsc", fps=30.0, frames=450)  # 15초
+        # 5~10초 구간의 소리 → 소스 [150, 300)
+        result = self.build(plan([clip("ntsc", 1, 0, 360)], audio=[{"gen_id": "ntsc", "start": 120, "end": 240, "offset": 5}], tracks=1))
+        self.assertEqual(result["status"], "complete")
+        sound = self.pool.append_calls[1][0]
+        self.assertEqual((sound["startFrame"], sound["endFrame"], sound["mediaType"], sound["trackIndex"], sound["recordFrame"]), (150, 300, 2, 1, 86400 + 120))
+        self.assertEqual(self.lane(self.project.timelines[0], "audio", 1), [("ntsc.mp4", 120, 120, 150)])
+
+    def test_reports_partial_when_the_reread_layout_differs(self):
+        self.add("a", frames=240)
+        self.add("b", "e035/C0020", frames=240)
+        original = FakeMediaPool.AppendToTimeline
+
+        def shifted(pool, infos):  # Resolve 가 둘째 클립을 다른 자리에 놓았다
+            return original(pool, [{**info, "recordFrame": info["recordFrame"] + (7 if index else 0)} for index, info in enumerate(infos)])
+
+        FakeMediaPool.AppendToTimeline = shifted
+        try:
+            result = self.build(plan([clip("a", 1, 0, 240), clip("b", 1, 240, 480)], tracks=1))
+        finally:
+            FakeMediaPool.AppendToTimeline = original
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual([(row["track"], row["gen_id"], row["start"], row["expected"], row["actual"]) for row in result["mismatches"]],
+                         [("V1", "b", 240, 240, None), ("V1", "", 247, None, 240)])
+        self.assertEqual(result["timeline_name"], "뻘뻘뻘_e035")
+
+    def test_reports_partial_when_required_state_is_not_applied(self):
+        self.add("a", frames=120)
+        self.manager.save_result = False
+        result = self.build(plan([clip("a", 1, 0, 120, enabled=False)], tracks=1, locked=[1]))
+        timeline = self.project.timelines[0]
+        self.assertEqual((result["status"], result["saved"]), ("partial", False))
+        self.assertIn("저장", result["warnings"][-1])
+        # 끄기가 실패한 경우 — 꺼 둔 영상이 살아 있으면 편집 탭에서 보던 것과 다르다
+        self.setUp()
+        self.add("a", frames=120)
+        original = FakeItem.SetClipEnabled
+        FakeItem.SetClipEnabled = lambda item, enabled: False
+        try:
+            result = self.build(plan([clip("a", 1, 0, 120, enabled=False)], tracks=1))
+        finally:
+            FakeItem.SetClipEnabled = original
+        self.assertEqual(result["status"], "partial")
+        self.assertIn("꺼 둔 클립", result["warnings"][0])
+        self.assertIs(timeline, timeline)
+
+    def test_stops_when_the_user_opens_another_timeline(self):
+        self.add("a", frames=120)
+        self.add("b", "e035/C0020", frames=120)
+        other = FakeTimeline("사용자 타임라인", 24.0)
+        self.project.timelines.append(other)
+        original = FakeMediaPool.AppendToTimeline
+        calls = []
+
+        def switch_after_first(pool, infos):
+            calls.append(len(infos))
+            placed = original(pool, infos)
+            pool.project.current_timeline = other  # 첫 트랙을 넣은 뒤 사용자가 다른 타임라인을 열었다
+            return placed
+
+        FakeMediaPool.AppendToTimeline = switch_after_first
+        try:
+            result = self.build(plan([clip("a", 1, 0, 120), clip("b", 2, 0, 120)]))
+        finally:
+            FakeMediaPool.AppendToTimeline = original
+        self.assertEqual((result["status"], result["error_code"], result["step"]), ("partial", "timeline_changed", "video"))
+        self.assertEqual(calls, [1])  # 둘째 트랙은 넣지 않았다
+        self.assertEqual((other.video, self.manager.saved), ([[]], 0))  # 남의 타임라인은 건드리지 않고 저장도 하지 않는다
+        self.assertIs(self.project.current_timeline, other)  # 되돌리지 않는다
+
+    def test_stops_when_the_project_changes(self):
+        self.add("a", frames=120)
+        elsewhere = FakeProject("다른 프로젝트", "resolve-project-2")
+        result = build_timeline(
+            self.manifest(), validate_plan(plan([clip("a", 1, 0, 120)], tracks=1), {"a"}), resolve=FakeResolve(FakeProjectManager(elsewhere)),
+        )
+        self.assertEqual((result["status"], result["error_code"], elsewhere.timelines), ("unavailable", "project_changed", []))
+        # 만든 뒤에 바뀐 경우 — ProjectManager 에 다시 물어 본다(처음 받은 project 객체만 보면 놓친다)
+        original = FakeMediaPool.CreateEmptyTimeline
+
+        def create_then_switch(pool, name):
+            timeline = original(pool, name)
+            self.manager.project = elsewhere
+            return timeline
+
+        FakeMediaPool.CreateEmptyTimeline = create_then_switch
+        try:
+            result = self.build(plan([clip("a", 1, 0, 120)], tracks=1))
+        finally:
+            FakeMediaPool.CreateEmptyTimeline = original
+        self.assertEqual((result["status"], result["error_code"]), ("partial", "project_changed"))
+        self.assertEqual((self.pool.append_calls, self.manager.saved, elsewhere.timelines), ([], 0, []))
+
+    def test_finds_clips_by_normalized_path_without_creating_bins(self):
+        made = self.add("a", frames=120)
+        made.path = made.path.upper()  # Resolve 가 다른 표기로 기록했다
+        self.assertEqual(_normal_path(made.path), _normal_path(self.items[0]["local_path"]))
+        before = [child.name for child in self.managed.children]
+        self.assertEqual(self.build(plan([clip("a", 1, 0, 120)], tracks=1))["status"], "complete")
+        self.assertEqual([child.name for child in self.managed.children], before)
+
+
+class TimelineWorkerTests(unittest.TestCase):
+    """자식 프로세스 — 가져오기에 이어 타임라인을 짓고, 전송 보호를 처음부터 끝까지 쥔다."""
+
+    PLAN = {"name": "x"}
+
+    def run_worker(self, imported, *, lease=None):
+        events: list[str] = []
+
+        @contextlib.contextmanager
+        def fake_lease():
+            events.append("lease+")
+            try:
+                yield
+            finally:
+                events.append("lease-")
+
+        def fake_import(manifest):
+            events.append("import")
+            return imported
+
+        def fake_build(manifest, plan):
+            events.append("build")
+            return resolve_timeline.new_result(status="complete")
+
+        with (
+            mock.patch.object(resolve_timeline_worker, "transfer_lease", lease or fake_lease),
+            mock.patch.object(resolve_timeline_worker, "_run_import", fake_import),
+            mock.patch.object(resolve_timeline_worker, "build_timeline", fake_build),
+        ):
+            return resolve_timeline_worker.run({"manifest": {"items": []}, "timeline": self.PLAN}), events
+
+    def test_builds_after_a_complete_import_under_one_lease(self):
+        result, events = self.run_worker({"status": "complete", "imported": 2})
+        self.assertEqual(events, ["lease+", "import", "build", "lease-"])  # 타임라인이 끝날 때까지 보호를 놓지 않는다
+        self.assertEqual((result["import"]["status"], result["timeline"]["status"]), ("complete", "complete"))
+
+    def test_does_not_build_when_the_import_is_incomplete(self):
+        for imported in ({"status": "partial", "error": "1개 실패"}, {"status": "unavailable", "error": "Resolve 꺼짐"}, {"status": "failed"}):
+            result, events = self.run_worker(imported)
+            self.assertEqual(events, ["lease+", "import", "lease-"])
+            self.assertEqual((result["timeline"]["status"], result["timeline"]["error_code"]), ("unavailable", "import_incomplete"))
+            self.assertEqual(result["timeline"]["timeline_name"], "")
+
+    def test_update_gate_blocks_both_steps(self):
+        @contextlib.contextmanager
+        def busy():
+            raise resolve_timeline_worker.ResolveTransferGateBusy("업데이트 중")
+            yield  # pragma: no cover
+
+        result, events = self.run_worker({"status": "complete"}, lease=busy)
+        self.assertEqual(events, [])
+        self.assertEqual((result["import"]["error_code"], result["timeline"]["error_code"]), ("update_in_progress", "update_in_progress"))
+
+    def test_main_prints_one_prefixed_json_line(self):
+        payload = {"manifest": {}, "timeline": {}}
+        with (
+            mock.patch.object(resolve_timeline_worker, "run", return_value={"import": {"status": "complete"}, "timeline": {"status": "complete"}}),
+            mock.patch.object(resolve_timeline_worker.sys, "stdin", io.StringIO(json.dumps(payload))),
+            mock.patch.object(resolve_timeline_worker.sys, "stdout", new_callable=io.StringIO) as out,
+        ):
+            resolve_timeline_worker.main()
+        line = out.getvalue().strip()
+        self.assertTrue(line.startswith("MVHUB_RESOLVE_TIMELINE="))
+        self.assertEqual(json.loads(line.removeprefix("MVHUB_RESOLVE_TIMELINE="))["timeline"]["status"], "complete")
+
+
+class TimelineRunnerTests(unittest.TestCase):
+    """부모 쪽 — 가져오기와 같은 길(호환 인터프리터·제한 시간 없음), 다른 자식·다른 머리글."""
+
+    def setUp(self):
+        resolve_status_runner._working_interpreter = None
+        resolve_status_runner._last_selection = None
+        running = mock.patch.object(resolve_status_runner, "resolve_process_running", return_value=True)
+        running.start()
+        self.addCleanup(running.stop)
+
+    def run_child(self, completed):
+        with (
+            mock.patch.object(resolve_status_runner, "_select_interpreter", return_value=(r"C:\Python311\python.exe", {"status": "ready"}, "")),
+            mock.patch.object(resolve_status_runner.subprocess, "run", return_value=completed) as run,
+        ):
+            return resolve_status_runner.run_resolve_timeline_isolated({"items": []}, {"name": "x"}), run
+
+    def test_returns_both_results_from_the_timeline_worker(self):
+        payload = {"import": {"status": "complete"}, "timeline": {"status": "complete", "timeline_name": "뻘뻘뻘_e035"}}
+        completed = subprocess.CompletedProcess(["python"], 0, stdout="log\nMVHUB_RESOLVE_TIMELINE=" + json.dumps(payload) + "\n", stderr="")
+        result, run = self.run_child(completed)
+        self.assertEqual(result, payload)
+        self.assertEqual(run.call_args.args[0][-1], "app.services.resolve_timeline_worker")
+        self.assertEqual(json.loads(run.call_args.kwargs["input"]), {"manifest": {"items": []}, "timeline": {"name": "x"}})
+        self.assertIsNone(run.call_args.kwargs["timeout"])  # 강제 종료가 Media Pool 정렬 복구를 끊지 않게
+
+    def test_child_crash_is_reported_on_both_results(self):
+        result, _run = self.run_child(subprocess.CompletedProcess(["python"], 3221225477, stdout="", stderr=""))
+        self.assertEqual((result["import"]["status"], result["import"]["error_code"]), ("unavailable", "child_crashed"))
+        self.assertEqual((result["timeline"]["status"], result["timeline"]["error_code"]), ("unavailable", "child_crashed"))
+        self.assertIn("타임라인 보내기", result["timeline"]["error"])
+
+    def test_malformed_child_result_is_not_trusted(self):
+        completed = subprocess.CompletedProcess(["python"], 0, stdout='MVHUB_RESOLVE_TIMELINE={"import": 5}\n', stderr="")
+        result, _run = self.run_child(completed)
+        self.assertEqual(result["timeline"]["error_code"], "invalid_child_result")
+
+    def test_resolve_not_running_never_starts_a_child(self):
+        with (
+            mock.patch.object(resolve_status_runner, "resolve_process_running", return_value=False),
+            mock.patch.object(resolve_status_runner.subprocess, "run") as run,
+        ):
+            result = resolve_status_runner.run_resolve_timeline_isolated({"items": []}, {})
+        self.assertEqual((result["timeline"]["status"], result["timeline"]["error_code"]), ("unavailable", "not_running"))
+        run.assert_not_called()
+
+
+class TimelineRouteTests(unittest.IsolatedAsyncioTestCase):
+    """라우트 — 원본 전송과 같은 관문·권한, 계획은 파일 준비보다 먼저 검사, manifest 에는 계획을 넣지 않는다."""
+
+    GENERATION = {"id": "g1", "job_id": "j1", "project_id": "p1", "project_name": "테스트", "folder_path": "e035/C0010", "status": "done", "assets": []}
+
+    def body(self, timeline=None, gen_ids=("g1",)):
+        return resolve_integration.ResolveTimelineIn(
+            gen_ids=list(gen_ids), resolve_project_id="resolve-1", resolve_project_name="EP01_EDIT",
+            timeline=timeline if timeline is not None else plan([clip("g1", 1, 0, 120)], tracks=1),
+        )
+
+    async def call(self, body, *, built=None, events=None):
+        manifest = {"transfer_id": "t-1", "project_id": "p1", "items": [], "total": 1}
+        built = built or {"import": {"status": "complete"}, "timeline": {"status": "complete", "timeline_name": "뻘뻘뻘_e035"}}
+        events = events if events is not None else []
+
+        @contextlib.asynccontextmanager
+        async def suspended():
+            events.append("suspend+")
+            try:
+                yield
+            finally:
+                events.append("suspend-")
+
+        def run(manifest_arg, plan_arg):
+            events.append("worker")
+            return built
+
+        async def save(manifest_arg):
+            events.append("save:" + ("timeline" if "timeline" in manifest_arg else "plain"))
+
+        with (
+            mock.patch.object(resolve_integration.repo, "get_generations_batch", return_value={"g1": self.GENERATION}),
+            mock.patch.object(resolve_integration, "batch_view_member_projects", return_value=set()),
+            mock.patch.object(resolve_integration, "can_view_generation_with_member_projects", return_value=True),
+            mock.patch.object(resolve_integration.active_account, "account_key", return_value=""),
+            mock.patch.object(resolve_integration.active_account, "active_email", return_value=""),
+            mock.patch.object(resolve_integration, "account_scope_uid", return_value=None),
+            mock.patch.object(resolve_integration._proxy, "proxying", return_value=False),
+            mock.patch.object(resolve_integration, "transfer_generations", new=mock.AsyncMock(return_value=manifest)) as transfer,
+            mock.patch.object(resolve_integration, "run_resolve_timeline_isolated", side_effect=run) as worker,
+            mock.patch.object(resolve_integration, "save_manifest", new=save),
+            mock.patch.object(resolve_integration.resolve_selection_monitor, "suspended", suspended),
+        ):
+            response = await resolve_integration.create_resolve_timeline(body, Request({"type": "http", "client": ("127.0.0.1", 1)}))
+        return response, transfer, worker, events
+
+    async def test_prepares_imports_builds_and_keeps_the_plan_out_of_the_manifest(self):
+        response, transfer, worker, events = await self.call(self.body())
+        self.assertEqual(response["timeline"], {"status": "complete", "timeline_name": "뻘뻘뻘_e035"})
+        self.assertEqual(response["transfer"]["resolve_import"], {"status": "complete"})
+        self.assertEqual(response["transfer"]["resolve_target"], {"project_id": "resolve-1", "project_name": "EP01_EDIT"})
+        self.assertNotIn("timeline", response["transfer"])  # manifest 는 보통의 원본 전송으로 남는다
+        transfer.assert_awaited_once_with("p1", [self.GENERATION])
+        manifest_arg, plan_arg = worker.call_args.args
+        self.assertEqual((plan_arg["format"], plan_arg["clips"][0]["gen_id"]), ("mvhub.edit-timeline", "g1"))
+        # 대상 프로젝트를 먼저 적고 → 선택 감시를 멈춘 채 자식을 돌리고 → 결과를 적는다
+        self.assertEqual(events, ["save:plain", "suspend+", "worker", "suspend-", "save:plain"])
+
+    async def test_a_bad_plan_is_rejected_before_any_file_is_prepared(self):
+        for bad in ({"format": "nope"}, plan([clip("stranger", 1, 0, 120)], tracks=1), plan([clip("g1", 1, 0, 120), clip("g1", 1, 100, 200)], tracks=1)):
+            with self.assertRaises(HTTPException) as raised:
+                await self.call(self.body(bad))
+            self.assertEqual(raised.exception.status_code, 400)
+        with (
+            mock.patch.object(resolve_integration, "transfer_generations", new=mock.AsyncMock()) as transfer,
+            mock.patch.object(resolve_integration.repo, "get_generations_batch") as lookup,
+        ):
+            with self.assertRaises(HTTPException):
+                await resolve_integration.create_resolve_timeline(self.body({"format": "nope"}), Request({"type": "http", "client": ("127.0.0.1", 1)}))
+        transfer.assert_not_awaited()
+        lookup.assert_not_called()
+
+    async def test_only_the_local_machine_may_send(self):
+        with self.assertRaises(HTTPException) as raised:
+            await resolve_integration.create_resolve_timeline(self.body(), Request({"type": "http", "client": ("192.168.1.50", 1)}))
+        self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_the_existing_transfer_route_still_works_after_the_split(self):
+        imported = {"status": "complete", "imported": 1}
+        manifest = {"transfer_id": "t-2", "project_id": "p1", "items": []}
+        with (
+            mock.patch.object(resolve_integration.repo, "get_generations_batch", return_value={"g1": self.GENERATION}),
+            mock.patch.object(resolve_integration, "batch_view_member_projects", return_value=set()),
+            mock.patch.object(resolve_integration, "can_view_generation_with_member_projects", return_value=True),
+            mock.patch.object(resolve_integration.active_account, "account_key", return_value=""),
+            mock.patch.object(resolve_integration.active_account, "active_email", return_value=""),
+            mock.patch.object(resolve_integration, "account_scope_uid", return_value=None),
+            mock.patch.object(resolve_integration._proxy, "proxying", return_value=False),
+            mock.patch.object(resolve_integration, "transfer_generations", new=mock.AsyncMock(return_value=manifest)),
+            mock.patch.object(resolve_integration, "run_resolve_import_isolated", return_value=imported),
+            mock.patch.object(resolve_integration, "save_manifest", new=mock.AsyncMock()),
+        ):
+            response = await resolve_integration.create_resolve_transfer(
+                resolve_integration.ResolveTransferIn(gen_ids=[" g1 ", "g1", ""]), Request({"type": "http", "client": ("127.0.0.1", 1)}),
+            )
+        self.assertEqual((response["transfer_id"], response["resolve_import"]), ("t-2", imported))
+
+
+if __name__ == "__main__":
+    unittest.main()
