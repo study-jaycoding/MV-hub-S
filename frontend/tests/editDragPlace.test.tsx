@@ -17,7 +17,7 @@ const gen = (id: string, cut: string, extra: Partial<Generation> = {}) => ({
   ...extra,
 } as unknown as Generation);
 
-const world = vi.hoisted(() => ({ gens: [] as unknown[] }));
+const world = vi.hoisted(() => ({ gens: [] as unknown[], disabled: {} as Record<string, string[]> }));
 vi.mock("../src/lib/resolveTransfer", async () => ({
   ...(await vi.importActual<typeof import("../src/lib/resolveTransfer")>("../src/lib/resolveTransfer")),
   getResolveConnectionStatus: () => Promise.reject(new Error("안 물었다")),
@@ -36,7 +36,7 @@ vi.mock("../src/lib/useEditSequence", async () => {
     useEditGenerations: () => ({ state: "ok", gens: world.gens, error: null, complete: true, known: true, reload: () => {} }),
   };
 });
-vi.mock("../src/lib/useDisabledFolders", () => ({ useDisabledFolders: () => ({}) }));
+vi.mock("../src/lib/useDisabledFolders", () => ({ useDisabledFolders: () => world.disabled }));
 
 import { EditTab } from "../src/components/timeline/EditTab";
 
@@ -118,6 +118,7 @@ beforeEach(() => {
   under = null;
   document.elementFromPoint = () => under;
   world.gens = [gen("a", "c1"), gen("b", "c1"), gen("x", "c2")];
+  world.disabled = {};
   opened.length = 0;
   flashed.length = 0;
   host = document.createElement("div");
@@ -399,6 +400,7 @@ it("끄는 사이 다른 창이 이 편집을 바꾸면 카드·컷·클립 끌�
   fire(clip, "pointermove", { clientY: 90 });
   otherWindowSaves([{ cut: "c1", gen: "a", track: 2 }, { cut: "c2", gen: "x", track: 3 }]);
   expect(lane(2).querySelector(".ed-clip")).toBe(clip);
+  expect(clip.style.transform).toBe(""); // 그 자리에서 걷는다 — 놓아도 버려질 끌기가 마우스를 따라다니지 않는다(Codex 4회째)
   fire(clip, "pointerup", { clientY: 90, buttons: 0 });
   expect(storedTracks()).toEqual([["a", 2], ["x", 3]]); // 다른 창의 것 그대로 — 그 위에 옛 끌기를 얹지 않는다
   expect(flashed.filter((message) => message.includes("바꾸지 못했습니다"))).toEqual([]);
@@ -452,4 +454,93 @@ it("클립 끌기: Esc 는 끌기를 버린다(놓아도 옮기지 않는다) �
   } finally {
     pointDoc.elementsFromPoint = savedPoint;
   }
+});
+
+// Codex 코드 리뷰 4회째(클립 끌기 P2 둘). ① 끌던 클립이 다른 창의 저장으로 사라지면 놓는 이벤트를 받을 요소가 없어 '끄는 중'(키·메뉴
+//  막기)이 Esc 를 누를 때까지 남았다 — 창이 초점을 잃어도 끌기가 남았다. 걷는 길을 한 곳으로 모았다(EditTimeline 의 cancelClipDrag).
+it("클립 끌기: 끌던 클립이 다른 창의 저장으로 사라지면 끌기를 걷는다 — 메뉴 막기가 남지 않는다. 창이 초점을 잃어도 버린다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "x", track: 1 }]);
+  mountOn("c1");
+  const [mine, other] = [...lane(1).querySelectorAll<HTMLElement>(".ed-clip")];
+  const pointDoc = document as unknown as { elementsFromPoint?: unknown };
+  const savedPoint = pointDoc.elementsFromPoint;
+  pointDoc.elementsFromPoint = () => [lane(2)]; // 마우스 밑은 V2 — 놓기로 치면 클립이 그리로 간다
+  try {
+    fire(mine, "pointerdown", { clientX: 10, clientY: 100 });
+    fire(mine, "pointermove", { clientX: 10, clientY: 40 });
+    expect(mine.style.transform).toBe("translateY(-60px)");
+    fire(other, "contextmenu", { button: 2, buttons: 3 }); // 끄는 중에는 메뉴가 뜨지 않는다
+    expect(document.querySelector(".ed-tmenu")).toBeNull();
+    // 다른 창이 끌던 클립을 지웠다 — 이 창은 그것을 받아들인다. 쥐고 있던 요소가 없어져 놓는 이벤트는 오지 않는다
+    seed([{ cut: "c2", gen: "x", track: 1 }]);
+    act(() => { window.dispatchEvent(new StorageEvent("storage", { key: DOC_KEY })); });
+    const rest = lane(1).querySelector<HTMLElement>(".ed-clip")!;
+    expect(lane(1).querySelectorAll(".ed-clip")).toHaveLength(1);
+    fire(rest, "contextmenu", { button: 2, buttons: 0 }); // 끄는 중이 풀렸다 — 메뉴가 뜬다
+    expect(document.querySelector(".ed-tmenu")).not.toBeNull();
+    press({ key: "Escape", code: "Escape" });
+    expect(document.querySelector(".ed-tmenu")).toBeNull();
+    // 창이 초점을 잃으면(Alt+Tab) 그 끌기도 버린다 — 놓아도 옮기지 않는다
+    fire(rest, "pointerdown", { clientX: 10, clientY: 100 });
+    fire(rest, "pointermove", { clientX: 10, clientY: 40 });
+    expect(rest.style.transform).toBe("translateY(-60px)");
+    fire(window, "blur");
+    expect([rest.style.transform, rest.style.zIndex]).toEqual(["", ""]);
+    fire(rest, "pointerup", { clientX: 10, clientY: 40, buttons: 0 });
+    expect(storedTracks()).toEqual([["x", 1]]);
+  } finally {
+    pointDoc.elementsFromPoint = savedPoint;
+  }
+});
+
+// ② 왼쪽으로 누르기만 한 채(6px 전) 휠 클릭하면 길이 조절 창이 뜨고, 그대로 더 움직이면 창 뒤에서 대기 중이던 끌기가 살아났다(쥐기가
+//  남아 움직임이 클립으로 온다). 다른 단추로 창·메뉴를 열기 전에 대기 중인 끌기와 쥐기를 걷는다.
+it("클립을 누르기만 한 채(6px 전) 휠 클릭·우클릭으로 창을 열면 대기 중인 끌기를 걷는다 — 창 뒤에서 끌기가 살아나지 않는다", () => {
+  world.gens = [gen("a", "c1"), gen("b", "c1", { assets: [{ id: "a-b", generation_id: "b", type: "video", file_path: "/media/b.mp4",
+    thumbnail_path: null, source_url: null, cached: true }] } as unknown as Partial<Generation>), gen("x", "c2")];
+  seed([{ cut: "c1", gen: "b", track: 2 }]);
+  mountOn("c1");
+  const clip = () => lane(2).querySelector<HTMLElement>(".ed-clip")!;
+  const pointDoc = document as unknown as { elementsFromPoint?: unknown };
+  const savedPoint = pointDoc.elementsFromPoint;
+  pointDoc.elementsFromPoint = () => [lane(1)]; // 마우스 밑은 V1 — 끌기가 살아 있으면 놓을 때 그리로 간다
+  try {
+    fire(clip(), "pointerdown", { clientX: 10, clientY: 100 });
+    fire(clip(), "pointermove", { clientX: 10, clientY: 98 }); // 문턱(6px) 전 — 아직 끌기가 아니다
+    fire(clip(), "auxclick", { button: 1, buttons: 5, clientX: 10, clientY: 98 });
+    expect(document.querySelector(".ed-trim")).not.toBeNull();
+    expect(clip().hasPointerCapture(1)).toBe(false); // 쥐기도 놓았다 — 창 뒤의 클립이 움직임을 받지 않는다
+    fire(clip(), "pointermove", { clientX: 10, clientY: 40 }); // 왼쪽을 누른 채 더 움직였다
+    expect(clip().style.transform).toBe("");
+    fire(clip(), "pointerup", { clientX: 10, clientY: 40, buttons: 0 });
+    expect(storedTracks()).toEqual([["b", 2]]);
+    press({ key: "Escape", code: "Escape" });
+    expect(document.querySelector(".ed-trim")).toBeNull();
+    // 우클릭 메뉴도 같다
+    fire(clip(), "pointerdown", { clientX: 10, clientY: 100 });
+    fire(clip(), "contextmenu", { button: 2, buttons: 3, clientX: 10, clientY: 100 });
+    expect(document.querySelector(".ed-tmenu")).not.toBeNull();
+    fire(clip(), "pointermove", { clientX: 10, clientY: 40 });
+    expect(clip().style.transform).toBe("");
+    fire(clip(), "pointerup", { clientX: 10, clientY: 40, buttons: 0 });
+    expect(storedTracks()).toEqual([["b", 2]]);
+  } finally {
+    pointDoc.elementsFromPoint = savedPoint;
+  }
+});
+
+// 문서는 그대로인데(rev 가 안 바뀐다) 끌던 클립이 화면에서 빠지는 길 — 숨기기(hideOff)가 켜진 채 다른 탭이 그 컷 폴더를 비활성으로 돌렸다.
+it("클립 끌기: 문서가 그대로여도 끌던 클립의 컷이 화면에서 빠지면 끌기를 걷는다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "x", track: 1 }], { hideOff: true });
+  mountOn("c1");
+  const mine = lane(1).querySelector<HTMLElement>(".ed-clip")!;
+  fire(mine, "pointerdown", { clientX: 10, clientY: 100 });
+  fire(mine, "pointermove", { clientX: 10, clientY: 40 });
+  expect(mine.style.transform).toBe("translateY(-60px)");
+  const before = localStorage.getItem(DOC_KEY);
+  world.disabled = { p1: ["e070/c1"] };
+  mount(); // 다시 그린다 — 실제로는 비활성 알림이 다시 그리게 한다
+  expect([lane(1).querySelectorAll(".ed-clip").length, mine.isConnected, localStorage.getItem(DOC_KEY)]).toEqual([1, false, before]);
+  fire(lane(1).querySelector<HTMLElement>(".ed-clip")!, "contextmenu", { button: 2, buttons: 0 }); // 끄는 중이 풀렸다 — 메뉴가 뜬다
+  expect(document.querySelector(".ed-tmenu")).not.toBeNull();
 });

@@ -188,6 +188,20 @@ export const EditTimeline = memo(function EditTimeline({
   //  풀고 놓으면 그대로 옮겨졌고, 끄는 동안 Space·Delete 가 뒤에서 먹었다(Codex 코드 리뷰 3회째 — 카드·컷 끌기와 같은 규칙으로 맞춘다).
   const drag = useRef<{ key: string; track: number; y: number; rev: number; moved: boolean; el: HTMLElement; id: number } | null>(null);
   const [clipDragging, setClipDragging] = useState(false);
+  // 클립 끌기를 걷는다 — 누르기만 한 것(문턱 전)도. ref·요소의 스타일·포인터 쥐기·상태를 한 곳에서 정리한다(놓기·Esc·창이 초점을
+  //  잃음·문서가 갈림·그 클립이 사라짐·다른 단추로 창을 엶 — Codex 코드 리뷰 4회째: 끌던 요소가 사라지면 놓는 이벤트가 오지 않아 끄는 중
+  //  상태(키·메뉴 막기)가 남았고, 문턱 전에 휠 클릭으로 창을 열면 뒤에서 끌기가 살아났다).
+  const cancelClipDrag = () => {
+    const current = drag.current;
+    drag.current = null;
+    setClipDragging(false);
+    if (!current) return;
+    current.el.style.transform = "";
+    current.el.style.zIndex = "";
+    if (current.el.hasPointerCapture(current.id)) current.el.releasePointerCapture(current.id);
+  };
+  const clipLive = useRef(cancelClipDrag);
+  clipLive.current = cancelClipDrag;
   const clipDown = (event: ReactPointerEvent<HTMLElement>, key: string, from: number, locked: boolean, cut: string) => {
     event.stopPropagation(); // 오른쪽 단추도 — 우클릭(메뉴)이 고른 것을 풀지 않게(빈 자리를 누른 것이 아니다)
     if (event.button !== 0) return;
@@ -212,10 +226,7 @@ export const EditTimeline = memo(function EditTimeline({
   };
   const clipUp = (event: ReactPointerEvent<HTMLElement>, cancel = false) => {
     const current = drag.current;
-    drag.current = null;
-    event.currentTarget.style.transform = "";
-    event.currentTarget.style.zIndex = "";
-    if (current?.moved) setClipDragging(false);
+    cancelClipDrag();
     if (!current?.moved || cancel) return;
     const lane = document.elementsFromPoint(event.clientX, event.clientY)
       .find((element) => element instanceof HTMLElement && element.dataset.track);
@@ -302,16 +313,20 @@ export const EditTimeline = memo(function EditTimeline({
     placeCutDrag(event.clientX);
   };
   // 클립 끌기 — Esc 는 끌기를 버린다(제자리로). 그 뒤의 놓기는 아무것도 옮기지 않는다(drag 가 비어 있다).
-  useEscapeClose(() => {
-    const current = drag.current;
-    drag.current = null;
-    if (current) {
-      current.el.style.transform = "";
-      current.el.style.zIndex = "";
-    }
-    setClipDragging(false);
-  }, clipDragging, true, true);
+  useEscapeClose(() => cancelClipDrag(), clipDragging, true, true);
   useDragKeyHold(clipDragging);
+  useEffect(() => {
+    if (!clipDragging) return;
+    const cancel = () => clipLive.current();
+    window.addEventListener("blur", cancel);
+    return () => window.removeEventListener("blur", cancel);
+  }, [clipDragging]);
+  // 누르거나 끄는 사이 문서가 갈렸거나(rev) 그 클립이 화면에서 사라졌으면(다른 창이 지움·그 컷 폴더가 없어짐) 걷는다 — 쥐고 있던
+  //  요소가 없어지면 놓는 이벤트를 받을 곳이 없다
+  useEffect(() => {
+    const current = drag.current;
+    if (current && (current.rev !== rev || !current.el.isConnected)) clipLive.current();
+  }, [rev, layout]);
   const cutDragging = !!cutDrag;
   useEscapeClose(() => endCutDrag(false), cutDragging, true, true);
   useDragKeyHold(cutDragging); // 초점이 남은 뒤의 단추(누른 컷 칸 포함)를 Space·Enter 가 누르지 않게
@@ -366,6 +381,7 @@ export const EditTimeline = memo(function EditTimeline({
           if (event.button !== 1) return;
           event.preventDefault();
           if (drag.current?.moved) return; // 끄는 중의 휠 클릭은 창을 열지 않는다(끌기는 이어진다)
+          cancelClipDrag(); // 누르기만 한(문턱 전) 끌기는 걷는다 — 창이 뜬 뒤 왼쪽을 누른 채 움직이면 뒤에서 끌기가 살아났다
           onClipTrim(key, event.clientX, event.clientY);
         }}
         onPointerDown={(event) => clipDown(event, key, clip.track, locked, clip.cut)}
@@ -378,6 +394,7 @@ export const EditTimeline = memo(function EditTimeline({
         onContextMenu={(event) => {
           event.preventDefault();
           if (drag.current?.moved) return; // 끄는 중의 우클릭은 메뉴를 열지 않는다
+          cancelClipDrag();
           onClipMenu(key, event.clientX, event.clientY);
         }}
       >
