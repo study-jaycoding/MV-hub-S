@@ -4,7 +4,7 @@ import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { clipKey, insertClip, removeClips, setClipDurs } from "../src/lib/editTimeline";
-import { clearUndo, editDocKey, keepUnsavedEditDoc, migrateEditDocs, readEditDoc } from "../src/lib/editTimelineStore";
+import { clearUndo, editDocKey, keepUnsavedEditDoc, readEditDoc } from "../src/lib/editTimelineStore";
 import { useEditDoc } from "../src/lib/useEditDoc";
 
 let host: HTMLDivElement;
@@ -131,9 +131,9 @@ it("다른 창의 저장 알림 — 늦게 온 옛 알림은 무시하고, 실�
   expect(flash).toHaveBeenCalledTimes(1);
 
   // 받아들이기 전에 시작한 지연 콜백(끌기 확정·길이 기록)은 버려진다.
-  let applied = true;
+  let applied = "";
   act(() => { applied = edit.applyEdit((doc) => removeClips(doc, [clipKey({ cut: "e070/c1", gen: "theirs" })]), { rev: before }); });
-  expect(applied).toBe(false);
+  expect(applied).toBe("none"); // 옛 rev 의 지연 콜백 — 바꿀 것이 없다
   expect(gens()).toEqual(["theirs"]);
   storageEvent("다른 키");
   expect(gens()).toEqual(["theirs"]);
@@ -156,66 +156,42 @@ it("문서 키는 계정·프로젝트·폴더로 정해지고 서버 주소는 
 });
 
 // 배포 전 점검(2026-10-13): 문서의 옛 자리(`ch.editTimeline:<계정>:…`)는 편집 탭이 없던 옛 판의 계정 전환 정리가 지운다 — 새 판을 쓰다 옛 판으로
-//  되돌린 뒤 계정을 바꾸면 편집본이 사라졌다. 모듈이 실릴 때 새 자리로 옮긴다(이 시험은 그 함수를 직접 부른다).
-it("옛 자리의 문서를 새 자리로 옮긴다 — 보관본(.bad)도 같이, 화면 설정·마지막으로 연 시퀀스는 그대로", () => {
-  const old = (rest: string) => `ch.editTimeline:${rest}`;
-  const now = (rest: string) => `mvhub.editDoc:${rest}`;
-  localStorage.setItem(old("me@x:p1:e070"), theirs("a"));
-  localStorage.setItem(old("me@x:p1:e070.bad"), "{깨진 원문");
-  localStorage.setItem(old("other@x:p2:e071"), theirs("b")); // 다른 계정 · 열어 보지 않은 시퀀스도
-  localStorage.setItem(old("me@x:p1:e080"), theirs("same"));
-  localStorage.setItem(now("me@x:p1:e080"), theirs("same")); // 새 자리에 같은 것이 이미 있다(옮기다 만 것) — 옛것만 치운다
-  localStorage.setItem("ch.editTimeline.last:me@x", "{}");
-  localStorage.setItem("ch.editTimeline.ui", "{}");
-  migrateEditDocs();
-  expect(localStorage.getItem(now("me@x:p1:e070"))).toBe(theirs("a"));
-  expect(localStorage.getItem(now("me@x:p1:e070.bad"))).toBe("{깨진 원문");
-  expect(localStorage.getItem(now("other@x:p2:e071"))).toBe(theirs("b"));
-  expect(localStorage.getItem(now("me@x:p1:e080"))).toBe(theirs("same"));
-  expect(Object.keys(localStorage).filter((key) => key.startsWith("ch.editTimeline")).sort()).toEqual(["ch.editTimeline.last:me@x", "ch.editTimeline.ui"]);
-  expect(Object.keys(localStorage).filter((key) => key.endsWith(".old"))).toEqual([]); // 같은 것에는 보관본을 만들지 않는다
-  migrateEditDocs(); // 두 번 불러도 같다
-  expect(localStorage.getItem(now("me@x:p1:e070"))).toBe(theirs("a"));
-});
-
-// Codex 재검토 P1: '새 자리에 있으면 그쪽이 새것'이라 보고 옛 자리를 지웠다 — 옛 자리만 아는 빌드·옮기기 전에 열려 있던 창이 **그 뒤에**
-//  저장한 편집이 사라진다. 어느 쪽이 새것인지 알 수 없으니 다른 것은 지우지 않고 보관본(`<새 키>.old`)으로 옮긴다.
-it("옛 자리와 새 자리의 내용이 다르면 옛것을 지우지 않고 보관본으로 옮긴다 — 보관하지 못하면 옛 자리에 그대로 둔다", () => {
-  const old = (rest: string) => `ch.editTimeline:${rest}`;
-  const now = (rest: string) => `mvhub.editDoc:${rest}`;
-  localStorage.setItem(now("me@x:p1:e070"), theirs("moved"));
-  localStorage.setItem(old("me@x:p1:e070"), theirs("moved", "later")); // 옮긴 뒤 옛 빌드가 옛 자리에 저장했다
-  migrateEditDocs();
-  expect(localStorage.getItem(now("me@x:p1:e070"))).toBe(theirs("moved")); // 화면의 문서는 새 자리의 것 그대로
-  expect(localStorage.getItem(now("me@x:p1:e070.old"))).toBe(theirs("moved", "later"));
-  expect(localStorage.getItem(old("me@x:p1:e070"))).toBeNull();
-
-  // 보관본 자리에 이미 다른 것이 있다 — 그것도 이것도 지우지 않는다
-  localStorage.setItem(old("me@x:p1:e070"), theirs("third"));
-  migrateEditDocs();
-  expect(localStorage.getItem(now("me@x:p1:e070.old"))).toBe(theirs("moved", "later"));
-  expect(localStorage.getItem(old("me@x:p1:e070"))).toBe(theirs("third"));
-
-  // 저장할 때도 같다: 이 창이 알던 것과 다른 것이 옛 자리에 있으면 보관본으로(여기서는 보관본 자리가 차 있어 그대로 남는다)
-  render(now("me@x:p1:e070"));
-  add("mine");
-  expect(localStorage.getItem(old("me@x:p1:e070"))).toBe(theirs("third"));
-  expect(readEditDoc(now("me@x:p1:e070")).doc.clips.map((item) => item.gen).sort()).toEqual(["mine", "moved"]);
-  keepUnsavedEditDoc(now("me@x:p1:e070"), null);
-});
-
-it("옮기지 못한 문서(용량 부족)는 옛 자리에 남고 그대로 읽힌다 — 다음에 저장되면 새 자리로 가고 옛것은 지운다", () => {
+//  되돌린 뒤 계정을 바꾸면 편집본이 사라졌다. 새 자리(`mvhub.editDoc:`)에 쓴다. **옮기지는 않는다**: 읽을 때 새 자리에 없으면 옛 자리의 것을
+//  읽고, 옛 자리는 지우지도 고치지도 않는다 — 처음엔 한 번에 옮겼는데(복사 → 삭제) 두 창이 엇갈리면 늦은 복사가 방금 저장한 편집을 덮고,
+//  옛 자리에 나중에 저장된 것을 지울 수 있었다(Codex 재검토 P1 두 번).
+it("옛 자리의 문서는 그대로 읽힌다 — 열기만 해서는 아무것도 쓰지 않고, 저장하면 새 자리에만 쓴다(옛 자리는 그대로)", () => {
   const OLD_A = KEY_A.replace("mvhub.editDoc:", "ch.editTimeline:");
   localStorage.setItem(OLD_A, theirs("kept"));
-  const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
-  migrateEditDocs();
-  expect([localStorage.getItem(OLD_A), localStorage.getItem(KEY_A)]).toEqual([theirs("kept"), null]);
+  localStorage.setItem("ch.editTimeline.last:test", "{}");
+  const setItem = vi.spyOn(Storage.prototype, "setItem");
   render(KEY_A);
-  expect(gens()).toEqual(["kept"]); // 옛 자리의 것을 읽는다 — 빈 문서로 열리지 않는다
+  expect(gens()).toEqual(["kept"]); // 빈 문서로 열리지 않는다
+  expect(setItem).not.toHaveBeenCalled(); // 복사하지 않는다
+  expect(localStorage.getItem(KEY_A)).toBeNull();
   setItem.mockRestore();
   add("more");
   expect(stored()).toEqual(["kept", "more"]);
-  expect([localStorage.getItem(OLD_A), localStorage.getItem(KEY_A) !== null]).toEqual([null, true]);
+  expect(localStorage.getItem(OLD_A)).toBe(theirs("kept")); // 지우지도 고치지도 않는다
+  expect(localStorage.getItem("ch.editTimeline.last:test")).toBe("{}");
+  // 새 자리에 생긴 뒤에는 옛 자리를 보지 않는다 — 옛 자리만 아는 빌드가 거기에 무엇을 써도 이 문서는 그대로다(그것도 지우지 않는다)
+  localStorage.setItem(OLD_A, theirs("older build"));
+  render(null);
+  render(KEY_A);
+  expect(gens()).toEqual(["kept", "more"]);
+  add("again");
+  expect(localStorage.getItem(OLD_A)).toBe(theirs("older build"));
+});
+
+it("옛 자리에만 있는 문서를 보는 동안 다른 창이 옛 자리에 저장해도(옛 빌드) 덮지 않는다 — 받아들이고 이번 조작은 버린다", () => {
+  const OLD_A = KEY_A.replace("mvhub.editDoc:", "ch.editTimeline:");
+  localStorage.setItem(OLD_A, theirs("kept"));
+  render(KEY_A);
+  localStorage.setItem(OLD_A, theirs("kept", "theirs")); // 새 자리는 아직 없다 — 이 창이 읽는 것은 옛 자리다
+  let outcome = "";
+  act(() => { outcome = edit.applyEdit((doc) => insertClip(doc, clip("mine"))); });
+  expect([outcome, gens(), localStorage.getItem(KEY_A)]).toEqual(["stopped", ["kept", "theirs"], null]);
+  add("mine");
+  expect(stored().sort()).toEqual(["kept", "mine", "theirs"]);
 });
 
 const theirs = (...ids: string[]) => JSON.stringify({
@@ -340,9 +316,9 @@ it("알림이 오기 전에 이 창이 바꿔도 다른 창의 편집을 덮지 
   add("mine");
   const before = edit.rev;
   localStorage.setItem(KEY_A, theirs("mine", "theirs")); // 다른 창이 저장했다 — 알림은 아직 안 왔다
-  let applied = true;
+  let applied = "";
   act(() => { applied = edit.applyEdit((doc) => insertClip(doc, clip("more"))); });
-  expect(applied).toBe(false);
+  expect(applied).toBe("stopped");
   expect([stored(), gens()]).toEqual([["mine", "theirs"], ["mine", "theirs"]]); // 다른 창의 것 그대로 — 이 창의 조작은 들어가지 않았다
   expect(flash.mock.calls).toEqual([["다른 창에서 바꾼 편집을 불러왔습니다. 방금 한 조작은 적용하지 않았습니다 — 다시 해 주세요."]]);
   expect([edit.rev !== before, edit.canUndo]).toEqual([true, false]);
@@ -357,7 +333,7 @@ it("알림이 오기 전에 이 창이 바꿔도 다른 창의 편집을 덮지 
   const stale = edit.rev;
   localStorage.setItem(KEY_A, theirs("replaced"));
   act(() => { applied = edit.applyEdit((doc) => removeClips(doc, [clipKey({ cut: "e070/c1", gen: "mine" })]), { rev: stale, undo: false }); });
-  expect(applied).toBe(false);
+  expect(applied).toBe("stopped");
   expect([stored(), gens()]).toEqual([["replaced"], ["replaced"]]);
 });
 
@@ -370,9 +346,9 @@ it("저장 못 한 편집 + 방금 안 다른 창의 저장 — 그 조작은 �
   setItem.mockRestore();
   flash.mockClear();
   localStorage.setItem(KEY_A, theirs("theirs")); // 알림은 아직 안 왔다
-  let applied = true;
+  let applied = "";
   act(() => { applied = edit.applyEdit((doc) => insertClip(doc, clip("more"))); });
-  expect(applied).toBe(false);
+  expect(applied).toBe("stopped");
   expect([stored(), gens()]).toEqual([["theirs"], ["unsaved"]]); // 덮지 않았고, 이 창의 편집도 그대로다
   expect(flash).toHaveBeenCalledTimes(1);
   act(() => edit.undo()); // 되돌리기도 그 순간에는 같다 — 이미 알린 뒤라 이번에는 진행한다
