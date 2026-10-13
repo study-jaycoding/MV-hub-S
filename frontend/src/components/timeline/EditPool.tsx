@@ -15,6 +15,7 @@ import type { EditListState } from "../../lib/useEditSequence";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../../lib/windowDrag";
+import { FilterPanelIcon } from "../common/ViewIcons";
 import { EditCard, editMarkLabel, type PoolItem } from "./EditCard";
 
 export type { PoolItem };
@@ -58,7 +59,13 @@ export function EditPool({
   resolve,
   onClearPicked,
   onMenu,
+  sideOpen,
+  onToggleSide,
 }: {
+  // 왼쪽 폴더 목록 여닫기(Jay 2026-10-13 — 공유 탭 도구 줄의 '필터 사이드바 닫기'와 같은 단추·같은 자리 관계: 사이드바 바로 옆 줄의 첫 단추).
+  //  닫아도 단추는 여기 남아 다시 연다. 닫힘은 편집 탭의 화면 설정(EditUi.sideHidden)에만 적는다 — 공유 탭의 것과 따로다.
+  sideOpen: boolean;
+  onToggleSide: () => void;
   title: string; // 'e070 / c0050'
   items: PoolItem[]; // 받은 순서(최신 먼저)
   picked: readonly string[]; // 고른 카드들(고른 순서 — 마지막 것이 듀얼 뷰어의 소스)
@@ -188,6 +195,12 @@ export function EditPool({
   return (
     <section className="ed-pool" onMouseDown={keepFocus}>
       <div className="ed-pool-head">
+        {/* 모양·글은 공유 탭의 단추 그대로 — 열림 = ▢, 닫힘 = ▷(상태는 글리프가 말한다) */}
+        <button type="button" className={"lib-filter lib-filter-ic ed-side-toggle" + (sideOpen ? " on" : "")} aria-pressed={sideOpen}
+          title={sideOpen ? t("필터 사이드바 닫기") : t("필터 사이드바 열기")} aria-label={sideOpen ? t("필터 사이드바 닫기") : t("필터 사이드바 열기")}
+          onClick={onToggleSide}>
+          <FilterPanelIcon open={sideOpen} />
+        </button>
         <h3 title={title}>{title || t("이 컷의 생성물")}</h3>
         <div className="ed-pool-tools" ref={toolsRef} onBlur={(event) => {
           // Tab 으로 메뉴 밖으로 나가면 닫는다(뷰어의 메뉴와 같다 — 조작 규칙 51). 안에서 옮기는 것(항목·크기 슬라이더)은 그대로다.

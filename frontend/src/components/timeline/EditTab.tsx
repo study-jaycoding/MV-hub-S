@@ -979,9 +979,14 @@ function EditTabInner({
     active: mixed && !onSource, onActivate: () => setKeyTarget("timeline"),
   };
 
+  // 왼쪽 폴더 목록 여닫기(Jay 2026-10-13 — 풀 머리줄의 단추, 공유 탭의 '필터 사이드바 닫기'와 같은 것). 닫으면 목록과 그 폭 손잡이가 사라지고
+  //  풀·뷰어가 왼쪽으로 붙는다. 편집 문서·재생은 그대로다. **고른 시퀀스가 없으면 닫아 두었어도 연다** — 닫힌 채로는 폴더를 고를 길이 없고,
+  //  빈 화면의 안내가 '왼쪽에서 … 고르세요'다.
+  const sideOpen = !ui.sideHidden || !target;
+
   return (
     <>
-      <EditSidebar
+      {sideOpen && <EditSidebar
         projects={projects}
         projectsState={projectsState}
         openProject={openProject}
@@ -995,7 +1000,7 @@ function EditTabInner({
         onReload={reloadTree}
         onGrabFocus={grabFocus}
         onFolderAction={onFolderAction}
-      />
+      />}
       <main className="main ed-root" ref={rootRef} tabIndex={-1} onMouseDownCapture={(event) => {
         grabFocus();
         // 입력칸(풀의 검색·크기)에 초점이 남은 채 타임라인·뷰어를 누르면 키를 편집 화면으로 돌려받는다 — 화면 안의 단추들은 초점을
@@ -1034,6 +1039,8 @@ function EditTabInner({
               resolve={resolve}
               onClearPicked={clearPicked}
               onMenu={(gen, x, y) => openMenu(gen, cut, x, y)}
+              sideOpen={sideOpen}
+              onToggleSide={() => patchUi({ sideHidden: sideOpen })}
             />
           </ResizableSidebar>
           {/* 타임라인 판 — 안 보일 때도 붙어 있다(엔진의 영상 요소를 떼면 안 된다). 안 보이면 소리를 끈다. */}

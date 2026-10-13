@@ -125,6 +125,9 @@
 }
 .ed-pool-head { flex: none; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--border); }
 .ed-pool-head h3 { flex: 1; min-width: 0; margin: 0; font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 왼쪽 폴더 목록 여닫기 — 공유 탭 도구 줄의 단추(.lib-filter-ic, 30px)를 그대로 쓴다. 머리줄의 왼쪽 여백(14px)과 간격(8px)을 줄여
+   단추가 가장자리에 붙고 제목이 단추 바로 옆에 오게 한다(시안 mock_edit_sidebar_toggle.png 의 A). */
+.ed-pool-head .ed-side-toggle { flex: none; margin: 0 -4px 0 -9px; }
 .ed-pool-tools { flex: none; position: relative; display: flex; align-items: center; gap: 2px; }
 .ed-pbtn {
   height: 26px; min-width: 28px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent;
