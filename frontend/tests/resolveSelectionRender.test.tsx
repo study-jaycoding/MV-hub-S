@@ -42,6 +42,7 @@ const beginList = vi.fn(); // 목록 훅의 beginComposeList — 폴더 창을 �
 let setStaleList: (on: boolean) => void; // 목록 훅의 staleList(닫은 직후 옛 첫 쪽을 보이는 중)를 시험이 켜고 끈다
 let setLoadingList: (on: boolean) => void; // 목록 훅의 loading(받는 중)
 let setListBehind: (on: boolean) => void; // 목록 훅의 listBehind(화면의 목록이 아직 옛 조회의 것)
+let bumpListRevision: () => void; // 목록 훅의 listRevision — 새 첫 쪽을 적용했다(조회가 바뀌어 받았든 같은 조회를 다시 받았든)
 let setLibraryGens: (next: Generation[]) => void; // 목록 훅의 gens — 다시 받아 목록이 바뀐 것을 시험이 만든다
 let startAuthPending = false; // 인증 훅을 '확인 중'으로 시작한다(새로 고친 직후) — 기본은 처음부터 끝난 상태
 let setAuthPending: (on: boolean) => void; // 인증 확인이 끝났다고 알린다
@@ -476,6 +477,8 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       setLoadingList = setLoad;
       const [listBehind, setBehind] = useState(false);
       setListBehind = setBehind;
+      const [listRevision, setRevision] = useState(0);
+      bumpListRevision = () => setRevision((revision) => revision + 1);
       refreshProjects = () => setProjects((previous) => [...previous]);
       const revealLocated = useCallback((tab: "my" | "team", value: GenerationLocation) => {
         setLocation({ tab, value }); setGens(value.items);
@@ -489,7 +492,7 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       isLocatedView: !!location && isLocatedQuery(args.genQuery, location.tab, location.value),
       stats: { has_unread: false, failed_count: 0, unread_count: 0 }, loading, loadingMore: false,
       hasMore: false, loadError: null, archivedCount: 0, unassignedCount: 0, loadMore: noop, beginComposeList: beginList,
-      reload: noop, reloadIfStale: noop, staleList, listBehind,
+      reload: noop, reloadIfStale: noop, staleList, listBehind, listRevision,
     };
     },
   }));
@@ -1592,6 +1595,25 @@ it("App 공유·리뷰: 컷 두 번 클릭 = 모아보기 · 우클릭 = 폴더 
   expect(after).toContain("episode/shot");
   expect(pill("target")).toMatchObject({ type: "span", props: { className: "scene-varpop-cur" } });
   expect(pill("neighbour")).toMatchObject({ type: "button", props: { disabled: false } });
+});
+
+// 2026-10-13 밤(배포 전 점검, Codex): 폴더를 옮길 때마다 같은 묶음 조회가 두 번 나갔다(자리 변경으로 한 번, 옮긴 뒤 목록의 첫 쪽이 와서 또 한 번).
+it("App 공유·리뷰: 폴더를 옮기면 묶음 조회는 한 번 — 옮긴 뒤 온 목록의 첫 쪽은 변경 통보가 아니다. 같은 조회를 다시 받으면 그때 다시 받는다", { timeout: 20_000 }, async () => {
+  const folderCards = byParent(() => false);
+  await mountTeamFolder({ folderCards, setFolderCover: vi.fn() });
+  act(() => bumpListRevision()); // 처음 연 화면(episode)의 첫 쪽
+  await settle();
+  const before = folderCards.mock.calls.length;
+  const since = () => folderCards.mock.calls.slice(before).map((call) => call[1]);
+  act(() => sidebarSnapshot!.onChange({ folder_path: undefined })); // 프로젝트 맨 위로
+  await settle();
+  expect(since()).toEqual([""]);
+  act(() => bumpListRevision()); // 옮긴 조회의 첫 쪽이 왔다
+  await settle();
+  expect(since()).toEqual([""]);
+  act(() => bumpListRevision()); // 같은 조회를 다시 받았다(주기 조회·통보)
+  await settle();
+  expect(since()).toEqual(["", ""]);
 });
 
 // 2026-10-13 오후(Jay): 모아보기 [개별] 카드의 [폴더로] = 그 컷 폴더로 이동 — 창이 닫히고, 사이드바에서 그 폴더를 누른 것처럼 기록 한 칸이 쌓인다.
