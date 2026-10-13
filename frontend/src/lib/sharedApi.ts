@@ -17,7 +17,7 @@ export interface ServerRelocationInfo {
 
 export const sharedApi = {
   // 선택 발행(로컬 허브 → 원격 공유 서버) — 로컬 우선 모델
-  sharedServerStatus: () =>
+  sharedServerStatus: (signal?: AbortSignal) =>
     jsonFetch<{
       configured: boolean;
       url: string | null;
@@ -34,7 +34,7 @@ export const sharedApi = {
       elevated_as: string | null;
       super_admin_active: boolean;
       super_admin_expires_at: number | null;
-    }>("/api/shared-server/status"),
+    }>("/api/shared-server/status", signal ? { signal } : undefined),
   sharedServerElevate: (password: string) =>
     jsonFetch<{
       ok: boolean;
@@ -107,10 +107,11 @@ export const sharedApi = {
       method: "POST",
       body: jsonBody({ url, email, password, name }),
     }),
-  sharedServerLogout: () =>
+  sharedServerLogout: (signal?: AbortSignal) =>
     jsonFetch<{ ok: boolean; has_token: boolean }>("/api/shared-server/logout", {
       method: "POST",
       body: jsonBody({}),
+      signal,
     }),
   // 관리자 창 전용 — 주소와 표시 이름을 함께 등록한다(이름은 비워도 된다).
   setSharedServerUrl: (url: string, name: string) =>
