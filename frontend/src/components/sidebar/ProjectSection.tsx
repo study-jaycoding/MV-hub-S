@@ -602,7 +602,7 @@ export function ProjectSection({
               (activeId === "none" && !deletedOnly ? " on sel-target" : "") +
               (unassignOver ? " drop-over" : "")
             }
-            onClick={() => onFilter(activeId === "none" ? undefined : "none")}
+            onClick={() => onFilter("none")} // 다시 눌러도 미분류(프로젝트 줄과 같다 — 해제는 '라이브러리' 줄)
             title="아직 프로젝트에 담기지 않은 결과물 — 카드를 여기로 끌어놓으면 귀속 해제"
             onDragOver={
               onDropToUnassigned
@@ -696,13 +696,15 @@ export function ProjectSection({
                     (dragId === project.id ? " row-dragging" : "") +
                     (overIdx === index && dragId !== project.id ? " row-dragover" : "")
                   }
-                  onClick={() => onFilter(activeId === project.id ? undefined : project.id)}
+                  // 다시 눌러도 **그 프로젝트**(맨 위) — 전엔 해제(라이브러리)로 튀었다(Jay 2026-10-13: 고른 프로젝트를 다시 누르면 라이브러리로 가는 버그).
+                  //  폴더 안에 있었으면 맨 위로 올라온다(onFilter 가 folder_path 를 지운다). 해제는 '라이브러리' 줄.
+                  onClick={() => onFilter(project.id)}
                   onKeyDown={(e) => {
                     // 줄 안의 단추(접기·끌기 손잡이)에서 올라온 키는 그 단추의 것이다
                     if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
                     e.preventDefault(); // Space 의 기본 동작(목록 스크롤)을 막는다 — 길게 눌린 반복도 같다
-                    // 길게 눌린 Enter·Space 는 받지 않는다 — 고르기가 토글이라 반복마다 지정·해제가 뒤집혔다(조작 규칙 38)
-                    if (!e.repeat) onFilter(activeId === project.id ? undefined : project.id);
+                    // 길게 눌린 Enter·Space 는 받지 않는다(조작 규칙 38)
+                    if (!e.repeat) onFilter(project.id);
                   }}
                   title={project.name}
                   onContextMenu={
@@ -862,7 +864,7 @@ export function ProjectSection({
                   <button
                     key={project.id}
                     className={"proj-row archived" + (activeId === project.id ? " on sel-target" : "")}
-                    onClick={() => onFilter(activeId === project.id ? undefined : project.id)}
+                    onClick={() => onFilter(project.id)} // 다시 눌러도 그 프로젝트(일반 줄과 같다 — Codex 코드 리뷰)
                     title={project.name}
                   >
                     <span className="proj-name">{project.name}</span>
