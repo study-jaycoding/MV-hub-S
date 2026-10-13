@@ -554,3 +554,67 @@ it("listBehind — 조회가 바뀌면 새 첫 쪽이 적용될 때까지 참, �
   await settle();
   expect(data.listBehind).toBe(false);
 });
+
+// 2026-10-13(Jay "아직 폴더 이동할 때 딜레이", 31회차): 조회가 바뀌었는데 앞 실행의 목록(에피소드의 첫 쪽·주기 조회)이 아직 안 왔으면 그것을 기다리지
+//  않는다 — 어차피 버릴 목록이다. 같은 조회를 다시 받는 것은 전처럼 줄을 선다(위 '한 줄로 선다' 시험들).
+it("조회가 바뀌면 앞 실행의 목록을 기다리지 않고 바로 출발한다 — 늦게 온 옛 목록은 버리고, 같은 조회는 전처럼 줄을 선다", async () => {
+  const EP: GenQuery = { tab: "team", project_id: "p1", folder_path: "e035" };
+  const CUT: GenQuery = { tab: "team", project_id: "p1", folder_path: "e035/C0010" };
+  await mount({ query: EP });
+  const slowEp = hold<Generation[]>(api.listGenerations); // 에피소드의 주기 조회가 떠 있다
+  const poll = start(() => data.reload(true, true));
+  const before = calls();
+  const cutList = hold<Generation[]>(api.listGenerations);
+  show({ query: CUT }); // 그사이 다른 폴더를 눌렀다
+  expect(calls().list).toBe(before.list + 1); // 기다리지 않고 출발했다
+  expect(vi.mocked(api.listGenerations).mock.calls.at(-1)![0]).toEqual(CUT);
+  expect([data.loading, data.listBehind]).toEqual([true, true]);
+  await act(async () => { cutList.resolve([gen("cut-1")]); });
+  await settle();
+  expect([ids(), data.loading, data.listBehind, poll.done]).toEqual([["cut-1"], false, false, false]); // 앞지름당한 실행의 약속은 자기 요청이 끝나야 풀린다
+  await act(async () => { slowEp.resolve(mainRows); }); // 늦게 온 옛 조회 — 버린다
+  await settle();
+  expect([ids(), data.loading, poll.done]).toEqual([["cut-1"], false, true]);
+  // 같은 조회를 다시 받는 것은 전처럼 줄을 선다 — 앞 실행이 끝난 뒤에 출발한다
+  const slow = hold<Generation[]>(api.listGenerations);
+  act(() => { void data.reload(true); });
+  const mark = calls();
+  const again = start(() => data.reload());
+  await settle();
+  expect([calls().list, again.done]).toEqual([mark.list, false]);
+  await act(async () => { slow.resolve([gen("cut-1")]); });
+  await settle();
+  expect([calls().list, again.done]).toEqual([mark.list + 1, true]);
+});
+
+// 앞지른 요청은 취소하지 못한다 — 느린 서버에서 폴더를 연달아 옮기면 낡은 요청들이 연결을 차지해 정작 마지막 조회가 늦는다(Codex 31회차 설계 검토).
+it("앞지르기는 낡은 요청 하나까지 — 그것이 떠 있는 동안 또 옮기면 줄을 서고, 낡은 요청이 끝나면 다시 앞지를 수 있다", async () => {
+  const at = (folder: string): GenQuery => ({ tab: "team", project_id: "p1", folder_path: folder });
+  await mount({ query: at("e035") });
+  const slowEp = hold<Generation[]>(api.listGenerations); // 에피소드의 주기 조회가 떠 있다
+  act(() => { void data.reload(true, true); });
+  const before = calls();
+  const first = hold<Generation[]>(api.listGenerations);
+  show({ query: at("e035/C0010") }); // 앞지른다 — 낡은 요청 하나(에피소드)
+  expect(calls().list).toBe(before.list + 1);
+  const second = hold<Generation[]>(api.listGenerations);
+  show({ query: at("e035/C0020") }); // 또 옮겼다 — 낡은 요청이 아직 떠 있어 줄을 선다
+  expect(calls().list).toBe(before.list + 1);
+  await act(async () => { first.resolve([gen("c10")]); }); // 줄을 잡은 실행의 목록이 왔다(버린다) → 줄 선 실행이 출발
+  await settle();
+  expect(calls().list).toBe(before.list + 2);
+  expect(vi.mocked(api.listGenerations).mock.calls.at(-1)![0]).toEqual(at("e035/C0020"));
+  expect([ids(), data.listBehind]).toEqual([["f1"], true]); // 버린 목록은 화면에 서지 않는다
+  await act(async () => { second.resolve([gen("c20")]); });
+  await settle();
+  expect([ids(), data.loading, data.listBehind]).toEqual([["c20"], false, false]);
+  await act(async () => { slowEp.resolve(mainRows); }); // 낡은 요청이 실제로 끝났다
+  await settle();
+  expect(ids()).toEqual(["c20"]);
+  // 다시 앞지를 수 있다 — 수를 줄 넘길 때가 아니라 목록이 끝날 때 내린다
+  hold<Generation[]>(api.listGenerations);
+  act(() => { void data.reload(true, true); });
+  const mark = calls();
+  show({ query: at("e035/C0030") });
+  expect(calls().list).toBe(mark.list + 1);
+});

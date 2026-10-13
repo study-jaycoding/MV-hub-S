@@ -575,15 +575,26 @@ export default function App() {
   //  안다 — 둘 중 하나만 온 때에 풀면 그 자리의 낱장이 잠깐 섰다가 컷 카드로 바뀐다(③).
   const cutWaiting = cutView && !listPeek && cardsScope !== null && !folderCardsUnsupported;
   const hereKey = JSON.stringify([filters.tab, filters.project_id ?? null, filters.folder_path ?? null, !!filters.deleted_only]);
+  const seenHereRef = useRef(hereKey);
   const settledHereRef = useRef<string | null>(null);
+  if (seenHereRef.current !== hereKey) {
+    // 자리를 떠났다 — 되돌아와도 다시 서야 한다. 남기면 빠른 A→B→A 에서(B 는 목록만 오고 묶음 답은 아직) A 가 '선 자리'로 보여 B 의 목록이
+    //  A 에 그대로, 잠금 없이 선다(Codex 31회차). 렌더 중 ref 갱신 — 같은 값이면 아무 일도 없어 두 번 그려도 같다.
+    seenHereRef.current = hereKey;
+    settledHereRef.current = null;
+  }
   useEffect(() => {
     // 창이 떠 있으면 목록은 창의 것이다 — 적지 않는다(창은 자리를 바꾸지 않는다)
     if (!listBehind && !listPeek && !(cutWaiting && folderCardsLoading)) settledHereRef.current = hereKey;
   });
   const moved = settledHereRef.current !== hereKey;
   const cutLoading = cutWaiting && folderCardsLoading && moved;
-  const narrowing = cutWaiting && !!listBehind && moved && !staleList && !isLocatedView && !loadError;
-  const listLocked = staleList || (narrowing && !cutMode); // 낱장 격자를 보이는 중일 때만 — 컷 카드는 목록과 무관하게 눌린다
+  // 자리를 옮긴 뒤 새 목록이 오기 전(공유 탭) — 화면의 낱장은 옛 자리의 것이거나 아래에서 먼저 고른 것이다. **잠금은 묶어 보일 수 있는지와
+  //  무관하다**: 기다리는 사이 검색어를 치면 묶음 조건이 풀리는데, 그때 잠금까지 풀면 옛 자리의 카드가 눌린다(Codex 31회차).
+  //  먼저 골라 그리기(narrowing)·자리 비우기만 묶음 보기의 것이다. 공유 탭만 — 주기 조회(15초)가 있어 목록이 영영 안 오는 일이 없다.
+  const behindAfterMove = filters.tab === "team" && !listPeek && moved && !!listBehind && !staleList && !isLocatedView && !loadError;
+  const narrowing = cutWaiting && behindAfterMove;
+  const listLocked = staleList || (behindAfterMove && !cutMode); // 낱장 격자를 보이는 중일 때만 — 컷 카드는 목록과 무관하게 눌린다
   // 창이 보여 주는 폴더의 지금 대표 — 표지가 '가장 최근 것' 일 뿐이면 대표가 아니다(null).
   const peekFolderCard = listPeek ? folderCards?.folders.find((folder) => folder.path === listPeek.path) : undefined;
   const peekCoverId = peekFolderCard?.rep ? peekFolderCard.cover.id : null;
@@ -2319,7 +2330,7 @@ export default function App() {
       filtersOpen={showFilters}
       onToggleFilters={() => setShowFilters((v) => !v)}
       count={gridGens.length}
-      countMore={hasMore && !narrowing}
+      countMore={hasMore && !behindAfterMove}
       // 전환 단추는 묶어 보일 수 있을 때만(창 안의 툴바에는 없다). 켜 둔 채로는 실제로 묶어 보이는 동안(응답을 기다리는 동안 포함 —
       //  사라졌다 다시 나타나지 않게, ③)에만 보인다 — 하위 폴더가 없는 폴더에서는 바꿀 것이 없다.
       folderCards={
@@ -2437,7 +2448,7 @@ export default function App() {
             ? coverHeader(ownCoverId, (g) => void pickFolderCover(g, { projectId: ownScope.projectId, path: filters.folder_path ?? "" }))
             : undefined
       }
-      hasMore={hasMore && !narrowing} // 먼저 보이는 동안은 더 받지 않는다 — 커서가 옛 조회의 것이다
+      hasMore={hasMore && !behindAfterMove} // 자리를 옮긴 뒤 새 목록 전에는 더 받지 않는다 — 커서가 옛 조회의 것이다
       loadingMore={loadingMore}
       onLoadMore={loadMore}
       resetKey={serverFilterKey}
