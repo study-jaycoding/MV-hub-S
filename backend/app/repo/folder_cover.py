@@ -63,7 +63,9 @@ def folder_cards(
     에피소드 화면용 집계(2026-10-13 — 건수와 **같은 범위**에서 센다. 이 값들이 없는 옛 서버면 화면이 그 표시를 숨긴다):
     video_count = 그 폴더(하위 포함)의 영상 수 · rep_count = 바로 아래 폴더 중 유효한 대표가 있는 수 ·
     last_shared_at/by = 그 폴더에서 가장 늦게 공유된 것의 시각과 만든 사람 이름(표지의 것이 아니다 — 대표를 정해 둔
-    폴더의 표지는 최신이 아니다) · children = 바로 아래 폴더의 미리보기(이름순 앞 `_STRIP` 개, 표지는 그림에 필요한 것만).
+    폴더의 표지는 최신이 아니다) · children = 바로 아래 폴더의 미리보기(이름순 앞 `_STRIP` 개, 표지는 그림에 필요한 것만) ·
+    final_count/held_count = 그 폴더(하위 포함)의 최종·보류 수 — 사이드바 숫자(`folder_review_counts_batch`)와 같은 규칙
+    (최종이 먼저 — 둘 다 켜진 옛 행을 두 번 세지 않는다). 일반 공유 수 = count - final_count - held_count.
     team_member_projects=None 은 전체 공유물(read_all·단독)이지만 viewer_uid 는 그래도 넘긴다 — 표지 행의
     개인 메타 가림은 조회 범위와 별개다.
     """
@@ -80,6 +82,7 @@ def folder_cards(
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT g.id, g.folder_path, g.creator_uid, "
+            "COALESCE(g.is_final, 0) AS is_final, COALESCE(g.is_held, 0) AS is_held, "
             "EXISTS (SELECT 1 FROM asset a WHERE a.generation_id = g.id AND a.type = 'video') AS is_video, "
             "(SELECT MAX(s.shared_at) FROM share s WHERE s.generation_id = g.id) AS shared_at "
             f"FROM generation g WHERE {where} "
@@ -108,8 +111,14 @@ def folder_cards(
         path = prefix + head
         entry = folders.get(path)
         if entry is None:
-            entry = folders[path] = {"count": 0, "cover_id": row["id"], "rep": False, "subs": {}, "videos": 0, "last": ("", None)}
+            entry = folders[path] = {
+                "count": 0, "cover_id": row["id"], "rep": False, "subs": {}, "videos": 0, "last": ("", None), "final": 0, "held": 0,
+            }
         entry["count"] += 1
+        if row["is_final"]:
+            entry["final"] += 1
+        elif row["is_held"]:
+            entry["held"] += 1
         entry["videos"] += 1 if row["is_video"] else 0
         if (row["shared_at"] or "") > entry["last"][0]:
             entry["last"] = (row["shared_at"], row["creator_uid"])
@@ -168,6 +177,7 @@ def folder_cards(
             "last_shared_at": entry["last"][0] or None,
             "last_shared_by": names.get(entry["last"][1]) if entry["last"][1] else None,
             "children": children,
+            "final_count": entry["final"], "held_count": entry["held"],
         })
     return {"parent": parent_path, "own_count": own_count, "folders": out}
 

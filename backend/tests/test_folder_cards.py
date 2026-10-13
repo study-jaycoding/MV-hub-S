@@ -436,3 +436,25 @@ def test_episode_cards_carry_the_numbers_and_cut_strip_of_the_episode_screen(cat
     assert (cut["count"], cut["subfolders"], cut["video_count"], cut["rep_count"], cut["children"]) == (2, 0, 1, 0, [])
     nested = cards("e020")[1]["e020/c0020"]
     assert (nested["subfolders"], [child["path"] for child in nested["children"]]) == (1, ["e020/c0020/takeB"])
+
+
+def test_cards_count_final_and_held_like_the_sidebar_numbers(catalog):
+    """모아보기 카드의 검토 줄 — 그 폴더(하위 포함)의 최종·보류 수. 사이드바 숫자와 같은 규칙: 최종이 먼저다."""
+    for gen_id, folder in (("plain", "e035/c0010"), ("fin", "e035/c0010"), ("both", "e035/c0010"),
+                           ("held", "e035/c0010/takeB"), ("next", "e035/c0020")):
+        seed(gen_id, folder)
+    seed("hidden", "e035/c0010", shared=False)           # 안 보이는 것은 세지 않는다
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET is_final = 1 WHERE id IN ('fin', 'both', 'hidden')")
+        conn.execute("UPDATE generation SET is_held = 1 WHERE id IN ('held', 'both')")  # both = 둘 다 켜진 옛 행 → 최종으로 한 번만
+
+    cut = cards("e035")[1]["e035/c0010"]
+    assert (cut["count"], cut["final_count"], cut["held_count"]) == (4, 2, 1)  # 손자 폴더(takeB)의 보류도 든다
+    plain = cards("e035")[1]["e035/c0020"]
+    assert (plain["count"], plain["final_count"], plain["held_count"]) == (1, 0, 0)
+    episode = cards("")[1]["e035"]
+    assert (episode["count"], episode["final_count"], episode["held_count"]) == (5, 2, 1)
+    # 사이드바가 쓰는 숫자(폴더마다 따로)를 그 폴더 아래로 더한 값과 같다
+    side = repo.projects.folder_review_counts_batch(["member"], team_member_projects=["member"], actor_uid="viewer")["member"]
+    under = [counts for path, counts in side.items() if path == "e035/c0010" or path.startswith("e035/c0010/")]
+    assert (sum(c["total"] for c in under), sum(c["final"] for c in under), sum(c["held"] for c in under)) == (4, 2, 1)
