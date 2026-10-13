@@ -349,7 +349,7 @@ it("옛 문맥의 조회가 끝나며 새 문맥에 얹힌 요구를 가져가�
 });
 
 // ── 컷 카드 격자 ──
-const gridProps = { scale: 1, fill: true, selected: new Set<string>(), onSelect: () => {}, onInfo: () => {}, onReel: () => {}, onShowAll: () => {}, onEnter: () => {}, onOpen: () => {}, top: false };
+const gridProps = { scale: 1, fill: true, layout: "grid" as const, selected: new Set<string>(), onSelect: () => {}, onInfo: () => {}, onReel: () => {}, onShowAll: () => {}, onEnter: () => {}, onOpen: () => {}, top: false };
 const dbl = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
 
 it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 미정', 영상이면 재생 표시. 컷을 두 번 누르면 모아보기", () => {
@@ -411,8 +411,10 @@ it("두 번 클릭은 하위 폴더가 있으면(에피소드) 그 폴더로 들
     <FolderCardGrid {...gridProps} folders={[episode, leaf, old]} top onEnter={(f) => entered.push(f.path)} onReel={(paths) => reels.push(paths)} outside={2} />,
   ));
   const tile = (path: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="${path}"]`)!;
-  expect(tile("e035").querySelector(".cut-tab")!.textContent).toBe("e035컷 5 ·14");
-  expect(tile("e036").querySelector(".cut-tab")!.textContent).toBe("e0362");
+  // 하위 폴더를 가진 카드가 하나라도 있는 단계 = 에피소드 화면 — 카드 모양이 다르다(이름은 표지 위에)
+  expect(host.querySelector(".cut-grid")!.className).toBe("cut-grid ep-board ep-grid");
+  expect(tile("e035").querySelector(".ep-cap")!.textContent).toBe("e035컷 5 · 14건");
+  expect(tile("e036").querySelector(".ep-cap")!.textContent).toBe("e0362건");
   expect(tile("e035").title).toBe("e035 · 컷 5 · 14건");
   dbl(tile("e035"));
   dbl(tile("e036"));
@@ -425,6 +427,106 @@ it("두 번 클릭은 하위 폴더가 있으면(에피소드) 그 폴더로 들
 // 끄는 중의 움직임은 단추가 눌려 있다(buttons 1) — 단추 없는 움직임은 끌기의 끝이다(lib/windowDrag)
 const mouse = (type: string, el: EventTarget, init: MouseEventInit = {}) =>
   act(() => { el.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, buttons: type === "mousemove" ? 1 : 0, ...init })); });
+
+// ── 에피소드 화면(2026-10-13) — 모양만 다르다: 리스트 = 한 줄에 하나, 그리드 = 컷 띠가 붙은 카드. 고르기·두 번 클릭·키는 같은 격자의 것 ──
+it("에피소드 화면: 리스트는 한 줄에 하나·그리드는 폭에 맞춰 채운다. 카드 안 단추(컷 띠·[열기])는 고르기를 바꾸지 않고 제 일을 한다", () => {
+  const entered: FolderCard[] = [];
+  let selected = new Set<string>();
+  const cuts = ["C0010", "C0020"].map((name) => ({ path: "e035/" + name, name, count: 3, rep: name === "C0010", cover: { id: "c-" + name, assets: [] } }));
+  const episode: FolderCard = { ...card("e035", 14), path: "e035", subfolders: 9, rep_count: 1, video_count: 4, children: cuts };
+  const other: FolderCard = { ...card("e036", 2), path: "e036", subfolders: 1, children: [] };
+  let layout: "list" | "grid" = "list";
+  const draw = () => act(() => root.render(
+    <FolderCardGrid {...gridProps} layout={layout} scale={1.2} folders={[episode, other]} top selected={selected}
+      onEnter={(folder) => entered.push(folder)} onSelect={(next) => { selected = next; draw(); }} outside={2} />,
+  ));
+  draw();
+  const grid = () => host.querySelector<HTMLElement>(".cut-grid")!;
+  const tile = () => host.querySelector<HTMLElement>('.cut-card[data-path="e035"]')!;
+  expect([grid().className, grid().style.gridTemplateColumns, grid().style.getPropertyValue("--ep-scale")]).toEqual(["cut-grid ep-board ep-list", "minmax(0, 1fr)", "1.2"]);
+  // 카드는 같은 .cut-card[data-path] — 안에 단추가 들어 있어 div(role=button)다
+  expect([tile().tagName, tile().getAttribute("role"), tile().tabIndex, tile().className]).toEqual(["DIV", "button", 0, "cut-card ep-card ep-list"]);
+  expect(host.querySelector(".cut-out-count")!.textContent).toBe("에피소드 밖 2건");
+
+  // 컷 띠의 컷 — 누름이 카드 고르기로 읽히지 않고 그 컷으로 들어간다(사이드바에서 그 컷을 누른 것과 같은 길)
+  const cutButton = tile().querySelector<HTMLButtonElement>(".ep-cut")!;
+  mouse("mousedown", cutButton);
+  mouse("mouseup", window);
+  act(() => cutButton.click());
+  expect(selected.size).toBe(0);
+  expect(entered.map((folder) => [folder.path, folder.name, folder.subfolders])).toEqual([["e035/C0010", "C0010", 0]]);
+  dbl(cutButton); // 그 단추를 빠르게 두 번 눌러도 카드의 두 번 클릭(에피소드로 들어가기)이 아니다
+  expect(entered.length).toBe(1);
+  // 단추에 초점이 있을 때의 Enter·Space 는 그 단추의 키다 — 격자가 카드를 열거나 고르지 않는다
+  cutButton.focus();
+  for (const key of ["Enter", " "]) act(() => { cutButton.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })); });
+  expect([entered.length, selected.size]).toEqual([1, 0]);
+  // '+N' · [열기] = 그 에피소드로
+  act(() => tile().querySelector<HTMLButtonElement>(".ep-cut.more")!.click());
+  act(() => tile().querySelector<HTMLButtonElement>(".ep-enter")!.click());
+  expect(entered.slice(1).map((folder) => folder.path)).toEqual(["e035", "e035"]);
+
+  // 카드 자체는 전과 같다 — 한 번 클릭 = 고르기, 두 번 클릭 = 들어가기
+  mouse("mousedown", tile().querySelector(".ep-name")!);
+  mouse("mouseup", window);
+  expect([[...selected], tile().classList.contains("sel"), tile().getAttribute("aria-pressed")]).toEqual([["e035"], true, "true"]);
+  dbl(tile().querySelector(".ep-name")!);
+  expect(entered.length).toBe(4);
+
+  layout = "grid";
+  draw();
+  expect([grid().className, grid().style.gridTemplateColumns]).toEqual(["cut-grid ep-board ep-grid", "repeat(auto-fill, minmax(408px, 1fr))"]); // 340 × 크기 1.2
+  expect(tile().className).toBe("cut-card ep-card ep-grid sel");
+  expect(tile().querySelector(".ep-enter")).toBeNull(); // 그리드에는 [열기] 가 없다
+});
+
+// Codex 코드 리뷰: 카드 안 단추는 격자의 누름 처리에서 빠지므로(고르기를 안 바꾸려고), 위에 뜬 메뉴를 닫는 누름이 그대로 컷으로 들어갔다 —
+//  화면 위치와 생성 위치까지 바뀐다. 누름의 시작에 가려져 있었으면 그 단추의 click 을 실행하지 않는다.
+it("에피소드 화면: 위에 뜬 메뉴를 닫는 누름은 카드 안 단추(컷 띠·[열기])를 실행하지 않는다 — 키보드로 누른 것은 그 순간의 가림을 본다", async () => {
+  const entered: string[] = [];
+  const cuts = [{ path: "e035/C0010", name: "C0010", count: 3, rep: false, cover: { id: "c", assets: [] } }];
+  const episode: FolderCard = { ...card("e035", 14), path: "e035", subfolders: 4, children: cuts };
+  act(() => root.render(<FolderCardGrid {...gridProps} layout="list" folders={[episode]} top onEnter={(folder) => entered.push(folder.path)} outside={0} />));
+  const cutButton = () => host.querySelector<HTMLButtonElement>(".ep-cut")!;
+  const { useKeyOwner } = await import("../src/lib/keyGate");
+  function Owner({ on }: { on: boolean }) { useKeyOwner(on); return null; }
+  const owner = createRoot(document.body.appendChild(document.createElement("div")));
+  const mouseClick = (el: HTMLElement) => act(() => { el.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })); });
+  // 메뉴가 떠 있는 채 시작한 누름 — 메뉴는 누름의 앞쪽(pointerdown)에 닫혀 click 때는 이미 없다. 들어가지 않는다
+  act(() => owner.render(<Owner on />));
+  act(() => { cutButton().dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+  act(() => owner.render(<Owner on={false} />));
+  mouse("mousedown", cutButton());
+  act(() => { cutButton().dispatchEvent(new Event("pointerup", { bubbles: true })); });
+  mouse("mouseup", window);
+  mouseClick(cutButton());
+  expect(entered).toEqual([]);
+  // 그다음의 보통 누름은 들어간다(기록이 남아 다음 누름을 삼키지 않는다)
+  act(() => { cutButton().dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+  mouse("mousedown", cutButton());
+  act(() => { cutButton().dispatchEvent(new Event("pointerup", { bubbles: true })); });
+  mouse("mouseup", window);
+  mouseClick(cutButton());
+  expect(entered).toEqual(["e035/C0010"]);
+  // 키보드로 누른 것(Enter·Space 의 click — detail 0): 위에 창이 떠 있으면 쉬고, 없으면 들어간다
+  const enter = host.querySelector<HTMLButtonElement>(".ep-enter")!;
+  act(() => owner.render(<Owner on />));
+  act(() => enter.click());
+  expect(entered).toHaveLength(1);
+  act(() => owner.render(<Owner on={false} />));
+  act(() => enter.click());
+  expect(entered).toEqual(["e035/C0010", "e035"]);
+  act(() => owner.unmount());
+});
+
+it("컷 화면(하위 폴더를 가진 카드가 없다)에서는 보기 방식을 바꿔도 겹친 종이 카드 그대로다", () => {
+  for (const layout of ["list", "grid"] as const) {
+    act(() => root.render(<FolderCardGrid {...gridProps} layout={layout} folders={[card("C0010", 1), card("C0020", 2)]} outside={0} />));
+    const grid = host.querySelector<HTMLElement>(".cut-grid")!;
+    expect([grid.className, grid.style.gridTemplateColumns, grid.querySelector(".cut-card")!.tagName, grid.querySelectorAll(".cut-tab").length])
+      .toEqual(["cut-grid", "repeat(auto-fill, minmax(180px, 1fr))", "BUTTON", 2]);
+  }
+});
 // jsdom 은 자리를 안 재 준다 — 카드마다 가짜 네모(가로로 한 줄, 200px 간격)
 function placeTiles() {
   [...host.querySelectorAll<HTMLElement>(".cut-card[data-path]")].forEach((tile, i) => {

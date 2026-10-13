@@ -53,7 +53,11 @@ def project_folder_cards(
             pid, parent, team_member_projects=member_projects, viewer_uid=viewer,
             workspace_id=(workspace_id or "").strip() or None,
         )
-        _prefer_remote_source_urls([folder["cover"] for folder in data["folders"]])
+        # 카드의 표지와, 에피소드 카드가 싣는 컷 미리보기의 표지(그림만 든 작은 꼴)에 같은 주소 규칙을 쓴다.
+        _prefer_remote_source_urls(
+            [folder["cover"] for folder in data["folders"]]
+            + [child["cover"] for folder in data["folders"] for child in folder["children"]]
+        )
         return data
 
 

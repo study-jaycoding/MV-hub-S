@@ -1,0 +1,92 @@
+/* ── 에피소드 화면(공유 & 리뷰 탭 — '들어가는' 폴더가 놓인 단계) ─────────────────────────────
+   컷 화면(겹친 종이 카드 .cut-card)과 확실히 다르게: 리스트 = 에피소드마다 가로 한 줄, 그리드 = 컷 띠가 붙은 큰 카드(Jay 2026-10-13).
+   카드는 같은 .cut-card[data-path] 다 — 고르기·마퀴·키는 FolderCardGrid 의 것 그대로이고, 여기는 모양만 덮는다.
+   크기는 격자가 주는 --ep-scale(크기 슬라이더)을 따른다. */
+.cut-grid.ep-board { gap: 12px; }
+.cut-card.ep-card {
+  aspect-ratio: auto; margin-top: 0; overflow: hidden; text-align: left; cursor: default;
+  color: var(--text, #e6e7ea); background: #15161b; border: 1px solid #262830; border-radius: 12px;
+}
+.cut-card.ep-card::before, .cut-card.ep-card::after { content: none; } /* 겹친 종이는 컷 카드의 것 */
+.cut-card.ep-card:hover, .cut-card.ep-card:focus-visible { border-color: var(--accent); outline: none; }
+.cut-card.ep-card.sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 0 14px 2px rgba(var(--accent-rgb), 0.35); }
+.ep-card .play-badge { z-index: 1; }
+/* '에피소드 밖 N건' 칸 — 정사각 대신 줄/카드 높이에 맞춘다 */
+.ep-board .cut-card.cut-out { aspect-ratio: auto; margin-top: 0; min-height: 64px; }
+
+/* 표지(리스트의 포스터 · 그리드의 큰 표지) */
+.ep-poster, .ep-cover { position: relative; display: block; overflow: hidden; background: #000; }
+.ep-poster > img, .ep-poster > video, .ep-cover > img, .ep-cover > video {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+}
+.ep-poster.contain > img, .ep-poster.contain > video, .ep-cover.contain > img, .ep-cover.contain > video { object-fit: contain; }
+
+/* 대표 진행 막대 */
+.ep-bar { position: relative; display: block; height: 5px; border-radius: 4px; background: #23252c; }
+.ep-bar > i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--accent); }
+.ep-bar.none { background: none; }
+
+/* 컷 띠 — 카드 안의 단추(전역 button 모양을 덮는다) */
+.ep-strip { display: grid; gap: 6px; }
+.ep-cut {
+  position: relative; display: block; height: 54px; min-width: 0; padding: 0; overflow: hidden;
+  border: 1px solid #2a2c34; border-radius: 6px; background: #1d2029; color: #e6e7ea;
+  font-size: 10px; font-weight: 600; line-height: 1.2; cursor: pointer;
+}
+.ep-cut:active { transform: none; }
+.ep-cut:hover, .ep-cut:focus-visible { border-color: var(--accent); outline: none; }
+.ep-cut > img, .ep-cut > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.ep-cut-name, .ep-cut-n { position: absolute; text-shadow: 0 1px 2px #000; pointer-events: none; }
+.ep-cut-name { left: 5px; top: 3px; max-width: calc(100% - 20px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ep-cut-n { right: 4px; bottom: 2px; color: var(--accent); font-weight: 700; }
+.ep-cut.rep { border-color: var(--accent); }
+.ep-cut.rep::after { content: "★"; position: absolute; right: 4px; top: 2px; color: var(--accent); font-size: 10px; text-shadow: 0 1px 2px #000; }
+.ep-cut.more { display: flex; align-items: center; justify-content: center; background: #161820; color: var(--accent); font-size: 11.5px; white-space: nowrap; }
+
+/* ── 리스트: 번호 · 표지 · 이름과 숫자 · 컷 띠 ── */
+.cut-card.ep-card.ep-list {
+  display: grid; align-items: center; gap: 14px; padding: 10px 14px 10px 6px;
+  grid-template-columns: 50px calc(236px * var(--ep-scale, 1)) minmax(0, 1fr) minmax(0, 300px);
+}
+.ep-list .ep-num { font-size: 34px; font-weight: 900; color: #3b3f4b; text-align: center; letter-spacing: -1px; }
+.ep-list .ep-poster { height: calc(132px * var(--ep-scale, 1)); border-radius: 9px; border: 2px solid #2a2c34; }
+.ep-info { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; }
+.ep-name { font-size: 21px; font-weight: 800; color: #fff; line-height: 1.2; }
+.ep-sub { font-size: 11px; color: var(--muted); }
+.ep-line { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.ep-list .ep-bar { width: 100%; max-width: 260px; height: 6px; margin: 7px 0 2px; }
+.ep-rep { font-size: 11px; color: var(--muted); }
+.ep-enter {
+  margin-top: 6px; padding: 3px 10px; border: 0; border-radius: 7px; background: var(--accent); color: #111;
+  font-size: 11px; font-weight: 700; line-height: 1.5; cursor: pointer;
+}
+.ep-enter:active { transform: none; }
+.ep-list .ep-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+/* 좁은 창 — 컷 띠를 아래 줄로 내린다(한 줄 8칸) */
+@media (max-width: 1000px) {
+  .cut-card.ep-card.ep-list { grid-template-columns: 50px calc(200px * var(--ep-scale, 1)) minmax(0, 1fr); }
+  .ep-list .ep-strip { grid-column: 1 / -1; grid-template-columns: repeat(8, minmax(0, 1fr)); }
+}
+
+/* ── 그리드: 큰 표지 + 컷 띠 + 진행 막대 ── */
+.cut-card.ep-card.ep-grid { display: flex; flex-direction: column; }
+.ep-grid .ep-cover { aspect-ratio: 16 / 9; }
+.ep-grid .ep-num {
+  position: absolute; left: 14px; top: 4px; z-index: 1; font-size: calc(44px * var(--ep-scale, 1)); font-weight: 900;
+  color: #fff; letter-spacing: -2px; line-height: 1.2; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7); pointer-events: none;
+}
+.ep-chip {
+  position: absolute; right: 10px; top: 10px; z-index: 1; padding: 2px 10px; border-radius: 999px;
+  background: var(--accent); color: #111; font-size: 11.5px; font-weight: 800; white-space: nowrap;
+}
+.ep-chip.none { background: rgba(0, 0, 0, 0.6); color: #c9cbd2; font-weight: 600; border: 1px solid rgba(255, 255, 255, 0.18); }
+.ep-cap {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; display: flex; align-items: baseline; gap: 8px;
+  padding: 26px 14px 9px; background: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.85)); white-space: nowrap; overflow: hidden;
+}
+.ep-cap > b { font-size: 20px; color: #fff; }
+.ep-cap > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: #c9cbd2; }
+.ep-grid .ep-strip { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 5px; padding: 9px 10px 6px; }
+.ep-grid .ep-cut { height: 44px; }
+.ep-foot { display: flex; align-items: center; gap: 10px; padding: 3px 12px 11px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.ep-foot .ep-bar { flex: 1; min-width: 20px; }

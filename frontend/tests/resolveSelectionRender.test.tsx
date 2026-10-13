@@ -1234,17 +1234,19 @@ const topCards = { parent: "", own_count: 0, folders: [{ path: "episode", name: 
 const byParent = (rep: () => boolean) => vi.fn((_pid: string, parent: string) =>
   Promise.resolve(parent === "episode" ? cutCards(rep()) : parent === "" ? topCards : { parent, own_count: 3, folders: [] }));
 const cutGrid = () => document.querySelector<HTMLElement>("main.main .cut-grid");
-const cutTile = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("main.main .cut-card:not(.cut-out)")]
-  .find((tile) => tile.querySelector(".cut-tab > span")!.textContent === name)!;
+// 컷 카드는 이름표(.cut-tab), 에피소드 화면의 카드는 표지 위 이름(.ep-cap > b · 리스트는 .ep-name) — 2026-10-13
+const cutTile = (name: string) => [...document.querySelectorAll<HTMLElement>("main.main .cut-card:not(.cut-out)")]
+  .find((tile) => tile.querySelector(".cut-tab > span, .ep-cap > b, .ep-name")!.textContent === name)!;
 type Pill = { type: string; props: { className: string; disabled?: boolean; onMouseDown?: (event: { preventDefault: () => void; button: number }) => void } };
 const pill = (id: string) => gridSnapshot!.cellHeader!(withAsset(id)) as unknown as Pill | null;
 
 async function mountTeamFolder(api: Record<string, unknown>, more: Partial<Filters> = {}) {
   installAppBoundaries([fixture, otherScene]);
   toolbarSnapshot = null;
+  // 마지막에 그린 것이 남는다 — 폴더 창이 뜨면 뒤의 사본을 먼저, 창의 툴바를 나중에 그리므로 창의 것이 남는다. 그린 자리는 표식으로 본다.
   vi.doMock("../src/components/LibraryToolbar", () => ({ LibraryToolbar: (props: ToolbarProps) => {
     toolbarSnapshot = props;
-    return null;
+    return <i data-toolbar="" data-cut={props.folderCards ? "1" : "0"} data-tags={props.tagPanelOpen ? "1" : "0"} />;
   } }));
   Object.assign(boundary.api, api);
   localStorage.setItem("ch.lib.filtersV2", JSON.stringify({ tab: "team", __v: "2" }));
@@ -1292,9 +1294,17 @@ it("App 공유·리뷰: 폴더를 고르면 바로 아래 폴더마다 카드 �
   // 카드의 폴더 이름표 → 그 폴더의 창(컷 카드 두 번 클릭은 창이 아니라 이동 — 아래 시험). 창 안 카드 위의 [대표] — 대표가 아직 없으니 모두 지정 단추. 그림이 없는 것에는 없다.
   const backKey = JSON.stringify(librarySnapshot!.genQuery);
   beginList.mockClear();
+  const behindToolbar = () => document.querySelector("main.main .lib-toolbar-behind [data-toolbar]");
+  expect([behindToolbar(), document.querySelectorAll("main.main [data-toolbar]").length]).toEqual([null, 1]); // 창이 없을 때는 도구 줄 하나
   act(() => gridSnapshot!.onOpenFolder!(libraryGeneration("target")));
   await settle();
   expect(peekWindow()!.querySelector(".folder-peek-title")!.textContent).toBe("Resolve project / episode/shot");
+  // 창 뒤의 도구 줄 자리에는 사본이 남는다(Jay 2026-10-13 — 창을 열어도 뒤 화면이 그대로, 흐리게만). 전환 단추는 사본에만 있고,
+  //  창 밖에 뜨는 태그 패널은 사본이 그리지 않는다. 눌리는 것은 창의 툴바 하나다(뒤 화면은 inert)
+  expect([behindToolbar()?.getAttribute("data-cut"), behindToolbar()?.getAttribute("data-tags"), behindToolbar()?.closest("[aria-hidden]") !== null])
+    .toEqual(["1", "0", true]);
+  expect(peekWindow()!.querySelector("[data-toolbar]")!.getAttribute("data-cut")).toBe("0");
+  expect(document.querySelector<HTMLElement>(".body")!.hasAttribute("inert")).toBe(true);
   expect(librarySnapshot!.genQuery).toMatchObject({ tab: "team", project_id: "resolve-project", folder_path: "episode/shot" });
   expect(beginList).toHaveBeenLastCalledWith({ keep: backKey });
   expect(peekWindow()!.contains(gridOutputs()[0])).toBe(true);
