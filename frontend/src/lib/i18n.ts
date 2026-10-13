@@ -169,6 +169,7 @@ const EN: Record<string, string> = {
   "길이(초)": "Length (seconds)",
   "잘라낸 뒤 {cut}초 · 원본 {full}초": "Cut off {cut}s · source {full}s",
   "원본 {full}초 그대로": "Full source, {full}s",
+  "영상을 불러오지 못했습니다 — 길이는 조절할 수 있습니다": "Couldn't load the video — you can still set the length",
   "←/→ 1프레임 · Shift 10프레임 · Space 재생 · Esc 닫기": "←/→ 1 frame · Shift 10 frames · Space play · Esc close",
   "휠 클릭": "middle-click",
   "잠긴 트랙의 클립은 길이를 바꿀 수 없습니다.": "Clips on a locked track can't be shortened.",

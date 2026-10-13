@@ -1,6 +1,7 @@
 // 편집 탭 — 클립 길이 조절 창(Jay 2026-10-13: 타임라인의 클립을 휠 클릭 → 같은 날 밤 "플로팅창으로 더 제대로 편집할 수 있게").
 //  뒤를 자른다 — 줄인 뒤의 구간에는 아래 트랙이 보인다.
-//  · **떠 있는 창**이다(lib/useFloatingPanel): 머리를 끌어 옮기고 자리를 기억한다. 밖을 눌러도 닫히지 않는다 — ✕ 나 Esc(초점이 창 안일 때).
+//  · **떠 있는 창**이다(lib/useFloatingPanel): 머리를 끌어 옮기고 자리를 기억한다(처음에는 화면 오른쪽 위 — 누른 클립과 타임라인을
+//    가리지 않는 자리). 밖을 눌러도 닫히지 않는다 — ✕ 나 Esc(초점이 창 안일 때).
 //    창이 떠 있어도 타임라인은 그대로 쓴다: Esc 겹·키 주인으로 올리지 않는다(lib/keyGate 의 '올리지 않는 것' — 코멘트 패널과 같다).
 //  · **키는 초점을 따른다.** 창은 body 에 그린다(createPortal) — 편집 키(EditTab.onKey)는 편집 화면 밖에서 난 키를 듣지 않으므로
 //    초점이 창 안이면 ←/→·Space·Delete 가 뒤의 재생헤드·클립에 먹지 않고, 초점이 타임라인이면 키는 타임라인의 것이다.
@@ -11,7 +12,10 @@
 //    건드리지 않는다(그 클립이 위 트랙에 가려져 있거나 꺼져 있어도 볼 수 있다).
 //  · ←/→ = 1프레임, Shift+←/→ = 10프레임, Space = 재생·멈춤, Ctrl+Z = 되돌리기. 숫자 칸(초·프레임)에 직접 친다(Enter·칸을 떠날 때 적용).
 //    끝까지 늘리면 '원본 길이로'와 같다(줄임을 지운다).
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useCallback, useEffect, useRef, useState,
+  type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import { EDIT_FPS } from "../../lib/editTimeline";
 import { useT } from "../../lib/i18n";
@@ -22,11 +26,9 @@ import { clampFloatingPanelPosition, useFloatingPanel } from "../../lib/useFloat
 
 const LS = makeStore("ch.editTrim.");
 const WIDTH = 560;
-const HEIGHT = 500; // 처음 놓을 자리를 잡는 데만 쓴다(그 뒤로는 끌어 둔 자리)
+const HEIGHT = 520; // 처음 놓을 자리를 잡는 데만 쓴다(그 뒤로는 끌어 둔 자리)
 
 export function EditTrimPop({
-  x,
-  y,
   openId,
   title,
   full,
@@ -38,8 +40,6 @@ export function EditTrimPop({
   onRedo,
   onClose,
 }: {
-  x: number; // 연 자리(휠 클릭·메뉴) — 끌어 둔 자리가 아직 없을 때만 쓴다
-  y: number;
   openId: string; // 열 때마다(다른 클립으로 바뀔 때도) 새 값 — 초점을 창으로 데려오고 재생을 멈춘다
   title: string; // 'C0110 · V2'
   full: number; // 원본 길이(초)
@@ -61,10 +61,11 @@ export function EditTrimPop({
     } else if (to !== frames || !trimmed) onChange(to / EDIT_FPS);
   };
 
-  // 자리 — 끌어 둔 자리(저장), 없으면 연 자리의 위쪽. 화면 밖으로 나가지 않게 잡는 것은 훅이 한다.
+  // 자리 — 끌어 둔 자리(저장). 아직 없으면 화면 오른쪽 위(상단바 아래): 누른 자리 위에 띄우면 방금 누른 클립과 타임라인을 가렸다
+  //  (2026-10-13 격리 실측 — 그리고 그 자리가 그대로 기억됐다). 화면 밖으로 나가지 않게 잡는 것은 훅이 한다.
   const { pos, panelRef, onHeadMouseDown } = useFloatingPanel(LS, "pos", "size", true);
   const first = useRef(clampFloatingPanelPosition(
-    { x: x - WIDTH / 2, y: y - HEIGHT - 16 },
+    { x: window.innerWidth - WIDTH - 16, y: 64 },
     { width: WIDTH, height: HEIGHT },
     { width: window.innerWidth, height: window.innerHeight },
   )).current;
@@ -81,6 +82,8 @@ export function EditTrimPop({
 
   // 큰 화면 — 재생 중이 아니면 그 길이의 마지막 프레임에 선다. 길이·클립이 바뀌면 재생을 멈춘다.
   const video = useRef<HTMLVideoElement>(null);
+  const [brokenSrc, setBrokenSrc] = useState<string | null>(null); // 못 받은 영상의 주소 — 그 주소일 때만 '못 받음'이다
+  const broken = !!src && brokenSrc === src;
   const [playing, setPlayingState] = useState(false);
   // 재생 중인가를 ref 로도 든다 — 영상 정보(loadedmetadata)가 오기 전에 ▶ 를 누르면, 열 때 걸어 둔 '마지막 프레임으로'가 뒤늦게
   //  돌아 재생 자리를 끝으로 옮겼다(Codex 코드 리뷰 6회째). 그 콜백이 도는 순간의 뜻을 본다.
@@ -144,9 +147,12 @@ export function EditTrimPop({
   useEffect(() => {
     panel.current?.focus({ preventScroll: true });
   }, [openId]);
+  // Esc 는 취소다 — 치던 값을 버리고 닫는다. 닫히며 초점이 편집 화면으로 옮겨질 때 칸이 blur 되는데, 그 blur 가 적용을 부르지
+  //  않게 한다(2026-10-13 격리 실측: 12f 에서 77 을 치고 Esc → 77f 가 적용된 채 닫혔다). ✕ 는 칸을 떠나는 누름이라 적용된다.
+  const cancelled = useRef(false);
   const commit = () => {
     setDraft(null);
-    if (!draft) return;
+    if (!draft || cancelled.current) return;
     const number = Number(draft.text.trim().replace(",", "."));
     if (!draft.text.trim() || !Number.isFinite(number) || number <= 0) return;
     set(draft.field === "sec" ? number * EDIT_FPS : number);
@@ -171,6 +177,7 @@ export function EditTrimPop({
     if (event.key === "Escape") {
       event.preventDefault();
       markKeyHandled(event.nativeEvent); // 뒤 화면의 Esc(선택 해제)가 같은 키를 또 쓰지 않게
+      cancelled.current = true;
       onClose();
       return;
     }
@@ -208,9 +215,14 @@ export function EditTrimPop({
         <button type="button" aria-label={t("닫기")} title={t("닫기")} onClick={onClose}>✕</button>
       </div>
       <div className="ed-trim-body">
-        {src && <video ref={video} className="ed-trim-view" src={src} muted playsInline preload="auto" />}
+        {src && <video ref={video} className="ed-trim-view" src={src} muted playsInline preload="auto" onError={() => setBrokenSrc(src)} />}
         <div className="ed-trim-play">
-          {src && <button type="button" className="ed-trim-go" onClick={togglePlay}>{playing ? "■ " + t("멈춤") : "▶ " + t("재생")}</button>}
+          {src && (
+            <button type="button" className="ed-trim-go" aria-disabled={broken} onClick={() => {
+              if (!broken) togglePlay();
+            }}>{playing ? "■ " + t("멈춤") : "▶ " + t("재생")}</button>
+          )}
+          {broken && <em>{t("영상을 불러오지 못했습니다 — 길이는 조절할 수 있습니다")}</em>}
           <span>
             {trimmed
               ? t("잘라낸 뒤 {cut}초 · 원본 {full}초").replace("{cut}", cut.toFixed(2)).replace("{full}", full.toFixed(2))
@@ -218,6 +230,7 @@ export function EditTrimPop({
           </span>
         </div>
         <input type="range" className="ed-trim-range" min={1} max={top} step={1} value={frames}
+          style={{ "--fill": `%` } as CSSProperties}
           aria-label={t("클립 길이(프레임)")} aria-valuetext={`${(frames / EDIT_FPS).toFixed(2)}${t("초")}`}
           onChange={(event) => set(Number(event.target.value))} />
         <div className="ed-trim-scale"><span>0</span><span>{(full / 2).toFixed(1)}</span><span>{full.toFixed(2)}{t("초")}</span></div>
