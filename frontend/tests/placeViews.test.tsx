@@ -169,4 +169,25 @@ describe("자리마다 본 모양(usePlaceView)", () => {
     go(b, "e070"); // 그다음 처음 가는 폴더는 방금 본 것(리스트)을 물려받는다
     expect(view(b)).toBe("list");
   });
+
+  // Codex 재검토 P3: 저장이 실패하면(용량) 바꾼 모양은 이 창의 기억에만 있다. 폴더를 옮기며 저장된 것을 다시 읽을 때 그 옛 값이
+  //  방금 바꾼 모양을 덮었다 — 다른 폴더에 다녀오면 모양이 되돌아갔다.
+  it("저장에 실패한 자리의 모양은 폴더를 옮겼다 돌아와도 이 창에 남는다 — 저장이 되면 그때 적힌다", () => {
+    const win = open("e035");
+    go(win, "e040"); // 둘 다 그리드로 적혀 있다
+    go(win, "e035");
+    const saved = data[PLACE_VIEWS_KEY];
+    const full = { on: true };
+    const real = Object.getOwnPropertyDescriptor(data, PLACE_VIEWS_KEY)!;
+    Object.defineProperty(data, PLACE_VIEWS_KEY, { configurable: true, enumerable: true, get: () => real.value as string,
+      set: (value: string) => { if (!full.on) real.value = value; } }); // 저장소가 꽉 찼다 — 쓰기가 말없이 버려진다
+    act(() => win.latest.setLayout("list"));
+    expect([view(win), data[PLACE_VIEWS_KEY] === saved]).toEqual(["list", true]);
+    go(win, "e040");
+    go(win, "e035");
+    expect(view(win)).toBe("list"); // 저장소의 옛 그리드로 돌아가지 않는다
+    full.on = false; // 용량이 풀렸다 — 다음에 바꿀 때 적힌다
+    act(() => win.latest.setGroupByDate(true));
+    expect(parsePlaceViews(JSON.parse(data[PLACE_VIEWS_KEY])).e035).toEqual({ layout: "list", group: true });
+  });
 });
