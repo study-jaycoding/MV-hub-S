@@ -814,17 +814,18 @@ def test_observed_job_id_does_not_pick_between_equal_candidates(
     assert repo.get_generation(second)["is_final"] is False
 
 
-def test_observed_job_id_waits_while_another_open_ledger_holds_the_same_local_row(
+def test_two_open_ledgers_of_one_generation_each_apply_a_fresh_look(
     isolated_content_db, monkeypatch
 ):
+    # 같은 생성물에 미종결 원장이 둘 — 팀 카드 쪽(서버 id)과 내 작업 쪽(job 앵커). 원장마다 seq·claim 을 따로 보므로 한쪽의
+    #  낡은 묶음 관측이 다른 쪽이 맞춘 로컬을 덮을 수 있다. 둘 다 그 생성물의 모든 이름을 잠그고 다시 본 값만 쓴다.
     mine = _seed_generation("local-mine", "job-mine", shared=True)
-    ref = _prepared_by_server_id("server-uuid-1")
-    # 같은 생성물에 job 앵커로 잡힌 다른 미종결 원장(내 작업 쪽에서 낸 요청) — 그쪽의 의도가 더 새로울 수 있다
-    other = repo.prepare_share_state_intent(
+    team = _prepared_by_server_id("server-uuid-1")  # 최종을 바란다
+    own = repo.prepare_share_state_intent(
         "http://share.example.test",
         job_anchor="job-mine",
         local_id=mine,
-        operation_kind="unfinalize",
+        operation_kind="unfinalize",  # 최종 해제를 바란다
         desired_shared=True,
         desired_final=False,
         base_shared=True,
@@ -832,31 +833,29 @@ def test_observed_job_id_waits_while_another_open_ledger_holds_the_same_local_ro
         desired_held=False,
         base_held=False,
     )
-    _release(other)
-    _patch_observer(
-        monkeypatch, lambda *_args: _observed("server-uuid-1", "job-mine", final=True)
-    )
-    _cycle("late-busy")
-    row = repo.get_share_state_intent(ref["intent_id"])
-    assert (row["status"], row["local_id"], row["last_error_code"]) == (
-        "pending",
-        None,
-        "local_target_busy",
-    )
-    assert repo.get_generation(mine)["is_final"] is False
+    _release(own)
+    looks: list[str] = []
 
-    # 그 원장이 끝난 뒤에는 적용한다
-    with db.get_connection() as conn:
-        conn.execute(
-            "UPDATE share_state_intent SET status='superseded', claim_token=NULL, next_retry_at=NULL "
-            "WHERE intent_id=?",
-            (other["intent_id"],),
-        )
-    _retry_now(ref["intent_id"])
-    _cycle("late-busy-2")
-    row = repo.get_share_state_intent(ref["intent_id"])
-    assert (row["status"], row["local_id"]) == ("converged", mine)
+    def look_again(_origin, _token, intent):
+        looks.append(intent["intent_id"])
+        return _observed("server-uuid-1", "job-mine", final=True)  # 서버의 지금
+
+    monkeypatch.setattr(
+        reconciler,
+        "_observe_remote_states",
+        lambda _origin, _token, intents: {  # 묶음 관측은 낡았다(최종이 아님)
+            str(intent["intent_id"]): _observed("server-uuid-1", "job-mine", final=False)
+            for intent in intents
+        },
+    )
+    monkeypatch.setattr(reconciler, "_observe_remote_state", look_again)
+    _cycle("two-ledgers")
+    assert sorted(looks) == sorted([team["intent_id"], own["intent_id"]])
     assert repo.get_generation(mine)["is_final"] is True
+    row = repo.get_share_state_intent(team["intent_id"])
+    assert (row["status"], row["local_id"]) == ("converged", mine)
+    # 내 작업 쪽 원장은 낡은 관측('최종 아님' = 바라던 상태)으로 닫히지 않는다 — 아직 안 보이므로 계속 지켜본다
+    assert repo.get_share_state_intent(own["intent_id"])["status"] == "prepared"
 
 
 def test_result_unknown_survives_an_auth_detour_and_other_observations(
@@ -1047,9 +1046,28 @@ def test_stale_observation_cannot_undo_a_reshare_finished_on_the_job_key(
     assert (row["status"], row["local_id"]) == ("prepared", None)
 
 
-def test_first_link_looks_again_while_holding_both_keys(isolated_content_db, monkeypatch):
+@pytest.mark.parametrize("ledger", ["server-id-only", "own-anchor"])
+def test_looks_again_while_holding_every_name_of_the_generation(
+    isolated_content_db, monkeypatch, ledger
+):
+    # 팀 카드 쪽 조작은 서버 id 로, 내 작업 쪽 조작은 job 앵커로 잠근다. 조정기는 어느 쪽 원장이든 두 이름을 다 쥐고 다시 본다.
     mine = _seed_generation("local-mine", "job-mine", shared=True)
-    ref = _prepared_by_server_id("server-uuid-1")
+    if ledger == "server-id-only":
+        ref = _prepared_by_server_id("server-uuid-1")
+    else:
+        ref = repo.prepare_share_state_intent(
+            "http://share.example.test",
+            job_anchor="job-mine",
+            local_id=mine,
+            operation_kind="finalize",
+            desired_shared=True,
+            desired_final=True,
+            base_shared=True,
+            base_final=False,
+            desired_held=False,
+            base_held=False,
+        )
+        _release(ref)
     held: list[bool] = []
 
     def look_again(origin, _token, _intent):
@@ -1078,8 +1096,8 @@ def test_first_link_looks_again_while_holding_both_keys(isolated_content_db, mon
     assert repo.get_share_state_intent(ref["intent_id"])["local_id"] == mine
 
 
-def test_ledger_with_its_own_anchor_does_not_look_again(isolated_content_db, monkeypatch):
-    # 저장된 앵커로 로컬 행을 찾는 원장(내 작업 쪽 요청)은 전과 같다 — 다른 키를 잡지도, 다시 보지도 않는다
+def test_generation_with_a_single_name_does_not_look_again(isolated_content_db, monkeypatch):
+    # 서버 id 와 job 앵커가 같은 생성물(이름이 하나)은 전과 같다 — 잡을 다른 키가 없고, 다시 보지도 않는다
     mine = _seed_generation("local-mine", "job-mine")
     ref = repo.prepare_share_state_intent(
         "http://share.example.test",
@@ -1094,19 +1112,159 @@ def test_ledger_with_its_own_anchor_does_not_look_again(isolated_content_db, mon
     _release(ref)
 
     def never(*_args):
-        raise AssertionError("저장된 앵커가 있는 원장은 다시 관측하지 않는다")
+        raise AssertionError("이름이 하나인 생성물은 다시 관측하지 않는다")
 
     monkeypatch.setattr(
         reconciler,
         "_observe_remote_states",
         lambda _origin, _token, intents: {
-            str(intent["intent_id"]): _observed("server-uuid-1", "job-other", final=False)
+            str(intent["intent_id"]): _observed("job-mine", "job-mine", final=False)
             for intent in intents
         },
     )
     monkeypatch.setattr(reconciler, "_observe_remote_state", never)
-    assert _cycle("own-anchor").get("converged") == 1
+    assert _cycle("single-name").get("converged") == 1
     assert repo.get_generation(mine)["shared"] is True
+
+
+def test_reused_ledger_cannot_undo_what_finished_on_the_job_key(
+    isolated_content_db, monkeypatch
+):
+    # Codex 3차 검토: 한 번 맞춘 원장은 local_id 를 기억한다(새 요청의 UPSERT 도 지우지 않는다). 그 원장의 다음 요청이
+    #  시간 초과되면 — 대상을 이미 안다고 해서 내 작업 쪽 조작과 같은 키를 쥔 것은 아니다.
+    mine = _seed_generation("local-mine", "job-mine", shared=True)
+    first = _prepared_by_server_id("server-uuid-1")
+    _patch_observer(
+        monkeypatch, lambda *_args: _observed("server-uuid-1", "job-mine", final=True)
+    )
+    assert _cycle("reuse-1").get("converged") == 1
+    assert repo.get_generation(mine)["is_final"] is True
+
+    # 같은 팀 카드에서 '최종 해제' → 시간 초과(결과 불명). 원장은 같은 행 · 새 seq · local_id 그대로
+    again = repo.prepare_share_state_intent(
+        "http://share.example.test",
+        server_generation_id="server-uuid-1",
+        operation_kind="unfinalize",
+        desired_shared=True,
+        desired_final=False,
+        base_shared=True,
+        base_final=True,
+        desired_held=False,
+        base_held=False,
+    )
+    _release(again)
+    assert (again["intent_id"], again["local_id"]) == (first["intent_id"], mine)
+    server = {"final": False}  # 서버는 늦게 해제를 적용했다
+
+    def see(*_args):
+        return _observed("server-uuid-1", "job-mine", final=server["final"])
+
+    def batch(_origin, _token, intents):
+        stale = {str(intent["intent_id"]): see() for intent in intents}
+        # 묶음 관측 직후 내 작업 쪽에서 다시 최종으로 올린다(job 키로 잠그는 길 · 원장은 바로 종결)
+        mine_side = repo.prepare_share_state_intent(
+            "http://share.example.test",
+            job_anchor="job-mine",
+            local_id=mine,
+            operation_kind="finalize",
+            desired_shared=True,
+            desired_final=True,
+            base_shared=True,
+            base_final=False,
+        )
+        assert (
+            repo.apply_share_state_intent_local(
+                mine_side["intent_id"],
+                mine_side["intent_seq"],
+                mine_side["claim_token"],
+                local_id=mine,
+                shared=True,
+                is_final=True,
+                final_by="supervisor",
+                observed_state={"shared": True, "is_final": True},
+            )
+            == repo.SHARE_STATE_APPLY_APPLIED
+        )
+        server["final"] = True
+        return stale
+
+    monkeypatch.setattr(reconciler, "_observe_remote_states", batch)
+    monkeypatch.setattr(reconciler, "_observe_remote_state", see)
+    assert _cycle("reuse-2").get("retry") == 1
+    assert repo.get_generation(mine)["is_final"] is True  # 방금 올린 최종이 남는다
+    assert repo.get_share_state_intent(first["intent_id"])["status"] == "prepared"
+
+
+def test_observed_job_id_skips_a_row_that_belongs_to_another_job(
+    isolated_content_db, monkeypatch
+):
+    # 로컬 id 가 우연히 그 job_id 와 같아도, 그 행의 job_id 가 다른 값이면 다른 생성물이다(내 작업 쪽은 그 job_id 로 잠근다)
+    other = _seed_generation("job-mine", "job-k", shared=True)
+    ref = _prepared_by_server_id("server-uuid-1")
+    _patch_observer(
+        monkeypatch, lambda *_args: _observed("server-uuid-1", "job-mine", final=True)
+    )
+    _cycle("other-job")
+    row = repo.get_share_state_intent(ref["intent_id"])
+    assert (row["status"], row["local_id"], row["last_error_code"]) == (
+        "converged",
+        None,
+        "local_mirror_skipped_no_target",
+    )
+    assert repo.get_generation(other)["is_final"] is False
+
+
+def test_ledger_that_remembers_its_row_does_not_switch_to_another_by_job_id(
+    isolated_content_db, monkeypatch
+):
+    # local_id 를 기억하는 원장은 그 행이 잠깐 없을 때 전처럼 기다린다 — 관측의 job_id 로 다른 행(받은 사본)에 옮겨 붙지 않는다
+    other = _seed_generation("received-copy", "job-mine", shared=True)
+    _prepared_by_server_id("server-uuid-1", local_id="local-gone-for-now")
+    _patch_observer(
+        monkeypatch, lambda *_args: _observed("server-uuid-1", "job-mine", final=True)
+    )
+    assert _cycle("remembered-row").get("waiting_local") == 1
+    assert repo.get_generation(other)["is_final"] is False
+
+
+def test_target_whose_key_is_not_held_waits_for_the_next_cycle(
+    isolated_content_db, monkeypatch
+):
+    # 잠근 뒤 다시 보니 서버가 다른 job_id 를 말한다(있을 수 없는 일에 가깝다) — 쥐지 않은 키의 로컬 행에는 쓰지 않는다
+    first = _seed_generation("local-a", "job-a", shared=True)
+    second = _seed_generation("local-b", "job-b", shared=True)
+    ref = _prepared_by_server_id("server-uuid-1")
+    monkeypatch.setattr(
+        reconciler,
+        "_observe_remote_states",
+        lambda _origin, _token, intents: {
+            str(intent["intent_id"]): _observed("server-uuid-1", "job-a", final=True)
+            for intent in intents
+        },
+    )
+    monkeypatch.setattr(
+        reconciler,
+        "_observe_remote_state",
+        lambda *_args: _observed("server-uuid-1", "job-b", final=True),
+    )
+    assert _cycle("key-not-held").get("retry") == 1
+    row = repo.get_share_state_intent(ref["intent_id"])
+    assert (row["status"], row["local_id"], row["last_error_code"]) == (
+        "pending",
+        None,
+        "local_target_key_not_held",
+    )
+    assert repo.get_generation(first)["is_final"] is False
+    assert repo.get_generation(second)["is_final"] is False
+
+    # 다음에는 처음부터 그 job_id 로 잠그고 본다
+    _retry_now(ref["intent_id"])
+    _patch_observer(
+        monkeypatch, lambda *_args: _observed("server-uuid-1", "job-b", final=True)
+    )
+    assert _cycle("key-held").get("converged") == 1
+    assert repo.get_generation(second)["is_final"] is True
+    assert repo.get_generation(first)["is_final"] is False
 
 
 def test_watch_expiry_gives_a_lost_local_target_its_full_retries(
@@ -1125,6 +1283,16 @@ def test_watch_expiry_gives_a_lost_local_target_its_full_retries(
         1,
         "local_target_lost",
     )
+
+    # 로컬 대상이 돌아온 다음 사이클 — 기한으로 닫는다는 기록과 그 종결 이름('이전 상태' = rejected)을 잃지 않는다
+    back = _seed_generation("local-gone-for-now", "job-mine", shared=True)
+    _retry_now(ref["intent_id"])
+    assert _cycle("expired-back").get("rejected") == 1
+    row = repo.get_share_state_intent(ref["intent_id"])
+    assert (row["status"], row["local_id"]) == ("rejected", back)
+    assert json.loads(row["observed_state_json"])["unknown_watch_expired"] is True
+    local = repo.get_generation(back)
+    assert (local["shared"], local["is_final"]) == (True, False)
 
 
 @pytest.mark.parametrize(

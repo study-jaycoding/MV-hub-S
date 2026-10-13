@@ -11,7 +11,7 @@ import asyncio
 import json
 import threading
 from contextlib import asynccontextmanager, contextmanager
-from typing import Any, Iterable, Iterator, Mapping, Optional
+from typing import Any, Collection, Iterable, Iterator, Mapping, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from ..config import DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
@@ -40,9 +40,9 @@ SHARE_STATE_TERMINAL_STATUSES = frozenset(
 SHARE_STATE_APPLY_APPLIED = "applied"
 SHARE_STATE_APPLY_CAS_LOST = "cas_lost"
 SHARE_STATE_APPLY_NO_TARGET = "no_target"
-# 관측한 job_id 로 찾은 로컬 행을 같은 서버의 **다른 미종결 원장**도 가리키고 있다 — 지금 적용하면 그쪽의 더 새로운
-# 사용자 의도를 낡은 관측으로 덮을 수 있다(원장마다 seq·claim 을 따로 본다). 적용하지 않고 다음에 다시 본다.
-SHARE_STATE_APPLY_BUSY = "busy"
+# 적용할 로컬 행을 '내 작업' 쪽 조작이 잠그는 키(그 행의 job_id, 없으면 id)를 호출자가 쥐고 있지 않다 — 그 키로 끝난
+# 조작을 낡은 관측으로 덮을 수 있다. 적용하지 않고, 다음에 그 키까지 잠그고 다시 본다.
+SHARE_STATE_APPLY_KEY_NOT_HELD = "key_not_held"
 # 관측한 job_id 에 같은 급의 로컬 완료본이 둘 이상이다 — 어느 쪽인지 추측하지 않고, 로컬은 건드리지 않는다.
 SHARE_STATE_APPLY_AMBIGUOUS = "ambiguous"
 _CLAIMABLE_STATUSES = ("prepared", "pending", "waiting_local", "auth_required")
@@ -564,6 +564,78 @@ def release_share_state_intent_claim(
         return cursor.rowcount == 1
 
 
+def _route_anchor(generation_row: Mapping[str, Any]) -> str:
+    """이 로컬 행을 '내 작업' 쪽 조작이 서버에 부르고 잠그는 이름 — job_id, 없으면 id(``finalize_id_map`` 의 server_id)."""
+    return generation_row["job_id"] or generation_row["id"]
+
+
+def _find_local_target(
+    conn: Any,
+    intent: Mapping[str, Any],
+    requested_local_id: Optional[str],
+    link_job_id: Optional[str],
+) -> tuple[Any, bool]:
+    """원장을 적용할 로컬 행 → ``(행 | None, 같은 급의 후보가 둘이라 고르지 못함)``.
+
+    순서: 저장된 local_id → 원장의 앵커(job_anchor · server_generation_id) → ``link_job_id``.
+    """
+    if requested_local_id:
+        target = conn.execute(
+            "SELECT id, worker_id, job_id FROM generation WHERE id=?",
+            (requested_local_id,),
+        ).fetchone()
+        if target is not None:
+            return target, False
+    for anchor in (intent["job_anchor"], intent["server_generation_id"]):
+        if not anchor:
+            continue
+        target = conn.execute(
+            "SELECT id, worker_id, job_id FROM generation WHERE id=? OR job_id=? "
+            "ORDER BY (id=?) DESC, (origin='local') DESC LIMIT 1",
+            (anchor, anchor, anchor),
+        ).fetchone()
+        if target is not None:
+            return target, False
+    job_id = _clean_optional(link_job_id)
+    if not job_id:
+        return None, False
+    # 응답을 받지 못한 요청은 원장에 서버 id 만 남는다(로컬 행은 job_id 로만 이어진다 — 정상 응답 길은 응답의 job_id 로
+    # 로컬 행을 다시 찾는다). 서버 관측이 알려 준 job_id 로 한 번 더 찾는다(2026-10-14 격리 실측 — 늦은 서버).
+    # 이름·폴더로 추측하지 않고, 없으면 행을 만들지 않는다.
+    # · 그 job_id 가 '내 작업' 쪽 이름인 행만 본다(job_id 가 같거나, job_id 가 없고 id 가 같다). id 만 우연히 같고
+    #   job_id 가 다른 값인 행은 다른 생성물이다.
+    # · 완료본만 본다 — 같은 job_id 에 '실패로 보존한 요청 행(origin local)'과 실제 결과(synced)가 같이 있을 수 있고
+    #   (generation_sync 의 NO_REVIVE 보존), 최종·공유의 대상은 실제 결과다.
+    candidates = conn.execute(
+        "SELECT id, worker_id, job_id, (id=?) AS by_id, (origin='local') AS is_local "
+        "FROM generation "
+        "WHERE (job_id=? OR (id=? AND (job_id IS NULL OR job_id=''))) AND status='done' "
+        "ORDER BY by_id DESC, is_local DESC LIMIT 2",
+        (job_id, job_id, job_id),
+    ).fetchall()
+    # 맨 앞 후보가 둘째보다 분명히 앞설 때만 고른다(id 일치 > 로컬본 > 그 외). 같은 급이 둘이면 고르지 않는다.
+    if len(candidates) == 2 and (candidates[0]["by_id"], candidates[0]["is_local"]) == (
+        candidates[1]["by_id"],
+        candidates[1]["is_local"],
+    ):
+        return None, True
+    return (candidates[0] if candidates else None), False
+
+
+def share_state_local_route_anchor(
+    intent: Mapping[str, Any], link_job_id: Optional[str] = None
+) -> Optional[str]:
+    """이 원장을 지금 적용하면 닿을 로컬 행을 '내 작업' 쪽 조작이 잠그는 이름. 대상이 없거나 못 고르면 None.
+
+    조정기가 잠글 키를 정하려고 잠금 **전에** 읽는다. 그사이 대상이 바뀌면 적용 쪽의 ``held_anchors`` 검사가 막는다.
+    """
+    with get_connection() as conn:
+        target, _ambiguous = _find_local_target(
+            conn, intent, _clean_optional(intent.get("local_id")), link_job_id
+        )
+    return _route_anchor(target) if target is not None else None
+
+
 def apply_share_state_intent_local(
     intent_id: str,
     intent_seq: int,
@@ -579,6 +651,7 @@ def apply_share_state_intent_local(
     status: str = "converged",
     observed_state: Optional[Mapping[str, Any]] = None,
     link_job_id: Optional[str] = None,
+    held_anchors: Optional[Collection[str]] = None,
 ) -> str:
     """로컬 ``{shared, final, held}`` 적용과 원장 상태 전이를 한 트랜잭션 CAS로 수행한다.
 
@@ -586,8 +659,10 @@ def apply_share_state_intent_local(
     옛 워커는 로컬을 한 줄도 바꾸지 못하고, 적용 중 예외가 나면 원장 전이까지 함께 롤백된다.
     반환값으로 정상 적용, CAS 경합 패배, 로컬 대상 부재를 구분한다.
 
-    ``link_job_id`` 는 원장에 저장된 앵커로 로컬 행을 못 찾을 때 대신 쓸 job_id 다. 이 길은 다른 키(job 키)로 잠그는
-    조작과 같은 로컬 행을 만지므로, 호출자가 **그 job 키의 잠금까지 쥐고 그 아래에서 다시 관측한 값**일 때만 넘긴다.
+    ``link_job_id`` 는 원장에 저장된 앵커로 로컬 행을 못 찾을 때 대신 쓸 job_id 다(서버 관측이 알려 준 값).
+    ``held_anchors`` 는 조정기가 넘긴다 — 지금 잠금을 쥐고 그 아래에서 관측한 이름들이다. 찾은 로컬 행을 내 작업 쪽
+    조작이 잠그는 키(``_route_anchor``)가 그 안에 없으면 적용하지 않는다(``SHARE_STATE_APPLY_KEY_NOT_HELD``).
+    라우트는 넘기지 않는다 — 자기 조작의 서버 응답을 적용하는 길이라 전과 같다.
     """
     if is_final and not shared:
         raise ValueError("최종 상태는 공유 상태여야 합니다")
@@ -609,70 +684,18 @@ def apply_share_state_intent_local(
             if intent is None:
                 conn.execute("ROLLBACK")
                 return SHARE_STATE_APPLY_CAS_LOST
-            target = None
-            requested_local_id = _clean_optional(local_id) or intent["local_id"]
-            if requested_local_id:
-                target = conn.execute(
-                    "SELECT id, worker_id FROM generation WHERE id=?",
-                    (requested_local_id,),
-                ).fetchone()
-            if target is None:
-                anchors = [
-                    value
-                    for value in (intent["job_anchor"], intent["server_generation_id"])
-                    if value
-                ]
-                for anchor in anchors:
-                    target = conn.execute(
-                        "SELECT id, worker_id FROM generation WHERE id=? OR job_id=? "
-                        "ORDER BY (id=?) DESC, (origin='local') DESC LIMIT 1",
-                        (anchor, anchor, anchor),
-                    ).fetchone()
-                    if target is not None:
-                        break
-            observed_job_id = _clean_optional(link_job_id)
-            if target is None and observed_job_id:
-                # 응답을 받지 못한 요청은 원장에 서버 id 만 남는다(로컬 행은 job_id 로만 이어진다 — 정상 응답 길은
-                # 응답의 job_id 로 로컬 행을 다시 찾는다). 서버 관측이 알려 준 job_id 로 한 번 더 찾는다
-                # (2026-10-14 격리 실측 — 늦은 서버). 이름·폴더로 추측하지 않고, 없으면 행을 만들지 않는다.
-                # 완료본만 본다 — 같은 job_id 에 '실패로 보존한 요청 행(origin local)'과 실제 결과(synced)가 같이
-                # 있을 수 있고(generation_sync 의 NO_REVIVE 보존), 최종·공유의 대상은 실제 결과다.
-                candidates = conn.execute(
-                    "SELECT id, worker_id, job_id, (id=?) AS by_id, (origin='local') AS is_local "
-                    "FROM generation WHERE (id=? OR job_id=?) AND status='done' "
-                    "ORDER BY by_id DESC, is_local DESC LIMIT 2",
-                    (observed_job_id, observed_job_id, observed_job_id),
-                ).fetchall()
-                # 맨 앞 후보가 둘째보다 분명히 앞설 때만 고른다(id 일치 > 로컬본 > 그 외). 같은 급이 둘이면 고르지 않는다.
-                if len(candidates) == 2 and (
-                    candidates[0]["by_id"],
-                    candidates[0]["is_local"],
-                ) == (candidates[1]["by_id"], candidates[1]["is_local"]):
-                    conn.execute("ROLLBACK")
-                    return SHARE_STATE_APPLY_AMBIGUOUS
-                if candidates:
-                    found = candidates[0]
-                    busy = conn.execute(
-                        "SELECT 1 FROM share_state_intent "
-                        "WHERE server_origin=? AND intent_id<>? AND status IN (?,?,?,?) "
-                        "AND (local_id=? OR job_anchor IN (?,?,?)) LIMIT 1",
-                        (
-                            intent["server_origin"],
-                            intent_id,
-                            *_CLAIMABLE_STATUSES,
-                            found["id"],
-                            observed_job_id,
-                            found["job_id"] or observed_job_id,
-                            found["id"],
-                        ),
-                    ).fetchone()
-                    if busy is not None:
-                        conn.execute("ROLLBACK")
-                        return SHARE_STATE_APPLY_BUSY
-                    target = found
+            target, ambiguous = _find_local_target(
+                conn, intent, _clean_optional(local_id) or intent["local_id"], link_job_id
+            )
+            if ambiguous:
+                conn.execute("ROLLBACK")
+                return SHARE_STATE_APPLY_AMBIGUOUS
             if target is None:
                 conn.execute("ROLLBACK")
                 return SHARE_STATE_APPLY_NO_TARGET
+            if held_anchors is not None and _route_anchor(target) not in held_anchors:
+                conn.execute("ROLLBACK")
+                return SHARE_STATE_APPLY_KEY_NOT_HELD
 
             target_id = target["id"]
             if shared:
