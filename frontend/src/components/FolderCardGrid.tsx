@@ -266,6 +266,14 @@ export function FolderCardGrid({ folders, scale, fill, layout, selected, onSelec
   //  그래서 소비되지 않은 기록(빈 곳의 우클릭·카드 밖에서 떼어 contextmenu 가 다른 곳에서 났거나 전파가 막힌 경우)이 남아도, 다음 마우스 우클릭은
   //  누름에서 다시 적고 메뉴 키는 안 보니 낡은 기록이 쓰일 길이 없다(Codex 코드 리뷰 2회).
   const rightPressCoveredRef = useRef<boolean | null>(null);
+  // 카드 안 단추(에피소드 카드의 컷 띠·[열기])의 누름이 가려진 채 시작됐나. 마우스 클릭(detail > 0)은 늘 같은 단추의 누름이 앞서 새로 적으므로
+  //  낡은 기록이 쓰일 길이 없고, 키보드로 누른 것(Enter·Space — detail 0)은 기록을 보지 않고 그 순간의 가림을 본다.
+  const actionCoveredRef = useRef(false);
+  const actionCovered = (e: React.MouseEvent): boolean => {
+    const covered = e.detail > 0 ? actionCoveredRef.current : backgroundKeysBlocked();
+    actionCoveredRef.current = false;
+    return covered;
+  };
   const onGridMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
       e.preventDefault(); // 휠 클릭의 자동 스크롤 막기(정보는 카드의 auxclick)
@@ -278,7 +286,12 @@ export function FolderCardGrid({ folders, scale, fill, layout, selected, onSelec
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
     if (target.closest(".cut-out")) return; // '컷 밖' 칸은 고르는 대상이 아니다(누르면 한 장씩 보기)
-    if (inCardAction(target)) return; // 카드 안 단추(컷 띠·[열기]) — 고르기를 바꾸지 않고 그 단추가 제 일을 한다
+    if (inCardAction(target)) {
+      // 카드 안 단추(컷 띠·[열기]) — 고르기를 바꾸지 않고 그 단추가 제 일을 한다. 다만 위에 뜬 메뉴를 닫는 누름이었으면 그 일도 하지 않는다:
+      //  단추의 click 은 누름 뒤에 와서 그때는 가림이 이미 풀려 있다 — 누름의 시작에 적어 두고 click 에서 본다(우클릭의 기록과 같은 이유).
+      actionCoveredRef.current = pressStartedCovered();
+      return;
+    }
     const card = target.closest(".cut-card[data-path]") as HTMLElement | null;
     e.preventDefault(); // 끌 때 글자·그림이 긁히지 않게(카드 위에서 시작해도 마퀴)
     if (pressStartedCovered()) return; // 위에 뜬 메뉴를 닫는 누름 — 고른 것을 바꾸지 않는다
@@ -341,9 +354,13 @@ export function FolderCardGrid({ folders, scale, fill, layout, selected, onSelec
               <div key={folder.path} role="button" tabIndex={0} className={`cut-card ep-card ep-${layout}` + (isSelected ? " sel" : "")} {...card}>
                 <EpisodeCardBody
                   folder={folder} layout={layout} thumbSize={thumbSize} fill={fill} now={now}
-                  onEnter={() => onEnter(folder)}
+                  onEnter={(e) => {
+                    if (!actionCovered(e)) onEnter(folder);
+                  }}
                   // 컷 띠의 컷 = 그 컷으로 바로(사이드바에서 그 컷을 누른 것과 같다 — 에피소드로 들어가는 것과 같은 길)
-                  onEnterCut={(cut) => onEnter({ ...folder, path: cut.path, name: cut.name, subfolders: 0 })}
+                  onEnterCut={(cut, e) => {
+                    if (!actionCovered(e)) onEnter({ ...folder, path: cut.path, name: cut.name, subfolders: 0 });
+                  }}
                 />
               </div>
             );

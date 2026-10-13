@@ -123,13 +123,25 @@ describe("에피소드 카드의 안쪽 그림", () => {
       .toEqual(["컷 16 · 73건", null, null, null]);
   });
 
+  it("컷 띠의 그림은 컷 카드와 같은 분기 — 포스터 없는 원격 영상은 첫 프레임(영상 요소)으로, 빈 칸으로 두지 않는다", () => {
+    const remote = { id: "v", assets: [{ id: "a", type: "video", file_path: "https://cdn.example/clip.mp4", thumbnail_path: null }] } as unknown as FolderCardChild["cover"];
+    const poster = { id: "p", assets: [{ id: "b", type: "video", file_path: "https://cdn.example/clip2.mp4", thumbnail_path: "/media/poster.jpg" }] } as unknown as FolderCardChild["cover"];
+    draw("list", episode({ subfolders: 3, children: [{ ...cut("c0010", 1), cover: remote }, { ...cut("c0020", 1), cover: poster }, cut("c0030", 1)] }));
+    const tiles = [...host.querySelectorAll<HTMLElement>(".ep-cut")];
+    const video = (tile: HTMLElement) => tile.querySelector("video");
+    expect([video(tiles[0])?.getAttribute("src"), video(tiles[0])?.getAttribute("preload"), video(tiles[0])?.hasAttribute("poster")])
+      .toEqual(["https://cdn.example/clip.mp4", "metadata", false]);
+    expect([video(tiles[1])?.getAttribute("preload"), video(tiles[1])?.getAttribute("poster")?.includes("poster.jpg")]).toEqual(["none", true]); // 포스터가 있으면 영상을 받지 않는다
+    expect([video(tiles[2]), tiles[2].querySelector("img") !== null]).toEqual([null, true]);
+  });
+
   it("카드 안의 누름 — 컷 띠의 컷은 그 컷으로, '+N'·[열기] 는 그 에피소드로. 모두 격자가 알아볼 표식을 단다", () => {
     const { onEnter, onEnterCut } = draw("list", episode());
     const buttons = [...host.querySelectorAll<HTMLButtonElement>("button")];
     expect(buttons.length).toBe(9); // 컷 7 + '+N' + [열기]
     expect(buttons.every((button) => button.hasAttribute("data-ep-action") && button.tabIndex === -1 && button.type === "button")).toBe(true);
     act(() => host.querySelectorAll<HTMLButtonElement>(".ep-cut")[2].click());
-    expect(onEnterCut).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ path: "e020/c0030", name: "c0030" }));
+    expect(onEnterCut).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ path: "e020/c0030", name: "c0030" }), expect.objectContaining({ type: "click" }));
     expect(onEnter).not.toHaveBeenCalled();
     act(() => host.querySelector<HTMLButtonElement>(".ep-cut.more")!.click());
     act(() => host.querySelector<HTMLButtonElement>(".ep-enter")!.click());

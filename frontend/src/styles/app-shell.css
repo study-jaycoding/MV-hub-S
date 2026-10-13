@@ -775,7 +775,11 @@
 
 /* 캔버스 '폴더 보기' — 사이드바 폴더 클릭 시 가운데 플로팅 창에 라이브러리 격자 그대로(툴바 필터·날짜 구분 동일).
    씬 위(캔버스 상단 패널 z 20)·씬 모달(200)·플로팅 입력창(300) 아래. 격자는 .gen-grid 가 스스로 스크롤·추가 로드. */
-.folder-peek-catcher { position: fixed; inset: 0; z-index: 150; background: rgba(0,0,0,0.35); }
+/* 바깥 막 — 모아보기(.reel-backdrop)와 같은 어둡기·흐림(Jay 2026-10-13: 뒤가 그대로 흐려 보이게). 막은 창의 **형제**라 창 안에
+   position:fixed 로 띄운 것의 기준이 되지 않는다(창을 감싼 요소에 backdrop-filter 를 걸면 그 안의 fixed 가 어긋난다 — scene.css 의 .scene-varpop-backdrop 주석). */
+.folder-peek-catcher { position: fixed; inset: 0; z-index: 150; background: rgba(4, 5, 8, 0.6); backdrop-filter: blur(4px); }
+/* 창 뒤에 남기는 도구 줄 사본(App) — 자리만 차지하는 그림이다. 감싼 칸이 줄 배치를 바꾸지 않게 한다. */
+.lib-toolbar-behind { display: contents; }
 .folder-peek {
   /* transform 없이 inset 으로 가운데 — transform 이 있으면 창 안에 position:fixed 로 띄운 것이 창 기준으로 어긋나고 overflow 에
      잘린다(코덱스 P2 — 그때는 툴바의 태그 패널이 창 안에 있었다. 지금 그 패널은 창의 쌓임 맥락 밖, body 에 그린다 — LibraryToolbar). */

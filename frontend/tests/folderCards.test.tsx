@@ -480,6 +480,45 @@ it("에피소드 화면: 리스트는 한 줄에 하나·그리드는 폭에 맞
   expect(tile().querySelector(".ep-enter")).toBeNull(); // 그리드에는 [열기] 가 없다
 });
 
+// Codex 코드 리뷰: 카드 안 단추는 격자의 누름 처리에서 빠지므로(고르기를 안 바꾸려고), 위에 뜬 메뉴를 닫는 누름이 그대로 컷으로 들어갔다 —
+//  화면 위치와 생성 위치까지 바뀐다. 누름의 시작에 가려져 있었으면 그 단추의 click 을 실행하지 않는다.
+it("에피소드 화면: 위에 뜬 메뉴를 닫는 누름은 카드 안 단추(컷 띠·[열기])를 실행하지 않는다 — 키보드로 누른 것은 그 순간의 가림을 본다", async () => {
+  const entered: string[] = [];
+  const cuts = [{ path: "e035/C0010", name: "C0010", count: 3, rep: false, cover: { id: "c", assets: [] } }];
+  const episode: FolderCard = { ...card("e035", 14), path: "e035", subfolders: 4, children: cuts };
+  act(() => root.render(<FolderCardGrid {...gridProps} layout="list" folders={[episode]} top onEnter={(folder) => entered.push(folder.path)} outside={0} />));
+  const cutButton = () => host.querySelector<HTMLButtonElement>(".ep-cut")!;
+  const { useKeyOwner } = await import("../src/lib/keyGate");
+  function Owner({ on }: { on: boolean }) { useKeyOwner(on); return null; }
+  const owner = createRoot(document.body.appendChild(document.createElement("div")));
+  const mouseClick = (el: HTMLElement) => act(() => { el.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })); });
+  // 메뉴가 떠 있는 채 시작한 누름 — 메뉴는 누름의 앞쪽(pointerdown)에 닫혀 click 때는 이미 없다. 들어가지 않는다
+  act(() => owner.render(<Owner on />));
+  act(() => { cutButton().dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+  act(() => owner.render(<Owner on={false} />));
+  mouse("mousedown", cutButton());
+  act(() => { cutButton().dispatchEvent(new Event("pointerup", { bubbles: true })); });
+  mouse("mouseup", window);
+  mouseClick(cutButton());
+  expect(entered).toEqual([]);
+  // 그다음의 보통 누름은 들어간다(기록이 남아 다음 누름을 삼키지 않는다)
+  act(() => { cutButton().dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+  mouse("mousedown", cutButton());
+  act(() => { cutButton().dispatchEvent(new Event("pointerup", { bubbles: true })); });
+  mouse("mouseup", window);
+  mouseClick(cutButton());
+  expect(entered).toEqual(["e035/C0010"]);
+  // 키보드로 누른 것(Enter·Space 의 click — detail 0): 위에 창이 떠 있으면 쉬고, 없으면 들어간다
+  const enter = host.querySelector<HTMLButtonElement>(".ep-enter")!;
+  act(() => owner.render(<Owner on />));
+  act(() => enter.click());
+  expect(entered).toHaveLength(1);
+  act(() => owner.render(<Owner on={false} />));
+  act(() => enter.click());
+  expect(entered).toEqual(["e035/C0010", "e035"]);
+  act(() => owner.unmount());
+});
+
 it("컷 화면(하위 폴더를 가진 카드가 없다)에서는 보기 방식을 바꿔도 겹친 종이 카드 그대로다", () => {
   for (const layout of ["list", "grid"] as const) {
     act(() => root.render(<FolderCardGrid {...gridProps} layout={layout} folders={[card("C0010", 1), card("C0020", 2)]} outside={0} />));

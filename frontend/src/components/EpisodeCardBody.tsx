@@ -15,8 +15,9 @@ interface Props {
   thumbSize: number; // 표지 썸네일 크기(격자가 카드 폭으로 정한다)
   fill: boolean; // 썸네일 꽉 채움 ↔ 비율 유지
   now: number; // '2시간 전' 의 기준 시각 — 격자가 한 번 재어 모든 카드에 같은 값을 준다
-  onEnter: () => void; // 이 에피소드로 들어가기([열기] · '+N')
-  onEnterCut: (cut: FolderCardChild) => void; // 컷 띠의 컷 — 그 컷으로 바로
+  // 카드 안 단추의 누름 — 누른 이벤트를 같이 넘긴다(격자가 '위에 뜬 메뉴를 닫는 누름'이었는지 본다).
+  onEnter: (e: React.MouseEvent) => void; // 이 에피소드로 들어가기([열기] · '+N')
+  onEnterCut: (cut: FolderCardChild, e: React.MouseEvent) => void; // 컷 띠의 컷 — 그 컷으로 바로
 }
 
 export function EpisodeCardBody({ folder, layout, thumbSize, fill, now, onEnter, onEnterCut }: Props) {
@@ -54,10 +55,16 @@ export function EpisodeCardBody({ folder, layout, thumbSize, fill, now, onEnter,
             tabIndex={-1}
             className={"ep-cut" + (cut.rep ? " rep" : "")}
             title={`${cut.path} · ${cut.count}${t("건")}`}
-            onClick={() => onEnterCut(cut)}
+            onClick={(e) => onEnterCut(cut, e)}
           >
-            {/* 그림만 — 영상도 포스터(정지 그림)로 */}
-            <MediaThumbnail thumb={mediaThumbUrl(media?.file_path, media?.thumbnail_path, media?.type, 256)} isVideo={false} alt="" fallback={null} />
+            {/* 컷 카드와 같은 그림 분기 — 포스터가 있으면 그것, 포스터 없는 영상은 첫 프레임(원격 영상은 썸네일 주소를 못 만든다) */}
+            <MediaThumbnail
+              thumb={mediaThumbUrl(media?.file_path, media?.thumbnail_path, media?.type, 256)}
+              isVideo={media?.type === "video"}
+              src={media?.file_path}
+              alt=""
+              fallback={null}
+            />
             <span className="ep-cut-name">{cut.name}</span>
             <span className="ep-cut-n">{cut.count}</span>
           </button>
