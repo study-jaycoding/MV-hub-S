@@ -29,6 +29,7 @@ vi.mock("../src/lib/useEditSequence", async () => {
 });
 
 import { EditTab } from "../src/components/timeline/EditTab";
+import { clearUndo, keepUnsavedEditDoc } from "../src/lib/editTimelineStore";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -57,6 +58,11 @@ afterEach(() => {
   act(() => root.unmount());
   host.remove();
   vi.restoreAllMocks();
+  // 저장 못 한 편집·되돌리기 단계는 모듈에 남는다(같은 문서 키를 쓰는 다음 시험이 그 문서로 시작한다) — 시험마다 비운다
+  for (const key of ["mvhub.editDoc:local:p1:e070", "mvhub.editDoc:local:p1:e080", "mvhub.editDoc:local:p2:e070"]) {
+    keepUnsavedEditDoc(key, null);
+    clearUndo(key);
+  }
 });
 const mount = (keysActive = true) => act(() => root.render(
   <EditTab authKey="auth" authReady workspace={{ scope: "team", id: "w1", name: "W" }} keysActive={keysActive} flash={() => {}}
@@ -230,9 +236,10 @@ it("클립을 끌다 놓는 이벤트를 놓치면(포인터 쥐기를 잃음) �
   // jsdom 에는 포인터 쥐기가 없다 — 쥔 요소를 기억하는 흉내
   let held: Element | null = null;
   const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
-  const saved = { set: proto.setPointerCapture, has: proto.hasPointerCapture };
+  const saved = { set: proto.setPointerCapture, has: proto.hasPointerCapture, release: proto.releasePointerCapture };
   proto.setPointerCapture = function (this: Element) { held = this; };
   proto.hasPointerCapture = function (this: Element) { return held === this; };
+  proto.releasePointerCapture = function (this: Element) { if (held === this) held = null; };
   const pointDoc = document as unknown as { elementsFromPoint?: unknown };
   const savedPoint = pointDoc.elementsFromPoint;
   try {
@@ -261,6 +268,7 @@ it("클립을 끌다 놓는 이벤트를 놓치면(포인터 쥐기를 잃음) �
   } finally {
     proto.setPointerCapture = saved.set;
     proto.hasPointerCapture = saved.has;
+    proto.releasePointerCapture = saved.release;
     pointDoc.elementsFromPoint = savedPoint;
   }
 });
@@ -368,9 +376,10 @@ it("클립 끌기는 왼쪽 단추의 놓기만 확정이다 — 휠을 같이 �
   localStorage.setItem(docKey, JSON.stringify(TRIM_DOC));
   let held: Element | null = null;
   const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
-  const saved = { set: proto.setPointerCapture, has: proto.hasPointerCapture };
+  const saved = { set: proto.setPointerCapture, has: proto.hasPointerCapture, release: proto.releasePointerCapture };
   proto.setPointerCapture = function (this: Element) { held = this; };
   proto.hasPointerCapture = function (this: Element) { return held === this; };
+  proto.releasePointerCapture = function (this: Element) { if (held === this) held = null; };
   const pointDoc = document as unknown as { elementsFromPoint?: unknown };
   const savedPoint = pointDoc.elementsFromPoint;
   try {
@@ -410,6 +419,7 @@ it("클립 끌기는 왼쪽 단추의 놓기만 확정이다 — 휠을 같이 �
   } finally {
     proto.setPointerCapture = saved.set;
     proto.hasPointerCapture = saved.has;
+    proto.releasePointerCapture = saved.release;
     pointDoc.elementsFromPoint = savedPoint;
   }
 });
@@ -459,4 +469,27 @@ it("충돌을 알고 길이 조절을 다시 연 뒤에도, 그 조절 도중 �
   step(); // T2 는 처음 안 것 — 버리고 닫는다
   expect(document.querySelector(".ed-trim")).toBeNull();
   expect(localStorage.getItem(docKey)).toBe(T2);
+});
+
+// 2026-10-13 격리 실측: 방금 누른 단추가 꺼지면(끝까지 늘림 · 원본 길이로) 초점이 body 로 빠지고, 그 뒤의 ←/→ 가 죽었다(창 밖에서 난 키는
+//  껍데기가 버린다). 화살표는 초점이 어디에 있든 듣는다 — 그리고 창이 닫히면 뒤 화면의 화살표(재생헤드 이동)로 돌아간다.
+it("길이 조절 창의 ←/→ 는 초점이 창 밖(body)에 있어도 듣는다 — 뒤의 재생헤드는 움직이지 않는다", () => {
+  const docKey = "mvhub.editDoc:local:p1:e070";
+  const press1f = openTrimOn(docKey);
+  const trim = () => (JSON.parse(localStorage.getItem(docKey)!) as { clips: { trim?: number }[] }).clips[0].trim;
+  const code = timecode();
+  press1f("−1f");
+  press1f("+1f"); // 끝까지 — 줄임이 지워지고 [+1f]·[원본 길이로]는 꺼진다
+  expect(trim()).toBeUndefined();
+  (document.activeElement as HTMLElement | null)?.blur(); // 꺼진 단추에서 초점이 빠졌다(크롬) — 키는 body 에서 난다
+  const left = press({ key: "ArrowLeft", code: "ArrowLeft" });
+  expect([trim(), left.defaultPrevented]).toEqual([119 / 24, true]);
+  press({ key: "ArrowLeft", code: "ArrowLeft", shiftKey: true });
+  expect(trim()).toBeCloseTo(109 / 24);
+  press({ key: "ArrowRight", code: "ArrowRight" });
+  expect(trim()).toBeCloseTo(110 / 24);
+  expect(timecode()).toBe(code); // 뒤 화면의 화살표(재생헤드 한 프레임)는 먹지 않았다
+  press1f("닫기");
+  press({ key: "ArrowRight", code: "ArrowRight" }); // 창이 닫히면 뒤 화면의 것이다
+  expect([trim(), timecode() === code]).toEqual([110 / 24, false]);
 });

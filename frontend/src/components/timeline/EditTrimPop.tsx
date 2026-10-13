@@ -54,19 +54,27 @@ export function EditTrimPop({
     return () => element.removeEventListener("loadedmetadata", seek);
   }, [frames, src]);
 
+  // ←/→ 는 **초점이 어디에 있든** 듣는다(window, 잡는 단계). 창 안의 요소에서만 들으면, 방금 누른 단추가 꺼질 때(끝까지 늘림 · 1프레임까지
+  //  줄임 · 원본 길이로) 초점이 body 로 빠져 키가 죽는다 — 창 밖에서 난 키는 껍데기가 뒤 화면으로 보내지 않고 버린다(2026-10-13 격리 실측:
+  //  창 안을 다시 눌러야 살아났다). 슬라이더가 스스로 한 칸 더 움직이지 않게 기본 동작도 막는다.
+  const nudge = useRef((_frames: number) => {});
+  nudge.current = (delta) => set(frames + delta);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      event.stopPropagation();
+      nudge.current((event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 10 : 1));
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
   const step = (delta: number, label: string) => (
     <button type="button" disabled={delta < 0 ? frames <= 1 : frames >= top} onClick={() => set(frames + delta)}>{label}</button>
   );
   return (
-    <EditMenu x={x} y={y} width={WIDTH} height={src ? 300 : 152} label={t("길이 조절")} className="ed-trim" role="dialog" onClose={onClose}>
-      <div
-        className="ed-trim-body"
-        onKeyDown={(event) => {
-          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-          event.preventDefault(); // 슬라이더가 스스로 한 칸 더 움직이지 않게
-          set(frames + (event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 10 : 1));
-        }}
-      >
+    <EditMenu x={x} y={y} width={WIDTH} height={src ? 284 : 138} label={t("길이 조절")} className="ed-trim" role="dialog" onClose={onClose}>
+      <div className="ed-trim-body">
         <div className="ed-tmenu-head">{t("길이 조절")} — {title}</div>
         {src && <video ref={video} className="ed-trim-view" src={src} muted playsInline preload="auto" />}
         <input type="range" className="ed-trim-range" autoFocus min={1} max={top} step={1} value={frames}
@@ -75,7 +83,7 @@ export function EditTrimPop({
         <div className="ed-trim-row">
           {step(-10, "−10f")}
           {step(-1, "−1f")}
-          <b>{(frames / EDIT_FPS).toFixed(2)}{t("초")}</b>
+          <b>{(trimmed ? frames / EDIT_FPS : full).toFixed(2)}{t("초")}</b>
           {step(1, "+1f")}
           {step(10, "+10f")}
         </div>
