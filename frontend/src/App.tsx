@@ -2109,9 +2109,10 @@ export default function App() {
   useEffect(() => {
     if (refocusGridRef.current !== null && refocusGridRef.current !== "*" && refocusGridRef.current !== listPeekCtx) refocusGridRef.current = null;
     if (refocusGridRef.current === null || staleList || loading) return;
-    // 컷 카드로 들어간 뒤("*")는 그 폴더의 묶음 응답이 와서 **최종 격자가 정해진 뒤**에 — 응답 전엔 격자가 비어 있다(③ cutPending). 옛 서버·실패면
+    // 묶음 응답을 기다리는 동안(③ cutPending)은 격자가 비어 있다 — 어느 복원이든 **최종 격자가 선 뒤**에. 에피소드로 들어간 뒤("*")만이 아니라
+    //  폴더 창을 닫은 뒤도(낱장 조회가 묶음 조회보다 먼저 끝나면 빈 격자에서 표식이 소비돼 초점이 안 돌아왔다 — Codex 코드 리뷰). 옛 서버·실패면
     //  낱장 격자가 최종이다(실패 뒤에도 기다리던 것 — Codex 설계 검토).
-    if (refocusGridRef.current === "*" && cutPending) return;
+    if (cutPending) return;
     refocusGridRef.current = null; // 한 번만 — 격자가 없으면(빈 목록·실패) 그대로 끝낸다
     // 묶음 보기면 컷 카드 격자가 그 자리다(둘 중 하나만 떠 있다)
     document.querySelector<HTMLElement>("main.main .gen-grid, main.main .cut-grid")?.focus({ preventScroll: true });
