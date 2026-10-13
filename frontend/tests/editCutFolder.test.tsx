@@ -610,6 +610,43 @@ it("뷰어 판: 소스만 보이면 재생 키는 소스 것이다 — 메뉴로
   expect(playingIn("timeline")).toBe(false);
 });
 
+// 크게 보기·비교·폴더 창이 떠 있는 동안 편집 키는 막힌다 — 뒤에서 도는 재생은 창을 닫기 전에는 멈출 수 없었고, 크게 보기의
+//  소리와 겹쳤다. 폴더 창은 타임라인만 멈추고 소스는 두었다(Codex 배포 전 검토 2026-10-13).
+it("크게 보기·비교·폴더 창으로 넘기면 타임라인도 소스도 멈춘다", () => {
+  world.gens = [...world.gens, videoGen()];
+  localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["source", "timeline"] }));
+  seed([{ cut: "c1", gen: "a", track: 1 }]);
+  mount();
+  act(() => cutCell("c1").click());
+  act(() => poolCards()[2].click()); // 소스 = 영상 v
+  const play = (mode: string) => {
+    act(() => pane(mode).querySelector<HTMLButtonElement>(".ed-play")!.click());
+    expect(playingIn(mode)).toBe(true);
+  };
+  const nothingPlays = () => [playingIn("timeline"), playingIn("source")].some(Boolean) === false;
+
+  play("timeline");
+  mouse(poolCards()[1], "dblclick"); // 크게 보기
+  expect(previews).toHaveLength(1);
+  expect(nothingPlays()).toBe(true);
+  play("source");
+  mouse(poolCards()[1], "dblclick");
+  expect(nothingPlays()).toBe(true);
+
+  play("source");
+  rightClick(poolCards()[0]); // 폴더 창(컷 더블클릭과 같은 길)
+  expect(opened).toHaveLength(1);
+  expect(nothingPlays()).toBe(true);
+
+  mouse(poolCards()[1], "click", { ctrlKey: true }); // 두 장을 골라 비교
+  for (const mode of ["timeline", "source"]) {
+    play(mode);
+    act(() => document.querySelector<HTMLButtonElement>(".ed-pool-sel .ed-psel-btn:not(.ed-psel-resolve)")!.click());
+    expect(nothingPlays()).toBe(true);
+  }
+  expect(compared).toHaveLength(2);
+});
+
 it("타임라인의 그림을 누르면 그 컷으로 간다 — 이미 그 컷이면 보던 자리 그대로", () => {
   seed([{ cut: "c1", gen: "a", track: 1 }]);
   mount();
@@ -929,7 +966,8 @@ it("트랙 머리 우클릭: 트랙을 더하고 옮기고 지운다 — 클립�
   act(() => cutCell("c1").click());
   expect(heads().map((head) => head.querySelector("b")!.textContent)).toEqual(["V3", "V2", "V1"]);
   expect(rightClick(headOf(1)).defaultPrevented).toBe(true);
-  expect(menuText()).toEqual(["이 위에 트랙 추가", "트랙 위로 옮기기", "트랙 아래로 옮기기 ×", "트랙 삭제클립 1개", "빈 트랙 모두 삭제"]);
+  // 빈 줄은 잠긴 V3 뿐이다 — 잠긴 트랙은 비어 있어도 지우지 않으므로 '빈 트랙 모두 삭제'는 흐리다(2026-10-13)
+  expect(menuText()).toEqual(["이 위에 트랙 추가", "트랙 위로 옮기기", "트랙 아래로 옮기기 ×", "트랙 삭제클립 1개", "빈 트랙 모두 삭제 ×"]);
   act(() => menuItem("이 위에 트랙 추가").click());
   expect(trackMenu()).toBeNull();
   expect(heads()).toHaveLength(4);
@@ -944,7 +982,12 @@ it("트랙 머리 우클릭: 트랙을 더하고 옮기고 지운다 — 클립�
 
   rightClick(headOf(4));
   expect(menuItem("트랙 삭제").disabled).toBe(true); // 잠긴 트랙은 못 지운다
-  act(() => menuItem("빈 트랙 모두 삭제").click()); // V3·V4(잠겼어도 비었다)가 사라진다
+  act(() => menuItem("빈 트랙 모두 삭제").click()); // 빈 V3 만 사라진다 — 잠긴 V4 는 비어 있어도 남아 V3 이 된다
+  expect(heads()).toHaveLength(3);
+  expect(stored()).toMatchObject({ tracks: 3, tracksLocked: [3] });
+  act(() => headOf(3).querySelector<HTMLButtonElement>('button[aria-label="잠금 풀기"]')!.click()); // 잠금을 풀면 지워진다
+  rightClick(headOf(3));
+  act(() => menuItem("빈 트랙 모두 삭제").click());
   expect(heads()).toHaveLength(2);
   expect(stored()).toMatchObject({ tracks: 2, tracksLocked: [] });
 
