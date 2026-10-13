@@ -252,7 +252,7 @@ updated: 2026-10-13
 | `personal_meta_transactions.py` | 53 | 개인 메타 로컬행 + 팀 shadow 를 한 트랜잭션으로 쓰는 경계 | `apply_generation_personal_meta_writes` |
 | `tags.py` | 287 | 태그/자동태그(별도 네임스페이스) 생성·설정·배치·전역삭제 | `repo.set_tags`·`create_auto_tag` |
 | `generation_views.py` | 121 | "마지막으로 크게 본" 개인 표시 | `repo.record_generation_view` |
-| `folder_cover.py` | 150 | 폴더 카드 집계(한 번 훑어 하위 폴더별 건수·최신·대표 유효성)와 대표 저장(`folder_cover`). 범위는 `projects._folder_counts_where`(사이드바 숫자와 같은 조건) + 폴더 접두(목록과 같은 LIKE 이스케이프) + 팀 공간 하나 | `repo.folder_cards`·`set_folder_cover` |
+| `folder_cover.py` | 150 | 폴더 카드 집계(한 번 훑어 하위 폴더별 건수·최신·대표 유효성)와 대표 저장(`folder_cover`). 범위는 `projects._folder_counts_where`(사이드바 숫자와 같은 조건) + 폴더 접두(목록과 같은 LIKE 이스케이프) + 팀 공간 하나. 카드의 표지는 목록 행에서 화면이 쓰는 칸만(`_COVER_FIELDS` — 프런트 `types.FolderCover` 와 같은 목록), 미리보기(컷 띠·생성물 띠)는 목록 행을 읽지 않고 첫 에셋만(`_first_assets`) | `repo.folder_cards`·`set_folder_cover` |
 | `scene_cards.py` | 140 | 캔버스 카드 ↔ 생성물 소속 사실 | `repo.list_scene_card_links` |
 | `scenes_backup.py` | 130 | 캔버스 씬(브라우저 IndexedDB)의 DB 미러 | `repo.list_scene_backups` |
 

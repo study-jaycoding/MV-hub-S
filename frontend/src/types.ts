@@ -153,7 +153,7 @@ export interface FolderCard {
   count: number;
   subfolders?: number; // 바로 아래 폴더 수 — 카드 이름표의 "컷 N" 표시용(두 번 클릭은 있든 없든 그 폴더로 들어간다, 2026-10-13 ②). 옛 서버는 안 준다(= 0)
   rep: boolean; // 표지가 팀이 정한 대표인가(아니면 가장 최근 것)
-  cover: Generation;
+  cover: FolderCover;
   // 에피소드 화면용 집계(2026-10-13) — 건수와 같은 범위에서 센다. 옛 공유 서버는 안 준다(화면이 그 표시만 뺀다).
   video_count?: number; // 그 폴더(하위 포함)의 영상 수
   rep_count?: number; // 바로 아래 폴더 중 대표를 정한 수
@@ -167,6 +167,15 @@ export interface FolderCard {
   workers?: { name: string | null; count: number }[]; // 만든 사람별 건수(많은 순 몇 명) — 이름을 모르면 null
   takes?: FolderCardTake[]; // 하위 폴더가 없는 카드만 — 그 컷의 생성물 미리보기(대표가 맨 앞, 그 뒤 최신 순). 나머지 수 = count − 길이
 }
+
+// 폴더 카드의 표지 — 목록 행 전체가 아니라 **화면이 쓰는 칸만** 온다(서버 repo/folder_cover.py 의 `_COVER_FIELDS` 와 같은 목록 — 한쪽만
+//  고치지 않는다). 목록 행 전체를 실으면 카드 한 장이 약 50KB 라 컷 300개 화면의 응답이 14.7MB 였다(15초마다 받는다 — 2026-10-13 실측).
+//  그림(assets 첫 장) · 정보 줄(모델·만든 사람·생성일·최종/보류·params 의 길이) · 폴더 창을 열 때의 프로젝트. 목록에서 직접 묶은 카드
+//  (lib/folderCardsLocal)는 목록 행을 그대로 넣는다 — 더 많은 칸이 들어 있어도 읽지 않는다.
+export type FolderCover = Pick<
+  Generation,
+  "id" | "project_id" | "project_name" | "folder_path" | "model" | "params" | "creator_name" | "is_mine" | "created_at" | "is_final" | "is_held" | "assets"
+>;
 
 // 컷 줄의 생성물 띠 한 칸. 표지는 그림에 필요한 것만 온다.
 export interface FolderCardTake {

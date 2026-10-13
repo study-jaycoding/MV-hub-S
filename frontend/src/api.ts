@@ -357,11 +357,8 @@ export const api = {
   folderCards: (projectId: string, parent: string, workspaceId?: string) => {
     const params = new URLSearchParams({ parent });
     if (workspaceId) params.set("workspace_id", workspaceId);
-    return jsonFetch<FolderCards>(`/api/projects/${pathPart(projectId)}/folder-cards?${params.toString()}`)
-      .then((cards) => ({
-        ...cards,
-        folders: cards.folders.map((folder) => ({ ...folder, cover: normalizeGenerations([folder.cover])[0] })),
-      }));
+    // 표지는 화면이 쓰는 칸만 온다(types.FolderCover) — 프롬프트가 없으니 목록 행의 프롬프트 호환 처리도 하지 않는다
+    return jsonFetch<FolderCards>(`/api/projects/${pathPart(projectId)}/folder-cards?${params.toString()}`);
   },
   // 그 폴더의 대표를 정한다(팀이 같이 본다). 서버가 '그 폴더 아래에서 내가 볼 수 있는 공유물' 인지 확인한다.
   setFolderCover: (projectId: string, folderPath: string, generationId: string) =>

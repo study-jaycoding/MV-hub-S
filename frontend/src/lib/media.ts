@@ -179,7 +179,7 @@ export function displayRefThumb(
 }
 
 // 생성본의 대표 썸네일 URL(없으면 null). 로컬 /media·공유받은 원격 URL 모두 리사이즈 썸네일로 변환.
-export function thumbOf(g: Generation, size = 256): string | null {
+export function thumbOf(g: Pick<Generation, "assets">, size = 256): string | null {
   const a = g.assets[0];
   // 영상도 포스터가 없으면 원본 경로를 media-thumb에 넘긴다. media-thumb는 첫 프레임을
   // JPEG로 디스크 캐시하므로, 카드가 다시 마운트될 때마다 <video preload=metadata>가

@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException, Request
 
 from app import db, db_migrations, deps, repo
+from app.repo import folder_cover as folder_cover_repo
 from app.routers import folder_cards as cards_router
 
 
@@ -98,10 +99,14 @@ def test_groups_by_the_folder_right_below_and_counts_everything_under_it(catalog
     assert by_path["e035/C0010"]["count"] == 2 and by_path["e035/C0040"]["count"] == 1
     # 바로 아래 폴더 수 — takeB 하나. 없으면 0(잎 = 폴더 창을 여는 카드)
     assert by_path["e035/C0010"]["subfolders"] == 1 and by_path["e035/C0040"]["subfolders"] == 0
-    # 표지는 가장 최근 것이고 목록 행과 같은 모양이다
+    # 표지는 가장 최근 것이고, 목록 행에서 화면이 쓰는 칸만 싣는다(프롬프트·레퍼런스·태그 … 는 없다 — 15초마다 받는 응답의 크기)
     assert by_path["e035/C0010"]["cover"]["id"] == "a2" and by_path["e035/C0010"]["rep"] is False
     assert by_path["e035/C0010"]["cover"]["folder_path"] == "e035/C0010/takeB"
-    assert {"assets", "prompt", "project_id"} <= set(by_path["e035/C0010"]["cover"])
+    assert set(by_path["e035/C0010"]["cover"]) == {
+        "id", "project_id", "project_name", "folder_path", "model", "params", "creator_name", "is_mine",
+        "created_at", "is_final", "is_held", "assets",
+    }
+    assert by_path["e035/C0010"]["cover"]["project_name"] == "member"
 
 
 def test_an_empty_parent_lists_the_top_folders_and_names_that_only_share_a_prefix_stay_apart(catalog):
@@ -438,7 +443,7 @@ def test_episode_cards_carry_the_numbers_and_cut_strip_of_the_episode_screen(cat
     assert (nested["subfolders"], [child["path"] for child in nested["children"]]) == (1, ["e020/c0020/takeB"])
 
 
-def test_cut_cards_carry_recent_takes_and_workers_for_the_list_view(catalog):
+def test_cut_cards_carry_recent_takes_and_workers_for_the_list_view(catalog, monkeypatch):
     """컷 화면의 리스트용 — 하위 폴더가 없는 카드는 생성물 미리보기(대표 먼저, 그 뒤 최신 순)를, 모든 카드는 작업자별 건수를 싣는다."""
     def asset(gen_id, kind="video"):
         with db.get_connection() as conn:
@@ -467,6 +472,27 @@ def test_cut_cards_carry_recent_takes_and_workers_for_the_list_view(catalog):
     assert set(takes[0]) == {"cover", "final", "held", "by"} and set(takes[0]["cover"]) == {"id", "assets"}
     assert [a["type"] for a in takes[0]["cover"]["assets"]] == ["video"]
     assert (takes[0]["by"], takes[2]["by"], takes[3]["by"]) == ("리버", "리버", None)  # t01·t10 = river, t09 = ozzy(이름 모름)
+    # 카드의 표지 — 정보 줄이 읽는 값은 목록 행 그대로, params 는 길이만 남긴다(프롬프트·그 밖의 params 는 싣지 않는다)
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE generation SET model = 'seedance-2.0', is_final = 1, params = ? WHERE id = 't01'",
+            ('{"duration": "6", "aspect_ratio": "16:9", "big": "' + "x" * 5000 + '"}',),
+        )
+    cover = cards("e035")[1]["e035/c0010"]["cover"]
+    listed = repo.list_generations(tab="team", team_member_projects=["member"], account_uid="viewer", project_id="member", generation_ids=["t01"])[0]
+    assert cover["params"] == {"duration": "6"} and "prompt" not in cover
+    assert {key: cover[key] for key in ("model", "creator_name", "is_mine", "created_at", "is_final", "is_held", "project_name")} == {
+        key: listed[key] for key in ("model", "creator_name", "is_mine", "created_at", "is_final", "is_held", "project_name")
+    }
+    assert (cover["model"], cover["creator_name"], cover["is_final"]) == ("seedance-2.0", "리버", True)
+    assert cover["assets"] == listed["assets"][:1] and takes[0]["cover"]["assets"] == listed["assets"][:1]  # 미리보기의 그림도 목록 행의 것과 같다
+    # 목록 행으로 읽는 것은 카드의 표지뿐이다 — 미리보기(생성물 띠 열 장)까지 목록 행으로 읽으면 읽는 시간의 대부분이 거기서 나간다
+    asked = []
+    real = folder_cover_repo.list_generations
+    monkeypatch.setattr(folder_cover_repo, "list_generations", lambda **kw: asked.append(sorted(kw["generation_ids"])) or real(**kw))
+    cards("e035")
+    monkeypatch.setattr(folder_cover_repo, "list_generations", real)
+    assert asked == [["sub", "t01"]]
     # 작업자별 건수 — 많은 순, 이름을 모르면 이름 없이(uid 를 내보내지 않는다)
     assert cut["workers"] == [{"name": "리버", "count": 8}, {"name": None, "count": 4}]
 

@@ -5,6 +5,10 @@
 보인다고 지우면 남의 정상 대표가 사라진다. 보이지 않는 대표의 id·정한 사람은 응답에 싣지 않는다.
 
 건수·폴더 이름·표지는 팀 목록·사이드바 숫자와 같은 범위(`_folder_counts_where`)에서만 만든다.
+
+응답 크기(2026-10-13 밤, 배포 전 실측): 카드의 표지에 목록 행 전체(프롬프트·params·레퍼런스 …)를 실으면 장당 약 50KB 라
+컷 300개 화면이 14.7MB 였다 — 이 응답은 15초마다 다시 받는다. 표지는 **화면이 쓰는 칸만**(`_COVER_FIELDS`) 싣고,
+미리보기(컷 띠·생성물 띠)는 목록 행을 읽지 않고 첫 에셋만 한 번에 읽는다.
 """
 
 from __future__ import annotations
@@ -23,6 +27,11 @@ _COVER_CHUNK = 500  # 표지 행을 한 번에 받는 개수(SQL 변수 상한 �
 _STRIP = 7  # 카드마다 싣는 바로 아래 폴더(컷) 미리보기 수 — 이름순 앞에서부터. 그 뒤는 화면이 `subfolders` 와의 차로 '+N' 을 그린다
 _TAKES = 10  # 하위 폴더가 없는 카드(컷)가 싣는 생성물 미리보기 수 — 대표가 있으면 맨 앞, 그 뒤는 최신 순. 그 뒤는 화면이 `count` 와의 차로 '+N'
 _WORKERS = 4  # 카드마다 싣는 작업자 수(건수 많은 순)
+# 카드의 표지가 싣는 칸 — 목록 행의 값 그대로(가림·이름 해석이 같다). 화면이 쓰는 것만: 그림(assets 첫 장) · 정보 줄(모델·만든 사람·
+#  생성일·최종/보류·길이) · 폴더 창을 열 때의 프로젝트. 프런트 `types.FolderCover` 와 같은 목록이다 — 한쪽만 고치지 않는다.
+_COVER_FIELDS = (
+    "id", "project_id", "project_name", "folder_path", "model", "creator_name", "is_mine", "created_at", "is_final", "is_held",
+)
 
 
 def _under(path: str) -> tuple[str, list[str]]:
@@ -50,6 +59,33 @@ def _visible_where(
     return where, args
 
 
+def _card_cover(row: dict[str, Any]) -> dict[str, Any]:
+    """목록 행 → 카드의 표지. params 는 정보 줄이 읽는 길이(duration)만 남긴다."""
+    params = row.get("params")
+    return {
+        **{key: row.get(key) for key in _COVER_FIELDS},
+        "params": {"duration": params["duration"]} if isinstance(params, dict) and "duration" in params else None,
+        "assets": (row.get("assets") or [])[:1],
+    }
+
+
+def _first_assets(conn: Any, generation_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """생성물마다 첫 에셋 한 장 — 목록 행(`_attach_children`)이 싣는 것과 같은 칸. 미리보기(컷 띠·생성물 띠)용이라 목록 행은 읽지 않는다."""
+    first: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(generation_ids), _COVER_CHUNK):
+        chunk = generation_ids[start:start + _COVER_CHUNK]
+        for row in conn.execute(
+            "SELECT id, generation_id, type, file_path, thumbnail_path, source_url "
+            f"FROM asset WHERE generation_id IN ({','.join('?' for _ in chunk)}) ORDER BY rowid",
+            chunk,
+        ):
+            if row["generation_id"] not in first:
+                item = dict(row)
+                item["cached"] = bool((item.get("file_path") or "").startswith("/media/"))
+                first[row["generation_id"]] = item
+    return first
+
+
 def folder_cards(
     project_id: str,
     parent: Optional[str],
@@ -60,8 +96,9 @@ def folder_cards(
 ) -> dict[str, Any]:
     """`parent` 바로 아래 폴더마다 {path, name, count, rep, cover}. `parent` 가 비면 프로젝트의 맨 위 폴더들.
 
-    count 는 그 폴더와 하위 전부(폴더 창이 보여 주는 것과 같다). cover 는 목록 행과 같은 모양이고, 유효한
-    대표가 있으면 그것(rep=True), 없으면 가장 최근 것이다. own_count = parent 에 직접 든 것(어느 카드에도 안 든다).
+    count 는 그 폴더와 하위 전부(폴더 창이 보여 주는 것과 같다). cover 는 목록 행에서 화면이 쓰는 칸만(`_COVER_FIELDS` +
+    길이만 남긴 params + 첫 에셋)이고, 유효한 대표가 있으면 그것(rep=True), 없으면 가장 최근 것이다.
+    own_count = parent 에 직접 든 것(어느 카드에도 안 든다).
     에피소드 화면용 집계(2026-10-13 — 건수와 **같은 범위**에서 센다. 이 값들이 없는 옛 서버면 화면이 그 표시를 숨긴다):
     video_count = 그 폴더(하위 포함)의 영상 수 · rep_count = 바로 아래 폴더 중 유효한 대표가 있는 수 ·
     last_shared_at/by = 그 폴더에서 가장 늦게 공유된 것의 시각과 만든 사람 이름(표지의 것이 아니다 — 대표를 정해 둔
@@ -155,9 +192,12 @@ def folder_cards(
         path: sorted(entry["subs"], key=lambda one: (one.casefold(), one))[:_STRIP]
         for path, entry in folders.items()
     }
-    cover_ids = list(dict.fromkeys(
-        [entry["cover_id"] for entry in folders.values()]
-        + [folders[path]["subs"][name]["cover_id"] for path, names in strips.items() for name in names]
+    # 카드의 표지만 목록 행으로 읽는다(카드 수만큼). 미리보기(컷 띠·생성물 띠)는 그림 한 장이면 된다 — 목록 행으로 읽으면 컷마다 열 장씩이라
+    #  읽는 시간의 대부분이 거기서 나갔다(배포 전 실측: 컷 300 × 12 에서 396ms 중 349ms). 미리보기의 것은 위 집계가 이미 같은 가시성
+    #  (`_visible_where` = 목록의 tab=team·그 프로젝트와 같은 조건)으로 거른 것이라 다시 거르지 않는다.
+    cover_ids = list(dict.fromkeys(entry["cover_id"] for entry in folders.values()))
+    preview_ids = list(dict.fromkeys(
+        [folders[path]["subs"][name]["cover_id"] for path, names in strips.items() for name in names]
         + [one["id"] for rows_of in takes.values() for one in rows_of]
     ))
     covers: dict[str, dict[str, Any]] = {}
@@ -171,9 +211,15 @@ def folder_cards(
             covers[cover["id"]] = cover
 
     with get_connection() as conn:
+        # 이름은 목록 행의 creator_name 과 같은 해석기다 — 생성물 띠의 '만든 사람'도 여기서 읽는다(폴더의 모든 만든 사람이 들어 있다).
         names = resolve_display_names(
             conn, {entry["last"][1] for entry in folders.values()} | {uid for entry in folders.values() for uid in entry["by"]},
         )
+        previews = _first_assets(conn, preview_ids)
+
+    def preview(generation_id: str) -> dict[str, Any]:
+        one = previews.get(generation_id)
+        return {"id": generation_id, "assets": [one] if one is not None else []}
 
     out = []
     for path in sorted(folders, key=lambda one: (one.casefold(), one)):
@@ -181,18 +227,16 @@ def folder_cards(
         cover = covers.get(entry["cover_id"])
         if cover is None:
             continue  # 집계와 표지 조회 사이에 지워졌거나 옮겨졌다 — 다음 조회에 바로잡힌다
-        children = []
-        for name in strips[path]:
-            sub = entry["subs"][name]
-            child_cover = covers.get(sub["cover_id"])
-            if child_cover is not None:  # 미리보기는 그림만 쓴다 — 목록 행 전체를 컷마다 싣지 않는다(주기 조회의 응답 크기)
-                children.append({
-                    "path": f"{path}/{name}", "name": name, "count": sub["count"], "rep": sub["rep"],
-                    "cover": {"id": child_cover["id"], "assets": (child_cover.get("assets") or [])[:1]},
-                })
+        children = [
+            {
+                "path": f"{path}/{name}", "name": name, "count": entry["subs"][name]["count"], "rep": entry["subs"][name]["rep"],
+                "cover": preview(entry["subs"][name]["cover_id"]),
+            }
+            for name in strips[path]
+        ]
         out.append({
             "path": path, "name": path[len(prefix):], "count": entry["count"],
-            "subfolders": len(entry["subs"]), "rep": entry["rep"], "cover": cover,
+            "subfolders": len(entry["subs"]), "rep": entry["rep"], "cover": _card_cover(cover),
             "video_count": entry["videos"],
             "rep_count": sum(1 for sub in entry["subs"].values() if sub["rep"]),
             "last_shared_at": entry["last"][0] or None,
@@ -207,14 +251,14 @@ def folder_cards(
                     key=lambda one: (-one[1], one[0] or ""),
                 )[:_WORKERS]
             ],
-            # 미리보기는 그림만 쓴다(목록 행 전체를 싣지 않는다 — 주기 조회의 응답 크기). 만든 사람은 목록 행의 값 그대로(가림 규칙이 같다)
+            # 미리보기는 그림만 쓴다. 만든 사람은 목록 행의 creator_name 과 같은 해석기의 값(이름을 모르면 null)
             "takes": [
                 {
-                    "cover": {"id": one["id"], "assets": (covers[one["id"]].get("assets") or [])[:1]},
+                    "cover": preview(one["id"]),
                     "final": bool(one["is_final"]), "held": bool(not one["is_final"] and one["is_held"]),
-                    "by": covers[one["id"]].get("creator_name") or None,
+                    "by": (names.get(one["creator_uid"]) if one["creator_uid"] else None) or None,
                 }
-                for one in takes.get(path, []) if one["id"] in covers
+                for one in takes.get(path, [])
             ],
         })
     return {"parent": parent_path, "own_count": own_count, "folders": out}
