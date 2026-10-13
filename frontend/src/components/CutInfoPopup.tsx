@@ -4,8 +4,9 @@
 //  목록은 폴더 창과 같은 조회(folderPeekQuery)를 끝까지 넘겨 받는다 — 첫 쪽만 세면 카드의 건수와 어긋난다(Codex 설계 검토).
 //  ponytail: 크레딧은 건마다 metrics 요청 — 컷이 수백 건이면 묶음 조회 API 로.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api, type GenCursor } from "../api";
+import { api } from "../api";
 import { inFolder, summarizeCut, type CutMetrics } from "../lib/cutSummary";
+import { FETCH_ALL_MAX, fetchAllGenerations } from "../lib/fetchAllGenerations";
 import { formatCredits } from "../lib/formatCredits";
 import { formatGenerationDateTime } from "../lib/generationDisplay";
 import { useT } from "../lib/i18n";
@@ -32,8 +33,7 @@ interface Props {
 }
 
 const POP_W = 420;
-const PAGE = 500;
-const MAX = 2000; // 목록은 이만큼까지(4쪽) — 넘으면 '최근 N건 기준'. 프로젝트만 골랐을 때의 카드는 에피소드라 수천 건일 수 있다
+const MAX = FETCH_ALL_MAX; // 목록은 이만큼까지(4쪽) — 넘으면 '최근 N건 기준'. 프로젝트만 골랐을 때의 카드는 에피소드라 수천 건일 수 있다
 const METRICS_MAX = 200; // 크레딧은 건마다 요청이라 이보다 많으면 집계하지 않는다
 const STRIP_MAX = 200; // 아래 생성물 줄도 이만큼만(그 뒤는 '외 N건') — 수천 장의 썸네일을 한 창에 그리지 않는다
 
@@ -44,17 +44,8 @@ function clampStart(x: number, y: number) {
 // 폴더 창과 같은 조회를 커서로 끝까지(상한 MAX). 대소문자가 다른 폴더가 섞여 오므로(서버 LIKE) 경로로 다시 거른다.
 //  alive() 가 거짓이면(창을 닫았거나 다른 폴더로) 다음 쪽을 받지 않는다.
 async function fetchFolder(query: GenQuery, path: string, alive: () => boolean): Promise<{ gens: Generation[]; truncated: boolean } | null> {
-  const all: Generation[] = [];
-  let cursor: GenCursor | null = null;
-  for (;;) {
-    const page: Generation[] = await api.listGenerations(query, cursor, PAGE);
-    if (!alive()) return null;
-    all.push(...page);
-    if (page.length < PAGE) return { gens: inFolder(all, path), truncated: false };
-    if (all.length >= MAX) return { gens: inFolder(all, path), truncated: true };
-    const last = page[page.length - 1];
-    cursor = { ts: last.sort_ts ?? 0, id: last.id };
-  }
+  const got = await fetchAllGenerations(query, alive); // 끝까지 받기는 '목록에서 직접 묶는 폴더 카드'와 같이 쓴다
+  return got && { gens: inFolder(got.gens, path), truncated: got.truncated };
 }
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
