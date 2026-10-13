@@ -564,6 +564,38 @@ it("길이 조절 창이 떠 있는 동안 그 클립을 지우면 창이 닫힌
   expect([storedTracks(), document.querySelector(".ed-trim")]).toEqual([[["b", 2]], null]);
 });
 
+// 2026-10-14 두 창 실측: 창이 스스로 닫히면(다른 창의 저장을 받아들임) 초점이 body 로 떨어졌다 — ✕·Esc 로 닫을 때처럼 편집 화면으로 돌린다.
+it("길이 조절 창이 다른 창의 저장으로 스스로 닫혀도 초점이 편집 화면으로 돌아온다 — 다른 곳에 둔 초점은 건드리지 않는다", () => {
+  world.gens = [gen("a", "c1"), gen("b", "c1", { assets: [{ id: "a-b", generation_id: "b", type: "video", file_path: "/media/b.mp4",
+    thumbnail_path: null, source_url: null, cached: true }] } as unknown as Partial<Generation>), gen("x", "c2")];
+  seed([{ cut: "c1", gen: "b", track: 2 }]);
+  mountOn("c1");
+  const openOn = (track: number) => {
+    const clip = lane(track).querySelector<HTMLElement>(".ed-clip")!;
+    fire(clip, "pointerdown", { clientX: 10, clientY: 100 });
+    fire(clip, "pointerup", { clientX: 10, clientY: 100, buttons: 0 });
+    fire(clip, "auxclick", { button: 1, buttons: 0 });
+  };
+  const otherWindowSaves = (track: number) => {
+    seed([{ cut: "c1", gen: "b", track }]);
+    act(() => { window.dispatchEvent(new StorageEvent("storage", { key: DOC_KEY })); });
+  };
+  const root = document.querySelector<HTMLElement>(".ed-root")!;
+
+  openOn(2);
+  act(() => document.querySelector<HTMLElement>('.ed-trim [aria-label="닫기"]')!.focus());
+  expect(document.querySelector(".ed-trim")!.contains(document.activeElement)).toBe(true);
+  otherWindowSaves(3);
+  expect([document.querySelector(".ed-trim"), document.activeElement]).toEqual([null, root]);
+
+  // 창은 떠 있는 채 뒤를 쓰는 창이다 — 초점을 풀에 둔 채였다면 그대로 둔다
+  openOn(3);
+  const elsewhere = document.querySelector<HTMLElement>('.ed-pool [title="검색"]')!;
+  act(() => elsewhere.focus());
+  otherWindowSaves(2);
+  expect([document.querySelector(".ed-trim"), document.activeElement]).toEqual([null, elsewhere]);
+});
+
 // Codex 코드 리뷰 6회째: 영상 정보(loadedmetadata)가 오기 전에 ▶ 를 누르면, 창을 열 때 걸어 둔 '마지막 프레임으로'가 뒤늦게 돌아 재생
 //  자리를 끝으로 옮겼다(처음부터 트는 대신 끝에서 바로 멈춤).
 it("길이 조절 창: 영상 정보가 오기 전에 재생을 눌러도 처음부터 튼다 — 뒤늦은 '마지막 프레임으로'가 끼어들지 않는다", () => {
