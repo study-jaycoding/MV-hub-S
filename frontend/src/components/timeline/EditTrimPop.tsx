@@ -1,7 +1,8 @@
 // 편집 탭 — 클립 길이 조절 창(Jay 2026-10-13: 타임라인의 클립을 휠 클릭 → 같은 날 밤 "플로팅창으로 더 제대로 편집할 수 있게").
 //  뒤를 자른다 — 줄인 뒤의 구간에는 아래 트랙이 보인다.
-//  · **떠 있는 창**이다(lib/useFloatingPanel): 머리를 끌어 옮기고 자리를 기억한다(처음에는 화면 오른쪽 위 — 누른 클립과 타임라인을
-//    가리지 않는 자리). 밖을 눌러도 닫히지 않는다 — ✕ 나 Esc(초점이 창 안일 때).
+//  · **떠 있는 창**이다(lib/useFloatingPanel): 머리를 끌어 옮기고 자리를 기억한다(처음에는 화면 오른쪽 위 — 큰 화면에서는 타임라인을
+//    가리지 않는다. 안쪽 높이가 약 865px 보다 낮으면 타임라인의 위쪽을 덮고, 어느 크기에서든 뷰어의 오른쪽을 덮는다 — 끌어 옮긴 자리를
+//    기억한다). 밖을 눌러도 닫히지 않는다 — ✕ 나 Esc(초점이 창 안일 때).
 //    창이 떠 있어도 타임라인은 그대로 쓴다: Esc 겹·키 주인으로 올리지 않는다(lib/keyGate 의 '올리지 않는 것' — 코멘트 패널과 같다).
 //  · **키는 초점을 따른다.** 창은 body 에 그린다(createPortal) — 편집 키(EditTab.onKey)는 편집 화면 밖에서 난 키를 듣지 않으므로
 //    초점이 창 안이면 ←/→·Space·Delete 가 뒤의 재생헤드·클립에 먹지 않고, 초점이 타임라인이면 키는 타임라인의 것이다.
@@ -230,7 +231,7 @@ export function EditTrimPop({
           </span>
         </div>
         <input type="range" className="ed-trim-range" min={1} max={top} step={1} value={frames}
-          style={{ "--fill": `%` } as CSSProperties}
+          style={{ "--fill": `${top > 1 ? ((frames - 1) / (top - 1)) * 100 : 100}%` } as CSSProperties}
           aria-label={t("클립 길이(프레임)")} aria-valuetext={`${(frames / EDIT_FPS).toFixed(2)}${t("초")}`}
           onChange={(event) => set(Number(event.target.value))} />
         <div className="ed-trim-scale"><span>0</span><span>{(full / 2).toFixed(1)}</span><span>{full.toFixed(2)}{t("초")}</span></div>

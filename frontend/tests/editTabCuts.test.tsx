@@ -300,6 +300,9 @@ it("클립을 휠 클릭하면 길이 조절 창이 뜬다 — 걸음마다 저�
   act(() => button("−10f").click());
   act(() => button("−1f").click());
   expect(trimOf()).toBeCloseTo(109 / 24);
+  // 띠의 채움(쓰는 구간의 끝) — 값이 비면 띠가 통째로 안 그려진다(2026-10-14 격리 실측: 식이 빠져 "%" 만 들어가 있었다)
+  const fill = pop.querySelector<HTMLInputElement>(".ed-trim-range")!.style.getPropertyValue("--fill");
+  expect([fill.endsWith("%"), Math.round(parseFloat(fill) * 100)]).toEqual([true, Math.round((108 / 119) * 10000)]);
   press({ key: "ArrowLeft", shiftKey: true }, pop.querySelector("input")!); // Shift+← = 10프레임
   expect(trimOf()).toBeCloseTo(99 / 24);
   expect(clipOn("1").textContent).toContain("4.1s / 5.0s"); // 타임라인의 클립에 쓰는 길이 / 원본 길이
