@@ -313,10 +313,12 @@ export const EditTimeline = memo(function EditTimeline({
     const locked = doc.tracksLocked.includes(clip.track);
     const off = !!clip.off || doc.tracksOff.includes(clip.track) || offCuts.has(clip.cut);
     // 잡기 쉬운 최소 폭(6px)보다 컷의 경계가 먼저다 — 한 프레임짜리 컷에서 6px 로 늘리면 다음 컷 자리를 덮고 거기서 눌린다
-    //  (Codex 코드 리뷰 2026-10-13). 아주 좁은 컷에서는 옆 여백(1px)도 없앤다.
+    //  (Codex 코드 리뷰 2026-10-13). 아주 좁은 컷에서는 옆 여백(1px)도, 폭의 하한도 없다(1px 로 올려도 컷이 0.8px 이면 넘친다).
+    //  테두리가 폭보다 넓어지는 좁은 클립은 테두리 없이 그린다(.ed-thin — 테두리 2px·고른 것 4px 는 폭을 줄여도 남는다).
     const room = span * zoom;
     const pad = room > 4 ? 1 : 0;
-    const clipWidth = Math.max(1, Math.min(Math.max(6, clip.len * zoom - 2), room - pad * 2));
+    const clipWidth = Math.max(0, Math.min(Math.max(6, clip.len * zoom - 2), room - pad * 2));
+    const thin = clipWidth < 6;
     const thumb = link?.gen ? thumbOf(link.gen, 256) : null;
     const frames = Math.min(16, Math.max(1, Math.round(clipWidth / ((LANE_H - 6) * (16 / 9)))));
     // 줄인 클립의 '원본의 나머지' — 그 컷 안에 남는 만큼만 빗금으로 보인다(아래 트랙이 드러나는 구간이다). 누를 수 없다.
@@ -326,7 +328,7 @@ export const EditTimeline = memo(function EditTimeline({
       {rest > 4 && <div className="ed-clip-rest" style={{ left: (start + clip.len) * zoom, width: rest - 1 }} />}
       <div
         className={"ed-clip" + (selected.has(key) ? " ed-sel" : "") + (off ? " ed-off" : "") +
-          (state !== "ok" ? ` ed-${state}` : "") + (locked ? " ed-locked" : "")}
+          (state !== "ok" ? ` ed-${state}` : "") + (locked ? " ed-locked" : "") + (thin ? " ed-thin" : "")}
         style={{ left: start * zoom + pad, width: clipWidth }}
         title={link?.gen?.prompt?.slice(0, 80) || undefined}
         // 휠 클릭(가운데 단추) = 길이 조절 창(Jay 2026-10-13). 누름의 자동 스크롤은 줄 뿌리의 keepFocus 가 이미 막는다.
