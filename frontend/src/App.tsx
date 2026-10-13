@@ -151,7 +151,7 @@ import { FETCH_ALL_MAX } from "./lib/fetchAllGenerations";
 import { useLocalFolderCards } from "./lib/useLocalFolderCards";
 import { placeViewKey } from "./lib/placeViews";
 import { usePlaceView } from "./lib/usePlaceView";
-import { useFolderCards } from "./lib/useFolderCards";
+import { useFolderCards, useSameQueryRevision } from "./lib/useFolderCards";
 import { CutInfoPopup } from "./components/CutInfoPopup";
 import { CutReel, type ReelMode } from "./components/CutReel";
 import { buildSpotlightCreateBody } from "./lib/spotlightSubmit";
@@ -567,8 +567,15 @@ export default function App() {
     const workspaceId = singleTeamWorkspace(genQuery);
     return { projectId: listPeek.projectId, parent: parentFolder(listPeek.path), ...(workspaceId ? { workspaceId } : {}) };
   }, [filters.tab, authReady, workspaceQueryReady, listPeek, cutView, cutScope, genQuery]);
+  // 폴더 카드를 다시 받는 신호 = 목록이 **같은 조회를 다시 받았을 때**(주기 조회·통보·내 조작 뒤의 다시 받기). 조회가 바뀌어(폴더 이동·찾는 조건·
+  //  폴더 창) 받은 첫 쪽은 변경 통보가 아니다 — 자리가 바뀐 것은 훅이 스스로 받는다. 둘 다 따라가면 폴더를 옮길 때마다 같은 묶음 조회가 두 번
+  //  나간다(아래 두 훅이면 네 번 — Codex 코드 리뷰 10-13).
+  const listQueryKey = useMemo(
+    () => JSON.stringify([libraryAuthKey, workspaceScopeKey, listGenQuery]), [libraryAuthKey, workspaceScopeKey, listGenQuery],
+  );
+  const cardsReloadKey = useSameQueryRevision(listQueryKey, listRevision);
   const { cards: folderCards, unsupported: folderCardsUnsupported, loading: folderCardsLoading, reload: reloadFolderCards } = useFolderCards({
-    scope: cardsScope, authKey: libraryAuthKey, reloadKey: listRevision,
+    scope: cardsScope, authKey: libraryAuthKey, reloadKey: cardsReloadKey,
   });
   // 지금 고른 자리의 서버 카드(안 거른 것) — 어느 폴더가 묶음인지·팀이 정한 대표가 무엇인지의 근거다.
   const baseHere =
@@ -686,7 +693,7 @@ export default function App() {
     const workspaceId = singleTeamWorkspace(genQuery);
     return { projectId: filters.project_id, parent: parentFolder(filters.folder_path), ...(workspaceId ? { workspaceId } : {}) };
   }, [filters.tab, filters.project_id, filters.folder_path, filters.deleted_only, authReady, workspaceQueryReady, listPeek, genQuery]);
-  const { cards: ownCards, reload: reloadOwnCards } = useFolderCards({ scope: ownScope, authKey: libraryAuthKey, reloadKey: listRevision });
+  const { cards: ownCards, reload: reloadOwnCards } = useFolderCards({ scope: ownScope, authKey: libraryAuthKey, reloadKey: cardsReloadKey });
   const ownFolderCard = ownScope ? ownCards?.folders.find((folder) => folder.path === filters.folder_path) : undefined;
   const ownCoverId = ownFolderCard?.rep ? ownFolderCard.cover.id : null;
   // 한 장씩 → 묶음으로 바뀌는 순간 고른 것을 비운다 — 남기면 보이지 않는 카드에 삭제·공유가 걸린다.

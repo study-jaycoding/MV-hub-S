@@ -17,7 +17,7 @@ vi.mock("../src/lib/modelCatalog", () => ({
 import { FolderCardGrid } from "../src/components/FolderCardGrid";
 import { folderCardsPlace, folderCardsScope, hasFindFilters, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "../src/lib/folderCards";
 import { HttpError } from "../src/lib/http";
-import { forgetFolderCards, useFolderCards } from "../src/lib/useFolderCards";
+import { forgetFolderCards, useFolderCards, useSameQueryRevision } from "../src/lib/useFolderCards";
 import { forgetCoverCredits } from "../src/lib/coverCredits";
 
 const base: GenQuery = { tab: "team", project_id: "p1", folder_path: "e035", colors: [], tags: [], auto_tags: [] };
@@ -182,6 +182,63 @@ it("옛 공유 서버(경로 없음)는 그 계정·서버에서만 '지원 안 
   await settle();
   expect(seen.unsupported).toBe(false);
   expect(folderCardsApi).toHaveBeenCalledTimes(calls + 1);
+});
+
+// 2026-10-13 밤(배포 전 점검, Codex): 앱을 먼저 올리고 공유 서버를 나중에 갱신하면 열린 화면의 묶음 보기가 돌아오지 않았다 — 옛 서버의
+//  404 를 그 계정·서버 문맥으로 기억하고 그 뒤로는 묻지 않았기 때문. 가끔(5분) 다시 물어본다.
+it("옛 서버로 기억한 뒤에도 5분에 한 번은 다시 물어본다 — 서버가 갱신되면 묶음 보기가 돌아오고, 아직 옛 서버면 다시 5분", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    const at = (seconds: number) => vi.setSystemTime(new Date(Date.UTC(2026, 9, 13) + seconds * 1000));
+    const missing = () => new HttpError(404, "404: Not Found", "Not Found");
+    at(0);
+    folderCardsApi.mockRejectedValue(missing());
+    show({ scope: e035 });
+    await settle();
+    expect([seen.unsupported, folderCardsApi.mock.calls.length]).toEqual([true, 1]);
+    at(299);
+    show({ scope: e035, reloadKey: 1 });
+    await settle();
+    expect(folderCardsApi).toHaveBeenCalledTimes(1); // 5분 안 — 묻지 않는다
+    at(301);
+    show({ scope: e035, reloadKey: 2 });
+    await settle();
+    expect([seen.unsupported, folderCardsApi.mock.calls.length]).toEqual([true, 2]); // 물어봤지만 아직 옛 서버
+    at(400);
+    show({ scope: e035, reloadKey: 3 });
+    await settle();
+    expect(folderCardsApi).toHaveBeenCalledTimes(2); // 그 물음에서 다시 5분
+    folderCardsApi.mockResolvedValue(cards(card("C0010", 8)));
+    at(602);
+    show({ scope: e035, reloadKey: 4 });
+    await settle();
+    expect([seen.unsupported, seen.cards?.folders.map((folder) => folder.name)]).toEqual([false, ["C0010"]]); // 서버가 갱신됐다
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// 2026-10-13 밤(배포 전 점검, Codex): 폴더를 옮길 때마다 같은 묶음 조회가 두 번 나갔다 — 자리 변경으로 한 번, 옮긴 뒤 목록의 첫 쪽이 와서
+//  (listRevision) 또 한 번. 조회가 바뀐 뒤의 첫 revision 은 그 조회의 첫 답이지 변경 통보가 아니다.
+it("다시 받는 신호 — 목록이 같은 조회를 다시 받았을 때만 오른다. 조회가 바뀐 뒤의 첫 revision 은 세지 않는다", () => {
+  let count = -1;
+  function Probe({ query, revision }: { query: string; revision: number }) {
+    count = useSameQueryRevision(query, revision);
+    return null;
+  }
+  const at = (query: string, revision: number) => { act(() => root.render(<Probe query={query} revision={revision} />)); return count; };
+  expect(at("a", 0)).toBe(0);
+  expect(at("a", 1)).toBe(0); // 처음 연 화면의 첫 쪽
+  expect(at("a", 2)).toBe(1); // 주기 조회·통보·내 조작 뒤의 다시 받기
+  expect(at("b", 2)).toBe(1); // 폴더를 옮겼다
+  expect(at("b", 3)).toBe(1); // 그 조회의 첫 쪽 — 변경 통보가 아니다
+  expect(at("b", 4)).toBe(2);
+  expect(at("c", 5)).toBe(2); // 조회와 revision 이 같이 바뀌어도 그 조회의 첫 답으로 본다
+  expect(at("c", 6)).toBe(3);
+  at("d", 6);
+  at("e", 6); // 빠르게 두 번 옮겼다 — 목록 훅은 마지막 조회의 첫 쪽만 적용한다
+  expect(at("e", 7)).toBe(3);
+  expect(at("e", 8)).toBe(4);
 });
 
 // 2026-10-13 ③(Jay): 폴더를 옮기면 묶음 응답 전에 낱장이 한 번 보였다 — App 이 loading 동안 낱장 격자를 그리지 않는다.

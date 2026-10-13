@@ -1,7 +1,9 @@
 // 공유 & 리뷰 탭의 폴더 카드(고른 폴더 바로 아래 폴더마다 건수·표지·대표) 받기.
 //  · 문맥(계정·서버·프로젝트·폴더·공간)이 바뀌면 받던 응답도 받아 둔 카드도 버린다 — 남의 문맥의 카드를 잠깐이라도 그리지 않는다.
-//  · reloadKey(목록이 새 첫 쪽을 적용할 때마다 오르는 값)가 바뀌면 다시 받는다 — 팀 목록의 통보·주기 조회와 같은 때에 따라간다.
+//  · reloadKey(목록이 **같은 조회를 다시 받을 때마다** 오르는 값)가 바뀌면 다시 받는다 — 팀 목록의 통보·주기 조회와 같은 때에 따라간다.
 //    대표만 바뀌면 생성물 목록 내용은 그대로라, 목록 배열이 바뀌었는지로는 알 수 없다.
+//    조회가 바뀌어(폴더 이동·찾는 조건·폴더 창) 받은 첫 쪽까지 따라가면 폴더를 옮길 때마다 같은 묶음 조회가 두 번 나간다(자리 변경으로 한 번,
+//    목록 도착으로 또 한 번) — App 은 `useSameQueryRevision` 으로 '같은 조회를 다시 받았을 때'만 오르는 값을 넘긴다(Codex 코드 리뷰 10-13).
 //  · **같은 문맥의 조회가 받는 중이면 새로 보내지 않고 그 조회에 얹는다**(끝난 뒤 한 번 더 받는다, 여러 요구를 하나로) — 주기
 //    조회(15초)보다 응답이 느린 서버에서 조회가 꼬리를 물고 이어져 대표 저장의 잠금이 영영 안 풀리던 것(Codex 코드 검토 10-09).
 //    얹을 때 받는 중인 응답은 **버리지 않는다** — 버리면 느린 서버에서 어느 응답도 적용되지 못한다. 대표를 저장한 뒤의 reload()
@@ -11,7 +13,8 @@
 //  · 새 응답이 받아 둔 것과 내용까지 같으면 같은 객체를 돌려준다 — 15초마다 카드·창(컷 정보·모아보기)이 새 객체를 받아 다시
 //    조회·다시 그리던 것을 막는다.
 //  · 옛 공유 서버(경로 없음)는 그 계정·서버 문맥에서만 '지원 안 함' 으로 기억한다 — 그때는 받아 둔 카드도 내놓지 않는다(낡은 묶음 화면이
-//    [전체]로 돌아갈 길 없이 남는다). 다른 오류는 기억하지 않고, 받아 둔 카드도 그대로 둔다.
+//    [전체]로 돌아갈 길 없이 남는다). 다른 오류는 기억하지 않고, 받아 둔 카드도 그대로 둔다. 그 기억은 **5분에 한 번 다시 물어본다** —
+//    앱을 먼저 올리고 서버를 나중에 갱신해도 열린 화면의 묶음 보기가 돌아오게(문맥에 서버 버전이 없다 — Codex 코드 리뷰 10-13).
 //  · loading = 지금 문맥의 카드가 아직 없고 그 문맥의 조회가 실패하지도 않은 동안 — 그동안 App 이 낱장 격자를 그리지 않는다(낱장이 한 번
 //    보였다가 컷 카드로 바뀌던 깜빡임, Jay 2026-10-13 ③). 받아 둔 카드가 있는 문맥으로 돌아오면 바로 그 카드(다시 받기는 뒤에서). 실패하면
 //    꺼진다(영영 빈 화면이 안 되게) — 그 실패 표식은 문맥을 떠나면 버린다: 남기면 실패한 폴더로 빠르게 되돌아올 때 첫 렌더부터 낱장이 선다
@@ -36,6 +39,20 @@ function remember(key: string, cards: FolderCards): void {
 /** 시험용 — 모듈에 든 기억을 비운다. */
 export function forgetFolderCards(): void {
   remembered.clear();
+}
+const UNSUPPORTED_RETRY_MS = 5 * 60_000; // 옛 서버로 기억한 문맥을 다시 물어보는 간격
+
+/** 목록이 **같은 조회를 다시 받았을 때만** 오르는 값(주기 조회·통보·내 조작 뒤의 다시 받기) — 폴더 카드를 다시 받는 신호.
+ *  조회가 바뀐 뒤의 첫 revision 은 그 조회의 첫 답이지 변경 통보가 아니다(빠르게 여러 번 옮겨도 목록 훅은 마지막 조회의 첫 쪽만 적용한다). */
+export function useSameQueryRevision(queryKey: string, revision: number): number {
+  const [seen, setSeen] = useState({ queryKey, revision, first: true, count: 0 });
+  if (seen.queryKey !== queryKey || seen.revision !== revision) {
+    const first = seen.queryKey !== queryKey || seen.first;
+    const bumped = seen.revision !== revision;
+    // 렌더 중 setState = React 의 '이전 렌더 값 기억' 방식(이 렌더는 버리고 새 값으로 바로 다시 그린다)
+    setSeen({ queryKey, revision, first: bumped ? false : first, count: seen.count + (bumped && !first ? 1 : 0) });
+  }
+  return seen.count;
 }
 
 interface Options {
@@ -69,6 +86,7 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
   }
   const [unsupportedFor, setUnsupportedFor] = useState<string | null>(null);
   const unsupported = unsupportedFor === authKey;
+  const unsupportedAtRef = useRef(0); // 옛 서버라고 마지막으로 확인한 때
   const seqRef = useRef(0);
   // 최신 인자 — 얹힌 뒤 늦게 출발하는 조회가 그때의 문맥으로 받게.
   const argsRef = useRef({ key, projectId, parent, workspaceId, authKey, unsupported });
@@ -79,10 +97,12 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
   const fetchOnce = useCallback(async (): Promise<boolean> => {
     const seq = ++seqRef.current; // 문맥이 바뀌거나 다시 받기 시작하면 앞선 응답은 버린다
     const { key: nowKey, projectId: pid, parent: dir, workspaceId: ws, authKey: auth, unsupported: off } = argsRef.current;
-    if (nowKey === null || pid === undefined || dir === undefined || off) return true;
+    if (nowKey === null || pid === undefined || dir === undefined) return true;
+    if (off && Date.now() - unsupportedAtRef.current < UNSUPPORTED_RETRY_MS) return true; // 옛 서버 — 가끔만 다시 물어본다
     try {
       const fresh = await api.folderCards(pid, dir, ws);
       if (seq !== seqRef.current) return false;
+      if (off) setUnsupportedFor(null); // 서버가 갱신됐다
       const kept = remembered.get(nowKey);
       // 내용이 같다 — 같은 객체를 돌려줘 아래가 다시 그리지 않게
       const cards = kept !== undefined && JSON.stringify(kept) === JSON.stringify(fresh) ? kept : fresh;
@@ -98,6 +118,7 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
       setLoaded((previous) => (previous !== null && previous.key === nowKey && previous.cards === cards ? previous : { key: nowKey, cards }));
     } catch (error) {
       if (seq !== seqRef.current) return false;
+      if (off || isRouteMissing(error)) unsupportedAtRef.current = Date.now(); // 다시 물어본 것이 실패해도 다음 물음은 그 간격 뒤
       if (isRouteMissing(error)) setUnsupportedFor(auth);
       else setFailedKey(nowKey);
     }
